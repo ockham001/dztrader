@@ -1,0 +1,23 @@
+var searchData=
+[
+  ['date_0',['date',['../struct_dz_tick.html#aa2c45d858aa75d6e1e9d7f61d40eb582',1,'DzTick::date'],['../struct_dz_bar.html#afaf2c694a2cf645369bed0a8fc0e77e0',1,'DzBar::date']]],
+  ['def_2eh_1',['def.h',['../def_8h.html',1,'']]],
+  ['depth_2',['depth',['../struct_dz_tick.html#adeeec7fb1429569b66f5404dbb92fbe4',1,'DzTick']]],
+  ['develop_5fdef_2ehpp_3',['develop_def.hpp',['../develop__def_8hpp.html',1,'']]],
+  ['develop_5fdeps_2ehpp_4',['develop_deps.hpp',['../develop__deps_8hpp.html',1,'']]],
+  ['develop_5futility_2ehpp_5',['develop_utility.hpp',['../develop__utility_8hpp.html',1,'']]],
+  ['dzbar_6',['DzBar',['../struct_dz_bar.html',1,'']]],
+  ['dzerrorid_7',['DzErrorID',['../def_8h.html#a409962c46e8ca673967fbfd97ed2a3d2',1,'def.h']]],
+  ['dzerrornone_8',['DzErrorNone',['../def_8h.html#a409962c46e8ca673967fbfd97ed2a3d2a7a69a9f5cf104cb8fccbb67547f3af28',1,'def.h']]],
+  ['dzerrorunknown_9',['DzErrorUnknown',['../def_8h.html#a409962c46e8ca673967fbfd97ed2a3d2ad6a6fdb0ff1cad4db666eb001a4fa415',1,'def.h']]],
+  ['dzlib_10',['dzlib',['../namespacedzlib.html',1,'']]],
+  ['dzlib_3a_3adetail_11',['detail',['../namespacedzlib_1_1detail.html',1,'dzlib']]],
+  ['dzlib_5fbuild_5ftimestamp_12',['DZLIB_BUILD_TIMESTAMP',['../version_8h.html#abc08e64137709d9688aaecda6753bd1b',1,'version.h']]],
+  ['dzlib_5fgit_5fbranch_13',['DZLIB_GIT_BRANCH',['../version_8h.html#a084986c14019eb15eb332e0069c7b649',1,'version.h']]],
+  ['dzlib_5fgit_5fhash_14',['DZLIB_GIT_HASH',['../version_8h.html#aadd180bb032a9d3f385b1212fa29919f',1,'version.h']]],
+  ['dzlib_5fversion_15',['DZLIB_VERSION',['../version_8h.html#a7404cef8763e3a04e3c83c70060995a5',1,'version.h']]],
+  ['dzlib_5fversion_5fmajor_16',['DZLIB_VERSION_MAJOR',['../version_8h.html#afeeaf78099e62033b8dddc4dea880c43',1,'version.h']]],
+  ['dzlib_5fversion_5fminor_17',['DZLIB_VERSION_MINOR',['../version_8h.html#abd494ab9468b09bffdd91290f30de92c',1,'version.h']]],
+  ['dzlib_5fversion_5fpatch_18',['DZLIB_VERSION_PATCH',['../version_8h.html#ace43e02a670a28a9856071a5440e3f75',1,'version.h']]],
+  ['dztick_19',['DzTick',['../struct_dz_tick.html',1,'']]]
+];
