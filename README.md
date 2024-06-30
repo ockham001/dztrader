@@ -1,13 +1,12 @@
-TODO
+[![Ockham's GitHub stats](https://github-readme-stats.vercel.app/api?username=ockham001)](https://github.com/ockham001/github-readme-stats)
+
 ## 目录
 - [目录](#目录)
 - [1. 安装](#1-安装)
 - [2. 配置](#2-配置)
 - [3. 运行](#3-运行)
-- [4. 打包](#4-打包)
-- [5. 部署](#5-部署)
-- [6. 参考](#6-参考)
 
+帮助文档 https://ockham001.github.io/dztrader/
 ## 1. 安装
 
 ```bash
@@ -41,25 +40,3 @@ npm run serve
 # 打包项目
 npm run build
 ```
-
-## 4. 打包
-
-```bash
-# 打包项目
-npm run build
-```
-
-## 5. 部署
-
-```bash
-# 部署项目
-npm run build
-
-# 部署项目
-npm run build
-
-# 部署项目
-npm run build
-
-# 部署项目
-npm run build
