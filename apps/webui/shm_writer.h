@@ -56,6 +56,12 @@ public:
     ///           帧层遵循契约 04 增量 patch 语义（schedules 出现时整体覆盖）
     void write_set_auto_login(const std::string& source, const nlohmann::json& payload);
 
+    /// 写 SET_MD_SHM_CONFIG 帧 (契约 02: SHM 行情通道配置, 定向到目标行情进程)
+    /// source: 目标行情源名 (如 "dzmd_ctp")
+    /// payload: ShmConfig 子集 (RFC 7386 递归合并; preload_points 内 key 值 null=删除;
+    ///           page_size_mb 网关端跳过——透传无害, 由网关忽略)
+    void write_set_md_shm_config(const std::string& source, const nlohmann::json& payload);
+
     bool is_ready() const { return event_writer_ != nullptr; }
 
 private:

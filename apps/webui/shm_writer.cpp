@@ -120,4 +120,22 @@ void ShmWriter::write_set_auto_login(const std::string& source, const nlohmann::
     }
 }
 
+void ShmWriter::write_set_md_shm_config(const std::string& source, const nlohmann::json& payload) {
+    if (!event_writer_) {
+        spdlog::error("write set md shm config failed: event_writer null | source={}", source);
+        return;
+    }
+    if (source.empty()) {
+        spdlog::error("write set md shm config failed: source empty");
+        return;
+    }
+    try {
+        // SET_MD_SHM_CONFIG 定向到目标行情进程 (契约 02): payload 为 ShmConfig 增量 patch
+        platform::write_ext_inst_json_obj(*event_writer_, DZ_FRAME_SET_MD_SHM_CONFIG, source, payload);
+        spdlog::info("set md shm config written | source={}", source);
+    } catch (const std::exception& e) {
+        spdlog::error("write set md shm config failed | source={} error=\"{}\"", source, e.what());
+    }
+}
+
 } // namespace dztrader::webui

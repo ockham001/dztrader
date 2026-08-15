@@ -51,6 +51,8 @@ public:
                   "/api/market-sources/{1}/current-broker", drogon::Put);
     ADD_METHOD_TO(MarketSourceCtrl::set_subscribe_params,
                   "/api/market-sources/{1}/subscribe-params", drogon::Put);
+    ADD_METHOD_TO(MarketSourceCtrl::set_shm_config,
+                  "/api/market-sources/{1}/shm-config", drogon::Put);
     ADD_METHOD_TO(MarketSourceCtrl::start, "/api/market-sources/{1}/start", drogon::Post);
     ADD_METHOD_TO(MarketSourceCtrl::stop, "/api/market-sources/{1}/stop", drogon::Post);
     ADD_METHOD_TO(MarketSourceCtrl::get_config, "/api/market-sources/{1}/config", drogon::Get);
@@ -114,6 +116,13 @@ public:
     void set_subscribe_params(const drogon::HttpRequestPtr& req,
                               std::function<void(const drogon::HttpResponsePtr&)>&& callback,
                               int64_t id);
+    /// PUT /api/market-sources/{id}/shm-config - 修改 SHM 行情通道配置 (契约 02)
+    /// Body: ShmConfig 子集 (RFC 7386 递归合并)。preload_points 内 key 的 value 为 null
+    /// 表示删除该时间点 (契约 02 唯一合法 null 位置); page_size_mb 网关端跳过。
+    /// dzweb 透传不解析; 范围校验由网关负责; 最终状态由 WS md_shm_config 推送
+    void set_shm_config(const drogon::HttpRequestPtr& req,
+                        std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                        int64_t id);
     /// POST /api/market-sources/{id}/start - 启动行情源进程 (PROCESS_CONTROL action=start)
     void start(const drogon::HttpRequestPtr& req,
                std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);

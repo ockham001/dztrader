@@ -324,4 +324,39 @@ void MarketSourceCtrl::set_subscribe_params(
     callback(json_response(drogon::k200OK, {{"ok", true}, {"message", "dispatched"}}));
 }
 
+// PUT /api/market-sources/{id}/shm-config - 修改 SHM 行情通道配置 (admin)
+// 契约 02: 直发 SET_MD_SHM_CONFIG 帧, HTTP 同步响应仅表示"已下发",
+//          最终状态由 WS md_shm_config 推送 (RTN_MD_SHM_CONFIG) 决定
+// 注意: 不能复用 dispatch_op (其写 SET_MD_CONFIG 帧); 用 guard_process_dispatch
+//       守卫后直接写 SET_MD_SHM_CONFIG 帧
+void MarketSourceCtrl::set_shm_config(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id) {  // NOLINT
+    if (!is_admin(req)) {
+        callback(error_response(drogon::k403Forbidden, "forbidden"));
+        return;
+    }
+    Json body;
+    try {
+        body = Json::parse(req->getBody());
+    } catch (...) {
+        callback(error_response(drogon::k400BadRequest, "bad request"));
+        return;
+    }
+    if (!body.is_object() || body.empty()) {
+        callback(error_response(drogon::k400BadRequest, "bad request"));
+        return;
+    }
+    // 整体透传 (契约 02 SET payload 即 ShmConfig 子集): 含 preload_points null 删除语义,
+    // 不做字段级筛选; page_size_mb 透传无害 (网关跳过)
+    std::string process_name;
+    auto err = guard_process_dispatch(id, "set_shm_config", process_name);
+    if (err.has_value()) {
+        callback(*err);
+        return;
+    }
+    shm_writer_->write_set_md_shm_config(process_name, body);
+    callback(json_response(drogon::k200OK, {{"ok", true}, {"message", "dispatched"}}));
+}
+
 }  // namespace dztrader::webui
