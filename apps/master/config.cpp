@@ -320,9 +320,19 @@ void generate_default_config(const std::filesystem::path& json_path) {
     shm_event["check_pages"] = 1;
     shm_event["check_bytes"] = 0;
 
+    // webui section: 默认启动 dzweb 后台 (exe 留空, 由 launch_child 调 find_exe_by_stem 实时填充)
+    nlohmann::json webui = nlohmann::json::object();
+    webui["args"] = nlohmann::json::array();
+    webui["restart"] = {
+        {"enabled", true},
+        {"max_attempts", 5},
+        {"backoff_sec", 5}
+    };
+
     nlohmann::json full = {
         {"log", {{"level", "info"}, {"flush_on", "warning"}}},
         {"master", {{"single_stop_timeout_sec", 3}}},
+        {"webui", webui},
         {"shm", {
             {"meta_file_size", 1 * 1024 * 1024},
             {"event", shm_event}

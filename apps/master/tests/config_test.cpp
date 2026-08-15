@@ -579,5 +579,33 @@ TEST_F(ConfigTest, ShmGlobalConfigSavePreservesEventSubsection) {
     EXPECT_EQ(saved["shm"]["event"]["check_interval_min"], 5);
 }
 
+// ---- 默认配置生成: 包含 webui 段 (默认启动 dzweb 后台) ----
+
+TEST_F(ConfigTest, DefaultConfigIncludesWebui) {
+    auto path = tmp_dir_ / "default_dztraderd.json";
+    generate_default_config(path);
+    ASSERT_TRUE(std::filesystem::exists(path));
+
+    auto cfg = parse_master_json(path);
+    ASSERT_EQ(cfg.entries.size(), 1u);
+    const auto& w = cfg.entries[0];
+    EXPECT_EQ(w.name, "dzweb");
+    EXPECT_EQ(w.category, Category::WebUI);
+    // 契约 05: exe 和 start_dir 不持久化, 留空由 launch_child 填充
+    EXPECT_TRUE(w.exe.empty());
+    EXPECT_TRUE(w.start_dir.empty());
+    EXPECT_TRUE(w.restart.enabled);
+    EXPECT_EQ(w.restart.max_attempts, 5);
+}
+
+TEST_F(ConfigTest, DefaultConfigNotOverwriteExisting) {
+    auto path = tmp_dir_ / "default_dztraderd.json";
+    std::ofstream(path) << R"({"master": {"single_stop_timeout_sec": 10}})";
+    generate_default_config(path);
+    auto cfg = parse_master_json(path);
+    EXPECT_EQ(cfg.master.single_stop_timeout_sec, 10);
+    EXPECT_TRUE(cfg.entries.empty());  // 已有文件不含 webui 段, 不覆盖
+}
+
 }  // namespace
 }  // namespace dztrader::master
