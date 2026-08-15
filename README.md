@@ -1,5 +1,7 @@
 # dztrader
 
+[![CI](https://github.com/ockham001/dztrader/actions/workflows/ci.yml/badge.svg)](https://github.com/ockham001/dztrader/actions/workflows/ci.yml)
+
 > 高性能量化交易系统，微秒级延迟，7×24 稳定运行，多进程架构 + 共享内存 IPC
 
 > [!NOTE]
@@ -17,6 +19,12 @@
 - **跨平台**：Windows（MSVC 2022）和 Linux（GCC 12+）
 - **前端**：WebUI 已实现（Vue3 + dzweb）；Qt 为规划项
 - **C++20**：Concepts、Ranges、Format
+
+## 界面预览
+
+| 登录 | 仪表盘 | 日志 |
+|---|---|---|
+| ![登录](docs/images/screenshot-login.png) | ![仪表盘](docs/images/screenshot-dashboard.png) | ![日志](docs/images/screenshot-logs.png) |
 
 ## 前置条件
 
