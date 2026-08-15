@@ -75,10 +75,13 @@ function loginCurrent(s: MarketSourceView): number {
   if (s.loginState === 'pending') return 0.5
   return 0
 }
-const subscribeClass = (s: MarketSourceView): string =>
-  (s.subscribeTotal > 0 && s.subscribeCount === s.subscribeTotal)
+// 订阅统计配色: expected=0（无订阅需求）为中性; 有需求且未满足为告警
+const subscribeClass = (s: MarketSourceView): string => {
+  if (s.subscribeTotal === 0) return 'source-card__info-sub--ok'
+  return s.subscribeCount === s.subscribeTotal
     ? 'source-card__info-sub--ok'
     : 'source-card__info-sub--warn'
+}
 // header 展示自动登录状态; 控件内状态见 LoginPanel
 const autoLoginStatusText = (s: MarketSourceView): string =>
   s.autoLoginPending ? '切换中' : (s.auto_login ? '已启用' : '未启用')
@@ -116,6 +119,19 @@ const autoLoginStatusText = (s: MarketSourceView): string =>
     <div v-if="src.expanded" class="source-card__body is-open">
       <LoginPanel :source="src" />
       <ScheduleManager :source="src" />
+
+      <!-- ── 网关信息（契约 09 CTP 类型只读状态，登录后由 RTN_MD_STATUS 填充；
+               属 interface_type=ctp 范畴，xtp 等其他接口类型卡片自行设计展示）── -->
+      <div class="card-section">
+        <div class="card-section__row">
+          <span class="card-section__title">网关信息</span>
+        </div>
+        <div class="gateway-info">
+          <span class="gateway-info__item">API 版本：<span>{{ src.apiVersion || '--' }}</span></span>
+          <span class="gateway-info__item">系统版本：<span>{{ src.sysVersion || '--' }}</span></span>
+          <span class="gateway-info__item">登录时间：<span>{{ src.loginTime || '--' }}</span></span>
+        </div>
+      </div>
 
       <!-- ── 经纪商 ── -->
       <div class="card-section">
@@ -218,6 +234,11 @@ const autoLoginStatusText = (s: MarketSourceView): string =>
 .card-section__title { font-size: var(--body-sm-font-size); font-weight: var(--font-weight-medium, 500); color: var(--text-default); }
 .card-section__body { margin-top: var(--spacer-4); }
 .card-hint { font-size: var(--body-sm-font-size); color: var(--text-tertiary); padding: var(--spacer-4) 0; }
+
+/* 网关信息只读行 */
+.gateway-info { display: flex; flex-wrap: wrap; gap: var(--spacer-4) var(--spacer-16); }
+.gateway-info__item { font-size: var(--body-sm-font-size); color: var(--text-tertiary); white-space: nowrap; }
+.gateway-info__item span { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 
 .dialog-form { display: flex; flex-direction: column; gap: var(--spacer-12); }
 .dialog-row { display: flex; align-items: center; gap: var(--spacer-12); }
