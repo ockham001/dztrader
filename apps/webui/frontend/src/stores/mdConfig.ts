@@ -17,7 +17,7 @@ import { progressLoginState } from '@/composables/marketSourceView'
 //     HTTP 成功不清 pending（keepPendingOnSuccess 默认 true，等 WS RTN 帧清）
 //     HTTP 失败清 pending + 返回 false；超时兜底（10s，usePending 超时清 + toast）
 // - applyMdConfig: 到达时清该 source 全部配置类 pending——对照 setMdConfig 批量清
-//   11 字段语义（marketSources.ts:798-828，逐字段核对），用 clearByPrefix 逐 op 前缀批量清。
+//   各配置字段语义以契约 08 MdConfig schema 为准（逐字段核对），用 clearByPrefix 逐 op 前缀批量清。
 //   注意不能用 source:{id}: 全量前缀——pending 为跨 store 共享的模块级命名空间，
 //   会误伤 process store 的 source:{id}:start/stop/remove 与 login/logout。
 // - applyMdStatus: 仅写镜像；login/logout pending 由 RTN_PROGRESS 状态转移驱动
