@@ -59,6 +59,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 1
 | PUT `/api/market-sources/{id}/brokers/{name}/frontends` | 更新前置地址 | → `SET_MD_CONFIG{SetFrontends}` |
 | PUT `/api/market-sources/{id}/current-broker` | 切换当前经纪商 | → `SET_MD_CONFIG{SetCurrentBroker}` |
 | PUT `/api/market-sources/{id}/subscribe-params` | 修改订阅参数 | → `SET_MD_CONFIG{SetSubscribeParams}`（契约 08，无状态保护，缺失字段保留旧值）；生效信号：`md_rtn_config` |
+| PUT `/api/market-sources/{id}/shm-config` | 修改 SHM 行情通道配置 | → `SET_MD_SHM_CONFIG`（契约 02，RFC 7386 递归合并；`page_size_mb` 不可变被网关跳过；`preload_points` 内 key 的 value 为 `null` 表示删除该时间点）；生效信号：`md_shm_config`（契约 02） |
 | POST `/api/market-sources/{id}/start` | 启动进程 | → `REQUEST_PROCESS_CONTROL{Start}`；生效信号：`process_status` 带 `event`（契约 04） |
 | POST `/api/market-sources/{id}/stop` | 停止进程 | → `REQUEST_PROCESS_CONTROL{Stop}` |
 | GET `/api/market-sources/{id}/config` | 读取行情配置 | 进程镜像（`md_config` 域） |
