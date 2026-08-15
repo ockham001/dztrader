@@ -19,22 +19,30 @@ const scheduleModalOpen = ref(false)
 const scheduleModalSourceId = ref<number | null>(null)
 const scheduleLoginTime = ref('09:00')
 const scheduleLogoutTime = ref('15:30')
+const scheduleError = ref<string | null>(null)
 
 function openScheduleModal(sourceId: number): void {
   scheduleModalSourceId.value = sourceId
   scheduleLoginTime.value = '09:00'
   scheduleLogoutTime.value = '15:30'
+  scheduleError.value = null
   scheduleModalOpen.value = true
 }
 
 function closeScheduleModal(): void {
   scheduleModalOpen.value = false
   scheduleModalSourceId.value = null
+  scheduleError.value = null
 }
 
 /// F-C10: try/catch 包裹, 失败时保持 Modal 打开 (与 addBroker/addFrontend 一致)
+/// 前置校验 (契约 05): login == logout 非法（会话区间必须非空）, 跨午夜（login > logout）合法
 async function confirmAddSchedule(): Promise<void> {
   if (!scheduleModalSourceId.value) return
+  if (scheduleLoginTime.value === scheduleLogoutTime.value) {
+    scheduleError.value = '登录时间与登出时间不能相同（会话区间必须非空）'
+    return
+  }
   try {
     await store.addSchedule(scheduleModalSourceId.value, scheduleLoginTime.value, scheduleLogoutTime.value)
     closeScheduleModal()
@@ -42,6 +50,10 @@ async function confirmAddSchedule(): Promise<void> {
     // 错误已由 store 设置 error 字段; 保持 Modal 打开让用户修改后重试
   }
 }
+
+// 跨午夜判定 (契约 05): HH:MM 字符串词典序 = 时间序
+const isOvernight = (sch: { login_time: string; logout_time: string }): boolean =>
+  sch.login_time > sch.logout_time
 
 const scheduleAddPending = computed(() => {
   if (!scheduleModalSourceId.value) return false
@@ -61,6 +73,7 @@ const scheduleAddPending = computed(() => {
         <span class="schedule-item__login">{{ sch.login_time }}</span>
         <span class="schedule-item__arrow">→</span>
         <span class="schedule-item__logout">{{ sch.logout_time }}</span>
+        <span v-if="isOvernight(sch)" class="schedule-item__overnight" title="跨午夜时段：[登录,24:00) ∪ [00:00,登出)">跨午夜</span>
         <button class="schedule-item__remove" type="button" title="此时段"
           :disabled="src.scheduleRemovePending"
           @click="store.removeSchedule(src.id, sch.login_time, sch.logout_time)">
@@ -69,7 +82,7 @@ const scheduleAddPending = computed(() => {
       </div>
     </div>
     <div v-else class="card-hint">
-      未设置时段{{ src.auto_login ? '，开启自动登录后将按时段自动登录/登出' : '' }}
+      未设置时段{{ src.auto_login ? '，自动登录已开启，添加时段后将按时段自动登录/登出' : '，开启自动登录后将按时段自动登录/登出' }}
     </div>
   </div>
 
@@ -88,6 +101,7 @@ const scheduleAddPending = computed(() => {
           <TimePicker v-model="scheduleLogoutTime" />
         </div>
       </div>
+      <div v-if="scheduleError" class="dialog-row__error">{{ scheduleError }}</div>
     </div>
     <template #footer>
       <button class="ds-btn ds-btn--secondary" type="button" :disabled="scheduleAddPending" @click="closeScheduleModal">取消</button>
@@ -194,6 +208,23 @@ const scheduleAddPending = computed(() => {
 .dialog-row__control {
   flex: 1;
   min-width: 0;
+}
+
+/* 跨午夜标识 */
+.schedule-item__overnight {
+  font-size: var(--body-xs-font-size);
+  color: var(--status-alert-default);
+  background: var(--bg-overlay-l1);
+  padding: 0 var(--spacer-4);
+  border-radius: var(--radius-4);
+  white-space: nowrap;
+}
+
+/* 对话框错误提示 */
+.dialog-row__error {
+  font-size: var(--body-sm-font-size);
+  color: var(--status-error-default);
+  padding-left: 122px; /* 与 control 列对齐 (label 宽度 + gap) */
 }
 
 /* Spinner for buttons */
