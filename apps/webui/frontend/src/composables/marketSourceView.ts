@@ -60,6 +60,11 @@ export interface MarketSourceView extends MarketSource {
   tradingDay: string
   subscribeCount: number
   subscribeTotal: number
+  subscribeBatchSize: number | null       // 契约 08 订阅参数（镜像未到达为 null）
+  subscribeBatchDelayMs: number | null
+  subCheckIntervalMs: number | null
+  subMaxRetry: number | null
+  subscribeParamsPending: boolean
   brokers: BrokerEntry[]
   selectedBrokerId: string | null
   schedules: ScheduleView[]
@@ -101,6 +106,11 @@ export function makeSource(
     tradingDay: '--',
     subscribeCount: 0,
     subscribeTotal: 0,
+    subscribeBatchSize: null,
+    subscribeBatchDelayMs: null,
+    subCheckIntervalMs: null,
+    subMaxRetry: null,
+    subscribeParamsPending: false,
     brokers: [],
     selectedBrokerId: null,
     schedules: [],

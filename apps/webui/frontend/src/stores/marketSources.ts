@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { marketSourcesApi } from '@/api/marketSources'
-import type { AvailableMarketSource, AddBrokerBody } from '@/api/marketSources'
+import type { AvailableMarketSource, AddBrokerBody, SubscribeParamsBody } from '@/api/marketSources'
 import type { BrokerEntry, MarketSource } from '@/types/api'
 import { usePending, PENDING_TIMEOUT } from '@/composables/usePending'
 import { useProcessStore } from '@/stores/process'
@@ -97,6 +97,11 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
         subscribeCount: mdStatus?.subscribeCount ?? 0,
         subscribeTotal: mdStatus?.subscribeTotal ?? 0,
         brokers: mdConfig?.brokers ?? [],
+        subscribeBatchSize: mdConfig?.subscribe_batch_size ?? null,
+        subscribeBatchDelayMs: mdConfig?.subscribe_batch_delay_ms ?? null,
+        subCheckIntervalMs: mdConfig?.sub_check_interval_ms ?? null,
+        subMaxRetry: mdConfig?.sub_max_retry ?? null,
+        subscribeParamsPending: pend('subscribe_params'),
         selectedBrokerId: mdConfig?.current_broker_name || null,
         schedules: mergeSchedules(b.id, autoLogin?.schedules),
         brokerAddPending: pend('broker_add'),
@@ -283,6 +288,10 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
         : Promise.resolve(true)
     }, 'toggle frontend failed', { requireIdle: true })
   }
+  async function setSubscribeParams(id: number, patch: SubscribeParamsBody): Promise<void> {
+    await runOp(id, 'subscribe_params', s => md.setSubscribeParams(id, s.source_name, patch),
+      'set subscribe params failed')
+  }
 
   /// 添加并启动行情源(设计 §3.1)。已有记录复用 id; 无则 create 后暂存, 等 WS 晋升。
   /// page 大小不再由 UI 传参: 由 master 读配置文件 configs/<source>.json 决定 (契约 03 §参数可改性)。
@@ -398,6 +407,7 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
     removeFrontend,
     editFrontend,
     setFrontendEnabled,
+    setSubscribeParams,
     addAndStartSource,
     removeSource,
     start,

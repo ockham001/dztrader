@@ -6,6 +6,7 @@ import StatusIndicator from '@/components/shared/StatusIndicator.vue'
 import { processStateText, processStateColor } from '@/composables/useProcessState'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import type { MarketSourceView } from '@/stores/marketSources'
+import type { SubscribeParamsBody } from '@/api/marketSources'
 import LoginPanel from './LoginPanel.vue'
 import ScheduleManager from './ScheduleManager.vue'
 import BrokerSelector from './BrokerSelector.vue'
@@ -80,6 +81,33 @@ const subscribeClass = (s: MarketSourceView): string => {
 // header 展示自动登录状态; 控件内状态见 LoginPanel
 const autoLoginStatusText = (s: MarketSourceView): string =>
   s.autoLoginPending ? '切换中' : (s.auto_login ? '已启用' : '未启用')
+
+// 订阅参数失焦提交: 值改变且满足契约范围才下发单字段 patch（契约 08 缺失=保留旧值）。
+// 范围对照契约 08: batch_size > 0, delay_ms >= 0, interval_ms > 0, retry >= 0
+// （与输入框 min 属性一致; 手输越界值前端拦截, 后端校验为最终防线）
+type SubParamKey = 'subscribe_batch_size' | 'subscribe_batch_delay_ms'
+  | 'sub_check_interval_ms' | 'sub_max_retry'
+const SUB_PARAM_MIN: Record<SubParamKey, number> = {
+  subscribe_batch_size: 1,
+  subscribe_batch_delay_ms: 0,
+  sub_check_interval_ms: 1,
+  sub_max_retry: 0,
+}
+const subParamCurrent = (s: MarketSourceView, key: SubParamKey): number | null =>
+  key === 'subscribe_batch_size' ? s.subscribeBatchSize
+    : key === 'subscribe_batch_delay_ms' ? s.subscribeBatchDelayMs
+    : key === 'sub_check_interval_ms' ? s.subCheckIntervalMs
+    : s.subMaxRetry
+
+function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): void {
+  const raw = (event.target as HTMLInputElement).value.trim()
+  const old = subParamCurrent(s, key)
+  if (raw === '') return                    // 清空不下发（无"删除参数"语义）
+  const parsed = Number(raw)
+  if (!Number.isInteger(parsed) || parsed < SUB_PARAM_MIN[key]) return  // 越界不下发
+  if (old !== null && parsed === old) return // 值未改变不下发
+  void store.setSubscribeParams(s.id, { [key]: parsed } as SubscribeParamsBody)
+}
 </script>
 
 <template>
@@ -126,6 +154,48 @@ const autoLoginStatusText = (s: MarketSourceView): string =>
           <span class="gateway-info__item">API 版本：<span>{{ src.apiVersion || '--' }}</span></span>
           <span class="gateway-info__item">系统版本：<span>{{ src.sysVersion || '--' }}</span></span>
           <span class="gateway-info__item">登录时间：<span>{{ src.loginTime || '--' }}</span></span>
+        </div>
+      </div>
+
+      <!-- ── 订阅参数（契约 08 SetSubscribeParams，无状态保护，缺失字段保留旧值）── -->
+      <div class="card-section">
+        <div class="card-section__row">
+          <span class="card-section__title">订阅参数</span>
+          <span v-if="src.subscribeParamsPending" class="card-section__title">保存中…</span>
+        </div>
+        <div class="sub-params">
+          <div class="sub-params__field">
+            <label>每批订阅数</label>
+            <div class="ds-input">
+              <input type="number" min="1" :value="src.subscribeBatchSize ?? ''"
+                :disabled="src.subscribeParamsPending"
+                @blur="onSubParamBlur(src, 'subscribe_batch_size', $event)">
+            </div>
+          </div>
+          <div class="sub-params__field">
+            <label>批间延迟(ms)</label>
+            <div class="ds-input">
+              <input type="number" min="0" :value="src.subscribeBatchDelayMs ?? ''"
+                :disabled="src.subscribeParamsPending"
+                @blur="onSubParamBlur(src, 'subscribe_batch_delay_ms', $event)">
+            </div>
+          </div>
+          <div class="sub-params__field">
+            <label>补订检查间隔(ms)</label>
+            <div class="ds-input">
+              <input type="number" min="1" :value="src.subCheckIntervalMs ?? ''"
+                :disabled="src.subscribeParamsPending"
+                @blur="onSubParamBlur(src, 'sub_check_interval_ms', $event)">
+            </div>
+          </div>
+          <div class="sub-params__field">
+            <label>补订最大重试</label>
+            <div class="ds-input">
+              <input type="number" min="0" :value="src.subMaxRetry ?? ''"
+                :disabled="src.subscribeParamsPending"
+                @blur="onSubParamBlur(src, 'sub_max_retry', $event)">
+            </div>
+          </div>
         </div>
       </div>
 
@@ -235,6 +305,13 @@ const autoLoginStatusText = (s: MarketSourceView): string =>
 .gateway-info { display: flex; flex-wrap: wrap; gap: var(--spacer-4) var(--spacer-16); }
 .gateway-info__item { font-size: var(--body-sm-font-size); color: var(--text-tertiary); white-space: nowrap; }
 .gateway-info__item span { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+
+/* 订阅参数网格 */
+.sub-params { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--spacer-8) var(--spacer-16); }
+.sub-params__field { display: flex; align-items: center; gap: var(--spacer-8); }
+.sub-params__field label { font-size: var(--body-sm-font-size); color: var(--text-tertiary); flex-shrink: 0; }
+.sub-params__field .ds-input { flex: 1; min-width: 0; }
+.sub-params__field .ds-input input { font-family: var(--code-editor-font-family); font-variant-numeric: tabular-nums; }
 
 .dialog-form { display: flex; flex-direction: column; gap: var(--spacer-12); }
 .dialog-row { display: flex; align-items: center; gap: var(--spacer-12); }
