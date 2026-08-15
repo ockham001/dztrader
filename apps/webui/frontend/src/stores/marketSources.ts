@@ -7,7 +7,7 @@ import { usePending, PENDING_TIMEOUT } from '@/composables/usePending'
 import { useProcessStore } from '@/stores/process'
 import { useMdConfigStore } from '@/stores/mdConfig'
 import { useProgressStore } from '@/stores/progress'
-import { makeSource, progressLoginState, type MarketSourceView, type LoginState, type ScheduleView } from '@/composables/marketSourceView'
+import { makeSource, progressLoginState, parseMdStatus, type MarketSourceView, type LoginState, type ScheduleView } from '@/composables/marketSourceView'
 
 export type { MarketSourceView, LoginState, ScheduleView }
 // P4 Task5: DB列表+聚合view; 领域状态由 process/mdConfig 镜像+usePending(单写化);
@@ -56,6 +56,7 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
       const name = b.source_name
       const processStatus = process.statuses[name]
       const mdConfig = md.configs[name]
+      const mdStatus = parseMdStatus(md.statuses[name]?.status)  // 新增
       const autoLogin = md.autoLogins[name]
       const prog = progress.progress[name] as { min?: unknown; max?: unknown; current?: unknown } | undefined
       const loginState = progressLoginState(prog) ?? loginStateCache.value[name] ?? 'offline'
@@ -78,6 +79,14 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
         scheduleAddPending: pend('schedule_add'),
         scheduleRemovePending: pend('schedule_remove'),
         expanded: expandedIds.value[b.id] ?? false,
+        apiVersion: mdStatus?.apiVersion ?? '',
+        sysVersion: mdStatus?.sysVersion ?? '',
+        loginTime: mdStatus?.loginTime ?? '',
+        // tradingDay 用 || 非 ??: parseMdStatus 对类型非法回落空串（非 nullish），
+        // ?? 不会触发回落；|| 使空串也显示 '--'（Idle 清空语义下 UI 正确显示占位符）
+        tradingDay: mdStatus?.tradingDay || '--',
+        subscribeCount: mdStatus?.subscribeCount ?? 0,
+        subscribeTotal: mdStatus?.subscribeTotal ?? 0,
         brokers: mdConfig?.brokers ?? [],
         selectedBrokerId: mdConfig?.current_broker_name || null,
         schedules: mergeSchedules(b.id, autoLogin?.schedules),

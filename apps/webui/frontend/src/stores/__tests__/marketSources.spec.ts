@@ -137,6 +137,52 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(s.removePending).toBe(false)
     })
 
+    describe('md_status 聚合桥接（契约 09）', () => {
+      it('镜像到达后填充 6 字段', async () => {
+        await loadDb()  // mock list + loadSources（sources 非空的唯一途径）
+        useMdConfigStore().applyMdStatus({ source: 'dzmd_ctp', status: {
+          api_version: 'v6.7.2',
+          sys_version: 'v6.7.2_20240105',
+          trading_day: '20260808',
+          login_time: '2026-08-08 08:45:32',
+          expected_subscribe_count: 5,
+          subscribed_count: 3,
+        }})
+        const s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
+        expect(s.tradingDay).toBe('20260808')
+        expect(s.subscribeCount).toBe(3)
+        expect(s.subscribeTotal).toBe(5)
+        expect(s.apiVersion).toBe('v6.7.2')
+        expect(s.sysVersion).toBe('v6.7.2_20240105')
+        expect(s.loginTime).toBe('2026-08-08 08:45:32')
+      })
+
+      it('清空语义：登录失败仅清 login_time，其余保留（契约 09）', async () => {
+        await loadDb()
+        useMdConfigStore().applyMdStatus({ source: 'dzmd_ctp', status: {
+          api_version: 'v6.7.2',
+          sys_version: 'v6.7.2_20240105',
+          trading_day: '20260808',
+          login_time: '',
+          expected_subscribe_count: 5,
+          subscribed_count: 0,
+        }})
+        const s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
+        expect(s.tradingDay).toBe('20260808')      // 保留，不因 login_time 为空整体丢弃
+        expect(s.loginTime).toBe('')
+        expect(s.subscribeCount).toBe(0)
+      })
+
+      it('字段类型非法时逐字段回落默认值', async () => {
+        await loadDb()
+        useMdConfigStore().applyMdStatus({ source: 'dzmd_ctp', status: { trading_day: 123, subscribed_count: 'x' } })
+        const s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
+        expect(s.tradingDay).toBe('--')
+        expect(s.subscribeCount).toBe(0)
+        expect(s.subscribeTotal).toBe(0)
+      })
+    })
+
     it('领域 store 写入后聚合回填（process_state / loginState / brokers / schedules / auto_login / 选中）', async () => {
       await loadDb()
       const store = useMarketSourcesStore()

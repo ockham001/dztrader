@@ -38,6 +38,13 @@ export interface MarketSourceView extends MarketSource {
   scheduleAddPending: boolean
   scheduleRemovePending: boolean
   expanded: boolean
+  // 以下 6 字段来自契约 09 MdStatus（CTP 类型 schema，interface_type=ctp）。
+  // 放通用视图模型是务实取舍：聚合层单一 computed 是现有架构约定，组件不直接读镜像。
+  // xtp 等其他接口类型无对应概念时恒为默认值（''/--/0），UI 无感知、无害；
+  // 届时若 xtp 状态 schema 差异大，由其 ui_card 组件定义独立解析（见 parseMdStatus 注释）。
+  apiVersion: string      // 契约 09 api_version，镜像未到达为 ''
+  sysVersion: string      // 契约 09 sys_version，镜像未到达为 ''
+  loginTime: string       // 契约 09 login_time，镜像未到达为 ''
   tradingDay: string
   subscribeCount: number
   subscribeTotal: number
@@ -75,6 +82,9 @@ export function makeSource(
     scheduleAddPending: false,
     scheduleRemovePending: false,
     expanded: false,
+    apiVersion: '',
+    sysVersion: '',
+    loginTime: '',
     tradingDay: '--',
     subscribeCount: 0,
     subscribeTotal: 0,
@@ -94,5 +104,44 @@ export function makeSource(
     stopPending: false,
     removePending: false,
     ...partial,
+  }
+}
+
+// ===== md_status 镜像解析（契约 09 CTP 类型，6 字段全量）=====
+// 层级归属：契约 09 的 MdStatus schema 定义于「CTP 类型（interface_type = ctp）」章节，
+// 本解析器为 CTP 接口专属（dzmd_ctp*）。dzmd_* 通用层不感知字段细节；
+// 将来 xtp 等其他 interface_type 由其独立 ui_card 组件 + 独立解析函数承接，不复用本函数。
+// statuses[source].status 为不透明 Record<string, unknown>（dzweb 透传）。
+// 逐字段独立 typeof 校验：类型非法的字段单独回落默认值，其余字段正常采用——
+// 契约 09 清空语义是分层的（进 Idle 全清空、登录失败仅清 login_time 其余保留），
+// 空串是合法值不是非法帧，禁止整帧全有或全无判定（否则登录失败场景会误丢 trading_day）。
+export interface MdStatusView {
+  apiVersion: string
+  sysVersion: string
+  tradingDay: string
+  loginTime: string
+  subscribeCount: number
+  subscribeTotal: number
+}
+
+export function parseMdStatus(raw: unknown): MdStatusView | null {
+  const s = raw as Partial<{
+    api_version: unknown
+    sys_version: unknown
+    trading_day: unknown
+    login_time: unknown
+    expected_subscribe_count: unknown
+    subscribed_count: unknown
+  }> | null | undefined
+  if (!s || typeof s !== 'object') return null  // 非对象: 镜像未到达/非法帧
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+  return {
+    apiVersion: str(s.api_version),
+    sysVersion: str(s.sys_version),
+    tradingDay: str(s.trading_day),
+    loginTime: str(s.login_time),
+    subscribeCount: num(s.subscribed_count),
+    subscribeTotal: num(s.expected_subscribe_count),
   }
 }
