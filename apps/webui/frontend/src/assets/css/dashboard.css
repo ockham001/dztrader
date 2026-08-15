@@ -1,0 +1,330 @@
+/* ===== Dashboard 专属样式（精确对齐静态设计 main.html 内联样式） ===== */
+
+/* dvh 支持 */
+@supports (height: 100dvh) {
+  .app-shell { height: 100dvh !important; }
+}
+
+/* ===== 面板卡片化 ===== */
+.dashboard-panel {
+  border: 1px solid var(--border-neutral-l1);
+  border-radius: var(--radius-12);
+  background: var(--bg-card);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--text-default) 6%, transparent);
+  overflow: hidden;
+}
+
+/* Allow flex children to shrink below content size */
+.dashboard-left-panel,
+.dashboard-right-panel,
+.dashboard-bottom-panel,
+.dashboard-panel {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ===== 面板内表格背景/边框覆盖 ===== */
+/* 静态设计：面板内表格用 bg-card 背景 + bg-base-secondary 分割线 */
+.dashboard-panel .ds-table thead th {
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--bg-base-secondary);
+}
+.dashboard-panel .ds-table tbody td {
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--bg-base-secondary);
+}
+.dashboard-panel .ds-table th.frozen,
+.dashboard-panel .ds-table td.frozen {
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--bg-base-secondary);
+}
+.dashboard-panel .auto-scroll {
+  background: var(--bg-card);
+}
+
+/* ===== 滚动条（macOS 风格：默认透明，hover 显形） ===== */
+.auto-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 200ms;
+}
+.auto-scroll:hover {
+  scrollbar-color: var(--icon-quaternary, rgba(128,128,128,0.4)) transparent;
+}
+.auto-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.auto-scroll::-webkit-scrollbar-track { background: transparent; }
+.auto-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+  transition: background 200ms;
+}
+.auto-scroll:hover::-webkit-scrollbar-thumb {
+  background: var(--icon-quaternary, rgba(128,128,128,0.4));
+}
+.auto-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--icon-tertiary, rgba(128,128,128,0.6));
+}
+
+/* ===== 表格基础（覆盖 components.css 全局样式） ===== */
+/* 禁止文本选择 */
+.ds-table, .ds-table thead, .ds-table tbody,
+.ds-table th, .ds-table td {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.ds-table tbody tr { cursor: default; }
+
+/* 统一表格字体 — body-xs */
+.ds-table {
+  font-family: var(--body-xs-font-family);
+  font-size: var(--body-xs-font-size);
+  font-weight: var(--body-xs-font-weight);
+  line-height: var(--body-xs-line-height);
+  letter-spacing: var(--body-xs-letter-spacing);
+  border-collapse: collapse;
+  width: 100%;
+}
+
+/* 表头 — body-xs-strong */
+.ds-table thead th {
+  font-weight: var(--body-xs-strong-font-weight);
+  font-size: var(--body-xs-strong-font-size);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  padding: 0 var(--spacer-12);
+  height: 28px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-neutral-l1);
+  background: transparent;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* 紧凑行间距 — 持仓/委托表 */
+.ds-table--dense tbody td {
+  padding: var(--spacer-6) var(--spacer-12);
+  border-bottom: 1px solid var(--border-neutral-l1);
+  white-space: nowrap;
+}
+
+/* 正常行间距 — 账户表 */
+.ds-table--normal tbody td {
+  padding: var(--spacer-6) var(--spacer-12);
+  border-bottom: 1px solid var(--border-neutral-l1);
+  white-space: nowrap;
+}
+
+/* ===== 单元格对齐 ===== */
+.ds-table .cell-text { text-align: left; }
+.ds-table .cell-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+/* ===== 冻结列 ===== */
+.ds-table th.frozen,
+.ds-table td.frozen {
+  position: sticky;
+  z-index: 2;
+  background: var(--bg-base-default);
+  will-change: transform;
+  flex-shrink: 0;
+  box-sizing: content-box;
+  min-width: -moz-max-content;
+  min-width: -webkit-max-content;
+  min-width: max-content;
+}
+.ds-table thead th.frozen { z-index: 3; }
+.ds-table tbody td.frozen { min-width: inherit; }
+
+/* ===== 双行单元格 ===== */
+.cell-two-line {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: var(--body-xs-line-height);
+}
+.cell-two-line .cell-main {
+  font-weight: var(--font-weight-medium);
+  color: var(--text-default);
+}
+.cell-two-line .cell-sub {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+/* ===== 涨跌着色（中国期货：红涨绿跌） ===== */
+.ds-table td.diff-pos { color: #d4543e !important; }
+.ds-table td.diff-neg { color: #2a9d5c !important; }
+.ds-table td.trade-buy { color: color-mix(in srgb, #d4543e 70%, var(--text-default)) !important; }
+.ds-table td.trade-sell { color: color-mix(in srgb, #2a9d5c 70%, var(--text-default)) !important; }
+
+/* ===== 委托状态图标（纯色，无背景圆圈） ===== */
+.order-status-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  font-size: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.order-status-icon--filled { color: var(--status-success-default); }
+.order-status-icon--pending { color: var(--status-alert-default); }
+.order-status-icon--cancelled { color: var(--text-tertiary); }
+.order-status-icon--rejected { color: var(--text-tertiary); text-decoration: line-through; }
+
+/* ===== 委托行状态 ===== */
+.order-row--rejected td {
+  color: var(--text-tertiary) !important;
+}
+.order-row--rejected .cell-text {
+  text-decoration: line-through;
+}
+.order-row--cancelled td {
+  color: var(--text-tertiary);
+}
+
+/* ===== 委托标签药丸（紧凑圆角） ===== */
+.ds-table .ds-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: var(--font-weight-medium);
+  border: none;
+  height: auto;
+  line-height: 16px;
+}
+.ds-table .ds-tag--success {
+  background: rgba(42, 157, 92, 0.15);
+  color: #2a9d5c;
+}
+.ds-tag--alert {
+  color: var(--status-alert-default);
+  background: color-mix(in srgb, var(--status-alert-default) 15%, transparent);
+}
+.ds-table .ds-tag--alert {
+  background: rgba(91, 141, 239, 0.15);
+  color: #5b8def;
+}
+.ds-table .ds-tag--danger {
+  background: rgba(212, 84, 62, 0.15);
+  color: #d4543e;
+}
+.ds-table .ds-tag:not([class*="ds-tag--"]) {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-tertiary);
+}
+
+/* ===== 消息级别图标 ===== */
+.msg-level-icon {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 5px;
+}
+.msg-level-icon--info { background: var(--status-primary-default); }
+.msg-level-icon--warning { background: var(--status-alert-default); }
+.msg-level-icon--error { background: var(--status-error-default); }
+
+/* ===== 策略列 ===== */
+.strategy-col { color: var(--text-tertiary); }
+
+/* ===== 分隔条 ===== */
+.splitter-v, .splitter-h {
+  background: transparent;
+  flex-shrink: 0;
+  transition: background-color 120ms;
+  position: relative;
+  z-index: 5;
+}
+.splitter-v::before, .splitter-h::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+}
+.splitter-v::before { left: -7px; right: -7px; top: 0; bottom: 0; }
+.splitter-h::before { top: -7px; bottom: -7px; left: 0; right: 0; }
+.splitter-v:hover, .splitter-h:hover,
+.splitter-v.active, .splitter-h.active {
+  background: var(--bg-brand);
+}
+
+/* ===== 响应式布局 — 窄屏 + 矮屏 ===== */
+@media (max-width: 1024px), (max-height: 600px) {
+  body {
+    height: auto !important;
+    overflow: visible !important;
+  }
+  .app-shell {
+    height: auto !important;
+    overflow: visible !important;
+  }
+  /* 让 workspace 跟随 app-shell 释放高度，topbar 才能基于视口 sticky */
+  .app-shell > .workspace {
+    height: auto !important;
+    overflow: visible !important;
+  }
+  .dashboard-content {
+    grid-template-columns: 1fr !important;
+    grid-template-rows: auto !important;
+    overflow: visible !important;
+    display: flex !important;
+    flex-direction: column;
+    gap: var(--spacer-8);
+    padding: var(--spacer-8);
+  }
+  .dashboard-content > .v-splitter-main { display: none !important; }
+
+  .dashboard-left-panel {
+    min-height: auto;
+    overflow: visible !important;
+    gap: var(--spacer-8);
+    display: flex;
+    flex-direction: column;
+  }
+  .dashboard-right-panel {
+    border-left: none !important;
+    min-height: auto;
+    overflow: visible !important;
+    gap: var(--spacer-8);
+    display: flex;
+    flex-direction: column;
+  }
+  .dashboard-panel {
+    flex: none !important;
+    min-height: 200px;
+    overflow: hidden;
+  }
+  .dashboard-bottom-panel {
+    flex: none !important;
+    flex-direction: column !important;
+    gap: var(--spacer-8);
+    min-height: auto !important;
+  }
+  .dashboard-panel--account {
+    border-right: none !important;
+    min-height: 180px;
+  }
+  .dashboard-panel--orders { min-height: 180px; }
+  .dashboard-panel--position { min-height: 280px; }
+
+  .v-splitter-1,
+  .h-splitter,
+  .market-strategy-splitter,
+  .strategy-msg-splitter {
+    display: none !important;
+  }
+}
+
+/* ===== 减少动画 ===== */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

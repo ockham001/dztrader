@@ -1,0 +1,126 @@
+---
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  clang-analyzer-*,
+  -clang-analyzer-optin.performance.Padding,
+  -clang-analyzer-optin.mpi.MPI-Checker,
+  -clang-analyzer-osx.*,
+  -clang-analyzer-optin.osx.*,
+  cppcoreguidelines-*,
+  -cppcoreguidelines-avoid-c-arrays,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-pro-type-union-access,
+  -cppcoreguidelines-pro-type-vararg,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  misc-*,
+  -misc-no-recursion,
+  -misc-non-private-member-variables-in-classes,
+  -misc-include-cleaner,
+  modernize-*,
+  -modernize-avoid-c-arrays,
+  -modernize-use-trailing-return-type,
+  -modernize-return-braced-init-list,
+  portability-*,
+  -portability-simd-pragma,
+  readability-*,
+  -readability-convert-member-functions-to-static,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
+  -readability-implicit-bool-conversion,
+  -readability-isolate-declaration,
+  -readability-magic-numbers,
+  -readability-named-parameter,
+  -readability-uppercase-literal-suffix,
+  -readability-else-after-return
+
+WarningsAsErrors: ''
+
+HeaderFilterRegex: 'src/.*|include/.*|libs/.*|apps/.*'
+
+FormatStyle: file
+
+CheckOptions:
+  # ============================================================
+  # Naming conventions
+  # ============================================================
+
+  # --- C++ 命名空间内（dztrader）---
+  # 类/结构体: PascalCase
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.UnionCase
+    value: CamelCase
+  # 枚举类型名: PascalCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  # 函数（成员/全局/静态）: snake_case
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.MethodCase
+    value: lower_case
+  # 变量（普通/参数/struct 成员）: snake_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.MemberCase
+    value: lower_case
+  - key: readability-identifier-naming.PublicMemberCase
+    value: lower_case
+  # 变量（class 私有/保护成员）: snake_case_（尾部下划线）
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: '_'
+  - key: readability-identifier-naming.ProtectedMemberSuffix
+    value: '_'
+  # 常量: UPPER_SNAKE_CASE
+  - key: readability-identifier-naming.ConstCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.ConstexprCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.StaticConstantCase
+    value: UPPER_CASE
+  # 枚举值（策略接口 unscoped enum）: UPPER_SNAKE_CASE
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  # 枚举值（项目内部 enum class）: UPPER_SNAKE_CASE
+  - key: readability-identifier-naming.ScopedEnumConstantCase
+    value: CamelCase
+  # 模板参数: PascalCase
+  - key: readability-identifier-naming.TemplateParameterCase
+    value: CamelCase
+  # 命名空间: snake_case
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  # typedef / type alias: PascalCase（C 接口 Dz+PascalCase 无法区分，统一按 CamelCase）
+  - key: readability-identifier-naming.TypedefCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypeAliasCase
+    value: CamelCase
+  # 宏定义: UPPER_SNAKE_CASE
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  # C++20 Concept: PascalCase
+  - key: readability-identifier-naming.ConceptCase
+    value: CamelCase
+
+  # --- Modernize preferences ---
+  - key: modernize-pass-by-value.ValuesOnly
+    value: 'true'
+  - key: modernize-use-override.AllowOverrideAndFinal
+    value: 'true'
+  # --- Performance ---
+  - key: performance-move-const-arg.CheckTriviallyCopyableMove
+    value: 'false'
+  # --- Bugprone ---
+  - key: bugprone-assignment-in-if-condition.WarnOnlyIfFirstVariableInStatement
+    value: 'true'

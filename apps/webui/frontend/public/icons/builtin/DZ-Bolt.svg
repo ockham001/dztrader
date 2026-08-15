@@ -1,0 +1,11 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#5B4FEE"/>
+      <stop offset="100%" stop-color="#4238D0"/>
+    </linearGradient>
+  </defs>
+  <rect width="24" height="24" rx="6" fill="url(#bgGrad)"/>
+  <!-- T: bold block letter with rounded corners -->
+  <path d="M4.5,5.5 Q4.5,5 5,5 L19,5 Q19.5,5 19.5,5.5 L19.5,8 Q19.5,8.5 19,8.5 L14.75,8.5 L14.75,18.5 Q14.75,19 14.25,19 L9.75,19 Q9.25,19 9.25,18.5 L9.25,8.5 L5,8.5 Q4.5,8.5 4.5,8 Z" fill="#FFFFFF"/>
+</svg>

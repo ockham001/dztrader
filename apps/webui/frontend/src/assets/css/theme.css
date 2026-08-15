@@ -1,0 +1,220 @@
+/* ============================================================
+   theme.css - 设计系统 tokens (light + dark)
+   ============================================================ */
+
+/* ---- Light theme (default) ---- */
+:root {
+  color-scheme: light;
+  /* bg */
+  --bg-base-default: #FFFFFF;
+  --bg-base-secondary: #F5F5F5;
+  --bg-base-tertiary: #E5E5E5;
+  --bg-overlay-l1: rgba(115, 115, 115, 0.08);
+  --bg-overlay-l2: rgba(115, 115, 115, 0.12);
+  --bg-overlay-l3: rgba(115, 115, 115, 0.16);
+  --bg-overlay-l4: rgba(115, 115, 115, 0.20);
+  --bg-white: #FFFFFF;
+  --bg-menu: #FFFFFF;
+  --bg-tooltip: #FFFFFF;
+  --bg-card: #F5F5F5;
+  --bg-invert: #262626;
+  --bg-invert-hover: #404040;
+  --bg-invert-active: #171717;
+  --bg-invert-disabled: rgba(115, 115, 115, 0.20);
+  --color-background: var(--bg-base-default);
+  --color-surface: var(--bg-base-secondary);
+  --color-surface-variant: var(--bg-base-tertiary);
+  --color-overlay-1: var(--bg-overlay-l1);
+  --color-overlay-2: var(--bg-overlay-l2);
+  --color-overlay-3: var(--bg-overlay-l3);
+  --color-overlay-4: var(--bg-overlay-l4);
+  --color-card: var(--bg-base-secondary);
+  --color-tooltip: var(--bg-tooltip);
+  --color-menu: var(--bg-menu);
+
+  /* bg-brand */
+  --bg-brand: #4B3FE3;
+  --bg-brand-hover: #6A6FFF;
+  --bg-brand-active: #3F31C6;
+  --bg-brand-disabled: rgba(75, 63, 227, 0.22);
+  --bg-brand-popup: rgba(170, 183, 255, 0.36);
+  --color-primary: var(--bg-brand);
+  --color-primary-hover: var(--bg-brand-hover);
+  --color-primary-disabled: var(--bg-brand-disabled);
+  --color-primary-soft: var(--bg-brand-popup);
+  --color-accent: var(--bg-brand);
+
+  /* text */
+  --text-default: #171717;
+  --text-default-hover: #262626;
+  --text-default-active: #262626;
+  --text-secondary: #404040;
+  --text-secondary-hover: #171717;
+  --text-secondary-active: #171717;
+  --text-tertiary: #737373;
+  --text-disabled: #A1A1A1;
+  --text-onbrand: #FFFFFF;
+  --text-onaccent: #FFFFFF;
+  --text-white: #FFFFFF;
+  --text-brand: #4B3FE3;
+  --text-brand-hover: #6A6FFF;
+  --color-foreground: var(--text-default);
+  --color-foreground-hover: var(--text-default-hover);
+  --color-on-surface: var(--text-default);
+  --color-on-surface-variant: var(--text-secondary);
+  --color-muted-foreground: var(--text-secondary);
+  --color-disabled-foreground: var(--text-disabled);
+  --color-on-primary: var(--text-onbrand);
+
+  /* icon */
+  --icon-default: #262626;
+  --icon-default-hover: #171717;
+  --icon-default-active: #171717;
+  --icon-secondary: #404040;
+  --icon-secondary-hover: #262626;
+  --icon-secondary-active: #262626;
+  --icon-tertiary: #737373;
+  --icon-disabled: #A1A1A1;
+  --icon-onbrand: #FFFFFF;
+  --icon-onaccent: #FFFFFF;
+  --icon-white: #FFFFFF;
+  --icon-brand: #4B3FE3;
+  --icon-brand-hover: #6A6FFF;
+
+  /* border */
+  --border-neutral-l1: rgba(115, 115, 115, 0.12);
+  --border-neutral-l2: rgba(115, 115, 115, 0.18);
+  --border-neutral-l3: rgba(115, 115, 115, 0.36);
+  --border-contrast: #000000;
+  --border-brand: #4B3FE3;
+  --color-border: var(--border-neutral-l1);
+  --color-border-strong: var(--border-neutral-l2);
+  --color-border-stronger: var(--border-neutral-l3);
+  --color-border-contrast: var(--border-contrast);
+  --color-outline: var(--border-neutral-l1);
+}
+
+/* ---- Dark theme (.dark class) ---- */
+.dark {
+  color-scheme: dark;
+  --bg-base-default: #171717;
+  --bg-base-secondary: #262626;
+  --bg-base-tertiary: #404040;
+  --bg-overlay-l1: #d4d4d40a;
+  --bg-overlay-l2: #d4d4d40f;
+  --bg-overlay-l3: #d4d4d414;
+  --bg-overlay-l4: #d4d4d41f;
+  --bg-white: #171717;
+  --bg-menu: #1f1f1f;
+  --bg-tooltip: #171717;
+  --bg-card: #202020;
+  --bg-invert: #e5e5e5;
+  --bg-invert-hover: #fafafa;
+  --bg-invert-active: #fafafa;
+  --bg-invert-disabled: #525252;
+  --bg-brand: #4b3fe3;
+  --bg-brand-hover: #6a6fff;
+  --bg-brand-active: #3f31c6;
+  --bg-brand-disabled: rgba(75, 63, 227, 0.32);
+  --bg-brand-popup: rgba(106, 111, 255, 0.18);
+
+  --text-default: #e5e5e5;
+  --text-default-hover: #fafafa;
+  --text-default-active: #fafafa;
+  --text-secondary: #a1a1a1;
+  --text-secondary-hover: #e5e5e5;
+  --text-secondary-active: #e5e5e5;
+  --text-tertiary: #737373;
+  --text-disabled: #525252;
+  --text-onbrand: #ffffff;
+  --text-onaccent: #ffffff;
+  --text-white: #ffffff;
+  --text-brand: #6a6fff;
+  --text-brand-hover: #4b3fe3;
+
+  --icon-default: #e5e5e5;
+  --icon-default-hover: #fafafa;
+  --icon-default-active: #fafafa;
+  --icon-secondary: #a1a1a1;
+  --icon-secondary-hover: #e5e5e5;
+  --icon-secondary-active: #e5e5e5;
+  --icon-tertiary: #737373;
+  --icon-disabled: #525252;
+  --icon-onbrand: #ffffff;
+  --icon-onaccent: #ffffff;
+  --icon-white: #ffffff;
+  --icon-brand: #6a6fff;
+  --icon-brand-hover: #6a6fff;
+
+  --border-neutral-l1: #e5e5e51a;
+  --border-neutral-l2: #e5e5e529;
+  --border-neutral-l3: #e5e5e533;
+  --border-brand: #6a6fff;
+  --border-contrast: #ffffff;
+
+  /* === LOG VIEWER HIGHLIGHT TOKENS (可整体删除) — Dark+ 主题配色 === */
+  --log-kv-key:     #9CDCFE;  /* variable.other */
+  --log-number:     #B5CEA8;  /* constant.numeric */
+  --log-string:     #CE9178;  /* string */
+  --log-hex:        #569CD6;  /* constant.language */
+  --log-date:       #6A9955;  /* comment */
+  --log-url:        #C586C0;  /* macro/control */
+  --log-exception:  #4EC9B0;  /* entity.name.type */
+  /* === END LOG VIEWER HIGHLIGHT TOKENS === */
+}
+
+/* ---- System theme (follow OS, no .light/.dark class) ---- */
+@media (prefers-color-scheme: dark) {
+  html:not(.light):not(.dark) {
+    color-scheme: dark;
+    --bg-base-default: #171717;
+    --bg-base-secondary: #262626;
+    --bg-base-tertiary: #404040;
+    --bg-overlay-l1: #d4d4d40a;
+    --bg-overlay-l2: #d4d4d40f;
+    --bg-overlay-l3: #d4d4d414;
+    --bg-overlay-l4: #d4d4d41f;
+    --bg-white: #171717;
+    --bg-menu: #1f1f1f;
+    --bg-tooltip: #171717;
+    --bg-card: #202020;
+    --bg-invert: #e5e5e5;
+    --bg-brand: #4b3fe3;
+    --bg-brand-hover: #6a6fff;
+    --bg-brand-active: #3f31c6;
+    --bg-brand-disabled: rgba(75, 63, 227, 0.32);
+    --bg-brand-popup: rgba(106, 111, 255, 0.18);
+
+    --text-default: #e5e5e5;
+    --text-default-hover: #fafafa;
+    --text-secondary: #a1a1a1;
+    --text-tertiary: #737373;
+    --text-disabled: #525252;
+    --text-onbrand: #ffffff;
+    --text-onaccent: #ffffff;
+    --text-white: #ffffff;
+    --text-brand: #6a6fff;
+
+    --icon-default: #e5e5e5;
+    --icon-secondary: #a1a1a1;
+    --icon-tertiary: #737373;
+    --icon-brand: #6a6fff;
+    --icon-brand-hover: #6a6fff;
+
+    --border-neutral-l1: #e5e5e51a;
+    --border-neutral-l2: #e5e5e529;
+    --border-neutral-l3: #e5e5e533;
+    --border-brand: #6a6fff;
+    --border-contrast: #ffffff;
+
+    /* === LOG VIEWER HIGHLIGHT TOKENS (可整体删除) — Dark+ 主题配色 === */
+    --log-kv-key:     #9CDCFE;
+    --log-number:     #B5CEA8;
+    --log-string:     #CE9178;
+    --log-hex:        #569CD6;
+    --log-date:       #6A9955;
+    --log-url:        #C586C0;
+    --log-exception:  #4EC9B0;
+    /* === END LOG VIEWER HIGHLIGHT TOKENS === */
+  }
+}

@@ -1,0 +1,5 @@
+{
+    "cmake.useCMakePresets": "always",
+    "cmake.useVsDeveloperEnvironment": "always",
+    "clangd.arguments": []
+}

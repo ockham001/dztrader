@@ -1,0 +1,17 @@
+# dztrader Linux 构建profile（GCC）
+# 用法: conan install . -pr:b profiles/linux-gcc -pr:h profiles/linux-gcc
+#       Debug 变体: 追加 -s build_type=Debug
+[settings]
+os=Linux
+arch=x86_64
+compiler=gcc
+compiler.version=13
+compiler.cppstd=20
+compiler.libcxx=libstdc++11
+build_type=Release
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Ninja
+# 禁用 conan 生成 CMakeUserPresets.json（空值=禁用）
+# 项目根有版本化的 CMakePresets.json，conan 只负责生成 toolchain
+tools.cmake.cmaketoolchain:user_presets=

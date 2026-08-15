@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  windows:
+    name: Windows (MSVC Release)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      # 冒烟测试冲突(dev 栈/孤儿进程)时直接失败, 防止被静默跳过造成假绿
+      DZ_SMOKE_STRICT: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Conan
+        run: pip install "conan>=2,<3"
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.conan2
+          key: conan2-${{ runner.os }}-${{ hashFiles('conanfile.py', 'profiles/win-msvc-static') }}
+          restore-keys: |
+            conan2-${{ runner.os }}-
+
+      - name: Setup (conan install + cmake configure)
+        shell: pwsh
+        run: .\scripts\setup.ps1
+
+      - name: Build (C++ + frontend dist)
+        shell: pwsh
+        run: .\scripts\build.ps1
+
+      - name: C++ Tests (incl. integration smoke)
+        shell: pwsh
+        run: .\scripts\test.ps1
+
+      - name: Frontend Tests
+        shell: pwsh
+        working-directory: apps/webui/frontend
+        run: npm test
+
+      - name: Upload test log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: last-test-log
+          path: build/windows/x86_64/Release/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+
+  linux:
+    name: Linux (GCC Release)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      # 冒烟测试冲突时直接失败, 防止被静默跳过造成假绿 (Linux 上冲突检测暂为空实现, 恒跑)
+      DZ_SMOKE_STRICT: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Conan
+        run: pip install "conan>=2,<3"
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.conan2
+          key: conan2-${{ runner.os }}-${{ hashFiles('conanfile.py', 'profiles/linux-gcc') }}
+          restore-keys: |
+            conan2-${{ runner.os }}-
+
+      - name: Setup (conan install + cmake configure)
+        run: ./scripts/setup.sh release
+
+      - name: Build (C++ + frontend dist)
+        run: ./scripts/build.sh --config release
+
+      - name: C++ Tests (incl. integration smoke)
+        run: ./scripts/test.sh --config release
+
+      - name: Frontend Tests
+        working-directory: apps/webui/frontend
+        run: npm test
+
+      - name: Upload test log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: last-test-log-linux
+          path: build/linux/x86_64/Release/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore

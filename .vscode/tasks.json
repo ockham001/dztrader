@@ -1,0 +1,187 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "setup",
+            "detail": "conan install + cmake configure + 写粘性 config（默认 Release）",
+            "type": "shell",
+            "windows": {
+                "command": ".\\scripts\\setup.ps1"
+            },
+            "linux": {
+                "command": "./scripts/setup.sh",
+                "args": [
+                    "release"
+                ]
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "setup (Debug)",
+            "detail": "conan install + cmake configure + 写粘性 config=Debug",
+            "type": "shell",
+            "windows": {
+                "command": ".\\scripts\\setup.ps1",
+                "args": [
+                    "-Config",
+                    "Debug"
+                ]
+            },
+            "linux": {
+                "command": "./scripts/setup.sh",
+                "args": [
+                    "debug"
+                ]
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "build",
+            "detail": "cmake build（跟随粘性 config，含前端 build + dist 复制）",
+            "type": "shell",
+            "windows": {
+                "command": ".\\scripts\\build.ps1"
+            },
+            "linux": {
+                "command": "./scripts/build.sh"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$msCompile",
+                "$gcc"
+            ]
+        },
+        {
+            "label": "run-dev",
+            "detail": "build + 设置 DZTRADER_HOME + 启动 master + 子进程",
+            "type": "shell",
+            "windows": {
+                "command": ".\\scripts\\run-dev.ps1"
+            },
+            "linux": {
+                "command": "./scripts/run-dev.sh"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "run-dev (no build)",
+            "detail": "跳过 build，直接启动 master",
+            "type": "shell",
+            "windows": {
+                "command": ".\\scripts\\run-dev.ps1",
+                "args": [
+                    "-NoBuild"
+                ]
+            },
+            "linux": {
+                "command": "./scripts/run-dev.sh",
+                "args": [
+                    "--no-build"
+                ]
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "stop",
+            "detail": "强杀 master + 清理僵尸子进程（Windows only，Linux 用 pkill）",
+            "type": "shell",
+            "windows": {
+                "command": ".\\scripts\\run-dev.ps1",
+                "args": [
+                    "-Stop"
+                ]
+            },
+            "linux": {
+                "command": "pkill",
+                "args": [
+                    "dztraderd"
+                ]
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "clean",
+            "detail": "删 build/ + frontend/dist/ + .dztrader_dev/（保留 conan cache）",
+            "type": "shell",
+            "windows": {
+                "command": ".\\scripts\\clean.ps1"
+            },
+            "linux": {
+                "command": "./scripts/clean.sh"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "test",
+            "detail": "ctest（跟随粘性 config）",
+            "type": "shell",
+            "windows": {
+                "command": ".\\scripts\\test.ps1"
+            },
+            "linux": {
+                "command": "./scripts/test.sh"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        }
+    ]
+}

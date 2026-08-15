@@ -1,0 +1,72 @@
+# Git 行尾符规范化
+# 参考：https://help.github.com/en/articles/dealing-with-line-endings
+
+# 自动检测文本文件并规范化行尾符
+* text=auto
+
+# C/C++ 源文件强制 LF
+*.h text eol=lf
+*.cpp text eol=lf
+*.c text eol=lf
+*.cc text eol=lf
+*.cxx text eol=lf
+*.hpp text eol=lf
+
+# CMake 文件强制 LF
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+
+# Python 强制 LF
+*.py text eol=lf
+
+# Shell 脚本强制 LF
+*.sh text eol=lf
+*.bash text eol=lf
+
+# 配置文件强制 LF
+*.toml text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.xml text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+*.conf text eol=lf
+
+# Markdown/文档强制 LF
+*.md text eol=lf
+*.txt text eol=lf
+*.rst text eol=lf
+
+# Web 前端强制 LF
+*.js text eol=lf
+*.ts text eol=lf
+*.vue text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.scss text eol=lf
+
+# Git 相关文件强制 LF
+.gitattributes text eol=lf
+.gitignore text eol=lf
+.editorconfig text eol=lf
+
+# 二进制文件不做转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.so binary
+*.dll binary
+*.lib binary
+*.a binary
+*.o binary
+*.obj binary
+*.pdb binary
+*.exe binary
+*.pyd binary

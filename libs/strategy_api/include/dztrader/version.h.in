@@ -1,0 +1,26 @@
+/**
+ * @file version.h
+ * @brief 版本号宏定义
+ *
+ * 由 CMake 从 version.h.in 自动生成，不要手动编辑。
+ * 单一真相源为根 CMakeLists.txt 的 project(VERSION)。
+ */
+#ifndef DZTRADER_VERSION_H_
+#define DZTRADER_VERSION_H_
+
+// clang-format off
+
+/** @brief 主版本号 */
+#define DZ_VERSION_MAJOR  ${VERSION_MAJOR}
+/** @brief 次版本号 */
+#define DZ_VERSION_MINOR  ${VERSION_MINOR}
+/** @brief 补丁版本号 */
+#define DZ_VERSION_PATCH  ${VERSION_ALTER}
+/** @brief 版本字符串，如 "0.0.1" */
+#define DZ_VERSION_STRING "${VERSION}"
+/** @brief 版本十六进制，格式 major<<16 | minor<<8 | patch */
+#define DZ_VERSION_HEX    (${VERSION_MAJOR} << 16 | ${VERSION_MINOR} << 8 | ${VERSION_ALTER})
+
+// clang-format on
+
+#endif /* DZTRADER_VERSION_H_ */

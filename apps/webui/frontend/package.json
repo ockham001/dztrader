@@ -1,0 +1,31 @@
+{
+  "name": "dztrader-ui",
+  "version": "1.0.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "echarts": "^5.6.0",
+    "pinia": "^2.2.0",
+    "vue": "^3.5.0",
+    "vue-echarts": "^7.0.3",
+    "vue-router": "^4.4.0",
+    "vue-virtual-scroller": "^3.0.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.1.0",
+    "@vue/test-utils": "^2.4.11",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.6.0",
+    "vite": "^5.4.0",
+    "vitest": "^2.1.9",
+    "vue-tsc": "^2.1.0"
+  }
+}

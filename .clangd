@@ -1,0 +1,21 @@
+CompileFlags:
+  # 显式指向项目根的 compile_commands.json（setup 脚本从 binaryDir 拷贝至此）。
+  # 不靠默认向上搜索，避免 clangd 误命中 build/<plat>/x86_64/<config>/ 下的原始文件。
+  # Release/Debug 切换时谁后跑 setup 根目录就是谁，建议最后 configure Debug（调试信息全）。
+  CompilationDatabase: .
+  Remove:
+    # clangd uses clang's compilation model which rejects /MTd + -fsanitize=address,
+    # but MSVC allows this combination (MSVC ASan uses its own runtime, not clang's).
+    # Remove these flags from clangd's view to avoid false-positive diagnostics.
+    - /MTd
+    - /MT
+    - -fsanitize=address
+    - /fsanitize=address
+
+Diagnostics:
+  Suppress:
+    - 'invalid-argument'
+  UnusedIncludes: None
+
+InlayHints:
+  Enabled: No

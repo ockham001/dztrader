@@ -1,0 +1,156 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 23,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "win-base",
+            "hidden": true,
+            "description": "Windows MSVC + Ninja（静态 CRT；architecture/toolset strategy=external 提供给 IDE 读取，配合 .vscode/settings.json 的 cmake.useVsDeveloperEnvironment=always 激活 MSVC 环境）",
+            "generator": "Ninja",
+            "architecture": {
+                "value": "x64",
+                "strategy": "external"
+            },
+            "toolset": {
+                "value": "host=x64",
+                "strategy": "external"
+            },
+            "cacheVariables": {
+                "CMAKE_POLICY_DEFAULT_CMP0091": "NEW",
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/install"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "linux-base",
+            "hidden": true,
+            "description": "Linux GCC + Ninja 基础配置",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_POLICY_DEFAULT_CMP0091": "NEW",
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/install"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "win-release",
+            "displayName": "Windows Release",
+            "description": "Windows MSVC Release（静态 CRT，Ninja 单配置）",
+            "inherits": "win-base",
+            "binaryDir": "${sourceDir}/build/windows/x86_64/Release",
+            "toolchainFile": "${sourceDir}/build/windows/x86_64/Release/conan_toolchain.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "win-debug",
+            "displayName": "Windows Debug",
+            "description": "Windows MSVC Debug（静态 CRT，Ninja 单配置）",
+            "inherits": "win-base",
+            "binaryDir": "${sourceDir}/build/windows/x86_64/Debug",
+            "toolchainFile": "${sourceDir}/build/windows/x86_64/Debug/conan_toolchain.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "linux-release",
+            "displayName": "Linux Release",
+            "description": "Linux GCC Release（Ninja 单配置）",
+            "inherits": "linux-base",
+            "binaryDir": "${sourceDir}/build/linux/x86_64/Release",
+            "toolchainFile": "${sourceDir}/build/linux/x86_64/Release/conan_toolchain.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "linux-debug",
+            "displayName": "Linux Debug",
+            "description": "Linux GCC Debug（Ninja 单配置）",
+            "inherits": "linux-base",
+            "binaryDir": "${sourceDir}/build/linux/x86_64/Debug",
+            "toolchainFile": "${sourceDir}/build/linux/x86_64/Debug/conan_toolchain.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "win-release",
+            "configurePreset": "win-release"
+        },
+        {
+            "name": "win-debug",
+            "configurePreset": "win-debug"
+        },
+        {
+            "name": "linux-release",
+            "configurePreset": "linux-release"
+        },
+        {
+            "name": "linux-debug",
+            "configurePreset": "linux-debug"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "test-base",
+            "hidden": true,
+            "description": "测试运行环境：强制 DZTRADER_HOME 指向项目内 .dztrader_dev，屏蔽系统级同名环境变量（自管临时目录的测试在 SetUp 内自行覆盖，不受影响）",
+            "environment": {
+                "DZTRADER_HOME": "${sourceDir}/.dztrader_dev"
+            }
+        },
+        {
+            "name": "win-release",
+            "configurePreset": "win-release",
+            "inherits": "test-base",
+            "execution": {
+                "noTestsAction": "error",
+                "stopOnFailure": false
+            }
+        },
+        {
+            "name": "win-debug",
+            "configurePreset": "win-debug",
+            "inherits": "test-base",
+            "execution": {
+                "noTestsAction": "error",
+                "stopOnFailure": false
+            }
+        },
+        {
+            "name": "linux-release",
+            "configurePreset": "linux-release",
+            "inherits": "test-base",
+            "execution": {
+                "noTestsAction": "error",
+                "stopOnFailure": false
+            }
+        },
+        {
+            "name": "linux-debug",
+            "configurePreset": "linux-debug",
+            "inherits": "test-base",
+            "execution": {
+                "noTestsAction": "error",
+                "stopOnFailure": false
+            }
+        }
+    ]
+}

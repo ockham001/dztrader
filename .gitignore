@@ -1,0 +1,141 @@
+# === Build artifacts ===
+
+# Worktrees (must be before build dirs)
+.worktrees/
+
+.run/
+
+# Compiled Object files
+*.d
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Linker files
+*.ilk
+
+# Debugger Files
+*.pdb
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+*.so.*
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Debug information
+*.dwo
+*.dwp
+
+# === Build directories ===
+build/
+Build/
+build-*/
+out/
+install/
+
+# === CMake/Conan generated files ===
+compile_commands.json
+version.h
+# 项目级 CMakePresets.json 已版本化（提交到 git）
+# CMakeUserPresets.json 是用户私有（conan 生成或个人配置），忽略
+CMakeUserPresets.json
+# conan 生成的 toolchain（在 build/ 下，已被 build/ 覆盖）
+
+# === IDE and editor files ===
+
+# Visual Studio
+.vs/
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.suo
+*.ncb
+*.sdf
+*.opensdf
+ipch/
+
+# Visual Studio Code
+# 注意：用 .vscode/* 而非 .vscode/，否则 ! 白名单无效
+# （.vscode/ 带尾随 / 会排除整个目录，git 不进入扫描，! 无法重新包含）
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# CLion / JetBrains
+.idea/
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+
+# === Project-specific ===
+.dztrader_dev/
+/tmp/
+
+# 运行时数据目录（dzweb/master 生成，DZTRADER_HOME 指向仓库根时产生）
+# 注意: 必须根锚定 (/), 否则会误吞同名源码目录 (如 libs/db、libs/shm）
+# 配置文件一律由进程自动生成（如 webui.json/dztraderd.json），仓库不保留 example 模板
+/configs/
+/db/
+/uploads/
+/flow/
+/cache/
+
+# 运行时共享内存文件 (单文件序号只增不减, 定期删除旧文件)
+/shm/
+third_party/**/*.so
+third_party/**/*.dll
+third_party/**/*.lib
+third_party/**/*.pdb
+!third_party/ctp/**
+
+# === OS files ===
+.DS_Store
+Thumbs.db
+
+# === Temporary files ===
+*.tmp
+*.log
+*.bak
+*.swp
+*~
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.whl
+
+# === Web frontend ===
+node_modules/
+
+# === Test/cache ===
+.cache/
+
+# === Doxygen generated ===
+docs/api/
