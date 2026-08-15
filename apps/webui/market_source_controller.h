@@ -49,6 +49,8 @@ public:
                   "/api/market-sources/{1}/brokers/{2}/frontends", drogon::Put);
     ADD_METHOD_TO(MarketSourceCtrl::set_current_broker,
                   "/api/market-sources/{1}/current-broker", drogon::Put);
+    ADD_METHOD_TO(MarketSourceCtrl::set_subscribe_params,
+                  "/api/market-sources/{1}/subscribe-params", drogon::Put);
     ADD_METHOD_TO(MarketSourceCtrl::start, "/api/market-sources/{1}/start", drogon::Post);
     ADD_METHOD_TO(MarketSourceCtrl::stop, "/api/market-sources/{1}/stop", drogon::Post);
     ADD_METHOD_TO(MarketSourceCtrl::get_config, "/api/market-sources/{1}/config", drogon::Get);
@@ -105,6 +107,13 @@ public:
     void set_current_broker(const drogon::HttpRequestPtr& req,
                             std::function<void(const drogon::HttpResponsePtr&)>&& callback,
                             int64_t id);
+    /// PUT /api/market-sources/{id}/subscribe-params - 修改订阅参数 (SetSubscribeParams, 无状态保护)
+    /// Body: 4 个可选字段 {subscribe_batch_size?, subscribe_batch_delay_ms?,
+    ///        sub_check_interval_ms?, sub_max_retry?}，缺失=保留旧值 (契约 08)
+    /// dzweb 透传不解析; 类型/范围校验由子进程负责; 最终状态由 WS md_rtn_config 推送
+    void set_subscribe_params(const drogon::HttpRequestPtr& req,
+                              std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                              int64_t id);
     /// POST /api/market-sources/{id}/start - 启动行情源进程 (PROCESS_CONTROL action=start)
     void start(const drogon::HttpRequestPtr& req,
                std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);

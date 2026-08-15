@@ -284,4 +284,44 @@ void MarketSourceCtrl::set_current_broker(
     callback(json_response(drogon::k200OK, {{"ok", true}, {"message", "dispatched"}}));
 }
 
+// PUT /api/market-sources/{id}/subscribe-params - 修改订阅参数 (admin) (op-based SetSubscribeParams)
+// 无状态保护: 任意时刻可改; Body 4 个可选字段, 缺失=保留旧值 (契约 08)
+void MarketSourceCtrl::set_subscribe_params(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id) {  // NOLINT
+    if (!is_admin(req)) {
+        callback(error_response(drogon::k403Forbidden, "forbidden"));
+        return;
+    }
+    Json body;
+    try {
+        body = Json::parse(req->getBody());
+    } catch (...) {
+        callback(error_response(drogon::k400BadRequest, "bad request"));
+        return;
+    }
+    if (!body.is_object()) {
+        callback(error_response(drogon::k400BadRequest, "bad request"));
+        return;
+    }
+    // 透传可选字段: 缺失=保留旧值 (契约 08 SetSubscribeParams), 校验由子进程负责
+    Json params = Json::object();
+    for (const char* key : {"subscribe_batch_size", "subscribe_batch_delay_ms",
+                            "sub_check_interval_ms", "sub_max_retry"}) {
+        if (body.contains(key)) {
+            params[key] = body[key];
+        }
+    }
+    if (params.empty()) {
+        callback(error_response(drogon::k400BadRequest, "no subscribe params in body"));
+        return;
+    }
+    auto err = dispatch_op(id, "set_subscribe_params", "SetSubscribeParams", params);
+    if (err.has_value()) {
+        callback(*err);
+        return;
+    }
+    callback(json_response(drogon::k200OK, {{"ok", true}, {"message", "dispatched"}}));
+}
+
 }  // namespace dztrader::webui
