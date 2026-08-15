@@ -56,7 +56,7 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
       const name = b.source_name
       const processStatus = process.statuses[name]
       const mdConfig = md.configs[name]
-      const mdStatus = parseMdStatus(md.statuses[name]?.status)  // 新增
+      const mdStatus = parseMdStatus(md.statuses[name]?.status)
       const autoLogin = md.autoLogins[name]
       const prog = progress.progress[name] as { min?: unknown; max?: unknown; current?: unknown } | undefined
       const loginState = progressLoginState(prog) ?? loginStateCache.value[name] ?? 'offline'
