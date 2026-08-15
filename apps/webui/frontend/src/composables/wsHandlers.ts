@@ -44,8 +44,9 @@ registerHandler('snapshot', (payload) => {
   // md_config/md_status 的 apply 承担"清 pending"副作用（onopen 不再 refreshConfigs/
   // QUERY_ALL 补拉，断线重连期间的挂起 pending 靠这里清除，否则悬挂至超时）。
   // log_config：日志进程列表无 pending-clearing 副作用，走 applySnapshot 整体重建
-  // （随快照增删，保持列表一致）；event_shm_config/md_shm_config 前端无 store
-  // 消费（设计 §5.2 不建空 store），忽略；auto_login 已消费（契约 04 排程镜像）。
+  // （随快照增删，保持列表一致）；md_shm_config 已消费（契约 02 SHM 配置镜像，
+  // 分发复用增量帧 apply）；event_shm_config（挂 dztraderd）前端无 store 消费，忽略；
+  // auto_login 已消费（契约 04 排程镜像）。
   const mirror = (payload ?? {}) as Record<string, Record<string, unknown>>
   const logs = useLogsStore()
   logs.applySnapshot(mirror as Record<string, { log_config?: { level?: string } }>)
@@ -72,10 +73,14 @@ registerHandler('snapshot', (payload) => {
           // 契约 04: snapshot 分发复用增量帧 apply（重连后恢复排程/自动登录镜像）
           mdConfigStore.applyAutoLogin(instanceId, value)
           break
+        case 'md_shm_config':
+          // 契约 02: snapshot 分发复用增量帧 apply（展示镜像 + 清悬挂 pending）
+          mdConfigStore.applyMdShmConfig(instanceId, value)
+          break
         case 'progress':
           progressStore.applyProgress(instanceId, value)
           break
-        // log_config 已由上方 applySnapshot 处理；event_shm_config/md_shm_config
+        // log_config 已由上方 applySnapshot 处理；event_shm_config（挂 dztraderd）
         // 前端无 store 消费，忽略
       }
     }
@@ -120,6 +125,14 @@ registerHandler('md_rtn_status', (payload) => {
   // P6: 契约 09 无状态字段——loginState 聚合与 login/logout pending 清除
   // 由 RTN_PROGRESS（契约 05）驱动, 本消息仅写镜像。
   useMdConfigStore().applyMdStatus(payload as MdRtnStatusPayload)
+})
+
+registerHandler('md_shm_config', (payload, instanceId) => {
+  // 契约 02: RTN_MD_SHM_CONFIG → WS md_shm_config（data=ShmConfig 全量, instance_id=行情进程名）
+  // 到达清 shm_config pending; event_shm_config（挂 dztraderd）前端不消费
+  if (instanceId) {
+    useMdConfigStore().applyMdShmConfig(instanceId, payload)
+  }
 })
 
 registerHandler('md_rtn_config', (payload) => {

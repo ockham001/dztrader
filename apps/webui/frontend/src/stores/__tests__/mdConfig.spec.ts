@@ -18,6 +18,7 @@ vi.mock('@/api/marketSources', () => ({
     setCurrentBroker: vi.fn(),
     updateFrontends: vi.fn(),
     setSubscribeParams: vi.fn(),
+    setShmConfig: vi.fn(),  // 新增（Task 12）
   },
 }))
 
@@ -490,6 +491,50 @@ describe('useMdConfigStore', () => {
       expect(r).toBe(false)
       // HTTP 失败清 pending: usePending settle→clearPending 置 false（与 login 失败用例一致）
       expect(usePending().pending['source:1:subscribe_params']).toBe(false)
+    })
+  })
+
+  describe('SHM 配置（契约 02）', () => {
+    const shmPayload = {
+      page_size_mb: 1024,
+      preload_points: { '08:45': { pages: 1, bytes: 0 } },
+      check_interval_min: 5,
+      check_pages: 1,
+      check_bytes: 0,
+    }
+
+    it('applyMdShmConfig 合法 payload 写入镜像', () => {
+      const store = useMdConfigStore()
+      store.applyMdShmConfig('dzmd_ctp', shmPayload)
+      expect(store.shmConfigs['dzmd_ctp'].page_size_mb).toBe(1024)
+      expect(store.shmConfigs['dzmd_ctp'].check_interval_min).toBe(5)
+    })
+
+    it('applyMdShmConfig 非法 payload 忽略不写', () => {
+      const store = useMdConfigStore()
+      store.applyMdShmConfig('dzmd_ctp', { page_size_mb: 'x' })
+      expect(store.shmConfigs['dzmd_ctp']).toBeUndefined()
+      store.applyMdShmConfig('dzmd_ctp', null)
+      expect(store.shmConfigs['dzmd_ctp']).toBeUndefined()
+    })
+
+    it('setShmConfig 下发 patch 并注册 pending，md_shm_config 到达清除', async () => {
+      vi.mocked(marketSourcesApi.setShmConfig).mockResolvedValue({ ok: true })
+      const store = useMdConfigStore()
+      const r = await store.setShmConfig(1, 'dzmd_ctp', { check_interval_min: 10 })
+      expect(r).toBe(true)
+      expect(marketSourcesApi.setShmConfig).toHaveBeenCalledWith(1, { check_interval_min: 10 })
+      expect(usePending().pending['source:1:shm_config']).toBe(true)
+      store.applyMdShmConfig('dzmd_ctp', shmPayload)
+      expect(usePending().pending['source:1:shm_config']).toBeUndefined()
+    })
+
+    it('setShmConfig 下发 preload_points null 删除语义', async () => {
+      vi.mocked(marketSourcesApi.setShmConfig).mockResolvedValue({ ok: true })
+      const store = useMdConfigStore()
+      await store.setShmConfig(1, 'dzmd_ctp', { preload_points: { '08:45': null } })
+      expect(marketSourcesApi.setShmConfig).toHaveBeenCalledWith(1,
+        { preload_points: { '08:45': null } })
     })
   })
 })

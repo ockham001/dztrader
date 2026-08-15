@@ -51,6 +51,16 @@ export interface SubscribeParamsBody {
   sub_max_retry?: number
 }
 
+// SHM 行情通道配置请求体 (契约 02 SET_MD_SHM_CONFIG): RFC 7386 递归合并 patch。
+// preload_points 内 key 的 value 为 null = 删除该时间点 (契约 02 唯一合法 null 位置);
+// page_size_mb 不可变, 网关跳过 (前端不下发该字段)
+export interface ShmConfigPatch {
+  preload_points?: Record<string, { pages: number; bytes: number } | null>
+  check_interval_min?: number
+  check_pages?: number
+  check_bytes?: number
+}
+
 export interface StartMarketSourceBody {
   display_name?: string      // 显示名（覆盖 DB 中的值）
 }
@@ -94,4 +104,8 @@ export const marketSourcesApi = {
   // HTTP 同步响应仅表示已下发, 最终状态由 WS md_rtn_config 推送决定
   setSubscribeParams: (sourceId: number, data: SubscribeParamsBody) =>
     api.put<{ ok: boolean }>(`/api/market-sources/${sourceId}/subscribe-params`, data),
+  // 修改 SHM 行情通道配置 (契约 02): merge patch 直发 SET_MD_SHM_CONFIG,
+  // 最终状态由 WS md_shm_config 推送 (RTN_MD_SHM_CONFIG) 决定
+  setShmConfig: (sourceId: number, data: ShmConfigPatch) =>
+    api.put<{ ok: boolean }>(`/api/market-sources/${sourceId}/shm-config`, data),
 }

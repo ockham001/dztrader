@@ -1,8 +1,9 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 import { marketSourcesApi } from '@/api/marketSources'
-import type { AddBrokerBody, AutoLoginBody, SubscribeParamsBody } from '@/api/marketSources'
+import type { AddBrokerBody, AutoLoginBody, SubscribeParamsBody, ShmConfigPatch } from '@/api/marketSources'
 import type { BrokerEntry, BrokerFrontend, MdConfigPayload, MdRtnConfigPayload, MdRtnStatusPayload } from '@/types/api'
+import type { ShmConfigView } from '@/types/mirror'
 import { usePending, clearByPrefix, PENDING_TIMEOUT } from '@/composables/usePending'
 import { useProgressStore } from '@/stores/progress'
 import { progressLoginState } from '@/composables/marketSourceView'
@@ -33,7 +34,7 @@ export type MdConfigOp =
   | 'schedule_add' | 'schedule_remove'
   | 'broker_add' | 'broker_remove' | 'broker_update' | 'broker_select'
   | 'frontend_add' | 'frontend_remove' | 'frontend_edit' | 'frontend_toggle'
-  | 'subscribe_params'
+  | 'subscribe_params' | 'shm_config'
 
 // 操作结果: boolean(成功/HTTP 失败) 或 PENDING_TIMEOUT(超时, usePending 已 toast)。
 // 薄代理对 PENDING_TIMEOUT 不设 error, 避免超时双 toast(§7.2)。
@@ -55,6 +56,7 @@ const OP_LABELS: Record<MdConfigOp, string> = {
   frontend_edit: '修改前置',
   frontend_toggle: '切换前置',
   subscribe_params: '修改订阅参数',
+  shm_config: '修改 SHM 配置',
 }
 
 // applyMdConfig 到达时批量清理的配置类 op（对照 setMdConfig 清的 8 个 broker/frontend
@@ -77,6 +79,9 @@ export const AUTO_LOGIN_OPS: readonly MdConfigOp[] = ['auto_login', 'schedule_ad
 export const useMdConfigStore = defineStore('mdConfig', () => {
   const configs = ref<Record<string, MdConfigPayload>>({})
   const statuses = ref<Record<string, MdRtnStatusPayload>>({})
+  // md_shm_config 帧镜像（契约 02，dzmd_* 通用层 schema 非 CTP 专属）：
+  // 全量覆盖（后到覆盖先到），非法整体忽略。到达时清 shm_config pending。
+  const shmConfigs = ref<Record<string, ShmConfigView>>({})
   const autoLogins = ref<Record<string, { enabled: boolean; schedules: { login_time: string; logout_time: string }[] }>>({})
 
   // source 名（如 'dzmd_ctp'）→ source id 映射：操作时记录，
@@ -113,6 +118,24 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
   function applyMdStatus(payload: MdRtnStatusPayload): void {
     if (!payload || !payload.source) return
     statuses.value[payload.source] = payload
+  }
+
+  // md_shm_config 帧（契约 02）: 全量覆盖, 非法整体忽略; 到达时清 shm_config pending
+  function applyMdShmConfig(source: string, payload: unknown): void {
+    const p = payload as Partial<Record<keyof ShmConfigView, unknown>> | null | undefined
+    if (!source || !p || typeof p !== 'object') return
+    const isNum = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v)
+    if (!isNum(p.page_size_mb) || !isNum(p.check_interval_min)
+      || !isNum(p.check_pages) || !isNum(p.check_bytes)) return
+    if (typeof p.preload_points !== 'object' || p.preload_points === null) return
+    for (const v of Object.values(p.preload_points)) {
+      const pt = v as { pages?: unknown; bytes?: unknown }
+      if (typeof pt !== 'object' || pt === null) return
+      if (!isNum(pt.pages) || !isNum(pt.bytes)) return
+    }
+    shmConfigs.value[source] = p as ShmConfigView
+    const id = nameToId.value[source]
+    if (id !== undefined) clearByPrefix(opKey(id, 'shm_config'))
   }
 
   // auto_login 帧（契约 04）：单条完整覆盖（后到覆盖先到），非法 payload 忽略不写。
@@ -410,6 +433,25 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     return result !== undefined
   }
 
+  // ===== SHM 行情通道配置 (契约 02: merge patch, page_size_mb 不可变不在此列) =====
+  async function setShmConfig(
+    id: number,
+    sourceName: string,
+    patch: ShmConfigPatch,
+  ): Promise<MdConfigOpResult> {
+    const key = opKey(id, 'shm_config')
+    if (pending[key]) return false
+    if (Object.keys(patch).length === 0) return true  // 空提交幂等成功, 不下发
+    nameToId.value[sourceName] = id
+    const result = await run(key, () => marketSourcesApi.setShmConfig(id, patch), {
+      timeout: CONFIG_OP_TIMEOUT_MS,
+      opLabel: OP_LABELS.shm_config,
+      distinguishTimeout: true,
+    })
+    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
+    return result !== undefined
+  }
+
   return {
     configs,
     statuses,
@@ -431,5 +473,8 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     editFrontend,
     setFrontendEnabled,
     setSubscribeParams,
+    shmConfigs,
+    applyMdShmConfig,
+    setShmConfig,
   }
 })

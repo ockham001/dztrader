@@ -9,6 +9,15 @@ export interface ProgressPayload { min: number; max: number; current: number; de
 
 export interface AutoLoginPayload { enabled: boolean; schedules: { login_time: string; logout_time: string }[] }
 
+// 契约 02 ShmConfig（dzmd_* 通用层）：展示/编辑用视图形状（RTN 全量）
+export interface ShmConfigView {
+  page_size_mb: number
+  preload_points: Record<string, { pages: number; bytes: number }>
+  check_interval_min: number
+  check_pages: number
+  check_bytes: number
+}
+
 export interface DomainPayloads {
   log_config?: LogConfigPayload
   process_status?: import('./api').ProcessStatusPayload
