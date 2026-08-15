@@ -45,7 +45,7 @@ void TdApi::on_sched_timer() {
 
         // 多账户: is_logged_in 取 "是否存在任意 session" (与 md 单 session 的差异)
         // 评估结果: Login 时连接所有未连接的 enabled 账户, Logout 时断开所有 sessions
-        // 排程单一真相源：auto_login_config_（契约 04-auto-login.md 迁移完成）
+        // 排程单一真相源：auto_login_config_（契约 05-auto-login 迁移完成）
         bool is_logged_in = !sessions_.empty();
         auto sched = to_sched_view(auto_login_config_.config());
         auto action = evaluate_sched_action(sched, weekday, hh_mm, is_logged_in);

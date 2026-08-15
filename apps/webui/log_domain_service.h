@@ -21,7 +21,7 @@ namespace dztrader::webui {
 /// handle_log_control()：日志控制请求分发（HTTP set_level/flush 的日志配置核心，
 /// 原 log_control.cpp 的 dispatch_log_control 迁入）：
 ///   target == 本进程(exe_stem)：直调 self_log_（不走 SHM），SET 成功后（或失败回退）
-///     经 publish 回推 WS；失败时 event_writer_ 非空则发 NOTIFY_UI 错误弹窗（契约 00-log.md:36）。
+///     经 publish 回推 WS；失败时 event_writer_ 非空则发 NOTIFY_UI 错误弹窗（契约 01-log 失败四件套）。
 ///   否则写 SHM 帧（SET_LOG_CONFIG / FLUSH_LOG），event_writer_ 为空时跳过（API-only 下其他进程不可达）。
 /// 职责边界与 libs/platform 的 LogConfig 一致：时机由外部控制，本服务不主动触发。
 class LogDomainService {
@@ -54,7 +54,7 @@ public:
                 try {
                     self_log_.set_log_config(payload);
                 } catch (const std::exception& e) {
-                    // 契约 00-log.md:36 失败必须日志 + NOTIFY_UI 错误弹窗；API-only 无 writer 时跳过
+                    // 契约 01-log: 失败必须日志 + NOTIFY_UI 错误弹窗；API-only 无 writer 时跳过
                     SPDLOG_WARN("webui set log config failed | error={}", e.what());
                     if (event_writer_) {
                         dztrader::platform::NotifyUi(dztrader::this_process::exe_stem(), *event_writer_)

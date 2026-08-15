@@ -21,7 +21,7 @@ namespace dztrader::master {
 
 namespace {
 
-// event 与 action/成功 的映射（契约 03-process.md 第 41-46 行）
+// event 与 action/成功 的映射（契约 04-process ProcessEvent 表）
 platform::ProcessEvent process_event_of(platform::ProcessAction action, bool ok) {
     using platform::ProcessAction;
     using platform::ProcessEvent;
@@ -167,7 +167,7 @@ void ShmManager::handle_process_control(const shm::FrameView& view) {
 }
 
 void ShmManager::handle_process_start(const platform::ProcessControlReq& req) {
-    // 1. 未注册 target（契约第 131 行修订）: 实时扫描 App Root, 找到同名网关 exe 则
+    // 1. 未注册 target（契约 04-process修订）: 实时扫描 App Root, 找到同名网关 exe 则
     //    动态注册（registry + dztraderd.json + store 镜像）后继续启动流程;
     //    exe 不存在或非网关进程（策略有独立注册流程）才回 StartFailed。
     bool dynamically_registered = false;
@@ -206,7 +206,7 @@ void ShmManager::handle_process_start(const platform::ProcessControlReq& req) {
             return;
         }
     }
-    // 2. 携带 config：先应用（等价 SET），帧顺序：先 118 后 116（契约第 134 行）
+    // 2. 携带 config：先应用（等价 SET），帧顺序：先 118 后 116（契约 04-process）
     if (req.config) {
         try {
             process_config_store_->set_process_config(req.target, *req.config);
@@ -218,14 +218,14 @@ void ShmManager::handle_process_start(const platform::ProcessControlReq& req) {
             process_config_store_->rtn_process_config();  // 回滚旧值（store 强保证内部不变）
             supervisor_->send_process_status(req.target, ChildState::Crashed, 0, err,
                                              platform::ProcessEvent::StartFailed);
-            return;  // 不启动（契约第 136 行）
+            return;  // 不启动（契约 04-process）
         }
         process_config_store_->rtn_process_config();  // 全量新值
     } else if (dynamically_registered) {
         // 动态注册的新条目同步给 dzweb（注册守卫依赖 process_config 条目, 必须先于 116）
         process_config_store_->rtn_process_config();
     }
-    // 幂等：已在运行（契约第 41/138 行，重试安全；已 Running/Stopping 均视为成功）
+    // 幂等：已在运行（契约 04-process，重试安全；已 Running/Stopping 均视为成功）
     if (auto existing = supervisor_->find_child(req.target);
         existing && existing->state() != ChildState::Stopped) {
         supervisor_->send_process_status(req.target, existing->state(),
@@ -246,7 +246,7 @@ void ShmManager::handle_process_start(const platform::ProcessControlReq& req) {
                                              platform::ProcessEvent::StartSucceeded);
             return;
         }
-        // spawn 失败：配置保留（契约第 135 行；118 已推新值）
+        // spawn 失败：配置保留（契约 04-process；118 已推新值）
         const std::string err = std::format("start_process returned false | target={}", req.target);
         SPDLOG_WARN("{}", err);
         notify_ui_.error(err);
@@ -271,7 +271,7 @@ void ShmManager::handle_process_stop(const platform::ProcessControlReq& req) {
                                          platform::ProcessEvent::StopFailed);
         return;
     }
-    // 幂等：无 child（未运行）→ 直接成功（契约第 43 行）
+    // 幂等：无 child（未运行）→ 直接成功（契约 04-process）
     if (!supervisor_->find_child(req.target)) {
         supervisor_->send_process_status(req.target, ChildState::Stopped, 0, "",
                                          platform::ProcessEvent::StopSucceeded);
@@ -298,13 +298,13 @@ void ShmManager::handle_process_remove(const platform::ProcessControlReq& req) {
     if (!child && !entry) {
         const std::string err = std::format("target not found | name={}", req.target);
         SPDLOG_WARN("{}", err);
-        // 契约第 132 行: Remove 对未注册 target 必须 NOTIFY_UI 错误级别弹窗 (popup=true)
+        // 契约 04-process: Remove 对未注册 target 必须 NOTIFY_UI 错误级别弹窗 (popup=true)
         notify_ui_.error(err);
         supervisor_->send_process_status(req.target, ChildState::Stopped, 0, err,
-                                         platform::ProcessEvent::RemoveFailed);  // 不幂等（契约第 46 行）
+                                         platform::ProcessEvent::RemoveFailed);  // 不幂等（契约 04-process）
         return;
     }
-    // 先删配置并推 118（条目消失 = 移除完成的权威信号，契约第 189 行）
+    // 先删配置并推 118（条目消失 = 移除完成的权威信号，契约 04-process）
     try {
         process_config_store_->remove(req.target);
     } catch (const std::exception& e) {
@@ -317,7 +317,7 @@ void ShmManager::handle_process_remove(const platform::ProcessControlReq& req) {
         return;
     }
     process_config_store_->rtn_process_config();
-    // 停止/兜底（防御性 catch：异常时仍回 RemoveFailed，契约第 137 行）
+    // 停止/兜底（防御性 catch：异常时仍回 RemoveFailed，契约 04-process）
     try {
         supervisor_->mark_remove_pending(req.target);
         if (!child) {
@@ -365,7 +365,7 @@ void ShmManager::handle_set_process_config(const shm::FrameView& view) {
         notify_ui_.error(std::format("进程配置更新失败: {}", e.what()));
         // store 强保证：内部不变，推 118 为回滚旧值
     }
-    process_config_store_->rtn_process_config();  // 成功推新值 / 失败推旧值（契约第 226 行）
+    process_config_store_->rtn_process_config();  // 成功推新值 / 失败推旧值（契约 04-process）
 }
 
 void ShmManager::send_shutdown() {
@@ -391,11 +391,11 @@ void ShmManager::report_shm_config() {
 void ShmManager::report_full_snapshot() {
     report_log_config();
     report_shm_config();
-    // 进程配置全量（118，契约第 259 行）
+    // 进程配置全量（118，契约 04-process）
     if (process_config_store_) {
         process_config_store_->rtn_process_config();
     }
-    // 每个注册进程一条状态（116，event 缺失=自发，契约第 181 行）
+    // 每个注册进程一条状态（116，event 缺失=自发，契约 04-process）
     if (supervisor_) {
         for (const auto& entry : supervisor_->registry_entries()) {
             auto child = supervisor_->find_child(entry.name);

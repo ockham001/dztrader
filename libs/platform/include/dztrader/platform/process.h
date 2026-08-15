@@ -16,16 +16,16 @@
 
 namespace dztrader::platform {
 
-// ===== 枚举（契约 03-process.md）=====
+// ===== 枚举（契约 04-process）=====
 
-/// 进程控制动作（契约第 13-21 行）
+/// 进程控制动作（契约 04-process）
 enum class ProcessAction : uint8_t {
     Start,   ///< 启动进程
     Stop,    ///< 停止进程
     Remove,  ///< 移除进程（停止 + 清理配置）
 };
 
-/// 子进程状态（契约第 23-33 行）
+/// 子进程状态（契约 04-process）
 enum class ChildState : uint8_t {
     Starting,  ///< 启动中
     Running,   ///< 运行中
@@ -34,7 +34,7 @@ enum class ChildState : uint8_t {
     Crashed,   ///< 已异常退出（exit_code != 0 或 spawn 失败）
 };
 
-/// 进程操作结果事件（契约第 35-47 行），仅在 RTN_PROCESS_STATUS 中出现
+/// 进程操作结果事件（契约 04-process），仅在 RTN_PROCESS_STATUS 中出现
 enum class ProcessEvent : uint8_t {
     StartSucceeded,   ///< 启动成功；已在 Running（幂等，重试安全）
     StartFailed,      ///< 启动失败
@@ -48,9 +48,9 @@ DZ_JSON_ENUM(ProcessAction)
 DZ_JSON_ENUM(ChildState)
 DZ_JSON_ENUM(ProcessEvent)
 
-// ===== 结构体（契约 03-process.md）=====
+// ===== 结构体（契约 04-process）=====
 
-/// 子进程重启策略（契约第 50-58 行）。
+/// 子进程重启策略（契约 04-process）。
 /// 全量角色三字段必填；enabled=false 时 max_attempts 忽略；实际退避 = backoff_sec × 连续崩溃次数，最小 1s。
 struct RestartPolicy {
     bool enabled = false;   ///< 是否启用自动重启
@@ -58,7 +58,7 @@ struct RestartPolicy {
     int backoff_sec = 5;    ///< 重启退避间隔（秒，>= 0）
 };
 
-/// 进程配置，全量角色（契约第 75-87 行）。
+/// 进程配置，全量角色（契约 04-process）。
 /// RTN_PROCESS_CONFIG payload 中作为 map 的 value：args/env/restart 必须出现；
 /// display_name 可缺失（缺失 = 未设置，前端回退到进程名）。
 /// 增量角色（SET/Start 携带的 patch）不由此类型表达，见 validate_process_config_patch。
@@ -69,14 +69,14 @@ struct ProcessConfig {
     std::optional<std::string> display_name;  ///< nullopt = 未设置
 };
 
-/// REQUEST_PROCESS_CONTROL payload（契约第 101-125 行）
+/// REQUEST_PROCESS_CONTROL payload（契约 04-process）
 struct ProcessControlReq {
     ProcessAction action = ProcessAction::Stop;
     std::string target;
     std::optional<nlohmann::json> config;  ///< 配置 patch，仅 action=Start 有效；null 非法
 };
 
-/// RTN_PROCESS_STATUS payload（契约第 145-189 行），单条完整状态
+/// RTN_PROCESS_STATUS payload（契约 04-process），单条完整状态
 struct ProcessStatus {
     std::string name;
     ChildState state = ChildState::Stopped;
@@ -86,13 +86,13 @@ struct ProcessStatus {
     std::optional<ProcessEvent> event;  ///< 缺失 = 自发状态变化
 };
 
-/// SET_PROCESS_CONFIG payload（契约第 193-228 行；payload 命名由设计文档补充）
+/// SET_PROCESS_CONFIG payload（契约 04-process；payload 命名由设计文档补充）
 struct SetProcessConfigReq {
     std::string target;
     nlohmann::json config;  ///< 配置 patch，必须为 object；null 非法
 };
 
-// ===== 序列化（手写：缺失 ≠ 默认值、空串省略，契约第 185 行）=====
+// ===== 序列化（手写：缺失 ≠ 默认值、空串省略，契约 04-process）=====
 
 inline void to_json(nlohmann::json& j, const RestartPolicy& p) {
     j = nlohmann::json{{"enabled", p.enabled},
@@ -136,7 +136,7 @@ inline void from_json(const nlohmann::json& j, ProcessControlReq& req) {
     j.at("target").get_to(req.target);
     if (j.contains("config")) {
         if (j["config"].is_null()) {
-            // 契约第 70/224 行：除 env 内部 value 外任何位置 null 均为校验失败
+            // 契约 04-process：除 env 内部 value 外任何位置 null 均为校验失败
             throw std::runtime_error("config must not be null");
         }
         req.config = j["config"];
@@ -183,11 +183,11 @@ inline void from_json(const nlohmann::json& j, SetProcessConfigReq& req) {
     req.config = j["config"];
 }
 
-// ===== 校验（契约 03-process.md 第 70-87、217-228 行规则唯一真相源）=====
+// ===== 校验（契约 04-process 校验规则唯一真相源）=====
 
 namespace detail {
 
-/// 整数或整数值的 double 均接受（01-shm 惯例，契约第 84 行"值在目标类型范围内即可"）。
+/// 整数或整数值的 double 均接受（02-shm 惯例，总则 §6"值在目标类型范围内即可"）。
 /// 注：命名与 shm_config.h 的 detail::get_int_value 区分（同为共享命名空间
 /// dztrader::platform::detail 内的 inline 函数），避免同 TU 包含两个头时重定义冲突。
 inline bool is_int_value(const nlohmann::json& j) {
@@ -213,14 +213,14 @@ inline int64_t to_int64(const nlohmann::json& j) {
 
 }  // namespace detail
 
-/// 校验增量角色 patch（SET_PROCESS_CONFIG / Start 携带的 config，契约第 70 行确认同规则）。
+/// 校验增量角色 patch（SET_PROCESS_CONFIG / Start 携带的 config，契约 04-process确认同规则）。
 /// RFC 7386 语义：出现字段覆盖，缺失字段保留。返回错误消息或 nullopt。
 /// 注意：必须定义在 validate_process_config_full 之前（full 内部调用本函数）。
 inline std::optional<std::string> validate_process_config_patch(const nlohmann::json& patch) {
     if (!patch.is_object()) {
-        return "process config patch must be a JSON object";  // 契约第 219 行
+        return "process config patch must be a JSON object";  // 契约 04-process
     }
-    if (patch.contains("args")) {  // 整体覆盖（契约第 84 行）
+    if (patch.contains("args")) {  // 整体覆盖（契约 04-process）
         const auto& v = patch["args"];
         if (v.is_null()) {
             return "args must not be null";
@@ -234,7 +234,7 @@ inline std::optional<std::string> validate_process_config_patch(const nlohmann::
             }
         }
     }
-    if (patch.contains("env")) {  // 递归合并（契约第 85 行）
+    if (patch.contains("env")) {  // 递归合并（契约 04-process）
         const auto& v = patch["env"];
         if (v.is_null()) {
             return "env must not be null";
@@ -249,7 +249,7 @@ inline std::optional<std::string> validate_process_config_patch(const nlohmann::
             }
         }
     }
-    if (patch.contains("restart")) {  // 整体覆盖（契约第 86 行）
+    if (patch.contains("restart")) {  // 整体覆盖（契约 04-process）
         const auto& v = patch["restart"];
         if (v.is_null()) {
             return "restart must not be null";
@@ -271,7 +271,7 @@ inline std::optional<std::string> validate_process_config_patch(const nlohmann::
                 return std::string("restart.") + key + " must be an integer";
             }
             if (detail::to_int64(n) < 0) {
-                return std::string("restart.") + key + " must be >= 0";  // 契约第 72-73 行
+                return std::string("restart.") + key + " must be >= 0";  // 契约 04-process
             }
             // 契约字段类型为 int: 钳制到 int32 范围, 避免 nlohmann get_to(int) 静默回绕
             if (detail::to_int64(n) > (std::numeric_limits<int>::max)()) {
@@ -280,7 +280,7 @@ inline std::optional<std::string> validate_process_config_patch(const nlohmann::
             }
         }
     }
-    if (patch.contains("display_name")) {  // 覆盖，空串=清空（契约第 87 行）
+    if (patch.contains("display_name")) {  // 覆盖，空串=清空（契约 04-process）
         const auto& v = patch["display_name"];
         if (v.is_null()) {
             return "display_name must not be null";
@@ -308,7 +308,7 @@ inline std::optional<std::string> validate_process_config_full(const nlohmann::j
         return err;
     }
     // 全量角色额外约束: env 内部 value 必须为 string
-    // (null 仅为增量角色的删除语义; 全量 env 是实际环境变量, 契约第 84-85 行,
+    // (null 仅为增量角色的删除语义; 全量 env 是实际环境变量, 契约 04-process,
     // 且 ProcessConfig::from_json 的 map<string,string> 对 null 抛异常)
     for (auto it = cfg["env"].begin(); it != cfg["env"].end(); ++it) {
         if (!it.value().is_string()) {
@@ -318,7 +318,7 @@ inline std::optional<std::string> validate_process_config_full(const nlohmann::j
     return std::nullopt;
 }
 
-/// 应用增量 patch 到全量配置（RFC 7386 选择性合并，契约第 80-87 行）。
+/// 应用增量 patch 到全量配置（RFC 7386 选择性合并，契约 04-process）。
 /// 规则：args/restart 整体覆盖（非递归）；env 递归合并（value 为 null 删除该 key）；
 /// display_name 覆盖（空串 = 清空，合并结果中移除该字段）；未知字段忽略。
 /// 前置条件：patch 已通过 validate_process_config_patch（本函数不重复校验，
@@ -328,9 +328,9 @@ inline nlohmann::json apply_process_config_patch(const nlohmann::json& current,
                                                  const nlohmann::json& patch) {
     nlohmann::json merged = current;
     if (patch.contains("args")) {
-        merged["args"] = patch["args"];  // 整体覆盖（契约第 84 行）
+        merged["args"] = patch["args"];  // 整体覆盖（契约 04-process）
     }
-    if (patch.contains("env")) {  // 递归合并（契约第 85 行）
+    if (patch.contains("env")) {  // 递归合并（契约 04-process）
         for (auto it = patch["env"].begin(); it != patch["env"].end(); ++it) {
             if (it.value().is_null()) {
                 merged["env"].erase(it.key());  // null = 删除该 key
@@ -340,11 +340,11 @@ inline nlohmann::json apply_process_config_patch(const nlohmann::json& current,
         }
     }
     if (patch.contains("restart")) {
-        merged["restart"] = patch["restart"];  // 整体覆盖（契约第 86 行）
+        merged["restart"] = patch["restart"];  // 整体覆盖（契约 04-process）
     }
     if (patch.contains("display_name")) {
         if (patch["display_name"].get<std::string>().empty()) {
-            merged.erase("display_name");  // 空串 = 清空（契约第 87 行）
+            merged.erase("display_name");  // 空串 = 清空（契约 04-process）
         } else {
             merged["display_name"] = patch["display_name"];
         }

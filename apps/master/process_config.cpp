@@ -38,12 +38,12 @@ void ProcessConfigStore::load(const nlohmann::json& initial_map) {
 
 void ProcessConfigStore::set_process_config(const std::string& target,
                                             const nlohmann::json& patch) {
-    // 契约第 225 行: target 不存在时校验失败
+    // 契约 04-process: target 不存在时校验失败
     auto it = cfg_map_.find(target);
     if (it == cfg_map_.end()) {
         throw std::runtime_error("target not registered | target=" + target);
     }
-    // 增量角色校验（契约第 70 行: SET / Start 携带的 config 同规则）
+    // 增量角色校验（契约 04-process: SET / Start 携带的 config 同规则）
     if (auto err = validate_process_config_patch(patch)) {
         throw std::runtime_error("invalid process config patch | target=" + target +
                                  " error=" + *err);
@@ -82,7 +82,7 @@ void ProcessConfigStore::remove(const std::string& name) {
 }
 
 void ProcessConfigStore::rtn_process_config() {
-    // 始终全量镜像（契约第 236 行），无 error 字段，无 instance_id（契约第 5 行）
+    // 始终全量镜像（契约 04-process），无 error 字段，无 instance_id（契约 04-process）
     try {
         const auto str = nlohmann::json(cfg_map_).dump();
         if (!event_writer_.write_ext_frame(DZ_FRAME_RTN_PROCESS_CONFIG,

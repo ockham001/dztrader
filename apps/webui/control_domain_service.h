@@ -8,7 +8,7 @@
 
 namespace dztrader::webui {
 
-/// 控制领域服务：SHUTDOWN_ALL / SHUTDOWN / UPDATE_SHM_EVENT_SUBSCRIBER（契约 06）。
+/// 控制领域服务：SHUTDOWN_ALL / SHUTDOWN（契约 04-process）/ UPDATE_SHM_EVENT_SUBSCRIBER（契约 02-shm）。
 /// 无镜像、无广播（后台控制帧，dzweb 自身消费）。
 /// **线程安全（关键）**：本服务方法可能被 FrameRouter 在监听线程调用（register_raw），
 /// 因此方法内部一律 queueInLoop 投递到 drogon IO 线程后执行实际动作——

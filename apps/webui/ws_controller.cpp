@@ -28,7 +28,7 @@ WsController::WsController(WebuiConfig cfg,
       mirror_(mirror) {
     // webui 自身 log_config 镜像初值已移入 main 装配（mirror_store->update），
     // 保证 API-only 模式(无 SHM)下前端连接快照也能看到 webui 自身级别
-    // （契约 00：dzweb 自身纳入镜像）。
+    // （契约 01-log：dzweb 自身纳入镜像）。
     // SHM 事件监听由 main 直调 EventMonitor（本类不再涉及）。
 }
 

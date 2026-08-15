@@ -15,7 +15,7 @@ namespace dztrader::webui {
 // 与 master 的 ProcessRegistry::scan_gateways() 发现的 exe stem 一致
 std::string process_name_for_source_type(const std::string& source_type);
 
-// 提取 ui_card 大类 (契约 06): 去掉 dzmd_/dztd_ 前缀, 取第一个 _ 之前的部分
+// 提取 ui_card 大类 (契约 08 接口类型识别): 去掉 dzmd_/dztd_ 前缀, 取第一个 _ 之前的部分
 // dzmd_ctp -> ctp, dzmd_ctp_1234 -> ctp, 未知前缀 -> ""
 std::string extract_ui_card(const std::string& process_name);
 

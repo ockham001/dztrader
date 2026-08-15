@@ -174,7 +174,7 @@ void MdStateMachine::set_state(MdState new_state) {
 
     // progress_max=4: Idle=0, Connecting/Disconnected=1, Connected=2, LoggingIn=3, LoggedIn=4
     // progress 仅反映连接/登录阶段, 不依赖订阅完成
-    // 契约 05 消费者约定（跨进程稳定契约）: 前端以 current 数值映射驱动登录态判定
+    // 契约 06 消费者约定（跨进程稳定契约）: 前端以 current 数值映射驱动登录态判定
     //   (current==max → 登录完成; current==min → 已登出; 其余 → 中间态),
     //   数值映射不可变更; desc 仅为展示文案, 前端不得依赖 desc 做状态判定。
     switch (new_state) {
@@ -228,7 +228,7 @@ void MdStateMachine::set_subscription_stats(size_t expected, size_t subscribed) 
 }
 
 nlohmann::json build_md_status_payload(const MdStatus& s) {
-    // 契约 09: 仅 6 字段，始终全量。登录/进度状态由 RTN_PROGRESS（契约 05）覆盖，
+    // 契约 09: 仅 6 字段，始终全量。登录/进度状态由 RTN_PROGRESS（契约 06）覆盖，
     // 本帧不包含状态与进度字段。
     return {
         {"api_version", s.api_version},

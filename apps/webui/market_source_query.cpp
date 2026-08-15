@@ -121,7 +121,7 @@ void MarketSourceCtrl::list(
             continue;
         }
         Json src_json = market_source_to_json(*source);
-        // auto_login 从镜像读 (dzmd_ctp 上报的 RTN_AUTO_LOGIN, 契约 04)
+        // auto_login 从镜像读 (dzmd_ctp 上报的 RTN_AUTO_LOGIN, 契约 05)
         auto auto_login_opt = process_mirror_->get_auto_login(st.name);
         if (auto_login_opt.has_value()) {
             src_json["auto_login"] = auto_login_opt->value("enabled", false);
@@ -132,7 +132,7 @@ void MarketSourceCtrl::list(
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/market-sources/{id} - detail (auto_login 从镜像读, 契约 04)
+// GET /api/market-sources/{id} - detail (auto_login 从镜像读, 契约 05)
 // ---------------------------------------------------------------------------
 void MarketSourceCtrl::get(
     const drogon::HttpRequestPtr& req,

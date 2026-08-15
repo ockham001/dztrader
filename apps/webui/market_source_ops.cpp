@@ -111,7 +111,7 @@ void MarketSourceCtrl::set_auto_login(
 }
 
 // ---------------------------------------------------------------------------
-// Wave 2C: 经纪商 CRUD 走 op-based 配置变更流程 (spec docs/flow_contracts/03-config-change.md)
+// 经纪商 CRUD 走 op-based 配置变更流程 (契约 08 SET_MD_CONFIG)
 // 通用模式: 下发 op + params → dzmd_ctp 校验+应用+持久化+回传 RTN_MD_CONFIG →
 //          dzweb 镜像更新 → WS 推送 md_rtn_config → 前端刷新
 // HTTP 同步响应仅表示"已下发", 最终状态由 WS 推送决定 (失败路径 C/D/E)

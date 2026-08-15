@@ -136,7 +136,7 @@ public:
     /// master 在子进程状态变化时调用 (launch_child/on_child_exit/stop_single_child)。
     void write_process_status(const platform::ProcessStatus& status);
 
-    /// 进程配置存储（只读访问：display_name 真相源，契约第 156 行）
+    /// 进程配置存储（只读访问：display_name 真相源，契约 04-process）
     [[nodiscard]] const ProcessConfigStore& process_config_store() const {
         return *process_config_store_;
     }
@@ -254,7 +254,7 @@ private:
 
     // ===== event 通道 SHM 配置 (依赖 event_writer_/config_path_, 必须在其后声明) =====
     /// event 通道 SHM 配置 (SET_EVENT_SHM_CONFIG 时更新可变字段,page_size_mb 不可变)
-    /// RTN 无 instance_id (契约 01-shm.md 第 5 行)
+    /// RTN 无 instance_id (契约 02-shm：事件通道帧头无 instance_id)
     dztrader::platform::EventShmConfig event_shm_config_;
 
     // ===== 进程配置存储 (依赖 event_writer_/config_path_/supervisor_, 必须在其后声明) =====

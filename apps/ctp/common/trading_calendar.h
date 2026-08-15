@@ -28,7 +28,7 @@ enum class AutoSchedAction {
 bool is_trading_window(int weekday, std::string_view hh_mm);
 
 /// ConfigT 概念: 须暴露 enable_auto_login_logout (bool) 与 schedules (vector<Schedule>)。
-/// 注: 契约 04 迁移后 md/td 的 Config 类不再含这两个字段, 本概念由 AutoLoginSchedView
+/// 注: 契约 05 迁移后 md/td 的 Config 类不再含这两个字段, 本概念由 AutoLoginSchedView
 /// （json 镜像适配视图, 见下）与测试用 FakeTdConfig 满足; 网关调度器经 to_sched_view
 /// 转换 auto_login 帧镜像后复用本模块的评估函数。
 template <typename ConfigT>

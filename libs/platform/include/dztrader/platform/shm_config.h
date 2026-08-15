@@ -31,7 +31,7 @@ inline constexpr int64_t SHM_BYTES_MAX = 1LL << 40;
 /// rtn 的时机和次数由外部控制——类内部不自己调 rtn_shm_config()。
 /// SET 失败的日志+NOTIFY_UI 也由外部 catch 块处理。
 ///
-/// 严格遵循 docs/frame_contracts/01-shm.md 契约:
+/// 严格遵循 docs/frame_contracts/02-shm.md 契约:
 ///   - SET 纯 RFC 7386 JSON Merge Patch(page_size_mb 不可变,完全跳过)
 ///   - null 仅允许 preload_points 内部某 key 的 value(表示删除该 key),其余位置 null 均校验失败
 ///   - preload_points 值为 {} 时按纯 RFC 7386 语义为无操作
@@ -98,7 +98,7 @@ private:
     nlohmann::json default_cfg_;
     std::filesystem::path cfg_path_;
     nlohmann::json::json_pointer section_;
-    nlohmann::json cfg_;  // 当前配置镜像(始终全量,契约第 90 行)
+    nlohmann::json cfg_;  // 当前配置镜像(始终全量,契约 02-shm)
 
     // 按 section_ 从文件读取,文件不存在/section 缺失返回默认值,JSON 解析失败抛。
     // degraded=true 表示文件内容非法/不可读,调用方应修复文件并记日志

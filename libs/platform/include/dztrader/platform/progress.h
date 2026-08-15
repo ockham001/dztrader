@@ -15,7 +15,7 @@ namespace dztrader::platform {
 /// 与 LogConfig/AutoLoginConfig 一致：内部持有 json 镜像，rtn 推送全量镜像。
 /// 与 LogConfig/AutoLoginConfig 的差异：无 SET、无持久化、无文件 IO（纯推送）。
 ///
-/// 严格遵循 docs/frame_contracts/05-progress.md 契约：
+/// 严格遵循 docs/frame_contracts/06-progress.md 契约：
 ///   - max > min：确定进度条，前端按 (current-min)/(max-min) 渲染
 ///   - max <= min（含 max==0）：不确定进度，前端显示 spinner 或隐藏进度条
 ///   - current 应在 [min, max] 范围内；超出时前端钳制（防御性，不报错）

@@ -105,7 +105,7 @@ nlohmann::json LogConfig::load_cfg_from_file(bool& degraded) const {
             degraded = true;  // 文件存在但打不开:回退默认并尝试修复
         }
     }
-    // 补齐缺失字段为默认值，校验类型 + 值有效性（契约第 56-57 行：RTN 的 level/flush_on
+    // 补齐缺失字段为默认值，校验类型 + 值有效性（契约 01-log：RTN 的 level/flush_on
     // 必填且为有效 string）
     nlohmann::json result = default_cfg();
     if (raw.is_object()) {
@@ -243,23 +243,23 @@ void LogConfig::set_log_config(const nlohmann::json& patch) {
     }
 
     // 2. 手动合并：只取 level 和 flush_on，其他字段忽略（兼容性优先，不抛异常）
-    //    契约第 28 行：出现的字段覆盖旧值，缺失字段保留
+    //    契约 01-log：出现的字段覆盖旧值，缺失字段保留
     nlohmann::json merged = cfg_;
     auto apply_field = [&patch](const char* key) -> std::optional<std::string> {
         if (!patch.contains(key)) {
             return std::nullopt;  // 缺失=不修改
         }
         const auto& v = patch[key];
-        // 禁止 null（契约第 29 行）
+        // 禁止 null（契约 01-log）
         if (v.is_null()) {
             throw std::runtime_error(std::string("patch contains null field: ") + key);
         }
-        // 必须是 string 类型（契约第 17-18 行）
+        // 必须是 string 类型（契约 01-log）
         if (!v.is_string()) {
             throw std::runtime_error(std::string("field must be a string: ") + key);
         }
         std::string s = v.get<std::string>();
-        // 禁止空字符串（契约第 17-18 行）
+        // 禁止空字符串（契约 01-log）
         if (s.empty()) {
             throw std::runtime_error(std::string("patch contains empty string field: ") + key);
         }
@@ -282,7 +282,7 @@ void LogConfig::set_log_config(const nlohmann::json& patch) {
     // 3b. 规范化：warn/err -> warning/error（契约：存储与 RTN 始终用规范全称）
     canonicalize(merged);
 
-    // 3c. 契约第 33 行：空对象 {} 视为无操作。值无变化时跳过持久化，仍回 RTN（当前值）
+    // 3c. 契约 01-log：空对象 {} 视为无操作。值无变化时跳过持久化，仍回 RTN（当前值）
     if (merged == cfg_) {
         return;
     }

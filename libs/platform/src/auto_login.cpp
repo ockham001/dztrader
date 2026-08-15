@@ -228,8 +228,8 @@ void AutoLoginConfig::set_auto_login(const nlohmann::json& patch) {
         throw std::runtime_error("patch must be a JSON object");
     }
 
-    // 2. 合并：enabled 出现则覆盖；schedules 出现则整体覆盖（契约第 78 行）
-    //    其他字段忽略（前向兼容）。null 任何位置非法（契约第 79 行）。
+    // 2. 合并：enabled 出现则覆盖；schedules 出现则整体覆盖（契约 05-auto-login）
+    //    其他字段忽略（前向兼容）。null 任何位置非法（契约 05-auto-login）。
     nlohmann::json merged = cfg_;
     if (patch.contains("enabled")) {
         const auto& v = patch["enabled"];
@@ -263,7 +263,7 @@ void AutoLoginConfig::set_auto_login(const nlohmann::json& patch) {
         throw std::runtime_error(*err);  // cfg_ 不变
     }
 
-    // 3b. 契约第 89 行：空对象 {} 视为无操作。值无变化时跳过持久化，仍回 RTN（当前值）
+    // 3b. 契约 05-auto-login：空对象 {} 视为无操作。值无变化时跳过持久化，仍回 RTN（当前值）
     if (merged == cfg_) {
         return;
     }

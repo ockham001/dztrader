@@ -124,7 +124,7 @@ int main(int argc, char* argv[]) {
     }
 
     // 4. 用 log_level/log_flush_on 填充 LoggerSetup -> set_default_logger
-    //    统一用 LogConfig::parse_level 校验 (契约 00-log.md), 非法回落 info
+    //    统一用 LogConfig::parse_level 校验 (契约 01-log), 非法回落 info
     dztrader::log::LoggerSetup log_setup;
     log_setup.logger_name = dztrader::this_process::exe_stem();
     log_setup.log_dir = dztrader::paths::logs();

@@ -86,7 +86,7 @@ void generate_default_config(const std::filesystem::path& json_path);
 
 /// 向 dztraderd.json 写入 [md.<name>] 或 [td.<name>] 段（若已存在则覆盖）。
 /// category 决定写入 "md" 还是 "td" section。
-/// 契约 05: 内部进程 (dzmd_*/dztd_*/dzweb) 的 exe 路径和 start_dir 不持久化到 json。
+/// 契约 04: 内部进程 (dzmd_*/dztd_*/dzweb) 的 exe 路径和 start_dir 不持久化到 json。
 void write_gateway_section(const std::filesystem::path& config_path,
                            Category category,
                            const std::string& gateway_name,

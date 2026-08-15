@@ -48,7 +48,7 @@ private:
     /// 内部直调 LogConfig + 写 SHM + NOTIFY_UI + publish 回推，不再经 log_control 自由函数）
     std::shared_ptr<LogDomainService> log_domain_;
 
-    /// Validate that level is a valid log level (lowercase, per contract 00-log.md).
+    /// Validate that level is a valid log level (lowercase, per contract 01-log).
     static bool is_valid_level(const std::string& level);
 };
 
