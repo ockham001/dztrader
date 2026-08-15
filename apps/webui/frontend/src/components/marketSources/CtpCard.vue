@@ -453,7 +453,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 .source-card__info-sub--warn { color: var(--status-error-default); }
 .source-card__meta-row { display: flex; align-items: center; gap: var(--spacer-12); flex-shrink: 1; flex-wrap: wrap; row-gap: 2px; }
 
-/* 尾部 LoginPanel/ScheduleManager 为独立子组件, 本组件内最后一个 .card-section 是经纪商段, 去掉底边框 */
+/* 尾部 LoginPanel/ScheduleManager 为独立子组件, 本组件内最后一个 .card-section 是高级段, 去掉底边框 */
 .card-section { padding-bottom: var(--spacer-12); border-bottom: 1px solid var(--border-neutral-l1); margin-bottom: var(--spacer-12); }
 .card-section:last-of-type { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
 .card-section__row { display: flex; align-items: center; justify-content: space-between; gap: var(--spacer-12); margin-bottom: var(--spacer-8); }
