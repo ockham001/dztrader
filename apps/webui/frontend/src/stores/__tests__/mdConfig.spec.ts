@@ -17,6 +17,7 @@ vi.mock('@/api/marketSources', () => ({
     updateBroker: vi.fn(),
     setCurrentBroker: vi.fn(),
     updateFrontends: vi.fn(),
+    setSubscribeParams: vi.fn(),
   },
 }))
 
@@ -459,6 +460,36 @@ describe('useMdConfigStore', () => {
       expect(marketSourcesApi.updateFrontends).toHaveBeenCalledWith(1, 'b1', [
         { address: 'a9', label: 'L1', enabled: false },
       ])
+    })
+  })
+
+  describe('setSubscribeParams（契约 08 SetSubscribeParams op）', () => {
+    it('下发单字段 patch，HTTP 成功保持 pending 等 RTN，md_rtn_config 到达清除', async () => {
+      vi.mocked(marketSourcesApi.setSubscribeParams).mockResolvedValue({ ok: true })
+      const store = useMdConfigStore()
+      const r = await store.setSubscribeParams(1, 'dzmd_ctp', { subscribe_batch_size: 500 })
+      expect(r).toBe(true)
+      expect(marketSourcesApi.setSubscribeParams).toHaveBeenCalledWith(1, { subscribe_batch_size: 500 })
+      // keepPendingOnSuccess 默认 true: 成功后 pending 仍挂起, 等 RTN 清
+      expect(usePending().pending['source:1:subscribe_params']).toBe(true)
+      store.applyMdConfig({ source: 'dzmd_ctp', config: configPayload })
+      expect(usePending().pending['source:1:subscribe_params']).toBeUndefined()
+    })
+
+    it('空提交幂等成功，不下发', async () => {
+      const store = useMdConfigStore()
+      const r = await store.setSubscribeParams(1, 'dzmd_ctp', {})
+      expect(r).toBe(true)
+      expect(marketSourcesApi.setSubscribeParams).not.toHaveBeenCalled()
+    })
+
+    it('HTTP 失败返回 false 并清 pending', async () => {
+      vi.mocked(marketSourcesApi.setSubscribeParams).mockRejectedValue(new Error('503'))
+      const store = useMdConfigStore()
+      const r = await store.setSubscribeParams(1, 'dzmd_ctp', { sub_max_retry: 5 })
+      expect(r).toBe(false)
+      // HTTP 失败清 pending: usePending settle→clearPending 置 false（与 login 失败用例一致）
+      expect(usePending().pending['source:1:subscribe_params']).toBe(false)
     })
   })
 })

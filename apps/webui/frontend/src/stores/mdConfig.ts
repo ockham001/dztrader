@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 import { marketSourcesApi } from '@/api/marketSources'
-import type { AddBrokerBody, AutoLoginBody } from '@/api/marketSources'
+import type { AddBrokerBody, AutoLoginBody, SubscribeParamsBody } from '@/api/marketSources'
 import type { BrokerEntry, BrokerFrontend, MdConfigPayload, MdRtnConfigPayload, MdRtnStatusPayload } from '@/types/api'
 import { usePending, clearByPrefix, PENDING_TIMEOUT } from '@/composables/usePending'
 import { useProgressStore } from '@/stores/progress'
@@ -33,6 +33,7 @@ export type MdConfigOp =
   | 'schedule_add' | 'schedule_remove'
   | 'broker_add' | 'broker_remove' | 'broker_update' | 'broker_select'
   | 'frontend_add' | 'frontend_remove' | 'frontend_edit' | 'frontend_toggle'
+  | 'subscribe_params'
 
 // 操作结果: boolean(成功/HTTP 失败) 或 PENDING_TIMEOUT(超时, usePending 已 toast)。
 // 薄代理对 PENDING_TIMEOUT 不设 error, 避免超时双 toast(§7.2)。
@@ -53,6 +54,7 @@ const OP_LABELS: Record<MdConfigOp, string> = {
   frontend_remove: '删除前置',
   frontend_edit: '修改前置',
   frontend_toggle: '切换前置',
+  subscribe_params: '修改订阅参数',
 }
 
 // applyMdConfig 到达时批量清理的配置类 op（对照 setMdConfig 清的 8 个 broker/frontend
@@ -66,6 +68,7 @@ const OP_LABELS: Record<MdConfigOp, string> = {
 export const MD_CONFIG_OPS: readonly MdConfigOp[] = [
   'broker_add', 'broker_remove', 'broker_update', 'broker_select',
   'frontend_add', 'frontend_remove', 'frontend_edit', 'frontend_toggle',
+  'subscribe_params',
 ]
 
 // 排程类 op：由 applyAutoLogin（RTN_AUTO_LOGIN，契约 04）批量清理
@@ -388,6 +391,25 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     return result !== undefined
   }
 
+  // ===== 订阅参数 (契约 08 SetSubscribeParams: 单字段 patch, 缺失=保留旧值, 无状态保护) =====
+  async function setSubscribeParams(
+    id: number,
+    sourceName: string,
+    patch: SubscribeParamsBody,
+  ): Promise<MdConfigOpResult> {
+    const key = opKey(id, 'subscribe_params')
+    if (pending[key]) return false
+    if (Object.keys(patch).length === 0) return true  // 空提交幂等成功, 不下发
+    nameToId.value[sourceName] = id
+    const result = await run(key, () => marketSourcesApi.setSubscribeParams(id, patch), {
+      timeout: CONFIG_OP_TIMEOUT_MS,
+      opLabel: OP_LABELS.subscribe_params,
+      distinguishTimeout: true,
+    })
+    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
+    return result !== undefined
+  }
+
   return {
     configs,
     statuses,
@@ -408,5 +430,6 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     removeFrontend,
     editFrontend,
     setFrontendEnabled,
+    setSubscribeParams,
   }
 })

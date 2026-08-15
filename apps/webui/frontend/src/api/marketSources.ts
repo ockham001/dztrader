@@ -43,6 +43,14 @@ export interface SetCurrentBrokerBody {
   name: string  // 空字符串表示清空选中
 }
 
+// 订阅参数请求体 (契约 08 SetSubscribeParams): 全部可选, 缺失=保留旧值, 无状态保护
+export interface SubscribeParamsBody {
+  subscribe_batch_size?: number
+  subscribe_batch_delay_ms?: number
+  sub_check_interval_ms?: number
+  sub_max_retry?: number
+}
+
 export interface StartMarketSourceBody {
   display_name?: string      // 显示名（覆盖 DB 中的值）
 }
@@ -82,4 +90,8 @@ export const marketSourcesApi = {
   // 切换当前选中经纪商 (空字符串清空选中)
   setCurrentBroker: (sourceId: number, brokerName: string) =>
     api.put<{ ok: boolean }>(`/api/market-sources/${sourceId}/current-broker`, { name: brokerName }),
+  // 修改订阅参数 (契约 08): 可选字段 patch, 直发 SET_MD_CONFIG{SetSubscribeParams},
+  // HTTP 同步响应仅表示已下发, 最终状态由 WS md_rtn_config 推送决定
+  setSubscribeParams: (sourceId: number, data: SubscribeParamsBody) =>
+    api.put<{ ok: boolean }>(`/api/market-sources/${sourceId}/subscribe-params`, data),
 }
