@@ -58,8 +58,16 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
       const mdConfig = md.configs[name]
       const mdStatus = parseMdStatus(md.statuses[name]?.status)
       const autoLogin = md.autoLogins[name]
-      const prog = progress.progress[name] as { min?: unknown; max?: unknown; current?: unknown } | undefined
+      const prog = progress.progress[name]
       const loginState = progressLoginState(prog) ?? loginStateCache.value[name] ?? 'offline'
+      // P3: StatusIndicator 直连数据——有镜像用真实值, 无镜像回落三值映射
+      const progressView = prog
+        ? { current: prog.current, min: prog.min, max: prog.max, desc: prog.desc }
+        : {
+            current: loginState === 'online' ? 1 : loginState === 'pending' ? 0.5 : 0,
+            min: 0,
+            max: 1,
+          }
       const pend = (op: string): boolean => pending[keyOf(b.id, op)] ?? false
       return makeSource({
         id: b.id,
@@ -73,6 +81,7 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
         created_at: b.created_at,
         updated_at: b.updated_at,
         loginState,
+        progressView,
         loginPending: pend('login'),
         logoutPending: pend('logout'),
         autoLoginPending: pend('auto_login'),

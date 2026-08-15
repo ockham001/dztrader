@@ -70,11 +70,6 @@ async function confirmAddBroker(): Promise<void> {
 }
 
 // ===== Header 辅助函数 =====
-function loginCurrent(s: MarketSourceView): number {
-  if (s.loginState === 'online') return 1
-  if (s.loginState === 'pending') return 0.5
-  return 0
-}
 // 订阅统计配色: expected=0（无订阅需求）为中性; 有需求且未满足为告警
 const subscribeClass = (s: MarketSourceView): string => {
   if (s.subscribeTotal === 0) return 'source-card__info-sub--ok'
@@ -105,9 +100,10 @@ const autoLoginStatusText = (s: MarketSourceView): string =>
         <span class="source-card__info-meta" :style="{ color: processStateColor(src.process_state) }">进程：<span>{{ processStateText(src.process_state) }}</span></span>
       </div>
       <StatusIndicator
-        :current="loginCurrent(src)"
-        :max="1"
-        :min="0"
+        :current="src.progressView.current"
+        :max="src.progressView.max"
+        :min="src.progressView.min"
+        :desc="src.progressView.desc"
         :idle-text="'未登录'"
         :loading-text="'登录中'"
         :done-text="'已登录'"

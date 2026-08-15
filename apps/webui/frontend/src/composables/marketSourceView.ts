@@ -28,10 +28,22 @@ export function progressLoginState(
   return 'pending'
 }
 
+// ===== StatusIndicator 直连数据（P3 接线）=====
+// 有合法 progress 镜像时直连 {min,max,current,desc}（真实进度条），
+// 无镜像时回落 loginState 三值映射 {0,0.5,1}（保证组件仍有合理显示）。
+// 形状对齐 stores/progress.ts 的 ProgressView（applyProgress 已做类型防御）。
+export interface ProgressIndicatorView {
+  current: number
+  min: number
+  max: number
+  desc?: string
+}
+
 export type ScheduleView = Schedule
 
 export interface MarketSourceView extends MarketSource {
   loginState: LoginState
+  progressView: ProgressIndicatorView  // StatusIndicator 直连数据（P3）
   loginPending: boolean
   logoutPending: boolean
   autoLoginPending: boolean
@@ -76,6 +88,7 @@ export function makeSource(
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     loginState: 'offline',
+    progressView: { current: 0, min: 0, max: 1 },
     loginPending: false,
     logoutPending: false,
     autoLoginPending: false,

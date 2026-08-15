@@ -15,13 +15,6 @@ const props = defineProps<{
 const store = useMarketSourcesStore()
 
 const src = computed(() => props.source)
-
-// Login status mapping for StatusIndicator
-function loginCurrent(s: MarketSourceView): number {
-  if (s.loginState === 'online') return 1
-  if (s.loginState === 'pending') return 0.5
-  return 0
-}
 </script>
 
 <template>
@@ -37,9 +30,10 @@ function loginCurrent(s: MarketSourceView): number {
         <span class="source-card__info-meta" :style="{ color: processStateColor(src.process_state) }">进程：<span>{{ processStateText(src.process_state) }}</span></span>
       </div>
       <StatusIndicator
-        :current="loginCurrent(src)"
-        :max="1"
-        :min="0"
+        :current="src.progressView.current"
+        :max="src.progressView.max"
+        :min="src.progressView.min"
+        :desc="src.progressView.desc"
         :idle-text="'未登录'"
         :loading-text="'登录中'"
         :done-text="'已登录'"

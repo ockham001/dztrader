@@ -633,4 +633,26 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(store.error).toBeNull()
     })
   })
+
+  describe('progressView 直连（契约 06）', () => {
+    it('有 progress 镜像时直连帧数值', async () => {
+      await loadDb()
+      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 2, desc: '已连接' })
+      const s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
+      expect(s.progressView).toEqual({ current: 2, min: 0, max: 4, desc: '已连接' })
+    })
+
+    it('无镜像时回落 loginState 三值映射（无 desc）', async () => {
+      await loadDb()
+      const s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
+      expect(s.progressView).toEqual({ current: 0, min: 0, max: 1 })  // 默认 offline
+    })
+
+    it('不确定进度（max<=min）保留原值', async () => {
+      await loadDb()
+      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 0, current: 0 })
+      const s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
+      expect(s.progressView).toEqual({ current: 0, min: 0, max: 0 })
+    })
+  })
 })

@@ -3,16 +3,10 @@ import { ref, computed, onUnmounted, type Ref } from 'vue'
 import StatusIndicator from '@/components/shared/StatusIndicator.vue'
 import { processStateText, processStateColor } from '@/composables/useProcessState'
 import { useMarketSourcesStore } from '@/stores/marketSources'
-import type { LoginState } from '@/stores/marketSources'
 
 const marketSourcesStore = useMarketSourcesStore()
 
 // 行情面板：复用 store 的 sources，与行情源页面同步
-const loginStateToStatus: Record<LoginState, number> = {
-  offline: 0,
-  pending: 0.5,
-  online: 1,
-}
 const marketOnlineCount = computed(
   () => marketSourcesStore.sources.filter(s => s.loginState === 'online').length,
 )
@@ -480,7 +474,7 @@ onUnmounted(() => {
                   >· {{ marketProcessStateText(src.process_state) }}</span>
                 </div>
               </div>
-              <StatusIndicator :current="loginStateToStatus[src.loginState]" :max="1" :mini="true" idle-text="未登录" loading-text="登录中" done-text="已登录" />
+              <StatusIndicator :current="src.progressView.current" :max="src.progressView.max" :min="src.progressView.min" :desc="src.progressView.desc" :mini="true" idle-text="未登录" loading-text="登录中" done-text="已登录" />
             </div>
           </div>
         </div>
