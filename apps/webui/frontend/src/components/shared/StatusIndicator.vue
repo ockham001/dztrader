@@ -5,6 +5,7 @@ const props = withDefaults(defineProps<{
   current: number
   max?: number
   min?: number
+  desc?: string
   idleText?: string
   loadingText?: string
   doneText?: string
@@ -26,7 +27,10 @@ const state = computed<StatusState>(() => {
   return 'loading'
 })
 
+// 文本源: 后端 desc 优先（契约 06: desc 为展示文案，状态判定仍走数值映射），
+// 未提供时回落调用方三态固定文案
 const text = computed(() => {
+  if (props.desc) return props.desc
   if (state.value === 'idle') return props.idleText
   if (state.value === 'done') return props.doneText
   return props.loadingText

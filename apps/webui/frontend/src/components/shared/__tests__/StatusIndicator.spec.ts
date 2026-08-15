@@ -54,3 +54,27 @@ describe('StatusIndicator', () => {
     expect(wrapper.classes()).toContain('ds-status--mini')
   })
 })
+
+// desc 文本（后端进度描述）
+describe('desc 文本（后端进度描述）', () => {
+  it('desc 优先于三态固定文案（loading 态显示 desc）', () => {
+    const wrapper = mount(StatusIndicator, {
+      props: { current: 2, min: 0, max: 4, desc: '已连接' },
+    })
+    expect(wrapper.find('.ds-status__progress-text').text()).toBe('已连接')
+  })
+
+  it('desc 优先于三态固定文案（done 态显示 desc）', () => {
+    const wrapper = mount(StatusIndicator, {
+      props: { current: 4, min: 0, max: 4, desc: '已登录' },
+    })
+    expect(wrapper.find('.ds-status__text').text()).toBe('已登录')
+  })
+
+  it('未传 desc 时保持三态固定文案', () => {
+    const wrapper = mount(StatusIndicator, {
+      props: { current: 4, min: 0, max: 4, doneText: '就绪' },
+    })
+    expect(wrapper.find('.ds-status__text').text()).toBe('就绪')
+  })
+})
