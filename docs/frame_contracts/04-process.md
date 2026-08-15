@@ -91,7 +91,7 @@
 ## DZ_FRAME_REQUEST_PROCESS_CONTROL
 
 **语义**：请求 master 对目标进程执行启动/停止/移除
-**方向**：dzweb → master
+**数据流**：形态 1（总则 §4.2）——dzweb → master（帧头无 `instance_id`，目标在 payload `target`）；前端入口 `POST /api/market-sources/{id}/start|stop`、`DELETE /api/market-sources/{id}`（契约 11）；响应帧 `RTN_PROCESS_STATUS`（带 `event`）→ 镜像 `process_status` 域 → WS 消息 `process_status`。Start 携带 `config` 成功时先推 `RTN_PROCESS_CONFIG` 再推 `RTN_PROCESS_STATUS`（帧顺序见约束）
 **Payload**：JSON
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -126,7 +126,7 @@
 ## DZ_FRAME_RTN_PROCESS_STATUS
 
 **语义**：master 推送进程状态（单条完整状态）
-**方向**：master → dzweb
+**数据流**：形态 4（总则 §4.2）——master → dzweb（帧头无 `instance_id`，进程名在 payload `name`）；无前端入口；镜像 `process_status` 域 → WS 消息 `process_status`（未注册进程不进镜像但仍广播）
 **Payload**：JSON
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -170,7 +170,7 @@
 ## DZ_FRAME_SET_PROCESS_CONFIG
 
 **语义**：请求 master 修改目标进程的配置（RFC 7386 增量更新）
-**方向**：dzweb → master
+**数据流**：形态 1（总则 §4.2）——dzweb → master（帧头无 `instance_id`，目标在 payload `target`）；前端入口：当前未定义独立端点（Start 携带 `config` 的路径间接覆盖，契约 11）；响应帧 `RTN_PROCESS_CONFIG` → 镜像 `process_config` 域 → WS 消息 `process_config`
 **Payload**：JSON
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -199,7 +199,7 @@
 ## DZ_FRAME_RTN_PROCESS_CONFIG
 
 **语义**：master 推送所有进程配置（全进程集合）
-**方向**：master → dzweb
+**数据流**：形态 4（总则 §4.2）——master → dzweb（帧头无 `instance_id`）；无前端入口；镜像 `process_config` 域（挂固定 `dztraderd`，key = 进程名）→ WS 消息 `process_config`
 **Payload**：JSON，**始终全量**；object，key = 进程名，value = ProcessConfig（全量角色）
 
 ```json
@@ -233,7 +233,7 @@
 ## DZ_FRAME_REQUEST_SHUTDOWN / DZ_FRAME_REQUEST_SHUTDOWN_ALL
 
 **语义**：请求进程优雅退出
-**方向**：master → 定向（`instance_id` = 目标进程名）/ master → 广播（无 `instance_id`）
+**数据流**：形态 5（总则 §4.2）——master → 定向（帧头 `instance_id` = 目标进程名）/ master → 广播（无 `instance_id`）；无前端入口（master 自身发起，UI 的 Stop/Remove 经形态 1 间接触发）；无 RTN，结果经 `RTN_PROCESS_STATUS` 体现
 **Payload**：空
 
 **触发场景**：

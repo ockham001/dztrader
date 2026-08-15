@@ -47,7 +47,7 @@
 ## DZ_FRAME_SET_EVENT_SHM_CONFIG / DZ_FRAME_SET_MD_SHM_CONFIG
 
 **语义**：设置目标 SHM 通道配置，RFC 7386 JSON Merge Patch 递归合并
-**方向**：dzweb → master（事件通道）/ dzweb → 各行情进程（行情通道）
+**数据流**：形态 1（总则 §4.2）——dzweb → master（事件通道，帧头无 `instance_id`，master 唯一）/ dzweb → 各行情进程（行情通道，帧头 `instance_id` = 行情进程名）；前端入口：当前未定义（shm_config 类消息暂无 UI 消费，见契约 10 §2.2）；响应帧 `RTN_*_SHM_CONFIG` → 镜像 `event_shm_config`（挂 `dztraderd`）/ `md_shm_config`（挂行情实例）域 → WS 消息同名
 **Payload**：JSON（ShmConfig 子集）
 
 ```json
@@ -74,7 +74,7 @@
 ## DZ_FRAME_RTN_EVENT_SHM_CONFIG / DZ_FRAME_RTN_MD_SHM_CONFIG
 
 **语义**：上报当前 SHM 通道配置
-**方向**：master → dzweb（事件通道）/ 各行情进程 → dzweb（行情通道）
+**数据流**：形态 4（总则 §4.2）——master（帧头无 `instance_id`，镜像挂固定 `dztraderd`）/ 各行情进程（帧头 `instance_id` = 来源）→ dzweb；无前端入口；镜像与 WS 消息名见下方"镜像"
 **Payload**：JSON，**始终全量**
 
 **触发场景**：
@@ -93,11 +93,12 @@
 ## DZ_FRAME_PRELOAD_EVENT_SHM / DZ_FRAME_PRELOAD_MD_SHM
 
 **语义**：广播预加载 SHM 通道（通知接收方对相应 SHM 通道执行预加载）
+**数据流**：形态 5（总则 §4.2）——发送方完成自身通道预加载后广播；接收方过滤（`PRELOAD_MD_SHM` 按 `instance_id` 匹配）；无前端入口、无 RTN、不进镜像
 **Payload**：struct `DzShmPreload`（真相源：`libs/strategy_api/include/dztrader/struct.h`，非 JSON；字段表不重复）
 
 **两帧差异**：
 
-| 帧类型 | 方向 | 帧头 |
+| 帧类型 | 逻辑方向 | 帧头 |
 |--------|------|------|
 | `PRELOAD_EVENT_SHM` | master → 所有子进程 | `DzExtFrameHeader`（无 `instance_id`） |
 | `PRELOAD_MD_SHM` | 行情进程 → 订阅该行情源的进程 | `DzExtInstFrameHeader`（`instance_id` = 通道名） |
@@ -117,7 +118,7 @@
 ## DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER / DZ_FRAME_UPDATE_SHM_MD_SUBSCRIBER
 
 **语义**：通知各进程刷新事件/行情通道 writer 的订阅者列表缓存
-**方向**：master → 广播（事件通道，无 `instance_id`）/ master → 定向（行情通道，`instance_id` = 行情进程名）
+**数据流**：形态 5（总则 §4.2）——master → 广播（事件通道，帧头无 `instance_id`）/ master → 定向（行情通道，帧头 `instance_id` = 行情进程名）；无前端入口、无 RTN、不进镜像（dzweb 明确忽略 `UPDATE_SHM_MD_SUBSCRIBER`）
 **Payload**：空
 
 **触发场景**：
@@ -134,7 +135,7 @@
 ## DZ_FRAME_REQUEST_MD_READER_REGISTER / DZ_FRAME_REQUEST_MD_READER_UNREGISTER
 
 **语义**：请求 master 注册/注销本进程为指定行情通道的**读者**（用于唤醒与页删除下限保护，与合约订阅无关）
-**方向**：策略/数据存储等订阅进程 → master（事件通道，`DzExtInstFrameHeader`，`instance_id` = 目标行情进程名 = 通道名）
+**数据流**：形态 5（总则 §4.2）——策略/数据存储等订阅进程 → master（`DzExtInstFrameHeader`，帧头 `instance_id` = 目标行情进程名 = 通道名，payload `subscriber` = 读者身份）；无前端入口、无 RTN（校验拒绝仅记日志）；成功副作用为 master 广播 `UPDATE_SHM_MD_SUBSCRIBER`
 **Payload**：JSON
 
 ```json
@@ -149,7 +150,7 @@
 - master 校验 `subscriber` 形如 `stg.<name>` 且 `name` 为已注册策略条目（registry）；通道不存在（md 未启动/已移除）时拒绝——均仅记日志，无 RTN
 - **无 RTN 兜底**（总则 §7）：注册失败不阻断数据消费（reader 游标独立于注册）；唤醒缺失由"单信号量 + 任意事件帧唤醒后排空"兜底，注册成功的 `UPDATE_SHM_MD_SUBSCRIBER` 帧本身即是一次唤醒
 - **启动顺序**：md 先于策略启动（master `start_all` 两趟），保证注册时目标通道已存在
-- 注册/注销成功后 master 更新行情通道 readers 并广播 `UPDATE_SHM_MD_SUBSCRIBER`（触发场景 §UPDATE 一节补充）
+- 注册/注销成功后 master 更新行情通道 readers 并广播 `UPDATE_SHM_MD_SUBSCRIBER`（该帧的触发场景见上方"UPDATE_SHM_*_SUBSCRIBER"节）
 - **注销三路径**：读者主动注销；读者进程退出时 master 代清理（对全部 md 通道幂等移除）；md 通道删除时随通道清空
 - 重复注册/注销幂等（add 已存在跳过、remove 缺失 key 为 no-op），多路径叠加无害
 

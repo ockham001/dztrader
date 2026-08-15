@@ -47,7 +47,7 @@ JSON 示例：
 ## DZ_FRAME_RTN_PROGRESS
 
 **语义**：推送当前进度状态
-**方向**：进程 → dzweb
+**数据流**：形态 4（总则 §4.2）——进程（帧头 `instance_id` = 来源，TD 按账户隔离时为 `{进程名}:{账户ID}`）→ dzweb；无前端入口；镜像 `progress` 域 → WS 消息 `progress`
 **Payload**：JSON（ProgressStatus）
 
 **触发场景**：

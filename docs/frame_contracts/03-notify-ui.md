@@ -11,7 +11,7 @@
 ## DZ_FRAME_NOTIFY_UI
 
 **语义**：向 UI 推送通知消息
-**方向**：各进程 → dzweb → 前端
+**数据流**：形态 6（总则 §4.2）——各进程 → dzweb → 前端；无前端入口；不进镜像，dzweb 转发 payload 并 WS 广播 `notify_ui`
 **Payload**：JSON
 
 | 字段 | 类型 | 说明 |

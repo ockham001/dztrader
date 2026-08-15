@@ -6,13 +6,14 @@
 
 ---
 
-## 语义 / 方向 / 路由
+## 语义 / 数据流 / 路由
 
-| 帧 | 方向 | 路由方式 |
+| 帧 | 逻辑方向 | 路由方式 |
 |---|---|---|
 | `DZ_FRAME_TD_ORDER_REQ` | 策略进程 → 所有交易网关 | 广播 + payload `account_id` 归属过滤 |
 | `DZ_FRAME_TD_ORDER_CANCEL_REQ` | 策略进程 → 所有交易网关 | 广播 + payload `account_id` 归属过滤 |
 
+- **数据流**：形态 5（总则 §4.2）——策略进程广播写入，交易网关按 payload `account_id` 归属自取（无 `instance_id` 路由）。
 - **发送方**：策略进程（`libs/strategy_api` 的 `dz_place_order` / `dz_cancel_order`），写入后唤醒事件通道订阅者，所有进程可见。
 - **接收方**：每个交易网关进程（`dztd_*`）读所有这类帧，只处理 `account_id` 存在于本进程配置 `config_.accounts` 中的请求；其余忽略（DEBUG 日志），不产生任何响应。
 - **不使用** `DzExtInstFrameHeader`：网关对这两个帧一律按 basic 布局解析。

@@ -48,12 +48,14 @@ JSON 示例：
 
 **清空语义**：进入未连接态（`Idle`）时 `sys_version`/`trading_day`/`login_time` 清空、订阅统计归零并推送；登录失败/登录响应解析失败时 `login_time` 清空并推送（防止前端误显示过期登录信息）。前端依赖全量覆盖，不自行推断清空时机。
 
+**断线（`Disconnected`，SDK 自动重连中）期间的保留语义**：上述字段**不清空**——`trading_day` 的语义是当前交易日（由登录响应确定，是本交易日内全部业务数据的时间锚），断线不改变交易日；`sys_version`/`login_time` 同样保留，重连成功后由新登录响应覆盖。断线时推送本帧：`subscribed_count` 归零、`expected_subscribe_count` 保留。网关的连接/登录**状态**不经本帧传达（本帧无状态字段），前端状态感知以 `RTN_PROGRESS`（契约 06）为准；断线时本帧推送的作用是同步订阅统计变化。
+
 ---
 
 ### DZ_FRAME_RTN_MD_STATUS
 
 **语义**：行情进程上报当前网关状态（全量）
-**方向**：行情进程 → dzweb（定向，`instance_id` = 行情进程名）
+**数据流**：形态 4（总则 §4.2）——行情进程（帧头 `instance_id` = 来源）→ dzweb；无前端入口；镜像 `md_status` 域 → WS 消息 `md_rtn_status`
 **Payload**：JSON（MdStatus），**始终全量**
 
 **触发场景**：

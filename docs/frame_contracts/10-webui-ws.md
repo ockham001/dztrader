@@ -3,6 +3,8 @@
 本文件规定 WebUI 前端与 dzweb 后端之间的 WebSocket 消息协议（type + payload 结构 + 校验 + 触发场景），与各帧契约同构。总则见《帧契约：通用规则》。
 
 > 本文件覆盖的是**进程间契约投射到 WS 的最终形态**：子进程通过 SHM 上报 RTN 帧 → dzweb 领域服务更新镜像 + WS 推到前端。因此大量消息与对应帧契约的 payload 一致，本文件只描述 WS 信封与差异，payload 字段细节以对应帧契约为准。
+>
+> 链路定位（总则 §4.2）：§2.2 领域消息 = 形态 1 响应侧 / 形态 4 的 dzweb 出口；§3 C2S 控制消息 = 形态 1/3 的 WS 前端入口（与 REST 等效）。
 
 ---
 
@@ -22,7 +24,7 @@
 | `type` | 消息类型（见 §2/§3） |
 | `data` | 领域消息载荷（广播帧专用） |
 | `payload` | 控制消息载荷（C2S 请求、`*_ack`/`error`/`log_line`/`log_tail_unsubscribed`/`data_changed`/`default_password_warning`） |
-| `instance_id` | 可选；领域消息的实例归属（`log_config`/`md_shm_config`/`auto_login`/`progress`/`event_shm_config`）；为空时不携带该字段 |
+| `instance_id` | 可选；领域消息的实例归属（`log_config`/`md_shm_config`/`auto_login`/`progress`）；为空时不携带该字段（`event_shm_config` 等挂 `dztraderd` 的消息为空，见 §2.2 表） |
 | `seq` | 可选；C2S 消息携带时由 `*_ack`/`error` 回填 |
 
 **`data` 与 `payload` 互斥**：领域消息用 `data`，控制消息用 `payload`，勿混用。

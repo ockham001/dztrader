@@ -11,7 +11,7 @@
 ## DZ_FRAME_SET_LOG_CONFIG
 
 **语义**：设置目标实例日志配置，RFC 7386 JSON Merge Patch 增量更新
-**方向**：dzweb → 指定实例（帧头 `instance_id` 匹配者）。dzweb 自身为目标时不走 SHM，直调 `LogConfig::set_log_config`（等价语义）
+**数据流**：形态 1（总则 §4.2）——dzweb → 指定实例（帧头 `instance_id` 匹配者）；前端入口 `POST /api/logs/level`（契约 11）；响应帧 `RTN_LOG_CONFIG` → 镜像 `log_config` 域 → WS 消息 `log_config`。目标为 dzweb 自身时为形态 2 短路：直调本进程处理（等价语义），回推路径不变
 **Payload**：JSON
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -37,7 +37,7 @@
 ## DZ_FRAME_FLUSH_LOG
 
 **语义**：触发目标实例立即 flush 日志缓冲
-**方向**：dzweb → 指定实例。dzweb 自身为目标时直接 `spdlog::default_logger()->flush()`
+**数据流**：形态 3（总则 §4.2）——dzweb → 指定实例（帧头 `instance_id` 匹配者）；前端入口 `POST /api/logs/flush`（契约 11）。目标为 dzweb 自身时为形态 2 短路（直接 flush，无回推）
 **Payload**：空
 
 **时序**：前端"刷新日志"按钮触发 → **无 RTN**
@@ -48,7 +48,7 @@
 ## DZ_FRAME_RTN_LOG_CONFIG
 
 **语义**：上报当前日志配置
-**方向**：各进程 → dzweb
+**数据流**：形态 4（总则 §4.2）——各进程（帧头 `instance_id` = 来源）→ dzweb；无前端入口；镜像 `log_config` 域 → WS 消息 `log_config`
 **Payload**：JSON，**始终全量**
 
 | 字段 | 类型 | 必填 | 说明 |

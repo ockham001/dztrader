@@ -6,9 +6,9 @@
 
 | 编号 | 主题 | 覆盖帧 | 类型层真相源 |
 |------|------|--------|--------------|
-| [00-general](00-general.md) | 通用规则 | 帧布局/传输/请求响应总则 + `QUERY_FULL_SNAPSHOT` | `libs/strategy_api/include/dztrader/struct.h`、`data_type.h`、`libs/core/.../core_data_type.h` |
+| [00-general](00-general.md) | 通用规则 | 帧布局/传输与数据流（§4 链路形态）/请求响应总则 + `QUERY_FULL_SNAPSHOT` | `libs/strategy_api/include/dztrader/struct.h`、`data_type.h`、`libs/core/.../core_data_type.h` |
 | [01-log](01-log.md) | 日志 | `SET_LOG_CONFIG`/`FLUSH_LOG`/`RTN_LOG_CONFIG` | `libs/platform/.../log_config.h` |
-| [02-shm](02-shm.md) | SHM 通道配置 | `SET/RTN_EVENT_SHM_CONFIG`、`SET/RTN_MD_SHM_CONFIG`、`PRELOAD_EVENT/MD_SHM`、`UPDATE_SHM_EVENT/MD_SUBSCRIBER` | `libs/platform/.../shm_config.h` |
+| [02-shm](02-shm.md) | SHM 通道配置 | `SET/RTN_EVENT_SHM_CONFIG`、`SET/RTN_MD_SHM_CONFIG`、`PRELOAD_EVENT/MD_SHM`、`UPDATE_SHM_EVENT/MD_SUBSCRIBER`、`REQUEST_MD_READER_REGISTER/UNREGISTER` | `libs/platform/.../shm_config.h` |
 | [03-notify-ui](03-notify-ui.md) | UI 通知 | `NOTIFY_UI` | `libs/platform/.../notify_ui.h` |
 | [04-process](04-process.md) | 进程 | `REQUEST_PROCESS_CONTROL`、`RTN_PROCESS_STATUS`、`SET/RTN_PROCESS_CONFIG`、`REQUEST_SHUTDOWN(_ALL)` | `libs/platform/.../process.h` |
 | [05-auto-login](05-auto-login.md) | 自动登录/登出排程 | `SET/RTN_AUTO_LOGIN` | `libs/platform/.../auto_login.h` |

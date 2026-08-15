@@ -64,7 +64,9 @@
 
 > `UpdateBroker` 的 `password` 缺失/空/`"****"` 均保留旧值。若用户真实密码恰好为 `"****"`，则无法通过 `UpdateBroker` 设置此密码（会被解释为保留旧值）。
 
-> **状态保护**：标记"是"的 op 在网关状态非 `Idle` 时拒绝。`Idle` = 无 API 实例的未连接态（初始状态或手动断开后）；其余任何状态（连接中/已连接/登录中/已登录）均拒绝。各接口类型的连接态集合由发送方进程状态机定义（CTP：`Idle`/`Connecting`/`Connected`/`LoggingIn`/`LoggedIn`）。
+> **状态保护**：标记"是"的 op 在网关状态非 `Idle` 时拒绝。`Idle` = 无 API 实例的未连接态（初始状态或手动断开后）；其余任何状态（连接中/已连接/登录中/已登录/断线重连中）均拒绝。各接口类型的连接态集合由发送方进程状态机定义（CTP：`Idle`/`Connecting`/`Connected`/`LoggingIn`/`LoggedIn`/`Disconnected`）。
+>
+> **断线期间的解锁路径**：断线（`Disconnected`，SDK 自动重连中）期间连接类 op 同样拒绝，等待重连即可；若断线持续过久，用户可经 UI 登出（`REQUEST_MD_DISCONNECT`，契约 07）强制释放 API 实例回到 `Idle` 后再修改。
 
 #### BrokerFrontend
 
@@ -103,7 +105,7 @@ MD 网关配置（全量结构，RTN payload 用）。
 ### DZ_FRAME_SET_MD_CONFIG
 
 **语义**：请求目标行情进程执行配置操作（op-based 增量更新）
-**方向**：dzweb → 目标行情进程（定向，`instance_id` = 行情进程名）
+**数据流**：形态 1（总则 §4.2）——dzweb → 目标行情进程（帧头 `instance_id` = 行情进程名）；dzweb 透传不解析（接口类型识别见上）；前端入口 brokers CRUD：`POST|PUT|DELETE /api/market-sources/{id}/brokers*`、`PUT .../current-broker`（契约 11）；响应帧 `RTN_MD_CONFIG` → 镜像 `md_config` 域 → WS 消息 `md_rtn_config`
 **Payload**：JSON
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -133,7 +135,7 @@ MD 网关配置（全量结构，RTN payload 用）。
 ### DZ_FRAME_RTN_MD_CONFIG
 
 **语义**：行情进程上报当前配置（全量，脱敏）
-**方向**：行情进程 → dzweb（定向，`instance_id` = 行情进程名）
+**数据流**：形态 4（总则 §4.2）——行情进程（帧头 `instance_id` = 来源）→ dzweb；无前端入口；镜像 `md_config` 域 → WS 消息 `md_rtn_config`
 **Payload**：JSON，**始终全量**
 
 payload 为上方 MdConfig schema 的脱敏 JSON（`password` → `"****"`）。成功推新值，失败推回滚后的旧值，失败原因通过 `NOTIFY_UI` 传达。
