@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { marketSourcesApi } from '@/api/marketSources'
-import type { AvailableMarketSource, AddBrokerBody, SubscribeParamsBody } from '@/api/marketSources'
+import type { AvailableMarketSource, AddBrokerBody, SubscribeParamsBody, ShmConfigPatch } from '@/api/marketSources'
 import type { BrokerEntry, MarketSource } from '@/types/api'
 import { usePending, PENDING_TIMEOUT } from '@/composables/usePending'
 import { useProcessStore } from '@/stores/process'
@@ -102,6 +102,7 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
         subCheckIntervalMs: mdConfig?.sub_check_interval_ms ?? null,
         subMaxRetry: mdConfig?.sub_max_retry ?? null,
         subscribeParamsPending: pend('subscribe_params'),
+        shmConfigPending: pend('shm_config'),
         selectedBrokerId: mdConfig?.current_broker_name || null,
         schedules: mergeSchedules(b.id, autoLogin?.schedules),
         brokerAddPending: pend('broker_add'),
@@ -292,6 +293,11 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
     await runOp(id, 'subscribe_params', s => md.setSubscribeParams(id, s.source_name, patch),
       'set subscribe params failed')
   }
+  // 契约 02 SHM 行情通道配置 (merge patch): rethrow 支撑添加预加载点 Modal 失败保持打开
+  async function setShmConfig(id: number, patch: ShmConfigPatch): Promise<void> {
+    await runOp(id, 'shm_config', s => md.setShmConfig(id, s.source_name, patch),
+      'set shm config failed', { rethrow: true })
+  }
 
   /// 添加并启动行情源(设计 §3.1)。已有记录复用 id; 无则 create 后暂存, 等 WS 晋升。
   /// page 大小不再由 UI 传参: 由 master 读配置文件 configs/<source>.json 决定 (契约 03 §参数可改性)。
@@ -408,6 +414,8 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
     editFrontend,
     setFrontendEnabled,
     setSubscribeParams,
+    shmConfigs: md.shmConfigs,  // 契约 02 SHM 配置镜像透传 (组件直读 mdConfig 镜像)
+    setShmConfig,
     addAndStartSource,
     removeSource,
     start,

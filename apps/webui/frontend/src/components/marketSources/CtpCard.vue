@@ -2,11 +2,12 @@
 import { ref, computed } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
+import TimePicker from '@/components/shared/TimePicker.vue'
 import StatusIndicator from '@/components/shared/StatusIndicator.vue'
 import { processStateText, processStateColor } from '@/composables/useProcessState'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import type { MarketSourceView } from '@/stores/marketSources'
-import type { SubscribeParamsBody } from '@/api/marketSources'
+import type { SubscribeParamsBody, ShmConfigPatch } from '@/api/marketSources'
 import LoginPanel from './LoginPanel.vue'
 import ScheduleManager from './ScheduleManager.vue'
 import BrokerSelector from './BrokerSelector.vue'
@@ -81,6 +82,89 @@ const subscribeClass = (s: MarketSourceView): string => {
 // header 展示自动登录状态; 控件内状态见 LoginPanel
 const autoLoginStatusText = (s: MarketSourceView): string =>
   s.autoLoginPending ? '切换中' : (s.auto_login ? '已启用' : '未启用')
+
+// ===== 高级段（契约 02 SHM 行情通道配置, dzmd_* 通用层; 默认折叠）=====
+// page_size_mb 启动后不可变（仅配置文件、启动前修改）→ 只读;
+// check_* 三字段失焦单字段提交; preload_points 行编辑（null 删除语义）。
+// 范围对照契约 02: interval ∈ [0,1440], pages ∈ [0,8], bytes ∈ [0, 2^40]
+const advancedOpen = ref(false)
+const shmCfg = computed(() => store.shmConfigs[src.value.source_name])
+const preloadEntries = computed(() =>
+  Object.entries(shmCfg.value?.preload_points ?? {})
+    .sort(([a], [b]) => a.localeCompare(b)))
+
+// check_* 三字段上限（契约 02 范围）: interval ∈ [0,1440], pages ∈ [0,8], bytes ∈ [0, 2^40]
+const SHM_FIELD_MAX = {
+  check_interval_min: 1440,
+  check_pages: 8,
+  check_bytes: 2 ** 40,
+} as const
+
+function onShmNumBlur(field: 'check_interval_min' | 'check_pages' | 'check_bytes', event: Event): void {
+  const raw = (event.target as HTMLInputElement).value.trim()
+  if (raw === '') return
+  const parsed = Number(raw)
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > SHM_FIELD_MAX[field]) return
+  const old = shmCfg.value?.[field]
+  if (old !== undefined && parsed === old) return
+  // rethrow 型薄代理: blur 路径吞 rejection（错误已由 store.error → View toast 承载）
+  store.setShmConfig(src.value.id, { [field]: parsed } as ShmConfigPatch).catch(() => {})
+}
+
+// 预加载点行内 pages/bytes 失焦: 从镜像读当前值拼完整 value 下发（递归合并按 key 覆盖）。
+// pages ∈ [0,8]; bytes ∈ [0, 2^40]（字节数可达 TB 级, 不与 pages 同限）
+function onPreloadBlur(time: string, field: 'pages' | 'bytes', event: Event): void {
+  const raw = (event.target as HTMLInputElement).value.trim()
+  if (raw === '') return
+  const parsed = Number(raw)
+  if (!Number.isInteger(parsed) || parsed < 0) return
+  if (field === 'pages' ? parsed > 8 : parsed > 2 ** 40) return
+  const cur = shmCfg.value?.preload_points[time]
+  if (cur && parsed === cur[field]) return
+  const next = { pages: cur?.pages ?? 0, bytes: cur?.bytes ?? 0, [field]: parsed }
+  store.setShmConfig(src.value.id, { preload_points: { [time]: next } }).catch(() => {})
+}
+
+// 删除预加载点: 契约 02 唯一合法 null 位置（preload_points 内 key 的 value=null）
+function removePreloadPoint(time: string): void {
+  store.setShmConfig(src.value.id, { preload_points: { [time]: null } }).catch(() => {})
+}
+
+// 添加预加载点 Modal（TimePicker 选 HH:MM + pages/bytes 输入）
+const preloadModalOpen = ref(false)
+const preloadTime = ref('08:45')
+const preloadPages = ref('1')
+const preloadBytes = ref('0')
+const preloadError = ref<string | null>(null)
+
+function openPreloadModal(): void {
+  preloadTime.value = '08:45'
+  preloadPages.value = '1'
+  preloadBytes.value = '0'
+  preloadError.value = null
+  preloadModalOpen.value = true
+}
+
+async function confirmAddPreload(): Promise<void> {
+  const time = preloadTime.value
+  const pages = Number(preloadPages.value)
+  const bytes = Number(preloadBytes.value)
+  if (preloadEntries.value.some(([t]) => t === time)) {
+    preloadError.value = '该时间点已存在'
+    return
+  }
+  if (!Number.isInteger(pages) || pages < 0 || pages > 8
+    || !Number.isInteger(bytes) || bytes < 0 || bytes > 2 ** 40) {
+    preloadError.value = 'pages 需为 0-8 的整数，bytes 需为 0-2^40 的整数'
+    return
+  }
+  try {
+    await store.setShmConfig(src.value.id, { preload_points: { [time]: { pages, bytes } } })
+    preloadModalOpen.value = false
+  } catch {
+    // 错误由 store error 字段承载（View 层 toast）；保持 Modal 打开
+  }
+}
 
 // 订阅参数失焦提交: 值改变且满足契约范围才下发单字段 patch（契约 08 缺失=保留旧值）。
 // 范围对照契约 08: batch_size > 0, delay_ms >= 0, interval_ms > 0, retry >= 0
@@ -217,6 +301,55 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
         </div>
       </div>
 
+      <!-- ── 高级（契约 02 SHM 行情通道配置, dzmd_* 通用层; 默认折叠）── -->
+      <div class="card-section">
+        <div class="card-section__row">
+          <span class="card-section__title">高级</span>
+          <button class="ds-btn ds-btn--tertiary ds-btn--sm" type="button" @click="advancedOpen = !advancedOpen">
+            {{ advancedOpen ? '收起' : '展开' }}
+          </button>
+        </div>
+        <template v-if="advancedOpen">
+          <div class="gateway-info">
+            <span class="gateway-info__item" title="仅可通过配置文件修改，进程启动前生效（契约 02）">
+              页大小：<span>{{ shmCfg ? `${shmCfg.page_size_mb} MB` : '--' }}</span>
+            </span>
+            <span class="gateway-info__item">周期检查间隔(分)：
+              <input class="shm-num-input" type="number" min="0" max="1440" :value="shmCfg?.check_interval_min ?? ''"
+                :disabled="src.shmConfigPending" @blur="onShmNumBlur('check_interval_min', $event)">
+            </span>
+            <span class="gateway-info__item">检查预载页数：
+              <input class="shm-num-input" type="number" min="0" max="8" :value="shmCfg?.check_pages ?? ''"
+                :disabled="src.shmConfigPending" @blur="onShmNumBlur('check_pages', $event)">
+            </span>
+            <span class="gateway-info__item">检查预载字节：
+              <input class="shm-num-input" type="number" min="0" :value="shmCfg?.check_bytes ?? ''"
+                :disabled="src.shmConfigPending" @blur="onShmNumBlur('check_bytes', $event)">
+            </span>
+          </div>
+          <div class="preload-list">
+            <div class="card-section__row" style="margin-top: var(--spacer-8)">
+              <span class="card-section__title">预加载点</span>
+              <button class="ds-btn ds-btn--tertiary ds-btn--sm" type="button" @click="openPreloadModal">添加</button>
+            </div>
+            <div v-for="[time, pt] in preloadEntries" :key="time" class="preload-item">
+              <span class="preload-item__time">{{ time }}</span>
+              <label class="preload-item__field">页
+                <input class="shm-num-input" type="number" min="0" max="8" :value="pt.pages"
+                  :disabled="src.shmConfigPending" @blur="onPreloadBlur(time, 'pages', $event)">
+              </label>
+              <label class="preload-item__field">字节
+                <input class="shm-num-input" type="number" min="0" :value="pt.bytes"
+                  :disabled="src.shmConfigPending" @blur="onPreloadBlur(time, 'bytes', $event)">
+              </label>
+              <button class="preload-item__remove" type="button"
+                :disabled="src.shmConfigPending" @click="removePreloadPoint(time)">删除</button>
+            </div>
+            <div v-if="preloadEntries.length === 0" class="card-hint">无预加载点</div>
+          </div>
+        </template>
+      </div>
+
       <button
         class="ds-btn ds-btn--danger-subtle"
         :style="{ width: '100%', marginTop: 'var(--spacer-16)', justifyContent: 'center' }"
@@ -273,6 +406,33 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
         </button>
       </template>
     </Modal>
+
+    <!-- ===== Add Preload Point Modal ===== -->
+    <Modal :open="preloadModalOpen" title="添加预加载点" @close="preloadModalOpen = false">
+      <div class="dialog-form">
+        <div class="dialog-row">
+          <label class="dialog-row__label">时间</label>
+          <div class="dialog-row__control"><TimePicker v-model="preloadTime" /></div>
+        </div>
+        <div class="dialog-row">
+          <label class="dialog-row__label">预加载页数</label>
+          <div class="ds-input dialog-row__control">
+            <input v-model="preloadPages" type="number" min="0" max="8" placeholder="0-8">
+          </div>
+        </div>
+        <div class="dialog-row">
+          <label class="dialog-row__label">预加载字节</label>
+          <div class="ds-input dialog-row__control">
+            <input v-model="preloadBytes" type="number" min="0" placeholder="字节数">
+          </div>
+        </div>
+        <div v-if="preloadError" class="dialog-row__error">{{ preloadError }}</div>
+      </div>
+      <template #footer>
+        <button class="ds-btn ds-btn--secondary" type="button" @click="preloadModalOpen = false">取消</button>
+        <button class="ds-btn ds-btn--primary" type="button" @click="confirmAddPreload">添加</button>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -312,6 +472,31 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 .sub-params__field label { font-size: var(--body-sm-font-size); color: var(--text-tertiary); flex-shrink: 0; }
 .sub-params__field .ds-input { flex: 1; min-width: 0; }
 .sub-params__field .ds-input input { font-family: var(--code-editor-font-family); font-variant-numeric: tabular-nums; }
+
+/* 高级段: SHM 数字输入（无边框内联风格, 聚焦显现）与预加载点行 */
+.shm-num-input {
+  width: 72px; padding: 1px var(--spacer-4); font-size: var(--body-sm-font-size);
+  font-family: var(--code-editor-font-family); font-variant-numeric: tabular-nums;
+  color: var(--text-secondary); background: transparent;
+  border: 1px solid transparent; border-radius: var(--radius-4);
+}
+.shm-num-input:focus { outline: none; border-color: var(--border-neutral-l1); background: var(--bg-base-secondary); }
+.shm-num-input:disabled { opacity: 0.6; }
+.preload-list { margin-top: var(--spacer-4); }
+.preload-item { display: flex; align-items: center; gap: var(--spacer-8); height: 30px; padding: 0 var(--spacer-4); border-radius: var(--radius-6); }
+.preload-item:hover { background: var(--bg-overlay-l1); }
+.preload-item__time { font-family: var(--code-editor-font-family); font-variant-numeric: tabular-nums; font-size: var(--body-base-font-size); color: var(--text-default); min-width: 44px; }
+.preload-item__field { display: inline-flex; align-items: center; gap: var(--spacer-4); font-size: var(--body-xs-font-size); color: var(--text-tertiary); }
+.preload-item__remove { margin-left: auto; background: none; border: none; color: var(--text-tertiary); font-size: var(--body-sm-font-size); cursor: pointer; padding: var(--spacer-2) var(--spacer-6); border-radius: var(--radius-4); }
+.preload-item__remove:not(:disabled):hover { color: var(--status-error-default); background: var(--status-error-surface-l1); }
+.preload-item__remove:disabled { cursor: default; opacity: 0.6; }
+
+/* 对话框错误提示（scoped 不跨组件, 本组件 Modal 自带） */
+.dialog-row__error {
+  font-size: var(--body-sm-font-size);
+  color: var(--status-error-default);
+  padding-left: 122px; /* 与 control 列对齐 (label 宽度 + gap) */
+}
 
 .dialog-form { display: flex; flex-direction: column; gap: var(--spacer-12); }
 .dialog-row { display: flex; align-items: center; gap: var(--spacer-12); }

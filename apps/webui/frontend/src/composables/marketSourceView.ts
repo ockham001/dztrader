@@ -65,6 +65,7 @@ export interface MarketSourceView extends MarketSource {
   subCheckIntervalMs: number | null
   subMaxRetry: number | null
   subscribeParamsPending: boolean
+  shmConfigPending: boolean  // 契约 02 SHM 配置下发 pending
   brokers: BrokerEntry[]
   selectedBrokerId: string | null
   schedules: ScheduleView[]
@@ -111,6 +112,7 @@ export function makeSource(
     subCheckIntervalMs: null,
     subMaxRetry: null,
     subscribeParamsPending: false,
+    shmConfigPending: false,
     brokers: [],
     selectedBrokerId: null,
     schedules: [],
