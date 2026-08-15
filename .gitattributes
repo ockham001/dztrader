@@ -52,6 +52,8 @@ CMakeLists.txt text eol=lf
 .editorconfig text eol=lf
 
 # 二进制文件不做转换
+# 截图禁止 delta 压缩（README 引用的界面预览图，改动后独立存储，避免依赖旧版本解码）
+docs/images/*.png binary -delta
 *.png binary
 *.jpg binary
 *.jpeg binary
