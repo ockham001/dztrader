@@ -1,4 +1,5 @@
 #include "market_source_controller.h"
+#include "ws_controller.h"
 
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
@@ -90,6 +91,9 @@ void MarketSourceCtrl::create(const drogon::HttpRequestPtr& req,
     }
     int64_t const id = repo_->create_market_source(source_type, source_name, display_name);
     auto source = repo_->get_market_source(id);
+    if (g_broadcast_data_changed) {
+        g_broadcast_data_changed("market_sources");
+    }
     callback(json_response(drogon::k201Created, market_source_detail(*source)));
 }
 
@@ -122,6 +126,9 @@ void MarketSourceCtrl::update(const drogon::HttpRequestPtr& req,
         return;
     }
     auto updated = repo_->get_market_source(id);
+    if (g_broadcast_data_changed) {
+        g_broadcast_data_changed("market_sources");  // 契约 rest §2.3: 多客户端列表同步
+    }
     callback(json_response(drogon::k200OK, market_source_detail(*updated)));
 }
 
@@ -164,6 +171,9 @@ void MarketSourceCtrl::remove(const drogon::HttpRequestPtr& req,
     // 可从 available 列表重新添加（create 复用行并复位 is_added=1）
     repo_->set_market_source_added(id, false);
     // 保留 DB 主表记录 (market_sources 行); 不调用 repo_->delete_market_source(id)
+    if (g_broadcast_data_changed) {
+        g_broadcast_data_changed("market_sources");  // 列表条目消失（is_added=0）
+    }
     SPDLOG_INFO("remove dispatched | source_id={} process={} (db kept)", id, process_name);
     callback(json_response(drogon::k200OK, {{"ok", true}, {"id", id}}));
 }

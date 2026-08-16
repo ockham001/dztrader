@@ -10,15 +10,22 @@ import { useMdConfigStore } from '@/stores/mdConfig'
 import { useNotifyStore } from '@/stores/notify'
 import { useProcessStore } from '@/stores/process'
 import { useProgressStore } from '@/stores/progress'
+import { useMarketSourcesStore } from '@/stores/marketSources'
 import type { LogLine, ProcessStatusPayload, MdConfigPayload, MdRtnConfigPayload, MdRtnStatusPayload } from '@/types/api'
 
 registerHandler('data_changed', (payload) => {
   // 多设备同步：后端数据变更时推送通知，前端按 scope 重新 REST 刷新
   const scope = (payload as { scope?: string } | undefined)?.scope
-  if (scope) {
-    const userManagement = useUserManagementStore()
-    userManagement.refreshByScope(scope)
+  if (!scope) return
+  if (scope === 'market_sources') {
+    // 行情源列表 DB 真相源（契约 rest §2.3/§3）：条目增删改后重新拉取
+    useMarketSourcesStore().loadSources().catch((err: unknown) => {
+      console.warn('data_changed loadSources failed', err)
+    })
+    return
   }
+  const userManagement = useUserManagementStore()
+  userManagement.refreshByScope(scope)
 })
 
 registerHandler('log_line', (payload) => {
