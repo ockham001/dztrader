@@ -289,7 +289,7 @@ export const useLogsStore = defineStore('logs', () => {
           shared ??= logsApi.setLevel(targets, batchLevel.value)
           return shared
         },
-        { minPendingMs: MIN_PENDING_MS, timeout: CONTROL_TIMEOUT_MS },
+        { minPendingMs: MIN_PENDING_MS, timeout: CONTROL_TIMEOUT_MS, opLabel: `${t} 日志级别设置` },
       ),
     ))
     const resp = results[0]
