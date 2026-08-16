@@ -567,24 +567,30 @@ TEST_F(MarketSourceControllerTest, AvailableAddedFollowsDbLifecycle) {
         auto req = admin_req();
         auto resp = invoke(&MarketSourceCtrl::list_available, req);
         auto body = parse_body(resp);
+        bool found = false;
         for (const auto& item : body) {
             if (item.value("name", "") == k_scan_target) {
+                found = true;
                 EXPECT_TRUE(item.value("added", false)) << "db row is_added=1 -> added=true";
                 EXPECT_EQ(item.value("ui_card", std::string{"<missing>"}), "ctp");
             }
         }
+        EXPECT_TRUE(found) << "test requires dzmd_ctp_md_state_test.exe in test exe dir";
     }
     // remove 标记（is_added=0）-> added=false（与进程镜像状态无关）
     EXPECT_TRUE(repo_->set_market_source_added(id, false));
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::list_available, req);
     auto body = parse_body(resp);
+    bool found = false;
     for (const auto& item : body) {
         if (item.value("name", "") == k_scan_target) {
+            found = true;
             EXPECT_FALSE(item.value("added", true)) << "db row is_added=0 -> added=false";
             EXPECT_EQ(item.value("ui_card", std::string{"<missing>"}), "ctp");
         }
     }
+    EXPECT_TRUE(found) << "test requires dzmd_ctp_md_state_test.exe in test exe dir";
 }
 
 TEST_F(MarketSourceControllerTest, AvailableUnmanagedExeNotAdded) {
@@ -598,12 +604,15 @@ TEST_F(MarketSourceControllerTest, AvailableUnmanagedExeNotAdded) {
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::list_available, req);
     auto body = parse_body(resp);
+    bool found = false;
     for (const auto& item : body) {
         if (item.value("name", "") == k_scan_target) {
+            found = true;
             EXPECT_FALSE(item.value("added", true))
                 << "running mirror but no db row -> added=false (is_added 语义)";
         }
     }
+    EXPECT_TRUE(found) << "test requires dzmd_ctp_md_state_test.exe in test exe dir";
 }
 
 // ---- get_config password redaction (Wave 5A) ----
