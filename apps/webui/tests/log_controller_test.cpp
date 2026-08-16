@@ -212,6 +212,22 @@ TEST_F(LogControllerTest, GetContentRejectsNonNumericLimit) {
     fs::remove(log_dir / "test_content_limit.log");
 }
 
+// get_content 的 offset 同样要隔离；需带 file 参数
+TEST_F(LogControllerTest, GetContentRejectsNonNumericOffset) {
+    auto log_dir = dztrader::paths::logs();
+    std::ofstream ofs(log_dir / "test_content_offset.log");
+    ofs << "2026-07-13T14:23:45.000000000+08:00 info test_content [func=m file=f.cpp:1 pid=1 tid=2] a\n";
+    ofs.close();
+
+    auto req = admin_req();
+    req->setParameter("file", "test_content_offset.log");
+    req->setParameter("offset", "abc");
+    auto resp = invoke(&LogCtrl::get_content, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+
+    fs::remove(log_dir / "test_content_offset.log");
+}
+
 // get_aggregate 的 limit 同样要隔离；需带 file 参数
 TEST_F(LogControllerTest, GetAggregateRejectsNonNumericLimit) {
     auto log_dir = dztrader::paths::logs();
