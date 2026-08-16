@@ -32,7 +32,7 @@ std::optional<drogon::HttpResponsePtr> MarketSourceCtrl::guard_process_dispatch(
                               "dzmd_ctp not running, cannot apply config");
     }
 
-    if (!shm_writer_) {
+    if (!shm_writer_ || !shm_writer_->is_ready()) {
         SPDLOG_ERROR("{} SHM writer not available | source_id={} process={}",
                      log_label, source_id, process_name);
         return error_response(drogon::k503ServiceUnavailable, "shm writer not available");

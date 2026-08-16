@@ -148,17 +148,20 @@ void MarketSourceCtrl::remove(const drogon::HttpRequestPtr& req,
     SPDLOG_INFO("remove market source | id={} source_name={} source_type={} process={}",
                 id, source->source_name, source->source_type, process_name);
     // 失败路径 A: shm_writer 未就绪 -> 返回 503
-    if (!shm_writer_) {
+    if (!shm_writer_ || !shm_writer_->is_ready()) {
         SPDLOG_WARN("shm not available, cannot send remove | source_id={} process={}", id, process_name);
         callback(error_response(drogon::k503ServiceUnavailable, "shm not available"));
         return;
     }
     // action="remove" (区别于 "stop"): master 收到 remove 后 stop_process + on_child_exit 中
     // remove_gateway_section 持久化移除网关声明, 下次 master 启动不再自动拉起
-    const bool ok = shm_writer_->write_process_control(platform::ProcessAction::Remove, process_name);
+    if (!shm_writer_->write_process_control(platform::ProcessAction::Remove, process_name)) {
+        callback(error_response(drogon::k503ServiceUnavailable, "shm write failed"));
+        return;
+    }
     // 保留 DB 主表记录 (market_sources 行); 不调用 repo_->delete_market_source(id)
-    SPDLOG_INFO("remove dispatched | source_id={} process={} ok={} (db kept)", id, process_name, ok);
-    callback(json_response(drogon::k200OK, {{"ok", ok}, {"id", id}}));
+    SPDLOG_INFO("remove dispatched | source_id={} process={} (db kept)", id, process_name);
+    callback(json_response(drogon::k200OK, {{"ok", true}, {"id", id}}));
 }
 
 // ---------------------------------------------------------------------------
@@ -184,9 +187,17 @@ void MarketSourceCtrl::login(const drogon::HttpRequestPtr& req,
                                  "process not running, cannot send md_connect"));
         return;
     }
-    const bool ok =
-        shm_writer_ ? shm_writer_->write_md_connect(source->source_name) : false;
-    callback(json_response(drogon::k200OK, {{"ok", ok}}));
+    if (!shm_writer_ || !shm_writer_->is_ready()) {
+        SPDLOG_WARN("shm not available, cannot send md_connect | source={}", source->source_name);
+        callback(error_response(drogon::k503ServiceUnavailable, "shm not available"));
+        return;
+    }
+    // 契约 rest §1: 写入事件通道失败 -> 503（不再 200 {ok:false}，避免前端 pending 悬挂至超时）
+    if (!shm_writer_->write_md_connect(source->source_name)) {
+        callback(error_response(drogon::k503ServiceUnavailable, "shm write failed"));
+        return;
+    }
+    callback(json_response(drogon::k200OK, {{"ok", true}}));
 }
 
 // ---------------------------------------------------------------------------
@@ -210,13 +221,17 @@ void MarketSourceCtrl::logout(const drogon::HttpRequestPtr& req,
                                  "process not running, cannot send md_disconnect"));
         return;
     }
-    if (!shm_writer_) {
+    if (!shm_writer_ || !shm_writer_->is_ready()) {
         SPDLOG_WARN("shm not available, cannot send md_disconnect | source={}", source->source_name);
         callback(error_response(drogon::k503ServiceUnavailable, "shm not available"));
         return;
     }
-    const bool ok = shm_writer_->write_md_disconnect(source->source_name);
-    callback(json_response(drogon::k200OK, {{"ok", ok}}));
+    // 契约 rest §1: 写入事件通道失败 -> 503（不再 200 {ok:false}，避免前端 pending 悬挂至超时）
+    if (!shm_writer_->write_md_disconnect(source->source_name)) {
+        callback(error_response(drogon::k503ServiceUnavailable, "shm write failed"));
+        return;
+    }
+    callback(json_response(drogon::k200OK, {{"ok", true}}));
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +250,7 @@ void MarketSourceCtrl::start(const drogon::HttpRequestPtr& req,
         callback(error_response(drogon::k404NotFound, "market source not found"));
         return;
     }
-    if (!shm_writer_) {
+    if (!shm_writer_ || !shm_writer_->is_ready()) {
         callback(error_response(drogon::k503ServiceUnavailable, "shm not available"));
         return;
     }
@@ -268,11 +283,15 @@ void MarketSourceCtrl::start(const drogon::HttpRequestPtr& req,
     if (!display_name.empty()) {
         start_config = nlohmann::json{{"display_name", display_name}};
     }
-    const bool ok = shm_writer_->write_process_control(platform::ProcessAction::Start,
-                                                       process_name, std::move(start_config));
-    SPDLOG_INFO("start dispatched | source_id={} process={} display_name={} ok={}",
-                id, process_name, display_name, ok);
-    callback(json_response(drogon::k200OK, {{"ok", ok}, {"source", source->source_name}}));
+    if (!shm_writer_->write_process_control(platform::ProcessAction::Start,
+                                            process_name, std::move(start_config))) {
+        SPDLOG_WARN("start write failed | source_id={} process={}", id, process_name);
+        callback(error_response(drogon::k503ServiceUnavailable, "shm write failed"));
+        return;
+    }
+    SPDLOG_INFO("start dispatched | source_id={} process={} display_name={}",
+                id, process_name, display_name);
+    callback(json_response(drogon::k200OK, {{"ok", true}, {"source", source->source_name}}));
 }
 
 // ---------------------------------------------------------------------------
@@ -290,15 +309,19 @@ void MarketSourceCtrl::stop(const drogon::HttpRequestPtr& req,
         callback(error_response(drogon::k404NotFound, "market source not found"));
         return;
     }
-    if (!shm_writer_) {
+    if (!shm_writer_ || !shm_writer_->is_ready()) {
         callback(error_response(drogon::k503ServiceUnavailable, "shm not available"));
         return;
     }
     // 单实例模式: PROCESS_CONTROL target = "dzmd_<type>" (master 的 process.name)
     std::string process_name = process_name_for_source_type(source->source_type);
-    const bool ok = shm_writer_->write_process_control(platform::ProcessAction::Stop, process_name);
-    SPDLOG_INFO("stop dispatched | source_id={} process={} ok={}", id, process_name, ok);
-    callback(json_response(drogon::k200OK, {{"ok", ok}}));
+    if (!shm_writer_->write_process_control(platform::ProcessAction::Stop, process_name)) {
+        SPDLOG_WARN("stop write failed | source_id={} process={}", id, process_name);
+        callback(error_response(drogon::k503ServiceUnavailable, "shm write failed"));
+        return;
+    }
+    SPDLOG_INFO("stop dispatched | source_id={} process={}", id, process_name);
+    callback(json_response(drogon::k200OK, {{"ok", true}}));
 }
 
 }  // namespace dztrader::webui

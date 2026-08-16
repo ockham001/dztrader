@@ -203,19 +203,16 @@ TEST_F(MarketSourceControllerTest, UpdateNonexistentReturns404) {
 
 // ---- delete ----
 
-TEST_F(MarketSourceControllerTest, DeleteDispatchesAndKeepsDbRow) {
-    // 镜像驱动架构: delete 下发 PROCESS_CONTROL "remove" 到 master, 由 master
-    // stop_process + 持久化移除 dztraderd.nlohmann::json [gateways.<name>] 段.
-    // fire-and-forget: SHM 写入失败仅由 ShmWriter 内部记录 WARN, 不再阻断 HTTP 响应
-    // (与其他库一致). 此用例验证:
-    //   1) 走到了 SHM 写入路径 (而非 404/403 等前置失败), 返回 200
-    //   2) DB 主表记录仍保留 (controller 不删除 market_sources 行, 保留行情源元数据;
-    //      brokers/credentials 自 Wave 2B 起存于子进程配置文件)
+TEST_F(MarketSourceControllerTest, DeleteReturns503WhenShmWriteFails) {
+    // 契约 rest §1: 写入事件通道失败 = 端点唯一职责失败 -> 503（不再是 200 {ok:false}）
+    // 测试环境 writer 未就绪（temp 目录无通道），write_process_control 返回 false
     const int64_t id = create_source("ctp_del");
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::remove, req, id);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+    // 写入失败不得标记移除：DB 行保持 is_added=1
     EXPECT_TRUE(repo_->get_market_source(id).has_value());
+    EXPECT_TRUE(repo_->get_market_source(id)->is_added);
 }
 
 TEST_F(MarketSourceControllerTest, DeleteAsNonAdminReturns403) {
@@ -329,31 +326,16 @@ TEST_F(MarketSourceControllerTest, ToggleAutoLoginRejectsWhenProcessNotRunning) 
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
 }
 
-TEST_F(MarketSourceControllerTest, ToggleAutoLoginDispatchSuccess) {
-    // Happy path coverage: mirror primed + shm_writer_ write fails (test env has
-    // no SHM channel) → 200 (fire-and-forget, 一致于其他库).
-    // 这验证 set_auto_login 走到了 dispatch_op 路径 (否则会从前置的
-    // is_process_running_in_mirror 检查返回 503).
+TEST_F(MarketSourceControllerTest, ToggleAutoLoginReturns503WhenWriterNotReady) {
+    // mirror primed 但 writer 未就绪: guard_process_dispatch 的 is_ready 检查 -> 503
+    // （此前 200 "dispatched" 是写失败伪装成功--契约 rest §1 修复项）
     const int64_t id = create_source("ctp_auto6");
     prime_mirror_for_dispatch(*process_mirror_, "dzmd_ctp");
 
     auto req = admin_req();
     req->setBody(R"({"enabled":true})");
     auto resp = invoke(&MarketSourceCtrl::set_auto_login, req, id);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
-}
-
-TEST_F(MarketSourceControllerTest, ToggleAutoLoginDisableDispatchSuccess) {
-    // Closing auto-login path: mirror primed + SHM write fails → 200 (fire-and-forget).
-    // 验证 disable 路径 (enabled=false) 同样走到 dispatch_op 的 SHM 写入步骤.
-    // WARN audit log 在 dispatch 后输出 (fire-and-forget 模式下视为已下发).
-    const int64_t id = create_source("ctp_auto7");
-    prime_mirror_for_dispatch(*process_mirror_, "dzmd_ctp");
-
-    auto req = admin_req();
-    req->setBody(R"({"enabled":false})");
-    auto resp = invoke(&MarketSourceCtrl::set_auto_login, req, id);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
 }
 
 // ---- auto-login / schedule (契约 auto-login: 全量 {enabled, schedules} 直发 SET_AUTO_LOGIN) ----
@@ -434,17 +416,16 @@ TEST_F(MarketSourceControllerTest, AddBrokerRejectsWhenProcessNotRunning) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
 }
 
-TEST_F(MarketSourceControllerTest, AddBrokerDispatchSuccess) {
-    // Happy path: 镜像就绪 + shm_writer_ 写入失败 (测试环境无 SHM 通道) → 200 (fire-and-forget)
-    // 这验证了 dispatch_op 路径走到了 write_md_set_config 并返回 200
+TEST_F(MarketSourceControllerTest, AddBrokerReturns503WhenWriterNotReady) {
+    // 契约 rest §1（修订）: guard_process_dispatch 的 is_ready 检查在 write_md_set_config
+    // 之前--镜像就绪但 writer 未就绪时 503，不再 200 "dispatched"（写失败伪装成功）
     const int64_t id = create_source("ctp_add4");
     prime_mirror_for_dispatch(*process_mirror_, "dzmd_ctp");
 
     auto req = admin_req();
     req->setBody(R"({"name":"b1","broker_id":"B1","user_id":"u","password":"p","product_info":"pi"})");
     auto resp = invoke(&MarketSourceCtrl::add_broker, req, id);
-    // fire-and-forget: SHM 写入失败仅记录, 不再返回 500
-    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
 }
 
 // ---- remove_broker ----
@@ -711,6 +692,40 @@ TEST_F(MarketSourceControllerTest, GetConfigRejectsWhenMirrorNotReady) {
     const int64_t id = create_source("ctp_cfg3");
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::get_config, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+}
+
+// ---- start / stop: writer 未就绪 -> 503（契约 rest §1）----
+
+TEST_F(MarketSourceControllerTest, StartReturns503WhenShmWriteFails) {
+    const int64_t id = create_source("ctp_start_w");
+    auto req = admin_req();
+    auto resp = invoke(&MarketSourceCtrl::start, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+}
+
+TEST_F(MarketSourceControllerTest, StopReturns503WhenShmWriteFails) {
+    const int64_t id = create_source("ctp_stop_w");
+    auto req = admin_req();
+    auto resp = invoke(&MarketSourceCtrl::stop, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+}
+
+// ---- login/logout: 镜像 Running 但 writer 未就绪 -> 503 ----
+
+TEST_F(MarketSourceControllerTest, LoginReturns503WhenWriterNotReady) {
+    const int64_t id = create_source("ctp_login_w");
+    prime_mirror_for_dispatch(*process_mirror_, "dzmd_ctp");
+    auto req = admin_req();
+    auto resp = invoke(&MarketSourceCtrl::login, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+}
+
+TEST_F(MarketSourceControllerTest, LogoutReturns503WhenWriterNotReady) {
+    const int64_t id = create_source("ctp_logout_w");
+    prime_mirror_for_dispatch(*process_mirror_, "dzmd_ctp");
+    auto req = admin_req();
+    auto resp = invoke(&MarketSourceCtrl::logout, req, id);
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
 }
 
