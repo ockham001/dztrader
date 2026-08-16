@@ -432,6 +432,12 @@ LogContent LogService::read_tail(const std::string& filename, TailCursor& cursor
         if (ifs.eof()) {
             break;
         }
+        // 剥 CRLF 行尾 \r（与 read_from_end_seek 一致）。游标偏移必须按剥前长度推进，
+        // 因为 CRLF 行占两个字节（\r\n），此处先记录完整字节数再 pop_back。
+        const auto line_bytes = raw_line.size() + 1;  // 剥前长度（含 \r 与 \n）
+        if (!raw_line.empty() && raw_line.back() == '\r') {
+            raw_line.pop_back();
+        }
         ++line_num;
         if (limit > 0 && static_cast<int>(result.lines.size()) >= limit) {
             break;  // 达到单次推送上限，剩余行下次再读
@@ -446,8 +452,8 @@ LogContent LogService::read_tail(const std::string& filename, TailCursor& cursor
             unparsed.parsed = false;
             result.lines.push_back(std::move(unparsed));
         }
-        // 完整行（以 '\n' 结尾）→ 推进游标
-        cursor.byte_offset += static_cast<long long>(raw_line.size()) + 1;
+        // 完整行（以 '\n' 结尾）→ 推进游标（按剥 \r 前的原始字节数，CRLF/LF 均精确）
+        cursor.byte_offset += static_cast<long long>(line_bytes);
         cursor.line_no = line_num;
     }
     result.total = cursor.line_no;

@@ -476,6 +476,7 @@ TEST(LogServiceTailCursor, IncrementalReadAdvancesCursor) {
     auto c1 = svc.read_tail("a.log", cur, 200);
     EXPECT_EQ(c1.lines.size(), 1u);
     EXPECT_EQ(c1.lines[0].n, 1);
+    EXPECT_EQ(c1.lines[0].parsed, true);  // Windows text 模式 ofstream 写入 CRLF，剥 \r 后应能解析
     EXPECT_GT(cur.byte_offset, 0);
     EXPECT_EQ(cur.line_no, 1);
     EXPECT_EQ(c1.total, 1);
@@ -488,6 +489,7 @@ TEST(LogServiceTailCursor, IncrementalReadAdvancesCursor) {
     auto c2 = svc.read_tail("a.log", cur, 200);
     EXPECT_EQ(c2.lines.size(), 1u);
     EXPECT_EQ(c2.lines[0].n, 2);
+    EXPECT_EQ(c2.lines[0].parsed, true);
     EXPECT_EQ(c2.total, 2);
 
     // 无新增：0 行，游标不变
@@ -530,6 +532,7 @@ TEST(LogServiceTailCursor, PartialLineWithoutNewlineNotConsumed) {
     auto c2 = svc.read_tail("a.log", cur, 200);
     EXPECT_EQ(c2.lines.size(), 1u);
     EXPECT_EQ(c2.lines[0].n, 2);
+    EXPECT_EQ(c2.lines[0].parsed, true);
 
     fs::remove_all(tmp);
 }
@@ -557,6 +560,7 @@ TEST(LogServiceTailCursor, TruncatedFileResetsCursor) {
     auto c = svc.read_tail("a.log", cur, 200);
     EXPECT_EQ(c.lines.size(), 1u);
     EXPECT_EQ(c.lines[0].n, 1);   // 新文件行号重新累计
+    EXPECT_EQ(c.lines[0].parsed, true);
     EXPECT_EQ(c.total, 1);
 
     fs::remove_all(tmp);
@@ -587,6 +591,50 @@ TEST(LogServiceTailCursor, BaselineSkipsExistingContent) {
     auto c2 = svc.read_tail("a.log", cur, 200);
     EXPECT_EQ(c2.lines.size(), 1u);
     EXPECT_EQ(c2.lines[0].n, 3);
+    EXPECT_EQ(c2.lines[0].parsed, true);
+
+    fs::remove_all(tmp);
+}
+
+TEST(LogServiceTailCursor, CrLfLineParsedTrue) {
+    const fs::path tmp = fs::temp_directory_path() / "dz_tail_cursor_crlf";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    LogService svc(tmp);
+
+    // 用 binary 模式显式写 CRLF 行尾，保证跨平台（Linux/macOS 亦复现 Windows CRLF 场景）
+    const std::string line1 =
+        "2026-07-13T14:23:45.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] line1\r\n";
+    const std::string line2 =
+        "2026-07-13T14:23:46.000000000+08:00 warning t [func=m file=f.cpp:2 pid=1 tid=3] line2\r\n";
+    {
+        std::ofstream ofs(tmp / "a.log", std::ios::binary);
+        ofs << line1;
+    }
+
+    // 全新游标读 CRLF 文件：剥行尾 \r 后 parsed=true，msg 不含 \r
+    LogService::TailCursor cur;
+    auto c1 = svc.read_tail("a.log", cur, 200);
+    ASSERT_EQ(c1.lines.size(), 1u);
+    EXPECT_EQ(c1.lines[0].parsed, true);
+    EXPECT_EQ(c1.lines[0].msg, "line1");
+    EXPECT_EQ(c1.lines[0].n, 1);
+    EXPECT_EQ(cur.line_no, 1);
+    // 游标偏移按剥前长度（含 \r\n 两字节）精确推进
+    EXPECT_EQ(cur.byte_offset, static_cast<long long>(line1.size()));
+
+    // 追加第二行后继续读：偏移持续精确推进，parsed=true
+    {
+        std::ofstream ofs(tmp / "a.log", std::ios::app | std::ios::binary);
+        ofs << line2;
+    }
+    auto c2 = svc.read_tail("a.log", cur, 200);
+    ASSERT_EQ(c2.lines.size(), 1u);
+    EXPECT_EQ(c2.lines[0].parsed, true);
+    EXPECT_EQ(c2.lines[0].msg, "line2");
+    EXPECT_EQ(c2.lines[0].n, 2);
+    EXPECT_EQ(cur.line_no, 2);
+    EXPECT_EQ(cur.byte_offset, static_cast<long long>(line1.size() + line2.size()));
 
     fs::remove_all(tmp);
 }
