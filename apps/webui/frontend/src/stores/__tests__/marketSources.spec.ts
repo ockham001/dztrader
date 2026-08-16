@@ -352,6 +352,13 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(store.sources[0].auto_login).toBe(true)
     })
 
+    it('addSchedule 镜像未就绪时设置中文错误并 rethrow（守卫）', async () => {
+      await loadDb()  // dbSource.source_name='dzmd_ctp', id=1; 不推送 auto_login 镜像
+      const store = useMarketSourcesStore()
+      await expect(store.addSchedule(1, '08:45', '15:30')).rejects.toThrow('自动登录配置尚未同步')
+      expect(store.error).toBe('自动登录配置尚未同步，请稍后重试')
+    })
+
     it('镜像已建立但 schedules 清空时显示空（清空语义不被回退掩盖）', async () => {
       await loadDb()
       const store = useMarketSourcesStore()

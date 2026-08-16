@@ -260,6 +260,9 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
   async function toggleAutoLogin(id: number, sourceName: string, enabled: boolean): Promise<MdConfigOpResult> {
     const key = opKey(id, 'auto_login')
     if (pending[key]) return false
+    // 守卫：镜像未就绪禁止提交。RFC7386 全量提交中 schedules 出现即整体覆盖，
+    // 兜底值 {enabled:false, schedules:[]} 会清空网关侧已有排程（破坏性）
+    if (!autoLogins.value[sourceName]) return false
     nameToId.value[sourceName] = id
     return submitAutoLogin(id, sourceName, key, OP_LABELS.auto_login,
       cur => ({ ...cur, enabled }))
@@ -268,6 +271,8 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
   async function addSchedule(id: number, sourceName: string, loginTime: string, logoutTime: string): Promise<MdConfigOpResult> {
     const key = opKey(id, 'schedule_add')
     if (pending[key]) return false
+    // 守卫：同 toggleAutoLogin——镜像未就绪时禁止全量提交
+    if (!autoLogins.value[sourceName]) return false
     nameToId.value[sourceName] = id
     const cur = currentAutoLogin(sourceName)
     if (cur.schedules.some(s => s.login_time === loginTime && s.logout_time === logoutTime)) {

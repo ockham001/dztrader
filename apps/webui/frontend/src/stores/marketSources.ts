@@ -232,11 +232,16 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
     await runOp(id, 'logout', s => md.logout(id, s.source_name), 'logout failed')
   }
   async function toggleAutoLogin(id: number, enabled: boolean): Promise<void> {
-    await runOp(id, 'auto_login', s => md.toggleAutoLogin(id, s.source_name, enabled), 'toggle auto-login failed')
+    const src = findView(id)
+    const notReady = src ? !md.autoLogins[src.source_name] : false
+    await runOp(id, 'auto_login', s => md.toggleAutoLogin(id, s.source_name, enabled),
+      notReady ? '自动登录配置尚未同步，请稍后重试' : 'toggle auto-login failed')
   }
   async function addSchedule(id: number, loginTime: string, logoutTime: string): Promise<void> {
+    const src = findView(id)
+    const notReady = src ? !md.autoLogins[src.source_name] : false
     await runOp(id, 'schedule_add', s => md.addSchedule(id, s.source_name, loginTime, logoutTime),
-      'add schedule failed', { rethrow: true })
+      notReady ? '自动登录配置尚未同步，请稍后重试' : 'add schedule failed', { rethrow: true })
   }
   async function removeSchedule(id: number, loginTime: string, logoutTime: string): Promise<void> {
     // 契约 auto-login 镜像条目无 id, 以 login+logout 时间对匹配（ScheduleManager 直接传时间对）

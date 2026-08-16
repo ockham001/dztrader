@@ -185,6 +185,7 @@ describe('useMdConfigStore', () => {
     it('到达时批量清排程类 pending（auto_login/schedule_add/schedule_remove）', async () => {
       vi.mocked(marketSourcesApi.setAutoLogin).mockResolvedValue({ ok: true })
       const store = useMdConfigStore()
+      store.applyAutoLogin('dzmd_ctp', { enabled: false, schedules: [] })  // 建立镜像（守卫要求）
       await store.toggleAutoLogin(1, 'dzmd_ctp', true)
       await store.addSchedule(1, 'dzmd_ctp', '09:00', '15:00')
       expect(usePending().pending['source:1:auto_login']).toBe(true)
@@ -198,6 +199,35 @@ describe('useMdConfigStore', () => {
       const { run } = usePending()
       await run('source:1:broker_add', () => Promise.resolve('x'))
       expect(usePending().pending['source:1:broker_add']).toBe(true)
+    })
+  })
+
+  describe('镜像未就绪守卫（防破坏性全量提交）', () => {
+    it('toggleAutoLogin 镜像未就绪时返回 false 且不下发', async () => {
+      const store = useMdConfigStore()
+      // 不 applyAutoLogin——镜像无 dzmd_ctp 条目
+      const r = await store.toggleAutoLogin(1, 'dzmd_ctp', true)
+      expect(r).toBe(false)
+      expect(vi.mocked(marketSourcesApi.setAutoLogin)).not.toHaveBeenCalled()
+    })
+
+    it('addSchedule 镜像未就绪时返回 false 且不下发', async () => {
+      const store = useMdConfigStore()
+      const r = await store.addSchedule(1, 'dzmd_ctp', '08:45', '15:30')
+      expect(r).toBe(false)
+      expect(vi.mocked(marketSourcesApi.setAutoLogin)).not.toHaveBeenCalled()
+    })
+
+    it('镜像就绪后正常下发（回归）', async () => {
+      vi.mocked(marketSourcesApi.setAutoLogin).mockResolvedValue({ ok: true })
+      const store = useMdConfigStore()
+      store.applyAutoLogin('dzmd_ctp', { enabled: false, schedules: [] })
+      const r = await store.toggleAutoLogin(1, 'dzmd_ctp', true)
+      expect(r).toBe(true)
+      expect(vi.mocked(marketSourcesApi.setAutoLogin)).toHaveBeenCalledWith(1, {
+        enabled: true,
+        schedules: [],
+      })
     })
   })
 
@@ -279,10 +309,11 @@ describe('useMdConfigStore', () => {
     it('toggleAutoLogin: HTTP 成功不清 pending（等 applyAutoLogin 清）', async () => {
       vi.mocked(marketSourcesApi.setAutoLogin).mockResolvedValue({ ok: true })
       const store = useMdConfigStore()
+      store.applyAutoLogin('dzmd_ctp', { enabled: false, schedules: [] })  // 建立镜像（守卫要求）
       const result = await store.toggleAutoLogin(1, 'dzmd_ctp', true)
       expect(result).toBe(true)
       expect(usePending().pending['source:1:auto_login']).toBe(true)
-      // 全量提交: 镜像未建立时 enabled=true, schedules=[]
+      // 全量提交: 以镜像为基准翻转 enabled（镜像 schedules=[]）
       expect(marketSourcesApi.setAutoLogin).toHaveBeenCalledWith(1, { enabled: true, schedules: [] })
 
       store.applyAutoLogin('dzmd_ctp', autoLoginPayload)
@@ -293,6 +324,7 @@ describe('useMdConfigStore', () => {
     it('toggleAutoLogin: HTTP 失败清 pending 并返回 false', async () => {
       vi.mocked(marketSourcesApi.setAutoLogin).mockRejectedValue(new Error('toggle failed'))
       const store = useMdConfigStore()
+      store.applyAutoLogin('dzmd_ctp', { enabled: false, schedules: [] })  // 建立镜像（守卫要求）
       expect(await store.toggleAutoLogin(1, 'dzmd_ctp', true)).toBe(false)
       expect(usePending().pending['source:1:auto_login']).toBe(false)
     })
