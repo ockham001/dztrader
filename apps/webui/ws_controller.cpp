@@ -1,6 +1,7 @@
 #include "ws_controller.h"
 #include "jwt.h"
 #include "log_service.h"
+#include "ws_control_precheck.h"
 
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/writer.h>
@@ -181,33 +182,20 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
         // admin 角色 + source 非空 + 事件通道可用 + 目标进程镜像 Running，否则回 error 不写帧
         const auto sit = sessions_.find(conn);
         const bool is_admin = sit != sessions_.end() && sit->second.is_admin;
-        if (!is_admin) {
-            const nlohmann::json err = {
-                {"type", "error"},
-                {"seq", msg.value("seq", 0)},
-                {"payload", {{"message", "admin required"}}}};
-            conn->send(err.dump());
-            return;
-        }
         const std::string source = payload.value("source", "");
-        if (source.empty() || !event_writer_) {
-            const nlohmann::json err = {
-                {"type", "error"},
-                {"seq", msg.value("seq", 0)},
-                {"payload", {{"message", "invalid source or writer not ready"}}}};
-            conn->send(err.dump());
-            return;
-        }
-        bool running = false;
+        std::optional<platform::ChildState> state;
         if (process_mirror_) {
-            auto st = process_mirror_->get_status(source);
-            running = st.has_value() && st->state == platform::ChildState::Running;
+            if (auto st = process_mirror_->get_status(source)) {
+                state = st->state;
+            }
         }
-        if (!running) {
+        const auto pre =
+            evaluate_md_connect_precheck(is_admin, source, event_writer_ != nullptr, state);
+        if (pre != MdConnectPrecheck::Ok) {
             const nlohmann::json err = {
                 {"type", "error"},
                 {"seq", msg.value("seq", 0)},
-                {"payload", {{"message", "process not running: " + source}}}};
+                {"payload", {{"message", md_connect_precheck_message(pre, source)}}}};
             conn->send(err.dump());
             return;
         }
@@ -223,7 +211,7 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
         conn->send(ack.dump());
     } else if (type == "query_md_subscriptions") {
         // 写 DZ_FRAME_QUERY_MD_SUBSCRIPTIONS 到 event channel (透传给目标 md 进程)
-        // 支持两种模式 (互斥):
+        // 支持两种模式（互斥校验由 md 进程负责，见 build_subscription_query_payload）:
         //   {"query": "unsuccessful"}                 - 查未成功 (Pending + NotRequested)
         //   {"instruments": ["IF2506", "IC2506"]}     - 按合约列表查
         // dzweb 不解析业务字段, 仅提取 source 路由, 其余透传给 md
@@ -236,13 +224,11 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
             conn->send(err.dump());
             return;
         }
-        // 构造 SHM payload: 仅含 query 或 instruments (不含 source, source 作为 ext_inst_id)
+        // 构造 SHM payload（不含 source, source 作为 ext_inst_id）。
+        // 契约 md-subscription: dzweb 不校验互斥——query/instruments 同时出现时两者透传，
+        // 由目标 md 进程经 RTN.error=ambiguous_query 表达
         nlohmann::json req_payload;
-        if (payload.contains("query") && payload["query"].is_string()) {
-            req_payload["query"] = payload["query"];
-        } else if (payload.contains("instruments") && payload["instruments"].is_array()) {
-            req_payload["instruments"] = payload["instruments"];
-        } else {
+        if (!build_subscription_query_payload(payload, req_payload)) {
             const nlohmann::json err = {{"type", "error"},
                                         {"seq", msg.value("seq", 0)},
                                         {"payload", {{"message", "missing query or instruments"}}}};
