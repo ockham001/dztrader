@@ -138,11 +138,8 @@ TEST_F(LogControllerTest, PostLevelRejectsInvalidLevel) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
 }
 
-// Regression test for dzweb 0xC0000005 crash (2026-07-19):
-// 旧实现通过缓存读取 target 当前级别作为 old，首次设置时三元运算符公共类型被推导为
-// std::string，nullptr 通过 nullptr_t → const char* → std::string 隐式转换路径
-// 构造 std::string(nullptr)，触发 strlen(nullptr) UB 导致 access violation。
-// 现实现不再依赖缓存，old 恒为 null（JSON null），必须正确返回而不崩溃。
+// 契约 rest §1: 响应 ok 表示"已写事件通道"。event_writer 为空（API-only 模式）
+// 时帧未写入，ok 必须为 false--否则前端会把"从未下发"当作"已下发"。
 TEST_F(LogControllerTest, PostLevelReturnsNullOldForUnknownTarget) {
     auto req = admin_req();
     req->setBody(R"({"targets":["dzmd_ctp"],"level":"warning"})");
@@ -155,9 +152,18 @@ TEST_F(LogControllerTest, PostLevelReturnsNullOldForUnknownTarget) {
     // old 必须是 JSON null（不是字符串 "null" 也不是崩溃）
     EXPECT_TRUE(body["results"][0]["old"].is_null());
     EXPECT_EQ(body["results"][0]["new"], "warning");
-    // fire-and-forget: 即使 event_writer_ 为 nullptr, 同步响应仍为 ok=true (已下发语义)
-    // 真正失败由 RTN_LOG_CONFIG 异步推送纠正
-    EXPECT_TRUE(body["results"][0]["ok"].get<bool>());
+    // fixture 中 event_writer_ 为 nullptr: 帧未写入, ok=false
+    EXPECT_FALSE(body["results"][0]["ok"].get<bool>());
+}
+
+// flush 同理: writer 缺失时 ok=false（FLUSH 无 RTN, 这是唯一的结果通道）
+TEST_F(LogControllerTest, PostFlushReportsFailureWhenWriterUnavailable) {
+    auto req = admin_req();
+    req->setBody(R"({"targets":["dzmd_ctp"]})");
+    auto resp = invoke(&LogCtrl::flush_log, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    auto body = parse_resp(resp);
+    EXPECT_FALSE(body["results"][0]["ok"].get<bool>());
 }
 
 TEST_F(LogControllerTest, PostFlushRequiresAdmin) {

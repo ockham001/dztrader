@@ -177,13 +177,13 @@ void LogCtrl::set_level(const drogon::HttpRequestPtr& req,
     Json results = Json::array();
     for (const auto& target : targets) {
         // 统一分发（LogDomainService::handle_log_control）：dzweb 自身直调 LogConfig
-        //（publish 回推 WS），其他进程写 SHM 帧
-        // 契约 log: SET_LOG_CONFIG 是增量 patch (RFC 7386)。UI 仅改 level。
-        log_domain_->handle_log_control(target, DZ_FRAME_SET_LOG_CONFIG, {{"level", level}});
-        // HTTP 同步响应仅表示"已下发"; 最终生效级别由 RTN/publish 异步推送确认
+        //（publish 回推 WS），其他进程写 SHM 帧。ok = 已应用/已写入事件通道（契约 rest §1）；
+        // 生效以 RTN_LOG_CONFIG / log_config WS 推送为准
+        const auto r = log_domain_->handle_log_control(
+            target, DZ_FRAME_SET_LOG_CONFIG, {{"level", level}});
         results.push_back({
             {"name", target},
-            {"ok", true},
+            {"ok", r == LogControlResult::Ok},
             {"old", nullptr},
             {"new", level}
         });
@@ -212,8 +212,9 @@ void LogCtrl::flush_log(const drogon::HttpRequestPtr& req,
 
     Json results = Json::array();
     for (const auto& target : targets) {
-        log_domain_->handle_log_control(target, DZ_FRAME_FLUSH_LOG, nlohmann::json::object());
-        results.push_back({{"name", target}, {"ok", true}});
+        const auto r = log_domain_->handle_log_control(
+            target, DZ_FRAME_FLUSH_LOG, nlohmann::json::object());
+        results.push_back({{"name", target}, {"ok", r == LogControlResult::Ok}});
     }
     callback(json_response(drogon::k200OK, {{"results", results}}));
 }

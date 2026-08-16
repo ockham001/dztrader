@@ -88,9 +88,9 @@ TEST(LogDomainServiceTest, SelfTargetDirectCallsLogConfig) {
     MirrorStore mirror;
     FakeBroadcaster ws;
     LogDomainService svc(mirror, ws, self_log, nullptr);
-    const bool handled = svc.handle_log_control(dztrader::this_process::exe_stem(),
-                                                DZ_FRAME_SET_LOG_CONFIG, {{"level", "error"}});
-    EXPECT_TRUE(handled);
+    const auto r = svc.handle_log_control(dztrader::this_process::exe_stem(),
+                                          DZ_FRAME_SET_LOG_CONFIG, {{"level", "error"}});
+    EXPECT_EQ(r, LogControlResult::Ok);
     EXPECT_EQ(self_log.current().at("level"), "error");
     // publish 回推：镜像 + WS 广播（type=log_config, instance=target）
     EXPECT_EQ(mirror.instance(dztrader::this_process::exe_stem())["log_config"]["level"], "error");
@@ -111,9 +111,9 @@ TEST(LogDomainServiceTest, SelfTargetInvalidLevelPublishesOld) {
     MirrorStore mirror;
     FakeBroadcaster ws;
     LogDomainService svc(mirror, ws, self_log, nullptr);
-    const bool handled = svc.handle_log_control(dztrader::this_process::exe_stem(),
-                                                DZ_FRAME_SET_LOG_CONFIG, {{"level", "NOPE"}});
-    EXPECT_TRUE(handled);
+    const auto r = svc.handle_log_control(dztrader::this_process::exe_stem(),
+                                          DZ_FRAME_SET_LOG_CONFIG, {{"level", "NOPE"}});
+    EXPECT_EQ(r, LogControlResult::WriteFailed);
     EXPECT_EQ(self_log.current().at("level"), "debug");  // 未变
     // 回推旧值
     ASSERT_EQ(ws.messages.size(), 1u);
@@ -131,9 +131,9 @@ TEST(LogDomainServiceTest, SelfTargetSetFailureNotifiesUi) {
     MirrorStore mirror;
     FakeBroadcaster ws;
     LogDomainService svc(mirror, ws, self_log, &*fx.writer);
-    const bool handled = svc.handle_log_control(dztrader::this_process::exe_stem(),
-                                                DZ_FRAME_SET_LOG_CONFIG, {{"level", "error"}});
-    EXPECT_TRUE(handled);
+    const auto r = svc.handle_log_control(dztrader::this_process::exe_stem(),
+                                          DZ_FRAME_SET_LOG_CONFIG, {{"level", "error"}});
+    EXPECT_EQ(r, LogControlResult::WriteFailed);
     EXPECT_EQ(self_log.current().at("level"), "debug");  // 回滚
     // publish 回推旧值
     ASSERT_EQ(ws.messages.size(), 1u);
@@ -152,9 +152,9 @@ TEST(LogDomainServiceTest, OtherTargetWritesShmFrame) {
     MirrorStore mirror;
     FakeBroadcaster ws;
     LogDomainService svc(mirror, ws, self_log, &*fx.writer);
-    const bool handled =
+    const auto r =
         svc.handle_log_control("dzmd_ctp", DZ_FRAME_SET_LOG_CONFIG, {{"level", "debug"}});
-    EXPECT_TRUE(handled);
+    EXPECT_EQ(r, LogControlResult::Ok);
     EXPECT_EQ(self_log.current().at("level"), "debug");   // 自身不被改写
     EXPECT_TRUE(mirror.instance("dzweb").empty());        // 其他进程分支不 publish
     EXPECT_TRUE(ws.messages.empty());
@@ -162,8 +162,41 @@ TEST(LogDomainServiceTest, OtherTargetWritesShmFrame) {
     std::filesystem::remove(cfg_path);
 }
 
-// 未知帧类型：返回 false
-TEST(LogDomainServiceTest, NonLogControlFrameReturnsFalse) {
+// 其他进程 target 且 writer 缺失: WriteFailed, 不产生任何帧
+TEST(LogDomainServiceTest, OtherTargetNoWriterFails) {
+    auto cfg_path = std::filesystem::temp_directory_path() / "dzweb_dispatch_nowriter.json";
+    std::filesystem::remove(cfg_path);
+    dztrader::platform::LogConfig self_log("dzweb", cfg_path);
+    self_log.load();
+
+    MirrorStore mirror;
+    FakeBroadcaster ws;
+    LogDomainService svc(mirror, ws, self_log, nullptr);
+    const auto r = svc.handle_log_control("dzmd_ctp", DZ_FRAME_SET_LOG_CONFIG, {{"level", "info"}});
+    EXPECT_EQ(r, LogControlResult::WriteFailed);
+    EXPECT_TRUE(ws.messages.empty());
+    std::filesystem::remove(cfg_path);
+}
+
+// FLUSH 其他进程: 帧写入成功 -> Ok + 帧类型正确
+TEST(LogDomainServiceTest, FlushOtherTargetWritesFrame) {
+    ShmFixture fx;
+    auto cfg_path = std::filesystem::temp_directory_path() / "dzweb_dispatch_flush.json";
+    std::filesystem::remove(cfg_path);
+    dztrader::platform::LogConfig self_log("dzweb", cfg_path);
+    self_log.load();
+
+    MirrorStore mirror;
+    FakeBroadcaster ws;
+    LogDomainService svc(mirror, ws, self_log, &*fx.writer);
+    const auto r = svc.handle_log_control("dzmd_ctp", DZ_FRAME_FLUSH_LOG, nlohmann::json::object());
+    EXPECT_EQ(r, LogControlResult::Ok);
+    EXPECT_EQ(fx.last_type(), DZ_FRAME_FLUSH_LOG);
+    std::filesystem::remove(cfg_path);
+}
+
+// 未知帧类型：返回 NotHandled
+TEST(LogDomainServiceTest, NonLogControlFrameReturnsNotHandled) {
     auto cfg_path = std::filesystem::temp_directory_path() / "dzweb_dispatch_unknown.json";
     std::filesystem::remove(cfg_path);
     dztrader::platform::LogConfig self_log("dzweb", cfg_path);
@@ -171,8 +204,8 @@ TEST(LogDomainServiceTest, NonLogControlFrameReturnsFalse) {
     MirrorStore mirror;
     FakeBroadcaster ws;
     LogDomainService svc(mirror, ws, self_log, nullptr);
-    const bool handled = svc.handle_log_control("x", DZ_FRAME_NOTIFY_UI, nlohmann::json::object());
-    EXPECT_FALSE(handled);
+    const auto r = svc.handle_log_control("x", DZ_FRAME_NOTIFY_UI, nlohmann::json::object());
+    EXPECT_EQ(r, LogControlResult::NotHandled);
     std::filesystem::remove(cfg_path);
 }
 

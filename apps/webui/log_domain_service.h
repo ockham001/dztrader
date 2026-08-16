@@ -16,6 +16,13 @@
 
 namespace dztrader::webui {
 
+/// 日志控制分发结果（契约 rest §1: ok 语义 = "已应用（自身）或已写入事件通道（其他进程）"）
+enum class LogControlResult {
+    NotHandled,   ///< 未知帧类型
+    Ok,           ///< 自身已应用，或其他进程帧已写入事件通道
+    WriteFailed,  ///< 未写入: writer 缺失或写入失败; 自身路径为应用失败（NOTIFY_UI 已发）
+};
+
 /// 日志领域服务：RTN_LOG_CONFIG 的镜像更新 + WS 广播（契约 log）。
 /// publish() 供 dzweb 自身直调（LogCtrl 路径）——镜像 + 广播，与 RTN 处理行为等价。
 /// handle_log_control()：日志控制请求分发（HTTP set_level/flush 的日志配置核心，
@@ -42,19 +49,21 @@ public:
     }
 
     /// 日志控制请求分发（HTTP set_level/flush 的日志配置核心，原 log_control.cpp 迁入）。
-    /// 返回 true 表示已处理（SET/FLUSH），false 表示未知类型。
-    bool handle_log_control(const std::string& target,
-                            DzFrameType type,
-                            const nlohmann::json& payload) {
+    /// NotHandled = 未知类型；Ok = 已应用/已写入；WriteFailed = 未写入或应用失败。
+    LogControlResult handle_log_control(const std::string& target,
+                                        DzFrameType type,
+                                        const nlohmann::json& payload) {
         const bool is_self = (target == dztrader::this_process::exe_stem());
 
         if (type == DZ_FRAME_SET_LOG_CONFIG) {
             if (is_self) {
                 // dzweb 自身：直调 LogConfig（唯一校验/规范化/持久化/应用源），不走 SHM
+                bool applied = true;
                 try {
                     self_log_.set_log_config(payload);
                 } catch (const std::exception& e) {
                     // 契约 log: 失败必须日志 + NOTIFY_UI 错误弹窗；API-only 无 writer 时跳过
+                    applied = false;
                     SPDLOG_WARN("webui set log config failed | error={}", e.what());
                     if (event_writer_) {
                         dztrader::platform::NotifyUi(dztrader::this_process::exe_stem(), *event_writer_)
@@ -63,38 +72,44 @@ public:
                 }
                 // 无论成败都回推当前生效值（成功=new，失败=rollback 旧值）
                 publish(target, self_log_.current());
-                return true;
+                return applied ? LogControlResult::Ok : LogControlResult::WriteFailed;
             }
-            // 其他进程：写 SHM SET_LOG_CONFIG 帧（fire-and-forget）
-            if (event_writer_) {
-                try {
-                    if (dztrader::shm::write_ext_inst_json(
-                            *event_writer_, DZ_FRAME_SET_LOG_CONFIG, target, payload)) {
-                        event_writer_->notify_subscribers();
-                    }
-                } catch (const std::exception& e) {
-                    SPDLOG_WARN("write set_log_config failed | target={} error={}", target, e.what());
+            // 其他进程：写 SHM SET_LOG_CONFIG 帧；结果如实上报
+            if (!event_writer_) {
+                SPDLOG_WARN("set_log_config skipped: event writer unavailable | target={}", target);
+                return LogControlResult::WriteFailed;
+            }
+            try {
+                if (dztrader::platform::write_ext_inst_json(
+                        *event_writer_, DZ_FRAME_SET_LOG_CONFIG, target, payload)) {
+                    return LogControlResult::Ok;  // platform 层已含 notify_subscribers
                 }
+            } catch (const std::exception& e) {
+                SPDLOG_WARN("write set_log_config failed | target={} error={}", target, e.what());
             }
-            return true;
+            return LogControlResult::WriteFailed;
         }
 
         if (type == DZ_FRAME_FLUSH_LOG) {
             if (is_self) {
                 spdlog::default_logger()->flush();
-                return true;
+                return LogControlResult::Ok;
             }
-            if (event_writer_) {
-                try {
-                    dztrader::platform::write_ext_inst_raw(*event_writer_, DZ_FRAME_FLUSH_LOG, target);
-                } catch (const std::exception& e) {
-                    SPDLOG_WARN("write flush_log failed | target={} error={}", target, e.what());
+            if (!event_writer_) {
+                SPDLOG_WARN("flush_log skipped: event writer unavailable | target={}", target);
+                return LogControlResult::WriteFailed;
+            }
+            try {
+                if (dztrader::platform::write_ext_inst_raw(*event_writer_, DZ_FRAME_FLUSH_LOG, target)) {
+                    return LogControlResult::Ok;
                 }
+            } catch (const std::exception& e) {
+                SPDLOG_WARN("write flush_log failed | target={} error={}", target, e.what());
             }
-            return true;
+            return LogControlResult::WriteFailed;
         }
 
-        return false;
+        return LogControlResult::NotHandled;
     }
 
 private:
