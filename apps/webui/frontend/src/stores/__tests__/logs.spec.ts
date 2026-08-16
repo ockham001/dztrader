@@ -142,18 +142,15 @@ describe('useLogsStore', () => {
     expect(pending['logs:dztraderd:set_level']).toBe(false)
   })
 
-  it('flushProcess pending uses logs:{name}:flush key and clears on success', async () => {
+  it('flushProcess 直接返回结果，不设 pending（契约 log：FLUSH 无反馈）', async () => {
     vi.mocked(logsApi.logsApi.flush).mockResolvedValue({
       results: [{ name: 'dztraderd', ok: true }],
     })
     const store = useLogsStore()
     const { pending } = usePending()
-    const p = store.flushProcess('dztraderd')
-    expect(pending['logs:dztraderd:flush']).toBe(true)
-    const ok = await p
+    const ok = await store.flushProcess('dztraderd')
     expect(ok).toBe(true)
-    await vi.advanceTimersByTimeAsync(300)
-    expect(pending['logs:dztraderd:flush']).toBe(false)
+    expect(pending['logs:dztraderd:flush']).toBeUndefined()  // 不设 pending
   })
 
   it('batchSetLevel marks every target pending and clears after success', async () => {
@@ -187,7 +184,7 @@ describe('useLogsStore', () => {
     expect(pending['logs:dzmd_ctp:set_level']).toBe(false)
   })
 
-  it('batchFlush returns counts and clears pending', async () => {
+  it('batchFlush 返回计数，不设 pending（契约 log：FLUSH 无反馈）', async () => {
     vi.mocked(logsApi.logsApi.flush).mockResolvedValue({
       results: [
         { name: 'dztraderd', ok: true },
@@ -195,13 +192,12 @@ describe('useLogsStore', () => {
       ],
     })
     const store = useLogsStore()
-    store.selectedProcesses = new Set(['dztraderd', 'dzmd_ctp'])
     const { pending } = usePending()
+    store.selectedProcesses = new Set(['dztraderd', 'dzmd_ctp'])
     const res = await store.batchFlush()
     expect(res).toEqual({ ok: 1, fail: 1 })
-    await vi.advanceTimersByTimeAsync(300)
-    expect(pending['logs:dztraderd:flush']).toBe(false)
-    expect(pending['logs:dzmd_ctp:flush']).toBe(false)
+    expect(pending['logs:dztraderd:flush']).toBeUndefined()
+    expect(pending['logs:dzmd_ctp:flush']).toBeUndefined()
   })
 
   it('applySnapshot builds process list from WS mirror', () => {

@@ -9,11 +9,12 @@ import type {
 } from '@/types/api'
 
 // 进程控制 pending 迁移 usePending（设计 §5.3，契约 log/webui-ws §5）：
-// - key: logs:{name}:set_level / logs:{name}:flush（按进程名，行级按钮独立 spin）
+// - key: logs:{name}:set_level（按进程名，行级按钮独立 spin）
 // - minPendingMs: 300 防闪烁
 // - set_level: RTN 驱动 --SET 后 pending，以对应实例的 log_config 推送
 //   （applyLogConfig resolve）清除；HTTP ok=false 无 RTN 会来，立即 fail
-// - flush: 无 RTN，keepPendingOnSuccess: false（HTTP 同步语义，成功即清，纯视觉防双击）
+// - flush: FLUSH 无反馈，前端不设 pending——flushProcess/batchFlush 直接调用返回
+//   { ok, fail }，不经 usePending，无 flush pending 键（行级 flush 按钮不 spin，属预期）
 // - timeout: 10_000 兜底（超时清 + toast）
 const MIN_PENDING_MS = 300
 const CONTROL_TIMEOUT_MS = 10_000
@@ -263,16 +264,14 @@ export const useLogsStore = defineStore('logs', () => {
     return true
   }
 
+  /// 契约 log: FLUSH 无反馈——前端不设 pending，直接调用返回布尔（HTTP 异常按失败）。
   async function flushProcess(name: string): Promise<boolean> {
-    const key = `logs:${name}:flush`
-    const resp = await run(
-      key,
-      () => logsApi.flush([name]),
-      { minPendingMs: MIN_PENDING_MS, timeout: CONTROL_TIMEOUT_MS, keepPendingOnSuccess: false },
-    )
-    if (!resp) return false
-    const result = resp.results.find(r => r.name === name)
-    return result?.ok ?? false
+    try {
+      const resp = await logsApi.flush([name])
+      return resp.results.find(r => r.name === name)?.ok ?? false
+    } catch {
+      return false
+    }
   }
 
   async function batchSetLevel(): Promise<{ ok: number; fail: number }> {
@@ -310,26 +309,18 @@ export const useLogsStore = defineStore('logs', () => {
   async function batchFlush(): Promise<{ ok: number; fail: number }> {
     const targets = Array.from(selectedProcesses.value)
     if (targets.length === 0) return { ok: 0, fail: 0 }
-    let shared: ReturnType<typeof logsApi.flush> | undefined
-    const results = await Promise.all(targets.map(t =>
-      run(
-        `logs:${t}:flush`,
-        async () => {
-          shared ??= logsApi.flush(targets)
-          return shared
-        },
-        { minPendingMs: MIN_PENDING_MS, timeout: CONTROL_TIMEOUT_MS, keepPendingOnSuccess: false },
-      ),
-    ))
-    const resp = results[0]
-    if (!resp) return { ok: 0, fail: targets.length }
-    let okCount = 0
-    let failCount = 0
-    for (const result of resp.results) {
-      if (result.ok) okCount++
-      else failCount++
+    try {
+      const resp = await logsApi.flush(targets)
+      let okCount = 0
+      let failCount = 0
+      for (const result of resp.results) {
+        if (result.ok) okCount++
+        else failCount++
+      }
+      return { ok: okCount, fail: failCount }
+    } catch {
+      return { ok: 0, fail: targets.length }
     }
-    return { ok: okCount, fail: failCount }
   }
 
   function toggleProcessSelection(name: string): void {
@@ -361,8 +352,8 @@ export const useLogsStore = defineStore('logs', () => {
   }
 
   function isProcessPending(name: string): boolean {
-    // 迁移 usePending 后：set_level 与 flush 任一挂起即视为 pending（行级按钮 spin/禁用）
-    return !!pending[`logs:${name}:set_level`] || !!pending[`logs:${name}:flush`]
+    // flush 不设 pending（契约 log）；仅 set_level 挂起时视为 pending（行级按钮 spin/禁用）
+    return !!pending[`logs:${name}:set_level`]
   }
 
   return {
