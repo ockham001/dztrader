@@ -19,9 +19,8 @@ registerHandler('data_changed', (payload) => {
   if (!scope) return
   if (scope === 'market_sources') {
     // 行情源列表 DB 真相源（契约 rest §2.3/§3）：条目增删改后重新拉取
-    useMarketSourcesStore().loadSources().catch((err: unknown) => {
-      console.warn('data_changed loadSources failed', err)
-    })
+    // 失败经 store.error → View watch toast 呈现（loadSources 内部已捕获不 rethrow）
+    useMarketSourcesStore().loadSources()
     return
   }
   const userManagement = useUserManagementStore()
