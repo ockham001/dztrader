@@ -364,16 +364,11 @@ int main(int argc, char* argv[]) {
         ws_ctrl->kick_user(username);
     };
 
-    // 50ms 定时器：仅轮询订阅的日志文件 tail（event channel 已移到 event_thread_）
-    drogon::app().getLoop()->runEvery(0.05, [ws_ctrl]() {
-        ws_ctrl->on_timer();
-    });
-
     // 启动事件通道监听线程（替代原 50ms 轮询的 event channel 部分）
     // EventMonitor 由 main 持有并直调（Task 8 去掉 WsController 委托链）
-    // 监听线程阻塞在 NamedSemaphore::wait_for，被 master 的 notify_subscribers 唤醒后
+    // 监听线程阻塞在 NamedSemaphore::wait，被 master 的 notify_subscribers 唤醒后
     // 逐帧交给 FrameRouter 分发到领域服务（register_json 投递 IO 线程 / register_raw 监听线程执行）
-    // 信号量名 = <exe_stem()>.<pid>，在监听线程启动时创建
+    // 信号量名 = <exe_stem()>（无 pid 后缀，与 master 注册名一致）
     event_monitor->start();
 
     // 启动序列: 通过 SHM 事件通道全量查询, 构建 ProcessMirror 初始镜像

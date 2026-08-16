@@ -4,6 +4,8 @@
 #include <filesystem>
 #include "log_service.h"
 
+using dztrader::webui::LogService;
+
 namespace fs = std::filesystem;
 
 class LogServiceTest : public ::testing::Test {
@@ -199,9 +201,10 @@ TEST_F(LogServiceTest, ReadTailFromZeroReadsAll) {
         "2026-07-13T14:23:47.000000000+08:00 error dztraderd [func=m file=f.cpp:3 pid=1 tid=4] c",
     });
 
-    auto c = svc_->read_tail("dztraderd.log", 0, 0);  // from_line=0, limit=0(不限)
+    LogService::TailCursor cur;
+    auto c = svc_->read_tail("dztraderd.log", cur, 0);  // limit=0(不限)，全新游标从文件头读
     EXPECT_EQ(c.lines.size(), 3u);
-    EXPECT_EQ(c.total, 3);  // 0 + 3
+    EXPECT_EQ(c.total, 3);
 }
 
 TEST_F(LogServiceTest, ReadTailSkipsAlreadyRead) {
@@ -213,11 +216,13 @@ TEST_F(LogServiceTest, ReadTailSkipsAlreadyRead) {
         "2026-07-13T14:23:49.000000000+08:00 error dztraderd [func=m file=f.cpp:5 pid=1 tid=6] e",
     });
 
-    auto c = svc_->read_tail("dztraderd.log", 2, 0);  // 跳过前 2 行
+    LogService::TailCursor cur;
+    (void)svc_->read_tail("dztraderd.log", cur, 2);  // 先消费前 2 行建立游标
+    auto c = svc_->read_tail("dztraderd.log", cur, 0);  // 从第 3 行继续增量读
     EXPECT_EQ(c.lines.size(), 3u);
     EXPECT_EQ(c.lines[0].n, 3);  // 第 3 行开始
     EXPECT_EQ(c.lines[2].n, 5);
-    EXPECT_EQ(c.total, 5);  // 2 + 3
+    EXPECT_EQ(c.total, 5);
 }
 
 TEST_F(LogServiceTest, ReadTailCapsAtLimit) {
@@ -229,9 +234,10 @@ TEST_F(LogServiceTest, ReadTailCapsAtLimit) {
         "2026-07-13T14:23:49.000000000+08:00 error dztraderd [func=m file=f.cpp:5 pid=1 tid=6] e",
     });
 
-    auto c = svc_->read_tail("dztraderd.log", 0, 2);  // limit=2
+    LogService::TailCursor cur;
+    auto c = svc_->read_tail("dztraderd.log", cur, 2);  // limit=2
     EXPECT_EQ(c.lines.size(), 2u);
-    EXPECT_EQ(c.total, 2);  // 0 + 2（cap 达到，剩余行下次再读）
+    EXPECT_EQ(c.total, 2);  // 游标推进到 2（cap 达到，剩余行下次再读）
 }
 
 TEST_F(LogServiceTest, ReadTailNoNewLinesReturnsSameBaseline) {
@@ -241,45 +247,60 @@ TEST_F(LogServiceTest, ReadTailNoNewLinesReturnsSameBaseline) {
         "2026-07-13T14:23:47.000000000+08:00 error dztraderd [func=m file=f.cpp:3 pid=1 tid=4] c",
     });
 
-    auto c = svc_->read_tail("dztraderd.log", 3, 0);  // 已读到第 3 行，无新增
+    LogService::TailCursor cur;
+    (void)svc_->read_tail("dztraderd.log", cur, 0);  // 已读到第 3 行
+    auto c = svc_->read_tail("dztraderd.log", cur, 0);  // 无新增
     EXPECT_EQ(c.lines.size(), 0u);
-    EXPECT_EQ(c.total, 3);  // 3 + 0
+    EXPECT_EQ(c.total, 3);  // 游标停在 3
 }
 
 TEST_F(LogServiceTest, ReadTailDetectsTruncation) {
-    // 模拟日志轮转：上次读到第 10 行，但文件被重建只有 3 行
+    // 模拟日志轮转：上次消费时文件较大（游标 byte_offset 落在末尾），
+    // 文件被重建为更短内容（字节数 < 已消费偏移）→ 游标重置，从头读
     write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.000000000+08:00 info dztraderd [func=m file=f.cpp:1 pid=1 tid=2] a",
-        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd [func=m file=f.cpp:2 pid=1 tid=3] b",
-        "2026-07-13T14:23:47.000000000+08:00 error dztraderd [func=m file=f.cpp:3 pid=1 tid=4] c",
+        "2026-07-13T14:23:45.000000000+08:00 info dztraderd [func=m file=f.cpp:1 pid=1 tid=2] ppppppppppppppppppppppppppppppppppppppppppppppppp",
+        "2026-07-13T14:23:46.000000000+08:00 info dztraderd [func=m file=f.cpp:2 pid=1 tid=3] ppppppppppppppppppppppppppppppppppppppppppppppppp",
+    });
+    LogService::TailCursor cur;
+    (void)svc_->read_tail("dztraderd.log", cur, 0);  // 消费全部，游标落在文件末尾
+
+    // 重建为更短文件（大小 < 旧游标 offset）
+    write_log_file("dztraderd.log", {
+        "2026-07-13T14:24:00.000000000+08:00 info dztraderd [func=m file=f.cpp:1 pid=1 tid=2] a",
+        "2026-07-13T14:24:01.000000000+08:00 info dztraderd [func=m file=f.cpp:2 pid=1 tid=3] b",
+        "2026-07-13T14:24:02.000000000+08:00 info dztraderd [func=m file=f.cpp:3 pid=1 tid=4] c",
     });
 
-    auto c = svc_->read_tail("dztraderd.log", 10, 0);  // from_line > 实际行数
-    EXPECT_EQ(c.lines.size(), 0u);
-    EXPECT_EQ(c.total, 3);  // 重置 baseline 为实际行数
+    auto c = svc_->read_tail("dztraderd.log", cur, 0);
+    EXPECT_EQ(c.lines.size(), 3u);  // 重置后从头读到全部新行
+    EXPECT_EQ(c.lines[0].n, 1);
+    EXPECT_EQ(c.total, 3);
 }
 
 TEST_F(LogServiceTest, ReadTailEmptyFile) {
     write_log_file("dztraderd.log", {});
 
-    auto c = svc_->read_tail("dztraderd.log", 0, 0);
+    LogService::TailCursor cur;
+    auto c = svc_->read_tail("dztraderd.log", cur, 0);
     EXPECT_EQ(c.lines.size(), 0u);
     EXPECT_EQ(c.total, 0);
 }
 
 TEST_F(LogServiceTest, ReadTailNonexistentFileReturnsEmpty) {
-    auto c = svc_->read_tail("nonexistent.log", 0, 0);
+    LogService::TailCursor cur;
+    auto c = svc_->read_tail("nonexistent.log", cur, 0);
     EXPECT_EQ(c.lines.size(), 0u);
-    EXPECT_EQ(c.total, 0);  // 默认 from_line=0
+    EXPECT_EQ(c.total, 0);  // 默认无进展
 }
 
 TEST_F(LogServiceTest, ReadTailIncrementalAppends) {
-    // 模拟 50ms 轮询场景：文件持续追加
+    // 模拟 500ms 轮询场景：文件持续追加
     write_log_file("dztraderd.log", {
         "2026-07-13T14:23:45.000000000+08:00 info dztraderd [func=m file=f.cpp:1 pid=1 tid=2] a",
     });
 
-    auto c1 = svc_->read_tail("dztraderd.log", 0, 0);
+    LogService::TailCursor cur;
+    auto c1 = svc_->read_tail("dztraderd.log", cur, 0);
     ASSERT_EQ(c1.lines.size(), 1u);
     EXPECT_EQ(c1.total, 1);
 
@@ -290,7 +311,7 @@ TEST_F(LogServiceTest, ReadTailIncrementalAppends) {
         ofs << "2026-07-13T14:23:47.000000000+08:00 error dztraderd [func=m file=f.cpp:3 pid=1 tid=4] c\n";
     }
 
-    auto c2 = svc_->read_tail("dztraderd.log", c1.total, 0);  // 从上次 baseline 继续
+    auto c2 = svc_->read_tail("dztraderd.log", cur, 0);  // 同一游标继续增量读
     EXPECT_EQ(c2.lines.size(), 2u);
     EXPECT_EQ(c2.lines[0].n, 2);
     EXPECT_EQ(c2.lines[1].n, 3);
@@ -367,7 +388,8 @@ TEST_F(LogServiceTest, ReadTailFromSubdirectoryPath) {
         "2026-07-13T14:23:45.000000000+08:00 info dzweb [func=m file=f.cpp:1 pid=1 tid=2] a",
     });
 
-    auto c = svc_->read_tail("dzweb/dzweb.log", 0, 0);
+    LogService::TailCursor cur;
+    auto c = svc_->read_tail("dzweb/dzweb.log", cur, 0);
     EXPECT_EQ(c.lines.size(), 1u);
     EXPECT_EQ(c.total, 1);
 }
@@ -432,4 +454,139 @@ TEST_F(LogServiceTest, ReadContentFromEndLargeFileSeekOptimized) {
         EXPECT_TRUE(line.parsed);
     }
     EXPECT_EQ(content.total, 10000);
+}
+
+// ---------------------------------------------------------------------------
+// TailCursor 增量读（I4-Phase1：字节偏移游标替代全文件重读）
+// ---------------------------------------------------------------------------
+
+TEST(LogServiceTailCursor, IncrementalReadAdvancesCursor) {
+    const fs::path tmp = fs::temp_directory_path() / "dz_tail_cursor_inc";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    LogService svc(tmp);
+
+    {
+        std::ofstream ofs(tmp / "a.log");
+        ofs << "2026-07-13T14:23:45.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] line1\n";
+    }
+
+    // 全新游标从文件头读：1 行，游标推进
+    LogService::TailCursor cur;
+    auto c1 = svc.read_tail("a.log", cur, 200);
+    EXPECT_EQ(c1.lines.size(), 1u);
+    EXPECT_EQ(c1.lines[0].n, 1);
+    EXPECT_GT(cur.byte_offset, 0);
+    EXPECT_EQ(cur.line_no, 1);
+    EXPECT_EQ(c1.total, 1);
+
+    // 追加 1 行后再读：只返回新增行，行号连续
+    {
+        std::ofstream ofs(tmp / "a.log", std::ios::app);
+        ofs << "2026-07-13T14:23:46.000000000+08:00 warning t [func=m file=f.cpp:2 pid=1 tid=3] line2\n";
+    }
+    auto c2 = svc.read_tail("a.log", cur, 200);
+    EXPECT_EQ(c2.lines.size(), 1u);
+    EXPECT_EQ(c2.lines[0].n, 2);
+    EXPECT_EQ(c2.total, 2);
+
+    // 无新增：0 行，游标不变
+    auto c3 = svc.read_tail("a.log", cur, 200);
+    EXPECT_EQ(c3.lines.size(), 0u);
+    EXPECT_EQ(c3.total, 2);
+
+    fs::remove_all(tmp);
+}
+
+TEST(LogServiceTailCursor, PartialLineWithoutNewlineNotConsumed) {
+    const fs::path tmp = fs::temp_directory_path() / "dz_tail_cursor_partial";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    LogService svc(tmp);
+
+    {
+        std::ofstream ofs(tmp / "a.log");
+        ofs << "2026-07-13T14:23:45.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] line1\n";
+    }
+    LogService::TailCursor cur;
+    (void)svc.read_tail("a.log", cur, 200);  // 消费 line1
+    const auto offset_after_line1 = cur.byte_offset;
+
+    // 追加半行（无换行符，模拟 spdlog 正在写入）
+    {
+        std::ofstream ofs(tmp / "a.log", std::ios::app);
+        ofs << "2026-07-13T14:23:46.000";  // 无 '\n'
+    }
+    auto c = svc.read_tail("a.log", cur, 200);
+    EXPECT_EQ(c.lines.size(), 0u);                       // 半行不推送
+    EXPECT_EQ(cur.byte_offset, offset_after_line1);      // 偏移不推进
+    EXPECT_EQ(cur.line_no, 1);
+
+    // 补齐换行后可读到完整行
+    {
+        std::ofstream ofs(tmp / "a.log", std::ios::app);
+        ofs << "000000+08:00 info t [func=m file=f.cpp:2 pid=1 tid=3] line2\n";
+    }
+    auto c2 = svc.read_tail("a.log", cur, 200);
+    EXPECT_EQ(c2.lines.size(), 1u);
+    EXPECT_EQ(c2.lines[0].n, 2);
+
+    fs::remove_all(tmp);
+}
+
+TEST(LogServiceTailCursor, TruncatedFileResetsCursor) {
+    const fs::path tmp = fs::temp_directory_path() / "dz_tail_cursor_trunc";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    LogService svc(tmp);
+
+    {
+        std::ofstream ofs(tmp / "a.log");
+        ofs << "2026-07-13T14:23:45.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] line1\n";
+        ofs << "2026-07-13T14:23:46.000000000+08:00 info t [func=m file=f.cpp:2 pid=1 tid=3] line2\n";
+    }
+    LogService::TailCursor cur;
+    (void)svc.read_tail("a.log", cur, 200);
+    EXPECT_EQ(cur.line_no, 2);
+
+    // 轮换/重写为更短文件（size < 已消费偏移）→ 游标重置，从头读
+    {
+        std::ofstream ofs(tmp / "a.log", std::ios::trunc);
+        ofs << "2026-07-13T15:00:00.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] new1\n";
+    }
+    auto c = svc.read_tail("a.log", cur, 200);
+    EXPECT_EQ(c.lines.size(), 1u);
+    EXPECT_EQ(c.lines[0].n, 1);   // 新文件行号重新累计
+    EXPECT_EQ(c.total, 1);
+
+    fs::remove_all(tmp);
+}
+
+TEST(LogServiceTailCursor, BaselineSkipsExistingContent) {
+    const fs::path tmp = fs::temp_directory_path() / "dz_tail_cursor_base";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    LogService svc(tmp);
+
+    {
+        std::ofstream ofs(tmp / "a.log");
+        ofs << "2026-07-13T14:23:45.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] line1\n";
+        ofs << "2026-07-13T14:23:46.000000000+08:00 info t [func=m file=f.cpp:2 pid=1 tid=3] line2\n";
+    }
+
+    // 基线 = 订阅时刻文件末尾：既有内容不推，只追新增
+    auto cur = svc.tail_baseline("a.log");
+    EXPECT_EQ(cur.line_no, 2);
+    auto c1 = svc.read_tail("a.log", cur, 200);
+    EXPECT_EQ(c1.lines.size(), 0u);
+
+    {
+        std::ofstream ofs(tmp / "a.log", std::ios::app);
+        ofs << "2026-07-13T14:23:47.000000000+08:00 info t [func=m file=f.cpp:3 pid=1 tid=4] line3\n";
+    }
+    auto c2 = svc.read_tail("a.log", cur, 200);
+    EXPECT_EQ(c2.lines.size(), 1u);
+    EXPECT_EQ(c2.lines[0].n, 3);
+
+    fs::remove_all(tmp);
 }

@@ -75,9 +75,10 @@ void WsController::handleNewConnection(const drogon::HttpRequestPtr& req,
     // 连接即推全量镜像快照: 前端以此构建初始状态, 之后按增量帧更新
     // 快照来源为共享 MirrorStore（领域服务写入），Task 8 不再保留独立 mirror_
     // 契约 webui-ws §1: snapshot 按连接定向发送（不广播给其他连接，避免误清他人 pending）
-    const nlohmann::json snap_msg = {{"type", "snapshot"}, {"data", mirror_.snapshot()}};
+    const nlohmann::json snapshot = mirror_.snapshot();
+    const nlohmann::json snap_msg = {{"type", "snapshot"}, {"data", snapshot}};
     conn->send(snap_msg.dump());
-    SPDLOG_DEBUG("mirror snapshot pushed | instances={}", mirror_.snapshot().size());
+    SPDLOG_DEBUG("mirror snapshot pushed | instances={}", snapshot.size());
 
     // 用户上线：更新状态为 online 并通知所有设备刷新
     if (repo_) {
@@ -140,6 +141,7 @@ void WsController::handleConnectionClosed(const drogon::WebSocketConnectionPtr& 
         username = it->second.user_id;
     }
     sessions_.erase(conn);
+    stop_log_tail_timer_if_idle();  // 无订阅时关闭轮询
     SPDLOG_INFO("ws closed");
 
     // 用户下线：检查是否还有同用户的其他 WS 连接，无则设 offline 并通知所有设备刷新
@@ -273,23 +275,24 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
         }
         sessions_[conn].subscribed_log_file = file;
         sessions_[conn].tail_fail_count = 0;  // 重订阅重置失败计数（跨订阅残留会使新订阅的 auto-unsubscribe 阈值被预支）
-        // 读取当前行数作为基线
+        // 基线 = 订阅时刻文件末尾（只追新增）：分块数换行，不逐行 parse
         try {
             dztrader::webui::LogService svc(dztrader::paths::logs());
-            auto content = svc.read_content(file, 0, 0, "", "", "", "");
-            sessions_[conn].last_log_line_count = static_cast<int>(content.lines.size());
+            sessions_[conn].log_cursor = svc.tail_baseline(file);
         } catch (...) {
-            // 吞因：基线读取失败则保持 last_log_line_count=0，从文件头开始 tail，订阅本身继续
+            // 吞因：基线读取失败则保持 {0,0}，从文件头开始 tail，订阅本身继续
             SPDLOG_DEBUG("log tail baseline read failed, ignored | file={}", file);
         }
+        start_log_tail_timer();  // 惰性启动 tail 轮询（幂等）
         const nlohmann::json ack = {{"type", "subscribe_log_ack"},
                                     {"seq", msg.value("seq", 0)},
                                     {"payload", {{"file", file}}}};
         conn->send(ack.dump());
     } else if (type == "unsubscribe_log") {
         sessions_[conn].subscribed_log_file.clear();
-        sessions_[conn].last_log_line_count = 0;
+        sessions_[conn].log_cursor = {};
         sessions_[conn].tail_fail_count = 0;  // 退订清零，下次订阅从满额阈值开始
+        stop_log_tail_timer_if_idle();  // 无订阅时关闭轮询
         const nlohmann::json ack = {{"type", "unsubscribe_log_ack"}, {"seq", msg.value("seq", 0)}};
         conn->send(ack.dump());
     } else {
@@ -351,6 +354,29 @@ void WsController::kick_user(const std::string& username) {
     SPDLOG_INFO("ws kicked | user={}", username);
 }
 
+void WsController::start_log_tail_timer() {
+    if (log_tail_timer_active_) {
+        return;
+    }
+    log_tail_timer_active_ = true;
+    // 惰性启动：首个日志订阅建立时才开启 500ms 轮询（无订阅时零定时器唤醒）
+    log_tail_timer_ = drogon::app().getLoop()->runEvery(
+        kLogTailIntervalSec, [this]() { on_timer(); });
+}
+
+void WsController::stop_log_tail_timer_if_idle() {
+    if (!log_tail_timer_active_) {
+        return;
+    }
+    for (const auto& [conn, sess] : sessions_) {
+        if (!sess.subscribed_log_file.empty()) {
+            return;  // 仍有订阅，保持轮询
+        }
+    }
+    drogon::app().getLoop()->invalidateTimer(log_tail_timer_);
+    log_tail_timer_active_ = false;
+}
+
 void WsController::on_timer() {
     // 仅 poll_log_tail（event channel 读取已移到 main 持有的 EventMonitor）
     try {
@@ -386,10 +412,8 @@ void WsController::poll_log_tail() {
             if (file.empty()) {
                 continue;  // 可能被前一轮 auto-unsubscribe 清空
             }
-            const int from_line = it->second.last_log_line_count;
-
-            // 偏移量读取：只读 from_line 之后的新增行，不全量重读
-            auto content = svc.read_tail(file, from_line, k_tail_limit);
+            // 增量读：只读 cursor 之后的字节，不全量重读
+            auto content = svc.read_tail(file, it->second.log_cursor, k_tail_limit);
 
             int pushed = 0;
             for (const auto& l : content.lines) {
@@ -418,16 +442,16 @@ void WsController::poll_log_tail() {
                 ++pushed;
             }
 
-            // 更新 baseline
-            if (pushed == static_cast<int>(content.lines.size())) {
-                // 全部推送成功（或无新行）→ 用 read_tail 返回的 total
-                it->second.last_log_line_count = content.total;
-                if (pushed > 0) {
-                    it->second.tail_fail_count = 0;  // 成功，重置失败计数
+            // 更新 baseline：游标已由 read_tail 推进；中途 send 失败则回退到已推送位置
+            // （行字节长 = raw.size() + 1，含 '\n'），下次从失败处继续
+            if (pushed < static_cast<int>(content.lines.size())) {
+                for (int i = static_cast<int>(content.lines.size()) - 1; i >= pushed; --i) {
+                    it->second.log_cursor.byte_offset -=
+                        static_cast<long long>(content.lines[static_cast<size_t>(i)].raw.size()) + 1;
+                    it->second.log_cursor.line_no -= 1;
                 }
-            } else {
-                // 中途 send 失败 → baseline 只推进到已推送的位置，下次从这继续
-                it->second.last_log_line_count = from_line + pushed;
+            } else if (pushed > 0) {
+                it->second.tail_fail_count = 0;  // 成功，重置失败计数
             }
 
             // 连续失败 3 次自动退订，防止僵尸连接每 50ms 无效 send
@@ -435,7 +459,8 @@ void WsController::poll_log_tail() {
                 SPDLOG_WARN("auto-unsubscribe log tail | user={} file={} fails={}",
                             it->second.user_id, file, it->second.tail_fail_count);
                 it->second.subscribed_log_file.clear();
-                it->second.last_log_line_count = 0;
+                it->second.log_cursor = {};
+                stop_log_tail_timer_if_idle();  // 若已无订阅，关闭轮询
                 it->second.tail_fail_count = 0;
                 try {
                     const nlohmann::json err = {

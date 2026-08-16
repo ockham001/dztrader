@@ -357,40 +357,84 @@ LogContent LogService::read_from_end_seek(const std::filesystem::path& filepath,
     return result;
 }
 
-LogContent LogService::read_tail(const std::string& filename, int from_line, int limit) {
+LogService::TailCursor LogService::tail_baseline(const std::string& filename) {
+    TailCursor cur;
+    if (!is_path_safe(filename)) {
+        return cur;
+    }
+    const auto filepath = log_dir_ / filename;
+    std::error_code ec;
+    if (!std::filesystem::exists(filepath, ec)) {
+        return cur;
+    }
+    std::ifstream ifs(filepath, std::ios::binary);
+    if (!ifs.is_open()) {
+        return cur;
+    }
+
+    constexpr std::streamsize k_buf = 64 * 1024;
+    std::vector<char> buf(static_cast<size_t>(k_buf));
+    long long last_nl_end = 0;  // 最后一个 '\n' 之后的位置
+    long long scanned = 0;      // 已扫描字节数
+    int newlines = 0;
+    while (ifs.read(buf.data(), k_buf) || ifs.gcount() > 0) {
+        const auto got = ifs.gcount();
+        for (std::streamsize i = 0; i < got; ++i) {
+            if (buf[static_cast<size_t>(i)] == '\n') {
+                ++newlines;
+                last_nl_end = scanned + i + 1;
+            }
+        }
+        scanned += got;
+        if (got < k_buf) {
+            break;  // 最后一块（不足 64KB）
+        }
+    }
+    cur.byte_offset = last_nl_end;
+    cur.line_no = newlines;
+    return cur;
+}
+
+LogContent LogService::read_tail(const std::string& filename, TailCursor& cursor, int limit) {
     LogContent result;
-    result.total = from_line;  // 默认：无进展
+    result.total = cursor.line_no;  // 默认：无进展
 
     if (!is_path_safe(filename)) {
         return result;
     }
-
-    auto filepath = log_dir_ / filename;
+    const auto filepath = log_dir_ / filename;
     std::error_code ec;
     if (!std::filesystem::exists(filepath, ec)) {
         return result;
     }
-
-    std::ifstream ifs(filepath);
-    if (!ifs.is_open()) {
+    const auto file_size = static_cast<long long>(std::filesystem::file_size(filepath, ec));
+    if (ec) {
         return result;
     }
 
+    // 轮换/截断：文件比已消费位置还小 → 重置游标从头读（新文件行号重新累计）
+    if (file_size < cursor.byte_offset) {
+        cursor = TailCursor{};
+        result.total = 0;
+    }
+
+    std::ifstream ifs(filepath, std::ios::binary);
+    if (!ifs.is_open()) {
+        return result;
+    }
+    ifs.seekg(cursor.byte_offset);
+
     std::string raw_line;
-    int line_num = 0;  // 实际读到的最后一行行号
+    int line_num = cursor.line_no;
     while (std::getline(ifs, raw_line)) {
         // getline 返回 true 但 eofbit 已设置：文件末尾无换行符，
-        // 说明该行可能尚未写完（spdlog 正在写入）。不推送、不递增 line_num、
-        // 不推进 baseline，下次轮询从同一行重新读。
+        // 该行可能尚未写完（spdlog 正在写入）。不推送、不推进游标，下次重读。
         if (ifs.eof()) {
             break;
         }
         ++line_num;
-        if (line_num <= from_line) {
-            continue;  // 跳过已读行
-        }
         if (limit > 0 && static_cast<int>(result.lines.size()) >= limit) {
-            break;  // 达到单次推送上限，停止读取（剩余行下次再读）
+            break;  // 达到单次推送上限，剩余行下次再读
         }
         auto parsed = parse_line(raw_line, line_num);
         if (parsed) {
@@ -402,16 +446,11 @@ LogContent LogService::read_tail(const std::string& filename, int from_line, int
             unparsed.parsed = false;
             result.lines.push_back(std::move(unparsed));
         }
+        // 完整行（以 '\n' 结尾）→ 推进游标
+        cursor.byte_offset += static_cast<long long>(raw_line.size()) + 1;
+        cursor.line_no = line_num;
     }
-
-    // 计算 baseline：
-    // - 文件被截断（line_num < from_line）：重置为实际行数
-    // - 正常：from_line + 本次读到的行数
-    if (line_num < from_line) {
-        result.total = line_num;
-    } else {
-        result.total = from_line + static_cast<int>(result.lines.size());
-    }
+    result.total = cursor.line_no;
     return result;
 }
 

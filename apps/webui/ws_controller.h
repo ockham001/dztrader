@@ -10,6 +10,7 @@
 #include <memory>
 #include <functional>
 #include "config.h"
+#include "log_service.h"
 #include "repository.h"
 #include "mirror_store.h"
 #include "process_mirror.h"
@@ -53,7 +54,7 @@ public:
                           const drogon::WebSocketMessageType&) override;
     void handleConnectionClosed(const drogon::WebSocketConnectionPtr&) override;
 
-    /// 50ms 定时器回调：仅轮询订阅的日志文件 tail
+    /// 日志 tail 轮询回调（500ms 惰性定时器：首个日志订阅建立时启动，无订阅时取消）
     void on_timer();
 
     /// 数据变更广播：通知所有连接某 scope 的数据已变更，前端收到后 REST 刷新
@@ -87,11 +88,22 @@ private:
     struct Session {
         std::string user_id;
         std::string subscribed_log_file;  // empty = no subscription
-        int last_log_line_count = 0;      // 上次读到的最后一行行号（1-based）；0 = 未读过
+        LogService::TailCursor log_cursor;  // tail 游标（字节偏移+行号，增量读）
         int tail_fail_count = 0;          // 连续 send 失败次数；达到 3 自动退订
         bool is_admin = false;             // 连接时按 DB 角色缓存（admin 角色控制消息预检）
     };
     std::unordered_map<drogon::WebSocketConnectionPtr, Session> sessions_;
+
+    /// 日志 tail 惰性定时器（用户裁决：接受 tail 期间 500ms 轮询；无订阅时关闭）
+    static constexpr double kLogTailIntervalSec = 0.5;
+    trantor::TimerId log_tail_timer_{};
+    bool log_tail_timer_active_ = false;
+
+    /// 首个日志订阅建立时启动 tail 轮询定时器（幂等）
+    void start_log_tail_timer();
+
+    /// 无任何日志订阅时取消 tail 轮询定时器（幂等；仍有订阅则不动）
+    void stop_log_tail_timer_if_idle();
 
     /// 处理 JSON 控制消息
     void handle_control_message(const drogon::WebSocketConnectionPtr&, const nlohmann::json& msg);

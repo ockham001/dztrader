@@ -39,6 +39,12 @@ struct LogContent {
 
 class LogService {
 public:
+    /// tail 游标：字节偏移 + 行号基线（跨调用保持，支持增量读与轮换检测）
+    struct TailCursor {
+        long long byte_offset = 0;  // 已消费到的字节位置（下一条新行起点）
+        int line_no = 0;            // 已消费到的行号（1-based；0 = 未读过）
+    };
+
     explicit LogService(std::filesystem::path log_dir);
 
     /// List log files (*.log), optionally filtered by logger name and/or date.
@@ -65,15 +71,19 @@ public:
                             const std::string& to_ts,
                             bool from_end = false);
 
-    /// Tail 专用：从 from_line 之后（不含）开始读取，最多返回 limit 行。
-    /// 比 read_content(limit=0) 全量读快得多，适合 50ms 轮询场景。
-    /// @param from_line  上次读到的最后一行行号（1-based）；0 表示从文件开头读
-    /// @param limit      最多返回的行数（0 = 不限）
-    /// @return LogContent.total = 建议的下次 from_line（见 ws_controller 用法）
-    ///         - 正常读 N 行：total = from_line + N
-    ///         - 达到 limit：total = from_line + limit
-    ///         - 文件被截断（实际行数 < from_line）：total = 实际行数（重置 baseline）
-    LogContent read_tail(const std::string& filename, int from_line, int limit);
+    /// 订阅基线：扫描文件当前末尾，返回"只追新增"的游标。
+    /// 分块数换行（不逐行 parse，远快于 read_content 全量计数）；
+    /// 末尾无换行的半行不计入（偏移停在最后一个 '\n' 之后），留给 read_tail 补齐。
+    /// 文件不存在/路径不安全/打不开 → 返回 {0,0}（从文件头开始 tail）。
+    TailCursor tail_baseline(const std::string& filename);
+
+    /// Tail 专用增量读：从 cursor.byte_offset 起只读新增字节，解析为行。
+    /// - 文件大小 < cursor.byte_offset（轮换/截断）→ 自动重置游标从头读（行号重新累计）
+    /// - 末尾无换行的半行不消费（游标不推进），下次调用补齐
+    /// - 达到 limit 停止读取，剩余行下次再读
+    /// @param cursor  入参=上次游标；出参=本次推进后的游标（send 失败时调用方可回退）
+    /// @return LogContent.total = 推进后的 cursor.line_no（建议的下次行号基线）
+    LogContent read_tail(const std::string& filename, TailCursor& cursor, int limit);
 
     struct LogStats {
         std::map<std::string, int> by_level;
