@@ -5,6 +5,7 @@
 #include <dztrader/core/path.h>
 #include <nlohmann/json.hpp>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,22 @@ std::string param_or(const drogon::HttpRequestPtr& req,
     const std::string v = req->getParameter(key);
     return v.empty() ? def : v;
 }
+
+/// 解析整型 query 参数：缺失用默认值；非数字/溢出回退 nullopt（caller 回 400）。
+/// stoi 会抛 invalid_argument/out_of_range，必须隔离（宁肯乱码不崩溃）
+std::optional<int> parse_int_param(const drogon::HttpRequestPtr& req,
+                                   const std::string& key,
+                                   int def) {
+    const std::string v = req->getParameter(key);
+    if (v.empty()) {
+        return def;
+    }
+    try {
+        return std::stoi(v);
+    } catch (...) {
+        return std::nullopt;
+    }
+}
 }  // namespace
 
 bool LogCtrl::is_valid_level(const std::string& level) {
@@ -33,8 +50,18 @@ void LogCtrl::get_files(const drogon::HttpRequestPtr& req,
     LogService svc(dztrader::paths::logs());
     const std::string logger = req->getParameter("logger");
     const std::string date = req->getParameter("date");
-    const int limit = std::stoi(param_or(req, "limit", "30"));
-    const int offset = std::stoi(param_or(req, "offset", "0"));
+    const auto limit_opt = parse_int_param(req, "limit", 30);
+    if (!limit_opt.has_value()) {
+        callback(error_response(drogon::k400BadRequest, "invalid limit parameter"));
+        return;
+    }
+    const int limit = *limit_opt;
+    const auto offset_opt = parse_int_param(req, "offset", 0);
+    if (!offset_opt.has_value()) {
+        callback(error_response(drogon::k400BadRequest, "invalid offset parameter"));
+        return;
+    }
+    const int offset = *offset_opt;
 
     auto files = svc.list_files(logger, date, limit, offset);
     Json arr = Json::array();
@@ -55,8 +82,18 @@ void LogCtrl::get_content(const drogon::HttpRequestPtr& req,
         callback(error_response(drogon::k400BadRequest, "missing file parameter"));
         return;
     }
-    const int offset = std::stoi(param_or(req, "offset", "0"));
-    const int limit = std::stoi(param_or(req, "limit", "500"));
+    const auto offset_opt = parse_int_param(req, "offset", 0);
+    if (!offset_opt.has_value()) {
+        callback(error_response(drogon::k400BadRequest, "invalid offset parameter"));
+        return;
+    }
+    const int offset = *offset_opt;
+    const auto limit_opt = parse_int_param(req, "limit", 500);
+    if (!limit_opt.has_value()) {
+        callback(error_response(drogon::k400BadRequest, "invalid limit parameter"));
+        return;
+    }
+    const int limit = *limit_opt;
     std::string level = req->getParameter("level");
     // 规范化 level 参数（warn->warning），使 level_severity 能正确匹配
     if (!level.empty()) {
@@ -112,7 +149,12 @@ void LogCtrl::get_aggregate(const drogon::HttpRequestPtr& req,
         return;
     }
     const std::string level = param_or(req, "level", "error");
-    const int limit = std::stoi(param_or(req, "limit", "20"));
+    const auto limit_opt = parse_int_param(req, "limit", 20);
+    if (!limit_opt.has_value()) {
+        callback(error_response(drogon::k400BadRequest, "invalid limit parameter"));
+        return;
+    }
+    const int limit = *limit_opt;
 
     auto agg = svc.get_aggregate(file, level, limit);
     Json arr = Json::array();

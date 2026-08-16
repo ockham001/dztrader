@@ -172,3 +172,58 @@ TEST_F(LogControllerTest, PostFlushRequiresAdmin) {
     auto resp = invoke(&LogCtrl::flush_log, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
 }
+
+// I3 整型参数保护：非数字 limit/offset 必须回 400，禁止 std::stoi 抛异常逃逸 handler
+TEST_F(LogControllerTest, GetFilesRejectsNonNumericLimit) {
+    auto req = admin_req();
+    req->setParameter("limit", "abc");
+    auto resp = invoke(&LogCtrl::get_files, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(LogControllerTest, GetFilesRejectsNonNumericOffset) {
+    auto req = admin_req();
+    req->setParameter("offset", "xyz");
+    auto resp = invoke(&LogCtrl::get_files, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+// 合法数字回归：?limit=10 应为 200
+TEST_F(LogControllerTest, GetFilesAcceptsNumericLimit) {
+    auto req = admin_req();
+    req->setParameter("limit", "10");
+    auto resp = invoke(&LogCtrl::get_files, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+}
+
+// get_content 的 limit 同样要隔离；需带 file 参数
+TEST_F(LogControllerTest, GetContentRejectsNonNumericLimit) {
+    auto log_dir = dztrader::paths::logs();
+    std::ofstream ofs(log_dir / "test_content_limit.log");
+    ofs << "2026-07-13T14:23:45.000000000+08:00 info test_content [func=m file=f.cpp:1 pid=1 tid=2] a\n";
+    ofs.close();
+
+    auto req = admin_req();
+    req->setParameter("file", "test_content_limit.log");
+    req->setParameter("limit", "abc");
+    auto resp = invoke(&LogCtrl::get_content, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+
+    fs::remove(log_dir / "test_content_limit.log");
+}
+
+// get_aggregate 的 limit 同样要隔离；需带 file 参数
+TEST_F(LogControllerTest, GetAggregateRejectsNonNumericLimit) {
+    auto log_dir = dztrader::paths::logs();
+    std::ofstream ofs(log_dir / "test_agg_limit.log");
+    ofs << "2026-07-13T14:23:45.000000000+08:00 error test_agg [func=m file=f.cpp:1 pid=1 tid=2] boom\n";
+    ofs.close();
+
+    auto req = admin_req();
+    req->setParameter("file", "test_agg_limit.log");
+    req->setParameter("limit", "def");
+    auto resp = invoke(&LogCtrl::get_aggregate, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+
+    fs::remove(log_dir / "test_agg_limit.log");
+}
