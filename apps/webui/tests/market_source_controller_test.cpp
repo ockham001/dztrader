@@ -7,6 +7,11 @@
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <memory>
+#include <dztrader/data_type.h>
+#include <dztrader/shm/channel_meta.h>
+#include <dztrader/shm/frame_view.h>
+#include <dztrader/shm/reader.h>
+#include <dztrader/shm/writer.h>
 
 namespace dztrader::webui {
 namespace {
@@ -758,6 +763,92 @@ TEST_F(MarketSourceControllerTest, RemoveNoBroadcastWhenWriteFails) {
     dztrader::webui::g_broadcast_data_changed = nullptr;
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
     EXPECT_TRUE(scopes.empty());
+}
+
+// ---- shm-config: 空对象 {} = no-op 透传（契约 shm §SET，I7）----
+
+/// 构造独立事件通道，返回就绪 ShmWriter 与捕获 Reader。
+/// 使 guard_process_dispatch 的 is_ready 通过，并能读到写入的 SET_MD_SHM_CONFIG 帧。
+struct ReadyShmFixture {
+    std::string channel_name;
+    std::filesystem::path shm_dir;
+    std::shared_ptr<shm::ChannelMeta> meta;
+    std::shared_ptr<shm::MultiWriter> writer;
+    std::optional<shm::Reader> reader;
+    static constexpr uint64_t MB = 1024ull * 1024;
+
+    ReadyShmFixture() {
+        channel_name = "dz_test_shmcfg_" + std::to_string(reinterpret_cast<uintptr_t>(this));
+        shm_dir = std::filesystem::temp_directory_path() / channel_name;
+        std::filesystem::remove_all(shm_dir);
+        std::filesystem::create_directories(shm_dir);
+        const shm::ChannelConfig cfg{.channel_name = channel_name,
+                                     .shm_dir = shm_dir,
+                                     .meta_file_size = 4 * MB,
+                                     .page_size = 1 * MB,
+                                     .lock_memory = false,
+                                     .prefetch_memory = false};
+        meta = std::make_shared<shm::ChannelMeta>(shm::ChannelMeta::open_or_create(cfg));
+        writer = std::make_shared<shm::MultiWriter>(shm::MultiWriter::create(meta, "test_writer"));
+        reader = shm::Reader::create(meta, "test_reader");
+    }
+    ~ReadyShmFixture() {
+        reader.reset();
+        writer.reset();
+        meta.reset();
+        std::filesystem::remove_all(shm_dir);
+    }
+    // 排空 reader，返回最后一帧是否与目标 instance 匹配的 SET_MD_SHM_CONFIG 及 payload
+    struct Captured { bool found = false; nlohmann::json payload; };
+    Captured capture_shm_config(const std::string& instance) {
+        Captured out;
+        while (const auto* raw = reader->next_frame()) {
+            const shm::FrameView view(raw);
+            if (view.type() != DZ_FRAME_SET_MD_SHM_CONFIG) {
+                continue;
+            }
+            if (std::string(view.ext_inst_id()) != instance) {
+                continue;
+            }
+            const auto* data = reinterpret_cast<const char*>(view.ext_inst_payload());
+            out.payload = nlohmann::json::parse(data, data + view.ext_inst_payload_size());
+            out.found = true;
+            break;
+        }
+        return out;
+    }
+};
+
+TEST_F(MarketSourceControllerTest, SetShmConfigEmptyObjectIsNoop_Dispatched200) {
+    // 契约 shm §SET: 空对象 {} = 无操作 no-op, 仍回 RTN（透传给网关，由网关回当前值）。
+    // 此前的实现把空 body 判为 400，与契约矛盾；修复后应放行透传。
+    // 镜像就绪 + writer 就绪时，set_shm_config 应返回 200 dispatched。
+    const int64_t id = create_source("ctp_shmcfg_empty");
+    prime_mirror_for_dispatch(*process_mirror_, "dzmd_ctp");
+
+    ReadyShmFixture shm;
+    shm_writer_ = std::make_shared<ShmWriter>(shm.writer);
+    ctrl_ = std::make_shared<MarketSourceCtrl>(repo_, shm_writer_, process_mirror_);
+
+    auto req = admin_req();
+    req->setBody(R"({})");
+    auto resp = invoke(&MarketSourceCtrl::set_shm_config, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    // 网关收到 payload 为 {} 的 SET_MD_SHM_CONFIG 帧
+    auto cap = shm.capture_shm_config("dzmd_ctp");
+    ASSERT_TRUE(cap.found) << "应写入 SET_MD_SHM_CONFIG 帧 (instance=dzmd_ctp)";
+    EXPECT_TRUE(cap.payload.is_object());
+    EXPECT_TRUE(cap.payload.empty());
+}
+
+TEST_F(MarketSourceControllerTest, SetShmConfigNonObjectBodyReturns400) {
+    // 仅非 object 形态（数组/标量/null）才 400（契约 shm §SET）
+    const int64_t id = create_source("ctp_shmcfg_arr");
+    auto req = admin_req();
+    req->setBody(R"([1,2])");
+    auto resp = invoke(&MarketSourceCtrl::set_shm_config, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
 }
 
 }  // anonymous namespace

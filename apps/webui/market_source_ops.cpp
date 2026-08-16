@@ -343,7 +343,9 @@ void MarketSourceCtrl::set_shm_config(
         callback(error_response(drogon::k400BadRequest, "bad request"));
         return;
     }
-    if (!body.is_object() || body.empty()) {
+    // 契约 shm §SET：空对象 {} = 无操作 no-op，仍透传（网关回 RTN 当前值）；
+    // 仅拒绝非 object 形态（null/数组/标量）
+    if (!body.is_object()) {
         callback(error_response(drogon::k400BadRequest, "bad request"));
         return;
     }
