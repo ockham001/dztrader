@@ -286,6 +286,7 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
             return;
         }
         sessions_[conn].subscribed_log_file = file;
+        sessions_[conn].tail_fail_count = 0;  // 重订阅重置失败计数（跨订阅残留会使新订阅的 auto-unsubscribe 阈值被预支）
         // 读取当前行数作为基线
         try {
             dztrader::webui::LogService svc(dztrader::paths::logs());
@@ -302,6 +303,7 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
     } else if (type == "unsubscribe_log") {
         sessions_[conn].subscribed_log_file.clear();
         sessions_[conn].last_log_line_count = 0;
+        sessions_[conn].tail_fail_count = 0;  // 退订清零，下次订阅从满额阈值开始
         const nlohmann::json ack = {{"type", "unsubscribe_log_ack"}, {"seq", msg.value("seq", 0)}};
         conn->send(ack.dump());
     } else {
