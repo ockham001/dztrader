@@ -469,7 +469,7 @@ void WsController::poll_log_tail() {
                 it->second.tail_fail_count = 0;  // 成功，重置失败计数
             }
 
-            // 连续失败 3 次自动退订，防止僵尸连接每 50ms 无效 send
+            // 连续失败 3 次自动退订，防止僵尸连接每 500ms 无效 send
             if (it->second.tail_fail_count >= 3) {
                 SPDLOG_WARN("auto-unsubscribe log tail | user={} file={} fails={}",
                             it->second.user_id, file, it->second.tail_fail_count);

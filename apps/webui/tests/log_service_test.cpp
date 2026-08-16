@@ -191,7 +191,7 @@ TEST_F(LogServiceTest, GetTimelineBucketsByMinute) {
 }
 
 // ---------------------------------------------------------------------------
-// read_tail：偏移量读取，为 ws_controller 的 50ms 轮询优化
+// read_tail：偏移量读取，为 ws_controller 的 500ms 轮询优化
 // ---------------------------------------------------------------------------
 
 TEST_F(LogServiceTest, ReadTailFromZeroReadsAll) {
