@@ -85,7 +85,7 @@ domain 清单与挂载实例：
 | `log_tail_unsubscribed` | 服务端主动退订日志 tail（连续失败 3 次 / 订阅自身日志被拒） | `{ file, reason }`；`reason ∈ self_logs_cannot_be_tailed \| send failures` |
 | `data_changed` | 后端 DB 数据变更（用户上下线等），通知前端按 `scope` 重新 REST 刷新 | `{ scope }` |
 | `default_password_warning` | admin 用户连接且仍为默认密码且未确认时，定向推送 | `{ message }` |
-| `error` | 连接协议错误（鉴权失败 / 非法 JSON / 未知 type / 控制消息参数缺失） | `{ message, seq? }` |
+| `error` | 连接协议错误（鉴权失败 / 非法 JSON / 未知 type / 控制消息参数缺失 / 管理操作权限或进程状态预检未通过） | `{ message, seq? }` |
 | `pong` | 响应客户端 `ping` | 无载荷 |
 
 ### 2.4 控制消息 ACK（多态 `*_ack`）
@@ -123,7 +123,7 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 
 - WS 是**状态推送通道**（镜像增量 + 快照）；REST 是**请求入口与大数据查询**（见契约 rest）。
 - 设置类请求统一走 REST：进程启停（`POST /api/market-sources/{id}/start|stop` → `REQUEST_PROCESS_CONTROL`）、行情连接（`POST /api/market-sources/{id}/login|logout` → `REQUEST_MD_CONNECT/DISCONNECT`）、行情配置（brokers CRUD → `SET_MD_CONFIG`）、自动登录（`PUT .../auto-login` → `SET_AUTO_LOGIN`）、日志配置（`POST /api/logs/level|flush` → `SET_LOG_CONFIG`/`FLUSH_LOG`）。WS 的 `md_connect`/`md_disconnect`/`query_md_subscriptions` 为等效便捷通道，两路行为一致。
-- `md_connect`/`md_disconnect` 与 REST `POST /api/market-sources/glm-5.3_common/login|logout` 校验一致：admin 角色 + 目标进程镜像 `Running` 预检；镜像未就绪（dzweb 启动初期快照未完成）时预检可能保守拒绝，以 pending 超时/progress 推送兜底。
+- `md_connect`/`md_disconnect` 与 REST `POST /api/market-sources/glm-5.3_common/login|logout` 核心守卫一致：admin 角色 + 目标进程镜像 `Running` 预检。镜像未就绪（dzweb 启动初期快照未完成）时预检可能保守拒绝（回 `error`，前端不设 pending）；预检放行后目标进程失效的场景由 pending 超时/progress 推送兜底。
 - 前端在 REST 请求成功后**不得假设已生效**：以 WS 领域消息（RTN 推送）为生效信号。
 
 ---
