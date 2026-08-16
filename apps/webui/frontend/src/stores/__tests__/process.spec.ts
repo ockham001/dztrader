@@ -178,6 +178,23 @@ describe('useProcessStore', () => {
       expect(await store.stop(1, 'dzmd_ctp')).toBe(false)
       expect(usePending().pending['source:1:stop']).toBe(false)
     })
+
+    // 超时兜底: distinguishTimeout+opLabel → resolve PENDING_TIMEOUT(truthy) 返回 true,
+    // 聚合层 runOp 据此跳过 error(§7.2 双 toast 去重)；toast 文案为可读 opLabel
+    it('超时兜底（30s）清 pending、返回 true 并 toast「行情源停止超时」一次', async () => {
+      vi.mocked(marketSourcesApi.stop).mockImplementation(() => new Promise(() => {}))
+      const store = useProcessStore()
+      const toast = useToastStore()
+      const errorSpy = vi.spyOn(toast, 'error')
+      const p = store.stop(1, 'dzmd_ctp')
+      expect(usePending().pending['source:1:stop']).toBe(true)
+      await vi.advanceTimersByTimeAsync(30_001)
+      expect(usePending().pending['source:1:stop']).toBe(false)
+      const result = await p
+      expect(result).toBe(true)  // PENDING_TIMEOUT truthy → 跳过 error
+      expect(errorSpy).toHaveBeenCalledTimes(1)  // 单 toast（去重）
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('行情源停止超时'))
+    })
   })
 
   describe('removeSource', () => {
@@ -198,6 +215,23 @@ describe('useProcessStore', () => {
       const store = useProcessStore()
       expect(await store.removeSource(1, 'dzmd_ctp')).toBe(false)
       expect(usePending().pending['source:1:remove']).toBe(false)
+    })
+
+    // 超时兜底: distinguishTimeout+opLabel → resolve PENDING_TIMEOUT(truthy) 返回 true,
+    // 聚合层 runOp 据此跳过 error(§7.2 双 toast 去重)；toast 文案为可读 opLabel
+    it('超时兜底（30s）清 pending、返回 true 并 toast「行情源删除超时」一次', async () => {
+      vi.mocked(marketSourcesApi.remove).mockImplementation(() => new Promise(() => {}))
+      const store = useProcessStore()
+      const toast = useToastStore()
+      const errorSpy = vi.spyOn(toast, 'error')
+      const p = store.removeSource(1, 'dzmd_ctp')
+      expect(usePending().pending['source:1:remove']).toBe(true)
+      await vi.advanceTimersByTimeAsync(30_001)
+      expect(usePending().pending['source:1:remove']).toBe(false)
+      const result = await p
+      expect(result).toBe(true)  // PENDING_TIMEOUT truthy → 跳过 error
+      expect(errorSpy).toHaveBeenCalledTimes(1)  // 单 toast（去重）
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('行情源删除超时'))
     })
   })
 

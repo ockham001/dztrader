@@ -15,8 +15,8 @@ import { usePending } from '@/composables/usePending'
 //     契约 process；原 rtn_process_control 消息后端已不推送，P6 迁移）
 //     HTTP 失败清 pending + 返回 false
 //     超时兜底（进程操作 30s，usePending 超时清 + toast）
-//   超时 toast 经 distinguishTimeout + opLabel 输出可读文案；超时返回 truthy
-//   symbol（start/stop/removeSource 返回 true），聚合层 runOp 据此跳过 error（§7.2 双 toast 去重）
+//   超时 toast 经 distinguishTimeout + opLabel 输出可读文案；超时返回 true
+//   symbol（PENDING_TIMEOUT 转真值）→ 聚合层 runOp 的 !ok 分支不命中，不设 error（§7.2 双 toast 去重）
 // - applyProcessStatus: 解析 event 字段清对应 pending（成功 resolve / 失败 fail, 不弹 toast）；
 //   RemoveSucceeded 写 removedNames（聚合层据此移除卡片）
 const PROCESS_OP_TIMEOUT_MS = 30_000
@@ -123,7 +123,7 @@ export const useProcessStore = defineStore('process', () => {
       opLabel: '行情源启动',          // 超时 toast 文案（原为裸 key）
       distinguishTimeout: true,       // 超时 resolve PENDING_TIMEOUT（truthy），下方判断按"跳过 error"处理
     })
-    // PENDING_TIMEOUT 为 truthy symbol：超时已 toast，返回 true 让聚合层跳过 error
+    // 超时返回 true（PENDING_TIMEOUT 转真值）→ 聚合层 runOp 的 !ok 分支不命中，不设 error，无双 toast
     return result !== undefined
   }
 
@@ -136,7 +136,7 @@ export const useProcessStore = defineStore('process', () => {
       opLabel: '行情源停止',          // 超时 toast 文案（原为裸 key）
       distinguishTimeout: true,       // 超时 resolve PENDING_TIMEOUT（truthy），下方判断按"跳过 error"处理
     })
-    // PENDING_TIMEOUT 为 truthy symbol：超时已 toast，返回 true 让聚合层跳过 error
+    // 超时返回 true（PENDING_TIMEOUT 转真值）→ 聚合层 runOp 的 !ok 分支不命中，不设 error，无双 toast
     return result !== undefined
   }
 
@@ -151,7 +151,7 @@ export const useProcessStore = defineStore('process', () => {
       opLabel: '行情源删除',          // 超时 toast 文案（原为裸 key）
       distinguishTimeout: true,       // 超时 resolve PENDING_TIMEOUT（truthy），下方判断按"跳过 error"处理
     })
-    // PENDING_TIMEOUT 为 truthy symbol：超时已 toast，返回 true 让聚合层跳过 error
+    // 超时返回 true（PENDING_TIMEOUT 转真值）→ 聚合层 runOp 的 !ok 分支不命中，不设 error，无双 toast
     return result !== undefined
   }
 
