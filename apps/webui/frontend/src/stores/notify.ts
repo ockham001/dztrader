@@ -26,7 +26,9 @@ export const useNotifyStore = defineStore('notify', () => {
   const popupQueue = ref<NotifyItem[]>([])
   const popupCurrent = computed<NotifyItem | null>(() => popupQueue.value[0] ?? null)
 
-  // timestamp 优先用透传值（契约 notify-ui payload 字段），缺省回退本地时间
+  // timestamp 优先用透传值（契约 notify-ui payload 字段，Unix 秒级），缺省回退 Date.now()（毫秒级）。
+  // 注意：两者单位不同——透传为秒、本地回退为毫秒。当前 items[].timestamp 无下游消费；
+  // 若将来做排序/展示必须先统一单位（见 wsHandlers notify_ui 透传处约定）。
   function push(message: string, source?: string, level?: NotifyLevel, popup?: boolean, timestamp?: number): void {
     if (!message) return // 空消息不弹 toast 不缓存（与 marketSources.setNotifyUi 行为一致）
     const lv = level ?? 'error' // level 缺失时默认 error（与现有 handler 规范化一致）

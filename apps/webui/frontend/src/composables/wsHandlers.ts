@@ -167,7 +167,8 @@ registerHandler('notify_ui', (payload) => {
   //   - 配置类 pending → md_rtn_config / auto_login
   //   - 进程类 pending → process_status 的 event 字段（契约 process）
   //   - 登录类 pending → progress 状态转移（契约 progress）
-  // data: { source?: string, message?: string, level?: string, popup?: boolean }
+  // data: { source?: string, message?: string, level?: string, popup?: boolean, timestamp?: number }
+  // timestamp 为契约 notify-ui 的 Unix 秒级发送方时间戳，原样透传（单位语义见 notify store push 注释）
   //   level 为字符串：'info' | 'warning' | 'error'（与 log level 规范全称一致）
   //   popup=true 且 error 级别: 契约 notify-ui 前端义务——必须打断用户展示
   //   （NotifyStore 入 popup 队列, App.vue 渲染 modal 逐条确认）
