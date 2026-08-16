@@ -133,6 +133,17 @@ watch(() => store.contentLoading, (loading, prev) => {
   }
 })
 
+// I1: 订阅绑定连接（契约 webui-ws §3 subscribe_log），断线即随旧连接失效；
+// 重连成功时按当前 tail 状态重建订阅，消除"开关仍开但 log_line 静默断流"。
+// prev 守卫：首连（挂载时已 connected）不重复订阅——onMounted 已处理
+watch(() => ws.connectionState.value, (state, prev) => {
+  if (state === 'connected' && prev && prev !== 'connected' &&
+      store.tailEnabled && store.selectedFile) {
+    ws.subscribeLog(store.selectedFile)
+    nextTick(() => scrollToBottom())
+  }
+})
+
 onMounted(() => {
   if (store.tailEnabled && store.selectedFile) {
     ws.subscribeLog(store.selectedFile)
@@ -140,6 +151,11 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  // M14: 清理未触发的关键字防抖定时器（避免卸载后改共享 store 状态）
+  if (keywordTimer) {
+    clearTimeout(keywordTimer)
+    keywordTimer = null
+  }
   if (store.tailEnabled) {
     ws.unsubscribeLog()
   }
