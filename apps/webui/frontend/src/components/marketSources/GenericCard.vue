@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import StatusIndicator from '@/components/shared/StatusIndicator.vue'
+import ProcessStartButton from './ProcessStartButton.vue'
 import { processStateText, processStateColor } from '@/composables/useProcessState'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import type { MarketSourceView } from '@/stores/marketSources'
@@ -43,6 +44,9 @@ const src = computed(() => props.source)
 
     <!-- Card Body: 仅显示基本信息提示 -->
     <div v-if="src.expanded" class="source-card__body is-open">
+      <div style="margin-bottom: var(--spacer-12)">
+        <ProcessStartButton :source="src" />
+      </div>
       <div class="card-hint">
         未知大类 <code class="mono">{{ src.ui_card }}</code>，未注册专用卡片组件。
         请在 <code class="mono">marketSourcesCardRegistry.ts</code> 中注册对应卡片。

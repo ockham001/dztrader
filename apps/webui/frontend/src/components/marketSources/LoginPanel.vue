@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import SyncSwitch from '@/components/shared/SyncSwitch.vue'
+import ProcessStartButton from './ProcessStartButton.vue'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import type { MarketSourceView } from '@/stores/marketSources'
 
@@ -26,11 +27,13 @@ const autoLoginStatusClass = (s: MarketSourceView): string => {
 <template>
   <!-- ── 登录操作 ── -->
   <div class="card-actions">
+    <ProcessStartButton :source="src" />
     <button
       class="ds-btn ds-btn--sm"
       :class="src.loginState === 'offline' ? 'ds-btn--primary' : 'ds-btn--secondary'"
       type="button"
-      :disabled="src.loginPending || src.loginState === 'pending'"
+      :disabled="src.loginPending || src.loginState === 'pending' || src.process_state !== 'Running'"
+      :title="src.process_state !== 'Running' ? '进程未运行，请先启动进程' : undefined"
       @click="store.login(src.id)"
     >
       <span v-if="src.loginPending" class="ds-btn__spinner"></span>
@@ -39,7 +42,8 @@ const autoLoginStatusClass = (s: MarketSourceView): string => {
     <button
       class="ds-btn ds-btn--sm ds-btn--danger-subtle"
       type="button"
-      :disabled="src.logoutPending || src.loginState === 'offline'"
+      :disabled="src.logoutPending || src.loginState === 'offline' || src.process_state !== 'Running'"
+      :title="src.process_state !== 'Running' ? '进程未运行，请先启动进程' : undefined"
       @click="store.logout(src.id)"
     >
       <span v-if="src.logoutPending" class="ds-btn__spinner"></span>
