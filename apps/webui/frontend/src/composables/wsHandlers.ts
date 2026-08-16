@@ -49,8 +49,8 @@ registerHandler('snapshot', (payload) => {
   // （process_config/process_status/md_config/md_status/progress），幂等覆盖——
   // md_config/md_status 的 apply 承担"清 pending"副作用（onopen 不再 refreshConfigs/
   // QUERY_ALL 补拉，断线重连期间的挂起 pending 靠这里清除，否则悬挂至超时）。
-  // log_config：日志进程列表无 pending-clearing 副作用，走 applySnapshot 整体重建
-  // （随快照增删，保持列表一致）；md_shm_config 已消费（契约 shm SHM 配置镜像，
+  // log_config：日志进程列表经 applySnapshot 整体重建（随快照增删，保持列表一致），
+  // 并兜底清 set_level pending（契约 webui-ws §6）；md_shm_config 已消费（契约 shm SHM 配置镜像，
   // 分发复用增量帧 apply）；event_shm_config（挂 dztraderd）前端无 store 消费，忽略；
   // auto_login 已消费（契约 auto-login 排程镜像）。
   const mirror = (payload ?? {}) as Record<string, Record<string, unknown>>
@@ -86,8 +86,8 @@ registerHandler('snapshot', (payload) => {
         case 'progress':
           progressStore.applyProgress(instanceId, value)
           break
-        // log_config 已由上方 applySnapshot 处理；event_shm_config（挂 dztraderd）
-        // 前端无 store 消费，忽略
+        // log_config 已由上方 applySnapshot 整体重建并兜底清 set_level pending；
+        // event_shm_config（挂 dztraderd）前端无 store 消费，忽略
       }
     }
   }
