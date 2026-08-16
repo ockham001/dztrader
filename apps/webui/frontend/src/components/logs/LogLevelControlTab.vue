@@ -30,7 +30,7 @@ async function handleLevelChange(proc: LogProcess, value: string | number): Prom
   const level = String(value)
   const ok = await store.setProcessLevel(proc.name, level)
   if (ok) {
-    toast.success(`${proc.name} 级别已设为 ${level}`)
+    toast.success(`${proc.name} 级别设置已下发`)
   } else {
     toast.error(`${proc.name} 级别设置失败`)
   }
@@ -54,9 +54,9 @@ async function handleBatchSetLevel(): Promise<void> {
   }
   const result = await store.batchSetLevel()
   if (result.fail === 0) {
-    toast.success(`已设置 ${result.ok} 个进程级别为 ${store.batchLevel}`)
+    toast.success(`已下发 ${result.ok} 个进程级别为 ${store.batchLevel}`)
   } else if (result.ok > 0) {
-    toast.warning(`${result.ok} 成功, ${result.fail} 失败`)
+    toast.warning(`${result.ok} 已下发, ${result.fail} 失败`)
   } else {
     toast.error('批量设置级别失败')
   }

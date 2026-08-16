@@ -94,7 +94,7 @@ describe('useLogsStore', () => {
     expect(store.totalLines).toBe(10005)
   })
 
-  it('setProcessLevel updates process level on success', async () => {
+  it('setProcessLevel dispatch: pending 保持直到 log_config 推送（契约 log）', async () => {
     vi.mocked(logsApi.logsApi.setLevel).mockResolvedValue({
       results: [{ name: 'dztraderd', ok: true, old: 'info', new: 'warning' }],
     })
@@ -102,12 +102,28 @@ describe('useLogsStore', () => {
     store.processes = [{ name: 'dztraderd', type: '主进程', level: 'info' }]
     const { pending } = usePending()
     const p = store.setProcessLevel('dztraderd', 'warning')
-    expect(pending['logs:dztraderd:set_level']).toBe(true)  // 请求期间挂起
     const ok = await p
     expect(ok).toBe(true)
+    // HTTP 成功≠已生效: pending 保持（keepPendingOnSuccess），级别不乐观更新
+    expect(pending['logs:dztraderd:set_level']).toBe(true)
+    expect(store.processes[0].level).toBe('info')
+    // log_config WS 推送（RTN_LOG_CONFIG）到达: 更新级别 + 清 pending
+    store.applyLogConfig('dztraderd', { level: 'warning' })
     expect(store.processes[0].level).toBe('warning')
-    // HTTP 同步语义：成功即清（keepPendingOnSuccess: false），仅受 300ms 防闪烁约束
-    expect(pending['logs:dztraderd:set_level']).toBe(true)  // 未到最短展示时长，仍 pending
+    await vi.advanceTimersByTimeAsync(300)
+    expect(pending['logs:dztraderd:set_level']).toBe(false)
+  })
+
+  it('setProcessLevel ok=false 立即清 pending（无 RTN 会来）', async () => {
+    vi.mocked(logsApi.logsApi.setLevel).mockResolvedValue({
+      results: [{ name: 'dztraderd', ok: false, old: 'info', new: 'warning' }],
+    })
+    const store = useLogsStore()
+    store.processes = [{ name: 'dztraderd', type: '主进程', level: 'info' }]
+    const { pending } = usePending()
+    const ok = await store.setProcessLevel('dztraderd', 'warning')
+    expect(ok).toBe(false)
+    expect(store.processes[0].level).toBe('info')
     await vi.advanceTimersByTimeAsync(300)
     expect(pending['logs:dztraderd:set_level']).toBe(false)
   })
@@ -150,7 +166,7 @@ describe('useLogsStore', () => {
     const store = useLogsStore()
     store.processes = [
       { name: 'dztraderd', type: '主进程', level: 'info' },
-      { name: 'dzmd_ctp', type: '行情源', level: 'debug' },
+      { name: 'dzmd_ctp', type: '行情源', level: 'info' },
     ]
     store.selectedProcesses = new Set(['dztraderd', 'dzmd_ctp'])
     store.batchLevel = 'warning'
@@ -160,7 +176,12 @@ describe('useLogsStore', () => {
     expect(pending['logs:dzmd_ctp:set_level']).toBe(true)
     const res = await p
     expect(res).toEqual({ ok: 2, fail: 0 })
-    expect(store.processes.every(proc => proc.level === 'warning')).toBe(true)
+    // 不乐观更新: 级别由 log_config 推送更新
+    expect(store.processes.every(proc => proc.level === 'info')).toBe(true)
+    // pending 保持, 由各 target 的 applyLogConfig 清除
+    expect(pending['logs:dztraderd:set_level']).toBe(true)
+    store.applyLogConfig('dztraderd', { level: 'warning' })
+    store.applyLogConfig('dzmd_ctp', { level: 'warning' })
     await vi.advanceTimersByTimeAsync(300)
     expect(pending['logs:dztraderd:set_level']).toBe(false)
     expect(pending['logs:dzmd_ctp:set_level']).toBe(false)

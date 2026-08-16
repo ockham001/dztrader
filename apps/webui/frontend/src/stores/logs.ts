@@ -8,12 +8,13 @@ import type {
   TimelineBucket, LogProcess, LogLevel,
 } from '@/types/api'
 
-// 进程控制 pending 迁移 usePending（设计 §5.3）：
+// 进程控制 pending 迁移 usePending（设计 §5.3，契约 log/webui-ws §5）：
 // - key: logs:{name}:set_level / logs:{name}:flush（按进程名，行级按钮独立 spin）
-// - minPendingMs: 300 防闪烁（对照现有 MIN_PENDING_MS 语义：HTTP 同步操作，成功也清）
-// - keepPendingOnSuccess: false —— 现有实现成功/失败均在 finally 清 processPending，
-//   logs 操作无 RTN 清 pending 链路（进程级别以 WS log_config 推送为准，非 pending 语义）
-// - timeout: 10_000 兜底（usePending 默认值，超时清 + toast）
+// - minPendingMs: 300 防闪烁
+// - set_level: RTN 驱动 --SET 后 pending，以对应实例的 log_config 推送
+//   （applyLogConfig resolve）清除；HTTP ok=false 无 RTN 会来，立即 fail
+// - flush: 无 RTN，keepPendingOnSuccess: false（HTTP 同步语义，成功即清，纯视觉防双击）
+// - timeout: 10_000 兜底（超时清 + toast）
 const MIN_PENDING_MS = 300
 const CONTROL_TIMEOUT_MS = 10_000
 
@@ -61,7 +62,7 @@ export const useLogsStore = defineStore('logs', () => {
   const selectedProcesses = ref<Set<string>>(new Set())
   const batchLevel = ref<string>('info')
 
-  const { pending, run } = usePending()
+  const { pending, run, resolve, fail } = usePending()
 
   // === Computed ===
   const loggerOptions = computed(() => {
@@ -230,6 +231,8 @@ export const useLogsStore = defineStore('logs', () => {
       // 快照之后新出现的进程：补一行
       processes.value.push({ name: instanceId, type: deriveType(instanceId), level })
     }
+    // 契约 log: log_config 推送到达 = 生效信号，清 set_level pending
+    resolve(`logs:${instanceId}:set_level`)
   }
 
   /// Append a new line from WebSocket log_line push (real-time tail)
@@ -241,24 +244,23 @@ export const useLogsStore = defineStore('logs', () => {
     totalLines.value++
   }
 
+  /// 契约 log: SET 后 pending，以对应实例的 log_config 推送（applyLogConfig）清除；
+  /// HTTP ok=false（未写入事件通道）时无 RTN 会来，立即 fail；超时 10s 兜底 toast。
+  /// 级别显示不乐观更新，由推送驱动（RTN 成功=新值/失败=回滚旧值）。
   async function setProcessLevel(name: string, level: string): Promise<boolean> {
     const key = `logs:${name}:set_level`
-    // 对照现有实现：HTTP 同步语义（成功即清 pending，finally 清），仅 300ms 防闪烁
     const resp = await run(
       key,
       () => logsApi.setLevel([name], level),
-      { minPendingMs: MIN_PENDING_MS, timeout: CONTROL_TIMEOUT_MS, keepPendingOnSuccess: false },
+      { minPendingMs: MIN_PENDING_MS, timeout: CONTROL_TIMEOUT_MS, opLabel: `${name} 日志级别设置` },
     )
     if (!resp) return false  // HTTP 失败/超时：usePending 已清 pending
     const result = resp.results.find(r => r.name === name)
-    if (result?.ok) {
-      const idx = processes.value.findIndex(p => p.name === name)
-      if (idx !== -1) {
-        processes.value[idx] = { ...processes.value[idx], level }
-      }
-      return true
+    if (!result?.ok) {
+      fail(key)  // 未写入事件通道：无 RTN，立即清
+      return false
     }
-    return false
+    return true
   }
 
   async function flushProcess(name: string): Promise<boolean> {
@@ -277,7 +279,8 @@ export const useLogsStore = defineStore('logs', () => {
     const targets = Array.from(selectedProcesses.value)
     if (targets.length === 0) return { ok: 0, fail: 0 }
     // 每个 target 一个 pending key（行级按钮独立 spin，对照现有 processPending Set 语义）；
-    // 共享一次 HTTP 请求（fn 防重入：shared promise 首次构造后复用）
+    // 共享一次 HTTP 请求（fn 防重入：shared promise 首次构造后复用）；
+    // pending 由各 target 的 applyLogConfig（log_config 推送）清除
     let shared: ReturnType<typeof logsApi.setLevel> | undefined
     const results = await Promise.all(targets.map(t =>
       run(
@@ -286,7 +289,7 @@ export const useLogsStore = defineStore('logs', () => {
           shared ??= logsApi.setLevel(targets, batchLevel.value)
           return shared
         },
-        { minPendingMs: MIN_PENDING_MS, timeout: CONTROL_TIMEOUT_MS, keepPendingOnSuccess: false },
+        { minPendingMs: MIN_PENDING_MS, timeout: CONTROL_TIMEOUT_MS },
       ),
     ))
     const resp = results[0]
@@ -295,13 +298,10 @@ export const useLogsStore = defineStore('logs', () => {
     let failCount = 0
     for (const result of resp.results) {
       if (result.ok) {
-        okCount++
-        const idx = processes.value.findIndex(p => p.name === result.name)
-        if (idx !== -1) {
-          processes.value[idx] = { ...processes.value[idx], level: batchLevel.value }
-        }
+        okCount++  // 已下发; 级别与 pending 由各 target 的 applyLogConfig 驱动
       } else {
         failCount++
+        fail(`logs:${result.name}:set_level`)
       }
     }
     return { ok: okCount, fail: failCount }
