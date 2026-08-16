@@ -25,11 +25,15 @@ let recoveryTimer: ReturnType<typeof setTimeout> | null = null
 let reconnectAttempts = 0
 let seqCounter = 0
 let manualClose = false
+let lastPongAt = 0  // 最近一次收到 pong 的时刻（onopen 重置，探活基准）
 
 const MAX_RECONNECT_ATTEMPTS = 5
 const HEARTBEAT_INTERVAL_MS = 30_000
 const RECONNECT_BASE_DELAY_MS = 3_000
 const RECOVERY_DELAY_MS = 30_000
+const HEARTBEAT_STALE_MS = 2 * HEARTBEAT_INTERVAL_MS + 5_000
+// 半开连接探活阈值：超过此时长未收到 pong 判定连接死亡，主动 close 走重连。
+// 仅靠 onclose 无法感知半开（对端不可达但 TCP 未断），心跳必须双向校验
 
 const connectionState = ref<WsConnectionState>('disconnected')
 const lastError = ref<string | null>(null)
@@ -48,6 +52,11 @@ function startHeartbeat(): void {
   stopHeartbeat()
   heartbeatTimer = setInterval(() => {
     if (ws && ws.readyState === WebSocket.OPEN) {
+      // 探活：距上次 pong 超过阈值 → 判定半开，强制断开触发重连路径
+      if (Date.now() - lastPongAt > HEARTBEAT_STALE_MS) {
+        ws.close()
+        return
+      }
       ws.send(JSON.stringify({ type: 'ping' }))
     }
   }, HEARTBEAT_INTERVAL_MS)
@@ -82,6 +91,8 @@ function handleMessage(event: MessageEvent): void {
   if (event.data instanceof Blob) {
     event.data.text().then((text) => {
       handleTextMessage(text)
+    }).catch((err: unknown) => {
+      console.warn('ws blob decode failed', err)
     })
     return
   }
@@ -95,7 +106,10 @@ function handleMessage(event: MessageEvent): void {
 function handleTextMessage(text: string): void {
   try {
     const msg = JSON.parse(text) as { type: string; data?: unknown; payload?: unknown; instance_id?: string }
-    if (msg.type === 'pong') return                      // 心跳应答
+    if (msg.type === 'pong') {                       // 心跳应答（探活基准）
+      lastPongAt = Date.now()
+      return
+    }
     if (msg.type === 'error') {                          // 连接协议错误
       if (msg.payload && typeof msg.payload === 'object' && 'message' in msg.payload) {
         lastError.value = String((msg.payload as { message: unknown }).message)
@@ -112,6 +126,16 @@ function handleTextMessage(text: string): void {
 export function connect(): void {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     return
+  }
+
+  // 清理可能遗留的重连/恢复定时器（failed 态 30s 恢复定时器与手动 connect 叠加会双建连）
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  if (recoveryTimer) {
+    clearTimeout(recoveryTimer)
+    recoveryTimer = null
   }
 
   manualClose = false
@@ -137,6 +161,7 @@ export function connect(): void {
     connectionState.value = 'connected'
     reconnectAttempts = 0
     lastError.value = null
+    lastPongAt = Date.now()  // 新连接重置探活基准
     startHeartbeat()
     // 重连补拉简化（P6，设计 §5.1）：后端连接即推全量 snapshot，snapshot 领域分发
     // 复用增量帧同一 apply 函数（process_config/process_status/md_config/md_status/progress），
