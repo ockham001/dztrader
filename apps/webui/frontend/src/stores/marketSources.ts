@@ -40,7 +40,7 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
 
   const keyOf = (id: number, op: string) => `source:${id}:${op}`
 
-  /// 聚合 schedules: 以 auto_login 镜像为准 (契约 04, 含清空语义)。
+  /// 聚合 schedules: 以 auto_login 镜像为准 (契约 auto-login, 含清空语义)。
   /// 镜像条目无 id, 前端以 login+logout 时间对匹配 (ScheduleView.id 为占位)。
   function mergeSchedules(id: number, mirror?: { login_time: string; logout_time: string }[]): ScheduleView[] {
     return (mirror ?? []).map((raw) => {
@@ -76,7 +76,7 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
         display_name: displayOverrides.value[name] ?? processStatus?.display_name ?? b.display_name,
         ui_card: b.ui_card,
         is_added: b.is_added,
-        // 契约 04: 自动登录/排程单一真相源为 auto_login 镜像 (WS auto_login 帧)
+        // 契约 auto-login: 自动登录/排程单一真相源为 auto_login 镜像 (WS auto_login 帧)
         auto_login: autoLogin?.enabled ?? false,
         created_at: b.created_at,
         updated_at: b.updated_at,
@@ -239,7 +239,7 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
       'add schedule failed', { rethrow: true })
   }
   async function removeSchedule(id: number, loginTime: string, logoutTime: string): Promise<void> {
-    // 契约 04 镜像条目无 id, 以 login+logout 时间对匹配（ScheduleManager 直接传时间对）
+    // 契约 auto-login 镜像条目无 id, 以 login+logout 时间对匹配（ScheduleManager 直接传时间对）
     await runOp(id, 'schedule_remove', (s) =>
       md.removeSchedule(id, s.source_name, loginTime, logoutTime),
       'remove schedule failed')
@@ -293,14 +293,14 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
     await runOp(id, 'subscribe_params', s => md.setSubscribeParams(id, s.source_name, patch),
       'set subscribe params failed')
   }
-  // 契约 02 SHM 行情通道配置 (merge patch): rethrow 支撑添加预加载点 Modal 失败保持打开
+  // 契约 shm SHM 行情通道配置 (merge patch): rethrow 支撑添加预加载点 Modal 失败保持打开
   async function setShmConfig(id: number, patch: ShmConfigPatch): Promise<void> {
     await runOp(id, 'shm_config', s => md.setShmConfig(id, s.source_name, patch),
       'set shm config failed', { rethrow: true })
   }
 
   /// 添加并启动行情源(设计 §3.1)。已有记录复用 id; 无则 create 后暂存, 等 WS 晋升。
-  /// page 大小不再由 UI 传参: 由 master 读配置文件 configs/<source>.json 决定 (契约 03 §参数可改性)。
+  /// page 大小不再由 UI 传参: 由 master 读配置文件 configs/<source>.json 决定 (契约 shm: page_size_mb 仅配置文件可改、启动后不可变)。
   async function addAndStartSource(processName: string, displayName: string): Promise<void> {
     const prefix = 'dzmd_'
     if (!processName.startsWith(prefix)) {
@@ -338,7 +338,7 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
         display_name: displayName,
       })
       if (!ok) throw new Error('start failed')
-      // 排程/自动登录由 WS auto_login 帧驱动 (契约 04), 无需 REST 补拉
+      // 排程/自动登录由 WS auto_login 帧驱动 (契约 auto-login), 无需 REST 补拉
       void refreshAvailable()
     } catch {
       if (pendingCreations.value[processName]) delete pendingCreations.value[processName]
@@ -414,7 +414,7 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
     editFrontend,
     setFrontendEnabled,
     setSubscribeParams,
-    shmConfigs: md.shmConfigs,  // 契约 02 SHM 配置镜像透传 (组件直读 mdConfig 镜像)
+    shmConfigs: md.shmConfigs,  // 契约 shm SHM 配置镜像透传 (组件直读 mdConfig 镜像)
     setShmConfig,
     addAndStartSource,
     removeSource,

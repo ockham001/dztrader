@@ -61,10 +61,10 @@ DZ_BEGIN_C_DECLS
 /** @brief 行情通道读者注销请求 (策略/数据进程→master, instance_id=目标行情进程名, payload={"subscriber":"stg.<name>"}) */
 #define DZ_FRAME_REQUEST_MD_READER_UNREGISTER ((DzFrameType)1014)
 
-/** @brief 交易订单请求 (basic 广播帧, 契约 12-td-order) */
+/** @brief 交易订单请求 (basic 广播帧, 契约 td-order) */
 #define DZ_FRAME_TD_ORDER_REQ ((DzFrameType)2100)
 
-/** @brief 取消订单请求 (basic 广播帧, 契约 12-td-order) */
+/** @brief 取消订单请求 (basic 广播帧, 契约 td-order) */
 #define DZ_FRAME_TD_ORDER_CANCEL_REQ ((DzFrameType)2101)
 /** @brief 交易修改配置请求 */
 #define DZ_FRAME_TD_REQ_MODIFY_CONFIG ((DzFrameType)2102)

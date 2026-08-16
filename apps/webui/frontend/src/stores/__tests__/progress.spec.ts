@@ -13,7 +13,7 @@ describe('useProgressStore', () => {
     expect(store.progress['dzmd_ctp']).toEqual({ min: 0, max: 4, current: 2, desc: '订阅合约中' })
   })
 
-  // 契约 05：单条完整状态，后到覆盖先到（对应后端 ProgressDomainServiceTest.ProgressOverwrites）
+  // 契约 progress：单条完整状态，后到覆盖先到（对应后端 ProgressDomainServiceTest.ProgressOverwrites）
   it('applyProgress 后到完整覆盖先到（含 max 归 0 / desc 清空）', () => {
     const store = useProgressStore()
     store.applyProgress('dzmd_ctp', { min: 0, max: 4, current: 2, desc: '订阅合约中' })

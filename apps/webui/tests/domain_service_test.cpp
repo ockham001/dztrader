@@ -348,10 +348,10 @@ TEST(AutoLoginDomainServiceTest, InvalidPayloadIgnored) {
     MirrorStore mirror;
     FakeBroadcaster ws;
     AutoLoginDomainService svc(mirror, ws);
-    // 非法：enabled 非 bool（契约 04 校验失败场景）
+    // 非法：enabled 非 bool（契约 auto-login 校验失败场景）
     const nlohmann::json bad = {{"enabled", "not_bool"}, {"schedules", nlohmann::json::array()}};
     svc.on_rtn_auto_login("dzmd_ctp", bad);
-    // 不更新镜像、不广播（契约 04：非法则记日志并忽略）
+    // 不更新镜像、不广播（契约 auto-login：非法则记日志并忽略）
     EXPECT_TRUE(mirror.instance("dzmd_ctp").empty());
     EXPECT_TRUE(ws.messages.empty());
     // 合法 payload 之后仍可正常更新（非法帧不污染状态）
@@ -365,7 +365,7 @@ TEST(AutoLoginDomainServiceTest, InvalidScheduleIgnored) {
     MirrorStore mirror;
     FakeBroadcaster ws;
     AutoLoginDomainService svc(mirror, ws);
-    // 非法：login_time == logout_time（会话区间必须非空，契约 04）
+    // 非法：login_time == logout_time（会话区间必须非空，契约 auto-login）
     const nlohmann::json bad = {
         {"enabled", true},
         {"schedules", nlohmann::json::array(
@@ -381,7 +381,7 @@ TEST(ProgressDomainServiceTest, ProgressOverwrites) {
     ProgressDomainService svc(mirror, ws);
     svc.on_rtn_progress("dzmd_ctp", nlohmann::json{{"min", 0}, {"max", 4}, {"current", 2}, {"desc", "订阅合约中"}});
     EXPECT_EQ(mirror.instance("dzmd_ctp")["progress"]["current"], 2);
-    // 后到覆盖先到（契约 05：单条完整状态）
+    // 后到覆盖先到（契约 progress：单条完整状态）
     svc.on_rtn_progress("dzmd_ctp", nlohmann::json{{"min", 0}, {"max", 0}, {"current", 0}, {"desc", ""}});
     EXPECT_EQ(mirror.instance("dzmd_ctp")["progress"]["max"], 0);
     EXPECT_EQ(mirror.instance("dzmd_ctp")["progress"]["desc"], "");

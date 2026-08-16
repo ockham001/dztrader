@@ -57,7 +57,7 @@ ProcessEntry parse_gateway_entry(const std::string& name, Category cat, const nl
     ProcessEntry entry;
     entry.name = name;
     entry.category = cat;
-    // exe 和 start_dir 留空, 由 launch_child 调 find_exe_by_stem 实时扫描填充 (契约 04/05)
+    // exe 和 start_dir 留空, 由 launch_child 调 find_exe_by_stem 实时扫描填充 (契约 process)
     entry.args = parse_args(val);
     entry.env = parse_env(val);
     entry.restart = parse_restart(val, cat);
@@ -198,7 +198,7 @@ void write_gateway_section(const std::filesystem::path& config_path,
         }
     }
 
-    // 构造单个 gateway 子对象 (契约 05: 不写 exe/start_dir)
+    // 构造单个 gateway 子对象 (契约 process: 不写 exe/start_dir)
     nlohmann::json gw;
     gw["args"] = args;
     gw["restart"] = {

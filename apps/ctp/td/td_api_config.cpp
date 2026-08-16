@@ -83,7 +83,7 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
     }
 
     // 5. 审计日志: 关键字段 old->new (不记录敏感值如 password)
-    // 注: enable_auto_login_logout 已随契约 04 迁移（SET/RTN_AUTO_LOGIN 帧）
+    // 注: enable_auto_login_logout 已随契约 auto-login 迁移（SET/RTN_AUTO_LOGIN 帧）
     if (old_config.enable_lock_mode != new_config.enable_lock_mode) {
         SPDLOG_INFO("lock_mode changed | old={} new={}",
                     old_config.enable_lock_mode, new_config.enable_lock_mode);
@@ -108,7 +108,7 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
 
     // 6. 成功路径必须上报 RTN_TD_CONFIG (脱敏), 让 dzweb 镜像更新
     //    契约: REQ (TD_REQ_MODIFY_CONFIG) 必须有对应 RTN (TD_RTN_CONFIG)
-    //    注: dzweb 当前未注册 TD 配置帧（TD 领域尚未接入契约 10 镜像模型），
+    //    注: dzweb 当前未注册 TD 配置帧（TD 领域尚未接入契约 webui-ws 镜像模型），
     //    本帧为 TD 配置变更的权威回报，供未来 TD 领域消费
     report_config();
 }

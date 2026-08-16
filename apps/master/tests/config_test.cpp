@@ -117,7 +117,7 @@ TEST_F(ConfigTest, WriteGatewaySectionCreatesNew) {
     auto cfg = parse_master_json(config_path_);
     ASSERT_EQ(cfg.entries.size(), 1u);
     EXPECT_EQ(cfg.entries[0].name, "dzmd_ctp");
-    // 契约 05: 内部进程 exe 和 start_dir 不持久化到 json, parse 不读取, 留空由 launch_child 调 find_exe_by_stem 实时填充
+    // 契约 process: 内部进程 exe 和 start_dir 不持久化到 json, parse 不读取, 留空由 launch_child 调 find_exe_by_stem 实时填充
     EXPECT_TRUE(cfg.entries[0].exe.empty());
     EXPECT_TRUE(cfg.entries[0].start_dir.empty());
     EXPECT_EQ(cfg.entries[0].args.size(), 2u);
@@ -133,14 +133,14 @@ TEST_F(ConfigTest, WriteGatewaySectionOverwritesExisting) {
                           {"--name", "dzmd_ctp"}, policy);
     auto cfg = parse_master_json(config_path_);
     ASSERT_EQ(cfg.entries.size(), 1u);
-    // 契约 05: exe 不持久化, 旧 json 中的 "old_exe" 被静默忽略, parse 不读取
+    // 契约 process: exe 不持久化, 旧 json 中的 "old_exe" 被静默忽略, parse 不读取
     EXPECT_TRUE(cfg.entries[0].exe.empty());
     EXPECT_TRUE(cfg.entries[0].start_dir.empty());
     EXPECT_EQ(cfg.entries[0].args.size(), 2u);
     EXPECT_FALSE(cfg.entries[0].restart.enabled);
 }
 
-// ---- F2: write_webui_section 写入 [webui] 段 (契约 05: dzweb 写 webui 而非 md.dzweb) ----
+// ---- F2: write_webui_section 写入 [webui] 段 (契约 process: dzweb 写 webui 而非 md.dzweb) ----
 TEST_F(ConfigTest, WriteWebuiSectionCreatesNew) {
     write_json(R"({"master": {}})");
     platform::RestartPolicy policy{.enabled = true, .max_attempts = 5, .backoff_sec = 5};
@@ -149,7 +149,7 @@ TEST_F(ConfigTest, WriteWebuiSectionCreatesNew) {
     ASSERT_EQ(cfg.entries.size(), 1u);
     EXPECT_EQ(cfg.entries[0].name, "dzweb");
     EXPECT_EQ(cfg.entries[0].category, Category::WebUI);
-    // 契约 05: dzweb 的 exe 和 start_dir 不持久化到 json, parse 不读取, 留空由 launch_child 调 find_exe_by_stem 实时填充
+    // 契约 process: dzweb 的 exe 和 start_dir 不持久化到 json, parse 不读取, 留空由 launch_child 调 find_exe_by_stem 实时填充
     EXPECT_TRUE(cfg.entries[0].exe.empty());
     EXPECT_TRUE(cfg.entries[0].start_dir.empty());
     EXPECT_EQ(cfg.entries[0].args.size(), 2u);
@@ -162,7 +162,7 @@ TEST_F(ConfigTest, WriteWebuiSectionCreatesNew) {
     EXPECT_FALSE(data.contains("md"));
     EXPECT_FALSE(data.contains("td"));
     EXPECT_FALSE(data.contains("gateways"));
-    // 契约 05: webui 段不含 exe 和 start_dir 字段
+    // 契约 process: webui 段不含 exe 和 start_dir 字段
     const auto& webui = data["webui"];
     EXPECT_FALSE(webui.contains("exe"));
     EXPECT_FALSE(webui.contains("start_dir"));
@@ -177,7 +177,7 @@ TEST_F(ConfigTest, WriteWebuiSectionOverwritesExisting) {
     write_webui_section(config_path_, {"--name", "dzweb"}, policy);
     auto cfg = parse_master_json(config_path_);
     ASSERT_EQ(cfg.entries.size(), 1u);
-    // 契约 05: exe 不持久化, 旧 json 中的 "old_exe" 被静默忽略, parse 不读取
+    // 契约 process: exe 不持久化, 旧 json 中的 "old_exe" 被静默忽略, parse 不读取
     EXPECT_TRUE(cfg.entries[0].exe.empty());
     EXPECT_TRUE(cfg.entries[0].start_dir.empty());
     EXPECT_EQ(cfg.entries[0].args.size(), 2u);
@@ -324,7 +324,7 @@ TEST_F(ConfigTest, ParseStrategyWithRestart) {
 }
 
 TEST_F(ConfigTest, GatewayEntryIgnoresExeAndStartDir) {
-    // 契约 05: md 段的 exe 和 start_dir 字段被静默忽略
+    // 契约 process: md 段的 exe 和 start_dir 字段被静默忽略
     // entry.exe 和 entry.start_dir 留空, 由 launch_child 调 find_exe_by_stem 实时填充
     // 旧测试名 StartDirDefaultsToExeParent 已失效 (exe 不再读取, 无 parent_path 可言)
     write_json(R"({
@@ -353,7 +353,7 @@ TEST_F(ConfigTest, EmptyJson) {
 }
 
 TEST_F(ConfigTest, ParseWebuiEntry) {
-    // 契约 05: webui 段的 exe 和 start_dir 字段被静默忽略 (旧 json 兼容)
+    // 契约 process: webui 段的 exe 和 start_dir 字段被静默忽略 (旧 json 兼容)
     // entry.name 内部统一为 "dzweb"
     write_json(R"({
         "webui": {
@@ -378,7 +378,7 @@ TEST_F(ConfigTest, ParseWebuiEntry) {
 }
 
 TEST_F(ConfigTest, ParseWebuiEntryIgnoresExeAndStartDir) {
-    // 契约 05: webui 段的 exe 字段被静默忽略, entry.exe 和 entry.start_dir 留空
+    // 契约 process: webui 段的 exe 字段被静默忽略, entry.exe 和 entry.start_dir 留空
     // 旧测试名 ParseWebuiDefaultsToExeParent 已失效 (exe 不再读取, 无 parent_path 可言)
     write_json(R"({
         "webui": {"exe": "dzweb"}
@@ -591,7 +591,7 @@ TEST_F(ConfigTest, DefaultConfigIncludesWebui) {
     const auto& w = cfg.entries[0];
     EXPECT_EQ(w.name, "dzweb");
     EXPECT_EQ(w.category, Category::WebUI);
-    // 契约 05: exe 和 start_dir 不持久化, 留空由 launch_child 填充
+    // 契约 process: exe 和 start_dir 不持久化, 留空由 launch_child 填充
     EXPECT_TRUE(w.exe.empty());
     EXPECT_TRUE(w.start_dir.empty());
     EXPECT_TRUE(w.restart.enabled);

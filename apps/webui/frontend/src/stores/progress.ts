@@ -9,7 +9,7 @@ export interface ProgressView {
   desc?: string
 }
 
-// 契约 05 progress 镜像：单条完整状态，后到覆盖先到；无 SET、无持久化。
+// 契约 progress 镜像：单条完整状态，后到覆盖先到；无 SET、无持久化。
 // 真实 UI 价值：行情源登录进度展示（设计 §5.2）。
 export const useProgressStore = defineStore('progress', () => {
   const progress = ref<Record<string, ProgressView>>({})

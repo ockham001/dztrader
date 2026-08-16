@@ -13,7 +13,7 @@ import ScheduleManager from './ScheduleManager.vue'
 import BrokerSelector from './BrokerSelector.vue'
 import BrokerCard from './BrokerCard.vue'
 
-// CtpCard 接收 MarketSource (契约 06 ui_card 机制)
+// CtpCard 接收 MarketSource (契约 md-config ui_card 机制)
 // CTP 大类专用卡片壳: 头部 + 登录/时段/经纪商各子组件 + 删除 + 添加经纪商 Modal
 // 卡片体拆分为 5 子组件 (LoginPanel/ScheduleManager/BrokerSelector/BrokerCard/FrontendTable)
 // 全局 error toast 由 MarketSourcesView 统一 watch store.error 处理, 卡片内不重复
@@ -83,17 +83,17 @@ const subscribeClass = (s: MarketSourceView): string => {
 const autoLoginStatusText = (s: MarketSourceView): string =>
   s.autoLoginPending ? '切换中' : (s.auto_login ? '已启用' : '未启用')
 
-// ===== 高级段（契约 02 SHM 行情通道配置, dzmd_* 通用层; 默认折叠）=====
+// ===== 高级段（契约 shm SHM 行情通道配置, dzmd_* 通用层; 默认折叠）=====
 // page_size_mb 启动后不可变（仅配置文件、启动前修改）→ 只读;
 // check_* 三字段失焦单字段提交; preload_points 行编辑（null 删除语义）。
-// 范围对照契约 02: interval ∈ [0,1440], pages ∈ [0,8], bytes ∈ [0, 2^40]
+// 范围对照契约 shm: interval ∈ [0,1440], pages ∈ [0,8], bytes ∈ [0, 2^40]
 const advancedOpen = ref(false)
 const shmCfg = computed(() => store.shmConfigs[src.value.source_name])
 const preloadEntries = computed(() =>
   Object.entries(shmCfg.value?.preload_points ?? {})
     .sort(([a], [b]) => a.localeCompare(b)))
 
-// check_* 三字段上限（契约 02 范围）: interval ∈ [0,1440], pages ∈ [0,8], bytes ∈ [0, 2^40]
+// check_* 三字段上限（契约 shm 范围）: interval ∈ [0,1440], pages ∈ [0,8], bytes ∈ [0, 2^40]
 const SHM_FIELD_MAX = {
   check_interval_min: 1440,
   check_pages: 8,
@@ -125,7 +125,7 @@ function onPreloadBlur(time: string, field: 'pages' | 'bytes', event: Event): vo
   store.setShmConfig(src.value.id, { preload_points: { [time]: next } }).catch(() => {})
 }
 
-// 删除预加载点: 契约 02 唯一合法 null 位置（preload_points 内 key 的 value=null）
+// 删除预加载点: 契约 shm 唯一合法 null 位置（preload_points 内 key 的 value=null）
 function removePreloadPoint(time: string): void {
   store.setShmConfig(src.value.id, { preload_points: { [time]: null } }).catch(() => {})
 }
@@ -166,8 +166,8 @@ async function confirmAddPreload(): Promise<void> {
   }
 }
 
-// 订阅参数失焦提交: 值改变且满足契约范围才下发单字段 patch（契约 08 缺失=保留旧值）。
-// 范围对照契约 08: batch_size > 0, delay_ms >= 0, interval_ms > 0, retry >= 0
+// 订阅参数失焦提交: 值改变且满足契约范围才下发单字段 patch（契约 md-config 缺失=保留旧值）。
+// 范围对照契约 md-config: batch_size > 0, delay_ms >= 0, interval_ms > 0, retry >= 0
 // （与输入框 min 属性一致; 手输越界值前端拦截, 后端校验为最终防线）
 type SubParamKey = 'subscribe_batch_size' | 'subscribe_batch_delay_ms'
   | 'sub_check_interval_ms' | 'sub_max_retry'
@@ -228,7 +228,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
       <LoginPanel :source="src" />
       <ScheduleManager :source="src" />
 
-      <!-- ── 网关信息（契约 09 CTP 类型只读状态，登录后由 RTN_MD_STATUS 填充；
+      <!-- ── 网关信息（契约 md-status CTP 类型只读状态，登录后由 RTN_MD_STATUS 填充；
                属 interface_type=ctp 范畴，xtp 等其他接口类型卡片自行设计展示）── -->
       <div class="card-section">
         <div class="card-section__row">
@@ -241,7 +241,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
         </div>
       </div>
 
-      <!-- ── 订阅参数（契约 08 SetSubscribeParams，无状态保护，缺失字段保留旧值）── -->
+      <!-- ── 订阅参数（契约 md-config SetSubscribeParams，无状态保护，缺失字段保留旧值）── -->
       <div class="card-section">
         <div class="card-section__row">
           <span class="card-section__title">订阅参数</span>
@@ -301,7 +301,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
         </div>
       </div>
 
-      <!-- ── 高级（契约 02 SHM 行情通道配置, dzmd_* 通用层; 默认折叠）── -->
+      <!-- ── 高级（契约 shm SHM 行情通道配置, dzmd_* 通用层; 默认折叠）── -->
       <div class="card-section">
         <div class="card-section__row">
           <span class="card-section__title">高级</span>
@@ -311,7 +311,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
         </div>
         <template v-if="advancedOpen">
           <div class="gateway-info">
-            <span class="gateway-info__item" title="仅可通过配置文件修改，进程启动前生效（契约 02）">
+            <span class="gateway-info__item" title="仅可通过配置文件修改，进程启动前生效（契约 shm）">
               页大小：<span>{{ shmCfg ? `${shmCfg.page_size_mb} MB` : '--' }}</span>
             </span>
             <span class="gateway-info__item">周期检查间隔(分)：

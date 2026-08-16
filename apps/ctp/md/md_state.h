@@ -65,7 +65,7 @@ struct MdStatus {
     size_t subscribed_count = 0;
 
     // NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT 已删除:
-    // RTN_MD_STATUS payload 由 build_md_status_payload() 构造（仅契约 09 的 6 字段）
+    // RTN_MD_STATUS payload 由 build_md_status_payload() 构造（仅契约 md-status 的 6 字段）
     // RTN_PROGRESS payload 由 report_progress() 从 progress_* 字段读取
 };
 
@@ -130,7 +130,7 @@ private:
     MdStatus status_;
 };
 
-/// 构造 RTN_MD_STATUS payload JSON（契约 09 的 6 字段，始终全量）。
+/// 构造 RTN_MD_STATUS payload JSON（契约 md-status 的 6 字段，始终全量）。
 /// 纯函数，不依赖 CTP SDK / SHM，可单元测试。
 nlohmann::json build_md_status_payload(const MdStatus& s);
 

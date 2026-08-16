@@ -124,7 +124,7 @@ void ShmManager::reset_subscribers() {
 void ShmManager::handle_md_reader_register(const shm::FrameView& view) {
     // 帧头 instance_id = 目标行情通道名; 消费方是 master (不匹配 name_), 故在
     // handle_frame 第一层处理。无 RTN: 注册失败不阻断数据消费 (reader 游标独立于
-    // 注册), 唤醒缺失由单信号量 + 任意事件帧唤醒后排空兜底 (契约 02-shm)。
+    // 注册), 唤醒缺失由单信号量 + 任意事件帧唤醒后排空兜底 (契约 shm)。
     const std::string channel_name(view.ext_inst_id());
 
     nlohmann::json payload;

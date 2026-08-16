@@ -266,7 +266,7 @@ TEST_F(ShmManagerTest, SetShmConfigAppliesAndPersists) {
         if (!frame) break;
         shm::FrameView view(frame);
         if (view.type() == DZ_FRAME_RTN_EVENT_SHM_CONFIG) {
-            // RTN 无 instance_id (契约 02-shm：事件通道帧头无 instance_id), 用 ext_payload 读取
+            // RTN 无 instance_id (契约 shm：事件通道帧头无 instance_id), 用 ext_payload 读取
             auto cfg = nlohmann::json::parse(
                 reinterpret_cast<const char*>(view.ext_payload()),
                 reinterpret_cast<const char*>(view.ext_payload()) + view.ext_payload_size());
@@ -526,13 +526,13 @@ TEST_F(ProcessControlFrameTest, StartUnknownTargetPushesStartFailed) {
     EXPECT_EQ(status["name"], "no_such_target");
     EXPECT_EQ(status["state"], "Crashed");
     EXPECT_EQ(status["event"], "StartFailed");
-    // 失败路径必须通过 NOTIFY_UI 反馈 (契约 03: 错误级别弹窗; 契约 02: level 为字符串)
+    // 失败路径必须通过 NOTIFY_UI 反馈 (契约 process: 错误级别弹窗; 契约 notify-ui: level 为字符串)
     auto nit = frames.find(DZ_FRAME_NOTIFY_UI);
     ASSERT_NE(nit, frames.end());
     EXPECT_EQ(nit->second.back()["level"], "error");
 }
 
-// 2. 已注册但未启动 -> Stop 幂等成功 (契约 04-process)
+// 2. 已注册但未启动 -> Stop 幂等成功 (契约 process)
 TEST_F(ProcessControlFrameTest, StopIdempotentWhenNotRunning) {
     auto reader = create_reader("stop_idem_reader");
     auto writer = create_writer("fake_ui");
@@ -552,7 +552,7 @@ TEST_F(ProcessControlFrameTest, StopIdempotentWhenNotRunning) {
     EXPECT_EQ(status["event"], "StopSucceeded");
 }
 
-// 3. Remove 未注册 target: 116{event=RemoveFailed} (不幂等, 契约 04-process) + NOTIFY_UI
+// 3. Remove 未注册 target: 116{event=RemoveFailed} (不幂等, 契约 process) + NOTIFY_UI
 TEST_F(ProcessControlFrameTest, RemoveUnknownTargetPushesRemoveFailed) {
     auto reader = create_reader("remove_fail_reader");
     auto writer = create_writer("fake_ui");
@@ -570,7 +570,7 @@ TEST_F(ProcessControlFrameTest, RemoveUnknownTargetPushesRemoveFailed) {
     EXPECT_EQ(status["name"], "no_such_target");
     EXPECT_EQ(status["event"], "RemoveFailed");
     EXPECT_NE(status["event"], "RemoveSucceeded");  // 未注册不幂等
-    // 契约 03 第 132 行: Remove 未注册 target 必须错误级别弹窗 (契约 02: level 为字符串)
+    // 契约 process: Remove 未注册 target 必须错误级别弹窗 (契约 notify-ui: level 为字符串)
     auto nit = frames.find(DZ_FRAME_NOTIFY_UI);
     ASSERT_NE(nit, frames.end());
     EXPECT_EQ(nit->second.back()["level"], "error");
@@ -590,7 +590,7 @@ TEST_F(ProcessControlFrameTest, SetProcessConfigPushesFullMap) {
     auto frames = drain_all(reader);
     auto it = frames.find(DZ_FRAME_RTN_PROCESS_CONFIG);
     ASSERT_NE(it, frames.end());
-    // 118 始终全量镜像 (契约 04-process)
+    // 118 始终全量镜像 (契约 process)
     const auto& cfg = it->second.back();
     ASSERT_TRUE(cfg.contains("dzmd_ctp"));
     EXPECT_EQ(cfg["dzmd_ctp"]["display_name"], "新名");
@@ -614,11 +614,11 @@ TEST_F(ProcessControlFrameTest, SetProcessConfigInvalidPushesOldMapAndNotify) {
     }
 
     auto frames = drain_all(reader);
-    // 118 推旧值 (契约 04-process: 失败回滚旧 map)
+    // 118 推旧值 (契约 process: 失败回滚旧 map)
     auto it = frames.find(DZ_FRAME_RTN_PROCESS_CONFIG);
     ASSERT_NE(it, frames.end());
     EXPECT_EQ(it->second.back()["dzmd_ctp"]["display_name"], "CTP行情");
-    // 失败路径带 NOTIFY_UI (error, 契约 02: level 为字符串)
+    // 失败路径带 NOTIFY_UI (error, 契约 notify-ui: level 为字符串)
     auto nit = frames.find(DZ_FRAME_NOTIFY_UI);
     ASSERT_NE(nit, frames.end());
     EXPECT_EQ(nit->second.back()["level"], "error");
@@ -641,7 +641,7 @@ TEST_F(ProcessControlFrameTest, FullSnapshotPushesConfigAndStatuses) {
     ASSERT_NE(cit, frames.end());
     ASSERT_TRUE(cit->second.back().contains("dzmd_ctp"));
     EXPECT_EQ(cit->second.back()["dzmd_ctp"]["display_name"], "CTP行情");
-    // 116: 注册进程状态, 无 event 字段 (自发状态变化, 契约 04-process)
+    // 116: 注册进程状态, 无 event 字段 (自发状态变化, 契约 process)
     auto sit = frames.find(DZ_FRAME_RTN_PROCESS_STATUS);
     ASSERT_NE(sit, frames.end());
     EXPECT_GE(sit->second.size(), 1u);
@@ -651,8 +651,8 @@ TEST_F(ProcessControlFrameTest, FullSnapshotPushesConfigAndStatuses) {
 }
 
 // 7. Start 已运行进程 → 幂等 StartSucceeded (P1 回归: 不重复 spawn, 不推 Crashed/StartFailed)
-// 第一次 Start 真实 spawn test_worker (长驻); 第二次 Start 必须走幂等分支 (契约 04-process)。
-// 契约 03 修订: 未注册 target 但 App Root 下存在同名网关 exe (dzmd_*)
+// 第一次 Start 真实 spawn test_worker (长驻); 第二次 Start 必须走幂等分支 (契约 process)。
+// 契约 process 修订: 未注册 target 但 App Root 下存在同名网关 exe (dzmd_*)
 // -> 动态注册 (registry + dztraderd.json 持久化 + 118 全量) 后正常启动 (116 Running/StartSucceeded)。
 TEST_F(ProcessControlFrameTest, StartUnregisteredGatewayDynamicallyRegistersAndStarts) {
     const auto worker_exe = dztrader::this_process::exe_dir() / "test_worker"
@@ -714,9 +714,9 @@ TEST_F(ProcessControlFrameTest, StartUnregisteredGatewayDynamicallyRegistersAndS
     std::filesystem::remove(gw_exe);
 }
 
-// 契约 03 修订: 未注册 target 扫描命中但非网关进程 (test_worker 无前缀, 策略有独立注册流程)
+// 契约 process 修订: 未注册 target 扫描命中但非网关进程 (test_worker 无前缀, 策略有独立注册流程)
 // -> 回 StartFailed, 不 spawn。
-// 契约 03 修订组合: 未注册网关 + Start 携带 config patch
+// 契约 process 修订组合: 未注册网关 + Start 携带 config patch
 // -> 先动态注册（默认配置）再应用 patch, 118 全量为 patch 后的值。
 TEST_F(ProcessControlFrameTest, StartUnregisteredGatewayWithConfigAppliesPatchAfterDynamicRegister) {
     const auto worker_exe = dztrader::this_process::exe_dir() / "test_worker"
@@ -856,7 +856,7 @@ TEST_F(ProcessControlFrameTest, StartRunningPushesStartSucceeded) {
     ioc_.run_for(std::chrono::seconds(5));  // single_stop_timeout_sec_=3, 超时强制 terminate
 }
 
-// ---- 帧 1013/1014: 行情通道读者注册/注销 (契约 02-shm) ----
+// ---- 帧 1013/1014: 行情通道读者注册/注销 (契约 shm) ----
 
 namespace {
 

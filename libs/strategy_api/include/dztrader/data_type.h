@@ -329,9 +329,9 @@ typedef int16_t DzFrameType;
 #define DZ_FRAME_REQUEST_SHUTDOWN   ((DzFrameType)12)
 /** @brief master→行情进程, 通知刷新 md 通道订阅者列表 (定向, instance_id=进程名) */
 #define DZ_FRAME_UPDATE_SHM_MD_SUBSCRIBER  ((DzFrameType)13)
-/** @brief 设置目标进程日志配置 (dzweb→目标进程, 定向, instance_id=目标进程名, 契约 01-log) */
+/** @brief 设置目标进程日志配置 (dzweb→目标进程, 定向, instance_id=目标进程名, 契约 log) */
 #define DZ_FRAME_SET_LOG_CONFIG     ((DzFrameType)14)
-/** @brief 触发目标进程日志 flush (dzweb→目标进程, 定向, instance_id=目标进程名, 契约 01-log) */
+/** @brief 触发目标进程日志 flush (dzweb→目标进程, 定向, instance_id=目标进程名, 契约 log) */
 #define DZ_FRAME_FLUSH_LOG         ((DzFrameType)15)
 /** @brief 广播停止请求 (所有进程执行, 无需匹配 instance_id) */
 #define DZ_FRAME_REQUEST_SHUTDOWN_ALL   ((DzFrameType)20)
@@ -345,7 +345,7 @@ typedef int16_t DzFrameType;
 #define DZ_FRAME_SET_MD_SHM_CONFIG         ((DzFrameType)24)
 /** @brief 推送行情通道配置 (md->UI, payload=ShmChannelConfig) */
 #define DZ_FRAME_RTN_MD_SHM_CONFIG         ((DzFrameType)25)
-/** @brief 进程上报当前日志配置（各进程→dzweb，经事件通道广播，契约 00） */
+/** @brief 进程上报当前日志配置（各进程→dzweb，经事件通道广播，契约 log） */
 #define DZ_FRAME_RTN_LOG_CONFIG  ((DzFrameType)16)
 
 /* ── 行情帧 ── */

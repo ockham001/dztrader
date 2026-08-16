@@ -17,7 +17,7 @@ namespace dztrader::platform {
 
 // ===== 枚举 =====
 
-/// CTP 行情网关配置操作类型（契约 08 CtpMdConfigOp 表）
+/// CTP 行情网关配置操作类型（契约 md-config CtpMdConfigOp 表）
 enum class CtpMdConfigOp {
     AddBroker,
     RemoveBroker,
@@ -47,7 +47,7 @@ inline bool is_ctp_connection_op(CtpMdConfigOp op) {
 
 // ===== 数据结构 =====
 
-/// SET payload 结构（契约 08 DZ_FRAME_SET_MD_CONFIG）
+/// SET payload 结构（契约 md-config DZ_FRAME_SET_MD_CONFIG）
 struct CtpMdConfigOpReq {
     CtpMdConfigOp op;
     nlohmann::json params;
@@ -55,7 +55,7 @@ struct CtpMdConfigOpReq {
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(CtpMdConfigOpReq, op, params)
 };
 
-/// 前置地址条目（契约 08 CtpBrokerFrontend）
+/// 前置地址条目（契约 md-config CtpBrokerFrontend）
 struct CtpBrokerFrontend {
     std::string address;
     std::string label;
@@ -64,7 +64,7 @@ struct CtpBrokerFrontend {
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(CtpBrokerFrontend, address, label, enabled)
 };
 
-/// 经纪商条目（契约 08 CtpBrokerEntry）
+/// 经纪商条目（契约 md-config CtpBrokerEntry）
 struct CtpBrokerEntry {
     std::string name;
     std::string broker_id;
@@ -77,7 +77,7 @@ struct CtpBrokerEntry {
         CtpBrokerEntry, name, broker_id, user_id, password, product_info, frontends)
 };
 
-/// MD 网关配置（契约 08 CtpMdConfigData，RTN payload 用）
+/// MD 网关配置（契约 md-config CtpMdConfigData，RTN payload 用）
 struct CtpMdConfigData {
     std::vector<CtpBrokerEntry> brokers;
     std::string current_broker_name;
@@ -97,7 +97,7 @@ struct CtpMdConfigData {
 
 // ===== 纯函数声明 =====
 
-/// SET payload 级校验：检查 op/params/null/必填/目标存在性（契约 08 校验失败场景）
+/// SET payload 级校验：检查 op/params/null/必填/目标存在性（契约 md-config 校验失败场景）
 std::optional<std::string> validate_ctp_op_req(const CtpMdConfigOpReq& req, const CtpMdConfigData& cfg);
 
 /// op 应用：switch(req.op) 修改 cfg，无副作用无 I/O

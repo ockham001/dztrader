@@ -43,14 +43,14 @@
 ## DZ_FRAME_REQUEST_MD_CONNECT / DZ_FRAME_REQUEST_MD_DISCONNECT
 
 **语义**：请求指定行情进程建立 / 断开连接（登录 / 登出）
-**数据流**：形态 3（总则 §4.2）——UI → dzweb → 目标行情进程（帧头 `instance_id` = 行情进程名）；前端入口 `POST /api/market-sources/{id}/login|logout`（契约 11）或 WS `md_connect`/`md_disconnect`（契约 10，两路等效）；无 RTN，结果经该进程 `RTN_PROGRESS` 与 `NOTIFY_MD_*` 健康度广播体现（ack 仅表示已写通道）
+**数据流**：形态 3（总则 §4.2）——UI → dzweb → 目标行情进程（帧头 `instance_id` = 行情进程名）；前端入口 `POST /api/market-sources/{id}/login|logout`（契约 rest）或 WS `md_connect`/`md_disconnect`（契约 webui-ws，两路等效）；无 RTN，结果经该进程 `RTN_PROGRESS` 与 `NOTIFY_MD_*` 健康度广播体现（ack 仅表示已写通道）
 **Payload**：空
 
-**时序**：前端发起 → dzweb 对前端回 ack（仅表示已写入事件通道，**不表示连接结果**；写通道失败时 `ok=false`，见契约 10）→ **无 RTN**
+**时序**：前端发起 → dzweb 对前端回 ack（仅表示已写入事件通道，**不表示连接结果**；写通道失败时 `ok=false`，见契约 webui-ws）→ **无 RTN**
 
 **约束**：
 - 定向帧，仅 `instance_id` 匹配的行情进程处理
-- 连接结果通过该行情进程的 `RTN_PROGRESS`（状态数值映射，契约 06）与健康度广播（下方 NOTIFY_MD_*）体现；前端不得以 ack 判定连接成败
+- 连接结果通过该行情进程的 `RTN_PROGRESS`（状态数值映射，契约 progress）与健康度广播（下方 NOTIFY_MD_*）体现；前端不得以 ack 判定连接成败
 
 ---
 
@@ -77,7 +77,7 @@
 ## DZ_FRAME_QUERY_MD_SUBSCRIPTIONS
 
 **语义**：查询目标行情进程的订阅详情
-**数据流**：形态 1（总则 §4.2）——dzweb → 目标 md 进程（帧头 `instance_id` = 行情进程名）；前端入口 WS `query_md_subscriptions`（契约 10；REST 未提供）；响应帧 `RTN_MD_SUBSCRIPTIONS` → 不进镜像 → WS 消息 `md_rtn_subscriptions`
+**数据流**：形态 1（总则 §4.2）——dzweb → 目标 md 进程（帧头 `instance_id` = 行情进程名）；前端入口 WS `query_md_subscriptions`（契约 webui-ws；REST 未提供）；响应帧 `RTN_MD_SUBSCRIPTIONS` → 不进镜像 → WS 消息 `md_rtn_subscriptions`
 **Payload**：JSON，两种模式互斥
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -133,7 +133,7 @@
 **约束**：
 - 成功路径排序：`unsuccessful` 模式下 Pending 优先、NotRequested 次之；`instruments` 模式按请求顺序
 - 错误路径：仅填充 `error`，其余字段为默认值（空列表/0/false）；错误码取值：`bad_json` / `missing_query_or_instruments` / `ambiguous_query` / `unknown_query`
-- **不进镜像**：查询响应，dzweb 注入 `source` 后透传广播（见契约 10）；前端数据以本 RTN 为准
+- **不进镜像**：查询响应，dzweb 注入 `source` 后透传广播（见契约 webui-ws）；前端数据以本 RTN 为准
 
 **前端义务**：
 - 查询后进入 pending，以对应实例的 `RTN_MD_SUBSCRIPTIONS` 推送清除（`error=null` 为成功数据，`error` 非 null 为查询失败并展示错误）；ack 仅用于写通道失败的快速反馈
@@ -148,7 +148,7 @@
 
 **两路一致**：UI 侧状态（`RTN_PROGRESS` 的数值映射）与后台侧健康度由同一状态机驱动，禁止两路不一致（进入可交易态时必须既推 `RTN_PROGRESS` 又广播 `NOTIFY_MD_CONNECTED`，离开时同理）。
 
-> 与 UI 状态的关系：本组帧仅服务后台订阅进程，前端 UI 不消费。前端判断行情进程的运行/停止状态以《帧契约：进程》的 `RTN_PROCESS_STATUS` / `RTN_PROCESS_CONFIG` 为准；判断登录/健康细粒度状态以 `RTN_PROGRESS`（契约 06）为准。
+> 与 UI 状态的关系：本组帧仅服务后台订阅进程，前端 UI 不消费。前端判断行情进程的运行/停止状态以《帧契约：进程》的 `RTN_PROCESS_STATUS` / `RTN_PROCESS_CONFIG` 为准；判断登录/健康细粒度状态以 `RTN_PROGRESS`（契约 progress）为准。
 
 ### DZ_FRAME_NOTIFY_MD_STARTED
 

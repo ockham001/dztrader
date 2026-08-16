@@ -33,7 +33,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzOrderReq, {
 
 DZ_DECLARE_ALIGNED_STRUCT(DzOrderCancelReq, {
     DzOrderId order_id;
-    DzAccountId account_id;  ///< 账户标识（basic 帧下撤单路由依据，契约 12-td-order）
+    DzAccountId account_id;  ///< 账户标识（basic 帧下撤单路由依据，契约 td-order）
 });
 
 DZ_END_C_DECLS

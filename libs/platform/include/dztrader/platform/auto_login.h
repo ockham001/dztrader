@@ -19,7 +19,7 @@ namespace dztrader::platform {
 /// rtn 的时机和次数由外部控制——类内部不自己调 rtn_auto_login()，避免重复 rtn。
 /// SET 失败的日志 + NOTIFY_UI 也由外部 catch 块处理。
 ///
-/// 严格遵循 docs/frame_contracts/05-auto-login.md 契约：
+/// 严格遵循 docs/frame_contracts/auto-login.md 契约：
 ///   - SET 纯 RFC 7386 JSON Merge Patch（enabled 出现则覆盖，schedules 出现则整体覆盖）
 ///   - 任何位置 null 均校验失败（本帧无 map 字段）
 ///   - login_time / logout_time 为 "HH:MM"（00:00-23:59）本地时间（计算机时钟），契约不做时区预测

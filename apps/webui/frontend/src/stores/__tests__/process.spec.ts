@@ -58,7 +58,7 @@ describe('useProcessStore', () => {
       expect(Object.keys(store.statuses)).toHaveLength(0)
     })
 
-    // 契约 04: 已移除进程（configs 有条目且不含该进程）的晚到 status 忽略（不重建镜像）
+    // 契约 process: 已移除进程（configs 有条目且不含该进程）的晚到 status 忽略（不重建镜像）
     it('configs 非空且不含该进程时忽略（已移除进程不重建镜像）', () => {
       const store = useProcessStore()
       store.applyProcessConfig({ dzmd_ctp: { a: 1 } })
@@ -85,7 +85,7 @@ describe('useProcessStore', () => {
       expect(store.configs['dzmd_other']).toEqual({ restart: { enabled: false } })
     })
 
-    it('覆盖天然含删除：后到全量不含的条目消失（契约 03: 条目消失 = 进程已移除）', () => {
+    it('覆盖天然含删除：后到全量不含的条目消失（契约 process: 条目消失 = 进程已移除）', () => {
       const store = useProcessStore()
       store.applyProcessConfig({ dzmd_ctp: { a: 1 }, dzmd_other: { b: 2 } })
       store.applyProcessConfig({ dzmd_ctp: { a: 2 } })
@@ -113,7 +113,7 @@ describe('useProcessStore', () => {
       const { pending } = usePending()
       expect(pending['source:1:start']).toBe(true)  // 成功保持挂起
 
-      // process_status 带 event 到达 → resolve 清 pending（契约 03）
+      // process_status 带 event 到达 → resolve 清 pending（契约 process）
       store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Running', pid: 1, event: 'StartSucceeded' })
       await vi.advanceTimersByTimeAsync(0)
       expect(pending['source:1:start']).toBe(false)
@@ -195,7 +195,7 @@ describe('useProcessStore', () => {
     })
   })
 
-  describe('applyProcessStatus event 处理（契约 03）', () => {
+  describe('applyProcessStatus event 处理（契约 process）', () => {
     it('失败路径（event=*Failed）fail 清 pending, 不弹 toast（反馈由 NOTIFY_UI 弹窗承载）', async () => {
       vi.mocked(marketSourcesApi.start).mockResolvedValue({ ok: true, source: 'dzmd_ctp' })
       const store = useProcessStore()
@@ -207,7 +207,7 @@ describe('useProcessStore', () => {
       store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Crashed', pid: 0, message: 'process start failed', event: 'StartFailed' })
       await vi.advanceTimersByTimeAsync(0)
       expect(usePending().pending['source:1:start']).toBe(false)
-      expect(errorSpy).not.toHaveBeenCalled()  // 契约 03: 失败弹窗由 NOTIFY_UI 帧承载
+      expect(errorSpy).not.toHaveBeenCalled()  // 契约 notify-ui: 失败弹窗由 NOTIFY_UI 帧承载
     })
 
     it('event 缺失（自发状态变化）不清 pending', async () => {

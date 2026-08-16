@@ -191,7 +191,7 @@ export interface FlushResult {
 // ===== Process Control =====
 export type ProcessState = 'Starting' | 'Running' | 'Stopping' | 'Stopped' | 'Crashed'
 
-// 进程操作结果事件（契约 03）：仅 RTN_PROCESS_STATUS 响应 REQUEST_PROCESS_CONTROL 时出现
+// 进程操作结果事件（契约 process）：仅 RTN_PROCESS_STATUS 响应 REQUEST_PROCESS_CONTROL 时出现
 export type ProcessEvent =
   | 'StartSucceeded' | 'StartFailed'
   | 'StopSucceeded' | 'StopFailed'
@@ -208,7 +208,7 @@ export interface ProcessStatusPayload {
 
 // 行情源配置载荷 (md_rtn_config 帧 data.config / GET /market-sources/{id}/config)
 // 字段与 stores/marketSources.ts setMdConfig 的实际解析对齐 (P3 Task 1)
-// 契约 08: brokers/current_broker_name + 订阅参数；排程/自动登录已迁移契约 04 (auto_login 帧)
+// 契约 md-config: brokers/current_broker_name + 订阅参数；排程/自动登录已迁移契约 auto-login (auto_login 帧)
 export interface MdConfigPayload {
   brokers: BrokerEntry[]
   current_broker_name: string

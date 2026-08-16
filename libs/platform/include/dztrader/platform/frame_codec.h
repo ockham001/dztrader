@@ -28,7 +28,7 @@ bool write_ext_inst_json(shm::MultiWriter& w, DzFrameType type,
                           static_cast<int>(type), instance_id);
             return false;
         }
-        // 契约 02-shm: 写入任何帧都必须唤醒等待进程 (接收方阻塞在 NamedSemaphore::wait)
+        // 契约 shm: 写入任何帧都必须唤醒等待进程 (接收方阻塞在 NamedSemaphore::wait)
         w.notify_subscribers();
         return true;
     } catch (const std::exception& e) {
@@ -46,7 +46,7 @@ bool write_ext_json(shm::MultiWriter& w, DzFrameType type, const T& obj) {
             spdlog::error("frame write failed: type={}", static_cast<int>(type));
             return false;
         }
-        // 契约 02-shm: 写入任何帧都必须唤醒等待进程 (接收方阻塞在 NamedSemaphore::wait)
+        // 契约 shm: 写入任何帧都必须唤醒等待进程 (接收方阻塞在 NamedSemaphore::wait)
         w.notify_subscribers();
         return true;
     } catch (const std::exception& e) {

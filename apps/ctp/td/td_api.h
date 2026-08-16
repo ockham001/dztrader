@@ -162,10 +162,10 @@ private:
     /// 按 account_id 直接断开 (TD_DISCONNECT 帧路径 + 自动调度共用)。
     /// find_session -> disconnect() -> erase。无 session 时 no-op。
     void disconnect_account_by_id(const std::string& account_id);
-    /// 处理 TD_ORDER_REQ 帧 (契约 12-td-order: basic 广播帧): 解析 payload DzOrderReq,
+    /// 处理 TD_ORDER_REQ 帧 (契约 td-order: basic 广播帧): 解析 payload DzOrderReq,
     /// 按 account_id 归属过滤后 find_session + place_order
     void on_order_req(const shm::FrameView& view);
-    /// 处理 TD_ORDER_CANCEL_REQ 帧 (契约 12-td-order: basic 广播帧): 解析 payload DzOrderCancelReq
+    /// 处理 TD_ORDER_CANCEL_REQ 帧 (契约 td-order: basic 广播帧): 解析 payload DzOrderCancelReq
     /// (order_id + account_id), 按 account_id 归属过滤后 find_session + cancel_order
     void on_cancel_req(const shm::FrameView& view);
     /// 在 sessions_ 中查找 account_id 对应的 AccountSession。未找到返回 nullptr。

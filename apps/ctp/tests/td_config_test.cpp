@@ -62,7 +62,7 @@ TEST_F(TdConfigTest, LoadFullConfig) {
 })json");
 
     auto cfg = TdConfig::load(path_, "td");
-    // 旧字段 enable_auto_login_logout/schedules 随契约 04 迁移移除,
+    // 旧字段 enable_auto_login_logout/schedules 随契约 auto-login 迁移移除,
     // 文件中残留的旧字段被未知字段忽略 (兼容旧配置文件)
     EXPECT_EQ(cfg.qry_account_interval_s, 5);
     EXPECT_EQ(cfg.qry_position_interval_s, 5);

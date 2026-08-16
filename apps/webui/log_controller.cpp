@@ -24,7 +24,7 @@ std::string param_or(const drogon::HttpRequestPtr& req,
 }  // namespace
 
 bool LogCtrl::is_valid_level(const std::string& level) {
-    // 统一调用 LogConfig::is_valid_level（契约 01-log）
+    // 统一调用 LogConfig::is_valid_level（契约 log）
     return dztrader::platform::LogConfig::is_valid_level(level);
 }
 
@@ -178,7 +178,7 @@ void LogCtrl::set_level(const drogon::HttpRequestPtr& req,
     for (const auto& target : targets) {
         // 统一分发（LogDomainService::handle_log_control）：dzweb 自身直调 LogConfig
         //（publish 回推 WS），其他进程写 SHM 帧
-        // 契约 01-log: SET_LOG_CONFIG 是增量 patch (RFC 7386)。UI 仅改 level。
+        // 契约 log: SET_LOG_CONFIG 是增量 patch (RFC 7386)。UI 仅改 level。
         log_domain_->handle_log_control(target, DZ_FRAME_SET_LOG_CONFIG, {{"level", level}});
         // HTTP 同步响应仅表示"已下发"; 最终生效级别由 RTN/publish 异步推送确认
         results.push_back({

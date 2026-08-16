@@ -82,7 +82,7 @@ TEST_F(MarketSourceControllerTest, CreateAndGetMarketSource) {
     const int64_t id = create_source("ctp_main");
 
     // GET detail: Wave 2C 后不再返回 credentials 字段 (凭证存于子进程配置文件)
-    // 排程/自动登录走契约 04 (auto_login 帧镜像): detail 无 schedules 字段,
+    // 排程/自动登录走契约 auto-login (auto_login 帧镜像): detail 无 schedules 字段,
     // auto_login 为占位 false (镜像未就绪时)
     auto get_req = admin_req();
     auto get_resp = invoke(&MarketSourceCtrl::get, get_req, id);
@@ -92,10 +92,10 @@ TEST_F(MarketSourceControllerTest, CreateAndGetMarketSource) {
     EXPECT_EQ(body["source_type"].get<std::string>(), "ctp");
     EXPECT_EQ(body["source_name"].get<std::string>(), "ctp_main");
     EXPECT_EQ(body["display_name"].get<std::string>(), "CTP Main");
-    // source_name="ctp_main" 不以 dzmd_/dztd_ 开头, ui_card 为空字符串 (契约 06)
+    // source_name="ctp_main" 不以 dzmd_/dztd_ 开头, ui_card 为空字符串 (契约 md-config)
     EXPECT_EQ(body["ui_card"].get<std::string>(), "");
     EXPECT_FALSE(body.contains("credentials"));
-    EXPECT_FALSE(body.contains("schedules"));  // 契约 04: 排程已迁移, 不再在 detail 返回
+    EXPECT_FALSE(body.contains("schedules"));  // 契约 auto-login: 排程已迁移, 不再在 detail 返回
     EXPECT_EQ(body["auto_login"].get<bool>(), false);
 }
 
@@ -139,7 +139,7 @@ TEST_F(MarketSourceControllerTest, ListMarketSources) {
     // List items must NOT include credentials/schedules (just the basic shape).
     EXPECT_FALSE(body[0].contains("credentials"));
     EXPECT_FALSE(body[0].contains("schedules"));
-    // 契约 06: ui_card 由 source_name 经 extract_ui_card 计算
+    // 契约 md-config: ui_card 由 source_name 经 extract_ui_card 计算
     // dzmd_ctp_a / dzmd_ctp_b → tail="ctp_a"/"ctp_b" → 第一个 _ 之前为 "ctp"
     for (const auto& item : body) {
         EXPECT_EQ(item["ui_card"].get<std::string>(), "ctp")
@@ -356,7 +356,7 @@ TEST_F(MarketSourceControllerTest, ToggleAutoLoginDisableDispatchSuccess) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
 }
 
-// ---- auto-login / schedule (契约 04: 全量 {enabled, schedules} 直发 SET_AUTO_LOGIN) ----
+// ---- auto-login / schedule (契约 auto-login: 全量 {enabled, schedules} 直发 SET_AUTO_LOGIN) ----
 
 TEST_F(MarketSourceControllerTest, SetAutoLoginAsNonAdminReturns403) {
     const int64_t id = create_source("ctp_sched2");
@@ -589,7 +589,7 @@ TEST_F(MarketSourceControllerTest, AvailableFiltersStoppedProcesses) {
             found = true;
             EXPECT_FALSE(item.value("added", true))
                 << "stopped process should not be marked as added";
-            // 契约 06: dzmd_ctp_md_state_test → tail="ctp_md_config_test" → ui_card="ctp"
+            // 契约 md-config: dzmd_ctp_md_state_test → tail="ctp_md_config_test" → ui_card="ctp"
             EXPECT_EQ(item.value("ui_card", std::string{"<missing>"}), "ctp")
                 << "ui_card should be 'ctp' for dzmd_ctp_md_state_test";
             break;

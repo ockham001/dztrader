@@ -7,12 +7,12 @@ import { usePending } from '@/composables/usePending'
 
 // 设计 §5.2：进程状态/控制领域（marketSources 进程部分拆出）
 // - statuses: process_status 帧镜像（name → ProcessStatusPayload，后到覆盖先到）
-// - configs:  process_config 帧镜像（name → config，全量覆盖——覆盖天然含删除，契约 03：
+// - configs:  process_config 帧镜像（name → config，全量覆盖——覆盖天然含删除，契约 process：
 //   条目消失 = 进程已移除）
 // - start/stop/removeSource: pending 迁移 usePending（key: source:{id}:{op}，op ∈ start/stop/remove）
 //   pending 语义与 marketSources.ts 现有实现逐项一致（拆 store 不得改变清理触发点）：
 //     HTTP 成功不清 pending（keepPendingOnSuccess 默认 true，等 process_status 带 event 清，
-//     契约 03；原 rtn_process_control 消息后端已不推送，P6 迁移）
+//     契约 process；原 rtn_process_control 消息后端已不推送，P6 迁移）
 //     HTTP 失败清 pending + 返回 false
 //     超时兜底（进程操作 30s，usePending 超时清 + toast）
 // - applyProcessStatus: 解析 event 字段清对应 pending（成功 resolve / 失败 fail, 不弹 toast）；
@@ -43,15 +43,15 @@ export const useProcessStore = defineStore('process', () => {
   }
 
   // process_status 帧：单条完整覆盖（后到覆盖先到），非法 payload 忽略不写
-  // 契约 03: 带 event 的帧是 REQUEST_PROCESS_CONTROL 的响应——据此清对应 pending
+  // 契约 process: 带 event 的帧是 REQUEST_PROCESS_CONTROL 的响应——据此清对应 pending
   // （StartSucceeded/StartFailed→start、StopSucceeded/StopFailed→stop、
   //  RemoveSucceeded/RemoveFailed→remove；失败仅清 pending（反馈由 NOTIFY_UI 弹窗承载））；
   // event 缺失 = 自发状态变化（崩溃/重启/快照），不清 pending。
   // P6 修复: 原 rtn_process_control 消息后端已不推送（帧 114 已删），
-  // pending 清理唯一入口迁移至此（契约 10 §5 已知差异关闭）。
+  // pending 清理唯一入口迁移至此（契约 webui-ws §5 已知差异关闭）。
   function applyProcessStatus(payload: ProcessStatusPayload): void {
     if (!payload || typeof payload !== 'object' || !payload.name) return
-    // 契约 04: 对已移除进程（process_config 已初始化且不含该进程）后续到达的
+    // 契约 process: 对已移除进程（process_config 已初始化且不含该进程）后续到达的
     // process_status 忽略（不重建镜像）。configs 未初始化时放行（快照/启动初期
     // 的顺序竞态：process_status 可能先于 process_config 到达）。
     if (configsInitialized.value && !(payload.name in configs.value)) {
@@ -81,7 +81,7 @@ export const useProcessStore = defineStore('process', () => {
     const key = opKey(sourceId, op)
     if (event.endsWith('Failed')) {
       // 只清 pending, 不弹 toast: 失败反馈由 NOTIFY_UI 错误级别弹窗承载
-      // （契约 03 要求失败路径必推 NOTIFY_UI popup=true, master 已实现）,
+      // （契约 notify-ui 要求失败路径必推 NOTIFY_UI popup=true, master 已实现）,
       // 此处再 toast 会造成双提示（弹窗 + 小 toast 并存, P4 §5.4 单出口原则）
       fail(key)
     } else {
@@ -94,7 +94,7 @@ export const useProcessStore = defineStore('process', () => {
     }
   }
 
-  // process_config 帧：全量覆盖本地配置镜像（覆盖天然含删除——契约 04）
+  // process_config 帧：全量覆盖本地配置镜像（覆盖天然含删除——契约 process）
   // 防御：非对象 / 数组 payload 忽略（不写不抛）
   function applyProcessConfig(payload: Record<string, unknown>): void {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return

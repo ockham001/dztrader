@@ -2,8 +2,8 @@
 // 自 composables/useWebSocket.ts 的 ServerMessage 迁入并扩展（P3 Task 1）
 
 // 服务端 → 客户端消息（type 联合 + 每类 payload）
-// P6: rtn_process_control 已移除——后端不推送该消息（帧 114 已删，契约 10 §5），
-// 进程操作 pending 由 process_status 帧的 event 字段清理（契约 04）
+// P6: rtn_process_control 已移除——后端不推送该消息（帧 114 已删，契约 webui-ws §5），
+// 进程操作 pending 由 process_status 帧的 event 字段清理（契约 process）
 export type WsServerMessageType =
   | 'snapshot' | 'process_status' | 'process_config'
   | 'md_rtn_config' | 'md_rtn_status' | 'md_rtn_subscriptions'

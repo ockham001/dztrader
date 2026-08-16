@@ -69,7 +69,7 @@ std::optional<std::string> validate(const TdConfig& cfg) {
         }
     }
 
-    // 排程/自动登录校验已随契约 04 迁移到 AutoLoginConfig（SET/RTN_AUTO_LOGIN 帧，
+    // 排程/自动登录校验已随契约 auto-login 迁移到 AutoLoginConfig（SET/RTN_AUTO_LOGIN 帧，
     // 持久化到 auto_login section）——td section 不再含排程字段
 
     if (cfg.qry_account_interval_s <= 0) {

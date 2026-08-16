@@ -9,7 +9,7 @@
 
 namespace dztrader::webui {
 
-/// 订阅领域服务：RTN_MD_SUBSCRIPTIONS 的 WS 广播（契约 07）。
+/// 订阅领域服务：RTN_MD_SUBSCRIPTIONS 的 WS 广播（契约 md-subscription）。
 /// 行为逐行对照原 WsController::handle_rtn_md_subscriptions：
 /// - payload 拷贝后注入 source 字段，再整体作为广播 payload（原实现 std::move 语义等价，
 ///   消息内容逐字节一致）；

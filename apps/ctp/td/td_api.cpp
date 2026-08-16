@@ -234,7 +234,7 @@ void TdApi::handle_frame(const std::byte* frame) {
 }
 
 void TdApi::handle_frame_inner(const std::byte* frame) {
-    // 设计 §4.4 帧处理模式 (与 md_api.cpp 一致), 差异见契约 12-td-order:
+    // 设计 §4.4 帧处理模式 (与 md_api.cpp 一致), 差异见契约 td-order:
     //   - basic 广播帧: 通用控制帧不做目标匹配; TD_ORDER_REQ / TD_ORDER_CANCEL_REQ 按 payload account_id 归属路由
     //   - 含 instance_id 帧: instance_id == name_ (进程级, 如 TD_CONNECT / TD_DISCONNECT / SET_LOG_CONFIG 等)
     //     或以 "name_:" 开头 (账户级, 设计 §1.1)
@@ -264,12 +264,12 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
             return;
         }
         case DZ_FRAME_TD_ORDER_REQ: {
-            // 契约 12-td-order: basic 广播帧, 按 payload account_id 归属路由
+            // 契约 td-order: basic 广播帧, 按 payload account_id 归属路由
             on_order_req(view);
             return;
         }
         case DZ_FRAME_TD_ORDER_CANCEL_REQ: {
-            // 契约 12-td-order: basic 广播帧, 按 payload account_id 归属路由
+            // 契约 td-order: basic 广播帧, 按 payload account_id 归属路由
             on_cancel_req(view);
             return;
         }
@@ -278,7 +278,7 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
     }
 
     // 2. 含 instance_id 帧: instance_id == name_ (进程级) 或以 "name_:" 开头 (账户级, 设计 §1.1)
-    //    (TD_ORDER_REQ / TD_ORDER_CANCEL_REQ 属 basic 广播帧, 已在第 1 层处理, 见契约 12-td-order)
+    //    (TD_ORDER_REQ / TD_ORDER_CANCEL_REQ 属 basic 广播帧, 已在第 1 层处理, 见契约 td-order)
     std::string_view inst(view.ext_inst_id());
     std::string prefix_with_colon = name_ + ":";
     if (inst != name_ && !inst.starts_with(prefix_with_colon)) {
@@ -642,7 +642,7 @@ void TdApi::disconnect_account_by_id(const std::string& account_id) {
 }
 
 void TdApi::on_order_req(const shm::FrameView& view) {
-    // 契约 12-td-order: TD_ORDER_REQ 是 basic 广播帧, payload = DzOrderReq (memcpy 解析, 避免对齐问题),
+    // 契约 td-order: TD_ORDER_REQ 是 basic 广播帧, payload = DzOrderReq (memcpy 解析, 避免对齐问题),
     // 按 payload account_id 归属路由: 每个 td 网关进程读所有下单帧, 只处理 account_id 在本进程配置中的订单.
 
     // 1. 校验 frame_size 足够容纳 DzFrameHeader + DzOrderReq (防止截断帧误读)
@@ -698,7 +698,7 @@ void TdApi::on_order_req(const shm::FrameView& view) {
 }
 
 void TdApi::on_cancel_req(const shm::FrameView& view) {
-    // 契约 12-td-order: TD_ORDER_CANCEL_REQ 是 basic 广播帧, payload = DzOrderCancelReq (order_id + account_id),
+    // 契约 td-order: TD_ORDER_CANCEL_REQ 是 basic 广播帧, payload = DzOrderCancelReq (order_id + account_id),
     // 按 payload account_id 归属路由 (与 on_order_req 相同).
 
     // 1. 校验 frame_size 足够容纳 DzFrameHeader + DzOrderCancelReq

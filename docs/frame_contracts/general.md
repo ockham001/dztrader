@@ -6,26 +6,27 @@
 
 ---
 
-## 1. 目录与编号
+## 1. 目录
 
-`docs/frame_contracts/` 是进程间帧协议的唯一语义真相源。编号 = 文件名前缀：
+`docs/frame_contracts/` 是进程间帧协议的唯一语义真相源：
 
-| 编号 | 主题 | 覆盖范围 |
-|------|------|----------|
-| 00 | 通用规则（本文件） | 帧布局、传输与数据流（§4 链路形态）、请求-响应总则、快照查询 |
-| 01 | 日志 | SET/FLUSH/RTN_LOG_CONFIG |
-| 02 | SHM 通道配置 | 事件/行情通道配置 + 预加载 + 订阅者刷新 + 行情通道读者注册 |
-| 03 | UI 通知 | NOTIFY_UI |
-| 04 | 进程 | 进程控制/状态/配置 + 优雅退出请求 |
-| 05 | 自动登录/登出排程 | SET/RTN_AUTO_LOGIN |
-| 06 | 进度推送 | RTN_PROGRESS |
-| 07 | 行情连接与订阅 | 连接请求、订阅/退订、订阅查询、行情生命周期通知 |
-| 08 | 行情网关配置 | SET/RTN_MD_CONFIG |
-| 09 | 行情网关状态 | RTN_MD_STATUS |
-| 10 | WebSocket 协议 | frontend ↔ dzweb 的 WS 信封与差异、前端行为义务 |
-| 11 | REST API | frontend ↔ dzweb 的 REST 端点 |
+| 主题 | 覆盖范围 |
+|------|----------|
+| 通用规则（本文件） | 帧布局、传输与数据流（§4 链路形态）、请求-响应总则、快照查询 |
+| 日志 | SET/FLUSH/RTN_LOG_CONFIG |
+| SHM 通道配置 | 事件/行情通道配置 + 预加载 + 订阅者刷新 + 行情通道读者注册 |
+| UI 通知 | NOTIFY_UI |
+| 进程 | 进程控制/状态/配置 + 优雅退出请求 |
+| 自动登录/登出排程 | SET/RTN_AUTO_LOGIN |
+| 进度推送 | RTN_PROGRESS |
+| 行情连接与订阅 | 连接请求、订阅/退订、订阅查询、行情生命周期通知 |
+| 行情网关配置 | SET/RTN_MD_CONFIG |
+| 行情网关状态 | RTN_MD_STATUS |
+| WebSocket 协议 | frontend ↔ dzweb 的 WS 信封与差异、前端行为义务 |
+| REST API | frontend ↔ dzweb 的 REST 端点 |
+| 交易委托请求 | TD_ORDER_REQ / TD_ORDER_CANCEL_REQ |
 
-> 历史：本目录于 2026-07 由 `docs/flow_contracts/` 演进而来（后改名 frame_contracts）。2026-08 整理时新增本总则，原 00-05 顺延为 01-06，原 06-misc 拆解归位，原 07-10 编号不变。
+> 历史：本目录于 2026-07 由 `docs/flow_contracts/` 演进而来（后改名 frame_contracts）。2026-08 整理时新增本总则，原 00-05 顺延为 01-06，原 06-misc 拆解归位，原 07-10 编号不变。2026-08-16 契约文件名去除序号前缀，代码与文档引用改「契约 + 短名」格式（短名即文件名去扩展名）。
 
 ---
 
@@ -72,7 +73,7 @@
 
 | 角色 | 说明 |
 |------|------|
-| 前端 | WebUI / Qt UI，经 REST（契约 11）与 WS（契约 10）与 dzweb 通信 |
+| 前端 | WebUI / Qt UI，经 REST（契约 rest）与 WS（契约 webui-ws）与 dzweb 通信 |
 | dzweb | WebUI 后端进程。逻辑组件：REST/WS 入口（controller）、领域服务（镜像更新 + WS 广播）、事件监听（事件通道读侧） |
 | master | 进程管理进程（`dztraderd`），事件通道配置宿主 |
 | 网关进程 | `dzmd_*`（行情）/ `dztd_*`（交易） |
@@ -93,14 +94,14 @@
 **形态 1：标准 SET→RTN 环路**（前端发起的设置/查询类请求）
 
 ```
-请求侧：前端 →(REST 契约 11 / WS 契约 10)→ dzweb 入口
+请求侧：前端 →(REST 契约 rest / WS 契约 webui-ws)→ dzweb 入口
         →(写 SET/REQ 帧 + 信号量唤醒)→ 事件通道
         →(全部等待进程唤醒；仅 frame_type 与路由键匹配者处理：instance_id 或 payload 目标字段)→ 目标进程 handler
 响应侧：目标进程 handler →(写 RTN 帧 + 唤醒)→ 事件通道
         →(dzweb 事件监听)→ 领域服务 →(镜像 domain 更新)→ WS 广播 → 前端（清 pending）
 ```
 
-- REST/WS 响应仅表示"已写事件通道"，生效信号 = 对应 WS 领域消息（契约 10 §4）。
+- REST/WS 响应仅表示"已写事件通道"，生效信号 = 对应 WS 领域消息（契约 webui-ws §4）。
 - 同一请求存在 REST 与 WS 两个等效入口时行为一致。
 
 **形态 2：dzweb 自身短路**（目标 = dzweb）
@@ -125,7 +126,7 @@
 进程 →(写 RTN 帧 + 唤醒)→ 事件通道 →(dzweb 事件监听)→ 领域服务 →(镜像 domain 更新)→ WS 广播 → 前端
 ```
 
-查询类响应（如 `RTN_MD_SUBSCRIPTIONS`，契约 07）为本形态的"不进镜像"变体：dzweb 注入 `source` 后透传广播。
+查询类响应（如 `RTN_MD_SUBSCRIPTIONS`，契约 md-subscription）为本形态的"不进镜像"变体：dzweb 注入 `source` 后透传广播。
 
 **形态 5：后台进程间帧**（不经 dzweb、不进镜像、无前端参与）
 
@@ -149,7 +150,7 @@
 
 - 取值 = 进程名（如 `dzmd_ctp`），或进程名 + 冒号 + 后缀（如交易多账户 `dztd_ctp:800123`）。
 - 进程名由命名规则约束（`dzmd_*`/`dztd_*`/`stg.*` 等）；后缀不含冒号，冒号仅作分隔符且至多出现一次。
-- 策略实例 ID = `stg.<name>`（无 pid 后缀，重启复用同名；订阅者身份与事件通道信号量名一致，见契约 07；master 与策略 SDK 必须构造同名）。
+- 策略实例 ID = `stg.<name>`（无 pid 后缀，重启复用同名；订阅者身份与事件通道信号量名一致，见契约 shm；master 与策略 SDK 必须构造同名）。
 - 同一逻辑实例在全部契约中必须使用同一 `instance_id`（日志、SHM 配置、进度、镜像 key 对齐）。
 - 帧头无 `instance_id` 的帧不得依赖"帧来源"路由；来源/目标必须显式在 payload 中携带（如 `target`/`name`/`source` 字段）。
 
@@ -205,7 +206,7 @@
 
 - dzweb 为每个实例维护镜像（key = `instance_id`，无 `instance_id` 帧挂固定 `dztraderd`）；收到 RTN 更新对应 domain 并 WS 推送。
 - RTN 全量覆盖：前端直接整体覆盖本地镜像，覆盖天然含删除。
-- 镜像 domain 名与 WS 消息的映射见契约 10；镜像不进"高频数据"。
+- 镜像 domain 名与 WS 消息的映射见契约 webui-ws；镜像不进"高频数据"。
 - 仅查询响应（如订阅详情）不进镜像，dzweb 透传广播。
 
 ---
@@ -244,6 +245,6 @@
 3. dzweb 领域服务（镜像 domain + WS 广播）
 4. 前端 store/组件
 5. 相关单测与 frame_types 测试
-6. 契约 10/11 的 WS/REST 映射表
+6. 契约 webui-ws 与 rest 的 WS/REST 映射表
 
 契约定稿后，实现与契约的冲突（含既有实现偏离）以契约为准；修实现需走对应模块流程（`apps/ctp/md` 另有锁定规则）。

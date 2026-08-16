@@ -47,7 +47,7 @@
 ## DZ_FRAME_SET_EVENT_SHM_CONFIG / DZ_FRAME_SET_MD_SHM_CONFIG
 
 **语义**：设置目标 SHM 通道配置，RFC 7386 JSON Merge Patch 递归合并
-**数据流**：形态 1（总则 §4.2）——dzweb → master（事件通道，帧头无 `instance_id`，master 唯一）/ dzweb → 各行情进程（行情通道，帧头 `instance_id` = 行情进程名）；前端入口：事件通道无（master 运维配置）；行情通道 `PUT /api/market-sources/{id}/shm-config`（契约 11，`page_size_mb` 仅配置文件可改）；响应帧 `RTN_*_SHM_CONFIG` → 镜像 `event_shm_config`（挂 `dztraderd`）/ `md_shm_config`（挂行情实例）域 → WS 消息同名
+**数据流**：形态 1（总则 §4.2）——dzweb → master（事件通道，帧头无 `instance_id`，master 唯一）/ dzweb → 各行情进程（行情通道，帧头 `instance_id` = 行情进程名）；前端入口：事件通道无（master 运维配置）；行情通道 `PUT /api/market-sources/{id}/shm-config`（契约 rest，`page_size_mb` 仅配置文件可改）；响应帧 `RTN_*_SHM_CONFIG` → 镜像 `event_shm_config`（挂 `dztraderd`）/ `md_shm_config`（挂行情实例）域 → WS 消息同名
 **Payload**：JSON（ShmConfig 子集）
 
 ```json
@@ -86,7 +86,7 @@
 **镜像**：
 - 事件通道：帧头无 `instance_id`，dzweb 挂固定实例 `dztraderd`，更新镜像 `event_shm_config` 域
 - 行情通道：按 `instance_id` 更新该实例镜像的 `md_shm_config` 域
-- 更新后 WS 推送（消息名见契约 10）
+- 更新后 WS 推送（消息名见契约 webui-ws）
 
 ---
 

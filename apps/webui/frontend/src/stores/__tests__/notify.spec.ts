@@ -85,7 +85,7 @@ describe('useNotifyStore', () => {
     expect(store.items).toHaveLength(0)
   })
 
-  // 契约 03 前端义务：level=error 且 popup=true 必须打断用户展示（入 popup 队列）
+  // 契约 notify-ui 前端义务：level=error 且 popup=true 必须打断用户展示（入 popup 队列）
   it('popup=true 且 error 级别进入弹窗队列，ackPopup 逐条出队', () => {
     const store = useNotifyStore()
     expect(store.popupCurrent).toBeNull()

@@ -74,7 +74,7 @@ public:
     const ProcessEntry* find_registry_entry(std::string_view name) const;
 
     /// 实时扫描 App Root 下同名可执行文件（转发 ProcessRegistry::find_exe_by_stem）。
-    /// 用于 PROCESS_CONTROL start 未注册目标的动态注册场景（契约 03 修订）。
+    /// 用于 PROCESS_CONTROL start 未注册目标的动态注册场景（契约 process 修订）。
     /// 返回 thread_local 缓冲指针, 跨调用不可用; 未找到返回 nullptr。
     const ProcessEntry* find_exe_by_stem(std::string_view name) const;
 
@@ -99,8 +99,8 @@ public:
     void unregister_entry(const std::string& name);
 
     /// 发送 RTN_PROCESS_STATUS 帧 (116, 无 instance_id)。
-    /// event 缺省 = 自发状态变化 (契约 04-process); 操作响应由 handle_process_control 显式传 event。
-    /// display_name 从 store 读取 (契约 04-process, store 为配置真相源)
+    /// event 缺省 = 自发状态变化 (契约 process); 操作响应由 handle_process_control 显式传 event。
+    /// display_name 从 store 读取 (契约 process, store 为配置真相源)
     void send_process_status(const std::string& name,
                              ChildState state,
                              int pid,

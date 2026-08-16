@@ -264,7 +264,7 @@ void MdApi::handle_set_md_config(const shm::FrameView& view) {
         apply_config_change(req);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("config op failed | error=\"{}\"", e.what());
-        // 契约 08: 失败原因由 NOTIFY_UI (错误级别弹窗) 传达, RTN 回旧值 (无 error 字段)
+        // 契约 md-config: 失败原因由 NOTIFY_UI (错误级别弹窗) 传达, RTN 回旧值 (无 error 字段)
         notify_ui_.error("配置处理失败: " + std::string(e.what()));
         report_config();
     }

@@ -567,7 +567,7 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     EXPECT_TRUE(cli_exited) << "stg_demo order mode did not exit within 15s";
     EXPECT_EQ(cli_exit, 3) << "stg_demo order mode should exit 3 (REJECTED) in empty-account setup";
 
-    // 2. 帧回路: SET_LOG_CONFIG 空 patch -> RTN_LOG_CONFIG (契约 01 回环, 配置缺失自愈路径)
+    // 2. 帧回路: SET_LOG_CONFIG 空 patch -> RTN_LOG_CONFIG (契约 log 回环, 配置缺失自愈路径)
     auto send_set_log_config = [&] {
         writer_->refresh_subscribers();  // 同上: 防过期订阅者快照漏唤醒
         platform::write_ext_inst_json_obj(*writer_, DZ_FRAME_SET_LOG_CONFIG, "dzmd_ctp",

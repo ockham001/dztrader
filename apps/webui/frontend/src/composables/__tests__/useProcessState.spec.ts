@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { processStateText, processStateColor, isStateIdle } from '../useProcessState'
 
 describe('processStateText', () => {
-  it('PascalCase key 映射为中文文案（契约 04 ChildState）', () => {
+  it('PascalCase key 映射为中文文案（契约 process ChildState）', () => {
     expect(processStateText('Starting')).toBe('启动中')
     expect(processStateText('Running')).toBe('运行中')
     expect(processStateText('Stopping')).toBe('停止中')

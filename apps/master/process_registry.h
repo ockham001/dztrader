@@ -51,7 +51,7 @@ public:
     void register_strategy(ProcessEntry entry);
 
     /// 运行时动态注册网关进程（PROCESS_CONTROL start 未注册目标扫描命中时,
-    /// 契约 03 修订: "添加行情源"场景动态注册并持久化 dztraderd.json）。
+    /// 契约 process 修订: "添加行情源"场景动态注册并持久化 dztraderd.json）。
     /// 已存在同名条目: 抛 Exception(DZ_EC_ALREADY_EXISTS)。
     void register_gateway(ProcessEntry entry);
 

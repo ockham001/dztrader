@@ -9,7 +9,7 @@
 
 namespace dztrader::webui {
 
-/// SHM 通道配置领域服务（契约 01）：RTN_EVENT_SHM_CONFIG / RTN_MD_SHM_CONFIG 的镜像 + WS 广播。
+/// SHM 通道配置领域服务（契约 shm）：RTN_EVENT_SHM_CONFIG / RTN_MD_SHM_CONFIG 的镜像 + WS 广播。
 /// 镜像 key：事件通道配置无 instance_id，固定挂 dztraderd（P1 镜像约定：无 instance_id 帧统一挂 master 实例）；
 /// 行情通道配置挂帧头 instance_id。
 class ShmDomainService {

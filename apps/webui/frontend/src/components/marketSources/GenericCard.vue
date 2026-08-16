@@ -5,7 +5,7 @@ import { processStateText, processStateColor } from '@/composables/useProcessSta
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import type { MarketSourceView } from '@/stores/marketSources'
 
-// GenericCard 接收 MarketSource (契约 06)
+// GenericCard 接收 MarketSource (契约 md-config)
 // ui_card 未命中映射表时的回退卡片, 只显示基本信息 (未知大类)
 // 完整 CTP 功能见 CtpCard.vue
 const props = defineProps<{

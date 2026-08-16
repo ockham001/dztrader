@@ -26,7 +26,7 @@ const dztrader::platform::CtpBrokerEntry* MdApi::find_current_broker() const {
 }
 
 void MdApi::report_config() {
-    // 契约 08: RTN_MD_CONFIG payload 始终为纯脱敏 CtpMdConfigData JSON, 无 error 字段。
+    // 契约 md-config: RTN_MD_CONFIG payload 始终为纯脱敏 CtpMdConfigData JSON, 无 error 字段。
     // 失败原因通过 NOTIFY_UI 传达 (错误级别弹窗), 清前端 pending 只需回 RTN (旧值)。
     try {
         platform::write_ext_inst_json_obj(event_writer_, DZ_FRAME_RTN_MD_CONFIG, name_,
@@ -45,7 +45,7 @@ void MdApi::apply_config_change(const dztrader::platform::CtpMdConfigOpReq& req)
     if (dztrader::platform::is_ctp_connection_op(req.op) && state_machine_.state() != MdState::Idle) {
         SPDLOG_WARN("config change rejected | op={} state={}", magic_enum::enum_name(req.op),
                     magic_enum::enum_name(state_machine_.state()));
-        // 契约 08: 状态保护拒绝属失败, 必须 NOTIFY_UI 错误级别弹窗 + 回 RTN (旧值, 无 error 字段)
+        // 契约 md-config: 状态保护拒绝属失败, 必须 NOTIFY_UI 错误级别弹窗 + 回 RTN (旧值, 无 error 字段)
         notify_ui_.error("请先断开行情再修改连接配置");
         report_config();
         return;

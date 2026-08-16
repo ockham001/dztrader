@@ -48,7 +48,7 @@
 ## DZ_FRAME_SET_AUTO_LOGIN
 
 **语义**：设置目标网关的自动登录/登出排程（RFC 7386 增量更新）
-**数据流**：形态 1（总则 §4.2）——dzweb → 目标网关（帧头 `instance_id` = 目标行情进程名）；前端入口 `PUT /api/market-sources/{id}/auto-login`（契约 11）；响应帧 `RTN_AUTO_LOGIN` → 镜像 `auto_login` 域 → WS 消息 `auto_login`
+**数据流**：形态 1（总则 §4.2）——dzweb → 目标网关（帧头 `instance_id` = 目标行情进程名）；前端入口 `PUT /api/market-sources/{id}/auto-login`（契约 rest）；响应帧 `RTN_AUTO_LOGIN` → 镜像 `auto_login` 域 → WS 消息 `auto_login`
 **Payload**：JSON（AutoLoginConfig 子集）
 
 ```json
@@ -86,7 +86,7 @@
 3. `QUERY_FULL_SNAPSHOT` 响应（总则 §7）
 
 **镜像**：
-- dzweb 收到后更新该实例镜像的 `auto_login` 域，并 WS 推送（消息名见契约 10）
+- dzweb 收到后更新该实例镜像的 `auto_login` 域，并 WS 推送（消息名见契约 webui-ws）
 
 ## 持久化与默认值
 

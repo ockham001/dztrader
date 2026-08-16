@@ -8,7 +8,7 @@
  * master ProcessRegistry::find_exe_by_stem 与 dzweb list_available 共用此实现,
  * 消除两处重复的扫描规则。
  *
- * 扫描规则 (契约 04):
+ * 扫描规则 (契约 process):
  * - 锚点: this_process::app_root() (从 exe_dir 向上查找 dztraderd[.exe])
  * - 第一层: 扫描 root 下所有可执行文件
  * - 第二层: 扫描 root 下每个子目录 (仅该子目录, 不递归)

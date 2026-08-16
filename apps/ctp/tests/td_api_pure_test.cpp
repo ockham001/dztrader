@@ -225,7 +225,7 @@ TEST(ApplyConfigOpTest, SetAccountCurrency) {
     EXPECT_EQ(cfg.accounts[0].currency_id, "USD");
 }
 
-// 契约 04 迁移完成: AddSchedule/RemoveSchedule/SetAutoLogin op 已移除,
+// 契约 auto-login 迁移完成: AddSchedule/RemoveSchedule/SetAutoLogin op 已移除,
 // 排程单一真相源为 SET/RTN_AUTO_LOGIN 帧 (见 td_api_scheduled.cpp / auto_login_config_)
 
 TEST(ApplyConfigOpTest, SetLockMode) {
@@ -361,7 +361,7 @@ TEST(IsConnectionOpTest, ConnectionOps) {
 
 TEST(IsConnectionOpTest, NonConnectionOps) {
     EXPECT_FALSE(is_connection_op(TdConfigOp::AddAccount));
-    // 契约 04 迁移完成: AddSchedule/RemoveSchedule/SetAutoLogin 已从枚举移除
+    // 契约 auto-login 迁移完成: AddSchedule/RemoveSchedule/SetAutoLogin 已从枚举移除
     EXPECT_FALSE(is_connection_op(TdConfigOp::SetLockMode));
     EXPECT_FALSE(is_connection_op(TdConfigOp::SetQryIntervals));
     EXPECT_FALSE(is_connection_op(TdConfigOp::SetAccountEnabled));

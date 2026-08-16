@@ -112,7 +112,7 @@ void ShmWriter::write_set_auto_login(const std::string& source, const nlohmann::
         return;
     }
     try {
-        // SET_AUTO_LOGIN 定向到目标网关 (契约 04): payload 为 AutoLoginConfig 增量 patch
+        // SET_AUTO_LOGIN 定向到目标网关 (契约 auto-login): payload 为 AutoLoginConfig 增量 patch
         platform::write_ext_inst_json_obj(*event_writer_, DZ_FRAME_SET_AUTO_LOGIN, source, payload);
         spdlog::info("set auto login written | source={}", source);
     } catch (const std::exception& e) {
@@ -130,7 +130,7 @@ void ShmWriter::write_set_md_shm_config(const std::string& source, const nlohman
         return;
     }
     try {
-        // SET_MD_SHM_CONFIG 定向到目标行情进程 (契约 02): payload 为 ShmConfig 增量 patch
+        // SET_MD_SHM_CONFIG 定向到目标行情进程 (契约 shm): payload 为 ShmConfig 增量 patch
         platform::write_ext_inst_json_obj(*event_writer_, DZ_FRAME_SET_MD_SHM_CONFIG, source, payload);
         spdlog::info("set md shm config written | source={}", source);
     } catch (const std::exception& e) {

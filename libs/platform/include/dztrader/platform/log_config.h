@@ -62,7 +62,7 @@ public:
     const nlohmann::json& current() const noexcept { return cfg_; }
 
     // ===== 静态工具函数（所有 level 校验/解析的唯一真相源）=====
-    // 契约 01-log: 有效值为 spdlog 规范全称（全小写，大小写敏感）：
+    // 契约 log: 有效值为 spdlog 规范全称（全小写，大小写敏感）：
     // trace/debug/info/warning/error/critical/off。
     // warn/err 为 spdlog from_str 内置快捷方式，作为输入别名接受但存储/RTN 时规范化为 warning/error。
     // from_str 对未知串返回 off，与合法 "off" 歧义，需显式区分。空串视为非法。
@@ -111,7 +111,7 @@ inline nlohmann::json LogConfig::default_cfg() {
 }
 
 inline void LogConfig::rtn_log_config(shm::MultiWriter& event_writer) {
-    // 始终全量当前 cfg_，无 error 字段（契约 01-log：RTN 始终全量、无 error 字段）
+    // 始终全量当前 cfg_，无 error 字段（契约 log：RTN 始终全量、无 error 字段）
     // 非 const：写共享内存有副作用
     write_ext_inst_json_obj(event_writer, DZ_FRAME_RTN_LOG_CONFIG, instance_id_, cfg_);
 }

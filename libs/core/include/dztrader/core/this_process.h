@@ -30,7 +30,7 @@ const std::filesystem::path& exe_dir();
  * 从 exe_dir() 开始向上查找 dztraderd[.exe]，最多向上 3 层（共检查 4 个目录：
  * exe_dir 及其 3 个祖先目录）。找到则返回该目录，未找到抛 std::runtime_error。
  *
- * App Root 是所有进程发现的扫描锚点（契约 04）。
+ * App Root 是所有进程发现的扫描锚点（契约 process）。
  */
 const std::filesystem::path& app_root();
 

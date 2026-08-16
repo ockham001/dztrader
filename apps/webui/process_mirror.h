@@ -68,7 +68,7 @@ public:
     /// 获取指定进程的 gateway_status (RTN_MD_STATUS 帧填充)
     std::optional<nlohmann::json> get_gateway_status(const std::string& name) const;
 
-    /// 获取指定进程的自动登录排程 (RTN_AUTO_LOGIN 帧填充, 契约 04)
+    /// 获取指定进程的自动登录排程 (RTN_AUTO_LOGIN 帧填充, 契约 auto-login)
     std::optional<nlohmann::json> get_auto_login(const std::string& name) const;
 
     /// 移除进程的镜像数据 (进程停止/崩溃时调用,避免 stale 数据长期保留)

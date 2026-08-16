@@ -12,7 +12,7 @@
 
 namespace dztrader::webui {
 
-/// 行情源配置领域服务：RTN_MD_CONFIG 的镜像更新 + source 自动入库 + WS 广播（契约 08）。
+/// 行情源配置领域服务：RTN_MD_CONFIG 的镜像更新 + source 自动入库 + WS 广播（契约 md-config）。
 /// 行为逐行对照原 WsController::handle_rtn_md_config：
 /// - 镜像更新 process_mirror.update_config(source, payload)；
 /// - source 前缀 dzmd_ 检查：未入库时以大写 suffix 为 source_type 自动入库

@@ -147,7 +147,7 @@ private:
     void cancel_login_timer();
     /// 处理 DZ_FRAME_REQUEST_SHUTDOWN 帧: 设置 running_=false, 让 run() 退出
     void handle_shutdown();
-    /// 推送网关状态 (RTN_MD_STATUS): 契约 09 的 6 字段
+    /// 推送网关状态 (RTN_MD_STATUS): 契约 md-status 的 6 字段
     /// 内部先同步订阅统计 (set_subscription_stats)，再构造 JSON 发送。
     void report_md_status();
     /// 推送进度 (RTN_PROGRESS): 从状态机 progress_* 字段读取, 经 progress_reporter_ 发送。
@@ -186,7 +186,7 @@ private:
     void report_full_snapshot();
 
     /// 上报当前配置到 UI (RTN_MD_CONFIG)。
-    /// 契约 08: payload 始终为纯脱敏 CtpMdConfigData JSON, 不带 error 字段; 失败原因由 NOTIFY_UI 传达。
+    /// 契约 md-config: payload 始终为纯脱敏 CtpMdConfigData JSON, 不带 error 字段; 失败原因由 NOTIFY_UI 传达。
     void report_config();
 
     /// 上报当前日志配置: 推 DZ_FRAME_RTN_LOG_CONFIG

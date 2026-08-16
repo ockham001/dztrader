@@ -11,7 +11,7 @@
 ## DZ_FRAME_SET_LOG_CONFIG
 
 **语义**：设置目标实例日志配置，RFC 7386 JSON Merge Patch 增量更新
-**数据流**：形态 1（总则 §4.2）——dzweb → 指定实例（帧头 `instance_id` 匹配者）；前端入口 `POST /api/logs/level`（契约 11）；响应帧 `RTN_LOG_CONFIG` → 镜像 `log_config` 域 → WS 消息 `log_config`。目标为 dzweb 自身时为形态 2 短路：直调本进程处理（等价语义），回推路径不变
+**数据流**：形态 1（总则 §4.2）——dzweb → 指定实例（帧头 `instance_id` 匹配者）；前端入口 `POST /api/logs/level`（契约 rest）；响应帧 `RTN_LOG_CONFIG` → 镜像 `log_config` 域 → WS 消息 `log_config`。目标为 dzweb 自身时为形态 2 短路：直调本进程处理（等价语义），回推路径不变
 **Payload**：JSON
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -37,7 +37,7 @@
 ## DZ_FRAME_FLUSH_LOG
 
 **语义**：触发目标实例立即 flush 日志缓冲
-**数据流**：形态 3（总则 §4.2）——dzweb → 指定实例（帧头 `instance_id` 匹配者）；前端入口 `POST /api/logs/flush`（契约 11）。目标为 dzweb 自身时为形态 2 短路（直接 flush，无回推）
+**数据流**：形态 3（总则 §4.2）——dzweb → 指定实例（帧头 `instance_id` 匹配者）；前端入口 `POST /api/logs/flush`（契约 rest）。目标为 dzweb 自身时为形态 2 短路（直接 flush，无回推）
 **Payload**：空
 
 **时序**：前端"刷新日志"按钮触发 → **无 RTN**
@@ -67,7 +67,7 @@
 3. `QUERY_FULL_SNAPSHOT` 响应（总则 §7）
 
 **镜像**：
-- dzweb 以 `instance_id` 为 key，更新镜像 `log_config` 域并 WS 推送（消息名 `log_config`，见契约 10）
+- dzweb 以 `instance_id` 为 key，更新镜像 `log_config` 域并 WS 推送（消息名 `log_config`，见契约 webui-ws）
 - dzweb 自身 `log_config` 同样纳入镜像（dzweb 自身 SET 成功/失败后经同路径回推）
 
 **前端义务**：

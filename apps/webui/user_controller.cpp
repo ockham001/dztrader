@@ -268,7 +268,7 @@ void UserCtrl::update_status(
 
     if (status == "disabled") {
         repo_->update_user_status(id, "disabled");
-        // 强制断开被禁用用户的所有 WS 连接（契约 11 §2.2：禁用时强制断开）
+        // 强制断开被禁用用户的所有 WS 连接（契约 rest §2.2：禁用时强制断开）
         if (g_kick_user) {
             g_kick_user(target->username);
         }

@@ -14,7 +14,7 @@
 
 namespace dztrader::ctp {
 
-// 复用平台库的经纪商/前置类型 (契约 08), 避免与 md 侧重复定义。
+// 复用平台库的经纪商/前置类型 (契约 md-config), 避免与 md 侧重复定义。
 // 字段与原 BrokerEntry/BrokerFrontend 完全一致, td 侧代码无需改动。
 using BrokerEntry = dztrader::platform::CtpBrokerEntry;
 using BrokerFrontend = dztrader::platform::CtpBrokerFrontend;
@@ -25,7 +25,7 @@ enum class TdConfigOp {
     // 进程级 op
     AddAccount,             // 添加账户 ID + 创建账户配置
     RemoveAccount,          // 移除账户 (仅校验 state==Idle, 不校验持仓)
-    // 注: AddSchedule/RemoveSchedule/SetAutoLogin 已随契约 04 迁移移除
+    // 注: AddSchedule/RemoveSchedule/SetAutoLogin 已随契约 auto-login 迁移移除
     // (排程单一真相源为 SET/RTN_AUTO_LOGIN 帧, 见 td_api_scheduled.cpp)
     SetLockMode,            // OffsetConverter LOCK 模式开关
     SetQryIntervals,        // qry_account_interval_s / qry_position_interval_s / qry_flush_interval_ms
@@ -85,7 +85,7 @@ struct AccountConfig {
 };
 
 /// TD 网关配置 (td section)。
-/// 排程/自动登录已迁移契约 04（SET/RTN_AUTO_LOGIN 帧，持久化到 auto_login section，
+/// 排程/自动登录已迁移契约 auto-login（SET/RTN_AUTO_LOGIN 帧，持久化到 auto_login section，
 /// 由 AutoLoginConfig 管理）——本结构不再含 schedules/enable_auto_login_logout 字段。
 struct TdConfig {
     int qry_account_interval_s = 5;          // 资金查询间隔 (秒)

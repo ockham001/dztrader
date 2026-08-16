@@ -137,7 +137,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(s.removePending).toBe(false)
     })
 
-    describe('md_status 聚合桥接（契约 09）', () => {
+    describe('md_status 聚合桥接（契约 md-status）', () => {
       it('镜像到达后填充 6 字段', async () => {
         await loadDb()  // mock list + loadSources（sources 非空的唯一途径）
         useMdConfigStore().applyMdStatus({ source: 'dzmd_ctp', status: {
@@ -157,7 +157,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
         expect(s.loginTime).toBe('2026-08-08 08:45:32')
       })
 
-      it('清空语义：登录失败仅清 login_time，其余保留（契约 09）', async () => {
+      it('清空语义：登录失败仅清 login_time，其余保留（契约 md-status）', async () => {
         await loadDb()
         useMdConfigStore().applyMdStatus({ source: 'dzmd_ctp', status: {
           api_version: 'v6.7.2',
@@ -197,7 +197,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(s.brokers).toHaveLength(1)
       expect(s.brokers[0].name).toBe('b1')
       expect(s.selectedBrokerId).toBe('b1')
-      // 排程/自动登录来自 auto_login 镜像（契约 04）
+      // 排程/自动登录来自 auto_login 镜像（契约 auto-login）
       md.applyAutoLogin('dzmd_ctp', autoLoginPayload)
       const s2 = store.sources[0]
       expect(s2.auto_login).toBe(true)
@@ -205,7 +205,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(s2.schedules[0].login_time).toBe('09:00')
       expect(s2.schedules[0].source_id).toBe(1)
 
-      // loginState 由 RTN_PROGRESS 驱动（契约 05）
+      // loginState 由 RTN_PROGRESS 驱动（契约 progress）
       useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 4 })
       await nextTick()  // loginState 缓存由 watch 同步
       expect(store.sources[0].loginState).toBe('online')
@@ -310,7 +310,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       md.applyMdConfig({ source: 'dzmd_ctp', config: configPayload })
       await nextTick()
       const s = store.sources[0]
-      // md_rtn_config 只清 broker/frontend 类（契约 08）
+      // md_rtn_config 只清 broker/frontend 类（契约 md-config）
       expect(s.brokerAddPending).toBe(false)
       expect(s.brokerRemovePending).toBe(false)
       expect(s.brokerSelectPending).toBe(false)
@@ -319,7 +319,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(s.frontendRemovePending).toBe(false)
       expect(s.frontendEditPending).toBe(false)
       expect(s.frontendTogglePending).toBe(false)
-      // 排程类 pending 由 auto_login RTN 清（契约 04），此处保持挂起
+      // 排程类 pending 由 auto_login RTN 清（契约 auto-login），此处保持挂起
       expect(s.autoLoginPending).toBe(true)
       expect(s.scheduleAddPending).toBe(true)
       expect(s.scheduleRemovePending).toBe(true)
@@ -335,7 +335,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(s2.scheduleRemovePending).toBe(false)
     })
 
-    it('schedules 以 auto_login 镜像为准（契约 04, 含清空语义）', async () => {
+    it('schedules 以 auto_login 镜像为准（契约 auto-login, 含清空语义）', async () => {
       await loadDb()
       const store = useMarketSourcesStore()
       const md = useMdConfigStore()
@@ -398,7 +398,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(store.sources).toHaveLength(1)
       expect(store.sources[0].removePending).toBe(false)
       expect(store.sources[0].stopPending).toBe(false)
-      // 失败反馈单一出口: NOTIFY_UI 弹窗（契约 03）, 不重复 toast
+      // 失败反馈单一出口: NOTIFY_UI 弹窗（契约 notify-ui）, 不重复 toast
       expect(errorSpy).not.toHaveBeenCalled()
       expect(store.error).toBeNull()
     })
@@ -514,7 +514,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       const store = useMarketSourcesStore()
       await store.loadSources()
       await store.addAndStartSource('dzmd_ctp', 'CTP主行情')
-      // master 失败路径: StartFailed 事件 + Crashed 状态 (契约 03)
+      // master 失败路径: StartFailed 事件 + Crashed 状态 (契约 process)
       useProcessStore().applyProcessStatus({ name: 'dzmd_ctp', state: 'Crashed', pid: 0, event: 'StartFailed' })
       await nextTick()
       // 不晋升: 失败反馈由 NOTIFY_UI 弹窗承载, 卡片不残留
@@ -585,7 +585,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       await vi.advanceTimersByTimeAsync(10_000)
     })
 
-    it('removeSchedule: 以 login+logout 时间对下发全量（契约 04 镜像无 id）', async () => {
+    it('removeSchedule: 以 login+logout 时间对下发全量（契约 auto-login 镜像无 id）', async () => {
       await loadDb()
       vi.mocked(marketSourcesApi.setAutoLogin).mockResolvedValue({ ok: true })
       useMdConfigStore().applyAutoLogin('dzmd_ctp', {
@@ -634,7 +634,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
     })
   })
 
-  describe('progressView 直连（契约 06）', () => {
+  describe('progressView 直连（契约 progress）', () => {
     it('有 progress 镜像时直连帧数值', async () => {
       await loadDb()
       useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 2, desc: '已连接' })

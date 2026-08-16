@@ -119,7 +119,7 @@ TEST(ProcessMirrorTest, UpdateConfigOverwritesExisting) {
     EXPECT_EQ((*got)["new_field"], "new_value");
 }
 
-// ---- 契约 03 条目消失 = 进程已移除（Remove 竞态修复回归测试）----
+// ---- 契约 process 条目消失 = 进程已移除（Remove 竞态修复回归测试）----
 
 TEST(ProcessMirrorTest, UpdateProcessConfigsEntryDisappearanceCleansInstanceMirror) {
     // Remove 流程帧序: 118(条目消失) 先于 116(Stopped); Stopped 被注册守卫拒绝,

@@ -12,7 +12,7 @@
 
 namespace dztrader::webui {
 
-/// 进程领域服务：RTN_PROCESS_STATUS / RTN_PROCESS_CONFIG 的镜像更新 + WS 广播（契约 03）。
+/// 进程领域服务：RTN_PROCESS_STATUS / RTN_PROCESS_CONFIG 的镜像更新 + WS 广播（契约 process）。
 /// 行为逐行对照原 WsController::handle_rtn_process_status / handle_rtn_process_config：
 /// - 注册守卫：仅当 dztraderd.process_config 含该进程条目时才写入镜像（原实现语义原样保留）；
 ///   Stopped/Crashed 时 mark_stale（保留 process_status，清除 md_config/md_status）。

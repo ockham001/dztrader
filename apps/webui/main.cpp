@@ -73,7 +73,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // 根据 TOML 配置调整日志级别 (统一用 LogConfig::parse_level, 契约 01-log)
+    // 根据 TOML 配置调整日志级别 (统一用 LogConfig::parse_level, 契约 log)
     // 非法级别容错为 info
     auto webui_level = dztrader::platform::LogConfig::parse_level(cfg.log_level)
                            .value_or(spdlog::level::info);
@@ -103,7 +103,7 @@ int main(int argc, char* argv[]) {
         dztrader::this_process::exe_stem(), config_path);
     self_log->load();
 
-    // 契约 04 失败路径 A: App Root 未找到时 dzweb 启动失败
+    // 契约 process 失败路径 A: App Root 未找到时 dzweb 启动失败
     // dzweb 不扫描自身, 但需要 App Root 作为扫描锚点发现 dzmd_*/dztd_* (供 available 列表)
     // app_root() 从当前 exe_dir 向上查找 dztraderd[.exe], 未找到抛 std::runtime_error
     try {
@@ -288,7 +288,7 @@ int main(int argc, char* argv[]) {
     auto progress_domain =
         std::make_shared<dztrader::webui::ProgressDomainService>(*mirror_store, *ws_ctrl);
 
-    // self log_config 镜像初值（原 WsController 构造内逻辑，契约 01-log：dzweb 自身纳入镜像）
+    // self log_config 镜像初值（原 WsController 构造内逻辑，契约 log：dzweb 自身纳入镜像）
     mirror_store->update(exe_stem, "log_config", self_log->current());
 
     // ===== 帧路由注册（必须全部在事件监听启动之前完成） =====

@@ -12,7 +12,7 @@ namespace dztrader::platform {
 
 namespace {
 
-// DzNotifyLevel -> 字符串，与 log level 规范全称一致（见帧契约 01-log）
+// DzNotifyLevel -> 字符串，与 log level 规范全称一致（见帧契约 log）
 const char* notify_level_to_string(DzNotifyLevel level) {
     switch (level) {
         case DZ_NOTIFY_INFO:  return "info";

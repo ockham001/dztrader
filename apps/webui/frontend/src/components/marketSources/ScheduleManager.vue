@@ -36,7 +36,7 @@ function closeScheduleModal(): void {
 }
 
 /// F-C10: try/catch 包裹, 失败时保持 Modal 打开 (与 addBroker/addFrontend 一致)
-/// 前置校验 (契约 05): login == logout 非法（会话区间必须非空）, 跨午夜（login > logout）合法
+/// 前置校验 (契约 auto-login): login == logout 非法（会话区间必须非空）, 跨午夜（login > logout）合法
 async function confirmAddSchedule(): Promise<void> {
   if (!scheduleModalSourceId.value) return
   if (scheduleLoginTime.value === scheduleLogoutTime.value) {
@@ -51,7 +51,7 @@ async function confirmAddSchedule(): Promise<void> {
   }
 }
 
-// 跨午夜判定 (契约 05): HH:MM 字符串词典序 = 时间序
+// 跨午夜判定 (契约 auto-login): HH:MM 字符串词典序 = 时间序
 const isOvernight = (sch: { login_time: string; logout_time: string }): boolean =>
   sch.login_time > sch.logout_time
 

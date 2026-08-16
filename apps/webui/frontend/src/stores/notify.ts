@@ -19,7 +19,7 @@ const MAX_ITEMS = 100
 // push 只走 toast store，绝不写任何其他 store 的 error.value ——
 // error.value 仅 HTTP 失败链路（catch → error.value → View watch 弹 toast）写入，
 // 两通道互斥、职责分离。
-// 契约 03 前端义务：level=error 且 popup=true 必须打断用户展示——
+// 契约 notify-ui 前端义务：level=error 且 popup=true 必须打断用户展示——
 // 进入 popup 队列（App.vue 渲染 modal，逐条确认），其余级别仅 toast。
 export const useNotifyStore = defineStore('notify', () => {
   const items = ref<NotifyItem[]>([])
@@ -39,7 +39,7 @@ export const useNotifyStore = defineStore('notify', () => {
     if (lv === 'error') toast.error(message)
     else if (lv === 'warning') toast.warning(message)
     else toast.info(message)
-    // 打断展示：仅 error + popup=true 入队（契约 03）
+    // 打断展示：仅 error + popup=true 入队（契约 notify-ui）
     if (popup && lv === 'error') {
       popupQueue.value.push({ source, message, level: lv, timestamp: Date.now(), popup })
     }

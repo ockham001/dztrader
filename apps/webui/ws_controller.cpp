@@ -28,7 +28,7 @@ WsController::WsController(WebuiConfig cfg,
       mirror_(mirror) {
     // webui 自身 log_config 镜像初值已移入 main 装配（mirror_store->update），
     // 保证 API-only 模式(无 SHM)下前端连接快照也能看到 webui 自身级别
-    // （契约 01-log：dzweb 自身纳入镜像）。
+    // （契约 log：dzweb 自身纳入镜像）。
     // SHM 事件监听由 main 直调 EventMonitor（本类不再涉及）。
 }
 
@@ -60,7 +60,7 @@ void WsController::handleNewConnection(const drogon::HttpRequestPtr& req,
 
     // 连接即推全量镜像快照: 前端以此构建初始状态, 之后按增量帧更新
     // 快照来源为共享 MirrorStore（领域服务写入），Task 8 不再保留独立 mirror_
-    // 契约 10 §1: snapshot 按连接定向发送（不广播给其他连接，避免误清他人 pending）
+    // 契约 webui-ws §1: snapshot 按连接定向发送（不广播给其他连接，避免误清他人 pending）
     const nlohmann::json snap_msg = {{"type", "snapshot"}, {"data", mirror_.snapshot()}};
     conn->send(snap_msg.dump());
     SPDLOG_DEBUG("mirror snapshot pushed | instances={}", mirror_.snapshot().size());
@@ -175,7 +175,7 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
             return;
         }
         // 走 frame_writer 统一接口 (内部 write+notify, 修复原直接 write_ext_inst_frame 遗漏 notify
-        // 的 bug)。契约 10 §2.4: ok 反映真实写入结果（写通道失败时前端立即提示、不设 pending）
+        // 的 bug)。契约 webui-ws §2.4: ok 反映真实写入结果（写通道失败时前端立即提示、不设 pending）
         const bool ok =
             platform::write_ext_inst_raw(*event_writer_, DZ_FRAME_REQUEST_MD_CONNECT, source);
         const nlohmann::json ack = {{"type", "md_connect_ack"},
@@ -183,7 +183,7 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
                                     {"payload", {{"source", source}, {"ok", ok}}}};
         conn->send(ack.dump());
     } else if (type == "md_disconnect") {
-        // 契约 10 §3: 校验规则与 md_connect 对称（source 非空且事件通道可用，否则回 error）
+        // 契约 webui-ws §3: 校验规则与 md_connect 对称（source 非空且事件通道可用，否则回 error）
         const std::string source = payload.value("source", "");
         if (source.empty() || !event_writer_) {
             const nlohmann::json err = {
@@ -193,7 +193,7 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
             conn->send(err.dump());
             return;
         }
-        // ok 反映真实写入结果（契约 10 §2.4，与 md_connect_ack 对称）
+        // ok 反映真实写入结果（契约 webui-ws §2.4，与 md_connect_ack 对称）
         const bool ok =
             platform::write_ext_inst_raw(*event_writer_, DZ_FRAME_REQUEST_MD_DISCONNECT, source);
         const nlohmann::json ack = {{"type", "md_disconnect_ack"},
@@ -228,7 +228,7 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
             conn->send(err.dump());
             return;
         }
-        // write 返回真实写入结果（契约 10 §2.4: ok=false 时前端立即提示、不设 pending）
+        // write 返回真实写入结果（契约 webui-ws §2.4: ok=false 时前端立即提示、不设 pending）
         const bool ok = platform::write_ext_inst_json_obj(
             *event_writer_, DZ_FRAME_QUERY_MD_SUBSCRIPTIONS, source, req_payload);
         const nlohmann::json ack = {{"type", "query_md_subscriptions_ack"},

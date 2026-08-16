@@ -132,7 +132,7 @@ void MdApi::on_sched_timer() {
         int weekday = static_cast<int>(now.weekday());  // ISO 8601: 1=周一...7=周日
 
         // 评估动作 (每次唤醒全量重评估, 不依赖上次状态)
-        // 排程单一真相源：auto_login_config_（契约 05-auto-login 迁移完成）
+        // 排程单一真相源：auto_login_config_（契约 auto-login 迁移完成）
         bool is_logged_in = (state_machine_.state() == MdState::LoggedIn);
         auto sched = to_sched_view(auto_login_config_.config());
         auto action = evaluate_sched_action(sched, weekday, hh_mm, is_logged_in);

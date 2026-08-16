@@ -139,7 +139,7 @@ describe('useMdConfigStore', () => {
       expect(store.statuses['dzmd_ctp'].status.login_state).toBe('offline')
     })
 
-    it('写镜像但不清 pending（契约 09 无状态字段；pending 由 RTN_PROGRESS 驱动）', async () => {
+    it('写镜像但不清 pending（契约 md-status 无状态字段；pending 由 RTN_PROGRESS 驱动）', async () => {
       vi.mocked(marketSourcesApi.login).mockResolvedValue({ ok: true })
       const store = useMdConfigStore()
       await store.login(1, 'dzmd_ctp')
@@ -160,7 +160,7 @@ describe('useMdConfigStore', () => {
     })
   })
 
-  describe('applyAutoLogin（契约 04）', () => {
+  describe('applyAutoLogin（契约 auto-login）', () => {
     it('写入完整条目（source → {enabled, schedules}）', () => {
       const store = useMdConfigStore()
       store.applyAutoLogin('dzmd_ctp', autoLoginPayload)
@@ -209,7 +209,7 @@ describe('useMdConfigStore', () => {
       expect(result).toBe(true)
       expect(usePending().pending['source:1:login']).toBe(true)
 
-      // 契约 05: dzmd_ctp 状态转移推送 RTN_PROGRESS, 数值映射 current==max=4 (LoggedIn)
+      // 契约 progress: dzmd_ctp 状态转移推送 RTN_PROGRESS, 数值映射 current==max=4 (LoggedIn)
       useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 4 })
       await nextTick()
       await vi.advanceTimersByTimeAsync(0)
@@ -231,7 +231,7 @@ describe('useMdConfigStore', () => {
       expect(result).toBe(true)
       expect(usePending().pending['source:1:logout']).toBe(true)
 
-      // 契约 05: dzmd_ctp 状态转移推送 RTN_PROGRESS, 数值映射 current==min=0 (Idle)
+      // 契约 progress: dzmd_ctp 状态转移推送 RTN_PROGRESS, 数值映射 current==min=0 (Idle)
       useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 0 })
       await nextTick()
       await vi.advanceTimersByTimeAsync(0)
@@ -275,7 +275,7 @@ describe('useMdConfigStore', () => {
     })
   })
 
-  describe('toggleAutoLogin / schedule（契约 04: 全量提交 SET_AUTO_LOGIN）', () => {
+  describe('toggleAutoLogin / schedule（契约 auto-login: 全量提交 SET_AUTO_LOGIN）', () => {
     it('toggleAutoLogin: HTTP 成功不清 pending（等 applyAutoLogin 清）', async () => {
       vi.mocked(marketSourcesApi.setAutoLogin).mockResolvedValue({ ok: true })
       const store = useMdConfigStore()
@@ -464,7 +464,7 @@ describe('useMdConfigStore', () => {
     })
   })
 
-  describe('setSubscribeParams（契约 08 SetSubscribeParams op）', () => {
+  describe('setSubscribeParams（契约 md-config SetSubscribeParams op）', () => {
     it('下发单字段 patch，HTTP 成功保持 pending 等 RTN，md_rtn_config 到达清除', async () => {
       vi.mocked(marketSourcesApi.setSubscribeParams).mockResolvedValue({ ok: true })
       const store = useMdConfigStore()
@@ -494,7 +494,7 @@ describe('useMdConfigStore', () => {
     })
   })
 
-  describe('SHM 配置（契约 02）', () => {
+  describe('SHM 配置（契约 shm）', () => {
     const shmPayload = {
       page_size_mb: 1024,
       preload_points: { '08:45': { pages: 1, bytes: 0 } },

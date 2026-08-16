@@ -20,7 +20,7 @@ std::string process_name_for_source_type(const std::string& source_type) {
     return "dzmd_" + lower;
 }
 
-// 提取 ui_card 大类 (契约 08 接口类型识别): 去掉 dzmd_/dztd_ 前缀, 取第一个 _ 之前的部分
+// 提取 ui_card 大类 (契约 md-config 接口类型识别): 去掉 dzmd_/dztd_ 前缀, 取第一个 _ 之前的部分
 // dzmd_ctp -> ctp, dzmd_ctp_1234 -> ctp, 未知前缀/退化 -> ""
 std::string extract_ui_card(const std::string& process_name) {
     constexpr size_t k_prefix_len = 5;  // "dzmd_" / "dztd_"
@@ -57,7 +57,7 @@ Json MarketSourceCtrl::market_source_to_json(const MarketSource& s) {
 
 Json MarketSourceCtrl::market_source_detail(const MarketSource& s) {
     Json detail = market_source_to_json(s);
-    // 排程/自动登录已迁移到契约 05 (SET/RTN_AUTO_LOGIN 帧), 镜像驱动
+    // 排程/自动登录已迁移到契约 auto-login (SET/RTN_AUTO_LOGIN 帧), 镜像驱动
     auto auto_login_opt = process_mirror_->get_auto_login(s.source_name);
     if (auto_login_opt.has_value()) {
         detail["auto_login"] = auto_login_opt->value("enabled", false);

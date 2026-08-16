@@ -106,7 +106,7 @@ TEST_F(PlatformFrameWriterTest, WriteSetMdConfig) {
     EXPECT_EQ(view.type(), DZ_FRAME_SET_MD_CONFIG);
 }
 
-// 测试 write_ext_json：写帧后必须 notify 订阅者 (契约 02-shm: 写入任何帧都唤醒等待进程)
+// 测试 write_ext_json：写帧后必须 notify 订阅者 (契约 shm: 写入任何帧都唤醒等待进程)
 // 回归: 曾缺失 notify, master/dzweb 阻塞在 NamedSemaphore::wait 收不到
 // REQUEST_PROCESS_CONTROL/RTN_PROCESS_STATUS, 进程控制请求无人处理
 TEST_F(PlatformFrameWriterTest, WriteExtJsonNotifiesSubscriber) {

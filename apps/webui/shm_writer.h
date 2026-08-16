@@ -23,7 +23,7 @@ public:
     /// 保证 UPDATE_SHM_EVENT_SUBSCRIBER 后写帧能 notify 到新订阅者
     explicit ShmWriter(std::shared_ptr<shm::MultiWriter> event_writer);
 
-    /// 写入 md_connect 控制帧。返回 true = 已写入事件通道（契约 11：响应 ok 表示已受理，非业务结果）
+    /// 写入 md_connect 控制帧。返回 true = 已写入事件通道（契约 rest：响应 ok 表示已受理，非业务结果）
     bool write_md_connect(const std::string& source);
     /// 写入 md_disconnect 控制帧。返回 true = 已写入事件通道
     bool write_md_disconnect(const std::string& source);
@@ -50,13 +50,13 @@ public:
     /// op_req_json: MdConfigOpReq 序列化后的 JSON ({op, params})
     void write_md_set_config(const std::string& source, const nlohmann::json& op_req_json);
 
-    /// 写 SET_AUTO_LOGIN 帧 (契约 04: 自动登录/登出排程, 定向到目标网关)
+    /// 写 SET_AUTO_LOGIN 帧 (契约 auto-login: 自动登录/登出排程, 定向到目标网关)
     /// source: 目标网关进程名 (如 "dzmd_ctp")
     /// payload: AutoLoginConfig JSON——REST 层为全量提交 {enabled, schedules};
-    ///           帧层遵循契约 04 增量 patch 语义（schedules 出现时整体覆盖）
+    ///           帧层遵循契约 auto-login 增量 patch 语义（schedules 出现时整体覆盖）
     void write_set_auto_login(const std::string& source, const nlohmann::json& payload);
 
-    /// 写 SET_MD_SHM_CONFIG 帧 (契约 02: SHM 行情通道配置, 定向到目标行情进程)
+    /// 写 SET_MD_SHM_CONFIG 帧 (契约 shm: SHM 行情通道配置, 定向到目标行情进程)
     /// source: 目标行情源名 (如 "dzmd_ctp")
     /// payload: ShmConfig 子集 (RFC 7386 递归合并; preload_points 内 key 值 null=删除;
     ///           page_size_mb 网关端跳过——透传无害, 由网关忽略)

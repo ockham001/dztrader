@@ -10,7 +10,7 @@
 
 namespace dztrader::webui {
 
-/// 行情源状态领域服务：RTN_MD_STATUS 的镜像更新 + WS 广播（契约 09）。
+/// 行情源状态领域服务：RTN_MD_STATUS 的镜像更新 + WS 广播（契约 md-status）。
 /// 行为逐行对照原 WsController::handle_rtn_md_status：
 /// - 镜像更新 process_mirror.update_gateway_status(source, payload)；
 /// - 广播 payload = {source, status}（instance_id 为空，source 在 payload 里）。

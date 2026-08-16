@@ -43,18 +43,18 @@ domain 清单与挂载实例：
 
 | domain | 挂载实例 | payload 结构（= 对应契约的 RTN payload） | 对应契约 |
 |---|---|---|---|
-| `log_config` | 各进程（含 `dztraderd` 自身） | `{ level, flush_on }` | 01 |
-| `event_shm_config` | 固定 `dztraderd` | SHM 事件通道配置 | 02 |
-| `md_shm_config` | 各行情进程 | SHM 行情通道配置 | 02 |
-| `process_config` | 固定 `dztraderd` | `{ [进程名]: config }` 全量映射 | 04 |
-| `process_status` | 各进程 | `{ name, state, pid, ... }` | 04 |
-| `auto_login` | 各行情进程 | `{ enabled, schedules }` | 05 |
-| `progress` | 各进程（TD 为 `{进程名}:{账户ID}`） | `{ min, max, current, desc }` | 06 |
-| `md_config` | 各行情进程 | 脱敏行情配置 | 08 |
-| `md_status` | 各行情进程 | 行情网关状态 | 09 |
+| `log_config` | 各进程（含 `dztraderd` 自身） | `{ level, flush_on }` | log |
+| `event_shm_config` | 固定 `dztraderd` | SHM 事件通道配置 | shm |
+| `md_shm_config` | 各行情进程 | SHM 行情通道配置 | shm |
+| `process_config` | 固定 `dztraderd` | `{ [进程名]: config }` 全量映射 | process |
+| `process_status` | 各进程 | `{ name, state, pid, ... }` | process |
+| `auto_login` | 各行情进程 | `{ enabled, schedules }` | auto-login |
+| `progress` | 各进程（TD 为 `{进程名}:{账户ID}`） | `{ min, max, current, desc }` | progress |
+| `md_config` | 各行情进程 | 脱敏行情配置 | md-config |
+| `md_status` | 各行情进程 | 行情网关状态 | md-status |
 
 > 注：
-> - `md_rtn_subscriptions`（契约 07）为查询响应，**不进镜像**，故不在快照中。
+> - `md_rtn_subscriptions`（契约 md-subscription）为查询响应，**不进镜像**，故不在快照中。
 > - **快照不承诺完整性**：snapshot 始终是"建连时刻 dzweb 已知镜像"（总则 §7）；尚未上报的进程域由后续增量消息补齐。
 > - **快照与增量形状不同**：快照按 `instance_id`/`domain` 嵌套、domain 值为纯 payload；增量消息（§2.2-2.8）多数把 `source`/`name` 内嵌在 payload 中且 `instance_id` 为空。前端为快照与增量各自维护 apply 逻辑（见 §5）。
 
@@ -62,17 +62,17 @@ domain 清单与挂载实例：
 
 | type | 来源帧 | 载荷（`data`） | `instance_id` | 对应契约 |
 |---|---|---|---|---|
-| `process_status` | `RTN_PROCESS_STATUS` | `{ name, state, pid, message, display_name, event }`；`event` 恒出现，`null` = 自发状态变化；`state` PascalCase。**形状注**：快照（§2.1）中该域值按帧层 RTN 序列化（`event` 缺失、空 `message`/`display_name` 省略），与增量消息的 `event:null` 形状不同；前端对缺失与 null 均按自发状态处理 | 空（`name` 在 payload 内） | 04 |
-| `process_config` | `RTN_PROCESS_CONFIG` | `{ [进程名]: config }` 全量映射，整体覆盖（条目消失 = 进程已移除） | 空 | 04 |
-| `md_rtn_config` | `RTN_MD_CONFIG` | `{ source: 进程名, config: 脱敏配置 }` | 空（`source` 在 payload 内） | 08 |
-| `md_rtn_status` | `RTN_MD_STATUS` | `{ source: 进程名, status: 网关状态 }` | 空（`source` 在 payload 内） | 09 |
-| `md_rtn_subscriptions` | `RTN_MD_SUBSCRIPTIONS` | 订阅查询结果，服务端注入 `source` 字段后整体透传 | 空 | 07 |
-| `notify_ui` | `NOTIFY_UI` | 原 payload 整体透传 `{ source, level, message, timestamp, popup }` | 空 | 03 |
-| `log_config` | `RTN_LOG_CONFIG` | `{ level, flush_on }`，始终全量 | 目标/来源进程名 | 01 |
-| `event_shm_config` | `RTN_EVENT_SHM_CONFIG` | SHM 事件通道配置 | 空（镜像挂 `dztraderd`） | 02 |
-| `md_shm_config` | `RTN_MD_SHM_CONFIG` | SHM 行情通道配置 | 行情进程名 | 02 |
-| `auto_login` | `RTN_AUTO_LOGIN` | `{ enabled, schedules }`；dzweb 读取时先校验，非法则记日志并忽略（不更新镜像、不广播） | 行情进程名 | 05 |
-| `progress` | `RTN_PROGRESS` | `{ min, max, current, desc }` | 进程名 / `{进程}:{账户}` | 06 |
+| `process_status` | `RTN_PROCESS_STATUS` | `{ name, state, pid, message, display_name, event }`；`event` 恒出现，`null` = 自发状态变化；`state` PascalCase。**形状注**：快照（§2.1）中该域值按帧层 RTN 序列化（`event` 缺失、空 `message`/`display_name` 省略），与增量消息的 `event:null` 形状不同；前端对缺失与 null 均按自发状态处理 | 空（`name` 在 payload 内） | process |
+| `process_config` | `RTN_PROCESS_CONFIG` | `{ [进程名]: config }` 全量映射，整体覆盖（条目消失 = 进程已移除） | 空 | process |
+| `md_rtn_config` | `RTN_MD_CONFIG` | `{ source: 进程名, config: 脱敏配置 }` | 空（`source` 在 payload 内） | md-config |
+| `md_rtn_status` | `RTN_MD_STATUS` | `{ source: 进程名, status: 网关状态 }` | 空（`source` 在 payload 内） | md-status |
+| `md_rtn_subscriptions` | `RTN_MD_SUBSCRIPTIONS` | 订阅查询结果，服务端注入 `source` 字段后整体透传 | 空 | md-subscription |
+| `notify_ui` | `NOTIFY_UI` | 原 payload 整体透传 `{ source, level, message, timestamp, popup }` | 空 | notify-ui |
+| `log_config` | `RTN_LOG_CONFIG` | `{ level, flush_on }`，始终全量 | 目标/来源进程名 | log |
+| `event_shm_config` | `RTN_EVENT_SHM_CONFIG` | SHM 事件通道配置 | 空（镜像挂 `dztraderd`） | shm |
+| `md_shm_config` | `RTN_MD_SHM_CONFIG` | SHM 行情通道配置 | 行情进程名 | shm |
+| `auto_login` | `RTN_AUTO_LOGIN` | `{ enabled, schedules }`；dzweb 读取时先校验，非法则记日志并忽略（不更新镜像、不广播） | 行情进程名 | auto-login |
+| `progress` | `RTN_PROGRESS` | `{ min, max, current, desc }` | 进程名 / `{进程}:{账户}` | progress |
 
 - 未被 `process_config` 注册的进程：`process_status` 镜像不写入，但广播仍无条件发出（前端可感知未知进程状态）。
 - `md_shm_config` 前端已有消费（展示与编辑，pending 由本消息清除）；`event_shm_config` 前端无 UI 消费，忽略无害。
@@ -121,7 +121,7 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 
 ## 4. REST 与 WS 的分工
 
-- WS 是**状态推送通道**（镜像增量 + 快照）；REST 是**请求入口与大数据查询**（见契约 11）。
+- WS 是**状态推送通道**（镜像增量 + 快照）；REST 是**请求入口与大数据查询**（见契约 rest）。
 - 设置类请求统一走 REST：进程启停（`POST /api/market-sources/{id}/start|stop` → `REQUEST_PROCESS_CONTROL`）、行情连接（`POST /api/market-sources/{id}/login|logout` → `REQUEST_MD_CONNECT/DISCONNECT`）、行情配置（brokers CRUD → `SET_MD_CONFIG`）、自动登录（`PUT .../auto-login` → `SET_AUTO_LOGIN`）、日志配置（`POST /api/logs/level|flush` → `SET_LOG_CONFIG`/`FLUSH_LOG`）。WS 的 `md_connect`/`md_disconnect`/`query_md_subscriptions` 为等效便捷通道，两路行为一致。
 - 前端在 REST 请求成功后**不得假设已生效**：以 WS 领域消息（RTN 推送）为生效信号。
 
@@ -132,18 +132,18 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 以下为跨进程可观察行为义务（视觉细节不属契约）：
 
 1. **pending 生命周期**：设置/控制请求发出后设 pending → 收到对应领域消息（RTN 推送）后清除；`*_ack` 的 `ok=false` 立即清除并提示；**所有请求必须有超时兜底**（建议 5s，超时视为目标进程无响应并提示），总则 §7。
-2. **pending 清除信号的唯一来源**：由各契约声明（如进程操作用 `process_status` 的 `event` 字段，日志配置用 `log_config` 推送）；`notify_ui` 是纯通知，**永不**清除 pending（契约 03）。
+2. **pending 清除信号的唯一来源**：由各契约声明（如进程操作用 `process_status` 的 `event` 字段，日志配置用 `log_config` 推送）；`notify_ui` 是纯通知，**永不**清除 pending（契约 notify-ui）。
 3. **错误展示来源**：业务失败经 `NOTIFY_UI`（`popup=true` 必须打断展示）或领域消息的错误字段（如 `md_rtn_subscriptions.error`）表达；`error`（WS 协议错误）只表示请求未被受理。
 4. **刷新来源**：镜像数据以 WS 推送为准（不本地缓存镜像）；`data_changed` 只提示按 `scope` 重新 REST 拉取对应列表。
-5. **幂等覆盖**：所有领域消息按"后到覆盖先到"处理（含快照分发与增量 apply），重复消息无害；对已移除进程的后续 `process_status` 忽略（契约 04）。
-6. **订阅查询结果处理**：以 `md_rtn_subscriptions` 的 `error` 字段判定成功/失败（`null`=成功），`truncated=true` 时按契约 07 的截断语义展示。
+5. **幂等覆盖**：所有领域消息按"后到覆盖先到"处理（含快照分发与增量 apply），重复消息无害；对已移除进程的后续 `process_status` 忽略（契约 process）。
+6. **订阅查询结果处理**：以 `md_rtn_subscriptions` 的 `error` 字段判定成功/失败（`null`=成功），`truncated=true` 时按契约 md-subscription 的截断语义展示。
 
 ---
 
 ## 6. 重连语义
 
 - 客户端退避重连：3s×2ⁿ，最多 5 次；用尽进入 `failed`，30s 后归零重试（7×24 自愈）。重连参数为实现细节，非协议。
-- 重连成功（`onopen`）后：服务端重推 `snapshot`，前端按快照领域分发到各 store（幂等覆盖，并清 pending），并 REST 拉取行情源列表（DB 为真相源，契约 11）。
+- 重连成功（`onopen`）后：服务端重推 `snapshot`，前端按快照领域分发到各 store（幂等覆盖，并清 pending），并 REST 拉取行情源列表（DB 为真相源，契约 rest）。
 - 镜像不被前端本地缓存：断连期间错过的增量消息由重连后的 `snapshot` 全量补齐。
 
 ---
@@ -151,5 +151,5 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 ## 7. 已知差异与遗留
 
 - 高频行情（tick/K 线）**不进** WS 镜像模型：镜像只服务低频状态/配置帧，高频走独立 msgpack 二进制通道（预留，未实现）。
-- 历史消息 `rtn_process_control` 已删除：进程操作 pending 由 `process_status` 帧的 `event` 字段清理（契约 04）。
+- 历史消息 `rtn_process_control` 已删除：进程操作 pending 由 `process_status` 帧的 `event` 字段清理（契约 process）。
 - 快照 `process_status` 域按帧层 RTN 序列化（`event` 缺失），与增量消息的 `event:null` 形状不同；前端对缺失与 null 均按自发状态处理（§2.2 形状注）。

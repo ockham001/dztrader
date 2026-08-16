@@ -136,7 +136,7 @@ public:
     /// master 在子进程状态变化时调用 (launch_child/on_child_exit/stop_single_child)。
     void write_process_status(const platform::ProcessStatus& status);
 
-    /// 进程配置存储（只读访问：display_name 真相源，契约 04-process）
+    /// 进程配置存储（只读访问：display_name 真相源，契约 process）
     [[nodiscard]] const ProcessConfigStore& process_config_store() const {
         return *process_config_store_;
     }
@@ -182,7 +182,7 @@ public:
     /// 处理 DZ_FRAME_REQUEST_MD_READER_REGISTER：校验 subscriber 身份
     /// （stg.<name> 且 name 为已注册策略条目）与目标通道存在性，通过后
     /// add_reader + notify_md_channel_subscriber_update 下发刷新。
-    /// 失败仅记日志拒绝（无 RTN；唤醒缺失由单信号量 + 任意事件帧唤醒兜底，契约 02-shm）。
+    /// 失败仅记日志拒绝（无 RTN；唤醒缺失由单信号量 + 任意事件帧唤醒兜底，契约 shm）。
     void handle_md_reader_register(const shm::FrameView& view);
 
     /// 处理 DZ_FRAME_REQUEST_MD_READER_UNREGISTER：同校验，remove_reader（幂等）+ 下发刷新。
@@ -254,7 +254,7 @@ private:
 
     // ===== event 通道 SHM 配置 (依赖 event_writer_/config_path_, 必须在其后声明) =====
     /// event 通道 SHM 配置 (SET_EVENT_SHM_CONFIG 时更新可变字段,page_size_mb 不可变)
-    /// RTN 无 instance_id (契约 02-shm：事件通道帧头无 instance_id)
+    /// RTN 无 instance_id (契约 shm：事件通道帧头无 instance_id)
     dztrader::platform::EventShmConfig event_shm_config_;
 
     // ===== 进程配置存储 (依赖 event_writer_/config_path_/supervisor_, 必须在其后声明) =====
@@ -267,7 +267,7 @@ private:
     void apply_process_config(const std::string& name, const nlohmann::json& full);
     /// 从 registry entries 构建全量配置 map（{name: {args,env,restart,display_name?}}）
     [[nodiscard]] nlohmann::json build_initial_config_map() const;
-    /// 动态注册网关进程（PROCESS_CONTROL start 未注册目标扫描命中, 契约 03 修订）:
+    /// 动态注册网关进程（PROCESS_CONTROL start 未注册目标扫描命中, 契约 process 修订）:
     /// registry 注册（persist 依赖 find_registry_entry 取 category）→ store 注册
     /// （persist 写 dztraderd.json + apply 更新 registry + 写镜像）。失败抛异常,
     /// 调用方按 StartFailed 处理。本方法不发 RTN。

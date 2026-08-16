@@ -66,7 +66,7 @@ DZ_API DzMdSource* dz_create_md_source(const char* name) {
         ctx().md_sources.insert(name);
         // 主动向 master 注册为该行情通道读者 (帧 1013, fire-and-forget):
         // master 持注册权并校验身份; 失败不阻断源创建, 唤醒缺失由"单信号量 +
-        // 任意事件帧唤醒后排空"兜底 (契约 02-shm)。
+        // 任意事件帧唤醒后排空"兜底 (契约 shm)。
         try {
             nlohmann::json payload = {{"subscriber", strategy_identity(ctx().strategy_id)}};
             (void)shm::write_ext_inst_json(ctx().writer, DZ_FRAME_REQUEST_MD_READER_REGISTER,

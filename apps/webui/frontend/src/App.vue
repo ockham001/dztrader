@@ -71,7 +71,7 @@ onUnmounted(() => {
       我知道了
     </button>
   </div>
-  <!-- 契约 03 前端义务: NOTIFY_UI level=error 且 popup=true 必须打断用户展示
+  <!-- 契约 notify-ui 前端义务: NOTIFY_UI level=error 且 popup=true 必须打断用户展示
        （遮罩 modal + 确认按钮，逐条出队） -->
   <div v-if="notify.popupCurrent" class="popup-overlay" role="alertdialog" aria-modal="true">
     <div class="popup-modal">

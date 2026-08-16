@@ -46,14 +46,14 @@ bool MarketSourceCtrl::is_process_running_in_mirror(int64_t source_id) const {
 
 // ---------------------------------------------------------------------------
 // GET /api/market-sources/available
-// 扫描 app_root() 下所有 dzmd_* 行情源 exe (契约 04: App Root + 去重), 返回真实可用进程
+// 扫描 app_root() 下所有 dzmd_* 行情源 exe (契约 process: App Root + 去重), 返回真实可用进程
 // ---------------------------------------------------------------------------
 void MarketSourceCtrl::list_available(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     (void)req;
     namespace fs = std::filesystem;
-    // 契约 04: dzweb 扫描 dzmd/dztd 必须用 App Root, 不得用 dzweb 自身 exe 目录或 cwd
+    // 契约 process: dzweb 扫描 dzmd/dztd 必须用 App Root, 不得用 dzweb 自身 exe 目录或 cwd
     const fs::path scan_dir = dztrader::this_process::app_root();
 
     auto existing = repo_->list_market_sources();
@@ -121,7 +121,7 @@ void MarketSourceCtrl::list(
             continue;
         }
         Json src_json = market_source_to_json(*source);
-        // auto_login 从镜像读 (dzmd_ctp 上报的 RTN_AUTO_LOGIN, 契约 05)
+        // auto_login 从镜像读 (dzmd_ctp 上报的 RTN_AUTO_LOGIN, 契约 auto-login)
         auto auto_login_opt = process_mirror_->get_auto_login(st.name);
         if (auto_login_opt.has_value()) {
             src_json["auto_login"] = auto_login_opt->value("enabled", false);
@@ -132,7 +132,7 @@ void MarketSourceCtrl::list(
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/market-sources/{id} - detail (auto_login 从镜像读, 契约 05)
+// GET /api/market-sources/{id} - detail (auto_login 从镜像读, 契约 auto-login)
 // ---------------------------------------------------------------------------
 void MarketSourceCtrl::get(
     const drogon::HttpRequestPtr& req,

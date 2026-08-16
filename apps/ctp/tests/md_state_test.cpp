@@ -377,7 +377,7 @@ TEST_F(MdStateMachineTest, LoginParseErrorFromUnexpectedStateIgnored) {
 }
 
 // ============================================================================
-// build_md_status_payload: 契约 09 字段集验证
+// build_md_status_payload: 契约 md-status 字段集验证
 // ============================================================================
 
 TEST(BuildMdStatusPayloadTest, ContainsExactlySixContractFields) {
@@ -391,14 +391,14 @@ TEST(BuildMdStatusPayloadTest, ContainsExactlySixContractFields) {
 
     auto j = build_md_status_payload(sm.status());
 
-    // 契约 09 的 6 个字段
+    // 契约 md-status 的 6 个字段
     EXPECT_EQ(j["api_version"], "v6.7.2");
     EXPECT_EQ(j["sys_version"], "v6.7.2_20240105");
     EXPECT_EQ(j["trading_day"], "20260808");
     EXPECT_EQ(j["login_time"], "08:45:32");
     EXPECT_EQ(j["expected_subscribe_count"], 5000);
     EXPECT_EQ(j["subscribed_count"], 5000);
-    // 契约 09: payload 仅 6 字段——登录/进度状态由 RTN_PROGRESS（契约 05）覆盖
+    // 契约 md-status: payload 仅 6 字段——登录/进度状态由 RTN_PROGRESS（契约 progress）覆盖
     EXPECT_EQ(j.size(), 6);
     EXPECT_FALSE(j.contains("login_state"));
 

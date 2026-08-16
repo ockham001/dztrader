@@ -15,7 +15,7 @@ namespace {
 // ===== 内部工具函数(仅本 TU 使用) =====
 
 bool is_integer_value(const nlohmann::json& j) {
-    // 契约 02-shm:整数字段不区分 int32/int64/uint64,JSON 数字只要值在目标类型范围内即可
+    // 契约 shm:整数字段不区分 int32/int64/uint64,JSON 数字只要值在目标类型范围内即可
     // 故 5 与 5.0 均接受,5.5 拒绝
     if (j.is_number_integer()) {
         return true;
@@ -116,21 +116,21 @@ std::optional<std::string> ShmConfigBase::validate(const nlohmann::json& cfg) {
 }
 
 nlohmann::json ShmConfigBase::merge_patch(const nlohmann::json& patch) const {
-    // 契约 02-shm:payload 非 object 为校验失败
+    // 契约 shm:payload 非 object 为校验失败
     if (!patch.is_object()) {
         throw std::runtime_error("shm config patch must be a JSON object");
     }
     nlohmann::json merged = cfg_;
 
     // page_size_mb 不可变:SET 中完全跳过(不解析、不校验、不报错),即使为 null 也跳过
-    // (契约 02-shm)
+    // (契约 shm)
 
     auto apply_int_field = [&patch](nlohmann::json& m, const char* key) {
         if (!patch.contains(key)) {
             return;  // 缺失=不修改(RFC 7386)
         }
         const nlohmann::json& v = patch[key];
-        // 契约 02-shm:除 preload_points 内部 key 的 value 外,null 均校验失败
+        // 契约 shm:除 preload_points 内部 key 的 value 外,null 均校验失败
         if (v.is_null()) {
             throw std::runtime_error(std::string(key) + " must not be null");
         }
@@ -145,7 +145,7 @@ nlohmann::json ShmConfigBase::merge_patch(const nlohmann::json& patch) const {
 
     if (patch.contains("preload_points")) {
         const nlohmann::json& pp = patch["preload_points"];
-        // preload_points 本身不允许 null(契约 02-shm)
+        // preload_points 本身不允许 null(契约 shm)
         if (pp.is_null()) {
             throw std::runtime_error("preload_points must not be null");
         }
@@ -155,20 +155,20 @@ nlohmann::json ShmConfigBase::merge_patch(const nlohmann::json& patch) const {
         if (!merged["preload_points"].is_object()) {
             merged["preload_points"] = nlohmann::json::object();
         }
-        // 纯 RFC 7386:pp 为 {} 时递归合并无 key 改动 = 无操作(契约 02-shm)
+        // 纯 RFC 7386:pp 为 {} 时递归合并无 key 改动 = 无操作(契约 shm)
         for (auto it = pp.begin(); it != pp.end(); ++it) {
             const std::string& key = it.key();
             const nlohmann::json& val = it.value();
-            // 契约 02-shm:key 必须为 "HH:MM"
+            // 契约 shm:key 必须为 "HH:MM"
             if (!is_hhmm(key)) {
                 throw std::runtime_error("invalid preload_points key format: " + key);
             }
             if (val.is_null()) {
-                // 契约 02-shm:null 在此唯一合法位置 = 删除该 key
+                // 契约 shm:null 在此唯一合法位置 = 删除该 key
                 merged["preload_points"].erase(key);
             } else if (val.is_object()) {
                 // 递归合并:从现有 point(规整为 {pages,bytes})起步,再叠加 val 的 pages/bytes
-                // 契约 02-shm:新增 key 时缺失 pages/bytes 补默认值 0
+                // 契约 shm:新增 key 时缺失 pages/bytes 补默认值 0
                 nlohmann::json point = {{"pages", 0}, {"bytes", 0}};
                 if (merged["preload_points"].contains(key) &&
                     merged["preload_points"][key].is_object()) {
@@ -201,7 +201,7 @@ nlohmann::json ShmConfigBase::merge_patch(const nlohmann::json& patch) const {
                 // val 中的额外字段忽略(不污染 cfg_)
                 merged["preload_points"][key] = std::move(point);
             } else {
-                // 契约 02-shm:value 非 object 且非 null 为校验失败
+                // 契约 shm:value 非 object 且非 null 为校验失败
                 throw std::runtime_error("preload_points value must be object or null: " + key);
             }
         }
@@ -373,7 +373,7 @@ void ShmConfigBase::set_shm_config(const nlohmann::json& patch) {
     if (auto err = validate(merged)) {
         throw std::runtime_error(*err);  // 范围错误,cfg_ 不变
     }
-    // 契约 02-shm:空对象 {} 视为无操作。值无变化(含 {}、page_size_mb 单独提交、
+    // 契约 shm:空对象 {} 视为无操作。值无变化(含 {}、page_size_mb 单独提交、
     // preload_points:{})时跳过持久化,仍回 RTN(当前值)
     if (merged == cfg_) {
         return;

@@ -76,7 +76,7 @@ std::optional<platform::ProcessStatus> ProcessMirror::get_status(const std::stri
 }
 
 void ProcessMirror::update_process_configs(const nlohmann::json& full_map) {
-    // 全量覆盖前: 找出配置条目消失的进程, 清理其实例镜像（契约 03: 条目消失 = 进程已移除）。
+    // 全量覆盖前: 找出配置条目消失的进程, 清理其实例镜像（契约 process: 条目消失 = 进程已移除）。
     // 若不清理: Remove 流程中 118(条目消失) 先于 116(Stopped) 到达, 而 Stopped 帧被
     // 注册守卫拒绝（契约"忽略已删除进程的 status"）, 镜像残留 process_status=Stopping,
     // 经 snapshot/REST list（不过滤 Stopping）让已移除进程在重连后"复活"。

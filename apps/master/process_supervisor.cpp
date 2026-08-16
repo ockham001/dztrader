@@ -328,7 +328,7 @@ void ProcessSupervisor::send_process_status(const std::string& name,
     status.state = state;
     status.pid = pid;
     status.message = message;
-    // display_name 从 store 读取 (契约 04-process, store 为配置真相源)
+    // display_name 从 store 读取 (契约 process, store 为配置真相源)
     // 这样所有 send_process_status 调用 (launch_child / on_child_exit / stop_single_child)
     // 都能自动携带 display_name, 无需在每个调用点显式传参
     status.display_name = shm_mgr_.display_name_of(name);
@@ -362,7 +362,7 @@ void ProcessSupervisor::notify_removed_for_inactive(const std::string& name) {
     } catch (const std::exception& e) {
         // 失败路径 D: 配置段删除失败 -> notify_ui 反馈
         // 契约要求: 继续完成订阅者清理, 不重启子进程 (删除是用户意图)
-        // 契约 05: json 操作失败必须打 ERROR 日志并通知 UI
+        // 契约 process: json 操作失败必须打 ERROR 日志并通知 UI
         SPDLOG_ERROR("failed to remove gateway section | name={} error=\"{}\"", name, e.what());
         notify_ui_.error(std::string("failed to remove gateway config | name=") + name
                         + " error=" + e.what());
@@ -370,7 +370,7 @@ void ProcessSupervisor::notify_removed_for_inactive(const std::string& name) {
     // 清理订阅者注册 (子进程可能曾注册过, 退出后残留)
     // remove_reader 是幂等的, 不存在也无害
     shm_mgr_.remove_reader(name);
-    // 推送 Stopped 状态让前端移除卡片 (契约 04-process: 未运行 pid=0; event 缺失=自发)
+    // 推送 Stopped 状态让前端移除卡片 (契约 process: 未运行 pid=0; event 缺失=自发)
     platform::ProcessStatus st{};
     st.name = name;
     st.state = ChildState::Stopped;
@@ -523,7 +523,7 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
             } catch (const std::exception& e) {
                 // 失败路径 D: 配置段删除失败 -> notify_ui 反馈前端
                 // 契约要求: 继续完成订阅者清理 (步骤 7) 与推状态 (步骤 8), 不重启子进程 (删除是用户意图)
-                // 契约 05: json 操作失败必须打 ERROR 日志并通知 UI
+                // 契约 process: json 操作失败必须打 ERROR 日志并通知 UI
                 SPDLOG_ERROR("failed to remove gateway section | name={} error=\"{}\"",
                             name, e.what());
                 notify_ui_.error(std::string("failed to remove gateway config | name=") + name
@@ -610,7 +610,7 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
             return;
         }
 
-        // 检查重启策略（从 registry 取最新配置：SET 变更对后续崩溃处理立即生效，契约 04-process）
+        // 检查重启策略（从 registry 取最新配置：SET 变更对后续崩溃处理立即生效，契约 process）
         const auto* latest_entry = registry_.find(name);
         const ProcessEntry& effective = latest_entry ? *latest_entry : child->entry();
         const auto& policy = effective.restart;

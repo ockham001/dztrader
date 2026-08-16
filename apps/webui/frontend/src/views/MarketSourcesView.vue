@@ -133,7 +133,7 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- ===== Source Cards List (动态渲染: ui_card -> Component, 契约 06) ===== -->
+      <!-- ===== Source Cards List (动态渲染: ui_card -> Component, 契约 md-config) ===== -->
       <div>
         <component
           v-for="src in store.sources"

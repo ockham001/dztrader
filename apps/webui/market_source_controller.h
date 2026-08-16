@@ -15,7 +15,7 @@ namespace dztrader::webui {
 // 与 master 的 ProcessRegistry::scan_gateways() 发现的 exe stem 一致
 std::string process_name_for_source_type(const std::string& source_type);
 
-// 提取 ui_card 大类 (契约 08 接口类型识别): 去掉 dzmd_/dztd_ 前缀, 取第一个 _ 之前的部分
+// 提取 ui_card 大类 (契约 md-config 接口类型识别): 去掉 dzmd_/dztd_ 前缀, 取第一个 _ 之前的部分
 // dzmd_ctp -> ctp, dzmd_ctp_1234 -> ctp, 未知前缀 -> ""
 std::string extract_ui_card(const std::string& process_name);
 
@@ -78,7 +78,7 @@ public:
     void logout(const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
     /// PUT /api/market-sources/{id}/auto-login - 全量设置自动登录/登出排程
-    /// Body: {enabled: bool, schedules: [{login_time, logout_time}, ...]}（契约 04）
+    /// Body: {enabled: bool, schedules: [{login_time, logout_time}, ...]}（契约 auto-login）
     /// 直发 SET_AUTO_LOGIN 帧, 最终状态由 WS auto_login 推送决定
     void set_auto_login(const drogon::HttpRequestPtr& req,
                         std::function<void(const drogon::HttpResponsePtr&)>&& callback,
@@ -111,14 +111,14 @@ public:
                             int64_t id);
     /// PUT /api/market-sources/{id}/subscribe-params - 修改订阅参数 (SetSubscribeParams, 无状态保护)
     /// Body: 4 个可选字段 {subscribe_batch_size?, subscribe_batch_delay_ms?,
-    ///        sub_check_interval_ms?, sub_max_retry?}，缺失=保留旧值 (契约 08)
+    ///        sub_check_interval_ms?, sub_max_retry?}，缺失=保留旧值 (契约 md-config)
     /// dzweb 透传不解析; 类型/范围校验由子进程负责; 最终状态由 WS md_rtn_config 推送
     void set_subscribe_params(const drogon::HttpRequestPtr& req,
                               std::function<void(const drogon::HttpResponsePtr&)>&& callback,
                               int64_t id);
-    /// PUT /api/market-sources/{id}/shm-config - 修改 SHM 行情通道配置 (契约 02)
+    /// PUT /api/market-sources/{id}/shm-config - 修改 SHM 行情通道配置 (契约 shm)
     /// Body: ShmConfig 子集 (RFC 7386 递归合并)。preload_points 内 key 的 value 为 null
-    /// 表示删除该时间点 (契约 02 唯一合法 null 位置); page_size_mb 网关端跳过。
+    /// 表示删除该时间点 (契约 shm 唯一合法 null 位置); page_size_mb 网关端跳过。
     /// dzweb 透传不解析; 范围校验由网关负责; 最终状态由 WS md_shm_config 推送
     void set_shm_config(const drogon::HttpRequestPtr& req,
                         std::function<void(const drogon::HttpResponsePtr&)>&& callback,

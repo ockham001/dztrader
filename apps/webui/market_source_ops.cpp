@@ -68,7 +68,7 @@ std::optional<drogon::HttpResponsePtr> MarketSourceCtrl::dispatch_op(
 
 // ---------------------------------------------------------------------------
 // PUT /api/market-sources/{id}/auto-login - 全量设置自动登录/登出排程 (admin)
-// 契约 04: 直发 SET_AUTO_LOGIN 帧 (enabled + schedules 全量; schedules 出现时整体覆盖)
+// 契约 auto-login: 直发 SET_AUTO_LOGIN 帧 (enabled + schedules 全量; schedules 出现时整体覆盖)
 // HTTP 同步响应仅表示 "已下发", 最终状态由 WS auto_login 推送 (RTN_AUTO_LOGIN) 决定
 // ---------------------------------------------------------------------------
 void MarketSourceCtrl::set_auto_login(
@@ -111,7 +111,7 @@ void MarketSourceCtrl::set_auto_login(
 }
 
 // ---------------------------------------------------------------------------
-// 经纪商 CRUD 走 op-based 配置变更流程 (契约 08 SET_MD_CONFIG)
+// 经纪商 CRUD 走 op-based 配置变更流程 (契约 md-config SET_MD_CONFIG)
 // 通用模式: 下发 op + params → dzmd_ctp 校验+应用+持久化+回传 RTN_MD_CONFIG →
 //          dzweb 镜像更新 → WS 推送 md_rtn_config → 前端刷新
 // HTTP 同步响应仅表示"已下发", 最终状态由 WS 推送决定 (失败路径 C/D/E)
@@ -285,7 +285,7 @@ void MarketSourceCtrl::set_current_broker(
 }
 
 // PUT /api/market-sources/{id}/subscribe-params - 修改订阅参数 (admin) (op-based SetSubscribeParams)
-// 无状态保护: 任意时刻可改; Body 4 个可选字段, 缺失=保留旧值 (契约 08)
+// 无状态保护: 任意时刻可改; Body 4 个可选字段, 缺失=保留旧值 (契约 md-config)
 void MarketSourceCtrl::set_subscribe_params(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id) {  // NOLINT
@@ -304,7 +304,7 @@ void MarketSourceCtrl::set_subscribe_params(
         callback(error_response(drogon::k400BadRequest, "bad request"));
         return;
     }
-    // 透传可选字段: 缺失=保留旧值 (契约 08 SetSubscribeParams), 校验由子进程负责
+    // 透传可选字段: 缺失=保留旧值 (契约 md-config SetSubscribeParams), 校验由子进程负责
     Json params = Json::object();
     for (const char* key : {"subscribe_batch_size", "subscribe_batch_delay_ms",
                             "sub_check_interval_ms", "sub_max_retry"}) {
@@ -325,7 +325,7 @@ void MarketSourceCtrl::set_subscribe_params(
 }
 
 // PUT /api/market-sources/{id}/shm-config - 修改 SHM 行情通道配置 (admin)
-// 契约 02: 直发 SET_MD_SHM_CONFIG 帧, HTTP 同步响应仅表示"已下发",
+// 契约 shm: 直发 SET_MD_SHM_CONFIG 帧, HTTP 同步响应仅表示"已下发",
 //          最终状态由 WS md_shm_config 推送 (RTN_MD_SHM_CONFIG) 决定
 // 注意: 不能复用 dispatch_op (其写 SET_MD_CONFIG 帧); 用 guard_process_dispatch
 //       守卫后直接写 SET_MD_SHM_CONFIG 帧
@@ -347,7 +347,7 @@ void MarketSourceCtrl::set_shm_config(
         callback(error_response(drogon::k400BadRequest, "bad request"));
         return;
     }
-    // 整体透传 (契约 02 SET payload 即 ShmConfig 子集): 含 preload_points null 删除语义,
+    // 整体透传 (契约 shm SET payload 即 ShmConfig 子集): 含 preload_points null 删除语义,
     // 不做字段级筛选; page_size_mb 透传无害 (网关跳过)
     std::string process_name;
     auto err = guard_process_dispatch(id, "set_shm_config", process_name);

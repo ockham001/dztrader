@@ -10,7 +10,7 @@
 
 namespace dztrader::webui {
 
-/// 通知领域服务：NOTIFY_UI 的缓存 + WS 广播 + 分级日志（契约 05）。
+/// 通知领域服务：NOTIFY_UI 的缓存 + WS 广播 + 分级日志（契约 notify-ui）。
 /// 行为逐行对照原 WsController::handle_notify_ui：
 /// - NotifyCache::add(payload) 环形缓存（max_size=0 时为 no-op）；
 /// - 广播 payload 原样透传（instance_id 为空）；

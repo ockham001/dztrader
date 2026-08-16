@@ -8,7 +8,7 @@
 
 namespace dztrader::webui {
 
-/// 进度领域服务（契约 05）：RTN_PROGRESS 的镜像 + WS 广播。
+/// 进度领域服务（契约 progress）：RTN_PROGRESS 的镜像 + WS 广播。
 /// 单条完整状态：前端收到后直接覆盖，后到覆盖先到；无 SET、无持久化。
 class ProgressDomainService {
 public:

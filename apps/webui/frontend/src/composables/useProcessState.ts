@@ -1,5 +1,5 @@
 // Process state display helpers — 从 CtpCard.vue:259-277 / GenericCard.vue:26-42 原样提取
-// 契约 04 ChildState 为 PascalCase（Starting/Running/Stopping/Stopped/Crashed）：
+// 契约 process ChildState 为 PascalCase（Starting/Running/Stopping/Stopped/Crashed）：
 // processStateText 与 processStateColor 均按 PascalCase 匹配。未映射/空值回退逻辑保留.
 export function processStateText(state: string | null): string {
   if (!state) return '未知'

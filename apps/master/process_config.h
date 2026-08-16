@@ -44,7 +44,7 @@ public:
     /// 接收处理 SET_PROCESS_CONFIG 的 config patch（增量角色）。
     /// 流程：target 存在性检查 → validate_process_config_patch
     ///       → apply_process_config_patch（副本）→ persist_fn → apply_fn → 更新镜像。
-    /// 失败：target 未注册（契约 04-process）或校验失败或回调失败 → 抛 std::runtime_error，
+    /// 失败：target 未注册（契约 process）或校验失败或回调失败 → 抛 std::runtime_error，
     ///       内部镜像不变（强保证）。
     /// 注意：persist_fn 成功而 apply_fn 失败时 dztraderd.json 已写入但镜像未更新
     /// （两个外部副作用的固有窗口），下次启动 load 以文件为准收敛。
@@ -52,7 +52,7 @@ public:
     /// 本方法不发 RTN，也不做 NOTIFY_UI——由调用者 catch 后处理。
     void set_process_config(const std::string& target, const nlohmann::json& patch);
 
-    /// 动态注册新进程条目（PROCESS_CONTROL start 未注册目标扫描命中时, 契约 03 修订）。
+    /// 动态注册新进程条目（PROCESS_CONTROL start 未注册目标扫描命中时, 契约 process 修订）。
     /// 流程: validate_process_config_full → persist_fn → apply_fn → 写入镜像。
     /// 目标已存在或校验失败或回调失败: 抛 std::runtime_error, 镜像不变（强保证）。
     /// 注意: persist_fn 成功而 apply_fn 失败时 dztraderd.json 已写入但镜像未更新
@@ -65,7 +65,7 @@ public:
     /// 本方法不发 RTN。
     void remove(const std::string& name);
 
-    /// 发送 RTN_PROCESS_CONFIG 帧。始终全量镜像（契约 04-process），无 error 字段。
+    /// 发送 RTN_PROCESS_CONFIG 帧。始终全量镜像（契约 process），无 error 字段。
     /// 非 const：内部写共享内存。rtn 时机完全由外部控制。
     void rtn_process_config();
 
