@@ -211,6 +211,21 @@ describe('useLogsStore', () => {
     expect(store.processes[1]).toEqual({ name: 'dzmd_ctp', type: '行情源', level: 'debug' })
   })
 
+  it('applySnapshot 清除挂起的 set_level pending（契约 webui-ws §6 并清 pending）', async () => {
+    vi.mocked(logsApi.logsApi.setLevel).mockResolvedValue({
+      results: [{ name: 'dztraderd', ok: true, old: 'info', new: 'warning' }],
+    })
+    const store = useLogsStore()
+    const { pending } = usePending()
+    await store.setProcessLevel('dztraderd', 'warning')  // ok=true → pending 保持等 RTN
+    expect(pending['logs:dztraderd:set_level']).toBe(true)
+    // 重连快照到达（断连期间 RTN 已被 dzweb 镜像吸收）：重建列表 + 清 pending
+    store.applySnapshot({ dztraderd: { log_config: { level: 'warning' } } })
+    expect(store.processes[0].level).toBe('warning')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(pending['logs:dztraderd:set_level']).toBe(false)
+  })
+
   it('applyLogConfig updates existing process level', () => {
     const store = useLogsStore()
     store.applySnapshot({ dztraderd: { log_config: { level: 'info' } } })

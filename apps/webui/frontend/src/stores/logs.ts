@@ -220,6 +220,11 @@ export const useLogsStore = defineStore('logs', () => {
       })
     }
     processes.value = list
+    // 契约 webui-ws §6"并清 pending"：快照是建连时刻的权威状态——
+    // 断连期间挂起的 set_level pending 由快照兜底清除（usePending M2 守卫：无该 key 时 no-op）
+    for (const p of list) {
+      resolve(`logs:${p.name}:set_level`)
+    }
   }
 
   /// 单实例 log_config 增量更新（RTN_LOG_CONFIG → WS log_config 推送）
