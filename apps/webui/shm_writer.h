@@ -11,9 +11,12 @@
 namespace dztrader::webui {
 
 /// 封装 SHM 事件通道写入，提供业务语义化接口
-/// 所有 write_* 方法均为 fire-and-forget (与其他库一致):
-///   - SHM 写入失败 (如通道满) 由内部 catch 记录 WARN 日志, 不抛出
-///   - 调用方不应检查返回值, 真正失败由 RTN_* 异步推送纠正
+/// 返回值约定分两组：
+///   - bool 返回的 write_* (write_md_connect / write_md_disconnect / write_process_control)：
+///     true = 已写入事件通道 (契约 rest §1)，调用方必须检查返回值，false 时映射 503
+///   - void 返回的 write_* (write_set_process_config / write_query_all / write_md_set_config /
+///     write_set_auto_login / write_set_md_shm_config)：fire-and-forget，写入失败由内部
+///     catch 记日志，真正失败由 RTN_* 异步推送纠正 (guard 前置拦截 is_ready 保证就绪性)
 class ShmWriter {
 public:
     /// 按 shm_dir 打开事件通道并自建 writer（测试/独立使用；通道不存在时降级）
