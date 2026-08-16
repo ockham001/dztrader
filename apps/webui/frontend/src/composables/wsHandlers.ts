@@ -173,12 +173,13 @@ registerHandler('notify_ui', (payload) => {
   //   （NotifyStore 入 popup 队列, App.vue 渲染 modal 逐条确认）
   // 双 toast 修复（设计 §5.4）：notify_ui → useNotifyStore → toast，不写 error.value
   //   （error.value 仅 HTTP 失败链路写入，两通道互斥）
-  const data = payload as { source?: string; message?: string; level?: string; popup?: boolean } | undefined
+  const data = payload as { source?: string; message?: string; level?: string; popup?: boolean; timestamp?: number } | undefined
   // level 已为字符串, 未匹配/缺失时默认 error
   const rawLevel = data?.level
   const level: 'info' | 'warning' | 'error' =
     rawLevel === 'info' ? 'info' : rawLevel === 'warning' ? 'warning' : 'error'
-  useNotifyStore().push(data?.message ?? '', data?.source, level, data?.popup === true)
+  useNotifyStore().push(data?.message ?? '', data?.source, level, data?.popup === true,
+    typeof data?.timestamp === 'number' ? data.timestamp : undefined)
 })
 
 registerHandler('progress', (payload, instanceId) => {

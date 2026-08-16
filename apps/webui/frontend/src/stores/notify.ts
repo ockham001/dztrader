@@ -26,11 +26,13 @@ export const useNotifyStore = defineStore('notify', () => {
   const popupQueue = ref<NotifyItem[]>([])
   const popupCurrent = computed<NotifyItem | null>(() => popupQueue.value[0] ?? null)
 
-  function push(message: string, source?: string, level?: NotifyLevel, popup?: boolean): void {
+  // timestamp 优先用透传值（契约 notify-ui payload 字段），缺省回退本地时间
+  function push(message: string, source?: string, level?: NotifyLevel, popup?: boolean, timestamp?: number): void {
     if (!message) return // 空消息不弹 toast 不缓存（与 marketSources.setNotifyUi 行为一致）
     const lv = level ?? 'error' // level 缺失时默认 error（与现有 handler 规范化一致）
+    const ts = timestamp ?? Date.now()
     if (MAX_ITEMS > 0) {
-      items.value.push({ source, message, level: lv, timestamp: Date.now(), popup })
+      items.value.push({ source, message, level: lv, timestamp: ts, popup })
       if (items.value.length > MAX_ITEMS) {
         items.value.splice(0, items.value.length - MAX_ITEMS)
       }
@@ -41,7 +43,7 @@ export const useNotifyStore = defineStore('notify', () => {
     else toast.info(message)
     // 打断展示：仅 error + popup=true 入队（契约 notify-ui）
     if (popup && lv === 'error') {
-      popupQueue.value.push({ source, message, level: lv, timestamp: Date.now(), popup })
+      popupQueue.value.push({ source, message, level: lv, timestamp: ts, popup })
     }
   }
 
