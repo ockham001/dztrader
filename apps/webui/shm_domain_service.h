@@ -18,7 +18,8 @@ public:
         : mirror_(mirror), ws_(ws) {}
 
     void on_rtn_event_shm_config(const nlohmann::json& payload) {
-        mirror_.update(std::string(kMasterInstance), "event_shm_config", payload);        ws_.broadcast("event_shm_config", "", payload);
+        mirror_.update(std::string(kMasterInstance), "event_shm_config", payload);
+        ws_.broadcast("event_shm_config", "", payload);
     }
 
     void on_rtn_md_shm_config(const std::string& source, const nlohmann::json& payload) {

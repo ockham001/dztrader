@@ -341,17 +341,23 @@ void WsController::kick_user(const std::string& username) {
     if (username.empty()) {
         return;
     }
+    // 先收集目标连接再统一关闭：若 shutdown 同步触发 close 回调（erase sessions_），
+    // 边遍历边关闭会导致 unordered_map 迭代器失效
+    std::vector<drogon::WebSocketConnectionPtr> targets;
     for (const auto& [conn, sess] : sessions_) {
         if (sess.user_id == username) {
-            try {
-                conn->shutdown();
-            } catch (...) {
-                // 吞因：单连接关闭失败不影响踢除其他连接（尽力而为）
-                SPDLOG_DEBUG("kick connection shutdown failed, ignored | user={}", username);
-            }
+            targets.push_back(conn);
         }
     }
-    SPDLOG_INFO("ws kicked | user={}", username);
+    for (const auto& conn : targets) {
+        try {
+            conn->shutdown();
+        } catch (...) {
+            // 吞因：单连接关闭失败不影响踢除其他连接（尽力而为）
+            SPDLOG_DEBUG("kick connection shutdown failed, ignored | user={}", username);
+        }
+    }
+    SPDLOG_INFO("ws kicked | user={} connections={}", username, targets.size());
 }
 
 void WsController::start_log_tail_timer() {

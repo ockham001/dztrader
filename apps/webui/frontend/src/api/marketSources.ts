@@ -11,7 +11,8 @@ export interface AvailableMarketSource {
   name: string          // 真实进程名（dzmd_ctp 等），即单实例模式下的 source_name
   display_name: string  // 友好显示名（Ctp 等）
   ui_card: string       // UI 卡片大类（去掉 dzmd_/dztd_ 前缀后的第一段，契约 md-config）
-  added: boolean        // dztraderd.json 中是否已写入 [gateways.<name>] 段（"运行中"或"待运行"）
+  /** DB 中该源记录存在且 is_added=1（契约 rest §2.3 生命周期标记：添加/移除状态） */
+  added: boolean
   in_db: boolean        // SQLite 中是否已有该 source_name 记录（用于复用 DB 记录）
 }
 
