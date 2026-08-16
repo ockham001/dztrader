@@ -127,15 +127,21 @@ describe('useProcessStore', () => {
       expect(usePending().pending['source:1:start']).toBe(false)
     })
 
-    it('超时兜底（30s）清 pending 并返回 false', async () => {
+    // 超时兜底: distinguishTimeout+opLabel → resolve PENDING_TIMEOUT(truthy) 返回 true,
+    // 聚合层 runOp 据此跳过 error(§7.2 双 toast 去重)；toast 文案为可读 opLabel
+    it('超时兜底（30s）清 pending、返回 true 并 toast「行情源启动超时」一次', async () => {
       vi.mocked(marketSourcesApi.start).mockImplementation(() => new Promise(() => {}))
       const store = useProcessStore()
+      const toast = useToastStore()
+      const errorSpy = vi.spyOn(toast, 'error')
       const p = store.start(1, 'dzmd_ctp')
       expect(usePending().pending['source:1:start']).toBe(true)
       await vi.advanceTimersByTimeAsync(30_001)
       expect(usePending().pending['source:1:start']).toBe(false)
       const result = await p
-      expect(result).toBe(false)
+      expect(result).toBe(true)  // PENDING_TIMEOUT truthy → 跳过 error
+      expect(errorSpy).toHaveBeenCalledTimes(1)  // 单 toast（去重）
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('行情源启动超时'))
     })
 
     it('同 key 已 pending 时防重入：不重复发 HTTP 并返回 false', async () => {
@@ -148,7 +154,7 @@ describe('useProcessStore', () => {
       expect(await p2).toBe(false)
       // 收尾：推进 30s 让 p1 走超时兜底 settle，不残留挂起 promise/timer
       await vi.advanceTimersByTimeAsync(30_001)
-      expect(await p1).toBe(false)
+      expect(await p1).toBe(true)  // 超时（PENDING_TIMEOUT truthy）→ 跳过 error（§7.2）
       expect(usePending().pending['source:1:start']).toBe(false)
     })
   })
