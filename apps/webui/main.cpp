@@ -294,8 +294,9 @@ int main(int argc, char* argv[]) {
     mirror_store->update(exe_stem, "log_config", self_log->current());
 
     // ===== 帧路由注册（必须全部在事件监听启动之前完成） =====
-    // register_json：decode 在监听线程、handler 投递到 IO 线程（值拷贝，安全）
-    // register_raw：在监听线程同步执行（ControlDomainService 内部已 queueInLoop）
+    // register_json：decode 在监听线程、handler 投递到 IO 线程 getIOLoop(0)（值拷贝，
+    // 安全，与 REST/WS 连接回调同线程串行）
+    // register_raw：在监听线程同步执行（ControlDomainService 内部投递到 IO 循环）
     dztrader::webui::FrameRouter router;
     router.register_json<nlohmann::json>(DZ_FRAME_RTN_LOG_CONFIG, true,
         [log_domain](const std::string& s, const nlohmann::json& p) {

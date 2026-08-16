@@ -21,7 +21,8 @@ class FrameRouter;
 /// 设计：
 /// - 监听线程仅做 SHM 读取 + FrameRouter::dispatch（decode 由 router 内部按 handler 类型处理）
 /// - 各帧类型对应的处理已注册到 FrameRouter（register_json / register_raw），
-///   由领域服务在 IO 线程（register_json）或监听线程（register_raw）执行
+///   由领域服务在 IO 线程 getIOLoop(0)（register_json）或监听线程（register_raw，
+///   ControlDomainService 内部投递到 IO 循环）执行
 class EventMonitor {
 public:
     EventMonitor(const std::filesystem::path& shm_dir,

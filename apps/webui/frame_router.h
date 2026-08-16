@@ -69,15 +69,29 @@ public:
 
     // ===== 线程语义（关键约定）=====
     // dispatch 在 EventMonitor 监听线程执行：
-    // - register_json 的 handler：decode 在监听线程（FrameView 有效期内），投递到 IO 线程执行（值拷贝，安全）
+    // - register_json 的 handler：decode 在监听线程（FrameView 有效期内），handler 投递到
+    //   IO 线程（getIOLoop(0)）执行（值拷贝，安全）；与 REST/WS 连接回调同线程串行，
+    //   领域服务写镜像/广播与 sessions_ 访问天然无竞争
     // - register_raw 的 handler：在监听线程**同步执行**（FrameView 有效）；
-    //   若 handler 需要异步（如调用 drogon API），必须自行 queueInLoop 且只捕获已拷贝的数据
+    //   若 handler 需要异步（如调用 drogon API），必须自行投递且只捕获已拷贝的数据
     //   （string 值等），**严禁捕获 FrameView 引用**（投递后 SHM 写入位置移动，指针失效）。
-    //   ControlDomainService 已按此约定实现（方法内部 queueInLoop）。
+    //   ControlDomainService 已按此约定实现（方法内部投递到 IO 循环）。
 
 private:
     static Poster default_poster() {
-        return [](std::function<void()> f) { drogon::app().getLoop()->queueInLoop(std::move(f)); };
+        return [](std::function<void()> f) {
+            // 投递到 IO 循环：与 REST/WS 连接回调同线程，领域服务写镜像/广播与
+            // sessions_ 访问天然串行（drogon getLoop() 是独立主循环，不承接连接，
+            // 投那里会与 IO 线程构成数据竞争——E1 修复）
+            auto* io_loop = drogon::app().getIOLoop(0);
+            if (io_loop != nullptr) {
+                io_loop->queueInLoop(std::move(f));
+            } else {
+                // 启动窗口（run() 前 IO 循环未建）：兜底投主循环。
+                // 该窗口无任何连接，REST/WS 不存在，共享状态访问仍单线程安全
+                drogon::app().getLoop()->queueInLoop(std::move(f));
+            }
+        };
     }
 
     std::unordered_map<DzFrameType, std::function<void(const shm::FrameView&)>> handlers_;
