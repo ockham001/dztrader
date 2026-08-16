@@ -57,19 +57,11 @@ void MarketSourceCtrl::list_available(
     const fs::path scan_dir = dztrader::this_process::app_root();
 
     auto existing = repo_->list_market_sources();
-    std::unordered_set<std::string> in_db_names;
+    // added 语义（契约 rest §2.3 修订）: DB 存在且 is_added=1（生命周期标记），
+    // 不再依赖镜像运行状态
+    std::unordered_map<std::string, bool> added_by_name;
     for (const auto& s : existing) {
-        in_db_names.insert(s.source_name);
-    }
-
-    // 镜像中所有运行中的进程名集合 (反映运行时真相, 过滤 stopped/crashed 的 stale 记录)
-    auto all_statuses = process_mirror_->get_all();
-    std::unordered_set<std::string> running_names;
-    for (const auto& st : all_statuses) {
-        if (st.state == platform::ChildState::Stopped || st.state == platform::ChildState::Crashed) {
-            continue;
-        }
-        running_names.insert(st.name);
+        added_by_name[s.source_name] = s.is_added;
     }
 
     // 委托给 libs/process 库 (消除与 master find_exe_by_stem 的扫描规则重复)
@@ -81,8 +73,9 @@ void MarketSourceCtrl::list_available(
         if (info.kind != dztrader::process::ProcessKind::GatewayMd) {
             continue;
         }
-        bool added = running_names.contains(info.name);
-        bool in_db = in_db_names.contains(info.name);
+        const auto it_added = added_by_name.find(info.name);
+        const bool in_db = it_added != added_by_name.end();
+        const bool added = in_db && it_added->second;
         arr.push_back({
             {"name", info.name},
             {"display_name", info.name},
@@ -99,34 +92,29 @@ void MarketSourceCtrl::list_available(
 
 // ---------------------------------------------------------------------------
 // GET /api/market-sources
-// 返回当前镜像中所有 dzmd_* 进程对应的源 (镜像由 SHM RTN_MD_CONFIG/RTN_MD_STATUS 异步驱动)
+// 契约 rest §3: 行情源列表以 DB 为真相源--返回 is_added=1 的 dzmd_* 行，
+// 不依赖进程镜像运行状态（运行状态由 WS process_status 表达，前端按卡片渲染）
 // ---------------------------------------------------------------------------
 void MarketSourceCtrl::list(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     (void)req;
-    auto all_statuses = process_mirror_->get_all();
+    auto sources = repo_->list_market_sources();
     Json arr = Json::array();
-    for (const auto& st : all_statuses) {
-        if (!st.name.starts_with("dzmd_")) {
-            continue;
+    for (const auto& s : sources) {
+        if (!s.source_name.starts_with("dzmd_")) {
+            continue;  // 防御: 仅行情源
         }
-        // 过滤 stale 记录: 进程已停止/崩溃但镜像未清理
-        if (st.state == platform::ChildState::Stopped || st.state == platform::ChildState::Crashed) {
-            continue;
+        if (!s.is_added) {
+            continue;  // remove 已下发的行不再列出（主表记录保留）
         }
-        auto source = repo_->find_market_source_by_source_name(st.name);
-        if (!source.has_value()) {
-            // 极端时序 (PROCESS_STATUS 先到, RTN_MD_CONFIG 未到): 跳过, 等补建后下次返回
-            continue;
-        }
-        Json src_json = market_source_to_json(*source);
+        Json src_json = market_source_to_json(s);
         // auto_login 从镜像读 (dzmd_ctp 上报的 RTN_AUTO_LOGIN, 契约 auto-login)
-        auto auto_login_opt = process_mirror_->get_auto_login(st.name);
+        auto auto_login_opt = process_mirror_->get_auto_login(s.source_name);
         if (auto_login_opt.has_value()) {
             src_json["auto_login"] = auto_login_opt->value("enabled", false);
         }
-        arr.push_back(src_json);
+        arr.push_back(std::move(src_json));
     }
     callback(json_response(drogon::k200OK, arr));
 }

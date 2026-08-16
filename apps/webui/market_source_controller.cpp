@@ -159,6 +159,10 @@ void MarketSourceCtrl::remove(const drogon::HttpRequestPtr& req,
         callback(error_response(drogon::k503ServiceUnavailable, "shm write failed"));
         return;
     }
+    // 契约 rest（修订）: 下发成功即标记生命周期（is_added=0）。
+    // 边缘: master 侧 RemoveFailed 时该行已被隐藏--NOTIFY_UI 弹窗提示用户，
+    // 可从 available 列表重新添加（create 复用行并复位 is_added=1）
+    repo_->set_market_source_added(id, false);
     // 保留 DB 主表记录 (market_sources 行); 不调用 repo_->delete_market_source(id)
     SPDLOG_INFO("remove dispatched | source_id={} process={} (db kept)", id, process_name);
     callback(json_response(drogon::k200OK, {{"ok", true}, {"id", id}}));

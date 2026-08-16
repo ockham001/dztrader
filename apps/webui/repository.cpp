@@ -938,12 +938,14 @@ int64_t Repository::create_market_source(const std::string& source_type,
                                          const std::string& display_name) {
     std::scoped_lock lk(mutex_);
     const std::string now = now_iso();
-    // 幂等创建: 若 source_name 已存在 (UNIQUE 冲突) 则不插入, 复用现有 id
-    // 避免 "删除此行情源" 后再次添加时 UNIQUE 约束冲突 500
+    // 幂等创建: 若 source_name 已存在 (UNIQUE 冲突) 则复用现有行并复位 is_added=1
+    // (remove 下发成功后行仅标记 is_added=0 保留, 再次添加时在此复活)
     const char* sql = "INSERT INTO market_sources (source_type, source_name, display_name, "
                       "is_added, created_at, updated_at) "
                       "VALUES (?, ?, ?, 1, ?, ?) "
-                      "ON CONFLICT(source_name) DO NOTHING";
+                      "ON CONFLICT(source_name) DO UPDATE SET "
+                      "is_added = 1, display_name = excluded.display_name, "
+                      "updated_at = excluded.updated_at";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, source_type.c_str(), -1, SQLITE_TRANSIENT);
@@ -954,24 +956,16 @@ int64_t Repository::create_market_source(const std::string& source_type,
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
 
-    // sqlite3_last_insert_rowid 在 ON CONFLICT DO NOTHING 未插入时不会返回 0,
-    // 而是返回上一次成功 INSERT 的 rowid (误导), 必须用 sqlite3_changes 判断实际插入行数
-    const int changes = sqlite3_changes(db_);
+    // DO UPDATE 路径不产生新 rowid (last_insert_rowid 为陈旧值),
+    // 统一按 source_name 回查 id (幂等复用行)
     int64_t id = 0;
-    if (changes > 0) {
-        // 实际插入了新行
-        id = sqlite3_last_insert_rowid(db_);
-    } else {
-        // 冲突未插入, 回查现有 id
-        sqlite3_stmt* sel = nullptr;
-        const char* sel_sql = "SELECT id FROM market_sources WHERE source_name = ?";
-        dz_prepare_v2(db_, sel_sql, -1, &sel, nullptr);
-        sqlite3_bind_text(sel, 1, source_name.c_str(), -1, SQLITE_TRANSIENT);
-        if (sqlite3_step(sel) == SQLITE_ROW) {
-            id = sqlite3_column_int64(sel, 0);
-        }
-        sqlite3_finalize(sel);
+    const char* sel = "SELECT id FROM market_sources WHERE source_name = ?";
+    dz_prepare_v2(db_, sel, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, source_name.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        id = sqlite3_column_int64(stmt, 0);
     }
+    sqlite3_finalize(stmt);
     return id;
 }
 
@@ -984,6 +978,20 @@ bool Repository::update_market_source(int64_t id, const std::string& display_nam
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, display_name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, now.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, id);
+    sqlite3_step(stmt);
+    const int changes = sqlite3_changes(db_);
+    sqlite3_finalize(stmt);
+    return changes > 0;
+}
+
+bool Repository::set_market_source_added(int64_t id, bool added) {
+    std::scoped_lock lk(mutex_);
+    const char* sql = "UPDATE market_sources SET is_added = ?, updated_at = ? WHERE id = ?";
+    sqlite3_stmt* stmt = nullptr;
+    dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, added ? 1 : 0);
+    sqlite3_bind_text(stmt, 2, now_iso().c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 3, id);
     sqlite3_step(stmt);
     const int changes = sqlite3_changes(db_);

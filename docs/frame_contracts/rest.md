@@ -44,12 +44,12 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 | 方法/路径 | 语义 | 帧/镜像联动 |
 |---|---|---|
-| GET `/api/market-sources` | 行情源列表 | 读取 DB（真相源，见 §3） |
-| GET `/api/market-sources/available` | 扫描可用网关 exe（`dzmd_*`/`dztd_*`）列表 | 文件系统扫描 |
+| GET `/api/market-sources` | 行情源列表（DB 真相源，返回 `is_added=1` 的 `dzmd_*` 行；运行状态由 WS `process_status` 表达） | 读取 DB（真相源，见 §3） |
+| GET `/api/market-sources/available` | 扫描可用网关 exe（`dzmd_*`/`dztd_*`）列表（`added` = DB 存在且 `is_added=1`） | 文件系统扫描 |
 | GET `/api/market-sources/{id}` | 详情 | DB + 进程镜像 |
 | POST `/api/market-sources` | 创建行情源条目 | DB |
 | PUT `/api/market-sources/{id}` | 更新条目（DB 显示名等字段） | DB；现状未广播 `data_changed`（与其他控制器不一致，见对齐清单） |
-| DELETE `/api/market-sources/{id}` | 移除进程条目 | → `REQUEST_PROCESS_CONTROL{Remove}`（契约 process）；DB 主表记录保留（历史/审计），进程配置条目消失 = 移除完成的权威信号 |
+| DELETE `/api/market-sources/{id}` | 移除进程条目 | → `REQUEST_PROCESS_CONTROL{Remove}`（契约 process）；DB 主表记录保留（历史/审计），进程配置条目消失 = 移除完成的权威信号；成功下发后 DB 行标记 `is_added=0`（主表记录保留，列表不再返回；再次添加时复用该行并复位 `is_added=1`） |
 | POST `/api/market-sources/{id}/login` | 行情连接请求 | → `REQUEST_MD_CONNECT`（`instance_id` = 进程名）；生效信号：`progress`/健康度（契约 md-subscription） |
 | POST `/api/market-sources/{id}/logout` | 行情断开请求 | → `REQUEST_MD_DISCONNECT`；生效信号同上 |
 | PUT `/api/market-sources/{id}/auto-login` | 全量设置自动登录排程 `{enabled, schedules}` | → `SET_AUTO_LOGIN`；生效信号：`auto_login` 推送（契约 auto-login） |
@@ -90,7 +90,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 ## 3. 真相源声明
 
-- **行情源列表**：DB（repository）为真相源。行情进程上报 `RTN_MD_CONFIG` 时，dzweb 对未入库的 `dzmd_*` 来源自动对账补录（幂等）。DB 与 master 进程配置（契约 process）的同步通过帧联动实现：添加行情源 + Start 由 master 动态注册（契约 process）。
+- **行情源列表**：DB（repository）为真相源。行情进程上报 `RTN_MD_CONFIG` 时，dzweb 对未入库的 `dzmd_*` 来源自动对账补录（幂等）。DB 与 master 进程配置（契约 process）的同步通过帧联动实现：添加行情源 + Start 由 master 动态注册（契约 process）。列表条目的生命周期由 DB `is_added` 标记承载（remove 下发成功置 0、再次添加复位 1）。
 - **进程存在性与运行状态**：master 进程配置为真相源（契约 process）；REST 列表是投影。
 - **配置与状态数据**：进程镜像（MirrorStore）为投影，真相源为对应帧契约的 RTN。
 - **用户/安全/权限**：DB 为真相源，变更经 `data_changed` 广播。

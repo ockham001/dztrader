@@ -134,6 +134,22 @@ TEST_F(RepositoryTest, MarketSourceCRUD) {
     EXPECT_FALSE(deleted.has_value());
 }
 
+TEST_F(RepositoryTest, MarketSourceIsAddedLifecycle) {
+    const int64_t id = repo_.create_market_source("ctp", "dzmd_ctp", "CTP");
+    // remove 标记
+    EXPECT_TRUE(repo_.set_market_source_added(id, false));
+    auto s = repo_.get_market_source(id);
+    ASSERT_TRUE(s.has_value());
+    EXPECT_FALSE(s->is_added);
+    // 再次添加：复用行并复位 is_added=1（ON CONFLICT DO UPDATE）
+    const int64_t id2 = repo_.create_market_source("ctp", "dzmd_ctp", "CTP 重启");
+    EXPECT_EQ(id2, id);
+    auto s2 = repo_.get_market_source(id2);
+    ASSERT_TRUE(s2.has_value());
+    EXPECT_TRUE(s2->is_added);
+    EXPECT_EQ(s2->display_name, "CTP 重启");
+}
+
 TEST_F(RepositoryTest, LoginHistory) {
     repo_.add_login_history("admin", "192.168.1.1", "Chrome/Windows", true);
     repo_.add_login_history("admin", "192.168.1.1", "Chrome/Windows", false);

@@ -116,8 +116,9 @@ TEST_F(MarketSourceControllerTest, CreateMissingFieldsReturns400) {
 // ---- list ----
 
 TEST_F(MarketSourceControllerTest, ListMarketSources) {
-    // 镜像驱动架构: list API 仅返回镜像中 dzmd_* 进程对应的源 (不再读 dztraderd.nlohmann::json)
-    // 1. DB 记录的 source_name 必须与镜像中进程名一致
+    // DB 真相源 (契约 rest §3): list 返回 DB 中 is_added=1 的 dzmd_* 行,
+    // 运行状态由 WS process_status 表达, 与镜像是否上报无关
+    // 1. DB 记录的 source_name 必须以 dzmd_ 开头
     create_source("dzmd_ctp_a");
     create_source("dzmd_ctp_b");
     // 2. 填充镜像 (模拟 PROCESS_STATUS 帧到达)
@@ -147,14 +148,27 @@ TEST_F(MarketSourceControllerTest, ListMarketSources) {
     }
 }
 
-TEST_F(MarketSourceControllerTest, ListWithEmptyMirrorReturnsEmpty) {
-    // 镜像为空 (无 dzmd_* 进程上报) 时, 即使 DB 有记录也返回空数组
-    create_source("dzmd_ctp_x");
+// ---- list: DB 真相源（契约 rest §3），不依赖镜像 Running ----
+
+TEST_F(MarketSourceControllerTest, ListReturnsDbRowsRegardlessOfProcessState) {
+    create_source("dzmd_list1");  // source_name 必须为 dzmd_* 前缀
+    create_source("dzmd_list2");
+
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::list, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
     auto body = parse_body(resp);
-    EXPECT_TRUE(body.is_array());
+    // 镜像为空（进程未运行）也返回 DB 行--修复前按镜像 running 过滤会返回空
+    EXPECT_EQ(body.size(), 2u);
+}
+
+TEST_F(MarketSourceControllerTest, ListExcludesNotAddedRows) {
+    const int64_t id = create_source("dzmd_list3");
+    EXPECT_TRUE(repo_->set_market_source_added(id, false));
+
+    auto req = admin_req();
+    auto resp = invoke(&MarketSourceCtrl::list, req);
+    auto body = parse_body(resp);
     EXPECT_EQ(body.size(), 0u);
 }
 
@@ -543,88 +557,53 @@ TEST_F(MarketSourceControllerTest, SetCurrentBrokerEmptyNameAllowed) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
 }
 
-// ---- list_available: stopped/crashed 进程不应被视为 "已添加" ----
-// Bug 场景: 用户点击"删除此行情源"后, dzmd_ctp 进程退出, master 推 PROCESS_STATUS
-// state=stopped, dzweb mark_stale 保留 status (用于历史感知), 但 list_available
-// 错误地把 stopped 状态的进程也算作 "added=true", 导致下拉菜单一直显示"已添加"
-//
-// 测试扫描目录是测试 exe 所在目录, 其中必定存在 dzmd_ctp_md_state_test.exe
-// (md_state_test 是 CTP 子项目测试). 用这个真实存在的 stem 作为扫描目标,
-// 确保测试能真正验证过滤逻辑 (而非因扫描不到目标而跳过断言).
-TEST_F(MarketSourceControllerTest, AvailableFiltersStoppedProcesses) {
-    // 镜像中放入一个 stopped 状态的进程, 名字与扫描目录中真实存在的 exe stem 一致
+// ---- list_available: added = DB 存在且 is_added=1（契约 rest §2.3 修订）----
+// 扫描目标用测试 exe 目录真实存在的 dzmd_ctp_md_state_test.exe stem
+TEST_F(MarketSourceControllerTest, AvailableAddedFollowsDbLifecycle) {
     constexpr const char* k_scan_target = "dzmd_ctp_md_state_test";
-    dztrader::platform::ProcessStatus s;
-    s.name = k_scan_target;
-    s.state = dztrader::platform::ChildState::Stopped;
-    process_mirror_->update_status(k_scan_target, s);
-    // list_available 应判定 added=false (stopped 进程不算已添加)
-    auto req = admin_req();
-    auto resp = invoke(&MarketSourceCtrl::list_available, req);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
-    auto body = parse_body(resp);
-    EXPECT_TRUE(body.is_array());
-    bool found = false;
-    for (const auto& item : body) {
-        if (item.value("name", "") == k_scan_target) {
-            found = true;
-            EXPECT_FALSE(item.value("added", true))
-                << "stopped process should not be marked as added";
-            // 契约 md-config: dzmd_ctp_md_state_test → tail="ctp_md_config_test" → ui_card="ctp"
-            EXPECT_EQ(item.value("ui_card", std::string{"<missing>"}), "ctp")
-                << "ui_card should be 'ctp' for dzmd_ctp_md_state_test";
-            break;
+    // DB 入库（is_added=1）-> added=true
+    const int64_t id = create_source(k_scan_target);
+    {
+        auto req = admin_req();
+        auto resp = invoke(&MarketSourceCtrl::list_available, req);
+        auto body = parse_body(resp);
+        for (const auto& item : body) {
+            if (item.value("name", "") == k_scan_target) {
+                EXPECT_TRUE(item.value("added", false)) << "db row is_added=1 -> added=true";
+                EXPECT_EQ(item.value("ui_card", std::string{"<missing>"}), "ctp");
+            }
         }
     }
-    EXPECT_TRUE(found) << "test requires " << k_scan_target
-                       << ".exe in test exe dir for scan target";
-}
-
-TEST_F(MarketSourceControllerTest, AvailableFiltersCrashedProcesses) {
-    constexpr const char* k_scan_target = "dzmd_ctp_md_state_test";
-    dztrader::platform::ProcessStatus s;
-    s.name = k_scan_target;
-    s.state = dztrader::platform::ChildState::Crashed;
-    process_mirror_->update_status(k_scan_target, s);
+    // remove 标记（is_added=0）-> added=false（与进程镜像状态无关）
+    EXPECT_TRUE(repo_->set_market_source_added(id, false));
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::list_available, req);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
     auto body = parse_body(resp);
-    EXPECT_TRUE(body.is_array());
     for (const auto& item : body) {
         if (item.value("name", "") == k_scan_target) {
-            EXPECT_FALSE(item.value("added", true))
-                << "crashed process should not be marked as added";
-            EXPECT_EQ(item.value("ui_card", std::string{"<missing>"}), "ctp")
-                << "ui_card should be 'ctp' for dzmd_ctp_md_state_test";
-            return;
+            EXPECT_FALSE(item.value("added", true)) << "db row is_added=0 -> added=false";
+            EXPECT_EQ(item.value("ui_card", std::string{"<missing>"}), "ctp");
         }
     }
-    FAIL() << "test requires " << k_scan_target << ".exe in test exe dir";
 }
 
-TEST_F(MarketSourceControllerTest, AvailableRunningProcessMarkedAsAdded) {
-    // 对照测试: running 状态的进程应被判定 added=true
+TEST_F(MarketSourceControllerTest, AvailableUnmanagedExeNotAdded) {
+    // 未入库的 exe（无论镜像状态）-> added=false
     constexpr const char* k_scan_target = "dzmd_ctp_md_state_test";
     dztrader::platform::ProcessStatus s;
     s.name = k_scan_target;
     s.state = dztrader::platform::ChildState::Running;
-    process_mirror_->update_status(k_scan_target, s);
+    process_mirror_->update_status(k_scan_target, s);  // 镜像 Running 但 DB 无行
+
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::list_available, req);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
     auto body = parse_body(resp);
-    EXPECT_TRUE(body.is_array());
     for (const auto& item : body) {
         if (item.value("name", "") == k_scan_target) {
-            EXPECT_TRUE(item.value("added", false))
-                << "running process should be marked as added";
-            EXPECT_EQ(item.value("ui_card", std::string{"<missing>"}), "ctp")
-                << "ui_card should be 'ctp' for dzmd_ctp_md_state_test";
-            return;
+            EXPECT_FALSE(item.value("added", true))
+                << "running mirror but no db row -> added=false (is_added 语义)";
         }
     }
-    FAIL() << "test requires " << k_scan_target << ".exe in test exe dir";
 }
 
 // ---- get_config password redaction (Wave 5A) ----

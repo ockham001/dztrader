@@ -148,6 +148,8 @@ public:
     int64_t create_market_source(const std::string& source_type, const std::string& source_name,
                                  const std::string& display_name);
     bool update_market_source(int64_t id, const std::string& display_name);
+    /// 标记行情源生命周期（契约 rest: remove 下发成功置 false，再次添加复位 true）
+    bool set_market_source_added(int64_t id, bool added);
     bool delete_market_source(int64_t id);
 
 private:
