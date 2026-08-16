@@ -83,9 +83,11 @@ const subscribeClass = (s: MarketSourceView): string => {
 const autoLoginStatusText = (s: MarketSourceView): string =>
   s.autoLoginPending ? '切换中' : (s.auto_login ? '已启用' : '未启用')
 
-// ===== 高级段（契约 shm SHM 行情通道配置, dzmd_* 通用层; 默认折叠）=====
-// page_size_mb 启动后不可变（仅配置文件、启动前修改）→ 只读;
-// check_* 三字段失焦单字段提交; preload_points 行编辑（null 删除语义）。
+// ===== 高级段（不常用且需专业知识的参数, 默认折叠）=====
+// 含两组子配置: 订阅参数（契约 md-config SetSubscribeParams, 无状态保护, 缺失=保留旧值）+
+// 行情通道（契约 shm SHM 通道配置, dzmd_* 通用层）。
+// 行情通道: page_size_mb 启动后不可变（仅配置文件、启动前修改）→ 只读;
+//           check_* 三字段失焦单字段提交; preload_points 行编辑（null 删除语义）。
 // 范围对照契约 shm: interval ∈ [0,1440], pages ∈ [0,8], bytes ∈ [0, 2^40]
 const advancedOpen = ref(false)
 const shmCfg = computed(() => store.shmConfigs[src.value.source_name])
@@ -241,48 +243,6 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
         </div>
       </div>
 
-      <!-- ── 订阅参数（契约 md-config SetSubscribeParams，无状态保护，缺失字段保留旧值）── -->
-      <div class="card-section">
-        <div class="card-section__row">
-          <span class="card-section__title">订阅参数</span>
-          <span v-if="src.subscribeParamsPending" class="card-section__title">保存中…</span>
-        </div>
-        <div class="sub-params">
-          <div class="sub-params__field">
-            <label>每批订阅数</label>
-            <div class="ds-input">
-              <input type="number" min="1" :value="src.subscribeBatchSize ?? ''"
-                :disabled="src.subscribeParamsPending"
-                @blur="onSubParamBlur(src, 'subscribe_batch_size', $event)">
-            </div>
-          </div>
-          <div class="sub-params__field">
-            <label>批间延迟(ms)</label>
-            <div class="ds-input">
-              <input type="number" min="0" :value="src.subscribeBatchDelayMs ?? ''"
-                :disabled="src.subscribeParamsPending"
-                @blur="onSubParamBlur(src, 'subscribe_batch_delay_ms', $event)">
-            </div>
-          </div>
-          <div class="sub-params__field">
-            <label>补订检查间隔(ms)</label>
-            <div class="ds-input">
-              <input type="number" min="1" :value="src.subCheckIntervalMs ?? ''"
-                :disabled="src.subscribeParamsPending"
-                @blur="onSubParamBlur(src, 'sub_check_interval_ms', $event)">
-            </div>
-          </div>
-          <div class="sub-params__field">
-            <label>补订最大重试</label>
-            <div class="ds-input">
-              <input type="number" min="0" :value="src.subMaxRetry ?? ''"
-                :disabled="src.subscribeParamsPending"
-                @blur="onSubParamBlur(src, 'sub_max_retry', $event)">
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- ── 经纪商 ── -->
       <div class="card-section">
         <div class="card-section__row">
@@ -301,7 +261,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
         </div>
       </div>
 
-      <!-- ── 高级（契约 shm SHM 行情通道配置, dzmd_* 通用层; 默认折叠）── -->
+      <!-- ── 高级（不常用且需专业知识的参数, 默认折叠）── -->
       <div class="card-section">
         <div class="card-section__row">
           <span class="card-section__title">高级</span>
@@ -310,6 +270,50 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
           </button>
         </div>
         <template v-if="advancedOpen">
+          <!-- ── 订阅参数（契约 md-config SetSubscribeParams，无状态保护，缺失字段保留旧值）── -->
+          <div class="card-section__row">
+            <span class="card-section__title">订阅参数</span>
+            <span v-if="src.subscribeParamsPending" class="card-section__title">保存中…</span>
+          </div>
+          <div class="sub-params">
+            <div class="sub-params__field">
+              <label>每批订阅数</label>
+              <div class="ds-input">
+                <input type="number" min="1" :value="src.subscribeBatchSize ?? ''"
+                  :disabled="src.subscribeParamsPending"
+                  @blur="onSubParamBlur(src, 'subscribe_batch_size', $event)">
+              </div>
+            </div>
+            <div class="sub-params__field">
+              <label>批间延迟(ms)</label>
+              <div class="ds-input">
+                <input type="number" min="0" :value="src.subscribeBatchDelayMs ?? ''"
+                  :disabled="src.subscribeParamsPending"
+                  @blur="onSubParamBlur(src, 'subscribe_batch_delay_ms', $event)">
+              </div>
+            </div>
+            <div class="sub-params__field">
+              <label>补订检查间隔(ms)</label>
+              <div class="ds-input">
+                <input type="number" min="1" :value="src.subCheckIntervalMs ?? ''"
+                  :disabled="src.subscribeParamsPending"
+                  @blur="onSubParamBlur(src, 'sub_check_interval_ms', $event)">
+              </div>
+            </div>
+            <div class="sub-params__field">
+              <label>补订最大重试</label>
+              <div class="ds-input">
+                <input type="number" min="0" :value="src.subMaxRetry ?? ''"
+                  :disabled="src.subscribeParamsPending"
+                  @blur="onSubParamBlur(src, 'sub_max_retry', $event)">
+              </div>
+            </div>
+          </div>
+
+          <!-- ── 行情通道（契约 shm SHM 行情通道配置, dzmd_* 通用层）── -->
+          <div class="card-section__row" style="margin-top: var(--spacer-12)">
+            <span class="card-section__title">行情通道</span>
+          </div>
           <div class="gateway-info">
             <span class="gateway-info__item" title="仅可通过配置文件修改，进程启动前生效（契约 shm）">
               页大小：<span>{{ shmCfg ? `${shmCfg.page_size_mb} MB` : '--' }}</span>
