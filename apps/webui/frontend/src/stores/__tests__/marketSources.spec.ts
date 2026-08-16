@@ -359,6 +359,14 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(store.error).toBe('自动登录配置尚未同步，请稍后重试')
     })
 
+    it('toggleAutoLogin 镜像未就绪时设置中文错误且不抛出、不下发（守卫）', async () => {
+      await loadDb()  // dbSource: id=1, source_name='dzmd_ctp'; 不推送 auto_login 镜像
+      const store = useMarketSourcesStore()
+      await expect(store.toggleAutoLogin(1, true)).resolves.toBeUndefined()  // 无 rethrow
+      expect(store.error).toBe('自动登录配置尚未同步，请稍后重试')
+      expect(vi.mocked(marketSourcesApi.setAutoLogin)).not.toHaveBeenCalled()
+    })
+
     it('镜像已建立但 schedules 清空时显示空（清空语义不被回退掩盖）', async () => {
       await loadDb()
       const store = useMarketSourcesStore()
