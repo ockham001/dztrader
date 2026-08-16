@@ -98,6 +98,10 @@ private:
     static constexpr double kLogTailIntervalSec = 0.5;
     trantor::TimerId log_tail_timer_{};
     bool log_tail_timer_active_ = false;
+    /// 连接所在的 IO 循环（threadNum=1 时即 drogon::app().getIOLoop(0)）：
+    /// 定时器注册到该循环，使 on_timer/poll_log_tail 与 WS 回调同线程串行，
+    /// 消除 sessions_ / log_tail_timer_active_ 的跨线程竞争（惰性缓存，见 start_log_tail_timer）
+    trantor::EventLoop* io_loop_ = nullptr;
 
     /// 首个日志订阅建立时启动 tail 轮询定时器（幂等）
     void start_log_tail_timer();

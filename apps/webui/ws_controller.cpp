@@ -364,9 +364,18 @@ void WsController::start_log_tail_timer() {
     if (log_tail_timer_active_) {
         return;
     }
+    // 惰性获取连接所在的 IO 循环并缓存：WsController 构造早于 drogon::app().run()
+    // （ioLoopThreadPool_ 未创建，getIOLoop(0) 返回 nullptr），而首次 subscribe_log
+    // 必在连接建立后发生，此时 run() 已调用、IO 循环就绪。注意 app().getLoop() 是
+    // 独立主循环（不参与连接分发），定时器必须注册到 IO 循环才能与 WS 回调同线程。
+    if (io_loop_ == nullptr) {
+        io_loop_ = drogon::app().getIOLoop(0);
+    }
     log_tail_timer_active_ = true;
     // 惰性启动：首个日志订阅建立时才开启 500ms 轮询（无订阅时零定时器唤醒）
-    log_tail_timer_ = drogon::app().getLoop()->runEvery(
+    // 定时器注册到连接所在的 IO 循环，on_timer/poll_log_tail 与 WS 回调同线程串行，
+    // sessions_ 与 log_tail_timer_active_ 无跨线程竞争（消除 check-then-act 误杀定时器）
+    log_tail_timer_ = io_loop_->runEvery(
         kLogTailIntervalSec, [this]() { on_timer(); });
 }
 
@@ -379,7 +388,7 @@ void WsController::stop_log_tail_timer_if_idle() {
             return;  // 仍有订阅，保持轮询
         }
     }
-    drogon::app().getLoop()->invalidateTimer(log_tail_timer_);
+    io_loop_->invalidateTimer(log_tail_timer_);
     log_tail_timer_active_ = false;
 }
 

@@ -162,8 +162,10 @@ int main(int argc, char* argv[]) {
     // 原因: event_thread 是 SHM 信号量的消费者, 必须先启动监听再发查询
     //       否则 master/子进程的响应可能在 event_thread 启动前到达, 信号量计数被消耗但无人处理
 
-    // 单线程事件循环: 所有 REST/WS/定时器/queueInLoop 串行执行 (memory 约定 thread_num=1)
-    // 本重构 LogCtrl 直调 self_log_ + 写 mirror_ 依赖此串行化, 否则 HTTP 与 WS 线程并发 = 数据竞争
+    // 单 IO 线程 + 独立主循环：drogon setThreadNum(1) 创建 1 个 DrogonIoLoop 线程承接所有
+    // REST/WS 连接回调；app().getLoop() 是独立主循环（不参与连接分发，勿用于连接相关定时器）。
+    // tail 定时器等须注册到 IO 循环（getIOLoop(0)）以与 WS 回调同线程串行，避免 sessions_ 数据竞争。
+    // 本重构 LogCtrl 直调 self_log_ + 写 mirror_ 依赖此串行化（HTTP 与 WS 回调同在 IO 线程）
     drogon::app().setThreadNum(1);
     drogon::app().addListener(cfg.server_listen, cfg.server_port);
 
