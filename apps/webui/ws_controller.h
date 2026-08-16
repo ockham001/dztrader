@@ -12,6 +12,7 @@
 #include "config.h"
 #include "repository.h"
 #include "mirror_store.h"
+#include "process_mirror.h"
 #include "ws_broadcaster.h"
 
 namespace dztrader::webui {
@@ -31,7 +32,8 @@ public:
                  std::shared_ptr<Repository> repo,
                  std::shared_ptr<shm::MultiWriter> event_writer,
                  std::shared_ptr<dztrader::platform::LogConfig> self_log,
-                 MirrorStore& mirror);
+                 MirrorStore& mirror,
+                 std::shared_ptr<ProcessMirror> process_mirror);
     ~WsController() = default;
 
     // 禁止拷贝/移动（引用成员）
@@ -78,12 +80,16 @@ private:
     /// 快照/增量读写均由 MirrorStore 承担（领域服务更新 + 连接快照推送）
     MirrorStore& mirror_;
 
+    /// 进程镜像视图：WS 控制消息的 Running 预检（与 REST login/logout 守卫一致）
+    std::shared_ptr<ProcessMirror> process_mirror_;
+
     /// 单连接订阅状态
     struct Session {
         std::string user_id;
         std::string subscribed_log_file;  // empty = no subscription
         int last_log_line_count = 0;      // 上次读到的最后一行行号（1-based）；0 = 未读过
         int tail_fail_count = 0;          // 连续 send 失败次数；达到 3 自动退订
+        bool is_admin = false;             // 连接时按 DB 角色缓存（admin 角色控制消息预检）
     };
     std::unordered_map<drogon::WebSocketConnectionPtr, Session> sessions_;
 

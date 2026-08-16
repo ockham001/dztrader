@@ -109,8 +109,8 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 | type | payload | 校验规则（dzweb） | 处理步骤 |
 |---|---|---|---|
 | `ping` | — | — | 回 `pong` |
-| `md_connect` | `{ source }` | `source` 非空且事件通道可用；否则回 `error`（message 说明原因），不写帧 | 写 `REQUEST_MD_CONNECT`（`instance_id=source`）→ 回 `md_connect_ack{source, ok:true}` |
-| `md_disconnect` | `{ source }` | 同 `md_connect` | 写 `REQUEST_MD_DISCONNECT` → 回 `md_disconnect_ack{source, ok:true}` |
+| `md_connect` | `{ source }` | `source` 非空、事件通道可用、当前连接为 admin、目标进程在镜像中为 `Running`；否则回 `error`（message 说明原因），不写帧 | 写 `REQUEST_MD_CONNECT`（`instance_id=source`）→ 回 `md_connect_ack{source, ok:true}` |
+| `md_disconnect` | `{ source }` | 同 `md_connect`（含 admin 与镜像 `Running` 校验） | 写 `REQUEST_MD_DISCONNECT` → 回 `md_disconnect_ack{source, ok:true}` |
 | `subscribe_log` | `{ file }` | `file` 非空；否则回 `error` | 拒绝订阅自身日志（回 `log_tail_unsubscribed{reason:self_logs_cannot_be_tailed}`，不建订阅）；建立本连接日志订阅 → 回 `subscribe_log_ack{file}` |
 | `unsubscribe_log` | — | — | 清除本连接订阅 → 回 `unsubscribe_log_ack{}` |
 | `query_md_subscriptions` | `{ source, query }` 或 `{ source, instruments }` | `source` 非空；`query` 为字符串或 `instruments` 为数组（二选一，缺一或类型错回 `error`）；dzweb 不校验 `query` 取值与互斥（由目标 md 进程校验，经 `RTN.error` 表达） | 构造 SHM payload（不含 `source`，`source` 作为 `instance_id`）写 `QUERY_MD_SUBSCRIPTIONS` → 回 `query_md_subscriptions_ack{source, ok}` |
@@ -123,6 +123,7 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 
 - WS 是**状态推送通道**（镜像增量 + 快照）；REST 是**请求入口与大数据查询**（见契约 rest）。
 - 设置类请求统一走 REST：进程启停（`POST /api/market-sources/{id}/start|stop` → `REQUEST_PROCESS_CONTROL`）、行情连接（`POST /api/market-sources/{id}/login|logout` → `REQUEST_MD_CONNECT/DISCONNECT`）、行情配置（brokers CRUD → `SET_MD_CONFIG`）、自动登录（`PUT .../auto-login` → `SET_AUTO_LOGIN`）、日志配置（`POST /api/logs/level|flush` → `SET_LOG_CONFIG`/`FLUSH_LOG`）。WS 的 `md_connect`/`md_disconnect`/`query_md_subscriptions` 为等效便捷通道，两路行为一致。
+- `md_connect`/`md_disconnect` 与 REST `POST /api/market-sources/glm-5.3_common/login|logout` 校验一致：admin 角色 + 目标进程镜像 `Running` 预检；镜像未就绪（dzweb 启动初期快照未完成）时预检可能保守拒绝，以 pending 超时/progress 推送兜底。
 - 前端在 REST 请求成功后**不得假设已生效**：以 WS 领域消息（RTN 推送）为生效信号。
 
 ---

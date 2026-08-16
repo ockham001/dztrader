@@ -20,12 +20,14 @@ WsController::WsController(WebuiConfig cfg,
                            std::shared_ptr<Repository> repo,
                            std::shared_ptr<shm::MultiWriter> event_writer,
                            std::shared_ptr<dztrader::platform::LogConfig> self_log,
-                           MirrorStore& mirror)
+                           MirrorStore& mirror,
+                           std::shared_ptr<ProcessMirror> process_mirror)
     : cfg_(std::move(cfg)),
       repo_(std::move(repo)),
       event_writer_(std::move(event_writer)),
       self_log_(std::move(self_log)),
-      mirror_(mirror) {
+      mirror_(mirror),
+      process_mirror_(std::move(process_mirror)) {
     // webui 自身 log_config 镜像初值已移入 main 装配（mirror_store->update），
     // 保证 API-only 模式(无 SHM)下前端连接快照也能看到 webui 自身级别
     // （契约 log：dzweb 自身纳入镜像）。
@@ -55,7 +57,18 @@ void WsController::handleNewConnection(const drogon::HttpRequestPtr& req,
         return;
     }
 
-    sessions_[conn] = Session{.user_id = user_id, .subscribed_log_file = ""};
+    // 连接时缓存角色（契约 webui-ws §3 修订：md_connect/md_disconnect 与 REST 一致要求 admin）
+    bool is_admin = false;
+    if (repo_) {
+        try {
+            auto user = repo_->get_user_by_username(user_id);
+            is_admin = user.has_value() && user->role == "admin";
+        } catch (...) {
+            // 吞因：角色查询失败按非管理员处理（保守拒绝管理操作，不影响只读订阅）
+            SPDLOG_DEBUG("role lookup failed, treat as non-admin | user={}", user_id);
+        }
+    }
+    sessions_[conn] = Session{.user_id = user_id, .subscribed_log_file = "", .is_admin = is_admin};
     SPDLOG_INFO("ws connected | user={}", user_id);
 
     // 连接即推全量镜像快照: 前端以此构建初始状态, 之后按增量帧更新
@@ -163,27 +176,19 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
     if (type == "ping") {
         conn->send(R"({"type":"pong"})");
         return;
-    } else if (type == "md_connect") {
-        // 写 DZ_FRAME_REQUEST_MD_CONNECT 到 event channel
-        std::string source = payload.value("source", "");
-        if (source.empty() || !event_writer_) {
+    } else if (type == "md_connect" || type == "md_disconnect") {
+        // 契约 webui-ws §3（修订）: 与 REST /login /logout 一致--
+        // admin 角色 + source 非空 + 事件通道可用 + 目标进程镜像 Running，否则回 error 不写帧
+        const auto sit = sessions_.find(conn);
+        const bool is_admin = sit != sessions_.end() && sit->second.is_admin;
+        if (!is_admin) {
             const nlohmann::json err = {
                 {"type", "error"},
                 {"seq", msg.value("seq", 0)},
-                {"payload", {{"message", "invalid source or writer not ready"}}}};
+                {"payload", {{"message", "admin required"}}}};
             conn->send(err.dump());
             return;
         }
-        // 走 frame_writer 统一接口 (内部 write+notify, 修复原直接 write_ext_inst_frame 遗漏 notify
-        // 的 bug)。契约 webui-ws §2.4: ok 反映真实写入结果（写通道失败时前端立即提示、不设 pending）
-        const bool ok =
-            platform::write_ext_inst_raw(*event_writer_, DZ_FRAME_REQUEST_MD_CONNECT, source);
-        const nlohmann::json ack = {{"type", "md_connect_ack"},
-                                    {"seq", msg.value("seq", 0)},
-                                    {"payload", {{"source", source}, {"ok", ok}}}};
-        conn->send(ack.dump());
-    } else if (type == "md_disconnect") {
-        // 契约 webui-ws §3: 校验规则与 md_connect 对称（source 非空且事件通道可用，否则回 error）
         const std::string source = payload.value("source", "");
         if (source.empty() || !event_writer_) {
             const nlohmann::json err = {
@@ -193,12 +198,28 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
             conn->send(err.dump());
             return;
         }
-        // ok 反映真实写入结果（契约 webui-ws §2.4，与 md_connect_ack 对称）
-        const bool ok =
-            platform::write_ext_inst_raw(*event_writer_, DZ_FRAME_REQUEST_MD_DISCONNECT, source);
-        const nlohmann::json ack = {{"type", "md_disconnect_ack"},
-                                    {"seq", msg.value("seq", 0)},
-                                    {"payload", {{"source", source}, {"ok", ok}}}};
+        bool running = false;
+        if (process_mirror_) {
+            auto st = process_mirror_->get_status(source);
+            running = st.has_value() && st->state == platform::ChildState::Running;
+        }
+        if (!running) {
+            const nlohmann::json err = {
+                {"type", "error"},
+                {"seq", msg.value("seq", 0)},
+                {"payload", {{"message", "process not running: " + source}}}};
+            conn->send(err.dump());
+            return;
+        }
+        // ok 反映真实写入结果（契约 webui-ws §2.4: ok=false 时前端立即提示、不设 pending）
+        const bool ok = platform::write_ext_inst_raw(
+            *event_writer_,
+            type == "md_connect" ? DZ_FRAME_REQUEST_MD_CONNECT : DZ_FRAME_REQUEST_MD_DISCONNECT,
+            source);
+        const nlohmann::json ack = {
+            {"type", type == "md_connect" ? "md_connect_ack" : "md_disconnect_ack"},
+            {"seq", msg.value("seq", 0)},
+            {"payload", {{"source", source}, {"ok", ok}}}};
         conn->send(ack.dump());
     } else if (type == "query_md_subscriptions") {
         // 写 DZ_FRAME_QUERY_MD_SUBSCRIPTIONS 到 event channel (透传给目标 md 进程)

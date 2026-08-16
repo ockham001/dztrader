@@ -256,7 +256,7 @@ int main(int argc, char* argv[]) {
     // 注册 WebSocket 控制器
     auto ws_ctrl = std::make_shared<dztrader::webui::WsController>(
         cfg, repo, event_writer, self_log,
-        *mirror_store);
+        *mirror_store, process_mirror);
     drogon::app().registerController(ws_ctrl);
 
     // ===== 领域服务装配（镜像 + 广播，行为等价搬迁自 WsController::handle_*） =====
