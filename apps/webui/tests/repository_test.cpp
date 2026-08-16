@@ -147,7 +147,7 @@ TEST_F(RepositoryTest, MarketSourceIsAddedLifecycle) {
     auto s2 = repo_.get_market_source(id2);
     ASSERT_TRUE(s2.has_value());
     EXPECT_TRUE(s2->is_added);
-    EXPECT_EQ(s2->display_name, "CTP 重启");
+    EXPECT_EQ(s2->display_name, "CTP");  // 复用行保留现有 display_name（再添加不覆盖——契约 rest §2.3 修订）
 }
 
 TEST_F(RepositoryTest, LoginHistory) {

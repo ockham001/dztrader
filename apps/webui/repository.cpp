@@ -938,14 +938,14 @@ int64_t Repository::create_market_source(const std::string& source_type,
                                          const std::string& display_name) {
     std::scoped_lock lk(mutex_);
     const std::string now = now_iso();
-    // 幂等创建: 若 source_name 已存在 (UNIQUE 冲突) 则复用现有行并复位 is_added=1
-    // (remove 下发成功后行仅标记 is_added=0 保留, 再次添加时在此复活)
+    // 幂等创建/复用: source_name 已存在（UNIQUE 冲突，如 remove 后再次添加）时复位 is_added=1
+    // 并刷新 updated_at；display_name 保留 DB 现值不覆盖（用户自定义名不因再添加丢失——
+    // available 预填进程名，覆盖会静默丢名）
     const char* sql = "INSERT INTO market_sources (source_type, source_name, display_name, "
                       "is_added, created_at, updated_at) "
                       "VALUES (?, ?, ?, 1, ?, ?) "
                       "ON CONFLICT(source_name) DO UPDATE SET "
-                      "is_added = 1, display_name = excluded.display_name, "
-                      "updated_at = excluded.updated_at";
+                      "is_added = 1, updated_at = excluded.updated_at";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, source_type.c_str(), -1, SQLITE_TRANSIENT);
