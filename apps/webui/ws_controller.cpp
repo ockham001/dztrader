@@ -69,7 +69,7 @@ void WsController::handleNewConnection(const drogon::HttpRequestPtr& req,
             SPDLOG_DEBUG("role lookup failed, treat as non-admin | user={}", user_id);
         }
     }
-    sessions_[conn] = Session{.user_id = user_id, .subscribed_log_file = "", .is_admin = is_admin};
+    sessions_[conn] = Session{.user_id = user_id, .subscribed_log_file = "", .log_cursor = {}, .is_admin = is_admin};
     SPDLOG_INFO("ws connected | user={}", user_id);
 
     // 连接即推全量镜像快照: 前端以此构建初始状态, 之后按增量帧更新
