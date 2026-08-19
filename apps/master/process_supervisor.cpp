@@ -157,8 +157,10 @@ void ProcessSupervisor::send_current_shutdown_batch() {
         if (any_running) {
             // 批次逐批串行, 最坏 N 批 × single_stop_timeout_sec_ (默认 3s, 四类批次最坏 12s)。
             // main.cpp 信号处理器中的 10s 硬超时 (release_all + ioc.stop) 仍是最终兜底:
-            // 若全部子进程挂死不退出, 硬超时先于最后批次强杀触发, 最后批次孤儿依赖下次
-            // master 启动时由 OrphanGuard 回收。属既有安全网, 不修改。
+            // 若全部子进程挂死不退出, 硬超时先于最后批次强杀触发。注意硬超时路径
+            // orphan_guard.cleanup() 会清空持久化的子进程 PID 记录, 故残留的孤儿
+            // 无法由下次启动的 OrphanGuard 回收, 只能人工清理 (病态场景, 实际风险低)。
+            // 属既有安全网, 不修改。
             // 批次超时定时器: 超时强制终止仍在运行的批次成员;
             // 取消由 advance_shutdown_batch 在批次完成时触发 (事件驱动, 无轮询)
             shutdown_timer_ = std::make_unique<boost::asio::steady_timer>(
