@@ -46,11 +46,6 @@ void ProcessSupervisor::start_all() {
 
     auto start_one = [this](const ProcessEntry& entry) {
         try {
-            // 启动 md 进程前先创建 md 通道（含 clear_readers 清空订阅者）
-            if (entry.category == Category::GatewayMd) {
-                shm_mgr_.create_md_channel(entry.name);
-            }
-
             // launch_child 返回值在此忽略: 启动失败时 launch_child 内部已处理失败路径反馈
             // (失败路径 B 推 crashed + notify_ui, 失败路径 D 推 crashed + notify_ui),
             // start_all 不需要额外处理 (与原行为一致)
@@ -69,9 +64,10 @@ void ProcessSupervisor::start_all() {
         }
     };
 
-    // 两趟启动: 先全部行情网关 (含 md 通道创建), 再其余进程。
+    // 两趟启动: 先全部行情网关, 再其余进程。
     // 原因: 策略进程启动后会主动向 master 发起 md 读者注册 (帧 1013),
     // 注册要求目标 md 通道已存在, 故 md 必须先行 (不依赖 registry 解析顺序)。
+    // md 通道创建统一在 launch_child 内 (GatewayMd 条目), 此处不重复创建。
     for (const auto& entry : entries) {
         if (entry.category == Category::GatewayMd) {
             start_one(entry);
@@ -419,6 +415,13 @@ bool ProcessSupervisor::launch_child(const ProcessEntry& entry) {
         // args/restart/display_name 仍以 json 配置为准 (不覆盖)
     }
 
+    // 启动 md 进程前先创建/重建 md 通道 (含 clear_readers; 关闭期间人工修改的
+    // page_size 经 open_or_create 自动重置生效)。可能抛异常, 由调用方 catch
+    // (start_one / handle_process_start / schedule_restart 均有 try)。
+    if (entry_to_launch.category == Category::GatewayMd) {
+        shm_mgr_.create_md_channel(entry_to_launch.name);
+    }
+
     auto child = ChildProcess::create(ioc_, entry_to_launch);
 
     boost::system::error_code ec;
@@ -561,10 +564,16 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
                         name, pid, e.what());
         }
 
-        // md 进程退出时广播 NOTIFY_MD_STOPPED: 通知策略/数据存储进程关闭行情通道
+        // md 进程退出时执行停止后果 (dztraderd 架构): 清空读者列表 + 关闭通道
+        // (统一由主进程执行, 通道不销毁), 再代发 NOTIFY_MD_STOPPED
         // (崩溃时 dzmd_ctp 自己无法广播, 由 master 代发; 正常停止时也需通知)
         // 独立 try-catch: 不阻塞后续崩溃通知/重启逻辑
         if (child->entry().category == Category::GatewayMd) {
+            try {
+                shm_mgr_.close_md_channel(name);
+            } catch (const std::exception& e) {
+                SPDLOG_ERROR("failed to close md channel | name={} error=\"{}\"", name, e.what());
+            }
             try {
                 platform::write_ext_inst_raw(shm_mgr_.event_writer(), DZ_FRAME_NOTIFY_MD_STOPPED, name);
             } catch (const std::exception& e) {

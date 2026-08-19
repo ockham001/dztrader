@@ -1106,5 +1106,47 @@ TEST_F(ProcessControlFrameTest, MdReaderUnregisterMissingChannelReturnsOkRtn) {
     EXPECT_TRUE(rtn_ok);
 }
 
+// 停止后果: close_md_channel 清空读者+释放句柄; 重建+就绪后可再接入
+// (page_size 人工修改经重建自动重置生效, 见 create_md_channel)
+TEST_F(ProcessControlFrameTest, CloseMdChannelClearsReadersAndRejectsUntilReady) {
+    register_strategy_for_test(registry_, "alpha");
+    shm_mgr_->create_md_channel("dzmd_ctp");
+
+    auto writer = create_writer("stg_sim");
+    mark_channel_ready(writer, "dzmd_ctp");
+    shm_mgr_->drain_event_channel();
+    write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp", "stg.alpha");
+    shm_mgr_->drain_event_channel();
+
+    // 关闭: 读者清空
+    shm_mgr_->close_md_channel("dzmd_ctp");
+    {
+        auto meta = shm::ChannelMeta::open_only("dzmd_ctp", dztrader::paths::shm());
+        auto names = meta.reader_names();
+        EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") == names.end());
+    }
+
+    // 关闭后接入被拒 (行情进程未运行), 不新增读者
+    write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp", "stg.alpha");
+    shm_mgr_->drain_event_channel();
+    {
+        auto meta = shm::ChannelMeta::open_only("dzmd_ctp", dztrader::paths::shm());
+        auto names = meta.reader_names();
+        EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") == names.end());
+    }
+
+    // 重建 (重启路径) + 就绪后接入成功
+    shm_mgr_->create_md_channel("dzmd_ctp");
+    mark_channel_ready(writer, "dzmd_ctp");
+    shm_mgr_->drain_event_channel();
+    write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp", "stg.alpha");
+    shm_mgr_->drain_event_channel();
+    {
+        auto meta = shm::ChannelMeta::open_only("dzmd_ctp", dztrader::paths::shm());
+        auto names = meta.reader_names();
+        EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") != names.end());
+    }
+}
+
 }  // namespace
 }  // namespace dztrader::master
