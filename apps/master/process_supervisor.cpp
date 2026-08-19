@@ -163,11 +163,13 @@ void ProcessSupervisor::send_current_shutdown_batch() {
             // 属既有安全网, 不修改。
             // 批次超时定时器: 超时强制终止仍在运行的批次成员;
             // 取消由 advance_shutdown_batch 在批次完成时触发 (事件驱动, 无轮询)
+            // 捕获排定下标: 防"旧 timer 已过期入队、批次已推进"时误杀新批次 (自检 P1)
+            auto armed_index = shutdown_batch_index_;
             shutdown_timer_ = std::make_unique<boost::asio::steady_timer>(
                 ioc_, std::chrono::seconds(single_stop_timeout_sec_));
-            shutdown_timer_->async_wait([this](const boost::system::error_code& ec) {
+            shutdown_timer_->async_wait([this, armed_index](const boost::system::error_code& ec) {
                 if (ec) return;  // 批次及时完成, 定时器被取消
-                force_terminate_batch();
+                force_terminate_batch(armed_index);
             });
             return;
         }
@@ -176,16 +178,18 @@ void ProcessSupervisor::send_current_shutdown_batch() {
     check_shutdown_complete();
 }
 
-void ProcessSupervisor::force_terminate_batch() {
-    // 当前批次超时: 强制终止仍在运行的成员; 退出回调 (on_child_exit ->
-    // advance_shutdown_batch) 随后逐个触发批次推进
-    if (shutdown_batch_index_ >= shutdown_batches_.size()) {
+void ProcessSupervisor::force_terminate_batch(size_t armed_index) {
+    // 校验排定下标: 过期 timer 在批次已推进后触发时, 不得误杀新批次 (自检 P1)
+    if (armed_index != shutdown_batch_index_ || armed_index >= shutdown_batches_.size()) {
         return;
     }
-    for (const auto& name : shutdown_batches_[shutdown_batch_index_]) {
+    for (const auto& name : shutdown_batches_[armed_index]) {
         auto child = find_child(name);
         if (child && child->state() != ChildState::Stopped) {
             SPDLOG_WARN("shutdown batch timeout, force terminating | name={}", name);
+            // 通过 notify_ui 反馈用户 (popup=false: 警告级别, 不弹窗只 toast)
+            // 与单进程停止路径 on_single_stop_timeout 的强杀反馈对称 (自检 A-偏离1)
+            notify_ui_.warn(std::string("shutdown batch timeout, force killing | name=") + name);
             force_killed_names_.insert(name);  // 跳过退出时的 crash 弹窗
             try {
                 child->terminate();
@@ -241,6 +245,13 @@ bool ProcessSupervisor::is_shutting_down() const {
 }
 
 bool ProcessSupervisor::start_process(std::string_view name) {
+    // 整体关闭期间拒绝启动: 新进程不在冻结批次内, 关闭会悬停至硬超时并留孤儿
+    // (与 stop_process 的 shutting_down_ 守卫对称, 自检 B-P3 / C-问题2)
+    if (shutting_down_) {
+        SPDLOG_WARN("start_process ignored, full shutdown in progress | name={}", name);
+        return false;
+    }
+
     const auto* entry = registry_.find(name);
     if (entry) {
         // json 声明的进程: launch_child 内部按需扫描填充 exe

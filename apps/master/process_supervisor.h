@@ -164,7 +164,8 @@ private:
     void send_current_shutdown_batch();
 
     /// 当前批次超时: 强制终止仍在运行的批次成员 (退出回调随后推进批次)
-    void force_terminate_batch();
+    /// armed_index = 排定该 timer 时的批次下标, 防过期 timer 在批次推进后误杀新批次
+    void force_terminate_batch(size_t armed_index);
 
     /// 批次推进: 当前批次全部退出后进入下一批 (由 on_child_exit 触发, 事件驱动)
     void advance_shutdown_batch();

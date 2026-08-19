@@ -163,7 +163,7 @@ void ShmManager::handle_md_reader_register(const shm::FrameView& view) {
         return;
     }
 
-    auto it = md_channels_.find(channel_name);
+    auto it = md_channels_.find(shm::channel_name(channel_name));
     if (it == md_channels_.end()) {
         // 通道未配置: 主进程不会拉起对应行情进程 (契约 shm 接入失败)
         SPDLOG_WARN(
@@ -226,7 +226,7 @@ void ShmManager::handle_md_reader_unregister(const shm::FrameView& view) {
         return;
     }
 
-    auto it = md_channels_.find(channel_name);
+    auto it = md_channels_.find(shm::channel_name(channel_name));
     if (it == md_channels_.end() || !it->second.meta) {
         // 通道不存在或已关闭: 读者条目随之消失, 幂等成功
         write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_UNREGISTER, subscriber,
