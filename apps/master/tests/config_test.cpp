@@ -533,6 +533,21 @@ TEST_F(ConfigTest, MasterConfigSavePreservesOtherFields) {
     EXPECT_EQ(saved["log"]["level"], "info");
 }
 
+// [master] 段清理策略字段: 旧文件无字段走默认 (与旧硬编码 200/24 一致); 双 0 往返
+TEST_F(ConfigTest, MasterConfigCleanupPolicyRoundTrip) {
+    // 旧配置文件无此字段 -> WITH_DEFAULT 补默认值 (自愈)
+    write_json(R"({"master": {}})");
+    auto old_cfg = MasterConfig::load(config_path_);
+    EXPECT_EQ(old_cfg.cleanup_max_page_count, 200u);
+    EXPECT_EQ(old_cfg.cleanup_max_page_age_hours, 24u);
+
+    // 显式双 0 (不清理) 保存后可读回
+    write_json(R"({"master": {"cleanup_max_page_count": 0, "cleanup_max_page_age_hours": 0}})");
+    auto cfg = MasterConfig::load(config_path_);
+    EXPECT_EQ(cfg.cleanup_max_page_count, 0u);
+    EXPECT_EQ(cfg.cleanup_max_page_age_hours, 0u);
+}
+
 // ---- ShmGlobalConfig (shm section, 仅 meta_file_size) ----
 
 TEST_F(ConfigTest, ShmGlobalConfigLoadDefault) {

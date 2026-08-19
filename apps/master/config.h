@@ -37,13 +37,20 @@ struct ProcessEntry {
     std::string display_name;
 };
 
-/// [master] 段配置 (仅 single_stop_timeout_sec; 日志相关字段迁移到 LogConfig)。
+/// [master] 段配置 (单进程停止超时 + 旧页清理策略; 日志相关字段迁移到 LogConfig)。
 struct MasterConfig {
     /// 单进程停止超时阈值 (秒), 超时后主进程强制 kill 子进程
     /// 对应 ProcessSupervisor::single_stop_timeout_sec_, 默认 3
     int single_stop_timeout_sec = 3;
 
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(MasterConfig, single_stop_timeout_sec)
+    /// 旧页清理策略 (全局统一: master 为唯一清理者, event + 全部 md 通道共用;
+    /// 语义对齐 shm::CleanupPolicy, 皆为 0 表示不清理)。仅人工经配置文件修改。
+    uint64_t cleanup_max_page_count = 200;
+    uint64_t cleanup_max_page_age_hours = 24;
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(MasterConfig, single_stop_timeout_sec,
+                                                cleanup_max_page_count,
+                                                cleanup_max_page_age_hours)
 
     /// 从 JSON 文件的 "master" section 加载
     static MasterConfig load(const std::filesystem::path& path,

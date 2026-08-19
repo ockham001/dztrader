@@ -57,9 +57,13 @@ public:
     /// log_config_ 在构造函数体内从 cfg_path 的 "log" section 加载 (失败用默认值自愈)
     /// shm_global: SHM 全局参数 (meta_file_size,启动后不变)
     /// cfg_path: dztraderd.json 路径 (用于 SET_LOG_CONFIG/SET_EVENT_SHM_CONFIG 持久化)
+    /// cleanup_policy: 旧页清理策略 (event + 全部 md 通道共用, 双 0 不清理;
+    /// 默认与旧硬编码行为一致 200/24)
     /// name: 进程名 (与 exe stem 一致, 默认 "dztraderd")
     ShmManager(const ShmGlobalConfig& shm_global,
                const std::filesystem::path& cfg_path,
+               shm::CleanupPolicy cleanup_policy =
+                   shm::CleanupPolicy{.max_page_count = 200, .max_page_age_hours = 24},
                std::string name = "dztraderd");
 
     ~ShmManager() = default;
@@ -239,6 +243,9 @@ private:
     // ===== 配置状态 (声明在最前, 构造函数初始化列表先执行) =====
     /// 全局 meta 文件大小 (所有通道共用,启动后不变)
     uint64_t meta_file_size_ = 1 * 1024 * 1024;
+
+    /// 旧页清理策略 (全局统一, event + 全部 md 通道共用; 双 0 不清理)
+    shm::CleanupPolicy cleanup_policy_{};
 
     /// 不可变: event 通道 page size (字节,从 event_shm_config_.page_size_mb 换算,启动后不变)
     uint64_t event_page_size_ = 32 * 1024 * 1024;

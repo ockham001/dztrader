@@ -14,6 +14,7 @@
 #include <dztrader/core/this_process.h>
 #include <dztrader/log/log.h>
 #include <dztrader/platform/log_config.h>
+#include <dztrader/shm/page_cleaner.h>
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/signal_set.hpp>
@@ -159,7 +160,10 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<dztrader::master::ShmManager> shm_mgr;
     try {
         shm_mgr = std::make_unique<dztrader::master::ShmManager>(
-            cfg.shm_global, config_path);
+            cfg.shm_global, config_path,
+            dztrader::shm::CleanupPolicy{
+                .max_page_count = cfg.master.cleanup_max_page_count,
+                .max_page_age_hours = cfg.master.cleanup_max_page_age_hours});
     } catch (const std::exception& e) {
         SPDLOG_CRITICAL("shm manager init failed | error=\"{}\"", e.what());
         return 1;

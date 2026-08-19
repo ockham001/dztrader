@@ -27,8 +27,10 @@ using dztrader::platform::mb_to_bytes;
 
 ShmManager::ShmManager(const ShmGlobalConfig& shm_global,
                        const std::filesystem::path& cfg_path,
+                       shm::CleanupPolicy cleanup_policy,
                        std::string name)
     : meta_file_size_(shm_global.meta_file_size),
+      cleanup_policy_(cleanup_policy),
       name_(name),
       config_path_(cfg_path),
       event_meta_([this, &shm_global]() {
@@ -77,8 +79,7 @@ ShmManager::ShmManager(const ShmGlobalConfig& shm_global,
       }()),
       event_writer_(shm::MultiWriter::create(event_meta_, name)),
       event_reader_(shm::Reader::create(event_meta_, name)),
-      cleaner_(std::make_unique<shm::PageCleaner>(
-          event_meta_, shm::CleanupPolicy{.max_page_count = 200, .max_page_age_hours = 24})),
+      cleaner_(std::make_unique<shm::PageCleaner>(event_meta_, cleanup_policy_)),
       log_config_(name_, config_path_),
       notify_ui_(name_, event_writer_),
       event_shm_config_(config_path_, event_writer_,
