@@ -26,13 +26,15 @@ void ShmManager::cleanup_old_pages() {
         if (deleted > 0) {
             SPDLOG_INFO("event channel pages cleaned | count={}", deleted);
         }
-        // 同时清理所有 md channel
-        for (auto& [name, meta] : md_channels_) {
-            if (!meta) {
+        // 同时清理所有 md channel (已关闭通道 meta 为空, 跳过: 无写入者无新页,
+        // 数据文件保留待重启复用, 重开后恢复清理)
+        // 注: 清理策略字面量为过渡占位, Task 7 引入 cleanup_policy_ 成员后统一替换
+        for (auto& [name, state] : md_channels_) {
+            if (!state.meta) {
                 continue;
             }
             shm::PageCleaner md_cleaner(
-                meta, shm::CleanupPolicy{.max_page_count = 200, .max_page_age_hours = 24});
+                state.meta, shm::CleanupPolicy{.max_page_count = 200, .max_page_age_hours = 24});
             size_t d = md_cleaner.cleanup();
             if (d > 0) {
                 SPDLOG_INFO("md channel pages cleaned | channel={} count={}", name, d);

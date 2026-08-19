@@ -41,6 +41,15 @@ namespace dztrader::master {
 
 class ProcessSupervisor;  // 前向声明, 避免 .h 循环 include
 
+/// md 通道运行态: 元数据句柄 + 就绪标志。
+/// meta 为 null 表示通道已关闭 (行情进程停止的后果): 数据文件/读取位置/page_size
+/// 保留待重启复用 (create_md_channel 重建时 page_size 不一致自动重置)。
+/// ready = 行情进程已广播 NOTIFY_MD_STARTED (通道就绪, 可接受读者接入)。
+struct MdChannelState {
+    std::shared_ptr<shm::ChannelMeta> meta;
+    bool ready = false;
+};
+
 class ShmManager {
 public:
     // ===== 生命周期与通道创建 =====
@@ -67,6 +76,16 @@ public:
     /// 自行注册,master 不订阅行情通道)。launch_child 之后应调用
     /// notify_md_channel_subscriber_update 通知行情进程刷新 spi_.writer_ 缓存。
     void create_md_channel(std::string_view source_name);
+
+    /// 关闭 md 通道 (行情进程停止的后果, dztraderd 架构): 清空读者列表 +
+    /// 释放元数据句柄 + 复位就绪标志。不触碰数据文件/读取位置/page_size
+    /// (保留待重启复用); 条目保留在 md_channels_ 表示通道已配置。
+    /// 由 ProcessSupervisor::on_child_exit 在 md 进程退出时调用。
+    void close_md_channel(std::string_view source_name);
+
+    /// 标记 md 通道就绪 (收到行情进程 NOTIFY_MD_STARTED 广播时调用)。
+    /// 未知通道或已关闭通道忽略。
+    void mark_md_channel_ready(std::string_view source_name);
 
     /// 注入 ProcessSupervisor 引用 (用于 PROCESS_CONTROL 帧调用启停)
     void set_supervisor(ProcessSupervisor* supervisor);
@@ -238,7 +257,7 @@ private:
     // ===== SHM 基础设施 =====
     // 声明顺序 = 析构逆序 = 依赖顺序 (writer/reader/cleaner 依赖 event_meta_)
     std::shared_ptr<shm::ChannelMeta> event_meta_;
-    std::unordered_map<std::string, std::shared_ptr<shm::ChannelMeta>> md_channels_;
+    std::unordered_map<std::string, MdChannelState> md_channels_;
 
     // event channel 读写器 (RAII: 构造函数初始化列表创建, 析构自动释放)
     shm::MultiWriter event_writer_;

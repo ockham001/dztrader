@@ -57,10 +57,10 @@ void ShmManager::update_subscribers(std::string_view channel_name,
     }
 
     auto it = md_channels_.find(std::string(channel_name));
-    if (it != md_channels_.end() && it->second) {
-        it->second->clear_readers();
+    if (it != md_channels_.end() && it->second.meta) {
+        it->second.meta->clear_readers();
         for (const auto& sub : subscribers) {
-            (void)it->second->add_reader(sub, /*pid=*/0);
+            (void)it->second.meta->add_reader(sub, /*pid=*/0);
         }
     }
 }
@@ -149,14 +149,14 @@ void ShmManager::handle_md_reader_register(const shm::FrameView& view) {
     }
 
     auto it = md_channels_.find(channel_name);
-    if (it == md_channels_.end() || !it->second) {
+    if (it == md_channels_.end() || !it->second.meta) {
         // 启动顺序保证 md 先于策略 (start_all 两趟); 此处缺失 = md 未启动/已移除
         SPDLOG_WARN(
             "md reader register rejected | reason=channel_not_found channel={} subscriber={}",
             channel_name, subscriber);
         return;
     }
-    const bool added = it->second->add_reader(subscriber, /*pid=*/0);
+    const bool added = it->second.meta->add_reader(subscriber, /*pid=*/0);
     SPDLOG_INFO("md reader registered | channel={} subscriber={} new={}", channel_name,
                 subscriber, added);
     notify_md_channel_subscriber_update(channel_name);
@@ -187,20 +187,20 @@ void ShmManager::handle_md_reader_unregister(const shm::FrameView& view) {
     }
 
     auto it = md_channels_.find(channel_name);
-    if (it == md_channels_.end() || !it->second) {
+    if (it == md_channels_.end() || !it->second.meta) {
         return;  // 通道已不存在, 读者条目随之消失, 无需处理
     }
-    it->second->remove_reader(subscriber);
+    it->second.meta->remove_reader(subscriber);
     SPDLOG_INFO("md reader unregistered | channel={} subscriber={}", channel_name, subscriber);
     notify_md_channel_subscriber_update(channel_name);
 }
 
 void ShmManager::remove_reader_from_all_md_channels(const std::string& sub_name) {
-    for (auto& [name, meta] : md_channels_) {
-        if (!meta) {
-            continue;
+    for (auto& [name, state] : md_channels_) {
+        if (!state.meta) {
+            continue;  // 已关闭通道读者已随停止后果清空
         }
-        meta->remove_reader(sub_name);
+        state.meta->remove_reader(sub_name);
         notify_md_channel_subscriber_update(name);
     }
 }

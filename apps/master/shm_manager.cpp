@@ -118,7 +118,10 @@ void ShmManager::create_md_channel(std::string_view source_name) {
     const auto& shm_dir = dztrader::paths::shm();
     const auto channel_name = shm::channel_name(source_name);
 
-    if (md_channels_.contains(channel_name)) {
+    // 通道存活 (元数据句柄在) 时幂等返回: 运行中的通道不重建
+    // (page_size 运行期间不可改, 无需重读配置)
+    if (auto it = md_channels_.find(channel_name);
+        it != md_channels_.end() && it->second.meta) {
         SPDLOG_INFO("md channel already exists | name={}", channel_name);
         return;
     }
@@ -126,6 +129,8 @@ void ShmManager::create_md_channel(std::string_view source_name) {
     // page_size 优先级 (新协议无 UI override):
     //   1. read_md_page_size(source_name) (从子进程配置文件读取)
     //   2. kDefaultMdPageSize (1024MB, 与 MdShmConfig 默认值一致)
+    // 关闭期间人工修改 page_size 在此生效: open_or_create 发现配置值与现存
+    // 不一致时自动重置 (清空页文件 + 写位置归零 + 按新值重建, 通道内建机制)
     uint64_t page_size = kDefaultMdPageSize;
     if (auto ps = read_md_page_size(std::string(source_name))) {
         page_size = *ps;
@@ -151,12 +156,39 @@ void ShmManager::create_md_channel(std::string_view source_name) {
     auto md_meta_ptr = std::make_shared<shm::ChannelMeta>(std::move(md_meta));
 
     // 清空订阅者列表: master 不订阅行情通道 (master 不读 tick),
-    // 行情通道订阅者由策略/数据进程注册,clear 后为初始空状态
+    // 行情通道订阅者由策略/数据进程注册, clear 后为初始空状态
+    // (重启重建时兜底清理上一运行残留)
     md_meta_ptr->clear_readers();
 
-    md_channels_[channel_name] = md_meta_ptr;
+    md_channels_[channel_name] = MdChannelState{md_meta_ptr, /*ready=*/false};
     SPDLOG_INFO("md channel created | name={} page_size={} meta_size={}", channel_name, page_size,
                 meta_file_size_);
+}
+
+void ShmManager::close_md_channel(std::string_view source_name) {
+    // 停止后果 (dztraderd 架构「行情进程生命周期」): 清空读者列表 + 释放句柄,
+    // 不触碰数据文件/读取位置/page_size (保留待重启复用); 条目保留表示已配置
+    auto it = md_channels_.find(std::string(source_name));
+    if (it == md_channels_.end()) {
+        return;
+    }
+    if (it->second.meta) {
+        it->second.meta->clear_readers();
+        it->second.meta.reset();
+    }
+    it->second.ready = false;
+    SPDLOG_INFO("md channel closed | source={}", source_name);
+}
+
+void ShmManager::mark_md_channel_ready(std::string_view source_name) {
+    auto it = md_channels_.find(std::string(source_name));
+    if (it == md_channels_.end() || !it->second.meta) {
+        // 未知行情进程或通道已关闭 (不在 master 编排内), 忽略
+        SPDLOG_DEBUG("md started ignored for unknown/closed channel | source={}", source_name);
+        return;
+    }
+    it->second.ready = true;
+    SPDLOG_INFO("md channel ready | source={}", source_name);
 }
 
 void ShmManager::start_periodic_tasks(boost::asio::io_context& ioc) {
