@@ -452,6 +452,15 @@ void ProcessSupervisor::notify_removed_for_inactive(const std::string& name) {
         notify_ui_.error(std::string("failed to remove gateway config | name=") + name
                         + " error=" + e.what());
     }
+    // Remove 流程: 对 md 源彻底删除通道目录与条目 (设计 spec 移除清理),
+    // 兜底处理进程未运行但通道文件残留的场景 (如曾启动后失败)
+    if (category == Category::GatewayMd) {
+        try {
+            shm_mgr_.destroy_md_channel(name);
+        } catch (const std::exception& e) {
+            SPDLOG_ERROR("failed to destroy md channel | name={} error=\"{}\"", name, e.what());
+        }
+    }
     // 清理订阅者注册 (子进程可能曾注册过, 退出后残留)
     // remove_reader 是幂等的, 不存在也无害
     shm_mgr_.remove_reader(name);
@@ -653,15 +662,22 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
                         name, pid, e.what());
         }
 
-        // md 进程退出时执行停止后果 (dztraderd 架构): 清空读者列表 + 关闭通道
-        // (统一由主进程执行, 通道不销毁), 再代发 NOTIFY_MD_STOPPED
+        // md 进程退出时执行通道生命周期 (dztraderd 架构 + 设计 spec 移除清理):
+        // - Remove 流程: 配置已删, 彻底删除通道文件与条目 (destroy_md_channel)
+        // - 停止/崩溃 (待重启): 清读者+关闭通道, 保留文件待重启复用 (close_md_channel)
+        // 两者统一由主进程执行; 随后代发 NOTIFY_MD_STOPPED
         // (崩溃时 dzmd_ctp 自己无法广播, 由 master 代发; 正常停止时也需通知)
         // 独立 try-catch: 不阻塞后续崩溃通知/重启逻辑
         if (child->entry().category == Category::GatewayMd) {
             try {
-                shm_mgr_.close_md_channel(name);
+                if (is_remove_flow) {
+                    shm_mgr_.destroy_md_channel(name);
+                } else {
+                    shm_mgr_.close_md_channel(name);
+                }
             } catch (const std::exception& e) {
-                SPDLOG_ERROR("failed to close md channel | name={} error=\"{}\"", name, e.what());
+                SPDLOG_ERROR("failed to close/destroy md channel | name={} error=\"{}\"",
+                             name, e.what());
             }
             try {
                 platform::write_ext_inst_raw(shm_mgr_.event_writer(), DZ_FRAME_NOTIFY_MD_STOPPED, name);
