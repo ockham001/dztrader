@@ -7,6 +7,7 @@
 #include <boost/interprocess/managed_mapped_file.hpp>
 #include <boost/interprocess/managed_shared_memory.hpp>
 #include <boost/interprocess/mapped_region.hpp>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <dztrader/core/encoding.h>
@@ -337,9 +338,19 @@ private:
         }
         std::vector<std::filesystem::path> page_files;
         for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-            if (entry.is_regular_file() && entry.path().extension() == ".dat") {
-                page_files.push_back(entry.path());
+            // 仅删除页文件 (stem 为纯数字页序号); 跳过 meta.dat 等非页文件,
+            // 否则 page_size 重置会把正被本进程映射的 meta.dat 一并删除,
+            // 导致重置后其他进程 open_only 按名打开失败 (子进程首启必败)
+            if (!entry.is_regular_file() || entry.path().extension() != ".dat") {
+                continue;
             }
+            const auto stem = entry.path().stem().string();
+            if (stem.empty() ||
+                !std::all_of(stem.begin(), stem.end(),
+                             [](unsigned char c) { return std::isdigit(c) != 0; })) {
+                continue;
+            }
+            page_files.push_back(entry.path());
         }
         std::ranges::sort(page_files);
 

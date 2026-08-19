@@ -133,6 +133,57 @@ TEST_F(ChannelMetaTest, PageSizeChangeCleansUpFiles) {
     EXPECT_EQ(std::filesystem::file_size(page0), 2 * MB);
 }
 
+// page_size 重置只清数字页文件: meta.dat 必须保留, 且重置后子进程视角
+// open_only 按名打开 meta.dat 必须成功 (回归: 旧实现误删 meta.dat)
+TEST_F(ChannelMetaTest, PageSizeChangeKeepsMetaFileAndReopenSucceeds) {
+    ChannelConfig config1{
+        .channel_name = channel_name_,
+        .shm_dir = shm_dir_,
+        .meta_file_size = 4 * MB,
+        .page_size = 1 * MB,
+        .lock_memory = false,
+        .prefetch_memory = false,
+    };
+
+    {
+        auto meta = ChannelMeta::open_or_create(config1);
+        auto dir = meta.page_dir();
+        create_page_file(dir, 1, 1 * MB);
+        create_page_file(dir, 2, 1 * MB);
+    }
+
+    ChannelConfig config2{
+        .channel_name = channel_name_,
+        .shm_dir = shm_dir_,
+        .meta_file_size = 4 * MB,
+        .page_size = 2 * MB,
+        .lock_memory = false,
+        .prefetch_memory = false,
+    };
+
+    {
+        auto meta = ChannelMeta::open_or_create(config2);
+        auto dir = meta.page_dir();
+
+        // (a) meta.dat 仍存在 (正被本进程映射, 重置不得删除其名字)
+        EXPECT_TRUE(std::filesystem::exists(dir / "meta.dat"));
+
+        // (b) 旧数字页文件已清, 页 0 以新 page_size 重建, 写位置归零重写初始帧
+        EXPECT_FALSE(std::filesystem::exists(dir / std::format("{:08d}.dat", 1)));
+        EXPECT_FALSE(std::filesystem::exists(dir / std::format("{:08d}.dat", 2)));
+        auto page0 = dir / std::format("{:08d}.dat", 0);
+        EXPECT_TRUE(std::filesystem::exists(page0));
+        EXPECT_EQ(std::filesystem::file_size(page0), 2 * MB);
+        EXPECT_GT(meta.next_write_pos()->load(), 0u);
+    }
+
+    // (c) 模拟子进程视角: 重置后 open_only 按名打开 meta.dat 不抛
+    EXPECT_NO_THROW({
+        auto meta = ChannelMeta::open_only(channel_name_, shm_dir_);
+        EXPECT_EQ(meta.page_size(), 2 * MB);
+    });
+}
+
 TEST_F(ChannelMetaTest, FirstFrameIsInvalidFill) {
     ChannelConfig config{
         .channel_name = channel_name_,
