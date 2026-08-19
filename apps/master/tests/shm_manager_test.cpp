@@ -1192,5 +1192,57 @@ TEST_F(ProcessControlFrameTest, CloseMdChannelClearsReadersAndRejectsUntilReady)
     }
 }
 
+// 移除语义: destroy_md_channel 清读者+删通道目录+删条目, 再注册回 channel not configured
+TEST_F(ProcessControlFrameTest, DestroyMdChannelRemovesFilesAndEntry) {
+    register_strategy_for_test(registry_, "alpha");
+    shm_mgr_->create_md_channel("dzmd_ctp");
+    const auto ch_dir = dztrader::paths::shm() / "dzmd_ctp";
+    ASSERT_TRUE(std::filesystem::exists(ch_dir));
+
+    shm_mgr_->destroy_md_channel("dzmd_ctp");
+
+    // 通道目录已删除
+    EXPECT_FALSE(std::filesystem::exists(ch_dir));
+
+    // 条目已删除: 再注册回 "channel not configured"
+    auto writer = create_writer("stg_sim");
+    shm::Reader reader = create_reader("rtn_probe_destroy");
+    write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp", "stg.alpha");
+    shm_mgr_->drain_event_channel();
+
+    bool rtn_conf = false;
+    for (int i = 0; i < 16; ++i) {
+        const auto* frame = reader.next_frame();
+        if (!frame) break;
+        shm::FrameView view(frame);
+        if (view.type() == DZ_FRAME_RTN_MD_READER_REGISTER &&
+            std::string_view(view.ext_inst_id()) == "stg.alpha") {
+            auto j = shm::decode_ext_inst_json<nlohmann::json>(view);
+            rtn_conf = !j.value("ok", true) &&
+                       j.value("message", std::string{}) == "channel not configured";
+        }
+    }
+    EXPECT_TRUE(rtn_conf);
+}
+
+// destroy 幂等: 重复调用不抛、无副作用
+TEST_F(ProcessControlFrameTest, DestroyMdChannelIdempotent) {
+    shm_mgr_->create_md_channel("dzmd_ctp");
+    shm_mgr_->destroy_md_channel("dzmd_ctp");
+    EXPECT_NO_THROW(shm_mgr_->destroy_md_channel("dzmd_ctp"));  // 条目不存在 no-op
+}
+
+// close 保留文件, destroy 删除: 生命周期语义区分
+TEST_F(ProcessControlFrameTest, CloseKeepsFilesDestroyRemoves) {
+    shm_mgr_->create_md_channel("dzmd_ctp");
+    const auto ch_dir = dztrader::paths::shm() / "dzmd_ctp";
+
+    shm_mgr_->close_md_channel("dzmd_ctp");
+    EXPECT_TRUE(std::filesystem::exists(ch_dir));  // 停止保留文件
+
+    shm_mgr_->destroy_md_channel("dzmd_ctp");
+    EXPECT_FALSE(std::filesystem::exists(ch_dir));  // 移除删除文件
+}
+
 }  // namespace
 }  // namespace dztrader::master
