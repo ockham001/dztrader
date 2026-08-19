@@ -374,10 +374,6 @@ void ShmManager::handle_set_process_config(const shm::FrameView& view) {
     process_config_store_->rtn_process_config();  // 成功推新值 / 失败推旧值（契约 process）
 }
 
-void ShmManager::send_shutdown() {
-    platform::write_ext_raw(event_writer_, DZ_FRAME_REQUEST_SHUTDOWN_ALL);
-}
-
 void ShmManager::send_shutdown(std::string_view target) {
     // 写 REQUEST_SHUTDOWN 帧：instance_id 为 target（仅匹配的进程执行）
     // 必须通知订阅者: 子进程阻塞在 event_queue->wait() (信号量等待),

@@ -615,14 +615,16 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     const bool healthy = wait_until([&] { return http_get_health(); }, 30000, [] {});
     ASSERT_TRUE(healthy) << "dzweb /health not 200 within 30s (port=" << webui_port_ << ")";
 
-    // 4. REQUEST_SHUTDOWN_ALL -> 全部子进程退出, master 推 Stopped (优雅退出路径)
-    //    触发帧 = SHUTDOWN_ALL + QUERY_FULL_SNAPSHOT: 快照让 master 重推每个注册进程的
-    //    当前状态 (已退出进程回 Stopped), 防止某进程的 Stopped 帧被前一断言窗口
-    //    drain 消费掉后其等待永不满足 (md/dzweb/td 几乎同时退出, 帧会在同一窗口到达)
+    // 4. 定向 REQUEST_SHUTDOWN -> 全部子进程退出, master 推 Stopped (优雅退出路径)
+    //    与 master 整体关闭同原语 (逆序逐批定向发送, 广播全员关闭帧不采用):
+    //    触发帧 = 定向 SHUTDOWN (dzmd_ctp/dztd_ctp/dzweb) + QUERY_FULL_SNAPSHOT:
+    //    快照让 master 重推每个注册进程的当前状态 (已退出进程回 Stopped),
+    //    防止某进程的 Stopped 帧被前一断言窗口 drain 消费掉后其等待永不满足
+    //    (md/dzweb/td 几乎同时退出, 帧会在同一窗口到达)
     auto send_shutdown_and_snapshot = [&] {
         writer_->refresh_subscribers();  // 防过期订阅者快照漏唤醒
-        if (writer_->write_ext_frame(DZ_FRAME_REQUEST_SHUTDOWN_ALL, nullptr, 0)) {
-            writer_->notify_subscribers();
+        for (const char* target : {"dzmd_ctp", "dztd_ctp", "dzweb"}) {
+            platform::write_ext_inst_raw(*writer_, DZ_FRAME_REQUEST_SHUTDOWN, target);
         }
         if (writer_->write_ext_frame(DZ_FRAME_QUERY_FULL_SNAPSHOT, nullptr, 0)) {
             writer_->notify_subscribers();
@@ -639,13 +641,13 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     };
     const bool md_stopped = wait_until([&] { return saw_stopped("dzmd_ctp"); }, 15000,
                                        send_shutdown_and_snapshot);
-    ASSERT_TRUE(md_stopped) << "dzmd_ctp did not stop within 15s after REQUEST_SHUTDOWN_ALL";
+    ASSERT_TRUE(md_stopped) << "dzmd_ctp did not stop within 15s after directed REQUEST_SHUTDOWN";
     const bool td_stopped = wait_until([&] { return saw_stopped("dztd_ctp"); }, 15000,
                                        send_shutdown_and_snapshot);
-    ASSERT_TRUE(td_stopped) << "dztd_ctp did not stop within 15s after REQUEST_SHUTDOWN_ALL";
+    ASSERT_TRUE(td_stopped) << "dztd_ctp did not stop within 15s after directed REQUEST_SHUTDOWN";
     const bool webui_stopped = wait_until([&] { return saw_stopped("dzweb"); }, 15000,
                                           send_shutdown_and_snapshot);
-    ASSERT_TRUE(webui_stopped) << "dzweb did not stop within 15s after REQUEST_SHUTDOWN_ALL";
+    ASSERT_TRUE(webui_stopped) << "dzweb did not stop within 15s after directed REQUEST_SHUTDOWN";
 
     // 5. 终止 master (master 常驻无自退出协议, 与 run-dev -Stop 同策略: 强杀)
     //    双轨判定: ChildProcess 状态回调 + 进程级 liveness (async_wait 在外部强杀后不触发)

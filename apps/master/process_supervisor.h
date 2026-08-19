@@ -26,9 +26,17 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace dztrader::master {
+
+/// 整体关闭逆序分批 (dztraderd 架构「停止与整体关闭」): 策略 → 交易网关 →
+/// 行情进程 → dzweb (UI 最后关闭, 可展示关闭进度), 与启动顺序严格互逆。
+/// 输入为关闭时刻运行中子进程的 (名字, 类别) 列表, 输出按批次组织的名字列表
+/// (空批次不产生)。纯函数, 供单元测试。
+std::vector<std::vector<std::string>> build_shutdown_batches(
+    const std::vector<std::pair<std::string, Category>>& running);
 
 class ProcessSupervisor {
 public:
@@ -152,6 +160,15 @@ private:
                                  const boost::system::error_code& ec,
                                  const std::string& name);
 
+    /// 向当前批次全部成员定向发送 REQUEST_SHUTDOWN; 批次已全停止则推进下一批
+    void send_current_shutdown_batch();
+
+    /// 当前批次超时: 强制终止仍在运行的批次成员 (退出回调随后推进批次)
+    void force_terminate_batch();
+
+    /// 批次推进: 当前批次全部退出后进入下一批 (由 on_child_exit 触发, 事件驱动)
+    void advance_shutdown_batch();
+
     boost::asio::io_context& ioc_;
     ProcessRegistry& registry_;
     ShmManager& shm_mgr_;
@@ -167,8 +184,12 @@ private:
     std::unordered_map<std::string,
         std::unique_ptr<boost::asio::steady_timer>> restart_timers_;
 
-    /// 关闭时强制终止定时器
+    /// 关闭时当前批次的强制终止定时器 (逐批复用, 批次完成即取消)
     std::unique_ptr<boost::asio::steady_timer> shutdown_timer_;
+
+    /// 整体关闭批次 (shutdown 时冻结) 与当前批次下标
+    std::vector<std::vector<std::string>> shutdown_batches_;
+    size_t shutdown_batch_index_ = 0;
 
     /// 单进程停止的强制终止定时器集合 (按 name 索引, 支持多并发 stop)
     /// 旧实现是单值 single_stop_timer_ + single_stop_target_, 快速连续 stop 两个进程时,
@@ -191,9 +212,6 @@ private:
 
     /// 关闭完成回调
     ShutdownCallback shutdown_callback_;
-
-    /// 关闭超时秒数
-    static constexpr int shutdown_timeout_sec = 3;
 
     /// 单进程停止超时秒数 (可配置, 由构造函数从 dztraderd.json [master].single_stop_timeout_sec 注入)
     int single_stop_timeout_sec_ = 3;

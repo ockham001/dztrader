@@ -29,6 +29,26 @@ std::string make_subscriber_name(const ProcessEntry& entry) {
 
 }  // namespace
 
+std::vector<std::vector<std::string>> build_shutdown_batches(
+    const std::vector<std::pair<std::string, Category>>& running) {
+    // 逆序 = 启动顺序严格互逆: md 最先启动 → 最后停止; dzweb 最后启动 → 最后关闭
+    // (UI 最后关闭可展示进度)。类别遍历顺序即批次顺序。
+    std::vector<std::vector<std::string>> batches;
+    for (Category cat : {Category::Strategy, Category::GatewayTd, Category::GatewayMd,
+                         Category::WebUI}) {
+        std::vector<std::string> names;
+        for (const auto& [name, category] : running) {
+            if (category == cat) {
+                names.push_back(name);
+            }
+        }
+        if (!names.empty()) {
+            batches.push_back(std::move(names));
+        }
+    }
+    return batches;
+}
+
 ProcessSupervisor::ProcessSupervisor(boost::asio::io_context& ioc,
                                      ProcessRegistry& registry,
                                      ShmManager& shm_mgr,
@@ -85,54 +105,108 @@ void ProcessSupervisor::shutdown() {
     shutting_down_ = true;
     SPDLOG_INFO("shutdown started");
 
-    // 取消所有单进程停止定时器 (若存在)
-    // 旧实现是单值, 只能跟踪一个 stop; 改为 map 后需遍历取消所有
+    // 取消所有单进程停止定时器与待处理的重启定时器 (整体关闭期间抑制自动重启)
     for (auto& [n, timer] : single_stop_timers_) {
         if (timer) timer->cancel();
     }
     single_stop_timers_.clear();
-
-    // 取消所有待处理的重启定时器
     for (auto& [name, timer] : restart_timers_) {
         timer->cancel();
     }
     restart_timers_.clear();
     restart_counts_.clear();
 
-    // 无子进程或全部已停止，立即完成
-    if (all_children_stopped()) {
+    // 冻结关闭批次 (逆序: 策略 → 交易 → 行情 → dzweb)
+    std::vector<std::pair<std::string, Category>> running;
+    for (auto& child : children_) {
+        if (child && child->state() != ChildState::Stopped) {
+            running.emplace_back(child->name(), child->entry().category);
+        }
+    }
+    shutdown_batches_ = build_shutdown_batches(running);
+    shutdown_batch_index_ = 0;
+
+    if (shutdown_batches_.empty()) {
+        // 无子进程或全部已停止，立即完成
         check_shutdown_complete();
         return;
     }
+    send_current_shutdown_batch();
+}
 
-    // 1. 通过事件通道发送 REQUEST_SHUTDOWN_ALL 帧 (无 instance_id, 所有进程执行)
-    try {
-        shm_mgr_.send_shutdown();
-    } catch (const std::exception& e) {
-        SPDLOG_WARN("send_shutdown failed | error=\"{}\"", e.what());
-    }
-    SPDLOG_INFO("shutdown command sent to all children");
-
-    // 2. 启动强制终止定时器
-    shutdown_timer_ = std::make_unique<boost::asio::steady_timer>(
-        ioc_, std::chrono::seconds(shutdown_timeout_sec));
-    shutdown_timer_->async_wait(
-        [this](const boost::system::error_code& ec) {
-            if (ec) {
-                // 定时器被取消 — 所有子进程已及时退出
-                SPDLOG_INFO("shutdown timer cancelled, all children exited gracefully");
-                return;
-            }
-
-            // 3. 超时：强制终止仍在运行的子进程
-            SPDLOG_WARN("shutdown timeout, force terminating remaining children");
-            for (auto& child : children_) {
-                if (child && child->state() != ChildState::Stopped) {
-                    SPDLOG_WARN("force terminating | name={}", child->name());
-                    child->terminate();
+void ProcessSupervisor::send_current_shutdown_batch() {
+    // 逐批推进: 批内有成员运行则定向 REQUEST_SHUTDOWN + 排批超时;
+    // 批已全停止 (期间自然退出) 则直接看下一批, 最终 check_shutdown_complete
+    while (shutdown_batch_index_ < shutdown_batches_.size()) {
+        const auto& batch = shutdown_batches_[shutdown_batch_index_];
+        bool any_running = false;
+        for (const auto& name : batch) {
+            auto child = find_child(name);
+            if (child && child->state() != ChildState::Stopped) {
+                any_running = true;
+                try {
+                    shm_mgr_.send_shutdown(name);
+                } catch (const std::exception& e) {
+                    SPDLOG_WARN(
+                        "send_shutdown failed, will force terminate on timeout | name={} error=\"{}\"",
+                        name, e.what());
                 }
+                send_process_status(name, ChildState::Stopping, static_cast<int>(child->pid()));
             }
-        });
+        }
+        if (any_running) {
+            // 批次超时定时器: 超时强制终止仍在运行的批次成员;
+            // 取消由 advance_shutdown_batch 在批次完成时触发 (事件驱动, 无轮询)
+            shutdown_timer_ = std::make_unique<boost::asio::steady_timer>(
+                ioc_, std::chrono::seconds(single_stop_timeout_sec_));
+            shutdown_timer_->async_wait([this](const boost::system::error_code& ec) {
+                if (ec) return;  // 批次及时完成, 定时器被取消
+                force_terminate_batch();
+            });
+            return;
+        }
+        ++shutdown_batch_index_;
+    }
+    check_shutdown_complete();
+}
+
+void ProcessSupervisor::force_terminate_batch() {
+    // 当前批次超时: 强制终止仍在运行的成员; 退出回调 (on_child_exit ->
+    // advance_shutdown_batch) 随后逐个触发批次推进
+    if (shutdown_batch_index_ >= shutdown_batches_.size()) {
+        return;
+    }
+    for (const auto& name : shutdown_batches_[shutdown_batch_index_]) {
+        auto child = find_child(name);
+        if (child && child->state() != ChildState::Stopped) {
+            SPDLOG_WARN("shutdown batch timeout, force terminating | name={}", name);
+            force_killed_names_.insert(name);  // 跳过退出时的 crash 弹窗
+            try {
+                child->terminate();
+            } catch (const std::exception& e) {
+                SPDLOG_CRITICAL("force terminate failed | name={} error=\"{}\"", name, e.what());
+            }
+        }
+    }
+}
+
+void ProcessSupervisor::advance_shutdown_batch() {
+    // 仅整体关闭期间有意义: 当前批次全部退出后推进下一批
+    if (!shutting_down_ || shutdown_batch_index_ >= shutdown_batches_.size()) {
+        return;
+    }
+    for (const auto& name : shutdown_batches_[shutdown_batch_index_]) {
+        auto child = find_child(name);
+        if (child && child->state() != ChildState::Stopped) {
+            return;  // 批次仍有成员未退出
+        }
+    }
+    if (shutdown_timer_) {
+        shutdown_timer_->cancel();
+        shutdown_timer_.reset();
+    }
+    ++shutdown_batch_index_;
+    send_current_shutdown_batch();
 }
 
 void ProcessSupervisor::force_terminate_all() {
@@ -600,7 +674,12 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
 
         if (shutting_down_) {
             SPDLOG_INFO("child exited during shutdown | name={} exit_code={}", name, exit_code);
-            check_shutdown_complete();
+            // 批次完成则推进下一批; 推进链路 (advance -> send_current -> 末批完成)
+            // 内部必达 check_shutdown_complete。此处不再显式调 check:
+            // 当前批未完成时 check 必为 no-op (批成员仍在运行),
+            // 完成时显式 check 会与链路内的 check 双触发关闭回调
+            // (release_all/orphan_guard.cleanup 被执行两次)
+            advance_shutdown_batch();
             return;
         }
 

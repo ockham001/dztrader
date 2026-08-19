@@ -67,47 +67,8 @@ protected:
 
 TEST_F(ShmManagerTest, InitCreatesEventChannelAndWriterReaderCleaner) {
     ShmManager mgr(make_default_shm_global(), cfg_path_);
-    // 构造后 event_writer_/event_reader_ 可用：send_shutdown 能写入 REQUEST_SHUTDOWN
-    EXPECT_NO_THROW(mgr.send_shutdown());
-}
-
-TEST_F(ShmManagerTest, SendShutdownWritesFrame) {
-    ShmManager mgr(make_default_shm_global(), cfg_path_);
-
-    // 先注册独立 Reader（reader 只能看到注册之后写入的帧），
-    // 再 send_shutdown，然后用该 Reader 验证 event channel 有 REQUEST_SHUTDOWN_ALL 帧
-    shm::Reader reader = shm::Reader::create(shm::channel_name("dzevent"), dztrader::paths::shm(), "test_reader");
-    mgr.send_shutdown();
-
-    int seen = 0;
-    for (int i = 0; i < 8; ++i) {
-        const auto* frame = reader.next_frame();
-        if (!frame) break;
-        shm::FrameView view(frame);
-        if (view.type() == DZ_FRAME_REQUEST_SHUTDOWN_ALL) {
-            ++seen;
-        }
-    }
-    EXPECT_GE(seen, 1);
-}
-
-// REQUEST_SHUTDOWN_ALL 使用无 instance_id 扩展头 (DzExtFrameHeader)
-TEST_F(ShmManagerTest, SendShutdownNoArgNoInstanceId) {
-    ShmManager mgr(make_default_shm_global(), cfg_path_);
-
-    shm::Reader reader = shm::Reader::create(shm::channel_name("dzevent"), dztrader::paths::shm(), "shutdown_all_reader");
-    mgr.send_shutdown();
-
-    int seen = 0;
-    for (int i = 0; i < 8; ++i) {
-        const auto* frame = reader.next_frame();
-        if (!frame) break;
-        shm::FrameView view(frame);
-        if (view.type() == DZ_FRAME_REQUEST_SHUTDOWN_ALL) {
-            ++seen;
-        }
-    }
-    EXPECT_GE(seen, 1);
+    // 构造后 event_writer_/event_reader_ 可用：send_shutdown 能写入定向 REQUEST_SHUTDOWN
+    EXPECT_NO_THROW(mgr.send_shutdown("dztraderd"));
 }
 
 TEST_F(ShmManagerTest, SendShutdownWithTargetWritesInstFrame) {
@@ -153,7 +114,7 @@ TEST_F(ShmManagerTest, PollEventChannelReadsStatusFrame) {
         mgr.drain_event_channel();
     }
     // 不直接断言内部 status_view_（private），仅验证 drain 不抛异常且 send_shutdown 仍可用
-    EXPECT_NO_THROW(mgr.send_shutdown());
+    EXPECT_NO_THROW(mgr.send_shutdown("dztraderd"));
 }
 
 TEST_F(ShmManagerTest, MasterHandlesSetLogLevelForSelf) {

@@ -162,9 +162,6 @@ public:
     /// 某进程当前配置中的 display_name（缺省空串；未注册返回空串）
     [[nodiscard]] std::string display_name_of(const std::string& name) const;
 
-    /// 向 event channel 写 REQUEST_SHUTDOWN_ALL 帧（无 instance_id，所有进程执行）。
-    void send_shutdown();
-
     /// 向 event channel 写 REQUEST_SHUTDOWN 帧（instance_id=target，仅匹配的进程执行）。
     void send_shutdown(std::string_view target);
 

@@ -154,5 +154,53 @@ TEST_F(ProcessSupervisorTest, StopProcessAlreadyStopped) {
     orphan_guard_.cleanup();
 }
 
+// 整体关闭逆序分批 (纯函数): 策略 -> 交易 -> 行情 -> dzweb, 空批次不产生
+TEST(ProcessShutdownBatches, ReverseOrderByCategory) {
+    std::vector<std::pair<std::string, Category>> running{
+        {"dzweb", Category::WebUI},     {"dzmd_ctp", Category::GatewayMd},
+        {"stg_a", Category::Strategy},  {"dztd_ctp", Category::GatewayTd},
+        {"stg_b", Category::Strategy},
+    };
+    auto batches = build_shutdown_batches(running);
+    ASSERT_EQ(batches.size(), 4u);
+    EXPECT_EQ(batches[0], (std::vector<std::string>{"stg_a", "stg_b"}));
+    EXPECT_EQ(batches[1], (std::vector<std::string>{"dztd_ctp"}));
+    EXPECT_EQ(batches[2], (std::vector<std::string>{"dzmd_ctp"}));
+    EXPECT_EQ(batches[3], (std::vector<std::string>{"dzweb"}));
+}
+
+// 单一类别只产生一个批次; 空输入产生零批次
+TEST(ProcessShutdownBatches, SingleCategoryAndEmpty) {
+    auto one = build_shutdown_batches({{"dzmd_ctp", Category::GatewayMd}});
+    ASSERT_EQ(one.size(), 1u);
+    EXPECT_EQ(one[0], (std::vector<std::string>{"dzmd_ctp"}));
+
+    EXPECT_TRUE(build_shutdown_batches({}).empty());
+}
+
+// 整体关闭事件驱动: 两个策略 (同一批次) 均退出后完成, 不依赖广播帧
+TEST_F(ProcessSupervisorTest, ShutdownStopsAllChildrenSequentially) {
+    registry_.register_strategy(make_strategy_entry("long_a", {"longrun", "60"}));
+    registry_.register_strategy(make_strategy_entry("long_b", {"longrun", "60"}));
+
+    shm_mgr_ = std::make_unique<ShmManager>(make_default_shm_global(), cfg_path_);
+    orphan_guard_.startup();
+
+    ProcessSupervisor supervisor(ioc_, registry_, *shm_mgr_, orphan_guard_);
+    supervisor.start_all();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    supervisor.shutdown();
+    EXPECT_TRUE(supervisor.is_shutting_down());
+
+    // worker 不读事件通道 -> REQUEST_SHUTDOWN 无效, 依赖批超时强制终止
+    // (single_stop_timeout_sec 默认 3s), 全部退出后 children 清空
+    ioc_.restart();
+    ioc_.run_for(std::chrono::seconds(10));
+    EXPECT_EQ(supervisor.children().size(), 0u);
+
+    orphan_guard_.cleanup();
+}
+
 }  // namespace
 }  // namespace dztrader::master
