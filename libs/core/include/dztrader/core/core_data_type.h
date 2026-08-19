@@ -56,6 +56,10 @@ DZ_BEGIN_C_DECLS
 #define DZ_FRAME_REQUEST_MD_READER_REGISTER   ((DzFrameType)1013)
 /** @brief 行情通道读者注销请求 (策略/数据进程→master, instance_id=目标行情进程名, payload={"subscriber":"stg.<name>"}) */
 #define DZ_FRAME_REQUEST_MD_READER_UNREGISTER ((DzFrameType)1014)
+/** @brief 行情通道读者注册响应 (master→请求进程, instance_id=请求进程名, payload={"channel":str,"ok":bool,"message":str 失败必填}) */
+#define DZ_FRAME_RTN_MD_READER_REGISTER     ((DzFrameType)1015)
+/** @brief 行情通道读者注销响应 (master→请求进程, instance_id=请求进程名, payload 同上) */
+#define DZ_FRAME_RTN_MD_READER_UNREGISTER   ((DzFrameType)1016)
 
 /** @brief 交易订单请求 (basic 广播帧, 契约 td-order) */
 #define DZ_FRAME_TD_ORDER_REQ ((DzFrameType)2100)

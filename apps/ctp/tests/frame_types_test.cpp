@@ -29,6 +29,13 @@ TEST(FrameTypes, MdSubscriptionQueryFrames) {
     EXPECT_EQ(DZ_FRAME_RTN_MD_SUBSCRIPTIONS,   static_cast<DzFrameType>(1012));
 }
 
+TEST(FrameTypes, MdReaderRegisterFrames) {
+    EXPECT_EQ(DZ_FRAME_REQUEST_MD_READER_REGISTER,   static_cast<DzFrameType>(1013));
+    EXPECT_EQ(DZ_FRAME_REQUEST_MD_READER_UNREGISTER, static_cast<DzFrameType>(1014));
+    EXPECT_EQ(DZ_FRAME_RTN_MD_READER_REGISTER,       static_cast<DzFrameType>(1015));
+    EXPECT_EQ(DZ_FRAME_RTN_MD_READER_UNREGISTER,     static_cast<DzFrameType>(1016));
+}
+
 TEST(FrameTypes, StgFrames) {
     EXPECT_EQ(DZ_FRAME_STG_USER_OUTPUT, static_cast<DzFrameType>(3002));
 }
