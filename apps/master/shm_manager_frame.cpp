@@ -290,6 +290,8 @@ void ShmManager::handle_process_stop(const platform::ProcessControlReq& req) {
     }
     // 幂等：无 child（未运行）→ 直接成功（契约 process）
     if (!supervisor_->find_child(req.target)) {
+        // 显式停止取消挂起的退避重启 (崩溃退避窗口内 Stop 后不应再被定时器拉起)
+        supervisor_->cancel_pending_restart(req.target);
         supervisor_->send_process_status(req.target, ChildState::Stopped, 0, "",
                                          platform::ProcessEvent::StopSucceeded);
         return;
@@ -338,7 +340,9 @@ void ShmManager::handle_process_remove(const platform::ProcessControlReq& req) {
     try {
         supervisor_->mark_remove_pending(req.target);
         if (!child) {
-            supervisor_->notify_removed_for_inactive(req.target);
+            // category 在配置删除前取得 (store remove 后 registry 条目已删, 兜底侧无法再查)
+            supervisor_->notify_removed_for_inactive(
+                req.target, entry ? entry->category : Category::GatewayMd);
         } else {
             supervisor_->stop_process(req.target);
         }

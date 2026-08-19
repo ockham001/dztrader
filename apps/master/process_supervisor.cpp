@@ -291,6 +291,17 @@ void ProcessSupervisor::stop_process(std::string_view name) {
     stop_single_child(std::move(child));
 }
 
+void ProcessSupervisor::cancel_pending_restart(const std::string& name) {
+    // 移除/显式停止时取消挂起的退避重启定时器 (进程不运行路径):
+    // 否则定时器到期会复活已移除的源 (重建通道+spawn), 违反"remove 不重启"契约
+    if (auto it = restart_timers_.find(name); it != restart_timers_.end()) {
+        it->second->cancel();
+        restart_timers_.erase(it);
+        SPDLOG_INFO("pending restart cancelled | name={}", name);
+    }
+    restart_counts_.erase(name);
+}
+
 void ProcessSupervisor::stop_single_child(std::shared_ptr<ChildProcess> child) {
     const auto& name = child->name();
 
@@ -432,14 +443,15 @@ bool ProcessSupervisor::consume_remove_pending(const std::string& name) {
     return true;
 }
 
-void ProcessSupervisor::notify_removed_for_inactive(const std::string& name) {
+void ProcessSupervisor::notify_removed_for_inactive(const std::string& name, Category category) {
     // 兜底路径: 子进程不在运行时 (on_child_exit 不会被触发),
     // 由 supervisor 完成 remove 流程剩余步骤 (删配置 + 清订阅者 + 推 stopped + consume_remove_pending)
     // 行为与原 shm_manager.cpp 中内联兜底逻辑近似等价: 层次划分调整 (shm_manager 调用 supervisor,
     // supervisor 调用 shm_mgr_ 完成具体操作), 并新增失败路径 D 的 notify_ui 反馈
     SPDLOG_INFO("remove: child not running, finalize immediately | name={}", name);
-    const auto* entry = registry_.find(name);
-    const Category category = entry ? entry->category : Category::GatewayMd;
+    // 取消挂起的退避重启定时器: 否则崩溃退避窗口内的 Remove 会被定时器"复活"
+    // (launch_child 重建通道 + spawn 已删源), 违反"remove 不重启"契约
+    cancel_pending_restart(name);
     try {
         remove_gateway_section(shm_mgr_.config_path(), category, name);
         SPDLOG_INFO("gateway section removed | name={} path={}",

@@ -189,12 +189,16 @@ void ShmManager::destroy_md_channel(std::string_view source_name) {
     const auto it = md_channels_.find(shm::channel_name(source_name));
     if (it == md_channels_.end() || !it->second.meta) {
         // 通道不存在或已关闭: 仍尝试删除残留目录 (进程未运行即移除场景), 幂等
-        try {
-            std::filesystem::remove_all(dztrader::paths::shm() / shm::channel_name(source_name));
-            SPDLOG_INFO("md channel residual dir removed | source={}", source_name);
-        } catch (const std::exception& e) {
+        // 按实际删除量打日志: 目录本不存在 (td/web 名字误入等) 时 remove_all 返回 0, 不打"已删除"
+        std::error_code ec;
+        const auto removed = std::filesystem::remove_all(
+            dztrader::paths::shm() / shm::channel_name(source_name), ec);
+        if (ec) {
             SPDLOG_WARN("md channel dir remove failed | source={} error=\"{}\"", source_name,
-                        e.what());
+                        ec.message());
+        } else if (removed > 0) {
+            SPDLOG_INFO("md channel residual dir removed | source={} entries={}", source_name,
+                        removed);
         }
         md_channels_.erase(shm::channel_name(source_name));
         return;

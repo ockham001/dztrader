@@ -171,6 +171,42 @@ TEST_F(ProcessSupervisorTest, StopProcessAlreadyStopped) {
     orphan_guard_.cleanup();
 }
 
+// Fix1: 崩溃退避窗口内 cancel_pending_restart 后不得"复活"进程
+// (Remove/显式停止在进程不运行路径取消挂起的退避重启定时器, 契约"remove 不重启")
+TEST_F(ProcessSupervisorTest, CancelPendingRestartPreventsRevival) {
+    auto entry = make_strategy_entry("stg_crash", {"longrun", "60"});
+    entry.restart.enabled = true;
+    entry.restart.max_attempts = 3;
+    entry.restart.backoff_sec = 1;  // 1s 退避: 未取消则观察窗口内必被拉起
+    registry_.register_strategy(entry);
+
+    shm_mgr_ = std::make_unique<ShmManager>(make_default_shm_global(), cfg_path_);
+    orphan_guard_.startup();
+
+    ProcessSupervisor supervisor(ioc_, registry_, *shm_mgr_, orphan_guard_);
+    supervisor.start_all();
+    ASSERT_EQ(supervisor.children().size(), 1u);
+
+    // 强杀模拟崩溃 (非零退出码) -> on_child_exit 挂 1s 退避重启定时器
+    supervisor.children()[0]->terminate();
+    ioc_.restart();
+    // 轮询等待退出回调完成 (children 清空 = on_child_exit 已执行, 定时器已挂上)
+    for (int i = 0; i < 20 && !supervisor.children().empty(); ++i) {
+        ioc_.run_for(std::chrono::milliseconds(100));
+    }
+    ASSERT_EQ(supervisor.children().size(), 0u);
+
+    // 移除/显式停止路径: 取消挂起的重启定时器
+    supervisor.cancel_pending_restart("stg_crash");
+
+    // 越过退避窗口验证未复活 (未取消时 launch_child 会重新拉起, children 变 1;
+    // 复活的 worker 续跑 60s, 观察窗口内不会自然退出, 断言稳定)
+    ioc_.run_for(std::chrono::seconds(3));
+    EXPECT_EQ(supervisor.children().size(), 0u);
+
+    orphan_guard_.cleanup();
+}
+
 // 整体关闭逆序分批 (纯函数): 策略 -> 交易 -> 行情 -> dzweb, 空批次不产生
 TEST(ProcessShutdownBatches, ReverseOrderByCategory) {
     std::vector<std::pair<std::string, Category>> running{

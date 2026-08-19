@@ -70,6 +70,11 @@ public:
     /// 动态停止（迭代 2）。
     void stop_process(std::string_view name);
 
+    /// 取消指定进程挂起的自动重启（移除/显式停止时调用，进程不运行路径）。
+    /// cancel + erase restart_timers_[name] + 清 restart_counts_；幂等（无挂起定时器为 no-op）。
+    /// 整体关闭期间的取消已由 shutdown() 全量执行，本方法面向单进程操作。
+    void cancel_pending_restart(const std::string& name);
+
     /// 查询
     std::shared_ptr<ChildProcess> find_child(std::string_view name);
     const std::vector<std::shared_ptr<ChildProcess>>& children() const;
@@ -131,7 +136,9 @@ public:
     ///   - 订阅者清理因无 pid 用 entry name 兜底 (remove_reader 幂等)
     ///   - 状态推送 pid=-1, message="removed (process not running)" 区分进程未运行场景
     ///   - 重启相关不适用
-    void notify_removed_for_inactive(const std::string& name);
+    /// category 由调用方在配置删除前取得 (store remove 的 apply 回调删除 registry 条目后
+    /// 再 find 恒为 nullptr, 无法在本函数内查询)
+    void notify_removed_for_inactive(const std::string& name, Category category);
 
     /// 是否正在关闭中？
     bool is_shutting_down() const;
