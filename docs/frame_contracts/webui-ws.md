@@ -49,7 +49,7 @@ domain 清单与挂载实例：
 | `process_config` | 固定 `dztraderd` | `{ [进程名]: config }` 全量映射 | process |
 | `process_status` | 各进程 | `{ name, state, pid, ... }` | process |
 | `auto_login` | 各行情进程 | `{ enabled, schedules }` | auto-login |
-| `progress` | 各进程（TD 为 `{进程名}:{账户ID}`） | `{ min, max, current, desc }` | progress |
+| `progress` | 各进程（TD 为账户 ID） | `{ min, max, current, desc }` | progress |
 | `md_config` | 各行情进程 | 脱敏行情配置 | md-config |
 | `md_status` | 各行情进程 | 行情网关状态 | md-status |
 
@@ -94,7 +94,7 @@ domain 清单与挂载实例：
 
 | type | 触发 | 载荷 | 业务结果 |
 |---|---|---|---|
-| `md_connect_ack` | `md_connect` | `{ source, ok }`；`ok=false` 时前端立即提示，不设 pending | 行情进程的 `progress`（登录态）+ 健康度 |
+| `md_connect_ack` | `md_connect` | `{ source, ok }`；`ok=false` 时前端立即提示，不设 pending | 行情进程的 `progress`（登录态） |
 | `md_disconnect_ack` | `md_disconnect` | `{ source, ok }`（与 `md_connect_ack` 对称） | 同上 |
 | `subscribe_log_ack` | `subscribe_log` | `{ file }` | `log_line` 逐行推送 |
 | `unsubscribe_log_ack` | `unsubscribe_log` | `{}` | — |

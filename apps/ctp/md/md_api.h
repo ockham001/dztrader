@@ -153,15 +153,6 @@ private:
     /// 推送进度 (RTN_PROGRESS): 从状态机 progress_* 字段读取, 经 progress_reporter_ 发送。
     void report_progress();
 
-    /// 行情健康度广播 (DZ_FRAME_NOTIFY_MD_CONNECTED / DZ_FRAME_NOTIFY_MD_DISCONNECTED)
-    /// 与 report_progress (DZ_FRAME_RTN_PROGRESS) 是两条独立线:
-    ///   - report_progress 上报细粒度状态 (MdState + 进度), 给 UI 展示
-    ///   - broadcast_health 上报二元健康度 (Up/Down), 给策略/数据存储决策
-    /// 仅在 health 翻转时发送, 避免重复。
-    ///   - 进入 LoggedIn -> Up -> DZ_FRAME_NOTIFY_MD_CONNECTED
-    ///   - 离开 LoggedIn -> Down -> DZ_FRAME_NOTIFY_MD_DISCONNECTED
-    void broadcast_health(MdHealth now);
-
     /// 连接 CTP 前置 (RegisterFront + Init)。前置条件: MdState::Idle
     void connect();
     /// 断开 CTP 前置 (Release)
@@ -305,7 +296,6 @@ private:
     dztrader::core::TimerQueue::TimerId login_timer_id_ = 0;
     bool recover_ = false;                    ///< --recover 标志: 崩溃恢复启动, 启动时补登
     dztrader::core::TimerQueue timer_queue_;  ///< 单线程定时器队列, 主循环 tick()
-    MdHealth last_health_ = MdHealth::Down;   ///< 上次广播的健康度, 用于翻转去重
 };
 
 }  // namespace dztrader::ctp

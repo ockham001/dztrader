@@ -2,7 +2,7 @@
 
 本文件覆盖 `DZ_FRAME_RTN_PROGRESS` 一个帧。总则见《帧契约：通用规则》。
 
-帧使用 `DzExtInstFrameHeader` 扩展头，`instance_id` 标识来源逻辑实例（进程名；TD 按账户隔离时为 `{进程名}:{账户ID}`，见总则 §5）。
+帧使用 `DzExtInstFrameHeader` 扩展头，`instance_id` 标识来源逻辑实例（进程名；TD 账户级为账户 ID，账户 ID 全局唯一，见总则 §5）。
 
 类型层真相源：`libs/platform/include/dztrader/platform/progress.h`（`ProgressReporter`）。
 
@@ -47,7 +47,7 @@ JSON 示例：
 ## DZ_FRAME_RTN_PROGRESS
 
 **语义**：推送当前进度状态
-**数据流**：形态 4（总则 §4.2）——进程（帧头 `instance_id` = 来源，TD 按账户隔离时为 `{进程名}:{账户ID}`）→ dzweb；无前端入口；镜像 `progress` 域 → WS 消息 `progress`
+**数据流**：形态 4（总则 §4.2）——进程（帧头 `instance_id` = 来源，TD 账户级为账户 ID）→ dzweb；无前端入口；镜像 `progress` 域 → WS 消息 `progress`
 **Payload**：JSON（ProgressStatus）
 
 **触发场景**：

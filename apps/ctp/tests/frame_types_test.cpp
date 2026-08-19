@@ -22,8 +22,6 @@ TEST(FrameTypes, TdPlaceholderFrames) {
 TEST(FrameTypes, MdServiceLifecycleFrames) {
     EXPECT_EQ(DZ_FRAME_NOTIFY_MD_STARTED,  static_cast<DzFrameType>(1007));
     EXPECT_EQ(DZ_FRAME_NOTIFY_MD_STOPPED,  static_cast<DzFrameType>(1008));
-    EXPECT_EQ(DZ_FRAME_NOTIFY_MD_CONNECTED,        static_cast<DzFrameType>(1009));
-    EXPECT_EQ(DZ_FRAME_NOTIFY_MD_DISCONNECTED,     static_cast<DzFrameType>(1010));
 }
 
 TEST(FrameTypes, MdSubscriptionQueryFrames) {

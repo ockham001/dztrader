@@ -8,12 +8,12 @@
 |------|--------|--------------|
 | [general](general.md) | 通用规则 | 帧布局/传输与数据流（§4 链路形态）/请求响应总则 + `QUERY_FULL_SNAPSHOT` | `libs/strategy_api/include/dztrader/struct.h`、`data_type.h`、`libs/core/.../core_data_type.h` |
 | [log](log.md) | 日志 | `SET_LOG_CONFIG`/`FLUSH_LOG`/`RTN_LOG_CONFIG` | `libs/platform/.../log_config.h` |
-| [shm](shm.md) | SHM 通道配置 | `SET/RTN_EVENT_SHM_CONFIG`、`SET/RTN_MD_SHM_CONFIG`、`PRELOAD_EVENT/MD_SHM`、`UPDATE_SHM_EVENT/MD_SUBSCRIBER`、`REQUEST_MD_READER_REGISTER/UNREGISTER` | `libs/platform/.../shm_config.h` |
+| [shm](shm.md) | SHM 通道配置 | `SET/RTN_EVENT_SHM_CONFIG`、`SET/RTN_MD_SHM_CONFIG`、`PRELOAD_EVENT/MD_SHM`、`UPDATE_SHM_EVENT/MD_SUBSCRIBER`、`REQUEST/RTN_MD_READER_REGISTER`、`REQUEST/RTN_MD_READER_UNREGISTER` | `libs/platform/.../shm_config.h` |
 | [notify-ui](notify-ui.md) | UI 通知 | `NOTIFY_UI` | `libs/platform/.../notify_ui.h` |
-| [process](process.md) | 进程 | `REQUEST_PROCESS_CONTROL`、`RTN_PROCESS_STATUS`、`SET/RTN_PROCESS_CONFIG`、`REQUEST_SHUTDOWN(_ALL)` | `libs/platform/.../process.h` |
+| [process](process.md) | 进程 | `REQUEST_PROCESS_CONTROL`、`RTN_PROCESS_STATUS`、`SET/RTN_PROCESS_CONFIG`、`REQUEST_SHUTDOWN` | `libs/platform/.../process.h` |
 | [auto-login](auto-login.md) | 自动登录/登出排程 | `SET/RTN_AUTO_LOGIN` | `libs/platform/.../auto_login.h` |
 | [progress](progress.md) | 进度推送 | `RTN_PROGRESS` | `libs/platform/.../progress.h` |
-| [md-subscription](md-subscription.md) | 行情连接与订阅 | `REQUEST_MD_CONNECT/DISCONNECT`、`REQUEST_MD_SUBSCRIBE`、`QUERY/RTN_MD_SUBSCRIPTIONS`、`NOTIFY_MD_STARTED/CONNECTED/DISCONNECTED/STOPPED` | `libs/platform/.../subscription_manager.h`、`libs/core/.../core_struct.h` |
+| [md-subscription](md-subscription.md) | 行情连接与订阅 | `REQUEST_MD_CONNECT/DISCONNECT`、`REQUEST_MD_SUBSCRIBE`、`QUERY/RTN_MD_SUBSCRIPTIONS`、`NOTIFY_MD_STARTED/STOPPED` | `libs/platform/.../subscription_manager.h`、`libs/core/.../core_struct.h` |
 | [md-config](md-config.md) | 行情网关配置 | `SET/RTN_MD_CONFIG` | `libs/platform/.../ctp_md_config.h` |
 | [md-status](md-status.md) | 行情网关状态 | `RTN_MD_STATUS` | 发送方进程（CTP：`apps/ctp/md/md_state.h`） |
 | [webui-ws](webui-ws.md) | WebSocket 协议 | frontend ↔ dzweb 的 WS 信封、消息全集、前端行为义务 | `apps/webui/ws_controller.*` |

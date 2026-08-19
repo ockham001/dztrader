@@ -48,10 +48,6 @@ DZ_BEGIN_C_DECLS
 #define DZ_FRAME_NOTIFY_MD_STARTED  ((DzFrameType)1007)
 /** @brief 行情服务已停止 (master→所有进程, instance_id=source, 通知策略/数据存储进程关闭行情通道) */
 #define DZ_FRAME_NOTIFY_MD_STOPPED   ((DzFrameType)1008)
-/** @brief 行情已连接可用 (dzmd_ctp→所有进程, instance_id=source, 已登录+订阅正常, 可交易) */
-#define DZ_FRAME_NOTIFY_MD_CONNECTED         ((DzFrameType)1009)
-/** @brief 行情已断开不可用 (dzmd_ctp→所有进程, instance_id=source, 任何异常, 不可交易) */
-#define DZ_FRAME_NOTIFY_MD_DISCONNECTED      ((DzFrameType)1010)
 /** @brief 查询订阅详情 (dzweb->md, payload={"query":"unsuccessful"} 或 {"instruments":["IF2506"]}) */
 #define DZ_FRAME_QUERY_MD_SUBSCRIPTIONS  ((DzFrameType)1011)
 /** @brief 返回订阅详情 (md->dzweb, payload={"subscriptions":[...],"returned_count":N,"total_matched":N,"truncated":bool,"error":string?}) */

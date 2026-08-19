@@ -50,7 +50,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 | POST `/api/market-sources` | 创建行情源条目 | DB；变更后广播 `data_changed{market_sources}` |
 | PUT `/api/market-sources/{id}` | 更新条目（DB 显示名等字段） | DB；变更后广播 `data_changed{market_sources}` |
 | DELETE `/api/market-sources/{id}` | 移除进程条目 | → `REQUEST_PROCESS_CONTROL{Remove}`（契约 process）；DB 主表记录保留（历史/审计），进程配置条目消失 = 移除完成的权威信号；成功下发后 DB 行标记 `is_added=0`（主表记录保留，列表不再返回；再次添加时复用该行并复位 `is_added=1`，display_name 保留 DB 现值不覆盖）；`is_added` 置 0 后广播 `data_changed{market_sources}` |
-| POST `/api/market-sources/{id}/login` | 行情连接请求 | → `REQUEST_MD_CONNECT`（`instance_id` = 进程名）；生效信号：`progress`/健康度（契约 md-subscription） |
+| POST `/api/market-sources/{id}/login` | 行情连接请求 | → `REQUEST_MD_CONNECT`（`instance_id` = 进程名）；生效信号：`progress`（契约 md-subscription） |
 | POST `/api/market-sources/{id}/logout` | 行情断开请求 | → `REQUEST_MD_DISCONNECT`；生效信号同上 |
 | PUT `/api/market-sources/{id}/auto-login` | 全量设置自动登录排程 `{enabled, schedules}` | → `SET_AUTO_LOGIN`；生效信号：`auto_login` 推送（契约 auto-login） |
 | POST `/api/market-sources/{id}/brokers` | 添加经纪商 | → `SET_MD_CONFIG{AddBroker}`；生效信号：`md_rtn_config`（契约 md-config） |

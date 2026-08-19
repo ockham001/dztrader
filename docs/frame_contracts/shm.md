@@ -1,9 +1,10 @@
 # 帧契约：SHM 通道配置
 
-本文件覆盖 `DZ_FRAME_SET_EVENT_SHM_CONFIG`、`DZ_FRAME_RTN_EVENT_SHM_CONFIG`、`DZ_FRAME_SET_MD_SHM_CONFIG`、`DZ_FRAME_RTN_MD_SHM_CONFIG`、`DZ_FRAME_PRELOAD_EVENT_SHM`、`DZ_FRAME_PRELOAD_MD_SHM`、`DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER`、`DZ_FRAME_UPDATE_SHM_MD_SUBSCRIBER`、`DZ_FRAME_REQUEST_MD_READER_REGISTER`、`DZ_FRAME_REQUEST_MD_READER_UNREGISTER` 十个帧。总则见《帧契约：通用规则》。
+本文件覆盖 `DZ_FRAME_SET_EVENT_SHM_CONFIG`、`DZ_FRAME_RTN_EVENT_SHM_CONFIG`、`DZ_FRAME_SET_MD_SHM_CONFIG`、`DZ_FRAME_RTN_MD_SHM_CONFIG`、`DZ_FRAME_PRELOAD_EVENT_SHM`、`DZ_FRAME_PRELOAD_MD_SHM`、`DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER`、`DZ_FRAME_UPDATE_SHM_MD_SUBSCRIBER`、`DZ_FRAME_REQUEST_MD_READER_REGISTER`、`DZ_FRAME_RTN_MD_READER_REGISTER`、`DZ_FRAME_REQUEST_MD_READER_UNREGISTER`、`DZ_FRAME_RTN_MD_READER_UNREGISTER` 十二个帧。总则见《帧契约：通用规则》。
 
 - 事件通道（SET/RTN/预加载/订阅者刷新）：帧头无 `instance_id`（`DzExtFrameHeader`），目标/来源均为 master（唯一），所有进程可见，dzweb 消费。
-- 行情通道：SET/RTN/预加载/订阅者刷新均含 `instance_id`（`DzExtInstFrameHeader`）= 行情进程名（与通道名一致：一个进程一个数据通道）。
+- 行情通道（SET/RTN/预加载/订阅者刷新）：均含 `instance_id`（`DzExtInstFrameHeader`）= 行情进程名（与通道名一致：一个进程一个数据通道）。
+- 例外：读者接入/断开的 RTN 帧（`RTN_MD_READER_REGISTER`/`RTN_MD_READER_UNREGISTER`）帧头 `instance_id` = **请求进程名**（master 逻辑定向回请求方，目标通道在 payload `channel`），不适用上述惯例。
 
 类型层真相源：`libs/platform/include/dztrader/platform/shm_config.h`（`EventShmConfig`/`MdShmConfig`，校验/合并/持久化唯一真相源）。
 
@@ -134,25 +135,49 @@
 
 ## DZ_FRAME_REQUEST_MD_READER_REGISTER / DZ_FRAME_REQUEST_MD_READER_UNREGISTER
 
-**语义**：请求 master 注册/注销本进程为指定行情通道的**读者**（用于唤醒与页删除下限保护，与合约订阅无关）
-**数据流**：形态 5（总则 §4.2）——策略/数据存储等订阅进程 → master（`DzExtInstFrameHeader`，帧头 `instance_id` = 目标行情进程名 = 通道名，payload `subscriber` = 读者身份）；无前端入口、无 RTN（校验拒绝仅记日志）；成功副作用为 master 广播 `UPDATE_SHM_MD_SUBSCRIBER`
+**语义**：请求 master 接入（注册）/ 断开接入（注销）本进程为指定行情通道的**读者**（用于唤醒与页删除下限保护，与合约订阅无关）
+**数据流**：形态 5（总则 §4.2）——接入/断开进程 → master（`DzExtInstFrameHeader`，帧头 `instance_id` = 目标行情进程名 = 通道名，payload `subscriber` = 读者身份）；无前端入口；成功副作用为 master 广播 `UPDATE_SHM_MD_SUBSCRIBER`；必回对应 RTN（见下节）
 **Payload**：JSON
 
 ```json
 {"subscriber": "stg.alpha"}
+{"subscriber": "dzstore"}
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `subscriber` | string | 是 | 读者身份 = 策略实例 ID（`stg.<name>`，总则 §5），即该进程的事件信号量名 |
+| `subscriber` | string | 是 | 读者身份 = 进程 instance_id（策略 `stg.<name>`，其余进程为进程名，总则 §5），即该进程的事件信号量名 |
+
+**时序**：请求进程发起 → 必回对应 RTN（总则 §7 极端情况兜底适用）
 
 **约束**：
-- master 校验 `subscriber` 形如 `stg.<name>` 且 `name` 为已注册策略条目（registry）；通道不存在（md 未启动/已移除）时拒绝——均仅记日志，无 RTN
-- **无 RTN 兜底**（总则 §7）：注册失败不阻断数据消费（reader 游标独立于注册）；唤醒缺失由"单信号量 + 任意事件帧唤醒后排空"兜底，注册成功的 `UPDATE_SHM_MD_SUBSCRIBER` 帧本身即是一次唤醒
-- **启动顺序**：md 先于策略启动（master `start_all` 两趟），保证注册时目标通道已存在
-- 注册/注销成功后 master 更新行情通道 readers 并广播 `UPDATE_SHM_MD_SUBSCRIBER`（该帧的触发场景见上方"UPDATE_SHM_*_SUBSCRIBER"节）
-- **注销三路径**：读者主动注销；读者进程退出时 master 代清理（对全部 md 通道幂等移除）；md 通道删除时随通道清空
+- master 校验 `subscriber` 为已注册进程（**任意类别，不限策略**）；接入另需通道存在且就绪（对应行情进程已发出 `NOTIFY_MD_STARTED`），不满足时回失败 RTN
+- **请求进程收到成功 RTN 前不得打开通道**：未经注册打开的通道不保证安全、无信号量唤醒（接入规则见《组件架构 dztraderd》）
+- **启动顺序**：md 先于其余进程启动（master `start_all` 两趟），保证注册时目标通道已存在
+- 注册/注销成功后 master 更新行情通道 readers 并广播 `UPDATE_SHM_MD_SUBSCRIBER`（该帧的触发场景见上方"UPDATE_SHM_*_SUBSCRIBER"节），随后回 RTN——RTN 为最终许可信号，时序固定：更新列表 → 广播 UPDATE → 回 RTN
+- **注销路径**：读者主动注销（RTN 确认）；读者进程退出或崩溃时 master 代清理（对全部 md 通道幂等移除，无 RTN）。行情通道关闭时列表已随停止后果清空（见《组件架构 dztraderd》「行情通道：读者（接入）规则」），无需第三路径
 - 重复注册/注销幂等（add 已存在跳过、remove 缺失 key 为 no-op），多路径叠加无害
+
+## DZ_FRAME_RTN_MD_READER_REGISTER / DZ_FRAME_RTN_MD_READER_UNREGISTER
+
+**语义**：master 对接入 / 断开接入请求的响应
+**数据流**：形态 5（总则 §4.2）——master → 请求进程（`DzExtInstFrameHeader`，帧头 `instance_id` = 请求进程名）；无前端入口、不进镜像、dzweb 不处理
+**Payload**：JSON
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `channel` | string | 是 | 目标行情通道名（= 行情进程名） |
+| `ok` | bool | 是 | 成功 / 失败 |
+| `message` | string | 失败时必填 | 失败原因（通道未配置、行情进程未运行、通道未就绪、进程未注册等）；成功时缺省 |
+
+```json
+{"channel": "dzmd_ctp", "ok": true}
+{"channel": "dzmd_ctp", "ok": false, "message": "channel not ready"}
+```
+
+**约束**：
+- 成功 = 读者已加入（或已移除）目标通道读者列表；请求进程以成功 RTN 作为打开 / 关闭通道句柄的许可信号
+- 失败携带原因，请求进程自行决定重试或放弃（本契约不作约定）
 
 ## 持久化与默认值
 

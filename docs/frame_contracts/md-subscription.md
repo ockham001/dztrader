@@ -1,6 +1,6 @@
 # 帧契约：行情连接与订阅
 
-本文件覆盖 `DZ_FRAME_REQUEST_MD_CONNECT`、`DZ_FRAME_REQUEST_MD_DISCONNECT`、`DZ_FRAME_REQUEST_MD_SUBSCRIBE`、`DZ_FRAME_QUERY_MD_SUBSCRIPTIONS`、`DZ_FRAME_RTN_MD_SUBSCRIPTIONS`、`DZ_FRAME_NOTIFY_MD_STARTED`、`DZ_FRAME_NOTIFY_MD_CONNECTED`、`DZ_FRAME_NOTIFY_MD_DISCONNECTED`、`DZ_FRAME_NOTIFY_MD_STOPPED` 九个帧。总则见《帧契约：通用规则》。
+本文件覆盖 `DZ_FRAME_REQUEST_MD_CONNECT`、`DZ_FRAME_REQUEST_MD_DISCONNECT`、`DZ_FRAME_REQUEST_MD_SUBSCRIBE`、`DZ_FRAME_QUERY_MD_SUBSCRIPTIONS`、`DZ_FRAME_RTN_MD_SUBSCRIPTIONS`、`DZ_FRAME_NOTIFY_MD_STARTED`、`DZ_FRAME_NOTIFY_MD_STOPPED` 七个帧。总则见《帧契约：通用规则》。
 
 全部帧使用 `DzExtInstFrameHeader` 扩展头，`instance_id` = 行情进程名（定向帧为目标进程，广播帧为来源进程）。
 
@@ -43,14 +43,14 @@
 ## DZ_FRAME_REQUEST_MD_CONNECT / DZ_FRAME_REQUEST_MD_DISCONNECT
 
 **语义**：请求指定行情进程建立 / 断开连接（登录 / 登出）
-**数据流**：形态 3（总则 §4.2）——UI → dzweb → 目标行情进程（帧头 `instance_id` = 行情进程名）；前端入口 `POST /api/market-sources/{id}/login|logout`（契约 rest）或 WS `md_connect`/`md_disconnect`（契约 webui-ws，两路等效）；无 RTN，结果经该进程 `RTN_PROGRESS` 与 `NOTIFY_MD_*` 健康度广播体现（ack 仅表示已写通道）
+**数据流**：形态 3（总则 §4.2）——UI → dzweb → 目标行情进程（帧头 `instance_id` = 行情进程名）；前端入口 `POST /api/market-sources/{id}/login|logout`（契约 rest）或 WS `md_connect`/`md_disconnect`（契约 webui-ws，两路等效）；无 RTN，结果经该进程 `RTN_PROGRESS` 体现（ack 仅表示已写通道）
 **Payload**：空
 
 **时序**：前端发起 → dzweb 对前端回 ack（仅表示已写入事件通道，**不表示连接结果**；写通道失败时 `ok=false`，见契约 webui-ws）→ **无 RTN**
 
 **约束**：
 - 定向帧，仅 `instance_id` 匹配的行情进程处理
-- 连接结果通过该行情进程的 `RTN_PROGRESS`（状态数值映射，契约 progress）与健康度广播（下方 NOTIFY_MD_*）体现；前端不得以 ack 判定连接成败
+- 连接结果通过该行情进程的 `RTN_PROGRESS`（状态数值映射，契约 progress）体现；前端不得以 ack 判定连接成败
 
 ---
 
@@ -142,11 +142,7 @@
 
 ## 行情服务生命周期通知
 
-四个帧（`DZ_FRAME_NOTIFY_MD_STARTED` / `DZ_FRAME_NOTIFY_MD_CONNECTED` / `DZ_FRAME_NOTIFY_MD_DISCONNECTED` / `DZ_FRAME_NOTIFY_MD_STOPPED`）为行情服务的后台生命周期广播，均为**形态 5（总则 §4.2）**：流向策略/数据存储等订阅进程，供其维护行情通道的开启/关闭；无前端入口、无 RTN、不进镜像。均为空 payload，`instance_id` = 行情进程名。
-
-**健康度定义**：行情健康度为二元（Up/Down），**由登录态决定**——进入 `LoggedIn` → Up，离开 `LoggedIn`（断线、登出、登录失败等任何原因）→ Down。健康度与订阅状态无关（订阅失败由补订机制处理，不翻转健康度）。仅在健康度翻转时广播，避免重复。
-
-**两路一致**：UI 侧状态（`RTN_PROGRESS` 的数值映射）与后台侧健康度由同一状态机驱动，禁止两路不一致（进入可交易态时必须既推 `RTN_PROGRESS` 又广播 `NOTIFY_MD_CONNECTED`，离开时同理）。
+两个帧（`DZ_FRAME_NOTIFY_MD_STARTED` / `DZ_FRAME_NOTIFY_MD_STOPPED`）为行情服务的后台生命周期广播，均为**形态 5（总则 §4.2）**：流向此前接入过该通道的订阅进程，供其维护行情通道的接入/断开接入；无前端入口、无 RTN、不进镜像。均为空 payload，`instance_id` = 行情进程名。
 
 > 与 UI 状态的关系：本组帧仅服务后台订阅进程，前端 UI 不消费。前端判断行情进程的运行/停止状态以《帧契约：进程》的 `RTN_PROCESS_STATUS` / `RTN_PROCESS_CONFIG` 为准；判断登录/健康细粒度状态以 `RTN_PROGRESS`（契约 progress）为准。
 
@@ -154,33 +150,16 @@
 
 **语义**：某行情服务已启动就绪，可对其行情通道发起订阅
 **数据流**：形态 5——md → 广播（`instance_id` = 行情进程名）
-**触发场景**：行情进程启动初始化完成后广播一次
+**触发场景**：行情进程在通道就绪、可接受合约订阅时广播一次；不以完成登录为前提——未登录状态同样接受合约订阅，仅暂不转发至柜台
 
-**约束**：仅后台进程消费（可重订阅/打开对应行情通道），dzweb / 前端不处理
-
-### DZ_FRAME_NOTIFY_MD_CONNECTED
-
-**语义**：某行情服务已登录（可交易），健康度由 Down 翻转为 Up
-**数据流**：形态 5——md → 广播（`instance_id` = 行情进程名）
-**触发场景**：进入 `LoggedIn`（登录成功）时广播
-
-**约束**：仅后台进程消费；仅在健康度翻转时发送
-
-### DZ_FRAME_NOTIFY_MD_DISCONNECTED
-
-**语义**：某行情服务已断开/不可用（不可交易），健康度由 Up 翻转为 Down
-**数据流**：形态 5——md → 广播（`instance_id` = 行情进程名）
-**触发场景**：离开 `LoggedIn`（断线、登出、被服务器登出等任何原因）时广播
-
-**约束**：仅后台进程消费；仅在健康度翻转时发送
+**约束**：仅后台进程消费（此前接入过该通道的进程据此重新接入该通道并重新订阅合约），dzweb / 前端不处理
 
 ### DZ_FRAME_NOTIFY_MD_STOPPED
 
-**语义**：某行情服务已停止，应关闭对应行情通道
-**数据流**：形态 5——master → 广播（`instance_id` = 被停止的行情进程名；进程退出无法自行发 `DISCONNECTED`，由 master 代发并隐含其语义）
+**语义**：某行情服务已停止，应断开接入对应行情通道
+**数据流**：形态 5——master → 广播（`instance_id` = 被停止的行情进程名；进程退出无法自行广播，由 master 代发）
 **触发场景**：行情进程退出时由 master 广播（崩溃时代发 + 正常停止时通知）
 
 **约束**：
-- `instance_id` 标识被停止的行情源，接收方据此关闭对应行情通道
-- **隐含 `NOTIFY_MD_DISCONNECTED` 语义**：进程退出时无法自行发送 `DISCONNECTED`，接收方收到 `STOPPED` 后应同时执行 `DISCONNECTED` 的清理逻辑（标记不可交易）
+- `instance_id` 标识被停止的行情源，接收方据此断开接入对应行情通道（旧句柄失效），此前订阅的合约随之无效
 - 仅后台进程消费，dzweb / 前端不处理，不据此判断行情进程状态

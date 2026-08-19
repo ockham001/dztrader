@@ -1,9 +1,9 @@
 # 帧契约：进程
 
-本文件覆盖 `DZ_FRAME_REQUEST_PROCESS_CONTROL`、`DZ_FRAME_RTN_PROCESS_STATUS`、`DZ_FRAME_SET_PROCESS_CONFIG`、`DZ_FRAME_RTN_PROCESS_CONFIG`、`DZ_FRAME_REQUEST_SHUTDOWN`、`DZ_FRAME_REQUEST_SHUTDOWN_ALL` 六个帧。总则见《帧契约：通用规则》。
+本文件覆盖 `DZ_FRAME_REQUEST_PROCESS_CONTROL`、`DZ_FRAME_RTN_PROCESS_STATUS`、`DZ_FRAME_SET_PROCESS_CONFIG`、`DZ_FRAME_RTN_PROCESS_CONFIG`、`DZ_FRAME_REQUEST_SHUTDOWN` 五个帧。总则见《帧契约：通用规则》。
 
 - 前四个帧使用 `DzExtFrameHeader` 扩展头（无 `instance_id`），目标/来源均在 payload。
-- 后两个优雅退出帧：`REQUEST_SHUTDOWN` 定向（`instance_id` = 目标进程名）、`REQUEST_SHUTDOWN_ALL` 广播（无 `instance_id`）。
+- 优雅退出帧 `REQUEST_SHUTDOWN` 为定向帧（`instance_id` = 目标进程名）。
 
 类型层真相源：`libs/platform/include/dztrader/platform/process.h`（枚举、结构体、序列化、校验、合并函数）。
 
@@ -230,17 +230,17 @@
 
 ---
 
-## DZ_FRAME_REQUEST_SHUTDOWN / DZ_FRAME_REQUEST_SHUTDOWN_ALL
+## DZ_FRAME_REQUEST_SHUTDOWN
 
 **语义**：请求进程优雅退出
-**数据流**：形态 5（总则 §4.2）——master → 定向（帧头 `instance_id` = 目标进程名）/ master → 广播（无 `instance_id`）；无前端入口（master 自身发起，UI 的 Stop/Remove 经形态 1 间接触发）；无 RTN，结果经 `RTN_PROCESS_STATUS` 体现
+**数据流**：形态 5（总则 §4.2）——master → 定向（帧头 `instance_id` = 目标进程名）；无前端入口（master 自身发起，UI 的 Stop/Remove 经形态 1 间接触发）；无 RTN，结果经 `RTN_PROCESS_STATUS` 体现
 **Payload**：空
 
 **触发场景**：
-- `REQUEST_SHUTDOWN_ALL`：master 整体关闭（主进程退出 / 用户关闭系统），所有进程（含 dzweb、md、td、策略等）均处理并退出
-- `REQUEST_SHUTDOWN`：master 停止/移除某个子进程（UI 发起 Stop / Remove）
+- master 停止/移除某个子进程（UI 发起 Stop / Remove）
+- master 整体关闭：按逆序逐批定向发送（编排顺序与批次语义见《组件架构 dztraderd》「停止与整体关闭」），不采用广播式全员关闭帧
 
 **约束**：
-- `REQUEST_SHUTDOWN` 仅 `instance_id` 匹配的进程处理
+- 仅 `instance_id` 匹配的进程处理
 - 无 RTN、无确认；master 以进程退出状态为准（见 RTN_PROCESS_STATUS）
 - 接收方必须在收到后发起退出流程；master 在 `Stopping` 等待超时后强制终止（见 RTN_PROCESS_STATUS 约束）

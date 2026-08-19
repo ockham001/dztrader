@@ -38,14 +38,6 @@ enum class MdState {
 /// 基于 magic_enum 自动派生 MdState 的 JSON 序列化, 字符串与日志一致。
 DZ_JSON_ENUM(MdState)
 
-/// 行情二元健康度 (给策略/数据存储进程决策用, 与 MdState 细粒度状态独立)。
-/// - Up: 已登录 (可交易)
-/// - Down: 任何异常或未登录 (不可交易)
-enum class MdHealth {
-    Down,  ///< 不可交易
-    Up     ///< 可交易
-};
-
 /// 网关状态, 对 UI 和共享内存可见。
 struct MdStatus {
     std::string api_version;

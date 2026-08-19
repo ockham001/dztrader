@@ -133,7 +133,6 @@ void MdApi::req_user_login() {
                 if (auto n = state_machine_.on_login_failed()) notify_ui(*n);
                 report_md_status();
                 report_progress();
-                broadcast_health(MdHealth::Down);
             }
         });
     report_progress();
@@ -154,7 +153,7 @@ void MdApi::on_front_connected(const OnFrontConnectedField& rsp [[maybe_unused]]
 // ============================================================================
 // 会话断开的三种路径
 //
-// 三个函数都执行"清理订阅链路 + report_md_status() + report_progress() + broadcast_health(Down)",
+// 三个函数都执行"清理订阅链路 + report_md_status() + report_progress()",
 // 但触发场景和清理范围不同, 修改时务必同步检查三者一致性:
 //
 // - on_front_disconnected: CTP 前置网络断开 (OnFrontDisconnected 回调)。
@@ -203,7 +202,6 @@ void MdApi::on_front_disconnected(const OnFrontDisconnectedField& rsp) {
     ++sub_generation_;  // 双保险: 使 cancel 前已被 tick 取出的回调也失效
     report_md_status();
     report_progress();
-    broadcast_health(MdHealth::Down);  // 断线 -> Down
 }
 
 void MdApi::disconnect() {
@@ -229,7 +227,6 @@ void MdApi::disconnect() {
     ++sub_generation_;  // 双保险: 使 cancel 前已被 tick 取出的回调也失效
     report_md_status();
     report_progress();
-    broadcast_health(MdHealth::Down);  // 离开 LoggedIn -> Down
 }
 
 void MdApi::on_rsp_user_logout(const OnRspUserLogoutField& rsp) {
@@ -257,7 +254,6 @@ void MdApi::on_rsp_user_logout(const OnRspUserLogoutField& rsp) {
     ++sub_generation_;  // 双保险: 使 cancel 前已被 tick 取出的回调也失效
     report_md_status();
     report_progress();
-    broadcast_health(MdHealth::Down);  // 被服务器登出 -> Down
 }
 
 void MdApi::on_heartbeat_warning(const OnHeartBeatWarningField& rsp) {
@@ -278,7 +274,6 @@ void MdApi::on_rsp_user_login(const OnRspUserLoginField& rsp) {
         if (auto n = state_machine_.on_login_failed()) notify_ui(*n);
         report_md_status();
         report_progress();
-        broadcast_health(MdHealth::Down);
         return;
     }
     if (rsp.rsp_info->ErrorID != 0) {
@@ -287,7 +282,6 @@ void MdApi::on_rsp_user_login(const OnRspUserLoginField& rsp) {
         if (auto n = state_machine_.on_login_failed()) notify_ui(*n);
         report_md_status();
         report_progress();
-        broadcast_health(MdHealth::Down);  // 登录失败, 仍 Down (幂等, 通常被去重)
         return;
     }
     if (!rsp.rsp_user_login.has_value()) {
@@ -295,7 +289,6 @@ void MdApi::on_rsp_user_login(const OnRspUserLoginField& rsp) {
         if (auto n = state_machine_.on_login_failed()) notify_ui(*n);
         report_md_status();
         report_progress();
-        broadcast_health(MdHealth::Down);
         return;
     }
     if (rsp.trading_day_parse_error.has_value()) {
@@ -306,7 +299,6 @@ void MdApi::on_rsp_user_login(const OnRspUserLoginField& rsp) {
         if (auto n = state_machine_.on_login_parse_error()) notify_ui(*n);
         report_md_status();
         report_progress();
-        broadcast_health(MdHealth::Down);  // 登录解析错误, 仍 Down (幂等)
         return;
     }
 
@@ -356,7 +348,6 @@ void MdApi::on_rsp_user_login(const OnRspUserLoginField& rsp) {
                 sub_manager_.expected_subscribe_count());
     report_md_status();
     report_progress();
-    broadcast_health(MdHealth::Up);  // 登录成功 -> Up (可交易)
 }
 
 void MdApi::on_rsp_error(const OnRspErrorField& rsp) {

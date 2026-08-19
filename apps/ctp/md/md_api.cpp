@@ -425,23 +425,6 @@ void MdApi::report_progress() {
     }
 }
 
-void MdApi::broadcast_health(MdHealth now) {
-    if (now == last_health_) {
-        return;  // 状态未翻转, 不重复广播
-    }
-    last_health_ = now;
-    try {
-        if (now == MdHealth::Up) {
-            platform::write_ext_inst_raw(event_writer_, DZ_FRAME_NOTIFY_MD_CONNECTED, name_);
-        } else {
-            platform::write_ext_inst_raw(event_writer_, DZ_FRAME_NOTIFY_MD_DISCONNECTED, name_);
-        }
-        SPDLOG_INFO("health broadcast | health={}", magic_enum::enum_name(now));
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("broadcast_health failed | error=\"{}\"", e.what());
-    }
-}
-
 void MdApi::notify_ui(const nlohmann::json& field) {
     notify_ui_.notify(field.value("level", DZ_NOTIFY_INFO), field.value("message", std::string{}),
                       field.value("popup", false));
