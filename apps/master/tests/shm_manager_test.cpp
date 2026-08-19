@@ -1057,6 +1057,32 @@ TEST_F(ProcessControlFrameTest, MdReaderRegisterWritesFailRtnWithMessage) {
     EXPECT_TRUE(rtn_fail);
 }
 
+// 通道已配置但已关闭 (行情进程未运行, meta==null): 拒绝注册并回失败 RTN
+TEST_F(ProcessControlFrameTest, MdReaderRegisterRejectsClosedChannel) {
+    register_strategy_for_test(registry_, "alpha");
+    shm_mgr_->create_md_channel("dzmd_ctp");
+    shm_mgr_->close_md_channel("dzmd_ctp");  // 停止后果: 句柄释放
+
+    auto writer = create_writer("stg_sim");
+    shm::Reader reader = create_reader("rtn_probe4");
+    write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp", "stg.alpha");
+    shm_mgr_->drain_event_channel();
+
+    bool rtn_fail = false;
+    for (int i = 0; i < 16; ++i) {
+        const auto* frame = reader.next_frame();
+        if (!frame) break;
+        shm::FrameView view(frame);
+        if (view.type() == DZ_FRAME_RTN_MD_READER_REGISTER &&
+            std::string_view(view.ext_inst_id()) == "stg.alpha") {
+            auto j = shm::decode_ext_inst_json<nlohmann::json>(view);
+            rtn_fail = !j.value("ok", true) &&
+                       j.value("message", std::string{}) == "market process not running";
+        }
+    }
+    EXPECT_TRUE(rtn_fail);
+}
+
 // 注销对已关闭/不存在通道幂等成功: 回 RTN ok=true
 TEST_F(ProcessControlFrameTest, MdReaderUnregisterMissingChannelReturnsOkRtn) {
     register_strategy_for_test(registry_, "alpha");
