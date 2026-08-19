@@ -75,6 +75,12 @@ void ShmManager::handle_frame(const std::byte* frame) {
                 handle_md_reader_unregister(view);
                 return;
             }
+            case DZ_FRAME_NOTIFY_MD_STARTED: {
+                // 行情进程就绪宣告 (instance_id=行情进程名=通道名, 非 name_,
+                // 必须第一层处理): 置位通道就绪, 此后读者接入可通过校验 (契约 shm)
+                mark_md_channel_ready(view.ext_inst_id());
+                return;
+            }
             case DZ_FRAME_SET_EVENT_SHM_CONFIG: {
                 // 无 instance_id (DzExtFrameHeader): 目标唯一为 master。
                 // 流程: decode -> set_shm_config (内部 validate+merge+save) -> rtn

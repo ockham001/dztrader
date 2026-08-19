@@ -14,24 +14,37 @@ namespace dztrader::master {
 
 namespace {
 
-/// 校验行情读者身份: "stg.<name>" 且 name 为 registry 中已注册的策略条目。
+/// 校验读者身份 = 进程 instance_id (契约 shm: 任意已注册进程, 不限策略):
+/// - "stg.<name>": name 必须为已注册策略条目
+/// - 裸进程名: 必须为已注册的非策略类别条目 (策略身份必须带 stg. 前缀)
 /// 仅作健全性闸门 (同部署进程互信), 防陌生名字污染 readers map 或误删他人条目。
 /// supervisor 未注入时拒绝 (fail-closed, 生产环境必注入)。
-bool is_registered_strategy(const ProcessSupervisor* supervisor, std::string_view subscriber,
-                            std::string& out_name) {
-    constexpr std::string_view kPrefix = "stg.";
-    if (!subscriber.starts_with(kPrefix)) {
-        return false;
-    }
-    out_name.assign(subscriber.substr(kPrefix.size()));
-    if (out_name.empty()) {
-        return false;
-    }
+bool is_registered_process(const ProcessSupervisor* supervisor, std::string_view subscriber) {
     if (supervisor == nullptr) {
         return false;
     }
-    const auto* entry = supervisor->find_registry_entry(out_name);
-    return entry != nullptr && entry->category == Category::Strategy;
+    constexpr std::string_view kPrefix = "stg.";
+    if (subscriber.starts_with(kPrefix)) {
+        const auto name = subscriber.substr(kPrefix.size());
+        if (name.empty()) {
+            return false;
+        }
+        const auto* entry = supervisor->find_registry_entry(name);
+        return entry != nullptr && entry->category == Category::Strategy;
+    }
+    const auto* entry = supervisor->find_registry_entry(subscriber);
+    return entry != nullptr && entry->category != Category::Strategy;
+}
+
+/// 写读者接入/断开 RTN 帧 (契约 shm: instance_id=请求进程名,
+/// payload={channel, ok, message 失败必填})
+void write_md_reader_rtn(shm::MultiWriter& w, DzFrameType type, std::string_view subscriber,
+                         std::string_view channel, bool ok, std::string_view message = "") {
+    nlohmann::json payload = {{"channel", channel}, {"ok", ok}};
+    if (!ok) {
+        payload["message"] = message;  // 失败时必填 (契约 shm)
+    }
+    platform::write_ext_inst_json_obj(w, type, subscriber, payload);
 }
 
 }  // namespace
@@ -123,14 +136,15 @@ void ShmManager::reset_subscribers() {
 
 void ShmManager::handle_md_reader_register(const shm::FrameView& view) {
     // 帧头 instance_id = 目标行情通道名; 消费方是 master (不匹配 name_), 故在
-    // handle_frame 第一层处理。无 RTN: 注册失败不阻断数据消费 (reader 游标独立于
-    // 注册), 唤醒缺失由单信号量 + 任意事件帧唤醒后排空兜底 (契约 shm)。
+    // handle_frame 第一层处理。契约 shm: 必回 RTN_MD_READER_REGISTER (1015),
+    // 时序固定: 更新列表 -> 广播 UPDATE -> 回 RTN; 失败携带 message。
     const std::string channel_name(view.ext_inst_id());
 
     nlohmann::json payload;
     try {
         payload = shm::decode_ext_inst_json<nlohmann::json>(view);
     } catch (const std::exception& e) {
+        // payload 损坏无法获知请求方身份, 无法回 RTN, 仅记日志
         SPDLOG_WARN("md reader register rejected | reason=bad_payload error=\"{}\"", e.what());
         return;
     }
@@ -141,28 +155,53 @@ void ShmManager::handle_md_reader_register(const shm::FrameView& view) {
     }
     const std::string subscriber = payload["subscriber"].get<std::string>();
 
-    std::string strategy_name;
-    if (!is_registered_strategy(supervisor_, subscriber, strategy_name)) {
+    if (!is_registered_process(supervisor_, subscriber)) {
         SPDLOG_WARN("md reader register rejected | reason=unknown_subscriber subscriber={}",
                     subscriber);
+        write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_REGISTER, subscriber,
+                            channel_name, false, "unknown subscriber");
         return;
     }
 
     auto it = md_channels_.find(channel_name);
-    if (it == md_channels_.end() || !it->second.meta) {
-        // 启动顺序保证 md 先于策略 (start_all 两趟); 此处缺失 = md 未启动/已移除
+    if (it == md_channels_.end()) {
+        // 通道未配置: 主进程不会拉起对应行情进程 (契约 shm 接入失败)
         SPDLOG_WARN(
-            "md reader register rejected | reason=channel_not_found channel={} subscriber={}",
+            "md reader register rejected | reason=channel_not_configured channel={} subscriber={}",
             channel_name, subscriber);
+        write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_REGISTER, subscriber,
+                            channel_name, false, "channel not configured");
         return;
     }
+    if (!it->second.meta) {
+        // 行情进程未运行: 通道已关闭 (停止后果), 元数据保留待重启复用
+        SPDLOG_WARN(
+            "md reader register rejected | reason=md_not_running channel={} subscriber={}",
+            channel_name, subscriber);
+        write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_REGISTER, subscriber,
+                            channel_name, false, "market process not running");
+        return;
+    }
+    if (!it->second.ready) {
+        // 通道未就绪: 行情进程尚未发出 NOTIFY_MD_STARTED (含在途停止场景)
+        SPDLOG_WARN("md reader register rejected | reason=channel_not_ready channel={} subscriber={}",
+                    channel_name, subscriber);
+        write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_REGISTER, subscriber,
+                            channel_name, false, "channel not ready");
+        return;
+    }
+
     const bool added = it->second.meta->add_reader(subscriber, /*pid=*/0);
     SPDLOG_INFO("md reader registered | channel={} subscriber={} new={}", channel_name,
                 subscriber, added);
     notify_md_channel_subscriber_update(channel_name);
+    write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_REGISTER, subscriber,
+                        channel_name, true);
 }
 
 void ShmManager::handle_md_reader_unregister(const shm::FrameView& view) {
+    // 契约 shm: 必回 RTN_MD_READER_UNREGISTER (1016)。对通道不存在/已关闭
+    // 幂等成功 (读者条目已随停止后果清空, 多路径叠加无害)。
     const std::string channel_name(view.ext_inst_id());
 
     nlohmann::json payload;
@@ -179,20 +218,26 @@ void ShmManager::handle_md_reader_unregister(const shm::FrameView& view) {
     }
     const std::string subscriber = payload["subscriber"].get<std::string>();
 
-    std::string strategy_name;
-    if (!is_registered_strategy(supervisor_, subscriber, strategy_name)) {
+    if (!is_registered_process(supervisor_, subscriber)) {
         SPDLOG_WARN("md reader unregister rejected | reason=unknown_subscriber subscriber={}",
                     subscriber);
+        write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_UNREGISTER, subscriber,
+                            channel_name, false, "unknown subscriber");
         return;
     }
 
     auto it = md_channels_.find(channel_name);
     if (it == md_channels_.end() || !it->second.meta) {
-        return;  // 通道已不存在, 读者条目随之消失, 无需处理
+        // 通道不存在或已关闭: 读者条目随之消失, 幂等成功
+        write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_UNREGISTER, subscriber,
+                            channel_name, true);
+        return;
     }
     it->second.meta->remove_reader(subscriber);
     SPDLOG_INFO("md reader unregistered | channel={} subscriber={}", channel_name, subscriber);
     notify_md_channel_subscriber_update(channel_name);
+    write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_UNREGISTER, subscriber,
+                        channel_name, true);
 }
 
 void ShmManager::remove_reader_from_all_md_channels(const std::string& sub_name) {

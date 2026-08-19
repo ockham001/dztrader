@@ -197,14 +197,16 @@ public:
     /// 由 ProcessSupervisor::notify_removed_for_inactive 调用。
     void remove_reader(std::string_view name);
 
-    // ===== 行情通道读者注册（帧 1013/1014, 策略主动发起, master 持权） =====
-    /// 处理 DZ_FRAME_REQUEST_MD_READER_REGISTER：校验 subscriber 身份
-    /// （stg.<name> 且 name 为已注册策略条目）与目标通道存在性，通过后
-    /// add_reader + notify_md_channel_subscriber_update 下发刷新。
-    /// 失败仅记日志拒绝（无 RTN；唤醒缺失由单信号量 + 任意事件帧唤醒兜底，契约 shm）。
+    // ===== 行情通道读者注册（帧 1013/1014, 任意已注册进程发起, master 持权） =====
+    /// 处理 DZ_FRAME_REQUEST_MD_READER_REGISTER：校验 subscriber 为已注册进程
+    /// （任意类别，不限策略，契约 shm）与通道三条件（已配置 / 行情进程运行 /
+    /// 已就绪），通过后 add_reader + 广播 UPDATE + 回 RTN_MD_READER_REGISTER(1015)
+    /// 成功；失败回 RTN ok=false 且 message 必填。
     void handle_md_reader_register(const shm::FrameView& view);
 
-    /// 处理 DZ_FRAME_REQUEST_MD_READER_UNREGISTER：同校验，remove_reader（幂等）+ 下发刷新。
+    /// 处理 DZ_FRAME_REQUEST_MD_READER_UNREGISTER：同身份校验，remove_reader
+    /// （幂等）+ 广播 UPDATE + 回 RTN_MD_READER_UNREGISTER(1016)；
+    /// 通道不存在/已关闭时幂等成功。
     void handle_md_reader_unregister(const shm::FrameView& view);
 
     /// 从全部 md 通道注销指定读者并通知对应 md 进程刷新缓存。
