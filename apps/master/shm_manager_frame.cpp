@@ -241,7 +241,7 @@ void ShmManager::handle_process_start(const platform::ProcessControlReq& req) {
     }
     // 3. 启动（page_size 走配置文件读取，不再有 override）
     try {
-        create_md_channel(req.target);
+        // md 通道由 launch_child 在启动 GatewayMd 时创建（唯一入口）
         bool started = supervisor_->start_process(req.target);
         notify_md_channel_subscriber_update(req.target);
         if (started) {
