@@ -236,10 +236,13 @@ int main(int argc, char* argv[]) {
             supervisor.shutdown();
 
             cleanup_timer->async_wait(
-                [&shm_mgr, &orphan_guard, &ioc](const boost::system::error_code& ec) {
+                [&shm_mgr, &orphan_guard, &supervisor, &ioc](const boost::system::error_code& ec) {
                     if (!ec) {
                         try {
                             SPDLOG_WARN("hard timeout, forced exit");
+                            // 先强杀剩余子进程, 避免逐批关闭最坏超时后残留孤儿
+                            // (整体关闭最坏 4 批 × 默认 3s = 12s > 本 10s 硬超时)
+                            supervisor.force_terminate_all();
                             shm_mgr->release_all();
                             orphan_guard.cleanup();
                         } catch (const std::exception& e) {
