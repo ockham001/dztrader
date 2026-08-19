@@ -541,7 +541,7 @@ TEST_F(ConfigTest, MasterConfigCleanupPolicyRoundTrip) {
     EXPECT_EQ(old_cfg.cleanup_max_page_count, 200u);
     EXPECT_EQ(old_cfg.cleanup_max_page_age_hours, 24u);
 
-    // 显式双 0 (不清理) 保存后可读回
+    // 显式双 0 (不清理) 写入配置文件后 load 读回验证 (模拟人工改配置后重启读取)
     write_json(R"({"master": {"cleanup_max_page_count": 0, "cleanup_max_page_age_hours": 0}})");
     auto cfg = MasterConfig::load(config_path_);
     EXPECT_EQ(cfg.cleanup_max_page_count, 0u);

@@ -169,7 +169,8 @@ void ShmManager::create_md_channel(std::string_view source_name) {
 void ShmManager::close_md_channel(std::string_view source_name) {
     // 停止后果 (dztraderd 架构「行情进程生命周期」): 清空读者列表 + 释放句柄,
     // 不触碰数据文件/读取位置/page_size (保留待重启复用); 条目保留表示已配置
-    auto it = md_channels_.find(std::string(source_name));
+    // key 与 create_md_channel 保持一致 (shm::channel_name, 当前为恒等变换)
+    auto it = md_channels_.find(shm::channel_name(source_name));
     if (it == md_channels_.end()) {
         return;
     }
@@ -182,7 +183,7 @@ void ShmManager::close_md_channel(std::string_view source_name) {
 }
 
 void ShmManager::mark_md_channel_ready(std::string_view source_name) {
-    auto it = md_channels_.find(std::string(source_name));
+    auto it = md_channels_.find(shm::channel_name(source_name));
     if (it == md_channels_.end() || !it->second.meta) {
         // 未知行情进程或通道已关闭 (不在 master 编排内), 忽略
         SPDLOG_DEBUG("md started ignored for unknown/closed channel | source={}", source_name);
