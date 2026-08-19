@@ -300,10 +300,6 @@ void MdApi::handle_frame_inner(const std::byte* frame) {
 
     switch (view.type()) {
         // --- 广播帧: 不检查 instance_id ---
-        case DZ_FRAME_REQUEST_SHUTDOWN_ALL:
-            // 广播: 所有进程退出
-            handle_shutdown();
-            break;
         case DZ_FRAME_PRELOAD_EVENT_SHM: {
             // 广播帧: 携带 DzShmPreload payload (pages/bytes), 随机延迟后预加载 event 通道
             const auto& params = view.payload<DzShmPreload>();
