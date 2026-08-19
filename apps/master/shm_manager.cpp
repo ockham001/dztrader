@@ -185,12 +185,13 @@ void ShmManager::close_md_channel(std::string_view source_name) {
 void ShmManager::destroy_md_channel(std::string_view source_name) {
     // 移除语义 (设计 spec: md 通道移除清理): 先执行停止后果 (清读者+释放句柄),
     // 再删除通道目录与条目。删除失败记录告警不崩溃 (Windows 文件占用时,
-    // 下次创建同源 open_or_create 重建 meta, cleaner 恢复清理, 非永久泄漏)。
+    // 仅当同源被重新添加时 open_or_create 重建 meta、cleaner 恢复清理)。
     const auto it = md_channels_.find(shm::channel_name(source_name));
     if (it == md_channels_.end() || !it->second.meta) {
         // 通道不存在或已关闭: 仍尝试删除残留目录 (进程未运行即移除场景), 幂等
         try {
             std::filesystem::remove_all(dztrader::paths::shm() / shm::channel_name(source_name));
+            SPDLOG_INFO("md channel residual dir removed | source={}", source_name);
         } catch (const std::exception& e) {
             SPDLOG_WARN("md channel dir remove failed | source={} error=\"{}\"", source_name,
                         e.what());

@@ -94,9 +94,10 @@ public:
     /// 彻底移除 md 通道 (Remove 流程, 配置已删, 永不再用): 清空读者列表 +
     /// 释放元数据句柄 + 删除通道目录 (meta.dat + 页文件) + 删除 md_channels_ 条目。
     /// 与 close_md_channel 区分: close 是停止后果保留文件待重启复用, destroy 是移除彻底删除。
-    /// 删除失败 (如 Windows 文件占用) 记录告警不崩溃, 下次创建同源时重建 + cleaner 恢复清理。
+    /// 删除失败 (如 Windows 文件占用) 记录告警不崩溃, 仅当同源被重新添加时重建并恢复清理。
     /// 由 ProcessSupervisor 在 Remove 流程 (on_child_exit remove 分支 /
-    /// notify_removed_for_inactive) 对 md 进程调用。幂等 (条目不存在 no-op)。
+    /// notify_removed_for_inactive) 对 md 进程调用。幂等: 条目不存在时仍尝试删除
+    /// 残留目录 (进程未运行即移除场景), 重复调用安全无副作用。
     void destroy_md_channel(std::string_view source_name);
 
     /// 注入 ProcessSupervisor 引用 (用于 PROCESS_CONTROL 帧调用启停)
