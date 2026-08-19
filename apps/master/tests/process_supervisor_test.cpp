@@ -5,7 +5,9 @@
 
 #include "process_supervisor.h"
 
+#include <dztrader/core/core_data_type.h>
 #include <dztrader/core/env.h>
+#include <dztrader/core/path.h>
 #include <dztrader/core/this_process.h>
 #include <dztrader/log/log.h>
 
@@ -240,6 +242,38 @@ TEST_F(ProcessSupervisorTest, ShutdownStopsAllCategoriesSequentially) {
     ioc_.restart();
     ioc_.run_for(std::chrono::seconds(12));
     EXPECT_EQ(supervisor.children().size(), 0u);
+
+    orphan_guard_.cleanup();
+}
+
+// GatewayMd 进程退出时 master 代发 NOTIFY_MD_STOPPED (md 停止后果接线, 自检补测)
+TEST_F(ProcessSupervisorTest, MdExitBroadcastsNotifyStopped) {
+    registry_.register_gateway(make_internal_entry("dzmd_ctp", Category::GatewayMd, {"quick", "1"}));
+
+    shm_mgr_ = std::make_unique<ShmManager>(make_default_shm_global(), cfg_path_);
+    orphan_guard_.startup();
+
+    ProcessSupervisor supervisor(ioc_, registry_, *shm_mgr_, orphan_guard_);
+    supervisor.start_all();
+
+    // 独立 reader 探测事件通道 (须在子进程退出前注册)
+    shm::Reader reader = shm::Reader::create(
+        shm::channel_name("dzevent"), dztrader::paths::shm(), "notify_stopped_probe");
+
+    ioc_.restart();
+    ioc_.run_for(std::chrono::seconds(3));
+
+    bool saw_stopped = false;
+    for (int i = 0; i < 64; ++i) {
+        const auto* frame = reader.next_frame();
+        if (!frame) break;
+        shm::FrameView view(frame);
+        if (view.type() == DZ_FRAME_NOTIFY_MD_STOPPED &&
+            std::string_view(view.ext_inst_id()) == "dzmd_ctp") {
+            saw_stopped = true;
+        }
+    }
+    EXPECT_TRUE(saw_stopped);
 
     orphan_guard_.cleanup();
 }

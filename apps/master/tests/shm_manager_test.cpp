@@ -870,11 +870,12 @@ TEST_F(ProcessControlFrameTest, MdReaderRegisterAddsReaderAndNotifies) {
     EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") != names.end());
 }
 
-// 身份校验: 未注册的 subscriber 被拒绝
+// 身份校验: 未注册的 subscriber 被拒绝, 且回 RTN 精确文案 "unknown subscriber"
 TEST_F(ProcessControlFrameTest, MdReaderRegisterRejectsUnknownSubscriber) {
     shm_mgr_->create_md_channel("dzmd_ctp");
 
     auto writer = create_writer("stg_sim");
+    shm::Reader reader = create_reader("rtn_unknown_sub");
     mark_channel_ready(writer, "dzmd_ctp");
     shm_mgr_->drain_event_channel();
     write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp",
@@ -884,18 +885,49 @@ TEST_F(ProcessControlFrameTest, MdReaderRegisterRejectsUnknownSubscriber) {
     auto meta = shm::ChannelMeta::open_only("dzmd_ctp", dztrader::paths::shm());
     auto names = meta.reader_names();
     EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.ghost") == names.end());
+
+    // RTN 精确文案: unknown subscriber (身份校验失败)
+    bool rtn_msg_ok = false;
+    for (int i = 0; i < 16; ++i) {
+        const auto* frame = reader.next_frame();
+        if (!frame) break;
+        shm::FrameView view(frame);
+        if (view.type() == DZ_FRAME_RTN_MD_READER_REGISTER &&
+            std::string_view(view.ext_inst_id()) == "stg.ghost") {
+            auto j = shm::decode_ext_inst_json<nlohmann::json>(view);
+            rtn_msg_ok = !j.value("ok", true) &&
+                         j.value("message", std::string{}) == "unknown subscriber";
+        }
+    }
+    EXPECT_TRUE(rtn_msg_ok);
 }
 
-// 通道缺失: md 未启动 (start_all 顺序保证外) -> 拒绝且不创建通道
+// 通道缺失: md 未启动 (start_all 顺序保证外) -> 拒绝且不创建通道, 回 RTN "channel not configured"
 TEST_F(ProcessControlFrameTest, MdReaderRegisterRejectsMissingChannel) {
     register_strategy_for_test(registry_, "alpha");
 
     auto writer = create_writer("stg_sim");
+    shm::Reader reader = create_reader("rtn_missing_ch");
     write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "no_such_md", "stg.alpha");
     shm_mgr_->drain_event_channel();
 
     // 拒绝路径不创建通道: shm 目录下不应出现该通道目录 (meta.dat)
     EXPECT_FALSE(std::filesystem::exists(dztrader::paths::shm() / "no_such_md"));
+
+    // RTN 精确文案: channel not configured (通道未配置)
+    bool rtn_msg_ok = false;
+    for (int i = 0; i < 16; ++i) {
+        const auto* frame = reader.next_frame();
+        if (!frame) break;
+        shm::FrameView view(frame);
+        if (view.type() == DZ_FRAME_RTN_MD_READER_REGISTER &&
+            std::string_view(view.ext_inst_id()) == "stg.alpha") {
+            auto j = shm::decode_ext_inst_json<nlohmann::json>(view);
+            rtn_msg_ok = !j.value("ok", true) &&
+                         j.value("message", std::string{}) == "channel not configured";
+        }
+    }
+    EXPECT_TRUE(rtn_msg_ok);
 }
 
 // 注销: readers map 移除 + 重复注销幂等不抛
@@ -938,18 +970,69 @@ TEST_F(ProcessControlFrameTest, RemoveReaderFromAllMdChannels) {
     EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") == names.end());
 }
 
-// 通道未就绪 (行情进程未发 NOTIFY_MD_STARTED): 拒绝接入, 读者不入列表
+// 通道未就绪 (行情进程未发 NOTIFY_MD_STARTED): 拒绝接入, 读者不入列表, 回 RTN "channel not ready"
 TEST_F(ProcessControlFrameTest, MdReaderRegisterRejectsNotReadyChannel) {
     register_strategy_for_test(registry_, "alpha");
     shm_mgr_->create_md_channel("dzmd_ctp");  // 建通道但不宣告就绪
 
     auto writer = create_writer("stg_sim");
+    shm::Reader reader = create_reader("rtn_not_ready");
     write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp", "stg.alpha");
     shm_mgr_->drain_event_channel();
 
     auto meta = shm::ChannelMeta::open_only("dzmd_ctp", dztrader::paths::shm());
     auto names = meta.reader_names();
     EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") == names.end());
+
+    // RTN 精确文案: channel not ready (通道未就绪)
+    bool rtn_msg_ok = false;
+    for (int i = 0; i < 16; ++i) {
+        const auto* frame = reader.next_frame();
+        if (!frame) break;
+        shm::FrameView view(frame);
+        if (view.type() == DZ_FRAME_RTN_MD_READER_REGISTER &&
+            std::string_view(view.ext_inst_id()) == "stg.alpha") {
+            auto j = shm::decode_ext_inst_json<nlohmann::json>(view);
+            rtn_msg_ok = !j.value("ok", true) &&
+                         j.value("message", std::string{}) == "channel not ready";
+        }
+    }
+    EXPECT_TRUE(rtn_msg_ok);
+}
+
+// 坏 payload 拒绝路径: 缺 subscriber 字段的 1013 帧被忽略 (无法获知请求方身份, 不回 RTN)
+TEST_F(ProcessControlFrameTest, MdReaderRegisterBadPayloadIsIgnored) {
+    register_strategy_for_test(registry_, "alpha");
+    shm_mgr_->create_md_channel("dzmd_ctp");
+
+    auto writer = create_writer("stg_sim");
+    mark_channel_ready(writer, "dzmd_ctp");
+    shm_mgr_->drain_event_channel();
+    shm::Reader reader = create_reader("rtn_bad_payload");
+
+    // 写缺 subscriber 字段的坏 payload 帧 (契约 shm bad_payload 路径: 不崩溃且不回 RTN)
+    nlohmann::json payload = {{"foo", 1}};
+    ASSERT_TRUE(shm::write_ext_inst_json(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp",
+                                         payload));
+    writer.notify_subscribers();
+    shm_mgr_->drain_event_channel();
+
+    // 读者不入列
+    auto meta = shm::ChannelMeta::open_only("dzmd_ctp", dztrader::paths::shm());
+    auto names = meta.reader_names();
+    EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") == names.end());
+
+    // 无法获知请求方身份 -> 不回 RTN
+    bool saw_rtn = false;
+    for (int i = 0; i < 16; ++i) {
+        const auto* frame = reader.next_frame();
+        if (!frame) break;
+        shm::FrameView view(frame);
+        if (view.type() == DZ_FRAME_RTN_MD_READER_REGISTER) {
+            saw_rtn = true;
+        }
+    }
+    EXPECT_FALSE(saw_rtn);
 }
 
 // 任意已注册进程可接入 (不限策略): 内部进程裸名身份注册成功
