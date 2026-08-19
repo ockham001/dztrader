@@ -79,6 +79,21 @@ protected:
         return entry;
     }
 
+    ProcessEntry make_internal_entry(const std::string& name, Category category,
+                                     const std::vector<std::string>& args = {}) {
+        ProcessEntry entry;
+        entry.name = name;
+        entry.category = category;
+        entry.exe = worker_exe_;
+        entry.args = args;
+        entry.start_dir = worker_exe_.parent_path().empty()
+            ? std::filesystem::current_path()
+            : worker_exe_.parent_path();
+        entry.restart = default_restart_policy(category);
+        entry.restart.enabled = false;  // 测试场景禁用重启
+        return entry;
+    }
+
     std::filesystem::path tmp_dir_;
     std::filesystem::path cfg_path_;
     std::optional<std::string> orig_home_;
@@ -197,6 +212,33 @@ TEST_F(ProcessSupervisorTest, ShutdownStopsAllChildrenSequentially) {
     // (single_stop_timeout_sec 默认 3s), 全部退出后 children 清空
     ioc_.restart();
     ioc_.run_for(std::chrono::seconds(10));
+    EXPECT_EQ(supervisor.children().size(), 0u);
+
+    orphan_guard_.cleanup();
+}
+
+// 整体关闭多类别逐批推进: 四类各一进程, 依赖每批超时强制终止后进入下一批,
+// 全部退出后 children 清空 (验证批次间 timer 重建与推进链路)
+TEST_F(ProcessSupervisorTest, ShutdownStopsAllCategoriesSequentially) {
+    registry_.register_strategy(make_strategy_entry("stg_a", {"longrun", "60"}));
+    registry_.register_gateway(make_internal_entry("dztd_ctp", Category::GatewayTd, {"longrun", "60"}));
+    registry_.register_gateway(make_internal_entry("dzmd_ctp", Category::GatewayMd, {"longrun", "60"}));
+    registry_.register_gateway(make_internal_entry("dzweb", Category::WebUI, {"longrun", "60"}));
+
+    shm_mgr_ = std::make_unique<ShmManager>(make_default_shm_global(), cfg_path_);
+    orphan_guard_.startup();
+
+    // single_stop_timeout_sec=1: 每批 1s 超时, 4 批最坏 4s, 测试可控
+    ProcessSupervisor supervisor(ioc_, registry_, *shm_mgr_, orphan_guard_, /*single_stop_timeout_sec=*/1);
+    supervisor.start_all();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    supervisor.shutdown();
+    EXPECT_TRUE(supervisor.is_shutting_down());
+
+    // worker 不读事件通道 -> REQUEST_SHUTDOWN 无效, 依赖各批超时强制终止
+    ioc_.restart();
+    ioc_.run_for(std::chrono::seconds(12));
     EXPECT_EQ(supervisor.children().size(), 0u);
 
     orphan_guard_.cleanup();

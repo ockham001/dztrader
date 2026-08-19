@@ -4,7 +4,7 @@
  *
  * 流程: 临时 DZTRADER_HOME -> spawn 真实 dztraderd.exe -> master 拉起行情/交易网关 + dzweb + 策略 stg_demo
  *       -> 事件通道帧回路断言 + dzweb /health HTTP 探测 + 空账户拒单闭环 (stg_demo order 退出码 3)
- *       -> REQUEST_SHUTDOWN_ALL -> 终止 master -> 清理。
+ *       -> 定向 REQUEST_SHUTDOWN (md/td/webui) -> 各进程 Stopped -> 终止 master -> 清理。
  *
  * 注意:
  * - Windows NamedSemaphore 为机器全局命名空间 ("dz.sem.<name>"), 与并行测试/dev 栈互扰,
