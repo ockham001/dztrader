@@ -173,6 +173,17 @@ void ShmManager::handle_process_control(const shm::FrameView& view) {
 }
 
 void ShmManager::handle_process_start(const platform::ProcessControlReq& req) {
+    // 0. 整体关闭期间拒绝 Start: 避免动态注册写入配置却不启动 (半应用副作用),
+    //    以及新进程不在关闭批次内导致关闭悬停 (自检收尾)。与 stop_process 守卫对称。
+    if (supervisor_->is_shutting_down()) {
+        const std::string err = std::format("start rejected, full shutdown in progress | target={}",
+                                            req.target);
+        SPDLOG_WARN("{}", err);
+        notify_ui_.error(err);
+        supervisor_->send_process_status(req.target, ChildState::Crashed, 0, err,
+                                         platform::ProcessEvent::StartFailed);
+        return;
+    }
     // 1. 未注册 target（契约 process修订）: 实时扫描 App Root, 找到同名网关 exe 则
     //    动态注册（registry + dztraderd.json + store 镜像）后继续启动流程;
     //    exe 不存在或非网关进程（策略有独立注册流程）才回 StartFailed。

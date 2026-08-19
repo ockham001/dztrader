@@ -69,7 +69,9 @@ void ShmManager::update_subscribers(std::string_view channel_name,
         return;
     }
 
-    auto it = md_channels_.find(std::string(channel_name));
+    // 查表 key 与 create/close/mark/register 统一用 shm::channel_name (自检收尾,
+    // 当前为恒等变换; 该函数无生产调用方, 属既有保留代码, 仅保持一致)
+    auto it = md_channels_.find(shm::channel_name(channel_name));
     if (it != md_channels_.end() && it->second.meta) {
         it->second.meta->clear_readers();
         for (const auto& sub : subscribers) {

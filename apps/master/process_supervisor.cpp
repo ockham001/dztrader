@@ -156,11 +156,9 @@ void ProcessSupervisor::send_current_shutdown_batch() {
         }
         if (any_running) {
             // 批次逐批串行, 最坏 N 批 × single_stop_timeout_sec_ (默认 3s, 四类批次最坏 12s)。
-            // main.cpp 信号处理器中的 10s 硬超时 (release_all + ioc.stop) 仍是最终兜底:
-            // 若全部子进程挂死不退出, 硬超时先于最后批次强杀触发。注意硬超时路径
-            // orphan_guard.cleanup() 会清空持久化的子进程 PID 记录, 故残留的孤儿
-            // 无法由下次启动的 OrphanGuard 回收, 只能人工清理 (病态场景, 实际风险低)。
-            // 属既有安全网, 不修改。
+            // main.cpp 信号处理器中的 10s 硬超时仍是最终兜底: 硬超时回调先
+            // force_terminate_all 强杀剩余子进程 (消除逐批超时后的尾批孤儿),
+            // 再 release_all + ioc.stop。属既有安全网, 仅补强杀不改变语义。
             // 批次超时定时器: 超时强制终止仍在运行的批次成员;
             // 取消由 advance_shutdown_batch 在批次完成时触发 (事件驱动, 无轮询)
             // 捕获排定下标: 防"旧 timer 已过期入队、批次已推进"时误杀新批次 (自检 P1)
@@ -220,13 +218,13 @@ void ProcessSupervisor::advance_shutdown_batch() {
 }
 
 void ProcessSupervisor::force_terminate_all() {
-    // 二次 Ctrl+C 路径: 强制终止所有仍在运行的子进程, 避免孤儿
+    // 二次 Ctrl+C / 硬超时路径: 强制终止所有仍在运行的子进程, 避免孤儿
     // 与 shutdown() 的超时强制终止逻辑一致, 但不发送 REQUEST_SHUTDOWN, 不启超时定时器
-    // 信号处理上下文调用, 每个子进程独立 try-catch 避免一个失败影响其他
+    // 信号处理上下文 / 硬超时回调调用, 每个子进程独立 try-catch 避免一个失败影响其他
     for (auto& child : children_) {
         if (child && child->state() != ChildState::Stopped) {
             try {
-                SPDLOG_WARN("force terminating on second signal | name={}", child->name());
+                SPDLOG_WARN("force terminating | name={}", child->name());
                 child->terminate();
             } catch (const std::exception& e) {
                 SPDLOG_CRITICAL("force terminate failed | name={} error=\"{}\"",
