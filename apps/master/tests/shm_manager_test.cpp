@@ -1244,5 +1244,74 @@ TEST_F(ProcessControlFrameTest, CloseKeepsFilesDestroyRemoves) {
     EXPECT_FALSE(std::filesystem::exists(ch_dir));  // 移除删除文件
 }
 
+// Remove 未运行进程(兜底路径 notify_removed_for_inactive): 配置段删除 + 118 条目消失
+// + 116 RemoveSucceeded + 通道目录销毁 + 二次 Remove 不幂等(RemoveFailed)。
+// 模拟"曾配置/曾启动"的通道态: 目录存在(进程未运行, 走 notify_removed_for_inactive)。
+TEST_F(ProcessControlFrameTest, RemoveInactiveGatewayFinalizesFully) {
+    shm_mgr_->create_md_channel("dzmd_ctp");
+    const auto ch_dir = dztrader::paths::shm() / "dzmd_ctp";
+    ASSERT_TRUE(std::filesystem::exists(ch_dir));
+
+    auto writer = create_writer("remove_probe");
+    auto reader = create_reader("remove_rtn_probe");
+    write_process_control_frame(writer, platform::ProcessAction::Remove, "dzmd_ctp");
+    for (int i = 0; i < 10; ++i) {
+        shm_mgr_->drain_event_channel();
+    }
+
+    // 通道目录销毁 (BUG-1 回归保护: category 拷贝错误时 destroy 被跳过、目录残留)
+    EXPECT_FALSE(std::filesystem::exists(ch_dir));
+
+    // json 配置段删除 (persist 链, 重新解析 cfg_path_)
+    nlohmann::json cfg;
+    {
+        std::ifstream ifs(cfg_path_);
+        ifs >> cfg;
+    }
+    EXPECT_FALSE(cfg.contains("md") && cfg["md"].contains("dzmd_ctp"));
+
+    // 帧序(写入顺序): 118(条目消失) -> 116 自发 Stopped -> 116 RemoveSucceeded。
+    // 一次性收集后断言: 118 先于 116 写入, 顺序 next_frame 扫描会先消费掉 118。
+    // event 为 optional, 缺失时序列化省略该字段 (platform/process.h to_json),
+    // value("event", "") 对自发帧返回空串、对请求帧返回事件名字符串。
+    auto frames = drain_all(reader);
+    // 116: RemoveSucceeded + Stopped
+    bool remove_ok = false;
+    auto it = frames.find(DZ_FRAME_RTN_PROCESS_STATUS);
+    ASSERT_NE(it, frames.end());
+    for (const auto& st : it->second) {
+        if (st.value("name", "") == "dzmd_ctp" &&
+            st.value("event", "") == "RemoveSucceeded" &&
+            st.value("state", "") == "Stopped") {
+            remove_ok = true;
+        }
+    }
+    EXPECT_TRUE(remove_ok);
+
+    // 118: 全量配置 map 中 dzmd_ctp 条目消失 (移除完成权威信号)
+    auto cit = frames.find(DZ_FRAME_RTN_PROCESS_CONFIG);
+    ASSERT_NE(cit, frames.end());
+    EXPECT_FALSE(cit->second.back().contains("dzmd_ctp"));
+
+    // 二次 Remove 不幂等: RemoveFailed (registry/store 已全清, 与契约 process 一致)
+    write_process_control_frame(writer, platform::ProcessAction::Remove, "dzmd_ctp");
+    for (int i = 0; i < 10; ++i) {
+        shm_mgr_->drain_event_channel();
+    }
+    bool second_failed = false;
+    {
+        auto frames2 = drain_all(reader);
+        auto it2 = frames2.find(DZ_FRAME_RTN_PROCESS_STATUS);
+        ASSERT_NE(it2, frames2.end());
+        for (const auto& st : it2->second) {
+            if (st.value("name", "") == "dzmd_ctp" &&
+                st.value("event", "") == "RemoveFailed") {
+                second_failed = true;
+            }
+        }
+    }
+    EXPECT_TRUE(second_failed);
+}
+
 }  // namespace
 }  // namespace dztrader::master
