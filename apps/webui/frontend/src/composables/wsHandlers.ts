@@ -11,6 +11,7 @@ import { useNotifyStore } from '@/stores/notify'
 import { useProcessStore } from '@/stores/process'
 import { useProgressStore } from '@/stores/progress'
 import { useMarketSourcesStore } from '@/stores/marketSources'
+import { useSettingsStore } from '@/stores/settings'
 import type { LogLine, ProcessStatusPayload, MdConfigPayload, MdRtnConfigPayload, MdRtnStatusPayload } from '@/types/api'
 
 registerHandler('data_changed', (payload) => {
@@ -51,7 +52,7 @@ registerHandler('snapshot', (payload) => {
   // QUERY_ALL 补拉，断线重连期间的挂起 pending 靠这里清除，否则悬挂至超时）。
   // log_config：日志进程列表经 applySnapshot 整体重建（随快照增删，保持列表一致），
   // 并兜底清 set_level pending（契约 webui-ws §6）；md_shm_config 已消费（契约 shm SHM 配置镜像，
-  // 分发复用增量帧 apply）；event_shm_config（挂 dztraderd）前端无 store 消费，忽略；
+  // 分发复用增量帧 apply）；event_shm_config 已消费（契约 shm 事件通道配置镜像，分发复用增量帧 apply）；
   // auto_login 已消费（契约 auto-login 排程镜像）。
   const mirror = (payload ?? {}) as Record<string, Record<string, unknown>>
   const logs = useLogsStore()
@@ -83,11 +84,14 @@ registerHandler('snapshot', (payload) => {
           // 契约 shm: snapshot 分发复用增量帧 apply（展示镜像 + 清悬挂 pending）
           mdConfigStore.applyMdShmConfig(instanceId, value)
           break
+        case 'event_shm_config':
+          // 契约 shm: snapshot 分发复用增量帧 apply (挂 dztraderd, 系统设置页展示)
+          useSettingsStore().applyEventShmConfig(value)
+          break
         case 'progress':
           progressStore.applyProgress(instanceId, value)
           break
-        // log_config 已由上方 applySnapshot 整体重建并兜底清 set_level pending；
-        // event_shm_config（挂 dztraderd）前端无 store 消费，忽略
+        // log_config 已由上方 applySnapshot 整体重建并兜底清 set_level pending
       }
     }
   }
@@ -135,7 +139,7 @@ registerHandler('md_rtn_status', (payload) => {
 
 registerHandler('md_shm_config', (payload, instanceId) => {
   // 契约 shm: RTN_MD_SHM_CONFIG → WS md_shm_config（data=ShmConfig 全量, instance_id=行情进程名）
-  // 到达清 shm_config pending; event_shm_config（挂 dztraderd）前端不消费
+  // 到达清 shm_config pending
   if (instanceId) {
     useMdConfigStore().applyMdShmConfig(instanceId, payload)
   }
@@ -189,4 +193,10 @@ registerHandler('progress', (payload, instanceId) => {
   if (instanceId) {
     useProgressStore().applyProgress(instanceId, payload)
   }
+})
+
+registerHandler('event_shm_config', (payload) => {
+  // 契约 shm: RTN_EVENT_SHM_CONFIG → WS event_shm_config (data=ShmConfig 全量, 挂 dztraderd)
+  // 到达清事件通道配置 pending; 系统设置页展示镜像
+  useSettingsStore().applyEventShmConfig(payload)
 })
