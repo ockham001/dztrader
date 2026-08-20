@@ -174,18 +174,19 @@ void ShmManager::close_md_channel(std::string_view source_name) {
     if (it == md_channels_.end()) {
         return;
     }
+    // 先复位就绪: 防 clear_readers 抛异常时残留 ready=true (残留会让通道校验放行读者接入)
+    it->second.ready = false;
     if (it->second.meta) {
         it->second.meta->clear_readers();
         it->second.meta.reset();
     }
-    it->second.ready = false;
     SPDLOG_INFO("md channel closed | source={}", source_name);
 }
 
 void ShmManager::destroy_md_channel(std::string_view source_name) {
     // 移除语义 (设计 spec: md 通道移除清理): 先执行停止后果 (清读者+释放句柄),
-    // 再删除通道目录与条目。删除失败记录告警不崩溃 (Windows 文件占用时,
-    // 仅当同源被重新添加时 open_or_create 重建 meta、cleaner 恢复清理)。
+    // 再删除通道目录与条目。删除失败记录告警 (日志+toast) 不崩溃 (Windows 文件
+    // 占用时, 仅当同源被重新添加时 open_or_create 重建 meta、cleaner 恢复清理)。
     const auto it = md_channels_.find(shm::channel_name(source_name));
     if (it == md_channels_.end() || !it->second.meta) {
         // 通道不存在或已关闭: 仍尝试删除残留目录 (进程未运行即移除场景), 幂等
@@ -194,8 +195,12 @@ void ShmManager::destroy_md_channel(std::string_view source_name) {
         const auto removed = std::filesystem::remove_all(
             dztrader::paths::shm() / shm::channel_name(source_name), ec);
         if (ec) {
-            SPDLOG_WARN("md channel dir remove failed | source={} error=\"{}\"", source_name,
-                        ec.message());
+            // 移除是用户发起操作, 删除失败有磁盘残留风险: ERROR + toast 告警供排查
+            SPDLOG_ERROR("md channel dir remove failed | source={} error=\"{}\"", source_name,
+                         ec.message());
+            notify_ui_.warn(
+                std::string("md channel dir remove failed, residual on disk | source=") +
+                std::string(source_name));
         } else if (removed > 0) {
             SPDLOG_INFO("md channel residual dir removed | source={} entries={}", source_name,
                         removed);
@@ -206,20 +211,27 @@ void ShmManager::destroy_md_channel(std::string_view source_name) {
     it->second.meta->clear_readers();
     it->second.meta.reset();
     it->second.ready = false;
-    try {
-        std::filesystem::remove_all(dztrader::paths::shm() / shm::channel_name(source_name));
-    } catch (const std::exception& e) {
-        SPDLOG_WARN("md channel dir remove failed | source={} error=\"{}\"", source_name, e.what());
+    std::error_code ec;
+    const auto removed = std::filesystem::remove_all(
+        dztrader::paths::shm() / shm::channel_name(source_name), ec);
+    if (ec) {
+        // 移除是用户发起操作, 删除失败有磁盘残留风险: ERROR + toast 告警供排查
+        SPDLOG_ERROR("md channel dir remove failed | source={} error=\"{}\"", source_name,
+                     ec.message());
+        notify_ui_.warn(std::string("md channel dir remove failed, residual on disk | source=") +
+                        std::string(source_name));
+    } else {
+        SPDLOG_INFO("md channel destroyed | source={} entries={}", source_name, removed);
     }
     md_channels_.erase(shm::channel_name(source_name));
-    SPDLOG_INFO("md channel destroyed | source={}", source_name);
 }
 
 void ShmManager::mark_md_channel_ready(std::string_view source_name) {
     auto it = md_channels_.find(shm::channel_name(source_name));
     if (it == md_channels_.end() || !it->second.meta) {
         // 未知行情进程或通道已关闭 (不在 master 编排内), 忽略
-        SPDLOG_DEBUG("md started ignored for unknown/closed channel | source={}", source_name);
+        // INFO 级: 编排不一致 (md 宣告但 master 不认识) 生产环境应可见, 量极低 (每源每次启动至多 1 条)
+        SPDLOG_INFO("md started ignored for unknown/closed channel | source={}", source_name);
         return;
     }
     it->second.ready = true;

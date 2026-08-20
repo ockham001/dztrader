@@ -54,8 +54,11 @@ void ShmManager::notify_md_channel_subscriber_update(std::string_view source_nam
     // 行情进程（dzmd_ctp）的 reader 收到后判断 instance_id == name_,
     // 调用 spi_.refresh_subscribers() 刷新行情通道 writer 缓存的订阅者列表（内部加自旋锁）
     // dzweb/其他进程收到 instance_id != "*" 的帧时忽略（不订阅行情通道）
-    platform::write_ext_inst_raw(event_writer_, DZ_FRAME_UPDATE_SHM_MD_SUBSCRIBER, source_name);
-    SPDLOG_INFO("md channel subscriber update notified | source={}", source_name);
+    if (platform::write_ext_inst_raw(event_writer_, DZ_FRAME_UPDATE_SHM_MD_SUBSCRIBER,
+                                     source_name)) {
+        SPDLOG_INFO("md channel subscriber update notified | source={}", source_name);
+    }
+    // 写失败由 frame_codec 内部记 ERROR, 此处不再打成功日志误导
 }
 
 void ShmManager::update_subscribers(std::string_view channel_name,
