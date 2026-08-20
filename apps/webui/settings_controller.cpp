@@ -40,6 +40,50 @@ void SettingsCtrl::set_event_shm_config(
     callback(json_response(drogon::k200OK, {{"ok", true}, {"message", "dispatched"}}));
 }
 
+// GET /api/settings/master (只读: 清理策略/停止超时 UI 可编辑属后续计划, 契约仅允许改配置文件)
+void SettingsCtrl::get_master(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+    if (!is_admin(req)) {
+        callback(error_response(drogon::k403Forbidden, "forbidden"));
+        return;
+    }
+    Json master = Json::object();
+    Json shm = Json::object();
+    if (std::filesystem::exists(master_config_path_)) {
+        // 契约: 段缺失/文件不可读时 load_json_section 返回 null, 需 is_object 守卫后兜底默认值
+        try {
+            auto m = dztrader::core::load_json_section<nlohmann::json>(master_config_path_, "master");
+            if (m.is_object()) master = m;
+        } catch (const std::exception& e) {
+            spdlog::warn("load master section failed | error={}", e.what());
+        }
+        try {
+            auto s = dztrader::core::load_json_section<nlohmann::json>(master_config_path_, "shm");
+            if (s.is_object()) shm = s;
+        } catch (const std::exception& e) {
+            spdlog::warn("load shm section failed | error={}", e.what());
+        }
+    }
+    // 字段类型防御: 若字段存在但类型非法(如字符串), .value() 会抛 type_error,
+    // 统一用 read_uint 校验 is_number_unsigned 后兜底默认值
+    auto read_uint = [](const Json& obj, const char* key, uint64_t fallback) -> uint64_t {
+        if (!obj.is_object()) return fallback;
+        const auto it = obj.find(key);
+        if (it == obj.end() || !it->is_number_unsigned()) return fallback;
+        return it->get<uint64_t>();
+    };
+    // 与 master 运行时 clamp 一致 (config.cpp:117-121 将 <1 钳制到 1), 展示生效值而非文件原始值
+    uint64_t stop_to = read_uint(master, "single_stop_timeout_sec", 3);
+    if (stop_to < 1) stop_to = 1;
+    callback(json_response(drogon::k200OK, {
+        {"single_stop_timeout_sec", stop_to},
+        {"cleanup_max_page_count", read_uint(master, "cleanup_max_page_count", 200)},
+        {"cleanup_max_page_age_hours", read_uint(master, "cleanup_max_page_age_hours", 24)},
+        {"meta_file_size", read_uint(shm, "meta_file_size", 1024 * 1024)},
+    }));
+}
+
 // GET /api/settings/webui
 // 注: 不返回 log_level——dzweb 日志级别运行期可经「日志」页修改, 此处展示会失真且重复, 归属日志页管理
 void SettingsCtrl::get_webui(
@@ -184,18 +228,6 @@ void SettingsCtrl::set_webui(
     if (has_ttl) webui_cfg_->token_ttl_sec = body["token_ttl_sec"].get<uint32_t>();
     if (has_cache) webui_cfg_->notify_cache_size = body["notify_cache_size"].get<size_t>();
     callback(json_response(drogon::k200OK, {{"ok", true}}));
-}
-
-// get_master 为 Task 4 期的 stub（保证本 Task 独立可链接、可测），
-// Task 4 实现 get_master 时整体替换。
-void SettingsCtrl::get_master(
-    const drogon::HttpRequestPtr& req,
-    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
-    if (!is_admin(req)) {
-        callback(error_response(drogon::k403Forbidden, "forbidden"));
-        return;
-    }
-    callback(json_response(drogon::k200OK, Json::object()));
 }
 
 }  // namespace dztrader::webui

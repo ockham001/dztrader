@@ -204,5 +204,77 @@ TEST_F(SettingsControllerTest, SetWebuiRejectsTooSmallTtl) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
 }
 
+TEST_F(SettingsControllerTest, GetMasterReadsSections) {
+    {
+        std::ofstream ofs(master_path_);
+        ofs << R"({"master":{"single_stop_timeout_sec":5,"cleanup_max_page_count":100,
+                   "cleanup_max_page_age_hours":12},"shm":{"meta_file_size":2097152,"event":{}}})";
+    }
+    auto resp = invoke(&SettingsCtrl::get_master, admin_req());
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    auto body = parse_body(resp);
+    EXPECT_EQ(body["single_stop_timeout_sec"], 5);
+    EXPECT_EQ(body["cleanup_max_page_count"], 100);
+    EXPECT_EQ(body["cleanup_max_page_age_hours"], 12);
+    EXPECT_EQ(body["meta_file_size"], 2097152);
+}
+
+TEST_F(SettingsControllerTest, GetMasterDefaultsWhenMissing) {
+    // master_path_ 指向不存在文件
+    auto resp = invoke(&SettingsCtrl::get_master, admin_req());
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    auto body = parse_body(resp);
+    EXPECT_EQ(body["single_stop_timeout_sec"], 3);
+    EXPECT_EQ(body["cleanup_max_page_count"], 200);
+    EXPECT_EQ(body["cleanup_max_page_age_hours"], 24);
+    EXPECT_EQ(body["meta_file_size"], 1024 * 1024);
+}
+
+TEST_F(SettingsControllerTest, GetMasterClampsStopTimeout) {
+    // master 运行时将 <1 的 single_stop_timeout_sec 钳制到 1 (config.cpp), 展示应反映生效值
+    {
+        std::ofstream ofs(master_path_);
+        ofs << R"({"master":{"single_stop_timeout_sec":0}})";
+    }
+    auto resp = invoke(&SettingsCtrl::get_master, admin_req());
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_EQ(parse_body(resp)["single_stop_timeout_sec"], 1);
+}
+
+TEST_F(SettingsControllerTest, GetMasterFallsBackOnTypeError) {
+    // 字段存在但类型非法 (字符串): read_uint 兜底默认值
+    {
+        std::ofstream ofs(master_path_);
+        ofs << R"({"master":{"single_stop_timeout_sec":"abc"},"shm":{}})";
+    }
+    auto resp = invoke(&SettingsCtrl::get_master, admin_req());
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    auto body = parse_body(resp);
+    EXPECT_EQ(body["single_stop_timeout_sec"], 3);
+    EXPECT_EQ(body["cleanup_max_page_count"], 200);
+    EXPECT_EQ(body["cleanup_max_page_age_hours"], 24);
+    EXPECT_EQ(body["meta_file_size"], 1024 * 1024);
+}
+
+TEST_F(SettingsControllerTest, GetMasterFallsBackOnBadJson) {
+    // 文件 JSON 损坏: 解析失败走 catch + 默认值, 不 500
+    {
+        std::ofstream ofs(master_path_);
+        ofs << "{not json";
+    }
+    auto resp = invoke(&SettingsCtrl::get_master, admin_req());
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    auto body = parse_body(resp);
+    EXPECT_EQ(body["single_stop_timeout_sec"], 3);
+    EXPECT_EQ(body["cleanup_max_page_count"], 200);
+    EXPECT_EQ(body["cleanup_max_page_age_hours"], 24);
+    EXPECT_EQ(body["meta_file_size"], 1024 * 1024);
+}
+
+TEST_F(SettingsControllerTest, GetMasterForbidsNonAdmin) {
+    auto resp = invoke(&SettingsCtrl::get_master, user_req());
+    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+}
+
 }  // namespace
 }  // namespace dztrader::webui
