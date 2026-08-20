@@ -30,6 +30,7 @@ export const appRoutes: RouteRecordRaw[] = [
   { path: '/settlement', name: 'settlement', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '结算', icon: 'time' } },
   { path: '/risk', name: 'risk', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '风控', icon: 'context' } },
   { path: '/user-management', name: 'user-management', component: () => import('@/views/UserManagementView.vue'), meta: { title: '访问控制', icon: 'shield', requiresAdmin: true } },
+  { path: '/settings', name: 'settings', component: () => import('@/views/SettingsView.vue'), meta: { title: '系统设置', icon: 'settings', requiresAdmin: true } },
   { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue'), meta: { public: true } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
