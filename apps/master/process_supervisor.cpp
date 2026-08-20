@@ -155,6 +155,8 @@ void ProcessSupervisor::send_current_shutdown_batch() {
             }
         }
         if (any_running) {
+            SPDLOG_INFO("shutdown batch {}/{} stopping | members={}",
+                        shutdown_batch_index_ + 1, shutdown_batches_.size(), batch.size());
             // 批次逐批串行, 最坏 N 批 × single_stop_timeout_sec_ (默认 3s, 四类批次最坏 12s)。
             // main.cpp 信号处理器中的 10s 硬超时仍是最终兜底: 硬超时回调先
             // force_terminate_all 强杀剩余子进程 (消除逐批超时后的尾批孤儿),
@@ -625,10 +627,16 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
         // 步骤 6: 若属于 remove 流程, 删除 dztraderd.json [md.<name>]/[td.<name>] 段
         // (流程契约要求: 删除配置在 on_child_exit 中执行, 不能同步在 stop_process 之后)
         bool is_remove_flow = consume_remove_pending(name);
-        if (is_remove_flow) {
+        // 移除窗口内同名源被重新添加(registry 条目重现): 用户意图已翻转为保留,
+        // 跳过移除收尾的配置段删除与通道销毁 —— 反删刚写回的配置会造成
+        // json/registry/store 三态不一致, master 重启后该源永久丢失
+        const bool remove_flow_re_added =
+            is_remove_flow && registry_.find(name) != nullptr;
+        if (is_remove_flow && !remove_flow_re_added) {
             const auto& cfg_path = shm_mgr_.config_path();
-            const auto* entry = registry_.find(name);
-            const Category category = entry ? entry->category : Category::GatewayMd;
+            // category 取 child->entry(): registry 条目已被 store remove 的 apply
+            // 回调删除, find 恒 miss, 兜底值会对 td 目标查错段 (BUG-3.1)
+            const Category category = child->entry().category;
             try {
                 remove_gateway_section(cfg_path, category, name);
                 SPDLOG_INFO("gateway section removed (on remove flow) | name={} path={}",
@@ -677,12 +685,13 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
         // md 进程退出时执行通道生命周期 (dztraderd 架构 + 设计 spec 移除清理):
         // - Remove 流程: 配置已删, 彻底删除通道文件与条目 (destroy_md_channel)
         // - 停止/崩溃 (待重启): 清读者+关闭通道, 保留文件待重启复用 (close_md_channel)
+        // - 移除窗口内重加: 按正常停止处理 (close), 保留文件待新进程启动
         // 两者统一由主进程执行; 随后代发 NOTIFY_MD_STOPPED
         // (崩溃时 dzmd_ctp 自己无法广播, 由 master 代发; 正常停止时也需通知)
         // 独立 try-catch: 不阻塞后续崩溃通知/重启逻辑
         if (child->entry().category == Category::GatewayMd) {
             try {
-                if (is_remove_flow) {
+                if (is_remove_flow && !remove_flow_re_added) {
                     shm_mgr_.destroy_md_channel(name);
                 } else {
                     shm_mgr_.close_md_channel(name);
