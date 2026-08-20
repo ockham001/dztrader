@@ -33,6 +33,7 @@ add_library(dzweb_obj OBJECT
     process_controller.cpp
     process_mirror.cpp
     notify_controller.cpp
+    settings_controller.cpp
 )
 target_link_libraries(dzweb_obj PUBLIC
     Drogon::Drogon
