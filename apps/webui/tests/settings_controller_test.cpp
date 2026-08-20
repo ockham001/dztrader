@@ -71,6 +71,7 @@ protected:
         webui_path_ = std::filesystem::temp_directory_path() / "dz_settings_webui_test.json";
         std::filesystem::remove(master_path_);
         std::filesystem::remove(webui_path_);
+        remove_corrupt_backups();   // 防历史运行残留的备份文件弱化备份断言
 
         ctrl_ = std::make_shared<SettingsCtrl>(
             repo_, shm_writer, master_path_, webui_path_, webui_cfg_);
@@ -84,10 +85,22 @@ protected:
         }
     }
 
+    // 清理 webui.json.corrupt.* 备份残留: SetUp 防历史残留弱化备份断言, TearDown 不留垃圾
+    void remove_corrupt_backups() {
+        const std::string prefix = webui_path_.filename().string() + ".corrupt.";
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(webui_path_.parent_path(), ec)) {
+            if (entry.path().filename().string().find(prefix) == 0) {
+                std::filesystem::remove(entry.path(), ec);
+            }
+        }
+    }
+
     void TearDown() override {
         std::filesystem::remove_all(shm_dir_);
         std::filesystem::remove(webui_path_);
         std::filesystem::remove(master_path_);
+        remove_corrupt_backups();
     }
 
     drogon::HttpRequestPtr admin_req() {
