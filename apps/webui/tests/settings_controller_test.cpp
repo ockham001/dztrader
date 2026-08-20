@@ -66,16 +66,29 @@ protected:
         webui_cfg_->jwt_secret = "secret";
         webui_cfg_->notify_cache_size = 100;
 
-        master_path_ = std::filesystem::temp_directory_path() / "dztraderd_test.json";
-        webui_path_ = std::filesystem::temp_directory_path() / "webui_test.json";
+        // 临时文件名带 dz_settings_ 前缀, 避免与 config_test.cpp 的 webui_test.json 在临时目录碰撞
+        master_path_ = std::filesystem::temp_directory_path() / "dz_settings_dztraderd_test.json";
+        webui_path_ = std::filesystem::temp_directory_path() / "dz_settings_webui_test.json";
         std::filesystem::remove(master_path_);
         std::filesystem::remove(webui_path_);
 
         ctrl_ = std::make_shared<SettingsCtrl>(
             repo_, shm_writer, master_path_, webui_path_, webui_cfg_);
+
+        // Task 3: 写初始 webui.json, 供 get_webui / set_webui 测试
+        {
+            std::ofstream ofs(webui_path_);
+            ofs << R"({"server":{"listen":"0.0.0.0","port":8080},"log":{"level":"info"},
+                       "auth":{"jwt_secret":"secret","token_ttl_sec":3600},
+                       "admin":{"username":"admin"},"notify":{"cache_size":100}})";
+        }
     }
 
-    void TearDown() override { std::filesystem::remove_all(shm_dir_); }
+    void TearDown() override {
+        std::filesystem::remove_all(shm_dir_);
+        std::filesystem::remove(webui_path_);
+        std::filesystem::remove(master_path_);
+    }
 
     drogon::HttpRequestPtr admin_req() {
         auto req = drogon::HttpRequest::newHttpRequest();
@@ -147,6 +160,47 @@ TEST_F(SettingsControllerTest, SetEventShmConfigRejectsMalformedJson) {
     auto req = admin_req();
     req->setBody("{not json");
     auto resp = invoke(&SettingsCtrl::set_event_shm_config, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(SettingsControllerTest, GetWebuiReturnsMasked) {
+    auto resp = invoke(&SettingsCtrl::get_webui, admin_req());
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    auto body = parse_body(resp);
+    EXPECT_EQ(body["token_ttl_sec"], 3600);
+    EXPECT_EQ(body["server_port"], 8080);
+    EXPECT_EQ(body["jwt_secret_set"], true);
+    EXPECT_FALSE(body.contains("jwt_secret"));
+}
+
+TEST_F(SettingsControllerTest, SetWebuiPersistsAndHotApplies) {
+    auto req = admin_req();
+    req->setBody(R"({"token_ttl_sec":7200})");
+    auto resp = invoke(&SettingsCtrl::set_webui, req);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    // 热生效: 共享持有者已更新
+    EXPECT_EQ(webui_cfg_->token_ttl_sec, 7200);
+    // 持久化: 文件已写, 且保留其他 section
+    std::ifstream ifs(webui_path_);
+    auto disk = nlohmann::json::parse(ifs);
+    EXPECT_EQ(disk["auth"]["token_ttl_sec"], 7200);
+    EXPECT_EQ(disk["notify"]["cache_size"], 100);
+    EXPECT_EQ(disk["admin"]["username"], "admin");
+}
+
+TEST_F(SettingsControllerTest, SetWebuiRejectsUnknownField) {
+    auto req = admin_req();
+    req->setBody(R"({"jwt_secret":"x"})");
+    auto resp = invoke(&SettingsCtrl::set_webui, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+    // 拒绝不改状态: 共享持有者保持原值 (热生效字段未被误改)
+    EXPECT_EQ(webui_cfg_->token_ttl_sec, 3600);
+}
+
+TEST_F(SettingsControllerTest, SetWebuiRejectsTooSmallTtl) {
+    auto req = admin_req();
+    req->setBody(R"({"token_ttl_sec":30})");
+    auto resp = invoke(&SettingsCtrl::set_webui, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
 }
 

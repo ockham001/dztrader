@@ -14,15 +14,16 @@ namespace {
 class AuthControllerTest : public ::testing::Test {
 protected:
     std::shared_ptr<Repository> repo_;
-    WebuiConfig cfg_;
+    std::shared_ptr<WebuiConfig> cfg_;
     std::shared_ptr<LoginCtrl> ctrl_;
 
     void SetUp() override {
         repo_ = std::make_shared<Repository>(":memory:");
-        cfg_.jwt_secret = "test_secret";
-        cfg_.token_ttl_sec = 3600;
-        cfg_.admin_username = "admin";
-        cfg_.admin_password = "admin_pass";
+        cfg_ = std::make_shared<WebuiConfig>();
+        cfg_->jwt_secret = "test_secret";
+        cfg_->token_ttl_sec = 3600;
+        cfg_->admin_username = "admin";
+        cfg_->admin_password = "admin_pass";
         // Create a test user with the default security config (lockout enabled, max=5, dur=900)
         repo_->create_user("testuser", "Test User", "test@test.com", "password123", "user");
         ctrl_ = std::make_shared<LoginCtrl>(cfg_, repo_);
@@ -62,7 +63,7 @@ TEST_F(AuthControllerTest, LoginSuccessReturns200) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
     auto body = parse_body(resp);
     EXPECT_TRUE(body.contains("token"));
-    EXPECT_EQ(body["expires_in"].get<uint32_t>(), cfg_.token_ttl_sec);
+    EXPECT_EQ(body["expires_in"].get<uint32_t>(), cfg_->token_ttl_sec);
     EXPECT_TRUE(body.contains("user"));
     auto user = body["user"];
     EXPECT_EQ(user["username"].get<std::string>(), "testuser");
@@ -191,7 +192,7 @@ TEST_F(AuthControllerTest, LoginSuccessReturnsValidJWT) {
     ASSERT_FALSE(token.empty());
 
     std::string user_id;
-    const bool ok = jwt_verify(token, cfg_.jwt_secret, user_id);
+    const bool ok = jwt_verify(token, cfg_->jwt_secret, user_id);
     EXPECT_TRUE(ok);
     EXPECT_EQ(user_id, "testuser");
 

@@ -113,17 +113,17 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
         g_broadcast_data_changed("users");
     }
 
-    std::string token = jwt_sign(username, cfg_.token_ttl_sec, cfg_.jwt_secret);
+    std::string token = jwt_sign(username, cfg_->token_ttl_sec, cfg_->jwt_secret);
     // Re-fetch the user so the response reflects the updated last_login fields
     auto refreshed = repo_->get_user_by_username(username);
     Json user_json = user_to_json(refreshed ? *refreshed : *user);
     // 默认密码告警标志:仅 admin 用户、当前密码是默认密码、且未确认告警时返回 true
-    bool is_default_password = cfg_.admin_password_is_default
+    bool is_default_password = cfg_->admin_password_is_default
                                && refreshed && refreshed->role == "admin"
                                && refreshed->default_password_acknowledged == 0;
     callback(json_response(drogon::k200OK,
                            Json{{"token", token},
-                                {"expires_in", cfg_.token_ttl_sec},
+                                {"expires_in", cfg_->token_ttl_sec},
                                 {"user", user_json},
                                 {"is_default_password", is_default_password}}));
 }

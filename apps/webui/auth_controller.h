@@ -12,7 +12,7 @@ namespace dztrader::webui {
 
 class LoginCtrl : public drogon::HttpController<LoginCtrl, false>, public ControllerBase {
 public:
-    LoginCtrl(WebuiConfig cfg, std::shared_ptr<Repository> repo)
+    LoginCtrl(std::shared_ptr<WebuiConfig> cfg, std::shared_ptr<Repository> repo)
         : ControllerBase(std::move(repo)), cfg_(std::move(cfg)) {}
 
     METHOD_LIST_BEGIN
@@ -23,7 +23,7 @@ public:
                std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
 private:
-    WebuiConfig cfg_;
+    std::shared_ptr<WebuiConfig> cfg_;
 };
 
 }  // namespace dztrader::webui

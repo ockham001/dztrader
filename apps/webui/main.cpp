@@ -24,6 +24,7 @@
 #include "market_source_controller.h"
 #include "process_controller.h"
 #include "process_mirror.h"
+#include "settings_controller.h"
 #include "mirror_store.h"
 #include "log_controller.h"
 #include "notify_cache.h"
@@ -199,7 +200,9 @@ int main(int argc, char* argv[]) {
         {drogon::Get});
 
     // 注册 /api/login 控制器
-    auto login_ctrl = std::make_shared<dztrader::webui::LoginCtrl>(cfg, repo);
+    // 共享 WebuiConfig 持有者: SettingsCtrl 热生效 token_ttl_sec 时 LoginCtrl 同步可见
+    auto webui_cfg_holder = std::make_shared<dztrader::webui::WebuiConfig>(cfg);
+    auto login_ctrl = std::make_shared<dztrader::webui::LoginCtrl>(webui_cfg_holder, repo);
     drogon::app().registerController(login_ctrl);
 
     // 注册其他业务控制器（Task 3、Task 4）
@@ -209,6 +212,15 @@ int main(int argc, char* argv[]) {
         std::make_shared<dztrader::webui::MarketSourceCtrl>(repo, shm_writer, process_mirror));
     drogon::app().registerController(
         std::make_shared<dztrader::webui::ProcessCtrl>(repo, process_mirror));
+
+    // 系统设置控制器: 只读展示 dztraderd.json (master 路径固定) + 事件通道(SET_EVENT_SHM_CONFIG)
+    // + webui.json (共享 webui_cfg_holder 与 LoginCtrl, token_ttl_sec 热生效)
+    auto settings_ctrl = std::make_shared<dztrader::webui::SettingsCtrl>(
+        repo, shm_writer,
+        dztrader::paths::configs() / "dztraderd.json",
+        config_path,
+        webui_cfg_holder);
+    drogon::app().registerController(settings_ctrl);
 
     // UI 通知缓存：NotifyDomainService 从 NOTIFY_UI 帧写入，
     // NotifyCtrl 的 GET /api/notifications 读取

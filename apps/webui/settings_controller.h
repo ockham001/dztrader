@@ -59,6 +59,8 @@ private:
     std::shared_ptr<ShmWriter> shm_writer_;
     std::filesystem::path master_config_path_;
     std::filesystem::path webui_config_path_;
+    // 线程安全: 依赖 dzweb setThreadNum(1) 单线程事件循环, 所有访问均在主循环串行执行,
+    // 热生效直接改字段不加锁 (对齐 notify_cache.h 同源不变量)
     std::shared_ptr<WebuiConfig> webui_cfg_;
 };
 
