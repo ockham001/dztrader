@@ -49,6 +49,19 @@ describe('useSettingsStore', () => {
       expect(store.eventShmConfig).toBeNull()
     })
 
+    it('非法 preload_points 形状（条目缺 bytes）→ 镜像不变', () => {
+      const store = useSettingsStore()
+      store.applyEventShmConfig(validPayload)
+      store.applyEventShmConfig({
+        page_size_mb: 32,
+        preload_points: { '09:00': { pages: 1 } },  // 缺 bytes
+        check_interval_min: 5,
+        check_pages: 1,
+        check_bytes: 0,
+      })
+      expect(store.eventShmConfig).toEqual(validPayload)
+    })
+
     it('合法 payload 到达清 pending（用导出的 EVENT_SHM_KEY）', () => {
       const { pending } = usePending()
       const store = useSettingsStore()
@@ -133,6 +146,59 @@ describe('useSettingsStore', () => {
       expect(r).toBe(true)
       expect(settingsApi.setEventShmConfig).not.toHaveBeenCalled()
       expect(usePending().pending[EVENT_SHM_KEY]).toBeUndefined()
+    })
+  })
+
+  describe('loadMaster / loadWebui / setWebui', () => {
+    const masterView = {
+      single_stop_timeout_sec: 5, cleanup_max_page_count: 100, cleanup_max_page_age_hours: 12, meta_file_size: 2097152,
+    }
+    const webuiView = {
+      server_listen: '0.0.0.0', server_port: 8080, token_ttl_sec: 3600, jwt_secret_set: true, notify_cache_size: 100,
+    }
+
+    it('loadMaster 成功写入、失败置 null', async () => {
+      vi.mocked(settingsApi.getMaster).mockResolvedValue(masterView)
+      const store = useSettingsStore()
+      await store.loadMaster()
+      expect(store.master).toEqual(masterView)
+
+      vi.mocked(settingsApi.getMaster).mockRejectedValue(new Error('503'))
+      await store.loadMaster()
+      expect(store.master).toBeNull()
+    })
+
+    it('loadWebui 成功写入、失败置 null', async () => {
+      vi.mocked(settingsApi.getWebui).mockResolvedValue(webuiView)
+      const store = useSettingsStore()
+      await store.loadWebui()
+      expect(store.webui).toEqual(webuiView)
+
+      vi.mocked(settingsApi.getWebui).mockRejectedValue(new Error('503'))
+      await store.loadWebui()
+      expect(store.webui).toBeNull()
+    })
+
+    it('setWebui 成功 → 回填 getWebui、返回 true', async () => {
+      vi.mocked(settingsApi.setWebui).mockResolvedValue({ ok: true })
+      vi.mocked(settingsApi.getWebui).mockResolvedValue({ ...webuiView, token_ttl_sec: 7200 })
+      const store = useSettingsStore()
+      const r = await store.setWebui({ token_ttl_sec: 7200 })
+      expect(r).toBe(true)
+      expect(settingsApi.setWebui).toHaveBeenCalledWith({ token_ttl_sec: 7200 })
+      // 保存成功后回填镜像 (getWebui 被调)
+      expect(settingsApi.getWebui).toHaveBeenCalled()
+      expect(store.webui).toEqual({ ...webuiView, token_ttl_sec: 7200 })
+    })
+
+    it('setWebui PUT 失败 → 返回 false 且不回填', async () => {
+      vi.mocked(settingsApi.setWebui).mockRejectedValue(new Error('400'))
+      const store = useSettingsStore()
+      store.webui = { ...webuiView }
+      const r = await store.setWebui({ token_ttl_sec: 7200 })
+      expect(r).toBe(false)
+      expect(settingsApi.getWebui).not.toHaveBeenCalled()
+      expect(store.webui?.token_ttl_sec).toBe(3600)
     })
   })
 })

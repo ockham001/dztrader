@@ -76,13 +76,18 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   async function setWebui(body: { token_ttl_sec?: number; notify_cache_size?: number }): Promise<boolean> {
+    // 仅 PUT 失败判定为保存失败; 回填镜像失败不影响保存成功
     try {
       await settingsApi.setWebui(body)
-      await loadWebui()   // 回填镜像, 保存后界面立即刷新为生效值 (token_ttl 热生效, cache 重启生效)
-      return true
     } catch {
       return false
     }
+    try {
+      await loadWebui()   // 回填镜像, 保存后界面立即刷新为生效值 (token_ttl 热生效, cache 重启生效)
+    } catch {
+      // 回填失败不影响保存成功
+    }
+    return true
   }
 
   return {

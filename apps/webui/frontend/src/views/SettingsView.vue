@@ -138,11 +138,11 @@ async function saveWebui(): Promise<void> {
         </div>
         <div class="cfg-row">
           <span class="cfg-label">Token 有效期(秒)</span>
-          <div class="ds-input" style="width:120px"><input v-model.number="webuiForm.token_ttl_sec" type="number" min="60"></div>
+          <div class="ds-input" style="width:120px"><input v-model.number="webuiForm.token_ttl_sec" type="number" min="60" max="604800" :disabled="webuiSaving"></div>
         </div>
         <div class="cfg-row">
           <span class="cfg-label">Notify 缓存条数</span>
-          <div class="ds-input" style="width:120px"><input v-model.number="webuiForm.notify_cache_size" type="number" min="0"></div>
+          <div class="ds-input" style="width:120px"><input v-model.number="webuiForm.notify_cache_size" type="number" min="0" max="1000000" :disabled="webuiSaving"></div>
           <span class="ds-tag ds-tag--warning">重启后生效</span>
         </div>
         <div class="cfg-row">
