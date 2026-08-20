@@ -323,6 +323,9 @@ void ShmManager::handle_process_remove(const platform::ProcessControlReq& req) {
                                          platform::ProcessEvent::RemoveFailed);  // 不幂等（契约 process）
         return;
     }
+    // category 按值拷贝: store remove 经 apply 回调会 erase registry vector 条目,
+    // 使 entry 指针失效 (悬空解引用会读到错误类别, 最坏误删 td 源的 shm 目录)
+    const Category category = entry ? entry->category : Category::GatewayMd;
     // 先删配置并推 118（条目消失 = 移除完成的权威信号，契约 process）
     try {
         process_config_store_->remove(req.target);
@@ -340,9 +343,7 @@ void ShmManager::handle_process_remove(const platform::ProcessControlReq& req) {
     try {
         supervisor_->mark_remove_pending(req.target);
         if (!child) {
-            // category 在配置删除前取得 (store remove 后 registry 条目已删, 兜底侧无法再查)
-            supervisor_->notify_removed_for_inactive(
-                req.target, entry ? entry->category : Category::GatewayMd);
+            supervisor_->notify_removed_for_inactive(req.target, category);
         } else {
             supervisor_->stop_process(req.target);
         }
