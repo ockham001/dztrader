@@ -58,25 +58,81 @@ DZ_API void dz_release(void) { g_ctx.reset(); }
 
 DZ_API DzMdSource* dz_create_md_source(const char* name) {
     try {
+        if (name == nullptr || *name == '\0') {
+            LastError::set(DZ_EC_INVALID_PARAM, "name is null or empty");
+            return nullptr;
+        }
         if (ctx().md_sources.contains(name)) {
             LastError::set(DZ_EC_INVALID_PARAM, "md source already created");
             return nullptr;
         }
-        auto* source = new DzMdSource{name, strategy_identity(ctx().strategy_id)};  // NOLINT
-        ctx().md_sources.insert(name);
-        // 主动向 master 注册为该行情通道读者 (帧 1013, fire-and-forget):
-        // master 持注册权并校验身份; 失败不阻断源创建, 唤醒缺失由"单信号量 +
-        // 任意事件帧唤醒后排空"兜底 (契约 shm)。
-        try {
-            nlohmann::json payload = {{"subscriber", strategy_identity(ctx().strategy_id)}};
-            (void)shm::write_ext_inst_json(ctx().writer, DZ_FRAME_REQUEST_MD_READER_REGISTER,
-                                           source->name, payload);
-            ctx().writer.notify_subscribers();
-        } catch (const Exception& e) {
-            LastError::set(e.code(), e.what());
-        } catch (const std::exception& e) {
-            LastError::set(DZ_EC_INTERNAL, e.what());
+        const std::string source_name(name);
+        const std::string identity = strategy_identity(ctx().strategy_id);
+
+        // 1. 主动向 master 注册为该行情通道读者 (帧 1013):
+        //    契约 shm: 请求进程收到成功 RTN 前不得打开通道, 故先发注册帧, 待 RTN 确认后才打开。
+        nlohmann::json payload = {{"subscriber", identity}};
+        (void)shm::write_ext_inst_json(ctx().writer, DZ_FRAME_REQUEST_MD_READER_REGISTER,
+                                       source_name, payload);
+        ctx().writer.notify_subscribers();
+
+        // 2. 阻塞等待匹配的 RTN (帧 1015): master 回 RTN 后 notify 订阅者信号量,
+        //    故 sem.wait_for 可被唤醒; 唤醒后排空 event reader 逐帧检查。
+        //    等待期间消费到的非目标帧直接丢弃——策略创建 md source 时尚未进入事件处理,
+        //    初始化早期少量事件帧丢失是可接受的工程权衡; 读到匹配 RTN 立即处理返回。
+        bool matched = false;
+        bool ok = false;
+        std::string fail_msg;
+        constexpr uint32_t kRegisterTimeoutMs = 5000;
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(kRegisterTimeoutMs);
+        while (!matched) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
+                break;  // 超时
+            }
+            const auto remaining_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+            if (!ctx().sem.wait_for(static_cast<uint32_t>(remaining_ms))) {
+                break;  // 超时
+            }
+            // 排空已到达的帧直到无新帧 (next_frame 非阻塞, 无新帧返回 nullptr)
+            while (const auto* frame = ctx().reader.next_frame()) {
+                shm::FrameView view(frame);
+                if (view.type() != DZ_FRAME_RTN_MD_READER_REGISTER ||
+                    std::string_view(view.ext_inst_id()) != identity) {
+                    continue;  // 非本请求的 RTN / 其他事件帧, 直接丢弃
+                }
+                const auto rtn = shm::decode_ext_inst_json<nlohmann::json>(view);
+                if (!rtn.is_object() || !rtn.contains("channel") || !rtn["channel"].is_string() ||
+                    rtn["channel"].get<std::string>() != source_name) {
+                    continue;  // 通道不匹配 (非本次注册的 RTN), 丢弃继续等
+                }
+                ok = rtn.value("ok", false);
+                if (!ok) {
+                    fail_msg = rtn.contains("message") && rtn["message"].is_string()
+                                   ? rtn["message"].get<std::string>()
+                                   : "md reader register failed";
+                }
+                matched = true;
+                break;
+            }
         }
+
+        // 3. 结果处理: 成功 RTN 前不得打开通道; 失败不放行。
+        if (!matched) {
+            // 超时: master 未在期限内回 RTN (通道/进程异常或 master 不可达)
+            LastError::set(DZ_EC_TIMEOUT, "md reader register timeout");
+            return nullptr;
+        }
+        if (!ok) {
+            // master 拒绝注册 (通道未配置/未就绪/行情进程未运行等), 携带原因不放行
+            LastError::set(DZ_EC_INVALID_PARAM, fail_msg);
+            return nullptr;
+        }
+        // 此刻才打开行情通道 reader (DzMdSource 构造函数立即 Reader::create)
+        auto* source = new DzMdSource{source_name, identity};  // NOLINT
+        ctx().md_sources.insert(source_name);
         return source;
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
