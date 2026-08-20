@@ -57,7 +57,7 @@ const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& acc
 /// 职责:
 /// - 管理多个 AccountSession (每账户一个, sessions_ map)
 /// - 主循环: 处理 SHM 帧 + SPI 事件 (MPMC) + 定时器 + 信号量 wait
-/// - 帧路由: basic 广播帧 (REQUEST_SHUTDOWN_ALL / TD_ORDER_REQ 等) + 含 instance_id 帧 (TD_CONNECT 等)
+/// - 帧路由: basic 广播帧 (TD_ORDER_REQ 等) + 含 instance_id 帧 (TD_CONNECT 等)
 /// - 事件 dispatch: 按 Field.account_id 路由到对应 AccountSession::on_*
 /// - 配置热更新 (op-based, 副本 + 回滚): td/log/shm 三 section
 /// - 健康度广播 (per-account TdHealth 翻转检测)

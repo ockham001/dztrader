@@ -302,8 +302,6 @@ int main(int argc, char* argv[]) {
         [log_domain](const std::string& s, const nlohmann::json& p) {
             log_domain->on_rtn_log_config(s, p);
         });
-    router.register_raw(DZ_FRAME_REQUEST_SHUTDOWN_ALL,
-        [control_domain](const dztrader::shm::FrameView&) { control_domain->on_shutdown_all(); });
     router.register_raw(DZ_FRAME_REQUEST_SHUTDOWN,
         [control_domain](const dztrader::shm::FrameView& v) {
             control_domain->on_shutdown(std::string(v.ext_inst_id()));

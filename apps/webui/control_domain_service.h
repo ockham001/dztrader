@@ -9,7 +9,7 @@
 
 namespace dztrader::webui {
 
-/// 控制领域服务：SHUTDOWN_ALL / SHUTDOWN（契约 process）/ UPDATE_SHM_EVENT_SUBSCRIBER（契约 shm）。
+/// 控制领域服务：SHUTDOWN（契约 process）/ UPDATE_SHM_EVENT_SUBSCRIBER（契约 shm）。
 /// 无镜像、无广播（后台控制帧，dzweb 自身消费）。
 /// **线程安全（关键）**：本服务方法可能被 FrameRouter 在监听线程调用（register_raw），
 /// 因此方法内部一律投递到 IO 循环 getIOLoop(0)（与 REST/WS 同线程）后执行实际动作——
@@ -21,17 +21,6 @@ class ControlDomainService {
 public:
     ControlDomainService(std::string self_process, shm::MultiWriter* event_writer)
         : self_process_(std::move(self_process)), event_writer_(event_writer) {}
-
-    void on_shutdown_all() {
-        post_to_io_loop([]() {
-            try {
-                SPDLOG_INFO("shutdown request received (broadcast)");
-                drogon::app().quit();
-            } catch (const std::exception& e) {
-                SPDLOG_WARN("shutdown_all failed | error={}", e.what());
-            }
-        });
-    }
 
     void on_shutdown(const std::string& source) {
         // 调用方（register_raw handler）已在监听线程拷贝 source 字符串值，投递安全

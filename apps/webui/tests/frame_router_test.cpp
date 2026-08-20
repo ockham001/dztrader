@@ -84,8 +84,8 @@ TEST(FrameRouterTest, UnregisteredTypeIgnored) {
 TEST(FrameRouterTest, RawHandlerReceivesFrame) {
     auto router = make_router();
     int calls = 0;
-    router.register_raw(DZ_FRAME_REQUEST_SHUTDOWN_ALL, [&](const shm::FrameView&) { ++calls; });
-    auto [view, reader] = write_and_read(DZ_FRAME_REQUEST_SHUTDOWN_ALL, "", nlohmann::json::object());
+    router.register_raw(DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER, [&](const shm::FrameView&) { ++calls; });
+    auto [view, reader] = write_and_read(DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER, "", nlohmann::json::object());
     (void)reader;
     router.dispatch(view);
     EXPECT_EQ(calls, 1);
