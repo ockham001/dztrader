@@ -65,6 +65,11 @@ public:
     ///           page_size_mb 网关端跳过——透传无害, 由网关忽略)
     void write_set_md_shm_config(const std::string& source, const nlohmann::json& payload);
 
+    /// 写 SET_EVENT_SHM_CONFIG 帧 (契约 shm: 事件通道 SHM 配置, 无 instance_id,
+    /// 定向 master; payload 为 RFC 7386 合并 patch, page_size_mb 由 master 跳过)
+    /// 最终状态由 WS event_shm_config 推送 (RTN_EVENT_SHM_CONFIG) 决定
+    void write_set_event_shm_config(const nlohmann::json& payload);
+
     bool is_ready() const { return event_writer_ != nullptr; }
 
 private:

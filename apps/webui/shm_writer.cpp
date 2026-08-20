@@ -138,4 +138,19 @@ void ShmWriter::write_set_md_shm_config(const std::string& source, const nlohman
     }
 }
 
+void ShmWriter::write_set_event_shm_config(const nlohmann::json& payload) {
+    if (!event_writer_) {
+        spdlog::error("write set event shm config failed: event_writer null");
+        return;
+    }
+    // 无 instance_id 帧: platform::write_ext_json 内部不抛异常, 返回 bool 标识写入结果
+    // (对齐 write_set_md_shm_config 的日志模式)
+    const bool ok = platform::write_ext_json(*event_writer_, DZ_FRAME_SET_EVENT_SHM_CONFIG, payload);
+    if (ok) {
+        spdlog::info("set event shm config written");
+    } else {
+        spdlog::error("write set event shm config failed");
+    }
+}
+
 } // namespace dztrader::webui
