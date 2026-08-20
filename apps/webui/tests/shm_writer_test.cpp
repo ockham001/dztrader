@@ -70,6 +70,19 @@ TEST_F(WebuiShmWriterTest, WriteSetEventShmConfig) {
         reinterpret_cast<const char*>(view.ext_payload()) + view.ext_payload_size());
     EXPECT_EQ(payload["check_interval_min"], 10);
     EXPECT_EQ(payload["preload_points"]["08:45"]["pages"], 1);
+    EXPECT_EQ(payload["preload_points"]["08:45"]["bytes"], 0);
+    // 无 instance_id 帧: 使用 8B DzExtFrameHeader (而非 72B DzExtInstFrameHeader)。
+    // 注: 不能对 DzExtFrame 调用 ext_inst_id() 判空——它会按 72B 头解读 data_size+payload,
+    //     恒非空; 正确判定是按帧大小区分两种扩展头布局
+    EXPECT_EQ(view.frame_size(), sizeof(DzFrameHeader) + sizeof(DzExtFrameHeader)
+                                     + ((view.ext_payload_size() + 7) & ~7u));
+}
+
+TEST_F(WebuiShmWriterTest, WriteSetEventShmConfigNullWriterNoCrash) {
+    // null writer: write_set_event_shm_config 内部 guard 直接返回, 不抛异常
+    // 注: 必须用花括号初始化, 圆括号会被解析为函数声明 (most vexing parse)
+    ShmWriter writer{std::shared_ptr<shm::MultiWriter>()};
+    EXPECT_NO_THROW(writer.write_set_event_shm_config(nlohmann::json{{"check_interval_min", 5}}));
 }
 
 }  // namespace

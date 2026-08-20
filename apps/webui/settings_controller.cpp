@@ -43,7 +43,7 @@ void SettingsCtrl::set_event_shm_config(
 // GET /api/settings/master (只读: 清理策略/停止超时 UI 可编辑属后续计划, 契约仅允许改配置文件)
 void SettingsCtrl::get_master(
     const drogon::HttpRequestPtr& req,
-    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -88,7 +88,7 @@ void SettingsCtrl::get_master(
 // 注: 不返回 log_level——dzweb 日志级别运行期可经「日志」页修改, 此处展示会失真且重复, 归属日志页管理
 void SettingsCtrl::get_webui(
     const drogon::HttpRequestPtr& req,
-    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -106,25 +106,35 @@ namespace {
 
 // webui.json load-modify-save: 读全量 -> 应用受限字段 -> tmp+rename 原子写 (保留其他 section)
 void save_webui_json(const std::filesystem::path& path, const nlohmann::json& patch) {
+    // 文件缺失(运行期被删)时先生成默认配置: 保留完整默认段(含随机 jwt_secret), 避免残缺配置
+    if (!std::filesystem::exists(path)) {
+        dztrader::webui::generate_default_config(path);
+    }
     nlohmann::json full = nlohmann::json::object();
     if (std::filesystem::exists(path)) {
-        std::ifstream ifs(path);
-        if (ifs) {
-            try {
-                ifs >> full;
-            } catch (const std::exception& e) {
-                // 旧文件 JSON 损坏: 不能静默清空其他 section, 否则单 section 写入会丢失全部配置。
-                // 备份损坏文件后用空 object 起步, 让用户能从备份恢复 (对齐 json_section.h)。
-                spdlog::warn("webui.json parse failed | error={}", e.what());
-                full = nlohmann::json::object();
-                auto backup = path;
-                backup += ".corrupt." + std::to_string(std::chrono::system_clock::to_time_t(
-                    std::chrono::system_clock::now()));
-                std::error_code ec;
-                std::filesystem::rename(path, backup, ec);
-                // 备份失败不阻断 save (可能 permission denied), 但至少尝试备份
-                if (ec) spdlog::warn("backup corrupt webui.json failed | error={}", ec.message());
+        bool corrupted = false;
+        {
+            std::ifstream ifs(path);
+            if (ifs) {
+                try {
+                    ifs >> full;
+                } catch (const std::exception& e) {
+                    // 旧文件 JSON 损坏: 不能静默清空其他 section, 否则单 section 写入会丢失全部配置。
+                    // 备份损坏文件后用空 object 起步, 让用户能从备份恢复 (对齐 json_section.h)。
+                    spdlog::warn("webui.json parse failed | error={}", e.what());
+                    corrupted = true;
+                }
             }
+        }  // ifs 析构关闭, 释放文件句柄 (Windows: rename 前必须释放, 否则 "being used by another process")
+        if (corrupted) {
+            full = nlohmann::json::object();
+            auto backup = path;
+            backup += ".corrupt." + std::to_string(std::chrono::system_clock::to_time_t(
+                std::chrono::system_clock::now()));
+            std::error_code ec;
+            std::filesystem::rename(path, backup, ec);
+            // 备份失败不阻断 save (可能 permission denied), 但至少尝试备份
+            if (ec) spdlog::warn("backup corrupt webui.json failed | error={}", ec.message());
         }
     }
     // auth/notify 段守卫: 旧文件存在但对应段缺失/非 object (如数组) 时, 先规整为 object 再写子字段
@@ -162,7 +172,7 @@ void save_webui_json(const std::filesystem::path& path, const nlohmann::json& pa
 // PUT /api/settings/webui
 void SettingsCtrl::set_webui(
     const drogon::HttpRequestPtr& req,
-    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;

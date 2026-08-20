@@ -169,8 +169,30 @@ TEST_F(SettingsControllerTest, GetWebuiReturnsMasked) {
     auto body = parse_body(resp);
     EXPECT_EQ(body["token_ttl_sec"], 3600);
     EXPECT_EQ(body["server_port"], 8080);
+    EXPECT_EQ(body["server_listen"], "0.0.0.0");
+    EXPECT_EQ(body["notify_cache_size"], 100);
     EXPECT_EQ(body["jwt_secret_set"], true);
     EXPECT_FALSE(body.contains("jwt_secret"));
+}
+
+TEST_F(SettingsControllerTest, GetWebuiAsNonAdminReturns403) {
+    auto resp = invoke(&SettingsCtrl::get_webui, user_req());
+    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+}
+
+TEST_F(SettingsControllerTest, SetWebuiAsNonAdminReturns403) {
+    auto req = user_req();
+    req->setBody(R"({"token_ttl_sec":7200})");
+    auto resp = invoke(&SettingsCtrl::set_webui, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+}
+
+TEST_F(SettingsControllerTest, GetWebuiReportsUnsetJwtSecret) {
+    // 运行期持有者 jwt_secret 为空 → jwt_secret_set=false (不回传明文)
+    webui_cfg_->jwt_secret.clear();
+    auto resp = invoke(&SettingsCtrl::get_webui, admin_req());
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_EQ(parse_body(resp)["jwt_secret_set"], false);
 }
 
 TEST_F(SettingsControllerTest, SetWebuiPersistsAndHotApplies) {
@@ -202,6 +224,76 @@ TEST_F(SettingsControllerTest, SetWebuiRejectsTooSmallTtl) {
     req->setBody(R"({"token_ttl_sec":30})");
     auto resp = invoke(&SettingsCtrl::set_webui, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(SettingsControllerTest, SetWebuiRejectsTooLargeTtl) {
+    auto req = admin_req();
+    req->setBody(R"({"token_ttl_sec":604801})");
+    auto resp = invoke(&SettingsCtrl::set_webui, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+    // 拒绝不改状态: 热生效字段未被误改
+    EXPECT_EQ(webui_cfg_->token_ttl_sec, 3600);
+}
+
+TEST_F(SettingsControllerTest, SetWebuiRejectsTooLargeCacheSize) {
+    auto req = admin_req();
+    req->setBody(R"({"notify_cache_size":1000001})");
+    auto resp = invoke(&SettingsCtrl::set_webui, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(SettingsControllerTest, SetWebuiRejectsMixedInvalidCacheAtomically) {
+    // 混合 patch 中任一字段非法 → 整体拒绝 (原子), 磁盘与热生效值均不动
+    auto req = admin_req();
+    req->setBody(R"({"token_ttl_sec":7200,"notify_cache_size":2000000})");
+    auto resp = invoke(&SettingsCtrl::set_webui, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+    EXPECT_EQ(webui_cfg_->token_ttl_sec, 3600);
+    std::ifstream ifs(webui_path_);
+    auto disk = nlohmann::json::parse(ifs);
+    EXPECT_EQ(disk["auth"]["token_ttl_sec"], 3600);
+}
+
+TEST_F(SettingsControllerTest, SetWebuiRepairsCorruptFileWithBackup) {
+    // 损坏文件: 备份 .corrupt.* 后从空 object 起步修复, 保留 auth/notify 段
+    {
+        std::ofstream ofs(webui_path_, std::ios::trunc);
+        ofs << "{not json";
+    }
+    auto req = admin_req();
+    req->setBody(R"({"token_ttl_sec":7200})");
+    auto resp = invoke(&SettingsCtrl::set_webui, req);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    // 文件被修复为合法 JSON, auth/notify 段存在 (损坏文件从空 object 起步,
+    // notify.cache_size 仅由 patch 字段写入, 缺失属预期)
+    std::ifstream ifs(webui_path_);
+    auto disk = nlohmann::json::parse(ifs);
+    EXPECT_EQ(disk["auth"]["token_ttl_sec"], 7200);
+    EXPECT_TRUE(disk.contains("notify"));
+    EXPECT_TRUE(disk["notify"].is_object());
+    // 同目录出现 .corrupt. 前缀备份
+    bool found_backup = false;
+    const std::string prefix = webui_path_.filename().string() + ".corrupt.";
+    for (const auto& entry : std::filesystem::directory_iterator(webui_path_.parent_path())) {
+        if (entry.path().filename().string().find(prefix) == 0) {
+            found_backup = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found_backup);
+}
+
+TEST_F(SettingsControllerTest, SetWebuiPersistsAndHotAppliesCacheSize) {
+    auto req = admin_req();
+    req->setBody(R"({"notify_cache_size":200})");
+    auto resp = invoke(&SettingsCtrl::set_webui, req);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    // 热生效: 共享持有者已更新
+    EXPECT_EQ(webui_cfg_->notify_cache_size, 200);
+    // 持久化: 文件已写
+    std::ifstream ifs(webui_path_);
+    auto disk = nlohmann::json::parse(ifs);
+    EXPECT_EQ(disk["notify"]["cache_size"], 200);
 }
 
 TEST_F(SettingsControllerTest, GetMasterReadsSections) {
