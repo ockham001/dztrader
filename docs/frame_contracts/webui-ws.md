@@ -75,7 +75,7 @@ domain 清单与挂载实例：
 | `progress` | `RTN_PROGRESS` | `{ min, max, current, desc }` | 进程名 / `{进程}:{账户}` | progress |
 
 - 未被 `process_config` 注册的进程：`process_status` 镜像不写入，但广播仍无条件发出（前端可感知未知进程状态）。
-- `md_shm_config` 前端已有消费（展示与编辑，pending 由本消息清除）；`event_shm_config` 前端无 UI 消费，忽略无害。
+- `md_shm_config` 前端已有消费（展示与编辑，pending 由本消息清除）；`event_shm_config` 前端已消费（系统设置页展示，编辑 pending 由本消息清除，入口契约 rest §2.7 `PUT /api/settings/event-shm-config`）。
 
 ### 2.3 控制消息（`payload` 键）
 

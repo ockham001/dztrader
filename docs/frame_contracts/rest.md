@@ -86,6 +86,14 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 |---|---|
 | GET `/api/notifications` | 最近通知（读取 NotifyCache，契约 notify-ui） |
 
+### 2.7 系统设置
+
+| 方法/路径 | 语义 | 帧/镜像联动 |
+|---|---|---|
+| PUT `/api/settings/event-shm-config` | 事件通道 SHM 配置 merge patch（admin） | → `SET_EVENT_SHM_CONFIG`（契约 shm，`page_size_mb` 由 master 跳过）；生效信号：WS `event_shm_config`（`RTN_EVENT_SHM_CONFIG`，镜像挂 `dztraderd`） |
+| GET `/api/settings/master` | 只读展示 dztraderd.json `[master]`/`[shm]` 段（admin） | 直接读文件（默认路径），清理策略/停止超时/`page_size_mb`/`meta_file_size` 仅配置文件可改 |
+| GET/PUT `/api/settings/webui` | 读取 / 修改 webui.json（admin；仅 `token_ttl_sec` 与 `notify_cache_size` 可改，`jwt_secret` 仅回传是否存在） | `token_ttl_sec` 热生效（下次登录签发生效），`notify_cache_size` 持久化重启生效 |
+
 ---
 
 ## 3. 真相源声明
