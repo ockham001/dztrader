@@ -227,3 +227,25 @@ export interface MdRtnStatusPayload {
   source: string
   status: Record<string, unknown>
 }
+
+// ===== 系统设置 =====
+// 注: 事件通道配置展示/编辑复用 types/mirror.ts 的 ShmConfigView (契约 shm), 不在 api.ts 重复定义
+export interface MasterSettingsView {
+  single_stop_timeout_sec: number
+  cleanup_max_page_count: number
+  cleanup_max_page_age_hours: number
+  meta_file_size: number
+}
+
+export interface WebuiSettingsView {
+  server_listen: string
+  server_port: number
+  token_ttl_sec: number
+  jwt_secret_set: boolean
+  notify_cache_size: number
+}
+
+export interface WebuiSettingsUpdateBody {
+  token_ttl_sec?: number
+  notify_cache_size?: number
+}
