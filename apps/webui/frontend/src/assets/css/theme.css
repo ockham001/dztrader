@@ -1,5 +1,31 @@
 /* ============================================================
-   theme.css - 设计系统 tokens (light + dark)
+   theme.css - 主题扩展规范（T5）+ 设计系统 tokens (light + dark)
+   ============================================================
+   ═══ 主题（light / dark / system）三大载体 ═══
+   1. design-tokens.css —— 非主题色 token（radius/spacer/font/status/brand/accent/viz/shadow
+      等，恒定不随主题变化），只定义在 :root，@light-only。
+   2. theme.css 本文件  —— 主题色 token（bg-*/text-*/icon-*/border-*/color-* 及对照别名），
+      分为三段：:root=浅色(默认)、.dark=深色、@media(prefers-color-scheme:dark){html:not(.light):not(.dark)}=跟随系统。
+   3. 组件/页面 —— 只消费 var(--x)，禁止裸写颜色（dz/token-literal 强制）。
+
+   ═══ 主题机制（由 ThemeDropdown.setTheme 驱动，html classList）═══
+   - light : html 挂 .light（或默认无类）→ 命中 :root（浅色）。
+   - dark  : html 挂 .dark             → 命中 .dark 段。
+   - system: html 无 .light 亦无 .dark → 命中 @media 段（跟随 OS 偏好）。
+
+   ═══ 新增一个主题色 token 的五步（必做，漏一步 = 主题残缺 bug）═══
+   ① 在 :root 段按语义命名新增：背景/前景 → bg-* / text-* / icon-* / border-* 前缀 +
+      语义名（default/secondary/tertiary/disabled/brand/onbrand/…），overlay 用 -l1~l4 分级。
+   ② 在 .dark 段覆盖同 token（深色值；透明 overlay 建议用 #RRGGBBAA 8 位 hex，勿用 rgba()）。
+   ③ 在下方 @media 段覆盖同 token（system 深色值与 .dark 一致时也须显式重复——三段各自独立）。
+   ④ 组件侧一律 var(--新token) 引用，CI 的 dz/token-literal（error）保证组件内无裸色。
+   ⑤ 若该色不随主题变化（如品牌、状态、图表系列），则进 design-tokens.css 而非本文件。
+
+   ═══ 反模式（禁止）═══
+   - 组件内硬编码颜色/字号/间距字面量（token-literal 拦截）。
+   - 把会随主题变化的颜色写进 design-tokens.css（它 @light-only，深色会缺）。
+   - 只补 :root 不补 .dark 与 system 两段深色（三状态任一缺失即某主题下组件看错色）。
+   - 新增第三个主题时绕过本文件/追加硬编码类（主题应只在 ThemeDropdown 暴露）。
    ============================================================ */
 
 /* ---- Light theme (default) ---- */
