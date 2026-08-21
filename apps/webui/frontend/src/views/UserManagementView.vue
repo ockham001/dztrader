@@ -987,11 +987,13 @@ onUnmounted(() => {
   margin-bottom: var(--spacer-16);
   flex-wrap: wrap;
 }
+
 .filter-bar .ds-input {
   flex: 1;
   min-width: 120px;
   max-width: 280px;
 }
+
 .filter-bar .ds-dropdown {
   width: auto;
   flex-shrink: 0;
@@ -1022,15 +1024,19 @@ onUnmounted(() => {
   display: inline-block;
   flex-shrink: 0;
 }
+
 .status-dot--online {
   background: var(--status-success-default);
 }
+
 .status-dot--offline {
   background: var(--brand-grey-500);
 }
+
 .status-dot--disabled {
   background: var(--status-error-default);
 }
+
 .status-dot--locked {
   background: var(--status-alert-default);
 }
@@ -1041,6 +1047,7 @@ onUnmounted(() => {
   flex-direction: column;
   gap: var(--spacer-16);
 }
+
 /* 注：.dialog-field 的水平布局（label + edit 同行）由全局 components.css 提供 */
 .dialog-field__label {
   font-size: var(--body-base-font-size);
@@ -1053,9 +1060,11 @@ onUnmounted(() => {
   .filter-bar .ds-input {
     max-width: none;
   }
+
   .filter-bar .ds-dropdown {
     max-width: none;
   }
+
   .page-header {
     flex-direction: column;
     align-items: flex-start;

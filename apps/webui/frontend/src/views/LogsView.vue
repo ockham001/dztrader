@@ -240,6 +240,7 @@ onUnmounted(() => {
   transition: background-color 120ms;
   z-index: 5;
 }
+
 .log-splitter::before {
   content: '';
   position: absolute;
@@ -249,6 +250,7 @@ onUnmounted(() => {
   top: 0;
   bottom: 0;
 }
+
 .log-splitter::after {
   content: '';
   position: absolute;
@@ -261,9 +263,11 @@ onUnmounted(() => {
   background: var(--border-neutral-l1);
   transition: background-color 120ms;
 }
+
 .log-splitter:hover {
   background: var(--bg-brand);
 }
+
 .log-splitter:hover::after {
   background: var(--bg-brand);
 }
@@ -277,9 +281,11 @@ onUnmounted(() => {
   align-items: center;
   padding: var(--spacer-8) var(--spacer-8) 0;
 }
+
 .log-browser__toolbar-spacer {
   flex: 1;
 }
+
 .log-browser__refresh-btn {
   flex-shrink: 0;
   height: 32px;
@@ -293,6 +299,7 @@ onUnmounted(() => {
   position: relative;
   z-index: 10;
 }
+
 .log-browser__filter .ds-dropdown {
   width: 100%;
   flex-shrink: 0;
@@ -380,14 +387,17 @@ onUnmounted(() => {
     padding: var(--spacer-8);
     min-height: auto !important;
   }
+
   .log-splitter {
     display: none !important;
   }
+
   .log-browser__sidebar {
     border-right: none;
     flex: none !important;
     min-height: auto;
   }
+
   .log-browser__content {
     flex: none !important;
     min-height: 400px;

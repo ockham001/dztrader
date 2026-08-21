@@ -29,9 +29,10 @@ const store = useMarketSourcesStore()
 <style scoped>
 .psb__spinner {
   display: inline-block; width: 12px; height: 12px;
-  border: 1.5px solid currentColor; border-top-color: transparent;
+  border: 1.5px solid currentcolor; border-top-color: transparent;
   border-radius: 50%; animation: psb-spin 0.6s linear infinite;
   opacity: 0.7; flex-shrink: 0; margin-right: 4px;
 }
+
 @keyframes psb-spin { to { transform: rotate(360deg); } }
 </style>

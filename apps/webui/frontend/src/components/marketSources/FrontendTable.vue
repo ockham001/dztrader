@@ -212,12 +212,14 @@ function onFrontendAddressBlur(
 .card-subsection {
   margin-top: var(--spacer-16);
 }
+
 .card-subsection__row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: var(--spacer-8);
 }
+
 .card-subsection__title {
   font-size: var(--body-xs-font-size);
   font-weight: var(--font-weight-medium, 500);
@@ -242,17 +244,20 @@ function onFrontendAddressBlur(
   color: var(--text-default);
   transition: border-color 0.1s ease, background 0.1s ease;
 }
+
+.fe-address-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
 .fe-address-input:hover:not(:disabled) {
   border-color: var(--border-neutral-l2);
 }
+
 .fe-address-input:focus:not(:disabled) {
   border-color: var(--border-focus-l1, var(--status-success-default));
   background: var(--bg-base-primary);
   outline: none;
-}
-.fe-address-input:disabled {
-  cursor: not-allowed;
-  opacity: 0.7;
 }
 
 /* Dialog form */
@@ -261,11 +266,13 @@ function onFrontendAddressBlur(
   flex-direction: column;
   gap: var(--spacer-12);
 }
+
 .dialog-row {
   display: flex;
   align-items: center;
   gap: var(--spacer-12);
 }
+
 .dialog-row__label {
   font-size: var(--body-sm-font-size);
   color: var(--text-tertiary);
@@ -274,6 +281,7 @@ function onFrontendAddressBlur(
   width: 110px;
   white-space: nowrap;
 }
+
 .dialog-row__control {
   flex: 1;
   min-width: 0;
@@ -284,13 +292,14 @@ function onFrontendAddressBlur(
   display: inline-block;
   width: 12px;
   height: 12px;
-  border: 1.5px solid currentColor;
+  border: 1.5px solid currentcolor;
   border-top-color: transparent;
   border-radius: 50%;
   animation: ds-btn-spin 0.6s linear infinite;
   opacity: 0.7;
   flex-shrink: 0;
 }
+
 @keyframes ds-btn-spin {
   to { transform: rotate(360deg); }
 }

@@ -103,7 +103,7 @@ onUnmounted(() => {
   border-radius: var(--radius-8, 8px);
   border: 1px solid var(--status-warning-default);
   background: var(--status-warning-surface-l1);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%), 0 2px 8px rgb(0 0 0 / 8%);
   font-size: var(--body-sm-font-size, 13px);
   line-height: var(--body-sm-line-height, 1.5);
   color: var(--text-default);
@@ -147,7 +147,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgb(0 0 0 / 40%);
 }
 
 .popup-modal {
@@ -161,7 +161,7 @@ onUnmounted(() => {
   border-radius: var(--radius-8, 8px);
   border: 1px solid var(--status-error-default);
   background: var(--status-error-surface-l1, #fff);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2), 0 4px 12px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 20%), 0 4px 12px rgb(0 0 0 / 12%);
 }
 
 .popup-modal__icon {

@@ -207,6 +207,7 @@ watch(() => store.browserTab, (tab) => {
   overflow-y: auto;
   padding: var(--spacer-12);
 }
+
 .log-analysis__empty {
   padding: var(--spacer-48);
   text-align: center;
@@ -219,18 +220,21 @@ watch(() => store.browserTab, (tab) => {
   grid-template-columns: repeat(4, 1fr);
   gap: var(--spacer-12);
 }
+
 .log-analysis__card {
   padding: var(--spacer-16);
   text-align: center;
   background: var(--bg-overlay-l1);
   border-radius: var(--radius-8);
 }
+
 .log-analysis__card-value {
   font-size: 28px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
 }
+
 .log-analysis__card-label {
   font-size: var(--body-sm-font-size);
   color: var(--text-tertiary);
@@ -242,26 +246,31 @@ watch(() => store.browserTab, (tab) => {
   background: var(--bg-overlay-l1);
   border-radius: var(--radius-8);
 }
+
 .log-analysis__section-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: var(--spacer-12);
 }
+
 .log-analysis__section-title {
   font-size: var(--body-base-font-size);
   font-weight: 600;
   color: var(--text-default);
 }
+
 .log-analysis__section-header .ds-dropdown {
   width: auto;
   flex-shrink: 0;
   max-width: 160px;
 }
+
 .log-analysis__chart {
   height: 320px;
   width: 100%;
 }
+
 .log-analysis__loading {
   height: 200px;
   display: flex;
@@ -277,22 +286,26 @@ watch(() => store.browserTab, (tab) => {
   border-radius: var(--radius-8);
   overflow-x: auto;
 }
+
 .log-analysis__msg-pattern {
   font-family: var(--code-terminal-font-family);
   font-size: var(--body-sm-font-size);
   max-width: 400px;
   word-break: break-all;
 }
+
 .log-analysis__ts {
   font-family: var(--code-terminal-font-family);
   font-size: var(--body-sm-font-size);
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
+
 .log-analysis__samples {
   background: var(--bg-base-secondary);
   padding: var(--spacer-8) var(--spacer-12);
 }
+
 .log-analysis__sample-line {
   font-family: var(--code-terminal-font-family);
   font-size: var(--code-terminal-font-size);
@@ -307,6 +320,7 @@ watch(() => store.browserTab, (tab) => {
   .log-analysis__cards {
     grid-template-columns: repeat(2, 1fr);
   }
+
   .log-analysis__chart {
     height: 240px;
   }

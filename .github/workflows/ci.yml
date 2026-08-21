@@ -51,6 +51,11 @@ jobs:
         working-directory: apps/webui/frontend
         run: npm run type-check
 
+      - name: Frontend Lint
+        shell: pwsh
+        working-directory: apps/webui/frontend
+        run: npm run lint && npm run lint:css
+
       - name: Frontend Tests
         shell: pwsh
         working-directory: apps/webui/frontend
@@ -104,6 +109,10 @@ jobs:
       - name: Frontend Type Check
         working-directory: apps/webui/frontend
         run: npm run type-check
+
+      - name: Frontend Lint
+        working-directory: apps/webui/frontend
+        run: npm run lint && npm run lint:css
 
       - name: Frontend Tests
         working-directory: apps/webui/frontend

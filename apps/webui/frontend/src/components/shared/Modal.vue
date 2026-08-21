@@ -49,7 +49,7 @@ onUnmounted(() => {
     <div class="ds-dialog">
       <div class="ds-dialog__head">
         <span class="ds-dialog__title">{{ title }}</span>
-        <button class="ds-dialog__close" @click="emit('close')">
+        <button type="button" class="ds-dialog__close" @click="emit('close')">
           <Icon name="Close" :size="16" />
         </button>
       </div>

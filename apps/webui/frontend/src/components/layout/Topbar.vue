@@ -29,7 +29,7 @@ const connStatus = computed<{ text: string; dotClass: string }>(() => {
 <template>
   <header class="topbar">
     <div class="topbar__left">
-      <button
+      <button type="button"
         class="topbar__hamburger"
         aria-label="打开导航菜单"
         @click="emit('toggleMobile')"
@@ -99,12 +99,15 @@ const connStatus = computed<{ text: string; dotClass: string }>(() => {
   border-radius: 50%;
   display: inline-block;
 }
+
 .topbar__conn-dot--success {
   background: var(--status-success-default);
 }
+
 .topbar__conn-dot--warning {
   background: var(--status-warning-default);
 }
+
 .topbar__conn-dot--error {
   background: var(--status-error-default);
 }

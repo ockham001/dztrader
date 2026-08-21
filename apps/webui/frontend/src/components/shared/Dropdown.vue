@@ -10,7 +10,7 @@ export interface DropdownItem {
 
 const props = withDefaults(defineProps<{
   items: DropdownItem[]
-  modelValue?: string | number
+  modelValue?: string | number // eslint-disable-line vue/require-default-prop -- v-model 双向绑定，父组件保证传入或 undefined 合法
   placeholder?: string
   disabled?: boolean
   /** When set, overrides selectedLabel (e.g. "切换中…" during pending) */

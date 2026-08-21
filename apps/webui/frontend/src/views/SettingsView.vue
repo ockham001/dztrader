@@ -282,6 +282,7 @@ async function saveWebui(): Promise<void> {
   gap: var(--spacer-8);
   align-items: center;
 }
+
 .cfg-label {
   width: 180px;
   color: var(--text-secondary);
@@ -289,12 +290,14 @@ async function saveWebui(): Promise<void> {
 
 /* 预加载点行（对齐 CTP 行情通道: 行内数字输入 + 删除） */
 .preload-row { min-height: 30px; }
+
 .preload-time {
   width: 64px;
   color: var(--text-default);
   font-family: var(--code-editor-font-family);
   font-variant-numeric: tabular-nums;
 }
+
 .preload-field {
   display: inline-flex;
   align-items: center;
@@ -302,6 +305,7 @@ async function saveWebui(): Promise<void> {
   font-size: var(--body-xs-font-size);
   color: var(--text-tertiary);
 }
+
 .shm-num-input {
   width: 72px; padding: 1px var(--spacer-4); font-size: var(--body-sm-font-size);
   font-family: var(--code-editor-font-family); font-variant-numeric: tabular-nums;
@@ -310,12 +314,13 @@ async function saveWebui(): Promise<void> {
 }
 .shm-num-input:focus { outline: none; border-color: var(--border-neutral-l1); background: var(--bg-base-secondary); }
 .shm-num-input:disabled { opacity: 0.6; }
+
 .preload-remove {
   margin-left: auto; background: none; border: none; color: var(--text-tertiary);
   font-size: var(--body-sm-font-size); cursor: pointer; padding: var(--spacer-2) var(--spacer-6); border-radius: var(--radius-4);
 }
-.preload-remove:not(:disabled):hover { color: var(--status-error-default); background: var(--status-error-surface-l1); }
 .preload-remove:disabled { cursor: default; opacity: 0.6; }
+.preload-remove:not(:disabled):hover { color: var(--status-error-default); background: var(--status-error-surface-l1); }
 
 /* 添加预加载点对话框 */
 .dialog-form { display: flex; flex-direction: column; gap: var(--spacer-12); }

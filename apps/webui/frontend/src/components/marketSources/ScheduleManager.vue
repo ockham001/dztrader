@@ -120,6 +120,7 @@ const scheduleAddPending = computed(() => {
   border-bottom: 1px solid var(--border-neutral-l1);
   margin-bottom: var(--spacer-12);
 }
+
 .card-section__row {
   display: flex;
   align-items: center;
@@ -142,6 +143,7 @@ const scheduleAddPending = computed(() => {
   gap: var(--spacer-4);
   margin-top: var(--spacer-8);
 }
+
 .schedule-item {
   display: flex;
   align-items: center;
@@ -151,9 +153,11 @@ const scheduleAddPending = computed(() => {
   border-radius: var(--radius-6);
   transition: background 0.1s ease;
 }
+
 .schedule-item:hover {
   background: var(--bg-overlay-l1);
 }
+
 .schedule-item__login,
 .schedule-item__logout {
   font-family: var(--code-editor-font-family);
@@ -161,11 +165,13 @@ const scheduleAddPending = computed(() => {
   font-size: var(--body-base-font-size);
   color: var(--text-default);
 }
+
 .schedule-item__arrow {
   color: var(--text-tertiary);
   font-size: var(--body-sm-font-size);
   flex-shrink: 0;
 }
+
 .schedule-item__remove {
   margin-left: auto;
   background: none;
@@ -177,13 +183,15 @@ const scheduleAddPending = computed(() => {
   border-radius: var(--radius-4);
   transition: color 0.1s ease, background 0.1s ease;
 }
-.schedule-item__remove:not(:disabled):hover {
-  color: var(--status-error-default);
-  background: var(--status-error-surface-l1);
-}
+
 .schedule-item__remove:disabled {
   cursor: default;
   opacity: 0.6;
+}
+
+.schedule-item__remove:not(:disabled):hover {
+  color: var(--status-error-default);
+  background: var(--status-error-surface-l1);
 }
 
 /* Dialog form */
@@ -192,11 +200,13 @@ const scheduleAddPending = computed(() => {
   flex-direction: column;
   gap: var(--spacer-12);
 }
+
 .dialog-row {
   display: flex;
   align-items: center;
   gap: var(--spacer-12);
 }
+
 .dialog-row__label {
   font-size: var(--body-sm-font-size);
   color: var(--text-tertiary);
@@ -205,6 +215,7 @@ const scheduleAddPending = computed(() => {
   width: 110px;
   white-space: nowrap;
 }
+
 .dialog-row__control {
   flex: 1;
   min-width: 0;
@@ -232,13 +243,14 @@ const scheduleAddPending = computed(() => {
   display: inline-block;
   width: 12px;
   height: 12px;
-  border: 1.5px solid currentColor;
+  border: 1.5px solid currentcolor;
   border-top-color: transparent;
   border-radius: 50%;
   animation: ds-btn-spin 0.6s linear infinite;
   opacity: 0.7;
   flex-shrink: 0;
 }
+
 @keyframes ds-btn-spin {
   to { transform: rotate(360deg); }
 }

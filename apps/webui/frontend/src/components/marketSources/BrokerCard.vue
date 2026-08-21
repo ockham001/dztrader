@@ -162,17 +162,20 @@ function onBrokerFieldBlur(
   margin-top: var(--spacer-12);
   background: var(--bg-base-secondary);
 }
+
 .broker-card__header {
   display: flex;
   align-items: center;
   gap: var(--spacer-8);
   margin-bottom: var(--spacer-8);
 }
+
 .broker-card__name {
   font-size: var(--body-base-font-size);
   font-weight: var(--font-weight-medium, 500);
   color: var(--text-default);
 }
+
 .broker-card__badge {
   display: inline-block;
   padding: 0 var(--spacer-6);
@@ -181,6 +184,7 @@ function onBrokerFieldBlur(
   background: var(--status-success-surface-l1);
   border-radius: var(--radius-4);
 }
+
 .broker-card__header .ds-btn {
   margin-left: auto;
 }
@@ -189,12 +193,14 @@ function onBrokerFieldBlur(
 .card-subsection {
   margin-top: var(--spacer-16);
 }
+
 .card-subsection__row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: var(--spacer-8);
 }
+
 .card-subsection__title {
   font-size: var(--body-xs-font-size);
   font-weight: var(--font-weight-medium, 500);
@@ -208,11 +214,13 @@ function onBrokerFieldBlur(
   gap: var(--spacer-10);
   margin-top: var(--spacer-4);
 }
+
 .login-field {
   display: flex;
   align-items: center;
   gap: var(--spacer-12);
 }
+
 .login-field__label {
   font-size: var(--body-sm-font-size);
   color: var(--text-tertiary);
@@ -220,11 +228,13 @@ function onBrokerFieldBlur(
   flex-shrink: 0;
   width: 90px;
 }
+
 .login-field .ds-input {
   flex: 1;
   min-width: 0;
   font-size: var(--body-base-font-size);
 }
+
 .login-field .ds-input input {
   font-family: var(--code-editor-font-family);
   font-variant-numeric: tabular-nums;

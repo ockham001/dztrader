@@ -193,6 +193,7 @@ onMounted(() => {
   border-radius: var(--radius-12);
   flex-wrap: wrap;
 }
+
 .batch-bar__actions {
   display: flex;
   align-items: center;
@@ -206,11 +207,13 @@ onMounted(() => {
   flex-direction: column;
   gap: var(--spacer-12);
 }
+
 .dialog-row {
   display: flex;
   align-items: center;
   gap: var(--spacer-12);
 }
+
 .dialog-row__label {
   font-size: var(--body-sm-font-size);
   color: var(--text-tertiary);
@@ -219,10 +222,12 @@ onMounted(() => {
   width: 110px;
   white-space: nowrap;
 }
+
 .dialog-row__control {
   flex: 1;
   min-width: 0;
 }
+
 .dialog-row__hint {
   font-size: var(--body-xs-font-size);
   color: var(--text-tertiary);
@@ -235,13 +240,14 @@ onMounted(() => {
   display: inline-block;
   width: 12px;
   height: 12px;
-  border: 1.5px solid currentColor;
+  border: 1.5px solid currentcolor;
   border-top-color: transparent;
   border-radius: 50%;
   animation: ds-btn-spin 0.6s linear infinite;
   opacity: 0.7;
   flex-shrink: 0;
 }
+
 @keyframes ds-btn-spin {
   to { transform: rotate(360deg); }
 }
@@ -252,6 +258,7 @@ onMounted(() => {
     flex-direction: column;
     align-items: flex-start;
   }
+
   .batch-bar {
     flex-direction: column;
     align-items: flex-start;

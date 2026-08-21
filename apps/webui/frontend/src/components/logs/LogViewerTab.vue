@@ -235,6 +235,9 @@ function formatTs(ts: string): string {
             {{ lineLevel(item) || '----' }}
           </span>
           <span class="log-row__logger">{{ item.logger }}</span>
+          <!-- 安全说明：highlightMessage 先对 & < > 做 HTML 转义，再对转义文本做 span 高亮；
+               highlightKeyword 仅对已转义文本包 <mark>，无注入路径。v-html 仅用于此受控高亮场景
+               （eslint 在配置层面豁免本文件的 vue/no-v-html，见 eslint.config.js） -->
           <span
             class="log-row__msg"
             v-html="highlightKeyword(highlightMessage(item.parsed ? item.msg : item.raw))"
@@ -262,37 +265,46 @@ function formatTs(ts: string): string {
   padding: var(--spacer-8) var(--spacer-12);
   border-bottom: 1px solid var(--border-neutral-l1);
 }
+
 .log-viewer__toolbar-row {
   display: flex;
   align-items: center;
   gap: var(--spacer-8);
 }
+
 .log-viewer__toolbar-row--filters {
   flex-wrap: wrap;
 }
+
 .log-viewer__toolbar-row--actions {
   flex-wrap: wrap;
 }
+
 .log-viewer__actions-spacer {
   flex: 1;
 }
+
 .log-viewer__tail-label {
   font-size: var(--body-sm-font-size);
   color: var(--text-secondary);
   white-space: nowrap;
 }
+
 .log-viewer__toolbar .ds-dropdown {
   width: auto;
   flex-shrink: 0;
   max-width: 160px;
 }
+
 .log-viewer__search {
   flex: 1;
   min-width: 120px;
 }
+
 .log-viewer__search input {
   height: 32px;
 }
+
 .log-viewer__info {
   font-size: 10px;
   color: var(--text-tertiary);
@@ -304,18 +316,22 @@ function formatTs(ts: string): string {
   flex: 1;
   overflow: auto;
 }
+
 .log-viewer__scroller {
   height: 100%;
   font-family: var(--code-terminal-font-family);
   font-size: var(--code-terminal-font-size);
   line-height: var(--code-terminal-line-height);
 }
+
 .log-viewer__lines :deep(.vue-recycle-scroller__item-wrapper) {
   overflow: visible;
 }
+
 .log-viewer__lines :deep(.vue-recycle-scroller__item-view) {
   width: auto;
 }
+
 .log-viewer__lines :deep(.vue-recycle-scroller.direction-vertical) {
   overflow-x: auto;
 }
@@ -327,12 +343,15 @@ function formatTs(ts: string): string {
   padding: 1px var(--spacer-8);
   white-space: nowrap;
 }
+
 .log-row:hover {
   background: var(--bg-overlay-l1);
 }
+
 .log-row-error {
   background: color-mix(in srgb, var(--status-error-default) 8%, transparent);
 }
+
 .log-row__n {
   color: var(--text-tertiary);
   flex-shrink: 0;
@@ -340,17 +359,20 @@ function formatTs(ts: string): string {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
 .log-row__ts {
   color: var(--text-tertiary);
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
+
 .log-level-tag {
   flex-shrink: 0;
   font-weight: 600;
   width: 50px;
   text-align: center;
 }
+
 .log-row__logger {
   color: var(--text-secondary);
   flex-shrink: 0;
@@ -358,6 +380,7 @@ function formatTs(ts: string): string {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
 .log-row__msg {
   color: var(--text-default);
   flex: 1;
@@ -371,10 +394,12 @@ function formatTs(ts: string): string {
 .log-viewer-panel :deep(.log-date) { color: var(--log-date); }
 .log-viewer-panel :deep(.log-url) { color: var(--log-url); }
 .log-viewer-panel :deep(.log-exception) { color: var(--log-exception); font-style: italic; }
+
 .log-viewer-panel :deep(.log-highlight) {
   background: color-mix(in srgb, var(--status-warning-default) 30%, transparent);
   border-radius: 2px;
 }
+
 .log-viewer__file-empty {
   padding: var(--spacer-48);
   text-align: center;

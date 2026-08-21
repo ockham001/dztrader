@@ -161,7 +161,7 @@ function openAbout(): void {
         borderBottom: '1px solid var(--bg-base-secondary)',
       }"
     >
-      <button
+      <button type="button"
         class="brand-toggle"
         :style="{
           display: 'flex',
@@ -260,7 +260,7 @@ function openAbout(): void {
       }"
     >
       <!-- User menu button -->
-      <button
+      <button type="button"
         class="user-section-btn"
         :style="{
           display: 'flex',
@@ -346,7 +346,7 @@ function openAbout(): void {
       </div>
 
       <!-- About button -->
-      <button
+      <button type="button"
         class="about-btn"
         :style="{
           display: 'flex',
@@ -397,8 +397,8 @@ function openAbout(): void {
         </div>
       </div>
       <template #footer>
-        <button class="ds-btn ds-btn--secondary" @click="changePwdOpen = false">取消</button>
-        <button class="ds-btn ds-btn--primary" :disabled="changePwdLoading" @click="submitChangePassword">
+        <button type="button" class="ds-btn ds-btn--secondary" @click="changePwdOpen = false">取消</button>
+        <button type="button" class="ds-btn ds-btn--primary" :disabled="changePwdLoading" @click="submitChangePassword">
           {{ changePwdLoading ? '提交中...' : '确认' }}
         </button>
       </template>
@@ -434,7 +434,7 @@ function openAbout(): void {
         <div :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-tertiary)' }">© 2024-2026 DZTrader Contributors</div>
       </div>
       <template #footer>
-        <button class="ds-btn ds-btn--primary" @click="aboutOpen = false">确定</button>
+        <button type="button" class="ds-btn ds-btn--primary" @click="aboutOpen = false">确定</button>
       </template>
     </Modal>
   </aside>

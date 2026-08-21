@@ -85,6 +85,7 @@ const autoLoginStatusClass = (s: MarketSourceView): string => {
   border-bottom: 1px solid var(--border-neutral-l1);
   margin-bottom: var(--spacer-12);
 }
+
 .card-section__row {
   display: flex;
   align-items: center;
@@ -99,22 +100,27 @@ const autoLoginStatusClass = (s: MarketSourceView): string => {
   align-items: center;
   gap: var(--spacer-8);
 }
+
 .auto-login-control__label {
   font-size: var(--body-sm-font-size);
   font-weight: var(--font-weight-medium, 500);
   color: var(--text-secondary);
 }
+
 .auto-login-control__status {
   font-size: var(--body-xs-font-size);
   font-weight: var(--font-weight-medium, 500);
   white-space: nowrap;
 }
+
 .auto-login-control__status.is-on {
   color: var(--status-success-default);
 }
+
 .auto-login-control__status.is-off {
   color: var(--status-alert-default);
 }
+
 .auto-login-control__status.is-pending {
   color: var(--text-tertiary);
 }
@@ -124,13 +130,14 @@ const autoLoginStatusClass = (s: MarketSourceView): string => {
   display: inline-block;
   width: 12px;
   height: 12px;
-  border: 1.5px solid currentColor;
+  border: 1.5px solid currentcolor;
   border-top-color: transparent;
   border-radius: 50%;
   animation: ds-btn-spin 0.6s linear infinite;
   opacity: 0.7;
   flex-shrink: 0;
 }
+
 @keyframes ds-btn-spin {
   to { transform: rotate(360deg); }
 }

@@ -5,7 +5,7 @@ const props = withDefaults(defineProps<{
   current: number
   max?: number
   min?: number
-  desc?: string
+  desc?: string // eslint-disable-line vue/require-default-prop -- 可选展示文本，不传即无描述，undefined 合法
   idleText?: string
   loadingText?: string
   doneText?: string

@@ -29,7 +29,7 @@ export interface SelectItem {
 
 const props = withDefaults(defineProps<{
   items: SelectItem[]
-  modelValue?: string | number
+  modelValue?: string | number // eslint-disable-line vue/require-default-prop -- v-model 双向绑定，父组件保证传入或 undefined 合法
   placeholder?: string
   pending?: boolean
   disabled?: boolean
@@ -148,9 +148,9 @@ onUnmounted(() => {
   border: 1px solid var(--border-neutral-l1);
   border-radius: var(--radius-8);
   color: var(--text-default);
+  font: inherit;
   font-size: var(--body-base-font-size);
   cursor: pointer;
-  font: inherit;
   transition: border-color 120ms ease, background 120ms ease;
 }
 

@@ -62,6 +62,7 @@ const src = computed(() => props.source)
   color: var(--text-default);
   min-width: 0;
 }
+
 .source-card__header {
   display: flex;
   align-items: center;
@@ -71,9 +72,11 @@ const src = computed(() => props.source)
   flex-wrap: nowrap;
   overflow-x: auto;
 }
+
 .source-card__header:hover {
   background: var(--bg-overlay-l1);
 }
+
 .source-card__chevron {
   display: inline-block;
   width: 16px;
@@ -84,32 +87,39 @@ const src = computed(() => props.source)
   transition: transform 0.2s ease;
   flex-shrink: 0;
 }
+
 .source-card__chevron.is-expanded {
   transform: rotate(90deg);
 }
+
 .source-card__body {
   padding: 0 var(--spacer-20) var(--spacer-20);
   overflow-x: auto;
 }
+
 .source-card__body.is-open {
   display: block;
 }
+
 .source-card__info {
   display: flex;
   flex-direction: column;
   gap: 1px;
   flex-shrink: 0;
 }
+
 .source-card__info-name {
   font-weight: var(--font-weight-medium, 500);
   color: var(--text-secondary);
   white-space: nowrap;
 }
+
 .source-card__info-meta {
   font-size: 10px;
   color: var(--text-tertiary);
   white-space: nowrap;
 }
+
 .source-card__meta-row {
   display: flex;
   align-items: center;
@@ -118,11 +128,13 @@ const src = computed(() => props.source)
   flex-wrap: wrap;
   row-gap: 2px;
 }
+
 .card-hint {
   font-size: var(--body-sm-font-size);
   color: var(--text-tertiary);
   padding: var(--spacer-4) 0;
 }
+
 .mono {
   font-family: var(--code-editor-font-family);
   font-variant-numeric: tabular-nums;

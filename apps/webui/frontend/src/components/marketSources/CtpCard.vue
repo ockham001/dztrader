@@ -487,8 +487,8 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 .preload-item__time { font-family: var(--code-editor-font-family); font-variant-numeric: tabular-nums; font-size: var(--body-base-font-size); color: var(--text-default); min-width: 44px; }
 .preload-item__field { display: inline-flex; align-items: center; gap: var(--spacer-4); font-size: var(--body-xs-font-size); color: var(--text-tertiary); }
 .preload-item__remove { margin-left: auto; background: none; border: none; color: var(--text-tertiary); font-size: var(--body-sm-font-size); cursor: pointer; padding: var(--spacer-2) var(--spacer-6); border-radius: var(--radius-4); }
-.preload-item__remove:not(:disabled):hover { color: var(--status-error-default); background: var(--status-error-surface-l1); }
 .preload-item__remove:disabled { cursor: default; opacity: 0.6; }
+.preload-item__remove:not(:disabled):hover { color: var(--status-error-default); background: var(--status-error-surface-l1); }
 
 /* 对话框错误提示（scoped 不跨组件, 本组件 Modal 自带） */
 .dialog-row__error {
@@ -502,7 +502,8 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 .dialog-row__label { font-size: var(--body-sm-font-size); color: var(--text-tertiary); font-weight: var(--font-weight-medium, 500); flex-shrink: 0; width: 110px; white-space: nowrap; }
 .dialog-row__control { flex: 1; min-width: 0; }
 
-.ds-btn__spinner { display: inline-block; width: 12px; height: 12px; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: ds-btn-spin 0.6s linear infinite; opacity: 0.7; flex-shrink: 0; }
+.ds-btn__spinner { display: inline-block; width: 12px; height: 12px; border: 1.5px solid currentcolor; border-top-color: transparent; border-radius: 50%; animation: ds-btn-spin 0.6s linear infinite; opacity: 0.7; flex-shrink: 0; }
+
 @keyframes ds-btn-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 768px) {

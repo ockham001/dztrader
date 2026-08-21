@@ -65,7 +65,7 @@ const ICON_MAP: Record<string, string> = {
   border-radius: var(--radius-8);
   border: 1px solid var(--border-neutral-l1);
   background: var(--bg-base-default);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%), 0 2px 8px rgb(0 0 0 / 8%);
   font-size: var(--body-sm-font-size);
   line-height: var(--body-sm-line-height);
   color: var(--text-default);
@@ -148,20 +148,24 @@ const ICON_MAP: Record<string, string> = {
 .toast-enter-active {
   transition: all 300ms cubic-bezier(0.2, 0, 0, 1);
 }
+
 .toast-leave-active {
   transition: all 250ms cubic-bezier(0.4, 0, 1, 1);
   position: absolute;
   right: 0;
   bottom: 0;
 }
+
 .toast-enter-from {
   opacity: 0;
   transform: translateX(100%);
 }
+
 .toast-leave-to {
   opacity: 0;
   transform: translateX(100%);
 }
+
 .toast-move {
   transition: transform 300ms ease;
 }

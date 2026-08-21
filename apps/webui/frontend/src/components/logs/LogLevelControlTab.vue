@@ -235,16 +235,19 @@ function handleSelectAll(event: Event): void {
   gap: var(--spacer-12);
   flex-wrap: wrap;
 }
+
 .log-control__batch {
   display: flex;
   align-items: center;
   gap: var(--spacer-8);
   flex-wrap: wrap;
 }
+
 .log-control__batch-label {
   font-size: var(--body-sm-font-size);
   color: var(--text-tertiary);
 }
+
 .log-control__batch .ds-dropdown {
   width: auto;
   flex-shrink: 0;
@@ -256,16 +259,19 @@ function handleSelectAll(event: Event): void {
   border: 1px solid var(--border-neutral-l1);
   border-radius: var(--radius-12);
 }
+
 .log-control__actions {
   display: flex;
   align-items: center;
   gap: var(--spacer-8);
 }
+
 .log-control__actions .ds-dropdown {
   width: auto;
   flex-shrink: 0;
   max-width: 160px;
 }
+
 .log-control__strategy-hint {
   font-size: var(--body-sm-font-size);
   color: var(--text-tertiary);

@@ -43,7 +43,7 @@ onUnmounted(() => {
 
 <template>
   <div class="filter-dropdown theme-dropdown" :style="{ position: 'relative' }">
-    <button
+    <button type="button"
       class="topbar__theme"
       :aria-label="'切换主题'"
       aria-haspopup="true"

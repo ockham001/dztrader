@@ -50,6 +50,7 @@ function brokerItems(s: MarketSourceView): DropdownItem[] {
   gap: var(--spacer-12);
   margin-bottom: var(--spacer-12);
 }
+
 .broker-select-row__label {
   font-size: var(--body-sm-font-size);
   color: var(--text-tertiary);
@@ -57,6 +58,7 @@ function brokerItems(s: MarketSourceView): DropdownItem[] {
   flex-shrink: 0;
   width: 70px;
 }
+
 .broker-select-row__select {
   max-width: 280px;
   width: 280px;

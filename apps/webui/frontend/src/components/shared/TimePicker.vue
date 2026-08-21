@@ -338,6 +338,7 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 2px;
   padding: 2px;
+
   /* slim scrollbar */
   scrollbar-width: thin;
   scrollbar-color: var(--border-neutral-l2) transparent;
