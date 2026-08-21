@@ -10,7 +10,7 @@
     "type-check": "vue-tsc --noEmit",
     "gen:types": "node scripts/gen-types.mjs",
     "lint": "eslint . --max-warnings 0",
-    "lint:css": "stylelint \"src/**/*.{css,vue}\"",
+    "lint:css": "stylelint \"src/**/*.{css,vue}\" --max-warnings 0",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest"
