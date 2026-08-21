@@ -7,6 +7,7 @@
 | 文档 | 内容 |
 |------|------|
 | [frame_contracts/](frame_contracts/README.md) | **帧协议与 frontend↔dzweb 协议的唯一语义真相源**（00-12，含通用规则、WS、REST）。开发 IPC/UI 联动前必读 |
+| [development-checklist.md](development-checklist.md) | **新功能开发门禁清单**（P6）：A 前端/B 后台/C 提交前三段，每项映射到自动化检查 |
 | 仓库根 `README.md` | 构建/运行/部署指南 |
 
 ## 架构参考（蓝图级，方向性）
