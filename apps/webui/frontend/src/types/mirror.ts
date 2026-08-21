@@ -3,11 +3,11 @@
 // P3 Task 1: 建立领域载荷骨架
 // 载荷细化为 unknown 是终态（设计 §5.5 实现偏差：判别联合预留至交易数据扩展前实现）
 
-export interface LogConfigPayload { level: string; flush_on: string }
+// LogConfigPayload / AutoLoginPayload / NotifyUiPayload 由契约单源生成（schema → generated.ts），禁止手写
+import type { LogConfigPayload, AutoLoginPayload, AutoLoginSchedule, NotifyUiPayload } from './generated'
+export type { AutoLoginPayload, AutoLoginSchedule, LogConfigPayload, NotifyUiPayload }
 
 export interface ProgressPayload { min: number; max: number; current: number; desc?: string }
-
-export interface AutoLoginPayload { enabled: boolean; schedules: { login_time: string; logout_time: string }[] }
 
 // 契约 shm ShmConfig（dzmd_* 通用层）：展示/编辑用视图形状（RTN 全量）
 export interface ShmConfigView {

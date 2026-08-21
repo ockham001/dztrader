@@ -35,6 +35,41 @@
         "current": { "type": "integer" },
         "desc": { "type": "string", "description": "简短文本说明；空串/省略=无文本" }
       }
+    },
+    "LogConfigPayload": {
+      "type": "object",
+      "required": ["level", "flush_on"],
+      "properties": {
+        "level": { "type": "string", "description": "当前生效级别，始终为规范全称（契约 log）" },
+        "flush_on": { "type": "string", "description": "当前生效 flush 阈值，始终为规范全称" }
+      }
+    },
+    "AutoLoginSchedule": {
+      "type": "object",
+      "required": ["login_time", "logout_time"],
+      "properties": {
+        "login_time": { "type": "string", "description": "登录时间 HH:MM（进程本地时间）" },
+        "logout_time": { "type": "string", "description": "登出时间 HH:MM（进程本地时间）" }
+      }
+    },
+    "AutoLoginPayload": {
+      "type": "object",
+      "required": ["enabled", "schedules"],
+      "properties": {
+        "enabled": { "type": "boolean", "description": "是否启用自动登录排程" },
+        "schedules": { "type": "array", "items": { "$ref": "#/$defs/AutoLoginSchedule" }, "description": "排程整体覆盖（契约 auto-login）" }
+      }
+    },
+    "NotifyUiPayload": {
+      "type": "object",
+      "required": ["source", "level", "message", "timestamp", "popup"],
+      "properties": {
+        "source": { "type": "string", "description": "通知来源（进程名或策略 ID）" },
+        "level": { "type": "string", "enum": ["info", "warning", "error"], "description": "通知级别" },
+        "message": { "type": "string", "description": "通知正文" },
+        "timestamp": { "type": "integer", "description": "Unix 秒级时间戳" },
+        "popup": { "type": "boolean", "description": "是否弹窗打断用户" }
+      }
     }
   }
 }

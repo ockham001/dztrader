@@ -29,3 +29,37 @@ export interface ProgressStatus {
     /** 简短文本说明；空串/省略=无文本 */
     desc?: string
 }
+
+export interface LogConfigPayload {
+    /** 当前生效级别，始终为规范全称（契约 log） */
+    level: string
+    /** 当前生效 flush 阈值，始终为规范全称 */
+    flush_on: string
+}
+
+export interface AutoLoginSchedule {
+    /** 登录时间 HH:MM（进程本地时间） */
+    login_time: string
+    /** 登出时间 HH:MM（进程本地时间） */
+    logout_time: string
+}
+
+export interface AutoLoginPayload {
+    /** 是否启用自动登录排程 */
+    enabled: boolean
+    /** 排程整体覆盖（契约 auto-login） */
+    schedules: AutoLoginSchedule[]
+}
+
+export interface NotifyUiPayload {
+    /** 通知来源（进程名或策略 ID） */
+    source: string
+    /** 通知级别 */
+    level: string
+    /** 通知正文 */
+    message: string
+    /** Unix 秒级时间戳 */
+    timestamp: number
+    /** 是否弹窗打断用户 */
+    popup: boolean
+}
