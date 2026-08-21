@@ -1,3 +1,8 @@
+// 契约单源生成的 WS 领域类型：由 schema → generated.ts 提供，此处 import 提供本地绑定（供
+// LogContent 等内部引用）并转发对外；勿在此手写重复定义（避免与生成物同名冲突）
+import type { BrokerFrontend, BrokerEntry, LogLine, MdConfigPayload, MdRtnConfigPayload, MdRtnStatusPayload } from './generated'
+export type { BrokerFrontend, BrokerEntry, LogLine, MdConfigPayload, MdRtnConfigPayload, MdRtnStatusPayload }
+
 // ===== Authentication =====
 export interface LoginRequest {
   username: string
@@ -102,23 +107,7 @@ export interface Schedule {
   logout_time: string
 }
 
-// 经纪商前置地址: 由 address 唯一标识 (broker 内部), 无独立 id
-export interface BrokerFrontend {
-  address: string
-  label: string
-  enabled: boolean
-}
-
-// 经纪商条目: 由 name 唯一标识 (source 内部), 无独立 id
-// 对应后端 dzmd_ctp MdConfig::BrokerEntry (Wave 1B commit 1f35e61)
-export interface BrokerEntry {
-  name: string
-  broker_id: string
-  user_id: string
-  password: string
-  product_info: string
-  frontends: BrokerFrontend[]
-}
+// BrokerFrontend / BrokerEntry 已由契约单源（generated）提供，见文件顶部转发
 
 // ===== Log Monitoring =====
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warning' | 'error' | 'critical' | 'off'
@@ -131,20 +120,7 @@ export interface LogFile {
   path: string
 }
 
-export interface LogLine {
-  n: number
-  ts: string
-  level: string
-  logger: string
-  func: string
-  file: string
-  line: number
-  pid: string
-  tid: string
-  msg: string
-  raw: string
-  parsed: boolean
-}
+// LogLine 已由契约单源（generated）提供，见文件顶部转发
 
 export interface LogContent {
   lines: LogLine[]
@@ -193,27 +169,7 @@ export interface FlushResult {
 // 此处仅转发，勿手写重复定义（避免与生成物同名冲突）
 export type { ProcessState, ProcessEvent, ProcessStatusPayload } from './generated'
 
-// 行情源配置载荷 (md_rtn_config 帧 data.config / GET /market-sources/{id}/config)
-// 字段与 stores/marketSources.ts setMdConfig 的实际解析对齐 (P3 Task 1)
-// 契约 md-config: brokers/current_broker_name + 订阅参数；排程/自动登录已迁移契约 auto-login (auto_login 帧)
-export interface MdConfigPayload {
-  brokers: BrokerEntry[]
-  current_broker_name: string
-  subscribe_batch_size?: number
-  subscribe_batch_delay_ms?: number
-  sub_check_interval_ms?: number
-  sub_max_retry?: number
-}
-
-export interface MdRtnConfigPayload {
-  source: string
-  config: MdConfigPayload
-}
-
-export interface MdRtnStatusPayload {
-  source: string
-  status: Record<string, unknown>
-}
+// MdConfigPayload / MdRtnConfigPayload / MdRtnStatusPayload 已由契约单源（generated）提供，见文件顶部转发
 
 // ===== 系统设置 =====
 // 注: 事件通道配置展示/编辑复用 types/mirror.ts 的 ShmConfigView (契约 shm), 不在 api.ts 重复定义

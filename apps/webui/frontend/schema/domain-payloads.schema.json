@@ -70,6 +70,92 @@
         "timestamp": { "type": "integer", "description": "Unix 秒级时间戳" },
         "popup": { "type": "boolean", "description": "是否弹窗打断用户" }
       }
+    },
+    "BrokerFrontend": {
+      "type": "object",
+      "required": ["address", "label", "enabled"],
+      "properties": {
+        "address": { "type": "string", "description": "前置地址，非空（契约 md-config）" },
+        "label": { "type": "string", "description": "可选人类可读标签，可为空" },
+        "enabled": { "type": "boolean", "description": "是否启用（注册到 CTP）" }
+      }
+    },
+    "BrokerEntry": {
+      "type": "object",
+      "required": ["name", "broker_id", "user_id", "password", "product_info", "frontends"],
+      "properties": {
+        "name": { "type": "string", "description": "经纪商不可变 key" },
+        "broker_id": { "type": "string", "description": "经纪公司代码" },
+        "user_id": { "type": "string", "description": "用户代码" },
+        "password": { "type": "string", "description": "登录密码（生产/RTN 脱敏为 ****）" },
+        "product_info": { "type": "string", "description": "产品信息" },
+        "frontends": { "type": "array", "items": { "$ref": "#/$defs/BrokerFrontend" }, "description": "前置地址列表" }
+      }
+    },
+    "MdConfigPayload": {
+      "type": "object",
+      "required": ["brokers", "current_broker_name"],
+      "properties": {
+        "brokers": { "type": "array", "items": { "$ref": "#/$defs/BrokerEntry" }, "description": "经纪商列表（RTN 全量）" },
+        "current_broker_name": { "type": "string", "description": "当前选中经纪商名，空或指向存在的经纪商" },
+        "subscribe_batch_size": { "type": "integer", "description": "每批订阅数量" },
+        "subscribe_batch_delay_ms": { "type": "integer", "description": "批间延迟（毫秒）" },
+        "sub_check_interval_ms": { "type": "integer", "description": "补订检查间隔（毫秒）" },
+        "sub_max_retry": { "type": "integer", "description": "补订最大重试" }
+      }
+    },
+    "MdRtnConfigPayload": {
+      "type": "object",
+      "required": ["source", "config"],
+      "properties": {
+        "source": { "type": "string", "description": "行情源进程名" },
+        "config": { "$ref": "#/$defs/MdConfigPayload", "description": "脱敏行情配置" }
+      }
+    },
+    "PreloadPoint": {
+      "type": "object",
+      "required": ["pages", "bytes"],
+      "properties": {
+        "pages": { "type": "integer", "description": "预加载页数，范围 [0,8]" },
+        "bytes": { "type": "integer", "description": "预加载字节数，范围 [0,2^40]" }
+      }
+    },
+    "ShmConfigView": {
+      "type": "object",
+      "required": ["page_size_mb", "preload_points", "check_interval_min", "check_pages", "check_bytes"],
+      "properties": {
+        "page_size_mb": { "type": "integer", "description": "页大小（MB），启动后不可变" },
+        "preload_points": { "type": "object", "additionalProperties": { "$ref": "#/$defs/PreloadPoint" }, "description": "预加载点，key=HH:MM" },
+        "check_interval_min": { "type": "integer", "description": "周期检查间隔（分钟），0=不检查" },
+        "check_pages": { "type": "integer", "description": "周期检查预加载页数" },
+        "check_bytes": { "type": "integer", "description": "周期检查预加载字节数" }
+      }
+    },
+    "LogLine": {
+      "type": "object",
+      "required": ["n", "ts", "level", "logger", "func", "file", "line", "pid", "tid", "msg", "raw", "parsed"],
+      "properties": {
+        "n": { "type": "integer", "description": "行号" },
+        "ts": { "type": "string", "description": "时间戳" },
+        "level": { "type": "string", "description": "日志级别" },
+        "logger": { "type": "string", "description": "logger 名" },
+        "func": { "type": "string", "description": "函数名" },
+        "file": { "type": "string", "description": "源文件名" },
+        "line": { "type": "integer", "description": "源文件行号" },
+        "pid": { "type": "string", "description": "进程 ID" },
+        "tid": { "type": "string", "description": "线程 ID" },
+        "msg": { "type": "string", "description": "日志消息" },
+        "raw": { "type": "string", "description": "原始行" },
+        "parsed": { "type": "boolean", "description": "是否已结构化解析" }
+      }
+    },
+    "MdRtnStatusPayload": {
+      "type": "object",
+      "required": ["source", "status"],
+      "properties": {
+        "source": { "type": "string", "description": "行情源进程名" },
+        "status": { "type": "object", "additionalProperties": true, "description": "网关状态（结构随接口类型）" }
+      }
     }
   }
 }

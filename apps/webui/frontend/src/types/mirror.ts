@@ -4,19 +4,12 @@
 // 载荷细化为 unknown 是终态（设计 §5.5 实现偏差：判别联合预留至交易数据扩展前实现）
 
 // LogConfigPayload / AutoLoginPayload / NotifyUiPayload 由契约单源生成（schema → generated.ts），禁止手写
-import type { LogConfigPayload, AutoLoginPayload, AutoLoginSchedule, NotifyUiPayload } from './generated'
-export type { AutoLoginPayload, AutoLoginSchedule, LogConfigPayload, NotifyUiPayload }
+import type { LogConfigPayload, AutoLoginPayload, AutoLoginSchedule, NotifyUiPayload, ShmConfigView } from './generated'
+export type { AutoLoginPayload, AutoLoginSchedule, LogConfigPayload, NotifyUiPayload, ShmConfigView }
 
 export interface ProgressPayload { min: number; max: number; current: number; desc?: string }
 
-// 契约 shm ShmConfig（dzmd_* 通用层）：展示/编辑用视图形状（RTN 全量）
-export interface ShmConfigView {
-  page_size_mb: number
-  preload_points: Record<string, { pages: number; bytes: number }>
-  check_interval_min: number
-  check_pages: number
-  check_bytes: number
-}
+// 契约 shm ShmConfigView 已由契约单源（generated）提供，见顶部转发
 
 export interface DomainPayloads {
   log_config?: LogConfigPayload

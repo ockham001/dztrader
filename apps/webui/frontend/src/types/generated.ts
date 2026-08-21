@@ -63,3 +63,103 @@ export interface NotifyUiPayload {
     /** 是否弹窗打断用户 */
     popup: boolean
 }
+
+export interface BrokerFrontend {
+    /** 前置地址，非空（契约 md-config） */
+    address: string
+    /** 可选人类可读标签，可为空 */
+    label: string
+    /** 是否启用（注册到 CTP） */
+    enabled: boolean
+}
+
+export interface BrokerEntry {
+    /** 经纪商不可变 key */
+    name: string
+    /** 经纪公司代码 */
+    broker_id: string
+    /** 用户代码 */
+    user_id: string
+    /** 登录密码（生产/RTN 脱敏为 ****） */
+    password: string
+    /** 产品信息 */
+    product_info: string
+    /** 前置地址列表 */
+    frontends: BrokerFrontend[]
+}
+
+export interface MdConfigPayload {
+    /** 经纪商列表（RTN 全量） */
+    brokers: BrokerEntry[]
+    /** 当前选中经纪商名，空或指向存在的经纪商 */
+    current_broker_name: string
+    /** 每批订阅数量 */
+    subscribe_batch_size?: number
+    /** 批间延迟（毫秒） */
+    subscribe_batch_delay_ms?: number
+    /** 补订检查间隔（毫秒） */
+    sub_check_interval_ms?: number
+    /** 补订最大重试 */
+    sub_max_retry?: number
+}
+
+export interface MdRtnConfigPayload {
+    /** 行情源进程名 */
+    source: string
+    /** 脱敏行情配置 */
+    config: MdConfigPayload
+}
+
+export interface PreloadPoint {
+    /** 预加载页数，范围 [0,8] */
+    pages: number
+    /** 预加载字节数，范围 [0,2^40] */
+    bytes: number
+}
+
+export interface ShmConfigView {
+    /** 页大小（MB），启动后不可变 */
+    page_size_mb: number
+    /** 预加载点，key=HH:MM */
+    preload_points: Record<string, PreloadPoint>
+    /** 周期检查间隔（分钟），0=不检查 */
+    check_interval_min: number
+    /** 周期检查预加载页数 */
+    check_pages: number
+    /** 周期检查预加载字节数 */
+    check_bytes: number
+}
+
+export interface LogLine {
+    /** 行号 */
+    n: number
+    /** 时间戳 */
+    ts: string
+    /** 日志级别 */
+    level: string
+    /** logger 名 */
+    logger: string
+    /** 函数名 */
+    func: string
+    /** 源文件名 */
+    file: string
+    /** 源文件行号 */
+    line: number
+    /** 进程 ID */
+    pid: string
+    /** 线程 ID */
+    tid: string
+    /** 日志消息 */
+    msg: string
+    /** 原始行 */
+    raw: string
+    /** 是否已结构化解析 */
+    parsed: boolean
+}
+
+export interface MdRtnStatusPayload {
+    /** 行情源进程名 */
+    source: string
+    /** 网关状态（结构随接口类型） */
+    status: Record<string, unknown>
+}

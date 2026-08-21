@@ -12,7 +12,7 @@ import { useProcessStore } from '@/stores/process'
 import { useProgressStore } from '@/stores/progress'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useSettingsStore } from '@/stores/settings'
-import type { LogLine, ProcessStatusPayload, MdConfigPayload, MdRtnConfigPayload, MdRtnStatusPayload } from '@/types/api'
+import type { ProcessStatusPayload, MdConfigPayload, MdRtnStatusPayload } from '@/types/api'
 
 registerHandler('data_changed', (payload) => {
   // 多设备同步：后端数据变更时推送通知，前端按 scope 重新 REST 刷新
@@ -29,7 +29,8 @@ registerHandler('data_changed', (payload) => {
 })
 
 registerHandler('log_line', (payload) => {
-  const data = payload as { file?: string; line?: LogLine } | undefined
+  // payload 已由 WsDataByType 判别联合类型化为 { file?; line?: LogLine }
+  const data = payload
   if (data?.line) {
     const logs = useLogsStore()
     logs.appendLogLine(data.line)
@@ -150,7 +151,8 @@ registerHandler('md_rtn_config', (payload) => {
   // dzmd_ctp 配置变化时推送 (已脱敏, 契约 md-config: brokers/current_broker_name/订阅参数)
   // data: { source: 'dzmd_ctp', config: { brokers: [...], ... } }
   // P4 Task 5 单写:mdConfig store 为 md_rtn_config 帧唯一写入点
-  const data = payload as MdRtnConfigPayload | undefined
+  // payload 已由 WsDataByType 判别联合类型化为 MdRtnConfigPayload（契约单源）
+  const data = payload
   if (!data?.source || !data?.config) {
     console.warn('md_rtn_config payload invalid', data)
     return

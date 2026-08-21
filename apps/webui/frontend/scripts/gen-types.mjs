@@ -20,6 +20,9 @@ function tsType(propDef) {
   if (propDef.type === 'integer' || propDef.type === 'number') return 'number'
   if (propDef.type === 'boolean') return 'boolean'
   if (propDef.type === 'array') return 'unknown[]'
+  if (propDef.type === 'object' && propDef.additionalProperties) {
+    return `Record<string, ${tsType(propDef.additionalProperties)}>`
+  }
   return 'unknown'
 }
 

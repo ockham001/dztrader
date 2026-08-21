@@ -3,6 +3,7 @@
 // 判别联合：data 类型经 WsDataByType 按 type 映射；真源 = 契约单源（schema → types/generated.ts）。
 import type {
   ProcessStatusPayload, ProgressStatus, LogConfigPayload, AutoLoginPayload, NotifyUiPayload,
+  MdRtnConfigPayload, MdRtnStatusPayload, ShmConfigView, LogLine,
 } from './generated'
 
 // 服务端 → 客户端每类消息的 data 载荷类型（判别联合核心）
@@ -11,19 +12,19 @@ export interface WsDataByType {
   snapshot: unknown                              // 结构特殊：Record<instance_id, Partial<DomainPayloads>>（镜像）
   process_status: ProcessStatusPayload
   process_config: Record<string, unknown>
-  md_rtn_config: unknown                         // 待迁复杂域（契约 md-config）
-  md_rtn_status: unknown
-  md_rtn_subscriptions: unknown
+  md_rtn_config: MdRtnConfigPayload
+  md_rtn_status: MdRtnStatusPayload
+  md_rtn_subscriptions: unknown                  // 待迁（契约 md-subscription）
   notify_ui: NotifyUiPayload
   log_config: LogConfigPayload
-  log_line: unknown                              // 待迁复杂域（契约 webui-ws log_line）
+  log_line: { file?: string; line?: LogLine }    // 契约 webui-ws log_line（file + 单条 line）
   log_tail_unsubscribed: unknown
   data_changed: unknown
   default_password_warning: unknown
   error: { message: string }
   pong: void
-  event_shm_config: unknown                      // 待迁（契约 shm）
-  md_shm_config: unknown
+  event_shm_config: ShmConfigView
+  md_shm_config: ShmConfigView
   auto_login: AutoLoginPayload
   progress: ProgressStatus
 }
