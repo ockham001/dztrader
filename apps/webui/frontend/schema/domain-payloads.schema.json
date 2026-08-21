@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "domain-payloads",
+  "title": "WS 领域载荷（前端单源 schema）",
+  "description": "dzweb → 前端 WS 消息 data 的权威 schema。真源=帧契约（process/progress 等）。前端 src/types/generated.ts 由 scripts/gen-types.mjs 生成，禁止手改。新增/修改字段必须同步更新对应帧契约。",
+  "$defs": {
+    "ProcessState": {
+      "type": "string",
+      "enum": ["Starting", "Running", "Stopping", "Stopped", "Crashed"],
+      "description": "进程状态（契约 process）"
+    },
+    "ProcessEvent": {
+      "type": "string",
+      "enum": ["StartSucceeded", "StartFailed", "StopSucceeded", "StopFailed", "RemoveSucceeded", "RemoveFailed"],
+      "description": "进程操作结果事件（契约 process）"
+    },
+    "ProcessStatusPayload": {
+      "type": "object",
+      "required": ["name", "state", "pid"],
+      "properties": {
+        "name": { "type": "string", "description": "进程名" },
+        "state": { "$ref": "#/$defs/ProcessState" },
+        "pid": { "type": "integer", "description": "进程 PID，未运行时为 0" },
+        "display_name": { "type": "string", "description": "用户可读显示名；缺省为空串" },
+        "message": { "type": "string", "description": "状态说明/失败原因；缺省为空串" },
+        "event": { "$ref": "#/$defs/ProcessEvent", "description": "操作结果事件；缺失=自发状态变化" }
+      }
+    },
+    "ProgressStatus": {
+      "type": "object",
+      "required": ["min", "max", "current"],
+      "properties": {
+        "min": { "type": "integer" },
+        "max": { "type": "integer", "description": "max <= min（含 max==0）表示不确定进度" },
+        "current": { "type": "integer" },
+        "desc": { "type": "string", "description": "简短文本说明；空串/省略=无文本" }
+      }
+    }
+  }
+}

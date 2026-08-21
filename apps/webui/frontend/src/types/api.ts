@@ -189,22 +189,9 @@ export interface FlushResult {
 }
 
 // ===== Process Control =====
-export type ProcessState = 'Starting' | 'Running' | 'Stopping' | 'Stopped' | 'Crashed'
-
-// 进程操作结果事件（契约 process）：仅 RTN_PROCESS_STATUS 响应 REQUEST_PROCESS_CONTROL 时出现
-export type ProcessEvent =
-  | 'StartSucceeded' | 'StartFailed'
-  | 'StopSucceeded' | 'StopFailed'
-  | 'RemoveSucceeded' | 'RemoveFailed'
-
-export interface ProcessStatusPayload {
-  name: string
-  state: ProcessState
-  pid: number
-  message?: string
-  display_name?: string
-  event?: ProcessEvent   // 缺失 = 自发状态变化（崩溃/重启/快照），不清 pending
-}
+// 进程状态/事件/状态载荷由契约单源生成（schema/domain-payloads.schema.json → src/types/generated.ts），
+// 此处仅转发，勿手写重复定义（避免与生成物同名冲突）
+export type { ProcessState, ProcessEvent, ProcessStatusPayload } from './generated'
 
 // 行情源配置载荷 (md_rtn_config 帧 data.config / GET /market-sources/{id}/config)
 // 字段与 stores/marketSources.ts setMdConfig 的实际解析对齐 (P3 Task 1)
