@@ -4,7 +4,9 @@ import { marketSourcesApi } from '@/api/marketSources'
 import type { AddBrokerBody, AutoLoginBody, SubscribeParamsBody, ShmConfigPatch } from '@/api/marketSources'
 import type { BrokerEntry, BrokerFrontend, MdConfigPayload, MdRtnConfigPayload, MdRtnStatusPayload } from '@/types/api'
 import type { ShmConfigView } from '@/types/mirror'
-import { usePending, clearByPrefix, PENDING_TIMEOUT } from '@/composables/usePending'
+import { PENDING_TIMEOUT } from '@/composables/usePending'
+import { marketSourcePending, clearByPrefix as clearMSPrefix } from '@/composables/marketSourcePending'
+import { createOperationRunner } from '@/composables/useOperation'
 import { useProgressStore } from '@/stores/progress'
 import { progressLoginState } from '@/composables/marketSourceView'
 
@@ -88,7 +90,15 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
   // RTN 回调（仅带进程名 source）据此定位 pending key（source:{id}:{op}）
   const nameToId = ref<Record<string, number>>({})
 
-  const { pending, run } = usePending()
+  // 行情源领域共享 pending（P3）：process/mdConfig/marketSources 围绕同一批
+  // source:{id}:{op} 操作，必须共用同一实例以便 RTN 批量清理与前端映射。
+  // P3 任务 2: 经领域 runner 使用该实例（防重入/name→id/run/结果映射收敛见 useOperation.ts）。
+  const runner = createOperationRunner({
+    pending: marketSourcePending,
+    timeout: CONFIG_OP_TIMEOUT_MS,
+    opKey,
+    nameToId,
+  })
 
   function opKey(id: number, op: MdConfigOp): string {
     return `source:${id}:${op}`
@@ -99,7 +109,7 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
   // process store（start/stop/remove）与 login/logout（applyProgress 负责）
   function clearConfigPending(id: number): void {
     for (const op of MD_CONFIG_OPS) {
-      clearByPrefix(opKey(id, op))
+      clearMSPrefix(opKey(id, op))
     }
   }
 
@@ -135,7 +145,7 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     }
     shmConfigs.value[source] = p as ShmConfigView
     const id = nameToId.value[source]
-    if (id !== undefined) clearByPrefix(opKey(id, 'shm_config'))
+    if (id !== undefined) clearMSPrefix(opKey(id, 'shm_config'))
   }
 
   // auto_login 帧（契约 auto-login）：单条完整覆盖（后到覆盖先到），非法 payload 忽略不写。
@@ -151,7 +161,7 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     const id = nameToId.value[source]
     if (id === undefined) return
     for (const op of AUTO_LOGIN_OPS) {
-      clearByPrefix(opKey(id, op))
+      clearMSPrefix(opKey(id, op))
     }
   }
 
@@ -171,9 +181,9 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
         if (sourceId === undefined) continue
         const state = progressLoginState(p)
         if (state === 'online') {
-          clearByPrefix(opKey(sourceId, 'login'))
+          clearMSPrefix(opKey(sourceId, 'login'))
         } else if (state === 'offline') {
-          clearByPrefix(opKey(sourceId, 'logout'))
+          clearMSPrefix(opKey(sourceId, 'logout'))
         }
       }
     },
@@ -186,29 +196,17 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
   // 现有 addBroker/removeBroker/addFrontend/removeFrontend 失败 re-throw 的
   // F-C10 语义（Modal 保持打开）依赖调用方错误信息，Task 5 聚合层接入时处理。
   async function login(id: number, sourceName: string): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'login')
-    if (pending[key]) return false
-    nameToId.value[sourceName] = id
-    const result = await run(key, () => marketSourcesApi.login(id), {
-      timeout: CONFIG_OP_TIMEOUT_MS,
-      opLabel: OP_LABELS.login,
-      distinguishTimeout: true,
-    })
-    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
-    return result !== undefined
+    const key = runner.opKey(id, 'login')
+    if (runner.busy(key)) return false
+    runner.assign(id, sourceName)
+    return runner.execute(key, () => marketSourcesApi.login(id), OP_LABELS.login)
   }
 
   async function logout(id: number, sourceName: string): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'logout')
-    if (pending[key]) return false
-    nameToId.value[sourceName] = id
-    const result = await run(key, () => marketSourcesApi.logout(id), {
-      timeout: CONFIG_OP_TIMEOUT_MS,
-      opLabel: OP_LABELS.logout,
-      distinguishTimeout: true,
-    })
-    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
-    return result !== undefined
+    const key = runner.opKey(id, 'logout')
+    if (runner.busy(key)) return false
+    runner.assign(id, sourceName)
+    return runner.execute(key, () => marketSourcesApi.logout(id), OP_LABELS.logout)
   }
 
   // ===== 自动登录/登出排程 (契约 auto-login) =====
@@ -237,15 +235,12 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
   ): Promise<MdConfigOpResult> {
     const prev = autoLogins.value[sourceName]
     const body = build(currentAutoLogin(sourceName))
-    const result = await run(
-      key,
-      () => {
-        autoLogins.value[sourceName] = body  // 乐观更新; RTN_AUTO_LOGIN 权威覆盖
-        return marketSourcesApi.setAutoLogin(id, body)
-      },
-      { timeout: CONFIG_OP_TIMEOUT_MS, opLabel, distinguishTimeout: true },
-    )
-    if (result === undefined || result === PENDING_TIMEOUT) {
+    // runner.execute 内含乐观更新 + 结果映射；失败/超时（无 RTN）需回滚乐观值
+    const result = await runner.execute(key, () => {
+      autoLogins.value[sourceName] = body  // 乐观更新; RTN_AUTO_LOGIN 权威覆盖
+      return marketSourcesApi.setAutoLogin(id, body)
+    }, opLabel)
+    if (result === false || result === PENDING_TIMEOUT) {
       // HTTP 失败 / 超时: 无 RTN 到达, 回滚乐观值
       if (prev === undefined) {
         delete autoLogins.value[sourceName]
@@ -253,27 +248,26 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
         autoLogins.value[sourceName] = prev
       }
     }
-    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
-    return result !== undefined
+    return result
   }
 
   async function toggleAutoLogin(id: number, sourceName: string, enabled: boolean): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'auto_login')
-    if (pending[key]) return false
+    const key = runner.opKey(id, 'auto_login')
+    if (runner.busy(key)) return false
     // 守卫：镜像未就绪禁止提交。RFC7386 全量提交中 schedules 出现即整体覆盖，
     // 兜底值 {enabled:false, schedules:[]} 会清空网关侧已有排程（破坏性）
     if (!autoLogins.value[sourceName]) return false
-    nameToId.value[sourceName] = id
+    runner.assign(id, sourceName)
     return submitAutoLogin(id, sourceName, key, OP_LABELS.auto_login,
       cur => ({ ...cur, enabled }))
   }
 
   async function addSchedule(id: number, sourceName: string, loginTime: string, logoutTime: string): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'schedule_add')
-    if (pending[key]) return false
+    const key = runner.opKey(id, 'schedule_add')
+    if (runner.busy(key)) return false
     // 守卫：同 toggleAutoLogin——镜像未就绪时禁止全量提交
     if (!autoLogins.value[sourceName]) return false
-    nameToId.value[sourceName] = id
+    runner.assign(id, sourceName)
     const cur = currentAutoLogin(sourceName)
     if (cur.schedules.some(s => s.login_time === loginTime && s.logout_time === logoutTime)) {
       return true  // 重复时段: 幂等成功（目标状态已达成, 不下发）
@@ -284,9 +278,9 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
   }
 
   async function removeSchedule(id: number, sourceName: string, loginTime: string, logoutTime: string): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'schedule_remove')
-    if (pending[key]) return false
-    nameToId.value[sourceName] = id
+    const key = runner.opKey(id, 'schedule_remove')
+    if (runner.busy(key)) return false
+    runner.assign(id, sourceName)
     const cur = currentAutoLogin(sourceName)
     const schedules = cur.schedules.filter(s => !(s.login_time === loginTime && s.logout_time === logoutTime))
     if (schedules.length === cur.schedules.length) {
@@ -297,126 +291,78 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
   }
 
   async function addBroker(id: number, sourceName: string, data: AddBrokerBody): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'broker_add')
-    if (pending[key]) return false
-    nameToId.value[sourceName] = id
-    const result = await run(key, () => marketSourcesApi.addBroker(id, data), {
-      timeout: CONFIG_OP_TIMEOUT_MS,
-      opLabel: OP_LABELS.broker_add,
-      distinguishTimeout: true,
-    })
-    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
-    return result !== undefined
+    const key = runner.opKey(id, 'broker_add')
+    if (runner.busy(key)) return false
+    runner.assign(id, sourceName)
+    return runner.execute(key, () => marketSourcesApi.addBroker(id, data), OP_LABELS.broker_add)
   }
 
   async function removeBroker(id: number, sourceName: string, brokerName: string): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'broker_remove')
-    if (pending[key]) return false
-    nameToId.value[sourceName] = id
-    const result = await run(key, () => marketSourcesApi.removeBroker(id, brokerName), {
-      timeout: CONFIG_OP_TIMEOUT_MS,
-      opLabel: OP_LABELS.broker_remove,
-      distinguishTimeout: true,
-    })
-    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
-    return result !== undefined
+    const key = runner.opKey(id, 'broker_remove')
+    if (runner.busy(key)) return false
+    runner.assign(id, sourceName)
+    return runner.execute(key, () => marketSourcesApi.removeBroker(id, brokerName), OP_LABELS.broker_remove)
   }
 
   async function updateBroker(id: number, sourceName: string, brokerName: string, broker: BrokerEntry): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'broker_update')
-    if (pending[key]) return false
-    nameToId.value[sourceName] = id
-    const result = await run(key, () => marketSourcesApi.updateBroker(id, brokerName, broker), {
-      timeout: CONFIG_OP_TIMEOUT_MS,
-      opLabel: OP_LABELS.broker_update,
-      distinguishTimeout: true,
-    })
-    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
-    return result !== undefined
+    const key = runner.opKey(id, 'broker_update')
+    if (runner.busy(key)) return false
+    runner.assign(id, sourceName)
+    return runner.execute(key, () => marketSourcesApi.updateBroker(id, brokerName, broker), OP_LABELS.broker_update)
   }
 
   async function selectBroker(id: number, sourceName: string, brokerName: string): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'broker_select')
-    if (pending[key]) return false
-    nameToId.value[sourceName] = id
-    const result = await run(key, () => marketSourcesApi.setCurrentBroker(id, brokerName), {
-      timeout: CONFIG_OP_TIMEOUT_MS,
-      opLabel: OP_LABELS.broker_select,
-      distinguishTimeout: true,
-    })
-    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
-    return result !== undefined
+    const key = runner.opKey(id, 'broker_select')
+    if (runner.busy(key)) return false
+    runner.assign(id, sourceName)
+    return runner.execute(key, () => marketSourcesApi.setCurrentBroker(id, brokerName), OP_LABELS.broker_select)
   }
 
   // ===== Frontend 系列（从 configs 镜像读 broker.frontends 构造新列表，与现有行为一致：
   // 镜像未建立/无此 broker 时不发请求）=====
   async function addFrontend(id: number, sourceName: string, brokerName: string, address: string, label: string): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'frontend_add')
-    if (pending[key]) return false
+    const key = runner.opKey(id, 'frontend_add')
+    if (runner.busy(key)) return false
     const broker = configs.value[sourceName]?.brokers.find(b => b.name === brokerName)
     if (!broker) return false
-    nameToId.value[sourceName] = id
+    runner.assign(id, sourceName)
     const newFrontends: BrokerFrontend[] = [...broker.frontends, { address, label, enabled: false }]
-    const result = await run(key, () => marketSourcesApi.updateFrontends(id, brokerName, newFrontends), {
-      timeout: CONFIG_OP_TIMEOUT_MS,
-      opLabel: OP_LABELS.frontend_add,
-      distinguishTimeout: true,
-    })
-    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
-    return result !== undefined
+    return runner.execute(key, () => marketSourcesApi.updateFrontends(id, brokerName, newFrontends), OP_LABELS.frontend_add)
   }
 
   async function removeFrontend(id: number, sourceName: string, brokerName: string, address: string): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'frontend_remove')
-    if (pending[key]) return false
+    const key = runner.opKey(id, 'frontend_remove')
+    if (runner.busy(key)) return false
     const broker = configs.value[sourceName]?.brokers.find(b => b.name === brokerName)
     if (!broker) return false
-    nameToId.value[sourceName] = id
+    runner.assign(id, sourceName)
     const newFrontends = broker.frontends.filter(f => f.address !== address)
-    const result = await run(key, () => marketSourcesApi.updateFrontends(id, brokerName, newFrontends), {
-      timeout: CONFIG_OP_TIMEOUT_MS,
-      opLabel: OP_LABELS.frontend_remove,
-      distinguishTimeout: true,
-    })
-    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
-    return result !== undefined
+    return runner.execute(key, () => marketSourcesApi.updateFrontends(id, brokerName, newFrontends), OP_LABELS.frontend_remove)
   }
 
   async function editFrontend(id: number, sourceName: string, brokerName: string, oldAddress: string, newAddress: string): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'frontend_edit')
-    if (pending[key]) return false
+    const key = runner.opKey(id, 'frontend_edit')
+    if (runner.busy(key)) return false
     const broker = configs.value[sourceName]?.brokers.find(b => b.name === brokerName)
     if (!broker) return false
     if (oldAddress === newAddress) return false  // 值未改变不下发（现有语义）
-    nameToId.value[sourceName] = id
+    runner.assign(id, sourceName)
     const newFrontends = broker.frontends.map(f =>
       f.address === oldAddress ? { ...f, address: newAddress } : f
     )
-    const result = await run(key, () => marketSourcesApi.updateFrontends(id, brokerName, newFrontends), {
-      timeout: CONFIG_OP_TIMEOUT_MS,
-      opLabel: OP_LABELS.frontend_edit,
-      distinguishTimeout: true,
-    })
-    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
-    return result !== undefined
+    return runner.execute(key, () => marketSourcesApi.updateFrontends(id, brokerName, newFrontends), OP_LABELS.frontend_edit)
   }
 
   async function setFrontendEnabled(id: number, sourceName: string, brokerName: string, address: string, enabled: boolean): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'frontend_toggle')
-    if (pending[key]) return false
+    const key = runner.opKey(id, 'frontend_toggle')
+    if (runner.busy(key)) return false
     const broker = configs.value[sourceName]?.brokers.find(b => b.name === brokerName)
     if (!broker) return false
-    nameToId.value[sourceName] = id
+    runner.assign(id, sourceName)
     const newFrontends = broker.frontends.map(f =>
       f.address === address ? { ...f, enabled } : f
     )
-    const result = await run(key, () => marketSourcesApi.updateFrontends(id, brokerName, newFrontends), {
-      timeout: CONFIG_OP_TIMEOUT_MS,
-      opLabel: OP_LABELS.frontend_toggle,
-      distinguishTimeout: true,
-    })
-    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
-    return result !== undefined
+    return runner.execute(key, () => marketSourcesApi.updateFrontends(id, brokerName, newFrontends), OP_LABELS.frontend_toggle)
   }
 
   // ===== 订阅参数 (契约 md-config SetSubscribeParams: 单字段 patch, 缺失=保留旧值, 无状态保护) =====
@@ -425,17 +371,11 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     sourceName: string,
     patch: SubscribeParamsBody,
   ): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'subscribe_params')
-    if (pending[key]) return false
+    const key = runner.opKey(id, 'subscribe_params')
+    if (runner.busy(key)) return false
     if (Object.keys(patch).length === 0) return true  // 空提交幂等成功, 不下发
-    nameToId.value[sourceName] = id
-    const result = await run(key, () => marketSourcesApi.setSubscribeParams(id, patch), {
-      timeout: CONFIG_OP_TIMEOUT_MS,
-      opLabel: OP_LABELS.subscribe_params,
-      distinguishTimeout: true,
-    })
-    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
-    return result !== undefined
+    runner.assign(id, sourceName)
+    return runner.execute(key, () => marketSourcesApi.setSubscribeParams(id, patch), OP_LABELS.subscribe_params)
   }
 
   // ===== SHM 行情通道配置 (契约 shm: merge patch, page_size_mb 不可变不在此列) =====
@@ -444,17 +384,11 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     sourceName: string,
     patch: ShmConfigPatch,
   ): Promise<MdConfigOpResult> {
-    const key = opKey(id, 'shm_config')
-    if (pending[key]) return false
+    const key = runner.opKey(id, 'shm_config')
+    if (runner.busy(key)) return false
     if (Object.keys(patch).length === 0) return true  // 空提交幂等成功, 不下发
-    nameToId.value[sourceName] = id
-    const result = await run(key, () => marketSourcesApi.setShmConfig(id, patch), {
-      timeout: CONFIG_OP_TIMEOUT_MS,
-      opLabel: OP_LABELS.shm_config,
-      distinguishTimeout: true,
-    })
-    if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
-    return result !== undefined
+    runner.assign(id, sourceName)
+    return runner.execute(key, () => marketSourcesApi.setShmConfig(id, patch), OP_LABELS.shm_config)
   }
 
   return {

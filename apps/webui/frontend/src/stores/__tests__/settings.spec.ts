@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
-import { useSettingsStore, EVENT_SHM_KEY, EVENT_SHM_TIMEOUT_MS } from '../settings'
-import { usePending, __resetForTests, PENDING_TIMEOUT } from '@/composables/usePending'
+import { useSettingsStore, settingsPending, EVENT_SHM_KEY, EVENT_SHM_TIMEOUT_MS } from '../settings'
+import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { useToastStore } from '@/stores/toast'
 import { settingsApi } from '@/api/settings'
 
@@ -23,12 +23,11 @@ const validPayload = {
   check_bytes: 0,
 }
 
-// usePending 是模块级状态（pending + timers Map），每个用例前重置；
-// 超时路径会调用 useToastStore，需要 active pinia
+// settingsPending 每用例重置；超时路径会调用 useToastStore，需要 active pinia
 describe('useSettingsStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    __resetForTests()
+    settingsPending.__resetForTests()
     vi.clearAllMocks()
     vi.useFakeTimers()
   })
@@ -63,7 +62,7 @@ describe('useSettingsStore', () => {
     })
 
     it('合法 payload 到达清 pending（用导出的 EVENT_SHM_KEY）', () => {
-      const { pending } = usePending()
+      const { pending } = settingsPending
       const store = useSettingsStore()
       pending[EVENT_SHM_KEY] = true
       store.applyEventShmConfig(validPayload)
@@ -79,7 +78,7 @@ describe('useSettingsStore', () => {
     })
 
     it('非法 payload 不清 pending', () => {
-      const { pending } = usePending()
+      const { pending } = settingsPending
       const store = useSettingsStore()
       pending[EVENT_SHM_KEY] = true
       store.applyEventShmConfig({ page_size_mb: 'x', check_pages: 1 })
@@ -96,10 +95,10 @@ describe('useSettingsStore', () => {
       expect(r).toBe(true)
       expect(settingsApi.setEventShmConfig).toHaveBeenCalledWith({ check_interval_min: 10 })
       // keepPendingOnSuccess 默认 true: 成功后 pending 仍挂起, 等 WS RTN (applyEventShmConfig) 清
-      expect(usePending().pending[EVENT_SHM_KEY]).toBe(true)
+      expect(settingsPending.pending[EVENT_SHM_KEY]).toBe(true)
 
       store.applyEventShmConfig(validPayload)
-      expect(usePending().pending[EVENT_SHM_KEY]).toBe(false)
+      expect(settingsPending.pending[EVENT_SHM_KEY]).toBe(false)
     })
 
     it('HTTP reject → 返回 false、pending 清 false', async () => {
@@ -107,17 +106,17 @@ describe('useSettingsStore', () => {
       const store = useSettingsStore()
       const r = await store.setEventShmConfig({ check_interval_min: 10 })
       expect(r).toBe(false)
-      expect(usePending().pending[EVENT_SHM_KEY]).toBe(false)
+      expect(settingsPending.pending[EVENT_SHM_KEY]).toBe(false)
     })
 
     it('超时（mock api 挂起, advance 超时+1ms）→ PENDING_TIMEOUT、pending 清 false、toast 一次', async () => {
       vi.mocked(settingsApi.setEventShmConfig).mockImplementation(() => new Promise(() => {}))
       const store = useSettingsStore()
       const p = store.setEventShmConfig({ check_interval_min: 10 })
-      expect(usePending().pending[EVENT_SHM_KEY]).toBe(true)
+      expect(settingsPending.pending[EVENT_SHM_KEY]).toBe(true)
 
       await vi.advanceTimersByTimeAsync(EVENT_SHM_TIMEOUT_MS + 1)
-      expect(usePending().pending[EVENT_SHM_KEY]).toBe(false)
+      expect(settingsPending.pending[EVENT_SHM_KEY]).toBe(false)
       const result = await p
       expect(result).toBe(PENDING_TIMEOUT)  // 超时供调用方识别去重双 toast (§7.2)
 
@@ -133,7 +132,7 @@ describe('useSettingsStore', () => {
       // 首次提交 HTTP 成功, keepPendingOnSuccess 保持 pending 挂起
       const r1 = await store.setEventShmConfig({ check_interval_min: 10 })
       expect(r1).toBe(true)
-      expect(usePending().pending[EVENT_SHM_KEY]).toBe(true)
+      expect(settingsPending.pending[EVENT_SHM_KEY]).toBe(true)
 
       const r2 = await store.setEventShmConfig({ check_pages: 2 })
       expect(r2).toBe(false)
@@ -145,7 +144,7 @@ describe('useSettingsStore', () => {
       const r = await store.setEventShmConfig({})
       expect(r).toBe(true)
       expect(settingsApi.setEventShmConfig).not.toHaveBeenCalled()
-      expect(usePending().pending[EVENT_SHM_KEY]).toBeUndefined()
+      expect(settingsPending.pending[EVENT_SHM_KEY]).toBeUndefined()
     })
   })
 

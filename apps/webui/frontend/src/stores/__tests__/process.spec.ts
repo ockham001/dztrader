@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useProcessStore } from '../process'
-import { usePending, __resetForTests } from '@/composables/usePending'
+import { marketSourcePending, __resetForTests } from '@/composables/marketSourcePending'
 import { useToastStore } from '@/stores/toast'
 import { marketSourcesApi } from '@/api/marketSources'
 
@@ -14,7 +14,7 @@ vi.mock('@/api/marketSources', () => ({
   },
 }))
 
-// usePending 是模块级状态（pending + timers Map），每个用例前重置；
+// 行情源领域共享 pending（marketSourcePending）+ timers，每个用例前重置；
 // 超时路径会调用 useToastStore，需要 active pinia
 
 describe('useProcessStore', () => {
@@ -110,7 +110,7 @@ describe('useProcessStore', () => {
       const store = useProcessStore()
       const result = await store.start(1, 'dzmd_ctp')
       expect(result).toBe(true)
-      const { pending } = usePending()
+      const { pending } = marketSourcePending
       expect(pending['source:1:start']).toBe(true)  // 成功保持挂起
 
       // process_status 带 event 到达 → resolve 清 pending（契约 process）
@@ -124,7 +124,7 @@ describe('useProcessStore', () => {
       const store = useProcessStore()
       const result = await store.start(1, 'dzmd_ctp')
       expect(result).toBe(false)
-      expect(usePending().pending['source:1:start']).toBe(false)
+      expect(marketSourcePending.pending['source:1:start']).toBe(false)
     })
 
     // 超时兜底: distinguishTimeout+opLabel → resolve PENDING_TIMEOUT(truthy) 返回 true,
@@ -135,9 +135,9 @@ describe('useProcessStore', () => {
       const toast = useToastStore()
       const errorSpy = vi.spyOn(toast, 'error')
       const p = store.start(1, 'dzmd_ctp')
-      expect(usePending().pending['source:1:start']).toBe(true)
+      expect(marketSourcePending.pending['source:1:start']).toBe(true)
       await vi.advanceTimersByTimeAsync(30_001)
-      expect(usePending().pending['source:1:start']).toBe(false)
+      expect(marketSourcePending.pending['source:1:start']).toBe(false)
       const result = await p
       expect(result).toBe(true)  // PENDING_TIMEOUT truthy → 跳过 error
       expect(errorSpy).toHaveBeenCalledTimes(1)  // 单 toast（去重）
@@ -155,7 +155,7 @@ describe('useProcessStore', () => {
       // 收尾：推进 30s 让 p1 走超时兜底 settle，不残留挂起 promise/timer
       await vi.advanceTimersByTimeAsync(30_001)
       expect(await p1).toBe(true)  // 超时（PENDING_TIMEOUT truthy）→ 跳过 error（§7.2）
-      expect(usePending().pending['source:1:start']).toBe(false)
+      expect(marketSourcePending.pending['source:1:start']).toBe(false)
     })
   })
 
@@ -165,7 +165,7 @@ describe('useProcessStore', () => {
       const store = useProcessStore()
       const result = await store.stop(1, 'dzmd_ctp')
       expect(result).toBe(true)
-      const { pending } = usePending()
+      const { pending } = marketSourcePending
       expect(pending['source:1:stop']).toBe(true)
       store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Stopping', pid: 1, event: 'StopSucceeded' })
       await vi.advanceTimersByTimeAsync(0)
@@ -176,7 +176,7 @@ describe('useProcessStore', () => {
       vi.mocked(marketSourcesApi.stop).mockRejectedValue(new Error('stop failed'))
       const store = useProcessStore()
       expect(await store.stop(1, 'dzmd_ctp')).toBe(false)
-      expect(usePending().pending['source:1:stop']).toBe(false)
+      expect(marketSourcePending.pending['source:1:stop']).toBe(false)
     })
 
     // 超时兜底: distinguishTimeout+opLabel → resolve PENDING_TIMEOUT(truthy) 返回 true,
@@ -187,9 +187,9 @@ describe('useProcessStore', () => {
       const toast = useToastStore()
       const errorSpy = vi.spyOn(toast, 'error')
       const p = store.stop(1, 'dzmd_ctp')
-      expect(usePending().pending['source:1:stop']).toBe(true)
+      expect(marketSourcePending.pending['source:1:stop']).toBe(true)
       await vi.advanceTimersByTimeAsync(30_001)
-      expect(usePending().pending['source:1:stop']).toBe(false)
+      expect(marketSourcePending.pending['source:1:stop']).toBe(false)
       const result = await p
       expect(result).toBe(true)  // PENDING_TIMEOUT truthy → 跳过 error
       expect(errorSpy).toHaveBeenCalledTimes(1)  // 单 toast（去重）
@@ -203,7 +203,7 @@ describe('useProcessStore', () => {
       const store = useProcessStore()
       const result = await store.removeSource(1, 'dzmd_ctp')
       expect(result).toBe(true)
-      const { pending } = usePending()
+      const { pending } = marketSourcePending
       expect(pending['source:1:remove']).toBe(true)
       store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Stopped', pid: 0, event: 'RemoveSucceeded' })
       await vi.advanceTimersByTimeAsync(0)
@@ -214,7 +214,7 @@ describe('useProcessStore', () => {
       vi.mocked(marketSourcesApi.remove).mockRejectedValue(new Error('remove failed'))
       const store = useProcessStore()
       expect(await store.removeSource(1, 'dzmd_ctp')).toBe(false)
-      expect(usePending().pending['source:1:remove']).toBe(false)
+      expect(marketSourcePending.pending['source:1:remove']).toBe(false)
     })
 
     // 超时兜底: distinguishTimeout+opLabel → resolve PENDING_TIMEOUT(truthy) 返回 true,
@@ -225,9 +225,9 @@ describe('useProcessStore', () => {
       const toast = useToastStore()
       const errorSpy = vi.spyOn(toast, 'error')
       const p = store.removeSource(1, 'dzmd_ctp')
-      expect(usePending().pending['source:1:remove']).toBe(true)
+      expect(marketSourcePending.pending['source:1:remove']).toBe(true)
       await vi.advanceTimersByTimeAsync(30_001)
-      expect(usePending().pending['source:1:remove']).toBe(false)
+      expect(marketSourcePending.pending['source:1:remove']).toBe(false)
       const result = await p
       expect(result).toBe(true)  // PENDING_TIMEOUT truthy → 跳过 error
       expect(errorSpy).toHaveBeenCalledTimes(1)  // 单 toast（去重）
@@ -240,13 +240,13 @@ describe('useProcessStore', () => {
       vi.mocked(marketSourcesApi.start).mockResolvedValue({ ok: true, source: 'dzmd_ctp' })
       const store = useProcessStore()
       await store.start(1, 'dzmd_ctp')
-      expect(usePending().pending['source:1:start']).toBe(true)
+      expect(marketSourcePending.pending['source:1:start']).toBe(true)
 
       const toast = useToastStore()
       const errorSpy = vi.spyOn(toast, 'error')
       store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Crashed', pid: 0, message: 'process start failed', event: 'StartFailed' })
       await vi.advanceTimersByTimeAsync(0)
-      expect(usePending().pending['source:1:start']).toBe(false)
+      expect(marketSourcePending.pending['source:1:start']).toBe(false)
       expect(errorSpy).not.toHaveBeenCalled()  // 契约 notify-ui: 失败弹窗由 NOTIFY_UI 帧承载
     })
 
@@ -254,22 +254,22 @@ describe('useProcessStore', () => {
       vi.mocked(marketSourcesApi.start).mockResolvedValue({ ok: true, source: 'dzmd_ctp' })
       const store = useProcessStore()
       await store.start(1, 'dzmd_ctp')
-      expect(usePending().pending['source:1:start']).toBe(true)
+      expect(marketSourcePending.pending['source:1:start']).toBe(true)
       store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Crashed', pid: 0, message: 'exit_code=1' })
       await vi.advanceTimersByTimeAsync(0)
-      expect(usePending().pending['source:1:start']).toBe(true)  // 自发变化不清 pending
+      expect(marketSourcePending.pending['source:1:start']).toBe(true)  // 自发变化不清 pending
     })
 
     it('未知 event 忽略（不抛不写）', async () => {
       const store = useProcessStore()
       store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Running', pid: 1, event: 'Unknown' as never })
-      expect(Object.keys(usePending().pending)).toHaveLength(0)
+      expect(Object.keys(marketSourcePending.pending)).toHaveLength(0)
     })
 
     it('未经过本 store 的 target 忽略（无 name→id 记录，pending 不存在）', async () => {
       const store = useProcessStore()
       store.applyProcessStatus({ name: 'never-ran', state: 'Running', pid: 1, event: 'StartSucceeded' })
-      expect(Object.keys(usePending().pending)).toHaveLength(0)
+      expect(Object.keys(marketSourcePending.pending)).toHaveLength(0)
     })
 
     // 回归（Remove 流程）：configs 已无该进程（RTN_PROCESS_CONFIG 先到）时，
@@ -279,12 +279,12 @@ describe('useProcessStore', () => {
       const store = useProcessStore()
       store.applyProcessConfig({ dzmd_ctp: { a: 1 } })
       await store.removeSource(1, 'dzmd_ctp')
-      expect(usePending().pending['source:1:remove']).toBe(true)
+      expect(marketSourcePending.pending['source:1:remove']).toBe(true)
       // 模拟 Remove 帧序：先 118（条目消失）再 116（RemoveSucceeded）
       store.applyProcessConfig({})
       store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Stopping', pid: 1234, event: 'RemoveSucceeded' })
       await vi.advanceTimersByTimeAsync(0)
-      expect(usePending().pending['source:1:remove']).toBe(false)  // pending 已清
+      expect(marketSourcePending.pending['source:1:remove']).toBe(false)  // pending 已清
       expect(store.statuses['dzmd_ctp']).toBeUndefined()           // 镜像不重建
     })
   })

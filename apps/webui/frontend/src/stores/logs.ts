@@ -22,6 +22,10 @@ const CONTROL_TIMEOUT_MS = 10_000
 export const LOG_LEVELS: LogLevel[] = ['trace', 'debug', 'info', 'warning', 'error', 'critical', 'off']
 const FILE_PAGE_SIZE = 30
 
+// 日志领域独立 pending 实例（P3：本领域无跨 store 交互，独立空间）。
+// 模块级单例导出供 store 与 spec 共享同一实例（可重置/可断言）。
+export const logPending = usePending()
+
 export const useLogsStore = defineStore('logs', () => {
   // === Tab state ===
   const browserTab = ref<'viewer' | 'analysis'>('viewer')
@@ -63,7 +67,7 @@ export const useLogsStore = defineStore('logs', () => {
   const selectedProcesses = ref<Set<string>>(new Set())
   const batchLevel = ref<string>('info')
 
-  const { pending, run, resolve, fail } = usePending()
+  const { pending, run, resolve, fail } = logPending
 
   // === Computed ===
   const loggerOptions = computed(() => {

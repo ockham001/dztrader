@@ -14,13 +14,17 @@ export const EVENT_SHM_KEY = 'settings:event_shm_config'
 // 配置类操作超时（对齐 mdConfig 的 CONFIG_OP_TIMEOUT_MS）
 export const EVENT_SHM_TIMEOUT_MS = 10_000
 
+// 系统设置领域独立 pending 实例（P3：本领域无跨 store 交互，独立空间）。
+// 模块级单例导出供 store 与 spec 共享同一实例（可重置/可断言）。
+export const settingsPending = usePending()
+
 export const useSettingsStore = defineStore('settings', () => {
   const eventShmConfig = ref<ShmConfigView | null>(null)
   const master = ref<MasterSettingsView | null>(null)
   const webui = ref<WebuiSettingsView | null>(null)
 
   // 事件通道配置 pending: 提交挂起, RTN event_shm_config 到达经 applyEventShmConfig 清除 (契约 shm)
-  const pendingApi = usePending()
+  const pendingApi = settingsPending
   const eventShmPending = computed(() => pendingApi.pending[EVENT_SHM_KEY] ?? false)
 
   // RTN_EVENT_SHM_CONFIG → WS event_shm_config: 全量覆盖, 非法 payload 忽略 (对齐 applyMdShmConfig)

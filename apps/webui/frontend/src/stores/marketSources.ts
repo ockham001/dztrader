@@ -3,7 +3,8 @@ import { ref, computed, watch } from 'vue'
 import { marketSourcesApi } from '@/api/marketSources'
 import type { AvailableMarketSource, AddBrokerBody, SubscribeParamsBody, ShmConfigPatch } from '@/api/marketSources'
 import type { BrokerEntry, MarketSource } from '@/types/api'
-import { usePending, PENDING_TIMEOUT } from '@/composables/usePending'
+import { PENDING_TIMEOUT } from '@/composables/usePending'
+import { marketSourcePending } from '@/composables/marketSourcePending'
 import { useProcessStore } from '@/stores/process'
 import { useMdConfigStore } from '@/stores/mdConfig'
 import { useProgressStore } from '@/stores/progress'
@@ -36,7 +37,7 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
   const process = useProcessStore()
   const md = useMdConfigStore()
   const progress = useProgressStore()
-  const { pending } = usePending()
+  const { pending } = marketSourcePending
 
   const keyOf = (id: number, op: string) => `source:${id}:${op}`
 

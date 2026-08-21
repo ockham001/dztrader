@@ -5,7 +5,7 @@ import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useProcessStore } from '@/stores/process'
 import { useMdConfigStore } from '@/stores/mdConfig'
 import { useProgressStore } from '@/stores/progress'
-import { __resetForTests } from '@/composables/usePending'
+import { marketSourcePending } from '@/composables/marketSourcePending'
 import { useToastStore } from '@/stores/toast'
 import { marketSourcesApi } from '@/api/marketSources'
 
@@ -81,7 +81,7 @@ const autoLoginPayload = {
 describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    __resetForTests()
+    marketSourcePending.__resetForTests()
     vi.clearAllMocks()
     vi.useFakeTimers()
   })
@@ -301,8 +301,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       vi.mocked(marketSourcesApi.login).mockResolvedValue({ ok: true })
       await md.login(1, 'dzmd_ctp')  // login pending 挂起 (成功不清)
       // 手动挂起 broker/frontend 配置类 pending + 排程类 pending + 进程类 pending
-      const { usePending } = await import('@/composables/usePending')
-      const pending = usePending()
+      const pending = marketSourcePending
       for (const op of ['auto_login', 'schedule_add', 'schedule_remove', 'broker_add', 'broker_remove', 'broker_update', 'broker_select', 'frontend_add', 'frontend_remove', 'frontend_edit', 'frontend_toggle']) {
         await pending.run(`source:1:${op}`, () => Promise.resolve('x'))
       }
@@ -616,8 +615,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       // 成功不清 pending (等 auto_login RTN 清)
       expect(store.sources[0].scheduleRemovePending).toBe(true)
       // 手动 resolve (模拟 RTN_AUTO_LOGIN 批量清)
-      const { usePending } = await import('@/composables/usePending')
-      usePending().resolve('source:1:schedule_remove')
+      marketSourcePending.resolve('source:1:schedule_remove')
       await nextTick()
       expect(store.sources[0].scheduleRemovePending).toBe(false)
     })

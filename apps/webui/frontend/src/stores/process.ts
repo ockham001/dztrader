@@ -3,7 +3,8 @@ import { ref } from 'vue'
 import { marketSourcesApi } from '@/api/marketSources'
 import type { StartMarketSourceBody } from '@/api/marketSources'
 import type { ProcessStatusPayload } from '@/types/api'
-import { usePending } from '@/composables/usePending'
+import { marketSourcePending } from '@/composables/marketSourcePending'
+import { createOperationRunner } from '@/composables/useOperation'
 
 // 设计 §5.2：进程状态/控制领域（marketSources 进程部分拆出）
 // - statuses: process_status 帧镜像（name → ProcessStatusPayload，后到覆盖先到）
@@ -38,11 +39,20 @@ export const useProcessStore = defineStore('process', () => {
   // Remove 成功时 filter sources 语义，P4 Task 5 单写化后迁移至此）
   const removedNames = ref<Record<string, number>>({})
 
-  const { pending, run, resolve, fail } = usePending()
+  const { resolve, fail } = marketSourcePending
 
   function opKey(id: number, op: 'start' | 'stop' | 'remove'): string {
     return `source:${id}:${op}`
   }
+
+  // P3 任务 2: 领域 runner 收敛「防重入 + name→id 映射 + run + 结果映射」机械样板
+  //（opKey/busy/assign/execute 见 composables/useOperation.ts）。
+  const runner = createOperationRunner({
+    pending: marketSourcePending,
+    timeout: PROCESS_OP_TIMEOUT_MS,
+    opKey,
+    nameToId,
+  })
 
   // process_status 帧：单条完整覆盖（后到覆盖先到），非法 payload 忽略不写
   // 契约 process: 带 event 的帧是 REQUEST_PROCESS_CONTROL 的响应——据此清对应 pending
@@ -115,44 +125,30 @@ export const useProcessStore = defineStore('process', () => {
   // data（可选）透传给 start API：addAndStartSource 传入 display_name
   //（对照现状 addAndStartSource 的 start 调用，P4 Task 5 聚合层接入）
   async function start(sourceId: number, sourceName: string, data?: StartMarketSourceBody): Promise<boolean> {
-    const key = opKey(sourceId, 'start')
-    if (pending[key]) return false  // 防重入（现状: if (src.startPending) return）
-    nameToId.value[sourceName] = sourceId
-    const result = await run(key, () => marketSourcesApi.start(sourceId, data), {
-      timeout: PROCESS_OP_TIMEOUT_MS,
-      opLabel: '行情源启动',          // 超时 toast 文案（原为裸 key）
-      distinguishTimeout: true,       // 超时 resolve PENDING_TIMEOUT（truthy），下方判断按"跳过 error"处理
-    })
-    // 超时返回 true（PENDING_TIMEOUT 转真值）→ 聚合层 runOp 的 !ok 分支不命中，不设 error，无双 toast
-    return result !== undefined
+    const key = runner.opKey(sourceId, 'start')
+    if (runner.busy(key)) return false  // 防重入（现状: if (src.startPending) return）
+    runner.assign(sourceId, sourceName)
+    // 超时返回 true（PENDING_TIMEOUT 经 !==false 转真值）→ 聚合层 runOp 的 !ok 分支不命中，
+    // 不设 error，无双 toast
+    return (await runner.execute(key, () => marketSourcesApi.start(sourceId, data), '行情源启动')) !== false
   }
 
   async function stop(sourceId: number, sourceName: string): Promise<boolean> {
-    const key = opKey(sourceId, 'stop')
-    if (pending[key]) return false
-    nameToId.value[sourceName] = sourceId
-    const result = await run(key, () => marketSourcesApi.stop(sourceId), {
-      timeout: PROCESS_OP_TIMEOUT_MS,
-      opLabel: '行情源停止',          // 超时 toast 文案（原为裸 key）
-      distinguishTimeout: true,       // 超时 resolve PENDING_TIMEOUT（truthy），下方判断按"跳过 error"处理
-    })
-    // 超时返回 true（PENDING_TIMEOUT 转真值）→ 聚合层 runOp 的 !ok 分支不命中，不设 error，无双 toast
-    return result !== undefined
+    const key = runner.opKey(sourceId, 'stop')
+    if (runner.busy(key)) return false
+    runner.assign(sourceId, sourceName)
+    // 超时返回 true（同上，跳过 error 无双 toast）
+    return (await runner.execute(key, () => marketSourcesApi.stop(sourceId), '行情源停止')) !== false
   }
 
   // 删除进程: 只 run source:{id}:remove 一个 pending（B1 的"Remove 同时清 stop"是
   // marketSources 卡片层语义, 由 Task 5 聚合回填处理; 本 store 仅迁移 pending 清理）
   async function removeSource(sourceId: number, sourceName: string): Promise<boolean> {
-    const key = opKey(sourceId, 'remove')
-    if (pending[key]) return false
-    nameToId.value[sourceName] = sourceId
-    const result = await run(key, () => marketSourcesApi.remove(sourceId), {
-      timeout: PROCESS_OP_TIMEOUT_MS,
-      opLabel: '行情源删除',          // 超时 toast 文案（原为裸 key）
-      distinguishTimeout: true,       // 超时 resolve PENDING_TIMEOUT（truthy），下方判断按"跳过 error"处理
-    })
-    // 超时返回 true（PENDING_TIMEOUT 转真值）→ 聚合层 runOp 的 !ok 分支不命中，不设 error，无双 toast
-    return result !== undefined
+    const key = runner.opKey(sourceId, 'remove')
+    if (runner.busy(key)) return false
+    runner.assign(sourceId, sourceName)
+    // 超时返回 true（同上，跳过 error 无双 toast）
+    return (await runner.execute(key, () => marketSourcesApi.remove(sourceId), '行情源删除')) !== false
   }
 
   return {

@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { nextTick } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 import { useMdConfigStore, MD_CONFIG_OPS } from '../mdConfig'
-import { usePending, __resetForTests, PENDING_TIMEOUT } from '@/composables/usePending'
+import { PENDING_TIMEOUT } from '@/composables/usePending'
+import { marketSourcePending, __resetForTests } from '@/composables/marketSourcePending'
 import { useProgressStore } from '@/stores/progress'
 import { marketSourcesApi } from '@/api/marketSources'
 
@@ -22,7 +23,7 @@ vi.mock('@/api/marketSources', () => ({
   },
 }))
 
-// usePending 是模块级状态（pending + timers Map），每个用例前重置；
+// 行情源领域共享 pending（marketSourcePending）+ timers，每个用例前重置；
 // 超时路径会调用 useToastStore，需要 active pinia
 
 const configPayload = {
@@ -96,7 +97,7 @@ describe('useMdConfigStore', () => {
       await store.login(1, 'dzmd_ctp')
 
       // 手动挂起全部配置类 op + login + process 领域 key + 其他 source 的 key
-      const { run } = usePending()
+      const { run } = marketSourcePending
       for (const op of MD_CONFIG_OPS) {
         await run(`source:1:${op}`, () => Promise.resolve('x'))
       }
@@ -108,20 +109,20 @@ describe('useMdConfigStore', () => {
 
       for (const op of MD_CONFIG_OPS) {
         // clearByPrefix 语义: delete 条目 → key 不存在 (undefined)
-        expect(usePending().pending[`source:1:${op}`]).toBeUndefined()
+        expect(marketSourcePending.pending[`source:1:${op}`]).toBeUndefined()
       }
-      expect(usePending().pending['source:1:login']).toBe(true)       // 配置类批量清不含 login
-      expect(usePending().pending['source:1:start']).toBe(true)       // 不误伤 process store 领域
-      expect(usePending().pending['source:2:auto_login']).toBe(true)  // 不影响其他 source
+      expect(marketSourcePending.pending['source:1:login']).toBe(true)       // 配置类批量清不含 login
+      expect(marketSourcePending.pending['source:1:start']).toBe(true)       // 不误伤 process store 领域
+      expect(marketSourcePending.pending['source:2:auto_login']).toBe(true)  // 不影响其他 source
     })
 
     it('未经过本 store 操作的 source（无 name→id 映射）：镜像照写, 不清 pending', async () => {
-      const { run } = usePending()
+      const { run } = marketSourcePending
       await run('source:9:auto_login', () => Promise.resolve('x'))
       const store = useMdConfigStore()
       store.applyMdConfig({ source: 'unknown_src', config: configPayload })
       expect(store.configs['unknown_src']).toEqual(configPayload)
-      expect(usePending().pending['source:9:auto_login']).toBe(true)
+      expect(marketSourcePending.pending['source:9:auto_login']).toBe(true)
     })
   })
 
@@ -143,13 +144,13 @@ describe('useMdConfigStore', () => {
       vi.mocked(marketSourcesApi.login).mockResolvedValue({ ok: true })
       const store = useMdConfigStore()
       await store.login(1, 'dzmd_ctp')
-      expect(usePending().pending['source:1:login']).toBe(true)
+      expect(marketSourcePending.pending['source:1:login']).toBe(true)
 
       store.applyMdStatus({ source: 'dzmd_ctp', status: { api_version: 'v6.7.2' } })
       await vi.advanceTimersByTimeAsync(0)
       // 仅写镜像, 不清 login pending
       expect(store.statuses['dzmd_ctp'].status.api_version).toBe('v6.7.2')
-      expect(usePending().pending['source:1:login']).toBe(true)
+      expect(marketSourcePending.pending['source:1:login']).toBe(true)
     })
 
     it('非法 payload（缺 source/null）忽略不写', () => {
@@ -188,17 +189,17 @@ describe('useMdConfigStore', () => {
       store.applyAutoLogin('dzmd_ctp', { enabled: false, schedules: [] })  // 建立镜像（守卫要求）
       await store.toggleAutoLogin(1, 'dzmd_ctp', true)
       await store.addSchedule(1, 'dzmd_ctp', '09:00', '15:00')
-      expect(usePending().pending['source:1:auto_login']).toBe(true)
-      expect(usePending().pending['source:1:schedule_add']).toBe(true)
+      expect(marketSourcePending.pending['source:1:auto_login']).toBe(true)
+      expect(marketSourcePending.pending['source:1:schedule_add']).toBe(true)
 
       store.applyAutoLogin('dzmd_ctp', autoLoginPayload)
       await vi.advanceTimersByTimeAsync(0)
-      expect(usePending().pending['source:1:auto_login']).toBeUndefined()
-      expect(usePending().pending['source:1:schedule_add']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:auto_login']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:schedule_add']).toBeUndefined()
       // 不误伤 broker 类 pending
-      const { run } = usePending()
+      const { run } = marketSourcePending
       await run('source:1:broker_add', () => Promise.resolve('x'))
-      expect(usePending().pending['source:1:broker_add']).toBe(true)
+      expect(marketSourcePending.pending['source:1:broker_add']).toBe(true)
     })
   })
 
@@ -237,13 +238,13 @@ describe('useMdConfigStore', () => {
       const store = useMdConfigStore()
       const result = await store.login(1, 'dzmd_ctp')
       expect(result).toBe(true)
-      expect(usePending().pending['source:1:login']).toBe(true)
+      expect(marketSourcePending.pending['source:1:login']).toBe(true)
 
       // 契约 progress: dzmd_ctp 状态转移推送 RTN_PROGRESS, 数值映射 current==max=4 (LoggedIn)
       useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 4 })
       await nextTick()
       await vi.advanceTimersByTimeAsync(0)
-      expect(usePending().pending['source:1:login']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:login']).toBeUndefined()
     })
 
     it('login: HTTP 失败清 pending 并返回 false', async () => {
@@ -251,7 +252,7 @@ describe('useMdConfigStore', () => {
       const store = useMdConfigStore()
       const result = await store.login(1, 'dzmd_ctp')
       expect(result).toBe(false)
-      expect(usePending().pending['source:1:login']).toBe(false)
+      expect(marketSourcePending.pending['source:1:login']).toBe(false)
     })
 
     it('logout: HTTP 成功不清 pending（等 RTN_PROGRESS "未登录" 清）', async () => {
@@ -259,33 +260,33 @@ describe('useMdConfigStore', () => {
       const store = useMdConfigStore()
       const result = await store.logout(1, 'dzmd_ctp')
       expect(result).toBe(true)
-      expect(usePending().pending['source:1:logout']).toBe(true)
+      expect(marketSourcePending.pending['source:1:logout']).toBe(true)
 
       // 契约 progress: dzmd_ctp 状态转移推送 RTN_PROGRESS, 数值映射 current==min=0 (Idle)
       useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 0 })
       await nextTick()
       await vi.advanceTimersByTimeAsync(0)
-      expect(usePending().pending['source:1:logout']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:logout']).toBeUndefined()
     })
 
     it('中间态 progress（数值映射 1..3）不清 pending', async () => {
       vi.mocked(marketSourcesApi.login).mockResolvedValue({ ok: true })
       const store = useMdConfigStore()
       await store.login(1, 'dzmd_ctp')
-      expect(usePending().pending['source:1:login']).toBe(true)
+      expect(marketSourcePending.pending['source:1:login']).toBe(true)
 
       useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 2 })
       await nextTick()
-      expect(usePending().pending['source:1:login']).toBe(true)
+      expect(marketSourcePending.pending['source:1:login']).toBe(true)
     })
 
     it('配置类操作超时兜底（10s）清 pending 并返回 PENDING_TIMEOUT', async () => {
       vi.mocked(marketSourcesApi.login).mockImplementation(() => new Promise(() => {}))
       const store = useMdConfigStore()
       const p = store.login(1, 'dzmd_ctp')
-      expect(usePending().pending['source:1:login']).toBe(true)
+      expect(marketSourcePending.pending['source:1:login']).toBe(true)
       await vi.advanceTimersByTimeAsync(10_001)
-      expect(usePending().pending['source:1:login']).toBe(false)
+      expect(marketSourcePending.pending['source:1:login']).toBe(false)
       const result = await p
       expect(result).toBe(PENDING_TIMEOUT)  // 超时供薄代理识别去重双 toast
     })
@@ -301,7 +302,7 @@ describe('useMdConfigStore', () => {
       // 收尾：推进 10s 让 p1 走超时兜底 settle，不残留挂起 promise/timer
       await vi.advanceTimersByTimeAsync(10_001)
       expect(await p1).toBe(PENDING_TIMEOUT)
-      expect(usePending().pending['source:1:login']).toBe(false)
+      expect(marketSourcePending.pending['source:1:login']).toBe(false)
     })
   })
 
@@ -312,13 +313,13 @@ describe('useMdConfigStore', () => {
       store.applyAutoLogin('dzmd_ctp', { enabled: false, schedules: [] })  // 建立镜像（守卫要求）
       const result = await store.toggleAutoLogin(1, 'dzmd_ctp', true)
       expect(result).toBe(true)
-      expect(usePending().pending['source:1:auto_login']).toBe(true)
+      expect(marketSourcePending.pending['source:1:auto_login']).toBe(true)
       // 全量提交: 以镜像为基准翻转 enabled（镜像 schedules=[]）
       expect(marketSourcesApi.setAutoLogin).toHaveBeenCalledWith(1, { enabled: true, schedules: [] })
 
       store.applyAutoLogin('dzmd_ctp', autoLoginPayload)
       await vi.advanceTimersByTimeAsync(0)
-      expect(usePending().pending['source:1:auto_login']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:auto_login']).toBeUndefined()
     })
 
     it('toggleAutoLogin: HTTP 失败清 pending 并返回 false', async () => {
@@ -326,7 +327,7 @@ describe('useMdConfigStore', () => {
       const store = useMdConfigStore()
       store.applyAutoLogin('dzmd_ctp', { enabled: false, schedules: [] })  // 建立镜像（守卫要求）
       expect(await store.toggleAutoLogin(1, 'dzmd_ctp', true)).toBe(false)
-      expect(usePending().pending['source:1:auto_login']).toBe(false)
+      expect(marketSourcePending.pending['source:1:auto_login']).toBe(false)
     })
 
     it('toggleAutoLogin: HTTP 失败回滚乐观更新（镜像不残留虚假值）', async () => {
@@ -348,7 +349,7 @@ describe('useMdConfigStore', () => {
       store.applyAutoLogin('dzmd_ctp', autoLoginPayload)  // 已含 09:00-15:00
       expect(await store.addSchedule(1, 'dzmd_ctp', '09:00', '15:00')).toBe(true)
       expect(marketSourcesApi.setAutoLogin).not.toHaveBeenCalled()
-      expect(usePending().pending['source:1:schedule_add']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:schedule_add']).toBeUndefined()
     })
 
     it('addSchedule / removeSchedule 独立 pending（互不干扰）', async () => {
@@ -364,7 +365,7 @@ describe('useMdConfigStore', () => {
           { login_time: '20:45', logout_time: '02:30' },
         ],
       })
-      expect(usePending().pending['source:1:schedule_add']).toBe(true)
+      expect(marketSourcePending.pending['source:1:schedule_add']).toBe(true)
 
       // schedule_add 挂起时 schedule_remove 仍可发起（现有 spec: 时段增删独立等待状态）
       const r = await store.removeSchedule(1, 'dzmd_ctp', '09:00', '15:00')
@@ -373,13 +374,13 @@ describe('useMdConfigStore', () => {
         enabled: true,
         schedules: [{ login_time: '20:45', logout_time: '02:30' }],
       })
-      expect(usePending().pending['source:1:schedule_remove']).toBe(true)
+      expect(marketSourcePending.pending['source:1:schedule_remove']).toBe(true)
 
       // 收尾：applyAutoLogin 批量清（clearByPrefix 语义: delete 条目）
       store.applyAutoLogin('dzmd_ctp', { enabled: true, schedules: [{ login_time: '20:45', logout_time: '02:30' }] })
       await vi.advanceTimersByTimeAsync(0)
-      expect(usePending().pending['source:1:schedule_add']).toBeUndefined()
-      expect(usePending().pending['source:1:schedule_remove']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:schedule_add']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:schedule_remove']).toBeUndefined()
     })
   })
 
@@ -399,25 +400,25 @@ describe('useMdConfigStore', () => {
       expect(marketSourcesApi.removeBroker).toHaveBeenCalledWith(1, 'b1')
       expect(marketSourcesApi.updateBroker).toHaveBeenCalledTimes(1)
       expect(marketSourcesApi.setCurrentBroker).toHaveBeenCalledWith(1, 'b1')
-      expect(usePending().pending['source:1:broker_add']).toBe(true)
-      expect(usePending().pending['source:1:broker_remove']).toBe(true)
-      expect(usePending().pending['source:1:broker_update']).toBe(true)
-      expect(usePending().pending['source:1:broker_select']).toBe(true)
+      expect(marketSourcePending.pending['source:1:broker_add']).toBe(true)
+      expect(marketSourcePending.pending['source:1:broker_remove']).toBe(true)
+      expect(marketSourcePending.pending['source:1:broker_update']).toBe(true)
+      expect(marketSourcePending.pending['source:1:broker_select']).toBe(true)
 
       store.applyMdConfig({ source: 'dzmd_ctp', config: configPayload })
       await vi.advanceTimersByTimeAsync(0)
       // clearByPrefix 语义: delete 条目 → key 不存在 (undefined)
-      expect(usePending().pending['source:1:broker_add']).toBeUndefined()
-      expect(usePending().pending['source:1:broker_remove']).toBeUndefined()
-      expect(usePending().pending['source:1:broker_update']).toBeUndefined()
-      expect(usePending().pending['source:1:broker_select']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:broker_add']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:broker_remove']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:broker_update']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:broker_select']).toBeUndefined()
     })
 
     it('broker 操作 HTTP 失败清 pending 并返回 false', async () => {
       vi.mocked(marketSourcesApi.addBroker).mockRejectedValue(new Error('add broker failed'))
       const store = useMdConfigStore()
       expect(await store.addBroker(1, 'dzmd_ctp', { name: 'b2', broker_id: 'x', user_id: 'u', password: 'p', product_info: 'pi' })).toBe(false)
-      expect(usePending().pending['source:1:broker_add']).toBe(false)
+      expect(marketSourcePending.pending['source:1:broker_add']).toBe(false)
     })
   })
 
@@ -427,7 +428,7 @@ describe('useMdConfigStore', () => {
       const result = await store.addFrontend(1, 'dzmd_ctp', 'nope', 'a9', 'L9')
       expect(result).toBe(false)
       expect(marketSourcesApi.updateFrontends).not.toHaveBeenCalled()
-      expect(Object.keys(usePending().pending)).toHaveLength(0)
+      expect(Object.keys(marketSourcePending.pending)).toHaveLength(0)
     })
 
     it('addFrontend: 从镜像构造新列表（当前列表 + 新项, enabled 默认 false）', async () => {
@@ -440,7 +441,7 @@ describe('useMdConfigStore', () => {
         { address: 'a1', label: 'L1', enabled: false },
         { address: 'a2', label: 'L2', enabled: false },
       ])
-      expect(usePending().pending['source:1:frontend_add']).toBe(true)
+      expect(marketSourcePending.pending['source:1:frontend_add']).toBe(true)
     })
 
     it('frontend 四个操作独立 pending（add 挂起时 remove 仍可发起）', async () => {
@@ -451,18 +452,18 @@ describe('useMdConfigStore', () => {
       vi.mocked(marketSourcesApi.updateFrontends).mockImplementationOnce(() => new Promise(() => {}))
       const p = store.addFrontend(1, 'dzmd_ctp', 'b1', 'a2', 'L2')
       await vi.advanceTimersByTimeAsync(0)
-      expect(usePending().pending['source:1:frontend_add']).toBe(true)
+      expect(marketSourcePending.pending['source:1:frontend_add']).toBe(true)
 
       // remove 独立发起（spec: 各控件独立等待状态, 可同时发起）
       const r = await store.removeFrontend(1, 'dzmd_ctp', 'b1', 'a1')
       expect(r).toBe(true)
       expect(marketSourcesApi.updateFrontends).toHaveBeenCalledTimes(2)
-      expect(usePending().pending['source:1:frontend_remove']).toBe(true)
+      expect(marketSourcePending.pending['source:1:frontend_remove']).toBe(true)
 
       // 收尾：add 走 10s 超时兜底
       await vi.advanceTimersByTimeAsync(10_001)
       expect(await p).toBe(PENDING_TIMEOUT)
-      expect(usePending().pending['source:1:frontend_add']).toBe(false)
+      expect(marketSourcePending.pending['source:1:frontend_add']).toBe(false)
     })
 
     it('setFrontendEnabled: 只改目标前置 enabled', async () => {
@@ -504,9 +505,9 @@ describe('useMdConfigStore', () => {
       expect(r).toBe(true)
       expect(marketSourcesApi.setSubscribeParams).toHaveBeenCalledWith(1, { subscribe_batch_size: 500 })
       // keepPendingOnSuccess 默认 true: 成功后 pending 仍挂起, 等 RTN 清
-      expect(usePending().pending['source:1:subscribe_params']).toBe(true)
+      expect(marketSourcePending.pending['source:1:subscribe_params']).toBe(true)
       store.applyMdConfig({ source: 'dzmd_ctp', config: configPayload })
-      expect(usePending().pending['source:1:subscribe_params']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:subscribe_params']).toBeUndefined()
     })
 
     it('空提交幂等成功，不下发', async () => {
@@ -522,7 +523,7 @@ describe('useMdConfigStore', () => {
       const r = await store.setSubscribeParams(1, 'dzmd_ctp', { sub_max_retry: 5 })
       expect(r).toBe(false)
       // HTTP 失败清 pending: usePending settle→clearPending 置 false（与 login 失败用例一致）
-      expect(usePending().pending['source:1:subscribe_params']).toBe(false)
+      expect(marketSourcePending.pending['source:1:subscribe_params']).toBe(false)
     })
   })
 
@@ -556,9 +557,9 @@ describe('useMdConfigStore', () => {
       const r = await store.setShmConfig(1, 'dzmd_ctp', { check_interval_min: 10 })
       expect(r).toBe(true)
       expect(marketSourcesApi.setShmConfig).toHaveBeenCalledWith(1, { check_interval_min: 10 })
-      expect(usePending().pending['source:1:shm_config']).toBe(true)
+      expect(marketSourcePending.pending['source:1:shm_config']).toBe(true)
       store.applyMdShmConfig('dzmd_ctp', shmPayload)
-      expect(usePending().pending['source:1:shm_config']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:shm_config']).toBeUndefined()
     })
 
     it('setShmConfig 下发 preload_points null 删除语义', async () => {

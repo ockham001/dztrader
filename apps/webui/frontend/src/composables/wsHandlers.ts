@@ -2,7 +2,7 @@
 // 注册表分发（模块级副作用：import 即注册）。
 // error/pong 为连接协议消息，留在 wsClient.ts 内部处理（不注册）。
 import { registerHandler } from './wsClient'
-import { clearByPrefix } from './usePending'
+import { clearByPrefix } from './marketSourcePending'
 import { useUserManagementStore } from '@/stores/userManagement'
 import { useLogsStore } from '@/stores/logs'
 import { useAuthStore } from '@/stores/auth'

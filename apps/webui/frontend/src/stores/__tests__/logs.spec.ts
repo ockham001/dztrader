@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
-import { useLogsStore } from '../logs'
-import { usePending, __resetForTests } from '@/composables/usePending'
+import { useLogsStore, logPending } from '../logs'
 import * as logsApi from '@/api/logs'
 
 // Mock the API module
@@ -21,8 +20,8 @@ describe('useLogsStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
-    // usePending 模块级状态（pending + timers Map）——每个用例前重置
-    __resetForTests()
+    // logPending 领域独立实例（pending + timers）——每个用例前重置
+    logPending.__resetForTests()
     vi.useFakeTimers()
   })
   afterEach(() => {
@@ -100,7 +99,7 @@ describe('useLogsStore', () => {
     })
     const store = useLogsStore()
     store.processes = [{ name: 'dztraderd', type: '主进程', level: 'info' }]
-    const { pending } = usePending()
+    const { pending } = logPending
     const p = store.setProcessLevel('dztraderd', 'warning')
     const ok = await p
     expect(ok).toBe(true)
@@ -120,7 +119,7 @@ describe('useLogsStore', () => {
     })
     const store = useLogsStore()
     store.processes = [{ name: 'dztraderd', type: '主进程', level: 'info' }]
-    const { pending } = usePending()
+    const { pending } = logPending
     const ok = await store.setProcessLevel('dztraderd', 'warning')
     expect(ok).toBe(false)
     expect(store.processes[0].level).toBe('info')
@@ -134,7 +133,7 @@ describe('useLogsStore', () => {
     })
     const store = useLogsStore()
     store.processes = [{ name: 'dztraderd', type: '主进程', level: 'info' }]
-    const { pending } = usePending()
+    const { pending } = logPending
     const ok = await store.setProcessLevel('dztraderd', 'warning')
     expect(ok).toBe(false)
     expect(store.processes[0].level).toBe('info')
@@ -147,7 +146,7 @@ describe('useLogsStore', () => {
       results: [{ name: 'dztraderd', ok: true }],
     })
     const store = useLogsStore()
-    const { pending } = usePending()
+    const { pending } = logPending
     const ok = await store.flushProcess('dztraderd')
     expect(ok).toBe(true)
     expect(pending['logs:dztraderd:flush']).toBeUndefined()  // 不设 pending
@@ -167,7 +166,7 @@ describe('useLogsStore', () => {
     ]
     store.selectedProcesses = new Set(['dztraderd', 'dzmd_ctp'])
     store.batchLevel = 'warning'
-    const { pending } = usePending()
+    const { pending } = logPending
     const p = store.batchSetLevel()
     expect(pending['logs:dztraderd:set_level']).toBe(true)
     expect(pending['logs:dzmd_ctp:set_level']).toBe(true)
@@ -192,7 +191,7 @@ describe('useLogsStore', () => {
       ],
     })
     const store = useLogsStore()
-    const { pending } = usePending()
+    const { pending } = logPending
     store.selectedProcesses = new Set(['dztraderd', 'dzmd_ctp'])
     const res = await store.batchFlush()
     expect(res).toEqual({ ok: 1, fail: 1 })
@@ -216,7 +215,7 @@ describe('useLogsStore', () => {
       results: [{ name: 'dztraderd', ok: true, old: 'info', new: 'warning' }],
     })
     const store = useLogsStore()
-    const { pending } = usePending()
+    const { pending } = logPending
     await store.setProcessLevel('dztraderd', 'warning')  // ok=true → pending 保持等 RTN
     expect(pending['logs:dztraderd:set_level']).toBe(true)
     // 重连快照到达（断连期间 RTN 已被 dzweb 镜像吸收）：重建列表 + 清 pending
