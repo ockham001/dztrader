@@ -28,3 +28,24 @@ WebUI 前后端长期累积四类痛点：新增功能重复出错（范式只�
 - 用户裁决：2026-08-21——"先有个优秀的架构，在此基础之上进行规则设定"（架构优化 + 规则约束统一立项）
 - 前置审查：同日前端（stores/composables/api/views）+ dzweb（controller/领域服务/帧路由）全面审查
 - 相关既有资产：ADR 0004（IO 循环与线程模型）、契约目录 frame_contracts（单源化对象）
+
+## 收官总结（2026-08-21 六阶段 P0–P6 全部完成）
+
+> 战略目标：把"文档约定"档的规则逐层下沉到"类型/抽象/lint 强制"档，四条痛点根因彻底机器化。
+> 约束：dzweb 线程模型锁定不可触碰；增量演进不推倒重写；每阶段独立可验收。四痛点逐一处理如下。
+
+| 阶段 | 目标 | 落地成果（机器强制档） |
+|---|---|---|
+| P0 保护网 | 改错被机器发现 | type-check 独立 + 进 CI；eslint+stylelint 引入；7 view 测试补齐；后端角色降级踢 WS 连接测试 |
+| P1 契约单源 | 前后端联动错根治 | WS/领域类型迁入 schema；`scripts/gen-types.mjs`→`generated.ts`；`WsDataByType` 判别联合；CI 契约 Freshness（改动未重新生成即失败） |
+| P2 后端收尾 | dzweb 可复制模板 | 全局函数指针→`DataChangeNotifier` 注入；REST/WS 双通道守卫收 `ControlGuard`；C2S 下沉领域服务；io 线程 SQLite 边界归档 |
+| P3 交互范式 | 新增功能=填模板 | `usePending` 实例化+领域单例；`useOperation` 抽领域 runner；行情源四件套模板+注册表契约测试；`CLEAR_BY_RTN` 清理触点声明式；userManagement 原型残留清理 |
+| P4 设计系统 | 视觉规则收敛一处 | token 补全灭 fallback(55→0)；`dz/token-literal` 修复休眠→升 error→CI；`dz/no-ds-namespace` 组件三层；theme.css 主题扩展五步规范 |
+| P5 多端适配 | 断点归布局组件 | Tailwind 断点档+`useBreakpoint`(matchMedia 事件驱动)；AppShell CSS 主导归一(去 inline/!important 打架)；触摸规范 pointer:coarse≥44px；dashboard 一屏监控规范固化；断点白名单测试防野断点 |
+| P6 持续门禁 | 常驻守护 | 门禁对账确认双平台 CI 全就位；`docs/development-checklist.md` 新功能清单逐项映射自动化检查 |
+
+**成果量化**：前端测试从 P0 前的 ~200 增至 275；lint:css 瑕疵 55→0 且红线升 error；断点从 5+ 个散点归一为 4 档标准；新增字段/组件/断点/操作均有对应门禁。
+
+**明确不做（预留给结构稳定后）**：Playwright 视觉回归截图 diff——P4/P5 刚改完三层与断点，布局结构未冻结，现做基准图易频繁失效。
+
+**后续可持续入口**：新增功能对照 `docs/development-checklist.md`；契约/生成物改动走 `frame_contracts/`；规则再演进以本 ADR 与本地 plan §6/§8 为准。
