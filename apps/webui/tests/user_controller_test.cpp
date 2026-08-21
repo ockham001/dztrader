@@ -182,6 +182,18 @@ TEST_F(UserControllerTest, UpdateKeepingNonAdminRoleDoesNotKick) {
     EXPECT_TRUE(kicked.empty());
 }
 
+TEST_F(UserControllerTest, UpdateKeepingAdminRoleDoesNotKick) {
+    // 目标为 admin 且保持 admin 角色：权限未降级，不应误踢
+    std::vector<std::string> kicked;
+    dztrader::webui::g_kick_user = [&kicked](const std::string& u) { kicked.push_back(u); };
+    auto req = admin_req();
+    req->setBody(R"({"display_name":"Administrator","email":"admin@test.com","role":"admin"})");
+    auto resp = invoke(&UserCtrl::update, req, admin_id_);
+    dztrader::webui::g_kick_user = nullptr;
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_TRUE(kicked.empty());
+}
+
 // ---- remove ----
 
 TEST_F(UserControllerTest, RemoveUserReturns204) {
