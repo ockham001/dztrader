@@ -26,11 +26,17 @@ export default {
         const value = decl.value
         const prop = decl.prop.toLowerCase()
 
-        // 1) 颜色字面量
+        // P4-T1：颜色检测前剥离 var(...) 段（含 token 名与 fallback），
+        // 防 token 名误报（如 var(--brand-grey-500) 被当 "grey" 颜色关键词）。
+        // 剥离后剩余的才是真正需转 token 的裸颜色字面量（如独立 rgb(...)、#fff）。
+        // 间距/圆角 px 仍按原始 value 检测——var(--spacer-8, 10px) 的 fallback px 同样需清理。
+        const strippedColors = value.replace(/var\([^)]*\)/g, '')
+
+        // 1) 颜色字面量（在剥离 var() 后的文本上检测）
         let colorHint = null
-        if (COLOR_HEX.test(value)) colorHint = 'hex 颜色字面量'
-        else if (COLOR_FUNC.test(value)) colorHint = 'rgb/hsl 颜色函数'
-        else if (COLOR_NAMED.test(value)) colorHint = '颜色命名关键词'
+        if (COLOR_HEX.test(strippedColors)) colorHint = 'hex 颜色字面量'
+        else if (COLOR_FUNC.test(strippedColors)) colorHint = 'rgb/hsl 颜色函数'
+        else if (COLOR_NAMED.test(strippedColors)) colorHint = '颜色命名关键词'
         if (colorHint) {
           utilsReport({
             result,

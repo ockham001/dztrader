@@ -5,8 +5,11 @@ export default {
   plugins: ['./stylelint-plugin-tokens.mjs'],
   customSyntax: 'postcss-html', // 支持 .vue <style> 块
   rules: {
-    // ----- 项目 token 红线（P4 前为 warning）-----
-    'dz/token-literal': 'warn',
+    // ----- 项目 token 红线（P4-T1 修复休眠：primary=true 才触发，severity 用 secondary）-----
+    // 注：插件的 `if (actual !== true) return` 要求 primary 必须为 true；
+    // 传字符串 'warn' 会被当作 primary 而非 severity，导致规则永不触发（休眠）。
+    // P4-T3 升 error 时改为 [true, { severity: 'error' }]。
+    'dz/token-literal': [true, { severity: 'warning' }],
 
     // ----- 标准规则收敛 -----
     // 允许嵌套空规则等，避免过度限制
