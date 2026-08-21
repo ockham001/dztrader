@@ -121,7 +121,8 @@ registerHandler('process_status', (payload) => {
   // P4 Task 5 单写:process store 为 process_status 帧唯一写入点
   // P6: event 字段（契约 process）承担进程操作 pending 清理 + Remove 成功卡片移除
   // (原 rtn_process_control 消息后端已不推送, 见 webui-ws.md §5 已知差异关闭)
-  useProcessStore().applyProcessStatus(payload as ProcessStatusPayload)
+  // payload 已由 WsDataByType 判别联合类型化为 ProcessStatusPayload（契约单源）
+  useProcessStore().applyProcessStatus(payload)
 })
 
 registerHandler('process_config', (payload) => {

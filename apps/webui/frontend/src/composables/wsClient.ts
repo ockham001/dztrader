@@ -1,16 +1,20 @@
 import { ref, readonly } from 'vue'
 import type { Ref } from 'vue'
 import { useMarketSourcesStore } from '@/stores/marketSources'
+import type { WsDataByType, WsServerMessageType, WsServerMessage } from '@/types/ws'
 
 export type WsConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'failed'
-export type WsHandler = (payload: unknown, instanceId?: string) => void
+// handler 泛型：payload 类型按消息 type 经 WsDataByType 收敛（判别联合）
+export type WsHandler<T extends WsServerMessageType = WsServerMessageType> =
+  (payload: WsDataByType[T], instanceId?: string) => void
 
 // 业务消息处理注册表：由 wsHandlers.ts 在模块加载时集中注册（注册表分发，替代原 switch）
 // pong/error 为连接协议消息，留在本模块内部处理（不注册）
+// 运行时以 string key 存储，注册处经泛型固化类型，分发处桥接 cast
 const handlers = new Map<string, WsHandler>()
 
-export function registerHandler(type: string, handler: WsHandler): void {
-  handlers.set(type, handler)
+export function registerHandler<T extends WsServerMessageType>(type: T, handler: WsHandler<T>): void {
+  handlers.set(type, handler as WsHandler)
 }
 
 export function unregisterHandler(type: string): void {
@@ -105,7 +109,7 @@ function handleMessage(event: MessageEvent): void {
 
 function handleTextMessage(text: string): void {
   try {
-    const msg = JSON.parse(text) as { type: string; data?: unknown; payload?: unknown; instance_id?: string }
+    const msg = JSON.parse(text) as WsServerMessage
     if (msg.type === 'pong') {                       // 心跳应答（探活基准）
       lastPongAt = Date.now()
       return
@@ -116,9 +120,9 @@ function handleTextMessage(text: string): void {
       }
       return
     }
-    const payload = msg.data ?? msg.payload              // data 键（领域消息）优先，payload 键（控制消息）兜底
+    const payload: unknown = msg.data ?? msg.payload      // data 键（领域消息）优先，payload 键（控制消息）兜底
     const handler = handlers.get(msg.type)
-    if (handler) handler(payload, msg.instance_id)
+    if (handler) handler(payload as never, msg.instance_id)
     // 未注册类型静默忽略（对应原 default: break）
   } catch { /* Ignore JSON parse errors */ }
 }
