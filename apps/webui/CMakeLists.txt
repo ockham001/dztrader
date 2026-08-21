@@ -90,12 +90,13 @@ if(NPM_EXECUTABLE)
     set(FRONTEND_DIST ${FRONTEND_DIR}/dist)
 
     # 前端源文件（CONFIGURE_DEPENDS: 新增/删除文件时自动重生成构建系统）
-    # 必须包含在 DEPENDS 中，否则只改 .vue/.ts 源码时 CMake 会认为 dist 已是最新而跳过构建
+    # 必须包含在 DEPENDS 中，否则只改 .vue/.ts/.css 源码时 CMake 会认为 dist 已是最新而跳过构建
     # 注意: 不能用 GLOB_RECURSE 匹配 ${FRONTEND_DIR}/index.html，否则会递归匹配到 dist/index.html (OUTPUT 自身) 形成依赖循环
     file(GLOB_RECURSE FRONTEND_SRC_SOURCES CONFIGURE_DEPENDS
         "${FRONTEND_DIR}/src/*.vue"
         "${FRONTEND_DIR}/src/*.ts"
         "${FRONTEND_DIR}/src/*.js"
+        "${FRONTEND_DIR}/src/*.css"
     )
     file(GLOB FRONTEND_TOP_SOURCES CONFIGURE_DEPENDS
         "${FRONTEND_DIR}/index.html"
