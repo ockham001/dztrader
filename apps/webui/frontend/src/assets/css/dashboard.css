@@ -1,8 +1,16 @@
 /* ===== Dashboard 专属样式（精确对齐静态设计 main.html 内联样式） ===== */
+/* ═══ P5-T4 一屏监控规范（固化现状做法，防回退）═══
+   Dashboard 是监控页，布局约定（其他页面不得效仿整页锁高）：
+   - 视口锁定：外层不产生整页滚动（app-shell 100vh/100dvh），高度自适应视口；
+   - 面板内滚动：各面板 min-height:0 + 自身 overflow，内容溢出走面板滚动条；
+   - 流体栅格：面板尺寸随视口伸缩，相近屏宽（桌面/大 pad）下一屏完整显示；
+   - 高度断点（如 max-height:600px 压缩间距）是监控页专属手段，全库仅本文件
+     允许出现（白名单测试 machine-enforce，见 breakpointWhitelist.spec.ts）。
+   ═════════════════════════════════════════════════════════════════ */
 
-/* dvh 支持 */
+/* dvh 支持（dashboard.css 在 layout.css 之后加载，同特异性后者胜，无需 !important） */
 @supports (height: 100dvh) {
-  .app-shell { height: 100dvh !important; }
+  .app-shell { height: 100dvh; }
 }
 
 /* ===== 面板卡片化 ===== */

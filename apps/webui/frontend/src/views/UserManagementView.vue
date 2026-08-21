@@ -1067,8 +1067,8 @@ onUnmounted(() => {
   font-weight: var(--font-weight-medium);
 }
 
-/* Responsive */
-@media (max-width: 900px) {
+/* Responsive（P5 收编原 900 → lg 档：窄屏放开 filter 控件宽度限制） */
+@media (max-width: 1023.98px) {
   .filter-bar .ds-input {
     max-width: none;
   }

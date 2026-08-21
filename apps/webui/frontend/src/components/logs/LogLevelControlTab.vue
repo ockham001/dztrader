@@ -286,7 +286,7 @@ function handleSelectAll(event: Event): void {
 }
 
 /* Responsive */
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
   .log-control__toolbar {
     flex-direction: column;
     align-items: flex-start;

@@ -24,6 +24,7 @@
     "vue-virtual-scroller": "^3.0.4"
   },
   "devDependencies": {
+    "@types/node": "^26.2.0",
     "@vitejs/plugin-vue": "^5.1.0",
     "@vue/test-utils": "^2.4.11",
     "eslint": "^9.39.4",

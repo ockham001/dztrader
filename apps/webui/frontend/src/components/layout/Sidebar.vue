@@ -138,17 +138,15 @@ function openAbout(): void {
       'sidebar-mobile-open': mobileOpen,
     }"
     :style="{
-      position: 'sticky',
-      top: 0,
-      height: '100vh',
       display: 'flex',
       flexDirection: 'column',
       gap: 'var(--spacer-16)',
       padding: '0 var(--spacer-12) var(--spacer-16)',
       background: 'var(--bg-base-default)',
-      zIndex: 300,
     }"
   >
+    <!-- 注：position/top/height/zIndex 已归 layout.css 的 .sidebar-panel
+         （P5-T2：布局属性归 CSS，消除 media !important 覆盖 inline 的打架） -->
     <!-- Brand row -->
     <div
       class="sidebar-header"

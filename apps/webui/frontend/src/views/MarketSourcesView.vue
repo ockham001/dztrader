@@ -239,7 +239,7 @@ onMounted(() => {
    此前本页 scoped 重复定义同一原子，属绕过 pattern 的冗余复制，已删除。 */
 
 /* Responsive */
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
   .page-header {
     flex-direction: column;
     align-items: flex-start;

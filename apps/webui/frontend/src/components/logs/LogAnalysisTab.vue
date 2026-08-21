@@ -316,7 +316,7 @@ watch(() => store.browserTab, (tab) => {
   padding: var(--spacer-2) 0;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
   .log-analysis__cards {
     grid-template-columns: repeat(2, 1fr);
   }

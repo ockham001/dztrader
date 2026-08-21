@@ -504,7 +504,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 
 /* Spinner: 复用全局 components.css 的 .ds-btn__spinner（P4 T4 去重复，统一 14px） */
 
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
   .source-card__header { gap: var(--spacer-8); padding: var(--spacer-12); }
   .source-card__body { padding: 0 var(--spacer-12) var(--spacer-12); }
   .card-section__row { flex-wrap: wrap; }

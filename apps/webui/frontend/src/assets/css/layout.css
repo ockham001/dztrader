@@ -1,5 +1,30 @@
 /* Shared layout CSS (sidebar + topbar + responsive) - extracted from main.html */
 
+/* ═══ P5 断点规范（Tailwind 档，与 composables/useBreakpoint.ts 双源对齐）═══
+   base <640 | sm ≥640 | md ≥768 | lg ≥1024 | xl ≥1280
+   - 布局重排归 CSS @media（CSS 主导）；行为分支（抽屉/rail）归 useBreakpoint(matchMedia)。
+   - @media 宽度值只允许以上四档（白名单测试 machine-enforce，见
+     composables/__tests__/breakpointWhitelist.spec.ts）；高度断点仅限 dashboard 监控页。
+   - 新代码优先 mobile-first（min-width）写法；存量 max-width 允许但档位必须标准。
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* ===== App shell grid（P5-T2：原 AppShell JS inline grid 移入，CSS 主导）===== */
+:root {
+  --sidebar-w: 220px;            /* 桌面侧栏展开宽 */
+  --sidebar-w-collapsed: 56px;   /* 桌面侧栏折叠 rail 宽 */
+}
+/* 默认（<md）：单列，侧栏为离屏抽屉（fixed，见下方 responsive sidebar 段） */
+.app-shell {
+  display: grid;
+  grid-template-columns: 1fr;
+  height: 100vh;
+}
+/* ≥md：桌面双列（rail 常驻，可折叠） */
+@media (min-width: 768px) {
+  .app-shell { grid-template-columns: var(--sidebar-w) minmax(0, 1fr); }
+  .app-shell.sidebar-collapsed { grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr); }
+}
+
 /* ===== Global reset ===== */
 body, main { margin: 0; }
 *, *::before, *::after { box-sizing: border-box; }
@@ -13,9 +38,17 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* ===== Dynamic viewport height (fixes iPad Safari 100vh address bar issue) ===== */
+/* ===== Sidebar panel 布局属性（P5-T2：原 Sidebar.vue inline 归 CSS，桌面 sticky 常驻；
+   <md 抽屉形态由下方 responsive 段覆盖，不再需要 !important）===== */
+.sidebar-panel {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  z-index: 300;
+}
+/* Dynamic viewport height（iPad Safari 地址栏）：置于基础规则之后以覆盖 100vh */
 @supports (height: 100dvh) {
-  .sidebar-panel { height: 100dvh !important; }
+  .sidebar-panel { height: 100dvh; }
 }
 
 /* ===== Icon mask + scrollbar utility ===== */
@@ -341,37 +374,28 @@ body {
 .topbar__theme:active { background: var(--bg-overlay-l2); }
 
 /* ===== Topbar responsive ===== */
-/* Mobile (<=768px) */
-@media (max-width: 768px) {
+/* <md：隐藏日期，保留星期+时间（顶栏信息密度降级第一级） */
+@media (max-width: 767.98px) {
   .topbar__hamburger { display: inline-flex; align-items: center; justify-content: center; width:32px; height:32px; border:none; background:transparent; border-radius:var(--radius-8); cursor:pointer; color:var(--icon-default); }
   .topbar__hamburger:active { background: var(--bg-overlay-l2); }
   .topbar__title { display: inline; }
   /* Hide date on mobile, keep weekday + time */
   .topbar__date { display: none; }
-  /* datetime responsive: hide date, keep ntp+weekday+time */
   .topbar__sep { display: none; }
 }
 
-/* Very narrow (<480px): hide weekday too, keep time only */
-@media (max-width: 480px) {
+/* <sm：再隐藏星期与连接文字，保留时间+NTP（P5 收编原 480/320 微断点为两级；
+   更窄场景由 topbar__left 的 overflow:hidden 兜底） */
+@media (max-width: 639.98px) {
   .topbar__conn span:last-child { display: none; }
   .topbar__weekday { display: none; }
-  /* datetime responsive: keep ntp+time only */
 }
 
-/* Extremely narrow (<320px): hide time entirely */
-@media (max-width: 320px) {
-  .topbar__time { display: none; }
-  .topbar__ntp span:last-child { display: none; }
-}
-
-/* ===== Responsive sidebar ===== */
-@media (max-width: 768px) {
-  .app-shell {
-    grid-template-columns: 1fr !important;
-  }
+/* ===== Responsive sidebar（<md：离屏抽屉；P5-T2 起 grid 已由上方 mobile-first 段定义，
+   此处仅侧栏自身形态，不再需要 !important 覆盖 JS inline）===== */
+@media (max-width: 767.98px) {
   .sidebar-panel {
-    position: fixed !important;
+    position: fixed;  /* 覆盖上方基础 sticky（inline 已归 CSS，无需 !important） */
     top: 0;
     left: 0;
     width: 260px;
@@ -379,6 +403,7 @@ body {
     z-index: 150;
     transform: translateX(-100%);
     transition: transform 240ms cubic-bezier(.3,0,0,1);
+    /* 覆盖组件 inline 的 padding 以追加底部安全区（inline 在，需 !important） */
     padding-bottom: calc(var(--spacer-16) + env(safe-area-inset-bottom, 0px)) !important;
   }
   .sidebar-panel.sidebar-mobile-open {
@@ -438,7 +463,7 @@ body {
   min-width: 200px;
 }
 /* Mobile sidebar */
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
   .sidebar-panel .user-dropdown {
     left: 0; right: 0; min-width: 0; width: 100%;
     bottom: calc(100% + 4px);

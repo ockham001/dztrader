@@ -379,7 +379,27 @@ pre {
     .dialog-form .ds-textarea:focus { background: var(--bg-base-tertiary); }
     .dialog-form .ds-textarea { min-height: 72px; resize: none; }
     .dialog-calendar-icon { width: 16px; height: 16px; color: var(--icon-secondary); object-fit: contain; }
-    @media (max-width: 720px) { .dialog-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 767.98px) { .dialog-grid { grid-template-columns: 1fr; } } /* P5 收编原 720 → md 档 */
+
+/* ═══ P5-T3 触摸规范（pointer: coarse = 触摸优先设备，Apple HIG/Material ≥44px）═══
+   - 触摸设备（手机/平板）上交互目标（按钮/菜单项/输入框/页签）最小 44px；
+     桌面 pointer: fine 不受影响（保持紧凑密度）。
+   - hover 规范：新增 :hover 样式应包在 @media (hover: hover) 内，防触摸设备
+     "粘滞 hover"（tap 后悬停态残留）；存量 hover 规则渐进迁移，不做一次性大改。
+   ═══════════════════════════════════════════════════════════════════ */
+@media (pointer: coarse) {
+  .ds-btn,
+  .ds-btn--sm { min-height: 44px; height: auto; }
+  .ds-btn--icon { min-width: 44px; }
+  .ds-tab { min-height: 44px; }
+  .ds-menu__item,
+  .ds-dropdown__item,
+  .ds-pagination__item { min-height: 44px; height: auto; }
+  .ds-input,
+  .ds-select { min-height: 44px; height: auto; }
+  .ds-check,
+  .ds-radio { min-height: 44px; }
+}
 
 /* ── Forms ─────────────────────────────────────────────────── */
 /* ===== Input / Search ===== */

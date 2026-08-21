@@ -1,15 +1,19 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch } from 'vue'
 import Sidebar from './Sidebar.vue'
 import Topbar from './Topbar.vue'
 import { useWebSocket } from '@/composables/wsClient'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 
-const EXPANDED_W = '220px'
-const COLLAPSED_W = '56px'
+// P5-T2 布局机制归一（CSS 主导）：grid 列模板/侧栏抽屉态全部在 layout.css 的
+// @media 断点中定义（Tailwind 档）；本组件 JS 只做【行为分支】——
+// useBreakpoint(matchMedia 事件驱动，跨断点瞬间触发，非 resize 逐像素) 判定
+// 抽屉模式(<md) vs 桌面 rail(≥md)，跨断点时自动收起 mobile 抽屉。
 
 const sidebarCollapsed = ref(false)
 const mobileSidebarOpen = ref(false)
-const isMobile = ref(false)
+
+const { isMobile } = useBreakpoint()
 
 // WebSocket 连接状态 banner
 const { connectionState } = useWebSocket()
@@ -25,13 +29,9 @@ const connBannerText = computed(() => {
   return ''
 })
 
-function checkMobile(): void {
-  isMobile.value = window.innerWidth < 768
-}
-
-const gridTemplateColumns = computed(() => {
-  if (isMobile.value) return '1fr'
-  return `${sidebarCollapsed.value ? COLLAPSED_W : EXPANDED_W} minmax(0, 1fr)`
+// 跨断点（如 pad 竖↔横、窗口拖宽）回到桌面时收起 mobile 抽屉残留态；rail 折叠偏好保持
+watch(isMobile, (mobile) => {
+  if (!mobile) mobileSidebarOpen.value = false
 })
 
 function toggleCollapse(): void {
@@ -46,26 +46,13 @@ function toggleMobile(): void {
 function closeMobile(): void {
   mobileSidebarOpen.value = false
 }
-
-function handleResize(): void {
-  checkMobile()
-  if (isMobile.value) closeMobile()
-}
-
-onMounted(() => {
-  checkMobile()
-  window.addEventListener('resize', handleResize)
-})
-onUnmounted(() => {
-  window.removeEventListener('resize', handleResize)
-})
 </script>
 
 <template>
+  <!-- P5-T2: grid 列模板归 CSS（layout.css 按 md 断点切换 抽屉/rail），此处不再 inline -->
   <div
     class="app-shell"
     :class="{ 'sidebar-collapsed': sidebarCollapsed && !isMobile }"
-    :style="{ display: 'grid', gridTemplateColumns, height: '100vh' }"
   >
     <!-- Mobile overlay -->
     <div
