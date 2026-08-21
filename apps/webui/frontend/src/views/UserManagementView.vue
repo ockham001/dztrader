@@ -130,6 +130,12 @@ async function handleAddIp(): Promise<void> {
   }
 }
 
+// P3 任务6：删除用户按真实结果反馈——失败保留用户并提示
+async function handleRemoveUser(id: number): Promise<void> {
+  const ok = await store.removeUser(id)
+  if (!ok) showToast(store.error ?? '删除用户失败', 'error')
+}
+
 async function handleRemoveIp(list: 'black' | 'white', id: number): Promise<void> {
   const ok = await store.removeIp(list, id)
   if (ok) {
@@ -168,7 +174,8 @@ function closeAddUserModal(): void {
 
 async function confirmAddUser(): Promise<void> {
   if (!newUser.value.username.trim() || !newUser.value.display_name.trim() || !newUser.value.password) return
-  await store.createUser({
+  // P3 任务6：按真实结果反馈——失败不关窗、不改本地假用户
+  const ok = await store.createUser({
     username: newUser.value.username.trim(),
     display_name: newUser.value.display_name.trim(),
     email: newUser.value.email.trim(),
@@ -177,6 +184,11 @@ async function confirmAddUser(): Promise<void> {
     accountPermissions: newUser.value.accountPermissions,
     strategyPermissions: newUser.value.strategyPermissions,
   })
+  if (!ok) {
+    showToast(store.error ?? '添加用户失败', 'error')
+    return
+  }
+  store.clearError()
   closeAddUserModal()
   showToast('用户已添加', 'success')
 }
@@ -565,7 +577,7 @@ onUnmounted(() => {
                         type="button"
                         title="删除"
                         :style="{ color: 'var(--status-error-default)' }"
-                        @click="store.removeUser(u.id)"
+                        @click="handleRemoveUser(u.id)"
                       >
                         <Icon name="Delete" :size="14" />
                       </button>

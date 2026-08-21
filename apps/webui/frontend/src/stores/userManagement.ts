@@ -209,7 +209,9 @@ export const useUserManagementStore = defineStore('userManagement', () => {
     role: string
     accountPermissions: string[]
     strategyPermissions: string[]
-  }): Promise<void> {
+  }): Promise<boolean> {
+    // P3 任务6：去掉本地插假用户兜底（Date.now() 当 id 的幽灵用户会污染镜像）。
+    // 失败只置 error 返回 false，由视图按真实结果反馈。
     try {
       const created = await usersApi.create({
         username: data.username,
@@ -226,22 +228,10 @@ export const useUserManagementStore = defineStore('userManagement', () => {
         actionPending: false,
       }
       users.value = [...users.value, newUser]
+      return true
     } catch {
-      // Fallback: add locally
-      const newUser: UserView = {
-        id: Date.now(),
-        username: data.username,
-        display_name: data.display_name,
-        email: data.email,
-        role: data.role as 'admin' | 'user',
-        status: 'offline',
-        created_at: new Date().toISOString().slice(0, 10),
-        accountPermissions: data.accountPermissions,
-        strategyPermissions: data.strategyPermissions,
-        expanded: false,
-        actionPending: false,
-      }
-      users.value = [...users.value, newUser]
+      error.value = '创建用户失败'
+      return false
     }
   }
 
@@ -260,12 +250,16 @@ export const useUserManagementStore = defineStore('userManagement', () => {
     }
   }
 
-  async function removeUser(id: number): Promise<void> {
-    users.value = users.value.filter(u => u.id !== id)
+  async function removeUser(id: number): Promise<boolean> {
+    // P3 任务6：改 API 优先——先等服务端删除成功再本地移除；失败保留用户（不产生与
+    // 服务端不一致的乐观删除，后续刷新也不会"复活"）。
     try {
       await usersApi.remove(id)
+      users.value = users.value.filter(u => u.id !== id)
+      return true
     } catch {
-      error.value = '删除用户失败（已本地移除）'
+      error.value = '删除用户失败（未删除，请重试）'
+      return false
     }
   }
 
