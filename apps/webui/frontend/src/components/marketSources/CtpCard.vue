@@ -88,25 +88,21 @@ const autoLoginStatusText = (s: MarketSourceView): string =>
 // 行情通道（契约 shm SHM 通道配置, dzmd_* 通用层）。
 // 行情通道: page_size_mb 启动后不可变（仅配置文件、启动前修改）→ 只读;
 //           check_* 三字段失焦单字段提交; preload_points 行编辑（null 删除语义）。
-// 范围对照契约 shm: interval ∈ [0,1440], pages ∈ [0,8], bytes ∈ [0, 2^40]
+// 前端不做范围校验: 修改多少就下发多少, 范围/类型由后端 validate() 校验,
+// 非法值被拒后经 RTN 回推旧值同步 (契约 shm: interval ∈ [0,1440], pages ∈ [0,8], bytes ∈ [0, 2^40])
 const advancedOpen = ref(false)
 const shmCfg = computed(() => store.shmConfigs[src.value.source_name])
 const preloadEntries = computed(() =>
   Object.entries(shmCfg.value?.preload_points ?? {})
     .sort(([a], [b]) => a.localeCompare(b)))
 
-// check_* 三字段上限（契约 shm 范围）: interval ∈ [0,1440], pages ∈ [0,8], bytes ∈ [0, 2^40]
-const SHM_FIELD_MAX = {
-  check_interval_min: 1440,
-  check_pages: 8,
-  check_bytes: 2 ** 40,
-} as const
-
+// check_* 三字段失焦单字段提交: 仅值改变/可序列化时才下发。
+// 前端不做范围校验: 范围/类型由后端 validate() 校验, 非法值被拒后经 RTN 回推旧值同步
 function onShmNumBlur(field: 'check_interval_min' | 'check_pages' | 'check_bytes', event: Event): void {
   const raw = (event.target as HTMLInputElement).value.trim()
   if (raw === '') return
   const parsed = Number(raw)
-  if (!Number.isInteger(parsed) || parsed < 0 || parsed > SHM_FIELD_MAX[field]) return
+  if (!Number.isFinite(parsed)) return  // 非数字无法序列化, 忽略
   const old = shmCfg.value?.[field]
   if (old !== undefined && parsed === old) return
   // rethrow 型薄代理: blur 路径吞 rejection（错误已由 store.error → View toast 承载）
@@ -114,13 +110,12 @@ function onShmNumBlur(field: 'check_interval_min' | 'check_pages' | 'check_bytes
 }
 
 // 预加载点行内 pages/bytes 失焦: 从镜像读当前值拼完整 value 下发（递归合并按 key 覆盖）。
-// pages ∈ [0,8]; bytes ∈ [0, 2^40]（字节数可达 TB 级, 不与 pages 同限）
+// 范围/类型由后端 validate() 校验, 非法值被拒后经 RTN 回推旧值同步
 function onPreloadBlur(time: string, field: 'pages' | 'bytes', event: Event): void {
   const raw = (event.target as HTMLInputElement).value.trim()
   if (raw === '') return
   const parsed = Number(raw)
-  if (!Number.isInteger(parsed) || parsed < 0) return
-  if (field === 'pages' ? parsed > 8 : parsed > 2 ** 40) return
+  if (!Number.isFinite(parsed)) return  // 非数字无法序列化, 忽略
   const cur = shmCfg.value?.preload_points[time]
   if (cur && parsed === cur[field]) return
   const next = { pages: cur?.pages ?? 0, bytes: cur?.bytes ?? 0, [field]: parsed }
@@ -155,11 +150,11 @@ async function confirmAddPreload(): Promise<void> {
     preloadError.value = '该时间点已存在'
     return
   }
-  if (!Number.isInteger(pages) || pages < 0 || pages > 8
-    || !Number.isInteger(bytes) || bytes < 0 || bytes > 2 ** 40) {
-    preloadError.value = 'pages 需为 0-8 的整数，bytes 需为 0-2^40 的整数'
+  if (!Number.isFinite(pages) || !Number.isFinite(bytes) || preloadPages.value.trim() === '' || preloadBytes.value.trim() === '') {
+    preloadError.value = '页数、字节需为有效数字'
     return
   }
+  // 范围/类型由后端 validate() 校验, 非法值被拒后经 RTN 回推旧值同步
   try {
     await store.setShmConfig(src.value.id, { preload_points: { [time]: { pages, bytes } } })
     preloadModalOpen.value = false
@@ -319,15 +314,15 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
               页大小：<span>{{ shmCfg ? `${shmCfg.page_size_mb} MB` : '--' }}</span>
             </span>
             <span class="gateway-info__item">周期检查间隔(分)：
-              <input class="shm-num-input" type="number" min="0" max="1440" :value="shmCfg?.check_interval_min ?? ''"
+              <input class="shm-num-input" type="number" :value="shmCfg?.check_interval_min ?? ''"
                 :disabled="src.shmConfigPending" @blur="onShmNumBlur('check_interval_min', $event)">
             </span>
             <span class="gateway-info__item">检查预载页数：
-              <input class="shm-num-input" type="number" min="0" max="8" :value="shmCfg?.check_pages ?? ''"
+              <input class="shm-num-input" type="number" :value="shmCfg?.check_pages ?? ''"
                 :disabled="src.shmConfigPending" @blur="onShmNumBlur('check_pages', $event)">
             </span>
             <span class="gateway-info__item">检查预载字节：
-              <input class="shm-num-input" type="number" min="0" :value="shmCfg?.check_bytes ?? ''"
+              <input class="shm-num-input" type="number" :value="shmCfg?.check_bytes ?? ''"
                 :disabled="src.shmConfigPending" @blur="onShmNumBlur('check_bytes', $event)">
             </span>
           </div>
@@ -339,11 +334,11 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
             <div v-for="[time, pt] in preloadEntries" :key="time" class="preload-item">
               <span class="preload-item__time">{{ time }}</span>
               <label class="preload-item__field">页
-                <input class="shm-num-input" type="number" min="0" max="8" :value="pt.pages"
+                <input class="shm-num-input" type="number" :value="pt.pages"
                   :disabled="src.shmConfigPending" @blur="onPreloadBlur(time, 'pages', $event)">
               </label>
               <label class="preload-item__field">字节
-                <input class="shm-num-input" type="number" min="0" :value="pt.bytes"
+                <input class="shm-num-input" type="number" :value="pt.bytes"
                   :disabled="src.shmConfigPending" @blur="onPreloadBlur(time, 'bytes', $event)">
               </label>
               <button class="preload-item__remove" type="button"
@@ -421,13 +416,13 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
         <div class="dialog-row">
           <label class="dialog-row__label">预加载页数</label>
           <div class="ds-input dialog-row__control">
-            <input v-model="preloadPages" type="number" min="0" max="8" placeholder="0-8">
+            <input v-model="preloadPages" type="number" placeholder="页数">
           </div>
         </div>
         <div class="dialog-row">
           <label class="dialog-row__label">预加载字节</label>
           <div class="ds-input dialog-row__control">
-            <input v-model="preloadBytes" type="number" min="0" placeholder="字节数">
+            <input v-model="preloadBytes" type="number" placeholder="字节数">
           </div>
         </div>
         <div v-if="preloadError" class="dialog-row__error">{{ preloadError }}</div>
