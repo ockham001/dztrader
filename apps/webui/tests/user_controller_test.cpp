@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "user_controller.h"
 #include "repository.h"
+#include "ws_controller.h"  // 声明 g_kick_user（角色降级踢连接测试用）
 
 #include <nlohmann/json.hpp>
 #include <memory>
@@ -152,6 +153,33 @@ TEST_F(UserControllerTest, UpdateNonexistentReturns404) {
     req->setBody(R"({"display_name":"x"})");
     auto resp = invoke(&UserCtrl::update, req, 99999);
     EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+}
+
+// ---- 角色降级踢连接（契约 webui-ws §2.3：降低权限后须强制断开该用户已建立的 WS 连接）----
+
+TEST_F(UserControllerTest, UpdateDemotingAdminToUserKicksUser) {
+    // 目标为 admin（username "admin"）；降级为 user 后应触发踢人
+    std::vector<std::string> kicked;
+    dztrader::webui::g_kick_user = [&kicked](const std::string& u) { kicked.push_back(u); };
+    auto req = admin_req();
+    req->setBody(R"({"display_name":"Administrator","email":"admin@test.com","role":"user"})");
+    auto resp = invoke(&UserCtrl::update, req, admin_id_);
+    dztrader::webui::g_kick_user = nullptr;  // 复位全局指针，防污染其他用例
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    ASSERT_EQ(kicked.size(), 1u);
+    EXPECT_EQ(kicked[0], "admin");
+}
+
+TEST_F(UserControllerTest, UpdateKeepingNonAdminRoleDoesNotKick) {
+    // 普通用户改 display_name 但保持 user 角色：权限未变，不应踢
+    std::vector<std::string> kicked;
+    dztrader::webui::g_kick_user = [&kicked](const std::string& u) { kicked.push_back(u); };
+    auto req = admin_req();
+    req->setBody(R"({"display_name":"Renamed","email":"reg@test.com","role":"user"})");
+    auto resp = invoke(&UserCtrl::update, req, user_id_);
+    dztrader::webui::g_kick_user = nullptr;
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_TRUE(kicked.empty());
 }
 
 // ---- remove ----

@@ -161,9 +161,22 @@ void UserCtrl::update(const drogon::HttpRequestPtr& req,
     const std::string email = body.value("email", "");
     const std::string role = body.value("role", "user");
 
+    // 契约 webui-ws §2.3：admin 被降级为新非 admin 时，须强制断开其已建 WS 连接
+    // （Session.is_admin 连接时缓存，降权后旧连接仍可绕过 md_connect 等 admin 预检）。
+    auto before = repo_->get_user_by_id(id);
+    if (!before.has_value()) {
+        callback(error_response(drogon::k404NotFound, "user not found"));
+        return;
+    }
+    const bool was_admin = before->role == "admin";
+
     if (!repo_->update_user(id, display_name, email, role)) {
         callback(error_response(drogon::k404NotFound, "user not found"));
         return;
+    }
+
+    if (was_admin && role != "admin" && g_kick_user) {
+        g_kick_user(before->username);
     }
 
     auto user = repo_->get_user_by_id(id);
