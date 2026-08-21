@@ -61,22 +61,46 @@ const OP_LABELS: Record<MdConfigOp, string> = {
   shm_config: '修改 SHM 配置',
 }
 
-// applyMdConfig 到达时批量清理的配置类 op（对照 setMdConfig 清的 8 个 broker/frontend
-// pending 字段：brokerAddPending / brokerRemovePending / brokerSelectPending /
-// brokerFieldEditPending / frontendAddPending / frontendRemovePending / frontendEditPending /
-// frontendTogglePending）
-// 不含 login/logout（由 RTN_PROGRESS 状态转移清）、排程类（由 applyAutoLogin 清，
-// 契约 auto-login：排程操作回 RTN_AUTO_LOGIN 而非 RTN_MD_CONFIG）与进程类 op（process store 领域）。
-// frontend 四个操作拆独立 op：现有 spec "各控件独立等待状态, 可同时发起"
-// （marketSources.ts:32-33），四个 frontend pending 字段互不干扰。
-export const MD_CONFIG_OPS: readonly MdConfigOp[] = [
-  'broker_add', 'broker_remove', 'broker_update', 'broker_select',
-  'frontend_add', 'frontend_remove', 'frontend_edit', 'frontend_toggle',
-  'subscribe_params',
-]
+// =====================================================================
+// P3 任务 4：pending 清理触点「声明式」——每个 op 声明由哪个 RTN 到达时清其 pending，
+// 框架统一按表接线（clearPending(id, ops)），新增操作只需在下方 ONE 处声明清理归属
+//（+ 加入 MdConfigOp 联合 + OP_LABELS），不再手写分散的 apply* 清理循环。
+//
+// 各种类含义（与现有命令式行为【逐项等价】）：
+//   - md_config：RTN_MD_CONFIG 到达清（broker/frontend/subscribe_params；
+//     对照 setMdConfig 清的 8 个 broker/frontend 字段 + subscribe_params）。
+//     frontend 四操作拆独立 op（现有 spec "各控件独立等待状态, 可同时发起"）。
+//   - md_shm_config：RTN_MD_SHM_CONFIG 到达清（shm_config）。
+//   - auto_login：RTN_AUTO_LOGIN 到达清（auto_login/schedule_add/schedule_remove，
+//     契约 auto-login：排程操作回 RTN_AUTO_LOGIN 而非 RTN_MD_CONFIG）。
+//   - progress_login / progress_logout：RTN_PROGRESS 状态转移驱动清（契约 progress）。
+// 不含进程类 op（start/stop/remove 属 process store 领域，其 handleProcessEvent 另有声明）。
+// =====================================================================
+export type ClearKind =
+  | 'md_config'        // RTN_MD_CONFIG
+  | 'md_shm_config'    // RTN_MD_SHM_CONFIG
+  | 'auto_login'       // RTN_AUTO_LOGIN
+  | 'progress_login'   // RTN_PROGRESS → 登录完成（online）
+  | 'progress_logout'  // RTN_PROGRESS → 已登出（offline）
 
-// 排程类 op：由 applyAutoLogin（RTN_AUTO_LOGIN，契约 auto-login）批量清理
-export const AUTO_LOGIN_OPS: readonly MdConfigOp[] = ['auto_login', 'schedule_add', 'schedule_remove']
+export const CLEAR_BY_RTN: Record<ClearKind, readonly MdConfigOp[]> = {
+  md_config: [
+    'broker_add', 'broker_remove', 'broker_update', 'broker_select',
+    'frontend_add', 'frontend_remove', 'frontend_edit', 'frontend_toggle',
+    'subscribe_params',
+  ],
+  md_shm_config: ['shm_config'],
+  auto_login: ['auto_login', 'schedule_add', 'schedule_remove'],
+  progress_login: ['login'],
+  progress_logout: ['logout'],
+}
+
+// 保留既有导出（兼容 spec 与历史引用），值取自统一声明表
+export const MD_CONFIG_OPS: readonly MdConfigOp[] = CLEAR_BY_RTN.md_config
+export const AUTO_LOGIN_OPS: readonly MdConfigOp[] = CLEAR_BY_RTN.auto_login
+
+// 全量 op（供测试断言「每个 op 都登记了清理归属」，漏登记会在 spec 中暴露）
+export const MD_CONFIG_ALL_OPS: readonly MdConfigOp[] = Object.keys(OP_LABELS) as MdConfigOp[]
 
 export const useMdConfigStore = defineStore('mdConfig', () => {
   const configs = ref<Record<string, MdConfigPayload>>({})
@@ -104,22 +128,21 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     return `source:${id}:${op}`
   }
 
-  // 清一个 id 的全部配置类 pending（现有 setMdConfig 批量清语义），
-  // 逐 op 前缀 clearByPrefix——精确限定配置类 op，不误伤同 key 空间的
-  // process store（start/stop/remove）与 login/logout（applyProgress 负责）
-  function clearConfigPending(id: number): void {
-    for (const op of MD_CONFIG_OPS) {
+  // 通用清理接线（P3 任务4 声明式）：按 CLEAR_BY_RTN 表，逐 op 前缀 clearByPrefix——
+  // 精确限定本类 op，不误伤同 key 空间的 process store（start/stop/remove）与其他 source。
+  function clearPending(id: number, ops: readonly MdConfigOp[]): void {
+    for (const op of ops) {
       clearMSPrefix(opKey(id, op))
     }
   }
 
   // md_rtn_config 帧：单条完整覆盖（后到覆盖先到），非法 payload 忽略不写
-  // 到达时清该 source 全部配置类 pending（现有 setMdConfig 批量清语义）
+  // 到达时清该 source 的 md_config 类 pending（声明表 CLEAR_BY_RTN.md_config）
   function applyMdConfig(payload: MdRtnConfigPayload): void {
     if (!payload || !payload.source || !payload.config) return
     configs.value[payload.source] = payload.config
     const id = nameToId.value[payload.source]
-    if (id !== undefined) clearConfigPending(id)
+    if (id !== undefined) clearPending(id, CLEAR_BY_RTN.md_config)
   }
 
   // md_rtn_status 帧：单条完整覆盖（后到覆盖先到），非法 payload 忽略不写。
@@ -145,7 +168,7 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     }
     shmConfigs.value[source] = p as ShmConfigView
     const id = nameToId.value[source]
-    if (id !== undefined) clearMSPrefix(opKey(id, 'shm_config'))
+    if (id !== undefined) clearPending(id, CLEAR_BY_RTN.md_shm_config)
   }
 
   // auto_login 帧（契约 auto-login）：单条完整覆盖（后到覆盖先到），非法 payload 忽略不写。
@@ -160,9 +183,7 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     }
     const id = nameToId.value[source]
     if (id === undefined) return
-    for (const op of AUTO_LOGIN_OPS) {
-      clearMSPrefix(opKey(id, op))
-    }
+    clearPending(id, CLEAR_BY_RTN.auto_login)
   }
 
   // ===== 登录/登出 pending 驱动 (契约 progress: RTN_PROGRESS 状态转移) =====
@@ -181,9 +202,9 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
         if (sourceId === undefined) continue
         const state = progressLoginState(p)
         if (state === 'online') {
-          clearMSPrefix(opKey(sourceId, 'login'))
+          clearPending(sourceId, CLEAR_BY_RTN.progress_login)
         } else if (state === 'offline') {
-          clearMSPrefix(opKey(sourceId, 'logout'))
+          clearPending(sourceId, CLEAR_BY_RTN.progress_logout)
         }
       }
     },

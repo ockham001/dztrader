@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { nextTick } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
-import { useMdConfigStore, MD_CONFIG_OPS } from '../mdConfig'
+import { useMdConfigStore, MD_CONFIG_OPS, CLEAR_BY_RTN, MD_CONFIG_ALL_OPS } from '../mdConfig'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { marketSourcePending, __resetForTests } from '@/composables/marketSourcePending'
 import { useProgressStore } from '@/stores/progress'
@@ -44,6 +44,30 @@ const autoLoginPayload = {
   enabled: true,
   schedules: [{ login_time: '09:00', logout_time: '15:00' }],
 }
+
+// P3 任务4：清理触点声明式门禁——每个 op 都必须登记清理归属，漏登记（→pending 悬挂到
+// 超时，操作进度卡死）在此暴露而非线上才发现。
+describe('CLEAR_BY_RTN 声明完整性', () => {
+  it('每个 MdConfigOp 都声明了由哪个 RTN 清理（不漏登记）', () => {
+    const claimed = new Set<string>(CLEAR_BY_RTN.md_config)
+    for (const kind of Object.keys(CLEAR_BY_RTN) as (keyof typeof CLEAR_BY_RTN)[]) {
+      for (const op of CLEAR_BY_RTN[kind]) claimed.add(op)
+    }
+    for (const op of MD_CONFIG_ALL_OPS) {
+      expect(claimed.has(op), `op「${op}」未登记清理归属`).toBe(true)
+    }
+  })
+
+  it('各清理类互不重叠（同 op 不得归属多个 RTN）', () => {
+    const seen = new Set<string>()
+    for (const kind of Object.keys(CLEAR_BY_RTN) as (keyof typeof CLEAR_BY_RTN)[]) {
+      for (const op of CLEAR_BY_RTN[kind]) {
+        expect(seen.has(op), `op「${op}」归属了多个清理类`).toBe(false)
+        seen.add(op)
+      }
+    }
+  })
+})
 
 describe('useMdConfigStore', () => {
   beforeEach(() => {
