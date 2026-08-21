@@ -131,13 +131,15 @@ body {
   margin: 0 auto;
 }
 
-/* Nav link hover */
-.nav-link:hover {
+/* Nav link hover — 图标/文字色介于选中与未选中之间, !important 覆盖内联样式; :not 避免影响选中态 */
+.nav-link:not(.nav-link--active):hover {
   background: var(--bg-overlay-l3);
-  color: var(--text-default-hover);
+  color: var(--text-default-hover) !important;
+  color: color-mix(in srgb, var(--text-default) 60%, var(--text-secondary)) !important;
 }
-.nav-link:hover .icon {
-  color: var(--icon-secondary-hover);
+.nav-link:not(.nav-link--active):hover .icon {
+  color: var(--icon-secondary-hover) !important;
+  color: color-mix(in srgb, var(--icon-default) 60%, var(--icon-tertiary)) !important;
 }
 
 /* User section hover */
