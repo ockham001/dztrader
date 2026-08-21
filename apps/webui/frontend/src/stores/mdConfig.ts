@@ -290,6 +290,10 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     if (!autoLogins.value[sourceName]) return false
     runner.assign(id, sourceName)
     const cur = currentAutoLogin(sourceName)
+    // 业务决策（P3 任务5 确认，§3.2 P1 结案）：以 (login_time, logout_time) 时间对为排程
+    // 唯一 key，同一时间对只允许一条——相同时段重复添加视为幂等成功（目标已达成）不下发。
+    // 不开"时间对重复多排程"：届时 removeSchedule 按时间对匹配会误删全部同时间对，
+    // 且需确认后端网关是否支持时间对重复（否则产生永远匹配不上的幽灵项）。
     if (cur.schedules.some(s => s.login_time === loginTime && s.logout_time === logoutTime)) {
       return true  // 重复时段: 幂等成功（目标状态已达成, 不下发）
     }
