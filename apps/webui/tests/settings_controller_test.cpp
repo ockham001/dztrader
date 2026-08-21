@@ -13,10 +13,12 @@
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <random>
 
 #include "settings_controller.h"
 #include "repository.h"
 #include "shm_writer.h"
+#include <dztrader/core/this_process.h>
 
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
@@ -39,16 +41,26 @@ protected:
 
     static constexpr uint64_t MB = 1024 * 1024;
 
+    /// 每用例唯一 token（PID + 随机数）：ctest -j 并行时同二进制各用例作为独立进程运行，
+    /// 固定目录/文件名会互相删改冲突，故 shm 目录、channel 名、JSON 文件均基于此唯一化。
+    std::string uid_;
+
     void SetUp() override {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<uint32_t> dist;
+        uid_ = std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
+               std::to_string(dist(gen));
+
         repo_ = std::make_shared<Repository>(":memory:");
         // 种子 admin/普通用户: is_admin 按 user_id attribute 查库判 role
         repo_->create_user("admin", "Administrator", "a@test.com", "pass", "admin");
         repo_->create_user("regular", "Regular User", "r@test.com", "pass", "user");
 
-        shm_dir_ = std::filesystem::temp_directory_path() / "dz_test_settings";
+        shm_dir_ = std::filesystem::temp_directory_path() / ("dz_test_settings_" + uid_);
         std::filesystem::remove_all(shm_dir_);
         ChannelConfig cfg{
-            .channel_name = "dz_test_settings",
+            .channel_name = "dz_test_settings_" + uid_,
             .shm_dir = shm_dir_,
             .meta_file_size = 4 * MB,
             .page_size = 1 * MB,
@@ -66,9 +78,9 @@ protected:
         webui_cfg_->jwt_secret = "secret";
         webui_cfg_->notify_cache_size = 100;
 
-        // 临时文件名带 dz_settings_ 前缀, 避免与 config_test.cpp 的 webui_test.json 在临时目录碰撞
-        master_path_ = std::filesystem::temp_directory_path() / "dz_settings_dztraderd_test.json";
-        webui_path_ = std::filesystem::temp_directory_path() / "dz_settings_webui_test.json";
+        // 临时文件名带 uid_, 避免与其他用例/测试在临时目录碰撞
+        master_path_ = std::filesystem::temp_directory_path() / ("dz_settings_dztraderd_test_" + uid_ + ".json");
+        webui_path_ = std::filesystem::temp_directory_path() / ("dz_settings_webui_test_" + uid_ + ".json");
         std::filesystem::remove(master_path_);
         std::filesystem::remove(webui_path_);
         remove_corrupt_backups();   // 防历史运行残留的备份文件弱化备份断言

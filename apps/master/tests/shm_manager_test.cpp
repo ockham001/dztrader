@@ -26,6 +26,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <random>
 #include <thread>
 #include <vector>
 
@@ -37,10 +38,21 @@ ShmGlobalConfig make_default_shm_global() {
     return {.meta_file_size = 1 * 1024 * 1024};
 }
 
+/// 进程唯一临时目录名（PID + 随机数）：ctest -j 并行时避免多个测试 exe
+/// 共用固定目录名（如 dz_shm_mgr_test / dz_pc_frame_test）导致 SHM 文件互相占用冲突。
+std::filesystem::path unique_temp_dir(const std::string& name) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint32_t> dist;
+    return std::filesystem::temp_directory_path() /
+           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
+            "_" + std::to_string(dist(gen)));
+}
+
 class ShmManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        tmp_dir_ = std::filesystem::temp_directory_path() / "dz_shm_mgr_test";
+        tmp_dir_ = unique_temp_dir("dz_shm_mgr_test");
         std::filesystem::remove_all(tmp_dir_);
         std::filesystem::create_directories(tmp_dir_);
         orig_home_ = dztrader::env::get("DZTRADER_HOME");
@@ -366,10 +378,20 @@ TEST_F(ShmManagerTest, StartEventShmMaintenanceWithZeroIntervalIsDisabled) {
 //     (注入时同时触发 store 初始镜像 load, 见 set_supervisor 实现)。
 class ProcessControlFrameTest : public ::testing::Test {
 protected:
+    /// 每进程唯一动态注册网关名（PID + 随机数）：避免多个并行用例/测试 exe 复制删除
+    /// 同名的 dzmd_test_worker*.exe（exe_dir 共享）互相冲突。以 dzmd_ 前缀供扫描器判 GatewayMd。
+    std::string gw_name_;
+
     void SetUp() override {
-        tmp_dir_ = std::filesystem::temp_directory_path() / "dz_pc_frame_test";
+        tmp_dir_ = unique_temp_dir("dz_pc_frame_test");
         std::filesystem::remove_all(tmp_dir_);
         std::filesystem::create_directories(tmp_dir_);
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<uint32_t> dist;
+        gw_name_ = "dzmd_test_worker_" +
+                   std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
+                   std::to_string(dist(gen));
         orig_home_ = dztrader::env::get("DZTRADER_HOME");
         dztrader::env::set("DZTRADER_HOME", tmp_dir_.string());
         // 最小 dztraderd.json + md section 注册 dzmd_ctp (registry 从文件加载,
@@ -622,11 +644,12 @@ TEST_F(ProcessControlFrameTest, StartUnregisteredGatewayDynamicallyRegistersAndS
 #endif
         ;
     // 复制为 dzmd_ 前缀网关 exe (扫描器按前缀判 GatewayMd), 用例结束后清理
-    const auto gw_exe = worker_exe.parent_path() / "dzmd_test_worker"
+    const auto gw_exe = worker_exe.parent_path() /
+                        (gw_name_
 #ifdef _WIN32
-        ".exe"
+                         + ".exe"
 #endif
-        ;
+                        );
     std::filesystem::remove(gw_exe);
     std::filesystem::copy_file(worker_exe, gw_exe);
 
@@ -634,7 +657,7 @@ TEST_F(ProcessControlFrameTest, StartUnregisteredGatewayDynamicallyRegistersAndS
     auto writer = create_writer("fake_ui");
 
     // 未注册 Start: 扫描命中 -> 动态注册 + 启动
-    write_process_control_frame(writer, platform::ProcessAction::Start, "dzmd_test_worker");
+    write_process_control_frame(writer, platform::ProcessAction::Start, gw_name_);
     for (int i = 0; i < 10; ++i) {
         shm_mgr_->drain_event_channel();
     }
@@ -644,29 +667,29 @@ TEST_F(ProcessControlFrameTest, StartUnregisteredGatewayDynamicallyRegistersAndS
         auto cit = frames.find(DZ_FRAME_RTN_PROCESS_CONFIG);
         ASSERT_NE(cit, frames.end());
         const auto& cfg = cit->second.back();
-        EXPECT_TRUE(cfg.contains("dzmd_test_worker"));
-        EXPECT_TRUE(cfg["dzmd_test_worker"].contains("restart"));
+        EXPECT_TRUE(cfg.contains(gw_name_));
+        EXPECT_TRUE(cfg[gw_name_].contains("restart"));
         // 116 Running + StartSucceeded
         auto it = frames.find(DZ_FRAME_RTN_PROCESS_STATUS);
         ASSERT_NE(it, frames.end());
         const auto& status = it->second.back();
-        EXPECT_EQ(status["name"], "dzmd_test_worker");
+        EXPECT_EQ(status["name"], gw_name_);
         EXPECT_EQ(status["event"], "StartSucceeded");
         EXPECT_EQ(status["state"], "Running");
     }
     // registry 已含新条目
-    EXPECT_NE(supervisor_->find_registry_entry("dzmd_test_worker"), nullptr);
+    EXPECT_NE(supervisor_->find_registry_entry(gw_name_), nullptr);
     // dztraderd.json 已持久化 md 段 (下次 master 启动自动拉起)
     {
         std::ifstream ifs(cfg_path_);
         nlohmann::json j;
         ifs >> j;
         EXPECT_TRUE(j.contains("md"));
-        EXPECT_TRUE(j["md"].contains("dzmd_test_worker"));
+        EXPECT_TRUE(j["md"].contains(gw_name_));
     }
 
     // 清理: 帧驱动 Stop + 跑 io_context 让 force-kill 定时器触发 (worker 不读事件通道)
-    write_process_control_frame(writer, platform::ProcessAction::Stop, "dzmd_test_worker");
+    write_process_control_frame(writer, platform::ProcessAction::Stop, gw_name_);
     for (int i = 0; i < 10; ++i) {
         shm_mgr_->drain_event_channel();
     }
@@ -685,18 +708,19 @@ TEST_F(ProcessControlFrameTest, StartUnregisteredGatewayWithConfigAppliesPatchAf
         ".exe"
 #endif
         ;
-    const auto gw_exe = worker_exe.parent_path() / "dzmd_test_worker"
+    const auto gw_exe = worker_exe.parent_path() /
+                        (gw_name_
 #ifdef _WIN32
-        ".exe"
+                         + ".exe"
 #endif
-        ;
+                        );
     std::filesystem::remove(gw_exe);
     std::filesystem::copy_file(worker_exe, gw_exe);
 
     auto reader = create_reader("dynreg_cfg_reader");
     auto writer = create_writer("fake_ui");
 
-    write_process_control_frame(writer, platform::ProcessAction::Start, "dzmd_test_worker",
+    write_process_control_frame(writer, platform::ProcessAction::Start, gw_name_,
                                 nlohmann::json{{"display_name", "新网关"}});
     for (int i = 0; i < 10; ++i) {
         shm_mgr_->drain_event_channel();
@@ -706,10 +730,10 @@ TEST_F(ProcessControlFrameTest, StartUnregisteredGatewayWithConfigAppliesPatchAf
         auto cit = frames.find(DZ_FRAME_RTN_PROCESS_CONFIG);
         ASSERT_NE(cit, frames.end());
         const auto& cfg = cit->second.back();
-        ASSERT_TRUE(cfg.contains("dzmd_test_worker"));
+        ASSERT_TRUE(cfg.contains(gw_name_));
         // patch 应用在动态注册的默认配置上: 118 为 patch 后全量
-        EXPECT_EQ(cfg["dzmd_test_worker"].value("display_name", ""), "新网关");
-        EXPECT_TRUE(cfg["dzmd_test_worker"].contains("restart"));
+        EXPECT_EQ(cfg[gw_name_].value("display_name", ""), "新网关");
+        EXPECT_TRUE(cfg[gw_name_].contains("restart"));
         auto it = frames.find(DZ_FRAME_RTN_PROCESS_STATUS);
         ASSERT_NE(it, frames.end());
         const auto& status = it->second.back();
@@ -717,12 +741,12 @@ TEST_F(ProcessControlFrameTest, StartUnregisteredGatewayWithConfigAppliesPatchAf
         EXPECT_EQ(status["state"], "Running");
     }
     // registry 条目 display_name 已应用 patch
-    const auto* entry = supervisor_->find_registry_entry("dzmd_test_worker");
+    const auto* entry = supervisor_->find_registry_entry(gw_name_);
     ASSERT_NE(entry, nullptr);
     EXPECT_EQ(entry->display_name, "新网关");
 
     // 清理: 帧驱动 Stop + 跑 io_context 让 force-kill 定时器触发
-    write_process_control_frame(writer, platform::ProcessAction::Stop, "dzmd_test_worker");
+    write_process_control_frame(writer, platform::ProcessAction::Stop, gw_name_);
     for (int i = 0; i < 10; ++i) {
         shm_mgr_->drain_event_channel();
     }

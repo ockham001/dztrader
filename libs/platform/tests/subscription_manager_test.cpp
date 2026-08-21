@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <dztrader/core/this_process.h>
 #include <dztrader/platform/subscription_manager.h>
 #include <dztrader/platform/frame_codec.h>
 #include <dztrader/shm/channel_meta.h>
@@ -9,6 +10,7 @@
 
 #include <filesystem>
 #include <optional>
+#include <random>
 #include <string>
 
 using dztrader::platform::InstrumentSubInfo;
@@ -39,7 +41,14 @@ protected:
     static constexpr uint64_t MB = 1024 * 1024;
 
     void SetUp() override {
-        channel_name_ = "dz_test_submgr";
+        // 每进程唯一通道名（PID + 随机数）：ctest -j 并行时同二进制各用例作为独立进程，
+        // 固定通道名/目录会互相删建冲突。
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<uint32_t> dist;
+        const std::string uid = std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
+                                "_" + std::to_string(dist(gen));
+        channel_name_ = "dz_test_submgr_" + uid;
         shm_dir_ = std::filesystem::temp_directory_path() / channel_name_;
         std::filesystem::remove_all(shm_dir_);
 

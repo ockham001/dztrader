@@ -2,11 +2,24 @@
 #include <cstdio>
 #include <fstream>
 #include <filesystem>
+#include <random>
 #include "log_service.h"
+#include <dztrader/core/this_process.h>
 
 using dztrader::webui::LogService;
 
 namespace fs = std::filesystem;
+
+/// 进程唯一临时目录名（PID + 随机数）：ctest -j 并行时避免多个用例/测试 exe
+/// 共用固定目录名（如 dz_log_service_test / dz_tail_cursor_*）导致冲突。
+fs::path unique_temp_dir(const std::string& name) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint32_t> dist;
+    return fs::temp_directory_path() /
+           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
+            "_" + std::to_string(dist(gen)));
+}
 
 class LogServiceTest : public ::testing::Test {
 protected:
@@ -14,7 +27,7 @@ protected:
     std::unique_ptr<dztrader::webui::LogService> svc_;
 
     void SetUp() override {
-        tmp_dir_ = fs::temp_directory_path() / "dz_log_service_test";
+        tmp_dir_ = unique_temp_dir("dz_log_service_test");
         fs::remove_all(tmp_dir_);
         fs::create_directories(tmp_dir_);
         svc_ = std::make_unique<dztrader::webui::LogService>(tmp_dir_);
