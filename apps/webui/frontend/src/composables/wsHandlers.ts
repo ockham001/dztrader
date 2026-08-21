@@ -12,7 +12,7 @@ import { useProcessStore } from '@/stores/process'
 import { useProgressStore } from '@/stores/progress'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useSettingsStore } from '@/stores/settings'
-import type { ProcessStatusPayload, MdConfigPayload, MdRtnStatusPayload } from '@/types/api'
+import type { ProcessStatusPayload, MdConfigPayload } from '@/types/api'
 
 registerHandler('data_changed', (payload) => {
   // 多设备同步：后端数据变更时推送通知，前端按 scope 重新 REST 刷新
@@ -104,10 +104,10 @@ registerHandler('snapshot', (payload) => {
 })
 
 registerHandler('log_config', (payload, instanceId) => {
-  // 单实例日志配置增量推送（RTN_LOG_CONFIG → WS）
-  // data: { level, flush_on }，instance_id 标识目标进程
+  // 单实例日志配置增量推送（RTN_LOG_CONFIG → WS 消息 log_config）
+  // payload 已由 WsDataByType 类型化为 LogConfigPayload（契约单源），instance_id 标识目标进程
   const logs = useLogsStore()
-  const data = payload as { level?: string } | undefined
+  const data = payload
   if (instanceId && data) {
     logs.applyLogConfig(instanceId, data)
   }
@@ -136,7 +136,8 @@ registerHandler('md_rtn_status', (payload) => {
   // P4 Task 5 单写:mdConfig store 为 md_rtn_status 帧唯一写入点。
   // P6: 契约 md-status 无状态字段——loginState 聚合与 login/logout pending 清除
   // 由 RTN_PROGRESS（契约 progress）驱动, 本消息仅写镜像。
-  useMdConfigStore().applyMdStatus(payload as MdRtnStatusPayload)
+  // payload 已由 WsDataByType 类型化为 MdRtnStatusPayload（契约单源）
+  useMdConfigStore().applyMdStatus(payload)
 })
 
 registerHandler('md_shm_config', (payload, instanceId) => {
@@ -181,7 +182,8 @@ registerHandler('notify_ui', (payload) => {
   //   （NotifyStore 入 popup 队列, App.vue 渲染 modal 逐条确认）
   // 双 toast 修复（设计 §5.4）：notify_ui → useNotifyStore → toast，不写 error.value
   //   （error.value 仅 HTTP 失败链路写入，两通道互斥）
-  const data = payload as { source?: string; message?: string; level?: string; popup?: boolean; timestamp?: number } | undefined
+  // payload 已由 WsDataByType 类型化为 NotifyUiPayload（契约单源，字段全必填）
+  const data = payload
   // level 已为字符串, 未匹配/缺失时默认 error
   const rawLevel = data?.level
   const level: 'info' | 'warning' | 'error' =
