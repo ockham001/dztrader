@@ -95,9 +95,8 @@ export const CLEAR_BY_RTN: Record<ClearKind, readonly MdConfigOp[]> = {
   progress_logout: ['logout'],
 }
 
-// 保留既有导出（兼容 spec 与历史引用），值取自统一声明表
+// 保留既有导出（兼容 spec 引用），值取自统一声明表
 export const MD_CONFIG_OPS: readonly MdConfigOp[] = CLEAR_BY_RTN.md_config
-export const AUTO_LOGIN_OPS: readonly MdConfigOp[] = CLEAR_BY_RTN.auto_login
 
 // 全量 op（供测试断言「每个 op 都登记了清理归属」，漏登记会在 spec 中暴露）
 export const MD_CONFIG_ALL_OPS: readonly MdConfigOp[] = Object.keys(OP_LABELS) as MdConfigOp[]
