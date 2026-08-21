@@ -46,6 +46,11 @@ jobs:
         shell: pwsh
         run: .\scripts\test.ps1
 
+      - name: Frontend Type Check
+        shell: pwsh
+        working-directory: apps/webui/frontend
+        run: npm run type-check
+
       - name: Frontend Tests
         shell: pwsh
         working-directory: apps/webui/frontend
@@ -95,6 +100,10 @@ jobs:
 
       - name: C++ Tests (incl. integration smoke)
         run: ./scripts/test.sh --config release
+
+      - name: Frontend Type Check
+        working-directory: apps/webui/frontend
+        run: npm run type-check
 
       - name: Frontend Tests
         working-directory: apps/webui/frontend
