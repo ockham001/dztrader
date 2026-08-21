@@ -91,9 +91,7 @@ void MarketSourceCtrl::create(const drogon::HttpRequestPtr& req,
     }
     int64_t const id = repo_->create_market_source(source_type, source_name, display_name);
     auto source = repo_->get_market_source(id);
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("market_sources");
-    }
+    notifier_.broadcast_data_changed("market_sources");
     callback(json_response(drogon::k201Created, market_source_detail(*source)));
 }
 
@@ -126,9 +124,7 @@ void MarketSourceCtrl::update(const drogon::HttpRequestPtr& req,
         return;
     }
     auto updated = repo_->get_market_source(id);
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("market_sources");  // 契约 rest §2.3: 多客户端列表同步
-    }
+    notifier_.broadcast_data_changed("market_sources");  // 契约 rest §2.3: 多客户端列表同步
     callback(json_response(drogon::k200OK, market_source_detail(*updated)));
 }
 
@@ -171,9 +167,7 @@ void MarketSourceCtrl::remove(const drogon::HttpRequestPtr& req,
     // 可从 available 列表重新添加（create 复用行并复位 is_added=1）
     repo_->set_market_source_added(id, false);
     // 保留 DB 主表记录 (market_sources 行); 不调用 repo_->delete_market_source(id)
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("market_sources");  // 列表条目消失（is_added=0）
-    }
+    notifier_.broadcast_data_changed("market_sources");  // 列表条目消失（is_added=0）
     SPDLOG_INFO("remove dispatched | source_id={} process={} (db kept)", id, process_name);
     callback(json_response(drogon::k200OK, {{"ok", true}, {"id", id}}));
 }
@@ -190,21 +184,28 @@ void MarketSourceCtrl::login(const drogon::HttpRequestPtr& req,
         return;
     }
     auto source = repo_->get_market_source(id);
-    if (!source.has_value()) {
-        callback(error_response(drogon::k404NotFound, "market source not found"));
-        return;
-    }
-    // SHM 下发前必须检查 dzmd_ctp 在镜像中是否 running, 避免写入无人接收
-    if (!is_process_running_in_mirror(id)) {
-        SPDLOG_WARN("login rejected: process not running | id={}", id);
-        callback(error_response(drogon::k503ServiceUnavailable,
-                                 "process not running, cannot send md_connect"));
-        return;
-    }
-    if (!shm_writer_ || !shm_writer_->is_ready()) {
-        SPDLOG_WARN("shm not available, cannot send md_connect | source={}", source->source_name);
-        callback(error_response(drogon::k503ServiceUnavailable, "shm not available"));
-        return;
+    const std::string source_name = source.has_value() ? source->source_name : std::string{};
+    // 共享守卫（control_guard.h，与 WS md_connect 同一处决策）；source_valid 已由上方 404 兜底
+    const bool writer_ready = shm_writer_ && shm_writer_->is_ready();
+    const bool process_running = is_process_running_in_mirror(id);
+    switch (evaluate_control_guard(true, source.has_value(), writer_ready, process_running)) {
+        case ControlGuard::NotAdmin:  // 理论不可达：入口已拦截
+            callback(error_response(drogon::k403Forbidden, "forbidden"));
+            return;
+        case ControlGuard::SourceInvalid:
+            callback(error_response(drogon::k404NotFound, "market source not found"));
+            return;
+        case ControlGuard::ChannelUnavailable:
+            SPDLOG_WARN("shm not available, cannot send md_connect | source={}", source_name);
+            callback(error_response(drogon::k503ServiceUnavailable, "shm not available"));
+            return;
+        case ControlGuard::ProcessNotRunning:
+            SPDLOG_WARN("login rejected: process not running | id={}", id);
+            callback(error_response(drogon::k503ServiceUnavailable,
+                                    "process not running, cannot send md_connect"));
+            return;
+        case ControlGuard::Ok:
+            break;
     }
     // 契约 rest §1: 写入事件通道失败 -> 503（不再 200 {ok:false}，避免前端 pending 悬挂至超时）
     if (!shm_writer_->write_md_connect(source->source_name)) {
@@ -225,20 +226,28 @@ void MarketSourceCtrl::logout(const drogon::HttpRequestPtr& req,
         return;
     }
     auto source = repo_->get_market_source(id);
-    if (!source.has_value()) {
-        callback(error_response(drogon::k404NotFound, "market source not found"));
-        return;
-    }
-    if (!is_process_running_in_mirror(id)) {
-        SPDLOG_WARN("logout rejected: process not running | id={}", id);
-        callback(error_response(drogon::k503ServiceUnavailable,
-                                 "process not running, cannot send md_disconnect"));
-        return;
-    }
-    if (!shm_writer_ || !shm_writer_->is_ready()) {
-        SPDLOG_WARN("shm not available, cannot send md_disconnect | source={}", source->source_name);
-        callback(error_response(drogon::k503ServiceUnavailable, "shm not available"));
-        return;
+    const std::string source_name = source.has_value() ? source->source_name : std::string{};
+    // 共享守卫（control_guard.h，与 WS md_disconnect 同一处决策）
+    const bool writer_ready = shm_writer_ && shm_writer_->is_ready();
+    const bool process_running = is_process_running_in_mirror(id);
+    switch (evaluate_control_guard(true, source.has_value(), writer_ready, process_running)) {
+        case ControlGuard::NotAdmin:  // 理论不可达：入口已拦截
+            callback(error_response(drogon::k403Forbidden, "forbidden"));
+            return;
+        case ControlGuard::SourceInvalid:
+            callback(error_response(drogon::k404NotFound, "market source not found"));
+            return;
+        case ControlGuard::ChannelUnavailable:
+            SPDLOG_WARN("shm not available, cannot send md_disconnect | source={}", source_name);
+            callback(error_response(drogon::k503ServiceUnavailable, "shm not available"));
+            return;
+        case ControlGuard::ProcessNotRunning:
+            SPDLOG_WARN("logout rejected: process not running | id={}", id);
+            callback(error_response(drogon::k503ServiceUnavailable,
+                                    "process not running, cannot send md_disconnect"));
+            return;
+        case ControlGuard::Ok:
+            break;
     }
     // 契约 rest §1: 写入事件通道失败 -> 503（不再 200 {ok:false}，避免前端 pending 悬挂至超时）
     if (!shm_writer_->write_md_disconnect(source->source_name)) {

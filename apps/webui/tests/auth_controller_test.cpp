@@ -3,6 +3,7 @@
 #include "repository.h"
 #include "jwt.h"
 #include "config.h"
+#include "fake_data_change_notifier.h"
 
 #include <nlohmann/json.hpp>
 #include <memory>
@@ -15,6 +16,7 @@ class AuthControllerTest : public ::testing::Test {
 protected:
     std::shared_ptr<Repository> repo_;
     std::shared_ptr<WebuiConfig> cfg_;
+    std::shared_ptr<FakeDataChangeNotifier> notifier_;
     std::shared_ptr<LoginCtrl> ctrl_;
 
     void SetUp() override {
@@ -24,9 +26,10 @@ protected:
         cfg_->token_ttl_sec = 3600;
         cfg_->admin_username = "admin";
         cfg_->admin_password = "admin_pass";
+        notifier_ = std::make_shared<FakeDataChangeNotifier>();
         // Create a test user with the default security config (lockout enabled, max=5, dur=900)
         repo_->create_user("testuser", "Test User", "test@test.com", "password123", "user");
-        ctrl_ = std::make_shared<LoginCtrl>(cfg_, repo_);
+        ctrl_ = std::make_shared<LoginCtrl>(cfg_, repo_, *notifier_);
     }
 
     drogon::HttpResponsePtr do_login(const std::string& username, const std::string& password) {

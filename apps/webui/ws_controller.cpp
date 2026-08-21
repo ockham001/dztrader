@@ -92,9 +92,7 @@ void WsController::handleNewConnection(const drogon::HttpRequestPtr& req,
             SPDLOG_DEBUG("update online status failed, ignored | user={}", user_id);
         }
     }
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("users");
-    }
+    broadcast_data_changed("users");
 
     // 默认密码告警:仅 admin 用户、当前是默认密码、且未确认时推送
     if (cfg_.admin_password_is_default && repo_) {
@@ -165,9 +163,7 @@ void WsController::handleConnectionClosed(const drogon::WebSocketConnectionPtr& 
             // 吞因：下线状态写 DB 失败不阻断连接关闭流程（尽力而为）
             SPDLOG_DEBUG("update offline status failed, ignored | user={}", username);
         }
-        if (g_broadcast_data_changed) {
-            g_broadcast_data_changed("users");
-        }
+        broadcast_data_changed("users");
     }
 }
 
@@ -303,9 +299,6 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
     }
 }
 
-/// 全局广播函数指针定义
-BroadcastDataChangedFn g_broadcast_data_changed;
-
 void WsController::broadcast_data_changed(const std::string& scope) {
     const nlohmann::json msg = {{"type", "data_changed"}, {"payload", {{"scope", scope}}}};
     broadcast_to_all(msg.dump());
@@ -333,9 +326,6 @@ void WsController::broadcast_frame(const std::string& type,
     }
     broadcast_to_all(msg.dump());
 }
-
-/// 全局踢人函数指针定义
-KickUserFn g_kick_user;
 
 void WsController::kick_user(const std::string& username) {
     if (username.empty()) {

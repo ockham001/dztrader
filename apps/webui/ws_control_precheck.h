@@ -6,29 +6,36 @@
 
 #include <dztrader/platform/process.h>
 #include <nlohmann/json.hpp>
+#include "control_guard.h"
 
 namespace dztrader::webui {
 
 /// WS md_connect/md_disconnect 预检结果（契约 webui-ws §3：admin + source 非空 +
 /// 事件通道可用 + 目标进程镜像 Running）。从 handle_control_message 提取为纯函数以便单测
 /// （WsController 依赖 drogon 连接对象无法脱离框架实例化）。
+/// 判定顺序收敛到共享 `evaluate_control_guard`（control_guard.h），此处仅做
+/// WS 语义映射 + 消息文本（SourceInvalid/ChannelUnavailable 归并为 InvalidSource，
+/// 与 WS 原有"invalid source or writer not ready"消息一致）。
 enum class MdConnectPrecheck {
     Ok,                  ///< 全部通过，可写帧
     NotAdmin,            ///< 当前连接非 admin
-    InvalidSource,       ///< source 缺失或事件通道不可用
+    InvalidSource,       ///< source 缺失 或 事件通道不可用
     ProcessNotRunning,   ///< 目标进程镜像非 Running（含镜像未就绪，保守拒绝）
 };
 
-/// 逐道守卫判定（顺序与 REST /login /logout 一致）。writer_ready = event_writer_ 可用。
+/// 逐道守卫判定（与 REST /login /logout 一致）。writer_ready = event_writer_ 可用。
 inline MdConnectPrecheck evaluate_md_connect_precheck(
     bool is_admin, const std::string& source, bool writer_ready,
     const std::optional<dztrader::platform::ChildState>& state) {
-    if (!is_admin) return MdConnectPrecheck::NotAdmin;
-    if (source.empty() || !writer_ready) return MdConnectPrecheck::InvalidSource;
-    if (!state.has_value() || *state != dztrader::platform::ChildState::Running) {
-        return MdConnectPrecheck::ProcessNotRunning;
+    const bool process_running = state.has_value() && *state == dztrader::platform::ChildState::Running;
+    switch (evaluate_control_guard(is_admin, !source.empty(), writer_ready, process_running)) {
+        case ControlGuard::NotAdmin: return MdConnectPrecheck::NotAdmin;
+        case ControlGuard::SourceInvalid:
+        case ControlGuard::ChannelUnavailable: return MdConnectPrecheck::InvalidSource;
+        case ControlGuard::ProcessNotRunning: return MdConnectPrecheck::ProcessNotRunning;
+        case ControlGuard::Ok: return MdConnectPrecheck::Ok;
     }
-    return MdConnectPrecheck::Ok;
+    return MdConnectPrecheck::InvalidSource;
 }
 
 /// 预检失败时回给前端的 error message（契约 webui-ws §2.3/§3）

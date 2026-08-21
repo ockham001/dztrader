@@ -10,7 +10,9 @@ namespace dztrader::webui {
 using Json = nlohmann::json;
 
 // ---------------------------------------------------------------------------
-// guard_process_dispatch: 下发守卫（dispatch_op 与 set_auto_login 共用）
+// guard_process_dispatch: 下发守卫（dispatch_op / set_auto_login / set_shm_config 共用）
+// 决策收敛到共享纯函数 evaluate_control_guard（control_guard.h，REST/WS 双通道同一处），
+// 此处仅做 REST 通道的输入取值 + 结果到 HTTP 状态/消息的映射。
 // 检查: source 存在 (404) + 进程在镜像中 running (503) + shm_writer 就绪 (503)
 // 成功: 返回 nullopt, 通过 process_name 输出目标进程名
 // 失败: 返回 HTTP 错误响应 (caller 直接 callback 返回)
@@ -26,16 +28,27 @@ std::optional<drogon::HttpResponsePtr> MarketSourceCtrl::guard_process_dispatch(
     }
     process_name = process_name_for_source_type(source->source_type);
 
-    if (!is_process_running_in_mirror(source_id)) {
-        SPDLOG_WARN("op dispatch rejected: dzmd_ctp not running | source_id={}", source_id);
-        return error_response(drogon::k503ServiceUnavailable,
-                              "dzmd_ctp not running, cannot apply config");
-    }
-
-    if (!shm_writer_ || !shm_writer_->is_ready()) {
-        SPDLOG_ERROR("{} SHM writer not available | source_id={} process={}",
-                     log_label, source_id, process_name);
-        return error_response(drogon::k503ServiceUnavailable, "shm writer not available");
+    // admin 已由各调用方入口先 403 校验，此处固定传 true；
+    // source_valid/writer_ready/process_running 取值与 REST 语义对齐
+    const bool writer_ready = shm_writer_ && shm_writer_->is_ready();
+    const bool process_running = is_process_running_in_mirror(source_id);
+    switch (evaluate_control_guard(true, true, writer_ready, process_running)) {
+        case ControlGuard::Ok:
+            return std::nullopt;
+        case ControlGuard::NotAdmin:
+            // 理论不可达：调用方入口已拦截非 admin
+            return error_response(drogon::k403Forbidden, "forbidden");
+        case ControlGuard::ChannelUnavailable:
+            SPDLOG_ERROR("{} SHM writer not available | source_id={} process={}",
+                         log_label, source_id, process_name);
+            return error_response(drogon::k503ServiceUnavailable, "shm writer not available");
+        case ControlGuard::ProcessNotRunning:
+            SPDLOG_WARN("op dispatch rejected: dzmd_ctp not running | source_id={}", source_id);
+            return error_response(drogon::k503ServiceUnavailable,
+                                  "dzmd_ctp not running, cannot apply config");
+        case ControlGuard::SourceInvalid:
+            // 已在上文 404 拦截，理论不可达
+            return error_response(drogon::k404NotFound, "market source not found");
     }
     return std::nullopt;
 }

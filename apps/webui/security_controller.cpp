@@ -100,9 +100,7 @@ void SecurityCtrl::set_config(const drogon::HttpRequestPtr& req,
         {"max_failed_attempts", config.max_failed_attempts},
         {"lockout_duration_sec", config.lockout_duration_sec},
     };
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("security_config");
-    }
+    notifier_.broadcast_data_changed("security_config");
     callback(json_response(drogon::k200OK, resp));
 }
 
@@ -159,16 +157,12 @@ void SecurityCtrl::add_blacklist(const drogon::HttpRequestPtr& req,
     auto entries = repo_->list_blacklist();
     for (const auto& e : entries) {
         if (e.ip == ip) {
-            if (g_broadcast_data_changed) {
-                g_broadcast_data_changed("blacklist");
-            }
+            notifier_.broadcast_data_changed("blacklist");
             callback(json_response(drogon::k201Created, ip_entry_to_json(e)));
             return;
         }
     }
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("blacklist");
-    }
+    notifier_.broadcast_data_changed("blacklist");
     callback(json_response(drogon::k201Created, Json{{"ip", ip}, {"reason", reason}, {"source", "manual"}}));
 }
 
@@ -187,9 +181,7 @@ void SecurityCtrl::remove_blacklist(const drogon::HttpRequestPtr& req,
         callback(error_response(drogon::k404NotFound, "entry not found"));
         return;
     }
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("blacklist");
-    }
+    notifier_.broadcast_data_changed("blacklist");
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setStatusCode(drogon::k204NoContent);
     callback(resp);
@@ -247,16 +239,12 @@ void SecurityCtrl::add_whitelist(const drogon::HttpRequestPtr& req,
     auto entries = repo_->list_whitelist();
     for (const auto& e : entries) {
         if (e.ip == ip) {
-            if (g_broadcast_data_changed) {
-                g_broadcast_data_changed("whitelist");
-            }
+            notifier_.broadcast_data_changed("whitelist");
             callback(json_response(drogon::k201Created, ip_entry_to_json(e)));
             return;
         }
     }
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("whitelist");
-    }
+    notifier_.broadcast_data_changed("whitelist");
     callback(json_response(drogon::k201Created, Json{{"ip", ip}, {"reason", reason}}));
 }
 
@@ -275,9 +263,7 @@ void SecurityCtrl::remove_whitelist(const drogon::HttpRequestPtr& req,
         callback(error_response(drogon::k404NotFound, "entry not found"));
         return;
     }
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("whitelist");
-    }
+    notifier_.broadcast_data_changed("whitelist");
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setStatusCode(drogon::k204NoContent);
     callback(resp);

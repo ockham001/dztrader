@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "security_controller.h"
 #include "repository.h"
+#include "fake_data_change_notifier.h"
 
 #include <nlohmann/json.hpp>
 #include <memory>
@@ -12,15 +13,17 @@ namespace {
 class SecurityControllerTest : public ::testing::Test {
 protected:
     std::shared_ptr<Repository> repo_;
+    std::shared_ptr<FakeDataChangeNotifier> notifier_;
     std::shared_ptr<SecurityCtrl> ctrl_;
     int64_t admin_id_ = 0;
     int64_t user_id_ = 0;
 
     void SetUp() override {
         repo_ = std::make_shared<Repository>(":memory:");
+        notifier_ = std::make_shared<FakeDataChangeNotifier>();
         admin_id_ = repo_->create_user("admin", "Administrator", "admin@test.com", "pass", "admin");
         user_id_ = repo_->create_user("regular", "Regular User", "reg@test.com", "pass", "user");
-        ctrl_ = std::make_shared<SecurityCtrl>(repo_);
+        ctrl_ = std::make_shared<SecurityCtrl>(repo_, *notifier_);
     }
 
     drogon::HttpRequestPtr admin_req() {

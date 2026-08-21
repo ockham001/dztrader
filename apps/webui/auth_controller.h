@@ -7,13 +7,14 @@
 #include "config.h"
 #include "repository.h"
 #include "controller_base.h"
+#include "data_change_notifier.h"
 
 namespace dztrader::webui {
 
 class LoginCtrl : public drogon::HttpController<LoginCtrl, false>, public ControllerBase {
 public:
-    LoginCtrl(std::shared_ptr<WebuiConfig> cfg, std::shared_ptr<Repository> repo)
-        : ControllerBase(std::move(repo)), cfg_(std::move(cfg)) {}
+    LoginCtrl(std::shared_ptr<WebuiConfig> cfg, std::shared_ptr<Repository> repo, DataChangeNotifier& notifier)
+        : ControllerBase(std::move(repo)), cfg_(std::move(cfg)), notifier_(notifier) {}
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(LoginCtrl::login, "/api/login", drogon::Post);
@@ -24,6 +25,7 @@ public:
 
 private:
     std::shared_ptr<WebuiConfig> cfg_;
+    DataChangeNotifier& notifier_;
 };
 
 }  // namespace dztrader::webui

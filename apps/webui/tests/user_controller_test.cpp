@@ -1,7 +1,8 @@
 #include <gtest/gtest.h>
 #include "user_controller.h"
 #include "repository.h"
-#include "ws_controller.h"  // 声明 g_kick_user（角色降级踢连接测试用）
+#include "ws_controller.h"
+#include "fake_data_change_notifier.h"
 
 #include <nlohmann/json.hpp>
 #include <memory>
@@ -14,15 +15,17 @@ class UserControllerTest : public ::testing::Test {
 protected:
     std::shared_ptr<Repository> repo_;
     WebuiConfig cfg_;
+    std::shared_ptr<FakeDataChangeNotifier> notifier_;
     std::shared_ptr<UserCtrl> ctrl_;
     int64_t admin_id_ = 0;
     int64_t user_id_ = 0;
 
     void SetUp() override {
         repo_ = std::make_shared<Repository>(":memory:");
+        notifier_ = std::make_shared<FakeDataChangeNotifier>();
         admin_id_ = repo_->create_user("admin", "Administrator", "admin@test.com", "pass", "admin");
         user_id_ = repo_->create_user("regular", "Regular User", "reg@test.com", "pass", "user");
-        ctrl_ = std::make_shared<UserCtrl>(repo_, cfg_);
+        ctrl_ = std::make_shared<UserCtrl>(repo_, cfg_, *notifier_);
     }
 
     /// Build a request carrying an admin JWT identity.
@@ -159,39 +162,30 @@ TEST_F(UserControllerTest, UpdateNonexistentReturns404) {
 
 TEST_F(UserControllerTest, UpdateDemotingAdminToUserKicksUser) {
     // 目标为 admin（username "admin"）；降级为 user 后应触发踢人
-    std::vector<std::string> kicked;
-    dztrader::webui::g_kick_user = [&kicked](const std::string& u) { kicked.push_back(u); };
     auto req = admin_req();
     req->setBody(R"({"display_name":"Administrator","email":"admin@test.com","role":"user"})");
     auto resp = invoke(&UserCtrl::update, req, admin_id_);
-    dztrader::webui::g_kick_user = nullptr;  // 复位全局指针，防污染其他用例
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
-    ASSERT_EQ(kicked.size(), 1u);
-    EXPECT_EQ(kicked[0], "admin");
+    ASSERT_EQ(notifier_->kicked.size(), 1u);
+    EXPECT_EQ(notifier_->kicked[0], "admin");
 }
 
 TEST_F(UserControllerTest, UpdateKeepingNonAdminRoleDoesNotKick) {
     // 普通用户改 display_name 但保持 user 角色：权限未变，不应踢
-    std::vector<std::string> kicked;
-    dztrader::webui::g_kick_user = [&kicked](const std::string& u) { kicked.push_back(u); };
     auto req = admin_req();
     req->setBody(R"({"display_name":"Renamed","email":"reg@test.com","role":"user"})");
     auto resp = invoke(&UserCtrl::update, req, user_id_);
-    dztrader::webui::g_kick_user = nullptr;
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
-    EXPECT_TRUE(kicked.empty());
+    EXPECT_TRUE(notifier_->kicked.empty());
 }
 
 TEST_F(UserControllerTest, UpdateKeepingAdminRoleDoesNotKick) {
     // 目标为 admin 且保持 admin 角色：权限未降级，不应误踢
-    std::vector<std::string> kicked;
-    dztrader::webui::g_kick_user = [&kicked](const std::string& u) { kicked.push_back(u); };
     auto req = admin_req();
     req->setBody(R"({"display_name":"Administrator","email":"admin@test.com","role":"admin"})");
     auto resp = invoke(&UserCtrl::update, req, admin_id_);
-    dztrader::webui::g_kick_user = nullptr;
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
-    EXPECT_TRUE(kicked.empty());
+    EXPECT_TRUE(notifier_->kicked.empty());
 }
 
 // ---- remove ----

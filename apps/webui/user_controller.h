@@ -7,13 +7,14 @@
 #include "repository.h"
 #include "config.h"
 #include "controller_base.h"
+#include "data_change_notifier.h"
 
 namespace dztrader::webui {
 
 class UserCtrl : public drogon::HttpController<UserCtrl, false>, public ControllerBase {
 public:
-    UserCtrl(std::shared_ptr<Repository> repo, WebuiConfig cfg)
-        : ControllerBase(std::move(repo)), cfg_(std::move(cfg)) {}
+    UserCtrl(std::shared_ptr<Repository> repo, WebuiConfig cfg, DataChangeNotifier& notifier)
+        : ControllerBase(std::move(repo)), cfg_(std::move(cfg)), notifier_(notifier) {}
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(UserCtrl::list, "/api/user", drogon::Get);
@@ -51,6 +52,7 @@ public:
 
 private:
     WebuiConfig cfg_;
+    DataChangeNotifier& notifier_;
 
     static nlohmann::json permission_to_json(const Permission& p);
 };

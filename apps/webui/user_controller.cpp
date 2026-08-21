@@ -131,9 +131,7 @@ void UserCtrl::create(const drogon::HttpRequestPtr& req,
 
     int64_t const id = repo_->create_user(username, display_name, email, password, role);
     auto user = repo_->get_user_by_id(id);
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("users");
-    }
+    notifier_.broadcast_data_changed("users");
     callback(json_response(drogon::k201Created, user_to_json(*user)));
 }
 
@@ -175,14 +173,12 @@ void UserCtrl::update(const drogon::HttpRequestPtr& req,
         return;
     }
 
-    if (was_admin && role != "admin" && g_kick_user) {
-        g_kick_user(before->username);
+    if (was_admin && role != "admin") {
+        notifier_.kick_user(before->username);
     }
 
     auto user = repo_->get_user_by_id(id);
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("users");
-    }
+    notifier_.broadcast_data_changed("users");
     callback(json_response(drogon::k200OK, user_to_json(*user)));
 }
 
@@ -227,15 +223,11 @@ void UserCtrl::remove(const drogon::HttpRequestPtr& req,
     }
 
     // 强制断开被删用户的所有 WS 连接
-    if (g_kick_user) {
-        g_kick_user(target->username);
-    }
+    notifier_.kick_user(target->username);
 
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setStatusCode(drogon::k204NoContent);
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("users");
-    }
+    notifier_.broadcast_data_changed("users");
     callback(resp);
 }
 
@@ -282,9 +274,7 @@ void UserCtrl::update_status(
     if (status == "disabled") {
         repo_->update_user_status(id, "disabled");
         // 强制断开被禁用用户的所有 WS 连接（契约 rest §2.2：禁用时强制断开）
-        if (g_kick_user) {
-            g_kick_user(target->username);
-        }
+        notifier_.kick_user(target->username);
     } else if (status == "enabled") {
         repo_->update_user_status(id, "offline");
     } else if (status == "locked") {
@@ -299,9 +289,7 @@ void UserCtrl::update_status(
     }
 
     auto user = repo_->get_user_by_id(id);
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("users");
-    }
+    notifier_.broadcast_data_changed("users");
     callback(json_response(drogon::k200OK, user_to_json(*user)));
 }
 
@@ -416,9 +404,7 @@ void UserCtrl::update_permissions(
     for (const auto& p : perms) {
         arr.push_back(permission_to_json(p));
     }
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("users");
-    }
+    notifier_.broadcast_data_changed("users");
     callback(json_response(drogon::k200OK, arr));
 }
 

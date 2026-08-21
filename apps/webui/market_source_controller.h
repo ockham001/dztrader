@@ -8,6 +8,8 @@
 #include "shm_writer.h"
 #include "process_mirror.h"
 #include "controller_base.h"
+#include "data_change_notifier.h"
+#include "control_guard.h"
 
 namespace dztrader::webui {
 
@@ -23,10 +25,12 @@ class MarketSourceCtrl : public drogon::HttpController<MarketSourceCtrl, false>,
 public:
     MarketSourceCtrl(std::shared_ptr<Repository> repo,
                      std::shared_ptr<ShmWriter> shm_writer,
-                     std::shared_ptr<ProcessMirror> process_mirror)
+                     std::shared_ptr<ProcessMirror> process_mirror,
+                     DataChangeNotifier& notifier)
         : ControllerBase(std::move(repo)),
           shm_writer_(std::move(shm_writer)),
-          process_mirror_(std::move(process_mirror)) {}
+          process_mirror_(std::move(process_mirror)),
+          notifier_(notifier) {}
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(MarketSourceCtrl::list_available, "/api/market-sources/available", drogon::Get);
@@ -140,6 +144,7 @@ public:
 private:
     std::shared_ptr<ShmWriter> shm_writer_;
     std::shared_ptr<ProcessMirror> process_mirror_;
+    DataChangeNotifier& notifier_;
 
     nlohmann::json market_source_detail(const MarketSource& s);
     static nlohmann::json market_source_to_json(const MarketSource& s);

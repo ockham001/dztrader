@@ -199,17 +199,28 @@ int main(int argc, char* argv[]) {
         },
         {drogon::Get});
 
+    // 注册 WebSocket 控制器
+    // P2 任务①：WsController 实现 DataChangeNotifier 薄接口，先于业务 controller 构造，
+    // 作为数据变更通知/踢人能力注入各 controller（取代原全局函数指针）
+    auto ws_ctrl = std::make_shared<dztrader::webui::WsController>(
+        cfg, repo, event_writer, self_log,
+        *mirror_store, process_mirror);
+    drogon::app().registerController(ws_ctrl);
+
     // 注册 /api/login 控制器
     // 共享 WebuiConfig 持有者: SettingsCtrl 热生效 token_ttl_sec 时 LoginCtrl 同步可见
     auto webui_cfg_holder = std::make_shared<dztrader::webui::WebuiConfig>(cfg);
-    auto login_ctrl = std::make_shared<dztrader::webui::LoginCtrl>(webui_cfg_holder, repo);
+    auto login_ctrl = std::make_shared<dztrader::webui::LoginCtrl>(webui_cfg_holder, repo, *ws_ctrl);
     drogon::app().registerController(login_ctrl);
 
-    // 注册其他业务控制器（Task 3、Task 4）
-    drogon::app().registerController(std::make_shared<dztrader::webui::UserCtrl>(repo, cfg));
-    drogon::app().registerController(std::make_shared<dztrader::webui::SecurityCtrl>(repo));
+    // 注册其他业务控制器（Task 3、Task 4），注入 DataChangeNotifier（数据变更通知/踢人）
     drogon::app().registerController(
-        std::make_shared<dztrader::webui::MarketSourceCtrl>(repo, shm_writer, process_mirror));
+        std::make_shared<dztrader::webui::UserCtrl>(repo, cfg, *ws_ctrl));
+    drogon::app().registerController(
+        std::make_shared<dztrader::webui::SecurityCtrl>(repo, *ws_ctrl));
+    drogon::app().registerController(
+        std::make_shared<dztrader::webui::MarketSourceCtrl>(
+            repo, shm_writer, process_mirror, *ws_ctrl));
     drogon::app().registerController(
         std::make_shared<dztrader::webui::ProcessCtrl>(repo, process_mirror));
 
@@ -266,12 +277,6 @@ int main(int argc, char* argv[]) {
             req->getAttributes()->insert("user_id", user_id);
             ccb();
         });
-
-    // 注册 WebSocket 控制器
-    auto ws_ctrl = std::make_shared<dztrader::webui::WsController>(
-        cfg, repo, event_writer, self_log,
-        *mirror_store, process_mirror);
-    drogon::app().registerController(ws_ctrl);
 
     // ===== 领域服务装配（镜像 + 广播，行为等价搬迁自 WsController::handle_*） =====
     // LogDomainService 归并 log_control（P4 Task 6）：持有 self_log + event_writer，
@@ -366,16 +371,6 @@ int main(int argc, char* argv[]) {
     // 生命周期：main 栈上 router 先声明、event_monitor 后声明（析构相反），
     // 监听线程在 drogon run 返回后经 event_monitor->stop() join，无线程在 router 析构后访问
     auto event_monitor = std::make_unique<dztrader::webui::EventMonitor>(shm_dir, router);
-
-    // 绑定全局广播函数指针：业务 controller 数据变更时通过此指针通知所有 WS 客户端
-    dztrader::webui::g_broadcast_data_changed = [ws_ctrl](const std::string& scope) {
-        ws_ctrl->broadcast_data_changed(scope);
-    };
-
-    // 绑定全局踢人函数指针：用户被删除/禁用时通过此指针强制断开其 WS 连接
-    dztrader::webui::g_kick_user = [ws_ctrl](const std::string& username) {
-        ws_ctrl->kick_user(username);
-    };
 
     // 启动事件通道监听线程（替代原 50ms 轮询的 event channel 部分）
     // EventMonitor 由 main 持有并直调（Task 8 去掉 WsController 委托链）

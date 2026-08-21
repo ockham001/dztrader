@@ -8,6 +8,22 @@ namespace {
 
 using Opt = std::optional<platform::ChildState>;
 
+// 共享守卫纯函数（control_guard.h）：REST/WS 双通道唯一决策处，顺序 admin → source → writer → 镜像 Running
+TEST(ControlGuardTest, SharedGuardOrderAndResults) {
+    // admin 未通过 -> NotAdmin
+    EXPECT_EQ(evaluate_control_guard(false, true, true, true), ControlGuard::NotAdmin);
+    // source 缺失 -> SourceInvalid
+    EXPECT_EQ(evaluate_control_guard(true, false, true, true), ControlGuard::SourceInvalid);
+    // writer 不可用 -> ChannelUnavailable（放行 source，阻塞通道）
+    EXPECT_EQ(evaluate_control_guard(true, true, false, true), ControlGuard::ChannelUnavailable);
+    // 进程镜像非 Running -> ProcessNotRunning
+    EXPECT_EQ(evaluate_control_guard(true, true, true, false), ControlGuard::ProcessNotRunning);
+    // 全部通过 -> Ok
+    EXPECT_EQ(evaluate_control_guard(true, true, true, true), ControlGuard::Ok);
+    // 多路同时失败：admin 优先于其余（守卫的短路顺序锚定第一失败）
+    EXPECT_EQ(evaluate_control_guard(false, false, false, false), ControlGuard::NotAdmin);
+}
+
 // 契约 webui-ws §3（修订）: 守卫顺序 admin -> source/writer -> 镜像 Running
 TEST(WsControlPrecheckTest, MdConnectPrecheckOrderAndResults) {
     EXPECT_EQ(evaluate_md_connect_precheck(false, "dzmd_ctp", true, Opt(platform::ChildState::Running)),

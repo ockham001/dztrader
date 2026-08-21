@@ -75,7 +75,10 @@ foreach(testfile ${WEBUI_TESTS})
         dzweb_obj
         GTest::gtest
     )
-    target_include_directories(dzweb_${testname} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_include_directories(dzweb_${testname} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
     set_target_properties(dzweb_${testname} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR})
     gtest_discover_tests(dzweb_${testname})
 endforeach()

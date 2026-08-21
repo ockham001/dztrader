@@ -3,6 +3,7 @@
 #include "repository.h"
 #include "process_mirror.h"
 #include "ws_controller.h"
+#include "fake_data_change_notifier.h"
 
 #include <nlohmann/json.hpp>
 #include <filesystem>
@@ -22,6 +23,7 @@ protected:
     std::shared_ptr<Repository> repo_;
     std::shared_ptr<ShmWriter> shm_writer_;
     std::shared_ptr<ProcessMirror> process_mirror_;
+    std::shared_ptr<FakeDataChangeNotifier> notifier_;
     std::shared_ptr<MarketSourceCtrl> ctrl_;
     int64_t admin_id_ = 0;
     int64_t user_id_ = 0;
@@ -36,7 +38,8 @@ protected:
         // ProcessMirror: 真实实例, 测试中镜像始终为空 (无 dzmd_ctp 上报)
         // 触发 is_process_running_in_mirror 返回 false, write 路径返回 503
         process_mirror_ = std::make_shared<ProcessMirror>();
-        ctrl_ = std::make_shared<MarketSourceCtrl>(repo_, shm_writer_, process_mirror_);
+        notifier_ = std::make_shared<FakeDataChangeNotifier>();
+        ctrl_ = std::make_shared<MarketSourceCtrl>(repo_, shm_writer_, process_mirror_, *notifier_);
     }
 
     drogon::HttpRequestPtr admin_req() {
@@ -726,43 +729,33 @@ TEST_F(MarketSourceControllerTest, LogoutReturns503WhenWriterNotReady) {
 // ---- data_changed{market_sources} 广播（契约 rest §2.3 修订：列表 DB 真相源的多客户端同步）----
 
 TEST_F(MarketSourceControllerTest, CreateBroadcastsMarketSourcesScope) {
-    std::vector<std::string> scopes;
-    dztrader::webui::g_broadcast_data_changed =
-        [&scopes](const std::string& s) { scopes.push_back(s); };
     auto req = admin_req();
     req->setBody(R"({"source_type":"ctp","source_name":"ctp_bc1","display_name":"X"})");
     auto resp = invoke(&MarketSourceCtrl::create, req);
-    dztrader::webui::g_broadcast_data_changed = nullptr;  // 复位全局指针，防污染其他用例
     EXPECT_EQ(resp->getStatusCode(), drogon::k201Created);
-    ASSERT_EQ(scopes.size(), 1u);
-    EXPECT_EQ(scopes[0], "market_sources");
+    ASSERT_EQ(notifier_->scopes.size(), 1u);
+    EXPECT_EQ(notifier_->scopes[0], "market_sources");
 }
 
 TEST_F(MarketSourceControllerTest, UpdateBroadcastsMarketSourcesScope) {
     const int64_t id = create_source("ctp_bc2");
-    std::vector<std::string> scopes;
-    dztrader::webui::g_broadcast_data_changed =
-        [&scopes](const std::string& s) { scopes.push_back(s); };
+    notifier_->scopes.clear();  // create_source 已广播一次，只统计本次 update 的广播
     auto req = admin_req();
     req->setBody(R"({"display_name":"新名字"})");
     auto resp = invoke(&MarketSourceCtrl::update, req, id);
-    dztrader::webui::g_broadcast_data_changed = nullptr;
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
-    ASSERT_EQ(scopes.size(), 1u);
-    EXPECT_EQ(scopes[0], "market_sources");
+    ASSERT_EQ(notifier_->scopes.size(), 1u);
+    EXPECT_EQ(notifier_->scopes[0], "market_sources");
 }
 
 TEST_F(MarketSourceControllerTest, RemoveNoBroadcastWhenWriteFails) {
     // 503 路径（写帧失败）不得广播——列表条目未变化
     const int64_t id = create_source("ctp_bc3");
-    std::vector<std::string> scopes;
-    dztrader::webui::g_broadcast_data_changed =
-        [&scopes](const std::string& s) { scopes.push_back(s); };
+    notifier_->scopes.clear();  // create_source 已广播一次，统计范围仅限 remove
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::remove, req, id);
-    dztrader::webui::g_broadcast_data_changed = nullptr;
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
-    EXPECT_TRUE(scopes.empty());
+    EXPECT_TRUE(notifier_->scopes.empty());
 }
 
 // ---- shm-config: 空对象 {} = no-op 透传（契约 shm §SET，I7）----
@@ -828,7 +821,8 @@ TEST_F(MarketSourceControllerTest, SetShmConfigEmptyObjectIsNoop_Dispatched200) 
 
     ReadyShmFixture shm;
     shm_writer_ = std::make_shared<ShmWriter>(shm.writer);
-    ctrl_ = std::make_shared<MarketSourceCtrl>(repo_, shm_writer_, process_mirror_);
+    notifier_ = std::make_shared<FakeDataChangeNotifier>();
+    ctrl_ = std::make_shared<MarketSourceCtrl>(repo_, shm_writer_, process_mirror_, *notifier_);
 
     auto req = admin_req();
     req->setBody(R"({})");

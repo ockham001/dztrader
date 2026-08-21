@@ -8,26 +8,21 @@
 #include <unordered_map>
 #include <string>
 #include <memory>
-#include <functional>
 #include "config.h"
 #include "log_service.h"
 #include "repository.h"
 #include "mirror_store.h"
 #include "process_mirror.h"
 #include "ws_broadcaster.h"
+#include "data_change_notifier.h"
 
 namespace dztrader::webui {
 
-/// 全局广播函数指针：数据变更时由业务 controller 调用，通知所有 WS 客户端刷新
-/// main.cpp 创建 WsController 后绑定此指针
-using BroadcastDataChangedFn = std::function<void(const std::string& scope)>;
-extern BroadcastDataChangedFn g_broadcast_data_changed;
-
-/// 全局踢人函数指针：用户被删除/禁用时强制断开其所有 WS 连接
-using KickUserFn = std::function<void(const std::string& username)>;
-extern KickUserFn g_kick_user;
-
-class WsController : public drogon::WebSocketController<WsController, false>, public WsBroadcaster {
+/// 提供数据变更通知/踢人能力（实现 DataChangeNotifier 薄接口）：
+/// 各业务 controller 构造时注入自身引用（取代原全局函数指针 g_broadcast_data_changed / g_kick_user）
+class WsController : public drogon::WebSocketController<WsController, false>,
+                     public WsBroadcaster,
+                     public DataChangeNotifier {
 public:
     WsController(WebuiConfig cfg,
                  std::shared_ptr<Repository> repo,
@@ -58,10 +53,10 @@ public:
     void on_timer();
 
     /// 数据变更广播：通知所有连接某 scope 的数据已变更，前端收到后 REST 刷新
-    void broadcast_data_changed(const std::string& scope);
+    void broadcast_data_changed(const std::string& scope) override;
 
     /// 强制断开指定用户的所有 WS 连接（用户被删除/禁用时调用）
-    void kick_user(const std::string& username);
+    void kick_user(const std::string& username) override;
 
     /// 实现 WsBroadcaster 薄接口：广播一帧 WS 消息（委托给私有 broadcast_frame）
     void broadcast(const std::string& type,

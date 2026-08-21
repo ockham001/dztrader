@@ -83,21 +83,15 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
             updated->failed_login_count >= config.max_failed_attempts) {
             repo_->lock_user(updated->id, now_epoch + config.lockout_duration_sec);
             repo_->add_login_history(username, client_ip, "web", false, user_agent, "account_locked");
-            if (g_broadcast_data_changed) {
-                g_broadcast_data_changed("login_history");
-            }
-            if (g_broadcast_data_changed) {
-                g_broadcast_data_changed("users");
-            }
+            notifier_.broadcast_data_changed("login_history");
+            notifier_.broadcast_data_changed("users");
             callback(json_response(drogon::k423Locked,
                                    Json{{"error", "account_locked"},
                                         {"locked_until", config.lockout_duration_sec}}));
             return;
         }
         repo_->add_login_history(username, client_ip, "web", false, user_agent, "invalid_credentials");
-        if (g_broadcast_data_changed) {
-            g_broadcast_data_changed("login_history");
-        }
+        notifier_.broadcast_data_changed("login_history");
         callback(error_response(drogon::k401Unauthorized, "invalid_credentials"));
         return;
     }
@@ -106,12 +100,8 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
     repo_->reset_failed_login(username);
     repo_->update_last_login(user->id, client_ip);
     repo_->add_login_history(username, client_ip, "web", true, user_agent);
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("login_history");
-    }
-    if (g_broadcast_data_changed) {
-        g_broadcast_data_changed("users");
-    }
+    notifier_.broadcast_data_changed("login_history");
+    notifier_.broadcast_data_changed("users");
 
     std::string token = jwt_sign(username, cfg_->token_ttl_sec, cfg_->jwt_secret);
     // Re-fetch the user so the response reflects the updated last_login fields

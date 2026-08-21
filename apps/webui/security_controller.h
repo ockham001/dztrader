@@ -6,13 +6,14 @@
 #include <memory>
 #include "repository.h"
 #include "controller_base.h"
+#include "data_change_notifier.h"
 
 namespace dztrader::webui {
 
 class SecurityCtrl : public drogon::HttpController<SecurityCtrl, false>, public ControllerBase {
 public:
-    explicit SecurityCtrl(std::shared_ptr<Repository> repo)
-        : ControllerBase(std::move(repo)) {}
+    SecurityCtrl(std::shared_ptr<Repository> repo, DataChangeNotifier& notifier)
+        : ControllerBase(std::move(repo)), notifier_(notifier) {}
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(SecurityCtrl::get_config, "/api/security/config", drogon::Get);
@@ -51,6 +52,8 @@ public:
                               std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
 private:
+    DataChangeNotifier& notifier_;
+
     static nlohmann::json ip_entry_to_json(const IpEntry& e);
     static nlohmann::json login_history_to_json(const LoginHistoryEntry& h);
 };
