@@ -138,6 +138,39 @@ TEST_F(UserControllerTest, GetNonexistentReturns404) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
 }
 
+// ---- me（角色降级后前端刷新缓存，与后端踢降级用户 WS 连接配套）----
+
+TEST_F(UserControllerTest, MeReturnsOwnInfoForNonAdmin) {
+    // 任意已认证用户（非 admin）可访问自身信息，无需 admin
+    auto req = user_req();  // attribute user_id = "regular"
+    auto resp = invoke(&UserCtrl::me, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    auto body = parse_body(resp);
+    EXPECT_EQ(body["username"].get<std::string>(), "regular");
+    EXPECT_EQ(body["role"].get<std::string>(), "user");
+}
+
+TEST_F(UserControllerTest, MeReturnsLatestRoleAfterDemotion) {
+    // 模拟角色降级：regular 从 user 升为 admin，前端 me 能取到最新角色
+    auto admin_req_ = admin_req();
+    admin_req_->setBody(R"({"display_name":"Regular User","email":"reg@test.com","role":"admin"})");
+    auto resp = invoke(&UserCtrl::update, admin_req_, user_id_);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    // 以 regular 身份再查 me：应返回最新 role=admin（DB 真相源）
+    auto req = user_req();
+    auto mine = invoke(&UserCtrl::me, req);
+    auto body = parse_body(mine);
+    EXPECT_EQ(body["role"].get<std::string>(), "admin");
+}
+
+TEST_F(UserControllerTest, MeWithoutAuthContextReturns403) {
+    // 无 user_id attribute（未注入 JWT 身份）→ 403
+    auto req = drogon::HttpRequest::newHttpRequest();
+    auto resp = invoke(&UserCtrl::me, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+}
+
 // ---- update ----
 
 TEST_F(UserControllerTest, UpdateUser) {

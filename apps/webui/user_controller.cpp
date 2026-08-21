@@ -95,6 +95,26 @@ void UserCtrl::get(const drogon::HttpRequestPtr& req,
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/user/me - 当前登录用户自身信息（任意已认证用户）
+// 角色降级后前端借此刷新已缓存角色（isAdmin 实时联动），与后端踢降级用户 WS 连接配套。
+// JWT pre-handling 已向 attribute 注入 user_id（= 当前登录用户名，见 main.cpp）。
+// ---------------------------------------------------------------------------
+void UserCtrl::me(const drogon::HttpRequestPtr& req,
+                  std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+    if (!req->getAttributes()->find("user_id")) {
+        callback(error_response(drogon::k403Forbidden, "forbidden"));
+        return;
+    }
+    const std::string username = req->getAttributes()->get<std::string>("user_id");
+    auto user = repo_->get_user_by_username(username);
+    if (!user.has_value()) {
+        callback(error_response(drogon::k404NotFound, "user not found"));
+        return;
+    }
+    callback(json_response(drogon::k200OK, user_to_json(*user)));
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/user - create user (admin only)
 // ---------------------------------------------------------------------------
 

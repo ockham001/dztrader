@@ -31,6 +31,7 @@ export const usersApi = {
     })
     return api.get<UserListResponse>(`/api/user?${query.toString()}`)
   },
+  me: () => api.get<User>('/api/user/me'),
   get: (id: number) => api.get<User>(`/api/user/${id}`),
   create: (data: CreateUserBody) => api.post<User>('/api/user', data),
   update: (id: number, data: UpdateUserBody) => api.put<User>(`/api/user/${id}`, data),

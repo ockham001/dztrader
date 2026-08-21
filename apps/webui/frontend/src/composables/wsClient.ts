@@ -1,6 +1,7 @@
 import { ref, readonly } from 'vue'
 import type { Ref } from 'vue'
 import { useMarketSourcesStore } from '@/stores/marketSources'
+import { useAuthStore } from '@/stores/auth'
 import type { WsDataByType, WsServerMessageType, WsServerMessage } from '@/types/ws'
 
 export type WsConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'failed'
@@ -177,6 +178,11 @@ export function connect(): void {
     const store = useMarketSourcesStore()
     store.loadSources().catch((err: unknown) => {
       console.warn('reconnect loadSources failed', err)
+    })
+    // 角色/状态同步：连接（含被踢后重连）成功后向后端拉取当前登录用户最新信息，
+    // 使 isAdmin 等缓存角色与服务端实时一致（角色降级时后端踢 WS 连接 → 重连即刷新）
+    useAuthStore().refreshCurrentUser().catch((err: unknown) => {
+      console.warn('refresh current user failed', err)
     })
   }
 

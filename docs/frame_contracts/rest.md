@@ -31,6 +31,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 | 方法/路径 | 语义 |
 |---|---|
 | GET/POST `/api/user`，GET/PUT/DELETE `/api/user/{id}` | 用户 CRUD（admin） |
+| GET `/api/user/me` | 当前登录用户自身信息（任意已认证用户）；前端在 WS 连接/重连成功后借此刷新缓存角色，使 `isAdmin` 与服务端实时一致（角色降级时后端踢其 WS 连接，重连即刷新） |
 | PUT `/api/user/{id}/status` | 启用/禁用用户；禁用时强制断开其 WS 连接 |
 | PUT `/api/user/{id}/password` | 重置密码（admin） |
 | GET/PUT `/api/user/{id}/permissions` | 权限查询/修改 |

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { authApi } from '@/api/auth'
+import { usersApi } from '@/api/users'
 import { ApiError } from '@/api/client'
 import type { User, LoginRequest } from '@/types/api'
 
@@ -59,5 +60,18 @@ export const useAuthStore = defineStore('auth', () => {
     // restoreUser 不恢复 isDefaultPassword(需要重新登录就知道)
   }
 
-  return { token, user, loading, error, isDefaultPassword, isAuthenticated, isAdmin, login, logout, restoreUser }
+  // 从后端刷新当前登录用户（WS 重连成功后调用）：同步角色降级等服务端变更，
+  // 使 isAdmin 实时联动（与后端踢降级用户 WS 连接配套）。失败保持现状（尽力而为）。
+  async function refreshCurrentUser(): Promise<void> {
+    if (!token.value) return
+    try {
+      const fresh = await usersApi.me()
+      user.value = fresh
+      localStorage.setItem('user_info', JSON.stringify(fresh))
+    } catch {
+      // 刷新失败保持本地缓存；401 已由 client.ts 统一跳转 /login
+    }
+  }
+
+  return { token, user, loading, error, isDefaultPassword, isAuthenticated, isAdmin, login, logout, restoreUser, refreshCurrentUser }
 })
