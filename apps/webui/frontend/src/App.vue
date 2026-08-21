@@ -90,22 +90,22 @@ onUnmounted(() => {
 <style scoped>
 .default-password-banner {
   position: fixed;
-  top: var(--spacer-16, 18px);
+  top: var(--spacer-16);
   left: 50%;
   transform: translateX(-50%);
   z-index: 9000;
   display: flex;
   align-items: center;
-  gap: var(--spacer-8, 10px);
+  gap: var(--spacer-8);
   min-width: 360px;
   max-width: 640px;
-  padding: var(--spacer-8, 10px) var(--spacer-12, 14px);
-  border-radius: var(--radius-8, 8px);
+  padding: var(--spacer-8) var(--spacer-12);
+  border-radius: var(--radius-8);
   border: 1px solid var(--status-warning-default);
   background: var(--status-warning-surface-l1);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 12%), 0 2px 8px rgb(0 0 0 / 8%);
-  font-size: var(--body-sm-font-size, 13px);
-  line-height: var(--body-sm-line-height, 1.5);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
   color: var(--text-default);
 }
 
@@ -125,12 +125,12 @@ onUnmounted(() => {
 
 .default-password-banner__action {
   flex-shrink: 0;
-  padding: var(--spacer-4, 4px) var(--spacer-12, 14px);
+  padding: var(--spacer-4) var(--spacer-12);
   border: 1px solid var(--status-warning-default);
   background: var(--status-warning-default);
-  color: #fff;
-  border-radius: var(--radius-4, 4px);
-  font-size: var(--body-sm-font-size, 13px);
+  color: var(--text-inverse);
+  border-radius: var(--radius-4);
+  font-size: var(--body-sm-font-size);
   cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease;
 }
@@ -147,21 +147,21 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgb(0 0 0 / 40%);
+  background: var(--overlay-scrim);
 }
 
 .popup-modal {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--spacer-12, 14px);
+  gap: var(--spacer-12);
   min-width: 320px;
   max-width: 480px;
-  padding: var(--spacer-16, 18px);
-  border-radius: var(--radius-8, 8px);
+  padding: var(--spacer-16);
+  border-radius: var(--radius-8);
   border: 1px solid var(--status-error-default);
-  background: var(--status-error-surface-l1, #fff);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 20%), 0 4px 12px rgb(0 0 0 / 12%);
+  background: var(--status-error-surface-l1);
+  box-shadow: var(--shadow-xl);
 }
 
 .popup-modal__icon {
@@ -174,18 +174,18 @@ onUnmounted(() => {
 .popup-modal__msg {
   word-break: break-word;
   text-align: center;
-  font-size: var(--body-md-font-size, 14px);
-  line-height: var(--body-md-line-height, 1.6);
+  font-size: var(--body-md-font-size);
+  line-height: var(--body-md-line-height);
   color: var(--text-default);
 }
 
 .popup-modal__action {
-  padding: var(--spacer-4, 4px) var(--spacer-16, 18px);
+  padding: var(--spacer-4) var(--spacer-16);
   border: 1px solid var(--status-error-default);
   background: var(--status-error-default);
-  color: #fff;
-  border-radius: var(--radius-4, 4px);
-  font-size: var(--body-sm-font-size, 13px);
+  color: var(--text-inverse);
+  border-radius: var(--radius-4);
+  font-size: var(--body-sm-font-size);
   cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease;
 }

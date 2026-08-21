@@ -307,7 +307,7 @@ async function saveWebui(): Promise<void> {
 }
 
 .shm-num-input {
-  width: 72px; padding: 1px var(--spacer-4); font-size: var(--body-sm-font-size);
+  width: 72px; padding: var(--spacer-1) var(--spacer-4); font-size: var(--body-sm-font-size);
   font-family: var(--code-editor-font-family); font-variant-numeric: tabular-nums;
   color: var(--text-secondary); background: transparent;
   border: 1px solid transparent; border-radius: var(--radius-4);
@@ -325,7 +325,7 @@ async function saveWebui(): Promise<void> {
 /* 添加预加载点对话框 */
 .dialog-form { display: flex; flex-direction: column; gap: var(--spacer-12); }
 .dialog-row { display: flex; align-items: center; gap: var(--spacer-12); }
-.dialog-row__label { font-size: var(--body-sm-font-size); color: var(--text-tertiary); font-weight: var(--font-weight-medium, 500); flex-shrink: 0; width: 110px; white-space: nowrap; }
+.dialog-row__label { font-size: var(--body-sm-font-size); color: var(--text-tertiary); font-weight: var(--font-weight-medium); flex-shrink: 0; width: 110px; white-space: nowrap; }
 .dialog-row__control { flex: 1; min-width: 0; }
-.dialog-row__error { font-size: var(--body-sm-font-size); color: var(--status-error-default); padding-left: 122px; }
+.dialog-row__error { font-size: var(--body-sm-font-size); color: var(--status-error-default); padding-left: var(--form-label-col-width); }
 </style>

@@ -259,7 +259,7 @@ onUnmounted(() => {
   transform: translate(-50%, -50%);
   width: 2px;
   height: 32px;
-  border-radius: 1px;
+  border-radius: var(--radius-1);
   background: var(--border-neutral-l1);
   transition: background-color 120ms;
 }
@@ -342,10 +342,10 @@ onUnmounted(() => {
 
 .log-browser__dzweb-badge {
   display: inline-block;
-  font-size: 9px;
-  padding: 1px 4px;
-  margin-left: 4px;
-  border-radius: 3px;
+  font-size: var(--font-size-9);
+  padding: var(--spacer-1) var(--spacer-4);
+  margin-left: var(--spacer-4);
+  border-radius: var(--radius-3);
   background: var(--bg-overlay-l2);
   color: var(--text-tertiary);
   vertical-align: middle;
@@ -354,9 +354,9 @@ onUnmounted(() => {
 .log-browser__file-meta {
   display: flex;
   gap: var(--spacer-8);
-  font-size: 10px;
+  font-size: var(--font-size-10);
   color: var(--text-tertiary);
-  margin-top: 2px;
+  margin-top: var(--spacer-2);
 }
 
 .log-browser__file-empty {

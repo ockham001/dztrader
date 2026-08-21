@@ -444,19 +444,19 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 .source-card__body { padding: 0 var(--spacer-20) var(--spacer-20); overflow-x: auto; }
 .source-card__body.is-open { display: block; }
 
-.source-card__info { display: flex; flex-direction: column; gap: 1px; flex-shrink: 0; }
-.source-card__info-name { font-weight: var(--font-weight-medium, 500); color: var(--text-secondary); white-space: nowrap; }
-.source-card__info-meta { font-size: 10px; color: var(--text-tertiary); white-space: nowrap; }
-.source-card__info-sub { font-size: 10px; white-space: nowrap; }
+.source-card__info { display: flex; flex-direction: column; gap: var(--spacer-1); flex-shrink: 0; }
+.source-card__info-name { font-weight: var(--font-weight-medium); color: var(--text-secondary); white-space: nowrap; }
+.source-card__info-meta { font-size: var(--font-size-10); color: var(--text-tertiary); white-space: nowrap; }
+.source-card__info-sub { font-size: var(--font-size-10); white-space: nowrap; }
 .source-card__info-sub--ok { color: var(--text-tertiary); }
 .source-card__info-sub--warn { color: var(--status-error-default); }
-.source-card__meta-row { display: flex; align-items: center; gap: var(--spacer-12); flex-shrink: 1; flex-wrap: wrap; row-gap: 2px; }
+.source-card__meta-row { display: flex; align-items: center; gap: var(--spacer-12); flex-shrink: 1; flex-wrap: wrap; row-gap: var(--spacer-2); }
 
 /* 尾部 LoginPanel/ScheduleManager 为独立子组件, 本组件内最后一个 .card-section 是高级段, 去掉底边框 */
 .card-section { padding-bottom: var(--spacer-12); border-bottom: 1px solid var(--border-neutral-l1); margin-bottom: var(--spacer-12); }
 .card-section:last-of-type { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
 .card-section__row { display: flex; align-items: center; justify-content: space-between; gap: var(--spacer-12); margin-bottom: var(--spacer-8); }
-.card-section__title { font-size: var(--body-sm-font-size); font-weight: var(--font-weight-medium, 500); color: var(--text-default); }
+.card-section__title { font-size: var(--body-sm-font-size); font-weight: var(--font-weight-medium); color: var(--text-default); }
 .card-section__body { margin-top: var(--spacer-4); }
 .card-hint { font-size: var(--body-sm-font-size); color: var(--text-tertiary); padding: var(--spacer-4) 0; }
 
@@ -474,7 +474,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 
 /* 高级段: SHM 数字输入（无边框内联风格, 聚焦显现）与预加载点行 */
 .shm-num-input {
-  width: 72px; padding: 1px var(--spacer-4); font-size: var(--body-sm-font-size);
+  width: 72px; padding: var(--spacer-1) var(--spacer-4); font-size: var(--body-sm-font-size);
   font-family: var(--code-editor-font-family); font-variant-numeric: tabular-nums;
   color: var(--text-secondary); background: transparent;
   border: 1px solid transparent; border-radius: var(--radius-4);
@@ -494,12 +494,12 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 .dialog-row__error {
   font-size: var(--body-sm-font-size);
   color: var(--status-error-default);
-  padding-left: 122px; /* 与 control 列对齐 (label 宽度 + gap) */
+  padding-left: var(--form-label-col-width); /* 与 control 列对齐 (label 宽度 + gap) */
 }
 
 .dialog-form { display: flex; flex-direction: column; gap: var(--spacer-12); }
 .dialog-row { display: flex; align-items: center; gap: var(--spacer-12); }
-.dialog-row__label { font-size: var(--body-sm-font-size); color: var(--text-tertiary); font-weight: var(--font-weight-medium, 500); flex-shrink: 0; width: 110px; white-space: nowrap; }
+.dialog-row__label { font-size: var(--body-sm-font-size); color: var(--text-tertiary); font-weight: var(--font-weight-medium); flex-shrink: 0; width: 110px; white-space: nowrap; }
 .dialog-row__control { flex: 1; min-width: 0; }
 
 .ds-btn__spinner { display: inline-block; width: 12px; height: 12px; border: 1.5px solid currentcolor; border-top-color: transparent; border-radius: 50%; animation: ds-btn-spin 0.6s linear infinite; opacity: 0.7; flex-shrink: 0; }

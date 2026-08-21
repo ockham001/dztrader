@@ -132,7 +132,7 @@ function togglePassword(): void {
                 fontSize: 'var(--body-base-font-size)',
                 lineHeight: 'var(--body-base-line-height)',
                 color: 'var(--text-default)',
-                fontWeight: 'var(--font-weight-medium, 500)',
+                fontWeight: 'var(--font-weight-medium)',
               }"
             >用户名</label>
             <div class="ds-input">
@@ -156,7 +156,7 @@ function togglePassword(): void {
                 fontSize: 'var(--body-base-font-size)',
                 lineHeight: 'var(--body-base-line-height)',
                 color: 'var(--text-default)',
-                fontWeight: 'var(--font-weight-medium, 500)',
+                fontWeight: 'var(--font-weight-medium)',
               }"
             >密码</label>
             <div class="ds-input">

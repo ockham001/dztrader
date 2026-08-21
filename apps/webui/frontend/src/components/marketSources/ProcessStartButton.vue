@@ -31,7 +31,7 @@ const store = useMarketSourcesStore()
   display: inline-block; width: 12px; height: 12px;
   border: 1.5px solid currentcolor; border-top-color: transparent;
   border-radius: 50%; animation: psb-spin 0.6s linear infinite;
-  opacity: 0.7; flex-shrink: 0; margin-right: 4px;
+  opacity: 0.7; flex-shrink: 0; margin-right: var(--spacer-4);
 }
 
 @keyframes psb-spin { to { transform: rotate(360deg); } }

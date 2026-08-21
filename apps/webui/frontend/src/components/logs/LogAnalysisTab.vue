@@ -229,7 +229,7 @@ watch(() => store.browserTab, (tab) => {
 }
 
 .log-analysis__card-value {
-  font-size: 28px;
+  font-size: var(--font-size-28);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
@@ -313,7 +313,7 @@ watch(() => store.browserTab, (tab) => {
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-all;
-  padding: 2px 0;
+  padding: var(--spacer-2) 0;
 }
 
 @media (max-width: 768px) {

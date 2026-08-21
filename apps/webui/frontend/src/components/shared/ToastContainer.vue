@@ -44,12 +44,12 @@ const ICON_MAP: Record<string, string> = {
 <style scoped>
 .toast-container {
   position: fixed;
-  right: var(--spacer-24, 24px);
-  bottom: var(--spacer-24, 24px);
+  right: var(--spacer-24);
+  bottom: var(--spacer-24);
   z-index: 9999;
   display: flex;
   flex-direction: column;
-  gap: var(--spacer-8, 8px);
+  gap: var(--spacer-8);
   pointer-events: none;
 }
 
@@ -65,7 +65,7 @@ const ICON_MAP: Record<string, string> = {
   border-radius: var(--radius-8);
   border: 1px solid var(--border-neutral-l1);
   background: var(--bg-base-default);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 12%), 0 2px 8px rgb(0 0 0 / 8%);
+  box-shadow: var(--shadow-lg);
   font-size: var(--body-sm-font-size);
   line-height: var(--body-sm-line-height);
   color: var(--text-default);

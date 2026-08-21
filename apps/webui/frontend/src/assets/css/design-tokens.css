@@ -395,6 +395,21 @@
   --special-bgtabsoverlay: rgba(255, 255, 255, 0.12);
   --special-bggoldoverlay: rgba(210, 181, 19, 0.12);
 
+  /* ← P4 T2 补充：非标 token 值（消灭组件内字面量；均在 token 表定义，组件只引用） */
+  --spacer-1: 1px;            /* hairline 间距/缺省增补 */
+  --radius-1: 1px;
+  --radius-3: 3px;
+  --font-size-9: 9px;         /* 微标签/徽标字号 */
+  --font-size-10: 10px;
+  --font-size-16: 16px;
+  --font-size-28: 28px;
+  --form-label-col-width: 122px; /* 对话框 label 列宽（label 110px + 间距 12px） */
+  --shadow-sm: 0 2px 8px rgb(0 0 0 / 8%);
+  --shadow-lg: 0 8px 24px rgb(0 0 0 / 12%), 0 2px 8px rgb(0 0 0 / 8%);
+  --shadow-xl: 0 12px 32px rgb(0 0 0 / 20%), 0 4px 12px rgb(0 0 0 / 12%);
+  --overlay-scrim: rgb(0 0 0 / 40%);  /* 弹层遮罩 */
+  --text-inverse: #FFFFFF;    /* 彩色背景上的反白文字（按钮等） */
+
   /* layout aliases */
   --brand-1: var(--brand-600);
   --brand-2: var(--brand-500);

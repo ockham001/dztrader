@@ -217,7 +217,7 @@ onMounted(() => {
 .dialog-row__label {
   font-size: var(--body-sm-font-size);
   color: var(--text-tertiary);
-  font-weight: var(--font-weight-medium, 500);
+  font-weight: var(--font-weight-medium);
   flex-shrink: 0;
   width: 110px;
   white-space: nowrap;
@@ -232,7 +232,7 @@ onMounted(() => {
   font-size: var(--body-xs-font-size);
   color: var(--text-tertiary);
   margin-top: calc(-1 * var(--spacer-4));
-  padding-left: 122px; /* align with control column (label width + gap) */
+  padding-left: var(--form-label-col-width); /* align with control column (label width + gap) */
 }
 
 /* Spinner for buttons */

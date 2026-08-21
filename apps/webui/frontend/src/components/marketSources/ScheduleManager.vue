@@ -210,7 +210,7 @@ const scheduleAddPending = computed(() => {
 .dialog-row__label {
   font-size: var(--body-sm-font-size);
   color: var(--text-tertiary);
-  font-weight: var(--font-weight-medium, 500);
+  font-weight: var(--font-weight-medium);
   flex-shrink: 0;
   width: 110px;
   white-space: nowrap;
@@ -235,7 +235,7 @@ const scheduleAddPending = computed(() => {
 .dialog-row__error {
   font-size: var(--body-sm-font-size);
   color: var(--status-error-default);
-  padding-left: 122px; /* 与 control 列对齐 (label 宽度 + gap) */
+  padding-left: var(--form-label-col-width); /* 与 control 列对齐 (label 宽度 + gap) */
 }
 
 /* Spinner for buttons */

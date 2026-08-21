@@ -467,7 +467,7 @@ onUnmounted(() => {
             :pending="store.securityConfig.lockoutPending"
             @change="(v: boolean) => store.toggleLoginLockout(v)"
           />
-          <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-medium, 500)', color: 'var(--text-secondary)' }">登录失败锁定</span>
+          <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-medium)', color: 'var(--text-secondary)' }">登录失败锁定</span>
           <span :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-tertiary)' }">连续登录失败 {{ store.securityConfig.max_failed_attempts }} 次后锁定账号 {{ Math.floor(store.securityConfig.lockout_duration_sec / 60) }} 分钟</span>
           <div :style="{ flex: 1 }"></div>
         </div>
@@ -512,7 +512,7 @@ onUnmounted(() => {
                     <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-10)' }">
                       <span class="ds-avatar ds-avatar--sm">{{ avatarChar(u.display_name) }}</span>
                       <div>
-                        <div :style="{ fontWeight: 'var(--font-weight-medium, 500)' }">{{ u.username }}</div>
+                        <div :style="{ fontWeight: 'var(--font-weight-medium)' }">{{ u.username }}</div>
                         <div :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-tertiary)' }">{{ u.email }}</div>
                       </div>
                     </div>
@@ -597,7 +597,7 @@ onUnmounted(() => {
                             @change="toggleAllUserAccountPerms(u)"
                           >
                           <span class="ds-check__box"></span>
-                          <span :style="{ fontWeight: 'var(--font-weight-medium, 500)', fontSize: 'var(--body-md-font-size)' }">账户权限</span>
+                          <span :style="{ fontWeight: 'var(--font-weight-medium)', fontSize: 'var(--body-md-font-size)' }">账户权限</span>
                         </label>
                         <div class="perm-list">
                           <label v-for="perm in ACCOUNT_PERMISSIONS" :key="perm" class="ds-check">
@@ -620,7 +620,7 @@ onUnmounted(() => {
                             @change="toggleAllUserStrategyPerms(u)"
                           >
                           <span class="ds-check__box"></span>
-                          <span :style="{ fontWeight: 'var(--font-weight-medium, 500)', fontSize: 'var(--body-md-font-size)' }">策略权限</span>
+                          <span :style="{ fontWeight: 'var(--font-weight-medium)', fontSize: 'var(--body-md-font-size)' }">策略权限</span>
                         </label>
                         <div class="perm-list">
                           <label v-for="perm in STRATEGY_PERMISSIONS" :key="perm" class="ds-check">
@@ -662,7 +662,7 @@ onUnmounted(() => {
           <!-- Access mode selector -->
           <div :style="{ marginBottom: 'var(--spacer-16)' }">
             <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-10)', marginBottom: 'var(--spacer-8)' }">
-              <div :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-medium, 500)', color: 'var(--text-secondary)', flexShrink: 0 }">访问模式</div>
+              <div :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-medium)', color: 'var(--text-secondary)', flexShrink: 0 }">访问模式</div>
               <SyncSelect
                 :items="accessModeItems"
                 :model-value="store.securityConfig.access_mode"
@@ -1064,7 +1064,7 @@ onUnmounted(() => {
 .dialog-field__label {
   font-size: var(--body-base-font-size);
   color: var(--text-default);
-  font-weight: var(--font-weight-medium, 500);
+  font-weight: var(--font-weight-medium);
 }
 
 /* Responsive */

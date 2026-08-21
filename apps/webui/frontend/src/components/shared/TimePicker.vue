@@ -320,7 +320,7 @@ onUnmounted(() => {
 .ds-timepicker__header-col {
   text-align: center;
   font-size: var(--body-xs-font-size);
-  font-weight: var(--font-weight-medium, 500);
+  font-weight: var(--font-weight-medium);
   color: var(--text-tertiary);
   letter-spacing: 0.04em;
 }
@@ -336,8 +336,8 @@ onUnmounted(() => {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 2px;
+  gap: var(--spacer-2);
+  padding: var(--spacer-2);
 
   /* slim scrollbar */
   scrollbar-width: thin;
@@ -350,7 +350,7 @@ onUnmounted(() => {
 
 .ds-timepicker__list::-webkit-scrollbar-thumb {
   background: var(--border-neutral-l2);
-  border-radius: 2px;
+  border-radius: var(--radius-2);
 }
 
 .ds-timepicker__item {

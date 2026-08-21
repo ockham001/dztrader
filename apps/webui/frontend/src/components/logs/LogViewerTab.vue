@@ -306,7 +306,7 @@ function formatTs(ts: string): string {
 }
 
 .log-viewer__info {
-  font-size: 10px;
+  font-size: var(--font-size-10);
   color: var(--text-tertiary);
   white-space: nowrap;
   flex-shrink: 0;
@@ -340,7 +340,7 @@ function formatTs(ts: string): string {
   display: flex;
   align-items: baseline;
   gap: var(--spacer-8);
-  padding: 1px var(--spacer-8);
+  padding: var(--spacer-1) var(--spacer-8);
   white-space: nowrap;
 }
 
@@ -397,7 +397,7 @@ function formatTs(ts: string): string {
 
 .log-viewer-panel :deep(.log-highlight) {
   background: color-mix(in srgb, var(--status-warning-default) 30%, transparent);
-  border-radius: 2px;
+  border-radius: var(--radius-2);
 }
 
 .log-viewer__file-empty {

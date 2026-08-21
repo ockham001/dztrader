@@ -81,7 +81,7 @@ const src = computed(() => props.source)
   display: inline-block;
   width: 16px;
   height: 16px;
-  font-size: 16px;
+  font-size: var(--font-size-16);
   line-height: 1;
   color: var(--icon-tertiary);
   transition: transform 0.2s ease;
@@ -104,18 +104,18 @@ const src = computed(() => props.source)
 .source-card__info {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: var(--spacer-1);
   flex-shrink: 0;
 }
 
 .source-card__info-name {
-  font-weight: var(--font-weight-medium, 500);
+  font-weight: var(--font-weight-medium);
   color: var(--text-secondary);
   white-space: nowrap;
 }
 
 .source-card__info-meta {
-  font-size: 10px;
+  font-size: var(--font-size-10);
   color: var(--text-tertiary);
   white-space: nowrap;
 }
@@ -126,7 +126,7 @@ const src = computed(() => props.source)
   gap: var(--spacer-12);
   flex-shrink: 1;
   flex-wrap: wrap;
-  row-gap: 2px;
+  row-gap: var(--spacer-2);
 }
 
 .card-hint {
