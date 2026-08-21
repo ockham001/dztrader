@@ -125,20 +125,5 @@ const autoLoginStatusClass = (s: MarketSourceView): string => {
   color: var(--text-tertiary);
 }
 
-/* Spinner for buttons */
-.ds-btn__spinner {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border: 1.5px solid currentcolor;
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: ds-btn-spin 0.6s linear infinite;
-  opacity: 0.7;
-  flex-shrink: 0;
-}
-
-@keyframes ds-btn-spin {
-  to { transform: rotate(360deg); }
-}
+/* Spinner: 复用全局 components.css 的 .ds-btn__spinner（P4 T4 去重复，统一 14px） */
 </style>

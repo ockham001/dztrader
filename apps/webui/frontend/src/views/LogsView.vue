@@ -131,7 +131,7 @@ onUnmounted(() => {
 
     <div class="section-gap">
       <div class="ds-card">
-        <div class="ds-card__header" style="display: flex; align-items: center; justify-content: space-between;">
+        <div class="log-browser__header" style="display: flex; align-items: center; justify-content: space-between;">
           <div class="ds-card__title" style="margin-bottom: 0;">日志浏览器</div>
           <div class="ds-tabs" style="margin-bottom: 0;">
             <button class="ds-tab" :class="{ 'is-active': store.browserTab === 'viewer' }" type="button" @click="store.browserTab = 'viewer'">查看</button>
@@ -220,7 +220,7 @@ onUnmounted(() => {
   margin-bottom: var(--spacer-24);
 }
 
-.ds-card__header {
+.log-browser__header {
   margin-bottom: var(--spacer-16);
 }
 

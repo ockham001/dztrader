@@ -235,22 +235,8 @@ onMounted(() => {
   padding-left: var(--form-label-col-width); /* align with control column (label width + gap) */
 }
 
-/* Spinner for buttons */
-.ds-btn__spinner {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border: 1.5px solid currentcolor;
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: ds-btn-spin 0.6s linear infinite;
-  opacity: 0.7;
-  flex-shrink: 0;
-}
-
-@keyframes ds-btn-spin {
-  to { transform: rotate(360deg); }
-}
+/* Spinner: 样式回归全局组件库 components.css 的 .ds-btn__spinner（P4 T4 去重复）。
+   此前本页 scoped 重复定义同一原子，属绕过 pattern 的冗余复制，已删除。 */
 
 /* Responsive */
 @media (max-width: 768px) {

@@ -1,12 +1,13 @@
-// 自定义 stylelint 插件：强制使用设计 token，禁写 CSS 字面量
-// 为 P4 设计系统铺路：颜色 / 间距(px) / 圆角(px) 字面量一律进 token 表。
-// 允许例外：currentColor / transparent 是语义色非字面量，放行。
-// 级别在 stylelint.config.mjs 中设置（当前 warning 用于摸清存量规模）。
+// 自定义 stylelint 插件（P4 设计系统）：
+//   1) dz/token-literal   —— 强制使用设计 token，禁写 CSS 字面量（颜色/间距/圆角）
+//   2) dz/no-ds-namespace —— 组件三层强制：feature/domain 的 scoped 样式禁止「定义」.ds-* 模式类
+//                            （.ds-* 组件库命名空间只应在 assets/css/components.css 定义，
+//                             feature 不得重写组件库原子，须用本地前缀类。上下文后代消费放行）。
 import stylelint from 'stylelint'
 
 const { report: utilsReport } = stylelint.utils
 
-export default {
+const ruleTokenLiteral = {
   ruleName: 'dz/token-literal',
   rule: (actual) => {
     return (root, result) => {
@@ -64,3 +65,32 @@ export default {
     }
   },
 }
+
+const ruleNoDsNamespace = {
+  ruleName: 'dz/no-ds-namespace',
+  // feature/domain 的 scoped <style> 禁止「定义」.ds-* 模式库类（绕过 pattern）。
+  // 判定：某条规则的首选择器以 .ds- 开头 → 该处在重写 .ds-* 组件库原子。
+  // 放行：上下文后代消费（如 .log-browser__filter .ds-dropdown）、:deep(.ds-*)、模板 class 引用。
+  rule: (primary) => {
+    return (root, result) => {
+      if (primary !== true) return
+
+      root.walkRules((rule) => {
+        for (const sel of rule.selectors ?? []) {
+          if (/^\s*\.ds-[a-z]/.test(sel)) {
+            utilsReport({
+              result,
+              ruleName: 'dz/no-ds-namespace',
+              message: `组件内禁止定义 .ds-* 模式库类（绕过 pattern，属三层越权）: "${sel}" —— .ds-* 只应在 assets/css/components.css 定义，feature 须用本地前缀类（如 .log-browser__*、.ms-*）`,
+              node: rule,
+              word: sel,
+            })
+            break
+          }
+        }
+      })
+    }
+  },
+}
+
+export default [ruleTokenLiteral, ruleNoDsNamespace]

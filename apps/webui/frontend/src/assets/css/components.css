@@ -3,6 +3,22 @@
    components.css — Design System Component and Atom Definitions
    Component sections mirror preview/component-*.html marker blocks.
    Stable atoms live here so downstream pages do not depend on preview shell CSS.
+
+   ═══ 组件三层契约（P4 T4，stylelint 强制 dz/no-ds-namespace）═══
+   本前端设计系统约定三层，业务组件不得越级：
+     primitive  纯语义原子 → 本文件顶部的 .ds-btn/.ds-input/.ds-check/.ds-switch/.ds-tag 等
+                （及 components.css 全量）.ds-* 类均属本层/pattern，只在本 assets/css/ 定义；
+     pattern    结构化组件 → shared/ 目录的 Vue 组件（Modal/Dropdown/SyncSelect/SyncSwitch/
+                StatusIndicator/ToastContainer/DatePicker/TimePicker/Icon）与 .ds-card/.ds-table
+                等结构化模式类；
+     domain     领域组件 → marketSources/、logs/ 目录的 Vue 组件（CtpCard/GenericCard/…）。
+   规则（由 dz/no-ds-namespace 强制）：
+     - .ds-* 模式/原子类只允许在 src/assets/css/** 定义；feature/domain 的 scoped 样式段
+       禁止「定义」.ds-* 类（不得重写组件库原子）——须用本地前缀类（如 .log-browser__*、.ms-*）。
+     - feature 可「消费」.ds-*（模板 class 引用）与上下文后代微调（.parent .ds-select），
+       但不得复制其实现。
+     - 新增基础组件/模式类只进本文件或 shared/；业务组件禁止自造裸色/字号/间距字面量
+       （dz/token-literal 强制，须引 design-tokens.css 的 token）。
    ═══════════════════════════════════════════════════════════════ */
 
 /* ── Shared Atoms ───────────────────────────────────────────── */

@@ -502,9 +502,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 .dialog-row__label { font-size: var(--body-sm-font-size); color: var(--text-tertiary); font-weight: var(--font-weight-medium); flex-shrink: 0; width: 110px; white-space: nowrap; }
 .dialog-row__control { flex: 1; min-width: 0; }
 
-.ds-btn__spinner { display: inline-block; width: 12px; height: 12px; border: 1.5px solid currentcolor; border-top-color: transparent; border-radius: 50%; animation: ds-btn-spin 0.6s linear infinite; opacity: 0.7; flex-shrink: 0; }
-
-@keyframes ds-btn-spin { to { transform: rotate(360deg); } }
+/* Spinner: 复用全局 components.css 的 .ds-btn__spinner（P4 T4 去重复，统一 14px） */
 
 @media (max-width: 768px) {
   .source-card__header { gap: var(--spacer-8); padding: var(--spacer-12); }

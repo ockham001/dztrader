@@ -190,7 +190,7 @@ function handleSelectAll(event: Event): void {
                     :disabled="!isAdmin() || store.isProcessPending(proc.name)"
                     @click="handleFlush(proc)"
                   >
-                    <span v-if="store.isProcessPending(proc.name)" class="icon ds-btn__icon-spin" :style="{ width: '12px', height: '12px', display: 'inline-flex' }">
+                    <span v-if="store.isProcessPending(proc.name)" class="icon log-level__icon-spin" :style="{ width: '12px', height: '12px', display: 'inline-flex' }">
                       <Icon name="Refresh" :size="12" />
                     </span>
                     <Icon v-else name="Refresh" :size="12" />
@@ -278,7 +278,7 @@ function handleSelectAll(event: Event): void {
   font-style: italic;
 }
 
-.ds-btn__icon-spin {
+.log-level__icon-spin {
   animation: log-control-spin 0.6s linear infinite;
   display: inline-flex;
   align-items: center;
