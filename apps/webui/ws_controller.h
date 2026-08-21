@@ -15,6 +15,7 @@
 #include "process_mirror.h"
 #include "ws_broadcaster.h"
 #include "data_change_notifier.h"
+#include "md_control_domain_service.h"
 
 namespace dztrader::webui {
 
@@ -29,7 +30,7 @@ public:
                  std::shared_ptr<shm::MultiWriter> event_writer,
                  std::shared_ptr<dztrader::platform::LogConfig> self_log,
                  MirrorStore& mirror,
-                 std::shared_ptr<ProcessMirror> process_mirror);
+                 MdControlDomainService& md_control);
     ~WsController() = default;
 
     // 禁止拷贝/移动（引用成员）
@@ -76,8 +77,9 @@ private:
     /// 快照/增量读写均由 MirrorStore 承担（领域服务更新 + 连接快照推送）
     MirrorStore& mirror_;
 
-    /// 进程镜像视图：WS 控制消息的 Running 预检（与 REST login/logout 守卫一致）
-    std::shared_ptr<ProcessMirror> process_mirror_;
+    /// 出方向行情控制领域服务：md_connect/md_disconnect/query_md_subscriptions
+    /// （P2 任务③：三个 C2S 分支下沉到服务，WsController 仅负责连接/鉴权/会话/routing）
+    MdControlDomainService& md_control_;
 
     /// 单连接订阅状态
     struct Session {

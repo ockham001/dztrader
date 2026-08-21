@@ -1,7 +1,6 @@
 #include "ws_controller.h"
 #include "jwt.h"
 #include "log_service.h"
-#include "ws_control_precheck.h"
 
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/writer.h>
@@ -22,13 +21,13 @@ WsController::WsController(WebuiConfig cfg,
                            std::shared_ptr<shm::MultiWriter> event_writer,
                            std::shared_ptr<dztrader::platform::LogConfig> self_log,
                            MirrorStore& mirror,
-                           std::shared_ptr<ProcessMirror> process_mirror)
+                           MdControlDomainService& md_control)
     : cfg_(std::move(cfg)),
       repo_(std::move(repo)),
       event_writer_(std::move(event_writer)),
       self_log_(std::move(self_log)),
       mirror_(mirror),
-      process_mirror_(std::move(process_mirror)) {
+      md_control_(md_control) {
     // webui 自身 log_config 镜像初值已移入 main 装配（mirror_store->update），
     // 保证 API-only 模式(无 SHM)下前端连接快照也能看到 webui 自身级别
     // （契约 log：dzweb 自身纳入镜像）。
@@ -176,70 +175,27 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
         conn->send(R"({"type":"pong"})");
         return;
     } else if (type == "md_connect" || type == "md_disconnect") {
-        // 契约 webui-ws §3（修订）: 与 REST /login /logout 一致--
-        // admin 角色 + source 非空 + 事件通道可用 + 目标进程镜像 Running，否则回 error 不写帧
+        // P2 任务③：出方向 C2S 下沉到 MdControlDomainService（守卫 + 写帧 + 回执）。
+        // 仅这里做连接级 admin 判定（Session 缓存）与定向回执注入，保持轻量。
         const auto sit = sessions_.find(conn);
         const bool is_admin = sit != sessions_.end() && sit->second.is_admin;
         const std::string source = payload.value("source", "");
-        std::optional<platform::ChildState> state;
-        if (process_mirror_) {
-            if (auto st = process_mirror_->get_status(source)) {
-                state = st->state;
-            }
+        const uint64_t seq = msg.value("seq", static_cast<uint64_t>(0));
+        // 定向回执：把服务返回的完整消息帧发给发起连接
+        MdControlDomainService::Reply reply =
+            [conn](nlohmann::json frame) { conn->send(frame.dump()); };
+        if (type == "md_connect") {
+            md_control_.handle_md_connect(is_admin, source, seq, reply);
+        } else {
+            md_control_.handle_md_disconnect(is_admin, source, seq, reply);
         }
-        const auto pre =
-            evaluate_md_connect_precheck(is_admin, source, event_writer_ != nullptr, state);
-        if (pre != MdConnectPrecheck::Ok) {
-            const nlohmann::json err = {
-                {"type", "error"},
-                {"seq", msg.value("seq", 0)},
-                {"payload", {{"message", md_connect_precheck_message(pre, source)}}}};
-            conn->send(err.dump());
-            return;
-        }
-        // ok 反映真实写入结果（契约 webui-ws §2.4: ok=false 时前端立即提示、不设 pending）
-        const bool ok = platform::write_ext_inst_raw(
-            *event_writer_,
-            type == "md_connect" ? DZ_FRAME_REQUEST_MD_CONNECT : DZ_FRAME_REQUEST_MD_DISCONNECT,
-            source);
-        const nlohmann::json ack = {
-            {"type", type == "md_connect" ? "md_connect_ack" : "md_disconnect_ack"},
-            {"seq", msg.value("seq", 0)},
-            {"payload", {{"source", source}, {"ok", ok}}}};
-        conn->send(ack.dump());
     } else if (type == "query_md_subscriptions") {
-        // 写 DZ_FRAME_QUERY_MD_SUBSCRIPTIONS 到 event channel (透传给目标 md 进程)
-        // 支持两种模式（互斥校验由 md 进程负责，见 build_subscription_query_payload）:
-        //   {"query": "unsuccessful"}                 - 查未成功 (Pending + NotRequested)
-        //   {"instruments": ["IF2506", "IC2506"]}     - 按合约列表查
-        // dzweb 不解析业务字段, 仅提取 source 路由, 其余透传给 md
-        std::string source = payload.value("source", "");
-        if (source.empty() || !event_writer_) {
-            const nlohmann::json err = {
-                {"type", "error"},
-                {"seq", msg.value("seq", 0)},
-                {"payload", {{"message", "invalid source or writer not ready"}}}};
-            conn->send(err.dump());
-            return;
-        }
-        // 构造 SHM payload（不含 source, source 作为 ext_inst_id）。
-        // 契约 md-subscription: dzweb 不校验互斥——query/instruments 同时出现时两者透传，
-        // 由目标 md 进程经 RTN.error=ambiguous_query 表达
-        nlohmann::json req_payload;
-        if (!build_subscription_query_payload(payload, req_payload)) {
-            const nlohmann::json err = {{"type", "error"},
-                                        {"seq", msg.value("seq", 0)},
-                                        {"payload", {{"message", "missing query or instruments"}}}};
-            conn->send(err.dump());
-            return;
-        }
-        // write 返回真实写入结果（契约 webui-ws §2.4: ok=false 时前端立即提示、不设 pending）
-        const bool ok = platform::write_ext_inst_json_obj(
-            *event_writer_, DZ_FRAME_QUERY_MD_SUBSCRIPTIONS, source, req_payload);
-        const nlohmann::json ack = {{"type", "query_md_subscriptions_ack"},
-                                    {"seq", msg.value("seq", 0)},
-                                    {"payload", {{"source", source}, {"ok", ok}}}};
-        conn->send(ack.dump());
+        // P2 任务③：下沉到 MdControlDomainService（透传，dzweb 不校验互斥）
+        const uint64_t seq = msg.value("seq", static_cast<uint64_t>(0));
+        MdControlDomainService::Reply reply =
+            [conn](nlohmann::json frame) { conn->send(frame.dump()); };
+        md_control_.handle_query_md_subscriptions(
+            payload.value("source", std::string{}), seq, payload, reply);
     } else if (type == "subscribe_log") {
         std::string file = payload.value("file", "");
         if (file.empty()) {

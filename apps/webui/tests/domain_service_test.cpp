@@ -6,6 +6,7 @@
 #include "shm_domain_service.h"
 #include "auto_login_domain_service.h"
 #include "progress_domain_service.h"
+#include "md_control_domain_service.h"
 #include "process_mirror.h"
 #include "repository.h"
 #include <dztrader/platform/process.h>
@@ -421,6 +422,138 @@ TEST(ProgressDomainServiceTest, ProgressOverwrites) {
     ASSERT_EQ(ws.messages.size(), 2u);
     EXPECT_EQ(ws.messages[1].type, "progress");
     EXPECT_EQ(ws.messages[1].instance_id, "dzmd_ctp");
+}
+
+// ===== MdControlDomainService（P2 任务③：出方向 C2S 下沉）=====
+// reply 捕获注入的完整消息帧；SHM 写帧经 ShmFixture 验证
+
+// md_connect 守卫失败（非 admin）：回 error，不写帧
+TEST(MdControlDomainServiceTest, MdConnectNonAdminRepliesErrorNoFrame) {
+    ShmFixture fx;
+    MirrorStore store;
+    ProcessMirror pm(store);
+    MdControlDomainService svc(pm, &*fx.writer);
+    std::vector<nlohmann::json> replies;
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    svc.handle_md_connect(false, "dzmd_ctp", 42, reply);
+    ASSERT_EQ(replies.size(), 1u);
+    EXPECT_EQ(replies[0]["type"], "error");
+    EXPECT_EQ(replies[0]["seq"], 42);
+    EXPECT_EQ(replies[0]["payload"]["message"], "admin required");
+    EXPECT_EQ(fx.last_type(), static_cast<DzFrameType>(-1));  // 未写任何帧
+}
+
+// md_connect 守卫失败（进程镜像非 Running）：回 error，不写帧
+TEST(MdControlDomainServiceTest, MdConnectProcessNotRunningRepliesError) {
+    ShmFixture fx;
+    MirrorStore store;
+    ProcessMirror pm(store);
+    MdControlDomainService svc(pm, &*fx.writer);
+    std::vector<nlohmann::json> replies;
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    svc.handle_md_connect(true, "dzmd_ctp", 7, reply);
+    ASSERT_EQ(replies.size(), 1u);
+    EXPECT_EQ(replies[0]["type"], "error");
+    EXPECT_EQ(replies[0]["payload"]["message"], "process not running: dzmd_ctp");
+    EXPECT_EQ(fx.last_type(), static_cast<DzFrameType>(-1));
+}
+
+// md_connect 守卫通过：写 DZ_FRAME_REQUEST_MD_CONNECT 帧 + 回 md_connect_ack{source, ok}
+TEST(MdControlDomainServiceTest, MdConnectOkWritesRequestFrame) {
+    ShmFixture fx;
+    MirrorStore store;
+    ProcessMirror pm(store);
+    dztrader::platform::ProcessStatus s;
+    s.name = "dzmd_ctp";
+    s.state = dztrader::platform::ChildState::Running;
+    pm.update_status("dzmd_ctp", s);
+    MdControlDomainService svc(pm, &*fx.writer);
+    std::vector<nlohmann::json> replies;
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    svc.handle_md_connect(true, "dzmd_ctp", 1, reply);
+    ASSERT_EQ(replies.size(), 1u);
+    EXPECT_EQ(replies[0]["type"], "md_connect_ack");
+    EXPECT_EQ(replies[0]["seq"], 1);
+    EXPECT_EQ(replies[0]["payload"]["source"], "dzmd_ctp");
+    EXPECT_EQ(replies[0]["payload"]["ok"], true);
+    EXPECT_EQ(fx.last_type(), DZ_FRAME_REQUEST_MD_CONNECT);
+}
+
+// md_disconnect 守卫通过：写 DZ_FRAME_REQUEST_MD_DISCONNECT + 回 md_disconnect_ack
+TEST(MdControlDomainServiceTest, MdDisconnectOkWritesDisconnectFrame) {
+    ShmFixture fx;
+    MirrorStore store;
+    ProcessMirror pm(store);
+    dztrader::platform::ProcessStatus s;
+    s.name = "dzmd_ctp";
+    s.state = dztrader::platform::ChildState::Running;
+    pm.update_status("dzmd_ctp", s);
+    MdControlDomainService svc(pm, &*fx.writer);
+    std::vector<nlohmann::json> replies;
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    svc.handle_md_disconnect(true, "dzmd_ctp", 9, reply);
+    ASSERT_EQ(replies.size(), 1u);
+    EXPECT_EQ(replies[0]["type"], "md_disconnect_ack");
+    EXPECT_EQ(replies[0]["payload"]["ok"], true);
+    EXPECT_EQ(fx.last_type(), DZ_FRAME_REQUEST_MD_DISCONNECT);
+}
+
+// md_disconnect 守卫失败（writer 缺失）：回 error，不写帧（API-only 无事件通道）
+TEST(MdControlDomainServiceTest, MdDisconnectNoWriterRepliesError) {
+    MirrorStore store;
+    ProcessMirror pm(store);
+    MdControlDomainService svc(pm, nullptr);
+    std::vector<nlohmann::json> replies;
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    svc.handle_md_disconnect(true, "dzmd_ctp", 3, reply);
+    ASSERT_EQ(replies.size(), 1u);
+    EXPECT_EQ(replies[0]["type"], "error");
+    EXPECT_EQ(replies[0]["payload"]["message"], "invalid source or writer not ready");
+}
+
+// query_md_subscriptions 正常：写 DZ_FRAME_QUERY_MD_SUBSCRIPTIONS + 回 ack（无需 admin）
+TEST(MdControlDomainServiceTest, QuerySubscriptionsOkWritesQueryFrame) {
+    ShmFixture fx;
+    MirrorStore store;
+    ProcessMirror pm(store);
+    MdControlDomainService svc(pm, &*fx.writer);
+    std::vector<nlohmann::json> replies;
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    const nlohmann::json payload = {{"source", "dzmd_ctp"}, {"query", "unsuccessful"}, {"seq", 5}};
+    svc.handle_query_md_subscriptions("dzmd_ctp", 5, payload, reply);
+    ASSERT_EQ(replies.size(), 1u);
+    EXPECT_EQ(replies[0]["type"], "query_md_subscriptions_ack");
+    EXPECT_EQ(replies[0]["seq"], 5);
+    EXPECT_EQ(replies[0]["payload"]["ok"], true);
+    EXPECT_EQ(fx.last_type(), DZ_FRAME_QUERY_MD_SUBSCRIPTIONS);
+}
+
+// query_md_subscriptions 缺 payload：回 error，不写帧
+TEST(MdControlDomainServiceTest, QuerySubscriptionsMissingPayloadRepliesError) {
+    ShmFixture fx;
+    MirrorStore store;
+    ProcessMirror pm(store);
+    MdControlDomainService svc(pm, &*fx.writer);
+    std::vector<nlohmann::json> replies;
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    svc.handle_query_md_subscriptions("dzmd_ctp", 2, nlohmann::json{{"source", "dzmd_ctp"}}, reply);
+    ASSERT_EQ(replies.size(), 1u);
+    EXPECT_EQ(replies[0]["type"], "error");
+    EXPECT_EQ(replies[0]["payload"]["message"], "missing query or instruments");
+    EXPECT_EQ(fx.last_type(), static_cast<DzFrameType>(-1));
+}
+
+// query_md_subscriptions writer 缺失：回 error（API-only 无事件通道）
+TEST(MdControlDomainServiceTest, QuerySubscriptionsNoWriterRepliesError) {
+    MirrorStore store;
+    ProcessMirror pm(store);
+    MdControlDomainService svc(pm, nullptr);
+    std::vector<nlohmann::json> replies;
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    svc.handle_query_md_subscriptions("dzmd_ctp", 6, nlohmann::json{{"query", "unsuccessful"}}, reply);
+    ASSERT_EQ(replies.size(), 1u);
+    EXPECT_EQ(replies[0]["type"], "error");
+    EXPECT_EQ(replies[0]["payload"]["message"], "invalid source or writer not ready");
 }
 
 }  // namespace

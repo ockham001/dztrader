@@ -202,9 +202,13 @@ int main(int argc, char* argv[]) {
     // 注册 WebSocket 控制器
     // P2 任务①：WsController 实现 DataChangeNotifier 薄接口，先于业务 controller 构造，
     // 作为数据变更通知/踢人能力注入各 controller（取代原全局函数指针）
+    // P2 任务③：出方向行情控制领域服务（md_connect/disconnect/query_md_subscriptions）
+    // 在 ws_ctrl 之前构造，注入 WsController 用于 C2S 下沉
+    auto md_control_domain =
+        std::make_shared<dztrader::webui::MdControlDomainService>(*process_mirror, event_writer.get());
     auto ws_ctrl = std::make_shared<dztrader::webui::WsController>(
         cfg, repo, event_writer, self_log,
-        *mirror_store, process_mirror);
+        *mirror_store, *md_control_domain);
     drogon::app().registerController(ws_ctrl);
 
     // 注册 /api/login 控制器
