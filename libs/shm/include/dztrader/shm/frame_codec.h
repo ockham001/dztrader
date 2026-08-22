@@ -21,12 +21,6 @@ T decode_ext_json(const FrameView& view) {
     return nlohmann::json::parse(data, data + view.ext_payload_size()).get<T>();
 }
 
-template <typename T>
-T decode_stg_json(const FrameView& view) {
-    const auto* data = reinterpret_cast<const char*>(view.stg_payload());
-    return nlohmann::json::parse(data, data + view.stg_payload_size()).get<T>();
-}
-
 template <AllowedWriteLock WriteLock, typename T>
 bool write_ext_inst_json(Writer<WriteLock>& writer,
                          DzFrameType frame_type,

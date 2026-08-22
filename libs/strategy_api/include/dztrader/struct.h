@@ -107,7 +107,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzTradingAccount, {
 /* ==========================================================
  *  帧格式结构体
  *
- *  命名约定: 扩展头按携带的标识字段命名 (Inst/Stg/无),
+ *  命名约定: 扩展头按携带的标识字段命名 (Inst/无),
  *  描述的是帧布局, 与 shm 唤醒机制无关 —— shm 写入任何帧
  *  都唤醒全部等待进程, 接收方按 frame_type / instance_id
  *  自行过滤是否处理。
@@ -121,12 +121,6 @@ DZ_DECLARE_ALIGNED_STRUCT(DzFrameHeader, {
 });
 
 /** @brief 扩展帧头部，仅变长帧使用，紧跟 DzFrameHeader */
-DZ_DECLARE_ALIGNED_STRUCT(DzExtStgFrameHeader, {
-    DzStrategyId strategy_id;  ///< 来源策略ID
-    uint32_t data_size;        ///< payload 实际字节数（不含头部）
-    char reserved[4];
-});
-
 typedef char DzInstanceId[64];
 
 /** @brief 扩展帧头部（含 instance_id），仅变长帧使用，紧跟 DzFrameHeader */

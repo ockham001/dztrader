@@ -56,23 +56,6 @@ public:
     uint32_t ext_payload_size() const noexcept {
         return ext_header().data_size;
     }
-
-    const DzExtStgFrameHeader& stg_header() const noexcept {
-        return *reinterpret_cast<const DzExtStgFrameHeader*>(
-            frame_ + sizeof(DzFrameHeader));
-    }
-
-    const std::byte* stg_payload() const noexcept {
-        return frame_ + sizeof(DzFrameHeader) + sizeof(DzExtStgFrameHeader);
-    }
-
-    uint32_t stg_payload_size() const noexcept {
-        return stg_header().data_size;
-    }
-
-    const char* stg_strategy_id() const noexcept {
-        return stg_header().strategy_id;
-    }
 };
 
 }  // namespace dztrader::shm
