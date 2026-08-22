@@ -16,7 +16,7 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `source` | string | 通知来源（进程名或策略实例 ID `stg.<name>`，总则 §5） |
+| `source` | string | 通知来源（进程名或裸策略名，总则 §5 身份边界） |
 | `level` | string | 级别：`"info"`/`"warning"`/`"error"`（与《帧契约：日志》的 log level 规范全称一致） |
 | `message` | string | 通知正文 |
 | `timestamp` | time_t | Unix 秒级时间戳 |

@@ -38,7 +38,7 @@
 - `DzFrameHeader`：所有帧共用固定头（`frame_size` 整帧大小、8 的倍数；`frame_type` 帧类型）。
 - 变长帧在固定头后紧跟一个扩展头，二选一：
   - `DzExtFrameHeader`：仅 `data_size`，无实例标识（广播/无路由帧）。
-  - `DzExtInstFrameHeader`：`instance_id`（`char[64]`）+ `data_size`，带实例路由（定向/来源标识）。策略帧的 `instance_id` 即策略实例 ID（`stg.<name>`，§5）。
+  - `DzExtInstFrameHeader`：`instance_id`（`char[64]`）+ `data_size`，带实例路由（定向/来源标识）。策略帧的 `instance_id` 为裸策略名（§5 身份边界）。
 - 定长 struct 帧无扩展头。
 
 **写入 API 真相源**：`libs/platform/include/dztrader/platform/frame_codec.h`（JSON 帧）与 `libs/shm/include/dztrader/shm/writer.h`（底层 `write_frame`/`write_ext_frame`）。
@@ -153,6 +153,7 @@
 - 账户 ID **全局唯一**（跨全部接口类型，如 CTP / XTP 不冲突），作为账户级实例的唯一标识，不携带进程名；账户归属进程由业务配置 / 路由推断，不由 `instance_id` 承载。
 - 策略实例 ID = `stg.<name>`（无 pid 后缀，重启复用同名；master 与策略 SDK 必须构造同名）。
 - 订阅者（读者）身份 = 进程 instance_id（策略 `stg.<name>`，其余进程为进程名），与该进程的事件通道信号量名一致（见契约 shm）。
+- **身份边界**：`stg.<name>` 前缀**仅用于内存中的订阅者/信号量/reader/md 订阅者身份**（区分策略与系统组件，同一事件通道命名空间防冲突）。策略帧的帧头 `instance_id`、payload 内嵌 `strategy_id` 字段、展示层与 SDK 接口一律用**裸策略名**（策略名在全部策略中唯一，如 `stg_demo`；本目录《帧契约：策略》《帧契约：UI 通知》按此执行）。
 - 同一逻辑实例在全部契约中必须使用同一 `instance_id`（日志、SHM 配置、进度、镜像 key 对齐）。
 - 帧头无 `instance_id` 的帧不得依赖"帧来源"路由；来源/目标必须显式在 payload 中携带（如 `target`/`name`/`source` 字段）。
 
