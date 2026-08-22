@@ -1,7 +1,10 @@
 #include "test_util.h"
 
 #include <cstring>
+#include <string_view>
+#include <vector>
 #include <dztrader/shm/channel_meta.h>
+#include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
 #include <dztrader/shm/common.h>
@@ -13,6 +16,7 @@
 
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
+using dztrader::shm::FrameView;
 using dztrader::shm::Reader;
 using dztrader::shm::MultiWriter;
 using dztrader::shm::SingleWriter;
@@ -477,4 +481,53 @@ TEST_F(WriterTest, TouchWritePositionMultiWriter) {
     ASSERT_TRUE(writer.write_frame(DZ_FRAME_PRELOAD_MD_SHM, params));
     writer.touch_write_position();
     SUCCEED();
+}
+
+TEST_F(WriterTest, OpenFrameRejectsFrameLargerThanPageSize) {
+    auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
+    SingleWriter writer = SingleWriter::create(meta, "gw.test");
+
+    const uint64_t nwp_before = meta->next_write_pos()->load();
+    // data_size=1MB → pending=1MB+8 > 页, 对齐(8倍数)通过后命中超页拒绝
+    EXPECT_EQ(writer.open_frame(DZ_FRAME_RTN_MD_TICK, 1 * MB), nullptr);
+    EXPECT_EQ(meta->next_write_pos()->load(), nwp_before);
+}
+
+TEST_F(WriterTest, FrameExactlyPageSizeSucceeds) {
+    auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
+    SingleWriter writer = SingleWriter::create(meta, "gw.test");
+
+    // pending = (1MB-8)+8 = 恰好等于页大小: 等值边界通过超页拒绝检查。
+    // 页首 8B 为通道头, 页剩余 1MB-8 容不下整页帧, 经填充跨入页 1 整页写入
+    constexpr uint32_t exact = static_cast<uint32_t>(1 * MB - sizeof(DzFrameHeader));
+    std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, exact);
+    ASSERT_NE(payload, nullptr);
+    writer.close_frame();
+    EXPECT_EQ(meta->next_write_pos()->load(), 2 * MB);
+}
+
+TEST_F(WriterTest, PageAwareCapWriteSucceeds) {
+    // 页感知上限真实路径: len=(1MB-80)&~7=1048496, 经 write_ext_inst_frame 总帧恰为 1MB;
+    // 页首 8B 通道头使整页帧跨入页 1 (填充页 0 剩余), Reader 跳过 INVALID_FILL 后读到该帧
+    auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
+    MultiWriter writer = MultiWriter::create(meta, "gw.test");
+    Reader reader = Reader::create(meta, "stg.test");
+
+    constexpr uint32_t cap_len =
+        static_cast<uint32_t>(1 * MB - sizeof(DzFrameHeader) - sizeof(DzExtInstFrameHeader));
+    std::vector<std::byte> buf(cap_len);
+    for (size_t i = 0; i < buf.size(); ++i) buf[i] = static_cast<std::byte>(i & 0xFF);
+
+    const char* inst = "inst.cap";
+    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, inst, buf.data(), cap_len));
+    writer.notify_subscribers();
+    EXPECT_EQ(meta->next_write_pos()->load(), 2 * MB);
+
+    auto* frame = reader.next_frame();
+    ASSERT_NE(frame, nullptr);
+    FrameView view(frame);
+    EXPECT_EQ(view.type(), DZ_FRAME_STG_USER_INPUT);
+    EXPECT_EQ(std::string_view(view.ext_inst_id()), inst);
+    EXPECT_EQ(view.ext_inst_payload_size(), cap_len);
+    EXPECT_EQ(std::memcmp(view.ext_inst_payload(), buf.data(), cap_len), 0);
 }

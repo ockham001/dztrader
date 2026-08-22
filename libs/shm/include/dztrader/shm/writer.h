@@ -151,6 +151,8 @@ public:
         }
     }
 
+    [[nodiscard]] uint64_t page_size() const noexcept { return page_size_; }
+
 private:
     Writer(std::shared_ptr<ChannelMeta> meta,
            AtomicU64* nwp,
