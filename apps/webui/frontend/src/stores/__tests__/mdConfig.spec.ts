@@ -212,8 +212,12 @@ describe('useMdConfigStore', () => {
       const store = useMdConfigStore()
       store.applyAutoLogin('dzmd_ctp', { enabled: false, schedules: [] })  // 建立镜像（守卫要求）
       await store.toggleAutoLogin(1, 'dzmd_ctp', true)
-      await store.addSchedule(1, 'dzmd_ctp', '09:00', '15:00')
       expect(marketSourcePending.pending['source:1:auto_login']).toBe(true)
+      // 域互斥: auto_login 在途时 addSchedule 会被拒 → 先 RTN 清掉 auto_login pending 再发起 addSchedule
+      store.applyAutoLogin('dzmd_ctp', { enabled: true, schedules: [] })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(marketSourcePending.pending['source:1:auto_login']).toBeUndefined()
+      await store.addSchedule(1, 'dzmd_ctp', '09:00', '15:00')
       expect(marketSourcePending.pending['source:1:schedule_add']).toBe(true)
 
       store.applyAutoLogin('dzmd_ctp', autoLoginPayload)
@@ -354,12 +358,12 @@ describe('useMdConfigStore', () => {
       expect(marketSourcePending.pending['source:1:auto_login']).toBe(false)
     })
 
-    it('toggleAutoLogin: HTTP 失败回滚乐观更新（镜像不残留虚假值）', async () => {
+    it('toggleAutoLogin: HTTP 失败镜像保持原值（非乐观, 不预写镜像）', async () => {
       vi.mocked(marketSourcesApi.setAutoLogin).mockRejectedValue(new Error('503'))
       const store = useMdConfigStore()
       // 先建立镜像 enabled=false
       store.applyAutoLogin('dzmd_ctp', { enabled: false, schedules: [] })
-      // 乐观更新为 true 后 HTTP 失败 → 回滚
+      // 非乐观: 提交不预写镜像, 失败时镜像从未被修改
       expect(await store.toggleAutoLogin(1, 'dzmd_ctp', true)).toBe(false)
       expect(store.autoLogins['dzmd_ctp'].enabled).toBe(false)
       // 镜像未建立时失败: 不残留条目
@@ -376,35 +380,64 @@ describe('useMdConfigStore', () => {
       expect(marketSourcePending.pending['source:1:schedule_add']).toBeUndefined()
     })
 
-    it('addSchedule / removeSchedule 独立 pending（互不干扰）', async () => {
-      vi.mocked(marketSourcesApi.setAutoLogin).mockResolvedValue({ ok: true })
+    it('addSchedule / removeSchedule 域互斥（在途全量提交未回推前拒绝新提交, 防旧基准覆盖）', async () => {
+      // setAutoLogin 挂起: addSchedule 提交后 RTN 未回推（镜像仍为旧值）
+      const resolvers: ((v: { ok: boolean }) => void)[] = []
+      vi.mocked(marketSourcesApi.setAutoLogin).mockImplementation(
+        () => new Promise(res => { resolvers.push(res) }))
       const store = useMdConfigStore()
-      // 先建立镜像 (全量提交的 schedules 基准)
-      store.applyAutoLogin('dzmd_ctp', autoLoginPayload)
-      await store.addSchedule(1, 'dzmd_ctp', '20:45', '02:30')
-      expect(marketSourcesApi.setAutoLogin).toHaveBeenCalledWith(1, {
+      store.applyAutoLogin('dzmd_ctp', autoLoginPayload)  // 已含 09:00-15:00
+      const p = store.addSchedule(1, 'dzmd_ctp', '20:45', '02:30')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(marketSourcesApi.setAutoLogin).toHaveBeenCalledTimes(1)
+      expect(marketSourcePending.pending['source:1:schedule_add']).toBe(true)
+
+      // schedule_add 在途时 removeSchedule 被域互斥拒绝: 不发第二次全量（旧基准会覆盖添加意图）
+      const rp = store.removeSchedule(1, 'dzmd_ctp', '09:00', '15:00')
+      await vi.advanceTimersByTimeAsync(0)
+      // 旧实现（乐观 + 独立 pending）会让 removeSchedule 发出第二次全量并挂起——
+      // 若确实发出则 resolve 之, 使下方断言在结果上干净失败而非 5s 超时
+      if (resolvers.length >= 2) resolvers[1]({ ok: true })
+      expect(await rp).toBe(false)
+      expect(marketSourcesApi.setAutoLogin).toHaveBeenCalledTimes(1)  // 仍只有第一次
+
+      // 收尾: resolve 在途提交; RTN 回推权威覆盖——镜像含新时段, 域 pending 批量清
+      for (const res of resolvers) res({ ok: true })
+      await p
+      store.applyAutoLogin('dzmd_ctp', {
         enabled: true,
         schedules: [
           { login_time: '09:00', logout_time: '15:00' },
           { login_time: '20:45', logout_time: '02:30' },
         ],
       })
-      expect(marketSourcePending.pending['source:1:schedule_add']).toBe(true)
-
-      // schedule_add 挂起时 schedule_remove 仍可发起（现有 spec: 时段增删独立等待状态）
-      const r = await store.removeSchedule(1, 'dzmd_ctp', '09:00', '15:00')
-      expect(r).toBe(true)
-      expect(marketSourcesApi.setAutoLogin).toHaveBeenLastCalledWith(1, {
-        enabled: true,
-        schedules: [{ login_time: '20:45', logout_time: '02:30' }],
-      })
-      expect(marketSourcePending.pending['source:1:schedule_remove']).toBe(true)
-
-      // 收尾：applyAutoLogin 批量清（clearByPrefix 语义: delete 条目）
-      store.applyAutoLogin('dzmd_ctp', { enabled: true, schedules: [{ login_time: '20:45', logout_time: '02:30' }] })
       await vi.advanceTimersByTimeAsync(0)
       expect(marketSourcePending.pending['source:1:schedule_add']).toBeUndefined()
       expect(marketSourcePending.pending['source:1:schedule_remove']).toBeUndefined()
+    })
+
+    it('removeSchedule 非乐观: HTTP 挂起期间镜像不变（时段仍在, 无假删除）', async () => {
+      let resolveRemove!: (v: { ok: boolean }) => void
+      vi.mocked(marketSourcesApi.setAutoLogin).mockImplementation(
+        () => new Promise(res => { resolveRemove = res }))
+      const store = useMdConfigStore()
+      store.applyAutoLogin('dzmd_ctp', autoLoginPayload)  // 含 09:00-15:00
+      const p = store.removeSchedule(1, 'dzmd_ctp', '09:00', '15:00')
+      await vi.advanceTimersByTimeAsync(0)
+      // 非乐观: RTN 未回推前镜像保持旧值——09:00 仍在（用户看到的应是"转圈待确认", 不是"立即消失"）
+      expect(store.autoLogins['dzmd_ctp'].schedules).toHaveLength(1)
+      expect(store.autoLogins['dzmd_ctp'].schedules[0].login_time).toBe('09:00')
+      resolveRemove({ ok: true })
+      await p
+    })
+
+    it('removeSchedule HTTP 失败: 镜像保持原值, 无需回滚（非乐观天然成立）', async () => {
+      vi.mocked(marketSourcesApi.setAutoLogin).mockRejectedValue(new Error('net down'))
+      const store = useMdConfigStore()
+      store.applyAutoLogin('dzmd_ctp', autoLoginPayload)
+      expect(await store.removeSchedule(1, 'dzmd_ctp', '09:00', '15:00')).toBe(false)
+      // 后台断网失败: 镜像从未被修改, 09:00 保留（与服务端一致）
+      expect(store.autoLogins['dzmd_ctp'].schedules).toHaveLength(1)
     })
   })
 

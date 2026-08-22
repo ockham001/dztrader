@@ -242,10 +242,12 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     }
   }
 
-  /// 全量提交 SET_AUTO_LOGIN + 乐观更新，HTTP 失败/超时时回滚乐观值。
-  /// 回滚必要性：网关侧校验失败契约 auto-login 必回 RTN（旧值），由 applyAutoLogin 权威覆盖；
-  /// 但 HTTP 失败（如 503 进程未运行）或超时无任何 RTN——若不回滚，虚假镜像会残留
-  /// 并被下一次全量提交再次下发（enabled=true 意外开启自动登录是安全敏感操作）。
+  // auto_login 域操作集（域互斥用）: 全量提交基准是镜像, 在途未回推前新提交会以旧基准覆盖在途意图
+  const AUTO_LOGIN_OPS = ['auto_login', 'schedule_add', 'schedule_remove'] as const
+
+  /// 全量提交 SET_AUTO_LOGIN，非乐观：不预写镜像，成功以 RTN_AUTO_LOGIN 权威覆盖为准；
+  /// HTTP 失败/超时无 RTN，镜像保持旧值（无需回滚）。
+  /// 域互斥：AUTO_LOGIN_OPS 任一在途即拒绝（返回 false，对齐同 key busy 模式）。
   async function submitAutoLogin(
     id: number,
     sourceName: string,
@@ -253,22 +255,11 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     opLabel: string,
     build: (cur: AutoLoginBody) => AutoLoginBody,
   ): Promise<MdConfigOpResult> {
-    const prev = autoLogins.value[sourceName]
-    const body = build(currentAutoLogin(sourceName))
-    // runner.execute 内含乐观更新 + 结果映射；失败/超时（无 RTN）需回滚乐观值
-    const result = await runner.execute(key, () => {
-      autoLogins.value[sourceName] = body  // 乐观更新; RTN_AUTO_LOGIN 权威覆盖
-      return marketSourcesApi.setAutoLogin(id, body)
-    }, opLabel)
-    if (result === false || result === PENDING_TIMEOUT) {
-      // HTTP 失败 / 超时: 无 RTN 到达, 回滚乐观值
-      if (prev === undefined) {
-        delete autoLogins.value[sourceName]
-      } else {
-        autoLogins.value[sourceName] = prev
-      }
+    if (AUTO_LOGIN_OPS.some(op => runner.busy(runner.opKey(id, op)))) {
+      return false  // 域内已有在途全量提交: 拒绝（防旧基准覆盖丢失更新）
     }
-    return result
+    const body = build(currentAutoLogin(sourceName))
+    return runner.execute(key, () => marketSourcesApi.setAutoLogin(id, body), opLabel)
   }
 
   async function toggleAutoLogin(id: number, sourceName: string, enabled: boolean): Promise<MdConfigOpResult> {
