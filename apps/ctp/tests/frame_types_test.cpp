@@ -37,7 +37,12 @@ TEST(FrameTypes, MdReaderRegisterFrames) {
 }
 
 TEST(FrameTypes, StgFrames) {
+    EXPECT_EQ(DZ_FRAME_STG_USER_INPUT, static_cast<DzFrameType>(3001));
     EXPECT_EQ(DZ_FRAME_STG_USER_OUTPUT, static_cast<DzFrameType>(3002));
+}
+
+TEST(FrameTypes, LogicalPositionFrame) {
+    EXPECT_EQ(DZ_FRAME_SET_LOGICAL_POSITION, static_cast<DzFrameType>(103));
 }
 
 TEST(FrameTypes, LogConfigFramesHaveCorrectIds) {

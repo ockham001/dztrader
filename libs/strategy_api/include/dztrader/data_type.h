@@ -370,7 +370,7 @@ typedef int16_t DzFrameType;
 
 /** @brief 用户输入传递给策略（UI→策略） */
 #define DZ_FRAME_STG_USER_INPUT     ((DzFrameType)3001)
-/** @brief 策略→UI, 用户输入的响应(未来用, 本次只占编号) */
+/** @brief 策略→UI 输出（dz_output_ui，契约 strategy） */
 #define DZ_FRAME_STG_USER_OUTPUT     ((DzFrameType)3002)
 
 #endif /* DZTRADER_DATA_TYPE_H_ */

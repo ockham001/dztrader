@@ -6,9 +6,6 @@ DZ_BEGIN_C_DECLS
 /** @brief 通知UI帧类型 */
 #define DZ_FRAME_NOTIFY_UI ((DzFrameType)101)
 
-/** @brief 输出UI帧类型 */
-#define DZ_FRAME_OUTPUT_UI ((DzFrameType)102)
-
 /** @brief 设置逻辑持仓帧类型 */
 #define DZ_FRAME_SET_LOGICAL_POSITION ((DzFrameType)103)
 

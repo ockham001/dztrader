@@ -327,7 +327,7 @@ DZ_API bool dz_set_logical_position(const char* account_id,
     }
     copy_string(pos->account_id, account_id, true);
     copy_string(pos->instrument_id, instrument_id, true);
-    copy_string(pos->strategy_id, ctx().strategy_id, true);
+    copy_string(pos->strategy_id, strategy_identity(ctx().strategy_id).c_str(), true);
     pos->net_volume = net_volume;
     ctx().writer.close_frame();
     ctx().writer.notify_subscribers();
@@ -349,7 +349,7 @@ DZ_API bool dz_notify_ui(DzNotifyLevel level, const char* message, bool popup) {
     }
     try {
         nlohmann::json payload = {
-            {"source", ctx().strategy_id},
+            {"source", strategy_identity(ctx().strategy_id)},
             {"level", level},
             {"message", message},
             {"timestamp", std::chrono::system_clock::to_time_t(std::chrono::system_clock::now())},
@@ -378,7 +378,8 @@ DZ_API bool dz_output_ui(const char* data) {
     const auto data_len = std::min(strlen(data), size_t{1024 * 1024});
 
     try {
-        ctx().writer.write_ext_inst_frame(DZ_FRAME_OUTPUT_UI, ctx().strategy_id,
+        ctx().writer.write_ext_inst_frame(DZ_FRAME_STG_USER_OUTPUT,
+                                     strategy_identity(ctx().strategy_id).c_str(),
                                      reinterpret_cast<const std::byte*>(data),
                                      static_cast<uint32_t>(data_len));
         ctx().writer.notify_subscribers();

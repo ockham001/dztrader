@@ -215,7 +215,7 @@ DZ_API bool dz_set_logical_position(const char* account_id,
 /**
  * @brief 向 UI 消息中心投递通知消息
  *
- * 策略名自动关联（dz_strategy_name()），无需传参。
+ * 策略名自动关联（dz_strategy_id()），无需传参。
  *
  * @param level    消息级别（DZ_NOTIFY_INFO / DZ_NOTIFY_WARN / DZ_NOTIFY_ERROR）
  * @param message  消息内容（UTF-8，策略自行组织）
@@ -234,7 +234,7 @@ DZ_API bool dz_notify_ui(DzNotifyLevel level, const char* message, bool popup);
  * 典型场景：用户在 UI 输入指令 → 策略通过 on_user_input 收到 →
  * 策略处理后将结果通过 dz_output_ui 返回 UI。
  *
- * 策略名自动关联（dz_strategy_name()），无需传参。
+ * 策略名自动关联（dz_strategy_id()），无需传参。
  *
  * @param data  输出数据（UTF-8 文本或 JSON，策略自行组织格式）
  * @return true 成功，false 失败（调 dz_errcode() 获取错误码）
