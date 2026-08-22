@@ -14,10 +14,10 @@
 ## DZ_FRAME_STG_USER_INPUT
 
 **语义**：向指定策略进程投递用户输入（UI → 策略）
-**数据流**：形态 3（总则 §4.2）——前端 → dzweb → 目标策略进程（帧头 `instance_id` = 目标裸策略名，如 `stg_demo`）；无 RTN，结果经该策略的 `STG_USER_OUTPUT` 体现
+**数据流**：形态 3（总则 §4.2）——前端 → dzweb → 目标策略进程（帧头 `instance_id` = 目标裸策略名，如 `stg_demo`）；无 RTN，单向投递（fire-and-forget）
 **Payload**：变长 UTF-8 文本或 JSON（策略自行组织格式），无固定 schema
 
-**时序**：无同步响应；前端 pending 由 `STG_USER_OUTPUT`（如策略按请求-响应方式处理）或超时兜底（总则 §7）
+**时序**：无同步响应、无 RTN；本契约不规定策略的响应义务，前端不设 pending
 
 **约束**：
 - 定向帧，仅 `instance_id` 匹配的策略进程处理（策略 SDK 按自身裸策略名匹配）
@@ -30,13 +30,13 @@
 
 ## DZ_FRAME_STG_USER_OUTPUT
 
-**语义**：策略向 UI 输出交互结果（策略 → UI），对应 `dz_output_ui`
+**语义**：策略向 UI 自主输出数据（策略 → UI，类似 stdout），对应 `dz_output_ui`
 **数据流**：形态 6 变体（总则 §4.2）——策略进程 → dzweb 转发 → 前端（帧头 `instance_id` = 来源裸策略名）；无前端入口；无 RTN
 **Payload**：变长 UTF-8 文本或 JSON（策略自行组织格式），无固定 schema
 
 **约束**：
 - `instance_id` = 来源裸策略名（与 dzweb 进程镜像 key 一致，零转换关联）
-- 与 `NOTIFY_UI`（契约 notify-ui）的区别：`NOTIFY_UI` 是通知消息（有级别/弹窗/时间戳，进通知缓存）；`STG_USER_OUTPUT` 是交互式输出（无级别无弹窗，不进缓存，请求-响应式）
+- 与 `NOTIFY_UI`（契约 notify-ui）的区别：`NOTIFY_UI` 是通知消息（有级别/弹窗/时间戳，进通知缓存）；`STG_USER_OUTPUT` 是策略自主上行输出（无级别无弹窗，不进缓存）；是否响应 UI 输入由策略自行决定，本契约不定义配对关系
 - 接收方（dzweb）当前未消费本帧（`dz_output_ui` 写帧但 dzweb 无对应处理，见 README 范围与遗留）；契约定义语义，实现滞后由 general §11.3 checklist 跟踪
 
 **镜像**：不进 dzweb 镜像

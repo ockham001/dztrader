@@ -225,14 +225,14 @@ DZ_API bool dz_set_logical_position(const char* account_id,
 DZ_API bool dz_notify_ui(DzNotifyLevel level, const char* message, bool popup);
 
 /**
- * @brief 向 UI 发送交互式输出
+ * @brief 向 UI 发送输出数据
  *
  * 与 dz_notify_ui 的区别：
  *   dz_notify_ui  — 通知消息，有级别和弹窗，类似日志/告警（主动推送）
- *   dz_output_ui  — 交互式输出，无级别无弹窗，类似 stdout（请求-响应式）
+ *   dz_output_ui  — 自主输出，无级别无弹窗，类似 stdout
  *
- * 典型场景：用户在 UI 输入指令 → 策略通过 on_user_input 收到 →
- * 策略处理后将结果通过 dz_output_ui 返回 UI。
+ * 典型场景：策略主动向 UI 输出运行状态/自定义数据；也可作为对 UI 输入
+ * （STG_USER_INPUT）的响应。
  *
  * 策略名自动关联（dz_strategy_id()），无需传参。
  *
