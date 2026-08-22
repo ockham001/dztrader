@@ -385,12 +385,8 @@ DZ_API bool dz_output_ui(const char* data) {
             return false;
         }
         const auto data_len = static_cast<uint32_t>(std::min<uint64_t>(len, cap));
-        // 失败时 open_frame 内部已设置具体 LastError(如超页拒绝), 此处透传不覆盖
-        if (!ctx().writer.write_ext_inst_frame(DZ_FRAME_STG_USER_OUTPUT, ctx().strategy_id,
-                                               reinterpret_cast<const std::byte*>(data),
-                                               data_len)) {
-            return false;
-        }
+        ctx().writer.write_ext_inst_frame(DZ_FRAME_STG_USER_OUTPUT, ctx().strategy_id,
+                                          reinterpret_cast<const std::byte*>(data), data_len);
         ctx().writer.notify_subscribers();
         return true;
     } catch (const Exception& e) {
