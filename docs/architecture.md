@@ -21,7 +21,7 @@
 | 类别 | 链接方式 | 原因 |
 |------|---------|------|
 | 项目内部库 | 静态 | 稳定优先 |
-| 策略接口库 | 动态(仅给策略) | 策略独立加载 |
+| 策略接口库 | 静态为主(`dzstrategy_sdk_static`, 链接进平台进程与示例策略)；动态(`dzstrategy_sdk`)仅按需 `--target` 构建 | 分发编译后策略的形态预留，ABI 稳定边界 |
 | Qt | 动态 | LGPL |
 | 闭源SDK | 动态 | 无选择 |
 | CRT(MSVC) | 静态(/MT) | 避免vcredist |
@@ -47,8 +47,8 @@ event(1个,多进程写,进程锁)：加锁→读next_write_pos→写帧→原�
 md(N-1个,单进程写,自旋锁仅订阅者列表)：写帧→原子更新next_write_pos(release)→自旋锁→通知订阅者信号量→释放自旋锁
 读：比较next_write_pos与本地read_pos，有新数据直接读(无锁)
 策略用单个信号量，dz_wait()唤醒后轮询各通道next_write_pos判断来源
-通道命名：event=dz_shm_event，md=dz_shm_<源>
-订阅：静态(dz_init配置)+动态(dz_subscribe/unsubscribe写event channel,master转发)
+通道命名：event=`dzevent`（`CHANNEL_NAME_EVENT`），md=`<行情源名>`（与行情进程名一致）
+订阅：策略经 `dz_subscribe`/`dz_unsubscribe` 直发行情进程（`REQUEST_MD_SUBSCRIBE`，`instance_id`=行情进程名，契约 md-subscription），不再经 master 转发
 
 ## 策略接口约束
 
@@ -61,7 +61,7 @@ md(N-1个,单进程写,自旋锁仅订阅者列表)：写帧→原子更新next_
 
 ## 依赖禁止
 
-- 编译进dzstrategy_sdk.dll的代码禁止依赖dzcore或dzlog
+- `dzstrategy_sdk` 面向策略分发，仅允许暴露 `nlohmann/json`；实现依赖 dzcore/dzshm（`api.cpp` 使用 `LastError`、shm writer/reader），依赖方向为内部库，非 ABI 暴露面
 - dzlog独立库,仅平台进程使用
 
 ## Reference Projects
