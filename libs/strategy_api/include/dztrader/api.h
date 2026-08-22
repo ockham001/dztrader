@@ -237,6 +237,8 @@ DZ_API bool dz_notify_ui(DzNotifyLevel level, const char* message, bool popup);
  * 策略名自动关联（dz_strategy_id()），无需传参。
  *
  * @param data  输出数据（UTF-8 文本或 JSON，策略自行组织格式）
+ * 数据超过单页可写上限时按字节截断；上限 = min(1MB, 通道页大小 - 帧头开销)，
+ * 由 SDK 自动计算。通道页过小无法容纳任何 payload 时返回 false。
  * @return true 成功，false 失败（调 dz_errcode() 获取错误码）
  */
 DZ_API bool dz_output_ui(const char* data);

@@ -22,6 +22,7 @@
 #include "result_set.h"
 #include "vector_result_set.h"
 #include "cursor_result_set.h"
+#include "output_limit.h"
 
 using namespace dztrader;
 
@@ -375,12 +376,17 @@ DZ_API bool dz_output_ui(const char* data) {
         return false;
     }
 
-    const auto data_len = std::min(strlen(data), size_t{1024 * 1024});
-
     try {
+        const auto len = strlen(data);
+        // 页感知上限: cap 在 try 内计算(ctx() 惰性构造可抛)
+        const auto cap = output_ui_max_payload(ctx().writer.page_size());
+        if (len > 0 && cap == 0) {
+            LastError::set(DZ_EC_BUFFER_TOO_SMALL, "page too small for output frame");
+            return false;
+        }
+        const auto data_len = static_cast<uint32_t>(std::min<uint64_t>(len, cap));
         ctx().writer.write_ext_inst_frame(DZ_FRAME_STG_USER_OUTPUT, ctx().strategy_id,
-                                     reinterpret_cast<const std::byte*>(data),
-                                     static_cast<uint32_t>(data_len));
+                                          reinterpret_cast<const std::byte*>(data), data_len);
         ctx().writer.notify_subscribers();
         return true;
     } catch (const Exception& e) {
