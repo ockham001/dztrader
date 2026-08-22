@@ -355,8 +355,17 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
                 <input class="shm-num-input" type="number" :value="pt.bytes"
                   :disabled="src.shmConfigPending" @blur="onPreloadBlur(time, 'bytes', $event)">
               </label>
-              <button class="preload-item__remove" type="button"
-                :disabled="src.shmConfigPending" @click="removePreloadPoint(time)">删除</button>
+              <button
+                class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--icon ds-btn--danger-icon"
+                style="margin-left: auto"
+                type="button"
+                :disabled="src.shmConfigPending"
+                :title="`删除预加载点 ${time}`"
+                :aria-label="`删除预加载点 ${time}`"
+                @click="removePreloadPoint(time)"
+              >
+                <Icon name="Delete" :size="14" />
+              </button>
             </div>
             <div v-if="preloadEntries.length === 0" class="card-hint">无预加载点</div>
           </div>
@@ -500,9 +509,6 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 .preload-item:hover { background: var(--bg-overlay-l1); }
 .preload-item__time { font-family: var(--code-editor-font-family); font-variant-numeric: tabular-nums; font-size: var(--body-base-font-size); color: var(--text-default); min-width: 44px; }
 .preload-item__field { display: inline-flex; align-items: center; gap: var(--spacer-4); font-size: var(--body-xs-font-size); color: var(--text-tertiary); }
-.preload-item__remove { margin-left: auto; background: none; border: none; color: var(--text-tertiary); font-size: var(--body-sm-font-size); cursor: pointer; padding: var(--spacer-2) var(--spacer-6); border-radius: var(--radius-4); }
-.preload-item__remove:disabled { cursor: default; opacity: 0.6; }
-.preload-item__remove:not(:disabled):hover { color: var(--status-error-default); background: var(--status-error-surface-l1); }
 
 /* 对话框错误提示（scoped 不跨组件, 本组件 Modal 自带） */
 .dialog-row__error {

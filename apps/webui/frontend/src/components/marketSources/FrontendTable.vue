@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
 import { isStateIdle } from '@/composables/useProcessState'
 import { useMarketSourcesStore } from '@/stores/marketSources'
@@ -63,6 +64,7 @@ const frontendDeleteModalOpen = ref(false)
 const frontendDeleteSourceId = ref<number | null>(null)
 const frontendDeleteBrokerName = ref('')
 const frontendDeleteAddress = ref('')
+const frontendDeleteSubmitting = ref(false)
 
 function openFrontendDeleteModal(sourceId: number, brokerName: string, address: string): void {
   frontendDeleteSourceId.value = sourceId
@@ -76,15 +78,19 @@ function closeFrontendDeleteModal(): void {
   frontendDeleteSourceId.value = null
   frontendDeleteBrokerName.value = ''
   frontendDeleteAddress.value = ''
+  frontendDeleteSubmitting.value = false
 }
 
 async function confirmDeleteFrontend(): Promise<void> {
   if (!frontendDeleteSourceId.value || !frontendDeleteBrokerName.value || !frontendDeleteAddress.value) return
+  if (frontendDeleteSubmitting.value) return  // 防重入
+  frontendDeleteSubmitting.value = true
   try {
     await store.removeFrontend(frontendDeleteSourceId.value, frontendDeleteBrokerName.value, frontendDeleteAddress.value)
     closeFrontendDeleteModal()
   } catch {
     // 错误已由 store 设置; 保持 Modal 打开让用户看到 toast 并可重试
+    frontendDeleteSubmitting.value = false
   }
 }
 
@@ -153,12 +159,15 @@ function onFrontendAddressBlur(
             <td><code class="mono" :style="{ fontSize: 'var(--body-sm-font-size)' }">{{ fe.label || '--' }}</code></td>
             <td :style="{ textAlign: 'right' }">
               <button
-                class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--danger-subtle"
+                class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--icon ds-btn--danger-icon"
                 type="button"
                 :disabled="!isStateIdle(src.process_state, src.loginState) || src.frontendRemovePending"
+                :title="`删除前置 ${fe.address}`"
+                :aria-label="`删除前置 ${fe.address}`"
                 @click="openFrontendDeleteModal(src.id, broker.name, fe.address)"
               >
-                {{ src.frontendRemovePending ? '删除中…' : '删除' }}
+                <span v-if="src.frontendRemovePending" class="ds-btn__spinner"></span>
+                <Icon v-else name="Delete" :size="14" />
               </button>
             </td>
           </tr>
@@ -204,7 +213,10 @@ function onFrontendAddressBlur(
     </div>
     <template #footer>
       <button class="ds-btn ds-btn--secondary" type="button" @click="closeFrontendDeleteModal">取消</button>
-      <button class="ds-btn ds-btn--danger" type="button" @click="confirmDeleteFrontend">删除</button>
+      <button class="ds-btn ds-btn--danger" type="button" :disabled="frontendDeleteSubmitting" @click="confirmDeleteFrontend">
+        <span v-if="frontendDeleteSubmitting" class="ds-btn__spinner"></span>
+        {{ frontendDeleteSubmitting ? '删除中…' : '删除' }}
+      </button>
     </template>
   </Modal>
 </template>

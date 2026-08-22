@@ -35,10 +35,12 @@ export interface UserView extends User {
   strategyPermissions: string[]
   expanded: boolean
   actionPending: boolean
+  removePending: boolean
 }
 
 export interface IpEntryView extends IpEntry {
   sourceType: 'auto' | 'manual'
+  removePending: boolean
 }
 
 export interface SecurityConfigView extends SecurityConfig {
@@ -117,11 +119,12 @@ export const useUserManagementStore = defineStore('userManagement', () => {
           strategyPermissions: [],
           expanded: false,
           actionPending: false,
+          removePending: false,
         } as UserView
       })
       securityConfig.value = { ...config, lockoutPending: false, accessModePending: false, lockoutError: null, accessModeError: null }
-      blacklist.value = black.map(b => ({ ...b, sourceType: (b.source === 'auto' ? 'auto' : 'manual') as 'auto' | 'manual' }))
-      whitelist.value = white.map(w => ({ ...w, sourceType: (w.source === 'auto' ? 'auto' : 'manual') as 'auto' | 'manual' }))
+      blacklist.value = black.map(b => ({ ...b, sourceType: (b.source === 'auto' ? 'auto' : 'manual') as 'auto' | 'manual', removePending: false }))
+      whitelist.value = white.map(w => ({ ...w, sourceType: (w.source === 'auto' ? 'auto' : 'manual') as 'auto' | 'manual', removePending: false }))
       loginHistory.value = history.entries
       loginHistoryPage.value = 1
       loginHistoryHasMore.value = history.entries.length >= LOGIN_HISTORY_PAGE_SIZE
@@ -152,10 +155,12 @@ export const useUserManagementStore = defineStore('userManagement', () => {
         securityConfig.value = { ...securityConfig.value, ...config }
       } else if (scope === 'blacklist') {
         const black = await securityApi.listBlacklist()
-        blacklist.value = black.map(b => ({ ...b, sourceType: (b.source === 'auto' ? 'auto' : 'manual') as 'auto' | 'manual' }))
+        const prevBlack = new Map(blacklist.value.map(e => [e.id, e.removePending]))
+        blacklist.value = black.map(b => ({ ...b, sourceType: (b.source === 'auto' ? 'auto' : 'manual') as 'auto' | 'manual', removePending: prevBlack.get(b.id) ?? false }))
       } else if (scope === 'whitelist') {
         const white = await securityApi.listWhitelist()
-        whitelist.value = white.map(w => ({ ...w, sourceType: (w.source === 'auto' ? 'auto' : 'manual') as 'auto' | 'manual' }))
+        const prevWhite = new Map(whitelist.value.map(e => [e.id, e.removePending]))
+        whitelist.value = white.map(w => ({ ...w, sourceType: (w.source === 'auto' ? 'auto' : 'manual') as 'auto' | 'manual', removePending: prevWhite.get(w.id) ?? false }))
       } else if (scope === 'users') {
         const userResp = await usersApi.list({ page: 1, page_size: 50 })
         // 保留现有用户的 expanded/permissions 等 view state；被删除的用户自然消失
@@ -168,6 +173,8 @@ export const useUserManagementStore = defineStore('userManagement', () => {
             strategyPermissions: existing?.strategyPermissions ?? [],
             expanded: existing?.expanded ?? false,
             actionPending: false,
+            // 保留 in-flight 删除标记（WS 刷新不打断正在进行的删除防重入）
+            removePending: existing?.removePending ?? false,
           } as UserView
         })
       } else if (scope === 'login_history') {
@@ -226,6 +233,7 @@ export const useUserManagementStore = defineStore('userManagement', () => {
         strategyPermissions: data.strategyPermissions,
         expanded: false,
         actionPending: false,
+        removePending: false,
       }
       users.value = [...users.value, newUser]
       return true
@@ -253,11 +261,15 @@ export const useUserManagementStore = defineStore('userManagement', () => {
   async function removeUser(id: number): Promise<boolean> {
     // P3 任务6：改 API 优先——先等服务端删除成功再本地移除；失败保留用户（不产生与
     // 服务端不一致的乐观删除，后续刷新也不会"复活"）。
+    const u = findUser(id)
+    if (!u || u.removePending) return true  // 幂等: 目标不存在或已在删除, 无操作
+    updateUser(id, { removePending: true })
     try {
       await usersApi.remove(id)
-      users.value = users.value.filter(u => u.id !== id)
+      users.value = users.value.filter(x => x.id !== id)
       return true
     } catch {
+      updateUser(id, { removePending: false })
       error.value = '删除用户失败（未删除，请重试）'
       return false
     }
@@ -335,10 +347,10 @@ export const useUserManagementStore = defineStore('userManagement', () => {
     try {
       if (list === 'black') {
         const entry = await securityApi.addBlacklist({ ip, reason })
-        blacklist.value = [...blacklist.value, { ...entry, sourceType: (entry.source === 'auto' ? 'auto' : 'manual') as 'auto' | 'manual' }]
+        blacklist.value = [...blacklist.value, { ...entry, sourceType: (entry.source === 'auto' ? 'auto' : 'manual') as 'auto' | 'manual', removePending: false }]
       } else {
         const entry = await securityApi.addWhitelist({ ip, reason })
-        whitelist.value = [...whitelist.value, { ...entry, sourceType: (entry.source === 'auto' ? 'auto' : 'manual') as 'auto' | 'manual' }]
+        whitelist.value = [...whitelist.value, { ...entry, sourceType: (entry.source === 'auto' ? 'auto' : 'manual') as 'auto' | 'manual', removePending: false }]
       }
       return true
     } catch {
@@ -347,6 +359,14 @@ export const useUserManagementStore = defineStore('userManagement', () => {
   }
 
   async function removeIp(list: 'black' | 'white', id: number): Promise<boolean> {
+    const arr = list === 'black' ? blacklist.value : whitelist.value
+    const target = arr.find(e => e.id === id)
+    if (!target || target.removePending) return true  // 幂等: 无操作
+    if (list === 'black') {
+      blacklist.value = blacklist.value.map(e => e.id === id ? { ...e, removePending: true } : e)
+    } else {
+      whitelist.value = whitelist.value.map(e => e.id === id ? { ...e, removePending: true } : e)
+    }
     try {
       if (list === 'black') {
         await securityApi.removeBlacklist(id)
@@ -357,6 +377,11 @@ export const useUserManagementStore = defineStore('userManagement', () => {
       }
       return true
     } catch {
+      if (list === 'black') {
+        blacklist.value = blacklist.value.map(e => e.id === id ? { ...e, removePending: false } : e)
+      } else {
+        whitelist.value = whitelist.value.map(e => e.id === id ? { ...e, removePending: false } : e)
+      }
       return false
     }
   }

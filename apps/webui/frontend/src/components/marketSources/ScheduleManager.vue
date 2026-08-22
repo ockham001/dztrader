@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
 import TimePicker from '@/components/shared/TimePicker.vue'
 import { useMarketSourcesStore } from '@/stores/marketSources'
@@ -13,6 +14,10 @@ const props = defineProps<{
 
 const store = useMarketSourcesStore()
 const src = computed(() => props.source)
+
+// auto_login 域互斥的 UI 侧: 域内任一操作在途时入口全部禁用（全量提交期间禁止并发修改）
+const autoLoginBusy = computed(() =>
+  src.value.autoLoginPending || src.value.scheduleAddPending || src.value.scheduleRemovePending)
 
 // ===== Add schedule modal =====
 const scheduleModalOpen = ref(false)
@@ -64,7 +69,7 @@ const scheduleAddPending = computed(() => {
 <template>
   <div class="card-section">
     <div class="card-section__row">
-      <button class="ds-btn ds-btn--tertiary ds-btn--sm" type="button" style="margin-left: auto" @click="openScheduleModal(src.id)">
+      <button class="ds-btn ds-btn--tertiary ds-btn--sm" type="button" style="margin-left: auto" :disabled="autoLoginBusy" @click="openScheduleModal(src.id)">
         添加时段
       </button>
     </div>
@@ -74,10 +79,17 @@ const scheduleAddPending = computed(() => {
         <span class="schedule-item__arrow">→</span>
         <span class="schedule-item__logout">{{ sch.logout_time }}</span>
         <span v-if="isOvernight(sch)" class="schedule-item__overnight" title="跨午夜时段：[登录,24:00) ∪ [00:00,登出)">跨午夜</span>
-        <button class="schedule-item__remove" type="button" title="此时段"
-          :disabled="src.scheduleRemovePending"
-          @click="store.removeSchedule(src.id, sch.login_time, sch.logout_time)">
-          {{ src.scheduleRemovePending ? '删除中…' : '删除' }}
+        <button
+          class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--icon ds-btn--danger-icon"
+          style="margin-left: auto"
+          type="button"
+          :disabled="autoLoginBusy"
+          :title="`删除时段 ${sch.login_time}→${sch.logout_time}`"
+          :aria-label="`删除时段 ${sch.login_time}→${sch.logout_time}`"
+          @click="store.removeSchedule(src.id, sch.login_time, sch.logout_time)"
+        >
+          <span v-if="src.scheduleRemovePending" class="ds-btn__spinner"></span>
+          <Icon v-else name="Delete" :size="14" />
         </button>
       </div>
     </div>
@@ -170,28 +182,6 @@ const scheduleAddPending = computed(() => {
   color: var(--text-tertiary);
   font-size: var(--body-sm-font-size);
   flex-shrink: 0;
-}
-
-.schedule-item__remove {
-  margin-left: auto;
-  background: none;
-  border: none;
-  color: var(--text-tertiary);
-  font-size: var(--body-sm-font-size);
-  cursor: pointer;
-  padding: var(--spacer-2) var(--spacer-6);
-  border-radius: var(--radius-4);
-  transition: color 0.1s ease, background 0.1s ease;
-}
-
-.schedule-item__remove:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
-.schedule-item__remove:not(:disabled):hover {
-  color: var(--status-error-default);
-  background: var(--status-error-surface-l1);
 }
 
 /* Dialog form */

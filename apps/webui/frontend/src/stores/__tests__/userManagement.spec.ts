@@ -101,5 +101,31 @@ describe('useUserManagementStore (P3 任务6 原型残留清理)', () => {
       expect(store.users).toHaveLength(1)  // 保留, 与服务端一致
       expect(store.error).toBeTruthy()
     })
+
+    it('删除进行中二次调用不重复调 API（removePending 防重入）', async () => {
+      let resolve!: () => void
+      vi.mocked(usersApi.remove).mockImplementation(() => new Promise(res => { resolve = res }))
+      const store = useUserManagementStore()
+      store.users = [{ ...mockUser(), removePending: false } as never]
+      const p1 = store.removeUser(7)
+      const ok2 = await store.removeUser(7)
+      expect(ok2).toBe(true)      // 幂等无操作, 不重复调 API
+      expect(usersApi.remove).toHaveBeenCalledTimes(1)
+      resolve()
+      await p1
+      expect(store.users).toHaveLength(0)  // 首次删除完成后移除
+    })
+
+    it('失败后恢复 removePending=false（可重试, 与服务端一致保留用户）', async () => {
+      vi.mocked(usersApi.remove).mockRejectedValue(new Error('boom'))
+      const store = useUserManagementStore()
+      store.users = [{ ...mockUser(), removePending: false } as never]
+      const p = store.removeUser(7)
+      expect(store.users[0].removePending).toBe(true)  // 立即置 pending
+      const ok = await p
+      expect(ok).toBe(false)
+      expect(store.users[0].removePending).toBe(false) // 失败恢复
+      expect(store.users).toHaveLength(1)
+    })
   })
 })

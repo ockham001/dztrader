@@ -137,6 +137,8 @@ async function handleRemoveUser(id: number): Promise<void> {
 }
 
 async function handleRemoveIp(list: 'black' | 'white', id: number): Promise<void> {
+  const entry = (list === 'black' ? store.blacklist : store.whitelist).find(e => e.id === id)
+  if (!entry || entry.removePending) return  // 无操作（陈旧行 / 删除进行中）: 不反馈
   const ok = await store.removeIp(list, id)
   if (ok) {
     showToast('已删除', 'success')
@@ -573,13 +575,15 @@ onUnmounted(() => {
                       </button>
                       <button
                         v-if="u.role !== 'admin'"
-                        class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
+                        class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm ds-btn--danger-icon"
                         type="button"
-                        title="删除"
-                        :style="{ color: 'var(--status-error-default)' }"
+                        :title="`删除用户 ${u.display_name}`"
+                        :aria-label="`删除用户 ${u.display_name}`"
+                        :disabled="u.removePending"
                         @click="handleRemoveUser(u.id)"
                       >
-                        <Icon name="Delete" :size="14" />
+                        <span v-if="u.removePending" class="ds-btn__spinner"></span>
+                        <Icon v-else name="Delete" :size="14" />
                       </button>
                     </div>
                   </td>
@@ -722,8 +726,11 @@ onUnmounted(() => {
                   <td :style="{ color: 'var(--text-secondary)' }">{{ entry.reason ?? '--' }}</td>
                   <td :style="{ fontVariantNumeric: 'tabular-nums' }">{{ entry.created_at }}</td>
                   <td class="ds-table__actions">
-                    <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm" type="button" title="删除" :style="{ color: 'var(--status-error-default)' }" @click="handleRemoveIp('black', entry.id)">
-                      <Icon name="Delete" :size="14" />
+                    <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm ds-btn--danger-icon" type="button"
+                      :title="`删除 ${entry.ip}`" :aria-label="`从黑名单删除 ${entry.ip}`"
+                      :disabled="entry.removePending" @click="handleRemoveIp('black', entry.id)">
+                      <span v-if="entry.removePending" class="ds-btn__spinner"></span>
+                      <Icon v-else name="Delete" :size="14" />
                     </button>
                   </td>
                 </tr>
@@ -753,8 +760,11 @@ onUnmounted(() => {
                   <td :style="{ color: 'var(--text-secondary)' }">{{ entry.reason ?? '--' }}</td>
                   <td :style="{ fontVariantNumeric: 'tabular-nums' }">{{ entry.created_at }}</td>
                   <td class="ds-table__actions">
-                    <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm" type="button" title="删除" :style="{ color: 'var(--status-error-default)' }" @click="handleRemoveIp('white', entry.id)">
-                      <Icon name="Delete" :size="14" />
+                    <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm ds-btn--danger-icon" type="button"
+                      :title="`删除 ${entry.ip}`" :aria-label="`从白名单删除 ${entry.ip}`"
+                      :disabled="entry.removePending" @click="handleRemoveIp('white', entry.id)">
+                      <span v-if="entry.removePending" class="ds-btn__spinner"></span>
+                      <Icon v-else name="Delete" :size="14" />
                     </button>
                   </td>
                 </tr>

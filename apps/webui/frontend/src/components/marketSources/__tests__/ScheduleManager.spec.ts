@@ -6,8 +6,9 @@ import ScheduleManager from '../ScheduleManager.vue'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { makeSource } from '@/composables/marketSourceView'
 
-// 最小 stub: Modal/TimePicker（Modal 模拟真实 v-if="open" 行为; TimePicker 为受控 input）
+// 最小 stub: Icon/Modal/TimePicker（Modal 模拟真实 v-if="open" 行为; TimePicker 为受控 input）
 const stubs = {
+  Icon: { template: '<span class="icon" />' },
   Modal: { props: ['open'], template: '<div v-if="open"><slot /><slot name="footer" /></div>' },
   TimePicker: { props: ['modelValue'], emits: ['update:modelValue'],
     template: '<input class="tp" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />' },
@@ -58,5 +59,38 @@ describe('ScheduleManager', () => {
     const items = w.findAll('.schedule-item')
     expect(items[0].find('.schedule-item__overnight').exists()).toBe(false)
     expect(items[1].find('.schedule-item__overnight').exists()).toBe(true)
+  })
+
+  it('时段行删除按钮为垃圾桶图标', () => {
+    const source = makeSource({
+      id: 1, source_type: 'CTP', source_name: 'dzmd_ctp', display_name: 'CTP',
+      schedules: [{ id: 0, source_id: 1, login_time: '09:00', logout_time: '15:00' }],
+    })
+    const w = mount(ScheduleManager, { props: { source }, global: { stubs } })
+    expect(w.find('.schedule-item button.ds-btn--danger-icon').exists()).toBe(true)
+  })
+
+  it('scheduleRemovePending 时删除按钮 disabled 且图标位变 spinner（与 Task 2 对称）', () => {
+    const source = makeSource({
+      id: 1, source_type: 'CTP', source_name: 'dzmd_ctp', display_name: 'CTP',
+      schedules: [{ id: 0, source_id: 1, login_time: '09:00', logout_time: '15:00' }],
+      scheduleRemovePending: true,
+    })
+    const w = mount(ScheduleManager, { props: { source }, global: { stubs } })
+    const btn = w.find('.schedule-item button.ds-btn--danger-icon')
+    expect((btn.element as HTMLButtonElement).disabled).toBe(true)
+    expect(btn.find('.ds-btn__spinner').exists()).toBe(true)
+  })
+
+  it('域内任一操作 pending 时添加时段入口与删除按钮均禁用（autoLoginBusy）', () => {
+    const source = makeSource({
+      id: 1, source_type: 'CTP', source_name: 'dzmd_ctp', display_name: 'CTP',
+      schedules: [{ id: 0, source_id: 1, login_time: '09:00', logout_time: '15:00' }],
+      scheduleRemovePending: true,
+    })
+    const w = mount(ScheduleManager, { props: { source }, global: { stubs } })
+    const addBtn = w.findAll('button').find(b => b.text() === '添加时段')
+    expect((addBtn!.element as HTMLButtonElement).disabled).toBe(true)
+    expect((w.find('.schedule-item button.ds-btn--danger-icon').element as HTMLButtonElement).disabled).toBe(true)
   })
 })

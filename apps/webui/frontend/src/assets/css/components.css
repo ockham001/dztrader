@@ -309,7 +309,7 @@ pre {
     .ds-btn--danger:active,
     .ds-btn--danger-strong:active { background: var(--status-error-active); border-color: var(--status-error-active); }
     .ds-btn--danger-subtle { background: var(--status-error-surface-l1); color: var(--status-error-default); border-color: var(--status-error-surface-l2); }
-    .ds-btn--danger-subtle:hover { background: var(--status-error-surface-l2); }
+    .ds-btn--danger-subtle:hover { background: var(--status-error-surface-l2); color: var(--status-error-default); }
     .ds-btn--danger-subtle:active { background: var(--status-error-surface-l3); }
     .ds-btn--warning { background: var(--status-warning-default); color: var(--text-onaccent); border-color: var(--status-warning-default); }
     .ds-btn--warning:hover { background: var(--status-warning-hover); border-color: var(--status-warning-hover); }
@@ -324,6 +324,11 @@ pre {
     .ds-btn--icon { width: 28px; padding: 0; justify-content: center; }
     .ds-btn--icon.ds-btn--sm { width: 24px; }
     .ds-btn--icon.ds-btn--lg { width: 32px; }
+    /* 行内删除图标按钮（垃圾桶）：透明底, hover 浮现 error 底; 全 token。仅定义颜色, 须与 ds-btn--icon(+ds-btn--sm) 复合使用以获尺寸 */
+    .ds-btn--danger-icon { background: transparent; color: var(--status-error-default); border-color: transparent; }
+    .ds-btn--danger-icon:hover { background: var(--status-error-surface-l1); color: var(--status-error-default); }
+    .ds-btn--danger-icon:active { background: var(--status-error-surface-l2); }
+    .ds-btn--danger-icon[disabled] { color: var(--text-disabled); cursor: default; }
     .ds-btn-group { display: inline-flex; }
     .ds-btn-group > .ds-btn { border-radius: var(--radius-0); margin-left: calc(-1 * var(--border-width-default)); }
     .ds-btn-group > .ds-btn:first-child { border-top-left-radius: var(--radius-8); border-bottom-left-radius: var(--radius-8); margin-left: 0; }
@@ -500,7 +505,7 @@ pre {
 
     /* ===== Danger subtle button (for logout) ===== */
     .ds-btn--danger-subtle { background: var(--status-error-surface-l1); color: var(--status-error-default); border: 1px solid var(--status-error-surface-l2); }
-    .ds-btn--danger-subtle:hover { background: var(--status-error-surface-l2); }
+    .ds-btn--danger-subtle:hover { background: var(--status-error-surface-l2); color: var(--status-error-default); }
 
     .icon-img { display: inline-block; width: 16px; height: 16px; flex: 0 0 16px; object-fit: contain; vertical-align: middle; }
     .icon-img--12 { width: 12px; height: 12px; flex-basis: 12px; }

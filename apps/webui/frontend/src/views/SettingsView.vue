@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, watch, computed, onMounted } from 'vue'
+import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
 import TimePicker from '@/components/shared/TimePicker.vue'
 import type { EventShmConfigPatch } from '@/api/settings'
@@ -172,7 +173,17 @@ async function saveWebui(): Promise<void> {
             <input class="shm-num-input" type="number" :value="pt.bytes"
               :disabled="store.eventShmPending" @blur="onPreloadBlur(time, 'bytes', $event)">
           </label>
-          <button class="preload-remove" type="button" :disabled="store.eventShmPending" @click="removePreloadPoint(time)">删除</button>
+          <button
+            class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--icon ds-btn--danger-icon"
+            style="margin-left: auto"
+            type="button"
+            :disabled="store.eventShmPending"
+            :title="`删除预加载点 ${time}`"
+            :aria-label="`删除预加载点 ${time}`"
+            @click="removePreloadPoint(time)"
+          >
+            <Icon name="Delete" :size="14" />
+          </button>
         </div>
         <div v-if="preloadEntries.length === 0" class="cfg-row">
           <span class="cfg-label"></span>
@@ -314,13 +325,6 @@ async function saveWebui(): Promise<void> {
 }
 .shm-num-input:focus { outline: none; border-color: var(--border-neutral-l1); background: var(--bg-base-secondary); }
 .shm-num-input:disabled { opacity: 0.6; }
-
-.preload-remove {
-  margin-left: auto; background: none; border: none; color: var(--text-tertiary);
-  font-size: var(--body-sm-font-size); cursor: pointer; padding: var(--spacer-2) var(--spacer-6); border-radius: var(--radius-4);
-}
-.preload-remove:disabled { cursor: default; opacity: 0.6; }
-.preload-remove:not(:disabled):hover { color: var(--status-error-default); background: var(--status-error-surface-l1); }
 
 /* 添加预加载点对话框 */
 .dialog-form { display: flex; flex-direction: column; gap: var(--spacer-12); }

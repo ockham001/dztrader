@@ -35,7 +35,7 @@ function fakeUser(
     id, username, display_name: username, email: `${username}@x.com`, role, status,
     last_login_at: '2026-08-21 10:00:00', created_at: '2026-08-01',
     accountPermissions: [...ACCOUNT_PERMISSIONS], strategyPermissions: [...STRATEGY_PERMISSIONS],
-    expanded: false, actionPending: false,
+    expanded: false, actionPending: false, removePending: false,
   }
 }
 
