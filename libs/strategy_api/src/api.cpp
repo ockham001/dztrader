@@ -385,8 +385,13 @@ DZ_API bool dz_output_ui(const char* data) {
             return false;
         }
         const auto data_len = static_cast<uint32_t>(std::min<uint64_t>(len, cap));
-        ctx().writer.write_ext_inst_frame(DZ_FRAME_STG_USER_OUTPUT, ctx().strategy_id,
-                                          reinterpret_cast<const std::byte*>(data), data_len);
+        if (!ctx().writer.write_ext_inst_frame(DZ_FRAME_STG_USER_OUTPUT, ctx().strategy_id,
+                                               reinterpret_cast<const std::byte*>(data),
+                                               data_len)) {
+            // write_ext_inst_frame 为 noexcept bool: 唯一失败路径是 open_frame 返回 nullptr,
+            // 其每条失败分支均已设置 LastError (writer.cpp), 此处直接透传, 不自设错误码
+            return false;
+        }
         ctx().writer.notify_subscribers();
         return true;
     } catch (const Exception& e) {
