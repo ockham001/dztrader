@@ -131,12 +131,16 @@ function handleSelectAll(event: Event): void {
         <thead>
           <tr>
             <th style="width: 40px">
-              <input
-                type="checkbox"
-                :checked="store.selectedProcesses.size === store.processes.length && store.processes.length > 0"
-                :disabled="!isAdmin()"
-                @change="handleSelectAll"
-              >
+              <label class="ds-check ds-check--all">
+                <input
+                  type="checkbox"
+                  :checked="store.selectedProcesses.size === store.processes.length && store.processes.length > 0"
+                  :indeterminate.prop="store.selectedProcesses.size > 0 && store.selectedProcesses.size < store.processes.length"
+                  :disabled="!isAdmin()"
+                  @change="handleSelectAll"
+                >
+                <span class="ds-check__box"></span>
+              </label>
             </th>
             <th>进程名</th>
             <th style="width: 100px">类型</th>
@@ -152,13 +156,15 @@ function handleSelectAll(event: Event): void {
           </tr>
           <tr v-for="proc in store.processes" :key="proc.name">
             <td>
-              <input
-                v-if="!isStrategy(proc)"
-                type="checkbox"
-                :checked="store.selectedProcesses.has(proc.name)"
-                :disabled="!isAdmin()"
-                @change="store.toggleProcessSelection(proc.name)"
-              >
+              <label v-if="!isStrategy(proc)" class="ds-check" :style="{ minHeight: 'auto' }">
+                <input
+                  type="checkbox"
+                  :checked="store.selectedProcesses.has(proc.name)"
+                  :disabled="!isAdmin()"
+                  @change="store.toggleProcessSelection(proc.name)"
+                >
+                <span class="ds-check__box"></span>
+              </label>
             </td>
             <td>{{ proc.name }}</td>
             <td>

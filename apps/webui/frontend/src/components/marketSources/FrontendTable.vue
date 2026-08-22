@@ -129,13 +129,15 @@ function onFrontendAddressBlur(
           <tr v-for="fe in broker.frontends" :key="fe.address">
             <!-- enabled 为 checkbox 语义, 多个前置可同时启用, CTP 自动故障切换 -->
             <td>
-              <input
-                type="checkbox"
-                :checked="fe.enabled"
-                :disabled="!isStateIdle(src.process_state, src.loginState) || src.frontendTogglePending"
-                :title="!isStateIdle(src.process_state, src.loginState) ? '需在未登录状态下操作' : ''"
-                @change="store.setFrontendEnabled(src.id, broker.name, fe.address, ($event.target as HTMLInputElement).checked)"
-              >
+              <label class="ds-check" :style="{ minHeight: 'auto' }" :title="!isStateIdle(src.process_state, src.loginState) ? '需在未登录状态下操作' : ''">
+                <input
+                  type="checkbox"
+                  :checked="fe.enabled"
+                  :disabled="!isStateIdle(src.process_state, src.loginState) || src.frontendTogglePending"
+                  @change="store.setFrontendEnabled(src.id, broker.name, fe.address, ($event.target as HTMLInputElement).checked)"
+                >
+                <span class="ds-check__box"></span>
+              </label>
             </td>
             <!-- F-C2: 地址可编辑, 失焦且值改变才下发 -->
             <td>
