@@ -7,6 +7,8 @@
 
 **身份边界**（总则 §5）：本契约全部帧的身份字段（帧头 `instance_id`、payload `strategy_id`）一律用**裸策略名**——策略帧只属于策略域，不会与其他进程混淆，策略名在全部策略中唯一。`stg.<name>` 前缀**仅用于内存中的订阅者/信号量/reader/md 订阅者身份**（与系统组件区分），不出现于策略帧、展示层与 SDK 接口。
 
+**页大小约束**：本契约两个变长帧（`STG_USER_INPUT`/`STG_USER_OUTPUT`）的总大小（帧头+扩展头+payload）不得超过通道单页大小；SDK 写侧按 `min(1MB, 页大小−帧头开销)` 截断 payload，超出部分丢弃。
+
 类型层真相源：`libs/strategy_api/include/dztrader/struct.h`、`libs/core/include/dztrader/core/core_struct.h`（`DzLogicalPosition`）。
 
 ---

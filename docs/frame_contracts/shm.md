@@ -184,3 +184,4 @@
 - SET 应用成功后持久化到目标进程配置文件（默认 section：事件 `/event_shm`、行情 `/md_shm`）
 - 启动加载：文件/section 缺失或内容非法时用默认值并修复文件（自愈），不抛异常、不发 RTN
 - 默认值：事件通道 `page_size_mb=64`，行情通道 `page_size_mb=1024`；其余字段两者相同（`preload_points={}`、`check_interval_min=0`、`check_pages=0`、`check_bytes=0`）
+- `page_size_mb` 合法范围 [1MB, 64GB]（通道创建硬校验）；人工配置低于下限时启动阶段自动 clamp 至 1MB 并记 WARN（自愈语义）。单帧总大小不得超过单页，超页写入被拒绝并报错。
