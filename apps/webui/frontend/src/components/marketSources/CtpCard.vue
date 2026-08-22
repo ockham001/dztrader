@@ -10,12 +10,11 @@ import type { MarketSourceView } from '@/stores/marketSources'
 import type { SubscribeParamsBody, ShmConfigPatch } from '@/api/marketSources'
 import LoginPanel from './LoginPanel.vue'
 import ScheduleManager from './ScheduleManager.vue'
-import BrokerSelector from './BrokerSelector.vue'
 import BrokerCard from './BrokerCard.vue'
 
 // CtpCard 接收 MarketSource (契约 md-config ui_card 机制)
 // CTP 大类专用卡片壳: 头部 + 登录/时段/经纪商各子组件 + 删除 + 添加经纪商 Modal
-// 卡片体拆分为 5 子组件 (LoginPanel/ScheduleManager/BrokerSelector/BrokerCard/FrontendTable)
+// 卡片体拆分为 4 子组件 (LoginPanel/ScheduleManager/BrokerCard/FrontendTable)
 // 全局 error toast 由 MarketSourcesView 统一 watch store.error 处理, 卡片内不重复
 const props = defineProps<{ source: MarketSourceView }>()
 const store = useMarketSourcesStore()
@@ -50,6 +49,13 @@ function closeBrokerModal(): void {
   newBrokerPassword.value = ''
   newBrokerProductInfo.value = ''
   brokerSubmitting.value = false
+}
+
+// ===== 经纪商手风琴: 同一时刻只展开一个; 全部默认折叠, 仅由点击头部手动展开 =====
+const expandedBroker = ref<string | null>(null)
+
+function toggleBroker(name: string): void {
+  expandedBroker.value = expandedBroker.value === name ? null : name
 }
 
 /// F-C10: 失败时保持 Modal 打开, 成功时关闭 (不乐观添加, 等 WS 推送)
@@ -241,15 +247,23 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
       <!-- ── 经纪商 ── -->
       <div class="card-section">
         <div class="card-section__row">
-          <span class="card-section__title">经纪商</span>
+          <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-8)' }">
+            <span class="card-section__title">经纪商</span>
+          </div>
           <!-- F-C4: 添加经纪商不受状态保护 (只扩展候选列表, 不改变当前连接) -->
           <button class="ds-btn ds-btn--tertiary ds-btn--sm" type="button" @click="openBrokerModal(src.id)">
             添加经纪商
           </button>
         </div>
         <div class="card-section__body">
-          <BrokerSelector :source="src" />
-          <BrokerCard v-for="broker in src.brokers" :key="broker.name" :source="src" :broker="broker" />
+          <BrokerCard
+            v-for="broker in src.brokers"
+            :key="broker.name"
+            :source="src"
+            :broker="broker"
+            :expanded="expandedBroker === broker.name"
+            @toggle="toggleBroker(broker.name)"
+          />
           <div v-if="src.brokers.length === 0" class="card-hint">
             暂无经纪商，点击"添加经纪商"创建
           </div>

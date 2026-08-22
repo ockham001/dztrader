@@ -525,10 +525,18 @@ pre {
     .ds-check input:indeterminate + .ds-check__box::after { content: ''; width: 8px; height: 2px; background: var(--text-onbrand); border-radius: 1px; }
     /* 全选行：减小高度让其与标题并列 */
     .ds-check--all { min-height: 0; }
-    .ds-radio__dot { width: 16px; height: 16px; border: 1px solid var(--border-neutral-l2); background: var(--bg-base-default); border-radius: var(--radius-full); display: inline-flex; align-items: center; justify-content: center; }
+    .ds-radio__dot { width: 16px; height: 16px; border: 1px solid var(--border-neutral-l2); background: var(--bg-base-default); border-radius: var(--radius-full); display: inline-flex; align-items: center; justify-content: center; transition: border-color .12s, background .12s; }
     .ds-radio input { display: none; }
     .ds-radio input:checked + .ds-radio__dot { border-color: var(--bg-brand); }
-    .ds-radio input:checked + .ds-radio__dot::after { content: ''; width: 10px; height: 10px; border-radius: var(--radius-full); background: var(--bg-brand); }
+    /* 内点始终存在, scale 控制显隐 → 选中时平滑过渡(伪元素无法 transition content, 用 transform) */
+    .ds-radio__dot::after { content: ''; width: 10px; height: 10px; border-radius: var(--radius-full); background: var(--bg-brand); transform: scale(0); transition: transform .15s ease; }
+    .ds-radio input:checked + .ds-radio__dot::after { transform: scale(1); }
+    /* pending: 圆点变 spinner(复用 ds-btn-spin) */
+    .ds-radio.is-pending .ds-radio__dot::after { width: 12px; height: 12px; background: transparent; border: 1.5px solid var(--bg-brand); border-top-color: transparent; animation: ds-btn-spin .6s linear infinite; }
+    @media (prefers-reduced-motion: reduce) {
+      .ds-radio__dot, .ds-radio__dot::after { transition: none; }
+      .ds-radio.is-pending .ds-radio__dot::after { animation: none; }
+    }
     .ds-switch { position: relative; display: inline-flex; width: 36px; height: 20px; background: var(--bg-overlay-l3); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-full); cursor: pointer; transition: background .15s, border-color .15s; }
     .ds-switch input { display: none; }
     .ds-switch__track { position: relative; width: 100%; height: 100%; }
