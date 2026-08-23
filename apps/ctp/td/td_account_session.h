@@ -53,13 +53,13 @@ public:
     /// 构造 (不连接 CTP).
     /// @param account_id 账户标识 (CTP InvestorID)
     /// @param order_id_meta 跨进程共享的 order_id 计数器 (外部拥有)
-    /// @param writer SHM 多写入者 (外部拥有, 多账户共享)
+    /// @param event_writer SHM 多写入者 (外部拥有, 多账户共享)
     /// @param persist_writer SQLite 持久化 writer (外部拥有, 多账户共享)
     /// @param event_queue SPI -> 主线程事件队列 (shared_ptr)
     /// @param timer_queue 定时器队列 (外部拥有)
     AccountSession(std::string account_id,
                    shm::OrderIdMeta& order_id_meta,
-                   shm::MultiWriter& writer,
+                   shm::MultiWriter& event_writer,
                    PersistWriter& persist_writer,
                    const MpmcQueuePtr& event_queue,
                    dztrader::core::TimerQueue& timer_queue);
@@ -199,7 +199,7 @@ private:
     // === 成员 ===
     std::string account_id_;
     shm::OrderIdMeta& order_id_meta_;
-    shm::MultiWriter& writer_;
+    shm::MultiWriter& event_writer_;
     PersistWriter& persist_writer_;
     MpmcQueuePtr event_queue_;
     dztrader::core::TimerQueue& timer_queue_;

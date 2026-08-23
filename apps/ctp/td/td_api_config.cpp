@@ -116,7 +116,7 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
 void TdApi::report_config() {
     // 上报当前 td 配置 (脱敏: broker.password -> "****"), 推 RTN_TD_CONFIG
     try {
-        platform::write_ext_inst_json_obj(writer_, DZ_FRAME_TD_RTN_CONFIG, name_, config_.to_safe_json());
+        platform::write_ext_inst_json_obj(event_writer_, DZ_FRAME_TD_RTN_CONFIG, name_, config_.to_safe_json());
     } catch (const dztrader::Exception& e) {
         SPDLOG_ERROR("rtn_td_config failed | err_code={} msg=\"{}\"", e.code(), e.what());
     } catch (const std::exception& e) {
@@ -125,7 +125,7 @@ void TdApi::report_config() {
 }
 
 void TdApi::report_log_config() {
-    log_config_.rtn_log_config(writer_);
+    log_config_.rtn_log_config(event_writer_);
 }
 
 void TdApi::report_auto_login() {

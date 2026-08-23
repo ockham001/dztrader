@@ -20,13 +20,13 @@ namespace dztrader::ctp {
 
 AccountSession::AccountSession(std::string account_id,
                                shm::OrderIdMeta& order_id_meta,
-                               shm::MultiWriter& writer,
+                               shm::MultiWriter& event_writer,
                                PersistWriter& persist_writer,
                                const MpmcQueuePtr& event_queue,
                                dztrader::core::TimerQueue& timer_queue)
     : account_id_(std::move(account_id)),
       order_id_meta_(order_id_meta),
-      writer_(writer),
+      event_writer_(event_writer),
       persist_writer_(persist_writer),
       event_queue_(event_queue),
       timer_queue_(timer_queue),
@@ -231,7 +231,7 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
         // I6: 推 DZ_FRAME_TD_INSTRUMENT SHM 帧, 让策略进程拿到合约信息 (price_tick/乘数/期权字段)
         try {
             DzContract contract = to_dz_contract(*f.instrument);
-            platform::write_struct(writer_, DZ_FRAME_TD_INSTRUMENT, contract);
+            platform::write_struct(event_writer_, DZ_FRAME_TD_INSTRUMENT, contract);
             // 持久化合约信息 (供审计/复盘)
             // update_day[9]: "YYYYMMDD" 文本 (从 DzDate 距纪元天数转换)
             InstrumentRecord rec;
@@ -622,12 +622,12 @@ void AccountSession::cancel_instruments_load_timer() {
 
 void AccountSession::write_order_rpt(const DzOrderReport& rpt) {
     // DZ_FRAME_TD_ORDER_RPT (2000), payload=DzOrderReport 通用字段
-    platform::write_struct(writer_, DZ_FRAME_TD_ORDER_RPT, rpt);
+    platform::write_struct(event_writer_, DZ_FRAME_TD_ORDER_RPT, rpt);
 }
 
 void AccountSession::write_trade_rpt(const DzTradeReport& rpt) {
     // DZ_FRAME_TD_TRADE_RPT (2001), payload=DzTradeReport 通用字段
-    platform::write_struct(writer_, DZ_FRAME_TD_TRADE_RPT, rpt);
+    platform::write_struct(event_writer_, DZ_FRAME_TD_TRADE_RPT, rpt);
 }
 
 void AccountSession::reject_order(const DzOrderReq& req, const std::string& reason) {
@@ -690,7 +690,7 @@ void AccountSession::write_risk_reject(const std::string& account_id,
         copy_string(field.reason, reason.c_str(), true);
         field.timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
-        platform::write_struct(writer_, DZ_FRAME_TD_RISK_REJECT, field);
+        platform::write_struct(event_writer_, DZ_FRAME_TD_RISK_REJECT, field);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td write_risk_reject failed | account={} error=\"{}\"",
                      account_id_, e.what());
@@ -832,7 +832,7 @@ void AccountSession::on_rsp_qry_instrument_margin_rate(const OnRspQryInstrumentM
             rec.short_margin_ratio_by_volume = f.margin_rate->ShortMarginRatioByVolume;
             rec.date = trading_day_;
 
-            platform::write_struct(writer_, DZ_FRAME_TD_MARGIN_RATE, rec);
+            platform::write_struct(event_writer_, DZ_FRAME_TD_MARGIN_RATE, rec);
             persist_writer_.enqueue(PersistTask{PersistTask::Kind::MarginRate, rec});
 
             SPDLOG_INFO("td qry margin rate | account={} instrument={} long={} short={}",
@@ -868,7 +868,7 @@ void AccountSession::on_rsp_qry_instrument_commission_rate(const OnRspQryInstrum
             rec.close_today_ratio_by_volume = f.commission_rate->CloseTodayRatioByVolume;
             rec.date = trading_day_;
 
-            platform::write_struct(writer_, DZ_FRAME_TD_COMMISSION_RATE, rec);
+            platform::write_struct(event_writer_, DZ_FRAME_TD_COMMISSION_RATE, rec);
             persist_writer_.enqueue(PersistTask{PersistTask::Kind::CommissionRate, rec});
 
             SPDLOG_INFO("td qry commission rate | account={} instrument={} open_money={} close_money={}",
@@ -895,7 +895,7 @@ void AccountSession::on_rtn_instrument_status(const OnRtnInstrumentStatusField& 
         rec.status = static_cast<int8_t>(f.instrument_status.InstrumentStatus);
         rec.time = parse_ctp_time(f.instrument_status.EnterTime);
 
-        platform::write_struct(writer_, DZ_FRAME_TD_INSTRUMENT_STATUS, rec);
+        platform::write_struct(event_writer_, DZ_FRAME_TD_INSTRUMENT_STATUS, rec);
 
         SPDLOG_DEBUG("td rtn instrument status | account={} instrument={} status={}",
                      account_id_, f.instrument_status.InstrumentID,
@@ -1125,7 +1125,7 @@ void AccountSession::on_rsp_transfer(const OnRspFromBankToFutureByFutureField& f
         rec.transfer_status[1] = '\0';
         rec.time = parse_ctp_time(f.req_transfer->TradeTime);
 
-        platform::write_struct(writer_, DZ_FRAME_TD_TRANSFER_RSP, rec);
+        platform::write_struct(event_writer_, DZ_FRAME_TD_TRANSFER_RSP, rec);
 
         SPDLOG_INFO("td rsp transfer | account={} trade_code={} amount={} error_id={}",
                     account_id_, f.req_transfer->TradeCode, f.req_transfer->TradeAmount, rec.error_id);
@@ -1152,7 +1152,7 @@ void AccountSession::on_rtn_transfer(const OnRtnFromBankToFutureByFutureField& f
         rec.transfer_status[1] = '\0';
         rec.time = parse_ctp_time(f.rsp_transfer.TradeTime);
 
-        platform::write_struct(writer_, DZ_FRAME_TD_TRANSFER_RTN, rec);
+        platform::write_struct(event_writer_, DZ_FRAME_TD_TRANSFER_RTN, rec);
 
         SPDLOG_INFO("td rtn transfer | account={} trade_code={} amount={} error_id={}",
                     account_id_, f.rsp_transfer.TradeCode, f.rsp_transfer.TradeAmount, rec.error_id);
@@ -1176,7 +1176,7 @@ void AccountSession::on_rsp_user_password_update(const OnRspUserPasswordUpdateFi
         }
         rec.time = 0;  // CTP 无时间字段, 留 0
 
-        platform::write_struct(writer_, DZ_FRAME_TD_PASSWORD_UPDATE_RSP, rec);
+        platform::write_struct(event_writer_, DZ_FRAME_TD_PASSWORD_UPDATE_RSP, rec);
 
         SPDLOG_INFO("td rsp user password update | account={} error_id={}",
                     account_id_, rec.error_id);
@@ -1200,7 +1200,7 @@ void AccountSession::on_rsp_trading_account_password_update(const OnRspTradingAc
         }
         rec.time = 0;  // CTP 无时间字段, 留 0
 
-        platform::write_struct(writer_, DZ_FRAME_TD_PASSWORD_UPDATE_RSP, rec);
+        platform::write_struct(event_writer_, DZ_FRAME_TD_PASSWORD_UPDATE_RSP, rec);
 
         SPDLOG_INFO("td rsp trading account password update | account={} error_id={}",
                     account_id_, rec.error_id);

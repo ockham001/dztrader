@@ -115,7 +115,8 @@ int main(int argc, char* argv[]) {
         SPDLOG_CRITICAL("td config validate failed | error=\"{}\"", *err);
         return 1;
     }
-    // shm config 已在 TdApi 构造函数体内由 shm_config_.load() 加载 (td_api.cpp), 无需外部加载
+    // 各 section 配置 (log/auto_login) 已在 TdApi 构造函数体内 load (td_api.cpp), 无需外部加载;
+    // 事件通道 SHM 预加载为纯被动 (响应 master 的 PRELOAD_EVENT_SHM 广播), td 不持有本地配置
 
     // 3. 打开 event channel (master 已创建, open_only)
     std::shared_ptr<shm::ChannelMeta> event_meta;

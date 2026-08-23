@@ -21,7 +21,6 @@
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/order_id_meta.h>
 #include <dztrader/shm/reader.h>
-#include <dztrader/platform/shm_config.h>
 #include <dztrader/shm/writer.h>
 #include <dztrader/struct.h>
 
@@ -59,17 +58,17 @@ const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& acc
 /// - 主循环: 处理 SHM 帧 + SPI 事件 (MPMC) + 定时器 + 信号量 wait
 /// - 帧路由: basic 广播帧 (TD_ORDER_REQ 等) + 含 instance_id 帧 (TD_CONNECT 等)
 /// - 事件 dispatch: 按 Field.account_id 路由到对应 AccountSession::on_*
-/// - 配置热更新 (op-based, 副本 + 回滚): td/log/shm 三 section
+/// - 配置热更新 (op-based, 副本 + 回滚): td/log 两 section
 /// - 健康度广播 (per-account TdHealth 翻转检测)
 /// - 自动调度 (登录/登出时间表, 复用 trading_calendar)
-/// - SHM 通道维护 (周期预加载 + 清理)
+/// - 事件通道预加载 (被动, 响应 master 的 PRELOAD_EVENT_SHM 广播, 与 md 端一致)
 /// - 优雅退出 (信号 / REQUEST_SHUTDOWN 帧)
 ///
 /// 线程模型 (设计 §1.2):
 /// - 主线程: run() 主循环, 处理帧/事件/定时器
 /// - SPI 线程 (每账户 1 个 CTP 工作线程): 仅 push 事件到 event_queue_ (MPMC)
 /// - PersistWriter 线程: 独立 SQLite 写入线程 (由 persist_writer_ 拥有)
-/// - 共享数据: writer_/reader_ (主线程), sessions_ 中各 AccountSession 的 writer 引用主线程的 writer_
+/// - 共享数据: event_writer_/reader_ (主线程), sessions_ 中各 AccountSession 的 writer 引用主线程的 event_writer_
 ///
 /// 生命周期:
 /// - 构造: 初始化 SHM reader/writer + OrderIdMeta + PersistWriter, 不连接 CTP
@@ -113,7 +112,7 @@ public:
     void run();
 
     /// 设置 td 配置, 必须在 run() 前调用
-    /// (log_config_/shm_config_ 在构造函数中已加载, 不再由 set_configs 传入)
+    /// (log_config_/auto_login_config_ 在构造函数中已加载, 不再由 set_configs 传入)
     void set_configs(TdConfig td_cfg);
 
     /// 设置 --recover 标志: 启动时若在会话区间内则对所有 enabled 账户补登
@@ -204,15 +203,11 @@ private:
     /// 崩溃恢复补登 (--recover): 启动时若在会话区间内, 对所有 enabled 账户调用 connect_account
     void try_recover_login();
 
-    // === SHM 维护 ===
-    /// 排定事件通道 SHM 维护周期定时器 (preload + cleanup + touch)
-    void schedule_event_shm_maintenance();
-    /// 事件通道 SHM 维护定时器回调: 对 reader_ + writer_ 执行三件套 + touch
-    void on_event_shm_timer();
-    /// 收到 PRELOAD_EVENT_SHM 广播后, 随机延迟后排定一次性预加载 (与 md 端对称)
+    // === 事件通道预加载 (实现在 td_api_scheduled.cpp, 与 md_api_scheduled.cpp 组织一致) ===
+    /// 事件通道预加载: 收到 DZ_FRAME_PRELOAD_EVENT_SHM 广播后随机延迟 0-5s 执行三件套
     void schedule_event_shm_preload(const DzShmPreload& params);
-    /// PRELOAD_EVENT_SHM 广播触发的预加载回调: 用 params 指定的 pages/bytes 预加载
-    void on_event_shm_preload(const DzShmPreload& params);
+    /// 事件通道预加载定时器回调: 对 reader_ + event_writer_ 执行三件套 + touch
+    void on_event_shm_timer(const DzShmPreload& params);
 
     // === 成员变量 ===
     std::string name_;                                   ///< 网关名 (= exe_stem)
@@ -222,7 +217,7 @@ private:
     std::shared_ptr<shm::ChannelMeta> event_meta_;       ///< 事件通道 meta (与 master 共享)
     MpmcQueuePtr event_queue_;                           ///< SPI -> 主线程事件队列 (MPMC)
     shm::Reader reader_;                                 ///< 事件通道 reader (主线程)
-    shm::MultiWriter writer_;                            ///< 事件通道 writer (主线程)
+    shm::MultiWriter event_writer_;                      ///< 事件通道 writer (主线程)
     dztrader::core::TimerQueue timer_queue_;             ///< 单线程定时器队列, 主循环 tick()
 
     std::unique_ptr<PersistWriter> persist_writer_;      ///< SQLite 持久化 writer (进程级单例, TdApi 拥有)
@@ -230,15 +225,12 @@ private:
 
     TdConfig config_;                                    ///< td section 配置
     std::filesystem::path config_path_;                  ///< dztd_ctp.json 路径, 用于持久化各 section
-    // notify_ui_ 依赖 name_/writer_, 必须在其后声明 (C++ 按声明顺序初始化)
-    dztrader::platform::NotifyUi notify_ui_;             ///< UI 通知发送器 (绑定 name_ + writer_)
-    // log_config_ 依赖 name_/config_path_/writer_, 必须在其后声明 (C++ 按声明顺序初始化)
+    // notify_ui_ 依赖 name_/event_writer_, 必须在其后声明 (C++ 按声明顺序初始化)
+    dztrader::platform::NotifyUi notify_ui_;             ///< UI 通知发送器 (绑定 name_ + event_writer_)
+    // log_config_ 依赖 name_/config_path_, 必须在其后声明 (C++ 按声明顺序初始化)
     dztrader::platform::LogConfig log_config_;                ///< log section 配置
-    // auto_login_config_ 依赖 name_/config_path_/writer_, 必须在其后声明 (C++ 按声明顺序初始化)
+    // auto_login_config_ 依赖 name_/config_path_/event_writer_, 必须在其后声明 (C++ 按声明顺序初始化)
     dztrader::platform::AutoLoginConfig auto_login_config_;   ///< 自动登录/登出排程 (SET/RTN_AUTO_LOGIN, 持久化到 auto_login section)
-    // shm_config_ 依赖 config_path_/writer_, 必须在其后声明 (C++ 按声明顺序初始化)
-    /// 事件通道 SHM 配置 (td 不处理 SET/RTN, 只 load + 读 getter 用于 maintenance)
-    dztrader::platform::EventShmConfig shm_config_;           ///< shm section 配置
 
     std::unordered_map<std::string, std::unique_ptr<AccountSession>> sessions_;  ///< account_id -> 会话
     std::unordered_map<std::string, TdHealth> account_health_;                   ///< account_id -> 上次广播健康度

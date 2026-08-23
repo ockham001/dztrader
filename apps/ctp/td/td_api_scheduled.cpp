@@ -7,17 +7,56 @@
 #include <magic_enum/magic_enum.hpp>
 #include <spdlog/spdlog.h>
 
+#include <dztrader/core/random.h>
 #include <dztrader/date_time/date_time.h>
 
 namespace dztrader::ctp {
 
 // ============================================================================
-// td_api_scheduled.cpp: 自动调度 (设计 §5.7, 参考 md_api_scheduled.cpp)
-// - schedule_auto_sched_timer: 对齐到下个分钟 25 秒排定定时器 (错峰, 避开整分钟 0 秒)
-// - on_sched_timer: 读 system_clock, 评估动作 (自动登录/登出), 重排定时器
-// - try_recover_login: --recover 启动时若在会话区间内, 对所有 enabled 账户补登
-// 与 md_api_scheduled.cpp 的差异: td 多账户, 登录/登出动作作用于所有 enabled 账户
+// td_api_scheduled.cpp: 定时任务 (参考 md_api_scheduled.cpp)
+// - 事件通道 SHM 预加载 (被动, 由 DZ_FRAME_PRELOAD_EVENT_SHM 触发)
+// - 自动调度 (登录/登出, 对齐分钟 25 秒; 设计 §5.7)
+// 与 md_api_scheduled.cpp 的差异: td 无行情数据通道维护,
+// 登录/登出动作作用于所有 enabled 账户
 // ============================================================================
+
+void TdApi::schedule_event_shm_preload(const DzShmPreload& params) {
+    // 随机延迟 0-5 秒, 避免多进程同时文件 I/O (与 md_api_scheduled.cpp 一致)
+    auto delay_ms = core::random_jitter(0, 5000);
+    SPDLOG_DEBUG("event shm preload scheduled | delay={}ms pages={} bytes={}", delay_ms.count(),
+                 params.pages, params.bytes);
+    timer_queue_.schedule_after_replace(
+        "event_shm_maint", delay_ms, [this, params]() { on_event_shm_timer(params); });
+}
+
+void TdApi::on_event_shm_timer(const DzShmPreload& params) {
+    try {
+        // 事件通道 reader_ 维护
+        if (params.pages > 0) {
+            reader_.prefetch_pages(params.pages);
+        }
+        if (params.bytes > 0) {
+            reader_.prefetch_for_bytes(params.bytes);
+        }
+        reader_.release_old_pages();
+        reader_.touch_read_position();
+
+        // 事件通道 event_writer_ 维护
+        if (params.pages > 0) {
+            event_writer_.prefetch_pages(params.pages);
+        }
+        if (params.bytes > 0) {
+            event_writer_.prefetch_for_bytes(params.bytes);
+        }
+        event_writer_.close_old_pages();
+        event_writer_.touch_write_position();
+
+        SPDLOG_DEBUG("event shm preload done | pages={} bytes={}", params.pages,
+                     params.bytes);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("event shm timer failed | error=\"{}\"", e.what());
+    }
+}
 
 void TdApi::schedule_auto_sched_timer() {
     // 计算到下个分钟 25 秒的延迟 (错峰: 避开整分钟 0 秒的繁忙时段)

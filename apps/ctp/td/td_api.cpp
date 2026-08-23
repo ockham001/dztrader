@@ -12,7 +12,6 @@
 
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/core_struct.h>  // DzOrderReq / DzOrderCancelReq
-#include <dztrader/core/random.h>
 #include <dztrader/core/string_util.h>  // copy_string
 #include <dztrader/data_type.h>
 #include <dztrader/platform/frame_codec.h>
@@ -40,17 +39,15 @@ TdApi::TdApi(std::string name,
       reader_name_(std::move(reader_name)),
       event_meta_(std::move(event_meta)),
       event_queue_(std::move(event_queue)),
-      // reader/writer 均用 reader_name_ 注册 (与 md_api.cpp 一致, 含 pid 保证唯一):
+      // reader/event_writer 均用 reader_name_ 注册 (与 md_api.cpp 一致, 含 pid 保证唯一):
       //   - reader: master notify_subscribers 唤醒本进程的信号量
       //   - writer: set_writer_page_index 用此 name 作 key (进程级唯一, 含 pid 避免同名进程冲突)
       reader_{shm::Reader::create(event_meta_, reader_name_)},
-      writer_{shm::MultiWriter::create(event_meta_, reader_name_)},
+      event_writer_{shm::MultiWriter::create(event_meta_, reader_name_)},
       config_path_(std::move(cfg_path)),
-      notify_ui_(name_, writer_),
+      notify_ui_(name_, event_writer_),
       log_config_(name_, config_path_),
-      auto_login_config_(name_, config_path_, writer_),
-      shm_config_(config_path_, writer_,
-                  nlohmann::json::json_pointer("/shm")) {
+      auto_login_config_(name_, config_path_, event_writer_) {
     // 创建跨进程共享的 OrderIdMeta (本进程是创建者, open_or_create 模式)
     // 文件布局: shm_dir_/<name_>/order_id.dat
     // 多账户共享同一计数器 (TdApi 持有, AccountSession 通过引用获取)
@@ -70,9 +67,6 @@ TdApi::TdApi(std::string name,
     log_config_.load();
     // 加载自动登录/登出排程 (从 dztd_ctp.json "auto_login" section, 失败用默认值自愈)
     auto_login_config_.load();
-    // 加载事件通道 SHM 配置 (从 dztd_ctp.json "shm" section, 失败用默认值自愈)
-    // td 不处理 SET/RTN, 仅用于 maintenance 定时器读取 check_interval_min/check_pages/check_bytes
-    shm_config_.load();
 }
 
 TdApi::~TdApi() {
@@ -133,7 +127,7 @@ void TdApi::run() {
         // 首次进入: 上报完整快照 + 广播服务启动 + (可选) 补登 + 排定自动调度定时器
         // 重入时跳过, 避免重复广播和重复排定时器
         report_full_snapshot();
-        platform::write_ext_inst_raw(writer_, DZ_FRAME_NOTIFY_TD_STARTED, name_);
+        platform::write_ext_inst_raw(event_writer_, DZ_FRAME_NOTIFY_TD_STARTED, name_);
         if (recover_) {
             try_recover_login();
         }
@@ -250,7 +244,7 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
         }
         case DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER: {
             // 广播: 刷新 event writer 订阅者列表
-            writer_.refresh_subscribers();
+            event_writer_.refresh_subscribers();
             return;
         }
         case DZ_FRAME_QUERY_FULL_SNAPSHOT: {
@@ -315,7 +309,7 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
                 SPDLOG_ERROR("set log config failed | error=\"{}\"", e.what());
                 notify_ui_.error(std::format("日志配置更新失败: {}", e.what()));
             }
-            log_config_.rtn_log_config(writer_);
+            log_config_.rtn_log_config(event_writer_);
             return;
         }
         case DZ_FRAME_SET_AUTO_LOGIN: {
@@ -588,7 +582,7 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
     // 5. 构造 AccountSession 并 open (异常不传播, 仅记日志 + 通知 UI)
     try {
         auto session = std::make_unique<AccountSession>(
-            account_id, *order_id_meta_, writer_, *persist_writer_,
+            account_id, *order_id_meta_, event_writer_, *persist_writer_,
             event_queue_, timer_queue_);
         session->open(session_flow_dir.string(), front_addrs,
                       cfg->broker.broker_id, cfg->broker.user_id,
@@ -681,7 +675,7 @@ void TdApi::on_order_req(const shm::FrameView& view) {
         rpt.volume = req.volume;
         rpt.volume_traded = 0;
         copy_string(rpt.remark, "账户未连接", true);
-        platform::write_struct(writer_, DZ_FRAME_TD_ORDER_RPT, rpt);
+        platform::write_struct(event_writer_, DZ_FRAME_TD_ORDER_RPT, rpt);
         return;
     }
     try {
@@ -747,7 +741,7 @@ void TdApi::update_status(const std::string& account_id) {
     try {
         std::string inst_id = std::format("{}:{}", name_, account_id);
         const auto& status = session->state_machine().status();
-        platform::write_ext_inst_json_obj(writer_, DZ_FRAME_TD_RTN_STATUS, inst_id, status);
+        platform::write_ext_inst_json_obj(event_writer_, DZ_FRAME_TD_RTN_STATUS, inst_id, status);
 
         // 同步推送 RTN_PROGRESS（per-account, 与 RTN_TD_STATUS 的 progress 字段一致）
         nlohmann::json prog = {{"min", status.progress_min},
@@ -756,7 +750,7 @@ void TdApi::update_status(const std::string& account_id) {
         if (!status.progress_desc.empty()) {
             prog["desc"] = status.progress_desc;
         }
-        platform::write_ext_inst_json_obj(writer_, DZ_FRAME_RTN_PROGRESS, inst_id, prog);
+        platform::write_ext_inst_json_obj(event_writer_, DZ_FRAME_RTN_PROGRESS, inst_id, prog);
     } catch (const dztrader::Exception& e) {
         SPDLOG_ERROR("update_status failed | account={} code={} error=\"{}\"",
                      account_id, e.code(), e.what());
@@ -776,9 +770,9 @@ void TdApi::broadcast_health(const std::string& account_id, TdHealth now) {
     std::string inst_id = std::format("{}:{}", name_, account_id);
     try {
         if (now == TdHealth::Up) {
-            platform::write_ext_inst_raw(writer_, DZ_FRAME_NOTIFY_TD_CONNECTED, inst_id);
+            platform::write_ext_inst_raw(event_writer_, DZ_FRAME_NOTIFY_TD_CONNECTED, inst_id);
         } else {
-            platform::write_ext_inst_raw(writer_, DZ_FRAME_NOTIFY_TD_DISCONNECTED, inst_id);
+            platform::write_ext_inst_raw(event_writer_, DZ_FRAME_NOTIFY_TD_DISCONNECTED, inst_id);
         }
         SPDLOG_INFO("health broadcast | account={} health={}", account_id,
                     magic_enum::enum_name(now));
@@ -792,73 +786,6 @@ void TdApi::report_state() {
     for (const auto& [account_id, session] : sessions_) {
         (void)session;  // update_status 内部 find_session, 仅需 account_id
         update_status(account_id);
-    }
-}
-
-void TdApi::schedule_event_shm_maintenance() {
-    // 排定事件通道 SHM 维护周期定时器 (preload + cleanup + touch)
-    // 与 md_api_scheduled.cpp schedule_md_shm_maintenance 模式一致, 复用 shm_config_
-    if (shm_config_.check_interval_min() <= 0) {
-        return;
-    }
-    auto delay = std::chrono::minutes(shm_config_.check_interval_min());
-    timer_queue_.schedule_after_replace("event_shm_maint", delay,
-                                        [this]() { on_event_shm_timer(); });
-}
-
-void TdApi::on_event_shm_timer() {
-    // 事件通道 reader_ + writer_ 三件套 + touch (与 md_api_scheduled.cpp on_event_shm_timer 一致)
-    try {
-        if (shm_config_.check_pages() > 0) {
-            reader_.prefetch_pages(shm_config_.check_pages());
-            writer_.prefetch_pages(shm_config_.check_pages());
-        }
-        if (shm_config_.check_bytes() > 0) {
-            reader_.prefetch_for_bytes(shm_config_.check_bytes());
-            writer_.prefetch_for_bytes(shm_config_.check_bytes());
-        }
-        reader_.release_old_pages();
-        reader_.touch_read_position();
-        writer_.close_old_pages();
-        writer_.touch_write_position();
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("event shm timer failed | error=\"{}\"", e.what());
-    }
-    // 无论成功失败都重排 (避免定时器永久丢失)
-    try {
-        schedule_event_shm_maintenance();
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("schedule_event_shm_maintenance failed | error=\"{}\"", e.what());
-    }
-}
-
-void TdApi::schedule_event_shm_preload(const DzShmPreload& params) {
-    // 随机延迟 0-5 秒, 避免多进程同时文件 I/O (与 md 端 schedule_event_shm_preload 一致)
-    auto delay_ms = core::random_jitter(0, 5000);
-    SPDLOG_DEBUG("event shm preload scheduled | delay={}ms pages={} bytes={}", delay_ms.count(),
-                 params.pages, params.bytes);
-    timer_queue_.schedule_after_replace(
-        "event_shm_preload", delay_ms, [this, params]() { on_event_shm_preload(params); });
-}
-
-void TdApi::on_event_shm_preload(const DzShmPreload& params) {
-    // 用 master 下发的 params 预加载 event 通道 reader_ + writer_ (与 md 端 on_event_shm_timer 一致)
-    try {
-        if (params.pages > 0) {
-            reader_.prefetch_pages(params.pages);
-            writer_.prefetch_pages(params.pages);
-        }
-        if (params.bytes > 0) {
-            reader_.prefetch_for_bytes(params.bytes);
-            writer_.prefetch_for_bytes(params.bytes);
-        }
-        reader_.release_old_pages();
-        reader_.touch_read_position();
-        writer_.close_old_pages();
-        writer_.touch_write_position();
-        SPDLOG_DEBUG("event shm preload done | pages={} bytes={}", params.pages, params.bytes);
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("event shm preload failed | error=\"{}\"", e.what());
     }
 }
 
