@@ -6,7 +6,6 @@
 #include <climits>
 #include <cfloat>
 #include <chrono>
-#include <optional>
 
 #include <dztrader/error.h>
 #include <dztrader/data_type.h>
@@ -27,17 +26,9 @@
 using namespace dztrader;
 
 namespace {
-std::optional<StrategyContext> g_ctx{};
-
-/// 运行上下文惰性构造: 事件通道读写器/信号量/订单ID元数据在首次使用时创建。
-/// 惰性而非静态 eager-init: 平台未启动时构造失败可在 dz_init 中捕获报错,
+/// 运行上下文, dz_init 中构造: 平台未启动时构造失败可在 dz_init 中捕获报错,
 /// 而不是让策略进程在进入 main 前以未处理异常崩溃。
-StrategyContext& ctx() {
-    if (!g_ctx.has_value()) {
-        g_ctx.emplace();
-    }
-    return *g_ctx;
-}
+StrategyContext* g_ctx = nullptr;  // NOLINT
 
 }  // namespace
 
@@ -45,17 +36,24 @@ StrategyContext& ctx() {
 
 DZ_API bool dz_init(void) {
     try {
-        (void)ctx();
+        if (g_ctx == nullptr) {
+            g_ctx = new StrategyContext();  // NOLINT
+        }
         return true;
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
     } catch (const std::exception& e) {
         LastError::set(DZ_EC_INTERNAL, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_INTERNAL, "unknown exception");
     }
     return false;
 }
 
-DZ_API void dz_release(void) { g_ctx.reset(); }
+DZ_API void dz_release(void) {
+    delete g_ctx;  // NOLINT
+    g_ctx = nullptr;
+}
 
 DZ_API DzMdSource* dz_create_md_source(const char* name) {
     try {
@@ -63,19 +61,19 @@ DZ_API DzMdSource* dz_create_md_source(const char* name) {
             LastError::set(DZ_EC_INVALID_PARAM, "name is null or empty");
             return nullptr;
         }
-        if (ctx().md_sources.contains(name)) {
+        if (g_ctx->md_sources.contains(name)) {
             LastError::set(DZ_EC_INVALID_PARAM, "md source already created");
             return nullptr;
         }
         const std::string source_name(name);
-        const std::string identity = strategy_identity(ctx().strategy_id);
+        const std::string identity = strategy_identity(g_ctx->strategy_id);
 
         // 1. 主动向 master 注册为该行情通道读者 (帧 1013):
         //    契约 shm: 请求进程收到成功 RTN 前不得打开通道, 故先发注册帧, 待 RTN 确认后才打开。
         nlohmann::json payload = {{"subscriber", identity}};
-        (void)shm::write_ext_inst_json(ctx().writer, DZ_FRAME_REQUEST_MD_READER_REGISTER,
+        (void)shm::write_ext_inst_json(g_ctx->writer, DZ_FRAME_REQUEST_MD_READER_REGISTER,
                                        source_name, payload);
-        ctx().writer.notify_subscribers();
+        g_ctx->writer.notify_subscribers();
 
         // 2. 阻塞等待匹配的 RTN (帧 1015): master 回 RTN 后 notify 订阅者信号量,
         //    故 sem.wait_for 可被唤醒; 唤醒后排空 event reader 逐帧检查。
@@ -84,9 +82,7 @@ DZ_API DzMdSource* dz_create_md_source(const char* name) {
         bool matched = false;
         bool ok = false;
         std::string fail_msg;
-        constexpr uint32_t kRegisterTimeoutMs = 5000;
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::milliseconds(kRegisterTimeoutMs);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5000);
         while (!matched) {
             const auto now = std::chrono::steady_clock::now();
             if (now >= deadline) {
@@ -94,11 +90,11 @@ DZ_API DzMdSource* dz_create_md_source(const char* name) {
             }
             const auto remaining_ms =
                 std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
-            if (!ctx().sem.wait_for(static_cast<uint32_t>(remaining_ms))) {
+            if (!g_ctx->sem.wait_for(static_cast<uint32_t>(remaining_ms))) {
                 break;  // 超时
             }
             // 排空已到达的帧直到无新帧 (next_frame 非阻塞, 无新帧返回 nullptr)
-            while (const auto* frame = ctx().reader.next_frame()) {
+            while (const auto* frame = g_ctx->reader.next_frame()) {
                 shm::FrameView view(frame);
                 if (view.type() != DZ_FRAME_RTN_MD_READER_REGISTER ||
                     std::string_view(view.ext_inst_id()) != identity) {
@@ -133,12 +129,14 @@ DZ_API DzMdSource* dz_create_md_source(const char* name) {
         }
         // 此刻才打开行情通道 reader (DzMdSource 构造函数立即 Reader::create)
         auto* source = new DzMdSource{source_name, identity};  // NOLINT
-        ctx().md_sources.insert(source_name);
+        g_ctx->md_sources.insert(source_name);
         return source;
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
     } catch (const std::exception& e) {
         LastError::set(DZ_EC_INTERNAL, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_INTERNAL, "unknown exception");
     }
     return nullptr;
 }
@@ -148,32 +146,32 @@ DZ_API void dz_destroy_md_source(DzMdSource* source) {
         // 主动向 master 注销读者 (帧 1014, best-effort):
         // master 在策略进程退出时也会兜底清理 (on_child_exit)。
         try {
-            nlohmann::json payload = {{"subscriber", strategy_identity(ctx().strategy_id)}};
-            (void)shm::write_ext_inst_json(ctx().writer, DZ_FRAME_REQUEST_MD_READER_UNREGISTER,
+            nlohmann::json payload = {{"subscriber", strategy_identity(g_ctx->strategy_id)}};
+            (void)shm::write_ext_inst_json(g_ctx->writer, DZ_FRAME_REQUEST_MD_READER_UNREGISTER,
                                            source->name, payload);
-            ctx().writer.notify_subscribers();
+            g_ctx->writer.notify_subscribers();
         } catch (const Exception& e) {
             LastError::set(e.code(), e.what());
         } catch (const std::exception& e) {
             LastError::set(DZ_EC_INTERNAL, e.what());
+        } catch (...) {
+            LastError::set(DZ_EC_INTERNAL, "unknown exception");
         }
-        ctx().md_sources.erase(source->name);
+        g_ctx->md_sources.erase(source->name);
         delete source;  // NOLINT
     }
 }
 
 DZ_API void dz_wait() {
     static_assert(noexcept(g_ctx->sem.wait()));
-    ctx().sem.wait();
+    g_ctx->sem.wait();
 }
 
-DZ_API bool dz_wait_for(uint32_t timeout_ms) {
-    return ctx().sem.wait_for(timeout_ms);
-}
+DZ_API bool dz_wait_for(uint32_t timeout_ms) { return g_ctx->sem.wait_for(timeout_ms); }
 
 DZ_API const void* dz_next_event(void) {
     static_assert(noexcept(g_ctx->reader.next_frame()));
-    return ctx().reader.next_frame();
+    return g_ctx->reader.next_frame();
 }
 
 DZ_API const void* dz_next_md(DzMdSource* source) {
@@ -181,11 +179,11 @@ DZ_API const void* dz_next_md(DzMdSource* source) {
     return source->reader.next_frame();
 }
 
-DZ_API void dz_notify_self(void) { ctx().sem.notify(); }
+DZ_API void dz_notify_self(void) { g_ctx->sem.notify(); }
 
-DZ_API const char* dz_strategy_home(void) { return ctx().strategy_home.c_str(); }
+DZ_API const char* dz_strategy_home(void) { return g_ctx->strategy_home.c_str(); }
 
-DZ_API const char* dz_strategy_id(void) { return ctx().strategy_id; }
+DZ_API const char* dz_strategy_id(void) { return g_ctx->strategy_id; }
 
 DZ_API bool dz_preload() { return true; }
 
@@ -199,12 +197,12 @@ DZ_API DzOrderId dz_place_order(const char* account_id,
                                 DzVolume volume,
                                 DzPositionEffect position_effect) {
     auto* req = reinterpret_cast<DzOrderReq*>(
-        ctx().writer.open_frame(DZ_FRAME_TD_ORDER_REQ, sizeof(DzOrderReq)));
+        g_ctx->writer.open_frame(DZ_FRAME_TD_ORDER_REQ, sizeof(DzOrderReq)));
     if (req == nullptr) {
         return -1;
     }
-    const auto order_id = ctx().order_id.generate();
-    copy_string(req->strategy_id, ctx().strategy_id, true);
+    const auto order_id = g_ctx->order_id.generate();
+    copy_string(req->strategy_id, g_ctx->strategy_id, true);
     copy_string(req->account_id, account_id, true);
     copy_string(req->instrument_id, instrument_id, true);
     req->remark[0] = '\0';
@@ -214,21 +212,21 @@ DZ_API DzOrderId dz_place_order(const char* account_id,
     req->volume = volume;
     req->position_effect = position_effect;
     req->order_id = order_id;
-    ctx().writer.close_frame();
-    ctx().writer.notify_subscribers();
+    g_ctx->writer.close_frame();
+    g_ctx->writer.notify_subscribers();
     return order_id;
 }
 
 DZ_API bool dz_cancel_order(const char* account_id, DzOrderId order_id) {
     auto* req = reinterpret_cast<DzOrderCancelReq*>(
-        ctx().writer.open_frame(DZ_FRAME_TD_ORDER_CANCEL_REQ, sizeof(DzOrderCancelReq)));
+        g_ctx->writer.open_frame(DZ_FRAME_TD_ORDER_CANCEL_REQ, sizeof(DzOrderCancelReq)));
     if (req == nullptr) {
         return false;
     }
     req->order_id = order_id;
     copy_string(req->account_id, account_id, true);
-    ctx().writer.close_frame();
-    ctx().writer.notify_subscribers();
+    g_ctx->writer.close_frame();
+    g_ctx->writer.notify_subscribers();
     return true;
 }
 
@@ -236,13 +234,15 @@ namespace {
 
 bool write_subscribe_req(DzMdSource* source, SubscribeReq& req) {
     try {
-        write_ext_inst_json(ctx().writer, DZ_FRAME_REQUEST_MD_SUBSCRIBE, source->name, req);
-        ctx().writer.notify_subscribers();
+        write_ext_inst_json(g_ctx->writer, DZ_FRAME_REQUEST_MD_SUBSCRIBE, source->name, req);
+        g_ctx->writer.notify_subscribers();
         return true;
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
     } catch (const std::exception& e) {
         LastError::set(DZ_EC_INTERNAL, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_INTERNAL, "unknown exception");
     }
     return false;
 }
@@ -278,7 +278,7 @@ DZ_API bool dz_subscribe(DzMdSource* source,
     }
 
     SubscribeReq req;
-    req.instance_id = strategy_identity(ctx().strategy_id);
+    req.instance_id = strategy_identity(g_ctx->strategy_id);
     req.action = SubscribeAction::Subscribe;
     req.replace = replace_previous;
     fill_instruments(req, instruments, count);
@@ -298,7 +298,7 @@ DZ_API bool dz_unsubscribe(DzMdSource* source, const char* const instruments[], 
     }
 
     SubscribeReq req;
-    req.instance_id = strategy_identity(ctx().strategy_id);
+    req.instance_id = strategy_identity(g_ctx->strategy_id);
 
     if (instruments == nullptr || count == 0) {
         req.action = SubscribeAction::UnsubscribeAll;
@@ -322,20 +322,18 @@ DZ_API bool dz_set_logical_position(const char* account_id,
                                     const char* instrument_id,
                                     int32_t net_volume) {
     auto* pos = reinterpret_cast<DzLogicalPosition*>(
-        ctx().writer.open_frame(DZ_FRAME_SET_LOGICAL_POSITION, sizeof(DzLogicalPosition)));
+        g_ctx->writer.open_frame(DZ_FRAME_SET_LOGICAL_POSITION, sizeof(DzLogicalPosition)));
     if (pos == nullptr) {
         return false;
     }
     copy_string(pos->account_id, account_id, true);
     copy_string(pos->instrument_id, instrument_id, true);
-    copy_string(pos->strategy_id, ctx().strategy_id, true);
+    copy_string(pos->strategy_id, g_ctx->strategy_id, true);
     pos->net_volume = net_volume;
-    ctx().writer.close_frame();
-    ctx().writer.notify_subscribers();
+    g_ctx->writer.close_frame();
+    g_ctx->writer.notify_subscribers();
     return true;
 }
-
-
 
 /* ── UI 通知 ── */
 
@@ -350,22 +348,24 @@ DZ_API bool dz_notify_ui(DzNotifyLevel level, const char* message, bool popup) {
     }
     try {
         nlohmann::json payload = {
-            {"source", ctx().strategy_id},
+            {"source", g_ctx->strategy_id},
             {"level", level},
             {"message", message},
             {"timestamp", std::chrono::system_clock::to_time_t(std::chrono::system_clock::now())},
             {"popup", popup},
         };
-        if (!shm::write_ext_json(ctx().writer, DZ_FRAME_NOTIFY_UI, payload)) {
+        if (!shm::write_ext_json(g_ctx->writer, DZ_FRAME_NOTIFY_UI, payload)) {
             LastError::set(DZ_EC_INTERNAL, "frame write failed");
             return false;
         }
-        ctx().writer.notify_subscribers();
+        g_ctx->writer.notify_subscribers();
         return true;
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
     } catch (const std::exception& e) {
         LastError::set(DZ_EC_INTERNAL, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_INTERNAL, "unknown exception");
     }
     return false;
 }
@@ -378,26 +378,28 @@ DZ_API bool dz_output_ui(const char* data) {
 
     try {
         const auto len = strlen(data);
-        // 页感知上限: cap 在 try 内计算(ctx() 惰性构造可抛)
-        const auto cap = output_ui_max_payload(ctx().writer.page_size());
+        // 页感知上限
+        const auto cap = output_ui_max_payload(g_ctx->writer.page_size());
         if (len > 0 && cap == 0) {
             LastError::set(DZ_EC_BUFFER_TOO_SMALL, "page too small for output frame");
             return false;
         }
         const auto data_len = static_cast<uint32_t>(std::min<uint64_t>(len, cap));
-        if (!ctx().writer.write_ext_inst_frame(DZ_FRAME_STG_USER_OUTPUT, ctx().strategy_id,
-                                               reinterpret_cast<const std::byte*>(data),
-                                               data_len)) {
+        if (!g_ctx->writer.write_ext_inst_frame(DZ_FRAME_STG_USER_OUTPUT, g_ctx->strategy_id,
+                                                reinterpret_cast<const std::byte*>(data),
+                                                data_len)) {
             // write_ext_inst_frame 为 noexcept bool: 唯一失败路径是 open_frame 返回 nullptr,
             // 其每条失败分支均已设置 LastError (writer.cpp), 此处直接透传, 不自设错误码
             return false;
         }
-        ctx().writer.notify_subscribers();
+        g_ctx->writer.notify_subscribers();
         return true;
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
     } catch (const std::exception& e) {
         LastError::set(DZ_EC_INTERNAL, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_INTERNAL, "unknown exception");
     }
     return false;
 }
@@ -455,7 +457,10 @@ DZ_API bool dz_resultset_get_bool(DzResultSet* rs, uint32_t index) {
     return rs && rs->impl ? rs->impl->get_bool(index) : false;
 }
 
-DZ_API void dz_resultset_close(DzResultSet* rs) { delete rs; }
+DZ_API void dz_resultset_close(DzResultSet* rs) {
+    delete rs;  // NOLINT
+    rs = nullptr;
+}
 
 /* ── 查询接口 ── */
 
