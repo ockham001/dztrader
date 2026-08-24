@@ -257,38 +257,66 @@ DZ_API DzOrderId dz_place_order(const char* account_id,
                                 double price,
                                 DzVolume volume,
                                 DzPositionEffect position_effect) {
-    auto* req = reinterpret_cast<DzOrderReq*>(
-        g_ctx->writer.open_frame(DZ_FRAME_TD_ORDER_REQ, sizeof(DzOrderReq)));
-    if (req == nullptr) {
+    if (g_ctx == nullptr) {
+        LastError::set(DZ_EC_STRATEGY_NOT_INITIALIZED, "dz_place_order: not initialized");
         return -1;
     }
-    const auto order_id = g_ctx->order_id.generate();
-    copy_string(req->strategy_id, g_ctx->strategy_id, true);
-    copy_string(req->account_id, account_id, true);
-    copy_string(req->instrument_id, instrument_id, true);
-    req->remark[0] = '\0';
-    req->direction = direction;
-    req->price_type = price_type;
-    req->price = price;
-    req->volume = volume;
-    req->position_effect = position_effect;
-    req->order_id = order_id;
-    g_ctx->writer.close_frame();
-    g_ctx->writer.notify_subscribers();
-    return order_id;
+    try {
+        auto* req = reinterpret_cast<DzOrderReq*>(
+            g_ctx->writer.open_frame(DZ_FRAME_TD_ORDER_REQ, sizeof(DzOrderReq)));
+        if (req == nullptr) {
+            // open_frame 失败时已设置 LastError, 直接透传
+            return -1;
+        }
+        const auto order_id = g_ctx->order_id.generate();
+        copy_string(req->strategy_id, g_ctx->strategy_id, true);
+        copy_string(req->account_id, account_id, true);
+        copy_string(req->instrument_id, instrument_id, true);
+        req->remark[0] = '\0';
+        req->direction = direction;
+        req->price_type = price_type;
+        req->price = price;
+        req->volume = volume;
+        req->position_effect = position_effect;
+        req->order_id = order_id;
+        g_ctx->writer.close_frame();
+        g_ctx->writer.notify_subscribers();
+        return order_id;
+    } catch (const Exception& e) {
+        LastError::set(e.code(), e.what());
+    } catch (const std::exception& e) {
+        LastError::set(DZ_EC_INTERNAL, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_INTERNAL, "unknown exception");
+    }
+    return -1;
 }
 
 DZ_API bool dz_cancel_order(const char* account_id, DzOrderId order_id) {
-    auto* req = reinterpret_cast<DzOrderCancelReq*>(
-        g_ctx->writer.open_frame(DZ_FRAME_TD_ORDER_CANCEL_REQ, sizeof(DzOrderCancelReq)));
-    if (req == nullptr) {
+    if (g_ctx == nullptr) {
+        LastError::set(DZ_EC_STRATEGY_NOT_INITIALIZED, "dz_cancel_order: not initialized");
         return false;
     }
-    req->order_id = order_id;
-    copy_string(req->account_id, account_id, true);
-    g_ctx->writer.close_frame();
-    g_ctx->writer.notify_subscribers();
-    return true;
+    try {
+        auto* req = reinterpret_cast<DzOrderCancelReq*>(
+            g_ctx->writer.open_frame(DZ_FRAME_TD_ORDER_CANCEL_REQ, sizeof(DzOrderCancelReq)));
+        if (req == nullptr) {
+            // open_frame 失败时已设置 LastError, 直接透传
+            return false;
+        }
+        req->order_id = order_id;
+        copy_string(req->account_id, account_id, true);
+        g_ctx->writer.close_frame();
+        g_ctx->writer.notify_subscribers();
+        return true;
+    } catch (const Exception& e) {
+        LastError::set(e.code(), e.what());
+    } catch (const std::exception& e) {
+        LastError::set(DZ_EC_INTERNAL, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_INTERNAL, "unknown exception");
+    }
+    return false;
 }
 
 namespace {
@@ -382,18 +410,32 @@ DZ_API bool dz_unsubscribe(DzMdSource* source, const char* const instruments[], 
 DZ_API bool dz_set_logical_position(const char* account_id,
                                     const char* instrument_id,
                                     int32_t net_volume) {
-    auto* pos = reinterpret_cast<DzLogicalPosition*>(
-        g_ctx->writer.open_frame(DZ_FRAME_SET_LOGICAL_POSITION, sizeof(DzLogicalPosition)));
-    if (pos == nullptr) {
+    if (g_ctx == nullptr) {
+        LastError::set(DZ_EC_STRATEGY_NOT_INITIALIZED, "dz_set_logical_position: not initialized");
         return false;
     }
-    copy_string(pos->account_id, account_id, true);
-    copy_string(pos->instrument_id, instrument_id, true);
-    copy_string(pos->strategy_id, g_ctx->strategy_id, true);
-    pos->net_volume = net_volume;
-    g_ctx->writer.close_frame();
-    g_ctx->writer.notify_subscribers();
-    return true;
+    try {
+        auto* pos = reinterpret_cast<DzLogicalPosition*>(
+            g_ctx->writer.open_frame(DZ_FRAME_SET_LOGICAL_POSITION, sizeof(DzLogicalPosition)));
+        if (pos == nullptr) {
+            // open_frame 失败时已设置 LastError, 直接透传
+            return false;
+        }
+        copy_string(pos->account_id, account_id, true);
+        copy_string(pos->instrument_id, instrument_id, true);
+        copy_string(pos->strategy_id, g_ctx->strategy_id, true);
+        pos->net_volume = net_volume;
+        g_ctx->writer.close_frame();
+        g_ctx->writer.notify_subscribers();
+        return true;
+    } catch (const Exception& e) {
+        LastError::set(e.code(), e.what());
+    } catch (const std::exception& e) {
+        LastError::set(DZ_EC_INTERNAL, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_INTERNAL, "unknown exception");
+    }
+    return false;
 }
 
 namespace {

@@ -50,10 +50,18 @@ target_link_libraries(dzstrategy_sdk
 # ============================================================
 # 单元测试：每个 *_test.cpp 独立编译
 # 测试只编译内部类（不含 api.cpp，避免导出符号；测试 result_set 等）
+# 例外：notify_ui_test / trade_api_test 链接真实 SDK (api.cpp)，
+#       覆盖 dz_* C 接口的完整写入/错误路径。
 # ============================================================
 set(SDK_TEST_SOURCES
     src/vector_result_set.cpp
     src/cursor_result_set.cpp
+)
+
+# 链接 api.cpp 的测试 (覆盖 C 接口完整路径)
+set(SDK_API_TESTS
+    notify_ui_test
+    trade_api_test
 )
 file(GLOB SDK_TESTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
@@ -67,9 +75,7 @@ foreach(testfile ${SDK_TESTS})
     target_link_libraries(dzstrategy_sdk_${testname} PRIVATE
         strategy_api_headers dzcore dzshm GTest::gtest
         Boost::boost nlohmann_json::nlohmann_json)
-    # notify_ui_test 链接真实 SDK (api.cpp), 覆盖 dz_notify_ui 完整写入路径。
-    # 其余测试仅编译内部类, 保持不链接 api.cpp 以免导出符号。
-    if(testname STREQUAL "notify_ui_test")
+    if(testname IN_LIST SDK_API_TESTS)
         target_sources(dzstrategy_sdk_${testname} PRIVATE src/api.cpp)
     endif()
     set_target_properties(dzstrategy_sdk_${testname} PROPERTIES
