@@ -365,22 +365,3 @@ TEST(ReaderReleaseTest, ReleaseOldPagesUpdatesIndex) {
     EXPECT_GE(meta->min_reader_page_index(), 1u);
     cleanup_test_dir(dir);
 }
-
-TEST_F(ReaderTest, TouchReadPositionDoesNotCrash) {
-    auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
-    SingleWriter writer = SingleWriter::create(meta, "test_writer");
-    Reader reader = Reader::create(meta, "test_reader");
-
-    // 写一帧让 reader 有内容可读
-    DzShmPreload params{.bytes = 512, .pages = 1, .reserved = 0};
-    ASSERT_TRUE(writer.write_frame(DZ_FRAME_PRELOAD_EVENT_SHM, params));
-    writer.notify_subscribers();
-
-    // 读一帧确保 page_ 和 offset_in_page_ 有效
-    const auto* frame = reader.next_frame();
-    ASSERT_NE(frame, nullptr);
-
-    // touch 不应崩溃
-    reader.touch_read_position();
-    SUCCEED();
-}

@@ -38,10 +38,6 @@ public:
 
     void release_old_pages() noexcept;
 
-    /// 触页预热: 读取当前读取位置的内存, 触发 page fault, 确保物理页已加载到 RAM。
-    /// 本方法不获取锁, 由调用方保证线程安全。
-    void touch_read_position() noexcept;
-
     [[nodiscard]] uint64_t read_position() const noexcept { return read_pos_; }
 
     [[nodiscard]] uint64_t current_page_id() const noexcept { return current_page_id_; }

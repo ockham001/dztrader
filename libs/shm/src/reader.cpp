@@ -139,15 +139,4 @@ void Reader::release_old_pages() noexcept {
     }
 }
 
-void Reader::touch_read_position() noexcept {
-    // 读取当前读取位置的 1 字节, 触发 page fault。
-    // volatile 防止编译器优化掉读取。
-    // Reader 持有 page_ (当前缓存页, 与 Writer 对称), 直接访问即可。
-    if (offset_in_page_ < page_size_) {
-        volatile char tmp = *reinterpret_cast<const volatile char*>(
-            page_.data() + offset_in_page_);
-        (void)tmp;
-    }
-}
-
 }  // namespace dztrader::shm

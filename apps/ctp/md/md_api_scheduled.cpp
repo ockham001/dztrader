@@ -41,7 +41,6 @@ void MdApi::on_event_shm_timer(const DzShmPreload& params) {
             reader_.prefetch_for_bytes(params.bytes);
         }
         reader_.release_old_pages();
-        reader_.touch_read_position();
 
         // 事件通道 event_writer_ 维护
         if (params.pages > 0) {

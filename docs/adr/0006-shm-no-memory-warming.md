@@ -29,11 +29,11 @@ warm 并非"额外成本"，只是把写路径迟早要付的缺页挪到空闲�
 同步评估的两项关联议题：
 
 - **page_pool 批量优化**：`get_page` 与 `prefetch_page` 存在 ~90 行逐行雷同逻辑；`prefetch_pages` 逐页调 `prefetch_page`（每页各拿一次 meta 进程锁 + stat×2 + 建文件 + mmap）。批量版（单次锁内处理 N 页）收益仅为省 (N-1) 次锁往返 ≈ 无竞争时亚微秒；代价是持锁时间放大 N 倍——密集区巡检与 writer 跨页写入撞锁时，writer 最坏等待从 ≤1×T_page（~6-90μs）放大到 ≤N×T_page（~48-720μs），碰撞概率 ~10⁻⁷ 量级，低但非零且不对称。性能收益为噪声，唯一价值是代码去重，不足以撬动热路径改动风险。
-- **touch 跨页安全性**：`Reader::touch_read_position` 只访问已成功映射的成员缓存页，单字节 + `offset_in_page_ < page_size_` 守卫保证永不越界至下一页（否则将是越界 UB）；配合"writer 在推进 nwp 前先创建下一页文件"不变式（`open_frame` 跨页先 `get_page` 建文件，`close_frame` 才 store 新 nwp，均在 meta 锁序内），reader 合法可到达位置的页文件必已存在，不存在 touch 打开未创建页的路径。追平 nwp 时触碰的是稀疏零区，仅产生无害 minor fault。PageCleaner 删除下限取 min(reader/writer page_index, active)；Windows 上映射中删除失败即告警跳过，Linux unlink 后既有映射仍有效。
+- **touch 跨页安全性**：~~`Reader::touch_read_position` 只访问已成功映射的成员缓存页~~ **（2026-08-24 已移除 reader touch，见下方 Amend）**；`Writer::touch_write_position` 单字节访问成员缓存页，`offset < page_size_` 守卫保证不越界。
 
 ## Decision
 
-1. **否决周期性内存预热**：不引入任何形式的周期性 warm（含 :19/:29/:49 错峰调度、forward-only 字节区间 warm API）。仅保留现有 `touch_write_position`/`touch_read_position` 单字节触碰（纳秒级，聊胜于无）。
+1. **否决周期性内存预热**：不引入任何形式的周期性 warm（含 :19/:29/:49 错峰调度、forward-only 字节区间 warm API）。仅保留现有 `Writer::touch_write_position` 单字节触碰（纳秒级，聊胜于无）。
 2. **预加载维持现状**：三道防线与关旧页沿用既有机制（`preload_points` / `check_interval_min` / `open_frame` 兜底 / `close_old_pages`），不新增配置字段，不动帧契约与 WebUI。
 3. **page_pool 批量/去重暂不动**：热路径代码保持不变；重复代码与逐页加锁行为一并保留。待未来有真实需求再评估——届时建议纯 helper 抽取（保持锁行为逐纳秒等价），或分片批量（每 K 页放一次锁，K=2-4）以兼顾锁收益与尾部风险。
 
@@ -47,5 +47,13 @@ warm 并非"额外成本"，只是把写路径迟早要付的缺页挪到空闲�
 ## References
 
 - 讨论日期：2026-08-23（shm 预加载策略设计讨论结论）
-- 源码位置：`libs/shm/src/page_pool.cpp`（get_page/prefetch_page/close_pages_before）、`libs/shm/src/reader.cpp`（prefetch_for_bytes/release_old_pages/touch_read_position）、`libs/shm/src/writer.cpp`（open_frame/prefetch_pages/touch_write_position）、`apps/ctp/md/md_api_scheduled.cpp`（preload_points/check_interval_min 触发）、`libs/shm/include/dztrader/shm/page_cleaner.h`（删除下限策略）
+- 源码位置：`libs/shm/src/page_pool.cpp`（get_page/prefetch_page/close_pages_before）、`libs/shm/src/reader.cpp`（prefetch_for_bytes/release_old_pages）、`libs/shm/src/writer.cpp`（open_frame/prefetch_pages/touch_write_position）、`apps/ctp/md/md_api_scheduled.cpp`（preload_points/check_interval_min 触发）、`libs/shm/include/dztrader/shm/page_cleaner.h`（删除下限策略）
 - 相关文档：《帧契约：shm》（docs/frame_contracts/shm.md）、ADR 0004（格式先例）
+
+## Amend (2026-08-24): 移除 Reader::touch_read_position
+
+**决策**：删除 `Reader::touch_read_position` 接口（声明/实现/测试/全部调用点），四件套 reader 半边改为 `prefetch_pages/prefetch_for_bytes/release_old_pages` 三件。`Writer::touch_write_position` 保留。
+
+**理由**：对 reader touch 的逐一场景检验均证明其冗余——活跃 reader 的读本身即触页；追平后等待的 reader 当前页已驻留（touch 为 no-op）；空闲被逐出后唤醒首读仅 ~1μs minor fault（噪声）。真正需要"预 fault frontier 新页"的是多写者事件通道的 writer（策略下单/td 回报路径），该处由后续 warm 方案覆盖，读者侧无此需求。详见 [2026-08-24-event-writer-prefetch-gap-analysis.md](../specs/2026-08-24-event-writer-prefetch-gap-analysis.md)。
+
+**影响**：本 ADR 决策项 1 的"保留 touch_read_position"部分被撤销，其余（否决周期性内存预热、保留 writer touch）不变。reader 跨页安全性由 `prefetch_for_bytes`/`release_old_pages` 与 PageCleaner 下限机制继续保证，不受影响。
