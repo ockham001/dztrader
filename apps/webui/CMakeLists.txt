@@ -18,6 +18,7 @@ add_library(dzweb_obj OBJECT
     config.cpp
     jwt.cpp
     event_monitor.cpp
+    event_preloader.cpp
     auth_controller.cpp
     ws_controller.cpp
     db_init.cpp

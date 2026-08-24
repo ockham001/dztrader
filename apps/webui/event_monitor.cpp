@@ -1,6 +1,7 @@
 #include "event_monitor.h"
 #include "frame_router.h"
 
+#include <dztrader/core/random.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/core/this_process.h>
 #include <spdlog/spdlog.h>
@@ -8,7 +9,9 @@
 
 namespace dztrader::webui {
 
-EventMonitor::EventMonitor(const std::filesystem::path& shm_dir, FrameRouter& router)
+EventMonitor::EventMonitor(const std::filesystem::path& shm_dir,
+                           FrameRouter& router,
+                           std::shared_ptr<shm::MultiWriter> event_writer)
     : router_(router) {
     // 内部创建 SHM Reader（与 ShmWriter 模式一致：接收 shm_dir，内部 open channel）
     // 方便失败时降级：共享内存不存在时 reader_ 为空，start() 走 no-op（API-only 模式）
@@ -21,6 +24,8 @@ EventMonitor::EventMonitor(const std::filesystem::path& shm_dir, FrameRouter& ro
         SPDLOG_WARN("shm reader init failed | error={} mode=api-only advice=start_dztraderd",
                     e.what());
     }
+    // 预加载执行器无条件创建（reader/writer 为空时内部方法自行降级为 no-op）
+    preloader_ = std::make_unique<EventChannelPreloader>(reader_, std::move(event_writer));
 }
 
 EventMonitor::~EventMonitor() { stop(); }
@@ -53,13 +58,27 @@ void EventMonitor::stop() {
     }
 }
 
+void EventMonitor::schedule_event_shm_preload(const DzShmPreload& params) {
+    // api-only 模式(通道缺失)无可维护对象, 直接跳过
+    if (!reader_) {
+        return;
+    }
+    preloader_->schedule_event_shm_preload(params, core::random_jitter(0, 5000));
+}
+
 void EventMonitor::run() {
     auto last_release = std::chrono::steady_clock::now();
     while (!stop_flag_.load(std::memory_order_acquire)) {
-        sem_->wait();
+        // 有待触发定时器(事件通道预加载)时精确超时唤醒, 否则无限等 (模式对齐 td_api.cpp)
+        if (preloader_->idle()) {
+            sem_->wait();
+        } else {
+            sem_->wait_for(preloader_->next_wait_ms());
+        }
         if (stop_flag_.load(std::memory_order_acquire)) {
             break;
         }
+        preloader_->tick_due();
         drain_and_post();
         // 周期上报 reader 页索引 (60s): master 的 PageCleaner 以 min(reader page_index, 活跃页)
         // 为删除下限; webui 不上报则下限恒为 0, 事件通道页文件永不删除 (磁盘只增不减)。

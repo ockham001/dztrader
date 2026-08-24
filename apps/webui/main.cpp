@@ -319,6 +319,11 @@ int main(int argc, char* argv[]) {
     // 安全，与 REST/WS 连接回调同线程串行）
     // register_raw：在监听线程同步执行（ControlDomainService 内部投递到 IO 循环）
     dztrader::webui::FrameRouter router;
+    // EventMonitor 由 main 持有并直调 start/stop（WsController 不再涉及）。
+    // 生命周期：main 栈上 router 先声明、event_monitor 后声明（析构相反），
+    // 监听线程在 drogon run 返回后经 event_monitor->stop() join，无线程在 router 析构后访问
+    auto event_monitor = std::make_unique<dztrader::webui::EventMonitor>(shm_dir, router,
+                                                                         event_writer);
     router.register_json<nlohmann::json>(DZ_FRAME_RTN_LOG_CONFIG, true,
         [log_domain](const std::string& s, const nlohmann::json& p) {
             log_domain->on_rtn_log_config(s, p);
@@ -329,6 +334,12 @@ int main(int argc, char* argv[]) {
         });
     router.register_raw(DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER,
         [control_domain](const dztrader::shm::FrameView&) { control_domain->on_update_subscribers(); });
+    // 事件通道预加载广播: 监听线程解析 payload 后随机延迟执行
+    // (reader 半边就地 / writer 半边投递 IO 线程, 见 event_preloader.h)
+    router.register_raw(DZ_FRAME_PRELOAD_EVENT_SHM,
+        [monitor = event_monitor.get()](const dztrader::shm::FrameView& v) {
+            monitor->schedule_event_shm_preload(v.payload<DzShmPreload>());
+        });
     router.register_json<nlohmann::json>(DZ_FRAME_RTN_PROCESS_STATUS, false,
         [process_domain](const std::string&, const nlohmann::json& p) {
             process_domain->on_rtn_process_status(p);
@@ -371,13 +382,8 @@ int main(int argc, char* argv[]) {
             progress_domain->on_rtn_progress(s, p);
         });
 
-    // ===== EventMonitor 由 main 持有并直调 start/stop（WsController 不再涉及） =====
-    // 生命周期：main 栈上 router 先声明、event_monitor 后声明（析构相反），
-    // 监听线程在 drogon run 返回后经 event_monitor->stop() join，无线程在 router 析构后访问
-    auto event_monitor = std::make_unique<dztrader::webui::EventMonitor>(shm_dir, router);
-
     // 启动事件通道监听线程（替代原 50ms 轮询的 event channel 部分）
-    // EventMonitor 由 main 持有并直调（Task 8 去掉 WsController 委托链）
+    // EventMonitor 由 main 持有并直调（Task 8 去掉 WsController 委托链），构造见帧路由注册处
     // 监听线程阻塞在 NamedSemaphore::wait，被 master 的 notify_subscribers 唤醒后
     // 逐帧交给 FrameRouter 分发到领域服务（register_json 投递 IO 线程 / register_raw 监听线程执行）
     // 信号量名 = <exe_stem()>（无 pid 后缀，与 master 注册名一致）
