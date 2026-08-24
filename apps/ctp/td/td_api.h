@@ -206,7 +206,7 @@ private:
     // === 事件通道预加载 (实现在 td_api_scheduled.cpp, 与 md_api_scheduled.cpp 组织一致) ===
     /// 事件通道预加载: 收到 DZ_FRAME_PRELOAD_EVENT_SHM 广播后随机延迟 0-5s 执行三件套
     void schedule_event_shm_preload(const DzShmPreload& params);
-    /// 事件通道预加载定时器回调: 对 reader_ + event_writer_ 执行三件套 + touch
+    /// 事件通道预加载定时器回调: 对 reader_ + event_writer_ 执行三件套
     void on_event_shm_timer(const DzShmPreload& params);
 
     // === 成员变量 ===

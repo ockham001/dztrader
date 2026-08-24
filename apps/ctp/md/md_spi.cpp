@@ -209,7 +209,7 @@ void MdSpi::OnRtnDepthMarketData(CThostFtdcDepthMarketDataField* pDepthMarketDat
         ((static_cast<DzTime>(pDepthMarketData->UpdateTime[6]) - '0') * 10) +
         (static_cast<DzTime>(pDepthMarketData->UpdateTime[7]) - '0');
 
-    // 写 SHM 帧, 与主线程的 refresh/prefetch/close/touch 互斥。
+    // 写 SHM 帧, 与主线程的 refresh/prefetch/close 互斥。
     std::lock_guard<shm::SpinLock> lk(thread_lock_);
     auto* tick = reinterpret_cast<DzTick*>(md_writer_.open_frame(DZ_FRAME_RTN_MD_TICK, sizeof(DzTick)));
     if (!tick) {

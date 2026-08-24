@@ -90,12 +90,12 @@ TEST_F(EventPreloaderTest, OnEventShmTimerReportsReaderPageIndex) {
     ASSERT_EQ(meta_->min_reader_page_index(), 0u);  // 从未上报过
 
     EventChannelPreloader preloader(reader_, writer_);
-    preloader.on_event_shm_timer(make_params(0, 0));  // 全零参数仍执行 release/touch
+    preloader.on_event_shm_timer(make_params(0, 0));  // 全零参数仍执行 release
 
     EXPECT_EQ(meta_->min_reader_page_index(), reader_->current_page_id());
 }
 
-/// writer 半边四件套直调: 应把当前页索引上报到 meta
+/// writer 半边直调: 应把当前页索引上报到 meta
 TEST_F(EventPreloaderTest, MaintainWriterShmReportsWriterPageIndex) {
     write_big_frame(DZ_FRAME_PRELOAD_EVENT_SHM);
     write_big_frame(DZ_FRAME_PRELOAD_EVENT_SHM);

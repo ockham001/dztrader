@@ -14,7 +14,8 @@ namespace dztrader::webui {
 
 /// 事件通道预加载执行器（被动，响应 master 的 DZ_FRAME_PRELOAD_EVENT_SHM 广播）。
 /// 与 md_api_scheduled.cpp 的 schedule_event_shm_preload / on_event_shm_timer 对齐：
-/// 收到广播后随机延迟执行 reader/writer 四件套（prefetch + release|close + touch）。
+/// 收到广播后随机延迟执行 reader/writer 半边（reader: prefetch + release_old_pages；
+/// writer: prefetch + close_old_pages）。
 ///
 /// 线程模型（见 docs/components/dzweb.md）：
 /// - schedule_event_shm_preload / on_event_shm_timer / tick_due 仅在监听线程调用
@@ -39,7 +40,7 @@ public:
     /// 名字对齐 md_api_scheduled.cpp 的 on_event_shm_timer(params)。
     void on_event_shm_timer(const DzShmPreload& params);
 
-    /// writer 半边四件套。static：投递 lambda 不捕获 this（仅按值持 shared_ptr 保活），
+    /// writer 半边。static：投递 lambda 不捕获 this（仅按值持 shared_ptr 保活），
     /// 进程退出期即使投递任务悬挂在未运行的循环里也因不捕获 this 而自然无害；
     /// 同时供单元测试直调。
     static void maintain_writer_shm(shm::MultiWriter& writer, const DzShmPreload& params);

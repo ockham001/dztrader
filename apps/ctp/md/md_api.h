@@ -129,15 +129,15 @@ private:
     void handle_subscribe_req(const shm::FrameView& view);
     /// 事件通道预加载: 收到 DZ_FRAME_PRELOAD_EVENT_SHM 广播后随机延迟 0-5s 执行三件套
     void schedule_event_shm_preload(const DzShmPreload& params);
-    /// 事件通道预加载定时器回调: 对 reader_ + event_writer_ 执行三件套 + touch
+    /// 事件通道预加载定时器回调: 对 reader_ + event_writer_ 执行三件套
     void on_event_shm_timer(const DzShmPreload& params);
 
     /// 行情数据通道自管理: 排定周期定时器
     void schedule_md_shm_maintenance();
-    /// 行情数据通道维护: prefetch + close_old + touch + 广播 PRELOAD_MD_SHM。
+    /// 行情数据通道维护: prefetch + close_old + 广播 PRELOAD_MD_SHM。
     /// on_md_shm_timer 和 on_sched_timer preload_point 共用。
     void maintain_md_shm(uint32_t pages, uint64_t bytes);
-    /// 行情数据通道维护定时器回调: 对 spi_ 执行三件套 + touch + 通知
+    /// 行情数据通道维护定时器回调: 对 spi_ 执行三件套 + 通知
     void on_md_shm_timer();
 
     /// 广播行情数据通道预加载参数 (通过事件通道发 DZ_FRAME_PRELOAD_MD_SHM 帧, 带本进程 instance_id)
