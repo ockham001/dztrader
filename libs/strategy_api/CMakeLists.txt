@@ -67,6 +67,11 @@ foreach(testfile ${SDK_TESTS})
     target_link_libraries(dzstrategy_sdk_${testname} PRIVATE
         strategy_api_headers dzcore dzshm GTest::gtest
         Boost::boost nlohmann_json::nlohmann_json)
+    # notify_ui_test 链接真实 SDK (api.cpp), 覆盖 dz_notify_ui 完整写入路径。
+    # 其余测试仅编译内部类, 保持不链接 api.cpp 以免导出符号。
+    if(testname STREQUAL "notify_ui_test")
+        target_sources(dzstrategy_sdk_${testname} PRIVATE src/api.cpp)
+    endif()
     set_target_properties(dzstrategy_sdk_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )

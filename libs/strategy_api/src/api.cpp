@@ -396,6 +396,20 @@ DZ_API bool dz_set_logical_position(const char* account_id,
     return true;
 }
 
+namespace {
+
+// DzNotifyLevel -> 字符串, 与 log level 规范全称一致 (契约 notify-ui level 字段)
+const char* notify_level_to_string(DzNotifyLevel level) {
+    switch (level) {
+        case DZ_NOTIFY_INFO:  return "info";
+        case DZ_NOTIFY_WARN:  return "warning";
+        case DZ_NOTIFY_ERROR: return "error";
+        default:              return "error";
+    }
+}
+
+}  // namespace
+
 /* ── UI 通知 ── */
 
 DZ_API bool dz_notify_ui(DzNotifyLevel level, const char* message, bool popup) {
@@ -410,7 +424,7 @@ DZ_API bool dz_notify_ui(DzNotifyLevel level, const char* message, bool popup) {
     try {
         nlohmann::json payload = {
             {"source", g_ctx->strategy_id},
-            {"level", level},
+            {"level", notify_level_to_string(level)},
             {"message", message},
             {"timestamp", std::chrono::system_clock::to_time_t(std::chrono::system_clock::now())},
             {"popup", popup},
