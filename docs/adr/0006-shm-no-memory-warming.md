@@ -29,11 +29,11 @@ warm 并非"额外成本"，只是把写路径迟早要付的缺页挪到空闲�
 同步评估的两项关联议题：
 
 - **page_pool 批量优化**：`get_page` 与 `prefetch_page` 存在 ~90 行逐行雷同逻辑；`prefetch_pages` 逐页调 `prefetch_page`（每页各拿一次 meta 进程锁 + stat×2 + 建文件 + mmap）。批量版（单次锁内处理 N 页）收益仅为省 (N-1) 次锁往返 ≈ 无竞争时亚微秒；代价是持锁时间放大 N 倍——密集区巡检与 writer 跨页写入撞锁时，writer 最坏等待从 ≤1×T_page（~6-90μs）放大到 ≤N×T_page（~48-720μs），碰撞概率 ~10⁻⁷ 量级，低但非零且不对称。性能收益为噪声，唯一价值是代码去重，不足以撬动热路径改动风险。
-- **touch 跨页安全性**：~~`Reader::touch_read_position` 只访问已成功映射的成员缓存页~~ **（2026-08-24 已移除 reader touch，见下方 Amend）**；`Writer::touch_write_position` 单字节访问成员缓存页，`offset < page_size_` 守卫保证不越界。
+- **touch 跨页安全性**：~~`Reader::touch_read_position` 只访问已成功映射的成员缓存页~~ **（2026-08-24 已移除 reader touch，见下方 Amend）**；~~`Writer::touch_write_position` 单字节访问成员缓存页，`offset < page_size_` 守卫保证不越界~~ **（2026-08-24 亦已移除，见 Amend 2）**。
 
 ## Decision
 
-1. **否决周期性内存预热**：不引入任何形式的周期性 warm（含 :19/:29/:49 错峰调度、forward-only 字节区间 warm API）。仅保留现有 `Writer::touch_write_position` 单字节触碰（纳秒级，聊胜于无）。
+1. **否决周期性内存预热**：不引入任何形式的周期性 warm（含 :19/:29/:49 错峰调度、forward-only 字节区间 warm API）。~~仅保留现有 `Writer::touch_write_position` 单字节触碰（纳秒级，聊胜于无）~~ **（2026-08-24 连 touch 一并移除，见 Amend 2）**。
 2. **预加载维持现状**：三道防线与关旧页沿用既有机制（`preload_points` / `check_interval_min` / `open_frame` 兜底 / `close_old_pages`），不新增配置字段，不动帧契约与 WebUI。
 3. **page_pool 批量/去重暂不动**：热路径代码保持不变；重复代码与逐页加锁行为一并保留。待未来有真实需求再评估——届时建议纯 helper 抽取（保持锁行为逐纳秒等价），或分片批量（每 K 页放一次锁，K=2-4）以兼顾锁收益与尾部风险。
 
@@ -42,12 +42,12 @@ warm 并非"额外成本"，只是把写路径迟早要付的缺页挪到空闲�
 - **Positive**：零代码变更；避免一项被量化证明为负收益的优化；量化账本留档，防止未来翻案重新论证。
 - **Negative / Known residual**：
   - `libs/shm/src/page_pool.cpp` 中 `get_page`/`prefetch_page` 的 ~90 行重复代码继续存在（双份维护风险，改页文件规则需同步两处）。
-  - MultiWriter 下 `Writer::touch_write_position` 用实时 `nwp % page_size` 算偏移，但 `page_` 可能仍是本写者上次使用的旧页——触碰落在旧页内对应偏移处，仍在映射区间内、内存安全，仅偶尔白碰一次（warm 提示失效一次）。后续如清理，加一行 `page_.page_id() == nwp / page_size` 校验即可。
+  - MultiWriter 下 ~~`Writer::touch_write_position` 用实时 `nwp % page_size` 算偏移，但 `page_` 可能仍是本写者上次使用的旧页——触碰落在旧页内对应偏移处，仍在映射区间内、内存安全，仅偶尔白碰一次（warm 提示失效一次）。后续如清理，加一行 `page_.page_id() == nwp / page_size` 校验即可~~ **（2026-08-24 touch 已移除，此残余随之消失；对应的"跳页/锚点"缺口与 warm 方案见 Amend 2）**。
 
 ## References
 
 - 讨论日期：2026-08-23（shm 预加载策略设计讨论结论）
-- 源码位置：`libs/shm/src/page_pool.cpp`（get_page/prefetch_page/close_pages_before）、`libs/shm/src/reader.cpp`（prefetch_for_bytes/release_old_pages）、`libs/shm/src/writer.cpp`（open_frame/prefetch_pages/touch_write_position）、`apps/ctp/md/md_api_scheduled.cpp`（preload_points/check_interval_min 触发）、`libs/shm/include/dztrader/shm/page_cleaner.h`（删除下限策略）
+- 源码位置：`libs/shm/src/page_pool.cpp`（get_page/prefetch_page/close_pages_before）、`libs/shm/src/reader.cpp`（prefetch_for_bytes/release_old_pages）、`libs/shm/src/writer.cpp`（open_frame/prefetch_pages）、`apps/ctp/md/md_api_scheduled.cpp`（preload_points/check_interval_min 触发）、`libs/shm/include/dztrader/shm/page_cleaner.h`（删除下限策略）
 - 相关文档：《帧契约：shm》（docs/frame_contracts/shm.md）、ADR 0004（格式先例）
 
 ## Amend (2026-08-24): 移除 Reader::touch_read_position
@@ -57,3 +57,13 @@ warm 并非"额外成本"，只是把写路径迟早要付的缺页挪到空闲�
 **理由**：对 reader touch 的逐一场景检验均证明其冗余——活跃 reader 的读本身即触页；追平后等待的 reader 当前页已驻留（touch 为 no-op）；空闲被逐出后唤醒首读仅 ~1μs minor fault（噪声）。真正需要"预 fault frontier 新页"的是多写者事件通道的 writer（策略下单/td 回报路径），该处由后续 warm 方案覆盖，读者侧无此需求。详见 [2026-08-24-event-writer-prefetch-gap-analysis.md](../specs/2026-08-24-event-writer-prefetch-gap-analysis.md)。
 
 **影响**：本 ADR 决策项 1 的"保留 touch_read_position"部分被撤销，其余（否决周期性内存预热、保留 writer touch）不变。reader 跨页安全性由 `prefetch_for_bytes`/`release_old_pages` 与 PageCleaner 下限机制继续保证，不受影响。
+
+## Amend 2 (2026-08-24): 移除 Writer::touch_write_position（touch 全部移除，warm 留档待议）
+
+**决策**：删除 `Writer::touch_write_position` 接口（声明/实现/测试/全部调用点含 MdSpi 代理），writer 半边改为 `prefetch_pages/prefetch_for_bytes/close_old_pages` 三件。**不引入替代的 warm 接口**——warm 方案整体留作将来讨论。
+
+**理由**：
+- 写者持续写时当前页天然驻留，touch 为 no-op；写者安静落后时 `page_` 为旧页、`offset` 按实时 nwp 算，touch 摸旧页错位地址（Gap 2）——语义空洞。
+- 实测（Linux, 128MB 同 mfile）：同一 4KB 页内重复写 ~27ns；**首次写新 4KB 页 ~4000-4500ns**；读 1 字节预 fault 后真写 ~497ns，而**写 1 字节预 fault（建写 PTE）后真写 ~39ns**——真正有效的 warm 需写触页且锚 nwp，等价于新设计 warm_write_position，非既有 touch 可达。既有 touch 与 warm 不可合并，故一并移除，将来按实测结论重新设计。
+
+**影响**：writer 跨页首写保留 open_frame 慢路径兜底（ADR 0006 第三道防线），代价是跳页首写 ~4-5μs 尖峰（低频、一次性、自愈）。预加载（prefetch/close_old_pages）维持现状。涉及 warm 的设计、更新频率、与预加载分工、跳页（Gap 1）追平，全部留档于 [2026-08-24-event-writer-prefetch-gap-analysis.md](../specs/2026-08-24-event-writer-prefetch-gap-analysis.md) 待将来讨论。

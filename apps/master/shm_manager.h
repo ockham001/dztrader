@@ -117,8 +117,7 @@ public:
     ///   1. event_writer_.prefetch_pages(check_pages) - master 自己写的页预热
     ///   2. event_writer_.prefetch_for_bytes(check_bytes) - 按字节预热
     ///   3. cleaner_->cleanup() + md 通道 cleanup - 清理旧页
-    ///   4. event_writer_.touch_write_position() - 触页防 swap
-    ///   5. 广播 DZ_FRAME_PRELOAD_EVENT_SHM (通知子进程预加载 event 通道)
+    ///   4. 广播 DZ_FRAME_PRELOAD_EVENT_SHM (通知子进程预加载 event 通道)
     void start_event_shm_maintenance(boost::asio::io_context& ioc);
 
     /// 重新调度 event 通道维护任务 (check_interval_min 变化时调用)

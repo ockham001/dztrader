@@ -54,9 +54,7 @@ void ShmManager::run_event_maintenance_tick() {
     }
     // 3. cleanup (清理旧页, event + md 通道)
     cleanup_old_pages();
-    // 4. touch_write_position (触页防 swap)
-    event_writer_.touch_write_position();
-    // 5. 广播 PRELOAD_EVENT_SHM (携带 check_pages/check_bytes 通知子进程预加载 event 通道)
+    // 4. 广播 PRELOAD_EVENT_SHM (携带 check_pages/check_bytes 通知子进程预加载 event 通道)
     DzShmPreload params{};
     params.pages = event_shm_config_.check_pages();
     params.bytes = event_shm_config_.check_bytes();
@@ -182,7 +180,6 @@ void ShmManager::on_event_preload_points_tick() {
                 if (p.bytes > 0) {
                     event_writer_.prefetch_for_bytes(p.bytes);
                 }
-                event_writer_.touch_write_position();
                 // 广播 PRELOAD_EVENT_SHM (携带该时间点的 pages/bytes 通知子进程预加载)
                 DzShmPreload params{};
                 params.pages = p.pages;

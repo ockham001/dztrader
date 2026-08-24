@@ -58,9 +58,6 @@ public:
     /// 关闭旧页 (回收)。主线程调用, 与 SPI 线程的写操作互斥。
     void close_old_pages();
 
-    /// 触页预热: 读取当前写入位置, 触发 page fault。主线程调用, 与 SPI 线程互斥。
-    void touch_write_position();
-
     // NOLINTBEGIN
     void OnFrontConnected() override;
 

@@ -48,7 +48,6 @@ void TdApi::on_event_shm_timer(const DzShmPreload& params) {
             event_writer_.prefetch_for_bytes(params.bytes);
         }
         event_writer_.close_old_pages();
-        event_writer_.touch_write_position();
 
         SPDLOG_DEBUG("event shm preload done | pages={} bytes={}", params.pages,
                      params.bytes);

@@ -208,7 +208,6 @@ DZ_API bool dz_preload_event(uint32_t pages, uint64_t bytes) {
             g_ctx->writer.prefetch_for_bytes(bytes);
         }
         g_ctx->writer.close_old_pages();
-        g_ctx->writer.touch_write_position();
         return true;
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());

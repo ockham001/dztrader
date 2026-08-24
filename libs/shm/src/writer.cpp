@@ -166,23 +166,6 @@ void Writer<WriteLock>::close_old_pages() noexcept {
     }
 }
 
-template <AllowedWriteLock WriteLock>
-void Writer<WriteLock>::touch_write_position() noexcept {
-    // 读取当前写入位置的 1 字节, 触发 page fault。
-    // volatile 防止编译器优化掉读取。
-    uint64_t offset = 0;
-    if constexpr (IS_NULL_WRITE_LOCK) {
-        offset = offset_in_page_;
-    } else {
-        offset = next_write_pos_->load(boost::memory_order_relaxed) % page_size_;
-    }
-    if (offset < page_size_) {
-        volatile char tmp = *reinterpret_cast<const volatile char*>(
-            page_.data() + offset);
-        (void)tmp;
-    }
-}
-
 template class Writer<ProcessMutex>;
 template class Writer<NullLock>;
 

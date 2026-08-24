@@ -287,9 +287,4 @@ void MdSpi::close_old_pages() {
     md_writer_.close_old_pages();
 }
 
-void MdSpi::touch_write_position() {
-    std::lock_guard<shm::SpinLock> lk(thread_lock_);
-    md_writer_.touch_write_position();
-}
-
 }  // namespace dztrader::ctp

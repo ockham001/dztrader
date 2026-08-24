@@ -127,10 +127,6 @@ public:
 
     void close_old_pages() noexcept;
 
-    /// 触页预热: 读取当前写入位置的内存, 触发 page fault, 确保物理页已加载到 RAM。
-    /// 本方法不获取 write_lock_, 纳秒级, 由调用方保证线程安全 (如外层 SpinLock)。
-    void touch_write_position() noexcept;
-
     [[nodiscard]] uint64_t write_position() const noexcept {
         return next_write_pos_->load(boost::memory_order_acquire);
     }

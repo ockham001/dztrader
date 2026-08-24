@@ -60,7 +60,6 @@ void EventChannelPreloader::maintain_writer_shm(shm::MultiWriter& writer,
         writer.prefetch_for_bytes(params.bytes);
     }
     writer.close_old_pages();
-    writer.touch_write_position();
 }
 
 uint32_t EventChannelPreloader::next_wait_ms() const {

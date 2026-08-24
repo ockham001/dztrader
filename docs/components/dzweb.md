@@ -49,7 +49,7 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
 ① 定时到期 on_event_shm_timer:
      ├─ reader 半边就地: pages/bytes prefetch -> release_old_pages
      └─ writer 半边 queueInLoop -> ② maintain_writer_shm:
-            pages/bytes prefetch -> close_old_pages -> touch_write_position
+            pages/bytes prefetch -> close_old_pages
 ```
 
 - params 全零时跳过 prefetch 但照常 release/touch/close（上报页索引 + 防 swap）

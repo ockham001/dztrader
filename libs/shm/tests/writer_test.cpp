@@ -461,28 +461,6 @@ TEST(WriterDeadlockTest, ConcurrentCtorAndPageCrossNoDeadlock) {
     cleanup_test_dir(dir);
 }
 
-TEST_F(WriterTest, TouchWritePositionDoesNotCrash) {
-    auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
-    SingleWriter writer = SingleWriter::create(meta, "test_writer");
-    // 写入一帧确保 page_ 和 offset_in_page_ 有效
-    DzShmPreload params{.bytes = 1024, .pages = 2, .reserved = 0};
-    ASSERT_TRUE(writer.write_frame(DZ_FRAME_PRELOAD_EVENT_SHM, params));
-    // touch 不应崩溃
-    writer.touch_write_position();
-    // 再次 touch (offset 已推进) 也不崩溃
-    writer.touch_write_position();
-    SUCCEED();
-}
-
-TEST_F(WriterTest, TouchWritePositionMultiWriter) {
-    auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
-    MultiWriter writer = MultiWriter::create(meta, "test_multi_writer");
-    DzShmPreload params{.bytes = 0, .pages = 1, .reserved = 0};
-    ASSERT_TRUE(writer.write_frame(DZ_FRAME_PRELOAD_MD_SHM, params));
-    writer.touch_write_position();
-    SUCCEED();
-}
-
 TEST_F(WriterTest, OpenFrameRejectsFrameLargerThanPageSize) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
