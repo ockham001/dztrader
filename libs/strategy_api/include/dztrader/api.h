@@ -126,14 +126,29 @@ DZ_API const char* dz_strategy_home(void);
 DZ_API const char* dz_strategy_id(void);
 
 /**
- * @brief 预加载共享内存映射区域
+ * @brief 预加载事件通道共享内存映射区域
  *
- * 在非活跃时间点调用，提前映射新的共享内存文件，
+ * 在非活跃时间点调用，提前映射事件通道新的共享内存文件，
  * 避免交易时段因首次访问触发页面错误导致延迟抖动。
  *
+ * @param pages 要预加载的页数；0 表示不按页预加载
+ * @param bytes 要预加载的字节数；0 表示不按字节预加载
  * @return true 成功或无需预加载，false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_preload(void);
+DZ_API bool dz_preload_event(uint32_t pages, uint64_t bytes);
+
+/**
+ * @brief 预加载指定行情通道共享内存映射区域
+ *
+ * 在非活跃时间点调用，提前映射指定行情通道新的共享内存文件，
+ * 避免交易时段因首次访问触发页面错误导致延迟抖动。
+ *
+ * @param source 行情源句柄（dz_create_md_source 创建）
+ * @param pages  要预加载的页数；0 表示不按页预加载
+ * @param bytes  要预加载的字节数；0 表示不按字节预加载
+ * @return true 成功或无需预加载，false 失败（调 dz_errcode() 获取错误码）
+ */
+DZ_API bool dz_preload_md(DzMdSource* source, uint32_t pages, uint64_t bytes);
 
 /* ── 交易接口 ── */
 

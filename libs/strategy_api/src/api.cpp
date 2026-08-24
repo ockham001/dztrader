@@ -185,7 +185,69 @@ DZ_API const char* dz_strategy_home(void) { return g_ctx->strategy_home.c_str();
 
 DZ_API const char* dz_strategy_id(void) { return g_ctx->strategy_id; }
 
-DZ_API bool dz_preload() { return true; }
+DZ_API bool dz_preload_event(uint32_t pages, uint64_t bytes) {
+    if (g_ctx == nullptr) {
+        LastError::set(DZ_EC_STRATEGY_NOT_INITIALIZED, "dz_preload_event: not initialized");
+        return false;
+    }
+    try {
+        // 事件通道 reader 半边 (对齐 md/td on_event_shm_timer)
+        if (pages > 0) {
+            g_ctx->reader.prefetch_pages(pages);
+        }
+        if (bytes > 0) {
+            g_ctx->reader.prefetch_for_bytes(bytes);
+        }
+        g_ctx->reader.release_old_pages();
+
+        // 事件通道 writer 半边
+        if (pages > 0) {
+            g_ctx->writer.prefetch_pages(pages);
+        }
+        if (bytes > 0) {
+            g_ctx->writer.prefetch_for_bytes(bytes);
+        }
+        g_ctx->writer.close_old_pages();
+        g_ctx->writer.touch_write_position();
+        return true;
+    } catch (const Exception& e) {
+        LastError::set(e.code(), e.what());
+    } catch (const std::exception& e) {
+        LastError::set(DZ_EC_INTERNAL, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_INTERNAL, "unknown exception");
+    }
+    return false;
+}
+
+DZ_API bool dz_preload_md(DzMdSource* source, uint32_t pages, uint64_t bytes) {
+    if (g_ctx == nullptr) {
+        LastError::set(DZ_EC_STRATEGY_NOT_INITIALIZED, "dz_preload_md: not initialized");
+        return false;
+    }
+    if (source == nullptr) {
+        LastError::set(DZ_EC_INVALID_PARAM, "dz_preload_md: source is null");
+        return false;
+    }
+    try {
+        // 行情通道: 策略进程为纯 reader, 仅 reader 半边 (无 writer)
+        if (pages > 0) {
+            source->reader.prefetch_pages(pages);
+        }
+        if (bytes > 0) {
+            source->reader.prefetch_for_bytes(bytes);
+        }
+        source->reader.release_old_pages();
+        return true;
+    } catch (const Exception& e) {
+        LastError::set(e.code(), e.what());
+    } catch (const std::exception& e) {
+        LastError::set(DZ_EC_INTERNAL, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_INTERNAL, "unknown exception");
+    }
+    return false;
+}
 
 /* ── 交易接口 ── */
 
