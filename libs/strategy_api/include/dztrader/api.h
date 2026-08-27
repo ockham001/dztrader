@@ -54,7 +54,7 @@ DZ_API DzContext* dz_init(void);
 /**
  * @brief 释放策略运行环境
  *
- * 调用后不可再调用其他函数（包括 dz_init）。
+ * 释放后不可再使用旧句柄；可重新调用 dz_init() 获得全新会话。
  * NULL 句柄为 no-op。
  *
  * @param ctx  句柄，可为 NULL
