@@ -9,9 +9,11 @@
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
 
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <thread>
 
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
@@ -109,18 +111,60 @@ TEST_F(TradeApiTest, SetLogicalPositionWritesFrame) {
 // ── 生命周期边界 ──
 
 TEST_F(TradeApiTest, SecondInitReturnsNullWithAlreadyInitialized) {
+    // 失败的重复 init 不得破坏活动会话: 身份与下单能力应保持
+    const char* const id_before = dz_strategy_id(ctx_);
     EXPECT_EQ(dz_init(), nullptr);
     EXPECT_EQ(dz_errcode(), DZ_EC_STRATEGY_ALREADY_INITIALIZED);
+    EXPECT_STREQ(dz_strategy_id(ctx_), id_before);
+    EXPECT_GE(dz_place_order(ctx_, "CTP001", "IF2401", DZ_DIRECTION_LONG, DZ_PRICE_LIMIT, 1, 1,
+                             DZ_POSITION_EFFECT_OPEN),
+              0);
 }
 
 TEST_F(TradeApiTest, ReleaseNullIsNoOp) {
-    dz_release(nullptr);  // 不崩溃即通过
+    // release(NULL) no-op: 不得破坏当前会话的可用性
+    const char* const id_before = dz_strategy_id(ctx_);
+    dz_release(nullptr);
+    EXPECT_STREQ(dz_strategy_id(ctx_), id_before);
+    const DzOrderId order_id = dz_place_order(ctx_, "CTP001", "IF2401", DZ_DIRECTION_LONG,
+                                              DZ_PRICE_LIMIT, 1, 1, DZ_POSITION_EFFECT_OPEN);
+    EXPECT_GE(order_id, 0);
 }
 
 TEST_F(TradeApiTest, ReinitAfterReleaseSucceeds) {
     dz_release(ctx_);
     ctx_ = dz_init();
     ASSERT_NE(ctx_, nullptr);
+    // 新句柄应功能正常
+    const DzOrderId order_id = dz_place_order(ctx_, "CTP001", "IF2401", DZ_DIRECTION_LONG,
+                                              DZ_PRICE_LIMIT, 1, 1, DZ_POSITION_EFFECT_OPEN);
+    EXPECT_GE(order_id, 0);
+}
+
+// ── 句柄化会话函数覆盖（防签名回归） ──
+
+TEST_F(TradeApiTest, StrategyHomeNonEmpty) {
+    EXPECT_NE(dz_strategy_home(ctx_), nullptr);
+    EXPECT_NE(dz_strategy_home(ctx_)[0], '\0');
+}
+
+TEST_F(TradeApiTest, WaitForTimesOutWhenNothingPending) {
+    // 信号量初值 0, 无写入时 wait_for 应超时返回 false
+    EXPECT_FALSE(dz_wait_for(ctx_, 10));
+}
+
+TEST_F(TradeApiTest, NotifySelfWakesWaitFor) {
+    dz_notify_self(ctx_);  // 投递一次信号量
+    EXPECT_TRUE(dz_wait_for(ctx_, 100));
+}
+
+TEST_F(TradeApiTest, WaitReturnsAfterNotify) {
+    std::thread notifier([this]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        dz_notify_self(ctx_);
+    });
+    dz_wait(ctx_);  // 阻塞至 notifier 投递信号量
+    notifier.join();
 }
 
 }  // namespace

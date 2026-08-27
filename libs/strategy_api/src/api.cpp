@@ -53,6 +53,8 @@ DZ_API DzContext* dz_init(void) {
 }
 
 DZ_API void dz_release(DzContext* ctx) {
+    // 契约(api.h 句柄契约): dz_release 恰好一次, 且只能传当前会话句柄。
+    // NULL 为 no-op; 非当前句柄/重复释放属 UB, 不设防。
     if (ctx == nullptr) {
         return;
     }

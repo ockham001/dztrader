@@ -64,7 +64,11 @@ DZ_API void dz_release(DzContext* ctx);
 /* ── 句柄契约 ──
  * ctx 必须来自 dz_init() 返回值。传入 NULL 或野指针为未定义行为，SDK 不做检查。
  * 悬垂句柄（release 后使用）、重复 release、非本进程句柄均属用户错误，不设防。
- * 生命周期由单线程保证，SDK 不做线程同步。
+ * dz_release 恰好调用一次，且只能传当前会话句柄（dz_init 最近一次成功返回的指针）；
+ * 对非当前句柄调用 dz_release 属未定义行为。
+ * 生命周期由单线程保证，SDK 不做线程同步（dz_init/dz_release 非线程安全）。
+ * release 后重新 dz_init() 获得全新会话；事件信号量为同名复用（不重置计数），
+ * 若 release 前有未消费的通知，新会话首次 dz_wait_for 可能立即返回（dz_next_event 排空自愈）。
  * dz_destroy_md_source(ctx, NULL) 为 no-op。 */
 
 DZ_API DzMdSource* dz_create_md_source(DzContext* ctx, const char* name);
