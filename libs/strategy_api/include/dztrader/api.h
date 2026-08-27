@@ -170,7 +170,7 @@ DZ_API bool dz_preload_event(DzContext* ctx, const void* preload);
  *                NULL 表示无需预加载（返回 true）
  * @return true 成功或无需预加载，false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_preload_md(DzContext* ctx, DzMdSource* source, const void* preload);
+DZ_API bool dz_preload_md(DzMdSource* source, const void* preload);
 
 /* ── 交易接口 ── */
 
@@ -231,8 +231,10 @@ DZ_API bool dz_subscribe(DzContext* ctx,
  * @param count         合约数量
  * @return true 成功，false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_unsubscribe(DzContext* ctx, DzMdSource* source,
-                           const char* const instruments[], uint32_t count);
+DZ_API bool dz_unsubscribe(DzContext* ctx,
+                           DzMdSource* source,
+                           const char* const instruments[],
+                           uint32_t count);
 
 /**
  * @brief 设置策略逻辑持仓

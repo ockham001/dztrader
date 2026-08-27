@@ -238,8 +238,7 @@ DZ_API bool dz_preload_event(DzContext* ctx, const void* preload) {
     return false;
 }
 
-DZ_API bool dz_preload_md(DzContext* ctx, DzMdSource* source, const void* preload) {
-    (void)ctx;  // 行情通道仅走 source 句柄, ctx 仅作签名对齐
+DZ_API bool dz_preload_md(DzMdSource* source, const void* preload) {
     if (source == nullptr) {
         LastError::set(DZ_EC_INVALID_PARAM, "dz_preload_md: source is null");
         return false;
