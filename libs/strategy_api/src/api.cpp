@@ -26,15 +26,23 @@
 using namespace dztrader;
 
 namespace {
+
 /// 会话登记: 仅 dz_init 重复调用检测与 dz_release 清登记使用;
 /// 其余函数一律走 ctx 参数 (spec §4.2), 不得引用本变量。
-DzContext* g_ctx = nullptr;  // NOLINT
+/// 用函数内 static 而非文件级非 const 全局, 满足
+/// cppcoreguidelines-avoid-non-const-global-variables。
+/// 非线程安全: 生命周期由调用方单线程保证 (api.h 句柄契约)。
+DzContext*& session_registry() {
+    static DzContext* session = nullptr;
+    return session;
+}
 
 }  // namespace
 
 /* ── 生命周期 ── */
 
 DZ_API DzContext* dz_init(void) {
+    DzContext*& g_ctx = session_registry();
     if (g_ctx != nullptr) {
         LastError::set(DZ_EC_STRATEGY_ALREADY_INITIALIZED, "dz_init called twice");
         return nullptr;
@@ -58,6 +66,7 @@ DZ_API void dz_release(DzContext* ctx) {
     if (ctx == nullptr) {
         return;
     }
+    DzContext*& g_ctx = session_registry();
     if (ctx == g_ctx) {
         g_ctx = nullptr;  // 先清登记再 delete
     }
