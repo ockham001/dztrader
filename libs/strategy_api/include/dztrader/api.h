@@ -120,6 +120,10 @@ DZ_API const void* dz_next_md(DzMdSource* source);
  *
  * 策略被唤醒后自行检查共享内存通道是否有新数据。
  *
+ * 线程安全：可在任意线程调用（底层 sem_post/ReleaseSemaphore 线程安全），
+ * 前提是 ctx 在调用期间存活（子线程 join 需先于 dz_release）。
+ * 典型用法：后台线程（定时器/数据线程）唤醒主事件循环。
+ *
  */
 DZ_API void dz_notify_self(DzContext* ctx);
 
