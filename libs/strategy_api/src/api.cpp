@@ -42,14 +42,14 @@ DzContext*& session_registry() {
 /* ── 生命周期 ── */
 
 DZ_API DzContext* dz_init(void) {
-    DzContext*& g_ctx = session_registry();
-    if (g_ctx != nullptr) {
+    DzContext*& session = session_registry();
+    if (session != nullptr) {
         LastError::set(DZ_EC_STRATEGY_ALREADY_INITIALIZED, "dz_init called twice");
         return nullptr;
     }
     try {
-        g_ctx = new DzContext();  // NOLINT
-        return g_ctx;
+        session = new DzContext();  // NOLINT
+        return session;
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
     } catch (const std::exception& e) {
@@ -66,9 +66,9 @@ DZ_API void dz_release(DzContext* ctx) {
     if (ctx == nullptr) {
         return;
     }
-    DzContext*& g_ctx = session_registry();
-    if (ctx == g_ctx) {
-        g_ctx = nullptr;  // 先清登记再 delete
+    DzContext*& session = session_registry();
+    if (ctx == session) {
+        session = nullptr;  // 先清登记再 delete
     }
     delete ctx;  // NOLINT
 }
