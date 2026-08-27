@@ -205,23 +205,26 @@ DZ_API const char* dz_strategy_home(DzContext* ctx) { return ctx->strategy_home.
 
 DZ_API const char* dz_strategy_id(DzContext* ctx) { return ctx->strategy_id; }
 
-DZ_API bool dz_preload_event(DzContext* ctx, uint32_t pages, uint64_t bytes) {
+DZ_API bool dz_preload_event(DzContext* ctx, const void* preload) {
     try {
         // 事件通道 reader 半边 (对齐 md/td on_event_shm_timer)
-        if (pages > 0) {
-            ctx->reader.prefetch_pages(pages);
+        // preload 为不透明透传: 布局为 DzShmPreload{bytes,pages,reserved},
+        // 调用方无需解析, 从平台 DZ_FRAME_PRELOAD_EVENT_SHM 帧 payload 原样转发。
+        const auto* spec = static_cast<const DzShmPreload*>(preload);
+        if (spec != nullptr && spec->pages > 0) {
+            ctx->reader.prefetch_pages(spec->pages);
         }
-        if (bytes > 0) {
-            ctx->reader.prefetch_for_bytes(bytes);
+        if (spec != nullptr && spec->bytes > 0) {
+            ctx->reader.prefetch_for_bytes(spec->bytes);
         }
         ctx->reader.release_old_pages();
 
         // 事件通道 writer 半边
-        if (pages > 0) {
-            ctx->writer.prefetch_pages(pages);
+        if (spec != nullptr && spec->pages > 0) {
+            ctx->writer.prefetch_pages(spec->pages);
         }
-        if (bytes > 0) {
-            ctx->writer.prefetch_for_bytes(bytes);
+        if (spec != nullptr && spec->bytes > 0) {
+            ctx->writer.prefetch_for_bytes(spec->bytes);
         }
         ctx->writer.close_old_pages();
         return true;
@@ -235,7 +238,7 @@ DZ_API bool dz_preload_event(DzContext* ctx, uint32_t pages, uint64_t bytes) {
     return false;
 }
 
-DZ_API bool dz_preload_md(DzContext* ctx, DzMdSource* source, uint32_t pages, uint64_t bytes) {
+DZ_API bool dz_preload_md(DzContext* ctx, DzMdSource* source, const void* preload) {
     (void)ctx;  // 行情通道仅走 source 句柄, ctx 仅作签名对齐
     if (source == nullptr) {
         LastError::set(DZ_EC_INVALID_PARAM, "dz_preload_md: source is null");
@@ -243,11 +246,14 @@ DZ_API bool dz_preload_md(DzContext* ctx, DzMdSource* source, uint32_t pages, ui
     }
     try {
         // 行情通道: 策略进程为纯 reader, 仅 reader 半边 (无 writer)
-        if (pages > 0) {
-            source->reader.prefetch_pages(pages);
+        // preload 为不透明透传: 布局为 DzShmPreload{bytes,pages,reserved},
+        // 调用方无需解析, 从平台 DZ_FRAME_PRELOAD_MD_SHM 帧 payload 原样转发。
+        const auto* spec = static_cast<const DzShmPreload*>(preload);
+        if (spec != nullptr && spec->pages > 0) {
+            source->reader.prefetch_pages(spec->pages);
         }
-        if (bytes > 0) {
-            source->reader.prefetch_for_bytes(bytes);
+        if (spec != nullptr && spec->bytes > 0) {
+            source->reader.prefetch_for_bytes(spec->bytes);
         }
         source->reader.release_old_pages();
         return true;

@@ -151,11 +151,12 @@ DZ_API const char* dz_strategy_id(DzContext* ctx);
  * 在非活跃时间点调用，提前映射事件通道新的共享内存文件，
  * 避免交易时段因首次访问触发页面错误导致延迟抖动。
  *
- * @param pages 要预加载的页数；0 表示不按页预加载
- * @param bytes 要预加载的字节数；0 表示不按字节预加载
+ * @param preload 预加载参数（不透明透传）：布局为 DzShmPreload{bytes,pages,reserved}，
+ *                调用方无需解析，从平台 DZ_FRAME_PRELOAD_EVENT_SHM 帧 payload 原样转发；
+ *                NULL 表示无需预加载（返回 true）
  * @return true 成功或无需预加载，false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_preload_event(DzContext* ctx, uint32_t pages, uint64_t bytes);
+DZ_API bool dz_preload_event(DzContext* ctx, const void* preload);
 
 /**
  * @brief 预加载指定行情通道共享内存映射区域
@@ -163,12 +164,13 @@ DZ_API bool dz_preload_event(DzContext* ctx, uint32_t pages, uint64_t bytes);
  * 在非活跃时间点调用，提前映射指定行情通道新的共享内存文件，
  * 避免交易时段因首次访问触发页面错误导致延迟抖动。
  *
- * @param source 行情源句柄（dz_create_md_source 创建）
- * @param pages  要预加载的页数；0 表示不按页预加载
- * @param bytes  要预加载的字节数；0 表示不按字节预加载
+ * @param source  行情源句柄（dz_create_md_source 创建）
+ * @param preload 预加载参数（不透明透传）：布局为 DzShmPreload{bytes,pages,reserved}，
+ *                调用方无需解析，从平台 DZ_FRAME_PRELOAD_MD_SHM 帧 payload 原样转发；
+ *                NULL 表示无需预加载（返回 true）
  * @return true 成功或无需预加载，false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_preload_md(DzContext* ctx, DzMdSource* source, uint32_t pages, uint64_t bytes);
+DZ_API bool dz_preload_md(DzContext* ctx, DzMdSource* source, const void* preload);
 
 /* ── 交易接口 ── */
 
