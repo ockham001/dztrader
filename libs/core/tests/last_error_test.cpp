@@ -87,7 +87,6 @@ TEST(LastError, StrKnownCodes)
 {
     EXPECT_STREQ(LastError::str(DZ_EC_INTERNAL), "internal error");
     EXPECT_STREQ(LastError::str(DZ_EC_SHM_OPEN_FAILED), "shm open failed");
-    EXPECT_STREQ(LastError::str(DZ_EC_STRATEGY_NOT_INITIALIZED), "strategy not initialized");
     EXPECT_STREQ(LastError::str(DZ_EC_TRADE_INSERT_FAILED), "trade insert failed");
     EXPECT_STREQ(LastError::str(DZ_EC_MD_SUBSCRIBE_FAILED), "subscribe failed");
 }
@@ -163,7 +162,6 @@ TEST(LastError, StrAllShmCodes)
 
 TEST(LastError, StrAllStrategyCodes)
 {
-    EXPECT_STREQ(LastError::str(DZ_EC_STRATEGY_NOT_INITIALIZED), "strategy not initialized");
     EXPECT_STREQ(LastError::str(DZ_EC_STRATEGY_ALREADY_INITIALIZED), "strategy already initialized");
     EXPECT_STREQ(LastError::str(DZ_EC_STRATEGY_INIT_FAILED), "strategy init failed");
     EXPECT_STREQ(LastError::str(DZ_EC_STRATEGY_RELEASE_FAILED), "strategy release failed");

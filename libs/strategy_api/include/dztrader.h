@@ -8,10 +8,12 @@
  * 使用示例（C）：
  * @code
  *   #include <dztrader.h>
- *   dz_init();
- *   dz_wait();
- *   const void* frame = dz_next_event();
+ *   DzContext* ctx = dz_init();
+ *   if (ctx == NULL) { return; } // dz_errcode()/dz_errmsg() 报告原因
+ *   dz_wait(ctx);
+ *   const void* frame = dz_next_event(ctx);
  *   const DzFrameHeader* hdr = (const DzFrameHeader*)frame;
+ *   dz_release(ctx);
  * @endcode
  */
 #ifndef DZTRADER_H_

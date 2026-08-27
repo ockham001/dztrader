@@ -24,6 +24,9 @@
  * 运行前提: dztraderd 已启动且 DZTRADER_HOME 一致。master 负责把本策略注册为
  * 事件通道订阅者 (stg.<exe名>), 网关回报帧经事件通道广播送达。
  * strategy_id 由平台取可执行文件名 (stg_demo), 与 master 配置 strategy[].name 一致。
+ *
+ * 句柄式用法: DzContext* ctx = dz_init(); 所有会话函数首参传 ctx,
+ * dz_release(ctx) 释放; 重复 dz_init 返回 NULL (查 dz_errcode)。
  */
 #include <dztrader/api.h>
 #include <dztrader/struct.h>
@@ -69,9 +72,9 @@ void print_usage() {
         "退出码: 0 成功 | 2 用法/初始化错误 | 3 下单被拒 (空账户拒单闭环) | 4 等待回报超时");
 }
 
-void print_identity() {
-    std::puts(std::format("策略ID: {} | SDK: {} | 目录: {}", dz_strategy_id(),
-                          dz_version_string(), dz_strategy_home())
+void print_identity(DzContext* ctx) {
+    std::puts(std::format("策略ID: {} | SDK: {} | 目录: {}", dz_strategy_id(ctx),
+                          dz_version_string(), dz_strategy_home(ctx))
                   .c_str());
 }
 
@@ -136,20 +139,20 @@ void print_tick(const DzTick& tick) {
                   .c_str());
 }
 
-int cmd_info() {
-    print_identity();
+int cmd_info(DzContext* ctx) {
+    print_identity(ctx);
     return kExitOk;
 }
 
-int cmd_md(int argc, char** argv) {
+int cmd_md(DzContext* ctx, int argc, char** argv) {
     // 用法: md <行情源名> <合约...>
     if (argc < 4) {
         print_usage();
         return kExitUsage;
     }
-    print_identity();
+    print_identity(ctx);
     const char* source_name = argv[2];
-    DzMdSource* source = dz_create_md_source(source_name);
+    DzMdSource* source = dz_create_md_source(ctx, source_name);
     if (source == nullptr) {
         std::puts(std::format("创建行情源失败: {} ({})", dz_errmsg(), dz_errcode()).c_str());
         return kExitUsage;
@@ -160,10 +163,10 @@ int cmd_md(int argc, char** argv) {
     for (int i = 3; i < argc; ++i) {
         instruments.push_back(argv[i]);
     }
-    if (!dz_subscribe(source, instruments.data(),
+    if (!dz_subscribe(ctx, source, instruments.data(),
                       static_cast<uint32_t>(instruments.size()), true)) {
         std::puts(std::format("订阅失败: {} ({})", dz_errmsg(), dz_errcode()).c_str());
-        dz_destroy_md_source(source);
+        dz_destroy_md_source(ctx, source);
         return kExitUsage;
     }
     std::puts(std::format("已订阅 {} 个合约, 观察 {}s (无行情连接时 0 tick 为预期)",
@@ -174,7 +177,7 @@ int cmd_md(int argc, char** argv) {
     const auto deadline = std::chrono::steady_clock::now() + kMdWindow;
     while (std::chrono::steady_clock::now() < deadline) {
         // 无论是否被唤醒都排空一次: 兜底订阅者快照过期导致的漏唤醒
-        (void)dz_wait_for(kPollStepMs);
+        (void)dz_wait_for(ctx, kPollStepMs);
         const void* frame = nullptr;
         while ((frame = dz_next_md(source)) != nullptr) {
             const DzTick* tick = as_md_tick(frame);
@@ -186,17 +189,17 @@ int cmd_md(int argc, char** argv) {
         }
     }
     std::puts(std::format("观察窗口结束: 共收到 {} 个 tick", tick_count).c_str());
-    dz_destroy_md_source(source);
+    dz_destroy_md_source(ctx, source);
     return kExitOk;
 }
 
-int cmd_order(int argc, char** argv) {
+int cmd_order(DzContext* ctx, int argc, char** argv) {
     // 用法: order <账户> <合约> <价格> <手数> [long|short]
     if (argc < 6 || argc > 7) {
         print_usage();
         return kExitUsage;
     }
-    print_identity();
+    print_identity(ctx);
     const char* account = argv[2];
     const char* instrument = argv[3];
     double price = 0.0;
@@ -224,7 +227,7 @@ int cmd_order(int argc, char** argv) {
     }
 
     // 固定限价 + 开仓 (演示工具; 市价/平仓可后续加参数)
-    const DzOrderId order_id = dz_place_order(account, instrument, direction,
+    const DzOrderId order_id = dz_place_order(ctx, account, instrument, direction,
                                               DZ_PRICE_LIMIT, price, volume,
                                               DZ_POSITION_EFFECT_OPEN);
     if (order_id < 0) {
@@ -240,9 +243,9 @@ int cmd_order(int argc, char** argv) {
     // 等待本订单回报 (td 广播 TD_ORDER_RPT, 按 order_id 过滤)
     const auto deadline = std::chrono::steady_clock::now() + kOrderWait;
     while (std::chrono::steady_clock::now() < deadline) {
-        (void)dz_wait_for(kPollStepMs);
+        (void)dz_wait_for(ctx, kPollStepMs);
         const void* frame = nullptr;
-        while ((frame = dz_next_event()) != nullptr) {
+        while ((frame = dz_next_event(ctx)) != nullptr) {
             const DzOrderReport* rpt = as_order_report(frame);
             if (rpt == nullptr || rpt->order_id != order_id) {
                 continue;
@@ -257,13 +260,13 @@ int cmd_order(int argc, char** argv) {
     return kExitNoReport;
 }
 
-int cmd_cancel(int argc, char** argv) {
+int cmd_cancel(DzContext* ctx, int argc, char** argv) {
     // 用法: cancel <账户> <订单ID>
     if (argc != 4) {
         print_usage();
         return kExitUsage;
     }
-    print_identity();
+    print_identity(ctx);
     const char* account = argv[2];
     DzOrderId order_id = 0;
     try {
@@ -272,7 +275,7 @@ int cmd_cancel(int argc, char** argv) {
         std::puts("订单ID 解析失败 (应为整数)");
         return kExitUsage;
     }
-    if (!dz_cancel_order(account, order_id)) {
+    if (!dz_cancel_order(ctx, account, order_id)) {
         std::puts(std::format("撤单请求发送失败: {} ({})", dz_errmsg(), dz_errcode()).c_str());
         return kExitUsage;
     }
@@ -280,9 +283,9 @@ int cmd_cancel(int argc, char** argv) {
 
     const auto deadline = std::chrono::steady_clock::now() + kOrderWait;
     while (std::chrono::steady_clock::now() < deadline) {
-        (void)dz_wait_for(kPollStepMs);
+        (void)dz_wait_for(ctx, kPollStepMs);
         const void* frame = nullptr;
-        while ((frame = dz_next_event()) != nullptr) {
+        while ((frame = dz_next_event(ctx)) != nullptr) {
             const DzOrderReport* rpt = as_order_report(frame);
             if (rpt == nullptr) {
                 continue;
@@ -308,7 +311,8 @@ int main(int argc, char** argv) {
         print_usage();
         return kExitUsage;
     }
-    if (!dz_init()) {
+    DzContext* ctx = dz_init();
+    if (ctx == nullptr) {
         std::puts(std::format("dz_init 失败: {} ({})", dz_errmsg(), dz_errcode()).c_str());
         std::puts("提示: 请确认 dztraderd 已启动且 DZTRADER_HOME 指向同一运行目录");
         return kExitUsage;
@@ -316,16 +320,16 @@ int main(int argc, char** argv) {
     const std::string_view cmd = argv[1];
     int rc = kExitUsage;
     if (cmd == "info") {
-        rc = cmd_info();
+        rc = cmd_info(ctx);
     } else if (cmd == "md") {
-        rc = cmd_md(argc, argv);
+        rc = cmd_md(ctx, argc, argv);
     } else if (cmd == "order") {
-        rc = cmd_order(argc, argv);
+        rc = cmd_order(ctx, argc, argv);
     } else if (cmd == "cancel") {
-        rc = cmd_cancel(argc, argv);
+        rc = cmd_cancel(ctx, argc, argv);
     } else {
         print_usage();
     }
-    dz_release();
+    dz_release(ctx);
     return rc;
 }

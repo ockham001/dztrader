@@ -37,12 +37,13 @@ void create_event_channel(const std::filesystem::path& shm_dir) {
     (void)ChannelMeta::open_or_create(cfg);
 }
 
-// dz_init 构造 StrategyContext: 打开 dzevent 通道 writer/reader + stg.* 信号量 +
+// dz_init 构造 DzContext: 打开 dzevent 通道 writer/reader + stg.* 信号量 +
 // order_id 元数据。测试直接经其 writer 写帧, 不依赖任何进程间协调。
 class NotifyUiTest : public ::testing::Test {
 protected:
     std::string home_;
     std::filesystem::path shm_dir_;
+    DzContext* ctx_ = nullptr;
 
     void SetUp() override {
         home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_notify").string();
@@ -54,17 +55,18 @@ protected:
         dztrader::env::set("DZTRADER_HOME", home_);
         create_event_channel(shm_dir_);
 
-        ASSERT_TRUE(dz_init()) << "dz_init failed: " << dz_errmsg();
+        ctx_ = dz_init();
+        ASSERT_NE(ctx_, nullptr) << "dz_init failed: " << dz_errmsg();
     }
 
     void TearDown() override {
-        dz_release();
+        dz_release(ctx_);
         std::filesystem::remove_all(home_);
     }
 
     /// 读取 dz_notify_ui 写入的下一帧 payload
     nlohmann::json read_notify_payload() {
-        const void* frame = dz_next_event();
+        const void* frame = dz_next_event(ctx_);
         if (frame == nullptr) {
             return {};
         }
@@ -77,17 +79,17 @@ protected:
 };
 
 TEST_F(NotifyUiTest, InfoLevelSerializedAsString) {
-    ASSERT_TRUE(dz_notify_ui(DZ_NOTIFY_INFO, "msg", false));
+    ASSERT_TRUE(dz_notify_ui(ctx_, DZ_NOTIFY_INFO, "msg", false));
     const auto payload = read_notify_payload();
     EXPECT_EQ(payload["level"], "info");
-    EXPECT_EQ(payload["source"], dz_strategy_id());
+    EXPECT_EQ(payload["source"], dz_strategy_id(ctx_));
     EXPECT_EQ(payload["message"], "msg");
     EXPECT_EQ(payload["popup"], false);
     EXPECT_TRUE(payload.contains("timestamp"));
 }
 
 TEST_F(NotifyUiTest, WarnLevelSerializedAsString) {
-    ASSERT_TRUE(dz_notify_ui(DZ_NOTIFY_WARN, "msg", false));
+    ASSERT_TRUE(dz_notify_ui(ctx_, DZ_NOTIFY_WARN, "msg", false));
     const auto payload = read_notify_payload();
     EXPECT_EQ(payload["level"], "warning");
 }
@@ -95,18 +97,18 @@ TEST_F(NotifyUiTest, WarnLevelSerializedAsString) {
 // 回归: level 曾是整数 (DZ_NOTIFY_ERROR=4), 契约 notify-ui 规定为字符串 "error",
 // 数值会被 dzweb 按 info 处理导致错误通知降级。
 TEST_F(NotifyUiTest, ErrorLevelSerializedAsString) {
-    ASSERT_TRUE(dz_notify_ui(DZ_NOTIFY_ERROR, "msg", true));
+    ASSERT_TRUE(dz_notify_ui(ctx_, DZ_NOTIFY_ERROR, "msg", true));
     const auto payload = read_notify_payload();
     EXPECT_EQ(payload["level"], "error");
     EXPECT_EQ(payload["popup"], true);
 }
 
 TEST_F(NotifyUiTest, InvalidLevelRejected) {
-    EXPECT_FALSE(dz_notify_ui(static_cast<DzNotifyLevel>(99), "msg", false));
+    EXPECT_FALSE(dz_notify_ui(ctx_, static_cast<DzNotifyLevel>(99), "msg", false));
 }
 
 TEST_F(NotifyUiTest, NullMessageRejected) {
-    EXPECT_FALSE(dz_notify_ui(DZ_NOTIFY_INFO, nullptr, false));
+    EXPECT_FALSE(dz_notify_ui(ctx_, DZ_NOTIFY_INFO, nullptr, false));
 }
 
 }  // namespace

@@ -53,7 +53,6 @@ const char* LastError::str(DzErrorCode code) noexcept
     case DZ_EC_SHM_SEM_OPEN_FAILED:     return "sem open failed";
     case DZ_EC_SHM_FILE_REMOVE_FAILED:  return "shm file remove failed";
     /* ── 策略接口 ── */
-    case DZ_EC_STRATEGY_NOT_INITIALIZED:     return "strategy not initialized";
     case DZ_EC_STRATEGY_ALREADY_INITIALIZED: return "strategy already initialized";
     case DZ_EC_STRATEGY_INIT_FAILED:         return "strategy init failed";
     case DZ_EC_STRATEGY_RELEASE_FAILED:      return "strategy release failed";

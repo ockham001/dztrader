@@ -27,6 +27,9 @@
 
 DZ_BEGIN_C_DECLS
 
+/** @brief 策略运行环境句柄（不透明指针） */
+typedef struct DzContext DzContext;
+
 /** @brief 结果集句柄 */
 typedef struct DzResultSet DzResultSet;
 
@@ -37,27 +40,36 @@ typedef struct DzMdSource DzMdSource;
 
 /**
  * @brief 初始化运行环境
-
- * 必须在调用其他任何函数之前调用。
- * 构造运行环境（事件通道读写器/信号量/订单ID元数据）。惰性幂等：
- * 重复调用直接返回 true；平台未启动（事件通道不可用）时返回 false，
- * 策略进程可安全报错退出而非崩溃。
  *
- * @return true 成功，false 失败（调 dz_errcode() 获取错误码）
+ * 必须在调用其他任何函数之前调用。
+ * 构造运行环境（事件通道读写器/信号量/订单ID元数据）。惰性幂等已废除：
+ * 重复调用返回 NULL（调 dz_errcode() 获取错误码，为
+ * DZ_EC_STRATEGY_ALREADY_INITIALIZED）；平台未启动（事件通道不可用）时
+ * 返回 NULL，策略进程可安全报错退出而非崩溃。
+ *
+ * @return 非 NULL 为句柄，NULL 为失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_init(void);
+DZ_API DzContext* dz_init(void);
 
 /**
  * @brief 释放策略运行环境
  *
  * 调用后不可再调用其他函数（包括 dz_init）。
+ * NULL 句柄为 no-op。
  *
+ * @param ctx  句柄，可为 NULL
  */
-DZ_API void dz_release(void);
+DZ_API void dz_release(DzContext* ctx);
 
-DZ_API DzMdSource* dz_create_md_source(const char* name);
+/* ── 句柄契约 ──
+ * ctx 必须来自 dz_init() 返回值。传入 NULL 或野指针为未定义行为，SDK 不做检查。
+ * 悬垂句柄（release 后使用）、重复 release、非本进程句柄均属用户错误，不设防。
+ * 生命周期由单线程保证，SDK 不做线程同步。
+ * dz_destroy_md_source(ctx, NULL) 为 no-op。 */
 
-DZ_API void dz_destroy_md_source(DzMdSource* source);
+DZ_API DzMdSource* dz_create_md_source(DzContext* ctx, const char* name);
+
+DZ_API void dz_destroy_md_source(DzContext* ctx, DzMdSource* source);
 
 /**
  * @brief 阻塞等待，直到有新数据可读
@@ -65,7 +77,7 @@ DZ_API void dz_destroy_md_source(DzMdSource* source);
  * 返回后通过 dz_next_md() / dz_next_event() 逐帧读取数据。
  * 高频模式下可不调用此函数，直接轮询 dz_next_md() / dz_next_event()。
  */
-DZ_API void dz_wait(void);
+DZ_API void dz_wait(DzContext* ctx);
 
 /**
  * @brief 阻塞等待，直到有新数据可读或超时
@@ -76,7 +88,7 @@ DZ_API void dz_wait(void);
  * @param timeout_ms 等待超时时间，单位毫秒。
  * @return true 被唤醒（有新数据），false 超时
  */
-DZ_API bool dz_wait_for(uint32_t timeout_ms);
+DZ_API bool dz_wait_for(DzContext* ctx, uint32_t timeout_ms);
 
 /**
  * @brief 取下一帧事件数据
@@ -86,7 +98,7 @@ DZ_API bool dz_wait_for(uint32_t timeout_ms);
  *
  * @return 帧指针，无数据返回 NULL
  */
-DZ_API const void* dz_next_event(void);
+DZ_API const void* dz_next_event(DzContext* ctx);
 
 /**
  * @brief 取下一帧行情数据
@@ -105,7 +117,7 @@ DZ_API const void* dz_next_md(DzMdSource* source);
  * 策略被唤醒后自行检查共享内存通道是否有新数据。
  *
  */
-DZ_API void dz_notify_self(void);
+DZ_API void dz_notify_self(DzContext* ctx);
 
 /**
  * @brief 获取策略可执行文件所在目录路径
@@ -114,7 +126,7 @@ DZ_API void dz_notify_self(void);
  *
  * @return 目录路径字符串
  */
-DZ_API const char* dz_strategy_home(void);
+DZ_API const char* dz_strategy_home(DzContext* ctx);
 
 /**
  * @brief 获取策略ID
@@ -123,7 +135,7 @@ DZ_API const char* dz_strategy_home(void);
  *
  * @return 策略ID字符串
  */
-DZ_API const char* dz_strategy_id(void);
+DZ_API const char* dz_strategy_id(DzContext* ctx);
 
 /**
  * @brief 预加载事件通道共享内存映射区域
@@ -135,7 +147,7 @@ DZ_API const char* dz_strategy_id(void);
  * @param bytes 要预加载的字节数；0 表示不按字节预加载
  * @return true 成功或无需预加载，false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_preload_event(uint32_t pages, uint64_t bytes);
+DZ_API bool dz_preload_event(DzContext* ctx, uint32_t pages, uint64_t bytes);
 
 /**
  * @brief 预加载指定行情通道共享内存映射区域
@@ -148,7 +160,7 @@ DZ_API bool dz_preload_event(uint32_t pages, uint64_t bytes);
  * @param bytes  要预加载的字节数；0 表示不按字节预加载
  * @return true 成功或无需预加载，false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_preload_md(DzMdSource* source, uint32_t pages, uint64_t bytes);
+DZ_API bool dz_preload_md(DzContext* ctx, DzMdSource* source, uint32_t pages, uint64_t bytes);
 
 /* ── 交易接口 ── */
 
@@ -166,7 +178,8 @@ DZ_API bool dz_preload_md(DzMdSource* source, uint32_t pages, uint64_t bytes);
  * @param position_effect  开平仓
  * @return >= 0 为订单 ID，< 0 表示失败（调 dz_errcode() 获取错误码）
  */
-DZ_API DzOrderId dz_place_order(const char* account_id,
+DZ_API DzOrderId dz_place_order(DzContext* ctx,
+                                const char* account_id,
                                 const char* instrument_id,
                                 DzDirection direction,
                                 DzPriceType price_type,
@@ -181,7 +194,7 @@ DZ_API DzOrderId dz_place_order(const char* account_id,
  * @param order_id    要撤销的订单 ID
  * @return true 成功，false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_cancel_order(const char* account_id, DzOrderId order_id);
+DZ_API bool dz_cancel_order(DzContext* ctx, const char* account_id, DzOrderId order_id);
 
 /**
  * @brief 订阅行情合约
@@ -192,7 +205,8 @@ DZ_API bool dz_cancel_order(const char* account_id, DzOrderId order_id);
  * @param replace_previous    true=先取消该策略在该行情源的所有旧订阅，再订阅新合约
  * @return true 成功，false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_subscribe(DzMdSource* source,
+DZ_API bool dz_subscribe(DzContext* ctx,
+                         DzMdSource* source,
                          const char* const instruments[],
                          uint32_t count,
                          bool replace_previous);
@@ -207,7 +221,8 @@ DZ_API bool dz_subscribe(DzMdSource* source,
  * @param count         合约数量
  * @return true 成功，false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_unsubscribe(DzMdSource* source, const char* const instruments[], uint32_t count);
+DZ_API bool dz_unsubscribe(DzContext* ctx, DzMdSource* source,
+                           const char* const instruments[], uint32_t count);
 
 /**
  * @brief 设置策略逻辑持仓
@@ -221,7 +236,8 @@ DZ_API bool dz_unsubscribe(DzMdSource* source, const char* const instruments[], 
  * @param net_volume     净手数（正=多，负=空，0=无持仓）
  * @return true 成功，false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_set_logical_position(const char* account_id,
+DZ_API bool dz_set_logical_position(DzContext* ctx,
+                                    const char* account_id,
                                     const char* instrument_id,
                                     int32_t net_volume);
 
@@ -230,14 +246,14 @@ DZ_API bool dz_set_logical_position(const char* account_id,
 /**
  * @brief 向 UI 消息中心投递通知消息
  *
- * 策略名自动关联（dz_strategy_id()），无需传参。
+ * 策略名自动关联（取自 ctx），无需传参。
  *
  * @param level    消息级别（DZ_NOTIFY_INFO / DZ_NOTIFY_WARN / DZ_NOTIFY_ERROR）
  * @param message  消息内容（UTF-8，策略自行组织）
  * @param popup    是否弹窗
  * @return true 成功，false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_notify_ui(DzNotifyLevel level, const char* message, bool popup);
+DZ_API bool dz_notify_ui(DzContext* ctx, DzNotifyLevel level, const char* message, bool popup);
 
 /**
  * @brief 向 UI 发送输出数据
@@ -249,14 +265,14 @@ DZ_API bool dz_notify_ui(DzNotifyLevel level, const char* message, bool popup);
  * 典型场景：策略主动向 UI 输出运行状态/自定义数据；也可作为对 UI 输入
  * （STG_USER_INPUT）的响应。
  *
- * 策略名自动关联（dz_strategy_id()），无需传参。
+ * 策略名自动关联（取自 ctx），无需传参。
  *
  * @param data  输出数据（UTF-8 文本或 JSON，策略自行组织格式）
  * 数据超过单页可写上限时按字节截断；上限 = min(1MB, 通道页大小 - 帧头开销)，
  * 由 SDK 自动计算。通道页过小无法容纳任何 payload 时返回 false。
  * @return true 成功，false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_output_ui(const char* data);
+DZ_API bool dz_output_ui(DzContext* ctx, const char* data);
 
 /* ── 数据库接口 ── */
 

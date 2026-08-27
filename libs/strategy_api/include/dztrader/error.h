@@ -5,7 +5,7 @@
  * 错误码为负数，0 表示成功。按模块分段：
  *   - 通用 (0 ~ -999)
  *   - 共享内存 (-1001 ~ -1999)
- *   - 策略接口 (-2001 ~ -2999)
+ *   - 策略接口 (-2002 ~ -2999)
  *   - 交易 (-3001 ~ -3999)
  *   - 行情 (-4001 ~ -4999)
  */
@@ -101,8 +101,6 @@ typedef int32_t DzErrorCode;
 
 /* ── 策略接口 ── */
 
-/** @brief 策略未初始化 */
-#define DZ_EC_STRATEGY_NOT_INITIALIZED ((DzErrorCode)(-2001))
 /** @brief 策略已初始化 */
 #define DZ_EC_STRATEGY_ALREADY_INITIALIZED ((DzErrorCode)(-2002))
 /** @brief 策略初始化失败 */
