@@ -79,6 +79,10 @@ foreach(testfile ${SDK_TESTS})
         Boost::boost nlohmann_json::nlohmann_json)
     if(testname IN_LIST SDK_API_TESTS)
         target_sources(dzstrategy_sdk_${testname} PRIVATE src/api.cpp)
+        # api.cpp 直接编入测试可执行文件（自包含, 不经 DLL 导出）,
+        # 语义同 dzstrategy_sdk_static: DZ_API 展开为空。
+        # 缺此定义时 MSVC 落到 dllimport 分支, 库内定义函数体报 C2491。
+        target_compile_definitions(dzstrategy_sdk_${testname} PRIVATE DZ_API_COMPILE_STATIC)
     endif()
     set_target_properties(dzstrategy_sdk_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
