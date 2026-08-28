@@ -1,9 +1,10 @@
 # 帧契约：策略
 
-本文件覆盖 `DZ_FRAME_STG_USER_INPUT`、`DZ_FRAME_STG_USER_OUTPUT`、`DZ_FRAME_SET_LOGICAL_POSITION` 三个帧。总则见《帧契约：通用规则》。
+本文件覆盖 `DZ_FRAME_STG_USER_INPUT`、`DZ_FRAME_STG_USER_OUTPUT`、`DZ_FRAME_SET_LOGICAL_POSITION`、`DZ_FRAME_STG_TIMER` 四个帧，以及策略 SDK（`dz_next_event`）对平台帧的拦截/放行总则。其他帧总则见《帧契约：通用规则》。
 
 - `STG_USER_INPUT` / `STG_USER_OUTPUT`：策略与 UI 之间的交互文本/数据帧，使用 `DzExtInstFrameHeader` 扩展头，`instance_id` = **裸策略名**（如 `stg_demo`，策略间唯一）。
 - `SET_LOGICAL_POSITION`：**basic 帧**（仅 `DzFrameHeader`，无扩展头），策略身份在 payload `strategy_id` 字段，同样为裸策略名。
+- `STG_TIMER`：策略定时器触发帧（`dz_schedule_*`），**仅 SDK 本地合成、不写共享内存**，经 `dz_next_event` 返回；basic 布局 `DzFrameHeader` + `DzTimerEvent{timer_id}`（16 字节），指针有效期至下一次 `dz_next_event`/`dz_release`。
 
 **身份边界**（总则 §5）：本契约全部帧的身份字段（帧头 `instance_id`、payload `strategy_id`）一律用**裸策略名**——策略帧只属于策略域，不会与其他进程混淆，策略名在全部策略中唯一。`stg.<name>` 前缀**仅用于内存中的订阅者/信号量/reader/md 订阅者身份**（与系统组件区分），不出现于策略帧、展示层与 SDK 接口。
 
@@ -58,6 +59,49 @@
 - 接收方（dzweb）当前未消费本帧，契约定义语义先行
 
 **镜像**：dzweb 未来按 `strategy_id` 维护逻辑持仓镜像（当前未实现）
+
+---
+
+## DZ_FRAME_STG_TIMER
+
+**语义**：策略定时器触发通知，对应 `dz_schedule_after/every/at/daily`（`libs/strategy_api/include/dztrader/api.h`）
+**数据流**：**不走共享内存**——定时器是策略进程内的 SDK 机制，触发帧由 SDK 本地合成（模拟 shm 帧布局），经 `dz_next_event` 返回；不广播、无 RTN、不进镜像
+**Payload**：struct `DzTimerEvent{timer_id}`（真相源：`libs/strategy_api/include/dztrader/struct.h`）
+
+**语义要点**：
+
+- `timer_id` = `dz_schedule_*` 返回的稳定 ID，周期/每日定时器每次触发的 `timer_id` 不变，`dz_schedule_cancel` 用同一 ID
+- 帧指针仅在下一次 `dz_next_event`/`dz_release` 前有效；本地缓冲 32 槽，缓冲满时触发**推迟投递、绝不丢帧**（等待用户下一次领取腾槽补投）
+- 定时器由主循环线程驱动：`dz_wait`（无定时器时无限阻塞，有定时器时等待至最近到期）+ `dz_next_event`（每轮 tick）；`dz_next_md` 不驱动定时器
+- 一次性（after/at）触发后自动取消；周期（every）按到期点+interval 重排不漂移，停滞期间错过的整周期不补触发；每日（daily）每次触发后按 wall clock 重算次日（自动适应时区/夏令时）
+- 时间点参数为距午夜毫秒数（本地时区），如 14:55:00 → 53,700,000
+
+**约束**：
+
+- SDK 内部任务（SHM 预加载随机延迟）与用户定时器共用队列，但内部 ID 对用户不可见，`dz_schedule_cancel`/`dz_schedule_cancel_all` 结构上无法误删
+- `dz_schedule_cancel_all` 仅清用户定时器；参数非法返回 `DZ_TIMER_INVALID` + `DZ_EC_INVALID_PARAM`，取消无效 ID 返回 false + `DZ_EC_TIMER_NOT_FOUND`
+
+---
+
+## 策略 SDK 事件拦截总则（dz_next_event）
+
+**处理优先级**：用户帧 > 定时器帧 > 内部帧。用户帧（TD 回报/用户输入/SHUTDOWN）直接返回、零计时器开销；通道无用户帧时（通道空或 32 上限让位）触发到期定时器并返回定时器帧；内部帧在扫描用户帧时顺带消费（轻量处理，预加载重活由随机延迟定时器承担）。
+
+**白名单（返回给策略用户）**：
+
+- TD 回报帧 2000–2017（`TD_ORDER_RPT`/`TD_TRADE_RPT`/`TD_POSITION_INFO`/`TD_TRADING_ACCOUNT`/`TD_GATEWAY_STATUS`/`TD_INSTRUMENT` 等）
+- `STG_USER_INPUT`（3001，定向本策略）
+- `REQUEST_SHUTDOWN`（12，`instance_id` == 裸策略名）：SDK 完成内部清理（取消内部预加载定时器、清定时器帧缓冲）后放行，策略用户可据此优雅退出（`REQUEST_SHUTDOWN_ALL`(20) 已移除：全项目无写入/消费端）
+- 本地合成的 `STG_TIMER`（3003）
+
+**拦截（SDK 内部消费，不返回策略用户）**：
+
+- `PRELOAD_EVENT_SHM`（11）/ `PRELOAD_MD_SHM`（17，`instance_id` 匹配本策略行情源）：随机 0–5s 延迟后执行预加载（契约 shm）
+- `UPDATE_SHM_EVENT_SUBSCRIBER`（21）：SDK 内部 `refresh_subscribers()`
+- `NOTIFY_MD_STARTED`（1007，本策略行情源）：SDK 自动补订阅期望集合
+- 其余平台帧（日志/SHM 配置、进程控制、md 控制、TD 控制 21xx、`STG_USER_OUTPUT`/`SET_LOGICAL_POSITION` 他策略回声等）：丢弃
+
+**防饿死上限**：每次 `dz_next_event` 调用最多连续消费 32 条内部帧，超过则本次让位（优先返回已到期定时器帧，否则 NULL，下次调用继续处理）；用户帧随时立即返回，绝不被吞。
 
 ---
 

@@ -219,7 +219,7 @@
 - 本目录当前覆盖事件通道的低频控制/配置/通知帧。
 - **已覆盖**：策略帧（`STG_USER_INPUT`/`STG_USER_OUTPUT`/`SET_LOGICAL_POSITION`，见《帧契约：策略》）。
 - **未覆盖**（后续独立契约，本目录暂不收录）：交易帧（除《帧契约：交易委托请求》已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ` 外，其余 2000-2114，TD 已实现大半）、行情/交易数据帧（`RTN_MD_TICK`、TD 推送 2000-2004，struct payload）。
-- `DZ_FRAME_SYS_SCHED`：帧类型与 payload（`DzSysSched`）保留但**当前无任何进程消费**（md 已于 2026-07 移除处理）；未来 master 集中调度若启用，需另行定契约。新读者不得假设其语义。
+- `DZ_FRAME_SYS_SCHED`：帧类型 10 与 payload（`DzSysSched`）已于 2026-08 随"系统调度域废弃"**从公开头移除**（此前无任何进程消费，md 已于 2026-07 移除处理）；帧号 10 保留不复用。策略侧定时需求由 `dz_schedule_*` 定时器接口承担（见《帧契约：策略》）。
 
 ---
 

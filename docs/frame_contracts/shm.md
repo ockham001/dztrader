@@ -112,6 +112,7 @@
 **约束**：
 - 广播方在自身完成对应通道预加载后广播
 - 接收方过滤：`PRELOAD_MD_SHM` 按 `instance_id` 匹配（仅订阅该行情源的进程处理）；`PRELOAD_EVENT_SHM` 不区分 `instance_id`
+- 策略 SDK（`dz_next_event`）：两帧均被拦截，不返回策略用户；SDK 内部按 `random_jitter(0,5000)` 随机延迟（tag 去重、连续广播只保留最新）后执行预加载，与 md/td/webui 三端同一逻辑
 - 无 RTN
 
 ---

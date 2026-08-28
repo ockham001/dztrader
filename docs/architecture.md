@@ -49,7 +49,9 @@ md(N-1个,单进程写,自旋锁仅订阅者列表)：写帧→原子更新next_
 策略用单个信号量，dz_wait()唤醒后轮询各通道next_write_pos判断来源
 通道命名：event=`dzevent`（`CHANNEL_NAME_EVENT`），md=`<行情源名>`（与行情进程名一致）
 订阅：策略经 `dz_subscribe`/`dz_unsubscribe` 直发行情进程（`REQUEST_MD_SUBSCRIBE`，`instance_id`=行情进程名，契约 md-subscription），不再经 master 转发
-行情源：公开策略 SDK 单行情源，内嵌 `DzContext`（`dz_next_md(ctx)`/`dz_preload_md(ctx)`/`dz_md_source_name(ctx)`）。源名由 master 经策略配置 `md_source` 注入环境变量 `DZTRADER_MD_SOURCE`，`dz_init` 必选（缺失/为空返回 NULL + `DZ_EC_MD_SOURCE_NOT_CONFIGURED`）；无 `DzMdSource` 句柄与 create/destroy API。订阅期望集合由 SDK 维护，md 重启后 `dz_on_md_started` 全量补订阅（不重开 reader）；策略 reader 与进程同生命周期，master 在 spawn 前预注册、退出后清理（1013–1016 保留给手工/外部进程）
+行情源：公开策略 SDK 单行情源，内嵌 `DzContext`（`dz_next_md(ctx)`/`dz_md_source_name(ctx)`）。源名由 master 经策略配置 `md_source` 注入环境变量 `DZTRADER_MD_SOURCE`，`dz_init` 必选（缺失/为空返回 NULL + `DZ_EC_MD_SOURCE_NOT_CONFIGURED`）；无 `DzMdSource` 句柄与 create/destroy API。订阅期望集合由 SDK 维护，md 重启后 `dz_next_event` 内部自动补订阅（不重开 reader）；策略 reader 与进程同生命周期，master 在 spawn 前预注册、退出后清理（1013–1016 保留给手工/外部进程）
+
+事件/定时器：`dz_next_event` 拦截平台内部帧（preload 随机延迟预加载、订阅者刷新、md 重启补订阅等由 SDK 内部消费），仅放行 TD 回报/用户输入/SHUTDOWN 帧；单次调用最多连续消费 32 条内部帧防饿死 `dz_next_md`。`dz_wait` 无定时器时无限阻塞、有定时器时等待至最近到期（对齐 dzmd_ctp 主循环）。定时器 API `dz_schedule_after/every/at/daily/cancel/cancel_all`（纯 C），触发帧 `DZ_FRAME_STG_TIMER` 本地合成经 `dz_next_event` 返回（不写共享内存）；内部 preload 随机延迟与用户定时器共用单 `TimerQueue`，内部 ID 用户不可见（防误删）。`dz_wait_for`/`dz_preload_event`/`dz_preload_md`/`dz_on_md_started` 已移除。
 
 ## 策略接口约束
 
