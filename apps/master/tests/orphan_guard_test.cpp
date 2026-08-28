@@ -7,12 +7,14 @@
 
 #include <dztrader/core/env.h>
 #include <dztrader/core/path.h>
+#include <dztrader/core/this_process.h>
 #include <dztrader/log/log.h>
 
 #include <SQLiteCpp/Database.h>
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
+#include <random>
 
 #ifndef _WIN32
 #include <sys/wait.h>
@@ -21,6 +23,20 @@
 
 namespace dztrader::master {
 namespace {
+
+/// 进程唯一临时目录名（PID + 随机数）：ctest -j 并行时 gtest_discover_tests 把
+/// 每个用例注册为独立 ctest 测试并行运行, 固定目录会让并行用例共用同一把
+/// master.pid 文件锁互相踩踏 (FileLockPreventsDoubleInstance 的 try_lock 断言
+/// 被其他用例持锁打穿)。与其他 master 测试的 unique_temp_dir 同款惯例。
+std::filesystem::path unique_temp_dir() {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint32_t> dist;
+    return std::filesystem::temp_directory_path() /
+           ("master_orphan_test_" +
+            std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
+            std::to_string(dist(gen)));
+}
 
 #ifndef _WIN32
 /// fork 子进程持锁并握手通知父进程 (POSIX fcntl 记录锁为进程级,
@@ -66,7 +82,8 @@ protected:
     }
 
     void SetUp() override {
-        tmp_dir_ = std::filesystem::temp_directory_path() / "master_orphan_test";
+        tmp_dir_ = unique_temp_dir();
+        std::filesystem::remove_all(tmp_dir_);
         std::filesystem::create_directories(tmp_dir_);
 
         // 保存并覆盖 DZTRADER_HOME，使 paths::cache() 指向临时目录
