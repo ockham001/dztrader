@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -49,10 +50,14 @@ void create_md_channel(const std::filesystem::path& shm_dir) {
 }
 
 // 与 notify_ui_test 同款 fixture: 临时 DZTRADER_HOME + 预建事件/md 通道 + dz_init。
+// SDK 写出的 TD_ORDER_REQ/TD_ORDER_CANCEL_REQ/SET_LOGICAL_POSITION 等帧在新语义下
+// 被 dz_next_event 拦截 (平台内部帧), 故用独立 probe reader 观察写帧。
 class TradeApiTest : public ::testing::Test {
 protected:
     std::string home_;
     DzContext* ctx_ = nullptr;
+    /// dz_init 后创建, 定位其后: 可观察 SDK 写出的全部帧 (Reader 无默认构造, 用 optional)
+    std::optional<Reader> probe_;
 
     void SetUp() override {
         home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_trade").string();
@@ -64,6 +69,8 @@ protected:
         create_md_channel(home_ + "/shm");
         ctx_ = dz_init();
         ASSERT_NE(ctx_, nullptr) << "dz_init failed: " << dz_errmsg();
+        probe_.emplace(Reader::create(dztrader::shm::channel_name(dztrader::CHANNEL_NAME_EVENT),
+                                      home_ + "/shm", "trade_test_probe"));
     }
 
     void TearDown() override {
@@ -71,15 +78,15 @@ protected:
         std::filesystem::remove_all(home_);
     }
 
-    /// 读取下一帧并断言为 basic struct 帧, 返回 payload 指针 (非拥有)
+    /// 从 probe reader 读取下一帧并断言为 basic struct 帧, 返回 payload 指针 (非拥有)
     const void* read_next_basic(DzFrameType type) {
-        const void* frame = dz_next_event(ctx_);
+        const std::byte* frame = probe_->next_frame();
         if (frame == nullptr) {
             return nullptr;
         }
-        const auto view = dztrader::shm::FrameView(static_cast<const std::byte*>(frame));
+        const auto view = dztrader::shm::FrameView(frame);
         EXPECT_EQ(view.type(), type);
-        return reinterpret_cast<const std::byte*>(frame) + sizeof(DzFrameHeader);
+        return frame + sizeof(DzFrameHeader);
     }
 };
 
@@ -162,14 +169,9 @@ TEST_F(TradeApiTest, StrategyHomeNonEmpty) {
     EXPECT_NE(dz_strategy_home(ctx_)[0], '\0');
 }
 
-TEST_F(TradeApiTest, WaitForTimesOutWhenNothingPending) {
-    // 信号量初值 0, 无写入时 wait_for 应超时返回 false
-    EXPECT_FALSE(dz_wait_for(ctx_, 10));
-}
-
-TEST_F(TradeApiTest, NotifySelfWakesWaitFor) {
+TEST_F(TradeApiTest, NotifySelfWakesWait) {
     dz_notify_self(ctx_);  // 投递一次信号量
-    EXPECT_TRUE(dz_wait_for(ctx_, 100));
+    dz_wait(ctx_);         // 已有计数应立即返回 (挂起即失败)
 }
 
 TEST_F(TradeApiTest, WaitReturnsAfterNotify) {

@@ -51,19 +51,21 @@ TEST_F(WriteFrameTest, WriteFrameAlignedStruct) {
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
     Reader reader = Reader::create(meta, "stg.test");
 
-    DzSysSched sched{};
-    sched.type = DZ_SYS_SCHED_TD_LOGIN;
-    ASSERT_TRUE(writer.write_frame(DZ_FRAME_SYS_SCHED, sched));
+    DzShmPreload preload{};
+    preload.bytes = 4096;
+    preload.pages = 2;
+    ASSERT_TRUE(writer.write_frame(DZ_FRAME_PRELOAD_EVENT_SHM, preload));
 
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
     auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-    EXPECT_EQ(hdr->frame_type, DZ_FRAME_SYS_SCHED);
-    EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + sizeof(DzSysSched));
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_PRELOAD_EVENT_SHM);
+    EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + sizeof(DzShmPreload));
 
-    auto* payload = reinterpret_cast<const DzSysSched*>(static_cast<const std::byte*>(frame) +
-                                                        sizeof(DzFrameHeader));
-    EXPECT_EQ(payload->type, DZ_SYS_SCHED_TD_LOGIN);
+    auto* payload = reinterpret_cast<const DzShmPreload*>(static_cast<const std::byte*>(frame) +
+                                                           sizeof(DzFrameHeader));
+    EXPECT_EQ(payload->bytes, 4096u);
+    EXPECT_EQ(payload->pages, 2u);
 }
 
 TEST_F(WriteFrameTest, WriteFrameMultipleFrames) {
@@ -72,16 +74,17 @@ TEST_F(WriteFrameTest, WriteFrameMultipleFrames) {
     Reader reader = Reader::create(meta, "stg.test");
 
     for (int i = 0; i < 5; ++i) {
-        DzSysSched sched{};
-        sched.type = DZ_SYS_SCHED_TD_LOGIN;
-        ASSERT_TRUE(writer.write_frame(DZ_FRAME_SYS_SCHED, sched));
+        DzShmPreload preload{};
+        preload.bytes = 4096;
+        preload.pages = 2;
+        ASSERT_TRUE(writer.write_frame(DZ_FRAME_PRELOAD_EVENT_SHM, preload));
     }
 
     for (int i = 0; i < 5; ++i) {
         auto* frame = reader.next_frame();
         ASSERT_NE(frame, nullptr);
         auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-        EXPECT_EQ(hdr->frame_type, DZ_FRAME_SYS_SCHED);
+        EXPECT_EQ(hdr->frame_type, DZ_FRAME_PRELOAD_EVENT_SHM);
     }
     EXPECT_EQ(reader.next_frame(), nullptr);
 }
@@ -261,9 +264,10 @@ TEST_F(WriteFrameTest, WriteExtFrameMixedTypes) {
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
     Reader reader = Reader::create(meta, "stg.test");
 
-    DzSysSched sched{};
-    sched.type = DZ_SYS_SCHED_TD_LOGIN;
-    ASSERT_TRUE(writer.write_frame(DZ_FRAME_SYS_SCHED, sched));
+    DzShmPreload preload{};
+    preload.bytes = 4096;
+    preload.pages = 2;
+    ASSERT_TRUE(writer.write_frame(DZ_FRAME_PRELOAD_EVENT_SHM, preload));
 
     const std::byte bin_data[] = {std::byte{0xDE}, std::byte{0xAD}};
     ASSERT_TRUE(
@@ -275,7 +279,7 @@ TEST_F(WriteFrameTest, WriteExtFrameMixedTypes) {
     auto* f1 = reader.next_frame();
     ASSERT_NE(f1, nullptr);
     auto* hdr1 = reinterpret_cast<const DzFrameHeader*>(f1);
-    EXPECT_EQ(hdr1->frame_type, DZ_FRAME_SYS_SCHED);
+    EXPECT_EQ(hdr1->frame_type, DZ_FRAME_PRELOAD_EVENT_SHM);
 
     auto* f2 = reader.next_frame();
     ASSERT_NE(f2, nullptr);

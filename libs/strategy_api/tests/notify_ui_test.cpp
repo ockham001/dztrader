@@ -11,6 +11,8 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <memory>
+#include <optional>
 #include <string>
 
 using dztrader::shm::ChannelConfig;
@@ -56,6 +58,9 @@ protected:
     std::string home_;
     std::filesystem::path shm_dir_;
     DzContext* ctx_ = nullptr;
+    /// dz_init 后创建, 定位其后: NOTIFY_UI 帧在新语义下被 dz_next_event 拦截,
+    /// 故用独立 probe reader 观察 SDK 写帧 (Reader 无默认构造, 用 optional)
+    std::optional<Reader> probe_;
 
     void SetUp() override {
         home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_notify").string();
@@ -71,6 +76,8 @@ protected:
 
         ctx_ = dz_init();
         ASSERT_NE(ctx_, nullptr) << "dz_init failed: " << dz_errmsg();
+        probe_.emplace(Reader::create(dztrader::shm::channel_name(dztrader::CHANNEL_NAME_EVENT),
+                                      shm_dir_, "notify_test_probe"));
     }
 
     void TearDown() override {
@@ -78,14 +85,13 @@ protected:
         std::filesystem::remove_all(home_);
     }
 
-    /// 读取 dz_notify_ui 写入的下一帧 payload
+    /// 读取 dz_notify_ui 写入的下一帧 payload (经 probe reader)
     nlohmann::json read_notify_payload() {
-        const void* frame = dz_next_event(ctx_);
+        const std::byte* frame = probe_->next_frame();
         if (frame == nullptr) {
             return {};
         }
-        const auto view = dztrader::shm::FrameView(
-            static_cast<const std::byte*>(frame));
+        const auto view = dztrader::shm::FrameView(frame);
         EXPECT_EQ(view.type(), DZ_FRAME_NOTIFY_UI);
         const auto* data = reinterpret_cast<const char*>(view.ext_payload());
         return nlohmann::json::parse(data, data + view.ext_payload_size());

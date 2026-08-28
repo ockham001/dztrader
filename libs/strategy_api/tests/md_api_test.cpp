@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -50,13 +51,17 @@ void create_md_channel(const std::filesystem::path& shm_dir) {
 }
 
 // 与 notify_ui_test / trade_api_test 同款 fixture: 临时 DZTRADER_HOME +
-// 预建事件/md 通道 + dz_init。测试进程用独立 writer 模拟 master 写
-// NOTIFY_MD_STARTED 广播帧, 再经 dz_on_md_started 触发 SDK 补订阅。
+// 预建事件/md 通道 + dz_init。测试进程用独立 writer 模拟 master/行情进程写广播帧,
+// 用独立 probe reader 观察 SDK 写出的事件帧 (订阅请求等)。SDK 内部帧
+// (NOTIFY_MD_STARTED / PRELOAD / 订阅回声等) 经 dz_next_event 自动消费,
+// 不再返回给策略用户, 故断言走 probe 而非 dz_next_event。
 class MdApiTest : public ::testing::Test {
 protected:
     std::string home_;
     std::filesystem::path shm_dir_;
     DzContext* ctx_ = nullptr;
+    /// dz_init 后创建, 定位其后: 可观察 SDK 写出的全部帧 (Reader 无默认构造, 用 optional)
+    std::optional<Reader> probe_;
 
     void SetUp() override {
         home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_md").string();
@@ -69,6 +74,8 @@ protected:
         create_md_channel(shm_dir_);
         ctx_ = dz_init();
         ASSERT_NE(ctx_, nullptr) << "dz_init failed: " << dz_errmsg();
+        probe_.emplace(Reader::create(dztrader::shm::channel_name(dztrader::CHANNEL_NAME_EVENT),
+                                      shm_dir_, "md_test_probe"));
     }
 
     void TearDown() override {
@@ -87,28 +94,30 @@ protected:
         writer.notify_subscribers();
     }
 
-    /// 模拟 master 写 NOTIFY_MD_STARTED 广播帧。
+    /// 模拟行情进程写 NOTIFY_MD_STARTED 广播帧。
     void emit_md_started(const std::string& source) {
         emit_inst_frame(DZ_FRAME_NOTIFY_MD_STARTED, source);
     }
 
-    /// 从事件通道读取下一帧, 返回解析后的 SubscribeReq (仅当帧为订阅类)。
+    /// 从 probe reader 读取下一帧, 返回解析后的 SubscribeReq (仅当帧为订阅类)。
     /// 非订阅帧则跳过, 返回 nullopt。
     std::optional<dztrader::SubscribeReq> read_next_subscribe() {
-        const void* frame = dz_next_event(ctx_);
-        if (frame == nullptr) {
-            return std::nullopt;
+        for (;;) {
+            const auto* frame = probe_->next_frame();
+            if (frame == nullptr) {
+                return std::nullopt;
+            }
+            const auto view = FrameView(frame);
+            if (view.type() != DZ_FRAME_REQUEST_MD_SUBSCRIBE) {
+                continue;
+            }
+            return dztrader::shm::decode_ext_inst_json<dztrader::SubscribeReq>(view);
         }
-        const auto view = FrameView(static_cast<const std::byte*>(frame));
-        if (view.type() != DZ_FRAME_REQUEST_MD_SUBSCRIBE) {
-            return std::nullopt;
-        }
-        return dztrader::shm::decode_ext_inst_json<dztrader::SubscribeReq>(view);
     }
 
-    /// 排干事件通道, 跳过全部非订阅帧。
+    /// 排干 probe reader 中已写出的帧 (跳过全部非订阅帧)。
     void drain_non_subscribe() {
-        while (dz_next_event(ctx_) != nullptr) {
+        while (probe_->next_frame() != nullptr) {
         }
     }
 };
@@ -202,45 +211,29 @@ TEST_F(MdApiTest, UnsubscribeListRemovesOnlyListed) {
     EXPECT_EQ(req->instruments, std::vector<std::string>({"IF2506"}));
 }
 
-// ── dz_on_md_started ──
+// ── NOTIFY_MD_STARTED 自动补订阅 (dz_next_event 内部消费) ──
 
-TEST_F(MdApiTest, OnMdStartedNullFrameReturnsFalse) {
-    EXPECT_FALSE(dz_on_md_started(ctx_, nullptr));
-    EXPECT_EQ(dz_errcode(), DZ_EC_INVALID_PARAM);
-}
-
-TEST_F(MdApiTest, OnMdStartedWrongFrameTypeReturnsFalse) {
-    // 非 STARTED 帧 (用 TD 订单请求帧类型, 模拟其他业务帧)
-    emit_inst_frame(DZ_FRAME_TD_ORDER_REQ, "test_md");
-    const void* frame = dz_next_event(ctx_);
-    ASSERT_NE(frame, nullptr);
-    EXPECT_FALSE(dz_on_md_started(ctx_, frame));
-    EXPECT_EQ(dz_errcode(), DZ_EC_INVALID_PARAM);
-}
-
-TEST_F(MdApiTest, OnMdStartedOtherSourceIgnoredNoResubscribe) {
+TEST_F(MdApiTest, NotifyMdStartedOtherSourceIgnoredNoResubscribe) {
     const char* const insts[] = {"IF2506"};
     ASSERT_TRUE(dz_subscribe(ctx_, insts, 1, true));
     drain_non_subscribe();
 
     emit_md_started("other_md");
-    const void* frame = dz_next_event(ctx_);
-    ASSERT_NE(frame, nullptr);
-    EXPECT_TRUE(dz_on_md_started(ctx_, frame));
-
-    // 非本策略源: 不补订阅, 无订阅帧产出
+    // SDK 内部消费 STARTED 帧: 非本策略源, 不补订阅, 用户拿不到该帧
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
+
+    // 无订阅帧产出 (probe 流中只有 STARTED(other) 被跳过)
+    EXPECT_EQ(read_next_subscribe(), std::nullopt);
 }
 
-TEST_F(MdApiTest, OnMdStartedOwnSourceResubscribesDesiredSet) {
+TEST_F(MdApiTest, NotifyMdStartedOwnSourceResubscribesDesiredSet) {
     const char* const insts[] = {"IF2506", "IC2506"};
     ASSERT_TRUE(dz_subscribe(ctx_, insts, 2, true));
     drain_non_subscribe();
 
     emit_md_started("test_md");
-    const void* frame = dz_next_event(ctx_);
-    ASSERT_NE(frame, nullptr);
-    EXPECT_TRUE(dz_on_md_started(ctx_, frame));
+    // SDK 内部消费 STARTED 帧并自动补订阅; 用户拿不到该帧
+    EXPECT_EQ(dz_next_event(ctx_), nullptr);
 
     // 本策略源: 全量补订阅, replace=true
     const auto req = read_next_subscribe();
@@ -250,12 +243,11 @@ TEST_F(MdApiTest, OnMdStartedOwnSourceResubscribesDesiredSet) {
     EXPECT_EQ(req->instruments, std::vector<std::string>({"IC2506", "IF2506"}));
 }
 
-TEST_F(MdApiTest, OnMdStartedOwnSourceEmptyDesiredSetNoOp) {
+TEST_F(MdApiTest, NotifyMdStartedEmptyDesiredSetNoOp) {
     emit_md_started("test_md");
-    const void* frame = dz_next_event(ctx_);
-    ASSERT_NE(frame, nullptr);
-    EXPECT_TRUE(dz_on_md_started(ctx_, frame));
+    // STARTED 被内部消费, 不返回用户; 无期望集合, 不补订阅
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
+    EXPECT_EQ(read_next_subscribe(), std::nullopt);
 }
 
 // ── dz_next_md ──

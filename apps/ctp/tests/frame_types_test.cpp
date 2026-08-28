@@ -52,7 +52,6 @@ TEST(FrameTypes, LogConfigFramesHaveCorrectIds) {
 }
 
 TEST(FrameTypes, BroadcastAllFrames) {
-    EXPECT_EQ(DZ_FRAME_REQUEST_SHUTDOWN_ALL,  static_cast<DzFrameType>(20));
     EXPECT_EQ(DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER, static_cast<DzFrameType>(21));
 }
 

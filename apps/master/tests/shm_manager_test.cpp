@@ -460,7 +460,6 @@ protected:
             if (!frame) break;
             shm::FrameView view(frame);
             const bool has_inst = (view.type() != DZ_FRAME_PRELOAD_EVENT_SHM &&
-                view.type() != DZ_FRAME_REQUEST_SHUTDOWN_ALL &&
                 view.type() != DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER &&
                 view.type() != DZ_FRAME_SET_EVENT_SHM_CONFIG &&
                 view.type() != DZ_FRAME_RTN_EVENT_SHM_CONFIG &&

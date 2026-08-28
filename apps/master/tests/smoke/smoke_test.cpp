@@ -137,7 +137,6 @@ bool process_alive(uint32_t pid) {
 bool frame_has_inst(DzFrameType t) {
     switch (t) {
         case DZ_FRAME_PRELOAD_EVENT_SHM:
-        case DZ_FRAME_REQUEST_SHUTDOWN_ALL:
         case DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER:
         case DZ_FRAME_SET_EVENT_SHM_CONFIG:
         case DZ_FRAME_RTN_EVENT_SHM_CONFIG:
