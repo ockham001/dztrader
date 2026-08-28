@@ -373,7 +373,7 @@ TEST_F(ScheduleApiTest, ShutdownFrameDirectedOwnInstanceDeliveredAfterCleanup) {
 // ── 定时器帧缓冲满: 推迟投递, 绝不丢帧 ──
 
 TEST_F(ScheduleApiTest, TimerBurstBeyondBufferIsNotLost) {
-    constexpr int kCount = 40;  // > 32 槽
+    constexpr int kCount = 200;  // > 32 槽, 同时覆盖堆在较大 n 下的顺序性
     std::set<DzTimerId> ids;
     for (int i = 0; i < kCount; ++i) {
         const DzTimerId id = dz_schedule_after(ctx_, 50);

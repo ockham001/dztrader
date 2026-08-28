@@ -14,7 +14,6 @@
 #include <dztrader/data_type.h>
 #include <dztrader/core/last_error.h>
 #include <dztrader/core/random.h>
-#include <dztrader/core/timer_queue.h>
 #include <dztrader/date_time/date_time.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/frame_codec.h>
@@ -82,14 +81,16 @@ DZ_API void dz_release(DzContext* ctx) {
 
 namespace {
 
-using TimerClock = dztrader::core::TimerQueue::Clock;
+using TimerClock = dztrader::TimerHeap::Clock;
 
 /// dz_next_event 单次调用连续消费内部帧的上限 (防内部帧洪峰饿死 dz_next_md)
 constexpr uint32_t kMaxInternalFramesPerCall = 32;
 
-/// 内部预加载定时器 tag (替换语义, 只保留最新)
-constexpr std::string_view kPreloadEventTag = "internal_preload_event";
-constexpr std::string_view kPreloadMdTag = "internal_preload_md";
+/// 内部预加载定时器令牌 (与用户稳定 ID 分属不同取值空间:
+/// 用户 ID 从 1 单调递增, 内部令牌置第 63 位, 结构上不可混淆)
+constexpr uint64_t kInternalTokenBase = 1ull << 63;
+constexpr uint64_t kInternalTokenEvent = kInternalTokenBase | 0;
+constexpr uint64_t kInternalTokenMd = kInternalTokenBase | 1;
 
 /// SDK 内部失败诊断: SDK 无日志模块, 写 stderr 单行。
 /// master 以管道捕获子进程 stderr 并逐行转发进其日志 (child_process.cpp
@@ -184,9 +185,9 @@ void handle_internal_frame(DzContext* ctx, const std::byte* frame, DzFrameType t
     switch (type) {
         case DZ_FRAME_PRELOAD_EVENT_SHM: {
             const auto& params = view.payload<DzShmPreload>();
-            ctx->schedule_internal_preload(
-                std::string(kPreloadEventTag), dztrader::core::random_jitter(0, 5000),
-                [ctx, params] { preload_event_channels(ctx, params); });
+            ctx->internal_event_preload = params;  // 覆盖参数槽 (只保留最新)
+            ctx->schedule_internal_preload(kInternalTokenEvent,
+                                           dztrader::core::random_jitter(0, 5000));
             return;
         }
         case DZ_FRAME_PRELOAD_MD_SHM: {
@@ -198,9 +199,9 @@ void handle_internal_frame(DzContext* ctx, const std::byte* frame, DzFrameType t
                 return;
             }
             const auto& params = *reinterpret_cast<const DzShmPreload*>(view.ext_inst_payload());
-            ctx->schedule_internal_preload(
-                std::string(kPreloadMdTag), dztrader::core::random_jitter(0, 5000),
-                [ctx, params] { preload_md_channel(ctx, params); });
+            ctx->internal_md_preload = params;  // 覆盖参数槽 (只保留最新)
+            ctx->schedule_internal_preload(kInternalTokenMd,
+                                           dztrader::core::random_jitter(0, 5000));
             return;
         }
         case DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER:
@@ -219,15 +220,36 @@ void handle_internal_frame(DzContext* ctx, const std::byte* frame, DzFrameType t
 /* ── 定时器机制 (DzContext 成员定义) ── */
 
 void DzContext::tick_timers() {
-    if (!timers.empty()) {
-        timers.tick();
+    if (timers.empty()) {
+        return;
+    }
+    const auto now = TimerClock::now();
+    while (!timers.empty() && timers.top().deadline <= now) {
+        const dztrader::TimerHeap::Node node = timers.pop();
+        if (node.token == kInternalTokenEvent) {
+            if (internal_event_preload.has_value()) {
+                preload_event_channels(this, *internal_event_preload);
+                internal_event_preload.reset();
+            }
+            continue;  // 参数槽空: 已被清理/替换 (防御)
+        }
+        if (node.token == kInternalTokenMd) {
+            if (internal_md_preload.has_value()) {
+                preload_md_channel(this, *internal_md_preload);
+                internal_md_preload.reset();
+            }
+            continue;  // 参数槽空: 已被清理/替换 (防御)
+        }
+        // 用户定时器: 注册表判定即为懒删除 (已取消的堆条目在此被丢弃)
+        on_user_timer_fire(node.token, now);
     }
 }
 
 uint32_t DzContext::next_timer_wait_ms() const {
-    // 前置条件: !timers.empty() (与 TimerQueue::next_timeout 一致)
-    const auto ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(timers.next_timeout()).count();
+    // 前置条件: !timers.empty()
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        timers.top().deadline - TimerClock::now())
+                        .count();
     if (ms <= 0) {
         return 0;
     }
@@ -272,17 +294,17 @@ const void* DzContext::pop_timer_frame() {
     return &timer_frames[idx];
 }
 
-void DzContext::on_user_timer_fire(DzTimerId timer_id) {
+void DzContext::on_user_timer_fire(DzTimerId timer_id, TimerClock::time_point now) {
     const auto it = user_timers.find(timer_id);
     if (it == user_timers.end()) {
-        return;  // 防御: 已取消/已触发 (正常路径不会发生)
+        return;  // 懒删除: 已取消/已触发的堆条目在此被丢弃
     }
     if (timer_frame_count >= kTimerFrameSlots) {
         // 缓冲满: 推迟投递 (领取腾槽时补投), 一次性保持注册表直到真正投递。
         // 周期/每日先重排后入 deferred: rearm 异常时最坏丢一帧, 定时器不静默死亡。
         if (it->second.kind != UserTimerEntry::Kind::After &&
             it->second.kind != UserTimerEntry::Kind::AtOnce) {
-            rearm_user_timer(it, TimerClock::now());
+            rearm_user_timer(it, now);
         }
         deferred_fires.push_back(timer_id);
         return;
@@ -293,7 +315,7 @@ void DzContext::on_user_timer_fire(DzTimerId timer_id) {
         user_timers.erase(it);
         return;
     }
-    rearm_user_timer(it, TimerClock::now());
+    rearm_user_timer(it, now);
 }
 
 void DzContext::rearm_user_timer(std::unordered_map<DzTimerId, UserTimerEntry>::iterator it,
@@ -306,20 +328,22 @@ void DzContext::rearm_user_timer(std::unordered_map<DzTimerId, UserTimerEntry>::
         if (entry.next_deadline <= now) {
             entry.next_deadline = now + entry.interval;
         }
-        entry.queue_id =
-            timers.schedule_at(entry.next_deadline, [this, id] { on_user_timer_fire(id); });
+        timers.push(entry.next_deadline, id);
         return;
     }
     // Daily: 每次触发按 wall clock 重算次日 (自动适应时区/夏令时)
-    entry.next_deadline = TimerClock::now() + next_time_of_day_delay(entry.time_of_day_ms);
-    entry.queue_id =
-        timers.schedule_at(entry.next_deadline, [this, id] { on_user_timer_fire(id); });
+    entry.next_deadline = now + next_time_of_day_delay(entry.time_of_day_ms);
+    timers.push(entry.next_deadline, id);
 }
 
 DzTimerId DzContext::schedule_user_timer(UserTimerEntry entry) {
     const DzTimerId id = next_user_timer_id++;
-    entry.queue_id =
-        timers.schedule_at(entry.next_deadline, [this, id] { on_user_timer_fire(id); });
+    if (id >= (1ull << 62)) {
+        // 与内部令牌空间 (第 63 位) 的隔离守卫; 实际不可达 (需 2^62 次调度)
+        --next_user_timer_id;
+        throw Exception(DZ_EC_INTERNAL, "timer id space exhausted");
+    }
+    timers.push(entry.next_deadline, id);
     user_timers.emplace(id, std::move(entry));
     return id;
 }
@@ -329,44 +353,35 @@ bool DzContext::cancel_user_timer(DzTimerId timer_id) {
     if (it == user_timers.end()) {
         return false;
     }
-    timers.cancel(it->second.queue_id);
+    // 物理移除堆条目 (O(n) 冷路径, 平坦内存线性扫描): 取消即消失,
+    // dz_wait 不会被残留条目幽灵唤醒; 堆性质由 remove_token 保证
+    timers.remove_token(timer_id);
     user_timers.erase(it);
     return true;
 }
 
 void DzContext::cancel_all_user_timers() {
-    for (const auto& [id, entry] : user_timers) {
-        (void)id;
-        timers.cancel(entry.queue_id);
-    }
+    // 单遍过滤重建 (O(n) 冷路径): 移除全部用户条目, 内部令牌保留
+    timers.remove_tokens_below(kInternalTokenBase);
     user_timers.clear();
     deferred_fires.clear();
     timer_frame_head = 0;
     timer_frame_count = 0;
 }
 
-void DzContext::schedule_internal_preload(const std::string& tag, std::chrono::milliseconds delay,
-                                          std::function<void()> action) {
-    if (const auto it = internal_preload_tags.find(tag); it != internal_preload_tags.end()) {
-        timers.cancel(it->second);
-        internal_preload_tags.erase(it);
-    }
-    const auto queue_id =
-        timers.schedule_after(delay, [this, tag, action = std::move(action)]() mutable {
-            internal_preload_tags.erase(tag);
-            action();
-        });
-    internal_preload_tags.emplace(tag, queue_id);
+void DzContext::schedule_internal_preload(uint64_t token, std::chrono::milliseconds delay) {
+    // 替换语义: 物理移除旧条目 (内部条目 ≤2, 冷路径 O(n)) 后按新随机延迟重排
+    timers.remove_token(token);
+    timers.push(TimerClock::now() + delay, token);
 }
 
 void DzContext::internal_cleanup_on_shutdown() {
     // 当前动作: 取消内部预加载定时器 + 清本地定时器帧缓冲。
     // 用户定时器不动 (由用户随进程退出自然消亡); 将来新增清理动作在此追加。
-    for (const auto& [tag, queue_id] : internal_preload_tags) {
-        (void)tag;
-        timers.cancel(queue_id);
-    }
-    internal_preload_tags.clear();
+    internal_event_preload.reset();
+    internal_md_preload.reset();
+    timers.remove_token(kInternalTokenEvent);
+    timers.remove_token(kInternalTokenMd);
     timer_frame_head = 0;
     timer_frame_count = 0;
 }
