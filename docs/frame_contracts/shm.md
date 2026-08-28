@@ -151,11 +151,12 @@
 **时序**：请求进程发起 → 必回对应 RTN（总则 §7 极端情况兜底适用）
 
 **约束**：
-- master 校验 `subscriber` 为已注册进程（**任意类别，不限策略**）；接入另需通道存在且就绪（对应行情进程已发出 `NOTIFY_MD_STARTED`），不满足时回失败 RTN
+- master 校验 `subscriber` 为已注册进程（**任意类别，不限策略**）；接入另需通道存在且就绪（对应行情进程已发出 `NOTIFY_MD_STARTED`），不满足时回失败 RTN；已 tombstone（被 Remove）的通道按"通道未配置"拒绝接入
 - **请求进程收到成功 RTN 前不得打开通道**：未经注册打开的通道不保证安全、无信号量唤醒（接入规则见《组件架构 dztraderd》）
-- **启动顺序**：md 先于其余进程启动（master `start_all` 两趟），保证注册时目标通道已存在
+- **普通策略不再使用本帧**：策略读者由 master 在 spawn 前统一预注册（`stg.<name>`）、退出后清理，1013/1014 保留供手工/外部进程接入
+- **启动顺序**：md 先于其余进程启动（master `start_all` 三趟），保证注册时目标通道已存在
 - 注册/注销成功后 master 更新行情通道 readers 并广播 `UPDATE_SHM_MD_SUBSCRIBER`（该帧的触发场景见上方"UPDATE_SHM_*_SUBSCRIBER"节），随后回 RTN——RTN 为最终许可信号，时序固定：更新列表 → 广播 UPDATE → 回 RTN
-- **注销路径**：读者主动注销（RTN 确认）；读者进程退出或崩溃时 master 代清理（对全部 md 通道幂等移除，无 RTN）。行情通道关闭时列表已随停止后果清空（见《组件架构 dztraderd》「行情通道：读者（接入）规则」），无需第三路径
+- **注销路径**：读者主动注销（RTN 确认）；读者进程退出或崩溃时 master 代清理（对全部 md 通道幂等移除，无 RTN）。行情通道停止/删除**不**清空 readers 表（策略 reader 与进程同生命周期），仅以下三类时机全量 clear：master 冷启动后首次打开该通道、page_size 变更/通道重置（无运行中绑定策略）、物理文件清理/通道销毁
 - 重复注册/注销幂等（add 已存在跳过、remove 缺失 key 为 no-op），多路径叠加无害
 
 ## DZ_FRAME_RTN_MD_READER_REGISTER / DZ_FRAME_RTN_MD_READER_UNREGISTER
