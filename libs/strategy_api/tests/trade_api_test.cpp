@@ -36,7 +36,19 @@ void create_event_channel(const std::filesystem::path& shm_dir) {
     (void)ChannelMeta::open_or_create(cfg);
 }
 
-// 与 notify_ui_test 同款 fixture: 临时 DZTRADER_HOME + 预建事件通道 + dz_init。
+void create_md_channel(const std::filesystem::path& shm_dir) {
+    ChannelConfig cfg{
+        .channel_name = "test_md",
+        .shm_dir = shm_dir,
+        .meta_file_size = 1 * kMB,
+        .page_size = 1 * kMB,
+        .lock_memory = false,
+        .prefetch_memory = false,
+    };
+    (void)ChannelMeta::open_or_create(cfg);
+}
+
+// 与 notify_ui_test 同款 fixture: 临时 DZTRADER_HOME + 预建事件/md 通道 + dz_init。
 class TradeApiTest : public ::testing::Test {
 protected:
     std::string home_;
@@ -47,7 +59,9 @@ protected:
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         dztrader::env::set("DZTRADER_HOME", home_);
+        dztrader::env::set("DZTRADER_MD_SOURCE", "test_md");
         create_event_channel(home_ + "/shm");
+        create_md_channel(home_ + "/shm");
         ctx_ = dz_init();
         ASSERT_NE(ctx_, nullptr) << "dz_init failed: " << dz_errmsg();
     }

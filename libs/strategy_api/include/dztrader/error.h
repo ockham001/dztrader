@@ -161,6 +161,8 @@ typedef int32_t DzErrorCode;
 #define DZ_EC_MD_GATEWAY_ERROR ((DzErrorCode)(-4006))
 /** @brief 无数据 */
 #define DZ_EC_MD_NO_DATA ((DzErrorCode)(-4007))
+/** @brief 未配置行情源（DZTRADER_MD_SOURCE 缺失或为空） */
+#define DZ_EC_MD_SOURCE_NOT_CONFIGURED ((DzErrorCode)(-4008))
 
 /* ── Master ── */
 

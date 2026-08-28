@@ -33,9 +33,6 @@ typedef struct DzContext DzContext;
 /** @brief 结果集句柄 */
 typedef struct DzResultSet DzResultSet;
 
-/* ── 行情源 ── */
-typedef struct DzMdSource DzMdSource;
-
 /* ── 生命周期 ── */
 
 /**
@@ -68,12 +65,9 @@ DZ_API void dz_release(DzContext* ctx);
  * 对非当前句柄调用 dz_release 属未定义行为。
  * 生命周期由单线程保证，SDK 不做线程同步（dz_init/dz_release 非线程安全）。
  * release 后重新 dz_init() 获得全新会话；事件信号量为同名复用（不重置计数），
- * 若 release 前有未消费的通知，新会话首次 dz_wait_for 可能立即返回（dz_next_event 排空自愈）。
- * dz_destroy_md_source(ctx, NULL) 为 no-op。 */
+ * 若 release 前有未消费的通知，新会话首次 dz_wait_for 可能立即返回（dz_next_event 排空自愈）。 */
 
-DZ_API DzMdSource* dz_create_md_source(DzContext* ctx, const char* name);
-
-DZ_API void dz_destroy_md_source(DzContext* ctx, DzMdSource* source);
+DZ_API const char* dz_md_source_name(DzContext* ctx);
 
 /**
  * @brief 阻塞等待，直到有新数据可读
@@ -110,10 +104,10 @@ DZ_API const void* dz_next_event(DzContext* ctx);
  * 非阻塞，推进游标返回下一帧指针。无新帧则返回 NULL。
  * 返回的指针指向 DzFrameHeader，按 frame_type 解析 payload。
  *
- * @param source  行情源句柄
+ * @param ctx  策略运行环境
  * @return 帧指针，无数据返回 NULL
  */
-DZ_API const void* dz_next_md(DzMdSource* source);
+DZ_API const void* dz_next_md(DzContext* ctx);
 
 /**
  * @brief 自通知：唤醒自身信号量
@@ -159,18 +153,30 @@ DZ_API const char* dz_strategy_id(DzContext* ctx);
 DZ_API bool dz_preload_event(DzContext* ctx, const void* preload);
 
 /**
- * @brief 预加载指定行情通道共享内存映射区域
+ * @brief 预加载本策略绑定行情通道的共享内存映射区域
  *
- * 在非活跃时间点调用，提前映射指定行情通道新的共享内存文件，
+ * 在非活跃时间点调用，提前映射行情通道新的共享内存文件，
  * 避免交易时段因首次访问触发页面错误导致延迟抖动。
  *
- * @param source  行情源句柄（dz_create_md_source 创建）
+ * @param ctx     策略运行环境
  * @param preload 预加载参数（不透明透传）：布局为 DzShmPreload{bytes,pages,reserved}，
  *                调用方无需解析，从平台 DZ_FRAME_PRELOAD_MD_SHM 帧 payload 原样转发；
  *                NULL 表示无需预加载（返回 true）
  * @return true 成功或无需预加载，false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_preload_md(DzMdSource* source, const void* preload);
+DZ_API bool dz_preload_md(DzContext* ctx, const void* preload);
+
+/**
+ * @brief 处理 NOTIFY_MD_STARTED 帧
+ *
+ * 模板收到 DZ_FRAME_NOTIFY_MD_STARTED 后调用。SDK 内部按帧头 instance_id 过滤，
+ * 只处理本策略绑定的行情源；匹配后使用当前期望订阅集合全量补订阅。
+ *
+ * @param ctx    策略运行环境
+ * @param frame  事件帧指针（来自 dz_next_event）
+ * @return true 无错误（含非本策略源/无需补订阅）；false 发生错误，可用 dz_errcode/dz_errmsg 打印
+ */
+DZ_API bool dz_on_md_started(DzContext* ctx, const void* frame);
 
 /* ── 交易接口 ── */
 
@@ -209,14 +215,13 @@ DZ_API bool dz_cancel_order(DzContext* ctx, const char* account_id, DzOrderId or
 /**
  * @brief 订阅行情合约
  *
- * @param source              行情源句柄
- * @param instruments         合约代码数组，NULL 或 count=0 为无效调用
- * @param count               合约数量
- * @param replace_previous    true=先取消该策略在该行情源的所有旧订阅，再订阅新合约
- * @return true 成功，false 失败（调 dz_errcode() 获取错误码）
+ * @param ctx               策略运行环境
+ * @param instruments       合约代码数组，NULL 或 count=0 为无效调用
+ * @param count             合约数量
+ * @param replace_previous  true=先取消该策略在当前行情源的所有旧订阅，再订阅新合约
+ * @return true 请求已写入事件通道且 SDK 期望集合已同步；false 失败（调 dz_errcode() 获取错误码）
  */
 DZ_API bool dz_subscribe(DzContext* ctx,
-                         DzMdSource* source,
                          const char* const instruments[],
                          uint32_t count,
                          bool replace_previous);
@@ -224,15 +229,14 @@ DZ_API bool dz_subscribe(DzContext* ctx,
 /**
  * @brief 取消订阅行情合约
  *
- * instruments 为 NULL 或 count 为 0 时，取消该策略在该行情源的所有订阅。
+ * instruments 为 NULL 或 count 为 0 时，取消该策略在当前行情源的所有订阅。
  *
- * @param source        行情源句柄
- * @param instruments   合约代码数组，NULL 或 count=0 表示取消所有订阅
- * @param count         合约数量
- * @return true 成功，false 失败（调 dz_errcode() 获取错误码）
+ * @param ctx          策略运行环境
+ * @param instruments  合约代码数组，NULL 或 count=0 表示取消所有订阅
+ * @param count        合约数量
+ * @return true 请求已写入事件通道且 SDK 期望集合已同步；false 失败（调 dz_errcode() 获取错误码）
  */
 DZ_API bool dz_unsubscribe(DzContext* ctx,
-                           DzMdSource* source,
                            const char* const instruments[],
                            uint32_t count);
 

@@ -37,8 +37,20 @@ void create_event_channel(const std::filesystem::path& shm_dir) {
     (void)ChannelMeta::open_or_create(cfg);
 }
 
+void create_md_channel(const std::filesystem::path& shm_dir) {
+    ChannelConfig cfg{
+        .channel_name = "test_md",
+        .shm_dir = shm_dir,
+        .meta_file_size = 1 * kMB,
+        .page_size = 1 * kMB,
+        .lock_memory = false,
+        .prefetch_memory = false,
+    };
+    (void)ChannelMeta::open_or_create(cfg);
+}
+
 // dz_init 构造 DzContext: 打开 dzevent 通道 writer/reader + stg.* 信号量 +
-// order_id 元数据。测试直接经其 writer 写帧, 不依赖任何进程间协调。
+// order_id 元数据 + 必选行情 reader。测试直接经其 writer 写帧, 不依赖任何进程间协调。
 class NotifyUiTest : public ::testing::Test {
 protected:
     std::string home_;
@@ -53,7 +65,9 @@ protected:
         // paths::shm() 按 DZTRADER_HOME 缓存: 进程内单例, 只能在首次调用前设好,
         // 之后不得再改 (所有用例共享同一 DZTRADER_HOME)。
         dztrader::env::set("DZTRADER_HOME", home_);
+        dztrader::env::set("DZTRADER_MD_SOURCE", "test_md");
         create_event_channel(shm_dir_);
+        create_md_channel(shm_dir_);
 
         ctx_ = dz_init();
         ASSERT_NE(ctx_, nullptr) << "dz_init failed: " << dz_errmsg();

@@ -8,8 +8,8 @@
  * 子命令:
  *   stg_demo info
  *       打印策略身份与 SDK 版本, 观察策略进程生命周期。
- *   stg_demo md <行情源名> <合约...>
- *       创建行情源 (向 master 注册读者) → 订阅合约 → 观察窗口内打印 tick。
+ *   stg_demo md <合约...>
+ *       使用 DZTRADER_MD_SOURCE 绑定的行情源订阅合约 → 观察窗口内打印 tick。
  *   stg_demo order <账户> <合约> <价格> <手数> [long|short]
  *       下限价开仓单并等待回报; 账户未连接时 td 网关回 REJECTED (空账户拒单闭环)。
  *   stg_demo cancel <账户> <订单ID>
@@ -65,7 +65,7 @@ void print_usage() {
         "\n"
         "用法:\n"
         "  stg_demo info\n"
-        "  stg_demo md <行情源名> <合约...>\n"
+        "  stg_demo md <合约...>\n"
         "  stg_demo order <账户> <合约> <价格> <手数> [long|short]\n"
         "  stg_demo cancel <账户> <订单ID>\n"
         "\n"
@@ -73,28 +73,38 @@ void print_usage() {
 }
 
 void print_identity(DzContext* ctx) {
-    std::puts(std::format("策略ID: {} | SDK: {} | 目录: {}", dz_strategy_id(ctx),
-                          dz_version_string(), dz_strategy_home(ctx))
+    std::puts(std::format("策略ID: {} | 行情源: {} | SDK: {} | 目录: {}", dz_strategy_id(ctx),
+                          dz_md_source_name(ctx), dz_version_string(), dz_strategy_home(ctx))
                   .c_str());
 }
 
 const char* order_status_name(DzOrderStatus status) {
     switch (status) {
-        case DZ_ORDER_SUBMITTING:   return "提交中";
-        case DZ_ORDER_NOT_TRADED:   return "未成交";
-        case DZ_ORDER_PART_TRADED:  return "部分成交";
-        case DZ_ORDER_ALL_TRADED:   return "全部成交";
-        case DZ_ORDER_CANCELLED:    return "已撤销";
-        case DZ_ORDER_REJECTED:     return "拒单";
-        default:                    return "未知";
+        case DZ_ORDER_SUBMITTING:
+            return "提交中";
+        case DZ_ORDER_NOT_TRADED:
+            return "未成交";
+        case DZ_ORDER_PART_TRADED:
+            return "部分成交";
+        case DZ_ORDER_ALL_TRADED:
+            return "全部成交";
+        case DZ_ORDER_CANCELLED:
+            return "已撤销";
+        case DZ_ORDER_REJECTED:
+            return "拒单";
+        default:
+            return "未知";
     }
 }
 
 const char* direction_name(DzDirection direction) {
     switch (direction) {
-        case DZ_DIRECTION_LONG:   return "买";
-        case DZ_DIRECTION_SHORT:  return "卖";
-        default:                  return "净";
+        case DZ_DIRECTION_LONG:
+            return "买";
+        case DZ_DIRECTION_SHORT:
+            return "卖";
+        default:
+            return "净";
     }
 }
 
@@ -104,8 +114,8 @@ const DzOrderReport* as_order_report(const void* frame) {
     if (hdr->frame_type != DZ_FRAME_TD_ORDER_RPT) {
         return nullptr;
     }
-    return reinterpret_cast<const DzOrderReport*>(
-        reinterpret_cast<const std::byte*>(hdr) + sizeof(DzFrameHeader));
+    return reinterpret_cast<const DzOrderReport*>(reinterpret_cast<const std::byte*>(hdr) +
+                                                  sizeof(DzFrameHeader));
 }
 
 const DzTick* as_md_tick(const void* frame) {
@@ -113,29 +123,28 @@ const DzTick* as_md_tick(const void* frame) {
     if (hdr->frame_type != DZ_FRAME_RTN_MD_TICK) {
         return nullptr;
     }
-    return reinterpret_cast<const DzTick*>(
-        reinterpret_cast<const std::byte*>(hdr) + sizeof(DzFrameHeader));
+    return reinterpret_cast<const DzTick*>(reinterpret_cast<const std::byte*>(hdr) +
+                                           sizeof(DzFrameHeader));
 }
 
 void print_report(const DzOrderReport& rpt) {
-    std::puts(std::format(
-        "回报: order_id={} strategy={} account={} instrument={} direction={} "
-        "price_type={} price={:.3f} volume={} traded={} status={}({}) remark=\"{}\"",
-        rpt.order_id, rpt.strategy_id, rpt.account_id, rpt.instrument_id,
-        direction_name(rpt.direction), static_cast<int>(rpt.price_type), rpt.price,
-        rpt.volume, rpt.volume_traded, static_cast<int>(rpt.status),
-        order_status_name(rpt.status), rpt.remark)
-                  .c_str());
+    std::puts(
+        std::format("回报: order_id={} strategy={} account={} instrument={} direction={} "
+                    "price_type={} price={:.3f} volume={} traded={} status={}({}) remark=\"{}\"",
+                    rpt.order_id, rpt.strategy_id, rpt.account_id, rpt.instrument_id,
+                    direction_name(rpt.direction), static_cast<int>(rpt.price_type), rpt.price,
+                    rpt.volume, rpt.volume_traded, static_cast<int>(rpt.status),
+                    order_status_name(rpt.status), rpt.remark)
+            .c_str());
 }
 
 void print_tick(const DzTick& tick) {
     const int32_t t = tick.time;
-    std::puts(std::format(
-        "tick: {} {:02d}:{:02d}:{:02d}.{:06d} last={:.3f} vol={} "
-        "bid1={:.3f}/{} ask1={:.3f}/{} oi={}",
-        tick.instrument_id, t / 3600, t % 3600 / 60, t % 60, tick.subseconds,
-        tick.last_price, tick.volume, tick.bid_price[0], tick.bid_volume[0],
-        tick.ask_price[0], tick.ask_volume[0], tick.open_interest)
+    std::puts(std::format("tick: {} {:02d}:{:02d}:{:02d}.{:06d} last={:.3f} vol={} "
+                          "bid1={:.3f}/{} ask1={:.3f}/{} oi={}",
+                          tick.instrument_id, t / 3600, t % 3600 / 60, t % 60, tick.subseconds,
+                          tick.last_price, tick.volume, tick.bid_price[0], tick.bid_volume[0],
+                          tick.ask_price[0], tick.ask_volume[0], tick.open_interest)
                   .c_str());
 }
 
@@ -145,28 +154,19 @@ int cmd_info(DzContext* ctx) {
 }
 
 int cmd_md(DzContext* ctx, int argc, char** argv) {
-    // 用法: md <行情源名> <合约...>
-    if (argc < 4) {
+    // 用法: md <合约...>
+    if (argc < 3) {
         print_usage();
         return kExitUsage;
     }
     print_identity(ctx);
-    const char* source_name = argv[2];
-    DzMdSource* source = dz_create_md_source(ctx, source_name);
-    if (source == nullptr) {
-        std::puts(std::format("创建行情源失败: {} ({})", dz_errmsg(), dz_errcode()).c_str());
-        return kExitUsage;
-    }
-    std::puts(std::format("行情源已创建: {} (读者注册请求已发 master)", source_name).c_str());
 
     std::vector<const char*> instruments;
-    for (int i = 3; i < argc; ++i) {
+    for (int i = 2; i < argc; ++i) {
         instruments.push_back(argv[i]);
     }
-    if (!dz_subscribe(ctx, source, instruments.data(),
-                      static_cast<uint32_t>(instruments.size()), true)) {
+    if (!dz_subscribe(ctx, instruments.data(), static_cast<uint32_t>(instruments.size()), true)) {
         std::puts(std::format("订阅失败: {} ({})", dz_errmsg(), dz_errcode()).c_str());
-        dz_destroy_md_source(ctx, source);
         return kExitUsage;
     }
     std::puts(std::format("已订阅 {} 个合约, 观察 {}s (无行情连接时 0 tick 为预期)",
@@ -179,7 +179,7 @@ int cmd_md(DzContext* ctx, int argc, char** argv) {
         // 无论是否被唤醒都排空一次: 兜底订阅者快照过期导致的漏唤醒
         (void)dz_wait_for(ctx, kPollStepMs);
         const void* frame = nullptr;
-        while ((frame = dz_next_md(source)) != nullptr) {
+        while ((frame = dz_next_md(ctx)) != nullptr) {
             const DzTick* tick = as_md_tick(frame);
             if (tick == nullptr) {
                 continue;
@@ -189,7 +189,6 @@ int cmd_md(DzContext* ctx, int argc, char** argv) {
         }
     }
     std::puts(std::format("观察窗口结束: 共收到 {} 个 tick", tick_count).c_str());
-    dz_destroy_md_source(ctx, source);
     return kExitOk;
 }
 
@@ -227,17 +226,15 @@ int cmd_order(DzContext* ctx, int argc, char** argv) {
     }
 
     // 固定限价 + 开仓 (演示工具; 市价/平仓可后续加参数)
-    const DzOrderId order_id = dz_place_order(ctx, account, instrument, direction,
-                                              DZ_PRICE_LIMIT, price, volume,
-                                              DZ_POSITION_EFFECT_OPEN);
+    const DzOrderId order_id = dz_place_order(ctx, account, instrument, direction, DZ_PRICE_LIMIT,
+                                              price, volume, DZ_POSITION_EFFECT_OPEN);
     if (order_id < 0) {
         std::puts(std::format("下单失败: {} ({})", dz_errmsg(), dz_errcode()).c_str());
         return kExitUsage;
     }
-    std::puts(std::format(
-        "订单已发送: order_id={} account={} instrument={} direction={} "
-        "price_type=限价 price={:.3f} volume={} 开平=开仓",
-        order_id, account, instrument, direction_name(direction), price, volume)
+    std::puts(std::format("订单已发送: order_id={} account={} instrument={} direction={} "
+                          "price_type=限价 price={:.3f} volume={} 开平=开仓",
+                          order_id, account, instrument, direction_name(direction), price, volume)
                   .c_str());
 
     // 等待本订单回报 (td 广播 TD_ORDER_RPT, 按 order_id 过滤)
@@ -294,9 +291,9 @@ int cmd_cancel(DzContext* ctx, int argc, char** argv) {
             return kExitOk;
         }
     }
-    std::puts(std::format("等待回报超时 ({}s): 账户未连接时 td 不回应撤单 (预期)",
-                          kOrderWait.count())
-                  .c_str());
+    std::puts(
+        std::format("等待回报超时 ({}s): 账户未连接时 td 不回应撤单 (预期)", kOrderWait.count())
+            .c_str());
     return kExitNoReport;
 }
 
