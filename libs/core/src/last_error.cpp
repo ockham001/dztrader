@@ -58,6 +58,7 @@ const char* LastError::str(DzErrorCode code) noexcept
     case DZ_EC_STRATEGY_RELEASE_FAILED:      return "strategy release failed";
     case DZ_EC_STRATEGY_NOTIFY_FAILED:       return "strategy notify failed";
     case DZ_EC_STRATEGY_HOME_NOT_FOUND:      return "strategy home not found";
+    case DZ_EC_TIMER_NOT_FOUND:              return "timer not found";
     /* ── 交易 ── */
     case DZ_EC_TRADE_INSERT_FAILED:        return "trade insert failed";
     case DZ_EC_TRADE_CANCEL_FAILED:        return "trade cancel failed";

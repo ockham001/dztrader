@@ -17,11 +17,18 @@
 #include <dztrader/core/core_struct.h>
 #include <dztrader/core/path.h>
 #include <dztrader/core/core_data_type.h>
+#include <dztrader/core/timer_queue.h>
 #include <dztrader/error.h>
+#include <array>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <set>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace dztrader {
 
@@ -84,6 +91,67 @@ struct DzContext {
     // ── 冷区 ────────────────────────────────────────────────
     std::string strategy_home;
     std::set<std::string> md_desired_instruments;
+
+    // ── 定时器区 ────────────────────────────────────────────
+    // 用户定时器与 SDK 内部任务(预加载随机延迟)共用单队列:
+    // 热路径(dz_wait/dz_next_event)只做 empty()/next_timeout()/tick(),
+    // 调度与取消为冷路径, 防误删靠内部 ID 对用户不可见。
+    dztrader::core::TimerQueue timers;
+
+    /// 用户定时器注册表: 稳定 ID -> 状态。周期定时器重排会更换队列条目,
+    /// 但稳定 ID 不变, 用户始终用首次返回的 ID 取消。
+    struct UserTimerEntry {
+        enum class Kind : uint8_t { After, Every, AtOnce, Daily };
+        Kind kind = Kind::After;
+        int32_t time_of_day_ms = 0;  ///< AtOnce/Daily: 距午夜毫秒 (Daily 重排用)
+        std::chrono::milliseconds interval{};  ///< Every: 触发间隔
+        /// Every: 上次到期点 + interval 重排的基准 (漂移无关);
+        /// After/AtOnce/Daily: 首次/下次到期点
+        dztrader::core::TimerQueue::TimePoint next_deadline{};
+        dztrader::core::TimerQueue::TimerId queue_id = 0;  ///< 当前队列条目 (重排会换)
+    };
+    std::unordered_map<DzTimerId, UserTimerEntry> user_timers;
+    DzTimerId next_user_timer_id = 1;
+
+    /// SDK 内部预加载定时器: tag -> 当前队列 ID (替换语义, 只保留最新)。
+    /// 值即内部 ID 全集, 对用户 API 不可见, cancel/cancel_all 结构上无法误删。
+    std::unordered_map<std::string, dztrader::core::TimerQueue::TimerId> internal_preload_tags;
+
+    /// 本地定时器帧环形缓冲: 模拟 shm 帧布局 (DzFrameHeader + DzTimerEvent),
+    /// 不写真实共享内存; 指针有效期至下一次 dz_next_event/dz_release。
+    static constexpr uint32_t kTimerFrameSlots = 32;
+    struct alignas(8) TimerFrameSlot {
+        DzFrameHeader header;
+        DzTimerEvent payload;
+    };
+    static_assert(sizeof(TimerFrameSlot) == 16, "timer frame slot must be 16 bytes");
+    std::array<TimerFrameSlot, kTimerFrameSlots> timer_frames{};
+    uint32_t timer_frame_head = 0;   ///< 下一个可写槽位
+    uint32_t timer_frame_count = 0;  ///< 待领取帧数
+
+    /// 缓冲满时推迟投递的触发 (稳定 ID, 保序)。领取腾槽时逐条补投, 绝不丢帧;
+    /// 已取消 ID 在补投时按注册表过滤 (取消语义覆盖)。
+    std::vector<DzTimerId> deferred_fires;
+
+    // ── 定时器机制 (定义见 api.cpp, 与 dz_wait/dz_next_event 同 TU 便于内联) ──
+    void tick_timers();
+    [[nodiscard]] bool has_pending_timers() const noexcept { return !timers.empty(); }
+    /// 最近到期定时器的剩余等待毫秒数 (前置条件: !timers.empty())
+    [[nodiscard]] uint32_t next_timer_wait_ms() const;
+    /// 取下一帧本地定时器帧 (缓冲空且无 deferred 时返回 nullptr)
+    [[nodiscard]] const void* pop_timer_frame();
+    void deliver_timer_frame(DzTimerId timer_id);
+    void on_user_timer_fire(DzTimerId timer_id);
+    void rearm_user_timer(std::unordered_map<DzTimerId, UserTimerEntry>::iterator it,
+                          dztrader::core::TimerQueue::TimePoint now);
+    DzTimerId schedule_user_timer(UserTimerEntry entry);
+    bool cancel_user_timer(DzTimerId timer_id);
+    void cancel_all_user_timers();
+    /// 内部任务排期 (tag 去重, 替换语义; action 自行保证不抛异常)
+    void schedule_internal_preload(const std::string& tag, std::chrono::milliseconds delay,
+                                   std::function<void()> action);
+    /// SHUTDOWN 时 SDK 内部资源清理 (可扩展: 将来新增清理动作在此追加)
+    void internal_cleanup_on_shutdown();
 
 private:
     static const std::string& checked_md_source_name(const std::string& name) {

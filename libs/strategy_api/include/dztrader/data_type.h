@@ -129,6 +129,11 @@ typedef int32_t DzTime;
 /** @brief 微秒部分 (0-999999) */
 typedef int32_t DzSubseconds;
 
+/** @brief 定时器 ID（SDK 分配，用户凭 ID 取消；DZ_TIMER_INVALID 表示无效/失败） */
+typedef uint64_t DzTimerId;
+
+/** @brief 无效定时器 ID */
+#define DZ_TIMER_INVALID ((DzTimerId)UINT64_MAX)
 
 /* ==========================================================
  *  标识类型
@@ -282,31 +287,11 @@ typedef int8_t DzNotifyLevel;
 
 /* ==========================================================
  *  系统级定时任务类型
+ *
+ *  注: DzSysSchedType / DZ_SYS_SCHED_* / DZ_FRAME_SYS_SCHED 已随
+ *  "系统调度域废弃"移除（2026-08 后无任何进程消费）。策略侧定时
+ *  需求由 dz_schedule_* 定时器接口承担。
  * ========================================================== */
-
-/** @brief 系统级定时任务类型 */
-typedef int8_t DzSysSchedType;
-
-/** @brief 交易账户登录 */
-#define DZ_SYS_SCHED_TD_LOGIN           ((DzSysSchedType)1)
-/** @brief 行情源登录 */
-#define DZ_SYS_SCHED_MD_LOGIN           ((DzSysSchedType)2)
-/** @brief 开盘前 */
-#define DZ_SYS_SCHED_PRE_OPENING        ((DzSysSchedType)3)
-/** @brief 集合竞价 */
-#define DZ_SYS_SCHED_CALL_AUCTION       ((DzSysSchedType)4)
-/** @brief 收盘前 */
-#define DZ_SYS_SCHED_PRE_CLOSING        ((DzSysSchedType)5)
-/** @brief 行情源登出 */
-#define DZ_SYS_SCHED_MD_LOGOUT          ((DzSysSchedType)6)
-/** @brief 交易账户登出 */
-#define DZ_SYS_SCHED_TD_LOGOUT          ((DzSysSchedType)7)
-/** @brief 交易日切换 */
-#define DZ_SYS_SCHED_TRADING_DAY_SWITCH ((DzSysSchedType)8)
-/** @brief 盘后数据整理 */
-#define DZ_SYS_SCHED_POST_MARKET        ((DzSysSchedType)9)
-/** @brief 盘后策略计算 */
-#define DZ_SYS_SCHED_POST_STRATEGY      ((DzSysSchedType)10)
 
 /* ==========================================================
  *  帧类型
@@ -319,8 +304,7 @@ typedef int16_t DzFrameType;
 
 /** @brief 无效填充帧（边界填充） */
 #define DZ_FRAME_INVALID_FILL       ((DzFrameType)0)
-/** @brief 系统广播时间信号 */
-#define DZ_FRAME_SYS_SCHED          ((DzFrameType)10)
+/* 帧类型 10 (原 DZ_FRAME_SYS_SCHED) 已废弃移除, 保留不复用 */
 /** @brief 事件通道预加载通知 (master->所有子进程, 无 instance_id) */
 #define DZ_FRAME_PRELOAD_EVENT_SHM  ((DzFrameType)11)
 /** @brief 行情数据通道预加载通知 (instance_id=行情源名, 如 "dzmd_ctp") */
@@ -333,8 +317,8 @@ typedef int16_t DzFrameType;
 #define DZ_FRAME_SET_LOG_CONFIG     ((DzFrameType)14)
 /** @brief 触发目标进程日志 flush (dzweb→目标进程, 定向, instance_id=目标进程名, 契约 log) */
 #define DZ_FRAME_FLUSH_LOG         ((DzFrameType)15)
-/** @brief 广播停止请求 (所有进程执行, 无需匹配 instance_id) */
-#define DZ_FRAME_REQUEST_SHUTDOWN_ALL   ((DzFrameType)20)
+/* 帧类型 20 (原 DZ_FRAME_REQUEST_SHUTDOWN_ALL) 已移除: 全项目无写入/消费端,
+ * master 关停走定向 REQUEST_SHUTDOWN; 帧号保留不复用 */
 /** @brief 广播刷新 event 通道订阅者列表 (所有进程执行, 无需匹配 instance_id) */
 #define DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER  ((DzFrameType)21)
 /** @brief 设置事件通道配置 (UI->master, payload=ShmChannelConfig) */
@@ -372,5 +356,8 @@ typedef int16_t DzFrameType;
 #define DZ_FRAME_STG_USER_INPUT     ((DzFrameType)3001)
 /** @brief 策略→UI 输出（dz_output_ui，契约 strategy） */
 #define DZ_FRAME_STG_USER_OUTPUT     ((DzFrameType)3002)
+/** @brief 策略定时器触发（dz_schedule_*，契约 strategy）
+ *  仅 SDK 本地合成、经 dz_next_event 返回, 不写入共享内存 */
+#define DZ_FRAME_STG_TIMER          ((DzFrameType)3003)
 
 #endif /* DZTRADER_DATA_TYPE_H_ */

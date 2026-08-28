@@ -65,34 +65,41 @@ DZ_API void dz_release(DzContext* ctx);
  * 对非当前句柄调用 dz_release 属未定义行为。
  * 生命周期由单线程保证，SDK 不做线程同步（dz_init/dz_release 非线程安全）。
  * release 后重新 dz_init() 获得全新会话；事件信号量为同名复用（不重置计数），
- * 若 release 前有未消费的通知，新会话首次 dz_wait_for 可能立即返回（dz_next_event 排空自愈）。 */
+ * 若 release 前有未消费的通知，新会话首次 dz_wait 可能立即返回（dz_next_event 排空自愈）。 */
 
 DZ_API const char* dz_md_source_name(DzContext* ctx);
 
 /**
- * @brief 阻塞等待，直到有新数据可读
+ * @brief 阻塞等待，直到有新数据可读或最近一个定时器到期
  *
  * 返回后通过 dz_next_md() / dz_next_event() 逐帧读取数据。
  * 高频模式下可不调用此函数，直接轮询 dz_next_md() / dz_next_event()。
+ *
+ * 等待行为：
+ *   - 无待触发定时器：无限阻塞，仅被信号量 notify 唤醒（CPU=0）
+ *   - 有待触发定时器（含 SDK 内部随机延迟任务）：等待至最近到期时间返回
+ * 唤醒后 SDK 已触发到期定时器，定时器帧经 dz_next_event() 返回。
  */
 DZ_API void dz_wait(DzContext* ctx);
-
-/**
- * @brief 阻塞等待，直到有新数据可读或超时
- *
- * 返回后通过 dz_next_md() / dz_next_event() 逐帧读取数据。
- * 高频模式下可不调用此函数，直接轮询 dz_next_md() / dz_next_event()。
- *
- * @param timeout_ms 等待超时时间，单位毫秒。
- * @return true 被唤醒（有新数据），false 超时
- */
-DZ_API bool dz_wait_for(DzContext* ctx, uint32_t timeout_ms);
 
 /**
  * @brief 取下一帧事件数据
  *
  * 非阻塞，推进游标返回下一帧指针。无新帧则返回 NULL。
  * 返回的指针指向 DzFrameHeader，按 frame_type 解析 payload。
+ *
+ * 处理优先级：用户帧 > 定时器帧 > 内部帧。
+ *   - 用户帧（TD 回报、STG_USER_INPUT、SHUTDOWN）直接返回，零计时器开销；
+ *   - 通道无用户帧时（通道空或 32 上限让位）触发到期定时器并返回定时器帧；
+ *   - 平台内部帧（SHM 预加载通知、订阅者刷新、日志/SHM 配置等）由 SDK
+ *     内部消费，不返回给策略；其中 PRELOAD_EVENT_SHM / PRELOAD_MD_SHM
+ *     触发 SDK 内部随机延迟预加载，NOTIFY_MD_STARTED 触发自动补订阅。
+ *   - REQUEST_SHUTDOWN（定向本策略）由 SDK 完成内部清理后放行。
+ *   - 每次调用最多连续消费 32 条内部帧，超过则本次让位（优先返回已到期
+ *     定时器帧，否则 NULL，下次调用继续处理），防止内部帧洪峰饿死 dz_next_md。
+ *
+ * 定时器帧（DZ_FRAME_STG_TIMER，dz_schedule_* 触发）为 SDK 本地合成，
+ * 指针仅在下次 dz_next_event / dz_release 调用前有效，需要留存请自行拷贝。
  *
  * @return 帧指针，无数据返回 NULL
  */
@@ -121,6 +128,79 @@ DZ_API const void* dz_next_md(DzContext* ctx);
  */
 DZ_API void dz_notify_self(DzContext* ctx);
 
+/* ── 定时器 ──
+ *
+ * 单线程契约：定时器由 dz_wait() / dz_next_event() 所在的主循环线程驱动（tick），
+ * dz_schedule_* 也必须在同一线程调用（与句柄契约一致）。触发事件以
+ * DZ_FRAME_STG_TIMER 帧经 dz_next_event() 返回，不写入共享内存。
+ * SDK 内部任务（SHM 预加载随机延迟）与用户定时器共用队列，但内部 ID 对用户
+ * 不可见，dz_schedule_cancel / dz_schedule_cancel_all 结构上无法误删内部定时器。 */
+
+/**
+ * @brief 一次性延时定时器
+ *
+ * @param ctx      策略运行环境
+ * @param delay_ms 延迟毫秒数，必须 > 0
+ * @return 定时器 ID（>=0）；失败返回 DZ_TIMER_INVALID（调 dz_errcode 获取错误码）
+ */
+DZ_API DzTimerId dz_schedule_after(DzContext* ctx, int32_t delay_ms);
+
+/**
+ * @brief 周期定时器
+ *
+ * 每 delay_ms 触发一次，不取消则一直触发。按「上次到期点 + interval」重排不漂移；
+ * 策略停滞期间错过的整周期不再补触发。
+ *
+ * @param ctx      策略运行环境
+ * @param delay_ms 触发间隔毫秒数，必须 > 0
+ * @return 定时器 ID；失败返回 DZ_TIMER_INVALID
+ */
+DZ_API DzTimerId dz_schedule_every(DzContext* ctx, int32_t delay_ms);
+
+/**
+ * @brief 一次性定点定时器（wall clock）
+ *
+ * 在下一个本地时间点触发一次。time_of_day_ms 为距午夜毫秒数，
+ * 如 14:55:00 → 53,700,000。已过的时间点次日触发。
+ *
+ * @param ctx            策略运行环境
+ * @param time_of_day_ms 距午夜毫秒数，[0, 86_399_999]
+ * @return 定时器 ID；失败返回 DZ_TIMER_INVALID
+ */
+DZ_API DzTimerId dz_schedule_at(DzContext* ctx, int32_t time_of_day_ms);
+
+/**
+ * @brief 每日定点定时器（wall clock）
+ *
+ * 每天该时间点触发，不取消则一直触发；每次触发后重算次日时间点，
+ * 自动适应时区/夏令时变化。
+ *
+ * @param ctx            策略运行环境
+ * @param time_of_day_ms 距午夜毫秒数，[0, 86_399_999]
+ * @return 定时器 ID；失败返回 DZ_TIMER_INVALID
+ */
+DZ_API DzTimerId dz_schedule_daily(DzContext* ctx, int32_t time_of_day_ms);
+
+/**
+ * @brief 取消指定定时器
+ *
+ * @param ctx      策略运行环境
+ * @param timer_id 定时器 ID（dz_schedule_* 返回值）
+ * @return true 已取消；false 定时器不存在（无效/已触发/内部定时器 ID），
+ *         调 dz_errcode 获取错误码（DZ_EC_TIMER_NOT_FOUND）
+ */
+DZ_API bool dz_schedule_cancel(DzContext* ctx, DzTimerId timer_id);
+
+/**
+ * @brief 取消全部用户定时器
+ *
+ * 仅清用户定时器（含已合成未领取的定时器帧）；SDK 内部定时器不受影响。
+ *
+ * @param ctx 策略运行环境
+ * @return true 成功
+ */
+DZ_API bool dz_schedule_cancel_all(DzContext* ctx);
+
 /**
  * @brief 获取策略可执行文件所在目录路径
  *
@@ -138,45 +218,6 @@ DZ_API const char* dz_strategy_home(DzContext* ctx);
  * @return 策略ID字符串
  */
 DZ_API const char* dz_strategy_id(DzContext* ctx);
-
-/**
- * @brief 预加载事件通道共享内存映射区域
- *
- * 在非活跃时间点调用，提前映射事件通道新的共享内存文件，
- * 避免交易时段因首次访问触发页面错误导致延迟抖动。
- *
- * @param preload 预加载参数（不透明透传）：布局为 DzShmPreload{bytes,pages,reserved}，
- *                调用方无需解析，从平台 DZ_FRAME_PRELOAD_EVENT_SHM 帧 payload 原样转发；
- *                NULL 表示无需预加载（返回 true）
- * @return true 成功或无需预加载，false 失败（调 dz_errcode() 获取错误码）
- */
-DZ_API bool dz_preload_event(DzContext* ctx, const void* preload);
-
-/**
- * @brief 预加载本策略绑定行情通道的共享内存映射区域
- *
- * 在非活跃时间点调用，提前映射行情通道新的共享内存文件，
- * 避免交易时段因首次访问触发页面错误导致延迟抖动。
- *
- * @param ctx     策略运行环境
- * @param preload 预加载参数（不透明透传）：布局为 DzShmPreload{bytes,pages,reserved}，
- *                调用方无需解析，从平台 DZ_FRAME_PRELOAD_MD_SHM 帧 payload 原样转发；
- *                NULL 表示无需预加载（返回 true）
- * @return true 成功或无需预加载，false 失败（调 dz_errcode() 获取错误码）
- */
-DZ_API bool dz_preload_md(DzContext* ctx, const void* preload);
-
-/**
- * @brief 处理 NOTIFY_MD_STARTED 帧
- *
- * 模板收到 DZ_FRAME_NOTIFY_MD_STARTED 后调用。SDK 内部按帧头 instance_id 过滤，
- * 只处理本策略绑定的行情源；匹配后使用当前期望订阅集合全量补订阅。
- *
- * @param ctx    策略运行环境
- * @param frame  事件帧指针（来自 dz_next_event）
- * @return true 无错误（含非本策略源/无需补订阅）；false 发生错误，可用 dz_errcode/dz_errmsg 打印
- */
-DZ_API bool dz_on_md_started(DzContext* ctx, const void* frame);
 
 /* ── 交易接口 ── */
 

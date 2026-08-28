@@ -139,17 +139,17 @@ DZ_DECLARE_ALIGNED_STRUCT(DzExtFrameHeader, {
 // 注: DzExtFrameHeader 在 2026-07-30 前指 72B 含 instance_id 的头 (现 DzExtInstFrameHeader);
 // 不设同名兼容别名, 让引用旧布局的代码编译报错, 而非静默拿到错误布局
 
-/** @brief 系统广播时间信号，DZ_FRAME_SYS_SCHED 的 payload */
-DZ_DECLARE_ALIGNED_STRUCT(DzSysSched, {
-    DzSysSchedType type;  ///< 事件类型（DZ_SYS_SCHED_* 常量）
-    char reserved[7];
-});
-
 /** @brief SHM 预加载参数, DZ_FRAME_PRELOAD_EVENT_SHM 与 DZ_FRAME_PRELOAD_MD_SHM 的 payload */
 DZ_DECLARE_ALIGNED_STRUCT(DzShmPreload, {
     uint64_t bytes;     ///< 预加载字节数
     uint32_t pages;     ///< 预加载页数
     uint32_t reserved;  ///< 保留字段
+});
+
+/** @brief 策略定时器触发事件, DZ_FRAME_STG_TIMER 的 payload
+ *  仅 SDK 本地合成 (不写共享内存), 指针有效期至下一次 dz_next_event/dz_release */
+DZ_DECLARE_ALIGNED_STRUCT(DzTimerEvent, {
+    DzTimerId timer_id;  ///< 触发定时器的稳定 ID (与 dz_schedule_* 返回值一致)
 });
 
 // ============================================================================

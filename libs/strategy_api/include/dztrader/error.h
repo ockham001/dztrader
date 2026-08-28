@@ -111,6 +111,8 @@ typedef int32_t DzErrorCode;
 #define DZ_EC_STRATEGY_NOTIFY_FAILED ((DzErrorCode)(-2005))
 /** @brief 策略目录未找到 */
 #define DZ_EC_STRATEGY_HOME_NOT_FOUND ((DzErrorCode)(-2006))
+/** @brief 定时器未找到（无效/已触发/内部定时器 ID） */
+#define DZ_EC_TIMER_NOT_FOUND ((DzErrorCode)(-2007))
 
 /* ── 交易 ── */
 

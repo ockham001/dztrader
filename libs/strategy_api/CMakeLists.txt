@@ -63,6 +63,7 @@ set(SDK_API_TESTS
     notify_ui_test
     trade_api_test
     md_api_test
+    schedule_api_test
 )
 file(GLOB SDK_TESTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
