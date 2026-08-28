@@ -44,6 +44,12 @@ endif()
 # conan profile 用 compiler.runtime=static
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+if(MSVC)
+    # 禁用 windows.h 的 min/max 宏——drogon/trantor 拉入 windows.h 后,
+    # std::numeric_limits<...>::max() 被宏打穿报 C2589/C2737 (GCC 无此问题)。
+    add_compile_definitions(NOMINMAX)
+endif()
+
 # 警告：全部开启，Release 视为错误
 if(MSVC)
     add_compile_options(/W4 /permissive- /utf-8)
