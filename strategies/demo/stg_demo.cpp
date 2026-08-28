@@ -175,9 +175,18 @@ int cmd_md(DzContext* ctx, int argc, char** argv) {
 
     uint64_t tick_count = 0;
     const auto deadline = std::chrono::steady_clock::now() + kMdWindow;
+    // 观察窗口内的轮询步长: 周期定时器唤醒 dz_wait (演示 dz_schedule_every)
+    const DzTimerId poll_timer = dz_schedule_every(ctx, static_cast<int32_t>(kPollStepMs));
+    if (poll_timer == DZ_TIMER_INVALID) {
+        std::puts(std::format("定时器创建失败: {} ({})", dz_errmsg(), dz_errcode()).c_str());
+        return kExitUsage;
+    }
     while (std::chrono::steady_clock::now() < deadline) {
         // 无论是否被唤醒都排空一次: 兜底订阅者快照过期导致的漏唤醒
-        (void)dz_wait_for(ctx, kPollStepMs);
+        dz_wait(ctx);
+        // 排干事件通道: 定时器帧等在此丢弃 (本命令只观察行情)
+        while (dz_next_event(ctx) != nullptr) {
+        }
         const void* frame = nullptr;
         while ((frame = dz_next_md(ctx)) != nullptr) {
             const DzTick* tick = as_md_tick(frame);
@@ -188,6 +197,7 @@ int cmd_md(DzContext* ctx, int argc, char** argv) {
             print_tick(*tick);
         }
     }
+    (void)dz_schedule_cancel(ctx, poll_timer);
     std::puts(std::format("观察窗口结束: 共收到 {} 个 tick", tick_count).c_str());
     return kExitOk;
 }
@@ -239,8 +249,13 @@ int cmd_order(DzContext* ctx, int argc, char** argv) {
 
     // 等待本订单回报 (td 广播 TD_ORDER_RPT, 按 order_id 过滤)
     const auto deadline = std::chrono::steady_clock::now() + kOrderWait;
+    const DzTimerId poll_timer = dz_schedule_every(ctx, static_cast<int32_t>(kPollStepMs));
+    if (poll_timer == DZ_TIMER_INVALID) {
+        std::puts(std::format("定时器创建失败: {} ({})", dz_errmsg(), dz_errcode()).c_str());
+        return kExitUsage;
+    }
     while (std::chrono::steady_clock::now() < deadline) {
-        (void)dz_wait_for(ctx, kPollStepMs);
+        dz_wait(ctx);
         const void* frame = nullptr;
         while ((frame = dz_next_event(ctx)) != nullptr) {
             const DzOrderReport* rpt = as_order_report(frame);
@@ -248,9 +263,11 @@ int cmd_order(DzContext* ctx, int argc, char** argv) {
                 continue;
             }
             print_report(*rpt);
+            (void)dz_schedule_cancel(ctx, poll_timer);
             return (rpt->status == DZ_ORDER_REJECTED) ? kExitRejected : kExitOk;
         }
     }
+    (void)dz_schedule_cancel(ctx, poll_timer);
     std::puts(std::format("等待回报超时 ({}s): 未收到 order_id={} 的回报 (td 未运行?)",
                           kOrderWait.count(), order_id)
                   .c_str());
@@ -279,8 +296,13 @@ int cmd_cancel(DzContext* ctx, int argc, char** argv) {
     std::puts(std::format("撤单请求已发送: account={} order_id={}", account, order_id).c_str());
 
     const auto deadline = std::chrono::steady_clock::now() + kOrderWait;
+    const DzTimerId poll_timer = dz_schedule_every(ctx, static_cast<int32_t>(kPollStepMs));
+    if (poll_timer == DZ_TIMER_INVALID) {
+        std::puts(std::format("定时器创建失败: {} ({})", dz_errmsg(), dz_errcode()).c_str());
+        return kExitUsage;
+    }
     while (std::chrono::steady_clock::now() < deadline) {
-        (void)dz_wait_for(ctx, kPollStepMs);
+        dz_wait(ctx);
         const void* frame = nullptr;
         while ((frame = dz_next_event(ctx)) != nullptr) {
             const DzOrderReport* rpt = as_order_report(frame);
@@ -288,9 +310,11 @@ int cmd_cancel(DzContext* ctx, int argc, char** argv) {
                 continue;
             }
             print_report(*rpt);
+            (void)dz_schedule_cancel(ctx, poll_timer);
             return kExitOk;
         }
     }
+    (void)dz_schedule_cancel(ctx, poll_timer);
     std::puts(
         std::format("等待回报超时 ({}s): 账户未连接时 td 不回应撤单 (预期)", kOrderWait.count())
             .c_str());
