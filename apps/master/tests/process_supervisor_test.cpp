@@ -326,5 +326,123 @@ TEST_F(ProcessSupervisorTest, MdExitBroadcastsNotifyStopped) {
     orphan_guard_.cleanup();
 }
 
+// ── 单行情源编排 (契约 4.4/4.6): pending / 晚到 STARTED 补启动 ──
+
+// start_process 对绑定源未 ready 的策略: 进 pending (Starting + message), 不 spawn
+TEST_F(ProcessSupervisorTest, StrategyStartPendingWhenMdNotReady) {
+    // 策略绑定一个未配置/未 ready 的源 "missing_md"
+    ProcessEntry entry;
+    entry.name = "stg_pending";
+    entry.category = Category::Strategy;
+    entry.exe = worker_exe_;
+    entry.start_dir = worker_exe_.parent_path();
+    entry.restart = default_restart_policy(Category::Strategy);
+    entry.restart.enabled = false;
+    entry.md_source = "missing_md";
+    registry_.register_strategy(entry);
+
+    shm_mgr_ = std::make_unique<ShmManager>(make_default_shm_global(), cfg_path_);
+    orphan_guard_.startup();
+
+    ProcessSupervisor supervisor(ioc_, registry_, *shm_mgr_, orphan_guard_);
+    shm_mgr_->set_supervisor(&supervisor);
+
+    // 运行期 start: 源未 ready -> pending, 不 spawn
+    EXPECT_FALSE(supervisor.start_process("stg_pending"));
+    EXPECT_EQ(supervisor.find_child("stg_pending"), nullptr);
+    std::string msg;
+    EXPECT_TRUE(supervisor.is_pending_strategy("stg_pending", msg));
+    EXPECT_EQ(msg, "waiting for md source missing_md");
+
+    orphan_guard_.cleanup();
+}
+
+// on_md_channel_ready (晚到 STARTED) 启动该源全部 pending 策略并清空 pending
+TEST_F(ProcessSupervisorTest, OnMdChannelReadyStartsPendingStrategies) {
+    for (const auto& name : {"stg_a", "stg_b"}) {
+        ProcessEntry entry;
+        entry.name = name;
+        entry.category = Category::Strategy;
+        entry.exe = worker_exe_;
+        entry.start_dir = worker_exe_.parent_path();
+        entry.restart = default_restart_policy(Category::Strategy);
+        entry.restart.enabled = false;
+        entry.md_source = "dzmd_ctp";
+        registry_.register_strategy(entry);
+    }
+
+    shm_mgr_ = std::make_unique<ShmManager>(make_default_shm_global(), cfg_path_);
+    orphan_guard_.startup();
+
+    ProcessSupervisor supervisor(ioc_, registry_, *shm_mgr_, orphan_guard_);
+    shm_mgr_->set_supervisor(&supervisor);
+
+    // 源未 ready: start 全部进 pending
+    EXPECT_FALSE(supervisor.start_process("stg_a"));
+    EXPECT_FALSE(supervisor.start_process("stg_b"));
+    std::string msg;
+    EXPECT_TRUE(supervisor.is_pending_strategy("stg_a", msg));
+    EXPECT_TRUE(supervisor.is_pending_strategy("stg_b", msg));
+
+    // 建通道 + 置 ready (模拟 master 编排), 触发 on_md_channel_ready 补启动
+    shm_mgr_->create_md_channel("dzmd_ctp");
+    auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
+    shm::MultiWriter writer = shm::MultiWriter::create(
+        std::make_shared<shm::ChannelMeta>(std::move(meta)), "md_sim");
+    platform::write_ext_inst_raw(writer, DZ_FRAME_NOTIFY_MD_STARTED, "dzmd_ctp");
+    shm_mgr_->drain_event_channel();
+
+    // pending 已清空, 两个策略已 spawn
+    EXPECT_FALSE(supervisor.is_pending_strategy("stg_a", msg));
+    EXPECT_FALSE(supervisor.is_pending_strategy("stg_b", msg));
+    EXPECT_NE(supervisor.find_child("stg_a"), nullptr);
+    EXPECT_NE(supervisor.find_child("stg_b"), nullptr);
+
+    // 清理
+    supervisor.shutdown();
+    ioc_.restart();
+    ioc_.run_for(std::chrono::seconds(5));
+    orphan_guard_.cleanup();
+}
+
+// 策略 spawn 前预注册 md 读者 (契约 4.3): on_md_channel_ready 后 readers 表含 stg.<name>
+TEST_F(ProcessSupervisorTest, StrategyReaderPreRegisteredOnMdChannel) {
+    ProcessEntry entry;
+    entry.name = "stg_reader";
+    entry.category = Category::Strategy;
+    entry.exe = worker_exe_;
+    entry.start_dir = worker_exe_.parent_path();
+    entry.restart = default_restart_policy(Category::Strategy);
+    entry.restart.enabled = false;
+    entry.md_source = "dzmd_ctp";
+    registry_.register_strategy(entry);
+
+    shm_mgr_ = std::make_unique<ShmManager>(make_default_shm_global(), cfg_path_);
+    orphan_guard_.startup();
+
+    ProcessSupervisor supervisor(ioc_, registry_, *shm_mgr_, orphan_guard_);
+    shm_mgr_->set_supervisor(&supervisor);
+
+    // pending -> ready -> spawn
+    EXPECT_FALSE(supervisor.start_process("stg_reader"));
+    shm_mgr_->create_md_channel("dzmd_ctp");
+    auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
+    shm::MultiWriter writer = shm::MultiWriter::create(
+        std::make_shared<shm::ChannelMeta>(std::move(meta)), "md_sim");
+    platform::write_ext_inst_raw(writer, DZ_FRAME_NOTIFY_MD_STARTED, "dzmd_ctp");
+    shm_mgr_->drain_event_channel();
+
+    // md 通道 readers 表已含 stg.stg_reader (master 预注册)
+    auto md_meta = shm::ChannelMeta::open_only("dzmd_ctp", dztrader::paths::shm());
+    auto names = md_meta.reader_names();
+    EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.stg_reader") != names.end());
+
+    // 清理
+    supervisor.shutdown();
+    ioc_.restart();
+    ioc_.run_for(std::chrono::seconds(5));
+    orphan_guard_.cleanup();
+}
+
 }  // namespace
 }  // namespace dztrader::master

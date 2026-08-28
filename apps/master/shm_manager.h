@@ -41,13 +41,29 @@ namespace dztrader::master {
 
 class ProcessSupervisor;  // 前向声明, 避免 .h 循环 include
 
-/// md 通道运行态: 元数据句柄 + 就绪标志。
-/// meta 为 null 表示通道已关闭 (行情进程停止的后果): 数据文件/读取位置/page_size
-/// 保留待重启复用 (create_md_channel 重建时 page_size 不一致自动重置)。
+/// md 通道运行态类别 (生命周期状态机, 契约 shm):
+/// - Running: 行情进程运行中, meta 句柄持有, ready 由 NOTIFY_MD_STARTED 置位
+/// - Stopped: 行情进程停止/崩溃待重启, 保留 meta 句柄与 readers 表
+///   (PageCleaner 继续覆盖; 策略 reader 不关闭)
+/// - Tombstone: 源已被 Remove (配置已删), 保留 meta 句柄与 readers 表,
+///   文件不删除, 仅供 PageCleaner 清理旧页与同源重加复用
+enum class MdChannelStatus : uint8_t {
+    Running,
+    Stopped,
+    Tombstone,
+};
+
+/// md 通道运行态: 元数据句柄 + 生命周期状态 + 最近 page_size。
+/// meta 在 Running/Stopped/Tombstone 下均持有 (契约: 停止/删除不清空 readers 表,
+/// 仅物理清理 / page_size 重置时才 clear_readers 并释放)。
 /// ready = 行情进程已广播 NOTIFY_MD_STARTED (通道就绪, 可接受读者接入)。
+/// last_page_size 记录最近一次生效的通道 page_size, 供 tombstone/停止复用比较
+/// (不能只重读 <source>.json, Remove 后文件缺失默认值会误判为变更)。
 struct MdChannelState {
     std::shared_ptr<shm::ChannelMeta> meta;
+    MdChannelStatus status = MdChannelStatus::Stopped;
     bool ready = false;
+    uint64_t last_page_size = 0;
 };
 
 class ShmManager {
@@ -73,23 +89,40 @@ public:
     ShmManager(ShmManager&&) = delete;
     ShmManager& operator=(ShmManager&&) = delete;
 
-    /// 创建 md 通道元数据 (启动每个 md 进程前调用)。
+    /// 创建 md 通道元数据 (启动每个 md 进程前调用), 按 MdChannelState 状态分派:
+    /// - Running (meta 持有): 幂等返回, 不重建;
+    /// - Stopped/Tombstone 且 page_size 与 last_page_size 一致: 复用既有 meta 与
+    ///   readers 表 (不清空, 契约 4.3);
+    /// - Stopped/Tombstone 且 page_size 变更: 存在运行中绑定策略则抛异常拒绝
+    ///   (契约 4.8, 错误信息列出策略名); 否则释放旧 meta 后 open_or_create 重置
+    ///   页文件 + clear_readers (全量 clear 时机 2);
+    /// - 本进程首次打开 (冷启动): clear_readers 清除上次运行残留 (时机 1)。
     /// page_size 按优先级: read_md_page_size(source_name) -> kDefaultMdPageSize
-    /// (新协议不再有 UI 透传的 page_size_override)
-    /// 创建后立即 clear_readers 清空订阅者列表 (行情通道订阅者由策略/数据进程
-    /// 自行注册,master 不订阅行情通道)。launch_child 之后应调用
+    /// (新协议不再有 UI 透传的 page_size_override)。
+    /// 策略读者由 supervisor 在 spawn 前 pre_register_strategy_reader 预注册
+    /// (策略 SDK 不再发 1013)。launch_child 之后应调用
     /// notify_md_channel_subscriber_update 通知行情进程刷新 spi_.writer_ 缓存。
     void create_md_channel(std::string_view source_name);
 
-    /// 关闭 md 通道 (行情进程停止的后果, dztraderd 架构): 清空读者列表 +
-    /// 释放元数据句柄 + 复位就绪标志。不触碰数据文件/读取位置/page_size
-    /// (保留待重启复用); 条目保留在 md_channels_ 表示通道已配置。
+    /// 关闭 md 通道 (行情进程停止的后果, dztraderd 架构): 复位就绪标志 + 标记
+    /// Stopped。不清空读者列表、不释放元数据句柄、不触碰数据文件/读取位置/
+    /// page_size (策略 reader 与进程同生命周期, PageCleaner 仍需遍历该通道)。
+    /// 条目保留在 md_channels_ 表示通道已配置。
     /// 由 ProcessSupervisor::on_child_exit 在 md 进程退出时调用。
     void close_md_channel(std::string_view source_name);
 
+    /// 标记 md 通道为 tombstone (Remove 流程, 配置已删): 不删文件、不清空
+    /// readers 表、不释放 meta 句柄, 仅供 PageCleaner 继续清理旧页与同源重加复用。
+    /// 与 destroy_md_channel 区分: tombstone 保留文件, destroy 物理删除。
+    void tombstone_md_channel(std::string_view source_name);
+
     /// 标记 md 通道就绪 (收到行情进程 NOTIFY_MD_STARTED 广播时调用)。
-    /// 未知通道或已关闭通道忽略。
+    /// 未知通道或已物理销毁通道忽略。就绪后回调 supervisor 启动该源 pending 策略。
     void mark_md_channel_ready(std::string_view source_name);
+
+    /// 查询 md 通道状态 (供 supervisor 编排 page_size 校验/pending 启动)。
+    /// 未配置返回 nullptr。
+    [[nodiscard]] const MdChannelState* md_channel_state(std::string_view source_name) const;
 
     /// 彻底移除 md 通道 (Remove 流程, 配置已删, 永不再用): 清空读者列表 +
     /// 释放元数据句柄 + 删除通道目录 (meta.dat + 页文件) + 删除 md_channels_ 条目。

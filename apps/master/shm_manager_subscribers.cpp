@@ -169,8 +169,9 @@ void ShmManager::handle_md_reader_register(const shm::FrameView& view) {
     }
 
     auto it = md_channels_.find(shm::channel_name(channel_name));
-    if (it == md_channels_.end()) {
-        // 通道未配置: 主进程不会拉起对应行情进程 (契约 shm 接入失败)
+    if (it == md_channels_.end() || it->second.status == MdChannelStatus::Tombstone) {
+        // 通道未配置或已 tombstone (Remove): 视为通道未配置 (契约 4.7:
+        // tombstone 保留条目但不得放行读者接入; 主进程不会拉起对应行情进程)
         SPDLOG_WARN(
             "md reader register rejected | reason=channel_not_configured channel={} subscriber={}",
             channel_name, subscriber);
@@ -178,8 +179,8 @@ void ShmManager::handle_md_reader_register(const shm::FrameView& view) {
                             channel_name, false, "channel not configured");
         return;
     }
-    if (!it->second.meta) {
-        // 行情进程未运行: 通道已关闭 (停止后果), 元数据保留待重启复用
+    if (it->second.status != MdChannelStatus::Running || !it->second.meta) {
+        // 行情进程未运行 (Stopped 待重启): 元数据保留但进程未拉起
         SPDLOG_WARN(
             "md reader register rejected | reason=md_not_running channel={} subscriber={}",
             channel_name, subscriber);
@@ -232,8 +233,9 @@ void ShmManager::handle_md_reader_unregister(const shm::FrameView& view) {
     }
 
     auto it = md_channels_.find(shm::channel_name(channel_name));
-    if (it == md_channels_.end() || !it->second.meta) {
-        // 通道不存在或已关闭: 读者条目随之消失, 幂等成功
+    if (it == md_channels_.end() || it->second.status == MdChannelStatus::Tombstone ||
+        !it->second.meta) {
+        // 通道不存在 / 已 tombstone / 已物理销毁: 读者条目随之消失, 幂等成功
         write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_UNREGISTER, subscriber,
                             channel_name, true);
         return;

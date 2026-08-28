@@ -119,30 +119,63 @@ void ShmManager::create_md_channel(std::string_view source_name) {
     const auto& shm_dir = dztrader::paths::shm();
     const auto channel_name = shm::channel_name(source_name);
 
-    // 通道存活 (元数据句柄在) 时幂等返回: 运行中的通道不重建
-    // (page_size 运行期间不可改, 无需重读配置)
-    if (auto it = md_channels_.find(channel_name);
-        it != md_channels_.end() && it->second.meta) {
-        SPDLOG_INFO("md channel already exists | name={}", channel_name);
+    // 按 MdChannelState 状态分派 (契约: 不再对"meta 已存在"简单幂等返回)
+    auto it = md_channels_.find(channel_name);
+    if (it != md_channels_.end() && it->second.status == MdChannelStatus::Running &&
+        it->second.meta) {
+        // 运行中的通道不重建 (page_size 运行期间不可改, 无需重读配置)
+        SPDLOG_INFO("md channel already running | name={}", channel_name);
         return;
     }
 
     // page_size 优先级 (新协议无 UI override):
     //   1. read_md_page_size(source_name) (从子进程配置文件读取)
     //   2. kDefaultMdPageSize (1024MB, 与 MdShmConfig 默认值一致)
-    // 关闭期间人工修改 page_size 在此生效: open_or_create 发现配置值与现存
-    // 不一致时自动重置 (清空页文件 + 写位置归零 + 按新值重建, 通道内建机制)
     uint64_t page_size = kDefaultMdPageSize;
     if (auto ps = read_md_page_size(std::string(source_name))) {
         page_size = *ps;
     } else {
         SPDLOG_ERROR("failed to read md page size, using default | source={}", source_name);
     }
-
     if (page_size < MIN_PAGE_SIZE_BYTES) {
         SPDLOG_WARN("md page_size too small, clamped to 1MB | source={} actual={}", source_name,
                     MIN_PAGE_SIZE_BYTES);
         page_size = MIN_PAGE_SIZE_BYTES;
+    }
+
+    // 停止/tombstone 复用: page_size 与 last_page_size 不一致 -> 重置通道
+    // (契约 4.8: 比较必须用 MdChannelState.last_page_size, 不能只重读 <source>.json;
+    //  tombstone 场景该文件可能已随 Remove 删除, 默认值会误判为变更)
+    bool need_reset = false;
+    if (it != md_channels_.end() && it->second.meta && it->second.last_page_size > 0 &&
+        it->second.last_page_size != page_size) {
+        need_reset = true;
+        // 契约 4.8: 存在运行中绑定策略 -> 拒绝启动 md (其 reader 仍映射旧 page_size
+        // 页文件, 重置会导致旧 reader 读到新布局帧头, 数据错乱)。master 不自动停策略。
+        if (supervisor_ != nullptr) {
+            std::string bound_names;
+            for (const auto& e : supervisor_->registry_entries()) {
+                if (e.category == Category::Strategy && e.md_source == source_name) {
+                    auto child = supervisor_->find_child(e.name);
+                    if (child && child->state() != ChildState::Stopped) {
+                        if (!bound_names.empty()) {
+                            bound_names += ", ";
+                        }
+                        bound_names += e.name;
+                    }
+                }
+            }
+            if (!bound_names.empty()) {
+                throw Exception(DZ_EC_SHM_CREATE_FAILED,
+                                "page_size change rejected, running strategies bound to source | "
+                                "source={} page_size_old={} page_size_new={} strategies=[{}]",
+                                source_name, it->second.last_page_size, page_size, bound_names);
+            }
+        }
+        SPDLOG_INFO("md channel page_size changed, resetting | name={} old={} new={}",
+                    channel_name, it->second.last_page_size, page_size);
+        // 释放旧 meta 句柄后再重建 (契约 4.8; Windows 上旧映射未释放会阻塞页文件删除)
+        it->second.meta.reset();
     }
 
     shm::ChannelConfig md_cfg{
@@ -153,49 +186,74 @@ void ShmManager::create_md_channel(std::string_view source_name) {
         .lock_memory = false,
         .prefetch_memory = false,
     };
-    auto md_meta = shm::ChannelMeta::open_or_create(md_cfg);
-    auto md_meta_ptr = std::make_shared<shm::ChannelMeta>(std::move(md_meta));
+    std::shared_ptr<shm::ChannelMeta> md_meta_ptr;
+    if (need_reset || it == md_channels_.end() || !it->second.meta) {
+        // 首次创建 / 停止后重建 / page_size 变更重置: open_or_create 处理
+        // meta_file_size 或 page_size 不一致时自动重置页文件 (通道内建机制)
+        auto md_meta = shm::ChannelMeta::open_or_create(md_cfg);
+        md_meta_ptr = std::make_shared<shm::ChannelMeta>(std::move(md_meta));
+    } else {
+        // 复用既有 meta 句柄 (停止/tombstone 保留, page_size 未变)
+        md_meta_ptr = it->second.meta;
+    }
 
-    // 清空订阅者列表: master 不订阅行情通道 (master 不读 tick),
-    // 行情通道订阅者由策略/数据进程注册, clear 后为初始空状态
-    // (重启重建时兜底清理上一运行残留)
-    md_meta_ptr->clear_readers();
+    // 全量 clear 时机 1: master 冷启动后本进程首次打开/创建该通道 (清除上次运行残留)。
+    // 运行期重启/停止/删除不清空 readers 表 (契约: readers 表反映当前可能仍持有
+    // 该通道映射的进程集合)。page_size 重置属于时机 2, 需 clear (旧 reader 不兼容)。
+    bool first_open_this_process = (it == md_channels_.end());
+    bool cleared = false;
+    if (first_open_this_process || need_reset) {
+        md_meta_ptr->clear_readers();
+        cleared = true;
+    }
 
-    md_channels_[channel_name] = MdChannelState{md_meta_ptr, /*ready=*/false};
-    SPDLOG_INFO("md channel created | name={} page_size={} meta_size={}", channel_name, page_size,
-                meta_file_size_);
+    MdChannelState state;
+    state.meta = md_meta_ptr;
+    state.status = MdChannelStatus::Running;
+    state.ready = false;
+    state.last_page_size = page_size;
+    md_channels_[channel_name] = std::move(state);
+    SPDLOG_INFO("md channel created | name={} page_size={} meta_size={} cleared={} reset={}",
+                channel_name, page_size, meta_file_size_, cleared, need_reset);
 }
 
 void ShmManager::close_md_channel(std::string_view source_name) {
-    // 停止后果 (dztraderd 架构「行情进程生命周期」): 清空读者列表 + 释放句柄,
-    // 不触碰数据文件/读取位置/page_size (保留待重启复用); 条目保留表示已配置
-    // key 与 create_md_channel 保持一致 (shm::channel_name, 当前为恒等变换)
+    // 停止后果 (契约: 不清空 readers 表, 不释放 meta 句柄):
+    // 策略 reader 与进程同生命周期, md 停止/崩溃时 reader 保持打开;
+    // PageCleaner 仍需遍历该通道 (min_reader_page_index 保护存活 reader)。
+    // 仅复位就绪标志 + 标记 Stopped; 数据文件/读取位置/page_size 保留待重启复用。
     auto it = md_channels_.find(shm::channel_name(source_name));
     if (it == md_channels_.end()) {
         return;
     }
-    // 先复位就绪: 防 clear_readers 抛异常时残留 ready=true (残留会让通道校验放行读者接入)
     it->second.ready = false;
-    if (it->second.meta) {
-        it->second.meta->clear_readers();
-        it->second.meta.reset();
+    it->second.status = MdChannelStatus::Stopped;
+    SPDLOG_INFO("md channel closed | source={} status=Stopped", source_name);
+}
+
+void ShmManager::tombstone_md_channel(std::string_view source_name) {
+    // Remove 流程 (契约 4.7): 不删文件、不清空 readers 表、不释放 meta,
+    // 标记 tombstone 供 PageCleaner 继续清理旧页与同源重加复用。
+    auto it = md_channels_.find(shm::channel_name(source_name));
+    if (it == md_channels_.end()) {
+        // 未知通道 (可能从未创建): 无操作, 幂等
+        return;
     }
-    SPDLOG_INFO("md channel closed | source={}", source_name);
+    it->second.ready = false;
+    it->second.status = MdChannelStatus::Tombstone;
+    SPDLOG_INFO("md channel tombstoned | source={}", source_name);
 }
 
 void ShmManager::destroy_md_channel(std::string_view source_name) {
-    // 移除语义 (设计 spec: md 通道移除清理): 先执行停止后果 (清读者+释放句柄),
-    // 再删除通道目录与条目。删除失败记录告警 (日志+toast) 不崩溃 (Windows 文件
-    // 占用时, 仅当同源被重新添加时 open_or_create 重建 meta、cleaner 恢复清理)。
+    // 物理清理入口 (契约: 仅保留给未来主动维护, Remove 流程不再调用):
+    // 清空读者 + 释放句柄 + 删除通道目录 + 删除条目。
     const auto it = md_channels_.find(shm::channel_name(source_name));
     if (it == md_channels_.end() || !it->second.meta) {
-        // 通道不存在或已关闭: 仍尝试删除残留目录 (进程未运行即移除场景), 幂等
-        // 按实际删除量打日志: 目录本不存在 (td/web 名字误入等) 时 remove_all 返回 0, 不打"已删除"
+        // 通道不存在或已释放: 仍尝试删除残留目录 (进程未运行即移除场景), 幂等
         std::error_code ec;
         const auto removed = std::filesystem::remove_all(
             dztrader::paths::shm() / shm::channel_name(source_name), ec);
         if (ec) {
-            // 移除是用户发起操作, 删除失败有磁盘残留风险: ERROR + toast 告警供排查
             SPDLOG_ERROR("md channel dir remove failed | source={} error=\"{}\"", source_name,
                          ec.message());
             notify_ui_.warn(
@@ -215,7 +273,6 @@ void ShmManager::destroy_md_channel(std::string_view source_name) {
     const auto removed = std::filesystem::remove_all(
         dztrader::paths::shm() / shm::channel_name(source_name), ec);
     if (ec) {
-        // 移除是用户发起操作, 删除失败有磁盘残留风险: ERROR + toast 告警供排查
         SPDLOG_ERROR("md channel dir remove failed | source={} error=\"{}\"", source_name,
                      ec.message());
         notify_ui_.warn(std::string("md channel dir remove failed, residual on disk | source=") +
@@ -229,13 +286,30 @@ void ShmManager::destroy_md_channel(std::string_view source_name) {
 void ShmManager::mark_md_channel_ready(std::string_view source_name) {
     auto it = md_channels_.find(shm::channel_name(source_name));
     if (it == md_channels_.end() || !it->second.meta) {
-        // 未知行情进程或通道已关闭 (不在 master 编排内), 忽略
-        // INFO 级: 编排不一致 (md 宣告但 master 不认识) 生产环境应可见, 量极低 (每源每次启动至多 1 条)
+        // 未知行情进程或通道已物理销毁, 忽略
         SPDLOG_INFO("md started ignored for unknown/closed channel | source={}", source_name);
+        return;
+    }
+    // 仅 Running 状态接受 STARTED。Stopped/Tombstone 下的 STARTED 必为过期帧
+    // (md 已死但帧仍滞留事件通道, drain 晚于停止后果处理): 忽略, 防止
+    // Tombstone 被误翻 Running (Remove 后通道永不重启, 且 1013 会误放行读者接入)。
+    // 合法路径: create_md_channel 先置 Running -> md 宣告 -> ready; 运行中重复宣告幂等。
+    if (it->second.status != MdChannelStatus::Running) {
+        SPDLOG_INFO("md started ignored for stale frame | source={} status={} (not Running)",
+                    source_name, static_cast<int>(it->second.status));
         return;
     }
     it->second.ready = true;
     SPDLOG_INFO("md channel ready | source={}", source_name);
+    // 晚到 STARTED 启动 pending 策略 (回调 supervisor)
+    if (supervisor_) {
+        supervisor_->on_md_channel_ready(std::string(source_name));
+    }
+}
+
+const MdChannelState* ShmManager::md_channel_state(std::string_view source_name) const {
+    auto it = md_channels_.find(shm::channel_name(source_name));
+    return it == md_channels_.end() ? nullptr : &it->second;
 }
 
 void ShmManager::start_periodic_tasks(boost::asio::io_context& ioc) {
@@ -387,6 +461,8 @@ void ShmManager::persist_process_config(const std::string& name, const nlohmann:
         const Category category = entry ? entry->category : Category::GatewayMd;
         if (category == Category::WebUI) {
             remove_webui_section(config_path_);
+        } else if (category == Category::Strategy) {
+            remove_strategy_section(config_path_, name);
         } else {
             remove_gateway_section(config_path_, category, name);
         }
@@ -394,7 +470,7 @@ void ShmManager::persist_process_config(const std::string& name, const nlohmann:
                     name, config_path_.string());
         return;
     }
-    // 写段：category 决定 write_gateway_section / write_webui_section
+    // 写段：category 决定 write_gateway_section / write_webui_section / strategy 数组
     const auto* entry = supervisor_ ? supervisor_->find_registry_entry(name) : nullptr;
     const Category category = entry ? entry->category : Category::GatewayMd;
     std::vector<std::string> args = full["args"].get<std::vector<std::string>>();
@@ -408,6 +484,25 @@ void ShmManager::persist_process_config(const std::string& name, const nlohmann:
         full.contains("display_name") ? full["display_name"].get<std::string>() : "";
     if (category == Category::WebUI) {
         write_webui_section(config_path_, args, restart, display_name);
+    } else if (category == Category::Strategy) {
+        // 策略条目持久化到 strategy section (数组), 保留既有 md_source/exe/start_dir
+        // (修复: 旧实现经 write_gateway_section 误写 md.<name> 段, 编辑运行配置会
+        //  把 md_source 或整个策略条目写丢)
+        nlohmann::json strategy_entry = {
+            {"name", name},
+            {"args", args},
+            {"env", full["env"]},
+            {"restart", {{"enabled", restart.enabled},
+                         {"max_attempts", restart.max_attempts},
+                         {"backoff_sec", restart.backoff_sec}}},
+        };
+        if (!display_name.empty()) {
+            strategy_entry["display_name"] = display_name;
+        }
+        if (entry && !entry->md_source.empty()) {
+            strategy_entry["md_source"] = entry->md_source;
+        }
+        write_strategy_section(config_path_, strategy_entry);
     } else {
         write_gateway_section(config_path_, category, name, args, restart, display_name);
     }
@@ -480,6 +575,11 @@ nlohmann::json ShmManager::build_initial_config_map() const {
         };
         if (!e.display_name.empty()) {
             cfg["display_name"] = e.display_name;
+        }
+        // 策略条目镜像携带 md_source, 使 SET/RTN 全量往返不丢失绑定源
+        // (策略条目在 store 镜像中的配置真相源地位与 args/env 一致)
+        if (e.category == Category::Strategy && !e.md_source.empty()) {
+            cfg["md_source"] = e.md_source;
         }
         map[e.name] = std::move(cfg);
     }

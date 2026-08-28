@@ -272,6 +272,7 @@ protected:
                 {"strategy", nlohmann::json::array(
                                  {{{"name", "stg_demo"},
                                    {"exe", cli_exe.string()},
+                                   {"md_source", "dzmd_ctp"},
                                    {"args", nlohmann::json::array({"info"})}}})},
             };
             std::ofstream ofs(home_ / "configs" / "dztraderd.json");
@@ -549,6 +550,8 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     cli_entry.category = Category::Strategy;
     cli_entry.exe = cli_exe_path;
     cli_entry.args = {"order", "CTP001", "IF2606", "100.0", "1"};
+    // 手动拉起策略不走 master 注入: 显式设置 DZTRADER_MD_SOURCE (SDK dz_init 必填)
+    cli_entry.env["DZTRADER_MD_SOURCE"] = "dzmd_ctp";
     auto cli = ChildProcess::create(ioc_, std::move(cli_entry));
     boost::system::error_code cli_spawn_ec;
     ASSERT_TRUE(cli->start(cli_spawn_ec))

@@ -255,11 +255,12 @@ TEST_F(ShmManagerTest, SetShmConfigAppliesAndPersists) {
 }
 
 TEST_F(ShmManagerTest, ReadMdPageSizeReturnsConfiguredValue) {
-    // 准备 configs 目录 + test_source.json
-    auto configs_dir = tmp_dir_ / "configs";
-    std::filesystem::create_directories(configs_dir);
-    auto json_path = configs_dir / "test_source.json";
-    std::ofstream(json_path) << R"({"shm": {"page_size_mb": 512}})";
+    // 注: paths::configs() 为进程级缓存 (首个调用者的 DZTRADER_HOME), 不随本测试
+    // tmp_dir_ 变化, 故配置文件必须写进缓存目录 (读写同源, 否则全量运行时读到
+    // 别的测试目录而误判缺失)。
+    std::filesystem::create_directories(dztrader::paths::configs());
+    std::ofstream(dztrader::paths::configs() / "test_source.json")
+        << R"({"shm": {"page_size_mb": 512}})";
 
     ShmManager mgr(make_default_shm_global(), cfg_path_);
     auto size = mgr.read_md_page_size("test_source");
@@ -288,11 +289,11 @@ TEST_F(ShmManagerTest, ReadMdPageSizeReturnsDefaultWhenFieldMissing) {
 }
 
 TEST_F(ShmManagerTest, ReadMdPageSizeReturnsNulloptOnMalformedJson) {
-    auto configs_dir = tmp_dir_ / "configs";
-    std::filesystem::create_directories(configs_dir);
-    auto json_path = configs_dir / "malformed.json";
+    // 同上: 配置文件必须写进 paths::configs() 缓存目录 (读写同源)
+    std::filesystem::create_directories(dztrader::paths::configs());
     // 写入格式错误的 json (未闭合字符串)
-    std::ofstream(json_path) << R"({"shm": {"page_size_mb": "unclosed})";
+    std::ofstream(dztrader::paths::configs() / "malformed.json")
+        << R"({"shm": {"page_size_mb": "unclosed})";
 
     ShmManager mgr(make_default_shm_global(), cfg_path_);
     auto size = mgr.read_md_page_size("malformed");
@@ -580,6 +581,54 @@ TEST_F(ProcessControlFrameTest, SetProcessConfigPushesFullMap) {
     EXPECT_TRUE(cfg["dzmd_ctp"]["args"].is_array());    // 全量字段保留
     EXPECT_TRUE(cfg["dzmd_ctp"]["env"].is_object());
     EXPECT_TRUE(cfg["dzmd_ctp"]["restart"].is_object());
+}
+
+// 策略条目 SET_PROCESS_CONFIG: 持久化写 strategy section (非 md.<name> 段),
+// 且保留既有 md_source/exe (修复: 编辑运行配置写丢绑定源的 BUG)。
+TEST_F(ProcessControlFrameTest, SetProcessConfigOnStrategyPersistsToStrategySection) {
+    // 向 registry 动态注册带 md_source 的策略条目, 然后重建 manager 栈,
+    // 使 store 初始镜像 (build_initial_config_map) 包含该策略 (经 set_supervisor 加载)。
+    ProcessEntry entry;
+    entry.name = "stg_persist";
+    entry.category = Category::Strategy;
+    entry.md_source = "dzmd_ctp";
+    entry.restart = default_restart_policy(Category::Strategy);
+    entry.restart.enabled = false;
+    registry_.register_strategy(entry);
+    supervisor_.reset();
+    shm_mgr_.reset();
+    shm_mgr_ = std::make_unique<ShmManager>(make_default_shm_global(), cfg_path_);
+    supervisor_ = std::make_unique<ProcessSupervisor>(ioc_, registry_, *shm_mgr_, orphan_guard_);
+    shm_mgr_->set_supervisor(supervisor_.get());
+
+    auto reader = create_reader("set_stg_cfg_reader");
+    auto writer = create_writer("fake_ui");
+
+    // 更新策略的运行配置 (args), 不含 md_source —— md_source 必须保留
+    write_set_process_config_frame(writer, "stg_persist",
+                                   nlohmann::json{{"args", nlohmann::json::array({"--x"})}});
+    for (int i = 0; i < 10; ++i) {
+        shm_mgr_->drain_event_channel();
+    }
+
+    // 持久化: dztraderd.json 的 strategy section 包含该条目且 md_source 保留
+    nlohmann::json cfg;
+    {
+        std::ifstream ifs(cfg_path_);
+        ifs >> cfg;
+    }
+    ASSERT_TRUE(cfg.contains("strategy") && cfg["strategy"].is_array());
+    bool found = false;
+    for (const auto& item : cfg["strategy"]) {
+        if (item.value("name", "") == "stg_persist") {
+            found = true;
+            EXPECT_EQ(item.value("md_source", ""), "dzmd_ctp");
+            EXPECT_EQ(item["args"], nlohmann::json::array({"--x"}));
+        }
+    }
+    EXPECT_TRUE(found) << "strategy entry missing from strategy section";
+    // 不得误写 md.stg_persist 段
+    EXPECT_FALSE(cfg.contains("md") && cfg["md"].contains("stg_persist"));
 }
 
 // 5. SET_PROCESS_CONFIG 非法 patch: store 强保证镜像不变, 118 推旧值 + NOTIFY_UI
@@ -1174,9 +1223,10 @@ TEST_F(ProcessControlFrameTest, MdReaderUnregisterMissingChannelReturnsOkRtn) {
     EXPECT_TRUE(rtn_ok);
 }
 
-// 停止后果: close_md_channel 清空读者+释放句柄; 重建+就绪后可再接入
-// (page_size 人工修改经重建自动重置生效, 见 create_md_channel)
-TEST_F(ProcessControlFrameTest, CloseMdChannelClearsReadersAndRejectsUntilReady) {
+// 停止后果: close_md_channel 标记 Stopped 但保留读者表与句柄 (契约 4.3/4.7,
+// 策略 reader 与进程同生命周期, PageCleaner 仍需遍历); 未就绪时读者接入被拒;
+// 重建+就绪后可再接入。
+TEST_F(ProcessControlFrameTest, CloseMdChannelKeepsReadersAndRejectsUntilReady) {
     register_strategy_for_test(registry_, "alpha");
     shm_mgr_->create_md_channel("dzmd_ctp");
 
@@ -1186,21 +1236,24 @@ TEST_F(ProcessControlFrameTest, CloseMdChannelClearsReadersAndRejectsUntilReady)
     write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp", "stg.alpha");
     shm_mgr_->drain_event_channel();
 
-    // 关闭: 读者清空
+    // 关闭: 标记 Stopped, 读者表保留 (契约: 停止/删除不清空 readers 表)
     shm_mgr_->close_md_channel("dzmd_ctp");
     {
+        auto* state = shm_mgr_->md_channel_state("dzmd_ctp");
+        ASSERT_NE(state, nullptr);
+        EXPECT_EQ(state->status, MdChannelStatus::Stopped);
         auto meta = shm::ChannelMeta::open_only("dzmd_ctp", dztrader::paths::shm());
         auto names = meta.reader_names();
-        EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") == names.end());
+        EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") != names.end());
     }
 
-    // 关闭后接入被拒 (行情进程未运行), 不新增读者
+    // 关闭(Stopped)后接入被拒 (行情进程未运行), 不新增读者
     write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp", "stg.alpha");
     shm_mgr_->drain_event_channel();
     {
         auto meta = shm::ChannelMeta::open_only("dzmd_ctp", dztrader::paths::shm());
         auto names = meta.reader_names();
-        EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") == names.end());
+        EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") != names.end());
     }
 
     // 重建 (重启路径) + 就绪后接入成功
@@ -1256,6 +1309,91 @@ TEST_F(ProcessControlFrameTest, DestroyMdChannelIdempotent) {
     EXPECT_NO_THROW(shm_mgr_->destroy_md_channel("dzmd_ctp"));  // 条目不存在 no-op
 }
 
+// page_size 变更约束 (契约 4.8): 存在运行中绑定策略时拒绝启动 md (错误信息列出策略名);
+// 无运行中策略时允许重置 (last_page_size 更新, readers 清空)。
+TEST_F(ProcessControlFrameTest, PageSizeChangeRejectedWithRunningBoundStrategy) {
+    // 注册运行中绑定策略 (test_worker 为真实可 spawn 的进程)
+    const auto worker_exe = dztrader::this_process::exe_dir() / "test_worker"
+#ifdef _WIN32
+        ".exe"
+#endif
+        ;
+    ProcessEntry entry;
+    entry.name = "stg_ps";
+    entry.category = Category::Strategy;
+    entry.exe = worker_exe;
+    entry.start_dir = worker_exe.parent_path();
+    entry.restart = default_restart_policy(Category::Strategy);
+    entry.restart.enabled = false;
+    entry.md_source = "dzmd_ctp";
+    registry_.register_strategy(entry);
+
+    // 建通道 (page_size 默认 1024MB) + 宣告就绪 + 启动策略
+    shm_mgr_->create_md_channel("dzmd_ctp");
+    auto ready_writer = create_writer("ps_ready_sim");
+    mark_channel_ready(ready_writer, "dzmd_ctp");
+    shm_mgr_->drain_event_channel();
+    ProcessSupervisor supervisor(ioc_, registry_, *shm_mgr_, orphan_guard_);
+    shm_mgr_->set_supervisor(&supervisor);
+    ASSERT_TRUE(supervisor.start_process("stg_ps"));
+    ASSERT_NE(supervisor.find_child("stg_ps"), nullptr);
+
+    // 人工改配置文件 page_size=2MB -> create_md_channel 检测到变更 + 运行中绑定策略 -> 拒绝
+    const auto cfg_json = dztrader::paths::configs() / "dzmd_ctp.json";
+    std::filesystem::create_directories(dztrader::paths::configs());
+    std::ofstream(cfg_json) << R"({"shm": {"page_size_mb": 2}})";
+    bool rejected = false;
+    try {
+        shm_mgr_->close_md_channel("dzmd_ctp");  // 模拟 md 停止后重启路径
+        shm_mgr_->create_md_channel("dzmd_ctp");
+    } catch (const std::exception& e) {
+        rejected = true;
+        EXPECT_NE(std::string(e.what()).find("stg_ps"), std::string::npos)
+            << "error must list bound strategy names: " << e.what();
+    }
+    EXPECT_TRUE(rejected) << "page_size change must be rejected with running bound strategy";
+
+    // 清理: 停止策略 (页大小校验走 Stopped 状态, 此处策略仍在运行, 直接强停)
+    supervisor.shutdown();
+    ioc_.restart();
+    ioc_.run_for(std::chrono::seconds(5));
+}
+
+// page_size 变更正向路径 (契约 4.8): 无运行中绑定策略时允许重置,
+// readers 清空 (全量 clear 时机 2) 且 last_page_size 更新。
+// 注: 配置文件写入与读取均经 paths::configs() (进程级缓存), 前后一致; 页大小
+// 取 2MB/3MB 与前序用例泄漏值 (2MB) 及默认值 (1024MB) 均可区分, 保证确定性。
+TEST_F(ProcessControlFrameTest, PageSizeChangeResetsWhenNoRunningStrategy) {
+    register_strategy_for_test(registry_, "alpha");
+    const auto cfg_json = dztrader::paths::configs() / "dzmd_ctp.json";
+    std::filesystem::create_directories(dztrader::paths::configs());
+
+    // 第一次创建: 2MB
+    std::ofstream(cfg_json) << R"({"shm": {"page_size_mb": 2}})";
+    shm_mgr_->create_md_channel("dzmd_ctp");
+    {
+        auto* state = shm_mgr_->md_channel_state("dzmd_ctp");
+        ASSERT_NE(state, nullptr);
+        ASSERT_EQ(state->last_page_size, 2u * 1024 * 1024);
+        // 预注册一个读者 (模拟策略 reader 残留)
+        (void)state->meta->add_reader("stg.alpha", /*pid=*/0);
+    }
+
+    // 改配置 page_size=3MB -> 无运行中策略 -> close + create 触发重置
+    std::ofstream(cfg_json) << R"({"shm": {"page_size_mb": 3}})";
+    shm_mgr_->close_md_channel("dzmd_ctp");
+    EXPECT_NO_THROW(shm_mgr_->create_md_channel("dzmd_ctp"));
+
+    // last_page_size 更新为 3MB, readers 清空 (全量 clear 时机 2)
+    {
+        auto* state = shm_mgr_->md_channel_state("dzmd_ctp");
+        ASSERT_NE(state, nullptr);
+        EXPECT_EQ(state->last_page_size, 3u * 1024 * 1024);
+        auto meta = shm::ChannelMeta::open_only("dzmd_ctp", dztrader::paths::shm());
+        EXPECT_TRUE(meta.reader_names().empty());
+    }
+}
+
 // close 保留文件, destroy 删除: 生命周期语义区分
 TEST_F(ProcessControlFrameTest, CloseKeepsFilesDestroyRemoves) {
     shm_mgr_->create_md_channel("dzmd_ctp");
@@ -1269,7 +1407,8 @@ TEST_F(ProcessControlFrameTest, CloseKeepsFilesDestroyRemoves) {
 }
 
 // Remove 未运行进程(兜底路径 notify_removed_for_inactive): 配置段删除 + 118 条目消失
-// + 116 RemoveSucceeded + 通道目录销毁 + 二次 Remove 不幂等(RemoveFailed)。
+// + 116 RemoveSucceeded + 通道标记 tombstone (目录与 readers 表保留, 契约 4.7)
+// + 二次 Remove 不幂等(RemoveFailed)。
 // 模拟"曾配置/曾启动"的通道态: 目录存在(进程未运行, 走 notify_removed_for_inactive)。
 TEST_F(ProcessControlFrameTest, RemoveInactiveGatewayFinalizesFully) {
     shm_mgr_->create_md_channel("dzmd_ctp");
@@ -1283,8 +1422,14 @@ TEST_F(ProcessControlFrameTest, RemoveInactiveGatewayFinalizesFully) {
         shm_mgr_->drain_event_channel();
     }
 
-    // 通道目录销毁 (BUG-1 回归保护: category 拷贝错误时 destroy 被跳过、目录残留)
-    EXPECT_FALSE(std::filesystem::exists(ch_dir));
+    // 契约 4.7: Remove 不删文件 (tombstone), 目录保留供 PageCleaner 清理与同源重加复用
+    EXPECT_TRUE(std::filesystem::exists(ch_dir));
+    // 通道标记 tombstone: 读者注册被拒 (channel not configured)
+    {
+        auto* state = shm_mgr_->md_channel_state("dzmd_ctp");
+        ASSERT_NE(state, nullptr);
+        EXPECT_EQ(state->status, MdChannelStatus::Tombstone);
+    }
 
     // json 配置段删除 (persist 链, 重新解析 cfg_path_)
     nlohmann::json cfg;

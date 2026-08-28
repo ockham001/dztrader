@@ -35,6 +35,11 @@ struct ProcessEntry {
     /// 或运行时通过 PROCESS_CONTROL start 帧动态注入)。
     /// 为空时前端 UI 应回退到 name 显示。
     std::string display_name;
+
+    /// 策略绑定的行情源名 (仅 Category::Strategy 有效, 必须非空且合法)。
+    /// master 注入 DZTRADER_MD_SOURCE 并据其编排启动依赖 (md ready 后才 spawn)。
+    /// 非 Strategy 条目携带 md_source 视为配置错误。
+    std::string md_source;
 };
 
 /// [master] 段配置 (单进程停止超时 + 旧页清理策略; 日志相关字段迁移到 LogConfig)。
@@ -43,12 +48,18 @@ struct MasterConfig {
     /// 对应 ProcessSupervisor::single_stop_timeout_sec_, 默认 3
     int single_stop_timeout_sec = 3;
 
+    /// 行情源就绪等待超时 (秒): start_all 第三趟同步等待各 md 源 ready 的时长,
+    /// 超时后未 ready 源的绑定策略进 pending。默认 5; <1 时 clamp 到 1 (同
+    /// single_stop_timeout_sec 规则)。
+    int md_ready_timeout_sec = 5;
+
     /// 旧页清理策略 (全局统一: master 为唯一清理者, event + 全部 md 通道共用;
     /// 语义对齐 shm::CleanupPolicy, 皆为 0 表示不清理)。仅人工经配置文件修改。
     uint64_t cleanup_max_page_count = 200;
     uint64_t cleanup_max_page_age_hours = 24;
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(MasterConfig, single_stop_timeout_sec,
+                                                md_ready_timeout_sec,
                                                 cleanup_max_page_count,
                                                 cleanup_max_page_age_hours)
 
@@ -106,6 +117,17 @@ void write_webui_section(const std::filesystem::path& config_path,
                          const std::vector<std::string>& args,
                          const platform::RestartPolicy& restart,
                          const std::string& display_name = "");
+
+/// 向 dztraderd.json 写入/更新单个 strategy 条目（strategy section 为数组,
+/// 按 name 匹配替换; 不存在则追加）。保留 exe/md_source/start_dir 字段。
+/// 由 ProcessConfigStore 策略条目的 persist 回调调用, 保证编辑 args/env 时
+/// 不把该条目或 md_source 写丢 (此前误写 md.<name> 段, BUG 修复)。
+void write_strategy_section(const std::filesystem::path& config_path,
+                            const nlohmann::json& strategy_entry);
+
+/// 从 dztraderd.json 的 strategy section 删除指定 name 的策略条目（不存在则无操作）。
+void remove_strategy_section(const std::filesystem::path& config_path,
+                             const std::string& name);
 
 /// 从 dztraderd.json 删除 [md.<name>] 或 [td.<name>] 段（若不存在则无操作）。
 void remove_gateway_section(const std::filesystem::path& config_path,

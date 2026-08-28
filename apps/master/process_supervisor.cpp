@@ -5,8 +5,10 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <format>
+#include <thread>
 
 namespace dztrader::master {
 
@@ -53,11 +55,13 @@ ProcessSupervisor::ProcessSupervisor(boost::asio::io_context& ioc,
                                      ProcessRegistry& registry,
                                      ShmManager& shm_mgr,
                                      OrphanGuard& orphan_guard,
-                                     int single_stop_timeout_sec)
+                                     int single_stop_timeout_sec,
+                                     int md_ready_timeout_sec)
     : ioc_(ioc), registry_(registry), shm_mgr_(shm_mgr),
       notify_ui_(shm_mgr.name(), shm_mgr.event_writer()),
       orphan_guard_(orphan_guard),
-      single_stop_timeout_sec_(single_stop_timeout_sec)
+      single_stop_timeout_sec_(single_stop_timeout_sec),
+      md_ready_timeout_sec_(md_ready_timeout_sec)
 {}
 
 void ProcessSupervisor::start_all() {
@@ -69,7 +73,8 @@ void ProcessSupervisor::start_all() {
             // launch_child 返回值在此忽略: 启动失败时 launch_child 内部已处理失败路径反馈
             // (失败路径 B 推 crashed + notify_ui, 失败路径 D 推 crashed + notify_ui),
             // start_all 不需要额外处理 (与原行为一致)
-            (void)launch_child(entry);   // 内部按需扫描填充 exe
+            (void)launch_child(entry);   // 内部按需扫描填充 exe; GatewayMd 成功后
+                                         // 内部挂 ready watchdog (契约 4.5, 每次 spawn 均挂)
 
             // 行情进程启动后通过事件通道发 UPDATE_SHM_MD_SUBSCRIBER instance_id=name 帧,
             // 通知行情进程刷新 spi_.writer_ 缓存的行情通道订阅者列表
@@ -84,20 +89,248 @@ void ProcessSupervisor::start_all() {
         }
     };
 
-    // 两趟启动: 先全部行情网关, 再其余进程。
-    // 原因: 策略进程启动后会主动向 master 发起 md 读者注册 (帧 1013),
-    // 注册要求目标 md 通道已存在, 故 md 必须先行 (不依赖 registry 解析顺序)。
-    // md 通道创建统一在 launch_child 内 (GatewayMd 条目), 此处不重复创建。
+    // 三趟启动编排 (契约 4.4):
+    //   第一趟: 全部行情网关 (md 必须先行: 策略 SDK 需已存在的 md 通道 + 预注册 reader)
+    //   第二趟: td / webui 立即启动, 不等待 md ready
+    //   第三趟: 同步有界等待被策略引用的 md ready, 逐源启动绑定策略
+    //           超时后未 ready 源的策略进 pending
     for (const auto& entry : entries) {
         if (entry.category == Category::GatewayMd) {
             start_one(entry);
         }
     }
     for (const auto& entry : entries) {
-        if (entry.category != Category::GatewayMd) {
+        if (entry.category != Category::GatewayMd && entry.category != Category::Strategy) {
             start_one(entry);
         }
     }
+    wait_for_md_ready_and_start_strategies();
+}
+
+void ProcessSupervisor::arm_md_ready_watchdog(const std::string& source) {
+    // 每次 spawn md 进程后启动 ready 定时器; 收到对应 NOTIFY_MD_STARTED 时由
+    // on_md_channel_ready 取消。超时按"是否存在运行中绑定策略"区分行为。
+    auto timer = std::make_unique<boost::asio::steady_timer>(
+        ioc_, std::chrono::seconds(md_ready_timeout_sec_));
+    auto* raw = timer.get();
+    raw->async_wait([this, source](const boost::system::error_code& ec) {
+        on_md_ready_timeout(source, ec);
+    });
+    // 防御性: 同名旧 timer 先取消再覆盖 (不应发生, 同源连续 spawn 时保护)
+    if (auto it = md_ready_timers_.find(source); it != md_ready_timers_.end()) {
+        it->second->cancel();
+        md_ready_timers_.erase(it);
+    }
+    md_ready_timers_[source] = std::move(timer);
+}
+
+void ProcessSupervisor::on_md_ready_timeout(const std::string& source,
+                                            const boost::system::error_code& ec) {
+    if (ec) {
+        // 被取消 (收到 STARTED, on_md_channel_ready 已 erase)
+        return;
+    }
+    md_ready_timers_.erase(source);
+    // 是否仍有运行中绑定策略 (md 运行期重启场景: 策略不退出, reader 保持打开)
+    bool has_running_bound = false;
+    for (const auto& name : strategies_bound_to(source)) {
+        auto child = find_child(name);
+        if (child && child->state() != ChildState::Stopped) {
+            has_running_bound = true;
+            break;
+        }
+    }
+    if (has_running_bound) {
+        // 存在运行中绑定策略: 判定该次 md 启动失败, terminate + 走 restart policy
+        SPDLOG_ERROR("md ready timeout, terminating unready md with running strategy | source={}",
+                     source);
+        auto child = find_child(source);
+        if (child) {
+            notify_ui_.error(std::string("market source failed to become ready, restarting | source=") +
+                             source);
+            force_killed_names_.insert(source);  // 不按 crash 弹窗
+            child->terminate();
+        }
+        return;
+    }
+    // 无运行中绑定策略 (启动编排超时或策略已退): 不杀 md, 策略保持 pending,
+    // 记录 ERROR, 等待晚到 STARTED (on_md_channel_ready 会补启动)
+    SPDLOG_ERROR("md ready timeout, strategies stay pending | source={}", source);
+}
+
+std::vector<std::string> ProcessSupervisor::strategies_bound_to(const std::string& source) const {
+    std::vector<std::string> names;
+    for (const auto& e : registry_.entries()) {
+        if (e.category == Category::Strategy && e.md_source == source) {
+            names.push_back(e.name);
+        }
+    }
+    return names;
+}
+
+void ProcessSupervisor::pre_register_strategy_reader(const std::string& strategy_name,
+                                                     const std::string& md_source) {
+    // 契约 4.3: 策略 spawn 前 add_reader(stg.<name>) 预注册 md 读者。
+    // 策略 SDK 的 dz_init 只 open_only, 不自行注册 (1013-1016 不再用于普通策略);
+    // master 统一维护 readers 表。随后通知 md 进程刷新 writer 缓存。
+    const auto* state = shm_mgr_.md_channel_state(md_source);
+    if (!state || !state->meta || state->status != MdChannelStatus::Running ||
+        !state->ready) {
+        // 源未 ready: 不应走到此处 (调用方保证 ready), 防御性记录
+        SPDLOG_WARN("pre-register reader skipped, source not ready | strategy={} source={}",
+                    strategy_name, md_source);
+        return;
+    }
+    const auto sub_name = std::format("stg.{}", strategy_name);
+    (void)state->meta->add_reader(sub_name, /*pid=*/0);
+    SPDLOG_INFO("strategy md reader pre-registered | strategy={} source={} reader={}",
+                strategy_name, md_source, sub_name);
+    shm_mgr_.notify_md_channel_subscriber_update(md_source);
+}
+
+void ProcessSupervisor::wait_for_md_ready_and_start_strategies() {
+    // 契约 4.4 第三趟: 同步有界等待被至少一个策略引用的 md ready。
+    // start_all 在 ioc.run() 之前执行, 不能依赖 asio 异步, 只能同步 drain
+    // event channel 处理 NOTIFY_MD_STARTED。
+    // 收集被引用的源 (去重)
+    std::vector<std::string> referenced_sources;
+    {
+        std::unordered_set<std::string> seen;
+        for (const auto& e : registry_.entries()) {
+            if (e.category == Category::Strategy && !e.md_source.empty() &&
+                seen.insert(e.md_source).second) {
+                referenced_sources.push_back(e.md_source);
+            }
+        }
+    }
+    if (referenced_sources.empty()) {
+        // 无绑定 md 的策略 (空 md_source, 测试/手工构造): 直接启动
+        for (const auto& e : registry_.entries()) {
+            if (e.category == Category::Strategy && e.md_source.empty() && !find_child(e.name)) {
+                (void)launch_child(e);
+            }
+        }
+        return;  // 无策略, 无需等待
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(md_ready_timeout_sec_);
+    std::unordered_set<std::string> ready_sources;
+    // 单个源的就绪处理: 首次变为 ready 时立即启动其绑定策略
+    // (契约 4.4: 已 ready 的源不因其他源未 ready 而等待)。幂等: 已在
+    // ready_sources 中的源跳过, start_strategies_for_source 内部再按 find_child 去重。
+    auto promote_ready_source = [&](const std::string& source) {
+        if (ready_sources.count(source)) {
+            return;
+        }
+        const auto* state = shm_mgr_.md_channel_state(source);
+        if (state && state->status == MdChannelStatus::Running && state->ready) {
+            ready_sources.insert(source);
+            start_strategies_for_source(source);
+        }
+    };
+    while (std::chrono::steady_clock::now() < deadline) {
+        // 同步 drain: 处理已到达的 NOTIFY_MD_STARTED (mark_md_channel_ready 内部
+        // 回调 on_md_channel_ready 启动 pending 策略)
+        shm_mgr_.drain_event_channel();
+        for (const auto& source : referenced_sources) {
+            promote_ready_source(source);
+        }
+        if (ready_sources.size() == referenced_sources.size()) {
+            break;  // 全部 ready
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    shm_mgr_.drain_event_channel();  // 最后一轮排空 (其处理的 STARTED 由下方补检)
+    for (const auto& source : referenced_sources) {
+        promote_ready_source(source);
+    }
+
+    // 无绑定 md 的策略 (空 md_source, 测试/手工构造): 直接启动 (与空源分支同语义)
+    for (const auto& e : registry_.entries()) {
+        if (e.category == Category::Strategy && e.md_source.empty() && !find_child(e.name)) {
+            (void)launch_child(e);
+        }
+    }
+
+    // 超时后仍未 ready 的源: 绑定策略进 pending (不 spawn)。
+    // 已 ready 源的策略在循环内 spawn (on_md_channel_ready 处理的晚到 STARTED
+    // 场景走 pending, 不在此列)。
+    for (const auto& source : referenced_sources) {
+        if (ready_sources.count(source)) {
+            continue;
+        }
+        for (const auto& name : strategies_bound_to(source)) {
+            if (find_child(name)) {
+                continue;  // 已在运行 (晚到 STARTED 已启动)
+            }
+            auto& list = pending_strategies_[source];
+            if (std::find(list.begin(), list.end(), name) == list.end()) {
+                list.push_back(name);
+                send_process_status(name, ChildState::Starting, 0,
+                                    "waiting for md source " + source);
+                SPDLOG_INFO("strategy pending (md not ready) | strategy={} source={}", name,
+                            source);
+            }
+        }
+    }
+}
+
+void ProcessSupervisor::start_strategies_for_source(const std::string& source) {
+    // 启动绑定 source 且未在运行的策略 (pre-register reader + spawn)
+    for (const auto& name : strategies_bound_to(source)) {
+        if (find_child(name)) {
+            continue;  // 已在运行
+        }
+        const auto* entry = registry_.find(name);
+        if (!entry) {
+            continue;
+        }
+        try {
+            pre_register_strategy_reader(name, source);
+            (void)launch_child(*entry);
+        } catch (const std::exception& e) {
+            SPDLOG_ERROR("failed to start strategy | strategy={} error=\"{}\"", name, e.what());
+        }
+    }
+}
+
+void ProcessSupervisor::on_md_channel_ready(const std::string& source) {
+    // 取消该源 ready watchdog (收到对应 NOTIFY_MD_STARTED)
+    if (auto it = md_ready_timers_.find(source); it != md_ready_timers_.end()) {
+        it->second->cancel();
+        md_ready_timers_.erase(it);
+    }
+    // 启动该源全部 pending 策略并清空 pending
+    auto it = pending_strategies_.find(source);
+    if (it == pending_strategies_.end()) {
+        return;
+    }
+    const auto pending_names = it->second;  // 拷贝: launch_child 回调可能改 pending
+    pending_strategies_.erase(it);
+    for (const auto& name : pending_names) {
+        const auto* entry = registry_.find(name);
+        if (!entry) {
+            continue;
+        }
+        try {
+            pre_register_strategy_reader(name, source);
+            (void)launch_child(*entry);
+        } catch (const std::exception& e) {
+            SPDLOG_ERROR("failed to start pending strategy | strategy={} error=\"{}\"", name,
+                         e.what());
+        }
+    }
+}
+
+bool ProcessSupervisor::is_pending_strategy(const std::string& name, std::string& message) const {
+    for (const auto& [source, names] : pending_strategies_) {
+        if (std::find(names.begin(), names.end(), name) != names.end()) {
+            message = "waiting for md source " + source;
+            return true;
+        }
+    }
+    return false;
 }
 
 void ProcessSupervisor::shutdown() {
@@ -115,6 +348,12 @@ void ProcessSupervisor::shutdown() {
     }
     restart_timers_.clear();
     restart_counts_.clear();
+    // 取消 md ready watchdog + 清空 pending (整体关闭后不再补启动, master 重启后重新编排)
+    for (auto& [source, timer] : md_ready_timers_) {
+        if (timer) timer->cancel();
+    }
+    md_ready_timers_.clear();
+    pending_strategies_.clear();
 
     // 冻结关闭批次 (逆序: 策略 → 交易 → 行情 → dzweb)
     std::vector<std::pair<std::string, Category>> running;
@@ -255,7 +494,7 @@ bool ProcessSupervisor::start_process(std::string_view name) {
     const auto* entry = registry_.find(name);
     if (entry) {
         // json 声明的进程: launch_child 内部按需扫描填充 exe
-        return launch_child(*entry);
+        return launch_registered_process(*entry);
     }
     // find 未命中: 进程未在 json 声明, 仍尝试实时扫描启动
     // (PROCESS_CONTROL start 添加新行情源场景: dzweb 点击添加 -> master 启动 -> 写 json)
@@ -271,7 +510,38 @@ bool ProcessSupervisor::start_process(std::string_view name) {
         restart_counts_.erase(std::string(name));
         return false;
     }
-    return launch_child(*scanned);
+    return launch_registered_process(*scanned);
+}
+
+bool ProcessSupervisor::launch_registered_process(const ProcessEntry& entry) {
+    // 策略: 绑定源未 ready 则进 pending (契约 4.6 运行期策略动态启动)。
+    // 空 md_source 属测试/手工构造的免 md 策略 (生产配置解析保证非空), 直接启动。
+    if (entry.category == Category::Strategy && !entry.md_source.empty()) {
+        const auto& source = entry.md_source;
+        const auto* state = shm_mgr_.md_channel_state(source);
+        const bool source_ready = state && state->status == MdChannelStatus::Running &&
+                                  state->ready && state->meta;
+        if (!source_ready) {
+            // 绑定源不存在或未 ready: 加入 pending, 反馈"等待行情源"
+            auto& list = pending_strategies_[source];
+            if (std::find(list.begin(), list.end(), entry.name) == list.end()) {
+                list.push_back(entry.name);
+            }
+            const std::string msg = "waiting for md source " + source;
+            send_process_status(entry.name, ChildState::Starting, 0, msg);
+            SPDLOG_INFO("strategy pending (md not ready) | strategy={} source={}", entry.name,
+                        source);
+            return false;
+        }
+        // 源 ready: pre-register reader + spawn
+        try {
+            pre_register_strategy_reader(entry.name, source);
+        } catch (const std::exception& e) {
+            SPDLOG_ERROR("pre-register strategy reader failed | strategy={} error=\"{}\"",
+                         entry.name, e.what());
+        }
+    }
+    return launch_child(entry);
 }
 
 void ProcessSupervisor::stop_process(std::string_view name) {
@@ -455,8 +725,12 @@ void ProcessSupervisor::notify_removed_for_inactive(const std::string& name, Cat
     // (launch_child 重建通道 + spawn 已删源), 违反"remove 不重启"契约
     cancel_pending_restart(name);
     try {
-        remove_gateway_section(shm_mgr_.config_path(), category, name);
-        SPDLOG_INFO("gateway section removed | name={} path={}",
+        if (category == Category::Strategy) {
+            remove_strategy_section(shm_mgr_.config_path(), name);
+        } else {
+            remove_gateway_section(shm_mgr_.config_path(), category, name);
+        }
+        SPDLOG_INFO("process config section removed | name={} path={}",
                     name, shm_mgr_.config_path().string());
     } catch (const std::exception& e) {
         // 失败路径 D: 配置段删除失败 -> notify_ui 反馈
@@ -466,13 +740,13 @@ void ProcessSupervisor::notify_removed_for_inactive(const std::string& name, Cat
         notify_ui_.error(std::string("failed to remove gateway config | name=") + name
                         + " error=" + e.what());
     }
-    // Remove 流程: 对 md 源彻底删除通道目录与条目 (设计 spec 移除清理),
-    // 兜底处理进程未运行但通道文件残留的场景 (如曾启动后失败)
+    // Remove 流程: 对 md 源标记 tombstone (契约 4.7: 不删文件、不清空 readers 表,
+    // 保留 meta 供 PageCleaner 清理与同源重加复用)。不再 destroy_md_channel。
     if (category == Category::GatewayMd) {
         try {
-            shm_mgr_.destroy_md_channel(name);
+            shm_mgr_.tombstone_md_channel(name);
         } catch (const std::exception& e) {
-            SPDLOG_ERROR("failed to destroy md channel | name={} error=\"{}\"", name, e.what());
+            SPDLOG_ERROR("failed to tombstone md channel | name={} error=\"{}\"", name, e.what());
         }
     }
     // 清理订阅者注册 (子进程可能曾注册过, 退出后残留)
@@ -527,11 +801,25 @@ bool ProcessSupervisor::launch_child(const ProcessEntry& entry) {
         // args/restart/display_name 仍以 json 配置为准 (不覆盖)
     }
 
-    // 启动 md 进程前先创建/重建 md 通道 (含 clear_readers; 关闭期间人工修改的
-    // page_size 经 open_or_create 自动重置生效)。可能抛异常, 由调用方 catch
-    // (start_one / handle_process_start / schedule_restart 均有 try)。
+    // 启动 md 进程前先创建/重建 md 通道 (含冷启动 clear_readers / page_size 分派;
+    // 关闭期间人工修改的 page_size 经 open_or_create 自动重置生效)。
+    // 可能抛异常, 由调用方 catch (start_one / handle_process_start / schedule_restart 均有 try)。
     if (entry_to_launch.category == Category::GatewayMd) {
         shm_mgr_.create_md_channel(entry_to_launch.name);
+    }
+
+    // 策略进程注入 DZTRADER_MD_SOURCE (契约 4.2): 显式覆盖, 避免继承 master 环境污染。
+    // 由 child_process.cpp 的环境合并逻辑合并进子进程环境。
+    // 空 md_source 属测试/手工构造的免 md 策略 (生产配置解析保证非空): 跳过注入。
+    if (entry_to_launch.category == Category::Strategy) {
+        if (entry_to_launch.md_source.empty()) {
+            SPDLOG_WARN("strategy launched without md_source (manual/test entry) | name={}",
+                        entry_to_launch.name);
+        } else {
+            entry_to_launch.env["DZTRADER_MD_SOURCE"] = entry_to_launch.md_source;
+            SPDLOG_INFO("strategy env injected | name={} DZTRADER_MD_SOURCE={}",
+                        entry_to_launch.name, entry_to_launch.md_source);
+        }
     }
 
     auto child = ChildProcess::create(ioc_, entry_to_launch);
@@ -584,6 +872,13 @@ bool ProcessSupervisor::launch_child(const ProcessEntry& entry) {
     auto launched_name = child->name();
     auto launched_pid = static_cast<int>(child->pid());
     send_process_status(launched_name, ChildState::Running, launched_pid);
+
+    // 每次 spawn md 进程后挂 ready watchdog (契约 4.5): 覆盖启动编排 / 手动 start /
+    // restart policy 全部 spawn 路径。收到对应 NOTIFY_MD_STARTED 时由
+    // on_md_channel_ready 取消; 超时按"是否存在运行中绑定策略"分流处理。
+    if (entry_to_launch.category == Category::GatewayMd) {
+        arm_md_ready_watchdog(launched_name);
+    }
 
     children_.push_back(std::move(child));
     return true;
@@ -638,8 +933,14 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
             // 回调删除, find 恒 miss, 兜底值会对 td 目标查错段 (BUG-3.1)
             const Category category = child->entry().category;
             try {
-                remove_gateway_section(cfg_path, category, name);
-                SPDLOG_INFO("gateway section removed (on remove flow) | name={} path={}",
+                // Strategy 条目持久化在 strategy 数组 section, 不能走 gateway 段删除
+                // (否则会误写 td.<name> 段)
+                if (category == Category::Strategy) {
+                    remove_strategy_section(cfg_path, name);
+                } else {
+                    remove_gateway_section(cfg_path, category, name);
+                }
+                SPDLOG_INFO("process config section removed (on remove flow) | name={} path={}",
                             name, cfg_path.string());
             } catch (const std::exception& e) {
                 // 失败路径 D: 配置段删除失败 -> notify_ui 反馈前端
@@ -683,21 +984,22 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
         }
 
         // md 进程退出时执行通道生命周期 (dztraderd 架构 + 设计 spec 移除清理):
-        // - Remove 流程: 配置已删, 彻底删除通道文件与条目 (destroy_md_channel)
-        // - 停止/崩溃 (待重启): 清读者+关闭通道, 保留文件待重启复用 (close_md_channel)
-        // - 移除窗口内重加: 按正常停止处理 (close), 保留文件待新进程启动
+        // - Remove 流程: 配置已删, 标记 tombstone (保留文件与 readers, PageCleaner
+        //   继续覆盖; 不再 destroy_md_channel —— 物理清理仅留给未来主动维护入口)
+        // - 停止/崩溃 (待重启): 标记 Stopped (保留 meta/readers, 文件待重启复用)
+        // - 移除窗口内重加: 按正常停止处理 (close)
         // 两者统一由主进程执行; 随后代发 NOTIFY_MD_STOPPED
         // (崩溃时 dzmd_ctp 自己无法广播, 由 master 代发; 正常停止时也需通知)
         // 独立 try-catch: 不阻塞后续崩溃通知/重启逻辑
         if (child->entry().category == Category::GatewayMd) {
             try {
                 if (is_remove_flow && !remove_flow_re_added) {
-                    shm_mgr_.destroy_md_channel(name);
+                    shm_mgr_.tombstone_md_channel(name);
                 } else {
                     shm_mgr_.close_md_channel(name);
                 }
             } catch (const std::exception& e) {
-                SPDLOG_ERROR("failed to close/destroy md channel | name={} error=\"{}\"",
+                SPDLOG_ERROR("failed to close/tombstone md channel | name={} error=\"{}\"",
                              name, e.what());
             }
             try {

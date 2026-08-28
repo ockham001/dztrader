@@ -254,7 +254,12 @@ void ShmManager::handle_process_start(const platform::ProcessControlReq& req) {
     try {
         // md 通道由 launch_child 在启动 GatewayMd 时创建（唯一入口）
         bool started = supervisor_->start_process(req.target);
-        notify_md_channel_subscriber_update(req.target);
+        // 仅 md 网关需要刷新行情通道订阅者缓存 (策略/td/web 不订阅行情通道,
+        // 策略读者由 pre_register_strategy_reader 独立处理)
+        const auto* entry = supervisor_->find_registry_entry(req.target);
+        if (entry && entry->category == Category::GatewayMd) {
+            notify_md_channel_subscriber_update(req.target);
+        }
         if (started) {
             // 真实 pid：从 supervisor 的 child 查询（契约示例第 162 行 pid: 12345）
             const auto child = supervisor_->find_child(req.target);
@@ -262,6 +267,20 @@ void ShmManager::handle_process_start(const platform::ProcessControlReq& req) {
                                              child ? static_cast<int>(child->pid()) : 0, "",
                                              platform::ProcessEvent::StartSucceeded);
             return;
+        }
+        // start_process 返回 false 可能因策略进 pending (等待行情源) 或 spawn 失败
+        // (Crashed 已推)。pending 场景: start 请求已被受理, 回 StartSucceeded +
+        // Starting + message (契约 process: Starting 用于启动流程存在可感知延迟的
+        // 场景; event 缺失会让前端 startPending 悬挂到超时兜底)。
+        if (entry && entry->category == Category::Strategy) {
+            std::string pending_msg;
+            if (supervisor_->is_pending_strategy(req.target, pending_msg)) {
+                SPDLOG_INFO("strategy start deferred, md source pending | target={} msg={}",
+                            req.target, pending_msg);
+                supervisor_->send_process_status(req.target, ChildState::Starting, 0, pending_msg,
+                                                 platform::ProcessEvent::StartSucceeded);
+                return;
+            }
         }
         // spawn 失败：配置保留（契约 process；118 已推新值）
         const std::string err = std::format("start_process returned false | target={}", req.target);
@@ -417,6 +436,13 @@ void ShmManager::report_full_snapshot() {
     if (supervisor_) {
         for (const auto& entry : supervisor_->registry_entries()) {
             auto child = supervisor_->find_child(entry.name);
+            // pending 策略: 保持 Starting + message (契约 4.4 快照一致性,
+            // 不能因 find_child 为 null 回退成 Stopped)
+            std::string pending_msg;
+            if (!child && supervisor_->is_pending_strategy(entry.name, pending_msg)) {
+                supervisor_->send_process_status(entry.name, ChildState::Starting, 0, pending_msg);
+                continue;
+            }
             supervisor_->send_process_status(
                 entry.name,
                 child ? child->state() : ChildState::Stopped,

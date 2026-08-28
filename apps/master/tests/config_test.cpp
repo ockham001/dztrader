@@ -303,6 +303,7 @@ TEST_F(ConfigTest, ParseStrategyEntries) {
             {
                 "name": "my_strategy",
                 "exe": "/home/user/strategies/my_strategy",
+                "md_source": "dzmd_ctp",
                 "args": ["--config", "strategy.toml"]
             }
         ]
@@ -315,6 +316,178 @@ TEST_F(ConfigTest, ParseStrategyEntries) {
     EXPECT_EQ(s.category, Category::Strategy);
     EXPECT_EQ(s.args.size(), 2u);
     EXPECT_FALSE(s.restart.enabled);  // strategy default: no restart
+    EXPECT_EQ(s.md_source, "dzmd_ctp");
+}
+
+// 策略携带 md_source: 解析进 ProcessEntry, 供启动编排与 env 注入
+TEST_F(ConfigTest, ParseStrategyWithMdSource) {
+    write_json(R"({
+        "strategy": [
+            {
+                "name": "alpha",
+                "exe": "/path/to/alpha",
+                "md_source": "dzmd_ctp"
+            }
+        ]
+    })");
+    auto cfg = parse_master_json(config_path_);
+    ASSERT_EQ(cfg.entries.size(), 1u);
+    EXPECT_EQ(cfg.entries[0].md_source, "dzmd_ctp");
+}
+
+// 策略缺 md_source: 配置错误 (解析抛异常)
+TEST_F(ConfigTest, ParseStrategyMissingMdSourceThrows) {
+    write_json(R"({
+        "strategy": [
+            {"name": "alpha", "exe": "/path/to/alpha"}
+        ]
+    })");
+    EXPECT_THROW(parse_master_json(config_path_), std::runtime_error);
+}
+
+// 策略 md_source 为空串: 配置错误
+TEST_F(ConfigTest, ParseStrategyEmptyMdSourceThrows) {
+    write_json(R"({
+        "strategy": [
+            {"name": "alpha", "exe": "/path/to/alpha", "md_source": ""}
+        ]
+    })");
+    EXPECT_THROW(parse_master_json(config_path_), std::runtime_error);
+}
+
+// 策略 md_source 含非法字符 (/): 配置错误
+TEST_F(ConfigTest, ParseStrategyMdSourceInvalidCharThrows) {
+    write_json(R"({
+        "strategy": [
+            {"name": "alpha", "exe": "/path/to/alpha", "md_source": "a/b"}
+        ]
+    })");
+    EXPECT_THROW(parse_master_json(config_path_), std::runtime_error);
+}
+
+// 策略 md_source 过长 (>63): 配置错误
+TEST_F(ConfigTest, ParseStrategyMdSourceTooLongThrows) {
+    write_json(R"({
+        "strategy": [
+            {"name": "alpha", "exe": "/path/to/alpha",
+             "md_source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+        ]
+    })");
+    EXPECT_THROW(parse_master_json(config_path_), std::runtime_error);
+}
+
+// 非 Strategy 条目携带 md_source: 配置错误 (契约 4.1 规则 6)
+TEST_F(ConfigTest, ParseGatewayWithMdSourceThrows) {
+    write_json(R"({
+        "md": {
+            "dzmd_ctp": {"args": [], "md_source": "ignored"}
+        }
+    })");
+    EXPECT_THROW(parse_master_json(config_path_), std::runtime_error);
+}
+
+// webui 条目携带 md_source: 同样配置错误
+TEST_F(ConfigTest, ParseWebuiWithMdSourceThrows) {
+    write_json(R"({
+        "webui": {"args": [], "md_source": "ignored"}
+    })");
+    EXPECT_THROW(parse_master_json(config_path_), std::runtime_error);
+}
+
+// ---- 策略条目持久化 (strategy section 数组) ----
+
+// write_strategy_section 新增策略条目 (strategy section 从无到有)
+TEST_F(ConfigTest, WriteStrategySectionCreatesEntry) {
+    write_json(R"({"master": {}})");
+    nlohmann::json entry = {
+        {"name", "alpha"},
+        {"exe", "/path/to/alpha"},
+        {"args", nlohmann::json::array()},
+        {"md_source", "dzmd_ctp"},
+    };
+    write_strategy_section(config_path_, entry);
+    auto cfg = parse_master_json(config_path_);
+    ASSERT_EQ(cfg.entries.size(), 1u);
+    EXPECT_EQ(cfg.entries[0].name, "alpha");
+    EXPECT_EQ(cfg.entries[0].md_source, "dzmd_ctp");
+}
+
+// write_strategy_section 更新既有条目时保留 md_source/exe (不被 args 覆盖写丢)
+TEST_F(ConfigTest, WriteStrategySectionPreservesMdSourceOnUpdate) {
+    write_json(R"({
+        "strategy": [
+            {"name": "alpha", "exe": "/path/to/alpha", "md_source": "dzmd_ctp", "args": ["old"]}
+        ]
+    })");
+    // 模拟 SET_PROCESS_CONFIG 更新 args/env/restart (不含 md_source)
+    nlohmann::json entry = {
+        {"name", "alpha"},
+        {"args", nlohmann::json::array({"new_arg"})},
+        {"restart", {{"enabled", true}, {"max_attempts", 5}, {"backoff_sec", 5}}},
+    };
+    write_strategy_section(config_path_, entry);
+    auto cfg = parse_master_json(config_path_);
+    ASSERT_EQ(cfg.entries.size(), 1u);
+    EXPECT_EQ(cfg.entries[0].name, "alpha");
+    // 既有 md_source/exe 保留 (修复: 误写 md.<name> 段会把 md_source 写丢)
+    EXPECT_EQ(cfg.entries[0].md_source, "dzmd_ctp");
+    EXPECT_EQ(cfg.entries[0].args, std::vector<std::string>({"new_arg"}));
+}
+
+// remove_strategy_section 删除指定策略条目, 其他条目保留
+TEST_F(ConfigTest, RemoveStrategySectionDeletesEntry) {
+    write_json(R"({
+        "strategy": [
+            {"name": "alpha", "exe": "/a", "md_source": "dzmd_ctp"},
+            {"name": "beta", "exe": "/b", "md_source": "dzmd_ctp"}
+        ]
+    })");
+    remove_strategy_section(config_path_, "alpha");
+    auto cfg = parse_master_json(config_path_);
+    ASSERT_EQ(cfg.entries.size(), 1u);
+    EXPECT_EQ(cfg.entries[0].name, "beta");
+}
+
+// remove_strategy_section 目标不存在: 无操作不抛
+TEST_F(ConfigTest, RemoveStrategySectionIdempotent) {
+    write_json(R"({"strategy": [{"name": "alpha", "exe": "/a", "md_source": "dzmd_ctp"}]})");
+    EXPECT_NO_THROW(remove_strategy_section(config_path_, "nonexistent"));
+    auto cfg = parse_master_json(config_path_);
+    ASSERT_EQ(cfg.entries.size(), 1u);
+    EXPECT_EQ(cfg.entries[0].name, "alpha");
+}
+
+// ---- MasterConfig.md_ready_timeout_sec ----
+
+TEST_F(ConfigTest, MasterConfigMdReadyTimeoutDefault) {
+    // 旧文件无该字段 -> 默认 5
+    auto cfg = MasterConfig::load(tmp_dir_ / "nonexistent.json");
+    EXPECT_EQ(cfg.md_ready_timeout_sec, 5);
+}
+
+TEST_F(ConfigTest, MasterConfigMdReadyTimeoutLoadAndClamp) {
+    write_json(R"({"master": {"md_ready_timeout_sec": 0}})");
+    auto cfg = parse_master_json(config_path_);
+    // <1 clamp 到 1 (与 single_stop_timeout_sec 同规则)
+    EXPECT_EQ(cfg.master.md_ready_timeout_sec, 1);
+}
+
+TEST_F(ConfigTest, MasterConfigSavePreservesMdReadyTimeout) {
+    nlohmann::json full = {
+        {"master", {{"single_stop_timeout_sec", 3}, {"md_ready_timeout_sec", 7}}}
+    };
+    auto path = tmp_dir_ / "master_md_ready.json";
+    std::ofstream(path) << full.dump(2);
+
+    MasterConfig cfg;
+    cfg.md_ready_timeout_sec = 9;
+    cfg.save(path);
+
+    std::ifstream ifs(path);
+    nlohmann::json saved;
+    ifs >> saved;
+    EXPECT_EQ(saved["master"]["md_ready_timeout_sec"], 9);
+    EXPECT_EQ(saved["master"]["single_stop_timeout_sec"], 3);
 }
 
 TEST_F(ConfigTest, ParseStrategyWithRestart) {
@@ -323,6 +496,7 @@ TEST_F(ConfigTest, ParseStrategyWithRestart) {
             {
                 "name": "auto_restart_strat",
                 "exe": "/path/to/strat",
+                "md_source": "dzmd_ctp",
                 "restart": {"enabled": true, "max_attempts": 3, "backoff_sec": 10}
             }
         ]

@@ -57,12 +57,40 @@ ProcessEntry parse_gateway_entry(const std::string& name, Category cat, const nl
     ProcessEntry entry;
     entry.name = name;
     entry.category = cat;
+    // 契约 4.1 规则 6: 非 Strategy 条目出现 md_source 视为配置错误
+    if (val.contains("md_source")) {
+        throw std::runtime_error(std::format(
+            "md_source is only valid for strategy entries | entry={}", name));
+    }
     // exe 和 start_dir 留空, 由 launch_child 调 find_exe_by_stem 实时扫描填充 (契约 process)
     entry.args = parse_args(val);
     entry.env = parse_env(val);
     entry.restart = parse_restart(val, cat);
     entry.display_name = val.value("display_name", "");
     return entry;
+}
+
+/// 解析并校验策略的 md_source 字段 (契约: 必填非空, 长度 ≤63, 不含 / \ 控制字符;
+/// 允许指向当前不存在的 md 源)。校验失败抛 std::runtime_error (配置错误)。
+std::string parse_strategy_md_source(const nlohmann::json& val) {
+    const std::string md_source = val.value("md_source", "");
+    if (md_source.empty()) {
+        throw std::runtime_error(
+            "strategy md_source is required and must be non-empty | strategy=" +
+            val.value("name", "?"));
+    }
+    if (md_source.size() > 63) {
+        throw std::runtime_error("strategy md_source too long (max 63) | strategy=" +
+                                 val.value("name", "?"));
+    }
+    for (const char c : md_source) {
+        if (c == '/' || c == '\\' || (static_cast<unsigned char>(c) < 0x20)) {
+            throw std::runtime_error(
+                "strategy md_source contains invalid character | strategy=" +
+                val.value("name", "?"));
+        }
+    }
+    return md_source;
 }
 
 }  // namespace
@@ -119,6 +147,11 @@ Config parse_master_json(const std::filesystem::path& config_path) {
                     cfg.master.single_stop_timeout_sec);
         cfg.master.single_stop_timeout_sec = 1;
     }
+    if (cfg.master.md_ready_timeout_sec < 1) {
+        SPDLOG_WARN("md_ready_timeout_sec too small, clamped to 1 | config={}",
+                    cfg.master.md_ready_timeout_sec);
+        cfg.master.md_ready_timeout_sec = 1;
+    }
 
     // shm section (ShmGlobalConfig::load 只读 meta_file_size, 忽略 event 子段)
     cfg.shm_global = ShmGlobalConfig::load(config_path, "shm");
@@ -141,6 +174,11 @@ Config parse_master_json(const std::filesystem::path& config_path) {
 
     // webui section (单例,与 master 同级)
     if (data.contains("webui") && data["webui"].is_object()) {
+        // 契约 4.1 规则 6: 非 Strategy 条目出现 md_source 视为配置错误
+        if (data["webui"].contains("md_source")) {
+            throw std::runtime_error(
+                "md_source is only valid for strategy entries | entry=webui");
+        }
         ProcessEntry entry;
         entry.name = "dzweb";
         entry.category = Category::WebUI;
@@ -166,6 +204,7 @@ Config parse_master_json(const std::filesystem::path& config_path) {
                 entry.start_dir = entry.exe.parent_path();
             }
             entry.restart = parse_restart(val, Category::Strategy);
+            entry.md_source = parse_strategy_md_source(val);
             cfg.entries.push_back(std::move(entry));
         }
     }
@@ -306,6 +345,87 @@ void remove_webui_section(const std::filesystem::path& config_path) {
     }
 }
 
+void write_strategy_section(const std::filesystem::path& config_path,
+                            const nlohmann::json& strategy_entry) {
+    // strategy section 为数组, 按 name 匹配替换; 不存在则追加。
+    // 保留策略条目的 exe/md_source/start_dir 等既有字段 (只覆盖 args/env/restart/
+    // display_name), 避免编辑运行配置时把 md_source 或整个条目写丢。
+    nlohmann::json strategy_arr = nlohmann::json::array();
+    if (std::filesystem::exists(config_path)) {
+        std::ifstream ifs(config_path);
+        if (ifs) {
+            try {
+                nlohmann::json full;
+                ifs >> full;
+                if (full.is_object() && full.contains("strategy") &&
+                    full["strategy"].is_array()) {
+                    strategy_arr = full["strategy"];
+                }
+            } catch (const std::exception&) {
+                // 旧文件损坏, 用空数组起步 (save_json_section 内部已处理备份)
+            }
+        }
+    }
+
+    const std::string name = strategy_entry.value("name", "");
+    bool replaced = false;
+    for (auto& item : strategy_arr) {
+        if (item.value("name", "") == name) {
+            // merged = 旧条目 + 新条目覆盖; 保留旧条目中本次未提供的字段
+            nlohmann::json merged = item;
+            for (auto it = strategy_entry.begin(); it != strategy_entry.end(); ++it) {
+                merged[it.key()] = it.value();
+            }
+            item = std::move(merged);
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced) {
+        strategy_arr.push_back(strategy_entry);
+    }
+
+    dztrader::core::save_json_section<nlohmann::json>(config_path, "strategy", strategy_arr);
+}
+
+void remove_strategy_section(const std::filesystem::path& config_path,
+                             const std::string& name) {
+    // load-modify-save: 读 strategy 数组 -> 移除匹配条目 -> 原子写回
+    if (!std::filesystem::exists(config_path)) return;
+    nlohmann::json strategy_arr = nlohmann::json::array();
+    {
+        std::ifstream ifs(config_path);
+        if (!ifs) return;
+        try {
+            nlohmann::json full;
+            ifs >> full;
+            if (!full.is_object() || !full.contains("strategy") ||
+                !full["strategy"].is_array()) {
+                return;
+            }
+            strategy_arr = full["strategy"];
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::format(
+                "failed to parse {} for remove strategy | error=\"{}\"",
+                config_path.string(), e.what()));
+        }
+    }
+
+    bool removed = false;
+    nlohmann::json result = nlohmann::json::array();
+    for (auto& item : strategy_arr) {
+        if (item.value("name", "") == name) {
+            removed = true;
+            continue;
+        }
+        result.push_back(std::move(item));
+    }
+    if (!removed) {
+        return;
+    }
+    dztrader::core::save_json_section<nlohmann::json>(config_path, "strategy", result);
+}
+
 void generate_default_config(const std::filesystem::path& json_path) {
     if (std::filesystem::exists(json_path)) return;
 
@@ -353,7 +473,8 @@ MasterConfig MasterConfig::load(const std::filesystem::path& path, const std::st
 }
 
 void MasterConfig::save(const std::filesystem::path& path, const std::string& section) const {
-    // load-modify-save: 读现有 section -> 更新 single_stop_timeout_sec -> 原子写回 (保留其他字段)
+    // load-modify-save: 读现有 section -> 更新 single_stop_timeout_sec + md_ready_timeout_sec
+    // -> 原子写回 (保留其他字段)
     nlohmann::json section_obj = nlohmann::json::object();
     if (std::filesystem::exists(path)) {
         std::ifstream ifs(path);
@@ -369,8 +490,9 @@ void MasterConfig::save(const std::filesystem::path& path, const std::string& se
             }
         }
     }
-    // 只更新 single_stop_timeout_sec, 保留其他字段
+    // 只更新 single_stop_timeout_sec 与 md_ready_timeout_sec, 保留其他字段
     section_obj["single_stop_timeout_sec"] = single_stop_timeout_sec;
+    section_obj["md_ready_timeout_sec"] = md_ready_timeout_sec;
     // 用 save_json_section 写整个 section (原子 tmp+rename, 保留其他 section 不变)
     dztrader::core::save_json_section<nlohmann::json>(path, section, section_obj);
 }

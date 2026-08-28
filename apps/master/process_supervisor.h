@@ -46,7 +46,8 @@ public:
                       ProcessRegistry& registry,
                       ShmManager& shm_mgr,
                       OrphanGuard& orphan_guard,
-                      int single_stop_timeout_sec = 3);
+                      int single_stop_timeout_sec = 3,
+                      int md_ready_timeout_sec = 5);
 
     /// 并行启动所有已注册的进程。
     void start_all();
@@ -143,12 +144,28 @@ public:
     /// 是否正在关闭中？
     bool is_shutting_down() const;
 
+    /// md 通道就绪回调 (由 ShmManager::mark_md_channel_ready 在收到
+    /// NOTIFY_MD_STARTED 后调用): 启动该源全部 pending 策略并清空 pending,
+    /// 取消该源 ready watchdog。
+    void on_md_channel_ready(const std::string& source);
+
+    /// 查询策略是否处于 pending (等待行情源 ready)。
+    /// 命中时 message 输出 pending 原因 (供 report_full_snapshot 保留 Starting 状态)。
+    [[nodiscard]] bool is_pending_strategy(const std::string& name, std::string& message) const;
+
 private:
     /// 启动子进程。返回 true 表示成功启动; false 表示启动失败
     /// (重复启动 / exe 未找到 / child->start 失败)。
     /// exe 为空时调 find_exe_by_stem 实时扫描填充 (扫描结果不回写 registry)。
     /// 失败时: 失败路径 B/D 推送 crashed + notify_ui, 失败路径 B 不安排 restart。
     bool launch_child(const ProcessEntry& entry);
+
+    /// 运行期动态启动入口 (PROCESS_CONTROL start / 晚到 STARTED 补启动):
+    /// - Strategy: 绑定源 ready 则 pre-register reader + launch_child;
+    ///   源不存在或未 ready 则进 pending (反馈"等待行情源")。
+    /// - 其他类别: 直接 launch_child。
+    /// 返回 true = 已 spawn (成功); false = 未 spawn (失败/pending/已在运行)。
+    bool launch_registered_process(const ProcessEntry& entry);
     void on_child_exit(std::shared_ptr<ChildProcess> child,
                        boost::system::error_code ec, int exit_code);
     void schedule_restart(const std::string& name,
@@ -211,6 +228,40 @@ private:
     /// 与 single_stop_timers_ 一样在 io_context 线程中串行访问, 无需加锁
     std::unordered_set<std::string> remove_pending_;
 
+    /// 未就绪 (md 未 ready) 的策略: source -> 策略名列表。
+    /// 启动编排超时后与运行期动态启动 (绑定源未就绪) 时加入;
+    /// on_md_channel_ready 收到晚到 STARTED 后启动全部并清空。
+    std::unordered_map<std::string, std::vector<std::string>> pending_strategies_;
+
+    /// md ready watchdog 定时器: source -> timer。
+    /// 每次 spawn md 进程后启动, 收到对应 NOTIFY_MD_STARTED 时取消 (on_md_channel_ready)。
+    /// 超时行为按"是否存在运行中绑定策略"区分 (见 on_md_ready_timeout)。
+    std::unordered_map<std::string, std::unique_ptr<boost::asio::steady_timer>> md_ready_timers_;
+
+    /// md ready 超时回调 (watchdog): source 在 md_ready_timeout_sec_ 内未 ready 时触发
+    void on_md_ready_timeout(const std::string& source,
+                             const boost::system::error_code& ec);
+
+    /// 每次 spawn md 进程后启动 ready watchdog 定时器 (契约 4.5)
+    void arm_md_ready_watchdog(const std::string& source);
+
+    /// 启动绑定 source 且未在运行的全部策略 (pre-register reader + spawn)。
+    /// 供启动编排与 on_md_channel_ready 共用。
+    void start_strategies_for_source(const std::string& source);
+
+    /// 策略 spawn 前预注册 md 读者 (契约 4.3): add_reader(stg.<name>) +
+    /// 通知 md 进程刷新订阅者缓存。
+    void pre_register_strategy_reader(const std::string& strategy_name,
+                                      const std::string& md_source);
+
+    /// start_all 第三趟: 同步有界等待被至少一个策略引用的 md ready,
+    /// 每个 ready 源启动其绑定策略 (add_reader + spawn); 超时后未 ready 源的
+    /// 绑定策略进 pending (Starting + message)。
+    void wait_for_md_ready_and_start_strategies();
+
+    /// 查询绑定某 source 的全部策略名 (来自 registry, 含未启动项)
+    std::vector<std::string> strategies_bound_to(const std::string& source) const;
+
     /// 被强制终止 (force kill) 的子进程名称集合
     /// 在 on_single_stop_timeout 中加入, 在 on_child_exit 中读取后清除
     /// 用于跳过 crash 分支的 notify_ui, 避免与 on_single_stop_timeout 中的
@@ -223,6 +274,9 @@ private:
 
     /// 单进程停止超时秒数 (可配置, 由构造函数从 dztraderd.json [master].single_stop_timeout_sec 注入)
     int single_stop_timeout_sec_ = 3;
+
+    /// md ready 等待超时秒数 (可配置, 由构造函数从 dztraderd.json [master].md_ready_timeout_sec 注入)
+    int md_ready_timeout_sec_ = 5;
 };
 
 }  // namespace dztrader::master

@@ -64,7 +64,7 @@ TEST_F(ProcessRegistryTest, StrategyFromConfig) {
     write_json(R"({
         "master": {},
         "strategy": [
-            {"name": "test_strat", "exe": "/path/to/strat"}
+            {"name": "test_strat", "exe": "/path/to/strat", "md_source": "dzmd_ctp"}
         ]
     })");
 
@@ -75,6 +75,7 @@ TEST_F(ProcessRegistryTest, StrategyFromConfig) {
     ASSERT_NE(strat, nullptr);
     EXPECT_EQ(strat->category, Category::Strategy);
     EXPECT_FALSE(strat->restart.enabled);
+    EXPECT_EQ(strat->md_source, "dzmd_ctp");
 }
 
 TEST_F(ProcessRegistryTest, FindNonExistent) {

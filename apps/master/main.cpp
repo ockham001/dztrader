@@ -170,12 +170,14 @@ int main(int argc, char* argv[]) {
     }
 
     // 8. 创建 io_context 和 ProcessSupervisor
-    //    single_stop_timeout_sec 从 dztraderd.json [master] 段读取 (默认 3),
-    //    控制 on_single_stop_timeout 强制 kill 的超时阈值 (失败路径 C)
+    //    single_stop_timeout_sec / md_ready_timeout_sec 从 dztraderd.json [master] 段读取
+    //    (默认 3 / 5), 前者控制 on_single_stop_timeout 强制 kill 的超时阈值 (失败路径 C),
+    //    后者控制 start_all 第三趟等待 md ready 的时长与 md ready watchdog。
     boost::asio::io_context ioc;
     auto work_guard = boost::asio::make_work_guard(ioc);
     dztrader::master::ProcessSupervisor supervisor(ioc, registry, *shm_mgr, orphan_guard,
-                                                    cfg.master.single_stop_timeout_sec);
+                                                    cfg.master.single_stop_timeout_sec,
+                                                    cfg.master.md_ready_timeout_sec);
 
     // 注入 supervisor 到 ShmManager，使 PROCESS_CONTROL 帧能调用 start_process/stop_process
     shm_mgr->set_supervisor(&supervisor);
