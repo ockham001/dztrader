@@ -64,7 +64,9 @@ public:
             nodes_[i] = nodes_.back();
             nodes_.pop_back();
             if (i < nodes_.size()) {
-                // 换入元素可能上浮或下沉，双向修正（标准堆删除）
+                // 换入元素可能上浮或下沉: 两路径互斥 (标准堆删除)。
+                // 若 sift_up 移动了元素, sift_down(原索引) 作用于被换下的父元素,
+                // 堆不变量保证其 <= 两孩子, 故 sift_down 为 no-op, 双重修正安全。
                 sift_up(i);
                 sift_down(i);
             }

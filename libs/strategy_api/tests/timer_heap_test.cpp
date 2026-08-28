@@ -91,6 +91,30 @@ TEST(TimerHeap, RemoveTokenKeepsHeapProperty) {
     EXPECT_EQ(count, 47);
 }
 
+TEST(TimerHeap, RemoveTokenReplacementBubblesUp) {
+    // 构造: 删除 token=101 (index 3) 时, 换入的尾元素 {4} 小于父 {100},
+    // 触发 sift_up 链; 其后的 sift_down(原索引) 作用于被换下的父元素,
+    // 按堆不变量必为 no-op。验证堆性质在双向修正后仍保持。
+    TimerHeap heap;
+    const auto base = Clock::now();
+    const std::vector<std::pair<int64_t, uint64_t>> init = {
+        {1, 1}, {100, 100}, {2, 2}, {101, 101}, {102, 102}, {3, 3}, {4, 4}};
+    for (const auto& [ms, token] : init) {
+        heap.push(base + std::chrono::milliseconds(ms), token);
+    }
+    EXPECT_TRUE(heap.remove_token(101));
+    int64_t prev = -1;
+    int count = 0;
+    while (!heap.empty()) {
+        const auto node = heap.pop();
+        const int64_t ms = (node.deadline - base) / std::chrono::milliseconds(1);
+        EXPECT_GE(ms, prev);
+        prev = ms;
+        ++count;
+    }
+    EXPECT_EQ(count, 6);
+}
+
 TEST(TimerHeap, RemoveTokensBelowRebuildsHeap) {
     TimerHeap heap;
     const auto base = Clock::now();
