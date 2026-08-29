@@ -75,10 +75,13 @@ DZ_API const char* dz_md_source_name(DzContext* ctx);
  * 返回后通过 dz_next_md() / dz_next_event() 逐帧读取数据。
  * 高频模式下可不调用此函数，直接轮询 dz_next_md() / dz_next_event()。
  *
- * 等待行为：
+ * 等待行为（纯等待，不做定时器触发）：
  *   - 无待触发定时器：无限阻塞，仅被信号量 notify 唤醒（CPU=0）
- *   - 有待触发定时器（含 SDK 内部随机延迟任务）：等待至最近到期时间返回
- * 唤醒后 SDK 已触发到期定时器，定时器帧经 dz_next_event() 返回。
+ *   - 有待触发定时器：等待至最近到期时间返回；已到期则立即返回（免系统调用）
+ *
+ * 定时器推进点唯一在 dz_next_event()：到期定时器由 dz_next_event 触发
+ * （通道无用户帧时）并经其返回。契约要求策略调用 dz_next_event 消费
+ * 事件流——定时器是事件流的一部分，不调用则不触发（不设防）。
  */
 DZ_API void dz_wait(DzContext* ctx);
 
@@ -130,8 +133,9 @@ DZ_API void dz_notify_self(DzContext* ctx);
 
 /* ── 定时器 ──
  *
- * 单线程契约：定时器由 dz_wait() / dz_next_event() 所在的主循环线程驱动（tick），
- * dz_schedule_* 也必须在同一线程调用（与句柄契约一致）。触发事件以
+ * 单线程契约：定时器推进点唯一在 dz_next_event()（通道无用户帧时 tick），
+ * dz_wait() 仅负责等待（无定时器无限阻塞 / 有定时器等待至最近到期）。
+ * dz_schedule_* 必须在主循环线程调用（与句柄契约一致）。触发事件以
  * DZ_FRAME_STG_TIMER 帧经 dz_next_event() 返回，不写入共享内存。
  * SDK 内部任务（SHM 预加载随机延迟）与用户定时器共用队列，但内部 ID 对用户
  * 不可见，dz_schedule_cancel / dz_schedule_cancel_all 结构上无法误删内部定时器。 */

@@ -389,20 +389,19 @@ void DzContext::internal_cleanup_on_shutdown() {
 }
 
 DZ_API void dz_wait(DzContext* ctx) {
+    // 纯等待: 不做任何定时器计算与触发 (唯一推进点在 dz_next_event)。
+    // 定时器是事件流的一部分, 契约要求策略调用 dz_next_event 消费;
+    // 不调用则不触发, 不设防。
     if (ctx->has_pending_timers()) {
         const uint32_t timeout_ms = ctx->next_timer_wait_ms();
+        if (timeout_ms == 0) {
+            return;  // 已到期: 免一次 syscall, 立即返回, 由 dz_next_event 触发
+        }
         static_assert(noexcept(ctx->sem.wait_for(timeout_ms)));
         (void)ctx->sem.wait_for(timeout_ms);
     } else {
         static_assert(noexcept(ctx->sem.wait()));
         ctx->sem.wait();
-    }
-    try {
-        ctx->tick_timers();
-    } catch (const std::exception& e) {
-        internal_diag(std::string("timer tick failed: ") + e.what());
-    } catch (...) {
-        internal_diag("timer tick failed: unknown exception");
     }
 }
 
