@@ -293,6 +293,10 @@ void AccountSession::on_rtn_order(const OnRtnOrderField& f) {
         if (local != nullptr) {
             rpt.base.order_id = *local;
             rpt.is_external = 0;
+            // 本地单: 回填 strategy_id (策略 SDK 按 strategy_id 定向过滤回报)
+            if (const std::string* sid = order_ref_map_.find_strategy(*local)) {
+                copy_string(rpt.base.strategy_id, sid->c_str(), true);
+            }
             // C4: 收到 CTP 回报后更新 CancelContext 的 front_id/session_id
             // (place_order 时初始为 0, 这里填充实际值供后续 cancel_order 使用)
             order_ref_map_.update_cancel_context(*local, f.order.FrontID, f.order.SessionID);
@@ -340,6 +344,10 @@ void AccountSession::on_rtn_trade(const OnRtnTradeField& f) {
         const DzOrderId* local = order_ref_map_.find_by_order_ref(f.trade.OrderRef);
         if (local != nullptr) {
             rpt.base.order_id = *local;
+            // 本地单: 回填 strategy_id (策略 SDK 按 strategy_id 定向过滤回报)
+            if (const std::string* sid = order_ref_map_.find_strategy(*local)) {
+                copy_string(rpt.base.strategy_id, sid->c_str(), true);
+            }
         }
 
         // 推 SHM (DzTradeReport 通用字段)
@@ -408,6 +416,8 @@ void AccountSession::place_order(const DzOrderReq& req) {
     // C1: OrderRefMap 内部归一化为 12 位补零格式, 与 CTP 回传格式一致
     std::string order_ref_str = std::to_string(order_ref_);
     order_ref_map_.insert_by_order_ref(order_ref_str, req.order_id);
+    // 回报回填: DzOrderId -> strategy_id (on_rtn_order/on_rtn_trade 回填用)
+    order_ref_map_.insert_strategy(req.order_id, req.strategy_id);
 
     int ret = api_->ReqOrderInsert(&input, build_ctx.request_id);
     if (ret != 0) {
@@ -415,6 +425,7 @@ void AccountSession::place_order(const DzOrderReq& req) {
                      account_id_, ret, req.order_id, order_ref_);
         // 失败回滚映射
         order_ref_map_.erase_by_order_ref(order_ref_str);
+        order_ref_map_.erase_strategy(req.order_id);
         reject_order(req, std::format("CTP 下单失败: ret={}", ret));
         return;
     }
