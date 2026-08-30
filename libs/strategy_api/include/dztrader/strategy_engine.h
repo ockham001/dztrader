@@ -10,9 +10,10 @@
  *     拼写错误在接入处编译报错
  *   - 可选: on_stop(), on_trade_report(const DzTradeReport&),
  *     on_order_report(const DzOrderReport&), on_schedule(const DzScheduleEvent&),
+ *     on_user_input(const DzUserInput&),
  *     on_error(DzErrorCode, std::string_view) -- 编译期探测, 实现了才调用
- *   - 引擎不分发的事件帧 (持仓/资金/网关状态等 TD 查询回报 2002-2017、
- *     STG_USER_INPUT) 与非 tick 行情帧被静默忽略, 实现对应回调不会被调用
+ *   - 引擎不分发的事件帧 (持仓/资金/网关状态等 TD 查询回报 2002-2017)
+ *     与非 tick 行情帧被静默忽略, 实现对应回调不会被调用
  *
  * 异常语义:
  *   - on_start 抛异常 = 生命周期失败: 引擎报告错误、释放会话、返回
@@ -27,9 +28,9 @@
  *     只能在回调内 (即引擎线程) 调用, 用户自建线程须在进程退出前 join
  *   - 回调参数是 SHM/SDK 缓冲的引用, 仅在本次回调返回前有效, 需留存请拷贝
  *
- * 自检: 启动时向 stdout 输出一行回调探测清单 (stop/trade/order/schedule/error
+ * 自检: 启动时向 stdout 输出一行回调探测清单 (stop/trade/order/schedule/input/error
  * 的 yes/no), 将"回调名拼错导致永不触发"的静默失败暴露在首次运行。
- * 注意: 继承 StrategyBase 的策略六项恒为 yes (基类提供全部空实现),
+ * 注意: 继承 StrategyBase 的策略各项恒为 yes (基类提供全部空实现),
  * 拼写错误的 override 由编译器 override 检查兜底。
  *
  * 典型用法:
@@ -61,7 +62,6 @@
 #include <format>
 #include <iostream>
 #include <string_view>
-
 namespace dztrader::strategy_engine_internal {
 
 /* ── 引擎内部: 模板实现细节, 策略用户勿直接引用 ──
@@ -80,6 +80,9 @@ concept HasOnOrderReport = requires(T t, const DzOrderReport& rpt) { t.on_order_
 
 template <typename T>
 concept HasOnSchedule = requires(T t, const DzScheduleEvent& ev) { t.on_schedule(ev); };
+
+template <typename T>
+concept HasOnUserInput = requires(T t, const DzUserInput& input) { t.on_user_input(input); };
 
 template <typename T>
 concept HasOnError =
@@ -181,6 +184,23 @@ void handle_event(StrategyT& strategy, const std::byte* frame, bool& running) no
                     }
                 }
                 break;
+            case DZ_FRAME_STG_USER_INPUT:
+                if constexpr (HasOnUserInput<StrategyT>) {
+                    // 变长 ext_inst 帧: DzFrameHeader + DzExtInstFrameHeader + 变长 payload,
+                    // 无固定 payload_size 可校验, 按 ext 头 data_size 解析 (契约 strategy)
+                    const auto& ext =
+                        *std::launder(reinterpret_cast<const DzExtInstFrameHeader*>(
+                            frame + sizeof(DzFrameHeader)));
+                    const auto* payload = static_cast<const char*>(
+                        static_cast<const void*>(frame + sizeof(DzFrameHeader) +
+                                                 sizeof(DzExtInstFrameHeader)));
+                    strategy.on_user_input(DzUserInput{
+                        .instance_id = std::string_view(ext.instance_id),
+                        .data = payload,
+                        .data_size = ext.data_size,
+                    });
+                }
+                break;
             case DZ_FRAME_REQUEST_SHUTDOWN:
                 running = false;  // 先定格退出决策 (帧已被消费, 反序可能永久阻塞)
                 if constexpr (HasOnStop<StrategyT>) {
@@ -232,11 +252,12 @@ void pump_once(StrategyT& strategy, DzContext* ctx, bool& running) {
 template <typename StrategyT>
 void report_start() noexcept {
     std::cout << std::format("strategy callbacks | stop={} trade={} order={} schedule={} "
-                             "error={}\n",
+                             "input={} error={}\n",
                              HasOnStop<StrategyT> ? "yes" : "no",
                              HasOnTradeReport<StrategyT> ? "yes" : "no",
                              HasOnOrderReport<StrategyT> ? "yes" : "no",
                              HasOnSchedule<StrategyT> ? "yes" : "no",
+                             HasOnUserInput<StrategyT> ? "yes" : "no",
                              HasOnError<StrategyT> ? "yes" : "no");
     std::cout.flush();  // master 管道块缓冲: 显式排空, 保证自检行不滞留
 }

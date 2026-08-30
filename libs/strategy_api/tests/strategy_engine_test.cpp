@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -22,6 +23,7 @@ namespace {
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::MultiWriter;
+using dztrader::DzUserInput;
 
 constexpr uint64_t kMB = 1024 * 1024;
 
@@ -167,6 +169,11 @@ public:
         ++schedule_count;
         timer_id = ev.timer_id;
     }
+    void on_user_input(const DzUserInput& input) {
+        ++input_count;
+        last_instance_id = std::string(input.instance_id);
+        last_input = std::string(input.data, input.data_size);
+    }
     void on_error(DzErrorCode code, std::string_view message) {
         ++error_count;
         error_code = code;
@@ -179,11 +186,14 @@ public:
     int trade_count = 0;
     int order_count = 0;
     int schedule_count = 0;
+    int input_count = 0;
     int error_count = 0;
     double last_price = 0.0;
     std::string trade_id;
     int64_t order_id = -1;
     DzTimerId timer_id = 0;
+    std::string last_instance_id;
+    std::string last_input;
     DzErrorCode error_code = 0;
     std::string error_message;
 };
@@ -568,6 +578,56 @@ TEST_F(StrategyEngineTest, TradeAndOrderReportsDispatchedWithPayload) {
     EXPECT_EQ(rc, 0);
     EXPECT_EQ(strategy.trade_count, 1);
     EXPECT_EQ(strategy.order_count, 1);
+    EXPECT_TRUE(shutdown_written.load());
+    EXPECT_EQ(strategy.stop_count, 1);
+}
+
+TEST_F(StrategyEngineTest, UserInputFrameDispatchedWithInstanceIdAndPayload) {
+    FullStrategy strategy;
+    std::string strategy_id;
+    std::atomic<bool> shutdown_written{false};
+
+    struct HookStrategy {
+        FullStrategy& inner;
+        std::string& strategy_id;
+        std::atomic<bool>& shutdown_written;
+        StrategyEngineTest& fixture;
+
+        void on_start(DzContext* ctx) {
+            inner.on_start(ctx);
+            strategy_id = dz_strategy_id(ctx);
+            (void)dz_schedule_after(ctx, 100);
+            // STG_USER_INPUT 变长 ext_inst 帧: instance_id + data_size + UTF-8 payload
+            // (契约 strategy: UI→策略, 写法同 dz_output_ui 的写端)
+            const char* payload = R"({"action":"pause","reason":"manual"})";
+            dztrader::shm::MultiWriter writer = dztrader::shm::MultiWriter::create(
+                fixture.event_channel_meta(), "engine_test_writer");
+            (void)writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, "ui_test_sender",
+                                              reinterpret_cast<const std::byte*>(payload),
+                                              static_cast<uint32_t>(std::strlen(payload)));
+        }
+        void on_stop() { inner.on_stop(); }
+        void on_tick(const DzTick& tick) { inner.on_tick(tick); }
+        void on_user_input(const DzUserInput& input) { inner.on_user_input(input); }
+        void on_schedule(const DzScheduleEvent& ev) {
+            inner.on_schedule(ev);
+            shutdown_written.store(fixture.write_shutdown(strategy_id));
+        }
+    };
+    static_assert(dztrader::Strategy<HookStrategy>);
+    static_assert(dztrader::strategy_engine_internal::HasOnUserInput<HookStrategy>);
+
+    HookStrategy hook{strategy, strategy_id, shutdown_written, *this};
+
+    start_rescue(strategy_id, 15000);
+    const int32_t rc = dztrader::run_strategy(hook);
+    join_threads();
+
+    EXPECT_EQ(rc, 0);
+    EXPECT_EQ(strategy.input_count, 1);
+    // instance_id 透传帧扩展头 (本测试写 "ui_test_sender"): 引擎不过滤, 策略自行判断
+    EXPECT_EQ(strategy.last_instance_id, "ui_test_sender");
+    EXPECT_EQ(strategy.last_input, R"({"action":"pause","reason":"manual"})");
     EXPECT_TRUE(shutdown_written.load());
     EXPECT_EQ(strategy.stop_count, 1);
 }

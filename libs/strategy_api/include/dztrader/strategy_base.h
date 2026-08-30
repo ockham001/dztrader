@@ -15,9 +15,21 @@
 #include <dztrader/error.h>
 #include <dztrader/struct.h>
 
+#include <cstdint>
 #include <string_view>
 
 namespace dztrader {
+
+/// 用户输入回调视图 (DZ_FRAME_STG_USER_INPUT, 变长 ext_inst 帧的解析结果)。
+/// 非共享内存布局结构: data 指向 SHM 帧 payload, 仅在本次回调返回前有效,
+/// 需留存请拷贝; 内容为 UTF-8 文本或 JSON, 无固定 schema (契约 strategy)。
+/// instance_id 为目标裸策略名 —— 该帧当前不按 instance_id 过滤, 收到的
+/// 不一定是定向本策略的输入, 策略可据此自行判断是否处理。
+struct DzUserInput {
+    std::string_view instance_id;  ///< 目标策略名 (帧扩展头 instance_id)
+    const char* data;              ///< 变长 payload (UTF-8 文本/JSON), 回调内有效
+    uint32_t data_size;            ///< payload 字节数 (不含结尾 0, 不保证 0 结尾)
+};
 
 class StrategyBase {
 public:
@@ -29,6 +41,7 @@ public:
     virtual void on_trade_report(const DzTradeReport& trade_report) { (void)trade_report; }
     virtual void on_order_report(const DzOrderReport& order_report) { (void)order_report; }
     virtual void on_schedule(const DzScheduleEvent& timer_event) { (void)timer_event; }
+    virtual void on_user_input(const DzUserInput& user_input) { (void)user_input; }
     virtual void on_error(DzErrorCode errcode, std::string_view message) {
         (void)errcode;
         (void)message;
