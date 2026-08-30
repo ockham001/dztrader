@@ -89,8 +89,9 @@
 
 **白名单（返回给策略用户）**：
 
-- TD 回报帧 2000–2017（`TD_ORDER_RPT`/`TD_TRADE_RPT`/`TD_POSITION_INFO`/`TD_TRADING_ACCOUNT`/`TD_GATEWAY_STATUS`/`TD_INSTRUMENT` 等）
-- `STG_USER_INPUT`（3001，定向本策略）
+- `TD_ORDER_RPT`(2000)/`TD_TRADE_RPT`(2001)：按 payload `strategy_id` 定向——仅 `strategy_id` == 本策略裸名的帧放行；`strategy_id` 为空（外部单/手工单，非任何策略所下）与其他策略的回报一律拦截丢弃（td 网关按下单 `DzOrderReq.strategy_id` 回填，见契约 td-order）
+- 其余 TD 回报帧 2002–2017（`TD_POSITION_INFO`/`TD_TRADING_ACCOUNT`/`TD_GATEWAY_STATUS`/`TD_INSTRUMENT` 等）：暂不按策略过滤，全量放行
+- `STG_USER_INPUT`（3001，定向本策略）：SDK 按 `instance_id` == 裸策略名过滤
 - `REQUEST_SHUTDOWN`（12，`instance_id` == 裸策略名）：SDK 完成内部清理（取消内部预加载定时器、清定时器帧缓冲）后放行，策略用户可据此优雅退出（`REQUEST_SHUTDOWN_ALL`(20) 已移除：全项目无写入/消费端）
 - 本地合成的 `STG_SCHEDULE`（3003）
 
@@ -99,6 +100,7 @@
 - `PRELOAD_EVENT_SHM`（11）/ `PRELOAD_MD_SHM`（17，`instance_id` 匹配本策略行情源）：随机 0–5s 延迟后执行预加载（契约 shm）
 - `UPDATE_SHM_EVENT_SUBSCRIBER`（21）：SDK 内部 `refresh_subscribers()`
 - `NOTIFY_MD_STARTED`（1007，本策略行情源）：SDK 自动补订阅期望集合
+- 非本策略/空 `strategy_id` 的 `TD_ORDER_RPT`/`TD_TRADE_RPT`；非本策略 `instance_id` 的 `STG_USER_INPUT`/`REQUEST_SHUTDOWN`
 - 其余平台帧（日志/SHM 配置、进程控制、md 控制、TD 控制 21xx、`STG_USER_OUTPUT`/`SET_LOGICAL_POSITION` 他策略回声等）：丢弃
 
 **防饿死上限**：每次 `dz_next_event` 调用最多连续消费 32 条内部帧，超过则本次让位（优先返回已到期定时器帧，否则 NULL，下次调用继续处理）；用户帧随时立即返回，绝不被吞。

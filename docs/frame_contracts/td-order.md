@@ -37,7 +37,7 @@ struct 引用（不抄写字段表，字段定义见 `libs/core/include/dztrader
 
 ## 时序与触发
 
-- **响应**：无同步响应帧。下单/撤单结果由 `DZ_FRAME_TD_ORDER_RPT`（含 `REJECTED` 状态）异步推送，该帧契约见后续交易帧契约（当前未收录）。
+- **响应**：无同步响应帧。下单/撤单结果由 `DZ_FRAME_TD_ORDER_RPT`（含 `REJECTED` 状态）异步推送，该帧契约见后续交易帧契约（当前未收录）。`TD_ORDER_RPT`/`TD_TRADE_RPT` 的 `strategy_id` 由 td 网关按下单 `DzOrderReq.strategy_id` 回填（td 侧 OrderRefMap 按 `DzOrderId` 关联），外部单/手工单（非任何策略所下）该字段为空串；策略 SDK 按 `strategy_id` 定向过滤（契约 strategy）。
 - **当前拒绝行为**：账户不在配置 / 无 session 时静默丢弃（仅日志）；错误回报与拒单通知的完整语义由后续交易帧契约补齐。
 - **触发场景**：仅策略主动下单/撤单；本契约不响应 `QUERY_FULL_SNAPSHOT`。
 
