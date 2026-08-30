@@ -43,6 +43,12 @@ public:
     /// 仅在 ctx 存在且新值非 0 时更新, 避免覆盖有效值.
     void update_cancel_context(DzOrderId order_id, int32_t front_id, int32_t session_id);
 
+    /// 登记 DzOrderId -> 裸策略名 (place_order 时记录, 回报回填 strategy_id 用)
+    void insert_strategy(DzOrderId order_id, const std::string& strategy_id);
+    /// 按 DzOrderId 查策略名, 未找到 (外部单) 返回 nullptr
+    const std::string* find_strategy(DzOrderId order_id) const;
+    void erase_strategy(DzOrderId order_id);
+
     size_t size() const noexcept { return ref_to_id_.size(); }
     void clear() noexcept;
 
@@ -55,6 +61,8 @@ private:
     std::unordered_map<std::string, DzOrderId> sys_to_id_;
     /// C4: DzOrderId -> CancelContext (撤单反向查找)
     std::unordered_map<DzOrderId, CancelContext> id_to_ctx_;
+    /// DzOrderId -> 裸策略名 (回报回填 strategy_id; 外部单无条目)
+    std::unordered_map<DzOrderId, std::string> id_to_strategy_;
 };
 
 /// order_ref 同步公式 (设计 §9.4): new = max(current+1, ctp_max+1)

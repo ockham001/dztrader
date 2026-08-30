@@ -112,6 +112,44 @@ TEST(OrderRefMapTest, Clear) {
     EXPECT_EQ(m.size(), 0u);
     EXPECT_EQ(m.find_by_order_ref("1"), nullptr);
     EXPECT_EQ(m.find_by_sys_id("12345"), nullptr);
+    EXPECT_EQ(m.find_strategy(100), nullptr);
+}
+
+// ============================================================================
+// strategy_id 映射 (DzOrderId -> 裸策略名, 回报回填用)
+// ============================================================================
+
+TEST(OrderRefMapTest, StrategyInsertAndFind) {
+    OrderRefMap m;
+    m.insert_strategy(100, "stg_a");
+    const std::string* s = m.find_strategy(100);
+    ASSERT_NE(s, nullptr);
+    EXPECT_EQ(*s, "stg_a");
+}
+
+TEST(OrderRefMapTest, StrategyFindMissingReturnsNullptr) {
+    OrderRefMap m;
+    EXPECT_EQ(m.find_strategy(999), nullptr);
+}
+
+TEST(OrderRefMapTest, StrategyOverwrite) {
+    OrderRefMap m;
+    m.insert_strategy(100, "stg_a");
+    m.insert_strategy(100, "stg_b");
+    EXPECT_EQ(*m.find_strategy(100), "stg_b");
+}
+
+TEST(OrderRefMapTest, StrategyErase) {
+    OrderRefMap m;
+    m.insert_strategy(100, "stg_a");
+    m.erase_strategy(100);
+    EXPECT_EQ(m.find_strategy(100), nullptr);
+}
+
+TEST(OrderRefMapTest, StrategyEraseMissingNoOp) {
+    OrderRefMap m;
+    m.erase_strategy(999);
+    EXPECT_EQ(m.find_strategy(999), nullptr);
 }
 
 // ============================================================================

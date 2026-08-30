@@ -73,10 +73,24 @@ void OrderRefMap::update_cancel_context(DzOrderId order_id, int32_t front_id, in
     }
 }
 
+void OrderRefMap::insert_strategy(DzOrderId order_id, const std::string& strategy_id) {
+    id_to_strategy_[order_id] = strategy_id;
+}
+
+const std::string* OrderRefMap::find_strategy(DzOrderId order_id) const {
+    auto it = id_to_strategy_.find(order_id);
+    return (it != id_to_strategy_.end()) ? &it->second : nullptr;
+}
+
+void OrderRefMap::erase_strategy(DzOrderId order_id) {
+    id_to_strategy_.erase(order_id);
+}
+
 void OrderRefMap::clear() noexcept {
     ref_to_id_.clear();
     sys_to_id_.clear();
     id_to_ctx_.clear();
+    id_to_strategy_.clear();
 }
 
 int64_t sync_order_ref(int64_t current_ref, int64_t ctp_max) noexcept {
