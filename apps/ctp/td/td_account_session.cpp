@@ -953,6 +953,10 @@ void AccountSession::on_rsp_order_insert(const OnRspOrderInsertField& f) {
         // 内联构建 REJECTED OrderRecord
         OrderRecord rec{};
         rec.base.order_id = *local;
+        // 本地单: 回填 strategy_id (策略 SDK 按 strategy_id 定向过滤回报)
+        if (const std::string* sid = order_ref_map_.find_strategy(*local)) {
+            copy_string(rec.base.strategy_id, sid->c_str(), true);
+        }
         copy_string(rec.base.instrument_id, f.input_order->InstrumentID, true);
         copy_string(rec.base.account_id, account_id_.c_str(), true);
         copy_string(rec.base.exchange_id, f.input_order->ExchangeID, true);
@@ -1046,6 +1050,10 @@ void AccountSession::on_err_rtn_order_insert(const OnErrRtnOrderInsertField& f) 
         // 内联构建 REJECTED OrderRecord (与 on_rsp_order_insert 一致)
         OrderRecord rec{};
         rec.base.order_id = *local;
+        // 本地单: 回填 strategy_id (策略 SDK 按 strategy_id 定向过滤回报)
+        if (const std::string* sid = order_ref_map_.find_strategy(*local)) {
+            copy_string(rec.base.strategy_id, sid->c_str(), true);
+        }
         copy_string(rec.base.instrument_id, f.input_order->InstrumentID, true);
         copy_string(rec.base.account_id, account_id_.c_str(), true);
         copy_string(rec.base.exchange_id, f.input_order->ExchangeID, true);
