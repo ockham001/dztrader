@@ -17,13 +17,13 @@
 #include <dztrader/core/core_struct.h>
 #include <dztrader/core/path.h>
 #include <dztrader/core/core_data_type.h>
+#include <dztrader/api.h>
 #include <dztrader/data_type.h>
 #include <dztrader/date_time/date_time.h>
 #include <dztrader/error.h>
 #include <array>
 #include <chrono>
 #include <cstdint>
-#include <cstdio>
 #include <filesystem>
 #include <format>
 #include <limits>
@@ -42,17 +42,6 @@ namespace dztrader {
 /// 是事件通道 reader/writer/信号量名与行情订阅 instance_id 的唯一构造点。
 inline std::string strategy_identity(const std::string& strategy_id) {
     return std::format("{}.{}", STRATEGY_PREFIX, strategy_id);
-}
-
-/// SDK 内部失败诊断: SDK 无日志模块, 写 stderr 单行。
-/// master 以管道捕获子进程 stderr 并逐行转发进其日志 (child_process.cpp
-/// "forwarded child stderr", warn 级); 手工运行策略时直接显示在终端。
-/// 内部失败不使用 LastError: dz_next_event/dz_wait 无失败返回语义,
-/// 设置错误码既无可靠检查时机又会残留误导。LastError 仅用于 API 失败返回。
-inline void internal_diag(const std::string& message) noexcept {
-    std::fputs("[dzsdk] ", stderr);
-    std::fwrite(message.data(), 1, message.size(), stderr);
-    std::fputc('\n', stderr);
 }
 
 /// wall clock: 到下一个本地时间点(距午夜毫秒)的延迟; 已过/恰好相等 -> 次日
@@ -352,11 +341,11 @@ private:
             }
             event_writer.close_old_pages();
         } catch (const dztrader::Exception& e) {
-            dztrader::internal_diag(std::string("event channel preload failed: ") + e.what());
+            dz_diag((std::string("event channel preload failed: ") + e.what()).c_str());
         } catch (const std::exception& e) {
-            dztrader::internal_diag(std::string("event channel preload failed: ") + e.what());
+            dz_diag((std::string("event channel preload failed: ") + e.what()).c_str());
         } catch (...) {
-            dztrader::internal_diag("event channel preload failed: unknown exception");
+            dz_diag("event channel preload failed: unknown exception");
         }
     }
 
@@ -371,11 +360,11 @@ private:
             }
             md_reader.release_old_pages();
         } catch (const dztrader::Exception& e) {
-            dztrader::internal_diag(std::string("md channel preload failed: ") + e.what());
+            dz_diag((std::string("md channel preload failed: ") + e.what()).c_str());
         } catch (const std::exception& e) {
-            dztrader::internal_diag(std::string("md channel preload failed: ") + e.what());
+            dz_diag((std::string("md channel preload failed: ") + e.what()).c_str());
         } catch (...) {
-            dztrader::internal_diag("md channel preload failed: unknown exception");
+            dz_diag("md channel preload failed: unknown exception");
         }
     }
 

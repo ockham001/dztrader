@@ -633,6 +633,19 @@ DZ_API const char* dz_errstr(int32_t errcode);
  */
 DZ_API const char* dz_errmsg(void);
 
+/* ── SDK 诊断输出 ── */
+
+/**
+ * @brief SDK 诊断输出：stderr 单行（[dzsdk] 前缀），master 捕获转发进日志
+ *
+ * SDK 无日志模块，内部失败与策略引擎兜底错误统一经此输出；用户可实现
+ * 策略 on_error 自行处理，但内部无法避免的错误（预加载失败、定时器异常等）
+ * 仍走本函数。手工运行策略时直接显示在终端。
+ *
+ * @param message 诊断文本（任意非空内容，无需 [dzsdk] 前缀，自动附加）
+ */
+DZ_API void dz_diag(const char* message);
+
 /* ── 版本信息 ── */
 
 /** @brief 获取主版本号 */

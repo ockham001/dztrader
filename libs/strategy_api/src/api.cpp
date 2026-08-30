@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdio>
 #include <unordered_set>
 #include <string_view>
 #include <cfloat>
@@ -180,9 +181,9 @@ DZ_API const void* dz_next_event(DzContext* ctx) {
         try {
             handle_internal_frame(ctx, frame, type);
         } catch (const std::exception& e) {
-            internal_diag(std::string("internal frame handling failed: ") + e.what());
+            dz_diag((std::string("internal frame handling failed: ") + e.what()).c_str());
         } catch (...) {
-            internal_diag("internal frame handling failed: unknown exception");
+            dz_diag("internal frame handling failed: unknown exception");
         }
         if (++internal_count >= kMaxInternalFramesPerCall) {
             break;  // 连续 32 条内部帧: 让位, 防饿死 dz_next_md
@@ -192,9 +193,9 @@ DZ_API const void* dz_next_event(DzContext* ctx) {
     try {
         ctx->tick_timers();
     } catch (const std::exception& e) {
-        internal_diag(std::string("timer tick failed: ") + e.what());
+        dz_diag((std::string("timer tick failed: ") + e.what()).c_str());
     } catch (...) {
-        internal_diag("timer tick failed: unknown exception");
+        dz_diag("timer tick failed: unknown exception");
     }
     return ctx->pop_timer_frame();
 }
@@ -515,11 +516,11 @@ void on_md_started_internal(DzContext* ctx, const std::byte* frame) {
                                ctx->md_desired_instruments.end());
         (void)write_subscribe_req(ctx, req);
     } catch (const Exception& e) {
-        internal_diag(std::string("auto resubscribe on md started failed: ") + e.what());
+        dz_diag((std::string("auto resubscribe on md started failed: ") + e.what()).c_str());
     } catch (const std::exception& e) {
-        internal_diag(std::string("auto resubscribe on md started failed: ") + e.what());
+        dz_diag((std::string("auto resubscribe on md started failed: ") + e.what()).c_str());
     } catch (...) {
-        internal_diag("auto resubscribe on md started failed: unknown exception");
+        dz_diag("auto resubscribe on md started failed: unknown exception");
     }
 }
 
@@ -781,6 +782,17 @@ DZ_API DzResultSet* dz_db_query(DzDatabase* db,
 DZ_API int32_t dz_errcode(void) { return dztrader::LastError::code(); }
 DZ_API const char* dz_errstr(int32_t errcode) { return dztrader::LastError::str(errcode); }
 DZ_API const char* dz_errmsg(void) { return dztrader::LastError::msg(); }
+
+/* ── SDK 诊断输出 ── */
+
+DZ_API void dz_diag(const char* message) {
+    if (message == nullptr) {
+        return;
+    }
+    std::fputs("[dzsdk] ", stderr);
+    std::fputs(message, stderr);
+    std::fputc('\n', stderr);
+}
 
 /* ── 版本信息 ── */
 

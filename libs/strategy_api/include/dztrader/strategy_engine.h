@@ -57,7 +57,6 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <exception>
 #include <format>
 #include <iostream>
@@ -67,16 +66,6 @@ namespace dztrader::strategy_engine_internal {
 
 /* ── 引擎内部: 模板实现细节, 策略用户勿直接引用 ──
    前置于公开入口: run_strategy 内的限定名在模板定义点须可见。 */
-
-/* ── 诊断输出 (与 SDK 内部 internal_diag 同款: stderr 单行 [dzsdk] 前缀,
-      master 经管道捕获转发进平台日志) ── */
-
-inline void diag_stderr(std::string_view message) noexcept {
-    constexpr std::string_view kPrefix = "[dzsdk] ";
-    std::fwrite(kPrefix.data(), 1, kPrefix.size(), stderr);
-    std::fwrite(message.data(), 1, message.size(), stderr);
-    std::fputc('\n', stderr);
-}
 
 /* ── 可选回调探测 concept ── */
 
@@ -96,7 +85,7 @@ template <typename T>
 concept HasOnError =
     requires(T t, DzErrorCode code, std::string_view msg) { t.on_error(code, msg); };
 
-/* ── 异常报告: 分发层捕获 → report_error 转发/兜底 → diag_stderr 终端。
+/* ── 异常报告: 分发层捕获 → report_error 转发/兜底 → dz_diag (导出诊断输出) 终端。
       report_error noexcept: 用户 on_error 再抛异常也在此消化,
       异常不逃逸出引擎。 ── */
 
@@ -106,13 +95,16 @@ void report_error(StrategyT& strategy, DzErrorCode errcode, std::string_view mes
         try {
             strategy.on_error(errcode, message);
         } catch (const std::exception& e) {
-            diag_stderr(std::format("on_error threw | reason=\"{}\" original=\"{}\"", e.what(),
-                                    message));
+            dz_diag(std::format("on_error threw | reason=\"{}\" original=\"{}\"", e.what(),
+                                message)
+                        .c_str());
         } catch (...) {
-            diag_stderr(std::format("on_error threw unknown exception | original=\"{}\"", message));
+            dz_diag(std::format("on_error threw unknown exception | original=\"{}\"", message)
+                        .c_str());
         }
     } else {
-        diag_stderr(std::format("callback exception | code={} message=\"{}\"", errcode, message));
+        dz_diag(std::format("callback exception | code={} message=\"{}\"", errcode, message)
+                    .c_str());
     }
 }
 
@@ -235,9 +227,11 @@ void pump_once(StrategyT& strategy, DzContext* ctx, bool& running) {
 
 /* ── 启动自检与生命周期回调 ── */
 
+/// 启动自检: 正常启动的一次性信息, 走 stdout (master 以 info 级转发),
+/// 不带 [dzsdk] 诊断前缀 (该前缀专属 stderr 诊断 dz_diag)。
 template <typename StrategyT>
 void report_start() noexcept {
-    std::cout << std::format("[dzsdk] strategy callbacks | stop={} trade={} order={} schedule={} "
+    std::cout << std::format("strategy callbacks | stop={} trade={} order={} schedule={} "
                              "error={}\n",
                              HasOnStop<StrategyT> ? "yes" : "no",
                              HasOnTradeReport<StrategyT> ? "yes" : "no",
