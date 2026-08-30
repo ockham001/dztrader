@@ -146,9 +146,9 @@ DZ_DECLARE_ALIGNED_STRUCT(DzShmPreload, {
     uint32_t reserved;  ///< 保留字段
 });
 
-/** @brief 策略定时器触发事件, DZ_FRAME_STG_TIMER 的 payload
+/** @brief 策略调度触发通知 (某次 dz_schedule_* 到期), DZ_FRAME_STG_SCHEDULE 的 payload
  *  仅 SDK 本地合成 (不写共享内存), 指针有效期至下一次 dz_next_event/dz_release */
-DZ_DECLARE_ALIGNED_STRUCT(DzTimerEvent, {
+DZ_DECLARE_ALIGNED_STRUCT(DzScheduleEvent, {
     DzTimerId timer_id;  ///< 触发定时器的稳定 ID (与 dz_schedule_* 返回值一致)
 });
 

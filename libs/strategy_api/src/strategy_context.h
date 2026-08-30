@@ -144,12 +144,12 @@ struct DzContext {
     std::optional<DzShmPreload> internal_event_preload;
     std::optional<DzShmPreload> internal_md_preload;
 
-    /// 本地定时器帧环形缓冲: 模拟 shm 帧布局 (DzFrameHeader + DzTimerEvent),
+    /// 本地定时器帧环形缓冲: 模拟 shm 帧布局 (DzFrameHeader + DzScheduleEvent),
     /// 不写真实共享内存; 指针有效期至下一次 dz_next_event/dz_release。
     static constexpr uint32_t TIMER_FRAME_SLOTS = 32;
     struct alignas(8) TimerFrameSlot {
         DzFrameHeader header;
-        DzTimerEvent payload;
+        DzScheduleEvent payload;
     };
     static_assert(sizeof(TimerFrameSlot) == 16, "timer frame slot must be 16 bytes");
     std::array<TimerFrameSlot, TIMER_FRAME_SLOTS> timer_frames{};
@@ -236,8 +236,8 @@ struct DzContext {
     }
     void deliver_timer_frame(DzTimerId timer_id) {
         auto& slot = timer_frames[timer_frame_head];
-        slot.header.frame_size = sizeof(DzFrameHeader) + sizeof(DzTimerEvent);
-        slot.header.frame_type = DZ_FRAME_STG_TIMER;
+        slot.header.frame_size = sizeof(DzFrameHeader) + sizeof(DzScheduleEvent);
+        slot.header.frame_type = DZ_FRAME_STG_SCHEDULE;
         slot.header.reserved[0] = 0;
         slot.header.reserved[1] = 0;
         slot.payload.timer_id = timer_id;

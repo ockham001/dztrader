@@ -103,7 +103,7 @@ protected:
     /// 等待 timeout_ms 内出现 target_id 的定时器帧, 返回 payload 指针 (ctx 内部缓冲,
     /// 下次 dz_next_event 前有效)。超时返回 nullptr。
     /// 守卫定时器兜底: 即使目标定时器实现异常, dz_wait 也不会永久挂死。
-    const DzTimerEvent* wait_timer_frame(DzTimerId target_id, uint32_t timeout_ms) {
+    const DzScheduleEvent* wait_timer_frame(DzTimerId target_id, uint32_t timeout_ms) {
         const DzTimerId guard = dz_schedule_after(ctx_, static_cast<int32_t>(timeout_ms) + 500);
         // 注: gtest ASSERT_* 失败分支为 void, 不可用于非 void 函数
         if (guard == DZ_TIMER_INVALID) {
@@ -120,10 +120,10 @@ protected:
                     break;
                 }
                 const auto view = FrameView(static_cast<const std::byte*>(frame));
-                if (view.type() != DZ_FRAME_STG_TIMER) {
+                if (view.type() != DZ_FRAME_STG_SCHEDULE) {
                     continue;
                 }
-                const auto& ev = view.payload<DzTimerEvent>();
+                const auto& ev = view.payload<DzScheduleEvent>();
                 if (ev.timer_id == guard) {
                     return nullptr;
                 }
@@ -304,8 +304,8 @@ TEST_F(ScheduleApiTest, UserFrameTakesPriorityOverBufferedTimerFrame) {
     frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
     const auto view = FrameView(static_cast<const std::byte*>(frame));
-    EXPECT_EQ(view.type(), DZ_FRAME_STG_TIMER);
-    EXPECT_EQ(view.payload<DzTimerEvent>().timer_id, tid);
+    EXPECT_EQ(view.type(), DZ_FRAME_STG_SCHEDULE);
+    EXPECT_EQ(view.payload<DzScheduleEvent>().timer_id, tid);
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
 }
 
@@ -395,10 +395,10 @@ TEST_F(ScheduleApiTest, TimerBurstBeyondBufferIsNotLost) {
                 break;
             }
             const auto view = FrameView(static_cast<const std::byte*>(frame));
-            if (view.type() != DZ_FRAME_STG_TIMER) {
+            if (view.type() != DZ_FRAME_STG_SCHEDULE) {
                 continue;
             }
-            const auto& ev = view.payload<DzTimerEvent>();
+            const auto& ev = view.payload<DzScheduleEvent>();
             if (ids.count(ev.timer_id) == 0) {
                 continue;
             }

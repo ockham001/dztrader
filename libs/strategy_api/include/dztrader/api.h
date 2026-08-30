@@ -101,7 +101,7 @@ DZ_API void dz_wait(DzContext* ctx);
  *   - 每次调用最多连续消费 32 条内部帧，超过则本次让位（优先返回已到期
  *     定时器帧，否则 NULL，下次调用继续处理），防止内部帧洪峰饿死 dz_next_md。
  *
- * 定时器帧（DZ_FRAME_STG_TIMER，dz_schedule_* 触发）为 SDK 本地合成，
+ * 定时器帧（DZ_FRAME_STG_SCHEDULE，dz_schedule_* 触发）为 SDK 本地合成，
  * 指针仅在下次 dz_next_event / dz_release 调用前有效，需要留存请自行拷贝。
  *
  * @return 帧指针，无数据返回 NULL
@@ -136,7 +136,7 @@ DZ_API void dz_notify_self(DzContext* ctx);
  * 单线程契约：定时器推进点唯一在 dz_next_event()（通道无用户帧时 tick），
  * dz_wait() 仅负责等待（无定时器无限阻塞 / 有定时器等待至最近到期）。
  * dz_schedule_* 必须在主循环线程调用（与句柄契约一致）。触发事件以
- * DZ_FRAME_STG_TIMER 帧经 dz_next_event() 返回，不写入共享内存。
+ * DZ_FRAME_STG_SCHEDULE 帧经 dz_next_event() 返回，不写入共享内存。
  * SDK 内部任务（SHM 预加载随机延迟）与用户定时器共用队列，但内部 ID 对用户
  * 不可见，dz_schedule_cancel / dz_schedule_cancel_all 结构上无法误删内部定时器。 */
 

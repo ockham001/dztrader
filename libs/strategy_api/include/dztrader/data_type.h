@@ -356,8 +356,8 @@ typedef int16_t DzFrameType;
 #define DZ_FRAME_STG_USER_INPUT     ((DzFrameType)3001)
 /** @brief 策略→UI 输出（dz_output_ui，契约 strategy） */
 #define DZ_FRAME_STG_USER_OUTPUT     ((DzFrameType)3002)
-/** @brief 策略定时器触发（dz_schedule_*，契约 strategy）
+/** @brief 策略调度触发（dz_schedule_*，契约 strategy）
  *  仅 SDK 本地合成、经 dz_next_event 返回, 不写入共享内存 */
-#define DZ_FRAME_STG_TIMER          ((DzFrameType)3003)
+#define DZ_FRAME_STG_SCHEDULE      ((DzFrameType)3003)
 
 #endif /* DZTRADER_DATA_TYPE_H_ */
