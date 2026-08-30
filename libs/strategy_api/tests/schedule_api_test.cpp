@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <memory>
 #include <set>
 #include <string>
@@ -79,13 +80,6 @@ protected:
     std::shared_ptr<ChannelMeta> open_event_meta() {
         return std::make_shared<ChannelMeta>(ChannelMeta::open_only(
             dztrader::shm::channel_name(dztrader::CHANNEL_NAME_EVENT), home_ + "/shm"));
-    }
-
-    /// basic struct 帧 (DzFrameHeader + DzShmPreload)
-    void emit_basic(DzFrameType type, const DzShmPreload& params) {
-        MultiWriter writer = MultiWriter::create(open_event_meta(), "schedule_test_writer");
-        ASSERT_TRUE(writer.write_frame(type, params));
-        writer.notify_subscribers();
     }
 
     /// basic struct 帧 (任意对齐 struct payload)
@@ -256,7 +250,7 @@ TEST_F(ScheduleApiTest, ScheduleCancelAllClearsPendingTimers) {
 TEST_F(ScheduleApiTest, CancelAllDoesNotAffectInternalTimers) {
     // 触发内部 preload 定时器 (随机 0-5s)
     DzShmPreload params{};
-    emit_basic(DZ_FRAME_PRELOAD_EVENT_SHM, params);
+    emit_struct(DZ_FRAME_PRELOAD_EVENT_SHM, params);
     EXPECT_EQ(dz_next_event(ctx_), nullptr);  // 广播帧被内部消费, 用户不可见
 
     // 用户层 cancel_all: 不得影响内部定时器
@@ -397,26 +391,94 @@ TEST_F(ScheduleApiTest, OtherInstanceUserInputIntercepted) {
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
 }
 
-TEST_F(ScheduleApiTest, PositionInfoStillDelivered) {
-    DzPositionInfo pos{};
-    emit_struct(DZ_FRAME_TD_POSITION_INFO, pos);
+// ── 其余 TD 回报 2002-2017: 暂不按策略过滤, 全量放行 (参数化覆盖全部 16 帧号) ──
+
+struct TdUnfilteredFrameParam {
+    DzFrameType type;
+    bool is_ext;  ///< true = 变长 ext 帧 (无 basic struct payload)
+};
+
+class TdUnfilteredFramesTest : public ScheduleApiTest,
+                               public ::testing::WithParamInterface<TdUnfilteredFrameParam> {};
+
+TEST_P(TdUnfilteredFramesTest, StillDelivered) {
+    const auto& p = GetParam();
+    if (p.is_ext) {
+        emit_ext(p.type);
+    } else {
+        DzShmPreload dummy{};
+        emit_struct(p.type, dummy);
+    }
     const void* frame = dz_next_event(ctx_);
-    ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_TD_POSITION_INFO);
+    ASSERT_NE(frame, nullptr) << "frame type " << p.type << " should be delivered";
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), p.type);
 }
 
-TEST_F(ScheduleApiTest, TradingAccountStillDelivered) {
-    DzTradingAccount acc{};
-    emit_struct(DZ_FRAME_TD_TRADING_ACCOUNT, acc);
+INSTANTIATE_TEST_SUITE_P(
+    TdUnfiltered, TdUnfilteredFramesTest,
+    ::testing::Values(
+        TdUnfilteredFrameParam{DZ_FRAME_TD_POSITION_INFO, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_TRADING_ACCOUNT, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_GATEWAY_STATUS, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_INSTRUMENT, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_INSTRUMENT_STATUS, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_ERROR_RPT, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_RISK_REJECT, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_REQ, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_RSP, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_RTN, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_PASSWORD_UPDATE_REQ, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_PASSWORD_UPDATE_RSP, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_SETTLEMENT_INFO, true},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_MARGIN_RATE, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_COMMISSION_RATE, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_POSITION_DETAIL, false}),
+    [](const ::testing::TestParamInfo<TdUnfilteredFrameParam>& info) {
+        return std::format("frame_{}", info.param.type);
+    });
+
+// ── 截断帧防御: frame_size 不足 payload 的 TD 回报被拦截而非越界读 ──
+
+TEST_F(ScheduleApiTest, TruncatedOrderReportIntercepted) {
+    // 用 open_frame 手动构造 payload 过短的 TD_ORDER_RPT 帧 (frame_size < 完整 DzOrderReport)
+    static_assert(sizeof(DzOrderReport) > 8);
+    MultiWriter writer = MultiWriter::create(open_event_meta(), "schedule_test_writer");
+    constexpr uint32_t kTruncatedPayload = 8;  // frame_size = 8 + header < sizeof(DzOrderReport)
+    std::byte* raw = writer.open_frame(DZ_FRAME_TD_ORDER_RPT, kTruncatedPayload);
+    ASSERT_NE(raw, nullptr);
+    writer.close_frame();
+    writer.notify_subscribers();
+
+    EXPECT_EQ(dz_next_event(ctx_), nullptr);  // 截断帧被拦截, 不越界读 payload
+}
+
+// ── 他策略回报洪峰 + 32 上限让位: 本策略回报仍可取到 ──
+
+TEST_F(ScheduleApiTest, OtherStrategyReportFloodYieldsThenOwnDelivered) {
+    // 33 条他策略 ORDER_RPT (被拦截) + 1 条本策略 ORDER_RPT
+    for (int i = 0; i < 33; ++i) {
+        DzOrderReport rpt{};
+        dztrader::copy_string(rpt.strategy_id, "other_strategy", true);
+        emit_struct(DZ_FRAME_TD_ORDER_RPT, rpt);
+    }
+    DzOrderReport own{};
+    dztrader::copy_string(own.strategy_id, dz_strategy_id(ctx_), true);
+    emit_struct(DZ_FRAME_TD_ORDER_RPT, own);
+
+    // 首次调用: 最多消费 32 条被拦截帧后让位, 返回 NULL (定时器帧由 32 让位逻辑返回)
+    EXPECT_EQ(dz_next_event(ctx_), nullptr);
+    // 第二次调用: 消费剩余被拦截帧后放行本策略回报
     const void* frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_TD_TRADING_ACCOUNT);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_TD_ORDER_RPT);
+    const auto& got = FrameView(static_cast<const std::byte*>(frame)).payload<DzOrderReport>();
+    EXPECT_EQ(std::string_view(got.strategy_id), std::string_view(dz_strategy_id(ctx_)));
 }
 
 TEST_F(ScheduleApiTest, ShutdownFrameDirectedOwnInstanceDeliveredAfterCleanup) {
     // 制造 pending 内部预加载定时器
     DzShmPreload params{};
-    emit_basic(DZ_FRAME_PRELOAD_EVENT_SHM, params);
+    emit_struct(DZ_FRAME_PRELOAD_EVENT_SHM, params);
     EXPECT_EQ(dz_next_event(ctx_), nullptr);  // 内部消费, 随机延迟已排
 
     // 用户周期定时器: SHUTDOWN 内部清理不得影响
