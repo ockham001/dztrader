@@ -1,6 +1,7 @@
 #include <dztrader/api.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <unordered_set>
 #include <string_view>
 #include <cfloat>
@@ -203,9 +204,7 @@ DZ_API const void* dz_next_md(DzContext* ctx) {
     return ctx->md_reader.next_frame();
 }
 
-DZ_API const char* dz_md_source_name(DzContext* ctx) {
-    return ctx->md_source_name;
-}
+DZ_API const char* dz_md_source_name(DzContext* ctx) { return ctx->md_source_name; }
 
 DZ_API void dz_notify_self(DzContext* ctx) { ctx->sem.notify(); }
 
@@ -219,7 +218,8 @@ bool valid_time_of_day_ms(int32_t time_of_day_ms) {
     return time_of_day_ms >= 0 && time_of_day_ms <= 86'399'999;
 }
 
-DzTimerId schedule_relative(DzContext* ctx, int32_t delay_ms,
+DzTimerId schedule_relative(DzContext* ctx,
+                            int32_t delay_ms,
                             DzContext::UserTimerEntry::Kind kind) {
     try {
         DzContext::UserTimerEntry entry;
@@ -239,14 +239,14 @@ DzTimerId schedule_relative(DzContext* ctx, int32_t delay_ms,
     return DZ_TIMER_INVALID;
 }
 
-DzTimerId schedule_time_of_day(DzContext* ctx, int32_t time_of_day_ms,
+DzTimerId schedule_time_of_day(DzContext* ctx,
+                               int32_t time_of_day_ms,
                                DzContext::UserTimerEntry::Kind kind) {
     try {
         DzContext::UserTimerEntry entry;
         entry.kind = kind;
         entry.time_of_day_ms = time_of_day_ms;
-        entry.next_deadline =
-            DzContext::TimerClock::now() + next_time_of_day_delay(time_of_day_ms);
+        entry.next_deadline = DzContext::TimerClock::now() + next_time_of_day_delay(time_of_day_ms);
         return ctx->schedule_user_timer(std::move(entry));
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
@@ -319,58 +319,56 @@ DZ_API DzOrderId dz_place_order(DzContext* ctx,
                                 double price,
                                 DzVolume volume,
                                 DzPositionEffect position_effect) {
-    try {
-        auto* req = reinterpret_cast<DzOrderReq*>(
-            ctx->event_writer.open_frame(DZ_FRAME_TD_ORDER_REQ, sizeof(DzOrderReq)));
-        if (req == nullptr) {
-            // open_frame 失败时已设置 LastError, 直接透传
-            return -1;
-        }
-        const auto order_id = ctx->order_id.generate();
-        copy_string(req->strategy_id, ctx->strategy_id, true);
-        copy_string(req->account_id, account_id, true);
-        copy_string(req->instrument_id, instrument_id, true);
-        req->remark[0] = '\0';
-        req->direction = direction;
-        req->price_type = price_type;
-        req->price = price;
-        req->volume = volume;
-        req->position_effect = position_effect;
-        req->order_id = order_id;
-        ctx->event_writer.close_frame();
-        ctx->event_writer.notify_subscribers();
-        return order_id;
-    } catch (const Exception& e) {
-        LastError::set(e.code(), e.what());
-    } catch (const std::exception& e) {
-        LastError::set(DZ_EC_INTERNAL, e.what());
-    } catch (...) {
-        LastError::set(DZ_EC_INTERNAL, "unknown exception");
+    // 本函数经 extern "C" 边界导出, 不允许异常逃逸; 体内所有操作均为 noexcept,
+    // 故无需 try/catch。static_assert 强制约束, 防止后续引入会抛异常的操作时
+    // 异常静默穿越 C ABI 边界 (UB)。
+    static_assert(
+        noexcept(ctx->event_writer.open_frame(DZ_FRAME_TD_ORDER_REQ, sizeof(DzOrderReq))));
+    static_assert(noexcept(ctx->order_id.generate()));
+    static_assert(noexcept(ctx->event_writer.close_frame()));
+    static_assert(noexcept(ctx->event_writer.notify_subscribers()));
+
+    auto* req = reinterpret_cast<DzOrderReq*>(
+        ctx->event_writer.open_frame(DZ_FRAME_TD_ORDER_REQ, sizeof(DzOrderReq)));
+    if (req == nullptr) {
+        // open_frame 失败时已设置 LastError, 直接透传
+        return -1;
     }
-    return -1;
+    const auto order_id = ctx->order_id.generate();
+    copy_string(req->strategy_id, ctx->strategy_id, true);
+    copy_string(req->account_id, account_id, true);
+    copy_string(req->instrument_id, instrument_id, true);
+    req->remark[0] = '\0';
+    req->direction = direction;
+    req->price_type = price_type;
+    req->price = price;
+    req->volume = volume;
+    req->position_effect = position_effect;
+    req->order_id = order_id;
+    ctx->event_writer.close_frame();
+    ctx->event_writer.notify_subscribers();
+    return order_id;
 }
 
 DZ_API bool dz_cancel_order(DzContext* ctx, const char* account_id, DzOrderId order_id) {
-    try {
-        auto* req = reinterpret_cast<DzOrderCancelReq*>(
-            ctx->event_writer.open_frame(DZ_FRAME_TD_ORDER_CANCEL_REQ, sizeof(DzOrderCancelReq)));
-        if (req == nullptr) {
-            // open_frame 失败时已设置 LastError, 直接透传
-            return false;
-        }
-        req->order_id = order_id;
-        copy_string(req->account_id, account_id, true);
-        ctx->event_writer.close_frame();
-        ctx->event_writer.notify_subscribers();
-        return true;
-    } catch (const Exception& e) {
-        LastError::set(e.code(), e.what());
-    } catch (const std::exception& e) {
-        LastError::set(DZ_EC_INTERNAL, e.what());
-    } catch (...) {
-        LastError::set(DZ_EC_INTERNAL, "unknown exception");
+    // 同 dz_place_order: extern "C" 边界不允许异常逃逸; 体内操作均 noexcept, 免 try/catch,
+    // static_assert 防止后续引入会抛异常的操作。
+    static_assert(noexcept(
+        ctx->event_writer.open_frame(DZ_FRAME_TD_ORDER_CANCEL_REQ, sizeof(DzOrderCancelReq))));
+    static_assert(noexcept(ctx->event_writer.close_frame()));
+    static_assert(noexcept(ctx->event_writer.notify_subscribers()));
+
+    auto* req = reinterpret_cast<DzOrderCancelReq*>(
+        ctx->event_writer.open_frame(DZ_FRAME_TD_ORDER_CANCEL_REQ, sizeof(DzOrderCancelReq)));
+    if (req == nullptr) {
+        // open_frame 失败时已设置 LastError, 直接透传
+        return false;
     }
-    return false;
+    req->order_id = order_id;
+    copy_string(req->account_id, account_id, true);
+    ctx->event_writer.close_frame();
+    ctx->event_writer.notify_subscribers();
+    return true;
 }
 
 namespace {
@@ -461,9 +459,7 @@ DZ_API bool dz_subscribe(DzContext* ctx,
     return true;
 }
 
-DZ_API bool dz_unsubscribe(DzContext* ctx,
-                           const char* const instruments[],
-                           uint32_t count) {
+DZ_API bool dz_unsubscribe(DzContext* ctx, const char* const instruments[], uint32_t count) {
     SubscribeReq req;
     req.instance_id = strategy_identity(ctx->strategy_id);
 
@@ -535,28 +531,26 @@ DZ_API bool dz_set_logical_position(DzContext* ctx,
                                     const char* account_id,
                                     const char* instrument_id,
                                     int32_t net_volume) {
-    try {
-        auto* pos = reinterpret_cast<DzLogicalPosition*>(
-            ctx->event_writer.open_frame(DZ_FRAME_SET_LOGICAL_POSITION, sizeof(DzLogicalPosition)));
-        if (pos == nullptr) {
-            // open_frame 失败时已设置 LastError, 直接透传
-            return false;
-        }
-        copy_string(pos->account_id, account_id, true);
-        copy_string(pos->instrument_id, instrument_id, true);
-        copy_string(pos->strategy_id, ctx->strategy_id, true);
-        pos->net_volume = net_volume;
-        ctx->event_writer.close_frame();
-        ctx->event_writer.notify_subscribers();
-        return true;
-    } catch (const Exception& e) {
-        LastError::set(e.code(), e.what());
-    } catch (const std::exception& e) {
-        LastError::set(DZ_EC_INTERNAL, e.what());
-    } catch (...) {
-        LastError::set(DZ_EC_INTERNAL, "unknown exception");
+    // 同 dz_place_order: extern "C" 边界不允许异常逃逸; 体内操作均 noexcept, 免 try/catch,
+    // static_assert 防止后续引入会抛异常的操作。
+    static_assert(noexcept(
+        ctx->event_writer.open_frame(DZ_FRAME_SET_LOGICAL_POSITION, sizeof(DzLogicalPosition))));
+    static_assert(noexcept(ctx->event_writer.close_frame()));
+    static_assert(noexcept(ctx->event_writer.notify_subscribers()));
+
+    auto* pos = reinterpret_cast<DzLogicalPosition*>(
+        ctx->event_writer.open_frame(DZ_FRAME_SET_LOGICAL_POSITION, sizeof(DzLogicalPosition)));
+    if (pos == nullptr) {
+        // open_frame 失败时已设置 LastError, 直接透传
+        return false;
     }
-    return false;
+    copy_string(pos->account_id, account_id, true);
+    copy_string(pos->instrument_id, instrument_id, true);
+    copy_string(pos->strategy_id, ctx->strategy_id, true);
+    pos->net_volume = net_volume;
+    ctx->event_writer.close_frame();
+    ctx->event_writer.notify_subscribers();
+    return true;
 }
 
 namespace {
@@ -618,31 +612,30 @@ DZ_API bool dz_output_ui(DzContext* ctx, const char* data) {
         return false;
     }
 
-    try {
-        const auto len = strlen(data);
-        // 页感知上限
-        const auto cap = output_ui_max_payload(ctx->event_writer.page_size());
-        if (len > 0 && cap == 0) {
-            LastError::set(DZ_EC_BUFFER_TOO_SMALL, "page too small for output frame");
-            return false;
-        }
-        const auto data_len = static_cast<uint32_t>(std::min<uint64_t>(len, cap));
-        if (!ctx->event_writer.write_ext_inst_frame(DZ_FRAME_STG_USER_OUTPUT, ctx->strategy_id,
-                                              reinterpret_cast<const std::byte*>(data), data_len)) {
-            // write_ext_inst_frame 为 noexcept bool: 唯一失败路径是 open_frame 返回 nullptr,
-            // 其每条失败分支均已设置 LastError (writer.cpp), 此处直接透传, 不自设错误码
-            return false;
-        }
-        ctx->event_writer.notify_subscribers();
-        return true;
-    } catch (const Exception& e) {
-        LastError::set(e.code(), e.what());
-    } catch (const std::exception& e) {
-        LastError::set(DZ_EC_INTERNAL, e.what());
-    } catch (...) {
-        LastError::set(DZ_EC_INTERNAL, "unknown exception");
+    // 同 dz_place_order: extern "C" 边界不允许异常逃逸; 体内操作均 noexcept, 免 try/catch,
+    // static_assert 防止后续引入会抛异常的操作。
+    static_assert(noexcept(output_ui_max_payload(ctx->event_writer.page_size())));
+    static_assert(noexcept(ctx->event_writer.write_ext_inst_frame(
+        DZ_FRAME_STG_USER_OUTPUT, ctx->strategy_id, reinterpret_cast<const std::byte*>(data), 0u)));
+    static_assert(noexcept(ctx->event_writer.notify_subscribers()));
+
+    const auto len = strlen(data);
+    // 页感知上限
+    const auto cap = output_ui_max_payload(ctx->event_writer.page_size());
+    if (len > 0 && cap == 0) {
+        LastError::set(DZ_EC_BUFFER_TOO_SMALL, "page too small for output frame");
+        return false;
     }
-    return false;
+    const auto data_len = static_cast<uint32_t>(std::min<uint64_t>(len, cap));
+    if (!ctx->event_writer.write_ext_inst_frame(DZ_FRAME_STG_USER_OUTPUT, ctx->strategy_id,
+                                                reinterpret_cast<const std::byte*>(data),
+                                                data_len)) {
+        // write_ext_inst_frame 为 noexcept bool: 唯一失败路径是 open_frame 返回 nullptr,
+        // 其每条失败分支均已设置 LastError (writer.cpp), 此处直接透传, 不自设错误码
+        return false;
+    }
+    ctx->event_writer.notify_subscribers();
+    return true;
 }
 
 /* ── 数据库接口 ── */
