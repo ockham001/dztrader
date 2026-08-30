@@ -3,6 +3,7 @@
 #include <dztrader/api.h>
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/env.h>
+#include <dztrader/core/string_util.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/named_semaphore.h>
 #include <dztrader/shm/writer.h>
@@ -545,15 +546,18 @@ TEST_F(StrategyEngineTest, TradeAndOrderReportsDispatchedWithPayload) {
             strategy_id = dz_strategy_id(ctx);
             (void)dz_schedule_after(ctx, 100);
             // TD 回报帧走事件通道 (basic struct 帧, 写法同 trade_api_test)
+            // SDK 按 payload strategy_id 定向过滤, 须填本策略裸名才放行
             DzTradeReport trade{};
             trade.price = 3888.5;
             trade.volume = 7;
+            dztrader::copy_string(trade.strategy_id, strategy_id.c_str(), true);
             dztrader::shm::MultiWriter writer = dztrader::shm::MultiWriter::create(
                 fixture.event_channel_meta(), "engine_test_writer");
             (void)writer.write_frame(DZ_FRAME_TD_TRADE_RPT, trade);
             DzOrderReport order{};
             order.price = 3901.0;
             order.volume = 3;
+            dztrader::copy_string(order.strategy_id, strategy_id.c_str(), true);
             (void)writer.write_frame(DZ_FRAME_TD_ORDER_RPT, order);
         }
         void on_stop() { inner.on_stop(); }
@@ -582,7 +586,7 @@ TEST_F(StrategyEngineTest, TradeAndOrderReportsDispatchedWithPayload) {
     EXPECT_EQ(strategy.stop_count, 1);
 }
 
-TEST_F(StrategyEngineTest, UserInputFrameDispatchedWithInstanceIdAndPayload) {
+TEST_F(StrategyEngineTest, UserInputFrameDirectedToOwnStrategyDispatched) {
     FullStrategy strategy;
     std::string strategy_id;
     std::atomic<bool> shutdown_written{false};
@@ -598,11 +602,12 @@ TEST_F(StrategyEngineTest, UserInputFrameDispatchedWithInstanceIdAndPayload) {
             strategy_id = dz_strategy_id(ctx);
             (void)dz_schedule_after(ctx, 100);
             // STG_USER_INPUT 变长 ext_inst 帧: instance_id + data_size + UTF-8 payload
-            // (契约 strategy: UI→策略, 写法同 dz_output_ui 的写端)
+            // (契约 strategy: UI→策略, SDK 按 instance_id == 裸策略名 定向过滤,
+            //  写法同 dz_output_ui 的写端, instance_id 须为本策略名才放行)
             const char* payload = R"({"action":"pause","reason":"manual"})";
             dztrader::shm::MultiWriter writer = dztrader::shm::MultiWriter::create(
                 fixture.event_channel_meta(), "engine_test_writer");
-            (void)writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, "ui_test_sender",
+            (void)writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, strategy_id.c_str(),
                                               reinterpret_cast<const std::byte*>(payload),
                                               static_cast<uint32_t>(std::strlen(payload)));
         }
@@ -625,8 +630,8 @@ TEST_F(StrategyEngineTest, UserInputFrameDispatchedWithInstanceIdAndPayload) {
 
     EXPECT_EQ(rc, 0);
     EXPECT_EQ(strategy.input_count, 1);
-    // instance_id 透传帧扩展头 (本测试写 "ui_test_sender"): 引擎不过滤, 策略自行判断
-    EXPECT_EQ(strategy.last_instance_id, "ui_test_sender");
+    // instance_id 透传帧扩展头: SDK 已定向过滤, 引擎收到的必为本策略输入
+    EXPECT_EQ(strategy.last_instance_id, strategy_id);
     EXPECT_EQ(strategy.last_input, R"({"action":"pause","reason":"manual"})");
     EXPECT_TRUE(shutdown_written.load());
     EXPECT_EQ(strategy.stop_count, 1);

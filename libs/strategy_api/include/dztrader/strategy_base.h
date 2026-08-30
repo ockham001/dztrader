@@ -23,10 +23,10 @@ namespace dztrader {
 /// 用户输入回调视图 (DZ_FRAME_STG_USER_INPUT, 变长 ext_inst 帧的解析结果)。
 /// 非共享内存布局结构: data 指向 SHM 帧 payload, 仅在本次回调返回前有效,
 /// 需留存请拷贝; 内容为 UTF-8 文本或 JSON, 无固定 schema (契约 strategy)。
-/// instance_id 为目标裸策略名 —— 该帧当前不按 instance_id 过滤, 收到的
-/// 不一定是定向本策略的输入, 策略可据此自行判断是否处理。
+/// instance_id 为目标裸策略名——SDK 已按 instance_id == 本策略名 定向过滤,
+/// 回调收到的必为定向本策略的输入。
 struct DzUserInput {
-    std::string_view instance_id;  ///< 目标策略名 (帧扩展头 instance_id)
+    std::string_view instance_id;  ///< 目标策略名 (帧扩展头 instance_id, == 本策略名)
     const char* data;              ///< 变长 payload (UTF-8 文本/JSON), 回调内有效
     uint32_t data_size;            ///< payload 字节数 (不含结尾 0, 不保证 0 结尾)
 };

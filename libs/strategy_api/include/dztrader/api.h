@@ -92,7 +92,9 @@ DZ_API void dz_wait(DzContext* ctx);
  * 返回的指针指向 DzFrameHeader，按 frame_type 解析 payload。
  *
  * 处理优先级：用户帧 > 定时器帧 > 内部帧。
- *   - 用户帧（TD 回报、STG_USER_INPUT、SHUTDOWN）直接返回，零计时器开销；
+ *   - 用户帧（本策略 TD 回报、定向本策略的 STG_USER_INPUT、SHUTDOWN）直接返回，零计时器开销；
+ *     TD_ORDER_RPT/TD_TRADE_RPT 按 payload strategy_id == 本策略裸名定向（空/他策略拦截），
+ *     其余 TD 回报（持仓/资金/费率等）暂不过滤全量放行，STG_USER_INPUT/SHUTDOWN 按 instance_id 定向；
  *   - 通道无用户帧时（通道空或 32 上限让位）触发到期定时器并返回定时器帧；
  *   - 平台内部帧（SHM 预加载通知、订阅者刷新、日志/SHM 配置等）由 SDK
  *     内部消费，不返回给策略；其中 PRELOAD_EVENT_SHM / PRELOAD_MD_SHM

@@ -84,59 +84,86 @@ namespace {
 /// dz_next_event 单次调用连续消费内部帧的上限 (防内部帧洪峰饿死 dz_next_md)
 constexpr uint32_t kMaxInternalFramesPerCall = 32;
 
-/// 策略用户可见帧白名单: TD 回报 2000-2017 / STG_USER_INPUT / SHUTDOWN(定向本策略)/ALL。
-/// 其余帧一律内部消费 (见 handle_internal_frame)。
-bool is_user_frame(const DzContext* ctx, DzFrameType type, const std::byte* frame) noexcept {
-    if (type >= DZ_FRAME_TD_ORDER_RPT && type <= DZ_FRAME_TD_POSITION_DETAIL) {
-        return true;
+/// TD 回报定向过滤: payload.strategy_id == 本策略裸名才放行。
+/// 空 strategy_id (外部单/手工单, 非任何策略所下) 与非本策略回报一律拦截。
+template <typename ReportT>
+bool is_own_report(const DzContext* ctx, const std::byte* frame) noexcept {
+    const shm::FrameView view(frame);
+    if (view.frame_size() < sizeof(DzFrameHeader) + sizeof(ReportT)) {
+        return false;  // 截断帧防御: 读不出 payload 的帧一律拦截
     }
-    if (type == DZ_FRAME_STG_USER_INPUT) {
-        return true;
-    }
-    if (type == DZ_FRAME_REQUEST_SHUTDOWN) {
-        // 定向帧: 仅 instance_id == 裸策略名 的属于本策略
-        return std::string_view(shm::FrameView(frame).ext_inst_id()) == ctx->strategy_id;
-    }
-    return false;
+    const auto& rpt = view.payload<ReportT>();
+    return std::string_view(rpt.strategy_id) == std::string_view(ctx->strategy_id);
 }
 
 /// NOTIFY_MD_STARTED 自动补订阅 (定义见 write_subscribe_req 之后)
 void on_md_started_internal(DzContext* ctx, const std::byte* frame);
 
-/// 内部帧处理: PRELOAD -> 随机延迟预加载; UPDATE_SUBSCRIBER -> 刷新订阅者;
-/// NOTIFY_MD_STARTED -> 自动补订阅; 其余平台帧丢弃。全部不返回给策略用户。
-void handle_internal_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
-    shm::FrameView view(frame);
+/// 单帧分派: 用户帧返回 true (放行给策略用户), 其余返回 false (SDK 内部消费/丢弃)。
+/// 逐帧类型 switch, 替代原 is_user_frame 白名单 + handle_internal_frame 双开关。
+bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
     switch (type) {
+        case DZ_FRAME_TD_ORDER_RPT:
+            return is_own_report<DzOrderReport>(ctx, frame);
+        case DZ_FRAME_TD_TRADE_RPT:
+            return is_own_report<DzTradeReport>(ctx, frame);
+        case DZ_FRAME_STG_USER_INPUT:
+            // 定向帧: 仅 instance_id == 裸策略名 的属于本策略
+            return std::string_view(shm::FrameView(frame).ext_inst_id()) == ctx->strategy_id;
+        case DZ_FRAME_REQUEST_SHUTDOWN:
+            if (std::string_view(shm::FrameView(frame).ext_inst_id()) == ctx->strategy_id) {
+                ctx->internal_cleanup_on_shutdown();  // 内部清理后再放行
+                return true;
+            }
+            return false;
         case DZ_FRAME_PRELOAD_EVENT_SHM: {
-            const auto& params = view.payload<DzShmPreload>();
+            const auto& params = shm::FrameView(frame).payload<DzShmPreload>();
             ctx->internal_event_preload = params;  // 覆盖参数槽 (只保留最新)
             ctx->schedule_internal_preload(DzContext::INTERNAL_TOKEN_EVENT,
                                            dztrader::core::random_jitter(0, 5000));
-            return;
+            return false;
         }
         case DZ_FRAME_PRELOAD_MD_SHM: {
+            const shm::FrameView view(frame);
             // 仅本策略绑定的行情源 (instance_id = 行情通道名)
             if (std::string_view(view.ext_inst_id()) != ctx->md_source_name) {
-                return;
+                return false;
             }
             if (view.ext_inst_payload_size() < sizeof(DzShmPreload)) {
-                return;
+                return false;
             }
             const auto& params = *reinterpret_cast<const DzShmPreload*>(view.ext_inst_payload());
             ctx->internal_md_preload = params;  // 覆盖参数槽 (只保留最新)
             ctx->schedule_internal_preload(DzContext::INTERNAL_TOKEN_MD,
                                            dztrader::core::random_jitter(0, 5000));
-            return;
+            return false;
         }
         case DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER:
             ctx->event_writer.refresh_subscribers();
-            return;
+            return false;
         case DZ_FRAME_NOTIFY_MD_STARTED:
             on_md_started_internal(ctx, frame);
-            return;
+            return false;
+        // 其余 TD 回报帧 2002-2017 (持仓/资金/费率/网关状态/合约等): 暂不按策略过滤, 全量放行
+        case DZ_FRAME_TD_POSITION_INFO:
+        case DZ_FRAME_TD_TRADING_ACCOUNT:
+        case DZ_FRAME_TD_GATEWAY_STATUS:
+        case DZ_FRAME_TD_INSTRUMENT:
+        case DZ_FRAME_TD_INSTRUMENT_STATUS:
+        case DZ_FRAME_TD_ERROR_RPT:
+        case DZ_FRAME_TD_RISK_REJECT:
+        case DZ_FRAME_TD_TRANSFER_REQ:
+        case DZ_FRAME_TD_TRANSFER_RSP:
+        case DZ_FRAME_TD_TRANSFER_RTN:
+        case DZ_FRAME_TD_PASSWORD_UPDATE_REQ:
+        case DZ_FRAME_TD_PASSWORD_UPDATE_RSP:
+        case DZ_FRAME_TD_SETTLEMENT_INFO:
+        case DZ_FRAME_TD_MARGIN_RATE:
+        case DZ_FRAME_TD_COMMISSION_RATE:
+        case DZ_FRAME_TD_POSITION_DETAIL:
+            return true;
         default:
-            return;  // 其余平台帧 (日志/SHM 配置/进程控制/TD 控制帧等) 丢弃
+            return false;  // 其余平台帧 (日志/SHM 配置/进程控制/TD 控制帧等) 丢弃
     }
 }
 
@@ -172,18 +199,14 @@ DZ_API const void* dz_next_event(DzContext* ctx) {
             break;  // 通道空: 服务计时器
         }
         const DzFrameType type = shm::FrameView(frame).type();
-        if (is_user_frame(ctx, type, frame)) {
-            if (type == DZ_FRAME_REQUEST_SHUTDOWN) {
-                ctx->internal_cleanup_on_shutdown();  // 内部清理后再放行
-            }
-            return frame;  // 用户帧最高优先
-        }
         try {
-            handle_internal_frame(ctx, frame, type);
+            if (dispatch_frame(ctx, frame, type)) {
+                return frame;  // 用户帧最高优先
+            }
         } catch (const std::exception& e) {
-            dz_diag((std::string("internal frame handling failed: ") + e.what()).c_str());
+            dz_diag((std::string("frame dispatch failed: ") + e.what()).c_str());
         } catch (...) {
-            dz_diag("internal frame handling failed: unknown exception");
+            dz_diag("frame dispatch failed: unknown exception");
         }
         if (++internal_count >= kMaxInternalFramesPerCall) {
             break;  // 连续 32 条内部帧: 让位, 防饿死 dz_next_md

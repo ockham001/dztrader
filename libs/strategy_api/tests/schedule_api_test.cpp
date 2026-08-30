@@ -3,10 +3,12 @@
 #include <dztrader/api.h>
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/env.h>
+#include <dztrader/core/string_util.h>
 #include <dztrader/date_time/date_time.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/writer.h>
+#include <dztrader/struct.h>
 
 #include <atomic>
 #include <chrono>
@@ -83,6 +85,14 @@ protected:
     void emit_basic(DzFrameType type, const DzShmPreload& params) {
         MultiWriter writer = MultiWriter::create(open_event_meta(), "schedule_test_writer");
         ASSERT_TRUE(writer.write_frame(type, params));
+        writer.notify_subscribers();
+    }
+
+    /// basic struct 帧 (任意对齐 struct payload)
+    template <typename T>
+    void emit_struct(DzFrameType type, const T& payload) {
+        MultiWriter writer = MultiWriter::create(open_event_meta(), "schedule_test_writer");
+        ASSERT_TRUE(writer.write_frame(type, payload));
         writer.notify_subscribers();
     }
 
@@ -330,6 +340,77 @@ TEST_F(ScheduleApiTest, InternalFramesInterceptedAndCappedAt32) {
     frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
     EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_STG_USER_INPUT);
+}
+
+// ── TD 回报按 strategy_id 定向过滤 ──
+
+TEST_F(ScheduleApiTest, OwnOrderReportDelivered) {
+    DzOrderReport rpt{};
+    dztrader::copy_string(rpt.strategy_id, dz_strategy_id(ctx_), true);
+    emit_struct(DZ_FRAME_TD_ORDER_RPT, rpt);
+    const void* frame = dz_next_event(ctx_);
+    ASSERT_NE(frame, nullptr);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_TD_ORDER_RPT);
+    const auto& got = FrameView(static_cast<const std::byte*>(frame)).payload<DzOrderReport>();
+    EXPECT_EQ(std::string_view(got.strategy_id), std::string_view(dz_strategy_id(ctx_)));
+}
+
+TEST_F(ScheduleApiTest, OtherStrategyOrderReportIntercepted) {
+    DzOrderReport rpt{};
+    dztrader::copy_string(rpt.strategy_id, "other_strategy", true);
+    emit_struct(DZ_FRAME_TD_ORDER_RPT, rpt);
+    EXPECT_EQ(dz_next_event(ctx_), nullptr);
+}
+
+TEST_F(ScheduleApiTest, EmptyStrategyOrderReportIntercepted) {
+    DzOrderReport rpt{};  // strategy_id 空 (外部单/手工单)
+    emit_struct(DZ_FRAME_TD_ORDER_RPT, rpt);
+    EXPECT_EQ(dz_next_event(ctx_), nullptr);
+}
+
+TEST_F(ScheduleApiTest, OwnTradeReportDelivered) {
+    DzTradeReport rpt{};
+    dztrader::copy_string(rpt.strategy_id, dz_strategy_id(ctx_), true);
+    emit_struct(DZ_FRAME_TD_TRADE_RPT, rpt);
+    const void* frame = dz_next_event(ctx_);
+    ASSERT_NE(frame, nullptr);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_TD_TRADE_RPT);
+    const auto& got = FrameView(static_cast<const std::byte*>(frame)).payload<DzTradeReport>();
+    EXPECT_EQ(std::string_view(got.strategy_id), std::string_view(dz_strategy_id(ctx_)));
+}
+
+TEST_F(ScheduleApiTest, OtherStrategyTradeReportIntercepted) {
+    DzTradeReport rpt{};
+    dztrader::copy_string(rpt.strategy_id, "other_strategy", true);
+    emit_struct(DZ_FRAME_TD_TRADE_RPT, rpt);
+    EXPECT_EQ(dz_next_event(ctx_), nullptr);
+}
+
+TEST_F(ScheduleApiTest, EmptyStrategyTradeReportIntercepted) {
+    DzTradeReport rpt{};  // strategy_id 空 (外部单/手工单)
+    emit_struct(DZ_FRAME_TD_TRADE_RPT, rpt);
+    EXPECT_EQ(dz_next_event(ctx_), nullptr);
+}
+
+TEST_F(ScheduleApiTest, OtherInstanceUserInputIntercepted) {
+    emit_ext_inst(DZ_FRAME_STG_USER_INPUT, "other_strategy");
+    EXPECT_EQ(dz_next_event(ctx_), nullptr);
+}
+
+TEST_F(ScheduleApiTest, PositionInfoStillDelivered) {
+    DzPositionInfo pos{};
+    emit_struct(DZ_FRAME_TD_POSITION_INFO, pos);
+    const void* frame = dz_next_event(ctx_);
+    ASSERT_NE(frame, nullptr);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_TD_POSITION_INFO);
+}
+
+TEST_F(ScheduleApiTest, TradingAccountStillDelivered) {
+    DzTradingAccount acc{};
+    emit_struct(DZ_FRAME_TD_TRADING_ACCOUNT, acc);
+    const void* frame = dz_next_event(ctx_);
+    ASSERT_NE(frame, nullptr);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_TD_TRADING_ACCOUNT);
 }
 
 TEST_F(ScheduleApiTest, ShutdownFrameDirectedOwnInstanceDeliveredAfterCleanup) {
