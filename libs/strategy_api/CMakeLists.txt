@@ -64,6 +64,7 @@ set(SDK_API_TESTS
     trade_api_test
     md_api_test
     schedule_api_test
+    strategy_engine_test
 )
 file(GLOB SDK_TESTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
@@ -87,11 +88,12 @@ foreach(testfile ${SDK_TESTS})
     set_target_properties(dzstrategy_sdk_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
-    # SDK API 测试 (md/notify/trade) 使用固定 DZTRADER_HOME + 机器全局 SHM 通道名,
+    # SDK API 测试 (md/notify/trade/engine) 使用固定 DZTRADER_HOME + 机器全局 SHM 通道名,
     # gtest_discover_tests 把每个用例注册为独立 ctest 测试, -j 并行时同二进制
-    # 多进程共用同一通道文件互相踩踏 -> RUN_SERIAL 串行化。
+    # 多进程共用同一通道文件互相踩踏 -> RUN_SERIAL 串行化;
+    # 均为秒级用例, TIMEOUT 60 防挂死兜底失效时拖死 CI
     if(testname IN_LIST SDK_API_TESTS)
-        gtest_discover_tests(dzstrategy_sdk_${testname} PROPERTIES RUN_SERIAL TRUE)
+        gtest_discover_tests(dzstrategy_sdk_${testname} PROPERTIES RUN_SERIAL TRUE TIMEOUT 60)
     else()
         gtest_discover_tests(dzstrategy_sdk_${testname})
     endif()
