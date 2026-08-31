@@ -1,7 +1,9 @@
 #include "shm_manager.h"
 
 #include <dztrader/core/core_data_type.h>
+#include <dztrader/core/core_struct.h>
 #include <dztrader/core/encoding.h>
+#include <dztrader/core/string_util.h>
 #include <dztrader/data_type.h>
 #include <dztrader/log/log.h>
 #include <dztrader/platform/frame_codec.h>
@@ -11,6 +13,7 @@
 #include <magic_enum/magic_enum.hpp>
 #include <spdlog/spdlog.h>
 
+#include <cstring>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -75,6 +78,16 @@ void ShmManager::handle_frame(const std::byte* frame) {
                 handle_md_reader_unregister(view);
                 return;
             }
+            case DZ_FRAME_ACCOUNT_STATUS: {
+                // 契约 account-status: master 消费 2018 维护 网关→账户集 镜像
+                handle_account_status(frame);
+                return;
+            }
+            case DZ_FRAME_TD_QUERY_ACCOUNT_STATUS: {
+                // 契约 account-status: 2115 兜底应答 (镜像未命中回 Offline, gateway_name="")
+                handle_query_account_status(frame);
+                return;
+            }
             case DZ_FRAME_NOTIFY_MD_STARTED: {
                 // 行情进程就绪宣告 (instance_id=行情进程名=通道名, 非 name_,
                 // 必须第一层处理): 置位通道就绪, 此后读者接入可通过校验 (契约 shm)
@@ -131,6 +144,83 @@ void ShmManager::handle_frame(const std::byte* frame) {
         SPDLOG_ERROR("handle_frame unexpected exception | error=\"{}\"", e.what());
     } catch (...) {
         SPDLOG_ERROR("handle_frame unexpected non-std exception");
+    }
+}
+
+void ShmManager::handle_account_status(const std::byte* frame) {
+    try {
+        const shm::FrameView view(frame);
+        constexpr auto kMin = sizeof(DzFrameHeader) + sizeof(DzAccountStatus);
+        if (view.frame_size() < kMin) {
+            SPDLOG_WARN("account status frame rejected | reason=short_payload frame_size={}",
+                        view.frame_size());
+            return;
+        }
+        DzAccountStatus status;
+        std::memcpy(&status, &view.payload<DzAccountStatus>(), sizeof(status));
+        const std::string gateway(status.gateway_name);
+        if (gateway.empty()) {
+            return;  // master 兜底应答回声: 不入镜像 (防自锁)
+        }
+        td_account_mirror_[gateway].insert(std::string(status.account_id));
+        SPDLOG_DEBUG("account mirror updated | gateway={} account={} state={}",
+                     gateway, std::string_view(status.account_id),
+                     static_cast<int>(status.state));
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("handle account status failed | error=\"{}\"", e.what());
+    }
+}
+
+void ShmManager::handle_query_account_status(const std::byte* frame) {
+    try {
+        const shm::FrameView view(frame);
+        constexpr auto kMin = sizeof(DzFrameHeader) + sizeof(DzAccountStatusReq);
+        if (view.frame_size() < kMin) {
+            return;
+        }
+        DzAccountStatusReq req;
+        std::memcpy(&req, &view.payload<DzAccountStatusReq>(), sizeof(req));
+        const std::string queried(req.account_id);
+        if (queried.empty()) {
+            return;  // 全量查询交给各 td 权威应答, master 不兜底
+        }
+        for (const auto& [gateway, accounts] : td_account_mirror_) {
+            if (accounts.count(queried) > 0) {
+                return;  // 该账户归属某网关, td 会权威应答
+            }
+        }
+        // 无任何运行中网关管理该账户: 兜底 Offline, gateway_name="" 标记非权威应答
+        DzAccountStatus fallback{};
+        dztrader::copy_string(fallback.account_id, queried.c_str(), true);
+        fallback.state = DZ_ACCOUNT_OFFLINE;
+        fallback.trading_day = 0;
+        platform::write_struct(event_writer_, DZ_FRAME_ACCOUNT_STATUS, fallback);
+        SPDLOG_INFO("account status fallback | account={} reason=no_gateway_manages", queried);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("handle query account status failed | error=\"{}\"", e.what());
+    }
+}
+
+void ShmManager::notify_td_stopped(std::string_view gateway_name) {
+    auto it = td_account_mirror_.find(std::string(gateway_name));
+    if (it == td_account_mirror_.end()) {
+        return;  // 无镜像 (td 从未上报) 为 no-op
+    }
+    for (const auto& account : it->second) {
+        DzAccountStatus status{};
+        dztrader::copy_string(status.account_id, account.c_str(), true);
+        dztrader::copy_string(status.gateway_name, std::string(gateway_name).c_str(), true);
+        status.state = DZ_ACCOUNT_OFFLINE;
+        status.trading_day = 0;
+        platform::write_struct(event_writer_, DZ_FRAME_ACCOUNT_STATUS, status);
+    }
+    SPDLOG_INFO("td stopped, accounts marked offline | gateway={} count={}",
+                gateway_name, it->second.size());
+}
+
+void ShmManager::forget_td_accounts(std::string_view gateway_name) {
+    if (td_account_mirror_.erase(std::string(gateway_name)) > 0) {
+        SPDLOG_INFO("td account mirror cleared | gateway={}", gateway_name);
     }
 }
 

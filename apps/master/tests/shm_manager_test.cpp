@@ -1,6 +1,7 @@
 #include "shm_manager.h"
 
 #include <dztrader/core/core_data_type.h>
+#include <dztrader/core/core_struct.h>
 #include <dztrader/core/env.h>
 #include <dztrader/core/path.h>
 #include <dztrader/core/this_process.h>
@@ -1479,6 +1480,195 @@ TEST_F(ProcessControlFrameTest, RemoveInactiveGatewayFinalizesFully) {
         }
     }
     EXPECT_TRUE(second_failed);
+}
+
+// ---- 契约 account-status: master 账户镜像 (2018 建镜像) + 2115 兜底应答 ----
+// 帧驱动模式同既有用例: 独立 MultiWriter 模拟 td 写 2018/2115 basic 帧
+// (payload=定长结构体, 无扩展头) -> drain -> probe Reader 断言 master 兜底帧。
+
+namespace {
+
+/// 写 2018 账户状态帧 (basic 广播帧, payload=DzAccountStatus)
+void write_account_status_frame(shm::MultiWriter& w, const std::string& gateway,
+                                const std::string& account, DzAccountState state) {
+    DzAccountStatus status{};
+    dztrader::copy_string(status.gateway_name, gateway.c_str(), true);
+    dztrader::copy_string(status.account_id, account.c_str(), true);
+    status.state = state;
+    status.trading_day = 0;
+    ASSERT_TRUE(platform::write_struct(w, DZ_FRAME_ACCOUNT_STATUS, status));
+}
+
+/// 写 2115 账户状态查询帧 (basic 广播帧, payload=DzAccountStatusReq)
+void write_query_account_status_frame(shm::MultiWriter& w, const std::string& account) {
+    DzAccountStatusReq req{};
+    dztrader::copy_string(req.account_id, account.c_str(), true);
+    ASSERT_TRUE(platform::write_struct(w, DZ_FRAME_TD_QUERY_ACCOUNT_STATUS, req));
+}
+
+/// 排空 reader 并收集全部 2018 账户状态帧 payload (帧指针下次 next_frame 失效, 拷出)
+std::vector<DzAccountStatus> collect_account_status_frames(shm::Reader& reader) {
+    std::vector<DzAccountStatus> out;
+    for (int i = 0; i < 64; ++i) {
+        const auto* frame = reader.next_frame();
+        if (!frame) break;
+        shm::FrameView view(frame);
+        if (view.type() != DZ_FRAME_ACCOUNT_STATUS) continue;
+        DzAccountStatus status;
+        std::memcpy(&status, &view.payload<DzAccountStatus>(), sizeof(status));
+        out.push_back(status);
+    }
+    return out;
+}
+
+}  // namespace
+
+// 2018 建镜像: td 上报 CTP001 后, 2115 查询命中镜像 -> master 不兜底 (td 权威应答)
+TEST_F(ShmManagerTest, AccountStatusFrameBuildsMirror) {
+    ShmManager mgr(make_default_shm_global(), cfg_path_);
+
+    auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
+    auto writer = shm::MultiWriter::create(
+        std::make_shared<shm::ChannelMeta>(std::move(meta)), "fake_td");
+    write_account_status_frame(writer, "dztd_ctp", "CTP001", DZ_ACCOUNT_READY);
+    for (int i = 0; i < 10; ++i) {
+        mgr.drain_event_channel();
+    }
+
+    // reader 必须注册在查询帧写入之前才能看到 master 的应答帧
+    shm::Reader reader = shm::Reader::create(shm::channel_name("dzevent"), dztrader::paths::shm(),
+                                             "mirror_probe");
+    write_query_account_status_frame(writer, "CTP001");
+    for (int i = 0; i < 10; ++i) {
+        mgr.drain_event_channel();
+    }
+
+    // 镜像命中: 无任何 2018 应答 (该网关 td 会权威应答)
+    EXPECT_TRUE(collect_account_status_frames(reader).empty());
+}
+
+// 2115 未命中: 查询账户不在任何网关镜像中 -> master 兜底回 Offline (gateway_name="")
+TEST_F(ShmManagerTest, QueryUnknownAccountGetsOfflineFallback) {
+    ShmManager mgr(make_default_shm_global(), cfg_path_);
+
+    auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
+    auto writer = shm::MultiWriter::create(
+        std::make_shared<shm::ChannelMeta>(std::move(meta)), "fake_td");
+    write_account_status_frame(writer, "dztd_ctp", "CTP001", DZ_ACCOUNT_READY);
+    for (int i = 0; i < 10; ++i) {
+        mgr.drain_event_channel();
+    }
+
+    shm::Reader reader = shm::Reader::create(shm::channel_name("dzevent"), dztrader::paths::shm(),
+                                             "fallback_probe");
+    write_query_account_status_frame(writer, "UNKNOWN");
+    for (int i = 0; i < 10; ++i) {
+        mgr.drain_event_channel();
+    }
+
+    auto frames = collect_account_status_frames(reader);
+    ASSERT_EQ(frames.size(), 1u);
+    EXPECT_STREQ(frames[0].account_id, "UNKNOWN");
+    EXPECT_STREQ(frames[0].gateway_name, "");
+    EXPECT_EQ(frames[0].state, DZ_ACCOUNT_OFFLINE);
+    EXPECT_EQ(frames[0].trading_day, 0);
+}
+
+// 回声防自锁: master 自己写的兜底帧 (gateway_name="") 回流后不得入镜像
+// (否则 2115 查询会命中镜像而不再兜底, 兜底链路永久失效)
+TEST_F(ShmManagerTest, FallbackEchoSkippedFromMirror) {
+    ShmManager mgr(make_default_shm_global(), cfg_path_);
+
+    auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
+    auto writer = shm::MultiWriter::create(
+        std::make_shared<shm::ChannelMeta>(std::move(meta)), "fake_td");
+    // 模拟 master 兜底应答回声: gateway_name="" 的 2018 帧
+    write_account_status_frame(writer, "", "CTP001", DZ_ACCOUNT_READY);
+    for (int i = 0; i < 10; ++i) {
+        mgr.drain_event_channel();
+    }
+
+    shm::Reader reader = shm::Reader::create(shm::channel_name("dzevent"), dztrader::paths::shm(),
+                                             "echo_probe");
+    write_query_account_status_frame(writer, "CTP001");
+    for (int i = 0; i < 10; ++i) {
+        mgr.drain_event_channel();
+    }
+
+    // 回声未入镜像: 查询仍走兜底, 回 Offline
+    auto frames = collect_account_status_frames(reader);
+    ASSERT_EQ(frames.size(), 1u);
+    EXPECT_STREQ(frames[0].account_id, "CTP001");
+    EXPECT_STREQ(frames[0].gateway_name, "");
+    EXPECT_EQ(frames[0].state, DZ_ACCOUNT_OFFLINE);
+}
+
+// td 退出兜底: notify_td_stopped 对镜像内账户逐账户写 Offline (gateway_name=真实网关名),
+// 且镜像保留 (重启后 td 快照重新确认, 期间 2115 查询仍命中不兜底)
+TEST_F(ShmManagerTest, NotifyTdStoppedWritesOfflineKeepingMirror) {
+    ShmManager mgr(make_default_shm_global(), cfg_path_);
+
+    auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
+    auto writer = shm::MultiWriter::create(
+        std::make_shared<shm::ChannelMeta>(std::move(meta)), "fake_td");
+    write_account_status_frame(writer, "dztd_ctp", "CTP001", DZ_ACCOUNT_READY);
+    write_account_status_frame(writer, "dztd_ctp", "CTP002", DZ_ACCOUNT_READY);
+    for (int i = 0; i < 10; ++i) {
+        mgr.drain_event_channel();
+    }
+
+    shm::Reader reader = shm::Reader::create(shm::channel_name("dzevent"), dztrader::paths::shm(),
+                                             "td_stop_probe");
+    mgr.notify_td_stopped("dztd_ctp");
+
+    // 逐账户 2 条 Offline 帧, gateway_name=真实网关名
+    auto frames = collect_account_status_frames(reader);
+    ASSERT_EQ(frames.size(), 2u);
+    std::set<std::string> accounts;
+    for (const auto& st : frames) {
+        EXPECT_STREQ(st.gateway_name, "dztd_ctp");
+        EXPECT_EQ(st.state, DZ_ACCOUNT_OFFLINE);
+        EXPECT_EQ(st.trading_day, 0);
+        accounts.insert(std::string(st.account_id));
+    }
+    EXPECT_EQ(accounts, (std::set<std::string>{"CTP001", "CTP002"}));
+
+    // 镜像保留: 2115 查 CTP001 仍命中, 不兜底
+    write_query_account_status_frame(writer, "CTP001");
+    for (int i = 0; i < 10; ++i) {
+        mgr.drain_event_channel();
+    }
+    EXPECT_TRUE(collect_account_status_frames(reader).empty());
+}
+
+// remove 流程清理: forget_td_accounts 删除镜像条目, 之后 2115 查询走兜底
+// (防僵尸账户集污染兜底应答)
+TEST_F(ShmManagerTest, ForgetTdAccountsClearsMirror) {
+    ShmManager mgr(make_default_shm_global(), cfg_path_);
+
+    auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
+    auto writer = shm::MultiWriter::create(
+        std::make_shared<shm::ChannelMeta>(std::move(meta)), "fake_td");
+    write_account_status_frame(writer, "dztd_ctp", "CTP001", DZ_ACCOUNT_READY);
+    for (int i = 0; i < 10; ++i) {
+        mgr.drain_event_channel();
+    }
+
+    mgr.forget_td_accounts("dztd_ctp");
+
+    shm::Reader reader = shm::Reader::create(shm::channel_name("dzevent"), dztrader::paths::shm(),
+                                             "forget_probe");
+    write_query_account_status_frame(writer, "CTP001");
+    for (int i = 0; i < 10; ++i) {
+        mgr.drain_event_channel();
+    }
+
+    // 镜像已清: 查询走兜底, 回 Offline
+    auto frames = collect_account_status_frames(reader);
+    ASSERT_EQ(frames.size(), 1u);
+    EXPECT_STREQ(frames[0].account_id, "CTP001");
+    EXPECT_STREQ(frames[0].gateway_name, "");
+    EXPECT_EQ(frames[0].state, DZ_ACCOUNT_OFFLINE);
 }
 
 }  // namespace

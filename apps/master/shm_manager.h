@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -200,6 +201,12 @@ public:
     /// master 在子进程状态变化时调用 (launch_child/on_child_exit/stop_single_child)。
     void write_process_status(const platform::ProcessStatus& status);
 
+    /// td 网关退出兜底: 对镜像内该网关账户集逐账户写 Offline (gateway_name=真实网关名,
+    /// 镜像保留, 重启后 td 快照重新确认; 由 ProcessSupervisor::on_child_exit GatewayTd 分支调用)
+    void notify_td_stopped(std::string_view gateway_name);
+    /// remove 流程清理: 删除该网关的账户镜像条目 (防僵尸账户集污染兜底应答)
+    void forget_td_accounts(std::string_view gateway_name);
+
     /// 进程配置存储（只读访问：display_name 真相源，契约 process）
     [[nodiscard]] const ProcessConfigStore& process_config_store() const {
         return *process_config_store_;
@@ -280,6 +287,14 @@ private:
     void handle_process_stop(const platform::ProcessControlReq& req);
     void handle_process_remove(const platform::ProcessControlReq& req);
     void handle_set_process_config(const shm::FrameView& view);
+
+    // ===== 账户状态镜像 (契约 account-status: master 兜底职责) =====
+    void handle_account_status(const std::byte* frame);
+    void handle_query_account_status(const std::byte* frame);
+    /// 2018 payload -> 独立缓冲 (帧指针在下一次 next_frame 后失效, 不外借)
+    /// td 网关名 -> 该网关管理的账户集 (2018 非空 gateway_name 帧喂入;
+    /// master 兜底回声 gateway_name="" 不入镜像)
+    std::unordered_map<std::string, std::set<std::string>> td_account_mirror_;
 
     // ===== 配置状态 (声明在最前, 构造函数初始化列表先执行) =====
     /// 全局 meta 文件大小 (所有通道共用,启动后不变)
