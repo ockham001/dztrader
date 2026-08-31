@@ -116,6 +116,7 @@ TEST(FrameTypes, TdBusinessFrames) {
     EXPECT_EQ(DZ_FRAME_TD_MARGIN_RATE,         static_cast<DzFrameType>(2015));
     EXPECT_EQ(DZ_FRAME_TD_COMMISSION_RATE,     static_cast<DzFrameType>(2016));
     EXPECT_EQ(DZ_FRAME_TD_POSITION_DETAIL,     static_cast<DzFrameType>(2017));
+    EXPECT_EQ(DZ_FRAME_ACCOUNT_STATUS,            static_cast<DzFrameType>(2018));
 }
 
 TEST(FrameTypes, TdConfigAndStatusFrames) {
@@ -128,4 +129,5 @@ TEST(FrameTypes, TdConfigAndStatusFrames) {
     EXPECT_EQ(DZ_FRAME_NOTIFY_TD_STOPPED,         static_cast<DzFrameType>(2112));
     EXPECT_EQ(DZ_FRAME_NOTIFY_TD_CONNECTED,       static_cast<DzFrameType>(2113));
     EXPECT_EQ(DZ_FRAME_NOTIFY_TD_DISCONNECTED,    static_cast<DzFrameType>(2114));
+    EXPECT_EQ(DZ_FRAME_TD_QUERY_ACCOUNT_STATUS,   static_cast<DzFrameType>(2115));
 }

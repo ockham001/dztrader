@@ -286,6 +286,20 @@ typedef int8_t DzNotifyLevel;
 #define DZ_NOTIFY_ERROR ((DzNotifyLevel)4)
 
 /* ==========================================================
+ *  账户登录状态
+ * ========================================================== */
+
+/** @brief 账户登录状态（三态，td 内部 11 态聚合映射，契约 account-status） */
+typedef int8_t DzAccountState;
+
+/** @brief 未登录（未启动/断开/登出/账户已移除） */
+#define DZ_ACCOUNT_OFFLINE    ((DzAccountState)0)
+/** @brief 登录进行中（连接/认证/登录/结算确认/合约加载全过程） */
+#define DZ_ACCOUNT_LOGGING_IN ((DzAccountState)1)
+/** @brief 就绪：登录+结算确认+合约加载完成，可下单可查询 */
+#define DZ_ACCOUNT_READY      ((DzAccountState)2)
+
+/* ==========================================================
  *  系统级定时任务类型
  *
  *  注: DzSysSchedType / DZ_SYS_SCHED_* / DZ_FRAME_SYS_SCHED 已随
@@ -349,6 +363,9 @@ typedef int16_t DzFrameType;
 #define DZ_FRAME_TD_TRADING_ACCOUNT ((DzFrameType)2003)
 /** @brief 交易网关状态变化 */
 #define DZ_FRAME_TD_GATEWAY_STATUS  ((DzFrameType)2004)
+/* 帧类型 2004 (原 DZ_FRAME_TD_GATEWAY_STATUS) 之后为账户登录状态推送 */
+/** @brief 账户登录状态推送 (basic 广播帧, payload=DzAccountStatus, 契约 account-status) */
+#define DZ_FRAME_ACCOUNT_STATUS   ((DzFrameType)2018)
 
 /* ── 策略帧 ── */
 
