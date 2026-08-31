@@ -773,9 +773,9 @@ void TdApi::update_status(const std::string& account_id) {
 }
 
 void TdApi::write_account_status(const std::string& account_id, DzAccountState state,
-                                 const std::string& trading_day) {
+                                 const std::string& trading_day, bool force) {
     auto& last = account_last_state_[account_id];
-    if (last == state && state != DZ_ACCOUNT_OFFLINE) {
+    if (!force && last == state && state != DZ_ACCOUNT_OFFLINE) {
         return;  // 三态未翻转, 不重复推 (Offline 恒推, 供删账户/崩溃兜底语义)
     }
     last = state;
@@ -801,9 +801,9 @@ void TdApi::report_account_status_all() {
             const auto& st = session->state_machine().status();
             write_account_status(acct.account_id,
                                  account_state_of(session->state_machine().state()),
-                                 st.trading_day);
+                                 st.trading_day, /*force=*/true);
         } else {
-            write_account_status(acct.account_id, DZ_ACCOUNT_OFFLINE, "");
+            write_account_status(acct.account_id, DZ_ACCOUNT_OFFLINE, "", /*force=*/true);
         }
     }
 }
@@ -833,9 +833,9 @@ void TdApi::handle_query_account_status(const std::byte* frame) {
     if (auto* session = find_session(std::string(req.account_id)); session != nullptr) {
         write_account_status(std::string(req.account_id),
                              account_state_of(session->state_machine().state()),
-                             session->state_machine().status().trading_day);
+                             session->state_machine().status().trading_day, /*force=*/true);
     } else {
-        write_account_status(std::string(req.account_id), DZ_ACCOUNT_OFFLINE, "");
+        write_account_status(std::string(req.account_id), DZ_ACCOUNT_OFFLINE, "", /*force=*/true);
     }
 }
 

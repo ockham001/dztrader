@@ -180,8 +180,9 @@ private:
     void update_status(const std::string& account_id);
     /// 账户状态统一写出口 (spec §3.1): 2018 三态去重推送。
     /// state 与该账户上次推送相同则跳过; trading_day 为空串或 state!=READY 时帧内 trading_day=0。
+    /// force=true = 权威全量重推, 绕过去重 — snapshot/query 应答路径用 (spec §3.1 重启快照自愈)。
     void write_account_status(const std::string& account_id, DzAccountState state,
-                              const std::string& trading_day);
+                              const std::string& trading_day, bool force = false);
     /// 对 config_.accounts 全量重推 (无 session=Offline; spec §3.1 配置加载即推)
     void report_account_status_all();
     /// 处理 TD_QUERY_ACCOUNT_STATUS(2115) basic 广播帧: 空=全量应答, 指定=命中配置才应答
