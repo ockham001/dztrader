@@ -4,7 +4,7 @@
 
 两帧均为 **basic 广播帧**（仅 `DzFrameHeader`，无扩展头，无 `instance_id`），走事件通道（总则 §4.1），身份在 payload。帧头无 `instance_id` 的帧不得依赖帧头路由（总则 §5）。
 
-类型层真相源：`libs/strategy_api/include/dztrader/struct.h`（`DzAccountStatus`、`DzAccountState` 三态枚举）、`libs/core/include/dztrader/core/core_struct.h`（`DzAccountStatusReq`）。
+类型层真相源：`libs/strategy_api/include/dztrader/struct.h`（`DzAccountStatus`）、`libs/strategy_api/include/dztrader/data_type.h`（`DzAccountState` 三态枚举及 `DZ_ACCOUNT_*` 宏）、`libs/core/include/dztrader/core/core_struct.h`（`DzAccountStatusReq`）。
 
 四端职责：
 

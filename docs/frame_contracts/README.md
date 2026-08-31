@@ -39,7 +39,7 @@
 
 - 本目录覆盖事件通道的低频控制/配置/通知帧。
 - 策略帧契约已收录（见 [strategy](strategy.md)）；`STG_USER_OUTPUT`/`SET_LOGICAL_POSITION` 的 dzweb 消费与 WS/REST 映射未接线（契约定义语义，实现滞后由 general §11.3 checklist 跟踪）。
-- **未覆盖**（后续独立契约）：交易帧（除契约 td-order 已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ` 与契约 account-status 已覆盖的 `ACCOUNT_STATUS`/`TD_QUERY_ACCOUNT_STATUS` 外，其余 2000-2114）、行情/交易数据帧（`RTN_MD_TICK`、TD 推送 2000-2004）、`SYS_SCHED`（帧类型保留未用，见 general §10）。
+- **未覆盖**（后续独立契约）：交易帧（除契约 td-order 已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ` 与契约 account-status 已覆盖的 `ACCOUNT_STATUS`/`TD_QUERY_ACCOUNT_STATUS` 外，其余 2000-2115）、行情/交易数据帧（`RTN_MD_TICK`、TD 推送 2000-2004）、`SYS_SCHED`（帧类型保留未用，见 general §10）。
 
 ## 变更流程
 
