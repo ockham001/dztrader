@@ -14,9 +14,11 @@
  *       下限价开仓单并等待回报; 账户未连接时 td 网关回 REJECTED (空账户拒单闭环)。
  *   stg_demo cancel <账户> <订单ID>
  *       发撤单请求并等待回报 (账户未连接时 td 静默丢弃撤单, 观察超时路径)。
+ *   stg_demo account [账户]
+ *       查询账户登录状态 (缺省=所有账户) 并在观察窗口内打印状态帧。
  *
  * 退出码 (供脚本/冒烟测试机器断言):
- *   0 = 成功 (info 完成 / md 观察窗口结束 / order、cancel 收到回报)
+ *   0 = 成功 (info 完成 / md、account 观察窗口结束 / order、cancel 收到回报)
  *   2 = 用法或初始化错误
  *   3 = order 收到 REJECTED 回报 (空账户拒单闭环)
  *   4 = order/cancel 在等待窗口内未收到回报
@@ -60,6 +62,7 @@ constexpr int kExitNoReport = 4;
 constexpr uint32_t kPollStepMs = 500;  // 每次等待/轮询步长
 constexpr auto kOrderWait = 5s;        // 下单/撤单等待回报窗口
 constexpr auto kMdWindow = 10s;        // 行情观察窗口
+constexpr auto kAccountWait = 3s;      // 账户状态观察窗口
 
 void print_usage() {
     std::puts(
@@ -70,6 +73,7 @@ void print_usage() {
         "  stg_demo md <合约...>\n"
         "  stg_demo order <账户> <合约> <价格> <手数> [long|short]\n"
         "  stg_demo cancel <账户> <订单ID>\n"
+        "  stg_demo account [账户]\n"
         "\n"
         "退出码: 0 成功 | 2 用法/初始化错误 | 3 下单被拒 (空账户拒单闭环) | 4 等待回报超时");
 }
@@ -127,6 +131,46 @@ const DzTick* as_md_tick(const void* frame) {
     }
     return reinterpret_cast<const DzTick*>(reinterpret_cast<const std::byte*>(hdr) +
                                            sizeof(DzFrameHeader));
+}
+
+// basic 帧 payload 紧跟 DzFrameHeader; 非目标帧或 frame_size 不足返回 nullptr
+const DzAccountStatus* as_account_status(const void* frame) {
+    const auto* hdr = static_cast<const DzFrameHeader*>(frame);
+    if (hdr->frame_type != DZ_FRAME_ACCOUNT_STATUS) {
+        return nullptr;
+    }
+    if (hdr->frame_size < sizeof(DzFrameHeader) + sizeof(DzAccountStatus)) {
+        return nullptr;
+    }
+    return reinterpret_cast<const DzAccountStatus*>(reinterpret_cast<const std::byte*>(hdr) +
+                                                    sizeof(DzFrameHeader));
+}
+
+std::string account_state_name(DzAccountState state) {
+    switch (state) {
+        case DZ_ACCOUNT_OFFLINE:
+            return "离线";
+        case DZ_ACCOUNT_LOGGING_IN:
+            return "登录中";
+        case DZ_ACCOUNT_READY:
+            return "就绪";
+        default:
+            return std::format("unknown({})", static_cast<int>(state));
+    }
+}
+
+void print_account_status(const DzAccountStatus& st) {
+    // trading_day 为距纪元天数; 0 = Offline/兜底应答, 无有效交易日
+    std::string day = "-";
+    if (st.trading_day != 0) {
+        const std::chrono::year_month_day ymd{
+            std::chrono::sys_days{std::chrono::days{st.trading_day}}};
+        day = std::format("{:04}-{:02}-{:02}", static_cast<int>(ymd.year()),
+                          static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
+    }
+    std::puts(std::format("账户状态: account={} gateway={} state={} trading_day={}",
+                          st.account_id, st.gateway_name, account_state_name(st.state), day)
+                  .c_str());
 }
 
 void print_report(const DzOrderReport& rpt) {
@@ -323,6 +367,45 @@ int cmd_cancel(DzContext* ctx, int argc, char** argv) {
     return kExitNoReport;
 }
 
+int cmd_account(DzContext* ctx, int argc, char** argv) {
+    // 用法: account [账户ID]  (缺省=所有账户)
+    if (argc > 3) {
+        print_usage();
+        return kExitUsage;
+    }
+    print_identity(ctx);
+    if (!dz_query_account_status(ctx, argc > 2 ? argv[2] : nullptr)) {
+        std::puts(std::format("查询失败: {} ({})", dz_errmsg(), dz_errcode()).c_str());
+        return kExitUsage;
+    }
+    std::puts(std::format("查询已发送, 观察 {}s (无账户连接时无状态帧为预期)",
+                          kAccountWait.count())
+                  .c_str());
+
+    uint32_t status_count = 0;
+    const auto deadline = std::chrono::steady_clock::now() + kAccountWait;
+    const DzTimerId poll_timer = dz_schedule_every(ctx, static_cast<int32_t>(kPollStepMs));
+    if (poll_timer == DZ_TIMER_INVALID) {
+        std::puts(std::format("定时器创建失败: {} ({})", dz_errmsg(), dz_errcode()).c_str());
+        return kExitUsage;
+    }
+    while (std::chrono::steady_clock::now() < deadline) {
+        dz_wait(ctx);
+        const void* frame = nullptr;
+        while ((frame = dz_next_event(ctx)) != nullptr) {
+            const DzAccountStatus* st = as_account_status(frame);
+            if (st == nullptr) {
+                continue;
+            }
+            ++status_count;
+            print_account_status(*st);
+        }
+    }
+    (void)dz_schedule_cancel(ctx, poll_timer);
+    std::puts(std::format("观察窗口结束: 共收到 {} 个状态帧", status_count).c_str());
+    return kExitOk;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -350,6 +433,8 @@ int main(int argc, char** argv) {
         rc = cmd_order(ctx, argc, argv);
     } else if (cmd == "cancel") {
         rc = cmd_cancel(ctx, argc, argv);
+    } else if (cmd == "account") {
+        rc = cmd_account(ctx, argc, argv);
     } else {
         print_usage();
     }
