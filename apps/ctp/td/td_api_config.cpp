@@ -106,6 +106,11 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
     }
     SPDLOG_INFO("td config updated | op={}", magic_enum::enum_name(req.op));
 
+    // 契约 account-status: 配置账户集变化 (含盘中新加未连接账户) -> 全量重推 2018,
+    // 无会话账户推 Offline, 让策略立即感知新账户存在且未登录
+    // (删配置账户走 disconnect 路径已有 Offline 补推, 此处全量重推幂等无害)
+    report_account_status_all();
+
     // 6. 成功路径必须上报 RTN_TD_CONFIG (脱敏), 让 dzweb 镜像更新
     //    契约: REQ (TD_REQ_MODIFY_CONFIG) 必须有对应 RTN (TD_RTN_CONFIG)
     //    注: dzweb 当前未注册 TD 配置帧（TD 领域尚未接入契约 webui-ws 镜像模型），
@@ -146,6 +151,8 @@ void TdApi::report_full_snapshot() {
     report_log_config();
     report_auto_login();
     report_state();
+    // 契约 account-status: 快照含账户三态 (无 session 账户推 Offline), 冷启动镜像一次到位
+    report_account_status_all();
     SPDLOG_DEBUG("td full snapshot reported | name={}", name_);
 }
 

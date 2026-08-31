@@ -14,6 +14,7 @@
 #include <dztrader/core/core_struct.h>  // DzOrderReq / DzOrderCancelReq
 #include <dztrader/core/string_util.h>  // copy_string
 #include <dztrader/data_type.h>
+#include <dztrader/date_time/date_time.h>  // Date::from_string ("YYYYMMDD" -> DzDate)
 #include <dztrader/platform/frame_codec.h>
 #include <dztrader/shm/frame_codec.h>  // decode_ext_inst_json, decode_ext_json
 #include <dztrader/struct.h>
@@ -250,6 +251,11 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
         case DZ_FRAME_QUERY_FULL_SNAPSHOT: {
             // 全量快照查询 (所有进程处理): 触发各进程上报完整快照 (配置+状态)
             report_full_snapshot();
+            return;
+        }
+        case DZ_FRAME_TD_QUERY_ACCOUNT_STATUS: {
+            // 契约 account-status: 2115 basic 广播帧, 空=全量应答, 指定=命中配置才应答
+            handle_query_account_status(frame);
             return;
         }
         case DZ_FRAME_TD_ORDER_REQ: {
@@ -626,6 +632,10 @@ void TdApi::disconnect_account_by_id(const std::string& account_id) {
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td disconnect failed | account={} error=\"{}\"", account_id, e.what());
     }
+    // 契约 account-status: 先推 Offline 帧, 后 erase 缓存与会话
+    // (write_account_status 的 Offline 恒推分支保证缓存即使已 Offline 也再推一条)
+    write_account_status(account_id, DZ_ACCOUNT_OFFLINE, "");
+    account_last_state_.erase(account_id);  // 先推 Offline 再清缓存 (ensure Offline 恒达)
     sessions_.erase(account_id);
     SPDLOG_INFO("td account disconnected | account={}", account_id);
 }
@@ -751,11 +761,81 @@ void TdApi::update_status(const std::string& account_id) {
             prog["desc"] = status.progress_desc;
         }
         platform::write_ext_inst_json_obj(event_writer_, DZ_FRAME_RTN_PROGRESS, inst_id, prog);
+
+        // 契约 account-status: 2018 三态去重推送 (与 2104 同一异常保护, 异常路径一致)
+        write_account_status(account_id, account_state_of(status.state), status.trading_day);
     } catch (const dztrader::Exception& e) {
         SPDLOG_ERROR("update_status failed | account={} code={} error=\"{}\"",
                      account_id, e.code(), e.what());
     } catch (const std::exception& e) {
         SPDLOG_ERROR("update_status failed | account={} error=\"{}\"", account_id, e.what());
+    }
+}
+
+void TdApi::write_account_status(const std::string& account_id, DzAccountState state,
+                                 const std::string& trading_day) {
+    auto& last = account_last_state_[account_id];
+    if (last == state && state != DZ_ACCOUNT_OFFLINE) {
+        return;  // 三态未翻转, 不重复推 (Offline 恒推, 供删账户/崩溃兜底语义)
+    }
+    last = state;
+    DzAccountStatus status{};
+    dztrader::copy_string(status.account_id, account_id.c_str(), true);
+    dztrader::copy_string(status.gateway_name, name_.c_str(), true);
+    status.state = state;
+    status.trading_day = 0;
+    if (state == DZ_ACCOUNT_READY && !trading_day.empty()) {
+        try {
+            status.trading_day =
+                dztrader::Date::from_string(trading_day, "%Y%m%d").days_since_epoch();
+        } catch (const std::exception&) {
+            status.trading_day = 0;  // 非法/缺失交易日回落 0 (契约 account-status)
+        }
+    }
+    platform::write_struct(event_writer_, DZ_FRAME_ACCOUNT_STATUS, status);
+}
+
+void TdApi::report_account_status_all() {
+    for (const auto& acct : config_.accounts) {
+        if (auto* session = find_session(acct.account_id); session != nullptr) {
+            const auto& st = session->state_machine().status();
+            write_account_status(acct.account_id,
+                                 account_state_of(session->state_machine().state()),
+                                 st.trading_day);
+        } else {
+            write_account_status(acct.account_id, DZ_ACCOUNT_OFFLINE, "");
+        }
+    }
+}
+
+void TdApi::handle_query_account_status(const std::byte* frame) {
+    const shm::FrameView view(frame);
+    constexpr auto kMin = sizeof(DzFrameHeader) + sizeof(DzAccountStatusReq);
+    if (view.frame_size() < kMin) {
+        SPDLOG_WARN("td query account status rejected | reason=short_payload frame_size={}",
+                    view.frame_size());
+        return;
+    }
+    DzAccountStatusReq req;
+    std::memcpy(&req, &view.payload<DzAccountStatusReq>(), sizeof(req));
+    std::vector<std::string> configured;
+    configured.reserve(config_.accounts.size());
+    for (const auto& a : config_.accounts) {
+        configured.emplace_back(a.account_id);
+    }
+    if (!account_query_matches(configured, req.account_id)) {
+        return;  // 不在本网关配置, 交 master 兜底
+    }
+    if (req.account_id[0] == '\0') {
+        report_account_status_all();
+        return;
+    }
+    if (auto* session = find_session(std::string(req.account_id)); session != nullptr) {
+        write_account_status(std::string(req.account_id),
+                             account_state_of(session->state_machine().state()),
+                             session->state_machine().status().trading_day);
+    } else {
+        write_account_status(std::string(req.account_id), DZ_ACCOUNT_OFFLINE, "");
     }
 }
 

@@ -177,4 +177,13 @@ const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& acc
     return find_current_account_in(cfg.accounts, account_id);
 }
 
+// 2115 查询路由: queried 为空串 = 查全部; 否则命中配置才应答 (不在配置不回, master 兜底)
+bool account_query_matches(const std::vector<std::string>& configured,
+                           const std::string& queried) {
+    if (queried.empty()) {
+        return true;
+    }
+    return std::ranges::find(configured, queried) != configured.end();
+}
+
 }  // namespace dztrader::ctp

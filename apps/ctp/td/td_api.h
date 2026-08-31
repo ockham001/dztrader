@@ -51,6 +51,10 @@ const AccountConfig* find_current_account_in(const std::vector<AccountConfig>& a
 /// account_id 为空或未找到时返回 nullptr。委托给 find_current_account_in(cfg.accounts, ...)。
 const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& account_id);
 
+/// 2115 查询路由: queried 为空串 = 查全部 (true); 否则命中配置才应答 (不在配置不回, master 兜底)
+bool account_query_matches(const std::vector<std::string>& configured,
+                           const std::string& queried);
+
 /// TdApi: CTP 交易网关进程级编排器 (设计 §1.1 多账户路由, §6.3 主循环)。
 ///
 /// 职责:
@@ -174,6 +178,14 @@ private:
     // === 状态/健康度 ===
     /// 推送指定账户的当前状态到 SHM (DZ_FRAME_RTN_TD_STATUS, payload 为 TdStatusRecord)
     void update_status(const std::string& account_id);
+    /// 账户状态统一写出口 (spec §3.1): 2018 三态去重推送。
+    /// state 与该账户上次推送相同则跳过; trading_day 为空串或 state!=READY 时帧内 trading_day=0。
+    void write_account_status(const std::string& account_id, DzAccountState state,
+                              const std::string& trading_day);
+    /// 对 config_.accounts 全量重推 (无 session=Offline; spec §3.1 配置加载即推)
+    void report_account_status_all();
+    /// 处理 TD_QUERY_ACCOUNT_STATUS(2115) basic 广播帧: 空=全量应答, 指定=命中配置才应答
+    void handle_query_account_status(const std::byte* frame);
     /// per-account 健康度翻转检测 + 广播 (NOTIFY_TD_CONNECTED / NOTIFY_TD_DISCONNECTED)。
     /// instance_id 格式 name_:account_id。仅在 health 翻转时发送, 避免重复。
     void broadcast_health(const std::string& account_id, TdHealth now);
@@ -234,6 +246,8 @@ private:
 
     std::unordered_map<std::string, std::unique_ptr<AccountSession>> sessions_;  ///< account_id -> 会话
     std::unordered_map<std::string, TdHealth> account_health_;                   ///< account_id -> 上次广播健康度
+    /// 账户上次推送的三态 (去重缓存; 键=account_id)
+    std::unordered_map<std::string, DzAccountState> account_last_state_;
 
     bool running_ = false;                               ///< 主循环运行中
     bool started_ = false;                               ///< run() 是否已完成初始化 (防重入重复广播)
