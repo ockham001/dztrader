@@ -316,6 +316,7 @@ TEST(AccountStateMapping, TripleStateAggregation) {
     EXPECT_EQ(account_state_of(TdState::Authenticating), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::Authenticated), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::LoggingIn), DZ_ACCOUNT_LOGGING_IN);
+    EXPECT_EQ(account_state_of(TdState::LoggedIn), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::Confirming), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::LoadingInstruments), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::Ready), DZ_ACCOUNT_READY);

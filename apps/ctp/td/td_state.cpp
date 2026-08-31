@@ -313,6 +313,7 @@ DzAccountState account_state_of(TdState state) noexcept {
         case TdState::Authenticating:
         case TdState::Authenticated:
         case TdState::LoggingIn:
+        case TdState::LoggedIn:
         case TdState::Confirming:
         case TdState::LoadingInstruments:
             return DZ_ACCOUNT_LOGGING_IN;
