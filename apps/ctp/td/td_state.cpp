@@ -303,4 +303,23 @@ void TdStateMachine::set_state(TdState new_state) {
     }
 }
 
+DzAccountState account_state_of(TdState state) noexcept {
+    switch (state) {
+        case TdState::Idle:
+        case TdState::Disconnected:
+            return DZ_ACCOUNT_OFFLINE;
+        case TdState::Connecting:
+        case TdState::Connected:
+        case TdState::Authenticating:
+        case TdState::Authenticated:
+        case TdState::LoggingIn:
+        case TdState::Confirming:
+        case TdState::LoadingInstruments:
+            return DZ_ACCOUNT_LOGGING_IN;
+        case TdState::Ready:
+            return DZ_ACCOUNT_READY;
+    }
+    return DZ_ACCOUNT_OFFLINE;  // 防御: 未枚举值按 Offline
+}
+
 }  // namespace dztrader::ctp
