@@ -42,6 +42,7 @@ public:
     virtual void on_order_report(const DzOrderReport& order_report) { (void)order_report; }
     virtual void on_schedule(const DzScheduleEvent& timer_event) { (void)timer_event; }
     virtual void on_user_input(const DzUserInput& user_input) { (void)user_input; }
+    virtual void on_account_status(const DzAccountStatus& status) { (void)status; }
     virtual void on_error(DzErrorCode errcode, std::string_view message) {
         (void)errcode;
         (void)message;
