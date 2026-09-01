@@ -10,7 +10,10 @@ namespace dztrader::ctp {
 
 /// TD schema 当前版本 (每次表结构变更递增).
 /// v1: 初始版本 (orders/trades/margin_rates/commission_rates/instruments).
-constexpr int kTdSchemaVersion = 1;
+/// v2: orders/trades 加 seq 列 + (account_id, seq) 索引; trades 唯一键升级为
+///     (account_id, trading_day, trade_id) (修复 CTP TradeID 跨日重复被 REPLACE);
+///     新增 positions / trading_accounts 表.
+constexpr int kTdSchemaVersion = 2;
 
 // ============================================================================
 // SQL-ready POD 记录: 复用 strategy_api 结构体 + 组合扩展 SQL 特有字段

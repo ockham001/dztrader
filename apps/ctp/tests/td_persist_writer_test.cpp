@@ -73,9 +73,9 @@ TEST_F(TdPersistWriterTest, OpenCreatesAllTables) {
         SQLite::Statement q(db,
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND "
             "name IN ('schema_version','orders','trades','margin_rates',"
-            "'commission_rates','instruments')");
+            "'commission_rates','instruments','positions','trading_accounts')");
         ASSERT_TRUE(q.executeStep());
-        EXPECT_EQ(q.getColumn(0).getInt(), 6);
+        EXPECT_EQ(q.getColumn(0).getInt(), 8);
     }
 }
 

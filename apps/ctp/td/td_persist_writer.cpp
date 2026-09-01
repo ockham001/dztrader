@@ -34,15 +34,15 @@ constexpr const char* kInsertOrderSql =
     "    account_id, trading_day, order_id, order_ref, external_order_id,"
     "    is_external, instrument_id, exchange_id, direction, position_effect,"
     "    price_type, status, price, volume, volume_traded, volume_canceled,"
-    "    insert_time, update_time, error_id, error_msg, strategy_id, remark"
-    ") VALUES (?,?,?,?,?,?,  ?,?,?,?,  ?,?,?,?,?,?,  ?,?,?,?, ?,?)";
+    "    insert_time, update_time, error_id, error_msg, strategy_id, remark, seq"
+    ") VALUES (?,?,?,?,?,?,  ?,?,?,?,  ?,?,?,?,?,?,  ?,?,?,?, ?,?,?)";
 
 constexpr const char* kInsertTradeSql =
     "INSERT OR REPLACE INTO trades ("
     "    account_id, trading_day, trade_id, order_id, instrument_id, exchange_id,"
     "    direction, position_effect, price, volume, trade_time, trade_date, commission,"
-    "    strategy_id"
-    ") VALUES (?,?,?,?,?,?,  ?,?,?,?,  ?,?,?,?)";
+    "    strategy_id, seq"
+    ") VALUES (?,?,?,?,?,?,  ?,?,?,?,  ?,?,?,?, ?)";
 
 constexpr const char* kInsertMarginRateSql =
     "INSERT OR REPLACE INTO margin_rates ("
@@ -405,6 +405,7 @@ void PersistWriter::bind_order(SQLite::Statement& stmt, const OrderRecord& r) {
     stmt.bind(20, r.error_msg);
     stmt.bind(21, r.base.strategy_id);
     stmt.bind(22, r.base.remark);
+    stmt.bind(23, static_cast<int64_t>(r.base.seq));
 }
 
 void PersistWriter::bind_trade(SQLite::Statement& stmt, const TradeRecord& r) {
@@ -422,6 +423,7 @@ void PersistWriter::bind_trade(SQLite::Statement& stmt, const TradeRecord& r) {
     stmt.bind(12, r.trade_date);
     stmt.bind(13, r.commission);
     stmt.bind(14, r.base.strategy_id);
+    stmt.bind(15, static_cast<int64_t>(r.base.seq));
 }
 
 void PersistWriter::bind_margin_rate(SQLite::Statement& stmt, const MarginRateRecord& r) {
