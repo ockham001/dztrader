@@ -162,6 +162,19 @@ void ShmManager::handle_account_status(const std::byte* frame) {
         if (gateway.empty()) {
             return;  // master 兜底应答回声: 不入镜像 (防自锁)
         }
+        if (status.state == DZ_ACCOUNT_OFFLINE) {
+            // Offline = 账户退出该网关的管理 (td 退出代推回声/断开/删账户): 从镜像移除。
+            // 否则 master 自推的 Offline 帧回流会重建镜像, dead-td 下 2115 再次静默
+            // (audit A-F1 自锁复活); 重启后 td 快照 (LoggingIn/Ready) 重建镜像
+            auto git = td_account_mirror_.find(gateway);
+            if (git != td_account_mirror_.end()) {
+                git->second.erase(std::string(status.account_id));
+                if (git->second.empty()) {
+                    td_account_mirror_.erase(git);
+                }
+            }
+            return;
+        }
         td_account_mirror_[gateway].insert(std::string(status.account_id));
         SPDLOG_DEBUG("account mirror updated | gateway={} account={} state={}",
                      gateway, std::string_view(status.account_id),
@@ -216,6 +229,9 @@ void ShmManager::notify_td_stopped(std::string_view gateway_name) {
     }
     SPDLOG_INFO("td stopped, accounts marked offline | gateway={} count={}",
                 gateway_name, it->second.size());
+    // 推完 Offline 即清镜像 (契约 account-status: 镜像 = 运行中网关当前管理的账户集;
+    // td 已退出不再"管理"任何账户 —— 保留会抑制 2115 兜底, dead-td 下策略静默挂死)
+    forget_td_accounts(gateway_name);
 }
 
 void ShmManager::forget_td_accounts(std::string_view gateway_name) {

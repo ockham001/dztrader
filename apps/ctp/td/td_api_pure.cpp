@@ -6,6 +6,9 @@
 #include <string>
 #include <vector>
 
+#include <dztrader/data_type.h>
+#include <dztrader/date_time/date_time.h>
+
 namespace dztrader::ctp {
 
 // ============================================================================
@@ -184,6 +187,25 @@ bool account_query_matches(const std::vector<std::string>& configured,
         return true;
     }
     return std::ranges::find(configured, queried) != configured.end();
+}
+
+// 2018 三态去重判定 (契约 account-status): 与 write_account_status 的内联条件一致,
+// 抽出纯函数供突变测试 (audit C-F1)。
+bool should_push_account_status(DzAccountState last, DzAccountState next, bool force) {
+    return force || last != next || next == DZ_ACCOUNT_OFFLINE;
+}
+
+// "YYYYMMDD" -> 距纪元天数; 空串/非法回落 0 (契约: 非 Ready 或缺失交易日 = 0)。
+// Date::from_string 抛异常在此消化。
+int32_t epoch_day_from_yyyymmdd(const std::string& yyyymmdd) {
+    if (yyyymmdd.empty()) {
+        return 0;
+    }
+    try {
+        return dztrader::Date::from_string(yyyymmdd, "%Y%m%d").days_since_epoch();
+    } catch (const std::exception&) {
+        return 0;  // 非法/缺失交易日回落 0 (契约 account-status)
+    }
 }
 
 }  // namespace dztrader::ctp

@@ -750,7 +750,9 @@ void ProcessSupervisor::notify_removed_for_inactive(const std::string& name, Cat
         }
     }
     if (category == Category::GatewayTd) {
-        shm_mgr_.forget_td_accounts(name);
+        // 契约 account-status: remove 三路径统一走 notify_td_stopped —— 推 Offline
+        // (gateway_name=真实网关名) 后清镜像, 与 on_child_exit 退出路径语义一致
+        shm_mgr_.notify_td_stopped(name);
     }
     // 清理订阅者注册 (子进程可能曾注册过, 退出后残留)
     // remove_reader 是幂等的, 不存在也无害
@@ -955,7 +957,11 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
                                 + " error=" + e.what());
             }
             if (category == Category::GatewayTd) {
-                shm_mgr_.forget_td_accounts(name);
+                // 契约 account-status: remove 流程统一走 notify_td_stopped ——
+                // 推 Offline (remove 也必须让策略感知) + 清镜像。
+                // 后续 on_child_exit 尾部 GatewayTd 分支再调 notify_td_stopped 时
+                // 镜像已清, 幂等 no-op (契约 Offline 恒推, 重复无害)
+                shm_mgr_.notify_td_stopped(name);
             }
         }
 
@@ -1017,8 +1023,8 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
         }
 
         if (child->entry().category == Category::GatewayTd) {
-            // 契约 account-status: td 退出 (崩溃/停止) 时对镜像内账户补推 Offline。
-            // 镜像保留: 重启后 td 快照重新确认; remove 流程另行 forget_td_accounts 清理。
+            // 契约 account-status: td 退出 (崩溃/停止/remove) 统一推 Offline + 清镜像
+            // (notify_td_stopped 内部先推后清; remove 分支上方已推过时镜像已清, 此处 no-op)。
             // 崩溃时 td 自身无法广播, master 代推 (与 GatewayMd 代发 NOTIFY_MD_STOPPED 对称)。
             // shutting_down 时全局退出, 免推 (策略进程同样在退)。
             try {

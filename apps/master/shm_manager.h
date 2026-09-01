@@ -201,10 +201,11 @@ public:
     /// master 在子进程状态变化时调用 (launch_child/on_child_exit/stop_single_child)。
     void write_process_status(const platform::ProcessStatus& status);
 
-    /// td 网关退出兜底: 对镜像内该网关账户集逐账户写 Offline (gateway_name=真实网关名,
-    /// 镜像保留, 重启后 td 快照重新确认; 由 ProcessSupervisor::on_child_exit GatewayTd 分支调用)
+    /// td 网关退出兜底: 对镜像内该网关账户集逐账户写 Offline (gateway_name=真实网关名),
+    /// 推完即清镜像 (镜像 = 运行中网关当前管理的账户集, td 退出后 2115 查询走 master 兜底;
+    /// 由 ProcessSupervisor::on_child_exit GatewayTd 分支与 remove 流程统一调用)
     void notify_td_stopped(std::string_view gateway_name);
-    /// remove 流程清理: 删除该网关的账户镜像条目 (防僵尸账户集污染兜底应答)
+    /// 删除该网关的账户镜像条目 (notify_td_stopped 内部调用; 公开保留供方法级测试)
     void forget_td_accounts(std::string_view gateway_name);
 
     /// 进程配置存储（只读访问：display_name 真相源，契约 process）

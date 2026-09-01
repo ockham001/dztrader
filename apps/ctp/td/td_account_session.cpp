@@ -23,13 +23,15 @@ AccountSession::AccountSession(std::string account_id,
                                shm::MultiWriter& event_writer,
                                PersistWriter& persist_writer,
                                const MpmcQueuePtr& event_queue,
-                               dztrader::core::TimerQueue& timer_queue)
+                               dztrader::core::TimerQueue& timer_queue,
+                               std::function<void(DzAccountState)> account_state_cb)
     : account_id_(std::move(account_id)),
       order_id_meta_(order_id_meta),
       event_writer_(event_writer),
       persist_writer_(persist_writer),
       event_queue_(event_queue),
       timer_queue_(timer_queue),
+      account_state_cb_(std::move(account_state_cb)),
       risk_gate_(false) {
     if (!event_queue_) {
         throw std::runtime_error("AccountSession: event_queue is null");
@@ -103,6 +105,11 @@ void AccountSession::open(const std::string& flow_dir,
             if (state_machine_.state() == TdState::Connecting) {
                 SPDLOG_ERROR("td connect timeout | account={}", account_id_);
                 state_machine_.on_connect_timeout();
+                // 契约 account-status: 连接超时回 Offline (本 lambda 是唯一不经
+                // TdApi dispatch 路径的直调点, 经状态通知回调走统一写出口)
+                if (account_state_cb_) {
+                    account_state_cb_(DZ_ACCOUNT_OFFLINE);
+                }
             }
         });
 

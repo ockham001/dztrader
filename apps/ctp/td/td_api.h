@@ -55,6 +55,14 @@ const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& acc
 bool account_query_matches(const std::vector<std::string>& configured,
                            const std::string& queried);
 
+/// 2018 三态去重判定 (契约 account-status): 非强制时, 同态且非 Offline 不推;
+/// Offline 恒推 (删账户/崩溃兜底语义)。force (快照/查询应答) 绕过去重。
+bool should_push_account_status(DzAccountState last, DzAccountState next, bool force);
+
+/// "YYYYMMDD" -> 距纪元天数; 空串/非法回落 0 (契约: 非 Ready 或缺失交易日 = 0)。
+/// Date::from_string 抛异常在此消化。
+int32_t epoch_day_from_yyyymmdd(const std::string& yyyymmdd);
+
 /// TdApi: CTP 交易网关进程级编排器 (设计 §1.1 多账户路由, §6.3 主循环)。
 ///
 /// 职责:
@@ -300,9 +308,18 @@ void TdApi::dispatch(Event& event, void (AccountSession::*handler)(const T&)) {
         broadcast_health(rsp->account_id, TdHealth::Down);
     }
     // 契约 account-status 场景 2: 实盘状态转移的三态翻转推送 (非 force, dedup 过滤
-    // 未翻转事件; 每事件一次 map 查找, 三态翻转时恰推一次)
-    write_account_status(rsp->account_id, account_state_of(after),
-                         session->state_machine().status().trading_day);
+    // 未翻转事件; 每事件一次 map 查找, 三态翻转时恰推一次)。
+    // 异常不逃逸 dispatch (bad_alloc 等否则杀主循环 + 跳过尾部 delete 造成事件泄漏)
+    try {
+        write_account_status(rsp->account_id, account_state_of(after),
+                             session->state_machine().status().trading_day);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("account status push failed | account={} error=\"{}\"",
+                     rsp->account_id, e.what());
+    } catch (...) {
+        SPDLOG_ERROR("account status push failed | account={} error=unknown_exception",
+                     rsp->account_id);
+    }
     delete rsp;  // NOLINT
 }
 

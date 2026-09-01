@@ -476,9 +476,18 @@ void TdApi::handle_front_event(Event& event) {
     } else if (before == TdState::Ready && after != TdState::Ready) {
         broadcast_health(account_id, TdHealth::Down);
     }
-    // 契约 account-status 场景 2: 前置连接/断开的三态翻转推送 (非 force, 同上)
-    write_account_status(account_id, account_state_of(after),
-                         session->state_machine().status().trading_day);
+    // 契约 account-status 场景 2: 前置连接/断开的三态翻转推送 (非 force, 同上)。
+    // 异常不逃逸 (否则杀主循环 + 跳过尾部 delete 造成事件泄漏)
+    try {
+        write_account_status(account_id, account_state_of(after),
+                             session->state_machine().status().trading_day);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("account status push failed | account={} error=\"{}\"",
+                     account_id, e.what());
+    } catch (...) {
+        SPDLOG_ERROR("account status push failed | account={} error=unknown_exception",
+                     account_id);
+    }
     AccountSession::delete_event(event);
 }
 
@@ -592,11 +601,17 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
     try {
         auto session = std::make_unique<AccountSession>(
             account_id, *order_id_meta_, event_writer_, *persist_writer_,
-            event_queue_, timer_queue_);
+            event_queue_, timer_queue_,
+            [this, account_id](DzAccountState state) {
+                // 契约 account-status: 会话内直调状态机的路径 (连接超时) 经统一出口推送
+                write_account_status(account_id, state, "");
+            });
         session->open(session_flow_dir.string(), front_addrs,
                       cfg->broker.broker_id, cfg->broker.user_id,
                       cfg->broker.password, cfg->auth_code, cfg->app_id);
         sessions_[account_id] = std::move(session);
+        // 契约 account-status 场景 3: 新会话建立即推 LoggingIn (spec §3.1 盘中增账户语义)
+        write_account_status(account_id, DZ_ACCOUNT_LOGGING_IN, "");
         SPDLOG_INFO("td account connected | account={} fronts={}", account_id, front_addrs.size());
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td connect failed | account={} error=\"{}\"", account_id, e.what());
@@ -778,7 +793,7 @@ void TdApi::update_status(const std::string& account_id) {
 void TdApi::write_account_status(const std::string& account_id, DzAccountState state,
                                  const std::string& trading_day, bool force) {
     auto& last = account_last_state_[account_id];
-    if (!force && last == state && state != DZ_ACCOUNT_OFFLINE) {
+    if (!should_push_account_status(last, state, force)) {
         return;  // 三态未翻转, 不重复推 (Offline 恒推, 供删账户/崩溃兜底语义)
     }
     last = state;
@@ -788,12 +803,7 @@ void TdApi::write_account_status(const std::string& account_id, DzAccountState s
     status.state = state;
     status.trading_day = 0;
     if (state == DZ_ACCOUNT_READY && !trading_day.empty()) {
-        try {
-            status.trading_day =
-                dztrader::Date::from_string(trading_day, "%Y%m%d").days_since_epoch();
-        } catch (const std::exception&) {
-            status.trading_day = 0;  // 非法/缺失交易日回落 0 (契约 account-status)
-        }
+        status.trading_day = epoch_day_from_yyyymmdd(trading_day);
     }
     platform::write_struct(event_writer_, DZ_FRAME_ACCOUNT_STATUS, status);
 }
