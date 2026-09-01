@@ -120,6 +120,7 @@ add_executable(dztd_ctp
     td/td_account_session_pure.cpp
     td/td_account_session.cpp
     td/td_spi.cpp
+    td/td_report_filter.cpp
     common/trading_calendar.cpp
 )
 target_include_directories(dztd_ctp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -260,6 +261,12 @@ foreach(testfile ${TD_CTP_TESTS})
     # td_account_session_pure_test 需要 td_account_session_pure.cpp (OrderRefMap + sync_order_ref 纯逻辑)
     if(testname STREQUAL "td_account_session_pure_test")
         target_sources(dztd_ctp_${testname} PRIVATE td/td_account_session_pure.cpp)
+    endif()
+    # td_report_filter_test 需要 td_report_filter.cpp + td_schema.cpp (OrderRecord/TradeRecord 组合 DzOrderReport)
+    # td_schema.h 引用 dztrader/db/migration.h 需链 dzdb
+    if(testname STREQUAL "td_report_filter_test")
+        target_sources(dztd_ctp_${testname} PRIVATE td/td_report_filter.cpp td/td_schema.cpp)
+        target_link_libraries(dztd_ctp_${testname} PRIVATE dzdb)
     endif()
     gtest_discover_tests(dztd_ctp_${testname})
     install(TARGETS dztd_ctp_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
