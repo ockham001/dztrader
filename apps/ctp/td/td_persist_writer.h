@@ -34,7 +34,7 @@ struct PersistTask {
         Instrument,
         Position,          // 单行绝对态 upsert (盘中有变化时走它)
         TradingAccount,    // 单行绝对态 upsert
-        PositionRebuild,   // 单事务重灌: 清该账户旧日行 + upsert 本组 (spec §3.2)
+        PositionRebuild,   // 单事务重灌: 清该账户全部持仓行 + upsert 本组 (spec §3.2 全量语义)
         FlushSignal,       // FIFO 哨兵: 此前任务必已提交 (flush 屏障)
     } kind;
 
@@ -47,7 +47,6 @@ struct PersistTask {
     /// PositionRebuild / FlushSignal 用: 目标账户.
     std::string account_id;
     /// Position / PositionRebuild / TradingAccount 用: 交易日 (DzDate 距纪元天数).
-    /// PositionRebuild 也用作 DELETE 的旧日排除基准.
     int64_t trading_day = 0;
     /// FlushSignal 用: enqueue_flush_signal 返回的哨兵 token.
     uint64_t flush_token = 0;
@@ -164,7 +163,7 @@ private:
     std::unique_ptr<SQLite::Statement> stmt_insert_instrument_;
     std::unique_ptr<SQLite::Statement> stmt_insert_position_;
     std::unique_ptr<SQLite::Statement> stmt_insert_taccount_;
-    std::unique_ptr<SQLite::Statement> stmt_delete_position_stale_;
+    std::unique_ptr<SQLite::Statement> stmt_delete_position_rebuild_;
 
     std::queue<PersistTask> queue_;
     std::mutex mtx_;

@@ -80,9 +80,9 @@ constexpr const char* kInsertTradingAccountSql =
     "    margin, withdraw_quota, deposit, withdraw, seq"
     ") VALUES (?,?,?,?,?,?,  ?,?,?,?, ?)";
 
-// PositionRebuild 单事务重灌: 清该账户旧日行 (spec §3.2 原子切换)
-constexpr const char* kDeletePositionStaleSql =
-    "DELETE FROM positions WHERE account_id=? AND trading_day!=?";
+// PositionRebuild 单事务重灌: 清该账户全部持仓行 (spec §3.2 全量语义原子切换)
+constexpr const char* kDeletePositionRebuildSql =
+    "DELETE FROM positions WHERE account_id=?";
 
 }  // namespace
 
@@ -149,8 +149,8 @@ void PersistWriter::prepare_statements(SQLite::Database& db) {
     stmt_insert_instrument_ = std::make_unique<SQLite::Statement>(db, kInsertInstrumentSql);
     stmt_insert_position_ = std::make_unique<SQLite::Statement>(db, kInsertPositionSql);
     stmt_insert_taccount_ = std::make_unique<SQLite::Statement>(db, kInsertTradingAccountSql);
-    stmt_delete_position_stale_ =
-        std::make_unique<SQLite::Statement>(db, kDeletePositionStaleSql);
+    stmt_delete_position_rebuild_ =
+        std::make_unique<SQLite::Statement>(db, kDeletePositionRebuildSql);
 }
 
 void PersistWriter::start_writer() {
@@ -204,7 +204,7 @@ void PersistWriter::stop() {
     stmt_insert_instrument_.reset();
     stmt_insert_position_.reset();
     stmt_insert_taccount_.reset();
-    stmt_delete_position_stale_.reset();
+    stmt_delete_position_rebuild_.reset();
     db_.reset();
 
     {
@@ -256,7 +256,7 @@ void PersistWriter::stop_best_effort() {
     stmt_insert_instrument_.reset();
     stmt_insert_position_.reset();
     stmt_insert_taccount_.reset();
-    stmt_delete_position_stale_.reset();
+    stmt_delete_position_rebuild_.reset();
     db_.reset();
 
     {
@@ -475,13 +475,14 @@ void PersistWriter::execute_batch(SQLite::Database& db, std::vector<PersistTask>
                 break;
             }
             case PersistTask::Kind::PositionRebuild: {
-                // 单事务重灌 (spec §3.2 原子性): 清该账户旧日行 + upsert 本组行,
+                // 单事务重灌 (spec §3.2 全量语义): 清该账户全部持仓行 + upsert 本组行,
                 // 外部读者只见原子切换. 外层 writer_loop 已有事务, 此处复用.
+                // 删全部行 (而非按 trading_day 排除): 查询响应为全量, 响应不含的
+                // 合约 = 已全平/已过期, 必须删除 (否则盘中平仓的幽灵持仓永驻到次日).
                 auto day = format_trading_day(task.trading_day);
-                stmt_delete_position_stale_->reset();
-                stmt_delete_position_stale_->bind(1, task.account_id);
-                stmt_delete_position_stale_->bind(2, day);
-                stmt_delete_position_stale_->exec();
+                stmt_delete_position_rebuild_->reset();
+                stmt_delete_position_rebuild_->bind(1, task.account_id);
+                stmt_delete_position_rebuild_->exec();
                 for (const auto& row : std::get<std::vector<DzPositionInfo>>(task.data)) {
                     stmt_insert_position_->reset();
                     bind_position(*stmt_insert_position_, row, day);

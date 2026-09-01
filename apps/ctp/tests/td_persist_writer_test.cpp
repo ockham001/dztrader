@@ -523,7 +523,7 @@ DzTradingAccount make_taccount(double balance, std::uint64_t seq) {
 
 }  // namespace
 
-// PositionRebuild 单事务重灌: 清该账户旧日行 + upsert 本组 (spec §3.2 原子性)
+// PositionRebuild 单事务重灌: 清该账户全部持仓行 + upsert 本组 (spec §3.2 全量语义)
 TEST_F(TdPersistWriterTest, PositionRebuildAtomicClearsStaleDays) {
     // DzDate (距纪元天数) = "YYYYMMDD" 的 days-since-epoch, 与生产 trading_day_ 语义一致.
     // 20696=20260831, 20697=20260901 (见 date_time Date{2026,8,31}.days_since_epoch()).
@@ -572,6 +572,52 @@ TEST_F(TdPersistWriterTest, PositionRebuildAtomicClearsStaleDays) {
         EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 2);
         EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE trading_day='20260831'"), 0);
         EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE trading_day='20260901'"), 2);
+
+        w.stop();
+    }
+}
+
+// 发现 2 回归 (评审 Important): PositionRebuild 需删"该账户全部行" (而非按 trading_day 排除).
+// 盘中全平: 当日持仓通过 Kind::Position upsert 入 DB (trading_day=当日), CTP 全平后查询
+// 响应不再含该合约 → PositionRebuild 组不含它. 若 DELETE 只按旧日排除, 当日行永驻 → 幽灵持仓.
+TEST_F(TdPersistWriterTest, PositionRebuildClearsClosedCurrentDayRows) {
+    constexpr int64_t kDay = 20697;  // 20260901
+    {
+        PersistWriter w(db_path_);
+        w.open();
+        w.start_writer();
+
+        // 当日开仓: 单行 upsert (trading_day=当日, 模拟盘中已落库的持仓).
+        {
+            auto p = make_position(5, 10, DZ_DIRECTION_LONG);
+            PersistTask t{.kind = PersistTask::Kind::Position,
+                          .data = std::vector<DzPositionInfo>{p},
+                          .account_id = "acc1",
+                          .trading_day = kDay};
+            w.enqueue(std::move(t));
+        }
+        {
+            auto token = w.enqueue_flush_signal();
+            EXPECT_TRUE(w.wait_flush(token, std::chrono::seconds(2)));
+        }
+        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 1);
+
+        // 全平: 下一次登录/补查查询响应不含该合约 → 空组 PositionRebuild (当日).
+        {
+            PersistTask t{.kind = PersistTask::Kind::PositionRebuild,
+                          .data = std::vector<DzPositionInfo>{},
+                          .account_id = "acc1",
+                          .trading_day = kDay};
+            w.enqueue(std::move(t));
+        }
+        {
+            auto token = w.enqueue_flush_signal();
+            EXPECT_TRUE(w.wait_flush(token, std::chrono::seconds(2)));
+        }
+
+        // 当日行也被删除 → 幽灵持仓清除.
+        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 0);
+        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE trading_day='20260901'"), 0);
 
         w.stop();
     }
