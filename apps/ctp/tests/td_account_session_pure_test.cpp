@@ -1,5 +1,7 @@
 #include "td/td_account_session_pure.h"
 
+#include <cstring>
+
 #include <gtest/gtest.h>
 
 using namespace dztrader::ctp;
@@ -253,4 +255,64 @@ TEST(ParseMaxOrderRefTest, EmptyReturnsZero) {
 TEST(ParseMaxOrderRefTest, NonDigitReturnsZero) {
     EXPECT_EQ(parse_max_order_ref("abc"), 0);
     EXPECT_EQ(parse_max_order_ref("12abc"), 0);
+}
+
+// ============================================================================
+// PositionMirror: 持仓绝对态镜像 (2002 写端 diff, spec §4.1)
+// ============================================================================
+
+namespace {
+
+DzPositionInfo make_pos(const char* account, const char* instrument, int8_t direction,
+                        int64_t volume, int64_t seq) {
+    DzPositionInfo p{};
+    std::strcpy(p.account_id, account);
+    std::strcpy(p.instrument_id, instrument);
+    std::strcpy(p.exchange_id, "CFFEX");
+    p.direction = direction;
+    p.volume = volume;
+    p.frozen_volume = 0;
+    p.today_volume = volume;
+    p.yd_volume = 0;
+    p.price = 3900.0;
+    p.seq = static_cast<uint64_t>(seq);
+    return p;
+}
+
+}  // namespace
+
+TEST(PositionMirrorTest, SameValueNotForwarded) {
+    PositionMirror m;
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 10)));
+    EXPECT_FALSE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 11)));
+}
+
+TEST(PositionMirrorTest, ChangedValueForwarded) {
+    PositionMirror m;
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 10)));
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 8, 11)));
+    EXPECT_FALSE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 8, 12)));
+}
+
+TEST(PositionMirrorTest, DirectionDistinguishesKey) {
+    PositionMirror m;
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 10)));
+    // 同 account+instrument 但 direction 不同 = 不同 key, 首次即转发
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_SHORT, 5, 11)));
+    EXPECT_FALSE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_SHORT, 5, 12)));
+}
+
+TEST(PositionMirrorTest, InstrumentDistinguishesKey) {
+    PositionMirror m;
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 10)));
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "rb2510", DZ_DIRECTION_LONG, 3, 11)));
+}
+
+TEST(PositionMirrorTest, ClearResetsMirror) {
+    PositionMirror m;
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 10)));
+    m.clear();
+    EXPECT_EQ(m.size(), 0u);
+    // 清空后同值再次出现视为变化 (重连重建基准)
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 11)));
 }

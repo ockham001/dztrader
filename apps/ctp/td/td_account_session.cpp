@@ -24,7 +24,8 @@ AccountSession::AccountSession(std::string account_id,
                                PersistWriter& persist_writer,
                                const MpmcQueuePtr& event_queue,
                                dztrader::core::TimerQueue& timer_queue,
-                               std::function<void(DzAccountState)> account_state_cb)
+                               std::function<void(DzAccountState)> account_state_cb,
+                               SessionBootData boot)
     : account_id_(std::move(account_id)),
       order_id_meta_(order_id_meta),
       event_writer_(event_writer),
@@ -36,6 +37,7 @@ AccountSession::AccountSession(std::string account_id,
     if (!event_queue_) {
         throw std::runtime_error("AccountSession: event_queue is null");
     }
+    init_from_boot(std::move(boot));
 }
 
 AccountSession::~AccountSession() {
@@ -43,6 +45,43 @@ AccountSession::~AccountSession() {
         disconnect();
     } catch (...) {
         // 析构不抛异常
+    }
+}
+
+void AccountSession::init_from_boot(const SessionBootData& boot) {
+    // Task 5 §2.2 启动恢复: 内存 seq = 该账户 DB 已提交最大 seq + 1.
+    // 累积不归零 (spec §2.1): MAX 对垃圾行只会抬高计数, 天然安全收敛.
+    seq_counter_ = boot.start_seq;
+    // 重放过滤器基准 = 该账户全部订单最新态 + 全部 trade_id 集合 (spec §4.1).
+    report_filter_ = std::make_unique<ReportFilter>(account_id_);
+    *report_filter_ = ReportFilter::load(boot.orders, boot.trades);
+    max_seq_at_disconnect_ = boot.start_seq;
+}
+
+void AccountSession::reload_incremental(SQLite::Database& db) {
+    // spec §4.3: 账户断开重连 (含重登) 时, 从断开时刻之后提交的 DB 行重新装载基准.
+    // 增量: seq > max_seq_at_disconnect_ 的 orders/trades, 合并进现有基准 (防重登重放全转发).
+    // 失败降级 (保留现有基准): 不阻塞重连, 重放风暴由过滤器吞同兜底.
+    try {
+        auto orders = load_orders_since(db, account_id_, max_seq_at_disconnect_);
+        auto trades = load_trades_since(db, account_id_, max_seq_at_disconnect_);
+        for (const auto& o : orders) {
+            report_filter_->accept_order(o);
+        }
+        for (const auto& t : trades) {
+            report_filter_->accept_trade(t);
+        }
+        if (!orders.empty() || !trades.empty()) {
+            SPDLOG_INFO("td incremental baseline reloaded | account={} orders={} trades={}",
+                        account_id_, orders.size(), trades.size());
+        }
+        // 水位推进到本次装载的最大 seq (含断连时水位): 防下次重连重复装载.
+        max_seq_at_disconnect_ = std::max(max_seq_at_disconnect_,
+                                          query_max_seq(db, account_id_));
+        seq_counter_ = std::max(seq_counter_, max_seq_at_disconnect_);
+    } catch (const std::exception& e) {
+        SPDLOG_WARN("td incremental baseline reload failed, keep existing | account={} error=\"{}\"",
+                    account_id_, e.what());
     }
 }
 
@@ -127,6 +166,8 @@ void AccountSession::disconnect() {
     api_ = nullptr;
     spi_.reset();
     state_machine_.on_disconnect();
+    // Task 5 §4.3: 记录断开时刻水位, 供重连时增量装载基准 (seq > 该值的行).
+    max_seq_at_disconnect_ = seq_counter_;
     // I1: 清空缓冲, 防止重连后重放陈旧回报
     buffered_orders_.clear();
     buffered_trades_.clear();
@@ -139,6 +180,14 @@ void AccountSession::disconnect() {
 
 void AccountSession::on_front_connected() {
     cancel_connect_timer();
+    // Task 5 §4.3: 前置重连 (含重登) 时增量重建过滤器基准 — 装载断开时刻之后提交的
+    // DB 行 (seq > max_seq_at_disconnect_), 合并进现有基准, 防重登重放全转发.
+    // 库不可用 (provider 空 / 查询失败) 时降级保留现有基准, 由过滤器吞同兜底.
+    if (prescan_db_provider_) {
+        if (SQLite::Database* db = prescan_db_provider_(); db != nullptr) {
+            reload_incremental(*db);
+        }
+    }
     auto notif = state_machine_.on_front_connected();
     SPDLOG_INFO("td front connected | account={} state={}",
                 account_id_, magic_enum::enum_name(state_machine_.state()));
@@ -295,7 +344,10 @@ void AccountSession::on_rtn_order(const OnRtnOrderField& f) {
         // CTP OrderField -> OrderRecord (含 DzOrderReport base + CTP 扩展字段)
         OrderRecord rpt = to_order_record(f.order, account_id_, trading_day_);
 
-        // 外部订单识别 (设计 §9.3): OrderRef 在映射表中 = 本地发出, 否则外部订单
+        // ① 现有 order_ref_map_ 识别: 本地单/外部单, order_id 赋值, is_external 判定 (设计 §9.3).
+        //    必须先于过滤器 check (过滤器按 order_id 定位基准; kSkip 命中时 replay_hit_order
+        //    用 DB 行回填 order_ref->order_id/strategy_id, 此时 rec 已带正确 order_id 才有效).
+        // OrderRef 在映射表中 = 本地发出, 否则外部订单
         const DzOrderId* local = order_ref_map_.find_by_order_ref(f.order.OrderRef);
         if (local != nullptr) {
             rpt.base.order_id = *local;
@@ -322,14 +374,40 @@ void AccountSession::on_rtn_order(const OnRtnOrderField& f) {
             rpt.volume_canceled = std::max(0, rpt.base.volume - rpt.base.volume_traded);
         }
 
-        // 推 SHM (DzOrderReport 通用字段, 不含 CTP 特有)
+        // ② 重放过滤器: 按 order_id 定位基准, 比对字段集 (spec §4.1).
+        //    基准未装载时 (兜底默认构造) 直接放行, 避免误吞.
+        bool outdated = false;
+        if (report_filter_ &&
+            report_filter_->check_order(rpt, &outdated) == ReportFilter::Verdict::kSkip) {
+            // 对比命中: 回填 order_ref_map_ (重启后本地单误判修复, spec §4.1).
+            // rec 已带正确 order_id, 用 DB 行含的 order_ref->order_id/strategy_id 信息回填.
+            report_filter_->replay_hit_order(rpt);
+            // 修复: 该 order_ref 已由识别块判为外部单时, 用基准行 order_ref 覆盖映射,
+            // 使后续回报 (含成交) 正确关联本地 order_id.
+            if (rpt.is_external && rpt.order_ref[0] != '\0') {
+                order_ref_map_.insert_by_order_ref(rpt.order_ref, rpt.base.order_id);
+                if (rpt.base.strategy_id[0] != '\0') {
+                    order_ref_map_.insert_strategy(rpt.base.order_id, rpt.base.strategy_id);
+                }
+            }
+            return;  // spec: 吞同不推不落不分配 seq
+        }
+        if (outdated) {
+            SPDLOG_WARN("td order outdated dropped | account={} order_id={}",
+                        account_id_, rpt.base.order_id);
+            return;
+        }
+
+        // ③ 转发: 分配 seq -> 更新基准 -> 推帧 -> 落库 (同一事件 shm 帧与 DB 行同 seq).
+        rpt.base.seq = ++seq_counter_;
+        report_filter_->accept_order(rpt);
         write_order_rpt(rpt.base);
-        // 持久化 (OrderRecord 含 CTP 扩展字段)
         persist_order(rpt);
 
-        SPDLOG_DEBUG("td rtn order | account={} order_id={} order_ref={} status={} traded={}",
+        SPDLOG_DEBUG("td rtn order | account={} order_id={} order_ref={} status={} traded={} seq={}",
                      account_id_, rpt.base.order_id, f.order.OrderRef,
-                     magic_enum::enum_name(rpt.base.status), rpt.base.volume_traded);
+                     magic_enum::enum_name(rpt.base.status), rpt.base.volume_traded,
+                     rpt.base.seq);
     } catch (const std::exception& e) {
         // "宁肯乱码也不能崩溃": 不传播异常到 TdApi 主循环
         SPDLOG_ERROR("td rtn order process failed | account={} error=\"{}\" instrument={} order_ref={}",
@@ -357,14 +435,22 @@ void AccountSession::on_rtn_trade(const OnRtnTradeField& f) {
             }
         }
 
-        // 推 SHM (DzTradeReport 通用字段)
+        // 重放过滤器: 成交键 (trading_day, trade_id) 存在性去重 (spec §4.1).
+        // 命中 = CTP 重放重复, 吞 (不推不落不分配 seq). 基准未装载时直接放行.
+        if (report_filter_ &&
+            report_filter_->check_trade(rpt) == ReportFilter::Verdict::kSkip) {
+            return;
+        }
+
+        // 转发: 分配 seq -> 更新基准 -> 推帧 -> 落库 (与委托同取号器, 全类型共享).
+        rpt.base.seq = ++seq_counter_;
+        report_filter_->accept_trade(rpt);
         write_trade_rpt(rpt.base);
-        // 持久化 (TradeRecord 含 commission/trade_time/trade_date 扩展)
         persist_trade(rpt);
 
-        SPDLOG_INFO("td rtn trade | account={} instrument={} trade_id={} volume={} price={}",
+        SPDLOG_INFO("td rtn trade | account={} instrument={} trade_id={} volume={} price={} seq={}",
                     account_id_, f.trade.InstrumentID, f.trade.TradeID, f.trade.Volume,
-                    f.trade.Price);
+                    f.trade.Price, rpt.base.seq);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td rtn trade process failed | account={} error=\"{}\" instrument={} trade_id={}",
                      account_id_, e.what(), f.trade.InstrumentID, f.trade.TradeID);
@@ -673,8 +759,6 @@ void AccountSession::reject_order(const DzOrderReq& req, const std::string& reas
         }
         copy_string(rpt.remark, reason.c_str(), true);
 
-        write_order_rpt(rpt);
-
         // 持久化 OrderRecord (含 CTP 扩展字段, 留 0/空)
         OrderRecord rec{};
         rec.base = rpt;
@@ -689,6 +773,16 @@ void AccountSession::reject_order(const DzOrderReq& req, const std::string& reas
                                          d.year(), d.month(), d.day()).out;
             *end = '\0';
         }
+
+        // Task 5: 本地拒单不经重放过滤器 (本地事件必新, spec §4.1 含本地拒单路径收口).
+        // 分配 seq (与 CTP 回报同主线程交错时, 同一函数内先 ++seq 后 write_*,
+        // 无并发, 帧序 = seq 序单调性成立) + 更新过滤器基准 (防后续重放误转发).
+        rec.base.seq = ++seq_counter_;
+        if (report_filter_) {
+            report_filter_->accept_order(rec);
+        }
+
+        write_order_rpt(rec.base);
         persist_order(rec);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td reject_order failed | account={} order_id={} error=\"{}\"",
@@ -721,6 +815,14 @@ void AccountSession::persist_order(const OrderRecord& r) {
 
 void AccountSession::persist_trade(const TradeRecord& r) {
     persist_writer_.enqueue(PersistTask{PersistTask::Kind::Trade, r});
+}
+
+void AccountSession::persist_position(const DzPositionInfo& pos) {
+    // 单行绝对态 upsert (盘中有变化时走它, spec §3.2). 交易日在 PersistTask 上携带.
+    persist_writer_.enqueue(PersistTask{.kind = PersistTask::Kind::Position,
+                                        .data = std::vector<DzPositionInfo>{pos},
+                                        .account_id = account_id_,
+                                        .trading_day = trading_day_});
 }
 
 // ============================================================================
@@ -800,14 +902,21 @@ void AccountSession::on_rsp_qry_trading_account(const OnRspQryTradingAccountFiel
 }
 
 // === on_rsp_qry_investor_position: 持仓查询响应 ===
-// 仅记日志 (PositionHolding 重建待查询链路落地后实现)
+// Task 5 (spec §4.2 查询链路响应侧): 绝对态转换 + diff + 推帧 + 落库.
 void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPositionField& f) {
     try {
         if (f.investor_position) {
-            SPDLOG_DEBUG("td qry position | account={} instrument={} position={} long_frozen={} short_frozen={}",
-                         account_id_, f.investor_position->InstrumentID,
-                         f.investor_position->Position, f.investor_position->LongFrozen,
-                         f.investor_position->ShortFrozen);
+            DzPositionInfo pos = to_dz_position(*f.investor_position, account_id_, trading_day_);
+            // 绝对态: 与持仓镜像比对, 有差异才转发 (spec §4.1); 镜像 key=(acct,inst,dir)
+            if (position_mirror_.update_if_changed(pos)) {
+                pos.seq = ++seq_counter_;
+                platform::write_struct(event_writer_, DZ_FRAME_POSITION_INFO, pos);
+                persist_position(pos);
+                SPDLOG_INFO("td qry position | account={} instrument={} pos={} dir={} seq={}",
+                            account_id_, f.investor_position->InstrumentID,
+                            f.investor_position->Position, f.investor_position->PosiDirection,
+                            pos.seq);
+            }
         }
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td on_rsp_qry_investor_position failed | account={} error=\"{}\"",
@@ -1003,6 +1112,12 @@ void AccountSession::on_rsp_order_insert(const OnRspOrderInsertField& f) {
             *end = '\0';
         }
 
+        // 本地拒单路径 (同 reject_order): 不经过滤器 (本地事件必新), 分配 seq + 更新基准.
+        rec.base.seq = ++seq_counter_;
+        if (report_filter_) {
+            report_filter_->accept_order(rec);
+        }
+
         write_order_rpt(rec.base);
         persist_order(rec);
 
@@ -1098,6 +1213,12 @@ void AccountSession::on_err_rtn_order_insert(const OnErrRtnOrderInsertField& f) 
                                          "{:04d}{:02d}{:02d}",
                                          d.year(), d.month(), d.day()).out;
             *end = '\0';
+        }
+
+        // 本地拒单路径 (同 reject_order): 不经过滤器 (本地事件必新), 分配 seq + 更新基准.
+        rec.base.seq = ++seq_counter_;
+        if (report_filter_) {
+            report_filter_->accept_order(rec);
         }
 
         write_order_rpt(rec.base);

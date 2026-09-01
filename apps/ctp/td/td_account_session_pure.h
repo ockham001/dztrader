@@ -6,8 +6,50 @@
 #include <unordered_map>
 
 #include <dztrader/data_type.h>  // DzOrderId
+#include <dztrader/struct.h>     // DzPositionInfo
 
 namespace dztrader::ctp {
+
+/// 持仓绝对态镜像 (2002 写端 diff, spec §4.1 "绝对态有差异才转发").
+/// key = (account_id, instrument_id, direction). 纯逻辑, 无 CTP/SHM 依赖, 可单测.
+///
+/// 语义:
+/// - update_if_changed(pos): 与镜像比对业务字段集, 有差异则更新镜像并返回 true (调用方转发);
+///   无差异返回 false (调用方吞). 首次遇到该 key 视为变化.
+/// - clear(): 清空镜像 (账户断开/重连时, spec §4.3 重连重建基准).
+/// - 跨日清空: 持仓为绝对态, 交易日切换后旧镜像不得拦截新日首报 (调用方在日切时 clear).
+class PositionMirror {
+public:
+    /// 比对并更新. 返回 true = 有差异 (调用方应转发), false = 与镜像相同 (调用方应吞).
+    bool update_if_changed(const DzPositionInfo& pos);
+
+    /// 清空镜像 (账户断开/重连/日切时调用).
+    void clear() noexcept { positions_.clear(); }
+
+    /// 镜像大小 (测试用).
+    size_t size() const noexcept { return positions_.size(); }
+
+private:
+    struct Key {
+        std::string account_id;
+        std::string instrument_id;
+        int8_t direction = 0;
+
+        bool operator==(const Key&) const = default;
+    };
+    struct KeyHash {
+        size_t operator()(const Key& k) const noexcept {
+            size_t h = std::hash<std::string>{}(k.account_id);
+            h ^= std::hash<std::string>{}(k.instrument_id) + 0x9e3779b9u + (h << 6) + (h >> 2);
+            h ^= static_cast<size_t>(k.direction) + 0x9e3779b9u + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+
+    static bool same_position(const DzPositionInfo& a, const DzPositionInfo& b) noexcept;
+
+    std::unordered_map<Key, DzPositionInfo, KeyHash> positions_;
+};
 
 /// 撤单上下文 (C4: cancel_order 反向查找所需).
 /// 主线程在 place_order 成功后 insert, on_rtn_order 收到 CTP 回报时 update front_id/session_id.

@@ -428,4 +428,40 @@ DzTradingAccount to_dz_trading_account(const CThostFtdcTradingAccountField& a,
     return r;
 }
 
+// ============================================================================
+// to_dz_position: CTP InvestorPositionField -> DzPositionInfo
+// ============================================================================
+
+DzPositionInfo to_dz_position(const CThostFtdcInvestorPositionField& p,
+                               const std::string& account_id,
+                               int32_t trading_day) noexcept {
+    DzPositionInfo r{};
+
+    copy_to_dz(r.instrument_id, p.InstrumentID);
+    copy_to_dz(r.exchange_id, p.ExchangeID);
+    copy_to_dz(r.account_id, account_id.c_str());
+
+    // 持仓方向: CTP 净持仓('1') 归为多头 (DZ 仅两态); 多('2') -> LONG, 空('3') -> SHORT
+    switch (p.PosiDirection) {
+        case THOST_FTDC_PD_Short: r.direction = DZ_DIRECTION_SHORT; break;
+        case THOST_FTDC_PD_Long:
+        case THOST_FTDC_PD_Net:
+        default:                  r.direction = DZ_DIRECTION_LONG;  break;
+    }
+
+    // 持仓量: CTP 持仓查询响应中 Position 为总持仓口径 (含今昨), 映射到 DZ 总持仓.
+    r.volume = p.Position;
+    // 冻结量: 多/空冻结合并 (DZ 单值)
+    r.frozen_volume = static_cast<int64_t>(p.LongFrozen) + static_cast<int64_t>(p.ShortFrozen);
+    // 均价: 无直接字段, 用持仓成本 (PositionCost) 除以总持仓; 持仓为 0 时留 0.
+    if (p.Position > 0) {
+        r.price = p.PositionCost / static_cast<double>(p.Position);
+    }
+    r.yd_volume = p.YdPosition;
+    r.today_volume = p.Position - p.YdPosition;  // 今仓 = 总 - 昨 (CTP 无直接今仓字段在此结构)
+    r.date = trading_day;
+
+    return r;
+}
+
 }  // namespace dztrader::ctp

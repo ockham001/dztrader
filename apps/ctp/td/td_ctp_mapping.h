@@ -102,6 +102,14 @@ DzTradingAccount to_dz_trading_account(const CThostFtdcTradingAccountField& a,
                                         const std::string& account_id,
                                         int32_t trading_day) noexcept;
 
+/// CTP InvestorPositionField -> DzPositionInfo (spec §4.2 2002 写端).
+/// trading_day 为 DzDate (距纪元天数).
+/// PosiDirection: 净('1') 归为多头 (持仓方向仅多/空两态); 多('2') -> LONG, 空('3') -> SHORT.
+/// 持仓量取 Position (今日持仓; CTP 该字段在持仓查询响应中为总持仓口径).
+DzPositionInfo to_dz_position(const CThostFtdcInvestorPositionField& p,
+                               const std::string& account_id,
+                               int32_t trading_day) noexcept;
+
 }  // namespace dztrader::ctp
 
 #endif  // DZTRADER_CTP_TD_CTP_MAPPING_H_

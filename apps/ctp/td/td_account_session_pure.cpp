@@ -116,4 +116,29 @@ int64_t parse_max_order_ref(const char* max_order_ref) noexcept {
     }
 }
 
+// ============================================================================
+// PositionMirror: 持仓绝对态镜像 (2002 写端 diff)
+// ============================================================================
+
+bool PositionMirror::same_position(const DzPositionInfo& a, const DzPositionInfo& b) noexcept {
+    // 业务字段集对比 (seq/date 不参与: 镜像内日期可能落后, seq 由调用方分配)
+    return a.volume == b.volume && a.frozen_volume == b.frozen_volume &&
+           a.price == b.price && a.yd_volume == b.yd_volume &&
+           a.today_volume == b.today_volume;
+}
+
+bool PositionMirror::update_if_changed(const DzPositionInfo& pos) {
+    Key key{pos.account_id, pos.instrument_id, pos.direction};
+    auto it = positions_.find(key);
+    if (it == positions_.end()) {
+        positions_.emplace(std::move(key), pos);
+        return true;  // 首次遇到该 key = 变化
+    }
+    if (same_position(it->second, pos)) {
+        return false;  // 与镜像相同, 不转发
+    }
+    it->second = pos;
+    return true;
+}
+
 }  // namespace dztrader::ctp

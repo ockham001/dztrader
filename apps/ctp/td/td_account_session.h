@@ -32,6 +32,8 @@
 
 #include <ThostFtdcTraderApi.h>
 
+#include <SQLiteCpp/Database.h>
+
 #include <dztrader/core/timer_queue.h>
 #include <dztrader/shm/order_id_meta.h>
 #include <dztrader/shm/writer.h>
@@ -42,6 +44,8 @@
 #include "td/td_events.h"
 #include "td/td_offset_converter.h"
 #include "td/td_persist_writer.h"
+#include "td/td_prescan.h"
+#include "td/td_report_filter.h"
 #include "td/td_risk_gate.h"
 #include "td/td_schema.h"
 #include "td/td_spi.h"
@@ -60,13 +64,16 @@ public:
     /// @param timer_queue 定时器队列 (外部拥有)
     /// @param account_state_cb 可选账户状态通知回调 (会话内直调状态机的路径经它推送,
     ///   当前仅连接超时; 在 TdApi 主循环线程同步调用)
+    /// @param boot 账户启动装载数据 (Task 5 §4.3): start_seq/orders/trades,
+    ///   ctor 内初始化 seq 计数器与重放过滤器基准
     AccountSession(std::string account_id,
                    shm::OrderIdMeta& order_id_meta,
                    shm::MultiWriter& event_writer,
                    PersistWriter& persist_writer,
                    const MpmcQueuePtr& event_queue,
                    dztrader::core::TimerQueue& timer_queue,
-                   std::function<void(DzAccountState)> account_state_cb = nullptr);
+                   std::function<void(DzAccountState)> account_state_cb = nullptr,
+                   SessionBootData boot = {});
     ~AccountSession();
 
     AccountSession(const AccountSession&) = delete;
@@ -156,6 +163,12 @@ public:
     /// 同步到所有 PositionHolding 的 trading_day.
     void set_trading_day(int32_t trading_day);
 
+    /// 注入独立只读连接提供器 (TdApi 注入, 供 §4.3 重连增量装载基准用; 可空).
+    /// 返回 nullptr 表示库不可用, 增量装载降级 (保留现有基准).
+    void set_prescan_db_provider(std::function<SQLite::Database*()> provider) {
+        prescan_db_provider_ = std::move(provider);
+    }
+
     /// 释放 td 事件 (主线程 drain 队列时调用, type >= 100 走 td_delete_event_data).
     /// 非 td 事件调 event.delete_data(). data 为 nullptr 时 no-op.
     static void delete_event(Event& event) noexcept;
@@ -195,6 +208,16 @@ private:
     /// 持久化 TradeRecord.
     void persist_trade(const TradeRecord& r);
 
+    /// 持久化持仓绝对态 (单行 upsert, Kind::Position).
+    void persist_position(const DzPositionInfo& pos);
+
+    /// 从 boot 初始化 seq 计数器 + 重放过滤器基准 (构造时调用).
+    void init_from_boot(const SessionBootData& boot);
+
+    /// §4.3 重连重建基准: 从断开时刻后提交的 DB 行增量装载 (seq > max_seq_at_disconnect_).
+    /// 需要独立只读连接 (由 TdApi 提供, 该连接为进程级单例). 失败降级 (保留现有基准).
+    void reload_incremental(SQLite::Database& db);
+
     /// LoadingInstruments 期间缓冲回报 (设计 §5.3)
     void buffer_order_rpt(const OnRtnOrderField& f);
     void buffer_trade_rpt(const OnRtnTradeField& f);
@@ -219,6 +242,18 @@ private:
     int64_t order_ref_ = 0;
     int32_t request_id_ = 0;
     int32_t trading_day_ = 0;  ///< 当前交易日 (DzDate, 距纪元天数)
+
+    /// 账户级状态变更 seq 计数器 (spec §2.2: 主线程分配, 无需原子).
+    /// 跨日累积单调, 同一事件 shm 帧与 DB 行带同一 seq.
+    uint64_t seq_counter_ = 0;
+    /// 重放过滤器基准 (登录/重连时 CTP 私有流去重, spec §4.1).
+    std::unique_ptr<ReportFilter> report_filter_;
+    /// 持仓绝对态镜像 (2002 写端 diff, spec §4.1).
+    PositionMirror position_mirror_;
+    /// 上次装载水位: 断连时记录, 重连时增量装载 seq > 该值的行 (spec §4.3).
+    uint64_t max_seq_at_disconnect_ = 0;
+    /// 独立只读连接提供器 (TdApi 注入; 重连增量装载基准用, 可空则降级).
+    std::function<SQLite::Database*()> prescan_db_provider_;
 
     /// 持仓 map: instrument_id -> PositionHolding (设计 §6)
     std::unordered_map<std::string, PositionHolding> holdings_;

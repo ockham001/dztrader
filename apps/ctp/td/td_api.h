@@ -29,6 +29,7 @@
 #include "td/td_account_session.h"
 #include "td/td_config.h"
 #include "td/td_persist_writer.h"
+#include "td/td_prescan.h"
 #include "td/td_state.h"
 
 namespace dztrader::ctp {
@@ -211,6 +212,16 @@ private:
     /// 上报当前自动登录/登出排程: 推 RTN_AUTO_LOGIN
     void report_auto_login();
 
+    // === TD 数据同步 (Task 5): 账户启动装载 / 重连增量重建 ===
+    /// 确保独立只读连接可用 (文件缺失时失败降级, 不抛).
+    void ensure_prescan_db();
+    /// 对 config_.accounts 全量预扫, 刷新 boot_cache_ (set_configs 末尾调用).
+    void prescan_all_accounts();
+    /// 取某账户的启动装载数据: boot_cache_ 命中即取; 缺失则用独立只读连接现查
+    /// (运行期 connect 的账户, config 变更后新增). 仍无历史 -> 空基准 SessionBootData{}.
+    /// 打开失败时置空基准, 由 AccountSession 空过滤器兜底 (不阻塞连接).
+    SessionBootData load_boot_data(const std::string& account_id);
+
     // === 配置热更新 (实现在 td_api_config.cpp) ===
     /// 应用 td 配置变更 (TD_REQ_MODIFY_CONFIG): 解码 TdConfigOpReq -> 副本 -> apply_config_op 纯函数
     /// -> validate -> 持久化到 config_path_ 的 td section -> 应用 -> 上报 RTN_TD_CONFIG。失败回滚。
@@ -257,6 +268,15 @@ private:
     std::unordered_map<std::string, TdHealth> account_health_;                   ///< account_id -> 上次广播健康度
     /// 账户上次推送的三态 (去重缓存; 键=account_id)
     std::unordered_map<std::string, DzAccountState> account_last_state_;
+
+    /// 账户启动装载数据缓存 (Task 5 §4.3): set_configs 预扫填充, connect 时取.
+    /// 键=account_id. 账户断开重连时按连接生命周期增量刷新 (走 prescan_db_).
+    std::map<std::string, SessionBootData> boot_cache_;
+    /// 独立只读连接 (同一 db 文件, 不占 PersistWriter 的 db_): 预扫 + 运行期兜底 + 重连增量装载.
+    /// set_configs 时打开; 打开失败 (db 尚不存在) 时置空, 运行期按需重开.
+    std::unique_ptr<SQLite::Database> prescan_db_;
+    /// 独立只读连接上次尝试打开时文件是否已存在 (失败重试节流用).
+    bool prescan_db_missing_ = false;
 
     bool running_ = false;                               ///< 主循环运行中
     bool started_ = false;                               ///< run() 是否已完成初始化 (防重入重复广播)

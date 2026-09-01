@@ -4,9 +4,11 @@
 #include <cstring>
 #include <format>
 #include <limits>
+#include <map>
 #include <string_view>
 #include <vector>
 
+#include <SQLiteCpp/Database.h>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
@@ -102,6 +104,12 @@ TdApi::~TdApi() {
 
 void TdApi::set_configs(TdConfig td_cfg) {
     config_ = std::move(td_cfg);
+    // Task 5: 预扫 hook. 在 run() 前 (set_configs 后、connect 前) 用独立只读连接
+    // 打开同一 db 文件, 对 config_.accounts 全量预扫, 存 boot_cache_ (start_seq/orders/trades).
+    // ctor 的 open->start_writer 窗口内 config_ 为空且 db() 守卫 !writer_started_, 无法查询,
+    // 故预扫在此 (set_configs 时机, config 已就绪、Writer 未启动不影响独立只读连接).
+    ensure_prescan_db();
+    prescan_all_accounts();
 }
 
 void TdApi::verify_order_id_against_db() {
@@ -116,6 +124,76 @@ void TdApi::verify_order_id_against_db() {
     } else {
         SPDLOG_INFO("order id self-check ok | db_max={} counter={}", db_max, before);
     }
+}
+
+// ============================================================================
+// TD 数据同步: 账户启动装载 / 重连增量重建 (Task 5)
+// ============================================================================
+
+void TdApi::ensure_prescan_db() {
+    // 独立只读连接打开同一 db 文件 (flow_dir_/<name_>.db). 文件尚不存在 (首次启动未落库)
+    // 时失败降级 (prescan_db_ 空), 运行期 connect 时按需重开.
+    try {
+        auto db_path = flow_dir_ / (name_ + ".db");
+        if (prescan_db_ != nullptr) {
+            return;  // 已打开
+        }
+        if (prescan_db_missing_ && !std::filesystem::exists(db_path)) {
+            return;  // 上次确认文件缺失, 节流跳过重复打开
+        }
+        prescan_db_ = std::make_unique<SQLite::Database>(db_path.string(), SQLite::OPEN_READONLY);
+        prescan_db_missing_ = false;
+        SPDLOG_INFO("td prescan db opened | path={}", db_path.string());
+    } catch (const std::exception& e) {
+        prescan_db_ = nullptr;
+        prescan_db_missing_ = true;
+        SPDLOG_WARN("td prescan db unavailable (degraded) | error=\"{}\"", e.what());
+    }
+}
+
+void TdApi::prescan_all_accounts() {
+    ensure_prescan_db();
+    if (prescan_db_ == nullptr) {
+        return;  // 打开失败: 后续 connect 时 load_boot_data 兜底 (仍无历史 -> 空基准)
+    }
+    std::vector<std::string> accounts;
+    accounts.reserve(config_.accounts.size());
+    for (const auto& a : config_.accounts) {
+        accounts.push_back(a.account_id);
+    }
+    try {
+        boot_cache_ = prescan_accounts(*prescan_db_, accounts);
+        SPDLOG_INFO("td prescan done | accounts={}", accounts.size());
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("td prescan failed | error=\"{}\"", e.what());
+        boot_cache_.clear();
+    }
+}
+
+SessionBootData TdApi::load_boot_data(const std::string& account_id) {
+    // 1. boot_cache_ 命中 (set_configs 预扫过): 取缓存.
+    if (auto it = boot_cache_.find(account_id); it != boot_cache_.end()) {
+        return it->second;
+    }
+    // 2. 运行期 connect 的账户 (config 变更后新增): 走同一条独立只读连接兜底查询.
+    //    不得置零 (spec §2.1 "累积不归零": 置零会让新 seq 与 DB 旧行冲突).
+    ensure_prescan_db();
+    if (prescan_db_ != nullptr) {
+        try {
+            SessionBootData boot;
+            boot.start_seq = query_max_seq(*prescan_db_, account_id);
+            boot.orders = load_orders(*prescan_db_, account_id);
+            boot.trades = load_trades(*prescan_db_, account_id);
+            boot_cache_[account_id] = boot;  // 缓存, 重连增量装载的基础
+            return boot;
+        } catch (const std::exception& e) {
+            SPDLOG_ERROR("td boot load fallback failed | account={} error=\"{}\"", account_id,
+                         e.what());
+        }
+    }
+    // 3. 仍无历史 (或查询失败): 空基准 + INFO 注明首次连接.
+    SPDLOG_INFO("td first connect, empty baseline | account={}", account_id);
+    return SessionBootData{};
 }
 
 // ============================================================================
@@ -599,16 +677,27 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
 
     // 5. 构造 AccountSession 并 open (异常不传播, 仅记日志 + 通知 UI)
     try {
+        // Task 5: 账户启动装载数据 (start_seq/orders/trades) 注入 AccountSession ctor.
+        // boot_cache_ 命中 (set_configs 预扫) 或运行期兜底查询; 无历史 -> 空基准.
+        auto boot = load_boot_data(account_id);
         auto session = std::make_unique<AccountSession>(
             account_id, *order_id_meta_, event_writer_, *persist_writer_,
             event_queue_, timer_queue_,
             [this, account_id](DzAccountState state) {
                 // 契约 account-status: 会话内直调状态机的路径 (连接超时) 经统一出口推送
                 write_account_status(account_id, state, "");
-            });
+            },
+            std::move(boot));
         session->open(session_flow_dir.string(), front_addrs,
                       cfg->broker.broker_id, cfg->broker.user_id,
                       cfg->broker.password, cfg->auth_code, cfg->app_id);
+        // Task 5 §4.3: 注入独立只读连接提供器, 供重连时增量装载基准 (断连后提交的 DB 行).
+        // ensure_prescan_db 会按需重开 (文件缺失时降级).
+        session->set_prescan_db_provider(
+            [this]() -> SQLite::Database* {
+                ensure_prescan_db();
+                return prescan_db_.get();
+            });
         sessions_[account_id] = std::move(session);
         // 契约 account-status 场景 3: 新会话建立即推 LoggingIn (spec §3.1 盘中增账户语义)
         write_account_status(account_id, DZ_ACCOUNT_LOGGING_IN, "");

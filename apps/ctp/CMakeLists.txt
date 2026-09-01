@@ -121,6 +121,7 @@ add_executable(dztd_ctp
     td/td_account_session.cpp
     td/td_spi.cpp
     td/td_report_filter.cpp
+    td/td_prescan.cpp
     common/trading_calendar.cpp
 )
 target_include_directories(dztd_ctp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
