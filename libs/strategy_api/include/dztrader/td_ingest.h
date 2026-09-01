@@ -63,6 +63,9 @@ public:
     bool admit_trade(const std::string& account_id, const char* trading_day, const char* trade_id);
 
     /// 交易日切换: 丢弃该账户全部旧日去重段 (集合增长有界, spec §5.4)。
+    /// 幂等: 仅当 new_trading_day 与已见日不同时清段; 同日重复调用为 no-op
+    /// (调用方可能在同一天多次推送, 重复清段会误删当前日段使二道防线失效)。
+    /// new_trading_day 为 nullptr 时无条件清段 (强制重建语义)。
     void on_trading_day_changed(const std::string& account_id, const char* new_trading_day);
 
 private:

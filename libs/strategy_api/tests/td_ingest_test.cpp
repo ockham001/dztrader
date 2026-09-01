@@ -91,6 +91,28 @@ TEST(TdIngestGate, ResetClearsTradeDedup) {
     EXPECT_TRUE(g.admit_trade("A", "20260901", "T1"));  // 重置后重建集合
 }
 
+// 评审发现 1 (Task 8 Fix): 重置后重新 admit — 成交去重段已清 (reset_account),
+// 同 (account, day, trade_id) 在重置后再次 admit_trade 必须放行。
+TEST(TdIngestGate, TradeDedupReAdmitAfterReset) {
+    TdIngestGate g;
+    (void)g.admit_trade("A", "20260901", "T1");
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));
+    g.reset_account("A", 5);
+    EXPECT_TRUE(g.admit_trade("A", "20260901", "T1"));  // 重置后重建集合, 不拦截
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));  // 重建后的二道防线仍生效
+}
+
+// 评审发现 1: on_trading_day_changed 显式调用后, 旧日段清空 — 新日同 trade_id 放行,
+// 且旧日同 trade_id 不再拦截新日 (与 admit_trade 内部自清一致)。
+TEST(TdIngestGate, TradeDedupExplicitDayChangeAllowsSameTradeAcrossDays) {
+    TdIngestGate g;
+    (void)g.admit_trade("A", "20260901", "T1");
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));
+    g.on_trading_day_changed("A", "20260902");
+    EXPECT_TRUE(g.admit_trade("A", "20260902", "T1"));  // 显式切换后新日放行
+    EXPECT_FALSE(g.admit_trade("A", "20260902", "T1"));  // 新日段正常去重
+}
+
 // 首帧 seq == W+1 (无空洞) 不记 gap; seq ≤ W 的首帧不记 gap。
 TEST(TdIngestGate, NoGapWhenSequentialOrBelowWatermark) {
     TdIngestGate g;

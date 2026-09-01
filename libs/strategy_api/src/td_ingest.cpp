@@ -101,7 +101,18 @@ bool TdIngestGate::admit_trade(const std::string& account_id, const char* tradin
 }
 
 void TdIngestGate::on_trading_day_changed(const std::string& account_id,
-                                          const char* /*new_trading_day*/) {
+                                          const char* new_trading_day) {
+    // 幂等: 仅在新交易日与已见日不同时清段; 同日重复调用为 no-op。
+    // 调用方 (SDK 在 2018 ACCOUNT_STATUS 推送时触发) 可能在同一天收到多次状态帧,
+    // 重复清段会误删当前日去重段、使二道防线失效, 故以 account_days_ 判变化。
+    if (new_trading_day != nullptr) {
+        const std::string day(new_trading_day);
+        auto day_it = account_days_.find(account_id);
+        if (day_it != account_days_.end() && day_it->second == day) {
+            return;  // 同日: no-op
+        }
+        account_days_[account_id] = day;
+    }
     // 新交易日: 丢弃该账户全部旧日段。段键 = account_id + '\x1f' + day,
     // 前缀匹配 account_id 即覆盖该账户所有日 (当前日段同删, 后续 admit_trade 重建)。
     for (auto it = trade_segments_.begin(); it != trade_segments_.end();) {
