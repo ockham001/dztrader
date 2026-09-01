@@ -14,6 +14,7 @@ set(SDK_SOURCES
     src/cursor_result_set.cpp
     src/vector_result_set.cpp
     src/db_database.cpp
+    src/td_ingest.cpp
 )
 
 # 内部头文件目录（src 下的 .h 是内部实现头）
@@ -57,6 +58,7 @@ target_link_libraries(dzstrategy_sdk
 set(SDK_TEST_SOURCES
     src/vector_result_set.cpp
     src/cursor_result_set.cpp
+    src/td_ingest.cpp
 )
 
 # 链接 api.cpp 的测试 (覆盖 C 接口完整路径)
