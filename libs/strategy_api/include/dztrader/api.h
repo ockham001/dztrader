@@ -304,6 +304,20 @@ DZ_API bool dz_set_logical_position(DzContext* ctx,
                                     const char* instrument_id,
                                     int32_t net_volume);
 
+/**
+ * @brief 查询账户登录状态（异步, fire-and-forget）
+ *
+ * 写 TD_QUERY_ACCOUNT_STATUS(2115) basic 广播帧; td 网关按配置应答
+ * DzAccountStatus(2018) 帧（经 on_account_status 回调到达）。
+ * 应答与主动推送为同一种帧, 无请求-响应关联。
+ * 无网关在线时由 master 兜底应答 (gateway_name 为空串)。
+ * 历史帧不重放: 策略启动时初始状态必须经本函数获取 (契约 account-status)。
+ *
+ * @param account_id  账户标识，NULL/"" 表示查询所有账户
+ * @return true 请求已写入事件通道，false 失败（调 dz_errcode() 获取错误码）
+ */
+DZ_API bool dz_query_account_status(DzContext* ctx, const char* account_id);
+
 /* ── UI 通知 ── */
 
 /**

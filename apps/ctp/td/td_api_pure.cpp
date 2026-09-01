@@ -6,6 +6,9 @@
 #include <string>
 #include <vector>
 
+#include <dztrader/data_type.h>
+#include <dztrader/date_time/date_time.h>
+
 namespace dztrader::ctp {
 
 // ============================================================================
@@ -175,6 +178,34 @@ const AccountConfig* find_current_account_in(const std::vector<AccountConfig>& a
 // 委托给 find_current_account_in(cfg.accounts, account_id)。
 const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& account_id) {
     return find_current_account_in(cfg.accounts, account_id);
+}
+
+// 2115 查询路由: queried 为空串 = 查全部; 否则命中配置才应答 (不在配置不回, master 兜底)
+bool account_query_matches(const std::vector<std::string>& configured,
+                           const std::string& queried) {
+    if (queried.empty()) {
+        return true;
+    }
+    return std::ranges::find(configured, queried) != configured.end();
+}
+
+// 2018 三态去重判定 (契约 account-status): 与 write_account_status 的内联条件一致,
+// 抽出纯函数供突变测试 (audit C-F1)。
+bool should_push_account_status(DzAccountState last, DzAccountState next, bool force) {
+    return force || last != next || next == DZ_ACCOUNT_OFFLINE;
+}
+
+// "YYYYMMDD" -> 距纪元天数; 空串/非法回落 0 (契约: 非 Ready 或缺失交易日 = 0)。
+// Date::from_string 抛异常在此消化。
+int32_t epoch_day_from_yyyymmdd(const std::string& yyyymmdd) {
+    if (yyyymmdd.empty()) {
+        return 0;
+    }
+    try {
+        return dztrader::Date::from_string(yyyymmdd, "%Y%m%d").days_since_epoch();
+    } catch (const std::exception&) {
+        return 0;  // 非法/缺失交易日回落 0 (契约 account-status)
+    }
 }
 
 }  // namespace dztrader::ctp

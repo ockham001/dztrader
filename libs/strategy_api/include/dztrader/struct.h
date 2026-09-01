@@ -152,6 +152,16 @@ DZ_DECLARE_ALIGNED_STRUCT(DzScheduleEvent, {
     DzTimerId timer_id;  ///< 触发定时器的稳定 ID (与 dz_schedule_* 返回值一致)
 });
 
+/** @brief 账户登录状态推送 payload (DZ_FRAME_ACCOUNT_STATUS=2018, basic 广播帧,
+ *  身份在 payload account_id + gateway_name, 无扩展头, 契约 account-status) */
+DZ_DECLARE_ALIGNED_STRUCT(DzAccountStatus, {
+    DzAccountId account_id;    ///< 账户标识
+    DzInstanceId gateway_name; ///< 网关进程名 (dztd_ctp/dztd_xtp); master 兜底应答为空串
+    DzDate trading_day;        ///< 交易日（距纪元天数; Offline 时为 0）
+    DzAccountState state;      ///< 三态 (DZ_ACCOUNT_*)
+    char reserved[3];
+});
+
 // ============================================================================
 // dztd_ctp 交易网关结构体 (向后兼容新增, 不修改现有结构)
 // ============================================================================

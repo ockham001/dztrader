@@ -1,6 +1,6 @@
 # 帧契约：策略
 
-本文件覆盖 `DZ_FRAME_UI_INPUT`、`DZ_FRAME_OUTPUT_UI`、`DZ_FRAME_SET_LOGICAL_POSITION`、`DZ_FRAME_SCHEDULE` 四个帧，以及策略 SDK（`dz_next_event`）对平台帧的拦截/放行总则。其他帧总则见《帧契约：通用规则》。
+本文件覆盖 `DZ_FRAME_UI_INPUT`、`DZ_FRAME_OUTPUT_UI`、`DZ_FRAME_SET_LOGICAL_POSITION`、`DZ_FRAME_SCHEDULE` 四个帧，以及策略 SDK（`dz_next_event`）对平台帧的拦截/放行总则。其他帧总则见《帧契约：通用规则》；SDK 全量透传的 `DZ_FRAME_ACCOUNT_STATUS` 帧语义见《帧契约：账户登录状态》。
 
 - `UI_INPUT` / `OUTPUT_UI`：策略与 UI 之间的交互文本/数据帧，使用 `DzExtInstFrameHeader` 扩展头，`instance_id` = **裸策略名**（如 `stg_demo`，策略间唯一）。
 - `SET_LOGICAL_POSITION`：**basic 帧**（仅 `DzFrameHeader`，无扩展头），策略身份在 payload `strategy_id` 字段，同样为裸策略名。
@@ -91,6 +91,7 @@
 
 - `ORDER_REPORT`(2000)/`TRADE_REPORT`(2001)：按 payload `strategy_id` 定向——仅 `strategy_id` == 本策略裸名的帧放行；`strategy_id` 为空（外部单/手工单，非任何策略所下）与其他策略的回报一律拦截丢弃（td 网关按下单 `DzOrderReq.strategy_id` 回填，见契约 td-order）
 - `POSITION_INFO`(2002)/`TRADING_ACCOUNT`(2003)：不按策略过滤，全量透传；引擎分发给策略 `on_position_info`/`on_trading_account` 回调（当前无写端，TD 网关查询链路落地后接线）
+- `ACCOUNT_STATUS`(2018)：同上不按策略过滤，全量透传（payload 无 `strategy_id`，账户级广播帧）；SDK 引擎分发 `on_account_status` 回调（帧语义见《帧契约：账户登录状态》）
 - 其余 TD 回报帧 2005–2017（`TD_INSTRUMENT` 等）：暂不按策略过滤，全量放行，引擎静默忽略
 - `UI_INPUT`（3001，定向本策略）：SDK 按 `instance_id` == 裸策略名过滤
 - `SHUTDOWN`（12，`instance_id` == 裸策略名）：SDK 完成内部清理（取消内部预加载定时器、清定时器帧缓冲）后放行，策略用户可据此优雅退出（`REQUEST_SHUTDOWN_ALL`(20) 已移除：全项目无写入/消费端）
@@ -102,7 +103,7 @@
 - `UPDATE_SHM_EVENT_SUBSCRIBER`（21）：SDK 内部 `refresh_subscribers()`
 - `NOTIFY_MD_STARTED`（1007，本策略行情源）：SDK 自动补订阅期望集合
 - 非本策略/空 `strategy_id` 的 `ORDER_REPORT`/`TRADE_REPORT`；非本策略 `instance_id` 的 `UI_INPUT`/`SHUTDOWN`
-- 其余平台帧（日志/SHM 配置、进程控制、md 控制、TD 控制 21xx、`OUTPUT_UI`/`SET_LOGICAL_POSITION` 他策略回声等）：丢弃
+- 其余平台帧（日志/SHM 配置、进程控制、md 控制、TD 控制 21xx、`OUTPUT_UI`/`SET_LOGICAL_POSITION` 他策略回声等）：丢弃（`TD_QUERY_ACCOUNT_STATUS` 是 SDK 写端帧——由 `dz_query_account_status` 发出，非读端白名单成员）
 
 **防饿死上限**：每次 `dz_next_event` 调用最多连续消费 32 条内部帧，超过则本次让位（优先返回已到期定时器帧，否则 NULL，下次调用继续处理）；用户帧随时立即返回，绝不被吞。
 

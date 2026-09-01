@@ -144,9 +144,10 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
         case DZ_FRAME_NOTIFY_MD_STARTED:
             on_md_started_internal(ctx, frame);
             return false;
-        // 其余 TD 回报帧 2002-2017 (持仓/资金/费率/网关状态/合约等): 暂不按策略过滤, 全量放行
+        // 其余 TD 回报帧 2002-2018 (持仓/资金/费率/网关状态/合约等): 暂不按策略过滤, 全量放行
         case DZ_FRAME_POSITION_INFO:
         case DZ_FRAME_TRADING_ACCOUNT:
+        case DZ_FRAME_ACCOUNT_STATUS:
         case DZ_FRAME_TD_INSTRUMENT:
         case DZ_FRAME_TD_INSTRUMENT_STATUS:
         case DZ_FRAME_TD_ERROR_REPORT:
@@ -571,6 +572,26 @@ DZ_API bool dz_set_logical_position(DzContext* ctx,
     copy_string(pos->instrument_id, instrument_id, true);
     copy_string(pos->strategy_id, ctx->strategy_id, true);
     pos->net_volume = net_volume;
+    ctx->event_writer.close_frame();
+    ctx->event_writer.notify_subscribers();
+    return true;
+}
+
+DZ_API bool dz_query_account_status(DzContext* ctx, const char* account_id) {
+    // 同 dz_set_logical_position: extern "C" 边界不允许异常逃逸; 体内操作均 noexcept,
+    // 免 try/catch, static_assert 防止后续引入会抛异常的操作。
+    static_assert(noexcept(ctx->event_writer.open_frame(
+        DZ_FRAME_TD_QUERY_ACCOUNT_STATUS, sizeof(DzAccountStatusReq))));
+    static_assert(noexcept(ctx->event_writer.close_frame()));
+    static_assert(noexcept(ctx->event_writer.notify_subscribers()));
+
+    auto* req = reinterpret_cast<DzAccountStatusReq*>(
+        ctx->event_writer.open_frame(DZ_FRAME_TD_QUERY_ACCOUNT_STATUS, sizeof(DzAccountStatusReq)));
+    if (req == nullptr) {
+        // open_frame 失败时已设置 LastError, 直接透传
+        return false;
+    }
+    dztrader::copy_string(req->account_id, account_id == nullptr ? "" : account_id, true);
     ctx->event_writer.close_frame();
     ctx->event_writer.notify_subscribers();
     return true;

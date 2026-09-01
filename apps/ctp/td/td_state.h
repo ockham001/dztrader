@@ -77,6 +77,10 @@ struct TdNotification {
     std::string message;                    ///< 中文消息
 };
 
+/// TdState 11 态 → 策略可见三态聚合映射 (spec §2.1)。
+/// Ready 与 TdHealth::Up 同一判定点; 内部 11 态演进不得破坏此映射的稳定性。
+DzAccountState account_state_of(TdState state) noexcept;
+
 /// CTP 交易网关的状态机。
 /// 不依赖 CTP SDK 或共享内存, 可完全独立测试。
 /// per-account 实例 (AccountSession 持有), 不持有 account_id (由 AccountSession 管理)。

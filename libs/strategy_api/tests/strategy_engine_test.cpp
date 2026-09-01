@@ -188,6 +188,10 @@ public:
         error_code = code;
         error_message = std::string(message);
     }
+    void on_account_status(const DzAccountStatus& status) {
+        last_account_status = status;
+        ++account_status_count;
+    }
 
     int start_count = 0;
     int tick_count = 0;
@@ -199,6 +203,7 @@ public:
     int schedule_count = 0;
     int input_count = 0;
     int error_count = 0;
+    int account_status_count = 0;
     double last_price = 0.0;
     std::string trade_id;
     int64_t order_id = -1;
@@ -209,6 +214,7 @@ public:
     std::string last_input;
     DzErrorCode error_code = 0;
     std::string error_message;
+    DzAccountStatus last_account_status{};
 };
 
 static_assert(dztrader::Strategy<FullStrategy>);
@@ -704,6 +710,112 @@ TEST_F(StrategyEngineTest, UserInputFrameDirectedToOwnStrategyDispatched) {
     // instance_id 透传帧扩展头: SDK 已定向过滤, 引擎收到的必为本策略输入
     EXPECT_EQ(strategy.last_instance_id, strategy_id);
     EXPECT_EQ(strategy.last_input, R"({"action":"pause","reason":"manual"})");
+    EXPECT_TRUE(shutdown_written.load());
+    EXPECT_EQ(strategy.stop_count, 1);
+}
+
+TEST_F(StrategyEngineTest, AccountStatusFrameDispatchedUnfiltered) {
+    FullStrategy strategy;
+    std::string strategy_id;
+    std::atomic<bool> shutdown_written{false};
+
+    struct HookStrategy {
+        FullStrategy& inner;
+        std::string& strategy_id;
+        std::atomic<bool>& shutdown_written;
+        StrategyEngineTest& fixture;
+
+        void on_start(DzContext* ctx) {
+            inner.on_start(ctx);
+            strategy_id = dz_strategy_id(ctx);
+            (void)dz_schedule_after(ctx, 100);
+            // 2018 为全量透传帧 (无策略过滤), basic struct 帧写法同 2002/2003 用例
+            DzAccountStatus status{};
+            dztrader::copy_string(status.account_id, "CTP001", true);
+            dztrader::copy_string(status.gateway_name, "dztd_ctp", true);
+            status.state = DZ_ACCOUNT_READY;
+            dztrader::shm::MultiWriter writer = dztrader::shm::MultiWriter::create(
+                fixture.event_channel_meta(), "engine_test_writer");
+            (void)writer.write_frame(DZ_FRAME_ACCOUNT_STATUS, status);
+        }
+        void on_stop() { inner.on_stop(); }
+        void on_tick(const DzTick& tick) { inner.on_tick(tick); }
+        void on_account_status(const DzAccountStatus& status) { inner.on_account_status(status); }
+        void on_schedule(const DzScheduleEvent& ev) {
+            inner.on_schedule(ev);
+            shutdown_written.store(fixture.write_shutdown(strategy_id));
+        }
+    };
+    static_assert(dztrader::Strategy<HookStrategy>);
+    static_assert(
+        dztrader::strategy_engine_internal::HasOnAccountStatus<HookStrategy>);
+
+    HookStrategy hook{strategy, strategy_id, shutdown_written, *this};
+
+    start_rescue(strategy_id, 15000);
+    const int32_t rc = dztrader::run_strategy(hook);
+    join_threads();
+
+    EXPECT_EQ(rc, 0);
+    EXPECT_EQ(strategy.account_status_count, 1);
+    EXPECT_STREQ(strategy.last_account_status.account_id, "CTP001");
+    EXPECT_STREQ(strategy.last_account_status.gateway_name, "dztd_ctp");
+    EXPECT_EQ(strategy.last_account_status.state, DZ_ACCOUNT_READY);
+    EXPECT_TRUE(shutdown_written.load());
+    EXPECT_EQ(strategy.stop_count, 1);
+}
+
+TEST_F(StrategyEngineTest, AccountStatusWrongSizeFrameNotDispatched) {
+    FullStrategy strategy;
+    std::string strategy_id;
+    std::atomic<bool> shutdown_written{false};
+
+    struct HookStrategy {
+        FullStrategy& inner;
+        std::string& strategy_id;
+        std::atomic<bool>& shutdown_written;
+        StrategyEngineTest& fixture;
+
+        void on_start(DzContext* ctx) {
+            inner.on_start(ctx);
+            strategy_id = dz_strategy_id(ctx);
+            (void)dz_schedule_after(ctx, 100);
+            // 超长帧防御 (payload_size_matches): frame_size = 头 + 104 + 8,
+            // SDK 对布局偏离的 2018 帧丢弃不分发
+            DzAccountStatus status{};
+            dztrader::copy_string(status.account_id, "CTP001", true);
+            dztrader::copy_string(status.gateway_name, "dztd_ctp", true);
+            status.state = DZ_ACCOUNT_READY;
+            dztrader::shm::MultiWriter writer = dztrader::shm::MultiWriter::create(
+                fixture.event_channel_meta(), "engine_test_writer");
+            auto* frame = writer.open_frame(DZ_FRAME_ACCOUNT_STATUS,
+                                            sizeof(DzAccountStatus) + 8);
+            if (frame != nullptr) {
+                std::memcpy(frame, &status, sizeof(DzAccountStatus));
+                writer.close_frame();
+            }
+        }
+        void on_stop() { inner.on_stop(); }
+        void on_tick(const DzTick& tick) { inner.on_tick(tick); }
+        void on_account_status(const DzAccountStatus& status) { inner.on_account_status(status); }
+        void on_schedule(const DzScheduleEvent& ev) {
+            inner.on_schedule(ev);
+            shutdown_written.store(fixture.write_shutdown(strategy_id));
+        }
+    };
+    static_assert(dztrader::Strategy<HookStrategy>);
+    static_assert(
+        dztrader::strategy_engine_internal::HasOnAccountStatus<HookStrategy>);
+
+    HookStrategy hook{strategy, strategy_id, shutdown_written, *this};
+
+    start_rescue(strategy_id, 15000);
+    const int32_t rc = dztrader::run_strategy(hook);
+    join_threads();
+
+    EXPECT_EQ(rc, 0);
+    // frame_size 不符: 2018 帧被 SDK 丢弃, 不分发到策略
+    EXPECT_EQ(strategy.account_status_count, 0);
     EXPECT_TRUE(shutdown_written.load());
     EXPECT_EQ(strategy.stop_count, 1);
 }

@@ -44,6 +44,7 @@ public:
     virtual void on_trading_account(const DzTradingAccount& account) { (void)account; }
     virtual void on_schedule(const DzScheduleEvent& timer_event) { (void)timer_event; }
     virtual void on_ui_input(const DzUiInput& ui_input) { (void)ui_input; }
+    virtual void on_account_status(const DzAccountStatus& status) { (void)status; }
     virtual void on_error(DzErrorCode errcode, std::string_view message) {
         (void)errcode;
         (void)message;

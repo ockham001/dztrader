@@ -749,6 +749,11 @@ void ProcessSupervisor::notify_removed_for_inactive(const std::string& name, Cat
             SPDLOG_ERROR("failed to tombstone md channel | name={} error=\"{}\"", name, e.what());
         }
     }
+    if (category == Category::GatewayTd) {
+        // 契约 account-status: remove 三路径统一走 notify_td_stopped —— 推 Offline
+        // (gateway_name=真实网关名) 后清镜像, 与 on_child_exit 退出路径语义一致
+        shm_mgr_.notify_td_stopped(name);
+    }
     // 清理订阅者注册 (子进程可能曾注册过, 退出后残留)
     // remove_reader 是幂等的, 不存在也无害
     shm_mgr_.remove_reader(name);
@@ -951,6 +956,13 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
                 notify_ui_.error(std::string("failed to remove gateway config | name=") + name
                                 + " error=" + e.what());
             }
+            if (category == Category::GatewayTd) {
+                // 契约 account-status: remove 流程统一走 notify_td_stopped ——
+                // 推 Offline (remove 也必须让策略感知) + 清镜像。
+                // 后续 on_child_exit 尾部 GatewayTd 分支再调 notify_td_stopped 时
+                // 镜像已清, 幂等 no-op (契约 Offline 恒推, 重复无害)
+                shm_mgr_.notify_td_stopped(name);
+            }
         }
 
         // 步骤 7: 注销事件通道订阅者 + 写 UPDATE_SHM_EVENT_SUBSCRIBER 帧
@@ -1006,6 +1018,21 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
                 platform::write_ext_inst_raw(shm_mgr_.event_writer(), DZ_FRAME_NOTIFY_MD_STOPPED, name);
             } catch (const std::exception& e) {
                 SPDLOG_ERROR("failed to broadcast md_service_stopped | name={} error=\"{}\"",
+                             name, e.what());
+            }
+        }
+
+        if (child->entry().category == Category::GatewayTd) {
+            // 契约 account-status: td 退出 (崩溃/停止/remove) 统一推 Offline + 清镜像
+            // (notify_td_stopped 内部先推后清; remove 分支上方已推过时镜像已清, 此处 no-op)。
+            // 崩溃时 td 自身无法广播, master 代推 (与 GatewayMd 代发 NOTIFY_MD_STOPPED 对称)。
+            // shutting_down 时全局退出, 免推 (策略进程同样在退)。
+            try {
+                if (!shutting_down_) {
+                    shm_mgr_.notify_td_stopped(name);
+                }
+            } catch (const std::exception& e) {
+                SPDLOG_ERROR("failed to notify td stopped | name={} error=\"{}\"",
                              name, e.what());
             }
         }

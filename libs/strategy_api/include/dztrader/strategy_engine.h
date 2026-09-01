@@ -12,9 +12,10 @@
  *     on_order_report(const DzOrderReport&),
  *     on_position_info(const DzPositionInfo&),
  *     on_trading_account(const DzTradingAccount&),
+ *     on_account_status(const DzAccountStatus&),
  *     on_schedule(const DzScheduleEvent&), on_ui_input(const DzUiInput&),
  *     on_error(DzErrorCode, std::string_view) -- 编译期探测, 实现了才调用
- *   - 引擎不分发的事件帧 (TD 查询回报 2005-2017) 与非 tick 行情帧
+ *   - 引擎不分发的事件帧 (TD 查询回报 2005-2017 等其余帧) 与非 tick 行情帧
  *     被静默忽略, 实现对应回调不会被调用
  *
  * 异常语义:
@@ -97,6 +98,11 @@ concept HasOnUiInput = requires(T t, const DzUiInput& input) { t.on_ui_input(inp
 template <typename T>
 concept HasOnError =
     requires(T t, DzErrorCode code, std::string_view msg) { t.on_error(code, msg); };
+
+template <typename T>
+concept HasOnAccountStatus = requires(T t, const DzAccountStatus& status) {
+    t.on_account_status(status);
+};
 
 /* ── 异常报告: 分发层捕获 → report_error 转发/兜底 → dz_diag (导出诊断输出) 终端。
       report_error noexcept: 用户 on_error 再抛异常也在此消化,
@@ -229,6 +235,13 @@ void handle_event(StrategyT& strategy, const std::byte* frame, bool& running) no
                 running = false;  // 先定格退出决策 (帧已被消费, 反序可能永久阻塞)
                 if constexpr (HasOnStop<StrategyT>) {
                     strategy.on_stop();
+                }
+                break;
+            case DZ_FRAME_ACCOUNT_STATUS:
+                if constexpr (HasOnAccountStatus<StrategyT>) {
+                    if (payload_size_matches<DzAccountStatus>(frame)) [[likely]] {
+                        strategy.on_account_status(frame_payload<DzAccountStatus>(frame));
+                    }
                 }
                 break;
             default:

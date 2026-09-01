@@ -129,6 +129,27 @@ TEST_F(TradeApiTest, SetLogicalPositionWritesFrame) {
     EXPECT_EQ(pos->net_volume, 3);
 }
 
+TEST_F(TradeApiTest, QueryAccountStatusWritesBasicFrame) {
+    ASSERT_TRUE(dz_query_account_status(ctx_, "CTP001"));
+    const auto* req =
+        static_cast<const DzAccountStatusReq*>(read_next_basic(DZ_FRAME_TD_QUERY_ACCOUNT_STATUS));
+    ASSERT_NE(req, nullptr);
+    EXPECT_STREQ(req->account_id, "CTP001");
+}
+
+TEST_F(TradeApiTest, QueryAccountStatusNullMeansAll) {
+    ASSERT_TRUE(dz_query_account_status(ctx_, nullptr));
+    const auto* req =
+        static_cast<const DzAccountStatusReq*>(read_next_basic(DZ_FRAME_TD_QUERY_ACCOUNT_STATUS));
+    ASSERT_NE(req, nullptr);
+    EXPECT_EQ(req->account_id[0], '\0');
+
+    ASSERT_TRUE(dz_query_account_status(ctx_, ""));
+    req = static_cast<const DzAccountStatusReq*>(read_next_basic(DZ_FRAME_TD_QUERY_ACCOUNT_STATUS));
+    ASSERT_NE(req, nullptr);
+    EXPECT_EQ(req->account_id[0], '\0');
+}
+
 // ── 生命周期边界 ──
 
 TEST_F(TradeApiTest, SecondInitReturnsNullWithAlreadyInitialized) {

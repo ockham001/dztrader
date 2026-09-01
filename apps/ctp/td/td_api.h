@@ -51,6 +51,18 @@ const AccountConfig* find_current_account_in(const std::vector<AccountConfig>& a
 /// account_id 为空或未找到时返回 nullptr。委托给 find_current_account_in(cfg.accounts, ...)。
 const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& account_id);
 
+/// 2115 查询路由: queried 为空串 = 查全部 (true); 否则命中配置才应答 (不在配置不回, master 兜底)
+bool account_query_matches(const std::vector<std::string>& configured,
+                           const std::string& queried);
+
+/// 2018 三态去重判定 (契约 account-status): 非强制时, 同态且非 Offline 不推;
+/// Offline 恒推 (删账户/崩溃兜底语义)。force (快照/查询应答) 绕过去重。
+bool should_push_account_status(DzAccountState last, DzAccountState next, bool force);
+
+/// "YYYYMMDD" -> 距纪元天数; 空串/非法回落 0 (契约: 非 Ready 或缺失交易日 = 0)。
+/// Date::from_string 抛异常在此消化。
+int32_t epoch_day_from_yyyymmdd(const std::string& yyyymmdd);
+
 /// TdApi: CTP 交易网关进程级编排器 (设计 §1.1 多账户路由, §6.3 主循环)。
 ///
 /// 职责:
@@ -174,6 +186,15 @@ private:
     // === 状态/健康度 ===
     /// 推送指定账户的当前状态到 SHM (DZ_FRAME_RTN_TD_STATUS, payload 为 TdStatusRecord)
     void update_status(const std::string& account_id);
+    /// 账户状态统一写出口 (spec §3.1): 2018 三态去重推送。
+    /// state 与该账户上次推送相同则跳过; trading_day 为空串或 state!=READY 时帧内 trading_day=0。
+    /// force=true = 权威全量重推, 绕过去重 — snapshot/query 应答路径用 (spec §3.1 重启快照自愈)。
+    void write_account_status(const std::string& account_id, DzAccountState state,
+                              const std::string& trading_day, bool force = false);
+    /// 对 config_.accounts 全量重推 (无 session=Offline; spec §3.1 配置加载即推)
+    void report_account_status_all();
+    /// 处理 TD_QUERY_ACCOUNT_STATUS(2115) basic 广播帧: 空=全量应答, 指定=命中配置才应答
+    void handle_query_account_status(const std::byte* frame);
     /// per-account 健康度翻转检测 + 广播 (NOTIFY_TD_CONNECTED / NOTIFY_TD_DISCONNECTED)。
     /// instance_id 格式 name_:account_id。仅在 health 翻转时发送, 避免重复。
     void broadcast_health(const std::string& account_id, TdHealth now);
@@ -234,6 +255,8 @@ private:
 
     std::unordered_map<std::string, std::unique_ptr<AccountSession>> sessions_;  ///< account_id -> 会话
     std::unordered_map<std::string, TdHealth> account_health_;                   ///< account_id -> 上次广播健康度
+    /// 账户上次推送的三态 (去重缓存; 键=account_id)
+    std::unordered_map<std::string, DzAccountState> account_last_state_;
 
     bool running_ = false;                               ///< 主循环运行中
     bool started_ = false;                               ///< run() 是否已完成初始化 (防重入重复广播)
@@ -283,6 +306,19 @@ void TdApi::dispatch(Event& event, void (AccountSession::*handler)(const T&)) {
         broadcast_health(rsp->account_id, TdHealth::Up);
     } else if (before == TdState::Ready && after != TdState::Ready) {
         broadcast_health(rsp->account_id, TdHealth::Down);
+    }
+    // 契约 account-status 场景 2: 实盘状态转移的三态翻转推送 (非 force, dedup 过滤
+    // 未翻转事件; 每事件一次 map 查找, 三态翻转时恰推一次)。
+    // 异常不逃逸 dispatch (bad_alloc 等否则杀主循环 + 跳过尾部 delete 造成事件泄漏)
+    try {
+        write_account_status(rsp->account_id, account_state_of(after),
+                             session->state_machine().status().trading_day);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("account status push failed | account={} error=\"{}\"",
+                     rsp->account_id, e.what());
+    } catch (...) {
+        SPDLOG_ERROR("account status push failed | account={} error=unknown_exception",
+                     rsp->account_id);
     }
     delete rsp;  // NOLINT
 }

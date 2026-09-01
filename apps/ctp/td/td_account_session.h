@@ -24,6 +24,7 @@
 #include <atomic>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -57,12 +58,15 @@ public:
     /// @param persist_writer SQLite 持久化 writer (外部拥有, 多账户共享)
     /// @param event_queue SPI -> 主线程事件队列 (shared_ptr)
     /// @param timer_queue 定时器队列 (外部拥有)
+    /// @param account_state_cb 可选账户状态通知回调 (会话内直调状态机的路径经它推送,
+    ///   当前仅连接超时; 在 TdApi 主循环线程同步调用)
     AccountSession(std::string account_id,
                    shm::OrderIdMeta& order_id_meta,
                    shm::MultiWriter& event_writer,
                    PersistWriter& persist_writer,
                    const MpmcQueuePtr& event_queue,
-                   dztrader::core::TimerQueue& timer_queue);
+                   dztrader::core::TimerQueue& timer_queue,
+                   std::function<void(DzAccountState)> account_state_cb = nullptr);
     ~AccountSession();
 
     AccountSession(const AccountSession&) = delete;
@@ -203,6 +207,8 @@ private:
     PersistWriter& persist_writer_;
     MpmcQueuePtr event_queue_;
     dztrader::core::TimerQueue& timer_queue_;
+    /// 账户状态通知回调 (可空; 会话内直调状态机的路径经它推送 2018, 契约 account-status)
+    std::function<void(DzAccountState)> account_state_cb_;
 
     CThostFtdcTraderApi* api_ = nullptr;
     std::unique_ptr<TdSpi> spi_;

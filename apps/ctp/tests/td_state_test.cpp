@@ -304,3 +304,20 @@ TEST_F(TdStateMachineTest, ReadyStateProgressIsMax) {
     EXPECT_EQ(sm.status().progress_current, sm.status().progress_max);
     EXPECT_EQ(sm.status().progress_current, 10);
 }
+
+// --- TdState 11 态 -> DzAccountState 三态聚合映射 (契约 account-status) ---
+
+TEST(AccountStateMapping, TripleStateAggregation) {
+    using namespace dztrader::ctp;
+    EXPECT_EQ(account_state_of(TdState::Idle), DZ_ACCOUNT_OFFLINE);
+    EXPECT_EQ(account_state_of(TdState::Disconnected), DZ_ACCOUNT_OFFLINE);
+    EXPECT_EQ(account_state_of(TdState::Connecting), DZ_ACCOUNT_LOGGING_IN);
+    EXPECT_EQ(account_state_of(TdState::Connected), DZ_ACCOUNT_LOGGING_IN);
+    EXPECT_EQ(account_state_of(TdState::Authenticating), DZ_ACCOUNT_LOGGING_IN);
+    EXPECT_EQ(account_state_of(TdState::Authenticated), DZ_ACCOUNT_LOGGING_IN);
+    EXPECT_EQ(account_state_of(TdState::LoggingIn), DZ_ACCOUNT_LOGGING_IN);
+    EXPECT_EQ(account_state_of(TdState::LoggedIn), DZ_ACCOUNT_LOGGING_IN);
+    EXPECT_EQ(account_state_of(TdState::Confirming), DZ_ACCOUNT_LOGGING_IN);
+    EXPECT_EQ(account_state_of(TdState::LoadingInstruments), DZ_ACCOUNT_LOGGING_IN);
+    EXPECT_EQ(account_state_of(TdState::Ready), DZ_ACCOUNT_READY);
+}
