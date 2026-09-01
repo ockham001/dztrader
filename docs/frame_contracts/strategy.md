@@ -90,7 +90,7 @@
 **白名单（返回给策略用户）**：
 
 - `ORDER_REPORT`(2000)/`TRADE_REPORT`(2001)：按 payload `strategy_id` 定向——仅 `strategy_id` == 本策略裸名的帧放行；`strategy_id` 为空（外部单/手工单，非任何策略所下）与其他策略的回报一律拦截丢弃（td 网关按下单 `DzOrderReq.strategy_id` 回填，见契约 td-order）
-- `POSITION_INFO`(2002)/`TRADING_ACCOUNT`(2003)：不按策略过滤，全量透传；引擎分发给策略 `on_position_info`/`on_trading_account` 回调（当前无写端，TD 网关查询链路落地后接线）
+- `POSITION_INFO`(2002)/`TRADING_ACCOUNT`(2003)：不按策略过滤，全量透传；引擎分发给策略 `on_position_info`/`on_trading_account` 回调（TD 网关查询链路已落地：登录完成协议在 Ready 前发起持仓/资金查询，响应经 SDK ingest seq 过滤后推送，见下"SDK ingest 过滤职责"）
 - `ACCOUNT_STATUS`(2018)：同上不按策略过滤，全量透传（payload 无 `strategy_id`，账户级广播帧）；SDK 引擎分发 `on_account_status` 回调（帧语义见《帧契约：账户登录状态》）
 - 其余 TD 回报帧 2005–2017（`TD_INSTRUMENT` 等）：暂不按策略过滤，全量放行，引擎静默忽略
 - `UI_INPUT`（3001，定向本策略）：SDK 按 `instance_id` == 裸策略名过滤
@@ -104,6 +104,23 @@
 - `NOTIFY_MD_STARTED`（1007，本策略行情源）：SDK 自动补订阅期望集合
 - 非本策略/空 `strategy_id` 的 `ORDER_REPORT`/`TRADE_REPORT`；非本策略 `instance_id` 的 `UI_INPUT`/`SHUTDOWN`
 - 其余平台帧（日志/SHM 配置、进程控制、md 控制、TD 控制 21xx、`OUTPUT_UI`/`SET_LOGICAL_POSITION` 他策略回声等）：丢弃（`TD_QUERY_ACCOUNT_STATUS` 是 SDK 写端帧——由 `dz_query_account_status` 发出，非读端白名单成员）
+
+**SDK ingest 过滤职责**（TD 数据同步，账户级 seq 水位）：
+
+SDK 在 `dz_next_event` 派发 2000–2003 帧时先经账户级 ingest 过滤，再返回策略用户：
+
+- **seq 过滤（先于 strategy_id 过滤）**：对每个账户维护水位 W（启动时查 TD 库 `MAX(seq)` 得，真相源 `struct.h` 四 payload 末尾 `seq` 字段，语义见 ADR 0007）。`seq ≤ W` 的帧（快照已含）拦截、不返回策略用户；`seq > W` 放行并推进该账户水位。**过滤次序固定：seq 过滤先于 strategy_id 过滤**——seq 是"该账户本条是否已同步"的全局判定，strategy_id 是"本策略是否定向该条"的定向判定，两者正交
+- **断档回补**：启动竞态窗口（在途帧写在 reader 开启前、落库在快照查询后）使首帧 `seq > W+1` 时，SDK 查 TD 库补回缺失区间，按 seq 序归并后派发
+- **成交去重**：按 `(account_id, trading_day, trade_id)` 二次防线去重（td 过滤器为第一道），交易日切换清理
+- **seq 倒退重置**：发现 `seq` 低于该账户已应用水位（数据被重置，非新的一天）时，清空该账户 ingest 状态、重查 TD 库设新水位后继续
+
+**对策略透明**：W 快照、断档回补、成交去重、seq 倒退重置全部在 SDK ingest 层完成，策略回调语义不受影响——`on_trade_report` 语义 = **每笔成交恰好一次**。
+
+**回调语义承诺**：2000–2003 回调（`on_order_report`/`on_trade_report`/`on_position_info`/`on_trading_account`）在 ingest 过滤后保证：
+
+- **无陈旧帧**：`seq ≤ W` 的帧已在 SDK 拦截，不会送达回调
+- **无断档**：启动竞态窗口的缺失区间由回补补齐
+- **成交不重复**：`on_trade_report` 每笔成交恰好一次
 
 **防饿死上限**：每次 `dz_next_event` 调用最多连续消费 32 条内部帧，超过则本次让位（优先返回已到期定时器帧，否则 NULL，下次调用继续处理）；用户帧随时立即返回，绝不被吞。
 
