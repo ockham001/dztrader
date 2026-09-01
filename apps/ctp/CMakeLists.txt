@@ -122,6 +122,7 @@ add_executable(dztd_ctp
     td/td_spi.cpp
     td/td_report_filter.cpp
     td/td_prescan.cpp
+    td/td_login_finalize.cpp
     common/trading_calendar.cpp
 )
 target_include_directories(dztd_ctp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -273,6 +274,10 @@ foreach(testfile ${TD_CTP_TESTS})
     if(testname STREQUAL "td_prescan_test")
         target_sources(dztd_ctp_${testname} PRIVATE td/td_prescan.cpp td/td_schema.cpp)
         target_link_libraries(dztd_ctp_${testname} PRIVATE dzdb)
+    endif()
+    # td_login_finalize_test 需要 td_login_finalize.cpp (登录收尾状态机纯逻辑, 无 CTP 依赖)
+    if(testname STREQUAL "td_login_finalize_test")
+        target_sources(dztd_ctp_${testname} PRIVATE td/td_login_finalize.cpp)
     endif()
     gtest_discover_tests(dztd_ctp_${testname})
     install(TARGETS dztd_ctp_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
