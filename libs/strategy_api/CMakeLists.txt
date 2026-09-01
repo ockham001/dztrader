@@ -13,6 +13,7 @@ set(SDK_SOURCES
     src/api.cpp
     src/cursor_result_set.cpp
     src/vector_result_set.cpp
+    src/db_database.cpp
 )
 
 # 内部头文件目录（src 下的 .h 是内部实现头）
@@ -25,8 +26,8 @@ add_library(dzstrategy_sdk_static STATIC ${SDK_SOURCES})
 target_include_directories(dzstrategy_sdk_static PUBLIC ${SDK_INTERNAL_INCLUDES})
 target_compile_definitions(dzstrategy_sdk_static PUBLIC DZ_API_COMPILE_STATIC)
 target_link_libraries(dzstrategy_sdk_static
-    PUBLIC strategy_api_headers dzcore dzshm
-    PUBLIC Boost::boost nlohmann_json::nlohmann_json
+    PUBLIC strategy_api_headers dzcore dzshm dzdb
+    PUBLIC Boost::boost nlohmann_json::nlohmann_json SQLiteCpp
 )
 
 # ============================================================
@@ -43,8 +44,8 @@ set_target_properties(dzstrategy_sdk PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${DZ_OUTPUT_DIR}
 )
 target_link_libraries(dzstrategy_sdk
-    PUBLIC strategy_api_headers dzcore dzshm
-    PUBLIC Boost::boost nlohmann_json::nlohmann_json
+    PUBLIC strategy_api_headers dzcore dzshm dzdb
+    PUBLIC Boost::boost nlohmann_json::nlohmann_json SQLiteCpp
 )
 
 # ============================================================
@@ -65,6 +66,7 @@ set(SDK_API_TESTS
     md_api_test
     schedule_api_test
     strategy_engine_test
+    db_test
 )
 file(GLOB SDK_TESTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
@@ -79,11 +81,14 @@ foreach(testfile ${SDK_TESTS})
         strategy_api_headers dzcore dzshm GTest::gtest
         Boost::boost nlohmann_json::nlohmann_json)
     if(testname IN_LIST SDK_API_TESTS)
-        target_sources(dzstrategy_sdk_${testname} PRIVATE src/api.cpp)
+        target_sources(dzstrategy_sdk_${testname} PRIVATE src/api.cpp src/db_database.cpp)
         # api.cpp 直接编入测试可执行文件（自包含, 不经 DLL 导出）,
         # 语义同 dzstrategy_sdk_static: DZ_API 展开为空。
         # 缺此定义时 MSVC 落到 dllimport 分支, 库内定义函数体报 C2491。
         target_compile_definitions(dzstrategy_sdk_${testname} PRIVATE DZ_API_COMPILE_STATIC)
+        # api.cpp 引用 dzdb 的 db_database.cpp 需链 dzdb (PUBLIC 传递 SQLiteCpp);
+        # db_test 直接用 SQLiteCpp 建临时库, 经 dzdb PUBLIC 依赖满足
+        target_link_libraries(dzstrategy_sdk_${testname} PRIVATE dzdb)
     endif()
     set_target_properties(dzstrategy_sdk_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}

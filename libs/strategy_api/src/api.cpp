@@ -4,10 +4,12 @@
 #include <cstddef>
 #include <cstdio>
 #include <unordered_set>
+#include <string>
 #include <string_view>
 #include <cfloat>
 #include <chrono>
 #include <limits>
+#include <memory>
 #include <vector>
 
 #include <dztrader/error.h>
@@ -26,6 +28,7 @@
 #include "vector_result_set.h"
 #include "cursor_result_set.h"
 #include "output_limit.h"
+#include "db_database.h"
 
 using namespace dztrader;
 
@@ -684,15 +687,47 @@ DZ_API bool dz_output_ui(DzContext* ctx, const char* data) {
 
 /* ── 数据库接口 ── */
 
+namespace {
+
+/// 查询结果装入 VectorResultSet (不新建 impl 类, 复用 vector_result_set)
+std::unique_ptr<DzResultSet> db_rs_from_result(strategy_api_internal::DbQueryResult result) {
+    auto rs = std::make_unique<DzResultSet>();
+    rs->impl = std::make_unique<strategy_api_internal::VectorResultSet>(
+        std::move(result.columns), std::move(result.rows));
+    return rs;
+}
+
+using strategy_api_internal::db_generic_query;
+using strategy_api_internal::db_open_readonly;
+using strategy_api_internal::db_query_order_trade;
+using strategy_api_internal::db_query_position;
+using strategy_api_internal::db_query_trading_account;
+
+}  // namespace
+
 DZ_API DzDatabase* dz_db_open(const char* path) {
-    (void)path;
-    LastError::set(DZ_EC_INTERNAL, "db not implemented");
+    if (path == nullptr || path[0] == '\0') {
+        LastError::set(DZ_EC_INVALID_PARAM, "db path is null");
+        return NULL;
+    }
+    try {
+        // 只读打开: 库文件不存在时报错返回 NULL (策略自行降级)。
+        return db_open_readonly(path).release();
+    } catch (const Exception& e) {
+        LastError::set(e.code(), e.what());
+    } catch (const std::exception& e) {
+        LastError::set(DZ_EC_SYSTEM, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_SYSTEM, "unknown exception");
+    }
     return NULL;
 }
 DZ_API bool dz_db_close(DzDatabase* db) {
-    (void)db;
-    LastError::set(DZ_EC_INTERNAL, "db not implemented");
-    return false;
+    if (db == nullptr) {
+        return true;  // NULL 安全: no-op 视为成功
+    }
+    delete db;  // NOLINT
+    return true;
 }
 
 /* ── DzResultSet ── */
@@ -745,52 +780,122 @@ DZ_API void dz_resultset_close(DzResultSet* rs) {
 DZ_API DzResultSet* dz_db_query_order(DzDatabase* db,
                                       const char* account_id,
                                       const char* instrument_id) {
-    (void)db;
-    (void)account_id;
-    (void)instrument_id;
-    LastError::set(DZ_EC_INTERNAL, "db not implemented");
+    if (db == nullptr || db->db == nullptr) {
+        LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
+        return NULL;
+    }
+    try {
+        return db_rs_from_result(db_query_order_trade(
+                   db, account_id ? account_id : "", instrument_id ? instrument_id : "", "orders",
+                   /*order_by_seq=*/true))
+            .release();
+    } catch (const Exception& e) {
+        LastError::set(e.code(), e.what());
+    } catch (const std::exception& e) {
+        LastError::set(DZ_EC_SYSTEM, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_SYSTEM, "unknown exception");
+    }
     return NULL;
 }
 DZ_API DzResultSet* dz_db_query_trade(DzDatabase* db,
                                       const char* account_id,
                                       const char* instrument_id) {
-    (void)db;
-    (void)account_id;
-    (void)instrument_id;
-    LastError::set(DZ_EC_INTERNAL, "db not implemented");
+    if (db == nullptr || db->db == nullptr) {
+        LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
+        return NULL;
+    }
+    try {
+        return db_rs_from_result(db_query_order_trade(
+                   db, account_id ? account_id : "", instrument_id ? instrument_id : "", "trades",
+                   /*order_by_seq=*/true))
+            .release();
+    } catch (const Exception& e) {
+        LastError::set(e.code(), e.what());
+    } catch (const std::exception& e) {
+        LastError::set(DZ_EC_SYSTEM, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_SYSTEM, "unknown exception");
+    }
     return NULL;
 }
 DZ_API DzResultSet* dz_db_query_position(DzDatabase* db,
                                          const char* account_id,
                                          const char* instrument_id) {
-    (void)db;
-    (void)account_id;
-    (void)instrument_id;
-    LastError::set(DZ_EC_INTERNAL, "db not implemented");
+    if (db == nullptr || db->db == nullptr) {
+        LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
+        return NULL;
+    }
+    try {
+        return db_rs_from_result(db_query_position(
+                   db, account_id ? account_id : "", instrument_id ? instrument_id : ""))
+            .release();
+    } catch (const Exception& e) {
+        LastError::set(e.code(), e.what());
+    } catch (const std::exception& e) {
+        LastError::set(DZ_EC_SYSTEM, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_SYSTEM, "unknown exception");
+    }
     return NULL;
 }
 DZ_API DzResultSet* dz_db_query_trading_account(DzDatabase* db, const char* account_id) {
-    (void)db;
-    (void)account_id;
-    LastError::set(DZ_EC_INTERNAL, "db not implemented");
+    if (db == nullptr || db->db == nullptr) {
+        LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
+        return NULL;
+    }
+    try {
+        return db_rs_from_result(db_query_trading_account(db, account_id ? account_id : ""))
+            .release();
+    } catch (const Exception& e) {
+        LastError::set(e.code(), e.what());
+    } catch (const std::exception& e) {
+        LastError::set(DZ_EC_SYSTEM, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_SYSTEM, "unknown exception");
+    }
     return NULL;
 }
 DZ_API DzResultSet* dz_db_query_commission(DzDatabase* db,
                                            const char* account_id,
                                            const char* instrument_id) {
-    (void)db;
-    (void)account_id;
-    (void)instrument_id;
-    LastError::set(DZ_EC_INTERNAL, "db not implemented");
+    if (db == nullptr || db->db == nullptr) {
+        LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
+        return NULL;
+    }
+    try {
+        return db_rs_from_result(db_query_order_trade(
+                   db, account_id ? account_id : "", instrument_id ? instrument_id : "",
+                   "commission_rates", /*order_by_seq=*/false))
+            .release();
+    } catch (const Exception& e) {
+        LastError::set(e.code(), e.what());
+    } catch (const std::exception& e) {
+        LastError::set(DZ_EC_SYSTEM, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_SYSTEM, "unknown exception");
+    }
     return NULL;
 }
 DZ_API DzResultSet* dz_db_query_margin(DzDatabase* db,
                                        const char* account_id,
                                        const char* instrument_id) {
-    (void)db;
-    (void)account_id;
-    (void)instrument_id;
-    LastError::set(DZ_EC_INTERNAL, "db not implemented");
+    if (db == nullptr || db->db == nullptr) {
+        LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
+        return NULL;
+    }
+    try {
+        return db_rs_from_result(db_query_order_trade(
+                   db, account_id ? account_id : "", instrument_id ? instrument_id : "",
+                   "margin_rates", /*order_by_seq=*/false))
+            .release();
+    } catch (const Exception& e) {
+        LastError::set(e.code(), e.what());
+    } catch (const std::exception& e) {
+        LastError::set(DZ_EC_SYSTEM, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_SYSTEM, "unknown exception");
+    }
     return NULL;
 }
 DZ_API DzResultSet* dz_db_query_bar(DzDatabase* db,
@@ -805,18 +910,33 @@ DZ_API DzResultSet* dz_db_query_bar(DzDatabase* db,
     (void)adjust_type;
     (void)start_date;
     (void)end_date;
-    LastError::set(DZ_EC_INTERNAL, "db not implemented");
+    LastError::set(DZ_EC_SYSTEM, "bar query not implemented");
     return NULL;
 }
 DZ_API DzResultSet* dz_db_query(DzDatabase* db,
                                 const char* query,
                                 const char* filter,
                                 int32_t version) {
-    (void)db;
-    (void)query;
-    (void)filter;
     (void)version;
-    LastError::set(DZ_EC_INTERNAL, "db not implemented");
+    if (db == nullptr || db->db == nullptr) {
+        LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
+        return NULL;
+    }
+    if (query == nullptr || query[0] == '\0') {
+        LastError::set(DZ_EC_INVALID_PARAM, "query is null");
+        return NULL;
+    }
+    try {
+        return db_rs_from_result(
+                   db_generic_query(db, query, filter != nullptr ? filter : ""))
+            .release();
+    } catch (const Exception& e) {
+        LastError::set(e.code(), e.what());
+    } catch (const std::exception& e) {
+        LastError::set(DZ_EC_SYSTEM, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_SYSTEM, "unknown exception");
+    }
     return NULL;
 }
 
