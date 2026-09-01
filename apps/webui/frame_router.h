@@ -58,6 +58,11 @@ public:
         handlers_[type] = std::move(h);
     }
 
+    /// 暴露 Poster（register_raw handler 内部投递到 IO 线程用）。
+    /// register_json 内部 decode 后经同一 poster 投递；register_raw handler 在监听线程
+    /// 同步执行，解析并拷贝字段后也应经此 poster 投递到 IO 线程，与 REST/WS 同线程串行。
+    const Poster& poster() const { return poster_; }
+
     void dispatch(const shm::FrameView& view) {
         auto it = handlers_.find(view.type());
         if (it == handlers_.end()) {
