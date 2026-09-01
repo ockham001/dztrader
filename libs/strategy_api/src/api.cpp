@@ -224,19 +224,68 @@ int32_t parse_trading_day_to_epoch(const std::string_view text) {
     }
 }
 
+/// epoch 秒 -> 距午夜秒 (DzTime, struct.h "时间（距午夜秒数）")。
+/// DB 时间列 (insert_time/update_time/trade_time) 存 epoch 秒 = 日期*86400 + 当日秒;
+/// rpt.time 只需当日秒部分 (日期已由 rpt.date 表达)。非法 (≤0) 回落 0。
+int32_t epoch_secs_to_tod(int64_t epoch_secs) {
+    if (epoch_secs <= 0) {
+        return 0;
+    }
+    return static_cast<int32_t>(epoch_secs % 86400);
+}
+
+/// DzDate (距纪元天数) -> "YYYYMMDD" 8 位文本 (gate 去重段键 day 分量)。
+/// 非法日期回落空串 (调用方按 0 日处理)。
+std::string format_epoch_day_to_yyyyMMdd(int32_t days) {
+    if (days <= 0) {
+        return "";
+    }
+    try {
+        const dztrader::Date d{days};
+        return std::format("{:04d}{:02d}{:02d}", d.year(), d.month(), d.day());
+    } catch (...) {
+        return "";
+    }
+}
+
+/// TRADE_REPORT 成交去重二道防线 (契约 strategy §5.4 / "SDK ingest 过滤职责"):
+/// 从帧 payload 取 (account_id, date, trade_id) 调 admit_trade。日期以帧 date 为真源
+/// (帧 date 为实时/回补路径均已填的 DzDate), 转 "YYYYMMDD" 文本对齐 gate 段键。
+/// 返回 false = 已存在重复 (拦截, 不返回策略用户)。
+bool admit_trade_report(DzContext* ctx, const DzTradeReport& rpt) {
+    const std::string day = format_epoch_day_to_yyyyMMdd(rpt.date);
+    if (day.empty()) {
+        return true;  // 解析失败: 不拦截 (宁可放行, 去重以帧 date 缺失时不强行拦)
+    }
+    return ctx->ingest_gate.admit_trade(rpt.account_id, day.c_str(), rpt.trade_id);
+}
+
+/// 2018 ACCOUNT_STATUS 推送: 携带 trading_day 时驱动 gate 交易日切换
+/// (清该账户旧日去重段, 契约 strategy "成交去重…交易日切换清理")。
+/// 未携带 (trading_day=0) 或解析失败: no-op (gate 维持已见日, 由 admit_trade 自清)。
+void on_account_status_trading_day(DzContext* ctx, const DzAccountStatus& st) {
+    const std::string day = format_epoch_day_to_yyyyMMdd(st.trading_day);
+    if (day.empty()) {
+        return;
+    }
+    ctx->ingest_gate.on_trading_day_changed(st.account_id, day.c_str());
+}
+
 /// 断档回补: 查询 [from, to] 区间四表行, 转 Dz*Report 填 seq, 按 seq 序入 replay 缓冲。
 /// 行序 = seq 序 (dz_db_query ORDER BY seq), 各表内部有序; 跨表归并按 seq 递增保证 —
 /// 简化: 逐表入缓冲, 每表内部 seq 序 (跨表全序由"断档区间内每表独立有序 + 单调 seq"保证,
 /// 回补消费端按帧类型独立, 不要求跨表严格交错)。
-void handle_gap(DzContext* ctx) {
+/// 返回 false = 缓冲溢出 (gap 区间过宽, 回补被截断): 调用方 (ingest_td_frame)
+/// 拦截触发帧, 宁缺勿乱 (不返回策略用户, 帧不丢, 触发帧也不放行)。
+bool handle_gap(DzContext* ctx) {
     auto gap = ctx->ingest_gate.take_pending_gap();
     if (!gap.has_value()) {
-        return;
+        return true;
     }
     auto db = open_td_db();
     if (db == nullptr) {
         dz_diag("ingest gap but td db unavailable, skip backfill");
-        return;
+        return true;  // 无库: 不拦截触发帧 (降级全放行语义)
     }
     const std::string filter =
         std::format("{{\"account_id\": \"{}\", \"seq\": {{\"$gte\": {}, \"$lt\": {}}}}}",
@@ -250,6 +299,7 @@ void handle_gap(DzContext* ctx) {
             return DbQueryResult{};
         }
     };
+    bool ok = true;
     // orders -> DzOrderReport (帧 2000)
     {
         DbQueryResult result = query_table("order");
@@ -268,6 +318,8 @@ void handle_gap(DzContext* ctx) {
             const auto vt_c = cols.idx("volume_traded", 15);
             const auto sid_c = cols.idx("strategy_id", 21);
             const auto seq_c = cols.idx("seq", 23);
+            const auto itime_c = cols.idx("insert_time", 17);
+            const auto utime_c = cols.idx("update_time", 18);
             for (const Row& row : result.rows) {
                 DzOrderReport rpt{};
                 dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
@@ -283,9 +335,14 @@ void handle_gap(DzContext* ctx) {
                 rpt.volume = static_cast<DzVolume>(row_int64(row, vol_c));
                 rpt.volume_traded = static_cast<DzVolume>(row_int64(row, vt_c));
                 rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
-                rpt.time = 0;  // DB 无原始时间戳 (insert_time 为 SQL 扩展, 帧语义不含)
+                // 回补时间语义 (评审发现 2): 实时帧 time 为 CTP InsertTime/UpdateTime 当日秒,
+                // DB insert_time/update_time 为 epoch 秒; 取当日秒填 rpt.time 与实时一致。
+                // 优先 update_time (最新状态时间), 缺省回落 insert_time。
+                rpt.time = epoch_secs_to_tod(
+                    row_int64(row, utime_c) != 0 ? row_int64(row, utime_c)
+                                                 : row_int64(row, itime_c));
                 rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
-                ctx->enqueue_replay_frame(DZ_FRAME_ORDER_REPORT, &rpt, sizeof(rpt));
+                ok = ctx->enqueue_replay_frame(DZ_FRAME_ORDER_REPORT, &rpt, sizeof(rpt)) && ok;
             }
         }
         // trades -> DzTradeReport (帧 2001)
@@ -304,6 +361,7 @@ void handle_gap(DzContext* ctx) {
             const auto vol_c = cols.idx("volume", 10);
             const auto sid_c = cols.idx("strategy_id", 14);
             const auto seq_c = cols.idx("seq", 15);
+            const auto ttime_c = cols.idx("trade_time", 11);
             for (const Row& row : result.rows) {
                 DzTradeReport rpt{};
                 dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
@@ -317,9 +375,11 @@ void handle_gap(DzContext* ctx) {
                 rpt.price = row_double(row, pr_c);
                 rpt.volume = static_cast<DzVolume>(row_int64(row, vol_c));
                 rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
-                rpt.time = 0;
+                // 回补时间语义 (评审发现 2): 实时帧 time 为 CTP TradeTime 当日秒,
+                // DB trade_time 为 epoch 秒; 取当日秒填 rpt.time 与实时一致。
+                rpt.time = epoch_secs_to_tod(row_int64(row, ttime_c));
                 rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
-                ctx->enqueue_replay_frame(DZ_FRAME_TRADE_REPORT, &rpt, sizeof(rpt));
+                ok = ctx->enqueue_replay_frame(DZ_FRAME_TRADE_REPORT, &rpt, sizeof(rpt)) && ok;
             }
         }
         // positions -> DzPositionInfo (帧 2002)
@@ -350,7 +410,7 @@ void handle_gap(DzContext* ctx) {
                 rpt.price = row_double(row, pr_c);
                 rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
                 rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
-                ctx->enqueue_replay_frame(DZ_FRAME_POSITION_INFO, &rpt, sizeof(rpt));
+                ok = ctx->enqueue_replay_frame(DZ_FRAME_POSITION_INFO, &rpt, sizeof(rpt)) && ok;
             }
         }
         // trading_accounts -> DzTradingAccount (帧 2003)
@@ -373,10 +433,11 @@ void handle_gap(DzContext* ctx) {
                 rpt.withdraw = row_double(row, cols.idx("withdraw", 9));
                 rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
                 rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
-                ctx->enqueue_replay_frame(DZ_FRAME_TRADING_ACCOUNT, &rpt, sizeof(rpt));
+                ok = ctx->enqueue_replay_frame(DZ_FRAME_TRADING_ACCOUNT, &rpt, sizeof(rpt)) && ok;
             }
         }
-    }
+    return ok;
+}
 
 /// 单帧 TD ingest 过滤 + 断档回补 (2000-2003 共用):
 /// 先 detect_reset (倒退) 后 admit (W 过滤), kSkip 拦截; gap 时查库填 replay 缓冲。
@@ -395,7 +456,10 @@ bool ingest_td_frame(DzContext* ctx, const std::byte* frame) {
     if (ctx->ingest_gate.admit(v.account_id, v.seq) == TdIngestGate::Verdict::kSkip) {
         return false;
     }
-    handle_gap(ctx);
+    // 回补缓冲溢出 (gap 过宽): 拦截触发帧, 宁缺勿乱 (见 handle_gap/enqueue 注释)。
+    if (!handle_gap(ctx)) {
+        return false;
+    }
     return true;
 }
 
@@ -473,7 +537,11 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
             if (!ingest_td_frame<DzTradeReport>(ctx, frame)) {
                 return false;
             }
-            return is_own_report<DzTradeReport>(ctx, frame);
+            // 定向过滤先行 (strategy_id 不匹配/空不污染去重段), 再成交去重二道防线。
+            if (!is_own_report<DzTradeReport>(ctx, frame)) {
+                return false;
+            }
+            return admit_trade_report(ctx, shm::FrameView(frame).payload<DzTradeReport>());
         case DZ_FRAME_UI_INPUT:
             // 定向帧: 仅 instance_id == 裸策略名 的属于本策略
             return std::string_view(shm::FrameView(frame).ext_inst_id()) == ctx->strategy_id;
@@ -529,7 +597,17 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
             }
             return ingest_td_frame<DzTradingAccount>(ctx, frame);
         }
-        case DZ_FRAME_ACCOUNT_STATUS:
+        case DZ_FRAME_ACCOUNT_STATUS: {
+            // 2018 携带 trading_day (DzAccountStatus.trading_day, Offline 为 0):
+            // 驱动 gate 交易日切换清旧日去重段 (契约 strategy "成交去重…交易日切换清理")。
+            // 截断帧防御: 读不出 payload 不驱动 (仍全量放行, 引擎侧 payload_size_matches 丢弃)。
+            if (shm::FrameView(frame).frame_size() >=
+                sizeof(DzFrameHeader) + sizeof(DzAccountStatus)) {
+                on_account_status_trading_day(
+                    ctx, shm::FrameView(frame).payload<DzAccountStatus>());
+            }
+            return true;  // 2018 仍全量放行给策略用户 (on_account_status 回调, 引擎测试覆盖)
+        }
         case DZ_FRAME_TD_INSTRUMENT:
         case DZ_FRAME_TD_INSTRUMENT_STATUS:
         case DZ_FRAME_TD_ERROR_REPORT:

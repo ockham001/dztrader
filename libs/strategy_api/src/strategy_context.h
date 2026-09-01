@@ -115,9 +115,13 @@ struct DzContext {
 
     /// 本地回补帧环形缓冲: 模拟 shm 帧布局 (DzFrameHeader + Dz*Report), 不写真实共享内存。
     /// 断档回补查询结果按 seq 序归并后入此缓冲, dz_next_event 前置 FIFO 派发。
+    /// 槽数评估 (评审发现 3 Fix): 四表最坏回补 4×(to-from+1) 帧, gap 区间内每表至多一行/seq;
+    /// 512 槽容纳 gap 宽 ~128 seq 的四表满帧 (DzOrderReport 约 200B, 512 槽 <100KB,
+    /// DzContext 冷区堆分配可承受)。溢出不再静默丢帧: 记 ERROR 且拦截触发帧,
+    /// 宁缺勿乱 (见 enqueue_replay_frame 注释)。
     /// 注意: 槽须容纳最大 payload DzOrderReport (含 seq, 远大于 16B) —
     /// 勿抄 TimerFrameSlot 的 static_assert(sizeof==16), 用联合容纳四帧 payload。
-    static constexpr uint32_t REPLAY_FRAME_SLOTS = 64;
+    static constexpr uint32_t REPLAY_FRAME_SLOTS = 512;
     struct alignas(8) ReplayFrameSlot {
         DzFrameHeader header;
         union {
@@ -131,11 +135,13 @@ struct DzContext {
     uint32_t replay_frame_head = 0;   ///< 下一个可写槽位
     uint32_t replay_frame_count = 0;  ///< 待领取帧数
 
-    /// 入回补帧缓冲 (FIFO)。缓冲满时丢弃并告警 (回补数据以触发帧为界, 缺帧由 DB 兜底)。
-    void enqueue_replay_frame(DzFrameType type, const void* payload, uint32_t payload_size) {
+    /// 入回补帧缓冲 (FIFO)。
+    /// 缓冲满 (仅 gap 区间过宽时发生): 记 ERROR 并返回 false, 调用方 (handle_gap)
+    /// 拦截触发帧 (保证帧不丢、触发帧也不放行, 宁缺勿乱)。返回 true = 已入缓冲。
+    bool enqueue_replay_frame(DzFrameType type, const void* payload, uint32_t payload_size) {
         if (replay_frame_count >= REPLAY_FRAME_SLOTS) {
-            dz_diag("replay frame buffer full, drop backfill frame");
-            return;
+            dz_diag("replay frame buffer overflow, backfill truncated");
+            return false;
         }
         auto& slot = replay_frames[replay_frame_head];
         slot.header.frame_size = sizeof(DzFrameHeader) + payload_size;
@@ -143,6 +149,7 @@ struct DzContext {
         std::memcpy(&slot.payload, payload, payload_size);
         replay_frame_head = (replay_frame_head + 1) % REPLAY_FRAME_SLOTS;
         ++replay_frame_count;
+        return true;
     }
     /// 取下一帧回补帧 (缓冲空返回 nullptr)
     [[nodiscard]] const void* pop_replay_frame() {
