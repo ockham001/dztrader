@@ -70,6 +70,7 @@ set(SDK_API_TESTS
     strategy_engine_test
     db_test
     td_ingest_wiring_test
+    td_ingest_nodb_test
 )
 file(GLOB SDK_TESTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
