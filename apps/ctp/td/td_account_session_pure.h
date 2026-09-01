@@ -23,6 +23,20 @@ public:
     /// 比对并更新. 返回 true = 有差异 (调用方应转发), false = 与镜像相同 (调用方应吞).
     bool update_if_changed(const DzPositionInfo& pos);
 
+    /// 镜像中某 key 的已存 seq (全量重灌用): 查询响应中与镜像相同 (未变化) 的行
+    /// 不推帧不分配新 seq, 但重灌组仍需该行 — 沿用 DB 既有 seq (镜像记录的就是
+    /// 最后一次转发的 seq). key 不存在返回 0.
+    [[nodiscard]] uint64_t seq_of(const std::string& account_id,
+                                  const std::string& instrument_id,
+                                  int8_t direction) const noexcept;
+
+    /// 为某 key 更新已存 seq (调用方为差异行分配新 seq 后同步, 供 seq_of 追溯).
+    /// key 不存在时 no-op.
+    void update_seq(const std::string& account_id,
+                    const std::string& instrument_id,
+                    int8_t direction,
+                    uint64_t seq) noexcept;
+
     /// 清空镜像 (账户断开/重连/日切时调用).
     void clear() noexcept { positions_.clear(); }
 

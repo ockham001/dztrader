@@ -243,9 +243,11 @@ void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
         int64_t ctp_max = parse_max_order_ref(f.rsp_user_login->MaxOrderRef);
         order_ref_ = sync_order_ref(order_ref_, ctp_max);
     }
-    // I4: 同步 trading_day, 解析失败 (INT32_MIN) 时记 WARN 但不中断登录
+    // I4: 同步 trading_day, 解析失败 (INT32_MIN) 时记 WARN 但不中断登录.
+    // 发现 3 (评审 Important): 走 set_trading_day 而非直接赋值 — 日切/重连后新交易日的
+    // 持仓为绝对态, 旧镜像 (key 不含日期) 会拦截新日首报, 必须在登录时清空 (spec §4.1 跨日清空).
     if (f.days_since_epoch != std::numeric_limits<int32_t>::min()) {
-        trading_day_ = f.days_since_epoch;
+        set_trading_day(f.days_since_epoch);
     } else {
         SPDLOG_WARN("td trading_day parse failed, keep previous | account={} trading_day={}",
                     account_id_, trading_day_);
@@ -763,6 +765,10 @@ void AccountSession::cancel_connect_timer() {
 void AccountSession::req_qry_investor_position() {
     // Task 6 (spec §4.2 登录收尾): Ready 前发起持仓查询 (登录不在 30μs 热路径).
     // CTP 流控 1 次/秒, 与资金查询串行间隔发起 (此处持仓完成后再发资金).
+    // 本轮全量组清空: is_last 时整组 PositionRebuild. 流控重试 (-3) 在本请求重发前
+    // 无任何响应回调, 清空安全. 同时复位本轮的 enqueue 幂等标志.
+    position_query_group_.clear();
+    position_rebuild_consumed_ = false;
     if (api_ == nullptr) {
         // api 未就绪 (防御): 视为查询失败, 仍推进到资金查询 (串行链不中断).
         finalizer_.on_position_failed();
@@ -1017,14 +1023,6 @@ void AccountSession::persist_trade(const TradeRecord& r) {
     persist_writer_.enqueue(PersistTask{PersistTask::Kind::Trade, r});
 }
 
-void AccountSession::persist_position(const DzPositionInfo& pos) {
-    // 单行绝对态 upsert (盘中有变化时走它, spec §3.2). 交易日在 PersistTask 上携带.
-    persist_writer_.enqueue(PersistTask{.kind = PersistTask::Kind::Position,
-                                        .data = std::vector<DzPositionInfo>{pos},
-                                        .account_id = account_id_,
-                                        .trading_day = trading_day_});
-}
-
 // ============================================================================
 // 内部辅助: 缓冲回报 (设计 §5.3)
 // ============================================================================
@@ -1126,32 +1124,56 @@ void AccountSession::on_rsp_qry_trading_account(const OnRspQryTradingAccountFiel
 }
 
 // === on_rsp_qry_investor_position: 持仓查询响应 ===
-// Task 5 (spec §4.2 查询链路响应侧): 绝对态转换 + diff + 推帧 + 落库.
+// Task 5 (spec §4.2 查询链路响应侧): 绝对态转换 + diff 推帧 + 全量重灌落库.
 // Task 6: is_last 完成持仓查询 -> 发起资金查询 (CTP 流控串行).
+// 发现 2 (评审 Important): 持仓查询响应为全量语义 (spec §3.2) — 用 PositionRebuild 单事务
+// 重灌 (清该账户全部持仓行 + upsert 本组行), 替代逐行 diff upsert. 逐行方式下 CTP 全平
+// (响应不再含该合约) 时无新帧触发, 镜像与 DB 旧持仓永驻 → 盘中平仓的幽灵持仓留到次日.
 void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPositionField& f) {
     try {
         if (f.investor_position) {
             DzPositionInfo pos = to_dz_position(*f.investor_position, account_id_, trading_day_);
-            // 绝对态: 与持仓镜像比对, 有差异才转发 (spec §4.1); 镜像 key=(acct,inst,dir)
-            if (position_mirror_.update_if_changed(pos)) {
+            // 绝对态: 与持仓镜像比对, 有差异才转发 2002 帧 (spec §4.1); 镜像 key=(acct,inst,dir).
+            // 镜像 diff 只控制 SHM 帧推送, 不控制 DB — DB 由 is_last 的全量重灌决定.
+            const bool changed = position_mirror_.update_if_changed(pos);
+            if (changed) {
                 pos.seq = ++seq_counter_;
+                // 镜像记录最后一次转发的 seq (供重灌组内未变化行沿用 DB 既有 seq).
+                position_mirror_.update_seq(account_id_, pos.instrument_id, pos.direction, pos.seq);
                 platform::write_struct(event_writer_, DZ_FRAME_POSITION_INFO, pos);
-                persist_position(pos);
                 SPDLOG_INFO("td qry position | account={} instrument={} pos={} dir={} seq={}",
                             account_id_, f.investor_position->InstrumentID,
                             f.investor_position->Position, f.investor_position->PosiDirection,
                             pos.seq);
+            } else {
+                // 与镜像相同 (重放/补查重复): 不推帧不分配新 seq. 但全量重灌仍需该行 —
+                // 沿用镜像 (DB) 既有 seq, 防止重灌把已同步行的 seq 冲成 0 (破坏 W 单调).
+                pos.seq = position_mirror_.seq_of(account_id_, pos.instrument_id, pos.direction);
             }
+            // 全量语义: 每行 (含未变化行) 都入重灌组, is_last 时整体单事务重灌.
+            position_query_group_.push_back(pos);
         } else if (f.rsp_info && f.rsp_info->ErrorID != 0) {
             SPDLOG_ERROR("td qry position error | account={} error_id={} error=\"{}\"",
                          account_id_, f.rsp_info->ErrorID,
                          dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg));
         }
         if (f.is_last) {
+            position_query_ok_ = !(f.rsp_info && f.rsp_info->ErrorID != 0);
+            if (position_query_ok_ && !position_rebuild_consumed_) {
+                // spec §3.2 全量语义: 单事务重灌 (清该账户全部持仓行 + upsert 本组行).
+                // 空组 = 账户全平, 同样需要重灌 (清空 DB 幽灵持仓).
+                // 幂等: 迟到的重复 is_last (超时/失败路径已推进 finalizer 后的补达) 不得
+                // 用已消费的空组再次重灌清空 DB.
+                position_rebuild_consumed_ = true;
+                persist_writer_.enqueue(PersistTask{
+                    .kind = PersistTask::Kind::PositionRebuild,
+                    .data = std::move(position_query_group_),
+                    .account_id = account_id_,
+                    .trading_day = trading_day_});
+            }
             // 持仓查询完成 -> 发起资金查询 (CTP 流控 1 次/秒, 串行).
             // 幂等防御: 若超时/失败路径已把 finalizer 推进到 kQueryAccount
             // (降级), 迟到的 is_last 仅更新 ok 标志, 不重复发资金查询.
-            position_query_ok_ = !(f.rsp_info && f.rsp_info->ErrorID != 0);
             if (finalizer_.phase() == Phase::kQueryPosition) {
                 finalizer_.on_position_done();
                 req_qry_trading_account();

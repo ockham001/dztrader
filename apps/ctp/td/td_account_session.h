@@ -221,9 +221,6 @@ private:
     /// 持久化 TradeRecord.
     void persist_trade(const TradeRecord& r);
 
-    /// 持久化持仓绝对态 (单行 upsert, Kind::Position).
-    void persist_position(const DzPositionInfo& pos);
-
     /// 从 boot 初始化 seq 计数器 + 重放过滤器基准 (构造时调用).
     void init_from_boot(const SessionBootData& boot);
 
@@ -275,6 +272,12 @@ private:
     std::unique_ptr<ReportFilter> report_filter_;
     /// 持仓绝对态镜像 (2002 写端 diff, spec §4.1).
     PositionMirror position_mirror_;
+    /// 本轮持仓查询全量组 (登录/补查 is_last 时 PositionRebuild 重灌用, spec §3.2).
+    /// 每次 req_qry_investor_position 开始时清空, 逐行累加, is_last 时整体 enqueue.
+    std::vector<DzPositionInfo> position_query_group_;
+    /// 本轮是否已 enqueue PositionRebuild (幂等防御: 迟到的重复 is_last 不得用已消费的
+    /// 空组再次重灌清空 DB).
+    bool position_rebuild_consumed_ = false;
     /// 登录收尾状态机 (spec §4.2): 双查询齐才可收尾, 失败降级不阻塞 Ready.
     LoginFinalizer finalizer_;
     /// 持仓/资金查询是否已成功 (供登录降级补查节流: 双查询都成功才置 true, spec §4.2).

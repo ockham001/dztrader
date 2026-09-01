@@ -141,4 +141,21 @@ bool PositionMirror::update_if_changed(const DzPositionInfo& pos) {
     return true;
 }
 
+uint64_t PositionMirror::seq_of(const std::string& account_id,
+                                const std::string& instrument_id,
+                                int8_t direction) const noexcept {
+    auto it = positions_.find(Key{account_id, instrument_id, direction});
+    return it == positions_.end() ? 0 : it->second.seq;
+}
+
+void PositionMirror::update_seq(const std::string& account_id,
+                                const std::string& instrument_id,
+                                int8_t direction,
+                                uint64_t seq) noexcept {
+    auto it = positions_.find(Key{account_id, instrument_id, direction});
+    if (it != positions_.end()) {
+        it->second.seq = seq;
+    }
+}
+
 }  // namespace dztrader::ctp

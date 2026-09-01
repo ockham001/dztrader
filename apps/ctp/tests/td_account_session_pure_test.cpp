@@ -316,3 +316,32 @@ TEST(PositionMirrorTest, ClearResetsMirror) {
     // 清空后同值再次出现视为变化 (重连重建基准)
     EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 11)));
 }
+
+// 发现 2 (评审 Important): 全量重灌组内未变化行沿用 DB 既有 seq — seq_of 追溯 + update_seq 同步.
+TEST(PositionMirrorTest, SeqAccessorsTrackLastForwardedSeq) {
+    PositionMirror m;
+    // 首次 (变化): seq_of 暂为 0 (调用方尚未分配新 seq).
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 0)));
+    EXPECT_EQ(m.seq_of("acc1", "IF2506", DZ_DIRECTION_LONG), 0u);
+    // 调用方分配新 seq=42 后同步回镜像.
+    m.update_seq("acc1", "IF2506", DZ_DIRECTION_LONG, 42);
+    EXPECT_EQ(m.seq_of("acc1", "IF2506", DZ_DIRECTION_LONG), 42u);
+    // 未变化再次出现: seq_of 追溯 = 42 (重灌组沿用).
+    EXPECT_FALSE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 0)));
+    EXPECT_EQ(m.seq_of("acc1", "IF2506", DZ_DIRECTION_LONG), 42u);
+}
+
+TEST(PositionMirrorTest, SeqAccessorsMissingKeyAndDifferentKey) {
+    PositionMirror m;
+    // 未见过 key → seq_of 返回 0; update_seq 对不存在 key no-op (不新增).
+    EXPECT_EQ(m.seq_of("acc1", "IF2506", DZ_DIRECTION_LONG), 0u);
+    m.update_seq("acc1", "IF2506", DZ_DIRECTION_LONG, 99);
+    EXPECT_EQ(m.seq_of("acc1", "IF2506", DZ_DIRECTION_LONG), 0u);
+    EXPECT_EQ(m.size(), 0u);
+
+    // 不同 direction / instrument 独立.
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 0)));
+    m.update_seq("acc1", "IF2506", DZ_DIRECTION_LONG, 7);
+    EXPECT_EQ(m.seq_of("acc1", "IF2506", DZ_DIRECTION_SHORT), 0u);
+    EXPECT_EQ(m.seq_of("acc1", "rb2510", DZ_DIRECTION_LONG), 0u);
+}

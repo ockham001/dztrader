@@ -88,7 +88,7 @@ seq 是 td ↔ SDK/dzweb 后端的**内部协调坐标**：**不进 WS 契约、
 | td 崩溃重启 seq 复用（未提交段） | 消费者铁律（"不变量清单"第 4 条，DB 水位 W）保证不误丢新事件 |
 | 账户数据清空/重加 | 重置协议（SDK 倒退检测 / dzweb 2018 触发；清空必须显式） |
 | 启动竞态在途窗口 | 回补；安静场景由登录完成协议重推触发 |
-| 跨日 | seq 累积无边界；trades 唯一键含 trading_day；positions 单事务重灌（旧日行清除） |
+| 跨日 | seq 累积无边界；trades 唯一键含 trading_day；positions 单事务重灌（清该账户全部持仓行 + upsert 本组，响应不含的合约即已全平/过期） |
 | 旧 SDK + 新 td | `payload_size_matches` 防御性丢帧；td 与 SDK 同仓同步发版 |
 | 多策略并发读 td 库 | SQLite 共享锁并发读 OK；写事务期间读端 busy_timeout 吸收 |
 | 多网关账户 ID 撞名 | 运维约定全局唯一；帧内加源标识留待需要时（YAGNI） |
