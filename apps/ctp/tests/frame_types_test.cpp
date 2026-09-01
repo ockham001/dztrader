@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <dztrader/data_type.h>
 #include <dztrader/core/core_data_type.h>
+#include <dztrader/struct.h>
 
 TEST(FrameTypes, SystemFrames) {
     EXPECT_EQ(DZ_FRAME_SHUTDOWN, static_cast<DzFrameType>(12));
@@ -143,4 +144,25 @@ TEST(FrameTypes, TdConfigAndStatusFrames) {
     EXPECT_EQ(DZ_FRAME_NOTIFY_TD_CONNECTED,       static_cast<DzFrameType>(2113));
     EXPECT_EQ(DZ_FRAME_NOTIFY_TD_DISCONNECTED,    static_cast<DzFrameType>(2114));
     EXPECT_EQ(DZ_FRAME_TD_QUERY_ACCOUNT_STATUS,   static_cast<DzFrameType>(2115));
+}
+
+TEST(FramePayload, TdBusinessFramesCarrySeq) {
+    // spec §3.1: 四类 td 业务帧 payload 末尾带 uint64_t seq
+    DzOrderReport o{};
+    o.seq = 42;
+    EXPECT_EQ(42u, o.seq);
+    DzTradeReport t{};
+    t.seq = 7;
+    EXPECT_EQ(7u, t.seq);
+    DzPositionInfo p{};
+    p.seq = 9;
+    EXPECT_EQ(9u, p.seq);
+    DzTradingAccount a{};
+    a.seq = 11;
+    EXPECT_EQ(11u, a.seq);
+    // 8 字节对齐不变（DZ_DECLARE_ALIGNED_STRUCT 编译期保证，这里防御 sizeof 可被 8 整除）
+    EXPECT_EQ(0u, sizeof(DzOrderReport) % 8);
+    EXPECT_EQ(0u, sizeof(DzTradeReport) % 8);
+    EXPECT_EQ(0u, sizeof(DzPositionInfo) % 8);
+    EXPECT_EQ(0u, sizeof(DzTradingAccount) % 8);
 }

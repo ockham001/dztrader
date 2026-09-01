@@ -55,6 +55,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzOrderReport, {
     DzAccountId account_id;    ///< 账户ID
     DzExchangeId exchange_id;  ///< 交易所ID
     DzOrderRemark remark;      ///< 委托单备注
+    uint64_t seq;              ///< 账户级状态变更序号（账户内全类型共享、跨日累积单调）
 });
 
 /** @brief 成交回报 */
@@ -72,6 +73,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzTradeReport, {
     DzAccountId account_id;    ///< 账户ID
     DzExchangeId exchange_id;  ///< 交易所ID
     DzTradeId trade_id;        ///< 成交ID
+    uint64_t seq;              ///< 账户级状态变更序号（账户内全类型共享、跨日累积单调）
 });
 
 /** @brief 持仓信息 */
@@ -87,6 +89,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzPositionInfo, {
     DzDate date;                   ///< 交易日（距纪元天数）
     DzDirection direction;         ///< 持仓方向
     char reserved[3];
+    uint64_t seq;                  ///< 账户级状态变更序号（账户内全类型共享、跨日累积单调）
 });
 
 /** @brief 交易账户资金 */
@@ -102,6 +105,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzTradingAccount, {
     double withdraw;         ///< 出金金额
     DzDate date;             ///< 交易日（距纪元天数）
     char reserved[4];
+    uint64_t seq;            ///< 账户级状态变更序号（账户内全类型共享、跨日累积单调）
 });
 
 /* ==========================================================
