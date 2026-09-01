@@ -103,14 +103,14 @@ void on_md_started_internal(DzContext* ctx, const std::byte* frame);
 /// 逐帧类型 switch, 替代原 is_user_frame 白名单 + handle_internal_frame 双开关。
 bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
     switch (type) {
-        case DZ_FRAME_TD_ORDER_RPT:
+        case DZ_FRAME_ORDER_REPORT:
             return is_own_report<DzOrderReport>(ctx, frame);
-        case DZ_FRAME_TD_TRADE_RPT:
+        case DZ_FRAME_TRADE_REPORT:
             return is_own_report<DzTradeReport>(ctx, frame);
-        case DZ_FRAME_STG_USER_INPUT:
+        case DZ_FRAME_UI_INPUT:
             // 定向帧: 仅 instance_id == 裸策略名 的属于本策略
             return std::string_view(shm::FrameView(frame).ext_inst_id()) == ctx->strategy_id;
-        case DZ_FRAME_REQUEST_SHUTDOWN:
+        case DZ_FRAME_SHUTDOWN:
             if (std::string_view(shm::FrameView(frame).ext_inst_id()) == ctx->strategy_id) {
                 ctx->internal_cleanup_on_shutdown();  // 内部清理后再放行
                 return true;
@@ -145,12 +145,11 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
             on_md_started_internal(ctx, frame);
             return false;
         // 其余 TD 回报帧 2002-2017 (持仓/资金/费率/网关状态/合约等): 暂不按策略过滤, 全量放行
-        case DZ_FRAME_TD_POSITION_INFO:
-        case DZ_FRAME_TD_TRADING_ACCOUNT:
-        case DZ_FRAME_TD_GATEWAY_STATUS:
+        case DZ_FRAME_POSITION_INFO:
+        case DZ_FRAME_TRADING_ACCOUNT:
         case DZ_FRAME_TD_INSTRUMENT:
         case DZ_FRAME_TD_INSTRUMENT_STATUS:
-        case DZ_FRAME_TD_ERROR_RPT:
+        case DZ_FRAME_TD_ERROR_REPORT:
         case DZ_FRAME_TD_RISK_REJECT:
         case DZ_FRAME_TD_TRANSFER_REQ:
         case DZ_FRAME_TD_TRANSFER_RSP:
@@ -640,7 +639,7 @@ DZ_API bool dz_output_ui(DzContext* ctx, const char* data) {
     // static_assert 防止后续引入会抛异常的操作。
     static_assert(noexcept(output_ui_max_payload(ctx->event_writer.page_size())));
     static_assert(noexcept(ctx->event_writer.write_ext_inst_frame(
-        DZ_FRAME_STG_USER_OUTPUT, ctx->strategy_id, reinterpret_cast<const std::byte*>(data), 0u)));
+        DZ_FRAME_OUTPUT_UI, ctx->strategy_id, reinterpret_cast<const std::byte*>(data), 0u)));
     static_assert(noexcept(ctx->event_writer.notify_subscribers()));
 
     const auto len = strlen(data);
@@ -651,7 +650,7 @@ DZ_API bool dz_output_ui(DzContext* ctx, const char* data) {
         return false;
     }
     const auto data_len = static_cast<uint32_t>(std::min<uint64_t>(len, cap));
-    if (!ctx->event_writer.write_ext_inst_frame(DZ_FRAME_STG_USER_OUTPUT, ctx->strategy_id,
+    if (!ctx->event_writer.write_ext_inst_frame(DZ_FRAME_OUTPUT_UI, ctx->strategy_id,
                                                 reinterpret_cast<const std::byte*>(data),
                                                 data_len)) {
         // write_ext_inst_frame 为 noexcept bool: 唯一失败路径是 open_frame 返回 nullptr,

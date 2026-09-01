@@ -295,6 +295,11 @@ typedef int8_t DzNotifyLevel;
 
 /* ==========================================================
  *  帧类型
+ *
+ *  本头仅含策略可见帧（策略经 dz_next_event / dz_next_md 识别消费）
+ *  与基础类型定义；平台内部帧（SHM 维护/日志配置/SHM 配置/UI 通知/
+ *  进程控制/行情控制/交易控制/策略上行帧）见
+ *  libs/core/include/dztrader/core/core_data_type.h。
  * ========================================================== */
 
 /** @brief 共享内存帧类型 */
@@ -302,62 +307,33 @@ typedef int16_t DzFrameType;
 
 /* ── 系统帧 ── */
 
-/** @brief 无效填充帧（边界填充） */
-#define DZ_FRAME_INVALID_FILL       ((DzFrameType)0)
-/* 帧类型 10 (原 DZ_FRAME_SYS_SCHED) 已废弃移除, 保留不复用 */
-/** @brief 事件通道预加载通知 (master->所有子进程, 无 instance_id) */
-#define DZ_FRAME_PRELOAD_EVENT_SHM  ((DzFrameType)11)
-/** @brief 行情数据通道预加载通知 (instance_id=行情源名, 如 "dzmd_ctp") */
-#define DZ_FRAME_PRELOAD_MD_SHM     ((DzFrameType)17)
 /** @brief 优雅关闭请求 (master->指定子进程, 定向, instance_id=目标进程名) */
-#define DZ_FRAME_REQUEST_SHUTDOWN   ((DzFrameType)12)
-/** @brief master→行情进程, 通知刷新 md 通道订阅者列表 (定向, instance_id=进程名) */
-#define DZ_FRAME_UPDATE_SHM_MD_SUBSCRIBER  ((DzFrameType)13)
-/** @brief 设置目标进程日志配置 (dzweb→目标进程, 定向, instance_id=目标进程名, 契约 log) */
-#define DZ_FRAME_SET_LOG_CONFIG     ((DzFrameType)14)
-/** @brief 触发目标进程日志 flush (dzweb→目标进程, 定向, instance_id=目标进程名, 契约 log) */
-#define DZ_FRAME_FLUSH_LOG         ((DzFrameType)15)
-/* 帧类型 20 (原 DZ_FRAME_REQUEST_SHUTDOWN_ALL) 已移除: 全项目无写入/消费端,
- * master 关停走定向 REQUEST_SHUTDOWN; 帧号保留不复用 */
-/** @brief 广播刷新 event 通道订阅者列表 (所有进程执行, 无需匹配 instance_id) */
-#define DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER  ((DzFrameType)21)
-/** @brief 设置事件通道配置 (UI->master, payload=ShmChannelConfig) */
-#define DZ_FRAME_SET_EVENT_SHM_CONFIG      ((DzFrameType)22)
-/** @brief 推送事件通道配置 (master->UI, payload=ShmChannelConfig) */
-#define DZ_FRAME_RTN_EVENT_SHM_CONFIG      ((DzFrameType)23)
-/** @brief 设置行情通道配置 (UI->md, payload=ShmChannelConfig) */
-#define DZ_FRAME_SET_MD_SHM_CONFIG         ((DzFrameType)24)
-/** @brief 推送行情通道配置 (md->UI, payload=ShmChannelConfig) */
-#define DZ_FRAME_RTN_MD_SHM_CONFIG         ((DzFrameType)25)
-/** @brief 进程上报当前日志配置（各进程→dzweb，经事件通道广播，契约 log） */
-#define DZ_FRAME_RTN_LOG_CONFIG  ((DzFrameType)16)
+#define DZ_FRAME_SHUTDOWN   ((DzFrameType)12)
 
 /* ── 行情帧 ── */
 
 /** @brief Tick 行情推送 */
-#define DZ_FRAME_RTN_MD_TICK            ((DzFrameType)1000)
+#define DZ_FRAME_TICK            ((DzFrameType)1000)
 
 /* ── 交易帧 ── */
 
 /** @brief 委托回报推送 */
-#define DZ_FRAME_TD_ORDER_RPT       ((DzFrameType)2000)
+#define DZ_FRAME_ORDER_REPORT     ((DzFrameType)2000)
 /** @brief 成交回报推送 */
-#define DZ_FRAME_TD_TRADE_RPT       ((DzFrameType)2001)
+#define DZ_FRAME_TRADE_REPORT     ((DzFrameType)2001)
 /** @brief 持仓变化推送 */
-#define DZ_FRAME_TD_POSITION_INFO   ((DzFrameType)2002)
+#define DZ_FRAME_POSITION_INFO    ((DzFrameType)2002)
 /** @brief 账户资金推送 */
-#define DZ_FRAME_TD_TRADING_ACCOUNT ((DzFrameType)2003)
-/** @brief 交易网关状态变化 */
-#define DZ_FRAME_TD_GATEWAY_STATUS  ((DzFrameType)2004)
+#define DZ_FRAME_TRADING_ACCOUNT  ((DzFrameType)2003)
+/* 帧类型 2004 (原 DZ_FRAME_TD_GATEWAY_STATUS) 已废弃移除:
+ * 无写端 (TD 网关实际状态上报走 DZ_FRAME_TD_RTN_STATUS=2104), 帧号保留不复用 */
 
 /* ── 策略帧 ── */
 
-/** @brief 用户输入传递给策略（UI→策略） */
-#define DZ_FRAME_STG_USER_INPUT     ((DzFrameType)3001)
-/** @brief 策略→UI 输出（dz_output_ui，契约 strategy） */
-#define DZ_FRAME_STG_USER_OUTPUT     ((DzFrameType)3002)
+/** @brief 来自 UI 的输入投递给策略（UI→策略，on_ui_input 回调，契约 strategy） */
+#define DZ_FRAME_UI_INPUT     ((DzFrameType)3001)
 /** @brief 策略调度触发（dz_schedule_*，契约 strategy）
  *  仅 SDK 本地合成、经 dz_next_event 返回, 不写入共享内存 */
-#define DZ_FRAME_STG_SCHEDULE      ((DzFrameType)3003)
+#define DZ_FRAME_SCHEDULE      ((DzFrameType)3003)
 
 #endif /* DZTRADER_DATA_TYPE_H_ */

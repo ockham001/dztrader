@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <dztrader/data_type.h>
+#include <dztrader/core/core_data_type.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/reader.h>

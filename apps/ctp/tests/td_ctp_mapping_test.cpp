@@ -488,25 +488,25 @@ TEST(ToTradeRecordTest, BuyCloseTodayMapping) {
 }
 
 // ============================================================================
-// to_dz_contract
+// to_dz_instrument
 // ============================================================================
 
-TEST(ToDzContractTest, Futures) {
+TEST(ToDzInstrumentInfoTest, Futures) {
     auto f = make_instrument_field();
-    auto c = to_dz_contract(f);
+    auto c = to_dz_instrument(f);
 
     EXPECT_STREQ(c.instrument_id, "IF2506");
     EXPECT_STREQ(c.exchange_id, "CFFEX");
     EXPECT_EQ(c.volume_multiple, 300);
     EXPECT_DOUBLE_EQ(c.price_tick, 0.2);
-    EXPECT_EQ(c.min_limit_order_volume, 1);
-    EXPECT_EQ(c.max_limit_order_volume, 500);
+    EXPECT_EQ(c.min_order_volume, 1);
+    EXPECT_EQ(c.max_order_volume, 500);
     EXPECT_EQ(c.option_type, 0);  // 非期权
     EXPECT_EQ(c.option_listed, parse_ctp_date("20260119"));  // OpenDate
     EXPECT_EQ(c.option_expiry, parse_ctp_date("20260619"));  // ExpireDate
 }
 
-TEST(ToDzContractTest, OptionCall) {
+TEST(ToDzInstrumentInfoTest, OptionCall) {
     auto f = make_instrument_field();
     std::strcpy(f.InstrumentID, "SR509C4800");
     std::strcpy(f.InstrumentName, "SR509C4800");
@@ -514,31 +514,31 @@ TEST(ToDzContractTest, OptionCall) {
     f.StrikePrice = 4800.0;
     std::strcpy(f.UnderlyingInstrID, "SR509");
 
-    auto c = to_dz_contract(f);
+    auto c = to_dz_instrument(f);
     EXPECT_STREQ(c.instrument_id, "SR509C4800");
     EXPECT_EQ(c.option_type, DZ_OPTION_CALL);  // 1
     EXPECT_DOUBLE_EQ(c.option_strike, 4800.0);
     EXPECT_STREQ(c.option_underlying, "SR509");
 }
 
-TEST(ToDzContractTest, OptionPut) {
+TEST(ToDzInstrumentInfoTest, OptionPut) {
     auto f = make_instrument_field();
     std::strcpy(f.InstrumentID, "SR509P4800");
     f.OptionsType = THOST_FTDC_CP_PutOptions;
     f.StrikePrice = 4800.0;
 
-    auto c = to_dz_contract(f);
+    auto c = to_dz_instrument(f);
     EXPECT_EQ(c.option_type, DZ_OPTION_PUT);  // -1
     EXPECT_DOUBLE_EQ(c.option_strike, 4800.0);
 }
 
-TEST(ToDzContractTest, EmptyDate) {
+TEST(ToDzInstrumentInfoTest, EmptyDate) {
     // CTP 字段为空时不应崩溃, 返回 -1
     auto f = make_instrument_field();
     std::strcpy(f.OpenDate, "");
     std::strcpy(f.ExpireDate, "");
 
-    auto c = to_dz_contract(f);
+    auto c = to_dz_instrument(f);
     EXPECT_EQ(c.option_listed, -1);
     EXPECT_EQ(c.option_expiry, -1);
 }

@@ -1,6 +1,7 @@
 #include "test_util.h"
 
 #include <cstring>
+#include <dztrader/core/core_data_type.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
@@ -96,12 +97,12 @@ TEST_F(WriteFrameTest, WriteExtFrameBinaryAligned) {
 
     const std::byte data[] = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
                               std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}};
-    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, "inst001", data, sizeof(data)));
+    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, "inst001", data, sizeof(data)));
 
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
     auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-    EXPECT_EQ(hdr->frame_type, DZ_FRAME_STG_USER_INPUT);
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_UI_INPUT);
     EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader) + sizeof(data));
 
     auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(static_cast<const std::byte*>(frame) +
@@ -122,12 +123,12 @@ TEST_F(WriteFrameTest, WriteExtFrameBinaryUnaligned) {
     Reader reader = Reader::create(meta, "stg.test");
 
     const std::byte data[] = {std::byte{0xAA}, std::byte{0xBB}, std::byte{0xCC}};
-    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, "inst002", data, sizeof(data)));
+    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, "inst002", data, sizeof(data)));
 
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
     auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-    EXPECT_EQ(hdr->frame_type, DZ_FRAME_STG_USER_INPUT);
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_UI_INPUT);
 
     uint32_t padded_size = (sizeof(data) + 7u) & ~7u;
     EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader) + padded_size);
@@ -152,12 +153,12 @@ TEST_F(WriteFrameTest, WriteExtFrameBinaryZeroSize) {
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
     Reader reader = Reader::create(meta, "stg.test");
 
-    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, "inst003", nullptr, 0));
+    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, "inst003", nullptr, 0));
 
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
     auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-    EXPECT_EQ(hdr->frame_type, DZ_FRAME_STG_USER_INPUT);
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_UI_INPUT);
     EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader));
 
     auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(static_cast<const std::byte*>(frame) +
@@ -173,12 +174,12 @@ TEST_F(WriteFrameTest, WriteExtFrameStringAligned) {
 
     const char* str = "hello!";
     uint32_t str_len = 6;
-    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, "inst004", to_bytes(str), str_len));
+    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, "inst004", to_bytes(str), str_len));
 
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
     auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-    EXPECT_EQ(hdr->frame_type, DZ_FRAME_STG_USER_INPUT);
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_UI_INPUT);
 
     uint32_t padded_size = (str_len + 7u) & ~7u;
     EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader) + padded_size);
@@ -200,7 +201,7 @@ TEST_F(WriteFrameTest, WriteExtFrameStringUnaligned) {
 
     const char* str = "abc";
     uint32_t str_len = 3;
-    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, "inst005", to_bytes(str), str_len));
+    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, "inst005", to_bytes(str), str_len));
 
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
@@ -225,7 +226,7 @@ TEST_F(WriteFrameTest, WriteExtFrameStdString) {
     Reader reader = Reader::create(meta, "stg.test");
 
     std::string msg = "test message from std::string";
-    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, "inst006", to_bytes(msg.c_str()),
+    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, "inst006", to_bytes(msg.c_str()),
                                        static_cast<uint32_t>(msg.size())));
 
     auto* frame = reader.next_frame();
@@ -248,7 +249,7 @@ TEST_F(WriteFrameTest, WriteExtFrameInstanceIdTruncation) {
 
     std::string long_id(100, 'X');
     const std::byte dummy = std::byte{0x42};
-    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, long_id.c_str(), &dummy, 1));
+    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, long_id.c_str(), &dummy, 1));
 
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
@@ -271,10 +272,10 @@ TEST_F(WriteFrameTest, WriteExtFrameMixedTypes) {
 
     const std::byte bin_data[] = {std::byte{0xDE}, std::byte{0xAD}};
     ASSERT_TRUE(
-        writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, "inst_bin", bin_data, sizeof(bin_data)));
+        writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, "inst_bin", bin_data, sizeof(bin_data)));
 
     const char* str = "payload text";
-    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, "inst_str", to_bytes(str), 12));
+    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, "inst_str", to_bytes(str), 12));
 
     auto* f1 = reader.next_frame();
     ASSERT_NE(f1, nullptr);
@@ -284,7 +285,7 @@ TEST_F(WriteFrameTest, WriteExtFrameMixedTypes) {
     auto* f2 = reader.next_frame();
     ASSERT_NE(f2, nullptr);
     auto* hdr2 = reinterpret_cast<const DzFrameHeader*>(f2);
-    EXPECT_EQ(hdr2->frame_type, DZ_FRAME_STG_USER_INPUT);
+    EXPECT_EQ(hdr2->frame_type, DZ_FRAME_UI_INPUT);
     auto* ext2 = reinterpret_cast<const DzExtInstFrameHeader*>(static_cast<const std::byte*>(f2) +
                                                            sizeof(DzFrameHeader));
     EXPECT_STREQ(ext2->instance_id, "inst_bin");
@@ -292,7 +293,7 @@ TEST_F(WriteFrameTest, WriteExtFrameMixedTypes) {
     auto* f3 = reader.next_frame();
     ASSERT_NE(f3, nullptr);
     auto* hdr3 = reinterpret_cast<const DzFrameHeader*>(f3);
-    EXPECT_EQ(hdr3->frame_type, DZ_FRAME_STG_USER_INPUT);
+    EXPECT_EQ(hdr3->frame_type, DZ_FRAME_UI_INPUT);
     auto* ext3 = reinterpret_cast<const DzExtInstFrameHeader*>(static_cast<const std::byte*>(f3) +
                                                            sizeof(DzFrameHeader));
     EXPECT_STREQ(ext3->instance_id, "inst_str");
@@ -309,7 +310,7 @@ TEST_F(WriteFrameTest, WriteExtFrameReservedZeroed) {
     Reader reader = Reader::create(meta, "stg.test");
 
     const std::byte dummy = std::byte{0x01};
-    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, "inst_res", &dummy, sizeof(dummy)));
+    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, "inst_res", &dummy, sizeof(dummy)));
 
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);

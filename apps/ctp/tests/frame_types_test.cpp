@@ -3,7 +3,7 @@
 #include <dztrader/core/core_data_type.h>
 
 TEST(FrameTypes, SystemFrames) {
-    EXPECT_EQ(DZ_FRAME_REQUEST_SHUTDOWN, static_cast<DzFrameType>(12));
+    EXPECT_EQ(DZ_FRAME_SHUTDOWN, static_cast<DzFrameType>(12));
     EXPECT_EQ(DZ_FRAME_UPDATE_SHM_MD_SUBSCRIBER, static_cast<DzFrameType>(13));
 }
 
@@ -37,8 +37,8 @@ TEST(FrameTypes, MdReaderRegisterFrames) {
 }
 
 TEST(FrameTypes, StgFrames) {
-    EXPECT_EQ(DZ_FRAME_STG_USER_INPUT, static_cast<DzFrameType>(3001));
-    EXPECT_EQ(DZ_FRAME_STG_USER_OUTPUT, static_cast<DzFrameType>(3002));
+    EXPECT_EQ(DZ_FRAME_UI_INPUT, static_cast<DzFrameType>(3001));
+    EXPECT_EQ(DZ_FRAME_OUTPUT_UI, static_cast<DzFrameType>(3002));
 }
 
 TEST(FrameTypes, LogicalPositionFrame) {
@@ -101,11 +101,24 @@ TEST(FrameTypes, ProgressFrame) {
 // 本文件 frame_types_test.cpp 由 md 侧 CMakeLists.txt 显式包含编译)
 // ============================================================================
 
+TEST(FrameTypes, TickFrame) {
+    // 行情数据帧 (1000)
+    EXPECT_EQ(DZ_FRAME_TICK, static_cast<DzFrameType>(1000));
+}
+
+TEST(FrameTypes, TdPushFrames) {
+    // 交易通用推送帧 (2000-2003, data_type.h)
+    EXPECT_EQ(DZ_FRAME_ORDER_REPORT,    static_cast<DzFrameType>(2000));
+    EXPECT_EQ(DZ_FRAME_TRADE_REPORT,    static_cast<DzFrameType>(2001));
+    EXPECT_EQ(DZ_FRAME_POSITION_INFO,   static_cast<DzFrameType>(2002));
+    EXPECT_EQ(DZ_FRAME_TRADING_ACCOUNT, static_cast<DzFrameType>(2003));
+}
+
 TEST(FrameTypes, TdBusinessFrames) {
     // 交易业务帧 (2005-2017)
     EXPECT_EQ(DZ_FRAME_TD_INSTRUMENT,          static_cast<DzFrameType>(2005));
     EXPECT_EQ(DZ_FRAME_TD_INSTRUMENT_STATUS,   static_cast<DzFrameType>(2006));
-    EXPECT_EQ(DZ_FRAME_TD_ERROR_RPT,           static_cast<DzFrameType>(2007));
+    EXPECT_EQ(DZ_FRAME_TD_ERROR_REPORT,        static_cast<DzFrameType>(2007));
     EXPECT_EQ(DZ_FRAME_TD_RISK_REJECT,         static_cast<DzFrameType>(2008));
     EXPECT_EQ(DZ_FRAME_TD_TRANSFER_REQ,        static_cast<DzFrameType>(2009));
     EXPECT_EQ(DZ_FRAME_TD_TRANSFER_RSP,       static_cast<DzFrameType>(2010));

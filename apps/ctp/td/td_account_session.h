@@ -169,10 +169,10 @@ private:
     /// 取消合约加载超时定时器 (I2)
     void cancel_instruments_load_timer();
 
-    /// 推 DzOrderReport 到 SHM (DZ_FRAME_TD_ORDER_RPT, 通用字段, 不含 CTP 特有).
+    /// 推 DzOrderReport 到 SHM (DZ_FRAME_ORDER_REPORT, 通用字段, 不含 CTP 特有).
     void write_order_rpt(const DzOrderReport& rpt);
 
-    /// 推 DzTradeReport 到 SHM (DZ_FRAME_TD_TRADE_RPT, 通用字段).
+    /// 推 DzTradeReport 到 SHM (DZ_FRAME_TRADE_REPORT, 通用字段).
     void write_trade_rpt(const DzTradeReport& rpt);
 
     /// C3: 推拒绝订单回报到 SHM (status=REJECTED), 让策略进程感知拒单.

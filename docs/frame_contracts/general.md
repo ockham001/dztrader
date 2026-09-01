@@ -47,8 +47,8 @@
 
 ## 3. 帧号（真相源：两个头文件，本契约不逐一列举）
 
-- 系统帧（含 SHM 维护、日志配置、SHM 配置、优雅退出）：`libs/strategy_api/include/dztrader/data_type.h`
-- UI/进程/行情控制/交易扩展帧：`libs/core/include/dztrader/core/core_data_type.h`
+- 策略可见帧（优雅退出、行情数据、交易推送、策略输入/调度）+ 基础类型：`libs/strategy_api/include/dztrader/data_type.h`
+- 其余平台帧（SHM 维护、日志配置、SHM 配置、填充/预加载、UI 通知、进程、行情控制、交易控制、策略上行输出）：`libs/core/include/dztrader/core/core_data_type.h`
 
 分段约定（分配规则）：
 
@@ -217,8 +217,8 @@
 ## 10. 本轮范围与遗留
 
 - 本目录当前覆盖事件通道的低频控制/配置/通知帧。
-- **已覆盖**：策略帧（`STG_USER_INPUT`/`STG_USER_OUTPUT`/`SET_LOGICAL_POSITION`，见《帧契约：策略》）。
-- **未覆盖**（后续独立契约，本目录暂不收录）：交易帧（除《帧契约：交易委托请求》已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ` 外，其余 2000-2114，TD 已实现大半）、行情/交易数据帧（`RTN_MD_TICK`、TD 推送 2000-2004，struct payload）。
+- **已覆盖**：策略帧（`UI_INPUT`/`OUTPUT_UI`/`SET_LOGICAL_POSITION`，见《帧契约：策略》）。
+- **未覆盖**（后续独立契约，本目录暂不收录）：交易帧（除《帧契约：交易委托请求》已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ` 外，其余 2000-2114，TD 已实现大半）、行情/交易数据帧（`TICK`、TD 推送 2000-2003，struct payload）。
 - `DZ_FRAME_SYS_SCHED`：帧类型 10 与 payload（`DzSysSched`）已于 2026-08 随"系统调度域废弃"**从公开头移除**（此前无任何进程消费，md 已于 2026-07 移除处理）；帧号 10 保留不复用。策略侧定时需求由 `dz_schedule_*` 定时器接口承担（见《帧契约：策略》）。
 
 ---

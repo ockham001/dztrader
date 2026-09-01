@@ -226,7 +226,7 @@ struct DzContext {
     void deliver_timer_frame(DzTimerId timer_id) {
         auto& slot = timer_frames[timer_frame_head];
         slot.header.frame_size = sizeof(DzFrameHeader) + sizeof(DzScheduleEvent);
-        slot.header.frame_type = DZ_FRAME_STG_SCHEDULE;
+        slot.header.frame_type = DZ_FRAME_SCHEDULE;
         slot.header.reserved[0] = 0;
         slot.header.reserved[1] = 0;
         slot.payload.timer_id = timer_id;

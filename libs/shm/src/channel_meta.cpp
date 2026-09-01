@@ -1,5 +1,6 @@
 #include <boost/interprocess/creation_tags.hpp>
 
+#include <dztrader/core/core_data_type.h>
 #include <algorithm>
 #include <boost/interprocess/containers/map.hpp>
 #include <boost/interprocess/containers/string.hpp>

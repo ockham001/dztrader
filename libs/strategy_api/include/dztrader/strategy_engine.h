@@ -9,18 +9,20 @@
  *   - 必选: on_start(DzContext*), on_tick(const DzTick&) -- concept 硬约束,
  *     拼写错误在接入处编译报错
  *   - 可选: on_stop(), on_trade_report(const DzTradeReport&),
- *     on_order_report(const DzOrderReport&), on_schedule(const DzScheduleEvent&),
- *     on_user_input(const DzUserInput&),
+ *     on_order_report(const DzOrderReport&),
+ *     on_position_info(const DzPositionInfo&),
+ *     on_trading_account(const DzTradingAccount&),
+ *     on_schedule(const DzScheduleEvent&), on_ui_input(const DzUiInput&),
  *     on_error(DzErrorCode, std::string_view) -- 编译期探测, 实现了才调用
- *   - 引擎不分发的事件帧 (持仓/资金/网关状态等 TD 查询回报 2002-2017)
- *     与非 tick 行情帧被静默忽略, 实现对应回调不会被调用
+ *   - 引擎不分发的事件帧 (TD 查询回报 2005-2017) 与非 tick 行情帧
+ *     被静默忽略, 实现对应回调不会被调用
  *
  * 异常语义:
  *   - on_start 抛异常 = 生命周期失败: 引擎报告错误、释放会话、返回
  *     DZ_EC_INTERNAL 退出 -- 半初始化策略不允许进入主循环响应行情
  *   - 其余回调抛异常: 引擎捕获后经 report_error 报告 (实现 on_error 则
  *     转发, 否则 stderr 诊断行), 进程继续运行
- *   - DZ_FRAME_REQUEST_SHUTDOWN 先置停止标志再调 on_stop, on_stop 为
+ *   - DZ_FRAME_SHUTDOWN 先置停止标志再调 on_stop, on_stop 为
  *     进程内最后一个用户回调; on_stop 抛异常不影响退出
  *
  * 线程模型 (api.h 句柄契约: SDK 非线程安全):
@@ -79,10 +81,18 @@ template <typename T>
 concept HasOnOrderReport = requires(T t, const DzOrderReport& rpt) { t.on_order_report(rpt); };
 
 template <typename T>
+concept HasOnPositionInfo = requires(T t, const DzPositionInfo& info) { t.on_position_info(info); };
+
+template <typename T>
+concept HasOnTradingAccount = requires(T t, const DzTradingAccount& account) {
+    t.on_trading_account(account);
+};
+
+template <typename T>
 concept HasOnSchedule = requires(T t, const DzScheduleEvent& ev) { t.on_schedule(ev); };
 
 template <typename T>
-concept HasOnUserInput = requires(T t, const DzUserInput& input) { t.on_user_input(input); };
+concept HasOnUiInput = requires(T t, const DzUiInput& input) { t.on_ui_input(input); };
 
 template <typename T>
 concept HasOnError =
@@ -143,7 +153,7 @@ bool payload_size_matches(const std::byte* frame) noexcept {
 
 template <typename StrategyT>
 void handle_md(StrategyT& strategy, const std::byte* frame) noexcept {
-    if (frame_header(frame).frame_type != DZ_FRAME_RTN_MD_TICK) [[likely]] {
+    if (frame_header(frame).frame_type != DZ_FRAME_TICK) [[likely]] {
         return;
     }
     if (!payload_size_matches<DzTick>(frame)) [[unlikely]] {
@@ -163,29 +173,43 @@ void handle_event(StrategyT& strategy, const std::byte* frame, bool& running) no
     const DzFrameType type = frame_header(frame).frame_type;
     try {
         switch (type) {
-            case DZ_FRAME_TD_TRADE_RPT:
+            case DZ_FRAME_TRADE_REPORT:
                 if constexpr (HasOnTradeReport<StrategyT>) {
                     if (payload_size_matches<DzTradeReport>(frame)) [[likely]] {
                         strategy.on_trade_report(frame_payload<DzTradeReport>(frame));
                     }
                 }
                 break;
-            case DZ_FRAME_TD_ORDER_RPT:
+            case DZ_FRAME_ORDER_REPORT:
                 if constexpr (HasOnOrderReport<StrategyT>) {
                     if (payload_size_matches<DzOrderReport>(frame)) [[likely]] {
                         strategy.on_order_report(frame_payload<DzOrderReport>(frame));
                     }
                 }
                 break;
-            case DZ_FRAME_STG_SCHEDULE:
+            case DZ_FRAME_POSITION_INFO:
+                if constexpr (HasOnPositionInfo<StrategyT>) {
+                    if (payload_size_matches<DzPositionInfo>(frame)) [[likely]] {
+                        strategy.on_position_info(frame_payload<DzPositionInfo>(frame));
+                    }
+                }
+                break;
+            case DZ_FRAME_TRADING_ACCOUNT:
+                if constexpr (HasOnTradingAccount<StrategyT>) {
+                    if (payload_size_matches<DzTradingAccount>(frame)) [[likely]] {
+                        strategy.on_trading_account(frame_payload<DzTradingAccount>(frame));
+                    }
+                }
+                break;
+            case DZ_FRAME_SCHEDULE:
                 if constexpr (HasOnSchedule<StrategyT>) {
                     if (payload_size_matches<DzScheduleEvent>(frame)) [[likely]] {
                         strategy.on_schedule(frame_payload<DzScheduleEvent>(frame));
                     }
                 }
                 break;
-            case DZ_FRAME_STG_USER_INPUT:
-                if constexpr (HasOnUserInput<StrategyT>) {
+            case DZ_FRAME_UI_INPUT:
+                if constexpr (HasOnUiInput<StrategyT>) {
                     // 变长 ext_inst 帧: DzFrameHeader + DzExtInstFrameHeader + 变长 payload,
                     // 无固定 payload_size 可校验, 按 ext 头 data_size 解析 (契约 strategy)
                     const auto& ext =
@@ -194,14 +218,14 @@ void handle_event(StrategyT& strategy, const std::byte* frame, bool& running) no
                     const auto* payload = static_cast<const char*>(
                         static_cast<const void*>(frame + sizeof(DzFrameHeader) +
                                                  sizeof(DzExtInstFrameHeader)));
-                    strategy.on_user_input(DzUserInput{
+                    strategy.on_ui_input(DzUiInput{
                         .instance_id = std::string_view(ext.instance_id),
                         .data = payload,
                         .data_size = ext.data_size,
                     });
                 }
                 break;
-            case DZ_FRAME_REQUEST_SHUTDOWN:
+            case DZ_FRAME_SHUTDOWN:
                 running = false;  // 先定格退出决策 (帧已被消费, 反序可能永久阻塞)
                 if constexpr (HasOnStop<StrategyT>) {
                     strategy.on_stop();
@@ -251,13 +275,15 @@ void pump_once(StrategyT& strategy, DzContext* ctx, bool& running) {
 /// 不带 [dzsdk] 诊断前缀 (该前缀专属 stderr 诊断 dz_diag)。
 template <typename StrategyT>
 void report_start() noexcept {
-    std::cout << std::format("strategy callbacks | stop={} trade={} order={} schedule={} "
-                             "input={} error={}\n",
+    std::cout << std::format("strategy callbacks | stop={} trade={} order={} position={} "
+                             "account={} schedule={} input={} error={}\n",
                              HasOnStop<StrategyT> ? "yes" : "no",
                              HasOnTradeReport<StrategyT> ? "yes" : "no",
                              HasOnOrderReport<StrategyT> ? "yes" : "no",
+                             HasOnPositionInfo<StrategyT> ? "yes" : "no",
+                             HasOnTradingAccount<StrategyT> ? "yes" : "no",
                              HasOnSchedule<StrategyT> ? "yes" : "no",
-                             HasOnUserInput<StrategyT> ? "yes" : "no",
+                             HasOnUiInput<StrategyT> ? "yes" : "no",
                              HasOnError<StrategyT> ? "yes" : "no");
     std::cout.flush();  // master 管道块缓冲: 显式排空, 保证自检行不滞留
 }
@@ -296,7 +322,7 @@ concept Strategy = requires(T t, DzContext* ctx, const DzTick& tick) {
     t.on_tick(tick);
 };
 
-/// 运行策略直至收到 DZ_FRAME_REQUEST_SHUTDOWN。
+/// 运行策略直至收到 DZ_FRAME_SHUTDOWN。
 /// 返回 0 = 正常退出; dz_init 失败返回其错误码; on_start 抛异常返回
 /// DZ_EC_INTERNAL (会话已释放, 带病初始化的策略不进入主循环)。
 template <Strategy StrategyT>

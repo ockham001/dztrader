@@ -107,7 +107,7 @@ void MdApi::run() {
             }
         }
         if (!running_) {
-            break;  // 收到 DZ_FRAME_REQUEST_SHUTDOWN, 不阻塞等待
+            break;  // 收到 DZ_FRAME_SHUTDOWN, 不阻塞等待
         }
         // 触发所有已到期的定时器(批次延迟、补订检查等)
         timer_queue_.tick();
@@ -362,7 +362,7 @@ void MdApi::handle_frame_inner(const std::byte* frame) {
                 handle_subscribe_req(view);
             }
             break;
-        case DZ_FRAME_REQUEST_SHUTDOWN:
+        case DZ_FRAME_SHUTDOWN:
             // 定向: 帧头 instance_id 已由前置网关确保 == name_
             if (is_addressed_to_me(view)) {
                 handle_shutdown();

@@ -24,9 +24,9 @@ TEST(TdStructTest, DzCommissionRateLayout) {
     static_assert(sizeof(DzCommissionRate) % 8 == 0);
 }
 
-TEST(TdStructTest, DzContractLayout) {
-    static_assert(alignof(DzContract) == 8);
-    static_assert(sizeof(DzContract) % 8 == 0);
+TEST(TdStructTest, DzInstrumentInfoLayout) {
+    static_assert(alignof(DzInstrumentInfo) == 8);
+    static_assert(sizeof(DzInstrumentInfo) % 8 == 0);
 }
 
 TEST(TdStructTest, DzInstrumentStatusLayout) {
@@ -59,8 +59,8 @@ TEST(TdStructTest, DzRiskRejectLayout) {
     static_assert(sizeof(DzRiskReject) % 8 == 0);
 }
 
-TEST(TdStructTest, DzContractFields) {
-    DzContract c{};
+TEST(TdStructTest, DzInstrumentInfoFields) {
+    DzInstrumentInfo c{};
     c.volume_multiple = 10;
     c.price_tick = 0.5;
     c.option_type = 1;  // CALL

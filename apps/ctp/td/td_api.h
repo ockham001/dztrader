@@ -62,7 +62,7 @@ const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& acc
 /// - 健康度广播 (per-account TdHealth 翻转检测)
 /// - 自动调度 (登录/登出时间表, 复用 trading_calendar)
 /// - 事件通道预加载 (被动, 响应 master 的 PRELOAD_EVENT_SHM 广播, 与 md 端一致)
-/// - 优雅退出 (信号 / REQUEST_SHUTDOWN 帧)
+/// - 优雅退出 (信号 / SHUTDOWN 帧)
 ///
 /// 线程模型 (设计 §1.2):
 /// - 主线程: run() 主循环, 处理帧/事件/定时器
@@ -108,7 +108,7 @@ public:
     ~TdApi();
 
     /// 主循环入口。首次调用时执行初始化 (started_ 标志), 之后循环处理帧/事件/定时器,
-    /// 直到收到 DZ_FRAME_REQUEST_SHUTDOWN / 外部信号 / 异常。阻塞调用。
+    /// 直到收到 DZ_FRAME_SHUTDOWN / 外部信号 / 异常。阻塞调用。
     void run();
 
     /// 设置 td 配置, 必须在 run() 前调用

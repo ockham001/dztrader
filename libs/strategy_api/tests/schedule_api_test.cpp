@@ -124,7 +124,7 @@ protected:
                     break;
                 }
                 const auto view = FrameView(static_cast<const std::byte*>(frame));
-                if (view.type() != DZ_FRAME_STG_SCHEDULE) {
+                if (view.type() != DZ_FRAME_SCHEDULE) {
                     continue;
                 }
                 const auto& ev = view.payload<DzScheduleEvent>();
@@ -299,16 +299,16 @@ TEST_F(ScheduleApiTest, UserFrameTakesPriorityOverBufferedTimerFrame) {
     dz_wait(ctx_);  // tick: 定时器帧合成进缓冲 (未领取)
 
     // 用户帧到达: 优先于已缓冲定时器帧返回
-    emit_ext_inst(DZ_FRAME_STG_USER_INPUT, dz_strategy_id(ctx_));
+    emit_ext_inst(DZ_FRAME_UI_INPUT, dz_strategy_id(ctx_));
     const void* frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_STG_USER_INPUT);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_UI_INPUT);
 
     // 通道空后服务计时器: 第二次调用返回定时器帧
     frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
     const auto view = FrameView(static_cast<const std::byte*>(frame));
-    EXPECT_EQ(view.type(), DZ_FRAME_STG_SCHEDULE);
+    EXPECT_EQ(view.type(), DZ_FRAME_SCHEDULE);
     EXPECT_EQ(view.payload<DzScheduleEvent>().timer_id, tid);
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
 }
@@ -320,20 +320,20 @@ TEST_F(ScheduleApiTest, InternalFramesInterceptedAndCappedAt32) {
     for (int i = 0; i < 5; ++i) {
         emit_ext(DZ_FRAME_QUERY_FULL_SNAPSHOT);
     }
-    emit_ext_inst(DZ_FRAME_STG_USER_INPUT, dz_strategy_id(ctx_));
+    emit_ext_inst(DZ_FRAME_UI_INPUT, dz_strategy_id(ctx_));
     const void* frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_STG_USER_INPUT);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_UI_INPUT);
 
     // 33 内部 + 1 用户: 首次调用最多消费 32 条内部帧后返回 NULL, 第二次拿到用户帧
     for (int i = 0; i < 33; ++i) {
         emit_ext(DZ_FRAME_QUERY_FULL_SNAPSHOT);
     }
-    emit_ext_inst(DZ_FRAME_STG_USER_INPUT, dz_strategy_id(ctx_));
+    emit_ext_inst(DZ_FRAME_UI_INPUT, dz_strategy_id(ctx_));
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
     frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_STG_USER_INPUT);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_UI_INPUT);
 }
 
 // ── TD 回报按 strategy_id 定向过滤 ──
@@ -341,10 +341,10 @@ TEST_F(ScheduleApiTest, InternalFramesInterceptedAndCappedAt32) {
 TEST_F(ScheduleApiTest, OwnOrderReportDelivered) {
     DzOrderReport rpt{};
     dztrader::copy_string(rpt.strategy_id, dz_strategy_id(ctx_), true);
-    emit_struct(DZ_FRAME_TD_ORDER_RPT, rpt);
+    emit_struct(DZ_FRAME_ORDER_REPORT, rpt);
     const void* frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_TD_ORDER_RPT);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_ORDER_REPORT);
     const auto& got = FrameView(static_cast<const std::byte*>(frame)).payload<DzOrderReport>();
     EXPECT_EQ(std::string_view(got.strategy_id), std::string_view(dz_strategy_id(ctx_)));
 }
@@ -352,23 +352,23 @@ TEST_F(ScheduleApiTest, OwnOrderReportDelivered) {
 TEST_F(ScheduleApiTest, OtherStrategyOrderReportIntercepted) {
     DzOrderReport rpt{};
     dztrader::copy_string(rpt.strategy_id, "other_strategy", true);
-    emit_struct(DZ_FRAME_TD_ORDER_RPT, rpt);
+    emit_struct(DZ_FRAME_ORDER_REPORT, rpt);
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
 }
 
 TEST_F(ScheduleApiTest, EmptyStrategyOrderReportIntercepted) {
     DzOrderReport rpt{};  // strategy_id 空 (外部单/手工单)
-    emit_struct(DZ_FRAME_TD_ORDER_RPT, rpt);
+    emit_struct(DZ_FRAME_ORDER_REPORT, rpt);
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
 }
 
 TEST_F(ScheduleApiTest, OwnTradeReportDelivered) {
     DzTradeReport rpt{};
     dztrader::copy_string(rpt.strategy_id, dz_strategy_id(ctx_), true);
-    emit_struct(DZ_FRAME_TD_TRADE_RPT, rpt);
+    emit_struct(DZ_FRAME_TRADE_REPORT, rpt);
     const void* frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_TD_TRADE_RPT);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_TRADE_REPORT);
     const auto& got = FrameView(static_cast<const std::byte*>(frame)).payload<DzTradeReport>();
     EXPECT_EQ(std::string_view(got.strategy_id), std::string_view(dz_strategy_id(ctx_)));
 }
@@ -376,18 +376,18 @@ TEST_F(ScheduleApiTest, OwnTradeReportDelivered) {
 TEST_F(ScheduleApiTest, OtherStrategyTradeReportIntercepted) {
     DzTradeReport rpt{};
     dztrader::copy_string(rpt.strategy_id, "other_strategy", true);
-    emit_struct(DZ_FRAME_TD_TRADE_RPT, rpt);
+    emit_struct(DZ_FRAME_TRADE_REPORT, rpt);
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
 }
 
 TEST_F(ScheduleApiTest, EmptyStrategyTradeReportIntercepted) {
     DzTradeReport rpt{};  // strategy_id 空 (外部单/手工单)
-    emit_struct(DZ_FRAME_TD_TRADE_RPT, rpt);
+    emit_struct(DZ_FRAME_TRADE_REPORT, rpt);
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
 }
 
 TEST_F(ScheduleApiTest, OtherInstanceUserInputIntercepted) {
-    emit_ext_inst(DZ_FRAME_STG_USER_INPUT, "other_strategy");
+    emit_ext_inst(DZ_FRAME_UI_INPUT, "other_strategy");
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
 }
 
@@ -417,12 +417,11 @@ TEST_P(TdUnfilteredFramesTest, StillDelivered) {
 INSTANTIATE_TEST_SUITE_P(
     TdUnfiltered, TdUnfilteredFramesTest,
     ::testing::Values(
-        TdUnfilteredFrameParam{DZ_FRAME_TD_POSITION_INFO, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_TRADING_ACCOUNT, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_GATEWAY_STATUS, false},
+        TdUnfilteredFrameParam{DZ_FRAME_POSITION_INFO, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TRADING_ACCOUNT, false},
         TdUnfilteredFrameParam{DZ_FRAME_TD_INSTRUMENT, false},
         TdUnfilteredFrameParam{DZ_FRAME_TD_INSTRUMENT_STATUS, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_ERROR_RPT, false},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_ERROR_REPORT, false},
         TdUnfilteredFrameParam{DZ_FRAME_TD_RISK_REJECT, false},
         TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_REQ, false},
         TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_RSP, false},
@@ -440,11 +439,11 @@ INSTANTIATE_TEST_SUITE_P(
 // ── 截断帧防御: frame_size 不足 payload 的 TD 回报被拦截而非越界读 ──
 
 TEST_F(ScheduleApiTest, TruncatedOrderReportIntercepted) {
-    // 用 open_frame 手动构造 payload 过短的 TD_ORDER_RPT 帧 (frame_size < 完整 DzOrderReport)
+    // 用 open_frame 手动构造 payload 过短的 ORDER_REPORT 帧 (frame_size < 完整 DzOrderReport)
     static_assert(sizeof(DzOrderReport) > 8);
     MultiWriter writer = MultiWriter::create(open_event_meta(), "schedule_test_writer");
     constexpr uint32_t kTruncatedPayload = 8;  // frame_size = 8 + header < sizeof(DzOrderReport)
-    std::byte* raw = writer.open_frame(DZ_FRAME_TD_ORDER_RPT, kTruncatedPayload);
+    std::byte* raw = writer.open_frame(DZ_FRAME_ORDER_REPORT, kTruncatedPayload);
     ASSERT_NE(raw, nullptr);
     writer.close_frame();
     writer.notify_subscribers();
@@ -455,22 +454,22 @@ TEST_F(ScheduleApiTest, TruncatedOrderReportIntercepted) {
 // ── 他策略回报洪峰 + 32 上限让位: 本策略回报仍可取到 ──
 
 TEST_F(ScheduleApiTest, OtherStrategyReportFloodYieldsThenOwnDelivered) {
-    // 33 条他策略 ORDER_RPT (被拦截) + 1 条本策略 ORDER_RPT
+    // 33 条他策略 ORDER_REPORT (被拦截) + 1 条本策略 ORDER_REPORT
     for (int i = 0; i < 33; ++i) {
         DzOrderReport rpt{};
         dztrader::copy_string(rpt.strategy_id, "other_strategy", true);
-        emit_struct(DZ_FRAME_TD_ORDER_RPT, rpt);
+        emit_struct(DZ_FRAME_ORDER_REPORT, rpt);
     }
     DzOrderReport own{};
     dztrader::copy_string(own.strategy_id, dz_strategy_id(ctx_), true);
-    emit_struct(DZ_FRAME_TD_ORDER_RPT, own);
+    emit_struct(DZ_FRAME_ORDER_REPORT, own);
 
     // 首次调用: 最多消费 32 条被拦截帧后让位, 返回 NULL (定时器帧由 32 让位逻辑返回)
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
     // 第二次调用: 消费剩余被拦截帧后放行本策略回报
     const void* frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_TD_ORDER_RPT);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_ORDER_REPORT);
     const auto& got = FrameView(static_cast<const std::byte*>(frame)).payload<DzOrderReport>();
     EXPECT_EQ(std::string_view(got.strategy_id), std::string_view(dz_strategy_id(ctx_)));
 }
@@ -486,13 +485,13 @@ TEST_F(ScheduleApiTest, ShutdownFrameDirectedOwnInstanceDeliveredAfterCleanup) {
     ASSERT_NE(tid, DZ_TIMER_INVALID);
 
     // 依次写: 非本策略定向 SHUTDOWN + 本策略定向 SHUTDOWN
-    emit_ext_inst(DZ_FRAME_REQUEST_SHUTDOWN, "other_strategy");
-    emit_ext_inst(DZ_FRAME_REQUEST_SHUTDOWN, dz_strategy_id(ctx_));
+    emit_ext_inst(DZ_FRAME_SHUTDOWN, "other_strategy");
+    emit_ext_inst(DZ_FRAME_SHUTDOWN, dz_strategy_id(ctx_));
 
     // 一次 dz_next_event: other 被拦截, own 内部清理后放行
     const void* frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_REQUEST_SHUTDOWN);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_SHUTDOWN);
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
 
     // 用户定时器不受清理影响: 仍周期触发
@@ -538,7 +537,7 @@ TEST_F(ScheduleApiTest, TimerBurstBeyondBufferIsNotLost) {
                 break;
             }
             const auto view = FrameView(static_cast<const std::byte*>(frame));
-            if (view.type() != DZ_FRAME_STG_SCHEDULE) {
+            if (view.type() != DZ_FRAME_SCHEDULE) {
                 continue;
             }
             const auto& ev = view.payload<DzScheduleEvent>();

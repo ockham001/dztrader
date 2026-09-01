@@ -113,7 +113,7 @@ const char* direction_name(DzDirection direction) {
 // basic 帧 payload 紧跟 DzFrameHeader; 非目标帧类型返回 nullptr
 const DzOrderReport* as_order_report(const void* frame) {
     const auto* hdr = static_cast<const DzFrameHeader*>(frame);
-    if (hdr->frame_type != DZ_FRAME_TD_ORDER_RPT) {
+    if (hdr->frame_type != DZ_FRAME_ORDER_REPORT) {
         return nullptr;
     }
     return reinterpret_cast<const DzOrderReport*>(reinterpret_cast<const std::byte*>(hdr) +
@@ -122,7 +122,7 @@ const DzOrderReport* as_order_report(const void* frame) {
 
 const DzTick* as_md_tick(const void* frame) {
     const auto* hdr = static_cast<const DzFrameHeader*>(frame);
-    if (hdr->frame_type != DZ_FRAME_RTN_MD_TICK) {
+    if (hdr->frame_type != DZ_FRAME_TICK) {
         return nullptr;
     }
     return reinterpret_cast<const DzTick*>(reinterpret_cast<const std::byte*>(hdr) +
@@ -249,7 +249,7 @@ int cmd_order(DzContext* ctx, int argc, char** argv) {
                           order_id, account, instrument, direction_name(direction), price, volume)
                   .c_str());
 
-    // 等待本订单回报 (td 广播 TD_ORDER_RPT, 按 order_id 过滤)
+    // 等待本订单回报 (td 广播 ORDER_REPORT, 按 order_id 过滤)
     const auto deadline = std::chrono::steady_clock::now() + kOrderWait;
     const DzTimerId poll_timer = dz_schedule_every(ctx, static_cast<int32_t>(kPollStepMs));
     if (poll_timer == DZ_TIMER_INVALID) {

@@ -52,7 +52,7 @@ public:
     /// 并行启动所有已注册的进程。
     void start_all();
 
-    /// 关闭所有子进程：逆序分批定向 REQUEST_SHUTDOWN → 批超时强制终止 → 进入下一批，全部退出后触发完成回调。
+    /// 关闭所有子进程：逆序分批定向 SHUTDOWN → 批超时强制终止 → 进入下一批，全部退出后触发完成回调。
     /// 幂等：可安全多次调用。
     void shutdown();
 
@@ -184,7 +184,7 @@ private:
                                  const boost::system::error_code& ec,
                                  const std::string& name);
 
-    /// 向当前批次全部成员定向发送 REQUEST_SHUTDOWN; 批次已全停止则推进下一批
+    /// 向当前批次全部成员定向发送 SHUTDOWN; 批次已全停止则推进下一批
     void send_current_shutdown_batch();
 
     /// 当前批次超时: 强制终止仍在运行的批次成员 (退出回调随后推进批次)

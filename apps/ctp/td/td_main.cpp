@@ -160,7 +160,7 @@ int main(int argc, char* argv[]) {
     while (true) {
         try {
             api->run();
-            // run 返回后: 若是信号触发的退出则正常结束, 否则 (收到 DZ_FRAME_REQUEST_SHUTDOWN) 也结束
+            // run 返回后: 若是信号触发的退出则正常结束, 否则 (收到 DZ_FRAME_SHUTDOWN) 也结束
             if (g_shutdown_requested.load(std::memory_order_relaxed)) {
                 SPDLOG_INFO("shutdown requested by signal");
             }

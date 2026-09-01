@@ -230,7 +230,7 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
         instrument_exchange_map_[f.instrument->InstrumentID] = f.instrument->ExchangeID;
         // I6: 推 DZ_FRAME_TD_INSTRUMENT SHM 帧, 让策略进程拿到合约信息 (price_tick/乘数/期权字段)
         try {
-            DzContract contract = to_dz_contract(*f.instrument);
+            DzInstrumentInfo contract = to_dz_instrument(*f.instrument);
             platform::write_struct(event_writer_, DZ_FRAME_TD_INSTRUMENT, contract);
             // 持久化合约信息 (供审计/复盘)
             // update_day[9]: "YYYYMMDD" 文本 (从 DzDate 距纪元天数转换)
@@ -632,13 +632,13 @@ void AccountSession::cancel_instruments_load_timer() {
 // ============================================================================
 
 void AccountSession::write_order_rpt(const DzOrderReport& rpt) {
-    // DZ_FRAME_TD_ORDER_RPT (2000), payload=DzOrderReport 通用字段
-    platform::write_struct(event_writer_, DZ_FRAME_TD_ORDER_RPT, rpt);
+    // DZ_FRAME_ORDER_REPORT (2000), payload=DzOrderReport 通用字段
+    platform::write_struct(event_writer_, DZ_FRAME_ORDER_REPORT, rpt);
 }
 
 void AccountSession::write_trade_rpt(const DzTradeReport& rpt) {
-    // DZ_FRAME_TD_TRADE_RPT (2001), payload=DzTradeReport 通用字段
-    platform::write_struct(event_writer_, DZ_FRAME_TD_TRADE_RPT, rpt);
+    // DZ_FRAME_TRADE_REPORT (2001), payload=DzTradeReport 通用字段
+    platform::write_struct(event_writer_, DZ_FRAME_TRADE_REPORT, rpt);
 }
 
 void AccountSession::reject_order(const DzOrderReq& req, const std::string& reason) {

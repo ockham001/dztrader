@@ -4,7 +4,7 @@
  *
  * 流程: 临时 DZTRADER_HOME -> spawn 真实 dztraderd.exe -> master 拉起行情/交易网关 + dzweb + 策略 stg_demo
  *       -> 事件通道帧回路断言 + dzweb /health HTTP 探测 + 空账户拒单闭环 (stg_demo order 退出码 3)
- *       -> 定向 REQUEST_SHUTDOWN (md/td/webui) -> 各进程 Stopped -> 终止 master -> 清理。
+ *       -> 定向 SHUTDOWN (md/td/webui) -> 各进程 Stopped -> 终止 master -> 清理。
  *
  * 注意:
  * - Windows NamedSemaphore 为机器全局命名空间 ("dz.sem.<name>"), 与并行测试/dev 栈互扰,
@@ -153,17 +153,17 @@ bool frame_has_inst(DzFrameType t) {
 }
 
 /// basic 帧 (定长结构体 payload 紧跟 DzFrameHeader, 无 ext 头): 无法按 JSON 解析。
-/// 策略/交易链路会在事件通道产生此类帧 (TD_ORDER_REQ=2100 / TD_ORDER_RPT=2000),
+/// 策略/交易链路会在事件通道产生此类帧 (TD_ORDER_REQ=2100 / ORDER_REPORT=2000),
 /// 混在 ext 帧里, drain 时只记摘要跳过 payload 解析。
 bool frame_is_basic_struct(DzFrameType t) {
     switch (t) {
         case DZ_FRAME_TD_ORDER_REQ:
         case DZ_FRAME_TD_ORDER_CANCEL_REQ:
-        case DZ_FRAME_TD_ORDER_RPT:
-        case DZ_FRAME_TD_TRADE_RPT:
-        case DZ_FRAME_TD_POSITION_INFO:
-        case DZ_FRAME_TD_TRADING_ACCOUNT:
-        case DZ_FRAME_RTN_MD_TICK:
+        case DZ_FRAME_ORDER_REPORT:
+        case DZ_FRAME_TRADE_REPORT:
+        case DZ_FRAME_POSITION_INFO:
+        case DZ_FRAME_TRADING_ACCOUNT:
+        case DZ_FRAME_TICK:
             return true;
         default:
             return false;
@@ -617,7 +617,7 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     const bool healthy = wait_until([&] { return http_get_health(); }, 30000, [] {});
     ASSERT_TRUE(healthy) << "dzweb /health not 200 within 30s (port=" << webui_port_ << ")";
 
-    // 4. 定向 REQUEST_SHUTDOWN -> 全部子进程退出, master 推 Stopped (优雅退出路径)
+    // 4. 定向 SHUTDOWN -> 全部子进程退出, master 推 Stopped (优雅退出路径)
     //    与 master 整体关闭同原语 (逆序逐批定向发送, 广播全员关闭帧不采用):
     //    触发帧 = 定向 SHUTDOWN (dzmd_ctp/dztd_ctp/dzweb) + QUERY_FULL_SNAPSHOT:
     //    快照让 master 重推每个注册进程的当前状态 (已退出进程回 Stopped),
@@ -626,7 +626,7 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     auto send_shutdown_and_snapshot = [&] {
         writer_->refresh_subscribers();  // 防过期订阅者快照漏唤醒
         for (const char* target : {"dzmd_ctp", "dztd_ctp", "dzweb"}) {
-            platform::write_ext_inst_raw(*writer_, DZ_FRAME_REQUEST_SHUTDOWN, target);
+            platform::write_ext_inst_raw(*writer_, DZ_FRAME_SHUTDOWN, target);
         }
         if (writer_->write_ext_frame(DZ_FRAME_QUERY_FULL_SNAPSHOT, nullptr, 0)) {
             writer_->notify_subscribers();
@@ -643,13 +643,13 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     };
     const bool md_stopped = wait_until([&] { return saw_stopped("dzmd_ctp"); }, 15000,
                                        send_shutdown_and_snapshot);
-    ASSERT_TRUE(md_stopped) << "dzmd_ctp did not stop within 15s after directed REQUEST_SHUTDOWN";
+    ASSERT_TRUE(md_stopped) << "dzmd_ctp did not stop within 15s after directed SHUTDOWN";
     const bool td_stopped = wait_until([&] { return saw_stopped("dztd_ctp"); }, 15000,
                                        send_shutdown_and_snapshot);
-    ASSERT_TRUE(td_stopped) << "dztd_ctp did not stop within 15s after directed REQUEST_SHUTDOWN";
+    ASSERT_TRUE(td_stopped) << "dztd_ctp did not stop within 15s after directed SHUTDOWN";
     const bool webui_stopped = wait_until([&] { return saw_stopped("dzweb"); }, 15000,
                                           send_shutdown_and_snapshot);
-    ASSERT_TRUE(webui_stopped) << "dzweb did not stop within 15s after directed REQUEST_SHUTDOWN";
+    ASSERT_TRUE(webui_stopped) << "dzweb did not stop within 15s after directed SHUTDOWN";
 
     // 5. 终止 master (master 常驻无自退出协议, 与 run-dev -Stop 同策略: 强杀)
     //    双轨判定: ChildProcess 状态回调 + 进程级 liveness (async_wait 在外部强杀后不触发)

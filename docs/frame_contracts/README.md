@@ -10,7 +10,7 @@
 | [log](log.md) | 日志 | `SET_LOG_CONFIG`/`FLUSH_LOG`/`RTN_LOG_CONFIG` | `libs/platform/.../log_config.h` |
 | [shm](shm.md) | SHM 通道配置 | `SET/RTN_EVENT_SHM_CONFIG`、`SET/RTN_MD_SHM_CONFIG`、`PRELOAD_EVENT/MD_SHM`、`UPDATE_SHM_EVENT/MD_SUBSCRIBER`、`REQUEST/RTN_MD_READER_REGISTER`、`REQUEST/RTN_MD_READER_UNREGISTER` | `libs/platform/.../shm_config.h` |
 | [notify-ui](notify-ui.md) | UI 通知 | `NOTIFY_UI` | `libs/platform/.../notify_ui.h` |
-| [process](process.md) | 进程 | `REQUEST_PROCESS_CONTROL`、`RTN_PROCESS_STATUS`、`SET/RTN_PROCESS_CONFIG`、`REQUEST_SHUTDOWN` | `libs/platform/.../process.h` |
+| [process](process.md) | 进程 | `REQUEST_PROCESS_CONTROL`、`RTN_PROCESS_STATUS`、`SET/RTN_PROCESS_CONFIG`、`SHUTDOWN` | `libs/platform/.../process.h` |
 | [auto-login](auto-login.md) | 自动登录/登出排程 | `SET/RTN_AUTO_LOGIN` | `libs/platform/.../auto_login.h` |
 | [progress](progress.md) | 进度推送 | `RTN_PROGRESS` | `libs/platform/.../progress.h` |
 | [md-subscription](md-subscription.md) | 行情连接与订阅 | `REQUEST_MD_CONNECT/DISCONNECT`、`REQUEST_MD_SUBSCRIBE`、`QUERY/RTN_MD_SUBSCRIPTIONS`、`NOTIFY_MD_STARTED/STOPPED` | `libs/platform/.../subscription_manager.h`、`libs/core/.../core_struct.h` |
@@ -19,7 +19,7 @@
 | [webui-ws](webui-ws.md) | WebSocket 协议 | frontend ↔ dzweb 的 WS 信封、消息全集、前端行为义务 | `apps/webui/ws_controller.*` |
 | [rest](rest.md) | REST API | frontend ↔ dzweb 的 REST 端点与帧联动 | `apps/webui/*_controller.h` |
 | [td-order](td-order.md) | 交易委托请求 | `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ` | `libs/core/.../core_struct.h` |
-| [strategy](strategy.md) | 策略帧 | `STG_USER_INPUT`/`STG_USER_OUTPUT`/`SET_LOGICAL_POSITION` | `libs/core/.../core_struct.h` |
+| [strategy](strategy.md) | 策略帧 | `UI_INPUT`/`OUTPUT_UI`/`SET_LOGICAL_POSITION` | `libs/core/.../core_struct.h` |
 
 ## 阅读顺序
 
@@ -37,8 +37,8 @@
 ## 范围与遗留
 
 - 本目录覆盖事件通道的低频控制/配置/通知帧。
-- 策略帧契约已收录（见 [strategy](strategy.md)）；`STG_USER_OUTPUT`/`SET_LOGICAL_POSITION` 的 dzweb 消费与 WS/REST 映射未接线（契约定义语义，实现滞后由 general §11.3 checklist 跟踪）。
-- **未覆盖**（后续独立契约）：交易帧（除契约 td-order 已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ` 外，其余 2000-2114）、行情/交易数据帧（`RTN_MD_TICK`、TD 推送 2000-2004）、`SYS_SCHED`（帧类型保留未用，见 general §10）。
+- 策略帧契约已收录（见 [strategy](strategy.md)）；`OUTPUT_UI`/`SET_LOGICAL_POSITION` 的 dzweb 消费与 WS/REST 映射未接线（契约定义语义，实现滞后由 general §11.3 checklist 跟踪）。
+- **未覆盖**（后续独立契约）：交易帧（除契约 td-order 已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ` 外，其余 2000-2114）、行情/交易数据帧（`TICK`、TD 推送 2000-2003）、`SYS_SCHED`（帧类型保留未用，见 general §10）。
 
 ## 变更流程
 

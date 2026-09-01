@@ -159,7 +159,7 @@ void TdApi::run() {
             }
         }
         if (!running_) {
-            break;  // 收到 DZ_FRAME_REQUEST_SHUTDOWN, 不阻塞等待
+            break;  // 收到 DZ_FRAME_SHUTDOWN, 不阻塞等待
         }
         // 触发所有已到期的定时器 (自动调度 / SHM 维护 / 连接超时等)
         timer_queue_.tick();
@@ -293,7 +293,7 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
             }
             return;
         }
-        case DZ_FRAME_REQUEST_SHUTDOWN: {
+        case DZ_FRAME_SHUTDOWN: {
             // 定向: instance_id == name_, 触发优雅退出
             handle_shutdown();
             return;
@@ -675,7 +675,7 @@ void TdApi::on_order_req(const shm::FrameView& view) {
         rpt.volume = req.volume;
         rpt.volume_traded = 0;
         copy_string(rpt.remark, "账户未连接", true);
-        platform::write_struct(event_writer_, DZ_FRAME_TD_ORDER_RPT, rpt);
+        platform::write_struct(event_writer_, DZ_FRAME_ORDER_REPORT, rpt);
         return;
     }
     try {

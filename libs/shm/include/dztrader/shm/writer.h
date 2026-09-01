@@ -7,6 +7,7 @@
 #include <memory>
 #include <type_traits>
 
+#include <dztrader/core/core_data_type.h>
 #include <dztrader/core/exception.h>
 #include <dztrader/core/last_error.h>
 #include <dztrader/error.h>

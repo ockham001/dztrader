@@ -364,11 +364,11 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
 }
 
 // ============================================================================
-// to_dz_contract: CTP InstrumentField -> DzContract
+// to_dz_instrument: CTP InstrumentField -> DzInstrumentInfo
 // ============================================================================
 
-DzContract to_dz_contract(const CThostFtdcInstrumentField& f) noexcept {
-    DzContract c{};
+DzInstrumentInfo to_dz_instrument(const CThostFtdcInstrumentField& f) noexcept {
+    DzInstrumentInfo c{};
 
     copy_to_dz(c.instrument_id, f.InstrumentID);
     copy_to_dz(c.exchange_id, f.ExchangeID);
@@ -376,7 +376,7 @@ DzContract to_dz_contract(const CThostFtdcInstrumentField& f) noexcept {
     copy_to_dz(c.name, f.InstrumentName);
 
     // 产品类型: CTP ProductClass -> DZ product (int8_t 标记)
-    // 'F'=期货, 'O'=期权, 'S'=组合 (与 DzContract 注释一致)
+    // 'F'=期货, 'O'=期权, 'S'=组合 (与 DzInstrumentInfo 注释一致)
     switch (f.ProductClass) {
         case THOST_FTDC_PC_Futures:     c.product = 'F'; break;
         case THOST_FTDC_PC_Options:     c.product = 'O'; break;
@@ -386,8 +386,8 @@ DzContract to_dz_contract(const CThostFtdcInstrumentField& f) noexcept {
 
     c.volume_multiple = f.VolumeMultiple;
     c.price_tick = f.PriceTick;
-    c.min_limit_order_volume = f.MinLimitOrderVolume;
-    c.max_limit_order_volume = f.MaxLimitOrderVolume;
+    c.min_order_volume = f.MinLimitOrderVolume;
+    c.max_order_volume = f.MaxLimitOrderVolume;
 
     // 期权字段
     switch (f.OptionsType) {

@@ -258,7 +258,7 @@ TEST_F(ProcessSupervisorTest, ShutdownStopsAllChildrenSequentially) {
     supervisor.shutdown();
     EXPECT_TRUE(supervisor.is_shutting_down());
 
-    // worker 不读事件通道 -> REQUEST_SHUTDOWN 无效, 依赖批超时强制终止
+    // worker 不读事件通道 -> SHUTDOWN 无效, 依赖批超时强制终止
     // (single_stop_timeout_sec 默认 3s), 全部退出后 children 清空
     ioc_.restart();
     ioc_.run_for(std::chrono::seconds(10));
@@ -286,7 +286,7 @@ TEST_F(ProcessSupervisorTest, ShutdownStopsAllCategoriesSequentially) {
     supervisor.shutdown();
     EXPECT_TRUE(supervisor.is_shutting_down());
 
-    // worker 不读事件通道 -> REQUEST_SHUTDOWN 无效, 依赖各批超时强制终止
+    // worker 不读事件通道 -> SHUTDOWN 无效, 依赖各批超时强制终止
     ioc_.restart();
     ioc_.run_for(std::chrono::seconds(12));
     EXPECT_EQ(supervisor.children().size(), 0u);

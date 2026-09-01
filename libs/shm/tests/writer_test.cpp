@@ -3,6 +3,7 @@
 #include <cstring>
 #include <string_view>
 #include <vector>
+#include <dztrader/core/core_data_type.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/reader.h>
@@ -56,7 +57,7 @@ TEST_F(WriterTest, SingleWriterWriteSingleFrame) {
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
 
     constexpr uint32_t data_size = 56;
-    std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, data_size);
+    std::byte* payload = writer.open_frame(DZ_FRAME_TICK, data_size);
     ASSERT_NE(payload, nullptr);
     std::memset(payload, 0xAB, data_size);
     writer.close_frame();
@@ -70,7 +71,7 @@ TEST_F(WriterTest, MultiWriterWriteSingleFrame) {
     MultiWriter writer = MultiWriter::create(meta, "gw.test");
 
     constexpr uint32_t data_size = 56;
-    std::byte* payload = writer.open_frame(DZ_FRAME_TD_ORDER_RPT, data_size);
+    std::byte* payload = writer.open_frame(DZ_FRAME_ORDER_REPORT, data_size);
     ASSERT_NE(payload, nullptr);
     std::memset(payload, 0xAB, data_size);
     writer.close_frame();
@@ -86,7 +87,7 @@ TEST_F(WriterTest, SingleWriterWriteMultipleFrames) {
     constexpr uint32_t data_size = 56;
     constexpr int num_frames = 10;
     for (int i = 0; i < num_frames; i++) {
-        std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, data_size);
+        std::byte* payload = writer.open_frame(DZ_FRAME_TICK, data_size);
         ASSERT_NE(payload, nullptr);
         std::memset(payload, 0xAB, data_size);
         writer.close_frame();
@@ -105,7 +106,7 @@ TEST_F(WriterTest, SingleWriterCrossPageBoundary) {
     int frames_written = 0;
     uint64_t page_size = 1 * MB;
     while (meta->next_write_pos()->load() <= page_size) {
-        std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, data_size);
+        std::byte* payload = writer.open_frame(DZ_FRAME_TICK, data_size);
         if (!payload) break;
         std::memset(payload, 0xAB, data_size);
         writer.close_frame();
@@ -121,7 +122,7 @@ TEST_F(WriterTest, OpenFrameRejectsNonAlignedFrameSize) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
 
-    EXPECT_EQ(writer.open_frame(DZ_FRAME_RTN_MD_TICK, 52), nullptr);
+    EXPECT_EQ(writer.open_frame(DZ_FRAME_TICK, 52), nullptr);
 }
 
 TEST_F(WriterTest, PayloadDataIntegrity) {
@@ -130,7 +131,7 @@ TEST_F(WriterTest, PayloadDataIntegrity) {
     Reader reader = Reader::create(meta, "stg.test");
 
     constexpr uint32_t data_size = 56;
-    std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, data_size);
+    std::byte* payload = writer.open_frame(DZ_FRAME_TICK, data_size);
     ASSERT_NE(payload, nullptr);
     std::memset(payload, 0xCD, data_size);
     writer.close_frame();
@@ -138,7 +139,7 @@ TEST_F(WriterTest, PayloadDataIntegrity) {
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
     auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-    EXPECT_EQ(hdr->frame_type, DZ_FRAME_RTN_MD_TICK);
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_TICK);
     EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + data_size);
 
     const auto* payload_data = static_cast<const std::byte*>(frame) + sizeof(DzFrameHeader);
@@ -161,7 +162,7 @@ TEST_F(WriterTest, OpenFrameRejectsZeroDataSize) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
 
-    std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, 0);
+    std::byte* payload = writer.open_frame(DZ_FRAME_TICK, 0);
     ASSERT_NE(payload, nullptr);
     writer.close_frame();
 
@@ -174,7 +175,7 @@ TEST_F(WriterTest, SingleWriterWritePositionAfterWrite) {
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
 
     constexpr uint32_t data_size = 56;
-    std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, data_size);
+    std::byte* payload = writer.open_frame(DZ_FRAME_TICK, data_size);
     ASSERT_NE(payload, nullptr);
     std::memset(payload, 0xAB, data_size);
     writer.close_frame();
@@ -188,7 +189,7 @@ TEST_F(WriterTest, SingleWriterPageIdAndOffsetAfterWrite) {
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
 
     constexpr uint32_t data_size = 56;
-    std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, data_size);
+    std::byte* payload = writer.open_frame(DZ_FRAME_TICK, data_size);
     ASSERT_NE(payload, nullptr);
     std::memset(payload, 0xAB, data_size);
     writer.close_frame();
@@ -204,7 +205,7 @@ TEST_F(WriterTest, NormalFrameIsNotPadding) {
     Reader reader = Reader::create(meta, "stg.test");
 
     constexpr uint32_t data_size = 56;
-    std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, data_size);
+    std::byte* payload = writer.open_frame(DZ_FRAME_TICK, data_size);
     ASSERT_NE(payload, nullptr);
     std::memset(payload, 0xAB, data_size);
     writer.close_frame();
@@ -235,7 +236,7 @@ TEST_F(WriterTest, AccessorsUnchangedAfterAlignmentRejection) {
     uint64_t page_id_before = writer.current_page_id();
     uint32_t offset_before = writer.offset_in_page();
 
-    EXPECT_EQ(writer.open_frame(DZ_FRAME_RTN_MD_TICK, 52), nullptr);
+    EXPECT_EQ(writer.open_frame(DZ_FRAME_TICK, 52), nullptr);
 
     EXPECT_EQ(writer.write_position(), pos_before);
     EXPECT_EQ(writer.current_page_id(), page_id_before);
@@ -249,7 +250,7 @@ TEST_F(WriterTest, AccessorsAccumulateAcrossMultipleWrites) {
     constexpr uint32_t data_size = 56;
     constexpr int num_frames = 5;
     for (int i = 0; i < num_frames; i++) {
-        std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, data_size);
+        std::byte* payload = writer.open_frame(DZ_FRAME_TICK, data_size);
         ASSERT_NE(payload, nullptr);
         std::memset(payload, 0xAB, data_size);
         writer.close_frame();
@@ -267,7 +268,7 @@ TEST_F(WriterTest, MultiWriterAccessorsAfterWrite) {
     MultiWriter writer = MultiWriter::create(meta, "gw.test");
 
     constexpr uint32_t data_size = 56;
-    std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, data_size);
+    std::byte* payload = writer.open_frame(DZ_FRAME_TICK, data_size);
     ASSERT_NE(payload, nullptr);
     std::memset(payload, 0xAB, data_size);
     writer.close_frame();
@@ -303,7 +304,7 @@ TEST_F(WriterTest, MultiWriterWritesToStalePageAfterOtherWriterCrossPage) {
     // B 连写直至跨入页 1
     int b_frames = 0;
     while (meta->next_write_pos()->load() <= page_size) {
-        write_frame(writer_b, DZ_FRAME_RTN_MD_TICK);
+        write_frame(writer_b, DZ_FRAME_TICK);
         ++b_frames;
         ASSERT_LT(b_frames, 20000) << "should have crossed page boundary long ago";
     }
@@ -339,7 +340,7 @@ TEST_F(WriterTest, CrossProcessWriteRead) {
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
     auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-    EXPECT_EQ(hdr->frame_type, DZ_FRAME_RTN_MD_TICK);
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_TICK);
     EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + 56);
 
     const auto* payload = static_cast<const std::byte*>(frame) + sizeof(DzFrameHeader);
@@ -382,7 +383,7 @@ TEST_F(WriterTest, ProcessRestartAfterCrash) {
     {
         auto writer = MultiWriter::create(meta, "gw.test");
         constexpr uint32_t data_size = 56;
-        auto* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, data_size);
+        auto* payload = writer.open_frame(DZ_FRAME_TICK, data_size);
         ASSERT_NE(payload, nullptr);
         std::memset(payload, 0xCD, data_size);
         writer.close_frame();
@@ -392,7 +393,7 @@ TEST_F(WriterTest, ProcessRestartAfterCrash) {
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
     auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-    EXPECT_EQ(hdr->frame_type, DZ_FRAME_RTN_MD_TICK);
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_TICK);
 }
 
 TEST(WriterCloseOldTest, CloseOldPagesUpdatesWriterIndex) {
@@ -413,7 +414,7 @@ TEST(WriterCloseOldTest, CloseOldPagesUpdatesWriterIndex) {
     // 至少不抛异常且 index 被写入
     // 写一帧后跨页，再 close_old_pages，index 应抬高
     DzTick tick{};
-    writer.write_frame(DZ_FRAME_RTN_MD_TICK, tick);
+    writer.write_frame(DZ_FRAME_TICK, tick);
     writer.close_old_pages();
     EXPECT_GE(meta->min_writer_page_index(), 0u);  // 不抛即基础通过
     cleanup_test_dir(dir);
@@ -467,7 +468,7 @@ TEST_F(WriterTest, OpenFrameRejectsFrameLargerThanPageSize) {
 
     const uint64_t nwp_before = meta->next_write_pos()->load();
     // data_size=1MB → pending=1MB+8 > 页, 对齐(8倍数)通过后命中超页拒绝
-    EXPECT_EQ(writer.open_frame(DZ_FRAME_RTN_MD_TICK, 1 * MB), nullptr);
+    EXPECT_EQ(writer.open_frame(DZ_FRAME_TICK, 1 * MB), nullptr);
     EXPECT_EQ(meta->next_write_pos()->load(), nwp_before);
 }
 
@@ -478,7 +479,7 @@ TEST_F(WriterTest, FrameExactlyPageSizeSucceeds) {
     // pending = (1MB-8)+8 = 恰好等于页大小: 等值边界通过超页拒绝检查。
     // 页首 8B 为通道头, 页剩余 1MB-8 容不下整页帧, 经填充跨入页 1 整页写入
     constexpr uint32_t exact = static_cast<uint32_t>(1 * MB - sizeof(DzFrameHeader));
-    std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, exact);
+    std::byte* payload = writer.open_frame(DZ_FRAME_TICK, exact);
     ASSERT_NE(payload, nullptr);
     writer.close_frame();
     EXPECT_EQ(meta->next_write_pos()->load(), 2 * MB);
@@ -497,14 +498,14 @@ TEST_F(WriterTest, PageAwareCapWriteSucceeds) {
     for (size_t i = 0; i < buf.size(); ++i) buf[i] = static_cast<std::byte>(i & 0xFF);
 
     const char* inst = "inst.cap";
-    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_STG_USER_INPUT, inst, buf.data(), cap_len));
+    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, inst, buf.data(), cap_len));
     writer.notify_subscribers();
     EXPECT_EQ(meta->next_write_pos()->load(), 2 * MB);
 
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
     FrameView view(frame);
-    EXPECT_EQ(view.type(), DZ_FRAME_STG_USER_INPUT);
+    EXPECT_EQ(view.type(), DZ_FRAME_UI_INPUT);
     EXPECT_EQ(std::string_view(view.ext_inst_id()), inst);
     EXPECT_EQ(view.ext_inst_payload_size(), cap_len);
     EXPECT_EQ(std::memcmp(view.ext_inst_payload(), buf.data(), cap_len), 0);

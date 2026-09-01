@@ -102,7 +102,7 @@ void migration_v1(SQLite::Database& db) {
         "    UNIQUE(account_id, date, product_code)"
         ")");
 
-    // instruments: 合约信息 (DzContract + update_day)
+    // instruments: 合约信息 (DzInstrumentInfo + update_day)
     db.exec(
         "CREATE TABLE IF NOT EXISTS instruments ("
         "    instrument_id TEXT PRIMARY KEY,"
@@ -111,8 +111,8 @@ void migration_v1(SQLite::Database& db) {
         "    product CHAR(1),"
         "    volume_multiple INTEGER,"
         "    price_tick REAL,"
-        "    min_limit_order_volume INTEGER,"
-        "    max_limit_order_volume INTEGER,"
+        "    min_order_volume INTEGER,"
+        "    max_order_volume INTEGER,"
         "    option_type CHAR(1),"
         "    option_strike REAL,"
         "    option_underlying TEXT,"

@@ -410,11 +410,11 @@ void ShmManager::handle_set_process_config(const shm::FrameView& view) {
 }
 
 void ShmManager::send_shutdown(std::string_view target) {
-    // 写 REQUEST_SHUTDOWN 帧：instance_id 为 target（仅匹配的进程执行）
+    // 写 SHUTDOWN 帧：instance_id 为 target（仅匹配的进程执行）
     // 必须通知订阅者: 子进程阻塞在 event_queue->wait() (信号量等待),
-    // 不 notify 的话子进程永远收不到 REQUEST_SHUTDOWN, master 超时后强制 terminate,
+    // 不 notify 的话子进程永远收不到 SHUTDOWN, master 超时后强制 terminate,
     // exit_code 非 0 触发 restart 策略, 进程被重新拉起, 导致 UI "删除此行情源" 删不掉
-    platform::write_ext_inst_raw(event_writer_, DZ_FRAME_REQUEST_SHUTDOWN, target);
+    platform::write_ext_inst_raw(event_writer_, DZ_FRAME_SHUTDOWN, target);
 }
 
 void ShmManager::report_log_config() {

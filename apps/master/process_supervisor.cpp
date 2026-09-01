@@ -374,7 +374,7 @@ void ProcessSupervisor::shutdown() {
 }
 
 void ProcessSupervisor::send_current_shutdown_batch() {
-    // 逐批推进: 批内有成员运行则定向 REQUEST_SHUTDOWN + 排批超时;
+    // 逐批推进: 批内有成员运行则定向 SHUTDOWN + 排批超时;
     // 批已全停止 (期间自然退出) 则直接看下一批, 最终 check_shutdown_complete
     while (shutdown_batch_index_ < shutdown_batches_.size()) {
         const auto& batch = shutdown_batches_[shutdown_batch_index_];
@@ -460,7 +460,7 @@ void ProcessSupervisor::advance_shutdown_batch() {
 
 void ProcessSupervisor::force_terminate_all() {
     // 二次 Ctrl+C / 硬超时路径: 强制终止所有仍在运行的子进程, 避免孤儿
-    // 与 shutdown() 的超时强制终止逻辑一致, 但不发送 REQUEST_SHUTDOWN, 不启超时定时器
+    // 与 shutdown() 的超时强制终止逻辑一致, 但不发送 SHUTDOWN, 不启超时定时器
     // 信号处理上下文 / 硬超时回调调用, 每个子进程独立 try-catch 避免一个失败影响其他
     for (auto& child : children_) {
         if (child && child->state() != ChildState::Stopped) {
@@ -577,7 +577,7 @@ void ProcessSupervisor::cancel_pending_restart(const std::string& name) {
 void ProcessSupervisor::stop_single_child(std::shared_ptr<ChildProcess> child) {
     const auto& name = child->name();
 
-    // 1. 定向发送 REQUEST_SHUTDOWN
+    // 1. 定向发送 SHUTDOWN
     try {
         shm_mgr_.send_shutdown(name);
         SPDLOG_INFO("shutdown sent to single child | name={}", name);

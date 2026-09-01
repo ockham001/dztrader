@@ -135,7 +135,7 @@ inline int channel_writer_write(const std::string& channel_name, const std::stri
         auto writer = SingleWriter::create(meta, "gw.helper");
 
         constexpr uint32_t data_size = 56;
-        auto* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, data_size);
+        auto* payload = writer.open_frame(DZ_FRAME_TICK, data_size);
         if (!payload) {
             return 1;
         }
@@ -165,7 +165,7 @@ inline int channel_writer_open_frame(const std::string& channel_name,
         auto writer = MultiWriter::create(meta, "gw.helper");
 
         constexpr uint32_t data_size = 56;
-        auto* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, data_size);
+        auto* payload = writer.open_frame(DZ_FRAME_TICK, data_size);
         if (!payload) {
             return 1;
         }
@@ -211,7 +211,7 @@ inline int channel_writer_continuous_cross(const std::string& channel_name,
         constexpr uint32_t data_size = 56;
         constexpr int num_frames = 80000;  // ~5 page-crosses on a 1MB page
         for (int i = 0; i < num_frames; ++i) {
-            auto* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, data_size);
+            auto* payload = writer.open_frame(DZ_FRAME_TICK, data_size);
             if (!payload) {
                 return 1;
             }

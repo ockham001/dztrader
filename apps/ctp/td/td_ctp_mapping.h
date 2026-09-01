@@ -8,7 +8,7 @@
 
 #include <dztrader/core/core_struct.h>  // DzOrderReq
 #include <dztrader/data_type.h>         // DzOrderStatus/DzPriceType
-#include <dztrader/struct.h>            // DzContract/DzTradingAccount
+#include <dztrader/struct.h>            // DzInstrumentInfo/DzTradingAccount
 
 #include "td/td_schema.h"  // OrderRecord/TradeRecord (组合扩展 strategy_api POD)
 
@@ -91,10 +91,10 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
                              const std::string& account_id,
                              int32_t trading_day) noexcept;
 
-/// CTP InstrumentField -> DzContract (字段一一映射).
+/// CTP InstrumentField -> DzInstrumentInfo (字段一一映射).
 /// 注意: CTP InstrumentName 为 GBK 编码, 此处原样拷贝 (后续如需 UTF-8 由调用方转换).
 /// CTP 无 ListedDate 字段, 用 OpenDate (上市日) 映射到 option_listed.
-DzContract to_dz_contract(const CThostFtdcInstrumentField& f) noexcept;
+DzInstrumentInfo to_dz_instrument(const CThostFtdcInstrumentField& f) noexcept;
 
 /// CTP TradingAccountField -> DzTradingAccount.
 /// trading_day 为 DzDate (距纪元天数).

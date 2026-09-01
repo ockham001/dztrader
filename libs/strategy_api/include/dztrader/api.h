@@ -92,18 +92,18 @@ DZ_API void dz_wait(DzContext* ctx);
  * 返回的指针指向 DzFrameHeader，按 frame_type 解析 payload。
  *
  * 处理优先级：用户帧 > 定时器帧 > 内部帧。
- *   - 用户帧（本策略 TD 回报、定向本策略的 STG_USER_INPUT、SHUTDOWN）直接返回，零计时器开销；
- *     TD_ORDER_RPT/TD_TRADE_RPT 按 payload strategy_id == 本策略裸名定向（空/他策略拦截），
- *     其余 TD 回报（持仓/资金/费率等）暂不过滤全量放行，STG_USER_INPUT/SHUTDOWN 按 instance_id 定向；
+ *   - 用户帧（本策略 TD 回报、定向本策略的 UI_INPUT、SHUTDOWN）直接返回，零计时器开销；
+ *     ORDER_REPORT/TRADE_REPORT 按 payload strategy_id == 本策略裸名定向（空/他策略拦截），
+ *     其余 TD 回报（持仓/资金/费率等）暂不过滤全量放行，UI_INPUT/SHUTDOWN 按 instance_id 定向；
  *   - 通道无用户帧时（通道空或 32 上限让位）触发到期定时器并返回定时器帧；
  *   - 平台内部帧（SHM 预加载通知、订阅者刷新、日志/SHM 配置等）由 SDK
  *     内部消费，不返回给策略；其中 PRELOAD_EVENT_SHM / PRELOAD_MD_SHM
  *     触发 SDK 内部随机延迟预加载，NOTIFY_MD_STARTED 触发自动补订阅。
- *   - REQUEST_SHUTDOWN（定向本策略）由 SDK 完成内部清理后放行。
+ *   - SHUTDOWN（定向本策略）由 SDK 完成内部清理后放行。
  *   - 每次调用最多连续消费 32 条内部帧，超过则本次让位（优先返回已到期
  *     定时器帧，否则 NULL，下次调用继续处理），防止内部帧洪峰饿死 dz_next_md。
  *
- * 定时器帧（DZ_FRAME_STG_SCHEDULE，dz_schedule_* 触发）为 SDK 本地合成，
+ * 定时器帧（DZ_FRAME_SCHEDULE，dz_schedule_* 触发）为 SDK 本地合成，
  * 指针仅在下次 dz_next_event / dz_release 调用前有效，需要留存请自行拷贝。
  *
  * @return 帧指针，无数据返回 NULL
@@ -138,7 +138,7 @@ DZ_API void dz_notify_self(DzContext* ctx);
  * 单线程契约：定时器推进点唯一在 dz_next_event()（通道无用户帧时 tick），
  * dz_wait() 仅负责等待（无定时器无限阻塞 / 有定时器等待至最近到期）。
  * dz_schedule_* 必须在主循环线程调用（与句柄契约一致）。触发事件以
- * DZ_FRAME_STG_SCHEDULE 帧经 dz_next_event() 返回，不写入共享内存。
+ * DZ_FRAME_SCHEDULE 帧经 dz_next_event() 返回，不写入共享内存。
  * SDK 内部任务（SHM 预加载随机延迟）与用户定时器共用队列，但内部 ID 对用户
  * 不可见，dz_schedule_cancel / dz_schedule_cancel_all 结构上无法误删内部定时器。 */
 
@@ -326,7 +326,7 @@ DZ_API bool dz_notify_ui(DzContext* ctx, DzNotifyLevel level, const char* messag
  *   dz_output_ui  — 自主输出，无级别无弹窗，类似 stdout
  *
  * 典型场景：策略主动向 UI 输出运行状态/自定义数据；也可作为对 UI 输入
- * （STG_USER_INPUT）的响应。
+ * （UI_INPUT）的响应。
  *
  * 策略名自动关联（取自 ctx），无需传参。
  *

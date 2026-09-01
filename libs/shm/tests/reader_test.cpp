@@ -1,6 +1,7 @@
 #include "test_util.h"
 
 #include <dztrader/error.h>
+#include <dztrader/core/core_data_type.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
@@ -66,13 +67,13 @@ TEST_F(ReaderTest, ReaderReadsWrittenFrame) {
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
     Reader reader = Reader::create(meta, "stg.test");
 
-    write_test_frame(writer, DZ_FRAME_RTN_MD_TICK);
+    write_test_frame(writer, DZ_FRAME_TICK);
 
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
 
     const auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-    EXPECT_EQ(hdr->frame_type, DZ_FRAME_RTN_MD_TICK);
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_TICK);
     EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + test_data_size);
 }
 
@@ -83,13 +84,13 @@ TEST_F(ReaderTest, ReaderReadsMultipleFrames) {
 
     const int num_frames = 5;
     for (int i = 0; i < num_frames; i++) {
-        write_test_frame(writer, DZ_FRAME_RTN_MD_TICK);
+        write_test_frame(writer, DZ_FRAME_TICK);
     }
 
     int count = 0;
     while (auto* frame = reader.next_frame()) {
         const auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-        EXPECT_EQ(hdr->frame_type, DZ_FRAME_RTN_MD_TICK);
+        EXPECT_EQ(hdr->frame_type, DZ_FRAME_TICK);
         count++;
     }
     EXPECT_EQ(count, num_frames);
@@ -99,17 +100,17 @@ TEST_F(ReaderTest, ReaderOnlyReadsNewDataAfterCreation) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
 
-    write_test_frame(writer, DZ_FRAME_RTN_MD_TICK);
+    write_test_frame(writer, DZ_FRAME_TICK);
 
     Reader reader = Reader::create(meta, "stg.test");
     EXPECT_EQ(reader.next_frame(), nullptr);
 
-    write_test_frame(writer, DZ_FRAME_RTN_MD_TICK);
+    write_test_frame(writer, DZ_FRAME_TICK);
 
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
     const auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-    EXPECT_EQ(hdr->frame_type, DZ_FRAME_RTN_MD_TICK);
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_TICK);
 }
 
 TEST_F(ReaderTest, ReaderCrossPageBoundary) {
@@ -120,7 +121,7 @@ TEST_F(ReaderTest, ReaderCrossPageBoundary) {
     int frames_written = 0;
     uint64_t page_size = 1 * MB;
     while (meta->next_write_pos()->load() <= page_size) {
-        std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, test_data_size);
+        std::byte* payload = writer.open_frame(DZ_FRAME_TICK, test_data_size);
         if (!payload) break;
         std::memset(payload, 0xAB, test_data_size);
         writer.close_frame();
@@ -131,7 +132,7 @@ TEST_F(ReaderTest, ReaderCrossPageBoundary) {
     int count = 0;
     while (auto* frame = reader.next_frame()) {
         const auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-        EXPECT_EQ(hdr->frame_type, DZ_FRAME_RTN_MD_TICK);
+        EXPECT_EQ(hdr->frame_type, DZ_FRAME_TICK);
         count++;
     }
     EXPECT_EQ(count, frames_written);
@@ -161,7 +162,7 @@ TEST_F(ReaderTest, NextFrameBlockingRead) {
 
     std::thread delayed_write([&] {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, test_data_size);
+        std::byte* payload = writer.open_frame(DZ_FRAME_TICK, test_data_size);
         ASSERT_NE(payload, nullptr);
         std::memset(payload, 0xAB, test_data_size);
         writer.close_frame();
@@ -175,7 +176,7 @@ TEST_F(ReaderTest, NextFrameBlockingRead) {
     }
     ASSERT_NE(frame, nullptr);
     const auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-    EXPECT_EQ(hdr->frame_type, DZ_FRAME_RTN_MD_TICK);
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_TICK);
 
     delayed_write.join();
 }
@@ -186,29 +187,29 @@ TEST_F(ReaderTest, ReaderSkipsInitialInvalidFill) {
 
     Reader reader = Reader::create(meta, "stg.test");
 
-    write_test_frame(writer, DZ_FRAME_RTN_MD_TICK);
+    write_test_frame(writer, DZ_FRAME_TICK);
 
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
     const auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
     EXPECT_NE(hdr->frame_type, DZ_FRAME_INVALID_FILL);
-    EXPECT_EQ(hdr->frame_type, DZ_FRAME_RTN_MD_TICK);
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_TICK);
 }
 
 TEST_F(ReaderTest, MultipleSubscribersIndependentReadPosition) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
 
-    write_test_frame(writer, DZ_FRAME_RTN_MD_TICK);
+    write_test_frame(writer, DZ_FRAME_TICK);
 
     Reader late_reader = Reader::create(meta, "stg.test");
     EXPECT_EQ(late_reader.next_frame(), nullptr);
 
-    write_test_frame(writer, DZ_FRAME_RTN_MD_TICK);
+    write_test_frame(writer, DZ_FRAME_TICK);
     auto* frame = late_reader.next_frame();
     ASSERT_NE(frame, nullptr);
     const auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-    EXPECT_EQ(hdr->frame_type, DZ_FRAME_RTN_MD_TICK);
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_TICK);
 }
 
 TEST_F(ReaderTest, CrossPageInvalidFillSkipped) {
@@ -219,7 +220,7 @@ TEST_F(ReaderTest, CrossPageInvalidFillSkipped) {
     int frames_written = 0;
     uint64_t page_size = 1 * MB;
     while (meta->next_write_pos()->load() <= page_size) {
-        std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, test_data_size);
+        std::byte* payload = writer.open_frame(DZ_FRAME_TICK, test_data_size);
         if (!payload) break;
         std::memset(payload, 0xAB, test_data_size);
         writer.close_frame();
@@ -240,7 +241,7 @@ TEST_F(ReaderTest, ReadPositionInitializesAtWritePosition) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
 
-    write_test_frame(writer, DZ_FRAME_RTN_MD_TICK);
+    write_test_frame(writer, DZ_FRAME_TICK);
 
     uint64_t write_pos = meta->next_write_pos()->load();
     Reader reader = Reader::create(meta, "stg.test");
@@ -252,7 +253,7 @@ TEST_F(ReaderTest, ReadPositionAdvancesAfterRead) {
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
     Reader reader = Reader::create(meta, "stg.test");
 
-    write_test_frame(writer, DZ_FRAME_RTN_MD_TICK);
+    write_test_frame(writer, DZ_FRAME_TICK);
 
     uint64_t pos_before = reader.read_position();
     auto* frame = reader.next_frame();
@@ -270,7 +271,7 @@ TEST_F(ReaderTest, CurrentPageIdUpdatesAfterCrossPage) {
     int frames_written = 0;
     uint64_t page_size = 1 * MB;
     while (meta->next_write_pos()->load() <= page_size) {
-        std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, test_data_size);
+        std::byte* payload = writer.open_frame(DZ_FRAME_TICK, test_data_size);
         if (!payload) break;
         std::memset(payload, 0xAB, test_data_size);
         writer.close_frame();
@@ -290,7 +291,7 @@ TEST_F(ReaderTest, NextFrameRawPointerParseable) {
     Reader reader = Reader::create(meta, "stg.test");
 
     constexpr uint32_t data_size = 56;
-    std::byte* payload = writer.open_frame(DZ_FRAME_RTN_MD_TICK, data_size);
+    std::byte* payload = writer.open_frame(DZ_FRAME_TICK, data_size);
     ASSERT_NE(payload, nullptr);
     std::memset(payload, 0xEF, data_size);
     writer.close_frame();
@@ -299,7 +300,7 @@ TEST_F(ReaderTest, NextFrameRawPointerParseable) {
     ASSERT_NE(frame, nullptr);
 
     const auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
-    EXPECT_EQ(hdr->frame_type, DZ_FRAME_RTN_MD_TICK);
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_TICK);
     EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + data_size);
 
     auto* payload_ptr = frame + sizeof(DzFrameHeader);

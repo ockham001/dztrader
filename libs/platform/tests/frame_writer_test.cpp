@@ -75,24 +75,24 @@ TEST_F(PlatformFrameWriterTest, WriteNotifyUi) {
 
 // 测试 write_request_shutdown：空 payload 控制帧
 TEST_F(PlatformFrameWriterTest, WriteRequestShutdown) {
-    dztrader::platform::write_ext_inst_raw(*writer_, DZ_FRAME_REQUEST_SHUTDOWN, "dzmd_ctp");
+    dztrader::platform::write_ext_inst_raw(*writer_, DZ_FRAME_SHUTDOWN, "dzmd_ctp");
 
     auto* frame = reader_->next_frame();
     ASSERT_NE(frame, nullptr);
     auto view = dztrader::shm::FrameView(frame);
-    EXPECT_EQ(view.type(), DZ_FRAME_REQUEST_SHUTDOWN);
+    EXPECT_EQ(view.type(), DZ_FRAME_SHUTDOWN);
 }
 
 // 测试 write_td_order_rpt：定长结构体帧
 TEST_F(PlatformFrameWriterTest, WriteTdOrderRpt) {
     DzOrderReport rpt{};
     rpt.order_id = 12345;
-    dztrader::platform::write_struct(*writer_, DZ_FRAME_TD_ORDER_RPT, rpt);
+    dztrader::platform::write_struct(*writer_, DZ_FRAME_ORDER_REPORT, rpt);
 
     auto* frame = reader_->next_frame();
     ASSERT_NE(frame, nullptr);
     auto view = dztrader::shm::FrameView(frame);
-    EXPECT_EQ(view.type(), DZ_FRAME_TD_ORDER_RPT);
+    EXPECT_EQ(view.type(), DZ_FRAME_ORDER_REPORT);
 }
 
 // 测试 write_set_md_config：JSON obj 帧

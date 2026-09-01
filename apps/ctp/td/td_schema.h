@@ -4,7 +4,7 @@
 #include <cstdint>
 
 #include <dztrader/db/migration.h>
-#include <dztrader/struct.h>  // DzOrderReport/DzTradeReport/DzMarginRate/DzCommissionRate/DzContract
+#include <dztrader/struct.h>  // DzOrderReport/DzTradeReport/DzMarginRate/DzCommissionRate/DzInstrumentInfo
 
 namespace dztrader::ctp {
 
@@ -52,9 +52,9 @@ using MarginRateRecord = DzMarginRate;
 using CommissionRateRecord = DzCommissionRate;
 
 /// 合约信息记录 (对应 instruments 表).
-/// DzContract 缺少 update_day 字段.
+/// DzInstrumentInfo 缺少 update_day 字段.
 struct InstrumentRecord {
-    DzContract base;               ///< SHM 帧字段
+    DzInstrumentInfo base;               ///< SHM 帧字段
     char update_day[9];            ///< "YYYYMMDD" 文本 (合约信息更新日)
 };
 

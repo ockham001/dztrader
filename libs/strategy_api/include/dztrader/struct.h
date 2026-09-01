@@ -139,14 +139,14 @@ DZ_DECLARE_ALIGNED_STRUCT(DzExtFrameHeader, {
 // 注: DzExtFrameHeader 在 2026-07-30 前指 72B 含 instance_id 的头 (现 DzExtInstFrameHeader);
 // 不设同名兼容别名, 让引用旧布局的代码编译报错, 而非静默拿到错误布局
 
-/** @brief SHM 预加载参数, DZ_FRAME_PRELOAD_EVENT_SHM 与 DZ_FRAME_PRELOAD_MD_SHM 的 payload */
+/** @brief SHM 预加载参数, 平台预加载通知帧的 payload (帧类型见 core_data_type.h) */
 DZ_DECLARE_ALIGNED_STRUCT(DzShmPreload, {
     uint64_t bytes;     ///< 预加载字节数
     uint32_t pages;     ///< 预加载页数
     uint32_t reserved;  ///< 保留字段
 });
 
-/** @brief 策略调度触发通知 (某次 dz_schedule_* 到期), DZ_FRAME_STG_SCHEDULE 的 payload
+/** @brief 策略调度触发通知 (某次 dz_schedule_* 到期), DZ_FRAME_SCHEDULE 的 payload
  *  仅 SDK 本地合成 (不写共享内存), 指针有效期至下一次 dz_next_event/dz_release */
 DZ_DECLARE_ALIGNED_STRUCT(DzScheduleEvent, {
     DzTimerId timer_id;  ///< 触发定时器的稳定 ID (与 dz_schedule_* 返回值一致)
@@ -211,7 +211,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzCommissionRate, {
 });
 
 /// 合约信息 (对应 CTP ReqQryInstrument)
-DZ_DECLARE_ALIGNED_STRUCT(DzContract, {
+DZ_DECLARE_ALIGNED_STRUCT(DzInstrumentInfo, {
     DzInstrumentId instrument_id;
     DzExchangeId exchange_id;
     char name[64];            // GBK->UTF8 转换后
@@ -219,8 +219,8 @@ DZ_DECLARE_ALIGNED_STRUCT(DzContract, {
     char reserved[7];         // 对齐 int64_t volume_multiple 到 8 字节边界
     int64_t volume_multiple;  // 合约乘数
     double price_tick;
-    int64_t min_limit_order_volume;
-    int64_t max_limit_order_volume;
+    int64_t min_order_volume;
+    int64_t max_order_volume;
     // 期权字段
     int8_t option_type;  // 1=CALL, -1=PUT, 0=非期权
     char reserved2[7];   // 对齐 double option_strike 到 8 字节边界

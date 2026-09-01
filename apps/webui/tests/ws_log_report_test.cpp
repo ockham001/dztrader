@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include <dztrader/data_type.h>
+#include <dztrader/core/core_data_type.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>

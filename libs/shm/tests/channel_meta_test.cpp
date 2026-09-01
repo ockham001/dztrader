@@ -309,7 +309,7 @@ TEST_F(ChannelMetaTest, OpenOrCreateToleratesCorruptActivePageChain) {
         bip2::mapped_region region{mfile, bip2::read_write, 0, 1 * MB};
         auto* hdr = reinterpret_cast<DzFrameHeader*>(
             static_cast<std::byte*>(region.get_address()) + 8);
-        hdr->frame_type = DZ_FRAME_RTN_MD_TICK;
+        hdr->frame_type = DZ_FRAME_TICK;
         hdr->frame_size = 8;
         meta.next_write_pos()->store(16, boost::memory_order_release);
     }

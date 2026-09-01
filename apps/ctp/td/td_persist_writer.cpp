@@ -61,7 +61,7 @@ constexpr const char* kInsertCommissionRateSql =
 constexpr const char* kInsertInstrumentSql =
     "INSERT OR REPLACE INTO instruments ("
     "    instrument_id, exchange_id, name, product, volume_multiple, price_tick,"
-    "    min_limit_order_volume, max_limit_order_volume, option_type, option_strike,"
+    "    min_order_volume, max_order_volume, option_type, option_strike,"
     "    option_underlying, option_listed, option_expiry, update_day"
     ") VALUES (?,?,?,?,?,?,  ?,?,?,?,  ?,?,?,?)";
 
@@ -459,8 +459,8 @@ void PersistWriter::bind_instrument(SQLite::Statement& stmt, const InstrumentRec
     stmt.bind(4, static_cast<int>(r.base.product));
     stmt.bind(5, r.base.volume_multiple);
     stmt.bind(6, r.base.price_tick);
-    stmt.bind(7, r.base.min_limit_order_volume);
-    stmt.bind(8, r.base.max_limit_order_volume);
+    stmt.bind(7, r.base.min_order_volume);
+    stmt.bind(8, r.base.max_order_volume);
     stmt.bind(9, static_cast<int>(r.base.option_type));
     stmt.bind(10, r.base.option_strike);
     stmt.bind(11, r.base.option_underlying);

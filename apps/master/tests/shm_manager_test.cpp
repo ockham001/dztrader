@@ -79,7 +79,7 @@ protected:
 
 TEST_F(ShmManagerTest, InitCreatesEventChannelAndWriterReaderCleaner) {
     ShmManager mgr(make_default_shm_global(), cfg_path_);
-    // 构造后 event_writer_/event_reader_ 可用：send_shutdown 能写入定向 REQUEST_SHUTDOWN
+    // 构造后 event_writer_/event_reader_ 可用：send_shutdown 能写入定向 SHUTDOWN
     EXPECT_NO_THROW(mgr.send_shutdown("dztraderd"));
 }
 
@@ -94,7 +94,7 @@ TEST_F(ShmManagerTest, SendShutdownWithTargetWritesInstFrame) {
         const auto* frame = reader.next_frame();
         if (!frame) break;
         shm::FrameView view(frame);
-        if (view.type() == DZ_FRAME_REQUEST_SHUTDOWN) {
+        if (view.type() == DZ_FRAME_SHUTDOWN) {
             ++seen;
             EXPECT_STREQ(view.ext_inst_id(), "dzmd_ctp");
         }

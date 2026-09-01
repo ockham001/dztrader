@@ -211,7 +211,7 @@ void MdSpi::OnRtnDepthMarketData(CThostFtdcDepthMarketDataField* pDepthMarketDat
 
     // 写 SHM 帧, 与主线程的 refresh/prefetch/close 互斥。
     std::lock_guard<shm::SpinLock> lk(thread_lock_);
-    auto* tick = reinterpret_cast<DzTick*>(md_writer_.open_frame(DZ_FRAME_RTN_MD_TICK, sizeof(DzTick)));
+    auto* tick = reinterpret_cast<DzTick*>(md_writer_.open_frame(DZ_FRAME_TICK, sizeof(DzTick)));
     if (!tick) {
         SPDLOG_ERROR("write failed | event=tick err_code={} msg=\"{}\"", LastError::code(),
                      LastError::msg());

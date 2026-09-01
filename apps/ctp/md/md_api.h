@@ -96,7 +96,7 @@ public:
     ~MdApi();
 
     /// 主循环入口。首次调用时执行初始化 (started_ 标志), 之后循环处理帧/事件/定时器,
-    /// 直到收到 DZ_FRAME_REQUEST_SHUTDOWN 或异常。阻塞调用。
+    /// 直到收到 DZ_FRAME_SHUTDOWN 或异常。阻塞调用。
     void run();
 
     /// 设置 --recover 标志: 启动时若在会话区间内则立即补登
@@ -145,7 +145,7 @@ private:
     void broadcast_md_preload(const DzShmPreload& params);
     /// 取消登录超时定时器 (若挂起), 并置 0。幂等。
     void cancel_login_timer();
-    /// 处理 DZ_FRAME_REQUEST_SHUTDOWN 帧: 设置 running_=false, 让 run() 退出
+    /// 处理 DZ_FRAME_SHUTDOWN 帧: 设置 running_=false, 让 run() 退出
     void handle_shutdown();
     /// 推送网关状态 (RTN_MD_STATUS): 契约 md-status 的 6 字段
     /// 内部先同步订阅统计 (set_subscription_stats)，再构造 JSON 发送。

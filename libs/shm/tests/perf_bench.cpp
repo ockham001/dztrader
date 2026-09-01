@@ -58,7 +58,7 @@ int main() {
     auto reader = dztrader::shm::Reader::create(meta, reader_name);
 
     std::byte payload[32] = {};
-    constexpr DzFrameType kFrame = DZ_FRAME_RTN_MD_TICK;  // 行情数据帧类型
+    constexpr DzFrameType kFrame = DZ_FRAME_TICK;  // 行情数据帧类型
 
     // 预热: 页缓存/分支预测/信号量路径
     for (int i = 0; i < kWarmup; ++i) {

@@ -1,4 +1,5 @@
 #include <dztrader/shm/reader.h>
+#include <dztrader/core/core_data_type.h>
 #include <memory>
 
 namespace dztrader::shm {
