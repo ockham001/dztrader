@@ -299,6 +299,10 @@ void TdApi::dispatch(Event& event, void (AccountSession::*handler)(const T&)) {
     } else if (before == TdState::Ready && after != TdState::Ready) {
         broadcast_health(rsp->account_id, TdHealth::Down);
     }
+    // 契约 account-status 场景 2: 实盘状态转移的三态翻转推送 (非 force, dedup 过滤
+    // 未翻转事件; 每事件一次 map 查找, 三态翻转时恰推一次)
+    write_account_status(rsp->account_id, account_state_of(after),
+                         session->state_machine().status().trading_day);
     delete rsp;  // NOLINT
 }
 

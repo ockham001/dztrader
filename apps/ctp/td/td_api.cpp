@@ -476,6 +476,9 @@ void TdApi::handle_front_event(Event& event) {
     } else if (before == TdState::Ready && after != TdState::Ready) {
         broadcast_health(account_id, TdHealth::Down);
     }
+    // 契约 account-status 场景 2: 前置连接/断开的三态翻转推送 (非 force, 同上)
+    write_account_status(account_id, account_state_of(after),
+                         session->state_machine().status().trading_day);
     AccountSession::delete_event(event);
 }
 
