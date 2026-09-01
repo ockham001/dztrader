@@ -376,8 +376,22 @@ void PersistWriter::writer_loop() {
         // C7: 必须捕获所有异常 (含非 std 异常), 否则 Writer 线程退出会导致 enqueue 死锁
         try {
             SQLite::Transaction txn(*db_);
-            execute_batch(*db_, batch);
+            std::vector<uint64_t> flushed_tokens;
+            execute_batch(*db_, batch, flushed_tokens);
             txn.commit();
+            // 评审 C1: 批事务提交成功后才 set_value, 保证 "wait_flush 返回" ⇒
+            // "此前任务必已提交/fsync". 提交/批执行失败时 (走 catch) 不 set,
+            // waiter 超时获知失败, 不会在数据实际被回滚时误报成功.
+            if (!flushed_tokens.empty()) {
+                std::lock_guard<std::mutex> lk(mtx_);
+                for (uint64_t token : flushed_tokens) {
+                    auto it = pending_flushes_.find(token);
+                    if (it != pending_flushes_.end()) {
+                        it->second.set_value();
+                        pending_flushes_.erase(it);
+                    }
+                }
+            }
             SPDLOG_DEBUG("persist batch committed | count={}", batch.size());
         } catch (const SQLite::Exception& e) {
             SPDLOG_ERROR("persist batch failed, dropping | count={} error=\"{}\"",
@@ -413,7 +427,8 @@ bool PersistWriter::wait_and_pop(PersistTask& out) {
     return true;
 }
 
-void PersistWriter::execute_batch(SQLite::Database& db, std::vector<PersistTask>& batch) {
+void PersistWriter::execute_batch(SQLite::Database& db, std::vector<PersistTask>& batch,
+                                  std::vector<uint64_t>& flushed_tokens) {
     (void)db;  // 预留: 事务/批处理优化走同一个连接
     for (auto& task : batch) {
         switch (task.kind) {
@@ -475,14 +490,10 @@ void PersistWriter::execute_batch(SQLite::Database& db, std::vector<PersistTask>
                 break;
             }
             case PersistTask::Kind::FlushSignal: {
-                // FIFO 哨兵: 此前任务已在本批/前批提交, set_value 唤醒 wait_flush.
-                // promise 由 Writer 线程 set, 保证"哨兵被处理"= "此前任务提交完成".
-                std::lock_guard<std::mutex> lk(mtx_);
-                auto it = pending_flushes_.find(task.flush_token);
-                if (it != pending_flushes_.end()) {
-                    it->second.set_value();
-                    pending_flushes_.erase(it);
-                }
+                // FIFO 哨兵: 收集 token, 由 writer_loop 在批事务 commit 成功后统一
+                // set_value. 保证 "wait_flush 返回" ⇒ "此前任务必已提交"
+                // (评审 C1: set 必须在 commit 之后, 不得在此处提前 set).
+                flushed_tokens.push_back(task.flush_token);
                 break;
             }
         }

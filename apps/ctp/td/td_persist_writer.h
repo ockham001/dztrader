@@ -131,7 +131,8 @@ public:
 private:
     void writer_loop();
     bool wait_and_pop(PersistTask& out);
-    void execute_batch(SQLite::Database& db, std::vector<PersistTask>& batch);
+    void execute_batch(SQLite::Database& db, std::vector<PersistTask>& batch,
+                       std::vector<uint64_t>& flushed_tokens);
     void prepare_statements(SQLite::Database& db);
 
     // 绑定单条记录到预编译 stmt 并执行
