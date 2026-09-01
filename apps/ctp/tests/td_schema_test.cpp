@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <string>
+#include <vector>
+
 #include <dztrader/db/connection.h>
 #include <dztrader/db/migration.h>
 
@@ -21,6 +24,19 @@ int index_count(dztrader::db::Connection& conn, const std::string& table) {
 bool index_exists(dztrader::db::Connection& conn, const std::string& name) {
     return conn.scalar<int>(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='" + name + "'") > 0;
+}
+
+std::string index_sql(dztrader::db::Connection& conn, const std::string& name) {
+    return conn.scalar<std::string>(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name='" + name + "'");
+}
+
+void expect_index_columns(dztrader::db::Connection& conn, const std::string& name,
+                          const std::vector<std::string>& cols) {
+    const auto sql = index_sql(conn, name);
+    for (const auto& col : cols) {
+        EXPECT_NE(sql.find(col), std::string::npos) << name << ": 缺少列 " << col;
+    }
 }
 
 class TdSchemaTest : public ::testing::Test {
@@ -89,9 +105,11 @@ TEST_F(TdSchemaTest, OrdersTradesHaveSeqColumnAndIndex) {
     // (1) seq 列存在
     EXPECT_NO_THROW(conn.scalar<int>("SELECT seq FROM orders LIMIT 0"));
     EXPECT_NO_THROW(conn.scalar<int>("SELECT seq FROM trades LIMIT 0"));
-    // (2) (account_id, seq) 索引存在
+    // (2) (account_id, seq) 索引存在且列内容正确 (防错建成 (seq))
     EXPECT_GE(index_count(conn, "orders"), 4);
     EXPECT_GE(index_count(conn, "trades"), 4);
+    expect_index_columns(conn, "idx_orders_acct_seq", {"account_id", "seq"});
+    expect_index_columns(conn, "idx_trades_acct_seq", {"account_id", "seq"});
 }
 
 TEST_F(TdSchemaTest, OrdersRebuildPreservesRowsAndIndexes) {
@@ -144,6 +162,9 @@ TEST_F(TdSchemaTest, OrdersRebuildPreservesRowsAndIndexes) {
     EXPECT_EQ(legacy.scalar<int>("SELECT COALESCE(MAX(seq), 0) FROM trades"), 0);
     EXPECT_GE(index_count(legacy, "orders"), 4);
     EXPECT_GE(index_count(legacy, "trades"), 4);
+    // (account_id, seq) 索引列内容正确
+    expect_index_columns(legacy, "idx_orders_acct_seq", {"account_id", "seq"});
+    expect_index_columns(legacy, "idx_trades_acct_seq", {"account_id", "seq"});
     // v1 既有索引保留
     EXPECT_TRUE(index_exists(legacy, "idx_orders_account_day"));
     EXPECT_TRUE(index_exists(legacy, "idx_orders_day_instr"));
@@ -180,6 +201,9 @@ TEST_F(TdSchemaTest, NewTablesPositionsTradingAccounts) {
               "VALUES ('acc1', '20260726', 100000.0, 50000.0)");
     EXPECT_EQ(conn.scalar<int>("SELECT COUNT(*) FROM trading_accounts"), 1);
     EXPECT_EQ(conn.scalar<int>("SELECT COALESCE(MAX(seq), 0) FROM trading_accounts"), 0);
+    // (account_id, seq) 索引列内容正确
+    expect_index_columns(conn, "idx_positions_acct_seq", {"account_id", "seq"});
+    expect_index_columns(conn, "idx_taccount_acct_seq", {"account_id", "seq"});
 }
 
 }  // namespace
