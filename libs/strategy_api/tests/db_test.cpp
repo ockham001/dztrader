@@ -6,6 +6,7 @@
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
+#include <cfloat>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -449,5 +450,125 @@ TEST_F(DbTest, QueryCommissionNoSeqColumn) {
     EXPECT_DOUBLE_EQ(0.3, dz_resultset_get_float64(rs, 8));      // close_ratio_by_volume
     EXPECT_EQ(19736, dz_resultset_get_int64(rs, 11));            // date
     EXPECT_FALSE(dz_resultset_next(rs));
+    dz_resultset_close(rs);
+}
+
+// 注入防御: filter 字段名必须为本表真实列 (白名单), 恶意字段名 (含 SQL 片段)
+// 一律拒绝 -> NULL + DZ_EC_INVALID_PARAM。值已参数绑定, 字段名 allowlist 封死拼接面。
+TEST_F(DbTest, GenericQueryRejectsUnknownFilterField) {
+    // 非本表字段 (orders 无 balance 列)
+    DzResultSet* rs = dz_db_query(db_, "order", "{\"balance\": 1}", 0);
+    EXPECT_EQ(nullptr, rs);
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+
+    // 注入型字段名: {"price IS NOT NULL AND 1=1 --": 1} 不能构造绕过 WHERE
+    rs = dz_db_query(db_, "order", "{\"price IS NOT NULL AND 1=1 --\": 1}", 0);
+    EXPECT_EQ(nullptr, rs);
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+
+    // 半角/特殊字符字段名同样拒绝
+    rs = dz_db_query(db_, "order", "{\"price)\": 1}", 0);
+    EXPECT_EQ(nullptr, rs);
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+
+    // commission 表 (无 seq 列) 的字段白名单独立: 不存在的列拒绝
+    rs = dz_db_query(db_, "commission", "{\"seq\": 1}", 0);
+    EXPECT_EQ(nullptr, rs);
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+
+    // 合法字段名不受影响 (回归: 白名单放行真实列)
+    rs = dz_db_query(db_, "order", "{\"account_id\": \"A\"}", 0);
+    ASSERT_NE(nullptr, rs) << dz_errmsg();
+    ASSERT_EQ(0, dz_resultset_status(rs));
+    dz_resultset_close(rs);
+}
+
+// 非法 filter 统一归 DZ_EC_INVALID_PARAM (与未知资源一致, 而非 DZ_EC_SYSTEM):
+// 非法 JSON / 非对象 / 未知算子。
+TEST_F(DbTest, GenericQueryInvalidFilterIsInvalidParam) {
+    // 非法 JSON 语法
+    DzResultSet* rs = dz_db_query(db_, "order", "{not json", 0);
+    EXPECT_EQ(nullptr, rs);
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+
+    // filter 非 JSON 对象 (数组)
+    rs = dz_db_query(db_, "order", "[1, 2]", 0);
+    EXPECT_EQ(nullptr, rs);
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+
+    // 未知算子
+    rs = dz_db_query(db_, "order", "{\"seq\": {\"$like\": 1}}", 0);
+    EXPECT_EQ(nullptr, rs);
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+
+    // $in 值非数组
+    rs = dz_db_query(db_, "order", "{\"seq\": {\"$in\": 5}}", 0);
+    EXPECT_EQ(nullptr, rs);
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+
+    // filter 值为非 string/int/float (对象内的布尔/对象)
+    rs = dz_db_query(db_, "order", "{\"account_id\": {\"$in\": [true]}}", 0);
+    EXPECT_EQ(nullptr, rs);
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+}
+
+// REAL 声明列归一化: 即使整数值以 INTEGER 存储 (SQLite REAL-affinity 空间优化),
+// get_float64 也必须返回正确浮点值而非 DBL_MAX。
+// orders.price/volume: price REAL 写整数值 3800 -> get_float64 返回 3800.0。
+TEST_F(DbTest, RealDeclaredColumnStoresIntegerValue) {
+    SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
+    {
+        // 整数值写进 REAL 列 (price REAL, 绑定整数 3800 -> INTEGER 存储)
+        SQLite::Statement ins(db,
+            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
+            " exchange_id, price, seq)"
+            " VALUES (?, '20260901', ?, ?, 'IF2401', 'CFFEX', ?, ?)");
+        ins.bind(1, "A");
+        ins.bind(2, static_cast<int64_t>(1001));
+        ins.bind(3, "r1");
+        ins.bind(4, static_cast<int64_t>(3800));
+        ins.bind(5, static_cast<int64_t>(1));
+        ins.exec();
+        // 整数下标也写进 REAL 列 (commission: REAL)
+        ins.reset();
+        ins.bind(1, "A");
+        ins.bind(2, static_cast<int64_t>(1002));
+        ins.bind(3, "r2");
+        ins.bind(4, static_cast<int64_t>(10));
+        ins.bind(5, static_cast<int64_t>(2));
+        ins.exec();
+    }
+    {
+        SQLite::Statement ins(db,
+            "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
+            " exchange_id, price, volume, seq)"
+            " VALUES (?, '20260901', ?, ?, 'IF2401', 'CFFEX', ?, ?, ?)");
+        ins.bind(1, "A");
+        ins.bind(2, "t1");
+        ins.bind(3, static_cast<int64_t>(1001));
+        ins.bind(4, static_cast<int64_t>(3810));
+        ins.bind(5, static_cast<int64_t>(2));
+        ins.bind(6, static_cast<int64_t>(1));
+        ins.exec();
+    }
+
+    // orders.price (索引 13) REAL 存整数 -> get_float64 应返回 3800.0 (非 DBL_MAX)
+    DzResultSet* rs = dz_db_query(db_, "order", "{\"account_id\": \"A\"}", 0);
+    ASSERT_NE(nullptr, rs) << dz_errmsg();
+    ASSERT_EQ(0, dz_resultset_status(rs));
+    ASSERT_TRUE(dz_resultset_next(rs));
+    EXPECT_DOUBLE_EQ(3800.0, dz_resultset_get_float64(rs, 13));  // price
+    EXPECT_NE(DBL_MAX, dz_resultset_get_float64(rs, 13));
+    ASSERT_TRUE(dz_resultset_next(rs));
+    EXPECT_DOUBLE_EQ(10.0, dz_resultset_get_float64(rs, 13));    // price=10 存整数
+    dz_resultset_close(rs);
+
+    // trades.price (索引 9) REAL 存整数 -> get_float64 返回 3810.0
+    rs = dz_db_query(db_, "trade", "{\"trade_id\": \"t1\"}", 0);
+    ASSERT_NE(nullptr, rs) << dz_errmsg();
+    ASSERT_EQ(0, dz_resultset_status(rs));
+    ASSERT_TRUE(dz_resultset_next(rs));
+    EXPECT_DOUBLE_EQ(3810.0, dz_resultset_get_float64(rs, 9));   // price
+    EXPECT_NE(DBL_MAX, dz_resultset_get_float64(rs, 9));
     dz_resultset_close(rs);
 }

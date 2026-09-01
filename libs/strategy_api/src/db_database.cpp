@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -45,6 +46,26 @@ DzColumnType declared_type_to_col_type(const char* declared) {
     return DZ_COL_TYPE_NULL;
 }
 
+/// 按声明类型读取列值: REAL 声明列即使运行时存整数 (SQLite 的 REAL-affinity 空间优化:
+/// 整数浮点值以 INTEGER 存储) 也归一化存 double, 保证 get_float64 返回正确值。
+ColumnValue read_column_value(const SQLite::Column& col, DzColumnType declared) {
+    const int t = col.getType();
+    if (t == SQLite::Null) {
+        return std::monostate{};
+    }
+    if (t == SQLite::INTEGER) {
+        const int64_t v = col.getInt64();
+        if (declared == DZ_COL_TYPE_FLOAT64) {
+            return static_cast<double>(v);
+        }
+        return v;
+    }
+    if (t == SQLite::FLOAT) {
+        return col.getDouble();
+    }
+    return col.getString();  // TEXT (含 BLOB 防御)
+}
+
 /// 通用: 执行 SELECT * 并将结果装入行容器。
 /// order_by_seq=true 时按 seq 升序 (回补路径依赖: 行序 = seq 序)。
 /// 异常抛给调用方。
@@ -68,10 +89,13 @@ void load_select_all(SQLite::Database& db,
     }
 
     const int col_count = stmt.getColumnCount();
+    std::vector<DzColumnType> declared_types;
+    declared_types.reserve(static_cast<size_t>(col_count));
     for (int i = 0; i < col_count; ++i) {
         ColumnMeta meta;
         meta.name = stmt.getColumnName(i);
         meta.type = declared_type_to_col_type(stmt.getColumnDeclaredType(i));
+        declared_types.push_back(meta.type);
         out->columns.push_back(std::move(meta));
     }
 
@@ -79,17 +103,7 @@ void load_select_all(SQLite::Database& db,
         Row row;
         row.reserve(static_cast<size_t>(col_count));
         for (int i = 0; i < col_count; ++i) {
-            const SQLite::Column col = stmt.getColumn(i);
-            const int t = col.getType();
-            if (t == SQLite::Null) {
-                row.emplace_back(std::monostate{});
-            } else if (t == SQLite::INTEGER) {
-                row.emplace_back(col.getInt64());
-            } else if (t == SQLite::FLOAT) {
-                row.emplace_back(col.getDouble());
-            } else {  // TEXT (含 BLOB 防御)
-                row.emplace_back(col.getString());
-            }
+            row.emplace_back(read_column_value(stmt.getColumn(i), declared_types[i]));
         }
         out->rows.push_back(std::move(row));
     }
@@ -125,7 +139,41 @@ const char* resource_to_table(const std::string_view q) {
     if (q == "trading_account") return "trading_accounts";
     if (q == "commission") return "commission_rates";
     if (q == "margin") return "margin_rates";
-    throw Exception(DZ_EC_INVALID_PARAM, "unknown query resource: %s", std::string(q).c_str());
+    throw Exception(DZ_EC_INVALID_PARAM, "unknown query resource: query={}", q);
+}
+
+/// 表 -> 可过滤字段白名单 (与 td_schema.cpp 各表真实列名一一对应)。
+/// filter 字段名必须先过本白名单再拼 SQL, 防注入 (值已参数绑定, 字段名只能 allowlist)。
+/// 表结构变更时此处一并更新。
+const std::set<std::string>& table_filterable_columns(const std::string_view table) {
+    static const std::set<std::string> kOrders = {"account_id", "trading_day", "order_id",
+        "order_ref", "external_order_id", "is_external", "instrument_id", "exchange_id",
+        "direction", "position_effect", "price_type", "status", "price", "volume",
+        "volume_traded", "volume_canceled", "insert_time", "update_time", "error_id",
+        "error_msg", "strategy_id", "remark", "seq"};
+    static const std::set<std::string> kTrades = {"account_id", "trading_day", "trade_id",
+        "order_id", "instrument_id", "exchange_id", "direction", "position_effect", "price",
+        "volume", "trade_time", "trade_date", "commission", "strategy_id", "seq"};
+    static const std::set<std::string> kPositions = {"account_id", "trading_day", "instrument_id",
+        "exchange_id", "direction", "volume", "frozen_volume", "today_volume", "yd_volume",
+        "price", "seq"};
+    static const std::set<std::string> kTradingAccounts = {"account_id", "trading_day", "balance",
+        "available", "frozen", "commission", "margin", "withdraw_quota", "deposit", "withdraw",
+        "seq"};
+    static const std::set<std::string> kCommissionRates = {"account_id", "instrument_id",
+        "product_code", "exchange_id", "open_ratio_by_money", "open_ratio_by_volume",
+        "close_ratio_by_money", "close_ratio_by_volume", "close_today_ratio_by_money",
+        "close_today_ratio_by_volume", "date"};
+    static const std::set<std::string> kMarginRates = {"account_id", "instrument_id",
+        "product_code", "exchange_id", "hedge_flag", "is_relative", "long_margin_ratio_by_money",
+        "long_margin_ratio_by_volume", "short_margin_ratio_by_money",
+        "short_margin_ratio_by_volume", "date"};
+    if (table == "orders") return kOrders;
+    if (table == "trades") return kTrades;
+    if (table == "positions") return kPositions;
+    if (table == "trading_accounts") return kTradingAccounts;
+    if (table == "commission_rates") return kCommissionRates;
+    return kMarginRates;
 }
 
 /// JSON 值 -> BindValue (字符串/整数/浮点)
@@ -139,7 +187,7 @@ BindValue json_to_bind_value(const nlohmann::json& v) {
     if (v.is_number_float()) {
         return v.get<double>();
     }
-    throw std::invalid_argument("filter value must be string/int/float");
+    throw Exception(DZ_EC_INVALID_PARAM, "filter value must be string/int/float");
 }
 
 /// 解析 filter JSON 对象 -> WHERE 子句 + 绑定值 (按出现顺序绑定 ?)
@@ -148,23 +196,37 @@ BindValue json_to_bind_value(const nlohmann::json& v) {
 ///   {"field": {"$gte":v,"$lt":v,...}}               -> field >= ? AND field < ?  (每算子)
 ///   {"field": {"$in":[a,b]}}                        -> field IN (?, ?)
 /// 多字段按 AND 组合。filter 为空 -> 无过滤。
-void build_filter_where(const std::string& filter, std::string* where, std::vector<BindValue>* values) {
+/// @param table 目标表 (用于字段名白名单校验; 字段必须为该表真实列, 否则 INVALID_PARAM)
+/// 非法 JSON / 未知算子 / 非本表字段 / 非对象 filter 均抛 INVALID_PARAM 异常。
+void build_filter_where(const std::string& table,
+                        const std::string& filter,
+                        std::string* where,
+                        std::vector<BindValue>* values) {
     if (filter.empty()) {
         where->clear();
         return;
     }
-    const nlohmann::json j = nlohmann::json::parse(filter);  // 非法 JSON 抛异常
-    if (!j.is_object()) {
-        throw std::invalid_argument("filter must be a JSON object");
+    nlohmann::json j;
+    try {
+        j = nlohmann::json::parse(filter);
+    } catch (const nlohmann::json::exception&) {
+        throw Exception(DZ_EC_INVALID_PARAM, "filter is not valid JSON");
     }
+    if (!j.is_object()) {
+        throw Exception(DZ_EC_INVALID_PARAM, "filter must be a JSON object");
+    }
+    const auto& columns = table_filterable_columns(table);
     std::vector<std::string> clauses;
     for (const auto& [field, cond] : j.items()) {
+        if (columns.find(field) == columns.end()) {
+            throw Exception(DZ_EC_INVALID_PARAM, "unknown filter field: field={}", field);
+        }
         if (cond.is_object()) {
             // 算子对象: {"$gte":v,"$lt":v,...} 或 {"$in":[..]}
             const auto in_it = cond.find("$in");
             if (in_it != cond.end()) {
                 if (!in_it->is_array()) {
-                    throw std::invalid_argument("$in must be an array");
+                    throw Exception(DZ_EC_INVALID_PARAM, "$in must be an array");
                 }
                 std::string placeholders;
                 for (size_t i = 0; i < in_it->size(); ++i) {
@@ -190,7 +252,7 @@ void build_filter_where(const std::string& filter, std::string* where, std::vect
                 } else if (op == "$lt") {
                     sql_op = "<";
                 } else {
-                    throw std::invalid_argument("unknown filter operator: " + op);
+                    throw Exception(DZ_EC_INVALID_PARAM, "unknown filter operator: op={}", op);
                 }
                 clauses.push_back(field + " " + std::string(sql_op) + " ?");
                 values->push_back(json_to_bind_value(val));
@@ -264,7 +326,7 @@ DbQueryResult db_generic_query(DzDatabase* db, const std::string& query, const s
     const char* table = resource_to_table(query);
     std::string where;
     std::vector<BindValue> bind_values;
-    build_filter_where(filter, &where, &bind_values);
+    build_filter_where(table, filter, &where, &bind_values);
     DbQueryResult out;
     load_select_all(*db->db, table, where, bind_values, order_by_seq, &out);
     return out;
