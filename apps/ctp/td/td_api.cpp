@@ -211,6 +211,10 @@ void TdApi::run() {
             try_recover_login();
         }
         schedule_auto_sched_timer();
+        // Task 6 (spec §4.2 查询失败降级补查): 排定 60s 间隔的 data resync 定时任务.
+        // 登录查询失败降级转 Ready 后, 对数据未完整账户补查持仓/资金直至成功.
+        // 启动即排定: 首个 Ready 账户 (若有缺项) 会在 60s 内得到补查.
+        schedule_data_resync();
         started_ = true;
     }
     while (running_) {

@@ -42,6 +42,7 @@
 #include "td/td_account_session_pure.h"
 #include "td/td_ctp_mapping.h"
 #include "td/td_events.h"
+#include "td/td_login_finalize.h"
 #include "td/td_offset_converter.h"
 #include "td/td_persist_writer.h"
 #include "td/td_prescan.h"
@@ -160,8 +161,20 @@ public:
     const TdStateMachine& state_machine() const noexcept { return state_machine_; }
 
     /// 设置当前交易日 (DzDate, 距纪元天数). 日切时由 TdApi 调用.
-    /// 同步到所有 PositionHolding 的 trading_day.
+    /// 同步到所有 PositionHolding 的 trading_day; 交易日切换时清空持仓镜像
+    /// (绝对态旧日镜像不得拦截新日首报, spec §4.1 跨日清空).
     void set_trading_day(int32_t trading_day);
+
+    /// 重新发起持仓/资金补查 (登录查询失败降级后的定时补查路径).
+    /// 仅 Ready 且此前查询未成功时生效; 无会话/非 Ready 时 no-op.
+    void resync_account_data();
+
+    /// 数据是否已完整 (持仓/资金双查询都成功). 供 TdApi 定时补查节流.
+    bool data_query_ok() const noexcept { return data_query_ok_; }
+
+    /// 重推各追加流最后一条 (委托/成交, 原 seq 直接写帧, 不落库不过滤器,
+    /// spec §4.2 "最后一条重推"). 由 TdApi 在 Ready 广播之后调用.
+    void repush_last_records();
 
     /// 注入独立只读连接提供器 (TdApi 注入, 供 §4.3 重连增量装载基准用; 可空).
     /// 返回 nullptr 表示库不可用, 增量装载降级 (保留现有基准).
@@ -223,6 +236,18 @@ private:
     void buffer_trade_rpt(const OnRtnTradeField& f);
     void replay_buffered_reports();
 
+    /// 发起持仓查询 (登录收尾阶段一, CTP 流控串行).
+    void req_qry_investor_position();
+    /// 发起资金查询 (登录收尾阶段二).
+    void req_qry_trading_account();
+    /// 双查询完成 (is_last 或失败降级) 后的统一收尾:
+    /// 缓冲重放 -> flush 屏障 -> on_instruments_loaded 转 Ready.
+    /// 若查询阶段未结束时 (双查询未齐) 调用 no-op (防御).
+    void finalize_login();
+
+    /// 尝试推进登录收尾状态机并执行对应阶段动作; 未达前置时停留.
+    void drive_finalizer();
+
     // === 成员 ===
     std::string account_id_;
     shm::OrderIdMeta& order_id_meta_;
@@ -250,6 +275,12 @@ private:
     std::unique_ptr<ReportFilter> report_filter_;
     /// 持仓绝对态镜像 (2002 写端 diff, spec §4.1).
     PositionMirror position_mirror_;
+    /// 登录收尾状态机 (spec §4.2): 双查询齐才可收尾, 失败降级不阻塞 Ready.
+    LoginFinalizer finalizer_;
+    /// 持仓/资金查询是否已成功 (供登录降级补查节流: 双查询都成功才置 true, spec §4.2).
+    bool position_query_ok_ = false;
+    bool account_query_ok_ = false;
+    bool data_query_ok_ = false;
     /// 上次装载水位: 断连时记录, 重连时增量装载 seq > 该值的行 (spec §4.3).
     uint64_t max_seq_at_disconnect_ = 0;
     /// 独立只读连接提供器 (TdApi 注入; 重连增量装载基准用, 可空则降级).
@@ -266,6 +297,9 @@ private:
     /// 缓冲回报 (LoadingInstruments 期间, 设计 §5.3)
     std::deque<OnRtnOrderField> buffered_orders_;
     std::deque<OnRtnTradeField> buffered_trades_;
+    /// 重放进行中标志: 重放时状态仍是 LoadingInstruments, on_rtn_order/trade 的
+    /// 缓冲分支须跳过, 否则重放会把这些回报重新入缓冲 (无限循环). Task 6.
+    bool replaying_ = false;
     static constexpr size_t kMaxBuffered = 100000;
 
     /// 定时器 id (0 = 无挂起)

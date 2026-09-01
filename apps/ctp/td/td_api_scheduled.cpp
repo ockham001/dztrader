@@ -126,6 +126,37 @@ void TdApi::on_sched_timer() {
     }
 }
 
+// ============================================================================
+// TD 数据同步补查 (spec §4.2): 登录查询失败降级转 Ready 后定时补查持仓/资金.
+// 60s 间隔, 成功一次后停止; 未成功前 positions/trading_accounts 表缺口由
+// 下次查询响应填充 (无变化即无帧, 故补查是缺口的唯一填充路径).
+// ============================================================================
+
+void TdApi::schedule_data_resync() {
+    timer_queue_.schedule_after_replace("td_data_resync", std::chrono::seconds(60),
+                                        [this]() { on_data_resync_timer(); });
+}
+
+void TdApi::on_data_resync_timer() {
+    try {
+        bool any_incomplete = false;
+        for (auto& [account_id, session] : sessions_) {
+            if (session->state() == TdState::Ready && !session->data_query_ok()) {
+                any_incomplete = true;
+                session->resync_account_data();
+                SPDLOG_INFO("td data resync | account={}", account_id);
+            }
+        }
+        if (any_incomplete) {
+            // 仍有未完整账户: 60s 后排定下一轮 (失败重试直至成功).
+            schedule_data_resync();
+        }
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("data resync timer failed | error=\"{}\"", e.what());
+        schedule_data_resync();  // 异常兜底: 继续重试, 避免补查静默终止
+    }
+}
+
 void TdApi::try_recover_login() {
     // --recover 崩溃恢复: 启动时若在会话区间内, 对所有 enabled 账户补登
     // 参考 md_api_ctp.cpp try_recover_login, 差异: td 多账户, 遍历 config_.accounts
