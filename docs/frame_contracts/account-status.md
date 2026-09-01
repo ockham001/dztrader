@@ -13,14 +13,14 @@
 | td 网关 | 写端（权威） | 读端（权威应答） |
 | master | 写端（兜底）+ 读端（建镜像） | 读端（兜底应答） |
 | 策略 SDK | 读端（全量透传 → `on_account_status`） | 写端（`dz_query_account_status`） |
-| dzweb | 不消费（无镜像、无 WS 映射） | 不消费 |
+| dzweb | 消费（TD 数据镜像 Ready/Offline 重置触发，详见《帧契约：td-data-sync》） | 不消费 |
 
 ---
 
 ## DZ_FRAME_ACCOUNT_STATUS
 
 **语义**：账户登录状态推送（td 内部 11 态聚合为三态）
-**数据流**：形态 5（总则 §4.2）——basic 广播帧（身份在 payload `account_id` + `gateway_name`）；写端 = td 网关（权威）与 master（兜底）；读端 = 策略 SDK（全量透传 → `on_account_status`）与 master（建镜像）；dzweb 不消费（无镜像、无 WS 映射）
+**数据流**：形态 5（总则 §4.2）——basic 广播帧（身份在 payload `account_id` + `gateway_name`）；写端 = td 网关（权威）与 master（兜底）；读端 = 策略 SDK（全量透传 → `on_account_status`）、master（建镜像）与 dzweb（消费 2018，TD 数据镜像重置触发，见《帧契约：td-data-sync》）
 **Payload**：struct `DzAccountStatus`（104B，真相源：`libs/strategy_api/include/dztrader/struct.h`，非 JSON；字段表不重复）
 
 **三态**（`DzAccountState`，真相源 `libs/strategy_api/include/dztrader/data_type.h`）：
@@ -59,7 +59,7 @@
 - master 兜底与 td 权威应答可能重复，消费方幂等取最新
 - 竞态窗口：td 启动快照未到时 master 可能假阴性 Offline（td 快照到达自愈）；td 崩溃到 master 补推之间策略可能已下单（Offline 仅通知，不改变订单路径）。td 退出后 2115 查询由 master 兜底回 Offline（`gateway_name` = ""）——不存在静默窗口
 
-**镜像**：不进 dzweb 镜像；master 维护内存镜像 `网关名→账户集` = **运行中网关当前管理的账户集**（非空 `gateway_name` 且非 Offline 帧加入镜像；Offline 帧从镜像移除——td 自身断开/退出推的 Offline 与 master 代推的 Offline 回流均使账户退出镜像，兜底应答回声 `gateway_name` = "" 不入镜像，防自锁）。td 退出（崩溃/停止/移除）推 Offline 后清镜像（新语义：已退出的 td 不再"管理"任何账户，保留镜像会抑制 2115 兜底、dead-td 下策略静默挂死）；重启后 td 快照（LoggingIn/Ready 帧）重建镜像
+**镜像**：不进 dzweb 镜像；master 维护内存镜像 `网关名→账户集` = **运行中网关当前管理的账户集**（非空 `gateway_name` 且非 Offline 帧加入镜像；Offline 帧从镜像移除——td 自身断开/退出推的 Offline 与 master 代推的 Offline 回流均使账户退出镜像，兜底应答回声 `gateway_name` = "" 不入镜像，防自锁）。td 退出（崩溃/停止/移除）推 Offline 后清镜像（新语义：已退出的 td 不再"管理"任何账户，保留镜像会抑制 2115 兜底、dead-td 下策略静默挂死）；重启后 td 快照（LoggingIn/Ready 帧）重建镜像。dzweb 的 TD 数据镜像（持仓/成交/委托/资金）经 2018 Ready 触发重建（清镜像 + 重查 td 库）、Offline 清空该账户镜像，语义见《帧契约：td-data-sync》
 
 ---
 
