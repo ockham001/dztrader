@@ -36,6 +36,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -394,7 +395,17 @@ protected:
             DecodedFrame df;
             df.type = view.type();
             std::string summary = std::to_string(static_cast<int>(df.type));
-            if (frame_is_basic_struct(df.type)) {
+            if (df.type == DZ_FRAME_ACCOUNT_STATUS &&
+                view.frame_size() >= sizeof(DzFrameHeader) + sizeof(DzAccountStatus)) {
+                // 账户状态 basic 广播帧 (契约 account-status): 定长 payload, 无扩展头,
+                // 拷出累积 (帧指针在下次 next_frame 失效)
+                DzAccountStatus status;
+                std::memcpy(&status, &view.payload<DzAccountStatus>(), sizeof(status));
+                account_status_frames_.push_back(status);
+                summary += " acct=" + std::string(status.account_id) +
+                           " gw=" + std::string(status.gateway_name) +
+                           " state=" + std::to_string(static_cast<int>(status.state));
+            } else if (frame_is_basic_struct(df.type)) {
                 summary += " basic";
             } else if (frame_has_inst(df.type)) {
                 df.instance_id = std::string(view.ext_inst_id());
@@ -475,6 +486,8 @@ protected:
     std::unique_ptr<shm::Reader> reader_;
     std::unique_ptr<shm::MultiWriter> writer_;
     std::vector<std::string> frame_summary_;
+    /// 契约 account-status: 排空中捕获的 2018 账户状态帧 payload (帧指针会失效, 拷出)
+    std::vector<DzAccountStatus> account_status_frames_;
 };
 
 /// 核心冒烟路径: 组合验证 4 条断言 (见设计 §3)
@@ -507,6 +520,27 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     const bool td_running = wait_until([&] { return saw_running("dztd_ctp"); }, 15000,
                                        send_query_snapshot);
     ASSERT_TRUE(td_running) << "dztd_ctp did not report Running within 15s";
+
+    // 1c-2. 账户状态回路: td 配置了账户 CTP001 但从不连接 (dztd_ctp.json stub)
+    //     -> td 启动读完配置应推 2018 Offline 帧 (契约 account-status 触发场景 1)。
+    //     2018 帧由 drain_available 统一捕获 (account_status_frames_); 启动帧可能
+    //     早于 reader 打开被错过, 但 QUERY_FULL_SNAPSHOT 触发 td 快照重推 Offline
+    //     (force=true), 故用既有 wait_until + 快照触发轮询窗口兜底 (10s 与本文件
+    //     其他轮询窗口一致; 负载下 3s 偏紧)。
+    const auto saw_account_offline = [&] {
+        (void)drain_available(*reader_);  // 排空并捕获 2018 payload 到 account_status_frames_
+        for (const auto& s : account_status_frames_) {
+            if (std::string(s.account_id) == "CTP001" && s.state == DZ_ACCOUNT_OFFLINE &&
+                std::string(s.gateway_name) == "dztd_ctp" && s.trading_day == 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const bool account_offline = wait_until(saw_account_offline, 10000, send_query_snapshot);
+    ASSERT_TRUE(account_offline)
+        << "dztd_ctp did not publish OFFLINE account status for configured CTP001";
+
     const bool webui_running = wait_until([&] { return saw_running("dzweb"); }, 20000,
                                           send_query_snapshot);
     ASSERT_TRUE(webui_running) << "dzweb did not report Running within 20s";
