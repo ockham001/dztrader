@@ -382,6 +382,21 @@ TEST_F(TdDataServiceTest, ReadyOneAccountPreservesOtherAccountWatermark) {
     ready_b.state = DZ_ACCOUNT_READY;
     feed_frame(router, DZ_FRAME_ACCOUNT_STATUS, ready_b);
 
+    // B Ready 后 B 的 W 不得被 A 污染: B 无 DB 快照 → 不设 W (等价 0 全放行)。
+    // B 快照外合法帧 seq=5 必须准入; 若 W 计算遍历整个镜像把 A 的 seq=5 误赋给 B (发现 3),
+    // seq=5 会被误判"快照已含"过滤 → B 缺条。
+    DzPositionInfo p_b{};
+    dztrader::copy_string(p_b.account_id, "CTP002", true);
+    dztrader::copy_string(p_b.instrument_id, "IF2612", true);
+    dztrader::copy_string(p_b.exchange_id, "CFFEX", true);
+    p_b.direction = DZ_DIRECTION_LONG;
+    p_b.volume = 6;
+    p_b.seq = 5;
+    feed_frame(router, DZ_FRAME_POSITION_INFO, p_b);
+    ASSERT_EQ(2u, svc.positions().size());  // DB 装载的 A IF2606 + B IF2612 (B 帧未误过滤)
+    EXPECT_STREQ(svc.positions()[0].account_id, "CTP001");
+    EXPECT_STREQ(svc.positions()[1].account_id, "CTP002");
+
     // A 帧 seq=5 (≤ W=5, 快照已含) → 必须跳过: 镜像不增。
     // 若 B 整库重建把 A 的 W 冲成 0, seq=5 会被准入 → 镜像多一条 (幽灵抑制的反面)。
     DzPositionInfo p_dup{};
@@ -392,7 +407,7 @@ TEST_F(TdDataServiceTest, ReadyOneAccountPreservesOtherAccountWatermark) {
     p_dup.volume = 9;
     p_dup.seq = 5;
     feed_frame(router, DZ_FRAME_POSITION_INFO, p_dup);
-    EXPECT_EQ(1u, svc.positions().size());  // 仅 DB 装载的 IF2606, seq=5 被过滤
+    EXPECT_EQ(2u, svc.positions().size());  // A IF2606 + B IF2612, A 的 seq=5 被过滤
 
     // A 帧 seq=6 (> W=5) → 仍准入。
     DzPositionInfo p_new{};
@@ -403,7 +418,7 @@ TEST_F(TdDataServiceTest, ReadyOneAccountPreservesOtherAccountWatermark) {
     p_new.volume = 4;
     p_new.seq = 6;
     feed_frame(router, DZ_FRAME_POSITION_INFO, p_new);
-    EXPECT_EQ(2u, svc.positions().size());
+    EXPECT_EQ(3u, svc.positions().size());
 }
 
 // 发现 2 回归 (评审 Important): 库不可用 (路径空) 降级后不得保留旧 W — W=0 全放行,

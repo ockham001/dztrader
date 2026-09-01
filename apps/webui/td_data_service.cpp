@@ -333,22 +333,33 @@ void TdDataService::rebuild(const std::string& account_id) {
 
     // 3. 设该账户新 W (spec §5.1/§2.1: W = 该账户 MAX(seq), 账户级独立水位; 过滤 seq ≤ W 的
     //    后续帧 — 快照已含)。四表 (委托/成交/持仓/资金) 共享一个计数器, 故取四表最大值。
+    //    只累加触发账户行: 镜像含他账户保留行 (rebuild 只清/只重建触发账户), 若遍历整个
+    //    镜像会把其他账户 seq 的 max 误赋给触发账户 → 触发账户 W 虚增, 其快照外合法帧被误
+    //    判"快照已含"过滤 → 缺条 (发现 3 回归)。
     //    镜像中无该账户行 = DB 无快照 → 不设 W (等价 W=0 全放行)。
     uint64_t account_max_seq = 0;
     const auto accumulate = [&account_max_seq](uint64_t seq) {
         account_max_seq = std::max(account_max_seq, seq);
     };
     for (const auto& p : positions_) {
-        accumulate(p.seq);
+        if (account_id == p.account_id) {
+            accumulate(p.seq);
+        }
     }
     for (const auto& a : trading_accounts_) {
-        accumulate(a.seq);
+        if (account_id == a.account_id) {
+            accumulate(a.seq);
+        }
     }
     for (const auto& o : orders_) {
-        accumulate(o.seq);
+        if (account_id == o.account_id) {
+            accumulate(o.seq);
+        }
     }
     for (const auto& t : trades_) {
-        accumulate(t.seq);
+        if (account_id == t.account_id) {
+            accumulate(t.seq);
+        }
     }
     if (account_max_seq > 0) {
         gate_.set_watermark(account_id, account_max_seq);
