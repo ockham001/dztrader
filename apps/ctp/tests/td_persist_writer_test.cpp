@@ -393,5 +393,186 @@ TEST_F(TdPersistWriterTest, QueueLimitBlocksEnqueue) {
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders"), 3);
 }
 
+// ============================================================================
+// flush 屏障 (FIFO 哨兵: 入队哨兵保证此前任务先提交)
+// ============================================================================
+
+TEST_F(TdPersistWriterTest, FlushWaitsForPriorTasksCommitted) {
+    {
+        PersistWriter w(db_path_);
+        w.open();
+        w.start_writer();
+
+        OrderRecord r1{};
+        r1.base.order_id = 1;
+        std::strcpy(r1.base.account_id, "acc1");
+        std::strcpy(r1.trading_day, "20260901");
+        std::strcpy(r1.order_ref, "000001");
+        std::strcpy(r1.base.instrument_id, "IF2506");
+        std::strcpy(r1.base.exchange_id, "CFFEX");
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = r1});
+
+        OrderRecord r2 = r1;
+        r2.base.order_id = 2;
+        std::strcpy(r2.order_ref, "000002");
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = r2});
+
+        auto token = w.enqueue_flush_signal();
+        EXPECT_TRUE(w.wait_flush(token, std::chrono::seconds(2)));
+        // 此刻 DB 已含 2 行 (此前任务必已提交 — FIFO 哨兵语义)
+        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders"), 2);
+
+        w.stop();
+    }
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders"), 2);
+}
+
+// stop() 后入队丢弃路径须立即 set: 哨兵被"消费"即视为提交完成, wait 恒 true
+TEST_F(TdPersistWriterTest, FlushAfterStopSucceedsImmediately) {
+    PersistWriter w(db_path_);
+    w.open();
+    w.start_writer();
+    auto token = w.enqueue_flush_signal();
+    EXPECT_TRUE(w.wait_flush(token, std::chrono::seconds(2)));
+    w.stop();
+    // stop() 后再入队哨兵: 丢弃分支须立即 set_value, 不得死锁/超时假负
+    auto token2 = w.enqueue_flush_signal();
+    EXPECT_TRUE(w.wait_flush(token2, std::chrono::milliseconds(500)));
+}
+
+// ============================================================================
+// positions / trading_accounts 新 Kind
+// ============================================================================
+
+namespace {
+
+/// 构造持仓记录 (DzPositionInfo). direction: DZ_DIRECTION_LONG=1 / SHORT=-1.
+DzPositionInfo make_position(std::int64_t volume, std::int64_t seq, int8_t direction) {
+    DzPositionInfo p{};
+    std::strcpy(p.instrument_id, "IF2506");
+    std::strcpy(p.exchange_id, "CFFEX");
+    std::strcpy(p.account_id, "acc1");
+    p.volume = volume;
+    p.frozen_volume = 0;
+    p.price = 3900.0;
+    p.yd_volume = 0;
+    p.today_volume = volume;
+    p.direction = direction;
+    p.seq = static_cast<uint64_t>(seq);
+    return p;
+}
+
+/// 构造账户资金记录 (DzTradingAccount).
+DzTradingAccount make_taccount(double balance, std::uint64_t seq) {
+    DzTradingAccount a{};
+    std::strcpy(a.account_id, "acc1");
+    a.balance = balance;
+    a.available = balance;
+    a.frozen = 0;
+    a.commission = 0;
+    a.margin = 0;
+    a.withdraw_quota = balance;
+    a.deposit = 0;
+    a.withdraw = 0;
+    a.seq = seq;
+    return a;
+}
+
+}  // namespace
+
+// PositionRebuild 单事务重灌: 清该账户旧日行 + upsert 本组 (spec §3.2 原子性)
+TEST_F(TdPersistWriterTest, PositionRebuildAtomicClearsStaleDays) {
+    // DzDate (距纪元天数) = "YYYYMMDD" 的 days-since-epoch, 与生产 trading_day_ 语义一致.
+    // 20696=20260831, 20697=20260901 (见 date_time Date{2026,8,31}.days_since_epoch()).
+    constexpr int64_t kOldDay = 20696;
+    constexpr int64_t kNewDay = 20697;
+    {
+        PersistWriter w(db_path_);
+        w.open();
+        w.start_writer();
+
+        // 先灌 trading_day=20260831 的 1 行 (旧日)
+        {
+            auto p = make_position(5, 10, DZ_DIRECTION_LONG);
+            PersistTask t{.kind = PersistTask::Kind::Position,
+                          .data = std::vector<DzPositionInfo>{p},
+                          .account_id = "acc1",
+                          .trading_day = kOldDay};
+            w.enqueue(std::move(t));
+        }
+        {
+            auto token = w.enqueue_flush_signal();
+            EXPECT_TRUE(w.wait_flush(token, std::chrono::seconds(2)));
+        }
+        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 1);
+
+        // enqueue PositionRebuild{day=20260901, 2 行} — 同账户两个不同 (instrument, direction)
+        {
+            std::vector<DzPositionInfo> group;
+            group.push_back(make_position(8, 11, DZ_DIRECTION_LONG));   // IF2506 多
+            auto rb = make_position(3, 12, DZ_DIRECTION_SHORT);         // rb2510 空
+            std::strcpy(rb.instrument_id, "rb2510");
+            std::strcpy(rb.exchange_id, "SHFE");
+            group.push_back(rb);
+            PersistTask t{.kind = PersistTask::Kind::PositionRebuild,
+                          .data = std::move(group),
+                          .account_id = "acc1",
+                          .trading_day = kNewDay};
+            w.enqueue(std::move(t));
+        }
+        {
+            auto token = w.enqueue_flush_signal();
+            EXPECT_TRUE(w.wait_flush(token, std::chrono::seconds(2)));
+        }
+
+        // flush 后: 旧日行已删, 新 2 行在 (同事务原子切换, 无中间态)
+        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 2);
+        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE trading_day='20260831'"), 0);
+        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE trading_day='20260901'"), 2);
+
+        w.stop();
+    }
+}
+
+// Kind::Position 单行 upsert (盘中有变化时走它); Kind::TradingAccount 同理
+TEST_F(TdPersistWriterTest, SingleUpsertPositionAndTradingAccount) {
+    constexpr int64_t kNewDay = 20697;  // DzDate: 20260901
+    {
+        PersistWriter w(db_path_);
+        w.open();
+        w.start_writer();
+
+        {
+            auto p = make_position(5, 20, DZ_DIRECTION_LONG);
+            PersistTask t{.kind = PersistTask::Kind::Position,
+                          .data = std::vector<DzPositionInfo>{p},
+                          .account_id = "acc1",
+                          .trading_day = kNewDay};
+            w.enqueue(std::move(t));
+        }
+        {
+            auto a = make_taccount(1000000.0, 21);
+            PersistTask t{.kind = PersistTask::Kind::TradingAccount,
+                          .data = a,
+                          .account_id = "acc1",
+                          .trading_day = kNewDay};
+            w.enqueue(std::move(t));
+        }
+        {
+            auto token = w.enqueue_flush_signal();
+            EXPECT_TRUE(w.wait_flush(token, std::chrono::seconds(2)));
+        }
+
+        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 1);
+        EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE instrument_id='IF2506'"), 5);
+        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE account_id='acc1'"), 1);
+        // balance REAL -> int 截断断言 1000000
+        EXPECT_EQ(scalar_int("SELECT balance FROM trading_accounts WHERE account_id='acc1'"),
+                  1000000);
+
+        w.stop();
+    }
+}
+
 }  // namespace
 }  // namespace dztrader::ctp

@@ -2,12 +2,15 @@
 #define DZTRADER_CTP_TD_PERSIST_WRITER_H_
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <variant>
 
 #include <SQLiteCpp/Database.h>
@@ -20,6 +23,8 @@
 namespace dztrader::ctp {
 
 /// 持久化任务 (队列元素, POD payload 避免 SPI 线程 to_json 抛异常).
+/// 注意: data 必须是第二个成员 — td_account_session.cpp 用位置聚合初始化
+/// PersistTask{Kind::X, rec}, 新增成员只能追加在尾部.
 struct PersistTask {
     enum class Kind : uint8_t {
         Order,
@@ -27,10 +32,25 @@ struct PersistTask {
         MarginRate,
         CommissionRate,
         Instrument,
+        Position,          // 单行绝对态 upsert (盘中有变化时走它)
+        TradingAccount,    // 单行绝对态 upsert
+        PositionRebuild,   // 单事务重灌: 清该账户旧日行 + upsert 本组 (spec §3.2)
+        FlushSignal,       // FIFO 哨兵: 此前任务必已提交 (flush 屏障)
     } kind;
 
+    /// Position / PositionRebuild / TradingAccount 用 (绝对态). TradingAccount 用单记录.
     std::variant<OrderRecord, TradeRecord, MarginRateRecord,
-                 CommissionRateRecord, InstrumentRecord> data;
+                 CommissionRateRecord, InstrumentRecord, std::vector<DzPositionInfo>,
+                 DzTradingAccount>
+        data;
+
+    /// PositionRebuild / FlushSignal 用: 目标账户.
+    std::string account_id;
+    /// Position / PositionRebuild / TradingAccount 用: 交易日 (DzDate 距纪元天数).
+    /// PositionRebuild 也用作 DELETE 的旧日排除基准.
+    int64_t trading_day = 0;
+    /// FlushSignal 用: enqueue_flush_signal 返回的哨兵 token.
+    uint64_t flush_token = 0;
 };
 
 /// 专用 SQLite Writer 线程 + 队列 (设计 §13.8-13.11).
@@ -90,6 +110,15 @@ public:
     /// shutdown 中 (running_=false) 直接丢弃 (不阻塞).
     void enqueue(PersistTask task);
 
+    /// 入队 flush 哨兵 (线程安全): FIFO 保证此前任务必已提交.
+    /// 返回自增 token, 供 wait_flush 使用. stop() 后入队丢弃路径会立即 set_value,
+    /// wait_flush 恒返回 true (哨兵被"消费"即视为提交完成语义).
+    uint64_t enqueue_flush_signal();
+
+    /// 等待哨兵被处理 (内部 promise/future). 哨兵被消费 (提交完成 或 stop 丢弃) 前阻塞.
+    /// 超时返回 false.
+    bool wait_flush(uint64_t token, std::chrono::milliseconds timeout);
+
     /// 获取数据库连接 (供主线程在 open() 后 start_writer() 前查询用).
     /// start_writer() 后调用抛 std::runtime_error (Writer 线程独占 db).
     SQLite::Database& db();
@@ -111,6 +140,13 @@ private:
     void bind_margin_rate(SQLite::Statement& stmt, const MarginRateRecord& r);
     void bind_commission_rate(SQLite::Statement& stmt, const CommissionRateRecord& r);
     void bind_instrument(SQLite::Statement& stmt, const InstrumentRecord& r);
+    void bind_position(SQLite::Statement& stmt, const DzPositionInfo& r,
+                       const std::string& trading_day);
+    void bind_trading_account(SQLite::Statement& stmt, const DzTradingAccount& r,
+                              const std::string& trading_day);
+
+    /// 以 YYYYMMDD 文本生成 trading_day (DzDate 距纪元天数 -> "YYYYMMDD").
+    static std::string format_trading_day(int64_t days);
 
     /// 析构兜底: 短超时 (1s) 等待 Writer 退出, 不 quick_exit.
     /// 主流程应显式调 stop() (30s 超时 + quick_exit 兜底).
@@ -125,6 +161,9 @@ private:
     std::unique_ptr<SQLite::Statement> stmt_insert_margin_;
     std::unique_ptr<SQLite::Statement> stmt_insert_commission_;
     std::unique_ptr<SQLite::Statement> stmt_insert_instrument_;
+    std::unique_ptr<SQLite::Statement> stmt_insert_position_;
+    std::unique_ptr<SQLite::Statement> stmt_insert_taccount_;
+    std::unique_ptr<SQLite::Statement> stmt_delete_position_stale_;
 
     std::queue<PersistTask> queue_;
     std::mutex mtx_;
@@ -138,6 +177,10 @@ private:
     bool writer_exited_ = false;             // Writer 线程已退出 (受 mtx_ 保护)
     bool explicit_stopped_ = false;          // I4: stop() 已显式调用, 析构 no-op
     std::thread writer_thread_;
+
+    /// flush 哨兵: token -> promise (Writer 线程 set_value, stop 丢弃路径同). 受 mtx_ 保护.
+    uint64_t next_flush_token_ = 1;
+    std::unordered_map<uint64_t, std::promise<void>> pending_flushes_;
 };
 
 }  // namespace dztrader::ctp

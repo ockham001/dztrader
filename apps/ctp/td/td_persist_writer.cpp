@@ -14,6 +14,7 @@
 
 #include <dztrader/db/connection.h>
 #include <dztrader/db/migration.h>
+#include <dztrader/date_time/date_time.h>  // Date (DzDate 距纪元天数 -> YYYYMMDD)
 
 namespace dztrader::ctp {
 
@@ -64,6 +65,24 @@ constexpr const char* kInsertInstrumentSql =
     "    min_order_volume, max_order_volume, option_type, option_strike,"
     "    option_underlying, option_listed, option_expiry, update_day"
     ") VALUES (?,?,?,?,?,?,  ?,?,?,?,  ?,?,?,?)";
+
+// positions (spec §3.2): key = (account_id, instrument_id, direction), 绝对态 upsert
+constexpr const char* kInsertPositionSql =
+    "INSERT OR REPLACE INTO positions ("
+    "    account_id, trading_day, instrument_id, exchange_id, direction,"
+    "    volume, frozen_volume, today_volume, yd_volume, price, seq"
+    ") VALUES (?,?,?,?,?,  ?,?,?,?,?, ?)";
+
+// trading_accounts: key = account_id, 绝对态 upsert
+constexpr const char* kInsertTradingAccountSql =
+    "INSERT OR REPLACE INTO trading_accounts ("
+    "    account_id, trading_day, balance, available, frozen, commission,"
+    "    margin, withdraw_quota, deposit, withdraw, seq"
+    ") VALUES (?,?,?,?,?,?,  ?,?,?,?, ?)";
+
+// PositionRebuild 单事务重灌: 清该账户旧日行 (spec §3.2 原子切换)
+constexpr const char* kDeletePositionStaleSql =
+    "DELETE FROM positions WHERE account_id=? AND trading_day!=?";
 
 }  // namespace
 
@@ -128,6 +147,10 @@ void PersistWriter::prepare_statements(SQLite::Database& db) {
     stmt_insert_margin_ = std::make_unique<SQLite::Statement>(db, kInsertMarginRateSql);
     stmt_insert_commission_ = std::make_unique<SQLite::Statement>(db, kInsertCommissionRateSql);
     stmt_insert_instrument_ = std::make_unique<SQLite::Statement>(db, kInsertInstrumentSql);
+    stmt_insert_position_ = std::make_unique<SQLite::Statement>(db, kInsertPositionSql);
+    stmt_insert_taccount_ = std::make_unique<SQLite::Statement>(db, kInsertTradingAccountSql);
+    stmt_delete_position_stale_ =
+        std::make_unique<SQLite::Statement>(db, kDeletePositionStaleSql);
 }
 
 void PersistWriter::start_writer() {
@@ -179,6 +202,9 @@ void PersistWriter::stop() {
     stmt_insert_margin_.reset();
     stmt_insert_commission_.reset();
     stmt_insert_instrument_.reset();
+    stmt_insert_position_.reset();
+    stmt_insert_taccount_.reset();
+    stmt_delete_position_stale_.reset();
     db_.reset();
 
     {
@@ -228,6 +254,9 @@ void PersistWriter::stop_best_effort() {
     stmt_insert_margin_.reset();
     stmt_insert_commission_.reset();
     stmt_insert_instrument_.reset();
+    stmt_insert_position_.reset();
+    stmt_insert_taccount_.reset();
+    stmt_delete_position_stale_.reset();
     db_.reset();
 
     {
@@ -243,12 +272,53 @@ void PersistWriter::enqueue(PersistTask task) {
         std::unique_lock<std::mutex> lk(mtx_);
         cv_full_.wait(lk, [this] { return queue_.size() < max_queue_size_ || shutdown_.load(); });
         if (shutdown_.load()) {
-            // stop() 已调用, 丢弃 (区别于 running_=false 的未启动状态)
+            // stop() 已调用, 丢弃 (区别于 running_=false 的未启动状态).
+            // FlushSignal 丢弃分支须立即 set_value: 丢弃 = 队列已无此前任务,
+            // wait_flush 恒返回 true (哨兵被"消费"即视为提交完成语义), 避免死 token.
+            if (task.kind == PersistTask::Kind::FlushSignal) {
+                auto token = next_flush_token_++;
+                pending_flushes_[token].set_value();
+                pending_flushes_.erase(token);
+            }
             return;
         }
         queue_.push(std::move(task));
     }
     cv_empty_.notify_one();
+}
+
+uint64_t PersistWriter::enqueue_flush_signal() {
+    std::unique_lock<std::mutex> lk(mtx_);
+    if (shutdown_.load()) {
+        // stop() 后: 丢弃路径语义, 返回一个"已消费"哨兵 token (wait_flush 恒 true).
+        auto token = next_flush_token_++;
+        pending_flushes_[token].set_value();
+        pending_flushes_.erase(token);
+        return token;
+    }
+    auto token = next_flush_token_++;
+    pending_flushes_.emplace(token, std::promise<void>{});
+    queue_.push(PersistTask{.kind = PersistTask::Kind::FlushSignal,
+                            .account_id = "",
+                            .flush_token = token});
+    lk.unlock();
+    cv_empty_.notify_one();
+    return token;
+}
+
+bool PersistWriter::wait_flush(uint64_t token, std::chrono::milliseconds timeout) {
+    std::future<void> fut;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        auto it = pending_flushes_.find(token);
+        if (it == pending_flushes_.end()) {
+            // 未知 token: 视为已消费 (stop 丢弃路径返回的 token 或非法值)
+            return true;
+        }
+        fut = it->second.get_future();
+    }
+    // promise 在 Writer 线程 set_value (或 stop 丢弃路径). 超时返回 false.
+    return fut.wait_for(timeout) == std::future_status::ready;
 }
 
 SQLite::Database& PersistWriter::db() {
@@ -373,6 +443,48 @@ void PersistWriter::execute_batch(SQLite::Database& db, std::vector<PersistTask>
                 bind_instrument(*stmt_insert_instrument_, std::get<InstrumentRecord>(task.data));
                 stmt_insert_instrument_->exec();
                 break;
+            case PersistTask::Kind::Position: {
+                // 单行绝对态 upsert (盘中有变化时走它). task.trading_day 是当前交易日.
+                const auto& row = std::get<std::vector<DzPositionInfo>>(task.data).front();
+                stmt_insert_position_->reset();
+                bind_position(*stmt_insert_position_, row, format_trading_day(task.trading_day));
+                stmt_insert_position_->exec();
+                break;
+            }
+            case PersistTask::Kind::TradingAccount: {
+                const auto& row = std::get<DzTradingAccount>(task.data);
+                stmt_insert_taccount_->reset();
+                bind_trading_account(*stmt_insert_taccount_, row,
+                                     format_trading_day(task.trading_day));
+                stmt_insert_taccount_->exec();
+                break;
+            }
+            case PersistTask::Kind::PositionRebuild: {
+                // 单事务重灌 (spec §3.2 原子性): 清该账户旧日行 + upsert 本组行,
+                // 外部读者只见原子切换. 外层 writer_loop 已有事务, 此处复用.
+                auto day = format_trading_day(task.trading_day);
+                stmt_delete_position_stale_->reset();
+                stmt_delete_position_stale_->bind(1, task.account_id);
+                stmt_delete_position_stale_->bind(2, day);
+                stmt_delete_position_stale_->exec();
+                for (const auto& row : std::get<std::vector<DzPositionInfo>>(task.data)) {
+                    stmt_insert_position_->reset();
+                    bind_position(*stmt_insert_position_, row, day);
+                    stmt_insert_position_->exec();
+                }
+                break;
+            }
+            case PersistTask::Kind::FlushSignal: {
+                // FIFO 哨兵: 此前任务已在本批/前批提交, set_value 唤醒 wait_flush.
+                // promise 由 Writer 线程 set, 保证"哨兵被处理"= "此前任务提交完成".
+                std::lock_guard<std::mutex> lk(mtx_);
+                auto it = pending_flushes_.find(task.flush_token);
+                if (it != pending_flushes_.end()) {
+                    it->second.set_value();
+                    pending_flushes_.erase(it);
+                }
+                break;
+            }
         }
     }
 }
@@ -469,6 +581,42 @@ void PersistWriter::bind_instrument(SQLite::Statement& stmt, const InstrumentRec
     stmt.bind(12, r.base.option_listed);
     stmt.bind(13, r.base.option_expiry);
     stmt.bind(14, r.update_day);
+}
+
+std::string PersistWriter::format_trading_day(int64_t days) {
+    // DzDate (距纪元天数) -> "YYYYMMDD" 文本 (positions/trading_accounts.trading_day 列)
+    dztrader::Date d{static_cast<int32_t>(days)};
+    return std::format("{:04d}{:02d}{:02d}", d.year(), d.month(), d.day());
+}
+
+void PersistWriter::bind_position(SQLite::Statement& stmt, const DzPositionInfo& r,
+                                  const std::string& trading_day) {
+    stmt.bind(1, r.account_id);
+    stmt.bind(2, trading_day);
+    stmt.bind(3, r.instrument_id);
+    stmt.bind(4, r.exchange_id);
+    stmt.bind(5, static_cast<int>(r.direction));
+    stmt.bind(6, r.volume);
+    stmt.bind(7, r.frozen_volume);
+    stmt.bind(8, r.today_volume);
+    stmt.bind(9, r.yd_volume);
+    stmt.bind(10, r.price);
+    stmt.bind(11, static_cast<int64_t>(r.seq));
+}
+
+void PersistWriter::bind_trading_account(SQLite::Statement& stmt, const DzTradingAccount& r,
+                                         const std::string& trading_day) {
+    stmt.bind(1, r.account_id);
+    stmt.bind(2, trading_day);
+    stmt.bind(3, r.balance);
+    stmt.bind(4, r.available);
+    stmt.bind(5, r.frozen);
+    stmt.bind(6, r.commission);
+    stmt.bind(7, r.margin);
+    stmt.bind(8, r.withdraw_quota);
+    stmt.bind(9, r.deposit);
+    stmt.bind(10, r.withdraw);
+    stmt.bind(11, static_cast<int64_t>(r.seq));
 }
 
 }  // namespace dztrader::ctp
