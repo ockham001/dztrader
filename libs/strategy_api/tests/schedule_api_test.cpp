@@ -455,12 +455,15 @@ TEST_F(ScheduleApiTest, TruncatedOrderReportIntercepted) {
 
 TEST_F(ScheduleApiTest, OtherStrategyReportFloodYieldsThenOwnDelivered) {
     // 33 条他策略 ORDER_REPORT (被拦截) + 1 条本策略 ORDER_REPORT
+    // 注: 各帧须带递增 seq (账户级 ingest 去重按 (account_id, seq), 同值会被判已应用拦截)
     for (int i = 0; i < 33; ++i) {
         DzOrderReport rpt{};
+        rpt.seq = static_cast<uint64_t>(i + 1);
         dztrader::copy_string(rpt.strategy_id, "other_strategy", true);
         emit_struct(DZ_FRAME_ORDER_REPORT, rpt);
     }
     DzOrderReport own{};
+    own.seq = 100;
     dztrader::copy_string(own.strategy_id, dz_strategy_id(ctx_), true);
     emit_struct(DZ_FRAME_ORDER_REPORT, own);
 

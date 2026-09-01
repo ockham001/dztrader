@@ -3,18 +3,23 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
+#include <unordered_map>
 #include <unordered_set>
 #include <string>
 #include <string_view>
 #include <cfloat>
 #include <chrono>
+#include <format>
 #include <limits>
 #include <memory>
+#include <utility>
+#include <variant>
 #include <vector>
 
 #include <dztrader/error.h>
 #include <dztrader/data_type.h>
 #include <dztrader/core/last_error.h>
+#include <dztrader/core/path.h>
 #include <dztrader/core/random.h>
 #include <dztrader/date_time/date_time.h>
 #include <dztrader/shm/frame_view.h>
@@ -44,6 +49,356 @@ DzContext*& context_registry() {
     return context;
 }
 
+// ── TD ingest 接线辅助 (契约 strategy "SDK ingest 过滤职责") ──────────────
+// 本组函数仅服务 dz_init (水位装载) / dispatch_frame (断档回补) /
+// dz_next_event (replay 派发), 均走 ctx 参数, 不触碰 context_registry。
+
+/// 缺省 td 网关名 (SDK 侧库路径发现, spec §3.3 库路径约定; 策略配置传入留后续)。
+constexpr const char* kDefaultTdGatewayName = "dztd_ctp";
+
+using strategy_api_internal::DbQueryResult;
+using strategy_api_internal::Row;
+using strategy_api_internal::ColumnValue;
+
+/// 行内取字符串列 (variant 无值/非字符串返回空串)
+const char* row_string(const Row& row, size_t index) {
+    if (index >= row.size()) {
+        return "";
+    }
+    const auto* s = std::get_if<std::string>(&row[index]);
+    return s ? s->c_str() : "";
+}
+
+/// 行内取整数列 (variant 无值/非 int64 返回 0)
+int64_t row_int64(const Row& row, size_t index) {
+    if (index >= row.size()) {
+        return 0;
+    }
+    const auto* v = std::get_if<int64_t>(&row[index]);
+    return v ? *v : 0;
+}
+
+/// 行内取浮点列 (variant 无值/非 double 返回 0)
+double row_double(const Row& row, size_t index) {
+    if (index >= row.size()) {
+        return 0.0;
+    }
+    const auto* v = std::get_if<double>(&row[index]);
+    return v ? *v : 0.0;
+}
+
+/// 列名 -> 索引 + 值读取的轻量包装 (避免每行重复查列名)
+struct ColumnMap {
+    explicit ColumnMap(const DbQueryResult& r) {
+        for (size_t i = 0; i < r.columns.size(); ++i) {
+            index_by_name.emplace(r.columns[i].name, i);
+        }
+    }
+    size_t idx(const std::string& name, size_t fallback = SIZE_MAX) const {
+        const auto it = index_by_name.find(name);
+        return it == index_by_name.end() ? fallback : it->second;
+    }
+    std::unordered_map<std::string, size_t> index_by_name;
+};
+
+/// 只读打开 td 库: <DZTRADER_HOME>/flow/<td网关名>/<td网关名>.db
+/// 失败 (库不存在/打不开) 返回 nullptr (调用方降级不过滤)。
+std::unique_ptr<DzDatabase> open_td_db() {
+    const auto db_path = dztrader::paths::home() / "flow" / kDefaultTdGatewayName /
+                         (std::string(kDefaultTdGatewayName) + ".db");
+    try {
+        return strategy_api_internal::db_open_readonly(db_path.string());
+    } catch (const Exception& e) {
+        dz_diag((std::string("td ingest db unavailable (degraded, no filtering): ") + e.what())
+                    .c_str());
+    } catch (const std::exception& e) {
+        dz_diag((std::string("td ingest db unavailable (degraded, no filtering): ") + e.what())
+                    .c_str());
+    } catch (...) {
+        dz_diag("td ingest db unavailable (degraded, no filtering): unknown exception");
+    }
+    return nullptr;
+}
+
+/// 装载全部账户水位: 四表无过滤查询, 按账户求 MAX(seq) (spec §5.1)。
+/// 单表查询失败 (表缺失/库不完整) 跳过该表, 不整体失败 (降级 = 部分表无快照水位,
+/// 该表数据经帧全量放行, 回补时同样按表容错)。
+void load_all_watermarks(DzContext* ctx) {
+    try {
+        auto db = open_td_db();
+        if (db == nullptr) {
+            return;
+        }
+        std::unordered_map<std::string, uint64_t> max_seq;
+        for (const char* resource : {"order", "trade", "position", "trading_account"}) {
+            DbQueryResult result;
+            try {
+                result = strategy_api_internal::db_generic_query(db.get(), resource, "");
+            } catch (const std::exception&) {
+                continue;  // 表缺失/查询失败: 跳过该表, 不整体失败
+            }
+            const ColumnMap cols(result);
+            const size_t acct_col = cols.idx("account_id");
+            const size_t seq_col = cols.idx("seq");
+            if (acct_col == SIZE_MAX || seq_col == SIZE_MAX) {
+                continue;  // 表缺列: 跳过 (防御)
+            }
+            for (const Row& row : result.rows) {
+                const std::string acct = row_string(row, acct_col);
+                if (acct.empty()) {
+                    continue;
+                }
+                const uint64_t seq = static_cast<uint64_t>(row_int64(row, seq_col));
+                auto it = max_seq.find(acct);
+                if (it == max_seq.end() || seq > it->second) {
+                    max_seq[acct] = seq;
+                }
+            }
+        }
+        for (const auto& [acct, w] : max_seq) {
+            ctx->ingest_gate.set_watermark(acct, w);
+        }
+        if (!max_seq.empty()) {
+            dz_diag(std::format("td ingest watermarks loaded | accounts={}", max_seq.size()).c_str());
+        }
+    } catch (const std::exception& e) {
+        dz_diag((std::string("td ingest watermark load failed (degraded, no filtering): ") +
+                 e.what())
+                    .c_str());
+    } catch (...) {
+        dz_diag("td ingest watermark load failed (degraded, no filtering)");
+    }
+}
+
+/// 重查单账户新水位 (spec §5.5 重置): 四表按账户 MAX(seq)。
+/// 库不可用时返回 0 (重置为新基准, gate 过滤 seq≤0 即不拦 seq≥1)。
+uint64_t rebuild_watermark(const std::string& account_id) {
+    try {
+        auto db = open_td_db();
+        if (db == nullptr) {
+            return 0;
+        }
+        uint64_t max_seq = 0;
+        for (const char* resource : {"order", "trade", "position", "trading_account"}) {
+            const std::string filter = std::format("{{\"account_id\": \"{}\"}}", account_id);
+            DbQueryResult result;
+            try {
+                result = strategy_api_internal::db_generic_query(db.get(), resource, filter);
+            } catch (const std::exception&) {
+                continue;  // 表缺失: 跳过该表
+            }
+            const ColumnMap cols(result);
+            const size_t seq_col = cols.idx("seq");
+            if (seq_col == SIZE_MAX) {
+                continue;
+            }
+            for (const Row& row : result.rows) {
+                const uint64_t seq = static_cast<uint64_t>(row_int64(row, seq_col));
+                if (seq > max_seq) {
+                    max_seq = seq;
+                }
+            }
+        }
+        return max_seq;
+    } catch (const std::exception& e) {
+        dz_diag((std::string("td ingest watermark rebuild failed (reset to empty): ") + e.what())
+                    .c_str());
+    } catch (...) {
+        dz_diag("td ingest watermark rebuild failed (reset to empty)");
+    }
+    return 0;
+}
+
+/// "YYYYMMDD" 文本 -> DzDate (距纪元天数); 非法回落 0。
+int32_t parse_trading_day_to_epoch(const std::string_view text) {
+    if (text.size() != 8) {
+        return 0;
+    }
+    try {
+        const int32_t y = std::stoi(std::string(text.substr(0, 4)));
+        const int32_t m = std::stoi(std::string(text.substr(4, 2)));
+        const int32_t d = std::stoi(std::string(text.substr(6, 2)));
+        return dztrader::Date::from_year_month_day(y, m, d).days_since_epoch();
+    } catch (...) {
+        return 0;
+    }
+}
+
+/// 断档回补: 查询 [from, to] 区间四表行, 转 Dz*Report 填 seq, 按 seq 序入 replay 缓冲。
+/// 行序 = seq 序 (dz_db_query ORDER BY seq), 各表内部有序; 跨表归并按 seq 递增保证 —
+/// 简化: 逐表入缓冲, 每表内部 seq 序 (跨表全序由"断档区间内每表独立有序 + 单调 seq"保证,
+/// 回补消费端按帧类型独立, 不要求跨表严格交错)。
+void handle_gap(DzContext* ctx) {
+    auto gap = ctx->ingest_gate.take_pending_gap();
+    if (!gap.has_value()) {
+        return;
+    }
+    auto db = open_td_db();
+    if (db == nullptr) {
+        dz_diag("ingest gap but td db unavailable, skip backfill");
+        return;
+    }
+    const std::string filter =
+        std::format("{{\"account_id\": \"{}\", \"seq\": {{\"$gte\": {}, \"$lt\": {}}}}}",
+                    gap->account_id, gap->from, gap->to + 1);
+    // 每表查询独立容错: 表缺失/查询失败跳过该表 (库不完整时其余表仍回补)。
+    const auto query_table = [&](const char* resource) -> DbQueryResult {
+        try {
+            return strategy_api_internal::db_generic_query(db.get(), resource, filter);
+        } catch (const std::exception& e) {
+            dz_diag((std::string("ingest backfill table skipped: ") + e.what()).c_str());
+            return DbQueryResult{};
+        }
+    };
+    // orders -> DzOrderReport (帧 2000)
+    {
+        DbQueryResult result = query_table("order");
+        const ColumnMap cols(result);
+        const auto acct_c = cols.idx("account_id", 1);
+            const auto day_c = cols.idx("trading_day", 2);
+            const auto oid_c = cols.idx("order_id", 3);
+            const auto inst_c = cols.idx("instrument_id", 7);
+            const auto exch_c = cols.idx("exchange_id", 8);
+            const auto dir_c = cols.idx("direction", 9);
+            const auto pe_c = cols.idx("position_effect", 10);
+            const auto pt_c = cols.idx("price_type", 11);
+            const auto st_c = cols.idx("status", 12);
+            const auto pr_c = cols.idx("price", 13);
+            const auto vol_c = cols.idx("volume", 14);
+            const auto vt_c = cols.idx("volume_traded", 15);
+            const auto sid_c = cols.idx("strategy_id", 21);
+            const auto seq_c = cols.idx("seq", 23);
+            for (const Row& row : result.rows) {
+                DzOrderReport rpt{};
+                dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
+                dztrader::copy_string(rpt.instrument_id, row_string(row, inst_c), true);
+                dztrader::copy_string(rpt.exchange_id, row_string(row, exch_c), true);
+                dztrader::copy_string(rpt.strategy_id, row_string(row, sid_c), true);
+                rpt.order_id = row_int64(row, oid_c);
+                rpt.direction = static_cast<DzDirection>(row_int64(row, dir_c));
+                rpt.position_effect = static_cast<DzPositionEffect>(row_int64(row, pe_c));
+                rpt.price_type = static_cast<DzPriceType>(row_int64(row, pt_c));
+                rpt.status = static_cast<DzOrderStatus>(row_int64(row, st_c));
+                rpt.price = row_double(row, pr_c);
+                rpt.volume = static_cast<DzVolume>(row_int64(row, vol_c));
+                rpt.volume_traded = static_cast<DzVolume>(row_int64(row, vt_c));
+                rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
+                rpt.time = 0;  // DB 无原始时间戳 (insert_time 为 SQL 扩展, 帧语义不含)
+                rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
+                ctx->enqueue_replay_frame(DZ_FRAME_ORDER_REPORT, &rpt, sizeof(rpt));
+            }
+        }
+        // trades -> DzTradeReport (帧 2001)
+        {
+            DbQueryResult result = query_table("trade");
+            const ColumnMap cols(result);
+            const auto acct_c = cols.idx("account_id", 1);
+            const auto day_c = cols.idx("trading_day", 2);
+            const auto tid_c = cols.idx("trade_id", 3);
+            const auto oid_c = cols.idx("order_id", 4);
+            const auto inst_c = cols.idx("instrument_id", 5);
+            const auto exch_c = cols.idx("exchange_id", 6);
+            const auto dir_c = cols.idx("direction", 7);
+            const auto pe_c = cols.idx("position_effect", 8);
+            const auto pr_c = cols.idx("price", 9);
+            const auto vol_c = cols.idx("volume", 10);
+            const auto sid_c = cols.idx("strategy_id", 14);
+            const auto seq_c = cols.idx("seq", 15);
+            for (const Row& row : result.rows) {
+                DzTradeReport rpt{};
+                dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
+                dztrader::copy_string(rpt.instrument_id, row_string(row, inst_c), true);
+                dztrader::copy_string(rpt.exchange_id, row_string(row, exch_c), true);
+                dztrader::copy_string(rpt.strategy_id, row_string(row, sid_c), true);
+                dztrader::copy_string(rpt.trade_id, row_string(row, tid_c), true);
+                rpt.order_id = row_int64(row, oid_c);
+                rpt.direction = static_cast<DzDirection>(row_int64(row, dir_c));
+                rpt.position_effect = static_cast<DzPositionEffect>(row_int64(row, pe_c));
+                rpt.price = row_double(row, pr_c);
+                rpt.volume = static_cast<DzVolume>(row_int64(row, vol_c));
+                rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
+                rpt.time = 0;
+                rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
+                ctx->enqueue_replay_frame(DZ_FRAME_TRADE_REPORT, &rpt, sizeof(rpt));
+            }
+        }
+        // positions -> DzPositionInfo (帧 2002)
+        {
+            DbQueryResult result = query_table("position");
+            const ColumnMap cols(result);
+            const auto acct_c = cols.idx("account_id", 0);
+            const auto day_c = cols.idx("trading_day", 1);
+            const auto inst_c = cols.idx("instrument_id", 2);
+            const auto exch_c = cols.idx("exchange_id", 3);
+            const auto dir_c = cols.idx("direction", 4);
+            const auto vol_c = cols.idx("volume", 5);
+            const auto fz_c = cols.idx("frozen_volume", 6);
+            const auto td_c = cols.idx("today_volume", 7);
+            const auto yd_c = cols.idx("yd_volume", 8);
+            const auto pr_c = cols.idx("price", 9);
+            const auto seq_c = cols.idx("seq", 10);
+            for (const Row& row : result.rows) {
+                DzPositionInfo rpt{};
+                dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
+                dztrader::copy_string(rpt.instrument_id, row_string(row, inst_c), true);
+                dztrader::copy_string(rpt.exchange_id, row_string(row, exch_c), true);
+                rpt.direction = static_cast<DzDirection>(row_int64(row, dir_c));
+                rpt.volume = row_int64(row, vol_c);
+                rpt.frozen_volume = row_int64(row, fz_c);
+                rpt.today_volume = row_int64(row, td_c);
+                rpt.yd_volume = row_int64(row, yd_c);
+                rpt.price = row_double(row, pr_c);
+                rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
+                rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
+                ctx->enqueue_replay_frame(DZ_FRAME_POSITION_INFO, &rpt, sizeof(rpt));
+            }
+        }
+        // trading_accounts -> DzTradingAccount (帧 2003)
+        {
+            DbQueryResult result = query_table("trading_account");
+            const ColumnMap cols(result);
+            const auto acct_c = cols.idx("account_id", 0);
+            const auto day_c = cols.idx("trading_day", 1);
+            const auto seq_c = cols.idx("seq", 10);
+            for (const Row& row : result.rows) {
+                DzTradingAccount rpt{};
+                dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
+                rpt.balance = row_double(row, cols.idx("balance", 2));
+                rpt.available = row_double(row, cols.idx("available", 3));
+                rpt.frozen = row_double(row, cols.idx("frozen", 4));
+                rpt.commission = row_double(row, cols.idx("commission", 5));
+                rpt.margin = row_double(row, cols.idx("margin", 6));
+                rpt.withdraw_quota = row_double(row, cols.idx("withdraw_quota", 7));
+                rpt.deposit = row_double(row, cols.idx("deposit", 8));
+                rpt.withdraw = row_double(row, cols.idx("withdraw", 9));
+                rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
+                rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
+                ctx->enqueue_replay_frame(DZ_FRAME_TRADING_ACCOUNT, &rpt, sizeof(rpt));
+            }
+        }
+    }
+
+/// 单帧 TD ingest 过滤 + 断档回补 (2000-2003 共用):
+/// 先 detect_reset (倒退) 后 admit (W 过滤), kSkip 拦截; gap 时查库填 replay 缓冲。
+/// 返回 true = 通过 ingest (调用方再做策略定向/放行)。
+template <typename ReportT>
+bool ingest_td_frame(DzContext* ctx, const std::byte* frame) {
+    const shm::FrameView view(frame);
+    if (view.frame_size() < sizeof(DzFrameHeader) + sizeof(ReportT)) {
+        return false;  // 截断帧防御: 读不出 payload 的帧一律拦截
+    }
+    const auto& v = view.payload<ReportT>();
+    if (ctx->ingest_gate.detect_reset(v.account_id, v.seq)) {
+        const uint64_t w = rebuild_watermark(v.account_id);
+        ctx->ingest_gate.reset_account(v.account_id, w);
+    }
+    if (ctx->ingest_gate.admit(v.account_id, v.seq) == TdIngestGate::Verdict::kSkip) {
+        return false;
+    }
+    handle_gap(ctx);
+    return true;
+}
+
 }  // namespace
 
 /* ── 生命周期 ── */
@@ -56,6 +411,9 @@ DZ_API DzContext* dz_init(void) {
     }
     try {
         context = new DzContext();  // NOLINT
+        // TD ingest 水位装载: 尝试打开 td 库查 W 填 gate; 失败/无库降级为不过滤全放行
+        // (日志注明, 见 load_all_watermarks)。降级不视为 init 失败。
+        load_all_watermarks(context);
         return context;
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
@@ -107,8 +465,14 @@ void on_md_started_internal(DzContext* ctx, const std::byte* frame);
 bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
     switch (type) {
         case DZ_FRAME_ORDER_REPORT:
+            if (!ingest_td_frame<DzOrderReport>(ctx, frame)) {
+                return false;
+            }
             return is_own_report<DzOrderReport>(ctx, frame);
         case DZ_FRAME_TRADE_REPORT:
+            if (!ingest_td_frame<DzTradeReport>(ctx, frame)) {
+                return false;
+            }
             return is_own_report<DzTradeReport>(ctx, frame);
         case DZ_FRAME_UI_INPUT:
             // 定向帧: 仅 instance_id == 裸策略名 的属于本策略
@@ -147,9 +511,24 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
         case DZ_FRAME_NOTIFY_MD_STARTED:
             on_md_started_internal(ctx, frame);
             return false;
-        // 其余 TD 回报帧 2002-2018 (持仓/资金/费率/网关状态/合约等): 暂不按策略过滤, 全量放行
-        case DZ_FRAME_POSITION_INFO:
-        case DZ_FRAME_TRADING_ACCOUNT:
+        // 其余 TD 回报帧 2002-2018 (持仓/资金/费率/网关状态/合约等): 暂不按策略过滤, 全量放行。
+        // 2002/2003 为 ingest 帧 (含 seq/account_id): 完整帧过 gate (W 过滤/断档/倒退),
+        // 截断帧保持透传 (既有语义: 不按策略过滤, 引擎侧 payload_size_matches 丢弃);
+        // 2005+ 无 seq 字段, 不 ingest, 直接全量放行。
+        case DZ_FRAME_POSITION_INFO: {
+            const shm::FrameView view(frame);
+            if (view.frame_size() < sizeof(DzFrameHeader) + sizeof(DzPositionInfo)) {
+                return true;  // 截断: 不透传 payload, 保持全量放行语义
+            }
+            return ingest_td_frame<DzPositionInfo>(ctx, frame);
+        }
+        case DZ_FRAME_TRADING_ACCOUNT: {
+            const shm::FrameView view(frame);
+            if (view.frame_size() < sizeof(DzFrameHeader) + sizeof(DzTradingAccount)) {
+                return true;  // 截断: 不透传 payload, 保持全量放行语义
+            }
+            return ingest_td_frame<DzTradingAccount>(ctx, frame);
+        }
         case DZ_FRAME_ACCOUNT_STATUS:
         case DZ_FRAME_TD_INSTRUMENT:
         case DZ_FRAME_TD_INSTRUMENT_STATUS:
@@ -190,7 +569,29 @@ DZ_API void dz_wait(DzContext* ctx) {
 }
 
 DZ_API const void* dz_next_event(DzContext* ctx) {
-    // 处理优先级: 用户帧 > 定时器帧 > 内部帧。
+    // 处理优先级: 回补帧 > 用户帧 > 定时器帧 > 内部帧。
+    // 回补帧 (断档回补合成的 Dz*Report) 前置 FIFO 派发: 先于任何 shm 实时帧,
+    // 保证回补数据按 seq 序在触发帧之后、后续实时帧之前送达 (契约 strategy:
+    // 启动竞态窗口的缺失区间由回补补齐, 无断档)。
+    // 回补帧已过 ingest gate (W/断档/去重), 不再重复过滤; 但 2000/2001 仍按
+    // strategy_id 定向 (回补查询按账户全量, 含他策略/外部单, 仅本策略放行)。
+    for (;;) {
+        const void* replay = ctx->pop_replay_frame();
+        if (replay == nullptr) {
+            break;
+        }
+        const DzFrameType rtype = shm::FrameView(static_cast<const std::byte*>(replay)).type();
+        if (rtype == DZ_FRAME_ORDER_REPORT) {
+            if (!is_own_report<DzOrderReport>(ctx, static_cast<const std::byte*>(replay))) {
+                continue;  // 他策略/外部单回补: 定向丢弃
+            }
+        } else if (rtype == DZ_FRAME_TRADE_REPORT) {
+            if (!is_own_report<DzTradeReport>(ctx, static_cast<const std::byte*>(replay))) {
+                continue;
+            }
+        }
+        return replay;
+    }
     // 用户帧路径零计时器开销 (不 tick 不 pop); 通道无用户帧 (空/32 让位) 时才
     // tick 定时器并返回定时器帧; 内部帧在扫描用户帧时顺带消费 (轻量处理,
     // 预加载重活已由随机延迟定时器承担)。

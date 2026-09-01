@@ -564,10 +564,12 @@ TEST_F(StrategyEngineTest, TradeAndOrderReportsDispatchedWithPayload) {
             strategy_id = dz_strategy_id(ctx);
             (void)dz_schedule_after(ctx, 100);
             // TD 回报帧走事件通道 (basic struct 帧, 写法同 trade_api_test)
-            // SDK 按 payload strategy_id 定向过滤, 须填本策略裸名才放行
+            // SDK 按 payload strategy_id 定向过滤, 须填本策略裸名才放行;
+            // 且各帧须带递增 seq (账户级 ingest 去重按 (account_id, seq), 同值会被判已应用)
             DzTradeReport trade{};
             trade.price = 3888.5;
             trade.volume = 7;
+            trade.seq = 1;
             dztrader::copy_string(trade.strategy_id, strategy_id.c_str(), true);
             dztrader::shm::MultiWriter writer = dztrader::shm::MultiWriter::create(
                 fixture.event_channel_meta(), "engine_test_writer");
@@ -575,6 +577,7 @@ TEST_F(StrategyEngineTest, TradeAndOrderReportsDispatchedWithPayload) {
             DzOrderReport order{};
             order.price = 3901.0;
             order.volume = 3;
+            order.seq = 2;
             dztrader::copy_string(order.strategy_id, strategy_id.c_str(), true);
             (void)writer.write_frame(DZ_FRAME_ORDER_REPORT, order);
         }
@@ -620,11 +623,14 @@ TEST_F(StrategyEngineTest, PositionAndAccountFramesDispatchedUnfiltered) {
             strategy_id = dz_strategy_id(ctx);
             (void)dz_schedule_after(ctx, 100);
             // 2002/2003 为全量透传帧 (无策略过滤): 不填 strategy_id 也应分发,
-            // 写法同 TradeAndOrderReportsDispatchedWithPayload (basic struct 帧)
+            // 写法同 TradeAndOrderReportsDispatchedWithPayload (basic struct 帧);
+            // 各帧须带递增 seq (账户级 ingest 去重按 (account_id, seq), 同值会被判已应用)
             DzPositionInfo info{};
+            info.seq = 1;
             dztrader::copy_string(info.instrument_id, "IF2603", true);
             info.direction = DZ_DIRECTION_LONG;
             DzTradingAccount account{};
+            account.seq = 2;
             account.balance = 100000.0;
             account.available = 80000.0;
             dztrader::shm::MultiWriter writer = dztrader::shm::MultiWriter::create(

@@ -24,6 +24,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <limits>
@@ -34,6 +35,7 @@
 #include <vector>
 
 #include "timer_heap.h"
+#include <dztrader/td_ingest.h>
 
 namespace dztrader {
 
@@ -105,6 +107,53 @@ struct DzContext {
     // ── 冷区 ────────────────────────────────────────────────
     std::string strategy_home;
     std::set<std::string> md_desired_instruments;
+
+    // ── TD ingest 区 (账户级 seq 水位, 契约 strategy "SDK ingest 过滤职责") ──
+    /// 纯逻辑 gate: W 过滤 / 断档 / 倒退重置 / 成交去重 (无 shm/db 依赖)。
+    /// 线程契约: 仅 dz_next_event 派发路径 (单线程) 使用。
+    dztrader::TdIngestGate ingest_gate;
+
+    /// 本地回补帧环形缓冲: 模拟 shm 帧布局 (DzFrameHeader + Dz*Report), 不写真实共享内存。
+    /// 断档回补查询结果按 seq 序归并后入此缓冲, dz_next_event 前置 FIFO 派发。
+    /// 注意: 槽须容纳最大 payload DzOrderReport (含 seq, 远大于 16B) —
+    /// 勿抄 TimerFrameSlot 的 static_assert(sizeof==16), 用联合容纳四帧 payload。
+    static constexpr uint32_t REPLAY_FRAME_SLOTS = 64;
+    struct alignas(8) ReplayFrameSlot {
+        DzFrameHeader header;
+        union {
+            DzOrderReport order;
+            DzTradeReport trade;
+            DzPositionInfo position;
+            DzTradingAccount account;
+        } payload;
+    };
+    std::array<ReplayFrameSlot, REPLAY_FRAME_SLOTS> replay_frames{};
+    uint32_t replay_frame_head = 0;   ///< 下一个可写槽位
+    uint32_t replay_frame_count = 0;  ///< 待领取帧数
+
+    /// 入回补帧缓冲 (FIFO)。缓冲满时丢弃并告警 (回补数据以触发帧为界, 缺帧由 DB 兜底)。
+    void enqueue_replay_frame(DzFrameType type, const void* payload, uint32_t payload_size) {
+        if (replay_frame_count >= REPLAY_FRAME_SLOTS) {
+            dz_diag("replay frame buffer full, drop backfill frame");
+            return;
+        }
+        auto& slot = replay_frames[replay_frame_head];
+        slot.header.frame_size = sizeof(DzFrameHeader) + payload_size;
+        slot.header.frame_type = type;
+        std::memcpy(&slot.payload, payload, payload_size);
+        replay_frame_head = (replay_frame_head + 1) % REPLAY_FRAME_SLOTS;
+        ++replay_frame_count;
+    }
+    /// 取下一帧回补帧 (缓冲空返回 nullptr)
+    [[nodiscard]] const void* pop_replay_frame() {
+        if (replay_frame_count == 0) {
+            return nullptr;
+        }
+        const uint32_t idx =
+            (replay_frame_head + REPLAY_FRAME_SLOTS - replay_frame_count) % REPLAY_FRAME_SLOTS;
+        --replay_frame_count;
+        return &replay_frames[idx];
+    }
 
     // ── 定时器区 ────────────────────────────────────────────
     // 用户定时器与 SDK 内部任务(预加载随机延迟)共用单堆:
