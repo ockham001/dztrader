@@ -43,9 +43,10 @@ public:
     /// 设账户水位 W（测试/启动装载用；生产路径由 rebuild() 从 DB 查得设入）。
     void set_watermark(const std::string& account_id, uint64_t w);
 
-    /// 重建镜像：清空全部镜像 + 只读打开 td 库四表全查重建 + 设新 W。
-    /// 2018 Ready 触发；失败（库不可用）降级为清空后不过滤（W=0 全放行）。
-    void rebuild();
+    /// 重建该账户镜像：只清触发账户镜像 + 只读打开 td 库四表按账户查询重建 + 设该账户新 W。
+    /// 2018 Ready(该账户) 触发；不动其他账户镜像/水位（多账户下其他账户在途数据不丢）。
+    /// 失败（库不可用/路径空）降级为清空该账户镜像 + 该账户 W=0 全放行（不幽灵抑制）。
+    void rebuild(const std::string& account_id);
 
     /// 只读访问器（WS 暴露留给后续设计，spec §10 前端不在本设计内）
     const std::vector<DzPositionInfo>& positions() const { return positions_; }
@@ -95,9 +96,8 @@ template <typename ReportT>
 bool TdDataService::ingest(const ReportT& report) {
     const std::string account(report.account_id);
     if (gate_.detect_reset(account, report.seq)) {
-        // 数据被重置: 清该账户镜像 + 重查 DB 新水位 (库不可用回落 0 = 全放行)
-        clear_account(account);
-        rebuild();
+        // 数据被重置: 重建该账户 (清镜像 + 重查 DB 新水位; 库不可用回落 0 = 全放行)
+        rebuild(account);
     }
     if (gate_.admit(account, report.seq) == TdIngestGate::Verdict::kSkip) {
         return false;

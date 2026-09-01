@@ -294,5 +294,156 @@ TEST_F(TdDataServiceTest, OfflineClearsOnlyThatAccount) {
     EXPECT_STREQ(positions[0].account_id, "CTP002");
 }
 
+// 发现 1 回归 (评审 Important): 多账户下 Ready(B) 不得整库重建误清 A 在途追加帧。
+// A 处于活跃交易 (orders/trades 先广播后异步落库): A 在途帧已入镜像但 DB 未提交,
+// B 的 Ready 只重建 B — A 的镜像与水位必须原样保留。
+TEST_F(TdDataServiceTest, ReadyOneAccountKeepsOtherInFlightData) {
+    FrameRouter router([](std::function<void()> f) { f(); });
+    auto svc = make_service(router);
+
+    // A 活跃交易: 委托/成交在途帧 (DB 未提交, 仅内存镜像)。
+    DzOrderReport ord{};
+    dztrader::copy_string(ord.account_id, "CTP001", true);
+    dztrader::copy_string(ord.instrument_id, "IF2606", true);
+    dztrader::copy_string(ord.exchange_id, "CFFEX", true);
+    dztrader::copy_string(ord.strategy_id, "stg1", true);
+    ord.order_id = 101;
+    ord.direction = DZ_DIRECTION_LONG;
+    ord.position_effect = DZ_POSITION_EFFECT_OPEN;
+    ord.price_type = DZ_PRICE_LIMIT;
+    ord.status = DZ_ORDER_ALL_TRADED;
+    ord.price = 3800.5;
+    ord.volume = 3;
+    ord.volume_traded = 3;
+    ord.seq = 7;
+    feed_frame(router, DZ_FRAME_ORDER_REPORT, ord);
+
+    DzTradeReport trd{};
+    dztrader::copy_string(trd.account_id, "CTP001", true);
+    dztrader::copy_string(trd.instrument_id, "IF2606", true);
+    dztrader::copy_string(trd.exchange_id, "CFFEX", true);
+    dztrader::copy_string(trd.strategy_id, "stg1", true);
+    dztrader::copy_string(trd.trade_id, "TRD1", true);
+    trd.order_id = 101;
+    trd.direction = DZ_DIRECTION_LONG;
+    trd.position_effect = DZ_POSITION_EFFECT_OPEN;
+    trd.price = 3800.5;
+    trd.volume = 3;
+    trd.seq = 8;
+    feed_frame(router, DZ_FRAME_TRADE_REPORT, trd);
+    ASSERT_EQ(1u, svc.orders().size());
+    ASSERT_EQ(1u, svc.trades().size());
+
+    // B 完成登录 → Ready(B): 只重建 B (B 在 DB 有持仓快照), 不得碰 A 在途镜像。
+    sqlite3* db = open_write(db_path_);
+    create_schema(db);
+    insert_position(db, "CTP002", "IF2612", 7, 1);
+    sqlite3_close(db);
+
+    DzAccountStatus ready_b{};
+    dztrader::copy_string(ready_b.account_id, "CTP002", true);
+    ready_b.state = DZ_ACCOUNT_READY;
+    ready_b.trading_day = dztrader::Date::from_year_month_day(2026, 9, 1).days_since_epoch();
+    feed_frame(router, DZ_FRAME_ACCOUNT_STATUS, ready_b);
+
+    // A 在途委托/成交仍完整 (整库重建会误清 — 追加流不清自愈)。
+    ASSERT_EQ(1u, svc.orders().size());
+    EXPECT_STREQ(svc.orders()[0].account_id, "CTP001");
+    EXPECT_EQ(101, svc.orders()[0].order_id);
+    ASSERT_EQ(1u, svc.trades().size());
+    EXPECT_STREQ(svc.trades()[0].trade_id, "TRD1");
+
+    // B 快照已重建; A 无快照 (DB 无 A 行) → 未设 W (A 水位不因 B 的 Ready 变化)。
+    ASSERT_EQ(1u, svc.positions().size());
+    EXPECT_STREQ(svc.positions()[0].account_id, "CTP002");
+}
+
+// 发现 1 延续: A 的 W 已由先前重建设过 (W=5), B Ready 后 A 水位必须原样保留 —
+// A 帧 seq=5 (≤ W=5, 快照已含) 仍被过滤; 若 B 整库重建把 A 的 W 冲成 0, seq=5 会被误准入。
+TEST_F(TdDataServiceTest, ReadyOneAccountPreservesOtherAccountWatermark) {
+    FrameRouter router([](std::function<void()> f) { f(); });
+    auto svc = make_service(router);
+
+    sqlite3* db = open_write(db_path_);
+    create_schema(db);
+    insert_position(db, "CTP001", "IF2606", 3, 5);
+    sqlite3_close(db);
+
+    // A Ready → A W=5, 镜像含 IF2606(vol=3)。
+    DzAccountStatus ready_a{};
+    dztrader::copy_string(ready_a.account_id, "CTP001", true);
+    ready_a.state = DZ_ACCOUNT_READY;
+    feed_frame(router, DZ_FRAME_ACCOUNT_STATUS, ready_a);
+    ASSERT_EQ(1u, svc.positions().size());
+
+    // B Ready: B 无快照, A 的 W=5 必须保留。
+    DzAccountStatus ready_b{};
+    dztrader::copy_string(ready_b.account_id, "CTP002", true);
+    ready_b.state = DZ_ACCOUNT_READY;
+    feed_frame(router, DZ_FRAME_ACCOUNT_STATUS, ready_b);
+
+    // A 帧 seq=5 (≤ W=5, 快照已含) → 必须跳过: 镜像不增。
+    // 若 B 整库重建把 A 的 W 冲成 0, seq=5 会被准入 → 镜像多一条 (幽灵抑制的反面)。
+    DzPositionInfo p_dup{};
+    dztrader::copy_string(p_dup.account_id, "CTP001", true);
+    dztrader::copy_string(p_dup.instrument_id, "IF2612", true);  // 不同合约, 可观察为 append
+    dztrader::copy_string(p_dup.exchange_id, "CFFEX", true);
+    p_dup.direction = DZ_DIRECTION_LONG;
+    p_dup.volume = 9;
+    p_dup.seq = 5;
+    feed_frame(router, DZ_FRAME_POSITION_INFO, p_dup);
+    EXPECT_EQ(1u, svc.positions().size());  // 仅 DB 装载的 IF2606, seq=5 被过滤
+
+    // A 帧 seq=6 (> W=5) → 仍准入。
+    DzPositionInfo p_new{};
+    dztrader::copy_string(p_new.account_id, "CTP001", true);
+    dztrader::copy_string(p_new.instrument_id, "IF2612", true);
+    dztrader::copy_string(p_new.exchange_id, "CFFEX", true);
+    p_new.direction = DZ_DIRECTION_LONG;
+    p_new.volume = 4;
+    p_new.seq = 6;
+    feed_frame(router, DZ_FRAME_POSITION_INFO, p_new);
+    EXPECT_EQ(2u, svc.positions().size());
+}
+
+// 发现 2 回归 (评审 Important): 库不可用 (路径空) 降级后不得保留旧 W — W=0 全放行,
+// 否则旧 W 过滤掉快照不含的帧 → 幽灵抑制 (有帧却镜像空白)。
+TEST_F(TdDataServiceTest, RebuildDegradeResetsWatermarkToZero) {
+    FrameRouter router([](std::function<void()> f) { f(); });
+    TdDataService svc(router, []() { return std::string(); });  // 恒空路径 (库不可用)
+
+    // 先给 A 设高 W=100 (模拟此前某次成功重建留下的水位) + 推进 last_applied。
+    svc.set_watermark("CTP001", 100);
+    DzPositionInfo p_old{};
+    dztrader::copy_string(p_old.account_id, "CTP001", true);
+    dztrader::copy_string(p_old.instrument_id, "IF2606", true);
+    dztrader::copy_string(p_old.exchange_id, "CFFEX", true);
+    p_old.direction = DZ_DIRECTION_LONG;
+    p_old.volume = 3;
+    p_old.seq = 101;  // > W=100 → 已应用, last_applied=101
+    feed_frame(router, DZ_FRAME_POSITION_INFO, p_old);
+    ASSERT_EQ(1u, svc.positions().size());
+
+    // A Ready → 库不可用降级: 清 A 镜像 + 该账户 W 复位 (W=0 全放行)。
+    DzAccountStatus ready{};
+    dztrader::copy_string(ready.account_id, "CTP001", true);
+    ready.state = DZ_ACCOUNT_READY;
+    feed_frame(router, DZ_FRAME_ACCOUNT_STATUS, ready);
+    EXPECT_EQ(0u, svc.positions().size());
+
+    // 降级后帧全放行: seq=1 (旧 W=100 会过滤掉 — 幽灵抑制) 现在必须准入。
+    DzPositionInfo p1{};
+    dztrader::copy_string(p1.account_id, "CTP001", true);
+    dztrader::copy_string(p1.instrument_id, "IF2606", true);
+    dztrader::copy_string(p1.exchange_id, "CFFEX", true);
+    p1.direction = DZ_DIRECTION_LONG;
+    p1.volume = 2;
+    p1.seq = 1;
+    feed_frame(router, DZ_FRAME_POSITION_INFO, p1);
+    ASSERT_EQ(1u, svc.positions().size());
+    EXPECT_STREQ(svc.positions()[0].instrument_id, "IF2606");
+    EXPECT_EQ(2, svc.positions()[0].volume);
+}
+
 }  // namespace
 }  // namespace dztrader::webui

@@ -150,9 +150,9 @@ void TdDataService::on_account_status(const DzAccountStatus& st) {
         case DZ_ACCOUNT_READY:
             // 契约 account-status/td-data-sync: Ready 时 td 已完成登录收尾协议
             // (持仓/资金查询 → persist flush → 广播 Ready), DB 已稳定 → 重建该账户镜像。
-            // 简化: 整库重建 (dzweb 只读消费, 库级全查成本可接受; 多账户场景下
-            // 后续可按 account_id 过滤重建, 当前镜像为库级全量)。
-            rebuild();
+            // 按账户过滤重建: 只清 + 只重设触发账户, 不动其他账户镜像/水位 (多账户下
+            // A 在途追加帧 "先广播后异步落库" 不被 B 的 Ready 误清)。
+            rebuild(account);
             break;
         case DZ_ACCOUNT_OFFLINE:
             // spec §5.5"清空必须显式": 重置后若无持仓帧到达, 旧镜像幽灵持仓永无人覆盖。
@@ -184,36 +184,41 @@ void TdDataService::clear_account(const std::string& account_id) {
     SPDLOG_INFO("td data mirror cleared | account={}", account_id);
 }
 
-void TdDataService::rebuild() {
-    // 1. 清空镜像 (spec §5.5: 重建=新基准, 旧镜像残留会被误当当前状态)
-    positions_.clear();
-    trading_accounts_.clear();
-    orders_.clear();
-    trades_.clear();
+void TdDataService::rebuild(const std::string& account_id) {
+    // 1. 只清触发账户镜像 (spec §5.5: 重建=新基准, 旧镜像残留会被误当当前状态)。
+    //    多账户下不动其他账户镜像/水位, 避免误清他账户在途追加数据 (orders/trades
+    //    是追加流, 不清自愈 — 在途帧 seq 已在 DB 提交前入镜像, 整库清则永久缺条)。
+    clear_account(account_id);
 
     const std::string path = td_db_path_();
     if (path.empty()) {
-        SPDLOG_WARN("td db path empty, rebuild skipped | mirror=empty");
+        // 库不可用降级: 该账户镜像已清 + W=0 (reset_account 置 has_watermark 且 w=0,
+        // 等价全放行), 绝不保留旧 W — 否则旧 W 过滤掉快照不含的帧, 幽灵抑制 (有帧却镜像空白)。
+        SPDLOG_WARN("td db path empty, rebuild skipped | account={} mirror=empty W=0", account_id);
         return;
     }
     sqlite3* db = nullptr;
     if (sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
-        SPDLOG_WARN("td db open failed (rebuild as empty) | path={} err={}", path,
-                    db != nullptr ? sqlite3_errmsg(db) : "unknown");
+        SPDLOG_WARN("td db open failed (rebuild as empty) | account={} path={} err={} W=0",
+                    account_id, path, db != nullptr ? sqlite3_errmsg(db) : "unknown");
         if (db != nullptr) {
             sqlite3_close(db);
         }
         return;
     }
 
-    // 2. 四表全查重建镜像 (spec §3.3: 只读打开, 表缺失/查询失败跳过该表)
+    // 2. 四表按账户过滤查询重建镜像 (spec §3.3: 只读打开, 表缺失/查询失败跳过该表)
     //    镜像键: positions (account_id,instrument_id,direction) / trading_accounts account_id。
+    //    account_id 列均为索引首列 (orders/trades/positions UNIQUE、trading_accounts PK),
+    //    按账户过滤只扫该账户行。
     {
         sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db, "SELECT account_id, trading_day, instrument_id, exchange_id,"
-                                  " direction, volume, frozen_volume, today_volume, yd_volume,"
-                                  " price, seq FROM positions",
+        if (sqlite3_prepare_v2(db,
+                               "SELECT account_id, trading_day, instrument_id, exchange_id,"
+                               " direction, volume, frozen_volume, today_volume, yd_volume,"
+                               " price, seq FROM positions WHERE account_id = ?",
                                -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 DzPositionInfo p{};
                 dztrader::copy_string(p.account_id, col_text(stmt, 0).c_str(), true);
@@ -236,10 +241,12 @@ void TdDataService::rebuild() {
     }
     {
         sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db, "SELECT account_id, trading_day, balance, available, frozen,"
-                                  " commission, margin, withdraw_quota, deposit, withdraw, seq"
-                                  " FROM trading_accounts",
+        if (sqlite3_prepare_v2(db,
+                               "SELECT account_id, trading_day, balance, available, frozen,"
+                               " commission, margin, withdraw_quota, deposit, withdraw, seq"
+                               " FROM trading_accounts WHERE account_id = ?",
                                -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 DzTradingAccount a{};
                 dztrader::copy_string(a.account_id, col_text(stmt, 0).c_str(), true);
@@ -262,10 +269,13 @@ void TdDataService::rebuild() {
     }
     {
         sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db, "SELECT account_id, trading_day, order_id, instrument_id,"
-                                  " exchange_id, direction, position_effect, price_type, status,"
-                                  " price, volume, volume_traded, strategy_id, seq FROM orders",
+        if (sqlite3_prepare_v2(db,
+                               "SELECT account_id, trading_day, order_id, instrument_id,"
+                               " exchange_id, direction, position_effect, price_type, status,"
+                               " price, volume, volume_traded, strategy_id, seq FROM orders"
+                               " WHERE account_id = ?",
                                -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 DzOrderReport o{};
                 dztrader::copy_string(o.account_id, col_text(stmt, 0).c_str(), true);
@@ -291,10 +301,13 @@ void TdDataService::rebuild() {
     }
     {
         sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db, "SELECT account_id, trading_day, trade_id, order_id,"
-                                  " instrument_id, exchange_id, direction, position_effect,"
-                                  " price, volume, strategy_id, seq FROM trades",
+        if (sqlite3_prepare_v2(db,
+                               "SELECT account_id, trading_day, trade_id, order_id,"
+                               " instrument_id, exchange_id, direction, position_effect,"
+                               " price, volume, strategy_id, seq FROM trades"
+                               " WHERE account_id = ?",
                                -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 DzTradeReport t{};
                 dztrader::copy_string(t.account_id, col_text(stmt, 0).c_str(), true);
@@ -318,33 +331,31 @@ void TdDataService::rebuild() {
     }
     sqlite3_close(db);
 
-    // 3. 设新 W (spec §5.1/§2.1: W = 该账户 MAX(seq), 账户级独立水位; 过滤 seq ≤ W 的
-    //    后续帧 — 快照已含)。四表 (委托/成交/持仓/资金) 共享一个计数器, 故按账户取四表
-    //    最大值。仅对镜像中出现的账户设 W; 无快照账户等价 W=0 (全放行)。
-    std::unordered_map<std::string, uint64_t> account_max_seq;
-    const auto accumulate = [&account_max_seq](const std::string& acct, uint64_t seq) {
-        auto& m = account_max_seq[acct];
-        m = std::max(m, seq);
+    // 3. 设该账户新 W (spec §5.1/§2.1: W = 该账户 MAX(seq), 账户级独立水位; 过滤 seq ≤ W 的
+    //    后续帧 — 快照已含)。四表 (委托/成交/持仓/资金) 共享一个计数器, 故取四表最大值。
+    //    镜像中无该账户行 = DB 无快照 → 不设 W (等价 W=0 全放行)。
+    uint64_t account_max_seq = 0;
+    const auto accumulate = [&account_max_seq](uint64_t seq) {
+        account_max_seq = std::max(account_max_seq, seq);
     };
     for (const auto& p : positions_) {
-        accumulate(p.account_id, p.seq);
+        accumulate(p.seq);
     }
     for (const auto& a : trading_accounts_) {
-        accumulate(a.account_id, a.seq);
+        accumulate(a.seq);
     }
     for (const auto& o : orders_) {
-        accumulate(o.account_id, o.seq);
+        accumulate(o.seq);
     }
     for (const auto& t : trades_) {
-        accumulate(t.account_id, t.seq);
+        accumulate(t.seq);
     }
-    for (const auto& [acct, w] : account_max_seq) {
-        if (w > 0) {
-            gate_.set_watermark(acct, w);
-        }
+    if (account_max_seq > 0) {
+        gate_.set_watermark(account_id, account_max_seq);
     }
-    SPDLOG_INFO("td data mirror rebuilt | path={} positions={} accounts={} orders={} trades={}",
-                path, positions_.size(), trading_accounts_.size(), orders_.size(), trades_.size());
+    SPDLOG_INFO("td data mirror rebuilt | account={} path={} positions={} accounts={} orders={} trades={} W={}",
+                account_id, path, positions_.size(), trading_accounts_.size(), orders_.size(),
+                trades_.size(), account_max_seq);
 }
 
 void TdDataService::set_watermark(const std::string& account_id, uint64_t w) {
