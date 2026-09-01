@@ -44,9 +44,17 @@ protected:
     }
     void TearDown() override { std::filesystem::remove_all(tmp_dir_); }
 
+    /// 只读连接 (与生产 td_persist_writer.cpp:125 一致设置 busy_timeout,
+    /// 防写入提交期间同进程另一连接报 database is locked).
+    static SQLite::Database open_readonly(const std::string& db_path) {
+        SQLite::Database db(db_path, SQLite::OPEN_READONLY);
+        db.exec("PRAGMA busy_timeout=5000");
+        return db;
+    }
+
     /// 只读标量查询 (验证 DB 已提交内容).
     int64_t scalar_int(const std::string& sql) {
-        SQLite::Database db(db_path_, SQLite::OPEN_READONLY);
+        SQLite::Database db = open_readonly(db_path_);
         SQLite::Statement q(db, sql);
         if (q.executeStep()) {
             return q.getColumn(0).getInt64();
@@ -268,12 +276,15 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
         EXPECT_EQ(gap->from, 101u);
         EXPECT_EQ(gap->to, 105u);
 
-        // 回补: DB 提交后 (Writer drain) 再查 seq>100 → 5 行返回 (在途窗口赶上落库积压)
+        // 回补: Writer drain (DB 提交在途窗口) 后新开只读连接再查 seq>100 → 5 行.
+        // 不用 drain 前已建的 ro (其 SQL 快照在提交前建立, 复用会读到"提交前"可见性,
+        // 且与其余场景"drain 后新开连接"不一致).
         w.start_writer();
         auto token = w.enqueue_flush_signal();
         ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
         w.stop();
-        auto backfilled = load_orders_since(ro, "acc1", 100u);  // seq > 100
+        SQLite::Database ro2 = open_readonly(db2);
+        auto backfilled = load_orders_since(ro2, "acc1", 100u);  // seq > 100
         ASSERT_EQ(backfilled.size(), 5u);
         EXPECT_EQ(backfilled.front().base.seq, 101u);
         EXPECT_EQ(backfilled.back().base.seq, 105u);
