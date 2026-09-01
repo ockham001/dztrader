@@ -278,6 +278,10 @@ void build_filter_where(const std::string& table,
 std::unique_ptr<DzDatabase> db_open_readonly(const std::string& path) {
     auto handle = std::make_unique<DzDatabase>();
     handle->db = std::make_unique<SQLite::Database>(path, SQLite::OPEN_READONLY);
+    // 只读连接也设 busy_timeout (与生产写端 td_persist_writer.cpp 一致, SQLiteCpp 默认 0):
+    // td Writer 批量提交持写锁窗口内, SDK 水位装载/断档回补查询不得立即 SQLITE_BUSY.
+    // spec §3.3: 低频读端可吸收毫秒级写锁.
+    handle->db->exec("PRAGMA busy_timeout=5000");
     return handle;
 }
 

@@ -7,8 +7,10 @@
 #include <SQLiteCpp/Statement.h>
 
 #include <cfloat>
+#include <chrono>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -571,4 +573,45 @@ TEST_F(DbTest, RealDeclaredColumnStoresIntegerValue) {
     EXPECT_DOUBLE_EQ(3810.0, dz_resultset_get_float64(rs, 9));   // price
     EXPECT_NE(DBL_MAX, dz_resultset_get_float64(rs, 9));
     dz_resultset_close(rs);
+}
+
+// 发现 1 回归 (评审 Important): db_open_readonly 必须设 busy_timeout (与生产写端一致),
+// 否则 SDK 水位装载/断档回补在 td Writer 批量提交 (持写锁) 窗口内立即 SQLITE_BUSY →
+// 查询返回 NULL (DZ_EC_SYSTEM), 消费端降级不过滤。
+// 测试: 另一连接 BEGIN IMMEDIATE 抢写锁, 释放线程 200ms 后 COMMIT — busy_timeout=5000
+// 让查询阻塞等待锁释放后成功返回; 无 busy_timeout 则查询立即失败。
+TEST_F(DbTest, ReadOnlyQueryWaitsOutWriteLockWindow) {
+    SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
+    {
+        SQLite::Statement ins(db,
+            "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
+            " direction, volume, price, seq) VALUES (?, '20260901', ?, 'CFFEX', 'L', ?, ?, ?)");
+        ins.bind(1, "A");
+        ins.bind(2, "IF2401");
+        ins.bind(3, static_cast<int64_t>(5));
+        ins.bind(4, 3810.0);
+        ins.bind(5, static_cast<int64_t>(1));
+        ins.exec();
+    }
+
+    // 抢占写锁 (BEGIN IMMEDIATE)。
+    SQLite::Database locker(db_path_, SQLite::OPEN_READWRITE);
+    locker.exec("BEGIN IMMEDIATE");
+    // 200ms 后释放写锁。
+    std::thread releaser([&locker]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        locker.exec("COMMIT");
+    });
+
+    // 全新只读连接 (走 db_open_readonly): busy_timeout 生效 → 阻塞到锁释放后成功查询。
+    DzDatabase* ro = dz_db_open(db_path_.c_str());
+    ASSERT_NE(nullptr, ro) << dz_errmsg();
+    DzResultSet* rs = dz_db_query_position(ro, "A", nullptr);
+    releaser.join();
+    ASSERT_NE(nullptr, rs) << dz_errmsg();  // 无 busy_timeout 则此处为 NULL (SQLITE_BUSY)
+    ASSERT_EQ(0, dz_resultset_status(rs));
+    ASSERT_TRUE(dz_resultset_next(rs));
+    EXPECT_EQ(5, dz_resultset_get_int64(rs, 5));  // volume
+    dz_resultset_close(rs);
+    dz_db_close(ro);
 }

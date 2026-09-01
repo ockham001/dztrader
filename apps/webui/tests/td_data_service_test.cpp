@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <thread>
 
 namespace dztrader::webui {
 namespace {
@@ -458,6 +459,50 @@ TEST_F(TdDataServiceTest, RebuildDegradeResetsWatermarkToZero) {
     ASSERT_EQ(1u, svc.positions().size());
     EXPECT_STREQ(svc.positions()[0].instrument_id, "IF2606");
     EXPECT_EQ(2, svc.positions()[0].volume);
+}
+
+// 发现 1 回归 (评审 Important): rebuild() 的只读连接必须设 busy_timeout (与生产写端一致),
+// 否则 td Writer 批量提交持写锁窗口内 rebuild() 立即 SQLITE_BUSY → 清镜像+W=0 降级,
+// dzweb 镜像永久停在"全放行但无快照", 直到下一 Ready/Offline 才重试。
+// 测试: 另一连接持写锁, 释放线程 200ms 后 COMMIT — busy_timeout=5000 让 rebuild 阻塞等待
+// 到锁释放后成功重建; 无 busy_timeout 则首个 SELECT 立即 SQLITE_BUSY, 镜像为空。
+TEST_F(TdDataServiceTest, RebuildWaitsOutWriteLockInsteadOfDegrading) {
+    {
+        sqlite3* db = open_write(db_path_);
+        create_schema(db);
+        insert_position(db, "CTP001", "IF2603", 2, 1);
+        insert_position(db, "CTP001", "IF2606", 5, 2);
+        sqlite3_close(db);
+    }
+
+    // 持有写锁的连接 (BEGIN IMMEDIATE 抢占写锁)。
+    sqlite3* locker = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open_v2(db_path_.c_str(), &locker,
+                                         SQLITE_OPEN_READWRITE, nullptr));
+    char* err = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_exec(locker, "BEGIN IMMEDIATE", nullptr, nullptr, &err));
+
+    // 200ms 后释放写锁 (此时 rebuild 若 busy_timeout 生效, 应阻塞等待而非降级)。
+    std::thread releaser([locker]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        sqlite3_exec(locker, "COMMIT", nullptr, nullptr, nullptr);
+        sqlite3_close(locker);
+    });
+
+    FrameRouter router([](std::function<void()> f) { f(); });
+    auto svc = make_service(router);
+    // 同步 rebuild (若 sqlite3_busy_timeout 未接线, 首个 SELECT 立即 BUSY → 镜像 0 条)。
+    svc.rebuild("CTP001");
+
+    releaser.join();
+
+    // busy_timeout 生效: 阻塞到锁释放后成功重建 2 条, 而非降级为空镜像。
+    const auto& positions = svc.positions();
+    ASSERT_EQ(2u, positions.size());
+    EXPECT_STREQ(positions[0].instrument_id, "IF2603");
+    EXPECT_EQ(2, positions[0].volume);
+    EXPECT_STREQ(positions[1].instrument_id, "IF2606");
+    EXPECT_EQ(5, positions[1].volume);
 }
 
 }  // namespace

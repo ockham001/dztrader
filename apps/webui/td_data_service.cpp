@@ -206,6 +206,10 @@ void TdDataService::rebuild(const std::string& account_id) {
         }
         return;
     }
+    // 只读连接设 busy_timeout (与生产写端 td_persist_writer.cpp:125 一致):
+    // td Writer 批量提交持写锁窗口内 rebuild() 不得立即 SQLITE_BUSY 降级 (清镜像+W=0) —
+    // 否则 dzweb 镜像永久停在"全放行但无快照", 直到下一 Ready/Offline 才重试.
+    sqlite3_busy_timeout(db, 5000);
 
     // 2. 四表按账户过滤查询重建镜像 (spec §3.3: 只读打开, 表缺失/查询失败跳过该表)
     //    镜像键: positions (account_id,instrument_id,direction) / trading_accounts account_id。

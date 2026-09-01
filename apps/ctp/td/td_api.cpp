@@ -142,6 +142,9 @@ void TdApi::ensure_prescan_db() {
             return;  // 上次确认文件缺失, 节流跳过重复打开
         }
         prescan_db_ = std::make_unique<SQLite::Database>(db_path.string(), SQLite::OPEN_READONLY);
+        // 只读连接设 busy_timeout (与写端 td_persist_writer.cpp 一致, SQLiteCpp 默认 0):
+        // 装载/预扫在 td Writer 批量提交窗口内不得立即 SQLITE_BUSY (spec §3.3).
+        prescan_db_->exec("PRAGMA busy_timeout=5000");
         prescan_db_missing_ = false;
         SPDLOG_INFO("td prescan db opened | path={}", db_path.string());
     } catch (const std::exception& e) {
