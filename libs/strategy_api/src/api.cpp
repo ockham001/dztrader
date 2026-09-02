@@ -121,6 +121,11 @@ std::unique_ptr<DzDatabase> open_td_db() {
 }
 
 /// 装载全部账户水位: 四表无过滤查询, 按账户求 MAX(seq) (spec §5.1)。
+/// 四表读取包进单只读事务 (BEGIN DEFERRED 快照读): 分次独立查询存在竞态 —
+/// 先查表 A 后写端提交 A 中 seq∈(W_A, W] 的行, 再查表 B 得 W_B ≥ W, 该行
+/// "快照没有却被 W 判定已含" → 静默误吞。单事务使首条 SELECT 起四表共享同一
+/// 快照 (SHARED 锁保持到 COMMIT), 写端短暂阻塞由 busy_timeout=5000 吸收
+/// (查询总时长 <10ms, 仅 init 低频路径)。
 /// 单表查询失败 (表缺失/库不完整) 跳过该表, 不整体失败 (降级 = 部分表无快照水位,
 /// 该表数据经帧全量放行, 回补时同样按表容错)。
 void load_all_watermarks(DzContext* ctx) {
@@ -129,37 +134,49 @@ void load_all_watermarks(DzContext* ctx) {
         if (db == nullptr) {
             return;
         }
-        std::unordered_map<std::string, uint64_t> max_seq;
-        for (const char* resource : {"order", "trade", "position", "trading_account"}) {
-            DbQueryResult result;
+        db->db->exec("BEGIN DEFERRED");
+        try {
+            std::unordered_map<std::string, uint64_t> max_seq;
+            for (const char* resource : {"order", "trade", "position", "trading_account"}) {
+                DbQueryResult result;
+                try {
+                    result = strategy_api_internal::db_generic_query(db.get(), resource, "");
+                } catch (const std::exception&) {
+                    continue;  // 表缺失/查询失败: 跳过该表, 不整体失败
+                }
+                const ColumnMap cols(result);
+                const size_t acct_col = cols.idx("account_id");
+                const size_t seq_col = cols.idx("seq");
+                if (acct_col == SIZE_MAX || seq_col == SIZE_MAX) {
+                    continue;  // 表缺列: 跳过 (防御)
+                }
+                for (const Row& row : result.rows) {
+                    const std::string acct = row_string(row, acct_col);
+                    if (acct.empty()) {
+                        continue;
+                    }
+                    const uint64_t seq = static_cast<uint64_t>(row_int64(row, seq_col));
+                    auto it = max_seq.find(acct);
+                    if (it == max_seq.end() || seq > it->second) {
+                        max_seq[acct] = seq;
+                    }
+                }
+            }
+            db->db->exec("COMMIT");
+            for (const auto& [acct, w] : max_seq) {
+                ctx->ingest_gate.set_watermark(acct, w);
+            }
+            if (!max_seq.empty()) {
+                dz_diag(
+                    std::format("td ingest watermarks loaded | accounts={}", max_seq.size())
+                        .c_str());
+            }
+        } catch (...) {
             try {
-                result = strategy_api_internal::db_generic_query(db.get(), resource, "");
-            } catch (const std::exception&) {
-                continue;  // 表缺失/查询失败: 跳过该表, 不整体失败
+                db->db->exec("ROLLBACK");
+            } catch (...) {
             }
-            const ColumnMap cols(result);
-            const size_t acct_col = cols.idx("account_id");
-            const size_t seq_col = cols.idx("seq");
-            if (acct_col == SIZE_MAX || seq_col == SIZE_MAX) {
-                continue;  // 表缺列: 跳过 (防御)
-            }
-            for (const Row& row : result.rows) {
-                const std::string acct = row_string(row, acct_col);
-                if (acct.empty()) {
-                    continue;
-                }
-                const uint64_t seq = static_cast<uint64_t>(row_int64(row, seq_col));
-                auto it = max_seq.find(acct);
-                if (it == max_seq.end() || seq > it->second) {
-                    max_seq[acct] = seq;
-                }
-            }
-        }
-        for (const auto& [acct, w] : max_seq) {
-            ctx->ingest_gate.set_watermark(acct, w);
-        }
-        if (!max_seq.empty()) {
-            dz_diag(std::format("td ingest watermarks loaded | accounts={}", max_seq.size()).c_str());
+            throw;
         }
     } catch (const std::exception& e) {
         dz_diag((std::string("td ingest watermark load failed (degraded, no filtering): ") +
@@ -171,6 +188,7 @@ void load_all_watermarks(DzContext* ctx) {
 }
 
 /// 重查单账户新水位 (spec §5.5 重置): 四表按账户 MAX(seq)。
+/// 四表读取包进单只读事务 (同 load_all_watermarks 的快照读竞态论证)。
 /// 库不可用时返回 0 (重置为新基准, gate 过滤 seq≤0 即不拦 seq≥1)。
 uint64_t rebuild_watermark(const std::string& account_id) {
     try {
@@ -178,28 +196,38 @@ uint64_t rebuild_watermark(const std::string& account_id) {
         if (db == nullptr) {
             return 0;
         }
-        uint64_t max_seq = 0;
-        for (const char* resource : {"order", "trade", "position", "trading_account"}) {
-            const std::string filter = std::format("{{\"account_id\": \"{}\"}}", account_id);
-            DbQueryResult result;
-            try {
-                result = strategy_api_internal::db_generic_query(db.get(), resource, filter);
-            } catch (const std::exception&) {
-                continue;  // 表缺失: 跳过该表
-            }
-            const ColumnMap cols(result);
-            const size_t seq_col = cols.idx("seq");
-            if (seq_col == SIZE_MAX) {
-                continue;
-            }
-            for (const Row& row : result.rows) {
-                const uint64_t seq = static_cast<uint64_t>(row_int64(row, seq_col));
-                if (seq > max_seq) {
-                    max_seq = seq;
+        db->db->exec("BEGIN DEFERRED");
+        try {
+            uint64_t max_seq = 0;
+            for (const char* resource : {"order", "trade", "position", "trading_account"}) {
+                const std::string filter = std::format("{{\"account_id\": \"{}\"}}", account_id);
+                DbQueryResult result;
+                try {
+                    result = strategy_api_internal::db_generic_query(db.get(), resource, filter);
+                } catch (const std::exception&) {
+                    continue;  // 表缺失: 跳过该表
+                }
+                const ColumnMap cols(result);
+                const size_t seq_col = cols.idx("seq");
+                if (seq_col == SIZE_MAX) {
+                    continue;
+                }
+                for (const Row& row : result.rows) {
+                    const uint64_t seq = static_cast<uint64_t>(row_int64(row, seq_col));
+                    if (seq > max_seq) {
+                        max_seq = seq;
+                    }
                 }
             }
+            db->db->exec("COMMIT");
+            return max_seq;
+        } catch (...) {
+            try {
+                db->db->exec("ROLLBACK");
+            } catch (...) {
+            }
+            throw;
         }
-        return max_seq;
     } catch (const std::exception& e) {
         dz_diag((std::string("td ingest watermark rebuild failed (reset to empty): ") + e.what())
                     .c_str());

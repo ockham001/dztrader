@@ -211,6 +211,19 @@ void TdDataService::rebuild(const std::string& account_id) {
     // 否则 dzweb 镜像永久停在"全放行但无快照", 直到下一 Ready/Offline 才重试.
     sqlite3_busy_timeout(db, 5000);
 
+    // 四表读取包进单只读事务 (BEGIN DEFERRED 快照读, 与 SDK load_all_watermarks 同型):
+    // 分次独立查询存在竞态 — 先查表 A 后写端提交 A 中 seq∈(W_A, W] 的行, 再查表 B 得
+    // W_B ≥ W, 该行"快照没有却被 W 判定已含" → 静默误吞。单事务使首条 SELECT 起
+    // 四表共享同一快照 (SHARED 锁保持到 COMMIT), 写端短暂阻塞由 busy_timeout 吸收。
+    char* begin_err = nullptr;
+    if (sqlite3_exec(db, "BEGIN DEFERRED", nullptr, nullptr, &begin_err) != SQLITE_OK) {
+        SPDLOG_WARN("td db begin snapshot failed (rebuild as empty) | account={} err={}",
+                    account_id, begin_err != nullptr ? begin_err : "unknown");
+        sqlite3_free(begin_err);
+        sqlite3_close(db);
+        return;
+    }
+
     // 2. 四表按账户过滤查询重建镜像 (spec §3.3: 只读打开, 表缺失/查询失败跳过该表)
     //    镜像键: positions (account_id,instrument_id,direction) / trading_accounts account_id。
     //    account_id 列均为索引首列 (orders/trades/positions UNIQUE、trading_accounts PK),
@@ -332,6 +345,14 @@ void TdDataService::rebuild(const std::string& account_id) {
             SPDLOG_WARN("td db query failed | table=trades");
         }
         sqlite3_finalize(stmt);
+    }
+    // 提交快照读 (只读事务 COMMIT 仅结束读; 失败防御性回滚)
+    char* commit_err = nullptr;
+    if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, &commit_err) != SQLITE_OK) {
+        SPDLOG_WARN("td db commit snapshot failed | account={} err={}", account_id,
+                    commit_err != nullptr ? commit_err : "unknown");
+        sqlite3_free(commit_err);
+        sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
     }
     sqlite3_close(db);
 
