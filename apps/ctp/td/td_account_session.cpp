@@ -644,16 +644,22 @@ void AccountSession::repush_last_records() {
     // 不经过滤器 (已是基准最新态, 再 check 会因同字段集被吞)、不落库 (DB 已含该记录).
     // 角色 = 保证到达的触发帧: 重放全被吞 / 行情安静时, 登录后必有一帧带 seq 到来,
     // 把消费端"断档挂到开盘"收成"登录完成即自愈". 无记录则不推 (无断档可能).
+    // 终检发现 6: 委托/成交各自取最新会推两条帧 — 成交 seq < 委托 seq (常见) 时,
+    // 低 seq 帧后到会被消费端 detect_reset 误判倒退, 触发全账户 rebuild (结果正确
+    // 但开销 + 噪声, 且 reset 清 applied_trades)。只推两帧中 seq 较大的一条:
+    // 消费端 last_applied 低于它才需要触发帧, 推大 seq 一条已覆盖该目的且无伪倒退.
     try {
-        if (const DzOrderReport* latest = report_filter_->find_latest_order(); latest != nullptr) {
-            platform::write_struct(event_writer_, DZ_FRAME_ORDER_REPORT, *latest);
+        const DzOrderReport* latest_order = report_filter_->find_latest_order();
+        const DzTradeReport* latest_trade = report_filter_->find_latest_trade();
+        if (latest_order != nullptr &&
+            (latest_trade == nullptr || latest_order->seq >= latest_trade->seq)) {
+            platform::write_struct(event_writer_, DZ_FRAME_ORDER_REPORT, *latest_order);
             SPDLOG_DEBUG("td repush last order | account={} order_id={} seq={}",
-                         account_id_, latest->order_id, latest->seq);
-        }
-        if (const DzTradeReport* latest = report_filter_->find_latest_trade(); latest != nullptr) {
-            platform::write_struct(event_writer_, DZ_FRAME_TRADE_REPORT, *latest);
+                         account_id_, latest_order->order_id, latest_order->seq);
+        } else if (latest_trade != nullptr) {
+            platform::write_struct(event_writer_, DZ_FRAME_TRADE_REPORT, *latest_trade);
             SPDLOG_DEBUG("td repush last trade | account={} trade_id={} seq={}",
-                         account_id_, latest->trade_id, latest->seq);
+                         account_id_, latest_trade->trade_id, latest_trade->seq);
         }
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td repush last records failed | account={} error=\"{}\"",
