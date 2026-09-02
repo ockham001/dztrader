@@ -827,16 +827,25 @@ void AccountSession::req_qry_investor_position() {
         req_qry_trading_account();
         return;
     }
-    // 5min 超时兜底: 查询长期不回 is_last 时降级收尾 (不卡死 LoadingInstruments).
-    // 仅在登录 (LoadingInstruments) 期间生效: 补查 (Ready) 阶段不降级, 由 60s
-    // 定时重试兜底, 避免陈旧超时定时器干扰在途补查.
+    // 超时兜底: 查询长期不回 is_last 时降级 (不卡死).
+    // - 登录 (LoadingInstruments) 阶段: 5min, 降级收尾转 Ready (spec §4.2);
+    // - 补查 (Ready) 阶段 (终检发现 5): 90s 独立超时, 到期 on_position_failed
+    //   降级回 kDone (下一轮 60s resync 重试) — 否则 CTP 长期不应答时 phase 停在
+    //   查询阶段, 60s resync 被 phase!=kDone 门挡, 补查静默终止。
+    const auto timeout = is_ready() ? std::chrono::seconds(90) : std::chrono::minutes(5);
     uint64_t gen = generation_;
-    timer_queue_.schedule_after(std::chrono::minutes(5),
+    timer_queue_.schedule_after(timeout,
         [this, gen]() {
             if (gen != generation_) return;
             if (state_machine_.state() == TdState::LoadingInstruments &&
                 finalizer_.phase() == Phase::kQueryPosition) {
                 SPDLOG_ERROR("td qry position timeout, degrade | account={}", account_id_);
+                finalizer_.on_position_failed();
+                position_query_ok_ = false;
+                req_qry_trading_account();
+            } else if (is_ready() && finalizer_.phase() == Phase::kQueryPosition) {
+                SPDLOG_ERROR("td resync qry position timeout, degrade to done | account={}",
+                             account_id_);
                 finalizer_.on_position_failed();
                 position_query_ok_ = false;
                 req_qry_trading_account();
@@ -875,13 +884,22 @@ void AccountSession::req_qry_trading_account() {
         finalize_login();
         return;
     }
+    // 超时兜底: 同 req_qry_investor_position — 登录阶段 5min, 补查 (Ready) 阶段
+    // 90s (终检发现 5), 到期降级回 kDone 由下一轮 resync 重试。
+    const auto timeout = is_ready() ? std::chrono::seconds(90) : std::chrono::minutes(5);
     uint64_t gen = generation_;
-    timer_queue_.schedule_after(std::chrono::minutes(5),
+    timer_queue_.schedule_after(timeout,
         [this, gen]() {
             if (gen != generation_) return;
             if (state_machine_.state() == TdState::LoadingInstruments &&
                 finalizer_.phase() == Phase::kQueryAccount) {
                 SPDLOG_ERROR("td qry account timeout, degrade | account={}", account_id_);
+                finalizer_.on_account_failed();
+                account_query_ok_ = false;
+                finalize_login();
+            } else if (is_ready() && finalizer_.phase() == Phase::kQueryAccount) {
+                SPDLOG_ERROR("td resync qry account timeout, degrade to done | account={}",
+                             account_id_);
                 finalizer_.on_account_failed();
                 account_query_ok_ = false;
                 finalize_login();
