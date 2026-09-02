@@ -156,28 +156,18 @@ void load_all_watermarks(DzContext* ctx) {
         try {
             std::unordered_map<std::string, uint64_t> max_seq;
             for (const char* resource : {"order", "trade", "position", "trading_account"}) {
-                DbQueryResult result;
+                // 终检发现 E: 聚合查询 (每账户 MAX(seq)) 替代 SELECT * 全行物化 —
+                // 库随历史线性增长时全表装载线性恶化, 聚合只物化每账户一行。
                 try {
-                    result = strategy_api_internal::db_generic_query(db.get(), resource, "");
+                    for (const auto& [acct, seq] :
+                         strategy_api_internal::db_query_max_seq_by_account(db.get(), resource)) {
+                        auto it = max_seq.find(acct);
+                        if (it == max_seq.end() || seq > it->second) {
+                            max_seq[acct] = seq;
+                        }
+                    }
                 } catch (const std::exception&) {
                     continue;  // 表缺失/查询失败: 跳过该表, 不整体失败
-                }
-                const ColumnMap cols(result);
-                const size_t acct_col = cols.idx("account_id");
-                const size_t seq_col = cols.idx("seq");
-                if (acct_col == SIZE_MAX || seq_col == SIZE_MAX) {
-                    continue;  // 表缺列: 跳过 (防御)
-                }
-                for (const Row& row : result.rows) {
-                    const std::string acct = row_string(row, acct_col);
-                    if (acct.empty()) {
-                        continue;
-                    }
-                    const uint64_t seq = static_cast<uint64_t>(row_int64(row, seq_col));
-                    auto it = max_seq.find(acct);
-                    if (it == max_seq.end() || seq > it->second) {
-                        max_seq[acct] = seq;
-                    }
                 }
             }
             db->db->exec("COMMIT");
@@ -218,23 +208,15 @@ uint64_t rebuild_watermark(const std::string& account_id) {
         try {
             uint64_t max_seq = 0;
             for (const char* resource : {"order", "trade", "position", "trading_account"}) {
-                const std::string filter = std::format("{{\"account_id\": \"{}\"}}", account_id);
-                DbQueryResult result;
+                // 终检发现 E: 聚合查询 (单账户 MAX(seq)) 替代该账户全行物化。
                 try {
-                    result = strategy_api_internal::db_generic_query(db.get(), resource, filter);
+                    const uint64_t s = strategy_api_internal::db_query_account_max_seq(
+                        db.get(), resource, account_id);
+                    if (s > max_seq) {
+                        max_seq = s;
+                    }
                 } catch (const std::exception&) {
                     continue;  // 表缺失: 跳过该表
-                }
-                const ColumnMap cols(result);
-                const size_t seq_col = cols.idx("seq");
-                if (seq_col == SIZE_MAX) {
-                    continue;
-                }
-                for (const Row& row : result.rows) {
-                    const uint64_t seq = static_cast<uint64_t>(row_int64(row, seq_col));
-                    if (seq > max_seq) {
-                        max_seq = seq;
-                    }
                 }
             }
             db->db->exec("COMMIT");
@@ -315,6 +297,42 @@ void on_account_status_trading_day(DzContext* ctx, const DzAccountStatus& st) {
         return;
     }
     ctx->ingest_gate.on_trading_day_changed(st.account_id, day.c_str());
+}
+
+/// 终检发现 D【Important】: td 重启复用 seq 吞新事件 — PositionRebuild DELETE 全平持仓
+/// 行会压低 DB MAX(seq) → td 重启 seq_counter_ = 压低后 MAX → 复用 seq 撞在线策略
+/// last_applied → admit 跳过新事件, 且策略无自愈路径 (2018 Offline 在 SDK 只清成交去重段,
+/// 不动 gate)。修复: 检测同账户 2018 Offline→Ready 翻转 (dzweb 有 2018 重建自愈) 时,
+/// 对 SDK ingest_gate reset_account(rebuild_watermark) + 清该账户 gap_retry 状态 —
+/// 与 dzweb 2018 重建对齐。注意: 2018 Ready 后紧接的 repush/重放不会重复 (td 过滤器吞同),
+/// gate 重置安全; applied_trades 清空由 trade 去重段同清 (reset_account 已做)。
+void on_account_status_gate_reset(DzContext* ctx, const DzAccountStatus& st) {
+    const std::string account(st.account_id);
+    if (account.empty()) {
+        return;
+    }
+    const bool seen_before =
+        ctx->account_status_states.find(account) != ctx->account_status_states.end();
+    const DzAccountState prev = seen_before ? ctx->account_status_states[account]
+                                            : DZ_ACCOUNT_LOGGING_IN;  // 首见不计翻转
+    const bool flip_to_ready = seen_before && prev == DZ_ACCOUNT_OFFLINE &&
+                               st.state == DZ_ACCOUNT_READY;
+    ctx->account_status_states[account] = st.state;
+    if (!flip_to_ready) {
+        return;
+    }
+    // Offline→Ready: 该账户数据被整体重建 (td 重启/重连重登收尾)。重查 DB 新水位
+    // (PositionRebuild 删行后可能低于在线 last_applied) + reset_account 复位 last_applied,
+    // 使复用 seq 的新帧不再被旧 last_applied 拦截。
+    const uint64_t w = rebuild_watermark(account);
+    ctx->ingest_gate.reset_account(account, w);
+    // 作废在途 gap 重试: 旧 regime 的回补区间在新水位下无意义, 暂存帧/触发帧不得在
+    // 重置后补发 (否则旧状态覆盖新状态)。
+    if (ctx->gap_retry.active && ctx->gap_retry.account_id == account) {
+        dz_diag("ingest gap retry cancelled on account status flip to ready");
+        ctx->gap_retry.clear();
+    }
+    dz_diag((std::string("ingest gate reset on 2018 offline->ready: account=") + account).c_str());
 }
 
 /// 断档回补重试上限 (契约 td-data-sync §5.2 "几十 ms 短重试; 耗尽放行"):
@@ -513,22 +531,35 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
     return ok;
 }
 
-/// 补发被拦截的触发帧 (回补完整或重试耗尽时, 经 replay 缓冲前置派发;
-/// 先于回补帧入缓冲, 与首次成功路径"触发帧先返回、回补帧随后"的次序一致)。
-void release_held_trigger(DzContext* ctx) {
+/// 补发被拦截的触发帧 + 重试期间暂存的后续帧 (回补完整或重试耗尽时, 经 replay 缓冲
+/// 前置派发)。调用方 (drive_gap_retry) 先入回补行再调用本函数 → 派发序 = 回补行 →
+/// 触发帧 → 暂存帧 (按 seq 序, 终检发现 B)。返回 false = 缓冲溢出 (触发帧/暂存帧被丢弃,
+/// 宁缺勿乱)。
+bool release_held_trigger(DzContext* ctx) {
     auto& rt = ctx->gap_retry;
+    bool ok = true;
     if (rt.trigger_payload.empty()) {
-        return;  // 防御: 无暂存帧 (理论不可达)
-    }
-    if (!ctx->enqueue_replay_frame(rt.trigger_type, rt.trigger_payload.data(),
-                                   static_cast<uint32_t>(rt.trigger_payload.size()))) {
+        // 防御: 无暂存触发帧 (理论不可达) — 仍派发暂存帧, 不整体跳过
+    } else if (!ctx->enqueue_replay_frame(rt.trigger_type, rt.trigger_payload.data(),
+                                          static_cast<uint32_t>(rt.trigger_payload.size()))) {
         dz_diag("ingest gap retry trigger release dropped (replay buffer full)");
+        ok = false;
     }
+    for (const auto& sf : rt.staged_frames) {
+        if (!ctx->enqueue_replay_frame(sf.type, sf.payload.data(),
+                                       static_cast<uint32_t>(sf.payload.size()))) {
+            dz_diag("ingest gap retry staged frame dropped (replay buffer full)");
+            ok = false;
+        }
+    }
+    return ok;
 }
 
 /// 断档回补重试驱动 (每次调用尝试一次; 由 dz_next_event 入口与后续 ingest 调用驱动):
-/// 覆盖 → 回补帧 + 暂存触发帧入 replay 缓冲, 重试结束;
-/// 仍不足 → 计数, 耗尽 (kGapRetryMax) → ERROR + 放行触发帧 (按"崩溃丢失", 契约 §5.2)。
+/// 覆盖 → 回补行 + 暂存触发帧 + 暂存后续帧入 replay 缓冲 (按 seq 序: 回补行 → 触发帧 →
+/// 暂存帧), 重试结束; 仍不足 → 计数, 耗尽 (kGapRetryMax) → ERROR + 放行触发帧 + 暂存帧
+/// (按"崩溃丢失", 契约 §5.2)。终检发现 B: 释放顺序必须回补行在前 (seq 最小), 否则
+/// 同键旧状态覆盖新状态; 暂存帧最后 (seq 最大), 后续帧不回退。
 void drive_gap_retry(DzContext* ctx) {
     auto& rt = ctx->gap_retry;
     if (!rt.active) {
@@ -541,8 +572,10 @@ void drive_gap_retry(DzContext* ctx) {
         GapBackfillRows rows = query_gap_tables(db.get(), rt.account_id, rt.from, rt.to);
         covered = gap_covered(rows, rt.from, rt.to);
         if (covered) {
-            release_held_trigger(ctx);
+            // 回补行先入缓冲 (seq 最小), 再释放触发帧 + 暂存帧 (seq 更大) —
+            // 派发序 = 回补行 → 触发帧 → 暂存帧 = 按 seq 序 (终检发现 B)。
             enqueued = enqueue_gap_rows(ctx, rows);
+            release_held_trigger(ctx);
         }
     }
     if (covered && enqueued) {
@@ -567,15 +600,29 @@ void drive_gap_retry(DzContext* ctx) {
 /// 断档回补入口: 处理 gate 新检测的 gap (首帧) 与既有重试 (每次调用尝试一次)。
 /// 返回 false = 触发帧被拦截:
 ///   - 重试开始 (覆盖不足, persist 在途窗口): 触发帧暂存, 待回补完整/耗尽时补发;
+///   - 重试在途 (终检发现 B): 后续帧暂存而非放行 — 直接放行会插到回补帧之前,
+///     同键时旧状态覆盖新状态且无再修复; 统一暂存, 覆盖后按 seq 序派发;
 ///   - 缓冲溢出 (gap 区间过宽, 回补被截断): 既有语义, 宁缺勿乱。
-/// 触发帧参数供暂存补发 (payload 副本; 仅 gap 检测帧传入, 后续帧传 nullptr)。
+/// 触发帧参数供暂存补发 (payload 副本; 仅 gap 检测帧传入, 后续帧传 nullptr — 后续帧
+/// 经 active 分支按完整帧暂存, 无需单独参数)。
 bool handle_gap(DzContext* ctx, const std::byte* trigger_frame) {
     if (ctx->gap_retry.active) {
-        // 重试在途: 本次调用顺带驱动一次 (无新 gap — gate 的 pending_gap 已被
-        // 首次尝试消费); 本帧正常放行 (last_applied 已推进, 回补帧经 replay
-        // 缓冲前置派发, 次序与既有"触发帧先返回、回补帧随后"语义一致)。
+        // 重试在途: 本帧 (seq > 触发帧) 不得直接放行 — 直接放行会让新状态帧先于
+        // 回补的旧状态帧到达, 同键 (同 order_id) 时回补旧状态覆盖新状态且无再修复
+        // (终检发现 B)。统一暂存 (经 trigger_frame 的完整帧 payload 副本), 覆盖/耗尽
+        // 时按 seq 序 (回补行 → 触发帧 → 暂存帧) 经 replay 缓冲派发。
+        // 暂存帧已在 ingest_td_frame 的 admit 阶段推进 last_applied, 派发时不再过
+        // ingest (与触发帧补发同语义), 天然 seq 序。
+        if (trigger_frame != nullptr) {
+            const shm::FrameView view(trigger_frame);
+            if (!ctx->gap_retry.stage(view.type(), trigger_frame + sizeof(DzFrameHeader),
+                                      view.frame_size() - sizeof(DzFrameHeader))) {
+                dz_diag("ingest gap retry staged frame overflow, drop frame");
+            }
+        }
+        // 每次调用顺带驱动一次重试 (无新 gap — gate 的 pending_gap 已被首次尝试消费)。
         drive_gap_retry(ctx);
-        return true;
+        return false;  // 拦截本帧 (宁缺勿乱: 本帧与回补帧的 seq 序不可被破坏)
     }
     auto gap = ctx->ingest_gate.take_pending_gap();
     if (!gap.has_value()) {
@@ -615,10 +662,23 @@ bool ingest_td_frame(DzContext* ctx, const std::byte* frame) {
     if (view.frame_size() < sizeof(DzFrameHeader) + sizeof(ReportT)) {
         return false;  // 截断帧防御: 读不出 payload 的帧一律拦截
     }
+    // 终检发现 C【Important】: 帧头损坏/版本错配的更大帧 (frame_size 无上界) 在回补
+    // 暂存/回放路径会按全量 payload memcpy 越界写坏相邻槽。ingest 层统一加上界钳制:
+    // payload 超 replay 槽联合容量 (最大 Dz*Report) 即拦截 + 日志 (宁缺勿乱)。
+    if (view.frame_size() > sizeof(DzFrameHeader) + DzContext::REPLAY_FRAME_MAX_PAYLOAD) {
+        dz_diag("ingest td frame payload exceeds replay slot capacity, frame dropped");
+        return false;
+    }
     const auto& v = view.payload<ReportT>();
     if (ctx->ingest_gate.detect_reset(v.account_id, v.seq)) {
         const uint64_t w = rebuild_watermark(v.account_id);
         ctx->ingest_gate.reset_account(v.account_id, w);
+        // 终检发现 D: 重置路径作废该账户在途 gap 重试 — 旧 regime 的回补区间
+        // (回补行/触发帧/暂存帧) 在新水位下无意义, 不得在重置后补发 (旧状态覆盖新状态)。
+        if (ctx->gap_retry.active && ctx->gap_retry.account_id == v.account_id) {
+            dz_diag("ingest gap retry cancelled on account reset");
+            ctx->gap_retry.clear();
+        }
     }
     if (ctx->ingest_gate.admit(v.account_id, v.seq) == TdIngestGate::Verdict::kSkip) {
         return false;
@@ -771,8 +831,11 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
             // 截断帧防御: 读不出 payload 不驱动 (仍全量放行, 引擎侧 payload_size_matches 丢弃)。
             if (shm::FrameView(frame).frame_size() >=
                 sizeof(DzFrameHeader) + sizeof(DzAccountStatus)) {
-                on_account_status_trading_day(
-                    ctx, shm::FrameView(frame).payload<DzAccountStatus>());
+                const auto& st = shm::FrameView(frame).payload<DzAccountStatus>();
+                on_account_status_trading_day(ctx, st);
+                // 终检发现 D: Offline→Ready 翻转触发该账户 gate 重置 + 清 gap_retry
+                // (td 重启复用 seq 吞新事件的自愈, 与 dzweb 2018 重建对齐)。
+                on_account_status_gate_reset(ctx, st);
             }
             return true;  // 2018 仍全量放行给策略用户 (on_account_status 回调, 引擎测试覆盖)
         }

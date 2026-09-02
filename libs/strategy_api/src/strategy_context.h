@@ -131,6 +131,9 @@ struct DzContext {
             DzTradingAccount account;
         } payload;
     };
+    /// 槽 payload 容量 (联合最大成员) — enqueue_replay_frame 上界钳制用。
+    static constexpr uint32_t REPLAY_FRAME_MAX_PAYLOAD =
+        sizeof(ReplayFrameSlot::payload);
     std::array<ReplayFrameSlot, REPLAY_FRAME_SLOTS> replay_frames{};
     uint32_t replay_frame_head = 0;   ///< 下一个可写槽位
     uint32_t replay_frame_count = 0;  ///< 待领取帧数
@@ -138,9 +141,16 @@ struct DzContext {
     /// 入回补帧缓冲 (FIFO)。
     /// 缓冲满 (仅 gap 区间过宽时发生): 记 ERROR 并返回 false, 调用方 (handle_gap)
     /// 拦截触发帧 (保证帧不丢、触发帧也不放行, 宁缺勿乱)。返回 true = 已入缓冲。
+    /// 终检发现 C【Important】: 触发帧/后续帧暂存路径按 frame_size 全量拷贝, 帧头
+    /// 损坏/版本错配 (payload_size 超槽) 时 memcpy 越界写坏相邻槽 — 加上界钳制,
+    /// 超槽 (槽容量 = 联合最大 payload) 记 ERROR 并返回 false (宁缺勿乱)。
     bool enqueue_replay_frame(DzFrameType type, const void* payload, uint32_t payload_size) {
         if (replay_frame_count >= REPLAY_FRAME_SLOTS) {
             dz_diag("replay frame buffer overflow, backfill truncated");
+            return false;
+        }
+        if (payload_size > REPLAY_FRAME_MAX_PAYLOAD) {
+            dz_diag("replay frame payload too large, frame dropped");
             return false;
         }
         auto& slot = replay_frames[replay_frame_head];
@@ -167,7 +177,18 @@ struct DzContext {
     /// gap 待重试并拦截触发帧 (宁缺勿乱); 每次dz_next_event 调用重试一次
     /// (无 sleep, 调用间隔即天然"短重试"间隔), 覆盖后补发触发帧 + 回补帧
     /// (经 replay 缓冲), 重试耗尽 (kGapRetryMax, api.cpp 定义) 放行触发帧 + ERROR。
+    /// 终检发现 B【Critical】: 重试期间到达的后续帧 (seq > 触发帧) 不得直接放行
+    /// (会插到触发帧/回补帧之前, 同键时旧状态覆盖新状态且无再修复) — 统一暂存,
+    /// 覆盖成功后按 seq 序 (回补行 → 触发帧 → 暂存帧) 经 replay 缓冲统一派发。
     struct GapRetryState {
+        /// 暂存的后续帧 (重试期间拦截, 覆盖/耗尽时按序补发)。
+        /// 上限对齐 replay 缓冲容量 (512), 超出丢弃 + ERROR (宁缺勿乱)。
+        struct StagedFrame {
+            DzFrameType type{};
+            std::vector<std::byte> payload;
+        };
+        static constexpr size_t kMaxStaged = 512;
+
         bool active = false;
         std::string account_id;
         uint64_t from = 0;  ///< gap 起点 (含)
@@ -175,6 +196,7 @@ struct DzContext {
         uint32_t attempts = 0;  ///< 已尝试次数 (首次计入)
         DzFrameType trigger_type{};  ///< 被拦截触发帧的类型
         std::vector<std::byte> trigger_payload;  ///< 被拦截触发帧 payload 副本 (补发用)
+        std::vector<StagedFrame> staged_frames;  ///< 重试期间拦截的后续帧 (FIFO, seq 序)
 
         void begin(const std::string& acct, uint64_t f, uint64_t t, DzFrameType type,
                    const std::byte* payload, uint32_t payload_size) {
@@ -186,6 +208,17 @@ struct DzContext {
             trigger_type = type;
             trigger_payload.assign(payload, payload + payload_size);
         }
+        /// 暂存重试期间到达的后续帧。超上限丢弃并返回 false (宁缺勿乱)。
+        bool stage(DzFrameType type, const std::byte* payload, uint32_t payload_size) {
+            if (staged_frames.size() >= kMaxStaged) {
+                return false;
+            }
+            StagedFrame sf;
+            sf.type = type;
+            sf.payload.assign(payload, payload + payload_size);
+            staged_frames.push_back(std::move(sf));
+            return true;
+        }
         void clear() {
             active = false;
             account_id.clear();
@@ -195,9 +228,15 @@ struct DzContext {
             trigger_type = {};
             trigger_payload.clear();
             trigger_payload.shrink_to_fit();
+            staged_frames.clear();
+            staged_frames.shrink_to_fit();
         }
     };
     GapRetryState gap_retry;
+
+    /// 终检发现 D: 各账户上次见到的 2018 三态 (Offline/LoggingIn/Ready) — 检测
+    /// Offline→Ready 翻转 (td 重启复用 seq 吞新事件的自愈) 用。初始无记录 = 未知。
+    std::unordered_map<std::string, DzAccountState> account_status_states;
 
     // ── 定时器区 ────────────────────────────────────────────
     // 用户定时器与 SDK 内部任务(预加载随机延迟)共用单堆:
