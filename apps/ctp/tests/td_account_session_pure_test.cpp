@@ -345,3 +345,42 @@ TEST(PositionMirrorTest, SeqAccessorsMissingKeyAndDifferentKey) {
     EXPECT_EQ(m.seq_of("acc1", "IF2506", DZ_DIRECTION_SHORT), 0u);
     EXPECT_EQ(m.seq_of("acc1", "rb2510", DZ_DIRECTION_LONG), 0u);
 }
+
+// 全平幽灵持仓差集 (发现 A): 镜像有而全量组 (查询响应) 无的 key 返回 —
+// 调用方据此发 volume=0 清零帧。组内行不受字段值影响, 只按 key 判定。
+TEST(PositionMirrorTest, KeysNotInGroupReportsDisappearedKeys) {
+    PositionMirror m;
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 10)));
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_SHORT, 2, 11)));
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "rb2510", DZ_DIRECTION_LONG, 3, 12)));
+    m.update_seq("acc1", "IF2506", DZ_DIRECTION_LONG, 10);
+    m.update_seq("acc1", "IF2506", DZ_DIRECTION_SHORT, 11);
+    m.update_seq("acc1", "rb2510", DZ_DIRECTION_LONG, 12);
+
+    // 全量组含其中两条 (IF2506 多/空 仍持有), rb2510 全平 (不再出现)。
+    std::vector<DzPositionInfo> group;
+    group.push_back(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 10));
+    group.push_back(make_pos("acc1", "IF2506", DZ_DIRECTION_SHORT, 2, 11));
+    auto missing = m.keys_not_in_group(group);
+    ASSERT_EQ(1u, missing.size());
+    EXPECT_STREQ(missing[0].account_id, "acc1");
+    EXPECT_STREQ(missing[0].instrument_id, "rb2510");
+    EXPECT_EQ(DZ_DIRECTION_LONG, missing[0].direction);
+
+    // 组 = 空 (账户全平): 全部 key 返回。
+    auto all = m.keys_not_in_group({});
+    ASSERT_EQ(3u, all.size());
+}
+
+// 差集按 key 而非字段值: 组内行字段任意 (仅 key 参与比较) 不影响判定。
+TEST(PositionMirrorTest, KeysNotInGroupIgnoresGroupFieldValues) {
+    PositionMirror m;
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 10)));
+    EXPECT_TRUE(m.update_if_changed(make_pos("acc1", "rb2510", DZ_DIRECTION_LONG, 3, 11)));
+
+    DzPositionInfo g0 = make_pos("acc1", "IF2506", DZ_DIRECTION_LONG, 5, 10);
+    g0.volume = 99;  // 字段值不参与 key 判定
+    auto missing = m.keys_not_in_group({g0});
+    ASSERT_EQ(1u, missing.size());
+    EXPECT_STREQ(missing[0].instrument_id, "rb2510");
+}

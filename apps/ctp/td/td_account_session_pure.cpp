@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_set>
+#include <vector>
 
 namespace dztrader::ctp {
 
@@ -156,6 +158,23 @@ void PositionMirror::update_seq(const std::string& account_id,
     if (it != positions_.end()) {
         it->second.seq = seq;
     }
+}
+
+std::vector<DzPositionInfo> PositionMirror::keys_not_in_group(
+    const std::vector<DzPositionInfo>& group) const {
+    std::unordered_set<Key, KeyHash> in_group;
+    for (const auto& p : group) {
+        in_group.emplace(p.account_id, p.instrument_id, p.direction);
+    }
+    std::vector<DzPositionInfo> missing;
+    for (const auto& [key, stored] : positions_) {
+        if (in_group.find(key) == in_group.end()) {
+            // 返回镜像中该 key 的最后一次行: 调用方以它为基础置 volume=0
+            // (同 account/instrument/direction 即 key 覆盖语义, 绝对态清零)。
+            missing.push_back(stored);
+        }
+    }
+    return missing;
 }
 
 }  // namespace dztrader::ctp

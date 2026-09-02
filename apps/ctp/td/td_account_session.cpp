@@ -1231,6 +1231,27 @@ void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPosition
                 // 幂等: 迟到的重复 is_last (超时/失败路径已推进 finalizer 后的补达) 不得
                 // 用已消费的空组再次重灌清空 DB.
                 position_rebuild_consumed_ = true;
+                // 终检发现 A【Critical】全平幽灵持仓: 绝对态"消失"无帧表达。
+                // 查询响应不含的合约 = 已全平/已过期, 但 td 侧不推 2002 帧 → 策略
+                // on_position_info 永不收清零、dzweb 镜像永不清零。在 move 组之前
+                // 计算镜像有而本组无的 key 差集, 对每个差集 key 发 volume=0 清零帧
+                // (绝对态语义: 新状态变更, 消费端按键覆盖自然清零), 同 seq 单调。
+                for (DzPositionInfo& zero : position_mirror_.keys_not_in_group(position_query_group_)) {
+                    zero.volume = 0;
+                    zero.frozen_volume = 0;
+                    zero.today_volume = 0;
+                    zero.yd_volume = 0;
+                    zero.seq = ++seq_counter_;
+                    // 镜像同步: update_if_changed 与 0 值有差异 (旧值非 0) → 自然覆盖;
+                    // update_seq 记录新 seq (下一轮查询同 key 未变化时沿用, 防止回灌冲 0)。
+                    if (position_mirror_.update_if_changed(zero)) {
+                        position_mirror_.update_seq(account_id_, zero.instrument_id,
+                                                    zero.direction, zero.seq);
+                    }
+                    platform::write_struct(event_writer_, DZ_FRAME_POSITION_INFO, zero);
+                    SPDLOG_INFO("td qry position zero | account={} instrument={} dir={} seq={}",
+                                account_id_, zero.instrument_id, zero.direction, zero.seq);
+                }
                 persist_writer_.enqueue(PersistTask{
                     .kind = PersistTask::Kind::PositionRebuild,
                     .data = std::move(position_query_group_),

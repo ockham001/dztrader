@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <dztrader/data_type.h>  // DzOrderId
 #include <dztrader/struct.h>     // DzPositionInfo
@@ -42,6 +43,14 @@ public:
 
     /// 镜像大小 (测试用).
     size_t size() const noexcept { return positions_.size(); }
+
+    /// 全量语义差集: 本镜像有而全量组 (本次查询响应) 无的 key。
+    /// 全平/过期合约不会出现在查询响应中, 绝对态下"消失"即清零 —
+    /// 调用方对每个差集 key 发 volume=0 的 2002 清零帧, 消除幽灵持仓。
+    /// 组内 key 取 (account_id, instrument_id, direction), 忽略组内行其余字段
+    /// (调用方在 enqueue 前按组行构造同 key 清零帧)。
+    [[nodiscard]] std::vector<DzPositionInfo> keys_not_in_group(
+        const std::vector<DzPositionInfo>& group) const;
 
 private:
     struct Key {
