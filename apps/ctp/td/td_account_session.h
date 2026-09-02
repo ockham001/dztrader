@@ -312,6 +312,11 @@ private:
     dztrader::core::TimerQueue::TimerId instruments_load_timer_id_ = 0;
     /// 代际失效: 断线时自增, 使已挂起定时器回调失效 (避免陈旧回调误触发)
     uint64_t generation_ = 0;
+    /// 查询链代际 (终检发现 1): 每次查询发起时快照 generation_, 响应处理校验
+    /// query_gen_ == generation_ 才继续 — 断连重连后旧会话迟到的查询响应 (含
+    /// 数据行与 is_last) 一律丢弃, 防旧响应污染新链 (重灌错行/重复收尾/seq 污染),
+    /// 彻底覆盖 "resync 在途断连重连" 交错。
+    uint64_t query_gen_ = 0;
 
     /// CTP 登录诊断字段 (open 时保存, 用于 ReqAuthenticate/ReqUserLogin)
     std::string broker_id_;

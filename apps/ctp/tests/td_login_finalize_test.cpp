@@ -57,3 +57,29 @@ TEST(LoginFinalizer, BothFailStillFinalizes) {
     EXPECT_TRUE(fin.can_reach_ready());  // 双查询都失败也降级收尾
     EXPECT_EQ(Phase::kReplay, fin.next());
 }
+
+// 终检发现 1: 重连后二次收尾 — 断连作废在途查询链 = 整体重置 LoginFinalizer
+// (td_account_session.cpp on_front_disconnected / on_rsp_qry_instrument is_last):
+// kDone 后重新默认构造, phase 回 kQueryPosition, 双查询重新齐备可再次收尾
+// (修复"重连重登后持仓 is_last 被 kDone 门挡住, 账户永久停在 LoadingInstruments")。
+TEST(LoginFinalizer, ReassignmentAfterDoneRestartsQueryPhase) {
+    LoginFinalizer fin;
+    fin.on_position_done();
+    fin.on_account_done();
+    fin.next();  // kReplay
+    fin.next();
+    fin.next();
+    fin.next();  // kDone
+    ASSERT_EQ(Phase::kDone, fin.phase());
+
+    // 断连/重登: finalizer_ = LoginFinalizer{} (重置语义)
+    fin = LoginFinalizer{};
+    EXPECT_EQ(Phase::kQueryPosition, fin.phase());
+    EXPECT_FALSE(fin.can_reach_ready());  // 双查询未齐: 查询阶段重新开始
+
+    // 重登查询链重走: 持仓/资金 is_last 再次齐备 → 可收尾
+    fin.on_position_done();
+    fin.on_account_done();
+    EXPECT_TRUE(fin.can_reach_ready());
+    EXPECT_EQ(Phase::kReplay, fin.next());
+}

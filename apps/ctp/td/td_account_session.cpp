@@ -204,6 +204,16 @@ void AccountSession::on_front_disconnected(int reason) {
     cancel_login_timer();
     cancel_instruments_load_timer();
     ++generation_;  // 使已挂起定时器回调失效
+    // 终检发现 1: 作废在途登录收尾查询链 (CTP 断连后在途查询响应作废)。
+    // 否则首次登录已收尾 (finalizer 停在 kDone), 重连重登的持仓 is_last 被
+    // phase()==kQueryPosition 门挡住不推进不发资金查询, 5min 兜底同门被挡,
+    // resync 被 !is_ready() 挡 → 账户永久停在 LoadingInstruments。
+    finalizer_ = LoginFinalizer{};  // 复位收尾状态机 (kQueryPosition)
+    position_query_group_.clear();
+    position_rebuild_consumed_ = false;
+    position_query_ok_ = false;
+    account_query_ok_ = false;
+    data_query_ok_ = false;  // 新链重新判定 (失败由重连收尾/补查兜底)
     // 清空持仓 map, 重连后主动查询重建 (设计 §6)
     holdings_.clear();
     // 清空合约 -> 交易所映射, 重连后 req_qry_instrument 重新填充 (C2)
@@ -282,6 +292,12 @@ void AccountSession::on_rsp_settlement_confirm(const OnRspSettlementInfoConfirmF
 }
 
 void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
+    // 终检发现 1: 陈旧响应防护 — 断连重连后, 旧会话事件队列中的迟到合约查询响应
+    // (响应发起时快照的 query_gen_ ≠ 当前 generation_) 一律丢弃, 防旧 is_last
+    // 二次发起查询链 / 旧行污染映射表。
+    if (query_gen_ != generation_) {
+        return;
+    }
     // 先处理数据, 再判 is_last (避免 null instrument + is_last 时状态机卡死)
     if (f.instrument) {
         // C2: 存储 instrument_id -> exchange_id 映射, 供 place_order 查表获取 exchange_id
@@ -336,6 +352,14 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
                     account_id_, instrument_exchange_map_.size());
         // 日切/重连后的持仓为绝对态: 清空旧镜像, 使新日首报不被旧镜像拦截 (spec §4.1 跨日清空).
         position_mirror_.clear();
+        // 终检发现 1 (双保险 b): 二次进入收尾前防御性复位收尾状态机 + ok 标志 —
+        // 首次登录已 kDone 时 (断连未清残留的任何路径), 重登查询链从 kQueryPosition
+        // 重走, 持仓/资金 is_last 的 phase 门才成立。
+        finalizer_ = LoginFinalizer{};
+        position_query_ok_ = false;
+        account_query_ok_ = false;
+        position_rebuild_consumed_ = false;
+        position_query_group_.clear();
         req_qry_investor_position();
     }
 }
@@ -718,6 +742,8 @@ void AccountSession::req_settlement_confirm() {
 
 void AccountSession::req_qry_instrument() {
     // C2: 查询全部合约, 填充 instrument_exchange_map_ (设计 §7.2)
+    // 终检发现 1: 发起时快照代际, 响应侧校验 (陈旧响应丢弃)
+    query_gen_ = generation_;
     CThostFtdcQryInstrumentField qry{};
     // InstrumentID 留空: 查询所有合约
     int ret = api_->ReqQryInstrument(&qry, ++request_id_);
@@ -764,6 +790,8 @@ void AccountSession::cancel_connect_timer() {
 
 void AccountSession::req_qry_investor_position() {
     // Task 6 (spec §4.2 登录收尾): Ready 前发起持仓查询 (登录不在 30μs 热路径).
+    // 终检发现 1: 发起时快照代际, 响应侧校验 (陈旧响应丢弃)
+    query_gen_ = generation_;
     // CTP 流控 1 次/秒, 与资金查询串行间隔发起 (此处持仓完成后再发资金).
     // 本轮全量组清空: is_last 时整组 PositionRebuild. 流控重试 (-3) 在本请求重发前
     // 无任何响应回调, 清空安全. 同时复位本轮的 enqueue 幂等标志.
@@ -818,6 +846,8 @@ void AccountSession::req_qry_investor_position() {
 
 void AccountSession::req_qry_trading_account() {
     // Task 6 (spec §4.2 登录收尾): 持仓完成后发起资金查询 (CTP 流控串行).
+    // 终检发现 1: 发起时快照代际, 响应侧校验 (陈旧响应丢弃)
+    query_gen_ = generation_;
     if (api_ == nullptr) {
         finalizer_.on_account_failed();
         account_query_ok_ = false;
@@ -1090,6 +1120,11 @@ void AccountSession::on_rsp_qry_order(const OnRspQryOrderField& f) {
 // to_dz_trading_account -> seq 分配 -> 推 DZ_FRAME_TRADING_ACCOUNT -> persist.
 // is_last/失败驱动登录收尾状态机 (资金查询完成).
 void AccountSession::on_rsp_qry_trading_account(const OnRspQryTradingAccountField& f) {
+    // 终检发现 1: 陈旧响应防护 — 旧会话迟到的资金查询响应会错误分配 seq (污染取号器)
+    // 并重复触发收尾, 一律丢弃。
+    if (query_gen_ != generation_) {
+        return;
+    }
     try {
         if (f.trading_account) {
             DzTradingAccount acct = to_dz_trading_account(*f.trading_account, account_id_, trading_day_);
@@ -1130,6 +1165,13 @@ void AccountSession::on_rsp_qry_trading_account(const OnRspQryTradingAccountFiel
 // 重灌 (清该账户全部持仓行 + upsert 本组行), 替代逐行 diff upsert. 逐行方式下 CTP 全平
 // (响应不再含该合约) 时无新帧触发, 镜像与 DB 旧持仓永驻 → 盘中平仓的幽灵持仓留到次日.
 void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPositionField& f) {
+    // 终检发现 1: 陈旧响应防护 — 断连重连后, 旧会话迟到的持仓查询响应 (含行数据与
+    // is_last) 一律丢弃: 旧行会污染新链 position_query_group_ (重灌清库错行),
+    // 旧 is_last 会重复触发资金查询/收尾。"resync 在途断连重连"交错同此防护:
+    // resync 迟到 is_last 的 phase 门判断自然失效。
+    if (query_gen_ != generation_) {
+        return;
+    }
     try {
         if (f.investor_position) {
             DzPositionInfo pos = to_dz_position(*f.investor_position, account_id_, trading_day_);
