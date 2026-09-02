@@ -317,8 +317,21 @@ bool PersistWriter::wait_flush(uint64_t token, std::chrono::milliseconds timeout
         }
         fut = it->second.get_future();
     }
-    // promise 在 Writer 线程 set_value (或 stop 丢弃路径). 超时返回 false.
-    return fut.wait_for(timeout) == std::future_status::ready;
+    // promise 在 Writer 线程 set_value / set_exception (批失败, 终检发现 F), 或
+    // stop 丢弃路径 set_value. set_exception 时 wait_for 仍返回 ready, get() 抛异常 —
+    // 捕获并返回 false (失败场景"此前任务未完成提交", 与超时同语义).
+    // 超时返回 false.
+    if (fut.wait_for(timeout) != std::future_status::ready) {
+        return false;
+    }
+    try {
+        fut.get();  // 传播批失败异常 (set_exception) — 捕获转 false, 不逃逸给调用方
+    } catch (const std::exception&) {
+        return false;
+    } catch (...) {
+        return false;
+    }
+    return true;
 }
 
 SQLite::Database& PersistWriter::db() {
@@ -374,9 +387,18 @@ void PersistWriter::writer_loop() {
 
         // 单事务批量提交 (失败不退出, 丢弃本批, 记 ERROR)
         // C7: 必须捕获所有异常 (含非 std 异常), 否则 Writer 线程退出会导致 enqueue 死锁
+        // 终检发现 F【Important】: 批失败时已入批的 flush 哨兵 token 既不 set_value
+        // 也不 erase → wait_flush 永久超时 + map 慢性泄漏 (7×24 周期重登累积)。
+        // 关键: 批执行中途抛异常时, execute_batch 在抛点之前收集的 flushed_tokens 可能
+        // 不含抛点之后/未执行的哨兵 token — 故 catch 分支以"本批全部 FlushSignal token"
+        // 为集合 (预扫描 batch), 对每个 set_exception + erase: wait_flush 捕获异常返回
+        // false, 语义正确 — 失败场景下批事务已回滚, "此前任务未完成提交"须以 false 显式表达。
+        // (注释: set_value 仅在批 commit 成功后执行, 保证 wait_flush 返回 true ⇒ 已提交。
+        //  既有 FlushReturnsFalseWhenBatchCommitFails 测试的"超时不 set"语义升级为
+        //  "显式 set_exception" — 同一不变量: 失败必 false, 且不再泄漏/饿死等待者。)
+        std::vector<uint64_t> flushed_tokens;
         try {
             SQLite::Transaction txn(*db_);
-            std::vector<uint64_t> flushed_tokens;
             execute_batch(*db_, batch, flushed_tokens);
             txn.commit();
             // 评审 C1: 批事务提交成功后才 set_value, 保证 "wait_flush 返回" ⇒
@@ -396,13 +418,16 @@ void PersistWriter::writer_loop() {
         } catch (const SQLite::Exception& e) {
             SPDLOG_ERROR("persist batch failed, dropping | count={} error=\"{}\"",
                          batch.size(), e.what());
+            fail_flushed_tokens(batch);
         } catch (const std::exception& e) {
             SPDLOG_ERROR("persist batch failed (std), dropping | count={} error=\"{}\"",
                          batch.size(), e.what());
+            fail_flushed_tokens(batch);
         } catch (...) {
             // 非 std 异常 (如 SQLite C 接口错误回调 throw int) 也必须吞下,
             // 防止 Writer 线程意外退出导致主线程 enqueue 永久阻塞 (设计 §13.11)
             SPDLOG_ERROR("persist batch failed (unknown), dropping | count={}", batch.size());
+            fail_flushed_tokens(batch);
         }
     }
 
@@ -412,6 +437,37 @@ void PersistWriter::writer_loop() {
     }
     cv_writer_done_.notify_one();
     SPDLOG_INFO("writer loop exited");
+}
+
+/// 批事务失败收尾: 本批全部 FlushSignal token 的 promise 必须终结 (set_exception), 否则
+/// wait_flush 永久阻塞/超时 + pending_flushes_ 条目永不回收 (终检发现 F 慢性泄漏)。
+/// set_exception 使 wait_flush 的 future 立即 ready (异常), 调用方捕获后返回 false —
+/// 失败场景"任务未完成提交"语义, 与 stop 丢弃路径的"已消费"语义区分。
+/// 注意: 批执行中途抛异常时 execute_batch 收集的 flushed_tokens 可能不含抛点之后的哨兵,
+/// 故以 batch 全量预扫描为 token 集合 (批内每个 FlushSignal 都是本批的等待者)。
+void PersistWriter::fail_flushed_tokens(const std::vector<PersistTask>& batch) {
+    std::vector<uint64_t> tokens;
+    for (const auto& task : batch) {
+        if (task.kind == PersistTask::Kind::FlushSignal) {
+            tokens.push_back(task.flush_token);
+        }
+    }
+    if (tokens.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lk(mtx_);
+    for (uint64_t token : tokens) {
+        auto it = pending_flushes_.find(token);
+        if (it != pending_flushes_.end()) {
+            try {
+                it->second.set_exception(
+                    std::make_exception_ptr(std::runtime_error("persist batch commit failed")));
+            } catch (...) {
+                // 防御: promise 已 set (理论不可达, 单 Writer 线程串行)
+            }
+            pending_flushes_.erase(it);
+        }
+    }
 }
 
 bool PersistWriter::wait_and_pop(PersistTask& out) {

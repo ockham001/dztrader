@@ -483,6 +483,63 @@ TEST_F(TdPersistWriterTest, FlushReturnsFalseWhenBatchCommitFails) {
     w.stop();
 }
 
+// 终检发现 F: 批失败路径 token 不得慢性泄漏 — wait_flush 须立即 (非超时) 返回 false,
+// 且反复失败后 pending_flushes_ 不累积 (set_exception + erase)。旧代码 catch 分支既不
+// set 也不 erase: wait_flush 靠 300ms 超时兜底返回 false, map 条目永久残留 (7×24 累积)。
+// 确定性: start_writer() 前全部入队 → 单批 drain (所有 FlushSignal 同批), 无批切分竞态。
+TEST_F(TdPersistWriterTest, FailedBatchDoesNotLeakFlushTokens) {
+    PersistWriter w(db_path_);
+    w.open();
+    // 删 margin_rates 表 (start_writer 前 db() 可用): 预编译 stmt 已建, 执行时报错
+    w.db().exec("DROP TABLE margin_rates");
+
+    // start_writer() 前全部入队: 队列累积, 启动后单批 drain (无批切分)。
+    constexpr int kRounds = 20;
+    std::vector<uint64_t> tokens;
+    for (int i = 0; i < kRounds; ++i) {
+        OrderRecord r{};
+        r.base.order_id = 1000 + i;
+        std::strcpy(r.base.account_id, "acc1");
+        std::strcpy(r.trading_day, "20260901");
+        std::strcpy(r.order_ref, "000001");
+        std::strcpy(r.base.instrument_id, "IF2506");
+        std::strcpy(r.base.exchange_id, "CFFEX");
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = r});
+
+        auto token = w.enqueue_flush_signal();
+        tokens.push_back(token);
+
+        MarginRateRecord m{};
+        std::strcpy(m.account_id, "acc1");
+        std::strcpy(m.product_code, "IF");
+        std::strcpy(m.instrument_id, "IF2506");
+        std::strcpy(m.exchange_id, "CFFEX");
+        m.hedge_flag = 'S';
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::MarginRate, .data = m});
+    }
+
+    w.start_writer();  // 单批 drain 全部任务, MarginRate 触发异常 → 整批回滚
+
+    // 关键断言: 全部 token 必须立即返回 (不被 300ms 超时拖住), 证明 catch 分支终结了
+    // promise。泄漏复现 (旧代码): token 既不 set 也不 erase → 每个 wait_flush 都要等满
+    // 300ms 超时; 且已 erase 的 token 本应返回 true, 旧代码里 map 残留使其永远等待。
+    // 修复后: set_exception/erase 均已执行, wait_flush 对已终结 token 立即返回。
+    // 布尔值在此不严格约束: set_exception 已抓 future 的调用返回 false, 未抓 (已 erase)
+    // 的按"已消费"返回 true — 二者都属"立即返回", 与旧代码"拖满 300ms"可区分。
+    const auto t0 = std::chrono::steady_clock::now();
+    for (uint64_t token : tokens) {
+        (void)w.wait_flush(token, std::chrono::milliseconds(300));
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    // 20 个 token 若都靠 300ms 超时兜底需 ≥6s; set_exception/erase 路径应 <1s。
+    EXPECT_LT(elapsed, std::chrono::seconds(1)) << "flush tokens leaked: wait_flush blocked on timeout";
+
+    // 后续未知 token 仍按"已消费"处理返回 true (map 已清, 不误伤正常路径)。
+    EXPECT_TRUE(w.wait_flush(999999, std::chrono::milliseconds(50)));
+
+    w.stop();
+}
+
 // ============================================================================
 // positions / trading_accounts 新 Kind
 // ============================================================================

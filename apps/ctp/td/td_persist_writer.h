@@ -132,6 +132,10 @@ private:
     bool wait_and_pop(PersistTask& out);
     void execute_batch(SQLite::Database& db, std::vector<PersistTask>& batch,
                        std::vector<uint64_t>& flushed_tokens);
+    /// 批事务失败收尾: 本批全部 FlushSignal token 的 promise set_exception + 从 map erase
+    /// (终检发现 F: 防 wait_flush 永久超时/误报 + pending_flushes_ 慢性泄漏; 批执行中途
+    /// 抛异常时 execute_batch 收集的 flushed_tokens 可能不全, 以 batch 全量预扫描为准)。
+    void fail_flushed_tokens(const std::vector<PersistTask>& batch);
     void prepare_statements(SQLite::Database& db);
 
     // 绑定单条记录到预编译 stmt 并执行
