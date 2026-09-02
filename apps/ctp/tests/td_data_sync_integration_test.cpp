@@ -420,5 +420,51 @@ TEST_F(TdDataSyncIntegrationTest, CrossDayAccumulation) {
     EXPECT_TRUE(gate.admit_trade("acc1", "20260902", "T001"));
 }
 
+// ============================================================================
+// 终检发现 4(c): 吞同不推进 W — 重放风暴全吞后, query_max_seq / DB MAX(seq)
+// 不变 (kSkip 路径: 不推不落不分配 seq, 消费端水位不被重放污染)
+// ============================================================================
+TEST_F(TdDataSyncIntegrationTest, ReplayStormSkipsLeaveWatermarkUnchanged) {
+    // 生产端落一批入库 (seq 1..30), W = 30
+    constexpr int kCount = 30;
+    std::vector<OrderRecord> seed;
+    seed.reserve(kCount);
+    for (int i = 1; i <= kCount; ++i) {
+        seed.push_back(make_order(i, static_cast<uint64_t>(i)));
+    }
+    {
+        PersistWriter w(db_path_);
+        w.open();
+        w.start_writer();
+        for (const auto& r : seed) {
+            w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = r});
+        }
+        auto token = w.enqueue_flush_signal();
+        ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+        w.stop();
+    }
+    SQLite::Database ro(db_path_, SQLite::OPEN_READONLY);
+    const uint64_t w_before = query_max_seq(ro, "acc1");
+    ASSERT_EQ(w_before, static_cast<uint64_t>(kCount));
+    const int64_t rows_before = scalar_int("SELECT COUNT(*) FROM orders WHERE account_id='acc1'");
+
+    // 消费端装载基准后重放同一批 → 全 kSkip (吞同)
+    auto filter = ReportFilter::load(load_orders(ro, "acc1"), load_trades(ro, "acc1"));
+    for (const auto& rec : seed) {
+        bool warn = false;
+        ASSERT_EQ(ReportFilter::Verdict::kSkip, filter.check_order(rec, &warn));
+    }
+
+    // 消费端水位 (gate) 不被重放推进: kSkip 后仍应按 W=30 过滤, 31 才放行
+    dztrader::TdIngestGate gate;
+    gate.set_watermark("acc1", w_before);
+    EXPECT_EQ(dztrader::TdIngestGate::Verdict::kSkip, gate.admit("acc1", w_before));
+    EXPECT_EQ(dztrader::TdIngestGate::Verdict::kApply, gate.admit("acc1", w_before + 1));
+
+    // DB 无新行, MAX(seq) 不变 (kSkip: 不推不落不分配 seq)
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE account_id='acc1'"), rows_before);
+    EXPECT_EQ(query_max_seq(ro, "acc1"), w_before);
+}
+
 }  // namespace
 }  // namespace dztrader::ctp
