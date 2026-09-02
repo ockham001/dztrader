@@ -380,20 +380,16 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
         }
         sqlite3_finalize(stmt);
     }
-    // 提交快照读 (只读事务 COMMIT 仅结束读; 失败防御性回滚)
-    char* commit_err = nullptr;
-    if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, &commit_err) != SQLITE_OK) {
-        SPDLOG_WARN("td db commit snapshot failed | account={} err={}", account_id,
-                    commit_err != nullptr ? commit_err : "unknown");
-        sqlite3_free(commit_err);
-        sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
-    }
-
     // 3. 设该账户新 W (spec §5.1/§2.1: W = 该账户 MAX(seq), 账户级独立水位; 过滤 seq ≤ W 的
     //    后续帧 — 快照已含)。四表 (委托/成交/持仓/资金) 共享一个计数器, 故取四表最大值。
     //    终检发现 E/G: 不再遍历镜像 (orders/trades 已按当日过滤, 跨日高 seq 会漏算) —
     //    直接对 DB 四表跑聚合查询 (每账户/每表 MAX(seq), 无日过滤), 与 SDK W 装载同语义。
     //    镜像中无该账户行 = DB 无快照 → 不设 W (等价 W=0 全放行)。
+    //    第二轮复审发现 G 回归: W 聚合必须包进同一只读事务 (COMMIT 之前) — 原实现移到
+    //    COMMIT 之后执行, 若写端在 COMMIT 后、W 查询前提交新行 seq∈(镜像Max, W], 该行
+    //    "镜像没有却被 W 判已含" → 静默缺条 (orders/trades 追加流永久缺)。BEGIN DEFERRED
+    //    单事务使首条 SELECT 起四表共享同一快照 (SHARED 锁保持到 COMMIT), 镜像装载与
+    //    W 聚合同快照, 与 SDK load_all_watermarks/rebuild_watermark 一致。
     uint64_t account_max_seq = 0;
     const auto accumulate = [&account_max_seq](uint64_t seq) {
         account_max_seq = std::max(account_max_seq, seq);
@@ -410,6 +406,14 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
             }
         }
         sqlite3_finalize(stmt);
+    }
+    // 提交快照读 (只读事务 COMMIT 仅结束读; 失败防御性回滚)
+    char* commit_err = nullptr;
+    if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, &commit_err) != SQLITE_OK) {
+        SPDLOG_WARN("td db commit snapshot failed | account={} err={}", account_id,
+                    commit_err != nullptr ? commit_err : "unknown");
+        sqlite3_free(commit_err);
+        sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
     }
     sqlite3_close(db);
 

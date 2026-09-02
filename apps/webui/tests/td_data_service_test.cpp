@@ -623,5 +623,87 @@ TEST_F(TdDataServiceTest, RebuildMirrorOnlyCurrentTradingDay) {
     EXPECT_EQ(1u, svc.orders().size());  // 未新增 (W 已含)
 }
 
+// 第二轮复审发现 G 回归: dzweb rebuild 的 W 聚合必须与镜像装载在同一只读事务快照内
+// (BEGIN DEFERRED 单事务, COMMIT 之前)。原实现把 W 聚合移到 COMMIT 之后执行 — 若写端
+// 在 COMMIT 后、W 查询前提交新行 seq∈(镜像Max, W], 该行"镜像没有却被 W 判已含" →
+// 静默缺条 (orders/trades 追加流永久缺)。
+// 并发守卫: 重建期间写端持续试图提交 seq=5 的持仓行。修复后 W 聚合在事务内 (SHARED 锁
+// 保持到 COMMIT), 写端被 SQLITE_BUSY 阻塞 → seq=5 不进入重建快照 → W=4 = 镜像快照 Max,
+// seq=5 帧放行入镜像。回归前 (W 在事务外) 写端可在 COMMIT 后抢锁 → W 被抬到 5 > 镜像
+// Max 4 → seq=5 帧被过滤且镜像缺条 (本测试断言其必入镜像)。
+TEST_F(TdDataServiceTest, RebuildWatermarkSharesMirrorSnapshot) {
+    // DB 快照: orders seq 1,2,3 + positions seq 4 (20260901)
+    {
+        sqlite3* db = open_write(db_path_);
+        create_schema(db);
+        exec_sql(db,
+            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
+            " exchange_id, direction, position_effect, price_type, status, price, volume,"
+            " volume_traded, strategy_id, seq)"
+            " VALUES ('CTP001', '20260901', 1, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " 3800.0, 3, 3, 'stg1', 1),"
+            "        ('CTP001', '20260901', 2, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " 3801.0, 2, 2, 'stg1', 2),"
+            "        ('CTP001', '20260901', 3, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " 3802.0, 1, 1, 'stg1', 3)");
+        insert_position(db, "CTP001", "IF2603", 3, 4);
+        sqlite3_close(db);
+    }
+
+    // 写端线程: 重建期间持续尝试提交 seq=5 持仓行 (busy_timeout=0 快速失败重试,
+    // 修复后整个快照事务 (含 W) 持 SHARED 锁 → 写端 BUSY 直到重建 COMMIT 后才提交)。
+    std::thread writer([this]() {
+        sqlite3* w = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open_v2(db_path_.c_str(), &w, SQLITE_OPEN_READWRITE, nullptr));
+        for (int attempt = 0; attempt < 200000; ++attempt) {
+            char* err = nullptr;
+            // busy_timeout=0: 重建事务持锁时立即 BUSY, 快速重试抢占 COMMIT 后的窗口
+            if (sqlite3_exec(w, "BEGIN IMMEDIATE", nullptr, nullptr, &err) != SQLITE_OK) {
+                sqlite3_free(err);
+                std::this_thread::yield();
+                continue;
+            }
+            sqlite3_stmt* stmt = nullptr;
+            const char* sql =
+                "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
+                " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
+                " VALUES ('CTP001', '20260901', 'IF2606', 'CFFEX', 1, 7, 0, 7, 0, 4000.0, 5)";
+            if (sqlite3_prepare_v2(w, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+                sqlite3_step(stmt);
+            }
+            sqlite3_finalize(stmt);
+            sqlite3_exec(w, "COMMIT", nullptr, nullptr, nullptr);
+            break;
+        }
+        sqlite3_close(w);
+    });
+
+    FrameRouter router([](std::function<void()> f) { f(); });
+    auto svc = make_service(router);
+    svc.rebuild("CTP001");  // 镜像 + W 同快照 (W 在 COMMIT 前)
+
+    writer.join();
+
+    // 一致性断言 (回归守卫): seq=5 持仓帧必须入镜像 — 要么快照已含 (写端先提交, W=5
+    // 且镜像含 seq=5), 要么放行 (> W=4)。回归前 W 被抬到 5 而镜像缺 seq=5 → 该帧被过滤,
+    // IF2606 永缺 (本断言失败)。
+    DzPositionInfo p5{};
+    dztrader::copy_string(p5.account_id, "CTP001", true);
+    dztrader::copy_string(p5.instrument_id, "IF2606", true);
+    dztrader::copy_string(p5.exchange_id, "CFFEX", true);
+    p5.direction = DZ_DIRECTION_LONG;
+    p5.volume = 7;
+    p5.seq = 5;
+    feed_frame(router, DZ_FRAME_POSITION_INFO, p5);
+
+    // IF2606@seq5 必在镜像 (快照含或帧放行); 不允许"W 已含却镜像无行"的缺条。
+    const auto& positions = svc.positions();
+    const auto found = std::find_if(positions.begin(), positions.end(), [](const DzPositionInfo& p) {
+        return std::string_view(p.instrument_id) == "IF2606";
+    });
+    ASSERT_NE(positions.end(), found) << "seq=5 持仓帧被 W 过滤且镜像缺行 (W 快照 ≠ 镜像快照)";
+    EXPECT_EQ(7, found->volume);
+}
+
 }  // namespace
 }  // namespace dztrader::webui

@@ -1138,4 +1138,74 @@ TEST_F(IngestWiringTest, FirstReadyDoesNotResetGate) {
     EXPECT_EQ(nullptr, dz_next_event(ctx_));  // 仍按 W=5 过滤
 }
 
+// 终检发现 E 回归 (第二轮复审 open item 1): gap_covered 绝对态容差 —
+// PositionRebuild 删行 (positions 全平) 后, 被删行 seq 在 DB 无行 → 行数 < 区间宽,
+// 旧判定误报"未覆盖" → 10 次重试耗尽放行且不回补现存行 (orders/trades 追加流缺条)。
+// 修复 (契约 §74): 该账户当前 MAX(seq) ≥ gap 上界即视为覆盖, 缺的中间 seq 是被删的
+// 历史行, 当前态已到位 → 覆盖成功, 现存回补行 (orders 6,8) 送达 + 触发帧放行。
+TEST_F(IngestWiringTest, GapCoverageToleratesDeletedPositionRow) {
+    // W=5 (SetUp 预置 orders seq 1..5)。gap 区间 [6,8]:
+    //   orders seq 6,8 (追加流, 现存) + positions seq 7 (绝对态, 随后 PositionRebuild
+    //   全平删行 — 模拟先建仓后全平: positions 表 DELETE, 该 seq 在 DB 无行)。
+    {
+        SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
+        SQLite::Statement o1(db,
+            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
+            " exchange_id, direction, position_effect, price_type, status, price, volume,"
+            " volume_traded, strategy_id, seq)"
+            " VALUES ('CTP001', '20260901', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " ?, ?, ?, ?, ?)");
+        o1.bind(1, static_cast<int64_t>(6006));
+        o1.bind(2, 4606.0);
+        o1.bind(3, static_cast<int64_t>(2));
+        o1.bind(4, static_cast<int64_t>(2));
+        o1.bind(5, dz_strategy_id(ctx_));
+        o1.bind(6, static_cast<int64_t>(6));
+        o1.exec();
+        o1.reset();
+        o1.bind(1, static_cast<int64_t>(6008));
+        o1.bind(2, 4608.0);
+        o1.bind(3, static_cast<int64_t>(2));
+        o1.bind(4, static_cast<int64_t>(2));
+        o1.bind(5, dz_strategy_id(ctx_));
+        o1.bind(6, static_cast<int64_t>(8));
+        o1.exec();
+        // positions seq 7 存在 → 模拟 PositionRebuild 全平删行 (INSERT 后 DELETE)。
+        SQLite::Statement pin(db,
+            "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
+            " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
+            " VALUES ('CTP001', '20260901', 'IF2603', 'CFFEX', '1', 3, 0, 3, 0, 3950.0, 7)");
+        pin.exec();
+        db.exec("DELETE FROM positions WHERE account_id='CTP001'");
+    }
+
+    // 首帧 seq=9 (> W+1=6): gap [6,8] span=3。现存行 = orders 6,8 = 2 < 3。
+    // 旧判定: 2 < 3 → 未覆盖 → 重试 10 次耗尽 → 触发帧放行 + orders 6,8 不回补 (缺条)。
+    // 新判定: 该账户 MAX(seq)=8 ≥ 上界 8 → 覆盖 → orders 6,8 回补 + 触发帧 9 放行。
+    DzOrderReport trigger{};
+    dztrader::copy_string(trigger.account_id, "CTP001", true);
+    dztrader::copy_string(trigger.strategy_id, dz_strategy_id(ctx_), true);
+    trigger.order_id = 900;
+    trigger.status = DZ_ORDER_ALL_TRADED;
+    trigger.seq = 9;
+    emit_struct(DZ_FRAME_ORDER_REPORT, trigger);
+
+    // 覆盖成功 (首查即覆盖, handle_gap 放行路径): 触发帧先返回, 回补帧随后 (同
+    // GapTriggersBackfillReplay 语义)。不耗尽不回补现存行 (缺条修复)。
+    const void* f = dz_next_event(ctx_);
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
+    EXPECT_EQ(9u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
+
+    f = dz_next_event(ctx_);
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(6u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
+
+    f = dz_next_event(ctx_);
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(8u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
+
+    EXPECT_EQ(nullptr, dz_next_event(ctx_));
+}
+
 }  // namespace

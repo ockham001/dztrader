@@ -376,14 +376,57 @@ GapBackfillRows query_gap_tables(DzDatabase* db, const std::string& account_id, 
     return rows;
 }
 
-/// 覆盖判定: 四表总行数 (失败表按 0 行) ≥ 区间宽。四表共享一个 seq 取号器,
-/// 区间内每个 seq 恰有一行落在某表; 总行数不足 = persist 在途窗口未提交
-/// (或 td 崩溃丢失 — 前者重试可覆盖, 后者重试耗尽后按契约放行)。
-bool gap_covered(const GapBackfillRows& rows, uint64_t from, uint64_t to) {
+/// 覆盖判定 (契约 td-data-sync §74): 追加流 + 绝对态容差。
+/// 四表共享一个 seq 取号器, 区间内每个 seq 恰有一行落在某表。
+/// - 追加流 (orders/trades) 不删行: 四表总行数 ≥ 区间宽 = 区间每个 seq 恰有一行
+///   (含绝对态现存的) 即精确覆盖;
+/// - 绝对态 (positions/trading_accounts) 存在 PositionRebuild 删行语义
+///   (td_persist_writer.cpp DELETE), 被删行在 DB 无行 → 行数 < span 会误判未覆盖 →
+///   10 次重试耗尽放行且不回补现存行 (追加流缺条)。放宽: 该账户当前 MAX(seq)
+///   (四表聚合, 与 W 同语义) ≥ gap 上界即视为覆盖 — 缺的中间 seq 是被删的历史行,
+///   当前态已到位。persist 单写者 FIFO 提交: 有 ≥ 上界的行提交 ⇒ 区间内缺席行永久
+///   缺席 (删行或崩溃丢失), 重试无益, 直接回补现存行更优。
+bool gap_covered(DzDatabase* db, const GapBackfillRows& rows, const std::string& account_id,
+                 uint64_t from, uint64_t to) {
     const uint64_t span = to - from + 1;
     const uint64_t total = rows.orders.rows.size() + rows.trades.rows.size() +
                            rows.positions.rows.size() + rows.accounts.rows.size();
-    return total >= span;
+    if (total >= span) {
+        return true;
+    }
+    uint64_t account_max = 0;
+    for (const char* resource : {"order", "trade", "position", "trading_account"}) {
+        try {
+            account_max = std::max(
+                account_max,
+                strategy_api_internal::db_query_account_max_seq(db, resource, account_id));
+        } catch (const std::exception&) {
+            continue;  // 表缺失/查询失败: 跳过该表 (容差聚合逐表容错)
+        }
+    }
+    return account_max >= to;
+}
+
+/// 断档回补单次快照查询 + 覆盖判定 (BEGIN DEFERRED 单事务, 与水位装载同型):
+/// 范围行查询 + 绝对态容差聚合查询必须共享同一快照 — 否则写端在范围查询后、容差聚合前
+/// 提交区间内行, 容差聚合见新行 (account_max ≥ 上界) 判覆盖, 而范围行仍缺该行 →
+/// 回补缺条 (该行 seq ≤ W 被过滤, 追加流永久缺)。单事务使两查询同快照, 写端短暂阻塞
+/// 由 busy_timeout=5000 吸收。返回 true = 覆盖; rows 为同快照的范围行结果。
+bool gap_covered_snapshot(DzDatabase* db, GapBackfillRows* rows, const std::string& account_id,
+                          uint64_t from, uint64_t to) {
+    db->db->exec("BEGIN DEFERRED");
+    try {
+        *rows = query_gap_tables(db, account_id, from, to);
+        const bool covered = gap_covered(db, *rows, account_id, from, to);
+        db->db->exec("COMMIT");
+        return covered;
+    } catch (...) {
+        try {
+            db->db->exec("ROLLBACK");
+        } catch (...) {
+        }
+        throw;
+    }
 }
 
 /// 回补帧入 replay 缓冲 (覆盖确认后调用): 查询结果转 Dz*Report 填 seq 入缓冲。
@@ -569,8 +612,8 @@ void drive_gap_retry(DzContext* ctx) {
     bool enqueued = false;
     auto db = open_td_db();
     if (db != nullptr) {
-        GapBackfillRows rows = query_gap_tables(db.get(), rt.account_id, rt.from, rt.to);
-        covered = gap_covered(rows, rt.from, rt.to);
+        GapBackfillRows rows;
+        covered = gap_covered_snapshot(db.get(), &rows, rt.account_id, rt.from, rt.to);
         if (covered) {
             // 回补行先入缓冲 (seq 最小), 再释放触发帧 + 暂存帧 (seq 更大) —
             // 派发序 = 回补行 → 触发帧 → 暂存帧 = 按 seq 序 (终检发现 B)。
@@ -633,8 +676,8 @@ bool handle_gap(DzContext* ctx, const std::byte* trigger_frame) {
         dz_diag("ingest gap but td db unavailable, skip backfill");
         return true;  // 无库: 不拦截触发帧 (降级全放行语义)
     }
-    GapBackfillRows rows = query_gap_tables(db.get(), gap->account_id, gap->from, gap->to);
-    if (!gap_covered(rows, gap->from, gap->to)) {
+    GapBackfillRows rows;
+    if (!gap_covered_snapshot(db.get(), &rows, gap->account_id, gap->from, gap->to)) {
         // 行数不足以覆盖 gap 区间 (触发帧到达 ≠ persist 已提交): 保留 gap 重试,
         // 拦截触发帧 (宁缺勿乱), 每次调用重试一次直至覆盖或耗尽 (契约 §5.2)。
         if (trigger_frame != nullptr) {
