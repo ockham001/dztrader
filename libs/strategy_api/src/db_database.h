@@ -10,6 +10,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <SQLiteCpp/Database.h>
@@ -102,6 +103,24 @@ DbQueryResult db_query_trading_account(DzDatabase* db, const std::string& accoun
 DbQueryResult db_generic_query(DzDatabase* db,
                                const std::string& query,
                                const std::string& filter);
+
+/**
+ * @brief 按账户分组求 MAX(seq) (水位装载用, 终检发现 E: 替代 SELECT * 全行物化 —
+ * 库随历史线性增长时全表装载线性恶化; 聚合查询只物化每账户一行)。
+ * @param resource "order"/"trade"/"position"/"trading_account" (仅 seq 表)
+ * @return account_id -> MAX(seq)。表缺失/查询失败抛异常 (调用方逐表容错)。
+ */
+std::unordered_map<std::string, uint64_t> db_query_max_seq_by_account(
+    DzDatabase* db, const std::string& resource);
+
+/**
+ * @brief 单账户 MAX(seq) (水位重建用, 终检发现 E: 替代该账户全行物化)。
+ * @param resource 同 db_query_max_seq_by_account
+ * @return 该账户 MAX(seq); 无行返回 0。表缺失/查询失败抛异常。
+ */
+uint64_t db_query_account_max_seq(DzDatabase* db,
+                                  const std::string& resource,
+                                  const std::string& account_id);
 
 }  // namespace dztrader::strategy_api_internal
 

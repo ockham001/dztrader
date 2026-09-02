@@ -336,4 +336,36 @@ DbQueryResult db_generic_query(DzDatabase* db, const std::string& query, const s
     return out;
 }
 
+std::unordered_map<std::string, uint64_t> db_query_max_seq_by_account(
+    DzDatabase* db, const std::string& resource) {
+    const char* table = resource_to_table(resource);
+    std::unordered_map<std::string, uint64_t> result;
+    // 终检发现 E: 聚合查询替代 SELECT * 全行物化 — 每账户一行, 库增长不线性恶化。
+    SQLite::Statement stmt(*db->db, "SELECT account_id, MAX(seq) FROM " + std::string(table) +
+                                        " GROUP BY account_id");
+    while (stmt.executeStep()) {
+        const std::string acct = stmt.getColumn(0).getString();
+        if (acct.empty()) {
+            continue;
+        }
+        result[acct] = static_cast<uint64_t>(stmt.getColumn(1).getInt64());
+    }
+    return result;
+}
+
+uint64_t db_query_account_max_seq(DzDatabase* db,
+                                  const std::string& resource,
+                                  const std::string& account_id) {
+    const char* table = resource_to_table(resource);
+    SQLite::Statement stmt(*db->db,
+                           "SELECT COALESCE(MAX(seq), 0) FROM " + std::string(table) +
+                               " WHERE account_id = ?");
+    stmt.bind(1, account_id);
+    uint64_t max_seq = 0;
+    if (stmt.executeStep()) {
+        max_seq = static_cast<uint64_t>(stmt.getColumn(0).getInt64());
+    }
+    return max_seq;
+}
+
 }  // namespace dztrader::strategy_api_internal
