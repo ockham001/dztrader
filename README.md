@@ -161,6 +161,8 @@ cmake --install build/linux/x86_64/Release
 复制 `build/linux/x86_64/Release/` 整个目录到目标 Linux x64 机。
 glibc 版本需 ≥ 构建机（或同等）。
 
+**注意**：td 网关（dztd_ctp 等）与策略 SDK 必须同版本**整包**升级并重启 master——混布旧/新版本时 `payload_size_matches` 防御会静默丢弃 TD 数据帧（见 `docs/frame_contracts/td-data-sync.md`）。
+
 ## 常见问题
 
 ### npm not found / 前端未构建
