@@ -46,7 +46,10 @@ public:
     /// 重建该账户镜像：只清触发账户镜像 + 只读打开 td 库四表按账户查询重建 + 设该账户新 W。
     /// 2018 Ready(该账户) 触发；不动其他账户镜像/水位（多账户下其他账户在途数据不丢）。
     /// 失败（库不可用/路径空）降级为清空该账户镜像 + 该账户 W=0 全放行（不幽灵抑制）。
-    void rebuild(const std::string& account_id);
+    /// @param reset_gate true (2018 Ready): 完整重置 (gate reset_account, 新基准);
+    ///                   false (断档 gap 补齐, 终检发现 E): 只刷新镜像 + 重设 W,
+    ///                   保留已推进的 last_applied — 否则后续帧 re-gap 循环重建。
+    void rebuild(const std::string& account_id, bool reset_gate = true);
 
     /// 只读访问器（WS 暴露留给后续设计，spec §10 前端不在本设计内）
     const std::vector<DzPositionInfo>& positions() const { return positions_; }
@@ -59,7 +62,8 @@ private:
     void register_handlers(FrameRouter& router);
 
     /// 单账户复位：清该账户镜像（spec §5.5"清空必须显式"）+ gate reset_account。
-    void clear_account(const std::string& account_id);
+    /// @param reset_gate false (断档 gap 补齐) 时只清镜像不重置 gate (保留 last_applied)。
+    void clear_account(const std::string& account_id, bool reset_gate = true);
 
     /// 单帧 ingest 过滤：先 detect_reset（倒退→重建重设 W 后重新 admit）后 admit。
     /// kSkip 返回 false；kApply 由调用方按类型更新镜像。
@@ -97,10 +101,20 @@ bool TdDataService::ingest(const ReportT& report) {
     const std::string account(report.account_id);
     if (gate_.detect_reset(account, report.seq)) {
         // 数据被重置: 重建该账户 (清镜像 + 重查 DB 新水位; 库不可用回落 0 = 全放行)
-        rebuild(account);
+        rebuild(account, /*reset_gate=*/true);
     }
     if (gate_.admit(account, report.seq) == TdIngestGate::Verdict::kSkip) {
         return false;
+    }
+    // 终检发现 E【Important】: dzweb 无回补腿 — gap 武装后 (首帧 seq > W+1, DB 快照
+    // 外缺条) 无人消费 take_pending_gap, orders/trades 缺条静默直到下次 2018 rebuild。
+    // admit 已推进 last_applied 后检查待处理 gap: 非空 → 触发 rebuild(account) —
+    // 等效用 DB 快照补齐缺条 (绝对态/追加流一并覆盖, 语义正确且实现极简)。
+    // 注意: 此处 rebuild 只刷新镜像 + 重设 W (reset_gate=false), 保留已推进的
+    // last_applied — 否则后续帧 seq > 新 W 首帧又暴露 gap → 循环重建。
+    // 触发频率低 (仅 gap 窗口), 可接受。
+    if (gate_.take_pending_gap().has_value()) {
+        rebuild(account, /*reset_gate=*/false);
     }
     return true;
 }

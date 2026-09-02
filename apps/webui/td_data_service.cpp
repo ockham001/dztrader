@@ -50,6 +50,29 @@ int32_t parse_trading_day_to_epoch(const std::string& text) {
     }
 }
 
+/// 查该账户最新交易日 (YYYYMMDD) — orders/trades 表的最大 trading_day 文本 (字典序
+/// = 时间序)。镜像日界过滤 (终检发现 G) 与日切判定用; 无行回落空串。
+std::string latest_trading_day(sqlite3* db, const std::string& account_id) {
+    for (const char* table : {"orders", "trades"}) {
+        sqlite3_stmt* stmt = nullptr;
+        const std::string sql =
+            std::string("SELECT MAX(trading_day) FROM ") + table + " WHERE account_id = ?";
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                const auto* ptr = sqlite3_column_text(stmt, 0);
+                if (ptr != nullptr) {
+                    const std::string day = reinterpret_cast<const char*>(ptr);
+                    sqlite3_finalize(stmt);
+                    return day;
+                }
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+    return {};
+}
+
 }  // namespace
 
 TdDataService::TdDataService(FrameRouter& router, std::function<std::string()> td_db_path)
@@ -163,7 +186,7 @@ void TdDataService::on_account_status(const DzAccountStatus& st) {
     }
 }
 
-void TdDataService::clear_account(const std::string& account_id) {
+void TdDataService::clear_account(const std::string& account_id, bool reset_gate) {
     const auto erase_for = [&](auto& vec, auto&& get_key) {
         for (auto it = vec.begin(); it != vec.end();) {
             if (get_key(*it) == account_id) {
@@ -180,15 +203,20 @@ void TdDataService::clear_account(const std::string& account_id) {
     erase_for(orders_, [](const DzOrderReport& o) { return std::string(o.account_id); });
     erase_for(trades_, [](const DzTradeReport& t) { return std::string(t.account_id); });
     // gate 重置: 新水位 0 (Offline 后无快照, 重新 Ready 时再重建/设 W)。
-    gate_.reset_account(account_id, 0);
+    // 终检发现 E: 断档 gap 补齐路径 (reset_gate=false) 只清镜像不重置 gate —
+    // 保留 last_applied 防后续帧 re-gap 循环。
+    if (reset_gate) {
+        gate_.reset_account(account_id, 0);
+    }
     SPDLOG_INFO("td data mirror cleared | account={}", account_id);
 }
 
-void TdDataService::rebuild(const std::string& account_id) {
+void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
     // 1. 只清触发账户镜像 (spec §5.5: 重建=新基准, 旧镜像残留会被误当当前状态)。
     //    多账户下不动其他账户镜像/水位, 避免误清他账户在途追加数据 (orders/trades
     //    是追加流, 不清自愈 — 在途帧 seq 已在 DB 提交前入镜像, 整库清则永久缺条)。
-    clear_account(account_id);
+    //    reset_gate=false (断档 gap 补齐): 只清镜像不重置 gate (保留 last_applied)。
+    clear_account(account_id, reset_gate);
 
     const std::string path = td_db_path_();
     if (path.empty()) {
@@ -228,6 +256,10 @@ void TdDataService::rebuild(const std::string& account_id) {
     //    镜像键: positions (account_id,instrument_id,direction) / trading_accounts account_id。
     //    account_id 列均为索引首列 (orders/trades/positions UNIQUE、trading_accounts PK),
     //    按账户过滤只扫该账户行。
+    //    终检发现 G【Important】: orders/trades 镜像加当日过滤 (trading_day = 最新交易日),
+    //    防镜像随历史线性增长 (0.9GB/年)。positions/trading_accounts 单行绝对态无需日过滤。
+    //    W 查询不带日过滤 (正确性: W 取四表 MAX(seq), 跨日累积单调)。
+    const std::string day = latest_trading_day(db, account_id);
     {
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db,
@@ -290,9 +322,10 @@ void TdDataService::rebuild(const std::string& account_id) {
                                "SELECT account_id, trading_day, order_id, instrument_id,"
                                " exchange_id, direction, position_effect, price_type, status,"
                                " price, volume, volume_traded, strategy_id, seq FROM orders"
-                               " WHERE account_id = ?",
+                               " WHERE account_id = ? AND trading_day = ?",
                                -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, day.c_str(), -1, SQLITE_TRANSIENT);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 DzOrderReport o{};
                 dztrader::copy_string(o.account_id, col_text(stmt, 0).c_str(), true);
@@ -322,9 +355,10 @@ void TdDataService::rebuild(const std::string& account_id) {
                                "SELECT account_id, trading_day, trade_id, order_id,"
                                " instrument_id, exchange_id, direction, position_effect,"
                                " price, volume, strategy_id, seq FROM trades"
-                               " WHERE account_id = ?",
+                               " WHERE account_id = ? AND trading_day = ?",
                                -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, day.c_str(), -1, SQLITE_TRANSIENT);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 DzTradeReport t{};
                 dztrader::copy_string(t.account_id, col_text(stmt, 0).c_str(), true);
@@ -354,38 +388,31 @@ void TdDataService::rebuild(const std::string& account_id) {
         sqlite3_free(commit_err);
         sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
     }
-    sqlite3_close(db);
 
     // 3. 设该账户新 W (spec §5.1/§2.1: W = 该账户 MAX(seq), 账户级独立水位; 过滤 seq ≤ W 的
     //    后续帧 — 快照已含)。四表 (委托/成交/持仓/资金) 共享一个计数器, 故取四表最大值。
-    //    只累加触发账户行: 镜像含他账户保留行 (rebuild 只清/只重建触发账户), 若遍历整个
-    //    镜像会把其他账户 seq 的 max 误赋给触发账户 → 触发账户 W 虚增, 其快照外合法帧被误
-    //    判"快照已含"过滤 → 缺条 (发现 3 回归)。
+    //    终检发现 E/G: 不再遍历镜像 (orders/trades 已按当日过滤, 跨日高 seq 会漏算) —
+    //    直接对 DB 四表跑聚合查询 (每账户/每表 MAX(seq), 无日过滤), 与 SDK W 装载同语义。
     //    镜像中无该账户行 = DB 无快照 → 不设 W (等价 W=0 全放行)。
     uint64_t account_max_seq = 0;
     const auto accumulate = [&account_max_seq](uint64_t seq) {
         account_max_seq = std::max(account_max_seq, seq);
     };
-    for (const auto& p : positions_) {
-        if (account_id == p.account_id) {
-            accumulate(p.seq);
+    for (const char* table :
+         {"positions", "trading_accounts", "orders", "trades"}) {
+        sqlite3_stmt* stmt = nullptr;
+        const std::string sql = std::string("SELECT COALESCE(MAX(seq), 0) FROM ") + table +
+                                " WHERE account_id = ?";
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                accumulate(static_cast<uint64_t>(col_int(stmt, 0)));
+            }
         }
+        sqlite3_finalize(stmt);
     }
-    for (const auto& a : trading_accounts_) {
-        if (account_id == a.account_id) {
-            accumulate(a.seq);
-        }
-    }
-    for (const auto& o : orders_) {
-        if (account_id == o.account_id) {
-            accumulate(o.seq);
-        }
-    }
-    for (const auto& t : trades_) {
-        if (account_id == t.account_id) {
-            accumulate(t.seq);
-        }
-    }
+    sqlite3_close(db);
+
     if (account_max_seq > 0) {
         gate_.set_watermark(account_id, account_max_seq);
     }
