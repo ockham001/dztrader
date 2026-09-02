@@ -162,6 +162,43 @@ struct DzContext {
         return &replay_frames[idx];
     }
 
+    /// 断档回补重试状态 (契约 td-data-sync §5.2 "耗尽放行"): 首次回补查得行数
+    /// 不足以覆盖 gap 区间 (触发帧到达 ≠ persist 已提交的在途窗口) 时, 保留
+    /// gap 待重试并拦截触发帧 (宁缺勿乱); 每次dz_next_event 调用重试一次
+    /// (无 sleep, 调用间隔即天然"短重试"间隔), 覆盖后补发触发帧 + 回补帧
+    /// (经 replay 缓冲), 重试耗尽 (kGapRetryMax, api.cpp 定义) 放行触发帧 + ERROR。
+    struct GapRetryState {
+        bool active = false;
+        std::string account_id;
+        uint64_t from = 0;  ///< gap 起点 (含)
+        uint64_t to = 0;    ///< gap 终点 (含)
+        uint32_t attempts = 0;  ///< 已尝试次数 (首次计入)
+        DzFrameType trigger_type{};  ///< 被拦截触发帧的类型
+        std::vector<std::byte> trigger_payload;  ///< 被拦截触发帧 payload 副本 (补发用)
+
+        void begin(const std::string& acct, uint64_t f, uint64_t t, DzFrameType type,
+                   const std::byte* payload, uint32_t payload_size) {
+            active = true;
+            account_id = acct;
+            from = f;
+            to = t;
+            attempts = 1;
+            trigger_type = type;
+            trigger_payload.assign(payload, payload + payload_size);
+        }
+        void clear() {
+            active = false;
+            account_id.clear();
+            from = 0;
+            to = 0;
+            attempts = 0;
+            trigger_type = {};
+            trigger_payload.clear();
+            trigger_payload.shrink_to_fit();
+        }
+    };
+    GapRetryState gap_retry;
+
     // ── 定时器区 ────────────────────────────────────────────
     // 用户定时器与 SDK 内部任务(预加载随机延迟)共用单堆:
     // 热路径(dz_wait/dz_next_event)只做 empty()/top()/pop()，

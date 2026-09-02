@@ -78,6 +78,24 @@ int64_t row_int64(const Row& row, size_t index) {
     return v ? *v : 0;
 }
 
+/// 行内取 CHAR(1) 编码的数值列 (direction/position_effect/price_type/status):
+/// td 写端绑定为数值, SQLite TEXT affinity 落盘为文本 '1'/'2'/…, 查询端按声明
+/// 类型读成 string — 直接 row_int64 会得 0 (方向/状态全错)。按字符串解析数值,
+/// 非数字回落 0。
+int64_t row_char_code(const Row& row, size_t index) {
+    if (index >= row.size()) {
+        return 0;
+    }
+    if (const auto* s = std::get_if<std::string>(&row[index])) {
+        try {
+            return std::stoll(*s);
+        } catch (const std::exception&) {
+            return 0;
+        }
+    }
+    return row_int64(row, index);
+}
+
 /// 行内取浮点列 (variant 无值/非 double 返回 0)
 double row_double(const Row& row, size_t index) {
     if (index >= row.size()) {
@@ -299,13 +317,266 @@ void on_account_status_trading_day(DzContext* ctx, const DzAccountStatus& st) {
     ctx->ingest_gate.on_trading_day_changed(st.account_id, day.c_str());
 }
 
-/// 断档回补: 查询 [from, to] 区间四表行, 转 Dz*Report 填 seq, 按 seq 序入 replay 缓冲。
-/// 行序 = seq 序 (dz_db_query ORDER BY seq), 各表内部有序; 跨表归并按 seq 递增保证 —
-/// 简化: 逐表入缓冲, 每表内部 seq 序 (跨表全序由"断档区间内每表独立有序 + 单调 seq"保证,
-/// 回补消费端按帧类型独立, 不要求跨表严格交错)。
-/// 返回 false = 缓冲溢出 (gap 区间过宽, 回补被截断): 调用方 (ingest_td_frame)
-/// 拦截触发帧, 宁缺勿乱 (不返回策略用户, 帧不丢, 触发帧也不放行)。
-bool handle_gap(DzContext* ctx) {
+/// 断档回补重试上限 (契约 td-data-sync §5.2 "几十 ms 短重试; 耗尽放行"):
+/// 无 sleep 设计 (dz_next_event 热路径不能阻塞), 每次调用查一次库, 上限耗尽后
+/// 按"崩溃丢失"放行触发帧 + ERROR 日志。
+constexpr uint32_t kGapRetryMax = 10;
+
+/// gap 区间四表查询结果 (每表独立容错: 表缺失/查询失败置 ok=false, 该表按 0 行
+/// 参与覆盖判定 — 库不完整时其余表仍可覆盖, 行数不足时则值得重试)。
+struct GapBackfillRows {
+    DbQueryResult orders;
+    DbQueryResult trades;
+    DbQueryResult positions;
+    DbQueryResult accounts;
+    bool orders_ok = false;
+    bool trades_ok = false;
+    bool positions_ok = false;
+    bool accounts_ok = false;
+};
+
+/// 查询 gap 区间四表行 (不转换不入缓冲)。
+GapBackfillRows query_gap_tables(DzDatabase* db, const std::string& account_id, uint64_t from,
+                                 uint64_t to) {
+    const std::string filter =
+        std::format("{{\"account_id\": \"{}\", \"seq\": {{\"$gte\": {}, \"$lt\": {}}}}}",
+                    account_id, from, to + 1);
+    const auto query_table = [&](const char* resource, bool* ok) -> DbQueryResult {
+        try {
+            *ok = true;
+            return strategy_api_internal::db_generic_query(db, resource, filter);
+        } catch (const std::exception& e) {
+            dz_diag((std::string("ingest backfill table skipped: ") + e.what()).c_str());
+            return DbQueryResult{};
+        }
+    };
+    GapBackfillRows rows;
+    rows.orders = query_table("order", &rows.orders_ok);
+    rows.trades = query_table("trade", &rows.trades_ok);
+    rows.positions = query_table("position", &rows.positions_ok);
+    rows.accounts = query_table("trading_account", &rows.accounts_ok);
+    return rows;
+}
+
+/// 覆盖判定: 四表总行数 (失败表按 0 行) ≥ 区间宽。四表共享一个 seq 取号器,
+/// 区间内每个 seq 恰有一行落在某表; 总行数不足 = persist 在途窗口未提交
+/// (或 td 崩溃丢失 — 前者重试可覆盖, 后者重试耗尽后按契约放行)。
+bool gap_covered(const GapBackfillRows& rows, uint64_t from, uint64_t to) {
+    const uint64_t span = to - from + 1;
+    const uint64_t total = rows.orders.rows.size() + rows.trades.rows.size() +
+                           rows.positions.rows.size() + rows.accounts.rows.size();
+    return total >= span;
+}
+
+/// 回补帧入 replay 缓冲 (覆盖确认后调用): 查询结果转 Dz*Report 填 seq 入缓冲。
+/// 行序 = seq 序 (dz_db_query ORDER BY seq), 各表内部有序; 跨表简化为逐表入缓冲,
+/// 每表内部 seq 序 (回补消费端按帧类型独立, 不要求跨表严格交错)。
+/// 返回 false = 缓冲溢出 (gap 区间过宽, 回补被截断)。
+bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
+    bool ok = true;
+    // orders -> DzOrderReport (帧 2000)
+    {
+        const DbQueryResult& result = rows.orders;
+        const ColumnMap cols(result);
+        const auto acct_c = cols.idx("account_id", 1);
+        const auto day_c = cols.idx("trading_day", 2);
+        const auto oid_c = cols.idx("order_id", 3);
+        const auto inst_c = cols.idx("instrument_id", 7);
+        const auto exch_c = cols.idx("exchange_id", 8);
+        const auto dir_c = cols.idx("direction", 9);
+        const auto pe_c = cols.idx("position_effect", 10);
+        const auto pt_c = cols.idx("price_type", 11);
+        const auto st_c = cols.idx("status", 12);
+        const auto pr_c = cols.idx("price", 13);
+        const auto vol_c = cols.idx("volume", 14);
+        const auto vt_c = cols.idx("volume_traded", 15);
+        const auto sid_c = cols.idx("strategy_id", 21);
+        const auto seq_c = cols.idx("seq", 23);
+        const auto itime_c = cols.idx("insert_time", 17);
+        const auto utime_c = cols.idx("update_time", 18);
+        for (const Row& row : result.rows) {
+            DzOrderReport rpt{};
+            dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
+            dztrader::copy_string(rpt.instrument_id, row_string(row, inst_c), true);
+            dztrader::copy_string(rpt.exchange_id, row_string(row, exch_c), true);
+            dztrader::copy_string(rpt.strategy_id, row_string(row, sid_c), true);
+            rpt.order_id = row_int64(row, oid_c);
+            rpt.direction = static_cast<DzDirection>(row_char_code(row, dir_c));
+            rpt.position_effect = static_cast<DzPositionEffect>(row_char_code(row, pe_c));
+            rpt.price_type = static_cast<DzPriceType>(row_char_code(row, pt_c));
+            rpt.status = static_cast<DzOrderStatus>(row_char_code(row, st_c));
+            rpt.price = row_double(row, pr_c);
+            rpt.volume = static_cast<DzVolume>(row_int64(row, vol_c));
+            rpt.volume_traded = static_cast<DzVolume>(row_int64(row, vt_c));
+            rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
+            // 回补时间语义 (评审发现 2): 实时帧 time 为 CTP InsertTime/UpdateTime 当日秒,
+            // DB insert_time/update_time 为 epoch 秒; 取当日秒填 rpt.time 与实时一致。
+            // 优先 update_time (最新状态时间), 缺省回落 insert_time。
+            rpt.time = epoch_secs_to_tod(
+                row_int64(row, utime_c) != 0 ? row_int64(row, utime_c)
+                                             : row_int64(row, itime_c));
+            rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
+            ok = ctx->enqueue_replay_frame(DZ_FRAME_ORDER_REPORT, &rpt, sizeof(rpt)) && ok;
+        }
+    }
+    // trades -> DzTradeReport (帧 2001)
+    {
+        const DbQueryResult& result = rows.trades;
+        const ColumnMap cols(result);
+        const auto acct_c = cols.idx("account_id", 1);
+        const auto day_c = cols.idx("trading_day", 2);
+        const auto tid_c = cols.idx("trade_id", 3);
+        const auto oid_c = cols.idx("order_id", 4);
+        const auto inst_c = cols.idx("instrument_id", 5);
+        const auto exch_c = cols.idx("exchange_id", 6);
+        const auto dir_c = cols.idx("direction", 7);
+        const auto pe_c = cols.idx("position_effect", 8);
+        const auto pr_c = cols.idx("price", 9);
+        const auto vol_c = cols.idx("volume", 10);
+        const auto sid_c = cols.idx("strategy_id", 14);
+        const auto seq_c = cols.idx("seq", 15);
+        const auto ttime_c = cols.idx("trade_time", 11);
+        for (const Row& row : result.rows) {
+            DzTradeReport rpt{};
+            dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
+            dztrader::copy_string(rpt.instrument_id, row_string(row, inst_c), true);
+            dztrader::copy_string(rpt.exchange_id, row_string(row, exch_c), true);
+            dztrader::copy_string(rpt.strategy_id, row_string(row, sid_c), true);
+            dztrader::copy_string(rpt.trade_id, row_string(row, tid_c), true);
+            rpt.order_id = row_int64(row, oid_c);
+            rpt.direction = static_cast<DzDirection>(row_char_code(row, dir_c));
+            rpt.position_effect = static_cast<DzPositionEffect>(row_char_code(row, pe_c));
+            rpt.price = row_double(row, pr_c);
+            rpt.volume = static_cast<DzVolume>(row_int64(row, vol_c));
+            rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
+            // 回补时间语义 (评审发现 2): 实时帧 time 为 CTP TradeTime 当日秒,
+            // DB trade_time 为 epoch 秒; 取当日秒填 rpt.time 与实时一致。
+            rpt.time = epoch_secs_to_tod(row_int64(row, ttime_c));
+            rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
+            ok = ctx->enqueue_replay_frame(DZ_FRAME_TRADE_REPORT, &rpt, sizeof(rpt)) && ok;
+        }
+    }
+    // positions -> DzPositionInfo (帧 2002)
+    {
+        const DbQueryResult& result = rows.positions;
+        const ColumnMap cols(result);
+        const auto acct_c = cols.idx("account_id", 0);
+        const auto day_c = cols.idx("trading_day", 1);
+        const auto inst_c = cols.idx("instrument_id", 2);
+        const auto exch_c = cols.idx("exchange_id", 3);
+        const auto dir_c = cols.idx("direction", 4);
+        const auto vol_c = cols.idx("volume", 5);
+        const auto fz_c = cols.idx("frozen_volume", 6);
+        const auto td_c = cols.idx("today_volume", 7);
+        const auto yd_c = cols.idx("yd_volume", 8);
+        const auto pr_c = cols.idx("price", 9);
+        const auto seq_c = cols.idx("seq", 10);
+        for (const Row& row : result.rows) {
+            DzPositionInfo rpt{};
+            dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
+            dztrader::copy_string(rpt.instrument_id, row_string(row, inst_c), true);
+            dztrader::copy_string(rpt.exchange_id, row_string(row, exch_c), true);
+            rpt.direction = static_cast<DzDirection>(row_char_code(row, dir_c));
+            rpt.volume = row_int64(row, vol_c);
+            rpt.frozen_volume = row_int64(row, fz_c);
+            rpt.today_volume = row_int64(row, td_c);
+            rpt.yd_volume = row_int64(row, yd_c);
+            rpt.price = row_double(row, pr_c);
+            rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
+            rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
+            ok = ctx->enqueue_replay_frame(DZ_FRAME_POSITION_INFO, &rpt, sizeof(rpt)) && ok;
+        }
+    }
+    // trading_accounts -> DzTradingAccount (帧 2003)
+    {
+        const DbQueryResult& result = rows.accounts;
+        const ColumnMap cols(result);
+        const auto acct_c = cols.idx("account_id", 0);
+        const auto day_c = cols.idx("trading_day", 1);
+        const auto seq_c = cols.idx("seq", 10);
+        for (const Row& row : result.rows) {
+            DzTradingAccount rpt{};
+            dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
+            rpt.balance = row_double(row, cols.idx("balance", 2));
+            rpt.available = row_double(row, cols.idx("available", 3));
+            rpt.frozen = row_double(row, cols.idx("frozen", 4));
+            rpt.commission = row_double(row, cols.idx("commission", 5));
+            rpt.margin = row_double(row, cols.idx("margin", 6));
+            rpt.withdraw_quota = row_double(row, cols.idx("withdraw_quota", 7));
+            rpt.deposit = row_double(row, cols.idx("deposit", 8));
+            rpt.withdraw = row_double(row, cols.idx("withdraw", 9));
+            rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
+            rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
+            ok = ctx->enqueue_replay_frame(DZ_FRAME_TRADING_ACCOUNT, &rpt, sizeof(rpt)) && ok;
+        }
+    }
+    return ok;
+}
+
+/// 补发被拦截的触发帧 (回补完整或重试耗尽时, 经 replay 缓冲前置派发;
+/// 先于回补帧入缓冲, 与首次成功路径"触发帧先返回、回补帧随后"的次序一致)。
+void release_held_trigger(DzContext* ctx) {
+    auto& rt = ctx->gap_retry;
+    if (rt.trigger_payload.empty()) {
+        return;  // 防御: 无暂存帧 (理论不可达)
+    }
+    if (!ctx->enqueue_replay_frame(rt.trigger_type, rt.trigger_payload.data(),
+                                   static_cast<uint32_t>(rt.trigger_payload.size()))) {
+        dz_diag("ingest gap retry trigger release dropped (replay buffer full)");
+    }
+}
+
+/// 断档回补重试驱动 (每次调用尝试一次; 由 dz_next_event 入口与后续 ingest 调用驱动):
+/// 覆盖 → 回补帧 + 暂存触发帧入 replay 缓冲, 重试结束;
+/// 仍不足 → 计数, 耗尽 (kGapRetryMax) → ERROR + 放行触发帧 (按"崩溃丢失", 契约 §5.2)。
+void drive_gap_retry(DzContext* ctx) {
+    auto& rt = ctx->gap_retry;
+    if (!rt.active) {
+        return;
+    }
+    bool covered = false;
+    bool enqueued = false;
+    auto db = open_td_db();
+    if (db != nullptr) {
+        GapBackfillRows rows = query_gap_tables(db.get(), rt.account_id, rt.from, rt.to);
+        covered = gap_covered(rows, rt.from, rt.to);
+        if (covered) {
+            release_held_trigger(ctx);
+            enqueued = enqueue_gap_rows(ctx, rows);
+        }
+    }
+    if (covered && enqueued) {
+        dz_diag("ingest gap backfill retry covered, trigger released");
+        rt.clear();
+        return;
+    }
+    if (covered && !enqueued) {
+        // 覆盖但缓冲溢出 (回补被截断): 与首次溢出语义一致, 不再重试
+        // (缓冲已满, 再查同区间仍溢出)。
+        dz_diag("ingest gap backfill retry overflow, give up retry");
+        rt.clear();
+        return;
+    }
+    if (++rt.attempts >= kGapRetryMax) {
+        dz_diag("ingest gap backfill retry exhausted, release trigger frame (treat as crash loss)");
+        release_held_trigger(ctx);
+        rt.clear();
+    }
+}
+
+/// 断档回补入口: 处理 gate 新检测的 gap (首帧) 与既有重试 (每次调用尝试一次)。
+/// 返回 false = 触发帧被拦截:
+///   - 重试开始 (覆盖不足, persist 在途窗口): 触发帧暂存, 待回补完整/耗尽时补发;
+///   - 缓冲溢出 (gap 区间过宽, 回补被截断): 既有语义, 宁缺勿乱。
+/// 触发帧参数供暂存补发 (payload 副本; 仅 gap 检测帧传入, 后续帧传 nullptr)。
+bool handle_gap(DzContext* ctx, const std::byte* trigger_frame) {
+    if (ctx->gap_retry.active) {
+        // 重试在途: 本次调用顺带驱动一次 (无新 gap — gate 的 pending_gap 已被
+        // 首次尝试消费); 本帧正常放行 (last_applied 已推进, 回补帧经 replay
+        // 缓冲前置派发, 次序与既有"触发帧先返回、回补帧随后"语义一致)。
+        drive_gap_retry(ctx);
+        return true;
+    }
     auto gap = ctx->ingest_gate.take_pending_gap();
     if (!gap.has_value()) {
         return true;
@@ -315,156 +586,24 @@ bool handle_gap(DzContext* ctx) {
         dz_diag("ingest gap but td db unavailable, skip backfill");
         return true;  // 无库: 不拦截触发帧 (降级全放行语义)
     }
-    const std::string filter =
-        std::format("{{\"account_id\": \"{}\", \"seq\": {{\"$gte\": {}, \"$lt\": {}}}}}",
-                    gap->account_id, gap->from, gap->to + 1);
-    // 每表查询独立容错: 表缺失/查询失败跳过该表 (库不完整时其余表仍回补)。
-    const auto query_table = [&](const char* resource) -> DbQueryResult {
-        try {
-            return strategy_api_internal::db_generic_query(db.get(), resource, filter);
-        } catch (const std::exception& e) {
-            dz_diag((std::string("ingest backfill table skipped: ") + e.what()).c_str());
-            return DbQueryResult{};
+    GapBackfillRows rows = query_gap_tables(db.get(), gap->account_id, gap->from, gap->to);
+    if (!gap_covered(rows, gap->from, gap->to)) {
+        // 行数不足以覆盖 gap 区间 (触发帧到达 ≠ persist 已提交): 保留 gap 重试,
+        // 拦截触发帧 (宁缺勿乱), 每次调用重试一次直至覆盖或耗尽 (契约 §5.2)。
+        if (trigger_frame != nullptr) {
+            const shm::FrameView view(trigger_frame);
+            ctx->gap_retry.begin(
+                gap->account_id, gap->from, gap->to, view.type(),
+                trigger_frame + sizeof(DzFrameHeader),
+                view.frame_size() - sizeof(DzFrameHeader));
         }
-    };
-    bool ok = true;
-    // orders -> DzOrderReport (帧 2000)
-    {
-        DbQueryResult result = query_table("order");
-        const ColumnMap cols(result);
-        const auto acct_c = cols.idx("account_id", 1);
-            const auto day_c = cols.idx("trading_day", 2);
-            const auto oid_c = cols.idx("order_id", 3);
-            const auto inst_c = cols.idx("instrument_id", 7);
-            const auto exch_c = cols.idx("exchange_id", 8);
-            const auto dir_c = cols.idx("direction", 9);
-            const auto pe_c = cols.idx("position_effect", 10);
-            const auto pt_c = cols.idx("price_type", 11);
-            const auto st_c = cols.idx("status", 12);
-            const auto pr_c = cols.idx("price", 13);
-            const auto vol_c = cols.idx("volume", 14);
-            const auto vt_c = cols.idx("volume_traded", 15);
-            const auto sid_c = cols.idx("strategy_id", 21);
-            const auto seq_c = cols.idx("seq", 23);
-            const auto itime_c = cols.idx("insert_time", 17);
-            const auto utime_c = cols.idx("update_time", 18);
-            for (const Row& row : result.rows) {
-                DzOrderReport rpt{};
-                dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
-                dztrader::copy_string(rpt.instrument_id, row_string(row, inst_c), true);
-                dztrader::copy_string(rpt.exchange_id, row_string(row, exch_c), true);
-                dztrader::copy_string(rpt.strategy_id, row_string(row, sid_c), true);
-                rpt.order_id = row_int64(row, oid_c);
-                rpt.direction = static_cast<DzDirection>(row_int64(row, dir_c));
-                rpt.position_effect = static_cast<DzPositionEffect>(row_int64(row, pe_c));
-                rpt.price_type = static_cast<DzPriceType>(row_int64(row, pt_c));
-                rpt.status = static_cast<DzOrderStatus>(row_int64(row, st_c));
-                rpt.price = row_double(row, pr_c);
-                rpt.volume = static_cast<DzVolume>(row_int64(row, vol_c));
-                rpt.volume_traded = static_cast<DzVolume>(row_int64(row, vt_c));
-                rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
-                // 回补时间语义 (评审发现 2): 实时帧 time 为 CTP InsertTime/UpdateTime 当日秒,
-                // DB insert_time/update_time 为 epoch 秒; 取当日秒填 rpt.time 与实时一致。
-                // 优先 update_time (最新状态时间), 缺省回落 insert_time。
-                rpt.time = epoch_secs_to_tod(
-                    row_int64(row, utime_c) != 0 ? row_int64(row, utime_c)
-                                                 : row_int64(row, itime_c));
-                rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
-                ok = ctx->enqueue_replay_frame(DZ_FRAME_ORDER_REPORT, &rpt, sizeof(rpt)) && ok;
-            }
-        }
-        // trades -> DzTradeReport (帧 2001)
-        {
-            DbQueryResult result = query_table("trade");
-            const ColumnMap cols(result);
-            const auto acct_c = cols.idx("account_id", 1);
-            const auto day_c = cols.idx("trading_day", 2);
-            const auto tid_c = cols.idx("trade_id", 3);
-            const auto oid_c = cols.idx("order_id", 4);
-            const auto inst_c = cols.idx("instrument_id", 5);
-            const auto exch_c = cols.idx("exchange_id", 6);
-            const auto dir_c = cols.idx("direction", 7);
-            const auto pe_c = cols.idx("position_effect", 8);
-            const auto pr_c = cols.idx("price", 9);
-            const auto vol_c = cols.idx("volume", 10);
-            const auto sid_c = cols.idx("strategy_id", 14);
-            const auto seq_c = cols.idx("seq", 15);
-            const auto ttime_c = cols.idx("trade_time", 11);
-            for (const Row& row : result.rows) {
-                DzTradeReport rpt{};
-                dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
-                dztrader::copy_string(rpt.instrument_id, row_string(row, inst_c), true);
-                dztrader::copy_string(rpt.exchange_id, row_string(row, exch_c), true);
-                dztrader::copy_string(rpt.strategy_id, row_string(row, sid_c), true);
-                dztrader::copy_string(rpt.trade_id, row_string(row, tid_c), true);
-                rpt.order_id = row_int64(row, oid_c);
-                rpt.direction = static_cast<DzDirection>(row_int64(row, dir_c));
-                rpt.position_effect = static_cast<DzPositionEffect>(row_int64(row, pe_c));
-                rpt.price = row_double(row, pr_c);
-                rpt.volume = static_cast<DzVolume>(row_int64(row, vol_c));
-                rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
-                // 回补时间语义 (评审发现 2): 实时帧 time 为 CTP TradeTime 当日秒,
-                // DB trade_time 为 epoch 秒; 取当日秒填 rpt.time 与实时一致。
-                rpt.time = epoch_secs_to_tod(row_int64(row, ttime_c));
-                rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
-                ok = ctx->enqueue_replay_frame(DZ_FRAME_TRADE_REPORT, &rpt, sizeof(rpt)) && ok;
-            }
-        }
-        // positions -> DzPositionInfo (帧 2002)
-        {
-            DbQueryResult result = query_table("position");
-            const ColumnMap cols(result);
-            const auto acct_c = cols.idx("account_id", 0);
-            const auto day_c = cols.idx("trading_day", 1);
-            const auto inst_c = cols.idx("instrument_id", 2);
-            const auto exch_c = cols.idx("exchange_id", 3);
-            const auto dir_c = cols.idx("direction", 4);
-            const auto vol_c = cols.idx("volume", 5);
-            const auto fz_c = cols.idx("frozen_volume", 6);
-            const auto td_c = cols.idx("today_volume", 7);
-            const auto yd_c = cols.idx("yd_volume", 8);
-            const auto pr_c = cols.idx("price", 9);
-            const auto seq_c = cols.idx("seq", 10);
-            for (const Row& row : result.rows) {
-                DzPositionInfo rpt{};
-                dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
-                dztrader::copy_string(rpt.instrument_id, row_string(row, inst_c), true);
-                dztrader::copy_string(rpt.exchange_id, row_string(row, exch_c), true);
-                rpt.direction = static_cast<DzDirection>(row_int64(row, dir_c));
-                rpt.volume = row_int64(row, vol_c);
-                rpt.frozen_volume = row_int64(row, fz_c);
-                rpt.today_volume = row_int64(row, td_c);
-                rpt.yd_volume = row_int64(row, yd_c);
-                rpt.price = row_double(row, pr_c);
-                rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
-                rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
-                ok = ctx->enqueue_replay_frame(DZ_FRAME_POSITION_INFO, &rpt, sizeof(rpt)) && ok;
-            }
-        }
-        // trading_accounts -> DzTradingAccount (帧 2003)
-        {
-            DbQueryResult result = query_table("trading_account");
-            const ColumnMap cols(result);
-            const auto acct_c = cols.idx("account_id", 0);
-            const auto day_c = cols.idx("trading_day", 1);
-            const auto seq_c = cols.idx("seq", 10);
-            for (const Row& row : result.rows) {
-                DzTradingAccount rpt{};
-                dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
-                rpt.balance = row_double(row, cols.idx("balance", 2));
-                rpt.available = row_double(row, cols.idx("available", 3));
-                rpt.frozen = row_double(row, cols.idx("frozen", 4));
-                rpt.commission = row_double(row, cols.idx("commission", 5));
-                rpt.margin = row_double(row, cols.idx("margin", 6));
-                rpt.withdraw_quota = row_double(row, cols.idx("withdraw_quota", 7));
-                rpt.deposit = row_double(row, cols.idx("deposit", 8));
-                rpt.withdraw = row_double(row, cols.idx("withdraw", 9));
-                rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
-                rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
-                ok = ctx->enqueue_replay_frame(DZ_FRAME_TRADING_ACCOUNT, &rpt, sizeof(rpt)) && ok;
-            }
-        }
-    return ok;
+        dz_diag("ingest gap backfill incomplete (rows not committed yet), will retry");
+        return false;
+    }
+    if (!enqueue_gap_rows(ctx, rows)) {
+        return false;  // 缓冲溢出: 拦截触发帧, 宁缺勿乱 (不重试, 缓冲已满)
+    }
+    return true;
 }
 
 /// 单帧 TD ingest 过滤 + 断档回补 (2000-2003 共用):
@@ -484,8 +623,9 @@ bool ingest_td_frame(DzContext* ctx, const std::byte* frame) {
     if (ctx->ingest_gate.admit(v.account_id, v.seq) == TdIngestGate::Verdict::kSkip) {
         return false;
     }
-    // 回补缓冲溢出 (gap 过宽): 拦截触发帧, 宁缺勿乱 (见 handle_gap/enqueue 注释)。
-    if (!handle_gap(ctx)) {
+    // 回补处理: 覆盖不足 → 触发帧拦截暂存重试; 缓冲溢出 (gap 过宽) → 拦截触发帧,
+    // 宁缺勿乱 (见 handle_gap/enqueue 注释)。
+    if (!handle_gap(ctx, frame)) {
         return false;
     }
     return true;
@@ -681,6 +821,18 @@ DZ_API const void* dz_next_event(DzContext* ctx) {
     // 启动竞态窗口的缺失区间由回补补齐, 无断档)。
     // 回补帧已过 ingest gate (W/断档/去重), 不再重复过滤; 但 2000/2001 仍按
     // strategy_id 定向 (回补查询按账户全量, 含他策略/外部单, 仅本策略放行)。
+    // 断档回补重试驱动 (契约 td-data-sync §5.2): 回补不足时每次调用查一次库
+    // (无 sleep, 调用间隔即天然"短重试"间隔); 成功/耗尽后触发帧 + 回补帧经
+    // 下面的 replay FIFO 前置派发。置于 replay 消费前, 使结果本次即可见。
+    if (ctx->gap_retry.active) {
+        try {
+            drive_gap_retry(ctx);
+        } catch (const std::exception& e) {
+            dz_diag((std::string("gap retry drive failed: ") + e.what()).c_str());
+        } catch (...) {
+            dz_diag("gap retry drive failed: unknown exception");
+        }
+    }
     for (;;) {
         const void* replay = ctx->pop_replay_frame();
         if (replay == nullptr) {
