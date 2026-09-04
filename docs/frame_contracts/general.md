@@ -219,7 +219,7 @@
 
 - 本目录当前覆盖事件通道的低频控制/配置/通知帧。
 - **已覆盖**：策略帧（`UI_INPUT`/`OUTPUT_UI`/`SET_LOGICAL_POSITION`，见《帧契约：策略》）；TD 数据同步（TD 推送 2000-2003 的账户级 seq 水位/回补/重置/登录完成协议，见《帧契约：TD 数据同步》）。
-- **未覆盖**（后续独立契约，本目录暂不收录）：交易帧（除《帧契约：交易委托请求》已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ`、《帧契约：账户登录状态》已覆盖的 `ACCOUNT_STATUS`/`TD_QUERY_ACCOUNT_STATUS` 与《帧契约：TD 数据同步》已覆盖的 TD 推送 2000-2003 外，其余 2005-2017/2100-2115，TD 已实现大半）、行情/交易数据帧（`TICK`，struct payload）。
+- **未覆盖**（后续独立契约，本目录暂不收录）：交易帧（除《帧契约：交易委托请求》已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ`、《帧契约：账户登录状态》已覆盖的 `ACCOUNT_STATUS`/`TD_QUERY_ACCOUNT_STATUS`、《帧契约：TD 数据同步》已覆盖的 TD 推送 2000-2003 与《帧契约：合约信息》已覆盖的 `TD_INSTRUMENT`/`TD_INSTRUMENT_STATUS` 外，其余 2007-2017/2100-2115，TD 已实现大半）、行情/交易数据帧（`TICK`，struct payload）。
 - `DZ_FRAME_SYS_SCHED`：帧类型 10 与 payload（`DzSysSched`）已于 2026-08 随"系统调度域废弃"**从公开头移除**（此前无任何进程消费，md 已于 2026-07 移除处理）；帧号 10 保留不复用。策略侧定时需求由 `dz_schedule_*` 定时器接口承担（见《帧契约：策略》）。
 
 ---
