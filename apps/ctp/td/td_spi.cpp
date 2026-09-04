@@ -92,7 +92,7 @@ void TdSpi::OnRspUserLogin(CThostFtdcRspUserLoginField* pRspUserLogin,
         if (pRspInfo && pRspUserLogin && pRspInfo->ErrorID == 0) {
             // 解析 TradingDay "YYYYMMDD" 为距纪元天数
             int32_t parsed = parse_ctp_date(pRspUserLogin->TradingDay);
-            if (parsed < 0) {
+            if (parsed == DZ_DATE_NA) {
                 parse_err = std::format("invalid TradingDay: {}", pRspUserLogin->TradingDay);
                 SPDLOG_WARN("td trading day parse failed | account={} trading_day=\"{}\"",
                             account_id_, pRspUserLogin->TradingDay);

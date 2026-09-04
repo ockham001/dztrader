@@ -56,18 +56,22 @@ int32_t parse_ctp_time(const char* hh_mm_ss) noexcept {
 
 // ============================================================================
 // parse_ctp_date: "YYYYMMDD" -> 距纪元天数 (DzDate)
+// 哨兵: DZ_DATE_NA(0) 表示无效/未提供 (POD 零初始化即 NA, 安全缺省)。
+// 注意: "19700101" 合法解析结果也是 0, 与哨兵重合 — 业务上不存在 1970 年真实交易日期,
+// 该输入视同 NA 是设计决策而非缺陷 (见 struct.h DZ_DATE_NA 注释)。
+// 注意 parse_ctp_time 仍以 -1 为哨兵 (0 秒是合法值), 两者语义独立, 勿统一。
 // ============================================================================
 
 int32_t parse_ctp_date(const char* yyyymmdd) noexcept {
     if (yyyymmdd == nullptr || yyyymmdd[0] == '\0') {
-        return -1;
+        return DZ_DATE_NA;
     }
     if (std::strlen(yyyymmdd) != 8) {
-        return -1;
+        return DZ_DATE_NA;
     }
     for (int i = 0; i < 8; ++i) {
         if (yyyymmdd[i] < '0' || yyyymmdd[i] > '9') {
-            return -1;
+            return DZ_DATE_NA;
         }
     }
 
@@ -80,7 +84,7 @@ int32_t parse_ctp_date(const char* yyyymmdd) noexcept {
     try {
         return Date::from_year_month_day(y, m, d).days_since_epoch();
     } catch (...) {
-        return -1;
+        return DZ_DATE_NA;
     }
 }
 
@@ -280,7 +284,7 @@ OrderRecord to_order_record(const CThostFtdcOrderField& o,
     // 优先用 CTP InsertDate (夜盘场景下 InsertDate 与 trading_day 可能不同),
     // 失败回退到 trading_day 参数
     int32_t insert_date = parse_ctp_date(o.InsertDate);
-    int32_t day_date = (insert_date >= 0) ? insert_date : trading_day;
+    int32_t day_date = (insert_date != DZ_DATE_NA) ? insert_date : trading_day;
     int64_t day_secs = static_cast<int64_t>(day_date) * 86400;
     int32_t insert_secs = parse_ctp_time(o.InsertTime);
     int32_t update_secs = parse_ctp_time(o.UpdateTime);
@@ -335,7 +339,7 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
 
     // trade_date: YYYYMMDD as int (优先用 CTP TradeDate, 失败从 trading_day 重组)
     int32_t ctp_trade_date = parse_ctp_date(t.TradeDate);
-    if (ctp_trade_date >= 0) {
+    if (ctp_trade_date != DZ_DATE_NA) {
         // CTP TradeDate "YYYYMMDD" -> int64_t
         try {
             r.trade_date = std::stoll(t.TradeDate);
@@ -353,7 +357,7 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
     }
 
     // trade_time: epoch seconds (优先用 CTP TradeDate, 失败回退 trading_day)
-    int32_t trade_date_days = (ctp_trade_date >= 0) ? ctp_trade_date : trading_day;
+    int32_t trade_date_days = (ctp_trade_date != DZ_DATE_NA) ? ctp_trade_date : trading_day;
     int32_t trade_secs = parse_ctp_time(t.TradeTime);
     int64_t trade_day_secs = static_cast<int64_t>(trade_date_days) * 86400;
     r.trade_time = (trade_secs >= 0) ? trade_day_secs + trade_secs : 0;
@@ -372,35 +376,46 @@ DzInstrumentInfo to_dz_instrument(const CThostFtdcInstrumentField& f) noexcept {
 
     copy_to_dz(c.instrument_id, f.InstrumentID);
     copy_to_dz(c.exchange_id, f.ExchangeID);
+    copy_to_dz(c.symbol, f.InstrumentID);   // CTP 裸码: symbol == instrument_id
     // CTP InstrumentName 为 GBK, 此处原样拷贝 (UTF-8 转换由调用方处理)
     copy_to_dz(c.name, f.InstrumentName);
 
-    // 产品类型: CTP ProductClass -> DZ product (int8_t 标记)
-    // 'F'=期货, 'O'=期权, 'S'=组合 (与 DzInstrumentInfo 注释一致)
+    // 产品类型: CTP ProductClass -> DZ_PRODUCT_* (未知暴露为 UNKNOWN, 不再伪装期货)
+    // 注意: 商品期权是 SpotOption('6') 而非 Options('2'); EFP('5')/TAS('7')/MI('I') 暴露为 UNKNOWN
     switch (f.ProductClass) {
-        case THOST_FTDC_PC_Futures:     c.product = 'F'; break;
-        case THOST_FTDC_PC_Options:     c.product = 'O'; break;
-        case THOST_FTDC_PC_Combination: c.product = 'S'; break;
-        default:                        c.product = 'F'; break;  // 兜底
+        case THOST_FTDC_PC_Futures:       c.product = DZ_PRODUCT_FUTURES;  break;
+        case THOST_FTDC_PC_Options:       c.product = DZ_PRODUCT_OPTION;   break;
+        case THOST_FTDC_PC_SpotOption:    c.product = DZ_PRODUCT_OPTION;   break;
+        case THOST_FTDC_PC_Combination:   c.product = DZ_PRODUCT_SPREAD;   break;
+        case THOST_FTDC_PC_Spot:          c.product = DZ_PRODUCT_SPOT;     break;
+        default:                          c.product = DZ_PRODUCT_UNKNOWN;  break;
     }
 
-    c.volume_multiple = f.VolumeMultiple;
-    c.price_tick = f.PriceTick;
+    // CTP 无 T+n 交收周期概念 (期货每日无债): 衍生品语境固定 -1
+    c.settle_cycle = -1;
+    // 交割方式 CTP 无单合约字段, 首版不推断 (SHFE 实物 / CFFEX 现金留品种级配置)
+    c.settlement_method = 0;
+    c.is_inverse = 0;                          // CTP 无反向合约
+    copy_to_dz(c.currency, "CNY");             // CTP 人民币计价 (copy_to_dz 自动 null 终止)
+    // base_asset / option_exercise_style / option_series: 零初始化即正确值, 不赋
+
     c.min_order_volume = f.MinLimitOrderVolume;
     c.max_order_volume = f.MaxLimitOrderVolume;
+    c.volume_multiple = static_cast<double>(f.VolumeMultiple);
+    c.price_tick = f.PriceTick;
+    c.volume_step = 1.0;                       // CTP 平台单位 == 原生单位 (手)
 
-    // 期权字段
+    // CTP 无 ListedDate, OpenDate (上市日) 映射 listed_date
+    c.listed_date = parse_ctp_date(f.OpenDate);
+    c.expiry_date = parse_ctp_date(f.ExpireDate);
+
     switch (f.OptionsType) {
         case THOST_FTDC_CP_CallOptions: c.option_type = DZ_OPTION_CALL; break;  // 1
         case THOST_FTDC_CP_PutOptions:  c.option_type = DZ_OPTION_PUT;  break;  // -1
         default:                        c.option_type = 0; break;  // 非期权
     }
     c.option_strike = f.StrikePrice;
-    copy_to_dz(c.option_underlying, f.UnderlyingInstrID);
-
-    // CTP 无 ListedDate, 用 OpenDate (上市日) 映射到 option_listed
-    c.option_listed = parse_ctp_date(f.OpenDate);
-    c.option_expiry = parse_ctp_date(f.ExpireDate);
+    copy_to_dz(c.underlying_id, f.UnderlyingInstrID);
 
     return c;
 }
