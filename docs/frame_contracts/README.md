@@ -21,6 +21,7 @@
 | [rest](rest.md) | REST API | frontend ↔ dzweb 的 REST 端点与帧联动 | `apps/webui/*_controller.h` |
 | [td-order](td-order.md) | 交易委托请求 | `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ` | `libs/core/.../core_struct.h` |
 | [td-data-sync](td-data-sync.md) | TD 数据同步 | `ORDER_REPORT`/`TRADE_REPORT`/`POSITION_INFO`/`TRADING_ACCOUNT`（账户级 seq 水位/回补/重置/登录完成协议） | `libs/strategy_api/include/dztrader/struct.h` |
+| [instrument](instrument.md) | 合约信息 | `TD_INSTRUMENT` | `libs/strategy_api/include/dztrader/struct.h`、`libs/core/.../core_data_type.h` |
 | [strategy](strategy.md) | 策略帧 | `UI_INPUT`/`OUTPUT_UI`/`SET_LOGICAL_POSITION` | `libs/core/.../core_struct.h` |
 
 ## 阅读顺序
