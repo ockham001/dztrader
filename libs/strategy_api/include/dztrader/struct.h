@@ -224,25 +224,84 @@ DZ_DECLARE_ALIGNED_STRUCT(DzCommissionRate, {
     char reserved[4];  // 对齐结构体大小到 8 字节倍数
 });
 
-/// 合约信息 (对应 CTP ReqQryInstrument)
+/// 合约信息 — 平台统一合约静态表
+///
+/// 发布方: td/md 进程 (登录/每日刷新时发布); 消费方: 策略进程只读
+///
+/// 身份规则 (instrument_id 全帧统一, 行情/查询/下单共用):
+/// - instrument_id 是平台全局唯一键, 订单/持仓/行情等所有帧以它引用;
+///   CTP 合约用裸交易所代码 (rb2601/MA601), 其他网关加网关段前缀
+///   (IB.266004536 / BNS.BTCUSDT), 保证跨网关唯一, 网关发布时校验。
+/// - symbol 是场所原生代码, 网关对场所 API 发单/订阅时原样透传;
+///   禁止从 instrument_id 反向解析 symbol (前缀仅为展示约定, 非语法规则)。
+/// - underlying_id 必须是合约表内有效行的 instrument_id (指数行合法)。
+///
+/// 数量语义 (平台单位, 全帧整数):
+/// - 期货/期权=手/张, 证券=股, 币圈=stepSize 粒度;
+///   下单/持仓帧全部整数 (DzVolume), 原生数量换算仅在网关边界发生 (volume_step)。
 DZ_DECLARE_ALIGNED_STRUCT(DzInstrumentInfo, {
+    /* ---- 身份区 (320 字节) ---- */
+    DzInstrumentId instrument_id;      ///< 平台全局唯一键 (CTP 裸码; 其他网关 "段.原生码")
+    DzExchangeId exchange_id;          ///< 交易场所代码 (平台注册表: SHFE/CME/BNS/BNF)
+    char symbol[88];                   ///< 场所原生代码 (CTP 6.3.15+ 为 81 字节, 原样透传)
+    char name[128];                    ///< 显示名, UTF-8, 网关负责转码; 纯展示不参与匹配
+
+    /* ---- 分类与结算语义 (8 字节) ---- */
+    int8_t product;                    ///< 产品类型 (DZ_PRODUCT_*; INDEX=非交易参考行)
+    int8_t settle_cycle;               ///< 交收周期: -1=不适用(衍生品), 0=T+0, 1=T+1(A股/美股), 2=T+2(FX现货/HK)
+    int8_t settlement_method;          ///< 交割/结算方式: 0=未知, 1=实物, 2=现金(股指期货/期权)
+    int8_t is_inverse;                 ///< 反向合约: 0=线性(PnL∝Δp), 1=反向(PnL∝Δp/p, 保证金币种=base_asset)
+    char reserved0[4];                 ///< 对齐 currency 到 8 字节边界
+
+    /* ---- 货币区 (16 字节) ---- */
+    char currency[8];                  ///< 计价/结算货币 (ISO 4217 或资产码: CNY/USD/USDT; 空=跟随账户本币)
+    char base_asset[8];                ///< 基础资产 (SPOT/FOREX/PERPETUAL: EUR/BTC/XAU; 其他衍生品留空)
+
+    /* ---- 量价区 (40 字节) ---- */
+    int64_t min_order_volume;          ///< 最小下单量, 平台单位 (A股=100 股, 限买不限卖; <=0=未提供)
+    int64_t max_order_volume;          ///< 最大下单量, 平台单位 (<=0=无限制)
+    double volume_multiple;            ///< 价值乘数, 仅用于 PnL/保证金浮点运算 (期货=乘数; 证券=1; 外汇=每手10万单位)
+    double price_tick;                 ///< 最小变动价位 (必须 > 0, 网关保证)
+    double volume_step;                ///< 1 平台单位对应的原生数量 (网关换算; CTP 恒 1; 0=视为 1)
+
+    /* ---- 生命周期 (8 字节, 全品种通用) ---- */
+    DzDate listed_date;                ///< 上市日 (DZ_DATE_NA=未知; 回测移仓不得交易未上市合约)
+    DzDate expiry_date;                ///< 到期/最后交易日 (期货/期权/权证/转债必填; 永续/现货=DZ_DATE_NA)
+
+    /* ---- 衍生品属性区 (112 字节, 按产品类型选用) ---- */
+    int8_t option_type;                ///< 期权方向: DZ_OPTION_CALL(1) / DZ_OPTION_PUT(-1); 0=非期权
+    int8_t option_exercise_style;      ///< 行权方式: 0=未知, 1=欧式(境内ETF/股指), 2=美式(美股), 3=百慕大
+    DzInstrumentId underlying_id;      ///< 标的合约 instrument_id (期权/权证/可转债; 指数行合法)
+    char reserved1[6];                 ///< 对齐 option_strike 到 8 字节边界
+    double option_strike;              ///< 行权/转股价 (期权/权证/可转债)
+    char option_series[8];             ///< 同价调整序列 (CZCE 期权 M/A/B 调整合约; 空=无)
+});                                    ///< 总计 504 字节, 8 字节对齐
+
+/// 组合合约腿 (product == SPREAD 时每腿一行)
+DZ_DECLARE_ALIGNED_STRUCT(DzInstrumentLeg, {
+    DzInstrumentId combo_id;           ///< 组合合约 instrument_id
+    DzInstrumentId leg_id;             ///< 腿合约 instrument_id (须为主表有效行)
+    int8_t direction;                  ///< 腿方向 (DZ_DIRECTION_*)
+    char reserved[7];                  ///< 对齐 ratio 到 8 字节边界
+    double ratio;                      ///< 腿比例 (通常 1)
+});                                    ///< 192 字节
+
+/// 合约扩展属性 K-V (场所特有参考信息的合法出口: isin/conid/trading_active 等;
+/// 禁止承载交易决策必需字段 — 那些必须进主表或伴随表)
+DZ_DECLARE_ALIGNED_STRUCT(DzInstrumentExt, {
     DzInstrumentId instrument_id;
-    DzExchangeId exchange_id;
-    char name[64];            // GBK->UTF8 转换后
-    int8_t product;           // 'F'=期货, 'O'=期权, 'S'=组合
-    char reserved[7];         // 对齐 int64_t volume_multiple 到 8 字节边界
-    int64_t volume_multiple;  // 合约乘数
-    double price_tick;
-    int64_t min_order_volume;
-    int64_t max_order_volume;
-    // 期权字段
-    int8_t option_type;  // 1=CALL, -1=PUT, 0=非期权
-    char reserved2[7];   // 对齐 double option_strike 到 8 字节边界
-    double option_strike;
-    DzInstrumentId option_underlying;
-    DzDate option_listed;
-    DzDate option_expiry;
+    char key[32];
+    char value[128];
+    char reserved[8];                  ///< 256 字节
 });
+
+/// 阶梯最小变动价位 (JPX 等按价位分档的场所; 每档一行, price_from 升序)
+/// 未发布该表的合约一律使用主表 price_tick
+DZ_DECLARE_ALIGNED_STRUCT(DzInstrumentTickTier, {
+    DzInstrumentId instrument_id;
+    double price_from;                 ///< 本档起始价 (含)
+    double price_tick;                 ///< 本档最小变动价位
+});                                    ///< 104 字节
 
 /// 合约交易状态 (对应 CTP OnRtnInstrumentStatus)
 DZ_DECLARE_ALIGNED_STRUCT(DzInstrumentStatus, {
