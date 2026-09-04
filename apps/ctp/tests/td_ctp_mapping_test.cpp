@@ -163,21 +163,27 @@ TEST(ParseCtpDateTest, ValidDate) {
 }
 
 TEST(ParseCtpDateTest, NullReturns) {
-    EXPECT_EQ(parse_ctp_date(nullptr), -1);
-    EXPECT_EQ(parse_ctp_date(""), -1);
+    EXPECT_EQ(parse_ctp_date(nullptr), DZ_DATE_NA);
+    EXPECT_EQ(parse_ctp_date(""), DZ_DATE_NA);
 }
 
 TEST(ParseCtpDateTest, InvalidFormat) {
-    EXPECT_EQ(parse_ctp_date("abc"), -1);
-    EXPECT_EQ(parse_ctp_date("2026072"), -1);   // 长度不足
-    EXPECT_EQ(parse_ctp_date("202607277"), -1);  // 长度过长
-    EXPECT_EQ(parse_ctp_date("2026072a"), -1);  // 非数字
+    EXPECT_EQ(parse_ctp_date("abc"), DZ_DATE_NA);
+    EXPECT_EQ(parse_ctp_date("2026072"), DZ_DATE_NA);   // 长度不足
+    EXPECT_EQ(parse_ctp_date("202607277"), DZ_DATE_NA);  // 长度过长
+    EXPECT_EQ(parse_ctp_date("2026072a"), DZ_DATE_NA);  // 非数字
 }
 
 TEST(ParseCtpDateTest, InvalidDate) {
-    EXPECT_EQ(parse_ctp_date("20260230"), -1);  // 2 月 30 日不存在
-    EXPECT_EQ(parse_ctp_date("20261301"), -1);  // 月份越界
-    EXPECT_EQ(parse_ctp_date("20260001"), -1);  // 月份为 0
+    EXPECT_EQ(parse_ctp_date("20260230"), DZ_DATE_NA);  // 2 月 30 日不存在
+    EXPECT_EQ(parse_ctp_date("20261301"), DZ_DATE_NA);  // 月份越界
+    EXPECT_EQ(parse_ctp_date("20260001"), DZ_DATE_NA);  // 月份为 0
+}
+
+TEST(ParseCtpDateTest, EpochDayCollidesWithNa) {
+    // "19700101" 解析结果 0 与 DZ_DATE_NA 重合 — 设计决策: 视同 NA
+    // (业务上不存在 1970 年真实交易日期, 见 DZ_DATE_NA 注释)
+    EXPECT_EQ(parse_ctp_date("19700101"), DZ_DATE_NA);
 }
 
 // ============================================================================
@@ -511,29 +517,36 @@ TEST(ToDzInstrumentInfoTest, Futures) {
     auto c = to_dz_instrument(f);
 
     EXPECT_STREQ(c.instrument_id, "IF2506");
+    EXPECT_STREQ(c.symbol, "IF2506");              // CTP 裸码: symbol == instrument_id
     EXPECT_STREQ(c.exchange_id, "CFFEX");
-    EXPECT_EQ(c.volume_multiple, 300);
+    EXPECT_EQ(c.product, DZ_PRODUCT_FUTURES);
+    EXPECT_DOUBLE_EQ(c.volume_multiple, 300);
     EXPECT_DOUBLE_EQ(c.price_tick, 0.2);
     EXPECT_EQ(c.min_order_volume, 1);
     EXPECT_EQ(c.max_order_volume, 500);
-    EXPECT_EQ(c.option_type, 0);  // 非期权
-    EXPECT_EQ(c.option_listed, parse_ctp_date("20260119"));  // OpenDate
-    EXPECT_EQ(c.option_expiry, parse_ctp_date("20260619"));  // ExpireDate
+    EXPECT_DOUBLE_EQ(c.volume_step, 1.0);
+    EXPECT_STREQ(c.currency, "CNY");
+    EXPECT_EQ(c.settle_cycle, -1);
+    EXPECT_EQ(c.is_inverse, 0);
+    EXPECT_EQ(c.listed_date, parse_ctp_date("20260119"));   // OpenDate
+    EXPECT_EQ(c.expiry_date, parse_ctp_date("20260619"));   // ExpireDate
+    EXPECT_EQ(c.option_type, 0);                   // 非期权
 }
 
 TEST(ToDzInstrumentInfoTest, OptionCall) {
     auto f = make_instrument_field();
     std::strcpy(f.InstrumentID, "SR509C4800");
     std::strcpy(f.InstrumentName, "SR509C4800");
+    f.ProductClass = THOST_FTDC_PC_Options;  // 场内期权 (fixture 缺省 Futures)
     f.OptionsType = THOST_FTDC_CP_CallOptions;
     f.StrikePrice = 4800.0;
     std::strcpy(f.UnderlyingInstrID, "SR509");
 
     auto c = to_dz_instrument(f);
-    EXPECT_STREQ(c.instrument_id, "SR509C4800");
-    EXPECT_EQ(c.option_type, DZ_OPTION_CALL);  // 1
+    EXPECT_EQ(c.product, DZ_PRODUCT_OPTION);
+    EXPECT_EQ(c.option_type, DZ_OPTION_CALL);      // 1
     EXPECT_DOUBLE_EQ(c.option_strike, 4800.0);
-    EXPECT_STREQ(c.option_underlying, "SR509");
+    EXPECT_STREQ(c.underlying_id, "SR509");
 }
 
 TEST(ToDzInstrumentInfoTest, OptionPut) {
@@ -543,19 +556,43 @@ TEST(ToDzInstrumentInfoTest, OptionPut) {
     f.StrikePrice = 4800.0;
 
     auto c = to_dz_instrument(f);
-    EXPECT_EQ(c.option_type, DZ_OPTION_PUT);  // -1
+    EXPECT_EQ(c.option_type, DZ_OPTION_PUT);       // -1
     EXPECT_DOUBLE_EQ(c.option_strike, 4800.0);
 }
 
-TEST(ToDzInstrumentInfoTest, EmptyDate) {
-    // CTP 字段为空时不应崩溃, 返回 -1
+TEST(ToDzInstrumentInfoTest, UnknownProductNotFutures) {
+    // 未识别 ProductClass 暴露为 UNKNOWN (v1 兜底为 'F', v2 改为显式暴露)
+    auto f = make_instrument_field();
+    f.ProductClass = static_cast<TThostFtdcProductClassType>('Z');
+
+    auto c = to_dz_instrument(f);
+    EXPECT_EQ(c.product, DZ_PRODUCT_UNKNOWN);
+}
+
+TEST(ToDzInstrumentInfoTest, SpotOptionIsOption) {
+    // 商品期权 ProductClass=SpotOption('6') 非 Options('2') — 漏映射则全部
+    // 商品期权变 UNKNOWN (v1 时代 default 兜底 'F' 蒙混, v2 必须显式映射)
+    auto f = make_instrument_field();
+    std::strcpy(f.InstrumentID, "sr509C4800");
+    f.ProductClass = THOST_FTDC_PC_SpotOption;
+    f.OptionsType = THOST_FTDC_CP_CallOptions;
+    f.StrikePrice = 4800.0;
+    std::strcpy(f.UnderlyingInstrID, "SR509");
+
+    auto c = to_dz_instrument(f);
+    EXPECT_EQ(c.product, DZ_PRODUCT_OPTION);
+    EXPECT_EQ(c.option_type, DZ_OPTION_CALL);
+}
+
+TEST(ToDzInstrumentInfoTest, EmptyDateIsNa) {
+    // CTP 字段为空 -> DZ_DATE_NA(0), 非 v1 的 -1
     auto f = make_instrument_field();
     std::strcpy(f.OpenDate, "");
     std::strcpy(f.ExpireDate, "");
 
     auto c = to_dz_instrument(f);
-    EXPECT_EQ(c.option_listed, -1);
-    EXPECT_EQ(c.option_expiry, -1);
+    EXPECT_EQ(c.listed_date, DZ_DATE_NA);
+    EXPECT_EQ(c.expiry_date, DZ_DATE_NA);
 }
 
 // ============================================================================

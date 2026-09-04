@@ -38,7 +38,7 @@ struct OrderBuildContext {
 /// 解析 CTP 时间 "HH:MM:SS" 为距午夜秒数. 失败返回 -1.
 int32_t parse_ctp_time(const char* hh_mm_ss) noexcept;
 
-/// 解析 CTP 日期 "YYYYMMDD" 为距纪元天数 (DzDate). 失败返回 -1.
+/// 解析 CTP 日期 "YYYYMMDD" 为距纪元天数 (DzDate). 非法/空输入返回 DZ_DATE_NA (0).
 int32_t parse_ctp_date(const char* yyyymmdd) noexcept;
 
 /// 品种归一化: 从合约 ID 提取品种代码 (如 "IF2506" -> "IF", "rb2510" -> "rb").
@@ -93,7 +93,8 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
 
 /// CTP InstrumentField -> DzInstrumentInfo (字段一一映射).
 /// 注意: CTP InstrumentName 为 GBK 编码, 此处原样拷贝 (后续如需 UTF-8 由调用方转换).
-/// CTP 无 ListedDate 字段, 用 OpenDate (上市日) 映射到 option_listed.
+/// CTP 无 ListedDate 字段, 用 OpenDate (上市日) 映射到 listed_date; ExpireDate 映射到 expiry_date
+/// (非法/空输入经 parse_ctp_date 回退为 DZ_DATE_NA).
 DzInstrumentInfo to_dz_instrument(const CThostFtdcInstrumentField& f) noexcept;
 
 /// CTP TradingAccountField -> DzTradingAccount.
