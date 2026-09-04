@@ -47,8 +47,8 @@ protected:
     void SetUp() override {
         apply_td_migrations(mgr);
         auto applied = mgr.apply(conn.db());
-        ASSERT_EQ(applied.size(), 2u);
-        EXPECT_EQ(applied[1], kTdSchemaVersion);
+        ASSERT_EQ(applied.size(), 3u);
+        EXPECT_EQ(applied[2], kTdSchemaVersion);
     }
 };
 
@@ -150,11 +150,11 @@ TEST_F(TdSchemaTest, OrdersRebuildPreservesRowsAndIndexes) {
                 "instrument_id, exchange_id, price, volume) "
                 "VALUES ('acc1', '20260726', 'T2', 2, 'IF2506', 'CFFEX', 3900.0, 1)");
 
-    // 应用完整迁移: v1 (IF NOT EXISTS 对既有表 no-op) + v2 (四步重建保数据)
+    // 应用完整迁移: v1 (IF NOT EXISTS 对既有表 no-op) + v2 (四步重建保数据) + v3
     dztrader::db::MigrationManager mgr2;
     dztrader::ctp::apply_td_migrations(mgr2);
     auto applied = mgr2.apply(legacy.db());
-    ASSERT_EQ(applied.size(), 2u);
+    ASSERT_EQ(applied.size(), 3u);
 
     EXPECT_EQ(legacy.scalar<int>("SELECT COUNT(*) FROM orders"), 2);
     EXPECT_EQ(legacy.scalar<int>("SELECT COALESCE(MAX(seq), 0) FROM orders"), 0);
@@ -204,6 +204,42 @@ TEST_F(TdSchemaTest, NewTablesPositionsTradingAccounts) {
     // (account_id, seq) 索引列内容正确
     expect_index_columns(conn, "idx_positions_acct_seq", {"account_id", "seq"});
     expect_index_columns(conn, "idx_taccount_acct_seq", {"account_id", "seq"});
+}
+
+TEST_F(TdSchemaTest, InstrumentsV3MigratesAsciiProductText) {
+    // v1 instruments: bind_instrument 以 static_cast<int>('F')=70 绑定 CHAR(1) 列,
+    // TEXT affinity 实存文本 "70" (sqlite3 实证) — CASE 必须匹配 ASCII 文本
+    dztrader::db::Connection legacy(":memory:");
+    legacy.db().exec(
+        "CREATE TABLE instruments ("
+        "    instrument_id TEXT PRIMARY KEY, exchange_id TEXT NOT NULL, name TEXT,"
+        "    product CHAR(1), volume_multiple INTEGER, price_tick REAL,"
+        "    min_order_volume INTEGER, max_order_volume INTEGER, option_type CHAR(1),"
+        "    option_strike REAL, option_underlying TEXT, option_listed INTEGER,"
+        "    option_expiry INTEGER, update_day TEXT)");
+    // 模拟 v1 写入路径的存储形态: product 文本 "70", option_type 文本 "1", 日期整数 -1
+    legacy.db().exec(
+        "INSERT INTO instruments VALUES ('SR509C4800','CZCE','SR509C4800','79',"
+        "10,0.5,1,0,'1',4800.0,'SR509',-1,-1,'20260101')");
+    legacy.db().exec(
+        "INSERT INTO instruments VALUES ('rb2601','SHFE','rb','70',"
+        "10,1,1,0,'0',0.0,'rb',-1,-1,'20260101')");
+
+    dztrader::db::MigrationManager mgr2;
+    dztrader::ctp::apply_td_migrations(mgr2);
+    auto applied = mgr2.apply(legacy.db());
+    ASSERT_EQ(applied.size(), 3u);
+
+    // product: 文本 "79"(期权)->2 / "70"(期货)->1
+    EXPECT_EQ(legacy.scalar<int>("SELECT product FROM instruments WHERE instrument_id='SR509C4800'"), 2);
+    EXPECT_EQ(legacy.scalar<int>("SELECT product FROM instruments WHERE instrument_id='rb2601'"), 1);
+    // option_type 文本 "1" 搬入 INTEGER 列后 affinity 转回整数 1 (CALL 信息不丢)
+    EXPECT_EQ(legacy.scalar<int>("SELECT option_type FROM instruments WHERE instrument_id='SR509C4800'"), 1);
+    // 旧日期哨兵 -1 -> 新 NA 0
+    EXPECT_EQ(legacy.scalar<int>("SELECT listed_date FROM instruments WHERE instrument_id='rb2601'"), 0);
+    // 新列缺省语义
+    EXPECT_EQ(legacy.scalar<int>("SELECT settle_cycle FROM instruments WHERE instrument_id='rb2601'"), -1);
+    EXPECT_EQ(legacy.scalar<std::string>("SELECT currency FROM instruments WHERE instrument_id='rb2601'"), "CNY");
 }
 
 }  // namespace

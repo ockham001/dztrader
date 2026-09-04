@@ -109,7 +109,7 @@ void migration_v1(SQLite::Database& db) {
         "    exchange_id TEXT NOT NULL,"
         "    name TEXT,"
         "    product CHAR(1),"
-        "    volume_multiple INTEGER,"
+        "    volume_multiple REAL,"               // v3: 字段已变 double (v1 曾为 INTEGER)
         "    price_tick REAL,"
         "    min_order_volume INTEGER,"
         "    max_order_volume INTEGER,"
@@ -226,11 +226,71 @@ void migration_v2(SQLite::Database& db) {
     db.exec("CREATE INDEX idx_taccount_acct_seq ON trading_accounts(account_id, seq)");
 }
 
+void migration_v3(SQLite::Database& db) {
+    // instruments 重建: DzInstrumentInfo v2 (product CHAR(1)->INTEGER, 新增 v2 列)
+    db.exec(
+        "CREATE TABLE instruments_v3 ("
+        "    instrument_id TEXT PRIMARY KEY,"
+        "    exchange_id TEXT NOT NULL,"
+        "    symbol TEXT NOT NULL DEFAULT '',"
+        "    name TEXT,"
+        "    product INTEGER NOT NULL DEFAULT 0,"
+        "    settle_cycle INTEGER NOT NULL DEFAULT -1,"
+        "    settlement_method INTEGER NOT NULL DEFAULT 0,"
+        "    is_inverse INTEGER NOT NULL DEFAULT 0,"
+        "    currency TEXT NOT NULL DEFAULT '',"
+        "    base_asset TEXT NOT NULL DEFAULT '',"
+        "    min_order_volume INTEGER NOT NULL DEFAULT 0,"
+        "    max_order_volume INTEGER NOT NULL DEFAULT 0,"
+        "    volume_multiple REAL NOT NULL DEFAULT 0,"
+        "    price_tick REAL NOT NULL DEFAULT 0,"
+        "    volume_step REAL NOT NULL DEFAULT 1,"
+        "    listed_date INTEGER NOT NULL DEFAULT 0,"
+        "    expiry_date INTEGER NOT NULL DEFAULT 0,"
+        "    option_type INTEGER NOT NULL DEFAULT 0,"
+        "    option_exercise_style INTEGER NOT NULL DEFAULT 0,"
+        "    underlying_id TEXT NOT NULL DEFAULT '',"
+        "    option_strike REAL NOT NULL DEFAULT 0,"
+        "    option_series TEXT NOT NULL DEFAULT '',"
+        "    update_day TEXT"
+        ")");
+    // v2 -> v3 搬运 (类型事实已用 sqlite3 实证验证):
+    //   product 列: v1 bind_instrument 以 static_cast<int>(r.base.product) 绑定
+    //     (td_persist_writer.cpp:641), CHAR(1) 列 TEXT affinity 下存的是**文本
+    //     "70"/"79"/"83"** (ASCII 'F'/'O'/'S'), typeof()=text — CASE 必须用文本
+    //     ASCII 码, 写 WHEN 'F' 永不匹配 (实证: 迁移后全变 0/UNKNOWN);
+    //     双写 ASCII 码 + 字符分支 (后者的兼容性: 若历史库曾以文本方式写入过 'F');
+    //   option_type 列: 同理存文本 "1"/"-1"/"0" — 直接搬运即可, INTEGER affinity
+    //     的 option_type 列自动把 TEXT "1" 转回 INTEGER 1 (实证 typeof()=integer);
+    //   option_listed/option_expiry 列: DzDate 绑定本就是整数, -1 旧哨兵 -> 0 新 NA
+    //     (实证 typeof()=integer, CASE WHEN -1 正常命中);
+    //   symbol 置空 (CTP 网关次日登录会全量重灌, 审计兼容即可)
+    db.exec(
+        "INSERT INTO instruments_v3 (instrument_id, exchange_id, symbol, name, product,"
+        "    settle_cycle, settlement_method, is_inverse, currency, base_asset,"
+        "    min_order_volume, max_order_volume, volume_multiple, price_tick, volume_step,"
+        "    listed_date, expiry_date, option_type, option_exercise_style, underlying_id,"
+        "    option_strike, option_series, update_day) "
+        "SELECT instrument_id, exchange_id, '', name,"
+        "    CASE product WHEN '70' THEN 1 WHEN '79' THEN 2 WHEN '83' THEN 4"
+        "         WHEN 'F' THEN 1 WHEN 'O' THEN 2 WHEN 'S' THEN 4 ELSE 0 END,"
+        "    -1, 0, 0, 'CNY', '',"
+        "    min_order_volume, max_order_volume, volume_multiple, price_tick, 1.0,"
+        "    CASE option_listed WHEN -1 THEN 0 ELSE option_listed END,"
+        "    CASE option_expiry WHEN -1 THEN 0 ELSE option_expiry END,"
+        "    option_type,"
+        "    0, option_underlying, option_strike, '', update_day "
+        "FROM instruments");
+    db.exec("DROP TABLE instruments");
+    db.exec("ALTER TABLE instruments_v3 RENAME TO instruments");
+}
+
 }  // namespace
 
 void apply_td_migrations(dztrader::db::MigrationManager& mgr) {
     mgr.add(1, migration_v1);
     mgr.add(2, migration_v2);
+    mgr.add(3, migration_v3);
 }
 
 }  // namespace dztrader::ctp

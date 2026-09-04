@@ -61,10 +61,12 @@ constexpr const char* kInsertCommissionRateSql =
 
 constexpr const char* kInsertInstrumentSql =
     "INSERT OR REPLACE INTO instruments ("
-    "    instrument_id, exchange_id, name, product, volume_multiple, price_tick,"
-    "    min_order_volume, max_order_volume, option_type, option_strike,"
-    "    option_underlying, option_listed, option_expiry, update_day"
-    ") VALUES (?,?,?,?,?,?,  ?,?,?,?,  ?,?,?,?)";
+    "    instrument_id, exchange_id, symbol, name, product, settle_cycle,"
+    "    settlement_method, is_inverse, currency, base_asset, min_order_volume,"
+    "    max_order_volume, volume_multiple, price_tick, volume_step, listed_date,"
+    "    expiry_date, option_type, option_exercise_style, underlying_id, option_strike,"
+    "    option_series, update_day"
+    ") VALUES (?,?,?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,?,?,  ?,?,?,?,?,?)";
 
 // positions (spec §3.2): key = (account_id, instrument_id, direction), 绝对态 upsert
 constexpr const char* kInsertPositionSql =
@@ -637,18 +639,27 @@ void PersistWriter::bind_commission_rate(SQLite::Statement& stmt, const Commissi
 void PersistWriter::bind_instrument(SQLite::Statement& stmt, const InstrumentRecord& r) {
     stmt.bind(1, r.base.instrument_id);
     stmt.bind(2, r.base.exchange_id);
-    stmt.bind(3, r.base.name);
-    stmt.bind(4, static_cast<int>(r.base.product));
-    stmt.bind(5, r.base.volume_multiple);
-    stmt.bind(6, r.base.price_tick);
-    stmt.bind(7, r.base.min_order_volume);
-    stmt.bind(8, r.base.max_order_volume);
-    stmt.bind(9, static_cast<int>(r.base.option_type));
-    stmt.bind(10, r.base.option_strike);
-    stmt.bind(11, r.base.option_underlying);
-    stmt.bind(12, r.base.option_listed);
-    stmt.bind(13, r.base.option_expiry);
-    stmt.bind(14, r.update_day);
+    stmt.bind(3, r.base.symbol);
+    stmt.bind(4, r.base.name);
+    stmt.bind(5, static_cast<int>(r.base.product));
+    stmt.bind(6, static_cast<int>(r.base.settle_cycle));
+    stmt.bind(7, static_cast<int>(r.base.settlement_method));
+    stmt.bind(8, static_cast<int>(r.base.is_inverse));
+    stmt.bind(9, r.base.currency);
+    stmt.bind(10, r.base.base_asset);
+    stmt.bind(11, static_cast<int64_t>(r.base.min_order_volume));
+    stmt.bind(12, static_cast<int64_t>(r.base.max_order_volume));
+    stmt.bind(13, r.base.volume_multiple);
+    stmt.bind(14, r.base.price_tick);
+    stmt.bind(15, r.base.volume_step);
+    stmt.bind(16, r.base.listed_date);
+    stmt.bind(17, r.base.expiry_date);
+    stmt.bind(18, static_cast<int>(r.base.option_type));
+    stmt.bind(19, static_cast<int>(r.base.option_exercise_style));
+    stmt.bind(20, r.base.underlying_id);
+    stmt.bind(21, r.base.option_strike);
+    stmt.bind(22, r.base.option_series);
+    stmt.bind(23, r.update_day);
 }
 
 std::string PersistWriter::format_trading_day(int64_t days) {

@@ -216,7 +216,7 @@ TEST_F(TdPersistWriterTest, InstrumentPersisted) {
         std::strcpy(r.base.instrument_id, "IF2506");
         std::strcpy(r.base.exchange_id, "CFFEX");
         std::strcpy(r.base.name, "沪深300股指期货");
-        r.base.product = 'F';
+        r.base.product = DZ_PRODUCT_FUTURES;
         r.base.volume_multiple = 300;
         r.base.price_tick = 0.2;
         w.enqueue(PersistTask{.kind = PersistTask::Kind::Instrument, .data = r});
@@ -224,6 +224,8 @@ TEST_F(TdPersistWriterTest, InstrumentPersisted) {
         w.stop();
     }
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM instruments"), 1);
+    // v3: product 列为 INTEGER (DZ_PRODUCT_*)
+    EXPECT_EQ(scalar_int("SELECT product FROM instruments"), DZ_PRODUCT_FUTURES);
 }
 
 TEST_F(TdPersistWriterTest, MarginRatePersisted) {

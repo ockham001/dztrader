@@ -13,7 +13,11 @@ namespace dztrader::ctp {
 /// v2: orders/trades 加 seq 列 + (account_id, seq) 索引; trades 唯一键升级为
 ///     (account_id, trading_day, trade_id) (修复 CTP TradeID 跨日重复被 REPLACE);
 ///     新增 positions / trading_accounts 表.
-constexpr int kTdSchemaVersion = 2;
+/// v3: instruments 表随 DzInstrumentInfo v2 重建 (新增 symbol/currency/base_asset/
+///     settle_cycle/settlement_method/is_inverse/volume_step/listed_date/expiry_date/
+///     option_exercise_style/underlying_id/option_series 列; 移除旧 option_* 列);
+///     product 列 CHAR(1)->INTEGER (DZ_PRODUCT_*)。
+constexpr int kTdSchemaVersion = 3;
 
 // ============================================================================
 // SQL-ready POD 记录: 复用 strategy_api 结构体 + 组合扩展 SQL 特有字段
