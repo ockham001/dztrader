@@ -186,6 +186,9 @@ typedef int8_t DzPositionEffect;
 #define DZ_POSITION_EFFECT_CLOSE_TODAY   ((DzPositionEffect)3)
 /** @brief 平昨 */
 #define DZ_POSITION_EFFECT_CLOSE_YESTDAY ((DzPositionEffect)4)
+/** @brief 自动拆分 (拆分优先级序列由账户级配置决定: 如 平今-平昨-开仓;
+ *         零初始化即 AUTO, 首版仅定义不实现) */
+#define DZ_POSITION_EFFECT_AUTO          ((DzPositionEffect)0)
 
 /* ==========================================================
  *  委托单状态
@@ -238,6 +241,33 @@ typedef int8_t DzOptionType;
 #define DZ_OPTION_PUT  ((DzOptionType)(-1))
 /** @brief 看涨 */
 #define DZ_OPTION_CALL ((DzOptionType)1)
+
+/* ==========================================================
+ *  合约产品类型
+ * ========================================================== */
+
+/** @brief 合约产品类型 (DzInstrumentInfo.product) */
+typedef int8_t DzProduct;
+
+#define DZ_PRODUCT_UNKNOWN   ((DzProduct)0)   ///< 未知
+#define DZ_PRODUCT_FUTURES   ((DzProduct)1)   ///< 期货
+#define DZ_PRODUCT_OPTION    ((DzProduct)2)   ///< 场内期权
+#define DZ_PRODUCT_PERPETUAL ((DzProduct)3)   ///< 永续合约
+#define DZ_PRODUCT_SPREAD    ((DzProduct)4)   ///< 交易所组合/价差 (腿见 DzInstrumentLeg)
+#define DZ_PRODUCT_EQUITY    ((DzProduct)5)   ///< 股票
+#define DZ_PRODUCT_ETF       ((DzProduct)6)   ///< ETF
+#define DZ_PRODUCT_FUND      ((DzProduct)7)   ///< 其他上市基金 (LOF/REITs)
+#define DZ_PRODUCT_BOND      ((DzProduct)8)   ///< 基础债券
+#define DZ_PRODUCT_CB        ((DzProduct)9)   ///< 可转债 (T+0, 交易规则独立故单列)
+#define DZ_PRODUCT_WARRANT   ((DzProduct)10)  ///< 权证/涡轮
+#define DZ_PRODUCT_INDEX     ((DzProduct)11)  ///< 指数 (非交易参考行, 仅作衍生品标的)
+#define DZ_PRODUCT_FOREX     ((DzProduct)12)  ///< 外汇对
+#define DZ_PRODUCT_SPOT      ((DzProduct)13)  ///< 现货 (SGE 贵金属等)
+#define DZ_PRODUCT_CFD       ((DzProduct)14)  ///< 差价合约
+
+/** @brief 日期未提供 (epoch day 0 = 1970-01-01 元旦, 全球无开市, 与真实业务日无碰撞;
+ *         与 POD 零初始化语义重合 — 未赋值即 NA, 安全缺省) */
+#define DZ_DATE_NA  ((DzDate)0)
 
 /* ==========================================================
  *  复权方式
