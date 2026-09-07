@@ -237,9 +237,18 @@ private:
     void req_qry_investor_position();
     /// 发起资金查询 (登录收尾阶段二).
     void req_qry_trading_account();
+    /// 发起保证金率查询 (登录收尾阶段三 / 按需查询).
+    /// @param instrument_id 空串=全量账户级 (登录收尾), 非空=单合约 (按需查询).
+    void req_qry_margin_rate(const char* instrument_id = "");
+    /// 发起手续费率查询 (登录收尾阶段四 / 按需查询).
+    void req_qry_commission_rate(const char* instrument_id = "");
+    /// 按需查询入口 (阶段2): 单合约费率查询, 入库+广播 (2015/2016).
+    /// 由 td_api 收到 DZ_FRAME_TD_QUERY_FEE_RATE=2116 帧调用.
+    /// @param query_type 0=保证金率, 1=手续费率, 2=两者.
+    void query_fee_rate(const char* instrument_id, int8_t query_type);
     /// 双查询完成 (is_last 或失败降级) 后的统一收尾:
     /// 缓冲重放 -> flush 屏障 -> on_instruments_loaded 转 Ready.
-    /// 若查询阶段未结束时 (双查询未齐) 调用 no-op (防御).
+    /// 若查询阶段未结束时 (四查询未齐) 调用 no-op (防御).
     void finalize_login();
 
     /// 尝试推进登录收尾状态机并执行对应阶段动作; 未达前置时停留.
@@ -283,7 +292,17 @@ private:
     /// 持仓/资金查询是否已成功 (供登录降级补查节流: 双查询都成功才置 true, spec §4.2).
     bool position_query_ok_ = false;
     bool account_query_ok_ = false;
+    /// 保证金率/手续费率查询是否已成功 (供登录降级补查节流).
+    bool margin_rate_query_ok_ = false;
+    bool commission_rate_query_ok_ = false;
     bool data_query_ok_ = false;
+    /// 费率/保证金查询是否广播 SHM: false=登录批量只入库, true=按需查询入库+广播 (2015/2016).
+    /// 登录收尾链起点重置 false (避免按需查询残留 true 使批量费率洪泛策略进程).
+    bool fee_rate_broadcast_ = false;
+    /// 按需查询 (query_type=2) 的串行推进: margin is_last 后是否接着发 commission (CTP 流控).
+    bool fee_query_pending_commission_ = false;
+    /// 按需查询的目标合约 (query_type=2 串行推进用; 登录链留空).
+    std::string fee_query_instrument_;
     /// 上次装载水位: 断连时记录, 重连时增量装载 seq > 该值的行 (spec §4.3).
     uint64_t max_seq_at_disconnect_ = 0;
     /// 独立只读连接提供器 (TdApi 注入; 重连增量装载基准用, 可空则降级).
