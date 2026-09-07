@@ -66,10 +66,10 @@ TEST(LoginFinalizer, ReassignmentAfterDoneRestartsQueryPhase) {
     LoginFinalizer fin;
     fin.on_position_done();
     fin.on_account_done();
-    fin.next();  // kReplay
-    fin.next();
-    fin.next();
-    fin.next();  // kDone
+    (void)fin.next();  // kReplay
+    (void)fin.next();
+    (void)fin.next();
+    (void)fin.next();  // kDone
     ASSERT_EQ(Phase::kDone, fin.phase());
 
     // 断连/重登: finalizer_ = LoginFinalizer{} (重置语义)

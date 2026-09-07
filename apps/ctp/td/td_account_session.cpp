@@ -919,7 +919,7 @@ void AccountSession::drive_finalizer() {
     // 前置: 双查询齐 (含失败降级) 且仍停在查询阶段时, 先推进到首个收尾阶段 kReplay
     // (SPI 路径 on_account_done 只置 account_done_, 不改变 phase, 由这里跨过查询阶段).
     if (finalizer_.can_reach_ready() && finalizer_.phase() == Phase::kQueryAccount) {
-        finalizer_.next();  // kQueryAccount -> kReplay
+        (void)finalizer_.next();  // kQueryAccount -> kReplay
     }
     while (finalizer_.phase() != Phase::kDone) {
         switch (finalizer_.phase()) {
@@ -952,7 +952,7 @@ void AccountSession::drive_finalizer() {
             case Phase::kDone:
                 return;
         }
-        finalizer_.next();
+        (void)finalizer_.next();
     }
 }
 

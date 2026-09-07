@@ -39,13 +39,16 @@ struct PersistTask {
     } kind;
 
     /// Position / PositionRebuild / TradingAccount 用 (绝对态). TradingAccount 用单记录.
+    /// NSDMI: FlushSignal 等不带 data 的 Kind 默认构造 (variant 第一个 alternative).
     std::variant<OrderRecord, TradeRecord, MarginRateRecord,
                  CommissionRateRecord, InstrumentRecord, std::vector<DzPositionInfo>,
                  DzTradingAccount>
-        data;
+        data = {};
 
     /// PositionRebuild / FlushSignal 用: 目标账户.
-    std::string account_id;
+    /// NSDMI 使其在位置初始化 {Kind, rec} 时默认空串; 仅需 account_id 的
+    /// Kind (TradingAccount/PositionRebuild) 走 designated 初始化显式填值 (见 td_account_session.cpp).
+    std::string account_id = {};
     /// Position / PositionRebuild / TradingAccount 用: 交易日 (DzDate 距纪元天数).
     int64_t trading_day = 0;
     /// FlushSignal 用: enqueue_flush_signal 返回的哨兵 token.
