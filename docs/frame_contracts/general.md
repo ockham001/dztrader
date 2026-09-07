@@ -27,6 +27,7 @@
 | REST API | frontend ↔ dzweb 的 REST 端点 |
 | 交易委托请求 | TD_ORDER_REQ / TD_ORDER_CANCEL_REQ |
 | TD 数据同步 | ORDER_REPORT / TRADE_REPORT / POSITION_INFO / TRADING_ACCOUNT（账户级 seq 水位、回补、重置、登录完成协议） |
+| 手续费/保证金 | TD_MARGIN_RATE / TD_COMMISSION_RATE + 三层建模约定与决策必需字段归属 |
 
 > 历史：本目录于 2026-07 由 `docs/flow_contracts/` 演进而来（后改名 frame_contracts）。2026-08 整理时新增本总则，原 00-05 顺延为 01-06，原 06-misc 拆解归位，原 07-10 编号不变。2026-08-16 契约文件名去除序号前缀，代码与文档引用改「契约 + 短名」格式（短名即文件名去扩展名）。
 
