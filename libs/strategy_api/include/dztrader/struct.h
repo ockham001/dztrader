@@ -192,6 +192,8 @@ DZ_DECLARE_ALIGNED_STRUCT(DzPositionDetail, {
 });
 
 /// 保证金率 (按品种归一化, 对应 CTP ReqQryInstrumentMarginRate)
+/// by_volume 系「每手/每张固定金额」，期权"每张固定"保证金/手续费也走 by_volume；
+/// 保证金币种不落本表 (见帧契约《手续费/保证金》: 线性=contract.currency, 反向=base_asset)。
 DZ_DECLARE_ALIGNED_STRUCT(DzMarginRate, {
     DzAccountId account_id;
     DzInstrumentId instrument_id;  // CTP 原始返回 (品种或合约)
@@ -209,6 +211,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzMarginRate, {
 });
 
 /// 手续费率 (按品种归一化, 对应 CTP ReqQryInstrumentCommissionRate)
+/// by_volume 系「每手/每张固定金额」，期权"每张固定"手续费也走 by_volume。
 DZ_DECLARE_ALIGNED_STRUCT(DzCommissionRate, {
     DzAccountId account_id;
     DzInstrumentId instrument_id;
