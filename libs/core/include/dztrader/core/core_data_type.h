@@ -159,6 +159,8 @@ DZ_BEGIN_C_DECLS
 #define DZ_FRAME_NOTIFY_TD_DISCONNECTED ((DzFrameType)2114)
 /** @brief 账户状态查询请求 (策略/SDK→td+master, basic 广播帧, payload=DzAccountStatusReq, 契约 account-status) */
 #define DZ_FRAME_TD_QUERY_ACCOUNT_STATUS ((DzFrameType)2115)
+/** @brief 费率/保证金率按需查询请求 (策略→td, basic 广播帧, payload=DzFeeRateQueryReq, 契约 td-fee-margin) */
+#define DZ_FRAME_TD_QUERY_FEE_RATE       ((DzFrameType)2116)
 
 DZ_END_C_DECLS
 

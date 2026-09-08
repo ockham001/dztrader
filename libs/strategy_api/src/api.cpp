@@ -1365,6 +1365,32 @@ DZ_API bool dz_query_account_status(DzContext* ctx, const char* account_id) {
     return true;
 }
 
+DZ_API bool dz_query_fee_rate(DzContext* ctx, const char* account_id, const char* instrument_id,
+                              int8_t query_type) {
+    // 同 dz_query_account_status: extern "C" 边界不允许异常逃逸; 体内操作均 noexcept.
+    static_assert(noexcept(ctx->event_writer.open_frame(
+        DZ_FRAME_TD_QUERY_FEE_RATE, sizeof(DzFeeRateQueryReq))));
+    static_assert(noexcept(ctx->event_writer.close_frame()));
+    static_assert(noexcept(ctx->event_writer.notify_subscribers()));
+
+    if (instrument_id == nullptr || instrument_id[0] == '\0') {
+        LastError::set(DZ_EC_INVALID_PARAM, "instrument_id is required");
+        return false;
+    }
+    auto* req = reinterpret_cast<DzFeeRateQueryReq*>(
+        ctx->event_writer.open_frame(DZ_FRAME_TD_QUERY_FEE_RATE, sizeof(DzFeeRateQueryReq)));
+    if (req == nullptr) {
+        // open_frame 失败时已设置 LastError, 直接透传
+        return false;
+    }
+    dztrader::copy_string(req->account_id, account_id == nullptr ? "" : account_id, true);
+    dztrader::copy_string(req->instrument_id, instrument_id, true);
+    req->query_type = query_type;
+    ctx->event_writer.close_frame();
+    ctx->event_writer.notify_subscribers();
+    return true;
+}
+
 namespace {
 
 // DzNotifyLevel -> 字符串, 与 log level 规范全称一致 (契约 notify-ui level 字段)

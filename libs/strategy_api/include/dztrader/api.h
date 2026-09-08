@@ -318,6 +318,22 @@ DZ_API bool dz_set_logical_position(DzContext* ctx,
  */
 DZ_API bool dz_query_account_status(DzContext* ctx, const char* account_id);
 
+/**
+ * @brief 按需查询单合约的保证金率/手续费率 (异步回填)
+ *
+ * 写 TD_QUERY_FEE_RATE(2116) basic 广播帧; td 网关查 CTP 后写入
+ * margin_rates/commission_rates 表并广播 DZ_FRAME_TD_MARGIN_RATE(2015)/
+ * DZ_FRAME_TD_COMMISSION_RATE(2016) 帧 (契约 td-fee-margin)。
+ * 发后即返 (不阻塞): 结果经 SHM 帧或后续 dz_db_query_* 获取。
+ *
+ * @param ctx           策略上下文
+ * @param account_id    账户标识
+ * @param instrument_id 目标合约 (平台唯一键, 网关段前缀规则见合约契约)
+ * @param query_type    0=保证金率, 1=手续费率, 2=两者
+ * @return true 请求已写入事件通道，false 失败（调 dz_errcode() 获取错误码）
+ */
+DZ_API bool dz_query_fee_rate(DzContext* ctx, const char* account_id, const char* instrument_id, int8_t query_type);
+
 /* ── UI 通知 ── */
 
 /**

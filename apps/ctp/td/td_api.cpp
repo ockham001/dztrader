@@ -343,6 +343,11 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
             handle_query_account_status(frame);
             return;
         }
+        case DZ_FRAME_TD_QUERY_FEE_RATE: {
+            // 契约 td-fee-margin: 2116 basic 广播帧, 按需查询单合约费率/保证金 (异步回填)
+            handle_query_fee_rate(frame);
+            return;
+        }
         case DZ_FRAME_TD_ORDER_REQ: {
             // 契约 td-order: basic 广播帧, 按 payload account_id 归属路由
             on_order_req(view);
@@ -945,6 +950,35 @@ void TdApi::handle_query_account_status(const std::byte* frame) {
                              session->state_machine().status().trading_day, /*force=*/true);
     } else {
         write_account_status(std::string(req.account_id), DZ_ACCOUNT_OFFLINE, "", /*force=*/true);
+    }
+}
+
+void TdApi::handle_query_fee_rate(const std::byte* frame) {
+    // 契约 td-fee-margin: 2116 basic 广播帧, 按需查询单合约费率/保证金 (异步回填).
+    const shm::FrameView view(frame);
+    constexpr auto kMin = sizeof(DzFrameHeader) + sizeof(DzFeeRateQueryReq);
+    if (view.frame_size() < kMin) {
+        SPDLOG_WARN("td query fee rate rejected | reason=short_payload frame_size={}",
+                    view.frame_size());
+        return;
+    }
+    DzFeeRateQueryReq req;
+    std::memcpy(&req, &view.payload<DzFeeRateQueryReq>(), sizeof(req));
+    if (req.instrument_id[0] == '\0') {
+        SPDLOG_WARN("td query fee rate rejected | reason=empty_instrument");
+        return;
+    }
+    if (req.account_id[0] == '\0') {
+        // 未指定账户: 对本网关全部账户发起 (契约: 空=全部).
+        for (auto& [acct, session] : sessions_) {
+            session->query_fee_rate(req.instrument_id, req.query_type);
+        }
+        return;
+    }
+    if (auto* session = find_session(std::string(req.account_id)); session != nullptr) {
+        session->query_fee_rate(req.instrument_id, req.query_type);
+    } else {
+        SPDLOG_WARN("td query fee rate no session | account={}", req.account_id);
     }
 }
 

@@ -153,6 +153,11 @@ public:
     /// 返回 false 表示未就绪 / 订单未登记 / CTP 返回非 0, 调用方应感知并通知策略进程.
     bool cancel_order(DzOrderId order_id);
 
+    /// 按需查询单合约费率/保证金 (阶段2, 契约 td-fee-margin): 入库+广播 (2015/2016), 异步回填.
+    /// 由 TdApi 收到 DZ_FRAME_TD_QUERY_FEE_RATE=2116 帧调用.
+    /// @param instrument_id 目标合约; @param query_type 0=保证金率, 1=手续费率, 2=两者.
+    void query_fee_rate(const char* instrument_id, int8_t query_type);
+
     // === 状态 ===
     TdState state() const noexcept { return state_machine_.state(); }
     bool is_ready() const noexcept { return state() == TdState::Ready; }
@@ -242,10 +247,6 @@ private:
     void req_qry_margin_rate(const char* instrument_id = "");
     /// 发起手续费率查询 (登录收尾阶段四 / 按需查询).
     void req_qry_commission_rate(const char* instrument_id = "");
-    /// 按需查询入口 (阶段2): 单合约费率查询, 入库+广播 (2015/2016).
-    /// 由 td_api 收到 DZ_FRAME_TD_QUERY_FEE_RATE=2116 帧调用.
-    /// @param query_type 0=保证金率, 1=手续费率, 2=两者.
-    void query_fee_rate(const char* instrument_id, int8_t query_type);
     /// 双查询完成 (is_last 或失败降级) 后的统一收尾:
     /// 缓冲重放 -> flush 屏障 -> on_instruments_loaded 转 Ready.
     /// 若查询阶段未结束时 (四查询未齐) 调用 no-op (防御).

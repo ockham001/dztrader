@@ -53,3 +53,38 @@
 - `DzCommissionRate` 尾部可追加 `strike_ratio_by_money` / `strike_ratio_by_volume`（SOPT 期权执行手续费，同构现有 6 项双精度，向后兼容）。
 - `DzMarginRate` 尾部可追加期权保证金模型字段（SOPT `OptionInstrTradeCost`）。
 - 追加原则：仅在对应柜台接入且有数据源时实施，字段追加在尾部、保持 8 字节对齐、同步 SQLite 白名单。
+
+## 7. 按需查询（阶段2）
+
+策略对**单合约**的保证金率/手续费率按需查询，td 网关实时查 CTP 后回填。
+
+### 7.1 请求帧
+
+| 帧 | payload | 方向 | 性质 |
+|----|---------|------|------|
+| `TD_QUERY_FEE_RATE=2116` | `DzFeeRateQueryReq` | 策略 → td 网关 | basic 广播帧（按 payload.account_id 路由） |
+
+`DzFeeRateQueryReq`（`libs/core/include/dztrader/core/core_struct.h`）：
+
+- `account_id[32]`：目标账户；空串 = 本网关全部账户。
+- `instrument_id[88]`：目标合约（平台唯一键，网关段前缀规则见合约契约）。必填。
+- `query_type`：`0`=保证金率，`1`=手续费率，`2`=两者。
+
+策略入口：`dz_query_fee_rate(ctx, account_id, instrument_id, query_type)`（`libs/strategy_api/include/dztrader/api.h`）。
+
+### 7.2 时序（异步回填）
+
+1. 策略 `dz_query_fee_rate` 写入 2116 帧即返回（**不阻塞**）。
+2. td 网关收到后按账户路由到 session，发起 CTP `ReqQryInstrumentMarginRate` / `ReqQryInstrumentCommissionRate`（单合约，带 `BrokerID+InvestorID` 账户级参数）。
+3. 响应逐条：**入库**（margin_rates / commission_rates 表）+ **广播** `TD_MARGIN_RATE(2015)` / `TD_COMMISSION_RATE(2016)`。
+4. 策略经 SHM 帧回调或后续 `dz_db_query_commission/margin` 拿新值。无请求-响应关联。
+
+### 7.3 与阶段1（登录收尾批量查询）的差异
+
+| 维度 | 阶段1（登录收尾） | 阶段2（按需查询） |
+|------|------------------|------------------|
+| 触发 | 登录收尾链（四查询之一） | 策略 `dz_query_fee_rate` |
+| 范围 | 全量账户级（InstrumentID 留空） | 单合约 |
+| 广播 | **不广播**（只入库，防全量洪泛） | **入库+广播** 2015/2016 |
+| 数据源 | CTP 全量回报 | CTP 单合约回报 |
+| 响应过滤 | 跳过 `IR_All`（交易所统一行），取 `IR_Group`/`IR_Single`（账户特异性） | 同左 |

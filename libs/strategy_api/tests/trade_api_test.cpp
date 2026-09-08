@@ -150,6 +150,31 @@ TEST_F(TradeApiTest, QueryAccountStatusNullMeansAll) {
     EXPECT_EQ(req->account_id[0], '\0');
 }
 
+TEST_F(TradeApiTest, QueryFeeRateWritesBasicFrame) {
+    ASSERT_TRUE(dz_query_fee_rate(ctx_, "CTP001", "rb2601", 2));
+    const auto* req =
+        static_cast<const DzFeeRateQueryReq*>(read_next_basic(DZ_FRAME_TD_QUERY_FEE_RATE));
+    ASSERT_NE(req, nullptr);
+    EXPECT_STREQ(req->account_id, "CTP001");
+    EXPECT_STREQ(req->instrument_id, "rb2601");
+    EXPECT_EQ(req->query_type, 2);
+}
+
+TEST_F(TradeApiTest, QueryFeeRateRejectsEmptyInstrument) {
+    ASSERT_FALSE(dz_query_fee_rate(ctx_, "CTP001", "", 0));
+    EXPECT_NE(dz_errcode(), 0);
+}
+
+TEST_F(TradeApiTest, QueryFeeRateMarginOnly) {
+    ASSERT_TRUE(dz_query_fee_rate(ctx_, "CTP001", "IF2401", 0));
+    const auto* req =
+        static_cast<const DzFeeRateQueryReq*>(read_next_basic(DZ_FRAME_TD_QUERY_FEE_RATE));
+    ASSERT_NE(req, nullptr);
+    EXPECT_STREQ(req->account_id, "CTP001");
+    EXPECT_STREQ(req->instrument_id, "IF2401");
+    EXPECT_EQ(req->query_type, 0);
+}
+
 // ── 生命周期边界 ──
 
 TEST_F(TradeApiTest, SecondInitReturnsNullWithAlreadyInitialized) {
