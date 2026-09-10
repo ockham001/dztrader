@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <format>
+#include <unordered_set>
 #include <utility>
 
 #include <magic_enum/magic_enum.hpp>
@@ -15,6 +16,8 @@
 #include <dztrader/date_time/date.h>
 #include <dztrader/platform/frame_codec.h>
 #include <dztrader/struct.h>
+
+#include "td/td_position.h"
 
 namespace dztrader::ctp {
 
@@ -168,6 +171,9 @@ void AccountSession::disconnect() {
     state_machine_.on_disconnect();
     // Task 5 §4.3: 记录断开时刻水位, 供重连时增量装载基准 (seq > 该值的行).
     max_seq_at_disconnect_ = seq_counter_;
+    // 断线持仓基准失效: 重连后重新查询重建; 在途查询响应变陈旧 (代际已失效).
+    position_baseline_ready_ = false;
+    position_query_in_flight_ = false;
     // I1: 清空缓冲, 防止重连后重放陈旧回报
     buffered_orders_.clear();
     buffered_trades_.clear();
@@ -214,6 +220,8 @@ void AccountSession::on_front_disconnected(int reason) {
     position_query_ok_ = false;
     account_query_ok_ = false;
     data_query_ok_ = false;  // 新链重新判定 (失败由重连收尾/补查兜底)
+    position_baseline_ready_ = false;
+    position_query_in_flight_ = false;
     // 清空持仓 map, 重连后主动查询重建 (设计 §6)
     holdings_.clear();
     // 清空合约 -> 交易所映射, 重连后 req_qry_instrument 重新填充 (C2)
@@ -304,8 +312,9 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
     }
     // 先处理数据, 再判 is_last (避免 null instrument + is_last 时状态机卡死)
     if (f.instrument) {
-        // C2: 存储 instrument_id -> exchange_id 映射, 供 place_order 查表获取 exchange_id
-        instrument_exchange_map_[f.instrument->InstrumentID] = f.instrument->ExchangeID;
+        // C2: 存储 instrument_id -> exchange_id/price_tick, 供 place_order 查表与 Task 7 用
+        instrument_exchange_map_[f.instrument->InstrumentID] =
+            InstrumentBrief{f.instrument->ExchangeID, f.instrument->PriceTick};
         // I6: 推 DZ_FRAME_TD_INSTRUMENT SHM 帧, 让策略进程拿到合约信息 (price_tick/乘数/期权字段)
         try {
             DzInstrumentInfo contract = to_dz_instrument(*f.instrument);
@@ -354,8 +363,8 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
         cancel_instruments_load_timer();
         SPDLOG_INFO("td instruments loaded, start login finalize | account={} count={}",
                     account_id_, instrument_exchange_map_.size());
-        // 日切/重连后的持仓为绝对态: 清空旧镜像, 使新日首报不被旧镜像拦截 (spec §4.1 跨日清空).
-        position_mirror_.clear();
+        // 日切/重连后的持仓为绝对态: 解除基准就绪标志, 新登录链查询重建基准.
+        position_baseline_ready_ = false;
         // 终检发现 1 (双保险 b): 二次进入收尾前防御性复位收尾状态机 + ok 标志 —
         // 首次登录已 kDone 时 (断连未清残留的任何路径), 重登查询链从 kQueryPosition
         // 重走, 持仓/资金 is_last 的 phase 门才成立。
@@ -537,7 +546,7 @@ void AccountSession::place_order(const DzOrderReq& req) {
     build_ctx.account_id = user_id_;  // CTP InvestorID
     build_ctx.order_ref = order_ref_;
     build_ctx.request_id = ++request_id_;
-    build_ctx.exchange_id = it->second;
+    build_ctx.exchange_id = it->second.exchange_id;
 
     CThostFtdcInputOrderField input = to_input_order_field(req, build_ctx);
     // BrokerID 单独填 (CTP 要求, to_input_order_field 不填)
@@ -795,69 +804,67 @@ void AccountSession::cancel_connect_timer() {
     }
 }
 
-void AccountSession::req_qry_investor_position() {
-    // Task 6 (spec §4.2 登录收尾): Ready 前发起持仓查询 (登录不在 30μs 热路径).
-    // 终检发现 1: 发起时快照代际, 响应侧校验 (陈旧响应丢弃)
+void AccountSession::req_qry_investor_position(bool login_chain) {
     query_gen_ = generation_;
-    // CTP 流控 1 次/秒, 与资金查询串行间隔发起 (此处持仓完成后再发资金).
-    // 本轮全量组清空: is_last 时整组 PositionRebuild. 流控重试 (-3) 在本请求重发前
-    // 无任何响应回调, 清空安全. 同时复位本轮的 enqueue 幂等标志.
+    position_query_agg_.clear();
     position_query_group_.clear();
     position_rebuild_consumed_ = false;
+    position_query_in_flight_ = true;
     if (api_ == nullptr) {
-        // api 未就绪 (防御): 视为查询失败, 仍推进到资金查询 (串行链不中断).
-        finalizer_.on_position_failed();
-        position_query_ok_ = false;
-        req_qry_trading_account();
+        position_query_in_flight_ = false;
+        if (login_chain) {
+            finalizer_.on_position_failed();
+            position_query_ok_ = false;
+            req_qry_trading_account();
+        }
         return;
     }
     CThostFtdcQryInvestorPositionField qry{};
     int ret = api_->ReqQryInvestorPosition(&qry, ++request_id_);
     if (ret != 0) {
-        if (ret == -3) {
-            // 流控 (-3): 1.5s 后重试 (参考 req_qry_instrument 流控队列模式).
+        position_query_in_flight_ = false;
+        if (ret == -3 && login_chain) {
             SPDLOG_WARN("td qry position flow control, retry in 1.5s | account={}", account_id_);
             uint64_t gen = generation_;
-            timer_queue_.schedule_after(std::chrono::milliseconds(1500),
-                [this, gen]() {
-                    if (gen != generation_) return;
-                    if (finalizer_.phase() == Phase::kQueryPosition) {
-                        req_qry_investor_position();
-                    }
-                });
+            timer_queue_.schedule_after(std::chrono::milliseconds(1500), [this, gen]() {
+                if (gen != generation_) return;
+                if (finalizer_.phase() == Phase::kQueryPosition) {
+                    req_qry_investor_position(true);
+                }
+            });
             return;
         }
-        // 非 -3 错误: 查询失败降级 (不阻塞 Ready), 由定时补查重试 (spec §4.2).
-        SPDLOG_ERROR("td req qry position failed | account={} ret={}", account_id_, ret);
-        finalizer_.on_position_failed();
-        position_query_ok_ = false;
-        req_qry_trading_account();
+        SPDLOG_ERROR("td req qry position failed | account={} ret={} login_chain={}",
+                     account_id_, ret, login_chain);
+        if (login_chain) {
+            finalizer_.on_position_failed();
+            position_query_ok_ = false;
+            req_qry_trading_account();
+        }
         return;
     }
-    // 超时兜底: 查询长期不回 is_last 时降级 (不卡死).
-    // - 登录 (LoadingInstruments) 阶段: 5min, 降级收尾转 Ready (spec §4.2);
-    // - 补查 (Ready) 阶段 (终检发现 5): 90s 独立超时, 到期 on_position_failed
-    //   降级回 kDone (下一轮 60s resync 重试) — 否则 CTP 长期不应答时 phase 停在
-    //   查询阶段, 60s resync 被 phase!=kDone 门挡, 补查静默终止。
+    // 超时兜底 (保留现有语义): 登录 5min / Ready 90s; 任意超时都清在途标志,
+    // 周期查询 (phase=kDone) 只清标志, 登录/补查链按原行为降级.
     const auto timeout = is_ready() ? std::chrono::seconds(90) : std::chrono::minutes(5);
     uint64_t gen = generation_;
-    timer_queue_.schedule_after(timeout,
-        [this, gen]() {
-            if (gen != generation_) return;
-            if (state_machine_.state() == TdState::LoadingInstruments &&
-                finalizer_.phase() == Phase::kQueryPosition) {
-                SPDLOG_ERROR("td qry position timeout, degrade | account={}", account_id_);
-                finalizer_.on_position_failed();
-                position_query_ok_ = false;
-                req_qry_trading_account();
-            } else if (is_ready() && finalizer_.phase() == Phase::kQueryPosition) {
-                SPDLOG_ERROR("td resync qry position timeout, degrade to done | account={}",
-                             account_id_);
-                finalizer_.on_position_failed();
-                position_query_ok_ = false;
-                req_qry_trading_account();
-            }
-        });
+    timer_queue_.schedule_after(timeout, [this, gen, login_chain]() {
+        if (gen != generation_) return;
+        if (!position_query_in_flight_) return;  // 响应已到, 超时作废
+        position_query_in_flight_ = false;
+        if (state_machine_.state() == TdState::LoadingInstruments &&
+            finalizer_.phase() == Phase::kQueryPosition) {
+            SPDLOG_ERROR("td qry position timeout, degrade | account={}", account_id_);
+            finalizer_.on_position_failed();
+            position_query_ok_ = false;
+            req_qry_trading_account();
+        } else if (login_chain && is_ready() && finalizer_.phase() == Phase::kQueryPosition) {
+            SPDLOG_ERROR("td resync qry position timeout, degrade to done | account={}",
+                         account_id_);
+            finalizer_.on_position_failed();
+            position_query_ok_ = false;
+            req_qry_trading_account();
+        }
+    });
 }
 
 void AccountSession::req_qry_trading_account() {
@@ -1141,7 +1148,7 @@ void AccountSession::reject_order(const DzOrderReq& req, const std::string& reas
         // exchange_id 从映射表查 (place_order 已校验存在, 这里兜底防异常)
         auto it = instrument_exchange_map_.find(req.instrument_id);
         if (it != instrument_exchange_map_.end()) {
-            copy_string(rpt.exchange_id, it->second.c_str(), true);
+            copy_string(rpt.exchange_id, it->second.exchange_id.c_str(), true);
         }
         copy_string(rpt.remark, reason.c_str(), true);
 
@@ -1201,6 +1208,118 @@ void AccountSession::persist_order(const OrderRecord& r) {
 
 void AccountSession::persist_trade(const TradeRecord& r) {
     persist_writer_.enqueue(PersistTask{PersistTask::Kind::Trade, r});
+}
+
+PositionHolding* AccountSession::ensure_holding(const std::string& instrument_id,
+                                                const std::string& exchange_hint) {
+    auto it = holdings_.find(instrument_id);
+    if (it != holdings_.end()) return &it->second;
+    std::string exchange_id = exchange_hint;
+    if (exchange_id.empty()) {
+        auto ex = instrument_exchange_map_.find(instrument_id);
+        if (ex != instrument_exchange_map_.end()) exchange_id = ex->second.exchange_id;
+    }
+    auto [ins, ok] = holdings_.emplace(instrument_id, PositionHolding(instrument_id, exchange_id));
+    return &ins->second;
+}
+
+void AccountSession::fill_position_info(DzPositionInfo& pos, const PositionHolding& h,
+                                        DzDirection dir) {
+    const PositionSide& s = h.side(dir);
+    copy_string(pos.instrument_id, h.instrument_id().c_str(), true);
+    copy_string(pos.exchange_id, h.exchange_id().c_str(), true);
+    copy_string(pos.account_id, account_id_.c_str(), true);
+    pos.direction = dir;
+    pos.volume = s.volume();
+    pos.today_volume = s.today;
+    pos.yd_volume = s.yd;
+    pos.frozen_volume = s.frozen();
+    pos.price = s.price;
+    pos.date = trading_day_;
+    pos.seq = s.seq;
+}
+
+void AccountSession::push_position(PositionHolding& h, DzDirection dir, bool persist) {
+    uint64_t seq = ++seq_counter_;
+    h.set_seq(dir, seq);
+    DzPositionInfo pos{};
+    fill_position_info(pos, h, dir);
+    platform::write_struct(event_writer_, DZ_FRAME_POSITION_INFO, pos);
+    if (persist) {
+        persist_writer_.enqueue(PersistTask{.kind = PersistTask::Kind::Position,
+                                            .data = std::vector<DzPositionInfo>{pos},
+                                            .account_id = account_id_,
+                                            .trading_day = trading_day_});
+    }
+    SPDLOG_DEBUG("td position push | account={} instrument={} dir={} volume={} frozen={} seq={}",
+                 account_id_, h.instrument_id(), static_cast<int>(dir), pos.volume,
+                 pos.frozen_volume, seq);
+}
+
+void AccountSession::apply_position_query() {
+    bool any_change = false;
+    bool any_gone = false;
+    std::unordered_set<PositionQueryKey, PositionQueryKeyHash> group;
+    for (const auto& [key, agg] : position_query_agg_) {
+        PositionHolding* h = ensure_holding(key.instrument_id, agg.exchange_id);
+        DzDirection dir = static_cast<DzDirection>(key.direction);
+        double price = agg.volume > 0 ? agg.cost / static_cast<double>(agg.volume) : 0.0;
+        auto ch = h->apply_query_side(dir, agg.volume, agg.yd, price);
+        if (ch.long_changed) { push_position(*h, DZ_DIRECTION_LONG); any_change = true; }
+        if (ch.short_changed) { push_position(*h, DZ_DIRECTION_SHORT); any_change = true; }
+        // 冻结对账: CTP 冻结总量与本地推导不符仅 WARN (不覆盖, CTP 无今昨拆分)
+        int64_t local_frozen = h->side(dir).frozen();
+        if (agg.ctp_frozen != local_frozen) {
+            SPDLOG_WARN("td position frozen mismatch | account={} instrument={} ctp={} local={}",
+                        account_id_, key.instrument_id, agg.ctp_frozen, local_frozen);
+        }
+        group.insert(key);
+    }
+    for (auto& [inst, h] : holdings_) {
+        for (DzDirection dir : {DZ_DIRECTION_LONG, DZ_DIRECTION_SHORT}) {
+            PositionQueryKey key{inst, static_cast<int8_t>(dir)};
+            if (group.contains(key)) continue;
+            auto ch = h.apply_query_side(dir, 0, 0, 0.0);
+            if ((dir == DZ_DIRECTION_LONG && ch.long_changed) ||
+                (dir == DZ_DIRECTION_SHORT && ch.short_changed)) {
+                push_position(h, dir, /*persist=*/false);  // 零帧只推不落库, 行由重灌 DELETE
+                any_gone = true;
+            }
+        }
+    }
+    // 活动平仓挂单全量种入 (含外部单; rebuild 内部按合约过滤), 先于重灌组构建
+    if (report_filter_) {
+        auto orders = report_filter_->active_orders(trading_day_);
+        std::vector<ActiveOrderUpdate> updates;
+        updates.reserve(orders.size());
+        for (const auto& o : orders) {
+            updates.push_back(ActiveOrderUpdate{std::string(o.base.instrument_id),
+                                                std::string(o.order_ref), o.base.direction,
+                                                o.base.position_effect, o.base.status,
+                                                o.base.volume, o.base.volume_traded});
+        }
+        for (auto& [inst, h] : holdings_) {
+            auto ch = h.rebuild_active_orders(updates);
+            if (ch.long_changed) push_position(h, DZ_DIRECTION_LONG);
+            if (ch.short_changed) push_position(h, DZ_DIRECTION_SHORT);
+        }
+    }
+    if (!position_baseline_ready_ || any_change || any_gone) {
+        position_query_group_.clear();
+        for (const auto& [key, agg] : position_query_agg_) {
+            auto it = holdings_.find(key.instrument_id);
+            if (it == holdings_.end()) continue;
+            DzPositionInfo pos{};
+            fill_position_info(pos, it->second, static_cast<DzDirection>(key.direction));
+            position_query_group_.push_back(pos);
+        }
+        persist_writer_.enqueue(PersistTask{.kind = PersistTask::Kind::PositionRebuild,
+                                            .data = std::move(position_query_group_),
+                                            .account_id = account_id_,
+                                            .trading_day = trading_day_});
+        position_query_group_.clear();
+    }
+    position_baseline_ready_ = true;
 }
 
 // ============================================================================
@@ -1310,84 +1429,38 @@ void AccountSession::on_rsp_qry_trading_account(const OnRspQryTradingAccountFiel
 }
 
 // === on_rsp_qry_investor_position: 持仓查询响应 ===
-// Task 5 (spec §4.2 查询链路响应侧): 绝对态转换 + diff 推帧 + 全量重灌落库.
+// Task 5 (spec §4.2 查询链路响应侧): 逐行累加 (同 key 多行合并), is_last 收口应用 —
+// 聚合模型 diff 推帧 / 全平零帧 / 活动委托重灌 / PositionRebuild 全量重灌落库.
 // Task 6: is_last 完成持仓查询 -> 发起资金查询 (CTP 流控串行).
-// 发现 2 (评审 Important): 持仓查询响应为全量语义 (spec §3.2) — 用 PositionRebuild 单事务
-// 重灌 (清该账户全部持仓行 + upsert 本组行), 替代逐行 diff upsert. 逐行方式下 CTP 全平
-// (响应不再含该合约) 时无新帧触发, 镜像与 DB 旧持仓永驻 → 盘中平仓的幽灵持仓留到次日.
 void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPositionField& f) {
-    // 终检发现 1: 陈旧响应防护 — 断连重连后, 旧会话迟到的持仓查询响应 (含行数据与
-    // is_last) 一律丢弃: 旧行会污染新链 position_query_group_ (重灌清库错行),
-    // 旧 is_last 会重复触发资金查询/收尾。"resync 在途断连重连"交错同此防护:
-    // resync 迟到 is_last 的 phase 门判断自然失效。
-    if (query_gen_ != generation_) {
-        return;
-    }
+    if (query_gen_ != generation_) return;
     try {
-        if (f.investor_position) {
-            DzPositionInfo pos = to_dz_position(*f.investor_position, account_id_, trading_day_);
-            // 绝对态: 与持仓镜像比对, 有差异才转发 2002 帧 (spec §4.1); 镜像 key=(acct,inst,dir).
-            // 镜像 diff 只控制 SHM 帧推送, 不控制 DB — DB 由 is_last 的全量重灌决定.
-            const bool changed = position_mirror_.update_if_changed(pos);
-            if (changed) {
-                pos.seq = ++seq_counter_;
-                // 镜像记录最后一次转发的 seq (供重灌组内未变化行沿用 DB 既有 seq).
-                position_mirror_.update_seq(account_id_, pos.instrument_id, pos.direction, pos.seq);
-                platform::write_struct(event_writer_, DZ_FRAME_POSITION_INFO, pos);
-                SPDLOG_INFO("td qry position | account={} instrument={} pos={} dir={} seq={}",
-                            account_id_, f.investor_position->InstrumentID,
-                            f.investor_position->Position, f.investor_position->PosiDirection,
-                            pos.seq);
-            } else {
-                // 与镜像相同 (重放/补查重复): 不推帧不分配新 seq. 但全量重灌仍需该行 —
-                // 沿用镜像 (DB) 既有 seq, 防止重灌把已同步行的 seq 冲成 0 (破坏 W 单调).
-                pos.seq = position_mirror_.seq_of(account_id_, pos.instrument_id, pos.direction);
-            }
-            // 全量语义: 每行 (含未变化行) 都入重灌组, is_last 时整体单事务重灌.
-            position_query_group_.push_back(pos);
+        const bool has_row = f.investor_position &&
+                             (f.investor_position->Position > 0 ||
+                              f.investor_position->YdPosition > 0);
+        if (has_row) {
+            const auto& p = *f.investor_position;
+            DzPositionInfo pos = to_dz_position(p, account_id_, trading_day_);
+            PositionQueryKey key{std::string(pos.instrument_id),
+                                 static_cast<int8_t>(pos.direction)};
+            PositionQueryAgg& agg = position_query_agg_[key];
+            agg.volume += p.Position;
+            agg.yd += p.YdPosition;
+            agg.cost += p.PositionCost;
+            agg.ctp_frozen += static_cast<int64_t>(p.LongFrozen) + p.ShortFrozen;
+            if (agg.exchange_id.empty()) agg.exchange_id = p.ExchangeID;
         } else if (f.rsp_info && f.rsp_info->ErrorID != 0) {
             SPDLOG_ERROR("td qry position error | account={} error_id={} error=\"{}\"",
                          account_id_, f.rsp_info->ErrorID,
                          dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg));
         }
         if (f.is_last) {
+            position_query_in_flight_ = false;
             position_query_ok_ = !(f.rsp_info && f.rsp_info->ErrorID != 0);
             if (position_query_ok_ && !position_rebuild_consumed_) {
-                // spec §3.2 全量语义: 单事务重灌 (清该账户全部持仓行 + upsert 本组行).
-                // 空组 = 账户全平, 同样需要重灌 (清空 DB 幽灵持仓).
-                // 幂等: 迟到的重复 is_last (超时/失败路径已推进 finalizer 后的补达) 不得
-                // 用已消费的空组再次重灌清空 DB.
                 position_rebuild_consumed_ = true;
-                // 终检发现 A【Critical】全平幽灵持仓: 绝对态"消失"无帧表达。
-                // 查询响应不含的合约 = 已全平/已过期, 但 td 侧不推 2002 帧 → 策略
-                // on_position_info 永不收清零、dzweb 镜像永不清零。在 move 组之前
-                // 计算镜像有而本组无的 key 差集, 对每个差集 key 发 volume=0 清零帧
-                // (绝对态语义: 新状态变更, 消费端按键覆盖自然清零), 同 seq 单调。
-                for (DzPositionInfo& zero : position_mirror_.keys_not_in_group(position_query_group_)) {
-                    zero.volume = 0;
-                    zero.frozen_volume = 0;
-                    zero.today_volume = 0;
-                    zero.yd_volume = 0;
-                    zero.seq = ++seq_counter_;
-                    // 镜像同步: update_if_changed 与 0 值有差异 (旧值非 0) → 自然覆盖;
-                    // update_seq 记录新 seq (下一轮查询同 key 未变化时沿用, 防止回灌冲 0)。
-                    if (position_mirror_.update_if_changed(zero)) {
-                        position_mirror_.update_seq(account_id_, zero.instrument_id,
-                                                    zero.direction, zero.seq);
-                    }
-                    platform::write_struct(event_writer_, DZ_FRAME_POSITION_INFO, zero);
-                    SPDLOG_INFO("td qry position zero | account={} instrument={} dir={} seq={}",
-                                account_id_, zero.instrument_id, zero.direction, zero.seq);
-                }
-                persist_writer_.enqueue(PersistTask{
-                    .kind = PersistTask::Kind::PositionRebuild,
-                    .data = std::move(position_query_group_),
-                    .account_id = account_id_,
-                    .trading_day = trading_day_});
+                apply_position_query();
             }
-            // 持仓查询完成 -> 发起资金查询 (CTP 流控 1 次/秒, 串行).
-            // 幂等防御: 若超时/失败路径已把 finalizer 推进到 kQueryAccount
-            // (降级), 迟到的 is_last 仅更新 ok 标志, 不重复发资金查询.
             if (finalizer_.phase() == Phase::kQueryPosition) {
                 finalizer_.on_position_done();
                 req_qry_trading_account();

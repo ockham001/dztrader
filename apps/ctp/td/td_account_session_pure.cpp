@@ -3,8 +3,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <unordered_set>
-#include <vector>
 
 namespace dztrader::ctp {
 
@@ -116,65 +114,6 @@ int64_t parse_max_order_ref(const char* max_order_ref) noexcept {
     } catch (...) {
         return 0;
     }
-}
-
-// ============================================================================
-// PositionMirror: 持仓绝对态镜像 (2002 写端 diff)
-// ============================================================================
-
-bool PositionMirror::same_position(const DzPositionInfo& a, const DzPositionInfo& b) noexcept {
-    // 业务字段集对比 (seq/date 不参与: 镜像内日期可能落后, seq 由调用方分配)
-    return a.volume == b.volume && a.frozen_volume == b.frozen_volume &&
-           a.price == b.price && a.yd_volume == b.yd_volume &&
-           a.today_volume == b.today_volume;
-}
-
-bool PositionMirror::update_if_changed(const DzPositionInfo& pos) {
-    Key key{pos.account_id, pos.instrument_id, pos.direction};
-    auto it = positions_.find(key);
-    if (it == positions_.end()) {
-        positions_.emplace(std::move(key), pos);
-        return true;  // 首次遇到该 key = 变化
-    }
-    if (same_position(it->second, pos)) {
-        return false;  // 与镜像相同, 不转发
-    }
-    it->second = pos;
-    return true;
-}
-
-uint64_t PositionMirror::seq_of(const std::string& account_id,
-                                const std::string& instrument_id,
-                                int8_t direction) const noexcept {
-    auto it = positions_.find(Key{account_id, instrument_id, direction});
-    return it == positions_.end() ? 0 : it->second.seq;
-}
-
-void PositionMirror::update_seq(const std::string& account_id,
-                                const std::string& instrument_id,
-                                int8_t direction,
-                                uint64_t seq) noexcept {
-    auto it = positions_.find(Key{account_id, instrument_id, direction});
-    if (it != positions_.end()) {
-        it->second.seq = seq;
-    }
-}
-
-std::vector<DzPositionInfo> PositionMirror::keys_not_in_group(
-    const std::vector<DzPositionInfo>& group) const {
-    std::unordered_set<Key, KeyHash> in_group;
-    for (const auto& p : group) {
-        in_group.emplace(p.account_id, p.instrument_id, p.direction);
-    }
-    std::vector<DzPositionInfo> missing;
-    for (const auto& [key, stored] : positions_) {
-        if (in_group.find(key) == in_group.end()) {
-            // 返回镜像中该 key 的最后一次行: 调用方以它为基础置 volume=0
-            // (同 account/instrument/direction 即 key 覆盖语义, 绝对态清零)。
-            missing.push_back(stored);
-        }
-    }
-    return missing;
 }
 
 }  // namespace dztrader::ctp

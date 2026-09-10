@@ -45,6 +45,7 @@
 #include "td/td_login_finalize.h"
 #include "td/td_offset_converter.h"
 #include "td/td_persist_writer.h"
+#include "td/td_position.h"
 #include "td/td_prescan.h"
 #include "td/td_report_filter.h"
 #include "td/td_risk_gate.h"
@@ -224,6 +225,20 @@ private:
     /// 持久化 TradeRecord.
     void persist_trade(const TradeRecord& r);
 
+    /// 确保 holdings_ 中存在该合约的 PositionHolding (缺则创建).
+    /// exchange_hint 为空时回退查 instrument_exchange_map_.
+    PositionHolding* ensure_holding(const std::string& instrument_id,
+                                    const std::string& exchange_hint = {});
+
+    /// 用 PositionHolding 单方向状态填充 DzPositionInfo (account/trading_day/seq).
+    void fill_position_info(DzPositionInfo& pos, const PositionHolding& h, DzDirection dir);
+
+    /// 推 DZ_FRAME_POSITION_INFO (2002): 分配 seq + 更新方向 seq + 可选持久化单行 upsert.
+    void push_position(PositionHolding& h, DzDirection dir, bool persist = true);
+
+    /// is_last 收口: 应用本轮查询累加器 (diff 推帧/零帧/活动委托重灌/PositionRebuild).
+    void apply_position_query();
+
     /// 从 boot 初始化 seq 计数器 + 重放过滤器基准 (构造时调用).
     void init_from_boot(const SessionBootData& boot);
 
@@ -237,7 +252,8 @@ private:
     void replay_buffered_reports();
 
     /// 发起持仓查询 (登录收尾阶段一, CTP 流控串行).
-    void req_qry_investor_position();
+    /// @param login_chain 登录/补查链发起 (失败降级收尾); false=周期重查 (失败仅清在途).
+    void req_qry_investor_position(bool login_chain = true);
     /// 发起资金查询 (登录收尾阶段二).
     void req_qry_trading_account();
     /// 发起保证金率查询 (登录收尾阶段三 / 按需查询).
@@ -278,8 +294,31 @@ private:
     uint64_t seq_counter_ = 0;
     /// 重放过滤器基准 (登录/重连时 CTP 私有流去重, spec §4.1).
     std::unique_ptr<ReportFilter> report_filter_;
-    /// 持仓绝对态镜像 (2002 写端 diff, spec §4.1).
-    PositionMirror position_mirror_;
+    /// 持仓查询累加器 (同一 (instrument, direction) 多行合并; 仅主线程).
+    struct PositionQueryKey {
+        std::string instrument_id;
+        int8_t direction = 0;
+        bool operator==(const PositionQueryKey&) const = default;
+    };
+    struct PositionQueryKeyHash {
+        size_t operator()(const PositionQueryKey& k) const noexcept {
+            size_t h = std::hash<std::string>{}(k.instrument_id);
+            h ^= static_cast<size_t>(static_cast<uint8_t>(k.direction)) + 0x9e3779b9u + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+    struct PositionQueryAgg {
+        std::string exchange_id;   // 查询行自带 (holding 交易所回退来源)
+        int64_t volume = 0;
+        int64_t yd = 0;
+        double cost = 0.0;
+        int64_t ctp_frozen = 0;    // LongFrozen+ShortFrozen, 仅冻结对账 WARN
+    };
+    std::unordered_map<PositionQueryKey, PositionQueryAgg, PositionQueryKeyHash> position_query_agg_;
+    /// 基准就绪: 首个成功查询应用后置位; 断线清空. 周期查询失败不解除.
+    bool position_baseline_ready_ = false;
+    /// 持仓查询在途 (防周期重查与登录链重叠).
+    bool position_query_in_flight_ = false;
     /// 本轮持仓查询全量组 (登录/补查 is_last 时 PositionRebuild 重灌用, spec §3.2).
     /// 每次 req_qry_investor_position 开始时清空, 逐行累加, is_last 时整体 enqueue.
     std::vector<DzPositionInfo> position_query_group_;
@@ -310,10 +349,14 @@ private:
     /// 持仓 map: instrument_id -> PositionHolding (设计 §6)
     std::unordered_map<std::string, PositionHolding> holdings_;
 
-    /// 合约 -> 交易所映射 (设计 §7.2, 由 on_rsp_qry_instrument 填充).
-    /// place_order 时查表获取 exchange_id, 未命中则拒单.
+    /// 合约 -> 交易所/最小变动价位 (设计 §7.2, 由 on_rsp_qry_instrument 填充).
+    /// place_order 时查表获取 exchange_id, 未命中则拒单; price_tick 供 Task 7 用.
     /// on_front_disconnected 清空 (重连后重新查询).
-    std::unordered_map<std::string, std::string> instrument_exchange_map_;
+    struct InstrumentBrief {
+        std::string exchange_id;
+        double price_tick = 0.0;
+    };
+    std::unordered_map<std::string, InstrumentBrief> instrument_exchange_map_;
 
     /// 缓冲回报 (LoadingInstruments 期间, 设计 §5.3)
     std::deque<OnRtnOrderField> buffered_orders_;
