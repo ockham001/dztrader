@@ -115,6 +115,7 @@ add_executable(dztd_ctp
     td/td_persist_writer.cpp
     td/td_schema.cpp
     td/td_offset_converter.cpp
+    td/td_position.cpp
     td/td_ctp_mapping.cpp
     td/td_risk_gate.cpp
     td/td_account_session_pure.cpp
@@ -249,6 +250,10 @@ foreach(testfile ${TD_CTP_TESTS})
     # td_offset_converter_test 需要 td_offset_converter.cpp (纯逻辑, 不需要 dzdb)
     if(testname STREQUAL "td_offset_converter_test")
         target_sources(dztd_ctp_${testname} PRIVATE td/td_offset_converter.cpp)
+    endif()
+    # td_position_test / td_offset_converter_test 需要 td_position.cpp (纯逻辑, 不需要 dzdb)
+    if(testname STREQUAL "td_position_test" OR testname STREQUAL "td_offset_converter_test")
+        target_sources(dztd_ctp_${testname} PRIVATE td/td_position.cpp)
     endif()
     # td_ctp_mapping_test 需要 td_ctp_mapping.cpp + td_schema.cpp (OrderRecord 组合 DzOrderReport)
     # 仅依赖 CTP 头 struct 定义, 不链接 .lib; 但 td_schema.h 引用 dztrader/db/migration.h 需链 dzdb

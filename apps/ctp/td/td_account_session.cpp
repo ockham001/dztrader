@@ -613,12 +613,9 @@ bool AccountSession::cancel_order(DzOrderId order_id) {
 
 void AccountSession::set_trading_day(int32_t trading_day) {
     trading_day_ = trading_day;
-    for (auto& [_, holding] : holdings_) {
-        holding.set_trading_day(trading_day);
+    for (auto& [inst, h] : holdings_) {
+        (void)h.on_day_switch();
     }
-    // Task 6 (spec §4.1 跨日清空): 持仓为绝对态, 交易日切换后旧镜像不得拦截
-    // 新日首报 (镜像 key 不含日期, 若不清空, 新日同字段首报会被吞).
-    position_mirror_.clear();
     SPDLOG_INFO("td trading day updated | account={} trading_day={}", account_id_, trading_day);
 }
 
