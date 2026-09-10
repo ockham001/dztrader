@@ -450,6 +450,20 @@ void AccountSession::on_rtn_order(const OnRtnOrderField& f) {
         write_order_rpt(rpt.base);
         persist_order(rpt);
 
+        // 活动平仓挂单 → 冻结重算 (kReplay 阶段同样应用; 基准未就绪时跳过)
+        if (position_baseline_ready_) {
+            if (auto* h = ensure_holding(rpt.base.instrument_id, std::string(rpt.base.exchange_id));
+                h != nullptr) {
+                ActiveOrderUpdate upd{std::string(rpt.base.instrument_id),
+                                      std::string(rpt.order_ref), rpt.base.direction,
+                                      rpt.base.position_effect, rpt.base.status,
+                                      rpt.base.volume, rpt.base.volume_traded};
+                auto ch = h->apply_order(upd);
+                if (ch.long_changed) push_position(*h, DZ_DIRECTION_LONG);
+                if (ch.short_changed) push_position(*h, DZ_DIRECTION_SHORT);
+            }
+        }
+
         SPDLOG_DEBUG("td rtn order | account={} order_id={} order_ref={} status={} traded={} seq={}",
                      account_id_, rpt.base.order_id, f.order.OrderRef,
                      magic_enum::enum_name(rpt.base.status), rpt.base.volume_traded,
@@ -494,6 +508,16 @@ void AccountSession::on_rtn_trade(const OnRtnTradeField& f) {
         report_filter_->accept_trade(rpt);
         write_trade_rpt(rpt.base);
         persist_trade(rpt);
+
+        // 盘中持仓增量 (基准就绪且非缓冲重放; 重放成交已含在查询快照中)
+        if (position_baseline_ready_ && !replaying_) {
+            if (auto* h = ensure_holding(rpt.base.instrument_id, std::string(rpt.base.exchange_id));
+                h != nullptr) {
+                auto ch = h->apply_trade(rpt.base);
+                if (ch.long_changed) push_position(*h, DZ_DIRECTION_LONG);
+                if (ch.short_changed) push_position(*h, DZ_DIRECTION_SHORT);
+            }
+        }
 
         SPDLOG_INFO("td rtn trade | account={} instrument={} trade_id={} volume={} price={} seq={}",
                     account_id_, f.trade.InstrumentID, f.trade.TradeID, f.trade.Volume,
@@ -623,7 +647,9 @@ bool AccountSession::cancel_order(DzOrderId order_id) {
 void AccountSession::set_trading_day(int32_t trading_day) {
     trading_day_ = trading_day;
     for (auto& [inst, h] : holdings_) {
-        (void)h.on_day_switch();
+        auto ch = h.on_day_switch();
+        if (ch.long_changed) push_position(h, DZ_DIRECTION_LONG);
+        if (ch.short_changed) push_position(h, DZ_DIRECTION_SHORT);
     }
     SPDLOG_INFO("td trading day updated | account={} trading_day={}", account_id_, trading_day);
 }
