@@ -90,7 +90,7 @@
 **白名单（返回给策略用户）**：
 
 - `ORDER_REPORT`(2000)/`TRADE_REPORT`(2001)：按 payload `strategy_id` 定向——仅 `strategy_id` == 本策略裸名的帧放行；`strategy_id` 为空（外部单/手工单，非任何策略所下）与其他策略的回报一律拦截丢弃（td 网关按下单 `DzOrderReq.strategy_id` 回填，见契约 td-order）
-- `POSITION_INFO`(2002)/`TRADING_ACCOUNT`(2003)：不按策略过滤，全量透传；引擎分发给策略 `on_position_info`/`on_trading_account` 回调（TD 网关查询链路已落地：登录完成协议在 Ready 前发起持仓/资金查询，响应经 SDK ingest seq 过滤后推送，见下"SDK ingest 过滤职责"）
+- `POSITION_INFO`(2002)/`TRADING_ACCOUNT`(2003)：不按策略过滤，全量透传；引擎分发给策略 `on_position_info`/`on_trading_account` 回调（TD 网关查询链路已落地：登录完成协议在 Ready 前发起持仓/资金查询，响应经 SDK ingest seq 过滤后推送，见下"SDK ingest 过滤职责"）；盘中成交/活动平仓挂单变化触发的增量 2002 同样经 ingest seq 过滤推送（绝对态）
 - `ACCOUNT_STATUS`(2018)：同上不按策略过滤，全量透传（payload 无 `strategy_id`，账户级广播帧）；SDK 引擎分发 `on_account_status` 回调（帧语义见《帧契约：账户登录状态》）
 - 其余 TD 回报帧 2005–2017（`TD_INSTRUMENT` 等）：暂不按策略过滤，全量放行，引擎静默忽略
 - `UI_INPUT`（3001，定向本策略）：SDK 按 `instance_id` == 裸策略名过滤

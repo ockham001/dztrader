@@ -90,5 +90,5 @@ struct 为 POD 零初始化，未显式赋值字段读到 0——哨兵体系与
 
 以下为 v2 已定义、尚未进入帧协议的类型，本契约预留其语义位：
 
-- `DZ_POSITION_EFFECT_AUTO`（`(DzPositionEffect)0`，`libs/strategy_api/include/dztrader/data_type.h`）：自动拆分平仓方向（零初始化即 AUTO），**已定义未实现**，拆分优先级序列由账户级配置决定；实现落地前网关不得收到 AUTO 语义的委托。
+- `DZ_POSITION_EFFECT_AUTO`（`(DzPositionEffect)0`，`libs/strategy_api/include/dztrader/data_type.h`）：自动拆分平仓方向（零初始化即 AUTO），**已定义未实现**，拆分优先级序列由账户级配置决定；未实现期间网关收到 AUTO 语义委托显式拒绝（fail-closed），策略需显式传 OPEN/CLOSE。
 - `DzInstrumentLeg`（组合合约腿，`product == DZ_PRODUCT_SPREAD` 时每腿一行）、`DzInstrumentExt`（合约扩展属性 K-V，场所特有参考信息合法出口；禁止承载交易决策必需字段）、`DzInstrumentTickTier`（阶梯最小变动价位，JPX 类场所）：**已定义未发布**——无对应帧号，经后续帧扩展引入；引入前 `DzInstrumentInfo` 主表为合约信息唯一载体。
