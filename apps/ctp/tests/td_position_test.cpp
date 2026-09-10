@@ -104,6 +104,26 @@ TEST(PositionHoldingTradeTest, ShfeGenericCloseHitsYesterday) {
     EXPECT_EQ(h.long_yesterday(), 2);
 }
 
+TEST(PositionHoldingTradeTest, TradeClampsFrozenUntilOrderUpdate) {
+    PositionHolding h{"IF2506", "CFFEX"};
+    h.apply_query_side(DZ_DIRECTION_LONG, 5, 0, 3900.0);
+    h.apply_order(make_close("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 5));
+    EXPECT_EQ(h.long_frozen(), 5);
+    h.apply_trade(make_trade(DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 2, 3950.0));
+    EXPECT_EQ(h.long_today(), 3);
+    EXPECT_LE(h.long_frozen(), 3);           // 成交先到也要夹取
+    EXPECT_GE(h.long_available_today(), 0);
+}
+
+TEST(PositionHoldingTradeTest, ShfeGenericCloseBeyondYdClamps) {
+    PositionHolding h{"rb2510", "SHFE"};
+    h.apply_query_side(DZ_DIRECTION_LONG, 5, 3, 3900.0);  // today=2, yd=3
+    h.apply_trade(make_trade(DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 5, 3950.0));
+    EXPECT_EQ(h.long_today(), 2);   // SHFE generic 只平昨, 不溢出到今
+    EXPECT_EQ(h.long_yesterday(), 0);
+    EXPECT_EQ(h.long_today() + h.long_yesterday(), 2);
+}
+
 TEST(PositionHoldingTradeTest, NegativeClampedAndPriceReset) {
     PositionHolding h{"IF2506", "CFFEX"};
     h.apply_query_side(DZ_DIRECTION_LONG, 1, 0, 3900.0);

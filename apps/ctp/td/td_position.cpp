@@ -120,6 +120,7 @@ SideChange PositionHolding::apply_trade(const DzTradeReport& trade) {
     } else {
         return {};
     }
+    recompute_frozen();  // 平仓成交先于委托回报到达时立即夹取, 防止 frozen>volume
     return {!same_side(lb, long_), !same_side(sb, short_)};
 }
 
