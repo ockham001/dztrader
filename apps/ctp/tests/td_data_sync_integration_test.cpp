@@ -466,5 +466,56 @@ TEST_F(TdDataSyncIntegrationTest, ReplayStormSkipsLeaveWatermarkUnchanged) {
     EXPECT_EQ(query_max_seq(ro, "acc1"), w_before);
 }
 
+// ============================================================================
+// 持仓增量落库 (spec §3.2)
+// Position 单行 upsert → PositionRebuild 重灌 (未变化行沿用原 seq + 新行)
+// → 空组重灌 = 清空 (全平幽灵持仓清除)
+// ============================================================================
+TEST_F(TdDataSyncIntegrationTest, PositionUpsertThenRebuildThenClear) {
+    auto make_pos = [](const char* inst, uint64_t seq) {
+        DzPositionInfo p{};
+        std::strcpy(p.account_id, "acc1");
+        std::strcpy(p.instrument_id, inst);
+        std::strcpy(p.exchange_id, "CFFEX");
+        p.direction = DZ_DIRECTION_LONG;
+        p.volume = 2;
+        p.today_volume = 1;
+        p.yd_volume = 1;
+        p.price = 3900.0;
+        p.date = 20260910;
+        p.seq = seq;
+        return p;
+    };
+    PersistWriter w(db_path_);
+    w.open();
+    w.start_writer();
+    // 1) 单行增量 upsert
+    w.enqueue(PersistTask{.kind = PersistTask::Kind::Position,
+                          .data = std::vector<DzPositionInfo>{make_pos("IF2506", 5)},
+                          .account_id = "acc1",
+                          .trading_day = 20260910});
+    auto token = w.enqueue_flush_signal();
+    ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+    EXPECT_EQ(scalar_int("SELECT seq FROM positions WHERE account_id='acc1' AND instrument_id='IF2506'"), 5);
+    // 2) 重灌: 未变化行沿用 seq 5 + 新行 seq 6
+    w.enqueue(PersistTask{.kind = PersistTask::Kind::PositionRebuild,
+                          .data = std::vector<DzPositionInfo>{make_pos("IF2506", 5), make_pos("rb2510", 6)},
+                          .account_id = "acc1",
+                          .trading_day = 20260910});
+    token = w.enqueue_flush_signal();
+    ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 2);
+    EXPECT_EQ(scalar_int("SELECT seq FROM positions WHERE account_id='acc1' AND instrument_id='rb2510'"), 6);
+    // 3) 空组重灌 = 清空 (全平幽灵持仓清除)
+    w.enqueue(PersistTask{.kind = PersistTask::Kind::PositionRebuild,
+                          .data = std::vector<DzPositionInfo>{},
+                          .account_id = "acc1",
+                          .trading_day = 20260910});
+    token = w.enqueue_flush_signal();
+    ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 0);
+    w.stop();
+}
+
 }  // namespace
 }  // namespace dztrader::ctp
