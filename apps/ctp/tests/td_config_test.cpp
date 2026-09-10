@@ -83,7 +83,7 @@ TEST_F(TdConfigTest, LoadDefaultsOmittedFields) {
     write_json(R"json({"accounts": []})json");
     auto cfg = TdConfig::load(path_, "td");
     EXPECT_EQ(cfg.qry_account_interval_s, 5);
-    EXPECT_EQ(cfg.qry_position_interval_s, 5);
+    EXPECT_EQ(cfg.qry_position_interval_s, 60);
     EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);
     EXPECT_TRUE(cfg.enable_lock_mode);
     EXPECT_TRUE(cfg.accounts.empty());
@@ -103,7 +103,7 @@ TEST_F(TdConfigTest, LoadSectionMissingReturnsDefaults) {
     EXPECT_TRUE(cfg.accounts.empty());
     // 校验其他默认值
     EXPECT_EQ(cfg.qry_account_interval_s, 5);
-    EXPECT_EQ(cfg.qry_position_interval_s, 5);
+    EXPECT_EQ(cfg.qry_position_interval_s, 60);
     EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);
     EXPECT_TRUE(cfg.enable_lock_mode);
 }

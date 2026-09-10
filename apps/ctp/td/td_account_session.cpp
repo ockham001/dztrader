@@ -163,6 +163,10 @@ void AccountSession::disconnect() {
     cancel_connect_timer();
     cancel_login_timer();
     cancel_instruments_load_timer();
+    if (position_poll_timer_id_ != 0) {
+        timer_queue_.cancel(position_poll_timer_id_);
+        position_poll_timer_id_ = 0;
+    }
     ++generation_;  // 使已挂起定时器回调失效
     api_->RegisterSpi(nullptr);
     api_->Release();
@@ -209,6 +213,10 @@ void AccountSession::on_front_disconnected(int reason) {
     cancel_connect_timer();
     cancel_login_timer();
     cancel_instruments_load_timer();
+    if (position_poll_timer_id_ != 0) {
+        timer_queue_.cancel(position_poll_timer_id_);
+        position_poll_timer_id_ = 0;
+    }
     ++generation_;  // 使已挂起定时器回调失效
     // 终检发现 1: 作废在途登录收尾查询链 (CTP 断连后在途查询响应作废)。
     // 否则首次登录已收尾 (finalizer 停在 kDone), 重连重登的持仓 is_last 被
@@ -665,6 +673,7 @@ void AccountSession::resync_account_data() {
     if (!is_ready() || data_query_ok_) {
         return;
     }
+    if (position_query_in_flight_) return;  // 与周期重查互斥, 避免双查询链
     // 上一轮查询链仍在进行 (phase 停在查询阶段, 如长时间流控重试) 时不重复发起,
     // 避免双查询链并发. 仅上一轮已收尾 (kDone) 才重开新一轮.
     if (finalizer_.phase() != Phase::kDone) {
@@ -676,6 +685,33 @@ void AccountSession::resync_account_data() {
     account_query_ok_ = false;
     finalizer_ = LoginFinalizer{};
     req_qry_investor_position();
+}
+
+void AccountSession::set_position_poll_interval(int seconds) {
+    position_poll_interval_s_ = seconds > 0 ? seconds : 60;
+    if (is_ready()) schedule_position_poll();
+}
+
+void AccountSession::schedule_position_poll() {
+    // tag 带账户维度: TdApi 的 TimerQueue 为进程级共享 (多账户同进程),
+    // 固定 tag 会互相 replace 导致其余账户轮询停摆.
+    position_poll_timer_id_ = timer_queue_.schedule_after_replace(
+        std::format("td_position_poll:{}", account_id_),
+        std::chrono::seconds(position_poll_interval_s_),
+        [this, gen = generation_]() {
+            if (gen != generation_) return;  // 断连/登出后回调作废
+            on_position_poll_timer();
+        });
+}
+
+void AccountSession::on_position_poll_timer() {
+    position_poll_timer_id_ = 0;
+    if (!is_ready()) return;
+    // data_query_ok_ false 时由既有 60s resync 兜底 (登录失败补查), 此处不并发
+    if (position_baseline_ready_ && data_query_ok_ && !position_query_in_flight_) {
+        req_qry_investor_position(false);
+    }
+    schedule_position_poll();
 }
 
 void AccountSession::repush_last_records() {
@@ -835,6 +871,7 @@ void AccountSession::cancel_connect_timer() {
 }
 
 void AccountSession::req_qry_investor_position(bool login_chain) {
+    ++position_query_token_;
     query_gen_ = generation_;
     position_query_agg_.clear();
     position_query_group_.clear();
@@ -877,8 +914,10 @@ void AccountSession::req_qry_investor_position(bool login_chain) {
     // 周期查询 (phase=kDone) 只清标志, 登录/补查链按原行为降级.
     const auto timeout = is_ready() ? std::chrono::seconds(90) : std::chrono::minutes(5);
     uint64_t gen = generation_;
-    timer_queue_.schedule_after(timeout, [this, gen, login_chain]() {
+    uint64_t token = position_query_token_;
+    timer_queue_.schedule_after(timeout, [this, gen, token, login_chain]() {
         if (gen != generation_) return;
+        if (token != position_query_token_) return;  // 已有更新的查询, 本次超时作废
         if (!position_query_in_flight_) return;  // 响应已到, 超时作废
         position_query_in_flight_ = false;
         if (state_machine_.state() == TdState::LoadingInstruments &&
@@ -1110,6 +1149,7 @@ void AccountSession::drive_finalizer() {
                 if (state_machine_.state() == TdState::LoadingInstruments) {
                     state_machine_.on_instruments_loaded();
                 }
+                schedule_position_poll();
                 break;
             case Phase::kDone:
                 return;

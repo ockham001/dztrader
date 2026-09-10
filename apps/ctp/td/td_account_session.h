@@ -173,6 +173,10 @@ public:
     /// 仅 Ready 且此前查询未成功时生效; 无会话/非 Ready 时 no-op.
     void resync_account_data();
 
+    /// 设置持仓周期重查间隔 (秒); <=0 回退 60. 已 Ready 时立即重排定时器
+    /// (配置热更新传播路径, 由 TdApi 在配置变更后调用).
+    void set_position_poll_interval(int seconds);
+
     /// 数据是否已完整 (持仓/资金双查询都成功). 供 TdApi 定时补查节流.
     bool data_query_ok() const noexcept { return data_query_ok_; }
 
@@ -269,6 +273,11 @@ private:
     /// 尝试推进登录收尾状态机并执行对应阶段动作; 未达前置时停留.
     void drive_finalizer();
 
+    /// 安排下一轮持仓周期重查 (tag 含账户维度: TdApi 的 TimerQueue 进程级共享).
+    void schedule_position_poll();
+    /// 周期定时器到期: 基线就绪且无在途查询时发起周期重查, 并安排下一轮.
+    void on_position_poll_timer();
+
     // === 成员 ===
     std::string account_id_;
     shm::OrderIdMeta& order_id_meta_;
@@ -319,6 +328,8 @@ private:
     bool position_baseline_ready_ = false;
     /// 持仓查询在途 (防周期重查与登录链重叠).
     bool position_query_in_flight_ = false;
+    /// 每请求 token: 超时定时器只对其对应的查询生效 (防误清新查询的 in_flight).
+    uint64_t position_query_token_ = 0;
     /// 本轮持仓查询全量组 (登录/补查 is_last 时 PositionRebuild 重灌用, spec §3.2).
     /// 每次 req_qry_investor_position 开始时清空, 逐行累加, is_last 时整体 enqueue.
     std::vector<DzPositionInfo> position_query_group_;
@@ -371,6 +382,9 @@ private:
     dztrader::core::TimerQueue::TimerId login_timer_id_ = 0;
     /// I2: 合约加载超时定时器 id (5 分钟, 设计 §2.4.1 流控持续 -3 超时)
     dztrader::core::TimerQueue::TimerId instruments_load_timer_id_ = 0;
+    /// 持仓周期重查间隔 (秒) 与定时器 id (0 = 无挂起); 配置热更新时传播.
+    int position_poll_interval_s_ = 60;
+    dztrader::core::TimerQueue::TimerId position_poll_timer_id_ = 0;
     /// 代际失效: 断线时自增, 使已挂起定时器回调失效 (避免陈旧回调误触发)
     uint64_t generation_ = 0;
     /// 查询链代际 (终检发现 1): 每次查询发起时快照 generation_, 响应处理校验

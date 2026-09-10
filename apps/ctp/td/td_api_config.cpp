@@ -106,6 +106,13 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
     }
     SPDLOG_INFO("td config updated | op={}", magic_enum::enum_name(req.op));
 
+    // Task 8: 持仓周期重查间隔热更新传播 (审计段之后): 逐会话重排定时器.
+    if (old_config.qry_position_interval_s != new_config.qry_position_interval_s) {
+        for (auto& [account_id, session] : sessions_) {
+            session->set_position_poll_interval(new_config.qry_position_interval_s);
+        }
+    }
+
     // 契约 account-status: 配置账户集变化 (含盘中新加未连接账户) -> 全量重推 2018,
     // 无会话账户推 Offline, 让策略立即感知新账户存在且未登录
     // (删配置账户走 disconnect 路径已有 Offline 补推, 此处全量重推幂等无害)

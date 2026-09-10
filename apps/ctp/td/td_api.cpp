@@ -707,6 +707,8 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
                 ensure_prescan_db();
                 return prescan_db_.get();
             });
+        // Task 8: 注入持仓周期重查间隔 (Ready 后生效).
+        session->set_position_poll_interval(config_.qry_position_interval_s);
         sessions_[account_id] = std::move(session);
         // 契约 account-status 场景 3: 新会话建立即推 LoggingIn (spec §3.1 盘中增账户语义)
         write_account_status(account_id, DZ_ACCOUNT_LOGGING_IN, "");

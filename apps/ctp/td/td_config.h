@@ -89,7 +89,7 @@ struct AccountConfig {
 /// 由 AutoLoginConfig 管理）——本结构不再含 schedules/enable_auto_login_logout 字段。
 struct TdConfig {
     int qry_account_interval_s = 5;          // 资金查询间隔 (秒)
-    int qry_position_interval_s = 5;         // 持仓查询间隔 (秒)
+    int qry_position_interval_s = 60;        // 持仓查询间隔 (秒)
     int qry_flush_interval_ms = 1500;        // 流控队列间隔 (毫秒)
     bool enable_lock_mode = true;            // OffsetConverter LOCK 模式
     std::vector<AccountConfig> accounts;     // 账户数组
