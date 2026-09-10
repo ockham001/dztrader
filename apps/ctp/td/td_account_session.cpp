@@ -887,7 +887,8 @@ void AccountSession::req_qry_investor_position(bool login_chain) {
         return;
     }
     CThostFtdcQryInvestorPositionField qry{};
-    int ret = api_->ReqQryInvestorPosition(&qry, ++request_id_);
+    position_query_request_id_ = ++request_id_;
+    int ret = api_->ReqQryInvestorPosition(&qry, position_query_request_id_);
     if (ret != 0) {
         position_query_in_flight_ = false;
         if (ret == -3 && login_chain) {
@@ -1503,7 +1504,7 @@ void AccountSession::on_rsp_qry_trading_account(const OnRspQryTradingAccountFiel
 // 聚合模型 diff 推帧 / 全平零帧 / 活动委托重灌 / PositionRebuild 全量重灌落库.
 // Task 6: is_last 完成持仓查询 -> 发起资金查询 (CTP 流控串行).
 void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPositionField& f) {
-    if (query_gen_ != generation_) return;
+    if (query_gen_ != generation_ || f.request_id != position_query_request_id_) return;
     try {
         const bool has_row = f.investor_position &&
                              (f.investor_position->Position > 0 ||

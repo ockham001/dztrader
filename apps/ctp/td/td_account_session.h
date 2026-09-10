@@ -330,6 +330,8 @@ private:
     bool position_query_in_flight_ = false;
     /// 每请求 token: 超时定时器只对其对应的查询生效 (防误清新查询的 in_flight).
     uint64_t position_query_token_ = 0;
+    /// 当前持仓查询的 CTP request_id: 迟到响应 (超时后被下一轮取代) 据此丢弃.
+    int position_query_request_id_ = 0;
     /// 本轮持仓查询全量组 (登录/补查 is_last 时 PositionRebuild 重灌用, spec §3.2).
     /// 每次 req_qry_investor_position 开始时清空, 逐行累加, is_last 时整体 enqueue.
     std::vector<DzPositionInfo> position_query_group_;
