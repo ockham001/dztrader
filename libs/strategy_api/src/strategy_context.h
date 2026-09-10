@@ -35,7 +35,7 @@
 #include <vector>
 
 #include "timer_heap.h"
-#include <dztrader/td_ingest.h>
+#include <dztrader/trading/td_ingest.h>
 
 namespace dztrader {
 

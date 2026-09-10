@@ -11,7 +11,7 @@
 #include <SQLiteCpp/Statement.h>
 
 #include <dztrader/core/this_process.h>
-#include <dztrader/td_ingest.h>
+#include <dztrader/trading/td_ingest.h>
 
 #include "td/td_persist_writer.h"
 #include "td/td_prescan.h"

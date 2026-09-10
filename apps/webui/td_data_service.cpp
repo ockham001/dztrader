@@ -1,7 +1,7 @@
 #include "td_data_service.h"
 
 #include <dztrader/date_time/date.h>
-#include <dztrader/td_ingest.h>
+#include <dztrader/trading/td_ingest.h>
 #include <spdlog/spdlog.h>
 #include <sqlite3.h>
 

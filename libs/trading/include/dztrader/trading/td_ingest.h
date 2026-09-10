@@ -3,10 +3,10 @@
  * @brief SDK TD 数据 ingest 门: 账户级 seq 水位过滤、断档、倒退重置、成交去重
  *
  * 纯逻辑核心 (spec §5.1/5.2/5.4/5.5), 无 shm/db 依赖, 可独立测试。
- * Task 9 (dzweb 后端 ingest) 复用本 gate。
+ * SDK 与 dzweb 后端共用本 gate。
  */
-#ifndef DZTRADER_STRATEGY_API_TD_INGEST_H_
-#define DZTRADER_STRATEGY_API_TD_INGEST_H_
+#ifndef DZTRADER_TRADING_TD_INGEST_H_
+#define DZTRADER_TRADING_TD_INGEST_H_
 
 #include <cstdint>
 #include <optional>
@@ -92,4 +92,4 @@ private:
 
 }  // namespace dztrader
 
-#endif  // DZTRADER_STRATEGY_API_TD_INGEST_H_
+#endif  // DZTRADER_TRADING_TD_INGEST_H_

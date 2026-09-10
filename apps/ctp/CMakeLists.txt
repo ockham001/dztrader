@@ -281,13 +281,11 @@ foreach(testfile ${TD_CTP_TESTS})
     endif()
     # td_data_sync_integration_test 需要 td_persist_writer.cpp + td_schema.cpp + td_report_filter.cpp
     # + td_prescan.cpp (进程内组装: PersistWriter 真线程 + ReportFilter + TdIngestGate) + 链 dzdb
-    # TdIngestGate 跨库引入: 直接编入 libs/strategy_api/src/td_ingest.cpp (轻量, 只取 gate 类, 不拖 api.cpp)
+    # TdIngestGate 由 dztrading 库提供（SDK 与 dzweb 共用的纯逻辑组件）。
     if(testname STREQUAL "td_data_sync_integration_test")
         target_sources(dztd_ctp_${testname} PRIVATE
-            td/td_persist_writer.cpp td/td_schema.cpp td/td_report_filter.cpp td/td_prescan.cpp
-            ${CMAKE_SOURCE_DIR}/libs/strategy_api/src/td_ingest.cpp)
-        # td_ingest.h 公开头在 strategy_api include 路径 (strategy_api_headers, dzcore 传递依赖)
-        target_link_libraries(dztd_ctp_${testname} PRIVATE dzdb)
+            td/td_persist_writer.cpp td/td_schema.cpp td/td_report_filter.cpp td/td_prescan.cpp)
+        target_link_libraries(dztd_ctp_${testname} PRIVATE dzdb dztrading)
     endif()
     gtest_discover_tests(dztd_ctp_${testname})
     install(TARGETS dztd_ctp_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)

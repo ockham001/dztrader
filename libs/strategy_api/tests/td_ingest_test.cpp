@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include <dztrader/td_ingest.h>
+#include <dztrader/trading/td_ingest.h>
 
 #include <optional>
 #include <string>

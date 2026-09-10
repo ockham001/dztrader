@@ -4,7 +4,7 @@
 #include <dztrader/date_time/date.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/struct.h>
-#include <dztrader/td_ingest.h>
+#include <dztrader/trading/td_ingest.h>
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 

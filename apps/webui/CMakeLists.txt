@@ -36,15 +36,13 @@ add_library(dzweb_obj OBJECT
     notify_controller.cpp
     settings_controller.cpp
     td_data_service.cpp
-    # Task 9: 复用 SDK ingest 门 (仅编 td_ingest.cpp, 不链整个 dzstrategy_sdk_static)
-    # td_ingest.cpp 无 shm/db 依赖, 纯逻辑 gate 类, 由公开头 include/dztrader/td_ingest.h 声明
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../libs/strategy_api/src/td_ingest.cpp
 )
 target_link_libraries(dzweb_obj PUBLIC
     Drogon::Drogon
     msgpack-cxx
     dzshm
     dzprocess
+    dztrading
     strategy_api_headers
     dzcore
     dzlog
