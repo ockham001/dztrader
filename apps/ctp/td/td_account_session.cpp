@@ -49,6 +49,8 @@ AccountSession::~AccountSession() {
     } catch (...) {
         // 析构不抛异常
     }
+    // 兜底: disconnect 早退 (api_ 已空) 时也须让未跟踪定时器回调即刻失效.
+    alive_token_.reset();
 }
 
 void AccountSession::init_from_boot(const SessionBootData& boot) {
@@ -160,6 +162,9 @@ void AccountSession::open(const std::string& flow_dir,
 
 void AccountSession::disconnect() {
     if (api_ == nullptr) return;
+    // 未跟踪的查询链定时器回调经弱引用检查即刻失效 (TdApi 随后 sessions_.erase,
+    // 队列中按原始 this 排定的回调若不检查会 UAF).
+    alive_token_.reset();
     cancel_connect_timer();
     cancel_login_timer();
     cancel_instruments_load_timer();
@@ -322,7 +327,8 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
     if (f.instrument) {
         // C2: 存储 instrument_id -> exchange_id/price_tick, 供 place_order 查表与 Task 7 用
         instrument_exchange_map_[f.instrument->InstrumentID] =
-            InstrumentBrief{f.instrument->ExchangeID, f.instrument->PriceTick};
+            InstrumentBrief{f.instrument->ExchangeID, f.instrument->PriceTick,
+                            static_cast<double>(f.instrument->VolumeMultiple)};
         // I6: 推 DZ_FRAME_TD_INSTRUMENT SHM 帧, 让策略进程拿到合约信息 (price_tick/乘数/期权字段)
         try {
             DzInstrumentInfo contract = to_dz_instrument(*f.instrument);
@@ -834,8 +840,10 @@ void AccountSession::req_qry_instrument() {
             // I3: 流控 (-3), 1.5s 后重试 (参考 mdctp 流控队列模式)
             SPDLOG_WARN("td qry instrument flow control, retry in 1.5s | account={}", account_id_);
             uint64_t gen = generation_;
+            std::weak_ptr<void> weak = alive_token_;
             timer_queue_.schedule_after(std::chrono::milliseconds(1500),
-                [this, gen]() {
+                [this, weak, gen]() {
+                    if (weak.expired()) return;
                     if (gen != generation_) return;
                     if (state_machine_.state() == TdState::LoadingInstruments) {
                         req_qry_instrument();
@@ -894,7 +902,9 @@ void AccountSession::req_qry_investor_position(bool login_chain) {
         if (ret == -3 && login_chain) {
             SPDLOG_WARN("td qry position flow control, retry in 1.5s | account={}", account_id_);
             uint64_t gen = generation_;
-            timer_queue_.schedule_after(std::chrono::milliseconds(1500), [this, gen]() {
+            std::weak_ptr<void> weak = alive_token_;
+            timer_queue_.schedule_after(std::chrono::milliseconds(1500), [this, weak, gen]() {
+                if (weak.expired()) return;
                 if (gen != generation_) return;
                 if (finalizer_.phase() == Phase::kQueryPosition) {
                     req_qry_investor_position(true);
@@ -916,7 +926,9 @@ void AccountSession::req_qry_investor_position(bool login_chain) {
     const auto timeout = is_ready() ? std::chrono::seconds(90) : std::chrono::minutes(5);
     uint64_t gen = generation_;
     uint64_t token = position_query_token_;
-    timer_queue_.schedule_after(timeout, [this, gen, token, login_chain]() {
+    std::weak_ptr<void> weak = alive_token_;
+    timer_queue_.schedule_after(timeout, [this, weak, gen, token, login_chain]() {
+        if (weak.expired()) return;
         if (gen != generation_) return;
         if (token != position_query_token_) return;  // 已有更新的查询, 本次超时作废
         if (!position_query_in_flight_) return;  // 响应已到, 超时作废
@@ -953,8 +965,10 @@ void AccountSession::req_qry_trading_account() {
         if (ret == -3) {
             SPDLOG_WARN("td qry account flow control, retry in 1.5s | account={}", account_id_);
             uint64_t gen = generation_;
+            std::weak_ptr<void> weak = alive_token_;
             timer_queue_.schedule_after(std::chrono::milliseconds(1500),
-                [this, gen]() {
+                [this, weak, gen]() {
+                    if (weak.expired()) return;
                     if (gen != generation_) return;
                     if (finalizer_.phase() == Phase::kQueryAccount) {
                         req_qry_trading_account();
@@ -972,8 +986,10 @@ void AccountSession::req_qry_trading_account() {
     // 90s (终检发现 5), 到期降级回 kDone 由下一轮 resync 重试。
     const auto timeout = is_ready() ? std::chrono::seconds(90) : std::chrono::minutes(5);
     uint64_t gen = generation_;
+    std::weak_ptr<void> weak = alive_token_;
     timer_queue_.schedule_after(timeout,
-        [this, gen]() {
+        [this, weak, gen]() {
+            if (weak.expired()) return;
             if (gen != generation_) return;
             if (state_machine_.state() == TdState::LoadingInstruments &&
                 finalizer_.phase() == Phase::kQueryAccount) {
@@ -1014,8 +1030,10 @@ void AccountSession::req_qry_margin_rate(const char* instrument_id) {
             SPDLOG_WARN("td qry margin rate flow control, retry in 1.5s | account={}", account_id_);
             uint64_t gen = generation_;
             std::string inst = instrument_id ? instrument_id : "";
+            std::weak_ptr<void> weak = alive_token_;
             timer_queue_.schedule_after(std::chrono::milliseconds(1500),
-                [this, gen, inst]() {
+                [this, weak, gen, inst]() {
+                    if (weak.expired()) return;
                     if (gen != generation_) return;
                     // 登录链由 finalizer phase 门, 按需查询 (Ready 后) 直接重试.
                     if (finalizer_.phase() == Phase::kQueryMarginRate || is_ready()) {
@@ -1034,7 +1052,9 @@ void AccountSession::req_qry_margin_rate(const char* instrument_id) {
     // 到期降级回 kDone 由下一轮 resync 重试.
     const auto timeout = is_ready() ? std::chrono::seconds(90) : std::chrono::minutes(5);
     uint64_t gen = generation_;
-    timer_queue_.schedule_after(timeout, [this, gen]() {
+    std::weak_ptr<void> weak = alive_token_;
+    timer_queue_.schedule_after(timeout, [this, weak, gen]() {
+        if (weak.expired()) return;
         if (gen != generation_) return;
         if (finalizer_.phase() == Phase::kQueryMarginRate) {
             SPDLOG_ERROR("td qry margin rate timeout, degrade | account={}", account_id_);
@@ -1067,8 +1087,10 @@ void AccountSession::req_qry_commission_rate(const char* instrument_id) {
                         account_id_);
             uint64_t gen = generation_;
             std::string inst = instrument_id ? instrument_id : "";
+            std::weak_ptr<void> weak = alive_token_;
             timer_queue_.schedule_after(std::chrono::milliseconds(1500),
-                [this, gen, inst]() {
+                [this, weak, gen, inst]() {
+                    if (weak.expired()) return;
                     if (gen != generation_) return;
                     if (finalizer_.phase() == Phase::kQueryCommissionRate) {
                         req_qry_commission_rate(inst.c_str());
@@ -1084,7 +1106,9 @@ void AccountSession::req_qry_commission_rate(const char* instrument_id) {
     }
     const auto timeout = is_ready() ? std::chrono::seconds(90) : std::chrono::minutes(5);
     uint64_t gen = generation_;
-    timer_queue_.schedule_after(timeout, [this, gen]() {
+    std::weak_ptr<void> weak = alive_token_;
+    timer_queue_.schedule_after(timeout, [this, weak, gen]() {
+        if (weak.expired()) return;
         if (gen != generation_) return;
         if (finalizer_.phase() == Phase::kQueryCommissionRate) {
             SPDLOG_ERROR("td qry commission rate timeout, degrade | account={}", account_id_);
@@ -1290,7 +1314,7 @@ PositionHolding* AccountSession::ensure_holding(const std::string& instrument_id
         auto ex = instrument_exchange_map_.find(instrument_id);
         if (ex != instrument_exchange_map_.end()) exchange_id = ex->second.exchange_id;
     }
-    auto [ins, ok] = holdings_.emplace(instrument_id, PositionHolding(instrument_id, exchange_id));
+    auto ins = holdings_.emplace(instrument_id, PositionHolding(instrument_id, exchange_id)).first;
     return &ins->second;
 }
 
@@ -1334,16 +1358,13 @@ void AccountSession::apply_position_query() {
     for (const auto& [key, agg] : position_query_agg_) {
         PositionHolding* h = ensure_holding(key.instrument_id, agg.exchange_id);
         DzDirection dir = static_cast<DzDirection>(key.direction);
-        double price = agg.volume > 0 ? agg.cost / static_cast<double>(agg.volume) : 0.0;
+        // 均价 = PositionCost / (持仓量 × 合约乘数); 缺乘数时留 0 (防除零/错价).
+        double price = (agg.volume > 0 && agg.volume_multiple > 0)
+                           ? agg.cost / (static_cast<double>(agg.volume) * agg.volume_multiple)
+                           : 0.0;
         auto ch = h->apply_query_side(dir, agg.volume, agg.yd, price);
         if (ch.long_changed) { push_position(*h, DZ_DIRECTION_LONG); any_change = true; }
         if (ch.short_changed) { push_position(*h, DZ_DIRECTION_SHORT); any_change = true; }
-        // 冻结对账: CTP 冻结总量与本地推导不符仅 WARN (不覆盖, CTP 无今昨拆分)
-        int64_t local_frozen = h->side(dir).frozen();
-        if (agg.ctp_frozen != local_frozen) {
-            SPDLOG_WARN("td position frozen mismatch | account={} instrument={} ctp={} local={}",
-                        account_id_, key.instrument_id, agg.ctp_frozen, local_frozen);
-        }
         group.insert(key);
     }
     for (auto& [inst, h] : holdings_) {
@@ -1373,6 +1394,17 @@ void AccountSession::apply_position_query() {
             auto ch = h.rebuild_active_orders(updates);
             if (ch.long_changed) push_position(h, DZ_DIRECTION_LONG);
             if (ch.short_changed) push_position(h, DZ_DIRECTION_SHORT);
+        }
+    }
+    // 冻结对账: 活动平仓挂单全量种入后再比对 (首个查询/重连时本地冻结尚未种入,
+    // 先比会误报); CTP 冻结总量与本地推导不符仅 WARN (不覆盖, CTP 无今昨拆分).
+    for (const auto& [key, agg] : position_query_agg_) {
+        auto it = holdings_.find(key.instrument_id);
+        if (it == holdings_.end()) continue;
+        int64_t local_frozen = it->second.side(static_cast<DzDirection>(key.direction)).frozen();
+        if (agg.ctp_frozen != local_frozen) {
+            SPDLOG_WARN("td position frozen mismatch | account={} instrument={} ctp={} local={}",
+                        account_id_, key.instrument_id, agg.ctp_frozen, local_frozen);
         }
     }
     if (!position_baseline_ready_ || any_change || any_gone) {
@@ -1511,13 +1543,20 @@ void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPosition
                               f.investor_position->YdPosition > 0);
         if (has_row) {
             const auto& p = *f.investor_position;
-            DzPositionInfo pos = to_dz_position(p, account_id_, trading_day_);
+            // 均价换算需合约乘数 (PositionCost 为金额); 合约表未命中/缺失时留 0 -> 均价 0.
+            double volume_multiple = 0.0;
+            if (auto ex = instrument_exchange_map_.find(p.InstrumentID);
+                ex != instrument_exchange_map_.end()) {
+                volume_multiple = ex->second.volume_multiple;
+            }
+            DzPositionInfo pos = to_dz_position(p, account_id_, trading_day_, volume_multiple);
             PositionQueryKey key{std::string(pos.instrument_id),
                                  static_cast<int8_t>(pos.direction)};
             PositionQueryAgg& agg = position_query_agg_[key];
             agg.volume += p.Position;
             agg.yd += p.YdPosition;
             agg.cost += p.PositionCost;
+            agg.volume_multiple = volume_multiple;
             agg.ctp_frozen += static_cast<int64_t>(p.LongFrozen) + p.ShortFrozen;
             if (agg.exchange_id.empty()) agg.exchange_id = p.ExchangeID;
         } else if (f.rsp_info && f.rsp_info->ErrorID != 0) {

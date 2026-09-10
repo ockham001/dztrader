@@ -136,6 +136,7 @@ DZ_BEGIN_C_DECLS
 /** @brief 手续费率镜像 */
 #define DZ_FRAME_TD_COMMISSION_RATE     ((DzFrameType)2016)
 /** @brief 持仓明细 */
+// producerless: position detail chain removed; number kept (append-only)
 #define DZ_FRAME_TD_POSITION_DETAIL     ((DzFrameType)2017)
 
 // ============================================================================

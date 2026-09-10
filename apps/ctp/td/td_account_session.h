@@ -164,9 +164,9 @@ public:
     RiskGate& risk_gate() noexcept { return risk_gate_; }
     const TdStateMachine& state_machine() const noexcept { return state_machine_; }
 
-    /// 设置当前交易日 (DzDate, 距纪元天数). 日切时由 TdApi 调用.
-    /// 同步到所有 PositionHolding 的 trading_day; 交易日切换时清空持仓镜像
-    /// (绝对态旧日镜像不得拦截新日首报, spec §4.1 跨日清空).
+    /// 设置当前交易日 (DzDate, 距纪元天数). 日切/登录时由 TdApi 调用.
+    /// 对每个 PositionHolding 执行跨日迁移 (today->yd, 清挂单冻结), 变化侧按
+    /// 增量规则推帧/落库 (绝对态旧日镜像不拦截新日首报, spec §4.1 跨日迁移).
     void set_trading_day(int32_t trading_day);
 
     /// 重新发起持仓/资金补查 (登录查询失败降级后的定时补查路径).
@@ -312,7 +312,8 @@ private:
     struct PositionQueryKeyHash {
         size_t operator()(const PositionQueryKey& k) const noexcept {
             size_t h = std::hash<std::string>{}(k.instrument_id);
-            h ^= static_cast<size_t>(static_cast<uint8_t>(k.direction)) + 0x9e3779b9u + (h << 6) + (h >> 2);
+            h ^= static_cast<size_t>(static_cast<uint8_t>(k.direction)) + 0x9e3779b9u +
+                 (h << 6) + (h >> 2);
             return h;
         }
     };
@@ -321,6 +322,7 @@ private:
         int64_t volume = 0;
         int64_t yd = 0;
         double cost = 0.0;
+        double volume_multiple = 0.0;  // 合约乘数 (均价换算: cost / (volume * multiple))
         int64_t ctp_frozen = 0;    // LongFrozen+ShortFrozen, 仅冻结对账 WARN
     };
     std::unordered_map<PositionQueryKey, PositionQueryAgg, PositionQueryKeyHash> position_query_agg_;
@@ -332,8 +334,7 @@ private:
     uint64_t position_query_token_ = 0;
     /// 当前持仓查询的 CTP request_id: 迟到响应 (超时后被下一轮取代) 据此丢弃.
     int position_query_request_id_ = 0;
-    /// 本轮持仓查询全量组 (登录/补查 is_last 时 PositionRebuild 重灌用, spec §3.2).
-    /// 每次 req_qry_investor_position 开始时清空, 逐行累加, is_last 时整体 enqueue.
+    /// 本轮持仓查询明细组 (is_last 时由累加器物化, 供 PositionRebuild 重灌, spec §3.2).
     std::vector<DzPositionInfo> position_query_group_;
     /// 本轮是否已 enqueue PositionRebuild (幂等防御: 迟到的重复 is_last 不得用已消费的
     /// 空组再次重灌清空 DB).
@@ -368,6 +369,7 @@ private:
     struct InstrumentBrief {
         std::string exchange_id;
         double price_tick = 0.0;
+        double volume_multiple = 0.0;  ///< 合约乘数 (PositionCost -> 均价换算)
     };
     std::unordered_map<std::string, InstrumentBrief> instrument_exchange_map_;
 
@@ -387,6 +389,8 @@ private:
     /// 持仓周期重查间隔 (秒) 与定时器 id (0 = 无挂起); 配置热更新时传播.
     int position_poll_interval_s_ = 60;
     dztrader::core::TimerQueue::TimerId position_poll_timer_id_ = 0;
+    /// 会话存活令牌: 未跟踪的查询链定时器回调先检查它, 防 logout erase 后 UAF.
+    std::shared_ptr<void> alive_token_ = std::make_shared<int>(0);
     /// 代际失效: 断线时自增, 使已挂起定时器回调失效 (避免陈旧回调误触发)
     uint64_t generation_ = 0;
     /// 查询链代际 (终检发现 1): 每次查询发起时快照 generation_, 响应处理校验

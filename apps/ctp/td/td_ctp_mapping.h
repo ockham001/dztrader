@@ -107,9 +107,12 @@ DzTradingAccount to_dz_trading_account(const CThostFtdcTradingAccountField& a,
 /// trading_day 为 DzDate (距纪元天数).
 /// PosiDirection: 净('1') 归为多头 (持仓方向仅多/空两态); 多('2') -> LONG, 空('3') -> SHORT.
 /// 持仓量取 Position (今日持仓; CTP 该字段在持仓查询响应中为总持仓口径).
+/// volume_multiple 为合约乘数 (CTP PositionCost 是金额, 非单价):
+/// 均价 = PositionCost / (Position × volume_multiple); Position 或乘数 <= 0 时留 0.
 DzPositionInfo to_dz_position(const CThostFtdcInvestorPositionField& p,
                                const std::string& account_id,
-                               int32_t trading_day) noexcept;
+                               int32_t trading_day,
+                               double volume_multiple) noexcept;
 
 }  // namespace dztrader::ctp
 

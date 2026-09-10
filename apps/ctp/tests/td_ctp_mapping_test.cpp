@@ -621,7 +621,7 @@ TEST(ToDzTradingAccountTest, BasicFields) {
 
 TEST(ToDzPositionTest, LongPositionMapsFields) {
     auto pf = make_position_field();
-    auto p = to_dz_position(pf, "acc1", kTradingDay);
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
 
     EXPECT_STREQ(p.instrument_id, "IF2506");
     EXPECT_STREQ(p.exchange_id, "CFFEX");
@@ -629,16 +629,23 @@ TEST(ToDzPositionTest, LongPositionMapsFields) {
     EXPECT_EQ(p.direction, DZ_DIRECTION_LONG);
     EXPECT_EQ(p.volume, 10);
     EXPECT_EQ(p.frozen_volume, 3);  // LongFrozen(2) + ShortFrozen(1)
-    EXPECT_DOUBLE_EQ(p.price, 3900.0);  // PositionCost / Position
+    EXPECT_DOUBLE_EQ(p.price, 3900.0);  // PositionCost / (Position * 1.0)
     EXPECT_EQ(p.yd_volume, 6);
     EXPECT_EQ(p.today_volume, 4);  // 总 - 昨
     EXPECT_EQ(p.date, kTradingDay);
 }
 
+TEST(ToDzPositionTest, VolumeMultipleScalesAveragePrice) {
+    // PositionCost 是金额: 均价 = PositionCost / (持仓量 × 合约乘数)
+    auto pf = make_position_field();
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 300.0);
+    EXPECT_DOUBLE_EQ(p.price, 13.0);  // 39000 / (10 * 300)
+}
+
 TEST(ToDzPositionTest, ShortPositionMapsDirection) {
     auto pf = make_position_field();
     pf.PosiDirection = THOST_FTDC_PD_Short;
-    auto p = to_dz_position(pf, "acc1", kTradingDay);
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
     EXPECT_EQ(p.direction, DZ_DIRECTION_SHORT);
 }
 
@@ -646,7 +653,7 @@ TEST(ToDzPositionTest, NetPositionTreatedAsLong) {
     // CTP 净持仓 (组合等) 归为多头 (DZ 仅多/空两态)
     auto pf = make_position_field();
     pf.PosiDirection = THOST_FTDC_PD_Net;
-    auto p = to_dz_position(pf, "acc1", kTradingDay);
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
     EXPECT_EQ(p.direction, DZ_DIRECTION_LONG);
 }
 
@@ -654,7 +661,7 @@ TEST(ToDzPositionTest, ZeroPositionHasZeroPrice) {
     auto pf = make_position_field();
     pf.Position = 0;
     pf.PositionCost = 39000.0;
-    auto p = to_dz_position(pf, "acc1", kTradingDay);
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
     EXPECT_EQ(p.volume, 0);
     EXPECT_DOUBLE_EQ(p.price, 0.0);  // 避免除零
     EXPECT_EQ(p.today_volume, -6);   // 0 - YdPosition

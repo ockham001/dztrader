@@ -505,6 +505,7 @@ TEST_F(TdDataSyncIntegrationTest, PositionUpsertThenRebuildThenClear) {
     token = w.enqueue_flush_signal();
     ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 2);
+    EXPECT_EQ(scalar_int("SELECT seq FROM positions WHERE account_id='acc1' AND instrument_id='IF2506'"), 5);
     EXPECT_EQ(scalar_int("SELECT seq FROM positions WHERE account_id='acc1' AND instrument_id='rb2510'"), 6);
     // 3) 空组重灌 = 清空 (全平幽灵持仓清除)
     w.enqueue(PersistTask{.kind = PersistTask::Kind::PositionRebuild,

@@ -449,7 +449,8 @@ DzTradingAccount to_dz_trading_account(const CThostFtdcTradingAccountField& a,
 
 DzPositionInfo to_dz_position(const CThostFtdcInvestorPositionField& p,
                                const std::string& account_id,
-                               int32_t trading_day) noexcept {
+                               int32_t trading_day,
+                               double volume_multiple) noexcept {
     DzPositionInfo r{};
 
     copy_to_dz(r.instrument_id, p.InstrumentID);
@@ -468,9 +469,10 @@ DzPositionInfo to_dz_position(const CThostFtdcInvestorPositionField& p,
     r.volume = p.Position;
     // 冻结量: 多/空冻结合并 (DZ 单值)
     r.frozen_volume = static_cast<int64_t>(p.LongFrozen) + static_cast<int64_t>(p.ShortFrozen);
-    // 均价: 无直接字段, 用持仓成本 (PositionCost) 除以总持仓; 持仓为 0 时留 0.
-    if (p.Position > 0) {
-        r.price = p.PositionCost / static_cast<double>(p.Position);
+    // 均价: 无直接字段. PositionCost 为金额 (vnpy: cost/(volume*size)),
+    // 除以总持仓与合约乘数; 持仓/乘数 <= 0 时留 0 (防除零, 缺合约表降级).
+    if (p.Position > 0 && volume_multiple > 0) {
+        r.price = p.PositionCost / (static_cast<double>(p.Position) * volume_multiple);
     }
     r.yd_volume = p.YdPosition;
     r.today_volume = p.Position - p.YdPosition;  // 今仓 = 总 - 昨 (CTP 无直接今仓字段在此结构)
