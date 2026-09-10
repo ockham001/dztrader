@@ -536,31 +536,35 @@ void AccountSession::place_order(const DzOrderReq& req) {
     if (!is_ready()) {
         SPDLOG_WARN("td place_order rejected, not ready | account={} state={}",
                     account_id_, magic_enum::enum_name(state_machine_.state()));
-        // C3: 推 REJECTED 回报让策略进程感知, 避免静默丢单
         reject_order(req, std::format("交易未就绪: {}",
                                        magic_enum::enum_name(state_machine_.state())));
         return;
     }
-
-    // 风控检查 (设计 §8)
-    AccountContext ctx;
-    ctx.account_id = account_id_;
-    // TODO: 查询链路落地后, 从 holdings_ + 合约信息缓存填充 price_tick/long_pos/short_pos
-    if (auto rej = risk_gate_.check_order(req, ctx)) {
-        SPDLOG_WARN("td place_order rejected by risk gate | account={} rule={} reason={}",
-                    account_id_, rej->rule_name, rej->reason);
-        // C3: 推 REJECTED 回报 + 风控拒绝帧
-        reject_order(req, std::format("风控拒绝: {}", rej->reason));
-        write_risk_reject(account_id_, rej->rule_name, rej->reason);
+    if (req.position_effect == DZ_POSITION_EFFECT_AUTO) {
+        SPDLOG_WARN("td place_order rejected: auto offset unimplemented | account={} order_id={} instrument={}",
+                    account_id_, req.order_id, req.instrument_id);
+        reject_order(req, "AUTO 开平未实现");
         return;
     }
-
-    // C2: 从 instrument_exchange_map_ 查表获取 exchange_id (替代 req.instrument_id)
     auto it = instrument_exchange_map_.find(req.instrument_id);
     if (it == instrument_exchange_map_.end()) {
         SPDLOG_WARN("td place_order rejected: instrument not found | account={} instrument={}",
                     account_id_, req.instrument_id);
         reject_order(req, std::format("未知合约: {}", req.instrument_id));
+        return;
+    }
+    AccountContext ctx;
+    ctx.account_id = account_id_;
+    ctx.price_tick = it->second.price_tick;
+    if (auto hit = holdings_.find(req.instrument_id); hit != holdings_.end()) {
+        ctx.long_pos = hit->second.side(DZ_DIRECTION_LONG).volume();
+        ctx.short_pos = hit->second.side(DZ_DIRECTION_SHORT).volume();
+    }
+    if (auto rej = risk_gate_.check_order(req, ctx)) {
+        SPDLOG_WARN("td place_order rejected by risk gate | account={} rule={} reason={}",
+                    account_id_, rej->rule_name, rej->reason);
+        reject_order(req, std::format("风控拒绝: {}", rej->reason));
+        write_risk_reject(account_id_, rej->rule_name, rej->reason);
         return;
     }
 

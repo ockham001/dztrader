@@ -21,8 +21,8 @@ struct RiskConfig {
 struct AccountContext {
     std::string account_id;
     double price_tick = 0.0;        ///< 最小变动价位
-    int32_t long_pos = 0;           ///< 多头持仓 (今+昨)
-    int32_t short_pos = 0;          ///< 空头持仓
+    int64_t long_pos = 0;           ///< 多头持仓 (今+昨)
+    int64_t short_pos = 0;          ///< 空头持仓
 };
 
 /// 风控拒绝信息 (与 SHM 帧的 DzRiskReject 区分, 此处用 std::string 便于日志)
