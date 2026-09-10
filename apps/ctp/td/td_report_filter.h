@@ -70,6 +70,10 @@ public:
     /// 最近 accept 的成交. 基准为空返回 nullptr.
     [[nodiscard]] const DzTradeReport* find_latest_trade() const noexcept;
 
+    /// 指定交易日的活动委托 (base.date == trading_day 且非终态).
+    /// 终态 = ALL_TRADED/CANCELLED/REJECTED; 无排序保证 (Task 5 种入用).
+    [[nodiscard]] std::vector<OrderRecord> active_orders(int32_t trading_day) const;
+
     /// 对比命中 (kSkip) 时回填钩子 (Task 5 据此转发给 order_ref_map_ 修复).
     /// 本任务内为占位: kSkip 时 rec 已带正确 order_id, 无对外状态变更.
     void replay_hit_order(const OrderRecord& rec);

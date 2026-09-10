@@ -71,6 +71,19 @@ const DzTradeReport* ReportFilter::find_latest_trade() const noexcept {
     return has_trade_ ? &latest_trade_ : nullptr;
 }
 
+std::vector<OrderRecord> ReportFilter::active_orders(int32_t trading_day) const {
+    std::vector<OrderRecord> result;
+    for (const auto& [id, rec] : orders_) {
+        if (rec.base.date != trading_day) continue;
+        if (rec.base.status == DZ_ORDER_ALL_TRADED || rec.base.status == DZ_ORDER_CANCELLED ||
+            rec.base.status == DZ_ORDER_REJECTED) {
+            continue;
+        }
+        result.push_back(rec);
+    }
+    return result;
+}
+
 void ReportFilter::replay_hit_order(const OrderRecord& rec) {
     // Task 4 内仅作命中追踪占位 (本类无对外状态变更);
     // Task 5 在此转发给 order_ref_map_ 修复 (kSkip 时 rec 已带正确 order_id).

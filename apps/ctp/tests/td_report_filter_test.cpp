@@ -184,4 +184,25 @@ TEST(ReportFilterLatest, LoadBaselineSetsLatest) {
     EXPECT_STREQ("T001", f.find_latest_trade()->trade_id);
 }
 
+// ============================================================================
+// active_orders: 按交易日 + 非终态过滤 (Task 5 种入用)
+// ============================================================================
+
+TEST(ReportFilterTest, ActiveOrdersFilterByDayAndStatus) {
+    ReportFilter f{"acc1"};
+    OrderRecord a{};
+    a.base.order_id = 1; a.base.date = 20260726; a.base.status = DZ_ORDER_NOT_TRADED;
+    std::strcpy(a.order_ref, "1");
+    OrderRecord b{};
+    b.base.order_id = 2; b.base.date = 20260726; b.base.status = DZ_ORDER_ALL_TRADED;
+    std::strcpy(b.order_ref, "2");
+    OrderRecord c{};
+    c.base.order_id = 3; c.base.date = 20260725; c.base.status = DZ_ORDER_PART_TRADED;
+    std::strcpy(c.order_ref, "3");
+    f.accept_order(a); f.accept_order(b); f.accept_order(c);
+    auto active = f.active_orders(20260726);
+    ASSERT_EQ(active.size(), 1u);
+    EXPECT_EQ(active[0].base.order_id, 1);
+}
+
 }  // namespace
