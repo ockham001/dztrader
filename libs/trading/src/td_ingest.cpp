@@ -10,12 +10,30 @@ void TdIngestGate::set_watermark(const std::string& account_id, uint64_t w) {
     st.has_watermark = true;
 }
 
+std::string TdIngestGate::trade_segment_prefix(const std::string& account_id) {
+    std::string prefix = account_id;
+    prefix.push_back('\x1f');
+    return prefix;
+}
+
 std::string TdIngestGate::trade_segment_key(const std::string& account_id,
                                             const char* trading_day) {
-    std::string key = account_id;
-    key.push_back('\x1f');
+    std::string key = trade_segment_prefix(account_id);
     key.append(trading_day);
     return key;
+}
+
+void TdIngestGate::erase_trade_segments(const std::string& account_id) {
+    // 段键 = account_id + '\x1f' + day; 必须带分隔符匹配 — 裸前缀
+    // (rfind(account_id, 0)) 会让 "ctp1" 误中 "ctp12" 的段。
+    const std::string prefix = trade_segment_prefix(account_id);
+    for (auto it = trade_segments_.begin(); it != trade_segments_.end();) {
+        if (it->first.starts_with(prefix)) {
+            it = trade_segments_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 TdIngestGate::Verdict TdIngestGate::admit(const std::string& account_id, uint64_t seq) {
@@ -68,13 +86,7 @@ void TdIngestGate::reset_account(const std::string& account_id, uint64_t new_w) 
     st.has_last_applied = false;
 
     // 清该账户全部成交去重段 (重置 = 新基准)
-    for (auto it = trade_segments_.begin(); it != trade_segments_.end();) {
-        if (it->first.rfind(account_id, 0) == 0) {
-            it = trade_segments_.erase(it);
-        } else {
-            ++it;
-        }
-    }
+    erase_trade_segments(account_id);
 }
 
 bool TdIngestGate::admit_trade(const std::string& account_id, const char* trading_day,
@@ -86,13 +98,7 @@ bool TdIngestGate::admit_trade(const std::string& account_id, const char* tradin
     const std::string day(trading_day);
     auto day_it = account_days_.find(account_id);
     if (day_it != account_days_.end() && day_it->second != day) {
-        for (auto it = trade_segments_.begin(); it != trade_segments_.end();) {
-            if (it->first.rfind(account_id, 0) == 0) {
-                it = trade_segments_.erase(it);
-            } else {
-                ++it;
-            }
-        }
+        erase_trade_segments(account_id);
     }
     account_days_[account_id] = day;
 
@@ -113,15 +119,8 @@ void TdIngestGate::on_trading_day_changed(const std::string& account_id,
         }
         account_days_[account_id] = day;
     }
-    // 新交易日: 丢弃该账户全部旧日段。段键 = account_id + '\x1f' + day,
-    // 前缀匹配 account_id 即覆盖该账户所有日 (当前日段同删, 后续 admit_trade 重建)。
-    for (auto it = trade_segments_.begin(); it != trade_segments_.end();) {
-        if (it->first.rfind(account_id, 0) == 0) {
-            it = trade_segments_.erase(it);
-        } else {
-            ++it;
-        }
-    }
+    // 新交易日: 丢弃该账户全部旧日段 (带分隔符前缀匹配, 当前日段同删, 后续 admit_trade 重建)。
+    erase_trade_segments(account_id);
 }
 
 }  // namespace dztrader

@@ -144,4 +144,25 @@ TEST(TdIngestGate, WatermarkDoesNotAffectOtherAccounts) {
     EXPECT_EQ(TdIngestGate::Verdict::kSkip, g.admit("A", 100));
 }
 
+// 前缀账户去重段隔离: 清 "ctp1" 不得误删 "ctp12" 的段 (段键 = account_id + '\x1f' + day,
+// 裸前缀匹配会让 "ctp12\x1f..." 也以 "ctp1" 开头)。
+TEST(TdIngestGate, TradeDedupSegmentsIsolatedForPrefixAccounts) {
+    TdIngestGate g;
+    EXPECT_TRUE(g.admit_trade("ctp1", "20260901", "T1"));
+    EXPECT_TRUE(g.admit_trade("ctp12", "20260901", "T1"));
+    g.on_trading_day_changed("ctp1", "20260902");
+    EXPECT_FALSE(g.admit_trade("ctp12", "20260901", "T1"));  // ctp12 段未被误删
+    g.reset_account("ctp1", 0);
+    EXPECT_FALSE(g.admit_trade("ctp12", "20260901", "T1"));  // reset 同样不得误伤
+}
+
+// admit_trade 自动清段路径的前缀隔离 (同一条 erase 循环的第三个调用点)。
+TEST(TdIngestGate, TradeDedupAutoCleanDoesNotTouchPrefixAccount) {
+    TdIngestGate g;
+    EXPECT_TRUE(g.admit_trade("ctp1", "20260901", "T1"));
+    EXPECT_TRUE(g.admit_trade("ctp12", "20260901", "T2"));
+    EXPECT_TRUE(g.admit_trade("ctp1", "20260902", "T3"));    // ctp1 切日 → 自动清段
+    EXPECT_FALSE(g.admit_trade("ctp12", "20260901", "T2"));  // ctp12 段未被误删
+}
+
 }  // namespace

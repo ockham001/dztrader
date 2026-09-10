@@ -72,6 +72,12 @@ private:
     /// 去重段键: account_id + '\x1f' + trading_day (内嵌 day 天然跨日隔离)
     static std::string trade_segment_key(const std::string& account_id, const char* trading_day);
 
+    /// 去重段前缀: account_id + '\x1f' (带分隔符, 前缀账户互不误伤)
+    static std::string trade_segment_prefix(const std::string& account_id);
+
+    /// 丢弃该账户全部去重段 (reset / 交易日切换共用; 带分隔符前缀匹配)
+    void erase_trade_segments(const std::string& account_id);
+
     /// account_id -> {W, last_applied}
     struct AccountState {
         uint64_t watermark = 0;
