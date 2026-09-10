@@ -51,12 +51,24 @@
 
 ### 登录后自动查询
 
-登录成功后自动发起基础查询（资金、持仓等），供 UI 与策略初始数据。查询受 CTP 流控约束，需排队调度；流控窗口、批次、失败回滚等调度细节属实现，后续单独设计。
+登录成功后自动发起基础查询（资金、持仓等），供 UI 与策略初始数据。查询受 CTP 流控约束，需排队调度；流控窗口、批次、失败回滚等调度细节属实现。持仓的基准建立、盘中增量维护与周期重查见《持仓维护与偏移转换》。
 
 ## 交易委托与回报
 
 - 接收策略广播的 `TD_ORDER_REQ` / `TD_ORDER_CANCEL_REQ`（basic 帧，按 payload `account_id` 归属过滤，见《帧契约：交易委托请求》）。
 - 委托 / 成交回报（`OnRtnOrder` / `OnRtnTrade`）经 event 通道广播，供策略与前端消费（交易帧契约未收录，后续补齐）。
+
+## 持仓维护与偏移转换
+
+持仓在进程内**自维护**：聚合查询建基准 + 成交/委托回报增量更新（决策见 [ADR 0008](../adr/0008-td-position-model.md)），不复用 CTP 明细查询。
+
+- **模型**（`apps/ctp/td/td_position.{h,cpp}`，纯 C++ 内部结构，不进公开头/SHM）：按合约 `PositionHolding` 维护多/空两侧 `PositionSide {today, yd, price, frozen_td, frozen_yd, seq}`（`volume = today + yd` 派生）与活动平仓挂单表（按合约隔离）。任一业务字段变化才取新 seq 推 2002 + `Kind::Position` upsert，未变化不推不落；原 `PositionMirror` 删除（差异/seq 职责并入 `PositionSide`）。`DzPositionDetail` 与 `ReqQryInvestorPositionDetail` 链路整体移除。
+- **查询建基准**：`ReqQryInvestorPosition` 响应按 (instrument, direction) 多行合并，`is_last` 一次性应用（volume/yd/price 以快照为准；frozen 不由快照覆盖）。差异侧推 2002 + `Kind::Position` upsert，消失 side 发 volume=0 帧（只推零帧、不 upsert，行由重灌 DELETE 兜底）；基准未就绪时的首个成功查询强制 `PositionRebuild` 重灌，已就绪后的查询（含补查重入与周期查询）仅在存在差异/消失时重灌。基准就绪标志独立于每轮查询成功标志（周期查询单次失败不得停用增量应用）；就绪前成交/委托的持仓增量一律不应用，首个成功查询统一重建。
+- **成交增量**：OPEN 增今仓、均价加权；平今/平昨按标志；非 SHFE generic CLOSE 今→昨溢出，SHFE generic CLOSE 减昨；量归零时均价清零，异常负值夹到 0 + WARN（下轮查询校正）。登录缓冲重放阶段（kReplay）只应用委托状态、跳过成交，避免与查询快照双重计数。
+- **冻结**：只由活动平仓挂单（含外部单）本地推导 `volume - volume_traded`，今仓优先、溢出到昨、按量夹取；拒绝/撤单/全成释放。登录种入按当前交易日过滤，CTP 冻结总量不符仅 WARN。
+- **日切**：today→yd、清挂单冻结，变化侧按上规则推帧/落库，下一轮查询权威校正。
+- **漂移自愈**：Ready 后每 `qry_position_interval_s`（默认 60s，可配置）重查一次（统一 TimerQueue 定时，不另起轮询线程，符合"无轮询"原则）；查询在途窗口的成交以快照覆盖为准，≤ 一个查询间隔收敛（近似语义见《帧契约：TD 数据同步》）。周期查询的失败处理与登录收尾链解耦：仅记日志/等下一轮，不推进 finalizer、不触发资金查询；登录查询失败期的补查沿用既有固定 60s 降级路径。
+- **下单**：本波不接入 OffsetConverter（SHFE 拆分/AUTO/父子单聚合回报留待专项），`DZ_POSITION_EFFECT_AUTO` 显式拒绝；风控上下文填入该合约真实多空持仓与合约 `price_tick`（现规则实际使用 `price_tick`）。
 
 ## 设计原则
 
