@@ -170,27 +170,6 @@ DZ_DECLARE_ALIGNED_STRUCT(DzAccountStatus, {
 // dztd_ctp 交易网关结构体 (向后兼容新增, 不修改现有结构)
 // ============================================================================
 
-/// 持仓明细 (OffsetConverter 依赖, 对应 CTP ReqQryInvestorPositionDetail)
-DZ_DECLARE_ALIGNED_STRUCT(DzPositionDetail, {
-    DzAccountId account_id;
-    DzInstrumentId instrument_id;
-    DzExchangeId exchange_id;
-    DzDirection direction;
-    int8_t hedge_flag;  // 'S'=投机, 'A'=套利, 'H'=套保
-    char reserved[2];   // 对齐 DzDate 到 4 字节边界
-    DzDate open_date;
-    DzTradeId trade_id;
-    DzLargeVolume volume;
-    double open_price;
-    double last_settlement_price;
-    double settlement_price;
-    double margin;
-    double close_profit_by_date;
-    double close_profit_by_trade;
-    int8_t spec_posi_type;  // 上期所特殊持仓类型
-    char reserved2[7];      // 对齐结构体大小到 8 字节倍数
-});
-
 /// 保证金率 (按品种归一化, 对应 CTP ReqQryInstrumentMarginRate)
 /// by_volume 系「每手/每张固定金额」，期权"每张固定"保证金/手续费也走 by_volume；
 /// 保证金币种不落本表 (见帧契约《手续费/保证金》: 线性=contract.currency, 反向=base_asset)。

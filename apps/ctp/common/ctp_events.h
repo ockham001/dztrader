@@ -46,7 +46,6 @@ enum class EventType : int16_t {
     OnRspQryInstrument = 103,                ///< 合约查询响应 (多次回调)
     OnRspQryTradingAccount = 104,            ///< 资金查询响应
     OnRspQryInvestorPosition = 105,          ///< 持仓查询响应
-    OnRspQryInvestorPositionDetail = 106,    ///< 持仓明细查询响应
     OnRspQryInstrumentMarginRate = 107,      ///< 保证金率查询响应
     OnRspQryInstrumentCommissionRate = 108,  ///< 手续费率查询响应
     OnRspQryOrder = 109,                     ///< 委托查询响应 (RESTART 补登用)

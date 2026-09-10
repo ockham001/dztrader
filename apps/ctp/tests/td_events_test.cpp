@@ -92,7 +92,6 @@ TEST(TdEventsTest, TdDeleteEventDataAllTdTypes) {
     test_type(EventType::OnRspQryInstrument, new OnRspQryInstrumentField{});
     test_type(EventType::OnRspQryTradingAccount, new OnRspQryTradingAccountField{});
     test_type(EventType::OnRspQryInvestorPosition, new OnRspQryInvestorPositionField{});
-    test_type(EventType::OnRspQryInvestorPositionDetail, new OnRspQryInvestorPositionDetailField{});
     test_type(EventType::OnRspQryInstrumentMarginRate, new OnRspQryInstrumentMarginRateField{});
     test_type(EventType::OnRspQryInstrumentCommissionRate, new OnRspQryInstrumentCommissionRateField{});
     test_type(EventType::OnRspQryOrder, new OnRspQryOrderField{});

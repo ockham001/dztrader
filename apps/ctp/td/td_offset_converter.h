@@ -3,12 +3,10 @@
 
 #include <cstdint>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include <dztrader/core/core_struct.h>  // DzOrderReq
 #include <dztrader/data_type.h>          // DzDirection/DzPositionEffect/DzDate
-#include <dztrader/struct.h>             // DzPositionDetail/DzTradeReport
 
 #include "td/td_position.h"  // PositionHolding (聚合持仓模型) + Exchange
 

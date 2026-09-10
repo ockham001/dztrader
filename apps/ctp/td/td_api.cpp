@@ -472,9 +472,6 @@ void TdApi::process_event(Event& event) {
         case EventType::OnRspQryInvestorPosition:
             dispatch<OnRspQryInvestorPositionField>(event, &AccountSession::on_rsp_qry_investor_position);
             return;
-        case EventType::OnRspQryInvestorPositionDetail:
-            dispatch<OnRspQryInvestorPositionDetailField>(event, &AccountSession::on_rsp_qry_investor_position_detail);
-            return;
         case EventType::OnRspQryInstrumentMarginRate:
             dispatch<OnRspQryInstrumentMarginRateField>(event, &AccountSession::on_rsp_qry_instrument_margin_rate);
             return;

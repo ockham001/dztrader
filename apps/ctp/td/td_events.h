@@ -113,15 +113,6 @@ struct OnRspQryInvestorPositionField {
     std::string account_id;  // 多账户路由用, TdSpi push 时填入 (放末尾, 不破坏已有 layout)
 };
 
-/// OnRspQryInvestorPositionDetail 回调数据
-struct OnRspQryInvestorPositionDetailField {
-    std::optional<CThostFtdcInvestorPositionDetailField> investor_position_detail;
-    std::optional<CThostFtdcRspInfoField> rsp_info;
-    int request_id = -1;
-    bool is_last = true;
-    std::string account_id;  // 多账户路由用, TdSpi push 时填入 (放末尾, 不破坏已有 layout)
-};
-
 /// OnRspQryInstrumentMarginRate 回调数据
 struct OnRspQryInstrumentMarginRateField {
     std::optional<CThostFtdcInstrumentMarginRateField> margin_rate;
@@ -280,9 +271,6 @@ inline void td_delete_event_data(Event& event) noexcept {
             break;
         case EventType::OnRspQryInvestorPosition:
             delete static_cast<OnRspQryInvestorPositionField*>(event.data);  // NOLINT
-            break;
-        case EventType::OnRspQryInvestorPositionDetail:
-            delete static_cast<OnRspQryInvestorPositionDetailField*>(event.data);  // NOLINT
             break;
         case EventType::OnRspQryInstrumentMarginRate:
             delete static_cast<OnRspQryInstrumentMarginRateField*>(event.data);  // NOLINT

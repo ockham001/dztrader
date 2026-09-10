@@ -119,8 +119,6 @@ public:
     void on_rsp_qry_trading_account(const OnRspQryTradingAccountField& f);
     /// 持仓查询响应 (重连后主动查询重建)
     void on_rsp_qry_investor_position(const OnRspQryInvestorPositionField& f);
-    /// 持仓明细查询响应 (PositionHolding 重建)
-    void on_rsp_qry_investor_position_detail(const OnRspQryInvestorPositionDetailField& f);
     /// 保证金率查询响应
     void on_rsp_qry_instrument_margin_rate(const OnRspQryInstrumentMarginRateField& f);
     /// 手续费率查询响应

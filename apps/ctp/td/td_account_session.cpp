@@ -1399,22 +1399,6 @@ void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPosition
     }
 }
 
-// === on_rsp_qry_investor_position_detail: 持仓明细查询响应 ===
-// TODO: PositionHolding 重建待查询链路落地后实现, 当前仅记日志
-void AccountSession::on_rsp_qry_investor_position_detail(const OnRspQryInvestorPositionDetailField& f) {
-    try {
-        if (f.investor_position_detail) {
-            SPDLOG_DEBUG("td qry position detail | account={} instrument={} direction={} volume={}",
-                         account_id_, f.investor_position_detail->InstrumentID,
-                         f.investor_position_detail->Direction,
-                         f.investor_position_detail->Volume);
-        }
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("td on_rsp_qry_investor_position_detail failed | account={} error=\"{}\"",
-                     account_id_, e.what());
-    }
-}
-
 // === on_rsp_qry_instrument_margin_rate: 保证金率查询响应 ===
 // 转 DzMarginRate, 按 broadcast 模式 (按需=true / 登录批量=false) 推 SHM + 持久化.
 void AccountSession::on_rsp_qry_instrument_margin_rate(const OnRspQryInstrumentMarginRateField& f) {

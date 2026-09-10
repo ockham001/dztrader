@@ -69,10 +69,6 @@ public:
     void OnRspQryTradingAccount(CThostFtdcTradingAccountField* pTradingAccount,
                                  CThostFtdcRspInfoField* pRspInfo,
                                  int nRequestID, bool bIsLast) override;
-    void OnRspQryInvestorPositionDetail(
-        CThostFtdcInvestorPositionDetailField* pInvestorPositionDetail,
-        CThostFtdcRspInfoField* pRspInfo,
-        int nRequestID, bool bIsLast) override;
     void OnRspQryInstrumentMarginRate(
         CThostFtdcInstrumentMarginRateField* pInstrumentMarginRate,
         CThostFtdcRspInfoField* pRspInfo,

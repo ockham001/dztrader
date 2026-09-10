@@ -294,27 +294,6 @@ void TdSpi::OnRspQryTradingAccount(CThostFtdcTradingAccountField* pTradingAccoun
     }
 }
 
-void TdSpi::OnRspQryInvestorPositionDetail(
-    CThostFtdcInvestorPositionDetailField* pInvestorPositionDetail,
-    CThostFtdcRspInfoField* pRspInfo,
-    int nRequestID, bool bIsLast) {
-    try {
-        event_queue_->push(
-            EventType::OnRspQryInvestorPositionDetail,
-            new OnRspQryInvestorPositionDetailField{
-                .investor_position_detail = pInvestorPositionDetail
-                                                ? std::make_optional(*pInvestorPositionDetail)
-                                                : std::nullopt,
-                .rsp_info = pRspInfo ? std::make_optional(*pRspInfo) : std::nullopt,
-                .request_id = nRequestID,
-                .is_last = bIsLast,
-                .account_id = account_id_});
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("td qry position detail push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
-    }
-}
-
 void TdSpi::OnRspQryInstrumentMarginRate(
     CThostFtdcInstrumentMarginRateField* pInstrumentMarginRate,
     CThostFtdcRspInfoField* pRspInfo,

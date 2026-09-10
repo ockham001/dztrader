@@ -8,12 +8,6 @@
 // 验证 8 字节对齐 + 大小为 8 倍数 + 关键字段偏移
 // ============================================================================
 
-TEST(TdStructTest, DzPositionDetailLayout) {
-    static_assert(alignof(DzPositionDetail) == 8);
-    static_assert(sizeof(DzPositionDetail) % 8 == 0);
-    static_assert(sizeof(DzPositionDetail) == sizeof(__dz_internal_packed_DzPositionDetail));
-}
-
 TEST(TdStructTest, DzMarginRateLayout) {
     static_assert(alignof(DzMarginRate) == 8);
     static_assert(sizeof(DzMarginRate) % 8 == 0);
