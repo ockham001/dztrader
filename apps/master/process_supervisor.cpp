@@ -976,7 +976,7 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
                         name, pid, e.what());
         }
 
-        // 步骤 7b: 注销该进程在所有 md 通道的读者条目 (策略经帧 1013 自注册) +
+        // 步骤 7b: 注销该进程在所有 md 通道的读者条目 (策略经帧 DZ_FRAME_REQUEST_MD_READER_REGISTER 自注册) +
         // 通知各 md 进程刷新订阅者缓存 (防止继续向死信号量 notify)。
         // remove_reader 对缺失 key 幂等; 网关类进程从未注册, 循环为 no-op。
         try {

@@ -31,7 +31,7 @@ public:
     /// 写入 md_disconnect 控制帧。返回 true = 已写入事件通道
     bool write_md_disconnect(const std::string& source);
 
-    /// 发送 REQUEST_PROCESS_CONTROL 帧 (115, 无 instance_id)
+    /// 发送 REQUEST_PROCESS_CONTROL 帧 DZ_FRAME_REQUEST_PROCESS_CONTROL, 无 instance_id)
     /// action: platform::ProcessAction 枚举 (Start/Stop/Remove)
     /// target: 进程名 (如 "dzmd_ctp")
     /// config: 配置 patch, 仅 action=Start 有效 (如 {"display_name": ...}); nullopt 表示不携带
@@ -40,7 +40,7 @@ public:
                                const std::string& target,
                                std::optional<nlohmann::json> config = std::nullopt);
 
-    /// 发送 SET_PROCESS_CONFIG 帧 (117, 无 instance_id)
+    /// 发送 SET_PROCESS_CONFIG 帧 DZ_FRAME_SET_PROCESS_CONFIG, 无 instance_id)
     /// target: 进程名 (如 "dzmd_ctp")
     /// config: 配置 patch (RFC 7386 语义: 出现字段覆盖, 缺失字段保留)
     void write_set_process_config(const std::string& target, const nlohmann::json& config);

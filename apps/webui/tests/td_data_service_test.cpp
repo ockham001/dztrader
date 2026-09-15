@@ -174,7 +174,7 @@ TEST_F(TdDataServiceTest, MirrorBuiltFromFramesAfterWatermark) {
     // 设 W=100 (等价于重建后 gate 的水位)
     svc.set_watermark("CTP001", 100);
 
-    // 帧按 seq 序到达 (单写者单调): 先 seq=100 (≤ W: 快照已含, 必须跳过), 再 seq=101。
+    // 帧按 seq 序到达 (单写者单调): 先 seq=100 (≤ W: 快照已含, 必须跳过), 再 seq=DZ_FRAME_NOTIFY_UI。
     DzPositionInfo p0{};
     dztrader::copy_string(p0.account_id, "CTP001", true);
     dztrader::copy_string(p0.instrument_id, "IF2606", true);

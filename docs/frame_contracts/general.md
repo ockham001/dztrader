@@ -52,18 +52,22 @@
 - 策略可见帧（优雅退出、行情数据、交易推送、策略输入/调度）+ 基础类型：`libs/strategy_api/include/dztrader/data_type.h`
 - 其余平台帧（SHM 维护、日志配置、SHM 配置、填充/预加载、UI 通知、进程、行情控制、交易控制、策略上行输出）：`libs/core/include/dztrader/core/core_data_type.h`
 
-分段约定（分配规则）：
+分段约定（分配规则，值域真相源：两个头文件里的帧定义）：
 
-| 段 | 用途 |
+| 值域 | 用途 |
 |------|------|
-| 0 | `INVALID_FILL` 边界填充，非业务帧 |
-| 10-25 | 系统帧 |
-| 101-121 | UI 通知、逻辑持仓、全量快照、进程、自动登录、进度 |
-| 1000-1016 | 行情（数据推送 1000，控制/RTN 1001-1016） |
-| 2000-2115 | 交易（推送 2000-2018，控制/配置/状态 2100-2115） |
-| 3001+ | 策略（用户输入/输出等） |
+| 0-31 | 填充、SHM 通道维护与预加载、日志、UI 通知、全量快照、进程控制/状态/配置、自动登录排程、进度、优雅关闭 |
+| 32-63 | 逻辑持仓、策略上行输出 |
+| 64-95 | 行情数据推送、行情网关配置/状态/连接/订阅、行情通道读者注册 |
+| 1000-1023 | 行情源生命周期通知、交易推送（委托/成交/持仓/资金/合约/费率/结算/账户登录状态） |
+| 1024-1123 | 交易控制（委托请求/连接/配置/状态）、账户与费率查询、风控拒绝、出入金与改密 |
+| 2000-2099 | 策略输入输出与本地调度 |
 
-新帧号必须落上述分段，登记位置与既有帧一致。
+**新帧分配规则**（帧名清单与热路径连号由 `frame_types_test` 锁定）：
+
+1. 新帧号取**同段内下一个空闲号**，追加在段尾；禁止插空档、禁止跨段散布同一接收域（接收方 `switch (frame_type)` 依赖段内稠密以生成单张跳转表）。
+2. **帧名是唯一引用方式**：帧的值只写在两个头文件里（`libs/strategy_api/include/dztrader/data_type.h` 策略可见帧、`libs/core/include/dztrader/core/core_data_type.h` 平台帧）；契约、注释、日志、测试一律写 `DZ_FRAME_*` 名，**禁止写值**。
+3. 无写端且无读端的帧**不保留号**：删除该行定义，号留给后续新帧（与"保留不复用"的旧约定相反，见 ADR）。
 
 **帧头类型登记（现状）**：代码中无 `frame_has_instance_id()` 中央映射表；各接收方注册帧监听时自行声明该帧是否含 `instance_id`。声明与写端布局不一致时，解码失败按坏帧处理（WARN 丢帧，不影响其他帧）。新增帧时写端与全部接收方必须一致登记。
 
@@ -219,9 +223,9 @@
 ## 10. 本轮范围与遗留
 
 - 本目录当前覆盖事件通道的低频控制/配置/通知帧。
-- **已覆盖**：策略帧（`UI_INPUT`/`OUTPUT_UI`/`SET_LOGICAL_POSITION`，见《帧契约：策略》）；TD 数据同步（TD 推送 2000-2003 的账户级 seq 水位/回补/重置/登录完成协议，见《帧契约：TD 数据同步》）。
-- **未覆盖**（后续独立契约，本目录暂不收录）：交易帧（除《帧契约：交易委托请求》已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ`、《帧契约：账户登录状态》已覆盖的 `ACCOUNT_STATUS`/`TD_QUERY_ACCOUNT_STATUS`、《帧契约：TD 数据同步》已覆盖的 TD 推送 2000-2003 与《帧契约：合约信息》已覆盖的 `TD_INSTRUMENT`/`TD_INSTRUMENT_STATUS` 外，其余 2007-2017/2100-2115，TD 已实现大半）、行情/交易数据帧（`TICK`，struct payload）。
-- `DZ_FRAME_SYS_SCHED`：帧类型 10 与 payload（`DzSysSched`）已于 2026-08 随"系统调度域废弃"**从公开头移除**（此前无任何进程消费，md 已于 2026-07 移除处理）；帧号 10 保留不复用。策略侧定时需求由 `dz_schedule_*` 定时器接口承担（见《帧契约：策略》）。
+- **已覆盖**：策略帧（`DZ_FRAME_UI_INPUT`/`DZ_FRAME_OUTPUT_UI`/`DZ_FRAME_SET_LOGICAL_POSITION`，见《帧契约：策略》）；TD 数据同步（TD 推送 `DZ_FRAME_ORDER_REPORT`/`DZ_FRAME_TRADE_REPORT`/`DZ_FRAME_POSITION_INFO`/`DZ_FRAME_TRADING_ACCOUNT` 的账户级 seq 水位/回补/重置/登录完成协议，见《帧契约：TD 数据同步》）。
+- **未覆盖**（后续独立契约，本目录暂不收录）：交易帧（除《帧契约：交易委托请求》已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ`、《帧契约：账户登录状态》已覆盖的 `ACCOUNT_STATUS`/`TD_QUERY_ACCOUNT_STATUS`、《帧契约：TD 数据同步》已覆盖的 TD 推送 DZ_FRAME_ORDER_REPORT-DZ_FRAME_TRADING_ACCOUNT 与《帧契约：合约信息》已覆盖的 `TD_INSTRUMENT`/`TD_INSTRUMENT_STATUS` 外，其余交易控制帧（`DZ_FRAME_TD_REQ_MODIFY_CONFIG`、`DZ_FRAME_TD_RTN_STATUS` 等，见 `core_data_type.h`），TD 已实现大半）、行情/交易数据帧（`TICK`，struct payload）。
+- `DZ_FRAME_SYS_SCHED`：该帧与其 payload（`DzSysSched`）已于 2026-08 随"系统调度域废弃"**从公开头移除**（此前无任何进程消费，md 已于 2026-07 移除处理），定义行一并删除、不再占号。策略侧定时需求由 `dz_schedule_*` 定时器接口承担（见《帧契约：策略》）。
 
 ---
 

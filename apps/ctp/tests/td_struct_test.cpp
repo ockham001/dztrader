@@ -29,31 +29,6 @@ TEST(TdStructTest, DzInstrumentStatusLayout) {
     static_assert(sizeof(DzInstrumentStatus) % 8 == 0);
 }
 
-TEST(TdStructTest, DzTransferReqLayout) {
-    static_assert(alignof(DzTransferReq) == 8);
-    static_assert(sizeof(DzTransferReq) % 8 == 0);
-}
-
-TEST(TdStructTest, DzTransferRspLayout) {
-    static_assert(alignof(DzTransferRsp) == 8);
-    static_assert(sizeof(DzTransferRsp) % 8 == 0);
-}
-
-TEST(TdStructTest, DzPasswordUpdateReqLayout) {
-    static_assert(alignof(DzPasswordUpdateReq) == 8);
-    static_assert(sizeof(DzPasswordUpdateReq) % 8 == 0);
-}
-
-TEST(TdStructTest, DzPasswordUpdateRspLayout) {
-    static_assert(alignof(DzPasswordUpdateRsp) == 8);
-    static_assert(sizeof(DzPasswordUpdateRsp) % 8 == 0);
-}
-
-TEST(TdStructTest, DzRiskRejectLayout) {
-    static_assert(alignof(DzRiskReject) == 8);
-    static_assert(sizeof(DzRiskReject) % 8 == 0);
-}
-
 TEST(TdStructTest, DzInstrumentInfoFields) {
     DzInstrumentInfo c{};
     c.volume_multiple = 10;

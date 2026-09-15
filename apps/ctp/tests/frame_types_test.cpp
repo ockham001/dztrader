@@ -1,168 +1,51 @@
+// 帧类型测试：本文件只写帧名, 不写帧值。
+//
+// 帧值的唯一书写位置是 libs/strategy_api/include/dztrader/data_type.h（策略可见帧）
+// 与 libs/core/include/dztrader/core/core_data_type.h（平台帧）;
+// 因此改帧号不需要动这里, 这里也不允许出现字面帧值。
 #include <gtest/gtest.h>
-#include <dztrader/data_type.h>
+
 #include <dztrader/core/core_data_type.h>
-#include <dztrader/struct.h>
 
-TEST(FrameTypes, SystemFrames) {
-    EXPECT_EQ(DZ_FRAME_SHUTDOWN, static_cast<DzFrameType>(12));
-    EXPECT_EQ(DZ_FRAME_UPDATE_SHM_MD_SUBSCRIBER, static_cast<DzFrameType>(13));
+#include <cstddef>
+#include <set>
+
+namespace {
+
+/// 策略可见帧清单（策略经 dz_next_event / dz_next_md 识别消费）。
+/// 增删策略可见帧属于对外契约变更, 必须显式改这里。
+constexpr DzFrameType kStrategyVisibleFrames[] = {
+    DZ_FRAME_SHUTDOWN,           DZ_FRAME_TICK,
+    DZ_FRAME_ORDER_REPORT,       DZ_FRAME_TRADE_REPORT,
+    DZ_FRAME_POSITION_INFO,      DZ_FRAME_TRADING_ACCOUNT,
+    DZ_FRAME_TD_INSTRUMENT,      DZ_FRAME_TD_INSTRUMENT_STATUS,
+    DZ_FRAME_TD_MARGIN_RATE,     DZ_FRAME_TD_COMMISSION_RATE,
+    DZ_FRAME_ACCOUNT_STATUS,
+    DZ_FRAME_UI_INPUT,           DZ_FRAME_SCHEDULE,
+};
+
+constexpr std::size_t kStrategyVisibleCount =
+    sizeof(kStrategyVisibleFrames) / sizeof(kStrategyVisibleFrames[0]);
+
+}  // namespace
+
+// ── 策略可见面: 集合稳定（增删策略可见帧必须显式改测试, 属对外契约变更） ──
+
+TEST(FrameTypes, StrategyVisibleSetIsStable) {
+    EXPECT_EQ(kStrategyVisibleCount, 13u);
+    const std::set<DzFrameType> unique(kStrategyVisibleFrames,
+                                       kStrategyVisibleFrames + kStrategyVisibleCount);
+    EXPECT_EQ(unique.size(), kStrategyVisibleCount) << "策略可见帧存在重复值";
 }
 
-TEST(FrameTypes, ShmPreloadFrames) {
-    EXPECT_EQ(DZ_FRAME_PRELOAD_EVENT_SHM, static_cast<DzFrameType>(11));
-    EXPECT_EQ(DZ_FRAME_PRELOAD_MD_SHM, static_cast<DzFrameType>(17));
-}
+// ── 策略热路径: 交易推送帧连号（接收方 switch 才能生成单张跳转表） ──
 
-TEST(FrameTypes, TdPlaceholderFrames) {
-    EXPECT_EQ(DZ_FRAME_TD_REQ_MODIFY_CONFIG, static_cast<DzFrameType>(2102));
-    EXPECT_EQ(DZ_FRAME_TD_CONNECT,           static_cast<DzFrameType>(2108));
-    EXPECT_EQ(DZ_FRAME_TD_DISCONNECT,        static_cast<DzFrameType>(2109));
-    EXPECT_EQ(DZ_FRAME_TD_SUBSCRIBE,         static_cast<DzFrameType>(2110));
-}
-
-TEST(FrameTypes, MdServiceLifecycleFrames) {
-    EXPECT_EQ(DZ_FRAME_NOTIFY_MD_STARTED,  static_cast<DzFrameType>(1007));
-    EXPECT_EQ(DZ_FRAME_NOTIFY_MD_STOPPED,  static_cast<DzFrameType>(1008));
-}
-
-TEST(FrameTypes, MdSubscriptionQueryFrames) {
-    EXPECT_EQ(DZ_FRAME_QUERY_MD_SUBSCRIPTIONS, static_cast<DzFrameType>(1011));
-    EXPECT_EQ(DZ_FRAME_RTN_MD_SUBSCRIPTIONS,   static_cast<DzFrameType>(1012));
-}
-
-TEST(FrameTypes, MdReaderRegisterFrames) {
-    EXPECT_EQ(DZ_FRAME_REQUEST_MD_READER_REGISTER,   static_cast<DzFrameType>(1013));
-    EXPECT_EQ(DZ_FRAME_REQUEST_MD_READER_UNREGISTER, static_cast<DzFrameType>(1014));
-    EXPECT_EQ(DZ_FRAME_RTN_MD_READER_REGISTER,       static_cast<DzFrameType>(1015));
-    EXPECT_EQ(DZ_FRAME_RTN_MD_READER_UNREGISTER,     static_cast<DzFrameType>(1016));
-}
-
-TEST(FrameTypes, StgFrames) {
-    EXPECT_EQ(DZ_FRAME_UI_INPUT, static_cast<DzFrameType>(3001));
-    EXPECT_EQ(DZ_FRAME_OUTPUT_UI, static_cast<DzFrameType>(3002));
-}
-
-TEST(FrameTypes, LogicalPositionFrame) {
-    EXPECT_EQ(DZ_FRAME_SET_LOGICAL_POSITION, static_cast<DzFrameType>(103));
-}
-
-TEST(FrameTypes, LogConfigFramesHaveCorrectIds) {
-    EXPECT_EQ(DZ_FRAME_SET_LOG_CONFIG, static_cast<DzFrameType>(14));
-    EXPECT_EQ(DZ_FRAME_FLUSH_LOG, static_cast<DzFrameType>(15));
-    EXPECT_EQ(DZ_FRAME_RTN_LOG_CONFIG, static_cast<DzFrameType>(16));
-}
-
-TEST(FrameTypes, BroadcastAllFrames) {
-    EXPECT_EQ(DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER, static_cast<DzFrameType>(21));
-}
-
-TEST(FrameTypes, LogConfigFramesAreInSystemRange) {
-    EXPECT_LE(DZ_FRAME_SET_LOG_CONFIG, static_cast<DzFrameType>(99));
-    EXPECT_LE(DZ_FRAME_FLUSH_LOG, static_cast<DzFrameType>(99));
-    EXPECT_LE(DZ_FRAME_RTN_LOG_CONFIG, static_cast<DzFrameType>(99));
-}
-
-TEST(FrameTypes, ShmConfigFramesHaveCorrectIds) {
-    // 拆分后: EVENT (22/23, 沿用原 ID) + MD (24/25, 新增)
-    EXPECT_EQ(DZ_FRAME_SET_EVENT_SHM_CONFIG, static_cast<DzFrameType>(22));
-    EXPECT_EQ(DZ_FRAME_RTN_EVENT_SHM_CONFIG, static_cast<DzFrameType>(23));
-    EXPECT_EQ(DZ_FRAME_SET_MD_SHM_CONFIG,    static_cast<DzFrameType>(24));
-    EXPECT_EQ(DZ_FRAME_RTN_MD_SHM_CONFIG,    static_cast<DzFrameType>(25));
-}
-
-TEST(FrameTypes, MdConfigFramesRenamed) {
-    EXPECT_EQ(DZ_FRAME_SET_MD_CONFIG, static_cast<DzFrameType>(1001));
-    EXPECT_EQ(DZ_FRAME_RTN_MD_CONFIG, static_cast<DzFrameType>(1002));
-    EXPECT_EQ(DZ_FRAME_RTN_MD_STATUS, static_cast<DzFrameType>(1003));
-    EXPECT_EQ(DZ_FRAME_REQUEST_MD_CONNECT, static_cast<DzFrameType>(1004));
-    EXPECT_EQ(DZ_FRAME_REQUEST_MD_DISCONNECT, static_cast<DzFrameType>(1005));
-    EXPECT_EQ(DZ_FRAME_REQUEST_MD_SUBSCRIBE, static_cast<DzFrameType>(1006));
-}
-
-TEST(FrameTypes, NewProcessControlFrames) {
-    EXPECT_EQ(DZ_FRAME_REQUEST_PROCESS_CONTROL, static_cast<DzFrameType>(115));
-    EXPECT_EQ(DZ_FRAME_RTN_PROCESS_STATUS,      static_cast<DzFrameType>(116));
-    EXPECT_EQ(DZ_FRAME_SET_PROCESS_CONFIG,      static_cast<DzFrameType>(117));
-    EXPECT_EQ(DZ_FRAME_RTN_PROCESS_CONFIG,      static_cast<DzFrameType>(118));
-    EXPECT_EQ(DZ_FRAME_QUERY_FULL_SNAPSHOT, static_cast<DzFrameType>(113));
-}
-
-TEST(FrameTypes, AutoLoginFrames) {
-    EXPECT_EQ(DZ_FRAME_SET_AUTO_LOGIN, static_cast<DzFrameType>(119));
-    EXPECT_EQ(DZ_FRAME_RTN_AUTO_LOGIN, static_cast<DzFrameType>(120));
-}
-
-TEST(FrameTypes, ProgressFrame) {
-    EXPECT_EQ(DZ_FRAME_RTN_PROGRESS, static_cast<DzFrameType>(121));
-}
-
-// ============================================================================
-// TD 帧类型测试
-// DzFrameType 为 md/td 共享枚举, 集中在此验证一致性 (td 测试 glob 为 td_*_test.cpp,
-// 本文件 frame_types_test.cpp 由 md 侧 CMakeLists.txt 显式包含编译)
-// ============================================================================
-
-TEST(FrameTypes, TickFrame) {
-    // 行情数据帧 (1000)
-    EXPECT_EQ(DZ_FRAME_TICK, static_cast<DzFrameType>(1000));
-}
-
-TEST(FrameTypes, TdPushFrames) {
-    // 交易通用推送帧 (2000-2003, data_type.h)
-    EXPECT_EQ(DZ_FRAME_ORDER_REPORT,    static_cast<DzFrameType>(2000));
-    EXPECT_EQ(DZ_FRAME_TRADE_REPORT,    static_cast<DzFrameType>(2001));
-    EXPECT_EQ(DZ_FRAME_POSITION_INFO,   static_cast<DzFrameType>(2002));
-    EXPECT_EQ(DZ_FRAME_TRADING_ACCOUNT, static_cast<DzFrameType>(2003));
-}
-
-TEST(FrameTypes, TdBusinessFrames) {
-    // 交易业务帧 (2005-2017)
-    EXPECT_EQ(DZ_FRAME_TD_INSTRUMENT,          static_cast<DzFrameType>(2005));
-    EXPECT_EQ(DZ_FRAME_TD_INSTRUMENT_STATUS,   static_cast<DzFrameType>(2006));
-    EXPECT_EQ(DZ_FRAME_TD_ERROR_REPORT,        static_cast<DzFrameType>(2007));
-    EXPECT_EQ(DZ_FRAME_TD_RISK_REJECT,         static_cast<DzFrameType>(2008));
-    EXPECT_EQ(DZ_FRAME_TD_TRANSFER_REQ,        static_cast<DzFrameType>(2009));
-    EXPECT_EQ(DZ_FRAME_TD_TRANSFER_RSP,       static_cast<DzFrameType>(2010));
-    EXPECT_EQ(DZ_FRAME_TD_TRANSFER_RTN,        static_cast<DzFrameType>(2011));
-    EXPECT_EQ(DZ_FRAME_TD_PASSWORD_UPDATE_REQ, static_cast<DzFrameType>(2012));
-    EXPECT_EQ(DZ_FRAME_TD_PASSWORD_UPDATE_RSP, static_cast<DzFrameType>(2013));
-    EXPECT_EQ(DZ_FRAME_TD_SETTLEMENT_INFO,     static_cast<DzFrameType>(2014));
-    EXPECT_EQ(DZ_FRAME_TD_MARGIN_RATE,         static_cast<DzFrameType>(2015));
-    EXPECT_EQ(DZ_FRAME_TD_COMMISSION_RATE,     static_cast<DzFrameType>(2016));
-    EXPECT_EQ(DZ_FRAME_TD_POSITION_DETAIL,     static_cast<DzFrameType>(2017));
-    EXPECT_EQ(DZ_FRAME_ACCOUNT_STATUS,            static_cast<DzFrameType>(2018));
-}
-
-TEST(FrameTypes, TdConfigAndStatusFrames) {
-    // 交易配置/状态帧 (2103-2114)
-    EXPECT_EQ(DZ_FRAME_TD_RTN_CONFIG,             static_cast<DzFrameType>(2103));
-    EXPECT_EQ(DZ_FRAME_TD_RTN_STATUS,             static_cast<DzFrameType>(2104));
-    EXPECT_EQ(DZ_FRAME_TD_QUERY_ALL,              static_cast<DzFrameType>(2105));
-    EXPECT_EQ(DZ_FRAME_TD_NOTIFY_UI,              static_cast<DzFrameType>(2106));
-    EXPECT_EQ(DZ_FRAME_NOTIFY_TD_STARTED,         static_cast<DzFrameType>(2111));
-    EXPECT_EQ(DZ_FRAME_NOTIFY_TD_STOPPED,         static_cast<DzFrameType>(2112));
-    EXPECT_EQ(DZ_FRAME_NOTIFY_TD_CONNECTED,       static_cast<DzFrameType>(2113));
-    EXPECT_EQ(DZ_FRAME_NOTIFY_TD_DISCONNECTED,    static_cast<DzFrameType>(2114));
-    EXPECT_EQ(DZ_FRAME_TD_QUERY_ACCOUNT_STATUS,   static_cast<DzFrameType>(2115));
-}
-
-TEST(FramePayload, TdBusinessFramesCarrySeq) {
-    // spec §3.1: 四类 td 业务帧 payload 末尾带 uint64_t seq
-    DzOrderReport o{};
-    o.seq = 42;
-    EXPECT_EQ(42u, o.seq);
-    DzTradeReport t{};
-    t.seq = 7;
-    EXPECT_EQ(7u, t.seq);
-    DzPositionInfo p{};
-    p.seq = 9;
-    EXPECT_EQ(9u, p.seq);
-    DzTradingAccount a{};
-    a.seq = 11;
-    EXPECT_EQ(11u, a.seq);
-    // 8 字节对齐不变（DZ_DECLARE_ALIGNED_STRUCT 编译期保证，这里防御 sizeof 可被 8 整除）
-    EXPECT_EQ(0u, sizeof(DzOrderReport) % 8);
-    EXPECT_EQ(0u, sizeof(DzTradeReport) % 8);
-    EXPECT_EQ(0u, sizeof(DzPositionInfo) % 8);
-    EXPECT_EQ(0u, sizeof(DzTradingAccount) % 8);
+TEST(FrameTypes, TradePushClusterIsContiguous) {
+    EXPECT_EQ(DZ_FRAME_TRADE_REPORT, DZ_FRAME_ORDER_REPORT + 1);
+    EXPECT_EQ(DZ_FRAME_POSITION_INFO, DZ_FRAME_ORDER_REPORT + 2);
+    EXPECT_EQ(DZ_FRAME_TRADING_ACCOUNT, DZ_FRAME_ORDER_REPORT + 3);
+    // 行情/交易生命周期帧与交易推送同段（同一段判定即进跳转表）
+    EXPECT_LT(DZ_FRAME_NOTIFY_MD_STARTED, DZ_FRAME_ORDER_REPORT);
+    // 策略簇连号
+    EXPECT_EQ(DZ_FRAME_SCHEDULE, DZ_FRAME_UI_INPUT + 3);
 }

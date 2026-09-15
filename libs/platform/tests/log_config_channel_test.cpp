@@ -293,7 +293,7 @@ TEST_F(LogConfigChannelTest, SetFailureRollsBackCfg) {
 
 // ===== rtn_log_config() 测试 =====
 
-// 15. rtn 推送的帧包含 level 和 flush_on，无 error 字段
+// DZ_FRAME_FLUSH_LOG. rtn 推送的帧包含 level 和 flush_on，无 error 字段
 TEST_F(LogConfigChannelTest, RtnSendsFullConfig) {
     write_cfg_file(R"({"log":{"level":"warn","flush_on":"error"}})");
 

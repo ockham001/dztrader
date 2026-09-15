@@ -26,7 +26,7 @@
 
 ## 阅读顺序
 
-先读 [general](general.md)（总则），再按需读各契约。每份契约只写与总则不同的部分；跨契约引用格式：《帧契约：\<主题\>》§N（**禁止以行号引用契约**，见 general §11.2）。
+先读 [general](general.md)（总则），再按需读各契约。每份契约只写与总则不同的部分；跨契约引用格式：《帧契约：\<主题\>》§N（**禁止以行号引用契约**，见 general §DZ_FRAME_PRELOAD_EVENT_SHM.2）。
 
 ## 单一真相源原则
 
@@ -40,9 +40,9 @@
 ## 范围与遗留
 
 - 本目录覆盖事件通道的低频控制/配置/通知帧。
-- 策略帧契约已收录（见 [strategy](strategy.md)）；`OUTPUT_UI`/`SET_LOGICAL_POSITION` 的 dzweb 消费与 WS/REST 映射未接线（契约定义语义，实现滞后由 general §11.3 checklist 跟踪）。
-- **未覆盖**（后续独立契约）：交易帧（除契约 td-order 已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ`、契约 account-status 已覆盖的 `ACCOUNT_STATUS`/`TD_QUERY_ACCOUNT_STATUS`、契约 td-data-sync 已覆盖的 TD 推送 2000-2003 与契约 instrument 已覆盖的 `TD_INSTRUMENT`/`TD_INSTRUMENT_STATUS` 外，其余 2007-2017/2100-2115 交易帧）、行情/交易数据帧（`TICK`）、`SYS_SCHED`（帧类型保留未用，见 general §10）。
+- 策略帧契约已收录（见 [strategy](strategy.md)）；`OUTPUT_UI`/`SET_LOGICAL_POSITION` 的 dzweb 消费与 WS/REST 映射未接线（契约定义语义，实现滞后由 general §DZ_FRAME_PRELOAD_EVENT_SHM.3 checklist 跟踪）。
+- **未覆盖**（后续独立契约）：交易帧（除契约 td-order 已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ`、契约 account-status 已覆盖的 `ACCOUNT_STATUS`/`TD_QUERY_ACCOUNT_STATUS`、契约 td-data-sync 已覆盖的 TD 推送 DZ_FRAME_ORDER_REPORT-DZ_FRAME_TRADING_ACCOUNT 与契约 instrument 已覆盖的 `TD_INSTRUMENT`/`TD_INSTRUMENT_STATUS` 外，其余 DZ_FRAME_TD_REQ_MODIFY_CONFIG-DZ_FRAME_NOTIFY_TD_DISCONNECTED 交易控制帧）、行情/交易数据帧（`TICK`）、`SYS_SCHED`（帧已移除，见 general §10）。
 
 ## 变更流程
 
-修改契约必须执行 [general §11.3](general.md) 的变更 checklist（platform 头文件、帧号登记、dzweb 领域服务、前端、测试、契约 webui-ws 与 rest 映射表同步检查）。
+修改契约必须执行 [general §DZ_FRAME_PRELOAD_EVENT_SHM.3](general.md) 的变更 checklist（platform 头文件、帧号登记、dzweb 领域服务、前端、测试、契约 webui-ws 与 rest 映射表同步检查）。

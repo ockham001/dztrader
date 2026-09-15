@@ -154,7 +154,7 @@ bool frame_has_inst(DzFrameType t) {
 }
 
 /// basic 帧 (定长结构体 payload 紧跟 DzFrameHeader, 无 ext 头): 无法按 JSON 解析。
-/// 策略/交易链路会在事件通道产生此类帧 (TD_ORDER_REQ=2100 / ORDER_REPORT=2000),
+/// 策略/交易链路会在事件通道产生此类帧 (TD_ORDER_REQ=DZ_FRAME_TD_ORDER_REQ / ORDER_REPORT=DZ_FRAME_ORDER_REPORT),
 /// 混在 ext 帧里, drain 时只记摘要跳过 payload 解析。
 bool frame_is_basic_struct(DzFrameType t) {
     switch (t) {
@@ -486,7 +486,7 @@ protected:
     std::unique_ptr<shm::Reader> reader_;
     std::unique_ptr<shm::MultiWriter> writer_;
     std::vector<std::string> frame_summary_;
-    /// 契约 account-status: 排空中捕获的 2018 账户状态帧 payload (帧指针会失效, 拷出)
+    /// 契约 account-status: 排空中捕获的 DZ_FRAME_ACCOUNT_STATUS 账户状态帧 payload (帧指针会失效, 拷出)
     std::vector<DzAccountStatus> account_status_frames_;
 };
 
@@ -496,7 +496,7 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
 
     auto send_query_snapshot = [&] {
         // 刷新订阅者快照: writer 创建时的快照可能早于 master 注册 md 订阅者
-        // (CI 负载下 master 拉起 md 更慢), 过期快照会漏唤醒 md (真实进程靠 21 帧刷新)
+        // (CI 负载下 master 拉起 md 更慢), 过期快照会漏唤醒 md (真实进程靠 DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER 帧刷新)
         writer_->refresh_subscribers();
         if (writer_->write_ext_frame(DZ_FRAME_QUERY_FULL_SNAPSHOT, nullptr, 0)) {
             writer_->notify_subscribers();
@@ -522,8 +522,8 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     ASSERT_TRUE(td_running) << "dztd_ctp did not report Running within 15s";
 
     // 1c-2. 账户状态回路: td 配置了账户 CTP001 但从不连接 (dztd_ctp.json stub)
-    //     -> td 启动读完配置应推 2018 Offline 帧 (契约 account-status 触发场景 1)。
-    //     2018 帧由 drain_available 统一捕获 (account_status_frames_); 启动帧可能
+    //     -> td 启动读完配置应推 DZ_FRAME_ACCOUNT_STATUS Offline 帧 (契约 account-status 触发场景 1)。
+    //     DZ_FRAME_ACCOUNT_STATUS 帧由 drain_available 统一捕获 (account_status_frames_); 启动帧可能
     //     早于 reader 打开被错过, 但 QUERY_FULL_SNAPSHOT 触发 td 快照重推 Offline
     //     (force=true), 故用既有 wait_until + 快照触发轮询窗口兜底 (10s 与本文件
     //     其他轮询窗口一致; 负载下 3s 偏紧)。

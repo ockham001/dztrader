@@ -81,7 +81,7 @@ TdDataService::TdDataService(FrameRouter& router, std::function<std::string()> t
 }
 
 void TdDataService::register_handlers(FrameRouter& router) {
-    // 2000-2003 为二进制 struct payload（write_struct 写帧），register_json 的 JSON decode
+    // DZ_FRAME_ORDER_REPORT-DZ_FRAME_TRADING_ACCOUNT 为二进制 struct payload（write_struct 写帧），register_json 的 JSON decode
     // 必失败——必须 register_raw。handler 在监听线程同步执行、FrameView 有效期内解析，
     // 拷贝字段后经 poster 投递到 IO 线程执行实际更新（与 REST/WS 连接回调同线程串行，
     // 镜像/gate 访问无竞争；严禁捕获 FrameView 引用）。

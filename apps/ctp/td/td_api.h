@@ -194,9 +194,9 @@ private:
                               const std::string& trading_day, bool force = false);
     /// 对 config_.accounts 全量重推 (无 session=Offline; spec §3.1 配置加载即推)
     void report_account_status_all();
-    /// 处理 TD_QUERY_ACCOUNT_STATUS(2115) basic 广播帧: 空=全量应答, 指定=命中配置才应答
+    /// 处理 TD_QUERY_ACCOUNT_STATUS basic 广播帧: 空=全量应答, 指定=命中配置才应答
     void handle_query_account_status(const std::byte* frame);
-    /// 处理 TD_QUERY_FEE_RATE(2116) basic 广播帧: 按需查询单合约费率/保证金 (异步回填)
+    /// 处理 TD_QUERY_FEE_RATE basic 广播帧: 按需查询单合约费率/保证金 (异步回填)
     void handle_query_fee_rate(const std::byte* frame);
     /// per-account 健康度翻转检测 + 广播 (NOTIFY_TD_CONNECTED / NOTIFY_TD_DISCONNECTED)。
     /// instance_id 格式 name_:account_id。仅在 health 翻转时发送, 避免重复。
@@ -351,7 +351,7 @@ void TdApi::dispatch(Event& event, void (AccountSession::*handler)(const T&)) {
                      rsp->account_id);
     }
     // Task 6 (spec §4.2 "最后一条重推"): Ready 翻转后、同 handler 返回周期内重推
-    // 追加流最后一条 (原 seq 直接写帧). 与 2018 Ready 广播同周期, 顺序确定:
+    // 追加流最后一条 (原 seq 直接写帧). 与 DZ_FRAME_ACCOUNT_STATUS Ready 广播同周期, 顺序确定:
     // 先广播 Ready (消费端拿到 DB 已稳定标记), 再重推触发帧 (带 seq 的保证到达帧).
     if (before != TdState::Ready && after == TdState::Ready) {
         session->repush_last_records();

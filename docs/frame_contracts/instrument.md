@@ -9,7 +9,7 @@
 | `TD_INSTRUMENT` | `DzInstrumentInfo` | 绝对态（合约静态表，逐条推送） |
 | `TD_INSTRUMENT_STATUS` | `DzInstrumentStatus` | 状态事件（合约交易状态变更） |
 
-两帧均为 basic 帧（仅 `DzFrameHeader`，无 `instance_id` 扩展头）、struct payload（编码规则见总则 §6）。类型层真相源：`libs/strategy_api/include/dztrader/struct.h`（`DzInstrumentInfo` 及伴随结构体）、`libs/core/include/dztrader/core/core_data_type.h`（帧号）。帧号定义：`TD_INSTRUMENT = 2005`、`TD_INSTRUMENT_STATUS = 2006`。
+两帧均为 basic 帧（仅 `DzFrameHeader`，无 `instance_id` 扩展头）、struct payload（编码规则见总则 §6）。类型层真相源：`libs/strategy_api/include/dztrader/struct.h`（`DzInstrumentInfo` 及伴随结构体）、`libs/core/include/dztrader/core/core_data_type.h`（帧号）。帧号定义：`TD_INSTRUMENT = DZ_FRAME_TD_INSTRUMENT`、`TD_INSTRUMENT_STATUS = DZ_FRAME_TD_INSTRUMENT_STATUS`。
 
 ## 语义 / 数据流 / 路由
 
@@ -80,11 +80,11 @@ struct 为 POD 零初始化，未显式赋值字段读到 0——哨兵体系与
   - `TD_INSTRUMENT`：账户登录链内的合约全量查询（CTP `ReqQryInstrument` 回报逐条一帧）；查询完成（is_last）或失败时账户转 Ready。每日刷新（网关重登录/日切重查）同样重发全量——消费方按覆盖语义处理（同一 `instrument_id` 后到覆盖先到）。
   - `TD_INSTRUMENT_STATUS`：盘中场所推送合约交易状态变更（CTP `OnRtnInstrumentStatus`），无请求帧对应。
 - **不响应** `QUERY_FULL_SNAPSHOT`（合约表无快照协议；策略在账户 Ready 前后被动接收全量）。
-- 与 2000-2003 TD 推送帧不同，两帧**无 `seq`**：不参与《帧契约：TD 数据同步》的水位/回补/重置机制；丢帧自愈依赖每日全量重发。
+- 与 DZ_FRAME_ORDER_REPORT-DZ_FRAME_TRADING_ACCOUNT TD 推送帧不同，两帧**无 `seq`**：不参与《帧契约：TD 数据同步》的水位/回补/重置机制；丢帧自愈依赖每日全量重发。
 
 ## 镜像
 
-- 不进 dzweb 镜像（后台进程间帧，dzweb 无 2005/2006 消费；策略 SDK 对 2005/2006 仅放行不解析 payload，策略用户经回调自取，见《帧契约：通用规则》§9）。
+- 不进 dzweb 镜像（后台进程间帧，dzweb 无 DZ_FRAME_TD_INSTRUMENT/DZ_FRAME_TD_INSTRUMENT_STATUS 消费；策略 SDK 对 DZ_FRAME_TD_INSTRUMENT/DZ_FRAME_TD_INSTRUMENT_STATUS 仅放行不解析 payload，策略用户经回调自取，见《帧契约：通用规则》§9）。
 
 ## 保留声明
 

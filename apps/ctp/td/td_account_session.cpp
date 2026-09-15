@@ -15,6 +15,8 @@
 #include <dztrader/data_type.h>
 #include <dztrader/date_time/date.h>
 #include <dztrader/platform/frame_codec.h>
+#include <dztrader/platform/risk_reject.h>
+#include <dztrader/platform/td_account_ops.h>
 #include <dztrader/struct.h>
 
 #include "td/td_position.h"
@@ -1281,16 +1283,16 @@ void AccountSession::reject_order(const DzOrderReq& req, const std::string& reas
 void AccountSession::write_risk_reject(const std::string& account_id,
                                        const std::string& rule_name,
                                        const std::string& reason) {
-    // C3: 推 DZ_FRAME_TD_RISK_REJECT (2008), payload=DzRiskReject
+    // C3: 推 DZ_FRAME_TD_RISK_REJECT, payload=JSON (契约 td-risk-reject)
     // 异常不传播 (设计 §8.2)
     try {
-        DzRiskReject field{};
-        copy_string(field.account_id, account_id.c_str(), true);
-        copy_string(field.rule_name, rule_name.c_str(), true);
-        copy_string(field.reason, reason.c_str(), true);
-        field.timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        platform::DzRiskReject reject;
+        reject.account_id = account_id;
+        reject.rule_name = rule_name;
+        reject.reason = reason;
+        reject.timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
-        platform::write_struct(event_writer_, DZ_FRAME_TD_RISK_REJECT, field);
+        platform::write_ext_json(event_writer_, DZ_FRAME_TD_RISK_REJECT, reject);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td write_risk_reject failed | account={} error=\"{}\"",
                      account_id_, e.what());
@@ -1937,7 +1939,7 @@ void AccountSession::on_err_rtn_order_action(const OnErrRtnOrderActionField& f) 
 }
 
 // === on_rsp_transfer: 出入金响应 ===
-// 转 DzTransferRsp (内联转换), 推 SHM DZ_FRAME_TD_TRANSFER_RSP
+// 转 platform::DzTransferRsp, 推 SHM DZ_FRAME_TD_TRANSFER_RSP (JSON, 契约 td-account-ops)
 void AccountSession::on_rsp_transfer(const OnRspFromBankToFutureByFutureField& f) {
     try {
         if (!f.req_transfer) {
@@ -1945,22 +1947,21 @@ void AccountSession::on_rsp_transfer(const OnRspFromBankToFutureByFutureField& f
             return;
         }
 
-        DzTransferRsp rec{};
-        copy_string(rec.account_id, account_id_.c_str(), true);
-        copy_string(rec.trade_code, f.req_transfer->TradeCode, true);
+        platform::DzTransferRsp rec;
+        rec.account_id = account_id_;
+        rec.trade_code = f.req_transfer->TradeCode;
         rec.error_id = (f.rsp_info && f.rsp_info->ErrorID != 0) ? f.rsp_info->ErrorID : 0;
         if (f.rsp_info) {
-            std::string error_msg = dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg);
-            copy_string(rec.error_msg, error_msg.c_str(), true);
+            rec.error_msg = dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg);
         }
         rec.bank_balance = 0;  // ReqTransferField 无银行余额字段
         rec.trade_amount = f.req_transfer->TradeAmount;
-        // TransferStatus 是单个 char, 直接赋值到 char[2] (首位 + null 终止)
-        rec.transfer_status[0] = f.req_transfer->TransferStatus;
-        rec.transfer_status[1] = '\0';
+        rec.transfer_status = f.req_transfer->TransferStatus == '\0'
+                                  ? std::string()
+                                  : std::string(1, f.req_transfer->TransferStatus);
         rec.time = parse_ctp_time(f.req_transfer->TradeTime);
 
-        platform::write_struct(event_writer_, DZ_FRAME_TD_TRANSFER_RSP, rec);
+        platform::write_ext_json(event_writer_, DZ_FRAME_TD_TRANSFER_RSP, rec);
 
         SPDLOG_INFO("td rsp transfer | account={} trade_code={} amount={} error_id={}",
                     account_id_, f.req_transfer->TradeCode, f.req_transfer->TradeAmount, rec.error_id);
@@ -1971,23 +1972,22 @@ void AccountSession::on_rsp_transfer(const OnRspFromBankToFutureByFutureField& f
 }
 
 // === on_rtn_transfer: 出入金实时通知 (银行权威结果) ===
-// 转 DzTransferRsp, 推 SHM DZ_FRAME_TD_TRANSFER_RTN
+// 转 platform::DzTransferRsp, 推 SHM DZ_FRAME_TD_TRANSFER_RTN (JSON, 契约 td-account-ops)
 void AccountSession::on_rtn_transfer(const OnRtnFromBankToFutureByFutureField& f) {
     try {
-        DzTransferRsp rec{};
-        copy_string(rec.account_id, account_id_.c_str(), true);
-        copy_string(rec.trade_code, f.rsp_transfer.TradeCode, true);
+        platform::DzTransferRsp rec;
+        rec.account_id = account_id_;
+        rec.trade_code = f.rsp_transfer.TradeCode;
         rec.error_id = f.rsp_transfer.ErrorID;
-        std::string error_msg = dztrader::to_utf8_from_gbk(f.rsp_transfer.ErrorMsg);
-        copy_string(rec.error_msg, error_msg.c_str(), true);
+        rec.error_msg = dztrader::to_utf8_from_gbk(f.rsp_transfer.ErrorMsg);
         rec.bank_balance = 0;  // RspTransferField 无明确银行余额字段
         rec.trade_amount = f.rsp_transfer.TradeAmount;
-        // TransferStatus 是单个 char, 直接赋值到 char[2] (首位 + null 终止)
-        rec.transfer_status[0] = f.rsp_transfer.TransferStatus;
-        rec.transfer_status[1] = '\0';
+        rec.transfer_status = f.rsp_transfer.TransferStatus == '\0'
+                                  ? std::string()
+                                  : std::string(1, f.rsp_transfer.TransferStatus);
         rec.time = parse_ctp_time(f.rsp_transfer.TradeTime);
 
-        platform::write_struct(event_writer_, DZ_FRAME_TD_TRANSFER_RTN, rec);
+        platform::write_ext_json(event_writer_, DZ_FRAME_TD_TRANSFER_RTN, rec);
 
         SPDLOG_INFO("td rtn transfer | account={} trade_code={} amount={} error_id={}",
                     account_id_, f.rsp_transfer.TradeCode, f.rsp_transfer.TradeAmount, rec.error_id);
@@ -1998,20 +1998,19 @@ void AccountSession::on_rtn_transfer(const OnRtnFromBankToFutureByFutureField& f
 }
 
 // === on_rsp_user_password_update: 修改登录密码响应 ===
-// 转 DzPasswordUpdateRsp (password_type='U'), 推 SHM
+// 转 platform::DzPasswordUpdateRsp (password_type="U"), 推 SHM (JSON, 契约 td-account-ops)
 void AccountSession::on_rsp_user_password_update(const OnRspUserPasswordUpdateField& f) {
     try {
-        DzPasswordUpdateRsp rec{};
-        copy_string(rec.account_id, account_id_.c_str(), true);
-        rec.password_type = 'U';
+        platform::DzPasswordUpdateRsp rec;
+        rec.account_id = account_id_;
+        rec.password_type = "U";
         rec.error_id = (f.rsp_info && f.rsp_info->ErrorID != 0) ? f.rsp_info->ErrorID : 0;
         if (f.rsp_info) {
-            std::string error_msg = dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg);
-            copy_string(rec.error_msg, error_msg.c_str(), true);
+            rec.error_msg = dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg);
         }
         rec.time = 0;  // CTP 无时间字段, 留 0
 
-        platform::write_struct(event_writer_, DZ_FRAME_TD_PASSWORD_UPDATE_RSP, rec);
+        platform::write_ext_json(event_writer_, DZ_FRAME_TD_PASSWORD_UPDATE_RSP, rec);
 
         SPDLOG_INFO("td rsp user password update | account={} error_id={}",
                     account_id_, rec.error_id);
@@ -2022,20 +2021,19 @@ void AccountSession::on_rsp_user_password_update(const OnRspUserPasswordUpdateFi
 }
 
 // === on_rsp_trading_account_password_update: 修改资金密码响应 ===
-// 转 DzPasswordUpdateRsp (password_type='A'), 推 SHM
+// 转 platform::DzPasswordUpdateRsp (password_type="A"), 推 SHM (JSON, 契约 td-account-ops)
 void AccountSession::on_rsp_trading_account_password_update(const OnRspTradingAccountPasswordUpdateField& f) {
     try {
-        DzPasswordUpdateRsp rec{};
-        copy_string(rec.account_id, account_id_.c_str(), true);
-        rec.password_type = 'A';
+        platform::DzPasswordUpdateRsp rec;
+        rec.account_id = account_id_;
+        rec.password_type = "A";
         rec.error_id = (f.rsp_info && f.rsp_info->ErrorID != 0) ? f.rsp_info->ErrorID : 0;
         if (f.rsp_info) {
-            std::string error_msg = dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg);
-            copy_string(rec.error_msg, error_msg.c_str(), true);
+            rec.error_msg = dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg);
         }
         rec.time = 0;  // CTP 无时间字段, 留 0
 
-        platform::write_struct(event_writer_, DZ_FRAME_TD_PASSWORD_UPDATE_RSP, rec);
+        platform::write_ext_json(event_writer_, DZ_FRAME_TD_PASSWORD_UPDATE_RSP, rec);
 
         SPDLOG_INFO("td rsp trading account password update | account={} error_id={}",
                     account_id_, rec.error_id);

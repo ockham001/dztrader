@@ -14,7 +14,7 @@
 
 namespace dztrader::webui {
 
-/// TD 数据 ingest 领域服务：消费 2000-2003 交易帧（经账户级 seq 水位过滤）
+/// TD 数据 ingest 领域服务：消费 DZ_FRAME_ORDER_REPORT-DZ_FRAME_TRADING_ACCOUNT 交易帧（经账户级 seq 水位过滤）
 /// 维护内存镜像，消费 2018 ACCOUNT_STATUS 作重置/重建触发（spec §5.5）。
 ///
 /// 语义（spec §5.1/§4.2/§5.5，契约 td-data-sync / account-status）：
@@ -58,7 +58,7 @@ public:
     const std::vector<DzTradeReport>& trades() const { return trades_; }
 
 private:
-    /// 注册各帧 handler（ctor 调用）。2000-2003 走 register_raw（struct payload）。
+    /// 注册各帧 handler（ctor 调用）。DZ_FRAME_ORDER_REPORT-DZ_FRAME_TRADING_ACCOUNT 走 register_raw（struct payload）。
     void register_handlers(FrameRouter& router);
 
     /// 单账户复位：清该账户镜像（spec §5.5"清空必须显式"）+ gate reset_account。

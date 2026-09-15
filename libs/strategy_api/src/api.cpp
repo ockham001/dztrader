@@ -435,7 +435,7 @@ bool gap_covered_snapshot(DzDatabase* db, GapBackfillRows* rows, const std::stri
 /// 返回 false = 缓冲溢出 (gap 区间过宽, 回补被截断)。
 bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
     bool ok = true;
-    // orders -> DzOrderReport (帧 2000)
+    // orders -> DzOrderReport (帧 DZ_FRAME_ORDER_REPORT)
     {
         const DbQueryResult& result = rows.orders;
         const ColumnMap cols(result);
@@ -480,7 +480,7 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
             ok = ctx->enqueue_replay_frame(DZ_FRAME_ORDER_REPORT, &rpt, sizeof(rpt)) && ok;
         }
     }
-    // trades -> DzTradeReport (帧 2001)
+    // trades -> DzTradeReport (帧 DZ_FRAME_TRADE_REPORT)
     {
         const DbQueryResult& result = rows.trades;
         const ColumnMap cols(result);
@@ -517,7 +517,7 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
             ok = ctx->enqueue_replay_frame(DZ_FRAME_TRADE_REPORT, &rpt, sizeof(rpt)) && ok;
         }
     }
-    // positions -> DzPositionInfo (帧 2002)
+    // positions -> DzPositionInfo (帧 DZ_FRAME_POSITION_INFO)
     {
         const DbQueryResult& result = rows.positions;
         const ColumnMap cols(result);
@@ -548,7 +548,7 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
             ok = ctx->enqueue_replay_frame(DZ_FRAME_POSITION_INFO, &rpt, sizeof(rpt)) && ok;
         }
     }
-    // trading_accounts -> DzTradingAccount (帧 2003)
+    // trading_accounts -> DzTradingAccount (帧 DZ_FRAME_TRADING_ACCOUNT)
     {
         const DbQueryResult& result = rows.accounts;
         const ColumnMap cols(result);
@@ -696,7 +696,7 @@ bool handle_gap(DzContext* ctx, const std::byte* trigger_frame) {
     return true;
 }
 
-/// 单帧 TD ingest 过滤 + 断档回补 (2000-2003 共用):
+/// 单帧 TD ingest 过滤 + 断档回补 (DZ_FRAME_ORDER_REPORT-DZ_FRAME_TRADING_ACCOUNT 共用):
 /// 先 detect_reset (倒退) 后 admit (W 过滤), kSkip 拦截; gap 时查库填 replay 缓冲。
 /// 返回 true = 通过 ingest (调用方再做策略定向/放行)。
 template <typename ReportT>
@@ -850,10 +850,10 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
         case DZ_FRAME_NOTIFY_MD_STARTED:
             on_md_started_internal(ctx, frame);
             return false;
-        // 其余 TD 回报帧 2002-2018 (持仓/资金/费率/网关状态/合约等): 暂不按策略过滤, 全量放行。
-        // 2002/2003 为 ingest 帧 (含 seq/account_id): 完整帧过 gate (W 过滤/断档/倒退),
+        // 其余 TD 回报帧 DZ_FRAME_POSITION_INFO-DZ_FRAME_ACCOUNT_STATUS (持仓/资金/费率/网关状态/合约等): 暂不按策略过滤, 全量放行。
+        // DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 为 ingest 帧 (含 seq/account_id): 完整帧过 gate (W 过滤/断档/倒退),
         // 截断帧保持透传 (既有语义: 不按策略过滤, 引擎侧 payload_size_matches 丢弃);
-        // 2005+ 无 seq 字段, 不 ingest, 直接全量放行。
+        // 除上述四个 ingest 帧外的 TD 回报帧无 seq 字段, 不 ingest, 直接全量放行。
         case DZ_FRAME_POSITION_INFO: {
             const shm::FrameView view(frame);
             if (view.frame_size() < sizeof(DzFrameHeader) + sizeof(DzPositionInfo)) {
@@ -884,17 +884,14 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
         }
         case DZ_FRAME_TD_INSTRUMENT:
         case DZ_FRAME_TD_INSTRUMENT_STATUS:
-        case DZ_FRAME_TD_ERROR_REPORT:
         case DZ_FRAME_TD_RISK_REJECT:
         case DZ_FRAME_TD_TRANSFER_REQ:
         case DZ_FRAME_TD_TRANSFER_RSP:
         case DZ_FRAME_TD_TRANSFER_RTN:
         case DZ_FRAME_TD_PASSWORD_UPDATE_REQ:
         case DZ_FRAME_TD_PASSWORD_UPDATE_RSP:
-        case DZ_FRAME_TD_SETTLEMENT_INFO:
         case DZ_FRAME_TD_MARGIN_RATE:
         case DZ_FRAME_TD_COMMISSION_RATE:
-        case DZ_FRAME_TD_POSITION_DETAIL:
             return true;
         default:
             return false;  // 其余平台帧 (日志/SHM 配置/进程控制/TD 控制帧等) 丢弃
@@ -925,7 +922,7 @@ DZ_API const void* dz_next_event(DzContext* ctx) {
     // 回补帧 (断档回补合成的 Dz*Report) 前置 FIFO 派发: 先于任何 shm 实时帧,
     // 保证回补数据按 seq 序在触发帧之后、后续实时帧之前送达 (契约 strategy:
     // 启动竞态窗口的缺失区间由回补补齐, 无断档)。
-    // 回补帧已过 ingest gate (W/断档/去重), 不再重复过滤; 但 2000/2001 仍按
+    // 回补帧已过 ingest gate (W/断档/去重), 不再重复过滤; 但 DZ_FRAME_ORDER_REPORT/DZ_FRAME_TRADE_REPORT 仍按
     // strategy_id 定向 (回补查询按账户全量, 含他策略/外部单, 仅本策略放行)。
     // 断档回补重试驱动 (契约 td-data-sync §5.2): 回补不足时每次调用查一次库
     // (无 sleep, 调用间隔即天然"短重试"间隔); 成功/耗尽后触发帧 + 回补帧经

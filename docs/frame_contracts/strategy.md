@@ -40,7 +40,7 @@
 **约束**：
 - `instance_id` = 来源裸策略名（与 dzweb 进程镜像 key 一致，零转换关联）
 - 与 `NOTIFY_UI`（契约 notify-ui）的区别：`NOTIFY_UI` 是通知消息（有级别/弹窗/时间戳，进通知缓存）；`OUTPUT_UI` 是策略自主上行输出（无级别无弹窗，不进缓存）；是否响应 UI 输入由策略自行决定，本契约不定义配对关系
-- 接收方（dzweb）当前未消费本帧（`dz_output_ui` 写帧但 dzweb 无对应处理，见 README 范围与遗留）；契约定义语义，实现滞后由 general §11.3 checklist 跟踪
+- 接收方（dzweb）当前未消费本帧（`dz_output_ui` 写帧但 dzweb 无对应处理，见 README 范围与遗留）；契约定义语义，实现滞后由 general §DZ_FRAME_PRELOAD_EVENT_SHM.3 checklist 跟踪
 
 **镜像**：不进 dzweb 镜像
 
@@ -89,25 +89,25 @@
 
 **白名单（返回给策略用户）**：
 
-- `ORDER_REPORT`(2000)/`TRADE_REPORT`(2001)：按 payload `strategy_id` 定向——仅 `strategy_id` == 本策略裸名的帧放行；`strategy_id` 为空（外部单/手工单，非任何策略所下）与其他策略的回报一律拦截丢弃（td 网关按下单 `DzOrderReq.strategy_id` 回填，见契约 td-order）
-- `POSITION_INFO`(2002)/`TRADING_ACCOUNT`(2003)：不按策略过滤，全量透传；引擎分发给策略 `on_position_info`/`on_trading_account` 回调（TD 网关查询链路已落地：登录完成协议在 Ready 前发起持仓/资金查询，响应经 SDK ingest seq 过滤后推送，见下"SDK ingest 过滤职责"）；盘中成交/活动平仓挂单变化触发的增量 2002 同样经 ingest seq 过滤推送（绝对态）
-- `ACCOUNT_STATUS`(2018)：同上不按策略过滤，全量透传（payload 无 `strategy_id`，账户级广播帧）；SDK 引擎分发 `on_account_status` 回调（帧语义见《帧契约：账户登录状态》）
-- 其余 TD 回报帧 2005–2017（`TD_INSTRUMENT` 等）：暂不按策略过滤，全量放行，引擎静默忽略
-- `UI_INPUT`（3001，定向本策略）：SDK 按 `instance_id` == 裸策略名过滤
-- `SHUTDOWN`（12，`instance_id` == 裸策略名）：SDK 完成内部清理（取消内部预加载定时器、清定时器帧缓冲）后放行，策略用户可据此优雅退出（`REQUEST_SHUTDOWN_ALL`(20) 已移除：全项目无写入/消费端）
+- `ORDER_REPORT`(DZ_FRAME_ORDER_REPORT)/`TRADE_REPORT`(DZ_FRAME_TRADE_REPORT)：按 payload `strategy_id` 定向——仅 `strategy_id` == 本策略裸名的帧放行；`strategy_id` 为空（外部单/手工单，非任何策略所下）与其他策略的回报一律拦截丢弃（td 网关按下单 `DzOrderReq.strategy_id` 回填，见契约 td-order）
+- `POSITION_INFO`/`TRADING_ACCOUNT`：不按策略过滤，全量透传；引擎分发给策略 `on_position_info`/`on_trading_account` 回调（TD 网关查询链路已落地：登录完成协议在 Ready 前发起持仓/资金查询，响应经 SDK ingest seq 过滤后推送，见下"SDK ingest 过滤职责"）；盘中成交/活动平仓挂单变化触发的增量 `POSITION_INFO` 同样经 ingest seq 过滤推送（绝对态）
+- `ACCOUNT_STATUS`(DZ_FRAME_ACCOUNT_STATUS)：同上不按策略过滤，全量透传（payload 无 `strategy_id`，账户级广播帧）；SDK 引擎分发 `on_account_status` 回调（帧语义见《帧契约：账户登录状态》）
+- 其余 TD 回报帧（`TD_INSTRUMENT`/`TD_INSTRUMENT_STATUS`/`TD_MARGIN_RATE`/`TD_COMMISSION_RATE` 等）：暂不按策略过滤，全量放行，引擎静默忽略
+- `UI_INPUT`（定向本策略）：SDK 按 `instance_id` == 裸策略名过滤
+- `SHUTDOWN`（DZ_FRAME_SHUTDOWN，`instance_id` == 裸策略名）：SDK 完成内部清理（取消内部预加载定时器、清定时器帧缓冲）后放行，策略用户可据此优雅退出（`REQUEST_SHUTDOWN_ALL` 已移除：全项目无写入/消费端）
 - 本地合成的 `SCHEDULE`（3003）
 
 **拦截（SDK 内部消费，不返回策略用户）**：
 
-- `PRELOAD_EVENT_SHM`（11）/ `PRELOAD_MD_SHM`（17，`instance_id` 匹配本策略行情源）：随机 0–5s 延迟后执行预加载（契约 shm）
-- `UPDATE_SHM_EVENT_SUBSCRIBER`（21）：SDK 内部 `refresh_subscribers()`
-- `NOTIFY_MD_STARTED`（1007，本策略行情源）：SDK 自动补订阅期望集合
+- `PRELOAD_EVENT_SHM` / `PRELOAD_MD_SHM`（`instance_id` 匹配本策略行情源）：随机 0–5s 延迟后执行预加载（契约 shm）
+- `UPDATE_SHM_EVENT_SUBSCRIBER`：SDK 内部 `refresh_subscribers()`
+- `NOTIFY_MD_STARTED`（本策略行情源）：SDK 自动补订阅期望集合
 - 非本策略/空 `strategy_id` 的 `ORDER_REPORT`/`TRADE_REPORT`；非本策略 `instance_id` 的 `UI_INPUT`/`SHUTDOWN`
 - 其余平台帧（日志/SHM 配置、进程控制、md 控制、TD 控制 21xx、`OUTPUT_UI`/`SET_LOGICAL_POSITION` 他策略回声等）：丢弃（`TD_QUERY_ACCOUNT_STATUS` 是 SDK 写端帧——由 `dz_query_account_status` 发出，非读端白名单成员）
 
 **SDK ingest 过滤职责**（TD 数据同步，账户级 seq 水位）：
 
-SDK 在 `dz_next_event` 派发 2000–2003 帧时先经账户级 ingest 过滤，再返回策略用户：
+SDK 在 `dz_next_event` 派发 DZ_FRAME_ORDER_REPORT–DZ_FRAME_TRADING_ACCOUNT 帧时先经账户级 ingest 过滤，再返回策略用户：
 
 - **seq 过滤（先于 strategy_id 过滤）**：对每个账户维护水位 W（启动时查 TD 库 `MAX(seq)` 得，真相源 `struct.h` 四 payload 末尾 `seq` 字段，语义见 ADR 0007）。`seq ≤ W` 的帧（快照已含）拦截、不返回策略用户；`seq > W` 放行并推进该账户水位。**过滤次序固定：seq 过滤先于 strategy_id 过滤**——seq 是"该账户本条是否已同步"的全局判定，strategy_id 是"本策略是否定向该条"的定向判定，两者正交
 - **断档回补**：启动竞态窗口（在途帧写在 reader 开启前、落库在快照查询后）使首帧 `seq > W+1` 时，SDK 查 TD 库补回缺失区间，按 seq 序归并后派发
@@ -116,7 +116,7 @@ SDK 在 `dz_next_event` 派发 2000–2003 帧时先经账户级 ingest 过滤�
 
 **对策略透明**：W 快照、断档回补、成交去重、seq 倒退重置全部在 SDK ingest 层完成，策略回调语义不受影响——`on_trade_report` 语义 = **每笔成交恰好一次**。
 
-**回调语义承诺**：2000–2003 回调（`on_order_report`/`on_trade_report`/`on_position_info`/`on_trading_account`）在 ingest 过滤后保证：
+**回调语义承诺**：`ORDER_REPORT`/`TRADE_REPORT`/`POSITION_INFO`/`TRADING_ACCOUNT` 回调（`on_order_report`/`on_trade_report`/`on_position_info`/`on_trading_account`）在 ingest 过滤后保证：
 
 - **无陈旧帧**：`seq ≤ W` 的帧已在 SDK 拦截，不会送达回调
 - **无断档**：启动竞态窗口的缺失区间由回补补齐
@@ -128,4 +128,4 @@ SDK 在 `dz_next_event` 派发 2000–2003 帧时先经账户级 ingest 过滤�
 
 ## 变更流程
 
-本契约随策略帧实现演进；修改必须执行 general §11.3 变更 checklist。
+本契约随策略帧实现演进；修改必须执行 general §DZ_FRAME_PRELOAD_EVENT_SHM.3 变更 checklist。

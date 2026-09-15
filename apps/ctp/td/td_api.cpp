@@ -339,12 +339,12 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
             return;
         }
         case DZ_FRAME_TD_QUERY_ACCOUNT_STATUS: {
-            // 契约 account-status: 2115 basic 广播帧, 空=全量应答, 指定=命中配置才应答
+            // 契约 account-status: DZ_FRAME_TD_QUERY_ACCOUNT_STATUS basic 广播帧, 空=全量应答, 指定=命中配置才应答
             handle_query_account_status(frame);
             return;
         }
         case DZ_FRAME_TD_QUERY_FEE_RATE: {
-            // 契约 td-fee-margin: 2116 basic 广播帧, 按需查询单合约费率/保证金 (异步回填)
+            // 契约 td-fee-margin: DZ_FRAME_TD_QUERY_FEE_RATE basic 广播帧, 按需查询单合约费率/保证金 (异步回填)
             handle_query_fee_rate(frame);
             return;
         }
@@ -953,7 +953,7 @@ void TdApi::handle_query_account_status(const std::byte* frame) {
 }
 
 void TdApi::handle_query_fee_rate(const std::byte* frame) {
-    // 契约 td-fee-margin: 2116 basic 广播帧, 按需查询单合约费率/保证金 (异步回填).
+    // 契约 td-fee-margin: DZ_FRAME_TD_QUERY_FEE_RATE basic 广播帧, 按需查询单合约费率/保证金 (异步回填).
     const shm::FrameView view(frame);
     constexpr auto kMin = sizeof(DzFrameHeader) + sizeof(DzFeeRateQueryReq);
     if (view.frame_size() < kMin) {

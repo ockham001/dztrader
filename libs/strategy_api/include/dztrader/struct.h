@@ -156,7 +156,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzScheduleEvent, {
     DzTimerId timer_id;  ///< 触发定时器的稳定 ID (与 dz_schedule_* 返回值一致)
 });
 
-/** @brief 账户登录状态推送 payload (DZ_FRAME_ACCOUNT_STATUS=2018, basic 广播帧,
+/** @brief 账户登录状态推送 payload (DZ_FRAME_ACCOUNT_STATUS, basic 广播帧,
  *  身份在 payload account_id + gateway_name, 无扩展头, 契约 account-status) */
 DZ_DECLARE_ALIGNED_STRUCT(DzAccountStatus, {
     DzAccountId account_id;    ///< 账户标识
@@ -294,64 +294,9 @@ DZ_DECLARE_ALIGNED_STRUCT(DzInstrumentStatus, {
     DzTime time;
 });
 
-/// 出入金请求 (对应 CTP ReqFromBankToFutureByFuture)
-DZ_DECLARE_ALIGNED_STRUCT(DzTransferReq, {
-    DzAccountId account_id;
-    char trade_code[8];  // "202001"/"202002"/"204002"
-    char bank_id[8];
-    char bank_account[32];
-    char bank_password[32];
-    char future_password[32];
-    char currency_id[8];
-    double trade_amount;
-    int8_t cust_type;  // 0=个人, 1=机构
-    char reserved[7];  // 对齐 int64_t request_id 到 8 字节边界
-    int64_t request_id;
-});
-
-/// 出入金响应 (OnRsp 接收 / OnRtn 权威结果)
-DZ_DECLARE_ALIGNED_STRUCT(DzTransferRsp, {
-    DzAccountId account_id;
-    char trade_code[8];
-    int32_t error_id;
-    char error_msg[128];
-    char reserved[4];  // 对齐 double bank_balance 到 8 字节边界
-    double bank_balance;
-    double trade_amount;
-    char transfer_status[2];
-    char reserved2[2];
-    DzTime time;
-});
-
-/// 修改密码请求
-DZ_DECLARE_ALIGNED_STRUCT(DzPasswordUpdateReq, {
-    DzAccountId account_id;
-    int8_t password_type;  // 'U'=登录密码, 'A'=资金密码
-    char reserved[7];      // 对齐结构体大小到 8 字节倍数
-    char old_password[32];
-    char new_password[32];
-    char currency_id[8];
-});
-
-/// 修改密码响应
-DZ_DECLARE_ALIGNED_STRUCT(DzPasswordUpdateRsp, {
-    DzAccountId account_id;
-    int8_t password_type;
-    char reserved[3];  // 对齐 int32_t error_id 到 4 字节边界
-    int32_t error_id;
-    char error_msg[128];
-    DzTime time;
-    char reserved2[4];  // 对齐结构体大小到 8 字节倍数
-});
-
-/// 风控拒绝通知
-DZ_DECLARE_ALIGNED_STRUCT(DzRiskReject, {
-    DzAccountId account_id;
-    char rule_name[32];
-    char reason[128];
-    int64_t timestamp_ns;
-});
-
+// 注: UI 协议帧（TRANSFER_* / PASSWORD_UPDATE_* / RISK_REJECT）的 payload 已由二进制
+// 结构体迁移为 JSON，类型真相源改为 libs/platform/include/dztrader/platform/
+// {td_account_ops.h, risk_reject.h}（ADR 0009），原 DZ_DECLARE_ALIGNED_STRUCT 定义已删除。
 DZ_END_C_DECLS
 
 #endif /* DZTRADER_STRUCT_H_ */

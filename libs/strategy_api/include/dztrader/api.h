@@ -307,8 +307,8 @@ DZ_API bool dz_set_logical_position(DzContext* ctx,
 /**
  * @brief 查询账户登录状态（异步, fire-and-forget）
  *
- * 写 TD_QUERY_ACCOUNT_STATUS(2115) basic 广播帧; td 网关按配置应答
- * DzAccountStatus(2018) 帧（经 on_account_status 回调到达）。
+ * 写 TD_QUERY_ACCOUNT_STATUS basic 广播帧; td 网关按配置应答
+ * DzAccountStatus(DZ_FRAME_ACCOUNT_STATUS) 帧（经 on_account_status 回调到达）。
  * 应答与主动推送为同一种帧, 无请求-响应关联。
  * 无网关在线时由 master 兜底应答 (gateway_name 为空串)。
  * 历史帧不重放: 策略启动时初始状态必须经本函数获取 (契约 account-status)。
@@ -321,9 +321,9 @@ DZ_API bool dz_query_account_status(DzContext* ctx, const char* account_id);
 /**
  * @brief 按需查询单合约的保证金率/手续费率 (异步回填)
  *
- * 写 TD_QUERY_FEE_RATE(2116) basic 广播帧; td 网关查 CTP 后写入
+ * 写 TD_QUERY_FEE_RATE basic 广播帧; td 网关查 CTP 后写入
  * margin_rates/commission_rates 表并广播 DZ_FRAME_TD_MARGIN_RATE(2015)/
- * DZ_FRAME_TD_COMMISSION_RATE(2016) 帧 (契约 td-fee-margin)。
+ * DZ_FRAME_TD_COMMISSION_RATE 帧 (契约 td-fee-margin)。
  * 发后即返 (不阻塞): 结果经 SHM 帧或后续 dz_db_query_* 获取。
  *
  * @param ctx           策略上下文

@@ -370,12 +370,12 @@ TEST_F(ShmManagerTest, StartEventShmMaintenanceWithZeroIntervalIsDisabled) {
 }
 
 // ============================================================================
-// 新协议 (115-118) 帧处理测试: REQUEST_PROCESS_CONTROL / SET_PROCESS_CONFIG / 全量快照
+// 新协议 (DZ_FRAME_REQUEST_PROCESS_CONTROL-DZ_FRAME_RTN_PROCESS_CONFIG) 帧处理测试: REQUEST_PROCESS_CONTROL / SET_PROCESS_CONFIG / 全量快照
 // ============================================================================
 // 真实 ProcessSupervisor + registry 从 dztraderd.json 加载 ("md" section 注册 dzmd_ctp)。
 // 用例只走"未注册/未启动"路径 (不 spawn 真实子进程), 帧驱动方式:
 //   独立 reader 注册 -> 独立 writer 写请求帧 -> drain_event_channel
-//   -> reader 排空断言响应帧 (116/118/101)。
+//   -> reader 排空断言响应帧 (DZ_FRAME_RTN_PROCESS_STATUS/DZ_FRAME_RTN_PROCESS_CONFIG/DZ_FRAME_NOTIFY_UI)。
 // 注: handle_process_control 要求 supervisor_ 非空, 故必须 set_supervisor 注入真实 supervisor
 //     (注入时同时触发 store 初始镜像 load, 见 set_supervisor 实现)。
 class ProcessControlFrameTest : public ::testing::Test {
@@ -432,7 +432,7 @@ protected:
         auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
         return shm::MultiWriter::create(std::make_shared<shm::ChannelMeta>(std::move(meta)), suffix);
     }
-    // 写 REQUEST_PROCESS_CONTROL 帧 (115, 无 instance_id) + notify
+    // 写 REQUEST_PROCESS_CONTROL 帧 DZ_FRAME_REQUEST_PROCESS_CONTROL, 无 instance_id) + notify
     void write_process_control_frame(shm::MultiWriter& w, platform::ProcessAction action,
                                      const std::string& target,
                                      std::optional<nlohmann::json> config = std::nullopt) {
@@ -440,14 +440,14 @@ protected:
         platform::write_ext_json(w, DZ_FRAME_REQUEST_PROCESS_CONTROL, req);
         w.notify_subscribers();
     }
-    // 写 SET_PROCESS_CONFIG 帧 (117, 无 instance_id) + notify
+    // 写 SET_PROCESS_CONFIG 帧 DZ_FRAME_SET_PROCESS_CONFIG, 无 instance_id) + notify
     void write_set_process_config_frame(shm::MultiWriter& w, const std::string& target,
                                         const nlohmann::json& config) {
         platform::SetProcessConfigReq req{.target = target, .config = config};
         platform::write_ext_json(w, DZ_FRAME_SET_PROCESS_CONFIG, req);
         w.notify_subscribers();
     }
-    // 写 QUERY_FULL_SNAPSHOT 帧 (113, 空 payload) + notify
+    // 写 QUERY_FULL_SNAPSHOT 帧 DZ_FRAME_QUERY_FULL_SNAPSHOT, 空 payload) + notify
     void write_query_full_snapshot(shm::MultiWriter& w) {
         ASSERT_TRUE(w.write_ext_frame(DZ_FRAME_QUERY_FULL_SNAPSHOT, nullptr, 0));
         w.notify_subscribers();
@@ -890,7 +890,7 @@ TEST_F(ProcessControlFrameTest, StartRunningPushesStartSucceeded) {
     ioc_.run_for(std::chrono::seconds(5));  // single_stop_timeout_sec_=3, 超时强制 terminate
 }
 
-// ---- 帧 1013/1014: 行情通道读者注册/注销 (契约 shm) ----
+// ---- 帧 DZ_FRAME_REQUEST_MD_READER_REGISTER/DZ_FRAME_REQUEST_MD_READER_UNREGISTER: 行情通道读者注册/注销 (契约 shm) ----
 
 namespace {
 
@@ -917,7 +917,7 @@ void mark_channel_ready(shm::MultiWriter& w, const std::string& source) {
     platform::write_ext_inst_raw(w, DZ_FRAME_NOTIFY_MD_STARTED, source);
 }
 
-/// 写 1013/1014 帧 (instance_id=行情源名, payload={"subscriber": ...}) + notify。
+/// 写 DZ_FRAME_REQUEST_MD_READER_REGISTER/DZ_FRAME_REQUEST_MD_READER_UNREGISTER 帧 (instance_id=行情源名, payload={"subscriber": ...}) + notify。
 void write_md_reader_frame(shm::MultiWriter& w, DzFrameType type, const std::string& source,
                            const std::string& subscriber) {
     nlohmann::json payload = {{"subscriber", subscriber}};
@@ -1026,7 +1026,7 @@ TEST_F(ProcessControlFrameTest, MdReaderUnregisterRemovesReaderIdempotent) {
 }
 
 // 退出兜底: remove_reader_from_all_md_channels 清理所有通道的该读者
-// (经 1013 帧注册 — master 持 creator 角色写 meta, open_only 无权 add_reader)
+// (经 DZ_FRAME_REQUEST_MD_READER_REGISTER 帧注册 — master 持 creator 角色写 meta, open_only 无权 add_reader)
 TEST_F(ProcessControlFrameTest, RemoveReaderFromAllMdChannels) {
     register_strategy_for_test(registry_, "alpha");
     shm_mgr_->create_md_channel("dzmd_ctp");
@@ -1073,7 +1073,7 @@ TEST_F(ProcessControlFrameTest, MdReaderRegisterRejectsNotReadyChannel) {
     EXPECT_TRUE(rtn_msg_ok);
 }
 
-// 坏 payload 拒绝路径: 缺 subscriber 字段的 1013 帧被忽略 (无法获知请求方身份, 不回 RTN)
+// 坏 payload 拒绝路径: 缺 subscriber 字段的 DZ_FRAME_REQUEST_MD_READER_REGISTER 帧被忽略 (无法获知请求方身份, 不回 RTN)
 TEST_F(ProcessControlFrameTest, MdReaderRegisterBadPayloadIsIgnored) {
     register_strategy_for_test(registry_, "alpha");
     shm_mgr_->create_md_channel("dzmd_ctp");
@@ -1439,7 +1439,7 @@ TEST_F(ProcessControlFrameTest, RemoveInactiveGatewayFinalizesFully) {
     }
     EXPECT_FALSE(cfg.contains("md") && cfg["md"].contains("dzmd_ctp"));
 
-    // 帧序(写入顺序): 118(条目消失) -> 116 自发 Stopped -> 116 RemoveSucceeded。
+    // 帧序(写入顺序): DZ_FRAME_RTN_PROCESS_CONFIG(条目消失) -> DZ_FRAME_RTN_PROCESS_STATUS 自发 Stopped -> DZ_FRAME_RTN_PROCESS_STATUS RemoveSucceeded。
     // 一次性收集后断言: 118 先于 116 写入, 顺序 next_frame 扫描会先消费掉 118。
     // event 为 optional, 缺失时序列化省略该字段 (platform/process.h to_json),
     // value("event", "") 对自发帧返回空串、对请求帧返回事件名字符串。
@@ -1483,12 +1483,12 @@ TEST_F(ProcessControlFrameTest, RemoveInactiveGatewayFinalizesFully) {
 }
 
 // ---- 契约 account-status: master 账户镜像 (2018 建镜像) + 2115 兜底应答 ----
-// 帧驱动模式同既有用例: 独立 MultiWriter 模拟 td 写 2018/2115 basic 帧
+// 帧驱动模式同既有用例: 独立 MultiWriter 模拟 td 写 DZ_FRAME_ACCOUNT_STATUS/DZ_FRAME_TD_QUERY_ACCOUNT_STATUS basic 帧
 // (payload=定长结构体, 无扩展头) -> drain -> probe Reader 断言 master 兜底帧。
 
 namespace {
 
-/// 写 2018 账户状态帧 (basic 广播帧, payload=DzAccountStatus)
+/// 写 DZ_FRAME_ACCOUNT_STATUS 账户状态帧 (basic 广播帧, payload=DzAccountStatus)
 void write_account_status_frame(shm::MultiWriter& w, const std::string& gateway,
                                 const std::string& account, DzAccountState state) {
     DzAccountStatus status{};
@@ -1499,14 +1499,14 @@ void write_account_status_frame(shm::MultiWriter& w, const std::string& gateway,
     ASSERT_TRUE(platform::write_struct(w, DZ_FRAME_ACCOUNT_STATUS, status));
 }
 
-/// 写 2115 账户状态查询帧 (basic 广播帧, payload=DzAccountStatusReq)
+/// 写 DZ_FRAME_TD_QUERY_ACCOUNT_STATUS 账户状态查询帧 (basic 广播帧, payload=DzAccountStatusReq)
 void write_query_account_status_frame(shm::MultiWriter& w, const std::string& account) {
     DzAccountStatusReq req{};
     dztrader::copy_string(req.account_id, account.c_str(), true);
     ASSERT_TRUE(platform::write_struct(w, DZ_FRAME_TD_QUERY_ACCOUNT_STATUS, req));
 }
 
-/// 排空 reader 并收集全部 2018 账户状态帧 payload (帧指针下次 next_frame 失效, 拷出)
+/// 排空 reader 并收集全部 DZ_FRAME_ACCOUNT_STATUS 账户状态帧 payload (帧指针下次 next_frame 失效, 拷出)
 std::vector<DzAccountStatus> collect_account_status_frames(shm::Reader& reader) {
     std::vector<DzAccountStatus> out;
     for (int i = 0; i < 64; ++i) {
@@ -1582,7 +1582,7 @@ TEST_F(ShmManagerTest, FallbackEchoSkippedFromMirror) {
     auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
     auto writer = shm::MultiWriter::create(
         std::make_shared<shm::ChannelMeta>(std::move(meta)), "fake_td");
-    // 模拟 master 兜底应答回声: gateway_name="" 的 2018 帧
+    // 模拟 master 兜底应答回声: gateway_name="" 的 DZ_FRAME_ACCOUNT_STATUS 帧
     write_account_status_frame(writer, "", "CTP001", DZ_ACCOUNT_READY);
     for (int i = 0; i < 10; ++i) {
         mgr.drain_event_channel();
@@ -1697,7 +1697,7 @@ TEST_F(ShmManagerTest, QueryWithEmptyAccountGetsNoFallback) {
         mgr.drain_event_channel();
     }
 
-    // master 静默: 无任何 2018 帧产出
+    // master 静默: 无任何 DZ_FRAME_ACCOUNT_STATUS 帧产出
     EXPECT_TRUE(collect_account_status_frames(reader).empty());
 }
 

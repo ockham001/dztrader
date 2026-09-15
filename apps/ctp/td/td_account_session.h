@@ -153,7 +153,7 @@ public:
     bool cancel_order(DzOrderId order_id);
 
     /// 按需查询单合约费率/保证金 (阶段2, 契约 td-fee-margin): 入库+广播 (2015/2016), 异步回填.
-    /// 由 TdApi 收到 DZ_FRAME_TD_QUERY_FEE_RATE=2116 帧调用.
+    /// 由 TdApi 收到 DZ_FRAME_TD_QUERY_FEE_RATE=DZ_FRAME_TD_QUERY_FEE_RATE 帧调用.
     /// @param instrument_id 目标合约; @param query_type 0=保证金率, 1=手续费率, 2=两者.
     void query_fee_rate(const char* instrument_id, int8_t query_type);
 

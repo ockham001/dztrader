@@ -197,7 +197,7 @@ public:
     /// 与 mdctp 的 report_full_snapshot() 形成命名一致性。
     void report_full_snapshot();
 
-    /// 写 PROCESS_STATUS 扩展帧 (116, 无 instance_id) 到 event channel + notify subscribers。
+    /// 写 PROCESS_STATUS 扩展帧 DZ_FRAME_RTN_PROCESS_STATUS, 无 instance_id) 到 event channel + notify subscribers。
     /// master 在子进程状态变化时调用 (launch_child/on_child_exit/stop_single_child)。
     void write_process_status(const platform::ProcessStatus& status);
 
@@ -247,7 +247,7 @@ public:
     /// 由 ProcessSupervisor::notify_removed_for_inactive 调用。
     void remove_reader(std::string_view name);
 
-    // ===== 行情通道读者注册（帧 1013/1014, 任意已注册进程发起, master 持权） =====
+    // ===== 行情通道读者注册（帧 DZ_FRAME_REQUEST_MD_READER_REGISTER/DZ_FRAME_REQUEST_MD_READER_UNREGISTER, 任意已注册进程发起, master 持权） =====
     /// 处理 DZ_FRAME_REQUEST_MD_READER_REGISTER：校验 subscriber 为已注册进程
     /// （任意类别，不限策略，契约 shm）与通道三条件（已配置 / 行情进程运行 /
     /// 已就绪），通过后 add_reader + 广播 UPDATE + 回 RTN_MD_READER_REGISTER(1015)
@@ -292,8 +292,8 @@ private:
     // ===== 账户状态镜像 (契约 account-status: master 兜底职责) =====
     void handle_account_status(const std::byte* frame);
     void handle_query_account_status(const std::byte* frame);
-    /// 2018 payload -> 独立缓冲 (帧指针在下一次 next_frame 后失效, 不外借)
-    /// td 网关名 -> 该网关管理的账户集 (2018 非空 gateway_name 帧喂入;
+    /// DZ_FRAME_ACCOUNT_STATUS payload -> 独立缓冲 (帧指针在下一次 next_frame 后失效, 不外借)
+    /// td 网关名 -> 该网关管理的账户集 (DZ_FRAME_ACCOUNT_STATUS 非空 gateway_name 帧喂入;
     /// master 兜底回声 gateway_name="" 不入镜像)
     std::unordered_map<std::string, std::set<std::string>> td_account_mirror_;
 

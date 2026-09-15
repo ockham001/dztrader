@@ -622,7 +622,7 @@ TEST_F(StrategyEngineTest, PositionAndAccountFramesDispatchedUnfiltered) {
             inner.on_start(ctx);
             strategy_id = dz_strategy_id(ctx);
             (void)dz_schedule_after(ctx, 100);
-            // 2002/2003 为全量透传帧 (无策略过滤): 不填 strategy_id 也应分发,
+            // DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 为全量透传帧 (无策略过滤): 不填 strategy_id 也应分发,
             // 写法同 TradeAndOrderReportsDispatchedWithPayload (basic struct 帧);
             // 各帧须带递增 seq (账户级 ingest 去重按 (account_id, seq), 同值会被判已应用)
             DzPositionInfo info{};
@@ -735,7 +735,7 @@ TEST_F(StrategyEngineTest, AccountStatusFrameDispatchedUnfiltered) {
             inner.on_start(ctx);
             strategy_id = dz_strategy_id(ctx);
             (void)dz_schedule_after(ctx, 100);
-            // 2018 为全量透传帧 (无策略过滤), basic struct 帧写法同 2002/2003 用例
+            // DZ_FRAME_ACCOUNT_STATUS 为全量透传帧 (无策略过滤), basic struct 帧写法同 DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 用例
             DzAccountStatus status{};
             dztrader::copy_string(status.account_id, "CTP001", true);
             dztrader::copy_string(status.gateway_name, "dztd_ctp", true);
@@ -787,7 +787,7 @@ TEST_F(StrategyEngineTest, AccountStatusWrongSizeFrameNotDispatched) {
             strategy_id = dz_strategy_id(ctx);
             (void)dz_schedule_after(ctx, 100);
             // 超长帧防御 (payload_size_matches): frame_size = 头 + 104 + 8,
-            // SDK 对布局偏离的 2018 帧丢弃不分发
+            // SDK 对布局偏离的 DZ_FRAME_ACCOUNT_STATUS 帧丢弃不分发
             DzAccountStatus status{};
             dztrader::copy_string(status.account_id, "CTP001", true);
             dztrader::copy_string(status.gateway_name, "dztd_ctp", true);
@@ -820,7 +820,7 @@ TEST_F(StrategyEngineTest, AccountStatusWrongSizeFrameNotDispatched) {
     join_threads();
 
     EXPECT_EQ(rc, 0);
-    // frame_size 不符: 2018 帧被 SDK 丢弃, 不分发到策略
+    // frame_size 不符: DZ_FRAME_ACCOUNT_STATUS 帧被 SDK 丢弃, 不分发到策略
     EXPECT_EQ(strategy.account_status_count, 0);
     EXPECT_TRUE(shutdown_written.load());
     EXPECT_EQ(strategy.stop_count, 1);

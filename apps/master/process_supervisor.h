@@ -112,7 +112,7 @@ public:
     /// 移除 registry 条目（store remove 回调用）
     void unregister_entry(const std::string& name);
 
-    /// 发送 RTN_PROCESS_STATUS 帧 (116, 无 instance_id)。
+    /// 发送 RTN_PROCESS_STATUS 帧 DZ_FRAME_RTN_PROCESS_STATUS, 无 instance_id)。
     /// event 缺省 = 自发状态变化 (契约 process); 操作响应由 handle_process_control 显式传 event。
     /// display_name 从 store 读取 (契约 process, store 为配置真相源)
     void send_process_status(const std::string& name,

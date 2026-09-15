@@ -215,7 +215,7 @@ protected:
     }
 };
 
-// W = 四表最大 seq: seq ≤ 11 的帧被拦截 (含 orders 表快照外但 ≤ 其他表 max 的帧)。
+// W = 四表最大 seq: seq ≤ DZ_FRAME_PRELOAD_EVENT_SHM 的帧被拦截 (含 orders 表快照外但 ≤ 其他表 max 的帧)。
 TEST_F(IngestWatermarkTest, WatermarkTakesMaxAcrossFourTables) {
     init_ctx();
     // seq=6: > orders 表 max(5) 但 ≤ trades 表 max(7) → 快照已含, 必须拦截。
@@ -250,7 +250,7 @@ TEST_F(IngestWatermarkTest, WatermarkTakesMaxAcrossFourTables) {
     EXPECT_EQ(12u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
 }
 
-// 2002 (positions) 帧同样受四表 W 过滤: seq=9 (positions 表自身快照行) 拦截。
+// DZ_FRAME_POSITION_INFO (positions) 帧同样受四表 W 过滤: seq=9 (positions 表自身快照行) 拦截。
 TEST_F(IngestWatermarkTest, PositionFrameFilteredByCrossTableWatermark) {
     init_ctx();
     DzPositionInfo p{};

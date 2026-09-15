@@ -122,7 +122,7 @@ TEST(ProcessMirrorTest, UpdateConfigOverwritesExisting) {
 // ---- 契约 process 条目消失 = 进程已移除（Remove 竞态修复回归测试）----
 
 TEST(ProcessMirrorTest, UpdateProcessConfigsEntryDisappearanceCleansInstanceMirror) {
-    // Remove 流程帧序: 118(条目消失) 先于 116(Stopped); Stopped 被注册守卫拒绝,
+    // Remove 流程帧序: DZ_FRAME_RTN_PROCESS_CONFIG(条目消失) 先于 DZ_FRAME_RTN_PROCESS_STATUS(Stopped); Stopped 被注册守卫拒绝,
     // 若 118 处理时不清理实例镜像, 残留 process_status=Stopping 会让已移除进程
     // 在 snapshot/REST list 中"复活"。
     ProcessMirror mirror;

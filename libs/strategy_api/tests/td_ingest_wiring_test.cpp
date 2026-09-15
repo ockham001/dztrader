@@ -375,7 +375,7 @@ TEST_F(IngestWiringTest, AccountStatusTradingDayChangeClearsTradeDedup) {
     EXPECT_EQ(nullptr, dz_next_event(ctx_));
 
     // 2018 ACCOUNT_STATUS 携带新交易日 2026-09-02: 触发 on_trading_day_changed, 清旧日段。
-    // 2018 仍全量放行给策略用户 (on_account_status 回调), 故返回该帧。
+    // DZ_FRAME_ACCOUNT_STATUS 仍全量放行给策略用户 (on_account_status 回调), 故返回该帧。
     {
         DzAccountStatus st{};
         dztrader::copy_string(st.account_id, "CTP001", true);
@@ -710,7 +710,7 @@ TEST_F(IngestWiringTest, BackfillDispatchesPositionAndTradingAccount) {
     // 触发帧先返回
     ASSERT_NE(nullptr, dz_next_event(ctx_));
 
-    // 回补: positions 行 → DZ_FRAME_POSITION_INFO (帧 2002)
+    // 回补: positions 行 → DZ_FRAME_POSITION_INFO (帧 DZ_FRAME_POSITION_INFO)
     const void* f = dz_next_event(ctx_);
     ASSERT_NE(f, nullptr);
     EXPECT_EQ(DZ_FRAME_POSITION_INFO, FrameView(static_cast<const std::byte*>(f)).type());
@@ -727,7 +727,7 @@ TEST_F(IngestWiringTest, BackfillDispatchesPositionAndTradingAccount) {
     EXPECT_DOUBLE_EQ(3950.5, pos.price);
     EXPECT_EQ(6u, pos.seq);
 
-    // 回补: trading_accounts 行 → DZ_FRAME_TRADING_ACCOUNT (帧 2003)
+    // 回补: trading_accounts 行 → DZ_FRAME_TRADING_ACCOUNT (帧 DZ_FRAME_TRADING_ACCOUNT)
     f = dz_next_event(ctx_);
     ASSERT_NE(f, nullptr);
     EXPECT_EQ(DZ_FRAME_TRADING_ACCOUNT, FrameView(static_cast<const std::byte*>(f)).type());
@@ -837,7 +837,7 @@ TEST_F(IngestWiringTest, GapBackfillRetryExhaustedReleasesTrigger) {
     EXPECT_EQ(nullptr, dz_next_event(ctx_));
 }
 
-// 评审发现 4: 2002/2003 帧 (POSITION_INFO / TRADING_ACCOUNT) 过 gate — W 过滤拦截
+// 评审发现 4: DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 帧 (POSITION_INFO / TRADING_ACCOUNT) 过 gate — W 过滤拦截
 // seq ≤ W 的帧, seq > W 放行 (全量放行语义, 不经 strategy_id 定向)。
 // seq 取值与 DB 快照连续 (W=5, 首帧 6): 避免合成空洞触发回补重试 (见发现 3 测试)。
 TEST_F(IngestWiringTest, PositionAndTradingAccountGoThroughGate) {    // seq ≤ W=5: 拦截
@@ -978,7 +978,7 @@ TEST_F(IngestWiringTest, GapRetryStagesSubsequentFramesThenDeliversInSeqOrder) {
     EXPECT_EQ(nullptr, dz_next_event(ctx_));
 }
 
-// 终检发现 B 回归: 重试期间到达的 2002/2003 绝对态帧同样暂存 (次序无关紧要但统一处理),
+// 终检发现 B 回归: 重试期间到达的 DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 绝对态帧同样暂存 (次序无关紧要但统一处理),
 // 不直接放行。
 TEST_F(IngestWiringTest, GapRetryStagesPositionFrameDuringRetry) {
     // gap 6,7 无行 (首次回补不足)
@@ -988,7 +988,7 @@ TEST_F(IngestWiringTest, GapRetryStagesPositionFrameDuringRetry) {
     emit_struct(DZ_FRAME_POSITION_INFO, trigger);
     EXPECT_EQ(nullptr, dz_next_event(ctx_));  // 触发帧拦截
 
-    // 重试在途: 2002 后续帧 seq=9 → 暂存 (不直接放行)
+    // 重试在途: DZ_FRAME_POSITION_INFO 后续帧 seq=9 → 暂存 (不直接放行)
     DzPositionInfo later{};
     dztrader::copy_string(later.account_id, "CTP001", true);
     later.seq = 9;
@@ -1022,7 +1022,7 @@ TEST_F(IngestWiringTest, GapRetryStagesPositionFrameDuringRetry) {
     ASSERT_NE(f, nullptr);
     EXPECT_EQ(DZ_FRAME_POSITION_INFO, FrameView(static_cast<const std::byte*>(f)).type());
     EXPECT_EQ(8u, FrameView(static_cast<const std::byte*>(f)).payload<DzPositionInfo>().seq);
-    // 暂存 2002 帧 seq=9
+    // 暂存 DZ_FRAME_POSITION_INFO 帧 seq=9
     f = dz_next_event(ctx_);
     ASSERT_NE(f, nullptr);
     EXPECT_EQ(DZ_FRAME_POSITION_INFO, FrameView(static_cast<const std::byte*>(f)).type());

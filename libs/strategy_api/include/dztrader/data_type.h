@@ -340,47 +340,70 @@ typedef int8_t DzAccountState;
 /* ==========================================================
  *  帧类型
  *
- *  本头仅含策略可见帧（策略经 dz_next_event / dz_next_md 识别消费）
- *  与基础类型定义；平台内部帧（SHM 维护/日志配置/SHM 配置/UI 通知/
- *  进程控制/行情控制/交易控制/策略上行帧）见
- *  libs/core/include/dztrader/core/core_data_type.h。
+ *  【唯一书写位置】帧的值只写在两个头文件里: 本头（策略可见帧）与
+ *  core_data_type.h（平台内部帧）; 契约、注释、日志、测试等其余任何位置
+ *  一律引用帧名 DZ_FRAME_*, 不得写值 —— 改帧号只需改这两处。
+ *
+ *  帧号分段（新增帧取本段下一个空闲号、追加在段尾; 禁止插空档、
+ *  禁止跨段散布同一接收域）:
+ *
+ *    | 值域      | 归属                                             |
+ *    |-----------|--------------------------------------------------|
+ *    | 0-31      | 系统/通道/日志/进程/自动登录/进度/关闭           |
+ *    | 32-63     | 逻辑持仓/策略上行输出                            |
+ *    | 64-95     | 行情数据与行情控制                               |
+ *    | 1000-1023 | 行情源生命周期 + 交易推送                        |
+ *    | 1024-1123 | 交易控制/状态/账户查询/出入金改密                |
+ *    | 2000-2099 | 策略输入输出与本地调度                           |
+ *
+ *  段内稠密的意义: 同一接收域的帧号聚在连续区间, 接收方 switch (frame_type)
+ *  用少量值簇即可生成跳转表, 逐帧成本不随段内帧数增长。
+ *
+ *  本头须可被 C 策略接口包含, 故只放宏与 typedef, 不放 C++ 断言。
  * ========================================================== */
 
 /** @brief 共享内存帧类型 */
 typedef int16_t DzFrameType;
 
-/* ── 系统帧 ── */
+/* ── 策略可见帧（策略经 dz_next_event / dz_next_md 识别消费） ── */
 
-/** @brief 优雅关闭请求 (master->指定子进程, 定向, instance_id=目标进程名) */
-#define DZ_FRAME_SHUTDOWN   ((DzFrameType)12)
+/** @brief 优雅关闭请求 (master→指定子进程, 定向, instance_id=目标进程名) */
+#define DZ_FRAME_SHUTDOWN ((DzFrameType)24)
 
-/* ── 行情帧 ── */
+/** @brief Tick 行情推送 (dz_next_md 消费) */
+#define DZ_FRAME_TICK ((DzFrameType)64)
 
-/** @brief Tick 行情推送 */
-#define DZ_FRAME_TICK            ((DzFrameType)1000)
+/** @brief 委托回报推送 (payload=DzOrderReport, 契约 td-data-sync) */
+#define DZ_FRAME_ORDER_REPORT ((DzFrameType)1002)
 
-/* ── 交易帧 ── */
+/** @brief 成交回报推送 (payload=DzTradeReport, 契约 td-data-sync) */
+#define DZ_FRAME_TRADE_REPORT ((DzFrameType)1003)
 
-/** @brief 委托回报推送 */
-#define DZ_FRAME_ORDER_REPORT     ((DzFrameType)2000)
-/** @brief 成交回报推送 */
-#define DZ_FRAME_TRADE_REPORT     ((DzFrameType)2001)
-/** @brief 持仓变化推送 */
-#define DZ_FRAME_POSITION_INFO    ((DzFrameType)2002)
-/** @brief 账户资金推送 */
-/** @brief 账户资金推送 */
-#define DZ_FRAME_TRADING_ACCOUNT  ((DzFrameType)2003)
-/* 帧类型 2004 (原 DZ_FRAME_TD_GATEWAY_STATUS) 已废弃移除:
- * 无写端 (TD 网关实际状态上报走 DZ_FRAME_TD_RTN_STATUS=2104), 帧号保留不复用 */
-/** @brief 账户登录状态推送 (basic 广播帧, payload=DzAccountStatus, 契约 account-status) */
-#define DZ_FRAME_ACCOUNT_STATUS   ((DzFrameType)2018)
+/** @brief 持仓变化推送 (payload=DzPositionInfo, 契约 td-data-sync) */
+#define DZ_FRAME_POSITION_INFO ((DzFrameType)1004)
 
-/* ── 策略帧 ── */
+/** @brief 账户资金推送 (payload=DzTradingAccount, 契约 td-data-sync) */
+#define DZ_FRAME_TRADING_ACCOUNT ((DzFrameType)1005)
 
-/** @brief 来自 UI 的输入投递给策略（UI→策略，on_ui_input 回调，契约 strategy） */
-#define DZ_FRAME_UI_INPUT     ((DzFrameType)3001)
-/** @brief 策略调度触发（dz_schedule_*，契约 strategy）
- *  仅 SDK 本地合成、经 dz_next_event 返回, 不写入共享内存 */
-#define DZ_FRAME_SCHEDULE      ((DzFrameType)3003)
+/** @brief 合约信息推送 (契约 instrument) */
+#define DZ_FRAME_TD_INSTRUMENT ((DzFrameType)1006)
+
+/** @brief 合约交易状态推送 (契约 instrument) */
+#define DZ_FRAME_TD_INSTRUMENT_STATUS ((DzFrameType)1007)
+
+/** @brief 保证金率镜像 (契约 td-fee-margin) */
+#define DZ_FRAME_TD_MARGIN_RATE ((DzFrameType)1010)
+
+/** @brief 手续费率镜像 (契约 td-fee-margin) */
+#define DZ_FRAME_TD_COMMISSION_RATE ((DzFrameType)1011)
+
+/** @brief 账户登录状态推送 (basic 广播帧, payload=DzAccountStatus) */
+#define DZ_FRAME_ACCOUNT_STATUS ((DzFrameType)1012)
+
+/** @brief 来自 UI 的输入投递给策略 (UI→策略, on_ui_input 回调) */
+#define DZ_FRAME_UI_INPUT ((DzFrameType)2000)
+
+/** @brief 策略调度触发 (dz_schedule_*; 仅 SDK 本地合成, 不写入共享内存) */
+#define DZ_FRAME_SCHEDULE ((DzFrameType)2003)
 
 #endif /* DZTRADER_DATA_TYPE_H_ */

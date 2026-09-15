@@ -177,15 +177,15 @@ TEST_F(TdDataSyncIntegrationTest, ReplayStormDedupEndToEnd) {
 
 // ============================================================================
 // 场景 2: 消费者竞态生产者 (spec §5.2 在途窗口)
-// 变体 A: 帧 101-110 写入 (seq 已分配) + persist 入队未提交 → 消费者 W=100
-//         → 首帧 101 无断档正常应用 (DB 提交在后, W 读自快照, 不误报 gap)
-// 变体 B: 帧 101-105 在 reader 开启前完成 (帧先于快照), DB 提交在后
-//         → 首帧 106 → gap(101,105) → 回补查 DB (提交后) → 5 行返回
+// 变体 A: 帧 DZ_FRAME_NOTIFY_UI-110 写入 (seq 已分配) + persist 入队未提交 → 消费者 W=100
+//         → 首帧 DZ_FRAME_NOTIFY_UI 无断档正常应用 (DB 提交在后, W 读自快照, 不误报 gap)
+// 变体 B: 帧 DZ_FRAME_NOTIFY_UI-105 在 reader 开启前完成 (帧先于快照), DB 提交在后
+//         → 首帧 106 → gap(DZ_FRAME_NOTIFY_UI,105) → 回补查 DB (提交后) → 5 行返回
 // ============================================================================
 TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
     constexpr uint64_t kW = 100;
 
-    // 先提交旧快照 seq 1..100 (W=100 的来源), 再在内存产生在途帧 101-105.
+    // 先提交旧快照 seq 1..100 (W=100 的来源), 再在内存产生在途帧 DZ_FRAME_NOTIFY_UI-105.
     {
         PersistWriter w(db_path_);
         w.open();
@@ -200,9 +200,9 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
     }
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE account_id='acc1'"), 100);
 
-    // ===================== 变体 A: 首帧 101 无断档 =====================
+    // ===================== 变体 A: 首帧 DZ_FRAME_NOTIFY_UI 无断档 =====================
     {
-        // 生产者: 帧已写 (内存已见 seq 101-105), persist 入队但 Writer 未启动 (未提交)
+        // 生产者: 帧已写 (内存已见 seq DZ_FRAME_NOTIFY_UI-105), persist 入队但 Writer 未启动 (未提交)
         // 队列堆积, 无 Writer 线程持锁 → 消费者可无锁快照.
         PersistWriter w(db_path_);
         w.open();  // 不 start_writer: 任务入队未提交, 不占写锁
@@ -217,7 +217,7 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
         const uint64_t w_read = query_max_seq(ro, "acc1");
         EXPECT_EQ(w_read, kW);
 
-        // gate 首帧 101 == W+1 → 无 gap, 正常应用
+        // gate 首帧 DZ_FRAME_NOTIFY_UI == W+1 → 无 gap, 正常应用
         dztrader::TdIngestGate gate;
         gate.set_watermark("acc1", w_read);
         EXPECT_EQ(dztrader::TdIngestGate::Verdict::kApply, gate.admit("acc1", 101));
@@ -231,9 +231,9 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
         EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE account_id='acc1'"), 105);
     }
 
-    // ===================== 变体 B: 首帧 106 → gap(101,105) → 回补 =====================
+    // ===================== 变体 B: 首帧 106 → gap(DZ_FRAME_NOTIFY_UI,105) → 回补 =====================
     {
-        // 独立临时库: 先提交 1..100 (W=100 快照), 帧 101-105 在 reader 开启前完成写入,
+        // 独立临时库: 先提交 1..100 (W=100 快照), 帧 DZ_FRAME_NOTIFY_UI-105 在 reader 开启前完成写入,
         // DB 提交在后 (在途窗口).
         std::filesystem::path tmp2 = unique_temp_dir("dz_td_data_sync_it_b");
         std::filesystem::create_directories(tmp2);
@@ -253,7 +253,7 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
             w.stop();
         }
 
-        // 帧 101-105 在 reader 开启前完成写入 (内存), DB 提交在后.
+        // 帧 DZ_FRAME_NOTIFY_UI-105 在 reader 开启前完成写入 (内存), DB 提交在后.
         // open() 即建 schema; 不 start_writer → 队列堆积未提交, 读者无锁快照.
         PersistWriter w(db2);
         w.open();
@@ -262,12 +262,12 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
             w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = r});
         }
 
-        // 消费者: reader 在 101-105 写完后开启 → 首个可见帧 = 106. W = 100 (旧快照).
+        // 消费者: reader 在 DZ_FRAME_NOTIFY_UI-105 写完后开启 → 首个可见帧 = 106. W = 100 (旧快照).
         SQLite::Database ro(db2, SQLite::OPEN_READONLY);
         const uint64_t w_read = query_max_seq(ro, "acc1");
         EXPECT_EQ(w_read, 100u);
 
-        // 首帧 106 → gate 标记 gap(101,105)
+        // 首帧 106 → gate 标记 gap(DZ_FRAME_NOTIFY_UI,105)
         dztrader::TdIngestGate gate;
         gate.set_watermark("acc1", w_read);
         EXPECT_EQ(dztrader::TdIngestGate::Verdict::kApply, gate.admit("acc1", 106));

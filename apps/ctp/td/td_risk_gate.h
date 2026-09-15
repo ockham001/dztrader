@@ -25,7 +25,7 @@ struct AccountContext {
     int64_t short_pos = 0;          ///< 空头持仓
 };
 
-/// 风控拒绝信息 (与 SHM 帧的 DzRiskReject 区分, 此处用 std::string 便于日志)
+/// 风控拒绝信息 (与 SHM 帧的 platform::DzRiskReject 区分, 此处用 std::string 便于日志)
 struct RiskReject {
     std::string rule_name;          ///< 规则名 (如 "max_order_volume")
     std::string reason;             ///< 拒绝原因 (中文)

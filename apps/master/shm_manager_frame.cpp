@@ -164,7 +164,7 @@ void ShmManager::handle_account_status(const std::byte* frame) {
         }
         if (status.state == DZ_ACCOUNT_OFFLINE) {
             // Offline = 账户退出该网关的管理 (td 退出代推回声/断开/删账户): 从镜像移除。
-            // 否则 master 自推的 Offline 帧回流会重建镜像, dead-td 下 2115 再次静默
+            // 否则 master 自推的 Offline 帧回流会重建镜像, dead-td 下 DZ_FRAME_TD_QUERY_ACCOUNT_STATUS 再次静默
             // (audit A-F1 自锁复活); 重启后 td 快照 (LoggingIn/Ready) 重建镜像
             auto git = td_account_mirror_.find(gateway);
             if (git != td_account_mirror_.end()) {
@@ -329,7 +329,7 @@ void ShmManager::handle_process_start(const platform::ProcessControlReq& req) {
             return;
         }
     }
-    // 2. 携带 config：先应用（等价 SET），帧顺序：先 118 后 116（契约 process）
+    // 2. 携带 config：先应用（等价 SET），帧顺序：先 DZ_FRAME_RTN_PROCESS_CONFIG 后 DZ_FRAME_RTN_PROCESS_STATUS（契约 process）
     if (req.config) {
         try {
             process_config_store_->set_process_config(req.target, *req.config);

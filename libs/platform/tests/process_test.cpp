@@ -18,11 +18,11 @@ using namespace dztrader::platform;
 
 // --- 帧号与帧头布局（契约 process：四个帧均使用 DzExtFrameHeader，无 instance_id）---
 
+// 进程帧的编号分配不变量（值只写在 data_type.h / core_data_type.h; 这里只断言连号）
 TEST(ProcessTest, FrameTypes) {
-    EXPECT_EQ(DZ_FRAME_REQUEST_PROCESS_CONTROL, static_cast<DzFrameType>(115));
-    EXPECT_EQ(DZ_FRAME_RTN_PROCESS_STATUS, static_cast<DzFrameType>(116));
-    EXPECT_EQ(DZ_FRAME_SET_PROCESS_CONFIG, static_cast<DzFrameType>(117));
-    EXPECT_EQ(DZ_FRAME_RTN_PROCESS_CONFIG, static_cast<DzFrameType>(118));
+    EXPECT_EQ(DZ_FRAME_RTN_PROCESS_STATUS, DZ_FRAME_REQUEST_PROCESS_CONTROL + 1);
+    EXPECT_EQ(DZ_FRAME_SET_PROCESS_CONFIG, DZ_FRAME_REQUEST_PROCESS_CONTROL + 2);
+    EXPECT_EQ(DZ_FRAME_RTN_PROCESS_CONFIG, DZ_FRAME_REQUEST_PROCESS_CONTROL + 3);
 }
 
 // --- 枚举序列化（契约 process；PascalCase 字符串）---

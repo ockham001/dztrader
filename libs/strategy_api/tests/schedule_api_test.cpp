@@ -391,11 +391,10 @@ TEST_F(ScheduleApiTest, OtherInstanceUserInputIntercepted) {
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
 }
 
-// ── 其余 TD 回报 2002-2017: 暂不按策略过滤, 全量放行 (参数化覆盖全部 16 帧号) ──
+// ── 其余 TD 回报 (DZ_FRAME_TD_INSTRUMENT 起, 无 seq): 暂不按策略过滤, 全量放行 ──
 
 struct TdUnfilteredFrameParam {
     DzFrameType type;
-    bool is_ext;  ///< true = 变长 ext 帧 (无 basic struct payload)
 };
 
 class TdUnfilteredFramesTest : public ScheduleApiTest,
@@ -403,12 +402,8 @@ class TdUnfilteredFramesTest : public ScheduleApiTest,
 
 TEST_P(TdUnfilteredFramesTest, StillDelivered) {
     const auto& p = GetParam();
-    if (p.is_ext) {
-        emit_ext(p.type);
-    } else {
-        DzShmPreload dummy{};
-        emit_struct(p.type, dummy);
-    }
+    DzShmPreload dummy{};
+    emit_struct(p.type, dummy);
     const void* frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr) << "frame type " << p.type << " should be delivered";
     EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), p.type);
@@ -417,21 +412,18 @@ TEST_P(TdUnfilteredFramesTest, StillDelivered) {
 INSTANTIATE_TEST_SUITE_P(
     TdUnfiltered, TdUnfilteredFramesTest,
     ::testing::Values(
-        TdUnfilteredFrameParam{DZ_FRAME_POSITION_INFO, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TRADING_ACCOUNT, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_INSTRUMENT, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_INSTRUMENT_STATUS, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_ERROR_REPORT, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_RISK_REJECT, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_REQ, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_RSP, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_RTN, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_PASSWORD_UPDATE_REQ, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_PASSWORD_UPDATE_RSP, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_SETTLEMENT_INFO, true},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_MARGIN_RATE, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_COMMISSION_RATE, false},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_POSITION_DETAIL, false}),
+        TdUnfilteredFrameParam{DZ_FRAME_POSITION_INFO},
+        TdUnfilteredFrameParam{DZ_FRAME_TRADING_ACCOUNT},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_INSTRUMENT},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_INSTRUMENT_STATUS},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_RISK_REJECT},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_REQ},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_RSP},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_RTN},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_PASSWORD_UPDATE_REQ},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_PASSWORD_UPDATE_RSP},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_MARGIN_RATE},
+        TdUnfilteredFrameParam{DZ_FRAME_TD_COMMISSION_RATE}),
     [](const ::testing::TestParamInfo<TdUnfilteredFrameParam>& info) {
         return std::format("frame_{}", info.param.type);
     });

@@ -52,6 +52,7 @@ const char* LastError::str(DzErrorCode code) noexcept
     case DZ_EC_SHM_PROCESS_LIST_FULL:   return "shm process list full";
     case DZ_EC_SHM_SEM_OPEN_FAILED:     return "sem open failed";
     case DZ_EC_SHM_FILE_REMOVE_FAILED:  return "shm file remove failed";
+    case DZ_EC_SHM_ORDER_ID_ACCESS_FAILED:            return "order id access failed";
     /* ── 策略接口 ── */
     case DZ_EC_STRATEGY_ALREADY_INITIALIZED: return "strategy already initialized";
     case DZ_EC_STRATEGY_INIT_FAILED:         return "strategy init failed";
@@ -83,6 +84,7 @@ const char* LastError::str(DzErrorCode code) noexcept
     case DZ_EC_MD_GATEWAY_NOT_CONNECTED: return "md gateway not connected";
     case DZ_EC_MD_GATEWAY_ERROR:         return "md gateway error";
     case DZ_EC_MD_NO_DATA:               return "no data";
+    case DZ_EC_MD_SOURCE_NOT_CONFIGURED:              return "md source not configured";
     /* ── Master ── */
     case DZ_EC_MASTER_LOCK_FAILED:       return "master lock failed";
     case DZ_EC_MASTER_ALREADY_RUNNING:   return "master already running";

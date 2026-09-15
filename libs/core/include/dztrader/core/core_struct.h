@@ -36,12 +36,12 @@ DZ_DECLARE_ALIGNED_STRUCT(DzOrderCancelReq, {
     DzAccountId account_id;  ///< 账户标识（basic 帧下撤单路由依据，契约 td-order）
 });
 
-/// 账户状态查询请求 (DZ_FRAME_TD_QUERY_ACCOUNT_STATUS=2115, basic 广播帧, 契约 account-status)
+/// 账户状态查询请求 (DZ_FRAME_TD_QUERY_ACCOUNT_STATUS15, basic 广播帧, 契约 account-status)
 DZ_DECLARE_ALIGNED_STRUCT(DzAccountStatusReq, {
     DzAccountId account_id;  ///< 目标账户; 空串 = 所有账户
 });
 
-/// 费率/保证金率按需查询请求 (DZ_FRAME_TD_QUERY_FEE_RATE=2116, basic 广播帧, 契约 td-fee-margin)
+/// 费率/保证金率按需查询请求 (DZ_FRAME_TD_QUERY_FEE_RATE16, basic 广播帧, 契约 td-fee-margin)
 DZ_DECLARE_ALIGNED_STRUCT(DzFeeRateQueryReq, {
     DzAccountId account_id;       ///< 目标账户
     DzInstrumentId instrument_id; ///< 目标合约
