@@ -391,7 +391,7 @@ TEST_F(ScheduleApiTest, OtherInstanceUserInputIntercepted) {
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
 }
 
-// ── 其余 TD 回报 (DZ_FRAME_TD_INSTRUMENT 起, 无 seq): 暂不按策略过滤, 全量放行 ──
+// ── 其余 TD 回报 (DZ_FRAME_TD_INSTRUMENT_STATUS 起, 无 seq): 暂不按策略过滤, 全量放行 ──
 
 struct TdUnfilteredFrameParam {
     DzFrameType type;
@@ -414,7 +414,6 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(
         TdUnfilteredFrameParam{DZ_FRAME_POSITION_INFO},
         TdUnfilteredFrameParam{DZ_FRAME_TRADING_ACCOUNT},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_INSTRUMENT},
         TdUnfilteredFrameParam{DZ_FRAME_TD_INSTRUMENT_STATUS},
         TdUnfilteredFrameParam{DZ_FRAME_TD_RISK_REJECT},
         TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_REQ},

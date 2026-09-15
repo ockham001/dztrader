@@ -18,7 +18,7 @@ constexpr DzFrameType kStrategyVisibleFrames[] = {
     DZ_FRAME_SHUTDOWN,           DZ_FRAME_TICK,
     DZ_FRAME_ORDER_REPORT,       DZ_FRAME_TRADE_REPORT,
     DZ_FRAME_POSITION_INFO,      DZ_FRAME_TRADING_ACCOUNT,
-    DZ_FRAME_TD_INSTRUMENT,      DZ_FRAME_TD_INSTRUMENT_STATUS,
+    DZ_FRAME_TD_INSTRUMENT_STATUS,
     DZ_FRAME_TD_MARGIN_RATE,     DZ_FRAME_TD_COMMISSION_RATE,
     DZ_FRAME_ACCOUNT_STATUS,
     DZ_FRAME_UI_INPUT,           DZ_FRAME_SCHEDULE,
@@ -32,7 +32,7 @@ constexpr std::size_t kStrategyVisibleCount =
 // ── 策略可见面: 集合稳定（增删策略可见帧必须显式改测试, 属对外契约变更） ──
 
 TEST(FrameTypes, StrategyVisibleSetIsStable) {
-    EXPECT_EQ(kStrategyVisibleCount, 13u);
+    EXPECT_EQ(kStrategyVisibleCount, 12u);
     const std::set<DzFrameType> unique(kStrategyVisibleFrames,
                                        kStrategyVisibleFrames + kStrategyVisibleCount);
     EXPECT_EQ(unique.size(), kStrategyVisibleCount) << "策略可见帧存在重复值";

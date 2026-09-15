@@ -102,7 +102,7 @@ void migration_v1(SQLite::Database& db) {
         "    UNIQUE(account_id, date, product_code)"
         ")");
 
-    // instruments: 合约信息 (DzInstrumentInfo + update_day)
+    // instruments: 合约信息 (历史 DzInstrumentInfo; 现 tdstore::InstrumentRecord + update_day)
     db.exec(
         "CREATE TABLE IF NOT EXISTS instruments ("
         "    instrument_id TEXT PRIMARY KEY,"
@@ -227,7 +227,7 @@ void migration_v2(SQLite::Database& db) {
 }
 
 void migration_v3(SQLite::Database& db) {
-    // instruments 重建: DzInstrumentInfo v2 (product CHAR(1)->INTEGER, 新增 v2 列)
+    // instruments 重建: 旧合约结构 v2 (product CHAR(1)->INTEGER, 新增 v2 列)
     db.exec(
         "CREATE TABLE instruments_v3 ("
         "    instrument_id TEXT PRIMARY KEY,"

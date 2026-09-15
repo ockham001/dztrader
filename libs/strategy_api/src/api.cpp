@@ -878,7 +878,6 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
             }
             return true;  // 2018 仍全量放行给策略用户 (on_account_status 回调, 引擎测试覆盖)
         }
-        case DZ_FRAME_TD_INSTRUMENT:
         case DZ_FRAME_TD_INSTRUMENT_STATUS:
         case DZ_FRAME_TD_RISK_REJECT:
         case DZ_FRAME_TD_TRANSFER_REQ:
