@@ -80,35 +80,43 @@ const std::vector<std::string>& instrument_columns() {
     return kColumns;
 }
 
-void upsert_instrument(dztrader::db::Database& db, const InstrumentRecord& r) {
-    auto stmt = db.prepare(kUpsertInstrumentSql);
+InstrumentUpserter::InstrumentUpserter(dztrader::db::Database& db)
+    : stmt_(db.prepare(kUpsertInstrumentSql)) {}
+
+void InstrumentUpserter::upsert(const InstrumentRecord& r) {
+    stmt_->reset();
     int i = 1;
-    stmt->bind(i++, r.instrument_id);
-    stmt->bind(i++, r.exchange_id);
-    stmt->bind(i++, r.symbol);
-    stmt->bind(i++, r.name);
-    stmt->bind(i++, static_cast<int64_t>(r.product_class));
-    stmt->bind(i++, r.product_code);
-    stmt->bind(i++, static_cast<int64_t>(r.settle_cycle));
-    stmt->bind(i++, r.currency);
-    stmt->bind(i++, r.base_asset);
-    stmt->bind(i++, static_cast<int64_t>(r.is_inverse));
-    stmt->bind(i++, r.volume_multiple);
-    stmt->bind(i++, r.volume_step);
-    stmt->bind(i++, r.price_tick);
-    stmt->bind(i++, r.min_limit_order_volume);
-    stmt->bind(i++, r.max_limit_order_volume);
-    stmt->bind(i++, r.min_market_order_volume);
-    stmt->bind(i++, r.max_market_order_volume);
-    stmt->bind(i++, static_cast<int64_t>(r.listed_date));
-    stmt->bind(i++, static_cast<int64_t>(r.delisted_date));
-    stmt->bind(i++, static_cast<int64_t>(r.option_type));
-    stmt->bind(i++, r.option_strike);
-    stmt->bind(i++, r.underlying_id);
-    stmt->bind(i++, r.underlying_multiple);
-    stmt->bind(i++, r.update_day);
-    stmt->bind(i++, r.updated_at);
-    stmt->execute();
+    stmt_->bind(i++, r.instrument_id);
+    stmt_->bind(i++, r.exchange_id);
+    stmt_->bind(i++, r.symbol);
+    stmt_->bind(i++, r.name);
+    stmt_->bind(i++, static_cast<int64_t>(r.product_class));
+    stmt_->bind(i++, r.product_code);
+    stmt_->bind(i++, static_cast<int64_t>(r.settle_cycle));
+    stmt_->bind(i++, r.currency);
+    stmt_->bind(i++, r.base_asset);
+    stmt_->bind(i++, static_cast<int64_t>(r.is_inverse));
+    stmt_->bind(i++, r.volume_multiple);
+    stmt_->bind(i++, r.volume_step);
+    stmt_->bind(i++, r.price_tick);
+    stmt_->bind(i++, r.min_limit_order_volume);
+    stmt_->bind(i++, r.max_limit_order_volume);
+    stmt_->bind(i++, r.min_market_order_volume);
+    stmt_->bind(i++, r.max_market_order_volume);
+    stmt_->bind(i++, static_cast<int64_t>(r.listed_date));
+    stmt_->bind(i++, static_cast<int64_t>(r.delisted_date));
+    stmt_->bind(i++, static_cast<int64_t>(r.option_type));
+    stmt_->bind(i++, r.option_strike);
+    stmt_->bind(i++, r.underlying_id);
+    stmt_->bind(i++, r.underlying_multiple);
+    stmt_->bind(i++, r.update_day);
+    stmt_->bind(i++, r.updated_at);
+    stmt_->execute();
+}
+
+void upsert_instrument(dztrader::db::Database& db, const InstrumentRecord& r) {
+    InstrumentUpserter upserter(db);
+    upserter.upsert(r);
 }
 
 dztrader::db::QueryResult query_instruments(dztrader::db::Database& db,

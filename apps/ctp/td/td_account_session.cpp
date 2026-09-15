@@ -361,6 +361,13 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
                 update_day_str = update_day;
             }
             auto rec = to_instrument_record(*f.instrument, update_day_str);
+            // CZCE 消歧回写: 刷新按库内 symbol (如 MA601) 发起, 响应 InstrumentID 即场所码;
+            // 命中 pending 时以原平台 instrument_id (如 MA1601) 作 PK 回写原行, 防原行
+            // updated_at 不推进 + 重复行. rec.symbol 保持响应 InstrumentID (场所原生码).
+            // 登录全量查询期间 pending 为空 → 行为不变; 仅主线程访问, 不加锁.
+            if (auto orig = refresh_pending_.take(f.instrument->InstrumentID); !orig.empty()) {
+                rec.instrument_id = std::move(orig);
+            }
             rec.updated_at = epoch_ms();
             persist_writer_.enqueue(PersistTask{PersistTask::Kind::Instrument, std::move(rec)});
         } catch (const std::exception& e) {
@@ -1174,9 +1181,10 @@ void AccountSession::query_instrument(const std::string& instrument_id) {
         if (!lookup_db_) {
             lookup_db_ = std::make_unique<db::SqliteDatabase>(
                 dztrader::paths::td_db().string(), SQLite::OPEN_READONLY);
-            // 只读连接设 busy_timeout (与 td_api.cpp / td_persist_writer.cpp 一致, SQLiteCpp 默认 0):
-            // 降级 DELETE 模式或 Writer 提交窗口内查询不得立即 SQLITE_BUSY (否则静默丢 CZCE 消歧).
-            lookup_db_->exec("PRAGMA busy_timeout=5000");
+            // 只读连接设 busy_timeout=500ms (SQLiteCpp 默认 0): 该查询在主循环内同步执行,
+            // 是消歧用的最佳努力路径; 降级 DELETE 模式下最坏停顿从 5s 降到 0.5s,
+            // 超时回落 instrument_id 可接受 (WAL 下读不阻塞写, 正常无等待).
+            lookup_db_->exec("PRAGMA busy_timeout=500");
         }
         symbol = tdstore::lookup_symbol(*lookup_db_, instrument_id);
     } catch (const std::exception& e) {
@@ -1186,9 +1194,13 @@ void AccountSession::query_instrument(const std::string& instrument_id) {
     if (symbol.empty()) {
         symbol = instrument_id;
     }
+    // CZCE 消歧回写登记: 响应只带场所 InstrumentID, 需据此恢复原行 PK
+    // (见 on_rsp_qry_instrument 的 take 回写; 未命中 = 登录全量查询路径, 行为不变).
+    refresh_pending_.add(symbol, instrument_id);
     auto field = to_qry_instrument_field(symbol);
     const int ret = api_->ReqQryInstrument(&field, ++request_id_);
     if (ret != 0) {
+        refresh_pending_.take(symbol);  // 发起失败: 撤销登记 (不会有响应来消费)
         SPDLOG_WARN("td query instrument failed | account={} instrument={} ret={}",
                     account_id_, instrument_id, ret);
     }

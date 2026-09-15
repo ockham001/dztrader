@@ -344,9 +344,10 @@ TEST_F(DbTest, ReadOnlyQueryWaitsOutWriteLockWindow) {
         ins.exec();
     }
 
-    // 抢占写锁 (BEGIN IMMEDIATE)。
+    // 抢占写锁 (BEGIN EXCLUSIVE: 回滚日志模式下 RESERVED 不阻塞新读者, 弱护栏;
+    // EXCLUSIVE 才真阻塞新读者 → 无 busy_timeout 时查询立即 SQLITE_BUSY)。
     SQLite::Database locker(db_path_, SQLite::OPEN_READWRITE);
-    locker.exec("BEGIN IMMEDIATE");
+    locker.exec("BEGIN EXCLUSIVE");
     // 200ms 后释放写锁。
     std::thread releaser([&locker]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));

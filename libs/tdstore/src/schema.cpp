@@ -260,6 +260,8 @@ void migration_v3(SQLite::Database& db) {
     //     "70"/"79"/"83"** (ASCII 'F'/'O'/'S'), typeof()=text — CASE 必须用文本
     //     ASCII 码, 写 WHEN 'F' 永不匹配 (实证: 迁移后全变 0/UNKNOWN);
     //     双写 ASCII 码 + 字符分支 (后者的兼容性: 若历史库曾以文本方式写入过 'F');
+    //     另补文本数值枚举分支 (DZ_PRODUCT_* 当前 1..14, 如 '13'=SPOT): 历史库亦可能
+    //     以文本落枚举数值 (实证缺失时按 ELSE 0 会静默丢分类);
     //   option_type 列: 同理存文本 "1"/"-1"/"0" — 直接搬运即可, INTEGER affinity
     //     的 option_type 列自动把 TEXT "1" 转回 INTEGER 1 (实证 typeof()=integer);
     //   option_listed/option_expiry 列: DzDate 绑定本就是整数, -1 旧哨兵 -> 0 新 NA
@@ -273,7 +275,12 @@ void migration_v3(SQLite::Database& db) {
         "    option_strike, option_series, update_day) "
         "SELECT instrument_id, exchange_id, '', name,"
         "    CASE product WHEN '70' THEN 1 WHEN '79' THEN 2 WHEN '83' THEN 4"
-        "         WHEN 'F' THEN 1 WHEN 'O' THEN 2 WHEN 'S' THEN 4 ELSE 0 END,"
+        "         WHEN 'F' THEN 1 WHEN 'O' THEN 2 WHEN 'S' THEN 4"
+        // 文本数值枚举 (DZ_PRODUCT_* 当前取值 1..14): 历史库亦可能以文本落枚举数值
+        "         WHEN '1' THEN 1 WHEN '2' THEN 2 WHEN '3' THEN 3 WHEN '4' THEN 4"
+        "         WHEN '5' THEN 5 WHEN '6' THEN 6 WHEN '7' THEN 7 WHEN '8' THEN 8"
+        "         WHEN '9' THEN 9 WHEN '10' THEN 10 WHEN '11' THEN 11 WHEN '12' THEN 12"
+        "         WHEN '13' THEN 13 WHEN '14' THEN 14 ELSE 0 END,"
         "    -1, 0, 0, 'CNY', '',"
         "    min_order_volume, max_order_volume, volume_multiple, price_tick, 1.0,"
         "    CASE option_listed WHEN -1 THEN 0 ELSE option_listed END,"

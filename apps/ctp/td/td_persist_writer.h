@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <dztrader/db/database_sqlite.h>
+#include <dztrader/tdstore/instrument_store.h>
 #include <dztrader/tdstore/records.h>
 
 #include "td/td_persist_records.h"
@@ -170,6 +171,9 @@ private:
     std::unique_ptr<SQLite::Database> db_;
     /// 后端无关连接包装 (db_ 的引用; tdstore store ops 用, Writer 线程独占).
     std::unique_ptr<dztrader::db::SqliteDatabaseRef> ref_;
+    /// 合约 upsert 预编译复用器 (open() 中 ref_ 就绪后构造; 仅 Writer 线程使用,
+    /// 必须先于 ref_/db_ 释放).
+    std::unique_ptr<tdstore::InstrumentUpserter> instrument_upserter_;
     std::unique_ptr<SQLite::Statement> stmt_insert_order_;
     std::unique_ptr<SQLite::Statement> stmt_insert_trade_;
     std::unique_ptr<SQLite::Statement> stmt_insert_margin_;

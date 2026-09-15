@@ -272,6 +272,30 @@ TEST_F(TdSchemaTest, InstrumentsV3MigratesAsciiProductText) {
     EXPECT_EQ(legacy.scalar<int>("SELECT updated_at FROM instruments WHERE instrument_id='rb2601'"), 0);
 }
 
+TEST_F(TdSchemaTest, InstrumentsV3MigratesNumericProductText) {
+    // v2 遗留库: product 文本 "13" (DZ_PRODUCT_SPOT 数值枚举的文本形态)
+    // -> v4 迁移后 product_class == 13 (若只认 ASCII 文本则落 ELSE 0)
+    dztrader::db::Connection legacy(":memory:");
+    legacy.db().exec(
+        "CREATE TABLE instruments ("
+        "    instrument_id TEXT PRIMARY KEY, exchange_id TEXT NOT NULL, name TEXT,"
+        "    product CHAR(1), volume_multiple INTEGER, price_tick REAL,"
+        "    min_order_volume INTEGER, max_order_volume INTEGER, option_type CHAR(1),"
+        "    option_strike REAL, option_underlying TEXT, option_listed INTEGER,"
+        "    option_expiry INTEGER, update_day TEXT)");
+    legacy.db().exec(
+        "INSERT INTO instruments VALUES ('AU9999','SGE','AU9999','13',"
+        "1,0.01,1,0,'0',0.0,'',-1,-1,'20260101')");
+
+    dztrader::db::MigrationManager mgr;
+    apply_td_migrations(mgr);
+    auto applied = mgr.apply(legacy.db());
+    ASSERT_EQ(applied.size(), 4u);
+
+    EXPECT_EQ(legacy.scalar<int>(
+                  "SELECT product_class FROM instruments WHERE instrument_id='AU9999'"), 13);
+}
+
 TEST_F(TdSchemaTest, V4ColumnNamesAndTypes) {
     const auto columns = table_columns(conn, "instruments");
     // 4 个改名后列 (声明类型随 v3 原列保留)

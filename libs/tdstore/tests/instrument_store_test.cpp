@@ -111,6 +111,26 @@ TEST_F(InstrumentStoreTest, UpsertIsReplaceIdempotent) {
     EXPECT_EQ(std::get<int64_t>(result.rows[0][2]), 1757923200001);
 }
 
+TEST_F(InstrumentStoreTest, UpserterReusesStatementAndUpserts) {
+    // 同一预编译器连写 2 条 + 覆盖同 id: 行数不增, 覆盖后取值正确
+    InstrumentUpserter upserter(db_);
+    upserter.upsert(make_record("rb2601"));
+    upserter.upsert(make_record("rb2605"));
+    InstrumentRecord updated = make_record("rb2601");
+    updated.price_tick = 1.0;
+    updated.updated_at = 1757923200001;
+    upserter.upsert(updated);
+
+    const std::vector<std::string> fields = {"instrument_id", "price_tick", "updated_at"};
+    const auto result = query_instruments(db_, "", fields);
+    ASSERT_EQ(result.rows.size(), 2u);
+    EXPECT_EQ(std::get<std::string>(result.rows[0][0]), "rb2601");
+    EXPECT_DOUBLE_EQ(std::get<double>(result.rows[0][1]), 1.0);
+    EXPECT_EQ(std::get<int64_t>(result.rows[0][2]), 1757923200001);
+    EXPECT_EQ(std::get<std::string>(result.rows[1][0]), "rb2605");
+    EXPECT_DOUBLE_EQ(std::get<double>(result.rows[1][1]), 0.5);
+}
+
 TEST_F(InstrumentStoreTest, ProjectionOrderFollowsRequest) {
     upsert_instrument(db_, make_record("rb2601"));
 
@@ -162,6 +182,14 @@ TEST_F(InstrumentStoreTest, LookupSymbolMissingReturnsEmpty) {
 TEST_F(InstrumentStoreTest, LookupSymbolReturnsStoredSymbol) {
     upsert_instrument(db_, make_record("rb2601"));
     EXPECT_EQ(lookup_symbol(db_, "rb2601"), "rb2601");
+}
+
+TEST_F(InstrumentStoreTest, LookupSymbolReturnsDistinctSymbol) {
+    // CZCE 消歧: 平台 PK 与场所原生码不同, 刷新须按 symbol 发起
+    InstrumentRecord record = make_record("MA1601");
+    record.symbol = "MA601";
+    upsert_instrument(db_, record);
+    EXPECT_EQ(lookup_symbol(db_, "MA1601"), "MA601");
 }
 
 TEST_F(InstrumentStoreTest, QueryInstrumentsEmptyKeepsColumnMeta) {

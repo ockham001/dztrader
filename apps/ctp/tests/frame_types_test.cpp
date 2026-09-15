@@ -3,6 +3,12 @@
 // 帧值的唯一书写位置是 libs/strategy_api/include/dztrader/data_type.h（策略可见帧）
 // 与 libs/core/include/dztrader/core/core_data_type.h（平台帧）;
 // 因此改帧号不需要动这里, 这里也不允许出现字面帧值。
+
+// 编译期钉子: 合约推送帧已退役 (ADR 0011), 任何头文件重新定义它都会在此引爆。
+#if defined(DZ_FRAME_TD_INSTRUMENT)
+#error "DZ_FRAME_TD_INSTRUMENT 已退役"
+#endif
+
 #include <gtest/gtest.h>
 
 #include <dztrader/core/core_data_type.h>

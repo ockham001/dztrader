@@ -42,6 +42,7 @@
 #include "td/td_account_session_pure.h"
 #include "td/td_ctp_mapping.h"
 #include "td/td_events.h"
+#include "td/td_instrument_query_pending.h"
 #include "td/td_login_finalize.h"
 #include "td/td_offset_converter.h"
 #include "td/td_persist_records.h"
@@ -370,6 +371,9 @@ private:
     std::function<SQLite::Database*()> prescan_db_provider_;
     /// 定向刷新用的独立只读连接 (惰性打开; PersistWriter 连接归 writer 线程独占, WAL 下多连接安全).
     std::unique_ptr<db::SqliteDatabase> lookup_db_;
+    /// 定向刷新的"场所查询码 -> 平台 instrument_id"待回写映射 (CZCE symbol 消歧闭环).
+    /// 与 lookup_db_ 同线程约定: 仅主线程访问 (query_instrument / on_rsp_qry_instrument).
+    InstrumentQueryPending refresh_pending_;
 
     /// 持仓 map: instrument_id -> PositionHolding (设计 §6)
     std::unordered_map<std::string, PositionHolding> holdings_;

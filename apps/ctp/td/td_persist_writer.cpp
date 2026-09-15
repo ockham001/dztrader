@@ -153,6 +153,8 @@ void PersistWriter::open() {
 
     // 预编译 INSERT 语句 (复用, 避免每次 prepare)
     prepare_statements(*db_);
+    // 合约 upsert 预编译复用 (migration 后表就绪; 仅 Writer 线程触碰 ref_/upserter)
+    instrument_upserter_ = std::make_unique<tdstore::InstrumentUpserter>(ref());
 
     opened_ = true;
     SPDLOG_INFO("database opened | path={} applied_versions={}", db_path_, applied.size());
@@ -220,6 +222,7 @@ void PersistWriter::stop() {
     stmt_insert_position_.reset();
     stmt_insert_taccount_.reset();
     stmt_delete_position_rebuild_.reset();
+    instrument_upserter_.reset();  // 先于 ref_/db_ 释放
     ref_.reset();
     db_.reset();
 
@@ -272,6 +275,7 @@ void PersistWriter::stop_best_effort() {
     stmt_insert_position_.reset();
     stmt_insert_taccount_.reset();
     stmt_delete_position_rebuild_.reset();
+    instrument_upserter_.reset();  // 先于 ref_/db_ 释放
     ref_.reset();
     db_.reset();
 
@@ -526,7 +530,8 @@ void PersistWriter::execute_batch(SQLite::Database& db, std::vector<PersistTask>
                 stmt_insert_commission_->exec();
                 break;
             case PersistTask::Kind::Instrument:
-                tdstore::upsert_instrument(ref(), std::get<tdstore::InstrumentRecord>(task.data));
+                // 预编译复用 (整批持写锁, 逐行 prepare 会放大锁窗口)
+                instrument_upserter_->upsert(std::get<tdstore::InstrumentRecord>(task.data));
                 break;
             case PersistTask::Kind::Position: {
                 // 单行绝对态 upsert (盘中有变化时走它). task.trading_day 是当前交易日.
