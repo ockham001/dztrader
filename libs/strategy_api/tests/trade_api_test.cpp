@@ -175,6 +175,22 @@ TEST_F(TradeApiTest, QueryFeeRateMarginOnly) {
     EXPECT_EQ(req->query_type, 0);
 }
 
+TEST_F(TradeApiTest, QueryInstrumentWritesFrame) {
+    ASSERT_TRUE(dz_query_instrument(ctx_, "CTP001", "rb2601"));
+    const auto* req =
+        static_cast<const DzInstrumentQueryReq*>(read_next_basic(DZ_FRAME_TD_QUERY_INSTRUMENT));
+    ASSERT_NE(req, nullptr);
+    EXPECT_STREQ(req->account_id, "CTP001");
+    EXPECT_STREQ(req->instrument_id, "rb2601");
+}
+
+TEST_F(TradeApiTest, QueryInstrumentRejectsEmpty) {
+    EXPECT_FALSE(dz_query_instrument(ctx_, "", "rb2601"));
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+    EXPECT_FALSE(dz_query_instrument(ctx_, "CTP001", ""));
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+}
+
 // ── 生命周期边界 ──
 
 TEST_F(TradeApiTest, SecondInitReturnsNullWithAlreadyInitialized) {

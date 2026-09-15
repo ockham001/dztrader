@@ -27,7 +27,7 @@ target_include_directories(dzstrategy_sdk_static PRIVATE ${SDK_INTERNAL_INCLUDES
 target_compile_definitions(dzstrategy_sdk_static PUBLIC DZ_API_COMPILE_STATIC)
 target_link_libraries(dzstrategy_sdk_static
     PRIVATE dztrading
-    PUBLIC strategy_api_headers dzcore dzshm dzdb
+    PUBLIC strategy_api_headers dzcore dzshm dzdb dztdstore
     PUBLIC Boost::boost nlohmann_json::nlohmann_json SQLiteCpp
 )
 
@@ -46,7 +46,7 @@ set_target_properties(dzstrategy_sdk PROPERTIES
 )
 target_link_libraries(dzstrategy_sdk
     PRIVATE dztrading
-    PUBLIC strategy_api_headers dzcore dzshm dzdb
+    PUBLIC strategy_api_headers dzcore dzshm dzdb dztdstore
     PUBLIC Boost::boost nlohmann_json::nlohmann_json SQLiteCpp
 )
 
@@ -69,6 +69,7 @@ set(SDK_API_TESTS
     schedule_api_test
     strategy_engine_test
     db_test
+    db_instruments_test
     td_ingest_wiring_test
     td_ingest_nodb_test
     td_ingest_watermark_test
@@ -93,7 +94,8 @@ foreach(testfile ${SDK_TESTS})
         target_compile_definitions(dzstrategy_sdk_${testname} PRIVATE DZ_API_COMPILE_STATIC)
         # api.cpp 引用 dzdb 的 db_database.cpp 需链 dzdb (PUBLIC 传递 SQLiteCpp);
         # db_test 直接用 SQLiteCpp 建临时库, 经 dzdb PUBLIC 依赖满足
-        target_link_libraries(dzstrategy_sdk_${testname} PRIVATE dzdb)
+        # api.cpp 调 tdstore::query_instruments -> 链 dztdstore
+        target_link_libraries(dzstrategy_sdk_${testname} PRIVATE dzdb dztdstore)
     endif()
     set_target_properties(dzstrategy_sdk_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}

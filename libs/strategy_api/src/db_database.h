@@ -13,13 +13,14 @@
 #include <unordered_map>
 #include <vector>
 
-#include <SQLiteCpp/Database.h>
+#include <dztrader/db/database_sqlite.h>
 
 #include "result_set_impl.h"
 
 /** @brief 数据库句柄实现体（api.h 的 DzDatabase 为不透明指针） */
 struct DzDatabase {
     std::unique_ptr<SQLite::Database> db;
+    dztrader::db::SqliteDatabaseRef ref() { return dztrader::db::SqliteDatabaseRef(*db); }
 };
 
 namespace dztrader::strategy_api_internal {
@@ -29,6 +30,9 @@ struct DbQueryResult {
     std::vector<ColumnMeta> columns;
     std::vector<Row> rows;
 };
+
+/// 后端无关查询结果 (db::QueryResult) -> SDK 内部结果; 列类型映射 db::ColumnType -> DzColumnType
+DbQueryResult to_db_query_result(db::QueryResult result);
 
 /**
  * @brief 只读打开 td 库 (SQLITE_OPEN_READONLY)
@@ -42,7 +46,7 @@ std::unique_ptr<DzDatabase> db_open_readonly(const std::string& path);
  * @param table "orders" / "trades"
  * @param order_by_seq 按 seq 升序 (orders/trades 有 seq 列); commission/margin 无 seq 列传 false
  *
- * 列序 = SELECT * 的表定义 (与 apps/ctp/td/td_schema.cpp 的 v2 建表语句一致):
+ * 列序 = SELECT * 的表定义 (与 libs/tdstore/src/schema.cpp 的 v2 建表语句一致):
  *   orders:     0=id 1=account_id 2=trading_day 3=order_id 4=order_ref
  *               5=external_order_id 6=is_external 7=instrument_id 8=exchange_id
  *               9=direction 10=position_effect 11=price_type 12=status

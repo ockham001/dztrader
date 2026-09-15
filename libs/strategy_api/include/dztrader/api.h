@@ -334,6 +334,17 @@ DZ_API bool dz_query_account_status(DzContext* ctx, const char* account_id);
  */
 DZ_API bool dz_query_fee_rate(DzContext* ctx, const char* account_id, const char* instrument_id, int8_t query_type);
 
+/**
+ * @brief 单合约信息定向刷新 (异步, 发后即返, 无响应)
+ *
+ * 写 TD_QUERY_INSTRUMENT basic 广播帧; td 网关查场所后写入统一 td 库
+ * instruments 表 (契约 instrument)。结果经后续 dz_db_query_instruments 获取;
+ * 建议配合 dz_schedule_after 延迟查询; 失败/重试由策略自管。
+ */
+DZ_API bool dz_query_instrument(DzContext* ctx,
+                                const char* account_id,
+                                const char* instrument_id);
+
 /* ── UI 通知 ── */
 
 /**
@@ -608,43 +619,17 @@ DZ_API DzResultSet* dz_db_query_bar(DzDatabase* db,
                                     DzDate start_date,
                                     DzDate end_date);
 
-/* ── 通用查询（数据库抽象，低频、可变字段） ── */
-
 /**
- * @brief 通用数据查询
+ * @brief 查询合约信息
  *
- * 对底层数据库进行抽象，策略无需关心数据库类型。
- * query 为结构化查询描述（数据库无关），filter 为过滤条件。
- *
- * query 类型约定（资源路径式）：
- *   "order"             — 委托
- *   "trade"             — 成交
- *   "position"          — 持仓
- *   "trading_account"   — 交易账户资金
- *   "commission"        — 手续费率
- *   "margin"            — 保证金率
- *   "bar"               — K 线数据
- *   "instrument"        — 合约属性
- *   "instruments"       — 可交易合约列表
- *   "trading_day"       — 交易日
- *   "trading_schedule"  — 交易时间表
- *
- * filter 格式（JSON 对象）：
- *   简单条件：{"instrument_id": "IF2401"}
- *   组合条件：{"account_id": "CTP001", "instrument_id": "IF2401"}
- *   范围查询：{"date": {"$gte": 19736, "$lte": 19740}}
- *   枚举条件：{"status": {"$in": [2, 3]}}
- *
- * @param db       数据库句柄
- * @param query    查询类型（资源路径式）
- * @param filter   过滤条件（JSON 对象字符串），NULL 表示无过滤
- * @param version  数据版本号（0=最新，>0=指定版本，用于缓存校验/增量查询）
- * @return 非 NULL 为结果集（需 dz_resultset_close），NULL 为失败（调 dz_errcode() 获取错误码）
+ * @param db            数据库句柄
+ * @param instrument_id 合约代码, NULL/""=全部
+ * @param fields        逗号分隔列名, NULL/""=全部承诺列; 返回列序=请求顺序
+ * @return 非 NULL 结果集 (需 dz_resultset_close); NULL 失败 (调 dz_errcode())
  */
-DZ_API DzResultSet* dz_db_query(DzDatabase* db,
-                                const char* query,
-                                const char* filter,
-                                int32_t version);
+DZ_API DzResultSet* dz_db_query_instruments(DzDatabase* db,
+                                            const char* instrument_id,
+                                            const char* fields);
 
 /* ── 错误信息三函数（SQLite3 风格） ── */
 

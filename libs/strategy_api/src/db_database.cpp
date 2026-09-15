@@ -46,6 +46,23 @@ DzColumnType declared_type_to_col_type(const char* declared) {
     return DZ_COL_TYPE_NULL;
 }
 
+/// 后端列类型 (db::ColumnType) -> SDK 公开列类型 (DzColumnType)。
+DzColumnType db_col_type_to_dz(dztrader::db::ColumnType type) {
+    switch (type) {
+        case dztrader::db::ColumnType::Bool:
+            return DZ_COL_TYPE_BOOL;
+        case dztrader::db::ColumnType::Int64:
+            return DZ_COL_TYPE_INT64;
+        case dztrader::db::ColumnType::Float64:
+            return DZ_COL_TYPE_FLOAT64;
+        case dztrader::db::ColumnType::String:
+            return DZ_COL_TYPE_STRING;
+        case dztrader::db::ColumnType::Null:
+            return DZ_COL_TYPE_NULL;
+    }
+    return DZ_COL_TYPE_NULL;
+}
+
 /// 按声明类型读取列值: REAL 声明列即使运行时存整数 (SQLite 的 REAL-affinity 空间优化:
 /// 整数浮点值以 INTEGER 存储) 也归一化存 double, 保证 get_float64 返回正确值。
 ColumnValue read_column_value(const SQLite::Column& col, DzColumnType declared) {
@@ -142,7 +159,7 @@ const char* resource_to_table(const std::string_view q) {
     throw Exception(DZ_EC_INVALID_PARAM, "unknown query resource: query={}", q);
 }
 
-/// 表 -> 可过滤字段白名单 (与 td_schema.cpp 各表真实列名一一对应)。
+/// 表 -> 可过滤字段白名单 (与 libs/tdstore/src/schema.cpp 各表真实列名一一对应)。
 /// filter 字段名必须先过本白名单再拼 SQL, 防注入 (值已参数绑定, 字段名只能 allowlist)。
 /// 表结构变更时此处一并更新。
 const std::set<std::string>& table_filterable_columns(const std::string_view table) {
@@ -283,6 +300,16 @@ std::unique_ptr<DzDatabase> db_open_readonly(const std::string& path) {
     // spec §3.3: 低频读端可吸收毫秒级写锁.
     handle->db->exec("PRAGMA busy_timeout=5000");
     return handle;
+}
+
+DbQueryResult to_db_query_result(dztrader::db::QueryResult result) {
+    DbQueryResult out;
+    out.columns.reserve(result.columns.size());
+    for (auto& column : result.columns) {
+        out.columns.push_back(ColumnMeta{db_col_type_to_dz(column.type), std::move(column.name)});
+    }
+    out.rows = std::move(result.rows);
+    return out;
 }
 
 DbQueryResult db_query_order_trade(DzDatabase* db,

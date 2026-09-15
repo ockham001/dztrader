@@ -6,16 +6,14 @@
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
-#include <cfloat>
 #include <chrono>
 #include <filesystem>
 #include <string>
 #include <thread>
-#include <vector>
 
 namespace {
 
-// 建表 SQL 常量: 与 apps/ctp/td/td_schema.cpp 的 migration_v2 建表语句逐字一致
+// 建表 SQL 常量: 与 libs/tdstore/src/schema.cpp 的 migration_v2 建表语句逐字一致
 // (orders/trades 为 v2 重建后的最终形态, 含 seq 列)。schema 变更时两处同步。
 constexpr const char* kCreateOrders =
     "CREATE TABLE IF NOT EXISTS orders ("
@@ -290,135 +288,6 @@ TEST_F(DbTest, QueryPositionAndTradingAccount) {
     dz_resultset_close(rs);
 }
 
-// 结构化查询: filter JSON 范围算子 $gte/$lt 按 seq 过滤, 行序 = seq 序 (回补路径依赖)。
-TEST_F(DbTest, GenericQuerySupportsSeqRange) {
-    SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
-    {
-        SQLite::Statement ins(db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, seq) VALUES ('A', '20260901', ?, ?, 'IF2401', 'CFFEX', ?)");
-        for (int64_t seq = 1; seq <= 5; ++seq) {
-            ins.bind(1, static_cast<int64_t>(1000 + seq));
-            ins.bind(2, "r" + std::to_string(seq));
-            ins.bind(3, seq);
-            ins.exec();
-            ins.reset();
-        }
-    }
-
-    DzResultSet* rs = dz_db_query(db_, "order", "{\"seq\": {\"$gte\": 1, \"$lt\": 4}}", 0);
-    ASSERT_NE(nullptr, rs) << dz_errmsg();
-    ASSERT_EQ(0, dz_resultset_status(rs));
-
-    int64_t last = 0;
-    int count = 0;
-    while (dz_resultset_next(rs)) {
-        const int64_t seq = dz_resultset_get_int64(rs, 23);
-        EXPECT_GT(seq, last);  // 行序 = seq 序
-        last = seq;
-        ++count;
-    }
-    EXPECT_EQ(3, count);  // seq 1,2,3
-    dz_resultset_close(rs);
-}
-
-// 结构化查询算子全覆盖: $gte/$lt/$lte/$gt/$in + 简单相等 + 多字段 AND。
-// 数据: 5 行, seq 1..5, volume 10/20/30/40/50。
-//   $lte/$gt 组合            -> seq 2..4 (seq 1,2,3,4 中 >1)
-//   $in                       -> volume IN (20,40) -> seq 2,4
-//   instrument_id 简单相等     -> IF2401 全部 5 行
-TEST_F(DbTest, GenericQuerySupportsAllOperators) {
-    SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
-    {
-        SQLite::Statement ins(db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, volume, seq) VALUES ('A', '20260901', ?, ?, 'IF2401', 'CFFEX', ?, ?)");
-        for (int64_t seq = 1; seq <= 5; ++seq) {
-            ins.bind(1, static_cast<int64_t>(1000 + seq));
-            ins.bind(2, "r" + std::to_string(seq));
-            ins.bind(3, static_cast<int64_t>(seq * 10));
-            ins.bind(4, seq);
-            ins.exec();
-            ins.reset();
-        }
-    }
-
-    auto* rs = dz_db_query(db_, "order", "{\"seq\": {\"$lte\": 4, \"$gt\": 1}}", 0);
-    ASSERT_NE(nullptr, rs) << dz_errmsg();
-    std::vector<int64_t> got;
-    while (dz_resultset_next(rs)) {
-        got.push_back(dz_resultset_get_int64(rs, 23));
-    }
-    dz_resultset_close(rs);
-    EXPECT_EQ((std::vector<int64_t>{2, 3, 4}), got);
-
-    rs = dz_db_query(db_, "order", "{\"volume\": {\"$in\": [20, 40]}}", 0);
-    ASSERT_NE(nullptr, rs) << dz_errmsg();
-    got.clear();
-    while (dz_resultset_next(rs)) {
-        got.push_back(dz_resultset_get_int64(rs, 23));
-    }
-    dz_resultset_close(rs);
-    EXPECT_EQ((std::vector<int64_t>{2, 4}), got);
-
-    // 多字段 AND + 简单相等
-    rs = dz_db_query(db_, "order", "{\"account_id\": \"A\", \"instrument_id\": \"IF9999\"}", 0);
-    ASSERT_NE(nullptr, rs) << dz_errmsg();
-    EXPECT_FALSE(dz_resultset_next(rs));
-    dz_resultset_close(rs);
-
-    // 未知资源 -> NULL + DZ_EC_INVALID_PARAM
-    rs = dz_db_query(db_, "not_a_resource", "{}", 0);
-    EXPECT_EQ(nullptr, rs);
-    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
-}
-
-// 结构化查询: filter 为 NULL 或无过滤 -> 全量返回。
-TEST_F(DbTest, GenericQueryNullFilterReturnsAll) {
-    SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
-    {
-        SQLite::Statement ins(db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, seq) VALUES ('A', '20260901', ?, ?, 'IF2401', 'CFFEX', ?)");
-        ins.bind(1, static_cast<int64_t>(1));
-        ins.bind(2, "r1");
-        ins.bind(3, static_cast<int64_t>(1));
-        ins.exec();
-        ins.reset();
-        ins.bind(1, static_cast<int64_t>(2));
-        ins.bind(2, "r2");
-        ins.bind(3, static_cast<int64_t>(2));
-        ins.exec();
-    }
-
-    DzResultSet* rs = dz_db_query(db_, "order", nullptr, 0);
-    ASSERT_NE(nullptr, rs) << dz_errmsg();
-    ASSERT_EQ(0, dz_resultset_status(rs));
-    int count = 0;
-    while (dz_resultset_next(rs)) {
-        ++count;
-    }
-    EXPECT_EQ(2, count);
-    dz_resultset_close(rs);
-}
-
-// 空结果集: 列元信息仍正确 (声明类型为准, 不依赖首行实际值)。
-// TEXT 列 (instrument_id/account_id) 应报 DZ_COL_TYPE_STRING, 数值列 (seq) 报 INT64。
-TEST_F(DbTest, EmptyResultKeepsColumnTypes) {
-    // 库为空 (SetUp 只建表无数据) -> 无条件查询返回空结果集
-    DzResultSet* rs = dz_db_query(db_, "order", "{\"account_id\": \"NO_SUCH\"}", 0);
-    ASSERT_NE(nullptr, rs) << dz_errmsg();
-    ASSERT_EQ(0, dz_resultset_status(rs));
-    ASSERT_EQ(24u, dz_resultset_column_count(rs));
-    EXPECT_EQ(DZ_COL_TYPE_STRING, dz_resultset_column_type(rs, 1));   // account_id TEXT
-    EXPECT_EQ(DZ_COL_TYPE_STRING, dz_resultset_column_type(rs, 7));   // instrument_id TEXT
-    EXPECT_EQ(DZ_COL_TYPE_INT64, dz_resultset_column_type(rs, 23));   // seq INTEGER
-    EXPECT_STREQ("account_id", dz_resultset_column_name(rs, 1));
-    EXPECT_STREQ("seq", dz_resultset_column_name(rs, 23));
-    EXPECT_FALSE(dz_resultset_next(rs));
-    dz_resultset_close(rs);
-}
-
 // commission/margin 表无 seq 列 (非 seq 跟踪表), 条件查询不得 ORDER BY seq (否则
 // "no such column: seq" 报错)。验证 dz_db_query_commission 可查询且按账户过滤。
 TEST_F(DbTest, QueryCommissionNoSeqColumn) {
@@ -452,126 +321,6 @@ TEST_F(DbTest, QueryCommissionNoSeqColumn) {
     EXPECT_DOUBLE_EQ(0.3, dz_resultset_get_float64(rs, 8));      // close_ratio_by_volume
     EXPECT_EQ(19736, dz_resultset_get_int64(rs, 11));            // date
     EXPECT_FALSE(dz_resultset_next(rs));
-    dz_resultset_close(rs);
-}
-
-// 注入防御: filter 字段名必须为本表真实列 (白名单), 恶意字段名 (含 SQL 片段)
-// 一律拒绝 -> NULL + DZ_EC_INVALID_PARAM。值已参数绑定, 字段名 allowlist 封死拼接面。
-TEST_F(DbTest, GenericQueryRejectsUnknownFilterField) {
-    // 非本表字段 (orders 无 balance 列)
-    DzResultSet* rs = dz_db_query(db_, "order", "{\"balance\": 1}", 0);
-    EXPECT_EQ(nullptr, rs);
-    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
-
-    // 注入型字段名: {"price IS NOT NULL AND 1=1 --": 1} 不能构造绕过 WHERE
-    rs = dz_db_query(db_, "order", "{\"price IS NOT NULL AND 1=1 --\": 1}", 0);
-    EXPECT_EQ(nullptr, rs);
-    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
-
-    // 半角/特殊字符字段名同样拒绝
-    rs = dz_db_query(db_, "order", "{\"price)\": 1}", 0);
-    EXPECT_EQ(nullptr, rs);
-    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
-
-    // commission 表 (无 seq 列) 的字段白名单独立: 不存在的列拒绝
-    rs = dz_db_query(db_, "commission", "{\"seq\": 1}", 0);
-    EXPECT_EQ(nullptr, rs);
-    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
-
-    // 合法字段名不受影响 (回归: 白名单放行真实列)
-    rs = dz_db_query(db_, "order", "{\"account_id\": \"A\"}", 0);
-    ASSERT_NE(nullptr, rs) << dz_errmsg();
-    ASSERT_EQ(0, dz_resultset_status(rs));
-    dz_resultset_close(rs);
-}
-
-// 非法 filter 统一归 DZ_EC_INVALID_PARAM (与未知资源一致, 而非 DZ_EC_SYSTEM):
-// 非法 JSON / 非对象 / 未知算子。
-TEST_F(DbTest, GenericQueryInvalidFilterIsInvalidParam) {
-    // 非法 JSON 语法
-    DzResultSet* rs = dz_db_query(db_, "order", "{not json", 0);
-    EXPECT_EQ(nullptr, rs);
-    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
-
-    // filter 非 JSON 对象 (数组)
-    rs = dz_db_query(db_, "order", "[1, 2]", 0);
-    EXPECT_EQ(nullptr, rs);
-    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
-
-    // 未知算子
-    rs = dz_db_query(db_, "order", "{\"seq\": {\"$like\": 1}}", 0);
-    EXPECT_EQ(nullptr, rs);
-    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
-
-    // $in 值非数组
-    rs = dz_db_query(db_, "order", "{\"seq\": {\"$in\": 5}}", 0);
-    EXPECT_EQ(nullptr, rs);
-    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
-
-    // filter 值为非 string/int/float (对象内的布尔/对象)
-    rs = dz_db_query(db_, "order", "{\"account_id\": {\"$in\": [true]}}", 0);
-    EXPECT_EQ(nullptr, rs);
-    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
-}
-
-// REAL 声明列归一化: 即使整数值以 INTEGER 存储 (SQLite REAL-affinity 空间优化),
-// get_float64 也必须返回正确浮点值而非 DBL_MAX。
-// orders.price/volume: price REAL 写整数值 3800 -> get_float64 返回 3800.0。
-TEST_F(DbTest, RealDeclaredColumnStoresIntegerValue) {
-    SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
-    {
-        // 整数值写进 REAL 列 (price REAL, 绑定整数 3800 -> INTEGER 存储)
-        SQLite::Statement ins(db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, price, seq)"
-            " VALUES (?, '20260901', ?, ?, 'IF2401', 'CFFEX', ?, ?)");
-        ins.bind(1, "A");
-        ins.bind(2, static_cast<int64_t>(1001));
-        ins.bind(3, "r1");
-        ins.bind(4, static_cast<int64_t>(3800));
-        ins.bind(5, static_cast<int64_t>(1));
-        ins.exec();
-        // 整数下标也写进 REAL 列 (commission: REAL)
-        ins.reset();
-        ins.bind(1, "A");
-        ins.bind(2, static_cast<int64_t>(1002));
-        ins.bind(3, "r2");
-        ins.bind(4, static_cast<int64_t>(10));
-        ins.bind(5, static_cast<int64_t>(2));
-        ins.exec();
-    }
-    {
-        SQLite::Statement ins(db,
-            "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
-            " exchange_id, price, volume, seq)"
-            " VALUES (?, '20260901', ?, ?, 'IF2401', 'CFFEX', ?, ?, ?)");
-        ins.bind(1, "A");
-        ins.bind(2, "t1");
-        ins.bind(3, static_cast<int64_t>(1001));
-        ins.bind(4, static_cast<int64_t>(3810));
-        ins.bind(5, static_cast<int64_t>(2));
-        ins.bind(6, static_cast<int64_t>(1));
-        ins.exec();
-    }
-
-    // orders.price (索引 13) REAL 存整数 -> get_float64 应返回 3800.0 (非 DBL_MAX)
-    DzResultSet* rs = dz_db_query(db_, "order", "{\"account_id\": \"A\"}", 0);
-    ASSERT_NE(nullptr, rs) << dz_errmsg();
-    ASSERT_EQ(0, dz_resultset_status(rs));
-    ASSERT_TRUE(dz_resultset_next(rs));
-    EXPECT_DOUBLE_EQ(3800.0, dz_resultset_get_float64(rs, 13));  // price
-    EXPECT_NE(DBL_MAX, dz_resultset_get_float64(rs, 13));
-    ASSERT_TRUE(dz_resultset_next(rs));
-    EXPECT_DOUBLE_EQ(10.0, dz_resultset_get_float64(rs, 13));    // price=10 存整数
-    dz_resultset_close(rs);
-
-    // trades.price (索引 9) REAL 存整数 -> get_float64 返回 3810.0
-    rs = dz_db_query(db_, "trade", "{\"trade_id\": \"t1\"}", 0);
-    ASSERT_NE(nullptr, rs) << dz_errmsg();
-    ASSERT_EQ(0, dz_resultset_status(rs));
-    ASSERT_TRUE(dz_resultset_next(rs));
-    EXPECT_DOUBLE_EQ(3810.0, dz_resultset_get_float64(rs, 9));   // price
-    EXPECT_NE(DBL_MAX, dz_resultset_get_float64(rs, 9));
     dz_resultset_close(rs);
 }
 
