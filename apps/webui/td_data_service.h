@@ -30,8 +30,8 @@ namespace dztrader::webui {
 class TdDataService {
 public:
     /// @param router FrameRouter 引用，ctor 内 register_raw 注册 2000-2003 + 2018
-    /// @param td_db_path 回调返回 td 库绝对路径（supervisor registry 提供 td 进程名 →
-    ///   $DZTRADER_HOME/flow/<td进程名>/<td进程名>.db），rebuild() 只读打开
+    /// @param td_db_path 回调返回 td 统一库绝对路径（$DZTRADER_HOME/db/td.db），
+    ///   rebuild() 只读打开
     TdDataService(FrameRouter& router, std::function<std::string()> td_db_path);
 
     // 含引用/不可拷贝成员（router_），禁拷贝/移动

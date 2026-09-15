@@ -49,7 +49,7 @@ void create_md_channel(const std::filesystem::path& shm_dir) {
     (void)ChannelMeta::open_or_create(cfg);
 }
 
-// orders 建表 SQL: 与 apps/ctp/td/td_schema.cpp v2 迁移后最终形态逐字一致 (含 seq 列)。
+// orders 建表 SQL: 与 libs/tdstore/src/schema.cpp v2 迁移后最终形态逐字一致 (含 seq 列)。
 constexpr const char* kCreateOrders =
     "CREATE TABLE IF NOT EXISTS orders ("
     "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -78,7 +78,7 @@ constexpr const char* kCreateOrders =
     "    seq INTEGER NOT NULL DEFAULT 0,"
     "    UNIQUE(account_id, order_id))";
 
-// trades 建表 SQL: 与 apps/ctp/td/td_schema.cpp v2 迁移后最终形态逐字一致 (含 seq 列)。
+// trades 建表 SQL: 与 libs/tdstore/src/schema.cpp v2 迁移后最终形态逐字一致 (含 seq 列)。
 constexpr const char* kCreateTrades =
     "CREATE TABLE IF NOT EXISTS trades ("
     "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -108,7 +108,7 @@ constexpr const char* kCreateTradingAccounts =
     "    deposit REAL, withdraw REAL,"
     "    seq INTEGER NOT NULL DEFAULT 0)";
 
-// positions 建表 SQL: 与 apps/ctp/td/td_schema.cpp v2 迁移后最终形态逐字一致 (含 seq 列)。
+// positions 建表 SQL: 与 libs/tdstore/src/schema.cpp v2 迁移后最终形态逐字一致 (含 seq 列)。
 constexpr const char* kCreatePositions =
     "CREATE TABLE IF NOT EXISTS positions ("
     "    account_id TEXT NOT NULL,"
@@ -124,7 +124,7 @@ constexpr const char* kCreatePositions =
     "    seq INTEGER NOT NULL DEFAULT 0,"
     "    UNIQUE(account_id, instrument_id, direction))";
 
-/// SDK ingest 接线端到端: 临时 DZTRADER_HOME + 预置 td 库 (flow/dztd_ctp/dztd_ctp.db)。
+/// SDK ingest 接线端到端: 临时 DZTRADER_HOME + 预置统一 td 库 (db/td.db)。
 /// 独立二进制 (独立进程): paths::home() 按进程缓存, 本 fixture 先设 DZTRADER_HOME
 /// 再 dz_init, 保证库路径发现落在本测试目录。
 class IngestWiringTest : public ::testing::Test {
@@ -138,13 +138,13 @@ protected:
                     .string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
-        std::filesystem::create_directories(home_ + "/flow/dztd_ctp");
+        std::filesystem::create_directories(home_ + "/db");
         dztrader::env::set("DZTRADER_HOME", home_);
         dztrader::env::set("DZTRADER_MD_SOURCE", "test_md");
         create_event_channel(home_ + "/shm");
         create_md_channel(home_ + "/shm");
 
-        db_path_ = std::filesystem::path(home_) / "flow" / "dztd_ctp" / "dztd_ctp.db";
+        db_path_ = std::filesystem::path(home_) / "db" / "td.db";
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         db.exec(kCreateOrders);
         db.exec(kCreateTrades);

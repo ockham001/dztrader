@@ -323,23 +323,8 @@ int main(int argc, char* argv[]) {
 
     // TD 数据 ingest 领域服务: 消费 2000-2003 (register_raw, 二进制 struct payload) 维护
     // 内存镜像 + 2018 ACCOUNT_STATUS (Ready→rebuild / Offline→清空账户镜像)。
-    // td 库路径: $DZTRADER_HOME/flow/<td进程名>/<td进程名>.db (spec §3.3);
-    // td 进程名从进程镜像的已注册进程 (dztd_* 前缀, 契约 process) 发现,
-    // 缺省回落 dztd_ctp (与 SDK 缺省网关名一致)。
-    const auto td_db_path_cb = [process_mirror]() -> std::string {
-        // get_all() 仅含已注册 (process_config 有条目) 的进程; 逐条取 dztd_* 前缀名。
-        std::string td_name;
-        for (const auto& status : process_mirror->get_all()) {
-            if (status.name.size() > 5 && status.name.starts_with("dztd_")) {
-                td_name = status.name;
-                break;
-            }
-        }
-        if (td_name.empty()) {
-            td_name = "dztd_ctp";  // 缺省回落 (SDK 缺省网关名, spec §3.3)
-        }
-        return (dztrader::paths::home() / "flow" / td_name / (td_name + ".db")).string();
-    };
+    // td 库路径: $DZTRADER_HOME/db/td.db (统一库, 所有 td 网关共写, spec §3.3)。
+    const auto td_db_path_cb = []() -> std::string { return dztrader::paths::td_db().string(); };
     auto td_data_service = std::make_shared<dztrader::webui::TdDataService>(router, td_db_path_cb);
 
     // EventMonitor 由 main 持有并直调 start/stop（WsController 不再涉及）。

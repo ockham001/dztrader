@@ -113,7 +113,7 @@ protected:
                     .string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
-        std::filesystem::create_directories(home_ + "/flow/dztd_ctp");
+        std::filesystem::create_directories(home_ + "/db");
         dztrader::env::set("DZTRADER_HOME", home_);
         dztrader::env::set("DZTRADER_MD_SOURCE", "test_md");
         ChannelConfig evt{
@@ -135,7 +135,7 @@ protected:
         };
         (void)ChannelMeta::open_or_create(md);
 
-        db_path_ = std::filesystem::path(home_) / "flow" / "dztd_ctp" / "dztd_ctp.db";
+        db_path_ = std::filesystem::path(home_) / "db" / "td.db";
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         db.exec(kCreateOrders);
         db.exec(kCreateTrades);

@@ -117,8 +117,9 @@ void PersistWriter::open() {
     // 后端无关连接包装 (tdstore store ops 用; Writer 线程独占, 主线程不得复用)
     ref_ = std::make_unique<dztrader::db::SqliteDatabaseRef>(*db_);
 
-    // PRAGMA 配置 (与 libs/db/connection.cpp 一致, DELETE + synchronous=FULL)
+    // PRAGMA 配置 (synchronous=FULL 数据安全优先; WAL 支持多网关共写 + 多读者)
     db_->exec("PRAGMA synchronous=FULL");
+    db_->exec("PRAGMA journal_mode=WAL");   // 多网关共写 + 多读者: 读不阻塞写
     db_->exec("PRAGMA busy_timeout=5000");
     db_->exec("PRAGMA cache_size=-8000");
     db_->exec("PRAGMA temp_store=MEMORY");

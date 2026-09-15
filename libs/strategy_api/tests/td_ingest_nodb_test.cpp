@@ -19,7 +19,7 @@ namespace {
 
 constexpr uint64_t kMB = 1024 * 1024;
 
-/// 独立进程测试 (独立二进制): 无 td 库 (不建 flow/dztd_ctp/dztd_ctp.db) 的降级场景。
+/// 独立进程测试 (独立二进制): 无 td 库 (不建 db/td.db) 的降级场景。
 /// 与 td_ingest_wiring_test 分开: paths::home() 按进程缓存 + context_registry 进程全局,
 /// 本 fixture 必须独占进程 (先设 DZTRADER_HOME 再 dz_init)。
 class IngestNoDbTest : public ::testing::Test {
@@ -54,7 +54,7 @@ protected:
         };
         (void)ChannelMeta::open_or_create(mdcfg);
 
-        // 无 flow/dztd_ctp/dztd_ctp.db: 水位装载降级为不过滤全放行, dz_init 不失败。
+        // 无 db/td.db: 水位装载降级为不过滤全放行, dz_init 不失败。
         ctx_ = dz_init();
         ASSERT_NE(nullptr, ctx_) << "dz_init failed (no db): " << dz_errmsg();
     }

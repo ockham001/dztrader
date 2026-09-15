@@ -14,6 +14,7 @@
 
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/core_struct.h>  // DzOrderReq / DzOrderCancelReq
+#include <dztrader/core/path.h>         // paths::td_db
 #include <dztrader/core/string_util.h>  // copy_string
 #include <dztrader/data_type.h>
 #include <dztrader/date_time/date_time.h>  // Date::from_string ("YYYYMMDD" -> DzDate)
@@ -58,8 +59,8 @@ TdApi::TdApi(std::string name,
         shm::OrderIdMeta::open_or_create(name_, shm_dir_));
 
     // 创建并打开 PersistWriter (SQLite 持久化, 启动时一次性 open + start_writer)
-    // db 路径: flow_dir_/<name_>.db (进程级单例, 多账户共享)
-    auto db_path = flow_dir_ / (name_ + ".db");
+    // db 路径: $DZTRADER_HOME/db/td.db (统一库, 所有 td 网关共写, 多账户共享)
+    auto db_path = dztrader::paths::td_db();
     persist_writer_ = std::make_unique<PersistWriter>(db_path.string());
     persist_writer_->open();
     // 启动自检 (设计 §13 step 8): 必须在 start_writer() 前执行 (主线程独占 db)
@@ -131,10 +132,10 @@ void TdApi::verify_order_id_against_db() {
 // ============================================================================
 
 void TdApi::ensure_prescan_db() {
-    // 独立只读连接打开同一 db 文件 (flow_dir_/<name_>.db). 文件尚不存在 (首次启动未落库)
+    // 独立只读连接打开同一 db 文件 ($DZTRADER_HOME/db/td.db). 文件尚不存在 (首次启动未落库)
     // 时失败降级 (prescan_db_ 空), 运行期 connect 时按需重开.
     try {
-        auto db_path = flow_dir_ / (name_ + ".db");
+        auto db_path = dztrader::paths::td_db();
         if (prescan_db_ != nullptr) {
             return;  // 已打开
         }

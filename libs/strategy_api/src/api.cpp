@@ -53,9 +53,6 @@ DzContext*& context_registry() {
 // 本组函数仅服务 dz_init (水位装载) / dispatch_frame (断档回补) /
 // dz_next_event (replay 派发), 均走 ctx 参数, 不触碰 context_registry。
 
-/// 缺省 td 网关名 (SDK 侧库路径发现, spec §3.3 库路径约定; 策略配置传入留后续)。
-constexpr const char* kDefaultTdGatewayName = "dztd_ctp";
-
 using strategy_api_internal::DbQueryResult;
 using strategy_api_internal::Row;
 using strategy_api_internal::ColumnValue;
@@ -119,11 +116,10 @@ struct ColumnMap {
     std::unordered_map<std::string, size_t> index_by_name;
 };
 
-/// 只读打开 td 库: <DZTRADER_HOME>/flow/<td网关名>/<td网关名>.db
+/// 只读打开 td 统一库: <DZTRADER_HOME>/db/td.db (所有 td 网关共写)
 /// 失败 (库不存在/打不开) 返回 nullptr (调用方降级不过滤)。
 std::unique_ptr<DzDatabase> open_td_db() {
-    const auto db_path = dztrader::paths::home() / "flow" / kDefaultTdGatewayName /
-                         (std::string(kDefaultTdGatewayName) + ".db");
+    const auto db_path = dztrader::paths::td_db();
     try {
         return strategy_api_internal::db_open_readonly(db_path.string());
     } catch (const Exception& e) {

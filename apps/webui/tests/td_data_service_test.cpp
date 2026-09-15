@@ -50,7 +50,7 @@ protected:
 
     void TearDown() override { std::filesystem::remove_all(dir_); }
 
-    // 建 td 库 v2 schema 四表 (与 td_schema.cpp 最终形态逐字一致)。
+    // 建 td 库 v2 schema 四表 (与 libs/tdstore/src/schema.cpp 最终形态逐字一致)。
     static void create_schema(sqlite3* db) {
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS orders ("
