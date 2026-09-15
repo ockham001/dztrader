@@ -6,6 +6,7 @@
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
+#include <cfloat>
 #include <chrono>
 #include <filesystem>
 #include <string>
@@ -363,4 +364,55 @@ TEST_F(DbTest, ReadOnlyQueryWaitsOutWriteLockWindow) {
     EXPECT_EQ(5, dz_resultset_get_int64(rs, 5));  // volume
     dz_resultset_close(rs);
     dz_db_close(ro);
+}
+
+// REAL 声明列归一化护栏 (评审 Important): 整数值以 INTEGER 存储 (SQLite REAL-affinity 空间优化)
+// 时, read_column_value 必须按声明类型归一化为 double, get_float64 返回正确值而非 DBL_MAX。
+// 覆盖在役公开路径 dz_db_query_order / dz_db_query_trade。
+TEST_F(DbTest, RealDeclaredColumnStoresIntegerValue) {
+    SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
+    {
+        // 整数值写进 REAL 声明列 (orders.price REAL, 绑定整数 3800 -> INTEGER 存储)
+        SQLite::Statement ins(db,
+            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
+            " exchange_id, price, seq)"
+            " VALUES (?, '20260901', ?, ?, 'IF2401', 'CFFEX', ?, ?)");
+        ins.bind(1, "A");
+        ins.bind(2, static_cast<int64_t>(1001));
+        ins.bind(3, "r1");
+        ins.bind(4, static_cast<int64_t>(3800));
+        ins.bind(5, static_cast<int64_t>(1));
+        ins.exec();
+    }
+    {
+        SQLite::Statement ins(db,
+            "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
+            " exchange_id, price, volume, seq)"
+            " VALUES (?, '20260901', ?, ?, 'IF2401', 'CFFEX', ?, ?, ?)");
+        ins.bind(1, "A");
+        ins.bind(2, "t1");
+        ins.bind(3, static_cast<int64_t>(1001));
+        ins.bind(4, static_cast<int64_t>(3810));
+        ins.bind(5, static_cast<int64_t>(2));
+        ins.bind(6, static_cast<int64_t>(1));
+        ins.exec();
+    }
+
+    // orders.price (索引 13) REAL 存整数 -> get_float64 应返回 3800.0 (非 DBL_MAX)
+    DzResultSet* rs = dz_db_query_order(db_, "A", nullptr);
+    ASSERT_NE(nullptr, rs) << dz_errmsg();
+    ASSERT_EQ(0, dz_resultset_status(rs));
+    ASSERT_TRUE(dz_resultset_next(rs));
+    EXPECT_DOUBLE_EQ(3800.0, dz_resultset_get_float64(rs, 13));
+    EXPECT_NE(DBL_MAX, dz_resultset_get_float64(rs, 13));
+    dz_resultset_close(rs);
+
+    // trades.price (索引 9) REAL 存整数 -> get_float64 应返回 3810.0
+    rs = dz_db_query_trade(db_, "A", nullptr);
+    ASSERT_NE(nullptr, rs) << dz_errmsg();
+    ASSERT_EQ(0, dz_resultset_status(rs));
+    ASSERT_TRUE(dz_resultset_next(rs));
+    EXPECT_DOUBLE_EQ(3810.0, dz_resultset_get_float64(rs, 9));
+    EXPECT_NE(DBL_MAX, dz_resultset_get_float64(rs, 9));
+    dz_resultset_close(rs);
 }

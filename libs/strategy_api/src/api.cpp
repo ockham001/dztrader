@@ -427,7 +427,7 @@ bool gap_covered_snapshot(DzDatabase* db, GapBackfillRows* rows, const std::stri
 }
 
 /// 回补帧入 replay 缓冲 (覆盖确认后调用): 查询结果转 Dz*Report 填 seq 入缓冲。
-/// 行序 = seq 序 (dz_db_query ORDER BY seq), 各表内部有序; 跨表简化为逐表入缓冲,
+/// 行序 = seq 序 (db_generic_query ORDER BY seq), 各表内部有序; 跨表简化为逐表入缓冲,
 /// 每表内部 seq 序 (回补消费端按帧类型独立, 不要求跨表严格交错)。
 /// 返回 false = 缓冲溢出 (gap 区间过宽, 回补被截断)。
 bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
