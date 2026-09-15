@@ -93,6 +93,9 @@ struct 引用（字段定义见对应头文件，本契约不抄写字段表）�
 | 元数据 | `update_day` | TEXT | `"YYYYMMDD"`；交易日未知时为 `"00000000"` | td 当前交易日（`DzDate` → `YYYYMMDD`） |
 | | `updated_at` | INTEGER | epoch ms | 每次 upsert 推进（刷新完成的观测点） |
 
+`updated_at` 为**墙钟毫秒**，**非严格单调**：同一毫秒或系统时钟回拨时可能相等/回退；仅供观测
+（刷新完成观测点，§10），**不作排序依据**（行序以 `instrument_id` 为准，§7）。
+
 哨兵规则（写端义务；读端按哨兵判 NA/缺省）：
 
 - **日期**：`listed_date`/`delisted_date` NA=0=`DZ_DATE_NA`（epoch day 0 = 1970-01-01 元旦，全球无开市，
@@ -226,6 +229,8 @@ DzResultSet* rs = dz_db_query_instruments(db, instrument_id, "symbol,price_tick,
 5. `OffsetConverter` 已实现未接入下单路径（独立待办，见 ADR 0008）。
 6. SDK `.so` 分发形态的 PIC 缺口（独立待办）。
 7. 旧 dev 库清理：按 td 进程分库的旧文件不再被读取（路径变更见 ADR 0012）；统一库 `db/td.db` 首次打开自动迁移到 schema v4。
+   清理旧网关库：`rm -f $DZTRADER_HOME/flow/*/*.db`（仅旧网关库 `.db`；`$DZTRADER_HOME/flow/<gw>/`
+   下 CTP 流文件不动——不确定时先 `ls` 确认）。
 
 ## 12. 镜像
 

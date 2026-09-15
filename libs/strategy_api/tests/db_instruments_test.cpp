@@ -151,4 +151,16 @@ TEST_F(DbInstrumentsTest, QueryInstrumentsEmptyFilterAllSorted) {
     dz_resultset_close(rs);
 }
 
+TEST_F(DbInstrumentsTest, QueryInstrumentsCommaOnlyFieldsReturnsAll) {
+    // 只有分隔符: 空段逐项跳过, 解析结果为空 -> 与 NULL/"" 等价, 返回全部 25 列
+    DzResultSet* rs = dz_db_query_instruments(db_, nullptr, ",");
+    ASSERT_NE(nullptr, rs) << dz_errmsg();
+    ASSERT_EQ(0, dz_resultset_status(rs));
+    ASSERT_EQ(25u, dz_resultset_column_count(rs));
+    EXPECT_STREQ("instrument_id", dz_resultset_column_name(rs, 0));
+    ASSERT_TRUE(dz_resultset_next(rs));
+    EXPECT_STREQ("rb2601", dz_resultset_get_string(rs, 0));
+    dz_resultset_close(rs);
+}
+
 }  // namespace

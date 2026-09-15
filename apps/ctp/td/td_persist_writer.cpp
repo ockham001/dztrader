@@ -136,6 +136,9 @@ void PersistWriter::open() {
             }
         }
     }
+    if (!wal_ready) {
+        SPDLOG_WARN("td db WAL conversion not applied, continue in current mode");
+    }
     db_->exec("PRAGMA busy_timeout=5000");
     db_->exec("PRAGMA cache_size=-8000");
     db_->exec("PRAGMA temp_store=MEMORY");

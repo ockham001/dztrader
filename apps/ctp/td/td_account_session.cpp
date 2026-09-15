@@ -377,6 +377,9 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
     }
     if (f.is_last) {
         // 定向刷新 (Ready 后) 的 is_last 不驱动登录收尾链
+        // 已知残余竞态 (非缺陷): 函数首部的 query_gen_ 代际门只能丢弃跨代迟到响应;
+        // 重登入 LoadingInstruments 期间, 同代的迟到刷新响应仍可能被当作全量查询的
+        // is_last 而重复发起持仓查询 — 仅重复查询, 无数据损坏.
         if (state_machine_.state() != TdState::LoadingInstruments) {
             SPDLOG_INFO("td instrument refresh done | account={} instrument={}",
                         account_id_, f.instrument ? f.instrument->InstrumentID : "");
@@ -1171,6 +1174,9 @@ void AccountSession::query_instrument(const std::string& instrument_id) {
         if (!lookup_db_) {
             lookup_db_ = std::make_unique<db::SqliteDatabase>(
                 dztrader::paths::td_db().string(), SQLite::OPEN_READONLY);
+            // 只读连接设 busy_timeout (与 td_api.cpp / td_persist_writer.cpp 一致, SQLiteCpp 默认 0):
+            // 降级 DELETE 模式或 Writer 提交窗口内查询不得立即 SQLITE_BUSY (否则静默丢 CZCE 消歧).
+            lookup_db_->exec("PRAGMA busy_timeout=5000");
         }
         symbol = tdstore::lookup_symbol(*lookup_db_, instrument_id);
     } catch (const std::exception& e) {
