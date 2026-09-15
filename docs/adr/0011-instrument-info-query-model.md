@@ -50,6 +50,23 @@ Accepted（2026-09-15）
 - 破坏性变更（无兼容包袱，同 ADR 0010 精神）：帧号 1006 释放、公开 `dz_db_query` 删除、结构体删除。
 - 核对项：CTP `ExpireDate` 是否等于最后交易日；`UnderlyingMultiple` 语义。
 
+### 旧 → 新迁移对照
+
+| 旧（已删除） | 新（`instruments` 表 / API / 帧） | 说明 |
+|---|---|---|
+| `DzInstrumentInfo.instrument_id`/`exchange_id`/`symbol`/`name` | 同名 4 列 | 逐字段直搬（`name` 落库前 GBK→UTF-8） |
+| `DzInstrumentInfo.product`（类型 `DzProduct`） | `product_class`（类型 `DzProductClass`） | 类型更名；`DZ_PRODUCT_*` 宏与数值不变（1..14）；另新增 `product_code`（CTP `ProductID`） |
+| `settle_cycle` / `settlement_method` / `is_inverse` | `settle_cycle` / `is_inverse` + 保留列 `settlement_method` | 交割方式降为 v3 保留列（不承诺、不可查询） |
+| `currency` / `base_asset` | 同名 2 列 | 直搬 |
+| `min_order_volume` / `max_order_volume` | `min_limit_order_volume` / `max_limit_order_volume` + 新增 `min_market_order_volume` / `max_market_order_volume` | 限价/市价拆对 |
+| `volume_multiple` / `price_tick` / `volume_step` | 同名 3 列 | 直搬 |
+| `listed_date` / `expiry_date` | `listed_date` / `delisted_date` | 更名（到期日 → 退市日，语义收敛） |
+| `option_type` / `option_exercise_style` / `underlying_id` / `option_strike` / `option_series` | `option_type` / `underlying_id` / `option_strike` + 新增 `underlying_multiple` + 保留列 `option_exercise_style` / `option_series` | 行权方式/调整序列降为保留列；标的乘数新增 |
+| （结构体无） | `update_day` / `updated_at` 元数据 2 列 | 新增（刷新完成观测点） |
+| `DZ_FRAME_TD_INSTRUMENT`(1006)，登录全量推送 | `DZ_FRAME_TD_QUERY_INSTRUMENT`(1043) + `dz_db_query_instruments` | 推送 → 单合约请求（无响应帧）+ DB 查询；全量刷新留在登录链路 |
+| `dz_db_query(db, ...)`（旧通用查询） | `dz_db_query_instruments(db, instrument_id, fields)` | 白名单列投影查询（默认 25 列） |
+| `DzInstrumentLeg` / `DzInstrumentExt` / `DzInstrumentTickTier` | 无对应 | 无消费方，不采纳（契约 §8） |
+
 ## References
 
 - 设计：`docs/superpowers/specs/2026-09-15-instrument-query-unified-td-db-design.md`

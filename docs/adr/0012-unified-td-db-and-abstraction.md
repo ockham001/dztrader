@@ -21,6 +21,7 @@ td 持久化现状：
 1. **统一单库**：所有 td 网关共用一个 SQLite 文件 `paths::td_db()` = `<DZTRADER_HOME>/db/td.db`；
    `flow/<实例名>/` 仅保留场所 API 流文件。
 2. **并发模型**：WAL + `synchronous=FULL` + `busy_timeout=5000`；多进程写串行化，读不阻塞写。
+   WAL 转换需独占锁，有界重试后仍失败则**降级为当前 journal 模式并告警**继续运行（不阻塞启动）。
 3. **迁移并发安全**：`MigrationManager::apply` 改为 `BEGIN IMMEDIATE` 单事务（版本复查 + 迁移 + 提交），
    多 td 进程并发首开安全（SQLiteCpp `TransactionBehavior::IMMEDIATE`）。
 4. **多账户写策略**：合约信息为交易所级数据，单表按 `instrument_id`；会话各自 `INSERT OR REPLACE` 幂等，
@@ -55,6 +56,8 @@ td 持久化现状：
 - 过渡期同一进程内可能同时存在原生 SQLiteCpp 与 `db::Database` 两条连接（合约走接口，其余走原生）；
   MySQL 项目完成全部迁移后收敛为一条。
 - tdstore 成为 td schema/记录的单一真相源，apps/ctp/td 不再拥有 schema。
+- **未落实（已登记）**：`account_id` 跨 td 网关的全局唯一校验待 master 侧实现（本次仅文档登记
+  Decision 4 的不变量，td 侧无校验；重复 account_id 的启动拦截缺失）。
 
 ## References
 

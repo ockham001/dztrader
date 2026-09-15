@@ -44,8 +44,10 @@
 - **接收方**：`DZ_FRAME_TD_QUERY_INSTRUMENT` 由 td 网关消费（按 `payload.account_id` 归属过滤；其他策略
   实例的 SDK 将其当平台帧丢弃）；`DZ_FRAME_TD_INSTRUMENT_STATUS` 由策略进程消费（SDK 全量放行、不解析
   payload，帧经 `dz_next_event` 返回给策略用户，按 `frame_type` 自取）。
-- **刷新请求定向解析**：td 侧先查统一库现有行的 `symbol`（CZCE 人工消歧），无行则回退 `instrument_id`，
-  再发 `ReqQryInstrument`；**不做自动消歧流程**（§5）。
+- **刷新请求定向解析与回写**：td 侧先查统一库现有行的 `symbol`（CZCE 人工消歧），无行则回退 `instrument_id`，
+  再发 `ReqQryInstrument`；发起时登记 `symbol → instrument_id` 待回写映射，响应命中时以原 **平台 `instrument_id`**
+  作 PK 更新原行（`rec.symbol` 保持响应场所码）→ 原行 `updated_at` 推进、不新增重复行；未命中（登录全量查询）
+  行为不变。**不做自动消歧流程**（§5）。
 - **前端入口**：无（后台进程间帧，无 REST/WS 入口）。
 - **镜像**：不进 dzweb 镜像（§12）。
 
@@ -107,7 +109,9 @@ struct 引用（字段定义见对应头文件，本契约不抄写字段表）�
   已随合约结构体退役消除（`InstrumentRecord` 默认 -1、DB 列 `DEFAULT -1`）。
 - **`currency`** 空=跟随账户本币；**`base_asset`** 空=不适用；`is_inverse` 0=线性、1=反向（反向合约保证金币种取 `base_asset`，契约 td-fee-margin）。
 - **`underlying_multiple <= 0`** = NA（语义核对项 §11）。
-- v3 物理列 `settlement_method`/`option_exercise_style`/`option_series` **保留但不承诺、不可查询**（§8）。
+- v3 物理列 `settlement_method`/`option_exercise_style`/`option_series` **保留但不承诺、不可查询**（§8）；
+  upsert SQL 不写这 3 列，`INSERT OR REPLACE` 的整行替换语义使其在**任意 upsert/刷新后被重置为列默认值**
+  （当前无消费方）。
 
 ## 5. 身份规则
 
@@ -117,7 +121,7 @@ struct 引用（字段定义见对应头文件，本契约不抄写字段表）�
 |------|------|------|
 | `instrument_id` | 平台唯一键 | CTP 合约用**裸交易所代码**（`rb2601`/`MA601`）；其他网关加**网关段前缀**（`IB.266004536`/`BNS.BTCUSDT`）保证跨网关唯一。唯一性由库表 PK 保证（同一 `instrument_id` 重复回报按覆盖语义 upsert）。 |
 | `exchange_id` | 交易场所代码 | 平台注册表值（`SHFE`/`CME`/`BNS`/`BNF` 等），非展示字符串，参与路由与规则判定。 |
-| `symbol` | 场所原生代码 | 网关对场所 API 发单/订阅时**原样透传**；仅展示与场所交互用。**`symbol ≠ instrument_id` 合法**（CZCE 手工消歧）；刷新请求的场所查询目标优先取库内 `symbol`，无行回退 `instrument_id`；不做自动消歧流程。 |
+| `symbol` | 场所原生代码 | 网关对场所 API 发单/订阅时**原样透传**；仅展示与场所交互用。**`symbol ≠ instrument_id` 合法**（CZCE 手工消歧）；刷新请求的场所查询目标优先取库内 `symbol`，无行回退 `instrument_id`；响应按发起时登记的 `symbol → instrument_id` 映射回写**原行**（不新增重复行）；不做自动消歧流程。 |
 
 - **禁止从 `instrument_id` 反向解析 `symbol`**：前缀仅为跨网关唯一性约定，非语法规则
   （`normalize_to_product` 类品种前缀提取仅适用于确认无歧义的裸码域，不得用于恢复 `symbol`）。
@@ -167,6 +171,9 @@ DzResultSet* dz_db_query_instruments(DzDatabase* db, const char* instrument_id, 
 - 结果集由策略负责 `dz_resultset_close` 释放；遍历/取值 API 见 `api.h`。
 - 仅投影 `instruments` 表承诺列；v3 保留列（`settlement_method`/`option_exercise_style`/`option_series`）不可选。
 
+**查询量级提示**：全表查询（`instrument_id` 为 NULL/空串）在万级行下约 10²ms / 10¹MB 量级（含全部 25 列）；
+建议按 `instrument_id` 精确查询或仅请求必需 `fields`（合约表为登录期全量 upsert，行数随在役合约增长）。
+
 `fields` 白名单（声明序，共 25；与 `tdstore::instrument_columns()` 一致）：
 
 `instrument_id`, `exchange_id`, `symbol`, `name`, `product_class`, `product_code`, `settle_cycle`, `currency`,
@@ -192,7 +199,7 @@ DzResultSet* rs = dz_db_query_instruments(db, instrument_id, "symbol,price_tick,
 | PositionType / PositionDateType | 由 `OffsetConvertMode`（账户/交易所级配置）承载 |
 | LongMarginRatio / ShortMarginRatio | 账户级费率链路，且已显式跳过交易所统一行 `IR_All`（契约 td-fee-margin） |
 | 手续费/保证金 | 不入合约表（CTP 不支持全量；走账户级按需查询 + `margin_rates`/`commission_rates`，契约 td-fee-margin） |
-| `settlement_method` / `option_exercise_style` / `option_series` | 物理列保留、不承诺、不可查询；对应功能落地时启用 |
+| `settlement_method` / `option_exercise_style` / `option_series` | 物理列保留、不承诺、不可查询；任意 upsert/刷新重置为默认值（当前无消费方）；对应功能落地时启用 |
 
 ## 9. 校验（仅写与总则不同的规则）
 
@@ -237,3 +244,11 @@ DzResultSet* rs = dz_db_query_instruments(db, instrument_id, "symbol,price_tick,
 - 不进 dzweb 镜像（后台进程间帧；dzweb 不消费 `DZ_FRAME_TD_QUERY_INSTRUMENT`/`DZ_FRAME_TD_INSTRUMENT_STATUS`）。
 - 策略 SDK 对 `DZ_FRAME_TD_INSTRUMENT_STATUS` 全量放行、不解析 payload；`DZ_FRAME_TD_QUERY_INSTRUMENT` 是
   SDK **写端帧**（由 `dz_query_instrument` 发出），非读端白名单成员（见契约 strategy）。
+
+## 13. 运维约束
+
+- **进程运行中禁止删除/替换/还原覆盖 `db/td.db`**（`rm`、`mv` 覆盖、从备份 `cp` 回滚等）：写连接持有旧 inode
+  继续写已被替换的文件，而新读者打开的是新路径文件，两侧看到不同数据（裂脑），无自动收敛机制。
+  清库/还原/备份回滚必须停全部 td 与策略进程后操作。
+- **升级次序**：先启动 td（打开统一库完成 v4 迁移）再启动策略；反向次序下策略可能以旧 schema 打开库，
+  新查询可能遇旧 schema 短暂返回 NULL，迁移完成后恢复。
