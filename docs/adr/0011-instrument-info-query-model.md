@@ -45,8 +45,8 @@ Accepted（2026-09-15）
 - 策略侧：不再解析合约结构体；合约数据一律经 DB 查询（`dz_db_query_instruments`）；刷新用 `dz_query_instrument` + 定时器。
 - td 侧：登录链路不再广播合约帧；新增单合约刷新处理；落库改经 `libs/tdstore`。
 - v4 schema 迁移：4 rename（`product`→`product_class`、`min_order_volume`→`min_limit_order_volume`、
-  `max_order_volume`→`max_limit_order_volume`、`expiry_date`→`delisted_date`）+ 4 add
-  （`product_code`、`updated_at`、`min_market_order_volume`、`max_market_order_volume`）。
+  `max_order_volume`→`max_limit_order_volume`、`expiry_date`→`delisted_date`）+ 5 add
+  （`product_code`、`min_market_order_volume`、`max_market_order_volume`、`underlying_multiple`、`updated_at`）。
 - 破坏性变更（无兼容包袱，同 ADR 0010 精神）：帧号 1006 释放、公开 `dz_db_query` 删除、结构体删除。
 - 核对项：CTP `ExpireDate` 是否等于最后交易日；`UnderlyingMultiple` 语义。
 
