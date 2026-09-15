@@ -224,7 +224,7 @@
 
 - 本目录当前覆盖事件通道的低频控制/配置/通知帧。
 - **已覆盖**：策略帧（`DZ_FRAME_UI_INPUT`/`DZ_FRAME_OUTPUT_UI`/`DZ_FRAME_SET_LOGICAL_POSITION`，见《帧契约：策略》）；TD 数据同步（TD 推送 `DZ_FRAME_ORDER_REPORT`/`DZ_FRAME_TRADE_REPORT`/`DZ_FRAME_POSITION_INFO`/`DZ_FRAME_TRADING_ACCOUNT` 的账户级 seq 水位/回补/重置/登录完成协议，见《帧契约：TD 数据同步》）。
-- **未覆盖**（后续独立契约，本目录暂不收录）：交易帧（除《帧契约：交易委托请求》已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ`、《帧契约：账户登录状态》已覆盖的 `ACCOUNT_STATUS`/`TD_QUERY_ACCOUNT_STATUS`、《帧契约：TD 数据同步》已覆盖的 TD 推送 DZ_FRAME_ORDER_REPORT-DZ_FRAME_TRADING_ACCOUNT 与《帧契约：合约信息》已覆盖的 `TD_INSTRUMENT`/`TD_INSTRUMENT_STATUS` 外，其余交易控制帧（`DZ_FRAME_TD_REQ_MODIFY_CONFIG`、`DZ_FRAME_TD_RTN_STATUS` 等，见 `core_data_type.h`），TD 已实现大半）、行情/交易数据帧（`TICK`，struct payload）。
+- **未覆盖**（后续独立契约，本目录暂不收录）：交易帧（除《帧契约：交易委托请求》已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ`、《帧契约：账户登录状态》已覆盖的 `ACCOUNT_STATUS`/`TD_QUERY_ACCOUNT_STATUS`、《帧契约：TD 数据同步》已覆盖的 TD 推送 DZ_FRAME_ORDER_REPORT-DZ_FRAME_TRADING_ACCOUNT 与《帧契约：合约信息》已覆盖的 `TD_QUERY_INSTRUMENT`/`TD_INSTRUMENT_STATUS` 外，其余交易控制帧（`DZ_FRAME_TD_REQ_MODIFY_CONFIG`、`DZ_FRAME_TD_RTN_STATUS` 等，见 `core_data_type.h`），TD 已实现大半）、行情/交易数据帧（`TICK`，struct payload）。
 - `DZ_FRAME_SYS_SCHED`：该帧与其 payload（`DzSysSched`）已于 2026-08 随"系统调度域废弃"**从公开头移除**（此前无任何进程消费，md 已于 2026-07 移除处理），定义行一并删除、不再占号。策略侧定时需求由 `dz_schedule_*` 定时器接口承担（见《帧契约：策略》）。
 
 ---

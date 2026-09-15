@@ -246,7 +246,7 @@ typedef int8_t DzOptionType;
  *  合约产品类型
  * ========================================================== */
 
-/** @brief 合约产品类型 (tdstore::InstrumentRecord.product_class) */
+/** @brief 合约产品类型 (统一 td 库 instruments.product_class; 见 ADR 0011) */
 typedef int8_t DzProductClass;
 
 #define DZ_PRODUCT_UNKNOWN   ((DzProductClass)0)   ///< 未知

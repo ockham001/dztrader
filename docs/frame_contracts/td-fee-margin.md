@@ -30,14 +30,14 @@
   - `long/short_margin_ratio_by_money`：多/空头保证金费率（比例）。
   - `long/short_margin_ratio_by_volume`：多/空头每手固定保证金金额；期权"每张固定保证金"（XTP `sell_margin`、TORA `MarginUnit`）也走 by_volume。
   - `is_relative`：0=绝对值，1=相对保证金率。
-  - **保证金币种不落本表**：线性合约取 `DzInstrumentInfo.currency`，反向合约（`is_inverse=1`）取 `DzInstrumentInfo.base_asset`。
+  - **保证金币种不落本表**：线性合约取统一 td 库 `instruments` 表 `currency` 列，反向合约（`is_inverse=1`）取 `base_asset` 列（经 `dz_db_query_instruments` 查询，契约 instrument）。
 - `DzCommissionRate`：
   - `*_ratio_by_money`：按金额比例费率；`*_ratio_by_volume`：按手固定金额（期权"每张固定手续费"走 by_volume）。
   - 开/平/平今三分量：期货（含今昨拆分）；证券/币圈无"平今"语义时 `close_today_*` 填 0 或与 `close_*` 同值（由网关策略决定，本契约不强制）。
 
 ## 4. 决策必需字段的正式通道（层2，未建）
 
-- 以下字段为**决策必需**，按 `struct.h`/`instrument.md` 契约**不得**进 `DzInstrumentExt` K-V：
+- 以下字段为**决策必需**，不得塞进合约信息通路（合约表无 K-V 扩展列；契约 instrument）：
   - 股票税目：印花税（单边）、过户费、经手费、规费、结算费、最低佣金。
   - 期权卖方保证金算法参数：FixedMargin / MiniMargin / Royalty、UpperRatio、组合保证金差。
   - 币圈 taker/maker 分层费率（账户级、准静态；手续费=成交额×费率，与 by_money 同构，接入时亦可直接进层1 `DzCommissionRate`）。
@@ -45,7 +45,7 @@
 
 ## 5. 动态数据（层3，未建）
 
-- `funding rate`（资金费率，8h 级周期、与持仓差挂钩、决策必需）：**不**进 `DzInstrumentExt`，**不**塞 `DzTick` 热路径。将来以独立低频事件帧（如 `DZ_FRAME_TD_FUNDING_RATE`）推送，策略只读；引入前策略自行获取。
+- `funding rate`（资金费率，8h 级周期、与持仓差挂钩、决策必需）：**不**塞 `DzTick` 热路径。将来以独立低频事件帧（如 `DZ_FRAME_TD_FUNDING_RATE`）推送，策略只读；引入前策略自行获取。
 - 外汇点差/隔夜利息、币圈初始/维持保证金/阶梯档位：同样归本层，接网关时按需建帧。
 
 ## 6. 将来扩展位（YAGNI 预留说明）

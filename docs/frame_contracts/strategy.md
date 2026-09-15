@@ -92,7 +92,7 @@
 - `ORDER_REPORT`(DZ_FRAME_ORDER_REPORT)/`TRADE_REPORT`(DZ_FRAME_TRADE_REPORT)：按 payload `strategy_id` 定向——仅 `strategy_id` == 本策略裸名的帧放行；`strategy_id` 为空（外部单/手工单，非任何策略所下）与其他策略的回报一律拦截丢弃（td 网关按下单 `DzOrderReq.strategy_id` 回填，见契约 td-order）
 - `POSITION_INFO`/`TRADING_ACCOUNT`：不按策略过滤，全量透传；引擎分发给策略 `on_position_info`/`on_trading_account` 回调（TD 网关查询链路已落地：登录完成协议在 Ready 前发起持仓/资金查询，响应经 SDK ingest seq 过滤后推送，见下"SDK ingest 过滤职责"）；盘中成交/活动平仓挂单变化触发的增量 `POSITION_INFO` 同样经 ingest seq 过滤推送（绝对态）
 - `ACCOUNT_STATUS`(DZ_FRAME_ACCOUNT_STATUS)：同上不按策略过滤，全量透传（payload 无 `strategy_id`，账户级广播帧）；SDK 引擎分发 `on_account_status` 回调（帧语义见《帧契约：账户登录状态》）
-- 其余 TD 回报帧（`TD_INSTRUMENT`/`TD_INSTRUMENT_STATUS`/`TD_MARGIN_RATE`/`TD_COMMISSION_RATE` 等）：暂不按策略过滤，全量放行，引擎静默忽略
+- 其余 TD 回报帧（`TD_INSTRUMENT_STATUS`/`TD_MARGIN_RATE`/`TD_COMMISSION_RATE` 等）：暂不按策略过滤，全量放行，引擎静默忽略
 - `UI_INPUT`（定向本策略）：SDK 按 `instance_id` == 裸策略名过滤
 - `SHUTDOWN`（DZ_FRAME_SHUTDOWN，`instance_id` == 裸策略名）：SDK 完成内部清理（取消内部预加载定时器、清定时器帧缓冲）后放行，策略用户可据此优雅退出（`REQUEST_SHUTDOWN_ALL` 已移除：全项目无写入/消费端）
 - 本地合成的 `SCHEDULE`（3003）
@@ -103,7 +103,7 @@
 - `UPDATE_SHM_EVENT_SUBSCRIBER`：SDK 内部 `refresh_subscribers()`
 - `NOTIFY_MD_STARTED`（本策略行情源）：SDK 自动补订阅期望集合
 - 非本策略/空 `strategy_id` 的 `ORDER_REPORT`/`TRADE_REPORT`；非本策略 `instance_id` 的 `UI_INPUT`/`SHUTDOWN`
-- 其余平台帧（日志/SHM 配置、进程控制、md 控制、TD 控制 21xx、`OUTPUT_UI`/`SET_LOGICAL_POSITION` 他策略回声等）：丢弃（`TD_QUERY_ACCOUNT_STATUS` 是 SDK 写端帧——由 `dz_query_account_status` 发出，非读端白名单成员）
+- 其余平台帧（日志/SHM 配置、进程控制、md 控制、TD 控制 21xx、`OUTPUT_UI`/`SET_LOGICAL_POSITION` 他策略回声等）：丢弃（`TD_QUERY_ACCOUNT_STATUS`/`TD_QUERY_INSTRUMENT` 是 SDK 写端帧——分别由 `dz_query_account_status`/`dz_query_instrument` 发出，非读端白名单成员）
 
 **SDK ingest 过滤职责**（TD 数据同步，账户级 seq 水位）：
 
