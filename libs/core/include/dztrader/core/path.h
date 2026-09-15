@@ -48,6 +48,11 @@ const std::filesystem::path& strategies();
  */
 const std::filesystem::path& db();
 
+/**
+ * @brief td 统一数据库文件 (db/td.db; 所有 td 网关共写)
+ */
+const std::filesystem::path& td_db();
+
 }  // namespace dztrader::paths
 
 #endif  /* DZTRADER_CORE_PATH_H_ */

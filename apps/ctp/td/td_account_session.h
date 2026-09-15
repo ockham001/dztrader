@@ -53,6 +53,10 @@
 #include "td/td_spi.h"
 #include "td/td_state.h"
 
+namespace dztrader::db {
+class SqliteDatabase;
+}  // namespace dztrader::db
+
 namespace dztrader::ctp {
 
 class AccountSession {
@@ -156,6 +160,11 @@ public:
     /// 由 TdApi 收到 DZ_FRAME_TD_QUERY_FEE_RATE=DZ_FRAME_TD_QUERY_FEE_RATE 帧调用.
     /// @param instrument_id 目标合约; @param query_type 0=保证金率, 1=手续费率, 2=两者.
     void query_fee_rate(const char* instrument_id, int8_t query_type);
+
+    /// 单合约定向刷新 (契约 instrument): 优先用 DB 行的 symbol (CZCE 人工消歧), 无行回退 instrument_id.
+    /// 仅 Ready 后生效 (登录链已全量查询, Ready 前拒绝). 响应经 on_rsp_qry_instrument 回写统一库.
+    /// 由 TdApi 收到 DZ_FRAME_TD_QUERY_INSTRUMENT 帧调用.
+    void query_instrument(const std::string& instrument_id);
 
     // === 状态 ===
     TdState state() const noexcept { return state_machine_.state(); }
@@ -359,6 +368,8 @@ private:
     uint64_t max_seq_at_disconnect_ = 0;
     /// 独立只读连接提供器 (TdApi 注入; 重连增量装载基准用, 可空则降级).
     std::function<SQLite::Database*()> prescan_db_provider_;
+    /// 定向刷新用的独立只读连接 (惰性打开; PersistWriter 连接归 writer 线程独占, WAL 下多连接安全).
+    std::unique_ptr<db::SqliteDatabase> lookup_db_;
 
     /// 持仓 map: instrument_id -> PositionHolding (设计 §6)
     std::unordered_map<std::string, PositionHolding> holdings_;

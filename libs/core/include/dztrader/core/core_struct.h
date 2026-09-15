@@ -49,6 +49,12 @@ DZ_DECLARE_ALIGNED_STRUCT(DzFeeRateQueryReq, {
     char reserved[7];             ///< 对齐到 8 字节倍数
 });
 
+/// 合约信息定向刷新请求 (DZ_FRAME_TD_QUERY_INSTRUMENT, basic 广播帧, 契约 instrument)
+DZ_DECLARE_ALIGNED_STRUCT(DzInstrumentQueryReq, {
+    DzAccountId account_id;        ///< 目标账户 (必填)
+    DzInstrumentId instrument_id;  ///< 目标合约 (平台唯一键, 必填)
+});
+
 DZ_END_C_DECLS
 
 namespace dztrader {

@@ -11,13 +11,16 @@
 
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/encoding.h>
+#include <dztrader/core/path.h>
 #include <dztrader/core/string_util.h>
 #include <dztrader/data_type.h>
 #include <dztrader/date_time/date.h>
+#include <dztrader/db/database_sqlite.h>
 #include <dztrader/platform/frame_codec.h>
 #include <dztrader/platform/risk_reject.h>
 #include <dztrader/platform/td_account_ops.h>
 #include <dztrader/struct.h>
+#include <dztrader/tdstore/instrument_store.h>
 #include <dztrader/tdstore/records.h>
 
 #include "td/td_persist_records.h"
@@ -373,6 +376,12 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
                      dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg));
     }
     if (f.is_last) {
+        // 定向刷新 (Ready 后) 的 is_last 不驱动登录收尾链
+        if (state_machine_.state() != TdState::LoadingInstruments) {
+            SPDLOG_INFO("td instrument refresh done | account={} instrument={}",
+                        account_id_, f.instrument ? f.instrument->InstrumentID : "");
+            return;
+        }
         // Task 6 (spec §4.2 登录完成协议): 合约加载完成**不立即**转 Ready.
         // 留在 LoadingInstruments (缓冲分支继续生效, CTP 私有流重放期间回报继续进缓冲),
         // 进入登录收尾查询阶段: 发起持仓查询 (CTP 流控 1 次/秒, 串行 -> 资金).
@@ -1146,6 +1155,36 @@ void AccountSession::query_fee_rate(const char* instrument_id, int8_t query_type
         req_qry_margin_rate(instrument_id);
     } else if (query_type == 1) {
         req_qry_commission_rate(instrument_id);
+    }
+}
+
+void AccountSession::query_instrument(const std::string& instrument_id) {
+    // 单合约定向刷新 (契约 instrument): 优先用 DB 行的 symbol (CZCE 人工消歧), 无行则回退 instrument_id.
+    // 注意 1: PersistWriter 的 SQLite 连接归 writer 线程独占, 此处用独立只读连接 (WAL 下多连接安全).
+    // 注意 2: Ready 前的刷新请求直接拒绝 (登录链会全量查, 无需刷新).
+    if (!is_ready()) {
+        SPDLOG_WARN("td query instrument rejected | account={} reason=not_ready", account_id_);
+        return;
+    }
+    std::string symbol;
+    try {
+        if (!lookup_db_) {
+            lookup_db_ = std::make_unique<db::SqliteDatabase>(
+                dztrader::paths::td_db().string(), SQLite::OPEN_READONLY);
+        }
+        symbol = tdstore::lookup_symbol(*lookup_db_, instrument_id);
+    } catch (const std::exception& e) {
+        SPDLOG_WARN("td query instrument: db lookup failed | account={} err={}",
+                    account_id_, e.what());
+    }
+    if (symbol.empty()) {
+        symbol = instrument_id;
+    }
+    auto field = to_qry_instrument_field(symbol);
+    const int ret = api_->ReqQryInstrument(&field, ++request_id_);
+    if (ret != 0) {
+        SPDLOG_WARN("td query instrument failed | account={} instrument={} ret={}",
+                    account_id_, instrument_id, ret);
     }
 }
 

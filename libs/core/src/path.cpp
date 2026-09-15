@@ -124,4 +124,11 @@ const std::filesystem::path& db()
     return CACHED;
 }
 
+const std::filesystem::path& td_db()
+{
+    // db() 已保证目录存在, 此处不重复 ensure
+    static const auto CACHED = db() / "td.db";
+    return CACHED;
+}
+
 }  // namespace dztrader::paths

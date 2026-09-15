@@ -198,6 +198,8 @@ private:
     void handle_query_account_status(const std::byte* frame);
     /// 处理 TD_QUERY_FEE_RATE basic 广播帧: 按需查询单合约费率/保证金 (异步回填)
     void handle_query_fee_rate(const std::byte* frame);
+    /// 处理 TD_QUERY_INSTRUMENT basic 广播帧: 单合约定向刷新 (契约 instrument, 响应回写统一库)
+    void handle_query_instrument(const std::byte* frame);
     /// per-account 健康度翻转检测 + 广播 (NOTIFY_TD_CONNECTED / NOTIFY_TD_DISCONNECTED)。
     /// instance_id 格式 name_:account_id。仅在 health 翻转时发送, 避免重复。
     void broadcast_health(const std::string& account_id, TdHealth now);
