@@ -18,10 +18,23 @@
 #include <dztrader/platform/risk_reject.h>
 #include <dztrader/platform/td_account_ops.h>
 #include <dztrader/struct.h>
+#include <dztrader/tdstore/records.h>
 
+#include "td/td_persist_records.h"
 #include "td/td_position.h"
 
 namespace dztrader::ctp {
+
+namespace {
+
+/// epoch 毫秒 (合约记录 updated_at 推进用).
+int64_t epoch_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+}  // namespace
 
 AccountSession::AccountSession(std::string account_id,
                                shm::OrderIdMeta& order_id_meta,
@@ -331,26 +344,24 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
         instrument_exchange_map_[f.instrument->InstrumentID] =
             InstrumentBrief{f.instrument->ExchangeID, f.instrument->PriceTick,
                             static_cast<double>(f.instrument->VolumeMultiple)};
-        // I6: 推 DZ_FRAME_TD_INSTRUMENT SHM 帧, 让策略进程拿到合约信息 (price_tick/乘数/期权字段)
         try {
-            DzInstrumentInfo contract = to_dz_instrument(*f.instrument);
-            platform::write_struct(event_writer_, DZ_FRAME_TD_INSTRUMENT, contract);
-            // 持久化合约信息 (供审计/复盘)
+            // 持久化合约信息 (供审计/复盘/策略查询)
             // update_day[9]: "YYYYMMDD" 文本 (从 DzDate 距纪元天数转换)
-            InstrumentRecord rec;
-            rec.base = contract;
+            std::string update_day_str = "00000000";
             if (trading_day_ > 0) {
                 dztrader::Date d{trading_day_};
-                auto* end = std::format_to_n(rec.update_day, sizeof(rec.update_day) - 1,
+                char update_day[9];
+                auto* end = std::format_to_n(update_day, sizeof(update_day) - 1,
                                              "{:04d}{:02d}{:02d}",
                                              d.year(), d.month(), d.day()).out;
                 *end = '\0';
-            } else {
-                std::snprintf(rec.update_day, sizeof(rec.update_day), "00000000");
+                update_day_str = update_day;
             }
-            persist_writer_.enqueue(PersistTask{PersistTask::Kind::Instrument, rec});
+            auto rec = to_instrument_record(*f.instrument, update_day_str);
+            rec.updated_at = epoch_ms();
+            persist_writer_.enqueue(PersistTask{PersistTask::Kind::Instrument, std::move(rec)});
         } catch (const std::exception& e) {
-            SPDLOG_ERROR("td instrument push failed | account={} instrument={} error=\"{}\"",
+            SPDLOG_ERROR("td instrument persist failed | account={} instrument={} error=\"{}\"",
                          account_id_, f.instrument->InstrumentID, e.what());
         }
         SPDLOG_DEBUG("td instrument | account={} instrument={}",

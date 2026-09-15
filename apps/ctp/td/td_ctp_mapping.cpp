@@ -4,6 +4,7 @@
 #include <cstring>
 #include <format>
 
+#include <dztrader/core/encoding.h>      // to_utf8_from_gbk
 #include <dztrader/core/string_util.h>  // copy_string
 #include <dztrader/date_time/date.h>     // Date
 
@@ -368,56 +369,62 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
 }
 
 // ============================================================================
-// to_dz_instrument: CTP InstrumentField -> DzInstrumentInfo
+// to_instrument_record: CTP InstrumentField -> tdstore::InstrumentRecord
 // ============================================================================
 
-DzInstrumentInfo to_dz_instrument(const CThostFtdcInstrumentField& f) noexcept {
-    DzInstrumentInfo c{};
+namespace {
 
-    copy_to_dz(c.instrument_id, f.InstrumentID);
-    copy_to_dz(c.exchange_id, f.ExchangeID);
-    copy_to_dz(c.symbol, f.InstrumentID);   // CTP 裸码: symbol == instrument_id
-    // CTP InstrumentName 为 GBK, 此处原样拷贝 (UTF-8 转换由调用方处理)
-    copy_to_dz(c.name, f.InstrumentName);
-
-    // 产品类型: CTP ProductClass -> DZ_PRODUCT_* (未知暴露为 UNKNOWN, 不再伪装期货)
-    // 注意: 商品期权是 SpotOption('6') 而非 Options('2'); EFP('5')/TAS('7')/MI('I') 暴露为 UNKNOWN
-    switch (f.ProductClass) {
-        case THOST_FTDC_PC_Futures:       c.product = DZ_PRODUCT_FUTURES;  break;
-        case THOST_FTDC_PC_Options:       c.product = DZ_PRODUCT_OPTION;   break;
-        case THOST_FTDC_PC_SpotOption:    c.product = DZ_PRODUCT_OPTION;   break;
-        case THOST_FTDC_PC_Combination:   c.product = DZ_PRODUCT_SPREAD;   break;
-        case THOST_FTDC_PC_Spot:          c.product = DZ_PRODUCT_SPOT;     break;
-        default:                          c.product = DZ_PRODUCT_UNKNOWN;  break;
+/// CTP ProductClass -> DZ_PRODUCT_* (未知暴露为 UNKNOWN, 不再伪装期货).
+/// 注意: 商品期权是 SpotOption('6') 而非 Options('2'); EFP('5')/TAS('7')/MI('I') 暴露为 UNKNOWN
+int32_t product_class_from_ctp(TThostFtdcProductClassType pc) noexcept {
+    switch (pc) {
+        case THOST_FTDC_PC_Futures:     return DZ_PRODUCT_FUTURES;
+        case THOST_FTDC_PC_Options:     return DZ_PRODUCT_OPTION;
+        case THOST_FTDC_PC_SpotOption:  return DZ_PRODUCT_OPTION;
+        case THOST_FTDC_PC_Combination: return DZ_PRODUCT_SPREAD;
+        case THOST_FTDC_PC_Spot:        return DZ_PRODUCT_SPOT;
+        default:                        return DZ_PRODUCT_UNKNOWN;
     }
+}
 
-    // CTP 无 T+n 交收周期概念 (期货每日无债): 衍生品语境固定 -1
-    c.settle_cycle = -1;
-    // 交割方式 CTP 无单合约字段, 首版不推断 (SHFE 实物 / CFFEX 现金留品种级配置)
-    c.settlement_method = 0;
-    c.is_inverse = 0;                          // CTP 无反向合约
-    copy_to_dz(c.currency, "CNY");             // CTP 人民币计价 (copy_to_dz 自动 null 终止)
-    // base_asset / option_exercise_style / option_series: 零初始化即正确值, 不赋
-
-    c.min_order_volume = f.MinLimitOrderVolume;
-    c.max_order_volume = f.MaxLimitOrderVolume;
-    c.volume_multiple = static_cast<double>(f.VolumeMultiple);
-    c.price_tick = f.PriceTick;
-    c.volume_step = 1.0;                       // CTP 平台单位 == 原生单位 (手)
-
-    // CTP 无 ListedDate, OpenDate (上市日) 映射 listed_date
-    c.listed_date = parse_ctp_date(f.OpenDate);
-    c.expiry_date = parse_ctp_date(f.ExpireDate);
-
-    switch (f.OptionsType) {
-        case THOST_FTDC_CP_CallOptions: c.option_type = DZ_OPTION_CALL; break;  // 1
-        case THOST_FTDC_CP_PutOptions:  c.option_type = DZ_OPTION_PUT;  break;  // -1
-        default:                        c.option_type = 0; break;  // 非期权
+/// CTP OptionsType -> DZ_OPTION_* (0=非期权)
+int32_t option_type_from_ctp(TThostFtdcOptionsTypeType type) noexcept {
+    switch (type) {
+        case THOST_FTDC_CP_CallOptions: return DZ_OPTION_CALL;  // 1
+        case THOST_FTDC_CP_PutOptions:  return DZ_OPTION_PUT;   // -1
+        default:                        return 0;               // 非期权
     }
-    c.option_strike = f.StrikePrice;
-    copy_to_dz(c.underlying_id, f.UnderlyingInstrID);
+}
 
-    return c;
+}  // namespace
+
+tdstore::InstrumentRecord to_instrument_record(const CThostFtdcInstrumentField& f,
+                                               const std::string& update_day) noexcept {
+    tdstore::InstrumentRecord r{};
+    r.instrument_id = f.InstrumentID;
+    r.exchange_id = f.ExchangeID;
+    r.symbol = f.InstrumentID;
+    r.name = dztrader::to_utf8_from_gbk(f.InstrumentName);
+    r.product_class = product_class_from_ctp(f.ProductClass);
+    r.product_code = f.ProductID;
+    r.settle_cycle = -1;                 // CTP 衍生品语义
+    r.currency = "CNY";
+    r.volume_multiple = static_cast<double>(f.VolumeMultiple);
+    r.volume_step = 1.0;
+    r.price_tick = f.PriceTick;
+    r.min_limit_order_volume = f.MinLimitOrderVolume;
+    r.max_limit_order_volume = f.MaxLimitOrderVolume;
+    r.min_market_order_volume = f.MinMarketOrderVolume;
+    r.max_market_order_volume = f.MaxMarketOrderVolume;
+    r.listed_date = parse_ctp_date(f.OpenDate);
+    r.delisted_date = parse_ctp_date(f.ExpireDate);
+    r.option_type = option_type_from_ctp(f.OptionsType);
+    r.option_strike = f.StrikePrice;
+    r.underlying_id = f.UnderlyingInstrID;
+    r.underlying_multiple = f.UnderlyingMultiple;
+    r.update_day = update_day;
+    // r.updated_at 由调用方置 epoch ms
+    return r;
 }
 
 // ============================================================================

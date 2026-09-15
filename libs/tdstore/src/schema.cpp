@@ -1,8 +1,8 @@
-#include "td/td_schema.h"
+#include <dztrader/tdstore/schema.h>
 
 #include <SQLiteCpp/Database.h>
 
-namespace dztrader::ctp {
+namespace dztrader::tdstore {
 
 // ============================================================================
 // v1: 初始表结构 (设计 §13.6)
@@ -285,12 +285,27 @@ void migration_v3(SQLite::Database& db) {
     db.exec("ALTER TABLE instruments_v3 RENAME TO instruments");
 }
 
+void migration_v4(SQLite::Database& db) {
+    // v4: 列改名 + 新列 (SQLite RENAME COLUMN 3.25+)
+    // 注: underlying_multiple 在 v3 中不存在, 必须在本迁移新增 (自检发现)
+    db.exec("ALTER TABLE instruments RENAME COLUMN product TO product_class");
+    db.exec("ALTER TABLE instruments RENAME COLUMN min_order_volume TO min_limit_order_volume");
+    db.exec("ALTER TABLE instruments RENAME COLUMN max_order_volume TO max_limit_order_volume");
+    db.exec("ALTER TABLE instruments RENAME COLUMN expiry_date TO delisted_date");
+    db.exec("ALTER TABLE instruments ADD COLUMN product_code TEXT NOT NULL DEFAULT ''");
+    db.exec("ALTER TABLE instruments ADD COLUMN min_market_order_volume INTEGER NOT NULL DEFAULT 0");
+    db.exec("ALTER TABLE instruments ADD COLUMN max_market_order_volume INTEGER NOT NULL DEFAULT 0");
+    db.exec("ALTER TABLE instruments ADD COLUMN underlying_multiple REAL NOT NULL DEFAULT 0");
+    db.exec("ALTER TABLE instruments ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0");
+}
+
 }  // namespace
 
 void apply_td_migrations(dztrader::db::MigrationManager& mgr) {
     mgr.add(1, migration_v1);
     mgr.add(2, migration_v2);
     mgr.add(3, migration_v3);
+    mgr.add(4, migration_v4);
 }
 
-}  // namespace dztrader::ctp
+}  // namespace dztrader::tdstore

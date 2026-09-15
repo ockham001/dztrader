@@ -8,7 +8,7 @@
 
 #include <SQLiteCpp/Database.h>
 
-#include "td/td_schema.h"  // OrderRecord / TradeRecord
+#include "td/td_persist_records.h"  // OrderRecord / TradeRecord
 
 namespace dztrader::ctp {
 

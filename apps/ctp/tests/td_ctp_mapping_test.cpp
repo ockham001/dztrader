@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <dztrader/core/encoding.h>
 #include <dztrader/date_time/date.h>
 
 using namespace dztrader::ctp;
@@ -60,11 +61,14 @@ CThostFtdcInstrumentField make_instrument_field() {
     std::strcpy(f.InstrumentID, "IF2506");
     std::strcpy(f.ExchangeID, "CFFEX");
     std::strcpy(f.InstrumentName, "IF2506");
+    std::strcpy(f.ProductID, "IF");
     f.ProductClass = THOST_FTDC_PC_Futures;
     f.VolumeMultiple = 300;
     f.PriceTick = 0.2;
     f.MinLimitOrderVolume = 1;
     f.MaxLimitOrderVolume = 500;
+    f.MinMarketOrderVolume = 1;
+    f.MaxMarketOrderVolume = 500;
     f.OptionsType = 0;  // 非期权
     f.StrikePrice = 0.0;
     std::strcpy(f.OpenDate, "20260119");
@@ -509,31 +513,36 @@ TEST(ToTradeRecordTest, BuyCloseTodayMapping) {
 }
 
 // ============================================================================
-// to_dz_instrument
+// to_instrument_record
 // ============================================================================
 
-TEST(ToDzInstrumentInfoTest, Futures) {
+TEST(ToInstrumentRecordTest, Futures) {
     auto f = make_instrument_field();
-    auto c = to_dz_instrument(f);
+    auto r = to_instrument_record(f, "20260101");
 
-    EXPECT_STREQ(c.instrument_id, "IF2506");
-    EXPECT_STREQ(c.symbol, "IF2506");              // CTP 裸码: symbol == instrument_id
-    EXPECT_STREQ(c.exchange_id, "CFFEX");
-    EXPECT_EQ(c.product, DZ_PRODUCT_FUTURES);
-    EXPECT_DOUBLE_EQ(c.volume_multiple, 300);
-    EXPECT_DOUBLE_EQ(c.price_tick, 0.2);
-    EXPECT_EQ(c.min_order_volume, 1);
-    EXPECT_EQ(c.max_order_volume, 500);
-    EXPECT_DOUBLE_EQ(c.volume_step, 1.0);
-    EXPECT_STREQ(c.currency, "CNY");
-    EXPECT_EQ(c.settle_cycle, -1);
-    EXPECT_EQ(c.is_inverse, 0);
-    EXPECT_EQ(c.listed_date, parse_ctp_date("20260119"));   // OpenDate
-    EXPECT_EQ(c.expiry_date, parse_ctp_date("20260619"));   // ExpireDate
-    EXPECT_EQ(c.option_type, 0);                   // 非期权
+    EXPECT_EQ(r.instrument_id, "IF2506");
+    EXPECT_EQ(r.symbol, "IF2506");              // CTP 裸码: symbol == instrument_id
+    EXPECT_EQ(r.exchange_id, "CFFEX");
+    EXPECT_EQ(r.product_class, DZ_PRODUCT_FUTURES);
+    EXPECT_EQ(r.product_code, "IF");
+    EXPECT_DOUBLE_EQ(r.volume_multiple, 300);
+    EXPECT_DOUBLE_EQ(r.price_tick, 0.2);
+    EXPECT_EQ(r.min_limit_order_volume, 1);
+    EXPECT_EQ(r.max_limit_order_volume, 500);
+    EXPECT_EQ(r.min_market_order_volume, 1);
+    EXPECT_EQ(r.max_market_order_volume, 500);
+    EXPECT_DOUBLE_EQ(r.volume_step, 1.0);
+    EXPECT_EQ(r.currency, "CNY");
+    EXPECT_EQ(r.settle_cycle, -1);
+    EXPECT_EQ(r.is_inverse, 0);
+    EXPECT_EQ(r.listed_date, parse_ctp_date("20260119"));    // OpenDate
+    EXPECT_EQ(r.delisted_date, parse_ctp_date("20260619"));  // ExpireDate
+    EXPECT_EQ(r.option_type, 0);                   // 非期权
+    EXPECT_EQ(r.update_day, "20260101");
+    EXPECT_EQ(r.updated_at, 0);                    // 由调用方填 epoch ms
 }
 
-TEST(ToDzInstrumentInfoTest, OptionCall) {
+TEST(ToInstrumentRecordTest, OptionCall) {
     auto f = make_instrument_field();
     std::strcpy(f.InstrumentID, "SR509C4800");
     std::strcpy(f.InstrumentName, "SR509C4800");
@@ -542,34 +551,34 @@ TEST(ToDzInstrumentInfoTest, OptionCall) {
     f.StrikePrice = 4800.0;
     std::strcpy(f.UnderlyingInstrID, "SR509");
 
-    auto c = to_dz_instrument(f);
-    EXPECT_EQ(c.product, DZ_PRODUCT_OPTION);
-    EXPECT_EQ(c.option_type, DZ_OPTION_CALL);      // 1
-    EXPECT_DOUBLE_EQ(c.option_strike, 4800.0);
-    EXPECT_STREQ(c.underlying_id, "SR509");
+    auto r = to_instrument_record(f, "20260101");
+    EXPECT_EQ(r.product_class, DZ_PRODUCT_OPTION);
+    EXPECT_EQ(r.option_type, DZ_OPTION_CALL);      // 1
+    EXPECT_DOUBLE_EQ(r.option_strike, 4800.0);
+    EXPECT_EQ(r.underlying_id, "SR509");
 }
 
-TEST(ToDzInstrumentInfoTest, OptionPut) {
+TEST(ToInstrumentRecordTest, OptionPut) {
     auto f = make_instrument_field();
     std::strcpy(f.InstrumentID, "SR509P4800");
     f.OptionsType = THOST_FTDC_CP_PutOptions;
     f.StrikePrice = 4800.0;
 
-    auto c = to_dz_instrument(f);
-    EXPECT_EQ(c.option_type, DZ_OPTION_PUT);       // -1
-    EXPECT_DOUBLE_EQ(c.option_strike, 4800.0);
+    auto r = to_instrument_record(f, "20260101");
+    EXPECT_EQ(r.option_type, DZ_OPTION_PUT);       // -1
+    EXPECT_DOUBLE_EQ(r.option_strike, 4800.0);
 }
 
-TEST(ToDzInstrumentInfoTest, UnknownProductNotFutures) {
+TEST(ToInstrumentRecordTest, UnknownProductNotFutures) {
     // 未识别 ProductClass 暴露为 UNKNOWN (v1 兜底为 'F', v2 改为显式暴露)
     auto f = make_instrument_field();
     f.ProductClass = static_cast<TThostFtdcProductClassType>('Z');
 
-    auto c = to_dz_instrument(f);
-    EXPECT_EQ(c.product, DZ_PRODUCT_UNKNOWN);
+    auto r = to_instrument_record(f, "20260101");
+    EXPECT_EQ(r.product_class, DZ_PRODUCT_UNKNOWN);
 }
 
-TEST(ToDzInstrumentInfoTest, SpotOptionIsOption) {
+TEST(ToInstrumentRecordTest, SpotOptionIsOption) {
     // 商品期权 ProductClass=SpotOption('6') 非 Options('2') — 漏映射则全部
     // 商品期权变 UNKNOWN (v1 时代 default 兜底 'F' 蒙混, v2 必须显式映射)
     auto f = make_instrument_field();
@@ -579,20 +588,54 @@ TEST(ToDzInstrumentInfoTest, SpotOptionIsOption) {
     f.StrikePrice = 4800.0;
     std::strcpy(f.UnderlyingInstrID, "SR509");
 
-    auto c = to_dz_instrument(f);
-    EXPECT_EQ(c.product, DZ_PRODUCT_OPTION);
-    EXPECT_EQ(c.option_type, DZ_OPTION_CALL);
+    auto r = to_instrument_record(f, "20260101");
+    EXPECT_EQ(r.product_class, DZ_PRODUCT_OPTION);
+    EXPECT_EQ(r.option_type, DZ_OPTION_CALL);
 }
 
-TEST(ToDzInstrumentInfoTest, EmptyDateIsNa) {
+TEST(ToInstrumentRecordTest, EmptyDateIsNa) {
     // CTP 字段为空 -> DZ_DATE_NA(0), 非 v1 的 -1
     auto f = make_instrument_field();
     std::strcpy(f.OpenDate, "");
     std::strcpy(f.ExpireDate, "");
 
-    auto c = to_dz_instrument(f);
-    EXPECT_EQ(c.listed_date, DZ_DATE_NA);
-    EXPECT_EQ(c.expiry_date, DZ_DATE_NA);
+    auto r = to_instrument_record(f, "20260101");
+    EXPECT_EQ(r.listed_date, DZ_DATE_NA);
+    EXPECT_EQ(r.delisted_date, DZ_DATE_NA);
+}
+
+TEST(ToInstrumentRecordTest, NameIsUtf8) {
+    // "沪" 的 GBK 字节; Linux 的 CTP SDK 已返回 UTF-8 (to_utf8_from_gbk 直返),
+    // Windows 下按代码页 936 转 UTF-8
+    const std::string gbk = std::string("\xBB\xA6", 2);
+    auto f = make_instrument_field();
+    std::strcpy(f.InstrumentName, gbk.c_str());
+
+    auto r = to_instrument_record(f, "20260101");
+    EXPECT_EQ(r.name, dztrader::to_utf8_from_gbk(gbk));
+#ifdef _WIN32
+    EXPECT_EQ(r.name, std::string("\xE6\xB2\xAA", 3));  // "沪" UTF-8
+#endif
+}
+
+TEST(ToInstrumentRecordTest, ProductCodeAndUnderlyingMultiple) {
+    auto f = make_instrument_field();
+    std::strcpy(f.ProductID, "rb");
+    f.UnderlyingMultiple = 10.0;
+
+    auto r = to_instrument_record(f, "20260101");
+    EXPECT_EQ(r.product_code, "rb");
+    EXPECT_DOUBLE_EQ(r.underlying_multiple, 10.0);
+}
+
+TEST(ToInstrumentRecordTest, MoneyDefaults) {
+    auto f = make_instrument_field();
+    auto r = to_instrument_record(f, "20260101");
+    EXPECT_EQ(r.settle_cycle, -1);   // CTP 衍生品语义: 不适用
+    EXPECT_EQ(r.currency, "CNY");
+    EXPECT_DOUBLE_EQ(r.volume_step, 1.0);
+    EXPECT_EQ(r.base_asset, "");
+    EXPECT_EQ(r.is_inverse, 0);
 }
 
 // ============================================================================

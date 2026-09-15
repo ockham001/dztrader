@@ -113,7 +113,6 @@ add_executable(dztd_ctp
     td/td_api_scheduled.cpp
     td/td_api_pure.cpp
     td/td_persist_writer.cpp
-    td/td_schema.cpp
     td/td_offset_converter.cpp
     td/td_position.cpp
     td/td_ctp_mapping.cpp
@@ -127,7 +126,7 @@ add_executable(dztd_ctp
     common/trading_calendar.cpp
 )
 target_include_directories(dztd_ctp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(dztd_ctp PRIVATE dzlog dzshm dzcore dzdb dzplatform_headers dztd_ctp_api)
+target_link_libraries(dztd_ctp PRIVATE dzlog dzshm dzcore dztdstore dzplatform_headers dztd_ctp_api)
 if(WIN32)
     target_compile_definitions(dztd_ctp PRIVATE _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=0x0602)
 endif()
@@ -238,14 +237,10 @@ foreach(testfile ${TD_CTP_TESTS})
     set_target_properties(dztd_ctp_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
-    # td_schema_test / td_persist_writer_test 需要 dzdb (SQLite) + td_schema.cpp
-    if(testname STREQUAL "td_schema_test" OR testname STREQUAL "td_persist_writer_test")
-        target_sources(dztd_ctp_${testname} PRIVATE td/td_schema.cpp)
-        target_link_libraries(dztd_ctp_${testname} PRIVATE dzdb)
-    endif()
-    # td_persist_writer_test 还需要 td_persist_writer.cpp
+    # td_persist_writer_test 需要 td_persist_writer.cpp + dztdstore (migration + store ops)
     if(testname STREQUAL "td_persist_writer_test")
         target_sources(dztd_ctp_${testname} PRIVATE td/td_persist_writer.cpp)
+        target_link_libraries(dztd_ctp_${testname} PRIVATE dztdstore)
     endif()
     # td_offset_converter_test 需要 td_offset_converter.cpp (纯逻辑, 不需要 dzdb)
     if(testname STREQUAL "td_offset_converter_test")
@@ -255,11 +250,11 @@ foreach(testfile ${TD_CTP_TESTS})
     if(testname STREQUAL "td_position_test" OR testname STREQUAL "td_offset_converter_test")
         target_sources(dztd_ctp_${testname} PRIVATE td/td_position.cpp)
     endif()
-    # td_ctp_mapping_test 需要 td_ctp_mapping.cpp + td_schema.cpp (OrderRecord 组合 DzOrderReport)
-    # 仅依赖 CTP 头 struct 定义, 不链接 .lib; 但 td_schema.h 引用 dztrader/db/migration.h 需链 dzdb
+    # td_ctp_mapping_test 需要 td_ctp_mapping.cpp (to_instrument_record 返回 tdstore 记录)
+    # 仅依赖 CTP 头 struct 定义, 不链接 .lib; 但 tdstore 记录/migration 需链 dztdstore
     if(testname STREQUAL "td_ctp_mapping_test")
-        target_sources(dztd_ctp_${testname} PRIVATE td/td_ctp_mapping.cpp td/td_schema.cpp)
-        target_link_libraries(dztd_ctp_${testname} PRIVATE dzdb)
+        target_sources(dztd_ctp_${testname} PRIVATE td/td_ctp_mapping.cpp)
+        target_link_libraries(dztd_ctp_${testname} PRIVATE dztdstore)
     endif()
     # td_risk_gate_test 需要 td_risk_gate.cpp (纯逻辑, 不依赖 CTP)
     if(testname STREQUAL "td_risk_gate_test")
@@ -269,28 +264,26 @@ foreach(testfile ${TD_CTP_TESTS})
     if(testname STREQUAL "td_account_session_pure_test")
         target_sources(dztd_ctp_${testname} PRIVATE td/td_account_session_pure.cpp)
     endif()
-    # td_report_filter_test 需要 td_report_filter.cpp + td_schema.cpp (OrderRecord/TradeRecord 组合 DzOrderReport)
-    # td_schema.h 引用 dztrader/db/migration.h 需链 dzdb
+    # td_report_filter_test 需要 td_report_filter.cpp (OrderRecord/TradeRecord 组合 DzOrderReport)
     if(testname STREQUAL "td_report_filter_test")
-        target_sources(dztd_ctp_${testname} PRIVATE td/td_report_filter.cpp td/td_schema.cpp)
-        target_link_libraries(dztd_ctp_${testname} PRIVATE dzdb)
+        target_sources(dztd_ctp_${testname} PRIVATE td/td_report_filter.cpp)
     endif()
-    # td_prescan_test 需要 td_prescan.cpp + td_schema.cpp (预扫自由函数, 独立只读连接)
+    # td_prescan_test 需要 td_prescan.cpp + dztdstore (schema migration, 独立只读连接)
     if(testname STREQUAL "td_prescan_test")
-        target_sources(dztd_ctp_${testname} PRIVATE td/td_prescan.cpp td/td_schema.cpp)
-        target_link_libraries(dztd_ctp_${testname} PRIVATE dzdb)
+        target_sources(dztd_ctp_${testname} PRIVATE td/td_prescan.cpp)
+        target_link_libraries(dztd_ctp_${testname} PRIVATE dztdstore)
     endif()
     # td_login_finalize_test 需要 td_login_finalize.cpp (登录收尾状态机纯逻辑, 无 CTP 依赖)
     if(testname STREQUAL "td_login_finalize_test")
         target_sources(dztd_ctp_${testname} PRIVATE td/td_login_finalize.cpp)
     endif()
-    # td_data_sync_integration_test 需要 td_persist_writer.cpp + td_schema.cpp + td_report_filter.cpp
-    # + td_prescan.cpp (进程内组装: PersistWriter 真线程 + ReportFilter + TdIngestGate) + 链 dzdb
+    # td_data_sync_integration_test 需要 td_persist_writer.cpp + td_report_filter.cpp
+    # + td_prescan.cpp (进程内组装: PersistWriter 真线程 + ReportFilter + TdIngestGate) + 链 dztdstore
     # TdIngestGate 由 dztrading 库提供（SDK 与 dzweb 共用的纯逻辑组件）。
     if(testname STREQUAL "td_data_sync_integration_test")
         target_sources(dztd_ctp_${testname} PRIVATE
-            td/td_persist_writer.cpp td/td_schema.cpp td/td_report_filter.cpp td/td_prescan.cpp)
-        target_link_libraries(dztd_ctp_${testname} PRIVATE dzdb dztrading)
+            td/td_persist_writer.cpp td/td_report_filter.cpp td/td_prescan.cpp)
+        target_link_libraries(dztd_ctp_${testname} PRIVATE dztdstore dztrading)
     endif()
     gtest_discover_tests(dztd_ctp_${testname})
     install(TARGETS dztd_ctp_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)

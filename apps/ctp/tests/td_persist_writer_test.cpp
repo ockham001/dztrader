@@ -13,9 +13,10 @@
 #include <SQLiteCpp/Statement.h>
 
 #include <dztrader/core/this_process.h>
+#include <dztrader/tdstore/records.h>
 
+#include "td/td_persist_records.h"
 #include "td/td_persist_writer.h"
-#include "td/td_schema.h"
 
 namespace dztrader::ctp {
 namespace {
@@ -212,20 +213,24 @@ TEST_F(TdPersistWriterTest, InstrumentPersisted) {
         w.open();
         w.start_writer();
 
-        InstrumentRecord r{};
-        std::strcpy(r.base.instrument_id, "IF2506");
-        std::strcpy(r.base.exchange_id, "CFFEX");
-        std::strcpy(r.base.name, "沪深300股指期货");
-        r.base.product = DZ_PRODUCT_FUTURES;
-        r.base.volume_multiple = 300;
-        r.base.price_tick = 0.2;
+        tdstore::InstrumentRecord r{};
+        r.instrument_id = "IF2506";
+        r.exchange_id = "CFFEX";
+        r.name = "沪深300股指期货";
+        r.product_class = DZ_PRODUCT_FUTURES;
+        r.min_limit_order_volume = 1;
+        r.delisted_date = 20600;
+        r.volume_multiple = 300;
+        r.price_tick = 0.2;
         w.enqueue(PersistTask{.kind = PersistTask::Kind::Instrument, .data = r});
 
         w.stop();
     }
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM instruments"), 1);
-    // v3: product 列为 INTEGER (DZ_PRODUCT_*)
-    EXPECT_EQ(scalar_int("SELECT product FROM instruments"), DZ_PRODUCT_FUTURES);
+    // v4: product_class 列 (DZ_PRODUCT_*)
+    EXPECT_EQ(scalar_int("SELECT product_class FROM instruments"), DZ_PRODUCT_FUTURES);
+    EXPECT_EQ(scalar_int("SELECT min_limit_order_volume FROM instruments"), 1);
+    EXPECT_EQ(scalar_int("SELECT delisted_date FROM instruments"), 20600);
 }
 
 TEST_F(TdPersistWriterTest, MarginRatePersisted) {

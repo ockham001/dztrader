@@ -15,12 +15,14 @@
 #include <dztrader/db/connection.h>
 #include <dztrader/db/migration.h>
 #include <dztrader/date_time/date_time.h>  // Date (DzDate 距纪元天数 -> YYYYMMDD)
+#include <dztrader/tdstore/instrument_store.h>
+#include <dztrader/tdstore/schema.h>
 
 namespace dztrader::ctp {
 
 // ============================================================================
 // INSERT OR REPLACE SQL (RESTART 重传去重, 最新状态覆盖旧记录)
-// 字段名与 td_schema.cpp CREATE TABLE 一致:
+// 字段名与 tdstore schema.cpp CREATE TABLE 一致:
 // - exchange_id (不是 exchange)
 // - volume (不是 volume_total, 与 DzOrderReport.volume 一致)
 // - date INTEGER (margin_rates/commission_rates, 不是 trading_day TEXT)
@@ -58,15 +60,6 @@ constexpr const char* kInsertCommissionRateSql =
     "    open_ratio_by_money, open_ratio_by_volume, close_ratio_by_money, close_ratio_by_volume,"
     "    close_today_ratio_by_money, close_today_ratio_by_volume, date"
     ") VALUES (?,?,?,?,  ?,?,?,?,?,?, ?)";
-
-constexpr const char* kInsertInstrumentSql =
-    "INSERT OR REPLACE INTO instruments ("
-    "    instrument_id, exchange_id, symbol, name, product, settle_cycle,"
-    "    settlement_method, is_inverse, currency, base_asset, min_order_volume,"
-    "    max_order_volume, volume_multiple, price_tick, volume_step, listed_date,"
-    "    expiry_date, option_type, option_exercise_style, underlying_id, option_strike,"
-    "    option_series, update_day"
-    ") VALUES (?,?,?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,?,?,  ?,?,?,?,?,?)";
 
 // positions (spec §3.2): key = (account_id, instrument_id, direction), 绝对态 upsert
 constexpr const char* kInsertPositionSql =
@@ -121,6 +114,8 @@ void PersistWriter::open() {
     // 创建 Connection 并应用 migration
     db_ = std::make_unique<SQLite::Database>(db_path_,
         SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+    // 后端无关连接包装 (tdstore store ops 用; Writer 线程独占, 主线程不得复用)
+    ref_ = std::make_unique<dztrader::db::SqliteDatabaseRef>(*db_);
 
     // PRAGMA 配置 (与 libs/db/connection.cpp 一致, DELETE + synchronous=FULL)
     db_->exec("PRAGMA synchronous=FULL");
@@ -130,7 +125,7 @@ void PersistWriter::open() {
 
     // 应用 TD migration (v1 创建所有表)
     dztrader::db::MigrationManager mgr;
-    apply_td_migrations(mgr);
+    dztrader::tdstore::apply_td_migrations(mgr);
     auto applied = mgr.apply(*db_);
     for (int v : applied) {
         SPDLOG_INFO("td migration applied | version={}", v);
@@ -148,7 +143,6 @@ void PersistWriter::prepare_statements(SQLite::Database& db) {
     stmt_insert_trade_ = std::make_unique<SQLite::Statement>(db, kInsertTradeSql);
     stmt_insert_margin_ = std::make_unique<SQLite::Statement>(db, kInsertMarginRateSql);
     stmt_insert_commission_ = std::make_unique<SQLite::Statement>(db, kInsertCommissionRateSql);
-    stmt_insert_instrument_ = std::make_unique<SQLite::Statement>(db, kInsertInstrumentSql);
     stmt_insert_position_ = std::make_unique<SQLite::Statement>(db, kInsertPositionSql);
     stmt_insert_taccount_ = std::make_unique<SQLite::Statement>(db, kInsertTradingAccountSql);
     stmt_delete_position_rebuild_ =
@@ -203,10 +197,10 @@ void PersistWriter::stop() {
     stmt_insert_trade_.reset();
     stmt_insert_margin_.reset();
     stmt_insert_commission_.reset();
-    stmt_insert_instrument_.reset();
     stmt_insert_position_.reset();
     stmt_insert_taccount_.reset();
     stmt_delete_position_rebuild_.reset();
+    ref_.reset();
     db_.reset();
 
     {
@@ -255,10 +249,10 @@ void PersistWriter::stop_best_effort() {
     stmt_insert_trade_.reset();
     stmt_insert_margin_.reset();
     stmt_insert_commission_.reset();
-    stmt_insert_instrument_.reset();
     stmt_insert_position_.reset();
     stmt_insert_taccount_.reset();
     stmt_delete_position_rebuild_.reset();
+    ref_.reset();
     db_.reset();
 
     {
@@ -512,9 +506,7 @@ void PersistWriter::execute_batch(SQLite::Database& db, std::vector<PersistTask>
                 stmt_insert_commission_->exec();
                 break;
             case PersistTask::Kind::Instrument:
-                stmt_insert_instrument_->reset();
-                bind_instrument(*stmt_insert_instrument_, std::get<InstrumentRecord>(task.data));
-                stmt_insert_instrument_->exec();
+                tdstore::upsert_instrument(ref(), std::get<tdstore::InstrumentRecord>(task.data));
                 break;
             case PersistTask::Kind::Position: {
                 // 单行绝对态 upsert (盘中有变化时走它). task.trading_day 是当前交易日.
@@ -634,32 +626,6 @@ void PersistWriter::bind_commission_rate(SQLite::Statement& stmt, const Commissi
     stmt.bind(9, r.close_today_ratio_by_money);
     stmt.bind(10, r.close_today_ratio_by_volume);
     stmt.bind(11, r.date);
-}
-
-void PersistWriter::bind_instrument(SQLite::Statement& stmt, const InstrumentRecord& r) {
-    stmt.bind(1, r.base.instrument_id);
-    stmt.bind(2, r.base.exchange_id);
-    stmt.bind(3, r.base.symbol);
-    stmt.bind(4, r.base.name);
-    stmt.bind(5, static_cast<int>(r.base.product));
-    stmt.bind(6, static_cast<int>(r.base.settle_cycle));
-    stmt.bind(7, static_cast<int>(r.base.settlement_method));
-    stmt.bind(8, static_cast<int>(r.base.is_inverse));
-    stmt.bind(9, r.base.currency);
-    stmt.bind(10, r.base.base_asset);
-    stmt.bind(11, static_cast<int64_t>(r.base.min_order_volume));
-    stmt.bind(12, static_cast<int64_t>(r.base.max_order_volume));
-    stmt.bind(13, r.base.volume_multiple);
-    stmt.bind(14, r.base.price_tick);
-    stmt.bind(15, r.base.volume_step);
-    stmt.bind(16, r.base.listed_date);
-    stmt.bind(17, r.base.expiry_date);
-    stmt.bind(18, static_cast<int>(r.base.option_type));
-    stmt.bind(19, static_cast<int>(r.base.option_exercise_style));
-    stmt.bind(20, r.base.underlying_id);
-    stmt.bind(21, r.base.option_strike);
-    stmt.bind(22, r.base.option_series);
-    stmt.bind(23, r.update_day);
 }
 
 std::string PersistWriter::format_trading_day(int64_t days) {

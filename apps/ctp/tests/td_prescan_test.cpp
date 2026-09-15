@@ -11,9 +11,10 @@
 
 #include <dztrader/core/this_process.h>
 #include <dztrader/db/migration.h>
+#include <dztrader/tdstore/schema.h>
 
+#include "td/td_persist_records.h"
 #include "td/td_prescan.h"
-#include "td/td_schema.h"
 
 namespace dztrader::ctp {
 namespace {
@@ -43,7 +44,7 @@ protected:
     SQLite::Database open_rw() {
         SQLite::Database db(db_path_, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         dztrader::db::MigrationManager mgr;
-        apply_td_migrations(mgr);
+        dztrader::tdstore::apply_td_migrations(mgr);
         mgr.apply(db);
         return db;
     }

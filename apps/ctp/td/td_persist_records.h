@@ -1,29 +1,18 @@
-#ifndef DZTRADER_CTP_TD_SCHEMA_H_
-#define DZTRADER_CTP_TD_SCHEMA_H_
+#ifndef DZTRADER_CTP_TD_PERSIST_RECORDS_H_
+#define DZTRADER_CTP_TD_PERSIST_RECORDS_H_
 
 #include <cstdint>
 
-#include <dztrader/db/migration.h>
-#include <dztrader/struct.h>  // DzOrderReport/DzTradeReport/DzMarginRate/DzCommissionRate/DzInstrumentInfo
+#include <dztrader/struct.h>  // DzOrderReport/DzTradeReport/DzMarginRate/DzCommissionRate
 
 namespace dztrader::ctp {
-
-/// TD schema 当前版本 (每次表结构变更递增).
-/// v1: 初始版本 (orders/trades/margin_rates/commission_rates/instruments).
-/// v2: orders/trades 加 seq 列 + (account_id, seq) 索引; trades 唯一键升级为
-///     (account_id, trading_day, trade_id) (修复 CTP TradeID 跨日重复被 REPLACE);
-///     新增 positions / trading_accounts 表.
-/// v3: instruments 表随 DzInstrumentInfo v2 重建 (新增 symbol/currency/base_asset/
-///     settle_cycle/settlement_method/is_inverse/volume_step/listed_date/expiry_date/
-///     option_exercise_style/underlying_id/option_series 列; 移除旧 option_* 列);
-///     product 列 CHAR(1)->INTEGER (DZ_PRODUCT_*)。
-constexpr int kTdSchemaVersion = 3;
 
 // ============================================================================
 // SQL-ready POD 记录: 复用 strategy_api 结构体 + 组合扩展 SQL 特有字段
 // 设计: strategy_api 的 DzOrderReport/DzTradeReport 等是 SHM 帧格式, 缺少
 // CTP 特有字段 (order_ref/external_order_id/error_msg 等). 用组合方式扩展,
 // 避免字段重复定义, 便于 SHM 帧与 SQL 记录互转.
+// 合约记录 (InstrumentRecord) 由 libs/tdstore 提供 (后端无关规范记录).
 // ============================================================================
 
 /// 委托记录 (对应 orders 表, 去重 key = account_id + order_id).
@@ -58,17 +47,6 @@ using MarginRateRecord = DzMarginRate;
 /// 手续费率记录 (直接复用 DzCommissionRate, 字段完全匹配).
 using CommissionRateRecord = DzCommissionRate;
 
-/// 合约信息记录 (对应 instruments 表).
-/// DzInstrumentInfo 缺少 update_day 字段.
-struct InstrumentRecord {
-    DzInstrumentInfo base;               ///< SHM 帧字段
-    char update_day[9];            ///< "YYYYMMDD" 文本 (合约信息更新日)
-};
-
-/// 注册所有 TD migration 到 MigrationManager (v1 起步).
-/// 调用方: PersistWriter::open() 中, 先 mgr.apply(db) 再使用表.
-void apply_td_migrations(dztrader::db::MigrationManager& mgr);
-
 }  // namespace dztrader::ctp
 
-#endif  // DZTRADER_CTP_TD_SCHEMA_H_
+#endif  // DZTRADER_CTP_TD_PERSIST_RECORDS_H_

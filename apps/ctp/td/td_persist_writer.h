@@ -18,7 +18,10 @@
 
 #include <vector>
 
-#include "td/td_schema.h"
+#include <dztrader/db/database_sqlite.h>
+#include <dztrader/tdstore/records.h>
+
+#include "td/td_persist_records.h"
 
 namespace dztrader::ctp {
 
@@ -41,7 +44,7 @@ struct PersistTask {
     /// Position / PositionRebuild / TradingAccount 用 (绝对态). TradingAccount 用单记录.
     /// NSDMI: FlushSignal 等不带 data 的 Kind 默认构造 (variant 第一个 alternative).
     std::variant<OrderRecord, TradeRecord, MarginRateRecord,
-                 CommissionRateRecord, InstrumentRecord, std::vector<DzPositionInfo>,
+                 CommissionRateRecord, tdstore::InstrumentRecord, std::vector<DzPositionInfo>,
                  DzTradingAccount>
         data = {};
 
@@ -146,11 +149,13 @@ private:
     void bind_trade(SQLite::Statement& stmt, const TradeRecord& r);
     void bind_margin_rate(SQLite::Statement& stmt, const MarginRateRecord& r);
     void bind_commission_rate(SQLite::Statement& stmt, const CommissionRateRecord& r);
-    void bind_instrument(SQLite::Statement& stmt, const InstrumentRecord& r);
     void bind_position(SQLite::Statement& stmt, const DzPositionInfo& r,
                        const std::string& trading_day);
     void bind_trading_account(SQLite::Statement& stmt, const DzTradingAccount& r,
                               const std::string& trading_day);
+
+    /// 后端无关连接句柄 (包装 db_, 供 tdstore store ops 使用; Writer 线程独占).
+    dztrader::db::Database& ref() noexcept { return *ref_; }
 
     /// 以 YYYYMMDD 文本生成 trading_day (DzDate 距纪元天数 -> "YYYYMMDD").
     static std::string format_trading_day(int64_t days);
@@ -163,11 +168,12 @@ private:
     size_t max_queue_size_;
 
     std::unique_ptr<SQLite::Database> db_;
+    /// 后端无关连接包装 (db_ 的引用; tdstore store ops 用, Writer 线程独占).
+    std::unique_ptr<dztrader::db::SqliteDatabaseRef> ref_;
     std::unique_ptr<SQLite::Statement> stmt_insert_order_;
     std::unique_ptr<SQLite::Statement> stmt_insert_trade_;
     std::unique_ptr<SQLite::Statement> stmt_insert_margin_;
     std::unique_ptr<SQLite::Statement> stmt_insert_commission_;
-    std::unique_ptr<SQLite::Statement> stmt_insert_instrument_;
     std::unique_ptr<SQLite::Statement> stmt_insert_position_;
     std::unique_ptr<SQLite::Statement> stmt_insert_taccount_;
     std::unique_ptr<SQLite::Statement> stmt_delete_position_rebuild_;

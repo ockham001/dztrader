@@ -44,12 +44,12 @@
 #include "td/td_events.h"
 #include "td/td_login_finalize.h"
 #include "td/td_offset_converter.h"
+#include "td/td_persist_records.h"
 #include "td/td_persist_writer.h"
 #include "td/td_position.h"
 #include "td/td_prescan.h"
 #include "td/td_report_filter.h"
 #include "td/td_risk_gate.h"
-#include "td/td_schema.h"
 #include "td/td_spi.h"
 #include "td/td_state.h"
 

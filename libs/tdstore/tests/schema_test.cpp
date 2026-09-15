@@ -1,14 +1,14 @@
 #include <gtest/gtest.h>
 
+#include <map>
 #include <string>
 #include <vector>
 
 #include <dztrader/db/connection.h>
 #include <dztrader/db/migration.h>
+#include <dztrader/tdstore/schema.h>
 
-#include "td/td_schema.h"
-
-namespace dztrader::ctp {
+namespace dztrader::tdstore {
 namespace {
 
 bool table_exists(dztrader::db::Connection& conn, const std::string& name) {
@@ -39,6 +39,23 @@ void expect_index_columns(dztrader::db::Connection& conn, const std::string& nam
     }
 }
 
+/// 列名 -> 声明类型 (PRAGMA table_info 的 name/type 列).
+std::map<std::string, std::string> table_columns(dztrader::db::Connection& conn,
+                                                 const std::string& table) {
+    std::map<std::string, std::string> columns;
+    SQLite::Statement q(conn.db(), "PRAGMA table_info(" + table + ")");
+    while (q.executeStep()) {
+        columns.emplace(q.getColumn(1).getString(), q.getColumn(2).getString());
+    }
+    return columns;
+}
+
+std::string column_type(const std::map<std::string, std::string>& columns,
+                        const std::string& name) {
+    auto it = columns.find(name);
+    return it == columns.end() ? std::string("<missing>") : it->second;
+}
+
 class TdSchemaTest : public ::testing::Test {
 protected:
     dztrader::db::Connection conn{":memory:"};
@@ -47,8 +64,8 @@ protected:
     void SetUp() override {
         apply_td_migrations(mgr);
         auto applied = mgr.apply(conn.db());
-        ASSERT_EQ(applied.size(), 3u);
-        EXPECT_EQ(applied[2], kTdSchemaVersion);
+        ASSERT_EQ(applied.size(), 4u);
+        EXPECT_EQ(applied[3], kTdSchemaVersion);
     }
 };
 
@@ -114,7 +131,7 @@ TEST_F(TdSchemaTest, OrdersTradesHaveSeqColumnAndIndex) {
 
 TEST_F(TdSchemaTest, OrdersRebuildPreservesRowsAndIndexes) {
     // v1 建表插 2 行 -> 迁移 v2 -> 2 行仍在且 seq=0, 索引保留
-    // 构造 v1 库: orders/trades 建 v1 表 (DDL 复制自 td_schema.cpp migration_v1) + 插数据
+    // 构造 v1 库: orders/trades 建 v1 表 (DDL 复制自 tdstore schema.cpp migration_v1) + 插数据
     dztrader::db::Connection legacy(":memory:");
     legacy.db().exec(
         "CREATE TABLE orders ("
@@ -150,11 +167,11 @@ TEST_F(TdSchemaTest, OrdersRebuildPreservesRowsAndIndexes) {
                 "instrument_id, exchange_id, price, volume) "
                 "VALUES ('acc1', '20260726', 'T2', 2, 'IF2506', 'CFFEX', 3900.0, 1)");
 
-    // 应用完整迁移: v1 (IF NOT EXISTS 对既有表 no-op) + v2 (四步重建保数据) + v3
+    // 应用完整迁移: v1 (IF NOT EXISTS 对既有表 no-op) + v2 (四步重建保数据) + v3 + v4
     dztrader::db::MigrationManager mgr2;
-    dztrader::ctp::apply_td_migrations(mgr2);
+    apply_td_migrations(mgr2);
     auto applied = mgr2.apply(legacy.db());
-    ASSERT_EQ(applied.size(), 3u);
+    ASSERT_EQ(applied.size(), 4u);
 
     EXPECT_EQ(legacy.scalar<int>("SELECT COUNT(*) FROM orders"), 2);
     EXPECT_EQ(legacy.scalar<int>("SELECT COALESCE(MAX(seq), 0) FROM orders"), 0);
@@ -206,6 +223,10 @@ TEST_F(TdSchemaTest, NewTablesPositionsTradingAccounts) {
     expect_index_columns(conn, "idx_taccount_acct_seq", {"account_id", "seq"});
 }
 
+// ============================================================================
+// v3: instruments 重建 (product INTEGER + v2 列) -> v4 改名/新增列
+// ============================================================================
+
 TEST_F(TdSchemaTest, InstrumentsV3MigratesAsciiProductText) {
     // v1 instruments: bind_instrument 以 static_cast<int>('F')=70 绑定 CHAR(1) 列,
     // TEXT affinity 实存文本 "70" (sqlite3 实证) — CASE 必须匹配 ASCII 文本
@@ -226,21 +247,55 @@ TEST_F(TdSchemaTest, InstrumentsV3MigratesAsciiProductText) {
         "10,1,1,0,'0',0.0,'rb',-1,-1,'20260101')");
 
     dztrader::db::MigrationManager mgr2;
-    dztrader::ctp::apply_td_migrations(mgr2);
+    apply_td_migrations(mgr2);
     auto applied = mgr2.apply(legacy.db());
-    ASSERT_EQ(applied.size(), 3u);
+    ASSERT_EQ(applied.size(), 4u);
 
-    // product: 文本 "79"(期权)->2 / "70"(期货)->1
-    EXPECT_EQ(legacy.scalar<int>("SELECT product FROM instruments WHERE instrument_id='SR509C4800'"), 2);
-    EXPECT_EQ(legacy.scalar<int>("SELECT product FROM instruments WHERE instrument_id='rb2601'"), 1);
+    // product -> product_class (v4 改名): 文本 "79"(期权)->2 / "70"(期货)->1
+    EXPECT_EQ(legacy.scalar<int>(
+                  "SELECT product_class FROM instruments WHERE instrument_id='SR509C4800'"), 2);
+    EXPECT_EQ(legacy.scalar<int>(
+                  "SELECT product_class FROM instruments WHERE instrument_id='rb2601'"), 1);
     // option_type 文本 "1" 搬入 INTEGER 列后 affinity 转回整数 1 (CALL 信息不丢)
     EXPECT_EQ(legacy.scalar<int>("SELECT option_type FROM instruments WHERE instrument_id='SR509C4800'"), 1);
     // 旧日期哨兵 -1 -> 新 NA 0
     EXPECT_EQ(legacy.scalar<int>("SELECT listed_date FROM instruments WHERE instrument_id='rb2601'"), 0);
+    // expiry_date -> delisted_date (v4 改名), -1 -> 0
+    EXPECT_EQ(legacy.scalar<int>("SELECT delisted_date FROM instruments WHERE instrument_id='rb2601'"), 0);
     // 新列缺省语义
     EXPECT_EQ(legacy.scalar<int>("SELECT settle_cycle FROM instruments WHERE instrument_id='rb2601'"), -1);
     EXPECT_EQ(legacy.scalar<std::string>("SELECT currency FROM instruments WHERE instrument_id='rb2601'"), "CNY");
+    EXPECT_EQ(legacy.scalar<std::string>("SELECT product_code FROM instruments WHERE instrument_id='rb2601'"), "");
+    EXPECT_EQ(legacy.scalar<int>("SELECT min_market_order_volume FROM instruments WHERE instrument_id='rb2601'"), 0);
+    EXPECT_EQ(legacy.scalar<int>("SELECT max_market_order_volume FROM instruments WHERE instrument_id='rb2601'"), 0);
+    EXPECT_EQ(legacy.scalar<int>("SELECT underlying_multiple FROM instruments WHERE instrument_id='rb2601'"), 0);
+    EXPECT_EQ(legacy.scalar<int>("SELECT updated_at FROM instruments WHERE instrument_id='rb2601'"), 0);
+}
+
+TEST_F(TdSchemaTest, V4ColumnNamesAndTypes) {
+    const auto columns = table_columns(conn, "instruments");
+    // 4 个改名后列 (声明类型随 v3 原列保留)
+    EXPECT_EQ(column_type(columns, "product_class"), "INTEGER");
+    EXPECT_EQ(column_type(columns, "min_limit_order_volume"), "INTEGER");
+    EXPECT_EQ(column_type(columns, "max_limit_order_volume"), "INTEGER");
+    EXPECT_EQ(column_type(columns, "delisted_date"), "INTEGER");
+    // 5 个新增列
+    EXPECT_EQ(column_type(columns, "product_code"), "TEXT");
+    EXPECT_EQ(column_type(columns, "min_market_order_volume"), "INTEGER");
+    EXPECT_EQ(column_type(columns, "max_market_order_volume"), "INTEGER");
+    EXPECT_EQ(column_type(columns, "underlying_multiple"), "REAL");
+    EXPECT_EQ(column_type(columns, "updated_at"), "INTEGER");
+    // 旧列名已不存在
+    EXPECT_EQ(columns.count("product"), 0u);
+    EXPECT_EQ(columns.count("min_order_volume"), 0u);
+    EXPECT_EQ(columns.count("max_order_volume"), 0u);
+    EXPECT_EQ(columns.count("expiry_date"), 0u);
+}
+
+TEST_F(TdSchemaTest, VersionIsFour) {
+    EXPECT_EQ(conn.scalar<int>("SELECT MAX(version) FROM schema_version"), 4);
+    EXPECT_EQ(kTdSchemaVersion, 4);
 }
 
 }  // namespace
-}  // namespace dztrader::ctp
+}  // namespace dztrader::tdstore

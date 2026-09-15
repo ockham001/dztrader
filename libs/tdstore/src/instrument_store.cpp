@@ -1,0 +1,183 @@
+#include <dztrader/tdstore/instrument_store.h>
+
+#include <algorithm>
+#include <iterator>
+#include <variant>
+
+#include <dztrader/core/exception.h>
+#include <dztrader/error.h>
+
+namespace dztrader::tdstore {
+
+namespace {
+
+/// 承诺字段声明 (白名单 + 列元信息类型).
+struct ColumnSpec {
+    std::string_view name;
+    dztrader::db::ColumnType type;
+};
+
+/// §4 定稿 23 列 + update_day/updated_at = 25 个可选项 (schema 序, 顺序固定).
+constexpr ColumnSpec kInstrumentColumns[] = {
+    {"instrument_id", dztrader::db::ColumnType::String},
+    {"exchange_id", dztrader::db::ColumnType::String},
+    {"symbol", dztrader::db::ColumnType::String},
+    {"name", dztrader::db::ColumnType::String},
+    {"product_class", dztrader::db::ColumnType::Int64},
+    {"product_code", dztrader::db::ColumnType::String},
+    {"settle_cycle", dztrader::db::ColumnType::Int64},
+    {"currency", dztrader::db::ColumnType::String},
+    {"base_asset", dztrader::db::ColumnType::String},
+    {"is_inverse", dztrader::db::ColumnType::Int64},
+    {"volume_multiple", dztrader::db::ColumnType::Float64},
+    {"volume_step", dztrader::db::ColumnType::Float64},
+    {"price_tick", dztrader::db::ColumnType::Float64},
+    {"min_limit_order_volume", dztrader::db::ColumnType::Int64},
+    {"max_limit_order_volume", dztrader::db::ColumnType::Int64},
+    {"min_market_order_volume", dztrader::db::ColumnType::Int64},
+    {"max_market_order_volume", dztrader::db::ColumnType::Int64},
+    {"listed_date", dztrader::db::ColumnType::Int64},
+    {"delisted_date", dztrader::db::ColumnType::Int64},
+    {"option_type", dztrader::db::ColumnType::Int64},
+    {"option_strike", dztrader::db::ColumnType::Float64},
+    {"underlying_id", dztrader::db::ColumnType::String},
+    {"underlying_multiple", dztrader::db::ColumnType::Float64},
+    {"update_day", dztrader::db::ColumnType::String},
+    {"updated_at", dztrader::db::ColumnType::Int64},
+};
+
+constexpr size_t kColumnCount = std::size(kInstrumentColumns);
+
+const ColumnSpec* find_column(std::string_view name) {
+    for (const auto& spec : kInstrumentColumns) {
+        if (spec.name == name) {
+            return &spec;
+        }
+    }
+    return nullptr;
+}
+
+constexpr const char* kUpsertInstrumentSql =
+    "INSERT OR REPLACE INTO instruments ("
+    "    instrument_id, exchange_id, symbol, name, product_class, product_code, settle_cycle,"
+    "    currency, base_asset, is_inverse, volume_multiple, volume_step, price_tick,"
+    "    min_limit_order_volume, max_limit_order_volume, min_market_order_volume,"
+    "    max_market_order_volume, listed_date, delisted_date, option_type, option_strike,"
+    "    underlying_id, underlying_multiple, update_day, updated_at"
+    ") VALUES (?,?,?,?,?,?,  ?,?,?,?,?,?,?,  ?,?,?,?,?,?,  ?,?,?,?,?,?)";
+
+}  // namespace
+
+const std::vector<std::string>& instrument_columns() {
+    static const std::vector<std::string> kColumns = [] {
+        std::vector<std::string> columns;
+        columns.reserve(kColumnCount);
+        for (const auto& spec : kInstrumentColumns) {
+            columns.emplace_back(spec.name);
+        }
+        return columns;
+    }();
+    return kColumns;
+}
+
+void upsert_instrument(dztrader::db::Database& db, const InstrumentRecord& r) {
+    auto stmt = db.prepare(kUpsertInstrumentSql);
+    int i = 1;
+    stmt->bind(i++, r.instrument_id);
+    stmt->bind(i++, r.exchange_id);
+    stmt->bind(i++, r.symbol);
+    stmt->bind(i++, r.name);
+    stmt->bind(i++, static_cast<int64_t>(r.product_class));
+    stmt->bind(i++, r.product_code);
+    stmt->bind(i++, static_cast<int64_t>(r.settle_cycle));
+    stmt->bind(i++, r.currency);
+    stmt->bind(i++, r.base_asset);
+    stmt->bind(i++, static_cast<int64_t>(r.is_inverse));
+    stmt->bind(i++, r.volume_multiple);
+    stmt->bind(i++, r.volume_step);
+    stmt->bind(i++, r.price_tick);
+    stmt->bind(i++, r.min_limit_order_volume);
+    stmt->bind(i++, r.max_limit_order_volume);
+    stmt->bind(i++, r.min_market_order_volume);
+    stmt->bind(i++, r.max_market_order_volume);
+    stmt->bind(i++, static_cast<int64_t>(r.listed_date));
+    stmt->bind(i++, static_cast<int64_t>(r.delisted_date));
+    stmt->bind(i++, static_cast<int64_t>(r.option_type));
+    stmt->bind(i++, r.option_strike);
+    stmt->bind(i++, r.underlying_id);
+    stmt->bind(i++, r.underlying_multiple);
+    stmt->bind(i++, r.update_day);
+    stmt->bind(i++, r.updated_at);
+    stmt->execute();
+}
+
+dztrader::db::QueryResult query_instruments(dztrader::db::Database& db,
+                                            std::string_view instrument_id,
+                                            std::span<const std::string> fields) {
+    // 1) 校验请求字段 (白名单 + 重复), 得到选中列 (顺序 = 请求顺序)
+    std::vector<const ColumnSpec*> selected;
+    if (fields.empty()) {
+        selected.reserve(kColumnCount);
+        for (const auto& spec : kInstrumentColumns) {
+            selected.push_back(&spec);
+        }
+    } else {
+        selected.reserve(fields.size());
+        for (const auto& field : fields) {
+            const ColumnSpec* spec = find_column(field);
+            if (spec == nullptr) {
+                throw dztrader::Exception(DZ_EC_INVALID_PARAM, "unknown field: {}", field);
+            }
+            const bool duplicated =
+                std::any_of(selected.begin(), selected.end(),
+                            [&field](const ColumnSpec* s) { return s->name == field; });
+            if (duplicated) {
+                throw dztrader::Exception(DZ_EC_INVALID_PARAM, "duplicate field: {}", field);
+            }
+            selected.push_back(spec);
+        }
+    }
+
+    // 2) 拼 SQL (列名只来自白名单, 无注入面)
+    std::string sql = "SELECT ";
+    for (size_t i = 0; i < selected.size(); ++i) {
+        if (i > 0) {
+            sql += ',';
+        }
+        sql += selected[i]->name;
+    }
+    sql += " FROM instruments";
+    std::vector<dztrader::db::BindValue> params;
+    if (!instrument_id.empty()) {
+        sql += " WHERE instrument_id = ?";
+        params.emplace_back(std::string(instrument_id));
+    }
+    sql += " ORDER BY instrument_id";
+
+    // 3) 取值 + 自填列元信息 (不依赖首行: 0 行时列元信息仍正确)
+    dztrader::db::QueryResult result = db.query(sql, params);
+    result.columns.clear();
+    result.columns.reserve(selected.size());
+    for (const ColumnSpec* spec : selected) {
+        result.columns.push_back(
+            dztrader::db::ColumnMeta{spec->type, std::string(spec->name)});
+    }
+    return result;
+}
+
+std::string lookup_symbol(dztrader::db::Database& db, std::string_view instrument_id) {
+    std::vector<dztrader::db::BindValue> params;
+    params.emplace_back(std::string(instrument_id));
+    dztrader::db::QueryResult result =
+        db.query("SELECT symbol FROM instruments WHERE instrument_id = ?", params);
+    if (result.rows.empty() || result.rows.front().empty()) {
+        return {};
+    }
+    const auto& value = result.rows.front().front();
+    if (const auto* symbol = std::get_if<std::string>(&value)) {
+        return *symbol;
+    }
+    return {};
+}
+
+}  // namespace dztrader::tdstore

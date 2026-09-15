@@ -13,10 +13,10 @@
 #include <dztrader/core/this_process.h>
 #include <dztrader/trading/td_ingest.h>
 
+#include "td/td_persist_records.h"
 #include "td/td_persist_writer.h"
 #include "td/td_prescan.h"
 #include "td/td_report_filter.h"
-#include "td/td_schema.h"
 
 namespace dztrader::ctp {
 namespace {
