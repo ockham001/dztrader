@@ -7,6 +7,7 @@
 #include <chrono>
 #include <format>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -119,7 +120,22 @@ void PersistWriter::open() {
 
     // PRAGMA 配置 (synchronous=FULL 数据安全优先; WAL 支持多网关共写 + 多读者)
     db_->exec("PRAGMA synchronous=FULL");
-    db_->exec("PRAGMA journal_mode=WAL");   // 多网关共写 + 多读者: 读不阻塞写
+    // 多网关共写 + 多读者: 读不阻塞写。转换需独占锁, busy_timeout 对其无效, 故有界重试;
+    // 仍失败则维持当前模式继续 (已是 WAL 时为无锁 no-op)。
+    bool wal_ready = false;
+    for (int attempt = 0; attempt < 3 && !wal_ready; ++attempt) {
+        if (attempt > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        try {
+            wal_ready = db_->execAndGet("PRAGMA journal_mode=WAL").getString() == "wal";
+        } catch (const std::exception& e) {
+            if (attempt == 2) {
+                SPDLOG_WARN("td db WAL conversion failed, continue in current mode | err={}",
+                            e.what());
+            }
+        }
+    }
     db_->exec("PRAGMA busy_timeout=5000");
     db_->exec("PRAGMA cache_size=-8000");
     db_->exec("PRAGMA temp_store=MEMORY");
