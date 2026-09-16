@@ -417,10 +417,14 @@ tdstore::InstrumentRecord to_instrument_record(const CThostFtdcInstrumentField& 
     r.min_market_order_volume = f.MinMarketOrderVolume;
     r.max_market_order_volume = f.MaxMarketOrderVolume;
     r.listed_date = parse_ctp_date(f.OpenDate);
+    // TODO(ctp-verify): 核对 CTP ExpireDate 是否等于最后交易日 (rb/IF/IO/m/SR/si + 1 期权抽查),
+    // 例外写回 docs/frame_contracts/instrument.md §11 核对项。
     r.delisted_date = parse_ctp_date(f.ExpireDate);
     r.option_type = option_type_from_ctp(f.OptionsType);
     r.option_strike = f.StrikePrice;
     r.underlying_id = f.UnderlyingInstrID;
+    // TODO(ctp-verify): 核对 UnderlyingMultiple 语义 (CFFEX 指数期权 + 商品期权各一例),
+    // 结论回填 docs/frame_contracts/instrument.md §11 核对项。
     r.underlying_multiple = f.UnderlyingMultiple;
     r.update_day = update_day;
     // r.updated_at 由调用方置 epoch ms

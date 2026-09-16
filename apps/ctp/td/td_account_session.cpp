@@ -365,6 +365,8 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
             // 命中 pending 时以原平台 instrument_id (如 MA1601) 作 PK 回写原行, 防原行
             // updated_at 不推进 + 重复行. rec.symbol 保持响应 InstrumentID (场所原生码).
             // 登录全量查询期间 pending 为空 → 行为不变; 仅主线程访问, 不加锁.
+            // TODO(ctp-verify): 核对 CZCE 响应 InstrumentID 形态 (3 位场所码 vs 4 位消歧码);
+            // 若返回消歧码则本关联恒不命中 (退化为空操作, 无副作用), 结论回填契约 §11 核对项。
             if (auto orig = refresh_pending_.take(f.instrument->InstrumentID); !orig.empty()) {
                 rec.instrument_id = std::move(orig);
             }

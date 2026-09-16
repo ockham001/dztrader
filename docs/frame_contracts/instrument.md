@@ -238,6 +238,9 @@ DzResultSet* rs = dz_db_query_instruments(db, instrument_id, "symbol,price_tick,
 7. 旧 dev 库清理：按 td 进程分库的旧文件不再被读取（路径变更见 ADR 0012）；统一库 `db/td.db` 首次打开自动迁移到 schema v4。
    清理旧网关库：`rm -f $DZTRADER_HOME/flow/*/*.db`（仅旧网关库 `.db`；`$DZTRADER_HOME/flow/<gw>/`
    下 CTP 流文件不动——不确定时先 `ls` 确认）。
+8. **核对**：CZCE 响应 `InstrumentID` 形态（3 位场所码 vs 4 位消歧码）——决定刷新回写关联是否命中；
+   未命中时空操作、无副作用。
+9. 第 2、3、8 条在代码中以 `TODO(ctp-verify)` 标记（`grep -rn "TODO(ctp-verify)" apps libs`），完成后随结论一并移除。
 
 ## 12. 镜像
 
