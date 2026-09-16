@@ -58,7 +58,8 @@ struct 引用（字段定义见对应头文件，本契约不抄写字段表）�
 - `DZ_FRAME_TD_QUERY_INSTRUMENT` → `DzInstrumentQueryReq`（`libs/core/include/dztrader/core/core_struct.h`）：
   `account_id`（目标账户，必填，路由键）、`instrument_id`（目标合约，平台唯一键，必填）。
 - `DZ_FRAME_TD_INSTRUMENT_STATUS` → `DzInstrumentStatus`（`libs/strategy_api/include/dztrader/struct.h`）：
-  `instrument_id`/`exchange_id`/`status`（场所状态码，如 `'B'`=BeforeTrading、`'C'`=Continous、`'D'`=Closed）/`time`。
+  `instrument_id`/`exchange_id`/`status`（CTP 场所状态码：`'0'`=BeforeTrading、`'1'`=NoTrading、`'2'`=Continous、
+  `'3'`~`'5'`=集合竞价三态、`'6'`=Closed、`'7'`=TransactionProcessing；透传原值，不归一化）/`time`。
   状态事件**无启动快照**（已知边界，§11）。
 
 ## 4. instruments 表字段（23 列 + 2 元数据）

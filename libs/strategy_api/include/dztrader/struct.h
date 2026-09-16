@@ -210,7 +210,8 @@ DZ_DECLARE_ALIGNED_STRUCT(DzCommissionRate, {
 DZ_DECLARE_ALIGNED_STRUCT(DzInstrumentStatus, {
     DzInstrumentId instrument_id;
     DzExchangeId exchange_id;
-    int8_t status;  // 'B'=BeforeTrading, 'C'=Continous, 'D'=Closed, ...
+    int8_t status;  // CTP 场所状态码: '0'=BeforeTrading, '1'=NoTrading, '2'=Continous,
+                    // '3'-'5'=集合竞价三态, '6'=Closed, '7'=TransactionProcessing
     char reserved[3];
     DzTime time;
 });
