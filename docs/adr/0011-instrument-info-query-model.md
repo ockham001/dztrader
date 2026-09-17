@@ -27,7 +27,7 @@ Accepted（2026-09-15）
    - 身份 4、分类 3（`product_class`/`product_code`/`settle_cycle`）、货币 3、量价 3、下单量 4（限价/市价各一对）、
      可交易窗口 2（`listed_date`/`delisted_date`）、期权 4、元数据 2（`update_day`/`updated_at`）；
    - 类型 `DzProduct` → `DzProductClass`（`DZ_PRODUCT_*` 宏不变）；
-   - 手续费/保证金**不入合约表**（CTP 不支持全量，走既有账户级按需查询 + `margin_rates`/`commission_rates`）。
+   - 手续费/保证金**不入合约表**（CTP 不支持全量，走既有账户级按需查询 + `margin_rates`/`commission_rates`）。（费率部分已被 ADR 0013 取代：不保留 margin_rates/commission_rates 与费率查询。）
 4. **记录载体的家**：`InstrumentRecord` 落在新库 `libs/tdstore`（规范记录，POD，不含 SQL/后端痕迹），
    供 td 落库与 SDK 查询共用；策略 API 不暴露任何合约结构体。
 
@@ -71,5 +71,5 @@ Accepted（2026-09-15）
 
 - 设计：`docs/superpowers/specs/2026-09-15-instrument-query-unified-td-db-design.md`
 - 帧契约：`docs/frame_contracts/instrument.md`（本次重写）
-- 费率/保证金边界：`docs/frame_contracts/td-fee-margin.md`
+- 费率/保证金边界：`docs/frame_contracts/td-fee-margin.md`（费率部分已被 ADR 0013 取代：不保留 margin_rates/commission_rates 与费率查询。）
 - 帧号规则：`docs/adr/0010-frame-number-reallocation.md`

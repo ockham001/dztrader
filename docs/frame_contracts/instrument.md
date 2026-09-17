@@ -2,14 +2,12 @@
 
 本契约规定合约信息的**查询化通路**：
 
-- 按需刷新请求 `DZ_FRAME_TD_QUERY_INSTRUMENT`（策略 → td 网关，basic 广播帧，无响应）；
-- 合约交易状态推送 `DZ_FRAME_TD_INSTRUMENT_STATUS`（td 网关 → 策略进程，basic 广播帧）。
+- 按需刷新请求 `DZ_FRAME_TD_QUERY_INSTRUMENT`（策略 → td 网关，basic 广播帧，无响应）。
 
 合约静态数据**不再走帧推送**：`DZ_FRAME_TD_INSTRUMENT` 与 `DzInstrumentInfo`/`DzInstrumentLeg`/`DzInstrumentExt`/`DzInstrumentTickTier`
 已全链路删除、帧号释放（ADR 0011）；静态数据一律经**统一 td 库** `instruments` 表查询（`dz_db_query_instruments`）。
 类型层真相源：`libs/tdstore/include/dztrader/tdstore/records.h`（`InstrumentRecord`）、
-`libs/tdstore/include/dztrader/tdstore/schema.h`（TD schema v4）、
-`libs/strategy_api/include/dztrader/struct.h`（`DzInstrumentStatus`）、
+`libs/tdstore/include/dztrader/tdstore/schema.h`（TD schema v5）、
 `libs/core/include/dztrader/core/core_struct.h`（`DzInstrumentQueryReq`）。总则见《帧契约：通用规则》。
 
 ## 1. 覆盖帧
@@ -17,15 +15,13 @@
 | 帧 | payload | 逻辑方向 | 性质 |
 |------|---------|----------|------|
 | `DZ_FRAME_TD_QUERY_INSTRUMENT` | `DzInstrumentQueryReq` | 策略 → td 网关 | basic 广播帧，按 `payload.account_id` 路由；无响应 |
-| `DZ_FRAME_TD_INSTRUMENT_STATUS` | `DzInstrumentStatus` | td 网关 → 策略进程 | basic 广播（事件通道），状态事件 |
 
-两帧均为 basic 帧（仅 `DzFrameHeader`，无 `instance_id` 扩展头）、struct payload（编码规则见总则 §6）。
-帧号登记：`DZ_FRAME_TD_QUERY_INSTRUMENT` 在 `libs/core/include/dztrader/core/core_data_type.h`；
-`DZ_FRAME_TD_INSTRUMENT_STATUS` 在 `libs/strategy_api/include/dztrader/data_type.h`。
+本帧为 basic 帧（仅 `DzFrameHeader`，无 `instance_id` 扩展头）、struct payload（编码规则见总则 §6）。
+帧号登记：`DZ_FRAME_TD_QUERY_INSTRUMENT` 在 `libs/core/include/dztrader/core/core_data_type.h`。
 
 ## 2. 语义 / 数据流 / 路由
 
-**数据流**（形态 5 后台进程间帧 + 形态 4 纯上行推送，总则 §4.2）：
+**数据流**（形态 5 后台进程间帧，总则 §4.2）：
 
 ```
 登录（含重连重登）:  td 全量查合约 ─→ tdstore 落库统一 td 库 instruments 表   （不再广播合约帧）
@@ -36,14 +32,11 @@
                                    （无响应帧；失败仅 td 日志，见 §9）
 读数据:              策略（定时器延迟后）dz_db_query_instruments(db, instrument_id, fields)
                       └─ libs/db → tdstore 投影查询 → DzResultSet
-盘中状态:            OnRtnInstrumentStatus → DZ_FRAME_TD_INSTRUMENT_STATUS（事件推送）
 ```
 
-- **发送方**：`DZ_FRAME_TD_QUERY_INSTRUMENT` 由策略 SDK `dz_query_instrument` 写（`libs/strategy_api/src/api.cpp`）；
-  `DZ_FRAME_TD_INSTRUMENT_STATUS` 由 td 网关（`dztd_*`）在盘中场所合约状态回报时逐条推送。
+- **发送方**：`DZ_FRAME_TD_QUERY_INSTRUMENT` 由策略 SDK `dz_query_instrument` 写（`libs/strategy_api/src/api.cpp`）。
 - **接收方**：`DZ_FRAME_TD_QUERY_INSTRUMENT` 由 td 网关消费（按 `payload.account_id` 归属过滤；其他策略
-  实例的 SDK 将其当平台帧丢弃）；`DZ_FRAME_TD_INSTRUMENT_STATUS` 由策略进程消费（SDK 全量放行、不解析
-  payload，帧经 `dz_next_event` 返回给策略用户，按 `frame_type` 自取）。
+  实例的 SDK 将其当平台帧丢弃）。
 - **刷新请求定向解析与回写**：td 侧先查统一库现有行的 `symbol`（CZCE 人工消歧），无行则回退 `instrument_id`，
   再发 `ReqQryInstrument`；发起时登记 `symbol → instrument_id` 待回写映射，响应命中时以原 **平台 `instrument_id`**
   作 PK 更新原行（`rec.symbol` 保持响应场所码）→ 原行 `updated_at` 推进、不新增重复行；未命中（登录全量查询）
@@ -57,15 +50,11 @@ struct 引用（字段定义见对应头文件，本契约不抄写字段表）�
 
 - `DZ_FRAME_TD_QUERY_INSTRUMENT` → `DzInstrumentQueryReq`（`libs/core/include/dztrader/core/core_struct.h`）：
   `account_id`（目标账户，必填，路由键）、`instrument_id`（目标合约，平台唯一键，必填）。
-- `DZ_FRAME_TD_INSTRUMENT_STATUS` → `DzInstrumentStatus`（`libs/strategy_api/include/dztrader/struct.h`）：
-  `instrument_id`/`exchange_id`/`status`（CTP 场所状态码：`'0'`=BeforeTrading、`'1'`=NoTrading、`'2'`=Continous、
-  `'3'`~`'5'`=集合竞价三态、`'6'`=Closed、`'7'`=TransactionProcessing；透传原值，不归一化）/`time`。
-  状态事件**无启动快照**（已知边界，§11）。
 
 ## 4. instruments 表字段（23 列 + 2 元数据）
 
 真相源：`libs/tdstore/include/dztrader/tdstore/records.h`（`InstrumentRecord`）与
-`libs/tdstore/include/dztrader/tdstore/schema.h`（`kTdSchemaVersion=4`；v4 = 4 rename + 5 add）。
+`libs/tdstore/include/dztrader/tdstore/schema.h`（`kTdSchemaVersion=5`；v4 = 4 rename + 5 add）。
 下表 23 列 + 元数据 2 列 = 25 列，即 `fields` 白名单全集（§7）。
 
 | 区 | 列 | SQLite 类型 | 哨兵 / 约束 | 来源与填值 |
@@ -108,7 +97,7 @@ struct 引用（字段定义见对应头文件，本契约不抄写字段表）�
 - **`volume_step <= 0` 视为 1**（换算工具已收敛此哨兵，见 `libs/core/include/dztrader/instrument_util.h`）。
 - **`settle_cycle`**：-1=不适用（衍生品），0=T+0；网关必须显式填值，不得依赖零初始化。历史 POD 零初始化陷阱
   已随合约结构体退役消除（`InstrumentRecord` 默认 -1、DB 列 `DEFAULT -1`）。
-- **`currency`** 空=跟随账户本币；**`base_asset`** 空=不适用；`is_inverse` 0=线性、1=反向（反向合约保证金币种取 `base_asset`，契约 td-fee-margin）。
+- **`currency`** 空=跟随账户本币；**`base_asset`** 空=不适用；`is_inverse` 0=线性、1=反向（反向合约币种取 `base_asset`）。
 - **`underlying_multiple <= 0`** = NA（语义核对项 §11）。
 - v3 物理列 `settlement_method`/`option_exercise_style`/`option_series` **保留但不承诺、不可查询**（§8）；
   upsert SQL 不写这 3 列，`INSERT OR REPLACE` 的整行替换语义使其在**任意 upsert/刷新后被重置为列默认值**
@@ -138,7 +127,7 @@ struct 引用（字段定义见对应头文件，本契约不抄写字段表）�
   回报归一到平台单位），策略核心路径不做任何浮点换算。
 - 换算基准为 `volume_step`（1 平台单位对应的原生数量；CTP 恒 1）。网关侧换算约定：`volume_step <= 0` 视为 1；
   原生→平台方向**向下取整到 step 网格**（浮点商误差容差 1e-9）。工具实现见 `libs/core/include/dztrader/instrument_util.h`。
-- `volume_multiple`（价值乘数）**仅用于** PnL/保证金浮点运算，不参与数量换算。
+- `volume_multiple`（价值乘数）**仅用于** PnL/名义价值浮点运算，不参与数量换算。
 
 **`product_class` 字典**：取值域为 `DzProductClass`（`DZ_PRODUCT_*` 宏，`libs/strategy_api/include/dztrader/data_type.h`），
 `UNKNOWN` 为兜底值——网关无法归类时填 `UNKNOWN`，**不得**以猜测的品种类型替代。CTP 映射
@@ -196,10 +185,9 @@ DzResultSet* rs = dz_db_query_instruments(db, instrument_id, "symbol,price_tick,
 |------|-----------|
 | StartDelivDate / EndDelivDate / DeliveryYear / DeliveryMonth | 投机平台不交割；可交易窗口由 `listed_date`/`delisted_date` 两列覆盖 |
 | CreateDate、MaxMarginSideAlgorithm、CombinationType、ExchangeInstID | 无消费方 |
-| InstLifePhase / IsTrading | 动态数据 → `DZ_FRAME_TD_INSTRUMENT_STATUS` 状态事件 |
+| InstLifePhase / IsTrading | 盘中动态数据，不入静态表 |
 | PositionType / PositionDateType | 由 `OffsetConvertMode`（账户/交易所级配置）承载 |
-| LongMarginRatio / ShortMarginRatio | 账户级费率链路，且已显式跳过交易所统一行 `IR_All`（契约 td-fee-margin） |
-| 手续费/保证金 | 不入合约表（CTP 不支持全量；走账户级按需查询 + `margin_rates`/`commission_rates`，契约 td-fee-margin） |
+| LongMarginRatio / ShortMarginRatio | 费率数据，不入合约表（费率能力已删除，ADR 0013） |
 | `settlement_method` / `option_exercise_style` / `option_series` | 物理列保留、不承诺、不可查询；任意 upsert/刷新重置为默认值（当前无消费方）；对应功能落地时启用 |
 
 ## 9. 校验（仅写与总则不同的规则）
@@ -212,8 +200,7 @@ DzResultSet* rs = dz_db_query_instruments(db, instrument_id, "symbol,price_tick,
     （`-3` 流控自动重试仅登录链路全量查询；刷新请求失败不重试，由策略按需重发。）
 - **写端（td）义务**：`instrument_id` 唯一；`price_tick > 0`；`delisted_date` 期货/期权不得 NA；哨兵字段按
   §4 填值；`product_class` 无法归类时填 `UNKNOWN` 不猜测；`name` 落库前 GBK→UTF-8；每次 upsert 推进 `updated_at`。
-- **读端（策略）义务**：合约数据一律经 `dz_db_query_instruments`（不解析任何合约结构体）；
-  `DZ_FRAME_TD_INSTRUMENT_STATUS` SDK 仅放行不解析 payload，策略消费时自行校验帧长，不足丢弃（截断帧防御）。
+- **读端（策略）义务**：合约数据一律经 `dz_db_query_instruments`（不解析任何合约结构体）。
 
 ## 10. 时序与触发
 
@@ -221,38 +208,35 @@ DzResultSet* rs = dz_db_query_instruments(db, instrument_id, "symbol,price_tick,
   `dz_query_instrument` → `dz_schedule_after` 延迟 → `dz_db_query_instruments`；失败/重试/超时由策略自管。
 - **触发场景**：
   - `DZ_FRAME_TD_QUERY_INSTRUMENT`：策略发现合约信息缺失/新上市/疑似修正时，按需刷新**单个**合约
-    （全量刷新属 td 登录链路内部行为，不暴露给策略）；
-  - `DZ_FRAME_TD_INSTRUMENT_STATUS`：盘中场所推送合约交易状态变更（CTP `OnRtnInstrumentStatus`），无请求帧对应。
+    （全量刷新属 td 登录链路内部行为，不暴露给策略）。
 - **登录链路全量落库**：账户登录（含重连重登）在结算确认后全量 `ReqQryInstrument`，回报逐条经 tdstore upsert
   统一库（`insert or replace`，`updated_at` 每次推进）；查询完成或失败驱动账户状态机（契约 account-status）。
 - **不响应** `QUERY_FULL_SNAPSHOT`（合约信息无快照协议；数据在库中随时可查）。
-- 两帧**无 `seq`**：不参与《帧契约：TD 数据同步》的水位/回补/重置机制。
+- 本帧**无 `seq`**：不参与《帧契约：TD 数据同步》的水位/回补/重置机制。
 
 ## 11. 已知边界与核对项
 
 1. `symbol ≠ instrument_id` 合法（CZCE 手工消歧）；刷新解析优先取库内 `symbol`，无行回退 `instrument_id`；不做自动消歧流程。
 2. **核对**：CTP `ExpireDate` 是否等于最后交易日（实盘抽查 rb/IF/IO/m/SR/si + 1 期权），例外写回本契约。
 3. **核对**：`UnderlyingMultiple` 语义（CFFEX 指数期权 / 商品期权各一例）。
-4. 状态事件**无启动快照**：策略启动时只能获知启动后的状态变更，初始状态需自行按需处理。
-5. `OffsetConverter` 已实现未接入下单路径（独立待办，见 ADR 0008）。
-6. SDK `.so` 分发形态的 PIC 缺口（独立待办）。
-7. 旧 dev 库清理：按 td 进程分库的旧文件不再被读取（路径变更见 ADR 0012）；统一库 `db/td.db` 首次打开自动迁移到 schema v4。
+4. `OffsetConverter` 已实现未接入下单路径（独立待办，见 ADR 0008）。
+5. SDK `.so` 分发形态的 PIC 缺口（独立待办）。
+6. 旧 dev 库清理：按 td 进程分库的旧文件不再被读取（路径变更见 ADR 0012）；统一库 `db/td.db` 首次打开自动迁移到 schema v5。
    清理旧网关库：`rm -f $DZTRADER_HOME/flow/*/*.db`（仅旧网关库 `.db`；`$DZTRADER_HOME/flow/<gw>/`
    下 CTP 流文件不动——不确定时先 `ls` 确认）。
-8. **核对**：CZCE 响应 `InstrumentID` 形态（3 位场所码 vs 4 位消歧码）——决定刷新回写关联是否命中；
+7. **核对**：CZCE 响应 `InstrumentID` 形态（3 位场所码 vs 4 位消歧码）——决定刷新回写关联是否命中；
    未命中时空操作、无副作用。
-9. 第 2、3、8 条在代码中以 `TODO(ctp-verify)` 标记（`grep -rn "TODO(ctp-verify)" apps libs`），完成后随结论一并移除。
+8. 第 2、3、7 条在代码中以 `TODO(ctp-verify)` 标记（`grep -rn "TODO(ctp-verify)" apps libs`），完成后随结论一并移除。
 
 ## 12. 镜像
 
-- 不进 dzweb 镜像（后台进程间帧；dzweb 不消费 `DZ_FRAME_TD_QUERY_INSTRUMENT`/`DZ_FRAME_TD_INSTRUMENT_STATUS`）。
-- 策略 SDK 对 `DZ_FRAME_TD_INSTRUMENT_STATUS` 全量放行、不解析 payload；`DZ_FRAME_TD_QUERY_INSTRUMENT` 是
-  SDK **写端帧**（由 `dz_query_instrument` 发出），非读端白名单成员（见契约 strategy）。
+- 不进 dzweb 镜像（后台进程间帧；dzweb 不消费 `DZ_FRAME_TD_QUERY_INSTRUMENT`）。
+- `DZ_FRAME_TD_QUERY_INSTRUMENT` 是 SDK **写端帧**（由 `dz_query_instrument` 发出），非读端白名单成员（见契约 strategy）。
 
 ## 13. 运维约束
 
 - **进程运行中禁止删除/替换/还原覆盖 `db/td.db`**（`rm`、`mv` 覆盖、从备份 `cp` 回滚等）：写连接持有旧 inode
   继续写已被替换的文件，而新读者打开的是新路径文件，两侧看到不同数据（裂脑），无自动收敛机制。
   清库/还原/备份回滚必须停全部 td 与策略进程后操作。
-- **升级次序**：先启动 td（打开统一库完成 v4 迁移）再启动策略；反向次序下策略可能以旧 schema 打开库，
+- **升级次序**：先启动 td（打开统一库完成 v5 迁移）再启动策略；反向次序下策略可能以旧 schema 打开库，
   新查询可能遇旧 schema 短暂返回 NULL，迁移完成后恢复。
