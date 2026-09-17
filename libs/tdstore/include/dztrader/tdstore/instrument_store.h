@@ -42,9 +42,6 @@ dztrader::db::QueryResult query_instruments(dztrader::db::Database& db,
                                             std::string_view instrument_id,
                                             std::span<const std::string> fields);
 
-/// 定向刷新解析: DB 现有行的 symbol; 无行返回 ""。
-std::string lookup_symbol(dztrader::db::Database& db, std::string_view instrument_id);
-
 }  // namespace dztrader::tdstore
 
 #endif  // DZTRADER_TDSTORE_INSTRUMENT_STORE_H_

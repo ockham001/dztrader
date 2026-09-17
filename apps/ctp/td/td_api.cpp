@@ -344,11 +344,6 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
             handle_query_account_status(frame);
             return;
         }
-        case DZ_FRAME_TD_QUERY_INSTRUMENT: {
-            // 契约 instrument: DZ_FRAME_TD_QUERY_INSTRUMENT basic 广播帧, 单合约定向刷新 (响应回写统一库)
-            handle_query_instrument(frame);
-            return;
-        }
         case DZ_FRAME_TD_ORDER_REQ: {
             // 契约 td-order: basic 广播帧, 按 payload account_id 归属路由
             on_order_req(view);
@@ -942,34 +937,6 @@ void TdApi::handle_query_account_status(const std::byte* frame) {
     } else {
         write_account_status(std::string(req.account_id), DZ_ACCOUNT_OFFLINE, "", /*force=*/true);
     }
-}
-
-void TdApi::handle_query_instrument(const std::byte* frame) {
-    // 契约 instrument: DZ_FRAME_TD_QUERY_INSTRUMENT basic 广播帧, 单合约定向刷新 (异步回填).
-    const shm::FrameView view(frame);
-    constexpr auto kMin = sizeof(DzFrameHeader) + sizeof(DzInstrumentQueryReq);
-    if (view.frame_size() < kMin) {
-        SPDLOG_WARN("td query instrument rejected | reason=short_payload frame_size={}",
-                    view.frame_size());
-        return;
-    }
-    DzInstrumentQueryReq req;
-    std::memcpy(&req, &view.payload<DzInstrumentQueryReq>(), sizeof(req));
-    if (req.account_id[0] == '\0') {
-        SPDLOG_WARN("td query instrument rejected | reason=empty_account");
-        return;
-    }
-    if (req.instrument_id[0] == '\0') {
-        SPDLOG_WARN("td query instrument rejected | reason=empty_instrument");
-        return;
-    }
-    auto* session = find_session(req.account_id);
-    if (session == nullptr) {
-        SPDLOG_WARN("td query instrument rejected | reason=account_not_found account={}",
-                    req.account_id);
-        return;
-    }
-    session->query_instrument(req.instrument_id);
 }
 
 void TdApi::broadcast_health(const std::string& account_id, TdHealth now) {

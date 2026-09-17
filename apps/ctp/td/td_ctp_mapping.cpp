@@ -414,16 +414,6 @@ tdstore::InstrumentRecord to_instrument_record(const CThostFtdcInstrumentField& 
 }
 
 // ============================================================================
-// to_qry_instrument_field: symbol -> CThostFtdcQryInstrumentField
-// ============================================================================
-
-CThostFtdcQryInstrumentField to_qry_instrument_field(std::string_view symbol) noexcept {
-    CThostFtdcQryInstrumentField f{};
-    copy_to_dz(f.InstrumentID, std::string(symbol).c_str());
-    return f;
-}
-
-// ============================================================================
 // to_dz_trading_account: CTP TradingAccountField -> DzTradingAccount
 // ============================================================================
 

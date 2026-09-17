@@ -3,7 +3,6 @@
 
 #include <cstdint>
 #include <string>
-#include <string_view>
 
 #include <ThostFtdcUserApiStruct.h>
 
@@ -94,10 +93,6 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
 /// delisted_date (非法/空输入经 parse_ctp_date 回退为 DZ_DATE_NA).
 tdstore::InstrumentRecord to_instrument_record(const CThostFtdcInstrumentField& f,
                                                const std::string& update_day) noexcept;
-
-/// symbol -> CTP 单合约查询字段 (仅 InstrumentID 非空, 其余零初始化).
-/// 用于 DZ_FRAME_TD_QUERY_INSTRUMENT 定向刷新: DB 行的 symbol (CZCE 人工消歧) 优先.
-CThostFtdcQryInstrumentField to_qry_instrument_field(std::string_view symbol) noexcept;
 
 /// CTP TradingAccountField -> DzTradingAccount.
 /// trading_day 为 DzDate (距纪元天数).

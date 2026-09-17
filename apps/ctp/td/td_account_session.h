@@ -42,7 +42,6 @@
 #include "td/td_account_session_pure.h"
 #include "td/td_ctp_mapping.h"
 #include "td/td_events.h"
-#include "td/td_instrument_query_pending.h"
 #include "td/td_login_finalize.h"
 #include "td/td_offset_converter.h"
 #include "td/td_persist_records.h"
@@ -53,10 +52,6 @@
 #include "td/td_risk_gate.h"
 #include "td/td_spi.h"
 #include "td/td_state.h"
-
-namespace dztrader::db {
-class SqliteDatabase;
-}  // namespace dztrader::db
 
 namespace dztrader::ctp {
 
@@ -150,11 +145,6 @@ public:
     /// 撤单: 反向查找 CancelContext (order_ref + front_id + session_id 三元组) 后 ReqOrderAction.
     /// 返回 false 表示未就绪 / 订单未登记 / CTP 返回非 0, 调用方应感知并通知策略进程.
     bool cancel_order(DzOrderId order_id);
-
-    /// 单合约定向刷新 (契约 instrument): 优先用 DB 行的 symbol (CZCE 人工消歧), 无行回退 instrument_id.
-    /// 仅 Ready 后生效 (登录链已全量查询, Ready 前拒绝). 响应经 on_rsp_qry_instrument 回写统一库.
-    /// 由 TdApi 收到 DZ_FRAME_TD_QUERY_INSTRUMENT 帧调用.
-    void query_instrument(const std::string& instrument_id);
 
     // === 状态 ===
     TdState state() const noexcept { return state_machine_.state(); }
@@ -343,11 +333,6 @@ private:
     uint64_t max_seq_at_disconnect_ = 0;
     /// 独立只读连接提供器 (TdApi 注入; 重连增量装载基准用, 可空则降级).
     std::function<SQLite::Database*()> prescan_db_provider_;
-    /// 定向刷新用的独立只读连接 (惰性打开; PersistWriter 连接归 writer 线程独占, WAL 下多连接安全).
-    std::unique_ptr<db::SqliteDatabase> lookup_db_;
-    /// 定向刷新的"场所查询码 -> 平台 instrument_id"待回写映射 (CZCE symbol 消歧闭环).
-    /// 与 lookup_db_ 同线程约定: 仅主线程访问 (query_instrument / on_rsp_qry_instrument).
-    InstrumentQueryPending refresh_pending_;
 
     /// 持仓 map: instrument_id -> PositionHolding (设计 §6)
     std::unordered_map<std::string, PositionHolding> holdings_;

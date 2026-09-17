@@ -175,23 +175,6 @@ TEST_F(InstrumentStoreTest, EmptyInstrumentIdReturnsAllSorted) {
     EXPECT_EQ(std::get<std::string>(result.rows[1][0]), "rb2605");
 }
 
-TEST_F(InstrumentStoreTest, LookupSymbolMissingReturnsEmpty) {
-    EXPECT_EQ(lookup_symbol(db_, "rb2601"), "");
-}
-
-TEST_F(InstrumentStoreTest, LookupSymbolReturnsStoredSymbol) {
-    upsert_instrument(db_, make_record("rb2601"));
-    EXPECT_EQ(lookup_symbol(db_, "rb2601"), "rb2601");
-}
-
-TEST_F(InstrumentStoreTest, LookupSymbolReturnsDistinctSymbol) {
-    // CZCE 消歧: 平台 PK 与场所原生码不同, 刷新须按 symbol 发起
-    InstrumentRecord record = make_record("MA1601");
-    record.symbol = "MA601";
-    upsert_instrument(db_, record);
-    EXPECT_EQ(lookup_symbol(db_, "MA1601"), "MA601");
-}
-
 TEST_F(InstrumentStoreTest, QueryInstrumentsEmptyKeepsColumnMeta) {
     const std::vector<std::string> fields = {"price_tick", "instrument_id"};
     const auto result = query_instruments(db_, "", fields);

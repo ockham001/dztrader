@@ -173,19 +173,4 @@ dztrader::db::QueryResult query_instruments(dztrader::db::Database& db,
     return result;
 }
 
-std::string lookup_symbol(dztrader::db::Database& db, std::string_view instrument_id) {
-    std::vector<dztrader::db::BindValue> params;
-    params.emplace_back(std::string(instrument_id));
-    dztrader::db::QueryResult result =
-        db.query("SELECT symbol FROM instruments WHERE instrument_id = ?", params);
-    if (result.rows.empty() || result.rows.front().empty()) {
-        return {};
-    }
-    const auto& value = result.rows.front().front();
-    if (const auto* symbol = std::get_if<std::string>(&value)) {
-        return *symbol;
-    }
-    return {};
-}
-
 }  // namespace dztrader::tdstore

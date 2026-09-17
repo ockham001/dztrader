@@ -11,16 +11,13 @@
 
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/encoding.h>
-#include <dztrader/core/path.h>
 #include <dztrader/core/string_util.h>
 #include <dztrader/data_type.h>
 #include <dztrader/date_time/date.h>
-#include <dztrader/db/database_sqlite.h>
 #include <dztrader/platform/frame_codec.h>
 #include <dztrader/platform/risk_reject.h>
 #include <dztrader/platform/td_account_ops.h>
 #include <dztrader/struct.h>
-#include <dztrader/tdstore/instrument_store.h>
 #include <dztrader/tdstore/records.h>
 
 #include "td/td_persist_records.h"
@@ -357,15 +354,6 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
                 update_day_str = update_day;
             }
             auto rec = to_instrument_record(*f.instrument, update_day_str);
-            // CZCE 消歧回写: 刷新按库内 symbol (如 MA601) 发起, 响应 InstrumentID 即场所码;
-            // 命中 pending 时以原平台 instrument_id (如 MA1601) 作 PK 回写原行, 防原行
-            // updated_at 不推进 + 重复行. rec.symbol 保持响应 InstrumentID (场所原生码).
-            // 登录全量查询期间 pending 为空 → 行为不变; 仅主线程访问, 不加锁.
-            // TODO(ctp-verify): 核对 CZCE 响应 InstrumentID 形态 (3 位场所码 vs 4 位消歧码);
-            // 若返回消歧码则本关联恒不命中 (退化为空操作, 无副作用), 结论回填契约 §11 核对项。
-            if (auto orig = refresh_pending_.take(f.instrument->InstrumentID); !orig.empty()) {
-                rec.instrument_id = std::move(orig);
-            }
             rec.updated_at = epoch_ms();
             persist_writer_.enqueue(PersistTask{PersistTask::Kind::Instrument, std::move(rec)});
         } catch (const std::exception& e) {
@@ -1035,44 +1023,6 @@ void AccountSession::req_qry_trading_account() {
                 finalize_login();
             }
         });
-}
-
-void AccountSession::query_instrument(const std::string& instrument_id) {
-    // 单合约定向刷新 (契约 instrument): 优先用 DB 行的 symbol (CZCE 人工消歧), 无行则回退 instrument_id.
-    // 注意 1: PersistWriter 的 SQLite 连接归 writer 线程独占, 此处用独立只读连接 (WAL 下多连接安全).
-    // 注意 2: Ready 前的刷新请求直接拒绝 (登录链会全量查, 无需刷新).
-    if (!is_ready()) {
-        SPDLOG_WARN("td query instrument rejected | account={} reason=not_ready", account_id_);
-        return;
-    }
-    std::string symbol;
-    try {
-        if (!lookup_db_) {
-            lookup_db_ = std::make_unique<db::SqliteDatabase>(
-                dztrader::paths::td_db().string(), SQLite::OPEN_READONLY);
-            // 只读连接设 busy_timeout=500ms (SQLiteCpp 默认 0): 该查询在主循环内同步执行,
-            // 是消歧用的最佳努力路径; 降级 DELETE 模式下最坏停顿从 5s 降到 0.5s,
-            // 超时回落 instrument_id 可接受 (WAL 下读不阻塞写, 正常无等待).
-            lookup_db_->exec("PRAGMA busy_timeout=500");
-        }
-        symbol = tdstore::lookup_symbol(*lookup_db_, instrument_id);
-    } catch (const std::exception& e) {
-        SPDLOG_WARN("td query instrument: db lookup failed | account={} err={}",
-                    account_id_, e.what());
-    }
-    if (symbol.empty()) {
-        symbol = instrument_id;
-    }
-    // CZCE 消歧回写登记: 响应只带场所 InstrumentID, 需据此恢复原行 PK
-    // (见 on_rsp_qry_instrument 的 take 回写; 未命中 = 登录全量查询路径, 行为不变).
-    refresh_pending_.add(symbol, instrument_id);
-    auto field = to_qry_instrument_field(symbol);
-    const int ret = api_->ReqQryInstrument(&field, ++request_id_);
-    if (ret != 0) {
-        refresh_pending_.take(symbol);  // 发起失败: 撤销登记 (不会有响应来消费)
-        SPDLOG_WARN("td query instrument failed | account={} instrument={} ret={}",
-                    account_id_, instrument_id, ret);
-    }
 }
 
 void AccountSession::drive_finalizer() {
