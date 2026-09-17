@@ -363,7 +363,7 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
     int64_t trade_day_secs = static_cast<int64_t>(trade_date_days) * 86400;
     r.trade_time = (trade_secs >= 0) ? trade_day_secs + trade_secs : 0;
 
-    r.commission = 0.0;  // 留 0, AccountSession 后续查询 CommissionRate 后填
+    r.commission = 0.0;  // 留 0（平台不查询费率，ADR 0013）
 
     return r;
 }

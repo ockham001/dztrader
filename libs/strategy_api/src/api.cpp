@@ -847,7 +847,7 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
         case DZ_FRAME_NOTIFY_MD_STARTED:
             on_md_started_internal(ctx, frame);
             return false;
-        // 其余 TD 回报帧 DZ_FRAME_POSITION_INFO-DZ_FRAME_ACCOUNT_STATUS (持仓/资金/费率/网关状态/合约等): 暂不按策略过滤, 全量放行。
+        // 其余 TD 回报帧 DZ_FRAME_POSITION_INFO-DZ_FRAME_ACCOUNT_STATUS (持仓/资金/网关状态/合约等): 暂不按策略过滤, 全量放行。
         // DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 为 ingest 帧 (含 seq/account_id): 完整帧过 gate (W 过滤/断档/倒退),
         // 截断帧保持透传 (既有语义: 不按策略过滤, 引擎侧 payload_size_matches 丢弃);
         // 除上述四个 ingest 帧外的 TD 回报帧无 seq 字段, 不 ingest, 直接全量放行。

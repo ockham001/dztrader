@@ -26,7 +26,6 @@ namespace dztrader::ctp {
 // 字段名与 tdstore schema.cpp CREATE TABLE 一致:
 // - exchange_id (不是 exchange)
 // - volume (不是 volume_total, 与 DzOrderReport.volume 一致)
-// - date INTEGER (trade 表 date 列, 不是 trading_day TEXT)
 // - orders/trades 增加 strategy_id, remark 列 (来自 DzOrderReport/DzTradeReport)
 // ============================================================================
 

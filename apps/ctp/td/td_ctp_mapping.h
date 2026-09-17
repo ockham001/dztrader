@@ -88,7 +88,7 @@ OrderRecord to_order_record(const CThostFtdcOrderField& o,
                              int32_t trading_day) noexcept;
 
 /// CTP TradeField -> TradeRecord (含 DzTradeReport base + 扩展字段).
-/// commission 留 0, 由 AccountSession 后续查询 CommissionRate 后填.
+/// commission 留 0（平台不查询费率，ADR 0013）.
 TradeRecord to_trade_record(const CThostFtdcTradeField& t,
                              const std::string& account_id,
                              int32_t trading_day) noexcept;

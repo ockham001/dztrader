@@ -22,7 +22,7 @@ Accepted（2026-09-15）
    - 新增 `DZ_FRAME_TD_QUERY_INSTRUMENT`(1043) + `DzInstrumentQueryReq`：策略请求**单合约**定向刷新，td 查 CTP 后落库，**无响应帧**；
    - 新增 `dz_db_query_instruments(db, instrument_id, fields)`：DB 查询返回 `DzResultSet`，`fields` 可选（默认全部承诺列）；
    - 全量刷新仍属登录/日切链路，不暴露给策略；策略用定时器延迟后查询。
-2. **保留** `DZ_FRAME_TD_INSTRUMENT_STATUS`(1007) 与 `DzInstrumentStatus`：交易状态是盘中事件，不入静态表。
+2. **保留** `DZ_FRAME_TD_INSTRUMENT_STATUS`(1007) 与 `DzInstrumentStatus`：交易状态是盘中事件，不入静态表。（该决策已被 ADR 0013 取代：帧 1007 与 DzInstrumentStatus 已删除。）
 3. **字段边界定稿**（23 列 + 2 元数据）：
    - 身份 4、分类 3（`product_class`/`product_code`/`settle_cycle`）、货币 3、量价 3、下单量 4（限价/市价各一对）、
      可交易窗口 2（`listed_date`/`delisted_date`）、期权 4、元数据 2（`update_day`/`updated_at`）；

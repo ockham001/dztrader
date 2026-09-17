@@ -54,7 +54,7 @@ struct 引用（字段定义见对应头文件，本契约不抄写字段表）�
 ## 4. instruments 表字段（23 列 + 2 元数据）
 
 真相源：`libs/tdstore/include/dztrader/tdstore/records.h`（`InstrumentRecord`）与
-`libs/tdstore/include/dztrader/tdstore/schema.h`（`kTdSchemaVersion=5`；v4 = 4 rename + 5 add）。
+`libs/tdstore/include/dztrader/tdstore/schema.h`（`kTdSchemaVersion=5`；v4 = 4 rename + 5 add；v5 = 删除 margin_rates/commission_rates（ADR 0013））。
 下表 23 列 + 元数据 2 列 = 25 列，即 `fields` 白名单全集（§7）。
 
 | 区 | 列 | SQLite 类型 | 哨兵 / 约束 | 来源与填值 |

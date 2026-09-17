@@ -17,7 +17,7 @@ Accepted（2026-09-16）
 ## Decision
 
 删除三块能力，对齐 vnpy 模型：
-- 帧 1007/1010/1011/1036 退役，不复用；
+- 帧 1007/1010/1011/1036 删除定义、不保留号（号按 general.md §3 与 ADR 0010 规则留给后续新帧，即可被未来新帧复用）；
 - `DzInstrumentStatus`/`DzMarginRate`/`DzCommissionRate`/`DzFeeRateQueryReq` 与 SDK API
   `dz_query_fee_rate`/`dz_db_query_margin`/`dz_db_query_commission` 删除；
 - 登录收尾链 4 查询 → 2 查询（position → account → replay → flush → ready）；
@@ -29,5 +29,5 @@ Accepted（2026-09-16）
 ## Consequences
 
 - 策略若需成本/可用保证金估算：CTP 柜台在下单时校验；平台后续如需要，另行立项"账户级费率查询"（可回滚路径）。
-- 合约状态如未来重启需求：须以平台中性枚举 + 逐柜台映射设计（见本 ADR Context 记录的同码异义问题），从零设计而非恢复旧帧。
+- 合约状态如未来重启需求：须以平台中性枚举 + 逐柜台映射设计（见本 ADR Context 记录的同码异义问题），从零设计而非复刻旧帧；本次释放的帧号不保留，按 general.md §3 与 ADR 0010 规则可被后续新帧复用。
 - 多接口规划中的股票类柜台（XTP/奇点/OST 等）无期货式状态语义，本决策与该方向一致。
