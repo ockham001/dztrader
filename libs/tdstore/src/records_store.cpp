@@ -113,6 +113,20 @@ void upsert_instruments(dztrader::db::Session& session,
     session.upsert("instruments", rows);
 }
 
+const std::vector<std::string>& instrument_promised_fields() {
+    static const std::vector<std::string> kFields = {
+        "instrument_id",           "exchange_id",              "symbol",
+        "name",                    "product_class",            "product_code",
+        "settle_cycle",            "currency",                 "base_asset",
+        "is_inverse",              "volume_multiple",          "volume_step",
+        "price_tick",              "min_limit_order_volume",   "max_limit_order_volume",
+        "min_market_order_volume", "max_market_order_volume",  "listed_date",
+        "delisted_date",           "option_type",              "option_strike",
+        "underlying_id",           "underlying_multiple",      "update_day",
+        "updated_at"};
+    return kFields;
+}
+
 dztrader::db::ResultSet query_instruments(dztrader::db::Session& session,
                                           std::string_view instrument_id,
                                           std::span<const std::string> fields) {

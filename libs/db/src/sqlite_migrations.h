@@ -7,7 +7,7 @@
 
 #include <span>
 
-#include <SQLiteCpp/Database.h>
+#include "sqlite.h"
 
 #include <dztrader/db/types.h>
 

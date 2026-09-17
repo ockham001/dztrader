@@ -5,7 +5,7 @@
 合约静态数据**不再走帧推送**：`DZ_FRAME_TD_INSTRUMENT` 与 `DzInstrumentInfo`/`DzInstrumentLeg`/`DzInstrumentExt`/`DzInstrumentTickTier`
 已全链路删除、帧号释放（ADR 0011）；静态数据一律经**统一 td 库** `instruments` 表查询（`dz_db_query_instruments`）。
 类型层真相源：`libs/tdstore/include/dztrader/tdstore/records.h`（`InstrumentRecord`）、
-`libs/tdstore/include/dztrader/tdstore/schema.h`（TD schema v5）。总则见《帧契约：通用规则》。
+`libs/tdstore/include/dztrader/tdstore/schema_catalog.h`（`tdstore::schema_catalog`，TD schema v5）。总则见《帧契约：通用规则》。
 
 ## 1. 覆盖帧
 
@@ -30,7 +30,7 @@
 ## 4. instruments 表字段（23 列 + 2 元数据）
 
 真相源：`libs/tdstore/include/dztrader/tdstore/records.h`（`InstrumentRecord`）与
-`libs/tdstore/include/dztrader/tdstore/schema.h`（`kTdSchemaVersion=5`；v4 = 4 rename + 5 add；v5 = 删除 margin_rates/commission_rates（ADR 0013））。
+`libs/tdstore/include/dztrader/tdstore/schema_catalog.h`（当前 schema 声明：`tdstore::schema_catalog`/`instruments_schema()`，`kTdSchemaVersion=5`；v4 = 4 rename + 5 add；v5 = 删除 margin_rates/commission_rates（ADR 0013））；迁移历史（v1..v5 DDL）真相源：`libs/db/src/sqlite_migrations.cpp`。
 下表 23 列 + 元数据 2 列 = 25 列，即 `fields` 白名单全集（§7）。
 
 | 区 | 列 | SQLite 类型 | 哨兵 / 约束 | 来源与填值 |
@@ -140,7 +140,7 @@ DzResultSet* dz_db_query_instruments(DzDatabase* db, const char* instrument_id, 
 **查询量级提示**：全表查询（`instrument_id` 为 NULL/空串）在万级行下约 10²ms / 10¹MB 量级（含全部 25 列）；
 建议按 `instrument_id` 精确查询或仅请求必需 `fields`（合约表为登录期全量 upsert，行数随在役合约增长）。
 
-`fields` 白名单（声明序，共 25；与 `tdstore::instrument_columns()` 一致）：
+`fields` 白名单（声明序，共 25；与 `tdstore::instrument_promised_fields()` 一致，`libs/tdstore/include/dztrader/tdstore/records_store.h`）：
 
 `instrument_id`, `exchange_id`, `symbol`, `name`, `product_class`, `product_code`, `settle_cycle`, `currency`,
 `base_asset`, `is_inverse`, `volume_multiple`, `volume_step`, `price_tick`, `min_limit_order_volume`,

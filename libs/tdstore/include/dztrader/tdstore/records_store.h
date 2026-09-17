@@ -8,6 +8,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <dztrader/db/database.h>
 #include <dztrader/struct.h>
@@ -34,6 +35,12 @@ void upsert_instruments(dztrader::db::Session& session,
 dztrader::db::ResultSet query_instruments(dztrader::db::Session& session,
                                           std::string_view instrument_id,
                                           std::span<const std::string> fields);
+
+/// dz_db_query_instruments fields 为空时返回的承诺列 (契约 docs/frame_contracts/instrument.md §7,
+/// 声明序共 25 列)。query_instruments 的空投影 = schema 全列 (28, 含 3 个保留列
+/// settlement_method/option_exercise_style/option_series), 与 C API 既有返回列不符 —
+/// C 边界显式传承诺列, 保持结果列序/列名零变化。
+[[nodiscard]] const std::vector<std::string>& instrument_promised_fields();
 
 }  // namespace dztrader::tdstore
 

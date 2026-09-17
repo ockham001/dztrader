@@ -27,7 +27,7 @@ td 持久化现状：
 4. **多账户写策略**：合约信息为交易所级数据，单表按 `instrument_id`；会话各自 `INSERT OR REPLACE` 幂等，
    `updated_at` 每次推进；不按账户分副本、不做"挑一个账户"选举。
    新增不变量：**`account_id` 跨 td 网关全局唯一**，由 master 配置校验。
-5. **DB 抽象启动**（本轮最小形态）：
+5. **DB 抽象启动**（本轮最小形态）：（Superseded by ADR 0015：D5 由 ADR 0015 升级为域级端口-适配器接口）
    - `libs/db` 新增后端接口 `Database`/`Statement`/`Transaction`/`QueryResult`/`BindValue` + SQLite 适配器
      （含包装既有连接的 `SqliteDatabaseRef`，供 PersistWriter 过渡期共用）；
    - 新库 `libs/tdstore` 承载 td 规范记录（`InstrumentRecord`）、td schema/迁移与 store 操作；instruments 为首个用例；
@@ -35,7 +35,7 @@ td 持久化现状：
 6. **SDK 路径**：`open_td_db` 改 `paths::td_db()`，删除硬编码网关名；不再需要注入 td 实例名。
 7. **MySQL 路线（后续独立实施）**：Boost.MySQL（BSL-1.0、header-only、协议级实现、不依赖 libmysqlclient、
    项目已用 Boost 1.90）+ OpenSSL 内部静态链接，编译进策略 SDK 单一动态库；`DZ_WITH_MYSQL` 编译开关。
-   Mongo 无 Boost 等价物（mongocxx 重且 ABI 敏感），缓。
+   Mongo 无 Boost 等价物（mongocxx 重且 ABI 敏感），缓。（Superseded by ADR 0015：D7 由 ADR 0015 作废）
 
 ## Alternatives
 

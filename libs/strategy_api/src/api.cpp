@@ -1451,24 +1451,6 @@ std::vector<std::string> parse_fields(const char* fields) {
     return out;
 }
 
-/// dz_db_query_instruments 的 fields 为空时返回的承诺列 (契约 docs/frame_contracts/instrument.md §7,
-/// 声明序共 25 列)。records_store::query_instruments 的空投影 = schema 全列 (28, 含 3 个保留列
-/// settlement_method/option_exercise_style/option_series), 与 C API 既有返回列不符 —
-/// C 边界显式传承诺列, 保持结果列序/列名零变化。
-const std::vector<std::string>& promised_instrument_fields() {
-    static const std::vector<std::string> kFields = {
-        "instrument_id",           "exchange_id",              "symbol",
-        "name",                    "product_class",            "product_code",
-        "settle_cycle",            "currency",                 "base_asset",
-        "is_inverse",              "volume_multiple",          "volume_step",
-        "price_tick",              "min_limit_order_volume",   "max_limit_order_volume",
-        "min_market_order_volume", "max_market_order_volume",  "listed_date",
-        "delisted_date",           "option_type",              "option_strike",
-        "underlying_id",           "underlying_multiple",      "update_day",
-        "updated_at"};
-    return kFields;
-}
-
 }  // namespace
 
 DZ_API DzDatabase* dz_db_open(const char* path) {
@@ -1647,11 +1629,11 @@ DZ_API DzResultSet* dz_db_query_instruments(DzDatabase* db,
     try {
         std::vector<std::string> requested = parse_fields(fields);
         if (requested.empty()) {
-            requested = promised_instrument_fields();
+            requested = tdstore::instrument_promised_fields();
         } else {
             // 显式请求字段必须过承诺列白名单 (契约 instrument §8: v3 保留列不可查询;
             // records_store 白名单 = 物理全列, 含 3 个保留列, 不满足 C API 词表)。
-            const auto& promised = promised_instrument_fields();
+            const auto& promised = tdstore::instrument_promised_fields();
             for (const std::string& name : requested) {
                 if (std::find(promised.begin(), promised.end(), name) == promised.end()) {
                     throw Exception(DZ_EC_INVALID_PARAM, "unknown field: {}", name);

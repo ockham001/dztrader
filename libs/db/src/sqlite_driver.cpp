@@ -6,7 +6,6 @@
 #include <utility>
 #include <variant>
 
-#include <SQLiteCpp/Statement.h>
 #include <spdlog/spdlog.h>
 
 #include <dztrader/core/exception.h>

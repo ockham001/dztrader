@@ -5,9 +5,6 @@
 #include <stdexcept>
 #include <vector>
 
-#include <SQLiteCpp/Statement.h>
-#include <SQLiteCpp/Transaction.h>
-
 #include <dztrader/core/exception.h>
 #include <dztrader/error.h>
 

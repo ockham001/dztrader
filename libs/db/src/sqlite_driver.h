@@ -13,7 +13,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include <SQLiteCpp/Database.h>
+#include "sqlite.h"
 
 #include <dztrader/db/database.h>
 
