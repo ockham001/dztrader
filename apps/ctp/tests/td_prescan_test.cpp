@@ -10,8 +10,8 @@
 #include <SQLiteCpp/Statement.h>
 
 #include <dztrader/core/this_process.h>
-#include <dztrader/db/legacy/migration.h>
-#include <dztrader/tdstore/schema.h>
+#include <dztrader/db/database.h>
+#include <dztrader/tdstore/schema_catalog.h>
 
 #include "td/td_persist_records.h"
 #include "td/td_prescan.h"
@@ -37,16 +37,17 @@ protected:
         db_path_ = (tmp_dir_ / "test.db").string();
         std::filesystem::remove(db_path_);
         std::filesystem::remove(db_path_ + "-journal");
+        auto database = dztrader::db::Database::open(
+            dztrader::db::Config{.backend = "sqlite", .options = {{"path", db_path_}}},
+            dztrader::tdstore::schemas());
+        database->migrate();
+        database.reset();  // 释放句柄, TearDown 才能删临时文件; prescan 仍走独立 raw 连接
     }
     void TearDown() override { std::filesystem::remove_all(tmp_dir_); }
 
-    /// 建 v2 schema (migration) 的读写连接, 用于灌测试数据.
+    /// 已建 schema 的读写连接, 用于灌测试数据.
     SQLite::Database open_rw() {
-        SQLite::Database db(db_path_, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
-        dztrader::db::legacy::MigrationManager mgr;
-        dztrader::tdstore::apply_td_migrations(mgr);
-        mgr.apply(db);
-        return db;
+        return SQLite::Database(db_path_, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
     }
 
     /// 独立只读连接 (模拟 TdApi 预扫 / 运行期兜底的独立连接).
