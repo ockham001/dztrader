@@ -9,7 +9,8 @@ namespace dztrader::tdstore {
 /// v4: instruments 列改名 (product→product_class, min/max_order_volume→min/max_limit_order_volume,
 ///     expiry_date→delisted_date) + 新增 product_code/min_market_order_volume/max_market_order_volume/
 ///     underlying_multiple/updated_at。
-constexpr int kTdSchemaVersion = 4;
+/// v5: 删除 margin_rates/commission_rates (费率功能退役, ADR 0013)。
+constexpr int kTdSchemaVersion = 5;
 
 /// 注册全部 TD migration (调用方先 add 后 apply)。
 void apply_td_migrations(dztrader::db::MigrationManager& mgr);

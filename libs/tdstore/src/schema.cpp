@@ -306,6 +306,13 @@ void migration_v4(SQLite::Database& db) {
     db.exec("ALTER TABLE instruments ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0");
 }
 
+void migration_v5(SQLite::Database& db) {
+    // v5: 费率功能删除 (ADR 0013) — margin_rates/commission_rates 退役 (无消费方, 数据丢弃).
+    // 历史迁移不可改: v1 仍会为全新库建这两张表, 由本迁移统一删除.
+    db.exec("DROP TABLE IF EXISTS margin_rates");
+    db.exec("DROP TABLE IF EXISTS commission_rates");
+}
+
 }  // namespace
 
 void apply_td_migrations(dztrader::db::MigrationManager& mgr) {
@@ -313,6 +320,7 @@ void apply_td_migrations(dztrader::db::MigrationManager& mgr) {
     mgr.add(2, migration_v2);
     mgr.add(3, migration_v3);
     mgr.add(4, migration_v4);
+    mgr.add(5, migration_v5);
 }
 
 }  // namespace dztrader::tdstore

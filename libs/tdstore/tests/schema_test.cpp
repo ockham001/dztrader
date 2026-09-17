@@ -64,8 +64,8 @@ protected:
     void SetUp() override {
         apply_td_migrations(mgr);
         auto applied = mgr.apply(conn.db());
-        ASSERT_EQ(applied.size(), 4u);
-        EXPECT_EQ(applied[3], kTdSchemaVersion);
+        ASSERT_EQ(applied.size(), 5u);
+        EXPECT_EQ(applied[4], kTdSchemaVersion);
     }
 };
 
@@ -73,8 +73,8 @@ TEST_F(TdSchemaTest, AllTablesCreated) {
     EXPECT_TRUE(table_exists(conn, "schema_version"));
     EXPECT_TRUE(table_exists(conn, "orders"));
     EXPECT_TRUE(table_exists(conn, "trades"));
-    EXPECT_TRUE(table_exists(conn, "margin_rates"));
-    EXPECT_TRUE(table_exists(conn, "commission_rates"));
+    EXPECT_FALSE(table_exists(conn, "margin_rates"));      // v5 已删除 (ADR 0013)
+    EXPECT_FALSE(table_exists(conn, "commission_rates"));  // v5 已删除 (ADR 0013)
     EXPECT_TRUE(table_exists(conn, "instruments"));
     EXPECT_TRUE(table_exists(conn, "positions"));
     EXPECT_TRUE(table_exists(conn, "trading_accounts"));
@@ -171,7 +171,7 @@ TEST_F(TdSchemaTest, OrdersRebuildPreservesRowsAndIndexes) {
     dztrader::db::MigrationManager mgr2;
     apply_td_migrations(mgr2);
     auto applied = mgr2.apply(legacy.db());
-    ASSERT_EQ(applied.size(), 4u);
+    ASSERT_EQ(applied.size(), 5u);
 
     EXPECT_EQ(legacy.scalar<int>("SELECT COUNT(*) FROM orders"), 2);
     EXPECT_EQ(legacy.scalar<int>("SELECT COALESCE(MAX(seq), 0) FROM orders"), 0);
@@ -249,7 +249,7 @@ TEST_F(TdSchemaTest, InstrumentsV3MigratesAsciiProductText) {
     dztrader::db::MigrationManager mgr2;
     apply_td_migrations(mgr2);
     auto applied = mgr2.apply(legacy.db());
-    ASSERT_EQ(applied.size(), 4u);
+    ASSERT_EQ(applied.size(), 5u);
 
     // product -> product_class (v4 改名): 文本 "79"(期权)->2 / "70"(期货)->1
     EXPECT_EQ(legacy.scalar<int>(
@@ -290,7 +290,7 @@ TEST_F(TdSchemaTest, InstrumentsV3MigratesNumericProductText) {
     dztrader::db::MigrationManager mgr;
     apply_td_migrations(mgr);
     auto applied = mgr.apply(legacy.db());
-    ASSERT_EQ(applied.size(), 4u);
+    ASSERT_EQ(applied.size(), 5u);
 
     EXPECT_EQ(legacy.scalar<int>(
                   "SELECT product_class FROM instruments WHERE instrument_id='AU9999'"), 13);
@@ -316,9 +316,30 @@ TEST_F(TdSchemaTest, V4ColumnNamesAndTypes) {
     EXPECT_EQ(columns.count("expiry_date"), 0u);
 }
 
-TEST_F(TdSchemaTest, VersionIsFour) {
-    EXPECT_EQ(conn.scalar<int>("SELECT MAX(version) FROM schema_version"), 4);
-    EXPECT_EQ(kTdSchemaVersion, 4);
+TEST_F(TdSchemaTest, VersionIsFive) {
+    EXPECT_EQ(conn.scalar<int>("SELECT MAX(version) FROM schema_version"), 5);
+    EXPECT_EQ(kTdSchemaVersion, 5);
+}
+
+TEST_F(TdSchemaTest, V5DropsFeeRateTables) {
+    // v4 遗留库含两费率表 → v5 迁移删除 (追加式迁移: v1 仍会建表, v5 负责删).
+    dztrader::db::Connection legacy(":memory:");
+    legacy.db().exec("CREATE TABLE margin_rates (id INTEGER PRIMARY KEY)");
+    legacy.db().exec("CREATE TABLE commission_rates (id INTEGER PRIMARY KEY)");
+    legacy.db().exec("INSERT INTO margin_rates (id) VALUES (1)");
+    legacy.db().exec("INSERT INTO commission_rates (id) VALUES (1)");
+
+    dztrader::db::MigrationManager mgr2;
+    apply_td_migrations(mgr2);
+    auto applied = mgr2.apply(legacy.db());
+    ASSERT_EQ(applied.size(), 5u);
+
+    EXPECT_FALSE(table_exists(legacy, "margin_rates"));
+    EXPECT_FALSE(table_exists(legacy, "commission_rates"));
+    EXPECT_EQ(legacy.scalar<int>("SELECT MAX(version) FROM schema_version"), 5);
+    // 其余表保留
+    EXPECT_TRUE(table_exists(legacy, "orders"));
+    EXPECT_TRUE(table_exists(legacy, "instruments"));
 }
 
 }  // namespace
