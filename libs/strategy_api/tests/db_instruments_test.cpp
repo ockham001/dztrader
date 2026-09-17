@@ -127,6 +127,17 @@ TEST_F(DbInstrumentsTest, QueryInstrumentsDuplicateField) {
     EXPECT_NE(std::string::npos, std::string(dz_errmsg()).find("price_tick"));
 }
 
+// v3 保留列 (settlement_method/option_exercise_style/option_series) 物理存在但不在 25 个
+// 承诺列白名单内: 契约 instrument §8 "不可查询", 必须报 unknown field (与 legacy 白名单一致)。
+TEST_F(DbInstrumentsTest, QueryInstrumentsReservedV3FieldsRejected) {
+    for (const char* field : {"settlement_method", "option_exercise_style", "option_series"}) {
+        DzResultSet* rs = dz_db_query_instruments(db_, nullptr, field);
+        EXPECT_EQ(nullptr, rs) << field;
+        EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode()) << field;
+        EXPECT_NE(std::string::npos, std::string(dz_errmsg()).find(field));
+    }
+}
+
 TEST_F(DbInstrumentsTest, QueryInstrumentsFilterById) {
     DzResultSet* rs = dz_db_query_instruments(db_, "rb2601", nullptr);
     ASSERT_NE(nullptr, rs) << dz_errmsg();

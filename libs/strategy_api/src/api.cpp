@@ -1648,6 +1648,15 @@ DZ_API DzResultSet* dz_db_query_instruments(DzDatabase* db,
         std::vector<std::string> requested = parse_fields(fields);
         if (requested.empty()) {
             requested = promised_instrument_fields();
+        } else {
+            // 显式请求字段必须过承诺列白名单 (契约 instrument §8: v3 保留列不可查询;
+            // records_store 白名单 = 物理全列, 含 3 个保留列, 不满足 C API 词表)。
+            const auto& promised = promised_instrument_fields();
+            for (const std::string& name : requested) {
+                if (std::find(promised.begin(), promised.end(), name) == promised.end()) {
+                    throw Exception(DZ_EC_INVALID_PARAM, "unknown field: {}", name);
+                }
+            }
         }
         auto result = tdstore::query_instruments(
             *db->session, instrument_id != nullptr ? instrument_id : "", requested);

@@ -28,8 +28,11 @@ protected:
         std::filesystem::create_directories(dir);
         db_path_ = (dir / "td.db").string();
 
+        // 回滚日志模式 (驱动默认 WAL): 本套件含写锁阻塞读的 busy_timeout 用例 — WAL 下写锁
+        // 不阻塞读快照 (无法触发 SQLITE_BUSY), 与迁移前 fixture 的默认日志模式一致。
         auto database = dztrader::db::Database::open(
-            dztrader::db::Config{.backend = "sqlite", .options = {{"path", db_path_}}},
+            dztrader::db::Config{.backend = "sqlite",
+                                 .options = {{"path", db_path_}, {"journal_mode", "delete"}}},
             dztrader::tdstore::schemas());
         database->migrate();
 
@@ -184,8 +187,10 @@ TEST_F(DbTest, QueryPositionAndTradingAccount) {
 // 发现 1 回归 (评审 Important): db_open_readonly 必须设 busy_timeout (与生产写端一致),
 // 否则 SDK 水位装载/断档回补在 td Writer 批量提交 (持写锁) 窗口内立即 SQLITE_BUSY →
 // 查询返回 NULL (DZ_EC_SYSTEM), 消费端降级不过滤。
-// 测试: 另一连接 BEGIN IMMEDIATE 抢写锁, 释放线程 200ms 后 COMMIT — busy_timeout=5000
-// 让查询阻塞等待锁释放后成功返回; 无 busy_timeout 则查询立即失败。
+// 前置: fixture 以回滚日志模式建库 (WAL 下写锁不阻塞读快照, BEGIN EXCLUSIVE 无法触发
+// SQLITE_BUSY)。测试: 只读连接先开启 (走 db_open_readonly, busy_timeout=5000 已生效),
+// 另一连接 BEGIN EXCLUSIVE 抢写锁, 释放线程 200ms 后 COMMIT — 查询阻塞等待锁释放后
+// 成功返回; 无 busy_timeout 则查询在持锁窗口内立即 SQLITE_BUSY 失败。
 TEST_F(DbTest, ReadOnlyQueryWaitsOutWriteLockWindow) {
     SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
     {
@@ -200,8 +205,13 @@ TEST_F(DbTest, ReadOnlyQueryWaitsOutWriteLockWindow) {
         ins.exec();
     }
 
-    // 抢占写锁 (BEGIN EXCLUSIVE: 回滚日志模式下 RESERVED 不阻塞新读者, 弱护栏;
-    // EXCLUSIVE 才真阻塞新读者 → 无 busy_timeout 时查询立即 SQLITE_BUSY)。
+    // 先开只读连接 (走 db_open_readonly): busy_timeout 在抢锁前已设置;
+    // 只读连接无法转 WAL, 库保持回滚日志模式。
+    DzDatabase* ro = dz_db_open(db_path_.c_str());
+    ASSERT_NE(nullptr, ro) << dz_errmsg();
+
+    // 抢占写锁 (回滚日志模式下 BEGIN EXCLUSIVE 阻塞新读者 →
+    // 无 busy_timeout 时查询立即 SQLITE_BUSY)。
     SQLite::Database locker(db_path_, SQLite::OPEN_READWRITE);
     locker.exec("BEGIN EXCLUSIVE");
     // 200ms 后释放写锁。
@@ -210,9 +220,7 @@ TEST_F(DbTest, ReadOnlyQueryWaitsOutWriteLockWindow) {
         locker.exec("COMMIT");
     });
 
-    // 全新只读连接 (走 db_open_readonly): busy_timeout 生效 → 阻塞到锁释放后成功查询。
-    DzDatabase* ro = dz_db_open(db_path_.c_str());
-    ASSERT_NE(nullptr, ro) << dz_errmsg();
+    // busy_timeout 生效 → 阻塞到锁释放后成功查询。
     DzResultSet* rs = dz_db_query_position(ro, "A", nullptr);
     releaser.join();
     ASSERT_NE(nullptr, rs) << dz_errmsg();  // 无 busy_timeout 则此处为 NULL (SQLITE_BUSY)
