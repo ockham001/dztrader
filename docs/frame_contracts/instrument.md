@@ -9,7 +9,7 @@
 
 ## 1. 覆盖帧
 
-本契约**无帧**：合约信息不走帧通路（历史帧 `1006`/`1043` 均已删除、号释放，见 ADR 0011/0014）。
+本契约**无帧**：合约信息不走帧通路（历史帧 `DZ_FRAME_TD_INSTRUMENT`/`DZ_FRAME_TD_QUERY_INSTRUMENT` 均已删除、号释放，见 ADR 0011/0014）。
 
 ## 2. 语义 / 数据流 / 路由
 
@@ -192,7 +192,7 @@ DzResultSet* rs = dz_db_query_instruments(db, instrument_id, "symbol,price_tick,
 
 ## 12. 镜像
 
-本契约无帧（历史帧 `1006`/`1043` 均已释放，见 ADR 0011/0014），无镜像内容。
+本契约无帧（历史帧 `DZ_FRAME_TD_INSTRUMENT`/`DZ_FRAME_TD_QUERY_INSTRUMENT` 均已释放，见 ADR 0011/0014），无镜像内容。
 
 ## 13. 运维约束
 
