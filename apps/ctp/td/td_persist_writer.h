@@ -13,16 +13,16 @@
 #include <unordered_map>
 #include <variant>
 
-#include <SQLiteCpp/Database.h>
-#include <SQLiteCpp/Statement.h>
-
 #include <vector>
 
-#include <dztrader/db/legacy/database_sqlite.h>
-#include <dztrader/tdstore/instrument_store.h>
 #include <dztrader/tdstore/records.h>
 
 #include "td/td_persist_records.h"
+
+namespace dztrader::db {
+class Database;
+class Session;
+}  // namespace dztrader::db
 
 namespace dztrader::ctp {
 
@@ -64,7 +64,7 @@ struct PersistTask {
 ///
 /// 生命周期:
 /// 1. open(): 主线程打开数据库 + migration (不启动 Writer)
-/// 2. (可选) db(): 主线程查询 (如 order_id 自检, 无竞争)
+/// 2. (可选) max_order_id(): 主线程查询 (如 order_id 自检, 无竞争)
 /// 3. start_writer(): 启动 Writer 线程
 /// 4. (运行期) enqueue(): SPI 线程入队
 /// 5. stop(): 主线程设置停止 + drain 残留 + join Writer + 关闭数据库
@@ -104,7 +104,7 @@ public:
     /// 2. Writer 线程 drain 残留队列后退出
     /// 3. 主线程等待 Writer 退出 (30s 超时)
     /// 4. 超时则 std::quick_exit (不阻塞调用方)
-    /// 5. 关闭预编译 stmt + 数据库
+    /// 5. 释放 writer_session_ + database_
     /// 显式调用必须: 析构仅作 best-effort 兜底 (短超时, 不 quick_exit).
     void stop();
 
@@ -122,36 +122,19 @@ public:
     /// 超时返回 false.
     bool wait_flush(uint64_t token, std::chrono::milliseconds timeout);
 
-    /// 获取数据库连接 (供主线程在 open() 后 start_writer() 前查询用).
-    /// start_writer() 后调用抛 std::runtime_error (Writer 线程独占 db).
-    SQLite::Database& db();
-
     /// 查询库内最大 order_id (orders + trades 两表取大), 供启动自检 (设计 §13 step 8).
-    /// 调用时机与 db() 相同: open() 后 start_writer() 前 (主线程独占 db).
-    /// 两表均为空时返回 0.
+    /// 调用时机: open() 后 start_writer() 前; 未 open 或 start_writer() 后调用抛
+    /// std::runtime_error. 两表均为空时返回 0.
     [[nodiscard]] int64_t max_order_id();
 
 private:
     void writer_loop();
     bool wait_and_pop(PersistTask& out);
-    void execute_batch(SQLite::Database& db, std::vector<PersistTask>& batch,
-                       std::vector<uint64_t>& flushed_tokens);
+    void execute_batch(std::vector<PersistTask>& batch, std::vector<uint64_t>& flushed_tokens);
     /// 批事务失败收尾: 本批全部 FlushSignal token 的 promise set_exception + 从 map erase
     /// (终检发现 F: 防 wait_flush 永久超时/误报 + pending_flushes_ 慢性泄漏; 批执行中途
     /// 抛异常时 execute_batch 收集的 flushed_tokens 可能不全, 以 batch 全量预扫描为准)。
     void fail_flushed_tokens(const std::vector<PersistTask>& batch);
-    void prepare_statements(SQLite::Database& db);
-
-    // 绑定单条记录到预编译 stmt 并执行
-    void bind_order(SQLite::Statement& stmt, const OrderRecord& r);
-    void bind_trade(SQLite::Statement& stmt, const TradeRecord& r);
-    void bind_position(SQLite::Statement& stmt, const DzPositionInfo& r,
-                       const std::string& trading_day);
-    void bind_trading_account(SQLite::Statement& stmt, const DzTradingAccount& r,
-                              const std::string& trading_day);
-
-    /// 后端无关连接句柄 (包装 db_, 供 tdstore store ops 使用; Writer 线程独占).
-    dztrader::db::legacy::Database& ref() noexcept { return *ref_; }
 
     /// 以 YYYYMMDD 文本生成 trading_day (DzDate 距纪元天数 -> "YYYYMMDD").
     static std::string format_trading_day(int64_t days);
@@ -163,17 +146,10 @@ private:
     std::string db_path_;
     size_t max_queue_size_;
 
-    std::unique_ptr<SQLite::Database> db_;
-    /// 后端无关连接包装 (db_ 的引用; tdstore store ops 用, Writer 线程独占).
-    std::unique_ptr<dztrader::db::legacy::SqliteDatabaseRef> ref_;
-    /// 合约 upsert 预编译复用器 (open() 中 ref_ 就绪后构造; 仅 Writer 线程使用,
-    /// 必须先于 ref_/db_ 释放).
-    std::unique_ptr<tdstore::InstrumentUpserter> instrument_upserter_;
-    std::unique_ptr<SQLite::Statement> stmt_insert_order_;
-    std::unique_ptr<SQLite::Statement> stmt_insert_trade_;
-    std::unique_ptr<SQLite::Statement> stmt_insert_position_;
-    std::unique_ptr<SQLite::Statement> stmt_insert_taccount_;
-    std::unique_ptr<SQLite::Statement> stmt_delete_position_rebuild_;
+    /// 统一 DB 入口 (schema/migration 句柄; 生命周期须晚于 writer_session_).
+    std::unique_ptr<dztrader::db::Database> database_;
+    /// Writer 线程独占会话 (一线程一 Session; stop 时先释放它再释放 database_).
+    std::unique_ptr<dztrader::db::Session> writer_session_;
 
     std::queue<PersistTask> queue_;
     std::mutex mtx_;

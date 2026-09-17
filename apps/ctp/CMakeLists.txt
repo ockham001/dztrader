@@ -113,6 +113,7 @@ add_executable(dztd_ctp
     td/td_api_scheduled.cpp
     td/td_api_pure.cpp
     td/td_persist_writer.cpp
+    td/td_persist_rows.cpp
     td/td_offset_converter.cpp
     td/td_position.cpp
     td/td_ctp_mapping.cpp
@@ -237,9 +238,9 @@ foreach(testfile ${TD_CTP_TESTS})
     set_target_properties(dztd_ctp_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
-    # td_persist_writer_test 需要 td_persist_writer.cpp + dztdstore (migration + store ops)
+    # td_persist_writer_test 需要 td_persist_writer.cpp + td_persist_rows.cpp + dztdstore
     if(testname STREQUAL "td_persist_writer_test")
-        target_sources(dztd_ctp_${testname} PRIVATE td/td_persist_writer.cpp)
+        target_sources(dztd_ctp_${testname} PRIVATE td/td_persist_writer.cpp td/td_persist_rows.cpp)
         target_link_libraries(dztd_ctp_${testname} PRIVATE dztdstore)
     endif()
     # td_offset_converter_test 需要 td_offset_converter.cpp (纯逻辑, 不需要 dzdb)
@@ -277,12 +278,14 @@ foreach(testfile ${TD_CTP_TESTS})
     if(testname STREQUAL "td_login_finalize_test")
         target_sources(dztd_ctp_${testname} PRIVATE td/td_login_finalize.cpp)
     endif()
-    # td_data_sync_integration_test 需要 td_persist_writer.cpp + td_report_filter.cpp
-    # + td_prescan.cpp (进程内组装: PersistWriter 真线程 + ReportFilter + TdIngestGate) + 链 dztdstore
+    # td_data_sync_integration_test 需要 td_persist_writer.cpp + td_persist_rows.cpp
+    # + td_report_filter.cpp + td_prescan.cpp (进程内组装: PersistWriter 真线程 + ReportFilter
+    # + TdIngestGate) + 链 dztdstore
     # TdIngestGate 由 dztrading 库提供（SDK 与 dzweb 共用的纯逻辑组件）。
     if(testname STREQUAL "td_data_sync_integration_test")
         target_sources(dztd_ctp_${testname} PRIVATE
-            td/td_persist_writer.cpp td/td_report_filter.cpp td/td_prescan.cpp)
+            td/td_persist_writer.cpp td/td_persist_rows.cpp td/td_report_filter.cpp
+            td/td_prescan.cpp)
         target_link_libraries(dztd_ctp_${testname} PRIVATE dztdstore dztrading)
     endif()
     gtest_discover_tests(dztd_ctp_${testname})

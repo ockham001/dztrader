@@ -32,6 +32,19 @@ std::filesystem::path unique_temp_dir(const std::string& name) {
             "_" + std::to_string(dist(gen)));
 }
 
+/// 原生 SQL 写入 (测试播种/外部破坏用; 独立连接, 不经过 PersistWriter).
+void raw_exec(const std::string& path, const std::string& sql) {
+    SQLite::Database db(path, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+    db.exec(sql);
+}
+
+/// 原生 SQL 标量读取 (独立只读连接; 整数经 sqlite3_column_text 转文本).
+std::string raw_scalar(const std::string& path, const std::string& sql) {
+    SQLite::Database db(path, SQLite::OPEN_READONLY);
+    SQLite::Statement q(db, sql);
+    return q.executeStep() ? q.getColumn(0).getString() : "";
+}
+
 /// 辅助: 创建临时 db 路径
 class TdPersistWriterTest : public ::testing::Test {
 protected:
@@ -69,14 +82,12 @@ TEST_F(TdPersistWriterTest, OpenCreatesAllTables) {
     {
         PersistWriter w(db_path_);
         w.open();
-        // 验证表存在 (在 start_writer 前 db() 可用)
-        auto& db = w.db();
-        SQLite::Statement q(db,
+        // 验证表存在 (独立只读连接, 不依赖 PersistWriter 句柄)
+        EXPECT_EQ(std::stoi(raw_scalar(db_path_,
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND "
             "name IN ('schema_version','orders','trades','instruments',"
-            "'positions','trading_accounts')");
-        ASSERT_TRUE(q.executeStep());
-        EXPECT_EQ(q.getColumn(0).getInt(), 6);
+            "'positions','trading_accounts')")),
+            6);
     }
 }
 
@@ -105,28 +116,29 @@ TEST_F(TdPersistWriterTest, OpenDegradesWhenWalConversionLocked) {
     }
     releaser.join();
     EXPECT_FALSE(open_threw);  // 冷启动不得因 WAL 转换失败而中止
-    // 锁窗口内转换失败: 维持 DELETE 模式 (下次无锁启动再转换), 不阻断 open 后续步骤
-    EXPECT_EQ("delete", w.db().execAndGet("PRAGMA journal_mode").getString());
+    // 迁移连接在锁窗口内转换失败仅告警并续跑; writer session 连接在锁释放后完成
+    // 转换 (仍持锁则维持当前模式继续, 不阻断 open).
+    EXPECT_EQ("wal", raw_scalar(db_path_, "PRAGMA journal_mode"));
 }
 
 // 无锁: WAL 转换成功, 最终 journal_mode = wal (多网关共写 + 多读者前提)。
 TEST_F(TdPersistWriterTest, OpenConvertsToWalWhenUnlocked) {
     PersistWriter w(db_path_);
     w.open();
-    EXPECT_EQ("wal", w.db().execAndGet("PRAGMA journal_mode").getString());
+    EXPECT_EQ("wal", raw_scalar(db_path_, "PRAGMA journal_mode"));
 }
 
-TEST_F(TdPersistWriterTest, DbAccessorThrowsAfterStartWriter) {
+TEST_F(TdPersistWriterTest, MaxOrderIdThrowsAfterStartWriter) {
     PersistWriter w(db_path_);
     w.open();
     w.start_writer();
-    EXPECT_THROW(w.db(), std::runtime_error);
+    EXPECT_THROW((void)w.max_order_id(), std::runtime_error);
     w.stop();
 }
 
-TEST_F(TdPersistWriterTest, DbAccessorThrowsBeforeOpen) {
+TEST_F(TdPersistWriterTest, MaxOrderIdThrowsBeforeOpen) {
     PersistWriter w(db_path_);
-    EXPECT_THROW(w.db(), std::runtime_error);
+    EXPECT_THROW((void)w.max_order_id(), std::runtime_error);
 }
 
 // ============================================================================
@@ -142,27 +154,29 @@ TEST_F(TdPersistWriterTest, MaxOrderIdEmptyDbIsZero) {
 TEST_F(TdPersistWriterTest, MaxOrderIdAcrossTables) {
     PersistWriter w(db_path_);
     w.open();
-    auto& db = w.db();
-    // orders 两笔 + trades 一笔, max = 200 (来自 trades)
-    db.exec("INSERT INTO orders (account_id, trading_day, order_id, order_ref, "
-            "instrument_id, exchange_id) "
-            "VALUES ('acc1', '20260814', 42, '000000000042', 'IF2506', 'CFFEX')");
-    db.exec("INSERT INTO orders (account_id, trading_day, order_id, order_ref, "
-            "instrument_id, exchange_id) "
-            "VALUES ('acc1', '20260814', 100, '000000000100', 'IF2506', 'CFFEX')");
-    db.exec("INSERT INTO trades (account_id, trading_day, trade_id, order_id, "
-            "instrument_id, exchange_id, price, volume) "
-            "VALUES ('acc1', '20260814', 'T1', 200, 'IF2506', 'CFFEX', 100.5, 1)");
+    // orders 两笔 + trades 一笔, max = 200 (来自 trades); 原生连接播种
+    raw_exec(db_path_,
+             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, "
+             "instrument_id, exchange_id) "
+             "VALUES ('acc1', '20260814', 42, '000000000042', 'IF2506', 'CFFEX')");
+    raw_exec(db_path_,
+             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, "
+             "instrument_id, exchange_id) "
+             "VALUES ('acc1', '20260814', 100, '000000000100', 'IF2506', 'CFFEX')");
+    raw_exec(db_path_,
+             "INSERT INTO trades (account_id, trading_day, trade_id, order_id, "
+             "instrument_id, exchange_id, price, volume) "
+             "VALUES ('acc1', '20260814', 'T1', 200, 'IF2506', 'CFFEX', 100.5, 1)");
     EXPECT_EQ(w.max_order_id(), 200);
 }
 
 TEST_F(TdPersistWriterTest, MaxOrderIdOrdersOnly) {
     PersistWriter w(db_path_);
     w.open();
-    auto& db = w.db();
-    db.exec("INSERT INTO orders (account_id, trading_day, order_id, order_ref, "
-            "instrument_id, exchange_id) "
-            "VALUES ('acc1', '20260814', 77, '000000000077', 'IF2506', 'CFFEX')");
+    raw_exec(db_path_,
+             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, "
+             "instrument_id, exchange_id) "
+             "VALUES ('acc1', '20260814', 77, '000000000077', 'IF2506', 'CFFEX')");
     EXPECT_EQ(w.max_order_id(), 77);
 }
 
@@ -446,13 +460,13 @@ TEST_F(TdPersistWriterTest, FlushAfterStopSucceedsImmediately) {
 // 批 = [合法 Order, FlushSignal, 触发异常的 Trade(trades 表已删)]:
 // - 哨兵 token 在批内被收集, 但 commit/批执行失败 → 整批回滚 (Order 丢弃)
 // - 若 set_value 早于 commit, wait_flush 会误报 true (数据实际已丢)
-// 复现技巧: open() 预编译 stmt 时 trades 表存在, 之后 DROP 该表,
-// stmt 执行时报 "no such table: trades" (确定性异常, 无需竞态).
+// 复现技巧: open() 建表后, 原生连接 DROP 该表 (start_writer 前),
+// 批内 trades 写入时报 "no such table: trades" (确定性异常, 无需竞态).
 TEST_F(TdPersistWriterTest, FlushReturnsFalseWhenBatchCommitFails) {
     PersistWriter w(db_path_);
     w.open();
-    // 删 trades 表 (start_writer 前 db() 可用): 预编译 stmt 已建, 执行时报错
-    w.db().exec("DROP TABLE trades");
+    // 删 trades 表 (start_writer 前): upsert 时 prepare 失败, 执行时报错
+    raw_exec(db_path_, "DROP TABLE trades");
     w.start_writer();
 
     // 合法 Order: 随批事务, commit 失败时一并回滚
@@ -492,8 +506,8 @@ TEST_F(TdPersistWriterTest, FlushReturnsFalseWhenBatchCommitFails) {
 TEST_F(TdPersistWriterTest, FailedBatchDoesNotLeakFlushTokens) {
     PersistWriter w(db_path_);
     w.open();
-    // 删 trades 表 (start_writer 前 db() 可用): 预编译 stmt 已建, 执行时报错
-    w.db().exec("DROP TABLE trades");
+    // 删 trades 表 (start_writer 前): upsert 时 prepare 失败, 执行时报错
+    raw_exec(db_path_, "DROP TABLE trades");
 
     // start_writer() 前全部入队: 队列累积, 启动后单批 drain (无批切分)。
     constexpr int kRounds = 20;
@@ -680,6 +694,53 @@ TEST_F(TdPersistWriterTest, PositionRebuildClearsClosedCurrentDayRows) {
 
         w.stop();
     }
+}
+
+// FIFO 原位语义 (load-bearing): 批内任务按原始序生效 — 早于 Rebuild 的 Position 行被
+// Rebuild 清除, 晚于 Rebuild 的 Position 行覆盖 Rebuild 结果. 若实现把所有 delete
+// 提前到所有 upsert 之前, 早于 Rebuild 的行会意外存活 (本用例可区分).
+TEST_F(TdPersistWriterTest, PositionRebuildRespectsTaskOrderWithinBatch) {
+    constexpr int64_t kDay = 20697;  // 20260901
+    PersistWriter w(db_path_);
+    w.open();
+
+    // start_writer() 前全部入队 → 单批 drain, 强制三任务同批处理.
+    {
+        auto p = make_position(5, 10, DZ_DIRECTION_LONG);  // IF2506, 早于 rebuild
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Position,
+                              .data = std::vector<DzPositionInfo>{p},
+                              .account_id = "acc1",
+                              .trading_day = kDay});
+    }
+    {
+        auto rb = make_position(8, 11, DZ_DIRECTION_SHORT);  // rb2510, rebuild 组
+        std::strcpy(rb.instrument_id, "rb2510");
+        std::strcpy(rb.exchange_id, "SHFE");
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::PositionRebuild,
+                              .data = std::vector<DzPositionInfo>{rb},
+                              .account_id = "acc1",
+                              .trading_day = kDay});
+    }
+    {
+        auto p = make_position(9, 12, DZ_DIRECTION_SHORT);  // rb2510, 晚于 rebuild
+        std::strcpy(p.instrument_id, "rb2510");
+        std::strcpy(p.exchange_id, "SHFE");
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Position,
+                              .data = std::vector<DzPositionInfo>{p},
+                              .account_id = "acc1",
+                              .trading_day = kDay});
+    }
+
+    w.start_writer();
+    auto token = w.enqueue_flush_signal();
+    EXPECT_TRUE(w.wait_flush(token, std::chrono::seconds(2)));
+
+    // 早于 Rebuild 的 IF2506 行被清除; rb2510 为晚到 Position 的覆盖值 9.
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE instrument_id='IF2506'"), 0);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 1);
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE instrument_id='rb2510'"), 9);
+
+    w.stop();
 }
 
 // Kind::Position 单行 upsert (盘中有变化时走它); Kind::TradingAccount 同理

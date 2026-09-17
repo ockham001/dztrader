@@ -1,7 +1,6 @@
 #include "td/td_persist_writer.h"
 
 #include <SQLiteCpp/Exception.h>
-#include <SQLiteCpp/Transaction.h>
 
 #include <algorithm>
 #include <chrono>
@@ -9,63 +8,19 @@
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <spdlog/spdlog.h>
 
-#include <dztrader/db/legacy/connection.h>
-#include <dztrader/db/legacy/migration.h>
+#include <dztrader/db/database.h>
 #include <dztrader/date_time/date_time.h>  // Date (DzDate 距纪元天数 -> YYYYMMDD)
-#include <dztrader/tdstore/instrument_store.h>
-#include <dztrader/tdstore/schema.h>
+#include <dztrader/tdstore/records_store.h>
+#include <dztrader/tdstore/schema_catalog.h>
+
+#include "td/td_persist_rows.h"
 
 namespace dztrader::ctp {
-
-// ============================================================================
-// INSERT OR REPLACE SQL (RESTART 重传去重, 最新状态覆盖旧记录)
-// 字段名与 tdstore schema.cpp CREATE TABLE 一致:
-// - exchange_id (不是 exchange)
-// - volume (不是 volume_total, 与 DzOrderReport.volume 一致)
-// - orders/trades 增加 strategy_id, remark 列 (来自 DzOrderReport/DzTradeReport)
-// ============================================================================
-
-namespace {
-
-// 注意: stmt 索引从 1 开始
-constexpr const char* kInsertOrderSql =
-    "INSERT OR REPLACE INTO orders ("
-    "    account_id, trading_day, order_id, order_ref, external_order_id,"
-    "    is_external, instrument_id, exchange_id, direction, position_effect,"
-    "    price_type, status, price, volume, volume_traded, volume_canceled,"
-    "    insert_time, update_time, error_id, error_msg, strategy_id, remark, seq"
-    ") VALUES (?,?,?,?,?,?,  ?,?,?,?,  ?,?,?,?,?,?,  ?,?,?,?, ?,?,?)";
-
-constexpr const char* kInsertTradeSql =
-    "INSERT OR REPLACE INTO trades ("
-    "    account_id, trading_day, trade_id, order_id, instrument_id, exchange_id,"
-    "    direction, position_effect, price, volume, trade_time, trade_date, commission,"
-    "    strategy_id, seq"
-    ") VALUES (?,?,?,?,?,?,  ?,?,?,?,  ?,?,?,?, ?)";
-
-// positions (spec §3.2): key = (account_id, instrument_id, direction), 绝对态 upsert
-constexpr const char* kInsertPositionSql =
-    "INSERT OR REPLACE INTO positions ("
-    "    account_id, trading_day, instrument_id, exchange_id, direction,"
-    "    volume, frozen_volume, today_volume, yd_volume, price, seq"
-    ") VALUES (?,?,?,?,?,  ?,?,?,?,?, ?)";
-
-// trading_accounts: key = account_id, 绝对态 upsert
-constexpr const char* kInsertTradingAccountSql =
-    "INSERT OR REPLACE INTO trading_accounts ("
-    "    account_id, trading_day, balance, available, frozen, commission,"
-    "    margin, withdraw_quota, deposit, withdraw, seq"
-    ") VALUES (?,?,?,?,?,?,  ?,?,?,?, ?)";
-
-// PositionRebuild 单事务重灌: 清该账户全部持仓行 (spec §3.2 全量语义原子切换)
-constexpr const char* kDeletePositionRebuildSql =
-    "DELETE FROM positions WHERE account_id=?";
-
-}  // namespace
 
 // ============================================================================
 // PersistWriter 实现
@@ -97,61 +52,19 @@ void PersistWriter::open() {
 
     SPDLOG_INFO("opening database | path={}", db_path_);
 
-    // 创建 Connection 并应用 migration
-    db_ = std::make_unique<SQLite::Database>(db_path_,
-        SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
-    // 后端无关连接包装 (tdstore store ops 用; Writer 线程独占, 主线程不得复用)
-    ref_ = std::make_unique<dztrader::db::legacy::SqliteDatabaseRef>(*db_);
-
-    // PRAGMA 配置 (synchronous=FULL 数据安全优先; WAL 支持多网关共写 + 多读者)
-    db_->exec("PRAGMA synchronous=FULL");
-    // 多网关共写 + 多读者: 读不阻塞写。转换需独占锁, busy_timeout 对其无效, 故有界重试;
-    // 仍失败则维持当前模式继续 (已是 WAL 时为无锁 no-op)。
-    bool wal_ready = false;
-    for (int attempt = 0; attempt < 3 && !wal_ready; ++attempt) {
-        if (attempt > 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        try {
-            wal_ready = db_->execAndGet("PRAGMA journal_mode=WAL").getString() == "wal";
-        } catch (const std::exception& e) {
-            if (attempt == 2) {
-                SPDLOG_WARN("td db WAL conversion failed, continue in current mode | err={}",
-                            e.what());
-            }
-        }
-    }
-    if (!wal_ready) {
-        SPDLOG_WARN("td db WAL conversion not applied, continue in current mode");
-    }
-    db_->exec("PRAGMA busy_timeout=5000");
-    db_->exec("PRAGMA cache_size=-8000");
-    db_->exec("PRAGMA temp_store=MEMORY");
-
-    // 应用 TD migration (v1 创建所有表)
-    dztrader::db::legacy::MigrationManager mgr;
-    dztrader::tdstore::apply_td_migrations(mgr);
-    auto applied = mgr.apply(*db_);
-    for (int v : applied) {
-        SPDLOG_INFO("td migration applied | version={}", v);
-    }
-
-    // 预编译 INSERT 语句 (复用, 避免每次 prepare)
-    prepare_statements(*db_);
-    // 合约 upsert 预编译复用 (migration 后表就绪; 仅 Writer 线程触碰 ref_/upserter)
-    instrument_upserter_ = std::make_unique<tdstore::InstrumentUpserter>(ref());
+    // 统一 DB 接口: schema 由 tdstore 声明 (字段序 = 建表列序), migrate 幂等
+    dztrader::db::Config config{
+        .backend = "sqlite",
+        .options = {{"path", db_path_}, {"journal_mode", "wal"}, {"synchronous", "full"},
+                    {"busy_timeout_ms", "5000"}, {"cache_size_kb", "8000"},
+                    {"temp_store", "memory"}}};
+    database_ = dztrader::db::Database::open(config, dztrader::tdstore::schemas());
+    database_->migrate();
+    // Writer 线程独占会话 (open 后 start_writer 前主线程不得复用)
+    writer_session_ = database_->session();
 
     opened_ = true;
-    SPDLOG_INFO("database opened | path={} applied_versions={}", db_path_, applied.size());
-}
-
-void PersistWriter::prepare_statements(SQLite::Database& db) {
-    stmt_insert_order_ = std::make_unique<SQLite::Statement>(db, kInsertOrderSql);
-    stmt_insert_trade_ = std::make_unique<SQLite::Statement>(db, kInsertTradeSql);
-    stmt_insert_position_ = std::make_unique<SQLite::Statement>(db, kInsertPositionSql);
-    stmt_insert_taccount_ = std::make_unique<SQLite::Statement>(db, kInsertTradingAccountSql);
-    stmt_delete_position_rebuild_ =
-        std::make_unique<SQLite::Statement>(db, kDeletePositionRebuildSql);
+    SPDLOG_INFO("database opened | path={}", db_path_);
 }
 
 void PersistWriter::start_writer() {
@@ -197,15 +110,9 @@ void PersistWriter::stop() {
         writer_thread_.join();
     }
 
-    // 关闭预编译 stmt + 数据库 (Writer 已退出, 无竞争)
-    stmt_insert_order_.reset();
-    stmt_insert_trade_.reset();
-    stmt_insert_position_.reset();
-    stmt_insert_taccount_.reset();
-    stmt_delete_position_rebuild_.reset();
-    instrument_upserter_.reset();  // 先于 ref_/db_ 释放
-    ref_.reset();
-    db_.reset();
+    // 释放 Session + Database (Writer 已退出, 无竞争; Session 须先于 Database)
+    writer_session_.reset();
+    database_.reset();
 
     {
         std::lock_guard<std::mutex> lk2(mtx_);
@@ -249,14 +156,8 @@ void PersistWriter::stop_best_effort() {
         writer_thread_.join();
     }
 
-    stmt_insert_order_.reset();
-    stmt_insert_trade_.reset();
-    stmt_insert_position_.reset();
-    stmt_insert_taccount_.reset();
-    stmt_delete_position_rebuild_.reset();
-    instrument_upserter_.reset();  // 先于 ref_/db_ 释放
-    ref_.reset();
-    db_.reset();
+    writer_session_.reset();
+    database_.reset();
 
     {
         std::lock_guard<std::mutex> lk2(mtx_);
@@ -333,28 +234,35 @@ bool PersistWriter::wait_flush(uint64_t token, std::chrono::milliseconds timeout
     return true;
 }
 
-SQLite::Database& PersistWriter::db() {
-    if (!opened_.load()) {
-        throw std::runtime_error("must call open() before db()");
-    }
-    std::lock_guard<std::mutex> lk(mtx_);
-    if (writer_started_) {
-        throw std::runtime_error("db() not available after start_writer() (writer thread owns db)");
-    }
-    return *db_;
-}
-
 int64_t PersistWriter::max_order_id() {
-    // 调用时机与 db() 相同: open() 后 start_writer() 前 (主线程独占 db, 无竞争)
-    auto& db = this->db();
-    int64_t result = 0;
-    SQLite::Statement q_orders(db, "SELECT COALESCE(MAX(order_id), 0) FROM orders");
-    if (q_orders.executeStep()) {
-        result = q_orders.getColumn(0).getInt64();
+    // 调用时机: open() 后 start_writer() 前 (主线程独立只读会话, 与 Writer 无竞争)
+    if (!opened_.load()) {
+        throw std::runtime_error("must call open() before max_order_id()");
     }
-    SQLite::Statement q_trades(db, "SELECT COALESCE(MAX(order_id), 0) FROM trades");
-    if (q_trades.executeStep()) {
-        result = std::max(result, q_trades.getColumn(0).getInt64());
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (writer_started_) {
+            throw std::runtime_error(
+                "max_order_id() not available after start_writer() (writer thread owns db)");
+        }
+    }
+    if (database_ == nullptr) {
+        throw std::runtime_error("max_order_id() not available after stop()");
+    }
+    // 临时只读会话: orders/trades 两表 MAX(order_id) 取大, 空表 (NULL) 计 0
+    std::unique_ptr<dztrader::db::Session> session = database_->session(/*read_only=*/true);
+    int64_t result = 0;
+    for (std::string_view collection : {"orders", "trades"}) {
+        dztrader::db::Aggregation aggregation;
+        aggregation.op = dztrader::db::AggregateOp::Max;
+        aggregation.field = "order_id";
+        dztrader::db::ResultSet rows = session->aggregate(collection, aggregation);
+        if (rows.empty() || rows.rows().front().values().empty()) {
+            continue;
+        }
+        if (const auto* value = std::get_if<int64_t>(&rows.rows().front().values().front())) {
+            result = std::max(result, *value);
+        }
     }
     return result;
 }
@@ -397,9 +305,10 @@ void PersistWriter::writer_loop() {
         //  "显式 set_exception" — 同一不变量: 失败必 false, 且不再泄漏/饿死等待者。)
         std::vector<uint64_t> flushed_tokens;
         try {
-            SQLite::Transaction txn(*db_);
-            execute_batch(*db_, batch, flushed_tokens);
-            txn.commit();
+            std::unique_ptr<dztrader::db::Transaction> transaction =
+                writer_session_->begin_transaction();
+            execute_batch(batch, flushed_tokens);
+            transaction->commit();
             // 评审 C1: 批事务提交成功后才 set_value, 保证 "wait_flush 返回" ⇒
             // "此前任务必已提交/fsync". 提交/批执行失败时 (走 catch) 不 set,
             // waiter 超时获知失败, 不会在数据实际被回滚时误报成功.
@@ -482,151 +391,100 @@ bool PersistWriter::wait_and_pop(PersistTask& out) {
     return true;
 }
 
-void PersistWriter::execute_batch(SQLite::Database& db, std::vector<PersistTask>& batch,
+void PersistWriter::execute_batch(std::vector<PersistTask>& batch,
                                   std::vector<uint64_t>& flushed_tokens) {
-    (void)db;  // 预留: 事务/批处理优化走同一个连接
+    // FIFO 语义 (load-bearing): 按批内原始序处理任务; 仅连续同类任务聚合为一次 upsert;
+    // PositionRebuild 在原位先 remove 再 upsert — 早于它的 Position 行被清除,
+    // 晚于它的 Position 行覆盖 rebuild 结果, 不得把所有 delete 提前到所有 upsert 之前.
+    PersistTask::Kind pending_kind = PersistTask::Kind::Order;
+    bool has_pending = false;
+    std::vector<dztrader::db::Row> pending_rows;
+
+    const auto flush_pending = [&]() {
+        if (has_pending && !pending_rows.empty()) {
+            switch (pending_kind) {
+                case PersistTask::Kind::Order: writer_session_->upsert("orders", pending_rows); break;
+                case PersistTask::Kind::Trade: writer_session_->upsert("trades", pending_rows); break;
+                case PersistTask::Kind::Position:
+                    writer_session_->upsert("positions", pending_rows);
+                    break;
+                case PersistTask::Kind::TradingAccount:
+                    writer_session_->upsert("trading_accounts", pending_rows);
+                    break;
+                case PersistTask::Kind::Instrument:
+                    writer_session_->upsert("instruments", pending_rows);
+                    break;
+                default: break;
+            }
+        }
+        has_pending = false;
+        pending_rows.clear();
+    };
+
+    const auto accumulate = [&](PersistTask::Kind kind, dztrader::db::Row row) {
+        if (has_pending && pending_kind != kind) {
+            flush_pending();
+        }
+        pending_kind = kind;
+        has_pending = true;
+        pending_rows.push_back(std::move(row));
+    };
+
     for (auto& task : batch) {
         switch (task.kind) {
             case PersistTask::Kind::Order:
-                stmt_insert_order_->reset();
-                bind_order(*stmt_insert_order_, std::get<OrderRecord>(task.data));
-                stmt_insert_order_->exec();
+                accumulate(task.kind, make_order_row(std::get<OrderRecord>(task.data)));
                 break;
             case PersistTask::Kind::Trade:
-                stmt_insert_trade_->reset();
-                bind_trade(*stmt_insert_trade_, std::get<TradeRecord>(task.data));
-                stmt_insert_trade_->exec();
+                accumulate(task.kind, make_trade_row(std::get<TradeRecord>(task.data)));
                 break;
             case PersistTask::Kind::Instrument:
-                // 预编译复用 (整批持写锁, 逐行 prepare 会放大锁窗口)
-                instrument_upserter_->upsert(std::get<tdstore::InstrumentRecord>(task.data));
+                accumulate(task.kind, tdstore::make_instrument_row(
+                                          std::get<tdstore::InstrumentRecord>(task.data)));
                 break;
             case PersistTask::Kind::Position: {
                 // 单行绝对态 upsert (盘中有变化时走它). task.trading_day 是当前交易日.
                 const auto& row = std::get<std::vector<DzPositionInfo>>(task.data).front();
-                stmt_insert_position_->reset();
-                bind_position(*stmt_insert_position_, row, format_trading_day(task.trading_day));
-                stmt_insert_position_->exec();
+                accumulate(task.kind,
+                           tdstore::make_position_row(row, format_trading_day(task.trading_day)));
                 break;
             }
-            case PersistTask::Kind::TradingAccount: {
-                const auto& row = std::get<DzTradingAccount>(task.data);
-                stmt_insert_taccount_->reset();
-                bind_trading_account(*stmt_insert_taccount_, row,
-                                     format_trading_day(task.trading_day));
-                stmt_insert_taccount_->exec();
+            case PersistTask::Kind::TradingAccount:
+                accumulate(task.kind, tdstore::make_trading_account_row(
+                                          std::get<DzTradingAccount>(task.data),
+                                          format_trading_day(task.trading_day)));
                 break;
-            }
             case PersistTask::Kind::PositionRebuild: {
-                // 单事务重灌 (spec §3.2 全量语义): 清该账户全部持仓行 + upsert 本组行,
-                // 外部读者只见原子切换. 外层 writer_loop 已有事务, 此处复用.
-                // 删全部行 (而非按 trading_day 排除): 查询响应为全量, 响应不含的
+                // 单事务重灌 (spec §3.2 全量语义): 先落此前任务保持 FIFO, 再原位
+                // remove + upsert; 外层 writer_loop 事务保证外部读者只见原子切换.
+                // 删该账户全部行 (而非按 trading_day 排除): 查询响应为全量, 响应不含的
                 // 合约 = 已全平/已过期, 必须删除 (否则盘中平仓的幽灵持仓永驻到次日).
-                auto day = format_trading_day(task.trading_day);
-                stmt_delete_position_rebuild_->reset();
-                stmt_delete_position_rebuild_->bind(1, task.account_id);
-                stmt_delete_position_rebuild_->exec();
+                flush_pending();
+                writer_session_->remove("positions",
+                                        dztrader::db::filters::eq("account_id", task.account_id));
+                std::vector<dztrader::db::Row> rows;
+                const std::string day = format_trading_day(task.trading_day);
                 for (const auto& row : std::get<std::vector<DzPositionInfo>>(task.data)) {
-                    stmt_insert_position_->reset();
-                    bind_position(*stmt_insert_position_, row, day);
-                    stmt_insert_position_->exec();
+                    rows.push_back(tdstore::make_position_row(row, day));
                 }
+                writer_session_->upsert("positions", rows);
                 break;
             }
-            case PersistTask::Kind::FlushSignal: {
+            case PersistTask::Kind::FlushSignal:
                 // FIFO 哨兵: 收集 token, 由 writer_loop 在批事务 commit 成功后统一
                 // set_value. 保证 "wait_flush 返回" ⇒ "此前任务必已提交"
                 // (评审 C1: set 必须在 commit 之后, 不得在此处提前 set).
                 flushed_tokens.push_back(task.flush_token);
                 break;
-            }
         }
     }
-}
-
-// ============================================================================
-// bind 函数: POD 字段 -> SQLite 参数 (索引从 1 开始)
-// 组合方式: r.base.xxx 访问 strategy_api 结构体字段, r.xxx 访问 SQL 扩展字段
-// ============================================================================
-
-void PersistWriter::bind_order(SQLite::Statement& stmt, const OrderRecord& r) {
-    stmt.bind(1, r.base.account_id);
-    stmt.bind(2, r.trading_day);
-    stmt.bind(3, r.base.order_id);
-    stmt.bind(4, r.order_ref);
-    stmt.bind(5, r.external_order_id);
-    stmt.bind(6, static_cast<int>(r.is_external));
-    stmt.bind(7, r.base.instrument_id);
-    stmt.bind(8, r.base.exchange_id);
-    stmt.bind(9, static_cast<int>(r.base.direction));
-    stmt.bind(10, static_cast<int>(r.base.position_effect));
-    stmt.bind(11, static_cast<int>(r.base.price_type));
-    stmt.bind(12, static_cast<int>(r.base.status));
-    stmt.bind(13, r.base.price);
-    stmt.bind(14, r.base.volume);
-    stmt.bind(15, r.base.volume_traded);
-    stmt.bind(16, r.volume_canceled);
-    stmt.bind(17, r.insert_time);
-    stmt.bind(18, r.update_time);
-    stmt.bind(19, r.error_id);
-    stmt.bind(20, r.error_msg);
-    stmt.bind(21, r.base.strategy_id);
-    stmt.bind(22, r.base.remark);
-    stmt.bind(23, static_cast<int64_t>(r.base.seq));
-}
-
-void PersistWriter::bind_trade(SQLite::Statement& stmt, const TradeRecord& r) {
-    stmt.bind(1, r.base.account_id);
-    stmt.bind(2, r.trading_day);
-    stmt.bind(3, r.base.trade_id);
-    stmt.bind(4, r.base.order_id);
-    stmt.bind(5, r.base.instrument_id);
-    stmt.bind(6, r.base.exchange_id);
-    stmt.bind(7, static_cast<int>(r.base.direction));
-    stmt.bind(8, static_cast<int>(r.base.position_effect));
-    stmt.bind(9, r.base.price);
-    stmt.bind(10, r.base.volume);
-    stmt.bind(11, r.trade_time);
-    stmt.bind(12, r.trade_date);
-    stmt.bind(13, r.commission);
-    stmt.bind(14, r.base.strategy_id);
-    stmt.bind(15, static_cast<int64_t>(r.base.seq));
+    flush_pending();
 }
 
 std::string PersistWriter::format_trading_day(int64_t days) {
     // DzDate (距纪元天数) -> "YYYYMMDD" 文本 (positions/trading_accounts.trading_day 列)
     dztrader::Date d{static_cast<int32_t>(days)};
     return std::format("{:04d}{:02d}{:02d}", d.year(), d.month(), d.day());
-}
-
-void PersistWriter::bind_position(SQLite::Statement& stmt, const DzPositionInfo& r,
-                                  const std::string& trading_day) {
-    stmt.bind(1, r.account_id);
-    stmt.bind(2, trading_day);
-    stmt.bind(3, r.instrument_id);
-    stmt.bind(4, r.exchange_id);
-    stmt.bind(5, static_cast<int>(r.direction));
-    stmt.bind(6, r.volume);
-    stmt.bind(7, r.frozen_volume);
-    stmt.bind(8, r.today_volume);
-    stmt.bind(9, r.yd_volume);
-    stmt.bind(10, r.price);
-    stmt.bind(11, static_cast<int64_t>(r.seq));
-}
-
-void PersistWriter::bind_trading_account(SQLite::Statement& stmt, const DzTradingAccount& r,
-                                         const std::string& trading_day) {
-    stmt.bind(1, r.account_id);
-    stmt.bind(2, trading_day);
-    stmt.bind(3, r.balance);
-    stmt.bind(4, r.available);
-    stmt.bind(5, r.frozen);
-    stmt.bind(6, r.commission);
-    stmt.bind(7, r.margin);
-    stmt.bind(8, r.withdraw_quota);
-    stmt.bind(9, r.deposit);
-    stmt.bind(10, r.withdraw);
-    stmt.bind(11, static_cast<int64_t>(r.seq));
 }
 
 }  // namespace dztrader::ctp
