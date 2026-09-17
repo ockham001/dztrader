@@ -44,7 +44,7 @@ std::unique_ptr<DzDatabase> db_open_readonly(const std::string& path);
 /**
  * @brief 按账户/合约条件查询 order/trade 表 (同构: account_id + instrument_id)
  * @param table "orders" / "trades"
- * @param order_by_seq 按 seq 升序 (orders/trades 有 seq 列); commission/margin 无 seq 列传 false
+ * @param order_by_seq 按 seq 升序 (orders/trades 有 seq 列)
  *
  * 列序 = SELECT * 的表定义 (与 libs/tdstore/src/schema.cpp 的 v2 建表语句一致):
  *   orders:     0=id 1=account_id 2=trading_day 3=order_id 4=order_ref
@@ -87,22 +87,13 @@ DbQueryResult db_query_trading_account(DzDatabase* db, const std::string& accoun
 
 /**
  * @brief 结构化通用查询
- * @param query  资源路径 ("order"/"trade"/"position"/"trading_account"/"commission"/"margin")
+ * @param query  资源路径 ("order"/"trade"/"position"/"trading_account")
  * @param filter JSON 过滤串 (可为空): {"field": value} 或 {"field": {"$gte":..,"$lt":..}}
  *               支持算子 $gte/$gt/$lte/$lt/$in; 多字段 AND 组合。
  *               回补区间: {"seq": {"$gte": W, "$lt": S0}}。
  *
- * 资源 -> 表 列序 (SELECT *):
- *   commission (commission_rates): 0=id 1=account_id 2=instrument_id 3=product_code
- *       4=exchange_id 5=open_ratio_by_money 6=open_ratio_by_volume
- *       7=close_ratio_by_money 8=close_ratio_by_volume
- *       9=close_today_ratio_by_money 10=close_today_ratio_by_volume 11=date
- *   margin (margin_rates): 0=id 1=account_id 2=instrument_id 3=product_code
- *       4=exchange_id 5=hedge_flag 6=is_relative 7=long_margin_ratio_by_money
- *       8=long_margin_ratio_by_volume 9=short_margin_ratio_by_money
- *       10=short_margin_ratio_by_volume 11=date
- * 仅 seq 表 (orders/trades/positions/trading_accounts) 行序 = seq 升序;
- * commission/margin 无 seq 列, 不排序。未知资源/未知字段/非法 JSON 抛异常。
+ * 仅 seq 表 (orders/trades/positions/trading_accounts) 行序 = seq 升序。
+ * 未知资源/未知字段/非法 JSON 抛异常。
  */
 DbQueryResult db_generic_query(DzDatabase* db,
                                const std::string& query,

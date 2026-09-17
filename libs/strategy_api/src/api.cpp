@@ -879,15 +879,12 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
             }
             return true;  // 2018 仍全量放行给策略用户 (on_account_status 回调, 引擎测试覆盖)
         }
-        case DZ_FRAME_TD_INSTRUMENT_STATUS:
         case DZ_FRAME_TD_RISK_REJECT:
         case DZ_FRAME_TD_TRANSFER_REQ:
         case DZ_FRAME_TD_TRANSFER_RSP:
         case DZ_FRAME_TD_TRANSFER_RTN:
         case DZ_FRAME_TD_PASSWORD_UPDATE_REQ:
         case DZ_FRAME_TD_PASSWORD_UPDATE_RSP:
-        case DZ_FRAME_TD_MARGIN_RATE:
-        case DZ_FRAME_TD_COMMISSION_RATE:
             return true;
         default:
             return false;  // 其余平台帧 (日志/SHM 配置/进程控制/TD 控制帧等) 丢弃
@@ -1358,35 +1355,9 @@ DZ_API bool dz_query_account_status(DzContext* ctx, const char* account_id) {
     return true;
 }
 
-DZ_API bool dz_query_fee_rate(DzContext* ctx, const char* account_id, const char* instrument_id,
-                              int8_t query_type) {
-    // 同 dz_query_account_status: extern "C" 边界不允许异常逃逸; 体内操作均 noexcept.
-    static_assert(noexcept(ctx->event_writer.open_frame(
-        DZ_FRAME_TD_QUERY_FEE_RATE, sizeof(DzFeeRateQueryReq))));
-    static_assert(noexcept(ctx->event_writer.close_frame()));
-    static_assert(noexcept(ctx->event_writer.notify_subscribers()));
-
-    if (instrument_id == nullptr || instrument_id[0] == '\0') {
-        LastError::set(DZ_EC_INVALID_PARAM, "instrument_id is required");
-        return false;
-    }
-    auto* req = reinterpret_cast<DzFeeRateQueryReq*>(
-        ctx->event_writer.open_frame(DZ_FRAME_TD_QUERY_FEE_RATE, sizeof(DzFeeRateQueryReq)));
-    if (req == nullptr) {
-        // open_frame 失败时已设置 LastError, 直接透传
-        return false;
-    }
-    dztrader::copy_string(req->account_id, account_id == nullptr ? "" : account_id, true);
-    dztrader::copy_string(req->instrument_id, instrument_id, true);
-    req->query_type = query_type;
-    ctx->event_writer.close_frame();
-    ctx->event_writer.notify_subscribers();
-    return true;
-}
-
 DZ_API bool dz_query_instrument(DzContext* ctx, const char* account_id,
                                 const char* instrument_id) {
-    // 同 dz_query_fee_rate: extern "C" 边界不允许异常逃逸; 体内操作均 noexcept.
+    // 同 dz_query_account_status: extern "C" 边界不允许异常逃逸; 体内操作均 noexcept.
     static_assert(noexcept(
         ctx->event_writer.open_frame(DZ_FRAME_TD_QUERY_INSTRUMENT, sizeof(DzInstrumentQueryReq))));
     static_assert(noexcept(ctx->event_writer.close_frame()));
@@ -1686,48 +1657,6 @@ DZ_API DzResultSet* dz_db_query_trading_account(DzDatabase* db, const char* acco
     }
     try {
         return db_rs_from_result(db_query_trading_account(db, account_id ? account_id : ""))
-            .release();
-    } catch (const Exception& e) {
-        LastError::set(e.code(), e.what());
-    } catch (const std::exception& e) {
-        LastError::set(DZ_EC_SYSTEM, e.what());
-    } catch (...) {
-        LastError::set(DZ_EC_SYSTEM, "unknown exception");
-    }
-    return NULL;
-}
-DZ_API DzResultSet* dz_db_query_commission(DzDatabase* db,
-                                           const char* account_id,
-                                           const char* instrument_id) {
-    if (db == nullptr || db->db == nullptr) {
-        LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
-        return NULL;
-    }
-    try {
-        return db_rs_from_result(db_query_order_trade(
-                   db, account_id ? account_id : "", instrument_id ? instrument_id : "",
-                   "commission_rates", /*order_by_seq=*/false))
-            .release();
-    } catch (const Exception& e) {
-        LastError::set(e.code(), e.what());
-    } catch (const std::exception& e) {
-        LastError::set(DZ_EC_SYSTEM, e.what());
-    } catch (...) {
-        LastError::set(DZ_EC_SYSTEM, "unknown exception");
-    }
-    return NULL;
-}
-DZ_API DzResultSet* dz_db_query_margin(DzDatabase* db,
-                                       const char* account_id,
-                                       const char* instrument_id) {
-    if (db == nullptr || db->db == nullptr) {
-        LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
-        return NULL;
-    }
-    try {
-        return db_rs_from_result(db_query_order_trade(
-                   db, account_id ? account_id : "", instrument_id ? instrument_id : "",
-                   "margin_rates", /*order_by_seq=*/false))
             .release();
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());

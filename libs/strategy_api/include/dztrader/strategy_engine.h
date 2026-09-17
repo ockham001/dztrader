@@ -15,7 +15,7 @@
  *     on_account_status(const DzAccountStatus&),
  *     on_schedule(const DzScheduleEvent&), on_ui_input(const DzUiInput&),
  *     on_error(DzErrorCode, std::string_view) -- 编译期探测, 实现了才调用
- *   - 引擎不分发的事件帧 (TD 查询回报 DZ_FRAME_TD_INSTRUMENT_STATUS-DZ_FRAME_TD_COMMISSION_RATE 等其余帧) 与非 tick 行情帧
+ *   - 引擎不分发的事件帧 (DZ_FRAME_TD_RISK_REJECT/TD_TRANSFER_* 等其余帧) 与非 tick 行情帧
  *     被静默忽略, 实现对应回调不会被调用
  *
  * 异常语义:

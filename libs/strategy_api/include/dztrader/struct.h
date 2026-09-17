@@ -166,56 +166,6 @@ DZ_DECLARE_ALIGNED_STRUCT(DzAccountStatus, {
     char reserved[3];
 });
 
-// ============================================================================
-// dztd_ctp 交易网关结构体 (向后兼容新增, 不修改现有结构)
-// ============================================================================
-
-/// 保证金率 (按品种归一化, 对应 CTP ReqQryInstrumentMarginRate)
-/// by_volume 系「每手/每张固定金额」，期权"每张固定"保证金/手续费也走 by_volume；
-/// 保证金币种不落本表 (见帧契约《手续费/保证金》: 线性=contract.currency, 反向=base_asset)。
-DZ_DECLARE_ALIGNED_STRUCT(DzMarginRate, {
-    DzAccountId account_id;
-    DzInstrumentId instrument_id;  // CTP 原始返回 (品种或合约)
-    char product_code[16];         // 归一化后的品种代码
-    DzExchangeId exchange_id;
-    int8_t hedge_flag;
-    int8_t is_relative;  // 0=绝对值, 1=相对保证金率
-    char reserved[6];    // 对齐后续 double 到 8 字节边界
-    double long_margin_ratio_by_money;
-    double long_margin_ratio_by_volume;
-    double short_margin_ratio_by_money;
-    double short_margin_ratio_by_volume;
-    DzDate date;
-    char reserved2[4];  // 对齐结构体大小到 8 字节倍数
-});
-
-/// 手续费率 (按品种归一化, 对应 CTP ReqQryInstrumentCommissionRate)
-/// by_volume 系「每手/每张固定金额」，期权"每张固定"手续费也走 by_volume。
-DZ_DECLARE_ALIGNED_STRUCT(DzCommissionRate, {
-    DzAccountId account_id;
-    DzInstrumentId instrument_id;
-    char product_code[16];
-    DzExchangeId exchange_id;
-    double open_ratio_by_money;
-    double open_ratio_by_volume;
-    double close_ratio_by_money;
-    double close_ratio_by_volume;
-    double close_today_ratio_by_money;
-    double close_today_ratio_by_volume;
-    DzDate date;
-    char reserved[4];  // 对齐结构体大小到 8 字节倍数
-});
-
-/// 合约交易状态 (对应 CTP OnRtnInstrumentStatus)
-DZ_DECLARE_ALIGNED_STRUCT(DzInstrumentStatus, {
-    DzInstrumentId instrument_id;
-    DzExchangeId exchange_id;
-    int8_t status;  // CTP 场所状态码: '0'=BeforeTrading, '1'=NoTrading, '2'=Continous,
-                    // '3'-'5'=集合竞价三态, '6'=Closed, '7'=TransactionProcessing
-    char reserved[3];
-    DzTime time;
-});
-
 // 注: UI 协议帧（TRANSFER_* / PASSWORD_UPDATE_* / RISK_REJECT）的 payload 已由二进制
 // 结构体迁移为 JSON，类型真相源改为 libs/platform/include/dztrader/platform/
 // {td_account_ops.h, risk_reject.h}（ADR 0009），原 DZ_DECLARE_ALIGNED_STRUCT 定义已删除。

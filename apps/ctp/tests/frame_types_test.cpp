@@ -16,6 +16,15 @@
 #include <cstddef>
 #include <set>
 
+// 编译期钉子: 合约状态与费率帧已退役 (ADR 0013), 任何头文件重新定义它都会在此引爆。
+#if defined(DZ_FRAME_TD_INSTRUMENT_STATUS) || defined(DZ_FRAME_TD_MARGIN_RATE) || \
+    defined(DZ_FRAME_TD_COMMISSION_RATE)
+#error "TD_INSTRUMENT_STATUS/TD_MARGIN_RATE/TD_COMMISSION_RATE 已退役 (ADR 0013)"
+#endif
+#if defined(DZ_FRAME_TD_QUERY_FEE_RATE)
+#error "DZ_FRAME_TD_QUERY_FEE_RATE 已退役 (ADR 0013)"
+#endif
+
 namespace {
 
 /// 策略可见帧清单（策略经 dz_next_event / dz_next_md 识别消费）。
@@ -24,8 +33,6 @@ constexpr DzFrameType kStrategyVisibleFrames[] = {
     DZ_FRAME_SHUTDOWN,           DZ_FRAME_TICK,
     DZ_FRAME_ORDER_REPORT,       DZ_FRAME_TRADE_REPORT,
     DZ_FRAME_POSITION_INFO,      DZ_FRAME_TRADING_ACCOUNT,
-    DZ_FRAME_TD_INSTRUMENT_STATUS,
-    DZ_FRAME_TD_MARGIN_RATE,     DZ_FRAME_TD_COMMISSION_RATE,
     DZ_FRAME_ACCOUNT_STATUS,
     DZ_FRAME_UI_INPUT,           DZ_FRAME_SCHEDULE,
 };
@@ -38,7 +45,7 @@ constexpr std::size_t kStrategyVisibleCount =
 // ── 策略可见面: 集合稳定（增删策略可见帧必须显式改测试, 属对外契约变更） ──
 
 TEST(FrameTypes, StrategyVisibleSetIsStable) {
-    EXPECT_EQ(kStrategyVisibleCount, 12u);
+    EXPECT_EQ(kStrategyVisibleCount, 9u);
     const std::set<DzFrameType> unique(kStrategyVisibleFrames,
                                        kStrategyVisibleFrames + kStrategyVisibleCount);
     EXPECT_EQ(unique.size(), kStrategyVisibleCount) << "策略可见帧存在重复值";

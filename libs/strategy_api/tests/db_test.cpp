@@ -88,38 +88,6 @@ constexpr const char* kCreateTradingAccounts =
     "    deposit REAL, withdraw REAL,"
     "    seq INTEGER NOT NULL DEFAULT 0)";
 
-constexpr const char* kCreateCommissionRates =
-    "CREATE TABLE IF NOT EXISTS commission_rates ("
-    "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "    account_id TEXT NOT NULL,"
-    "    instrument_id TEXT NOT NULL,"
-    "    product_code TEXT NOT NULL,"
-    "    exchange_id TEXT NOT NULL,"
-    "    open_ratio_by_money REAL,"
-    "    open_ratio_by_volume REAL,"
-    "    close_ratio_by_money REAL,"
-    "    close_ratio_by_volume REAL,"
-    "    close_today_ratio_by_money REAL,"
-    "    close_today_ratio_by_volume REAL,"
-    "    date INTEGER,"
-    "    UNIQUE(account_id, date, product_code))";
-
-constexpr const char* kCreateMarginRates =
-    "CREATE TABLE IF NOT EXISTS margin_rates ("
-    "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "    account_id TEXT NOT NULL,"
-    "    instrument_id TEXT NOT NULL,"
-    "    product_code TEXT NOT NULL,"
-    "    exchange_id TEXT NOT NULL,"
-    "    hedge_flag CHAR(1),"
-    "    is_relative CHAR(1),"
-    "    long_margin_ratio_by_money REAL,"
-    "    long_margin_ratio_by_volume REAL,"
-    "    short_margin_ratio_by_money REAL,"
-    "    short_margin_ratio_by_volume REAL,"
-    "    date INTEGER,"
-    "    UNIQUE(account_id, date, product_code))";
-
 /// 在临时目录建 td 库 (schema v2) 并写入样例行。
 class DbTest : public ::testing::Test {
 protected:
@@ -137,8 +105,6 @@ protected:
         db.exec(kCreateTrades);
         db.exec(kCreatePositions);
         db.exec(kCreateTradingAccounts);
-        db.exec(kCreateCommissionRates);
-        db.exec(kCreateMarginRates);
 
         db_ = dz_db_open(db_path_.c_str());
         ASSERT_NE(nullptr, db_) << "dz_db_open failed: " << dz_errmsg();
@@ -285,42 +251,6 @@ TEST_F(DbTest, QueryPositionAndTradingAccount) {
     EXPECT_DOUBLE_EQ(100000.5, dz_resultset_get_float64(rs, 2));  // balance
     EXPECT_DOUBLE_EQ(90000.25, dz_resultset_get_float64(rs, 3));  // available
     EXPECT_EQ(1, dz_resultset_get_int64(rs, 10));            // seq
-    EXPECT_FALSE(dz_resultset_next(rs));
-    dz_resultset_close(rs);
-}
-
-// commission/margin 表无 seq 列 (非 seq 跟踪表), 条件查询不得 ORDER BY seq (否则
-// "no such column: seq" 报错)。验证 dz_db_query_commission 可查询且按账户过滤。
-TEST_F(DbTest, QueryCommissionNoSeqColumn) {
-    SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
-    {
-        SQLite::Statement ins(db,
-            "INSERT INTO commission_rates (account_id, instrument_id, product_code, exchange_id,"
-            " open_ratio_by_volume, close_ratio_by_volume, date)"
-            " VALUES (?, 'IF2401', 'IF', 'CFFEX', ?, ?, ?)");
-        ins.bind(1, "A");
-        ins.bind(2, 0.3);
-        ins.bind(3, 0.3);
-        ins.bind(4, static_cast<int64_t>(19736));
-        ins.exec();
-        ins.reset();
-        ins.bind(1, "B");
-        ins.bind(2, 0.5);
-        ins.bind(3, 0.5);
-        ins.bind(4, static_cast<int64_t>(19736));
-        ins.exec();
-    }
-
-    DzResultSet* rs = dz_db_query_commission(db_, "A", nullptr);
-    ASSERT_NE(nullptr, rs) << dz_errmsg();
-    ASSERT_EQ(0, dz_resultset_status(rs));
-    ASSERT_EQ(12u, dz_resultset_column_count(rs));
-    ASSERT_TRUE(dz_resultset_next(rs));
-    EXPECT_STREQ("A", dz_resultset_get_string(rs, 1));           // account_id
-    EXPECT_STREQ("IF2401", dz_resultset_get_string(rs, 2));      // instrument_id
-    EXPECT_DOUBLE_EQ(0.3, dz_resultset_get_float64(rs, 6));      // open_ratio_by_volume
-    EXPECT_DOUBLE_EQ(0.3, dz_resultset_get_float64(rs, 8));      // close_ratio_by_volume
-    EXPECT_EQ(19736, dz_resultset_get_int64(rs, 11));            // date
     EXPECT_FALSE(dz_resultset_next(rs));
     dz_resultset_close(rs);
 }

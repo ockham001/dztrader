@@ -385,15 +385,6 @@ typedef int16_t DzFrameType;
 /** @brief 账户资金推送 (payload=DzTradingAccount, 契约 td-data-sync) */
 #define DZ_FRAME_TRADING_ACCOUNT ((DzFrameType)1005)
 
-/** @brief 合约交易状态推送 (契约 instrument) */
-#define DZ_FRAME_TD_INSTRUMENT_STATUS ((DzFrameType)1007)
-
-/** @brief 保证金率镜像 (契约 td-fee-margin) */
-#define DZ_FRAME_TD_MARGIN_RATE ((DzFrameType)1010)
-
-/** @brief 手续费率镜像 (契约 td-fee-margin) */
-#define DZ_FRAME_TD_COMMISSION_RATE ((DzFrameType)1011)
-
 /** @brief 账户登录状态推送 (basic 广播帧, payload=DzAccountStatus) */
 #define DZ_FRAME_ACCOUNT_STATUS ((DzFrameType)1012)
 

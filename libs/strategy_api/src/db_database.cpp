@@ -154,8 +154,6 @@ const char* resource_to_table(const std::string_view q) {
     if (q == "trade") return "trades";
     if (q == "position") return "positions";
     if (q == "trading_account") return "trading_accounts";
-    if (q == "commission") return "commission_rates";
-    if (q == "margin") return "margin_rates";
     throw Exception(DZ_EC_INVALID_PARAM, "unknown query resource: query={}", q);
 }
 
@@ -177,20 +175,10 @@ const std::set<std::string>& table_filterable_columns(const std::string_view tab
     static const std::set<std::string> kTradingAccounts = {"account_id", "trading_day", "balance",
         "available", "frozen", "commission", "margin", "withdraw_quota", "deposit", "withdraw",
         "seq"};
-    static const std::set<std::string> kCommissionRates = {"account_id", "instrument_id",
-        "product_code", "exchange_id", "open_ratio_by_money", "open_ratio_by_volume",
-        "close_ratio_by_money", "close_ratio_by_volume", "close_today_ratio_by_money",
-        "close_today_ratio_by_volume", "date"};
-    static const std::set<std::string> kMarginRates = {"account_id", "instrument_id",
-        "product_code", "exchange_id", "hedge_flag", "is_relative", "long_margin_ratio_by_money",
-        "long_margin_ratio_by_volume", "short_margin_ratio_by_money",
-        "short_margin_ratio_by_volume", "date"};
     if (table == "orders") return kOrders;
     if (table == "trades") return kTrades;
     if (table == "positions") return kPositions;
-    if (table == "trading_accounts") return kTradingAccounts;
-    if (table == "commission_rates") return kCommissionRates;
-    return kMarginRates;
+    return kTradingAccounts;
 }
 
 /// JSON 值 -> BindValue (字符串/整数/浮点)
@@ -351,15 +339,13 @@ DbQueryResult db_query_trading_account(DzDatabase* db, const std::string& accoun
 }
 
 DbQueryResult db_generic_query(DzDatabase* db, const std::string& query, const std::string& filter) {
-    // 仅 seq 表按 seq 升序 (回补路径依赖); commission/margin 无 seq 列, 不排序
-    const bool order_by_seq =
-        query != "commission" && query != "margin";
     const char* table = resource_to_table(query);
     std::string where;
     std::vector<BindValue> bind_values;
     build_filter_where(table, filter, &where, &bind_values);
     DbQueryResult out;
-    load_select_all(*db->db, table, where, bind_values, order_by_seq, &out);
+    // 回补路径依赖: 行序 = seq 升序 (resource_to_table 各表均为 seq 表)
+    load_select_all(*db->db, table, where, bind_values, /*order_by_seq=*/true, &out);
     return out;
 }
 

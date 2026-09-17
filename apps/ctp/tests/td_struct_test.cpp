@@ -8,22 +8,6 @@
 // 验证 8 字节对齐 + 大小为 8 倍数 + 关键字段偏移
 // ============================================================================
 
-TEST(TdStructTest, DzMarginRateLayout) {
-    static_assert(alignof(DzMarginRate) == 8);
-    static_assert(sizeof(DzMarginRate) % 8 == 0);
-    static_assert(sizeof(DzMarginRate) == sizeof(__dz_internal_packed_DzMarginRate));
-}
-
-TEST(TdStructTest, DzCommissionRateLayout) {
-    static_assert(alignof(DzCommissionRate) == 8);
-    static_assert(sizeof(DzCommissionRate) % 8 == 0);
-}
-
-TEST(TdStructTest, DzInstrumentStatusLayout) {
-    static_assert(alignof(DzInstrumentStatus) == 8);
-    static_assert(sizeof(DzInstrumentStatus) % 8 == 0);
-}
-
 TEST(TdStructTest, DzAccountStatusLayout) {
     static_assert(alignof(DzAccountStatus) == 8);
     static_assert(sizeof(DzAccountStatus) == 104);
