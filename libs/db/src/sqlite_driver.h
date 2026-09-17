@@ -64,10 +64,37 @@ private:
     void begin_scope(Scope kind);
     void end_scope(bool commit);
 
+    friend class SqliteTransaction;
+    friend class SqliteSnapshot;
+
     const SqliteDatabaseImpl* owner_;
     std::unique_ptr<SQLite::Database> db_;
     bool read_only_ = false;
     Scope scope_ = Scope::None;
+};
+
+/// 写事务句柄：析构未 commit 则回滚；commit 失败时作用域保持, 由析构兜底
+class SqliteTransaction final : public Transaction {
+public:
+    explicit SqliteTransaction(SqliteSession& session) : session_(&session) {}
+    ~SqliteTransaction() override;
+
+    void commit() override;
+    void rollback() noexcept override;
+
+private:
+    SqliteSession* session_;
+    bool finished_ = false;
+};
+
+/// 只读快照句柄：析构结束只读作用域 (异常吞掉)
+class SqliteSnapshot final : public Snapshot {
+public:
+    explicit SqliteSnapshot(SqliteSession& session) : session_(&session) {}
+    ~SqliteSnapshot() override;
+
+private:
+    SqliteSession* session_;
 };
 
 }  // namespace dztrader::db

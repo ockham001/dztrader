@@ -162,15 +162,19 @@ void SqliteSession::begin_scope(Scope kind) {
     }
     db_->exec(kind == Scope::Transaction ? "BEGIN IMMEDIATE" : "BEGIN DEFERRED");
     scope_ = kind;
+    if (kind == Scope::Snapshot) {
+        // WAL 下 BEGIN DEFERRED 不立即取快照, 先读一次锁定视图
+        SQLite::Statement pin(*db_, "SELECT 1 FROM sqlite_schema LIMIT 1");
+        pin.executeStep();
+    }
 }
 
 void SqliteSession::end_scope(bool commit) {
     if (scope_ == Scope::None) {
         return;
     }
-    const Scope kind = scope_;
-    if (commit || kind == Scope::Snapshot) {
-        db_->exec("COMMIT");
+    if (commit) {
+        db_->exec("COMMIT");  // 失败时保持 scope_, 由调用方/析构回滚
         scope_ = Scope::None;
         return;
     }
@@ -335,13 +339,66 @@ ResultSet SqliteSession::aggregate(std::string_view collection, const Aggregatio
 }
 
 std::unique_ptr<Transaction> SqliteSession::begin_transaction() {
-    // Task 6 实现
-    throw Exception(DZ_EC_DB_TRANSACTION_FAILED, "sqlite transaction not implemented yet");
+    if (read_only_) {
+        throw Exception(DZ_EC_PERMISSION_DENIED, "session is read-only");
+    }
+    if (scope_ == Scope::Snapshot) {
+        throw Exception(DZ_EC_PERMISSION_DENIED,
+                        "begin_transaction inside snapshot is not allowed");
+    }
+    begin_scope(Scope::Transaction);
+    return std::make_unique<SqliteTransaction>(*this);
 }
 
 std::unique_ptr<Snapshot> SqliteSession::begin_snapshot() {
-    // Task 6 实现
-    throw Exception(DZ_EC_DB_UNSUPPORTED_CAPABILITY, "sqlite snapshot not implemented yet");
+    if (!has(owner_->capabilities(), Capability::SnapshotRead)) {
+        throw Exception(DZ_EC_DB_UNSUPPORTED_CAPABILITY, "snapshot read is not supported");
+    }
+    begin_scope(Scope::Snapshot);
+    return std::make_unique<SqliteSnapshot>(*this);
+}
+
+SqliteTransaction::~SqliteTransaction() {
+    if (finished_) {
+        return;
+    }
+    try {
+        session_->end_scope(/*commit=*/false);
+    } catch (...) {
+    }
+}
+
+void SqliteTransaction::commit() {
+    if (finished_) {
+        throw Exception(DZ_EC_DB_TRANSACTION_FAILED, "transaction already finished");
+    }
+    try {
+        session_->end_scope(/*commit=*/true);
+    } catch (const Exception&) {
+        throw;
+    } catch (const std::exception& e) {
+        throw Exception(DZ_EC_DB_TRANSACTION_FAILED, "sqlite commit failed: {}", e.what());
+    }
+    finished_ = true;  // 仅在 COMMIT 成功后失效句柄
+}
+
+void SqliteTransaction::rollback() noexcept {
+    if (finished_) {
+        return;  // noexcept 接口无法抛错; 已结束句柄的 rollback 为无操作
+    }
+    session_->end_scope(/*commit=*/false);
+    finished_ = true;
+}
+
+SqliteSnapshot::~SqliteSnapshot() {
+    try {
+        session_->end_scope(/*commit=*/true);  // 只读事务 COMMIT 即结束
+    } catch (...) {
+        try {
+            session_->end_scope(/*commit=*/false);  // COMMIT 失败: 回滚清理作用域
+        } catch (...) {
+        }
+    }
 }
 
 std::unique_ptr<Database> Database::open(const Config& config,
