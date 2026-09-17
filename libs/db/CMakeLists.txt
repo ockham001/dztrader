@@ -1,7 +1,7 @@
 # ============================================================
-# dzdb: SQLite 持久化封装（STATIC 库）
+# dzdb: 数据库统一接口 + SQLite 驱动（STATIC 库）
 # 依赖 SQLiteCpp (Conan 提供) + dzcore
-# 单线程独占 (dztd_ctp 的 PersistWriter 线程独占, 无并发)
+# 并发模型: Database 共享, Session 一线程一个（每会话独立连接）
 # ============================================================
 add_library(dzdb STATIC)
 file(GLOB DB_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")

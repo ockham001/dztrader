@@ -48,7 +48,7 @@ Accepted（2026-09-17）
 ## Consequences
 
 - `libs/db` 重构：SQL 级 `Database`/`SqliteDatabaseRef` 与 SQLiteCpp 直接暴露被删除
-  （P0 阶段结束时收敛，分 P0a/P0b/P0c 三次提交落地；同一阶段内不留跨阶段双轨）；
+  （P0 阶段结束时收敛，分 P0a/P0b/P0c 三个阶段落地；同一阶段内不留跨阶段双轨）；
   SQLiteCpp 收纳为 sqlite 驱动内部实现。例外：`apps/ctp/td/td_prescan.*` 的 raw SQLiteCpp
   只读路径 P0 暂不迁移（后续 ADR 处理）。
 - `tdstore` 变 facade；td `PersistWriter` 持 `Session`；SDK 内部查询走同一接口

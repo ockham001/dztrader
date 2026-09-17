@@ -123,7 +123,7 @@ public:
     bool wait_flush(uint64_t token, std::chrono::milliseconds timeout);
 
     /// 查询库内最大 order_id (orders + trades 两表取大), 供启动自检 (设计 §13 step 8).
-    /// 调用时机: open() 后 start_writer() 前; 未 open 或 start_writer() 后调用抛
+    /// 调用时机: open() 后 start_writer() 前; 未 open / start_writer() 后 / stop() 后调用抛
     /// std::runtime_error. 两表均为空时返回 0.
     [[nodiscard]] int64_t max_order_id();
 

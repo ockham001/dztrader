@@ -1,6 +1,6 @@
 # ============================================================
-# dztdstore: td 库规范记录 + schema 迁移 + store ops（STATIC 库）
-# 依赖 dzdb（Database/QueryResult/SQLiteCpp）+ dzcore
+# dztdstore: td 库规范记录 + schema 声明（schema_catalog）+ store facade（STATIC 库）
+# 依赖 dzdb（Database/Session/ResultSet）+ dzcore
 # ============================================================
 add_library(dztdstore STATIC)
 file(GLOB TDSTORE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
