@@ -19,7 +19,7 @@ ADR 0011 引入 `DZ_FRAME_TD_QUERY_INSTRUMENT`(1043) + `DzInstrumentQueryReq` + 
 `general.md §3` 留给后续新帧）、`dz_query_instrument`、td 入口/会话刷新路径、
 CZCE 消歧关联机制（`InstrumentQueryPending`/`lookup_symbol`/`to_qry_instrument_field`）。
 保留：`dz_db_query_instruments`、`instruments` 表、登录/重连全量查询与 upsert；
-CZCE `symbol ≠ instrument_id` 作为数据继续存在。反转 ADR 0011 的 D1/D3 相关决策。
+CZCE `symbol ≠ instrument_id` 作为数据继续存在。反转 ADR 0011 决策 1 中关于 1043 定向刷新的条款。
 
 ## Consequences
 

@@ -1,6 +1,6 @@
 /**
  * @file instrument_store.h
- * @brief instruments 表 store ops (记录 upsert / 投影查询 / symbol 定向解析)
+ * @brief instruments 表 store ops (记录 upsert / 投影查询)
  */
 #ifndef DZTRADER_TDSTORE_INSTRUMENT_STORE_H_
 #define DZTRADER_TDSTORE_INSTRUMENT_STORE_H_

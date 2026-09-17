@@ -1,6 +1,6 @@
 # 帧契约：合约信息
 
-本契约规定合约信息的**查询化通路**：
+本契约规定合约信息的**查询化通路**。
 
 合约静态数据**不再走帧推送**：`DZ_FRAME_TD_INSTRUMENT` 与 `DzInstrumentInfo`/`DzInstrumentLeg`/`DzInstrumentExt`/`DzInstrumentTickTier`
 已全链路删除、帧号释放（ADR 0011）；静态数据一律经**统一 td 库** `instruments` 表查询（`dz_db_query_instruments`）。
