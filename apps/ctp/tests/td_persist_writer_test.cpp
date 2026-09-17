@@ -73,10 +73,10 @@ TEST_F(TdPersistWriterTest, OpenCreatesAllTables) {
         auto& db = w.db();
         SQLite::Statement q(db,
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND "
-            "name IN ('schema_version','orders','trades','margin_rates',"
-            "'commission_rates','instruments','positions','trading_accounts')");
+            "name IN ('schema_version','orders','trades','instruments',"
+            "'positions','trading_accounts')");
         ASSERT_TRUE(q.executeStep());
-        EXPECT_EQ(q.getColumn(0).getInt(), 8);
+        EXPECT_EQ(q.getColumn(0).getInt(), 6);
     }
 }
 
@@ -269,47 +269,6 @@ TEST_F(TdPersistWriterTest, InstrumentPersisted) {
     EXPECT_EQ(scalar_int("SELECT delisted_date FROM instruments"), 20600);
 }
 
-TEST_F(TdPersistWriterTest, MarginRatePersisted) {
-    {
-        PersistWriter w(db_path_);
-        w.open();
-        w.start_writer();
-
-        MarginRateRecord r{};
-        std::strcpy(r.account_id, "acc1");
-        std::strcpy(r.product_code, "IF");
-        std::strcpy(r.instrument_id, "IF2506");
-        std::strcpy(r.exchange_id, "CFFEX");
-        r.hedge_flag = 'S';
-        r.long_margin_ratio_by_money = 0.10;
-        r.date = 19635;  // DzDate (距纪元天数)
-        w.enqueue(PersistTask{.kind = PersistTask::Kind::MarginRate, .data = r});
-
-        w.stop();
-    }
-    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM margin_rates"), 1);
-}
-
-TEST_F(TdPersistWriterTest, CommissionRatePersisted) {
-    {
-        PersistWriter w(db_path_);
-        w.open();
-        w.start_writer();
-
-        CommissionRateRecord r{};
-        std::strcpy(r.account_id, "acc1");
-        std::strcpy(r.product_code, "IF");
-        std::strcpy(r.instrument_id, "IF2506");
-        std::strcpy(r.exchange_id, "CFFEX");
-        r.open_ratio_by_money = 0.000025;
-        r.date = 19635;  // DzDate
-        w.enqueue(PersistTask{.kind = PersistTask::Kind::CommissionRate, .data = r});
-
-        w.stop();
-    }
-    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM commission_rates"), 1);
-}
-
 // ============================================================================
 // 退出不遗漏 (stop drain 残留)
 // ============================================================================
@@ -484,16 +443,16 @@ TEST_F(TdPersistWriterTest, FlushAfterStopSucceedsImmediately) {
 }
 
 // 评审 C1 失败路径: 批事务失败时, 已入队的 flush 哨兵不得误报成功.
-// 批 = [合法 Order, FlushSignal, 触发异常的 MarginRate(表已删)]:
+// 批 = [合法 Order, FlushSignal, 触发异常的 Trade(trades 表已删)]:
 // - 哨兵 token 在批内被收集, 但 commit/批执行失败 → 整批回滚 (Order 丢弃)
 // - 若 set_value 早于 commit, wait_flush 会误报 true (数据实际已丢)
-// 复现技巧: open() 预编译 stmt 时 margin_rates 表存在, 之后 DROP 该表,
-// stmt 执行时报 "no such table: margin_rates" (确定性异常, 无需竞态).
+// 复现技巧: open() 预编译 stmt 时 trades 表存在, 之后 DROP 该表,
+// stmt 执行时报 "no such table: trades" (确定性异常, 无需竞态).
 TEST_F(TdPersistWriterTest, FlushReturnsFalseWhenBatchCommitFails) {
     PersistWriter w(db_path_);
     w.open();
-    // 删 margin_rates 表 (start_writer 前 db() 可用): 预编译 stmt 已建, 执行时报错
-    w.db().exec("DROP TABLE margin_rates");
+    // 删 trades 表 (start_writer 前 db() 可用): 预编译 stmt 已建, 执行时报错
+    w.db().exec("DROP TABLE trades");
     w.start_writer();
 
     // 合法 Order: 随批事务, commit 失败时一并回滚
@@ -509,13 +468,13 @@ TEST_F(TdPersistWriterTest, FlushReturnsFalseWhenBatchCommitFails) {
     auto token = w.enqueue_flush_signal();
 
     // 同批尾部触发异常: 表已删 -> exec 抛 SQLite::Exception, 整批回滚
-    MarginRateRecord m{};
-    std::strcpy(m.account_id, "acc1");
-    std::strcpy(m.product_code, "IF");
-    std::strcpy(m.instrument_id, "IF2506");
-    std::strcpy(m.exchange_id, "CFFEX");
-    m.hedge_flag = 'S';
-    w.enqueue(PersistTask{.kind = PersistTask::Kind::MarginRate, .data = m});
+    TradeRecord t{};
+    std::strcpy(t.base.account_id, "acc1");
+    std::strcpy(t.trading_day, "20260901");
+    std::strcpy(t.base.trade_id, "T001");
+    std::strcpy(t.base.instrument_id, "IF2506");
+    std::strcpy(t.base.exchange_id, "CFFEX");
+    w.enqueue(PersistTask{.kind = PersistTask::Kind::Trade, .data = t});
 
     // 批失败 -> flush 不 set -> 超时返回 false (不得误报成功)
     EXPECT_FALSE(w.wait_flush(token, std::chrono::milliseconds(300)));
@@ -533,8 +492,8 @@ TEST_F(TdPersistWriterTest, FlushReturnsFalseWhenBatchCommitFails) {
 TEST_F(TdPersistWriterTest, FailedBatchDoesNotLeakFlushTokens) {
     PersistWriter w(db_path_);
     w.open();
-    // 删 margin_rates 表 (start_writer 前 db() 可用): 预编译 stmt 已建, 执行时报错
-    w.db().exec("DROP TABLE margin_rates");
+    // 删 trades 表 (start_writer 前 db() 可用): 预编译 stmt 已建, 执行时报错
+    w.db().exec("DROP TABLE trades");
 
     // start_writer() 前全部入队: 队列累积, 启动后单批 drain (无批切分)。
     constexpr int kRounds = 20;
@@ -552,16 +511,16 @@ TEST_F(TdPersistWriterTest, FailedBatchDoesNotLeakFlushTokens) {
         auto token = w.enqueue_flush_signal();
         tokens.push_back(token);
 
-        MarginRateRecord m{};
-        std::strcpy(m.account_id, "acc1");
-        std::strcpy(m.product_code, "IF");
-        std::strcpy(m.instrument_id, "IF2506");
-        std::strcpy(m.exchange_id, "CFFEX");
-        m.hedge_flag = 'S';
-        w.enqueue(PersistTask{.kind = PersistTask::Kind::MarginRate, .data = m});
+        TradeRecord t{};
+        std::strcpy(t.base.account_id, "acc1");
+        std::strcpy(t.trading_day, "20260901");
+        std::strcpy(t.base.trade_id, "T001");
+        std::strcpy(t.base.instrument_id, "IF2506");
+        std::strcpy(t.base.exchange_id, "CFFEX");
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Trade, .data = t});
     }
 
-    w.start_writer();  // 单批 drain 全部任务, MarginRate 触发异常 → 整批回滚
+    w.start_writer();  // 单批 drain 全部任务, Trade 触发异常 → 整批回滚
 
     // 关键断言: 全部 token 必须立即返回 (不被 300ms 超时拖住), 证明 catch 分支终结了
     // promise。泄漏复现 (旧代码): token 既不 set 也不 erase → 每个 wait_flush 都要等满

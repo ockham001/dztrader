@@ -69,14 +69,6 @@ public:
     void OnRspQryTradingAccount(CThostFtdcTradingAccountField* pTradingAccount,
                                  CThostFtdcRspInfoField* pRspInfo,
                                  int nRequestID, bool bIsLast) override;
-    void OnRspQryInstrumentMarginRate(
-        CThostFtdcInstrumentMarginRateField* pInstrumentMarginRate,
-        CThostFtdcRspInfoField* pRspInfo,
-        int nRequestID, bool bIsLast) override;
-    void OnRspQryInstrumentCommissionRate(
-        CThostFtdcInstrumentCommissionRateField* pInstrumentCommissionRate,
-        CThostFtdcRspInfoField* pRspInfo,
-        int nRequestID, bool bIsLast) override;
     void OnRspQryInstrument(CThostFtdcInstrumentField* pInstrument,
                              CThostFtdcRspInfoField* pRspInfo,
                              int nRequestID, bool bIsLast) override;
@@ -96,7 +88,6 @@ public:
     // === 实时回报 (核心路径) ===
     void OnRtnOrder(CThostFtdcOrderField* pOrder) override;
     void OnRtnTrade(CThostFtdcTradeField* pTrade) override;
-    void OnRtnInstrumentStatus(CThostFtdcInstrumentStatusField* pInstrumentStatus) override;
 
     // === 出入金 ===
     void OnRspFromBankToFutureByFuture(CThostFtdcReqTransferField* pReqTransfer,

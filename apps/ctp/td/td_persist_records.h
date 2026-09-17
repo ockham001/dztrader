@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-#include <dztrader/struct.h>  // DzOrderReport/DzTradeReport/DzMarginRate/DzCommissionRate
+#include <dztrader/struct.h>  // DzOrderReport/DzTradeReport
 
 namespace dztrader::ctp {
 
@@ -40,12 +40,6 @@ struct TradeRecord {
     int64_t trade_date;            ///< YYYYMMDD as int
     double commission;             ///< 手续费
 };
-
-/// 保证金率记录 (直接复用 DzMarginRate, 字段完全匹配).
-using MarginRateRecord = DzMarginRate;
-
-/// 手续费率记录 (直接复用 DzCommissionRate, 字段完全匹配).
-using CommissionRateRecord = DzCommissionRate;
 
 }  // namespace dztrader::ctp
 

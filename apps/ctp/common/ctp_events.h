@@ -47,12 +47,9 @@ enum class EventType : int16_t {
     OnRspQryTradingAccount = 104,            ///< 资金查询响应
     OnRspQryInvestorPosition = 105,          ///< 持仓查询响应
     // 106 retired (was OnRspQryInvestorPositionDetail)
-    OnRspQryInstrumentMarginRate = 107,      ///< 保证金率查询响应
-    OnRspQryInstrumentCommissionRate = 108,  ///< 手续费率查询响应
     OnRspQryOrder = 109,                     ///< 委托查询响应 (RESTART 补登用)
     OnRtnOrder = 110,                        ///< 委托回报 (实时推送)
     OnRtnTrade = 111,                        ///< 成交回报 (实时推送)
-    OnRtnInstrumentStatus = 112,             ///< 合约交易状态回报
     OnRspOrderInsert = 113,                  ///< 报单录入响应
     OnRspOrderAction = 114,                  ///< 报单操作响应 (撤单)
     OnErrRtnOrderInsert = 115,               ///< 报单录入错误回报

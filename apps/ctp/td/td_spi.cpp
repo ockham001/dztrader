@@ -294,48 +294,6 @@ void TdSpi::OnRspQryTradingAccount(CThostFtdcTradingAccountField* pTradingAccoun
     }
 }
 
-void TdSpi::OnRspQryInstrumentMarginRate(
-    CThostFtdcInstrumentMarginRateField* pInstrumentMarginRate,
-    CThostFtdcRspInfoField* pRspInfo,
-    int nRequestID, bool bIsLast) {
-    try {
-        event_queue_->push(
-            EventType::OnRspQryInstrumentMarginRate,
-            new OnRspQryInstrumentMarginRateField{
-                .margin_rate = pInstrumentMarginRate
-                                   ? std::make_optional(*pInstrumentMarginRate)
-                                   : std::nullopt,
-                .rsp_info = pRspInfo ? std::make_optional(*pRspInfo) : std::nullopt,
-                .request_id = nRequestID,
-                .is_last = bIsLast,
-                .account_id = account_id_});
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("td qry margin rate push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
-    }
-}
-
-void TdSpi::OnRspQryInstrumentCommissionRate(
-    CThostFtdcInstrumentCommissionRateField* pInstrumentCommissionRate,
-    CThostFtdcRspInfoField* pRspInfo,
-    int nRequestID, bool bIsLast) {
-    try {
-        event_queue_->push(
-            EventType::OnRspQryInstrumentCommissionRate,
-            new OnRspQryInstrumentCommissionRateField{
-                .commission_rate = pInstrumentCommissionRate
-                                       ? std::make_optional(*pInstrumentCommissionRate)
-                                       : std::nullopt,
-                .rsp_info = pRspInfo ? std::make_optional(*pRspInfo) : std::nullopt,
-                .request_id = nRequestID,
-                .is_last = bIsLast,
-                .account_id = account_id_});
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("td qry commission rate push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
-    }
-}
-
 void TdSpi::OnRspQryInstrument(CThostFtdcInstrumentField* pInstrument,
                                 CThostFtdcRspInfoField* pRspInfo,
                                 int nRequestID, bool bIsLast) {
@@ -482,21 +440,6 @@ void TdSpi::OnRtnTrade(CThostFtdcTradeField* pTrade) {
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td rtn trade push failed | account={} error=\"{}\" instrument={} trade_id={}",
                      account_id_, e.what(), pTrade->InstrumentID, pTrade->TradeID);
-    }
-}
-
-void TdSpi::OnRtnInstrumentStatus(CThostFtdcInstrumentStatusField* pInstrumentStatus) {
-    if (pInstrumentStatus == nullptr) {
-        return;
-    }
-    try {
-        event_queue_->push(
-            EventType::OnRtnInstrumentStatus,
-            new OnRtnInstrumentStatusField{.instrument_status = *pInstrumentStatus,
-                                           .account_id = account_id_});
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("td rtn instrument status push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
     }
 }
 

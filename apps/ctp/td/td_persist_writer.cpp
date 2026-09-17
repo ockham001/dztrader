@@ -26,7 +26,7 @@ namespace dztrader::ctp {
 // 字段名与 tdstore schema.cpp CREATE TABLE 一致:
 // - exchange_id (不是 exchange)
 // - volume (不是 volume_total, 与 DzOrderReport.volume 一致)
-// - date INTEGER (margin_rates/commission_rates, 不是 trading_day TEXT)
+// - date INTEGER (trade 表 date 列, 不是 trading_day TEXT)
 // - orders/trades 增加 strategy_id, remark 列 (来自 DzOrderReport/DzTradeReport)
 // ============================================================================
 
@@ -47,20 +47,6 @@ constexpr const char* kInsertTradeSql =
     "    direction, position_effect, price, volume, trade_time, trade_date, commission,"
     "    strategy_id, seq"
     ") VALUES (?,?,?,?,?,?,  ?,?,?,?,  ?,?,?,?, ?)";
-
-constexpr const char* kInsertMarginRateSql =
-    "INSERT OR REPLACE INTO margin_rates ("
-    "    account_id, instrument_id, product_code, exchange_id,"
-    "    hedge_flag, is_relative, long_margin_ratio_by_money, long_margin_ratio_by_volume,"
-    "    short_margin_ratio_by_money, short_margin_ratio_by_volume, date"
-    ") VALUES (?,?,?,?,  ?,?,?,?,?,?, ?)";
-
-constexpr const char* kInsertCommissionRateSql =
-    "INSERT OR REPLACE INTO commission_rates ("
-    "    account_id, instrument_id, product_code, exchange_id,"
-    "    open_ratio_by_money, open_ratio_by_volume, close_ratio_by_money, close_ratio_by_volume,"
-    "    close_today_ratio_by_money, close_today_ratio_by_volume, date"
-    ") VALUES (?,?,?,?,  ?,?,?,?,?,?, ?)";
 
 // positions (spec §3.2): key = (account_id, instrument_id, direction), 绝对态 upsert
 constexpr const char* kInsertPositionSql =
@@ -163,8 +149,6 @@ void PersistWriter::open() {
 void PersistWriter::prepare_statements(SQLite::Database& db) {
     stmt_insert_order_ = std::make_unique<SQLite::Statement>(db, kInsertOrderSql);
     stmt_insert_trade_ = std::make_unique<SQLite::Statement>(db, kInsertTradeSql);
-    stmt_insert_margin_ = std::make_unique<SQLite::Statement>(db, kInsertMarginRateSql);
-    stmt_insert_commission_ = std::make_unique<SQLite::Statement>(db, kInsertCommissionRateSql);
     stmt_insert_position_ = std::make_unique<SQLite::Statement>(db, kInsertPositionSql);
     stmt_insert_taccount_ = std::make_unique<SQLite::Statement>(db, kInsertTradingAccountSql);
     stmt_delete_position_rebuild_ =
@@ -217,8 +201,6 @@ void PersistWriter::stop() {
     // 关闭预编译 stmt + 数据库 (Writer 已退出, 无竞争)
     stmt_insert_order_.reset();
     stmt_insert_trade_.reset();
-    stmt_insert_margin_.reset();
-    stmt_insert_commission_.reset();
     stmt_insert_position_.reset();
     stmt_insert_taccount_.reset();
     stmt_delete_position_rebuild_.reset();
@@ -270,8 +252,6 @@ void PersistWriter::stop_best_effort() {
 
     stmt_insert_order_.reset();
     stmt_insert_trade_.reset();
-    stmt_insert_margin_.reset();
-    stmt_insert_commission_.reset();
     stmt_insert_position_.reset();
     stmt_insert_taccount_.reset();
     stmt_delete_position_rebuild_.reset();
@@ -518,17 +498,6 @@ void PersistWriter::execute_batch(SQLite::Database& db, std::vector<PersistTask>
                 bind_trade(*stmt_insert_trade_, std::get<TradeRecord>(task.data));
                 stmt_insert_trade_->exec();
                 break;
-            case PersistTask::Kind::MarginRate:
-                stmt_insert_margin_->reset();
-                bind_margin_rate(*stmt_insert_margin_, std::get<MarginRateRecord>(task.data));
-                stmt_insert_margin_->exec();
-                break;
-            case PersistTask::Kind::CommissionRate:
-                stmt_insert_commission_->reset();
-                bind_commission_rate(*stmt_insert_commission_,
-                                     std::get<CommissionRateRecord>(task.data));
-                stmt_insert_commission_->exec();
-                break;
             case PersistTask::Kind::Instrument:
                 // 预编译复用 (整批持写锁, 逐行 prepare 会放大锁窗口)
                 instrument_upserter_->upsert(std::get<tdstore::InstrumentRecord>(task.data));
@@ -623,34 +592,6 @@ void PersistWriter::bind_trade(SQLite::Statement& stmt, const TradeRecord& r) {
     stmt.bind(13, r.commission);
     stmt.bind(14, r.base.strategy_id);
     stmt.bind(15, static_cast<int64_t>(r.base.seq));
-}
-
-void PersistWriter::bind_margin_rate(SQLite::Statement& stmt, const MarginRateRecord& r) {
-    stmt.bind(1, r.account_id);
-    stmt.bind(2, r.instrument_id);
-    stmt.bind(3, r.product_code);
-    stmt.bind(4, r.exchange_id);
-    stmt.bind(5, static_cast<int>(r.hedge_flag));
-    stmt.bind(6, static_cast<int>(r.is_relative));
-    stmt.bind(7, r.long_margin_ratio_by_money);
-    stmt.bind(8, r.long_margin_ratio_by_volume);
-    stmt.bind(9, r.short_margin_ratio_by_money);
-    stmt.bind(10, r.short_margin_ratio_by_volume);
-    stmt.bind(11, r.date);
-}
-
-void PersistWriter::bind_commission_rate(SQLite::Statement& stmt, const CommissionRateRecord& r) {
-    stmt.bind(1, r.account_id);
-    stmt.bind(2, r.instrument_id);
-    stmt.bind(3, r.product_code);
-    stmt.bind(4, r.exchange_id);
-    stmt.bind(5, r.open_ratio_by_money);
-    stmt.bind(6, r.open_ratio_by_volume);
-    stmt.bind(7, r.close_ratio_by_money);
-    stmt.bind(8, r.close_ratio_by_volume);
-    stmt.bind(9, r.close_today_ratio_by_money);
-    stmt.bind(10, r.close_today_ratio_by_volume);
-    stmt.bind(11, r.date);
 }
 
 std::string PersistWriter::format_trading_day(int64_t days) {

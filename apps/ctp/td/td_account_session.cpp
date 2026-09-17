@@ -325,10 +325,6 @@ void AccountSession::on_rsp_settlement_confirm(const OnRspSettlementInfoConfirmF
     }
     state_machine_.on_settlement_confirmed();
     SPDLOG_INFO("td settlement confirmed | account={}", account_id_);
-    // 登录收尾链起点重置费率查询广播模式为 false (只入库不广播, 全量费率洪泛防护).
-    fee_rate_broadcast_ = false;
-    fee_query_pending_commission_ = false;
-    fee_query_instrument_.clear();
     // C2: 启动合约查询 (设计 §7.2), 进入 LoadingInstruments 状态.
     // 查询完成 (on_rsp_qry_instrument is_last) 或失败时调 on_instruments_loaded 转 Ready.
     req_qry_instrument();
@@ -1041,135 +1037,6 @@ void AccountSession::req_qry_trading_account() {
         });
 }
 
-void AccountSession::req_qry_margin_rate(const char* instrument_id) {
-    // 登录收尾阶段三 (全量账户级) / 按需查询 (单合约, 阶段2).
-    // 终检发现 1: 发起时快照代际, 响应侧校验 (陈旧响应丢弃)
-    query_gen_ = generation_;
-    if (api_ == nullptr) {
-        finalizer_.on_margin_rate_failed();
-        margin_rate_query_ok_ = false;
-        req_qry_commission_rate();  // 串行链不中断
-        return;
-    }
-    CThostFtdcQryInstrumentMarginRateField qry{};
-    copy_string(qry.BrokerID, broker_id_.c_str(), true);
-    copy_string(qry.InvestorID, account_id_.c_str(), true);
-    qry.HedgeFlag = THOST_FTDC_HF_Speculation;  // 决策: 先只取投机保证金率
-    if (instrument_id != nullptr && instrument_id[0] != '\0') {
-        copy_string(qry.InstrumentID, instrument_id, true);
-    }
-    int ret = api_->ReqQryInstrumentMarginRate(&qry, ++request_id_);
-    if (ret != 0) {
-        if (ret == -3) {
-            SPDLOG_WARN("td qry margin rate flow control, retry in 1.5s | account={}", account_id_);
-            uint64_t gen = generation_;
-            std::string inst = instrument_id ? instrument_id : "";
-            std::weak_ptr<void> weak = alive_token_;
-            timer_queue_.schedule_after(std::chrono::milliseconds(1500),
-                [this, weak, gen, inst]() {
-                    if (weak.expired()) return;
-                    if (gen != generation_) return;
-                    // 登录链由 finalizer phase 门, 按需查询 (Ready 后) 直接重试.
-                    if (finalizer_.phase() == Phase::kQueryMarginRate || is_ready()) {
-                        req_qry_margin_rate(inst.c_str());
-                    }
-                });
-            return;
-        }
-        SPDLOG_ERROR("td req qry margin rate failed | account={} ret={}", account_id_, ret);
-        finalizer_.on_margin_rate_failed();
-        margin_rate_query_ok_ = false;
-        req_qry_commission_rate();
-        return;
-    }
-    // 超时兜底: 同 req_qry_trading_account — 登录 5min / 补查 (Ready) 90s,
-    // 到期降级回 kDone 由下一轮 resync 重试.
-    const auto timeout = is_ready() ? std::chrono::seconds(90) : std::chrono::minutes(5);
-    uint64_t gen = generation_;
-    std::weak_ptr<void> weak = alive_token_;
-    timer_queue_.schedule_after(timeout, [this, weak, gen]() {
-        if (weak.expired()) return;
-        if (gen != generation_) return;
-        if (finalizer_.phase() == Phase::kQueryMarginRate) {
-            SPDLOG_ERROR("td qry margin rate timeout, degrade | account={}", account_id_);
-            finalizer_.on_margin_rate_failed();
-            margin_rate_query_ok_ = false;
-            req_qry_commission_rate();
-        }
-    });
-}
-
-void AccountSession::req_qry_commission_rate(const char* instrument_id) {
-    // 登录收尾阶段四 (全量账户级) / 按需查询 (单合约, 阶段2).
-    query_gen_ = generation_;
-    if (api_ == nullptr) {
-        finalizer_.on_commission_rate_failed();
-        commission_rate_query_ok_ = false;
-        finalize_login();  // 四查询链尾: 收尾
-        return;
-    }
-    CThostFtdcQryInstrumentCommissionRateField qry{};
-    copy_string(qry.BrokerID, broker_id_.c_str(), true);
-    copy_string(qry.InvestorID, account_id_.c_str(), true);
-    if (instrument_id != nullptr && instrument_id[0] != '\0') {
-        copy_string(qry.InstrumentID, instrument_id, true);
-    }
-    int ret = api_->ReqQryInstrumentCommissionRate(&qry, ++request_id_);
-    if (ret != 0) {
-        if (ret == -3) {
-            SPDLOG_WARN("td qry commission rate flow control, retry in 1.5s | account={}",
-                        account_id_);
-            uint64_t gen = generation_;
-            std::string inst = instrument_id ? instrument_id : "";
-            std::weak_ptr<void> weak = alive_token_;
-            timer_queue_.schedule_after(std::chrono::milliseconds(1500),
-                [this, weak, gen, inst]() {
-                    if (weak.expired()) return;
-                    if (gen != generation_) return;
-                    if (finalizer_.phase() == Phase::kQueryCommissionRate) {
-                        req_qry_commission_rate(inst.c_str());
-                    }
-                });
-            return;
-        }
-        SPDLOG_ERROR("td req qry commission rate failed | account={} ret={}", account_id_, ret);
-        finalizer_.on_commission_rate_failed();
-        commission_rate_query_ok_ = false;
-        finalize_login();
-        return;
-    }
-    const auto timeout = is_ready() ? std::chrono::seconds(90) : std::chrono::minutes(5);
-    uint64_t gen = generation_;
-    std::weak_ptr<void> weak = alive_token_;
-    timer_queue_.schedule_after(timeout, [this, weak, gen]() {
-        if (weak.expired()) return;
-        if (gen != generation_) return;
-        if (finalizer_.phase() == Phase::kQueryCommissionRate) {
-            SPDLOG_ERROR("td qry commission rate timeout, degrade | account={}", account_id_);
-            finalizer_.on_commission_rate_failed();
-            commission_rate_query_ok_ = false;
-            finalize_login();
-        }
-    });
-}
-
-void AccountSession::query_fee_rate(const char* instrument_id, int8_t query_type) {
-    // 阶段2 按需查询: 设广播模式 (入库+广播 2015/2016), 单合约. 异步回填 (发后即返).
-    // query_type=2 (两者) 时先发保证金, 其 is_last 后串行发手续费 (CTP 流控 1 次/秒).
-    if (instrument_id == nullptr || instrument_id[0] == '\0') {
-        SPDLOG_WARN("td query fee rate empty instrument | account={}", account_id_);
-        return;
-    }
-    fee_rate_broadcast_ = true;
-    fee_query_pending_commission_ = (query_type == 2);
-    fee_query_instrument_ = instrument_id;
-    if (query_type == 0 || query_type == 2) {
-        req_qry_margin_rate(instrument_id);
-    } else if (query_type == 1) {
-        req_qry_commission_rate(instrument_id);
-    }
-}
-
 void AccountSession::query_instrument(const std::string& instrument_id) {
     // 单合约定向刷新 (契约 instrument): 优先用 DB 行的 symbol (CZCE 人工消歧), 无行则回退 instrument_id.
     // 注意 1: PersistWriter 的 SQLite 连接归 writer 线程独占, 此处用独立只读连接 (WAL 下多连接安全).
@@ -1211,18 +1078,12 @@ void AccountSession::query_instrument(const std::string& instrument_id) {
 void AccountSession::drive_finalizer() {
     // 登录收尾状态机线性推进 (spec §4.2).
     // 每个阶段动作完成后调 next() 取下一阶段; 未满足前置时 next() 停留.
-    // 前置: 四查询齐 (含失败降级) 且仍停在最后一个查询阶段时, 先推进到首个
-    // 收尾阶段 kReplay (SPI 路径 on_commission_rate_done 只置 done_, 不改变 phase,
-    // 由这里跨过查询阶段).
-    if (finalizer_.can_reach_ready() && finalizer_.phase() == Phase::kQueryCommissionRate) {
-        (void)finalizer_.next();  // kQueryCommissionRate -> kReplay
-    }
+    // 查询阶段由 SPI 回调驱动: 资金 is_last 处 on_account_done 已使 phase 进入
+    // kReplay, 随后 finalize_login() 由此推进 replay -> flush -> ready.
     while (finalizer_.phase() != Phase::kDone) {
         switch (finalizer_.phase()) {
             case Phase::kQueryPosition:
             case Phase::kQueryAccount:
-            case Phase::kQueryMarginRate:
-            case Phase::kQueryCommissionRate:
                 // 查询阶段由 SPI 回调 (on_rsp_qry_* is_last/失败) 驱动, 这里不推进.
                 return;
             case Phase::kReplay:
@@ -1256,13 +1117,12 @@ void AccountSession::drive_finalizer() {
 }
 
 void AccountSession::finalize_login() {
-    // 四查询完成 (含失败降级) 后进入收尾序列. 防御: 未达前置时 no-op.
+    // 双查询完成 (含失败降级) 后进入收尾序列. 防御: 未达前置时 no-op.
     if (!finalizer_.can_reach_ready()) {
         return;
     }
-    // 四查询都成功才算数据完整 (供补查节流); 任一失败则由定时补查重试 (spec §4.2).
-    data_query_ok_ = position_query_ok_ && account_query_ok_ &&
-                     margin_rate_query_ok_ && commission_rate_query_ok_;
+    // 两查询都成功才算数据完整 (供补查节流); 任一失败则由定时补查重试 (spec §4.2).
+    data_query_ok_ = position_query_ok_ && account_query_ok_;
     drive_finalizer();
 }
 
@@ -1586,15 +1446,12 @@ void AccountSession::on_rsp_qry_trading_account(const OnRspQryTradingAccountFiel
                          dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg));
         }
         if (f.is_last) {
-            // 资金查询完成 -> 发起保证金率查询 (CTP 流控 1 次/秒, 串行).
-            // 收尾序列移至手续费率查询 is_last (四查询链尾) 触发.
-            // 无错误 (ErrorID==0) 视为查询成功, 供补查节流 (空账户 is_last 无数据也成功).
+            // 资金查询完成 -> 进入收尾序列 (replay -> flush -> ready), 由 drive_finalizer 推进.
             account_query_ok_ = !(f.rsp_info && f.rsp_info->ErrorID != 0);
-            // 幂等防御: 超时/失败路径已把 finalizer 推进过 kQueryAccount 时,
-            // 迟到的 is_last 仅更新 ok 标志, 不重复触发查询链 (phase 门防御).
+            // 幂等防御: 超时/失败路径已推进过 kQueryAccount 时, 迟到的 is_last 仅更新 ok 标志.
             if (finalizer_.phase() == Phase::kQueryAccount) {
-                finalizer_.on_account_done();  // -> kQueryMarginRate
-                req_qry_margin_rate();         // 全量账户级 (InstrumentID 留空)
+                finalizer_.on_account_done();
+                finalize_login();
             }
         }
     } catch (const std::exception& e) {
@@ -1650,145 +1507,6 @@ void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPosition
         }
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td on_rsp_qry_investor_position failed | account={} error=\"{}\"",
-                     account_id_, e.what());
-    }
-}
-
-// === on_rsp_qry_instrument_margin_rate: 保证金率查询响应 ===
-// 转 DzMarginRate, 按 broadcast 模式 (按需=true / 登录批量=false) 推 SHM + 持久化.
-void AccountSession::on_rsp_qry_instrument_margin_rate(const OnRspQryInstrumentMarginRateField& f) {
-    // 终检发现 1: 陈旧响应防护 — 断连重连后旧会话迟到的查询响应一律丢弃.
-    if (query_gen_ != generation_) {
-        return;
-    }
-    try {
-        if (f.margin_rate && (!f.rsp_info || f.rsp_info->ErrorID == 0)) {
-            // InvestorRange: IR_All='1'=交易所对所有投资者统一, IR_Group='2'=经纪公司,
-            // IR_Single='3'=单一投资者. 只取账户特异性行 (Group/Single), 跳过交易所统一行
-            // — 避免同合约多行被 UNIQUE REPLACE 覆盖, 且账户实际费率应优先于交易所标准.
-            if (f.margin_rate->InvestorRange == THOST_FTDC_IR_All) {
-                // 交易所统一行 (无账户特异性): 登录批量查询时忽略, 由 Group/Single 行承载.
-                goto margin_is_last;
-            }
-            DzMarginRate rec{};
-            copy_string(rec.account_id, account_id_.c_str(), true);
-            copy_string(rec.instrument_id, f.margin_rate->InstrumentID, true);
-            std::string product = normalize_to_product(f.margin_rate->InstrumentID);
-            copy_string(rec.product_code, product.c_str(), true);
-            copy_string(rec.exchange_id, f.margin_rate->ExchangeID, true);
-            rec.hedge_flag = static_cast<int8_t>(f.margin_rate->HedgeFlag);
-            rec.is_relative = static_cast<int8_t>(f.margin_rate->IsRelative);
-            rec.long_margin_ratio_by_money = f.margin_rate->LongMarginRatioByMoney;
-            rec.long_margin_ratio_by_volume = f.margin_rate->LongMarginRatioByVolume;
-            rec.short_margin_ratio_by_money = f.margin_rate->ShortMarginRatioByMoney;
-            rec.short_margin_ratio_by_volume = f.margin_rate->ShortMarginRatioByVolume;
-            rec.date = trading_day_;
-
-            if (fee_rate_broadcast_) {
-                platform::write_struct(event_writer_, DZ_FRAME_TD_MARGIN_RATE, rec);
-            }
-            persist_writer_.enqueue(PersistTask{PersistTask::Kind::MarginRate, rec});
-
-            SPDLOG_INFO("td qry margin rate | account={} instrument={} long={} short={}",
-                        account_id_, f.margin_rate->InstrumentID,
-                        rec.long_margin_ratio_by_money, rec.short_margin_ratio_by_money);
-        } else if (f.rsp_info && f.rsp_info->ErrorID != 0) {
-            SPDLOG_ERROR("td qry margin rate error | account={} error_id={} error=\"{}\"",
-                         account_id_, f.rsp_info->ErrorID,
-                         dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg));
-        }
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("td on_rsp_qry_instrument_margin_rate failed | account={} error=\"{}\"",
-                     account_id_, e.what());
-    }
-margin_is_last:
-    if (f.is_last) {
-        // 保证金率查询完成.
-        margin_rate_query_ok_ = !(f.rsp_info && f.rsp_info->ErrorID != 0);
-        if (finalizer_.phase() == Phase::kQueryMarginRate) {
-            // 登录收尾链: 推进到手续费率查询 (CTP 流控 1 次/秒, 串行).
-            finalizer_.on_margin_rate_done();  // -> kQueryCommissionRate
-            req_qry_commission_rate();         // 全量账户级 (InstrumentID 留空)
-        } else if (fee_query_pending_commission_) {
-            // 按需查询 query_type=2: margin 完成后续发 commission (异步回填).
-            fee_query_pending_commission_ = false;
-            req_qry_commission_rate(fee_query_instrument_.c_str());
-        }
-    }
-}
-
-// === on_rsp_qry_instrument_commission_rate: 手续费率查询响应 ===
-// 转 DzCommissionRate, 按 broadcast 模式 (按需=true / 登录批量=false) 推 SHM + 持久化.
-void AccountSession::on_rsp_qry_instrument_commission_rate(const OnRspQryInstrumentCommissionRateField& f) {
-    // 终检发现 1: 陈旧响应防护 — 断连重连后旧会话迟到的查询响应一律丢弃.
-    if (query_gen_ != generation_) {
-        return;
-    }
-    try {
-        if (f.commission_rate && (!f.rsp_info || f.rsp_info->ErrorID == 0)) {
-            // 手续费率响应同含 InvestorRange (IR_All/Group/Single): 同 margin, 只取账户特异性行.
-            if (f.commission_rate->InvestorRange == THOST_FTDC_IR_All) {
-                goto commission_is_last;
-            }
-            DzCommissionRate rec{};
-            copy_string(rec.account_id, account_id_.c_str(), true);
-            copy_string(rec.instrument_id, f.commission_rate->InstrumentID, true);
-            std::string product = normalize_to_product(f.commission_rate->InstrumentID);
-            copy_string(rec.product_code, product.c_str(), true);
-            copy_string(rec.exchange_id, f.commission_rate->ExchangeID, true);
-            rec.open_ratio_by_money = f.commission_rate->OpenRatioByMoney;
-            rec.open_ratio_by_volume = f.commission_rate->OpenRatioByVolume;
-            rec.close_ratio_by_money = f.commission_rate->CloseRatioByMoney;
-            rec.close_ratio_by_volume = f.commission_rate->CloseRatioByVolume;
-            rec.close_today_ratio_by_money = f.commission_rate->CloseTodayRatioByMoney;
-            rec.close_today_ratio_by_volume = f.commission_rate->CloseTodayRatioByVolume;
-            rec.date = trading_day_;
-
-            if (fee_rate_broadcast_) {
-                platform::write_struct(event_writer_, DZ_FRAME_TD_COMMISSION_RATE, rec);
-            }
-            persist_writer_.enqueue(PersistTask{PersistTask::Kind::CommissionRate, rec});
-
-            SPDLOG_INFO("td qry commission rate | account={} instrument={} open_money={} close_money={}",
-                        account_id_, f.commission_rate->InstrumentID,
-                        rec.open_ratio_by_money, rec.close_ratio_by_money);
-        } else if (f.rsp_info && f.rsp_info->ErrorID != 0) {
-            SPDLOG_ERROR("td qry commission rate error | account={} error_id={} error=\"{}\"",
-                         account_id_, f.rsp_info->ErrorID,
-                         dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg));
-        }
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("td on_rsp_qry_instrument_commission_rate failed | account={} error=\"{}\"",
-                     account_id_, e.what());
-    }
-commission_is_last:
-    if (f.is_last) {
-        // 手续费率查询完成 (四查询链尾) -> 进入收尾序列.
-        commission_rate_query_ok_ = !(f.rsp_info && f.rsp_info->ErrorID != 0);
-        if (finalizer_.phase() == Phase::kQueryCommissionRate) {
-            finalizer_.on_commission_rate_done();
-            finalize_login();
-        }
-    }
-}
-
-// === on_rtn_instrument_status: 合约交易状态回报 ===
-// 转 DzInstrumentStatus (内联转换), 推 SHM
-void AccountSession::on_rtn_instrument_status(const OnRtnInstrumentStatusField& f) {
-    try {
-        DzInstrumentStatus rec{};
-        copy_string(rec.instrument_id, f.instrument_status.InstrumentID, true);
-        copy_string(rec.exchange_id, f.instrument_status.ExchangeID, true);
-        rec.status = static_cast<int8_t>(f.instrument_status.InstrumentStatus);
-        rec.time = parse_ctp_time(f.instrument_status.EnterTime);
-
-        platform::write_struct(event_writer_, DZ_FRAME_TD_INSTRUMENT_STATUS, rec);
-
-        SPDLOG_DEBUG("td rtn instrument status | account={} instrument={} status={}",
-                     account_id_, f.instrument_status.InstrumentID,
-                     f.instrument_status.InstrumentStatus);
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("td on_rtn_instrument_status failed | account={} error=\"{}\"",
                      account_id_, e.what());
     }
 }

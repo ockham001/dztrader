@@ -33,8 +33,6 @@ struct PersistTask {
     enum class Kind : uint8_t {
         Order,
         Trade,
-        MarginRate,
-        CommissionRate,
         Instrument,
         Position,          // 单行绝对态 upsert (盘中有变化时走它)
         TradingAccount,    // 单行绝对态 upsert
@@ -44,9 +42,8 @@ struct PersistTask {
 
     /// Position / PositionRebuild / TradingAccount 用 (绝对态). TradingAccount 用单记录.
     /// NSDMI: FlushSignal 等不带 data 的 Kind 默认构造 (variant 第一个 alternative).
-    std::variant<OrderRecord, TradeRecord, MarginRateRecord,
-                 CommissionRateRecord, tdstore::InstrumentRecord, std::vector<DzPositionInfo>,
-                 DzTradingAccount>
+    std::variant<OrderRecord, TradeRecord, tdstore::InstrumentRecord,
+                 std::vector<DzPositionInfo>, DzTradingAccount>
         data = {};
 
     /// PositionRebuild / FlushSignal 用: 目标账户.
@@ -148,8 +145,6 @@ private:
     // 绑定单条记录到预编译 stmt 并执行
     void bind_order(SQLite::Statement& stmt, const OrderRecord& r);
     void bind_trade(SQLite::Statement& stmt, const TradeRecord& r);
-    void bind_margin_rate(SQLite::Statement& stmt, const MarginRateRecord& r);
-    void bind_commission_rate(SQLite::Statement& stmt, const CommissionRateRecord& r);
     void bind_position(SQLite::Statement& stmt, const DzPositionInfo& r,
                        const std::string& trading_day);
     void bind_trading_account(SQLite::Statement& stmt, const DzTradingAccount& r,
@@ -176,8 +171,6 @@ private:
     std::unique_ptr<tdstore::InstrumentUpserter> instrument_upserter_;
     std::unique_ptr<SQLite::Statement> stmt_insert_order_;
     std::unique_ptr<SQLite::Statement> stmt_insert_trade_;
-    std::unique_ptr<SQLite::Statement> stmt_insert_margin_;
-    std::unique_ptr<SQLite::Statement> stmt_insert_commission_;
     std::unique_ptr<SQLite::Statement> stmt_insert_position_;
     std::unique_ptr<SQLite::Statement> stmt_insert_taccount_;
     std::unique_ptr<SQLite::Statement> stmt_delete_position_rebuild_;

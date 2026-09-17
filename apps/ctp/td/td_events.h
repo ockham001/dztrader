@@ -113,24 +113,6 @@ struct OnRspQryInvestorPositionField {
     std::string account_id;  // 多账户路由用, TdSpi push 时填入 (放末尾, 不破坏已有 layout)
 };
 
-/// OnRspQryInstrumentMarginRate 回调数据
-struct OnRspQryInstrumentMarginRateField {
-    std::optional<CThostFtdcInstrumentMarginRateField> margin_rate;
-    std::optional<CThostFtdcRspInfoField> rsp_info;
-    int request_id = -1;
-    bool is_last = true;
-    std::string account_id;  // 多账户路由用, TdSpi push 时填入 (放末尾, 不破坏已有 layout)
-};
-
-/// OnRspQryInstrumentCommissionRate 回调数据
-struct OnRspQryInstrumentCommissionRateField {
-    std::optional<CThostFtdcInstrumentCommissionRateField> commission_rate;
-    std::optional<CThostFtdcRspInfoField> rsp_info;
-    int request_id = -1;
-    bool is_last = true;
-    std::string account_id;  // 多账户路由用, TdSpi push 时填入 (放末尾, 不破坏已有 layout)
-};
-
 /// OnRspQryOrder 回调数据 (RESTART 补登用)
 struct OnRspQryOrderField {
     std::optional<CThostFtdcOrderField> order;
@@ -155,12 +137,6 @@ struct OnRtnOrderField {
 struct OnRtnTradeField {
     CThostFtdcTradeField trade{};
     std::chrono::system_clock::time_point rsp_time;  // 接收时刻, 用于延迟诊断
-    std::string account_id;  // 多账户路由用, TdSpi push 时填入 (放末尾, 与 OnRtnOrderField 一致)
-};
-
-/// OnRtnInstrumentStatus 回调数据 (合约交易状态)
-struct OnRtnInstrumentStatusField {
-    CThostFtdcInstrumentStatusField instrument_status{};
     std::string account_id;  // 多账户路由用, TdSpi push 时填入 (放末尾, 与 OnRtnOrderField 一致)
 };
 
@@ -272,12 +248,6 @@ inline void td_delete_event_data(Event& event) noexcept {
         case EventType::OnRspQryInvestorPosition:
             delete static_cast<OnRspQryInvestorPositionField*>(event.data);  // NOLINT
             break;
-        case EventType::OnRspQryInstrumentMarginRate:
-            delete static_cast<OnRspQryInstrumentMarginRateField*>(event.data);  // NOLINT
-            break;
-        case EventType::OnRspQryInstrumentCommissionRate:
-            delete static_cast<OnRspQryInstrumentCommissionRateField*>(event.data);  // NOLINT
-            break;
         case EventType::OnRspQryOrder:
             delete static_cast<OnRspQryOrderField*>(event.data);  // NOLINT
             break;
@@ -286,9 +256,6 @@ inline void td_delete_event_data(Event& event) noexcept {
             break;
         case EventType::OnRtnTrade:
             delete static_cast<OnRtnTradeField*>(event.data);  // NOLINT
-            break;
-        case EventType::OnRtnInstrumentStatus:
-            delete static_cast<OnRtnInstrumentStatusField*>(event.data);  // NOLINT
             break;
         case EventType::OnRspOrderInsert:
             delete static_cast<OnRspOrderInsertField*>(event.data);  // NOLINT
