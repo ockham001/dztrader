@@ -91,9 +91,10 @@ TEST_F(TdPersistWriterTest, OpenCreatesAllTables) {
     }
 }
 
-// 评审发现 (plan-mandated): WAL 转换需独占锁, busy_timeout 对其无效 — 别连接持锁时
-// 瞬时抛 database is locked。open() 必须降级续跑 (冷启动不中止), 留待下次启动转换。
-TEST_F(TdPersistWriterTest, OpenDegradesWhenWalConversionLocked) {
+// WAL 收敛语义: WAL 转换需独占锁且 busy_timeout 对其无效 — 别连接持锁时瞬时抛
+// database is locked。open() 内迁移连接在锁窗口内有界重试失败仅告警续跑 (冷启动不中止),
+// 锁释放后的 writer session 连接完成转换 — 最终收敛 journal_mode=wal, open 全程不抛。
+TEST_F(TdPersistWriterTest, OpenConvergesToWalAfterLockClears) {
     // 第二连接持写事务锁住库 (RESERVED); 800ms 后释放, 让 open() 内迁移的
     // busy_timeout 能等到锁, 而 WAL 转换的 3 次有界重试 (0/100/200ms) 全部落在锁窗口内。
     SQLite::Database locker(db_path_, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);

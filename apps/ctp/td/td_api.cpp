@@ -107,8 +107,8 @@ void TdApi::set_configs(TdConfig td_cfg) {
     config_ = std::move(td_cfg);
     // Task 5: 预扫 hook. 在 run() 前 (set_configs 后、connect 前) 用独立只读连接
     // 打开同一 db 文件, 对 config_.accounts 全量预扫, 存 boot_cache_ (start_seq/orders/trades).
-    // ctor 的 open->start_writer 窗口内 config_ 为空且 db() 守卫 !writer_started_, 无法查询,
-    // 故预扫在此 (set_configs 时机, config 已就绪、Writer 未启动不影响独立只读连接).
+    // ctor 的 open->start_writer 窗口内 config_ 为空且 max_order_id() 守卫 !writer_started_,
+    // 无法查询; 故预扫在此 (set_configs 时机, config 已就绪、Writer 未启动不影响独立只读连接).
     ensure_prescan_db();
     prescan_all_accounts();
 }

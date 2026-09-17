@@ -25,8 +25,25 @@ std::string option_or(const std::map<std::string, std::string, std::less<>>& opt
 }
 
 /// 应用连接级 PRAGMA（迁移连接与 Session 连接共用）
+/// read_only: 只读连接不尝试 journal_mode 转换 (需写库头, 必然 SQLITE_READONLY), 免去
+/// 3×100ms 有界重试与误导性告警; 其余 PRAGMA 均为连接级设置, 逐条尽力, 失败吞掉.
 void apply_pragmas(SQLite::Database& db,
-                   const std::map<std::string, std::string, std::less<>>& options) {
+                   const std::map<std::string, std::string, std::less<>>& options, bool read_only) {
+    if (read_only) {
+        const std::string pragmas[] = {
+            "PRAGMA synchronous=" + option_or(options, "synchronous", "full"),
+            "PRAGMA busy_timeout=" + option_or(options, "busy_timeout_ms", "5000"),
+            "PRAGMA cache_size=-" + option_or(options, "cache_size_kb", "8000"),
+            "PRAGMA temp_store=" + option_or(options, "temp_store", "memory"),
+        };
+        for (const std::string& pragma : pragmas) {
+            try {
+                db.exec(pragma);
+            } catch (const std::exception&) {
+            }
+        }
+        return;
+    }
     db.exec("PRAGMA synchronous=" + option_or(options, "synchronous", "full"));
     const std::string journal_mode = option_or(options, "journal_mode", "wal");
     bool wal_ready = false;
@@ -37,8 +54,12 @@ void apply_pragmas(SQLite::Database& db,
         try {
             wal_ready =
                 db.execAndGet("PRAGMA journal_mode=" + journal_mode).getString() == journal_mode;
-        } catch (const std::exception&) {
-            // 独占锁竞争: 有界重试
+        } catch (const std::exception& e) {
+            // 独占锁竞争: 有界重试. 末次失败原因单独告警便于诊断 (attempt 0/1 不刷日志)
+            if (attempt == 2) {
+                SPDLOG_WARN("td db WAL conversion not applied, continue in current mode | err={}",
+                            e.what());
+            }
         }
     }
     if (!wal_ready) {
@@ -102,7 +123,7 @@ std::unique_ptr<Session> SqliteDatabaseImpl::session(bool read_only) {
         const int flags = read_only ? SQLite::OPEN_READONLY
                                     : (SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         auto db = std::make_unique<SQLite::Database>(path_, flags);
-        apply_pragmas(*db, options_);
+        apply_pragmas(*db, options_, read_only);
         return std::make_unique<SqliteSession>(this, std::move(db), read_only);
     } catch (const std::exception& e) {
         throw Exception(DZ_EC_DB_OPEN_FAILED, "sqlite session open failed: {}", e.what());
@@ -112,7 +133,7 @@ std::unique_ptr<Session> SqliteDatabaseImpl::session(bool read_only) {
 void SqliteDatabaseImpl::migrate() {
     try {
         SQLite::Database db(path_, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
-        apply_pragmas(db, options_);
+        apply_pragmas(db, options_, /*read_only=*/false);
         internal::apply_td_migrations(db);
         internal::create_missing_collections(db, schemas_);
     } catch (const Exception&) {
