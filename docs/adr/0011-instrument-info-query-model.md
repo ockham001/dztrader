@@ -71,5 +71,5 @@ Accepted（2026-09-15）
 
 - 设计：`docs/superpowers/specs/2026-09-15-instrument-query-unified-td-db-design.md`
 - 帧契约：`docs/frame_contracts/instrument.md`（本次重写）
-- 费率/保证金边界：`docs/frame_contracts/td-fee-margin.md`（费率部分已被 ADR 0013 取代：不保留 margin_rates/commission_rates 与费率查询。）
+- 费率/保证金边界：`docs/frame_contracts/td-fee-margin.md`（费率部分已被 ADR 0013 取代：不保留 margin_rates/commission_rates 与费率查询。该契约文件已随 ADR 0013 删除。）
 - 帧号规则：`docs/adr/0010-frame-number-reallocation.md`

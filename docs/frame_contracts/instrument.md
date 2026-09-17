@@ -240,3 +240,5 @@ DzResultSet* rs = dz_db_query_instruments(db, instrument_id, "symbol,price_tick,
   清库/还原/备份回滚必须停全部 td 与策略进程后操作。
 - **升级次序**：先启动 td（打开统一库完成 v5 迁移）再启动策略；反向次序下策略可能以旧 schema 打开库，
   新查询可能遇旧 schema 短暂返回 NULL，迁移完成后恢复。
+- **新旧 td 不得混跑**：v5 迁移后旧版 td 打开新库会在准备费率语句时失败退出；新 td 迁移时旧 td 的
+  预编译语句失效、持久化批整批丢弃——升级须先停旧 td 再启新 td。

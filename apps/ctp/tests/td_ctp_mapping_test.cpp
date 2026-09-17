@@ -191,23 +191,6 @@ TEST(ParseCtpDateTest, EpochDayCollidesWithNa) {
 }
 
 // ============================================================================
-// normalize_to_product
-// ============================================================================
-
-TEST(NormalizeToProductTest, DigitSuffix) {
-    EXPECT_EQ(normalize_to_product("IF2506"), "IF");
-    EXPECT_EQ(normalize_to_product("rb2510"), "rb");
-    EXPECT_EQ(normalize_to_product("T2509"), "T");
-    EXPECT_EQ(normalize_to_product("SR509C4800"), "SR");  // 期权: 取首次数字之前
-}
-
-TEST(NormalizeToProductTest, NoDigit) {
-    EXPECT_EQ(normalize_to_product("IF"), "IF");
-    EXPECT_EQ(normalize_to_product(""), "");
-    EXPECT_EQ(normalize_to_product("rb"), "rb");
-}
-
-// ============================================================================
 // STATUS_CTP2VT (设计 §12.3 状态映射)
 // ============================================================================
 

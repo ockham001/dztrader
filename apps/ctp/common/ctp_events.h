@@ -47,6 +47,7 @@ enum class EventType : int16_t {
     OnRspQryTradingAccount = 104,            ///< 资金查询响应
     OnRspQryInvestorPosition = 105,          ///< 持仓查询响应
     // 106 retired (was OnRspQryInvestorPositionDetail)
+    // 107/108/112 retired (ADR 0013: 合约状态与费率)
     OnRspQryOrder = 109,                     ///< 委托查询响应 (RESTART 补登用)
     OnRtnOrder = 110,                        ///< 委托回报 (实时推送)
     OnRtnTrade = 111,                        ///< 成交回报 (实时推送)

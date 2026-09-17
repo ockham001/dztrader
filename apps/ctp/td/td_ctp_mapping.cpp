@@ -90,24 +90,6 @@ int32_t parse_ctp_date(const char* yyyymmdd) noexcept {
 }
 
 // ============================================================================
-// normalize_to_product: 提取首个数字之前的前缀作为品种代码
-// ============================================================================
-
-std::string normalize_to_product(const std::string& instrument_id) {
-    if (instrument_id.empty()) {
-        return {};
-    }
-    // 取首个数字之前的前缀 (品种代码). 期货如 "IF2506" -> "IF",
-    // 期权如 "SR509C4800" -> "SR", "IO2506-C-3900" -> "IO".
-    size_t i = 0;
-    while (i < instrument_id.size() &&
-           (instrument_id[i] < '0' || instrument_id[i] > '9')) {
-        ++i;
-    }
-    return instrument_id.substr(0, i);
-}
-
-// ============================================================================
 // STATUS_CTP2VT: CTP OrderStatus -> DzOrderStatus
 // ============================================================================
 
