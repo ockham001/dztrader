@@ -369,12 +369,9 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
                      dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg));
     }
     if (f.is_last) {
-        // 定向刷新 (Ready 后) 的 is_last 不驱动登录收尾链
-        // 已知残余竞态 (非缺陷): 函数首部的 query_gen_ 代际门只能丢弃跨代迟到响应;
-        // 重登入 LoadingInstruments 期间, 同代的迟到刷新响应仍可能被当作全量查询的
-        // is_last 而重复发起持仓查询 — 仅重复查询, 无数据损坏.
+        // Ready 后无合约查询发起方 (定向刷新已退役, ADR 0014); 重复/迟到 is_last 一律忽略.
         if (state_machine_.state() != TdState::LoadingInstruments) {
-            SPDLOG_INFO("td instrument refresh done | account={} instrument={}",
+            SPDLOG_INFO("td qry instrument is_last ignored (not loading) | account={} instrument={}",
                         account_id_, f.instrument ? f.instrument->InstrumentID : "");
             return;
         }

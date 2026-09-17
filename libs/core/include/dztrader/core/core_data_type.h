@@ -130,8 +130,6 @@ DZ_BEGIN_C_DECLS
 #define DZ_FRAME_TD_PASSWORD_UPDATE_REQ ((DzFrameType)1041)
 /** @brief 修改密码响应 (JSON ext 帧, 契约 td-account-ops) */
 #define DZ_FRAME_TD_PASSWORD_UPDATE_RSP ((DzFrameType)1042)
-/** @brief 单合约信息定向刷新请求 (策略→td, basic 广播帧, 契约 instrument) */
-#define DZ_FRAME_TD_QUERY_INSTRUMENT ((DzFrameType)1043)
 
 DZ_END_C_DECLS
 

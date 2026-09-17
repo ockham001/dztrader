@@ -25,6 +25,11 @@
 #error "DZ_FRAME_TD_QUERY_FEE_RATE 已退役 (ADR 0013)"
 #endif
 
+// 编译期钉子: 合约定向刷新帧已退役 (ADR 0014), 任何头文件重新定义它都会在此引爆。
+#if defined(DZ_FRAME_TD_QUERY_INSTRUMENT)
+#error "DZ_FRAME_TD_QUERY_INSTRUMENT 已退役 (ADR 0014)"
+#endif
+
 namespace {
 
 /// 策略可见帧清单（策略经 dz_next_event / dz_next_md 识别消费）。

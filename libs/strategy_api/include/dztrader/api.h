@@ -318,17 +318,6 @@ DZ_API bool dz_set_logical_position(DzContext* ctx,
  */
 DZ_API bool dz_query_account_status(DzContext* ctx, const char* account_id);
 
-/**
- * @brief 单合约信息定向刷新 (异步, 发后即返, 无响应)
- *
- * 写 TD_QUERY_INSTRUMENT basic 广播帧; td 网关查场所后写入统一 td 库
- * instruments 表 (契约 instrument)。结果经后续 dz_db_query_instruments 获取;
- * 建议配合 dz_schedule_after 延迟查询; 失败/重试由策略自管。
- */
-DZ_API bool dz_query_instrument(DzContext* ctx,
-                                const char* account_id,
-                                const char* instrument_id);
-
 /* ── UI 通知 ── */
 
 /**
