@@ -41,6 +41,35 @@ private:
     std::unordered_map<std::string_view, const ResourceSchema*> schema_by_name_;
 };
 
+/// SQLite 会话：schema 类型化读写；不得晚于其 Database 析构
+class SqliteSession final : public Session {
+public:
+    SqliteSession(const SqliteDatabaseImpl* owner, std::unique_ptr<SQLite::Database> db,
+                  bool read_only);
+
+    void upsert(std::string_view collection, std::span<const Row> rows) override;
+    uint64_t remove(std::string_view collection, const Filter& filter) override;
+    [[nodiscard]] ResultSet find(std::string_view collection, const Filter& filter,
+                                 const FindOptions& options) override;
+    [[nodiscard]] ResultSet aggregate(std::string_view collection,
+                                      const Aggregation& aggregation) override;
+    [[nodiscard]] std::unique_ptr<Transaction> begin_transaction() override;
+    [[nodiscard]] std::unique_ptr<Snapshot> begin_snapshot() override;
+
+private:
+    enum class Scope { None, Transaction, Snapshot };
+
+    [[nodiscard]] const ResourceSchema& require_schema(std::string_view collection) const;
+    [[nodiscard]] static Value read_column(const SQLite::Column& column, ValueType type);
+    void begin_scope(Scope kind);
+    void end_scope(bool commit);
+
+    const SqliteDatabaseImpl* owner_;
+    std::unique_ptr<SQLite::Database> db_;
+    bool read_only_ = false;
+    Scope scope_ = Scope::None;
+};
+
 }  // namespace dztrader::db
 
 #endif  // DZTRADER_DB_SRC_SQLITE_DRIVER_H_
