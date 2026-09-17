@@ -1,4 +1,4 @@
-#include "dztrader/db/migration.h"
+#include "dztrader/db/legacy/migration.h"
 
 #include <algorithm>
 #include <chrono>
@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace dztrader::db {
+namespace dztrader::db::legacy {
 
 void MigrationManager::add(int version, MigrationFn fn) {
     if (version < 1) {
@@ -64,4 +64,4 @@ std::vector<int> MigrationManager::apply(SQLite::Database& db) {
     return newly_applied;
 }
 
-}  // namespace dztrader::db
+}  // namespace dztrader::db::legacy

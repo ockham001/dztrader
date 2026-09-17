@@ -1,14 +1,14 @@
 #include <gtest/gtest.h>
 
-#include <dztrader/db/database_sqlite.h>
+#include <dztrader/db/legacy/database_sqlite.h>
 
 #include <string_view>
 #include <variant>
 
-using dztrader::db::ColumnType;
-using dztrader::db::Database;
-using dztrader::db::SqliteDatabase;
-using dztrader::db::SqliteDatabaseRef;
+using dztrader::db::legacy::ColumnType;
+using dztrader::db::legacy::Database;
+using dztrader::db::legacy::SqliteDatabase;
+using dztrader::db::legacy::SqliteDatabaseRef;
 
 namespace {
 

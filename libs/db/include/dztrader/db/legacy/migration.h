@@ -1,5 +1,5 @@
-#ifndef DZTRADER_DB_MIGRATION_H_
-#define DZTRADER_DB_MIGRATION_H_
+#ifndef DZTRADER_DB_LEGACY_MIGRATION_H_
+#define DZTRADER_DB_LEGACY_MIGRATION_H_
 
 #include <functional>
 #include <map>
@@ -7,7 +7,7 @@
 
 #include "dztrader/db/sqlite.h"
 
-namespace dztrader::db {
+namespace dztrader::db::legacy {
 
 /// 通用 SQLite schema 版本管理.
 /// 维护 schema_version(version, applied_at) 表, 按编号顺序应用迁移函数.
@@ -32,6 +32,6 @@ private:
     std::map<int, MigrationFn> migrations_;
 };
 
-}  // namespace dztrader::db
+}  // namespace dztrader::db::legacy
 
-#endif  // DZTRADER_DB_MIGRATION_H_
+#endif  // DZTRADER_DB_LEGACY_MIGRATION_H_

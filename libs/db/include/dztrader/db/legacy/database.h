@@ -2,8 +2,8 @@
  * @file database.h
  * @brief 数据库后端无关接口（本轮 SQLite 适配; MySQL 见后续项目）
  */
-#ifndef DZTRADER_DB_DATABASE_H_
-#define DZTRADER_DB_DATABASE_H_
+#ifndef DZTRADER_DB_LEGACY_DATABASE_H_
+#define DZTRADER_DB_LEGACY_DATABASE_H_
 
 #include <cstdint>
 #include <memory>
@@ -13,7 +13,7 @@
 #include <variant>
 #include <vector>
 
-namespace dztrader::db {
+namespace dztrader::db::legacy {
 
 /// 绑定值 / 结果值 (NULL 用 monostate)
 using BindValue = std::variant<std::monostate, bool, int64_t, double, std::string>;
@@ -61,6 +61,6 @@ public:
     virtual std::unique_ptr<Transaction> begin(bool immediate = false) = 0;
 };
 
-}  // namespace dztrader::db
+}  // namespace dztrader::db::legacy
 
-#endif  // DZTRADER_DB_DATABASE_H_
+#endif  // DZTRADER_DB_LEGACY_DATABASE_H_

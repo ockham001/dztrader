@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <dztrader/api.h>
-#include <dztrader/db/database_sqlite.h>
-#include <dztrader/db/migration.h>
+#include <dztrader/db/legacy/database_sqlite.h>
+#include <dztrader/db/legacy/migration.h>
 #include <dztrader/error.h>
 #include <dztrader/tdstore/instrument_store.h>
 #include <dztrader/tdstore/records.h>
@@ -31,8 +31,8 @@ protected:
 
         {
             SQLite::Database db(db_path_, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
-            dztrader::db::SqliteDatabaseRef ref(db);
-            dztrader::db::MigrationManager mgr;
+            dztrader::db::legacy::SqliteDatabaseRef ref(db);
+            dztrader::db::legacy::MigrationManager mgr;
             dztrader::tdstore::apply_td_migrations(mgr);
             mgr.apply(db);
             dztrader::tdstore::upsert_instrument(ref, make_record("rb2601"));

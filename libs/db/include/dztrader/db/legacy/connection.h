@@ -1,12 +1,12 @@
-#ifndef DZTRADER_DB_CONNECTION_H_
-#define DZTRADER_DB_CONNECTION_H_
+#ifndef DZTRADER_DB_LEGACY_CONNECTION_H_
+#define DZTRADER_DB_LEGACY_CONNECTION_H_
 
 #include <memory>
 #include <string>
 
 #include "dztrader/db/sqlite.h"
 
-namespace dztrader::db {
+namespace dztrader::db::legacy {
 
 /// RAII SQLite 连接封装.
 /// 单线程独占 (dztd_ctp 的 PersistWriter 线程独占, 无并发).
@@ -57,6 +57,6 @@ private:
     std::unique_ptr<SQLite::Database> db_;
 };
 
-}  // namespace dztrader::db
+}  // namespace dztrader::db::legacy
 
-#endif  // DZTRADER_DB_CONNECTION_H_
+#endif  // DZTRADER_DB_LEGACY_CONNECTION_H_

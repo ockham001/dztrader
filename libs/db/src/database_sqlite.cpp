@@ -2,12 +2,12 @@
  * @file database_sqlite.cpp
  * @brief SQLite 后端适配实现
  */
-#include <dztrader/db/database_sqlite.h>
+#include <dztrader/db/legacy/database_sqlite.h>
 
 #include <type_traits>
 #include <utility>
 
-namespace dztrader::db {
+namespace dztrader::db::legacy {
 namespace {
 
 /// SQLiteCpp 列类型常量 -> 后端无关枚举。
@@ -152,4 +152,4 @@ std::unique_ptr<Transaction> SqliteDatabaseRef::begin(bool immediate) {
     return begin_impl(db_, immediate);
 }
 
-}  // namespace dztrader::db
+}  // namespace dztrader::db::legacy

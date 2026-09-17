@@ -1,8 +1,8 @@
-#include "dztrader/db/connection.h"
+#include "dztrader/db/legacy/connection.h"
 
 #include <stdexcept>
 
-namespace dztrader::db {
+namespace dztrader::db::legacy {
 
 Connection::Connection(const std::string& path) {
     // SQLiteCpp Database 构造: SQLITE_OPEN_READWRITE|CREATE, 默认 0 timeout
@@ -28,4 +28,4 @@ SQLite::Transaction Connection::begin_transaction() {
     return SQLite::Transaction(*db_);
 }
 
-}  // namespace dztrader::db
+}  // namespace dztrader::db::legacy

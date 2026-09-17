@@ -8,6 +8,7 @@
  *   - 策略接口 (-2002 ~ -2999)
  *   - 交易 (-3001 ~ -3999)
  *   - 行情 (-4001 ~ -4999)
+ *   - 数据库 (-6001 ~ -6999)
  */
 #ifndef DZTRADER_ERROR_H_
 #define DZTRADER_ERROR_H_
@@ -174,5 +175,24 @@ typedef int32_t DzErrorCode;
 #define DZ_EC_MASTER_ALREADY_RUNNING ((DzErrorCode)(-5002))
 /** @brief Master 数据库操作失败 */
 #define DZ_EC_MASTER_DB_FAILED ((DzErrorCode)(-5003))
+
+/* ── 数据库 ── */
+
+/** @brief 打开/连接数据库失败 */
+#define DZ_EC_DB_OPEN_FAILED ((DzErrorCode)(-6001))
+/** @brief 会话/连接已关闭 */
+#define DZ_EC_DB_CLOSED ((DzErrorCode)(-6002))
+/** @brief 查询执行失败 (find/aggregate) */
+#define DZ_EC_DB_QUERY_FAILED ((DzErrorCode)(-6003))
+/** @brief 写入执行失败 (upsert/remove) */
+#define DZ_EC_DB_WRITE_FAILED ((DzErrorCode)(-6004))
+/** @brief schema 迁移失败 */
+#define DZ_EC_DB_MIGRATE_FAILED ((DzErrorCode)(-6005))
+/** @brief backend 名未注册 */
+#define DZ_EC_DB_UNSUPPORTED_BACKEND ((DzErrorCode)(-6006))
+/** @brief 能力不满足 (如无快照) */
+#define DZ_EC_DB_UNSUPPORTED_CAPABILITY ((DzErrorCode)(-6007))
+/** @brief 事务状态非法/提交失败 */
+#define DZ_EC_DB_TRANSACTION_FAILED ((DzErrorCode)(-6008))
 
 #endif /* DZTRADER_ERROR_H_ */

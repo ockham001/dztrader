@@ -13,8 +13,8 @@
 
 #include <spdlog/spdlog.h>
 
-#include <dztrader/db/connection.h>
-#include <dztrader/db/migration.h>
+#include <dztrader/db/legacy/connection.h>
+#include <dztrader/db/legacy/migration.h>
 #include <dztrader/date_time/date_time.h>  // Date (DzDate 距纪元天数 -> YYYYMMDD)
 #include <dztrader/tdstore/instrument_store.h>
 #include <dztrader/tdstore/schema.h>
@@ -101,7 +101,7 @@ void PersistWriter::open() {
     db_ = std::make_unique<SQLite::Database>(db_path_,
         SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
     // 后端无关连接包装 (tdstore store ops 用; Writer 线程独占, 主线程不得复用)
-    ref_ = std::make_unique<dztrader::db::SqliteDatabaseRef>(*db_);
+    ref_ = std::make_unique<dztrader::db::legacy::SqliteDatabaseRef>(*db_);
 
     // PRAGMA 配置 (synchronous=FULL 数据安全优先; WAL 支持多网关共写 + 多读者)
     db_->exec("PRAGMA synchronous=FULL");
@@ -129,7 +129,7 @@ void PersistWriter::open() {
     db_->exec("PRAGMA temp_store=MEMORY");
 
     // 应用 TD migration (v1 创建所有表)
-    dztrader::db::MigrationManager mgr;
+    dztrader::db::legacy::MigrationManager mgr;
     dztrader::tdstore::apply_td_migrations(mgr);
     auto applied = mgr.apply(*db_);
     for (int v : applied) {

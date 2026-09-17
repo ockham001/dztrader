@@ -1,7 +1,7 @@
 #ifndef DZTRADER_TDSTORE_SCHEMA_H_
 #define DZTRADER_TDSTORE_SCHEMA_H_
 
-#include <dztrader/db/migration.h>
+#include <dztrader/db/legacy/migration.h>
 
 namespace dztrader::tdstore {
 
@@ -13,7 +13,7 @@ namespace dztrader::tdstore {
 constexpr int kTdSchemaVersion = 5;
 
 /// 注册全部 TD migration (调用方先 add 后 apply)。
-void apply_td_migrations(dztrader::db::MigrationManager& mgr);
+void apply_td_migrations(dztrader::db::legacy::MigrationManager& mgr);
 
 }  // namespace dztrader::tdstore
 

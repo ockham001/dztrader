@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <dztrader/core/this_process.h>
-#include <dztrader/db/connection.h>
-#include <dztrader/db/migration.h>
+#include <dztrader/db/legacy/connection.h>
+#include <dztrader/db/legacy/migration.h>
 
 #include <filesystem>
 #include <random>
@@ -11,7 +11,7 @@
 namespace {
 
 /// 辅助: 创建 schema_version 表是否存在的检查
-bool table_exists(dztrader::db::Connection& conn, const std::string& name) {
+bool table_exists(dztrader::db::legacy::Connection& conn, const std::string& name) {
     return conn.scalar<int>(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='" + name + "'") > 0;
 }
@@ -27,8 +27,8 @@ std::filesystem::path unique_temp_dir(const std::string& name) {
 }
 
 TEST(MigrationManagerTest, ApplyCreatesSchemaVersionTable) {
-    dztrader::db::Connection conn(":memory:");
-    dztrader::db::MigrationManager mgr;
+    dztrader::db::legacy::Connection conn(":memory:");
+    dztrader::db::legacy::MigrationManager mgr;
     mgr.add(1, [](SQLite::Database& db) {
         db.exec("CREATE TABLE foo (id INTEGER)");
     });
@@ -40,8 +40,8 @@ TEST(MigrationManagerTest, ApplyCreatesSchemaVersionTable) {
 }
 
 TEST(MigrationManagerTest, ApplyRecordsVersionAndTimestamp) {
-    dztrader::db::Connection conn(":memory:");
-    dztrader::db::MigrationManager mgr;
+    dztrader::db::legacy::Connection conn(":memory:");
+    dztrader::db::legacy::MigrationManager mgr;
     mgr.add(1, [](SQLite::Database&) {});
     mgr.apply(conn.db());
 
@@ -51,8 +51,8 @@ TEST(MigrationManagerTest, ApplyRecordsVersionAndTimestamp) {
 }
 
 TEST(MigrationManagerTest, ApplyMultipleMigrationsInOrder) {
-    dztrader::db::Connection conn(":memory:");
-    dztrader::db::MigrationManager mgr;
+    dztrader::db::legacy::Connection conn(":memory:");
+    dztrader::db::legacy::MigrationManager mgr;
     mgr.add(1, [](SQLite::Database& db) { db.exec("CREATE TABLE t1 (id INTEGER)"); });
     mgr.add(2, [](SQLite::Database& db) { db.exec("CREATE TABLE t2 (id INTEGER)"); });
     mgr.add(3, [](SQLite::Database& db) { db.exec("ALTER TABLE t1 ADD COLUMN name TEXT"); });
@@ -68,8 +68,8 @@ TEST(MigrationManagerTest, ApplyMultipleMigrationsInOrder) {
 }
 
 TEST(MigrationManagerTest, DuplicateApplyIsNoOp) {
-    dztrader::db::Connection conn(":memory:");
-    dztrader::db::MigrationManager mgr;
+    dztrader::db::legacy::Connection conn(":memory:");
+    dztrader::db::legacy::MigrationManager mgr;
     mgr.add(1, [](SQLite::Database& db) { db.exec("CREATE TABLE t1 (id INTEGER)"); });
 
     mgr.apply(conn.db());
@@ -79,8 +79,8 @@ TEST(MigrationManagerTest, DuplicateApplyIsNoOp) {
 }
 
 TEST(MigrationManagerTest, PartialApplyResumesFromLastVersion) {
-    dztrader::db::Connection conn(":memory:");
-    dztrader::db::MigrationManager mgr;
+    dztrader::db::legacy::Connection conn(":memory:");
+    dztrader::db::legacy::MigrationManager mgr;
     mgr.add(1, [](SQLite::Database& db) { db.exec("CREATE TABLE t1 (id INTEGER)"); });
     mgr.apply(conn.db());
 
@@ -92,8 +92,8 @@ TEST(MigrationManagerTest, PartialApplyResumesFromLastVersion) {
 }
 
 TEST(MigrationManagerTest, MigrationFailureRollsBackAndThrows) {
-    dztrader::db::Connection conn(":memory:");
-    dztrader::db::MigrationManager mgr;
+    dztrader::db::legacy::Connection conn(":memory:");
+    dztrader::db::legacy::MigrationManager mgr;
     mgr.add(1, [](SQLite::Database& db) { db.exec("CREATE TABLE t1 (id INTEGER)"); });
     mgr.add(2, [](SQLite::Database& db) { db.exec("CREATE INVALID TABLE"); });
 
@@ -104,16 +104,16 @@ TEST(MigrationManagerTest, MigrationFailureRollsBackAndThrows) {
 }
 
 TEST(MigrationManagerTest, EmptyMigrationsAppliesNothing) {
-    dztrader::db::Connection conn(":memory:");
-    dztrader::db::MigrationManager mgr;
+    dztrader::db::legacy::Connection conn(":memory:");
+    dztrader::db::legacy::MigrationManager mgr;
     auto applied = mgr.apply(conn.db());
     EXPECT_TRUE(applied.empty());
     EXPECT_TRUE(table_exists(conn, "schema_version"));
 }
 
 TEST(MigrationManagerTest, ReapplyIsNoop) {
-    dztrader::db::Connection conn(":memory:");
-    dztrader::db::MigrationManager mgr;
+    dztrader::db::legacy::Connection conn(":memory:");
+    dztrader::db::legacy::MigrationManager mgr;
     mgr.add(1, [](SQLite::Database& db) { db.exec("CREATE TABLE t1 (id INTEGER)"); });
     mgr.add(2, [](SQLite::Database& db) { db.exec("CREATE TABLE t2 (id INTEGER)"); });
 
@@ -133,15 +133,15 @@ TEST(MigrationManagerTest, FailedMigrationLeavesNoPartialState) {
     const auto db_path = (tmp_dir / "test.db").string();
 
     {
-        dztrader::db::Connection conn(db_path);
-        dztrader::db::MigrationManager mgr;
+        dztrader::db::legacy::Connection conn(db_path);
+        dztrader::db::legacy::MigrationManager mgr;
         mgr.add(1, [](SQLite::Database& db) { db.exec("CREATE TABLE t1 (id INTEGER)"); });
         mgr.add(2, [](SQLite::Database&) { throw std::runtime_error("migration 2 failed"); });
         EXPECT_THROW(mgr.apply(conn.db()), std::runtime_error);
     }
     {
         // 重开连接: 单事务语义下失败的 apply 整体回滚, 不残留任何部分状态
-        dztrader::db::Connection conn(db_path);
+        dztrader::db::legacy::Connection conn(db_path);
         EXPECT_FALSE(table_exists(conn, "schema_version"));
         EXPECT_FALSE(table_exists(conn, "t1"));
     }
@@ -154,16 +154,16 @@ TEST(MigrationManagerTest, ConcurrentApplySafe) {
     std::filesystem::create_directories(tmp_dir);
     const auto db_path = (tmp_dir / "test.db").string();
 
-    auto register_all = [](dztrader::db::MigrationManager& mgr) {
+    auto register_all = [](dztrader::db::legacy::MigrationManager& mgr) {
         mgr.add(1, [](SQLite::Database& db) { db.exec("CREATE TABLE t1 (id INTEGER)"); });
         mgr.add(2, [](SQLite::Database& db) { db.exec("CREATE TABLE t2 (id INTEGER)"); });
     };
 
     {
-        dztrader::db::Connection conn_a(db_path);
-        dztrader::db::Connection conn_b(db_path);
-        dztrader::db::MigrationManager mgr_a;
-        dztrader::db::MigrationManager mgr_b;
+        dztrader::db::legacy::Connection conn_a(db_path);
+        dztrader::db::legacy::Connection conn_b(db_path);
+        dztrader::db::legacy::MigrationManager mgr_a;
+        dztrader::db::legacy::MigrationManager mgr_b;
         register_all(mgr_a);
         register_all(mgr_b);
 

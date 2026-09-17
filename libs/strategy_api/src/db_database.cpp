@@ -46,18 +46,18 @@ DzColumnType declared_type_to_col_type(const char* declared) {
     return DZ_COL_TYPE_NULL;
 }
 
-/// 后端列类型 (db::ColumnType) -> SDK 公开列类型 (DzColumnType)。
-DzColumnType db_col_type_to_dz(dztrader::db::ColumnType type) {
+/// 后端列类型 (dztrader::db::legacy::ColumnType) -> SDK 公开列类型 (DzColumnType)。
+DzColumnType db_col_type_to_dz(dztrader::db::legacy::ColumnType type) {
     switch (type) {
-        case dztrader::db::ColumnType::Bool:
+        case dztrader::db::legacy::ColumnType::Bool:
             return DZ_COL_TYPE_BOOL;
-        case dztrader::db::ColumnType::Int64:
+        case dztrader::db::legacy::ColumnType::Int64:
             return DZ_COL_TYPE_INT64;
-        case dztrader::db::ColumnType::Float64:
+        case dztrader::db::legacy::ColumnType::Float64:
             return DZ_COL_TYPE_FLOAT64;
-        case dztrader::db::ColumnType::String:
+        case dztrader::db::legacy::ColumnType::String:
             return DZ_COL_TYPE_STRING;
-        case dztrader::db::ColumnType::Null:
+        case dztrader::db::legacy::ColumnType::Null:
             return DZ_COL_TYPE_NULL;
     }
     return DZ_COL_TYPE_NULL;
@@ -290,7 +290,7 @@ std::unique_ptr<DzDatabase> db_open_readonly(const std::string& path) {
     return handle;
 }
 
-DbQueryResult to_db_query_result(dztrader::db::QueryResult result) {
+DbQueryResult to_db_query_result(dztrader::db::legacy::QueryResult result) {
     DbQueryResult out;
     out.columns.reserve(result.columns.size());
     for (auto& column : result.columns) {

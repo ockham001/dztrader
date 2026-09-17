@@ -5,9 +5,9 @@
 #include <vector>
 
 #include <dztrader/core/exception.h>
-#include <dztrader/db/connection.h>
-#include <dztrader/db/database_sqlite.h>
-#include <dztrader/db/migration.h>
+#include <dztrader/db/legacy/connection.h>
+#include <dztrader/db/legacy/database_sqlite.h>
+#include <dztrader/db/legacy/migration.h>
 #include <dztrader/error.h>
 #include <dztrader/tdstore/instrument_store.h>
 #include <dztrader/tdstore/records.h>
@@ -49,11 +49,11 @@ InstrumentRecord make_record(const std::string& instrument_id) {
 
 class InstrumentStoreTest : public ::testing::Test {
 protected:
-    dztrader::db::Connection conn{":memory:"};
-    dztrader::db::SqliteDatabaseRef db_{conn.db()};
+    dztrader::db::legacy::Connection conn{":memory:"};
+    dztrader::db::legacy::SqliteDatabaseRef db_{conn.db()};
 
     void SetUp() override {
-        dztrader::db::MigrationManager mgr;
+        dztrader::db::legacy::MigrationManager mgr;
         apply_td_migrations(mgr);
         mgr.apply(conn.db());
     }
@@ -180,9 +180,9 @@ TEST_F(InstrumentStoreTest, QueryInstrumentsEmptyKeepsColumnMeta) {
     const auto result = query_instruments(db_, "", fields);
     ASSERT_EQ(result.columns.size(), 2u);
     EXPECT_EQ(result.columns[0].name, "price_tick");
-    EXPECT_EQ(result.columns[0].type, dztrader::db::ColumnType::Float64);
+    EXPECT_EQ(result.columns[0].type, dztrader::db::legacy::ColumnType::Float64);
     EXPECT_EQ(result.columns[1].name, "instrument_id");
-    EXPECT_EQ(result.columns[1].type, dztrader::db::ColumnType::String);
+    EXPECT_EQ(result.columns[1].type, dztrader::db::legacy::ColumnType::String);
     EXPECT_TRUE(result.rows.empty());
 }
 

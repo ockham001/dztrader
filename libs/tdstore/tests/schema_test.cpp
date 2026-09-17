@@ -4,34 +4,34 @@
 #include <string>
 #include <vector>
 
-#include <dztrader/db/connection.h>
-#include <dztrader/db/migration.h>
+#include <dztrader/db/legacy/connection.h>
+#include <dztrader/db/legacy/migration.h>
 #include <dztrader/tdstore/schema.h>
 
 namespace dztrader::tdstore {
 namespace {
 
-bool table_exists(dztrader::db::Connection& conn, const std::string& name) {
+bool table_exists(dztrader::db::legacy::Connection& conn, const std::string& name) {
     return conn.scalar<int>(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='" + name + "'") > 0;
 }
 
-int index_count(dztrader::db::Connection& conn, const std::string& table) {
+int index_count(dztrader::db::legacy::Connection& conn, const std::string& table) {
     return conn.scalar<int>(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name='" + table + "'");
 }
 
-bool index_exists(dztrader::db::Connection& conn, const std::string& name) {
+bool index_exists(dztrader::db::legacy::Connection& conn, const std::string& name) {
     return conn.scalar<int>(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='" + name + "'") > 0;
 }
 
-std::string index_sql(dztrader::db::Connection& conn, const std::string& name) {
+std::string index_sql(dztrader::db::legacy::Connection& conn, const std::string& name) {
     return conn.scalar<std::string>(
         "SELECT sql FROM sqlite_master WHERE type='index' AND name='" + name + "'");
 }
 
-void expect_index_columns(dztrader::db::Connection& conn, const std::string& name,
+void expect_index_columns(dztrader::db::legacy::Connection& conn, const std::string& name,
                           const std::vector<std::string>& cols) {
     const auto sql = index_sql(conn, name);
     for (const auto& col : cols) {
@@ -40,7 +40,7 @@ void expect_index_columns(dztrader::db::Connection& conn, const std::string& nam
 }
 
 /// 列名 -> 声明类型 (PRAGMA table_info 的 name/type 列).
-std::map<std::string, std::string> table_columns(dztrader::db::Connection& conn,
+std::map<std::string, std::string> table_columns(dztrader::db::legacy::Connection& conn,
                                                  const std::string& table) {
     std::map<std::string, std::string> columns;
     SQLite::Statement q(conn.db(), "PRAGMA table_info(" + table + ")");
@@ -58,8 +58,8 @@ std::string column_type(const std::map<std::string, std::string>& columns,
 
 class TdSchemaTest : public ::testing::Test {
 protected:
-    dztrader::db::Connection conn{":memory:"};
-    dztrader::db::MigrationManager mgr;
+    dztrader::db::legacy::Connection conn{":memory:"};
+    dztrader::db::legacy::MigrationManager mgr;
 
     void SetUp() override {
         apply_td_migrations(mgr);
@@ -132,7 +132,7 @@ TEST_F(TdSchemaTest, OrdersTradesHaveSeqColumnAndIndex) {
 TEST_F(TdSchemaTest, OrdersRebuildPreservesRowsAndIndexes) {
     // v1 建表插 2 行 -> 迁移 v2 -> 2 行仍在且 seq=0, 索引保留
     // 构造 v1 库: orders/trades 建 v1 表 (DDL 复制自 tdstore schema.cpp migration_v1) + 插数据
-    dztrader::db::Connection legacy(":memory:");
+    dztrader::db::legacy::Connection legacy(":memory:");
     legacy.db().exec(
         "CREATE TABLE orders ("
         "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -168,7 +168,7 @@ TEST_F(TdSchemaTest, OrdersRebuildPreservesRowsAndIndexes) {
                 "VALUES ('acc1', '20260726', 'T2', 2, 'IF2506', 'CFFEX', 3900.0, 1)");
 
     // 应用完整迁移: v1 (IF NOT EXISTS 对既有表 no-op) + v2 (四步重建保数据) + v3 + v4
-    dztrader::db::MigrationManager mgr2;
+    dztrader::db::legacy::MigrationManager mgr2;
     apply_td_migrations(mgr2);
     auto applied = mgr2.apply(legacy.db());
     ASSERT_EQ(applied.size(), 5u);
@@ -230,7 +230,7 @@ TEST_F(TdSchemaTest, NewTablesPositionsTradingAccounts) {
 TEST_F(TdSchemaTest, InstrumentsV3MigratesAsciiProductText) {
     // v1 instruments: bind_instrument 以 static_cast<int>('F')=70 绑定 CHAR(1) 列,
     // TEXT affinity 实存文本 "70" (sqlite3 实证) — CASE 必须匹配 ASCII 文本
-    dztrader::db::Connection legacy(":memory:");
+    dztrader::db::legacy::Connection legacy(":memory:");
     legacy.db().exec(
         "CREATE TABLE instruments ("
         "    instrument_id TEXT PRIMARY KEY, exchange_id TEXT NOT NULL, name TEXT,"
@@ -246,7 +246,7 @@ TEST_F(TdSchemaTest, InstrumentsV3MigratesAsciiProductText) {
         "INSERT INTO instruments VALUES ('rb2601','SHFE','rb','70',"
         "10,1,1,0,'0',0.0,'rb',-1,-1,'20260101')");
 
-    dztrader::db::MigrationManager mgr2;
+    dztrader::db::legacy::MigrationManager mgr2;
     apply_td_migrations(mgr2);
     auto applied = mgr2.apply(legacy.db());
     ASSERT_EQ(applied.size(), 5u);
@@ -275,7 +275,7 @@ TEST_F(TdSchemaTest, InstrumentsV3MigratesAsciiProductText) {
 TEST_F(TdSchemaTest, InstrumentsV3MigratesNumericProductText) {
     // v2 遗留库: product 文本 "13" (DZ_PRODUCT_SPOT 数值枚举的文本形态)
     // -> v4 迁移后 product_class == 13 (若只认 ASCII 文本则落 ELSE 0)
-    dztrader::db::Connection legacy(":memory:");
+    dztrader::db::legacy::Connection legacy(":memory:");
     legacy.db().exec(
         "CREATE TABLE instruments ("
         "    instrument_id TEXT PRIMARY KEY, exchange_id TEXT NOT NULL, name TEXT,"
@@ -287,7 +287,7 @@ TEST_F(TdSchemaTest, InstrumentsV3MigratesNumericProductText) {
         "INSERT INTO instruments VALUES ('AU9999','SGE','AU9999','13',"
         "1,0.01,1,0,'0',0.0,'',-1,-1,'20260101')");
 
-    dztrader::db::MigrationManager mgr;
+    dztrader::db::legacy::MigrationManager mgr;
     apply_td_migrations(mgr);
     auto applied = mgr.apply(legacy.db());
     ASSERT_EQ(applied.size(), 5u);
@@ -323,13 +323,13 @@ TEST_F(TdSchemaTest, VersionIsFive) {
 
 TEST_F(TdSchemaTest, V5DropsFeeRateTables) {
     // v4 遗留库含两费率表 → v5 迁移删除 (追加式迁移: v1 仍会建表, v5 负责删).
-    dztrader::db::Connection legacy(":memory:");
+    dztrader::db::legacy::Connection legacy(":memory:");
     legacy.db().exec("CREATE TABLE margin_rates (id INTEGER PRIMARY KEY)");
     legacy.db().exec("CREATE TABLE commission_rates (id INTEGER PRIMARY KEY)");
     legacy.db().exec("INSERT INTO margin_rates (id) VALUES (1)");
     legacy.db().exec("INSERT INTO commission_rates (id) VALUES (1)");
 
-    dztrader::db::MigrationManager mgr2;
+    dztrader::db::legacy::MigrationManager mgr2;
     apply_td_migrations(mgr2);
     auto applied = mgr2.apply(legacy.db());
     ASSERT_EQ(applied.size(), 5u);

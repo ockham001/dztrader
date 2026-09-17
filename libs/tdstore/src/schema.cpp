@@ -315,7 +315,7 @@ void migration_v5(SQLite::Database& db) {
 
 }  // namespace
 
-void apply_td_migrations(dztrader::db::MigrationManager& mgr) {
+void apply_td_migrations(dztrader::db::legacy::MigrationManager& mgr) {
     mgr.add(1, migration_v1);
     mgr.add(2, migration_v2);
     mgr.add(3, migration_v3);

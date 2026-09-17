@@ -10,7 +10,7 @@
 #include <SQLiteCpp/Statement.h>
 
 #include <dztrader/core/this_process.h>
-#include <dztrader/db/migration.h>
+#include <dztrader/db/legacy/migration.h>
 #include <dztrader/tdstore/schema.h>
 
 #include "td/td_persist_records.h"
@@ -43,7 +43,7 @@ protected:
     /// 建 v2 schema (migration) 的读写连接, 用于灌测试数据.
     SQLite::Database open_rw() {
         SQLite::Database db(db_path_, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
-        dztrader::db::MigrationManager mgr;
+        dztrader::db::legacy::MigrationManager mgr;
         dztrader::tdstore::apply_td_migrations(mgr);
         mgr.apply(db);
         return db;

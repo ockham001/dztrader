@@ -2,13 +2,13 @@
  * @file database_sqlite.h
  * @brief SQLite 适配器 (拥有型 / 引用包装型)
  */
-#ifndef DZTRADER_DB_DATABASE_SQLITE_H_
-#define DZTRADER_DB_DATABASE_SQLITE_H_
+#ifndef DZTRADER_DB_LEGACY_DATABASE_SQLITE_H_
+#define DZTRADER_DB_LEGACY_DATABASE_SQLITE_H_
 
-#include <dztrader/db/database.h>
+#include <dztrader/db/legacy/database.h>
 #include <dztrader/db/sqlite.h>
 
-namespace dztrader::db {
+namespace dztrader::db::legacy {
 
 class SqliteStatement final : public Statement {
 public:
@@ -55,6 +55,6 @@ private:
     SQLite::Database& db_;
 };
 
-}  // namespace dztrader::db
+}  // namespace dztrader::db::legacy
 
-#endif  // DZTRADER_DB_DATABASE_SQLITE_H_
+#endif  // DZTRADER_DB_LEGACY_DATABASE_SQLITE_H_

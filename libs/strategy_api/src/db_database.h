@@ -13,14 +13,16 @@
 #include <unordered_map>
 #include <vector>
 
-#include <dztrader/db/database_sqlite.h>
+#include <dztrader/db/legacy/database_sqlite.h>
 
 #include "result_set_impl.h"
 
 /** @brief 数据库句柄实现体（api.h 的 DzDatabase 为不透明指针） */
 struct DzDatabase {
     std::unique_ptr<SQLite::Database> db;
-    dztrader::db::SqliteDatabaseRef ref() { return dztrader::db::SqliteDatabaseRef(*db); }
+    dztrader::db::legacy::SqliteDatabaseRef ref() {
+        return dztrader::db::legacy::SqliteDatabaseRef(*db);
+    }
 };
 
 namespace dztrader::strategy_api_internal {
@@ -31,8 +33,8 @@ struct DbQueryResult {
     std::vector<Row> rows;
 };
 
-/// 后端无关查询结果 (db::QueryResult) -> SDK 内部结果; 列类型映射 db::ColumnType -> DzColumnType
-DbQueryResult to_db_query_result(db::QueryResult result);
+/// 后端无关查询结果 (db::legacy::QueryResult) -> SDK 内部结果; 列类型映射 db::legacy::ColumnType -> DzColumnType
+DbQueryResult to_db_query_result(dztrader::db::legacy::QueryResult result);
 
 /**
  * @brief 只读打开 td 库 (SQLITE_OPEN_READONLY)
