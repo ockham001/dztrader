@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <dztrader/api.h>
+#include <dztrader/db/database.h>
 #include <dztrader/error.h>
+#include <dztrader/tdstore/schema_catalog.h>
 
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
@@ -14,81 +16,7 @@
 
 namespace {
 
-// 建表 SQL 常量: 与 libs/tdstore/src/schema.cpp 的 migration_v2 建表语句逐字一致
-// (orders/trades 为 v2 重建后的最终形态, 含 seq 列)。schema 变更时两处同步。
-constexpr const char* kCreateOrders =
-    "CREATE TABLE IF NOT EXISTS orders ("
-    "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "    account_id TEXT NOT NULL,"
-    "    trading_day TEXT NOT NULL,"
-    "    order_id INTEGER NOT NULL,"
-    "    order_ref TEXT NOT NULL,"
-    "    external_order_id TEXT,"
-    "    is_external INTEGER NOT NULL DEFAULT 0,"
-    "    instrument_id TEXT NOT NULL,"
-    "    exchange_id TEXT NOT NULL,"
-    "    direction CHAR(1),"
-    "    position_effect CHAR(1),"
-    "    price_type CHAR(1),"
-    "    status CHAR(1),"
-    "    price REAL,"
-    "    volume INTEGER,"
-    "    volume_traded INTEGER,"
-    "    volume_canceled INTEGER,"
-    "    insert_time INTEGER,"
-    "    update_time INTEGER,"
-    "    error_id INTEGER,"
-    "    error_msg TEXT,"
-    "    strategy_id TEXT,"
-    "    remark TEXT,"
-    "    seq INTEGER NOT NULL DEFAULT 0,"
-    "    UNIQUE(account_id, order_id))";
-
-constexpr const char* kCreateTrades =
-    "CREATE TABLE IF NOT EXISTS trades ("
-    "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "    account_id TEXT NOT NULL,"
-    "    trading_day TEXT NOT NULL,"
-    "    trade_id TEXT NOT NULL,"
-    "    order_id INTEGER NOT NULL,"
-    "    instrument_id TEXT NOT NULL,"
-    "    exchange_id TEXT NOT NULL,"
-    "    direction CHAR(1),"
-    "    position_effect CHAR(1),"
-    "    price REAL NOT NULL,"
-    "    volume INTEGER NOT NULL,"
-    "    trade_time INTEGER,"
-    "    trade_date INTEGER,"
-    "    commission REAL,"
-    "    strategy_id TEXT,"
-    "    seq INTEGER NOT NULL DEFAULT 0,"
-    "    UNIQUE(account_id, trading_day, trade_id))";
-
-constexpr const char* kCreatePositions =
-    "CREATE TABLE IF NOT EXISTS positions ("
-    "    account_id TEXT NOT NULL,"
-    "    trading_day TEXT NOT NULL,"
-    "    instrument_id TEXT NOT NULL,"
-    "    exchange_id TEXT NOT NULL,"
-    "    direction CHAR(1) NOT NULL,"
-    "    volume INTEGER,"
-    "    frozen_volume INTEGER,"
-    "    today_volume INTEGER,"
-    "    yd_volume INTEGER,"
-    "    price REAL,"
-    "    seq INTEGER NOT NULL DEFAULT 0,"
-    "    UNIQUE(account_id, instrument_id, direction))";
-
-constexpr const char* kCreateTradingAccounts =
-    "CREATE TABLE IF NOT EXISTS trading_accounts ("
-    "    account_id TEXT NOT NULL PRIMARY KEY,"
-    "    trading_day TEXT NOT NULL,"
-    "    balance REAL, available REAL, frozen REAL,"
-    "    commission REAL, margin REAL, withdraw_quota REAL,"
-    "    deposit REAL, withdraw REAL,"
-    "    seq INTEGER NOT NULL DEFAULT 0)";
-
-/// 在临时目录建 td 库 (schema v2) 并写入样例行。
+/// 在临时目录建 td 库 (schema_catalog 声明 + 驱动迁移) 并写入样例行。
 class DbTest : public ::testing::Test {
 protected:
     std::string db_path_;
@@ -100,11 +28,10 @@ protected:
         std::filesystem::create_directories(dir);
         db_path_ = (dir / "td.db").string();
 
-        SQLite::Database db(db_path_, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
-        db.exec(kCreateOrders);
-        db.exec(kCreateTrades);
-        db.exec(kCreatePositions);
-        db.exec(kCreateTradingAccounts);
+        auto database = dztrader::db::Database::open(
+            dztrader::db::Config{.backend = "sqlite", .options = {{"path", db_path_}}},
+            dztrader::tdstore::schemas());
+        database->migrate();
 
         db_ = dz_db_open(db_path_.c_str());
         ASSERT_NE(nullptr, db_) << "dz_db_open failed: " << dz_errmsg();
@@ -120,11 +47,10 @@ protected:
 
 }  // namespace
 
-// 打开不存在的库文件应失败返回 NULL (策略据此降级), 错误码为 DZ_EC_SYSTEM
-// (控制器裁决: 不新增 DZ_EC_DB_* 公开错误码, open/query 失败用 DZ_EC_SYSTEM + 描述)。
+// 打开不存在的库文件应失败返回 NULL (策略据此降级), 错误码为 DZ_EC_DB_OPEN_FAILED。
 TEST_F(DbTest, OpenReadOnlyMissingFileFails) {
     EXPECT_EQ(nullptr, dz_db_open("/nonexistent/dz_does_not_exist.db"));
-    EXPECT_EQ(DZ_EC_SYSTEM, dz_errcode());
+    EXPECT_EQ(DZ_EC_DB_OPEN_FAILED, dz_errcode());
 }
 
 // NULL 参数 (path) 应返回 NULL 且错误码 DZ_EC_INVALID_PARAM。

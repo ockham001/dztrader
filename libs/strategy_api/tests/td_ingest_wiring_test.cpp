@@ -5,10 +5,12 @@
 #include <dztrader/core/env.h>
 #include <dztrader/core/string_util.h>
 #include <dztrader/date_time/date.h>
+#include <dztrader/db/database.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/writer.h>
 #include <dztrader/struct.h>
+#include <dztrader/tdstore/schema_catalog.h>
 
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
@@ -49,81 +51,6 @@ void create_md_channel(const std::filesystem::path& shm_dir) {
     (void)ChannelMeta::open_or_create(cfg);
 }
 
-// orders 建表 SQL: 与 libs/tdstore/src/schema.cpp v2 迁移后最终形态逐字一致 (含 seq 列)。
-constexpr const char* kCreateOrders =
-    "CREATE TABLE IF NOT EXISTS orders ("
-    "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "    account_id TEXT NOT NULL,"
-    "    trading_day TEXT NOT NULL,"
-    "    order_id INTEGER NOT NULL,"
-    "    order_ref TEXT NOT NULL,"
-    "    external_order_id TEXT,"
-    "    is_external INTEGER NOT NULL DEFAULT 0,"
-    "    instrument_id TEXT NOT NULL,"
-    "    exchange_id TEXT NOT NULL,"
-    "    direction CHAR(1),"
-    "    position_effect CHAR(1),"
-    "    price_type CHAR(1),"
-    "    status CHAR(1),"
-    "    price REAL,"
-    "    volume INTEGER,"
-    "    volume_traded INTEGER,"
-    "    volume_canceled INTEGER,"
-    "    insert_time INTEGER,"
-    "    update_time INTEGER,"
-    "    error_id INTEGER,"
-    "    error_msg TEXT,"
-    "    strategy_id TEXT,"
-    "    remark TEXT,"
-    "    seq INTEGER NOT NULL DEFAULT 0,"
-    "    UNIQUE(account_id, order_id))";
-
-// trades 建表 SQL: 与 libs/tdstore/src/schema.cpp v2 迁移后最终形态逐字一致 (含 seq 列)。
-constexpr const char* kCreateTrades =
-    "CREATE TABLE IF NOT EXISTS trades ("
-    "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "    account_id TEXT NOT NULL,"
-    "    trading_day TEXT NOT NULL,"
-    "    trade_id TEXT NOT NULL,"
-    "    order_id INTEGER NOT NULL,"
-    "    instrument_id TEXT NOT NULL,"
-    "    exchange_id TEXT NOT NULL,"
-    "    direction CHAR(1),"
-    "    position_effect CHAR(1),"
-    "    price REAL NOT NULL,"
-    "    volume INTEGER NOT NULL,"
-    "    trade_time INTEGER,"
-    "    trade_date INTEGER,"
-    "    commission REAL,"
-    "    strategy_id TEXT,"
-    "    seq INTEGER NOT NULL DEFAULT 0,"
-    "    UNIQUE(account_id, trading_day, trade_id))";
-
-constexpr const char* kCreateTradingAccounts =
-    "CREATE TABLE IF NOT EXISTS trading_accounts ("
-    "    account_id TEXT NOT NULL PRIMARY KEY,"
-    "    trading_day TEXT NOT NULL,"
-    "    balance REAL, available REAL, frozen REAL,"
-    "    commission REAL, margin REAL, withdraw_quota REAL,"
-    "    deposit REAL, withdraw REAL,"
-    "    seq INTEGER NOT NULL DEFAULT 0)";
-
-// positions 建表 SQL: 与 libs/tdstore/src/schema.cpp v2 迁移后最终形态逐字一致 (含 seq 列)。
-constexpr const char* kCreatePositions =
-    "CREATE TABLE IF NOT EXISTS positions ("
-    "    account_id TEXT NOT NULL,"
-    "    trading_day TEXT NOT NULL,"
-    "    instrument_id TEXT NOT NULL,"
-    "    exchange_id TEXT NOT NULL,"
-    "    direction CHAR(1) NOT NULL,"
-    "    volume INTEGER NOT NULL,"
-    "    frozen_volume INTEGER,"
-    "    today_volume INTEGER,"
-    "    yd_volume INTEGER,"
-    "    price REAL,"
-    "    seq INTEGER NOT NULL DEFAULT 0,"
-    "    UNIQUE(account_id, instrument_id, direction))";
-
 /// SDK ingest 接线端到端: 临时 DZTRADER_HOME + 预置统一 td 库 (db/td.db)。
 /// 独立二进制 (独立进程): paths::home() 按进程缓存, 本 fixture 先设 DZTRADER_HOME
 /// 再 dz_init, 保证库路径发现落在本测试目录。
@@ -145,11 +72,14 @@ protected:
         create_md_channel(home_ + "/shm");
 
         db_path_ = std::filesystem::path(home_) / "db" / "td.db";
-        SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
-        db.exec(kCreateOrders);
-        db.exec(kCreateTrades);
-        db.exec(kCreatePositions);
-        db.exec(kCreateTradingAccounts);
+        {
+            auto database = dztrader::db::Database::open(
+                dztrader::db::Config{.backend = "sqlite",
+                                     .options = {{"path", db_path_.string()}}},
+                dztrader::tdstore::schemas());
+            database->migrate();
+        }
+        SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         // 预置快照行: 账户 CTP001, orders seq 1..5 (W 快照 = MAX(seq) = 5)
         {
             SQLite::Statement ins(db,

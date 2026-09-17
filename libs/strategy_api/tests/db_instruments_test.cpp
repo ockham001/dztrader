@@ -1,23 +1,21 @@
 #include <gtest/gtest.h>
 
 #include <dztrader/api.h>
-#include <dztrader/db/legacy/database_sqlite.h>
-#include <dztrader/db/legacy/migration.h>
+#include <dztrader/db/database.h>
 #include <dztrader/error.h>
-#include <dztrader/tdstore/instrument_store.h>
 #include <dztrader/tdstore/records.h>
-#include <dztrader/tdstore/schema.h>
-
-#include <SQLiteCpp/Database.h>
+#include <dztrader/tdstore/records_store.h>
+#include <dztrader/tdstore/schema_catalog.h>
 
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace {
 
 /// instruments 查询 SDK 接口 (dz_db_query_instruments) 测试。
-/// 建库走 tdstore 真实迁移 (libs/tdstore/src/schema.cpp), schema 不与测试副本漂移。
+/// 建库走 tdstore::schemas() 声明 + 驱动迁移, schema 不与测试副本漂移。
 class DbInstrumentsTest : public ::testing::Test {
 protected:
     std::string db_path_;
@@ -30,13 +28,14 @@ protected:
         db_path_ = (dir / "td.db").string();
 
         {
-            SQLite::Database db(db_path_, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
-            dztrader::db::legacy::SqliteDatabaseRef ref(db);
-            dztrader::db::legacy::MigrationManager mgr;
-            dztrader::tdstore::apply_td_migrations(mgr);
-            mgr.apply(db);
-            dztrader::tdstore::upsert_instrument(ref, make_record("rb2601"));
-            dztrader::tdstore::upsert_instrument(ref, make_record("rb2605"));
+            auto database = dztrader::db::Database::open(
+                dztrader::db::Config{.backend = "sqlite", .options = {{"path", db_path_}}},
+                dztrader::tdstore::schemas());
+            database->migrate();
+            auto session = database->session();
+            const std::vector<dztrader::tdstore::InstrumentRecord> records{
+                make_record("rb2601"), make_record("rb2605")};
+            dztrader::tdstore::upsert_instruments(*session, records);
         }
 
         db_ = dz_db_open(db_path_.c_str());

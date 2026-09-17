@@ -26,7 +26,7 @@
 #include <dztrader/shm/frame_codec.h>
 #include <dztrader/core/core_struct.h>
 #include <dztrader/core/core_data_type.h>
-#include <dztrader/tdstore/instrument_store.h>
+#include <dztrader/tdstore/records_store.h>
 #include <dztrader/version.h>
 
 #include "strategy_context.h"
@@ -136,11 +136,10 @@ std::unique_ptr<DzDatabase> open_td_db() {
 }
 
 /// 装载全部账户水位: 四表无过滤查询, 按账户求 MAX(seq) (spec §5.1)。
-/// 四表读取包进单只读事务 (BEGIN DEFERRED 快照读): 分次独立查询存在竞态 —
+/// 四表读取包进单只读快照 (begin_snapshot RAII): 分次独立查询存在竞态 —
 /// 先查表 A 后写端提交 A 中 seq∈(W_A, W] 的行, 再查表 B 得 W_B ≥ W, 该行
-/// "快照没有却被 W 判定已含" → 静默误吞。单事务使首条 SELECT 起四表共享同一
-/// 快照 (SHARED 锁保持到 COMMIT), 写端短暂阻塞由 busy_timeout=5000 吸收
-/// (查询总时长 <10ms, 仅 init 低频路径)。
+/// "快照没有却被 W 判定已含" → 静默误吞。单快照使四表共享同一视图,
+/// 写端短暂阻塞由 busy_timeout=5000 吸收 (查询总时长 <10ms, 仅 init 低频路径)。
 /// 单表查询失败 (表缺失/库不完整) 跳过该表, 不整体失败 (降级 = 部分表无快照水位,
 /// 该表数据经帧全量放行, 回补时同样按表容错)。
 void load_all_watermarks(DzContext* ctx) {
@@ -149,39 +148,30 @@ void load_all_watermarks(DzContext* ctx) {
         if (db == nullptr) {
             return;
         }
-        db->db->exec("BEGIN DEFERRED");
-        try {
-            std::unordered_map<std::string, uint64_t> max_seq;
-            for (const char* resource : {"order", "trade", "position", "trading_account"}) {
-                // 终检发现 E: 聚合查询 (每账户 MAX(seq)) 替代 SELECT * 全行物化 —
-                // 库随历史线性增长时全表装载线性恶化, 聚合只物化每账户一行。
-                try {
-                    for (const auto& [acct, seq] :
-                         strategy_api_internal::db_query_max_seq_by_account(db.get(), resource)) {
-                        auto it = max_seq.find(acct);
-                        if (it == max_seq.end() || seq > it->second) {
-                            max_seq[acct] = seq;
-                        }
-                    }
-                } catch (const std::exception&) {
-                    continue;  // 表缺失/查询失败: 跳过该表, 不整体失败
-                }
-            }
-            db->db->exec("COMMIT");
-            for (const auto& [acct, w] : max_seq) {
-                ctx->ingest_gate.set_watermark(acct, w);
-            }
-            if (!max_seq.empty()) {
-                dz_diag(
-                    std::format("td ingest watermarks loaded | accounts={}", max_seq.size())
-                        .c_str());
-            }
-        } catch (...) {
+        // 快照作用域覆盖四表聚合循环; 作用域结束 (析构) 即结束只读事务。
+        auto snapshot = db->session->begin_snapshot();
+        std::unordered_map<std::string, uint64_t> max_seq;
+        for (const char* resource : {"order", "trade", "position", "trading_account"}) {
+            // 终检发现 E: 聚合查询 (每账户 MAX(seq)) 替代 SELECT * 全行物化 —
+            // 库随历史线性增长时全表装载线性恶化, 聚合只物化每账户一行。
             try {
-                db->db->exec("ROLLBACK");
-            } catch (...) {
+                for (const auto& [acct, seq] :
+                     strategy_api_internal::db_query_max_seq_by_account(db.get(), resource)) {
+                    auto it = max_seq.find(acct);
+                    if (it == max_seq.end() || seq > it->second) {
+                        max_seq[acct] = seq;
+                    }
+                }
+            } catch (const std::exception&) {
+                continue;  // 表缺失/查询失败: 跳过该表, 不整体失败
             }
-            throw;
+        }
+        for (const auto& [acct, w] : max_seq) {
+            ctx->ingest_gate.set_watermark(acct, w);
+        }
+        if (!max_seq.empty()) {
+            dz_diag(
+                std::format("td ingest watermarks loaded | accounts={}", max_seq.size()).c_str());
         }
     } catch (const std::exception& e) {
         dz_diag((std::string("td ingest watermark load failed (degraded, no filtering): ") +
@@ -193,7 +183,7 @@ void load_all_watermarks(DzContext* ctx) {
 }
 
 /// 重查单账户新水位 (spec §5.5 重置): 四表按账户 MAX(seq)。
-/// 四表读取包进单只读事务 (同 load_all_watermarks 的快照读竞态论证)。
+/// 四表读取包进单只读快照 (同 load_all_watermarks 的快照读竞态论证)。
 /// 库不可用时返回 0 (重置为新基准, gate 过滤 seq≤0 即不拦 seq≥1)。
 uint64_t rebuild_watermark(const std::string& account_id) {
     try {
@@ -201,30 +191,22 @@ uint64_t rebuild_watermark(const std::string& account_id) {
         if (db == nullptr) {
             return 0;
         }
-        db->db->exec("BEGIN DEFERRED");
-        try {
-            uint64_t max_seq = 0;
-            for (const char* resource : {"order", "trade", "position", "trading_account"}) {
-                // 终检发现 E: 聚合查询 (单账户 MAX(seq)) 替代该账户全行物化。
-                try {
-                    const uint64_t s = strategy_api_internal::db_query_account_max_seq(
-                        db.get(), resource, account_id);
-                    if (s > max_seq) {
-                        max_seq = s;
-                    }
-                } catch (const std::exception&) {
-                    continue;  // 表缺失: 跳过该表
-                }
-            }
-            db->db->exec("COMMIT");
-            return max_seq;
-        } catch (...) {
+        // 快照作用域覆盖四表聚合循环; 作用域结束 (析构) 即结束只读事务。
+        auto snapshot = db->session->begin_snapshot();
+        uint64_t max_seq = 0;
+        for (const char* resource : {"order", "trade", "position", "trading_account"}) {
+            // 终检发现 E: 聚合查询 (单账户 MAX(seq)) 替代该账户全行物化。
             try {
-                db->db->exec("ROLLBACK");
-            } catch (...) {
+                const uint64_t s = strategy_api_internal::db_query_account_max_seq(
+                    db.get(), resource, account_id);
+                if (s > max_seq) {
+                    max_seq = s;
+                }
+            } catch (const std::exception&) {
+                continue;  // 表缺失: 跳过该表
             }
-            throw;
         }
+        return max_seq;
     } catch (const std::exception& e) {
         dz_diag((std::string("td ingest watermark rebuild failed (reset to empty): ") + e.what())
                     .c_str());
@@ -353,13 +335,10 @@ struct GapBackfillRows {
 /// 查询 gap 区间四表行 (不转换不入缓冲)。
 GapBackfillRows query_gap_tables(DzDatabase* db, const std::string& account_id, uint64_t from,
                                  uint64_t to) {
-    const std::string filter =
-        std::format("{{\"account_id\": \"{}\", \"seq\": {{\"$gte\": {}, \"$lt\": {}}}}}",
-                    account_id, from, to + 1);
     const auto query_table = [&](const char* resource, bool* ok) -> DbQueryResult {
         try {
             *ok = true;
-            return strategy_api_internal::db_generic_query(db, resource, filter);
+            return strategy_api_internal::db_query_seq_range(db, resource, account_id, from, to);
         } catch (const std::exception& e) {
             dz_diag((std::string("ingest backfill table skipped: ") + e.what()).c_str());
             return DbQueryResult{};
@@ -404,30 +383,21 @@ bool gap_covered(DzDatabase* db, const GapBackfillRows& rows, const std::string&
     return account_max >= to;
 }
 
-/// 断档回补单次快照查询 + 覆盖判定 (BEGIN DEFERRED 单事务, 与水位装载同型):
+/// 断档回补单次快照查询 + 覆盖判定 (begin_snapshot 只读快照, 与水位装载同型):
 /// 范围行查询 + 绝对态容差聚合查询必须共享同一快照 — 否则写端在范围查询后、容差聚合前
 /// 提交区间内行, 容差聚合见新行 (account_max ≥ 上界) 判覆盖, 而范围行仍缺该行 →
-/// 回补缺条 (该行 seq ≤ W 被过滤, 追加流永久缺)。单事务使两查询同快照, 写端短暂阻塞
+/// 回补缺条 (该行 seq ≤ W 被过滤, 追加流永久缺)。单快照使两查询同视图, 写端短暂阻塞
 /// 由 busy_timeout=5000 吸收。返回 true = 覆盖; rows 为同快照的范围行结果。
 bool gap_covered_snapshot(DzDatabase* db, GapBackfillRows* rows, const std::string& account_id,
                           uint64_t from, uint64_t to) {
-    db->db->exec("BEGIN DEFERRED");
-    try {
-        *rows = query_gap_tables(db, account_id, from, to);
-        const bool covered = gap_covered(db, *rows, account_id, from, to);
-        db->db->exec("COMMIT");
-        return covered;
-    } catch (...) {
-        try {
-            db->db->exec("ROLLBACK");
-        } catch (...) {
-        }
-        throw;
-    }
+    // 快照作用域覆盖范围查询 + 覆盖判定聚合; 作用域结束 (析构) 即结束只读事务。
+    auto snapshot = db->session->begin_snapshot();
+    *rows = query_gap_tables(db, account_id, from, to);
+    return gap_covered(db, *rows, account_id, from, to);
 }
 
 /// 回补帧入 replay 缓冲 (覆盖确认后调用): 查询结果转 Dz*Report 填 seq 入缓冲。
-/// 行序 = seq 序 (db_generic_query ORDER BY seq), 各表内部有序; 跨表简化为逐表入缓冲,
+/// 行序 = seq 序 (db_query_seq_range ORDER BY seq ASC), 各表内部有序; 跨表简化为逐表入缓冲,
 /// 每表内部 seq 序 (回补消费端按帧类型独立, 不要求跨表严格交错)。
 /// 返回 false = 缓冲溢出 (gap 区间过宽, 回补被截断)。
 bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
@@ -1458,7 +1428,7 @@ using strategy_api_internal::db_query_position;
 using strategy_api_internal::db_query_trading_account;
 using strategy_api_internal::to_db_query_result;
 
-/// 逗号分隔列名 -> 列名列表 (逐项 trim 空格, 空项跳过); NULL/"" -> 空 (tdstore 视为全部承诺列)
+/// 逗号分隔列名 -> 列名列表 (逐项 trim 空格, 空项跳过); NULL/"" -> 空 (调用方回填承诺列)
 std::vector<std::string> parse_fields(const char* fields) {
     std::vector<std::string> out;
     if (fields == nullptr || fields[0] == '\0') {
@@ -1479,6 +1449,24 @@ std::vector<std::string> parse_fields(const char* fields) {
         rest.remove_prefix(comma + 1);
     }
     return out;
+}
+
+/// dz_db_query_instruments 的 fields 为空时返回的承诺列 (契约 docs/frame_contracts/instrument.md §7,
+/// 声明序共 25 列)。records_store::query_instruments 的空投影 = schema 全列 (28, 含 3 个保留列
+/// settlement_method/option_exercise_style/option_series), 与 C API 既有返回列不符 —
+/// C 边界显式传承诺列, 保持结果列序/列名零变化。
+const std::vector<std::string>& promised_instrument_fields() {
+    static const std::vector<std::string> kFields = {
+        "instrument_id",           "exchange_id",              "symbol",
+        "name",                    "product_class",            "product_code",
+        "settle_cycle",            "currency",                 "base_asset",
+        "is_inverse",              "volume_multiple",          "volume_step",
+        "price_tick",              "min_limit_order_volume",   "max_limit_order_volume",
+        "min_market_order_volume", "max_market_order_volume",  "listed_date",
+        "delisted_date",           "option_type",              "option_strike",
+        "underlying_id",           "underlying_multiple",      "update_day",
+        "updated_at"};
+    return kFields;
 }
 
 }  // namespace
@@ -1558,7 +1546,7 @@ DZ_API void dz_resultset_close(DzResultSet* rs) {
 DZ_API DzResultSet* dz_db_query_order(DzDatabase* db,
                                       const char* account_id,
                                       const char* instrument_id) {
-    if (db == nullptr || db->db == nullptr) {
+    if (db == nullptr || db->session == nullptr) {
         LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
         return NULL;
     }
@@ -1579,7 +1567,7 @@ DZ_API DzResultSet* dz_db_query_order(DzDatabase* db,
 DZ_API DzResultSet* dz_db_query_trade(DzDatabase* db,
                                       const char* account_id,
                                       const char* instrument_id) {
-    if (db == nullptr || db->db == nullptr) {
+    if (db == nullptr || db->session == nullptr) {
         LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
         return NULL;
     }
@@ -1600,7 +1588,7 @@ DZ_API DzResultSet* dz_db_query_trade(DzDatabase* db,
 DZ_API DzResultSet* dz_db_query_position(DzDatabase* db,
                                          const char* account_id,
                                          const char* instrument_id) {
-    if (db == nullptr || db->db == nullptr) {
+    if (db == nullptr || db->session == nullptr) {
         LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
         return NULL;
     }
@@ -1618,7 +1606,7 @@ DZ_API DzResultSet* dz_db_query_position(DzDatabase* db,
     return NULL;
 }
 DZ_API DzResultSet* dz_db_query_trading_account(DzDatabase* db, const char* account_id) {
-    if (db == nullptr || db->db == nullptr) {
+    if (db == nullptr || db->session == nullptr) {
         LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
         return NULL;
     }
@@ -1652,14 +1640,17 @@ DZ_API DzResultSet* dz_db_query_bar(DzDatabase* db,
 DZ_API DzResultSet* dz_db_query_instruments(DzDatabase* db,
                                             const char* instrument_id,
                                             const char* fields) {
-    if (db == nullptr || db->db == nullptr) {
+    if (db == nullptr || db->session == nullptr) {
         LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
         return NULL;
     }
     try {
-        auto ref = db->ref();
+        std::vector<std::string> requested = parse_fields(fields);
+        if (requested.empty()) {
+            requested = promised_instrument_fields();
+        }
         auto result = tdstore::query_instruments(
-            ref, instrument_id != nullptr ? instrument_id : "", parse_fields(fields));
+            *db->session, instrument_id != nullptr ? instrument_id : "", requested);
         return db_rs_from_result(to_db_query_result(std::move(result))).release();
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());

@@ -9,10 +9,12 @@
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/env.h>
 #include <dztrader/core/string_util.h>
+#include <dztrader/db/database.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/writer.h>
 #include <dztrader/struct.h>
+#include <dztrader/tdstore/schema_catalog.h>
 
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
@@ -28,79 +30,6 @@ using dztrader::shm::MultiWriter;
 namespace {
 
 constexpr uint64_t kMB = 1024 * 1024;
-
-// 与 td_ingest_wiring_test.cpp 同型的建表 SQL (v2 迁移后最终形态)。
-constexpr const char* kCreateOrders =
-    "CREATE TABLE IF NOT EXISTS orders ("
-    "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "    account_id TEXT NOT NULL,"
-    "    trading_day TEXT NOT NULL,"
-    "    order_id INTEGER NOT NULL,"
-    "    order_ref TEXT NOT NULL,"
-    "    external_order_id TEXT,"
-    "    is_external INTEGER NOT NULL DEFAULT 0,"
-    "    instrument_id TEXT NOT NULL,"
-    "    exchange_id TEXT NOT NULL,"
-    "    direction CHAR(1),"
-    "    position_effect CHAR(1),"
-    "    price_type CHAR(1),"
-    "    status CHAR(1),"
-    "    price REAL,"
-    "    volume INTEGER,"
-    "    volume_traded INTEGER,"
-    "    volume_canceled INTEGER,"
-    "    insert_time INTEGER,"
-    "    update_time INTEGER,"
-    "    error_id INTEGER,"
-    "    error_msg TEXT,"
-    "    strategy_id TEXT,"
-    "    remark TEXT,"
-    "    seq INTEGER NOT NULL DEFAULT 0,"
-    "    UNIQUE(account_id, order_id))";
-
-constexpr const char* kCreateTrades =
-    "CREATE TABLE IF NOT EXISTS trades ("
-    "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "    account_id TEXT NOT NULL,"
-    "    trading_day TEXT NOT NULL,"
-    "    trade_id TEXT NOT NULL,"
-    "    order_id INTEGER NOT NULL,"
-    "    instrument_id TEXT NOT NULL,"
-    "    exchange_id TEXT NOT NULL,"
-    "    direction CHAR(1),"
-    "    position_effect CHAR(1),"
-    "    price REAL NOT NULL,"
-    "    volume INTEGER NOT NULL,"
-    "    trade_time INTEGER,"
-    "    trade_date INTEGER,"
-    "    commission REAL,"
-    "    strategy_id TEXT,"
-    "    seq INTEGER NOT NULL DEFAULT 0,"
-    "    UNIQUE(account_id, trading_day, trade_id))";
-
-constexpr const char* kCreatePositions =
-    "CREATE TABLE IF NOT EXISTS positions ("
-    "    account_id TEXT NOT NULL,"
-    "    trading_day TEXT NOT NULL,"
-    "    instrument_id TEXT NOT NULL,"
-    "    exchange_id TEXT NOT NULL,"
-    "    direction CHAR(1) NOT NULL,"
-    "    volume INTEGER NOT NULL,"
-    "    frozen_volume INTEGER,"
-    "    today_volume INTEGER,"
-    "    yd_volume INTEGER,"
-    "    price REAL,"
-    "    seq INTEGER NOT NULL DEFAULT 0,"
-    "    UNIQUE(account_id, instrument_id, direction))";
-
-constexpr const char* kCreateTradingAccounts =
-    "CREATE TABLE IF NOT EXISTS trading_accounts ("
-    "    account_id TEXT NOT NULL PRIMARY KEY,"
-    "    trading_day TEXT NOT NULL,"
-    "    balance REAL, available REAL, frozen REAL,"
-    "    commission REAL, margin REAL, withdraw_quota REAL,"
-    "    deposit REAL, withdraw REAL,"
-    "    seq INTEGER NOT NULL DEFAULT 0)";
 
 class IngestWatermarkTest : public ::testing::Test {
 protected:
@@ -136,11 +65,14 @@ protected:
         (void)ChannelMeta::open_or_create(md);
 
         db_path_ = std::filesystem::path(home_) / "db" / "td.db";
-        SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
-        db.exec(kCreateOrders);
-        db.exec(kCreateTrades);
-        db.exec(kCreatePositions);
-        db.exec(kCreateTradingAccounts);
+        {
+            auto database = dztrader::db::Database::open(
+                dztrader::db::Config{.backend = "sqlite",
+                                     .options = {{"path", db_path_.string()}}},
+                dztrader::tdstore::schemas());
+            database->migrate();
+        }
+        SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         // 四表预置 (账户 CTP001): orders 最大 seq=5, trades=7, positions=9, trading_accounts=11
         // → W 必须取四表最大 = 11 (非任何单表的 5/7/9)。
         SQLite::Statement o(db,
