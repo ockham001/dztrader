@@ -13,15 +13,15 @@
 
 ## 2. 语义 / 数据流 / 路由
 
-**数据流**（形态 5 后台进程间帧，总则 §4.2）：
+**数据流**（无帧通路；数据在统一库，经 DB 查询）：
 
 ```
 登录（含重连重登）:  td 全量查合约 ─→ tdstore 落库统一 td 库 instruments 表   （不再广播合约帧）
-读数据:              策略（定时器延迟后）dz_db_query_instruments(db, instrument_id, fields)
+读数据:              策略 dz_db_query_instruments(db, instrument_id, fields)
                       └─ libs/db → tdstore 投影查询 → DzResultSet
 ```
 
-- **前端入口**：无（后台进程间帧，无 REST/WS 入口）。
+- **前端入口**：无（无帧通路，无 REST/WS 入口）。
 
 ## 3. Payload
 
