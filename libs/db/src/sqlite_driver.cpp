@@ -160,12 +160,29 @@ void SqliteSession::begin_scope(Scope kind) {
     if (scope_ != Scope::None) {
         throw Exception(DZ_EC_DB_TRANSACTION_FAILED, "scope already active");
     }
-    db_->exec(kind == Scope::Transaction ? "BEGIN IMMEDIATE" : "BEGIN DEFERRED");
+    const std::string_view name = kind == Scope::Transaction ? "transaction" : "snapshot";
+    try {
+        db_->exec(kind == Scope::Transaction ? "BEGIN IMMEDIATE" : "BEGIN DEFERRED");
+    } catch (const Exception&) {
+        throw;
+    } catch (const std::exception& e) {
+        throw Exception(DZ_EC_DB_TRANSACTION_FAILED, "sqlite begin failed | scope={} error=\"{}\"",
+                        name, e.what());
+    }
     scope_ = kind;
     if (kind == Scope::Snapshot) {
         // WAL 下 BEGIN DEFERRED 不立即取快照, 先读一次锁定视图
-        SQLite::Statement pin(*db_, "SELECT 1 FROM sqlite_schema LIMIT 1");
-        pin.executeStep();
+        try {
+            SQLite::Statement pin(*db_, "SELECT 1 FROM sqlite_schema LIMIT 1");
+            pin.executeStep();
+        } catch (const Exception&) {
+            end_scope(/*commit=*/false);  // 回收半开快照, 避免 scope_ 卡死
+            throw;
+        } catch (const std::exception& e) {
+            end_scope(/*commit=*/false);  // 回收半开快照, 避免 scope_ 卡死
+            throw Exception(DZ_EC_DB_TRANSACTION_FAILED,
+                            "sqlite snapshot pin failed | error=\"{}\"", e.what());
+        }
     }
 }
 

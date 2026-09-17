@@ -88,6 +88,32 @@ TEST_F(SqliteTxnTest, NestedScopeRejected) {
     auto txn = session_->begin_transaction();
     EXPECT_THROW((void)session_->begin_snapshot(), dztrader::Exception);
     EXPECT_THROW((void)session_->begin_transaction(), dztrader::Exception);
+    txn->rollback();
+    auto retry = session_->begin_transaction();  // 拒绝嵌套不得卡死作用域
+    retry->commit();
+    EXPECT_EQ(session_->find("session_orders").size(), 0u);
+}
+
+TEST_F(SqliteTxnTest, BeginTransactionBusyIsWrappedAndKeepsScopeFree) {
+    auto locker = database_->session();
+    auto lock_txn = locker->begin_transaction();  // 持 WAL 写锁
+    auto no_wait_db = Database::open(
+        Config{.backend = "sqlite",
+               .options = {{"path", path_.string()}, {"busy_timeout_ms", "0"}}},
+        orders_schema());
+    auto victim = no_wait_db->session();
+
+    DzErrorCode code = DZ_EC_OK;
+    try {
+        (void)victim->begin_transaction();  // BEGIN IMMEDIATE 立即 BUSY
+    } catch (const dztrader::Exception& e) {
+        code = e.code();
+    }
+    EXPECT_EQ(code, DZ_EC_DB_TRANSACTION_FAILED);
+
+    lock_txn->rollback();
+    auto retry = victim->begin_transaction();  // BEGIN 失败未卡死 scope_
+    retry->commit();
 }
 
 TEST_F(SqliteTxnTest, SnapshotSeesStableViewAndRejectsWrites) {
