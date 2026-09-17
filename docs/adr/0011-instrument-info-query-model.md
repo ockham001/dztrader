@@ -19,7 +19,7 @@ Accepted（2026-09-15）
 
 1. **查询模型取代推送**：
    - 删除 `DZ_FRAME_TD_INSTRUMENT`(1006) 与 `DzInstrumentInfo`/`DzInstrumentLeg`/`DzInstrumentExt`/`DzInstrumentTickTier`；
-   - 新增 `DZ_FRAME_TD_QUERY_INSTRUMENT`(1043) + `DzInstrumentQueryReq`：策略请求**单合约**定向刷新，td 查 CTP 后落库，**无响应帧**；
+   - 新增 `DZ_FRAME_TD_QUERY_INSTRUMENT`(1043) + `DzInstrumentQueryReq`：策略请求**单合约**定向刷新，td 查 CTP 后落库，**无响应帧**；（该帧与刷新机制已被 ADR 0014 取代：帧 1043 删除、号释放。）
    - 新增 `dz_db_query_instruments(db, instrument_id, fields)`：DB 查询返回 `DzResultSet`，`fields` 可选（默认全部承诺列）；
    - 全量刷新仍属登录/日切链路，不暴露给策略；策略用定时器延迟后查询。
 2. **保留** `DZ_FRAME_TD_INSTRUMENT_STATUS`(1007) 与 `DzInstrumentStatus`：交易状态是盘中事件，不入静态表。（该决策已被 ADR 0013 取代：帧 1007 与 DzInstrumentStatus 已删除。）
@@ -42,8 +42,8 @@ Accepted（2026-09-15）
 
 ## Consequences
 
-- 策略侧：不再解析合约结构体；合约数据一律经 DB 查询（`dz_db_query_instruments`）；刷新用 `dz_query_instrument` + 定时器。
-- td 侧：登录链路不再广播合约帧；新增单合约刷新处理；落库改经 `libs/tdstore`。
+- 策略侧：不再解析合约结构体；合约数据一律经 DB 查询（`dz_db_query_instruments`）；刷新用 `dz_query_instrument` + 定时器。（已被 ADR 0014 取代：`dz_query_instrument` 删除，仅存 DB 查询。）
+- td 侧：登录链路不再广播合约帧；新增单合约刷新处理；落库改经 `libs/tdstore`。（已被 ADR 0014 取代：不再有单合约刷新处理。）
 - v4 schema 迁移：4 rename（`product`→`product_class`、`min_order_volume`→`min_limit_order_volume`、
   `max_order_volume`→`max_limit_order_volume`、`expiry_date`→`delisted_date`）+ 5 add
   （`product_code`、`min_market_order_volume`、`max_market_order_volume`、`underlying_multiple`、`updated_at`）。
@@ -62,8 +62,8 @@ Accepted（2026-09-15）
 | `volume_multiple` / `price_tick` / `volume_step` | 同名 3 列 | 直搬 |
 | `listed_date` / `expiry_date` | `listed_date` / `delisted_date` | 更名（到期日 → 退市日，语义收敛） |
 | `option_type` / `option_exercise_style` / `underlying_id` / `option_strike` / `option_series` | `option_type` / `underlying_id` / `option_strike` + 新增 `underlying_multiple` + 保留列 `option_exercise_style` / `option_series` | 行权方式/调整序列降为保留列；标的乘数新增 |
-| （结构体无） | `update_day` / `updated_at` 元数据 2 列 | 新增（刷新完成观测点） |
-| `DZ_FRAME_TD_INSTRUMENT`(1006)，登录全量推送 | `DZ_FRAME_TD_QUERY_INSTRUMENT`(1043) + `dz_db_query_instruments` | 推送 → 单合约请求（无响应帧）+ DB 查询；全量刷新留在登录链路 |
+| （结构体无） | `update_day` / `updated_at` 元数据 2 列 | 新增（登录/重连全量 upsert 的观测点；按需刷新已由 ADR 0014 删除） |
+| `DZ_FRAME_TD_INSTRUMENT`(1006)，登录全量推送 | `DZ_FRAME_TD_QUERY_INSTRUMENT`(1043) + `dz_db_query_instruments` | 推送 → 单合约请求（无响应帧）+ DB 查询；全量刷新留在登录链路（该行决策已被 ADR 0014 取代：仅保留 `dz_db_query_instruments`。） |
 | `dz_db_query(db, ...)`（旧通用查询） | `dz_db_query_instruments(db, instrument_id, fields)` | 白名单列投影查询（默认 25 列） |
 | `DzInstrumentLeg` / `DzInstrumentExt` / `DzInstrumentTickTier` | 无对应 | 无消费方，不采纳（契约 §8） |
 

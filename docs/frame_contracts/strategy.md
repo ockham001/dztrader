@@ -103,7 +103,7 @@
 - `UPDATE_SHM_EVENT_SUBSCRIBER`：SDK 内部 `refresh_subscribers()`
 - `NOTIFY_MD_STARTED`（本策略行情源）：SDK 自动补订阅期望集合
 - 非本策略/空 `strategy_id` 的 `ORDER_REPORT`/`TRADE_REPORT`；非本策略 `instance_id` 的 `UI_INPUT`/`SHUTDOWN`
-- 其余平台帧（日志/SHM 配置、进程控制、md 控制、TD 控制 21xx、`OUTPUT_UI`/`SET_LOGICAL_POSITION` 他策略回声等）：丢弃（`TD_QUERY_ACCOUNT_STATUS`/`TD_QUERY_INSTRUMENT` 是 SDK 写端帧——分别由 `dz_query_account_status`/`dz_query_instrument` 发出，非读端白名单成员）
+- 其余平台帧（日志/SHM 配置、进程控制、md 控制、TD 控制 21xx、`OUTPUT_UI`/`SET_LOGICAL_POSITION` 他策略回声等）：丢弃（`TD_QUERY_ACCOUNT_STATUS` 是 SDK 写端帧——由 `dz_query_account_status` 发出，非读端白名单成员）
 
 **SDK ingest 过滤职责**（TD 数据同步，账户级 seq 水位）：
 
