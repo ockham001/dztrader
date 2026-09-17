@@ -86,8 +86,8 @@ TEST_F(SqliteTxnTest, CommitTwiceRejected) {
 
 TEST_F(SqliteTxnTest, NestedScopeRejected) {
     auto txn = session_->begin_transaction();
-    EXPECT_THROW(session_->begin_snapshot(), dztrader::Exception);
-    EXPECT_THROW(session_->begin_transaction(), dztrader::Exception);
+    EXPECT_THROW((void)session_->begin_snapshot(), dztrader::Exception);
+    EXPECT_THROW((void)session_->begin_transaction(), dztrader::Exception);
 }
 
 TEST_F(SqliteTxnTest, SnapshotSeesStableViewAndRejectsWrites) {
@@ -109,6 +109,6 @@ TEST_F(SqliteTxnTest, ReadOnlySessionRejectsWrites) {
     auto ro = database_->session(/*read_only=*/true);
     const Row row = make_order("a", 1, "cu", 1);
     EXPECT_THROW(ro->upsert("session_orders", std::span<const Row>(&row, 1)), dztrader::Exception);
-    EXPECT_THROW(ro->begin_transaction(), dztrader::Exception);
-    EXPECT_NO_THROW(ro->find("session_orders"));
+    EXPECT_THROW((void)ro->begin_transaction(), dztrader::Exception);
+    EXPECT_NO_THROW((void)ro->find("session_orders"));
 }
