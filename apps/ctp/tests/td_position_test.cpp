@@ -23,7 +23,7 @@ ActiveOrderUpdate make_close(const char* ref, DzDirection dir, DzPositionEffect 
     return o;
 }
 
-DzTradeReport make_trade(DzDirection dir, DzPositionEffect effect, int64_t volume, double price) {
+DzTradeReport make_trade(DzDirection dir, DzPositionEffect effect, DzVolume volume, double price) {
     DzTradeReport t{};
     t.direction = dir;
     t.position_effect = effect;
