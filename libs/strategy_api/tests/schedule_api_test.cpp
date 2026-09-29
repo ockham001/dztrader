@@ -344,8 +344,9 @@ TEST_F(ScheduleApiTest, OwnOrderReportDelivered) {
     emit_struct(DZ_FRAME_ORDER_REPORT, rpt);
     const void* frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_ORDER_REPORT);
-    const auto& got = FrameView(static_cast<const std::byte*>(frame)).payload<DzOrderReport>();
+    const auto view = FrameView(static_cast<const std::byte*>(frame));
+    EXPECT_EQ(view.type(), DZ_FRAME_ORDER_REPORT);
+    const auto& got = view.payload<DzOrderReport>();
     EXPECT_EQ(std::string_view(got.strategy_id), std::string_view(dz_strategy_id(ctx_)));
 }
 
@@ -368,8 +369,9 @@ TEST_F(ScheduleApiTest, OwnTradeReportDelivered) {
     emit_struct(DZ_FRAME_TRADE_REPORT, rpt);
     const void* frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_TRADE_REPORT);
-    const auto& got = FrameView(static_cast<const std::byte*>(frame)).payload<DzTradeReport>();
+    const auto view = FrameView(static_cast<const std::byte*>(frame));
+    EXPECT_EQ(view.type(), DZ_FRAME_TRADE_REPORT);
+    const auto& got = view.payload<DzTradeReport>();
     EXPECT_EQ(std::string_view(got.strategy_id), std::string_view(dz_strategy_id(ctx_)));
 }
 
@@ -460,8 +462,9 @@ TEST_F(ScheduleApiTest, OtherStrategyReportFloodYieldsThenOwnDelivered) {
     // 第二次调用: 消费剩余被拦截帧后放行本策略回报
     const void* frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_ORDER_REPORT);
-    const auto& got = FrameView(static_cast<const std::byte*>(frame)).payload<DzOrderReport>();
+    const auto view = FrameView(static_cast<const std::byte*>(frame));
+    EXPECT_EQ(view.type(), DZ_FRAME_ORDER_REPORT);
+    const auto& got = view.payload<DzOrderReport>();
     EXPECT_EQ(std::string_view(got.strategy_id), std::string_view(dz_strategy_id(ctx_)));
 }
 

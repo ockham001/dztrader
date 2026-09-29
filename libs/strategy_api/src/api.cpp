@@ -790,7 +790,8 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
             }
             return false;
         case DZ_FRAME_PRELOAD_EVENT_SHM: {
-            const auto& params = shm::FrameView(frame).payload<DzShmPreload>();
+            const shm::FrameView view(frame);
+            const auto& params = view.payload<DzShmPreload>();
             ctx->internal_event_preload = params;  // 覆盖参数槽 (只保留最新)
             ctx->schedule_internal_preload(DzContext::INTERNAL_TOKEN_EVENT,
                                            dztrader::core::random_jitter(0, 5000));
@@ -839,9 +840,9 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
             // 2018 携带 trading_day (DzAccountStatus.trading_day, Offline 为 0):
             // 驱动 gate 交易日切换清旧日去重段 (契约 strategy "成交去重…交易日切换清理")。
             // 截断帧防御: 读不出 payload 不驱动 (仍全量放行, 引擎侧 payload_size_matches 丢弃)。
-            if (shm::FrameView(frame).frame_size() >=
-                sizeof(DzFrameHeader) + sizeof(DzAccountStatus)) {
-                const auto& st = shm::FrameView(frame).payload<DzAccountStatus>();
+            const shm::FrameView view(frame);
+            if (view.frame_size() >= sizeof(DzFrameHeader) + sizeof(DzAccountStatus)) {
+                const auto& st = view.payload<DzAccountStatus>();
                 on_account_status_trading_day(ctx, st);
                 // 终检发现 D: Offline→Ready 翻转触发该账户 gate 重置 + 清 gap_retry
                 // (td 重启复用 seq 吞新事件的自愈, 与 dzweb 2018 重建对齐)。

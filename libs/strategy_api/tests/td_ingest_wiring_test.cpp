@@ -439,32 +439,42 @@ TEST_F(IngestWiringTest, BackfillFillsOrderAndTradeTime) {
     ASSERT_NE(nullptr, dz_next_event(ctx_));
 
     // 回补 FIFO: 先 orders (表序), seq 6, 7
-    const void* f = dz_next_event(ctx_);
-    ASSERT_NE(f, nullptr);
-    EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
-    const DzOrderReport& o6 = FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>();
-    EXPECT_EQ(6u, o6.seq);
-    EXPECT_EQ(9 * 3600 + 15 * 60 + 5, o6.time);  // insert_time 当日秒
-
-    f = dz_next_event(ctx_);
-    ASSERT_NE(f, nullptr);
-    const DzOrderReport& o7 = FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>();
-    EXPECT_EQ(7u, o7.seq);
-    EXPECT_EQ(11 * 3600 + 30 * 60 + 45, o7.time);  // update_time 当日秒
+    {
+        const void* f = dz_next_event(ctx_);
+        ASSERT_NE(f, nullptr);
+        const auto view = FrameView(static_cast<const std::byte*>(f));
+        EXPECT_EQ(DZ_FRAME_ORDER_REPORT, view.type());
+        const DzOrderReport& o6 = view.payload<DzOrderReport>();
+        EXPECT_EQ(6u, o6.seq);
+        EXPECT_EQ(9 * 3600 + 15 * 60 + 5, o6.time);  // insert_time 当日秒
+    }
+    {
+        const void* f = dz_next_event(ctx_);
+        ASSERT_NE(f, nullptr);
+        const auto view = FrameView(static_cast<const std::byte*>(f));
+        const DzOrderReport& o7 = view.payload<DzOrderReport>();
+        EXPECT_EQ(7u, o7.seq);
+        EXPECT_EQ(11 * 3600 + 30 * 60 + 45, o7.time);  // update_time 当日秒
+    }
 
     // trades 回补
-    f = dz_next_event(ctx_);
-    ASSERT_NE(f, nullptr);
-    EXPECT_EQ(DZ_FRAME_TRADE_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
-    const DzTradeReport& t1 = FrameView(static_cast<const std::byte*>(f)).payload<DzTradeReport>();
-    EXPECT_EQ(6u, t1.seq);
-    EXPECT_EQ(10 * 3600 + 1 * 60 + 2, t1.time);  // trade_time 当日秒
-
-    f = dz_next_event(ctx_);
-    ASSERT_NE(f, nullptr);
-    const DzTradeReport& t2 = FrameView(static_cast<const std::byte*>(f)).payload<DzTradeReport>();
-    EXPECT_EQ(7u, t2.seq);
-    EXPECT_EQ(12 * 3600 + 3 * 60 + 4, t2.time);
+    {
+        const void* f = dz_next_event(ctx_);
+        ASSERT_NE(f, nullptr);
+        const auto view = FrameView(static_cast<const std::byte*>(f));
+        EXPECT_EQ(DZ_FRAME_TRADE_REPORT, view.type());
+        const DzTradeReport& t1 = view.payload<DzTradeReport>();
+        EXPECT_EQ(6u, t1.seq);
+        EXPECT_EQ(10 * 3600 + 1 * 60 + 2, t1.time);  // trade_time 当日秒
+    }
+    {
+        const void* f = dz_next_event(ctx_);
+        ASSERT_NE(f, nullptr);
+        const auto view = FrameView(static_cast<const std::byte*>(f));
+        const DzTradeReport& t2 = view.payload<DzTradeReport>();
+        EXPECT_EQ(7u, t2.seq);
+        EXPECT_EQ(12 * 3600 + 3 * 60 + 4, t2.time);
+    }
 
     EXPECT_EQ(nullptr, dz_next_event(ctx_));
 }
@@ -641,38 +651,42 @@ TEST_F(IngestWiringTest, BackfillDispatchesPositionAndTradingAccount) {
     ASSERT_NE(nullptr, dz_next_event(ctx_));
 
     // 回补: positions 行 → DZ_FRAME_POSITION_INFO (帧 DZ_FRAME_POSITION_INFO)
-    const void* f = dz_next_event(ctx_);
-    ASSERT_NE(f, nullptr);
-    EXPECT_EQ(DZ_FRAME_POSITION_INFO, FrameView(static_cast<const std::byte*>(f)).type());
-    const DzPositionInfo& pos =
-        FrameView(static_cast<const std::byte*>(f)).payload<DzPositionInfo>();
-    EXPECT_STREQ("CTP001", pos.account_id);
-    EXPECT_STREQ("IF2603", pos.instrument_id);
-    EXPECT_STREQ("CFFEX", pos.exchange_id);
-    EXPECT_EQ(DZ_DIRECTION_LONG, pos.direction);
-    EXPECT_EQ(3u, pos.volume);
-    EXPECT_EQ(1u, pos.frozen_volume);
-    EXPECT_EQ(3u, pos.today_volume);
-    EXPECT_EQ(2u, pos.yd_volume);
-    EXPECT_DOUBLE_EQ(3950.5, pos.price);
-    EXPECT_EQ(6u, pos.seq);
+    {
+        const void* f = dz_next_event(ctx_);
+        ASSERT_NE(f, nullptr);
+        const auto view = FrameView(static_cast<const std::byte*>(f));
+        EXPECT_EQ(DZ_FRAME_POSITION_INFO, view.type());
+        const DzPositionInfo& pos = view.payload<DzPositionInfo>();
+        EXPECT_STREQ("CTP001", pos.account_id);
+        EXPECT_STREQ("IF2603", pos.instrument_id);
+        EXPECT_STREQ("CFFEX", pos.exchange_id);
+        EXPECT_EQ(DZ_DIRECTION_LONG, pos.direction);
+        EXPECT_EQ(3u, pos.volume);
+        EXPECT_EQ(1u, pos.frozen_volume);
+        EXPECT_EQ(3u, pos.today_volume);
+        EXPECT_EQ(2u, pos.yd_volume);
+        EXPECT_DOUBLE_EQ(3950.5, pos.price);
+        EXPECT_EQ(6u, pos.seq);
+    }
 
     // 回补: trading_accounts 行 → DZ_FRAME_TRADING_ACCOUNT (帧 DZ_FRAME_TRADING_ACCOUNT)
-    f = dz_next_event(ctx_);
-    ASSERT_NE(f, nullptr);
-    EXPECT_EQ(DZ_FRAME_TRADING_ACCOUNT, FrameView(static_cast<const std::byte*>(f)).type());
-    const DzTradingAccount& acct =
-        FrameView(static_cast<const std::byte*>(f)).payload<DzTradingAccount>();
-    EXPECT_STREQ("CTP001", acct.account_id);
-    EXPECT_DOUBLE_EQ(100000.5, acct.balance);
-    EXPECT_DOUBLE_EQ(90000.25, acct.available);
-    EXPECT_DOUBLE_EQ(1000.0, acct.frozen);
-    EXPECT_DOUBLE_EQ(12.5, acct.commission);
-    EXPECT_DOUBLE_EQ(9000.0, acct.margin);
-    EXPECT_DOUBLE_EQ(500.0, acct.withdraw_quota);
-    EXPECT_DOUBLE_EQ(2000.0, acct.deposit);
-    EXPECT_DOUBLE_EQ(1000.0, acct.withdraw);
-    EXPECT_EQ(7u, acct.seq);
+    {
+        const void* f = dz_next_event(ctx_);
+        ASSERT_NE(f, nullptr);
+        const auto view = FrameView(static_cast<const std::byte*>(f));
+        EXPECT_EQ(DZ_FRAME_TRADING_ACCOUNT, view.type());
+        const DzTradingAccount& acct = view.payload<DzTradingAccount>();
+        EXPECT_STREQ("CTP001", acct.account_id);
+        EXPECT_DOUBLE_EQ(100000.5, acct.balance);
+        EXPECT_DOUBLE_EQ(90000.25, acct.available);
+        EXPECT_DOUBLE_EQ(1000.0, acct.frozen);
+        EXPECT_DOUBLE_EQ(12.5, acct.commission);
+        EXPECT_DOUBLE_EQ(9000.0, acct.margin);
+        EXPECT_DOUBLE_EQ(500.0, acct.withdraw_quota);
+        EXPECT_DOUBLE_EQ(2000.0, acct.deposit);
+        EXPECT_DOUBLE_EQ(1000.0, acct.withdraw);
+        EXPECT_EQ(7u, acct.seq);
+    }
 
     EXPECT_EQ(nullptr, dz_next_event(ctx_));
 }
