@@ -15,3 +15,12 @@ tools.cmake.cmaketoolchain:generator=Ninja
 # 禁用 conan 生成 CMakeUserPresets.json（空值=禁用）
 # 项目根有版本化的 CMakePresets.json，conan 只负责生成 toolchain
 tools.cmake.cmaketoolchain:user_presets=
+# 锁定实际编译器为 gcc-13，与上面的 compiler.version=13 保持一致
+# （不写这行时 conan 只会打包版本号，实际用的是系统默认 gcc —— 二者会脱节）
+# 作用范围：本 conf 决定 conan 源码编译的包（boost/drogon/spdlog/gtest/sqlitecpp）
+# 用哪个编译器编，CMakeToolchain 同时据此写 set(CMAKE_CXX_COMPILER)，
+# 故项目自身的 487 个编译单元也走 gcc-13。无需 export CC/CXX。
+# 路径为本机 /usr/bin/gcc-13；CI (ubuntu-24.04) 默认 gcc 即 13.x，同路径有效。
+# 升级路径：等 conancenter 提供 gcc-15/16 预编译二进制后，改这一行即可
+# （同时改上面的 compiler.version，否则 package_id 与预编译包对不上）
+tools.build:compiler_executables={"c": "/usr/bin/gcc-13", "cpp": "/usr/bin/g++-13"}
