@@ -232,15 +232,15 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
     }
 
     // ===================== 变体 B: 首帧 106 → gap(DZ_FRAME_NOTIFY_UI,105) → 回补 =====================
-    {
-        // 独立临时库: 先提交 1..100 (W=100 快照), 帧 DZ_FRAME_NOTIFY_UI-105 在 reader 开启前完成写入,
-        // DB 提交在后 (在途窗口).
-        std::filesystem::path tmp2 = unique_temp_dir("dz_td_data_sync_it_b");
-        std::filesystem::create_directories(tmp2);
-        const std::string db2 = (tmp2 / "b.db").string();
-        std::filesystem::remove(db2);
-        std::filesystem::remove(db2 + "-journal");
-        {
+    // 独立临时库: 先提交 1..100 (W=100 快照), 帧 DZ_FRAME_NOTIFY_UI-105 在 reader 开启前完成写入,
+    // DB 提交在后 (在途窗口).
+    std::filesystem::path tmp2 = unique_temp_dir("dz_td_data_sync_it_b");
+    std::filesystem::create_directories(tmp2);
+    const std::string db2 = (tmp2 / "b.db").string();
+    std::filesystem::remove(db2);
+    std::filesystem::remove(db2 + "-journal");
+    {   // 变体 B 作用域: 内层 w/ro/ro2 三个 SQLite 句柄全部析构后才允许删库
+        {   // 首个 PersistWriter 独立作用域
             PersistWriter w(db2);
             w.open();
             w.start_writer();
@@ -288,9 +288,12 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
         ASSERT_EQ(backfilled.size(), 5u);
         EXPECT_EQ(backfilled.front().base.seq, 101u);
         EXPECT_EQ(backfilled.back().base.seq, 105u);
+    }   // PersistWriter w / ro / ro2 在此析构, 释放 db2 的 SQLite 句柄
 
-        std::filesystem::remove_all(tmp2);
-    }
+    // 临时库删除必须在其内所有 SQLite 句柄析构之后: Windows 不允许删除仍被占用的
+    // 文件(remove_all 抛 filesystem_error), Linux 允许删除已打开的文件, 故该顺序
+    // 问题仅在 Windows CI 暴露。
+    std::filesystem::remove_all(tmp2);
 }
 
 // ============================================================================
