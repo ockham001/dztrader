@@ -81,7 +81,9 @@ int main() {
     }
 
     std::ranges::sort(ns);
-    const auto pct = [&](double p) { return ns[static_cast<size_t>(ns.size() * p)]; };
+    const auto pct = [&](double p) {
+        return ns[static_cast<size_t>(static_cast<double>(ns.size()) * p)];
+    };
     std::printf("SHM roundtrip (write+notify+wake+read), %d iters:\n", kIters);
     std::printf("  median: %lld ns\n  p99:    %lld ns\n  max:    %lld ns\n",
                 static_cast<long long>(pct(0.5)), static_cast<long long>(pct(0.99)),

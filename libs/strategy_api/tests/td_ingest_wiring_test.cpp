@@ -90,7 +90,7 @@ protected:
                 " ?, ?, ?, 'stale', ?)");
             for (int64_t seq = 1; seq <= 5; ++seq) {
                 ins.bind(1, static_cast<int64_t>(1000 + seq));
-                ins.bind(2, 3800.0 + seq);
+                ins.bind(2, 3800.0 + static_cast<double>(seq));
                 ins.bind(3, static_cast<int64_t>(1));
                 ins.bind(4, static_cast<int64_t>(1));
                 ins.bind(5, static_cast<int64_t>(seq));
@@ -147,7 +147,7 @@ TEST_F(IngestWiringTest, GapTriggersBackfillReplay) {
         const char* own = dz_strategy_id(ctx_);
         for (int64_t seq = 6; seq <= 7; ++seq) {
             ins.bind(1, static_cast<int64_t>(2000 + seq));
-            ins.bind(2, 3900.0 + seq);
+            ins.bind(2, 3900.0 + static_cast<double>(seq));
             ins.bind(3, static_cast<int64_t>(2));
             ins.bind(4, static_cast<int64_t>(2));
             ins.bind(5, own);
@@ -493,7 +493,7 @@ TEST_F(IngestWiringTest, BackfillBufferOverflowInterceptsTrigger) {
             " ?, ?, ?, ?, ?)");
         for (int64_t seq = 6; seq <= 605; ++seq) {
             ins.bind(1, static_cast<int64_t>(4000 + seq));
-            ins.bind(2, 4300.0 + seq);
+            ins.bind(2, 4300.0 + static_cast<double>(seq));
             ins.bind(3, static_cast<int64_t>(1));
             ins.bind(4, static_cast<int64_t>(1));
             ins.bind(5, dz_strategy_id(ctx_));
@@ -559,7 +559,7 @@ TEST_F(IngestWiringTest, ResetReAdmitNotFilteredByWatermark) {
             " ?, ?, ?, 'own', ?)");
         for (int64_t seq = 1; seq <= 2; ++seq) {
             ins.bind(1, static_cast<int64_t>(7000 + seq));
-            ins.bind(2, 4700.0 + seq);
+            ins.bind(2, 4700.0 + static_cast<double>(seq));
             ins.bind(3, static_cast<int64_t>(1));
             ins.bind(4, static_cast<int64_t>(1));
             ins.bind(5, static_cast<int64_t>(seq));
@@ -721,7 +721,7 @@ TEST_F(IngestWiringTest, GapBackfillRetriesUntilRowsCommitted) {
         const char* own = dz_strategy_id(ctx_);
         for (int64_t seq = 6; seq <= 7; ++seq) {
             ins.bind(1, static_cast<int64_t>(6000 + seq));
-            ins.bind(2, 4600.0 + seq);
+            ins.bind(2, 4600.0 + static_cast<double>(seq));
             ins.bind(3, static_cast<int64_t>(2));
             ins.bind(4, static_cast<int64_t>(2));
             ins.bind(5, own);
@@ -1021,7 +1021,7 @@ TEST_F(IngestWiringTest, AccountStatusFlipToReadyResetsGateForReusedSeq) {
             " ?, ?, ?, 'own', ?)");
         for (int64_t seq = 1; seq <= 2; ++seq) {
             ins.bind(1, static_cast<int64_t>(8000 + seq));
-            ins.bind(2, 4800.0 + seq);
+            ins.bind(2, 4800.0 + static_cast<double>(seq));
             ins.bind(3, static_cast<int64_t>(1));
             ins.bind(4, static_cast<int64_t>(1));
             ins.bind(5, static_cast<int64_t>(seq));

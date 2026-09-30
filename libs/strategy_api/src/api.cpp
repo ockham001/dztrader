@@ -626,7 +626,8 @@ bool handle_gap(DzContext* ctx, const std::byte* trigger_frame) {
         if (trigger_frame != nullptr) {
             const shm::FrameView view(trigger_frame);
             if (!ctx->gap_retry.stage(view.type(), trigger_frame + sizeof(DzFrameHeader),
-                                      view.frame_size() - sizeof(DzFrameHeader))) {
+                                      static_cast<uint32_t>(view.frame_size() -
+                                                              sizeof(DzFrameHeader)))) {
                 dz_diag("ingest gap retry staged frame overflow, drop frame");
             }
         }
@@ -652,7 +653,7 @@ bool handle_gap(DzContext* ctx, const std::byte* trigger_frame) {
             ctx->gap_retry.begin(
                 gap->account_id, gap->from, gap->to, view.type(),
                 trigger_frame + sizeof(DzFrameHeader),
-                view.frame_size() - sizeof(DzFrameHeader));
+                static_cast<uint32_t>(view.frame_size() - sizeof(DzFrameHeader)));
         }
         dz_diag("ingest gap backfill incomplete (rows not committed yet), will retry");
         return false;

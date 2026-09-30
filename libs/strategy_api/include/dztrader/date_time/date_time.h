@@ -110,11 +110,11 @@ public:
     }
 
     [[nodiscard]] constexpr int32_t minutes_since_midnight() const noexcept {
-        return duration_since_midnight<std::chrono::minutes>().count();
+        return static_cast<int32_t>(duration_since_midnight<std::chrono::minutes>().count());
     }
 
     [[nodiscard]] constexpr int32_t hours_since_midnight() const noexcept {
-        return duration_since_midnight<std::chrono::hours>().count();
+        return static_cast<int32_t>(duration_since_midnight<std::chrono::hours>().count());
     }
 
     [[nodiscard]] constexpr int64_t nanosecs_since_epoch() const noexcept { return duration_; }
@@ -144,7 +144,9 @@ public:
     }
 
     [[nodiscard]] constexpr int32_t days_since_epoch() const noexcept {
-        return std::chrono::floor<std::chrono::days>(std::chrono::nanoseconds{duration_}).count();
+        return static_cast<int32_t>(
+            std::chrono::floor<std::chrono::days>(std::chrono::nanoseconds{duration_})
+                .count());
     }
 
     //
@@ -226,7 +228,7 @@ public:
     }
 
     [[nodiscard]] constexpr int32_t days_to(const DateTime& d) const noexcept {
-        return (d.sys_days() - sys_days()).count();
+        return static_cast<int32_t>((d.sys_days() - sys_days()).count());
     }
 
     //

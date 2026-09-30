@@ -60,7 +60,10 @@ if(MSVC)
     add_compile_options(/Zi)
     add_link_options(/DEBUG)
 else()
-    add_compile_options(-Wall -Wextra -Wpedantic)
+    # -Wconversion: 收窄转换检查。MSVC 侧 /W4 的 C4244 已覆盖, GCC 需显式开启才能
+    # 在 Linux 本地开发时同等可见(曾漏掉 int64_t->DzVolume=int32_t 真实窄化)。
+    # 已知噪音面: std::chrono duration -> int32_t/int64_t, 已按各文件既有惯例显式收窄。
+    add_compile_options(-Wall -Wextra -Wpedantic -Wconversion)
     add_compile_options($<$<CONFIG:Release>:-Werror>)
 endif()
 

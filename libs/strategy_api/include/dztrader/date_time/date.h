@@ -22,19 +22,19 @@ public:
         : duration_(days_since_epoch) {}
 
     constexpr Date(const std::chrono::year_month_day& ymd) noexcept  // NOLINT
-        : Date(std::chrono::sys_days{ymd}.time_since_epoch().count()) {}
+        : Date(static_cast<int32_t>(std::chrono::sys_days{ymd}.time_since_epoch().count())) {}
 
     constexpr Date(const std::chrono::year_month_weekday& ymwd)  // NOLINT
         noexcept
-        : Date(std::chrono::sys_days{ymwd}.time_since_epoch().count()) {}
+        : Date(static_cast<int32_t>(std::chrono::sys_days{ymwd}.time_since_epoch().count())) {}
 
     constexpr Date(const std::chrono::year_month_day_last& ymdl)  // NOLINT
         noexcept
-        : Date(std::chrono::sys_days{ymdl}.time_since_epoch().count()) {}
+        : Date(static_cast<int32_t>(std::chrono::sys_days{ymdl}.time_since_epoch().count())) {}
 
     constexpr Date(const std::chrono::year_month_weekday_last& ymwdl)  // NOLINT
         noexcept
-        : Date(std::chrono::sys_days{ymwdl}.time_since_epoch().count()) {}
+        : Date(static_cast<int32_t>(std::chrono::sys_days{ymwdl}.time_since_epoch().count())) {}
 
     constexpr Date(std::chrono::year y, std::chrono::month m, std::chrono::day d) noexcept
         : Date(std::chrono::year_month_day{y, m, d}) {}
@@ -232,11 +232,11 @@ public:
     friend constexpr auto operator<=>(const Date&, const Date&) = default;
 
     constexpr Date operator+(std::chrono::days d) const noexcept {
-        return Date(duration_ + d.count());
+        return Date(static_cast<int32_t>(duration_ + d.count()));
     }
 
     constexpr Date operator-(std::chrono::days d) const noexcept {
-        return Date(duration_ - d.count());
+        return Date(static_cast<int32_t>(duration_ - d.count()));
     }
 
     constexpr Date& operator+=(std::chrono::days d) noexcept {
