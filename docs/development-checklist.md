@@ -4,7 +4,8 @@
 > 逐项对照。每一项都对应**已有的自动化检查**——不是人肉勾选，而是"做对了 CI 自然绿"。
 > 提交时若某项对应的 CI 门禁未包含到你的改动，说明该改动可能越过了系统边界，需复核。
 >
-> 配套：`.claude/rules/workflow.md`（push 前验证清单）+ `docs/frame_contracts/README.md`（跨进程协议清单）。
+> 配套：仓库根 `AGENTS.md`（硬门禁与日常工作流）+ `docs/frame_contracts/README.md`（跨进程协议清单）。
+> 本文 C 段是 **push 前验证清单的权威来源**，比 AGENTS.md 的摘要更全。
 
 ---
 
@@ -26,7 +27,7 @@
 | # | 动作 | 对应的自动化门禁 |
 |---|------|------------------|
 | B1 | 新增控制器/领域服务 | `ctest`（webui 套件）绿色；（后台门禁在 CI 的 C++ Tests 步骤） |
-| B2 | 改帧/WS/REST 契约 | **先改 `docs/frame_contracts/`**，再按 00-general §11.3 逐项同步（platform 头文件、帧号登记、dzweb、前端、测试）；契约 Freshness 步骤防生成类型漂移 |
+| B2 | 改帧/WS/REST 契约 | **先改 `docs/frame_contracts/`**（先读 `general.md` 总则），再按 `general.md` §11.3 逐项同步（platform 头文件、帧号登记、dzweb、前端、测试）；契约 Freshness 步骤防生成类型漂移 |
 | B3 | 改 WS payload 字段 | 改 schema → 跑 `npm run gen:types` → 前端类型自动更新；CI 校验 generated.ts 最新 |
 | B4 | 新增角色/权限判断 | 对照 `ControlGuard` 共享守卫，避免 REST/WS 平行实现 |
 
