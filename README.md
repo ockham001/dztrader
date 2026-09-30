@@ -16,7 +16,7 @@
 - **C/C++ 策略接口**：C 接口保证 ABI 兼容，可直接用 C 开发；C++ 封装（提供工具、模板等）后期按需添加
 - **Python 绑定**：pybind11，规划中（尚未实现）
 - **7×24 运行**：健壮的进程管理、崩溃恢复、过期数据保护
-- **跨平台**：Windows（MSVC 2022）和 Linux（GCC 12+）
+- **跨平台**：Windows（MSVC 2022）和 Linux（GCC 13）
 - **前端**：WebUI 已实现（Vue3 + dzweb）；Qt 为规划项
 - **C++20**：Concepts、Ranges、Format
 
@@ -34,7 +34,7 @@
 | Conan | 2.x | 包管理器 |
 | Ninja | 任意 | 构建生成器（Windows + Linux 统一） |
 | Visual Studio | 2022 | Windows MSVC 编译器（需 C++ 桌面开发工作负载，含 vcvarsall） |
-| GCC | 12+ | Linux 编译器（C++20 支持） |
+| GCC | 13（需 `/usr/bin/gcc-13`） | Linux 编译器。`profiles/linux-gcc` 用 `tools.build:compiler_executables` 把编译器钉死在该路径，以保证 conan 源码包的 `package_id` 与 CI 的 gcc-13 预编译包一致 —— 换成别的版本会混链 |
 | Python | 3.9+ | pybind11 绑定（规划中，当前构建不需要） |
 | Node.js | 18+ | 前端构建（仅开发期，运行时不需要） |
 

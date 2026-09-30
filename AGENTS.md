@@ -106,7 +106,7 @@
 
 ## 四、代码约定
 
-摘要。命名以**现有代码为准**（代码库自身一致遵循）；日志格式的**可执行真相源是 `scripts/check_log_format.py`**（CI 门禁，会兜住偏离）。构建与跨平台的外围细节见 [docs/agent/build-appendix.md](docs/agent/build-appendix.md)。
+摘要。命名以**现有代码为准**（代码库自身一致遵循）。日志格式的检查工具是 `scripts/check_log_format.py`，**需手动在提交前跑**（未接入 CI，CI 不会替你兜住）。构建与跨平台的外围细节见 [docs/agent/build-appendix.md](docs/agent/build-appendix.md)。
 
 ### 命名
 
