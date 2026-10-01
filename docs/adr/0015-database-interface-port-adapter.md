@@ -4,6 +4,10 @@
 
 Accepted（2026-09-17）
 
+> 修订：决策 4 中"驱动隔离（MySQL/Mongo 不进 SDK）"的取向由
+> [ADR 0016](0016-strategy-sdk-embedded-sql-drivers.md) 修订 —— 策略进程内嵌 SQLite + Boost.MySQL；
+> 本 ADR 决策 1/2/3/5 与接口三件套继续有效，代理适配器路径对 Mongo/原版 MySQL 继续保留。
+
 ## Context
 
 - 需求：事务域（instruments/orders/trades/positions/trading_accounts）与归档域（tick/bar，未实现）

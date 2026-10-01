@@ -32,6 +32,24 @@
 环境变量DZTRADER_HOME指定数据根，未设置用系统默认(Win:%USERPROFILE%\.dztrader，Linux:$HOME/.dztrader)。
 子目录：configs/ shm/ logs/ cache/ strategies/ db/
 
+## 数据库后端
+
+事务域 DB 走端口-适配器接口（`dztrader::db`：`Database`/`Session`/`Row`/`Filter`/`Capability`，ADR 0015），
+后端由配置选择，调用方代码不变（ADR 0016）：
+
+| 后端 | 实现 | 编入位置 | 状态 |
+|------|------|---------|------|
+| sqlite | SQLiteCpp | `dzdb`（随策略 SDK 单文件分发） | 默认，全链路可用 |
+| mysql | Boost.MySQL + 静态 OpenSSL/ZLIB/boost_charconv | 同上，CMake `DZ_WITH_MYSQL=ON`（默认） | 驱动/一致性/真机集成已验；**td 写端与 dzweb 读端仍为 SQLite，切换属后续阶段** |
+| mongo / 原版 MySQL | 动态库插件（环境变量注入）或代理适配器（独立服务进程） | 未实现 | 只留驱动注册缝，接口不变 |
+
+选择规则（`db::resolve_config("td")` 是唯一入口）：环境变量 `DZTRADER_DB_BACKEND` /
+`DZTRADER_DB_OPT_<KEY>` > `<DZTRADER_HOME>/configs/database.json` 的 `td` 段（缺失自动生成，
+不提交模板）> 内置默认（sqlite + `<DZTRADER_HOME>/db/td.db`）。
+
+不变量：**同一部署读写两端必须指向同一后端与同一数据库**——写 A 读 B 会让水位/回补静默失效。
+默认配置下与迁移前完全等价（`paths::td_db()` + busy_timeout 5000）。
+
 ## IPC通道详情
 
 1个event channel + N-1个md channel：
