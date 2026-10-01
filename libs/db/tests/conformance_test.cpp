@@ -4,7 +4,12 @@
 
 #include "conformance_main.h"
 
+#if defined(DZ_WITH_MYSQL) && DZ_WITH_MYSQL
+#include "mysql_test_env.h"
+#endif
+
 #include <filesystem>
+#include <map>
 #include <random>
 
 namespace db_test {
@@ -30,6 +35,27 @@ db::Row make_order(std::string account, int64_t order_id, int64_t seq) {
     return db::Row{std::vector<db::Value>{std::monostate{}, std::move(account), order_id, seq}};
 }
 
+std::unique_ptr<db::Database> make_sqlite(const std::filesystem::path& path,
+                                          std::span<const db::ResourceSchema> schemas) {
+    return db::Database::open(
+        db::Config{.backend = "sqlite", .options = {{"path", path.string()}}}, schemas);
+}
+
+#if defined(DZ_WITH_MYSQL) && DZ_WITH_MYSQL
+/// path.stem() 即库名（dz_conformance_<pid>_<rand>）：自建库，用例结束由 cleanup 删库
+std::unique_ptr<db::Database> make_mysql(const std::filesystem::path& path,
+                                         std::span<const db::ResourceSchema> schemas) {
+    const std::string database = path.stem().string();
+    mysql_env::create_database(database);
+    return db::Database::open(
+        mysql_env::config_for(database, {{"schema_version", "0"}}), schemas);
+}
+
+void cleanup_mysql(const std::filesystem::path& path) {
+    mysql_env::drop_database(path.stem().string());
+}
+#endif
+
 }  // namespace
 
 const std::vector<db::ResourceSchema>& conformance_schemas() {
@@ -45,13 +71,10 @@ const std::vector<db::ResourceSchema>& conformance_schemas() {
 
 const std::vector<Driver>& drivers() {
     static const std::vector<Driver> kDrivers = {
-        Driver{"sqlite",
-               [](const std::filesystem::path& path,
-                  std::span<const db::ResourceSchema> schemas) {
-                   return db::Database::open(
-                       db::Config{.backend = "sqlite", .options = {{"path", path.string()}}},
-                       schemas);
-               }},
+        Driver{"sqlite", make_sqlite, {}, false},
+#if defined(DZ_WITH_MYSQL) && DZ_WITH_MYSQL
+        Driver{"mysql", make_mysql, cleanup_mysql, true},
+#endif
     };
     return kDrivers;
 }
@@ -59,8 +82,14 @@ const std::vector<Driver>& drivers() {
 class ConformanceTest : public ::testing::TestWithParam<size_t> {
 protected:
     void SetUp() override {
+        const Driver& driver = drivers()[GetParam()];
+#if defined(DZ_WITH_MYSQL) && DZ_WITH_MYSQL
+        if (driver.requires_server && !mysql_env::configured()) {
+            GTEST_SKIP() << "mysql test server not configured | env=DZ_TEST_MYSQL_HOST";
+        }
+#endif
         path_ = unique_db_path("dz_conformance");
-        database_ = drivers()[GetParam()].make(path_, conformance_schemas());
+        database_ = driver.make(path_, conformance_schemas());
         ASSERT_NE(database_, nullptr);
         database_->migrate();
         session_ = database_->session();
@@ -68,7 +97,15 @@ protected:
     void TearDown() override {
         session_.reset();
         database_.reset();
-        std::filesystem::remove(path_);
+        if (path_.empty()) {
+            return;  // SetUp 跳过：无资源可清理
+        }
+        const Cleanup& cleanup = drivers()[GetParam()].cleanup;
+        if (cleanup) {
+            cleanup(path_);
+        } else {
+            std::filesystem::remove(path_);
+        }
     }
 
     std::filesystem::path path_;
@@ -106,6 +143,21 @@ TEST_P(ConformanceTest, FindEmptyColumns) {
     EXPECT_EQ(result.columns()[3].name, "seq");
 }
 
+// FIX-2：无 Filter 全量 find 必须按 schema 声明类型解码（String 仍是 string，
+// Int64 仍是 int64_t），Row::values() 的 variant 类型断言即证据
+TEST_P(ConformanceTest, FindAllDecodesDeclaredTypes) {
+    const db::Row rows[] = {make_order("a", 7, 42)};
+    session_->upsert(kCollection, rows);
+    const auto result = session_->find(kCollection);
+    ASSERT_EQ(result.size(), 1u);
+    const db::Row& row = result.rows()[0];
+    ASSERT_EQ(row.size(), 4u);
+    EXPECT_EQ(std::get<int64_t>(row.values()[0]) > 0, true) << "自增 id 应为整数";
+    EXPECT_EQ(std::get<std::string>(row.values()[1]), "a");
+    EXPECT_EQ(row.get<int64_t>(2), 7);
+    EXPECT_EQ(row.get<int64_t>(3), 42);
+}
+
 TEST_P(ConformanceTest, RemoveCount) {
     const db::Row rows[] = {make_order("a", 1, 1), make_order("b", 2, 2)};
     session_->upsert(kCollection, rows);
@@ -125,7 +177,16 @@ TEST_P(ConformanceTest, AggregateMaxGroupBy) {
     ASSERT_EQ(result.size(), 2u);
     ASSERT_EQ(result.columns().size(), 2u);
     EXPECT_EQ(result.columns()[0].name, "account_id");
+    EXPECT_EQ(result.columns()[0].type, db::ValueType::String);
     EXPECT_EQ(result.columns()[1].name, "max");
+    EXPECT_EQ(result.columns()[1].type, db::ValueType::Int64);
+    std::map<std::string, int64_t> maxima;
+    for (const db::Row& row : result.rows()) {
+        maxima[row.get<std::string>(0)] = row.get<int64_t>(1);
+    }
+    ASSERT_EQ(maxima.size(), 2u);
+    EXPECT_EQ(maxima["a"], 20);
+    EXPECT_EQ(maxima["b"], 33);
 }
 
 TEST_P(ConformanceTest, AggregateCount) {
@@ -138,7 +199,36 @@ TEST_P(ConformanceTest, AggregateCount) {
     ASSERT_EQ(result.size(), 1u);
     ASSERT_EQ(result.columns().size(), 1u);
     EXPECT_EQ(result.columns()[0].name, "count");
+    EXPECT_EQ(result.columns()[0].type, db::ValueType::Int64);
     EXPECT_EQ(result.rows()[0].get<int64_t>(0), 3);
+}
+
+// FIX-2/FIX-14：SUM/AVG 的返回类型与值（sqlite INTEGER/REAL；mysql 侧 SUM 走 DECIMAL
+// 字符串也必须按 schema 声明类型解码回 int64_t / double）
+TEST_P(ConformanceTest, AggregateSumAvgTypes) {
+    const db::Row rows[] = {make_order("a", 1, 10), make_order("a", 2, 20),
+                            make_order("b", 3, 33)};
+    session_->upsert(kCollection, rows);
+
+    db::Aggregation sum;
+    sum.op = db::AggregateOp::Sum;
+    sum.field = "seq";
+    const auto sum_result = session_->aggregate(kCollection, sum);
+    ASSERT_EQ(sum_result.size(), 1u);
+    ASSERT_EQ(sum_result.columns().size(), 1u);
+    EXPECT_EQ(sum_result.columns()[0].name, "sum");
+    EXPECT_EQ(sum_result.columns()[0].type, db::ValueType::Int64);
+    EXPECT_EQ(sum_result.rows()[0].get<int64_t>(0), 63);
+
+    db::Aggregation avg;
+    avg.op = db::AggregateOp::Avg;
+    avg.field = "seq";
+    const auto avg_result = session_->aggregate(kCollection, avg);
+    ASSERT_EQ(avg_result.size(), 1u);
+    ASSERT_EQ(avg_result.columns().size(), 1u);
+    EXPECT_EQ(avg_result.columns()[0].name, "avg");
+    EXPECT_EQ(avg_result.columns()[0].type, db::ValueType::Float64);
+    EXPECT_DOUBLE_EQ(avg_result.rows()[0].get<double>(0), 21.0);
 }
 
 TEST_P(ConformanceTest, TransactionRollback) {

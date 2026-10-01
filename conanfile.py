@@ -66,6 +66,9 @@ class DztraderConan(ConanFile):
     def requirements(self):
         # 核心依赖（固定版本）
         self.requires("boost/1.90.0")
+        # Boost.MySQL 驱动直连 OpenSSL（TLS + caching_sha2 认证）：显式声明为直接依赖，
+        # 不靠 drogon 的传递引入（版本与当前解析结果一致）；ZLIB 经 openssl 导入目标传递
+        self.requires("openssl/3.6.4")
         self.requires("spdlog/1.17.0")
         self.requires("toml11/4.4.0")
         self.requires("sqlitecpp/3.3.3")

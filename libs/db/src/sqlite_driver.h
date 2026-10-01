@@ -19,6 +19,11 @@
 
 namespace dztrader::db {
 
+/// 驱动工厂（ADR 0016 注册缝）：backend 名已在查找时确定，仅建库不打开连接；
+/// options 缺 "path" 或为空抛 DZ_EC_DB_OPEN_FAILED
+[[nodiscard]] std::unique_ptr<Database> open_sqlite(const Config& config,
+                                                    std::span<const ResourceSchema> schemas);
+
 class SqliteDatabaseImpl final : public Database {
 public:
     SqliteDatabaseImpl(std::string path, std::map<std::string, std::string, std::less<>> options,

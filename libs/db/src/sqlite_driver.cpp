@@ -11,6 +11,7 @@
 #include <dztrader/core/exception.h>
 #include <dztrader/error.h>
 
+#include "sql_compiler.h"
 #include "sqlite_migrations.h"
 #include "sqlite_sql.h"
 
@@ -274,9 +275,11 @@ uint64_t SqliteSession::remove(std::string_view collection, const Filter& filter
         throw Exception(DZ_EC_PERMISSION_DENIED, "remove inside snapshot is not allowed");
     }
     const ResourceSchema& schema = require_schema(collection);
-    const internal::CompiledFilter compiled = internal::compile_filter(filter.conditions(), schema);
+    const internal::CompiledFilter compiled =
+        internal::compile_filter(filter.conditions(), schema, internal::kSqliteDialect);
     try {
-        SQLite::Statement stmt(*db_, internal::build_delete_sql(schema, compiled));
+        SQLite::Statement stmt(*db_, internal::build_delete_sql(schema, compiled,
+                                                               internal::kSqliteDialect));
         for (size_t i = 0; i < compiled.params.size(); ++i) {
             bind_value(stmt, static_cast<int>(i + 1), compiled.params[i]);
         }
@@ -291,7 +294,8 @@ uint64_t SqliteSession::remove(std::string_view collection, const Filter& filter
 ResultSet SqliteSession::find(std::string_view collection, const Filter& filter,
                               const FindOptions& options) {
     const ResourceSchema& schema = require_schema(collection);
-    const internal::CompiledFilter compiled = internal::compile_filter(filter.conditions(), schema);
+    const internal::CompiledFilter compiled =
+        internal::compile_filter(filter.conditions(), schema, internal::kSqliteDialect);
     std::vector<Column> columns;
     columns.reserve(schema.fields.size());
     for (const FieldSchema& field : schema.fields) {
@@ -300,7 +304,7 @@ ResultSet SqliteSession::find(std::string_view collection, const Filter& filter,
     try {
         SQLite::Statement stmt(
             *db_, internal::build_select_sql(schema, compiled, options.sort, options.offset,
-                                             options.limit));
+                                             options.limit, internal::kSqliteDialect));
         for (size_t i = 0; i < compiled.params.size(); ++i) {
             bind_value(stmt, static_cast<int>(i + 1), compiled.params[i]);
         }
@@ -325,7 +329,7 @@ ResultSet SqliteSession::find(std::string_view collection, const Filter& filter,
 ResultSet SqliteSession::aggregate(std::string_view collection, const Aggregation& aggregation) {
     const ResourceSchema& schema = require_schema(collection);
     const internal::CompiledFilter compiled =
-        internal::compile_filter(aggregation.filter.conditions(), schema);
+        internal::compile_filter(aggregation.filter.conditions(), schema, internal::kSqliteDialect);
     std::vector<Column> columns;
     std::vector<ValueType> value_types;
     columns.reserve(aggregation.group_by.size() + 1);
@@ -354,7 +358,8 @@ ResultSet SqliteSession::aggregate(std::string_view collection, const Aggregatio
     try {
         SQLite::Statement stmt(*db_, internal::build_aggregate_sql(
                                          schema, aggregation.op, aggregation.field,
-                                         aggregation.group_by, compiled, aggregation.sort));
+                                         aggregation.group_by, compiled, aggregation.sort,
+                                         internal::kSqliteDialect));
         for (size_t i = 0; i < compiled.params.size(); ++i) {
             bind_value(stmt, static_cast<int>(i + 1), compiled.params[i]);
         }
@@ -438,16 +443,13 @@ SqliteSnapshot::~SqliteSnapshot() {
     }
 }
 
-std::unique_ptr<Database> Database::open(const Config& config,
-                                         std::span<const ResourceSchema> schemas) {
-    if (config.backend == "sqlite") {
-        const auto it = config.options.find("path");
-        if (it == config.options.end() || it->second.empty()) {
-            throw Exception(DZ_EC_DB_OPEN_FAILED, "sqlite path option is required");
-        }
-        return std::make_unique<SqliteDatabaseImpl>(it->second, config.options, schemas);
+std::unique_ptr<Database> open_sqlite(const Config& config,
+                                      std::span<const ResourceSchema> schemas) {
+    const auto it = config.options.find("path");
+    if (it == config.options.end() || it->second.empty()) {
+        throw Exception(DZ_EC_DB_OPEN_FAILED, "sqlite path option is required");
     }
-    throw Exception(DZ_EC_DB_UNSUPPORTED_BACKEND, "unsupported backend: backend={}", config.backend);
+    return std::make_unique<SqliteDatabaseImpl>(it->second, config.options, schemas);
 }
 
 }  // namespace dztrader::db

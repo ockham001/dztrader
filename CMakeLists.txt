@@ -138,6 +138,18 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 
 # ============================================================
+# MySQL 驱动（Boost.MySQL）内嵌开关 (ADR 0016)
+#   ON  : dzdb 编入 mysql 后端并静态链接其传递依赖 (boost_charconv/OpenSSL/ZLIB)，
+#         随策略 SDK 单文件分发；策略进程可直连 MySQL
+#   OFF : 只保留 sqlite 后端，不引入 OpenSSL 依赖
+# OpenSSL::Crypto 的 Conan 导入目标已传递 ZLIB::ZLIB，无需单独 find_package(ZLIB)
+# ============================================================
+option(DZ_WITH_MYSQL "Embed the Boost.MySQL backend into dzdb (and the strategy SDK)" ON)
+if(DZ_WITH_MYSQL)
+    find_package(OpenSSL REQUIRED)
+endif()
+
+# ============================================================
 # version: 生成 version.h（header-only）
 # 单一真相源为上方 project(VERSION)，通过变量映射保持 version.h.in 模板不改
 # 生成到源码树 libs/strategy_api/include/dztrader/version.h（与 version.h.in 同目录），

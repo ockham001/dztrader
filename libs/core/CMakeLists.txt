@@ -20,6 +20,10 @@ target_link_libraries(dzcore
     PUBLIC Boost::process spdlog::spdlog toml11::toml11
            nlohmann_json::nlohmann_json magic_enum::magic_enum
 )
+# 可被链入 dzstrategy_sdk 动态库，静态库对象需 PIC（与 dzdb/dztdstore/dztrading 同）。
+# 缺此设置时：SDK 动态库一旦引用本库某个含外部数据符号直接寻址的 TU（如 env.cpp），
+# 共享链接会以 "relocation R_X86_64_PC32 ... recompile with -fPIC" 失败（ADR 0016）。
+set_target_properties(dzcore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ============================================================
 # 单元测试：每个 *_test.cpp 独立编译运行
