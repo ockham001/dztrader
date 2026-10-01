@@ -119,7 +119,13 @@ DzResultSet* dz_db_query_instruments(DzDatabase* db, const char* instrument_id, 
 ```
 
 `db` 为 `dz_db_open` 打开的统一 td 库（`paths::td_db()` = `<DZTRADER_HOME>/db/td.db`，ADR 0012；只读打开，
-库不存在时打开失败）。查询走 `libs/db` → `tdstore::query_instruments`，结果映射为 `DzResultSet`。
+库不存在时打开失败）。`dz_db_open_default()` 按配置解析打开 td 库（优先级：环境变量
+`DZTRADER_DB_BACKEND`/`DZTRADER_DB_OPT_<KEY>` > `<DZTRADER_HOME>/configs/database.json` 的 `td` 段 > 内置默认
+`sqlite` + `<DZTRADER_HOME>/db/td.db`；配置文件缺失时自动生成，ADR 0016）；默认配置下与
+`dz_db_open(paths::td_db())` 等价。非 sqlite 后端输出一次性护栏诊断（本轮 td 写端仍锁 SQLite，
+写端切换后删除该护栏），不做功能拦截。SDK 内部 ingest（水位装载/断档回补）在库打开失败后按
+退避窗口（默认 1s）重试：窗口内视为库不可用（降级不过滤、不再发起连接），窗口过后重试；
+配置解析失败不走该退避（配置错误单独诊断）。查询走 `libs/db` → `tdstore::query_instruments`，结果映射为 `DzResultSet`。
 
 | 参数 | 语义 |
 |------|------|

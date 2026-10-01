@@ -38,7 +38,7 @@
 
 ## 生产端：重放过滤与 seq 分配（td）
 
-基准 = **内存轻量镜像**（账户 connect 时从 DB 装载该账户全部订单最新态 + 全部 trade_id 集合，**不按交易日过滤**——connect 时交易日尚未知，且 CTP 重放在登录成功后立即到达，基准必须先于首条重放就绪；量级数百条可接受），热路径**不查 SQLite**（db 归 Writer 线程独占）。镜像在主线程**即时**更新（不等落库），否则 burst 内下一条回报拿旧基准误判。
+基准 = **内存轻量镜像**（账户 connect 时从 DB 装载该账户全部订单最新态 + 全部 trade_id 集合，**不按交易日过滤**——connect 时交易日尚未知，且 CTP 重放在登录成功后立即到达，基准必须先于首条重放就绪；量级数百条可接受），热路径**不查数据库**（db 归 Writer 线程独占；库后端由 `db::resolve_config` 决定，默认 SQLite —— 策略读端已接，本轮写端仍为 SQLite，MySQL 侧语义与准入见 ADR 0016）。镜像在主线程**即时**更新（不等落库），否则 burst 内下一条回报拿旧基准误判。
 
 - 委托：与基准对比 `{update_time, volume_traded, volume_canceled, status}`——集合完全相等 → 忽略（不推/不落/不分配 seq）；不相等 → 防御检查 update_time 回退（异常旧数据则吞并告警），否则更新镜像 + 分配 seq + 推 shm + 落库
 - 成交：`(account_id, trading_day, trade_id)` 存在性 → 已存在忽略；不存在转发
@@ -106,7 +106,7 @@ seq 是 td ↔ SDK/dzweb 后端的**内部协调坐标**：**不进 WS 契约、
 | 启动竞态在途窗口 | 回补；安静场景由登录完成协议重推触发 |
 | 跨日 | seq 累积无边界；trades 唯一键含 trading_day；positions 单事务重灌（清该账户全部持仓行 + upsert 本组，响应不含的合约即已全平/过期）；日切 today→yd、清挂单冻结 |
 | 旧 SDK + 新 td | `payload_size_matches` 防御性丢帧；td 与 SDK 同仓同步发版 |
-| 多策略并发读 td 库 | SQLite 共享锁并发读 OK；写事务期间读端 busy_timeout 吸收 |
+| 多策略并发读 td 库 | 后端由 `db::resolve_config` 决定（默认 SQLite；MySQL 侧语义与准入见 ADR 0016）；SQLite 共享锁并发读 OK，写事务期间读端 busy_timeout 吸收 |
 | 多网关账户 ID 撞名 | 运维约定全局唯一；帧内加源标识留待需要时（YAGNI） |
 | 查询在途窗口成交 | 以查询快照覆盖为准；最多一个查询间隔（默认 60s）后自愈收敛（绝对态帧，消费端最终一致） |
 

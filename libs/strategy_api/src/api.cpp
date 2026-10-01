@@ -12,6 +12,7 @@
 #include <format>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -19,8 +20,8 @@
 #include <dztrader/error.h>
 #include <dztrader/data_type.h>
 #include <dztrader/core/last_error.h>
-#include <dztrader/core/path.h>
 #include <dztrader/core/random.h>
+#include <dztrader/db/config.h>
 #include <dztrader/date_time/date_time.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/frame_codec.h>
@@ -117,20 +118,84 @@ struct ColumnMap {
     std::unordered_map<std::string, size_t> index_by_name;
 };
 
-/// 只读打开 td 统一库: <DZTRADER_HOME>/db/td.db (所有 td 网关共写)
-/// 失败 (库不存在/打不开) 返回 nullptr (调用方降级不过滤)。
-std::unique_ptr<DzDatabase> open_td_db() {
-    const auto db_path = dztrader::paths::td_db();
+/// 非 sqlite 后端一次性护栏诊断 (FIX-1): 本轮 td 写端仍锁 SQLite (后续阶段才切),
+/// 策略侧解析出 MySQL 等后端时提示写端尚未迁移; 写端切换后删除本护栏。
+void report_non_sqlite_backend_once(const std::string& backend) {
+    static std::mutex mutex;
+    static std::string reported;
+    const std::lock_guard<std::mutex> lock(mutex);
+    if (reported == backend) {
+        return;
+    }
+    reported = backend;
+    dz_diag(std::format("db backend is not sqlite, platform write side not migrated in this "
+                        "release, verify writer backend matches | backend={}",
+                        backend)
+                .c_str());
+}
+
+/// 配置解析失败一次性诊断 (FIX-3): 配置错误 (如 database.json 损坏) 不是"库不存在",
+/// 不得静默降级; 同一错误文本只报一次, 且不缓存失败。
+void report_ingest_config_error_once(const std::string& error) {
+    static std::mutex mutex;
+    static std::string reported;
+    const std::lock_guard<std::mutex> lock(mutex);
+    if (reported == error) {
+        return;
+    }
+    reported = error;
+    dz_diag(std::format("td ingest db config invalid, backfill disabled (degraded, no "
+                        "filtering) | error=\"{}\"",
+                        error)
+                .c_str());
+}
+
+/// 诊断用的目标描述: 只含 sqlite path 或 mysql host:port — 绝不输出 password (FIX-3)。
+std::string config_target(const dztrader::db::Config& config) {
+    const auto option = [&config](std::string_view key) -> std::string {
+        const auto it = config.options.find(key);
+        return it == config.options.end() ? std::string() : it->second;
+    };
+    if (config.backend == "sqlite") {
+        return option("path");
+    }
+    const std::string host = option("host");
+    const std::string port = option("port");
+    if (host.empty() && port.empty()) {
+        return "-";
+    }
+    return host + ":" + port;
+}
+
+/// 取 ingest td 库句柄 (进程内复用, 配置由 db::resolve_config("td") 决定):
+/// 默认 sqlite + <DZTRADER_HOME>/db/td.db, 与迁移前 paths::td_db() 完全等价。
+/// 返回借用的指针 (缓存持有, 调用方不得 close); nullptr = 库不可用 (降级不过滤),
+/// 诊断已按配置去重输出 (dz_next_event → gap 回补重试窗口内每次调用都会走到这里)。
+/// 配置解析失败与打开失败分开报告 (FIX-3): 前者是配置错误, 后者是库不可用。
+DzDatabase* open_td_db() {
+    dztrader::db::Config config;
     try {
-        return strategy_api_internal::db_open_readonly(db_path.string());
-    } catch (const Exception& e) {
-        dz_diag((std::string("td ingest db unavailable (degraded, no filtering): ") + e.what())
-                    .c_str());
+        config = dztrader::db::resolve_config("td");
     } catch (const std::exception& e) {
-        dz_diag((std::string("td ingest db unavailable (degraded, no filtering): ") + e.what())
-                    .c_str());
+        report_ingest_config_error_once(e.what());
+        return nullptr;
     } catch (...) {
-        dz_diag("td ingest db unavailable (degraded, no filtering): unknown exception");
+        report_ingest_config_error_once("unknown exception");
+        return nullptr;
+    }
+    if (config.backend != "sqlite") {
+        report_non_sqlite_backend_once(config.backend);
+    }
+    const strategy_api_internal::IngestDbAcquire acquired =
+        strategy_api_internal::acquire_ingest_db(config);
+    if (acquired.db != nullptr) {
+        return acquired.db;
+    }
+    if (acquired.report) {
+        dz_diag(std::format("td ingest db unavailable (degraded, no filtering) | backend={} "
+                            "target=\"{}\" error=\"{}\"",
+                            config.backend, config_target(config), acquired.error)
+                    .c_str());
     }
     return nullptr;
 }
@@ -144,7 +209,7 @@ std::unique_ptr<DzDatabase> open_td_db() {
 /// 该表数据经帧全量放行, 回补时同样按表容错)。
 void load_all_watermarks(DzContext* ctx) {
     try {
-        auto db = open_td_db();
+        DzDatabase* db = open_td_db();
         if (db == nullptr) {
             return;
         }
@@ -156,7 +221,7 @@ void load_all_watermarks(DzContext* ctx) {
             // 库随历史线性增长时全表装载线性恶化, 聚合只物化每账户一行。
             try {
                 for (const auto& [acct, seq] :
-                     strategy_api_internal::db_query_max_seq_by_account(db.get(), resource)) {
+                     strategy_api_internal::db_query_max_seq_by_account(db, resource)) {
                     auto it = max_seq.find(acct);
                     if (it == max_seq.end() || seq > it->second) {
                         max_seq[acct] = seq;
@@ -187,7 +252,7 @@ void load_all_watermarks(DzContext* ctx) {
 /// 库不可用时返回 0 (重置为新基准, gate 过滤 seq≤0 即不拦 seq≥1)。
 uint64_t rebuild_watermark(const std::string& account_id) {
     try {
-        auto db = open_td_db();
+        DzDatabase* db = open_td_db();
         if (db == nullptr) {
             return 0;
         }
@@ -198,7 +263,7 @@ uint64_t rebuild_watermark(const std::string& account_id) {
             // 终检发现 E: 聚合查询 (单账户 MAX(seq)) 替代该账户全行物化。
             try {
                 const uint64_t s = strategy_api_internal::db_query_account_max_seq(
-                    db.get(), resource, account_id);
+                    db, resource, account_id);
                 if (s > max_seq) {
                     max_seq = s;
                 }
@@ -577,10 +642,10 @@ void drive_gap_retry(DzContext* ctx) {
     }
     bool covered = false;
     bool enqueued = false;
-    auto db = open_td_db();
+    DzDatabase* db = open_td_db();
     if (db != nullptr) {
         GapBackfillRows rows;
-        covered = gap_covered_snapshot(db.get(), &rows, rt.account_id, rt.from, rt.to);
+        covered = gap_covered_snapshot(db, &rows, rt.account_id, rt.from, rt.to);
         if (covered) {
             // 回补行先入缓冲 (seq 最小), 再释放触发帧 + 暂存帧 (seq 更大) —
             // 派发序 = 回补行 → 触发帧 → 暂存帧 = 按 seq 序 (终检发现 B)。
@@ -639,13 +704,13 @@ bool handle_gap(DzContext* ctx, const std::byte* trigger_frame) {
     if (!gap.has_value()) {
         return true;
     }
-    auto db = open_td_db();
+    DzDatabase* db = open_td_db();
     if (db == nullptr) {
         dz_diag("ingest gap but td db unavailable, skip backfill");
         return true;  // 无库: 不拦截触发帧 (降级全放行语义)
     }
     GapBackfillRows rows;
-    if (!gap_covered_snapshot(db.get(), &rows, gap->account_id, gap->from, gap->to)) {
+    if (!gap_covered_snapshot(db, &rows, gap->account_id, gap->from, gap->to)) {
         // 行数不足以覆盖 gap 区间 (触发帧到达 ≠ persist 已提交): 保留 gap 重试,
         // 拦截触发帧 (宁缺勿乱), 每次调用重试一次直至覆盖或耗尽 (契约 §5.2)。
         if (trigger_frame != nullptr) {
@@ -1425,6 +1490,7 @@ std::unique_ptr<DzResultSet> db_rs_from_result(strategy_api_internal::DbQueryRes
 }
 
 using strategy_api_internal::db_open_readonly;
+using strategy_api_internal::db_open_readonly_config;
 using strategy_api_internal::db_query_order_trade;
 using strategy_api_internal::db_query_position;
 using strategy_api_internal::db_query_trading_account;
@@ -1463,6 +1529,31 @@ DZ_API DzDatabase* dz_db_open(const char* path) {
     try {
         // 只读打开: 库文件不存在时报错返回 NULL (策略自行降级)。
         return db_open_readonly(path).release();
+    } catch (const Exception& e) {
+        LastError::set(e.code(), e.what());
+    } catch (const std::exception& e) {
+        LastError::set(DZ_EC_SYSTEM, e.what());
+    } catch (...) {
+        LastError::set(DZ_EC_SYSTEM, "unknown exception");
+    }
+    return NULL;
+}
+DZ_API DzDatabase* dz_db_open_default(void) {
+    try {
+        // 后端/路径由配置解析决定 (env > configs/database.json > 内置默认 sqlite);
+        // 默认 sqlite 下等价于 dz_db_open(paths::td_db())。
+        const dztrader::db::Config config = dztrader::db::resolve_config("td");
+        // FIX-9: 未编入的后端早失败 (如 DZ_WITH_MYSQL=OFF 时配置成 mysql),
+        // 不等到底层驱动才报错; 消息含 backend。
+        if (!dztrader::db::backend_available(config.backend)) {
+            throw Exception(DZ_EC_DB_UNSUPPORTED_BACKEND, "db backend not available | backend={}",
+                            config.backend);
+        }
+        // FIX-1: 本轮 td 写端仍锁 SQLite, 非 sqlite 后端只做一次性护栏诊断 (不拦截)。
+        if (config.backend != "sqlite") {
+            report_non_sqlite_backend_once(config.backend);
+        }
+        return db_open_readonly_config(config).release();
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
     } catch (const std::exception& e) {

@@ -365,6 +365,27 @@ typedef struct DzDatabase DzDatabase;
 DZ_API DzDatabase* dz_db_open(const char* path);
 
 /**
+ * @brief 按进程配置打开 td 库
+ *
+ * 后端与连接参数由配置解析单点决定，优先级（高 → 低）：
+ *   1. 环境变量 `DZTRADER_DB_BACKEND` / `DZTRADER_DB_OPT_<KEY>`（`<KEY>` 小写化后作为
+ *      option 键，如 `DZTRADER_DB_OPT_PATH`、`DZTRADER_DB_OPT_HOST`）
+ *   2. `<DZTRADER_HOME>/configs/database.json` 的 `td` 段（缺失时按默认自动生成）
+ *   3. 内置默认：`sqlite` + `<DZTRADER_HOME>/db/td.db`（只读打开）
+ *
+ * 不变量：同一部署内读写两端必须指向同一后端与同一数据库（写 A 读 B 会让
+ * 水位/回补静默失效）。
+ *
+ * 临时护栏：本轮 td 写端仍锁 SQLite，配置解析出非 sqlite 后端时输出一次性诊断
+ * （不拦截），写端切换后删除。
+ *
+ * @return 非 NULL 为句柄，NULL 为失败（调 dz_errcode() 获取错误码：配置非法 =
+ *         `DZ_EC_INVALID_PARAM`；后端未编入 = `DZ_EC_DB_UNSUPPORTED_BACKEND`；
+ *         库不存在/连不上 = `DZ_EC_DB_OPEN_FAILED`）
+ */
+DZ_API DzDatabase* dz_db_open_default(void);
+
+/**
  * @brief 关闭数据库
  *
  * @param db  数据库句柄
