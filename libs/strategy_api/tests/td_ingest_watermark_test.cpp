@@ -19,6 +19,8 @@
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
+#include "db_database.h"
+
 #include <filesystem>
 #include <string>
 
@@ -38,6 +40,9 @@ protected:
     DzContext* ctx_ = nullptr;
 
     void SetUp() override {
+        // 释放上一用例缓存的 ingest 只读句柄; Windows 上未关闭的句柄会让下面的 remove_all
+        // 撞文件占用。
+        dztrader::strategy_api_internal::reset_ingest_cache_for_test();
         home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_ingest_wm").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
@@ -128,6 +133,9 @@ protected:
 
     void TearDown() override {
         dz_release(ctx_);
+        // 先释放 ingest 缓存句柄再删目录; Windows 上被占用文件不可删 (Linux 无此限制, 故只在 CI
+        // 暴露)。
+        dztrader::strategy_api_internal::reset_ingest_cache_for_test();
         std::filesystem::remove_all(home_);
     }
 
