@@ -6,7 +6,7 @@
 
 | 文档 | 内容 |
 |------|------|
-| [frame_contracts/](frame_contracts/README.md) | **帧协议与 frontend↔dzweb 协议的唯一语义真相源**（无编号，21 份；**先读 [general](frame_contracts/general.md) 总则**）。开发 IPC/UI 联动前必读 |
+| [frame_contracts/](frame_contracts/README.md) | **帧协议与 frontend↔dzweb 协议的唯一语义真相源**（无编号；**先读 [general](frame_contracts/general.md) 总则**）。开发 IPC/UI 联动前必读 |
 | [development-checklist.md](development-checklist.md) | **新功能开发门禁清单**（P6）：A 前端/B 后台/C 提交前三段，每项映射到自动化检查 |
 | 仓库根 `README.md` | 构建/运行/部署指南 |
 
@@ -14,7 +14,7 @@
 
 | 文档 | 内容 | 与现状的关系 |
 |------|------|--------------|
-| [architecture.md](architecture.md) | 进程模型、依赖方向、静态库、IPC 通道、策略接口约束 | 早期蓝图，方向有效；细节以代码为准（如订阅请求已由"master 转发"改为策略直发行情进程，见 frame_contracts 07） |
+| [architecture.md](architecture.md) | 进程模型、依赖方向、静态库、IPC 通道、策略接口约束 | 早期蓝图，方向有效；细节以代码为准（如订阅请求已由"master 转发"改为策略直发行情进程，见《帧契约：md-subscription》） |
 | [ui-trading.md](ui-trading.md) | UI 系统与交易接口规划 | 蓝图（Qt 后端、部分接口为规划项）；现状实现为 WebUI（Vue3 + dzweb），交易接口开发顺序以实际为准 |
 | [components/](components/) | 组件级架构设计（线程模型、通道、会话、设计原则） | 与代码同步维护；按组件一档，如 [dzmd_ctp.md](components/dzmd_ctp.md) |
 | [adr/](adr/) | 架构决策记录 | 按编号追溯决策 |
@@ -34,3 +34,6 @@
 
 1. 帧协议/WS/REST → `frame_contracts/`（当前版本）
 2. 代码与契约冲突时，契约是语义真相源；修实现需走对应模块流程
+3. 硬门禁与工作方式 → 根 `AGENTS.md`；门禁清单细节 → `development-checklist.md`
+4. 架构参考（architecture.md / ui-trading.md / components/）为蓝图级：与代码和契约冲突时以后者为准
+5. 本地历史归档（docs/plans|specs|superpowers，不在版本控制内）：与现状冲突时以契约与代码为准，归档内容不修改
