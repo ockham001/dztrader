@@ -23,7 +23,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Conan
-        run: pip install "conan>=2,<3"
+        run: pip install "conan==2.32.0"
 
       - name: Cache Conan packages
         uses: actions/cache@v4
@@ -92,8 +92,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Log Format Check
+        run: python scripts/check_log_format.py apps/ libs/
+
+      - name: Install clang-format 21 (apt.llvm.org, official LLVM)
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          echo "deb https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-toolchain-21.list > /dev/null
+          sudo apt-get update -q
+          sudo apt-get install -y clang-format-21
+          clang-format-21 --version
+
+      - name: C++ Format Check (clang-format 21.x)
+        run: find libs apps \( -name '*.h' -o -name '*.cpp' \) -print0 | xargs -0 clang-format-21 --dry-run --Werror
+
       - name: Install Conan
-        run: pip install "conan>=2,<3"
+        run: pip install "conan==2.32.0"
 
       - name: Cache Conan packages
         uses: actions/cache@v4
