@@ -1,0 +1,4 @@
+# 全仓 clang-format 21.1.8 格式基线提交（2026-10-16）；git blame 与 GitHub blame 视图忽略此提交
+# 本地启用：git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+0e2a0f30f51e95c390cc632eb46c895e0174beca
