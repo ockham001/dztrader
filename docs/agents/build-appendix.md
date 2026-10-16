@@ -18,6 +18,12 @@ CMake + Conan 2.x + Ninja + GTest。本文档记录**项目特有规则与非主
 
 Linux profile（`profiles/linux-gcc`）用 `tools.build:compiler_executables` 把编译器**显式钉在 `/usr/bin/gcc-13`**。这不是冗余配置：它让 conan 源码包（boost / drogon / spdlog / gtest / sqlitecpp）的 `package_id` 与 CI 的 gcc-13 预编译包保持一致。**不要"顺手"改成系统默认编译器** —— 那会造成混链，CI 才暴露。
 
+工具版本对齐（本地与 CI 必须一致；升级时同一次提交改两边）：
+
+- **clang-format 固定 21.x**：本机从 Ubuntu 官方归档取 `clang-format-21`（`apt-get download clang-format-21` 后 `dpkg -x` 解包，二进制放 `~/.local/bin/clang-format`）；CI 从 [apt.llvm.org](https://apt.llvm.org/) 的 `llvm-toolchain-noble-21` 安装。CI 对 `libs/`+`apps/` 全量 `--dry-run --Werror`
+- **conan 固定 `==2.32.0`**：CI 两个 job 钉死；本地升级 conan 时同步改 `.github/workflows/ci.yml`
+- 2026-10-16 的格式基线全仓格式化提交已记录于 [`.git-blame-ignore-revs`](../../.git-blame-ignore-revs)
+
 ---
 
 ## MSVC 环境激活（仅 Windows）

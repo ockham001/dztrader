@@ -106,7 +106,7 @@
 
 ## 四、代码约定
 
-摘要。命名以**现有代码为准**（代码库自身一致遵循）。日志格式的检查工具是 `scripts/check_log_format.py`，**需手动在提交前跑**（未接入 CI，CI 不会替你兜住）。构建与跨平台的外围细节见 [docs/agents/build-appendix.md](docs/agents/build-appendix.md)。
+摘要。命名以**现有代码为准**（代码库自身一致遵循）。日志格式（`scripts/check_log_format.py`）与 clang-format 格式检查均已接入 CI（linux job）；本地预检命令见 [docs/development-checklist.md](docs/development-checklist.md) 的 C 段。构建与跨平台的外围细节见 [docs/agents/build-appendix.md](docs/agents/build-appendix.md)。
 
 ### 命名
 
