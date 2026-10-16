@@ -113,7 +113,7 @@
 三层防护：
 1. **路径分离**（结构性）：Debug 产物在 `build/.../Debug/`，Release 在 `build/.../Release/`，部署脚本从 Release 路径取
 2. **Debug 警告**（视觉）：`run-dev` 启动 Debug 时打印黄色 `=== DEBUG BUILD - 仅本地调试，禁止部署生产 ===`
-3. **install 脚本写死 Release**（流程强制，未来实现）：`cmake --install build/.../Release` 不接受 Debug 路径
+3. **install 只从 Release 安装**（流程约定）：`cmake --install build/.../Release`；不从 Debug 目录安装
 
 **部署到生产**：永远从 `build/<plat>/<arch>/Release/` 复制，**绝不**从 Debug 复制。
 
