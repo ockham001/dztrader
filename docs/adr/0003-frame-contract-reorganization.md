@@ -58,6 +58,6 @@ Accepted
 
 ## References
 
-- [00-general](../../docs/frame_contracts/00-general.md)（§1 历史注记、§11 变更规则）
+- [00-general](../../docs/frame_contracts/general.md)（§1 历史注记、§11 变更规则）
 - [frame_contracts README](../../docs/frame_contracts/README.md)
 - 相关提交：契约重整分片（docs → libs → apps/ctp → apps/master → apps/webui → frontend）

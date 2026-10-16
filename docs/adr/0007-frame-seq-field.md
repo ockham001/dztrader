@@ -40,6 +40,6 @@ TD 数据同步机制需要把"数据库持久化"与"共享内存实时通道"�
 
 ## References
 
-- 帧契约：[00-general](../../docs/frame_contracts/00-general.md)（帧布局与变更规则）
-- [12-td-order](../../docs/frame_contracts/12-td-order.md)
+- 帧契约：[00-general](../../docs/frame_contracts/general.md)（帧布局与变更规则）
+- [12-td-order](../../docs/frame_contracts/td-order.md)
 - 类型层真相源：`libs/strategy_api/include/dztrader/struct.h`

@@ -38,6 +38,7 @@
 - [ ] `npm test` 全绿（前端 vitest）
 - [ ] `ctest` 全绿（后台；含冒烟 smoke）
 - [ ] C++ 格式（clang-format 21.x）与日志格式（`python scripts/check_log_format.py apps/ libs/`）——已接入 CI（linux job），本地可预检
+- [ ] 文档链接（`python scripts/check_docs_links.py`）与提交信息前缀——已接入 CI（linux job）
 - [ ] `git status` 干净，改动为小步提交（信息中文，`fix:/feat:/refactor:/docs:/test:/chore:/perf:/style:/build:/ci:` 前缀）
 - [ ] 契约/生成物有改动时 CI 的 Freshness 步骤绿
 

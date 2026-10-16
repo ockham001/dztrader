@@ -13,7 +13,7 @@
 
 **该目录下所有文件的改动，必须先向我说明改动内容并取得确认，才能动手。**
 
-这条规则的原始载体（一个锁定的说明文件）已在历史提交中删除；本条是全仓**权威**记录（`CONTRIBUTING.md` 的同类表述指向本节）。不要以"顺手改一下"绕过。
+这条规则的原始载体（一个锁定的说明文件）已在历史提交中删除；本条是全仓**权威**记录（`CONTRIBUTING.md` 的同类表述指向本节）。不要以"顺手改一下"绕过。已由 `.opencode/opencode.json` 权限机器化：编辑 `apps/ctp/md/` 会先要求确认。
 
 ### 2. `DZTRADER_HOME` 必须指向项目内
 
@@ -36,7 +36,7 @@
 
 日常迭代只用 `setup` / `build` / `run-dev` / `clean` 四个脚本，**命令与参数以 [README.md 的"快速开始"与"命令详解"](README.md) 为准**。
 
-绕开脚本直接 `cmake --build --preset ...` 会**静默丢失 config 粘性**：`.dztrader_dev/.config` 由 `setup` 写入，`build` / `run-dev` 自动跟随（优先级：`--config` 参数 > 粘性文件 > `release`）。直接调 cmake 等于每次都退回 `release`。
+绕开脚本直接 `cmake --build --preset ...` 会**静默丢失 config 粘性**：`.dztrader_dev/.config` 由 `setup` 写入，`build` / `run-dev` 自动跟随（优先级：`--config` 参数 > 粘性文件 > `release`）。直接调 cmake 等于每次都退回 `release`——该直调路径已由权限 deny（脚本内调用不受影响）。
 
 两条容易漏的附带事实：
 
@@ -49,7 +49,7 @@
 
 改前端后必须走 `build` 脚本（底层 cmake target `dzweb_frontend`，自动 `npm ci` → `vite build` → 复制到 `${DZ_OUTPUT_DIR}/web`）。
 
-直接 `npm run build` 的产物只落在 `frontend/dist/`，而 `dzweb` 加载的是 `build/.../web/` —— **UI 不会更新**，且没有报错。
+直接 `npm run build`（已由权限 deny）的产物只落在 `frontend/dist/`，而 `dzweb` 加载的是 `build/.../web/` —— **UI 不会更新**，且没有报错。
 
 用户验证 UI **永远访问 8080**（`dzweb.exe` 的 drogon HTTP 服务器，托管静态文件 + `/api` + `/ws` + `/health`）。5173 只是 vite dev server，仅在需要前端 HMR 时作为例外。
 
@@ -100,7 +100,7 @@
 
 **写法**：`docs/adr/NNNN-<slug>.md`，编号**只增不回收**。模板 = Status / Context / Decision / Consequences，外加需要时的 Supersedes 段（参考 0002、0003 的实际结构）。Decision 必须写明**为什么不用另一个方案**；20 行内讲清，超过说明决策不聚焦。
 
-**约束**：一经 **Accepted 不修改** —— 新的推翻写新 ADR，旧 ADR 加 Supersedes 引用。契约重编号的 old→new 映射见 ADR 0003。历史文档（`docs/specs/`、`docs/plans/`）不改。
+**约束**：一经 **Accepted 不修改** —— 新的推翻写新 ADR，旧 ADR 加 Supersedes 引用。契约重编号的 old→new 映射见 ADR 0003。历史文档（`docs/specs/`、`docs/plans/`）不改。**唯一例外**：修正失效链接指向与错别字（随提交说明，不改决策内容）。
 
 ---
 
@@ -181,7 +181,7 @@
 - worktree 内**需重新跑 `setup`**（conan 缓存独立）
 - 多终端可在不同 worktree 并行；**禁止同一 worktree 同时操作**
 - 合并前确认共同祖先：`git merge-base main HEAD`，无则 cherry-pick
-- **禁止**：`--orphan`、`push --force` 到 main、未确认的 `reset --hard` / `clean -fd`、未经我同意推送远程
+- **禁止**：`--orphan`、`push --force` 到 main、未确认的 `reset --hard` / `clean -fd`、未经我同意推送远程（`git push` 为权限 ask，force 两式为 deny）
 
 ---
 
