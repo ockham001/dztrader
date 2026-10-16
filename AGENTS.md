@@ -106,7 +106,7 @@
 
 ## 四、代码约定
 
-摘要。命名以**现有代码为准**（代码库自身一致遵循）。日志格式的检查工具是 `scripts/check_log_format.py`，**需手动在提交前跑**（未接入 CI，CI 不会替你兜住）。构建与跨平台的外围细节见 [docs/agent/build-appendix.md](docs/agent/build-appendix.md)。
+摘要。命名以**现有代码为准**（代码库自身一致遵循）。日志格式的检查工具是 `scripts/check_log_format.py`，**需手动在提交前跑**（未接入 CI，CI 不会替你兜住）。构建与跨平台的外围细节见 [docs/agents/build-appendix.md](docs/agents/build-appendix.md)。
 
 ### 命名
 
@@ -131,7 +131,7 @@
 
 仅 64 位，Windows x86_64 / MSVC 与 Linux x86_64 / GCC。策略接口（C API）不在此限制内。
 
-非上述组合**必须 `#error`，禁止静默回退**（`((void)0)` 之类）。完整 `#if` 模板见 `docs/agent/build-appendix.md`。
+非上述组合**必须 `#error`，禁止静默回退**（`((void)0)` 之类）。完整 `#if` 模板见 `docs/agents/build-appendix.md`。
 
 ---
 
@@ -189,6 +189,6 @@
 | [docs/components/](docs/components/) | 组件级设计（线程模型、通道、会话） |
 | [docs/ui-trading.md](docs/ui-trading.md) | UI 系统与交易接口规划（蓝图级） |
 | [docs/adr/](docs/adr/) | 架构决策记录，按编号追溯 |
-| [docs/agent/build-appendix.md](docs/agent/build-appendix.md) | 构建外围细节：工具链、MSVC 激活、clangd、预设、输出布局、单测约定、install、conan、前端机制、部署产物分析、跨平台 `#error` 模板 |
+| [docs/agents/build-appendix.md](docs/agents/build-appendix.md) | 构建外围细节：工具链、MSVC 激活、clangd、预设、输出布局、单测约定、install、conan、前端机制、部署产物分析、跨平台 `#error` 模板 |
 
 `docs/specs/`、`docs/plans/`、`docs/superpowers/` 是**本地归档**（不在版本控制内），与现状冲突时以帧契约与代码为准，**不修改**。
