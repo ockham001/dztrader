@@ -81,6 +81,33 @@ Ninja 单配置，每个 config 独立 binaryDir：`build/<plat>/x86_64/<Release
 
 ---
 
+## 本地 MySQL 测试环境（可选）
+
+MySQL 相关用例（`MysqlDriverTest`、`TdSchemaMysqlTest`、驱动一致性套件的 mysql 部分）在**未配置服务器时 Skip**（GTEST_SKIP，不失败），判定条件为环境变量 `DZ_TEST_MYSQL_HOST` 非空。需要本地跑通时：
+
+1. 安装任意 MySQL 协议兼容服务器（Ubuntu 官方归档示例）：
+
+```bash
+sudo apt install mariadb-server
+sudo systemctl start mariadb   # apt 通常已自动启动
+```
+
+2. 建测试账户（用例自建/自删 `dz_test_*` 库，不污染其他库）：
+
+```bash
+sudo mariadb -e "CREATE USER 'dz'@'127.0.0.1' IDENTIFIED BY '<password>'; GRANT ALL PRIVILEGES ON \`dz_test_%\`.* TO 'dz'@'127.0.0.1';"
+```
+
+3. 导出环境变量后跑测试：
+
+```bash
+export DZ_TEST_MYSQL_HOST=127.0.0.1 DZ_TEST_MYSQL_PORT=3306 \
+       DZ_TEST_MYSQL_USER=dz DZ_TEST_MYSQL_PASSWORD='<password>'
+./scripts/test.sh
+```
+
+Linux 默认 `DZ_WITH_MYSQL=ON`（根 `CMakeLists.txt`）；关掉它时 mysql 相关用例整文件排除。CI 不配置该服务器 → CI 上这些用例保持 Skip（预期）；配置生效后本地 Skip 数应为 0。
+
 ## VSCode 任务
 
 `.vscode/tasks.json` 提供 **8** 个任务：`setup`、`setup (Debug)`、`build`、`run-dev`、`run-dev (no build)`、`stop`、`clean`、`test`。
