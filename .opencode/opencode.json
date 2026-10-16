@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permissions": [
+    { "action": "edit", "resource": "apps/ctp/md/*", "effect": "ask" },
+    { "action": "shell", "resource": "cmake --build *", "effect": "deny" },
+    { "action": "shell", "resource": "npm run build *", "effect": "deny" },
+    { "action": "shell", "resource": "git push *", "effect": "ask" },
+    { "action": "shell", "resource": "git push -f*", "effect": "deny" },
+    { "action": "shell", "resource": "git push --force*", "effect": "deny" }
+  ]
+}
