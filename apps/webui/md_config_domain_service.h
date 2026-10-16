@@ -19,11 +19,14 @@ namespace dztrader::webui {
 ///   （find_market_source_by_source_name + create_market_source，已存在则跳过）；
 /// - 广播 payload = {source, config}（instance_id 为空，与原 broadcast_to_all 消息一致：
 ///   消息里没有 instance_id 字段，source 在 payload 里）。
-/// 线程安全：依赖 dzweb 固定单线程事件循环（thread_num=1），所有访问均发生在主循环串行执行，不加锁。
+/// 线程安全：依赖 dzweb
+/// 固定单线程事件循环（thread_num=1），所有访问均发生在主循环串行执行，不加锁。
 class MdConfigDomainService {
 public:
     MdConfigDomainService(Repository& repo, ProcessMirror& process_mirror, WsBroadcaster& ws)
-        : repo_(repo), process_mirror_(process_mirror), ws_(ws) {}
+        : repo_(repo),
+          process_mirror_(process_mirror),
+          ws_(ws) {}
 
     void on_rtn_md_config(const std::string& source, const nlohmann::json& payload) {
         try {
@@ -39,8 +42,9 @@ public:
                             static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
                     }
                     repo_.create_market_source(source_type, source, source);
-                    SPDLOG_INFO("market source reconciled from RTN_MD_CONFIG | name={} source_type={}",
-                                source, source_type);
+                    SPDLOG_INFO(
+                        "market source reconciled from RTN_MD_CONFIG | name={} source_type={}",
+                        source, source_type);
                 }
             }
             ws_.broadcast("md_rtn_config", "",

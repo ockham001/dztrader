@@ -52,9 +52,10 @@ protected:
         orig_home_ = dztrader::env::get("DZTRADER_HOME");
         dztrader::env::set("DZTRADER_HOME", tmp_dir_.string());
 
-        worker_exe_ = dztrader::this_process::exe_dir() / "test_worker"
+        worker_exe_ = dztrader::this_process::exe_dir() /
+                      "test_worker"
 #ifdef _WIN32
-            ".exe"
+                      ".exe"
 #endif
             ;
 
@@ -85,24 +86,23 @@ protected:
         entry.category = Category::Strategy;
         entry.exe = worker_exe_;
         entry.args = args;
-        entry.start_dir = worker_exe_.parent_path().empty()
-            ? std::filesystem::current_path()
-            : worker_exe_.parent_path();
+        entry.start_dir = worker_exe_.parent_path().empty() ? std::filesystem::current_path()
+                                                            : worker_exe_.parent_path();
         entry.restart = default_restart_policy(Category::Strategy);
         entry.restart.enabled = false;  // 测试场景禁用重启
         return entry;
     }
 
-    ProcessEntry make_internal_entry(const std::string& name, Category category,
+    ProcessEntry make_internal_entry(const std::string& name,
+                                     Category category,
                                      const std::vector<std::string>& args = {}) {
         ProcessEntry entry;
         entry.name = name;
         entry.category = category;
         entry.exe = worker_exe_;
         entry.args = args;
-        entry.start_dir = worker_exe_.parent_path().empty()
-            ? std::filesystem::current_path()
-            : worker_exe_.parent_path();
+        entry.start_dir = worker_exe_.parent_path().empty() ? std::filesystem::current_path()
+                                                            : worker_exe_.parent_path();
         entry.restart = default_restart_policy(category);
         entry.restart.enabled = false;  // 测试场景禁用重启
         return entry;
@@ -119,9 +119,7 @@ protected:
 };
 
 // 测试用默认配置
-inline ShmGlobalConfig make_default_shm_global() {
-    return {.meta_file_size = 1 * 1024 * 1024};
-}
+inline ShmGlobalConfig make_default_shm_global() { return {.meta_file_size = 1 * 1024 * 1024}; }
 
 // stop_process 在 shutdown 进行中应被拒绝（无副作用）
 TEST_F(ProcessSupervisorTest, StopProcessRejectedDuringShutdown) {
@@ -222,8 +220,8 @@ TEST_F(ProcessSupervisorTest, CancelPendingRestartPreventsRevival) {
 // 整体关闭逆序分批 (纯函数): 策略 -> 交易 -> 行情 -> dzweb, 空批次不产生
 TEST(ProcessShutdownBatches, ReverseOrderByCategory) {
     std::vector<std::pair<std::string, Category>> running{
-        {"dzweb", Category::WebUI},     {"dzmd_ctp", Category::GatewayMd},
-        {"stg_a", Category::Strategy},  {"dztd_ctp", Category::GatewayTd},
+        {"dzweb", Category::WebUI},    {"dzmd_ctp", Category::GatewayMd},
+        {"stg_a", Category::Strategy}, {"dztd_ctp", Category::GatewayTd},
         {"stg_b", Category::Strategy},
     };
     auto batches = build_shutdown_batches(running);
@@ -271,15 +269,18 @@ TEST_F(ProcessSupervisorTest, ShutdownStopsAllChildrenSequentially) {
 // 全部退出后 children 清空 (验证批次间 timer 重建与推进链路)
 TEST_F(ProcessSupervisorTest, ShutdownStopsAllCategoriesSequentially) {
     registry_.register_strategy(make_strategy_entry("stg_a", {"longrun", "60"}));
-    registry_.register_gateway(make_internal_entry("dztd_ctp", Category::GatewayTd, {"longrun", "60"}));
-    registry_.register_gateway(make_internal_entry("dzmd_ctp", Category::GatewayMd, {"longrun", "60"}));
+    registry_.register_gateway(
+        make_internal_entry("dztd_ctp", Category::GatewayTd, {"longrun", "60"}));
+    registry_.register_gateway(
+        make_internal_entry("dzmd_ctp", Category::GatewayMd, {"longrun", "60"}));
     registry_.register_gateway(make_internal_entry("dzweb", Category::WebUI, {"longrun", "60"}));
 
     shm_mgr_ = std::make_unique<ShmManager>(make_default_shm_global(), cfg_path_);
     orphan_guard_.startup();
 
     // single_stop_timeout_sec=1: 每批 1s 超时, 4 批最坏 4s, 测试可控
-    ProcessSupervisor supervisor(ioc_, registry_, *shm_mgr_, orphan_guard_, /*single_stop_timeout_sec=*/1);
+    ProcessSupervisor supervisor(ioc_, registry_, *shm_mgr_, orphan_guard_,
+                                 /*single_stop_timeout_sec=*/1);
     supervisor.start_all();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
@@ -296,7 +297,8 @@ TEST_F(ProcessSupervisorTest, ShutdownStopsAllCategoriesSequentially) {
 
 // GatewayMd 进程退出时 master 代发 NOTIFY_MD_STOPPED (md 停止后果接线, 自检补测)
 TEST_F(ProcessSupervisorTest, MdExitBroadcastsNotifyStopped) {
-    registry_.register_gateway(make_internal_entry("dzmd_ctp", Category::GatewayMd, {"quick", "1"}));
+    registry_.register_gateway(
+        make_internal_entry("dzmd_ctp", Category::GatewayMd, {"quick", "1"}));
 
     shm_mgr_ = std::make_unique<ShmManager>(make_default_shm_global(), cfg_path_);
     orphan_guard_.startup();
@@ -305,8 +307,8 @@ TEST_F(ProcessSupervisorTest, MdExitBroadcastsNotifyStopped) {
     supervisor.start_all();
 
     // 独立 reader 探测事件通道 (须在子进程退出前注册)
-    shm::Reader reader = shm::Reader::create(
-        shm::channel_name("dzevent"), dztrader::paths::shm(), "notify_stopped_probe");
+    shm::Reader reader = shm::Reader::create(shm::channel_name("dzevent"), dztrader::paths::shm(),
+                                             "notify_stopped_probe");
 
     ioc_.restart();
     ioc_.run_for(std::chrono::seconds(3));
@@ -387,8 +389,8 @@ TEST_F(ProcessSupervisorTest, OnMdChannelReadyStartsPendingStrategies) {
     // 建通道 + 置 ready (模拟 master 编排), 触发 on_md_channel_ready 补启动
     shm_mgr_->create_md_channel("dzmd_ctp");
     auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
-    shm::MultiWriter writer = shm::MultiWriter::create(
-        std::make_shared<shm::ChannelMeta>(std::move(meta)), "md_sim");
+    shm::MultiWriter writer =
+        shm::MultiWriter::create(std::make_shared<shm::ChannelMeta>(std::move(meta)), "md_sim");
     platform::write_ext_inst_raw(writer, DZ_FRAME_NOTIFY_MD_STARTED, "dzmd_ctp");
     shm_mgr_->drain_event_channel();
 
@@ -427,8 +429,8 @@ TEST_F(ProcessSupervisorTest, StrategyReaderPreRegisteredOnMdChannel) {
     EXPECT_FALSE(supervisor.start_process("stg_reader"));
     shm_mgr_->create_md_channel("dzmd_ctp");
     auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
-    shm::MultiWriter writer = shm::MultiWriter::create(
-        std::make_shared<shm::ChannelMeta>(std::move(meta)), "md_sim");
+    shm::MultiWriter writer =
+        shm::MultiWriter::create(std::make_shared<shm::ChannelMeta>(std::move(meta)), "md_sim");
     platform::write_ext_inst_raw(writer, DZ_FRAME_NOTIFY_MD_STARTED, "dzmd_ctp");
     shm_mgr_->drain_event_channel();
 

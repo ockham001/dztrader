@@ -10,7 +10,6 @@
 namespace dztrader::webui {
 namespace {
 
-
 class UserControllerTest : public ::testing::Test {
 protected:
     std::shared_ptr<Repository> repo_;
@@ -46,9 +45,9 @@ protected:
     template <typename Fn, typename... Args>
     drogon::HttpResponsePtr invoke(Fn fn, const drogon::HttpRequestPtr& req, Args&&... args) {
         drogon::HttpResponsePtr captured;
-        (ctrl_.get()->*fn)(req,
-                          [&captured](const drogon::HttpResponsePtr& r) { captured = r; },
-                          std::forward<Args>(args)...);
+        (ctrl_.get()->*fn)(
+            req, [&captured](const drogon::HttpResponsePtr& r) { captured = r; },
+            std::forward<Args>(args)...);
         return captured;
     }
 
@@ -62,7 +61,8 @@ protected:
 
 TEST_F(UserControllerTest, CreateAsAdminReturns201) {
     auto req = admin_req();
-    req->setBody(R"({"username":"newuser","display_name":"New","email":"n@t.com","password":"pw","role":"user"})");
+    req->setBody(
+        R"({"username":"newuser","display_name":"New","email":"n@t.com","password":"pw","role":"user"})");
     auto resp = invoke(&UserCtrl::create, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k201Created);
     auto body = parse_body(resp);
@@ -353,7 +353,8 @@ TEST_F(UserControllerTest, GetPermissionsEmpty) {
 
 TEST_F(UserControllerTest, UpdateAndGetPermissions) {
     auto req = admin_req();
-    req->setBody(R"({"permissions":[{"type":"account","id":"CTP-001","granted":true},{"type":"strategy","id":"MACD","granted":false}]})");
+    req->setBody(
+        R"({"permissions":[{"type":"account","id":"CTP-001","granted":true},{"type":"strategy","id":"MACD","granted":false}]})");
     auto resp = invoke(&UserCtrl::update_permissions, req, user_id_);
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
     auto body = parse_body(resp);

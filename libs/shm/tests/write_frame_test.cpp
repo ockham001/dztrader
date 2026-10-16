@@ -64,7 +64,7 @@ TEST_F(WriteFrameTest, WriteFrameAlignedStruct) {
     EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + sizeof(DzShmPreload));
 
     auto* payload = reinterpret_cast<const DzShmPreload*>(static_cast<const std::byte*>(frame) +
-                                                           sizeof(DzFrameHeader));
+                                                          sizeof(DzFrameHeader));
     EXPECT_EQ(payload->bytes, 4096u);
     EXPECT_EQ(payload->pages, 2u);
 }
@@ -105,8 +105,8 @@ TEST_F(WriteFrameTest, WriteExtFrameBinaryAligned) {
     EXPECT_EQ(hdr->frame_type, DZ_FRAME_UI_INPUT);
     EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader) + sizeof(data));
 
-    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(static_cast<const std::byte*>(frame) +
-                                                              sizeof(DzFrameHeader));
+    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(
+        static_cast<const std::byte*>(frame) + sizeof(DzFrameHeader));
     EXPECT_STREQ(ext_hdr->instance_id, "inst001");
     EXPECT_EQ(ext_hdr->data_size, sizeof(data));
 
@@ -133,8 +133,8 @@ TEST_F(WriteFrameTest, WriteExtFrameBinaryUnaligned) {
     uint32_t padded_size = (sizeof(data) + 7u) & ~7u;
     EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader) + padded_size);
 
-    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(static_cast<const std::byte*>(frame) +
-                                                              sizeof(DzFrameHeader));
+    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(
+        static_cast<const std::byte*>(frame) + sizeof(DzFrameHeader));
     EXPECT_STREQ(ext_hdr->instance_id, "inst002");
     EXPECT_EQ(ext_hdr->data_size, sizeof(data));
 
@@ -161,8 +161,8 @@ TEST_F(WriteFrameTest, WriteExtFrameBinaryZeroSize) {
     EXPECT_EQ(hdr->frame_type, DZ_FRAME_UI_INPUT);
     EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader));
 
-    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(static_cast<const std::byte*>(frame) +
-                                                              sizeof(DzFrameHeader));
+    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(
+        static_cast<const std::byte*>(frame) + sizeof(DzFrameHeader));
     EXPECT_STREQ(ext_hdr->instance_id, "inst003");
     EXPECT_EQ(ext_hdr->data_size, 0u);
 }
@@ -184,8 +184,8 @@ TEST_F(WriteFrameTest, WriteExtFrameStringAligned) {
     uint32_t padded_size = (str_len + 7u) & ~7u;
     EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader) + padded_size);
 
-    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(static_cast<const std::byte*>(frame) +
-                                                              sizeof(DzFrameHeader));
+    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(
+        static_cast<const std::byte*>(frame) + sizeof(DzFrameHeader));
     EXPECT_STREQ(ext_hdr->instance_id, "inst004");
     EXPECT_EQ(ext_hdr->data_size, str_len);
 
@@ -208,8 +208,8 @@ TEST_F(WriteFrameTest, WriteExtFrameStringUnaligned) {
 
     uint32_t padded_size = (str_len + 7u) & ~7u;
 
-    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(static_cast<const std::byte*>(frame) +
-                                                              sizeof(DzFrameHeader));
+    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(
+        static_cast<const std::byte*>(frame) + sizeof(DzFrameHeader));
     EXPECT_EQ(ext_hdr->data_size, str_len);
 
     auto* payload =
@@ -227,13 +227,13 @@ TEST_F(WriteFrameTest, WriteExtFrameStdString) {
 
     std::string msg = "test message from std::string";
     ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, "inst006", to_bytes(msg.c_str()),
-                                       static_cast<uint32_t>(msg.size())));
+                                            static_cast<uint32_t>(msg.size())));
 
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
 
-    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(static_cast<const std::byte*>(frame) +
-                                                              sizeof(DzFrameHeader));
+    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(
+        static_cast<const std::byte*>(frame) + sizeof(DzFrameHeader));
     EXPECT_STREQ(ext_hdr->instance_id, "inst006");
     EXPECT_EQ(ext_hdr->data_size, static_cast<uint32_t>(msg.size()));
 
@@ -254,8 +254,8 @@ TEST_F(WriteFrameTest, WriteExtFrameInstanceIdTruncation) {
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
 
-    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(static_cast<const std::byte*>(frame) +
-                                                              sizeof(DzFrameHeader));
+    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(
+        static_cast<const std::byte*>(frame) + sizeof(DzFrameHeader));
     EXPECT_EQ(std::strlen(ext_hdr->instance_id), sizeof(DzStrategyId) - 1);
     EXPECT_EQ(ext_hdr->instance_id[sizeof(DzStrategyId) - 1], '\0');
 }
@@ -287,7 +287,7 @@ TEST_F(WriteFrameTest, WriteExtFrameMixedTypes) {
     auto* hdr2 = reinterpret_cast<const DzFrameHeader*>(f2);
     EXPECT_EQ(hdr2->frame_type, DZ_FRAME_UI_INPUT);
     auto* ext2 = reinterpret_cast<const DzExtInstFrameHeader*>(static_cast<const std::byte*>(f2) +
-                                                           sizeof(DzFrameHeader));
+                                                               sizeof(DzFrameHeader));
     EXPECT_STREQ(ext2->instance_id, "inst_bin");
 
     auto* f3 = reader.next_frame();
@@ -295,7 +295,7 @@ TEST_F(WriteFrameTest, WriteExtFrameMixedTypes) {
     auto* hdr3 = reinterpret_cast<const DzFrameHeader*>(f3);
     EXPECT_EQ(hdr3->frame_type, DZ_FRAME_UI_INPUT);
     auto* ext3 = reinterpret_cast<const DzExtInstFrameHeader*>(static_cast<const std::byte*>(f3) +
-                                                           sizeof(DzFrameHeader));
+                                                               sizeof(DzFrameHeader));
     EXPECT_STREQ(ext3->instance_id, "inst_str");
     auto* payload3 =
         static_cast<const std::byte*>(f3) + sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader);
@@ -314,8 +314,8 @@ TEST_F(WriteFrameTest, WriteExtFrameReservedZeroed) {
 
     auto* frame = reader.next_frame();
     ASSERT_NE(frame, nullptr);
-    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(static_cast<const std::byte*>(frame) +
-                                                              sizeof(DzFrameHeader));
+    auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(
+        static_cast<const std::byte*>(frame) + sizeof(DzFrameHeader));
     for (char c : ext_hdr->reserved) {
         EXPECT_EQ(c, '\0');
     }

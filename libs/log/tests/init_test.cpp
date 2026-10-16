@@ -11,8 +11,7 @@ extern const std::filesystem::path& test_root();
 
 class SetDefaultLoggerTest : public ::testing::Test {
 protected:
-    void TearDown() override
-    {
+    void TearDown() override {
         spdlog::shutdown();
         std::set_terminate(nullptr);
     }
@@ -20,8 +19,7 @@ protected:
 
 namespace {
 
-dztrader::log::LoggerSetup make_config(const std::string& test_name)
-{
+dztrader::log::LoggerSetup make_config(const std::string& test_name) {
     dztrader::log::LoggerSetup config;
     config.logger_name = test_name;
     config.enable_console = false;
@@ -29,21 +27,18 @@ dztrader::log::LoggerSetup make_config(const std::string& test_name)
     return config;
 }
 
-void expect_throws_invalid_param(auto fn)
-{
+void expect_throws_invalid_param(auto fn) {
     try {
         fn();
         FAIL() << "Expected Exception";
-    }
-    catch (const dztrader::Exception& e) {
+    } catch (const dztrader::Exception& e) {
         EXPECT_EQ(e.code(), DZ_EC_INVALID_PARAM);
     }
 }
 
 }  // namespace
 
-TEST_F(SetDefaultLoggerTest, SetDefaultLogger)
-{
+TEST_F(SetDefaultLoggerTest, SetDefaultLogger) {
     auto config = make_config("basic");
     config.enable_console = true;
     config.level = spdlog::level::warn;
@@ -77,8 +72,7 @@ TEST_F(SetDefaultLoggerTest, SetDefaultLogger)
     EXPECT_NO_THROW(logger->flush());
 }
 
-TEST_F(SetDefaultLoggerTest, CreatesLogDirectory)
-{
+TEST_F(SetDefaultLoggerTest, CreatesLogDirectory) {
     auto dir = test_root() / "creates_dir";
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
@@ -89,8 +83,7 @@ TEST_F(SetDefaultLoggerTest, CreatesLogDirectory)
     EXPECT_TRUE(std::filesystem::exists(dir));
 }
 
-TEST_F(SetDefaultLoggerTest, ConsoleDisabled)
-{
+TEST_F(SetDefaultLoggerTest, ConsoleDisabled) {
     auto config = make_config("console_off");
     config.enable_console = false;
     EXPECT_NO_THROW(dztrader::log::set_default_logger(config));
@@ -100,8 +93,7 @@ TEST_F(SetDefaultLoggerTest, ConsoleDisabled)
     EXPECT_EQ(logger->sinks().size(), 1u);
 }
 
-TEST_F(SetDefaultLoggerTest, ServiceModeDisablesConsole)
-{
+TEST_F(SetDefaultLoggerTest, ServiceModeDisablesConsole) {
     auto config = make_config("service_mode");
     config.enable_console = true;
     config.service_mode = true;
@@ -112,48 +104,42 @@ TEST_F(SetDefaultLoggerTest, ServiceModeDisablesConsole)
     EXPECT_EQ(logger->sinks().size(), 1u);
 }
 
-TEST_F(SetDefaultLoggerTest, EmptyProcessNameThrows)
-{
+TEST_F(SetDefaultLoggerTest, EmptyProcessNameThrows) {
     dztrader::log::LoggerSetup config;
     config.logger_name = "";
     config.log_dir = test_root() / "empty_name";
     expect_throws_invalid_param([&] { dztrader::log::set_default_logger(config); });
 }
 
-TEST_F(SetDefaultLoggerTest, EmptyLogDirThrows)
-{
+TEST_F(SetDefaultLoggerTest, EmptyLogDirThrows) {
     dztrader::log::LoggerSetup config;
     config.logger_name = "empty_dir_test";
     config.log_dir = "";
     expect_throws_invalid_param([&] { dztrader::log::set_default_logger(config); });
 }
 
-TEST_F(SetDefaultLoggerTest, ProcessNameWithSlashThrows)
-{
+TEST_F(SetDefaultLoggerTest, ProcessNameWithSlashThrows) {
     dztrader::log::LoggerSetup config;
     config.logger_name = "sub/dir";
     config.log_dir = test_root() / "path_sep_slash";
     expect_throws_invalid_param([&] { dztrader::log::set_default_logger(config); });
 }
 
-TEST_F(SetDefaultLoggerTest, ProcessNameWithBackslashThrows)
-{
+TEST_F(SetDefaultLoggerTest, ProcessNameWithBackslashThrows) {
     dztrader::log::LoggerSetup config;
     config.logger_name = "sub\\dir";
     config.log_dir = test_root() / "path_sep_backslash";
     expect_throws_invalid_param([&] { dztrader::log::set_default_logger(config); });
 }
 
-TEST_F(SetDefaultLoggerTest, ProcessNameWithColonThrows)
-{
+TEST_F(SetDefaultLoggerTest, ProcessNameWithColonThrows) {
     dztrader::log::LoggerSetup config;
     config.logger_name = "sub:dir";
     config.log_dir = test_root() / "path_sep_colon";
     expect_throws_invalid_param([&] { dztrader::log::set_default_logger(config); });
 }
 
-TEST_F(SetDefaultLoggerTest, SetDefaultLoggerIdempotent)
-{
+TEST_F(SetDefaultLoggerTest, SetDefaultLoggerIdempotent) {
     auto config = make_config("idempotent");
     EXPECT_NO_THROW(dztrader::log::set_default_logger(config));
 

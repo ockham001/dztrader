@@ -75,9 +75,9 @@ TEST(TimerHeap, RemoveTokenKeepsHeapProperty) {
         heap.push(base + std::chrono::milliseconds(i), static_cast<uint64_t>(i));
     }
     // 移除堆顶/中间/尾部各一个, 之后全部按序弹出
-    EXPECT_TRUE(heap.remove_token(0));   // 堆顶
-    EXPECT_TRUE(heap.remove_token(25));  // 中间
-    EXPECT_TRUE(heap.remove_token(49));  // 尾部
+    EXPECT_TRUE(heap.remove_token(0));     // 堆顶
+    EXPECT_TRUE(heap.remove_token(25));    // 中间
+    EXPECT_TRUE(heap.remove_token(49));    // 尾部
     EXPECT_FALSE(heap.remove_token(100));  // 不存在
     int64_t prev = -1;
     int count = 0;

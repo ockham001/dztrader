@@ -10,7 +10,9 @@ TimerQueue::TimerId TimerQueue::schedule_at(TimePoint deadline, Callback cb) {
     return schedule_at_internal(deadline, {}, std::move(cb));
 }
 
-TimerQueue::TimerId TimerQueue::schedule_after_ignored(std::string tag, Duration delay, Callback cb) {
+TimerQueue::TimerId TimerQueue::schedule_after_ignored(std::string tag,
+                                                       Duration delay,
+                                                       Callback cb) {
     if (!tag.empty()) {
         auto it = tags_.find(tag);
         if (it != tags_.end()) {
@@ -20,7 +22,9 @@ TimerQueue::TimerId TimerQueue::schedule_after_ignored(std::string tag, Duration
     return schedule_at_internal(Clock::now() + delay, std::move(tag), std::move(cb));
 }
 
-TimerQueue::TimerId TimerQueue::schedule_after_replace(std::string tag, Duration delay, Callback cb) {
+TimerQueue::TimerId TimerQueue::schedule_after_replace(std::string tag,
+                                                       Duration delay,
+                                                       Callback cb) {
     if (!tag.empty()) {
         auto it = tags_.find(tag);
         if (it != tags_.end()) {
@@ -73,10 +77,13 @@ bool TimerQueue::empty() const {
     return deadlines_.empty();
 }
 
-TimerQueue::TimerId TimerQueue::schedule_at_internal(TimePoint deadline, std::string tag, Callback cb) {
+TimerQueue::TimerId TimerQueue::schedule_at_internal(TimePoint deadline,
+                                                     std::string tag,
+                                                     Callback cb) {
     auto id = ++next_id_;
     auto deadline_it = deadlines_.emplace(deadline, id);
-    auto& entry = entries_.emplace(id, Entry{std::move(cb), deadline_it, std::move(tag)}).first->second;
+    auto& entry =
+        entries_.emplace(id, Entry{std::move(cb), deadline_it, std::move(tag)}).first->second;
     if (!entry.tag.empty()) {
         tags_[entry.tag] = id;
     }

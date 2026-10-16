@@ -43,7 +43,8 @@ Reader Reader::create(std::shared_ptr<ChannelMeta> meta, const std::string& read
                   std::move(page_opt.value()), std::move(page_pool), reader_name);
 }
 
-Reader Reader::create(const std::string& channel_name, const std::filesystem::path& shm_dir,
+Reader Reader::create(const std::string& channel_name,
+                      const std::filesystem::path& shm_dir,
                       const std::string& reader_name) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_only(channel_name, shm_dir));
     return create(meta, reader_name);

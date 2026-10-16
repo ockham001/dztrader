@@ -43,18 +43,18 @@ enum class TdHealth {
 /// 网关状态, 对 UI 和共享内存可见。
 /// 参考 mdctp MdStatus, 去掉订阅统计字段 (md 特有), 新增 account_id (per-account 标识)。
 struct TdStatus {
-    std::string account_id;          ///< 账户标识 (per-account 状态上报用)
-    std::string api_version;         ///< CTP API 版本
-    std::string sys_version;         ///< 系统版本 (OnRspUserLogin 返回)
-    std::string trading_day;         ///< 交易日 "YYYYMMDD"
-    std::string login_time;          ///< 登录时间
-    TdState state = TdState::Idle;   ///< 当前状态
+    std::string account_id;         ///< 账户标识 (per-account 状态上报用)
+    std::string api_version;        ///< CTP API 版本
+    std::string sys_version;        ///< 系统版本 (OnRspUserLogin 返回)
+    std::string trading_day;        ///< 交易日 "YYYYMMDD"
+    std::string login_time;         ///< 登录时间
+    TdState state = TdState::Idle;  ///< 当前状态
 
     // 步骤进度 (UI 可渲染为进度条)
-    std::string progress_desc;       ///< 进度描述 (中文)
-    int progress_min = 0;            ///< 进度最小值
-    int progress_max = 10;           ///< 进度最大值 (td: max=10, md 是 4)
-    int progress_current = 0;        ///< 当前进度
+    std::string progress_desc;  ///< 进度描述 (中文)
+    int progress_min = 0;       ///< 进度最小值
+    int progress_max = 10;      ///< 进度最大值 (td: max=10, md 是 4)
+    int progress_current = 0;   ///< 当前进度
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(TdStatus,
                                                 account_id,
@@ -73,8 +73,8 @@ struct TdStatus {
 /// 与 mdctp MdNotification 模式一致, 调用方应通过 notify_ui 发送给前端。
 struct TdNotification {
     DzNotifyLevel level = DZ_NOTIFY_INFO;  ///< INFO/WARN/ERROR
-    bool popup = false;                     ///< 是否弹窗
-    std::string message;                    ///< 中文消息
+    bool popup = false;                    ///< 是否弹窗
+    std::string message;                   ///< 中文消息
 };
 
 /// TdState 11 态 → 策略可见三态聚合映射 (spec §2.1)。
@@ -128,8 +128,8 @@ public:
 
     /// 登录成功时调用, 同步 order_ref_ (由 AccountSession 处理, 状态机只更新状态)。
     std::optional<TdNotification> on_login_success(const std::string& sys_version,
-                                                    const std::string& trading_day,
-                                                    const std::string& login_time);
+                                                   const std::string& trading_day,
+                                                   const std::string& login_time);
 
     /// 登录失败时调用 (ErrorID != 0)。
     std::optional<TdNotification> on_login_failed();

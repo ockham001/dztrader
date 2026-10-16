@@ -21,9 +21,7 @@ struct ChannelConfig {
 };
 
 /// 通道名 (event="dzevent", md=行情源名如"dzmd_ctp", 不会冲突)
-inline std::string channel_name(std::string_view name) {
-    return std::format("{}", name);
-}
+inline std::string channel_name(std::string_view name) { return std::format("{}", name); }
 
 }  // namespace dztrader::shm
 

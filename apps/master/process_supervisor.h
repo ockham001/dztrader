@@ -52,8 +52,8 @@ public:
     /// 并行启动所有已注册的进程。
     void start_all();
 
-    /// 关闭所有子进程：逆序分批定向 SHUTDOWN → 批超时强制终止 → 进入下一批，全部退出后触发完成回调。
-    /// 幂等：可安全多次调用。
+    /// 关闭所有子进程：逆序分批定向 SHUTDOWN → 批超时强制终止 →
+    /// 进入下一批，全部退出后触发完成回调。 幂等：可安全多次调用。
     void shutdown();
 
     /// 强制终止所有仍在运行的子进程 (二次 Ctrl+C 时调用, 避免孤儿)。
@@ -167,9 +167,9 @@ private:
     /// 返回 true = 已 spawn (成功); false = 未 spawn (失败/pending/已在运行)。
     bool launch_registered_process(const ProcessEntry& entry);
     void on_child_exit(std::shared_ptr<ChildProcess> child,
-                       boost::system::error_code ec, int exit_code);
-    void schedule_restart(const std::string& name,
-                          const ProcessEntry& entry, int restart_count);
+                       boost::system::error_code ec,
+                       int exit_code);
+    void schedule_restart(const std::string& name, const ProcessEntry& entry, int restart_count);
     void remove_child(const std::shared_ptr<ChildProcess>& child);
     bool all_children_stopped() const;
     void check_shutdown_complete();
@@ -181,8 +181,8 @@ private:
     /// name 由调用方从 lambda 捕获传入 (即 stop_single_child 中捕获的 name 副本),
     /// 用于从 single_stop_timers_ 中 erase 对应 entry, 不依赖 child 仍存活
     void on_single_stop_timeout(std::shared_ptr<ChildProcess> child,
-                                 const boost::system::error_code& ec,
-                                 const std::string& name);
+                                const boost::system::error_code& ec,
+                                const std::string& name);
 
     /// 向当前批次全部成员定向发送 SHUTDOWN; 批次已全停止则推进下一批
     void send_current_shutdown_batch();
@@ -206,8 +206,7 @@ private:
     std::unordered_map<std::string, int> restart_counts_;
 
     /// 退避定时器（重启调度用）
-    std::unordered_map<std::string,
-        std::unique_ptr<boost::asio::steady_timer>> restart_timers_;
+    std::unordered_map<std::string, std::unique_ptr<boost::asio::steady_timer>> restart_timers_;
 
     /// 关闭时当前批次的强制终止定时器 (逐批复用, 批次完成即取消)
     std::unique_ptr<boost::asio::steady_timer> shutdown_timer_;
@@ -220,8 +219,7 @@ private:
     /// 旧实现是单值 single_stop_timer_ + single_stop_target_, 快速连续 stop 两个进程时,
     /// 第二次赋值会销毁第一个 timer, 第一个进程若卡死则永远无法 force-kill (变僵尸)。
     /// 改为 map 后, 每个被 stop 的进程都有独立的超时定时器。
-    std::unordered_map<std::string,
-        std::unique_ptr<boost::asio::steady_timer>> single_stop_timers_;
+    std::unordered_map<std::string, std::unique_ptr<boost::asio::steady_timer>> single_stop_timers_;
 
     /// 进入 remove 流程的 source 集合（区别于 stop：remove 需要 on_child_exit 后删配置）
     /// 由 mark_remove_pending 设置, 由 consume_remove_pending 消费
@@ -239,8 +237,7 @@ private:
     std::unordered_map<std::string, std::unique_ptr<boost::asio::steady_timer>> md_ready_timers_;
 
     /// md ready 超时回调 (watchdog): source 在 md_ready_timeout_sec_ 内未 ready 时触发
-    void on_md_ready_timeout(const std::string& source,
-                             const boost::system::error_code& ec);
+    void on_md_ready_timeout(const std::string& source, const boost::system::error_code& ec);
 
     /// 每次 spawn md 进程后启动 ready watchdog 定时器 (契约 4.5)
     void arm_md_ready_watchdog(const std::string& source);
@@ -272,10 +269,12 @@ private:
     /// 关闭完成回调
     ShutdownCallback shutdown_callback_;
 
-    /// 单进程停止超时秒数 (可配置, 由构造函数从 dztraderd.json [master].single_stop_timeout_sec 注入)
+    /// 单进程停止超时秒数 (可配置, 由构造函数从 dztraderd.json [master].single_stop_timeout_sec
+    /// 注入)
     int single_stop_timeout_sec_ = 3;
 
-    /// md ready 等待超时秒数 (可配置, 由构造函数从 dztraderd.json [master].md_ready_timeout_sec 注入)
+    /// md ready 等待超时秒数 (可配置, 由构造函数从 dztraderd.json [master].md_ready_timeout_sec
+    /// 注入)
     int md_ready_timeout_sec_ = 5;
 };
 

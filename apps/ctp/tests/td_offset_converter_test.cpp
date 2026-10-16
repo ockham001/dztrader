@@ -9,8 +9,11 @@ using namespace dztrader::ctp;
 namespace {
 
 /// 辅助: 构造一个 DzTradeReport
-DzTradeReport make_trade(DzDirection dir, DzPositionEffect off, int32_t volume,
-                         double price = 3900.0, const char* trade_id = "T001") {
+DzTradeReport make_trade(DzDirection dir,
+                         DzPositionEffect off,
+                         int32_t volume,
+                         double price = 3900.0,
+                         const char* trade_id = "T001") {
     DzTradeReport t{};
     std::strcpy(t.instrument_id, "IF2506");
     std::strcpy(t.exchange_id, "CFFEX");
@@ -24,8 +27,11 @@ DzTradeReport make_trade(DzDirection dir, DzPositionEffect off, int32_t volume,
 }
 
 /// 辅助: 构造一个活动委托更新 (平仓类挂单)
-ActiveOrderUpdate make_close_order(const char* ref, DzDirection dir, DzPositionEffect effect,
-                                   int32_t volume, int32_t traded = 0,
+ActiveOrderUpdate make_close_order(const char* ref,
+                                   DzDirection dir,
+                                   DzPositionEffect effect,
+                                   int32_t volume,
+                                   int32_t traded = 0,
                                    DzOrderStatus status = DZ_ORDER_NOT_TRADED,
                                    const char* instrument = "IF2506") {
     ActiveOrderUpdate o{};
@@ -40,8 +46,10 @@ ActiveOrderUpdate make_close_order(const char* ref, DzDirection dir, DzPositionE
 }
 
 /// 辅助: 构造一个 DzOrderReq
-DzOrderReq make_order_req(DzDirection dir, DzPositionEffect off,
-                           int32_t volume, double price = 3900.0) {
+DzOrderReq make_order_req(DzDirection dir,
+                          DzPositionEffect off,
+                          int32_t volume,
+                          double price = 3900.0) {
     DzOrderReq r{};
     std::strcpy(r.instrument_id, "IF2506");
     std::strcpy(r.account_id, "acc1");
@@ -134,9 +142,9 @@ TEST_F(PositionHoldingTest, QueryBothSidesAccumulate) {
     // 旧明细按方向汇总: 多 8 今 + 2 昨, 空 4 今
     seed_side(h, DZ_DIRECTION_LONG, 10, 2);
     seed_side(h, DZ_DIRECTION_SHORT, 4, 0);
-    EXPECT_EQ(h.long_today(), 8);       // 10 - 2
-    EXPECT_EQ(h.long_yesterday(), 2);   // 2
-    EXPECT_EQ(h.short_today(), 4);      // 4
+    EXPECT_EQ(h.long_today(), 8);      // 10 - 2
+    EXPECT_EQ(h.long_yesterday(), 2);  // 2
+    EXPECT_EQ(h.short_today(), 4);     // 4
     EXPECT_EQ(h.short_yesterday(), 0);
 }
 
@@ -186,8 +194,8 @@ TEST_F(PositionHoldingTest, TradeOpenDoesNotAffectFrozen) {
 
     // 开仓不影响 frozen
     h.apply_trade(make_trade(DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_OPEN, 10));
-    EXPECT_EQ(h.long_frozen(), 5);    // 不变
-    EXPECT_EQ(h.long_today(), 15);    // 5 + 10
+    EXPECT_EQ(h.long_frozen(), 5);  // 不变
+    EXPECT_EQ(h.long_today(), 15);  // 5 + 10
 }
 
 // ============================================================================
@@ -427,8 +435,8 @@ TEST_F(OffsetConverterShfeTest, CloseYesterdayExcludesFrozen) {
     // 持仓: 今多 0, 昨多 5
     seed_side(h, DZ_DIRECTION_LONG, 5, 5);
     // 挂起平昨单 3 手: long_frozen_yd = 3
-    h.apply_order(make_close_order("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE_YESTDAY, 3,
-                                   0, DZ_ORDER_NOT_TRADED, "rb2510"));
+    h.apply_order(make_close_order("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE_YESTDAY, 3, 0,
+                                   DZ_ORDER_NOT_TRADED, "rb2510"));
     EXPECT_EQ(h.long_yesterday(), 5);
     EXPECT_EQ(h.long_frozen_yesterday(), 3);
     EXPECT_EQ(h.long_available_yesterday(), 2);  // 5 - 3
@@ -446,8 +454,8 @@ TEST_F(OffsetConverterShfeTest, CloseShortYesterdayExcludesFrozen) {
     // 持仓: 今空 0, 昨空 5
     seed_side(h, DZ_DIRECTION_SHORT, 5, 5);
     // 挂起平昨单 3 手: short_frozen_yd = 3
-    h.apply_order(make_close_order("1", DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_CLOSE_YESTDAY, 3,
-                                   0, DZ_ORDER_NOT_TRADED, "rb2510"));
+    h.apply_order(make_close_order("1", DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_CLOSE_YESTDAY, 3, 0,
+                                   DZ_ORDER_NOT_TRADED, "rb2510"));
     EXPECT_EQ(h.short_yesterday(), 5);
     EXPECT_EQ(h.short_frozen_yesterday(), 3);
     EXPECT_EQ(h.short_available_yesterday(), 2);

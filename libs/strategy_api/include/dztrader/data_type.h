@@ -46,7 +46,7 @@
 /** @brief C++ 环境下展开为 extern "C" {，C 环境下为空 */
 #ifdef __cplusplus
 #define DZ_BEGIN_C_DECLS extern "C" {
-#define DZ_END_C_DECLS   }
+#define DZ_END_C_DECLS }
 #else
 #define DZ_BEGIN_C_DECLS
 #define DZ_END_C_DECLS
@@ -61,10 +61,10 @@
 
 /** @brief 跨 C/C++ 的 sizeof 宏，C 侧需要 struct 关键字 */
 #ifdef __cplusplus
-#define DZ_SIZEOF(Type)        sizeof(Type)
+#define DZ_SIZEOF(Type) sizeof(Type)
 #define DZ_SIZEOF_PACKED(Type) sizeof(__dz_internal_packed_##Type)
 #else
-#define DZ_SIZEOF(Type)        sizeof(struct Type)
+#define DZ_SIZEOF(Type) sizeof(struct Type)
 #define DZ_SIZEOF_PACKED(Type) sizeof(struct __dz_internal_packed_##Type)
 #endif
 
@@ -74,7 +74,9 @@
 
 #if defined(_MSC_VER)
 #define DZ_PACK_TYPE_BEGIN __pragma(pack(push, 1))
-#define DZ_PACK_TYPE_END   ;__pragma(pack(pop))
+#define DZ_PACK_TYPE_END \
+    ;                    \
+    __pragma(pack(pop))
 #elif defined(__GNUC__) || defined(__clang__)
 #define DZ_PACK_TYPE_BEGIN
 #define DZ_PACK_TYPE_END __attribute__((packed));
@@ -97,15 +99,17 @@
  * });
  * @endcode
  */
-#define DZ_DECLARE_ALIGNED_STRUCT(Type, ...)                                                                           \
-    struct alignas(8) Type __VA_ARGS__;                                                                                \
-    static_assert(sizeof(Type) % 8 == 0, "Size of " #Type " must be multiple of 8");                                   \
-    static_assert(alignof(Type) == 8, "Alignment of " #Type " must be 8");                                             \
-    DZ_PACK_TYPE_BEGIN                                                                                                 \
-    struct __dz_internal_packed_##Type __VA_ARGS__                                                                     \
-    DZ_PACK_TYPE_END                                                                                                   \
-    static_assert(alignof(__dz_internal_packed_##Type) == 1, "Alignment of __dz_internal_packed_" #Type " must be 1"); \
-    static_assert(sizeof(Type) == sizeof(__dz_internal_packed_##Type), #Type " has padding bytes");
+#define DZ_DECLARE_ALIGNED_STRUCT(Type, ...)                                         \
+    struct alignas(8) Type __VA_ARGS__;                                              \
+    static_assert(sizeof(Type) % 8 == 0, "Size of " #Type " must be multiple of 8"); \
+    static_assert(alignof(Type) == 8, "Alignment of " #Type " must be 8");           \
+    DZ_PACK_TYPE_BEGIN                                                               \
+    struct __dz_internal_packed_##Type __VA_ARGS__ DZ_PACK_TYPE_END static_assert(   \
+        alignof(__dz_internal_packed_##Type) == 1,                                   \
+        "Alignment of __dz_internal_packed_" #Type " must be 1");                    \
+    static_assert(sizeof(Type) == sizeof(__dz_internal_packed_##Type), #Type         \
+                  " has padding "                                                    \
+                  "bytes");
 
 /* ==========================================================
  *  标量类型
@@ -167,9 +171,9 @@ typedef int8_t DzDirection;
 /** @brief 空，卖 */
 #define DZ_DIRECTION_SHORT ((DzDirection)(-1))
 /** @brief 净 */
-#define DZ_DIRECTION_NET   ((DzDirection)0)
+#define DZ_DIRECTION_NET ((DzDirection)0)
 /** @brief 多，买 */
-#define DZ_DIRECTION_LONG  ((DzDirection)1)
+#define DZ_DIRECTION_LONG ((DzDirection)1)
 
 /* ==========================================================
  *  开平仓
@@ -179,16 +183,16 @@ typedef int8_t DzDirection;
 typedef int8_t DzPositionEffect;
 
 /** @brief 开仓 */
-#define DZ_POSITION_EFFECT_OPEN          ((DzPositionEffect)1)
+#define DZ_POSITION_EFFECT_OPEN ((DzPositionEffect)1)
 /** @brief 平仓 */
-#define DZ_POSITION_EFFECT_CLOSE         ((DzPositionEffect)2)
+#define DZ_POSITION_EFFECT_CLOSE ((DzPositionEffect)2)
 /** @brief 平今 */
-#define DZ_POSITION_EFFECT_CLOSE_TODAY   ((DzPositionEffect)3)
+#define DZ_POSITION_EFFECT_CLOSE_TODAY ((DzPositionEffect)3)
 /** @brief 平昨 */
 #define DZ_POSITION_EFFECT_CLOSE_YESTDAY ((DzPositionEffect)4)
 /** @brief 自动拆分 (拆分优先级序列由账户级配置决定: 如 平今-平昨-开仓;
  *         零初始化即 AUTO, 首版仅定义不实现) */
-#define DZ_POSITION_EFFECT_AUTO          ((DzPositionEffect)0)
+#define DZ_POSITION_EFFECT_AUTO ((DzPositionEffect)0)
 
 /* ==========================================================
  *  委托单状态
@@ -198,17 +202,17 @@ typedef int8_t DzPositionEffect;
 typedef int8_t DzOrderStatus;
 
 /** @brief 提交中 */
-#define DZ_ORDER_SUBMITTING  ((DzOrderStatus)1)
+#define DZ_ORDER_SUBMITTING ((DzOrderStatus)1)
 /** @brief 未成交 */
-#define DZ_ORDER_NOT_TRADED  ((DzOrderStatus)2)
+#define DZ_ORDER_NOT_TRADED ((DzOrderStatus)2)
 /** @brief 部分成交 */
 #define DZ_ORDER_PART_TRADED ((DzOrderStatus)3)
 /** @brief 全部成交 */
-#define DZ_ORDER_ALL_TRADED  ((DzOrderStatus)4)
+#define DZ_ORDER_ALL_TRADED ((DzOrderStatus)4)
 /** @brief 已撤销 */
-#define DZ_ORDER_CANCELLED   ((DzOrderStatus)5)
+#define DZ_ORDER_CANCELLED ((DzOrderStatus)5)
 /** @brief 拒单 */
-#define DZ_ORDER_REJECTED    ((DzOrderStatus)6)
+#define DZ_ORDER_REJECTED ((DzOrderStatus)6)
 
 /* ==========================================================
  *  委托单类型
@@ -218,17 +222,17 @@ typedef int8_t DzOrderStatus;
 typedef int8_t DzPriceType;
 
 /** @brief 限价 */
-#define DZ_PRICE_LIMIT  ((DzPriceType)0)
+#define DZ_PRICE_LIMIT ((DzPriceType)0)
 /** @brief 市价 */
 #define DZ_PRICE_MARKET ((DzPriceType)1)
 /** @brief STOP */
-#define DZ_PRICE_STOP   ((DzPriceType)2)
+#define DZ_PRICE_STOP ((DzPriceType)2)
 /** @brief FAK（立即成交剩余撤销） */
-#define DZ_PRICE_FAK    ((DzPriceType)3)
+#define DZ_PRICE_FAK ((DzPriceType)3)
 /** @brief FOK（全部成交否则撤销） */
-#define DZ_PRICE_FOK    ((DzPriceType)4)
+#define DZ_PRICE_FOK ((DzPriceType)4)
 /** @brief 询价 */
-#define DZ_PRICE_RFQ    ((DzPriceType)5)
+#define DZ_PRICE_RFQ ((DzPriceType)5)
 
 /* ==========================================================
  *  期权类型
@@ -238,7 +242,7 @@ typedef int8_t DzPriceType;
 typedef int8_t DzOptionType;
 
 /** @brief 看跌 */
-#define DZ_OPTION_PUT  ((DzOptionType)(-1))
+#define DZ_OPTION_PUT ((DzOptionType)(-1))
 /** @brief 看涨 */
 #define DZ_OPTION_CALL ((DzOptionType)1)
 
@@ -249,25 +253,25 @@ typedef int8_t DzOptionType;
 /** @brief 合约产品类型 (统一 td 库 instruments.product_class; 见 ADR 0011) */
 typedef int8_t DzProductClass;
 
-#define DZ_PRODUCT_UNKNOWN   ((DzProductClass)0)   ///< 未知
-#define DZ_PRODUCT_FUTURES   ((DzProductClass)1)   ///< 期货
-#define DZ_PRODUCT_OPTION    ((DzProductClass)2)   ///< 场内期权
-#define DZ_PRODUCT_PERPETUAL ((DzProductClass)3)   ///< 永续合约
-#define DZ_PRODUCT_SPREAD    ((DzProductClass)4)   ///< 交易所组合/价差
-#define DZ_PRODUCT_EQUITY    ((DzProductClass)5)   ///< 股票
-#define DZ_PRODUCT_ETF       ((DzProductClass)6)   ///< ETF
-#define DZ_PRODUCT_FUND      ((DzProductClass)7)   ///< 其他上市基金 (LOF/REITs)
-#define DZ_PRODUCT_BOND      ((DzProductClass)8)   ///< 基础债券
-#define DZ_PRODUCT_CB        ((DzProductClass)9)   ///< 可转债 (T+0, 交易规则独立故单列)
-#define DZ_PRODUCT_WARRANT   ((DzProductClass)10)  ///< 权证/涡轮
-#define DZ_PRODUCT_INDEX     ((DzProductClass)11)  ///< 指数 (非交易参考行, 仅作衍生品标的)
-#define DZ_PRODUCT_FOREX     ((DzProductClass)12)  ///< 外汇对
-#define DZ_PRODUCT_SPOT      ((DzProductClass)13)  ///< 现货 (SGE 贵金属等)
-#define DZ_PRODUCT_CFD       ((DzProductClass)14)  ///< 差价合约
+#define DZ_PRODUCT_UNKNOWN ((DzProductClass)0)    ///< 未知
+#define DZ_PRODUCT_FUTURES ((DzProductClass)1)    ///< 期货
+#define DZ_PRODUCT_OPTION ((DzProductClass)2)     ///< 场内期权
+#define DZ_PRODUCT_PERPETUAL ((DzProductClass)3)  ///< 永续合约
+#define DZ_PRODUCT_SPREAD ((DzProductClass)4)     ///< 交易所组合/价差
+#define DZ_PRODUCT_EQUITY ((DzProductClass)5)     ///< 股票
+#define DZ_PRODUCT_ETF ((DzProductClass)6)        ///< ETF
+#define DZ_PRODUCT_FUND ((DzProductClass)7)       ///< 其他上市基金 (LOF/REITs)
+#define DZ_PRODUCT_BOND ((DzProductClass)8)       ///< 基础债券
+#define DZ_PRODUCT_CB ((DzProductClass)9)         ///< 可转债 (T+0, 交易规则独立故单列)
+#define DZ_PRODUCT_WARRANT ((DzProductClass)10)   ///< 权证/涡轮
+#define DZ_PRODUCT_INDEX ((DzProductClass)11)     ///< 指数 (非交易参考行, 仅作衍生品标的)
+#define DZ_PRODUCT_FOREX ((DzProductClass)12)     ///< 外汇对
+#define DZ_PRODUCT_SPOT ((DzProductClass)13)      ///< 现货 (SGE 贵金属等)
+#define DZ_PRODUCT_CFD ((DzProductClass)14)       ///< 差价合约
 
 /** @brief 日期未提供 (epoch day 0 = 1970-01-01 元旦, 全球无开市, 与真实业务日无碰撞;
  *         与 POD 零初始化语义重合 — 未赋值即 NA, 安全缺省) */
-#define DZ_DATE_NA  ((DzDate)0)
+#define DZ_DATE_NA ((DzDate)0)
 
 /* ==========================================================
  *  复权方式
@@ -277,9 +281,9 @@ typedef int8_t DzProductClass;
 typedef int8_t DzAdjustType;
 
 /** @brief 前复权 */
-#define DZ_ADJUST_FORWARD  ((DzAdjustType)(-1))
+#define DZ_ADJUST_FORWARD ((DzAdjustType)(-1))
 /** @brief 不复权 */
-#define DZ_ADJUST_NONE     ((DzAdjustType)0)
+#define DZ_ADJUST_NONE ((DzAdjustType)0)
 /** @brief 后复权 */
 #define DZ_ADJUST_BACKWARD ((DzAdjustType)1)
 
@@ -291,15 +295,15 @@ typedef int8_t DzAdjustType;
 typedef int8_t DzColumnType;
 
 /** @brief 无效值 */
-#define DZ_COL_TYPE_NULL    ((DzColumnType)0)
+#define DZ_COL_TYPE_NULL ((DzColumnType)0)
 /** @brief bool */
-#define DZ_COL_TYPE_BOOL    ((DzColumnType)1)
+#define DZ_COL_TYPE_BOOL ((DzColumnType)1)
 /** @brief int64_t */
-#define DZ_COL_TYPE_INT64   ((DzColumnType)2)
+#define DZ_COL_TYPE_INT64 ((DzColumnType)2)
 /** @brief double（IEEE 754 双精度） */
 #define DZ_COL_TYPE_FLOAT64 ((DzColumnType)3)
 /** @brief const char*（内部持有） */
-#define DZ_COL_TYPE_STRING  ((DzColumnType)4)
+#define DZ_COL_TYPE_STRING ((DzColumnType)4)
 
 /* ==========================================================
  *  UI 通知级别
@@ -309,9 +313,9 @@ typedef int8_t DzColumnType;
 typedef int8_t DzNotifyLevel;
 
 /** @brief 信息通知 */
-#define DZ_NOTIFY_INFO  ((DzNotifyLevel)2)
+#define DZ_NOTIFY_INFO ((DzNotifyLevel)2)
 /** @brief 警告通知 */
-#define DZ_NOTIFY_WARN  ((DzNotifyLevel)3)
+#define DZ_NOTIFY_WARN ((DzNotifyLevel)3)
 /** @brief 错误通知 */
 #define DZ_NOTIFY_ERROR ((DzNotifyLevel)4)
 
@@ -323,11 +327,11 @@ typedef int8_t DzNotifyLevel;
 typedef int8_t DzAccountState;
 
 /** @brief 未登录（未启动/断开/登出/账户已移除） */
-#define DZ_ACCOUNT_OFFLINE    ((DzAccountState)0)
+#define DZ_ACCOUNT_OFFLINE ((DzAccountState)0)
 /** @brief 登录进行中（连接/认证/登录/结算确认/合约加载全过程） */
 #define DZ_ACCOUNT_LOGGING_IN ((DzAccountState)1)
 /** @brief 就绪：登录+结算确认+合约加载完成，可下单可查询 */
-#define DZ_ACCOUNT_READY      ((DzAccountState)2)
+#define DZ_ACCOUNT_READY ((DzAccountState)2)
 
 /* ==========================================================
  *  系统级定时任务类型

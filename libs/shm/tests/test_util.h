@@ -21,8 +21,7 @@ namespace dztrader::shm::test {
 constexpr uint64_t KB = 1024ULL;
 constexpr uint64_t MB = KB * 1024ULL;
 
-inline std::string unique_channel_name(const std::string& prefix)
-{
+inline std::string unique_channel_name(const std::string& prefix) {
     auto ts = std::chrono::steady_clock::now().time_since_epoch().count();
 #ifdef _WIN32
     auto pid = GetCurrentProcessId();
@@ -32,21 +31,18 @@ inline std::string unique_channel_name(const std::string& prefix)
     return prefix + "_" + std::to_string(ts) + "_" + std::to_string(pid);
 }
 
-inline std::filesystem::path test_shm_dir(const std::string& channel_name)
-{
+inline std::filesystem::path test_shm_dir(const std::string& channel_name) {
     return std::filesystem::temp_directory_path() / "dz_shm_test" / channel_name;
 }
 
-inline void create_page_file(const std::filesystem::path& dir, uint64_t page_id, uint64_t size)
-{
+inline void create_page_file(const std::filesystem::path& dir, uint64_t page_id, uint64_t size) {
     auto path = dir / std::format("{:08d}.dat", page_id);
     std::ofstream ofs(path, std::ios::binary);
     ofs.seekp(size - 1);
     ofs.put('\0');
 }
 
-inline void cleanup_test_dir(const std::filesystem::path& shm_dir)
-{
+inline void cleanup_test_dir(const std::filesystem::path& shm_dir) {
     std::error_code ec;
     std::filesystem::remove_all(shm_dir, ec);
 }

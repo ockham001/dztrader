@@ -18,7 +18,6 @@
 namespace dztrader::webui {
 namespace {
 
-
 class MarketSourceControllerTest : public ::testing::Test {
 protected:
     std::shared_ptr<Repository> repo_;
@@ -56,9 +55,9 @@ protected:
     template <typename Fn, typename... Args>
     drogon::HttpResponsePtr invoke(Fn fn, const drogon::HttpRequestPtr& req, Args&&... args) {
         drogon::HttpResponsePtr captured;
-        (ctrl_.get()->*fn)(req,
-                          [&captured](const drogon::HttpResponsePtr& r) { captured = r; },
-                          std::forward<Args>(args)...);
+        (ctrl_.get()->*fn)(
+            req, [&captured](const drogon::HttpResponsePtr& r) { captured = r; },
+            std::forward<Args>(args)...);
         return captured;
     }
     static nlohmann::json parse_body(const drogon::HttpResponsePtr& resp) {
@@ -412,7 +411,8 @@ TEST_F(MarketSourceControllerTest, SetAutoLoginInvalidBodyReturns400) {
 TEST_F(MarketSourceControllerTest, AddBrokerAsNonAdminReturns403) {
     const int64_t id = create_source("ctp_add1");
     auto req = user_req();
-    req->setBody(R"({"name":"b1","broker_id":"B1","user_id":"u","password":"p","product_info":"pi"})");
+    req->setBody(
+        R"({"name":"b1","broker_id":"B1","user_id":"u","password":"p","product_info":"pi"})");
     auto resp = invoke(&MarketSourceCtrl::add_broker, req, id);
     EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
 }
@@ -435,7 +435,8 @@ TEST_F(MarketSourceControllerTest, AddBrokerNonexistentSourceReturns404) {
 TEST_F(MarketSourceControllerTest, AddBrokerRejectsWhenProcessNotRunning) {
     const int64_t id = create_source("ctp_add3");
     auto req = admin_req();
-    req->setBody(R"({"name":"b1","broker_id":"B1","user_id":"u","password":"p","product_info":"pi"})");
+    req->setBody(
+        R"({"name":"b1","broker_id":"B1","user_id":"u","password":"p","product_info":"pi"})");
     auto resp = invoke(&MarketSourceCtrl::add_broker, req, id);
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
 }
@@ -447,7 +448,8 @@ TEST_F(MarketSourceControllerTest, AddBrokerReturns503WhenWriterNotReady) {
     prime_mirror_for_dispatch(*process_mirror_, "dzmd_ctp");
 
     auto req = admin_req();
-    req->setBody(R"({"name":"b1","broker_id":"B1","user_id":"u","password":"p","product_info":"pi"})");
+    req->setBody(
+        R"({"name":"b1","broker_id":"B1","user_id":"u","password":"p","product_info":"pi"})");
     auto resp = invoke(&MarketSourceCtrl::add_broker, req, id);
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
 }
@@ -793,7 +795,10 @@ struct ReadyShmFixture {
         std::filesystem::remove_all(shm_dir);
     }
     // 排空 reader，返回最后一帧是否与目标 instance 匹配的 SET_MD_SHM_CONFIG 及 payload
-    struct Captured { bool found = false; nlohmann::json payload; };
+    struct Captured {
+        bool found = false;
+        nlohmann::json payload;
+    };
     Captured capture_shm_config(const std::string& instance) {
         Captured out;
         while (const auto* raw = reader->next_frame()) {

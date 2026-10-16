@@ -53,7 +53,8 @@ void SettingsCtrl::get_master(
     if (std::filesystem::exists(master_config_path_)) {
         // 契约: 段缺失/文件不可读时 load_json_section 返回 null, 需 is_object 守卫后兜底默认值
         try {
-            auto m = dztrader::core::load_json_section<nlohmann::json>(master_config_path_, "master");
+            auto m =
+                dztrader::core::load_json_section<nlohmann::json>(master_config_path_, "master");
             if (m.is_object()) master = m;
         } catch (const std::exception& e) {
             spdlog::warn("load master section failed | error={}", e.what());
@@ -76,16 +77,19 @@ void SettingsCtrl::get_master(
     // 与 master 运行时 clamp 一致 (config.cpp:117-121 将 <1 钳制到 1), 展示生效值而非文件原始值
     uint64_t stop_to = read_uint(master, "single_stop_timeout_sec", 3);
     if (stop_to < 1) stop_to = 1;
-    callback(json_response(drogon::k200OK, {
-        {"single_stop_timeout_sec", stop_to},
-        {"cleanup_max_page_count", read_uint(master, "cleanup_max_page_count", 200)},
-        {"cleanup_max_page_age_hours", read_uint(master, "cleanup_max_page_age_hours", 24)},
-        {"meta_file_size", read_uint(shm, "meta_file_size", 1024 * 1024)},
-    }));
+    callback(json_response(
+        drogon::k200OK,
+        {
+            {"single_stop_timeout_sec", stop_to},
+            {"cleanup_max_page_count", read_uint(master, "cleanup_max_page_count", 200)},
+            {"cleanup_max_page_age_hours", read_uint(master, "cleanup_max_page_age_hours", 24)},
+            {"meta_file_size", read_uint(shm, "meta_file_size", 1024 * 1024)},
+        }));
 }
 
 // GET /api/settings/webui
-// 注: 不返回 log_level——dzweb 日志级别运行期可经「日志」页修改, 此处展示会失真且重复, 归属日志页管理
+// 注: 不返回 log_level——dzweb 日志级别运行期可经「日志」页修改, 此处展示会失真且重复,
+// 归属日志页管理
 void SettingsCtrl::get_webui(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
@@ -94,12 +98,12 @@ void SettingsCtrl::get_webui(
         return;
     }
     callback(json_response(drogon::k200OK, {
-        {"server_listen", webui_cfg_->server_listen},
-        {"server_port", webui_cfg_->server_port},
-        {"token_ttl_sec", webui_cfg_->token_ttl_sec},
-        {"jwt_secret_set", !webui_cfg_->jwt_secret.empty()},
-        {"notify_cache_size", webui_cfg_->notify_cache_size},
-    }));
+                                               {"server_listen", webui_cfg_->server_listen},
+                                               {"server_port", webui_cfg_->server_port},
+                                               {"token_ttl_sec", webui_cfg_->token_ttl_sec},
+                                               {"jwt_secret_set", !webui_cfg_->jwt_secret.empty()},
+                                               {"notify_cache_size", webui_cfg_->notify_cache_size},
+                                           }));
 }
 
 namespace {
@@ -119,18 +123,20 @@ void save_webui_json(const std::filesystem::path& path, const nlohmann::json& pa
                 try {
                     ifs >> full;
                 } catch (const std::exception& e) {
-                    // 旧文件 JSON 损坏: 不能静默清空其他 section, 否则单 section 写入会丢失全部配置。
-                    // 备份损坏文件后用空 object 起步, 让用户能从备份恢复 (对齐 json_section.h)。
+                    // 旧文件 JSON 损坏: 不能静默清空其他 section, 否则单 section
+                    // 写入会丢失全部配置。 备份损坏文件后用空 object 起步, 让用户能从备份恢复 (对齐
+                    // json_section.h)。
                     spdlog::warn("webui.json parse failed | error={}", e.what());
                     corrupted = true;
                 }
             }
-        }  // ifs 析构关闭, 释放文件句柄 (Windows: rename 前必须释放, 否则 "being used by another process")
+        }  // ifs 析构关闭, 释放文件句柄 (Windows: rename 前必须释放, 否则 "being used by another
+           // process")
         if (corrupted) {
             full = nlohmann::json::object();
             auto backup = path;
             backup += ".corrupt." + std::to_string(std::chrono::system_clock::to_time_t(
-                std::chrono::system_clock::now()));
+                                        std::chrono::system_clock::now()));
             std::error_code ec;
             std::filesystem::rename(path, backup, ec);
             // 备份失败不阻断 save (可能 permission denied), 但至少尝试备份
@@ -138,10 +144,13 @@ void save_webui_json(const std::filesystem::path& path, const nlohmann::json& pa
         }
     }
     // auth/notify 段守卫: 旧文件存在但对应段缺失/非 object (如数组) 时, 先规整为 object 再写子字段
-    if (!full.contains("auth") || !full["auth"].is_object()) full["auth"] = nlohmann::json::object();
-    if (!full.contains("notify") || !full["notify"].is_object()) full["notify"] = nlohmann::json::object();
+    if (!full.contains("auth") || !full["auth"].is_object())
+        full["auth"] = nlohmann::json::object();
+    if (!full.contains("notify") || !full["notify"].is_object())
+        full["notify"] = nlohmann::json::object();
     if (patch.contains("token_ttl_sec")) full["auth"]["token_ttl_sec"] = patch["token_ttl_sec"];
-    if (patch.contains("notify_cache_size")) full["notify"]["cache_size"] = patch["notify_cache_size"];
+    if (patch.contains("notify_cache_size"))
+        full["notify"]["cache_size"] = patch["notify_cache_size"];
 
     auto tmp = path;
     tmp += ".tmp";
@@ -159,7 +168,9 @@ void save_webui_json(const std::filesystem::path& path, const nlohmann::json& pa
         }
         std::error_code ec;
         std::filesystem::rename(tmp, path, ec);
-        if (ec) throw std::runtime_error("rename failed | from=" + tmp.string() + " to=" + path.string());
+        if (ec)
+            throw std::runtime_error("rename failed | from=" + tmp.string() +
+                                     " to=" + path.string());
     } catch (const std::exception&) {
         std::error_code rm_ec;
         std::filesystem::remove(tmp, rm_ec);

@@ -6,18 +6,17 @@
 namespace dztrader::ctp {
 
 RiskGate::RiskGate(bool enabled, RiskConfig config)
-    : enabled_(enabled), config_(config) {}
+    : enabled_(enabled),
+      config_(config) {}
 
 void RiskGate::set_enabled(bool enabled) noexcept {
     enabled_.store(enabled, std::memory_order_release);
 }
 
-bool RiskGate::enabled() const noexcept {
-    return enabled_.load(std::memory_order_acquire);
-}
+bool RiskGate::enabled() const noexcept { return enabled_.load(std::memory_order_acquire); }
 
 std::optional<RiskReject> RiskGate::check_order(const DzOrderReq& req,
-                                                 const AccountContext& ctx) noexcept {
+                                                const AccountContext& ctx) noexcept {
     // 关闭时 [[likely]] 分支预测, 几乎零开销
     if (!enabled_.load(std::memory_order_acquire)) [[likely]] {
         return std::nullopt;
@@ -50,7 +49,7 @@ std::optional<RiskReject> RiskGate::check_order(const DzOrderReq& req,
 }
 
 std::optional<RiskReject> RiskGate::check_cancel(const DzOrderReq& req,
-                                                  const AccountContext& ctx) noexcept {
+                                                 const AccountContext& ctx) noexcept {
     (void)req;
     (void)ctx;
     return std::nullopt;

@@ -34,8 +34,7 @@ protected:
     static constexpr uint64_t MB = 1024ULL * 1024ULL;
 
     void SetUp() override {
-        channel_name_ =
-            "dz_test_shm_cfg_" + std::to_string(reinterpret_cast<uintptr_t>(this));
+        channel_name_ = "dz_test_shm_cfg_" + std::to_string(reinterpret_cast<uintptr_t>(this));
         shm_dir_ = std::filesystem::temp_directory_path() / channel_name_;
         std::filesystem::remove_all(shm_dir_);
         std::filesystem::create_directories(shm_dir_);
@@ -71,8 +70,7 @@ protected:
 
     std::string read_cfg_file() {
         std::ifstream ifs(cfg_path_);
-        return std::string(std::istreambuf_iterator<char>(ifs),
-                           std::istreambuf_iterator<char>());
+        return std::string(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
     }
 
     // 排空 reader,返回最后一个 RTN_EVENT_SHM_CONFIG(无 instance_id 帧)的 payload
@@ -218,7 +216,7 @@ TEST_F(ShmConfigTest, EventSetEmptyPatchIsNoOp) {
     cfg.load();
 
     nlohmann::json patch = nlohmann::json::object();
-    cfg.set_shm_config(patch);  // 不抛
+    cfg.set_shm_config(patch);                         // 不抛
     EXPECT_FALSE(std::filesystem::exists(cfg_path_));  // 无操作:不写盘
 
     cfg.rtn_shm_config();
@@ -295,7 +293,7 @@ TEST_F(ShmConfigTest, EventSetPageSizeMbSkipped) {
     EventShmConfig cfg(cfg_path_, *writer_);
     cfg.load();
 
-    cfg.set_shm_config({{"page_size_mb", 999}});  // 被忽略
+    cfg.set_shm_config({{"page_size_mb", 999}});      // 被忽略
     cfg.set_shm_config({{"page_size_mb", nullptr}});  // null 也跳过,不报错
 
     cfg.rtn_shm_config();
@@ -363,10 +361,11 @@ TEST_F(ShmConfigTest, EventSetRangeErrorThrows) {
     EXPECT_THROW(cfg.set_shm_config({{"check_interval_min", 1441}}), std::runtime_error);
     EXPECT_THROW(cfg.set_shm_config({{"check_pages", 9}}), std::runtime_error);
     EXPECT_THROW(cfg.set_shm_config({{"check_bytes", (1LL << 40) + 1}}), std::runtime_error);
-    EXPECT_THROW(cfg.set_shm_config(
-        {{"preload_points", {{"08:45", {{"pages", 9}}}}}}), std::runtime_error);
-    EXPECT_THROW(cfg.set_shm_config(
-        {{"preload_points", {{"08:45", {{"bytes", (1LL << 40) + 1}}}}}}), std::runtime_error);
+    EXPECT_THROW(cfg.set_shm_config({{"preload_points", {{"08:45", {{"pages", 9}}}}}}),
+                 std::runtime_error);
+    EXPECT_THROW(
+        cfg.set_shm_config({{"preload_points", {{"08:45", {{"bytes", (1LL << 40) + 1}}}}}}),
+        std::runtime_error);
 }
 
 // 20. preload_points key 格式非法抛异常
@@ -374,14 +373,14 @@ TEST_F(ShmConfigTest, EventSetInvalidKeyFormatThrows) {
     EventShmConfig cfg(cfg_path_, *writer_);
     cfg.load();
 
-    EXPECT_THROW(cfg.set_shm_config(
-        {{"preload_points", {{"24:00", {{"pages", 1}}}}}}), std::runtime_error);  // HH 超 23
-    EXPECT_THROW(cfg.set_shm_config(
-        {{"preload_points", {{"08:60", {{"pages", 1}}}}}}), std::runtime_error);  // MM 超 59
-    EXPECT_THROW(cfg.set_shm_config(
-        {{"preload_points", {{"8:45", {{"pages", 1}}}}}}), std::runtime_error);   // 非 HH:MM
-    EXPECT_THROW(cfg.set_shm_config(
-        {{"preload_points", {{"abcd", {{"pages", 1}}}}}}), std::runtime_error);
+    EXPECT_THROW(cfg.set_shm_config({{"preload_points", {{"24:00", {{"pages", 1}}}}}}),
+                 std::runtime_error);  // HH 超 23
+    EXPECT_THROW(cfg.set_shm_config({{"preload_points", {{"08:60", {{"pages", 1}}}}}}),
+                 std::runtime_error);  // MM 超 59
+    EXPECT_THROW(cfg.set_shm_config({{"preload_points", {{"8:45", {{"pages", 1}}}}}}),
+                 std::runtime_error);  // 非 HH:MM
+    EXPECT_THROW(cfg.set_shm_config({{"preload_points", {{"abcd", {{"pages", 1}}}}}}),
+                 std::runtime_error);
 }
 
 // 21. preload_points value 非 object 非 null(数字)抛异常
@@ -389,8 +388,7 @@ TEST_F(ShmConfigTest, EventSetPreloadValueNonObjectThrows) {
     EventShmConfig cfg(cfg_path_, *writer_);
     cfg.load();
 
-    EXPECT_THROW(cfg.set_shm_config(
-        {{"preload_points", {{"08:45", 5}}}}), std::runtime_error);
+    EXPECT_THROW(cfg.set_shm_config({{"preload_points", {{"08:45", 5}}}}), std::runtime_error);
 }
 
 // 22. patch 含额外字段:成功,extra 被忽略,cfg_ 不含 extra
@@ -421,8 +419,7 @@ TEST_F(ShmConfigTest, EventSetHugeIntegralDoubleThrows) {
     EventShmConfig cfg(cfg_path_, *writer_);
     cfg.load();
 
-    EXPECT_THROW(cfg.set_shm_config({{"check_pages", 9223372036854775808.0}}),
-                 std::runtime_error);
+    EXPECT_THROW(cfg.set_shm_config({{"check_pages", 9223372036854775808.0}}), std::runtime_error);
     EXPECT_THROW(cfg.set_shm_config({{"check_pages", 1e30}}), std::runtime_error);
 }
 
@@ -452,8 +449,8 @@ TEST_F(ShmConfigTest, EventSetNullPagesInPointThrows) {
     EventShmConfig cfg(cfg_path_, *writer_);
     cfg.load();
 
-    EXPECT_THROW(cfg.set_shm_config(
-        {{"preload_points", {{"08:45", {{"pages", nullptr}}}}}}), std::runtime_error);
+    EXPECT_THROW(cfg.set_shm_config({{"preload_points", {{"08:45", {{"pages", nullptr}}}}}}),
+                 std::runtime_error);
 }
 
 // 27. save 失败时 cfg_ 不变(强保证):cfg_path 指向不存在父目录
@@ -576,7 +573,7 @@ TEST_F(ShmConfigTest, MdSetMergeSameSemantics) {
     EXPECT_EQ(rtn["check_interval_min"], 30);
     EXPECT_EQ(rtn["preload_points"]["09:30"]["pages"], 3);
     EXPECT_EQ(rtn["preload_points"]["09:30"]["bytes"], 0);  // 补默认
-    EXPECT_EQ(rtn["check_pages"], 0);  // 失败的 set 未生效
+    EXPECT_EQ(rtn["check_pages"], 0);                       // 失败的 set 未生效
 }
 
 // 35. Md load 自愈:文件损坏后用默认值 + 修复文件

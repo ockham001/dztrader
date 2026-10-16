@@ -22,7 +22,8 @@ int main(int argc, char* argv[]) {
 
         if (runtime > 0) {
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - start).count();
+                               std::chrono::steady_clock::now() - start)
+                               .count();
             if (elapsed >= runtime) {
                 std::cout << "runtime expired | name=" << name << std::endl;
                 break;

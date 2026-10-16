@@ -100,9 +100,9 @@ private:
     /// 内部 NullLock, 实际互斥完全依赖外部 thread_lock_。
     shm::SingleWriter md_writer_;
 
-    /// 当前交易日距纪元天数。仅 SPI 线程读写 (OnRspUserLogin 写, OnRspUserLogout/OnRtnDepthMarketData 读)。
-    /// 依赖 CTP MD API 单线程回调模型, 无需加锁。主线程禁止直接读取。
-    /// 初始值为 INT32_MIN 哨兵, 登录成功后更新为有效值。
+    /// 当前交易日距纪元天数。仅 SPI 线程读写 (OnRspUserLogin 写,
+    /// OnRspUserLogout/OnRtnDepthMarketData 读)。 依赖 CTP MD API 单线程回调模型,
+    /// 无需加锁。主线程禁止直接读取。 初始值为 INT32_MIN 哨兵, 登录成功后更新为有效值。
     DzDate days_since_epoch_ = std::numeric_limits<DzDate>::min();
 
     /// 事件队列 (SPSC, 构造后不可变)。SPI 线程单生产者 push, 主线程单消费者 pop/wait。

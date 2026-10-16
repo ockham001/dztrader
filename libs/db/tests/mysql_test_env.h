@@ -75,7 +75,8 @@ inline std::string unique_database_name(std::string_view prefix) {
 
 /// 用一条独立连接执行服务器级语句（CREATE/DROP DATABASE、information_schema 查询），
 /// 返回第一行第一列的标量文本（NULL/无行返回 nullopt）；database 为空表示不选库
-inline std::optional<std::string> run_statement(const std::string& database, const std::string& sql) {
+inline std::optional<std::string> run_statement(const std::string& database,
+                                                const std::string& sql) {
     const Server target = server();
     boost::asio::io_context context;
     boost::mysql::any_connection connection(context);
@@ -95,8 +96,8 @@ inline std::optional<std::string> run_statement(const std::string& database, con
     boost::mysql::results result;
     connection.execute(sql, result, ec, diagnostics);
     if (ec) {
-        throw std::runtime_error("mysql test env statement failed | sql=" + sql + " error=" +
-                                 std::string(diagnostics.server_message()));
+        throw std::runtime_error("mysql test env statement failed | sql=" + sql +
+                                 " error=" + std::string(diagnostics.server_message()));
     }
     std::optional<std::string> value;
     if (!result.rows().empty() && result.rows()[0].size() > 0) {
@@ -114,7 +115,8 @@ inline std::optional<std::string> run_statement(const std::string& database, con
                     value = std::string(text.data(), text.size());
                     break;
                 }
-                default: value = "<non-scalar>";
+                default:
+                    value = "<non-scalar>";
             }
         }
     }
@@ -124,8 +126,8 @@ inline std::optional<std::string> run_statement(const std::string& database, con
 }
 
 inline void create_database(const std::string& name) {
-    (void)run_statement("", "CREATE DATABASE `" + name +
-                                "` CHARACTER SET utf8mb4 COLLATE utf8mb4_bin");
+    (void)run_statement("",
+                        "CREATE DATABASE `" + name + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_bin");
 }
 
 inline void drop_database(const std::string& name) {

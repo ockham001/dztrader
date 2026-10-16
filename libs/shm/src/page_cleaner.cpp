@@ -12,7 +12,8 @@
 namespace dztrader::shm {
 
 PageCleaner::PageCleaner(std::shared_ptr<ChannelMeta> meta, CleanupPolicy policy)
-    : meta_(std::move(meta)), policy_(policy) {}
+    : meta_(std::move(meta)),
+      policy_(policy) {}
 
 uint64_t PageCleaner::active_page_id() const noexcept {
     return meta_->next_write_pos()->load() / meta_->page_size();
@@ -77,7 +78,8 @@ size_t PageCleaner::cleanup() {
         if (policy_.max_page_age_hours > 0) {
             auto ftime = std::filesystem::last_write_time(path);
             auto age = std::chrono::duration_cast<std::chrono::hours>(now - ftime);
-            exceed_age = (age.count() > 0LL && static_cast<uint64_t>(age.count()) > policy_.max_page_age_hours);
+            exceed_age = (age.count() > 0LL &&
+                          static_cast<uint64_t>(age.count()) > policy_.max_page_age_hours);
         }
 
         // 满足任一即删除
@@ -89,8 +91,8 @@ size_t PageCleaner::cleanup() {
         std::filesystem::remove(path, ec);
         if (ec) {
             // 仍被映射（Windows 缓存映射）或异常竞态：跳过，不中断本次清理
-            SPDLOG_WARN("page file remove skipped (still in use): path={} err={}",
-                        path.string(), dztrader::to_utf8_from_system(ec.message()));
+            SPDLOG_WARN("page file remove skipped (still in use): path={} err={}", path.string(),
+                        dztrader::to_utf8_from_system(ec.message()));
             continue;
         }
         ++deleted;

@@ -8,8 +8,11 @@ using namespace dztrader::ctp;
 
 namespace {
 
-ActiveOrderUpdate make_close(const char* ref, DzDirection dir, DzPositionEffect effect,
-                             int64_t volume, int64_t traded = 0,
+ActiveOrderUpdate make_close(const char* ref,
+                             DzDirection dir,
+                             DzPositionEffect effect,
+                             int64_t volume,
+                             int64_t traded = 0,
                              DzOrderStatus status = DZ_ORDER_NOT_TRADED,
                              const char* instrument = "IF2506") {
     ActiveOrderUpdate o{};
@@ -69,7 +72,8 @@ TEST(PositionHoldingQueryTest, ApplyAndNormalize) {
 
 TEST(PositionHoldingTradeTest, OpenWeightedPriceAndSides) {
     PositionHolding h{"IF2506", "CFFEX"};
-    EXPECT_TRUE(h.apply_trade(make_trade(DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_OPEN, 2, 3900.0)).long_changed);
+    EXPECT_TRUE(h.apply_trade(make_trade(DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_OPEN, 2, 3900.0))
+                    .long_changed);
     h.apply_trade(make_trade(DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_OPEN, 2, 3910.0));
     EXPECT_EQ(h.long_today(), 4);
     EXPECT_DOUBLE_EQ(h.side(DZ_DIRECTION_LONG).price, 3905.0);
@@ -111,7 +115,7 @@ TEST(PositionHoldingTradeTest, TradeClampsFrozenUntilOrderUpdate) {
     EXPECT_EQ(h.long_frozen(), 5);
     h.apply_trade(make_trade(DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 2, 3950.0));
     EXPECT_EQ(h.long_today(), 3);
-    EXPECT_LE(h.long_frozen(), 3);           // 成交先到也要夹取
+    EXPECT_LE(h.long_frozen(), 3);  // 成交先到也要夹取
     EXPECT_GE(h.long_available_today(), 0);
 }
 
@@ -119,7 +123,7 @@ TEST(PositionHoldingTradeTest, ShfeGenericCloseBeyondYdClamps) {
     PositionHolding h{"rb2510", "SHFE"};
     h.apply_query_side(DZ_DIRECTION_LONG, 5, 3, 3900.0);  // today=2, yd=3
     h.apply_trade(make_trade(DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 5, 3950.0));
-    EXPECT_EQ(h.long_today(), 2);   // SHFE generic 只平昨, 不溢出到今
+    EXPECT_EQ(h.long_today(), 2);  // SHFE generic 只平昨, 不溢出到今
     EXPECT_EQ(h.long_yesterday(), 0);
     EXPECT_EQ(h.long_today() + h.long_yesterday(), 2);
 }
@@ -136,12 +140,14 @@ TEST(PositionHoldingTradeTest, NegativeClampedAndPriceReset) {
 TEST(PositionHoldingFrozenTest, GenericFreezesTodayThenSpills) {
     PositionHolding h{"IF2506", "CFFEX"};
     h.apply_query_side(DZ_DIRECTION_LONG, 5, 3, 3900.0);  // today=2, yd=3
-    auto ch = h.rebuild_active_orders({make_close("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 4)});
+    auto ch =
+        h.rebuild_active_orders({make_close("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 4)});
     EXPECT_TRUE(ch.long_changed);
     EXPECT_EQ(h.long_frozen_today(), 2);
     EXPECT_EQ(h.long_frozen_yesterday(), 2);
     // 撤单释放
-    ch = h.apply_order(make_close("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 4, 0, DZ_ORDER_CANCELLED));
+    ch = h.apply_order(
+        make_close("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 4, 0, DZ_ORDER_CANCELLED));
     EXPECT_TRUE(ch.long_changed);
     EXPECT_EQ(h.long_frozen(), 0);
 }
@@ -151,9 +157,12 @@ TEST(PositionHoldingFrozenTest, TradeAdjustsRemainingFrozen) {
     h.apply_query_side(DZ_DIRECTION_LONG, 5, 0, 3900.0);
     h.apply_order(make_close("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE_TODAY, 5));
     EXPECT_EQ(h.long_frozen_today(), 5);
-    h.apply_order(make_close("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE_TODAY, 5, 2, DZ_ORDER_PART_TRADED));
+    h.apply_order(make_close("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE_TODAY, 5, 2,
+                             DZ_ORDER_PART_TRADED));
     EXPECT_EQ(h.long_frozen_today(), 3);
-    EXPECT_TRUE(h.apply_order(make_close("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE_TODAY, 5, 5, DZ_ORDER_ALL_TRADED)).long_changed);
+    EXPECT_TRUE(h.apply_order(make_close("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE_TODAY, 5,
+                                         5, DZ_ORDER_ALL_TRADED))
+                    .long_changed);
     EXPECT_EQ(h.long_frozen(), 0);
 }
 
@@ -219,7 +228,10 @@ TEST(PositionHoldingTradeTest, OpenPriceNotDilutedByZeroCost) {
 
 TEST(PositionHoldingInputGuardTest, NetDirectionAndZeroVolumeIgnored) {
     PositionHolding h{"IF2506", "CFFEX"};
-    EXPECT_FALSE(h.apply_trade(make_trade(DZ_DIRECTION_NET, DZ_POSITION_EFFECT_OPEN, 1, 3900.0)).any());
-    EXPECT_FALSE(h.apply_trade(make_trade(DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_OPEN, 0, 3900.0)).any());
-    EXPECT_FALSE(h.apply_order(make_close("1", DZ_DIRECTION_NET, DZ_POSITION_EFFECT_CLOSE, 1)).any());
+    EXPECT_FALSE(
+        h.apply_trade(make_trade(DZ_DIRECTION_NET, DZ_POSITION_EFFECT_OPEN, 1, 3900.0)).any());
+    EXPECT_FALSE(
+        h.apply_trade(make_trade(DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_OPEN, 0, 3900.0)).any());
+    EXPECT_FALSE(
+        h.apply_order(make_close("1", DZ_DIRECTION_NET, DZ_POSITION_EFFECT_CLOSE, 1)).any());
 }

@@ -79,8 +79,8 @@ public:
     /// name: 进程名 (与 exe stem 一致, 默认 "dztraderd")
     ShmManager(const ShmGlobalConfig& shm_global,
                const std::filesystem::path& cfg_path,
-               shm::CleanupPolicy cleanup_policy =
-                   shm::CleanupPolicy{.max_page_count = 200, .max_page_age_hours = 24},
+               shm::CleanupPolicy cleanup_policy = shm::CleanupPolicy{.max_page_count = 200,
+                                                                      .max_page_age_hours = 24},
                std::string name = "dztraderd");
 
     ~ShmManager() = default;
@@ -197,8 +197,9 @@ public:
     /// 与 mdctp 的 report_full_snapshot() 形成命名一致性。
     void report_full_snapshot();
 
-    /// 写 PROCESS_STATUS 扩展帧 DZ_FRAME_RTN_PROCESS_STATUS, 无 instance_id) 到 event channel + notify subscribers。
-    /// master 在子进程状态变化时调用 (launch_child/on_child_exit/stop_single_child)。
+    /// 写 PROCESS_STATUS 扩展帧 DZ_FRAME_RTN_PROCESS_STATUS, 无 instance_id) 到 event channel +
+    /// notify subscribers。 master 在子进程状态变化时调用
+    /// (launch_child/on_child_exit/stop_single_child)。
     void write_process_status(const platform::ProcessStatus& status);
 
     /// td 网关退出兜底: 对镜像内该网关账户集逐账户写 Offline (gateway_name=真实网关名),
@@ -247,7 +248,9 @@ public:
     /// 由 ProcessSupervisor::notify_removed_for_inactive 调用。
     void remove_reader(std::string_view name);
 
-    // ===== 行情通道读者注册（帧 DZ_FRAME_REQUEST_MD_READER_REGISTER/DZ_FRAME_REQUEST_MD_READER_UNREGISTER, 任意已注册进程发起, master 持权） =====
+    // ===== 行情通道读者注册（帧
+    // DZ_FRAME_REQUEST_MD_READER_REGISTER/DZ_FRAME_REQUEST_MD_READER_UNREGISTER,
+    // 任意已注册进程发起, master 持权） =====
     /// 处理 DZ_FRAME_REQUEST_MD_READER_REGISTER：校验 subscriber 为已注册进程
     /// （任意类别，不限策略，契约 shm）与通道三条件（已配置 / 行情进程运行 /
     /// 已就绪），通过后 add_reader + 广播 UPDATE + 回 RTN_MD_READER_REGISTER(1015)
@@ -263,8 +266,8 @@ public:
     /// 子进程退出时由 ProcessSupervisor::on_child_exit 调用（幂等，key 不存在为 no-op）。
     void remove_reader_from_all_md_channels(const std::string& sub_name);
 
-    /// 重置订阅者列表：clear_readers + add_reader(master 自己) + 写 UPDATE_SHM_EVENT_SUBSCRIBER 帧。
-    /// 在 master 启动创建事件通道后调用。
+    /// 重置订阅者列表：clear_readers + add_reader(master 自己) + 写 UPDATE_SHM_EVENT_SUBSCRIBER
+    /// 帧。 在 master 启动创建事件通道后调用。
     void reset_subscribers();
 
     // ===== 访问器 =====

@@ -55,8 +55,8 @@ TdApi::TdApi(std::string name,
     // 创建跨进程共享的 OrderIdMeta (本进程是创建者, open_or_create 模式)
     // 文件布局: shm_dir_/<name_>/order_id.dat
     // 多账户共享同一计数器 (TdApi 持有, AccountSession 通过引用获取)
-    order_id_meta_ = std::make_unique<shm::OrderIdMeta>(
-        shm::OrderIdMeta::open_or_create(name_, shm_dir_));
+    order_id_meta_ =
+        std::make_unique<shm::OrderIdMeta>(shm::OrderIdMeta::open_or_create(name_, shm_dir_));
 
     // 创建并打开 PersistWriter (SQLite 持久化, 启动时一次性 open + start_writer)
     // db 路径: $DZTRADER_HOME/db/td.db (统一库, 所有 td 网关共写, 多账户共享)
@@ -76,7 +76,8 @@ TdApi::TdApi(std::string name,
 TdApi::~TdApi() {
     running_ = false;
     // 1. 显式 disconnect 所有 AccountSession (CTP API Release 同步等待 SPI 线程退出)
-    //    AccountSession 析构会再次 disconnect (幂等), 但显式调用确保顺序: 先停 SPI 再停 PersistWriter
+    //    AccountSession 析构会再次 disconnect (幂等), 但显式调用确保顺序: 先停 SPI 再停
+    //    PersistWriter
     for (auto& [account_id, session] : sessions_) {
         try {
             session->disconnect();
@@ -260,9 +261,9 @@ void TdApi::run() {
         } else {
             // next_timeout() 返回 native duration (无 uint32_t 截断),
             // NamedSemaphore::wait_for 接受 uint32_t ms, 需 cast + clamp 防溢出
-            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          timer_queue_.next_timeout())
-                          .count();
+            auto ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(timer_queue_.next_timeout())
+                    .count();
             constexpr auto kMaxMs = static_cast<long long>(std::numeric_limits<uint32_t>::max());
             uint32_t timeout_ms =
                 ms >= kMaxMs ? std::numeric_limits<uint32_t>::max() : static_cast<uint32_t>(ms);
@@ -316,8 +317,10 @@ void TdApi::handle_frame(const std::byte* frame) {
 
 void TdApi::handle_frame_inner(const std::byte* frame) {
     // 设计 §4.4 帧处理模式 (与 md_api.cpp 一致), 差异见契约 td-order:
-    //   - basic 广播帧: 通用控制帧不做目标匹配; TD_ORDER_REQ / TD_ORDER_CANCEL_REQ 按 payload account_id 归属路由
-    //   - 含 instance_id 帧: instance_id == name_ (进程级, 如 TD_CONNECT / TD_DISCONNECT / SET_LOG_CONFIG 等)
+    //   - basic 广播帧: 通用控制帧不做目标匹配; TD_ORDER_REQ / TD_ORDER_CANCEL_REQ 按 payload
+    //   account_id 归属路由
+    //   - 含 instance_id 帧: instance_id == name_ (进程级, 如 TD_CONNECT / TD_DISCONNECT /
+    //   SET_LOG_CONFIG 等)
     //     或以 "name_:" 开头 (账户级, 设计 §1.1)
     FrameView view(frame);
 
@@ -340,7 +343,8 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
             return;
         }
         case DZ_FRAME_TD_QUERY_ACCOUNT_STATUS: {
-            // 契约 account-status: DZ_FRAME_TD_QUERY_ACCOUNT_STATUS basic 广播帧, 空=全量应答, 指定=命中配置才应答
+            // 契约 account-status: DZ_FRAME_TD_QUERY_ACCOUNT_STATUS basic 广播帧, 空=全量应答,
+            // 指定=命中配置才应答
             handle_query_account_status(frame);
             return;
         }
@@ -376,7 +380,8 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
             return;
         }
         case DZ_FRAME_TD_REQ_MODIFY_CONFIG: {
-            // 配置 op 变更: decode TdConfigOpReq -> apply_config_change (decode 失败仅记日志 + 通知 UI)
+            // 配置 op 变更: decode TdConfigOpReq -> apply_config_change (decode 失败仅记日志 + 通知
+            // UI)
             try {
                 apply_config_change(decode_ext_inst_json<TdConfigOpReq>(view));
             } catch (const std::exception& e) {
@@ -395,8 +400,7 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
             // 流程: decode -> set_log_config -> rtn
             // 失败: catch -> 日志 + notify_ui -> rtn (旧值)
             try {
-                log_config_.set_log_config(
-                    decode_ext_inst_json<nlohmann::json>(view));
+                log_config_.set_log_config(decode_ext_inst_json<nlohmann::json>(view));
             } catch (const std::exception& e) {
                 SPDLOG_ERROR("set log config failed | error=\"{}\"", e.what());
                 notify_ui_.error(std::format("日志配置更新失败: {}", e.what()));
@@ -409,8 +413,7 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
             // 流程: decode -> set_auto_login -> rtn
             // 失败: catch -> 日志 + notify_ui -> rtn (旧值)
             try {
-                auto_login_config_.set_auto_login(
-                    decode_ext_inst_json<nlohmann::json>(view));
+                auto_login_config_.set_auto_login(decode_ext_inst_json<nlohmann::json>(view));
             } catch (const std::exception& e) {
                 SPDLOG_ERROR("set auto login failed | error=\"{}\"", e.what());
                 notify_ui_.error(std::format("自动登录配置更新失败: {}", e.what()));
@@ -447,7 +450,8 @@ void TdApi::process_event(Event& event) {
             dispatch<OnRspTdUserLoginField>(event, &AccountSession::on_rsp_user_login);
             return;
         case EventType::OnRspSettlementInfoConfirm:
-            dispatch<OnRspSettlementInfoConfirmField>(event, &AccountSession::on_rsp_settlement_confirm);
+            dispatch<OnRspSettlementInfoConfirmField>(event,
+                                                      &AccountSession::on_rsp_settlement_confirm);
             return;
         case EventType::OnRspQryInstrument:
             dispatch<OnRspQryInstrumentField>(event, &AccountSession::on_rsp_qry_instrument);
@@ -463,10 +467,12 @@ void TdApi::process_event(Event& event) {
             dispatch<OnRspQryOrderField>(event, &AccountSession::on_rsp_qry_order);
             return;
         case EventType::OnRspQryTradingAccount:
-            dispatch<OnRspQryTradingAccountField>(event, &AccountSession::on_rsp_qry_trading_account);
+            dispatch<OnRspQryTradingAccountField>(event,
+                                                  &AccountSession::on_rsp_qry_trading_account);
             return;
         case EventType::OnRspQryInvestorPosition:
-            dispatch<OnRspQryInvestorPositionField>(event, &AccountSession::on_rsp_qry_investor_position);
+            dispatch<OnRspQryInvestorPositionField>(event,
+                                                    &AccountSession::on_rsp_qry_investor_position);
             return;
         case EventType::OnRspOrderInsert:
             dispatch<OnRspOrderInsertField>(event, &AccountSession::on_rsp_order_insert);
@@ -487,10 +493,12 @@ void TdApi::process_event(Event& event) {
             dispatch<OnRtnFromBankToFutureByFutureField>(event, &AccountSession::on_rtn_transfer);
             return;
         case EventType::OnRspUserPasswordUpdate:
-            dispatch<OnRspUserPasswordUpdateField>(event, &AccountSession::on_rsp_user_password_update);
+            dispatch<OnRspUserPasswordUpdateField>(event,
+                                                   &AccountSession::on_rsp_user_password_update);
             return;
         case EventType::OnRspTradingAccountPasswordUpdate:
-            dispatch<OnRspTradingAccountPasswordUpdateField>(event, &AccountSession::on_rsp_trading_account_password_update);
+            dispatch<OnRspTradingAccountPasswordUpdateField>(
+                event, &AccountSession::on_rsp_trading_account_password_update);
             return;
         default:
             // md 类型 (3, 4-13) td 进程不应收到, 兜底释放防泄漏
@@ -556,11 +564,9 @@ void TdApi::handle_front_event(Event& event) {
         write_account_status(account_id, account_state_of(after),
                              session->state_machine().status().trading_day);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("account status push failed | account={} error=\"{}\"",
-                     account_id, e.what());
+        SPDLOG_ERROR("account status push failed | account={} error=\"{}\"", account_id, e.what());
     } catch (...) {
-        SPDLOG_ERROR("account status push failed | account={} error=unknown_exception",
-                     account_id);
+        SPDLOG_ERROR("account status push failed | account={} error=unknown_exception", account_id);
     }
     AccountSession::delete_event(event);
 }
@@ -579,8 +585,8 @@ void TdApi::handle_shutdown() {
         try {
             session->disconnect();
         } catch (const std::exception& e) {
-            SPDLOG_ERROR("disconnect failed on shutdown | account={} error=\"{}\"",
-                         account_id, e.what());
+            SPDLOG_ERROR("disconnect failed on shutdown | account={} error=\"{}\"", account_id,
+                         e.what());
         } catch (...) {
             SPDLOG_ERROR("disconnect unknown exception on shutdown | account={}", account_id);
         }
@@ -677,23 +683,21 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
         // boot_cache_ 命中 (set_configs 预扫) 或运行期兜底查询; 无历史 -> 空基准.
         auto boot = load_boot_data(account_id);
         auto session = std::make_unique<AccountSession>(
-            account_id, *order_id_meta_, event_writer_, *persist_writer_,
-            event_queue_, timer_queue_,
+            account_id, *order_id_meta_, event_writer_, *persist_writer_, event_queue_,
+            timer_queue_,
             [this, account_id](DzAccountState state) {
                 // 契约 account-status: 会话内直调状态机的路径 (连接超时) 经统一出口推送
                 write_account_status(account_id, state, "");
             },
             std::move(boot));
-        session->open(session_flow_dir.string(), front_addrs,
-                      cfg->broker.broker_id, cfg->broker.user_id,
-                      cfg->broker.password, cfg->auth_code, cfg->app_id);
+        session->open(session_flow_dir.string(), front_addrs, cfg->broker.broker_id,
+                      cfg->broker.user_id, cfg->broker.password, cfg->auth_code, cfg->app_id);
         // Task 5 §4.3: 注入独立只读连接提供器, 供重连时增量装载基准 (断连后提交的 DB 行).
         // ensure_prescan_db 会按需重开 (文件缺失时降级).
-        session->set_prescan_db_provider(
-            [this]() -> SQLite::Database* {
-                ensure_prescan_db();
-                return prescan_db_.get();
-            });
+        session->set_prescan_db_provider([this]() -> SQLite::Database* {
+            ensure_prescan_db();
+            return prescan_db_.get();
+        });
         // Task 8: 注入持仓周期重查间隔 (Ready 后生效).
         session->set_position_poll_interval(config_.qry_position_interval_s);
         sessions_[account_id] = std::move(session);
@@ -746,8 +750,9 @@ void TdApi::disconnect_account_by_id(const std::string& account_id) {
 }
 
 void TdApi::on_order_req(const shm::FrameView& view) {
-    // 契约 td-order: TD_ORDER_REQ 是 basic 广播帧, payload = DzOrderReq (memcpy 解析, 避免对齐问题),
-    // 按 payload account_id 归属路由: 每个 td 网关进程读所有下单帧, 只处理 account_id 在本进程配置中的订单.
+    // 契约 td-order: TD_ORDER_REQ 是 basic 广播帧, payload = DzOrderReq (memcpy 解析,
+    // 避免对齐问题), 按 payload account_id 归属路由: 每个 td 网关进程读所有下单帧, 只处理
+    // account_id 在本进程配置中的订单.
 
     // 1. 校验 frame_size 足够容纳 DzFrameHeader + DzOrderReq (防止截断帧误读)
     constexpr auto kMinFrameSize = sizeof(DzFrameHeader) + sizeof(DzOrderReq);
@@ -796,14 +801,14 @@ void TdApi::on_order_req(const shm::FrameView& view) {
     try {
         session->place_order(req);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td place_order failed | account={} order_id={} error=\"{}\"",
-                     req.account_id, req.order_id, e.what());
+        SPDLOG_ERROR("td place_order failed | account={} order_id={} error=\"{}\"", req.account_id,
+                     req.order_id, e.what());
     }
 }
 
 void TdApi::on_cancel_req(const shm::FrameView& view) {
-    // 契约 td-order: TD_ORDER_CANCEL_REQ 是 basic 广播帧, payload = DzOrderCancelReq (order_id + account_id),
-    // 按 payload account_id 归属路由 (与 on_order_req 相同).
+    // 契约 td-order: TD_ORDER_CANCEL_REQ 是 basic 广播帧, payload = DzOrderCancelReq (order_id +
+    // account_id), 按 payload account_id 归属路由 (与 on_order_req 相同).
 
     // 1. 校验 frame_size 足够容纳 DzFrameHeader + DzOrderCancelReq
     constexpr auto kMinFrameSize = sizeof(DzFrameHeader) + sizeof(DzOrderCancelReq);
@@ -870,15 +875,17 @@ void TdApi::update_status(const std::string& account_id) {
         // 契约 account-status: 2018 三态去重推送 (与 2104 同一异常保护, 异常路径一致)
         write_account_status(account_id, account_state_of(status.state), status.trading_day);
     } catch (const dztrader::Exception& e) {
-        SPDLOG_ERROR("update_status failed | account={} code={} error=\"{}\"",
-                     account_id, e.code(), e.what());
+        SPDLOG_ERROR("update_status failed | account={} code={} error=\"{}\"", account_id, e.code(),
+                     e.what());
     } catch (const std::exception& e) {
         SPDLOG_ERROR("update_status failed | account={} error=\"{}\"", account_id, e.what());
     }
 }
 
-void TdApi::write_account_status(const std::string& account_id, DzAccountState state,
-                                 const std::string& trading_day, bool force) {
+void TdApi::write_account_status(const std::string& account_id,
+                                 DzAccountState state,
+                                 const std::string& trading_day,
+                                 bool force) {
     auto& last = account_last_state_[account_id];
     if (!should_push_account_status(last, state, force)) {
         return;  // 三态未翻转, 不重复推 (Offline 恒推, 供删账户/崩溃兜底语义)
@@ -900,8 +907,8 @@ void TdApi::report_account_status_all() {
         if (auto* session = find_session(acct.account_id); session != nullptr) {
             const auto& st = session->state_machine().status();
             write_account_status(acct.account_id,
-                                 account_state_of(session->state_machine().state()),
-                                 st.trading_day, /*force=*/true);
+                                 account_state_of(session->state_machine().state()), st.trading_day,
+                                 /*force=*/true);
         } else {
             write_account_status(acct.account_id, DZ_ACCOUNT_OFFLINE, "", /*force=*/true);
         }

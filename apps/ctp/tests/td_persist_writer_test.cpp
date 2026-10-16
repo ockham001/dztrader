@@ -56,9 +56,7 @@ protected:
         std::filesystem::remove(db_path_);
         std::filesystem::remove(db_path_ + "-journal");
     }
-    void TearDown() override {
-        std::filesystem::remove_all(tmp_dir_);
-    }
+    void TearDown() override { std::filesystem::remove_all(tmp_dir_); }
 
     /// 重新打开数据库只读查询 (验证持久化结果)
     int scalar_int(const std::string& sql) {
@@ -84,10 +82,10 @@ TEST_F(TdPersistWriterTest, OpenCreatesAllTables) {
         w.open();
         // 验证表存在 (独立只读连接, 不依赖 PersistWriter 句柄)
         EXPECT_EQ(std::stoi(raw_scalar(db_path_,
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND "
-            "name IN ('schema_version','orders','trades','instruments',"
-            "'positions','trading_accounts')")),
-            6);
+                                       "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND "
+                                       "name IN ('schema_version','orders','trades','instruments',"
+                                       "'positions','trading_accounts')")),
+                  6);
     }
 }
 
@@ -340,7 +338,7 @@ TEST_F(TdPersistWriterTest, DuplicateOrderReplacedWithLatestState) {
 
         w.stop();
     }
-    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders"), 1);  // 去重, 1 行
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders"), 1);                   // 去重, 1 行
     EXPECT_EQ(scalar_int("SELECT status FROM orders WHERE order_id=100"), 4);  // 最新状态
     EXPECT_EQ(scalar_int("SELECT volume_traded FROM orders WHERE order_id=100"), 2);
 }
@@ -549,7 +547,8 @@ TEST_F(TdPersistWriterTest, FailedBatchDoesNotLeakFlushTokens) {
     }
     const auto elapsed = std::chrono::steady_clock::now() - t0;
     // 20 个 token 若都靠 300ms 超时兜底需 ≥6s; set_exception/erase 路径应 <1s。
-    EXPECT_LT(elapsed, std::chrono::seconds(1)) << "flush tokens leaked: wait_flush blocked on timeout";
+    EXPECT_LT(elapsed, std::chrono::seconds(1))
+        << "flush tokens leaked: wait_flush blocked on timeout";
 
     // 后续未知 token 仍按"已消费"处理返回 true (map 已清, 不误伤正常路径)。
     EXPECT_TRUE(w.wait_flush(999999, std::chrono::milliseconds(50)));
@@ -626,8 +625,8 @@ TEST_F(TdPersistWriterTest, PositionRebuildAtomicClearsStaleDays) {
         // enqueue PositionRebuild{day=20260901, 2 行} — 同账户两个不同 (instrument, direction)
         {
             std::vector<DzPositionInfo> group;
-            group.push_back(make_position(8, 11, DZ_DIRECTION_LONG));   // IF2506 多
-            auto rb = make_position(3, 12, DZ_DIRECTION_SHORT);         // rb2510 空
+            group.push_back(make_position(8, 11, DZ_DIRECTION_LONG));  // IF2506 多
+            auto rb = make_position(3, 12, DZ_DIRECTION_SHORT);        // rb2510 空
             std::strcpy(rb.instrument_id, "rb2510");
             std::strcpy(rb.exchange_id, "SHFE");
             group.push_back(rb);

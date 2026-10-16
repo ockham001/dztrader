@@ -18,9 +18,9 @@ namespace dztrader::ctp {
 /// CTP 价格类型三元组 (LimitPriceType + TimeCondition + VolumeCondition).
 /// 三个字段共同决定 CTP 下单语义, 不能单独使用.
 struct OrderTypeTriplet {
-    char limit_price_type;   ///< 'LimitPrice' / 'AnyPrice' / 'BestPrice' 等
-    char time_condition;     ///< 'GFD' / 'IOC' 等
-    char volume_condition;   ///< 'AnyVolume' / 'MinVolume' / 'CV' 等
+    char limit_price_type;  ///< 'LimitPrice' / 'AnyPrice' / 'BestPrice' 等
+    char time_condition;    ///< 'GFD' / 'IOC' 等
+    char volume_condition;  ///< 'AnyVolume' / 'MinVolume' / 'CV' 等
 };
 
 /// 下单时构建 CTP InputOrderField 所需的上下文.
@@ -54,8 +54,8 @@ DzOrderStatus STATUS_CTP2VT(char ctp_status) noexcept;
 /// DZ_PRICE_LIMIT  -> LimitPrice + GFD + MinVolume
 /// DZ_PRICE_MARKET -> AnyPrice  + IOC + AnyVolume
 /// DZ_PRICE_FAK    -> LimitPrice + IOC + MinVolume
-/// DZ_PRICE_FOK    -> LimitPrice + IOC + CV (MinVolume=VolumeTotalOriginal, 由 to_input_order_field 填)
-/// 其他类型 (STOP/RFQ) 期货不支持, 返回 LimitPrice 兜底.
+/// DZ_PRICE_FOK    -> LimitPrice + IOC + CV (MinVolume=VolumeTotalOriginal, 由 to_input_order_field
+/// 填) 其他类型 (STOP/RFQ) 期货不支持, 返回 LimitPrice 兜底.
 OrderTypeTriplet ORDERTYPE_VT2CTP(DzPriceType t) noexcept;
 
 // ============================================================================
@@ -70,7 +70,7 @@ OrderTypeTriplet ORDERTYPE_VT2CTP(DzPriceType t) noexcept;
 /// - FOK 模拟: MinVolume = req.volume (配合 CV 实现"全部成交否则撤销")
 /// - LimitPrice 直接拷贝 req.price (市价单时 CTP 忽略此字段)
 CThostFtdcInputOrderField to_input_order_field(const DzOrderReq& req,
-                                                const OrderBuildContext& ctx) noexcept;
+                                               const OrderBuildContext& ctx) noexcept;
 
 /// CTP OrderField -> OrderRecord (含 DzOrderReport base + CTP 扩展字段).
 /// trading_day 为 DzDate (距纪元天数), 由 AccountSession 传入.
@@ -79,14 +79,14 @@ CThostFtdcInputOrderField to_input_order_field(const DzOrderReq& req,
 /// volume_canceled 留 0 (CThostFtdcOrderField 无此字段), AccountSession 在
 /// on_rtn_order 中根据 OrderStatus 推导: CANCELLED 状态时 = volume - volume_traded.
 OrderRecord to_order_record(const CThostFtdcOrderField& o,
-                             const std::string& account_id,
-                             int32_t trading_day) noexcept;
+                            const std::string& account_id,
+                            int32_t trading_day) noexcept;
 
 /// CTP TradeField -> TradeRecord (含 DzTradeReport base + 扩展字段).
 /// commission 留 0（平台不查询费率，ADR 0013）.
 TradeRecord to_trade_record(const CThostFtdcTradeField& t,
-                             const std::string& account_id,
-                             int32_t trading_day) noexcept;
+                            const std::string& account_id,
+                            int32_t trading_day) noexcept;
 
 /// CTP InstrumentField -> tdstore 规范记录 (name 转 UTF-8; update_day/updated_at 由调用方填).
 /// CTP 无 ListedDate 字段, 用 OpenDate (上市日) 映射到 listed_date; ExpireDate 映射到
@@ -97,8 +97,8 @@ tdstore::InstrumentRecord to_instrument_record(const CThostFtdcInstrumentField& 
 /// CTP TradingAccountField -> DzTradingAccount.
 /// trading_day 为 DzDate (距纪元天数).
 DzTradingAccount to_dz_trading_account(const CThostFtdcTradingAccountField& a,
-                                        const std::string& account_id,
-                                        int32_t trading_day) noexcept;
+                                       const std::string& account_id,
+                                       int32_t trading_day) noexcept;
 
 /// CTP InvestorPositionField -> DzPositionInfo (spec §4.2 2002 写端).
 /// trading_day 为 DzDate (距纪元天数).
@@ -107,9 +107,9 @@ DzTradingAccount to_dz_trading_account(const CThostFtdcTradingAccountField& a,
 /// volume_multiple 为合约乘数 (CTP PositionCost 是金额, 非单价):
 /// 均价 = PositionCost / (Position × volume_multiple); Position 或乘数 <= 0 时留 0.
 DzPositionInfo to_dz_position(const CThostFtdcInvestorPositionField& p,
-                               const std::string& account_id,
-                               int32_t trading_day,
-                               double volume_multiple) noexcept;
+                              const std::string& account_id,
+                              int32_t trading_day,
+                              double volume_multiple) noexcept;
 
 }  // namespace dztrader::ctp
 

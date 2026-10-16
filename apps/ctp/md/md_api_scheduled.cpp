@@ -27,8 +27,8 @@ void MdApi::schedule_event_shm_preload(const DzShmPreload& params) {
     auto delay_ms = core::random_jitter(0, 5000);
     SPDLOG_DEBUG("event shm preload scheduled | delay={}ms pages={} bytes={}", delay_ms.count(),
                  params.pages, params.bytes);
-    timer_queue_.schedule_after_replace(
-        "event_shm_maint", delay_ms, [this, params]() { on_event_shm_timer(params); });
+    timer_queue_.schedule_after_replace("event_shm_maint", delay_ms,
+                                        [this, params]() { on_event_shm_timer(params); });
 }
 
 void MdApi::on_event_shm_timer(const DzShmPreload& params) {
@@ -51,8 +51,7 @@ void MdApi::on_event_shm_timer(const DzShmPreload& params) {
         }
         event_writer_.close_old_pages();
 
-        SPDLOG_DEBUG("event shm preload done | pages={} bytes={}", params.pages,
-                     params.bytes);
+        SPDLOG_DEBUG("event shm preload done | pages={} bytes={}", params.pages, params.bytes);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("event shm timer failed | error=\"{}\"", e.what());
     }
@@ -63,8 +62,7 @@ void MdApi::schedule_md_shm_maintenance() {
         return;
     }
     auto delay = std::chrono::minutes(md_shm_config_.check_interval_min());
-    timer_queue_.schedule_after_replace("md_shm_maint", delay,
-                                        [this]() { on_md_shm_timer(); });
+    timer_queue_.schedule_after_replace("md_shm_maint", delay, [this]() { on_md_shm_timer(); });
 }
 
 void MdApi::maintain_md_shm(uint32_t pages, uint64_t bytes) {
@@ -100,10 +98,10 @@ void MdApi::on_md_shm_timer() {
 void MdApi::broadcast_md_preload(const DzShmPreload& params) {
     // 带 instance_id 的广播帧: 订阅了本行情源 (name_) 的进程收到后预加载对应 md 通道
     const auto* raw = reinterpret_cast<const std::byte*>(&params);
-    platform::write_ext_inst_raw(event_writer_, DZ_FRAME_PRELOAD_MD_SHM, name_,
-                                 raw, static_cast<uint32_t>(sizeof(params)));
-    SPDLOG_DEBUG("md shm preload broadcast | instance={} pages={} bytes={}", name_,
-                 params.pages, params.bytes);
+    platform::write_ext_inst_raw(event_writer_, DZ_FRAME_PRELOAD_MD_SHM, name_, raw,
+                                 static_cast<uint32_t>(sizeof(params)));
+    SPDLOG_DEBUG("md shm preload broadcast | instance={} pages={} bytes={}", name_, params.pages,
+                 params.bytes);
 }
 
 void MdApi::schedule_auto_sched_timer() {
@@ -138,9 +136,9 @@ void MdApi::on_sched_timer() {
             case AutoSchedAction::Login:
                 SPDLOG_INFO("auto sched login | time={} weekday={}", hh_mm, weekday);
                 if (state_machine_.state() == MdState::Idle) {
-                    connect();           // 需要先建立前置连接
+                    connect();  // 需要先建立前置连接
                 } else if (state_machine_.state() == MdState::Connected) {
-                    req_user_login();    // 前置已连接, 直接重新登录 (服务器登出恢复路径)
+                    req_user_login();  // 前置已连接, 直接重新登录 (服务器登出恢复路径)
                 } else {
                     SPDLOG_WARN("auto sched login skipped | state={}",
                                 magic_enum::enum_name(state_machine_.state()));

@@ -12,9 +12,9 @@ namespace dztrader::ctp {
 /// 撤单上下文 (C4: cancel_order 反向查找所需).
 /// 主线程在 place_order 成功后 insert, on_rtn_order 收到 CTP 回报时 update front_id/session_id.
 struct CancelContext {
-    std::string order_ref;  ///< CTP OrderRef (12 位补零格式)
-    int32_t front_id = 0;   ///< CTP FrontID (OnRtnOrder 回报填充)
-    int32_t session_id = 0; ///< CTP SessionID (OnRtnOrder 回报填充)
+    std::string order_ref;   ///< CTP OrderRef (12 位补零格式)
+    int32_t front_id = 0;    ///< CTP FrontID (OnRtnOrder 回报填充)
+    int32_t session_id = 0;  ///< CTP SessionID (OnRtnOrder 回报填充)
 };
 
 /// order_ref / OrderSysID -> DzOrderId 映射表 (设计 §9.3)

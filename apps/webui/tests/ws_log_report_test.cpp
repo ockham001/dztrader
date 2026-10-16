@@ -26,12 +26,12 @@ TEST(WsLogReportTest, ReaderReturnsRtnLogConfig) {
     };
     (void)shm::ChannelMeta::open_or_create(evt_cfg);
 
-    shm::Reader reader = shm::Reader::create(
-        dztrader::shm::channel_name("dzevent"), shm_dir, "test_report_reader");
+    shm::Reader reader =
+        shm::Reader::create(dztrader::shm::channel_name("dzevent"), shm_dir, "test_report_reader");
 
     auto meta = shm::ChannelMeta::open_only(dztrader::shm::channel_name("dzevent"), shm_dir);
-    auto writer = shm::MultiWriter::create(
-        std::make_shared<shm::ChannelMeta>(std::move(meta)), "test_report_writer");
+    auto writer = shm::MultiWriter::create(std::make_shared<shm::ChannelMeta>(std::move(meta)),
+                                           "test_report_writer");
 
     const nlohmann::json cfg = {{"level", "debug"}, {"flush_on", "info"}};
     shm::write_ext_inst_json(writer, DZ_FRAME_RTN_LOG_CONFIG, "ctp", cfg);

@@ -11,7 +11,6 @@
 namespace dztrader::webui {
 namespace {
 
-
 class AuthControllerTest : public ::testing::Test {
 protected:
     std::shared_ptr<Repository> repo_;

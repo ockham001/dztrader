@@ -100,9 +100,8 @@ std::string scalar_to_string(const nlohmann::json& value, const std::string& key
     if (value.is_number_float()) {
         return value.dump();
     }
-    throw Exception(DZ_EC_INVALID_PARAM,
-                    "database config option must be scalar | key={} type={}", key,
-                    value.type_name());
+    throw Exception(DZ_EC_INVALID_PARAM, "database config option must be scalar | key={} type={}",
+                    key, value.type_name());
 }
 
 /// 已解析的 domain 段；found = 段存在（不存在则调用方生成默认）
@@ -127,9 +126,8 @@ FileSection load_file_section(const std::filesystem::path& path, std::string_vie
     try {
         ifs >> full;
     } catch (const std::exception& e) {
-        throw Exception(DZ_EC_INVALID_PARAM,
-                        "database config parse failed | path={} error=\"{}\"", path.string(),
-                        e.what());
+        throw Exception(DZ_EC_INVALID_PARAM, "database config parse failed | path={} error=\"{}\"",
+                        path.string(), e.what());
     }
     if (!full.is_object()) {
         throw Exception(DZ_EC_INVALID_PARAM, "database config root must be object | path={}",
@@ -141,8 +139,8 @@ FileSection load_file_section(const std::filesystem::path& path, std::string_vie
         return section;  // 段缺失: 调用方生成默认段
     }
     if (!section_it->is_object()) {
-        throw Exception(DZ_EC_INVALID_PARAM,
-                        "database config section must be object | domain={}", domain_key);
+        throw Exception(DZ_EC_INVALID_PARAM, "database config section must be object | domain={}",
+                        domain_key);
     }
     section.found = true;
 
@@ -179,9 +177,8 @@ void generate_default_section(const std::filesystem::path& path, std::string_vie
     try {
         core::save_json_section(path, std::string(domain), section);
     } catch (const std::exception& e) {
-        throw Exception(DZ_EC_SYSTEM,
-                        "database config generate failed | path={} error=\"{}\"", path.string(),
-                        e.what());
+        throw Exception(DZ_EC_SYSTEM, "database config generate failed | path={} error=\"{}\"",
+                        path.string(), e.what());
     }
 }
 
@@ -196,8 +193,7 @@ OptionsMap env_options() {
         }
         const std::string_view suffix(key.data() + kEnvOptPrefix.size(),
                                       key.size() - kEnvOptPrefix.size());
-        if (suffix.empty() ||
-            !std::all_of(suffix.begin(), suffix.end(), is_env_key_char)) {
+        if (suffix.empty() || !std::all_of(suffix.begin(), suffix.end(), is_env_key_char)) {
             continue;
         }
         const std::string value = entry.value().string();
@@ -219,8 +215,7 @@ Config resolve_config(std::string_view domain) {
     }
 
     // 优先级: 内置默认(按最终 backend) < 文件段 < 环境变量
-    std::string backend =
-        section.backend.empty() ? std::string(kBackendSqlite) : section.backend;
+    std::string backend = section.backend.empty() ? std::string(kBackendSqlite) : section.backend;
     if (const auto env_backend = env::get(kEnvBackend);
         env_backend.has_value() && !env_backend->empty()) {
         backend = *env_backend;

@@ -64,8 +64,8 @@ public:
     // ===== 静态工具函数（所有 level 校验/解析的唯一真相源）=====
     // 契约 log: 有效值为 spdlog 规范全称（全小写，大小写敏感）：
     // trace/debug/info/warning/error/critical/off。
-    // warn/err 为 spdlog from_str 内置快捷方式，作为输入别名接受但存储/RTN 时规范化为 warning/error。
-    // from_str 对未知串返回 off，与合法 "off" 歧义，需显式区分。空串视为非法。
+    // warn/err 为 spdlog from_str 内置快捷方式，作为输入别名接受但存储/RTN 时规范化为
+    // warning/error。 from_str 对未知串返回 off，与合法 "off" 歧义，需显式区分。空串视为非法。
 
     /// 解析 level 字符串为 spdlog 级别。非法（空串或未知串）返回 std::nullopt。
     static std::optional<spdlog::level::level_enum> parse_level(std::string_view s) noexcept;

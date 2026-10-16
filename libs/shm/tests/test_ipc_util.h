@@ -317,8 +317,7 @@ inline int run(int argc, char* argv[]) {
     }
     if (cmd == "file_mapping_hold" && argc >= 5) {
         std::string sig = (argc >= 6) ? argv[5] : "";
-        return file_mapping_hold(argv[1], argv[2], std::stoull(argv[3]),
-                                 std::atoi(argv[4]), sig);
+        return file_mapping_hold(argv[1], argv[2], std::stoull(argv[3]), std::atoi(argv[4]), sig);
     }
 
     std::cerr << "unknown command or missing args: " << cmd << "\n";

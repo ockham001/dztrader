@@ -34,9 +34,7 @@ dztrader::db::Value to_value(int64_t value) { return value; }
 
 dztrader::db::Value to_value(double value) { return value; }
 
-dztrader::db::Value to_value(char value) {
-    return int64_t{static_cast<unsigned char>(value)};
-}
+dztrader::db::Value to_value(char value) { return int64_t{static_cast<unsigned char>(value)}; }
 
 db::Row make_instrument_row(const InstrumentRecord& r) {
     return db::Row{std::vector<db::Value>{
@@ -103,8 +101,7 @@ db::Row make_trading_account_row(const DzTradingAccount& r, std::string_view tra
     }};
 }
 
-void upsert_instruments(dztrader::db::Session& session,
-                        std::span<const InstrumentRecord> records) {
+void upsert_instruments(dztrader::db::Session& session, std::span<const InstrumentRecord> records) {
     std::vector<db::Row> rows;
     rows.reserve(records.size());
     for (const InstrumentRecord& record : records) {
@@ -114,16 +111,31 @@ void upsert_instruments(dztrader::db::Session& session,
 }
 
 const std::vector<std::string>& instrument_promised_fields() {
-    static const std::vector<std::string> kFields = {
-        "instrument_id",           "exchange_id",              "symbol",
-        "name",                    "product_class",            "product_code",
-        "settle_cycle",            "currency",                 "base_asset",
-        "is_inverse",              "volume_multiple",          "volume_step",
-        "price_tick",              "min_limit_order_volume",   "max_limit_order_volume",
-        "min_market_order_volume", "max_market_order_volume",  "listed_date",
-        "delisted_date",           "option_type",              "option_strike",
-        "underlying_id",           "underlying_multiple",      "update_day",
-        "updated_at"};
+    static const std::vector<std::string> kFields = {"instrument_id",
+                                                     "exchange_id",
+                                                     "symbol",
+                                                     "name",
+                                                     "product_class",
+                                                     "product_code",
+                                                     "settle_cycle",
+                                                     "currency",
+                                                     "base_asset",
+                                                     "is_inverse",
+                                                     "volume_multiple",
+                                                     "volume_step",
+                                                     "price_tick",
+                                                     "min_limit_order_volume",
+                                                     "max_limit_order_volume",
+                                                     "min_market_order_volume",
+                                                     "max_market_order_volume",
+                                                     "listed_date",
+                                                     "delisted_date",
+                                                     "option_type",
+                                                     "option_strike",
+                                                     "underlying_id",
+                                                     "underlying_multiple",
+                                                     "update_day",
+                                                     "updated_at"};
     return kFields;
 }
 
@@ -146,9 +158,8 @@ dztrader::db::ResultSet query_instruments(dztrader::db::Session& session,
                 throw Exception(DZ_EC_INVALID_PARAM, "unknown field: {}", name);
             }
             const bool duplicated =
-                std::any_of(selected.begin(), selected.end(), [&name](const auto* existing) {
-                    return existing->name == name;
-                });
+                std::any_of(selected.begin(), selected.end(),
+                            [&name](const auto* existing) { return existing->name == name; });
             if (duplicated) {
                 throw Exception(DZ_EC_INVALID_PARAM, "duplicate field: {}", name);
             }

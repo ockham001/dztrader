@@ -52,8 +52,10 @@ bool should_be_logged_in(const ConfigT& cfg, std::string_view hh_mm);
 /// @param is_logged_in 当前是否已登录 (state == LoggedIn)
 /// @return 动作枚举 (None/Login/Logout)
 template <AutoSchedConfig ConfigT>
-AutoSchedAction evaluate_sched_action(const ConfigT& cfg, int weekday,
-                         std::string_view hh_mm, bool is_logged_in);
+AutoSchedAction evaluate_sched_action(const ConfigT& cfg,
+                                      int weekday,
+                                      std::string_view hh_mm,
+                                      bool is_logged_in);
 
 // 模板实现 (header-only, 避免显式实例化)
 
@@ -79,8 +81,10 @@ bool should_be_logged_in(const ConfigT& cfg, std::string_view hh_mm) {
 }
 
 template <AutoSchedConfig ConfigT>
-AutoSchedAction evaluate_sched_action(const ConfigT& cfg, int weekday,
-                         std::string_view hh_mm, bool is_logged_in) {
+AutoSchedAction evaluate_sched_action(const ConfigT& cfg,
+                                      int weekday,
+                                      std::string_view hh_mm,
+                                      bool is_logged_in) {
     if (!cfg.enable_auto_login_logout) {
         return AutoSchedAction::None;
     }

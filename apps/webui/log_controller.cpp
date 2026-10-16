@@ -66,16 +66,18 @@ void LogCtrl::get_files(const drogon::HttpRequestPtr& req,
     auto files = svc.list_files(logger, date, limit, offset);
     Json arr = Json::array();
     for (const auto& f : files) {
-        arr.push_back({
-            {"name", f.name}, {"logger", f.logger},
-            {"size", f.size}, {"mtime", f.mtime}, {"path", f.path}
-        });
+        arr.push_back({{"name", f.name},
+                       {"logger", f.logger},
+                       {"size", f.size},
+                       {"mtime", f.mtime},
+                       {"path", f.path}});
     }
     callback(json_response(drogon::k200OK, arr));
 }
 
-void LogCtrl::get_content(const drogon::HttpRequestPtr& req,
-                          std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+void LogCtrl::get_content(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     LogService svc(dztrader::paths::logs());
     const std::string file = req->getParameter("file");
     if (file.empty()) {
@@ -107,12 +109,18 @@ void LogCtrl::get_content(const drogon::HttpRequestPtr& req,
     auto content = svc.read_content(file, offset, limit, level, keyword, from, to, from_end);
     Json lines = Json::array();
     for (const auto& l : content.lines) {
-        lines.push_back({
-            {"n", l.n}, {"ts", l.ts}, {"level", l.level},
-            {"logger", l.logger}, {"func", l.func}, {"file", l.file},
-            {"line", l.line_no}, {"pid", l.pid}, {"tid", l.tid},
-            {"msg", l.msg}, {"raw", l.raw}, {"parsed", l.parsed}
-        });
+        lines.push_back({{"n", l.n},
+                         {"ts", l.ts},
+                         {"level", l.level},
+                         {"logger", l.logger},
+                         {"func", l.func},
+                         {"file", l.file},
+                         {"line", l.line_no},
+                         {"pid", l.pid},
+                         {"tid", l.tid},
+                         {"msg", l.msg},
+                         {"raw", l.raw},
+                         {"parsed", l.parsed}});
     }
     const Json resp = {{"lines", lines}, {"total", content.total}};
     callback(json_response(drogon::k200OK, resp));
@@ -140,8 +148,9 @@ void LogCtrl::get_stats(const drogon::HttpRequestPtr& req,
     callback(json_response(drogon::k200OK, resp));
 }
 
-void LogCtrl::get_aggregate(const drogon::HttpRequestPtr& req,
-                            std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+void LogCtrl::get_aggregate(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     LogService svc(dztrader::paths::logs());
     const std::string file = req->getParameter("file");
     if (file.empty()) {
@@ -159,17 +168,18 @@ void LogCtrl::get_aggregate(const drogon::HttpRequestPtr& req,
     auto agg = svc.get_aggregate(file, level, limit);
     Json arr = Json::array();
     for (const auto& a : agg) {
-        arr.push_back({
-            {"msg_pattern", a.msg_pattern}, {"count", a.count},
-            {"first_ts", a.first_ts}, {"last_ts", a.last_ts},
-            {"samples", a.samples}
-        });
+        arr.push_back({{"msg_pattern", a.msg_pattern},
+                       {"count", a.count},
+                       {"first_ts", a.first_ts},
+                       {"last_ts", a.last_ts},
+                       {"samples", a.samples}});
     }
     callback(json_response(drogon::k200OK, arr));
 }
 
-void LogCtrl::get_timeline(const drogon::HttpRequestPtr& req,
-                           std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+void LogCtrl::get_timeline(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     LogService svc(dztrader::paths::logs());
     const std::string file = req->getParameter("file");
     if (file.empty()) {
@@ -219,16 +229,14 @@ void LogCtrl::set_level(const drogon::HttpRequestPtr& req,
     Json results = Json::array();
     for (const auto& target : targets) {
         // 统一分发（LogDomainService::handle_log_control）：dzweb 自身直调 LogConfig
-        //（publish 回推 WS），其他进程写 SHM 帧。ok = 已应用/已写入事件通道（契约 rest §1）；
+        // （publish 回推 WS），其他进程写 SHM 帧。ok = 已应用/已写入事件通道（契约 rest §1）；
         // 生效以 RTN_LOG_CONFIG / log_config WS 推送为准
-        const auto r = log_domain_->handle_log_control(
-            target, DZ_FRAME_SET_LOG_CONFIG, {{"level", level}});
-        results.push_back({
-            {"name", target},
-            {"ok", r == LogControlResult::Ok},
-            {"old", nullptr},
-            {"new", level}
-        });
+        const auto r =
+            log_domain_->handle_log_control(target, DZ_FRAME_SET_LOG_CONFIG, {{"level", level}});
+        results.push_back({{"name", target},
+                           {"ok", r == LogControlResult::Ok},
+                           {"old", nullptr},
+                           {"new", level}});
     }
     callback(json_response(drogon::k200OK, {{"results", results}}));
 }
@@ -254,8 +262,8 @@ void LogCtrl::flush_log(const drogon::HttpRequestPtr& req,
 
     Json results = Json::array();
     for (const auto& target : targets) {
-        const auto r = log_domain_->handle_log_control(
-            target, DZ_FRAME_FLUSH_LOG, nlohmann::json::object());
+        const auto r =
+            log_domain_->handle_log_control(target, DZ_FRAME_FLUSH_LOG, nlohmann::json::object());
         results.push_back({{"name", target}, {"ok", r == LogControlResult::Ok}});
     }
     callback(json_response(drogon::k200OK, {{"results", results}}));

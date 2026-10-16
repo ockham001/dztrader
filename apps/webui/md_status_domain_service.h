@@ -14,11 +14,13 @@ namespace dztrader::webui {
 /// 行为逐行对照原 WsController::handle_rtn_md_status：
 /// - 镜像更新 process_mirror.update_gateway_status(source, payload)；
 /// - 广播 payload = {source, status}（instance_id 为空，source 在 payload 里）。
-/// 线程安全：依赖 dzweb 固定单线程事件循环（thread_num=1），所有访问均发生在主循环串行执行，不加锁。
+/// 线程安全：依赖 dzweb
+/// 固定单线程事件循环（thread_num=1），所有访问均发生在主循环串行执行，不加锁。
 class MdStatusDomainService {
 public:
     MdStatusDomainService(ProcessMirror& process_mirror, WsBroadcaster& ws)
-        : process_mirror_(process_mirror), ws_(ws) {}
+        : process_mirror_(process_mirror),
+          ws_(ws) {}
 
     void on_rtn_md_status(const std::string& source, const nlohmann::json& payload) {
         try {

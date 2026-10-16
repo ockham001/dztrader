@@ -37,8 +37,8 @@ db::Row make_order(std::string account, int64_t order_id, int64_t seq) {
 
 std::unique_ptr<db::Database> make_sqlite(const std::filesystem::path& path,
                                           std::span<const db::ResourceSchema> schemas) {
-    return db::Database::open(
-        db::Config{.backend = "sqlite", .options = {{"path", path.string()}}}, schemas);
+    return db::Database::open(db::Config{.backend = "sqlite", .options = {{"path", path.string()}}},
+                              schemas);
 }
 
 #if defined(DZ_WITH_MYSQL) && DZ_WITH_MYSQL
@@ -47,8 +47,7 @@ std::unique_ptr<db::Database> make_mysql(const std::filesystem::path& path,
                                          std::span<const db::ResourceSchema> schemas) {
     const std::string database = path.stem().string();
     mysql_env::create_database(database);
-    return db::Database::open(
-        mysql_env::config_for(database, {{"schema_version", "0"}}), schemas);
+    return db::Database::open(mysql_env::config_for(database, {{"schema_version", "0"}}), schemas);
 }
 
 void cleanup_mysql(const std::filesystem::path& path) {
@@ -118,7 +117,8 @@ TEST_P(ConformanceTest, UpsertIdempotentByKey) {
     session_->upsert(kCollection, std::span<const db::Row>(&first, 1));
     const db::Row second = make_order("a", 1, 11);
     session_->upsert(kCollection, std::span<const db::Row>(&second, 1));
-    const auto result = session_->find(kCollection, db::filters::eq("account_id", std::string("a")));
+    const auto result =
+        session_->find(kCollection, db::filters::eq("account_id", std::string("a")));
     ASSERT_EQ(result.size(), 1u);
     EXPECT_EQ(result.rows()[0].get<int64_t>(3), 11);
 }
@@ -127,8 +127,8 @@ TEST_P(ConformanceTest, FindSortPage) {
     const db::Row rows[] = {make_order("a", 1, 1), make_order("a", 2, 2), make_order("a", 3, 3)};
     session_->upsert(kCollection, rows);
     const auto result = session_->find(
-        kCollection, {}, db::FindOptions{.sort = {{"seq", db::SortOrder::Descending}},
-                                         .offset = 1, .limit = 1});
+        kCollection, {},
+        db::FindOptions{.sort = {{"seq", db::SortOrder::Descending}}, .offset = 1, .limit = 1});
     ASSERT_EQ(result.size(), 1u);
     EXPECT_EQ(result.rows()[0].get<int64_t>(3), 2);
     ASSERT_EQ(result.columns().size(), 4u);
@@ -166,8 +166,7 @@ TEST_P(ConformanceTest, RemoveCount) {
 }
 
 TEST_P(ConformanceTest, AggregateMaxGroupBy) {
-    const db::Row rows[] = {make_order("a", 1, 10), make_order("a", 2, 20),
-                            make_order("b", 3, 33)};
+    const db::Row rows[] = {make_order("a", 1, 10), make_order("a", 2, 20), make_order("b", 3, 33)};
     session_->upsert(kCollection, rows);
     db::Aggregation aggregation;
     aggregation.op = db::AggregateOp::Max;
@@ -190,8 +189,7 @@ TEST_P(ConformanceTest, AggregateMaxGroupBy) {
 }
 
 TEST_P(ConformanceTest, AggregateCount) {
-    const db::Row rows[] = {make_order("a", 1, 10), make_order("a", 2, 20),
-                            make_order("b", 3, 33)};
+    const db::Row rows[] = {make_order("a", 1, 10), make_order("a", 2, 20), make_order("b", 3, 33)};
     session_->upsert(kCollection, rows);
     db::Aggregation aggregation;
     aggregation.op = db::AggregateOp::Count;
@@ -206,8 +204,7 @@ TEST_P(ConformanceTest, AggregateCount) {
 // FIX-2/FIX-14：SUM/AVG 的返回类型与值（sqlite INTEGER/REAL；mysql 侧 SUM 走 DECIMAL
 // 字符串也必须按 schema 声明类型解码回 int64_t / double）
 TEST_P(ConformanceTest, AggregateSumAvgTypes) {
-    const db::Row rows[] = {make_order("a", 1, 10), make_order("a", 2, 20),
-                            make_order("b", 3, 33)};
+    const db::Row rows[] = {make_order("a", 1, 10), make_order("a", 2, 20), make_order("b", 3, 33)};
     session_->upsert(kCollection, rows);
 
     db::Aggregation sum;
@@ -271,7 +268,9 @@ TEST_P(ConformanceTest, CapabilitiesCoverAllFour) {
     EXPECT_TRUE(db::has(caps, db::Capability::OrderedRangeScan));
 }
 
-INSTANTIATE_TEST_SUITE_P(Drivers, ConformanceTest, ::testing::Range<size_t>(0, drivers().size()),
+INSTANTIATE_TEST_SUITE_P(Drivers,
+                         ConformanceTest,
+                         ::testing::Range<size_t>(0, drivers().size()),
                          [](const ::testing::TestParamInfo<size_t>& info) {
                              return drivers()[info.param].name;
                          });

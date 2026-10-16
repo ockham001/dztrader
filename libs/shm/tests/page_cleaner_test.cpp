@@ -14,9 +14,9 @@ using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::CleanupPolicy;
 using dztrader::shm::PageCleaner;
-using dztrader::shm::test::MB;
 using dztrader::shm::test::cleanup_test_dir;
 using dztrader::shm::test::create_page_file;
+using dztrader::shm::test::MB;
 using dztrader::shm::test::spawn_helper;
 using dztrader::shm::test::test_shm_dir;
 using dztrader::shm::test::unique_channel_name;
@@ -30,8 +30,7 @@ protected:
     ChannelConfig config_;
     std::shared_ptr<ChannelMeta> meta_;
 
-    void SetUp() override
-    {
+    void SetUp() override {
         channel_name_ = unique_channel_name("dz_test_cleaner");
         shm_dir_ = test_shm_dir(channel_name_);
         config_ = {
@@ -45,22 +44,19 @@ protected:
         meta_ = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(config_));
     }
 
-    void TearDown() override
-    {
+    void TearDown() override {
         meta_.reset();
         cleanup_test_dir(shm_dir_);
     }
 };
 
-TEST_F(PageCleanerTest, NoCleanupWhenPolicyIsZero)
-{
+TEST_F(PageCleanerTest, NoCleanupWhenPolicyIsZero) {
     CleanupPolicy policy{.max_page_count = 0, .max_page_age_hours = 0};
     PageCleaner cleaner(meta_, policy);
     EXPECT_EQ(cleaner.cleanup(), 0u);
 }
 
-TEST_F(PageCleanerTest, CleanupByCountDeletesOldFiles)
-{
+TEST_F(PageCleanerTest, CleanupByCountDeletesOldFiles) {
     auto dir = meta_->page_dir();
     create_page_file(dir, 1, 1 * MB);
     create_page_file(dir, 2, 1 * MB);
@@ -77,8 +73,7 @@ TEST_F(PageCleanerTest, CleanupByCountDeletesOldFiles)
     EXPECT_TRUE(std::filesystem::exists(dir / std::format("{:08d}.dat", 3)));
 }
 
-TEST_F(PageCleanerTest, CleanupDoesNotDeleteActivePage)
-{
+TEST_F(PageCleanerTest, CleanupDoesNotDeleteActivePage) {
     auto dir = meta_->page_dir();
     create_page_file(dir, 1, 1 * MB);
     create_page_file(dir, 2, 1 * MB);
@@ -93,8 +88,7 @@ TEST_F(PageCleanerTest, CleanupDoesNotDeleteActivePage)
     EXPECT_TRUE(std::filesystem::exists(dir / std::format("{:08d}.dat", 2)));
 }
 
-TEST_F(PageCleanerTest, CleanupSkipsNonDatFiles)
-{
+TEST_F(PageCleanerTest, CleanupSkipsNonDatFiles) {
     auto dir = meta_->page_dir();
     create_page_file(dir, 1, 1 * MB);
     std::ofstream ofs(dir / "readme.txt", std::ios::binary);
@@ -111,8 +105,7 @@ TEST_F(PageCleanerTest, CleanupSkipsNonDatFiles)
     EXPECT_TRUE(std::filesystem::exists(dir / "readme.txt"));
 }
 
-TEST_F(PageCleanerTest, CleanupReturnsZeroWhenNoFiles)
-{
+TEST_F(PageCleanerTest, CleanupReturnsZeroWhenNoFiles) {
     CleanupPolicy policy{.max_page_count = 1, .max_page_age_hours = 0};
     PageCleaner cleaner(meta_, policy);
 
@@ -120,8 +113,7 @@ TEST_F(PageCleanerTest, CleanupReturnsZeroWhenNoFiles)
     EXPECT_EQ(deleted, 0u);
 }
 
-TEST_F(PageCleanerTest, CleanupByAgeDeletesOldFiles)
-{
+TEST_F(PageCleanerTest, CleanupByAgeDeletesOldFiles) {
     auto dir = meta_->page_dir();
     create_page_file(dir, 1, 1 * MB);
     create_page_file(dir, 2, 1 * MB);
@@ -145,8 +137,7 @@ TEST_F(PageCleanerTest, CleanupByAgeDeletesOldFiles)
     EXPECT_FALSE(std::filesystem::exists(old_path2));
 }
 
-TEST_F(PageCleanerTest, CleanupByAgeKeepsRecentFiles)
-{
+TEST_F(PageCleanerTest, CleanupByAgeKeepsRecentFiles) {
     auto dir = meta_->page_dir();
     create_page_file(dir, 1, 1 * MB);
 
@@ -164,8 +155,7 @@ TEST_F(PageCleanerTest, CleanupByAgeKeepsRecentFiles)
     EXPECT_TRUE(std::filesystem::exists(recent_path));
 }
 
-TEST_F(PageCleanerTest, CombinedCountAndAgePolicy)
-{
+TEST_F(PageCleanerTest, CombinedCountAndAgePolicy) {
     auto dir = meta_->page_dir();
     create_page_file(dir, 1, 1 * MB);
     create_page_file(dir, 2, 1 * MB);
@@ -228,8 +218,8 @@ TEST_F(PageCleanerTest, CleanupMultiProcMappingHeld) {
     auto signal_file = shm_dir_ / "helper_mapped";
     boost::asio::io_context ctx;
     // helper 持 page 1 的裸 mapping（非 reader），hold 3s 保证与 cleaner 重叠
-    auto proc = spawn_helper(ctx, {"file_mapping_hold", channel_name_, shm_dir_.string(),
-                                   "1", "3000", signal_file.string()});
+    auto proc = spawn_helper(ctx, {"file_mapping_hold", channel_name_, shm_dir_.string(), "1",
+                                   "3000", signal_file.string()});
     ASSERT_TRUE(wait_for_file(signal_file, std::chrono::seconds(5)))
         << "helper failed to establish mapping";
 

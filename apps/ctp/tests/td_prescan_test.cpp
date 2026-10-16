@@ -58,10 +58,18 @@ protected:
 };
 
 /// 插入 orders 行. direction/status 按写端语义存为 INTEGER (bind 侧 static_cast<int>).
-void insert_order(SQLite::Database& db, const std::string& acct, int64_t order_id,
-                  const char* order_ref, int64_t seq, int8_t status, int32_t vol_traded,
-                  int32_t vol_canceled, int64_t update_time, int8_t direction) {
-    SQLite::Statement s(db,
+void insert_order(SQLite::Database& db,
+                  const std::string& acct,
+                  int64_t order_id,
+                  const char* order_ref,
+                  int64_t seq,
+                  int8_t status,
+                  int32_t vol_traded,
+                  int32_t vol_canceled,
+                  int64_t update_time,
+                  int8_t direction) {
+    SQLite::Statement s(
+        db,
         "INSERT OR REPLACE INTO orders (account_id, trading_day, order_id, order_ref,"
         " instrument_id, exchange_id, direction, status, volume, volume_traded,"
         " volume_canceled, update_time, seq) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
@@ -81,9 +89,13 @@ void insert_order(SQLite::Database& db, const std::string& acct, int64_t order_i
     s.exec();
 }
 
-void insert_trade(SQLite::Database& db, const std::string& acct, const char* trade_id,
-                  int64_t seq, int64_t order_id) {
-    SQLite::Statement s(db,
+void insert_trade(SQLite::Database& db,
+                  const std::string& acct,
+                  const char* trade_id,
+                  int64_t seq,
+                  int64_t order_id) {
+    SQLite::Statement s(
+        db,
         "INSERT OR REPLACE INTO trades (account_id, trading_day, trade_id, order_id,"
         " instrument_id, exchange_id, direction, price, volume, strategy_id, seq)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?)");
@@ -101,9 +113,13 @@ void insert_trade(SQLite::Database& db, const std::string& acct, const char* tra
     s.exec();
 }
 
-void insert_position(SQLite::Database& db, const std::string& acct, const char* instrument,
-                     int64_t seq, int8_t direction) {
-    SQLite::Statement s(db,
+void insert_position(SQLite::Database& db,
+                     const std::string& acct,
+                     const char* instrument,
+                     int64_t seq,
+                     int8_t direction) {
+    SQLite::Statement s(
+        db,
         "INSERT OR REPLACE INTO positions (account_id, trading_day, instrument_id, exchange_id,"
         " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?)");
@@ -122,7 +138,8 @@ void insert_position(SQLite::Database& db, const std::string& acct, const char* 
 }
 
 void insert_taccount(SQLite::Database& db, const std::string& acct, int64_t seq) {
-    SQLite::Statement s(db,
+    SQLite::Statement s(
+        db,
         "INSERT OR REPLACE INTO trading_accounts (account_id, trading_day, balance, available,"
         " frozen, commission, margin, withdraw_quota, deposit, withdraw, seq)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?)");
@@ -154,8 +171,8 @@ TEST_F(TdPrescanTest, QueryMaxSeqAcrossFourTables) {
         insert_taccount(db, "acc1", 3);
     }
     auto ro = open_ro();
-    EXPECT_EQ(query_max_seq(ro, "acc1"), 12u);   // positions 最大 (四表取大)
-    EXPECT_EQ(query_max_seq(ro, "other"), 0u);   // 空账户 -> 0
+    EXPECT_EQ(query_max_seq(ro, "acc1"), 12u);  // positions 最大 (四表取大)
+    EXPECT_EQ(query_max_seq(ro, "other"), 0u);  // 空账户 -> 0
 }
 
 // ============================================================================
@@ -182,7 +199,8 @@ TEST_F(TdPrescanTest, LoadOrdersTradesFullReload) {
     ASSERT_EQ(orders.size(), 2u);
     ASSERT_EQ(trades.size(), 3u);
 
-    // 字段完整性: order_id / order_ref / seq / direction(整数) / status / volume_canceled / update_time / trading_day
+    // 字段完整性: order_id / order_ref / seq / direction(整数) / status / volume_canceled /
+    // update_time / trading_day
     EXPECT_EQ(orders[0].base.order_id, 1);
     EXPECT_STREQ(orders[0].order_ref, "000000000001");
     EXPECT_EQ(orders[0].base.seq, 1u);
@@ -234,8 +252,8 @@ TEST_F(TdPrescanTest, LoadSinceReturnsIncrementalRows) {
         insert_trade(db, "acc1", "T003", 3, 2);
     }
     auto ro = open_ro();
-    auto orders = load_orders_since(ro, "acc1", 1);   // seq > 1
-    auto trades = load_trades_since(ro, "acc1", 2);   // seq > 2
+    auto orders = load_orders_since(ro, "acc1", 1);  // seq > 1
+    auto trades = load_trades_since(ro, "acc1", 2);  // seq > 2
     ASSERT_EQ(orders.size(), 1u);
     EXPECT_EQ(orders[0].base.order_id, 2);
     ASSERT_EQ(trades.size(), 1u);
@@ -259,11 +277,11 @@ TEST_F(TdPrescanTest, PrescanAccountsBuildsBootDataPerAccount) {
     auto ro = open_ro();
     auto boot = prescan_accounts(ro, {"acc1", "acc2", "acc3"});
     ASSERT_EQ(boot.size(), 3u);
-    EXPECT_EQ(boot.at("acc1").start_seq, 6u);   // max(orders=5, trades=6)
+    EXPECT_EQ(boot.at("acc1").start_seq, 6u);  // max(orders=5, trades=6)
     EXPECT_EQ(boot.at("acc1").orders.size(), 1u);
     EXPECT_EQ(boot.at("acc1").trades.size(), 1u);
     EXPECT_EQ(boot.at("acc2").start_seq, 3u);
-    EXPECT_EQ(boot.at("acc3").start_seq, 0u);    // 无历史 → 空基准
+    EXPECT_EQ(boot.at("acc3").start_seq, 0u);  // 无历史 → 空基准
 }
 
 // ============================================================================

@@ -12,8 +12,7 @@ namespace dztrader::shm {
 #error "unsupported: dztrader requires Windows x86_64 (MSVC) or Linux x86_64 (GCC)"
 #endif
 
-void SpinLock::lock() noexcept
-{
+void SpinLock::lock() noexcept {
     while (!try_lock()) {
         DZ_SPIN_PAUSE();
     }

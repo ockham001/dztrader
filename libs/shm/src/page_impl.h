@@ -31,16 +31,22 @@ public:
                             file_path.string(), page_size, e.what());
         }
         if (region_.get_address() == nullptr) {
-            throw Exception(DZ_EC_SHM_MAP_FAILED, "mapped region is null: path={}", file_path.string());
+            throw Exception(DZ_EC_SHM_MAP_FAILED, "mapped region is null: path={}",
+                            file_path.string());
         }
         if (region_.get_size() != page_size) {
-            throw Exception(DZ_EC_SHM_MAP_FAILED, "mapped region size mismatch: path={} expected={} actual={}",
+            throw Exception(DZ_EC_SHM_MAP_FAILED,
+                            "mapped region size mismatch: path={} expected={} actual={}",
                             file_path.string(), page_size, region_.get_size());
         }
     }
 
-    [[nodiscard]] std::byte* address() const noexcept { return static_cast<std::byte*>(region_.get_address()); }
-    [[nodiscard]] uint64_t size() const noexcept { return static_cast<uint64_t>(region_.get_size()); }
+    [[nodiscard]] std::byte* address() const noexcept {
+        return static_cast<std::byte*>(region_.get_address());
+    }
+    [[nodiscard]] uint64_t size() const noexcept {
+        return static_cast<uint64_t>(region_.get_size());
+    }
     [[nodiscard]] uint64_t page_id() const noexcept { return page_id_; }
 
 private:

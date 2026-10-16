@@ -30,8 +30,8 @@ struct DzRiskReject {
     /// to_json/from_json 由 intrusive 宏生成（必须写在结构体内）:
     /// from_json 为 WITH_DEFAULT——缺字段回退默认值、整体 null 解码为全默认结构（不抛错），
     /// 故接线时 handler 必须显式校验必填字段，不得依赖解码错误。
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(DzRiskReject, account_id, rule_name, reason,
-                                                timestamp_ns)
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
+        DzRiskReject, account_id, rule_name, reason, timestamp_ns)
 };
 
 }  // namespace dztrader::platform

@@ -94,8 +94,8 @@ protected:
               const std::map<std::string, std::string, std::less<>>& extra = {}) {
         std::map<std::string, std::string, std::less<>> options = extra;
         options["schema_version"] = version;
-        database_ = db::Database::open(mysql_env::config_for(database_name_, options),
-                                       probe_schemas());
+        database_ =
+            db::Database::open(mysql_env::config_for(database_name_, options), probe_schemas());
     }
 
     /// 打开 + 迁移 + 建会话
@@ -127,11 +127,16 @@ TEST(MysqlOptionsTest, Defaults) {
 
 TEST(MysqlOptionsTest, ParsesAllKeys) {
     const std::map<std::string, std::string, std::less<>> raw = {
-        {"host", "10.0.0.1"},   {"port", "3307"},
-        {"user", "dz"},         {"password", "secret"},
-        {"database", "td"},     {"connect_timeout_ms", "1500"},
-        {"read_timeout_ms", "2500"}, {"write_timeout_ms", "3500"},
-        {"schema_version", "5"}, {"ssl_mode", "verify_identity"},
+        {"host", "10.0.0.1"},
+        {"port", "3307"},
+        {"user", "dz"},
+        {"password", "secret"},
+        {"database", "td"},
+        {"connect_timeout_ms", "1500"},
+        {"read_timeout_ms", "2500"},
+        {"write_timeout_ms", "3500"},
+        {"schema_version", "5"},
+        {"ssl_mode", "verify_identity"},
     };
     const internal_ns::MysqlOptions options = internal_ns::parse_mysql_options(raw);
     EXPECT_EQ(options.host, "10.0.0.1");
@@ -156,13 +161,11 @@ TEST(MysqlOptionsTest, RejectsInvalidValues) {
                   DZ_EC_INVALID_PARAM)
             << "port=" << port;
     }
-    EXPECT_EQ(code_of([&] {
-                  (void)internal_ns::parse_mysql_options({{"connect_timeout_ms", "-5"}});
-              }),
-              DZ_EC_INVALID_PARAM);
     EXPECT_EQ(
-        code_of([&] { (void)internal_ns::parse_mysql_options({{"schema_version", "abc"}}); }),
+        code_of([&] { (void)internal_ns::parse_mysql_options({{"connect_timeout_ms", "-5"}}); }),
         DZ_EC_INVALID_PARAM);
+    EXPECT_EQ(code_of([&] { (void)internal_ns::parse_mysql_options({{"schema_version", "abc"}}); }),
+              DZ_EC_INVALID_PARAM);
     EXPECT_EQ(code_of([&] { (void)internal_ns::parse_mysql_options({{"ssl_mode", "bogus"}}); }),
               DZ_EC_INVALID_PARAM);
 }
@@ -211,8 +214,8 @@ TEST_F(MysqlDriverTest, MigrateWritesVersionOnceAndIsIdempotent) {
               std::optional<std::string>("3"));
     EXPECT_EQ(mysql_env::scalar(database_name_, "SELECT COUNT(*) FROM schema_version"),
               std::optional<std::string>("1"));
-    const auto applied_at = mysql_env::scalar(database_name_,
-                                              "SELECT applied_at FROM schema_version WHERE version=3");
+    const auto applied_at =
+        mysql_env::scalar(database_name_, "SELECT applied_at FROM schema_version WHERE version=3");
     ASSERT_TRUE(applied_at.has_value());
     EXPECT_EQ(applied_at->size(), 20u) << "applied_at 形状对齐 sqlite 的 %FT%TZ";
     EXPECT_EQ(applied_at->back(), 'Z');
@@ -236,8 +239,8 @@ TEST_F(MysqlDriverTest, MigrateRejectsVersionSkew) {
         mysql_env::config_for(database_name_, {{"schema_version", "4"}}), probe_schemas());
     EXPECT_EQ(code_of([&] { newer->migrate(); }), DZ_EC_DB_MIGRATE_FAILED);
     // 同版本幂等通过
-    auto same = db::Database::open(
-        mysql_env::config_for(database_name_, {{"schema_version", "3"}}), probe_schemas());
+    auto same = db::Database::open(mysql_env::config_for(database_name_, {{"schema_version", "3"}}),
+                                   probe_schemas());
     EXPECT_NO_THROW(same->migrate());
 }
 
@@ -254,20 +257,21 @@ TEST_F(MysqlDriverTest, MigrateRequiresExplicitSchemaVersion) {
 
 TEST_F(MysqlDriverTest, ConnectFailuresMapToOpenFailed) {
     auto wrong_password = db::Database::open(
-        mysql_env::config_for(database_name_, {{"password", "definitely-wrong"}, {"schema_version", "1"}}),
+        mysql_env::config_for(database_name_,
+                              {{"password", "definitely-wrong"}, {"schema_version", "1"}}),
         probe_schemas());
     EXPECT_EQ(code_of([&] { (void)wrong_password->session(); }), DZ_EC_DB_OPEN_FAILED);
 
-    auto missing_database = db::Database::open(
-        mysql_env::config_for(mysql_env::unique_database_name("dz_missing"), {{"schema_version", "1"}}),
-        probe_schemas());
+    auto missing_database =
+        db::Database::open(mysql_env::config_for(mysql_env::unique_database_name("dz_missing"),
+                                                 {{"schema_version", "1"}}),
+                           probe_schemas());
     EXPECT_EQ(code_of([&] { (void)missing_database->session(); }), DZ_EC_DB_OPEN_FAILED);
 }
 
 TEST_F(MysqlDriverTest, UnregisteredCollectionMapsToQueryFailed) {
     open_migrated();
-    EXPECT_EQ(code_of([&] { (void)session_->find("no_such_collection"); }),
-              DZ_EC_DB_QUERY_FAILED);
+    EXPECT_EQ(code_of([&] { (void)session_->find("no_such_collection"); }), DZ_EC_DB_QUERY_FAILED);
     EXPECT_EQ(code_of([&] { (void)session_->find(kCollection, db::filters::eq("missing", 1)); }),
               DZ_EC_DB_QUERY_FAILED);
 }
@@ -375,8 +379,9 @@ TEST_F(MysqlDriverTest, SnapshotIsolationAcrossSessions) {
     open_migrated();
     upsert_one(*session_, make_row("a", 1, 1.0, true, std::monostate{}));
     auto snapshot = session_->begin_snapshot();
-    EXPECT_EQ(code_of([&] { upsert_one(*session_, make_row("b", 2, 1.0, true, std::monostate{})); }),
-              DZ_EC_PERMISSION_DENIED)
+    EXPECT_EQ(
+        code_of([&] { upsert_one(*session_, make_row("b", 2, 1.0, true, std::monostate{})); }),
+        DZ_EC_PERMISSION_DENIED)
         << "快照作用域内禁止写";
     auto writer = database_->session();
     upsert_one(*writer, make_row("b", 2, 1.0, true, std::monostate{}));
@@ -390,8 +395,9 @@ TEST_F(MysqlDriverTest, ReadOnlySessionRejectsWrites) {
     upsert_one(*session_, make_row("a", 1, 1.0, true, std::monostate{}));
     session_.reset();
     auto read_only = database_->session(/*read_only=*/true);
-    EXPECT_EQ(code_of([&] { upsert_one(*read_only, make_row("b", 2, 1.0, true, std::monostate{})); }),
-              DZ_EC_PERMISSION_DENIED);
+    EXPECT_EQ(
+        code_of([&] { upsert_one(*read_only, make_row("b", 2, 1.0, true, std::monostate{})); }),
+        DZ_EC_PERMISSION_DENIED);
     EXPECT_EQ(code_of([&] { (void)read_only->remove(kCollection, db::Filter{}); }),
               DZ_EC_PERMISSION_DENIED);
     EXPECT_EQ(code_of([&] { (void)read_only->begin_transaction(); }), DZ_EC_PERMISSION_DENIED);
@@ -417,9 +423,10 @@ TEST_F(MysqlDriverTest, StringColumnBindsNumbersAsText) {
 
 TEST_F(MysqlDriverTest, NonIntegerStringForIntColumnIsRejected) {
     open_migrated();
-    EXPECT_EQ(
-        code_of([&] { (void)session_->find(kCollection, db::filters::eq("seq", std::string("abc"))); }),
-        DZ_EC_INVALID_PARAM);
+    EXPECT_EQ(code_of([&] {
+                  (void)session_->find(kCollection, db::filters::eq("seq", std::string("abc")));
+              }),
+              DZ_EC_INVALID_PARAM);
     EXPECT_EQ(code_of([&] {
                   (void)session_->find(kCollection, db::filters::eq("seq", std::string("1.5")));
               }),
@@ -443,10 +450,12 @@ TEST_F(MysqlDriverTest, NonFiniteDoubleIsRejected) {
     open_migrated();
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const double inf = std::numeric_limits<double>::infinity();
-    EXPECT_EQ(code_of([&] { upsert_one(*session_, make_row("a", 1, nan, true, std::monostate{})); }),
-              DZ_EC_INVALID_PARAM);
-    EXPECT_EQ(code_of([&] { upsert_one(*session_, make_row("b", 2, inf, true, std::monostate{})); }),
-              DZ_EC_INVALID_PARAM);
+    EXPECT_EQ(
+        code_of([&] { upsert_one(*session_, make_row("a", 1, nan, true, std::monostate{})); }),
+        DZ_EC_INVALID_PARAM);
+    EXPECT_EQ(
+        code_of([&] { upsert_one(*session_, make_row("b", 2, inf, true, std::monostate{})); }),
+        DZ_EC_INVALID_PARAM);
     // 归一化前统一检查：非有限 double 绑到 String 列同样拒绝
     EXPECT_EQ(code_of([&] { upsert_one(*session_, make_row("c", 3, 1.0, true, nan)); }),
               DZ_EC_INVALID_PARAM);

@@ -98,7 +98,8 @@ struct CtpMdConfigData {
 // ===== 纯函数声明 =====
 
 /// SET payload 级校验：检查 op/params/null/必填/目标存在性（契约 md-config 校验失败场景）
-std::optional<std::string> validate_ctp_op_req(const CtpMdConfigOpReq& req, const CtpMdConfigData& cfg);
+std::optional<std::string> validate_ctp_op_req(const CtpMdConfigOpReq& req,
+                                               const CtpMdConfigData& cfg);
 
 /// op 应用：switch(req.op) 修改 cfg，无副作用无 I/O
 /// 调用前应已通过 validate_ctp_op_req 校验

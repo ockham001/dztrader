@@ -7,8 +7,7 @@ using namespace dztrader::ctp;
 namespace {
 
 /// 辅助: 构造一个最小可用的 DzOrderReq
-DzOrderReq make_req(double price, DzVolume volume,
-                    DzDirection dir = DZ_DIRECTION_LONG) {
+DzOrderReq make_req(double price, DzVolume volume, DzDirection dir = DZ_DIRECTION_LONG) {
     DzOrderReq r{};
     r.price = price;
     r.volume = volume;

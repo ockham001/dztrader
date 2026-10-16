@@ -172,21 +172,24 @@ TEST_F(TdAccountOpsTest, AllFramesAreJsonExtWithoutInstanceId) {
     DzPasswordUpdateRsp password_rsp;
     password_rsp.account_id = "a4";
 
-    ASSERT_TRUE(dztrader::platform::write_ext_json(*writer_, DZ_FRAME_TD_TRANSFER_REQ, transfer_req));
-    ASSERT_TRUE(dztrader::platform::write_ext_json(*writer_, DZ_FRAME_TD_TRANSFER_RSP, transfer_rsp));
-    ASSERT_TRUE(dztrader::platform::write_ext_json(*writer_, DZ_FRAME_TD_TRANSFER_RTN, transfer_rsp));
-    ASSERT_TRUE(dztrader::platform::write_ext_json(*writer_, DZ_FRAME_TD_PASSWORD_UPDATE_REQ, password_req));
-    ASSERT_TRUE(dztrader::platform::write_ext_json(*writer_, DZ_FRAME_TD_PASSWORD_UPDATE_RSP, password_rsp));
+    ASSERT_TRUE(
+        dztrader::platform::write_ext_json(*writer_, DZ_FRAME_TD_TRANSFER_REQ, transfer_req));
+    ASSERT_TRUE(
+        dztrader::platform::write_ext_json(*writer_, DZ_FRAME_TD_TRANSFER_RSP, transfer_rsp));
+    ASSERT_TRUE(
+        dztrader::platform::write_ext_json(*writer_, DZ_FRAME_TD_TRANSFER_RTN, transfer_rsp));
+    ASSERT_TRUE(dztrader::platform::write_ext_json(*writer_, DZ_FRAME_TD_PASSWORD_UPDATE_REQ,
+                                                   password_req));
+    ASSERT_TRUE(dztrader::platform::write_ext_json(*writer_, DZ_FRAME_TD_PASSWORD_UPDATE_RSP,
+                                                   password_rsp));
 
     struct Expect {
         DzFrameType type;
         const char* account_id;
     };
     const Expect expects[] = {
-        {DZ_FRAME_TD_TRANSFER_REQ, "a1"},
-        {DZ_FRAME_TD_TRANSFER_RSP, "a2"},
-        {DZ_FRAME_TD_TRANSFER_RTN, "a2"},
-        {DZ_FRAME_TD_PASSWORD_UPDATE_REQ, "a3"},
+        {DZ_FRAME_TD_TRANSFER_REQ, "a1"},        {DZ_FRAME_TD_TRANSFER_RSP, "a2"},
+        {DZ_FRAME_TD_TRANSFER_RTN, "a2"},        {DZ_FRAME_TD_PASSWORD_UPDATE_REQ, "a3"},
         {DZ_FRAME_TD_PASSWORD_UPDATE_RSP, "a4"},
     };
     for (const auto& e : expects) {
@@ -212,9 +215,8 @@ TEST_F(TdAccountOpsTest, WithDefaultDecodeIsLenient) {
     const auto null_payload = nlohmann::json::parse("null").get<DzTransferReq>();
     EXPECT_EQ(null_payload.account_id, "");
 
-    EXPECT_THROW(
-        nlohmann::json::parse(R"({"account_id": null})").get<DzTransferReq>(),
-        nlohmann::json::type_error);
+    EXPECT_THROW(nlohmann::json::parse(R"({"account_id": null})").get<DzTransferReq>(),
+                 nlohmann::json::type_error);
 }
 
 }  // namespace

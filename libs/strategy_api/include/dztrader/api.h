@@ -283,9 +283,7 @@ DZ_API bool dz_subscribe(DzContext* ctx,
  * @param count        合约数量
  * @return true 请求已写入事件通道且 SDK 期望集合已同步；false 失败（调 dz_errcode() 获取错误码）
  */
-DZ_API bool dz_unsubscribe(DzContext* ctx,
-                           const char* const instruments[],
-                           uint32_t count);
+DZ_API bool dz_unsubscribe(DzContext* ctx, const char* const instruments[], uint32_t count);
 
 /**
  * @brief 设置策略逻辑持仓

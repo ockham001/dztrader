@@ -22,13 +22,12 @@ public:
     LastError() = delete;
 
     /** @brief 设置错误码 + 上下文（格式化失败时降级为原始 fmt，超长截断） */
-    template <typename... Args> static void set(DzErrorCode code, std::string_view fmt, const Args&... args) noexcept
-    {
+    template <typename... Args>
+    static void set(DzErrorCode code, std::string_view fmt, const Args&... args) noexcept {
         code_ = code;
         if constexpr (sizeof...(Args) == 0) {
             store_msg(fmt);
-        }
-        else {
+        } else {
             try_format(fmt, args...);
         }
     }
@@ -43,16 +42,14 @@ public:
     [[nodiscard]] static const char* msg() noexcept { return msg_.data(); }
 
     /** @brief 清除错误状态 */
-    static void clear() noexcept
-    {
+    static void clear() noexcept {
         code_ = DZ_EC_OK;
         msg_[0] = '\0';
     }
 
 private:
     /** @brief 写入 msg_ 缓冲区，超长截断 */
-    static void store_msg(std::string_view src) noexcept
-    {
+    static void store_msg(std::string_view src) noexcept {
         const auto copy_len = src.size() < msg_.size() - 1 ? src.size() : msg_.size() - 1;
         if (copy_len > 0) {
             std::memcpy(msg_.data(), src.data(), copy_len);
@@ -61,12 +58,11 @@ private:
     }
 
     /** @brief 格式化并写入缓冲区，失败时降级为原始 fmt */
-    template <typename... Args> static void try_format(std::string_view fmt, const Args&... args) noexcept
-    {
+    template <typename... Args>
+    static void try_format(std::string_view fmt, const Args&... args) noexcept {
         try {
             store_msg(std::vformat(fmt, std::make_format_args(args...)));
-        }
-        catch (...) {
+        } catch (...) {
             store_msg(fmt);
         }
     }

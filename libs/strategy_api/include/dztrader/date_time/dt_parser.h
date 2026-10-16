@@ -87,8 +87,7 @@ struct DateTimeParser {
 
     // ---------- 辅助函数 ----------
     // 检查并消耗一个指定字符
-    static void match_char(const char*& s, const char* s_end, char expected,
-                           const char* str_base) {
+    static void match_char(const char*& s, const char* s_end, char expected, const char* str_base) {
         if (s == s_end || *s != expected) {
             throw std::invalid_argument(
                 std::format("expected char | char={} pos={}", expected, s - str_base));
@@ -98,19 +97,20 @@ struct DateTimeParser {
 
     // 使用解析器 P 从当前位置解析一个字段，并移动指针
     template <typename Parser>
-    static typename Parser::ResultType parse_field(const char*& s, const char* s_end,
+    static typename Parser::ResultType parse_field(const char*& s,
+                                                   const char* s_end,
                                                    const char* str_base) {
         if (static_cast<size_t>(s_end - s) < Parser::LENGTH_REQUIRED) {
-            throw std::invalid_argument(std::format(
-                "unexpected end of string while parsing field | required={} pos={}",
-                Parser::LENGTH_REQUIRED, s - str_base));
+            throw std::invalid_argument(
+                std::format("unexpected end of string while parsing field | required={} pos={}",
+                            Parser::LENGTH_REQUIRED, s - str_base));
         }
         // 校验所有字符均为数字，防止 "20ab" 等输入静默产生垃圾值
         for (size_t i = 0; i < Parser::LENGTH_REQUIRED; ++i) {
             if (std::isdigit(static_cast<unsigned char>(s[i])) == 0) {
-                throw std::invalid_argument(std::format(
-                    "non-digit character in numeric field | char={} pos={}",
-                    s[i], (s - str_base) + static_cast<ptrdiff_t>(i)));
+                throw std::invalid_argument(
+                    std::format("non-digit character in numeric field | char={} pos={}", s[i],
+                                (s - str_base) + static_cast<ptrdiff_t>(i)));
             }
         }
         auto value = Parser::parse(s);
@@ -120,19 +120,16 @@ struct DateTimeParser {
 
     static void check_hh_mm_ss(const ParsedFields& fields) {
         if (fields.hour && fields.hour > std::chrono::hours{23}) {
-            throw std::out_of_range(
-                std::format("hour value out of range | hour={} range=0-23",
-                            static_cast<int32_t>(fields.hour->count())));
+            throw std::out_of_range(std::format("hour value out of range | hour={} range=0-23",
+                                                static_cast<int32_t>(fields.hour->count())));
         }
         if (fields.minute && fields.minute > std::chrono::minutes{59}) {
-            throw std::out_of_range(
-                std::format("minute value out of range | minute={} range=0-59",
-                            static_cast<int32_t>(fields.minute->count())));
+            throw std::out_of_range(std::format("minute value out of range | minute={} range=0-59",
+                                                static_cast<int32_t>(fields.minute->count())));
         }
         if (fields.second && fields.second > std::chrono::seconds{59}) {
-            throw std::out_of_range(
-                std::format("second value out of range | second={} range=0-59",
-                            static_cast<int32_t>(fields.second->count())));
+            throw std::out_of_range(std::format("second value out of range | second={} range=0-59",
+                                                static_cast<int32_t>(fields.second->count())));
         }
         if (fields.second && fields.subsecond) {
             if (fields.subsecond.value() > std::chrono::nanoseconds{999'999'999}) {
@@ -186,7 +183,8 @@ struct DateTimeParser {
                             int64_t ns = 0;
                             int32_t digits = 0;
                             // 读取所有连续数字，但只取前9位
-                            while (s != s_end && (std::isdigit(static_cast<unsigned char>(*s)) != 0)) {
+                            while (s != s_end &&
+                                   (std::isdigit(static_cast<unsigned char>(*s)) != 0)) {
                                 if (digits < 9) {
                                     ns = (ns * 10) + (*s - '0');
                                 }
@@ -195,9 +193,9 @@ struct DateTimeParser {
                             }
                             // 小数点后必须至少有一位数字
                             if (digits == 0) {
-                                throw std::invalid_argument(std::format(
-                                    "expected digits after decimal point | pos={}",
-                                    s - str.data()));
+                                throw std::invalid_argument(
+                                    std::format("expected digits after decimal point | pos={}",
+                                                s - str.data()));
                             }
                             // 如果实际位数少于9，补零到9位
                             for (int i = digits; i < 9; ++i) {
@@ -242,7 +240,8 @@ struct DateTimeParser {
                             ++s;
                             int64_t ns = 0;
                             int32_t digits = 0;
-                            while (s != s_end && (std::isdigit(static_cast<unsigned char>(*s)) != 0)) {
+                            while (s != s_end &&
+                                   (std::isdigit(static_cast<unsigned char>(*s)) != 0)) {
                                 if (digits < 9) {
                                     ns = (ns * 10) + (*s - '0');
                                 }
@@ -251,9 +250,9 @@ struct DateTimeParser {
                             }
                             // 小数点后必须至少有一位数字
                             if (digits == 0) {
-                                throw std::invalid_argument(std::format(
-                                    "expected digits after decimal point | pos={}",
-                                    s - str.data()));
+                                throw std::invalid_argument(
+                                    std::format("expected digits after decimal point | pos={}",
+                                                s - str.data()));
                             }
                             for (int i = digits; i < 9; ++i) {
                                 ns *= 10;

@@ -17,7 +17,8 @@ TEST(WsLogTailTest, LogServiceReadsAppendedContent) {
     // Write initial content
     {
         std::ofstream ofs(tmp / "test.log");
-        ofs << "2026-07-13T14:23:45.000000000+08:00 info test [func=m file=f.cpp:1 pid=1 tid=2] line1\n";
+        ofs << "2026-07-13T14:23:45.000000000+08:00 info test [func=m file=f.cpp:1 pid=1 tid=2] "
+               "line1\n";
     }
 
     auto c1 = svc.read_content("test.log", 0, 500, "", "", "", "");
@@ -26,7 +27,8 @@ TEST(WsLogTailTest, LogServiceReadsAppendedContent) {
     // Append a line
     {
         std::ofstream ofs(tmp / "test.log", std::ios::app);
-        ofs << "2026-07-13T14:23:46.000000000+08:00 warning test [func=m file=f.cpp:2 pid=1 tid=3] line2\n";
+        ofs << "2026-07-13T14:23:46.000000000+08:00 warning test [func=m file=f.cpp:2 pid=1 tid=3] "
+               "line2\n";
     }
 
     // Read again — should see 2 lines
@@ -45,9 +47,12 @@ TEST(WsLogTailTest, LogServiceReadsFromOffset) {
 
     {
         std::ofstream ofs(tmp / "test.log");
-        ofs << "2026-07-13T14:23:45.000000000+08:00 info test [func=m file=f.cpp:1 pid=1 tid=2] line1\n";
-        ofs << "2026-07-13T14:23:46.000000000+08:00 info test [func=m file=f.cpp:2 pid=1 tid=3] line2\n";
-        ofs << "2026-07-13T14:23:47.000000000+08:00 info test [func=m file=f.cpp:3 pid=1 tid=4] line3\n";
+        ofs << "2026-07-13T14:23:45.000000000+08:00 info test [func=m file=f.cpp:1 pid=1 tid=2] "
+               "line1\n";
+        ofs << "2026-07-13T14:23:46.000000000+08:00 info test [func=m file=f.cpp:2 pid=1 tid=3] "
+               "line2\n";
+        ofs << "2026-07-13T14:23:47.000000000+08:00 info test [func=m file=f.cpp:3 pid=1 tid=4] "
+               "line3\n";
     }
 
     // Read from offset 2 (skip first 2 lines)

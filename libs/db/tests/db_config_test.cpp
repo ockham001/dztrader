@@ -99,9 +99,8 @@ TEST_F(DbConfigTest, DefaultsGenerateConfigFileIdempotently) {
 
 // 文件段覆盖内置默认; options 标量 (字符串/数字) 统一转字符串。
 TEST_F(DbConfigTest, FileSectionOverridesBuiltinDefault) {
-    write_file(config_file_,
-               R"({"td":{"backend":"sqlite","options":{"path":"/tmp/from_file.db",)"
-               R"("busy_timeout_ms":"1234","cache_size_kb":2048}}})");
+    write_file(config_file_, R"({"td":{"backend":"sqlite","options":{"path":"/tmp/from_file.db",)"
+                             R"("busy_timeout_ms":"1234","cache_size_kb":2048}}})");
     const Config config = dztrader::db::resolve_config("td");
     EXPECT_EQ("sqlite", config.backend);
     EXPECT_EQ("/tmp/from_file.db", option(config, "path"));
@@ -111,9 +110,8 @@ TEST_F(DbConfigTest, FileSectionOverridesBuiltinDefault) {
 
 // 环境变量覆盖文件段 (DZTRADER_DB_OPT_<KEY> -> options[<key 小写>])。
 TEST_F(DbConfigTest, EnvOptionsOverrideFileSection) {
-    write_file(config_file_,
-               R"({"td":{"backend":"sqlite","options":{"path":"/tmp/from_file.db",)"
-               R"("busy_timeout_ms":"1234"}}})");
+    write_file(config_file_, R"({"td":{"backend":"sqlite","options":{"path":"/tmp/from_file.db",)"
+                             R"("busy_timeout_ms":"1234"}}})");
     dztrader::env::set("DZTRADER_DB_OPT_PATH", "/tmp/from_env.db");
     dztrader::env::set("DZTRADER_DB_OPT_BUSY_TIMEOUT_MS", "2222");
     const Config config = dztrader::db::resolve_config("td");
@@ -123,8 +121,7 @@ TEST_F(DbConfigTest, EnvOptionsOverrideFileSection) {
 
 // 环境变量切换 backend -> 采用该后端的内置默认; mysql 不注入 sqlite 的默认 path。
 TEST_F(DbConfigTest, EnvBackendSwitchesToMysqlDefaults) {
-    write_file(config_file_,
-               R"({"td":{"backend":"sqlite","options":{"busy_timeout_ms":"1234"}}})");
+    write_file(config_file_, R"({"td":{"backend":"sqlite","options":{"busy_timeout_ms":"1234"}}})");
     dztrader::env::set("DZTRADER_DB_BACKEND", "mysql");
     const Config config = dztrader::db::resolve_config("td");
     EXPECT_EQ("mysql", config.backend);
@@ -173,8 +170,7 @@ TEST_F(DbConfigTest, NonObjectRootThrows) {
 
 // domain 段缺失: 生成该段默认, 保留文件其他段; 已有段不被重写。
 TEST_F(DbConfigTest, MissingSectionGeneratesAndKeepsOtherSections) {
-    write_file(config_file_,
-               R"({"web":{"backend":"sqlite","options":{"path":"/tmp/web.db"}}})");
+    write_file(config_file_, R"({"web":{"backend":"sqlite","options":{"path":"/tmp/web.db"}}})");
     const Config td = dztrader::db::resolve_config("td");
     EXPECT_EQ("sqlite", td.backend);
     EXPECT_EQ(dztrader::paths::td_db().string(), option(td, "path"));

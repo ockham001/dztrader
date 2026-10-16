@@ -3,12 +3,12 @@
 
 namespace {
 
-using dztrader::instrument::volume_step_of;
-using dztrader::instrument::to_native_volume;
 using dztrader::instrument::from_native_volume;
+using dztrader::instrument::to_native_volume;
+using dztrader::instrument::volume_step_of;
 
 TEST(InstrumentUtilTest, StepSentinel) {
-    EXPECT_DOUBLE_EQ(volume_step_of(0.0), 1.0);     // volume_step = 0 -> 视为 1
+    EXPECT_DOUBLE_EQ(volume_step_of(0.0), 1.0);  // volume_step = 0 -> 视为 1
     EXPECT_DOUBLE_EQ(volume_step_of(0.001), 0.001);
 }
 

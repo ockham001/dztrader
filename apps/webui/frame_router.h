@@ -16,10 +16,12 @@ public:
     using Poster = std::function<void(std::function<void()>)>;
     using RawHandler = std::function<void(const shm::FrameView&)>;
 
-    explicit FrameRouter(Poster poster = default_poster()) : poster_(std::move(poster)) {}
+    explicit FrameRouter(Poster poster = default_poster())
+        : poster_(std::move(poster)) {}
 
     template <typename Payload>
-    void register_json(DzFrameType type, bool has_instance_id,
+    void register_json(DzFrameType type,
+                       bool has_instance_id,
                        std::function<void(const std::string& source, const Payload&)> h) {
         handlers_[type] = [this, has_instance_id, h = std::move(h)](const shm::FrameView& view) {
             // 第一层（监听线程）：decode，失败 WARN 丢帧
@@ -33,8 +35,7 @@ public:
                         try {
                             h(source, payload);
                         } catch (const std::exception& e) {
-                            SPDLOG_ERROR("frame handler failed | type={} error={}",
-                                         type, e.what());
+                            SPDLOG_ERROR("frame handler failed | type={} error={}", type, e.what());
                         }
                     });
                 } else {
@@ -48,15 +49,13 @@ public:
                     });
                 }
             } catch (const std::exception& e) {
-                SPDLOG_WARN("decode frame failed | type={} error={}",
-                            static_cast<int>(view.type()), e.what());
+                SPDLOG_WARN("decode frame failed | type={} error={}", static_cast<int>(view.type()),
+                            e.what());
             }
         };
     }
 
-    void register_raw(DzFrameType type, RawHandler h) {
-        handlers_[type] = std::move(h);
-    }
+    void register_raw(DzFrameType type, RawHandler h) { handlers_[type] = std::move(h); }
 
     /// 暴露 Poster（register_raw handler 内部投递到 IO 线程用）。
     /// register_json 内部 decode 后经同一 poster 投递；register_raw handler 在监听线程

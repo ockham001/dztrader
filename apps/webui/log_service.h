@@ -10,31 +10,31 @@
 namespace dztrader::webui {
 
 struct LogFileInfo {
-    std::string name;     // e.g. "master_2026-07-13.log"
-    std::string logger;   // e.g. "dztraderd" (parsed from filename)
-    uintmax_t size;       // bytes
-    std::string mtime;    // ISO 8601 last-modified time
-    std::string path;     // full path
+    std::string name;    // e.g. "master_2026-07-13.log"
+    std::string logger;  // e.g. "dztraderd" (parsed from filename)
+    uintmax_t size;      // bytes
+    std::string mtime;   // ISO 8601 last-modified time
+    std::string path;    // full path
 };
 
 struct LogLine {
-    int n;                // 1-based line number
-    std::string ts;       // timestamp (raw from log)
-    std::string level;    // info/warning/error/critical/...（spdlog 默认小写显示名）
-    std::string logger;   // logger name
-    std::string func;     // function name
-    std::string file;     // source file
-    int line_no;          // source line number
+    int n;               // 1-based line number
+    std::string ts;      // timestamp (raw from log)
+    std::string level;   // info/warning/error/critical/...（spdlog 默认小写显示名）
+    std::string logger;  // logger name
+    std::string func;    // function name
+    std::string file;    // source file
+    int line_no;         // source line number
     std::string pid;
     std::string tid;
-    std::string msg;      // message content
-    std::string raw;      // raw line text
-    bool parsed;          // false if regex didn't match (strategy logs)
+    std::string msg;  // message content
+    std::string raw;  // raw line text
+    bool parsed;      // false if regex didn't match (strategy logs)
 };
 
 struct LogContent {
     std::vector<LogLine> lines;
-    int total;            // estimated total lines in file
+    int total;  // estimated total lines in file
 };
 
 class LogService {
@@ -53,18 +53,21 @@ public:
     /// Sorted by mtime descending. Pagination via limit/offset.
     std::vector<LogFileInfo> list_files(const std::string& logger_filter,
                                         const std::string& date_filter,
-                                        int limit, int offset);
+                                        int limit,
+                                        int offset);
 
     /// Read file content with optional filtering.
     /// @param filename  just the filename (not full path), e.g. "master.log"
     /// @param offset    0-based line offset (after filtering)
     /// @param limit     max lines to return
-    /// @param level_filter  lowercase spdlog display level name (info/warning/error/...), empty = all
+    /// @param level_filter  lowercase spdlog display level name (info/warning/error/...), empty =
+    /// all
     /// @param keyword   substring match on msg, empty = all
     /// @param from_ts   ISO timestamp lower bound (inclusive), empty = no bound
     /// @param to_ts     ISO timestamp upper bound (inclusive), empty = no bound
     LogContent read_content(const std::string& filename,
-                            int offset, int limit,
+                            int offset,
+                            int limit,
                             const std::string& level_filter,
                             const std::string& keyword,
                             const std::string& from_ts,
@@ -100,7 +103,7 @@ public:
     };
 
     struct TimelineBucket {
-        std::string ts;               // bucket timestamp (truncated to bucket precision)
+        std::string ts;                     // bucket timestamp (truncated to bucket precision)
         std::map<std::string, int> counts;  // level → count
     };
 
@@ -122,7 +125,8 @@ public:
     std::vector<TimelineBucket> get_timeline(const std::string& filename,
                                              const std::string& bucket);
 
-    /// Extract logger name from filename: "dztraderd.log" → "dztraderd", "dztraderd_2026-07-13.log" → "dztraderd"
+    /// Extract logger name from filename: "dztraderd.log" → "dztraderd", "dztraderd_2026-07-13.log"
+    /// → "dztraderd"
     static std::string extract_logger(const std::string& filename);
 
 private:
@@ -136,7 +140,8 @@ private:
 
     /// Seek-optimized read of last N lines from a large file.
     LogContent read_from_end_seek(const std::filesystem::path& filepath,
-                                  std::uintmax_t file_size, int limit);
+                                  std::uintmax_t file_size,
+                                  int limit);
 };
 
 }  // namespace dztrader::webui

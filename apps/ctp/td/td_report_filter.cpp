@@ -5,7 +5,8 @@
 
 namespace dztrader::ctp {
 
-ReportFilter::ReportFilter(std::string account_id) : account_id_(std::move(account_id)) {}
+ReportFilter::ReportFilter(std::string account_id)
+    : account_id_(std::move(account_id)) {}
 
 ReportFilter ReportFilter::load(const std::vector<OrderRecord>& orders,
                                 const std::vector<TradeRecord>& trades) {
@@ -24,8 +25,7 @@ bool ReportFilter::same_order_fields(const OrderRecord& a, const OrderRecord& b)
            a.volume_canceled == b.volume_canceled && a.base.status == b.base.status;
 }
 
-ReportFilter::Verdict ReportFilter::check_order(const OrderRecord& rec,
-                                                bool* outdated_warn) const {
+ReportFilter::Verdict ReportFilter::check_order(const OrderRecord& rec, bool* outdated_warn) const {
     if (outdated_warn) {
         *outdated_warn = false;
     }

@@ -41,9 +41,8 @@ std::string hash_password(const std::string& password) {
     salt_hex[SALT_LEN * 2] = '\0';
 
     unsigned char hash[HASH_LEN];
-    if (PKCS5_PBKDF2_HMAC(password.c_str(), static_cast<int>(password.size()),
-                          salt, SALT_LEN, PBKDF2_ITERATIONS,
-                          EVP_sha256(), HASH_LEN, hash) != 1) {
+    if (PKCS5_PBKDF2_HMAC(password.c_str(), static_cast<int>(password.size()), salt, SALT_LEN,
+                          PBKDF2_ITERATIONS, EVP_sha256(), HASH_LEN, hash) != 1) {
         throw std::runtime_error("PKCS5_PBKDF2_HMAC failed");
     }
     char hash_hex[(HASH_LEN * 2) + 1];
@@ -52,14 +51,13 @@ std::string hash_password(const std::string& password) {
     }
     hash_hex[HASH_LEN * 2] = '\0';
 
-    return std::string(PREFIX) + std::to_string(PBKDF2_ITERATIONS) + "$" +
-           salt_hex + "$" + hash_hex;
+    return std::string(PREFIX) + std::to_string(PBKDF2_ITERATIONS) + "$" + salt_hex + "$" +
+           hash_hex;
 }
 
 bool verify_password(const std::string& password, const std::string& hash) {
     // Format: pbkdf2_sha256$iterations$salt_hex$hash_hex
-    if (hash.size() < PREFIX_LEN ||
-        hash.compare(0, PREFIX_LEN, PREFIX) != 0) {
+    if (hash.size() < PREFIX_LEN || hash.compare(0, PREFIX_LEN, PREFIX) != 0) {
         return false;  // unsupported format
     }
 
@@ -97,9 +95,8 @@ bool verify_password(const std::string& password, const std::string& hash) {
     }
 
     unsigned char computed[HASH_LEN];
-    if (PKCS5_PBKDF2_HMAC(password.c_str(), static_cast<int>(password.size()),
-                          salt, SALT_LEN, iterations,
-                          EVP_sha256(), HASH_LEN, computed) != 1) {
+    if (PKCS5_PBKDF2_HMAC(password.c_str(), static_cast<int>(password.size()), salt, SALT_LEN,
+                          iterations, EVP_sha256(), HASH_LEN, computed) != 1) {
         return false;
     }
 
@@ -133,8 +130,8 @@ std::string col_text(sqlite3_stmt* stmt, int col) {
 // Free functions declared in repository.h
 // ---------------------------------------------------------------------------
 
-void dz_prepare_v2(sqlite3* db, const char* sql, int n_byte,
-                   sqlite3_stmt** stmt, const char** tail) {
+void dz_prepare_v2(
+    sqlite3* db, const char* sql, int n_byte, sqlite3_stmt** stmt, const char** tail) {
     const int rc = sqlite3_prepare_v2(db, sql, n_byte, stmt, tail);
     if (rc != SQLITE_OK) {
         const std::string err = sqlite3_errmsg(db);
@@ -188,9 +185,10 @@ Repository::~Repository() {
 std::optional<User> Repository::get_user_by_id(int64_t id) {
     std::scoped_lock lk(mutex_);
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, username, display_name, email, role, status, "
-                      "locked_until, failed_login_count, last_login_at, last_login_ip, "
-                      "created_at, updated_at, default_password_acknowledged FROM users WHERE id = ?";
+    const char* sql =
+        "SELECT id, username, display_name, email, role, status, "
+        "locked_until, failed_login_count, last_login_at, last_login_ip, "
+        "created_at, updated_at, default_password_acknowledged FROM users WHERE id = ?";
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_int64(stmt, 1, id);
 
@@ -219,9 +217,10 @@ std::optional<User> Repository::get_user_by_id(int64_t id) {
 std::optional<User> Repository::get_user_by_username(const std::string& username) {
     std::scoped_lock lk(mutex_);
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, username, display_name, email, role, status, "
-                      "locked_until, failed_login_count, last_login_at, last_login_ip, "
-                      "created_at, updated_at, default_password_acknowledged FROM users WHERE username = ?";
+    const char* sql =
+        "SELECT id, username, display_name, email, role, status, "
+        "locked_until, failed_login_count, last_login_at, last_login_ip, "
+        "created_at, updated_at, default_password_acknowledged FROM users WHERE username = ?";
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
 
@@ -265,9 +264,10 @@ std::optional<std::string> Repository::get_password_hash(const std::string& user
 }
 
 Repository::UserListResult Repository::list_users(const std::string& search,
-                                                   const std::string& role_filter,
-                                                   const std::string& status_filter,
-                                                   int page, int page_size) {
+                                                  const std::string& role_filter,
+                                                  const std::string& status_filter,
+                                                  int page,
+                                                  int page_size) {
     std::scoped_lock lk(mutex_);
 
     std::string where = " WHERE 1=1";
@@ -351,15 +351,18 @@ Repository::UserListResult Repository::list_users(const std::string& search,
     return result;
 }
 
-int64_t Repository::create_user(const std::string& username, const std::string& display_name,
-                                const std::string& email, const std::string& password,
+int64_t Repository::create_user(const std::string& username,
+                                const std::string& display_name,
+                                const std::string& email,
+                                const std::string& password,
                                 const std::string& role) {
     std::scoped_lock lk(mutex_);
     const std::string password_hash = hash_password(password);
     const std::string now = now_iso();
 
-    const char* sql = "INSERT INTO users (username, display_name, email, password_hash, "
-                      "role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'offline', ?, ?)";
+    const char* sql =
+        "INSERT INTO users (username, display_name, email, password_hash, "
+        "role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'offline', ?, ?)";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
@@ -379,12 +382,15 @@ int64_t Repository::create_user(const std::string& username, const std::string& 
     return id;
 }
 
-bool Repository::update_user(int64_t id, const std::string& display_name,
-                             const std::string& email, const std::string& role) {
+bool Repository::update_user(int64_t id,
+                             const std::string& display_name,
+                             const std::string& email,
+                             const std::string& role) {
     std::scoped_lock lk(mutex_);
     const std::string now = now_iso();
-    const char* sql = "UPDATE users SET display_name = ?, email = ?, role = ?, updated_at = ? "
-                      "WHERE id = ?";
+    const char* sql =
+        "UPDATE users SET display_name = ?, email = ?, role = ?, updated_at = ? "
+        "WHERE id = ?";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, display_name.c_str(), -1, SQLITE_TRANSIENT);
@@ -444,8 +450,8 @@ bool Repository::reset_password(int64_t id, const std::string& new_password) {
     // 改回默认密码时重置确认标志(会再次告警);改为强密码时不重置(避免误报)
     if (changes > 0 && new_password == kDefaultAdminPassword) {
         sqlite3_stmt* reset_stmt = nullptr;
-        dz_prepare_v2(db_, "UPDATE users SET default_password_acknowledged = 0 WHERE id = ?",
-                      -1, &reset_stmt, nullptr);
+        dz_prepare_v2(db_, "UPDATE users SET default_password_acknowledged = 0 WHERE id = ?", -1,
+                      &reset_stmt, nullptr);
         sqlite3_bind_int64(reset_stmt, 1, id);
         sqlite3_step(reset_stmt);
         sqlite3_finalize(reset_stmt);
@@ -456,8 +462,8 @@ bool Repository::reset_password(int64_t id, const std::string& new_password) {
 bool Repository::ack_default_password(int64_t user_id) {
     std::scoped_lock lk(mutex_);
     sqlite3_stmt* stmt = nullptr;
-    dz_prepare_v2(db_, "UPDATE users SET default_password_acknowledged = 1 WHERE id = ?",
-                  -1, &stmt, nullptr);
+    dz_prepare_v2(db_, "UPDATE users SET default_password_acknowledged = 1 WHERE id = ?", -1, &stmt,
+                  nullptr);
     sqlite3_bind_int64(stmt, 1, user_id);
     sqlite3_step(stmt);
     const int changes = sqlite3_changes(db_);
@@ -467,7 +473,8 @@ bool Repository::ack_default_password(int64_t user_id) {
 
 void Repository::increment_failed_login(const std::string& username) {
     std::scoped_lock lk(mutex_);
-    const char* sql = "UPDATE users SET failed_login_count = failed_login_count + 1 WHERE username = ?";
+    const char* sql =
+        "UPDATE users SET failed_login_count = failed_login_count + 1 WHERE username = ?";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
@@ -488,7 +495,8 @@ void Repository::reset_failed_login(const std::string& username) {
 void Repository::lock_user(int64_t id, int64_t locked_until) {
     std::scoped_lock lk(mutex_);
     const std::string now = now_iso();
-    const char* sql = "UPDATE users SET status = 'locked', locked_until = ?, updated_at = ? WHERE id = ?";
+    const char* sql =
+        "UPDATE users SET status = 'locked', locked_until = ?, updated_at = ? WHERE id = ?";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_int64(stmt, 1, locked_until);
@@ -501,8 +509,9 @@ void Repository::lock_user(int64_t id, int64_t locked_until) {
 void Repository::update_last_login(int64_t id, const std::string& ip) {
     std::scoped_lock lk(mutex_);
     const std::string now = now_iso();
-    const char* sql = "UPDATE users SET last_login_at = ?, last_login_ip = ?, status = 'online', "
-                      "updated_at = ? WHERE id = ?";
+    const char* sql =
+        "UPDATE users SET last_login_at = ?, last_login_ip = ?, status = 'online', "
+        "updated_at = ? WHERE id = ?";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, now.c_str(), -1, SQLITE_TRANSIENT);
@@ -520,8 +529,9 @@ void Repository::update_last_login(int64_t id, const std::string& ip) {
 std::vector<Permission> Repository::get_user_permissions(int64_t user_id) {
     std::scoped_lock lk(mutex_);
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT permission_type, permission_id, granted FROM user_permissions "
-                      "WHERE user_id = ? ORDER BY permission_type, permission_id";
+    const char* sql =
+        "SELECT permission_type, permission_id, granted FROM user_permissions "
+        "WHERE user_id = ? ORDER BY permission_type, permission_id";
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_int64(stmt, 1, user_id);
 
@@ -537,12 +547,16 @@ std::vector<Permission> Repository::get_user_permissions(int64_t user_id) {
     return result;
 }
 
-bool Repository::set_user_permission(int64_t user_id, const std::string& type,
-                                     const std::string& perm_id, bool granted) {
+bool Repository::set_user_permission(int64_t user_id,
+                                     const std::string& type,
+                                     const std::string& perm_id,
+                                     bool granted) {
     std::scoped_lock lk(mutex_);
-    const char* sql = "INSERT INTO user_permissions (user_id, permission_type, permission_id, granted) "
-                      "VALUES (?, ?, ?, ?) "
-                      "ON CONFLICT(user_id, permission_type, permission_id) DO UPDATE SET granted = excluded.granted";
+    const char* sql =
+        "INSERT INTO user_permissions (user_id, permission_type, permission_id, granted) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(user_id, permission_type, permission_id) DO UPDATE SET granted = "
+        "excluded.granted";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_int64(stmt, 1, user_id);
@@ -558,14 +572,17 @@ bool Repository::set_user_permission(int64_t user_id, const std::string& type,
 // Login history
 // ---------------------------------------------------------------------------
 
-void Repository::add_login_history(const std::string& username, const std::string& ip,
-                                   const std::string& device, bool success,
+void Repository::add_login_history(const std::string& username,
+                                   const std::string& ip,
+                                   const std::string& device,
+                                   bool success,
                                    const std::string& user_agent,
                                    const std::string& reason) {
     std::scoped_lock lk(mutex_);
     const std::string now = now_iso();
-    const char* sql = "INSERT INTO login_history (username, ip, device, success, created_at, user_agent, reason) "
-                      "VALUES (?, ?, ?, ?, ?, ?, ?)";
+    const char* sql =
+        "INSERT INTO login_history (username, ip, device, success, created_at, user_agent, reason) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
@@ -591,10 +608,8 @@ void Repository::add_login_history(const std::string& username, const std::strin
     sqlite3_finalize(stmt);
 }
 
-Repository::LoginHistoryResult Repository::get_login_history(int page, int page_size,
-                                                             int days,
-                                                             const std::string& start,
-                                                             const std::string& end) {
+Repository::LoginHistoryResult Repository::get_login_history(
+    int page, int page_size, int days, const std::string& start, const std::string& end) {
     std::scoped_lock lk(mutex_);
 
     // Build the WHERE clause. When explicit start/end ISO timestamps are
@@ -711,8 +726,8 @@ SecurityConfig Repository::get_security_config() {
 bool Repository::set_security_config(const SecurityConfig& config) {
     std::scoped_lock lk(mutex_);
     sqlite3_stmt* stmt = nullptr;
-    dz_prepare_v2(db_, "INSERT OR REPLACE INTO security_config (key, value) VALUES (?, ?)",
-                       -1, &stmt, nullptr);
+    dz_prepare_v2(db_, "INSERT OR REPLACE INTO security_config (key, value) VALUES (?, ?)", -1,
+                  &stmt, nullptr);
 
     auto set_value = [&](const std::string& key, const std::string& value) {
         sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT);
@@ -755,12 +770,14 @@ std::vector<IpEntry> Repository::list_blacklist() {
     return result;
 }
 
-bool Repository::add_to_blacklist(const std::string& ip, const std::string& reason,
+bool Repository::add_to_blacklist(const std::string& ip,
+                                  const std::string& reason,
                                   const std::string& source) {
     std::scoped_lock lk(mutex_);
     const std::string now = now_iso();
-    const char* sql = "INSERT OR IGNORE INTO ip_blacklist (ip, reason, source, created_at) "
-                      "VALUES (?, ?, ?, ?)";
+    const char* sql =
+        "INSERT OR IGNORE INTO ip_blacklist (ip, reason, source, created_at) "
+        "VALUES (?, ?, ?, ?)";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, ip.c_str(), -1, SQLITE_TRANSIENT);
@@ -791,7 +808,8 @@ bool Repository::remove_from_blacklist(int64_t id) {
 std::vector<IpEntry> Repository::list_whitelist() {
     std::scoped_lock lk(mutex_);
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, ip, reason, '' AS source, created_at FROM ip_whitelist ORDER BY id";
+    const char* sql =
+        "SELECT id, ip, reason, '' AS source, created_at FROM ip_whitelist ORDER BY id";
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
 
     std::vector<IpEntry> result;
@@ -810,7 +828,8 @@ std::vector<IpEntry> Repository::list_whitelist() {
 bool Repository::add_to_whitelist(const std::string& ip, const std::string& reason) {
     std::scoped_lock lk(mutex_);
     const std::string now = now_iso();
-    const char* sql = "INSERT OR IGNORE INTO ip_whitelist (ip, reason, created_at) VALUES (?, ?, ?)";
+    const char* sql =
+        "INSERT OR IGNORE INTO ip_whitelist (ip, reason, created_at) VALUES (?, ?, ?)";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, ip.c_str(), -1, SQLITE_TRANSIENT);
@@ -864,8 +883,9 @@ bool Repository::is_ip_whitelisted(const std::string& ip) {
 std::vector<MarketSource> Repository::list_market_sources() {
     std::scoped_lock lk(mutex_);
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, source_type, source_name, display_name, is_added, "
-                      "created_at, updated_at FROM market_sources ORDER BY id";
+    const char* sql =
+        "SELECT id, source_type, source_name, display_name, is_added, "
+        "created_at, updated_at FROM market_sources ORDER BY id";
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
 
     std::vector<MarketSource> result;
@@ -887,8 +907,9 @@ std::vector<MarketSource> Repository::list_market_sources() {
 std::optional<MarketSource> Repository::get_market_source(int64_t id) {
     std::scoped_lock lk(mutex_);
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, source_type, source_name, display_name, is_added, "
-                      "created_at, updated_at FROM market_sources WHERE id = ?";
+    const char* sql =
+        "SELECT id, source_type, source_name, display_name, is_added, "
+        "created_at, updated_at FROM market_sources WHERE id = ?";
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_int64(stmt, 1, id);
 
@@ -912,8 +933,9 @@ std::optional<MarketSource> Repository::find_market_source_by_source_name(
     const std::string& source_name) {
     std::scoped_lock lk(mutex_);
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, source_type, source_name, display_name, is_added, "
-                      "created_at, updated_at FROM market_sources WHERE source_name = ?";
+    const char* sql =
+        "SELECT id, source_type, source_name, display_name, is_added, "
+        "created_at, updated_at FROM market_sources WHERE source_name = ?";
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, source_name.c_str(), -1, SQLITE_TRANSIENT);
 
@@ -941,11 +963,12 @@ int64_t Repository::create_market_source(const std::string& source_type,
     // 幂等创建/复用: source_name 已存在（UNIQUE 冲突，如 remove 后再次添加）时复位 is_added=1
     // 并刷新 updated_at；display_name 保留 DB 现值不覆盖（用户自定义名不因再添加丢失——
     // available 预填进程名，覆盖会静默丢名）
-    const char* sql = "INSERT INTO market_sources (source_type, source_name, display_name, "
-                      "is_added, created_at, updated_at) "
-                      "VALUES (?, ?, ?, 1, ?, ?) "
-                      "ON CONFLICT(source_name) DO UPDATE SET "
-                      "is_added = 1, updated_at = excluded.updated_at";
+    const char* sql =
+        "INSERT INTO market_sources (source_type, source_name, display_name, "
+        "is_added, created_at, updated_at) "
+        "VALUES (?, ?, ?, 1, ?, ?) "
+        "ON CONFLICT(source_name) DO UPDATE SET "
+        "is_added = 1, updated_at = excluded.updated_at";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, source_type.c_str(), -1, SQLITE_TRANSIENT);
@@ -972,8 +995,9 @@ int64_t Repository::create_market_source(const std::string& source_type,
 bool Repository::update_market_source(int64_t id, const std::string& display_name) {
     std::scoped_lock lk(mutex_);
     const std::string now = now_iso();
-    const char* sql = "UPDATE market_sources SET display_name = ?, updated_at = ? "
-                      "WHERE id = ?";
+    const char* sql =
+        "UPDATE market_sources SET display_name = ?, updated_at = ? "
+        "WHERE id = ?";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, display_name.c_str(), -1, SQLITE_TRANSIENT);

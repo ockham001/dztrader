@@ -14,7 +14,8 @@
 namespace dztrader::shm {
 
 PagePool::PagePool(std::shared_ptr<ChannelMeta> meta, bool read_only)
-    : meta_(std::move(meta)), read_only_(read_only) {}
+    : meta_(std::move(meta)),
+      read_only_(read_only) {}
 
 std::optional<Page> PagePool::get_page(uint64_t page_id) noexcept {
     try {
@@ -45,7 +46,8 @@ std::optional<Page> PagePool::get_page(uint64_t page_id) noexcept {
             if (!std::filesystem::exists(file_path)) {
                 std::ofstream ofs(file_path, std::ios::binary);
                 if (!ofs) {
-                    throw Exception(DZ_EC_SHM_CREATE_FAILED, "create page failed: path={}", file_path.string());
+                    throw Exception(DZ_EC_SHM_CREATE_FAILED, "create page failed: path={}",
+                                    file_path.string());
                 }
             }
             if (std::filesystem::file_size(file_path) != meta_->page_size()) {
@@ -53,7 +55,8 @@ std::optional<Page> PagePool::get_page(uint64_t page_id) noexcept {
             }
         }
         // 文件已就绪，meta 锁内构造 mapping（PageImpl 不再持锁）
-        auto impl = std::make_shared<page_internal::PageImpl>(file_path, meta_->page_size(), page_id);
+        auto impl =
+            std::make_shared<page_internal::PageImpl>(file_path, meta_->page_size(), page_id);
         pages_[page_id] = impl;
         return Page(impl);
     } catch (const Exception& e) {
@@ -90,14 +93,16 @@ bool PagePool::prefetch_page(uint64_t page_id) noexcept {
             if (!std::filesystem::exists(file_path)) {
                 std::ofstream ofs(file_path, std::ios::binary);
                 if (!ofs) {
-                    throw Exception(DZ_EC_SHM_CREATE_FAILED, "create page failed: path={}", file_path.string());
+                    throw Exception(DZ_EC_SHM_CREATE_FAILED, "create page failed: path={}",
+                                    file_path.string());
                 }
             }
             if (std::filesystem::file_size(file_path) != meta_->page_size()) {
                 std::filesystem::resize_file(file_path, meta_->page_size());
             }
         }
-        auto impl = std::make_shared<page_internal::PageImpl>(file_path, meta_->page_size(), page_id);
+        auto impl =
+            std::make_shared<page_internal::PageImpl>(file_path, meta_->page_size(), page_id);
         pages_[page_id] = impl;
         return true;
     } catch (const Exception& e) {

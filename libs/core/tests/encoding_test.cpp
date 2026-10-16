@@ -16,9 +16,7 @@ using dztrader::to_utf8_from_system;
 
 // ── to_utf8_from_system ──
 
-TEST(ToUtf8FromSystem, EmptyStringReturnsEmpty) {
-    EXPECT_EQ(to_utf8_from_system(""), "");
-}
+TEST(ToUtf8FromSystem, EmptyStringReturnsEmpty) { EXPECT_EQ(to_utf8_from_system(""), ""); }
 
 TEST(ToUtf8FromSystem, AsciiUnchanged) {
     EXPECT_EQ(to_utf8_from_system("hello world"), "hello world");
@@ -48,8 +46,14 @@ TEST(ToUtf8FromSystem, ConvertsMixedAsciiGbkOnChineseWindows) {
         GTEST_SKIP() << "skipped: CP_ACP is not 936 (GBK)";
     }
     // "a中b" = 'a' + GBK("中") + 'b'
-    const std::string mixed = std::string("a\xD6\xD0""b", 4);
-    const std::string expected = std::string("a\xE4\xB8\xAD""b", 5);
+    const std::string mixed = std::string(
+        "a\xD6\xD0"
+        "b",
+        4);
+    const std::string expected = std::string(
+        "a\xE4\xB8\xAD"
+        "b",
+        5);
     EXPECT_EQ(to_utf8_from_system(mixed), expected);
 }
 #else
@@ -62,9 +66,7 @@ TEST(ToUtf8FromSystem, ReturnsOriginalOnLinux) {
 
 // ── to_utf8_from_gbk ──
 
-TEST(ToUtf8FromGbk, EmptyStringReturnsEmpty) {
-    EXPECT_EQ(to_utf8_from_gbk(""), "");
-}
+TEST(ToUtf8FromGbk, EmptyStringReturnsEmpty) { EXPECT_EQ(to_utf8_from_gbk(""), ""); }
 
 TEST(ToUtf8FromGbk, AsciiUnchanged) {
     // ASCII 与 GBK 兼容, 不变
@@ -89,17 +91,29 @@ TEST(ToUtf8FromGbk, ConvertsGbkChineseToUtf8) {
 
 TEST(ToUtf8FromGbk, ConvertsMixedAsciiGbk) {
     // "a中b" = 'a' + GBK("中") + 'b'
-    const std::string mixed = std::string("a\xD6\xD0""b", 4);
-    const std::string expected = std::string("a\xE4\xB8\xAD""b", 5);
+    const std::string mixed = std::string(
+        "a\xD6\xD0"
+        "b",
+        4);
+    const std::string expected = std::string(
+        "a\xE4\xB8\xAD"
+        "b",
+        5);
     EXPECT_EQ(to_utf8_from_gbk(mixed), expected);
 }
 
 TEST(ToUtf8FromGbk, ConvertsMultipleChineseChars) {
     // "你好CTP" 全部字符
     // GBK: 你=C4 E3, 好=BAC3, C=T P=P
-    const std::string gbk = std::string("\xC4\xE3\xBA\xC3""CTP", 6);
+    const std::string gbk = std::string(
+        "\xC4\xE3\xBA\xC3"
+        "CTP",
+        6);
     // UTF-8: 你=E4 BD A0, 好=E5 A5 BD, C=T P=P
-    const std::string expected = std::string("\xE4\xBD\xA0\xE5\xA5\xBD""CTP", 8);
+    const std::string expected = std::string(
+        "\xE4\xBD\xA0\xE5\xA5\xBD"
+        "CTP",
+        8);
     EXPECT_EQ(to_utf8_from_gbk(gbk), expected);
 }
 

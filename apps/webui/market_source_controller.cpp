@@ -69,8 +69,9 @@ Json MarketSourceCtrl::market_source_detail(const MarketSource& s) {
 // ---------------------------------------------------------------------------
 // POST /api/market-sources - create (admin)
 // ---------------------------------------------------------------------------
-void MarketSourceCtrl::create(const drogon::HttpRequestPtr& req,
-                              std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+void MarketSourceCtrl::create(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -98,9 +99,10 @@ void MarketSourceCtrl::create(const drogon::HttpRequestPtr& req,
 // ---------------------------------------------------------------------------
 // PUT /api/market-sources/{id} - update (admin)
 // ---------------------------------------------------------------------------
-void MarketSourceCtrl::update(const drogon::HttpRequestPtr& req,
-                              std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
-                              int64_t id) {
+void MarketSourceCtrl::update(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
+    int64_t id) {
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -134,9 +136,10 @@ void MarketSourceCtrl::update(const drogon::HttpRequestPtr& req,
 //       master 持久化移除 dztraderd.Json [gateways.<name>] 段, 下次启动不再拉起
 // 保留 DB 主表记录 (market_sources 行); 用户再次"添加"时复用主表记录
 // ---------------------------------------------------------------------------
-void MarketSourceCtrl::remove(const drogon::HttpRequestPtr& req,
-                              std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
-                              int64_t id) {
+void MarketSourceCtrl::remove(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
+    int64_t id) {
     SPDLOG_INFO("remove market source requested | id={}", id);
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
@@ -148,11 +151,12 @@ void MarketSourceCtrl::remove(const drogon::HttpRequestPtr& req,
         return;
     }
     std::string process_name = process_name_for_source_type(source->source_type);
-    SPDLOG_INFO("remove market source | id={} source_name={} source_type={} process={}",
-                id, source->source_name, source->source_type, process_name);
+    SPDLOG_INFO("remove market source | id={} source_name={} source_type={} process={}", id,
+                source->source_name, source->source_type, process_name);
     // 失败路径 A: shm_writer 未就绪 -> 返回 503
     if (!shm_writer_ || !shm_writer_->is_ready()) {
-        SPDLOG_WARN("shm not available, cannot send remove | source_id={} process={}", id, process_name);
+        SPDLOG_WARN("shm not available, cannot send remove | source_id={} process={}", id,
+                    process_name);
         callback(error_response(drogon::k503ServiceUnavailable, "shm not available"));
         return;
     }
@@ -176,9 +180,10 @@ void MarketSourceCtrl::remove(const drogon::HttpRequestPtr& req,
 // POST /api/market-sources/{id}/login - SHM md_connect (admin)
 // Wave 2C: 凭证已存于子进程配置文件; 本端点只发 md_connect 事件, 不持久化任何数据
 // ---------------------------------------------------------------------------
-void MarketSourceCtrl::login(const drogon::HttpRequestPtr& req,
-                             std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
-                             int64_t id) {
+void MarketSourceCtrl::login(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
+    int64_t id) {
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -218,9 +223,10 @@ void MarketSourceCtrl::login(const drogon::HttpRequestPtr& req,
 // ---------------------------------------------------------------------------
 // POST /api/market-sources/{id}/logout - SHM md_disconnect (admin)
 // ---------------------------------------------------------------------------
-void MarketSourceCtrl::logout(const drogon::HttpRequestPtr& req,
-                              std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
-                              int64_t id) {
+void MarketSourceCtrl::logout(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
+    int64_t id) {
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -261,9 +267,10 @@ void MarketSourceCtrl::logout(const drogon::HttpRequestPtr& req,
 // POST /api/market-sources/{id}/start - 启动行情源进程 (admin)
 // 接收可选 JSON body {display_name?: string}; 更新 DB display_name 后发 PROCESS_CONTROL start
 // ---------------------------------------------------------------------------
-void MarketSourceCtrl::start(const drogon::HttpRequestPtr& req,
-                              std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
-                              int64_t id) {
+void MarketSourceCtrl::start(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
+    int64_t id) {
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -306,23 +313,24 @@ void MarketSourceCtrl::start(const drogon::HttpRequestPtr& req,
     if (!display_name.empty()) {
         start_config = nlohmann::json{{"display_name", display_name}};
     }
-    if (!shm_writer_->write_process_control(platform::ProcessAction::Start,
-                                            process_name, std::move(start_config))) {
+    if (!shm_writer_->write_process_control(platform::ProcessAction::Start, process_name,
+                                            std::move(start_config))) {
         SPDLOG_WARN("start write failed | source_id={} process={}", id, process_name);
         callback(error_response(drogon::k503ServiceUnavailable, "shm write failed"));
         return;
     }
-    SPDLOG_INFO("start dispatched | source_id={} process={} display_name={}",
-                id, process_name, display_name);
+    SPDLOG_INFO("start dispatched | source_id={} process={} display_name={}", id, process_name,
+                display_name);
     callback(json_response(drogon::k200OK, {{"ok", true}, {"source", source->source_name}}));
 }
 
 // ---------------------------------------------------------------------------
 // POST /api/market-sources/{id}/stop - 停止行情源进程 (admin)
 // ---------------------------------------------------------------------------
-void MarketSourceCtrl::stop(const drogon::HttpRequestPtr& req,
-                             std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
-                             int64_t id) {
+void MarketSourceCtrl::stop(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
+    int64_t id) {
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;

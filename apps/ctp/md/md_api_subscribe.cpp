@@ -44,7 +44,8 @@ void MdApi::send_next_batch() {
     if (pending_batches_.empty()) {
         // 所有批次发完, 注册补订检查定时器
         sub_timer_id_ = timer_queue_.schedule_after(
-            std::chrono::milliseconds(ctp_md_config_.config().sub_check_interval_ms), [this, gen]() {
+            std::chrono::milliseconds(ctp_md_config_.config().sub_check_interval_ms),
+            [this, gen]() {
                 if (gen != sub_generation_) {
                     SPDLOG_DEBUG("timer callback discarded | reason=\"stale_generation\"");
                     return;
@@ -93,8 +94,8 @@ void MdApi::on_batch_complete() {
     }
     auto pending = sub_manager_.check_subscribe_status();
     // 决策表见 md_batch_check.h: 滞留批次 (已入队未发送) 继续发送链, 不计重试
-    switch (decide_batch_check_action(!pending_batches_.empty(), !pending.empty(),
-                                      sub_retry_count_, ctp_md_config_.config().sub_max_retry)) {
+    switch (decide_batch_check_action(!pending_batches_.empty(), !pending.empty(), sub_retry_count_,
+                                      ctp_md_config_.config().sub_max_retry)) {
         case BatchCheckAction::ContinueSend:
             // 补订检查窗口内到达的新订阅: 已入队未发送, 不是"已发未确认"。
             // 误判为重试会虚增 retry_count, 订阅洪峰连续命中检查窗口会超限后
@@ -106,8 +107,7 @@ void MdApi::on_batch_complete() {
             sub_retry_count_ = 0;
             sub_timer_id_ = 0;
             SPDLOG_INFO("sub check done | subscribed={} expected={}",
-                        sub_manager_.subscribed_count(),
-                        sub_manager_.expected_subscribe_count());
+                        sub_manager_.subscribed_count(), sub_manager_.expected_subscribe_count());
             // 确认链路不触发状态转移, 完成时主动推送, 否则 UI 订阅数停在旧值
             report_md_status();
             report_progress();
@@ -127,8 +127,8 @@ void MdApi::on_batch_complete() {
             return;
         case BatchCheckAction::Retry:
             sub_retry_count_++;
-            SPDLOG_WARN("sub retry | pending={} retry={} max={}", pending.size(),
-                        sub_retry_count_, ctp_md_config_.config().sub_max_retry);
+            SPDLOG_WARN("sub retry | pending={} retry={} max={}", pending.size(), sub_retry_count_,
+                        ctp_md_config_.config().sub_max_retry);
             // 重新分批, 追加到队列
             enqueue_batches(std::move(pending));
             send_next_batch();

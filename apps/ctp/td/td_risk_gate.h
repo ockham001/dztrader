@@ -13,22 +13,22 @@ namespace dztrader::ctp {
 
 /// 风控配置 (设计 §8.1, 仅基本规则)
 struct RiskConfig {
-    int32_t max_order_volume = 0;   ///< 单笔数量上限, 0=不检查
-    bool check_price_tick = true;   ///< 价格必须是 price_tick 整数倍
+    int32_t max_order_volume = 0;  ///< 单笔数量上限, 0=不检查
+    bool check_price_tick = true;  ///< 价格必须是 price_tick 整数倍
 };
 
 /// 账户上下文 (风控检查时由 AccountSession 传入快照)
 struct AccountContext {
     std::string account_id;
-    double price_tick = 0.0;        ///< 最小变动价位
-    int64_t long_pos = 0;           ///< 多头持仓 (今+昨)
-    int64_t short_pos = 0;          ///< 空头持仓
+    double price_tick = 0.0;  ///< 最小变动价位
+    int64_t long_pos = 0;     ///< 多头持仓 (今+昨)
+    int64_t short_pos = 0;    ///< 空头持仓
 };
 
 /// 风控拒绝信息 (与 SHM 帧的 platform::DzRiskReject 区分, 此处用 std::string 便于日志)
 struct RiskReject {
-    std::string rule_name;          ///< 规则名 (如 "max_order_volume")
-    std::string reason;             ///< 拒绝原因 (中文)
+    std::string rule_name;  ///< 规则名 (如 "max_order_volume")
+    std::string reason;     ///< 拒绝原因 (中文)
 };
 
 /// 可开关的风控钩子 (设计 §8)
@@ -45,7 +45,7 @@ public:
 
     /// 下单风控检查. 通过返回 nullopt, 拒绝返回 RiskReject.
     std::optional<RiskReject> check_order(const DzOrderReq& req,
-                                           const AccountContext& ctx) noexcept;
+                                          const AccountContext& ctx) noexcept;
 
     /// 撤单风控检查 (当前总是通过, 留作未来扩展)
     std::optional<RiskReject> check_cancel(const DzOrderReq& req,

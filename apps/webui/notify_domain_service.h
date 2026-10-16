@@ -16,10 +16,13 @@ namespace dztrader::webui {
 /// - 广播 payload 原样透传（instance_id 为空）；
 /// - level 为 "warning"/"error" 时记 WARN，否则 INFO（level 缺失或非字符串按 INFO）。
 /// 原实现无 try/catch，本服务按任务要求统一包裹 try/catch 记 WARN（正常路径行为不变）。
-/// 线程安全：依赖 dzweb 固定单线程事件循环（thread_num=1），所有访问均发生在主循环串行执行，不加锁。
+/// 线程安全：依赖 dzweb
+/// 固定单线程事件循环（thread_num=1），所有访问均发生在主循环串行执行，不加锁。
 class NotifyDomainService {
 public:
-    NotifyDomainService(NotifyCache& cache, WsBroadcaster& ws) : cache_(cache), ws_(ws) {}
+    NotifyDomainService(NotifyCache& cache, WsBroadcaster& ws)
+        : cache_(cache),
+          ws_(ws) {}
 
     void on_notify_ui(const nlohmann::json& payload) {
         try {

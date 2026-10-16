@@ -54,7 +54,8 @@ struct FakeTdConfig {
 };
 
 // 编译期验证: AutoLoginSchedView 和 FakeTdConfig 都满足 AutoSchedConfig concept
-static_assert(AutoSchedConfig<AutoLoginSchedView>, "AutoLoginSchedView should satisfy AutoSchedConfig");
+static_assert(AutoSchedConfig<AutoLoginSchedView>,
+              "AutoLoginSchedView should satisfy AutoSchedConfig");
 static_assert(AutoSchedConfig<FakeTdConfig>, "FakeTdConfig should satisfy AutoSchedConfig");
 
 TEST(AutoSchedConfigConcept, AcceptsAutoLoginSchedView) {
@@ -78,8 +79,9 @@ TEST(AutoSchedConfigConcept, AcceptsFakeTdConfig) {
 
 namespace {
 
-AutoLoginSchedView make_cfg_with_schedule(const std::string& login, const std::string& logout,
-                                           bool enable = true) {
+AutoLoginSchedView make_cfg_with_schedule(const std::string& login,
+                                          const std::string& logout,
+                                          bool enable = true) {
     AutoLoginSchedView cfg;
     cfg.enable_auto_login_logout = enable;
     cfg.schedules.push_back({login, logout});

@@ -27,9 +27,8 @@ void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req) {
             if (!acct.account_id.empty()) {
                 for (const auto& a : cfg.accounts) {
                     if (a.account_id == acct.account_id) {
-                        throw std::invalid_argument(
-                            std::format("addaccount duplicate | account_id=\"{}\"",
-                                        acct.account_id));
+                        throw std::invalid_argument(std::format(
+                            "addaccount duplicate | account_id=\"{}\"", acct.account_id));
                     }
                 }
             }
@@ -74,8 +73,7 @@ void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req) {
                         }
                         // frontends 是数组, 若提供则整体替换, 不提供则保留
                         if (bj.contains("frontends")) {
-                            a.broker.frontends =
-                                bj["frontends"].get<std::vector<BrokerFrontend>>();
+                            a.broker.frontends = bj["frontends"].get<std::vector<BrokerFrontend>>();
                         }
                     }
                     a.auth_code = req.params.value("auth_code", a.auth_code);
@@ -161,7 +159,7 @@ void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req) {
 
 // 在 accounts 中查找 account_id 对应的账户 (纯函数, 供单元测试)。
 const AccountConfig* find_current_account_in(const std::vector<AccountConfig>& accounts,
-                                              const std::string& account_id) {
+                                             const std::string& account_id) {
     if (account_id.empty()) {
         return nullptr;
     }
@@ -181,8 +179,7 @@ const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& acc
 }
 
 // 2115 查询路由: queried 为空串 = 查全部; 否则命中配置才应答 (不在配置不回, master 兜底)
-bool account_query_matches(const std::vector<std::string>& configured,
-                           const std::string& queried) {
+bool account_query_matches(const std::vector<std::string>& configured, const std::string& queried) {
     if (queried.empty()) {
         return true;
     }

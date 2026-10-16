@@ -32,8 +32,7 @@ protected:
 
     void SetUp() override {
         // 唯一通道名，避免多次运行残留状态互相干扰
-        channel_name_ =
-            "dz_test_log_cfg_" + std::to_string(reinterpret_cast<uintptr_t>(this));
+        channel_name_ = "dz_test_log_cfg_" + std::to_string(reinterpret_cast<uintptr_t>(this));
         shm_dir_ = std::filesystem::temp_directory_path() / channel_name_;
         std::filesystem::remove_all(shm_dir_);
         std::filesystem::create_directories(shm_dir_);
@@ -70,8 +69,7 @@ protected:
 
     std::string read_cfg_file() {
         std::ifstream ifs(cfg_path_);
-        return std::string(std::istreambuf_iterator<char>(ifs),
-                           std::istreambuf_iterator<char>());
+        return std::string(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
     }
 
     // 排空 reader 所有可用帧，返回最后一个 RTN_LOG_CONFIG 的 payload 解析结果。
@@ -190,7 +188,7 @@ TEST_F(LogConfigChannelTest, SetFlushOnSucceeds) {
 
     cfg.rtn_log_config(*writer_);
     auto rtn = read_last_rtn_log_config();
-    EXPECT_EQ(rtn["level"], "debug");  // level 不变
+    EXPECT_EQ(rtn["level"], "debug");       // level 不变
     EXPECT_EQ(rtn["flush_on"], "warning");  // warn 规范化为 warning
 }
 
@@ -319,7 +317,7 @@ TEST_F(LogConfigChannelTest, RtnAfterFailedSetSendsOldValue) {
 
     cfg.rtn_log_config(*writer_);
     auto rtn = read_last_rtn_log_config();
-    EXPECT_EQ(rtn["level"], "warning");   // 旧值（规范化后），未被改写
+    EXPECT_EQ(rtn["level"], "warning");  // 旧值（规范化后），未被改写
     EXPECT_EQ(rtn["flush_on"], "error");
 }
 

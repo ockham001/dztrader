@@ -58,14 +58,20 @@ class ChannelMetaImpl {
         uint64_t pid;
         uint64_t page_index;
     };
-    using IpcReaderMap = boost::interprocess::map<
-        IpcString, ReaderInfo, std::less<IpcString>,
-        boost::interprocess::allocator<std::pair<const IpcString, ReaderInfo>,
-                                       boost::interprocess::managed_shared_memory::segment_manager>>;
-    using IpcWriterMap = boost::interprocess::map<
-        IpcString, WriterInfo, std::less<IpcString>,
-        boost::interprocess::allocator<std::pair<const IpcString, WriterInfo>,
-                                       boost::interprocess::managed_shared_memory::segment_manager>>;
+    using IpcReaderMap =
+        boost::interprocess::map<IpcString,
+                                 ReaderInfo,
+                                 std::less<IpcString>,
+                                 boost::interprocess::allocator<
+                                     std::pair<const IpcString, ReaderInfo>,
+                                     boost::interprocess::managed_shared_memory::segment_manager>>;
+    using IpcWriterMap =
+        boost::interprocess::map<IpcString,
+                                 WriterInfo,
+                                 std::less<IpcString>,
+                                 boost::interprocess::allocator<
+                                     std::pair<const IpcString, WriterInfo>,
+                                     boost::interprocess::managed_shared_memory::segment_manager>>;
 
 public:
     ChannelMetaImpl(const ChannelConfig& config)
@@ -158,8 +164,8 @@ public:
         std::scoped_lock<ProcessMutex> lk(channel_meta_lock_);
         auto it = readers_->find(IpcString(name.c_str(), segment_.get_segment_manager()));
         if (it == readers_->end()) {
-            throw Exception(DZ_EC_SHM_SUBSCRIBER_FAILED,
-                            "set_reader_page_index: key not found: {}", name);
+            throw Exception(DZ_EC_SHM_SUBSCRIBER_FAILED, "set_reader_page_index: key not found: {}",
+                            name);
         }
         it->second.page_index = idx;
     }
@@ -167,8 +173,8 @@ public:
         std::scoped_lock<ProcessMutex> lk(channel_meta_lock_);
         auto it = writers_->find(IpcString(name.c_str(), segment_.get_segment_manager()));
         if (it == writers_->end()) {
-            throw Exception(DZ_EC_SHM_SUBSCRIBER_FAILED,
-                            "set_writer_page_index: key not found: {}", name);
+            throw Exception(DZ_EC_SHM_SUBSCRIBER_FAILED, "set_writer_page_index: key not found: {}",
+                            name);
         }
         it->second.page_index = idx;
     }
@@ -183,15 +189,25 @@ public:
     }
 
     [[nodiscard]] uint64_t min_reader_page_index_locked() const {
-        if (readers_->empty()) { return UINT64_MAX; }
+        if (readers_->empty()) {
+            return UINT64_MAX;
+        }
         uint64_t m = UINT64_MAX;
-        for (const auto& [k, v] : *readers_) { (void)k; m = std::min(m, v.page_index); }
+        for (const auto& [k, v] : *readers_) {
+            (void)k;
+            m = std::min(m, v.page_index);
+        }
         return m;
     }
     [[nodiscard]] uint64_t min_writer_page_index_locked() const {
-        if (writers_->empty()) { return UINT64_MAX; }
+        if (writers_->empty()) {
+            return UINT64_MAX;
+        }
         uint64_t m = UINT64_MAX;
-        for (const auto& [k, v] : *writers_) { (void)k; m = std::min(m, v.page_index); }
+        for (const auto& [k, v] : *writers_) {
+            (void)k;
+            m = std::min(m, v.page_index);
+        }
         return m;
     }
 
@@ -294,16 +310,18 @@ private:
     void init_readers_writers_locked() {
         readers_ = segment_.find_or_construct<IpcReaderMap>("readers")(
             std::less<IpcString>(),
-            boost::interprocess::allocator<std::pair<const IpcString, ReaderInfo>,
-                                           boost::interprocess::managed_shared_memory::segment_manager>(
+            boost::interprocess::allocator<
+                std::pair<const IpcString, ReaderInfo>,
+                boost::interprocess::managed_shared_memory::segment_manager>(
                 segment_.get_segment_manager()));
         if (!readers_) {
             throw Exception(DZ_EC_SHM_CREATE_FAILED, "readers is null");
         }
         writers_ = segment_.find_or_construct<IpcWriterMap>("writers")(
             std::less<IpcString>(),
-            boost::interprocess::allocator<std::pair<const IpcString, WriterInfo>,
-                                           boost::interprocess::managed_shared_memory::segment_manager>(
+            boost::interprocess::allocator<
+                std::pair<const IpcString, WriterInfo>,
+                boost::interprocess::managed_shared_memory::segment_manager>(
                 segment_.get_segment_manager()));
         if (!writers_) {
             throw Exception(DZ_EC_SHM_CREATE_FAILED, "writers is null");
@@ -346,9 +364,9 @@ private:
                 continue;
             }
             const auto stem = entry.path().stem().string();
-            if (stem.empty() ||
-                !std::all_of(stem.begin(), stem.end(),
-                             [](unsigned char c) { return std::isdigit(c) != 0; })) {
+            if (stem.empty() || !std::all_of(stem.begin(), stem.end(), [](unsigned char c) {
+                    return std::isdigit(c) != 0;
+                })) {
                 continue;
             }
             page_files.push_back(entry.path());
@@ -406,9 +424,8 @@ private:
     void validate_active_page_locked() {
         const uint64_t nwp = next_write_pos_->load(boost::memory_order_relaxed);
         if (nwp % 8 != 0 || nwp < sizeof(DzFrameHeader)) {
-            SPDLOG_ERROR(
-                "shm meta corrupted | reason=next_write_pos_invalid nwp={} channel={}", nwp,
-                channel_name_);
+            SPDLOG_ERROR("shm meta corrupted | reason=next_write_pos_invalid nwp={} channel={}",
+                         nwp, channel_name_);
             return;
         }
 
@@ -416,15 +433,15 @@ private:
         auto file_path = page_dir() / std::format("{:08d}.dat", page_id);
         std::error_code ec;
         if (!std::filesystem::exists(file_path, ec)) {
-            SPDLOG_ERROR(
-                "shm meta corrupted | reason=active_page_missing page={} channel={}", page_id,
-                channel_name_);
+            SPDLOG_ERROR("shm meta corrupted | reason=active_page_missing page={} channel={}",
+                         page_id, channel_name_);
             return;
         }
         const auto file_size = std::filesystem::file_size(file_path, ec);
         if (ec || file_size != page_size_) {
             SPDLOG_ERROR(
-                "shm meta corrupted | reason=active_page_size_mismatch page={} size={} expected={} channel={}",
+                "shm meta corrupted | reason=active_page_size_mismatch page={} size={} expected={} "
+                "channel={}",
                 page_id, file_size, page_size_, channel_name_);
             return;
         }
@@ -448,7 +465,8 @@ private:
                 const uint32_t fs = hdr->frame_size;
                 if (fs < sizeof(DzFrameHeader) || fs % 8 != 0 || fs > page_size_ - offset) {
                     SPDLOG_WARN(
-                        "shm chain broken | reason=bad_frame_size page={} offset={} frame_size={} channel={}",
+                        "shm chain broken | reason=bad_frame_size page={} offset={} frame_size={} "
+                        "channel={}",
                         page_id, offset, fs, channel_name_);
                     return;
                 }
@@ -462,7 +480,8 @@ private:
             }
             if (offset != end) {
                 SPDLOG_WARN(
-                    "shm chain broken | reason=chain_ends_short page={} offset={} nwp_in_page={} channel={}",
+                    "shm chain broken | reason=chain_ends_short page={} offset={} nwp_in_page={} "
+                    "channel={}",
                     page_id, offset, end, channel_name_);
             }
         } catch (const std::exception& e) {
@@ -521,10 +540,14 @@ ProcessMutex ChannelMeta::create_meta_mutex() const { return impl_->create_meta_
 
 void ChannelMeta::clear_readers() { impl_->clear_readers(); }
 void ChannelMeta::remove_reader(const std::string& n) { impl_->remove_reader(n); }
-bool ChannelMeta::add_reader(const std::string& n, uint64_t pid) { return impl_->add_reader(n, pid); }
+bool ChannelMeta::add_reader(const std::string& n, uint64_t pid) {
+    return impl_->add_reader(n, pid);
+}
 void ChannelMeta::clear_writers() { impl_->clear_writers(); }
 void ChannelMeta::remove_writer(const std::string& n) { impl_->remove_writer(n); }
-bool ChannelMeta::add_writer(const std::string& n, uint64_t pid) { return impl_->add_writer(n, pid); }
+bool ChannelMeta::add_writer(const std::string& n, uint64_t pid) {
+    return impl_->add_writer(n, pid);
+}
 void ChannelMeta::set_reader_page_index(const std::string& n, uint64_t i) {
     impl_->set_reader_page_index(n, i);
 }
@@ -533,8 +556,12 @@ void ChannelMeta::set_writer_page_index(const std::string& n, uint64_t i) {
 }
 uint64_t ChannelMeta::min_reader_page_index() const { return impl_->min_reader_page_index(); }
 uint64_t ChannelMeta::min_writer_page_index() const { return impl_->min_writer_page_index(); }
-uint64_t ChannelMeta::min_reader_page_index_locked() const { return impl_->min_reader_page_index_locked(); }
-uint64_t ChannelMeta::min_writer_page_index_locked() const { return impl_->min_writer_page_index_locked(); }
+uint64_t ChannelMeta::min_reader_page_index_locked() const {
+    return impl_->min_reader_page_index_locked();
+}
+uint64_t ChannelMeta::min_writer_page_index_locked() const {
+    return impl_->min_writer_page_index_locked();
+}
 std::vector<std::string> ChannelMeta::reader_names() const { return impl_->reader_names(); }
 
 }  // namespace dztrader::shm

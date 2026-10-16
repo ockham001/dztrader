@@ -11,11 +11,11 @@ ShmWriter::ShmWriter(const std::filesystem::path& shm_dir) {
     try {
         auto meta = std::make_shared<shm::ChannelMeta>(
             shm::ChannelMeta::open_only(shm::channel_name("dzevent"), shm_dir));
-        event_writer_ = std::make_shared<shm::MultiWriter>(
-            shm::MultiWriter::create(meta, "dzweb"));
+        event_writer_ = std::make_shared<shm::MultiWriter>(shm::MultiWriter::create(meta, "dzweb"));
         spdlog::info("shm writer initialized | channel={}", shm::channel_name("dzevent"));
     } catch (const std::exception& e) {
-        spdlog::warn("shm writer init failed | channel={} error=\"{}\"", shm::channel_name("dzevent"), e.what());
+        spdlog::warn("shm writer init failed | channel={} error=\"{}\"",
+                     shm::channel_name("dzevent"), e.what());
     }
 }
 
@@ -45,11 +45,10 @@ bool ShmWriter::write_process_control(platform::ProcessAction action,
     }
     const platform::ProcessControlReq req{
         .action = action, .target = target, .config = std::move(config)};
-    const bool ok =
-        platform::write_ext_json(*event_writer_, DZ_FRAME_REQUEST_PROCESS_CONTROL, req);
+    const bool ok = platform::write_ext_json(*event_writer_, DZ_FRAME_REQUEST_PROCESS_CONTROL, req);
     if (ok) {
-        spdlog::info("process control written | action={} target={}",
-                     magic_enum::enum_name(action), target);
+        spdlog::info("process control written | action={} target={}", magic_enum::enum_name(action),
+                     target);
     } else {
         spdlog::warn("write process control failed | action={} target={}",
                      magic_enum::enum_name(action), target);
@@ -57,8 +56,7 @@ bool ShmWriter::write_process_control(platform::ProcessAction action,
     return ok;
 }
 
-void ShmWriter::write_set_process_config(const std::string& target,
-                                         const nlohmann::json& config) {
+void ShmWriter::write_set_process_config(const std::string& target, const nlohmann::json& config) {
     if (!event_writer_ || target.empty()) {
         return;
     }
@@ -95,7 +93,8 @@ void ShmWriter::write_md_set_config(const std::string& source, const nlohmann::j
     try {
         // SET_MD_CONFIG 的 payload 是 MdConfigOpReq 序列化 JSON ({op, params})
         // dzmd_ctp 端用 decode_ext_inst_json<MdConfigOpReq> 解析
-        platform::write_ext_inst_json_obj(*event_writer_, DZ_FRAME_SET_MD_CONFIG, source, op_req_json);
+        platform::write_ext_inst_json_obj(*event_writer_, DZ_FRAME_SET_MD_CONFIG, source,
+                                          op_req_json);
         spdlog::debug("md set config written | source={}", source);
     } catch (const std::exception& e) {
         spdlog::error("write md set config failed | source={} error=\"{}\"", source, e.what());
@@ -131,7 +130,8 @@ void ShmWriter::write_set_md_shm_config(const std::string& source, const nlohman
     }
     try {
         // SET_MD_SHM_CONFIG 定向到目标行情进程 (契约 shm): payload 为 ShmConfig 增量 patch
-        platform::write_ext_inst_json_obj(*event_writer_, DZ_FRAME_SET_MD_SHM_CONFIG, source, payload);
+        platform::write_ext_inst_json_obj(*event_writer_, DZ_FRAME_SET_MD_SHM_CONFIG, source,
+                                          payload);
         spdlog::info("set md shm config written | source={}", source);
     } catch (const std::exception& e) {
         spdlog::error("write set md shm config failed | source={} error=\"{}\"", source, e.what());
@@ -145,7 +145,8 @@ void ShmWriter::write_set_event_shm_config(const nlohmann::json& payload) {
     }
     // 无 instance_id 帧: platform::write_ext_json 内部不抛异常, 返回 bool 标识写入结果
     // (对齐 write_set_md_shm_config 的日志模式)
-    const bool ok = platform::write_ext_json(*event_writer_, DZ_FRAME_SET_EVENT_SHM_CONFIG, payload);
+    const bool ok =
+        platform::write_ext_json(*event_writer_, DZ_FRAME_SET_EVENT_SHM_CONFIG, payload);
     if (ok) {
         spdlog::info("set event shm config written");
     } else {
@@ -153,4 +154,4 @@ void ShmWriter::write_set_event_shm_config(const nlohmann::json& payload) {
     }
 }
 
-} // namespace dztrader::webui
+}  // namespace dztrader::webui

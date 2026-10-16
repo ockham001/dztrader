@@ -20,7 +20,8 @@ namespace dztrader::webui {
 class ControlDomainService {
 public:
     ControlDomainService(std::string self_process, shm::MultiWriter* event_writer)
-        : self_process_(std::move(self_process)), event_writer_(event_writer) {}
+        : self_process_(std::move(self_process)),
+          event_writer_(event_writer) {}
 
     void on_shutdown(const std::string& source) {
         // 调用方（register_raw handler）已在监听线程拷贝 source 字符串值，投递安全

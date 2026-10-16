@@ -6,7 +6,7 @@
 // 由 libs/platform/tests/ctp_md_config_test.cpp 覆盖, 本文件不再重复测试。
 
 #include <dztrader/platform/ctp_md_config.h>  // CtpBrokerEntry
-#include "md/md_batch_check.h"  // BatchCheckAction, decide_batch_check_action
+#include "md/md_batch_check.h"                // BatchCheckAction, decide_batch_check_action
 
 #include <deque>
 #include <string>
@@ -24,8 +24,7 @@ std::deque<std::vector<std::string>> make_batches(std::vector<std::string> instr
 
 /// 在 brokers 中查找 name 对应的 broker (纯函数)。
 const dztrader::platform::CtpBrokerEntry* find_current_broker_in(
-    const std::vector<dztrader::platform::CtpBrokerEntry>& brokers,
-    const std::string& name);
+    const std::vector<dztrader::platform::CtpBrokerEntry>& brokers, const std::string& name);
 
 namespace {
 
@@ -141,7 +140,8 @@ TEST(FindCurrentBrokerInTest, FoundByName) {
 }
 
 TEST(FindCurrentBrokerInTest, NotFoundReturnsNull) {
-    std::vector<dztrader::platform::CtpBrokerEntry> brokers = {make_broker("b1"), make_broker("b2")};
+    std::vector<dztrader::platform::CtpBrokerEntry> brokers = {make_broker("b1"),
+                                                               make_broker("b2")};
     EXPECT_EQ(find_current_broker_in(brokers, "nonexistent"), nullptr);
 }
 

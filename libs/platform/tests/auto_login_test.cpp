@@ -31,8 +31,7 @@ protected:
     static constexpr uint64_t MB = 1024 * 1024;
 
     void SetUp() override {
-        channel_name_ =
-            "dz_test_auto_login_" + std::to_string(reinterpret_cast<uintptr_t>(this));
+        channel_name_ = "dz_test_auto_login_" + std::to_string(reinterpret_cast<uintptr_t>(this));
         shm_dir_ = std::filesystem::temp_directory_path() / channel_name_;
         std::filesystem::remove_all(shm_dir_);
         std::filesystem::create_directories(shm_dir_);
@@ -68,8 +67,7 @@ protected:
 
     std::string read_cfg_file() {
         std::ifstream ifs(cfg_path_);
-        return std::string(std::istreambuf_iterator<char>(ifs),
-                           std::istreambuf_iterator<char>());
+        return std::string(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
     }
 
     // 排空 reader，返回最后一个 RTN_AUTO_LOGIN 的 payload。
@@ -95,10 +93,10 @@ TEST(AutoLoginIsHhMm, ValidTimes) {
 }
 
 TEST(AutoLoginIsHhMm, InvalidTimes) {
-    EXPECT_FALSE(dztrader::platform::AutoLoginConfig::is_hh_mm("24:00"));  // hh 越界
-    EXPECT_FALSE(dztrader::platform::AutoLoginConfig::is_hh_mm("23:60"));  // mm 越界
-    EXPECT_FALSE(dztrader::platform::AutoLoginConfig::is_hh_mm("8:45"));   // 缺前导零
-    EXPECT_FALSE(dztrader::platform::AutoLoginConfig::is_hh_mm("08:450")); // 过长
+    EXPECT_FALSE(dztrader::platform::AutoLoginConfig::is_hh_mm("24:00"));   // hh 越界
+    EXPECT_FALSE(dztrader::platform::AutoLoginConfig::is_hh_mm("23:60"));   // mm 越界
+    EXPECT_FALSE(dztrader::platform::AutoLoginConfig::is_hh_mm("8:45"));    // 缺前导零
+    EXPECT_FALSE(dztrader::platform::AutoLoginConfig::is_hh_mm("08:450"));  // 过长
     EXPECT_FALSE(dztrader::platform::AutoLoginConfig::is_hh_mm(""));        // 空
     EXPECT_FALSE(dztrader::platform::AutoLoginConfig::is_hh_mm("ab:cd"));   // 非数字
 }
@@ -238,8 +236,8 @@ TEST_F(AutoLoginConfigTest, LoadMissingSchedulesUsesDefault) {
 
     cfg.rtn_auto_login();
     auto rtn = read_last_rtn();
-    EXPECT_EQ(rtn["enabled"], false);           // 文件值保留
-    EXPECT_TRUE(rtn["schedules"].empty());      // 默认补齐
+    EXPECT_EQ(rtn["enabled"], false);       // 文件值保留
+    EXPECT_TRUE(rtn["schedules"].empty());  // 默认补齐
 }
 
 // ===== set_auto_login() 测试 =====
@@ -266,9 +264,9 @@ TEST_F(AutoLoginConfigTest, SetSchedulesWholesaleReplace) {
 
     // 整体替换为两条新排程
     cfg.set_auto_login({{"schedules", nlohmann::json::array({
-                            {{"login_time", "20:45"}, {"logout_time", "02:30"}},
-                            {{"login_time", "09:00"}, {"logout_time", "11:30"}},
-                        })}});
+                                          {{"login_time", "20:45"}, {"logout_time", "02:30"}},
+                                          {{"login_time", "09:00"}, {"logout_time", "11:30"}},
+                                      })}});
 
     cfg.rtn_auto_login();
     auto rtn = read_last_rtn();
@@ -345,10 +343,11 @@ TEST_F(AutoLoginConfigTest, SetScheduleLoginEqualsLogoutThrows) {
     dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_);
     cfg.load();
 
-    EXPECT_THROW(cfg.set_auto_login({{"schedules", nlohmann::json::array({
-                                       {{"login_time", "08:00"}, {"logout_time", "08:00"}},
-                                   })}}),
-                 std::runtime_error);
+    EXPECT_THROW(
+        cfg.set_auto_login({{"schedules", nlohmann::json::array({
+                                              {{"login_time", "08:00"}, {"logout_time", "08:00"}},
+                                          })}}),
+        std::runtime_error);
 }
 
 // 16. patch 含未知字段：忽略，cfg_ 不含未知字段
@@ -423,9 +422,10 @@ TEST_F(AutoLoginConfigTest, SetPersistsToFile) {
     dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_);
     cfg.load();
 
-    cfg.set_auto_login({{"enabled", false}, {"schedules", nlohmann::json::array({
-                                                  {{"login_time", "20:45"}, {"logout_time", "02:30"}},
-                                              })}});
+    cfg.set_auto_login({{"enabled", false},
+                        {"schedules", nlohmann::json::array({
+                                          {{"login_time", "20:45"}, {"logout_time", "02:30"}},
+                                      })}});
 
     auto file_json = nlohmann::json::parse(read_cfg_file());
     EXPECT_EQ(file_json["auto_login"]["enabled"], false);

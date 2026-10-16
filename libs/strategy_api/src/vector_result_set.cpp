@@ -25,9 +25,7 @@ bool VectorResultSet::next() {
 
 int32_t VectorResultSet::status() const { return status_; }
 
-uint32_t VectorResultSet::column_count() const {
-    return static_cast<uint32_t>(columns_.size());
-}
+uint32_t VectorResultSet::column_count() const { return static_cast<uint32_t>(columns_.size()); }
 
 DzColumnType VectorResultSet::column_type(uint32_t index) const {
     if (index >= columns_.size()) return DZ_COL_TYPE_NULL;

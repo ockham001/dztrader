@@ -24,41 +24,41 @@ namespace dztrader::ctp {
 /// OnRtnDepthMarketData 不入队, 由 SPI 线程直接写 SHM (低延迟路径)。
 enum class EventType : int16_t {
     Unknown = 0,
-    OnFrontConnected = 1,       ///< 前置连接成功
-    OnFrontDisconnected = 2,    ///< 前置连接断开
-    OnHeartbeatWarning = 3,     ///< 心跳超时警告
-    OnRspUserLogin = 4,         ///< 登录响应
-    OnRspUserLogout = 5,        ///< 登出响应
+    OnFrontConnected = 1,               ///< 前置连接成功
+    OnFrontDisconnected = 2,            ///< 前置连接断开
+    OnHeartbeatWarning = 3,             ///< 心跳超时警告
+    OnRspUserLogin = 4,                 ///< 登录响应
+    OnRspUserLogout = 5,                ///< 登出响应
     OnRspQueryMulticastInstrument = 6,  ///< 组播合约查询响应 (预留)
-    OnRspError = 7,             ///< 错误响应
-    OnRspSubMarketData = 8,     ///< 订阅行情响应
-    OnRspUnsubMarketData = 9,   ///< 退订行情响应
-    OnRspSubForQuoteSp = 10,    ///< 订阅询价响应 (预留)
-    OnRspUnsubForQuoteSp = 11,  ///< 退订询价响应 (预留)
-    OnRtnDepthMarketData = 12,  ///< 行情推送 (不入队, 直写 SHM)
-    OnRtnForQuoteResp = 13,     ///< 询价响应 (预留)
+    OnRspError = 7,                     ///< 错误响应
+    OnRspSubMarketData = 8,             ///< 订阅行情响应
+    OnRspUnsubMarketData = 9,           ///< 退订行情响应
+    OnRspSubForQuoteSp = 10,            ///< 订阅询价响应 (预留)
+    OnRspUnsubForQuoteSp = 11,          ///< 退订询价响应 (预留)
+    OnRtnDepthMarketData = 12,          ///< 行情推送 (不入队, 直写 SHM)
+    OnRtnForQuoteResp = 13,             ///< 询价响应 (预留)
     // td 扩展 (100+, 避开 md 的 0-13)
     // 注意: td 的 *Field 结构和 delete_data 处理在 apps/ctp/td/td_events.h
     // Event::delete_data() 对 td 类型走 default 分支 (记 WARN, 由 td_delete_event_data 处理)
-    OnRspAuthenticate = 100,                 ///< td 认证响应
-    OnRspTdUserLogin = 101,                  ///< td 登录响应 (Field 含 MaxOrderRef, 与 md 的 OnRspUserLogin=4 不同)
-    OnRspSettlementInfoConfirm = 102,        ///< 结算单确认响应
-    OnRspQryInstrument = 103,                ///< 合约查询响应 (多次回调)
-    OnRspQryTradingAccount = 104,            ///< 资金查询响应
-    OnRspQryInvestorPosition = 105,          ///< 持仓查询响应
+    OnRspAuthenticate = 100,  ///< td 认证响应
+    OnRspTdUserLogin = 101,  ///< td 登录响应 (Field 含 MaxOrderRef, 与 md 的 OnRspUserLogin=4 不同)
+    OnRspSettlementInfoConfirm = 102,  ///< 结算单确认响应
+    OnRspQryInstrument = 103,          ///< 合约查询响应 (多次回调)
+    OnRspQryTradingAccount = 104,      ///< 资金查询响应
+    OnRspQryInvestorPosition = 105,    ///< 持仓查询响应
     // 106 retired (was OnRspQryInvestorPositionDetail)
     // 107/108/112 retired (ADR 0013: 合约状态与费率)
-    OnRspQryOrder = 109,                     ///< 委托查询响应 (RESTART 补登用)
-    OnRtnOrder = 110,                        ///< 委托回报 (实时推送)
-    OnRtnTrade = 111,                        ///< 成交回报 (实时推送)
-    OnRspOrderInsert = 113,                  ///< 报单录入响应
-    OnRspOrderAction = 114,                  ///< 报单操作响应 (撤单)
-    OnErrRtnOrderInsert = 115,               ///< 报单录入错误回报
-    OnErrRtnOrderAction = 116,               ///< 报单操作错误回报
-    OnRspFromBankToFutureByFuture = 117,     ///< 出入金响应 (OnRsp)
-    OnRtnFromBankToFutureByFuture = 118,     ///< 出入金实时通知 (OnRtn, 权威)
-    OnRspUserPasswordUpdate = 119,           ///< 修改登录密码响应
-    OnRspTradingAccountPasswordUpdate = 120, ///< 修改资金密码响应
+    OnRspQryOrder = 109,                      ///< 委托查询响应 (RESTART 补登用)
+    OnRtnOrder = 110,                         ///< 委托回报 (实时推送)
+    OnRtnTrade = 111,                         ///< 成交回报 (实时推送)
+    OnRspOrderInsert = 113,                   ///< 报单录入响应
+    OnRspOrderAction = 114,                   ///< 报单操作响应 (撤单)
+    OnErrRtnOrderInsert = 115,                ///< 报单录入错误回报
+    OnErrRtnOrderAction = 116,                ///< 报单操作错误回报
+    OnRspFromBankToFutureByFuture = 117,      ///< 出入金响应 (OnRsp)
+    OnRtnFromBankToFutureByFuture = 118,      ///< 出入金实时通知 (OnRtn, 权威)
+    OnRspUserPasswordUpdate = 119,            ///< 修改登录密码响应
+    OnRspTradingAccountPasswordUpdate = 120,  ///< 修改资金密码响应
 };
 
 /// SPI 线程到主线程的事件载体。

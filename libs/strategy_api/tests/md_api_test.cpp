@@ -88,8 +88,8 @@ protected:
     void emit_inst_frame(DzFrameType type, const std::string& instance) {
         auto meta = ChannelMeta::open_only(
             dztrader::shm::channel_name(dztrader::CHANNEL_NAME_EVENT), shm_dir_);
-        MultiWriter writer = MultiWriter::create(
-            std::make_shared<ChannelMeta>(std::move(meta)), "md_test_writer");
+        MultiWriter writer =
+            MultiWriter::create(std::make_shared<ChannelMeta>(std::move(meta)), "md_test_writer");
         ASSERT_TRUE(writer.write_ext_inst_frame(type, instance.c_str(), nullptr, 0));
         writer.notify_subscribers();
     }
@@ -252,8 +252,6 @@ TEST_F(MdApiTest, NotifyMdStartedEmptyDesiredSetNoOp) {
 
 // ── dz_next_md ──
 
-TEST_F(MdApiTest, NextMdNullWhenNoData) {
-    EXPECT_EQ(dz_next_md(ctx_), nullptr);
-}
+TEST_F(MdApiTest, NextMdNullWhenNoData) { EXPECT_EQ(dz_next_md(ctx_), nullptr); }
 
 }  // namespace

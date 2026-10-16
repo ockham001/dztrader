@@ -15,15 +15,13 @@ namespace this_process = dztrader::this_process;
 // exe_path — 返回非空绝对路径
 // ---------------------------------------------------------------------------
 
-TEST(ThisProcessTest, ExePathIsAbsolute)
-{
+TEST(ThisProcessTest, ExePathIsAbsolute) {
     const auto& p = this_process::exe_path();
     EXPECT_TRUE(p.is_absolute());
     EXPECT_FALSE(p.empty());
 }
 
-TEST(ThisProcessTest, ExePathExists)
-{
+TEST(ThisProcessTest, ExePathExists) {
     // 可执行文件应该存在于文件系统
     std::error_code ec;
     EXPECT_TRUE(std::filesystem::exists(this_process::exe_path(), ec));
@@ -33,52 +31,36 @@ TEST(ThisProcessTest, ExePathExists)
 // exe_dir — 返回非空绝对路径，且是 exe_path 的父目录
 // ---------------------------------------------------------------------------
 
-TEST(ThisProcessTest, ExeDirIsParentOfExePath)
-{
+TEST(ThisProcessTest, ExeDirIsParentOfExePath) {
     EXPECT_EQ(this_process::exe_dir(), this_process::exe_path().parent_path());
 }
 
-TEST(ThisProcessTest, ExeDirIsAbsolute)
-{
-    EXPECT_TRUE(this_process::exe_dir().is_absolute());
-}
+TEST(ThisProcessTest, ExeDirIsAbsolute) { EXPECT_TRUE(this_process::exe_dir().is_absolute()); }
 
 // ---------------------------------------------------------------------------
 // exe_name — 返回非空字符串
 // ---------------------------------------------------------------------------
 
-TEST(ThisProcessTest, ExeNameNotEmpty)
-{
-    EXPECT_FALSE(this_process::exe_name().empty());
-}
+TEST(ThisProcessTest, ExeNameNotEmpty) { EXPECT_FALSE(this_process::exe_name().empty()); }
 
-TEST(ThisProcessTest, ExeNameMatchesFilename)
-{
-    EXPECT_EQ(this_process::exe_name(),
-              this_process::exe_path().filename().string());
+TEST(ThisProcessTest, ExeNameMatchesFilename) {
+    EXPECT_EQ(this_process::exe_name(), this_process::exe_path().filename().string());
 }
 
 // ---------------------------------------------------------------------------
 // exe_stem — 返回非空字符串，不含扩展名
 // ---------------------------------------------------------------------------
 
-TEST(ThisProcessTest, ExeStemNotEmpty)
-{
-    EXPECT_FALSE(this_process::exe_stem().empty());
-}
+TEST(ThisProcessTest, ExeStemNotEmpty) { EXPECT_FALSE(this_process::exe_stem().empty()); }
 
-TEST(ThisProcessTest, ExeStemMatchesStem)
-{
-    EXPECT_EQ(this_process::exe_stem(),
-              this_process::exe_path().stem().string());
+TEST(ThisProcessTest, ExeStemMatchesStem) {
+    EXPECT_EQ(this_process::exe_stem(), this_process::exe_path().stem().string());
 }
 
 #ifdef _WIN32
-TEST(ThisProcessTest, ExeStemNoExeSuffix)
-{
+TEST(ThisProcessTest, ExeStemNoExeSuffix) {
     // Windows 上 stem 不应包含 .exe
-    EXPECT_EQ(this_process::exe_stem().find(".exe"),
-              std::string::npos);
+    EXPECT_EQ(this_process::exe_stem().find(".exe"), std::string::npos);
 }
 #endif
 
@@ -86,17 +68,13 @@ TEST(ThisProcessTest, ExeStemNoExeSuffix)
 // pid — 返回正整数
 // ---------------------------------------------------------------------------
 
-TEST(ThisProcessTest, PidIsPositive)
-{
-    EXPECT_GT(this_process::pid(), 0);
-}
+TEST(ThisProcessTest, PidIsPositive) { EXPECT_GT(this_process::pid(), 0); }
 
 // ---------------------------------------------------------------------------
 // 多次调用返回同一值（缓存验证）
 // ---------------------------------------------------------------------------
 
-TEST(ThisProcessTest, CachedValuesStable)
-{
+TEST(ThisProcessTest, CachedValuesStable) {
     const auto& path1 = this_process::exe_path();
     const auto& path2 = this_process::exe_path();
     EXPECT_EQ(&path1, &path2);  // 同一引用
@@ -119,8 +97,7 @@ TEST(ThisProcessTest, CachedValuesStable)
 // exe_dir 是 exe_path 的直接子关系
 // ---------------------------------------------------------------------------
 
-TEST(ThisProcessTest, ExeDirContainsExePath)
-{
+TEST(ThisProcessTest, ExeDirContainsExePath) {
     // exe_path 应在 exe_dir 目录下
     const auto& exe = this_process::exe_path();
     const auto& dir = this_process::exe_dir();

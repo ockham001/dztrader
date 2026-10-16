@@ -51,11 +51,12 @@ DZ_JSON_ENUM(ProcessEvent)
 // ===== 结构体（契约 process）=====
 
 /// 子进程重启策略（契约 process）。
-/// 全量角色三字段必填；enabled=false 时 max_attempts 忽略；实际退避 = backoff_sec × 连续崩溃次数，最小 1s。
+/// 全量角色三字段必填；enabled=false 时 max_attempts 忽略；实际退避 = backoff_sec ×
+/// 连续崩溃次数，最小 1s。
 struct RestartPolicy {
-    bool enabled = false;   ///< 是否启用自动重启
-    int max_attempts = 0;   ///< 最大重启次数（>= 0）
-    int backoff_sec = 5;    ///< 重启退避间隔（秒，>= 0）
+    bool enabled = false;  ///< 是否启用自动重启
+    int max_attempts = 0;  ///< 最大重启次数（>= 0）
+    int backoff_sec = 5;   ///< 重启退避间隔（秒，>= 0）
 };
 
 /// 进程配置，全量角色（契约 process）。
@@ -64,7 +65,7 @@ struct RestartPolicy {
 /// 增量角色（SET/Start 携带的 patch）不由此类型表达，见 validate_process_config_patch。
 struct ProcessConfig {
     std::vector<std::string> args;
-    std::map<std::string, std::string> env;   ///< map：确定性输出（key 有序）
+    std::map<std::string, std::string> env;  ///< map：确定性输出（key 有序）
     RestartPolicy restart;
     std::optional<std::string> display_name;  ///< nullopt = 未设置
 };
@@ -95,9 +96,8 @@ struct SetProcessConfigReq {
 // ===== 序列化（手写：缺失 ≠ 默认值、空串省略，契约 process）=====
 
 inline void to_json(nlohmann::json& j, const RestartPolicy& p) {
-    j = nlohmann::json{{"enabled", p.enabled},
-                       {"max_attempts", p.max_attempts},
-                       {"backoff_sec", p.backoff_sec}};
+    j = nlohmann::json{
+        {"enabled", p.enabled}, {"max_attempts", p.max_attempts}, {"backoff_sec", p.backoff_sec}};
 }
 
 inline void from_json(const nlohmann::json& j, RestartPolicy& p) {
@@ -275,8 +275,8 @@ inline std::optional<std::string> validate_process_config_patch(const nlohmann::
             }
             // 契约字段类型为 int: 钳制到 int32 范围, 避免 nlohmann get_to(int) 静默回绕
             if (detail::to_int64(n) > (std::numeric_limits<int>::max)()) {
-                return std::string("restart.") + key + " must be <= " +
-                       std::to_string((std::numeric_limits<int>::max)());
+                return std::string("restart.") + key +
+                       " must be <= " + std::to_string((std::numeric_limits<int>::max)());
             }
         }
     }

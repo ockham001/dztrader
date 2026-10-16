@@ -46,15 +46,14 @@ void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req);
 /// 在 accounts 中查找 account_id 对应的账户 (纯函数)。
 /// account_id 为空或未找到时返回 nullptr。
 const AccountConfig* find_current_account_in(const std::vector<AccountConfig>& accounts,
-                                              const std::string& account_id);
+                                             const std::string& account_id);
 
 /// 在 cfg.accounts 中查找 account_id 对应的账户 (纯函数, 便捷重载)。
 /// account_id 为空或未找到时返回 nullptr。委托给 find_current_account_in(cfg.accounts, ...)。
 const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& account_id);
 
 /// 2115 查询路由: queried 为空串 = 查全部 (true); 否则命中配置才应答 (不在配置不回, master 兜底)
-bool account_query_matches(const std::vector<std::string>& configured,
-                           const std::string& queried);
+bool account_query_matches(const std::vector<std::string>& configured, const std::string& queried);
 
 /// 2018 三态去重判定 (契约 account-status): 非强制时, 同态且非 Offline 不推;
 /// Offline 恒推 (删账户/崩溃兜底语义)。force (快照/查询应答) 绕过去重。
@@ -81,7 +80,8 @@ int32_t epoch_day_from_yyyymmdd(const std::string& yyyymmdd);
 /// - 主线程: run() 主循环, 处理帧/事件/定时器
 /// - SPI 线程 (每账户 1 个 CTP 工作线程): 仅 push 事件到 event_queue_ (MPMC)
 /// - PersistWriter 线程: 独立 SQLite 写入线程 (由 persist_writer_ 拥有)
-/// - 共享数据: event_writer_/reader_ (主线程), sessions_ 中各 AccountSession 的 writer 引用主线程的 event_writer_
+/// - 共享数据: event_writer_/reader_ (主线程), sessions_ 中各 AccountSession 的 writer 引用主线程的
+/// event_writer_
 ///
 /// 生命周期:
 /// - 构造: 初始化 SHM reader/writer + OrderIdMeta + PersistWriter, 不连接 CTP
@@ -141,15 +141,15 @@ private:
     /// 构造函数内调用, 时机在 PersistWriter::open() 后 start_writer() 前 (主线程独占 db)。
     void verify_order_id_against_db();
     // === 主循环 ===
-    /// 处理一个 SHM 帧 (分两层: basic 帧 (广播控制帧 + TD_ORDER_REQ/CANCEL_REQ 按 payload account_id 路由) /
-    /// 含 instance_id 帧检查 instance_id == name_ 或 name_: 前缀)
+    /// 处理一个 SHM 帧 (分两层: basic 帧 (广播控制帧 + TD_ORDER_REQ/CANCEL_REQ 按 payload
+    /// account_id 路由) / 含 instance_id 帧检查 instance_id == name_ 或 name_: 前缀)
     void handle_frame(const std::byte* frame);
     /// 实际帧分发逻辑 (由 handle_frame 调用, 异常由外层兜底)
     void handle_frame_inner(const std::byte* frame);
     /// 从事件队列取出一个 Event, 按 EventType dispatch 到对应 AccountSession on_* 方法
     void process_event(Event& event);
-    /// 模板 dispatch: 类型擦除后按 rsp->account_id 路由到 AccountSession handler, 异常不传播 (仅记日志)。
-    /// handler 是 AccountSession 的 on_*(const T&) 方法。rsp 为 nullptr 时跳过。
+    /// 模板 dispatch: 类型擦除后按 rsp->account_id 路由到 AccountSession handler, 异常不传播
+    /// (仅记日志)。 handler 是 AccountSession 的 on_*(const T&) 方法。rsp 为 nullptr 时跳过。
     template <typename T>
     void dispatch(Event& event, void (AccountSession::*handler)(const T&));
     /// 处理 OnFrontConnected / OnFrontDisconnected 事件 (不能用 dispatch<T> 模板,
@@ -158,13 +158,15 @@ private:
     /// session 为 null / 异常时记日志 + 释放 data (不传播异常)。
     void handle_front_event(Event& event);
     /// 析构时清理队列残留事件, 防止 shutdown 与 SPI 回调竞态导致泄漏。
-    /// 不调用 handler (进程即将退出), 仅按 EventType 释放 data (td 类型走 AccountSession::delete_event)。
+    /// 不调用 handler (进程即将退出), 仅按 EventType 释放 data (td 类型走
+    /// AccountSession::delete_event)。
     void drain_event_queue();
     /// 优雅退出: running_=false + disconnect 所有 AccountSession + stop PersistWriter + 保存配置
     void handle_shutdown();
 
     // === 账户管理 ===
-    /// 处理 TD_CONNECT 帧: 解析 account_id, 查 config_.accounts 找配置, 构造 AccountSession 并 open()
+    /// 处理 TD_CONNECT 帧: 解析 account_id, 查 config_.accounts 找配置, 构造 AccountSession 并
+    /// open()
     void connect_account(const shm::FrameView& view);
     /// 处理 TD_DISCONNECT 帧: 解析 account_id, 调用 session->disconnect()
     void disconnect_account(const shm::FrameView& view);
@@ -190,8 +192,10 @@ private:
     /// 账户状态统一写出口 (spec §3.1): 2018 三态去重推送。
     /// state 与该账户上次推送相同则跳过; trading_day 为空串或 state!=READY 时帧内 trading_day=0。
     /// force=true = 权威全量重推, 绕过去重 — snapshot/query 应答路径用 (spec §3.1 重启快照自愈)。
-    void write_account_status(const std::string& account_id, DzAccountState state,
-                              const std::string& trading_day, bool force = false);
+    void write_account_status(const std::string& account_id,
+                              DzAccountState state,
+                              const std::string& trading_day,
+                              bool force = false);
     /// 对 config_.accounts 全量重推 (无 session=Offline; spec §3.1 配置加载即推)
     void report_account_status_all();
     /// 处理 TD_QUERY_ACCOUNT_STATUS basic 广播帧: 空=全量应答, 指定=命中配置才应答
@@ -223,7 +227,8 @@ private:
     SessionBootData load_boot_data(const std::string& account_id);
 
     // === 配置热更新 (实现在 td_api_config.cpp) ===
-    /// 应用 td 配置变更 (TD_REQ_MODIFY_CONFIG): 解码 TdConfigOpReq -> 副本 -> apply_config_op 纯函数
+    /// 应用 td 配置变更 (TD_REQ_MODIFY_CONFIG): 解码 TdConfigOpReq -> 副本 -> apply_config_op
+    /// 纯函数
     /// -> validate -> 持久化到 config_path_ 的 td section -> 应用 -> 上报 RTN_TD_CONFIG。失败回滚。
     void apply_config_change(const TdConfigOpReq& req);
 
@@ -250,30 +255,36 @@ private:
     void on_event_shm_timer(const DzShmPreload& params);
 
     // === 成员变量 ===
-    std::string name_;                                   ///< 网关名 (= exe_stem)
-    std::filesystem::path shm_dir_;                      ///< 事件通道 SHM 目录
-    std::filesystem::path flow_dir_;                     ///< CTP 流文件目录根
-    std::string reader_name_;                            ///< SHM 订阅者名
-    std::shared_ptr<shm::ChannelMeta> event_meta_;       ///< 事件通道 meta (与 master 共享)
-    MpmcQueuePtr event_queue_;                           ///< SPI -> 主线程事件队列 (MPMC)
-    shm::Reader reader_;                                 ///< 事件通道 reader (主线程)
-    shm::MultiWriter event_writer_;                      ///< 事件通道 writer (主线程)
-    dztrader::core::TimerQueue timer_queue_;             ///< 单线程定时器队列, 主循环 tick()
+    std::string name_;                              ///< 网关名 (= exe_stem)
+    std::filesystem::path shm_dir_;                 ///< 事件通道 SHM 目录
+    std::filesystem::path flow_dir_;                ///< CTP 流文件目录根
+    std::string reader_name_;                       ///< SHM 订阅者名
+    std::shared_ptr<shm::ChannelMeta> event_meta_;  ///< 事件通道 meta (与 master 共享)
+    MpmcQueuePtr event_queue_;                      ///< SPI -> 主线程事件队列 (MPMC)
+    shm::Reader reader_;                            ///< 事件通道 reader (主线程)
+    shm::MultiWriter event_writer_;                 ///< 事件通道 writer (主线程)
+    dztrader::core::TimerQueue timer_queue_;        ///< 单线程定时器队列, 主循环 tick()
 
-    std::unique_ptr<PersistWriter> persist_writer_;      ///< SQLite 持久化 writer (进程级单例, TdApi 拥有)
-    std::unique_ptr<shm::OrderIdMeta> order_id_meta_;    ///< 跨进程 order_id 计数器 (进程级单例, TdApi 拥有)
+    std::unique_ptr<PersistWriter>
+        persist_writer_;  ///< SQLite 持久化 writer (进程级单例, TdApi 拥有)
+    std::unique_ptr<shm::OrderIdMeta>
+        order_id_meta_;  ///< 跨进程 order_id 计数器 (进程级单例, TdApi 拥有)
 
-    TdConfig config_;                                    ///< td section 配置
-    std::filesystem::path config_path_;                  ///< dztd_ctp.json 路径, 用于持久化各 section
+    TdConfig config_;                    ///< td section 配置
+    std::filesystem::path config_path_;  ///< dztd_ctp.json 路径, 用于持久化各 section
     // notify_ui_ 依赖 name_/event_writer_, 必须在其后声明 (C++ 按声明顺序初始化)
-    dztrader::platform::NotifyUi notify_ui_;             ///< UI 通知发送器 (绑定 name_ + event_writer_)
+    dztrader::platform::NotifyUi notify_ui_;  ///< UI 通知发送器 (绑定 name_ + event_writer_)
     // log_config_ 依赖 name_/config_path_, 必须在其后声明 (C++ 按声明顺序初始化)
-    dztrader::platform::LogConfig log_config_;                ///< log section 配置
-    // auto_login_config_ 依赖 name_/config_path_/event_writer_, 必须在其后声明 (C++ 按声明顺序初始化)
-    dztrader::platform::AutoLoginConfig auto_login_config_;   ///< 自动登录/登出排程 (SET/RTN_AUTO_LOGIN, 持久化到 auto_login section)
+    dztrader::platform::LogConfig log_config_;  ///< log section 配置
+    // auto_login_config_ 依赖 name_/config_path_/event_writer_, 必须在其后声明 (C++
+    // 按声明顺序初始化)
+    dztrader::platform::AutoLoginConfig
+        auto_login_config_;  ///< 自动登录/登出排程 (SET/RTN_AUTO_LOGIN, 持久化到 auto_login
+                             ///< section)
 
-    std::unordered_map<std::string, std::unique_ptr<AccountSession>> sessions_;  ///< account_id -> 会话
-    std::unordered_map<std::string, TdHealth> account_health_;                   ///< account_id -> 上次广播健康度
+    std::unordered_map<std::string, std::unique_ptr<AccountSession>>
+        sessions_;                                              ///< account_id -> 会话
+    std::unordered_map<std::string, TdHealth> account_health_;  ///< account_id -> 上次广播健康度
     /// 账户上次推送的三态 (去重缓存; 键=account_id)
     std::unordered_map<std::string, DzAccountState> account_last_state_;
 
@@ -286,9 +297,9 @@ private:
     /// 独立只读连接上次尝试打开时文件是否已存在 (失败重试节流用).
     bool prescan_db_missing_ = false;
 
-    bool running_ = false;                               ///< 主循环运行中
-    bool started_ = false;                               ///< run() 是否已完成初始化 (防重入重复广播)
-    bool recover_ = false;                               ///< --recover 标志: 崩溃恢复启动, 补登
+    bool running_ = false;  ///< 主循环运行中
+    bool started_ = false;  ///< run() 是否已完成初始化 (防重入重复广播)
+    bool recover_ = false;  ///< --recover 标志: 崩溃恢复启动, 补登
     /// 外部 shutdown 标志 (由 td_main.cpp 的信号处理器置位)。
     /// run() 主循环检查此标志, 若置位则调用 handle_shutdown() 优雅退出。
     std::atomic<bool>* external_shutdown_flag_ = nullptr;
@@ -342,8 +353,8 @@ void TdApi::dispatch(Event& event, void (AccountSession::*handler)(const T&)) {
         write_account_status(rsp->account_id, account_state_of(after),
                              session->state_machine().status().trading_day);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("account status push failed | account={} error=\"{}\"",
-                     rsp->account_id, e.what());
+        SPDLOG_ERROR("account status push failed | account={} error=\"{}\"", rsp->account_id,
+                     e.what());
     } catch (...) {
         SPDLOG_ERROR("account status push failed | account={} error=unknown_exception",
                      rsp->account_id);

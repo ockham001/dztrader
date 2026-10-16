@@ -37,8 +37,8 @@ TEST(MirrorStoreTest, EraseDomain) {
     m.erase("dzmd_ctp", "md_status");
     EXPECT_FALSE(m.instance("dzmd_ctp").contains("md_status"));
     EXPECT_TRUE(m.instance("dzmd_ctp").contains("log_config"));  // 其他领域保留
-    m.erase("dzmd_ctp", "md_status");  // 幂等：不存在不报错
-    m.erase("no_such_instance", "log_config");  // 实例不存在不报错
+    m.erase("dzmd_ctp", "md_status");                            // 幂等：不存在不报错
+    m.erase("no_such_instance", "log_config");                   // 实例不存在不报错
 }
 
 TEST(MirrorStoreTest, RemoveInstance) {
@@ -48,7 +48,7 @@ TEST(MirrorStoreTest, RemoveInstance) {
     m.remove("dzmd_ctp");
     EXPECT_FALSE(m.snapshot().contains("dzmd_ctp"));
     EXPECT_TRUE(m.snapshot().contains("dztraderd"));  // 其他实例保留
-    m.remove("dzmd_ctp");  // 幂等
+    m.remove("dzmd_ctp");                             // 幂等
 }
 
 TEST(MirrorStoreTest, SnapshotIsLiveView) {

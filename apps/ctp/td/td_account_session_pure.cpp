@@ -82,9 +82,7 @@ const std::string* OrderRefMap::find_strategy(DzOrderId order_id) const {
     return (it != id_to_strategy_.end()) ? &it->second : nullptr;
 }
 
-void OrderRefMap::erase_strategy(DzOrderId order_id) {
-    id_to_strategy_.erase(order_id);
-}
+void OrderRefMap::erase_strategy(DzOrderId order_id) { id_to_strategy_.erase(order_id); }
 
 void OrderRefMap::clear() noexcept {
     ref_to_id_.clear();

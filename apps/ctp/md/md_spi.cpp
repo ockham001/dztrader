@@ -17,8 +17,8 @@ namespace dztrader::ctp {
 MdSpi::MdSpi(const std::string& name,
              const std::filesystem::path& shm_dir,
              const SpscQueuePtr& event_queue)
-    : md_writer_{shm::SingleWriter::create(shm::channel_name(name), shm_dir,
-                                        std::format("gw.{}", name))},
+    : md_writer_{shm::SingleWriter::create(
+          shm::channel_name(name), shm_dir, std::format("gw.{}", name))},
       event_queue_{event_queue} {
     if (!event_queue_) {
         throw std::runtime_error("event_queue is null");
@@ -68,14 +68,15 @@ void MdSpi::OnRspUserLogin(CThostFtdcRspUserLoginField* pRspUserLogin,
                 days_since_epoch_ = trading_day_to_days(&pRspUserLogin->TradingDay[0]);
             } catch (std::exception& e) {
                 trading_day_parse_error = e.what();
-                SPDLOG_WARN("trading day parse failed | error=\"{}\" trading_day=\"{}\"",
-                            e.what(), pRspUserLogin->TradingDay);
+                SPDLOG_WARN("trading day parse failed | error=\"{}\" trading_day=\"{}\"", e.what(),
+                            pRspUserLogin->TradingDay);
             }
-            SPDLOG_INFO("login rsp ok | request_id={} is_last={} trading_day={}",
-                        nRequestID, bIsLast, pRspUserLogin->TradingDay);
+            SPDLOG_INFO("login rsp ok | request_id={} is_last={} trading_day={}", nRequestID,
+                        bIsLast, pRspUserLogin->TradingDay);
         } else if (pRspInfo) {
             SPDLOG_ERROR("login rsp failed | error_id={} error_msg=\"{}\" request_id={}",
-                         pRspInfo->ErrorID, dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg), nRequestID);
+                         pRspInfo->ErrorID, dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg),
+                         nRequestID);
         }
         event_queue_->push(
             EventType::OnRspUserLogin,
@@ -99,7 +100,8 @@ void MdSpi::OnRspUserLogout(CThostFtdcUserLogoutField* pUserLogout,
     try {
         if (pRspInfo && pRspInfo->ErrorID != 0) {
             SPDLOG_ERROR("logout rsp failed | error_id={} error_msg=\"{}\" request_id={}",
-                         pRspInfo->ErrorID, dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg), nRequestID);
+                         pRspInfo->ErrorID, dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg),
+                         nRequestID);
         } else {
             SPDLOG_INFO("logout rsp ok | request_id={} is_last={}", nRequestID, bIsLast);
         }
@@ -120,7 +122,8 @@ void MdSpi::OnRspError(CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bI
     try {
         if (pRspInfo) {
             SPDLOG_ERROR("error rsp | error_id={} error_msg=\"{}\" request_id={} is_last={}",
-                         pRspInfo->ErrorID, dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg), nRequestID, bIsLast);
+                         pRspInfo->ErrorID, dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg),
+                         nRequestID, bIsLast);
         }
         event_queue_->push(
             EventType::OnRspError,
@@ -140,12 +143,12 @@ void MdSpi::OnRspSubMarketData(CThostFtdcSpecificInstrumentField* pSpecificInstr
         if (pRspInfo && pRspInfo->ErrorID != 0) {
             SPDLOG_ERROR(
                 "sub rsp failed | instrument={} error_id={} error_msg=\"{}\" request_id={}",
-                pSpecificInstrument ? pSpecificInstrument->InstrumentID : "",
-                pRspInfo->ErrorID, dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg), nRequestID);
+                pSpecificInstrument ? pSpecificInstrument->InstrumentID : "", pRspInfo->ErrorID,
+                dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg), nRequestID);
         } else {
             SPDLOG_INFO("sub rsp ok | instrument={} request_id={} is_last={}",
-                        pSpecificInstrument ? pSpecificInstrument->InstrumentID : "",
-                        nRequestID, bIsLast);
+                        pSpecificInstrument ? pSpecificInstrument->InstrumentID : "", nRequestID,
+                        bIsLast);
         }
         event_queue_->push(
             EventType::OnRspSubMarketData,
@@ -168,12 +171,12 @@ void MdSpi::OnRspUnSubMarketData(CThostFtdcSpecificInstrumentField* pSpecificIns
         if (pRspInfo && pRspInfo->ErrorID != 0) {
             SPDLOG_ERROR(
                 "unsub rsp failed | instrument={} error_id={} error_msg=\"{}\" request_id={}",
-                pSpecificInstrument ? pSpecificInstrument->InstrumentID : "",
-                pRspInfo->ErrorID, dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg), nRequestID);
+                pSpecificInstrument ? pSpecificInstrument->InstrumentID : "", pRspInfo->ErrorID,
+                dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg), nRequestID);
         } else {
             SPDLOG_INFO("unsub rsp ok | instrument={} request_id={} is_last={}",
-                        pSpecificInstrument ? pSpecificInstrument->InstrumentID : "",
-                        nRequestID, bIsLast);
+                        pSpecificInstrument ? pSpecificInstrument->InstrumentID : "", nRequestID,
+                        bIsLast);
         }
         event_queue_->push(
             EventType::OnRspUnsubMarketData,

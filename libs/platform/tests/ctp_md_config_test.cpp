@@ -145,10 +145,12 @@ TEST(ValidateOpReq, UpdateBrokerProductInfoWrongType) {
 
 TEST(ValidateOpReq, AddBrokerOptionalStringFieldsValid) {
     CtpMdConfigData cfg;
-    CtpMdConfigOpReq req{CtpMdConfigOp::AddBroker, {
-        {"name", "x"}, {"broker_id", "9999"}, {"user_id", "u"},
-        {"password", "p"}, {"product_info", "pi"}
-    }};
+    CtpMdConfigOpReq req{CtpMdConfigOp::AddBroker,
+                         {{"name", "x"},
+                          {"broker_id", "9999"},
+                          {"user_id", "u"},
+                          {"password", "p"},
+                          {"product_info", "pi"}}};
     auto err = dztrader::platform::validate_ctp_op_req(req, cfg);
     EXPECT_FALSE(err.has_value());
 }
@@ -182,12 +184,12 @@ TEST(ValidateOpReq, SetFrontendsValid) {
     CtpBrokerEntry b;
     b.name = "simnow";
     cfg.brokers.push_back(b);
-    CtpMdConfigOpReq req{CtpMdConfigOp::SetFrontends, {
-        {"name", "simnow"},
-        {"frontends", nlohmann::json::array({
-            {{"address", "tcp://1.2.3.4:10131"}, {"label", ""}, {"enabled", true}}
-        })}
-    }};
+    CtpMdConfigOpReq req{
+        CtpMdConfigOp::SetFrontends,
+        {{"name", "simnow"},
+         {"frontends",
+          nlohmann::json::array(
+              {{{"address", "tcp://1.2.3.4:10131"}, {"label", ""}, {"enabled", true}}})}}};
     auto err = dztrader::platform::validate_ctp_op_req(req, cfg);
     EXPECT_FALSE(err.has_value());
 }
@@ -197,20 +199,16 @@ TEST(ValidateOpReq, SetFrontendsEmptyArray) {
     CtpBrokerEntry b;
     b.name = "simnow";
     cfg.brokers.push_back(b);
-    CtpMdConfigOpReq req{CtpMdConfigOp::SetFrontends, {
-        {"name", "simnow"},
-        {"frontends", nlohmann::json::array()}
-    }};
+    CtpMdConfigOpReq req{CtpMdConfigOp::SetFrontends,
+                         {{"name", "simnow"}, {"frontends", nlohmann::json::array()}}};
     auto err = dztrader::platform::validate_ctp_op_req(req, cfg);
     EXPECT_FALSE(err.has_value());
 }
 
 TEST(ValidateOpReq, SetFrontendsBrokerNotFound) {
     CtpMdConfigData cfg;
-    CtpMdConfigOpReq req{CtpMdConfigOp::SetFrontends, {
-        {"name", "ghost"},
-        {"frontends", nlohmann::json::array()}
-    }};
+    CtpMdConfigOpReq req{CtpMdConfigOp::SetFrontends,
+                         {{"name", "ghost"}, {"frontends", nlohmann::json::array()}}};
     auto err = dztrader::platform::validate_ctp_op_req(req, cfg);
     ASSERT_TRUE(err.has_value());
 }
@@ -220,10 +218,8 @@ TEST(ValidateOpReq, SetFrontendsNotArray) {
     CtpBrokerEntry b;
     b.name = "simnow";
     cfg.brokers.push_back(b);
-    CtpMdConfigOpReq req{CtpMdConfigOp::SetFrontends, {
-        {"name", "simnow"},
-        {"frontends", "not_an_array"}
-    }};
+    CtpMdConfigOpReq req{CtpMdConfigOp::SetFrontends,
+                         {{"name", "simnow"}, {"frontends", "not_an_array"}}};
     auto err = dztrader::platform::validate_ctp_op_req(req, cfg);
     ASSERT_TRUE(err.has_value());
 }
@@ -233,12 +229,12 @@ TEST(ValidateOpReq, SetFrontendsLabelWrongType) {
     CtpBrokerEntry b;
     b.name = "simnow";
     cfg.brokers.push_back(b);
-    CtpMdConfigOpReq req{CtpMdConfigOp::SetFrontends, {
-        {"name", "simnow"},
-        {"frontends", nlohmann::json::array({
-            {{"address", "tcp://1.2.3.4:10131"}, {"label", 123}, {"enabled", true}}
-        })}
-    }};
+    CtpMdConfigOpReq req{
+        CtpMdConfigOp::SetFrontends,
+        {{"name", "simnow"},
+         {"frontends",
+          nlohmann::json::array(
+              {{{"address", "tcp://1.2.3.4:10131"}, {"label", 123}, {"enabled", true}}})}}};
     auto err = dztrader::platform::validate_ctp_op_req(req, cfg);
     ASSERT_TRUE(err.has_value());
 }
@@ -266,12 +262,11 @@ TEST(ValidateOpReq, SetCurrentBrokerNotFound) {
 
 TEST(ValidateOpReq, SetSubscribeParamsAllValid) {
     CtpMdConfigData cfg;
-    CtpMdConfigOpReq req{CtpMdConfigOp::SetSubscribeParams, {
-        {"subscribe_batch_size", 500},
-        {"subscribe_batch_delay_ms", 2000},
-        {"sub_check_interval_ms", 5000},
-        {"sub_max_retry", 5}
-    }};
+    CtpMdConfigOpReq req{CtpMdConfigOp::SetSubscribeParams,
+                         {{"subscribe_batch_size", 500},
+                          {"subscribe_batch_delay_ms", 2000},
+                          {"sub_check_interval_ms", 5000},
+                          {"sub_max_retry", 5}}};
     auto err = dztrader::platform::validate_ctp_op_req(req, cfg);
     EXPECT_FALSE(err.has_value());
 }
@@ -301,10 +296,12 @@ TEST(ValidateOpReq, ParamsNotObject) {
 
 TEST(ApplyConfigOp, AddBroker) {
     CtpMdConfigData cfg;
-    CtpMdConfigOpReq req{CtpMdConfigOp::AddBroker, {
-        {"name", "simnow"}, {"broker_id", "9999"}, {"user_id", "00001"},
-        {"password", "123456"}, {"product_info", ""}
-    }};
+    CtpMdConfigOpReq req{CtpMdConfigOp::AddBroker,
+                         {{"name", "simnow"},
+                          {"broker_id", "9999"},
+                          {"user_id", "00001"},
+                          {"password", "123456"},
+                          {"product_info", ""}}};
     dztrader::platform::apply_ctp_config_op(cfg, req);
     ASSERT_EQ(cfg.brokers.size(), 1u);
     EXPECT_EQ(cfg.brokers[0].name, "simnow");
@@ -372,7 +369,8 @@ TEST(ApplyConfigOp, UpdateBrokerPasswordNew) {
     b.name = "simnow";
     b.password = "old_pwd";
     cfg.brokers.push_back(b);
-    CtpMdConfigOpReq req{CtpMdConfigOp::UpdateBroker, {{"name", "simnow"}, {"password", "new_pwd"}}};
+    CtpMdConfigOpReq req{CtpMdConfigOp::UpdateBroker,
+                         {{"name", "simnow"}, {"password", "new_pwd"}}};
     dztrader::platform::apply_ctp_config_op(cfg, req);
     EXPECT_EQ(cfg.brokers[0].password, "new_pwd");
 }
@@ -395,12 +393,12 @@ TEST(ApplyConfigOp, SetFrontends) {
     CtpBrokerEntry b;
     b.name = "simnow";
     cfg.brokers.push_back(b);
-    CtpMdConfigOpReq req{CtpMdConfigOp::SetFrontends, {
-        {"name", "simnow"},
-        {"frontends", nlohmann::json::array({
-            {{"address", "tcp://1.2.3.4:10131"}, {"label", "电信"}, {"enabled", true}}
-        })}
-    }};
+    CtpMdConfigOpReq req{
+        CtpMdConfigOp::SetFrontends,
+        {{"name", "simnow"},
+         {"frontends",
+          nlohmann::json::array(
+              {{{"address", "tcp://1.2.3.4:10131"}, {"label", "电信"}, {"enabled", true}}})}}};
     dztrader::platform::apply_ctp_config_op(cfg, req);
     ASSERT_EQ(cfg.brokers[0].frontends.size(), 1u);
     EXPECT_EQ(cfg.brokers[0].frontends[0].address, "tcp://1.2.3.4:10131");
@@ -412,10 +410,8 @@ TEST(ApplyConfigOp, SetFrontendsEmptyArray) {
     b.name = "simnow";
     b.frontends.push_back({"tcp://old:10131", "", true});
     cfg.brokers.push_back(b);
-    CtpMdConfigOpReq req{CtpMdConfigOp::SetFrontends, {
-        {"name", "simnow"},
-        {"frontends", nlohmann::json::array()}
-    }};
+    CtpMdConfigOpReq req{CtpMdConfigOp::SetFrontends,
+                         {{"name", "simnow"}, {"frontends", nlohmann::json::array()}}};
     dztrader::platform::apply_ctp_config_op(cfg, req);
     EXPECT_TRUE(cfg.brokers[0].frontends.empty());
 }
@@ -446,12 +442,11 @@ TEST(ApplyConfigOp, SetSubscribeParams) {
 
 TEST(ApplyConfigOp, SetSubscribeParamsAllFields) {
     CtpMdConfigData cfg;
-    CtpMdConfigOpReq req{CtpMdConfigOp::SetSubscribeParams, {
-        {"subscribe_batch_size", 500},
-        {"subscribe_batch_delay_ms", 2000},
-        {"sub_check_interval_ms", 5000},
-        {"sub_max_retry", 5}
-    }};
+    CtpMdConfigOpReq req{CtpMdConfigOp::SetSubscribeParams,
+                         {{"subscribe_batch_size", 500},
+                          {"subscribe_batch_delay_ms", 2000},
+                          {"sub_check_interval_ms", 5000},
+                          {"sub_max_retry", 5}}};
     dztrader::platform::apply_ctp_config_op(cfg, req);
     EXPECT_EQ(cfg.subscribe_batch_size, 500);
     EXPECT_EQ(cfg.subscribe_batch_delay_ms, 2000);
@@ -585,8 +580,7 @@ protected:
     static constexpr uint64_t MB = 1024 * 1024;
 
     void SetUp() override {
-        channel_name_ =
-            "dz_test_ctp_md_cfg_" + std::to_string(reinterpret_cast<uintptr_t>(this));
+        channel_name_ = "dz_test_ctp_md_cfg_" + std::to_string(reinterpret_cast<uintptr_t>(this));
         shm_dir_ = std::filesystem::temp_directory_path() / channel_name_;
         std::filesystem::remove_all(shm_dir_);
         std::filesystem::create_directories(shm_dir_);
@@ -622,8 +616,7 @@ protected:
 
     std::string read_cfg_file() {
         std::ifstream ifs(cfg_path_);
-        return std::string(std::istreambuf_iterator<char>(ifs),
-                           std::istreambuf_iterator<char>());
+        return std::string(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
     }
 
     nlohmann::json read_last_rtn() {
@@ -699,10 +692,12 @@ TEST_F(CtpMdConfigTest, LoadSectionNotObjectUsesDefaults) {
 TEST_F(CtpMdConfigTest, SetMdConfigAddBroker) {
     CtpMdConfig md("dzmd_ctp", cfg_path_, *writer_);
     md.load();
-    CtpMdConfigOpReq req{CtpMdConfigOp::AddBroker, {
-        {"name", "simnow"}, {"broker_id", "9999"}, {"user_id", "00001"},
-        {"password", "123456"}, {"product_info", ""}
-    }};
+    CtpMdConfigOpReq req{CtpMdConfigOp::AddBroker,
+                         {{"name", "simnow"},
+                          {"broker_id", "9999"},
+                          {"user_id", "00001"},
+                          {"password", "123456"},
+                          {"product_info", ""}}};
     md.set_md_config(req);
     ASSERT_EQ(md.config().brokers.size(), 1u);
     EXPECT_EQ(md.config().brokers[0].name, "simnow");
@@ -733,9 +728,7 @@ TEST_F(CtpMdConfigTest, SetMdConfigPersistsToFile) {
 TEST_F(CtpMdConfigTest, RtnMdConfigSendsFrame) {
     CtpMdConfig md("dzmd_ctp", cfg_path_, *writer_);
     md.load();
-    CtpMdConfigOpReq req{CtpMdConfigOp::AddBroker, {
-        {"name", "simnow"}, {"password", "secret"}
-    }};
+    CtpMdConfigOpReq req{CtpMdConfigOp::AddBroker, {{"name", "simnow"}, {"password", "secret"}}};
     md.set_md_config(req);
     md.rtn_md_config();
     auto rtn = read_last_rtn();
@@ -813,9 +806,9 @@ TEST_F(CtpMdConfigTest, SetMdConfigFailureRollsBack) {
     auto state_before = md.config();
 
     // 尝试一个会失败的 op（subscribe_batch_size = 0）
-    EXPECT_THROW(md.set_md_config({CtpMdConfigOp::SetSubscribeParams, {
-        {"subscribe_batch_size", 0}
-    }}), std::runtime_error);
+    EXPECT_THROW(
+        md.set_md_config({CtpMdConfigOp::SetSubscribeParams, {{"subscribe_batch_size", 0}}}),
+        std::runtime_error);
 
     // cfg_ 不变
     EXPECT_EQ(md.config().brokers.size(), state_before.brokers.size());

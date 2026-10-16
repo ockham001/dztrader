@@ -53,73 +53,73 @@ protected:
     // 建 td 库 v2 schema 四表 (与 libs/tdstore/src/schema.cpp 最终形态逐字一致)。
     static void create_schema(sqlite3* db) {
         exec_sql(db,
-            "CREATE TABLE IF NOT EXISTS orders ("
-            "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "    account_id TEXT NOT NULL,"
-            "    trading_day TEXT NOT NULL,"
-            "    order_id INTEGER NOT NULL,"
-            "    order_ref TEXT NOT NULL,"
-            "    external_order_id TEXT,"
-            "    is_external INTEGER NOT NULL DEFAULT 0,"
-            "    instrument_id TEXT NOT NULL,"
-            "    exchange_id TEXT NOT NULL,"
-            "    direction CHAR(1),"
-            "    position_effect CHAR(1),"
-            "    price_type CHAR(1),"
-            "    status CHAR(1),"
-            "    price REAL,"
-            "    volume INTEGER,"
-            "    volume_traded INTEGER,"
-            "    volume_canceled INTEGER,"
-            "    insert_time INTEGER,"
-            "    update_time INTEGER,"
-            "    error_id INTEGER,"
-            "    error_msg TEXT,"
-            "    strategy_id TEXT,"
-            "    remark TEXT,"
-            "    seq INTEGER NOT NULL DEFAULT 0,"
-            "    UNIQUE(account_id, order_id))");
+                 "CREATE TABLE IF NOT EXISTS orders ("
+                 "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                 "    account_id TEXT NOT NULL,"
+                 "    trading_day TEXT NOT NULL,"
+                 "    order_id INTEGER NOT NULL,"
+                 "    order_ref TEXT NOT NULL,"
+                 "    external_order_id TEXT,"
+                 "    is_external INTEGER NOT NULL DEFAULT 0,"
+                 "    instrument_id TEXT NOT NULL,"
+                 "    exchange_id TEXT NOT NULL,"
+                 "    direction CHAR(1),"
+                 "    position_effect CHAR(1),"
+                 "    price_type CHAR(1),"
+                 "    status CHAR(1),"
+                 "    price REAL,"
+                 "    volume INTEGER,"
+                 "    volume_traded INTEGER,"
+                 "    volume_canceled INTEGER,"
+                 "    insert_time INTEGER,"
+                 "    update_time INTEGER,"
+                 "    error_id INTEGER,"
+                 "    error_msg TEXT,"
+                 "    strategy_id TEXT,"
+                 "    remark TEXT,"
+                 "    seq INTEGER NOT NULL DEFAULT 0,"
+                 "    UNIQUE(account_id, order_id))");
         exec_sql(db,
-            "CREATE TABLE IF NOT EXISTS trades ("
-            "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "    account_id TEXT NOT NULL,"
-            "    trading_day TEXT NOT NULL,"
-            "    trade_id TEXT NOT NULL,"
-            "    order_id INTEGER NOT NULL,"
-            "    instrument_id TEXT NOT NULL,"
-            "    exchange_id TEXT NOT NULL,"
-            "    direction CHAR(1),"
-            "    position_effect CHAR(1),"
-            "    price REAL NOT NULL,"
-            "    volume INTEGER NOT NULL,"
-            "    trade_time INTEGER,"
-            "    trade_date INTEGER,"
-            "    commission REAL,"
-            "    strategy_id TEXT,"
-            "    seq INTEGER NOT NULL DEFAULT 0,"
-            "    UNIQUE(account_id, trading_day, trade_id))");
+                 "CREATE TABLE IF NOT EXISTS trades ("
+                 "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                 "    account_id TEXT NOT NULL,"
+                 "    trading_day TEXT NOT NULL,"
+                 "    trade_id TEXT NOT NULL,"
+                 "    order_id INTEGER NOT NULL,"
+                 "    instrument_id TEXT NOT NULL,"
+                 "    exchange_id TEXT NOT NULL,"
+                 "    direction CHAR(1),"
+                 "    position_effect CHAR(1),"
+                 "    price REAL NOT NULL,"
+                 "    volume INTEGER NOT NULL,"
+                 "    trade_time INTEGER,"
+                 "    trade_date INTEGER,"
+                 "    commission REAL,"
+                 "    strategy_id TEXT,"
+                 "    seq INTEGER NOT NULL DEFAULT 0,"
+                 "    UNIQUE(account_id, trading_day, trade_id))");
         exec_sql(db,
-            "CREATE TABLE IF NOT EXISTS positions ("
-            "    account_id TEXT NOT NULL,"
-            "    trading_day TEXT NOT NULL,"
-            "    instrument_id TEXT NOT NULL,"
-            "    exchange_id TEXT NOT NULL,"
-            "    direction CHAR(1) NOT NULL,"
-            "    volume INTEGER,"
-            "    frozen_volume INTEGER,"
-            "    today_volume INTEGER,"
-            "    yd_volume INTEGER,"
-            "    price REAL,"
-            "    seq INTEGER NOT NULL DEFAULT 0,"
-            "    UNIQUE(account_id, instrument_id, direction))");
+                 "CREATE TABLE IF NOT EXISTS positions ("
+                 "    account_id TEXT NOT NULL,"
+                 "    trading_day TEXT NOT NULL,"
+                 "    instrument_id TEXT NOT NULL,"
+                 "    exchange_id TEXT NOT NULL,"
+                 "    direction CHAR(1) NOT NULL,"
+                 "    volume INTEGER,"
+                 "    frozen_volume INTEGER,"
+                 "    today_volume INTEGER,"
+                 "    yd_volume INTEGER,"
+                 "    price REAL,"
+                 "    seq INTEGER NOT NULL DEFAULT 0,"
+                 "    UNIQUE(account_id, instrument_id, direction))");
         exec_sql(db,
-            "CREATE TABLE IF NOT EXISTS trading_accounts ("
-            "    account_id TEXT NOT NULL PRIMARY KEY,"
-            "    trading_day TEXT NOT NULL,"
-            "    balance REAL, available REAL, frozen REAL,"
-            "    commission REAL, margin REAL, withdraw_quota REAL,"
-            "    deposit REAL, withdraw REAL,"
-            "    seq INTEGER NOT NULL DEFAULT 0)");
+                 "CREATE TABLE IF NOT EXISTS trading_accounts ("
+                 "    account_id TEXT NOT NULL PRIMARY KEY,"
+                 "    trading_day TEXT NOT NULL,"
+                 "    balance REAL, available REAL, frozen REAL,"
+                 "    commission REAL, margin REAL, withdraw_quota REAL,"
+                 "    deposit REAL, withdraw REAL,"
+                 "    seq INTEGER NOT NULL DEFAULT 0)");
     }
 
     // 打开可写库建 schema（测试塞数据用）。
@@ -130,8 +130,11 @@ protected:
     }
 
     // 往 positions 表插 1 行持仓。
-    static void insert_position(sqlite3* db, const std::string& acct,
-                                const std::string& inst, int64_t volume, uint64_t seq) {
+    static void insert_position(sqlite3* db,
+                                const std::string& acct,
+                                const std::string& inst,
+                                int64_t volume,
+                                uint64_t seq) {
         sqlite3_stmt* stmt = nullptr;
         const char* sql =
             "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
@@ -174,7 +177,8 @@ TEST_F(TdDataServiceTest, MirrorBuiltFromFramesAfterWatermark) {
     // 设 W=100 (等价于重建后 gate 的水位)
     svc.set_watermark("CTP001", 100);
 
-    // 帧按 seq 序到达 (单写者单调): 先 seq=100 (≤ W: 快照已含, 必须跳过), 再 seq=DZ_FRAME_NOTIFY_UI。
+    // 帧按 seq 序到达 (单写者单调): 先 seq=100 (≤ W: 快照已含, 必须跳过), 再
+    // seq=DZ_FRAME_NOTIFY_UI。
     DzPositionInfo p0{};
     dztrader::copy_string(p0.account_id, "CTP001", true);
     dztrader::copy_string(p0.instrument_id, "IF2606", true);
@@ -207,8 +211,8 @@ TEST_F(TdDataServiceTest, Ready2018TriggersRebuildFromDb) {
         insert_position(db, "CTP001", "IF2603", 2, 1);
         insert_position(db, "CTP001", "IF2606", 5, 2);
         exec_sql(db,
-            "INSERT INTO trading_accounts (account_id, trading_day, balance, available, seq)"
-            " VALUES ('CTP001', '20260901', 100000.0, 50000.0, 3)");
+                 "INSERT INTO trading_accounts (account_id, trading_day, balance, available, seq)"
+                 " VALUES ('CTP001', '20260901', 100000.0, 50000.0, 3)");
         sqlite3_close(db);
     }
 
@@ -477,8 +481,8 @@ TEST_F(TdDataServiceTest, RebuildWaitsOutWriteLockInsteadOfDegrading) {
 
     // 持有写锁的连接 (BEGIN IMMEDIATE 抢占写锁)。
     sqlite3* locker = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_open_v2(db_path_.c_str(), &locker,
-                                         SQLITE_OPEN_READWRITE, nullptr));
+    ASSERT_EQ(SQLITE_OK,
+              sqlite3_open_v2(db_path_.c_str(), &locker, SQLITE_OPEN_READWRITE, nullptr));
     char* err = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_exec(locker, "BEGIN IMMEDIATE", nullptr, nullptr, &err));
 
@@ -515,18 +519,18 @@ TEST_F(TdDataServiceTest, GapTriggersRebuildToFillMissingRows) {
         sqlite3* db = open_write(db_path_);
         create_schema(db);
         exec_sql(db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', 1, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " 3800.0, 3, 3, 'stg1', 1),"
-            "        ('CTP001', '20260901', 2, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " 3801.0, 2, 2, 'stg1', 2)");
+                 "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
+                 " exchange_id, direction, position_effect, price_type, status, price, volume,"
+                 " volume_traded, strategy_id, seq)"
+                 " VALUES ('CTP001', '20260901', 1, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+                 " 3800.0, 3, 3, 'stg1', 1),"
+                 "        ('CTP001', '20260901', 2, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+                 " 3801.0, 2, 2, 'stg1', 2)");
         exec_sql(db,
-            "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
-            " exchange_id, direction, position_effect, price, volume, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', 'T1', 1, 'IF2603', 'CFFEX', '1', '1', 3800.0, 1,"
-            " 'stg1', 3)");
+                 "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
+                 " exchange_id, direction, position_effect, price, volume, strategy_id, seq)"
+                 " VALUES ('CTP001', '20260901', 'T1', 1, 'IF2603', 'CFFEX', '1', '1', 3800.0, 1,"
+                 " 'stg1', 3)");
         insert_position(db, "CTP001", "IF2603", 3, 4);
         sqlite3_close(db);
     }
@@ -575,22 +579,22 @@ TEST_F(TdDataServiceTest, RebuildMirrorOnlyCurrentTradingDay) {
         sqlite3* db = open_write(db_path_);
         create_schema(db);
         exec_sql(db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', 1, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " 3800.0, 3, 3, 'stg1', 1),"
-            "        ('CTP001', '20260901', 2, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " 3801.0, 2, 2, 'stg1', 2),"
-            "        ('CTP001', '20260902', 3, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " 3802.0, 5, 5, 'stg1', 3)");
+                 "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
+                 " exchange_id, direction, position_effect, price_type, status, price, volume,"
+                 " volume_traded, strategy_id, seq)"
+                 " VALUES ('CTP001', '20260901', 1, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+                 " 3800.0, 3, 3, 'stg1', 1),"
+                 "        ('CTP001', '20260901', 2, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+                 " 3801.0, 2, 2, 'stg1', 2),"
+                 "        ('CTP001', '20260902', 3, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+                 " 3802.0, 5, 5, 'stg1', 3)");
         exec_sql(db,
-            "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
-            " exchange_id, direction, position_effect, price, volume, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', 'T1', 1, 'IF2603', 'CFFEX', '1', '1', 3800.0, 1,"
-            " 'stg1', 1),"
-            "        ('CTP001', '20260902', 'T2', 3, 'IF2603', 'CFFEX', '1', '1', 3802.0, 1,"
-            " 'stg1', 3)");
+                 "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
+                 " exchange_id, direction, position_effect, price, volume, strategy_id, seq)"
+                 " VALUES ('CTP001', '20260901', 'T1', 1, 'IF2603', 'CFFEX', '1', '1', 3800.0, 1,"
+                 " 'stg1', 1),"
+                 "        ('CTP001', '20260902', 'T2', 3, 'IF2603', 'CFFEX', '1', '1', 3802.0, 1,"
+                 " 'stg1', 3)");
         sqlite3_close(db);
     }
 
@@ -637,15 +641,15 @@ TEST_F(TdDataServiceTest, RebuildWatermarkSharesMirrorSnapshot) {
         sqlite3* db = open_write(db_path_);
         create_schema(db);
         exec_sql(db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', 1, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " 3800.0, 3, 3, 'stg1', 1),"
-            "        ('CTP001', '20260901', 2, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " 3801.0, 2, 2, 'stg1', 2),"
-            "        ('CTP001', '20260901', 3, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " 3802.0, 1, 1, 'stg1', 3)");
+                 "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
+                 " exchange_id, direction, position_effect, price_type, status, price, volume,"
+                 " volume_traded, strategy_id, seq)"
+                 " VALUES ('CTP001', '20260901', 1, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+                 " 3800.0, 3, 3, 'stg1', 1),"
+                 "        ('CTP001', '20260901', 2, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+                 " 3801.0, 2, 2, 'stg1', 2),"
+                 "        ('CTP001', '20260901', 3, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+                 " 3802.0, 1, 1, 'stg1', 3)");
         insert_position(db, "CTP001", "IF2603", 3, 4);
         sqlite3_close(db);
     }
@@ -698,9 +702,9 @@ TEST_F(TdDataServiceTest, RebuildWatermarkSharesMirrorSnapshot) {
 
     // IF2606@seq5 必在镜像 (快照含或帧放行); 不允许"W 已含却镜像无行"的缺条。
     const auto& positions = svc.positions();
-    const auto found = std::find_if(positions.begin(), positions.end(), [](const DzPositionInfo& p) {
-        return std::string_view(p.instrument_id) == "IF2606";
-    });
+    const auto found = std::find_if(
+        positions.begin(), positions.end(),
+        [](const DzPositionInfo& p) { return std::string_view(p.instrument_id) == "IF2606"; });
     ASSERT_NE(positions.end(), found) << "seq=5 持仓帧被 W 过滤且镜像缺行 (W 快照 ≠ 镜像快照)";
     EXPECT_EQ(7, found->volume);
 }

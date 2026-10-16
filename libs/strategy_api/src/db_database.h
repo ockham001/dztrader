@@ -176,8 +176,8 @@ DbQueryResult db_query_seq_range(DzDatabase* db,
  * @param resource "order"/"trade"/"position"/"trading_account" (仅 seq 表)
  * @return account_id -> MAX(seq)。表缺失/查询失败抛异常 (调用方逐表容错)。
  */
-std::unordered_map<std::string, uint64_t> db_query_max_seq_by_account(
-    DzDatabase* db, const std::string& resource);
+std::unordered_map<std::string, uint64_t> db_query_max_seq_by_account(DzDatabase* db,
+                                                                      const std::string& resource);
 
 /**
  * @brief 单账户 MAX(seq) (水位重建用, 终检发现 E: 替代该账户全行物化)。

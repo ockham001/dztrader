@@ -28,29 +28,42 @@ const FieldSchema& require_field(const ResourceSchema& schema, std::string_view 
 
 const char* compare_operator(CompareOp op) {
     switch (op) {
-        case CompareOp::Eq: return "=";
-        case CompareOp::Ne: return "!=";
-        case CompareOp::Gt: return ">";
-        case CompareOp::Gte: return ">=";
-        case CompareOp::Lt: return "<";
-        case CompareOp::Lte: return "<=";
-        case CompareOp::In: return "IN";
+        case CompareOp::Eq:
+            return "=";
+        case CompareOp::Ne:
+            return "!=";
+        case CompareOp::Gt:
+            return ">";
+        case CompareOp::Gte:
+            return ">=";
+        case CompareOp::Lt:
+            return "<";
+        case CompareOp::Lte:
+            return "<=";
+        case CompareOp::In:
+            return "IN";
     }
     return "=";
 }
 
 const char* aggregate_function(AggregateOp op) {
     switch (op) {
-        case AggregateOp::Count: return "COUNT";
-        case AggregateOp::Max: return "MAX";
-        case AggregateOp::Min: return "MIN";
-        case AggregateOp::Sum: return "SUM";
-        case AggregateOp::Avg: return "AVG";
+        case AggregateOp::Count:
+            return "COUNT";
+        case AggregateOp::Max:
+            return "MAX";
+        case AggregateOp::Min:
+            return "MIN";
+        case AggregateOp::Sum:
+            return "SUM";
+        case AggregateOp::Avg:
+            return "AVG";
     }
     return "COUNT";
 }
 
-std::string order_by_clause(const ResourceSchema& schema, std::span<const SortSpec> sort,
+std::string order_by_clause(const ResourceSchema& schema,
+                            std::span<const SortSpec> sort,
                             const SqlDialect& dialect) {
     if (sort.empty()) {
         return {};
@@ -86,7 +99,8 @@ const FieldSchema* find_field(const ResourceSchema& schema, std::string_view nam
     return nullptr;
 }
 
-CompiledFilter compile_filter(std::span<const Condition> conditions, const ResourceSchema& schema,
+CompiledFilter compile_filter(std::span<const Condition> conditions,
+                              const ResourceSchema& schema,
                               const SqlDialect& dialect) {
     CompiledFilter compiled;
     for (const Condition& condition : conditions) {
@@ -159,7 +173,8 @@ std::string build_insert_sql(const ResourceSchema& schema, const SqlDialect& dia
     return sql;
 }
 
-std::string build_delete_sql(const ResourceSchema& schema, const CompiledFilter& filter,
+std::string build_delete_sql(const ResourceSchema& schema,
+                             const CompiledFilter& filter,
                              const SqlDialect& dialect) {
     std::string sql = "DELETE FROM ";
     sql += quote_ident(dialect, schema.name);
@@ -169,8 +184,11 @@ std::string build_delete_sql(const ResourceSchema& schema, const CompiledFilter&
     return sql;
 }
 
-std::string build_select_sql(const ResourceSchema& schema, const CompiledFilter& filter,
-                             std::span<const SortSpec> sort, int64_t offset, int64_t limit,
+std::string build_select_sql(const ResourceSchema& schema,
+                             const CompiledFilter& filter,
+                             std::span<const SortSpec> sort,
+                             int64_t offset,
+                             int64_t limit,
                              const SqlDialect& dialect) {
     std::string sql = "SELECT ";
     sql += build_column_list(schema, dialect);
@@ -192,9 +210,12 @@ std::string build_select_sql(const ResourceSchema& schema, const CompiledFilter&
     return sql;
 }
 
-std::string build_aggregate_sql(const ResourceSchema& schema, AggregateOp op, std::string_view field,
+std::string build_aggregate_sql(const ResourceSchema& schema,
+                                AggregateOp op,
+                                std::string_view field,
                                 std::span<const std::string> group_by,
-                                const CompiledFilter& filter, std::span<const SortSpec> sort,
+                                const CompiledFilter& filter,
+                                std::span<const SortSpec> sort,
                                 const SqlDialect& dialect) {
     std::string sql = "SELECT ";
     for (size_t i = 0; i < group_by.size(); ++i) {

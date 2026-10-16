@@ -15,8 +15,7 @@
 // 内 extern 声明, 不 include td_api.h——它携带 TdApi 类定义, 测试目标未链接完整依赖)。
 // 本文件同做法: 在 namespace dztrader::ctp {} 内 extern 声明, 签名与 td_api.h 纯函数区一致
 namespace dztrader::ctp {
-bool account_query_matches(const std::vector<std::string>& configured,
-                           const std::string& queried);
+bool account_query_matches(const std::vector<std::string>& configured, const std::string& queried);
 /// 2018 三态去重判定 (契约 account-status): 非强制时, 同态且非 Offline 不推;
 /// Offline 恒推 (删账户/崩溃兜底语义)。force (快照/查询应答) 绕过去重。
 bool should_push_account_status(DzAccountState last, DzAccountState next, bool force);
@@ -38,34 +37,34 @@ TEST(AccountQueryRoute, UnconfiguredNotMatched) {
 
 // 同态且非 Offline -> 不推 (去重)
 TEST(ShouldPushAccountStatus, SameStateNonOfflineSkipped) {
-    EXPECT_FALSE(dztrader::ctp::should_push_account_status(
-        DZ_ACCOUNT_LOGGING_IN, DZ_ACCOUNT_LOGGING_IN, false));
-    EXPECT_FALSE(dztrader::ctp::should_push_account_status(
-        DZ_ACCOUNT_READY, DZ_ACCOUNT_READY, false));
+    EXPECT_FALSE(dztrader::ctp::should_push_account_status(DZ_ACCOUNT_LOGGING_IN,
+                                                           DZ_ACCOUNT_LOGGING_IN, false));
+    EXPECT_FALSE(
+        dztrader::ctp::should_push_account_status(DZ_ACCOUNT_READY, DZ_ACCOUNT_READY, false));
 }
 
 // force (快照/查询应答) 绕过去重: 同态也推
 TEST(ShouldPushAccountStatus, ForceBypassesDedup) {
-    EXPECT_TRUE(dztrader::ctp::should_push_account_status(
-        DZ_ACCOUNT_READY, DZ_ACCOUNT_READY, true));
-    EXPECT_TRUE(dztrader::ctp::should_push_account_status(
-        DZ_ACCOUNT_LOGGING_IN, DZ_ACCOUNT_LOGGING_IN, true));
+    EXPECT_TRUE(
+        dztrader::ctp::should_push_account_status(DZ_ACCOUNT_READY, DZ_ACCOUNT_READY, true));
+    EXPECT_TRUE(dztrader::ctp::should_push_account_status(DZ_ACCOUNT_LOGGING_IN,
+                                                          DZ_ACCOUNT_LOGGING_IN, true));
 }
 
 // Offline 恒推: 删账户/崩溃兜底语义依赖必达 (含 Offline->Offline)
 TEST(ShouldPushAccountStatus, OfflineAlwaysPushes) {
-    EXPECT_TRUE(dztrader::ctp::should_push_account_status(
-        DZ_ACCOUNT_READY, DZ_ACCOUNT_OFFLINE, false));
-    EXPECT_TRUE(dztrader::ctp::should_push_account_status(
-        DZ_ACCOUNT_OFFLINE, DZ_ACCOUNT_OFFLINE, false));
+    EXPECT_TRUE(
+        dztrader::ctp::should_push_account_status(DZ_ACCOUNT_READY, DZ_ACCOUNT_OFFLINE, false));
+    EXPECT_TRUE(
+        dztrader::ctp::should_push_account_status(DZ_ACCOUNT_OFFLINE, DZ_ACCOUNT_OFFLINE, false));
 }
 
 // 三态翻转 -> 推
 TEST(ShouldPushAccountStatus, StateChangePushes) {
-    EXPECT_TRUE(dztrader::ctp::should_push_account_status(
-        DZ_ACCOUNT_OFFLINE, DZ_ACCOUNT_LOGGING_IN, false));
-    EXPECT_TRUE(dztrader::ctp::should_push_account_status(
-        DZ_ACCOUNT_LOGGING_IN, DZ_ACCOUNT_READY, false));
+    EXPECT_TRUE(dztrader::ctp::should_push_account_status(DZ_ACCOUNT_OFFLINE, DZ_ACCOUNT_LOGGING_IN,
+                                                          false));
+    EXPECT_TRUE(
+        dztrader::ctp::should_push_account_status(DZ_ACCOUNT_LOGGING_IN, DZ_ACCOUNT_READY, false));
 }
 
 // ---- epoch_day_from_yyyymmdd: 交易日转换 (audit C-F1) ----

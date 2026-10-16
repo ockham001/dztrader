@@ -67,7 +67,7 @@ TEST(TdIngestGate, TradeDedupSecondLine) {
 TEST(TdIngestGate, TradeDedupClearedOnTradingDayChange) {
     TdIngestGate g;
     (void)g.admit_trade("A", "20260901", "T1");
-    g.on_trading_day_changed("A", "20260902");  // 新 day → 清旧段
+    g.on_trading_day_changed("A", "20260902");          // 新 day → 清旧段
     EXPECT_TRUE(g.admit_trade("A", "20260902", "T1"));  // 不被旧段拦截
 }
 
@@ -98,7 +98,7 @@ TEST(TdIngestGate, TradeDedupReAdmitAfterReset) {
     (void)g.admit_trade("A", "20260901", "T1");
     EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));
     g.reset_account("A", 5);
-    EXPECT_TRUE(g.admit_trade("A", "20260901", "T1"));  // 重置后重建集合, 不拦截
+    EXPECT_TRUE(g.admit_trade("A", "20260901", "T1"));   // 重置后重建集合, 不拦截
     EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));  // 重建后的二道防线仍生效
 }
 
@@ -109,7 +109,7 @@ TEST(TdIngestGate, TradeDedupExplicitDayChangeAllowsSameTradeAcrossDays) {
     (void)g.admit_trade("A", "20260901", "T1");
     EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));
     g.on_trading_day_changed("A", "20260902");
-    EXPECT_TRUE(g.admit_trade("A", "20260902", "T1"));  // 显式切换后新日放行
+    EXPECT_TRUE(g.admit_trade("A", "20260902", "T1"));   // 显式切换后新日放行
     EXPECT_FALSE(g.admit_trade("A", "20260902", "T1"));  // 新日段正常去重
 }
 

@@ -35,8 +35,8 @@ TdConfig TdConfig::load(const std::filesystem::path& path, const std::string& se
     }
     try {
         auto cfg = dztrader::core::load_json_section<TdConfig>(path, section);
-        SPDLOG_INFO("dztd_ctp config loaded | path={} accounts={}",
-                    path.string(), cfg.accounts.size());
+        SPDLOG_INFO("dztd_ctp config loaded | path={} accounts={}", path.string(),
+                    cfg.accounts.size());
         return cfg;
     } catch (const std::exception& e) {
         throw std::runtime_error(std::format("dztd_ctp config parse failed | path={} error=\"{}\"",

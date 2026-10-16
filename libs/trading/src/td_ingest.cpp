@@ -89,7 +89,8 @@ void TdIngestGate::reset_account(const std::string& account_id, uint64_t new_w) 
     erase_trade_segments(account_id);
 }
 
-bool TdIngestGate::admit_trade(const std::string& account_id, const char* trading_day,
+bool TdIngestGate::admit_trade(const std::string& account_id,
+                               const char* trading_day,
                                const char* trade_id) {
     if (trading_day == nullptr || trade_id == nullptr) {
         return false;

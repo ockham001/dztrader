@@ -20,7 +20,8 @@
 namespace dztrader::webui {
 
 /// 提供数据变更通知/踢人能力（实现 DataChangeNotifier 薄接口）：
-/// 各业务 controller 构造时注入自身引用（取代原全局函数指针 g_broadcast_data_changed / g_kick_user）
+/// 各业务 controller 构造时注入自身引用（取代原全局函数指针 g_broadcast_data_changed /
+/// g_kick_user）
 class WsController : public drogon::WebSocketController<WsController, false>,
                      public WsBroadcaster,
                      public DataChangeNotifier {
@@ -84,10 +85,10 @@ private:
     /// 单连接订阅状态
     struct Session {
         std::string user_id;
-        std::string subscribed_log_file;  // empty = no subscription
+        std::string subscribed_log_file;    // empty = no subscription
         LogService::TailCursor log_cursor;  // tail 游标（字节偏移+行号，增量读）
-        int tail_fail_count = 0;          // 连续 send 失败次数；达到 3 自动退订
-        bool is_admin = false;             // 连接时按 DB 角色缓存（admin 角色控制消息预检）
+        int tail_fail_count = 0;            // 连续 send 失败次数；达到 3 自动退订
+        bool is_admin = false;              // 连接时按 DB 角色缓存（admin 角色控制消息预检）
     };
     std::unordered_map<drogon::WebSocketConnectionPtr, Session> sessions_;
 

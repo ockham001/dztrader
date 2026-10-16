@@ -28,8 +28,10 @@ enum class LogControlResult {
 /// handle_log_control()：日志控制请求分发（HTTP set_level/flush 的日志配置核心，
 /// 原 log_control.cpp 的 dispatch_log_control 迁入）：
 ///   target == 本进程(exe_stem)：直调 self_log_（不走 SHM），SET 成功后（或失败回退）
-///     经 publish 回推 WS；失败时 event_writer_ 非空则发 NOTIFY_UI 错误弹窗（契约 log 失败四件套）。
-///   否则写 SHM 帧（SET_LOG_CONFIG / FLUSH_LOG），event_writer_ 为空时跳过（API-only 下其他进程不可达）。
+///     经 publish 回推 WS；失败时 event_writer_ 非空则发 NOTIFY_UI 错误弹窗（契约 log
+///     失败四件套）。
+///   否则写 SHM 帧（SET_LOG_CONFIG / FLUSH_LOG），event_writer_ 为空时跳过（API-only
+///   下其他进程不可达）。
 /// 职责边界与 libs/platform 的 LogConfig 一致：时机由外部控制，本服务不主动触发。
 class LogDomainService {
 public:
@@ -37,7 +39,10 @@ public:
                      WsBroadcaster& ws,
                      dztrader::platform::LogConfig& self_log,
                      shm::MultiWriter* event_writer)
-        : mirror_(mirror), ws_(ws), self_log_(self_log), event_writer_(event_writer) {}
+        : mirror_(mirror),
+          ws_(ws),
+          self_log_(self_log),
+          event_writer_(event_writer) {}
 
     void on_rtn_log_config(const std::string& source, const nlohmann::json& payload) {
         mirror_.update(source, "log_config", payload);
@@ -66,7 +71,8 @@ public:
                     applied = false;
                     SPDLOG_WARN("webui set log config failed | error={}", e.what());
                     if (event_writer_) {
-                        dztrader::platform::NotifyUi(dztrader::this_process::exe_stem(), *event_writer_)
+                        dztrader::platform::NotifyUi(dztrader::this_process::exe_stem(),
+                                                     *event_writer_)
                             .error(std::string("日志配置更新失败: ") + e.what());
                     }
                 }
@@ -80,8 +86,8 @@ public:
                 return LogControlResult::WriteFailed;
             }
             try {
-                if (dztrader::platform::write_ext_inst_json(
-                        *event_writer_, DZ_FRAME_SET_LOG_CONFIG, target, payload)) {
+                if (dztrader::platform::write_ext_inst_json(*event_writer_, DZ_FRAME_SET_LOG_CONFIG,
+                                                            target, payload)) {
                     return LogControlResult::Ok;  // platform 层已含 notify_subscribers
                 }
             } catch (const std::exception& e) {
@@ -100,7 +106,8 @@ public:
                 return LogControlResult::WriteFailed;
             }
             try {
-                if (dztrader::platform::write_ext_inst_raw(*event_writer_, DZ_FRAME_FLUSH_LOG, target)) {
+                if (dztrader::platform::write_ext_inst_raw(*event_writer_, DZ_FRAME_FLUSH_LOG,
+                                                           target)) {
                     return LogControlResult::Ok;
                 }
             } catch (const std::exception& e) {

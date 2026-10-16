@@ -69,15 +69,17 @@ struct DzContext {
               const std::filesystem::path& chn_order_id_dir,
               const std::filesystem::path& chn_md_dir)
         : sem{dztrader::strategy_identity(strategy_id)},
-          md_reader{dztrader::shm::Reader::create(
-              checked_md_source_name(md_source_name), chn_md_dir,
-              dztrader::strategy_identity(strategy_id))},
-          event_reader{dztrader::shm::Reader::create(chn_event_name, chn_event_dir,
-                                                      dztrader::strategy_identity(strategy_id))},
-          event_writer{dztrader::shm::MultiWriter::create(chn_event_name, chn_event_dir,
-                                                           dztrader::strategy_identity(strategy_id))},
-          order_id{dztrader::shm::OrderIdMeta::open_or_create(chn_order_id_name, chn_order_id_dir)} {
-        dztrader::copy_string(this->md_source_name, checked_md_source_name(md_source_name).c_str(), true);
+          md_reader{dztrader::shm::Reader::create(checked_md_source_name(md_source_name),
+                                                  chn_md_dir,
+                                                  dztrader::strategy_identity(strategy_id))},
+          event_reader{dztrader::shm::Reader::create(
+              chn_event_name, chn_event_dir, dztrader::strategy_identity(strategy_id))},
+          event_writer{dztrader::shm::MultiWriter::create(
+              chn_event_name, chn_event_dir, dztrader::strategy_identity(strategy_id))},
+          order_id{
+              dztrader::shm::OrderIdMeta::open_or_create(chn_order_id_name, chn_order_id_dir)} {
+        dztrader::copy_string(this->md_source_name, checked_md_source_name(md_source_name).c_str(),
+                              true);
         dztrader::copy_string(this->strategy_id, strategy_id.c_str(), true);
         strategy_home = dztrader::this_process::exe_dir().string();
     }
@@ -132,8 +134,7 @@ struct DzContext {
         } payload;
     };
     /// 槽 payload 容量 (联合最大成员) — enqueue_replay_frame 上界钳制用。
-    static constexpr uint32_t REPLAY_FRAME_MAX_PAYLOAD =
-        sizeof(ReplayFrameSlot::payload);
+    static constexpr uint32_t REPLAY_FRAME_MAX_PAYLOAD = sizeof(ReplayFrameSlot::payload);
     std::array<ReplayFrameSlot, REPLAY_FRAME_SLOTS> replay_frames{};
     uint32_t replay_frame_head = 0;   ///< 下一个可写槽位
     uint32_t replay_frame_count = 0;  ///< 待领取帧数
@@ -191,15 +192,19 @@ struct DzContext {
 
         bool active = false;
         std::string account_id;
-        uint64_t from = 0;  ///< gap 起点 (含)
-        uint64_t to = 0;    ///< gap 终点 (含)
-        uint32_t attempts = 0;  ///< 已尝试次数 (首次计入)
-        DzFrameType trigger_type{};  ///< 被拦截触发帧的类型
+        uint64_t from = 0;                       ///< gap 起点 (含)
+        uint64_t to = 0;                         ///< gap 终点 (含)
+        uint32_t attempts = 0;                   ///< 已尝试次数 (首次计入)
+        DzFrameType trigger_type{};              ///< 被拦截触发帧的类型
         std::vector<std::byte> trigger_payload;  ///< 被拦截触发帧 payload 副本 (补发用)
         std::vector<StagedFrame> staged_frames;  ///< 重试期间拦截的后续帧 (FIFO, seq 序)
 
-        void begin(const std::string& acct, uint64_t f, uint64_t t, DzFrameType type,
-                   const std::byte* payload, uint32_t payload_size) {
+        void begin(const std::string& acct,
+                   uint64_t f,
+                   uint64_t t,
+                   DzFrameType type,
+                   const std::byte* payload,
+                   uint32_t payload_size) {
             active = true;
             account_id = acct;
             from = f;
@@ -251,7 +256,7 @@ struct DzContext {
     struct UserTimerEntry {
         enum class Kind : uint8_t { After, Every, AtOnce, Daily };
         Kind kind = Kind::After;
-        int32_t time_of_day_ms = 0;  ///< AtOnce/Daily: 距午夜毫秒 (Daily 重排用)
+        int32_t time_of_day_ms = 0;            ///< AtOnce/Daily: 距午夜毫秒 (Daily 重排用)
         std::chrono::milliseconds interval{};  ///< Every: 触发间隔
         /// Every: 上次到期点 + interval 重排的基准 (漂移无关);
         /// After/AtOnce/Daily: 首次/下次到期点
@@ -506,8 +511,7 @@ private:
                                       "DZTRADER_MD_SOURCE is empty");
         }
         if (name.size() >= sizeof(DzInstanceId)) {
-            throw dztrader::Exception(DZ_EC_INVALID_PARAM,
-                                      "market source name too long (max 63)");
+            throw dztrader::Exception(DZ_EC_INVALID_PARAM, "market source name too long (max 63)");
         }
         for (char c : name) {
             if (c == '/' || c == '\\' || (static_cast<unsigned char>(c) < 0x20)) {

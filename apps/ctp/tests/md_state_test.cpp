@@ -30,7 +30,7 @@ TEST_F(MdStateMachineTest, ConnectFromIdleTransitionsToConnecting) {
 }
 
 TEST_F(MdStateMachineTest, ConnectFromNonIdleRejected) {
-    sm.on_connect();  // 现处于 Connecting
+    sm.on_connect();               // 现处于 Connecting
     auto notif = sm.on_connect();  // 被拒绝
     EXPECT_EQ(sm.state(), MdState::Connecting);
     EXPECT_FALSE(notif.has_value());

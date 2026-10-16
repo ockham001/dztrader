@@ -44,7 +44,10 @@ void MdApi::connect() {
     // 检查是否有 enabled 前置（在创建 api 之前，避免创建后无前置可注册）
     bool has_enabled = false;
     for (const auto& fe : current_broker->frontends) {
-        if (fe.enabled) { has_enabled = true; break; }
+        if (fe.enabled) {
+            has_enabled = true;
+            break;
+        }
     }
     if (!has_enabled) {
         SPDLOG_WARN("connect rejected | reason=\"no_enabled_frontend\" broker=\"{}\"",
@@ -72,8 +75,8 @@ void MdApi::connect() {
     state_machine_.on_connect();
     report_progress();
     // 30s 连接超时: 未收到 OnFrontConnected 则自动 disconnect 回 Idle
-    connect_timer_id_ = timer_queue_.schedule_after_replace(
-        "connect_timeout", std::chrono::seconds(30), [this]() {
+    connect_timer_id_ =
+        timer_queue_.schedule_after_replace("connect_timeout", std::chrono::seconds(30), [this]() {
             if (state_machine_.state() == MdState::Connecting) {
                 SPDLOG_WARN("connect timeout, disconnecting | timeout=30s");
                 disconnect();
@@ -126,8 +129,8 @@ void MdApi::req_user_login() {
     // ReqUserLogin 成功后才转移状态, 避免失败时永久 stuck LoggingIn
     state_machine_.on_req_login();
     // 登录超时: 10s 内未收到 OnRspUserLogin 则回退到 Connected
-    login_timer_id_ = timer_queue_.schedule_after_replace(
-        "login_timeout", std::chrono::seconds(10), [this]() {
+    login_timer_id_ =
+        timer_queue_.schedule_after_replace("login_timeout", std::chrono::seconds(10), [this]() {
             if (state_machine_.state() == MdState::LoggingIn) {
                 SPDLOG_WARN("login timeout, fallback to connected | timeout=10s");
                 if (auto n = state_machine_.on_login_failed()) notify_ui(*n);
@@ -209,7 +212,7 @@ void MdApi::disconnect() {
         timer_queue_.cancel(connect_timer_id_);
         connect_timer_id_ = 0;
     }
-    cancel_login_timer();                    // 取消可能挂起的登录超时
+    cancel_login_timer();  // 取消可能挂起的登录超时
     if (api_ != nullptr) {
         api_->Release();
         api_ = nullptr;
@@ -304,9 +307,10 @@ void MdApi::on_rsp_user_login(const OnRspUserLoginField& rsp) {
 
     std::string login_time;
     try {
-        login_time = DateTime::system_to_local(
-            DateTime::from_timestamp(std::chrono::system_clock::to_time_t(rsp.rsp_time)))
-            .to_string();
+        login_time =
+            DateTime::system_to_local(
+                DateTime::from_timestamp(std::chrono::system_clock::to_time_t(rsp.rsp_time)))
+                .to_string();
     } catch (const std::exception& e) {
         SPDLOG_WARN("login time parse failed, use empty | error=\"{}\"", e.what());
         // login_time 保持空串, 继续执行 on_login_success 确保状态转移

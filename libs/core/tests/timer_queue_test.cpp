@@ -148,9 +148,7 @@ TEST(TimerQueue, TimersWithDifferentDeadlines) {
 TEST(TimerQueue, ScheduleInCallbackDoesNotTriggerInSameTick) {
     TimerQueue tq;
     bool second_called = false;
-    tq.schedule_after(0ms, [&] {
-        tq.schedule_after(0ms, [&] { second_called = true; });
-    });
+    tq.schedule_after(0ms, [&] { tq.schedule_after(0ms, [&] { second_called = true; }); });
 
     tq.tick();
     EXPECT_FALSE(second_called);
@@ -399,10 +397,10 @@ TEST(TimerQueue, NextTimeoutHandlesLongDuration) {
 // tick 部分触发后, next_timeout 返回剩余定时器中最早的
 TEST(TimerQueue, NextTimeoutAfterPartialTick) {
     TimerQueue tq;
-    tq.schedule_at(TimerQueue::Clock::now(), [] {});              // 立即过期
-    tq.schedule_after(std::chrono::hours(1), [] {});              // 1 小时后
+    tq.schedule_at(TimerQueue::Clock::now(), [] {});  // 立即过期
+    tq.schedule_after(std::chrono::hours(1), [] {});  // 1 小时后
     ASSERT_FALSE(tq.empty());
-    tq.tick();  // 仅触发过期的
+    tq.tick();                 // 仅触发过期的
     ASSERT_FALSE(tq.empty());  // 还有 1 小时那个
     auto to = tq.next_timeout();
     EXPECT_GE(to, std::chrono::minutes(58));
@@ -415,7 +413,7 @@ TEST(TimerQueue, CancelOtherTimerInCallback) {
     bool called_b = false;
     auto id_b = tq.schedule_after(0ms, [&] { called_b = true; });
     tq.schedule_after(0ms, [&] { tq.cancel(id_b); });  // 回调内取消 b
-    EXPECT_NO_FATAL_FAILURE(tq.tick());  // 不应崩溃 (b 是否已触发取决于顺序)
+    EXPECT_NO_FATAL_FAILURE(tq.tick());                // 不应崩溃 (b 是否已触发取决于顺序)
 }
 
 // 回调内用 replace 重新调度同 tag 不应崩溃
@@ -427,7 +425,7 @@ TEST(TimerQueue, ReplaceSameTagInCallback) {
         tq.schedule_after_replace("self", 10s, [&] { ++count; });  // 回调内 replace 自身
     });
     EXPECT_NO_FATAL_FAILURE(tq.tick());
-    EXPECT_EQ(count, 1);  // 第一轮只触发一次
+    EXPECT_EQ(count, 1);       // 第一轮只触发一次
     EXPECT_FALSE(tq.empty());  // 新的 10s 定时器存在
 }
 

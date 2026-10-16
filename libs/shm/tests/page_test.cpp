@@ -27,8 +27,7 @@ protected:
     ChannelConfig config_;
     std::shared_ptr<ChannelMeta> meta_;
 
-    void SetUp() override
-    {
+    void SetUp() override {
         channel_name_ = unique_channel_name("dz_test_page");
         shm_dir_ = test_shm_dir(channel_name_);
         config_ = {
@@ -42,15 +41,13 @@ protected:
         meta_ = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(config_));
     }
 
-    void TearDown() override
-    {
+    void TearDown() override {
         meta_.reset();
         cleanup_test_dir(shm_dir_);
     }
 };
 
-TEST_F(PageTest, CreatePageFromChannelMeta)
-{
+TEST_F(PageTest, CreatePageFromChannelMeta) {
     PagePool pool(meta_);
     auto page = pool.get_page(0);
     ASSERT_TRUE(page.has_value());
@@ -60,8 +57,7 @@ TEST_F(PageTest, CreatePageFromChannelMeta)
     EXPECT_EQ(page->page_id(), 0u);
 }
 
-TEST_F(PageTest, PageAddressWritable)
-{
+TEST_F(PageTest, PageAddressWritable) {
     PagePool pool(meta_);
     auto page = pool.get_page(0);
     ASSERT_TRUE(page.has_value());
@@ -72,13 +68,13 @@ TEST_F(PageTest, PageAddressWritable)
 
     boost::interprocess::file_mapping mfile((meta_->page_dir() / "00000000.dat").string().c_str(),
                                             boost::interprocess::read_only);
-    boost::interprocess::mapped_region region(mfile, boost::interprocess::read_only, offset, sizeof(test_data));
+    boost::interprocess::mapped_region region(mfile, boost::interprocess::read_only, offset,
+                                              sizeof(test_data));
 
     EXPECT_EQ(std::memcmp(region.get_address(), test_data, sizeof(test_data)), 0);
 }
 
-TEST_F(PageTest, PageIdFromFilename)
-{
+TEST_F(PageTest, PageIdFromFilename) {
     PagePool pool(meta_);
 
     auto page0 = pool.get_page(0);
@@ -91,8 +87,7 @@ TEST_F(PageTest, PageIdFromFilename)
     EXPECT_EQ(page1->page_id(), 1u);
 }
 
-TEST_F(PageTest, DataPointerOffsetAccess)
-{
+TEST_F(PageTest, DataPointerOffsetAccess) {
     PagePool pool(meta_);
     auto page = pool.get_page(0);
     ASSERT_TRUE(page.has_value());

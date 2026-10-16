@@ -2,8 +2,9 @@
 
 namespace dztrader::webui {
 
-void NotifyCtrl::get_recent(const drogon::HttpRequestPtr& req,
-                            std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+void NotifyCtrl::get_recent(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     (void)req;
     if (!notify_cache_) {
         callback(json_response(drogon::k200OK, {{"notifications", nlohmann::json::array()}}));

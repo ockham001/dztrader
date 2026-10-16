@@ -41,8 +41,9 @@ Json SecurityCtrl::login_history_to_json(const LoginHistoryEntry& h) {
 // GET /api/security/config
 // ---------------------------------------------------------------------------
 
-void SecurityCtrl::get_config(const drogon::HttpRequestPtr& req,
-                              std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+void SecurityCtrl::get_config(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -61,8 +62,9 @@ void SecurityCtrl::get_config(const drogon::HttpRequestPtr& req,
 // PUT /api/security/config
 // ---------------------------------------------------------------------------
 
-void SecurityCtrl::set_config(const drogon::HttpRequestPtr& req,
-                              std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+void SecurityCtrl::set_config(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -89,8 +91,8 @@ void SecurityCtrl::set_config(const drogon::HttpRequestPtr& req,
     }
 
     if (!repo_->set_security_config(config)) {
-        callback(error_response(drogon::k500InternalServerError,
-                                "failed to update security config"));
+        callback(
+            error_response(drogon::k500InternalServerError, "failed to update security config"));
         return;
     }
 
@@ -108,8 +110,9 @@ void SecurityCtrl::set_config(const drogon::HttpRequestPtr& req,
 // GET /api/security/blacklist
 // ---------------------------------------------------------------------------
 
-void SecurityCtrl::list_blacklist(const drogon::HttpRequestPtr& req,
-                                  std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+void SecurityCtrl::list_blacklist(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -126,8 +129,9 @@ void SecurityCtrl::list_blacklist(const drogon::HttpRequestPtr& req,
 // POST /api/security/blacklist
 // ---------------------------------------------------------------------------
 
-void SecurityCtrl::add_blacklist(const drogon::HttpRequestPtr& req,
-                                 std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+void SecurityCtrl::add_blacklist(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -163,16 +167,18 @@ void SecurityCtrl::add_blacklist(const drogon::HttpRequestPtr& req,
         }
     }
     notifier_.broadcast_data_changed("blacklist");
-    callback(json_response(drogon::k201Created, Json{{"ip", ip}, {"reason", reason}, {"source", "manual"}}));
+    callback(json_response(drogon::k201Created,
+                           Json{{"ip", ip}, {"reason", reason}, {"source", "manual"}}));
 }
 
 // ---------------------------------------------------------------------------
 // DELETE /api/security/blacklist/{id}
 // ---------------------------------------------------------------------------
 
-void SecurityCtrl::remove_blacklist(const drogon::HttpRequestPtr& req,
-                                    std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
-                                    int64_t id) {
+void SecurityCtrl::remove_blacklist(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
+    int64_t id) {
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -191,8 +197,9 @@ void SecurityCtrl::remove_blacklist(const drogon::HttpRequestPtr& req,
 // GET /api/security/whitelist
 // ---------------------------------------------------------------------------
 
-void SecurityCtrl::list_whitelist(const drogon::HttpRequestPtr& req,
-                                  std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+void SecurityCtrl::list_whitelist(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -209,8 +216,9 @@ void SecurityCtrl::list_whitelist(const drogon::HttpRequestPtr& req,
 // POST /api/security/whitelist
 // ---------------------------------------------------------------------------
 
-void SecurityCtrl::add_whitelist(const drogon::HttpRequestPtr& req,
-                                 std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+void SecurityCtrl::add_whitelist(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -252,9 +260,10 @@ void SecurityCtrl::add_whitelist(const drogon::HttpRequestPtr& req,
 // DELETE /api/security/whitelist/{id}
 // ---------------------------------------------------------------------------
 
-void SecurityCtrl::remove_whitelist(const drogon::HttpRequestPtr& req,
-                                    std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
-                                    int64_t id) {
+void SecurityCtrl::remove_whitelist(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
+    int64_t id) {
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -273,8 +282,9 @@ void SecurityCtrl::remove_whitelist(const drogon::HttpRequestPtr& req,
 // GET /api/security/login-history?page=&page_size=&days=&start=&end=
 // ---------------------------------------------------------------------------
 
-void SecurityCtrl::login_history(const drogon::HttpRequestPtr& req,
-                                 std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+void SecurityCtrl::login_history(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -319,8 +329,9 @@ void SecurityCtrl::login_history(const drogon::HttpRequestPtr& req,
 // POST /api/security/ack-default-password
 // ---------------------------------------------------------------------------
 
-void SecurityCtrl::ack_default_password(const drogon::HttpRequestPtr& req,
-                                        std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+void SecurityCtrl::ack_default_password(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     // 仅 admin 可调用
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "admin_only"));

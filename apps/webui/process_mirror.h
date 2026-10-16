@@ -12,14 +12,14 @@ namespace dztrader::webui {
 
 /// 进程镜像:在 dzweb 内存中维护所有子进程的状态和详情快照
 /// 启动序列通过 QUERY_ALL 触发 master 和子进程上报, WsController 收到
-/// RTN_PROCESS_STATUS / RTN_PROCESS_CONFIG / RTN_MD_CONFIG / RTN_MD_STATUS 帧时调用 update_* 刷新镜像
-/// 线程安全: 依赖 dzweb 固定单线程事件循环(thread_num=1), 所有访问均发生在主循环串行执行,
+/// RTN_PROCESS_STATUS / RTN_PROCESS_CONFIG / RTN_MD_CONFIG / RTN_MD_STATUS 帧时调用 update_*
+/// 刷新镜像 线程安全: 依赖 dzweb 固定单线程事件循环(thread_num=1), 所有访问均发生在主循环串行执行,
 /// 故不加锁。若未来引入多线程必须重新评估加锁。
 ///
 /// 视图化 (P1 Task 4): 内部数据不再自持, 而是 MirrorStore 的强类型视图——
-/// 写入方法 (update_*) 写 MirrorStore (domain key: process_status/md_config/md_status/process_config),
-/// 查询方法从镜像解析回强类型。默认构造自持有 owned_, 生产装配注入共享 MirrorStore。
-/// 含引用成员, 禁拷贝/移动 (Rule of Five)。
+/// 写入方法 (update_*) 写 MirrorStore (domain key:
+/// process_status/md_config/md_status/process_config), 查询方法从镜像解析回强类型。默认构造自持有
+/// owned_, 生产装配注入共享 MirrorStore。 含引用成员, 禁拷贝/移动 (Rule of Five)。
 class ProcessMirror {
 public:
     /// 默认构造: 自包含镜像 (测试用, 保持既有调用点零改动)

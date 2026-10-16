@@ -8,8 +8,9 @@ namespace dztrader::ctp {
 // OffsetConverter 实现
 // ============================================================================
 
-std::vector<OrderSubRequest> OffsetConverter::convert_order_request(
-    const DzOrderReq& req, const PositionHolding& holding, OffsetConvertMode mode) {
+std::vector<OrderSubRequest> OffsetConverter::convert_order_request(const DzOrderReq& req,
+                                                                    const PositionHolding& holding,
+                                                                    OffsetConvertMode mode) {
     std::vector<OrderSubRequest> result;
 
     switch (mode) {

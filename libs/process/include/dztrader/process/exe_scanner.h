@@ -38,8 +38,7 @@ std::vector<ProcessExeInfo> scan_all_exes(
 /// 实时扫描指定 name 的可执行文件 (基于 scan_all_exes + 按 name 查找)
 /// 找到返回 ProcessExeInfo, 未找到返回 nullopt
 std::optional<ProcessExeInfo> find_exe_by_stem(
-    std::string_view name,
-    const std::filesystem::path& root = dztrader::this_process::app_root());
+    std::string_view name, const std::filesystem::path& root = dztrader::this_process::app_root());
 
 }  // namespace dztrader::process
 

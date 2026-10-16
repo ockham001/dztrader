@@ -36,8 +36,8 @@ std::vector<std::vector<std::string>> build_shutdown_batches(
     // 逆序 = 启动顺序严格互逆: md 最先启动 → 最后停止; dzweb 最后启动 → 最后关闭
     // (UI 最后关闭可展示进度)。类别遍历顺序即批次顺序。
     std::vector<std::vector<std::string>> batches;
-    for (Category cat : {Category::Strategy, Category::GatewayTd, Category::GatewayMd,
-                         Category::WebUI}) {
+    for (Category cat :
+         {Category::Strategy, Category::GatewayTd, Category::GatewayMd, Category::WebUI}) {
         std::vector<std::string> names;
         for (const auto& [name, category] : running) {
             if (category == cat) {
@@ -57,12 +57,13 @@ ProcessSupervisor::ProcessSupervisor(boost::asio::io_context& ioc,
                                      OrphanGuard& orphan_guard,
                                      int single_stop_timeout_sec,
                                      int md_ready_timeout_sec)
-    : ioc_(ioc), registry_(registry), shm_mgr_(shm_mgr),
+    : ioc_(ioc),
+      registry_(registry),
+      shm_mgr_(shm_mgr),
       notify_ui_(shm_mgr.name(), shm_mgr.event_writer()),
       orphan_guard_(orphan_guard),
       single_stop_timeout_sec_(single_stop_timeout_sec),
-      md_ready_timeout_sec_(md_ready_timeout_sec)
-{}
+      md_ready_timeout_sec_(md_ready_timeout_sec) {}
 
 void ProcessSupervisor::start_all() {
     const auto& entries = registry_.entries();
@@ -73,8 +74,8 @@ void ProcessSupervisor::start_all() {
             // launch_child 返回值在此忽略: 启动失败时 launch_child 内部已处理失败路径反馈
             // (失败路径 B 推 crashed + notify_ui, 失败路径 D 推 crashed + notify_ui),
             // start_all 不需要额外处理 (与原行为一致)
-            (void)launch_child(entry);   // 内部按需扫描填充 exe; GatewayMd 成功后
-                                         // 内部挂 ready watchdog (契约 4.5, 每次 spawn 均挂)
+            (void)launch_child(entry);  // 内部按需扫描填充 exe; GatewayMd 成功后
+                                        // 内部挂 ready watchdog (契约 4.5, 每次 spawn 均挂)
 
             // 行情进程启动后通过事件通道发 UPDATE_SHM_MD_SUBSCRIBER instance_id=name 帧,
             // 通知行情进程刷新 spi_.writer_ 缓存的行情通道订阅者列表
@@ -113,9 +114,8 @@ void ProcessSupervisor::arm_md_ready_watchdog(const std::string& source) {
     auto timer = std::make_unique<boost::asio::steady_timer>(
         ioc_, std::chrono::seconds(md_ready_timeout_sec_));
     auto* raw = timer.get();
-    raw->async_wait([this, source](const boost::system::error_code& ec) {
-        on_md_ready_timeout(source, ec);
-    });
+    raw->async_wait(
+        [this, source](const boost::system::error_code& ec) { on_md_ready_timeout(source, ec); });
     // 防御性: 同名旧 timer 先取消再覆盖 (不应发生, 同源连续 spawn 时保护)
     if (auto it = md_ready_timers_.find(source); it != md_ready_timers_.end()) {
         it->second->cancel();
@@ -146,8 +146,8 @@ void ProcessSupervisor::on_md_ready_timeout(const std::string& source,
                      source);
         auto child = find_child(source);
         if (child) {
-            notify_ui_.error(std::string("market source failed to become ready, restarting | source=") +
-                             source);
+            notify_ui_.error(
+                std::string("market source failed to become ready, restarting | source=") + source);
             force_killed_names_.insert(source);  // 不按 crash 弹窗
             child->terminate();
         }
@@ -174,8 +174,7 @@ void ProcessSupervisor::pre_register_strategy_reader(const std::string& strategy
     // 策略 SDK 的 dz_init 只 open_only, 不自行注册 (1013-1016 不再用于普通策略);
     // master 统一维护 readers 表。随后通知 md 进程刷新 writer 缓存。
     const auto* state = shm_mgr_.md_channel_state(md_source);
-    if (!state || !state->meta || state->status != MdChannelStatus::Running ||
-        !state->ready) {
+    if (!state || !state->meta || state->status != MdChannelStatus::Running || !state->ready) {
         // 源未 ready: 不应走到此处 (调用方保证 ready), 防御性记录
         SPDLOG_WARN("pre-register reader skipped, source not ready | strategy={} source={}",
                     strategy_name, md_source);
@@ -213,8 +212,8 @@ void ProcessSupervisor::wait_for_md_ready_and_start_strategies() {
         return;  // 无策略, 无需等待
     }
 
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::seconds(md_ready_timeout_sec_);
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(md_ready_timeout_sec_);
     std::unordered_set<std::string> ready_sources;
     // 单个源的就绪处理: 首次变为 ready 时立即启动其绑定策略
     // (契约 4.4: 已 ready 的源不因其他源未 ready 而等待)。幂等: 已在
@@ -334,7 +333,9 @@ bool ProcessSupervisor::is_pending_strategy(const std::string& name, std::string
 }
 
 void ProcessSupervisor::shutdown() {
-    if (shutting_down_) { return; }  // 幂等
+    if (shutting_down_) {
+        return;
+    }  // 幂等
     shutting_down_ = true;
     SPDLOG_INFO("shutdown started");
 
@@ -387,15 +388,16 @@ void ProcessSupervisor::send_current_shutdown_batch() {
                     shm_mgr_.send_shutdown(name);
                 } catch (const std::exception& e) {
                     SPDLOG_WARN(
-                        "send_shutdown failed, will force terminate on timeout | name={} error=\"{}\"",
+                        "send_shutdown failed, will force terminate on timeout | name={} "
+                        "error=\"{}\"",
                         name, e.what());
                 }
                 send_process_status(name, ChildState::Stopping, static_cast<int>(child->pid()));
             }
         }
         if (any_running) {
-            SPDLOG_INFO("shutdown batch {}/{} stopping | members={}",
-                        shutdown_batch_index_ + 1, shutdown_batches_.size(), batch.size());
+            SPDLOG_INFO("shutdown batch {}/{} stopping | members={}", shutdown_batch_index_ + 1,
+                        shutdown_batches_.size(), batch.size());
             // 批次逐批串行, 最坏 N 批 × single_stop_timeout_sec_ (默认 3s, 四类批次最坏 12s)。
             // main.cpp 信号处理器中的 10s 硬超时仍是最终兜底: 硬超时回调先
             // force_terminate_all 强杀剩余子进程 (消除逐批超时后的尾批孤儿),
@@ -468,8 +470,8 @@ void ProcessSupervisor::force_terminate_all() {
                 SPDLOG_WARN("force terminating | name={}", child->name());
                 child->terminate();
             } catch (const std::exception& e) {
-                SPDLOG_CRITICAL("force terminate failed | name={} error=\"{}\"",
-                                child->name(), e.what());
+                SPDLOG_CRITICAL("force terminate failed | name={} error=\"{}\"", child->name(),
+                                e.what());
             }
         }
     }
@@ -479,9 +481,7 @@ void ProcessSupervisor::set_shutdown_callback(ShutdownCallback cb) {
     shutdown_callback_ = std::move(cb);
 }
 
-bool ProcessSupervisor::is_shutting_down() const {
-    return shutting_down_;
-}
+bool ProcessSupervisor::is_shutting_down() const { return shutting_down_; }
 
 bool ProcessSupervisor::start_process(std::string_view name) {
     // 整体关闭期间拒绝启动: 新进程不在冻结批次内, 关闭会悬停至硬超时并留孤儿
@@ -519,8 +519,8 @@ bool ProcessSupervisor::launch_registered_process(const ProcessEntry& entry) {
     if (entry.category == Category::Strategy && !entry.md_source.empty()) {
         const auto& source = entry.md_source;
         const auto* state = shm_mgr_.md_channel_state(source);
-        const bool source_ready = state && state->status == MdChannelStatus::Running &&
-                                  state->ready && state->meta;
+        const bool source_ready =
+            state && state->status == MdChannelStatus::Running && state->ready && state->meta;
         if (!source_ready) {
             // 绑定源不存在或未 ready: 加入 pending, 反馈"等待行情源"
             auto& list = pending_strategies_[source];
@@ -610,10 +610,9 @@ void ProcessSupervisor::stop_single_child(std::shared_ptr<ChildProcess> child) {
     single_stop_timers_[name] = std::move(timer);
 }
 
-void ProcessSupervisor::on_single_stop_timeout(
-        std::shared_ptr<ChildProcess> child,
-        const boost::system::error_code& ec,
-        const std::string& name) {
+void ProcessSupervisor::on_single_stop_timeout(std::shared_ptr<ChildProcess> child,
+                                               const boost::system::error_code& ec,
+                                               const std::string& name) {
     if (ec) {
         SPDLOG_INFO("single stop timer cancelled, child exited gracefully | name={}", name);
         // 旧实现: single_stop_target_.clear() — 单值, 会清掉所有 stop 跟踪
@@ -641,7 +640,9 @@ void ProcessSupervisor::on_single_stop_timeout(
 
 std::shared_ptr<ChildProcess> ProcessSupervisor::find_child(std::string_view name) {
     for (auto& child : children_) {
-        if (child && child->name() == name) { return child; }
+        if (child && child->name() == name) {
+            return child;
+        }
     }
     return nullptr;
 }
@@ -663,10 +664,9 @@ void ProcessSupervisor::register_gateway(ProcessEntry entry) {
 }
 
 void ProcessSupervisor::update_display_name(std::string_view name,
-                                             const std::string& display_name) {
+                                            const std::string& display_name) {
     if (registry_.update_display_name(name, display_name)) {
-        SPDLOG_INFO("registry display_name updated | name={} display_name={}",
-                    name, display_name);
+        SPDLOG_INFO("registry display_name updated | name={} display_name={}", name, display_name);
     }
 }
 
@@ -686,10 +686,10 @@ void ProcessSupervisor::unregister_entry(const std::string& name) {
 }
 
 void ProcessSupervisor::send_process_status(const std::string& name,
-                                             ChildState state,
-                                             int pid,
-                                             const std::string& message,
-                                             std::optional<platform::ProcessEvent> event) {
+                                            ChildState state,
+                                            int pid,
+                                            const std::string& message,
+                                            std::optional<platform::ProcessEvent> event) {
     platform::ProcessStatus status;
     status.name = name;
     // ChildState 已为 platform:: 类型 (child_process.h alias), 直接赋值
@@ -717,9 +717,10 @@ bool ProcessSupervisor::consume_remove_pending(const std::string& name) {
 
 void ProcessSupervisor::notify_removed_for_inactive(const std::string& name, Category category) {
     // 兜底路径: 子进程不在运行时 (on_child_exit 不会被触发),
-    // 由 supervisor 完成 remove 流程剩余步骤 (删配置 + 清订阅者 + 推 stopped + consume_remove_pending)
-    // 行为与原 shm_manager.cpp 中内联兜底逻辑近似等价: 层次划分调整 (shm_manager 调用 supervisor,
-    // supervisor 调用 shm_mgr_ 完成具体操作), 并新增失败路径 D 的 notify_ui 反馈
+    // 由 supervisor 完成 remove 流程剩余步骤 (删配置 + 清订阅者 + 推 stopped +
+    // consume_remove_pending) 行为与原 shm_manager.cpp 中内联兜底逻辑近似等价: 层次划分调整
+    // (shm_manager 调用 supervisor, supervisor 调用 shm_mgr_ 完成具体操作), 并新增失败路径 D 的
+    // notify_ui 反馈
     SPDLOG_INFO("remove: child not running, finalize immediately | name={}", name);
     // 取消挂起的退避重启定时器: 否则崩溃退避窗口内的 Remove 会被定时器"复活"
     // (launch_child 重建通道 + spawn 已删源), 违反"remove 不重启"契约
@@ -730,15 +731,15 @@ void ProcessSupervisor::notify_removed_for_inactive(const std::string& name, Cat
         } else {
             remove_gateway_section(shm_mgr_.config_path(), category, name);
         }
-        SPDLOG_INFO("process config section removed | name={} path={}",
-                    name, shm_mgr_.config_path().string());
+        SPDLOG_INFO("process config section removed | name={} path={}", name,
+                    shm_mgr_.config_path().string());
     } catch (const std::exception& e) {
         // 失败路径 D: 配置段删除失败 -> notify_ui 反馈
         // 契约要求: 继续完成订阅者清理, 不重启子进程 (删除是用户意图)
         // 契约 process: json 操作失败必须打 ERROR 日志并通知 UI
         SPDLOG_ERROR("failed to remove gateway section | name={} error=\"{}\"", name, e.what());
-        notify_ui_.error(std::string("failed to remove gateway config | name=") + name
-                        + " error=" + e.what());
+        notify_ui_.error(std::string("failed to remove gateway config | name=") + name +
+                         " error=" + e.what());
     }
     // Remove 流程: 对 md 源标记 tombstone (契约 4.7: 不删文件、不清空 readers 表,
     // 保留 meta 供 PageCleaner 清理与同源重加复用)。不再 destroy_md_channel。
@@ -782,7 +783,8 @@ bool ProcessSupervisor::launch_child(const ProcessEntry& entry) {
         // - notify_ui: 弹 toast 反馈"进程已在运行", 让用户知道本次启动未真正发生
         SPDLOG_ERROR("process already running, skipping | name={}", entry.name);
         const std::string err_msg = "process already running | name=" + entry.name;
-        send_process_status(entry.name, ChildState::Running, static_cast<int>(existing->pid()), err_msg);
+        send_process_status(entry.name, ChildState::Running, static_cast<int>(existing->pid()),
+                            err_msg);
         notify_ui_.error(err_msg, false);
         return false;
     }
@@ -835,8 +837,8 @@ bool ProcessSupervisor::launch_child(const ProcessEntry& entry) {
         // 通过 PROCESS_STATUS state=crashed 反馈给前端 (setProcessStatus 会清 startPending)
         // 通过 notify_ui 给出具体错误信息 (setNotifyUi 兜底清 startPending + 弹 toast)
         // 内部 SPDLOG 与对外 notify_ui 共用同一 err_msg, 便于日志检索与关联
-        std::string err_msg = std::format("spawn child failed | name={} error=\"{}\"",
-                                          entry.name, dztrader::to_utf8_from_system(ec.message()));
+        std::string err_msg = std::format("spawn child failed | name={} error=\"{}\"", entry.name,
+                                          dztrader::to_utf8_from_system(ec.message()));
         SPDLOG_ERROR("{}", err_msg);
         send_process_status(entry.name, ChildState::Crashed, 0, err_msg);
         notify_ui_.error(err_msg);
@@ -862,15 +864,15 @@ bool ProcessSupervisor::launch_child(const ProcessEntry& entry) {
 
     // 注册子进程为事件通道订阅者 + 写 UPDATE_SHM_EVENT_SUBSCRIBER 帧
     // 子进程启动后会通过 Reader::create → sync_from_channel_meta 获取最新订阅者列表，
-    // 并在 poll event channel 时收到 UPDATE_SHM_EVENT_SUBSCRIBER 帧调 refresh_subscribers 刷新本地缓存
+    // 并在 poll event channel 时收到 UPDATE_SHM_EVENT_SUBSCRIBER 帧调 refresh_subscribers
+    // 刷新本地缓存
     auto sub_name = make_subscriber_name(entry_to_launch);
     shm_mgr_.register_subscriber(sub_name, static_cast<uint64_t>(child->pid()));
 
     // 设置退出回调 — 捕获 shared_ptr 保持子进程存活
-    child->async_wait(
-        [this, child](boost::system::error_code exit_ec, int exit_code) {
-            on_child_exit(child, exit_ec, exit_code);
-        });
+    child->async_wait([this, child](boost::system::error_code exit_ec, int exit_code) {
+        on_child_exit(child, exit_ec, exit_code);
+    });
 
     // 推送 PROCESS_STATUS: running
     // 必须在 std::move(child) 之前捕获 name 和 pid, move 后 child 为空
@@ -890,9 +892,11 @@ bool ProcessSupervisor::launch_child(const ProcessEntry& entry) {
 }
 
 void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
-                                       [[maybe_unused]] boost::system::error_code ec,
-                                       int exit_code) {
-    if (!child) { return; }
+                                      [[maybe_unused]] boost::system::error_code ec,
+                                      int exit_code) {
+    if (!child) {
+        return;
+    }
 
     auto name = child->name();
     auto pid = child->pid();
@@ -905,8 +909,7 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
     // 顺序: 先删配置 (步骤 6), 再清理订阅者 (步骤 7), 最后推状态 (步骤 8) - 严格遵守契约
     // 每个步骤独立 try-catch: 单步骤失败不阻塞其他步骤 (失败路径 D)
     ChildState exit_state = (exit_code == 0) ? ChildState::Stopped : ChildState::Crashed;
-    std::string exit_msg = (exit_code != 0)
-        ? std::format("exit_code={}", exit_code) : "";
+    std::string exit_msg = (exit_code != 0) ? std::format("exit_code={}", exit_code) : "";
 
     try {
         // 从 OrphanGuard 注销
@@ -930,8 +933,7 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
         // 移除窗口内同名源被重新添加(registry 条目重现): 用户意图已翻转为保留,
         // 跳过移除收尾的配置段删除与通道销毁 —— 反删刚写回的配置会造成
         // json/registry/store 三态不一致, master 重启后该源永久丢失
-        const bool remove_flow_re_added =
-            is_remove_flow && registry_.find(name) != nullptr;
+        const bool remove_flow_re_added = is_remove_flow && registry_.find(name) != nullptr;
         if (is_remove_flow && !remove_flow_re_added) {
             const auto& cfg_path = shm_mgr_.config_path();
             // category 取 child->entry(): registry 条目已被 store remove 的 apply
@@ -949,12 +951,12 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
                             name, cfg_path.string());
             } catch (const std::exception& e) {
                 // 失败路径 D: 配置段删除失败 -> notify_ui 反馈前端
-                // 契约要求: 继续完成订阅者清理 (步骤 7) 与推状态 (步骤 8), 不重启子进程 (删除是用户意图)
-                // 契约 process: json 操作失败必须打 ERROR 日志并通知 UI
-                SPDLOG_ERROR("failed to remove gateway section | name={} error=\"{}\"",
-                            name, e.what());
-                notify_ui_.error(std::string("failed to remove gateway config | name=") + name
-                                + " error=" + e.what());
+                // 契约要求: 继续完成订阅者清理 (步骤 7) 与推状态 (步骤 8), 不重启子进程
+                // (删除是用户意图) 契约 process: json 操作失败必须打 ERROR 日志并通知 UI
+                SPDLOG_ERROR("failed to remove gateway section | name={} error=\"{}\"", name,
+                             e.what());
+                notify_ui_.error(std::string("failed to remove gateway config | name=") + name +
+                                 " error=" + e.what());
             }
             if (category == Category::GatewayTd) {
                 // 契约 account-status: remove 流程统一走 notify_td_stopped ——
@@ -972,13 +974,13 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
         try {
             shm_mgr_.unregister_subscriber(sub_name);
         } catch (const std::exception& e) {
-            SPDLOG_ERROR("failed to unregister subscriber | name={} pid={} error=\"{}\"",
-                        name, pid, e.what());
+            SPDLOG_ERROR("failed to unregister subscriber | name={} pid={} error=\"{}\"", name, pid,
+                         e.what());
         }
 
-        // 步骤 7b: 注销该进程在所有 md 通道的读者条目 (策略经帧 DZ_FRAME_REQUEST_MD_READER_REGISTER 自注册) +
-        // 通知各 md 进程刷新订阅者缓存 (防止继续向死信号量 notify)。
-        // remove_reader 对缺失 key 幂等; 网关类进程从未注册, 循环为 no-op。
+        // 步骤 7b: 注销该进程在所有 md 通道的读者条目 (策略经帧 DZ_FRAME_REQUEST_MD_READER_REGISTER
+        // 自注册) + 通知各 md 进程刷新订阅者缓存 (防止继续向死信号量 notify)。 remove_reader 对缺失
+        // key 幂等; 网关类进程从未注册, 循环为 no-op。
         try {
             shm_mgr_.remove_reader_from_all_md_channels(sub_name);
         } catch (const std::exception& e) {
@@ -991,8 +993,8 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
         try {
             send_process_status(name, exit_state, static_cast<int>(pid), exit_msg);
         } catch (const std::exception& e) {
-            SPDLOG_ERROR("failed to send process status | name={} pid={} error=\"{}\"",
-                        name, pid, e.what());
+            SPDLOG_ERROR("failed to send process status | name={} pid={} error=\"{}\"", name, pid,
+                         e.what());
         }
 
         // md 进程退出时执行通道生命周期 (dztraderd 架构 + 设计 spec 移除清理):
@@ -1011,14 +1013,15 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
                     shm_mgr_.close_md_channel(name);
                 }
             } catch (const std::exception& e) {
-                SPDLOG_ERROR("failed to close/tombstone md channel | name={} error=\"{}\"",
-                             name, e.what());
+                SPDLOG_ERROR("failed to close/tombstone md channel | name={} error=\"{}\"", name,
+                             e.what());
             }
             try {
-                platform::write_ext_inst_raw(shm_mgr_.event_writer(), DZ_FRAME_NOTIFY_MD_STOPPED, name);
+                platform::write_ext_inst_raw(shm_mgr_.event_writer(), DZ_FRAME_NOTIFY_MD_STOPPED,
+                                             name);
             } catch (const std::exception& e) {
-                SPDLOG_ERROR("failed to broadcast md_service_stopped | name={} error=\"{}\"",
-                             name, e.what());
+                SPDLOG_ERROR("failed to broadcast md_service_stopped | name={} error=\"{}\"", name,
+                             e.what());
             }
         }
 
@@ -1032,8 +1035,7 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
                     shm_mgr_.notify_td_stopped(name);
                 }
             } catch (const std::exception& e) {
-                SPDLOG_ERROR("failed to notify td stopped | name={} error=\"{}\"",
-                             name, e.what());
+                SPDLOG_ERROR("failed to notify td stopped | name={} error=\"{}\"", name, e.what());
             }
         }
 
@@ -1045,8 +1047,8 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
         // 此处再发 "crashed" 会造成双弹窗且文案不符 (实为 master 强制 kill, 非崩溃)
         bool was_force_killed = force_killed_names_.count(name) > 0;
         if (exit_code != 0 && !shutting_down_ && !was_force_killed) {
-            std::string crash_msg = std::format(
-                "child crashed | name={} pid={} exit_code={}", name, pid, exit_code);
+            std::string crash_msg =
+                std::format("child crashed | name={} pid={} exit_code={}", name, pid, exit_code);
             notify_ui_.error(crash_msg);
         }
         // 清理 force_killed 标记 (此处之后该 name 不再需要 force_killed 状态)
@@ -1066,8 +1068,8 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
 
         // remove 流程不重启 (即使 crashed), 删除是用户意图
         if (is_remove_flow) {
-            SPDLOG_INFO("child exited on remove flow, not restarting | name={} exit_code={}",
-                        name, exit_code);
+            SPDLOG_INFO("child exited on remove flow, not restarting | name={} exit_code={}", name,
+                        exit_code);
             restart_counts_.erase(name);
             return;
         }
@@ -1091,8 +1093,8 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
 
         int count = ++restart_counts_[name];
         if (count > policy.max_attempts) {
-            SPDLOG_ERROR("max restart attempts reached | name={} exit_code={} count={}",
-                         name, exit_code, count);
+            SPDLOG_ERROR("max restart attempts reached | name={} exit_code={} count={}", name,
+                         exit_code, count);
             restart_counts_.erase(name);
             return;
         }
@@ -1105,17 +1107,16 @@ void ProcessSupervisor::on_child_exit(std::shared_ptr<ChildProcess> child,
 }
 
 void ProcessSupervisor::schedule_restart(const std::string& name,
-                                          const ProcessEntry& entry,
-                                          int restart_count) {
+                                         const ProcessEntry& entry,
+                                         int restart_count) {
     auto backoff = entry.restart.backoff_sec * restart_count;
     // 钳制最小 1 秒, 防止 backoff_sec=0 导致快速重启循环 (毫秒级内连续 spawn 失败)
     if (backoff < 1) backoff = 1;
 
-    SPDLOG_INFO("restart scheduled | name={} backoff_sec={} restart_count={}",
-                name, backoff, restart_count);
+    SPDLOG_INFO("restart scheduled | name={} backoff_sec={} restart_count={}", name, backoff,
+                restart_count);
 
-    auto timer = std::make_unique<boost::asio::steady_timer>(
-        ioc_, std::chrono::seconds(backoff));
+    auto timer = std::make_unique<boost::asio::steady_timer>(ioc_, std::chrono::seconds(backoff));
 
     // 按值捕获 entry 用于重启
     auto entry_copy = entry;
@@ -1123,31 +1124,30 @@ void ProcessSupervisor::schedule_restart(const std::string& name,
     // 仅网关进程 (dzmd_*/dztd_*) 解析此参数, 其他进程忽略
     entry_copy.args.push_back("--recover");
 
-    timer->async_wait(
-        [this, name, entry_copy](const boost::system::error_code& ec) {
-            if (ec) {
-                // 被 cancel 时不 erase, 避免误删后续 timer:
-                // 若 schedule_restart 同名再次调用, 旧 timer T1 被 cancel 后回调以 ec=aborted 触发,
-                // 此时 map 中已存新 timer T2, 此处 erase(name) 会误删 T2, 导致 T2 失去跟踪。
-                SPDLOG_DEBUG("restart timer cancelled | name={}", name);
-                return;
-            }
-            // 正常触发时才 erase (此时 map 中存的就是本 timer)
-            restart_timers_.erase(name);
-            if (shutting_down_) {
-                SPDLOG_INFO("not restarting during shutdown | name={}", name);
-                return;
-            }
+    timer->async_wait([this, name, entry_copy](const boost::system::error_code& ec) {
+        if (ec) {
+            // 被 cancel 时不 erase, 避免误删后续 timer:
+            // 若 schedule_restart 同名再次调用, 旧 timer T1 被 cancel 后回调以 ec=aborted 触发,
+            // 此时 map 中已存新 timer T2, 此处 erase(name) 会误删 T2, 导致 T2 失去跟踪。
+            SPDLOG_DEBUG("restart timer cancelled | name={}", name);
+            return;
+        }
+        // 正常触发时才 erase (此时 map 中存的就是本 timer)
+        restart_timers_.erase(name);
+        if (shutting_down_) {
+            SPDLOG_INFO("not restarting during shutdown | name={}", name);
+            return;
+        }
 
-            try {
-                SPDLOG_INFO("restarting child | name={}", name);
-                // 重启走 launch_child：成功推 Running；spawn 失败推 Crashed + 终止重启循环
-                // （launch_child 失败路径不安排下一次重启，符合契约"重启 spawn 失败终止循环"）
-                (void)launch_child(entry_copy);
-            } catch (const std::exception& e) {
-                SPDLOG_CRITICAL("restart failed | name={} error=\"{}\"", name, e.what());
-            }
-        });
+        try {
+            SPDLOG_INFO("restarting child | name={}", name);
+            // 重启走 launch_child：成功推 Running；spawn 失败推 Crashed + 终止重启循环
+            // （launch_child 失败路径不安排下一次重启，符合契约"重启 spawn 失败终止循环"）
+            (void)launch_child(entry_copy);
+        } catch (const std::exception& e) {
+            SPDLOG_CRITICAL("restart failed | name={} error=\"{}\"", name, e.what());
+        }
+    });
 
     // 防御性: 若存在旧的重启定时器 (例如 on_child_exit 被重复触发), 先取消再覆盖
     if (auto it = restart_timers_.find(name); it != restart_timers_.end()) {
@@ -1158,23 +1158,26 @@ void ProcessSupervisor::schedule_restart(const std::string& name,
 }
 
 void ProcessSupervisor::remove_child(const std::shared_ptr<ChildProcess>& child) {
-    auto it = std::remove_if(children_.begin(), children_.end(),
-        [&child](const std::shared_ptr<ChildProcess>& c) {
-            return c.get() == child.get();
-        });
+    auto it = std::remove_if(
+        children_.begin(), children_.end(),
+        [&child](const std::shared_ptr<ChildProcess>& c) { return c.get() == child.get(); });
     children_.erase(it, children_.end());
 }
 
 bool ProcessSupervisor::all_children_stopped() const {
     return std::all_of(children_.begin(), children_.end(),
-        [](const std::shared_ptr<ChildProcess>& c) {
-            return !c || c->state() == ChildState::Stopped;
-        });
+                       [](const std::shared_ptr<ChildProcess>& c) {
+                           return !c || c->state() == ChildState::Stopped;
+                       });
 }
 
 void ProcessSupervisor::check_shutdown_complete() {
-    if (!shutting_down_) { return; }
-    if (!all_children_stopped()) { return; }
+    if (!shutting_down_) {
+        return;
+    }
+    if (!all_children_stopped()) {
+        return;
+    }
 
     // 取消强制终止定时器 — 所有子进程已退出
     if (shutdown_timer_) {

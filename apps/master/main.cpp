@@ -129,10 +129,10 @@ int main(int argc, char* argv[]) {
     dztrader::log::LoggerSetup log_setup;
     log_setup.logger_name = dztrader::this_process::exe_stem();
     log_setup.log_dir = dztrader::paths::logs();
-    log_setup.level = dztrader::platform::LogConfig::parse_level(log_level)
-                          .value_or(spdlog::level::info);
-    log_setup.flush_level = dztrader::platform::LogConfig::parse_level(log_flush_on)
-                                .value_or(spdlog::level::info);
+    log_setup.level =
+        dztrader::platform::LogConfig::parse_level(log_level).value_or(spdlog::level::info);
+    log_setup.flush_level =
+        dztrader::platform::LogConfig::parse_level(log_flush_on).value_or(spdlog::level::info);
     dztrader::log::set_default_logger(log_setup);
     SPDLOG_INFO("master starting | pid={}", dztrader::this_process::pid());
 
@@ -176,8 +176,8 @@ int main(int argc, char* argv[]) {
     boost::asio::io_context ioc;
     auto work_guard = boost::asio::make_work_guard(ioc);
     dztrader::master::ProcessSupervisor supervisor(ioc, registry, *shm_mgr, orphan_guard,
-                                                    cfg.master.single_stop_timeout_sec,
-                                                    cfg.master.md_ready_timeout_sec);
+                                                   cfg.master.single_stop_timeout_sec,
+                                                   cfg.master.md_ready_timeout_sec);
 
     // 注入 supervisor 到 ShmManager，使 PROCESS_CONTROL 帧能调用 start_process/stop_process
     shm_mgr->set_supervisor(&supervisor);
@@ -197,12 +197,15 @@ int main(int argc, char* argv[]) {
     //    首次信号：优雅关闭。二次信号：强制退出。
     //    boost::asio::signal_set::async_wait 是 one-shot — 首次回调触发后 signal_set 解除武装,
     //    第二次 Ctrl+C 会落到 SIG_DFL, 绕过 release_all()/orphan_guard.cleanup()。
-    //    故在首次信号分支末尾重新 async_wait 同一 handler (递归重武装), 让二次信号进入 force-exit 分支。
+    //    故在首次信号分支末尾重新 async_wait 同一 handler (递归重武装), 让二次信号进入 force-exit
+    //    分支。
     boost::asio::signal_set signals(ioc, SIGINT, SIGTERM);
     std::function<void(const boost::system::error_code&, int)> signal_handler;
-    signal_handler = [&supervisor, &shm_mgr, &orphan_guard, &ioc, &signals,
-                      &signal_handler](const boost::system::error_code& ec, int sig) {
-        if (ec) { return; }
+    signal_handler = [&supervisor, &shm_mgr, &orphan_guard, &ioc, &signals, &signal_handler](
+                         const boost::system::error_code& ec, int sig) {
+        if (ec) {
+            return;
+        }
         try {
             if (supervisor.is_shutting_down()) {
                 SPDLOG_CRITICAL("second signal received, force terminating children | sig={}", sig);

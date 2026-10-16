@@ -18,8 +18,8 @@
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::FrameView;
-using dztrader::shm::Reader;
 using dztrader::shm::MultiWriter;
+using dztrader::shm::Reader;
 using dztrader::shm::SingleWriter;
 using dztrader::shm::test::cleanup_test_dir;
 using dztrader::shm::test::MB;
@@ -401,8 +401,12 @@ TEST(WriterCloseOldTest, CloseOldPagesUpdatesWriterIndex) {
     using namespace dztrader::shm::test;
     auto channel = unique_channel_name("dz_test_writer_close");
     auto dir = test_shm_dir(channel);
-    ChannelConfig config{.channel_name=channel, .shm_dir=dir, .meta_file_size=4*MB,
-                         .page_size=1*MB, .lock_memory=false, .prefetch_memory=false};
+    ChannelConfig config{.channel_name = channel,
+                         .shm_dir = dir,
+                         .meta_file_size = 4 * MB,
+                         .page_size = 1 * MB,
+                         .lock_memory = false,
+                         .prefetch_memory = false};
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(config));
     meta->clear_writers();
     (void)meta->add_writer("gw.t", 9999);
@@ -429,8 +433,12 @@ TEST(WriterDeadlockTest, ConcurrentCtorAndPageCrossNoDeadlock) {
     auto channel = unique_channel_name("dz_test_deadlock");
     auto dir = test_shm_dir(channel);
     auto signal_file = dir / "helper_started";
-    ChannelConfig config{.channel_name = channel, .shm_dir = dir, .meta_file_size = 4 * MB,
-                         .page_size = 1 * MB, .lock_memory = false, .prefetch_memory = false};
+    ChannelConfig config{.channel_name = channel,
+                         .shm_dir = dir,
+                         .meta_file_size = 4 * MB,
+                         .page_size = 1 * MB,
+                         .lock_memory = false,
+                         .prefetch_memory = false};
 
     // 预创建 channel，使 helper 与主进程都 open 已存在的 channel（page_size 不变，
     // 不走重置路径），仅竞争 write→meta 锁。
@@ -440,12 +448,11 @@ TEST(WriterDeadlockTest, ConcurrentCtorAndPageCrossNoDeadlock) {
     }
 
     boost::asio::io_context ctx;
-    auto proc = spawn_helper(ctx, {"channel_writer_continuous_cross", channel, dir.string(),
-                                   signal_file.string()});
+    auto proc = spawn_helper(
+        ctx, {"channel_writer_continuous_cross", channel, dir.string(), signal_file.string()});
 
     // 等 helper 开始写后再并发 open_or_create，保证 page-cross 与 ctor 真正重叠。
-    ASSERT_TRUE(wait_for_file(signal_file, std::chrono::seconds(5)))
-        << "helper failed to start";
+    ASSERT_TRUE(wait_for_file(signal_file, std::chrono::seconds(5))) << "helper failed to start";
 
     // 并发多次 open_or_create 同一 channel：ctor 持 write→meta。helper 的换页路径
     // 也持 write→meta。锁序一致则两者在 write 锁上串行并推进；AB-BA 反序会永久挂起

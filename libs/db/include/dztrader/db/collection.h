@@ -17,12 +17,12 @@ namespace dztrader::db {
 class Collection {
 public:
     Collection(Session& session, std::string name)
-        : session_(&session), name_(std::move(name)) {}
+        : session_(&session),
+          name_(std::move(name)) {}
 
     void upsert(std::span<const Row> rows) { session_->upsert(name_, rows); }
     uint64_t remove(const Filter& filter) { return session_->remove(name_, filter); }
-    [[nodiscard]] ResultSet find(const Filter& filter = {},
-                                 const FindOptions& options = {}) const {
+    [[nodiscard]] ResultSet find(const Filter& filter = {}, const FindOptions& options = {}) const {
         return session_->find(name_, filter, options);
     }
     /// 保留 sort，忽略 offset/limit，取首行

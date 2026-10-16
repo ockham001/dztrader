@@ -18,9 +18,7 @@ using Json = nlohmann::json;
 // 失败: 返回 HTTP 错误响应 (caller 直接 callback 返回)
 // ---------------------------------------------------------------------------
 std::optional<drogon::HttpResponsePtr> MarketSourceCtrl::guard_process_dispatch(
-    int64_t source_id,
-    const std::string& log_label,
-    std::string& process_name) {
+    int64_t source_id, const std::string& log_label, std::string& process_name) {
     auto source = repo_->get_market_source(source_id);
     if (!source.has_value()) {
         SPDLOG_WARN("op dispatch rejected: source not found | source_id={}", source_id);
@@ -39,8 +37,8 @@ std::optional<drogon::HttpResponsePtr> MarketSourceCtrl::guard_process_dispatch(
             // 理论不可达：调用方入口已拦截非 admin
             return error_response(drogon::k403Forbidden, "forbidden");
         case ControlGuard::ChannelUnavailable:
-            SPDLOG_ERROR("{} SHM writer not available | source_id={} process={}",
-                         log_label, source_id, process_name);
+            SPDLOG_ERROR("{} SHM writer not available | source_id={} process={}", log_label,
+                         source_id, process_name);
             return error_response(drogon::k503ServiceUnavailable, "shm writer not available");
         case ControlGuard::ProcessNotRunning:
             SPDLOG_WARN("op dispatch rejected: dzmd_ctp not running | source_id={}", source_id);
@@ -59,11 +57,10 @@ std::optional<drogon::HttpResponsePtr> MarketSourceCtrl::guard_process_dispatch(
 // op_name: MdConfigOp 序列化后的字符串 (如 "AddBroker"); params: op 携带的参数 JSON
 // 成功返回 nullopt (caller 应返回 200 ok=dispatched); SHM 写入为 fire-and-forget
 // ---------------------------------------------------------------------------
-std::optional<drogon::HttpResponsePtr> MarketSourceCtrl::dispatch_op(
-    int64_t source_id,
-    const std::string& log_label,
-    const std::string& op_name,
-    const nlohmann::json& params) {
+std::optional<drogon::HttpResponsePtr> MarketSourceCtrl::dispatch_op(int64_t source_id,
+                                                                     const std::string& log_label,
+                                                                     const std::string& op_name,
+                                                                     const nlohmann::json& params) {
     std::string process_name;
     if (auto err = guard_process_dispatch(source_id, log_label, process_name); err.has_value()) {
         return *err;
@@ -86,7 +83,8 @@ std::optional<drogon::HttpResponsePtr> MarketSourceCtrl::dispatch_op(
 // ---------------------------------------------------------------------------
 void MarketSourceCtrl::set_auto_login(
     const drogon::HttpRequestPtr& req,
-    std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id) {  // NOLINT
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+    int64_t id) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -132,9 +130,9 @@ void MarketSourceCtrl::set_auto_login(
 
 // POST /api/market-sources/{id}/brokers - 添加经纪商 (admin) (op-based AddBroker)
 // name 为不可变 key; frontends 默认空数组; 子进程校验 name 唯一性
-void MarketSourceCtrl::add_broker(
-    const drogon::HttpRequestPtr& req,
-    std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id) {  // NOLINT
+void MarketSourceCtrl::add_broker(const drogon::HttpRequestPtr& req,
+                                  std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                                  int64_t id) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -166,12 +164,13 @@ void MarketSourceCtrl::add_broker(
     callback(json_response(drogon::k200OK, {{"ok", true}, {"message", "dispatched"}}));
 }
 
-// DELETE /api/market-sources/{id}/brokers/{broker_name} - 删除经纪商 (admin) (op-based RemoveBroker)
-// 受状态保护: 子进程非 Idle 时拒绝 (失败路径 C)
+// DELETE /api/market-sources/{id}/brokers/{broker_name} - 删除经纪商 (admin) (op-based
+// RemoveBroker) 受状态保护: 子进程非 Idle 时拒绝 (失败路径 C)
 void MarketSourceCtrl::remove_broker(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
-    int64_t id, const std::string& broker_name) {
+    int64_t id,
+    const std::string& broker_name) {
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -189,12 +188,14 @@ void MarketSourceCtrl::remove_broker(
     callback(json_response(drogon::k200OK, {{"ok", true}, {"message", "dispatched"}}));
 }
 
-// PUT /api/market-sources/{id}/brokers/{broker_name} - 编辑经纪商字段 (admin) (op-based UpdateBroker)
-// password 处理: dzweb 透传 body.password (可能为 "****" 表示未改); 子进程对 "****" 保留旧值
+// PUT /api/market-sources/{id}/brokers/{broker_name} - 编辑经纪商字段 (admin) (op-based
+// UpdateBroker) password 处理: dzweb 透传 body.password (可能为 "****" 表示未改); 子进程对 "****"
+// 保留旧值
 void MarketSourceCtrl::update_broker(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
-    int64_t id, const std::string& broker_name) {
+    int64_t id,
+    const std::string& broker_name) {
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -212,8 +213,7 @@ void MarketSourceCtrl::update_broker(
     }
     // body 中的 name 必须与 URL 一致 (name 为不可变 key, 不响应改名请求)
     if (body.value("name", "") != broker_name) {
-        callback(error_response(drogon::k400BadRequest,
-                                "broker name in body must match URL"));
+        callback(error_response(drogon::k400BadRequest, "broker name in body must match URL"));
         return;
     }
     const Json params = {
@@ -236,7 +236,8 @@ void MarketSourceCtrl::update_broker(
 void MarketSourceCtrl::update_broker_frontends(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
-    int64_t id, const std::string& broker_name) {
+    int64_t id,
+    const std::string& broker_name) {
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -253,16 +254,15 @@ void MarketSourceCtrl::update_broker_frontends(
         return;
     }
     if (!body.contains("frontends") || !body["frontends"].is_array()) {
-        callback(error_response(drogon::k400BadRequest,
-                                "missing or invalid 'frontends' array"));
+        callback(error_response(drogon::k400BadRequest, "missing or invalid 'frontends' array"));
         return;
     }
     const Json params = {
         {"name", broker_name},
         {"frontends", body["frontends"]},
     };
-    auto err = dispatch_op(id, "update_broker_frontends name=" + broker_name,
-                           "SetFrontends", params);
+    auto err =
+        dispatch_op(id, "update_broker_frontends name=" + broker_name, "SetFrontends", params);
     if (err.has_value()) {
         callback(*err);
         return;
@@ -270,11 +270,12 @@ void MarketSourceCtrl::update_broker_frontends(
     callback(json_response(drogon::k200OK, {{"ok", true}, {"message", "dispatched"}}));
 }
 
-// PUT /api/market-sources/{id}/current-broker - 切换当前选中经纪商 (admin) (op-based SetCurrentBroker)
-// Body: {name} 或 {name: ""} 清空选中; 受状态保护 (失败路径 C)
+// PUT /api/market-sources/{id}/current-broker - 切换当前选中经纪商 (admin) (op-based
+// SetCurrentBroker) Body: {name} 或 {name: ""} 清空选中; 受状态保护 (失败路径 C)
 void MarketSourceCtrl::set_current_broker(
     const drogon::HttpRequestPtr& req,
-    std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id) {  // NOLINT
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+    int64_t id) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -297,11 +298,12 @@ void MarketSourceCtrl::set_current_broker(
     callback(json_response(drogon::k200OK, {{"ok", true}, {"message", "dispatched"}}));
 }
 
-// PUT /api/market-sources/{id}/subscribe-params - 修改订阅参数 (admin) (op-based SetSubscribeParams)
-// 无状态保护: 任意时刻可改; Body 4 个可选字段, 缺失=保留旧值 (契约 md-config)
+// PUT /api/market-sources/{id}/subscribe-params - 修改订阅参数 (admin) (op-based
+// SetSubscribeParams) 无状态保护: 任意时刻可改; Body 4 个可选字段, 缺失=保留旧值 (契约 md-config)
 void MarketSourceCtrl::set_subscribe_params(
     const drogon::HttpRequestPtr& req,
-    std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id) {  // NOLINT
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+    int64_t id) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -344,7 +346,8 @@ void MarketSourceCtrl::set_subscribe_params(
 //       守卫后直接写 SET_MD_SHM_CONFIG 帧
 void MarketSourceCtrl::set_shm_config(
     const drogon::HttpRequestPtr& req,
-    std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id) {  // NOLINT
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+    int64_t id) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;

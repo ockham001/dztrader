@@ -24,8 +24,7 @@ namespace dztrader::this_process {
 
 namespace {
 
-std::filesystem::path compute_exe_path()
-{
+std::filesystem::path compute_exe_path() {
 #ifdef _WIN32
     // 使用增长缓冲区处理长路径
     // GetModuleFileNameW 成功时返回不含 null 终止符的长度
@@ -37,8 +36,7 @@ std::filesystem::path compute_exe_path()
         buf.resize(buf_size);
         const DWORD len = GetModuleFileNameW(nullptr, buf.data(), buf_size);
         if (len == 0) {
-            throw Exception(DZ_EC_SYSTEM,
-                std::string("msg=\"GetModuleFileNameW failed\""));
+            throw Exception(DZ_EC_SYSTEM, std::string("msg=\"GetModuleFileNameW failed\""));
         }
         if (len < buf_size) {
             buf.resize(len);
@@ -47,8 +45,7 @@ std::filesystem::path compute_exe_path()
         // len == buf_size：路径被截断或恰好填满缓冲区，扩大缓冲区重试
         buf_size *= 2;
         if (buf_size > 32768) {
-            throw Exception(DZ_EC_SYSTEM,
-                std::string("msg=\"exe path exceeds 32768 characters\""));
+            throw Exception(DZ_EC_SYSTEM, std::string("msg=\"exe path exceeds 32768 characters\""));
         }
     }
 #else
@@ -57,7 +54,8 @@ std::filesystem::path compute_exe_path()
     auto p = std::filesystem::read_symlink("/proc/self/exe", ec);
     if (ec) {
         throw Exception(DZ_EC_SYSTEM,
-            std::string("msg=\"read_symlink /proc/self/exe failed\" err=\"") + dztrader::to_utf8_from_system(ec.message()) + "\"");
+                        std::string("msg=\"read_symlink /proc/self/exe failed\" err=\"") +
+                            dztrader::to_utf8_from_system(ec.message()) + "\"");
     }
     return p;
 #endif
@@ -79,8 +77,7 @@ bool has_master_marker(const std::filesystem::path& dir) {
 }
 
 /// 从 exe_dir 开始向上查找 dztraderd[.exe]，最多向上 3 层
-std::filesystem::path compute_app_root()
-{
+std::filesystem::path compute_app_root() {
     auto dir = exe_dir();
     for (int i = 0; i < 4; ++i) {  // exe_dir + 3 祖先 = 4 个目录
         if (has_master_marker(dir)) {
@@ -99,38 +96,32 @@ std::filesystem::path compute_app_root()
 
 }  // namespace
 
-const std::filesystem::path& exe_path()
-{
+const std::filesystem::path& exe_path() {
     static const auto CACHED_PATH = compute_exe_path();
     return CACHED_PATH;
 }
 
-const std::filesystem::path& exe_dir()
-{
+const std::filesystem::path& exe_dir() {
     static const auto CACHED_DIR = exe_path().parent_path();
     return CACHED_DIR;
 }
 
-const std::filesystem::path& app_root()
-{
+const std::filesystem::path& app_root() {
     static const auto CACHED_ROOT = compute_app_root();
     return CACHED_ROOT;
 }
 
-const std::string& exe_name()
-{
+const std::string& exe_name() {
     static const auto CACHED_NAME = exe_path().filename().string();
     return CACHED_NAME;
 }
 
-const std::string& exe_stem()
-{
+const std::string& exe_stem() {
     static const auto CACHED_STEM = exe_path().stem().string();
     return CACHED_STEM;
 }
 
-int pid()
-{
+int pid() {
 #ifdef _WIN32
     return static_cast<int>(GetCurrentProcessId());
 #else

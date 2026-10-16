@@ -29,8 +29,8 @@ struct TradeKeyHash {
 /// 基准 = 该账户 DB 全量装载 (load) 或运行期逐条接受 (accept_order/accept_trade) 的快照.
 /// 对比键:
 /// - 委托: order_id 定位基准行, 对比集 {update_time, volume_traded, volume_canceled, status}.
-///   完全相等 → kSkip (重放重复); 不相等且 rec.update_time < base.update_time → kSkip + 过期告警 (防御);
-///   否则 → kForward (含同秒 status/volume 翻转, 必须转发).
+///   完全相等 → kSkip (重放重复); 不相等且 rec.update_time < base.update_time → kSkip + 过期告警
+///   (防御); 否则 → kForward (含同秒 status/volume 翻转, 必须转发).
 /// - 成交: 键 (trading_day, trade_id) 存在性 (跨日同 trade_id 必须 kForward).
 ///
 /// check_* 不更新基准 (转发与否由调用方决定后调 accept_*); check_* 不修改对象状态.
@@ -49,9 +49,9 @@ public:
     static ReportFilter load(const std::vector<OrderRecord>& orders,
                              const std::vector<TradeRecord>& trades);
 
-    /// 委托去重: 按 order_id 定位基准行, 对比集 {update_time, volume_traded, volume_canceled, status}.
-    /// 完全相等 → kSkip; 不相等但 rec.update_time < base.update_time → 设 *outdated_warn=true 且 kSkip;
-    /// 否则 kForward. 不更新基准. 基准无该 order_id → kForward.
+    /// 委托去重: 按 order_id 定位基准行, 对比集 {update_time, volume_traded, volume_canceled,
+    /// status}. 完全相等 → kSkip; 不相等但 rec.update_time < base.update_time → 设
+    /// *outdated_warn=true 且 kSkip; 否则 kForward. 不更新基准. 基准无该 order_id → kForward.
     [[nodiscard]] Verdict check_order(const OrderRecord& rec, bool* outdated_warn = nullptr) const;
 
     /// 更新委托基准 (转发路径调用, 主线程即时更新).

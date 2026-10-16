@@ -10,14 +10,15 @@ namespace dztrader::webui {
 
 EventChannelPreloader::EventChannelPreloader(std::shared_ptr<shm::Reader> reader,
                                              std::shared_ptr<shm::MultiWriter> event_writer)
-    : reader_(std::move(reader)), event_writer_(std::move(event_writer)) {}
+    : reader_(std::move(reader)),
+      event_writer_(std::move(event_writer)) {}
 
 void EventChannelPreloader::schedule_event_shm_preload(const DzShmPreload& params,
                                                        std::chrono::milliseconds delay) {
     SPDLOG_DEBUG("event shm preload scheduled | delay={}ms pages={} bytes={}", delay.count(),
                  params.pages, params.bytes);
-    timer_queue_.schedule_after_replace(
-        "event_shm_maint", delay, [this, params]() { on_event_shm_timer(params); });
+    timer_queue_.schedule_after_replace("event_shm_maint", delay,
+                                        [this, params]() { on_event_shm_timer(params); });
 }
 
 void EventChannelPreloader::on_event_shm_timer(const DzShmPreload& params) {
@@ -65,8 +66,7 @@ void EventChannelPreloader::maintain_writer_shm(shm::MultiWriter& writer,
 uint32_t EventChannelPreloader::next_wait_ms() const {
     // 模式对齐 td_api.cpp 主循环: native duration → ms, cast + clamp 防 uint32 溢出
     auto ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(timer_queue_.next_timeout())
-            .count();
+        std::chrono::duration_cast<std::chrono::milliseconds>(timer_queue_.next_timeout()).count();
     constexpr auto kMaxMs = static_cast<long long>(std::numeric_limits<uint32_t>::max());
     return ms >= kMaxMs ? std::numeric_limits<uint32_t>::max() : static_cast<uint32_t>(ms);
 }

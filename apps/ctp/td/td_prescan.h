@@ -32,17 +32,19 @@ std::vector<OrderRecord> load_orders(SQLite::Database& db, const std::string& ac
 std::vector<TradeRecord> load_trades(SQLite::Database& db, const std::string& account_id);
 
 /// 增量装载: seq > since_seq 的 orders (重连重建基准, §4.3).
-std::vector<OrderRecord> load_orders_since(SQLite::Database& db, const std::string& account_id,
+std::vector<OrderRecord> load_orders_since(SQLite::Database& db,
+                                           const std::string& account_id,
                                            uint64_t since_seq);
 
 /// 增量装载: seq > since_seq 的 trades (重连重建基准, §4.3).
-std::vector<TradeRecord> load_trades_since(SQLite::Database& db, const std::string& account_id,
+std::vector<TradeRecord> load_trades_since(SQLite::Database& db,
+                                           const std::string& account_id,
                                            uint64_t since_seq);
 
 /// 对 accounts 列表全量预扫, 返回 account_id -> SessionBootData (start_seq = 实际 MAX).
 /// 无历史账户得到空基准 (start_seq=0). 供 TdApi::set_configs 预扫缓存.
-std::map<std::string, SessionBootData> prescan_accounts(
-    SQLite::Database& db, const std::vector<std::string>& accounts);
+std::map<std::string, SessionBootData> prescan_accounts(SQLite::Database& db,
+                                                        const std::vector<std::string>& accounts);
 
 }  // namespace dztrader::ctp
 

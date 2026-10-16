@@ -34,8 +34,8 @@ std::filesystem::path make_test_exe(const std::filesystem::path& dir, const std:
     ofs << "stub";
     ofs.close();
 #ifndef _WIN32
-    std::filesystem::permissions(path,
-        std::filesystem::perms::owner_exec | std::filesystem::perms::owner_read,
+    std::filesystem::permissions(
+        path, std::filesystem::perms::owner_exec | std::filesystem::perms::owner_read,
         std::filesystem::perm_options::add);
 #endif
     return path;
@@ -44,7 +44,7 @@ std::filesystem::path make_test_exe(const std::filesystem::path& dir, const std:
 /// 创建非可执行文件 (Windows: .pdb/.dll 无执行位; 仅 Windows 测试使用)
 #ifdef _WIN32
 std::filesystem::path make_non_exec_file(const std::filesystem::path& dir,
-                                          const std::string& name_with_ext) {
+                                         const std::string& name_with_ext) {
     std::filesystem::create_directories(dir);
     auto path = dir / name_with_ext;
     std::ofstream ofs(path);
@@ -59,7 +59,7 @@ protected:
     void SetUp() override {
         // 唯一临时目录, 避免并行测试冲突
         tmp_root_ = std::filesystem::temp_directory_path() /
-            ("dzprocess_test_" + std::to_string(std::rand()));
+                    ("dzprocess_test_" + std::to_string(std::rand()));
         std::filesystem::create_directories(tmp_root_);
     }
 
@@ -87,7 +87,8 @@ TEST_F(ExeScannerTest, FindsExeInRootDir) {
     ASSERT_EQ(result.size(), 1u);
     EXPECT_EQ(result[0].name, "dzmd_ctp");
     EXPECT_EQ(result[0].kind, ProcessKind::GatewayMd);
-    // 用 stem 断言, 跨平台兼容 (Windows: dzmd_ctp.exe -> stem "dzmd_ctp", Linux: dzmd_ctp -> stem "dzmd_ctp")
+    // 用 stem 断言, 跨平台兼容 (Windows: dzmd_ctp.exe -> stem "dzmd_ctp", Linux: dzmd_ctp -> stem
+    // "dzmd_ctp")
     EXPECT_EQ(result[0].exe.stem().string(), "dzmd_ctp");
     EXPECT_EQ(result[0].start_dir, tmp_root_);
 }

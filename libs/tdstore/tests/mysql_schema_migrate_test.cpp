@@ -1,7 +1,7 @@
 // tdstore 真实 schema × MySQL 迁移集成测试。
-// 缺陷回归：instruments（28 字段 + 主键 + 零索引）曾因 CREATE TABLE 生成器留尾随逗号而 migrate 失败，
-// 导致 tdstore::schemas() 在 MySQL 上五张表全部建不出来。本文件在真机 MySQL 上跑真实 schema 的
-// migrate + instruments upsert/find，服务器未配置（DZ_TEST_MYSQL_HOST 为空）时整体 GTEST_SKIP。
+// 缺陷回归：instruments（28 字段 + 主键 + 零索引）曾因 CREATE TABLE 生成器留尾随逗号而 migrate
+// 失败， 导致 tdstore::schemas() 在 MySQL 上五张表全部建不出来。本文件在真机 MySQL 上跑真实 schema
+// 的 migrate + instruments upsert/find，服务器未配置（DZ_TEST_MYSQL_HOST 为空）时整体 GTEST_SKIP。
 #if defined(DZ_WITH_MYSQL) && DZ_WITH_MYSQL
 
 #include <gtest/gtest.h>
@@ -61,9 +61,9 @@ std::optional<std::string> run_statement(const std::string& database, const std:
     boost::asio::io_context context;
     boost::mysql::any_connection connection(context);
     boost::mysql::connect_params params;
-    params.server_address = boost::mysql::host_and_port{env_or("DZ_TEST_MYSQL_HOST", "127.0.0.1"),
-                                                        static_cast<std::uint16_t>(std::stoi(
-                                                            env_or("DZ_TEST_MYSQL_PORT", "3306")))};
+    params.server_address = boost::mysql::host_and_port{
+        env_or("DZ_TEST_MYSQL_HOST", "127.0.0.1"),
+        static_cast<std::uint16_t>(std::stoi(env_or("DZ_TEST_MYSQL_PORT", "3306")))};
     params.username = env_or("DZ_TEST_MYSQL_USER", "");
     params.password = env_or("DZ_TEST_MYSQL_PASSWORD", "");
     params.database = database;
@@ -78,8 +78,8 @@ std::optional<std::string> run_statement(const std::string& database, const std:
     boost::mysql::results result;
     connection.execute(sql, result, ec, diagnostics);
     if (ec) {
-        throw std::runtime_error("tdstore mysql test statement failed | sql=" + sql + " error=" +
-                                 std::string(diagnostics.server_message()));
+        throw std::runtime_error("tdstore mysql test statement failed | sql=" + sql +
+                                 " error=" + std::string(diagnostics.server_message()));
     }
     std::optional<std::string> value;
     if (!result.rows().empty() && result.rows()[0].size() > 0) {
@@ -97,7 +97,8 @@ std::optional<std::string> run_statement(const std::string& database, const std:
                     value = std::string(text.data(), text.size());
                     break;
                 }
-                default: value = "<non-scalar>";
+                default:
+                    value = "<non-scalar>";
             }
         }
     }
@@ -107,8 +108,8 @@ std::optional<std::string> run_statement(const std::string& database, const std:
 }
 
 void create_database(const std::string& name) {
-    (void)run_statement("", "CREATE DATABASE `" + name +
-                                "` CHARACTER SET utf8mb4 COLLATE utf8mb4_bin");
+    (void)run_statement("",
+                        "CREATE DATABASE `" + name + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_bin");
 }
 
 void drop_database(const std::string& name) {
@@ -133,34 +134,34 @@ db::Config config_for(const std::string& database) {
 /// instruments 真实列序（28 列）：instrument_id/exchange_id/symbol/name/...
 db::Row instrument_row(std::string instrument_id, double price_tick, std::int64_t updated_at) {
     return db::Row{std::vector<db::Value>{
-        std::move(instrument_id),   // instrument_id (PK)
-        std::string("SHFE"),        // exchange_id
-        std::string("cu2612"),      // symbol
-        std::string("沪铜2612"),    // name (utf8mb4 往返)
-        int64_t{1},                 // product_class
-        int64_t{1},                 // settle_cycle
-        int64_t{0},                 // settlement_method
-        int64_t{0},                 // is_inverse
-        std::string("CNY"),         // currency
-        std::string(""),            // base_asset
-        int64_t{1},                 // min_limit_order_volume
-        int64_t{500},               // max_limit_order_volume
-        double{5.0},                // volume_multiple
-        price_tick,                 // price_tick
-        double{10.0},               // volume_step
-        int64_t{20261001},          // listed_date
-        int64_t{0},                 // delisted_date
-        int64_t{0},                 // option_type
-        int64_t{0},                 // option_exercise_style
-        std::string(""),            // underlying_id
-        double{0.0},                // option_strike
-        std::string(""),            // option_series
-        std::string("20261001"),    // update_day
-        std::string("cu"),          // product_code
-        int64_t{1},                 // min_market_order_volume
-        int64_t{500},               // max_market_order_volume
-        double{5.0},                // underlying_multiple
-        updated_at,                 // updated_at
+        std::move(instrument_id),  // instrument_id (PK)
+        std::string("SHFE"),       // exchange_id
+        std::string("cu2612"),     // symbol
+        std::string("沪铜2612"),   // name (utf8mb4 往返)
+        int64_t{1},                // product_class
+        int64_t{1},                // settle_cycle
+        int64_t{0},                // settlement_method
+        int64_t{0},                // is_inverse
+        std::string("CNY"),        // currency
+        std::string(""),           // base_asset
+        int64_t{1},                // min_limit_order_volume
+        int64_t{500},              // max_limit_order_volume
+        double{5.0},               // volume_multiple
+        price_tick,                // price_tick
+        double{10.0},              // volume_step
+        int64_t{20261001},         // listed_date
+        int64_t{0},                // delisted_date
+        int64_t{0},                // option_type
+        int64_t{0},                // option_exercise_style
+        std::string(""),           // underlying_id
+        double{0.0},               // option_strike
+        std::string(""),           // option_series
+        std::string("20261001"),   // update_day
+        std::string("cu"),         // product_code
+        int64_t{1},                // min_market_order_volume
+        int64_t{500},              // max_market_order_volume
+        double{5.0},               // underlying_multiple
+        updated_at,                // updated_at
     }};
 }
 
@@ -195,10 +196,9 @@ protected:
 TEST_F(TdSchemaMysqlTest, MigrateCreatesAllFiveTables) {
     for (const char* table : {"orders", "trades", "positions", "trading_accounts", "instruments"}) {
         const auto exists = run_statement(
-            database_name_,
-            std::string("SELECT COUNT(*) FROM information_schema.TABLES WHERE "
-                        "TABLE_SCHEMA=DATABASE() AND TABLE_NAME='") +
-                table + "'");
+            database_name_, std::string("SELECT COUNT(*) FROM information_schema.TABLES WHERE "
+                                        "TABLE_SCHEMA=DATABASE() AND TABLE_NAME='") +
+                                table + "'");
         ASSERT_TRUE(exists.has_value()) << "table=" << table;
         EXPECT_EQ(*exists, "1") << "table=" << table;
     }
@@ -228,8 +228,7 @@ TEST_F(TdSchemaMysqlTest, InstrumentsUpsertAndFind) {
     // 主键幂等：同 instrument_id 再写只更新
     const db::Row updated = instrument_row("cu2612", 20.0, 200);
     session_->upsert("instruments", std::span<const db::Row>(&updated, 1));
-    found = session_->find("instruments",
-                           db::filters::eq("instrument_id", std::string("cu2612")));
+    found = session_->find("instruments", db::filters::eq("instrument_id", std::string("cu2612")));
     ASSERT_EQ(found.size(), 1u);
     EXPECT_DOUBLE_EQ(found.rows()[0].get<double>(13), 20.0);
     EXPECT_EQ(found.rows()[0].get<int64_t>(27), 200);

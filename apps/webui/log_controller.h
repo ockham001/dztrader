@@ -9,23 +9,21 @@
 
 namespace dztrader::webui {
 
-class LogCtrl : public drogon::HttpController<LogCtrl, false>,
-                public ControllerBase {
+class LogCtrl : public drogon::HttpController<LogCtrl, false>, public ControllerBase {
 public:
-    explicit LogCtrl(std::shared_ptr<Repository> repo,
-                     std::shared_ptr<LogDomainService> log_domain)
+    explicit LogCtrl(std::shared_ptr<Repository> repo, std::shared_ptr<LogDomainService> log_domain)
         : ControllerBase(std::move(repo)),
           log_domain_(std::move(log_domain)) {}
 
 public:
     METHOD_LIST_BEGIN
-        ADD_METHOD_TO(LogCtrl::get_files,      "/api/logs/files",      drogon::Get);
-        ADD_METHOD_TO(LogCtrl::get_content,    "/api/logs/content",    drogon::Get);
-        ADD_METHOD_TO(LogCtrl::get_stats,      "/api/logs/stats",      drogon::Get);
-        ADD_METHOD_TO(LogCtrl::get_aggregate,  "/api/logs/aggregate",  drogon::Get);
-        ADD_METHOD_TO(LogCtrl::get_timeline,   "/api/logs/timeline",   drogon::Get);
-        ADD_METHOD_TO(LogCtrl::set_level,      "/api/logs/level",      drogon::Post);
-        ADD_METHOD_TO(LogCtrl::flush_log,      "/api/logs/flush",      drogon::Post);
+    ADD_METHOD_TO(LogCtrl::get_files, "/api/logs/files", drogon::Get);
+    ADD_METHOD_TO(LogCtrl::get_content, "/api/logs/content", drogon::Get);
+    ADD_METHOD_TO(LogCtrl::get_stats, "/api/logs/stats", drogon::Get);
+    ADD_METHOD_TO(LogCtrl::get_aggregate, "/api/logs/aggregate", drogon::Get);
+    ADD_METHOD_TO(LogCtrl::get_timeline, "/api/logs/timeline", drogon::Get);
+    ADD_METHOD_TO(LogCtrl::set_level, "/api/logs/level", drogon::Post);
+    ADD_METHOD_TO(LogCtrl::flush_log, "/api/logs/flush", drogon::Post);
     METHOD_LIST_END
 
     void get_files(const drogon::HttpRequestPtr& req,

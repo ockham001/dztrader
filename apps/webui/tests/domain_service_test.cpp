@@ -27,9 +27,14 @@ namespace {
 
 class FakeBroadcaster : public WsBroadcaster {
 public:
-    struct Msg { std::string type; std::string instance_id; nlohmann::json data; };
+    struct Msg {
+        std::string type;
+        std::string instance_id;
+        nlohmann::json data;
+    };
     std::vector<Msg> messages;
-    void broadcast(const std::string& type, const std::string& instance_id,
+    void broadcast(const std::string& type,
+                   const std::string& instance_id,
                    const nlohmann::json& data) override {
         messages.push_back({.type = type, .instance_id = instance_id, .data = data});
     }
@@ -156,10 +161,10 @@ TEST(LogDomainServiceTest, OtherTargetWritesShmFrame) {
     const auto r =
         svc.handle_log_control("dzmd_ctp", DZ_FRAME_SET_LOG_CONFIG, {{"level", "debug"}});
     EXPECT_EQ(r, LogControlResult::Ok);
-    EXPECT_EQ(self_log.current().at("level"), "debug");   // 自身不被改写
-    EXPECT_TRUE(mirror.instance("dzweb").empty());        // 其他进程分支不 publish
+    EXPECT_EQ(self_log.current().at("level"), "debug");  // 自身不被改写
+    EXPECT_TRUE(mirror.instance("dzweb").empty());       // 其他进程分支不 publish
     EXPECT_TRUE(ws.messages.empty());
-    EXPECT_EQ(fx.last_type(), DZ_FRAME_SET_LOG_CONFIG);    // 帧已写入 SHM
+    EXPECT_EQ(fx.last_type(), DZ_FRAME_SET_LOG_CONFIG);  // 帧已写入 SHM
     std::filesystem::remove(cfg_path);
 }
 
@@ -209,7 +214,6 @@ TEST(LogDomainServiceTest, NonLogControlFrameReturnsNotHandled) {
     EXPECT_EQ(r, LogControlResult::NotHandled);
     std::filesystem::remove(cfg_path);
 }
-
 
 TEST(LogDomainServiceTest, OnRtnLogConfigUpdatesMirrorAndBroadcasts) {
     MirrorStore mirror;
@@ -278,9 +282,12 @@ TEST(ProcessDomainServiceTest, RegisteredProcessMirrored) {
     MirrorStore mirror;
     FakeBroadcaster ws;
     ProcessMirror pm(mirror);
-    pm.update_process_configs(nlohmann::json{{"dzmd_ctp", nlohmann::json{
-        {"args", nlohmann::json::array()}, {"env", nlohmann::json::object()},
-        {"restart", nlohmann::json{{"enabled", false}, {"max_attempts", 0}, {"backoff_sec", 5}}}}}});
+    pm.update_process_configs(nlohmann::json{
+        {"dzmd_ctp", nlohmann::json{{"args", nlohmann::json::array()},
+                                    {"env", nlohmann::json::object()},
+                                    {"restart", nlohmann::json{{"enabled", false},
+                                                               {"max_attempts", 0},
+                                                               {"backoff_sec", 5}}}}}});
     ProcessDomainService svc(pm, ws);
 
     const nlohmann::json payload = {{"name", "dzmd_ctp"}, {"state", "Running"}, {"pid", 123}};
@@ -295,11 +302,13 @@ TEST(ProcessDomainServiceTest, ProcessConfigFullOverwrite) {
     ProcessMirror pm(mirror);
     ProcessDomainService svc(pm, ws);
 
-    svc.on_rtn_process_config(nlohmann::json{{"dzmd_ctp", nlohmann::json{{"args", nlohmann::json::array()}}}});
+    svc.on_rtn_process_config(
+        nlohmann::json{{"dzmd_ctp", nlohmann::json{{"args", nlohmann::json::array()}}}});
     EXPECT_TRUE(mirror.instance("dztraderd")["process_config"].contains("dzmd_ctp"));
     EXPECT_EQ(ws.messages[0].type, "process_config");
     // 全量覆盖：第二次不含 dzmd_xtp 时条目消失
-    svc.on_rtn_process_config(nlohmann::json{{"dzmd_xtp", nlohmann::json{{"args", nlohmann::json::array()}}}});
+    svc.on_rtn_process_config(
+        nlohmann::json{{"dzmd_xtp", nlohmann::json{{"args", nlohmann::json::array()}}}});
     EXPECT_FALSE(mirror.instance("dztraderd")["process_config"].contains("dzmd_ctp"));
 }
 
@@ -342,7 +351,7 @@ TEST(ShmDomainServiceTest, EventShmConfigMountedOnMaster) {
     EXPECT_EQ(mirror.instance("dztraderd")["event_shm_config"]["check_interval_min"], 5);
     ASSERT_EQ(ws.messages.size(), 1u);
     EXPECT_EQ(ws.messages[0].type, "event_shm_config");
-    EXPECT_EQ(ws.messages[0].instance_id, "");   // 无 instance_id，广播不带该字段
+    EXPECT_EQ(ws.messages[0].instance_id, "");  // 无 instance_id，广播不带该字段
     EXPECT_EQ(ws.messages[0].data["check_interval_min"], 5);
 }
 
@@ -413,10 +422,12 @@ TEST(ProgressDomainServiceTest, ProgressOverwrites) {
     MirrorStore mirror;
     FakeBroadcaster ws;
     ProgressDomainService svc(mirror, ws);
-    svc.on_rtn_progress("dzmd_ctp", nlohmann::json{{"min", 0}, {"max", 4}, {"current", 2}, {"desc", "订阅合约中"}});
+    svc.on_rtn_progress(
+        "dzmd_ctp", nlohmann::json{{"min", 0}, {"max", 4}, {"current", 2}, {"desc", "订阅合约中"}});
     EXPECT_EQ(mirror.instance("dzmd_ctp")["progress"]["current"], 2);
     // 后到覆盖先到（契约 progress：单条完整状态）
-    svc.on_rtn_progress("dzmd_ctp", nlohmann::json{{"min", 0}, {"max", 0}, {"current", 0}, {"desc", ""}});
+    svc.on_rtn_progress("dzmd_ctp",
+                        nlohmann::json{{"min", 0}, {"max", 0}, {"current", 0}, {"desc", ""}});
     EXPECT_EQ(mirror.instance("dzmd_ctp")["progress"]["max"], 0);
     EXPECT_EQ(mirror.instance("dzmd_ctp")["progress"]["desc"], "");
     ASSERT_EQ(ws.messages.size(), 2u);
@@ -434,7 +445,9 @@ TEST(MdControlDomainServiceTest, MdConnectNonAdminRepliesErrorNoFrame) {
     ProcessMirror pm(store);
     MdControlDomainService svc(pm, &*fx.writer);
     std::vector<nlohmann::json> replies;
-    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) {
+        replies.push_back(std::move(f));
+    };
     svc.handle_md_connect(false, "dzmd_ctp", 42, reply);
     ASSERT_EQ(replies.size(), 1u);
     EXPECT_EQ(replies[0]["type"], "error");
@@ -450,7 +463,9 @@ TEST(MdControlDomainServiceTest, MdConnectProcessNotRunningRepliesError) {
     ProcessMirror pm(store);
     MdControlDomainService svc(pm, &*fx.writer);
     std::vector<nlohmann::json> replies;
-    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) {
+        replies.push_back(std::move(f));
+    };
     svc.handle_md_connect(true, "dzmd_ctp", 7, reply);
     ASSERT_EQ(replies.size(), 1u);
     EXPECT_EQ(replies[0]["type"], "error");
@@ -469,7 +484,9 @@ TEST(MdControlDomainServiceTest, MdConnectOkWritesRequestFrame) {
     pm.update_status("dzmd_ctp", s);
     MdControlDomainService svc(pm, &*fx.writer);
     std::vector<nlohmann::json> replies;
-    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) {
+        replies.push_back(std::move(f));
+    };
     svc.handle_md_connect(true, "dzmd_ctp", 1, reply);
     ASSERT_EQ(replies.size(), 1u);
     EXPECT_EQ(replies[0]["type"], "md_connect_ack");
@@ -490,7 +507,9 @@ TEST(MdControlDomainServiceTest, MdDisconnectOkWritesDisconnectFrame) {
     pm.update_status("dzmd_ctp", s);
     MdControlDomainService svc(pm, &*fx.writer);
     std::vector<nlohmann::json> replies;
-    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) {
+        replies.push_back(std::move(f));
+    };
     svc.handle_md_disconnect(true, "dzmd_ctp", 9, reply);
     ASSERT_EQ(replies.size(), 1u);
     EXPECT_EQ(replies[0]["type"], "md_disconnect_ack");
@@ -504,7 +523,9 @@ TEST(MdControlDomainServiceTest, MdDisconnectNoWriterRepliesError) {
     ProcessMirror pm(store);
     MdControlDomainService svc(pm, nullptr);
     std::vector<nlohmann::json> replies;
-    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) {
+        replies.push_back(std::move(f));
+    };
     svc.handle_md_disconnect(true, "dzmd_ctp", 3, reply);
     ASSERT_EQ(replies.size(), 1u);
     EXPECT_EQ(replies[0]["type"], "error");
@@ -518,7 +539,9 @@ TEST(MdControlDomainServiceTest, QuerySubscriptionsOkWritesQueryFrame) {
     ProcessMirror pm(store);
     MdControlDomainService svc(pm, &*fx.writer);
     std::vector<nlohmann::json> replies;
-    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) {
+        replies.push_back(std::move(f));
+    };
     const nlohmann::json payload = {{"source", "dzmd_ctp"}, {"query", "unsuccessful"}, {"seq", 5}};
     svc.handle_query_md_subscriptions("dzmd_ctp", 5, payload, reply);
     ASSERT_EQ(replies.size(), 1u);
@@ -535,7 +558,9 @@ TEST(MdControlDomainServiceTest, QuerySubscriptionsMissingPayloadRepliesError) {
     ProcessMirror pm(store);
     MdControlDomainService svc(pm, &*fx.writer);
     std::vector<nlohmann::json> replies;
-    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) {
+        replies.push_back(std::move(f));
+    };
     svc.handle_query_md_subscriptions("dzmd_ctp", 2, nlohmann::json{{"source", "dzmd_ctp"}}, reply);
     ASSERT_EQ(replies.size(), 1u);
     EXPECT_EQ(replies[0]["type"], "error");
@@ -549,8 +574,11 @@ TEST(MdControlDomainServiceTest, QuerySubscriptionsNoWriterRepliesError) {
     ProcessMirror pm(store);
     MdControlDomainService svc(pm, nullptr);
     std::vector<nlohmann::json> replies;
-    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) { replies.push_back(std::move(f)); };
-    svc.handle_query_md_subscriptions("dzmd_ctp", 6, nlohmann::json{{"query", "unsuccessful"}}, reply);
+    MdControlDomainService::Reply reply = [&replies](nlohmann::json f) {
+        replies.push_back(std::move(f));
+    };
+    svc.handle_query_md_subscriptions("dzmd_ctp", 6, nlohmann::json{{"query", "unsuccessful"}},
+                                      reply);
     ASSERT_EQ(replies.size(), 1u);
     EXPECT_EQ(replies[0]["type"], "error");
     EXPECT_EQ(replies[0]["payload"]["message"], "invalid source or writer not ready");

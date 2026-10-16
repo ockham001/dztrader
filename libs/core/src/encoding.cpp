@@ -32,15 +32,15 @@ static std::string mb_to_utf8(const std::string& s, UINT code_page) {
     MultiByteToWideChar(code_page, 0, input, input_len, wide.data(), wide_len);
 
     // 第二步: UTF-16 -> UTF-8
-    int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), wide_len,
-                                       nullptr, 0, nullptr, nullptr);
+    int utf8_len =
+        WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), wide_len, nullptr, 0, nullptr, nullptr);
     if (utf8_len <= 0) {
         return s;
     }
 
     std::string utf8(utf8_len, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), wide_len,
-                        utf8.data(), utf8_len, nullptr, nullptr);
+    WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), wide_len, utf8.data(), utf8_len, nullptr,
+                        nullptr);
 
     return utf8;
 }

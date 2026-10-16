@@ -51,9 +51,7 @@ public:
     }
 
     /// 设置当前进度（desc 保留不变）。
-    void set_current(int current) {
-        cfg_["current"] = current;
-    }
+    void set_current(int current) { cfg_["current"] = current; }
 
     /// 设置当前进度 + 说明。
     void set_current(int current, std::string desc) {
@@ -63,9 +61,7 @@ public:
 
     /// 推送 RTN_PROGRESS 帧（始终全量当前镜像）。
     /// rtn 的时机和次数完全由外部控制，类内部不自动调用本方法。
-    void rtn() {
-        write_ext_inst_json_obj(writer_, DZ_FRAME_RTN_PROGRESS, source_, cfg_);
-    }
+    void rtn() { write_ext_inst_json_obj(writer_, DZ_FRAME_RTN_PROGRESS, source_, cfg_); }
 
     /// 只读访问当前配置镜像（快照上报时判断是否有活跃进度用）。
     const nlohmann::json& config() const noexcept { return cfg_; }

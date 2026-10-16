@@ -14,13 +14,7 @@
 
 namespace dztrader::strategy_api_internal {
 
-using ColumnValue = std::variant<
-    std::monostate,
-    bool,
-    int64_t,
-    double,
-    std::string
->;
+using ColumnValue = std::variant<std::monostate, bool, int64_t, double, std::string>;
 
 using Row = std::vector<ColumnValue>;
 

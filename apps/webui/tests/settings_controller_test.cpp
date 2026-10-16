@@ -80,14 +80,16 @@ protected:
         webui_cfg_->notify_cache_size = 100;
 
         // 临时文件名带 uid_, 避免与其他用例/测试在临时目录碰撞
-        master_path_ = std::filesystem::temp_directory_path() / ("dz_settings_dztraderd_test_" + uid_ + ".json");
-        webui_path_ = std::filesystem::temp_directory_path() / ("dz_settings_webui_test_" + uid_ + ".json");
+        master_path_ = std::filesystem::temp_directory_path() /
+                       ("dz_settings_dztraderd_test_" + uid_ + ".json");
+        webui_path_ =
+            std::filesystem::temp_directory_path() / ("dz_settings_webui_test_" + uid_ + ".json");
         std::filesystem::remove(master_path_);
         std::filesystem::remove(webui_path_);
-        remove_corrupt_backups();   // 防历史运行残留的备份文件弱化备份断言
+        remove_corrupt_backups();  // 防历史运行残留的备份文件弱化备份断言
 
-        ctrl_ = std::make_shared<SettingsCtrl>(
-            repo_, shm_writer, master_path_, webui_path_, webui_cfg_);
+        ctrl_ = std::make_shared<SettingsCtrl>(repo_, shm_writer, master_path_, webui_path_,
+                                               webui_cfg_);
 
         // Task 3: 写初始 webui.json, 供 get_webui / set_webui 测试
         {
@@ -102,7 +104,8 @@ protected:
     void remove_corrupt_backups() {
         const std::string prefix = webui_path_.filename().string() + ".corrupt.";
         std::error_code ec;
-        for (const auto& entry : std::filesystem::directory_iterator(webui_path_.parent_path(), ec)) {
+        for (const auto& entry :
+             std::filesystem::directory_iterator(webui_path_.parent_path(), ec)) {
             if (entry.path().filename().string().find(prefix) == 0) {
                 std::filesystem::remove(entry.path(), ec);
             }
@@ -129,9 +132,9 @@ protected:
     template <typename Fn, typename... Args>
     drogon::HttpResponsePtr invoke(Fn fn, const drogon::HttpRequestPtr& req, Args&&... args) {
         drogon::HttpResponsePtr captured;
-        (ctrl_.get()->*fn)(req,
-                          [&captured](const drogon::HttpResponsePtr& r) { captured = r; },
-                          std::forward<Args>(args)...);
+        (ctrl_.get()->*fn)(
+            req, [&captured](const drogon::HttpResponsePtr& r) { captured = r; },
+            std::forward<Args>(args)...);
         return captured;
     }
     static nlohmann::json parse_body(const drogon::HttpResponsePtr& resp) {
@@ -168,9 +171,10 @@ TEST_F(SettingsControllerTest, SetEventShmConfigDispatches) {
 
 TEST_F(SettingsControllerTest, SetEventShmConfigReturns503WhenWriterNotReady) {
     // 构造 shm_writer 为 null 的控制器: is_ready() 恒 false → 503 (对齐
-    // market_source_controller_test.cpp 的 503 先例, 如 ToggleAutoLoginReturns503WhenWriterNotReady)
-    auto ctrl_no_writer = std::make_shared<SettingsCtrl>(
-        repo_, nullptr, master_path_, webui_path_, webui_cfg_);
+    // market_source_controller_test.cpp 的 503 先例, 如
+    // ToggleAutoLoginReturns503WhenWriterNotReady)
+    auto ctrl_no_writer =
+        std::make_shared<SettingsCtrl>(repo_, nullptr, master_path_, webui_path_, webui_cfg_);
     auto req = admin_req();
     req->setBody(R"({"check_interval_min":10})");
     drogon::HttpResponsePtr captured;

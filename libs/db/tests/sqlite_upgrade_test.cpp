@@ -21,8 +21,8 @@ std::filesystem::path unique_db_path(const std::string& name) {
     std::mt19937 gen(rd());
     std::uniform_int_distribution<uint32_t> dist;
     return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
-            std::to_string(dist(gen)) + ".db");
+           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
+            "_" + std::to_string(dist(gen)) + ".db");
 }
 
 /// 删除 db 及附属文件 (Windows 下须先释放全部连接句柄再调用)
@@ -101,7 +101,8 @@ void create_v1_schema(SQLite::Database& db) {
         "    UNIQUE(account_id, order_id)"
         ")");
     db.exec("CREATE INDEX IF NOT EXISTS idx_orders_account_day ON orders(account_id, trading_day)");
-    db.exec("CREATE INDEX IF NOT EXISTS idx_orders_day_instr ON orders(trading_day, instrument_id)");
+    db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_orders_day_instr ON orders(trading_day, instrument_id)");
 
     db.exec(
         "CREATE TABLE IF NOT EXISTS trades ("
@@ -122,7 +123,8 @@ void create_v1_schema(SQLite::Database& db) {
         "    strategy_id TEXT,"
         "    UNIQUE(account_id, trade_id)"
         ")");
-    db.exec("CREATE INDEX IF NOT EXISTS idx_trades_day_instr ON trades(trading_day, instrument_id)");
+    db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_trades_day_instr ON trades(trading_day, instrument_id)");
     db.exec("CREATE INDEX IF NOT EXISTS idx_trades_account_day ON trades(account_id, trading_day)");
 
     db.exec(
@@ -227,7 +229,8 @@ TEST(SqliteUpgradeTest, V1WithDataUpgradesToV5PreservingRows) {
             "'20260726')");
         db.exec(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
-        db.exec("INSERT INTO schema_version (version, applied_at) VALUES (1, '2026-01-01T00:00:00Z')");
+        db.exec(
+            "INSERT INTO schema_version (version, applied_at) VALUES (1, '2026-01-01T00:00:00Z')");
     }
 
     open_and_migrate(path);
@@ -245,15 +248,18 @@ TEST(SqliteUpgradeTest, V1WithDataUpgradesToV5PreservingRows) {
     EXPECT_DOUBLE_EQ(raw_double(path, "SELECT price FROM trades WHERE trade_id='T2'"), 3901.5);
     // v3 重建保数据 + 类型搬运 (ASCII '70' -> 1, 文本枚举 '13' -> 13)
     EXPECT_EQ(raw_scalar(path, "SELECT COUNT(*) FROM instruments"), 2);
-    EXPECT_EQ(raw_scalar(path, "SELECT product_class FROM instruments WHERE instrument_id='IF2506'"),
-              1);
-    EXPECT_EQ(raw_scalar(path, "SELECT product_class FROM instruments WHERE instrument_id='AU9999'"),
-              13);
     EXPECT_EQ(
-        raw_scalar(path, "SELECT min_limit_order_volume FROM instruments WHERE instrument_id='IF2506'"),
+        raw_scalar(path, "SELECT product_class FROM instruments WHERE instrument_id='IF2506'"), 1);
+    EXPECT_EQ(
+        raw_scalar(path, "SELECT product_class FROM instruments WHERE instrument_id='AU9999'"), 13);
+    EXPECT_EQ(
+        raw_scalar(path,
+                   "SELECT min_limit_order_volume FROM instruments WHERE instrument_id='IF2506'"),
         1);
-    EXPECT_EQ(raw_scalar(path, "SELECT max_limit_order_volume FROM instruments WHERE instrument_id='IF2506'"),
-              10);
+    EXPECT_EQ(
+        raw_scalar(path,
+                   "SELECT max_limit_order_volume FROM instruments WHERE instrument_id='IF2506'"),
+        10);
     EXPECT_EQ(raw_scalar(path, "SELECT settle_cycle FROM instruments WHERE instrument_id='IF2506'"),
               -1);
     EXPECT_EQ(raw_string(path, "SELECT currency FROM instruments WHERE instrument_id='IF2506'"),
@@ -261,19 +267,23 @@ TEST(SqliteUpgradeTest, V1WithDataUpgradesToV5PreservingRows) {
     EXPECT_EQ(raw_string(path, "SELECT update_day FROM instruments WHERE instrument_id='IF2506'"),
               "20260726");
     // v4 改名 + 哨兵归零 + 新列默认值
-    EXPECT_EQ(raw_scalar(path, "SELECT delisted_date FROM instruments WHERE instrument_id='IF2506'"),
-              0);
+    EXPECT_EQ(
+        raw_scalar(path, "SELECT delisted_date FROM instruments WHERE instrument_id='IF2506'"), 0);
     EXPECT_EQ(raw_string(path, "SELECT product_code FROM instruments WHERE instrument_id='IF2506'"),
               "");
-    EXPECT_EQ(raw_scalar(path,
-                         "SELECT min_market_order_volume FROM instruments WHERE instrument_id='IF2506'"),
+    EXPECT_EQ(
+        raw_scalar(path,
+                   "SELECT min_market_order_volume FROM instruments WHERE instrument_id='IF2506'"),
+        0);
+    EXPECT_EQ(
+        raw_scalar(path,
+                   "SELECT max_market_order_volume FROM instruments WHERE instrument_id='IF2506'"),
+        0);
+    EXPECT_EQ(raw_scalar(
+                  path, "SELECT underlying_multiple FROM instruments WHERE instrument_id='IF2506'"),
               0);
-    EXPECT_EQ(raw_scalar(path,
-                         "SELECT max_market_order_volume FROM instruments WHERE instrument_id='IF2506'"),
+    EXPECT_EQ(raw_scalar(path, "SELECT updated_at FROM instruments WHERE instrument_id='IF2506'"),
               0);
-    EXPECT_EQ(raw_scalar(path, "SELECT underlying_multiple FROM instruments WHERE instrument_id='IF2506'"),
-              0);
-    EXPECT_EQ(raw_scalar(path, "SELECT updated_at FROM instruments WHERE instrument_id='IF2506'"), 0);
     // v5: 费率两表退役
     EXPECT_EQ(raw_scalar(path,
                          "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
@@ -289,9 +299,9 @@ TEST(SqliteUpgradeTest, V5SchemaHasV4InstrumentColumns) {
     open_and_migrate(path);
 
     const auto columns = raw_columns(path, "instruments");
-    for (const char* name : {"product_class", "delisted_date", "product_code",
-                             "min_market_order_volume", "max_market_order_volume",
-                             "underlying_multiple", "updated_at"}) {
+    for (const char* name :
+         {"product_class", "delisted_date", "product_code", "min_market_order_volume",
+          "max_market_order_volume", "underlying_multiple", "updated_at"}) {
         EXPECT_EQ(columns.count(name), 1u) << "missing column: " << name;
     }
     for (const char* name : {"product", "min_order_volume", "max_order_volume", "expiry_date"}) {
@@ -323,10 +333,9 @@ TEST(SqliteUpgradeTest, OrdersUniqueConstraintRejectsDuplicate) {
         db.exec(
             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id, "
             "exchange_id) VALUES ('acc1', '20260726', 1, '001', 'IF2506', 'CFFEX')");
-        EXPECT_THROW(db.exec(
-                         "INSERT INTO orders (account_id, trading_day, order_id, order_ref, "
-                         "instrument_id, exchange_id) "
-                         "VALUES ('acc1', '20260726', 1, '002', 'IF2506', 'CFFEX')"),
+        EXPECT_THROW(db.exec("INSERT INTO orders (account_id, trading_day, order_id, order_ref, "
+                             "instrument_id, exchange_id) "
+                             "VALUES ('acc1', '20260726', 1, '002', 'IF2506', 'CFFEX')"),
                      SQLite::Exception);
         // 不同账户同 order_id 合法
         EXPECT_NO_THROW(db.exec(

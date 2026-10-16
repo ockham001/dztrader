@@ -34,21 +34,25 @@ struct PersistTask {
         Order,
         Trade,
         Instrument,
-        Position,          // 单行绝对态 upsert (盘中有变化时走它)
-        TradingAccount,    // 单行绝对态 upsert
-        PositionRebuild,   // 单事务重灌: 清该账户全部持仓行 + upsert 本组 (spec §3.2 全量语义)
-        FlushSignal,       // FIFO 哨兵: 此前任务必已提交 (flush 屏障)
+        Position,         // 单行绝对态 upsert (盘中有变化时走它)
+        TradingAccount,   // 单行绝对态 upsert
+        PositionRebuild,  // 单事务重灌: 清该账户全部持仓行 + upsert 本组 (spec §3.2 全量语义)
+        FlushSignal,      // FIFO 哨兵: 此前任务必已提交 (flush 屏障)
     } kind;
 
     /// Position / PositionRebuild / TradingAccount 用 (绝对态). TradingAccount 用单记录.
     /// NSDMI: FlushSignal 等不带 data 的 Kind 默认构造 (variant 第一个 alternative).
-    std::variant<OrderRecord, TradeRecord, tdstore::InstrumentRecord,
-                 std::vector<DzPositionInfo>, DzTradingAccount>
+    std::variant<OrderRecord,
+                 TradeRecord,
+                 tdstore::InstrumentRecord,
+                 std::vector<DzPositionInfo>,
+                 DzTradingAccount>
         data = {};
 
     /// PositionRebuild / FlushSignal 用: 目标账户.
     /// NSDMI 使其在位置初始化 {Kind, rec} 时默认空串; 仅需 account_id 的
-    /// Kind (TradingAccount/PositionRebuild) 走 designated 初始化显式填值 (见 td_account_session.cpp).
+    /// Kind (TradingAccount/PositionRebuild) 走 designated 初始化显式填值 (见
+    /// td_account_session.cpp).
     std::string account_id = {};
     /// Position / PositionRebuild / TradingAccount 用: 交易日 (DzDate 距纪元天数).
     int64_t trading_day = 0;
@@ -153,15 +157,15 @@ private:
 
     std::queue<PersistTask> queue_;
     std::mutex mtx_;
-    std::condition_variable cv_empty_;       // 通知 Writer: 队列非空
-    std::condition_variable cv_full_;        // 通知 enqueue: 队列非满
-    std::condition_variable cv_writer_done_; // 通知 stop: Writer 已退出
-    std::atomic<bool> running_{false};       // Writer 线程运行中
-    std::atomic<bool> shutdown_{false};      // stop() 已调用 (区别于未启动, 防止 enqueue 误丢弃)
-    std::atomic<bool> opened_{false};        // open() 已调用
-    bool writer_started_ = false;            // start_writer() 已调用 (受 mtx_ 保护)
-    bool writer_exited_ = false;             // Writer 线程已退出 (受 mtx_ 保护)
-    bool explicit_stopped_ = false;          // I4: stop() 已显式调用, 析构 no-op
+    std::condition_variable cv_empty_;        // 通知 Writer: 队列非空
+    std::condition_variable cv_full_;         // 通知 enqueue: 队列非满
+    std::condition_variable cv_writer_done_;  // 通知 stop: Writer 已退出
+    std::atomic<bool> running_{false};        // Writer 线程运行中
+    std::atomic<bool> shutdown_{false};       // stop() 已调用 (区别于未启动, 防止 enqueue 误丢弃)
+    std::atomic<bool> opened_{false};         // open() 已调用
+    bool writer_started_ = false;             // start_writer() 已调用 (受 mtx_ 保护)
+    bool writer_exited_ = false;              // Writer 线程已退出 (受 mtx_ 保护)
+    bool explicit_stopped_ = false;           // I4: stop() 已显式调用, 析构 no-op
     std::thread writer_thread_;
 
     /// flush 哨兵: token -> promise (Writer 线程 set_value, stop 丢弃路径同). 受 mtx_ 保护.

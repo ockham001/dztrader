@@ -9,7 +9,8 @@
 
 namespace dztrader::platform {
 
-/// UI 通知发送器。绑定 source + writer，封装 DZ_FRAME_NOTIFY_UI 帧（无 instance_id，source 在 payload）。
+/// UI 通知发送器。绑定 source + writer，封装 DZ_FRAME_NOTIFY_UI 帧（无 instance_id，source 在
+/// payload）。
 ///
 /// 无状态（source/writer 除外），fire-and-forget：内部吞异常并 spdlog::error。
 /// 便捷方法 error/warn/info 按级别预设 popup 默认值（ERROR 弹窗，WARN/INFO 不弹窗），

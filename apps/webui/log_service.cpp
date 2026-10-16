@@ -15,15 +15,13 @@ namespace {
 //       使用 [^\]]+? 非贪婪匹配到 ] 之前的字符，然后必须匹配空格
 const std::regex SPDLOG_PATTERN(
     R"(^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,9}[+-]\d{2}:\d{2})\s+)"
-    R"((\w+)\s+(\S+)\s+\[func=([^\]]*?)\s+file=([^:\s]*):(\d*)\s+pid=(\d+)\s+tid=(\d+)\]\s+(.*)$)"
-);
+    R"((\w+)\s+(\S+)\s+\[func=([^\]]*?)\s+file=([^:\s]*):(\d*)\s+pid=(\d+)\s+tid=(\d+)\]\s+(.*)$)");
 
 /// 日志级别严重程度排序：trace < debug < info < warning < error < critical < off
 /// 返回 -1 表示未知级别（不会匹配任何阈值）
 int level_severity(const std::string& level) {
-    static const std::vector<std::string> ORDERED = {
-        "trace", "debug", "info", "warning", "error", "critical", "off"
-    };
+    static const std::vector<std::string> ORDERED = {"trace", "debug",    "info", "warning",
+                                                     "error", "critical", "off"};
     auto it = std::find(ORDERED.begin(), ORDERED.end(), level);
     return it != ORDERED.end() ? static_cast<int>(std::distance(ORDERED.begin(), it)) : -1;
 }
@@ -49,8 +47,9 @@ std::string LogService::extract_logger(const std::string& filename) {
 }
 
 std::vector<LogFileInfo> LogService::list_files(const std::string& logger_filter,
-                                                 const std::string& date_filter,
-                                                 int limit, int offset) {
+                                                const std::string& date_filter,
+                                                int limit,
+                                                int offset) {
     std::vector<LogFileInfo> files;
     std::error_code ec;
     for (const auto& entry : std::filesystem::recursive_directory_iterator(log_dir_, ec)) {
@@ -69,7 +68,7 @@ std::vector<LogFileInfo> LogService::list_files(const std::string& logger_filter
 
         // 日期筛选：从文件名提取 _YYYY-MM-DD 后缀
         if (!date_filter.empty()) {
-            std::string base = name.substr(0, name.size() - 4); // strip .log
+            std::string base = name.substr(0, name.size() - 4);  // strip .log
             bool date_matched = false;
             if (base.size() >= 11 && base[base.size() - 11] == '_') {
                 const std::string maybe_date = base.substr(base.size() - 10);
@@ -94,7 +93,8 @@ std::vector<LogFileInfo> LogService::list_files(const std::string& logger_filter
         // Format mtime as ISO 8601
         auto ftime = entry.last_write_time(ec);
         auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-            ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
+            ftime - std::filesystem::file_time_type::clock::now() +
+            std::chrono::system_clock::now());
         info.mtime = std::format("{:%Y-%m-%dT%T}", sctp);
 
         files.push_back(std::move(info));
@@ -102,9 +102,7 @@ std::vector<LogFileInfo> LogService::list_files(const std::string& logger_filter
 
     // Sort by mtime descending (most recent first)
     std::sort(files.begin(), files.end(),
-              [](const LogFileInfo& a, const LogFileInfo& b) {
-                  return a.mtime > b.mtime;
-              });
+              [](const LogFileInfo& a, const LogFileInfo& b) { return a.mtime > b.mtime; });
 
     // Paginate
     offset = (std::max)(offset, 0);
@@ -172,7 +170,8 @@ std::optional<LogLine> LogService::parse_line(const std::string& raw, int line_n
 }
 
 LogContent LogService::read_content(const std::string& filename,
-                                    int offset, int limit,
+                                    int offset,
+                                    int limit,
                                     const std::string& level_filter,
                                     const std::string& keyword,
                                     const std::string& from_ts,
@@ -258,7 +257,8 @@ LogContent LogService::read_content(const std::string& filename,
 
     if (from_end) {
         // Take last `limit` lines
-        const int start = (limit > 0) ? (std::max)(0, static_cast<int>(filtered.size()) - limit) : 0;
+        const int start =
+            (limit > 0) ? (std::max)(0, static_cast<int>(filtered.size()) - limit) : 0;
         result.lines = std::vector<LogLine>(filtered.begin() + start, filtered.end());
     } else {
         // Offset-based pagination (existing behavior)
@@ -271,20 +271,19 @@ LogContent LogService::read_content(const std::string& filename,
         if (limit <= 0) {
             end = static_cast<int>(filtered.size());
         }
-        result.lines = std::vector<LogLine>(filtered.begin() + offset,
-                                            filtered.begin() + end);
+        result.lines = std::vector<LogLine>(filtered.begin() + offset, filtered.begin() + end);
     }
 
     return result;
 }
 
 LogContent LogService::read_from_end_seek(const std::filesystem::path& filepath,
-                                           std::uintmax_t file_size, int limit) {
+                                          std::uintmax_t file_size,
+                                          int limit) {
     LogContent result;
 
     // Estimate chunk size: max(limit * 256, 64KB)
-    auto chunk_size = std::max<std::uintmax_t>(
-        static_cast<std::uintmax_t>(limit) * 256, 65536);
+    auto chunk_size = std::max<std::uintmax_t>(static_cast<std::uintmax_t>(limit) * 256, 65536);
     chunk_size = (std::min)(chunk_size, file_size);
 
     std::ifstream ifs(filepath, std::ios::binary);
@@ -308,8 +307,8 @@ LogContent LogService::read_from_end_seek(const std::filesystem::path& filepath,
             if (gcount <= 0) {
                 break;
             }
-            skipped_newlines += static_cast<int>(
-                std::count(buf.begin(), buf.begin() + gcount, '\n'));
+            skipped_newlines +=
+                static_cast<int>(std::count(buf.begin(), buf.begin() + gcount, '\n'));
             read_so_far += static_cast<std::uintmax_t>(gcount);
         }
     }
@@ -528,8 +527,9 @@ std::string truncate_ts(const std::string& ts, const std::string& bucket) {
 }
 }  // namespace
 
-std::vector<LogService::ErrorAggregate> LogService::get_aggregate(
-    const std::string& filename, const std::string& level, int limit) {
+std::vector<LogService::ErrorAggregate> LogService::get_aggregate(const std::string& filename,
+                                                                  const std::string& level,
+                                                                  int limit) {
     // Read all lines at the target level and above (e.g. "error" includes critical)
     auto content = read_content(filename, 0, 0, level, "", "", "");
 
@@ -562,9 +562,7 @@ std::vector<LogService::ErrorAggregate> LogService::get_aggregate(
         result.push_back(std::move(agg));
     }
     std::sort(result.begin(), result.end(),
-              [](const ErrorAggregate& a, const ErrorAggregate& b) {
-                  return a.count > b.count;
-              });
+              [](const ErrorAggregate& a, const ErrorAggregate& b) { return a.count > b.count; });
 
     if (limit > 0 && static_cast<int>(result.size()) > limit) {
         result.resize(limit);
@@ -572,8 +570,8 @@ std::vector<LogService::ErrorAggregate> LogService::get_aggregate(
     return result;
 }
 
-std::vector<LogService::TimelineBucket> LogService::get_timeline(
-    const std::string& filename, const std::string& bucket) {
+std::vector<LogService::TimelineBucket> LogService::get_timeline(const std::string& filename,
+                                                                 const std::string& bucket) {
     auto content = read_content(filename, 0, 0, "", "", "", "");
 
     std::map<std::string, TimelineBucket> buckets;
@@ -595,9 +593,7 @@ std::vector<LogService::TimelineBucket> LogService::get_timeline(
     }
     // Sort by timestamp ascending
     std::sort(result.begin(), result.end(),
-              [](const TimelineBucket& a, const TimelineBucket& b) {
-                  return a.ts < b.ts;
-              });
+              [](const TimelineBucket& a, const TimelineBucket& b) { return a.ts < b.ts; });
     return result;
 }
 

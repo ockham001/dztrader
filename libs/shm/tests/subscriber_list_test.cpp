@@ -12,8 +12,8 @@ using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::NamedSemaphore;
 using dztrader::shm::SubscriberList;
-using dztrader::shm::test::MB;
 using dztrader::shm::test::cleanup_test_dir;
+using dztrader::shm::test::MB;
 using dztrader::shm::test::test_shm_dir;
 using dztrader::shm::test::unique_channel_name;
 
@@ -22,16 +22,14 @@ protected:
     std::string channel_name_;
     std::filesystem::path shm_dir_;
 
-    void SetUp() override
-    {
+    void SetUp() override {
         channel_name_ = unique_channel_name("dz_test_sublist");
         shm_dir_ = test_shm_dir(channel_name_);
     }
 
     void TearDown() override { cleanup_test_dir(shm_dir_); }
 
-    ChannelConfig make_config()
-    {
+    ChannelConfig make_config() {
         return ChannelConfig{
             .channel_name = channel_name_,
             .shm_dir = shm_dir_,
@@ -43,19 +41,14 @@ protected:
     }
 };
 
-TEST_F(SubscriberListTest, DefaultConstruction)
-{
-    SubscriberList list;
-}
+TEST_F(SubscriberListTest, DefaultConstruction) { SubscriberList list; }
 
-TEST_F(SubscriberListTest, NotifyAllWithNoSubscribers)
-{
+TEST_F(SubscriberListTest, NotifyAllWithNoSubscribers) {
     SubscriberList list;
     list.notify_all();
 }
 
-TEST_F(SubscriberListTest, SyncFromChannelMeta)
-{
+TEST_F(SubscriberListTest, SyncFromChannelMeta) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
     (void)meta->add_reader("sub_sync_1", /*pid=*/0);
     (void)meta->add_reader("sub_sync_2", /*pid=*/0);
@@ -67,16 +60,14 @@ TEST_F(SubscriberListTest, SyncFromChannelMeta)
     NamedSemaphore::remove("sub_sync_2");
 }
 
-TEST_F(SubscriberListTest, SyncFromChannelMetaEmpty)
-{
+TEST_F(SubscriberListTest, SyncFromChannelMetaEmpty) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
 
     SubscriberList list;
     EXPECT_TRUE(list.sync_from_channel_meta(*meta));
 }
 
-TEST_F(SubscriberListTest, NotifyAllWakesSubscribers)
-{
+TEST_F(SubscriberListTest, NotifyAllWakesSubscribers) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
     (void)meta->add_reader("sub_notify_test", /*pid=*/0);
 
@@ -100,14 +91,12 @@ TEST_F(SubscriberListTest, NotifyAllWakesSubscribers)
     NamedSemaphore::remove("sub_notify_test");
 }
 
-TEST_F(SubscriberListTest, MoveConstruction)
-{
+TEST_F(SubscriberListTest, MoveConstruction) {
     SubscriberList list1;
     SubscriberList list2 = std::move(list1);
 }
 
-TEST_F(SubscriberListTest, ReSyncUpdatesSubscribers)
-{
+TEST_F(SubscriberListTest, ReSyncUpdatesSubscribers) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
     (void)meta->add_reader("sub_first", /*pid=*/0);
 
@@ -121,8 +110,7 @@ TEST_F(SubscriberListTest, ReSyncUpdatesSubscribers)
     NamedSemaphore::remove("sub_second");
 }
 
-TEST_F(SubscriberListTest, SyncAfterClearPicksUpNewSubscribers)
-{
+TEST_F(SubscriberListTest, SyncAfterClearPicksUpNewSubscribers) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
     (void)meta->add_reader("sub_old", /*pid=*/0);
 

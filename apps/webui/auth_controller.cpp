@@ -49,8 +49,7 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
         int64_t remaining = user->locked_until - now_epoch;
         remaining = std::max<int64_t>(remaining, 0);
         callback(json_response(drogon::k423Locked,
-                               Json{{"error", "account_locked"},
-                                    {"locked_until", remaining}}));
+                               Json{{"error", "account_locked"}, {"locked_until", remaining}}));
         return;
     }
 
@@ -82,15 +81,17 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
         if (updated && config.login_lockout_enabled &&
             updated->failed_login_count >= config.max_failed_attempts) {
             repo_->lock_user(updated->id, now_epoch + config.lockout_duration_sec);
-            repo_->add_login_history(username, client_ip, "web", false, user_agent, "account_locked");
+            repo_->add_login_history(username, client_ip, "web", false, user_agent,
+                                     "account_locked");
             notifier_.broadcast_data_changed("login_history");
             notifier_.broadcast_data_changed("users");
-            callback(json_response(drogon::k423Locked,
-                                   Json{{"error", "account_locked"},
-                                        {"locked_until", config.lockout_duration_sec}}));
+            callback(json_response(
+                drogon::k423Locked,
+                Json{{"error", "account_locked"}, {"locked_until", config.lockout_duration_sec}}));
             return;
         }
-        repo_->add_login_history(username, client_ip, "web", false, user_agent, "invalid_credentials");
+        repo_->add_login_history(username, client_ip, "web", false, user_agent,
+                                 "invalid_credentials");
         notifier_.broadcast_data_changed("login_history");
         callback(error_response(drogon::k401Unauthorized, "invalid_credentials"));
         return;
@@ -108,14 +109,13 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
     auto refreshed = repo_->get_user_by_username(username);
     Json user_json = user_to_json(refreshed ? *refreshed : *user);
     // 默认密码告警标志:仅 admin 用户、当前密码是默认密码、且未确认告警时返回 true
-    bool is_default_password = cfg_->admin_password_is_default
-                               && refreshed && refreshed->role == "admin"
-                               && refreshed->default_password_acknowledged == 0;
-    callback(json_response(drogon::k200OK,
-                           Json{{"token", token},
-                                {"expires_in", cfg_->token_ttl_sec},
-                                {"user", user_json},
-                                {"is_default_password", is_default_password}}));
+    bool is_default_password = cfg_->admin_password_is_default && refreshed &&
+                               refreshed->role == "admin" &&
+                               refreshed->default_password_acknowledged == 0;
+    callback(json_response(drogon::k200OK, Json{{"token", token},
+                                                {"expires_in", cfg_->token_ttl_sec},
+                                                {"user", user_json},
+                                                {"is_default_password", is_default_password}}));
 }
 
 }  // namespace dztrader::webui

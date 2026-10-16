@@ -18,27 +18,27 @@ namespace dztrader::ctp {
 /// 委托记录 (对应 orders 表, 去重 key = account_id + order_id).
 /// DzOrderReport 是 SHM 帧格式, 缺少 CTP 特有字段.
 struct OrderRecord {
-    DzOrderReport base;            ///< SHM 帧字段 (order_id/strategy_id/instrument_id/...)
-    char trading_day[9];           ///< "YYYYMMDD" 文本 (SQL 列, base.date 是 DzDate)
-    char order_ref[13];            ///< CTP OrderRef (12 位 + null)
-    char external_order_id[21];    ///< CTP OrderSysID (20 位 + null)
-    int8_t is_external;            ///< 是否外部订单 (CTP 返回的, 非本系统发出)
-    char reserved[7];              ///< 对齐 int32_t volume_canceled 到 8 字节边界
-    int32_t volume_canceled;       ///< 已撤数量
-    int64_t insert_time;           ///< epoch seconds (CTP InsertTime)
-    int64_t update_time;           ///< epoch seconds (CTP UpdateTime)
-    int32_t error_id;              ///< CTP ErrorID
-    char error_msg[128];           ///< CTP ErrorMsg (GBK->UTF8)
+    DzOrderReport base;          ///< SHM 帧字段 (order_id/strategy_id/instrument_id/...)
+    char trading_day[9];         ///< "YYYYMMDD" 文本 (SQL 列, base.date 是 DzDate)
+    char order_ref[13];          ///< CTP OrderRef (12 位 + null)
+    char external_order_id[21];  ///< CTP OrderSysID (20 位 + null)
+    int8_t is_external;          ///< 是否外部订单 (CTP 返回的, 非本系统发出)
+    char reserved[7];            ///< 对齐 int32_t volume_canceled 到 8 字节边界
+    int32_t volume_canceled;     ///< 已撤数量
+    int64_t insert_time;         ///< epoch seconds (CTP InsertTime)
+    int64_t update_time;         ///< epoch seconds (CTP UpdateTime)
+    int32_t error_id;            ///< CTP ErrorID
+    char error_msg[128];         ///< CTP ErrorMsg (GBK->UTF8)
 };
 
 /// 成交记录 (对应 trades 表, 去重 key = account_id + trade_id).
 /// DzTradeReport 缺少 commission/trade_time(秒)/trade_date(YYYYMMDD int).
 struct TradeRecord {
-    DzTradeReport base;            ///< SHM 帧字段
-    char trading_day[9];           ///< "YYYYMMDD" 文本
-    int64_t trade_time;            ///< epoch seconds
-    int64_t trade_date;            ///< YYYYMMDD as int
-    double commission;             ///< 手续费
+    DzTradeReport base;   ///< SHM 帧字段
+    char trading_day[9];  ///< "YYYYMMDD" 文本
+    int64_t trade_time;   ///< epoch seconds
+    int64_t trade_date;   ///< YYYYMMDD as int
+    double commission;    ///< 手续费
 };
 
 }  // namespace dztrader::ctp

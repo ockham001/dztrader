@@ -59,8 +59,8 @@ ProcessEntry parse_gateway_entry(const std::string& name, Category cat, const nl
     entry.category = cat;
     // 契约 4.1 规则 6: 非 Strategy 条目出现 md_source 视为配置错误
     if (val.contains("md_source")) {
-        throw std::runtime_error(std::format(
-            "md_source is only valid for strategy entries | entry={}", name));
+        throw std::runtime_error(
+            std::format("md_source is only valid for strategy entries | entry={}", name));
     }
     // exe 和 start_dir 留空, 由 launch_child 调 find_exe_by_stem 实时扫描填充 (契约 process)
     entry.args = parse_args(val);
@@ -85,9 +85,8 @@ std::string parse_strategy_md_source(const nlohmann::json& val) {
     }
     for (const char c : md_source) {
         if (c == '/' || c == '\\' || (static_cast<unsigned char>(c) < 0x20)) {
-            throw std::runtime_error(
-                "strategy md_source contains invalid character | strategy=" +
-                val.value("name", "?"));
+            throw std::runtime_error("strategy md_source contains invalid character | strategy=" +
+                                     val.value("name", "?"));
         }
     }
     return md_source;
@@ -97,10 +96,14 @@ std::string parse_strategy_md_source(const nlohmann::json& val) {
 
 const char* category_str(Category cat) {
     switch (cat) {
-        case Category::GatewayMd:  return "md";
-        case Category::GatewayTd:  return "td";
-        case Category::Strategy:    return "stg";
-        case Category::WebUI:       return "webui";
+        case Category::GatewayMd:
+            return "md";
+        case Category::GatewayTd:
+            return "td";
+        case Category::Strategy:
+            return "stg";
+        case Category::WebUI:
+            return "webui";
     }
     return "unknown";
 }
@@ -176,8 +179,7 @@ Config parse_master_json(const std::filesystem::path& config_path) {
     if (data.contains("webui") && data["webui"].is_object()) {
         // 契约 4.1 规则 6: 非 Strategy 条目出现 md_source 视为配置错误
         if (data["webui"].contains("md_source")) {
-            throw std::runtime_error(
-                "md_source is only valid for strategy entries | entry=webui");
+            throw std::runtime_error("md_source is only valid for strategy entries | entry=webui");
         }
         ProcessEntry entry;
         entry.name = "dzweb";
@@ -240,11 +242,9 @@ void write_gateway_section(const std::filesystem::path& config_path,
     // 构造单个 gateway 子对象 (契约 process: 不写 exe/start_dir)
     nlohmann::json gw;
     gw["args"] = args;
-    gw["restart"] = {
-        {"enabled", restart.enabled},
-        {"max_attempts", restart.max_attempts},
-        {"backoff_sec", restart.backoff_sec}
-    };
+    gw["restart"] = {{"enabled", restart.enabled},
+                     {"max_attempts", restart.max_attempts},
+                     {"backoff_sec", restart.backoff_sec}};
     if (!display_name.empty()) gw["display_name"] = display_name;
     section_obj[gateway_name] = gw;
 
@@ -258,11 +258,9 @@ void write_webui_section(const std::filesystem::path& config_path,
                          const std::string& display_name) {
     nlohmann::json webui_obj;
     webui_obj["args"] = args;
-    webui_obj["restart"] = {
-        {"enabled", restart.enabled},
-        {"max_attempts", restart.max_attempts},
-        {"backoff_sec", restart.backoff_sec}
-    };
+    webui_obj["restart"] = {{"enabled", restart.enabled},
+                            {"max_attempts", restart.max_attempts},
+                            {"backoff_sec", restart.backoff_sec}};
     if (!display_name.empty()) webui_obj["display_name"] = display_name;
 
     dztrader::core::save_json_section<nlohmann::json>(config_path, "webui", webui_obj);
@@ -285,9 +283,9 @@ void remove_gateway_section(const std::filesystem::path& config_path,
             if (!full.is_object() || !full.contains(section)) return;
             section_obj = full[section];
         } catch (const std::exception& e) {
-            throw std::runtime_error(std::format(
-                "failed to parse {} for remove gateway | error=\"{}\"",
-                config_path.string(), e.what()));
+            throw std::runtime_error(
+                std::format("failed to parse {} for remove gateway | error=\"{}\"",
+                            config_path.string(), e.what()));
         }
     }
     if (!section_obj.is_object() || !section_obj.contains(gateway_name)) return;
@@ -306,9 +304,9 @@ void remove_webui_section(const std::filesystem::path& config_path) {
         try {
             ifs >> full;
         } catch (const std::exception& e) {
-            throw std::runtime_error(std::format(
-                "failed to parse {} for remove webui | error=\"{}\"",
-                config_path.string(), e.what()));
+            throw std::runtime_error(
+                std::format("failed to parse {} for remove webui | error=\"{}\"",
+                            config_path.string(), e.what()));
         }
     }
     if (!full.is_object() || !full.contains("webui")) return;
@@ -336,7 +334,8 @@ void remove_webui_section(const std::filesystem::path& config_path) {
         std::error_code ec;
         std::filesystem::rename(tmp, config_path, ec);
         if (ec) {
-            throw std::runtime_error("rename failed | from=" + tmp.string() + " to=" + config_path.string());
+            throw std::runtime_error("rename failed | from=" + tmp.string() +
+                                     " to=" + config_path.string());
         }
     } catch (const std::exception&) {
         std::error_code rm_ec;
@@ -357,8 +356,7 @@ void write_strategy_section(const std::filesystem::path& config_path,
             try {
                 nlohmann::json full;
                 ifs >> full;
-                if (full.is_object() && full.contains("strategy") &&
-                    full["strategy"].is_array()) {
+                if (full.is_object() && full.contains("strategy") && full["strategy"].is_array()) {
                     strategy_arr = full["strategy"];
                 }
             } catch (const std::exception&) {
@@ -388,8 +386,7 @@ void write_strategy_section(const std::filesystem::path& config_path,
     dztrader::core::save_json_section<nlohmann::json>(config_path, "strategy", strategy_arr);
 }
 
-void remove_strategy_section(const std::filesystem::path& config_path,
-                             const std::string& name) {
+void remove_strategy_section(const std::filesystem::path& config_path, const std::string& name) {
     // load-modify-save: 读 strategy 数组 -> 移除匹配条目 -> 原子写回
     if (!std::filesystem::exists(config_path)) return;
     nlohmann::json strategy_arr = nlohmann::json::array();
@@ -399,15 +396,14 @@ void remove_strategy_section(const std::filesystem::path& config_path,
         try {
             nlohmann::json full;
             ifs >> full;
-            if (!full.is_object() || !full.contains("strategy") ||
-                !full["strategy"].is_array()) {
+            if (!full.is_object() || !full.contains("strategy") || !full["strategy"].is_array()) {
                 return;
             }
             strategy_arr = full["strategy"];
         } catch (const std::exception& e) {
-            throw std::runtime_error(std::format(
-                "failed to parse {} for remove strategy | error=\"{}\"",
-                config_path.string(), e.what()));
+            throw std::runtime_error(
+                std::format("failed to parse {} for remove strategy | error=\"{}\"",
+                            config_path.string(), e.what()));
         }
     }
 
@@ -443,21 +439,12 @@ void generate_default_config(const std::filesystem::path& json_path) {
     // webui section: 默认启动 dzweb 后台 (exe 留空, 由 launch_child 调 find_exe_by_stem 实时填充)
     nlohmann::json webui = nlohmann::json::object();
     webui["args"] = nlohmann::json::array();
-    webui["restart"] = {
-        {"enabled", true},
-        {"max_attempts", 5},
-        {"backoff_sec", 5}
-    };
+    webui["restart"] = {{"enabled", true}, {"max_attempts", 5}, {"backoff_sec", 5}};
 
-    nlohmann::json full = {
-        {"log", {{"level", "info"}, {"flush_on", "warning"}}},
-        {"master", {{"single_stop_timeout_sec", 3}}},
-        {"webui", webui},
-        {"shm", {
-            {"meta_file_size", 1 * 1024 * 1024},
-            {"event", shm_event}
-        }}
-    };
+    nlohmann::json full = {{"log", {{"level", "info"}, {"flush_on", "warning"}}},
+                           {"master", {{"single_stop_timeout_sec", 3}}},
+                           {"webui", webui},
+                           {"shm", {{"meta_file_size", 1 * 1024 * 1024}, {"event", shm_event}}}};
 
     std::ofstream ofs(json_path);
     if (!ofs) {
@@ -499,7 +486,8 @@ void MasterConfig::save(const std::filesystem::path& path, const std::string& se
 
 // ---- ShmGlobalConfig ----
 
-ShmGlobalConfig ShmGlobalConfig::load(const std::filesystem::path& path, const std::string& section) {
+ShmGlobalConfig ShmGlobalConfig::load(const std::filesystem::path& path,
+                                      const std::string& section) {
     // NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT 只反序列化 meta_file_size 字段,
     // event 子段自动忽略
     return dztrader::core::load_json_section<ShmGlobalConfig>(path, section);

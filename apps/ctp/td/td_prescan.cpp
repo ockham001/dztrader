@@ -40,7 +40,8 @@ int32_t parse_yyyymmdd_to_epoch(const std::string& text) {
 /// 通用查询模板: 按 account_id 过滤 (可选 seq > since_seq 增量).
 /// 列按写端 bind_order 语义读 (direction/status/price_type/position_effect 为 INTEGER).
 template <bool Since>
-std::vector<OrderRecord> load_orders_impl(SQLite::Database& db, const std::string& account_id,
+std::vector<OrderRecord> load_orders_impl(SQLite::Database& db,
+                                          const std::string& account_id,
                                           uint64_t since_seq) {
     std::vector<OrderRecord> out;
     std::string sql =
@@ -69,7 +70,8 @@ std::vector<OrderRecord> load_orders_impl(SQLite::Database& db, const std::strin
         r.is_external = static_cast<int8_t>(stmt.getColumn(4).getInt());
         copy_to_fixed(r.base.instrument_id, stmt.getColumn(5).getString());
         copy_to_fixed(r.base.exchange_id, stmt.getColumn(6).getString());
-        r.base.direction = static_cast<int8_t>(stmt.getColumn(7).getInt());  // INTEGER 读 (Task 3 注)
+        r.base.direction =
+            static_cast<int8_t>(stmt.getColumn(7).getInt());  // INTEGER 读 (Task 3 注)
         r.base.position_effect = static_cast<int8_t>(stmt.getColumn(8).getInt());
         r.base.price_type = static_cast<int8_t>(stmt.getColumn(9).getInt());
         r.base.status = static_cast<int8_t>(stmt.getColumn(10).getInt());
@@ -91,7 +93,8 @@ std::vector<OrderRecord> load_orders_impl(SQLite::Database& db, const std::strin
 }
 
 template <bool Since>
-std::vector<TradeRecord> load_trades_impl(SQLite::Database& db, const std::string& account_id,
+std::vector<TradeRecord> load_trades_impl(SQLite::Database& db,
+                                          const std::string& account_id,
                                           uint64_t since_seq) {
     std::vector<TradeRecord> out;
     std::string sql =
@@ -138,8 +141,8 @@ uint64_t query_max_seq(SQLite::Database& db, const std::string& account_id) {
     constexpr const char* kTables[] = {"orders", "trades", "positions", "trading_accounts"};
     uint64_t result = 0;
     for (const char* table : kTables) {
-        SQLite::Statement stmt(
-            db, std::string("SELECT COALESCE(MAX(seq), 0) FROM ") + table + " WHERE account_id = ?");
+        SQLite::Statement stmt(db, std::string("SELECT COALESCE(MAX(seq), 0) FROM ") + table +
+                                       " WHERE account_id = ?");
         stmt.bind(1, account_id);
         if (stmt.executeStep()) {
             const int64_t v = stmt.getColumn(0).getInt64();
@@ -159,18 +162,20 @@ std::vector<TradeRecord> load_trades(SQLite::Database& db, const std::string& ac
     return load_trades_impl<false>(db, account_id, 0);
 }
 
-std::vector<OrderRecord> load_orders_since(SQLite::Database& db, const std::string& account_id,
+std::vector<OrderRecord> load_orders_since(SQLite::Database& db,
+                                           const std::string& account_id,
                                            uint64_t since_seq) {
     return load_orders_impl<true>(db, account_id, since_seq);
 }
 
-std::vector<TradeRecord> load_trades_since(SQLite::Database& db, const std::string& account_id,
+std::vector<TradeRecord> load_trades_since(SQLite::Database& db,
+                                           const std::string& account_id,
                                            uint64_t since_seq) {
     return load_trades_impl<true>(db, account_id, since_seq);
 }
 
-std::map<std::string, SessionBootData> prescan_accounts(
-    SQLite::Database& db, const std::vector<std::string>& accounts) {
+std::map<std::string, SessionBootData> prescan_accounts(SQLite::Database& db,
+                                                        const std::vector<std::string>& accounts) {
     std::map<std::string, SessionBootData> result;
     for (const auto& acct : accounts) {
         SessionBootData boot;

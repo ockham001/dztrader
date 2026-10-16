@@ -14,7 +14,9 @@ namespace dztrader::webui {
 class UserCtrl : public drogon::HttpController<UserCtrl, false>, public ControllerBase {
 public:
     UserCtrl(std::shared_ptr<Repository> repo, WebuiConfig cfg, DataChangeNotifier& notifier)
-        : ControllerBase(std::move(repo)), cfg_(std::move(cfg)), notifier_(notifier) {}
+        : ControllerBase(std::move(repo)),
+          cfg_(std::move(cfg)),
+          notifier_(notifier) {}
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(UserCtrl::list, "/api/user", drogon::Get);
@@ -38,21 +40,28 @@ public:
     void list(const drogon::HttpRequestPtr& req,
               std::function<void(const drogon::HttpResponsePtr&)>&& callback);
     void get(const drogon::HttpRequestPtr& req,
-             std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
+             std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+             int64_t id);
     void create(const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& callback);
     void update(const drogon::HttpRequestPtr& req,
-                std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
+                std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                int64_t id);
     void remove(const drogon::HttpRequestPtr& req,
-                std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
+                std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                int64_t id);
     void update_status(const drogon::HttpRequestPtr& req,
-                       std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
+                       std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                       int64_t id);
     void reset_password(const drogon::HttpRequestPtr& req,
-                        std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
+                        std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                        int64_t id);
     void get_permissions(const drogon::HttpRequestPtr& req,
-                         std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
+                         std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                         int64_t id);
     void update_permissions(const drogon::HttpRequestPtr& req,
-                            std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
+                            std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                            int64_t id);
     void change_password(const drogon::HttpRequestPtr& req,
                          std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 

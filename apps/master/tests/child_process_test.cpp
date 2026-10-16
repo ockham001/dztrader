@@ -30,23 +30,22 @@ protected:
 
     void SetUp() override {
         // test_worker 与测试二进制同目录（tests/）
-        worker_exe_ = dztrader::this_process::exe_dir() / "test_worker"
+        worker_exe_ = dztrader::this_process::exe_dir() /
+                      "test_worker"
 #ifdef _WIN32
-            ".exe"
+                      ".exe"
 #endif
             ;
     }
 
-    ProcessEntry make_entry(const std::string& name,
-                            const std::vector<std::string>& args = {}) {
+    ProcessEntry make_entry(const std::string& name, const std::vector<std::string>& args = {}) {
         ProcessEntry entry;
         entry.name = name;
         entry.category = Category::Strategy;
         entry.exe = worker_exe_;
         entry.args = args;
-        entry.start_dir = worker_exe_.parent_path().empty()
-            ? std::filesystem::current_path()
-            : worker_exe_.parent_path();
+        entry.start_dir = worker_exe_.parent_path().empty() ? std::filesystem::current_path()
+                                                            : worker_exe_.parent_path();
         entry.restart = default_restart_policy(Category::Strategy);
         return entry;
     }
@@ -94,9 +93,7 @@ TEST_F(ChildProcessTest, Terminate) {
 
     // 在 terminate 前设置退出回调
     bool exited = false;
-    child->async_wait([&](boost::system::error_code, int) {
-        exited = true;
-    });
+    child->async_wait([&](boost::system::error_code, int) { exited = true; });
 
     child->terminate();
     EXPECT_EQ(child->state(), ChildState::Stopping);

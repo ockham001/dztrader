@@ -10,16 +10,12 @@ using dztrader::webui::load_webui_config;
 class WebuiConfigTest : public ::testing::Test {
 protected:
     fs::path tmp_;
-    void SetUp() override {
-        tmp_ = fs::temp_directory_path() / "webui_test.json";
-    }
+    void SetUp() override { tmp_ = fs::temp_directory_path() / "webui_test.json"; }
     void TearDown() override {
         std::error_code ec;
         fs::remove(tmp_, ec);
     }
-    void write(const std::string& content) {
-        std::ofstream(tmp_) << content;
-    }
+    void write(const std::string& content) { std::ofstream(tmp_) << content; }
 };
 
 TEST_F(WebuiConfigTest, ParsesAllFields) {

@@ -14,8 +14,9 @@ namespace dztrader::core {
 /// 文件不存在或 section 缺失时返回默认构造的 T。
 /// JSON 解析错误时抛 std::runtime_error。
 /// sub_section 非空时读 section.sub_section (嵌套子段)。
-template<typename T>
-T load_json_section(const std::filesystem::path& path, const std::string& section,
+template <typename T>
+T load_json_section(const std::filesystem::path& path,
+                    const std::string& section,
                     const std::string& sub_section = "") {
     if (!std::filesystem::exists(path)) {
         return T{};
@@ -28,7 +29,8 @@ T load_json_section(const std::filesystem::path& path, const std::string& sectio
     try {
         ifs >> full;
     } catch (const std::exception& e) {
-        throw std::runtime_error("JSON parse failed | path=" + path.string() + " error=\"" + e.what() + "\"");
+        throw std::runtime_error("JSON parse failed | path=" + path.string() + " error=\"" +
+                                 e.what() + "\"");
     }
     if (!full.is_object() || !full.contains(section)) {
         return T{};
@@ -49,8 +51,10 @@ T load_json_section(const std::filesystem::path& path, const std::string& sectio
 /// 显式 close + 检查流状态, 防止磁盘满/配额耗尽时静默产生截断文件。
 /// sub_section 非空时写 section.sub_section (嵌套子段, 保留 section 中其他字段)。
 /// @throws std::runtime_error 文件打开/写入/close/rename 失败时抛出。
-template<typename T>
-void save_json_section(const std::filesystem::path& path, const std::string& section, const T& data,
+template <typename T>
+void save_json_section(const std::filesystem::path& path,
+                       const std::string& section,
+                       const T& data,
                        const std::string& sub_section = "") {
     nlohmann::json full = nlohmann::json::object();
     if (std::filesystem::exists(path)) {
@@ -65,7 +69,7 @@ void save_json_section(const std::filesystem::path& path, const std::string& sec
                 std::error_code ec;
                 auto backup = path;
                 backup += ".corrupt." + std::to_string(std::chrono::system_clock::to_time_t(
-                    std::chrono::system_clock::now()));
+                                            std::chrono::system_clock::now()));
                 std::filesystem::rename(path, backup, ec);
                 // rename 失败不阻断 save (可能 permission denied), 但至少尝试备份
             }
@@ -103,7 +107,8 @@ void save_json_section(const std::filesystem::path& path, const std::string& sec
         std::error_code ec;
         std::filesystem::rename(tmp, path, ec);
         if (ec) {
-            throw std::runtime_error("rename failed | from=" + tmp.string() + " to=" + path.string());
+            throw std::runtime_error("rename failed | from=" + tmp.string() +
+                                     " to=" + path.string());
         }
     } catch (const std::exception&) {
         std::error_code rm_ec;

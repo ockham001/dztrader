@@ -22,15 +22,13 @@ namespace dztrader::master {
 namespace {
 
 /// 获取当前时间戳（秒，Unix epoch）。
-int64_t current_timestamp() {
-    return DateTime::system_now().timestamp<int64_t>();
-}
+int64_t current_timestamp() { return DateTime::system_now().timestamp<int64_t>(); }
 
 }  // namespace
 
 void OrphanGuard::startup() {
     lock_path_ = dztrader::paths::cache() / "master.pid";
-    db_path_   = dztrader::paths::cache() / "children.db";
+    db_path_ = dztrader::paths::cache() / "children.db";
 
     // 1. 获取 file_lock 防止多实例
     // 确保锁文件的父目录存在
@@ -40,16 +38,17 @@ void OrphanGuard::startup() {
     if (!std::filesystem::exists(lock_path_)) {
         std::ofstream ofs(lock_path_);
         if (!ofs) {
-            throw Exception(DZ_EC_MASTER_LOCK_FAILED, "lock file create failed | path={}", lock_path_.string());
+            throw Exception(DZ_EC_MASTER_LOCK_FAILED, "lock file create failed | path={}",
+                            lock_path_.string());
         }
     }
 
     try {
-        instance_lock_ = std::make_unique<boost::interprocess::file_lock>(
-            lock_path_.string().c_str());
+        instance_lock_ =
+            std::make_unique<boost::interprocess::file_lock>(lock_path_.string().c_str());
     } catch (const std::exception& e) {
         throw Exception(DZ_EC_MASTER_LOCK_FAILED, "file_lock create failed | path={} error=\"{}\"",
-                    lock_path_.string(), e.what());
+                        lock_path_.string(), e.what());
     }
 
     if (!instance_lock_->try_lock()) {
@@ -60,13 +59,13 @@ void OrphanGuard::startup() {
     // 2. 打开/创建 SQLite 数据库，启用 WAL 模式和忙等待
     try {
         db_ = std::make_unique<SQLite::Database>(db_path_.string(),
-            SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+                                                 SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         db_->exec("PRAGMA journal_mode=WAL");
         db_->exec("PRAGMA busy_timeout=5000");
         init_db();
     } catch (const std::exception& e) {
         throw Exception(DZ_EC_MASTER_DB_FAILED, "children db open failed | path={} error=\"{}\"",
-                    db_path_.string(), e.what());
+                        db_path_.string(), e.what());
     }
 
     // 3. 清理残留子进程
@@ -89,16 +88,16 @@ void OrphanGuard::startup() {
 
             // 规范化两个路径后比较（避免相对路径/混合分隔符导致误判）
             std::error_code canon_ec;
-            auto canon_exe = std::filesystem::weakly_canonical(
-                std::filesystem::path(exe_str), canon_ec);
-            auto canon_stored = std::filesystem::weakly_canonical(
-                std::filesystem::path(rec.exe_path), canon_ec);
+            auto canon_exe =
+                std::filesystem::weakly_canonical(std::filesystem::path(exe_str), canon_ec);
+            auto canon_stored =
+                std::filesystem::weakly_canonical(std::filesystem::path(rec.exe_path), canon_ec);
 
             // 进程存活。检查 exe_path 是否匹配（PID 复用检测）
             if (canon_exe == canon_stored) {
                 // 相同可执行文件 — 这是我们的孤儿进程，终止它
-                SPDLOG_WARN("terminating orphan | pid={} name={} exe={}",
-                            rec.pid, rec.name, rec.exe_path);
+                SPDLOG_WARN("terminating orphan | pid={} name={} exe={}", rec.pid, rec.name,
+                            rec.exe_path);
                 terminate_orphan(rec.pid, rec.name);
             } else {
                 // PID 被不同进程复用 — 跳过
@@ -106,8 +105,8 @@ void OrphanGuard::startup() {
                             rec.pid, rec.exe_path, exe_str);
             }
         } catch (const std::exception& e) {
-            SPDLOG_ERROR("orphan check failed, skipping | pid={} name={} error=\"{}\"",
-                         rec.pid, rec.name, e.what());
+            SPDLOG_ERROR("orphan check failed, skipping | pid={} name={} error=\"{}\"", rec.pid,
+                         rec.name, e.what());
         }
     }
 
@@ -117,12 +116,14 @@ void OrphanGuard::startup() {
 }
 
 void OrphanGuard::register_child(process_v2::pid_type pid,
-                                  std::string_view name,
-                                  const std::filesystem::path& exe) {
-    if (!db_) { return; }
+                                 std::string_view name,
+                                 const std::filesystem::path& exe) {
+    if (!db_) {
+        return;
+    }
     try {
-        SQLite::Statement insert(*db_,
-            "INSERT OR REPLACE INTO children (pid, name, exe, ts) VALUES (?, ?, ?, ?)");
+        SQLite::Statement insert(
+            *db_, "INSERT OR REPLACE INTO children (pid, name, exe, ts) VALUES (?, ?, ?, ?)");
         insert.bind(1, static_cast<int64_t>(pid));
         insert.bind(2, std::string(name));
         insert.bind(3, exe.string());
@@ -134,7 +135,9 @@ void OrphanGuard::register_child(process_v2::pid_type pid,
 }
 
 void OrphanGuard::unregister_child(process_v2::pid_type pid) {
-    if (!db_) { return; }
+    if (!db_) {
+        return;
+    }
     try {
         SQLite::Statement del(*db_, "DELETE FROM children WHERE pid = ?");
         del.bind(1, static_cast<int64_t>(pid));
@@ -163,20 +166,23 @@ void OrphanGuard::cleanup() {
 }
 
 void OrphanGuard::init_db() {
-    if (!db_) { return; }
+    if (!db_) {
+        return;
+    }
     db_->exec(
         "CREATE TABLE IF NOT EXISTS children ("
         "  pid   INTEGER PRIMARY KEY,"
         "  name  TEXT NOT NULL,"
         "  exe   TEXT NOT NULL,"
         "  ts    INTEGER NOT NULL"
-        ")"
-    );
+        ")");
 }
 
 std::vector<PidRecord> OrphanGuard::read_children() {
     std::vector<PidRecord> records;
-    if (!db_) { return records; }
+    if (!db_) {
+        return records;
+    }
 
     try {
         SQLite::Statement query(*db_, "SELECT pid, name, exe FROM children");
@@ -216,8 +222,8 @@ void OrphanGuard::terminate_orphan(process_v2::pid_type pid, const std::string& 
             // 进程已死 — 视为成功（在 terminate 调用过程中退出）
             SPDLOG_INFO("orphan exited during terminate | pid={} name={}", pid, name);
         } else {
-            SPDLOG_WARN("terminate orphan failed | pid={} name={} error=\"{}\"",
-                        pid, name, dztrader::to_utf8_from_system(ec.message()));
+            SPDLOG_WARN("terminate orphan failed | pid={} name={} error=\"{}\"", pid, name,
+                        dztrader::to_utf8_from_system(ec.message()));
         }
     } catch (const std::exception& e) {
         SPDLOG_WARN("attach to orphan failed | pid={} name={} error=\"{}\"", pid, name, e.what());
@@ -225,7 +231,9 @@ void OrphanGuard::terminate_orphan(process_v2::pid_type pid, const std::string& 
 }
 
 void OrphanGuard::clear_children() {
-    if (!db_) { return; }
+    if (!db_) {
+        return;
+    }
     try {
         db_->exec("DELETE FROM children");
     } catch (const std::exception& e) {

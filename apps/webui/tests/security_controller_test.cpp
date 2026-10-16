@@ -9,7 +9,6 @@
 namespace dztrader::webui {
 namespace {
 
-
 class SecurityControllerTest : public ::testing::Test {
 protected:
     std::shared_ptr<Repository> repo_;
@@ -39,9 +38,9 @@ protected:
     template <typename Fn, typename... Args>
     drogon::HttpResponsePtr invoke(Fn fn, const drogon::HttpRequestPtr& req, Args&&... args) {
         drogon::HttpResponsePtr captured;
-        (ctrl_.get()->*fn)(req,
-                          [&captured](const drogon::HttpResponsePtr& r) { captured = r; },
-                          std::forward<Args>(args)...);
+        (ctrl_.get()->*fn)(
+            req, [&captured](const drogon::HttpResponsePtr& r) { captured = r; },
+            std::forward<Args>(args)...);
         return captured;
     }
     static nlohmann::json parse_body(const drogon::HttpResponsePtr& resp) {
@@ -72,7 +71,8 @@ TEST_F(SecurityControllerTest, GetConfigAsNonAdminReturns403) {
 
 TEST_F(SecurityControllerTest, SetConfigReturns200) {
     auto req = admin_req();
-    req->setBody(R"({"login_lockout_enabled":false,"access_mode":"whitelist","max_failed_attempts":3,"lockout_duration_sec":600})");
+    req->setBody(
+        R"({"login_lockout_enabled":false,"access_mode":"whitelist","max_failed_attempts":3,"lockout_duration_sec":600})");
     auto resp = invoke(&SecurityCtrl::set_config, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
     auto body = parse_body(resp);

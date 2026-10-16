@@ -20,7 +20,8 @@ namespace dztrader::db {
 namespace {
 
 std::string option_or(const std::map<std::string, std::string, std::less<>>& options,
-                      std::string_view key, std::string fallback) {
+                      std::string_view key,
+                      std::string fallback) {
     const auto it = options.find(key);
     return it == options.end() ? std::move(fallback) : it->second;
 }
@@ -29,7 +30,8 @@ std::string option_or(const std::map<std::string, std::string, std::less<>>& opt
 /// read_only: 只读连接不尝试 journal_mode 转换 (需写库头, 必然 SQLITE_READONLY), 免去
 /// 3×100ms 有界重试与误导性告警; 其余 PRAGMA 均为连接级设置, 逐条尽力, 失败吞掉.
 void apply_pragmas(SQLite::Database& db,
-                   const std::map<std::string, std::string, std::less<>>& options, bool read_only) {
+                   const std::map<std::string, std::string, std::less<>>& options,
+                   bool read_only) {
     if (read_only) {
         const std::string pragmas[] = {
             "PRAGMA synchronous=" + option_or(options, "synchronous", "full"),
@@ -89,21 +91,28 @@ void bind_value(SQLite::Statement& stmt, int index, const Value& value) {
 
 std::string_view aggregate_column_name(AggregateOp op) {
     switch (op) {
-        case AggregateOp::Count: return "count";
-        case AggregateOp::Max: return "max";
-        case AggregateOp::Min: return "min";
-        case AggregateOp::Sum: return "sum";
-        case AggregateOp::Avg: return "avg";
+        case AggregateOp::Count:
+            return "count";
+        case AggregateOp::Max:
+            return "max";
+        case AggregateOp::Min:
+            return "min";
+        case AggregateOp::Sum:
+            return "sum";
+        case AggregateOp::Avg:
+            return "avg";
     }
     return "count";
 }
 
 }  // namespace
 
-SqliteDatabaseImpl::SqliteDatabaseImpl(
-    std::string path, std::map<std::string, std::string, std::less<>> options,
-    std::span<const ResourceSchema> schemas)
-    : path_(std::move(path)), options_(std::move(options)), schemas_(schemas.begin(), schemas.end()) {
+SqliteDatabaseImpl::SqliteDatabaseImpl(std::string path,
+                                       std::map<std::string, std::string, std::less<>> options,
+                                       std::span<const ResourceSchema> schemas)
+    : path_(std::move(path)),
+      options_(std::move(options)),
+      schemas_(schemas.begin(), schemas.end()) {
     for (const ResourceSchema& schema : schemas_) {
         schema_by_name_.emplace(schema.name, &schema);
     }
@@ -121,8 +130,8 @@ Capability SqliteDatabaseImpl::capabilities() const noexcept {
 
 std::unique_ptr<Session> SqliteDatabaseImpl::session(bool read_only) {
     try {
-        const int flags = read_only ? SQLite::OPEN_READONLY
-                                    : (SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+        const int flags =
+            read_only ? SQLite::OPEN_READONLY : (SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         auto db = std::make_unique<SQLite::Database>(path_, flags);
         apply_pragmas(*db, options_, read_only);
         return std::make_unique<SqliteSession>(this, std::move(db), read_only);
@@ -144,9 +153,12 @@ void SqliteDatabaseImpl::migrate() {
     }
 }
 
-SqliteSession::SqliteSession(const SqliteDatabaseImpl* owner, std::unique_ptr<SQLite::Database> db,
+SqliteSession::SqliteSession(const SqliteDatabaseImpl* owner,
+                             std::unique_ptr<SQLite::Database> db,
                              bool read_only)
-    : owner_(owner), db_(std::move(db)), read_only_(read_only) {}
+    : owner_(owner),
+      db_(std::move(db)),
+      read_only_(read_only) {}
 
 const ResourceSchema& SqliteSession::require_schema(std::string_view collection) const {
     const ResourceSchema* schema = owner_->find_schema(collection);
@@ -278,8 +290,8 @@ uint64_t SqliteSession::remove(std::string_view collection, const Filter& filter
     const internal::CompiledFilter compiled =
         internal::compile_filter(filter.conditions(), schema, internal::kSqliteDialect);
     try {
-        SQLite::Statement stmt(*db_, internal::build_delete_sql(schema, compiled,
-                                                               internal::kSqliteDialect));
+        SQLite::Statement stmt(
+            *db_, internal::build_delete_sql(schema, compiled, internal::kSqliteDialect));
         for (size_t i = 0; i < compiled.params.size(); ++i) {
             bind_value(stmt, static_cast<int>(i + 1), compiled.params[i]);
         }
@@ -291,7 +303,8 @@ uint64_t SqliteSession::remove(std::string_view collection, const Filter& filter
     }
 }
 
-ResultSet SqliteSession::find(std::string_view collection, const Filter& filter,
+ResultSet SqliteSession::find(std::string_view collection,
+                              const Filter& filter,
                               const FindOptions& options) {
     const ResourceSchema& schema = require_schema(collection);
     const internal::CompiledFilter compiled =
@@ -356,10 +369,10 @@ ResultSet SqliteSession::aggregate(std::string_view collection, const Aggregatio
     columns.push_back({std::string(aggregate_column_name(aggregation.op)), aggregate_type});
     value_types.push_back(aggregate_type);
     try {
-        SQLite::Statement stmt(*db_, internal::build_aggregate_sql(
-                                         schema, aggregation.op, aggregation.field,
-                                         aggregation.group_by, compiled, aggregation.sort,
-                                         internal::kSqliteDialect));
+        SQLite::Statement stmt(
+            *db_, internal::build_aggregate_sql(schema, aggregation.op, aggregation.field,
+                                                aggregation.group_by, compiled, aggregation.sort,
+                                                internal::kSqliteDialect));
         for (size_t i = 0; i < compiled.params.size(); ++i) {
             bind_value(stmt, static_cast<int>(i + 1), compiled.params[i]);
         }

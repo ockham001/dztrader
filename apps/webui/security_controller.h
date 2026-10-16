@@ -13,7 +13,8 @@ namespace dztrader::webui {
 class SecurityCtrl : public drogon::HttpController<SecurityCtrl, false>, public ControllerBase {
 public:
     SecurityCtrl(std::shared_ptr<Repository> repo, DataChangeNotifier& notifier)
-        : ControllerBase(std::move(repo)), notifier_(notifier) {}
+        : ControllerBase(std::move(repo)),
+          notifier_(notifier) {}
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(SecurityCtrl::get_config, "/api/security/config", drogon::Get);
@@ -25,7 +26,9 @@ public:
     ADD_METHOD_TO(SecurityCtrl::add_whitelist, "/api/security/whitelist", drogon::Post);
     ADD_METHOD_TO(SecurityCtrl::remove_whitelist, "/api/security/whitelist/{1}", drogon::Delete);
     ADD_METHOD_TO(SecurityCtrl::login_history, "/api/security/login-history", drogon::Get);
-    ADD_METHOD_TO(SecurityCtrl::ack_default_password, "/api/security/ack-default-password", drogon::Post);
+    ADD_METHOD_TO(SecurityCtrl::ack_default_password,
+                  "/api/security/ack-default-password",
+                  drogon::Post);
     METHOD_LIST_END
 
     void get_config(const drogon::HttpRequestPtr& req,

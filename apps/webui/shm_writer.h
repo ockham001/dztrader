@@ -26,7 +26,8 @@ public:
     /// 保证 UPDATE_SHM_EVENT_SUBSCRIBER 后写帧能 notify 到新订阅者
     explicit ShmWriter(std::shared_ptr<shm::MultiWriter> event_writer);
 
-    /// 写入 md_connect 控制帧。返回 true = 已写入事件通道（契约 rest：响应 ok 表示已受理，非业务结果）
+    /// 写入 md_connect 控制帧。返回 true = 已写入事件通道（契约 rest：响应 ok
+    /// 表示已受理，非业务结果）
     bool write_md_connect(const std::string& source);
     /// 写入 md_disconnect 控制帧。返回 true = 已写入事件通道
     bool write_md_disconnect(const std::string& source);
@@ -76,4 +77,4 @@ private:
     std::shared_ptr<shm::MultiWriter> event_writer_;
 };
 
-} // namespace dztrader::webui
+}  // namespace dztrader::webui

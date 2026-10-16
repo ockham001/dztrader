@@ -11,7 +11,8 @@ class FrameView {
     const std::byte* frame_;
 
 public:
-    explicit FrameView(const std::byte* frame) noexcept : frame_(frame) {}
+    explicit FrameView(const std::byte* frame) noexcept
+        : frame_(frame) {}
 
     const DzFrameHeader& header() const noexcept {
         return *reinterpret_cast<const DzFrameHeader*>(frame_);
@@ -28,34 +29,26 @@ public:
     }
 
     const DzExtInstFrameHeader& ext_inst_header() const noexcept {
-        return *reinterpret_cast<const DzExtInstFrameHeader*>(
-            frame_ + sizeof(DzFrameHeader));
+        return *reinterpret_cast<const DzExtInstFrameHeader*>(frame_ + sizeof(DzFrameHeader));
     }
 
     const std::byte* ext_inst_payload() const noexcept {
         return frame_ + sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader);
     }
 
-    uint32_t ext_inst_payload_size() const noexcept {
-        return ext_inst_header().data_size;
-    }
+    uint32_t ext_inst_payload_size() const noexcept { return ext_inst_header().data_size; }
 
-    const char* ext_inst_id() const noexcept {
-        return ext_inst_header().instance_id;
-    }
+    const char* ext_inst_id() const noexcept { return ext_inst_header().instance_id; }
 
     const DzExtFrameHeader& ext_header() const noexcept {
-        return *reinterpret_cast<const DzExtFrameHeader*>(
-            frame_ + sizeof(DzFrameHeader));
+        return *reinterpret_cast<const DzExtFrameHeader*>(frame_ + sizeof(DzFrameHeader));
     }
 
     const std::byte* ext_payload() const noexcept {
         return frame_ + sizeof(DzFrameHeader) + sizeof(DzExtFrameHeader);
     }
 
-    uint32_t ext_payload_size() const noexcept {
-        return ext_header().data_size;
-    }
+    uint32_t ext_payload_size() const noexcept { return ext_header().data_size; }
 };
 
 }  // namespace dztrader::shm

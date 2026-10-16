@@ -13,7 +13,8 @@
 
 namespace dztrader::db::internal {
 
-/// td schema v1..v5（版本表 schema_version；单 IMMEDIATE 事务；幂等；失败抛 DZ_EC_DB_MIGRATE_FAILED）
+/// td schema v1..v5（版本表 schema_version；单 IMMEDIATE 事务；幂等；失败抛
+/// DZ_EC_DB_MIGRATE_FAILED）
 void apply_td_migrations(SQLite::Database& db);
 
 /// 对 sqlite_master 中不存在的 collection 按 ResourceSchema 建表 + 索引（IF NOT EXISTS，幂等）

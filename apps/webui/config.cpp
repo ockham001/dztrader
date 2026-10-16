@@ -19,8 +19,8 @@ WebuiConfig load_webui_config(const std::filesystem::path& json_path) {
     try {
         ifs >> data;
     } catch (const std::exception& e) {
-        throw std::runtime_error("webui config parse failed: " + json_path.string() +
-                                 " error=\"" + e.what() + "\"");
+        throw std::runtime_error("webui config parse failed: " + json_path.string() + " error=\"" +
+                                 e.what() + "\"");
     }
     if (!data.is_object()) {
         throw std::runtime_error("webui config root must be JSON object: " + json_path.string());

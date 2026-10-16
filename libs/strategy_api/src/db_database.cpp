@@ -27,7 +27,7 @@ struct IngestDbCache {
     std::optional<db::Config> failed_config;  ///< 最近打开失败的配置
     bool failure_reported = false;            ///< 该配置的失败已诊断过
     std::optional<std::chrono::steady_clock::time_point> retry_not_before;  ///< 退避截止
-    std::chrono::milliseconds backoff = kIngestFailureBackoffMs;  ///< 窗口 (测试可覆盖)
+    std::chrono::milliseconds backoff = kIngestFailureBackoffMs;            ///< 窗口 (测试可覆盖)
     uint64_t open_attempts = 0;  ///< 真实打开尝试次数 (退避跳过不计; 测试断言用)
 };
 
@@ -72,8 +72,7 @@ std::unique_ptr<DzDatabase> db_open_readonly_config(const db::Config& config) {
 
 std::unique_ptr<DzDatabase> db_open_readonly(const std::string& path) {
     return db_open_readonly_config(
-        db::Config{.backend = "sqlite",
-                   .options = {{"path", path}, {"busy_timeout_ms", "5000"}}});
+        db::Config{.backend = "sqlite", .options = {{"path", path}, {"busy_timeout_ms", "5000"}}});
 }
 
 IngestDbAcquire acquire_ingest_db(const db::Config& config) {
@@ -169,8 +168,10 @@ DbQueryResult to_db_query_result(db::ResultSet result) {
     return out;
 }
 
-DbQueryResult db_query_order_trade(DzDatabase* db, const std::string& account_id,
-                                   const std::string& instrument_id, const std::string& table,
+DbQueryResult db_query_order_trade(DzDatabase* db,
+                                   const std::string& account_id,
+                                   const std::string& instrument_id,
+                                   const std::string& table,
                                    bool order_by_seq) {
     db::Filter filter;
     if (!account_id.empty()) filter.add(db::filters::eq("account_id", account_id));
@@ -180,7 +181,8 @@ DbQueryResult db_query_order_trade(DzDatabase* db, const std::string& account_id
     return to_db_query_result(db->session->find(table, filter, options));
 }
 
-DbQueryResult db_query_position(DzDatabase* db, const std::string& account_id,
+DbQueryResult db_query_position(DzDatabase* db,
+                                const std::string& account_id,
                                 const std::string& instrument_id) {
     db::Filter filter;
     if (!account_id.empty()) filter.add(db::filters::eq("account_id", account_id));
@@ -196,14 +198,17 @@ DbQueryResult db_query_trading_account(DzDatabase* db, const std::string& accoun
         "trading_accounts", filter, db::FindOptions{.sort = {{"seq", db::SortOrder::Ascending}}}));
 }
 
-DbQueryResult db_query_seq_range(DzDatabase* db, const std::string& resource,
-                                 const std::string& account_id, uint64_t from, uint64_t to) {
+DbQueryResult db_query_seq_range(DzDatabase* db,
+                                 const std::string& resource,
+                                 const std::string& account_id,
+                                 uint64_t from,
+                                 uint64_t to) {
     const db::Filter filter = {db::filters::eq("account_id", account_id),
                                db::filters::gte("seq", static_cast<int64_t>(from)),
                                db::filters::lt("seq", static_cast<int64_t>(to + 1))};
-    return to_db_query_result(db->session->find(
-        resource_collection(resource), filter,
-        db::FindOptions{.sort = {{"seq", db::SortOrder::Ascending}}}));
+    return to_db_query_result(
+        db->session->find(resource_collection(resource), filter,
+                          db::FindOptions{.sort = {{"seq", db::SortOrder::Ascending}}}));
 }
 
 std::unordered_map<std::string, uint64_t> db_query_max_seq_by_account(DzDatabase* db,
@@ -224,7 +229,8 @@ std::unordered_map<std::string, uint64_t> db_query_max_seq_by_account(DzDatabase
     return out;
 }
 
-uint64_t db_query_account_max_seq(DzDatabase* db, const std::string& resource,
+uint64_t db_query_account_max_seq(DzDatabase* db,
+                                  const std::string& resource,
                                   const std::string& account_id) {
     db::Aggregation aggregation;
     aggregation.op = db::AggregateOp::Max;

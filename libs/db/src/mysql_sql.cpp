@@ -43,8 +43,10 @@ std::string field_definition(const FieldSchema& field, const ResourceSchema& sch
 }
 
 /// 命名索引行
-std::string key_definition(std::string_view kind, std::string_view name,
-                           std::span<const std::string_view> fields, const ResourceSchema& schema) {
+std::string key_definition(std::string_view kind,
+                           std::string_view name,
+                           std::span<const std::string_view> fields,
+                           const ResourceSchema& schema) {
     std::string line = "  ";
     line += kind;
     line += " ";
@@ -67,19 +69,24 @@ std::string primary_key_definition(std::string_view column) {
 
 }  // namespace
 
-std::string_view mysql_column_type(ValueType type, std::string_view column,
+std::string_view mysql_column_type(ValueType type,
+                                   std::string_view column,
                                    std::string_view collection) {
     switch (type) {
-        case ValueType::Int64: return "BIGINT";
-        case ValueType::Float64: return "DOUBLE";
+        case ValueType::Int64:
+            return "BIGINT";
+        case ValueType::Float64:
+            return "DOUBLE";
         // 列级 utf8mb4_bin：对齐 SQLite 默认 BINARY 比较，避免默认 ai_ci 让唯一键/过滤大小写不敏感
         case ValueType::String:
             return "VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin";
-        case ValueType::Bool: return "TINYINT(1)";
-        case ValueType::Null: break;
+        case ValueType::Bool:
+            return "TINYINT(1)";
+        case ValueType::Null:
+            break;
     }
-    throw Exception(DZ_EC_INVALID_PARAM, "unsupported column type | column={} collection={}", column,
-                    collection);
+    throw Exception(DZ_EC_INVALID_PARAM, "unsupported column type | column={} collection={}",
+                    column, collection);
 }
 
 std::string build_mysql_create_table_sql(const ResourceSchema& schema) {
@@ -114,8 +121,8 @@ std::string build_mysql_create_table_sql(const ResourceSchema& schema) {
         lines.push_back(primary_key_definition(primary->name));
     }
     for (const IndexSchema& index : schema.indexes) {
-        lines.push_back(key_definition(index.unique ? "UNIQUE KEY" : "KEY", index.name, index.fields,
-                                       schema));
+        lines.push_back(
+            key_definition(index.unique ? "UNIQUE KEY" : "KEY", index.name, index.fields, schema));
     }
     std::string sql = "CREATE TABLE IF NOT EXISTS ";
     sql += quote_identifier(schema.name);

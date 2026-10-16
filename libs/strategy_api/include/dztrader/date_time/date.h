@@ -113,8 +113,8 @@ public:
         auto fields = Parser::parse(str, fmt);
         if (!fields.year || !fields.month || !fields.day) {
             throw std::invalid_argument(std::format(
-                "missing date components | year={} month={} day={}",
-                fields.year.has_value(), fields.month.has_value(), fields.day.has_value()));
+                "missing date components | year={} month={} day={}", fields.year.has_value(),
+                fields.month.has_value(), fields.day.has_value()));
         }
         return Date::from_year_month_day(*fields.year, *fields.month, *fields.day);
     }

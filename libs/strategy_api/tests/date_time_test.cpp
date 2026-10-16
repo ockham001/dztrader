@@ -54,9 +54,8 @@ TEST_F(DateTimeTest, ConstructorFromDateAndTime) {
 }
 
 TEST_F(DateTimeTest, ConstructorFromYMDAndHMS) {
-    auto ymd = std::chrono::year_month_day{std::chrono::year{2024},
-                                            std::chrono::month{6},
-                                            std::chrono::day{15}};
+    auto ymd = std::chrono::year_month_day{std::chrono::year{2024}, std::chrono::month{6},
+                                           std::chrono::day{15}};
     auto dur = std::chrono::hours{14} + std::chrono::minutes{30};
     auto hms = std::chrono::hh_mm_ss{dur};
     DateTime dt{ymd, hms};
@@ -227,9 +226,7 @@ TEST_F(DateTimeTest, DaysToNegative) {
     EXPECT_EQ(a.days_to(b), -10);
 }
 
-TEST_F(DateTimeTest, DaysToZero) {
-    EXPECT_EQ(market_open_.days_to(market_open_), 0);
-}
+TEST_F(DateTimeTest, DaysToZero) { EXPECT_EQ(market_open_.days_to(market_open_), 0); }
 
 TEST_F(DateTimeTest, OperatorPlusDuration) {
     auto dt = market_open_ + std::chrono::hours{1};
@@ -347,9 +344,8 @@ TEST_F(DateTimeTest, FromStringDateOnly) {
 }
 
 TEST_F(DateTimeTest, FromYmdHmsChronoValid) {
-    auto ymd = std::chrono::year_month_day{std::chrono::year{2024},
-                                            std::chrono::month{6},
-                                            std::chrono::day{15}};
+    auto ymd = std::chrono::year_month_day{std::chrono::year{2024}, std::chrono::month{6},
+                                           std::chrono::day{15}};
     auto dur = std::chrono::hours{14} + std::chrono::minutes{30};
     auto hms = std::chrono::hh_mm_ss{dur};
     auto dt = DateTime::from_ymd_hms(ymd, hms);
@@ -358,17 +354,15 @@ TEST_F(DateTimeTest, FromYmdHmsChronoValid) {
 }
 
 TEST_F(DateTimeTest, FromYmdHmsChronoInvalidDate) {
-    auto ymd = std::chrono::year_month_day{std::chrono::year{2024},
-                                            std::chrono::month{2},
-                                            std::chrono::day{30}};
+    auto ymd = std::chrono::year_month_day{std::chrono::year{2024}, std::chrono::month{2},
+                                           std::chrono::day{30}};
     auto hms = std::chrono::hh_mm_ss{std::chrono::hours{0}};
     EXPECT_THROW(DateTime::from_ymd_hms(ymd, hms), std::invalid_argument);
 }
 
 TEST_F(DateTimeTest, FromYmdHmsChronoInvalidTime) {
-    auto ymd = std::chrono::year_month_day{std::chrono::year{2024},
-                                            std::chrono::month{1},
-                                            std::chrono::day{1}};
+    auto ymd = std::chrono::year_month_day{std::chrono::year{2024}, std::chrono::month{1},
+                                           std::chrono::day{1}};
     auto dur = std::chrono::hours{25};
     auto hms = std::chrono::hh_mm_ss{dur};
     EXPECT_THROW(DateTime::from_ymd_hms(ymd, hms), std::invalid_argument);
@@ -447,11 +441,11 @@ TEST_F(DateTimeTest, SystemToLocalFallbackMatchesNormalPath) {
     auto local_via_normal = DateTime::system_to_local(sys);
 
     // 复现 fallback 逻辑：用 zoned_time 转换
-    auto local_via_fallback = std::chrono::zoned_time(
-        std::chrono::current_zone(),
-        std::chrono::sys_time<std::chrono::nanoseconds>{
-            std::chrono::nanoseconds{sys.nanosecs_since_epoch()}})
-        .get_local_time();
+    auto local_via_fallback =
+        std::chrono::zoned_time(std::chrono::current_zone(),
+                                std::chrono::sys_time<std::chrono::nanoseconds>{
+                                    std::chrono::nanoseconds{sys.nanosecs_since_epoch()}})
+            .get_local_time();
 
     // 两条路径结果应一致（纳秒级）
     EXPECT_EQ(local_via_normal.nanosecs_since_epoch(),
@@ -476,14 +470,18 @@ TEST_F(DateTimeTest, LocalToSystemFallbackMatchesNormalPath) {
 
 TEST_F(DateTimeTest, SystemToLocalRoundTripMultipleTimestamps) {
     // 多个时间点的往返一致性，覆盖不同季节（夏令时/冬令时边界附近）
-    struct Ymd { int32_t y; int32_t m; int32_t d; };
+    struct Ymd {
+        int32_t y;
+        int32_t m;
+        int32_t d;
+    };
     std::vector<Ymd> test_cases = {
-        {2024, 1, 1},   // 冬
-        {2024, 3, 15},  // 春（部分时区夏令时切换附近）
-        {2024, 6, 21},  // 夏
-        {2024, 9, 15},  // 秋
-        {2024, 11, 5},  // 秋（部分时区冬令时切换附近）
-        {2024, 12, 31}, // 冬
+        {2024, 1, 1},    // 冬
+        {2024, 3, 15},   // 春（部分时区夏令时切换附近）
+        {2024, 6, 21},   // 夏
+        {2024, 9, 15},   // 秋
+        {2024, 11, 5},   // 秋（部分时区冬令时切换附近）
+        {2024, 12, 31},  // 冬
     };
     for (const auto& tc : test_cases) {
         DateTime sys{Date{tc.y, tc.m, tc.d}, Time{10, 0, 0}};
@@ -664,8 +662,7 @@ TEST_F(DateTimeTest, DISABLED_NightSessionExhaustive) {
             DateTime action{d, Time{h, 0, 0}};
             auto trading = DateTime::action_day_to_trading_day(action);
             if (wd == Weekday::Saturday || wd == Weekday::Sunday) {
-                EXPECT_THROW(DateTime::trading_day_to_action_day(trading),
-                             std::invalid_argument)
+                EXPECT_THROW(DateTime::trading_day_to_action_day(trading), std::invalid_argument)
                     << "Should throw for trading_day weekday="
                     << static_cast<int>(trading.weekday());
                 continue;
@@ -695,9 +692,8 @@ TEST_F(DateTimeTest, DISABLED_MarketDataSimulation) {
             int64_t ts2 = START_TS + (std::rand() % static_cast<int>(END_TS - START_TS));
             auto dt3 = DateTime::from_timestamp(ts2);
             auto diff = dt3 - dt;
-            EXPECT_EQ(
-                std::chrono::duration_cast<std::chrono::seconds>(diff).count(),
-                dt3.seconds_since_epoch() - dt.seconds_since_epoch());
+            EXPECT_EQ(std::chrono::duration_cast<std::chrono::seconds>(diff).count(),
+                      dt3.seconds_since_epoch() - dt.seconds_since_epoch());
         }
     }
 }

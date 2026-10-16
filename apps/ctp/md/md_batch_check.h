@@ -23,8 +23,10 @@ enum class BatchCheckAction {
 /// @param has_pending 是否存在 Pending 合约
 /// @param retry_count 本次检查前已累计的重试次数
 /// @param max_retry 最大重试次数 (retry_count + 1 > max_retry 时 GiveUp, 与既有语义一致)
-BatchCheckAction decide_batch_check_action(bool queue_nonempty, bool has_pending,
-                                           int retry_count, int max_retry);
+BatchCheckAction decide_batch_check_action(bool queue_nonempty,
+                                           bool has_pending,
+                                           int retry_count,
+                                           int max_retry);
 
 }  // namespace dztrader::ctp
 

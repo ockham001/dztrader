@@ -296,20 +296,21 @@ private:
     struct PositionQueryKeyHash {
         size_t operator()(const PositionQueryKey& k) const noexcept {
             size_t h = std::hash<std::string>{}(k.instrument_id);
-            h ^= static_cast<size_t>(static_cast<uint8_t>(k.direction)) + 0x9e3779b9u +
-                 (h << 6) + (h >> 2);
+            h ^= static_cast<size_t>(static_cast<uint8_t>(k.direction)) + 0x9e3779b9u + (h << 6) +
+                 (h >> 2);
             return h;
         }
     };
     struct PositionQueryAgg {
-        std::string exchange_id;   // 查询行自带 (holding 交易所回退来源)
+        std::string exchange_id;  // 查询行自带 (holding 交易所回退来源)
         int64_t volume = 0;
         int64_t yd = 0;
         double cost = 0.0;
         double volume_multiple = 0.0;  // 合约乘数 (均价换算: cost / (volume * multiple))
-        int64_t ctp_frozen = 0;    // LongFrozen+ShortFrozen, 仅冻结对账 WARN
+        int64_t ctp_frozen = 0;        // LongFrozen+ShortFrozen, 仅冻结对账 WARN
     };
-    std::unordered_map<PositionQueryKey, PositionQueryAgg, PositionQueryKeyHash> position_query_agg_;
+    std::unordered_map<PositionQueryKey, PositionQueryAgg, PositionQueryKeyHash>
+        position_query_agg_;
     /// 基准就绪: 首个成功查询应用后置位; 断线清空. 周期查询失败不解除.
     bool position_baseline_ready_ = false;
     /// 持仓查询在途 (防周期重查与登录链重叠).

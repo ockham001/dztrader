@@ -23,8 +23,9 @@ std::filesystem::path unique_db_path() {
     std::mt19937 gen(rd());
     std::uniform_int_distribution<uint32_t> dist;
     return std::filesystem::temp_directory_path() /
-           ("dz_td_records_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-            "_" + std::to_string(dist(gen)) + ".db");
+           ("dz_td_records_" +
+            std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
+            std::to_string(dist(gen)) + ".db");
 }
 
 class RecordsStoreTest : public ::testing::Test {

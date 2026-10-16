@@ -49,8 +49,10 @@ CaughtError catch_error(Fn&& fn) {
 
 constexpr std::string_view kSqliteColumns = R"("id", "account_id", "order_id", "seq")";
 constexpr std::string_view kMysqlColumns = R"(`id`, `account_id`, `order_id`, `seq`)";
-constexpr std::string_view kSqliteSelect = R"(SELECT "id", "account_id", "order_id", "seq" FROM "orders")";
-constexpr std::string_view kMysqlSelect = R"(SELECT `id`, `account_id`, `order_id`, `seq` FROM `orders`)";
+constexpr std::string_view kSqliteSelect =
+    R"(SELECT "id", "account_id", "order_id", "seq" FROM "orders")";
+constexpr std::string_view kMysqlSelect =
+    R"(SELECT `id`, `account_id`, `order_id`, `seq` FROM `orders`)";
 
 }  // namespace
 
@@ -74,13 +76,12 @@ TEST(SqlCompilerTest, CompileFilterComparisonOperators) {
         const char* where;
     };
     const OpCase cases[] = {
-        {db::CompareOp::Eq, "\"seq\" = ?"},   {db::CompareOp::Ne, "\"seq\" != ?"},
-        {db::CompareOp::Gt, "\"seq\" > ?"},   {db::CompareOp::Gte, "\"seq\" >= ?"},
-        {db::CompareOp::Lt, "\"seq\" < ?"},   {db::CompareOp::Lte, "\"seq\" <= ?"},
+        {db::CompareOp::Eq, "\"seq\" = ?"}, {db::CompareOp::Ne, "\"seq\" != ?"},
+        {db::CompareOp::Gt, "\"seq\" > ?"}, {db::CompareOp::Gte, "\"seq\" >= ?"},
+        {db::CompareOp::Lt, "\"seq\" < ?"}, {db::CompareOp::Lte, "\"seq\" <= ?"},
     };
     for (const OpCase& op_case : cases) {
-        const std::vector<db::Condition> conditions{
-            db::Condition{"seq", op_case.op, {int64_t{7}}}};
+        const std::vector<db::Condition> conditions{db::Condition{"seq", op_case.op, {int64_t{7}}}};
         const internal::CompiledFilter compiled =
             internal::compile_filter(conditions, orders_schema(), internal::kSqliteDialect);
         EXPECT_EQ(compiled.where, op_case.where);
@@ -114,8 +115,7 @@ TEST(SqlCompilerTest, CompileFilterInValues) {
 }
 
 TEST(SqlCompilerTest, CompileFilterEmptyInIsConstantFalse) {
-    const std::vector<db::Condition> only_empty_in{
-        db::Condition{"seq", db::CompareOp::In, {}}};
+    const std::vector<db::Condition> only_empty_in{db::Condition{"seq", db::CompareOp::In, {}}};
     const internal::CompiledFilter compiled =
         internal::compile_filter(only_empty_in, orders_schema(), internal::kSqliteDialect);
     EXPECT_EQ(compiled.where, "0");
@@ -193,8 +193,7 @@ TEST(SqlCompilerTest, BuildDeleteSql) {
 }
 
 TEST(SqlCompilerTest, BuildSelectSql) {
-    EXPECT_EQ(internal::build_select_sql(orders_schema(), {}, {}, 0, -1,
-                                         internal::kSqliteDialect),
+    EXPECT_EQ(internal::build_select_sql(orders_schema(), {}, {}, 0, -1, internal::kSqliteDialect),
               kSqliteSelect);
     EXPECT_EQ(internal::build_select_sql(orders_schema(), {}, {}, 0, -1, internal::kMysqlDialect),
               kMysqlSelect);
@@ -203,9 +202,9 @@ TEST(SqlCompilerTest, BuildSelectSql) {
 TEST(SqlCompilerTest, BuildSelectSqlSortLimitOffset) {
     const std::vector<db::SortSpec> sort{{"seq", db::SortOrder::Descending},
                                          {"account_id", db::SortOrder::Ascending}};
-    EXPECT_EQ(internal::build_select_sql(orders_schema(), {}, sort, 0, -1,
-                                         internal::kSqliteDialect),
-              std::string(kSqliteSelect) + " ORDER BY \"seq\" DESC, \"account_id\" ASC");
+    EXPECT_EQ(
+        internal::build_select_sql(orders_schema(), {}, sort, 0, -1, internal::kSqliteDialect),
+        std::string(kSqliteSelect) + " ORDER BY \"seq\" DESC, \"account_id\" ASC");
     EXPECT_EQ(internal::build_select_sql(orders_schema(), {}, {}, 5, 10, internal::kSqliteDialect),
               std::string(kSqliteSelect) + " LIMIT 10 OFFSET 5");
     EXPECT_EQ(internal::build_select_sql(orders_schema(), {}, {}, 5, -1, internal::kSqliteDialect),
@@ -241,8 +240,8 @@ TEST(SqlCompilerTest, BuildSelectSqlUnlimitedLimitPerDialect) {
 TEST(SqlCompilerTest, BuildSelectSqlUnknownSortFieldRejected) {
     const std::vector<db::SortSpec> sort{{"nope", db::SortOrder::Ascending}};
     const CaughtError error = catch_error([&] {
-        static_cast<void>(internal::build_select_sql(orders_schema(), {}, sort, 0, -1,
-                                                     internal::kSqliteDialect));
+        static_cast<void>(
+            internal::build_select_sql(orders_schema(), {}, sort, 0, -1, internal::kSqliteDialect));
     });
     EXPECT_TRUE(error.caught);
     EXPECT_EQ(error.code, DZ_EC_DB_QUERY_FAILED);
@@ -301,9 +300,8 @@ TEST(SqlCompilerTest, BuildAggregateSqlUnknownFieldRejected) {
     EXPECT_EQ(group_error.message, "unknown field | field=nope collection=orders");
 
     const CaughtError field_error = catch_error([&] {
-        static_cast<void>(internal::build_aggregate_sql(orders_schema(), db::AggregateOp::Max,
-                                                        "nope", {}, {}, {},
-                                                        internal::kSqliteDialect));
+        static_cast<void>(internal::build_aggregate_sql(
+            orders_schema(), db::AggregateOp::Max, "nope", {}, {}, {}, internal::kSqliteDialect));
     });
     EXPECT_TRUE(field_error.caught);
     EXPECT_EQ(field_error.code, DZ_EC_DB_QUERY_FAILED);
@@ -311,7 +309,7 @@ TEST(SqlCompilerTest, BuildAggregateSqlUnknownFieldRejected) {
 }
 
 TEST(SqlCompilerTest, SqliteUpsertKeepsInsertOrReplace) {
-    EXPECT_EQ(internal::build_upsert_sql(orders_schema()),
-              "INSERT OR REPLACE INTO \"orders\" (" + std::string(kSqliteColumns) +
-                  ") VALUES (?, ?, ?, ?)");
+    EXPECT_EQ(internal::build_upsert_sql(orders_schema()), "INSERT OR REPLACE INTO \"orders\" (" +
+                                                               std::string(kSqliteColumns) +
+                                                               ") VALUES (?, ?, ?, ?)");
 }

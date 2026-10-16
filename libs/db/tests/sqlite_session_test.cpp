@@ -15,8 +15,8 @@ std::filesystem::path unique_db_path(const std::string& name) {
     std::mt19937 gen(rd());
     std::uniform_int_distribution<uint32_t> dist;
     return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
-            std::to_string(dist(gen)) + ".db");
+           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
+            "_" + std::to_string(dist(gen)) + ".db");
 }
 
 // 集合名避开 td 旧迁移表 orders（其 v1..v5 建表含 order_ref/exchange_id 等额外 NOT NULL 列）
@@ -66,7 +66,8 @@ TEST_F(SqliteSessionTest, UpsertIsIdempotentByKey) {
     session_->upsert("session_orders", std::span<const Row>(&first, 1));
     const Row second = make_order("a", 1, "cu2601", 11);
     session_->upsert("session_orders", std::span<const Row>(&second, 1));
-    const auto result = session_->find("session_orders", filters::eq("account_id", std::string("a")));
+    const auto result =
+        session_->find("session_orders", filters::eq("account_id", std::string("a")));
     ASSERT_EQ(result.size(), 1u);
     EXPECT_EQ(result.rows()[0].get<int64_t>(6), 11);
 }
@@ -76,7 +77,8 @@ TEST_F(SqliteSessionTest, FindSortsAndPagesWithSchemaColumns) {
                         make_order("a", 3, "cu", 3)};
     session_->upsert("session_orders", rows);
     const auto result = session_->find(
-        "session_orders", {}, FindOptions{.sort = {{"seq", SortOrder::Descending}}, .offset = 1, .limit = 1});
+        "session_orders", {},
+        FindOptions{.sort = {{"seq", SortOrder::Descending}}, .offset = 1, .limit = 1});
     ASSERT_EQ(result.size(), 1u);
     EXPECT_EQ(result.rows()[0].get<int64_t>(3), 2);
     ASSERT_EQ(result.columns().size(), 7u);
@@ -84,7 +86,8 @@ TEST_F(SqliteSessionTest, FindSortsAndPagesWithSchemaColumns) {
 }
 
 TEST_F(SqliteSessionTest, FindEmptyStillReturnsSchemaColumns) {
-    const auto result = session_->find("session_orders", filters::eq("account_id", std::string("none")));
+    const auto result =
+        session_->find("session_orders", filters::eq("account_id", std::string("none")));
     EXPECT_TRUE(result.empty());
     ASSERT_EQ(result.columns().size(), 7u);
     EXPECT_EQ(result.columns()[6].name, "seq");

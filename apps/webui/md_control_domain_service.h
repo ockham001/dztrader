@@ -30,7 +30,8 @@ public:
     using Reply = std::function<void(nlohmann::json)>;
 
     MdControlDomainService(ProcessMirror& process_mirror, shm::MultiWriter* event_writer)
-        : process_mirror_(process_mirror), event_writer_(event_writer) {}
+        : process_mirror_(process_mirror),
+          event_writer_(event_writer) {}
 
     /// C2S md_connect：admin + source 非空 + 事件通道可用 + 目标进程镜像 Running 守卫后
     /// 写 DZ_FRAME_REQUEST_MD_CONNECT；回 md_connect_ack{source, ok}（契约 webui-ws §3/§2.4）
@@ -94,16 +95,16 @@ private:
         const auto pre =
             evaluate_md_connect_precheck(is_admin, source, event_writer_ != nullptr, state);
         if (pre != MdConnectPrecheck::Ok) {
-            reply(nlohmann::json{{"type", "error"},
-                                 {"seq", seq},
-                                 {"payload", {{"message", md_connect_precheck_message(pre, source)}}}});
+            reply(nlohmann::json{
+                {"type", "error"},
+                {"seq", seq},
+                {"payload", {{"message", md_connect_precheck_message(pre, source)}}}});
             return;
         }
         // ok 反映真实写入结果（契约 webui-ws §2.4: ok=false 时前端立即提示、不设 pending）
         const bool ok = platform::write_ext_inst_raw(
             *event_writer_,
-            is_connect ? DZ_FRAME_REQUEST_MD_CONNECT : DZ_FRAME_REQUEST_MD_DISCONNECT,
-            source);
+            is_connect ? DZ_FRAME_REQUEST_MD_CONNECT : DZ_FRAME_REQUEST_MD_DISCONNECT, source);
         reply(nlohmann::json{{"type", is_connect ? "md_connect_ack" : "md_disconnect_ack"},
                              {"seq", seq},
                              {"payload", {{"source", source}, {"ok", ok}}}});

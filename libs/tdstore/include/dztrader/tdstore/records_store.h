@@ -30,8 +30,7 @@ db::Row make_instrument_row(const InstrumentRecord& record);
 db::Row make_position_row(const DzPositionInfo& record, std::string_view trading_day);
 db::Row make_trading_account_row(const DzTradingAccount& record, std::string_view trading_day);
 
-void upsert_instruments(dztrader::db::Session& session,
-                        std::span<const InstrumentRecord> records);
+void upsert_instruments(dztrader::db::Session& session, std::span<const InstrumentRecord> records);
 dztrader::db::ResultSet query_instruments(dztrader::db::Session& session,
                                           std::string_view instrument_id,
                                           std::span<const std::string> fields);

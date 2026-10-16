@@ -12,8 +12,10 @@ namespace dztrader::ctp {
 // 供单元测试直接编译 (无需链接 CTP 库)
 
 // on_batch_complete 决策: queue_nonempty 优先 (滞留批次非重试), 语义见 md_batch_check.h
-BatchCheckAction decide_batch_check_action(bool queue_nonempty, bool has_pending,
-                                           int retry_count, int max_retry) {
+BatchCheckAction decide_batch_check_action(bool queue_nonempty,
+                                           bool has_pending,
+                                           int retry_count,
+                                           int max_retry) {
     if (queue_nonempty) {
         return BatchCheckAction::ContinueSend;
     }
@@ -33,8 +35,7 @@ std::deque<std::vector<std::string>> make_batches(std::vector<std::string> instr
     }
     for (size_t offset = 0; offset < instruments.size(); offset += batch_size) {
         auto count = std::min<size_t>(batch_size, instruments.size() - offset);
-        batches.emplace_back(instruments.begin() + offset,
-                             instruments.begin() + offset + count);
+        batches.emplace_back(instruments.begin() + offset, instruments.begin() + offset + count);
     }
     return batches;
 }
@@ -42,8 +43,7 @@ std::deque<std::vector<std::string>> make_batches(std::vector<std::string> instr
 // 在 brokers 中查找 name 对应的 broker (纯函数, 供单元测试)。
 // name 为空或未找到时返回 nullptr。
 const dztrader::platform::CtpBrokerEntry* find_current_broker_in(
-    const std::vector<dztrader::platform::CtpBrokerEntry>& brokers,
-    const std::string& name) {
+    const std::vector<dztrader::platform::CtpBrokerEntry>& brokers, const std::string& name) {
     if (name.empty()) {
         return nullptr;
     }

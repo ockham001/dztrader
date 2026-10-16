@@ -43,9 +43,17 @@ struct DzTransferReq {
     /// 请求追踪 ID
     int32_t request_id = 0;
 
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(DzTransferReq, account_id, trade_code, bank_id,
-                                                bank_account, bank_password, future_password,
-                                                currency_id, trade_amount, cust_type, request_id)
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(DzTransferReq,
+                                                account_id,
+                                                trade_code,
+                                                bank_id,
+                                                bank_account,
+                                                bank_password,
+                                                future_password,
+                                                currency_id,
+                                                trade_amount,
+                                                cust_type,
+                                                request_id)
 };
 
 /// 出入金响应：DZ_FRAME_TD_TRANSFER_RSP（OnRsp 即时受理）与 DZ_FRAME_TD_TRANSFER_RTN
@@ -68,9 +76,15 @@ struct DzTransferRsp {
     /// 距午夜秒数；-1=CTP TradeTime 缺失/非法，0=午夜
     int32_t time = 0;
 
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(DzTransferRsp, account_id, trade_code, error_id,
-                                                error_msg, bank_balance, trade_amount,
-                                                transfer_status, time)
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(DzTransferRsp,
+                                                account_id,
+                                                trade_code,
+                                                error_id,
+                                                error_msg,
+                                                bank_balance,
+                                                trade_amount,
+                                                transfer_status,
+                                                time)
 };
 
 /// 修改密码请求（dzweb → td）
@@ -86,8 +100,8 @@ struct DzPasswordUpdateReq {
     /// 币种，资金密码场景使用
     std::string currency_id;
 
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(DzPasswordUpdateReq, account_id, password_type,
-                                                old_password, new_password, currency_id)
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
+        DzPasswordUpdateReq, account_id, password_type, old_password, new_password, currency_id)
 };
 
 /// 修改密码响应（td → dzweb）；无异步 RTN
@@ -103,8 +117,8 @@ struct DzPasswordUpdateRsp {
     /// CTP 无时间字段，恒 0
     int32_t time = 0;
 
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(DzPasswordUpdateRsp, account_id, password_type,
-                                                error_id, error_msg, time)
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
+        DzPasswordUpdateRsp, account_id, password_type, error_id, error_msg, time)
 };
 
 // from_json 一律 WITH_DEFAULT（缺字段回退默认值、整体 null 解码为全默认结构，不抛错）；

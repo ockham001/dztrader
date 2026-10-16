@@ -8,7 +8,8 @@ namespace {
 
 using Opt = std::optional<platform::ChildState>;
 
-// 共享守卫纯函数（control_guard.h）：REST/WS 双通道唯一决策处，顺序 admin → source → writer → 镜像 Running
+// 共享守卫纯函数（control_guard.h）：REST/WS 双通道唯一决策处，顺序 admin → source → writer → 镜像
+// Running
 TEST(ControlGuardTest, SharedGuardOrderAndResults) {
     // admin 未通过 -> NotAdmin
     EXPECT_EQ(evaluate_control_guard(false, true, true, true), ControlGuard::NotAdmin);
@@ -26,19 +27,23 @@ TEST(ControlGuardTest, SharedGuardOrderAndResults) {
 
 // 契约 webui-ws §3（修订）: 守卫顺序 admin -> source/writer -> 镜像 Running
 TEST(WsControlPrecheckTest, MdConnectPrecheckOrderAndResults) {
-    EXPECT_EQ(evaluate_md_connect_precheck(false, "dzmd_ctp", true, Opt(platform::ChildState::Running)),
-              MdConnectPrecheck::NotAdmin);
+    EXPECT_EQ(
+        evaluate_md_connect_precheck(false, "dzmd_ctp", true, Opt(platform::ChildState::Running)),
+        MdConnectPrecheck::NotAdmin);
     EXPECT_EQ(evaluate_md_connect_precheck(true, "", true, Opt(platform::ChildState::Running)),
               MdConnectPrecheck::InvalidSource);
-    EXPECT_EQ(evaluate_md_connect_precheck(true, "dzmd_ctp", false, Opt(platform::ChildState::Running)),
-              MdConnectPrecheck::InvalidSource);
+    EXPECT_EQ(
+        evaluate_md_connect_precheck(true, "dzmd_ctp", false, Opt(platform::ChildState::Running)),
+        MdConnectPrecheck::InvalidSource);
     // 镜像未就绪（nullopt）保守拒绝；非 Running 拒绝
     EXPECT_EQ(evaluate_md_connect_precheck(true, "dzmd_ctp", true, std::nullopt),
               MdConnectPrecheck::ProcessNotRunning);
-    EXPECT_EQ(evaluate_md_connect_precheck(true, "dzmd_ctp", true, Opt(platform::ChildState::Stopped)),
-              MdConnectPrecheck::ProcessNotRunning);
-    EXPECT_EQ(evaluate_md_connect_precheck(true, "dzmd_ctp", true, Opt(platform::ChildState::Running)),
-              MdConnectPrecheck::Ok);
+    EXPECT_EQ(
+        evaluate_md_connect_precheck(true, "dzmd_ctp", true, Opt(platform::ChildState::Stopped)),
+        MdConnectPrecheck::ProcessNotRunning);
+    EXPECT_EQ(
+        evaluate_md_connect_precheck(true, "dzmd_ctp", true, Opt(platform::ChildState::Running)),
+        MdConnectPrecheck::Ok);
 }
 
 TEST(WsControlPrecheckTest, MdConnectPrecheckMessages) {

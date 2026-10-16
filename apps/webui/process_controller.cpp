@@ -3,8 +3,9 @@
 
 namespace dztrader::webui {
 
-void ProcessCtrl::get_all(const drogon::HttpRequestPtr& req,
-                          std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+void ProcessCtrl::get_all(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     (void)req;  // 认证由 JWT advice 处理,本端点不要求 admin (所有登录用户可读)
     auto statuses = process_mirror_->get_all();
     nlohmann::json arr = nlohmann::json::array();

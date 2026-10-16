@@ -55,9 +55,9 @@ DzContext*& context_registry() {
 // 本组函数仅服务 dz_init (水位装载) / dispatch_frame (断档回补) /
 // dz_next_event (replay 派发), 均走 ctx 参数, 不触碰 context_registry。
 
+using strategy_api_internal::ColumnValue;
 using strategy_api_internal::DbQueryResult;
 using strategy_api_internal::Row;
-using strategy_api_internal::ColumnValue;
 
 /// 行内取字符串列 (variant 无值/非字符串返回空串)
 const char* row_string(const Row& row, size_t index) {
@@ -239,9 +239,9 @@ void load_all_watermarks(DzContext* ctx) {
                 std::format("td ingest watermarks loaded | accounts={}", max_seq.size()).c_str());
         }
     } catch (const std::exception& e) {
-        dz_diag((std::string("td ingest watermark load failed (degraded, no filtering): ") +
-                 e.what())
-                    .c_str());
+        dz_diag(
+            (std::string("td ingest watermark load failed (degraded, no filtering): ") + e.what())
+                .c_str());
     } catch (...) {
         dz_diag("td ingest watermark load failed (degraded, no filtering)");
     }
@@ -262,8 +262,8 @@ uint64_t rebuild_watermark(const std::string& account_id) {
         for (const char* resource : {"order", "trade", "position", "trading_account"}) {
             // 终检发现 E: 聚合查询 (单账户 MAX(seq)) 替代该账户全行物化。
             try {
-                const uint64_t s = strategy_api_internal::db_query_account_max_seq(
-                    db, resource, account_id);
+                const uint64_t s =
+                    strategy_api_internal::db_query_account_max_seq(db, resource, account_id);
                 if (s > max_seq) {
                     max_seq = s;
                 }
@@ -357,10 +357,10 @@ void on_account_status_gate_reset(DzContext* ctx, const DzAccountStatus& st) {
     }
     const bool seen_before =
         ctx->account_status_states.find(account) != ctx->account_status_states.end();
-    const DzAccountState prev = seen_before ? ctx->account_status_states[account]
-                                            : DZ_ACCOUNT_LOGGING_IN;  // 首见不计翻转
-    const bool flip_to_ready = seen_before && prev == DZ_ACCOUNT_OFFLINE &&
-                               st.state == DZ_ACCOUNT_READY;
+    const DzAccountState prev =
+        seen_before ? ctx->account_status_states[account] : DZ_ACCOUNT_LOGGING_IN;  // 首见不计翻转
+    const bool flip_to_ready =
+        seen_before && prev == DZ_ACCOUNT_OFFLINE && st.state == DZ_ACCOUNT_READY;
     ctx->account_status_states[account] = st.state;
     if (!flip_to_ready) {
         return;
@@ -398,7 +398,9 @@ struct GapBackfillRows {
 };
 
 /// 查询 gap 区间四表行 (不转换不入缓冲)。
-GapBackfillRows query_gap_tables(DzDatabase* db, const std::string& account_id, uint64_t from,
+GapBackfillRows query_gap_tables(DzDatabase* db,
+                                 const std::string& account_id,
+                                 uint64_t from,
                                  uint64_t to) {
     const auto query_table = [&](const char* resource, bool* ok) -> DbQueryResult {
         try {
@@ -427,8 +429,11 @@ GapBackfillRows query_gap_tables(DzDatabase* db, const std::string& account_id, 
 ///   (四表聚合, 与 W 同语义) ≥ gap 上界即视为覆盖 — 缺的中间 seq 是被删的历史行,
 ///   当前态已到位。persist 单写者 FIFO 提交: 有 ≥ 上界的行提交 ⇒ 区间内缺席行永久
 ///   缺席 (删行或崩溃丢失), 重试无益, 直接回补现存行更优。
-bool gap_covered(DzDatabase* db, const GapBackfillRows& rows, const std::string& account_id,
-                 uint64_t from, uint64_t to) {
+bool gap_covered(DzDatabase* db,
+                 const GapBackfillRows& rows,
+                 const std::string& account_id,
+                 uint64_t from,
+                 uint64_t to) {
     const uint64_t span = to - from + 1;
     const uint64_t total = rows.orders.rows.size() + rows.trades.rows.size() +
                            rows.positions.rows.size() + rows.accounts.rows.size();
@@ -438,9 +443,8 @@ bool gap_covered(DzDatabase* db, const GapBackfillRows& rows, const std::string&
     uint64_t account_max = 0;
     for (const char* resource : {"order", "trade", "position", "trading_account"}) {
         try {
-            account_max = std::max(
-                account_max,
-                strategy_api_internal::db_query_account_max_seq(db, resource, account_id));
+            account_max = std::max(account_max, strategy_api_internal::db_query_account_max_seq(
+                                                    db, resource, account_id));
         } catch (const std::exception&) {
             continue;  // 表缺失/查询失败: 跳过该表 (容差聚合逐表容错)
         }
@@ -453,8 +457,11 @@ bool gap_covered(DzDatabase* db, const GapBackfillRows& rows, const std::string&
 /// 提交区间内行, 容差聚合见新行 (account_max ≥ 上界) 判覆盖, 而范围行仍缺该行 →
 /// 回补缺条 (该行 seq ≤ W 被过滤, 追加流永久缺)。单快照使两查询同视图, 写端短暂阻塞
 /// 由 busy_timeout=5000 吸收。返回 true = 覆盖; rows 为同快照的范围行结果。
-bool gap_covered_snapshot(DzDatabase* db, GapBackfillRows* rows, const std::string& account_id,
-                          uint64_t from, uint64_t to) {
+bool gap_covered_snapshot(DzDatabase* db,
+                          GapBackfillRows* rows,
+                          const std::string& account_id,
+                          uint64_t from,
+                          uint64_t to) {
     // 快照作用域覆盖范围查询 + 覆盖判定聚合; 作用域结束 (析构) 即结束只读事务。
     auto snapshot = db->session->begin_snapshot();
     *rows = query_gap_tables(db, account_id, from, to);
@@ -505,9 +512,8 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
             // 回补时间语义 (评审发现 2): 实时帧 time 为 CTP InsertTime/UpdateTime 当日秒,
             // DB insert_time/update_time 为 epoch 秒; 取当日秒填 rpt.time 与实时一致。
             // 优先 update_time (最新状态时间), 缺省回落 insert_time。
-            rpt.time = epoch_secs_to_tod(
-                row_int64(row, utime_c) != 0 ? row_int64(row, utime_c)
-                                             : row_int64(row, itime_c));
+            rpt.time = epoch_secs_to_tod(row_int64(row, utime_c) != 0 ? row_int64(row, utime_c)
+                                                                      : row_int64(row, itime_c));
             rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
             ok = ctx->enqueue_replay_frame(DZ_FRAME_ORDER_REPORT, &rpt, sizeof(rpt)) && ok;
         }
@@ -690,9 +696,9 @@ bool handle_gap(DzContext* ctx, const std::byte* trigger_frame) {
         // ingest (与触发帧补发同语义), 天然 seq 序。
         if (trigger_frame != nullptr) {
             const shm::FrameView view(trigger_frame);
-            if (!ctx->gap_retry.stage(view.type(), trigger_frame + sizeof(DzFrameHeader),
-                                      static_cast<uint32_t>(view.frame_size() -
-                                                              sizeof(DzFrameHeader)))) {
+            if (!ctx->gap_retry.stage(
+                    view.type(), trigger_frame + sizeof(DzFrameHeader),
+                    static_cast<uint32_t>(view.frame_size() - sizeof(DzFrameHeader)))) {
                 dz_diag("ingest gap retry staged frame overflow, drop frame");
             }
         }
@@ -715,10 +721,9 @@ bool handle_gap(DzContext* ctx, const std::byte* trigger_frame) {
         // 拦截触发帧 (宁缺勿乱), 每次调用重试一次直至覆盖或耗尽 (契约 §5.2)。
         if (trigger_frame != nullptr) {
             const shm::FrameView view(trigger_frame);
-            ctx->gap_retry.begin(
-                gap->account_id, gap->from, gap->to, view.type(),
-                trigger_frame + sizeof(DzFrameHeader),
-                static_cast<uint32_t>(view.frame_size() - sizeof(DzFrameHeader)));
+            ctx->gap_retry.begin(gap->account_id, gap->from, gap->to, view.type(),
+                                 trigger_frame + sizeof(DzFrameHeader),
+                                 static_cast<uint32_t>(view.frame_size() - sizeof(DzFrameHeader)));
         }
         dz_diag("ingest gap backfill incomplete (rows not committed yet), will retry");
         return false;
@@ -884,10 +889,11 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
         case DZ_FRAME_NOTIFY_MD_STARTED:
             on_md_started_internal(ctx, frame);
             return false;
-        // 其余 TD 回报帧 DZ_FRAME_POSITION_INFO-DZ_FRAME_ACCOUNT_STATUS (持仓/资金/网关状态等): 暂不按策略过滤, 全量放行。
-        // DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 为 ingest 帧 (含 seq/account_id): 完整帧过 gate (W 过滤/断档/倒退),
-        // 截断帧保持透传 (既有语义: 不按策略过滤, 引擎侧 payload_size_matches 丢弃);
-        // 除上述四个 ingest 帧外的 TD 回报帧无 seq 字段, 不 ingest, 直接全量放行。
+        // 其余 TD 回报帧 DZ_FRAME_POSITION_INFO-DZ_FRAME_ACCOUNT_STATUS (持仓/资金/网关状态等):
+        // 暂不按策略过滤, 全量放行。 DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 为 ingest 帧
+        // (含 seq/account_id): 完整帧过 gate (W 过滤/断档/倒退), 截断帧保持透传 (既有语义:
+        // 不按策略过滤, 引擎侧 payload_size_matches 丢弃); 除上述四个 ingest 帧外的 TD 回报帧无 seq
+        // 字段, 不 ingest, 直接全量放行。
         case DZ_FRAME_POSITION_INFO: {
             const shm::FrameView view(frame);
             if (view.frame_size() < sizeof(DzFrameHeader) + sizeof(DzPositionInfo)) {
@@ -952,11 +958,11 @@ DZ_API const void* dz_next_event(DzContext* ctx) {
     // 回补帧 (断档回补合成的 Dz*Report) 前置 FIFO 派发: 先于任何 shm 实时帧,
     // 保证回补数据按 seq 序在触发帧之后、后续实时帧之前送达 (契约 strategy:
     // 启动竞态窗口的缺失区间由回补补齐, 无断档)。
-    // 回补帧已过 ingest gate (W/断档/去重), 不再重复过滤; 但 DZ_FRAME_ORDER_REPORT/DZ_FRAME_TRADE_REPORT 仍按
-    // strategy_id 定向 (回补查询按账户全量, 含他策略/外部单, 仅本策略放行)。
-    // 断档回补重试驱动 (契约 td-data-sync §5.2): 回补不足时每次调用查一次库
-    // (无 sleep, 调用间隔即天然"短重试"间隔); 成功/耗尽后触发帧 + 回补帧经
-    // 下面的 replay FIFO 前置派发。置于 replay 消费前, 使结果本次即可见。
+    // 回补帧已过 ingest gate (W/断档/去重), 不再重复过滤; 但
+    // DZ_FRAME_ORDER_REPORT/DZ_FRAME_TRADE_REPORT 仍按 strategy_id 定向 (回补查询按账户全量,
+    // 含他策略/外部单, 仅本策略放行)。 断档回补重试驱动 (契约 td-data-sync §5.2):
+    // 回补不足时每次调用查一次库 (无 sleep, 调用间隔即天然"短重试"间隔); 成功/耗尽后触发帧 +
+    // 回补帧经 下面的 replay FIFO 前置派发。置于 replay 消费前, 使结果本次即可见。
     if (ctx->gap_retry.active) {
         try {
             drive_gap_retry(ctx);
@@ -1375,8 +1381,8 @@ DZ_API bool dz_set_logical_position(DzContext* ctx,
 DZ_API bool dz_query_account_status(DzContext* ctx, const char* account_id) {
     // 同 dz_set_logical_position: extern "C" 边界不允许异常逃逸; 体内操作均 noexcept,
     // 免 try/catch, static_assert 防止后续引入会抛异常的操作。
-    static_assert(noexcept(ctx->event_writer.open_frame(
-        DZ_FRAME_TD_QUERY_ACCOUNT_STATUS, sizeof(DzAccountStatusReq))));
+    static_assert(noexcept(ctx->event_writer.open_frame(DZ_FRAME_TD_QUERY_ACCOUNT_STATUS,
+                                                        sizeof(DzAccountStatusReq))));
     static_assert(noexcept(ctx->event_writer.close_frame()));
     static_assert(noexcept(ctx->event_writer.notify_subscribers()));
 
@@ -1484,8 +1490,8 @@ namespace {
 /// 查询结果装入 VectorResultSet (不新建 impl 类, 复用 vector_result_set)
 std::unique_ptr<DzResultSet> db_rs_from_result(strategy_api_internal::DbQueryResult result) {
     auto rs = std::make_unique<DzResultSet>();
-    rs->impl = std::make_unique<strategy_api_internal::VectorResultSet>(
-        std::move(result.columns), std::move(result.rows));
+    rs->impl = std::make_unique<strategy_api_internal::VectorResultSet>(std::move(result.columns),
+                                                                        std::move(result.rows));
     return rs;
 }
 
@@ -1626,9 +1632,9 @@ DZ_API DzResultSet* dz_db_query_order(DzDatabase* db,
         return NULL;
     }
     try {
-        return db_rs_from_result(db_query_order_trade(
-                   db, account_id ? account_id : "", instrument_id ? instrument_id : "", "orders",
-                   /*order_by_seq=*/true))
+        return db_rs_from_result(db_query_order_trade(db, account_id ? account_id : "",
+                                                      instrument_id ? instrument_id : "", "orders",
+                                                      /*order_by_seq=*/true))
             .release();
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
@@ -1647,9 +1653,9 @@ DZ_API DzResultSet* dz_db_query_trade(DzDatabase* db,
         return NULL;
     }
     try {
-        return db_rs_from_result(db_query_order_trade(
-                   db, account_id ? account_id : "", instrument_id ? instrument_id : "", "trades",
-                   /*order_by_seq=*/true))
+        return db_rs_from_result(db_query_order_trade(db, account_id ? account_id : "",
+                                                      instrument_id ? instrument_id : "", "trades",
+                                                      /*order_by_seq=*/true))
             .release();
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
@@ -1668,8 +1674,8 @@ DZ_API DzResultSet* dz_db_query_position(DzDatabase* db,
         return NULL;
     }
     try {
-        return db_rs_from_result(db_query_position(
-                   db, account_id ? account_id : "", instrument_id ? instrument_id : ""))
+        return db_rs_from_result(db_query_position(db, account_id ? account_id : "",
+                                                   instrument_id ? instrument_id : ""))
             .release();
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());

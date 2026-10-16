@@ -6,15 +6,13 @@
 
 using dztrader::shm::SpinLock;
 
-TEST(SpinLockTest, BasicLockUnlock)
-{
+TEST(SpinLockTest, BasicLockUnlock) {
     SpinLock lock;
     lock.lock();
     lock.unlock();
 }
 
-TEST(SpinLockTest, TryLock)
-{
+TEST(SpinLockTest, TryLock) {
     SpinLock lock;
 
     EXPECT_TRUE(lock.try_lock());
@@ -25,8 +23,7 @@ TEST(SpinLockTest, TryLock)
     lock.unlock();
 }
 
-TEST(SpinLockTest, MultiThreadContention)
-{
+TEST(SpinLockTest, MultiThreadContention) {
     constexpr int kThreads = 8;
     constexpr int kIncrements = 10000;
 
@@ -51,8 +48,7 @@ TEST(SpinLockTest, MultiThreadContention)
     EXPECT_EQ(counter.load(), static_cast<int64_t>(kThreads) * kIncrements);
 }
 
-TEST(SpinLockTest, TryLockContention)
-{
+TEST(SpinLockTest, TryLockContention) {
     constexpr int kThreads = 8;
     constexpr int kAttempts = 10000;
 
@@ -80,8 +76,7 @@ TEST(SpinLockTest, TryLockContention)
     EXPECT_LE(counter.load(), static_cast<int64_t>(kThreads) * kAttempts);
 }
 
-TEST(SpinLockTest, InShmNamespace)
-{
+TEST(SpinLockTest, InShmNamespace) {
     dztrader::shm::SpinLock lock;
     lock.lock();
     lock.unlock();

@@ -14,8 +14,8 @@
 
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
-using dztrader::shm::Reader;
 using dztrader::shm::NamedSemaphore;
+using dztrader::shm::Reader;
 using dztrader::shm::SingleWriter;
 using dztrader::shm::test::cleanup_test_dir;
 using dztrader::shm::test::MB;
@@ -346,8 +346,12 @@ TEST(ReaderReleaseTest, ReleaseOldPagesUpdatesIndex) {
     using namespace dztrader::shm::test;
     auto channel = unique_channel_name("dz_test_reader_rel");
     auto dir = test_shm_dir(channel);
-    ChannelConfig config{.channel_name=channel, .shm_dir=dir, .meta_file_size=4*MB,
-                         .page_size=1*MB, .lock_memory=false, .prefetch_memory=false};
+    ChannelConfig config{.channel_name = channel,
+                         .shm_dir = dir,
+                         .meta_file_size = 4 * MB,
+                         .page_size = 1 * MB,
+                         .lock_memory = false,
+                         .prefetch_memory = false};
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(config));
     meta->clear_readers();
     (void)meta->add_reader("stg.t", 1234);

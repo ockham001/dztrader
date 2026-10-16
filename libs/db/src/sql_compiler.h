@@ -50,7 +50,8 @@ inline constexpr SqlDialect kMysqlDialect{'`', "18446744073709551615"};
                                             const SqlDialect& dialect);
 
 /// 引用形式的列清单 "c1, c2, ..."（schema 声明序）
-[[nodiscard]] std::string build_column_list(const ResourceSchema& schema, const SqlDialect& dialect);
+[[nodiscard]] std::string build_column_list(const ResourceSchema& schema,
+                                            const SqlDialect& dialect);
 
 /// "?, ?, ..." 共 count 个占位符
 [[nodiscard]] std::string build_placeholders(size_t count);
@@ -64,12 +65,16 @@ inline constexpr SqlDialect kMysqlDialect{'`', "18446744073709551615"};
                                            const SqlDialect& dialect);
 
 /// SELECT <schema 字段序> FROM <name> [WHERE] [ORDER BY] [LIMIT] [OFFSET]
-[[nodiscard]] std::string build_select_sql(const ResourceSchema& schema, const CompiledFilter& filter,
-                                           std::span<const SortSpec> sort, int64_t offset, int64_t limit,
+[[nodiscard]] std::string build_select_sql(const ResourceSchema& schema,
+                                           const CompiledFilter& filter,
+                                           std::span<const SortSpec> sort,
+                                           int64_t offset,
+                                           int64_t limit,
                                            const SqlDialect& dialect);
 
 /// SELECT <group_by 序>, <op>(<field>) FROM <name> [WHERE] [GROUP BY] [ORDER BY]
-[[nodiscard]] std::string build_aggregate_sql(const ResourceSchema& schema, AggregateOp op,
+[[nodiscard]] std::string build_aggregate_sql(const ResourceSchema& schema,
+                                              AggregateOp op,
                                               std::string_view field,
                                               std::span<const std::string> group_by,
                                               const CompiledFilter& filter,

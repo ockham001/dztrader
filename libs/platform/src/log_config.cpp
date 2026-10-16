@@ -213,7 +213,8 @@ void LogConfig::load() {
     bool degraded = false;
     std::string reason;
     try {
-        cfg_ = load_cfg_from_file(degraded);  // 文件不存在/section 缺失返回默认值不抛；JSON 解析失败抛
+        cfg_ =
+            load_cfg_from_file(degraded);  // 文件不存在/section 缺失返回默认值不抛；JSON 解析失败抛
     } catch (const std::exception& e) {
         // 文件损坏（JSON 解析失败）：用默认值修复，不中断启动
         // 用 spdlog::error 而非 SPDLOG_ERROR：启动期项目 logger 可能尚未初始化

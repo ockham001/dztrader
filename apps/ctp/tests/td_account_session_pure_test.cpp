@@ -215,25 +215,15 @@ TEST(OrderRefMapTest, ClearAlsoClearsCancelContext) {
 // sync_order_ref (设计 §9.4)
 // ============================================================================
 
-TEST(SyncOrderRefTest, CtpMaxLarger) {
-    EXPECT_EQ(sync_order_ref(5, 100), 101);
-}
+TEST(SyncOrderRefTest, CtpMaxLarger) { EXPECT_EQ(sync_order_ref(5, 100), 101); }
 
-TEST(SyncOrderRefTest, CurrentLarger) {
-    EXPECT_EQ(sync_order_ref(200, 100), 201);
-}
+TEST(SyncOrderRefTest, CurrentLarger) { EXPECT_EQ(sync_order_ref(200, 100), 201); }
 
-TEST(SyncOrderRefTest, Equal) {
-    EXPECT_EQ(sync_order_ref(100, 100), 101);
-}
+TEST(SyncOrderRefTest, Equal) { EXPECT_EQ(sync_order_ref(100, 100), 101); }
 
-TEST(SyncOrderRefTest, BothZero) {
-    EXPECT_EQ(sync_order_ref(0, 0), 1);
-}
+TEST(SyncOrderRefTest, BothZero) { EXPECT_EQ(sync_order_ref(0, 0), 1); }
 
-TEST(SyncOrderRefTest, NegativeCtpMax) {
-    EXPECT_EQ(sync_order_ref(50, -1), 51);
-}
+TEST(SyncOrderRefTest, NegativeCtpMax) { EXPECT_EQ(sync_order_ref(50, -1), 51); }
 
 // ============================================================================
 // parse_max_order_ref
@@ -254,4 +244,3 @@ TEST(ParseMaxOrderRefTest, NonDigitReturnsZero) {
     EXPECT_EQ(parse_max_order_ref("abc"), 0);
     EXPECT_EQ(parse_max_order_ref("12abc"), 0);
 }
-

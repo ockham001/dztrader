@@ -38,8 +38,7 @@ db::ResourceSchema probe_schema() {
                    {"seq", ValueType::Int64, false, false, false},
                    {"price", ValueType::Float64, true, false, false},
                    {"active", ValueType::Bool, false, false, false}},
-        .indexes = {{"uq_orders", {"account_id", "seq"}, true},
-                    {"idx_price", {"price"}, false}}};
+        .indexes = {{"uq_orders", {"account_id", "seq"}, true}, {"idx_price", {"price"}, false}}};
 }
 
 }  // namespace
@@ -158,16 +157,16 @@ TEST(MysqlSqlTest, CreateTableRejectsBadSchema) {
 
 TEST(MysqlSqlTest, UpsertSkipsAutoIncrement) {
     const db::ResourceSchema schema = probe_schema();
-    EXPECT_EQ(internal_ns::build_mysql_upsert_sql(schema),
-              "INSERT INTO `orders` (`id`, `account_id`, `seq`, `price`, `active`) VALUES (?, ?, ?, "
-              "?, ?) ON DUPLICATE KEY UPDATE `account_id`=VALUES(`account_id`), "
-              "`seq`=VALUES(`seq`), `price`=VALUES(`price`), `active`=VALUES(`active`)");
+    EXPECT_EQ(
+        internal_ns::build_mysql_upsert_sql(schema),
+        "INSERT INTO `orders` (`id`, `account_id`, `seq`, `price`, `active`) VALUES (?, ?, ?, "
+        "?, ?) ON DUPLICATE KEY UPDATE `account_id`=VALUES(`account_id`), "
+        "`seq`=VALUES(`seq`), `price`=VALUES(`price`), `active`=VALUES(`active`)");
 }
 
 TEST(MysqlSqlTest, UpsertSelfAssignWhenOnlyAutoIncrement) {
-    const db::ResourceSchema schema{.name = "counter",
-                                    .fields = {{"id", ValueType::Int64, false, true, true}},
-                                    .indexes = {}};
+    const db::ResourceSchema schema{
+        .name = "counter", .fields = {{"id", ValueType::Int64, false, true, true}}, .indexes = {}};
     EXPECT_EQ(internal_ns::build_mysql_upsert_sql(schema),
               "INSERT INTO `counter` (`id`) VALUES (?) ON DUPLICATE KEY UPDATE `id`=`id`");
 }
@@ -225,8 +224,7 @@ TEST(MysqlSqlTest, CompilerRejectsUnknownFilterField) {
     const db::ResourceSchema schema = probe_schema();
     const std::vector<db::Condition> conditions = {db::filters::eq("missing", std::string("a"))};
     EXPECT_EQ(code_of([&] {
-                  (void)internal_ns::compile_filter(conditions, schema,
-                                                    internal_ns::kMysqlDialect);
+                  (void)internal_ns::compile_filter(conditions, schema, internal_ns::kMysqlDialect);
               }),
               DZ_EC_DB_QUERY_FAILED);
 }

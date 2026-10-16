@@ -5,8 +5,7 @@
 
 namespace dztrader::shm {
 
-bool SubscriberList::sync_from_channel_meta(const ChannelMeta& meta) noexcept
-{
+bool SubscriberList::sync_from_channel_meta(const ChannelMeta& meta) noexcept {
     try {
         auto names = meta.reader_names();
         std::vector<NamedSemaphore> new_sems;

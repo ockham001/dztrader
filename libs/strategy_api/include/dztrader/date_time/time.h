@@ -20,11 +20,10 @@ public:
         : duration_(millisecs_since_midnight) {}
 
     constexpr Time(int32_t h, int32_t m, int32_t s = 0, int32_t ms = 0) noexcept
-        : duration_{static_cast<int32_t>(
-              (static_cast<int64_t>(h) * MSECS_PER_HOUR) +
-              (static_cast<int64_t>(m) * MSECS_PER_MIN) +
-              (static_cast<int64_t>(s) * MSECS_PER_SEC) +
-              static_cast<int64_t>(ms))} {}
+        : duration_{static_cast<int32_t>((static_cast<int64_t>(h) * MSECS_PER_HOUR) +
+                                         (static_cast<int64_t>(m) * MSECS_PER_MIN) +
+                                         (static_cast<int64_t>(s) * MSECS_PER_SEC) +
+                                         static_cast<int64_t>(ms))} {}
 
     constexpr Time(std::chrono::hours h,
                    std::chrono::minutes m,
@@ -160,8 +159,8 @@ public:
     template <class Rep, class Period>
     static constexpr Time from_hh_mm_ss(
         const std::chrono::hh_mm_ss<std::chrono::duration<Rep, Period>>& hms) {
-        const int32_t ms_since_midnight =
-            static_cast<int32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(hms.to_duration()).count());
+        const int32_t ms_since_midnight = static_cast<int32_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(hms.to_duration()).count());
         if (!is_valid(ms_since_midnight)) [[unlikely]] {
             throw std::invalid_argument("invalid time");
         }

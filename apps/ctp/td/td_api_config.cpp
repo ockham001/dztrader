@@ -59,8 +59,7 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
             if (session != nullptr) {
                 SPDLOG_WARN("td config change rejected | op={} account={} reason=session_active",
                             magic_enum::enum_name(req.op), account_id);
-                notify_ui_.error(
-                    std::format("账户 {} 正在连接, 请先断开再修改配置", account_id));
+                notify_ui_.error(std::format("账户 {} 正在连接, 请先断开再修改配置", account_id));
                 report_config();
                 return;
             }
@@ -85,8 +84,8 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
     // 5. 审计日志: 关键字段 old->new (不记录敏感值如 password)
     // 注: enable_auto_login_logout 已随契约 auto-login 迁移（SET/RTN_AUTO_LOGIN 帧）
     if (old_config.enable_lock_mode != new_config.enable_lock_mode) {
-        SPDLOG_INFO("lock_mode changed | old={} new={}",
-                    old_config.enable_lock_mode, new_config.enable_lock_mode);
+        SPDLOG_INFO("lock_mode changed | old={} new={}", old_config.enable_lock_mode,
+                    new_config.enable_lock_mode);
     }
     if (old_config.qry_account_interval_s != new_config.qry_account_interval_s) {
         SPDLOG_INFO("qry_account_interval_s changed | old={} new={}",
@@ -101,8 +100,8 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
                     old_config.qry_flush_interval_ms, new_config.qry_flush_interval_ms);
     }
     if (old_config.accounts.size() != new_config.accounts.size()) {
-        SPDLOG_INFO("accounts count changed | old={} new={}",
-                    old_config.accounts.size(), new_config.accounts.size());
+        SPDLOG_INFO("accounts count changed | old={} new={}", old_config.accounts.size(),
+                    new_config.accounts.size());
     }
     SPDLOG_INFO("td config updated | op={}", magic_enum::enum_name(req.op));
 
@@ -128,7 +127,8 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
 void TdApi::report_config() {
     // 上报当前 td 配置 (脱敏: broker.password -> "****"), 推 RTN_TD_CONFIG
     try {
-        platform::write_ext_inst_json_obj(event_writer_, DZ_FRAME_TD_RTN_CONFIG, name_, config_.to_safe_json());
+        platform::write_ext_inst_json_obj(event_writer_, DZ_FRAME_TD_RTN_CONFIG, name_,
+                                          config_.to_safe_json());
     } catch (const dztrader::Exception& e) {
         SPDLOG_ERROR("rtn_td_config failed | err_code={} msg=\"{}\"", e.code(), e.what());
     } catch (const std::exception& e) {
@@ -136,9 +136,7 @@ void TdApi::report_config() {
     }
 }
 
-void TdApi::report_log_config() {
-    log_config_.rtn_log_config(event_writer_);
-}
+void TdApi::report_log_config() { log_config_.rtn_log_config(event_writer_); }
 
 void TdApi::report_auto_login() {
     try {
@@ -151,9 +149,9 @@ void TdApi::report_auto_login() {
 void TdApi::report_full_snapshot() {
     // 设计 §5.9: 上报完整快照, 让 dzweb 冷启动时填充镜像
     // 由 run() 启动和 DZ_FRAME_QUERY_FULL_SNAPSHOT 帧触发
-    // 顺序: RTN_TD_CONFIG (脱敏) + RTN_LOG_CONFIG + RTN_AUTO_LOGIN + per-session RTN_TD_STATUS + RTN_PROGRESS
-    // 注意: tdctp 不上报 SHM 配置 (事件通道由 master 管理)
-    // per-session RTN_TD_STATUS 由 report_state() 转发
+    // 顺序: RTN_TD_CONFIG (脱敏) + RTN_LOG_CONFIG + RTN_AUTO_LOGIN + per-session RTN_TD_STATUS +
+    // RTN_PROGRESS 注意: tdctp 不上报 SHM 配置 (事件通道由 master 管理) per-session RTN_TD_STATUS
+    // 由 report_state() 转发
     report_config();
     report_log_config();
     report_auto_login();

@@ -21,8 +21,10 @@ namespace dztrader::log {
 
 /// 文件日志格式（完整，便于事后分析与 AI 识别）
 /// 每个字段用 key=value 显式标识，AI 无需查阅 pattern 文档即可理解
-/// 示例: 2026-07-15T07:34:23.995522100+08:00 info dztraderd [func=main file=main.cpp:72 pid=32464 tid=31600] dztraderd starting | k=v
-inline constexpr std::string_view FILE_PATTERN = "%Y-%m-%dT%T.%F%z %l %n [func=%! file=%s:%# pid=%P tid=%t] %v";
+/// 示例: 2026-07-15T07:34:23.995522100+08:00 info dztraderd [func=main file=main.cpp:72 pid=32464
+/// tid=31600] dztraderd starting | k=v
+inline constexpr std::string_view FILE_PATTERN =
+    "%Y-%m-%dT%T.%F%z %l %n [func=%! file=%s:%# pid=%P tid=%t] %v";
 
 /// 控制台日志格式（简洁，便于实时查看）
 /// 含月/日+秒级时间，省略 TID/文件/行号/函数名
@@ -42,7 +44,8 @@ struct LoggerSetup {
     spdlog::level::level_enum flush_level = spdlog::level::info;  ///< 触发立即刷新的日志级别
 #endif
     bool service_mode = false;  ///< 服务模式，强制禁用控制台输出（适用于守护进程）
-    uint16_t max_files = 0;     ///< 历史日志文件最大数量，0 表示不限制；7x24 长期运行建议设置（如 30）防止磁盘写满
+    uint16_t max_files =
+        0;  ///< 历史日志文件最大数量，0 表示不限制；7x24 长期运行建议设置（如 30）防止磁盘写满
 };
 
 /**

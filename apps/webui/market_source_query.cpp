@@ -85,8 +85,8 @@ void MarketSourceCtrl::list_available(
         });
     }
 
-    SPDLOG_INFO("available market sources scanned | count={} dir={}",
-                arr.size(), scan_dir.string());
+    SPDLOG_INFO("available market sources scanned | count={} dir={}", arr.size(),
+                scan_dir.string());
     callback(json_response(drogon::k200OK, arr));
 }
 
@@ -122,9 +122,9 @@ void MarketSourceCtrl::list(
 // ---------------------------------------------------------------------------
 // GET /api/market-sources/{id} - detail (auto_login 从镜像读, 契约 auto-login)
 // ---------------------------------------------------------------------------
-void MarketSourceCtrl::get(
-    const drogon::HttpRequestPtr& req,
-    std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id) {  // NOLINT
+void MarketSourceCtrl::get(const drogon::HttpRequestPtr& req,
+                           std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                           int64_t id) {  // NOLINT
     (void)req;
     auto source = repo_->get_market_source(id);
     if (!source.has_value()) {
@@ -137,9 +137,9 @@ void MarketSourceCtrl::get(
 // ---------------------------------------------------------------------------
 // GET /api/market-sources/{id}/config - 读取配置 (从镜像), password 脱敏为 "****"
 // ---------------------------------------------------------------------------
-void MarketSourceCtrl::get_config(
-    const drogon::HttpRequestPtr& req,
-    std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id) {  // NOLINT
+void MarketSourceCtrl::get_config(const drogon::HttpRequestPtr& req,
+                                  std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                                  int64_t id) {  // NOLINT
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "forbidden"));
         return;
@@ -152,7 +152,7 @@ void MarketSourceCtrl::get_config(
     auto config_opt = get_config_from_mirror(id);
     if (!config_opt.has_value()) {
         callback(error_response(drogon::k503ServiceUnavailable,
-                                 "process not running or mirror not ready"));
+                                "process not running or mirror not ready"));
         return;
     }
     // 脱敏: password 字段返回掩码; Wave 5A: 同时脱敏 brokers[].password
@@ -167,8 +167,8 @@ void MarketSourceCtrl::get_config(
             }
         }
     }
-    callback(json_response(drogon::k200OK,
-                            {{"source", source->source_name}, {"config", safe_config}}));
+    callback(
+        json_response(drogon::k200OK, {{"source", source->source_name}, {"config", safe_config}}));
 }
 
 // ---------------------------------------------------------------------------

@@ -10,9 +10,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include <dztrader/core/core_data_type.h>    // DzFrameType
-#include <dztrader/core/core_struct.h>       // SubscribeReq, SubscribeAction
-#include <dztrader/core/json_enum.h>         // DZ_JSON_ENUM
+#include <dztrader/core/core_data_type.h>  // DzFrameType
+#include <dztrader/core/core_struct.h>     // SubscribeReq, SubscribeAction
+#include <dztrader/core/json_enum.h>       // DZ_JSON_ENUM
 #include <dztrader/platform/notify_ui.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/writer.h>
@@ -37,9 +37,9 @@ inline constexpr int SUBSCRIPTION_QUERY_MAX = 32;
 /// 单条订阅详情 (DZ_FRAME_RTN_MD_SUBSCRIPTIONS 响应元素)。
 /// 跨进程契约: md 进程构造, dzweb 透传, UI 消费。
 struct SubscriptionDetail {
-    std::string instrument;                              ///< 合约代码
-    SubState sub_state = SubState::NotRequested;         ///< 订阅状态
-    std::vector<std::string> subscribers;                ///< 订阅者 instance_id 列表
+    std::string instrument;                       ///< 合约代码
+    SubState sub_state = SubState::NotRequested;  ///< 订阅状态
+    std::vector<std::string> subscribers;         ///< 订阅者 instance_id 列表
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE(SubscriptionDetail, instrument, sub_state, subscribers)
 };
@@ -47,15 +47,14 @@ struct SubscriptionDetail {
 /// 查询订阅响应 (DZ_FRAME_RTN_MD_SUBSCRIPTIONS payload)。
 /// 成功路径填充 subscriptions/计数; 错误路径仅填充 error, 其余为默认值。
 struct RtnMdSubscriptionsRsp {
-    std::vector<SubscriptionDetail> subscriptions;       ///< 详情列表 (可能截断)
-    int returned_count = 0;                              ///< 实际返回条数
-    int total_matched = 0;                               ///< 匹配总数
-    bool truncated = false;                              ///< 是否因超 max_n 截断
-    std::optional<std::string> error;                    ///< 错误路径填充, 成功路径为 nullopt
+    std::vector<SubscriptionDetail> subscriptions;  ///< 详情列表 (可能截断)
+    int returned_count = 0;                         ///< 实际返回条数
+    int total_matched = 0;                          ///< 匹配总数
+    bool truncated = false;                         ///< 是否因超 max_n 截断
+    std::optional<std::string> error;               ///< 错误路径填充, 成功路径为 nullopt
 
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(RtnMdSubscriptionsRsp,
-                                               subscriptions, returned_count,
-                                               total_matched, truncated, error)
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
+        RtnMdSubscriptionsRsp, subscriptions, returned_count, total_matched, truncated, error)
 };
 
 /// 合约订阅详情（从 MdStateMachine 内嵌类型提升为独立公开类型，逻辑不变）。

@@ -26,7 +26,8 @@ namespace dztrader::db {
 
 class SqliteDatabaseImpl final : public Database {
 public:
-    SqliteDatabaseImpl(std::string path, std::map<std::string, std::string, std::less<>> options,
+    SqliteDatabaseImpl(std::string path,
+                       std::map<std::string, std::string, std::less<>> options,
                        std::span<const ResourceSchema> schemas);
 
     std::unique_ptr<Session> session(bool read_only = false) override;
@@ -49,12 +50,14 @@ private:
 /// SQLite 会话：schema 类型化读写；不得晚于其 Database 析构
 class SqliteSession final : public Session {
 public:
-    SqliteSession(const SqliteDatabaseImpl* owner, std::unique_ptr<SQLite::Database> db,
+    SqliteSession(const SqliteDatabaseImpl* owner,
+                  std::unique_ptr<SQLite::Database> db,
                   bool read_only);
 
     void upsert(std::string_view collection, std::span<const Row> rows) override;
     uint64_t remove(std::string_view collection, const Filter& filter) override;
-    [[nodiscard]] ResultSet find(std::string_view collection, const Filter& filter,
+    [[nodiscard]] ResultSet find(std::string_view collection,
+                                 const Filter& filter,
                                  const FindOptions& options) override;
     [[nodiscard]] ResultSet aggregate(std::string_view collection,
                                       const Aggregation& aggregation) override;
@@ -81,7 +84,8 @@ private:
 /// 写事务句柄：析构未 commit 则回滚；commit 失败时作用域保持, 由析构兜底
 class SqliteTransaction final : public Transaction {
 public:
-    explicit SqliteTransaction(SqliteSession& session) : session_(&session) {}
+    explicit SqliteTransaction(SqliteSession& session)
+        : session_(&session) {}
     ~SqliteTransaction() override;
 
     void commit() override;
@@ -95,7 +99,8 @@ private:
 /// 只读快照句柄：析构结束只读作用域 (异常吞掉)
 class SqliteSnapshot final : public Snapshot {
 public:
-    explicit SqliteSnapshot(SqliteSession& session) : session_(&session) {}
+    explicit SqliteSnapshot(SqliteSession& session)
+        : session_(&session) {}
     ~SqliteSnapshot() override;
 
 private:

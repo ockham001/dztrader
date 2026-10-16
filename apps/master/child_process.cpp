@@ -153,8 +153,8 @@ bool ChildProcess::start(boost::system::error_code& ec) {
 
     if (ec) {
         state_ = ChildState::Stopped;
-        SPDLOG_ERROR("child start failed | name={} exe={} error=\"{}\"", entry_.name, entry_.exe.string(),
-                     dztrader::to_utf8_from_system(ec.message()));
+        SPDLOG_ERROR("child start failed | name={} exe={} error=\"{}\"", entry_.name,
+                     entry_.exe.string(), dztrader::to_utf8_from_system(ec.message()));
         return false;
     }
 
@@ -182,7 +182,8 @@ void ChildProcess::terminate() {
     boost::system::error_code ec;
     proc_->terminate(ec);
     if (ec) {
-        SPDLOG_WARN("terminate failed | name={} error=\"{}\"", entry_.name, dztrader::to_utf8_from_system(ec.message()));
+        SPDLOG_WARN("terminate failed | name={} error=\"{}\"", entry_.name,
+                    dztrader::to_utf8_from_system(ec.message()));
     } else {
         SPDLOG_INFO("child terminated | name={}", entry_.name);
     }
@@ -232,18 +233,13 @@ void ChildProcess::read_stdout_line() {
                     auto logger = dztrader::log::forward_logger();
                     if (logger) {
                         logger->log(kForwardedLoc, level,
-                            "{} | child_pid={} child_entry={} child_msg=\"{}\"",
-                            prose,
-                            self->proc_ ? self->proc_->id() : 0,
-                            self->entry_.exe.filename().string(),
-                            escape_for_kv(buf));
+                                    "{} | child_pid={} child_entry={} child_msg=\"{}\"", prose,
+                                    self->proc_ ? self->proc_->id() : 0,
+                                    self->entry_.exe.filename().string(), escape_for_kv(buf));
                     } else {
-                        SPDLOG_INFO(
-                            "{} | child_pid={} child_entry={} child_msg=\"{}\"",
-                            prose,
-                            self->proc_ ? self->proc_->id() : 0,
-                            self->entry_.exe.filename().string(),
-                            escape_for_kv(buf));
+                        SPDLOG_INFO("{} | child_pid={} child_entry={} child_msg=\"{}\"", prose,
+                                    self->proc_ ? self->proc_->id() : 0,
+                                    self->entry_.exe.filename().string(), escape_for_kv(buf));
                     }
                 };
                 if (ec) {
@@ -293,18 +289,13 @@ void ChildProcess::read_stderr_line() {
                     auto logger = dztrader::log::forward_logger();
                     if (logger) {
                         logger->log(kForwardedLoc, level,
-                            "{} | child_pid={} child_entry={} child_msg=\"{}\"",
-                            prose,
-                            self->proc_ ? self->proc_->id() : 0,
-                            self->entry_.exe.filename().string(),
-                            escape_for_kv(buf));
+                                    "{} | child_pid={} child_entry={} child_msg=\"{}\"", prose,
+                                    self->proc_ ? self->proc_->id() : 0,
+                                    self->entry_.exe.filename().string(), escape_for_kv(buf));
                     } else {
-                        SPDLOG_WARN(
-                            "{} | child_pid={} child_entry={} child_msg=\"{}\"",
-                            prose,
-                            self->proc_ ? self->proc_->id() : 0,
-                            self->entry_.exe.filename().string(),
-                            escape_for_kv(buf));
+                        SPDLOG_WARN("{} | child_pid={} child_entry={} child_msg=\"{}\"", prose,
+                                    self->proc_ ? self->proc_->id() : 0,
+                                    self->entry_.exe.filename().string(), escape_for_kv(buf));
                     }
                 };
                 if (ec) {

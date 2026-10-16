@@ -121,8 +121,8 @@ void set_default_logger(const LoggerSetup& config) {
     // 显式传 truncate=false 与 max_files=config.max_files
     // max_files=0（默认）不限制历史日志数量；md/td 等 7x24 进程应设为 30 防止磁盘写满
     auto file_sink = std::make_shared<DailyFileSinkMt>(
-        (log_dir / (name + ".log")).string(), 0, 0,
-        false, config.max_files);  // rotation_hour=0, rotation_minute=0, truncate=false
+        (log_dir / (name + ".log")).string(), 0, 0, false,
+        config.max_files);  // rotation_hour=0, rotation_minute=0, truncate=false
     file_sink->set_pattern(std::string(FILE_PATTERN));
     g_file_sink = file_sink;  // 供 create_child_logger() 复用
     sinks.push_back(std::move(file_sink));
@@ -151,8 +151,6 @@ void set_default_logger(const LoggerSetup& config) {
     std::set_terminate(terminate_handler);
 }
 
-std::shared_ptr<spdlog::logger> forward_logger() {
-    return g_forward_logger;
-}
+std::shared_ptr<spdlog::logger> forward_logger() { return g_forward_logger; }
 
 }  // namespace dztrader::log

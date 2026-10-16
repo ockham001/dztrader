@@ -2,7 +2,8 @@
  * @file smoke_test.cpp
  * @brief 集成冒烟测试: master + dzmd_ctp + dztd_ctp + dzweb 真实进程组合验证。
  *
- * 流程: 临时 DZTRADER_HOME -> spawn 真实 dztraderd.exe -> master 拉起行情/交易网关 + dzweb + 策略 stg_demo
+ * 流程: 临时 DZTRADER_HOME -> spawn 真实 dztraderd.exe -> master 拉起行情/交易网关 + dzweb + 策略
+ * stg_demo
  *       -> 事件通道帧回路断言 + dzweb /health HTTP 探测 + 空账户拒单闭环 (stg_demo order 退出码 3)
  *       -> 定向 SHUTDOWN (md/td/webui) -> 各进程 Stopped -> 终止 master -> 清理。
  *
@@ -77,9 +78,7 @@ bool event_channel_semaphore_exists() {
 #endif
 }
 
-bool smoke_strict() {
-    return env::get("DZ_SMOKE_STRICT") == "1";
-}
+bool smoke_strict() { return env::get("DZ_SMOKE_STRICT") == "1"; }
 
 /// 按 pid 强杀 (等价于 run-dev -Stop 的 Stop-Process -Force)。
 /// 不用 ChildProcess::terminate: 外部强杀后其 async_wait 状态回调不触发, 判定不可靠。
@@ -154,8 +153,8 @@ bool frame_has_inst(DzFrameType t) {
 }
 
 /// basic 帧 (定长结构体 payload 紧跟 DzFrameHeader, 无 ext 头): 无法按 JSON 解析。
-/// 策略/交易链路会在事件通道产生此类帧 (TD_ORDER_REQ=DZ_FRAME_TD_ORDER_REQ / ORDER_REPORT=DZ_FRAME_ORDER_REPORT),
-/// 混在 ext 帧里, drain 时只记摘要跳过 payload 解析。
+/// 策略/交易链路会在事件通道产生此类帧 (TD_ORDER_REQ=DZ_FRAME_TD_ORDER_REQ /
+/// ORDER_REPORT=DZ_FRAME_ORDER_REPORT), 混在 ext 帧里, drain 时只记摘要跳过 payload 解析。
 bool frame_is_basic_struct(DzFrameType t) {
     switch (t) {
         case DZ_FRAME_TD_ORDER_REQ:
@@ -173,8 +172,8 @@ bool frame_is_basic_struct(DzFrameType t) {
 
 struct DecodedFrame {
     DzFrameType type{};
-    std::string instance_id;   // 空 = 无 instance_id 帧
-    nlohmann::json payload;    // 空 payload 帧 -> null
+    std::string instance_id;  // 空 = 无 instance_id 帧
+    nlohmann::json payload;   // 空 payload 帧 -> null
     bool has_payload{false};
 };
 
@@ -237,43 +236,42 @@ protected:
         // TdConfig::load 对缺失文件走 exists 短路, 冒烟由 md 覆盖共享模式即可)
         // 策略: exe 名即策略ID (stg_demo), 必须与 strategy[].name 一致; info 模式秒退, 断言生命周期
         {
-            const auto cli_exe = out_dir_ / "stg_demo"
+            const auto cli_exe = out_dir_ /
+                                 "stg_demo"
 #ifdef _WIN32
-                ".exe"
+                                 ".exe"
 #endif
                 ;
             nlohmann::json cfg = {
                 {"log", nlohmann::json::object()},
                 {"master", nlohmann::json::object()},
-                {"shm", {{"meta_file_size", 1048576},
-                         {"event", {{"page_size_mb", 1},
-                                    {"preload_points", nlohmann::json::object()},
-                                    {"check_interval_min", 5},
-                                    {"check_pages", 1},
-                                    {"check_bytes", 0}}}}},
-                {"md", {{"dzmd_ctp",
-                         {{"args", nlohmann::json::array()},
-                          {"env", nlohmann::json::object()},
-                          {"restart", {{"enabled", false},
-                                       {"max_attempts", 0},
-                                       {"backoff_sec", 5}}},
-                          {"display_name", "CTP行情"}}}}},
-                {"td", {{"dztd_ctp",
-                         {{"args", nlohmann::json::array()},
-                          {"env", nlohmann::json::object()},
-                          {"restart", {{"enabled", false},
-                                       {"max_attempts", 0},
-                                       {"backoff_sec", 5}}},
-                          {"display_name", "CTP交易"}}}}},
-                {"webui", {{"args", nlohmann::json::array()},
-                           {"restart", {{"enabled", false},
-                                        {"max_attempts", 0},
-                                        {"backoff_sec", 5}}}}},
-                {"strategy", nlohmann::json::array(
-                                 {{{"name", "stg_demo"},
-                                   {"exe", cli_exe.string()},
-                                   {"md_source", "dzmd_ctp"},
-                                   {"args", nlohmann::json::array({"info"})}}})},
+                {"shm",
+                 {{"meta_file_size", 1048576},
+                  {"event",
+                   {{"page_size_mb", 1},
+                    {"preload_points", nlohmann::json::object()},
+                    {"check_interval_min", 5},
+                    {"check_pages", 1},
+                    {"check_bytes", 0}}}}},
+                {"md",
+                 {{"dzmd_ctp",
+                   {{"args", nlohmann::json::array()},
+                    {"env", nlohmann::json::object()},
+                    {"restart", {{"enabled", false}, {"max_attempts", 0}, {"backoff_sec", 5}}},
+                    {"display_name", "CTP行情"}}}}},
+                {"td",
+                 {{"dztd_ctp",
+                   {{"args", nlohmann::json::array()},
+                    {"env", nlohmann::json::object()},
+                    {"restart", {{"enabled", false}, {"max_attempts", 0}, {"backoff_sec", 5}}},
+                    {"display_name", "CTP交易"}}}}},
+                {"webui",
+                 {{"args", nlohmann::json::array()},
+                  {"restart", {{"enabled", false}, {"max_attempts", 0}, {"backoff_sec", 5}}}}},
+                {"strategy", nlohmann::json::array({{{"name", "stg_demo"},
+                                                     {"exe", cli_exe.string()},
+                                                     {"md_source", "dzmd_ctp"},
+                                                     {"args", nlohmann::json::array({"info"})}}})},
             };
             std::ofstream ofs(home_ / "configs" / "dztraderd.json");
             ofs << cfg.dump();
@@ -297,16 +295,15 @@ protected:
         {
             nlohmann::json td_cfg = {
                 {"td",
-                 {{"accounts",
-                   nlohmann::json::array(
-                       {{{"account_id", "CTP001"},
-                         {"broker", {{"name", "smoke-empty-account"},
-                                     {"broker_id", "9999"},
-                                     {"user_id", "SMOKE001"},
-                                     {"password", ""},
-                                     {"product_info", ""},
-                                     {"frontends", nlohmann::json::array()}}},
-                         {"enabled", true}}})}}},
+                 {{"accounts", nlohmann::json::array({{{"account_id", "CTP001"},
+                                                       {"broker",
+                                                        {{"name", "smoke-empty-account"},
+                                                         {"broker_id", "9999"},
+                                                         {"user_id", "SMOKE001"},
+                                                         {"password", ""},
+                                                         {"product_info", ""},
+                                                         {"frontends", nlohmann::json::array()}}},
+                                                       {"enabled", true}}})}}},
             };
             std::ofstream ofs(home_ / "configs" / "dztd_ctp.json");
             ofs << td_cfg.dump();
@@ -314,9 +311,10 @@ protected:
         }
 
         // master 可执行文件: 测试 exe 在 <out>/tests/, master 在 <out>/
-        master_exe_ = out_dir_ / "dztraderd"
+        master_exe_ = out_dir_ /
+                      "dztraderd"
 #ifdef _WIN32
-            ".exe"
+                      ".exe"
 #endif
             ;
 
@@ -327,8 +325,8 @@ protected:
         master_ = ChildProcess::create(ioc_, std::move(entry));
         boost::system::error_code spawn_ec;
         ASSERT_TRUE(master_->start(spawn_ec))
-            << "master spawn failed | exe=" << master_exe_.string()
-            << " error=\"" << spawn_ec.message() << "\"";
+            << "master spawn failed | exe=" << master_exe_.string() << " error=\""
+            << spawn_ec.message() << "\"";
     }
 
     void TearDown() override {
@@ -438,7 +436,8 @@ protected:
     /// reader 打开而错过; 用快照/SET 类触发帧周期性重发保证至少一次落在打开之后)
     template <typename Pred, typename Trigger>
     bool wait_until(Pred pred, int timeout_ms, Trigger trigger, int interval_ms = 100) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         int ticks = 0;
         while (std::chrono::steady_clock::now() < deadline) {
             if (pred()) {
@@ -486,7 +485,8 @@ protected:
     std::unique_ptr<shm::Reader> reader_;
     std::unique_ptr<shm::MultiWriter> writer_;
     std::vector<std::string> frame_summary_;
-    /// 契约 account-status: 排空中捕获的 DZ_FRAME_ACCOUNT_STATUS 账户状态帧 payload (帧指针会失效, 拷出)
+    /// 契约 account-status: 排空中捕获的 DZ_FRAME_ACCOUNT_STATUS 账户状态帧 payload (帧指针会失效,
+    /// 拷出)
     std::vector<DzAccountStatus> account_status_frames_;
 };
 
@@ -496,7 +496,8 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
 
     auto send_query_snapshot = [&] {
         // 刷新订阅者快照: writer 创建时的快照可能早于 master 注册 md 订阅者
-        // (CI 负载下 master 拉起 md 更慢), 过期快照会漏唤醒 md (真实进程靠 DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER 帧刷新)
+        // (CI 负载下 master 拉起 md 更慢), 过期快照会漏唤醒 md (真实进程靠
+        // DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER 帧刷新)
         writer_->refresh_subscribers();
         if (writer_->write_ext_frame(DZ_FRAME_QUERY_FULL_SNAPSHOT, nullptr, 0)) {
             writer_->notify_subscribers();
@@ -507,24 +508,24 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     //    RTN_PROCESS_STATUS (shm_manager_frame.cpp report_full_snapshot)
     const auto saw_running = [&](const std::string& name) {
         for (auto& f : drain_available(*reader_)) {
-            if (f.type == DZ_FRAME_RTN_PROCESS_STATUS &&
-                f.payload.value("name", "") == name && f.payload.value("state", "") == "Running") {
+            if (f.type == DZ_FRAME_RTN_PROCESS_STATUS && f.payload.value("name", "") == name &&
+                f.payload.value("state", "") == "Running") {
                 return true;
             }
         }
         return false;
     };
-    const bool md_running = wait_until([&] { return saw_running("dzmd_ctp"); }, 30000,
-                                       send_query_snapshot);
+    const bool md_running =
+        wait_until([&] { return saw_running("dzmd_ctp"); }, 30000, send_query_snapshot);
     ASSERT_TRUE(md_running) << "dzmd_ctp did not report Running within 30s";
-    const bool td_running = wait_until([&] { return saw_running("dztd_ctp"); }, 15000,
-                                       send_query_snapshot);
+    const bool td_running =
+        wait_until([&] { return saw_running("dztd_ctp"); }, 15000, send_query_snapshot);
     ASSERT_TRUE(td_running) << "dztd_ctp did not report Running within 15s";
 
     // 1c-2. 账户状态回路: td 配置了账户 CTP001 但从不连接 (dztd_ctp.json stub)
-    //     -> td 启动读完配置应推 DZ_FRAME_ACCOUNT_STATUS Offline 帧 (契约 account-status 触发场景 1)。
-    //     DZ_FRAME_ACCOUNT_STATUS 帧由 drain_available 统一捕获 (account_status_frames_); 启动帧可能
-    //     早于 reader 打开被错过, 但 QUERY_FULL_SNAPSHOT 触发 td 快照重推 Offline
+    //     -> td 启动读完配置应推 DZ_FRAME_ACCOUNT_STATUS Offline 帧 (契约 account-status 触发场景
+    //     1)。 DZ_FRAME_ACCOUNT_STATUS 帧由 drain_available 统一捕获 (account_status_frames_);
+    //     启动帧可能 早于 reader 打开被错过, 但 QUERY_FULL_SNAPSHOT 触发 td 快照重推 Offline
     //     (force=true), 故用既有 wait_until + 快照触发轮询窗口兜底 (10s 与本文件
     //     其他轮询窗口一致; 负载下 3s 偏紧)。
     const auto saw_account_offline = [&] {
@@ -541,8 +542,8 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     ASSERT_TRUE(account_offline)
         << "dztd_ctp did not publish OFFLINE account status for configured CTP001";
 
-    const bool webui_running = wait_until([&] { return saw_running("dzweb"); }, 20000,
-                                          send_query_snapshot);
+    const bool webui_running =
+        wait_until([&] { return saw_running("dzweb"); }, 20000, send_query_snapshot);
     ASSERT_TRUE(webui_running) << "dzweb did not report Running within 20s";
 
     // 1b. 策略生命周期: master 按 strategy 段拉起 stg_demo(info) -> 策略秒退 0 -> master 推
@@ -573,9 +574,10 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     //     -> no_session 分支推 REJECTED 回报 -> 策略收到回报按设计退出 3 (机器可断言)。
     //     无需 master 注册订阅者: 回报帧已落在通道内, 策略每 500ms 无条件排空一次
     //     (唤醒缺失兜底), 不依赖被 notify 唤醒。
-    const auto cli_exe_path = out_dir_ / "stg_demo"
+    const auto cli_exe_path = out_dir_ /
+                              "stg_demo"
 #ifdef _WIN32
-        ".exe"
+                              ".exe"
 #endif
         ;
     ProcessEntry cli_entry;
@@ -587,9 +589,8 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     cli_entry.env["DZTRADER_MD_SOURCE"] = "dzmd_ctp";
     auto cli = ChildProcess::create(ioc_, std::move(cli_entry));
     boost::system::error_code cli_spawn_ec;
-    ASSERT_TRUE(cli->start(cli_spawn_ec))
-        << "stg_demo spawn failed | exe=" << cli_exe_path.string()
-        << " error=\"" << cli_spawn_ec.message() << "\"";
+    ASSERT_TRUE(cli->start(cli_spawn_ec)) << "stg_demo spawn failed | exe=" << cli_exe_path.string()
+                                          << " error=\"" << cli_spawn_ec.message() << "\"";
     int cli_exit = -1;
     bool cli_exited = false;
     cli->async_wait([&](boost::system::error_code, int code) {
@@ -609,14 +610,16 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
         platform::write_ext_inst_json_obj(*writer_, DZ_FRAME_SET_LOG_CONFIG, "dzmd_ctp",
                                           nlohmann::json::object());
     };
-    const bool got_rtn = wait_until([&] {
-        for (auto& f : drain_available(*reader_)) {
-            if (f.type == DZ_FRAME_RTN_LOG_CONFIG && f.instance_id == "dzmd_ctp") {
-                return true;
+    const bool got_rtn = wait_until(
+        [&] {
+            for (auto& f : drain_available(*reader_)) {
+                if (f.type == DZ_FRAME_RTN_LOG_CONFIG && f.instance_id == "dzmd_ctp") {
+                    return true;
+                }
             }
-        }
-        return false;
-    }, 10000, send_set_log_config);
+            return false;
+        },
+        10000, send_set_log_config);
     ASSERT_TRUE(got_rtn) << "no RTN_LOG_CONFIG from dzmd_ctp within 10s";
 
     // 2b. td 帧回路: SET_LOG_CONFIG -> RTN_LOG_CONFIG (td 配置缺失自愈路径 + 帧回路)
@@ -625,26 +628,30 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
         platform::write_ext_inst_json_obj(*writer_, DZ_FRAME_SET_LOG_CONFIG, "dztd_ctp",
                                           nlohmann::json::object());
     };
-    const bool got_rtn_td = wait_until([&] {
-        for (auto& f : drain_available(*reader_)) {
-            if (f.type == DZ_FRAME_RTN_LOG_CONFIG && f.instance_id == "dztd_ctp") {
-                return true;
+    const bool got_rtn_td = wait_until(
+        [&] {
+            for (auto& f : drain_available(*reader_)) {
+                if (f.type == DZ_FRAME_RTN_LOG_CONFIG && f.instance_id == "dztd_ctp") {
+                    return true;
+                }
             }
-        }
-        return false;
-    }, 10000, send_set_log_config_td);
+            return false;
+        },
+        10000, send_set_log_config_td);
     ASSERT_TRUE(got_rtn_td) << "no RTN_LOG_CONFIG from dztd_ctp within 10s";
 
     // 3. QUERY_FULL_SNAPSHOT -> md 按契约上报 (至少 RTN_LOG_CONFIG)
-    const bool got_snapshot = wait_until([&] {
-        for (auto& f : drain_available(*reader_)) {
-            if (f.instance_id == "dzmd_ctp" &&
-                (f.type == DZ_FRAME_RTN_LOG_CONFIG || f.type == DZ_FRAME_RTN_MD_SHM_CONFIG)) {
-                return true;
+    const bool got_snapshot = wait_until(
+        [&] {
+            for (auto& f : drain_available(*reader_)) {
+                if (f.instance_id == "dzmd_ctp" &&
+                    (f.type == DZ_FRAME_RTN_LOG_CONFIG || f.type == DZ_FRAME_RTN_MD_SHM_CONFIG)) {
+                    return true;
+                }
             }
-        }
-        return false;
-    }, 10000, send_query_snapshot);
+            return false;
+        },
+        10000, send_query_snapshot);
     ASSERT_TRUE(got_snapshot) << "no snapshot RTN from dzmd_ctp within 10s";
 
     // 3b. dzweb HTTP 健康: GET /health -> 200 (drogon 服务器真实对外可用)
@@ -668,21 +675,21 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     };
     const auto saw_stopped = [&](const std::string& name) {
         for (auto& f : drain_available(*reader_)) {
-            if (f.type == DZ_FRAME_RTN_PROCESS_STATUS &&
-                f.payload.value("name", "") == name && f.payload.value("state", "") == "Stopped") {
+            if (f.type == DZ_FRAME_RTN_PROCESS_STATUS && f.payload.value("name", "") == name &&
+                f.payload.value("state", "") == "Stopped") {
                 return true;
             }
         }
         return false;
     };
-    const bool md_stopped = wait_until([&] { return saw_stopped("dzmd_ctp"); }, 15000,
-                                       send_shutdown_and_snapshot);
+    const bool md_stopped =
+        wait_until([&] { return saw_stopped("dzmd_ctp"); }, 15000, send_shutdown_and_snapshot);
     ASSERT_TRUE(md_stopped) << "dzmd_ctp did not stop within 15s after directed SHUTDOWN";
-    const bool td_stopped = wait_until([&] { return saw_stopped("dztd_ctp"); }, 15000,
-                                       send_shutdown_and_snapshot);
+    const bool td_stopped =
+        wait_until([&] { return saw_stopped("dztd_ctp"); }, 15000, send_shutdown_and_snapshot);
     ASSERT_TRUE(td_stopped) << "dztd_ctp did not stop within 15s after directed SHUTDOWN";
-    const bool webui_stopped = wait_until([&] { return saw_stopped("dzweb"); }, 15000,
-                                          send_shutdown_and_snapshot);
+    const bool webui_stopped =
+        wait_until([&] { return saw_stopped("dzweb"); }, 15000, send_shutdown_and_snapshot);
     ASSERT_TRUE(webui_stopped) << "dzweb did not stop within 15s after directed SHUTDOWN";
 
     // 5. 终止 master (master 常驻无自退出协议, 与 run-dev -Stop 同策略: 强杀)

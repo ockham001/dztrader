@@ -22,8 +22,8 @@
 
 namespace dztrader::master {
 
-using dztrader::platform::MIN_PAGE_SIZE_BYTES;
 using dztrader::platform::mb_to_bytes;
+using dztrader::platform::MIN_PAGE_SIZE_BYTES;
 
 ShmManager::ShmManager(const ShmGlobalConfig& shm_global,
                        const std::filesystem::path& cfg_path,
@@ -82,8 +82,7 @@ ShmManager::ShmManager(const ShmGlobalConfig& shm_global,
       cleaner_(std::make_unique<shm::PageCleaner>(event_meta_, cleanup_policy_)),
       log_config_(name_, config_path_),
       notify_ui_(name_, event_writer_),
-      event_shm_config_(config_path_, event_writer_,
-                        nlohmann::json::json_pointer("/shm/event")),
+      event_shm_config_(config_path_, event_writer_, nlohmann::json::json_pointer("/shm/event")),
       event_sem_(name) {
     SPDLOG_INFO("event channel writer/reader/cleaner ready");
 
@@ -110,9 +109,8 @@ ShmManager::ShmManager(const ShmGlobalConfig& shm_global,
 
     // event_page_size_ 已在 event_meta_ 创建 lambda 中从文件读取并赋值,
     // 此处从 event_shm_config_ 再赋一次保证一致性 (同源数据, 值相同)
-    event_page_size_ = std::max<uint64_t>(
-        event_shm_config_.page_size_mb() * 1024 * 1024,
-        dztrader::platform::MIN_PAGE_SIZE_BYTES);
+    event_page_size_ = std::max<uint64_t>(event_shm_config_.page_size_mb() * 1024 * 1024,
+                                          dztrader::platform::MIN_PAGE_SIZE_BYTES);
 }
 
 void ShmManager::create_md_channel(std::string_view source_name) {
@@ -172,8 +170,8 @@ void ShmManager::create_md_channel(std::string_view source_name) {
                                 source_name, it->second.last_page_size, page_size, bound_names);
             }
         }
-        SPDLOG_INFO("md channel page_size changed, resetting | name={} old={} new={}",
-                    channel_name, it->second.last_page_size, page_size);
+        SPDLOG_INFO("md channel page_size changed, resetting | name={} old={} new={}", channel_name,
+                    it->second.last_page_size, page_size);
         // 释放旧 meta 句柄后再重建 (契约 4.8; Windows 上旧映射未释放会阻塞页文件删除)
         it->second.meta.reset();
     }
@@ -270,8 +268,8 @@ void ShmManager::destroy_md_channel(std::string_view source_name) {
     it->second.meta.reset();
     it->second.ready = false;
     std::error_code ec;
-    const auto removed = std::filesystem::remove_all(
-        dztrader::paths::shm() / shm::channel_name(source_name), ec);
+    const auto removed =
+        std::filesystem::remove_all(dztrader::paths::shm() / shm::channel_name(source_name), ec);
     if (ec) {
         SPDLOG_ERROR("md channel dir remove failed | source={} error=\"{}\"", source_name,
                      ec.message());
@@ -466,8 +464,8 @@ void ShmManager::persist_process_config(const std::string& name, const nlohmann:
         } else {
             remove_gateway_section(config_path_, category, name);
         }
-        SPDLOG_INFO("process config section removed | name={} path={}",
-                    name, config_path_.string());
+        SPDLOG_INFO("process config section removed | name={} path={}", name,
+                    config_path_.string());
         return;
     }
     // 写段：category 决定 write_gateway_section / write_webui_section / strategy 数组
@@ -492,9 +490,10 @@ void ShmManager::persist_process_config(const std::string& name, const nlohmann:
             {"name", name},
             {"args", args},
             {"env", full["env"]},
-            {"restart", {{"enabled", restart.enabled},
-                         {"max_attempts", restart.max_attempts},
-                         {"backoff_sec", restart.backoff_sec}}},
+            {"restart",
+             {{"enabled", restart.enabled},
+              {"max_attempts", restart.max_attempts},
+              {"backoff_sec", restart.backoff_sec}}},
         };
         if (!display_name.empty()) {
             strategy_entry["display_name"] = display_name;
@@ -517,9 +516,10 @@ void ShmManager::register_dynamic_gateway(const ProcessEntry& scanned) {
     nlohmann::json full = {
         {"args", scanned.args},
         {"env", scanned.env},
-        {"restart", {{"enabled", scanned.restart.enabled},
-                     {"max_attempts", scanned.restart.max_attempts},
-                     {"backoff_sec", scanned.restart.backoff_sec}}},
+        {"restart",
+         {{"enabled", scanned.restart.enabled},
+          {"max_attempts", scanned.restart.max_attempts},
+          {"backoff_sec", scanned.restart.backoff_sec}}},
     };
     if (!scanned.display_name.empty()) {
         full["display_name"] = scanned.display_name;
@@ -532,8 +532,8 @@ void ShmManager::register_dynamic_gateway(const ProcessEntry& scanned) {
         supervisor_->unregister_entry(scanned.name);
         throw;
     }
-    SPDLOG_INFO("gateway dynamically registered | name={} category={} exe={}",
-                scanned.name, static_cast<int>(scanned.category), scanned.exe.string());
+    SPDLOG_INFO("gateway dynamically registered | name={} category={} exe={}", scanned.name,
+                static_cast<int>(scanned.category), scanned.exe.string());
 }
 
 void ShmManager::apply_process_config(const std::string& name, const nlohmann::json& full) {
@@ -569,9 +569,10 @@ nlohmann::json ShmManager::build_initial_config_map() const {
         nlohmann::json cfg = {
             {"args", e.args},
             {"env", e.env},
-            {"restart", {{"enabled", e.restart.enabled},
-                         {"max_attempts", e.restart.max_attempts},
-                         {"backoff_sec", e.restart.backoff_sec}}},
+            {"restart",
+             {{"enabled", e.restart.enabled},
+              {"max_attempts", e.restart.max_attempts},
+              {"backoff_sec", e.restart.backoff_sec}}},
         };
         if (!e.display_name.empty()) {
             cfg["display_name"] = e.display_name;

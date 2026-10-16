@@ -19,8 +19,7 @@ public:
 
     bool sync_from_channel_meta(const ChannelMeta& meta) noexcept;
 
-    void notify_all() noexcept
-    {
+    void notify_all() noexcept {
         for (auto& sem : sems_) {
             sem.notify();
         }

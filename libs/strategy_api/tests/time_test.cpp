@@ -50,8 +50,8 @@ TEST_F(TimeTest, ConstructorFromHMSDefaultSecMs) {
 }
 
 TEST_F(TimeTest, ConstructorFromChronoHMS) {
-    Time t{std::chrono::hours{9}, std::chrono::minutes{30},
-           std::chrono::seconds{15}, std::chrono::milliseconds{500}};
+    Time t{std::chrono::hours{9}, std::chrono::minutes{30}, std::chrono::seconds{15},
+           std::chrono::milliseconds{500}};
     EXPECT_EQ(t.hour(), 9);
     EXPECT_EQ(t.minute(), 30);
     EXPECT_EQ(t.second(), 15);
@@ -59,8 +59,8 @@ TEST_F(TimeTest, ConstructorFromChronoHMS) {
 }
 
 TEST_F(TimeTest, ConstructorFromHhMmSs) {
-    auto dur = std::chrono::hours{9} + std::chrono::minutes{30} +
-               std::chrono::seconds{15} + std::chrono::milliseconds{500};
+    auto dur = std::chrono::hours{9} + std::chrono::minutes{30} + std::chrono::seconds{15} +
+               std::chrono::milliseconds{500};
     auto hms = std::chrono::hh_mm_ss{dur};
     Time t{hms};
     EXPECT_EQ(t.hour(), 9);
@@ -171,9 +171,7 @@ TEST_F(TimeTest, MillisecsTo) {
     EXPECT_EQ(a.millisecs_to(b), 500);
 }
 
-TEST_F(TimeTest, MillisecsToZero) {
-    EXPECT_EQ(midnight_.millisecs_to(midnight_), 0);
-}
+TEST_F(TimeTest, MillisecsToZero) { EXPECT_EQ(midnight_.millisecs_to(midnight_), 0); }
 
 TEST_F(TimeTest, OperatorPlusDuration) {
     Time t{10, 0, 0};

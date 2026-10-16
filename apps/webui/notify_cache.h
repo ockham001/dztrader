@@ -13,7 +13,8 @@ namespace dztrader::webui {
 /// 故不加锁。若未来引入多线程必须重新评估加锁。
 class NotifyCache {
 public:
-    explicit NotifyCache(size_t max_size) : max_size_(max_size) {}
+    explicit NotifyCache(size_t max_size)
+        : max_size_(max_size) {}
 
     /// 运行时调整缓存上限。设为 0 表示禁用写入(不清空已有缓存)；
     /// 缩小到小于当前条数时,由后续 add() 逐条 pop_front 自然收敛。
@@ -28,9 +29,7 @@ public:
         messages_.push_back(payload);
     }
 
-    std::vector<nlohmann::json> get_all() const {
-        return {messages_.begin(), messages_.end()};
-    }
+    std::vector<nlohmann::json> get_all() const { return {messages_.begin(), messages_.end()}; }
 
 private:
     size_t max_size_;

@@ -32,9 +32,7 @@ protected:
         fs::create_directories(tmp_dir_);
         svc_ = std::make_unique<dztrader::webui::LogService>(tmp_dir_);
     }
-    void TearDown() override {
-        fs::remove_all(tmp_dir_);
-    }
+    void TearDown() override { fs::remove_all(tmp_dir_); }
 
     void write_log_file(const std::string& name, const std::vector<std::string>& lines) {
         std::ofstream ofs(tmp_dir_ / name);
@@ -73,10 +71,13 @@ TEST_F(LogServiceTest, ListFilesPaginates) {
 }
 
 TEST_F(LogServiceTest, ReadContentReturnsParsedLines) {
-    write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.123456789+08:00 info dztraderd [func=main file=apps/master/main.cpp:42 pid=12345 tid=12346] md channel initialized",
-        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd [func=run file=shm_manager.cpp:100 pid=12345 tid=12347] page cleanup slow",
-    });
+    write_log_file("dztraderd.log",
+                   {
+                       "2026-07-13T14:23:45.123456789+08:00 info dztraderd [func=main "
+                       "file=apps/master/main.cpp:42 pid=12345 tid=12346] md channel initialized",
+                       "2026-07-13T14:23:46.000000000+08:00 warning dztraderd [func=run "
+                       "file=shm_manager.cpp:100 pid=12345 tid=12347] page cleanup slow",
+                   });
 
     auto content = svc_->read_content("dztraderd.log", 0, 500, "", "", "", "");
     ASSERT_EQ(content.lines.size(), 2u);
@@ -93,8 +94,9 @@ TEST_F(LogServiceTest, ReadContentReturnsParsedLines) {
 
 TEST_F(LogServiceTest, ParseLineWithEmptyFuncFileLine) {
     write_log_file("web.log", {
-        "2026-07-16T12:30:14.406320900+08:00 info dzweb [func= file=: pid=67304 tid=67200] shm writer initialized",
-    });
+                                  "2026-07-16T12:30:14.406320900+08:00 info dzweb [func= file=: "
+                                  "pid=67304 tid=67200] shm writer initialized",
+                              });
 
     auto content = svc_->read_content("web.log", 0, 500, "", "", "", "");
     ASSERT_EQ(content.lines.size(), 1u);
@@ -110,8 +112,8 @@ TEST_F(LogServiceTest, ParseLineWithEmptyFuncFileLine) {
 
 TEST_F(LogServiceTest, ReadContentUnparsableLineMarkedRaw) {
     write_log_file("strategy.log", {
-        "some random text without spdlog format",
-    });
+                                       "some random text without spdlog format",
+                                   });
 
     auto content = svc_->read_content("strategy.log", 0, 500, "", "", "", "");
     ASSERT_EQ(content.lines.size(), 1u);
@@ -121,10 +123,13 @@ TEST_F(LogServiceTest, ReadContentUnparsableLineMarkedRaw) {
 
 TEST_F(LogServiceTest, ReadContentFiltersByLevel) {
     write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.123456789+08:00 info dztraderd [func=main file=main.cpp:42 pid=123 tid=124] info msg",
-        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd [func=run file=run.cpp:100 pid=123 tid=125] warn msg",
-        "2026-07-13T14:23:47.000000000+08:00 error dztraderd [func=run file=run.cpp:101 pid=123 tid=126] error msg",
-    });
+                                        "2026-07-13T14:23:45.123456789+08:00 info dztraderd "
+                                        "[func=main file=main.cpp:42 pid=123 tid=124] info msg",
+                                        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd "
+                                        "[func=run file=run.cpp:100 pid=123 tid=125] warn msg",
+                                        "2026-07-13T14:23:47.000000000+08:00 error dztraderd "
+                                        "[func=run file=run.cpp:101 pid=123 tid=126] error msg",
+                                    });
 
     // level_filter 按 severity 阈值过滤：选 warning 返回 warning + error（不含 info）
     auto content = svc_->read_content("dztraderd.log", 0, 500, "warning", "", "", "");
@@ -134,10 +139,13 @@ TEST_F(LogServiceTest, ReadContentFiltersByLevel) {
 }
 
 TEST_F(LogServiceTest, ReadContentFiltersByKeyword) {
-    write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.123456789+08:00 info dztraderd [func=main file=main.cpp:42 pid=123 tid=124] order accepted",
-        "2026-07-13T14:23:46.000000000+08:00 info dztraderd [func=run file=run.cpp:100 pid=123 tid=125] order rejected",
-    });
+    write_log_file("dztraderd.log",
+                   {
+                       "2026-07-13T14:23:45.123456789+08:00 info dztraderd [func=main "
+                       "file=main.cpp:42 pid=123 tid=124] order accepted",
+                       "2026-07-13T14:23:46.000000000+08:00 info dztraderd [func=run "
+                       "file=run.cpp:100 pid=123 tid=125] order rejected",
+                   });
 
     auto content = svc_->read_content("dztraderd.log", 0, 500, "", "rejected", "", "");
     ASSERT_EQ(content.lines.size(), 1u);
@@ -152,11 +160,15 @@ TEST_F(LogServiceTest, ReadContentNonexistentFileReturnsEmpty) {
 
 TEST_F(LogServiceTest, GetStatsCountsByLevel) {
     write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.123456789+08:00 info dztraderd [func=main file=main.cpp:1 pid=1 tid=2] msg1",
-        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd [func=main file=main.cpp:2 pid=1 tid=3] msg2",
-        "2026-07-13T14:23:47.000000000+08:00 error dztraderd [func=main file=main.cpp:3 pid=1 tid=4] msg3",
-        "2026-07-13T14:23:48.000000000+08:00 info dztraderd [func=main file=main.cpp:4 pid=1 tid=5] msg4",
-    });
+                                        "2026-07-13T14:23:45.123456789+08:00 info dztraderd "
+                                        "[func=main file=main.cpp:1 pid=1 tid=2] msg1",
+                                        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd "
+                                        "[func=main file=main.cpp:2 pid=1 tid=3] msg2",
+                                        "2026-07-13T14:23:47.000000000+08:00 error dztraderd "
+                                        "[func=main file=main.cpp:3 pid=1 tid=4] msg3",
+                                        "2026-07-13T14:23:48.000000000+08:00 info dztraderd "
+                                        "[func=main file=main.cpp:4 pid=1 tid=5] msg4",
+                                    });
 
     auto stats = svc_->get_stats("dztraderd.log", "", "", "");
     EXPECT_EQ(stats.by_level["info"], 2);
@@ -166,12 +178,18 @@ TEST_F(LogServiceTest, GetStatsCountsByLevel) {
 }
 
 TEST_F(LogServiceTest, GetAggregateGroupsByTemplate) {
-    write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.123456789+08:00 error dztraderd [func=main file=main.cpp:1 pid=1 tid=2] order rejected: order_id=12345, reason=price_limit",
-        "2026-07-13T14:23:46.000000000+08:00 error dztraderd [func=main file=main.cpp:2 pid=1 tid=3] order rejected: order_id=67890, reason=price_limit",
-        "2026-07-13T14:23:47.000000000+08:00 error dztraderd [func=main file=main.cpp:3 pid=1 tid=4] connection lost: timeout=3000",
-        "2026-07-13T14:23:48.000000000+08:00 info dztraderd [func=main file=main.cpp:4 pid=1 tid=5] info msg",
-    });
+    write_log_file(
+        "dztraderd.log",
+        {
+            "2026-07-13T14:23:45.123456789+08:00 error dztraderd [func=main file=main.cpp:1 pid=1 "
+            "tid=2] order rejected: order_id=12345, reason=price_limit",
+            "2026-07-13T14:23:46.000000000+08:00 error dztraderd [func=main file=main.cpp:2 pid=1 "
+            "tid=3] order rejected: order_id=67890, reason=price_limit",
+            "2026-07-13T14:23:47.000000000+08:00 error dztraderd [func=main file=main.cpp:3 pid=1 "
+            "tid=4] connection lost: timeout=3000",
+            "2026-07-13T14:23:48.000000000+08:00 info dztraderd [func=main file=main.cpp:4 pid=1 "
+            "tid=5] info msg",
+        });
 
     auto agg = svc_->get_aggregate("dztraderd.log", "error", 20);
     ASSERT_EQ(agg.size(), 2u);  // 2 distinct templates
@@ -189,10 +207,13 @@ TEST_F(LogServiceTest, GetAggregateGroupsByTemplate) {
 
 TEST_F(LogServiceTest, GetTimelineBucketsByMinute) {
     write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.000000000+08:00 info dztraderd [func=m file=f.cpp:1 pid=1 tid=2] a",
-        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd [func=m file=f.cpp:2 pid=1 tid=3] b",
-        "2026-07-13T14:24:10.000000000+08:00 error dztraderd [func=m file=f.cpp:3 pid=1 tid=4] c",
-    });
+                                        "2026-07-13T14:23:45.000000000+08:00 info dztraderd "
+                                        "[func=m file=f.cpp:1 pid=1 tid=2] a",
+                                        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd "
+                                        "[func=m file=f.cpp:2 pid=1 tid=3] b",
+                                        "2026-07-13T14:24:10.000000000+08:00 error dztraderd "
+                                        "[func=m file=f.cpp:3 pid=1 tid=4] c",
+                                    });
 
     auto timeline = svc_->get_timeline("dztraderd.log", "minute");
     ASSERT_EQ(timeline.size(), 2u);  // 2 distinct minutes
@@ -209,10 +230,13 @@ TEST_F(LogServiceTest, GetTimelineBucketsByMinute) {
 
 TEST_F(LogServiceTest, ReadTailFromZeroReadsAll) {
     write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.000000000+08:00 info dztraderd [func=m file=f.cpp:1 pid=1 tid=2] a",
-        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd [func=m file=f.cpp:2 pid=1 tid=3] b",
-        "2026-07-13T14:23:47.000000000+08:00 error dztraderd [func=m file=f.cpp:3 pid=1 tid=4] c",
-    });
+                                        "2026-07-13T14:23:45.000000000+08:00 info dztraderd "
+                                        "[func=m file=f.cpp:1 pid=1 tid=2] a",
+                                        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd "
+                                        "[func=m file=f.cpp:2 pid=1 tid=3] b",
+                                        "2026-07-13T14:23:47.000000000+08:00 error dztraderd "
+                                        "[func=m file=f.cpp:3 pid=1 tid=4] c",
+                                    });
 
     LogService::TailCursor cur;
     auto c = svc_->read_tail("dztraderd.log", cur, 0);  // limit=0(不限)，全新游标从文件头读
@@ -222,15 +246,20 @@ TEST_F(LogServiceTest, ReadTailFromZeroReadsAll) {
 
 TEST_F(LogServiceTest, ReadTailSkipsAlreadyRead) {
     write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.000000000+08:00 info dztraderd [func=m file=f.cpp:1 pid=1 tid=2] a",
-        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd [func=m file=f.cpp:2 pid=1 tid=3] b",
-        "2026-07-13T14:23:47.000000000+08:00 error dztraderd [func=m file=f.cpp:3 pid=1 tid=4] c",
-        "2026-07-13T14:23:48.000000000+08:00 error dztraderd [func=m file=f.cpp:4 pid=1 tid=5] d",
-        "2026-07-13T14:23:49.000000000+08:00 error dztraderd [func=m file=f.cpp:5 pid=1 tid=6] e",
-    });
+                                        "2026-07-13T14:23:45.000000000+08:00 info dztraderd "
+                                        "[func=m file=f.cpp:1 pid=1 tid=2] a",
+                                        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd "
+                                        "[func=m file=f.cpp:2 pid=1 tid=3] b",
+                                        "2026-07-13T14:23:47.000000000+08:00 error dztraderd "
+                                        "[func=m file=f.cpp:3 pid=1 tid=4] c",
+                                        "2026-07-13T14:23:48.000000000+08:00 error dztraderd "
+                                        "[func=m file=f.cpp:4 pid=1 tid=5] d",
+                                        "2026-07-13T14:23:49.000000000+08:00 error dztraderd "
+                                        "[func=m file=f.cpp:5 pid=1 tid=6] e",
+                                    });
 
     LogService::TailCursor cur;
-    (void)svc_->read_tail("dztraderd.log", cur, 2);  // 先消费前 2 行建立游标
+    (void)svc_->read_tail("dztraderd.log", cur, 2);     // 先消费前 2 行建立游标
     auto c = svc_->read_tail("dztraderd.log", cur, 0);  // 从第 3 行继续增量读
     EXPECT_EQ(c.lines.size(), 3u);
     EXPECT_EQ(c.lines[0].n, 3);  // 第 3 行开始
@@ -240,12 +269,17 @@ TEST_F(LogServiceTest, ReadTailSkipsAlreadyRead) {
 
 TEST_F(LogServiceTest, ReadTailCapsAtLimit) {
     write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.000000000+08:00 info dztraderd [func=m file=f.cpp:1 pid=1 tid=2] a",
-        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd [func=m file=f.cpp:2 pid=1 tid=3] b",
-        "2026-07-13T14:23:47.000000000+08:00 error dztraderd [func=m file=f.cpp:3 pid=1 tid=4] c",
-        "2026-07-13T14:23:48.000000000+08:00 error dztraderd [func=m file=f.cpp:4 pid=1 tid=5] d",
-        "2026-07-13T14:23:49.000000000+08:00 error dztraderd [func=m file=f.cpp:5 pid=1 tid=6] e",
-    });
+                                        "2026-07-13T14:23:45.000000000+08:00 info dztraderd "
+                                        "[func=m file=f.cpp:1 pid=1 tid=2] a",
+                                        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd "
+                                        "[func=m file=f.cpp:2 pid=1 tid=3] b",
+                                        "2026-07-13T14:23:47.000000000+08:00 error dztraderd "
+                                        "[func=m file=f.cpp:3 pid=1 tid=4] c",
+                                        "2026-07-13T14:23:48.000000000+08:00 error dztraderd "
+                                        "[func=m file=f.cpp:4 pid=1 tid=5] d",
+                                        "2026-07-13T14:23:49.000000000+08:00 error dztraderd "
+                                        "[func=m file=f.cpp:5 pid=1 tid=6] e",
+                                    });
 
     LogService::TailCursor cur;
     auto c = svc_->read_tail("dztraderd.log", cur, 2);  // limit=2
@@ -255,13 +289,16 @@ TEST_F(LogServiceTest, ReadTailCapsAtLimit) {
 
 TEST_F(LogServiceTest, ReadTailNoNewLinesReturnsSameBaseline) {
     write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.000000000+08:00 info dztraderd [func=m file=f.cpp:1 pid=1 tid=2] a",
-        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd [func=m file=f.cpp:2 pid=1 tid=3] b",
-        "2026-07-13T14:23:47.000000000+08:00 error dztraderd [func=m file=f.cpp:3 pid=1 tid=4] c",
-    });
+                                        "2026-07-13T14:23:45.000000000+08:00 info dztraderd "
+                                        "[func=m file=f.cpp:1 pid=1 tid=2] a",
+                                        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd "
+                                        "[func=m file=f.cpp:2 pid=1 tid=3] b",
+                                        "2026-07-13T14:23:47.000000000+08:00 error dztraderd "
+                                        "[func=m file=f.cpp:3 pid=1 tid=4] c",
+                                    });
 
     LogService::TailCursor cur;
-    (void)svc_->read_tail("dztraderd.log", cur, 0);  // 已读到第 3 行
+    (void)svc_->read_tail("dztraderd.log", cur, 0);     // 已读到第 3 行
     auto c = svc_->read_tail("dztraderd.log", cur, 0);  // 无新增
     EXPECT_EQ(c.lines.size(), 0u);
     EXPECT_EQ(c.total, 3);  // 游标停在 3
@@ -270,19 +307,25 @@ TEST_F(LogServiceTest, ReadTailNoNewLinesReturnsSameBaseline) {
 TEST_F(LogServiceTest, ReadTailDetectsTruncation) {
     // 模拟日志轮转：上次消费时文件较大（游标 byte_offset 落在末尾），
     // 文件被重建为更短内容（字节数 < 已消费偏移）→ 游标重置，从头读
-    write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.000000000+08:00 info dztraderd [func=m file=f.cpp:1 pid=1 tid=2] ppppppppppppppppppppppppppppppppppppppppppppppppp",
-        "2026-07-13T14:23:46.000000000+08:00 info dztraderd [func=m file=f.cpp:2 pid=1 tid=3] ppppppppppppppppppppppppppppppppppppppppppppppppp",
-    });
+    write_log_file("dztraderd.log",
+                   {
+                       "2026-07-13T14:23:45.000000000+08:00 info dztraderd [func=m file=f.cpp:1 "
+                       "pid=1 tid=2] ppppppppppppppppppppppppppppppppppppppppppppppppp",
+                       "2026-07-13T14:23:46.000000000+08:00 info dztraderd [func=m file=f.cpp:2 "
+                       "pid=1 tid=3] ppppppppppppppppppppppppppppppppppppppppppppppppp",
+                   });
     LogService::TailCursor cur;
     (void)svc_->read_tail("dztraderd.log", cur, 0);  // 消费全部，游标落在文件末尾
 
     // 重建为更短文件（大小 < 旧游标 offset）
     write_log_file("dztraderd.log", {
-        "2026-07-13T14:24:00.000000000+08:00 info dztraderd [func=m file=f.cpp:1 pid=1 tid=2] a",
-        "2026-07-13T14:24:01.000000000+08:00 info dztraderd [func=m file=f.cpp:2 pid=1 tid=3] b",
-        "2026-07-13T14:24:02.000000000+08:00 info dztraderd [func=m file=f.cpp:3 pid=1 tid=4] c",
-    });
+                                        "2026-07-13T14:24:00.000000000+08:00 info dztraderd "
+                                        "[func=m file=f.cpp:1 pid=1 tid=2] a",
+                                        "2026-07-13T14:24:01.000000000+08:00 info dztraderd "
+                                        "[func=m file=f.cpp:2 pid=1 tid=3] b",
+                                        "2026-07-13T14:24:02.000000000+08:00 info dztraderd "
+                                        "[func=m file=f.cpp:3 pid=1 tid=4] c",
+                                    });
 
     auto c = svc_->read_tail("dztraderd.log", cur, 0);
     EXPECT_EQ(c.lines.size(), 3u);  // 重置后从头读到全部新行
@@ -309,8 +352,9 @@ TEST_F(LogServiceTest, ReadTailNonexistentFileReturnsEmpty) {
 TEST_F(LogServiceTest, ReadTailIncrementalAppends) {
     // 模拟 500ms 轮询场景：文件持续追加
     write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.000000000+08:00 info dztraderd [func=m file=f.cpp:1 pid=1 tid=2] a",
-    });
+                                        "2026-07-13T14:23:45.000000000+08:00 info dztraderd "
+                                        "[func=m file=f.cpp:1 pid=1 tid=2] a",
+                                    });
 
     LogService::TailCursor cur;
     auto c1 = svc_->read_tail("dztraderd.log", cur, 0);
@@ -320,8 +364,10 @@ TEST_F(LogServiceTest, ReadTailIncrementalAppends) {
     // 追加 2 行
     {
         std::ofstream ofs(tmp_dir_ / "dztraderd.log", std::ios::app);
-        ofs << "2026-07-13T14:23:46.000000000+08:00 warning dztraderd [func=m file=f.cpp:2 pid=1 tid=3] b\n";
-        ofs << "2026-07-13T14:23:47.000000000+08:00 error dztraderd [func=m file=f.cpp:3 pid=1 tid=4] c\n";
+        ofs << "2026-07-13T14:23:46.000000000+08:00 warning dztraderd [func=m file=f.cpp:2 pid=1 "
+               "tid=3] b\n";
+        ofs << "2026-07-13T14:23:47.000000000+08:00 error dztraderd [func=m file=f.cpp:3 pid=1 "
+               "tid=4] c\n";
     }
 
     auto c2 = svc_->read_tail("dztraderd.log", cur, 0);  // 同一游标继续增量读
@@ -337,10 +383,14 @@ TEST_F(LogServiceTest, ReadTailIncrementalAppends) {
 
 TEST_F(LogServiceTest, ParseLineWithSpaceInFuncName) {
     // C++ lambda 或 operator() 会产生带空格的 func 名称
-    write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.000000000+08:00 info dztraderd [func=ns::Class::async_wait::<lambda_1>::operator () file=child_process.h:105 pid=30428 tid=66028] child exited",
-        "2026-07-13T14:23:46.000000000+08:00 info dztraderd.fwd [func=forwarded file=external:1 pid=30428 tid=66028] forwarded child stdout",
-    });
+    write_log_file("dztraderd.log",
+                   {
+                       "2026-07-13T14:23:45.000000000+08:00 info dztraderd "
+                       "[func=ns::Class::async_wait::<lambda_1>::operator () "
+                       "file=child_process.h:105 pid=30428 tid=66028] child exited",
+                       "2026-07-13T14:23:46.000000000+08:00 info dztraderd.fwd [func=forwarded "
+                       "file=external:1 pid=30428 tid=66028] forwarded child stdout",
+                   });
 
     auto content = svc_->read_content("dztraderd.log", 0, 500, "", "", "", "");
     ASSERT_EQ(content.lines.size(), 2u);
@@ -377,9 +427,11 @@ TEST_F(LogServiceTest, ListFilesRecursiveIncludesSubdirectory) {
 
 TEST_F(LogServiceTest, ReadContentFromSubdirectoryPath) {
     fs::create_directories(tmp_dir_ / "dzweb");
-    write_log_file("dzweb/dzweb_2026-07-16.log", {
-        "2026-07-13T14:23:45.000000000+08:00 info dzweb [func=main file=main.cpp:42 pid=1 tid=2] webui started",
-    });
+    write_log_file("dzweb/dzweb_2026-07-16.log",
+                   {
+                       "2026-07-13T14:23:45.000000000+08:00 info dzweb [func=main file=main.cpp:42 "
+                       "pid=1 tid=2] webui started",
+                   });
 
     auto content = svc_->read_content("dzweb/dzweb_2026-07-16.log", 0, 500, "", "", "", "");
     ASSERT_EQ(content.lines.size(), 1u);
@@ -397,9 +449,11 @@ TEST_F(LogServiceTest, PathTraversalRejected) {
 
 TEST_F(LogServiceTest, ReadTailFromSubdirectoryPath) {
     fs::create_directories(tmp_dir_ / "dzweb");
-    write_log_file("dzweb/dzweb.log", {
-        "2026-07-13T14:23:45.000000000+08:00 info dzweb [func=m file=f.cpp:1 pid=1 tid=2] a",
-    });
+    write_log_file(
+        "dzweb/dzweb.log",
+        {
+            "2026-07-13T14:23:45.000000000+08:00 info dzweb [func=m file=f.cpp:1 pid=1 tid=2] a",
+        });
 
     LogService::TailCursor cur;
     auto c = svc_->read_tail("dzweb/dzweb.log", cur, 0);
@@ -418,9 +472,8 @@ TEST_F(LogServiceTest, ReadContentFromEndReturnsLastLines) {
         // 缓冲区需 37 字节（36 字符 + null），用 64 防止截断
         char ts[64];
         std::snprintf(ts, sizeof(ts), "2026-07-13T14:23:%02d.000000000+08:00", i);
-        lines.push_back(std::string(ts) +
-            " info dztraderd [func=m file=f.cpp:" + std::to_string(i) +
-            " pid=1 tid=2] line " + std::to_string(i));
+        lines.push_back(std::string(ts) + " info dztraderd [func=m file=f.cpp:" +
+                        std::to_string(i) + " pid=1 tid=2] line " + std::to_string(i));
     }
     write_log_file("dztraderd.log", lines);
 
@@ -434,12 +487,17 @@ TEST_F(LogServiceTest, ReadContentFromEndReturnsLastLines) {
 
 TEST_F(LogServiceTest, ReadContentFromEndWithFilter) {
     write_log_file("dztraderd.log", {
-        "2026-07-13T14:23:45.000000000+08:00 info dztraderd [func=m file=f.cpp:1 pid=1 tid=2] info 1",
-        "2026-07-13T14:23:46.000000000+08:00 error dztraderd [func=m file=f.cpp:2 pid=1 tid=3] error 1",
-        "2026-07-13T14:23:47.000000000+08:00 info dztraderd [func=m file=f.cpp:3 pid=1 tid=4] info 2",
-        "2026-07-13T14:23:48.000000000+08:00 error dztraderd [func=m file=f.cpp:4 pid=1 tid=5] error 2",
-        "2026-07-13T14:23:49.000000000+08:00 info dztraderd [func=m file=f.cpp:5 pid=1 tid=6] info 3",
-    });
+                                        "2026-07-13T14:23:45.000000000+08:00 info dztraderd "
+                                        "[func=m file=f.cpp:1 pid=1 tid=2] info 1",
+                                        "2026-07-13T14:23:46.000000000+08:00 error dztraderd "
+                                        "[func=m file=f.cpp:2 pid=1 tid=3] error 1",
+                                        "2026-07-13T14:23:47.000000000+08:00 info dztraderd "
+                                        "[func=m file=f.cpp:3 pid=1 tid=4] info 2",
+                                        "2026-07-13T14:23:48.000000000+08:00 error dztraderd "
+                                        "[func=m file=f.cpp:4 pid=1 tid=5] error 2",
+                                        "2026-07-13T14:23:49.000000000+08:00 info dztraderd "
+                                        "[func=m file=f.cpp:5 pid=1 tid=6] info 3",
+                                    });
 
     auto content = svc_->read_content("dztraderd.log", 0, 1, "error", "", "", "", true);
     ASSERT_EQ(content.lines.size(), 1u);
@@ -481,7 +539,8 @@ TEST(LogServiceTailCursor, IncrementalReadAdvancesCursor) {
 
     {
         std::ofstream ofs(tmp / "a.log");
-        ofs << "2026-07-13T14:23:45.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] line1\n";
+        ofs << "2026-07-13T14:23:45.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] "
+               "line1\n";
     }
 
     // 全新游标从文件头读：1 行，游标推进
@@ -497,7 +556,8 @@ TEST(LogServiceTailCursor, IncrementalReadAdvancesCursor) {
     // 追加 1 行后再读：只返回新增行，行号连续
     {
         std::ofstream ofs(tmp / "a.log", std::ios::app);
-        ofs << "2026-07-13T14:23:46.000000000+08:00 warning t [func=m file=f.cpp:2 pid=1 tid=3] line2\n";
+        ofs << "2026-07-13T14:23:46.000000000+08:00 warning t [func=m file=f.cpp:2 pid=1 tid=3] "
+               "line2\n";
     }
     auto c2 = svc.read_tail("a.log", cur, 200);
     EXPECT_EQ(c2.lines.size(), 1u);
@@ -521,7 +581,8 @@ TEST(LogServiceTailCursor, PartialLineWithoutNewlineNotConsumed) {
 
     {
         std::ofstream ofs(tmp / "a.log");
-        ofs << "2026-07-13T14:23:45.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] line1\n";
+        ofs << "2026-07-13T14:23:45.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] "
+               "line1\n";
     }
     LogService::TailCursor cur;
     (void)svc.read_tail("a.log", cur, 200);  // 消费 line1
@@ -533,8 +594,8 @@ TEST(LogServiceTailCursor, PartialLineWithoutNewlineNotConsumed) {
         ofs << "2026-07-13T14:23:46.000";  // 无 '\n'
     }
     auto c = svc.read_tail("a.log", cur, 200);
-    EXPECT_EQ(c.lines.size(), 0u);                       // 半行不推送
-    EXPECT_EQ(cur.byte_offset, offset_after_line1);      // 偏移不推进
+    EXPECT_EQ(c.lines.size(), 0u);                   // 半行不推送
+    EXPECT_EQ(cur.byte_offset, offset_after_line1);  // 偏移不推进
     EXPECT_EQ(cur.line_no, 1);
 
     // 补齐换行后可读到完整行
@@ -558,8 +619,10 @@ TEST(LogServiceTailCursor, TruncatedFileResetsCursor) {
 
     {
         std::ofstream ofs(tmp / "a.log");
-        ofs << "2026-07-13T14:23:45.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] line1\n";
-        ofs << "2026-07-13T14:23:46.000000000+08:00 info t [func=m file=f.cpp:2 pid=1 tid=3] line2\n";
+        ofs << "2026-07-13T14:23:45.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] "
+               "line1\n";
+        ofs << "2026-07-13T14:23:46.000000000+08:00 info t [func=m file=f.cpp:2 pid=1 tid=3] "
+               "line2\n";
     }
     LogService::TailCursor cur;
     (void)svc.read_tail("a.log", cur, 200);
@@ -568,11 +631,12 @@ TEST(LogServiceTailCursor, TruncatedFileResetsCursor) {
     // 轮换/重写为更短文件（size < 已消费偏移）→ 游标重置，从头读
     {
         std::ofstream ofs(tmp / "a.log", std::ios::trunc);
-        ofs << "2026-07-13T15:00:00.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] new1\n";
+        ofs << "2026-07-13T15:00:00.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] "
+               "new1\n";
     }
     auto c = svc.read_tail("a.log", cur, 200);
     EXPECT_EQ(c.lines.size(), 1u);
-    EXPECT_EQ(c.lines[0].n, 1);   // 新文件行号重新累计
+    EXPECT_EQ(c.lines[0].n, 1);  // 新文件行号重新累计
     EXPECT_EQ(c.lines[0].parsed, true);
     EXPECT_EQ(c.total, 1);
 
@@ -587,8 +651,10 @@ TEST(LogServiceTailCursor, BaselineSkipsExistingContent) {
 
     {
         std::ofstream ofs(tmp / "a.log");
-        ofs << "2026-07-13T14:23:45.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] line1\n";
-        ofs << "2026-07-13T14:23:46.000000000+08:00 info t [func=m file=f.cpp:2 pid=1 tid=3] line2\n";
+        ofs << "2026-07-13T14:23:45.000000000+08:00 info t [func=m file=f.cpp:1 pid=1 tid=2] "
+               "line1\n";
+        ofs << "2026-07-13T14:23:46.000000000+08:00 info t [func=m file=f.cpp:2 pid=1 tid=3] "
+               "line2\n";
     }
 
     // 基线 = 订阅时刻文件末尾：既有内容不推，只追新增
@@ -599,7 +665,8 @@ TEST(LogServiceTailCursor, BaselineSkipsExistingContent) {
 
     {
         std::ofstream ofs(tmp / "a.log", std::ios::app);
-        ofs << "2026-07-13T14:23:47.000000000+08:00 info t [func=m file=f.cpp:3 pid=1 tid=4] line3\n";
+        ofs << "2026-07-13T14:23:47.000000000+08:00 info t [func=m file=f.cpp:3 pid=1 tid=4] "
+               "line3\n";
     }
     auto c2 = svc.read_tail("a.log", cur, 200);
     EXPECT_EQ(c2.lines.size(), 1u);

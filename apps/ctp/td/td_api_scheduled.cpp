@@ -25,8 +25,8 @@ void TdApi::schedule_event_shm_preload(const DzShmPreload& params) {
     auto delay_ms = core::random_jitter(0, 5000);
     SPDLOG_DEBUG("event shm preload scheduled | delay={}ms pages={} bytes={}", delay_ms.count(),
                  params.pages, params.bytes);
-    timer_queue_.schedule_after_replace(
-        "event_shm_maint", delay_ms, [this, params]() { on_event_shm_timer(params); });
+    timer_queue_.schedule_after_replace("event_shm_maint", delay_ms,
+                                        [this, params]() { on_event_shm_timer(params); });
 }
 
 void TdApi::on_event_shm_timer(const DzShmPreload& params) {
@@ -49,8 +49,7 @@ void TdApi::on_event_shm_timer(const DzShmPreload& params) {
         }
         event_writer_.close_old_pages();
 
-        SPDLOG_DEBUG("event shm preload done | pages={} bytes={}", params.pages,
-                     params.bytes);
+        SPDLOG_DEBUG("event shm preload done | pages={} bytes={}", params.pages, params.bytes);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("event shm timer failed | error=\"{}\"", e.what());
     }

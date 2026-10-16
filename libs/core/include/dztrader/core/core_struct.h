@@ -67,5 +67,4 @@ struct SubscribeReq {
 
 }  // namespace dztrader
 
-
 #endif  // DZTRADER_CORE_CORE_STRUCT_H

@@ -44,8 +44,7 @@ std::deque<std::vector<std::string>> make_batches(std::vector<std::string> instr
 /// 在 brokers 中查找 name 对应的 broker (纯函数, 供单元测试)。
 /// name 为空或未找到时返回 nullptr。
 const dztrader::platform::CtpBrokerEntry* find_current_broker_in(
-    const std::vector<dztrader::platform::CtpBrokerEntry>& brokers,
-    const std::string& name);
+    const std::vector<dztrader::platform::CtpBrokerEntry>& brokers, const std::string& name);
 
 // on_batch_complete 决策 (BatchCheckAction / decide_batch_check_action) 同为纯函数,
 // 声明在独立头文件 md/md_batch_check.h (枚举值无法 forward declare, 测试需 include)。
@@ -177,7 +176,8 @@ private:
     void report_full_snapshot();
 
     /// 上报当前配置到 UI (RTN_MD_CONFIG)。
-    /// 契约 md-config: payload 始终为纯脱敏 CtpMdConfigData JSON, 不带 error 字段; 失败原因由 NOTIFY_UI 传达。
+    /// 契约 md-config: payload 始终为纯脱敏 CtpMdConfigData JSON, 不带 error 字段; 失败原因由
+    /// NOTIFY_UI 传达。
     void report_config();
 
     /// 上报当前日志配置: 推 DZ_FRAME_RTN_LOG_CONFIG
@@ -239,8 +239,8 @@ private:
     void on_rsp_unsub_market_data(const OnRspUnSubMarketDataField& rsp);
 
     // --- 订阅批次管理 ---
-    /// 将合约列表分批追加到 pending_batches_ 队列 (batch_size 由 ctp_md_config_.config().subscribe_batch_size
-    /// 提供)。
+    /// 将合约列表分批追加到 pending_batches_ 队列 (batch_size 由
+    /// ctp_md_config_.config().subscribe_batch_size 提供)。
     void enqueue_batches(std::vector<std::string> instruments);
 
     /// 发送下一批 CTP 订阅。队列空时转 on_batch_complete; 否则发批次后用 TimerQueue 延迟发下一批。
@@ -266,15 +266,22 @@ private:
     std::string name_;
     std::filesystem::path config_path_;  ///< dzmd_ctp.json 路径, 用于持久化各 section
     // ctp_md_config_ 依赖 event_writer_/name_/config_path_, 必须在其后声明 (C++ 按声明顺序初始化)
-    dztrader::platform::CtpMdConfig ctp_md_config_;  ///< md section 配置 (brokers/current_broker/subscribe_params, SET/RTN_MD_CONFIG, 持久化到 md section)
+    dztrader::platform::CtpMdConfig
+        ctp_md_config_;  ///< md section 配置 (brokers/current_broker/subscribe_params,
+                         ///< SET/RTN_MD_CONFIG, 持久化到 md section)
     // notify_ui_ 依赖 event_writer_/name_, 必须在其后声明 (C++ 按声明顺序初始化)
     dztrader::platform::NotifyUi notify_ui_;  ///< UI 通知发送器 (绑定 source+writer)
     // log_config_ 依赖 event_writer_/name_/config_path_, 必须在其后声明 (C++ 按声明顺序初始化)
     dztrader::platform::LogConfig log_config_;  ///< log section 配置 (level/flush_on)
     // md_shm_config_ 依赖 event_writer_/name_/config_path_, 必须在其后声明 (C++ 按声明顺序初始化)
-    dztrader::platform::MdShmConfig md_shm_config_;  ///< 行情通道 SHM 配置 (SET_MD_SHM_CONFIG 时更新可变字段, page_size_mb 不可变; RTN 带 instance_id=name_)
-    // auto_login_config_ 依赖 event_writer_/name_/config_path_, 必须在其后声明 (C++ 按声明顺序初始化)
-    dztrader::platform::AutoLoginConfig auto_login_config_;  ///< 自动登录/登出排程 (SET/RTN_AUTO_LOGIN, 持久化到 auto_login section)
+    dztrader::platform::MdShmConfig
+        md_shm_config_;  ///< 行情通道 SHM 配置 (SET_MD_SHM_CONFIG 时更新可变字段, page_size_mb
+                         ///< 不可变; RTN 带 instance_id=name_)
+    // auto_login_config_ 依赖 event_writer_/name_/config_path_, 必须在其后声明 (C++
+    // 按声明顺序初始化)
+    dztrader::platform::AutoLoginConfig
+        auto_login_config_;  ///< 自动登录/登出排程 (SET/RTN_AUTO_LOGIN, 持久化到 auto_login
+                             ///< section)
     // progress_reporter_ 依赖 event_writer_/name_, 必须在其后声明 (C++ 按声明顺序初始化)
     dztrader::platform::ProgressReporter progress_reporter_;  ///< 进度推送 (RTN_PROGRESS, 无持久化)
     MdStateMachine state_machine_;

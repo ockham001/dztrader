@@ -58,8 +58,8 @@ int main(int argc, char* argv[]) {
     std::error_code mk_ec;
     std::filesystem::create_directories(flow_dir, mk_ec);
     if (mk_ec) {
-        spdlog::error("create flow dir failed | path={} error=\"{}\"",
-                      flow_dir.string(), dztrader::to_utf8_from_system(mk_ec.message()));
+        spdlog::error("create flow dir failed | path={} error=\"{}\"", flow_dir.string(),
+                      dztrader::to_utf8_from_system(mk_ec.message()));
         return 1;
     }
 
@@ -86,10 +86,9 @@ int main(int argc, char* argv[]) {
         SPDLOG_WARN("log config missing, using defaults | path={}", cfg_path.string());
     }
     // 统一用 LogConfig::parse_level 校验 (与 master main.cpp 一致), 非法回落 info
-    auto lvl = dztrader::platform::LogConfig::parse_level(log_level)
-                   .value_or(spdlog::level::info);
-    auto flush_lvl = dztrader::platform::LogConfig::parse_level(log_flush_on)
-                         .value_or(spdlog::level::info);
+    auto lvl = dztrader::platform::LogConfig::parse_level(log_level).value_or(spdlog::level::info);
+    auto flush_lvl =
+        dztrader::platform::LogConfig::parse_level(log_flush_on).value_or(spdlog::level::info);
 
     dztrader::log::LoggerSetup setup{
         .logger_name = name,
@@ -143,11 +142,12 @@ int main(int argc, char* argv[]) {
     // 5. 构造 event_queue (多账户 SPI 线程 -> 主线程, MPMC 共用 event_sem)
     auto event_queue = std::make_shared<MpmcQueue>(event_sem.get(), 4096);
 
-    // 6. 构造 TdApi (内部创建 event reader/writer + OrderIdMeta + PersistWriter, 构造时加载 log_config_)
+    // 6. 构造 TdApi (内部创建 event reader/writer + OrderIdMeta + PersistWriter, 构造时加载
+    // log_config_)
     std::unique_ptr<TdApi> api;
     try {
-        api = std::make_unique<TdApi>(name, paths::shm(), event_meta,
-                                      event_queue, flow_dir, reader_name, cfg_path);
+        api = std::make_unique<TdApi>(name, paths::shm(), event_meta, event_queue, flow_dir,
+                                      reader_name, cfg_path);
     } catch (const std::exception& e) {
         SPDLOG_CRITICAL("td api init failed | error=\"{}\"", e.what());
         return 1;

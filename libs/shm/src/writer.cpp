@@ -80,8 +80,7 @@ std::byte* Writer<WriteLock>::open_frame(DzFrameType frame_type, uint32_t data_s
 
     // 单帧不得超过单页大小: 跨页写入会导致 page_.data() 之外内存越界
     if (pending_size_ > page_size_) {
-        LastError::set(DZ_EC_SHM_OPEN_FAILED,
-                       "write: frame size {} exceeds page size {}",
+        LastError::set(DZ_EC_SHM_OPEN_FAILED, "write: frame size {} exceeds page size {}",
                        pending_size_, page_size_);
         pending_size_ = 0;
         write_lock_.unlock();

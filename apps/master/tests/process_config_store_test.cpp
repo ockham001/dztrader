@@ -19,9 +19,10 @@ namespace dztrader::master {
 namespace {
 
 nlohmann::json make_full_cfg(const std::string& display_name = "") {
-    nlohmann::json cfg = {{"args", nlohmann::json::array()},
-                          {"env", nlohmann::json::object()},
-                          {"restart", {{"enabled", true}, {"max_attempts", 5}, {"backoff_sec", 5}}}};
+    nlohmann::json cfg = {
+        {"args", nlohmann::json::array()},
+        {"env", nlohmann::json::object()},
+        {"restart", {{"enabled", true}, {"max_attempts", 5}, {"backoff_sec", 5}}}};
     if (!display_name.empty()) {
         cfg["display_name"] = display_name;
     }
@@ -47,8 +48,7 @@ protected:
     std::vector<Call> apply_calls_;
 
     void SetUp() override {
-        channel_name_ =
-            "dz_test_proc_cfg_" + std::to_string(reinterpret_cast<uintptr_t>(this));
+        channel_name_ = "dz_test_proc_cfg_" + std::to_string(reinterpret_cast<uintptr_t>(this));
         shm_dir_ = std::filesystem::temp_directory_path() / channel_name_;
         std::filesystem::remove_all(shm_dir_);
         std::filesystem::create_directories(shm_dir_);
@@ -210,8 +210,7 @@ TEST_F(ProcessConfigStoreTest, RemoveUnknownTargetThrows) {
 }
 
 TEST_F(ProcessConfigStoreTest, RtnProcessConfigWritesFullMap) {
-    store_->load({{"dzmd_ctp", make_full_cfg("CTP行情")},
-                  {"dztd_ctp", make_full_cfg("CTP交易")}});
+    store_->load({{"dzmd_ctp", make_full_cfg("CTP行情")}, {"dztd_ctp", make_full_cfg("CTP交易")}});
     store_->rtn_process_config();
     auto payload = last_rtn_payload();
     ASSERT_TRUE(payload.has_value());

@@ -10,7 +10,8 @@
 namespace dztrader::ctp {
 
 TdSpi::TdSpi(std::string account_id, const MpmcQueuePtr& event_queue)
-    : account_id_(std::move(account_id)), event_queue_(event_queue) {
+    : account_id_(std::move(account_id)),
+      event_queue_(event_queue) {
     if (!event_queue_) {
         throw std::runtime_error("TdSpi: event_queue is null");
     }
@@ -26,9 +27,10 @@ void TdSpi::OnFrontConnected() {
     SPDLOG_INFO("td front connected | account={}", account_id_);
     try {
         // 用 td 版本 Field (含 account_id), 不可与 md 的 OnFrontConnectedField 混用
-        event_queue_->push(EventType::OnFrontConnected,
-                           new OnTdFrontConnectedField{.account_id = account_id_,
-                                                       .rsp_time = std::chrono::system_clock::now()});
+        event_queue_->push(
+            EventType::OnFrontConnected,
+            new OnTdFrontConnectedField{.account_id = account_id_,
+                                        .rsp_time = std::chrono::system_clock::now()});
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td connected push failed | account={} error=\"{}\"", account_id_, e.what());
     }
@@ -38,11 +40,12 @@ void TdSpi::OnFrontDisconnected(int nReason) {
     SPDLOG_WARN("td front disconnected | account={} reason={}", account_id_, nReason);
     try {
         // 用 td 版本 Field (含 account_id), 不可与 md 的 OnFrontDisconnectedField 混用
-        event_queue_->push(EventType::OnFrontDisconnected,
-                           new OnTdFrontDisconnectedField{.account_id = account_id_,
-                                                           .reason = nReason});
+        event_queue_->push(
+            EventType::OnFrontDisconnected,
+            new OnTdFrontDisconnectedField{.account_id = account_id_, .reason = nReason});
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td disconnected push failed | account={} error=\"{}\"", account_id_, e.what());
+        SPDLOG_ERROR("td disconnected push failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
@@ -57,26 +60,25 @@ void TdSpi::OnHeartBeatWarning(int nTimeLapse) {
 
 void TdSpi::OnRspAuthenticate(CThostFtdcRspAuthenticateField* pRspAuthenticateField,
                               CThostFtdcRspInfoField* pRspInfo,
-                              int nRequestID, bool bIsLast) {
+                              int nRequestID,
+                              bool bIsLast) {
     try {
         if (pRspInfo && pRspInfo->ErrorID != 0) {
-            SPDLOG_ERROR("td auth failed | account={} error_id={} error_msg=\"{}\"",
-                         account_id_, pRspInfo->ErrorID,
-                         dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg));
+            SPDLOG_ERROR("td auth failed | account={} error_id={} error_msg=\"{}\"", account_id_,
+                         pRspInfo->ErrorID, dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg));
         } else {
             SPDLOG_INFO("td auth ok | account={} request_id={}", account_id_, nRequestID);
         }
-        event_queue_->push(
-            EventType::OnRspAuthenticate,
-            new OnRspAuthenticateField{
-                .rsp_authenticate = pRspAuthenticateField
-                                        ? std::make_optional(*pRspAuthenticateField)
-                                        : std::nullopt,
-                .rsp_info = pRspInfo ? std::make_optional(*pRspInfo) : std::nullopt,
-                .request_id = nRequestID,
-                .is_last = bIsLast,
-                .rsp_time = std::chrono::system_clock::now(),
-                .account_id = account_id_});
+        event_queue_->push(EventType::OnRspAuthenticate,
+                           new OnRspAuthenticateField{
+                               .rsp_authenticate = pRspAuthenticateField
+                                                       ? std::make_optional(*pRspAuthenticateField)
+                                                       : std::nullopt,
+                               .rsp_info = pRspInfo ? std::make_optional(*pRspInfo) : std::nullopt,
+                               .request_id = nRequestID,
+                               .is_last = bIsLast,
+                               .rsp_time = std::chrono::system_clock::now(),
+                               .account_id = account_id_});
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td auth push failed | account={} error=\"{}\"", account_id_, e.what());
     }
@@ -84,7 +86,8 @@ void TdSpi::OnRspAuthenticate(CThostFtdcRspAuthenticateField* pRspAuthenticateFi
 
 void TdSpi::OnRspUserLogin(CThostFtdcRspUserLoginField* pRspUserLogin,
                            CThostFtdcRspInfoField* pRspInfo,
-                           int nRequestID, bool bIsLast) {
+                           int nRequestID,
+                           bool bIsLast) {
     try {
         auto now = std::chrono::system_clock::now();
         int32_t days = std::numeric_limits<int32_t>::min();
@@ -102,9 +105,8 @@ void TdSpi::OnRspUserLogin(CThostFtdcRspUserLoginField* pRspUserLogin,
                             account_id_, pRspUserLogin->TradingDay, pRspUserLogin->MaxOrderRef);
             }
         } else if (pRspInfo) {
-            SPDLOG_ERROR("td login failed | account={} error_id={} error_msg=\"{}\"",
-                         account_id_, pRspInfo->ErrorID,
-                         dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg));
+            SPDLOG_ERROR("td login failed | account={} error_id={} error_msg=\"{}\"", account_id_,
+                         pRspInfo->ErrorID, dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg));
         }
         event_queue_->push(
             EventType::OnRspTdUserLogin,
@@ -124,13 +126,13 @@ void TdSpi::OnRspUserLogin(CThostFtdcRspUserLoginField* pRspUserLogin,
 
 void TdSpi::OnRspUserLogout(CThostFtdcUserLogoutField* pUserLogout,
                             CThostFtdcRspInfoField* pRspInfo,
-                            int nRequestID, bool bIsLast) {
+                            int nRequestID,
+                            bool bIsLast) {
     (void)pUserLogout;
     (void)bIsLast;
     // 登出仅日志, 不入队 (AccountSession 无需处理, 状态由 disconnect 驱动)
     if (pRspInfo && pRspInfo->ErrorID != 0) {
-        SPDLOG_ERROR("td logout failed | account={} error_id={}",
-                     account_id_, pRspInfo->ErrorID);
+        SPDLOG_ERROR("td logout failed | account={} error_id={}", account_id_, pRspInfo->ErrorID);
     } else {
         SPDLOG_INFO("td logout ok | account={} request_id={}", account_id_, nRequestID);
     }
@@ -156,12 +158,13 @@ void TdSpi::OnRspError(CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bI
 // ============================================================================
 
 void TdSpi::OnRspSettlementInfoConfirm(CThostFtdcSettlementInfoConfirmField* pSettlementInfoConfirm,
-                                        CThostFtdcRspInfoField* pRspInfo,
-                                        int nRequestID, bool bIsLast) {
+                                       CThostFtdcRspInfoField* pRspInfo,
+                                       int nRequestID,
+                                       bool bIsLast) {
     try {
         if (pRspInfo && pRspInfo->ErrorID != 0) {
-            SPDLOG_ERROR("td settlement confirm failed | account={} error_id={}",
-                         account_id_, pRspInfo->ErrorID);
+            SPDLOG_ERROR("td settlement confirm failed | account={} error_id={}", account_id_,
+                         pRspInfo->ErrorID);
         } else {
             SPDLOG_INFO("td settlement confirmed | account={}", account_id_);
         }
@@ -181,35 +184,36 @@ void TdSpi::OnRspSettlementInfoConfirm(CThostFtdcSettlementInfoConfirmField* pSe
 }
 
 void TdSpi::OnRspUserPasswordUpdate(CThostFtdcUserPasswordUpdateField* pUserPasswordUpdate,
-                                     CThostFtdcRspInfoField* pRspInfo,
-                                     int nRequestID, bool bIsLast) {
+                                    CThostFtdcRspInfoField* pRspInfo,
+                                    int nRequestID,
+                                    bool bIsLast) {
     try {
         if (pRspInfo && pRspInfo->ErrorID != 0) {
-            SPDLOG_ERROR("td user password update failed | account={} error_id={}",
-                         account_id_, pRspInfo->ErrorID);
+            SPDLOG_ERROR("td user password update failed | account={} error_id={}", account_id_,
+                         pRspInfo->ErrorID);
         } else {
             SPDLOG_INFO("td user password updated | account={}", account_id_);
         }
         event_queue_->push(
             EventType::OnRspUserPasswordUpdate,
             new OnRspUserPasswordUpdateField{
-                .password_update = pUserPasswordUpdate
-                                       ? std::make_optional(*pUserPasswordUpdate)
-                                       : std::nullopt,
+                .password_update =
+                    pUserPasswordUpdate ? std::make_optional(*pUserPasswordUpdate) : std::nullopt,
                 .rsp_info = pRspInfo ? std::make_optional(*pRspInfo) : std::nullopt,
                 .request_id = nRequestID,
                 .is_last = bIsLast,
                 .account_id = account_id_});
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td user password push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td user password push failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
 void TdSpi::OnRspTradingAccountPasswordUpdate(
     CThostFtdcTradingAccountPasswordUpdateField* pTradingAccountPasswordUpdate,
     CThostFtdcRspInfoField* pRspInfo,
-    int nRequestID, bool bIsLast) {
+    int nRequestID,
+    bool bIsLast) {
     try {
         if (pRspInfo && pRspInfo->ErrorID != 0) {
             SPDLOG_ERROR("td trading account password update failed | account={} error_id={}",
@@ -237,66 +241,66 @@ void TdSpi::OnRspTradingAccountPasswordUpdate(
 // 查询响应
 // ============================================================================
 
-void TdSpi::OnRspQryOrder(CThostFtdcOrderField* pOrder, CThostFtdcRspInfoField* pRspInfo,
-                          int nRequestID, bool bIsLast) {
+void TdSpi::OnRspQryOrder(CThostFtdcOrderField* pOrder,
+                          CThostFtdcRspInfoField* pRspInfo,
+                          int nRequestID,
+                          bool bIsLast) {
     try {
-        event_queue_->push(
-            EventType::OnRspQryOrder,
-            new OnRspQryOrderField{
-                .order = pOrder ? std::make_optional(*pOrder) : std::nullopt,
-                .rsp_info = pRspInfo ? std::make_optional(*pRspInfo) : std::nullopt,
-                .request_id = nRequestID,
-                .is_last = bIsLast,
-                .account_id = account_id_});
+        event_queue_->push(EventType::OnRspQryOrder,
+                           new OnRspQryOrderField{
+                               .order = pOrder ? std::make_optional(*pOrder) : std::nullopt,
+                               .rsp_info = pRspInfo ? std::make_optional(*pRspInfo) : std::nullopt,
+                               .request_id = nRequestID,
+                               .is_last = bIsLast,
+                               .account_id = account_id_});
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td qry order push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td qry order push failed | account={} error=\"{}\"", account_id_, e.what());
     }
 }
 
 void TdSpi::OnRspQryInvestorPosition(CThostFtdcInvestorPositionField* pInvestorPosition,
-                                      CThostFtdcRspInfoField* pRspInfo,
-                                      int nRequestID, bool bIsLast) {
+                                     CThostFtdcRspInfoField* pRspInfo,
+                                     int nRequestID,
+                                     bool bIsLast) {
     try {
         event_queue_->push(
             EventType::OnRspQryInvestorPosition,
             new OnRspQryInvestorPositionField{
-                .investor_position = pInvestorPosition
-                                         ? std::make_optional(*pInvestorPosition)
-                                         : std::nullopt,
+                .investor_position =
+                    pInvestorPosition ? std::make_optional(*pInvestorPosition) : std::nullopt,
                 .rsp_info = pRspInfo ? std::make_optional(*pRspInfo) : std::nullopt,
                 .request_id = nRequestID,
                 .is_last = bIsLast,
                 .account_id = account_id_});
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td qry position push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td qry position push failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
 void TdSpi::OnRspQryTradingAccount(CThostFtdcTradingAccountField* pTradingAccount,
-                                    CThostFtdcRspInfoField* pRspInfo,
-                                    int nRequestID, bool bIsLast) {
+                                   CThostFtdcRspInfoField* pRspInfo,
+                                   int nRequestID,
+                                   bool bIsLast) {
     try {
         event_queue_->push(
             EventType::OnRspQryTradingAccount,
             new OnRspQryTradingAccountField{
-                .trading_account = pTradingAccount
-                                       ? std::make_optional(*pTradingAccount)
-                                       : std::nullopt,
+                .trading_account =
+                    pTradingAccount ? std::make_optional(*pTradingAccount) : std::nullopt,
                 .rsp_info = pRspInfo ? std::make_optional(*pRspInfo) : std::nullopt,
                 .request_id = nRequestID,
                 .is_last = bIsLast,
                 .account_id = account_id_});
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td qry account push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td qry account push failed | account={} error=\"{}\"", account_id_, e.what());
     }
 }
 
 void TdSpi::OnRspQryInstrument(CThostFtdcInstrumentField* pInstrument,
-                                CThostFtdcRspInfoField* pRspInfo,
-                                int nRequestID, bool bIsLast) {
+                               CThostFtdcRspInfoField* pRspInfo,
+                               int nRequestID,
+                               bool bIsLast) {
     try {
         event_queue_->push(
             EventType::OnRspQryInstrument,
@@ -307,8 +311,8 @@ void TdSpi::OnRspQryInstrument(CThostFtdcInstrumentField* pInstrument,
                 .is_last = bIsLast,
                 .account_id = account_id_});
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td qry instrument push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td qry instrument push failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
@@ -317,8 +321,9 @@ void TdSpi::OnRspQryInstrument(CThostFtdcInstrumentField* pInstrument,
 // ============================================================================
 
 void TdSpi::OnRspOrderInsert(CThostFtdcInputOrderField* pInputOrder,
-                              CThostFtdcRspInfoField* pRspInfo,
-                              int nRequestID, bool bIsLast) {
+                             CThostFtdcRspInfoField* pRspInfo,
+                             int nRequestID,
+                             bool bIsLast) {
     try {
         if (pRspInfo && pRspInfo->ErrorID != 0) {
             SPDLOG_ERROR("td order insert rsp error | account={} error_id={} error_msg=\"{}\"",
@@ -334,14 +339,15 @@ void TdSpi::OnRspOrderInsert(CThostFtdcInputOrderField* pInputOrder,
                 .is_last = bIsLast,
                 .account_id = account_id_});
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td order insert rsp push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td order insert rsp push failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
 void TdSpi::OnRspOrderAction(CThostFtdcInputOrderActionField* pInputOrderAction,
-                              CThostFtdcRspInfoField* pRspInfo,
-                              int nRequestID, bool bIsLast) {
+                             CThostFtdcRspInfoField* pRspInfo,
+                             int nRequestID,
+                             bool bIsLast) {
     try {
         if (pRspInfo && pRspInfo->ErrorID != 0) {
             SPDLOG_ERROR("td order action rsp error | account={} error_id={} error_msg=\"{}\"",
@@ -351,21 +357,20 @@ void TdSpi::OnRspOrderAction(CThostFtdcInputOrderActionField* pInputOrderAction,
         event_queue_->push(
             EventType::OnRspOrderAction,
             new OnRspOrderActionField{
-                .input_order_action = pInputOrderAction
-                                          ? std::make_optional(*pInputOrderAction)
-                                          : std::nullopt,
+                .input_order_action =
+                    pInputOrderAction ? std::make_optional(*pInputOrderAction) : std::nullopt,
                 .rsp_info = pRspInfo ? std::make_optional(*pRspInfo) : std::nullopt,
                 .request_id = nRequestID,
                 .is_last = bIsLast,
                 .account_id = account_id_});
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td order action rsp push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td order action rsp push failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
 void TdSpi::OnErrRtnOrderInsert(CThostFtdcInputOrderField* pInputOrder,
-                                 CThostFtdcRspInfoField* pRspInfo) {
+                                CThostFtdcRspInfoField* pRspInfo) {
     try {
         if (pRspInfo) {
             SPDLOG_ERROR("td err rtn order insert | account={} error_id={} error_msg=\"{}\"",
@@ -379,13 +384,13 @@ void TdSpi::OnErrRtnOrderInsert(CThostFtdcInputOrderField* pInputOrder,
                 .rsp_info = pRspInfo ? std::make_optional(*pRspInfo) : std::nullopt,
                 .account_id = account_id_});
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td err rtn order insert push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td err rtn order insert push failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
 void TdSpi::OnErrRtnOrderAction(CThostFtdcOrderActionField* pOrderAction,
-                                 CThostFtdcRspInfoField* pRspInfo) {
+                                CThostFtdcRspInfoField* pRspInfo) {
     try {
         if (pRspInfo) {
             SPDLOG_ERROR("td err rtn order action | account={} error_id={} error_msg=\"{}\"",
@@ -399,8 +404,8 @@ void TdSpi::OnErrRtnOrderAction(CThostFtdcOrderActionField* pOrderAction,
                 .rsp_info = pRspInfo ? std::make_optional(*pRspInfo) : std::nullopt,
                 .account_id = account_id_});
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td err rtn order action push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td err rtn order action push failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
@@ -415,14 +420,14 @@ void TdSpi::OnRtnOrder(CThostFtdcOrderField* pOrder) {
         return;
     }
     try {
-        event_queue_->push(
-            EventType::OnRtnOrder,
-            new OnRtnOrderField{.order = *pOrder,
-                                .rsp_time = std::chrono::system_clock::now(),
-                                .account_id = account_id_});
+        event_queue_->push(EventType::OnRtnOrder,
+                           new OnRtnOrderField{.order = *pOrder,
+                                               .rsp_time = std::chrono::system_clock::now(),
+                                               .account_id = account_id_});
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td rtn order push failed | account={} error=\"{}\" instrument={} order_ref={}",
-                     account_id_, e.what(), pOrder->InstrumentID, pOrder->OrderRef);
+        SPDLOG_ERROR(
+            "td rtn order push failed | account={} error=\"{}\" instrument={} order_ref={}",
+            account_id_, e.what(), pOrder->InstrumentID, pOrder->OrderRef);
     }
 }
 
@@ -432,11 +437,10 @@ void TdSpi::OnRtnTrade(CThostFtdcTradeField* pTrade) {
         return;
     }
     try {
-        event_queue_->push(
-            EventType::OnRtnTrade,
-            new OnRtnTradeField{.trade = *pTrade,
-                                 .rsp_time = std::chrono::system_clock::now(),
-                                 .account_id = account_id_});
+        event_queue_->push(EventType::OnRtnTrade,
+                           new OnRtnTradeField{.trade = *pTrade,
+                                               .rsp_time = std::chrono::system_clock::now(),
+                                               .account_id = account_id_});
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td rtn trade push failed | account={} error=\"{}\" instrument={} trade_id={}",
                      account_id_, e.what(), pTrade->InstrumentID, pTrade->TradeID);
@@ -448,12 +452,13 @@ void TdSpi::OnRtnTrade(CThostFtdcTradeField* pTrade) {
 // ============================================================================
 
 void TdSpi::OnRspFromBankToFutureByFuture(CThostFtdcReqTransferField* pReqTransfer,
-                                           CThostFtdcRspInfoField* pRspInfo,
-                                           int nRequestID, bool bIsLast) {
+                                          CThostFtdcRspInfoField* pRspInfo,
+                                          int nRequestID,
+                                          bool bIsLast) {
     try {
         if (pRspInfo && pRspInfo->ErrorID != 0) {
-            SPDLOG_ERROR("td transfer rsp error | account={} error_id={}",
-                         account_id_, pRspInfo->ErrorID);
+            SPDLOG_ERROR("td transfer rsp error | account={} error_id={}", account_id_,
+                         pRspInfo->ErrorID);
         }
         event_queue_->push(
             EventType::OnRspFromBankToFutureByFuture,
@@ -464,8 +469,8 @@ void TdSpi::OnRspFromBankToFutureByFuture(CThostFtdcReqTransferField* pReqTransf
                 .is_last = bIsLast,
                 .account_id = account_id_});
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td transfer rsp push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td transfer rsp push failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
@@ -474,13 +479,12 @@ void TdSpi::OnRtnFromBankToFutureByFuture(CThostFtdcRspTransferField* pRspTransf
         return;
     }
     try {
-        event_queue_->push(
-            EventType::OnRtnFromBankToFutureByFuture,
-            new OnRtnFromBankToFutureByFutureField{.rsp_transfer = *pRspTransfer,
-                                                    .account_id = account_id_});
+        event_queue_->push(EventType::OnRtnFromBankToFutureByFuture,
+                           new OnRtnFromBankToFutureByFutureField{.rsp_transfer = *pRspTransfer,
+                                                                  .account_id = account_id_});
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td rtn transfer push failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td rtn transfer push failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 

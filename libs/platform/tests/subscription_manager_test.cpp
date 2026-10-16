@@ -14,10 +14,10 @@
 #include <string>
 
 using dztrader::platform::InstrumentSubInfo;
-using dztrader::platform::SubState;
-using dztrader::platform::SubscriptionManager;
-using dztrader::platform::SubscriptionDetail;
 using dztrader::platform::NotifyUi;
+using dztrader::platform::SubscriptionDetail;
+using dztrader::platform::SubscriptionManager;
+using dztrader::platform::SubState;
 using dztrader::platform::write_ext_inst_json_obj;
 using dztrader::platform::write_ext_inst_raw;
 using dztrader::shm::ChannelConfig;
@@ -46,8 +46,9 @@ protected:
         std::random_device rd;
         std::mt19937 gen(rd());
         std::uniform_int_distribution<uint32_t> dist;
-        const std::string uid = std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-                                "_" + std::to_string(dist(gen));
+        const std::string uid =
+            std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
+            std::to_string(dist(gen));
         channel_name_ = "dz_test_submgr_" + uid;
         shm_dir_ = std::filesystem::temp_directory_path() / channel_name_;
         std::filesystem::remove_all(shm_dir_);
@@ -78,8 +79,9 @@ protected:
 
     /// 辅助: 写 JSON 帧到 writer, 从 reader 读回构造 FrameView
     /// 返回 reader 读到的帧指针 (next_frame)
-    const std::byte* write_and_read_frame(DzFrameType type, std::string_view inst_id,
-                                           const nlohmann::json& payload) {
+    const std::byte* write_and_read_frame(DzFrameType type,
+                                          std::string_view inst_id,
+                                          const nlohmann::json& payload) {
         write_ext_inst_json_obj(*writer_, type, inst_id, payload);
         return reader_->next_frame();
     }
@@ -171,9 +173,9 @@ TEST_F(SubscriptionManagerTest, QueryUnsuccessfulMode) {
     ASSERT_NE(rtn_frame, nullptr);
     FrameView rtn_view(rtn_frame);
     EXPECT_EQ(rtn_view.type(), DZ_FRAME_RTN_MD_SUBSCRIPTIONS);
-    auto rsp = nlohmann::json::parse(
-        reinterpret_cast<const char*>(rtn_view.ext_inst_payload()),
-        reinterpret_cast<const char*>(rtn_view.ext_inst_payload()) + rtn_view.ext_inst_payload_size());
+    auto rsp = nlohmann::json::parse(reinterpret_cast<const char*>(rtn_view.ext_inst_payload()),
+                                     reinterpret_cast<const char*>(rtn_view.ext_inst_payload()) +
+                                         rtn_view.ext_inst_payload_size());
     EXPECT_EQ(rsp["returned_count"], 2);
     EXPECT_EQ(rsp["total_matched"], 2);
     EXPECT_FALSE(rsp["truncated"]);
@@ -204,15 +206,16 @@ TEST_F(SubscriptionManagerTest, QueryTruncation) {
     auto* rtn_frame = reader_->next_frame();
     ASSERT_NE(rtn_frame, nullptr);
     FrameView rtn_view(rtn_frame);
-    auto rsp = nlohmann::json::parse(
-        reinterpret_cast<const char*>(rtn_view.ext_inst_payload()),
-        reinterpret_cast<const char*>(rtn_view.ext_inst_payload()) + rtn_view.ext_inst_payload_size());
+    auto rsp = nlohmann::json::parse(reinterpret_cast<const char*>(rtn_view.ext_inst_payload()),
+                                     reinterpret_cast<const char*>(rtn_view.ext_inst_payload()) +
+                                         rtn_view.ext_inst_payload_size());
     EXPECT_EQ(rsp["returned_count"], 32);
     EXPECT_EQ(rsp["total_matched"], 40);
     EXPECT_TRUE(rsp["truncated"]);
 }
 
-// Test 11: query error responses (unknown_query / bad_json / missing_query_or_instruments / ambiguous_query)
+// Test 11: query error responses (unknown_query / bad_json / missing_query_or_instruments /
+// ambiguous_query)
 TEST_F(SubscriptionManagerTest, QueryErrorResponses) {
     // unknown_query
     {
@@ -261,8 +264,7 @@ TEST_F(SubscriptionManagerTest, QueryErrorResponses) {
     {
         // Write raw non-JSON bytes as frame payload
         const char* bad = "not valid json";
-        dztrader::platform::write_ext_inst_raw(*writer_, DZ_FRAME_QUERY_MD_SUBSCRIPTIONS,
-                                               "test_md",
+        dztrader::platform::write_ext_inst_raw(*writer_, DZ_FRAME_QUERY_MD_SUBSCRIPTIONS, "test_md",
                                                reinterpret_cast<const std::byte*>(bad), 14);
         auto* f = reader_->next_frame();
         ASSERT_NE(f, nullptr);
@@ -298,12 +300,10 @@ TEST_F(SubscriptionManagerTest, HandleSubscribeReqReplaceTrue) {
     sm_->on_sub_confirmed("IF2506", true);
 
     // Now replace with new instruments
-    nlohmann::json req = {
-        {"instance_id", "stg.alpha"},
-        {"action", 0},  // Subscribe
-        {"replace", true},
-        {"instruments", {"IC2506", "rb2510"}}
-    };
+    nlohmann::json req = {{"instance_id", "stg.alpha"},
+                          {"action", 0},  // Subscribe
+                          {"replace", true},
+                          {"instruments", {"IC2506", "rb2510"}}};
     auto* f = write_and_read_frame(DZ_FRAME_REQUEST_MD_SUBSCRIBE, "test_md", req);
     ASSERT_NE(f, nullptr);
     auto result = sm_->handle_subscribe_req(FrameView(f));
@@ -369,8 +369,8 @@ TEST_F(SubscriptionManagerTest, OnLoggedInReturnsPlan) {
     sm_->on_sub_confirmed("IF2506", true);
     // IF2506 is Subscribed with subscriber; IC2506 is Pending with subscriber
     auto plan = sm_->on_logged_in();
-    // After on_logged_in: cleanup collects Subscribed orphans, but IF2506 has subscriber (not orphan)
-    // So to_unsubscribe should be empty
+    // After on_logged_in: cleanup collects Subscribed orphans, but IF2506 has subscriber (not
+    // orphan) So to_unsubscribe should be empty
     EXPECT_TRUE(plan.to_unsubscribe.empty());
     // to_resubscribe: both have subscribers and are now NotRequested (after reset)
     ASSERT_EQ(plan.to_resubscribe.size(), 2u);
@@ -421,7 +421,8 @@ TEST_F(SubscriptionManagerTest, QueryInstrumentsModeSkipsNonString) {
     sm_->mark_pending({"IF2506"});
     sm_->on_sub_confirmed("IF2506", true);
 
-    // instruments 模式: 请求为对象, 内含 instruments 数组 (混合类型: string, number, bool, string, string)
+    // instruments 模式: 请求为对象, 内含 instruments 数组 (混合类型: string, number, bool, string,
+    // string)
     nlohmann::json req = {{"instruments", {"IF2506", 123, "IC2506", true, "NONEXISTENT"}}};
 
     auto* query_frame = write_and_read_frame(DZ_FRAME_QUERY_MD_SUBSCRIPTIONS, "test_md", req);
@@ -432,9 +433,9 @@ TEST_F(SubscriptionManagerTest, QueryInstrumentsModeSkipsNonString) {
     auto* rtn_frame = reader_->next_frame();
     ASSERT_NE(rtn_frame, nullptr);
     FrameView rtn_view(rtn_frame);
-    auto rsp = nlohmann::json::parse(
-        reinterpret_cast<const char*>(rtn_view.ext_inst_payload()),
-        reinterpret_cast<const char*>(rtn_view.ext_inst_payload()) + rtn_view.ext_inst_payload_size());
+    auto rsp = nlohmann::json::parse(reinterpret_cast<const char*>(rtn_view.ext_inst_payload()),
+                                     reinterpret_cast<const char*>(rtn_view.ext_inst_payload()) +
+                                         rtn_view.ext_inst_payload_size());
 
     // 3 string elements (IF2506, IC2506, NONEXISTENT), 2 non-string skipped
     EXPECT_EQ(rsp["returned_count"], 3);

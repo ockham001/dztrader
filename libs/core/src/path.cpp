@@ -19,8 +19,7 @@ namespace {
 
 constexpr std::string_view ENV_DZTRADER_HOME = "DZTRADER_HOME";
 
-std::filesystem::path compute_home()
-{
+std::filesystem::path compute_home() {
     // 1. 优先读环境变量 DZTRADER_HOME
     auto env_home = env::get(ENV_DZTRADER_HOME);
     if (env_home.has_value() && !env_home->empty()) {
@@ -31,8 +30,8 @@ std::filesystem::path compute_home()
         std::error_code ec;
         auto abs_p = std::filesystem::absolute(p, ec);
         if (ec) {
-            throw Exception(DZ_EC_SYSTEM,
-                std::format("path=\"{}\" err=\"{}\"", p.string(), dztrader::to_utf8_from_system(ec.message())));
+            throw Exception(DZ_EC_SYSTEM, std::format("path=\"{}\" err=\"{}\"", p.string(),
+                                                      dztrader::to_utf8_from_system(ec.message())));
         }
         return abs_p;
     }
@@ -42,20 +41,18 @@ std::filesystem::path compute_home()
     return os_home / ".dztrader";
 }
 
-void ensure_exists(const std::filesystem::path& dir)
-{
+void ensure_exists(const std::filesystem::path& dir) {
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     if (ec) {
-        throw Exception(DZ_EC_SYSTEM,
-            std::string("path=\"") + dir.string() + "\" err=\"" + dztrader::to_utf8_from_system(ec.message()) + "\"");
+        throw Exception(DZ_EC_SYSTEM, std::string("path=\"") + dir.string() + "\" err=\"" +
+                                          dztrader::to_utf8_from_system(ec.message()) + "\"");
     }
 }
 
 }  // namespace
 
-const std::filesystem::path& home()
-{
+const std::filesystem::path& home() {
     static const auto CACHED_HOME = [] {
         auto p = compute_home();
         ensure_exists(p);
@@ -64,8 +61,7 @@ const std::filesystem::path& home()
     return CACHED_HOME;
 }
 
-const std::filesystem::path& configs()
-{
+const std::filesystem::path& configs() {
     static const auto CACHED = [] {
         auto d = home() / "configs";
         ensure_exists(d);
@@ -74,8 +70,7 @@ const std::filesystem::path& configs()
     return CACHED;
 }
 
-const std::filesystem::path& shm()
-{
+const std::filesystem::path& shm() {
     static const auto CACHED = [] {
         auto d = home() / "shm";
         ensure_exists(d);
@@ -84,8 +79,7 @@ const std::filesystem::path& shm()
     return CACHED;
 }
 
-const std::filesystem::path& logs()
-{
+const std::filesystem::path& logs() {
     static const auto CACHED = [] {
         auto d = home() / "logs";
         ensure_exists(d);
@@ -94,8 +88,7 @@ const std::filesystem::path& logs()
     return CACHED;
 }
 
-const std::filesystem::path& cache()
-{
+const std::filesystem::path& cache() {
     static const auto CACHED = [] {
         auto d = home() / "cache";
         ensure_exists(d);
@@ -104,8 +97,7 @@ const std::filesystem::path& cache()
     return CACHED;
 }
 
-const std::filesystem::path& strategies()
-{
+const std::filesystem::path& strategies() {
     static const auto CACHED = [] {
         auto d = home() / "strategies";
         ensure_exists(d);
@@ -114,8 +106,7 @@ const std::filesystem::path& strategies()
     return CACHED;
 }
 
-const std::filesystem::path& db()
-{
+const std::filesystem::path& db() {
     static const auto CACHED = [] {
         auto d = home() / "db";
         ensure_exists(d);
@@ -124,8 +115,7 @@ const std::filesystem::path& db()
     return CACHED;
 }
 
-const std::filesystem::path& td_db()
-{
+const std::filesystem::path& td_db() {
     // db() 已保证目录存在, 此处不重复 ensure
     static const auto CACHED = db() / "td.db";
     return CACHED;

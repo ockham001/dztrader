@@ -222,7 +222,7 @@ TEST_F(TdStateMachineTest, ReconnectFromDisconnected) {
 // --- 非法转移被拒绝 ---
 
 TEST_F(TdStateMachineTest, ConnectFromNonIdleRejected) {
-    sm.on_connect();  // Idle -> Connecting
+    sm.on_connect();               // Idle -> Connecting
     auto notif = sm.on_connect();  // 被拒绝
     EXPECT_EQ(sm.state(), TdState::Connecting);
     EXPECT_FALSE(notif.has_value());

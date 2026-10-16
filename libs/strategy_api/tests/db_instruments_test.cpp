@@ -33,8 +33,8 @@ protected:
                 dztrader::tdstore::schemas());
             database->migrate();
             auto session = database->session();
-            const std::vector<dztrader::tdstore::InstrumentRecord> records{
-                make_record("rb2601"), make_record("rb2605")};
+            const std::vector<dztrader::tdstore::InstrumentRecord> records{make_record("rb2601"),
+                                                                           make_record("rb2605")};
             dztrader::tdstore::upsert_instruments(*session, records);
         }
 

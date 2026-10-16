@@ -85,9 +85,8 @@ template <typename T>
 concept HasOnPositionInfo = requires(T t, const DzPositionInfo& info) { t.on_position_info(info); };
 
 template <typename T>
-concept HasOnTradingAccount = requires(T t, const DzTradingAccount& account) {
-    t.on_trading_account(account);
-};
+concept HasOnTradingAccount =
+    requires(T t, const DzTradingAccount& account) { t.on_trading_account(account); };
 
 template <typename T>
 concept HasOnSchedule = requires(T t, const DzScheduleEvent& ev) { t.on_schedule(ev); };
@@ -100,9 +99,8 @@ concept HasOnError =
     requires(T t, DzErrorCode code, std::string_view msg) { t.on_error(code, msg); };
 
 template <typename T>
-concept HasOnAccountStatus = requires(T t, const DzAccountStatus& status) {
-    t.on_account_status(status);
-};
+concept HasOnAccountStatus =
+    requires(T t, const DzAccountStatus& status) { t.on_account_status(status); };
 
 /* ── 异常报告: 分发层捕获 → report_error 转发/兜底 → dz_diag (导出诊断输出) 终端。
       report_error noexcept: 用户 on_error 再抛异常也在此消化,
@@ -114,16 +112,15 @@ void report_error(StrategyT& strategy, DzErrorCode errcode, std::string_view mes
         try {
             strategy.on_error(errcode, message);
         } catch (const std::exception& e) {
-            dz_diag(std::format("on_error threw | reason=\"{}\" original=\"{}\"", e.what(),
-                                message)
+            dz_diag(std::format("on_error threw | reason=\"{}\" original=\"{}\"", e.what(), message)
                         .c_str());
         } catch (...) {
-            dz_diag(std::format("on_error threw unknown exception | original=\"{}\"", message)
-                        .c_str());
+            dz_diag(
+                std::format("on_error threw unknown exception | original=\"{}\"", message).c_str());
         }
     } else {
-        dz_diag(std::format("callback exception | code={} message=\"{}\"", errcode, message)
-                    .c_str());
+        dz_diag(
+            std::format("callback exception | code={} message=\"{}\"", errcode, message).c_str());
     }
 }
 
@@ -218,12 +215,10 @@ void handle_event(StrategyT& strategy, const std::byte* frame, bool& running) no
                 if constexpr (HasOnUiInput<StrategyT>) {
                     // 变长 ext_inst 帧: DzFrameHeader + DzExtInstFrameHeader + 变长 payload,
                     // 无固定 payload_size 可校验, 按 ext 头 data_size 解析 (契约 strategy)
-                    const auto& ext =
-                        *std::launder(reinterpret_cast<const DzExtInstFrameHeader*>(
-                            frame + sizeof(DzFrameHeader)));
-                    const auto* payload = static_cast<const char*>(
-                        static_cast<const void*>(frame + sizeof(DzFrameHeader) +
-                                                 sizeof(DzExtInstFrameHeader)));
+                    const auto& ext = *std::launder(reinterpret_cast<const DzExtInstFrameHeader*>(
+                        frame + sizeof(DzFrameHeader)));
+                    const auto* payload = static_cast<const char*>(static_cast<const void*>(
+                        frame + sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader)));
                     strategy.on_ui_input(DzUiInput{
                         .instance_id = std::string_view(ext.instance_id),
                         .data = payload,
@@ -288,16 +283,13 @@ void pump_once(StrategyT& strategy, DzContext* ctx, bool& running) {
 /// 不带 [dzsdk] 诊断前缀 (该前缀专属 stderr 诊断 dz_diag)。
 template <typename StrategyT>
 void report_start() noexcept {
-    std::cout << std::format("strategy callbacks | stop={} trade={} order={} position={} "
-                             "account={} schedule={} input={} error={}\n",
-                             HasOnStop<StrategyT> ? "yes" : "no",
-                             HasOnTradeReport<StrategyT> ? "yes" : "no",
-                             HasOnOrderReport<StrategyT> ? "yes" : "no",
-                             HasOnPositionInfo<StrategyT> ? "yes" : "no",
-                             HasOnTradingAccount<StrategyT> ? "yes" : "no",
-                             HasOnSchedule<StrategyT> ? "yes" : "no",
-                             HasOnUiInput<StrategyT> ? "yes" : "no",
-                             HasOnError<StrategyT> ? "yes" : "no");
+    std::cout << std::format(
+        "strategy callbacks | stop={} trade={} order={} position={} "
+        "account={} schedule={} input={} error={}\n",
+        HasOnStop<StrategyT> ? "yes" : "no", HasOnTradeReport<StrategyT> ? "yes" : "no",
+        HasOnOrderReport<StrategyT> ? "yes" : "no", HasOnPositionInfo<StrategyT> ? "yes" : "no",
+        HasOnTradingAccount<StrategyT> ? "yes" : "no", HasOnSchedule<StrategyT> ? "yes" : "no",
+        HasOnUiInput<StrategyT> ? "yes" : "no", HasOnError<StrategyT> ? "yes" : "no");
     std::cout.flush();  // master 管道块缓冲: 显式排空, 保证自检行不滞留
 }
 

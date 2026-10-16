@@ -19,8 +19,7 @@ namespace {
 /// 最小 WsBroadcaster 桩（domain_service_test.cpp 同款）：LogDomainService 构造依赖
 class FakeBroadcaster : public dztrader::webui::WsBroadcaster {
 public:
-    void broadcast(const std::string&, const std::string&,
-                   const nlohmann::json&) override {}
+    void broadcast(const std::string&, const std::string&, const nlohmann::json&) override {}
 };
 }  // namespace
 
@@ -42,7 +41,7 @@ protected:
 
         // P4 Task 6：LogCtrl 构造注入 LogDomainService（归并 log_control 后
         // set_level/flush 经 handle_log_control 分发）。测试给 disposable self_log
-        //（构造即含默认配置, 不 load()）和 nullptr event_writer。
+        // （构造即含默认配置, 不 load()）和 nullptr event_writer。
         self_log_ = std::make_shared<dztrader::platform::LogConfig>("dzweb_test", ":memory:");
         mirror_ = std::make_shared<dztrader::webui::MirrorStore>();
         ws_ = std::make_shared<FakeBroadcaster>();
@@ -81,7 +80,8 @@ TEST_F(LogControllerTest, GetFilesReturnsList) {
     // Write a test log file to paths::logs()
     auto log_dir = dztrader::paths::logs();
     std::ofstream ofs(log_dir / "test_logctrl.log");
-    ofs << "2026-07-13T14:23:45.000000000+08:00 info test_logctrl [func=main file=main.cpp:1 pid=1 tid=2] test\n";
+    ofs << "2026-07-13T14:23:45.000000000+08:00 info test_logctrl [func=main file=main.cpp:1 pid=1 "
+           "tid=2] test\n";
     ofs.close();
 
     auto req = admin_req();
@@ -96,7 +96,8 @@ TEST_F(LogControllerTest, GetFilesReturnsList) {
 TEST_F(LogControllerTest, GetContentReturnsLines) {
     auto log_dir = dztrader::paths::logs();
     std::ofstream ofs(log_dir / "test_content.log");
-    ofs << "2026-07-13T14:23:45.000000000+08:00 info test_content [func=main file=main.cpp:1 pid=1 tid=2] hello\n";
+    ofs << "2026-07-13T14:23:45.000000000+08:00 info test_content [func=main file=main.cpp:1 pid=1 "
+           "tid=2] hello\n";
     ofs.close();
 
     auto req = admin_req();
@@ -112,8 +113,10 @@ TEST_F(LogControllerTest, GetContentReturnsLines) {
 TEST_F(LogControllerTest, GetStatsReturnsCounts) {
     auto log_dir = dztrader::paths::logs();
     std::ofstream ofs(log_dir / "test_stats.log");
-    ofs << "2026-07-13T14:23:45.000000000+08:00 info test_stats [func=m file=f.cpp:1 pid=1 tid=2] a\n";
-    ofs << "2026-07-13T14:23:46.000000000+08:00 warning test_stats [func=m file=f.cpp:2 pid=1 tid=3] b\n";
+    ofs << "2026-07-13T14:23:45.000000000+08:00 info test_stats [func=m file=f.cpp:1 pid=1 tid=2] "
+           "a\n";
+    ofs << "2026-07-13T14:23:46.000000000+08:00 warning test_stats [func=m file=f.cpp:2 pid=1 "
+           "tid=3] b\n";
     ofs.close();
 
     auto req = admin_req();
@@ -200,7 +203,8 @@ TEST_F(LogControllerTest, GetFilesAcceptsNumericLimit) {
 TEST_F(LogControllerTest, GetContentRejectsNonNumericLimit) {
     auto log_dir = dztrader::paths::logs();
     std::ofstream ofs(log_dir / "test_content_limit.log");
-    ofs << "2026-07-13T14:23:45.000000000+08:00 info test_content [func=m file=f.cpp:1 pid=1 tid=2] a\n";
+    ofs << "2026-07-13T14:23:45.000000000+08:00 info test_content [func=m file=f.cpp:1 pid=1 "
+           "tid=2] a\n";
     ofs.close();
 
     auto req = admin_req();
@@ -216,7 +220,8 @@ TEST_F(LogControllerTest, GetContentRejectsNonNumericLimit) {
 TEST_F(LogControllerTest, GetContentRejectsNonNumericOffset) {
     auto log_dir = dztrader::paths::logs();
     std::ofstream ofs(log_dir / "test_content_offset.log");
-    ofs << "2026-07-13T14:23:45.000000000+08:00 info test_content [func=m file=f.cpp:1 pid=1 tid=2] a\n";
+    ofs << "2026-07-13T14:23:45.000000000+08:00 info test_content [func=m file=f.cpp:1 pid=1 "
+           "tid=2] a\n";
     ofs.close();
 
     auto req = admin_req();
@@ -232,7 +237,8 @@ TEST_F(LogControllerTest, GetContentRejectsNonNumericOffset) {
 TEST_F(LogControllerTest, GetAggregateRejectsNonNumericLimit) {
     auto log_dir = dztrader::paths::logs();
     std::ofstream ofs(log_dir / "test_agg_limit.log");
-    ofs << "2026-07-13T14:23:45.000000000+08:00 error test_agg [func=m file=f.cpp:1 pid=1 tid=2] boom\n";
+    ofs << "2026-07-13T14:23:45.000000000+08:00 error test_agg [func=m file=f.cpp:1 pid=1 tid=2] "
+           "boom\n";
     ofs.close();
 
     auto req = admin_req();

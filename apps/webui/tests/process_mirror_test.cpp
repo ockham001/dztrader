@@ -122,9 +122,9 @@ TEST(ProcessMirrorTest, UpdateConfigOverwritesExisting) {
 // ---- 契约 process 条目消失 = 进程已移除（Remove 竞态修复回归测试）----
 
 TEST(ProcessMirrorTest, UpdateProcessConfigsEntryDisappearanceCleansInstanceMirror) {
-    // Remove 流程帧序: DZ_FRAME_RTN_PROCESS_CONFIG(条目消失) 先于 DZ_FRAME_RTN_PROCESS_STATUS(Stopped); Stopped 被注册守卫拒绝,
-    // 若 118 处理时不清理实例镜像, 残留 process_status=Stopping 会让已移除进程
-    // 在 snapshot/REST list 中"复活"。
+    // Remove 流程帧序: DZ_FRAME_RTN_PROCESS_CONFIG(条目消失) 先于
+    // DZ_FRAME_RTN_PROCESS_STATUS(Stopped); Stopped 被注册守卫拒绝, 若 118 处理时不清理实例镜像,
+    // 残留 process_status=Stopping 会让已移除进程 在 snapshot/REST list 中"复活"。
     ProcessMirror mirror;
     dztrader::platform::ProcessStatus s;
     s.name = "dzmd_ctp";
@@ -133,8 +133,10 @@ TEST(ProcessMirrorTest, UpdateProcessConfigsEntryDisappearanceCleansInstanceMirr
     mirror.update_config("dzmd_ctp", nlohmann::json{{"brokers", nlohmann::json::array()}});
     mirror.update_gateway_status("dzmd_ctp", nlohmann::json{{"api_version", "v6.7.2"}});
     mirror.update_process_configs(nlohmann::json{
-        {"dzmd_ctp", {{"args", nlohmann::json::array()}, {"env", nlohmann::json::object()},
-                      {"restart", {{"enabled", true}, {"max_attempts", 5}, {"backoff_sec", 5}}}}}});
+        {"dzmd_ctp",
+         {{"args", nlohmann::json::array()},
+          {"env", nlohmann::json::object()},
+          {"restart", {{"enabled", true}, {"max_attempts", 5}, {"backoff_sec", 5}}}}}});
     ASSERT_TRUE(mirror.get_status("dzmd_ctp").has_value());
 
     // 118 全量覆盖: dzmd_ctp 条目消失 → 实例镜像清理
@@ -147,8 +149,10 @@ TEST(ProcessMirrorTest, UpdateProcessConfigsEntryDisappearanceCleansInstanceMirr
     // 其他仍注册的进程不受影响
     mirror.update_status("dzmd_xtp", s);
     mirror.update_process_configs(nlohmann::json{
-        {"dzmd_xtp", {{"args", nlohmann::json::array()}, {"env", nlohmann::json::object()},
-                      {"restart", {{"enabled", true}, {"max_attempts", 5}, {"backoff_sec", 5}}}}}});
+        {"dzmd_xtp",
+         {{"args", nlohmann::json::array()},
+          {"env", nlohmann::json::object()},
+          {"restart", {{"enabled", true}, {"max_attempts", 5}, {"backoff_sec", 5}}}}}});
     EXPECT_TRUE(mirror.get_status("dzmd_xtp").has_value());
 }
 

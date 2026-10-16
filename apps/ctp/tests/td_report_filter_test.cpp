@@ -14,8 +14,11 @@ using Verdict = ReportFilter::Verdict;
 namespace {
 
 /// 辅助: 构造一个基准 OrderRecord (status=已撤销'5', vol_traded=10, upd=1000).
-OrderRecord make_order(int64_t order_id, int8_t status, int32_t vol_traded,
-                       int32_t vol_canceled, int64_t update_time) {
+OrderRecord make_order(int64_t order_id,
+                       int8_t status,
+                       int32_t vol_traded,
+                       int32_t vol_canceled,
+                       int64_t update_time) {
     OrderRecord r{};
     r.base.order_id = order_id;
     r.base.status = status;
@@ -56,15 +59,15 @@ TEST(ReportFilterOrder, IdenticalRecordSkipped) {
 
 TEST(ReportFilterOrder, StatusFlipSameSecondForwards) {
     // spec §4.1 修正后的关键用例: 同秒 status 翻转 (volume/update_time 均不变) 必须转发
-    auto f = make_filter_with_order();                       // status='3'(部分成交), vol=5, upd=1000
+    auto f = make_filter_with_order();  // status='3'(部分成交), vol=5, upd=1000
     auto rec = make_order(1, DZ_ORDER_PART_TRADED, 5, 0, 1000);
-    f.accept_order(rec);                                     // 更新基准为 part-traded
+    f.accept_order(rec);                                           // 更新基准为 part-traded
     auto flipped = make_order(1, DZ_ORDER_CANCELLED, 5, 0, 1000);  // 已撤销, vol=5, upd=1000
     EXPECT_EQ(Verdict::kForward, f.check_order(flipped));
 }
 
 TEST(ReportFilterOrder, OutdatedUpdateTimeDefensivelySkipped) {
-    auto f = make_filter_with_order();                       // upd=1000
+    auto f = make_filter_with_order();                          // upd=1000
     auto rec = make_order(1, DZ_ORDER_ALL_TRADED, 10, 0, 500);  // 其余字段不等, 但时间回退
     bool warn = false;
     EXPECT_EQ(Verdict::kSkip, f.check_order(rec, &warn));
@@ -73,7 +76,7 @@ TEST(ReportFilterOrder, OutdatedUpdateTimeDefensivelySkipped) {
 
 TEST(ReportFilterOrder, OutdatedSameTimeNotSkipped) {
     // update_time 相等时不判回退 (同秒不等即转发)
-    auto f = make_filter_with_order();                       // upd=1000
+    auto f = make_filter_with_order();                           // upd=1000
     auto rec = make_order(1, DZ_ORDER_ALL_TRADED, 10, 0, 1000);  // 字段不等但 upd 相同
     bool warn = false;
     EXPECT_EQ(Verdict::kForward, f.check_order(rec, &warn));
@@ -81,7 +84,7 @@ TEST(ReportFilterOrder, OutdatedSameTimeNotSkipped) {
 }
 
 TEST(ReportFilterOrder, NewOrderForwards) {
-    auto f = make_filter_with_order();  // 基准含 order_id=1
+    auto f = make_filter_with_order();                          // 基准含 order_id=1
     auto rec = make_order(2, DZ_ORDER_NOT_TRADED, 0, 0, 2000);  // order_id 不在基准
     EXPECT_EQ(Verdict::kForward, f.check_order(rec));
 }
@@ -191,15 +194,23 @@ TEST(ReportFilterLatest, LoadBaselineSetsLatest) {
 TEST(ReportFilterTest, ActiveOrdersFilterByDayAndStatus) {
     ReportFilter f{"acc1"};
     OrderRecord a{};
-    a.base.order_id = 1; a.base.date = 20260726; a.base.status = DZ_ORDER_NOT_TRADED;
+    a.base.order_id = 1;
+    a.base.date = 20260726;
+    a.base.status = DZ_ORDER_NOT_TRADED;
     std::strcpy(a.order_ref, "1");
     OrderRecord b{};
-    b.base.order_id = 2; b.base.date = 20260726; b.base.status = DZ_ORDER_ALL_TRADED;
+    b.base.order_id = 2;
+    b.base.date = 20260726;
+    b.base.status = DZ_ORDER_ALL_TRADED;
     std::strcpy(b.order_ref, "2");
     OrderRecord c{};
-    c.base.order_id = 3; c.base.date = 20260725; c.base.status = DZ_ORDER_PART_TRADED;
+    c.base.order_id = 3;
+    c.base.date = 20260725;
+    c.base.status = DZ_ORDER_PART_TRADED;
     std::strcpy(c.order_ref, "3");
-    f.accept_order(a); f.accept_order(b); f.accept_order(c);
+    f.accept_order(a);
+    f.accept_order(b);
+    f.accept_order(c);
     auto active = f.active_orders(20260726);
     ASSERT_EQ(active.size(), 1u);
     EXPECT_EQ(active[0].base.order_id, 1);

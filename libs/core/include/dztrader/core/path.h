@@ -55,4 +55,4 @@ const std::filesystem::path& td_db();
 
 }  // namespace dztrader::paths
 
-#endif  /* DZTRADER_CORE_PATH_H_ */
+#endif /* DZTRADER_CORE_PATH_H_ */

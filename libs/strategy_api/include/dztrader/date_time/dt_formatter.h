@@ -264,8 +264,7 @@ private:
             dest.push_back(static_cast<char>('0' + (value / 10)));
             dest.push_back(static_cast<char>('0' + (value % 10)));
         } else [[unlikely]] {
-            throw std::out_of_range(
-                std::format("value out of range | value={} range=0-99", value));
+            throw std::out_of_range(std::format("value out of range | value={} range=0-99", value));
         }
     }
 

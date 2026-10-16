@@ -22,7 +22,8 @@ enum class ControlGuard {
 /// 统一守卫纯函数：REST 与 WS 双通道都只调用这一处，保证新增控制命令只需写一处守卫。
 /// @param is_admin        当前是否 admin（REST 已由发送方先 403；WS 由 Session.is_admin 提供）
 /// @param source_valid    source 是否存在/非空（REST 由 DB 查得；WS 为 source 非空）
-/// @param writer_ready    事件通道(writer)是否可用（REST 为 shm_writer_->is_ready；WS 为 event_writer 非空）
+/// @param writer_ready    事件通道(writer)是否可用（REST 为 shm_writer_->is_ready；WS 为
+/// event_writer 非空）
 /// @param process_running 目标进程镜像是否 Running（REST 查 source_type→进程；WS 查 source）
 inline ControlGuard evaluate_control_guard(bool is_admin,
                                            bool source_valid,

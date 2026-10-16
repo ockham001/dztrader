@@ -125,12 +125,13 @@ TEST_F(ConfigTest, RemoveGatewaySectionPreservesOthers) {
 TEST_F(ConfigTest, WriteGatewaySectionCreatesNew) {
     write_json(R"({"master": {}})");
     platform::RestartPolicy policy{.enabled = true, .max_attempts = 5, .backoff_sec = 5};
-    write_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp",
-                          {"--name", "dzmd_ctp"}, policy);
+    write_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp", {"--name", "dzmd_ctp"},
+                          policy);
     auto cfg = parse_master_json(config_path_);
     ASSERT_EQ(cfg.entries.size(), 1u);
     EXPECT_EQ(cfg.entries[0].name, "dzmd_ctp");
-    // 契约 process: 内部进程 exe 和 start_dir 不持久化到 json, parse 不读取, 留空由 launch_child 调 find_exe_by_stem 实时填充
+    // 契约 process: 内部进程 exe 和 start_dir 不持久化到 json, parse 不读取, 留空由 launch_child 调
+    // find_exe_by_stem 实时填充
     EXPECT_TRUE(cfg.entries[0].exe.empty());
     EXPECT_TRUE(cfg.entries[0].start_dir.empty());
     EXPECT_EQ(cfg.entries[0].args.size(), 2u);
@@ -142,8 +143,8 @@ TEST_F(ConfigTest, WriteGatewaySectionOverwritesExisting) {
         "md": {"dzmd_ctp": {"exe": "old_exe", "args": ["old_arg"]}}
     })");
     platform::RestartPolicy policy{.enabled = false, .max_attempts = 0, .backoff_sec = 5};
-    write_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp",
-                          {"--name", "dzmd_ctp"}, policy);
+    write_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp", {"--name", "dzmd_ctp"},
+                          policy);
     auto cfg = parse_master_json(config_path_);
     ASSERT_EQ(cfg.entries.size(), 1u);
     // 契约 process: exe 不持久化, 旧 json 中的 "old_exe" 被静默忽略, parse 不读取
@@ -162,7 +163,8 @@ TEST_F(ConfigTest, WriteWebuiSectionCreatesNew) {
     ASSERT_EQ(cfg.entries.size(), 1u);
     EXPECT_EQ(cfg.entries[0].name, "dzweb");
     EXPECT_EQ(cfg.entries[0].category, Category::WebUI);
-    // 契约 process: dzweb 的 exe 和 start_dir 不持久化到 json, parse 不读取, 留空由 launch_child 调 find_exe_by_stem 实时填充
+    // 契约 process: dzweb 的 exe 和 start_dir 不持久化到 json, parse 不读取, 留空由 launch_child 调
+    // find_exe_by_stem 实时填充
     EXPECT_TRUE(cfg.entries[0].exe.empty());
     EXPECT_TRUE(cfg.entries[0].start_dir.empty());
     EXPECT_EQ(cfg.entries[0].args.size(), 2u);
@@ -210,9 +212,8 @@ TEST_F(ConfigTest, WriteWebuiSectionOverwritesExisting) {
 TEST_F(ConfigTest, WriteGatewaySectionPersistsDisplayName) {
     write_json(R"({"master": {}})");
     platform::RestartPolicy policy{.enabled = true, .max_attempts = 5, .backoff_sec = 5};
-    write_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp",
-                          {"--name", "dzmd_ctp"}, policy,
-                          "CTP期货行情");
+    write_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp", {"--name", "dzmd_ctp"},
+                          policy, "CTP期货行情");
     auto cfg = parse_master_json(config_path_);
     ASSERT_EQ(cfg.entries.size(), 1u);
     EXPECT_EQ(cfg.entries[0].display_name, "CTP期货行情");
@@ -222,8 +223,8 @@ TEST_F(ConfigTest, WriteGatewaySectionPersistsDisplayName) {
 TEST_F(ConfigTest, WriteGatewaySectionEmptyDisplayNameSkipped) {
     write_json(R"({"master": {}})");
     platform::RestartPolicy policy{.enabled = true, .max_attempts = 5, .backoff_sec = 5};
-    write_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp",
-                          {"--name", "dzmd_ctp"}, policy,
+    write_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp", {"--name", "dzmd_ctp"},
+                          policy,
                           "");  // 空 display_name
     auto cfg = parse_master_json(config_path_);
     ASSERT_EQ(cfg.entries.size(), 1u);
@@ -245,8 +246,8 @@ TEST_F(ConfigTest, ParseJsonWithoutDisplayNameDefaultsEmpty) {
 TEST_F(ConfigTest, WriteThenRemoveGatewaySection) {
     write_json(R"({"master": {}})");
     platform::RestartPolicy policy{.enabled = true, .max_attempts = 5, .backoff_sec = 5};
-    write_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp",
-                          {"--name", "dzmd_ctp"}, policy);
+    write_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp", {"--name", "dzmd_ctp"},
+                          policy);
     auto cfg1 = parse_master_json(config_path_);
     EXPECT_EQ(cfg1.entries.size(), 1u);
 
@@ -474,8 +475,7 @@ TEST_F(ConfigTest, MasterConfigMdReadyTimeoutLoadAndClamp) {
 
 TEST_F(ConfigTest, MasterConfigSavePreservesMdReadyTimeout) {
     nlohmann::json full = {
-        {"master", {{"single_stop_timeout_sec", 3}, {"md_ready_timeout_sec", 7}}}
-    };
+        {"master", {{"single_stop_timeout_sec", 3}, {"md_ready_timeout_sec", 7}}}};
     auto path = tmp_dir_ / "master_md_ready.json";
     std::ofstream(path) << full.dump(2);
 
@@ -601,11 +601,11 @@ TEST_F(ConfigTest, ParseMdAndTdSections) {
     auto cfg = parse_master_json(config_path_);
     EXPECT_EQ(cfg.entries.size(), 2u);
     auto md = std::find_if(cfg.entries.begin(), cfg.entries.end(),
-        [](const ProcessEntry& e) { return e.name == "dzmd_ctp"; });
+                           [](const ProcessEntry& e) { return e.name == "dzmd_ctp"; });
     ASSERT_NE(md, cfg.entries.end());
     EXPECT_EQ(md->category, Category::GatewayMd);
     auto td = std::find_if(cfg.entries.begin(), cfg.entries.end(),
-        [](const ProcessEntry& e) { return e.name == "dztd_ctp"; });
+                           [](const ProcessEntry& e) { return e.name == "dztd_ctp"; });
     ASSERT_NE(td, cfg.entries.end());
     EXPECT_EQ(td->category, Category::GatewayTd);
 }
@@ -635,16 +635,16 @@ TEST_F(ConfigTest, ParseShmSections) {
 
 TEST_F(ConfigTest, WriteGatewaySectionMdAndTd) {
     write_json(R"({"md": {}, "td": {}})");
-    write_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp",
-                          {"--arg1"}, {.enabled = true, .max_attempts = 3, .backoff_sec = 5}, "CTP");
-    write_gateway_section(config_path_, Category::GatewayTd, "dztd_ctp",
-                          {"--arg2"}, {.enabled = true, .max_attempts = 5, .backoff_sec = 10}, "");
+    write_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp", {"--arg1"},
+                          {.enabled = true, .max_attempts = 3, .backoff_sec = 5}, "CTP");
+    write_gateway_section(config_path_, Category::GatewayTd, "dztd_ctp", {"--arg2"},
+                          {.enabled = true, .max_attempts = 5, .backoff_sec = 10}, "");
 
     auto cfg = parse_master_json(config_path_);
     EXPECT_EQ(cfg.entries.size(), 2u);
 
     auto md = std::find_if(cfg.entries.begin(), cfg.entries.end(),
-        [](const ProcessEntry& e) { return e.name == "dzmd_ctp"; });
+                           [](const ProcessEntry& e) { return e.name == "dzmd_ctp"; });
     ASSERT_NE(md, cfg.entries.end());
     EXPECT_EQ(md->category, Category::GatewayMd);
     EXPECT_EQ(md->args.size(), 1u);
@@ -655,7 +655,7 @@ TEST_F(ConfigTest, WriteGatewaySectionMdAndTd) {
     EXPECT_EQ(md->display_name, "CTP");
 
     auto td = std::find_if(cfg.entries.begin(), cfg.entries.end(),
-        [](const ProcessEntry& e) { return e.name == "dztd_ctp"; });
+                           [](const ProcessEntry& e) { return e.name == "dztd_ctp"; });
     ASSERT_NE(td, cfg.entries.end());
     EXPECT_EQ(td->category, Category::GatewayTd);
     EXPECT_EQ(td->args.size(), 1u);
@@ -687,9 +687,7 @@ TEST_F(ConfigTest, MasterConfigLoadDefault) {
 }
 
 TEST_F(ConfigTest, MasterConfigLoadFromSection) {
-    nlohmann::json full = {
-        {"master", {{"single_stop_timeout_sec", 10}}}
-    };
+    nlohmann::json full = {{"master", {{"single_stop_timeout_sec", 10}}}};
     auto path = tmp_dir_ / "master_test.json";
     std::ofstream(path) << full.dump(2);
 
@@ -699,10 +697,8 @@ TEST_F(ConfigTest, MasterConfigLoadFromSection) {
 
 TEST_F(ConfigTest, MasterConfigSavePreservesOtherFields) {
     // 初始文件: master 段含 single_stop_timeout_sec + 自定义字段 other_field
-    nlohmann::json full = {
-        {"master", {{"single_stop_timeout_sec", 5}, {"other_field", "keep_me"}}},
-        {"log", {{"level", "info"}}}
-    };
+    nlohmann::json full = {{"master", {{"single_stop_timeout_sec", 5}, {"other_field", "keep_me"}}},
+                           {"log", {{"level", "info"}}}};
     auto path = tmp_dir_ / "master_save_test.json";
     std::ofstream(path) << full.dump(2);
 
@@ -743,12 +739,11 @@ TEST_F(ConfigTest, ShmGlobalConfigLoadDefault) {
 }
 
 TEST_F(ConfigTest, ShmGlobalConfigLoadFromSection) {
-    nlohmann::json full = {
-        {"shm", {
-            {"meta_file_size", 2 * 1024 * 1024},
-            {"event", {{"page_size_mb", 32}}}  // event 子段应被忽略
-        }}
-    };
+    nlohmann::json full = {{"shm",
+                            {
+                                {"meta_file_size", 2 * 1024 * 1024},
+                                {"event", {{"page_size_mb", 32}}}  // event 子段应被忽略
+                            }}};
     auto path = tmp_dir_ / "shm_global_test.json";
     std::ofstream(path) << full.dump(2);
 
@@ -758,12 +753,9 @@ TEST_F(ConfigTest, ShmGlobalConfigLoadFromSection) {
 
 TEST_F(ConfigTest, ShmGlobalConfigSavePreservesEventSubsection) {
     // 初始: shm.meta_file_size=1MB + shm.event={page_size_mb:32,...}
-    nlohmann::json full = {
-        {"shm", {
-            {"meta_file_size", 1 * 1024 * 1024},
-            {"event", {{"page_size_mb", 32}, {"check_interval_min", 5}}}
-        }}
-    };
+    nlohmann::json full = {{"shm",
+                            {{"meta_file_size", 1 * 1024 * 1024},
+                             {"event", {{"page_size_mb", 32}, {"check_interval_min", 5}}}}}};
     auto path = tmp_dir_ / "shm_global_save_test.json";
     std::ofstream(path) << full.dump(2);
 

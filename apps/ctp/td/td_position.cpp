@@ -10,8 +10,8 @@ namespace dztrader::ctp {
 namespace {
 
 bool same_side(const PositionSide& a, const PositionSide& b) noexcept {
-    return a.today == b.today && a.yd == b.yd && a.price == b.price &&
-           a.frozen_td == b.frozen_td && a.frozen_yd == b.frozen_yd;
+    return a.today == b.today && a.yd == b.yd && a.price == b.price && a.frozen_td == b.frozen_td &&
+           a.frozen_yd == b.frozen_yd;
 }
 
 void add_open(PositionSide& s, const DzTradeReport& t) {
@@ -25,7 +25,9 @@ void add_open(PositionSide& s, const DzTradeReport& t) {
     s.today += t.volume;
 }
 
-void close_side(PositionSide& s, const DzTradeReport& t, Exchange ex,
+void close_side(PositionSide& s,
+                const DzTradeReport& t,
+                Exchange ex,
                 const std::string& instrument_id) {
     if (t.position_effect == DZ_POSITION_EFFECT_CLOSE_TODAY) {
         s.today -= t.volume;
@@ -41,8 +43,8 @@ void close_side(PositionSide& s, const DzTradeReport& t, Exchange ex,
         }
     }
     if (s.today < 0 || s.yd < 0) {
-        SPDLOG_WARN("position negative clamped | instrument={} today={} yd={}",
-                    instrument_id, s.today, s.yd);
+        SPDLOG_WARN("position negative clamped | instrument={} today={} yd={}", instrument_id,
+                    s.today, s.yd);
         s.today = std::max<int64_t>(0, s.today);
         s.yd = std::max<int64_t>(0, s.yd);
     }
@@ -86,7 +88,9 @@ void PositionHolding::set_seq(DzDirection dir, uint64_t seq) noexcept {
     mutable_side(dir).seq = seq;
 }
 
-SideChange PositionHolding::apply_query_side(DzDirection dir, int64_t volume, int64_t yd,
+SideChange PositionHolding::apply_query_side(DzDirection dir,
+                                             int64_t volume,
+                                             int64_t yd,
                                              double price) {
     if (dir != DZ_DIRECTION_LONG && dir != DZ_DIRECTION_SHORT) return {};
     const PositionSide lb = long_;
@@ -129,8 +133,7 @@ SideChange PositionHolding::apply_order(const ActiveOrderUpdate& order) {
     if (order.direction != DZ_DIRECTION_LONG && order.direction != DZ_DIRECTION_SHORT) return {};
     const PositionSide lb = long_;
     const PositionSide sb = short_;
-    if (is_terminal_order_status(order.status) ||
-        order.effect == DZ_POSITION_EFFECT_OPEN) {
+    if (is_terminal_order_status(order.status) || order.effect == DZ_POSITION_EFFECT_OPEN) {
         active_orders_.erase(order.order_ref);
     } else {
         active_orders_[order.order_ref] =
@@ -147,12 +150,10 @@ SideChange PositionHolding::rebuild_active_orders(const std::vector<ActiveOrderU
     for (const auto& o : orders) {
         if (o.order_ref.empty() || o.instrument_id != instrument_id_) continue;
         if (o.direction != DZ_DIRECTION_LONG && o.direction != DZ_DIRECTION_SHORT) continue;
-        if (is_terminal_order_status(o.status) ||
-            o.effect == DZ_POSITION_EFFECT_OPEN) {
+        if (is_terminal_order_status(o.status) || o.effect == DZ_POSITION_EFFECT_OPEN) {
             continue;
         }
-        active_orders_[o.order_ref] =
-            ActiveOrder{o.direction, o.effect, o.volume, o.volume_traded};
+        active_orders_[o.order_ref] = ActiveOrder{o.direction, o.effect, o.volume, o.volume_traded};
     }
     recompute_frozen();
     return {!same_side(lb, long_), !same_side(sb, short_)};
@@ -213,10 +214,18 @@ void PositionHolding::clear() noexcept {
     active_orders_.clear();
 }
 
-int64_t PositionHolding::long_available_today() const noexcept { return long_.today - long_.frozen_td; }
-int64_t PositionHolding::short_available_today() const noexcept { return short_.today - short_.frozen_td; }
-int64_t PositionHolding::long_available_yesterday() const noexcept { return long_.yd - long_.frozen_yd; }
-int64_t PositionHolding::short_available_yesterday() const noexcept { return short_.yd - short_.frozen_yd; }
+int64_t PositionHolding::long_available_today() const noexcept {
+    return long_.today - long_.frozen_td;
+}
+int64_t PositionHolding::short_available_today() const noexcept {
+    return short_.today - short_.frozen_td;
+}
+int64_t PositionHolding::long_available_yesterday() const noexcept {
+    return long_.yd - long_.frozen_yd;
+}
+int64_t PositionHolding::short_available_yesterday() const noexcept {
+    return short_.yd - short_.frozen_yd;
+}
 int64_t PositionHolding::long_today() const noexcept { return long_.today; }
 int64_t PositionHolding::long_yesterday() const noexcept { return long_.yd; }
 int64_t PositionHolding::short_today() const noexcept { return short_.today; }

@@ -116,7 +116,7 @@ std::vector<ProcessExeInfo> scan_all_exes(const std::filesystem::path& root) {
         }
         std::error_code sub_ec;
         for (const auto& file_entry :
-                std::filesystem::directory_iterator(sub_entry.path(), sub_ec)) {
+             std::filesystem::directory_iterator(sub_entry.path(), sub_ec)) {
             if (sub_ec) {
                 // 失败路径 C: 子目录 IO 错误时跳过该子目录, 不整体失败
                 SPDLOG_WARN("scan_all_exes: iterate subdir failed | path={} error=\"{}\"",
@@ -152,8 +152,7 @@ std::vector<ProcessExeInfo> scan_all_exes(const std::filesystem::path& root) {
         }
         if (sub_ec) {
             SPDLOG_WARN("scan_all_exes: scan subdir failed | path={} error=\"{}\"",
-                        sub_entry.path().string(),
-                        dztrader::to_utf8_from_system(sub_ec.message()));
+                        sub_entry.path().string(), dztrader::to_utf8_from_system(sub_ec.message()));
             continue;
         }
     }
@@ -172,7 +171,7 @@ std::vector<ProcessExeInfo> scan_all_exes(const std::filesystem::path& root) {
 }
 
 std::optional<ProcessExeInfo> find_exe_by_stem(std::string_view name,
-                                                const std::filesystem::path& root) {
+                                               const std::filesystem::path& root) {
     auto all = scan_all_exes(root);
     auto it = std::find_if(all.begin(), all.end(),
                            [&](const ProcessExeInfo& info) { return info.name == name; });

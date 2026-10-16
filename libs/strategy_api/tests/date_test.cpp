@@ -33,9 +33,8 @@ TEST_F(DateTest, ConstructorFromDaysSinceEpoch) {
 }
 
 TEST_F(DateTest, ConstructorFromYearMonthDay) {
-    auto ymd = std::chrono::year_month_day{std::chrono::year{2024},
-                                            std::chrono::month{2},
-                                            std::chrono::day{29}};
+    auto ymd = std::chrono::year_month_day{std::chrono::year{2024}, std::chrono::month{2},
+                                           std::chrono::day{29}};
     Date d(ymd);
     EXPECT_EQ(d, leap_day_);
     EXPECT_EQ(d.year(), 2024);
@@ -44,9 +43,9 @@ TEST_F(DateTest, ConstructorFromYearMonthDay) {
 }
 
 TEST_F(DateTest, ConstructorFromYearMonthWeekday) {
-    auto ymwd = std::chrono::year_month_weekday{
-        std::chrono::year{2024}, std::chrono::month{1},
-        std::chrono::weekday_indexed{std::chrono::weekday{1u}, 1u}};
+    auto ymwd =
+        std::chrono::year_month_weekday{std::chrono::year{2024}, std::chrono::month{1},
+                                        std::chrono::weekday_indexed{std::chrono::weekday{1u}, 1u}};
     Date d(ymwd);
     EXPECT_EQ(d.year(), 2024);
     EXPECT_EQ(d.month(), 1);
@@ -62,9 +61,9 @@ TEST_F(DateTest, ConstructorFromYearMonthDayLast) {
 }
 
 TEST_F(DateTest, ConstructorFromYearMonthWeekdayLast) {
-    auto ymwdl = std::chrono::year_month_weekday_last{
-        std::chrono::year{2024}, std::chrono::month{3},
-        std::chrono::weekday_last{std::chrono::weekday{5u}}};
+    auto ymwdl =
+        std::chrono::year_month_weekday_last{std::chrono::year{2024}, std::chrono::month{3},
+                                             std::chrono::weekday_last{std::chrono::weekday{5u}}};
     Date d(ymwdl);
     EXPECT_EQ(d.month(), 3);
     EXPECT_EQ(d.weekday(), Weekday::Friday);
@@ -216,9 +215,7 @@ TEST_F(DateTest, DaysToNegative) {
     EXPECT_EQ(a.days_to(b), -10);
 }
 
-TEST_F(DateTest, DaysToZero) {
-    EXPECT_EQ(epoch_.days_to(epoch_), 0);
-}
+TEST_F(DateTest, DaysToZero) { EXPECT_EQ(epoch_.days_to(epoch_), 0); }
 
 TEST_F(DateTest, OperatorPlusDays) {
     auto d = epoch_ + std::chrono::days{5};
@@ -420,27 +417,23 @@ TEST_F(DateTest, FromStringInvalidDate) {
 }
 
 TEST_F(DateTest, FromYearMonthDayValid) {
-    auto d = Date::from_year_month_day(std::chrono::year{2024},
-                                        std::chrono::month{2},
-                                        std::chrono::day{29});
+    auto d = Date::from_year_month_day(std::chrono::year{2024}, std::chrono::month{2},
+                                       std::chrono::day{29});
     EXPECT_EQ(d.day(), 29);
 }
 
 TEST_F(DateTest, FromYearMonthDayInvalid) {
-    EXPECT_THROW(Date::from_year_month_day(std::chrono::year{2024},
-                                            std::chrono::month{2},
-                                            std::chrono::day{30}),
+    EXPECT_THROW(Date::from_year_month_day(std::chrono::year{2024}, std::chrono::month{2},
+                                           std::chrono::day{30}),
                  std::invalid_argument);
 }
 
 TEST_F(DateTest, FromYearMonthDayInvalidParams) {
-    EXPECT_THROW(Date::from_year_month_day(std::chrono::year{2024},
-                                            std::chrono::month{0},
-                                            std::chrono::day{1}),
+    EXPECT_THROW(Date::from_year_month_day(std::chrono::year{2024}, std::chrono::month{0},
+                                           std::chrono::day{1}),
                  std::invalid_argument);
-    EXPECT_THROW(Date::from_year_month_day(std::chrono::year{2024},
-                                            std::chrono::month{1},
-                                            std::chrono::day{0}),
+    EXPECT_THROW(Date::from_year_month_day(std::chrono::year{2024}, std::chrono::month{1},
+                                           std::chrono::day{0}),
                  std::invalid_argument);
 }
 
@@ -474,8 +467,7 @@ TEST_F(DateTest, FromYearMonthDayLastNonLeap) {
 }
 
 TEST_F(DateTest, FromYearMonthDayLastInvalid) {
-    EXPECT_THROW(Date::from_year_month_day_last(std::chrono::year{2024},
-                                                  std::chrono::month{0}),
+    EXPECT_THROW(Date::from_year_month_day_last(std::chrono::year{2024}, std::chrono::month{0}),
                  std::invalid_argument);
 }
 
@@ -531,14 +523,13 @@ TEST_F(DateTest, DISABLED_MonthEndTruncationExhaustive) {
                     auto result = d.add_months(delta);
                     auto result_ymd = result.year_month_day();
                     EXPECT_TRUE(result_ymd.ok())
-                        << "Invalid date from " << y << "-" << m << "-" << day
-                        << " + " << delta << " months = " << result.to_string();
+                        << "Invalid date from " << y << "-" << m << "-" << day << " + " << delta
+                        << " months = " << result.to_string();
 
-                    auto last_day = Date::from_year_month_day_last(
-                        result.year(), result.month());
+                    auto last_day = Date::from_year_month_day_last(result.year(), result.month());
                     EXPECT_LE(result.day(), last_day.day())
-                        << "Day exceeds month end from " << y << "-" << m << "-" << day
-                        << " + " << delta << " months";
+                        << "Day exceeds month end from " << y << "-" << m << "-" << day << " + "
+                        << delta << " months";
                 }
             }
         }

@@ -29,9 +29,12 @@ platform::ProcessEvent process_event_of(platform::ProcessAction action, bool ok)
     using platform::ProcessAction;
     using platform::ProcessEvent;
     switch (action) {
-        case ProcessAction::Start:  return ok ? ProcessEvent::StartSucceeded : ProcessEvent::StartFailed;
-        case ProcessAction::Stop:   return ok ? ProcessEvent::StopSucceeded : ProcessEvent::StopFailed;
-        case ProcessAction::Remove: return ok ? ProcessEvent::RemoveSucceeded : ProcessEvent::RemoveFailed;
+        case ProcessAction::Start:
+            return ok ? ProcessEvent::StartSucceeded : ProcessEvent::StartFailed;
+        case ProcessAction::Stop:
+            return ok ? ProcessEvent::StopSucceeded : ProcessEvent::StopFailed;
+        case ProcessAction::Remove:
+            return ok ? ProcessEvent::RemoveSucceeded : ProcessEvent::RemoveFailed;
     }
     return ok ? ProcessEvent::StartSucceeded : ProcessEvent::StartFailed;  // unreachable
 }
@@ -99,8 +102,7 @@ void ShmManager::handle_frame(const std::byte* frame) {
                 // 流程: decode -> set_shm_config (内部 validate+merge+save) -> rtn
                 // 失败: catch -> 日志 + notify_ui -> rtn (旧值)
                 try {
-                    event_shm_config_.set_shm_config(
-                        shm::decode_ext_json<nlohmann::json>(view));
+                    event_shm_config_.set_shm_config(shm::decode_ext_json<nlohmann::json>(view));
                 } catch (const std::exception& e) {
                     SPDLOG_ERROR("set event shm config failed | error=\"{}\"", e.what());
                     notify_ui_.error(std::string("事件通道配置更新失败: ") + e.what());
@@ -123,8 +125,7 @@ void ShmManager::handle_frame(const std::byte* frame) {
                 // 流程: decode -> set_log_config -> rtn
                 // 失败: catch -> 日志 + notify_ui -> rtn (旧值)
                 try {
-                    log_config_.set_log_config(
-                        shm::decode_ext_inst_json<nlohmann::json>(view));
+                    log_config_.set_log_config(shm::decode_ext_inst_json<nlohmann::json>(view));
                 } catch (const std::exception& e) {
                     SPDLOG_ERROR("set log config failed | error=\"{}\"", e.what());
                     notify_ui_.error(std::format("日志配置更新失败: {}", e.what()));
@@ -164,8 +165,9 @@ void ShmManager::handle_account_status(const std::byte* frame) {
         }
         if (status.state == DZ_ACCOUNT_OFFLINE) {
             // Offline = 账户退出该网关的管理 (td 退出代推回声/断开/删账户): 从镜像移除。
-            // 否则 master 自推的 Offline 帧回流会重建镜像, dead-td 下 DZ_FRAME_TD_QUERY_ACCOUNT_STATUS 再次静默
-            // (audit A-F1 自锁复活); 重启后 td 快照 (LoggingIn/Ready) 重建镜像
+            // 否则 master 自推的 Offline 帧回流会重建镜像, dead-td 下
+            // DZ_FRAME_TD_QUERY_ACCOUNT_STATUS 再次静默 (audit A-F1 自锁复活); 重启后 td 快照
+            // (LoggingIn/Ready) 重建镜像
             auto git = td_account_mirror_.find(gateway);
             if (git != td_account_mirror_.end()) {
                 git->second.erase(std::string(status.account_id));
@@ -176,9 +178,8 @@ void ShmManager::handle_account_status(const std::byte* frame) {
             return;
         }
         td_account_mirror_[gateway].insert(std::string(status.account_id));
-        SPDLOG_DEBUG("account mirror updated | gateway={} account={} state={}",
-                     gateway, std::string_view(status.account_id),
-                     static_cast<int>(status.state));
+        SPDLOG_DEBUG("account mirror updated | gateway={} account={} state={}", gateway,
+                     std::string_view(status.account_id), static_cast<int>(status.state));
     } catch (const std::exception& e) {
         SPDLOG_ERROR("handle account status failed | error=\"{}\"", e.what());
     }
@@ -227,8 +228,8 @@ void ShmManager::notify_td_stopped(std::string_view gateway_name) {
         status.trading_day = 0;
         platform::write_struct(event_writer_, DZ_FRAME_ACCOUNT_STATUS, status);
     }
-    SPDLOG_INFO("td stopped, accounts marked offline | gateway={} count={}",
-                gateway_name, it->second.size());
+    SPDLOG_INFO("td stopped, accounts marked offline | gateway={} count={}", gateway_name,
+                it->second.size());
     // 推完 Offline 即清镜像 (契约 account-status: 镜像 = 运行中网关当前管理的账户集;
     // td 已退出不再"管理"任何账户 —— 保留会抑制 2115 兜底, dead-td 下策略静默挂死)
     forget_td_accounts(gateway_name);
@@ -252,12 +253,12 @@ void ShmManager::handle_process_control(const shm::FrameView& view) {
         notify_ui_.error(std::format("进程控制请求无效: {}", e.what()));
         return;
     }
-    SPDLOG_INFO("process control received | action={} target={}",
-                magic_enum::enum_name(req.action), req.target);
+    SPDLOG_INFO("process control received | action={} target={}", magic_enum::enum_name(req.action),
+                req.target);
     if (!supervisor_ || !process_config_store_) {
-        const std::string err = std::format("process control unavailable | supervisor={} store={}",
-                                            static_cast<bool>(supervisor_),
-                                            static_cast<bool>(process_config_store_));
+        const std::string err =
+            std::format("process control unavailable | supervisor={} store={}",
+                        static_cast<bool>(supervisor_), static_cast<bool>(process_config_store_));
         SPDLOG_WARN("{}", err);
         if (supervisor_) {
             supervisor_->send_process_status(req.target, ChildState::Crashed, 0, err,
@@ -282,8 +283,8 @@ void ShmManager::handle_process_start(const platform::ProcessControlReq& req) {
     // 0. 整体关闭期间拒绝 Start: 避免动态注册写入配置却不启动 (半应用副作用),
     //    以及新进程不在关闭批次内导致关闭悬停 (自检收尾)。与 stop_process 守卫对称。
     if (supervisor_->is_shutting_down()) {
-        const std::string err = std::format("start rejected, full shutdown in progress | target={}",
-                                            req.target);
+        const std::string err =
+            std::format("start rejected, full shutdown in progress | target={}", req.target);
         SPDLOG_WARN("{}", err);
         notify_ui_.error(err);
         supervisor_->send_process_status(req.target, ChildState::Crashed, 0, err,
@@ -297,19 +298,18 @@ void ShmManager::handle_process_start(const platform::ProcessControlReq& req) {
     if (!supervisor_->find_registry_entry(req.target)) {
         const auto* scanned = supervisor_->find_exe_by_stem(req.target);
         if (!scanned) {
-            const std::string err = std::format("target not registered and exe not found | target={}",
-                                                req.target);
+            const std::string err =
+                std::format("target not registered and exe not found | target={}", req.target);
             SPDLOG_WARN("{}", err);
             notify_ui_.error(err);
             supervisor_->send_process_status(req.target, ChildState::Crashed, 0, err,
                                              platform::ProcessEvent::StartFailed);
             return;
         }
-        if (scanned->category != Category::GatewayMd &&
-            scanned->category != Category::GatewayTd) {
+        if (scanned->category != Category::GatewayMd && scanned->category != Category::GatewayTd) {
             // 非网关进程（策略等）有独立注册流程, 不在 Start 时动态注册
-            const std::string err = std::format("target not registered and not a gateway | target={}",
-                                                req.target);
+            const std::string err =
+                std::format("target not registered and not a gateway | target={}", req.target);
             SPDLOG_WARN("{}", err);
             notify_ui_.error(err);
             supervisor_->send_process_status(req.target, ChildState::Crashed, 0, err,
@@ -329,13 +329,14 @@ void ShmManager::handle_process_start(const platform::ProcessControlReq& req) {
             return;
         }
     }
-    // 2. 携带 config：先应用（等价 SET），帧顺序：先 DZ_FRAME_RTN_PROCESS_CONFIG 后 DZ_FRAME_RTN_PROCESS_STATUS（契约 process）
+    // 2. 携带 config：先应用（等价 SET），帧顺序：先 DZ_FRAME_RTN_PROCESS_CONFIG 后
+    // DZ_FRAME_RTN_PROCESS_STATUS（契约 process）
     if (req.config) {
         try {
             process_config_store_->set_process_config(req.target, *req.config);
         } catch (const std::exception& e) {
-            const std::string err = std::format("start config apply failed | target={} error=\"{}\"",
-                                                req.target, e.what());
+            const std::string err = std::format(
+                "start config apply failed | target={} error=\"{}\"", req.target, e.what());
             SPDLOG_ERROR("{}", err);
             notify_ui_.error(err);
             process_config_store_->rtn_process_config();  // 回滚旧值（store 强保证内部不变）
@@ -395,8 +396,8 @@ void ShmManager::handle_process_start(const platform::ProcessControlReq& req) {
         supervisor_->send_process_status(req.target, ChildState::Crashed, 0, err,
                                          platform::ProcessEvent::StartFailed);
     } catch (const std::exception& e) {
-        const std::string err = std::format("start failed | target={} error=\"{}\"",
-                                            req.target, e.what());
+        const std::string err =
+            std::format("start failed | target={} error=\"{}\"", req.target, e.what());
         SPDLOG_ERROR("{}", err);
         notify_ui_.error(err);
         supervisor_->send_process_status(req.target, ChildState::Crashed, 0, err,
@@ -428,7 +429,8 @@ void ShmManager::handle_process_stop(const platform::ProcessControlReq& req) {
                                          child ? static_cast<int>(child->pid()) : 0, "",
                                          platform::ProcessEvent::StopSucceeded);
     } catch (const std::exception& e) {
-        const std::string err = std::format("stop failed | target={} error=\"{}\"", req.target, e.what());
+        const std::string err =
+            std::format("stop failed | target={} error=\"{}\"", req.target, e.what());
         SPDLOG_ERROR("{}", err);
         notify_ui_.error(err);
         supervisor_->send_process_status(req.target, ChildState::Stopping, 0, err,
@@ -444,8 +446,9 @@ void ShmManager::handle_process_remove(const platform::ProcessControlReq& req) {
         SPDLOG_WARN("{}", err);
         // 契约 process: Remove 对未注册 target 必须 NOTIFY_UI 错误级别弹窗 (popup=true)
         notify_ui_.error(err);
-        supervisor_->send_process_status(req.target, ChildState::Stopped, 0, err,
-                                         platform::ProcessEvent::RemoveFailed);  // 不幂等（契约 process）
+        supervisor_->send_process_status(
+            req.target, ChildState::Stopped, 0, err,
+            platform::ProcessEvent::RemoveFailed);  // 不幂等（契约 process）
         return;
     }
     // category 按值拷贝: store remove 经 apply 回调会 erase registry vector 条目,
@@ -455,8 +458,8 @@ void ShmManager::handle_process_remove(const platform::ProcessControlReq& req) {
     try {
         process_config_store_->remove(req.target);
     } catch (const std::exception& e) {
-        const std::string err = std::format("remove config failed | target={} error=\"{}\"",
-                                            req.target, e.what());
+        const std::string err =
+            std::format("remove config failed | target={} error=\"{}\"", req.target, e.what());
         SPDLOG_ERROR("{}", err);
         notify_ui_.error(err);
         supervisor_->send_process_status(req.target, ChildState::Stopped, 0, err,
@@ -472,17 +475,18 @@ void ShmManager::handle_process_remove(const platform::ProcessControlReq& req) {
         } else {
             supervisor_->stop_process(req.target);
         }
-        supervisor_->send_process_status(req.target, child ? ChildState::Stopping : ChildState::Stopped,
+        supervisor_->send_process_status(req.target,
+                                         child ? ChildState::Stopping : ChildState::Stopped,
                                          child ? static_cast<int>(child->pid()) : 0, "",
                                          platform::ProcessEvent::RemoveSucceeded);
     } catch (const std::exception& e) {
-        const std::string err = std::format("remove stop failed | target={} error=\"{}\"",
-                                            req.target, e.what());
+        const std::string err =
+            std::format("remove stop failed | target={} error=\"{}\"", req.target, e.what());
         SPDLOG_ERROR("{}", err);
         notify_ui_.error(err);
-        supervisor_->send_process_status(req.target, child ? ChildState::Stopping : ChildState::Stopped,
-                                         child ? static_cast<int>(child->pid()) : 0, err,
-                                         platform::ProcessEvent::RemoveFailed);
+        supervisor_->send_process_status(
+            req.target, child ? ChildState::Stopping : ChildState::Stopped,
+            child ? static_cast<int>(child->pid()) : 0, err, platform::ProcessEvent::RemoveFailed);
     }
 }
 
@@ -523,13 +527,9 @@ void ShmManager::send_shutdown(std::string_view target) {
     platform::write_ext_inst_raw(event_writer_, DZ_FRAME_SHUTDOWN, target);
 }
 
-void ShmManager::report_log_config() {
-    log_config_.rtn_log_config(event_writer_);
-}
+void ShmManager::report_log_config() { log_config_.rtn_log_config(event_writer_); }
 
-void ShmManager::report_shm_config() {
-    event_shm_config_.rtn_shm_config();
-}
+void ShmManager::report_shm_config() { event_shm_config_.rtn_shm_config(); }
 
 void ShmManager::report_full_snapshot() {
     report_log_config();
@@ -549,10 +549,9 @@ void ShmManager::report_full_snapshot() {
                 supervisor_->send_process_status(entry.name, ChildState::Starting, 0, pending_msg);
                 continue;
             }
-            supervisor_->send_process_status(
-                entry.name,
-                child ? child->state() : ChildState::Stopped,
-                child ? static_cast<int>(child->pid()) : 0);
+            supervisor_->send_process_status(entry.name,
+                                             child ? child->state() : ChildState::Stopped,
+                                             child ? static_cast<int>(child->pid()) : 0);
         }
         SPDLOG_INFO("full snapshot reported | configs + {} processes",
                     supervisor_->registry_entries().size());

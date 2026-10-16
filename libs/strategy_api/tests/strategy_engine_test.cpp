@@ -21,10 +21,10 @@
 
 namespace {
 
+using dztrader::DzUiInput;
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::MultiWriter;
-using dztrader::DzUiInput;
 
 constexpr uint64_t kMB = 1024 * 1024;
 
@@ -90,9 +90,8 @@ protected:
     }
 
     std::shared_ptr<ChannelMeta> open_event_meta() {
-        return std::make_shared<ChannelMeta>(
-            ChannelMeta::open_only(dztrader::shm::channel_name(dztrader::CHANNEL_NAME_EVENT),
-                                   home_ + "/shm"));
+        return std::make_shared<ChannelMeta>(ChannelMeta::open_only(
+            dztrader::shm::channel_name(dztrader::CHANNEL_NAME_EVENT), home_ + "/shm"));
     }
 
     std::shared_ptr<ChannelMeta> open_md_meta() {
@@ -424,9 +423,7 @@ TEST_F(StrategyEngineTest, ExceptionInOnTickIsCaughtAndEngineKeepsRunning) {
             (void)fixture.write_tick(99.0);
         }
         void on_tick(const DzTick& tick) { inner.on_tick(tick); }
-        void on_error(DzErrorCode code, std::string_view message) {
-            inner.on_error(code, message);
-        }
+        void on_error(DzErrorCode code, std::string_view message) { inner.on_error(code, message); }
         void on_schedule(const DzScheduleEvent&) { (void)fixture.write_shutdown(strategy_id); }
     };
     static_assert(dztrader::Strategy<HookStrategy>);
@@ -478,9 +475,7 @@ TEST_F(StrategyEngineTest, ExceptionInOnErrorDoesNotEscapeEngine) {
             (void)fixture.write_tick(1.0);
         }
         void on_tick(const DzTick& tick) { inner.on_tick(tick); }
-        void on_error(DzErrorCode code, std::string_view message) {
-            inner.on_error(code, message);
-        }
+        void on_error(DzErrorCode code, std::string_view message) { inner.on_error(code, message); }
         void on_schedule(const DzScheduleEvent&) { (void)fixture.write_shutdown(strategy_id); }
     };
     static_assert(dztrader::Strategy<HookStrategy>);
@@ -528,9 +523,7 @@ TEST_F(StrategyEngineTest, ExceptionInOnStartReleasesSessionAndReturnsError) {
             inner.on_start(ctx);
         }
         void on_tick(const DzTick&) { ++rogue_tick_count; }
-        void on_error(DzErrorCode code, std::string_view message) {
-            inner.on_error(code, message);
-        }
+        void on_error(DzErrorCode code, std::string_view message) { inner.on_error(code, message); }
     };
 
     HookStrategy hook{strategy, strategy_id};
@@ -622,9 +615,9 @@ TEST_F(StrategyEngineTest, PositionAndAccountFramesDispatchedUnfiltered) {
             inner.on_start(ctx);
             strategy_id = dz_strategy_id(ctx);
             (void)dz_schedule_after(ctx, 100);
-            // DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 为全量透传帧 (无策略过滤): 不填 strategy_id 也应分发,
-            // 写法同 TradeAndOrderReportsDispatchedWithPayload (basic struct 帧);
-            // 各帧须带递增 seq (账户级 ingest 去重按 (account_id, seq), 同值会被判已应用)
+            // DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 为全量透传帧 (无策略过滤): 不填
+            // strategy_id 也应分发, 写法同 TradeAndOrderReportsDispatchedWithPayload (basic struct
+            // 帧); 各帧须带递增 seq (账户级 ingest 去重按 (account_id, seq), 同值会被判已应用)
             DzPositionInfo info{};
             info.seq = 1;
             dztrader::copy_string(info.instrument_id, "IF2603", true);
@@ -650,10 +643,8 @@ TEST_F(StrategyEngineTest, PositionAndAccountFramesDispatchedUnfiltered) {
         }
     };
     static_assert(dztrader::Strategy<HookStrategy>);
-    static_assert(
-        dztrader::strategy_engine_internal::HasOnPositionInfo<HookStrategy>);
-    static_assert(
-        dztrader::strategy_engine_internal::HasOnTradingAccount<HookStrategy>);
+    static_assert(dztrader::strategy_engine_internal::HasOnPositionInfo<HookStrategy>);
+    static_assert(dztrader::strategy_engine_internal::HasOnTradingAccount<HookStrategy>);
 
     HookStrategy hook{strategy, strategy_id, shutdown_written, *this};
 
@@ -735,7 +726,8 @@ TEST_F(StrategyEngineTest, AccountStatusFrameDispatchedUnfiltered) {
             inner.on_start(ctx);
             strategy_id = dz_strategy_id(ctx);
             (void)dz_schedule_after(ctx, 100);
-            // DZ_FRAME_ACCOUNT_STATUS 为全量透传帧 (无策略过滤), basic struct 帧写法同 DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 用例
+            // DZ_FRAME_ACCOUNT_STATUS 为全量透传帧 (无策略过滤), basic struct 帧写法同
+            // DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 用例
             DzAccountStatus status{};
             dztrader::copy_string(status.account_id, "CTP001", true);
             dztrader::copy_string(status.gateway_name, "dztd_ctp", true);
@@ -753,8 +745,7 @@ TEST_F(StrategyEngineTest, AccountStatusFrameDispatchedUnfiltered) {
         }
     };
     static_assert(dztrader::Strategy<HookStrategy>);
-    static_assert(
-        dztrader::strategy_engine_internal::HasOnAccountStatus<HookStrategy>);
+    static_assert(dztrader::strategy_engine_internal::HasOnAccountStatus<HookStrategy>);
 
     HookStrategy hook{strategy, strategy_id, shutdown_written, *this};
 
@@ -794,8 +785,7 @@ TEST_F(StrategyEngineTest, AccountStatusWrongSizeFrameNotDispatched) {
             status.state = DZ_ACCOUNT_READY;
             dztrader::shm::MultiWriter writer = dztrader::shm::MultiWriter::create(
                 fixture.event_channel_meta(), "engine_test_writer");
-            auto* frame = writer.open_frame(DZ_FRAME_ACCOUNT_STATUS,
-                                            sizeof(DzAccountStatus) + 8);
+            auto* frame = writer.open_frame(DZ_FRAME_ACCOUNT_STATUS, sizeof(DzAccountStatus) + 8);
             if (frame != nullptr) {
                 std::memcpy(frame, &status, sizeof(DzAccountStatus));
                 writer.close_frame();
@@ -810,8 +800,7 @@ TEST_F(StrategyEngineTest, AccountStatusWrongSizeFrameNotDispatched) {
         }
     };
     static_assert(dztrader::Strategy<HookStrategy>);
-    static_assert(
-        dztrader::strategy_engine_internal::HasOnAccountStatus<HookStrategy>);
+    static_assert(dztrader::strategy_engine_internal::HasOnAccountStatus<HookStrategy>);
 
     HookStrategy hook{strategy, strategy_id, shutdown_written, *this};
 

@@ -28,8 +28,8 @@ void ProcessConfigStore::load(const nlohmann::json& initial_map) {
     for (auto it = initial_map.begin(); it != initial_map.end(); ++it) {
         const std::string& name = it.key();
         if (auto err = validate_process_config_full(it.value())) {
-            SPDLOG_ERROR("process config load skipped invalid entry | name={} error=\"{}\"",
-                         name, *err);
+            SPDLOG_ERROR("process config load skipped invalid entry | name={} error=\"{}\"", name,
+                         *err);
             continue;
         }
         cfg_map_[name] = it.value();
@@ -57,13 +57,12 @@ void ProcessConfigStore::set_process_config(const std::string& target,
 }
 
 void ProcessConfigStore::register_process(const std::string& name,
-                                         const nlohmann::json& full_config) {
+                                          const nlohmann::json& full_config) {
     if (cfg_map_.contains(name)) {
         throw std::runtime_error("already registered | target=" + name);
     }
     if (auto err = validate_process_config_full(full_config)) {
-        throw std::runtime_error("invalid process config | target=" + name +
-                                 " error=" + *err);
+        throw std::runtime_error("invalid process config | target=" + name + " error=" + *err);
     }
     // 先持久化后应用（副作用窗口见头文件注释）
     persist_fn_(name, full_config);

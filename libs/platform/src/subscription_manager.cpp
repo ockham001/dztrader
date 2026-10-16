@@ -4,7 +4,7 @@
 
 #include <spdlog/spdlog.h>
 
-#include <dztrader/shm/frame_codec.h>  // decode_ext_inst_json
+#include <dztrader/shm/frame_codec.h>       // decode_ext_inst_json
 #include <dztrader/platform/frame_codec.h>  // write_ext_inst_json_obj
 
 namespace dztrader::platform {
@@ -12,12 +12,14 @@ namespace dztrader::platform {
 SubscriptionManager::SubscriptionManager(const std::string& name,
                                          shm::MultiWriter& event_writer,
                                          NotifyUi& notify_ui)
-    : name_(name), event_writer_(event_writer), notify_ui_(notify_ui) {}
+    : name_(name),
+      event_writer_(event_writer),
+      notify_ui_(notify_ui) {}
 
 // ---- Manual entry ----
 
-std::vector<std::string> SubscriptionManager::subscribe(
-    const std::string& instance_id, std::vector<std::string> instruments) {
+std::vector<std::string> SubscriptionManager::subscribe(const std::string& instance_id,
+                                                        std::vector<std::string> instruments) {
     std::vector<std::string> to_subscribe;
     to_subscribe.reserve(instruments.size());
     std::set<std::string> seen;
@@ -37,8 +39,8 @@ std::vector<std::string> SubscriptionManager::subscribe(
     return to_subscribe;
 }
 
-std::vector<std::string> SubscriptionManager::unsubscribe(
-    const std::string& instance_id, std::vector<std::string> instruments) {
+std::vector<std::string> SubscriptionManager::unsubscribe(const std::string& instance_id,
+                                                          std::vector<std::string> instruments) {
     std::vector<std::string> to_unsub;
     for (const auto& inst : instruments) {
         auto it = instruments_sub_info_.find(inst);
@@ -164,9 +166,7 @@ size_t SubscriptionManager::expected_subscribe_count() const {
     return instruments_sub_info_.size();
 }
 
-size_t SubscriptionManager::subscribed_count() const {
-    return cached_subscribed_count_;
-}
+size_t SubscriptionManager::subscribed_count() const { return cached_subscribed_count_; }
 
 bool SubscriptionManager::is_instrument_subscribed(const std::string& instrument) const {
     auto it = instruments_sub_info_.find(instrument);

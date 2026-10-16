@@ -125,7 +125,9 @@ TEST_F(OrphanGuardTest, StartupThrowsOnDoubleInstance) {
     // POSIX: fcntl 记录锁为进程级, 用 fork 子进程持锁模拟"另一实例"
     const auto lock_path = tmp_dir_ / "cache" / "master.pid";
     std::filesystem::create_directories(lock_path.parent_path());
-    { std::ofstream ofs(lock_path); }
+    {
+        std::ofstream ofs(lock_path);
+    }
 
     const pid_t child = fork_lock_holder(lock_path);
     ASSERT_GE(child, 0) << "child failed to acquire lock";
@@ -143,8 +145,7 @@ TEST_F(OrphanGuardTest, SQLiteReadWrite) {
     auto db_path = tmp_dir_ / "cache" / "children.db";
     std::filesystem::create_directories(db_path.parent_path());
 
-    SQLite::Database db(db_path.string(),
-        SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+    SQLite::Database db(db_path.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
     db.exec("PRAGMA journal_mode=WAL");
     db.exec("PRAGMA busy_timeout=5000");
     db.exec(
@@ -153,12 +154,10 @@ TEST_F(OrphanGuardTest, SQLiteReadWrite) {
         "  name  TEXT NOT NULL,"
         "  exe   TEXT NOT NULL,"
         "  ts    INTEGER NOT NULL"
-        ")"
-    );
+        ")");
 
     // 插入
-    SQLite::Statement insert(db,
-        "INSERT INTO children (pid, name, exe, ts) VALUES (?, ?, ?, ?)");
+    SQLite::Statement insert(db, "INSERT INTO children (pid, name, exe, ts) VALUES (?, ?, ?, ?)");
     insert.bind(1, 12345);
     insert.bind(2, "test_child");
     insert.bind(3, "/path/to/exe");
@@ -188,7 +187,9 @@ TEST_F(OrphanGuardTest, FileLockPreventsDoubleInstance) {
     std::filesystem::create_directories(lock_path.parent_path());
 
     // 创建锁文件
-    { std::ofstream ofs(lock_path); }
+    {
+        std::ofstream ofs(lock_path);
+    }
 
 #ifdef _WIN32
     // Windows: file_lock 为句柄级互斥, 同进程二次加锁即失败

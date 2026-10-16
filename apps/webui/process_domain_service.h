@@ -19,11 +19,13 @@ namespace dztrader::webui {
 /// - 广播在守卫之外无条件执行（前端可感知未知进程状态，与原实现一致）。
 /// - 广播 payload 逐字段序列化：name/state/pid/message/display_name/event
 ///   （event 为 nullopt 时序列化为 null，与原实现逐字节一致）。
-/// 线程安全：依赖 dzweb 固定单线程事件循环（thread_num=1），所有访问均发生在主循环串行执行，不加锁。
+/// 线程安全：依赖 dzweb
+/// 固定单线程事件循环（thread_num=1），所有访问均发生在主循环串行执行，不加锁。
 class ProcessDomainService {
 public:
     ProcessDomainService(ProcessMirror& process_mirror, WsBroadcaster& ws)
-        : process_mirror_(process_mirror), ws_(ws) {}
+        : process_mirror_(process_mirror),
+          ws_(ws) {}
 
     void on_rtn_process_status(const nlohmann::json& payload) {
         try {

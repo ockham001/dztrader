@@ -20,7 +20,8 @@ namespace dztrader::db::internal {
 inline constexpr std::string_view kMysqlSchemaVersionTable = "schema_version";
 
 /// ValueType -> MySQL 列类型文本；ValueType::Null 不支持（抛 DZ_EC_INVALID_PARAM）
-[[nodiscard]] std::string_view mysql_column_type(ValueType type, std::string_view column,
+[[nodiscard]] std::string_view mysql_column_type(ValueType type,
+                                                 std::string_view column,
                                                  std::string_view collection);
 
 /// CREATE TABLE IF NOT EXISTS：InnoDB + ROW_FORMAT=DYNAMIC + utf8mb4/utf8mb4_bin，

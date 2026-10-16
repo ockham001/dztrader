@@ -159,7 +159,8 @@ std::optional<nlohmann::json> MdStateMachine::on_server_logout() {
     }
     set_state(MdState::Connected);
     SPDLOG_WARN("server logout | state=LoggedIn");
-    return nlohmann::json{{"level", DZ_NOTIFY_WARN}, {"message", "行情被服务器登出"}, {"popup", true}};
+    return nlohmann::json{
+        {"level", DZ_NOTIFY_WARN}, {"message", "行情被服务器登出"}, {"popup", true}};
 }
 
 void MdStateMachine::set_state(MdState new_state) {

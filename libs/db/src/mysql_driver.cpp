@@ -58,26 +58,29 @@ std::string_view as_view(boost::mysql::string_view text) {
 }
 
 /// 服务端诊断优先；客户端错误（连不上/超时）无服务端消息时用 error_code 文本
-std::string error_text(const boost::mysql::error_code& ec,
-                       const boost::mysql::diagnostics& diag) {
+std::string error_text(const boost::mysql::error_code& ec, const boost::mysql::diagnostics& diag) {
     const std::string_view server = as_view(diag.server_message());
     return server.empty() ? ec.message() : std::string(server);
 }
 
-[[noreturn]] void throw_param_type_mismatch(std::string_view column, std::string_view collection,
+[[noreturn]] void throw_param_type_mismatch(std::string_view column,
+                                            std::string_view collection,
                                             std::string_view detail) {
     throw Exception(DZ_EC_INVALID_PARAM,
                     "parameter type mismatch | column={} collection={} detail={}", column,
                     collection, detail);
 }
 
-[[noreturn]] void throw_column_type_mismatch(std::string_view column, std::string_view collection,
+[[noreturn]] void throw_column_type_mismatch(std::string_view column,
+                                             std::string_view collection,
                                              std::string_view kind) {
-    throw Exception(DZ_EC_DB_QUERY_FAILED, "unexpected column type | column={} collection={} kind={}",
-                    column, collection, kind);
+    throw Exception(DZ_EC_DB_QUERY_FAILED,
+                    "unexpected column type | column={} collection={} kind={}", column, collection,
+                    kind);
 }
 
-std::int64_t parse_int64_text(std::string_view text, std::string_view column,
+std::int64_t parse_int64_text(std::string_view text,
+                              std::string_view column,
                               std::string_view collection) {
     std::int64_t value = 0;
     const char* first = text.data();
@@ -91,7 +94,8 @@ std::int64_t parse_int64_text(std::string_view text, std::string_view column,
     return value;
 }
 
-double parse_double_text(std::string_view text, std::string_view column,
+double parse_double_text(std::string_view text,
+                         std::string_view column,
                          std::string_view collection) {
     double value = 0.0;
     const char* first = text.data();
@@ -105,14 +109,17 @@ double parse_double_text(std::string_view text, std::string_view column,
     return value;
 }
 
-std::int64_t parse_int64_option(std::string_view key, std::string_view text, std::int64_t lower,
+std::int64_t parse_int64_option(std::string_view key,
+                                std::string_view text,
+                                std::int64_t lower,
                                 std::int64_t upper) {
     std::int64_t value = 0;
     const char* first = text.data();
     const char* last = text.data() + text.size();
     const auto result = std::from_chars(first, last, value);
     if (result.ec != std::errc{} || result.ptr != last || value < lower || value > upper) {
-        throw Exception(DZ_EC_INVALID_PARAM, "invalid mysql option | key={} value=\"{}\"", key, text);
+        throw Exception(DZ_EC_INVALID_PARAM, "invalid mysql option | key={} value=\"{}\"", key,
+                        text);
     }
     return value;
 }
@@ -147,11 +154,14 @@ MysqlSslMode parse_ssl_mode(std::string_view text) {
 
 boost::mysql::ssl_mode to_boost_ssl_mode(MysqlSslMode mode) {
     switch (mode) {
-        case MysqlSslMode::Disabled: return boost::mysql::ssl_mode::disable;
-        case MysqlSslMode::Preferred: return boost::mysql::ssl_mode::enable;
+        case MysqlSslMode::Disabled:
+            return boost::mysql::ssl_mode::disable;
+        case MysqlSslMode::Preferred:
+            return boost::mysql::ssl_mode::enable;
         case MysqlSslMode::Required:
         case MysqlSslMode::VerifyCa:
-        case MysqlSslMode::VerifyIdentity: return boost::mysql::ssl_mode::require;
+        case MysqlSslMode::VerifyIdentity:
+            return boost::mysql::ssl_mode::require;
     }
     return boost::mysql::ssl_mode::enable;
 }
@@ -204,10 +214,12 @@ std::string read_scalar_text(const boost::mysql::results& result, std::string_vi
 
 MysqlOptions parse_mysql_options(const std::map<std::string, std::string, std::less<>>& options) {
     MysqlOptions parsed;
-    if (const std::string* value = find_option(options, "host"); value != nullptr && !value->empty()) {
+    if (const std::string* value = find_option(options, "host");
+        value != nullptr && !value->empty()) {
         parsed.host = *value;
     }
-    if (const std::string* value = find_option(options, "port"); value != nullptr && !value->empty()) {
+    if (const std::string* value = find_option(options, "port");
+        value != nullptr && !value->empty()) {
         parsed.port = static_cast<std::uint16_t>(parse_int64_option("port", *value, 1, 65535));
     }
     if (const std::string* value = find_option(options, "user"); value != nullptr) {
@@ -237,8 +249,8 @@ MysqlOptions parse_mysql_options(const std::map<std::string, std::string, std::l
     }
     if (const std::string* value = find_option(options, "schema_version");
         value != nullptr && !value->empty()) {
-        parsed.schema_version =
-            parse_int64_option("schema_version", *value, 0, std::numeric_limits<std::int32_t>::max());
+        parsed.schema_version = parse_int64_option("schema_version", *value, 0,
+                                                   std::numeric_limits<std::int32_t>::max());
     }
     if (const std::string* value = find_option(options, "ssl_mode");
         value != nullptr && !value->empty()) {
@@ -260,7 +272,9 @@ public:
         std::visit([&](const auto& typed) { add_typed(typed, field, schema); }, value);
     }
 
-    [[nodiscard]] std::span<const boost::mysql::field_view> views() const noexcept { return views_; }
+    [[nodiscard]] std::span<const boost::mysql::field_view> views() const noexcept {
+        return views_;
+    }
 
 private:
     template <typename T>
@@ -269,10 +283,18 @@ private:
             views_.emplace_back();  // NULL
         } else {
             switch (field.type) {
-                case ValueType::String: add_string_column(value, field, schema); break;
-                case ValueType::Int64: add_int_column(value, field, schema); break;
-                case ValueType::Float64: add_float_column(value, field, schema); break;
-                case ValueType::Bool: add_bool_column(value, field, schema); break;
+                case ValueType::String:
+                    add_string_column(value, field, schema);
+                    break;
+                case ValueType::Int64:
+                    add_int_column(value, field, schema);
+                    break;
+                case ValueType::Float64:
+                    add_float_column(value, field, schema);
+                    break;
+                case ValueType::Bool:
+                    add_bool_column(value, field, schema);
+                    break;
                 case ValueType::Null:
                     throw_param_type_mismatch(field.name, schema.name, "column-type-null");
             }
@@ -354,7 +376,8 @@ private:
 class MysqlConnection {
 public:
     MysqlConnection(MysqlOptions options, bool read_only)
-        : options_(std::move(options)), read_only_(read_only) {}
+        : options_(std::move(options)),
+          read_only_(read_only) {}
     ~MysqlConnection() = default;
 
     MysqlConnection(const MysqlConnection&) = delete;
@@ -370,8 +393,8 @@ public:
         params.ssl = to_boost_ssl_mode(options_.ssl_mode);
         boost::mysql::any_connection_params connection_params;
         if (needs_certificate_verification(options_.ssl_mode)) {
-            ssl_context_ = std::make_unique<boost::asio::ssl::context>(
-                boost::asio::ssl::context::tls_client);
+            ssl_context_ =
+                std::make_unique<boost::asio::ssl::context>(boost::asio::ssl::context::tls_client);
             ssl_context_->set_verify_mode(boost::asio::ssl::verify_peer);
             ssl_context_->set_default_verify_paths();
             if (options_.ssl_mode == MysqlSslMode::VerifyIdentity) {
@@ -381,11 +404,11 @@ public:
             connection_params.ssl_context = ssl_context_.get();
         }
         conn_.emplace(ctx_, connection_params);
-        const boost::mysql::error_code ec = run_with_deadline(
-            options_.connect_timeout, DZ_EC_DB_OPEN_FAILED, "connect",
-            [&](boost::mysql::any_connection& conn, auto handler) {
-                conn.async_connect(params, diag_, std::move(handler));
-            });
+        const boost::mysql::error_code ec =
+            run_with_deadline(options_.connect_timeout, DZ_EC_DB_OPEN_FAILED, "connect",
+                              [&](boost::mysql::any_connection& conn, auto handler) {
+                                  conn.async_connect(params, diag_, std::move(handler));
+                              });
         if (ec) {
             throw Exception(DZ_EC_DB_OPEN_FAILED,
                             "mysql connect failed | host={} port={} database={} error=\"{}\"",
@@ -395,14 +418,15 @@ public:
     }
 
     /// 文本 SQL（DDL/事务控制/会话设置）；失败抛 code 对应异常
-    boost::mysql::results run_text(std::string_view sql, std::chrono::milliseconds timeout,
-                                   DzErrorCode code, std::string_view op) {
+    boost::mysql::results run_text(std::string_view sql,
+                                   std::chrono::milliseconds timeout,
+                                   DzErrorCode code,
+                                   std::string_view op) {
         boost::mysql::results result;
-        const boost::mysql::error_code ec =
-            run_with_deadline(timeout, code, op,
-                              [&](boost::mysql::any_connection& conn, auto handler) {
-                                  conn.async_execute(sql, result, diag_, std::move(handler));
-                              });
+        const boost::mysql::error_code ec = run_with_deadline(
+            timeout, code, op, [&](boost::mysql::any_connection& conn, auto handler) {
+                conn.async_execute(sql, result, diag_, std::move(handler));
+            });
         if (ec) {
             throw_operation_error(ec, code, op);
         }
@@ -412,7 +436,8 @@ public:
     /// prepared statement（`?` 按序绑定）；失败抛 code 对应异常
     boost::mysql::results run_prepared(std::string_view sql,
                                        std::span<const boost::mysql::field_view> params,
-                                       std::chrono::milliseconds timeout, DzErrorCode code,
+                                       std::chrono::milliseconds timeout,
+                                       DzErrorCode code,
                                        std::string_view op) {
         const boost::mysql::statement& statement = cached_statement(sql, timeout, code, op);
         boost::mysql::results result;
@@ -469,8 +494,10 @@ private:
     }
 
     template <typename Initiate>
-    boost::mysql::error_code run_with_deadline(std::chrono::milliseconds timeout, DzErrorCode code,
-                                               std::string_view op, Initiate&& initiate) {
+    boost::mysql::error_code run_with_deadline(std::chrono::milliseconds timeout,
+                                               DzErrorCode code,
+                                               std::string_view op,
+                                               Initiate&& initiate) {
         boost::mysql::any_connection& conn = require_connection();
         boost::mysql::error_code ec;
         bool completed = false;
@@ -514,7 +541,8 @@ private:
     /// 语句缓存：同一 SQL 只 prepare 一次；超过上限关闭最旧一条
     const boost::mysql::statement& cached_statement(std::string_view sql,
                                                     std::chrono::milliseconds timeout,
-                                                    DzErrorCode code, std::string_view op) {
+                                                    DzErrorCode code,
+                                                    std::string_view op) {
         const auto found = statements_.find(sql);
         if (found != statements_.end()) {
             return found->second;
@@ -549,14 +577,15 @@ private:
         return statements_.emplace(std::move(key), statement).first->second;
     }
 
-    [[noreturn]] void throw_operation_error(const boost::mysql::error_code& ec, DzErrorCode code,
+    [[noreturn]] void throw_operation_error(const boost::mysql::error_code& ec,
+                                            DzErrorCode code,
                                             std::string_view op) const {
         throw Exception(code, "mysql operation failed | op={} error=\"{}\"", op,
                         error_text(ec, diag_));
     }
 
     MysqlOptions options_;
-    boost::asio::io_context ctx_;  ///< 先于 conn_ 声明 → conn_ 先析构
+    boost::asio::io_context ctx_;                             ///< 先于 conn_ 声明 → conn_ 先析构
     std::unique_ptr<boost::asio::ssl::context> ssl_context_;  ///< 证书校验模式才构造，须活过连接
     std::optional<boost::mysql::any_connection> conn_;
     boost::mysql::diagnostics diag_;
@@ -570,35 +599,47 @@ private:
 // 结果读取（按 schema 声明类型）
 // ============================================================
 
-std::int64_t read_integer(const boost::mysql::field_view& field, std::string_view column,
+std::int64_t read_integer(const boost::mysql::field_view& field,
+                          std::string_view column,
                           std::string_view collection) {
     switch (field.kind()) {
-        case boost::mysql::field_kind::int64: return field.as_int64();
-        case boost::mysql::field_kind::uint64: return static_cast<std::int64_t>(field.as_uint64());
-        case boost::mysql::field_kind::double_: return static_cast<std::int64_t>(field.as_double());
+        case boost::mysql::field_kind::int64:
+            return field.as_int64();
+        case boost::mysql::field_kind::uint64:
+            return static_cast<std::int64_t>(field.as_uint64());
+        case boost::mysql::field_kind::double_:
+            return static_cast<std::int64_t>(field.as_double());
         case boost::mysql::field_kind::string:
             // FIX-2：SUM() 等聚合在 MySQL/MariaDB 返回 DECIMAL，二进制协议以字符串传回；
             // 按 schema 声明的 Int64 列解析（整数和不会带小数位），不用文本协议猜测类型
             return parse_int64_text(as_view(field.as_string()), column, collection);
-        default: throw_column_type_mismatch(column, collection, "non-integer");
+        default:
+            throw_column_type_mismatch(column, collection, "non-integer");
     }
 }
 
-double read_float(const boost::mysql::field_view& field, std::string_view column,
+double read_float(const boost::mysql::field_view& field,
+                  std::string_view column,
                   std::string_view collection) {
     switch (field.kind()) {
-        case boost::mysql::field_kind::double_: return field.as_double();
-        case boost::mysql::field_kind::float_: return static_cast<double>(field.as_float());
-        case boost::mysql::field_kind::int64: return static_cast<double>(field.as_int64());
-        case boost::mysql::field_kind::uint64: return static_cast<double>(field.as_uint64());
+        case boost::mysql::field_kind::double_:
+            return field.as_double();
+        case boost::mysql::field_kind::float_:
+            return static_cast<double>(field.as_float());
+        case boost::mysql::field_kind::int64:
+            return static_cast<double>(field.as_int64());
+        case boost::mysql::field_kind::uint64:
+            return static_cast<double>(field.as_uint64());
         case boost::mysql::field_kind::string:
             // FIX-2：AVG()/DECIMAL 结果在二进制协议里是字符串，显式解析为 double
             return parse_double_text(as_view(field.as_string()), column, collection);
-        default: throw_column_type_mismatch(column, collection, "non-float");
+        default:
+            throw_column_type_mismatch(column, collection, "non-float");
     }
 }
 
-std::string read_string(const boost::mysql::field_view& field, std::string_view column,
+std::string read_string(const boost::mysql::field_view& field,
+                        std::string_view column,
                         std::string_view collection) {
     switch (field.kind()) {
         case boost::mysql::field_kind::string:
@@ -607,20 +648,27 @@ std::string read_string(const boost::mysql::field_view& field, std::string_view 
             const boost::mysql::blob_view blob = field.as_blob();
             return std::string(reinterpret_cast<const char*>(blob.data()), blob.size());
         }
-        default: throw_column_type_mismatch(column, collection, "non-string");
+        default:
+            throw_column_type_mismatch(column, collection, "non-string");
     }
 }
 
-Value read_column(const boost::mysql::field_view& field, ValueType type, std::string_view column,
+Value read_column(const boost::mysql::field_view& field,
+                  ValueType type,
+                  std::string_view column,
                   std::string_view collection) {
     if (field.is_null()) {
         return std::monostate{};
     }
     switch (type) {
-        case ValueType::Bool: return read_integer(field, column, collection) != 0;
-        case ValueType::Int64: return read_integer(field, column, collection);
-        case ValueType::Float64: return read_float(field, column, collection);
-        case ValueType::String: return read_string(field, column, collection);
+        case ValueType::Bool:
+            return read_integer(field, column, collection) != 0;
+        case ValueType::Int64:
+            return read_integer(field, column, collection);
+        case ValueType::Float64:
+            return read_float(field, column, collection);
+        case ValueType::String:
+            return read_string(field, column, collection);
         case ValueType::Null:
             throw Exception(DZ_EC_DB_QUERY_FAILED,
                             "unexpected value for null column | column={} collection={}", column,
@@ -630,8 +678,10 @@ Value read_column(const boost::mysql::field_view& field, ValueType type, std::st
 }
 
 /// 过滤条件参数按目标列类型归一化（顺序与 compile_filter 的 `?` 一致，见 sql_compiler.h）
-void bind_filter_params(BoundParams& params, std::span<const Condition> conditions,
-                        const ResourceSchema& schema, const CompiledFilter& compiled) {
+void bind_filter_params(BoundParams& params,
+                        std::span<const Condition> conditions,
+                        const ResourceSchema& schema,
+                        const CompiledFilter& compiled) {
     size_t expected = 0;
     for (const Condition& condition : conditions) {
         const FieldSchema* field = find_field(schema, condition.field);
@@ -663,11 +713,16 @@ void bind_filter_params(BoundParams& params, std::span<const Condition> conditio
 
 std::string_view aggregate_column_name(AggregateOp op) {
     switch (op) {
-        case AggregateOp::Count: return "count";
-        case AggregateOp::Max: return "max";
-        case AggregateOp::Min: return "min";
-        case AggregateOp::Sum: return "sum";
-        case AggregateOp::Avg: return "avg";
+        case AggregateOp::Count:
+            return "count";
+        case AggregateOp::Max:
+            return "max";
+        case AggregateOp::Min:
+            return "min";
+        case AggregateOp::Sum:
+            return "sum";
+        case AggregateOp::Avg:
+            return "avg";
     }
     return "count";
 }
@@ -681,7 +736,8 @@ using internal::MysqlConnection;
 
 MysqlDatabaseImpl::MysqlDatabaseImpl(internal::MysqlOptions options,
                                      std::span<const ResourceSchema> schemas)
-    : options_(std::move(options)), schemas_(schemas.begin(), schemas.end()) {
+    : options_(std::move(options)),
+      schemas_(schemas.begin(), schemas.end()) {
     for (const ResourceSchema& schema : schemas_) {
         schema_by_name_.emplace(schema.name, &schema);
     }
@@ -737,8 +793,8 @@ void MysqlDatabaseImpl::migrate() {
                                           DZ_EC_DB_MIGRATE_FAILED, "migrate_version_write");
             return;
         }
-        const std::int64_t db_version = internal::read_integer(
-            version_field, "version", internal::kMysqlSchemaVersionTable);
+        const std::int64_t db_version =
+            internal::read_integer(version_field, "version", internal::kMysqlSchemaVersionTable);
         if (db_version < code_version) {
             throw Exception(DZ_EC_DB_MIGRATE_FAILED,
                             "mysql schema version is older than code | db_version={} "
@@ -759,8 +815,11 @@ void MysqlDatabaseImpl::migrate() {
 }
 
 MysqlSession::MysqlSession(const MysqlDatabaseImpl* owner,
-                           std::unique_ptr<internal::MysqlConnection> connection, bool read_only)
-    : owner_(owner), conn_(std::move(connection)), read_only_(read_only) {}
+                           std::unique_ptr<internal::MysqlConnection> connection,
+                           bool read_only)
+    : owner_(owner),
+      conn_(std::move(connection)),
+      read_only_(read_only) {}
 
 MysqlSession::~MysqlSession() = default;
 
@@ -778,10 +837,10 @@ void MysqlSession::begin_scope(Scope kind) {
         throw Exception(DZ_EC_DB_TRANSACTION_FAILED, "scope already active");
     }
     const bool is_transaction = kind == Scope::Transaction;
-    (void)conn_->run_text(is_transaction ? "START TRANSACTION"
-                                         : "START TRANSACTION WITH CONSISTENT SNAPSHOT",
-                          conn_->read_timeout(), DZ_EC_DB_TRANSACTION_FAILED,
-                          is_transaction ? "begin_transaction" : "begin_snapshot");
+    (void)conn_->run_text(
+        is_transaction ? "START TRANSACTION" : "START TRANSACTION WITH CONSISTENT SNAPSHOT",
+        conn_->read_timeout(), DZ_EC_DB_TRANSACTION_FAILED,
+        is_transaction ? "begin_transaction" : "begin_snapshot");
     scope_ = kind;
 }
 
@@ -863,13 +922,13 @@ uint64_t MysqlSession::remove(std::string_view collection, const Filter& filter)
     BoundParams params;
     internal::bind_filter_params(params, filter.conditions(), schema, compiled);
     const std::string sql = internal::build_delete_sql(schema, compiled, internal::kMysqlDialect);
-    const boost::mysql::results result =
-        conn_->run_prepared(sql, params.views(), conn_->write_timeout(), DZ_EC_DB_WRITE_FAILED,
-                            "remove");
+    const boost::mysql::results result = conn_->run_prepared(
+        sql, params.views(), conn_->write_timeout(), DZ_EC_DB_WRITE_FAILED, "remove");
     return static_cast<uint64_t>(result.affected_rows());
 }
 
-ResultSet MysqlSession::find(std::string_view collection, const Filter& filter,
+ResultSet MysqlSession::find(std::string_view collection,
+                             const Filter& filter,
                              const FindOptions& options) {
     const ResourceSchema& schema = require_schema(collection);
     const internal::CompiledFilter compiled =
@@ -882,8 +941,8 @@ ResultSet MysqlSession::find(std::string_view collection, const Filter& filter,
         columns.push_back({std::string(field.name), field.type});
     }
     // 不限量（limit<0）的 LIMIT 文本由编译器按方言给出（mysql: 18446744073709551615）
-    const std::string sql = internal::build_select_sql(schema, compiled, options.sort, options.offset,
-                                                       options.limit, internal::kMysqlDialect);
+    const std::string sql = internal::build_select_sql(
+        schema, compiled, options.sort, options.offset, options.limit, internal::kMysqlDialect);
     const boost::mysql::results result = conn_->run_prepared(
         sql, params.views(), conn_->read_timeout(), DZ_EC_DB_QUERY_FAILED, "find");
     std::vector<Row> rows;
@@ -929,12 +988,12 @@ ResultSet MysqlSession::aggregate(std::string_view collection, const Aggregation
         }
         aggregate_type = aggregation.op == AggregateOp::Avg ? ValueType::Float64 : field->type;
     }
-    columns.push_back({std::string(internal::aggregate_column_name(aggregation.op)), aggregate_type});
+    columns.push_back(
+        {std::string(internal::aggregate_column_name(aggregation.op)), aggregate_type});
     value_types.push_back(aggregate_type);
-    const std::string sql =
-        internal::build_aggregate_sql(schema, aggregation.op, aggregation.field,
-                                      aggregation.group_by, compiled, aggregation.sort,
-                                      internal::kMysqlDialect);
+    const std::string sql = internal::build_aggregate_sql(
+        schema, aggregation.op, aggregation.field, aggregation.group_by, compiled, aggregation.sort,
+        internal::kMysqlDialect);
     const boost::mysql::results result = conn_->run_prepared(
         sql, params.views(), conn_->read_timeout(), DZ_EC_DB_QUERY_FAILED, "aggregate");
     std::vector<Row> rows;

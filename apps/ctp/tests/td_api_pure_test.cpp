@@ -20,7 +20,7 @@ void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req);
 /// 在 accounts 中查找 account_id 对应的账户 (纯函数)。
 /// account_id 为空或未找到时返回 nullptr。
 const AccountConfig* find_current_account_in(const std::vector<AccountConfig>& accounts,
-                                              const std::string& account_id);
+                                             const std::string& account_id);
 
 /// 在 cfg.accounts 中查找 account_id 对应的账户 (纯函数)。
 /// account_id 为空或未找到时返回 nullptr。
@@ -28,7 +28,8 @@ const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& acc
 
 namespace {
 
-AccountConfig make_account(const std::string& id, const std::string& broker_name = "",
+AccountConfig make_account(const std::string& id,
+                           const std::string& broker_name = "",
                            const std::string& password = "") {
     AccountConfig a;
     a.account_id = id;
@@ -48,13 +49,14 @@ TdConfigOpReq make_req(TdConfigOp op, nlohmann::json params) {
 TEST(ApplyConfigOpTest, AddAccount) {
     TdConfig cfg;
     auto req = make_req(TdConfigOp::AddAccount, {{"account_id", "a1"},
-                                                  {"broker", {{"name", "simnow"},
-                                                              {"broker_id", "9999"},
-                                                              {"user_id", "00001"},
-                                                              {"password", "123456"}}},
-                                                  {"auth_code", "auth"},
-                                                  {"app_id", "app"},
-                                                  {"currency_id", "CNY"}});
+                                                 {"broker",
+                                                  {{"name", "simnow"},
+                                                   {"broker_id", "9999"},
+                                                   {"user_id", "00001"},
+                                                   {"password", "123456"}}},
+                                                 {"auth_code", "auth"},
+                                                 {"app_id", "app"},
+                                                 {"currency_id", "CNY"}});
     apply_config_op(cfg, req);
     ASSERT_EQ(cfg.accounts.size(), 1u);
     EXPECT_EQ(cfg.accounts[0].account_id, "a1");
@@ -118,10 +120,11 @@ TEST(ApplyConfigOpTest, UpdateAccount) {
     TdConfig cfg;
     cfg.accounts.push_back(make_account("a1", "old_name", "old_pass"));
     auto req = make_req(TdConfigOp::UpdateAccount, {{"account_id", "a1"},
-                                                     {"broker", {{"name", "new_name"},
-                                                                 {"broker_id", "9999"},
-                                                                 {"user_id", "u1"},
-                                                                 {"password", "new_pass"}}}});
+                                                    {"broker",
+                                                     {{"name", "new_name"},
+                                                      {"broker_id", "9999"},
+                                                      {"user_id", "u1"},
+                                                      {"password", "new_pass"}}}});
     apply_config_op(cfg, req);
     EXPECT_EQ(cfg.accounts[0].broker.name, "new_name");
     EXPECT_EQ(cfg.accounts[0].broker.password, "new_pass");
@@ -132,9 +135,9 @@ TEST(ApplyConfigOpTest, UpdateAccountPasswordMaskKeepsOld) {
     TdConfig cfg;
     cfg.accounts.push_back(make_account("a1", "name", "old_pass"));
     // password="****" 表示保留旧值
-    auto req = make_req(TdConfigOp::UpdateAccount, {{"account_id", "a1"},
-                                                     {"broker", {{"name", "name"},
-                                                                 {"password", "****"}}}});
+    auto req =
+        make_req(TdConfigOp::UpdateAccount,
+                 {{"account_id", "a1"}, {"broker", {{"name", "name"}, {"password", "****"}}}});
     apply_config_op(cfg, req);
     EXPECT_EQ(cfg.accounts[0].broker.password, "old_pass");  // 保留旧值
 }
@@ -181,8 +184,8 @@ TEST(ApplyConfigOpTest, UpdateAccountPasswordEmptyKeepsOld) {
     TdConfig cfg;
     cfg.accounts.push_back(make_account("a1", "name", "old_pass"));
     // password="" (空串) 表示不改
-    auto req = make_req(TdConfigOp::UpdateAccount, {{"account_id", "a1"},
-                                                     {"broker", {{"password", ""}}}});
+    auto req =
+        make_req(TdConfigOp::UpdateAccount, {{"account_id", "a1"}, {"broker", {{"password", ""}}}});
     apply_config_op(cfg, req);
     EXPECT_EQ(cfg.accounts[0].broker.password, "old_pass");
 }
@@ -191,8 +194,8 @@ TEST(ApplyConfigOpTest, UpdateAccountNotFoundThrows) {
     // 关键决策: UpdateAccount 不存在抛 std::invalid_argument
     TdConfig cfg;
     cfg.accounts.push_back(make_account("a1"));
-    auto req = make_req(TdConfigOp::UpdateAccount, {{"account_id", "nonexistent"},
-                                                     {"broker", {{"name", "x"}}}});
+    auto req = make_req(TdConfigOp::UpdateAccount,
+                        {{"account_id", "nonexistent"}, {"broker", {{"name", "x"}}}});
     EXPECT_THROW(apply_config_op(cfg, req), std::invalid_argument);
     EXPECT_EQ(cfg.accounts[0].broker.name, "");  // cfg 未被修改
 }
@@ -210,8 +213,8 @@ TEST(ApplyConfigOpTest, SetAccountRiskControl) {
     TdConfig cfg;
     cfg.accounts.push_back(make_account("a1"));
     EXPECT_FALSE(cfg.accounts[0].risk_control_enabled);  // 默认 false
-    auto req = make_req(TdConfigOp::SetAccountRiskControl,
-                        {{"account_id", "a1"}, {"enabled", true}});
+    auto req =
+        make_req(TdConfigOp::SetAccountRiskControl, {{"account_id", "a1"}, {"enabled", true}});
     apply_config_op(cfg, req);
     EXPECT_TRUE(cfg.accounts[0].risk_control_enabled);
 }
@@ -219,8 +222,8 @@ TEST(ApplyConfigOpTest, SetAccountRiskControl) {
 TEST(ApplyConfigOpTest, SetAccountCurrency) {
     TdConfig cfg;
     cfg.accounts.push_back(make_account("a1"));
-    auto req = make_req(TdConfigOp::SetAccountCurrency,
-                        {{"account_id", "a1"}, {"currency_id", "USD"}});
+    auto req =
+        make_req(TdConfigOp::SetAccountCurrency, {{"account_id", "a1"}, {"currency_id", "USD"}});
     apply_config_op(cfg, req);
     EXPECT_EQ(cfg.accounts[0].currency_id, "USD");
 }
@@ -238,11 +241,9 @@ TEST(ApplyConfigOpTest, SetLockMode) {
 
 TEST(ApplyConfigOpTest, SetQryIntervals) {
     TdConfig cfg;
-    auto req = make_req(TdConfigOp::SetQryIntervals, {
-        {"qry_account_interval_s", 10},
-        {"qry_position_interval_s", 15},
-        {"qry_flush_interval_ms", 2000}
-    });
+    auto req = make_req(TdConfigOp::SetQryIntervals, {{"qry_account_interval_s", 10},
+                                                      {"qry_position_interval_s", 15},
+                                                      {"qry_flush_interval_ms", 2000}});
     apply_config_op(cfg, req);
     EXPECT_EQ(cfg.qry_account_interval_s, 10);
     EXPECT_EQ(cfg.qry_position_interval_s, 15);
@@ -258,7 +259,7 @@ TEST(ApplyConfigOpTest, SetQryIntervalsPartialUpdate) {
     auto req = make_req(TdConfigOp::SetQryIntervals, {{"qry_account_interval_s", 20}});
     apply_config_op(cfg, req);
     EXPECT_EQ(cfg.qry_account_interval_s, 20);
-    EXPECT_EQ(cfg.qry_position_interval_s, 5);  // 保留旧值
+    EXPECT_EQ(cfg.qry_position_interval_s, 5);   // 保留旧值
     EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);  // 保留旧值
 }
 
@@ -290,7 +291,7 @@ TEST(ApplyConfigOpTest, SetQryIntervalsPartialValidUpdatePreservesOthers) {
     auto req = make_req(TdConfigOp::SetQryIntervals, {{"qry_account_interval_s", 10}});
     EXPECT_NO_THROW(apply_config_op(cfg, req));
     EXPECT_EQ(cfg.qry_account_interval_s, 10);
-    EXPECT_EQ(cfg.qry_position_interval_s, 5);  // 保留旧值
+    EXPECT_EQ(cfg.qry_position_interval_s, 5);   // 保留旧值
     EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);  // 保留旧值
 }
 

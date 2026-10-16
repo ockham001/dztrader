@@ -34,8 +34,7 @@ using ChildState = dztrader::platform::ChildState;
 class ChildProcess : public std::enable_shared_from_this<ChildProcess> {
 public:
     /// 工厂函数：创建 shared_ptr<ChildProcess>，禁止直接构造。
-    static std::shared_ptr<ChildProcess> create(
-        boost::asio::io_context& ioc, ProcessEntry entry);
+    static std::shared_ptr<ChildProcess> create(boost::asio::io_context& ioc, ProcessEntry entry);
 
     /// 启动子进程（非抛出，使用 default_process_launcher）。
     /// 成功返回 true，失败返回 false（ec 被设置）。
@@ -50,7 +49,7 @@ public:
 
     /// 异步等待子进程退出。Handler 签名：void(error_code, int exit_code)。
     /// 捕获 shared_from_this() 以保持 *this 存活直到回调完成。
-    template<typename Handler>
+    template <typename Handler>
     void async_wait(Handler&& handler);
 
     /// 状态查询
@@ -80,7 +79,7 @@ private:
 
 // ── 模板实现 ─────────────────────────────────────────────────
 
-template<typename Handler>
+template <typename Handler>
 void ChildProcess::async_wait(Handler&& handler) {
     if (!proc_) {
         boost::system::error_code ec;
@@ -89,24 +88,21 @@ void ChildProcess::async_wait(Handler&& handler) {
     }
 
     auto self = shared_from_this();
-    proc_->async_wait(
-        [self, h = std::forward<Handler>(handler)](
-            boost::system::error_code ec, int exit_code) mutable {
-            self->state_ = ChildState::Stopped;
-            if (ec) {
-                SPDLOG_WARN("async_wait error | name={} error=\"{}\"",
-                            self->entry_.name, ec.message());
-            } else {
-                SPDLOG_INFO("child exited | name={} exit_code={}",
-                            self->entry_.name, exit_code);
-            }
-            try {
-                h(ec, ec ? -1 : exit_code);
-            } catch (const std::exception& e) {
-                SPDLOG_CRITICAL("async_wait handler error | name={} error=\"{}\"",
-                                self->entry_.name, e.what());
-            }
-        });
+    proc_->async_wait([self, h = std::forward<Handler>(handler)](boost::system::error_code ec,
+                                                                 int exit_code) mutable {
+        self->state_ = ChildState::Stopped;
+        if (ec) {
+            SPDLOG_WARN("async_wait error | name={} error=\"{}\"", self->entry_.name, ec.message());
+        } else {
+            SPDLOG_INFO("child exited | name={} exit_code={}", self->entry_.name, exit_code);
+        }
+        try {
+            h(ec, ec ? -1 : exit_code);
+        } catch (const std::exception& e) {
+            SPDLOG_CRITICAL("async_wait handler error | name={} error=\"{}\"", self->entry_.name,
+                            e.what());
+        }
+    });
 }
 
 }  // namespace dztrader::master

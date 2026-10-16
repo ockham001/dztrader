@@ -53,7 +53,8 @@ std::optional<std::string> check_optional_strings(const nlohmann::json& params,
 
 // ===== validate_ctp_op_req =====
 
-std::optional<std::string> validate_ctp_op_req(const CtpMdConfigOpReq& req, const CtpMdConfigData& cfg) {
+std::optional<std::string> validate_ctp_op_req(const CtpMdConfigOpReq& req,
+                                               const CtpMdConfigData& cfg) {
     // 2. params 必须为 object
     if (!req.params.is_object()) {
         return "params must be a JSON object";
@@ -72,8 +73,8 @@ std::optional<std::string> validate_ctp_op_req(const CtpMdConfigOpReq& req, cons
             if (name.empty()) {
                 return "AddBroker: name must not be empty";
             }
-            if (auto err = check_optional_strings(req.params,
-                                                  {"broker_id", "user_id", "password", "product_info"})) {
+            if (auto err = check_optional_strings(
+                    req.params, {"broker_id", "user_id", "password", "product_info"})) {
                 return err;
             }
             if (find_broker(cfg, name) != nullptr) {
@@ -102,8 +103,8 @@ std::optional<std::string> validate_ctp_op_req(const CtpMdConfigOpReq& req, cons
             if (name.empty()) {
                 return "UpdateBroker: name must not be empty";
             }
-            if (auto err = check_optional_strings(req.params,
-                                                  {"broker_id", "user_id", "password", "product_info"})) {
+            if (auto err = check_optional_strings(
+                    req.params, {"broker_id", "user_id", "password", "product_info"})) {
                 return err;
             }
             if (find_broker(cfg, name) == nullptr) {
@@ -473,8 +474,8 @@ void CtpMdConfig::set_md_config(const CtpMdConfigOpReq& req) {
 }
 
 void CtpMdConfig::rtn_md_config() {
-    write_ext_inst_json_obj(event_writer_, DZ_FRAME_RTN_MD_CONFIG,
-                            instance_id_, ctp_config_to_safe_json(cfg_));
+    write_ext_inst_json_obj(event_writer_, DZ_FRAME_RTN_MD_CONFIG, instance_id_,
+                            ctp_config_to_safe_json(cfg_));
 }
 
 }  // namespace dztrader::platform

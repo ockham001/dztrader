@@ -5,9 +5,8 @@
 using namespace dztrader::db;
 
 TEST(DbTypesTest, FilterHelpersMapScalars) {
-    const Filter f = {filters::eq("account_id", std::string("ctp_001")),
-                      filters::gte("seq", 100), filters::lt("seq", 200),
-                      filters::in("instrument_id", {"cu2601", "al2601"})};
+    const Filter f = {filters::eq("account_id", std::string("ctp_001")), filters::gte("seq", 100),
+                      filters::lt("seq", 200), filters::in("instrument_id", {"cu2601", "al2601"})};
     ASSERT_EQ(f.conditions().size(), 4u);
     EXPECT_EQ(f.conditions()[0].op, CompareOp::Eq);
     EXPECT_EQ(std::get<std::string>(f.conditions()[0].values[0]), "ctp_001");

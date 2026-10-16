@@ -89,7 +89,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzPositionInfo, {
     DzDate date;                   ///< 交易日（距纪元天数）
     DzDirection direction;         ///< 持仓方向
     char reserved[3];
-    uint64_t seq;                  ///< 账户级状态变更序号（账户内全类型共享、跨日累积单调）
+    uint64_t seq;  ///< 账户级状态变更序号（账户内全类型共享、跨日累积单调）
 });
 
 /** @brief 交易账户资金 */
@@ -105,7 +105,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzTradingAccount, {
     double withdraw;         ///< 出金金额
     DzDate date;             ///< 交易日（距纪元天数）
     char reserved[4];
-    uint64_t seq;            ///< 账户级状态变更序号（账户内全类型共享、跨日累积单调）
+    uint64_t seq;  ///< 账户级状态变更序号（账户内全类型共享、跨日累积单调）
 });
 
 /* ==========================================================
@@ -159,10 +159,10 @@ DZ_DECLARE_ALIGNED_STRUCT(DzScheduleEvent, {
 /** @brief 账户登录状态推送 payload (DZ_FRAME_ACCOUNT_STATUS, basic 广播帧,
  *  身份在 payload account_id + gateway_name, 无扩展头, 契约 account-status) */
 DZ_DECLARE_ALIGNED_STRUCT(DzAccountStatus, {
-    DzAccountId account_id;    ///< 账户标识
-    DzInstanceId gateway_name; ///< 网关进程名 (dztd_ctp/dztd_xtp); master 兜底应答为空串
-    DzDate trading_day;        ///< 交易日（距纪元天数; Offline 时为 0）
-    DzAccountState state;      ///< 三态 (DZ_ACCOUNT_*)
+    DzAccountId account_id;     ///< 账户标识
+    DzInstanceId gateway_name;  ///< 网关进程名 (dztd_ctp/dztd_xtp); master 兜底应答为空串
+    DzDate trading_day;         ///< 交易日（距纪元天数; Offline 时为 0）
+    DzAccountState state;       ///< 三态 (DZ_ACCOUNT_*)
     char reserved[3];
 });
 

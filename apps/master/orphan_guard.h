@@ -36,7 +36,8 @@ public:
 
     /// 子进程启动后注册 PID。
     void register_child(process_v2::pid_type pid,
-                        std::string_view name, const std::filesystem::path& exe);
+                        std::string_view name,
+                        const std::filesystem::path& exe);
 
     /// 子进程退出后注销 PID。
     void unregister_child(process_v2::pid_type pid);
@@ -58,8 +59,8 @@ private:
     void clear_children();
 
     std::unique_ptr<boost::interprocess::file_lock> instance_lock_;
-    std::filesystem::path lock_path_;    // $DZTRADER_HOME/cache/master.pid
-    std::filesystem::path db_path_;      // $DZTRADER_HOME/cache/children.db
+    std::filesystem::path lock_path_;  // $DZTRADER_HOME/cache/master.pid
+    std::filesystem::path db_path_;    // $DZTRADER_HOME/cache/children.db
     std::unique_ptr<SQLite::Database> db_;
 };
 

@@ -80,8 +80,7 @@ std::optional<TdNotification> TdStateMachine::on_connect_timeout() {
 
 std::optional<TdNotification> TdStateMachine::on_req_authenticate() {
     if (status_.state != TdState::Connected) {
-        SPDLOG_WARN("authenticate req rejected | state={}",
-                    magic_enum::enum_name(status_.state));
+        SPDLOG_WARN("authenticate req rejected | state={}", magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
     set_state(TdState::Authenticating);
@@ -120,19 +119,18 @@ std::optional<TdNotification> TdStateMachine::on_req_login() {
 }
 
 std::optional<TdNotification> TdStateMachine::on_login_success(const std::string& sys_version,
-                                                                const std::string& trading_day,
-                                                                const std::string& login_time) {
+                                                               const std::string& trading_day,
+                                                               const std::string& login_time) {
     if (status_.state != TdState::LoggingIn) {
-        SPDLOG_WARN("login ok: unexpected state | state={}",
-                    magic_enum::enum_name(status_.state));
+        SPDLOG_WARN("login ok: unexpected state | state={}", magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
     status_.sys_version = sys_version;
     status_.trading_day = trading_day;
     status_.login_time = login_time;
     set_state(TdState::LoggedIn);
-    SPDLOG_INFO("login success | sys_version={} trading_day={} login_time={}",
-                sys_version, trading_day, login_time);
+    SPDLOG_INFO("login success | sys_version={} trading_day={} login_time={}", sys_version,
+                trading_day, login_time);
     return TdNotification{.level = DZ_NOTIFY_INFO, .popup = false, .message = "交易登录成功"};
 }
 
@@ -149,8 +147,7 @@ std::optional<TdNotification> TdStateMachine::on_login_failed() {
     // - 未认证 -> Connected (无认证路径, 重新走 Connected -> LoggingIn)
     TdState rollback = was_authenticated_ ? TdState::Authenticated : TdState::Connected;
     set_state(rollback);
-    SPDLOG_ERROR("login failed | state=LoggingIn rollback={}",
-                 magic_enum::enum_name(rollback));
+    SPDLOG_ERROR("login failed | state=LoggingIn rollback={}", magic_enum::enum_name(rollback));
     return TdNotification{.level = DZ_NOTIFY_ERROR, .popup = true, .message = "交易登录失败"};
 }
 

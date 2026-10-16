@@ -82,10 +82,8 @@ std::string base64url_decode(const std::string& s) {
 std::string hmac_sha256(const std::string& key, const std::string& msg) {
     unsigned char digest[EVP_MAX_MD_SIZE];
     unsigned int digest_len = 0;
-    HMAC(EVP_sha256(),
-         key.data(), static_cast<int>(key.size()),
-         reinterpret_cast<const unsigned char*>(msg.data()), msg.size(),
-         digest, &digest_len);
+    HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()),
+         reinterpret_cast<const unsigned char*>(msg.data()), msg.size(), digest, &digest_len);
     return {reinterpret_cast<char*>(digest), digest_len};
 }
 
@@ -136,7 +134,8 @@ bool jwt_verify(const std::string& token, const std::string& secret, std::string
     }
     int diff = 0;
     for (size_t i = 0; i < sig_b64.size(); ++i) {
-        diff |= static_cast<unsigned char>(sig_b64[i]) ^ static_cast<unsigned char>(expected_sig_b64[i]);
+        diff |= static_cast<unsigned char>(sig_b64[i]) ^
+                static_cast<unsigned char>(expected_sig_b64[i]);
     }
     if (diff != 0) {
         return false;
@@ -152,7 +151,8 @@ bool jwt_verify(const std::string& token, const std::string& secret, std::string
         out_sub = payload.value("sub", "");
         int64_t const exp = payload.value("exp", 0LL);
         auto now = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
+                                            std::chrono::system_clock::now().time_since_epoch())
+                                            .count());
         return now < exp;
     } catch (...) {
         return false;

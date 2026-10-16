@@ -8,14 +8,12 @@ extern const std::filesystem::path& test_root();
 
 class TerminateHandlerTest : public ::testing::Test {
 protected:
-    void TearDown() override
-    {
+    void TearDown() override {
         spdlog::shutdown();
         std::set_terminate(nullptr);
     }
 
-    void setup_log(const std::string& test_name)
-    {
+    void setup_log(const std::string& test_name) {
         dztrader::log::LoggerSetup config;
         config.logger_name = test_name;
         config.enable_console = false;
@@ -25,8 +23,7 @@ protected:
     }
 };
 
-TEST_F(TerminateHandlerTest, TerminateHandlerInstalledAfterSetDefaultLogger)
-{
+TEST_F(TerminateHandlerTest, TerminateHandlerInstalledAfterSetDefaultLogger) {
     auto default_handler = std::get_terminate();
     setup_log("th_installed");
     auto handler = std::get_terminate();
@@ -34,8 +31,7 @@ TEST_F(TerminateHandlerTest, TerminateHandlerInstalledAfterSetDefaultLogger)
     EXPECT_NE(handler, default_handler);
 }
 
-TEST_F(TerminateHandlerTest, TerminatesProcessViaAbort)
-{
+TEST_F(TerminateHandlerTest, TerminatesProcessViaAbort) {
     setup_log("th_abort");
     EXPECT_DEATH(std::terminate(), ".*");
 }

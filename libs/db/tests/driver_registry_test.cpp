@@ -1,6 +1,7 @@
 /**
  * @file driver_registry_test.cpp
- * @brief 驱动注册缝单元测试：注册/重名/空名/未知 backend 错误码、has_driver、Database::open 经注册表
+ * @brief 驱动注册缝单元测试：注册/重名/空名/未知 backend 错误码、has_driver、Database::open
+ * 经注册表
  */
 #include <gtest/gtest.h>
 
@@ -136,9 +137,8 @@ TEST(DriverRegistryTest, CreateDatabaseDispatchesToRegisteredFactory) {
 
 TEST(DriverRegistryTest, CreateDatabaseUnknownBackendRejected) {
     const db::Config config{.backend = "nope", .options = {}};
-    const CaughtError error = catch_error([&] {
-        static_cast<void>(internal::create_database(config, {}));
-    });
+    const CaughtError error =
+        catch_error([&] { static_cast<void>(internal::create_database(config, {})); });
     EXPECT_TRUE(error.caught);
     EXPECT_EQ(error.code, DZ_EC_DB_UNSUPPORTED_BACKEND);
     EXPECT_EQ(error.message, "unsupported backend: backend=nope");
@@ -179,8 +179,9 @@ TEST_F(SqliteRegistryTest, OpenRegisteredSqliteBackend) {
 }
 
 TEST_F(SqliteRegistryTest, SqliteMissingPathRejected) {
-    const CaughtError error =
-        catch_error([&] { static_cast<void>(db::Database::open(db::Config{.backend = "sqlite", .options = {}}, {})); });
+    const CaughtError error = catch_error([&] {
+        static_cast<void>(db::Database::open(db::Config{.backend = "sqlite", .options = {}}, {}));
+    });
     EXPECT_TRUE(error.caught);
     EXPECT_EQ(error.code, DZ_EC_DB_OPEN_FAILED);
     EXPECT_EQ(error.message, "sqlite path option is required");
@@ -188,8 +189,8 @@ TEST_F(SqliteRegistryTest, SqliteMissingPathRejected) {
 
 TEST_F(SqliteRegistryTest, SqliteEmptyPathRejected) {
     const CaughtError error = catch_error([&] {
-        static_cast<void>(db::Database::open(
-            db::Config{.backend = "sqlite", .options = {{"path", ""}}}, {}));
+        static_cast<void>(
+            db::Database::open(db::Config{.backend = "sqlite", .options = {{"path", ""}}}, {}));
     });
     EXPECT_TRUE(error.caught);
     EXPECT_EQ(error.code, DZ_EC_DB_OPEN_FAILED);

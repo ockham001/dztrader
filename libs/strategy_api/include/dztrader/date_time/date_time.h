@@ -145,8 +145,7 @@ public:
 
     [[nodiscard]] constexpr int32_t days_since_epoch() const noexcept {
         return static_cast<int32_t>(
-            std::chrono::floor<std::chrono::days>(std::chrono::nanoseconds{duration_})
-                .count());
+            std::chrono::floor<std::chrono::days>(std::chrono::nanoseconds{duration_}).count());
     }
 
     //
@@ -259,8 +258,8 @@ public:
         auto fields = Parser::parse(str, fmt);
         if (!fields.year || !fields.month || !fields.day) {
             throw std::invalid_argument(std::format(
-                "missing date components | year={} month={} day={}",
-                fields.year.has_value(), fields.month.has_value(), fields.day.has_value()));
+                "missing date components | year={} month={} day={}", fields.year.has_value(),
+                fields.month.has_value(), fields.day.has_value()));
         }
 
         // 构造日期部分
@@ -310,9 +309,9 @@ public:
                                            int32_t ns = 0) {
         if (h < 0 || h >= 24 || minute < 0 || minute >= 60 || s < 0 || s >= 60 || ms < 0 ||
             ms >= 1000 || us < 0 || us >= 1000 || ns < 0 || ns >= 1000) [[unlikely]] {
-            throw std::invalid_argument(std::format(
-                "invalid time component | h={} min={} s={} ms={} us={} ns={}",
-                h, minute, s, ms, us, ns));
+            throw std::invalid_argument(
+                std::format("invalid time component | h={} min={} s={} ms={} us={} ns={}", h,
+                            minute, s, ms, us, ns));
         }
         return DateTime::from_ymd_hms(
             std::chrono::year_month_day{std::chrono::year{y},
@@ -371,11 +370,11 @@ public:
         const auto local_ymd = local_time.year_month_day();
         const auto local_hms = local_time.hh_mm_ss<std::chrono::nanoseconds>();
         std::tm local_tm{};
-        local_tm.tm_sec  = static_cast<int32_t>(local_hms.seconds().count());
-        local_tm.tm_min  = static_cast<int32_t>(local_hms.minutes().count());
+        local_tm.tm_sec = static_cast<int32_t>(local_hms.seconds().count());
+        local_tm.tm_min = static_cast<int32_t>(local_hms.minutes().count());
         local_tm.tm_hour = static_cast<int32_t>(local_hms.hours().count());
         local_tm.tm_mday = static_cast<int32_t>(static_cast<uint32_t>(local_ymd.day()));
-        local_tm.tm_mon  = static_cast<int32_t>(static_cast<uint32_t>(local_ymd.month())) - 1;
+        local_tm.tm_mon = static_cast<int32_t>(static_cast<uint32_t>(local_ymd.month())) - 1;
         local_tm.tm_year = static_cast<int32_t>(local_ymd.year()) - 1900;
         local_tm.tm_isdst = -1;
 
@@ -560,9 +559,8 @@ private:
             case Weekday::Friday:
                 return hour >= 18 ? -1 : 0;
             default:
-                throw std::invalid_argument(
-                    std::format("trading day cannot be weekend | weekday={}",
-                                static_cast<int32_t>(weekday)));
+                throw std::invalid_argument(std::format(
+                    "trading day cannot be weekend | weekday={}", static_cast<int32_t>(weekday)));
         }
     }
 

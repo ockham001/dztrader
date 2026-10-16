@@ -30,10 +30,11 @@ public:
     /// @param cfg_path     持久化路径
     /// @param event_writer 共享内存写入器
     /// @param section      JSON 路径，默认 "/auto_login"；空路径 "" 表示 root
-    AutoLoginConfig(std::string instance_id,
-                    std::filesystem::path cfg_path,
-                    shm::MultiWriter& event_writer,
-                    nlohmann::json::json_pointer section = nlohmann::json::json_pointer("/auto_login"));
+    AutoLoginConfig(
+        std::string instance_id,
+        std::filesystem::path cfg_path,
+        shm::MultiWriter& event_writer,
+        nlohmann::json::json_pointer section = nlohmann::json::json_pointer("/auto_login"));
     // 构造后 cfg_ 初始化为 default_cfg()，即使不调 load() 也有合理默认值
 
     // 禁拷贝/移动：持有引用成员，绑定后终身不变，不应放入容器或按值传递

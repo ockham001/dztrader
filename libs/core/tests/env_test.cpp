@@ -20,8 +20,7 @@ namespace env = dztrader::env;
 // env::get — 存在的环境变量
 // ---------------------------------------------------------------------------
 
-TEST(EnvTest, GetExistingVar)
-{
+TEST(EnvTest, GetExistingVar) {
     auto val = env::get("PATH");
     EXPECT_TRUE(val.has_value());
     EXPECT_FALSE(val->empty());
@@ -31,8 +30,7 @@ TEST(EnvTest, GetExistingVar)
 // env::get — 不存在的环境变量
 // ---------------------------------------------------------------------------
 
-TEST(EnvTest, GetNonexistentVar)
-{
+TEST(EnvTest, GetNonexistentVar) {
     auto val = env::get("DZTRADER_NONEXISTENT_VAR_12345");
     EXPECT_FALSE(val.has_value());
 }
@@ -41,8 +39,7 @@ TEST(EnvTest, GetNonexistentVar)
 // env::get_or — 存在时返回实际值
 // ---------------------------------------------------------------------------
 
-TEST(EnvTest, GetOrExistingVar)
-{
+TEST(EnvTest, GetOrExistingVar) {
     auto result = env::get_or("PATH", "/usr/bin");
     EXPECT_FALSE(result.empty());
     // PATH 应包含实际值而非 default
@@ -53,8 +50,7 @@ TEST(EnvTest, GetOrExistingVar)
 // env::get_or — 不存在时返回默认值
 // ---------------------------------------------------------------------------
 
-TEST(EnvTest, GetOrDefaultValue)
-{
+TEST(EnvTest, GetOrDefaultValue) {
     auto result = env::get_or("DZTRADER_NONEXISTENT_VAR_12345", "default_val");
     EXPECT_EQ(result, "default_val");
 }
@@ -63,8 +59,7 @@ TEST(EnvTest, GetOrDefaultValue)
 // env::set / env::get — 设置后可读取
 // ---------------------------------------------------------------------------
 
-TEST(EnvTest, SetAndGet)
-{
+TEST(EnvTest, SetAndGet) {
     env::set("DZTRADER_TEST_VAR", "hello_world");
     auto val = env::get("DZTRADER_TEST_VAR");
     EXPECT_TRUE(val.has_value());
@@ -76,8 +71,7 @@ TEST(EnvTest, SetAndGet)
 // env::unset — 删除后不可读取
 // ---------------------------------------------------------------------------
 
-TEST(EnvTest, UnsetRemovesVar)
-{
+TEST(EnvTest, UnsetRemovesVar) {
     env::set("DZTRADER_TEST_VAR_UNSET", "temporary");
     env::unset("DZTRADER_TEST_VAR_UNSET");
     auto val = env::get("DZTRADER_TEST_VAR_UNSET");
@@ -88,8 +82,7 @@ TEST(EnvTest, UnsetRemovesVar)
 // env::find_executable — 查找已知可执行文件
 // ---------------------------------------------------------------------------
 
-TEST(EnvTest, FindExecutableExists)
-{
+TEST(EnvTest, FindExecutableExists) {
 #ifdef _WIN32
     auto result = env::find_executable("cmd");
 #else
@@ -103,8 +96,7 @@ TEST(EnvTest, FindExecutableExists)
 // env::find_executable — 查找不存在的东西
 // ---------------------------------------------------------------------------
 
-TEST(EnvTest, FindExecutableNotFound)
-{
+TEST(EnvTest, FindExecutableNotFound) {
     auto result = env::find_executable("dztrader_nonexistent_exe_12345");
     EXPECT_FALSE(result.has_value());
 }
@@ -113,17 +105,13 @@ TEST(EnvTest, FindExecutableNotFound)
 // env::home_dir — 返回非空绝对路径
 // ---------------------------------------------------------------------------
 
-TEST(EnvTest, HomeDirIsAbsolute)
-{
+TEST(EnvTest, HomeDirIsAbsolute) {
     auto home = env::home_dir();
     EXPECT_TRUE(home.is_absolute());
     EXPECT_FALSE(home.empty());
 }
 
-TEST(EnvTest, HomeDirNeverEmpty)
-{
-    EXPECT_FALSE(env::home_dir().empty());
-}
+TEST(EnvTest, HomeDirNeverEmpty) { EXPECT_FALSE(env::home_dir().empty()); }
 
 // ---------------------------------------------------------------------------
 // env::get — 空值环境变量（回归测试）
@@ -131,8 +119,7 @@ TEST(EnvTest, HomeDirNeverEmpty)
 // Windows 不支持空值环境变量，此测试仅在 Linux 上验证
 // ---------------------------------------------------------------------------
 
-TEST(EnvTest, GetEmptyValueVar)
-{
+TEST(EnvTest, GetEmptyValueVar) {
 #ifndef _WIN32
     // Linux: 设置空值环境变量
     env::set("DZTRADER_TEST_EMPTY_VAR", "");

@@ -38,12 +38,12 @@ bool is_terminal_order_status(DzOrderStatus status) noexcept;
 
 /// 单方向聚合持仓. today/yd 的量价与冻结均按方向独立维护.
 struct PositionSide {
-    int64_t today = 0;        // 今仓
-    int64_t yd = 0;           // 昨仓
-    double price = 0.0;       // 持仓均价 (weighted by volume)
-    int64_t frozen_td = 0;    // 今仓冻结
-    int64_t frozen_yd = 0;    // 昨仓冻结
-    uint64_t seq = 0;         // 最近一次该方向持仓变更序号
+    int64_t today = 0;      // 今仓
+    int64_t yd = 0;         // 昨仓
+    double price = 0.0;     // 持仓均价 (weighted by volume)
+    int64_t frozen_td = 0;  // 今仓冻结
+    int64_t frozen_yd = 0;  // 昨仓冻结
+    uint64_t seq = 0;       // 最近一次该方向持仓变更序号
 
     /// 总持仓 = today + yd
     int64_t volume() const noexcept { return today + yd; }
@@ -62,9 +62,9 @@ struct SideChange {
 /// 活动委托单 (未终态且非 OPEN) 的持仓冻结视图.
 /// instrument_id 必需: 防止跨合约冻结污染.
 struct ActiveOrderUpdate {
-    std::string instrument_id;                      // 必需: 防止跨合约冻结污染
+    std::string instrument_id;  // 必需: 防止跨合约冻结污染
     std::string order_ref;
-    DzDirection direction = DZ_DIRECTION_NET;       // 卖→平多, 买→平空
+    DzDirection direction = DZ_DIRECTION_NET;  // 卖→平多, 买→平空
     DzPositionEffect effect = DZ_POSITION_EFFECT_OPEN;
     DzOrderStatus status = DZ_ORDER_SUBMITTING;
     int64_t volume = 0;

@@ -411,8 +411,7 @@ void MdApi::report_md_status() {
 void MdApi::report_progress() {
     try {
         const auto& s = state_machine_.status();
-        progress_reporter_.set(s.progress_min, s.progress_max,
-                               s.progress_current, s.progress_desc);
+        progress_reporter_.set(s.progress_min, s.progress_max, s.progress_current, s.progress_desc);
         progress_reporter_.rtn();
     } catch (const Exception& e) {
         SPDLOG_ERROR("report_progress failed | err_code={} msg=\"{}\"", e.code(), e.what());

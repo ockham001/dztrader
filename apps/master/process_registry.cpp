@@ -19,10 +19,14 @@ namespace {
 /// ProcessKind -> Category 转换 (master 内部类型映射)
 Category kind_to_category(process::ProcessKind kind) {
     switch (kind) {
-        case process::ProcessKind::GatewayMd: return Category::GatewayMd;
-        case process::ProcessKind::GatewayTd: return Category::GatewayTd;
-        case process::ProcessKind::WebUI:     return Category::WebUI;
-        default:                              return Category::Strategy;
+        case process::ProcessKind::GatewayMd:
+            return Category::GatewayMd;
+        case process::ProcessKind::GatewayTd:
+            return Category::GatewayTd;
+        case process::ProcessKind::WebUI:
+            return Category::WebUI;
+        default:
+            return Category::Strategy;
     }
 }
 
@@ -68,13 +72,11 @@ const ProcessEntry* ProcessRegistry::find_exe_by_stem(std::string_view name) con
     tls_entry.exe = opt->exe;
     tls_entry.start_dir = opt->start_dir;
     tls_entry.restart = default_restart_policy(tls_entry.category);
-    SPDLOG_INFO("find_exe_by_stem: found | name={} exe={}",
-                tls_entry.name, tls_entry.exe.string());
+    SPDLOG_INFO("find_exe_by_stem: found | name={} exe={}", tls_entry.name, tls_entry.exe.string());
     return &tls_entry;
 }
 
-bool ProcessRegistry::update_display_name(std::string_view name,
-                                           const std::string& display_name) {
+bool ProcessRegistry::update_display_name(std::string_view name, const std::string& display_name) {
     for (auto& e : entries_) {
         if (e.name == name) {
             if (e.display_name == display_name) {

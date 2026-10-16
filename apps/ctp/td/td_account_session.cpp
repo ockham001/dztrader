@@ -96,12 +96,12 @@ void AccountSession::reload_incremental(SQLite::Database& db) {
                         account_id_, orders.size(), trades.size());
         }
         // 水位推进到本次装载的最大 seq (含断连时水位): 防下次重连重复装载.
-        max_seq_at_disconnect_ = std::max(max_seq_at_disconnect_,
-                                          query_max_seq(db, account_id_));
+        max_seq_at_disconnect_ = std::max(max_seq_at_disconnect_, query_max_seq(db, account_id_));
         seq_counter_ = std::max(seq_counter_, max_seq_at_disconnect_);
     } catch (const std::exception& e) {
-        SPDLOG_WARN("td incremental baseline reload failed, keep existing | account={} error=\"{}\"",
-                    account_id_, e.what());
+        SPDLOG_WARN(
+            "td incremental baseline reload failed, keep existing | account={} error=\"{}\"",
+            account_id_, e.what());
     }
 }
 
@@ -157,20 +157,18 @@ void AccountSession::open(const std::string& flow_dir,
 
     // 30s 连接超时, 防止卡在 Connecting 状态
     uint64_t gen = generation_;
-    connect_timer_id_ = timer_queue_.schedule_after(
-        std::chrono::seconds(30),
-        [this, gen]() {
-            if (gen != generation_) return;  // 陈旧回调
-            if (state_machine_.state() == TdState::Connecting) {
-                SPDLOG_ERROR("td connect timeout | account={}", account_id_);
-                state_machine_.on_connect_timeout();
-                // 契约 account-status: 连接超时回 Offline (本 lambda 是唯一不经
-                // TdApi dispatch 路径的直调点, 经状态通知回调走统一写出口)
-                if (account_state_cb_) {
-                    account_state_cb_(DZ_ACCOUNT_OFFLINE);
-                }
+    connect_timer_id_ = timer_queue_.schedule_after(std::chrono::seconds(30), [this, gen]() {
+        if (gen != generation_) return;  // 陈旧回调
+        if (state_machine_.state() == TdState::Connecting) {
+            SPDLOG_ERROR("td connect timeout | account={}", account_id_);
+            state_machine_.on_connect_timeout();
+            // 契约 account-status: 连接超时回 Offline (本 lambda 是唯一不经
+            // TdApi dispatch 路径的直调点, 经状态通知回调走统一写出口)
+            if (account_state_cb_) {
+                account_state_cb_(DZ_ACCOUNT_OFFLINE);
             }
-        });
+        }
+    });
 
     api_->Init();
 }
@@ -219,8 +217,8 @@ void AccountSession::on_front_connected() {
         }
     }
     auto notif = state_machine_.on_front_connected();
-    SPDLOG_INFO("td front connected | account={} state={}",
-                account_id_, magic_enum::enum_name(state_machine_.state()));
+    SPDLOG_INFO("td front connected | account={} state={}", account_id_,
+                magic_enum::enum_name(state_machine_.state()));
     if (!auth_code_.empty()) {
         req_authenticate();
     } else {
@@ -266,8 +264,8 @@ void AccountSession::on_rsp_authenticate(const OnRspAuthenticateField& f) {
     cancel_login_timer();
     bool ok = f.rsp_info && f.rsp_info->ErrorID == 0;
     if (!ok) {
-        SPDLOG_ERROR("td authenticate failed | account={} error_id={}",
-                     account_id_, f.rsp_info ? f.rsp_info->ErrorID : -1);
+        SPDLOG_ERROR("td authenticate failed | account={} error_id={}", account_id_,
+                     f.rsp_info ? f.rsp_info->ErrorID : -1);
         state_machine_.on_authenticate_failed();
         return;
     }
@@ -279,8 +277,8 @@ void AccountSession::on_rsp_authenticate(const OnRspAuthenticateField& f) {
 void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
     cancel_login_timer();
     if (!f.rsp_info || f.rsp_info->ErrorID != 0) {
-        SPDLOG_ERROR("td login failed | account={} error_id={}",
-                     account_id_, f.rsp_info ? f.rsp_info->ErrorID : -1);
+        SPDLOG_ERROR("td login failed | account={} error_id={}", account_id_,
+                     f.rsp_info ? f.rsp_info->ErrorID : -1);
         state_machine_.on_login_failed();
         return;
     }
@@ -303,17 +301,16 @@ void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
     std::string trading_day_str = f.rsp_user_login ? f.rsp_user_login->TradingDay : "";
     std::string login_time = f.rsp_user_login ? f.rsp_user_login->LoginTime : "";
     state_machine_.on_login_success(sys_version, trading_day_str, login_time);
-    SPDLOG_INFO("td login success | account={} order_ref={} trading_day={}",
-                account_id_, order_ref_, trading_day_str);
+    SPDLOG_INFO("td login success | account={} order_ref={} trading_day={}", account_id_,
+                order_ref_, trading_day_str);
     req_settlement_confirm();
 }
 
 void AccountSession::on_rsp_settlement_confirm(const OnRspSettlementInfoConfirmField& f) {
     // I8: 统一 rsp_info 处理: 缺失视为失败 (与 on_rsp_authenticate / on_rsp_user_login 一致)
     if (!f.rsp_info || f.rsp_info->ErrorID != 0) {
-        std::string err = f.rsp_info
-            ? dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg)
-            : "rsp_info is null";
+        std::string err =
+            f.rsp_info ? dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg) : "rsp_info is null";
         SPDLOG_ERROR("td settlement confirm failed | account={} error_id={} error=\"{}\"",
                      account_id_, f.rsp_info ? f.rsp_info->ErrorID : -1, err);
         // C6: 回退到 LoggedIn, 等待下个调度点重试 (不卡死在 Confirming)
@@ -348,8 +345,8 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
                 dztrader::Date d{trading_day_};
                 char update_day[9];
                 auto* end = std::format_to_n(update_day, sizeof(update_day) - 1,
-                                             "{:04d}{:02d}{:02d}",
-                                             d.year(), d.month(), d.day()).out;
+                                             "{:04d}{:02d}{:02d}", d.year(), d.month(), d.day())
+                                .out;
                 *end = '\0';
                 update_day_str = update_day;
             }
@@ -360,8 +357,8 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
             SPDLOG_ERROR("td instrument persist failed | account={} instrument={} error=\"{}\"",
                          account_id_, f.instrument->InstrumentID, e.what());
         }
-        SPDLOG_DEBUG("td instrument | account={} instrument={}",
-                     account_id_, f.instrument->InstrumentID);
+        SPDLOG_DEBUG("td instrument | account={} instrument={}", account_id_,
+                     f.instrument->InstrumentID);
     } else if (f.rsp_info && f.rsp_info->ErrorID != 0) {
         // CTP 查询失败 (流控超时/权限错误等): pInstrument=null, pRspInfo={ErrorID!=0}
         SPDLOG_ERROR("td qry instrument error | account={} error_id={} error_msg=\"{}\"",
@@ -371,8 +368,9 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
     if (f.is_last) {
         // Ready 后无合约查询发起方 (定向刷新已退役, ADR 0014); 重复/迟到 is_last 一律忽略.
         if (state_machine_.state() != TdState::LoadingInstruments) {
-            SPDLOG_INFO("td qry instrument is_last ignored (not loading) | account={} instrument={}",
-                        account_id_, f.instrument ? f.instrument->InstrumentID : "");
+            SPDLOG_INFO(
+                "td qry instrument is_last ignored (not loading) | account={} instrument={}",
+                account_id_, f.instrument ? f.instrument->InstrumentID : "");
             return;
         }
         // Task 6 (spec §4.2 登录完成协议): 合约加载完成**不立即**转 Ready.
@@ -381,9 +379,8 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
         bool failed = (f.rsp_info && f.rsp_info->ErrorID != 0) || !f.instrument;
         if (failed) {
             // 合约加载失败: 回退到 LoggedIn, 不进入 Ready (设计 §2.4.1).
-            std::string err = f.rsp_info
-                ? dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg)
-                : "instrument is null on is_last";
+            std::string err = f.rsp_info ? dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg)
+                                         : "instrument is null on is_last";
             cancel_instruments_load_timer();
             state_machine_.on_instruments_load_failed(err);
             return;
@@ -468,8 +465,8 @@ void AccountSession::on_rtn_order(const OnRtnOrderField& f) {
             return;  // spec: 吞同不推不落不分配 seq
         }
         if (outdated) {
-            SPDLOG_WARN("td order outdated dropped | account={} order_id={}",
-                        account_id_, rpt.base.order_id);
+            SPDLOG_WARN("td order outdated dropped | account={} order_id={}", account_id_,
+                        rpt.base.order_id);
             return;
         }
 
@@ -484,23 +481,27 @@ void AccountSession::on_rtn_order(const OnRtnOrderField& f) {
             if (auto* h = ensure_holding(rpt.base.instrument_id, std::string(rpt.base.exchange_id));
                 h != nullptr) {
                 ActiveOrderUpdate upd{std::string(rpt.base.instrument_id),
-                                      std::string(rpt.order_ref), rpt.base.direction,
-                                      rpt.base.position_effect, rpt.base.status,
-                                      rpt.base.volume, rpt.base.volume_traded};
+                                      std::string(rpt.order_ref),
+                                      rpt.base.direction,
+                                      rpt.base.position_effect,
+                                      rpt.base.status,
+                                      rpt.base.volume,
+                                      rpt.base.volume_traded};
                 auto ch = h->apply_order(upd);
                 if (ch.long_changed) push_position(*h, DZ_DIRECTION_LONG);
                 if (ch.short_changed) push_position(*h, DZ_DIRECTION_SHORT);
             }
         }
 
-        SPDLOG_DEBUG("td rtn order | account={} order_id={} order_ref={} status={} traded={} seq={}",
-                     account_id_, rpt.base.order_id, f.order.OrderRef,
-                     magic_enum::enum_name(rpt.base.status), rpt.base.volume_traded,
-                     rpt.base.seq);
+        SPDLOG_DEBUG(
+            "td rtn order | account={} order_id={} order_ref={} status={} traded={} seq={}",
+            account_id_, rpt.base.order_id, f.order.OrderRef,
+            magic_enum::enum_name(rpt.base.status), rpt.base.volume_traded, rpt.base.seq);
     } catch (const std::exception& e) {
         // "宁肯乱码也不能崩溃": 不传播异常到 TdApi 主循环
-        SPDLOG_ERROR("td rtn order process failed | account={} error=\"{}\" instrument={} order_ref={}",
-                     account_id_, e.what(), f.order.InstrumentID, f.order.OrderRef);
+        SPDLOG_ERROR(
+            "td rtn order process failed | account={} error=\"{}\" instrument={} order_ref={}",
+            account_id_, e.what(), f.order.InstrumentID, f.order.OrderRef);
     }
 }
 
@@ -527,8 +528,7 @@ void AccountSession::on_rtn_trade(const OnRtnTradeField& f) {
 
         // 重放过滤器: 成交键 (trading_day, trade_id) 存在性去重 (spec §4.1).
         // 命中 = CTP 重放重复, 吞 (不推不落不分配 seq). 基准未装载时直接放行.
-        if (report_filter_ &&
-            report_filter_->check_trade(rpt) == ReportFilter::Verdict::kSkip) {
+        if (report_filter_ && report_filter_->check_trade(rpt) == ReportFilter::Verdict::kSkip) {
             return;
         }
 
@@ -552,8 +552,9 @@ void AccountSession::on_rtn_trade(const OnRtnTradeField& f) {
                     account_id_, f.trade.InstrumentID, f.trade.TradeID, f.trade.Volume,
                     f.trade.Price, rpt.base.seq);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td rtn trade process failed | account={} error=\"{}\" instrument={} trade_id={}",
-                     account_id_, e.what(), f.trade.InstrumentID, f.trade.TradeID);
+        SPDLOG_ERROR(
+            "td rtn trade process failed | account={} error=\"{}\" instrument={} trade_id={}",
+            account_id_, e.what(), f.trade.InstrumentID, f.trade.TradeID);
     }
 }
 
@@ -563,15 +564,17 @@ void AccountSession::on_rtn_trade(const OnRtnTradeField& f) {
 
 void AccountSession::place_order(const DzOrderReq& req) {
     if (!is_ready()) {
-        SPDLOG_WARN("td place_order rejected, not ready | account={} state={}",
-                    account_id_, magic_enum::enum_name(state_machine_.state()));
-        reject_order(req, std::format("交易未就绪: {}",
-                                       magic_enum::enum_name(state_machine_.state())));
+        SPDLOG_WARN("td place_order rejected, not ready | account={} state={}", account_id_,
+                    magic_enum::enum_name(state_machine_.state()));
+        reject_order(req,
+                     std::format("交易未就绪: {}", magic_enum::enum_name(state_machine_.state())));
         return;
     }
     if (req.position_effect == DZ_POSITION_EFFECT_AUTO) {
-        SPDLOG_WARN("td place_order rejected: auto offset unimplemented | account={} order_id={} instrument={}",
-                    account_id_, req.order_id, req.instrument_id);
+        SPDLOG_WARN(
+            "td place_order rejected: auto offset unimplemented | account={} order_id={} "
+            "instrument={}",
+            account_id_, req.order_id, req.instrument_id);
         reject_order(req, "AUTO 开平未实现");
         return;
     }
@@ -652,8 +655,8 @@ bool AccountSession::cancel_order(DzOrderId order_id) {
         return false;
     }
     if (api_ == nullptr) {
-        SPDLOG_ERROR("td cancel_order failed: api is null | account={} order_id={}",
-                     account_id_, order_id);
+        SPDLOG_ERROR("td cancel_order failed: api is null | account={} order_id={}", account_id_,
+                     order_id);
         return false;
     }
 
@@ -718,8 +721,7 @@ void AccountSession::schedule_position_poll() {
     // 固定 tag 会互相 replace 导致其余账户轮询停摆.
     position_poll_timer_id_ = timer_queue_.schedule_after_replace(
         std::format("td_position_poll:{}", account_id_),
-        std::chrono::seconds(position_poll_interval_s_),
-        [this, gen = generation_]() {
+        std::chrono::seconds(position_poll_interval_s_), [this, gen = generation_]() {
             if (gen != generation_) return;  // 断连/登出后回调作废
             on_position_poll_timer();
         });
@@ -751,16 +753,16 @@ void AccountSession::repush_last_records() {
         if (latest_order != nullptr &&
             (latest_trade == nullptr || latest_order->seq >= latest_trade->seq)) {
             platform::write_struct(event_writer_, DZ_FRAME_ORDER_REPORT, *latest_order);
-            SPDLOG_DEBUG("td repush last order | account={} order_id={} seq={}",
-                         account_id_, latest_order->order_id, latest_order->seq);
+            SPDLOG_DEBUG("td repush last order | account={} order_id={} seq={}", account_id_,
+                         latest_order->order_id, latest_order->seq);
         } else if (latest_trade != nullptr) {
             platform::write_struct(event_writer_, DZ_FRAME_TRADE_REPORT, *latest_trade);
-            SPDLOG_DEBUG("td repush last trade | account={} trade_id={} seq={}",
-                         account_id_, latest_trade->trade_id, latest_trade->seq);
+            SPDLOG_DEBUG("td repush last trade | account={} trade_id={} seq={}", account_id_,
+                         latest_trade->trade_id, latest_trade->seq);
         }
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td repush last records failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td repush last records failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
@@ -770,8 +772,7 @@ void AccountSession::delete_event(Event& event) noexcept {
     //   - td 类型 (>=100)
     //   - OnFrontConnected / OnFrontDisconnected (td 进程用 td 版本 Field, 不可走 md 路径)
     // 其他 md 类型 (3, 4-13) 走 Event::delete_data (md 内联)
-    if (static_cast<int16_t>(event.type) >= 100 ||
-        event.type == EventType::OnFrontConnected ||
+    if (static_cast<int16_t>(event.type) >= 100 || event.type == EventType::OnFrontConnected ||
         event.type == EventType::OnFrontDisconnected) {
         td_delete_event_data(event);
     } else {
@@ -797,15 +798,13 @@ void AccountSession::req_authenticate() {
     state_machine_.on_req_authenticate();
     // 10s 认证超时
     uint64_t gen = generation_;
-    login_timer_id_ = timer_queue_.schedule_after(
-        std::chrono::seconds(10),
-        [this, gen]() {
-            if (gen != generation_) return;
-            if (state_machine_.state() == TdState::Authenticating) {
-                SPDLOG_ERROR("td authenticate timeout | account={}", account_id_);
-                state_machine_.on_authenticate_failed();
-            }
-        });
+    login_timer_id_ = timer_queue_.schedule_after(std::chrono::seconds(10), [this, gen]() {
+        if (gen != generation_) return;
+        if (state_machine_.state() == TdState::Authenticating) {
+            SPDLOG_ERROR("td authenticate timeout | account={}", account_id_);
+            state_machine_.on_authenticate_failed();
+        }
+    });
 }
 
 void AccountSession::req_login() {
@@ -820,15 +819,13 @@ void AccountSession::req_login() {
     }
     state_machine_.on_req_login();
     uint64_t gen = generation_;
-    login_timer_id_ = timer_queue_.schedule_after(
-        std::chrono::seconds(10),
-        [this, gen]() {
-            if (gen != generation_) return;
-            if (state_machine_.state() == TdState::LoggingIn) {
-                SPDLOG_ERROR("td login timeout | account={}", account_id_);
-                state_machine_.on_login_failed();
-            }
-        });
+    login_timer_id_ = timer_queue_.schedule_after(std::chrono::seconds(10), [this, gen]() {
+        if (gen != generation_) return;
+        if (state_machine_.state() == TdState::LoggingIn) {
+            SPDLOG_ERROR("td login timeout | account={}", account_id_);
+            state_machine_.on_login_failed();
+        }
+    });
 }
 
 void AccountSession::req_settlement_confirm() {
@@ -856,28 +853,25 @@ void AccountSession::req_qry_instrument() {
             SPDLOG_WARN("td qry instrument flow control, retry in 1.5s | account={}", account_id_);
             uint64_t gen = generation_;
             std::weak_ptr<void> weak = alive_token_;
-            timer_queue_.schedule_after(std::chrono::milliseconds(1500),
-                [this, weak, gen]() {
-                    if (weak.expired()) return;
-                    if (gen != generation_) return;
-                    if (state_machine_.state() == TdState::LoadingInstruments) {
-                        req_qry_instrument();
-                    }
-                });
+            timer_queue_.schedule_after(std::chrono::milliseconds(1500), [this, weak, gen]() {
+                if (weak.expired()) return;
+                if (gen != generation_) return;
+                if (state_machine_.state() == TdState::LoadingInstruments) {
+                    req_qry_instrument();
+                }
+            });
             return;
         }
         // C2: 非 -3 错误, 调 on_instruments_load_failed 回退到 LoggedIn (设计 §2.4.1)
         SPDLOG_ERROR("td req qry instrument failed | account={} ret={}", account_id_, ret);
-        state_machine_.on_instruments_load_failed(
-            std::format("ReqQryInstrument ret={}", ret));
+        state_machine_.on_instruments_load_failed(std::format("ReqQryInstrument ret={}", ret));
         return;
     }
     // I2: 排定 5 分钟超时, 防止 CTP 长期不回 is_last 导致卡死 (设计 §2.4.1)
     cancel_instruments_load_timer();
     uint64_t gen = generation_;
-    instruments_load_timer_id_ = timer_queue_.schedule_after(
-        std::chrono::minutes(5),
-        [this, gen]() {
+    instruments_load_timer_id_ =
+        timer_queue_.schedule_after(std::chrono::minutes(5), [this, gen]() {
             if (gen != generation_) return;
             if (state_machine_.state() == TdState::LoadingInstruments) {
                 SPDLOG_ERROR("td instruments load timeout | account={}", account_id_);
@@ -927,8 +921,8 @@ void AccountSession::req_qry_investor_position(bool login_chain) {
             });
             return;
         }
-        SPDLOG_ERROR("td req qry position failed | account={} ret={} login_chain={}",
-                     account_id_, ret, login_chain);
+        SPDLOG_ERROR("td req qry position failed | account={} ret={} login_chain={}", account_id_,
+                     ret, login_chain);
         if (login_chain) {
             finalizer_.on_position_failed();
             position_query_ok_ = false;
@@ -946,7 +940,7 @@ void AccountSession::req_qry_investor_position(bool login_chain) {
         if (weak.expired()) return;
         if (gen != generation_) return;
         if (token != position_query_token_) return;  // 已有更新的查询, 本次超时作废
-        if (!position_query_in_flight_) return;  // 响应已到, 超时作废
+        if (!position_query_in_flight_) return;      // 响应已到, 超时作废
         position_query_in_flight_ = false;
         if (state_machine_.state() == TdState::LoadingInstruments &&
             finalizer_.phase() == Phase::kQueryPosition) {
@@ -981,14 +975,13 @@ void AccountSession::req_qry_trading_account() {
             SPDLOG_WARN("td qry account flow control, retry in 1.5s | account={}", account_id_);
             uint64_t gen = generation_;
             std::weak_ptr<void> weak = alive_token_;
-            timer_queue_.schedule_after(std::chrono::milliseconds(1500),
-                [this, weak, gen]() {
-                    if (weak.expired()) return;
-                    if (gen != generation_) return;
-                    if (finalizer_.phase() == Phase::kQueryAccount) {
-                        req_qry_trading_account();
-                    }
-                });
+            timer_queue_.schedule_after(std::chrono::milliseconds(1500), [this, weak, gen]() {
+                if (weak.expired()) return;
+                if (gen != generation_) return;
+                if (finalizer_.phase() == Phase::kQueryAccount) {
+                    req_qry_trading_account();
+                }
+            });
             return;
         }
         SPDLOG_ERROR("td req qry account failed | account={} ret={}", account_id_, ret);
@@ -1002,24 +995,23 @@ void AccountSession::req_qry_trading_account() {
     const auto timeout = is_ready() ? std::chrono::seconds(90) : std::chrono::minutes(5);
     uint64_t gen = generation_;
     std::weak_ptr<void> weak = alive_token_;
-    timer_queue_.schedule_after(timeout,
-        [this, weak, gen]() {
-            if (weak.expired()) return;
-            if (gen != generation_) return;
-            if (state_machine_.state() == TdState::LoadingInstruments &&
-                finalizer_.phase() == Phase::kQueryAccount) {
-                SPDLOG_ERROR("td qry account timeout, degrade | account={}", account_id_);
-                finalizer_.on_account_failed();
-                account_query_ok_ = false;
-                finalize_login();
-            } else if (is_ready() && finalizer_.phase() == Phase::kQueryAccount) {
-                SPDLOG_ERROR("td resync qry account timeout, degrade to done | account={}",
-                             account_id_);
-                finalizer_.on_account_failed();
-                account_query_ok_ = false;
-                finalize_login();
-            }
-        });
+    timer_queue_.schedule_after(timeout, [this, weak, gen]() {
+        if (weak.expired()) return;
+        if (gen != generation_) return;
+        if (state_machine_.state() == TdState::LoadingInstruments &&
+            finalizer_.phase() == Phase::kQueryAccount) {
+            SPDLOG_ERROR("td qry account timeout, degrade | account={}", account_id_);
+            finalizer_.on_account_failed();
+            account_query_ok_ = false;
+            finalize_login();
+        } else if (is_ready() && finalizer_.phase() == Phase::kQueryAccount) {
+            SPDLOG_ERROR("td resync qry account timeout, degrade to done | account={}",
+                         account_id_);
+            finalizer_.on_account_failed();
+            account_query_ok_ = false;
+            finalize_login();
+        }
+    });
 }
 
 void AccountSession::drive_finalizer() {
@@ -1136,8 +1128,8 @@ void AccountSession::reject_order(const DzOrderReq& req, const std::string& reas
         if (trading_day_ > 0) {
             dztrader::Date d{trading_day_};
             auto* end = std::format_to_n(rec.trading_day, sizeof(rec.trading_day) - 1,
-                                         "{:04d}{:02d}{:02d}",
-                                         d.year(), d.month(), d.day()).out;
+                                         "{:04d}{:02d}{:02d}", d.year(), d.month(), d.day())
+                            .out;
             *end = '\0';
         }
 
@@ -1152,8 +1144,8 @@ void AccountSession::reject_order(const DzOrderReq& req, const std::string& reas
         write_order_rpt(rec.base);
         persist_order(rec);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td reject_order failed | account={} order_id={} error=\"{}\"",
-                     account_id_, req.order_id, e.what());
+        SPDLOG_ERROR("td reject_order failed | account={} order_id={} error=\"{}\"", account_id_,
+                     req.order_id, e.what());
     }
 }
 
@@ -1168,11 +1160,12 @@ void AccountSession::write_risk_reject(const std::string& account_id,
         reject.rule_name = rule_name;
         reject.reason = reason;
         reject.timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
+                                  std::chrono::system_clock::now().time_since_epoch())
+                                  .count();
         platform::write_ext_json(event_writer_, DZ_FRAME_TD_RISK_REJECT, reject);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td write_risk_reject failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td write_risk_reject failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
@@ -1197,7 +1190,8 @@ PositionHolding* AccountSession::ensure_holding(const std::string& instrument_id
     return &ins->second;
 }
 
-void AccountSession::fill_position_info(DzPositionInfo& pos, const PositionHolding& h,
+void AccountSession::fill_position_info(DzPositionInfo& pos,
+                                        const PositionHolding& h,
                                         DzDirection dir) {
     const PositionSide& s = h.side(dir);
     copy_string(pos.instrument_id, h.instrument_id().c_str(), true);
@@ -1242,8 +1236,14 @@ void AccountSession::apply_position_query() {
                            ? agg.cost / (static_cast<double>(agg.volume) * agg.volume_multiple)
                            : 0.0;
         auto ch = h->apply_query_side(dir, agg.volume, agg.yd, price);
-        if (ch.long_changed) { push_position(*h, DZ_DIRECTION_LONG); any_change = true; }
-        if (ch.short_changed) { push_position(*h, DZ_DIRECTION_SHORT); any_change = true; }
+        if (ch.long_changed) {
+            push_position(*h, DZ_DIRECTION_LONG);
+            any_change = true;
+        }
+        if (ch.short_changed) {
+            push_position(*h, DZ_DIRECTION_SHORT);
+            any_change = true;
+        }
         group.insert(key);
     }
     for (auto& [inst, h] : holdings_) {
@@ -1264,10 +1264,9 @@ void AccountSession::apply_position_query() {
         std::vector<ActiveOrderUpdate> updates;
         updates.reserve(orders.size());
         for (const auto& o : orders) {
-            updates.push_back(ActiveOrderUpdate{std::string(o.base.instrument_id),
-                                                std::string(o.order_ref), o.base.direction,
-                                                o.base.position_effect, o.base.status,
-                                                o.base.volume, o.base.volume_traded});
+            updates.push_back(ActiveOrderUpdate{
+                std::string(o.base.instrument_id), std::string(o.order_ref), o.base.direction,
+                o.base.position_effect, o.base.status, o.base.volume, o.base.volume_traded});
         }
         for (auto& [inst, h] : holdings_) {
             auto ch = h.rebuild_active_orders(updates);
@@ -1326,8 +1325,8 @@ void AccountSession::buffer_trade_rpt(const OnRtnTradeField& f) {
 
 void AccountSession::replay_buffered_reports() {
     if (buffered_orders_.empty() && buffered_trades_.empty()) return;
-    SPDLOG_INFO("td replay buffered | account={} orders={} trades={}",
-                account_id_, buffered_orders_.size(), buffered_trades_.size());
+    SPDLOG_INFO("td replay buffered | account={} orders={} trades={}", account_id_,
+                buffered_orders_.size(), buffered_trades_.size());
     // Task 6: 重放发生在状态机转 Ready 之前 (flush 屏障前), 状态仍是
     // LoadingInstruments, on_rtn_order/on_rtn_trade 会走缓冲分支把回报重新入缓冲.
     // 置 replaying_ 标志使缓冲分支放行, 重放完清除.
@@ -1353,16 +1352,16 @@ void AccountSession::replay_buffered_reports() {
 void AccountSession::on_rsp_qry_order(const OnRspQryOrderField& f) {
     try {
         if (f.order) {
-            SPDLOG_DEBUG("td qry order | account={} instrument={} order_ref={} status={} is_last={}",
-                         account_id_, f.order->InstrumentID, f.order->OrderRef,
-                         magic_enum::enum_name(STATUS_CTP2VT(f.order->OrderStatus)), f.is_last);
+            SPDLOG_DEBUG(
+                "td qry order | account={} instrument={} order_ref={} status={} is_last={}",
+                account_id_, f.order->InstrumentID, f.order->OrderRef,
+                magic_enum::enum_name(STATUS_CTP2VT(f.order->OrderStatus)), f.is_last);
         }
         if (f.is_last) {
             SPDLOG_INFO("td qry order done | account={}", account_id_);
         }
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td on_rsp_qry_order failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td on_rsp_qry_order failed | account={} error=\"{}\"", account_id_, e.what());
     }
 }
 
@@ -1378,7 +1377,8 @@ void AccountSession::on_rsp_qry_trading_account(const OnRspQryTradingAccountFiel
     }
     try {
         if (f.trading_account) {
-            DzTradingAccount acct = to_dz_trading_account(*f.trading_account, account_id_, trading_day_);
+            DzTradingAccount acct =
+                to_dz_trading_account(*f.trading_account, account_id_, trading_day_);
             acct.seq = ++seq_counter_;
             platform::write_struct(event_writer_, DZ_FRAME_TRADING_ACCOUNT, acct);
             persist_writer_.enqueue(PersistTask{.kind = PersistTask::Kind::TradingAccount,
@@ -1402,8 +1402,8 @@ void AccountSession::on_rsp_qry_trading_account(const OnRspQryTradingAccountFiel
             }
         }
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td on_rsp_qry_trading_account failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td on_rsp_qry_trading_account failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
@@ -1414,9 +1414,8 @@ void AccountSession::on_rsp_qry_trading_account(const OnRspQryTradingAccountFiel
 void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPositionField& f) {
     if (query_gen_ != generation_ || f.request_id != position_query_request_id_) return;
     try {
-        const bool has_row = f.investor_position &&
-                             (f.investor_position->Position > 0 ||
-                              f.investor_position->YdPosition > 0);
+        const bool has_row = f.investor_position && (f.investor_position->Position > 0 ||
+                                                     f.investor_position->YdPosition > 0);
         if (has_row) {
             const auto& p = *f.investor_position;
             // 均价换算需合约乘数 (PositionCost 为金额); 合约表未命中/缺失时留 0 -> 均价 0.
@@ -1436,9 +1435,8 @@ void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPosition
             agg.ctp_frozen += static_cast<int64_t>(p.LongFrozen) + p.ShortFrozen;
             if (agg.exchange_id.empty()) agg.exchange_id = p.ExchangeID;
         } else if (f.rsp_info && f.rsp_info->ErrorID != 0) {
-            SPDLOG_ERROR("td qry position error | account={} error_id={} error=\"{}\"",
-                         account_id_, f.rsp_info->ErrorID,
-                         dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg));
+            SPDLOG_ERROR("td qry position error | account={} error_id={} error=\"{}\"", account_id_,
+                         f.rsp_info->ErrorID, dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg));
         }
         if (f.is_last) {
             position_query_in_flight_ = false;
@@ -1465,29 +1463,32 @@ void AccountSession::on_rsp_order_insert(const OnRspOrderInsertField& f) {
         if (f.rsp_info && f.rsp_info->ErrorID == 0) {
             // 无错误 (罕见), 仅记 DEBUG
             if (f.input_order) {
-                SPDLOG_DEBUG("td rsp order insert (no error) | account={} instrument={} order_ref={}",
-                             account_id_, f.input_order->InstrumentID, f.input_order->OrderRef);
+                SPDLOG_DEBUG(
+                    "td rsp order insert (no error) | account={} instrument={} order_ref={}",
+                    account_id_, f.input_order->InstrumentID, f.input_order->OrderRef);
             }
             return;
         }
 
         // I8: rsp_info 缺失视为失败 (与 on_rsp_authenticate / on_rsp_user_login 一致)
         int error_id = f.rsp_info ? f.rsp_info->ErrorID : -1;
-        std::string error_msg = f.rsp_info
-            ? dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg)
-            : "rsp_info is null";
+        std::string error_msg =
+            f.rsp_info ? dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg) : "rsp_info is null";
 
         if (!f.input_order) {
-            SPDLOG_ERROR("td rsp order insert error, no input_order | account={} error_id={} error=\"{}\"",
-                         account_id_, error_id, error_msg);
+            SPDLOG_ERROR(
+                "td rsp order insert error, no input_order | account={} error_id={} error=\"{}\"",
+                account_id_, error_id, error_msg);
             return;
         }
 
         // 查 OrderRefMap 找 order_id
         const DzOrderId* local = order_ref_map_.find_by_order_ref(f.input_order->OrderRef);
         if (local == nullptr) {
-            SPDLOG_WARN("td rsp order insert error, order_ref not found | account={} order_ref={} error_id={} error=\"{}\"",
-                        account_id_, f.input_order->OrderRef, error_id, error_msg);
+            SPDLOG_WARN(
+                "td rsp order insert error, order_ref not found | account={} order_ref={} "
+                "error_id={} error=\"{}\"",
+                account_id_, f.input_order->OrderRef, error_id, error_msg);
             return;
         }
 
@@ -1501,18 +1502,35 @@ void AccountSession::on_rsp_order_insert(const OnRspOrderInsertField& f) {
         copy_string(rec.base.instrument_id, f.input_order->InstrumentID, true);
         copy_string(rec.base.account_id, account_id_.c_str(), true);
         copy_string(rec.base.exchange_id, f.input_order->ExchangeID, true);
-        rec.base.direction = (f.input_order->Direction == THOST_FTDC_D_Buy) ? DZ_DIRECTION_LONG : DZ_DIRECTION_SHORT;
+        rec.base.direction =
+            (f.input_order->Direction == THOST_FTDC_D_Buy) ? DZ_DIRECTION_LONG : DZ_DIRECTION_SHORT;
         switch (f.input_order->CombOffsetFlag[0]) {
-            case THOST_FTDC_OF_Open:           rec.base.position_effect = DZ_POSITION_EFFECT_OPEN;           break;
-            case THOST_FTDC_OF_Close:          rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE;          break;
-            case THOST_FTDC_OF_CloseToday:     rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE_TODAY;    break;
-            case THOST_FTDC_OF_CloseYesterday: rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE_YESTDAY;  break;
-            default:                           rec.base.position_effect = DZ_POSITION_EFFECT_OPEN;           break;
+            case THOST_FTDC_OF_Open:
+                rec.base.position_effect = DZ_POSITION_EFFECT_OPEN;
+                break;
+            case THOST_FTDC_OF_Close:
+                rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE;
+                break;
+            case THOST_FTDC_OF_CloseToday:
+                rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE_TODAY;
+                break;
+            case THOST_FTDC_OF_CloseYesterday:
+                rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE_YESTDAY;
+                break;
+            default:
+                rec.base.position_effect = DZ_POSITION_EFFECT_OPEN;
+                break;
         }
         switch (f.input_order->OrderPriceType) {
-            case THOST_FTDC_OPT_AnyPrice:   rec.base.price_type = DZ_PRICE_MARKET; break;
-            case THOST_FTDC_OPT_LimitPrice: rec.base.price_type = DZ_PRICE_LIMIT;  break;
-            default:                        rec.base.price_type = DZ_PRICE_LIMIT;  break;
+            case THOST_FTDC_OPT_AnyPrice:
+                rec.base.price_type = DZ_PRICE_MARKET;
+                break;
+            case THOST_FTDC_OPT_LimitPrice:
+                rec.base.price_type = DZ_PRICE_LIMIT;
+                break;
+            default:
+                rec.base.price_type = DZ_PRICE_LIMIT;
+                break;
         }
         rec.base.status = DZ_ORDER_REJECTED;
         rec.base.price = f.input_order->LimitPrice;
@@ -1532,8 +1550,8 @@ void AccountSession::on_rsp_order_insert(const OnRspOrderInsertField& f) {
         if (trading_day_ > 0) {
             dztrader::Date d{trading_day_};
             auto* end = std::format_to_n(rec.trading_day, sizeof(rec.trading_day) - 1,
-                                         "{:04d}{:02d}{:02d}",
-                                         d.year(), d.month(), d.day()).out;
+                                         "{:04d}{:02d}{:02d}", d.year(), d.month(), d.day())
+                            .out;
             *end = '\0';
         }
 
@@ -1546,11 +1564,13 @@ void AccountSession::on_rsp_order_insert(const OnRspOrderInsertField& f) {
         write_order_rpt(rec.base);
         persist_order(rec);
 
-        SPDLOG_ERROR("td rsp order insert rejected | account={} order_id={} order_ref={} error_id={} error=\"{}\"",
-                     account_id_, *local, f.input_order->OrderRef, error_id, error_msg);
+        SPDLOG_ERROR(
+            "td rsp order insert rejected | account={} order_id={} order_ref={} error_id={} "
+            "error=\"{}\"",
+            account_id_, *local, f.input_order->OrderRef, error_id, error_msg);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td on_rsp_order_insert failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td on_rsp_order_insert failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
@@ -1560,13 +1580,14 @@ void AccountSession::on_rsp_order_action(const OnRspOrderActionField& f) {
     try {
         if (f.rsp_info && f.rsp_info->ErrorID != 0) {
             std::string error_msg = dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg);
-            SPDLOG_WARN("td rsp order action error | account={} error_id={} error=\"{}\" order_ref={}",
-                        account_id_, f.rsp_info->ErrorID, error_msg,
-                        f.input_order_action ? f.input_order_action->OrderRef : "");
+            SPDLOG_WARN(
+                "td rsp order action error | account={} error_id={} error=\"{}\" order_ref={}",
+                account_id_, f.rsp_info->ErrorID, error_msg,
+                f.input_order_action ? f.input_order_action->OrderRef : "");
         }
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td on_rsp_order_action failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td on_rsp_order_action failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
@@ -1582,15 +1603,18 @@ void AccountSession::on_err_rtn_order_insert(const OnErrRtnOrderInsertField& f) 
         std::string error_msg = dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg);
 
         if (!f.input_order) {
-            SPDLOG_ERROR("td err rtn order insert, no input_order | account={} error_id={} error=\"{}\"",
-                         account_id_, error_id, error_msg);
+            SPDLOG_ERROR(
+                "td err rtn order insert, no input_order | account={} error_id={} error=\"{}\"",
+                account_id_, error_id, error_msg);
             return;
         }
 
         const DzOrderId* local = order_ref_map_.find_by_order_ref(f.input_order->OrderRef);
         if (local == nullptr) {
-            SPDLOG_WARN("td err rtn order insert, order_ref not found | account={} order_ref={} error_id={} error=\"{}\"",
-                        account_id_, f.input_order->OrderRef, error_id, error_msg);
+            SPDLOG_WARN(
+                "td err rtn order insert, order_ref not found | account={} order_ref={} "
+                "error_id={} error=\"{}\"",
+                account_id_, f.input_order->OrderRef, error_id, error_msg);
             return;
         }
 
@@ -1604,18 +1628,35 @@ void AccountSession::on_err_rtn_order_insert(const OnErrRtnOrderInsertField& f) 
         copy_string(rec.base.instrument_id, f.input_order->InstrumentID, true);
         copy_string(rec.base.account_id, account_id_.c_str(), true);
         copy_string(rec.base.exchange_id, f.input_order->ExchangeID, true);
-        rec.base.direction = (f.input_order->Direction == THOST_FTDC_D_Buy) ? DZ_DIRECTION_LONG : DZ_DIRECTION_SHORT;
+        rec.base.direction =
+            (f.input_order->Direction == THOST_FTDC_D_Buy) ? DZ_DIRECTION_LONG : DZ_DIRECTION_SHORT;
         switch (f.input_order->CombOffsetFlag[0]) {
-            case THOST_FTDC_OF_Open:           rec.base.position_effect = DZ_POSITION_EFFECT_OPEN;           break;
-            case THOST_FTDC_OF_Close:          rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE;          break;
-            case THOST_FTDC_OF_CloseToday:     rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE_TODAY;    break;
-            case THOST_FTDC_OF_CloseYesterday: rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE_YESTDAY;  break;
-            default:                           rec.base.position_effect = DZ_POSITION_EFFECT_OPEN;           break;
+            case THOST_FTDC_OF_Open:
+                rec.base.position_effect = DZ_POSITION_EFFECT_OPEN;
+                break;
+            case THOST_FTDC_OF_Close:
+                rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE;
+                break;
+            case THOST_FTDC_OF_CloseToday:
+                rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE_TODAY;
+                break;
+            case THOST_FTDC_OF_CloseYesterday:
+                rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE_YESTDAY;
+                break;
+            default:
+                rec.base.position_effect = DZ_POSITION_EFFECT_OPEN;
+                break;
         }
         switch (f.input_order->OrderPriceType) {
-            case THOST_FTDC_OPT_AnyPrice:   rec.base.price_type = DZ_PRICE_MARKET; break;
-            case THOST_FTDC_OPT_LimitPrice: rec.base.price_type = DZ_PRICE_LIMIT;  break;
-            default:                        rec.base.price_type = DZ_PRICE_LIMIT;  break;
+            case THOST_FTDC_OPT_AnyPrice:
+                rec.base.price_type = DZ_PRICE_MARKET;
+                break;
+            case THOST_FTDC_OPT_LimitPrice:
+                rec.base.price_type = DZ_PRICE_LIMIT;
+                break;
+            default:
+                rec.base.price_type = DZ_PRICE_LIMIT;
+                break;
         }
         rec.base.status = DZ_ORDER_REJECTED;
         rec.base.price = f.input_order->LimitPrice;
@@ -1635,8 +1676,8 @@ void AccountSession::on_err_rtn_order_insert(const OnErrRtnOrderInsertField& f) 
         if (trading_day_ > 0) {
             dztrader::Date d{trading_day_};
             auto* end = std::format_to_n(rec.trading_day, sizeof(rec.trading_day) - 1,
-                                         "{:04d}{:02d}{:02d}",
-                                         d.year(), d.month(), d.day()).out;
+                                         "{:04d}{:02d}{:02d}", d.year(), d.month(), d.day())
+                            .out;
             *end = '\0';
         }
 
@@ -1649,11 +1690,13 @@ void AccountSession::on_err_rtn_order_insert(const OnErrRtnOrderInsertField& f) 
         write_order_rpt(rec.base);
         persist_order(rec);
 
-        SPDLOG_ERROR("td err rtn order insert rejected | account={} order_id={} order_ref={} error_id={} error=\"{}\"",
-                     account_id_, *local, f.input_order->OrderRef, error_id, error_msg);
+        SPDLOG_ERROR(
+            "td err rtn order insert rejected | account={} order_id={} order_ref={} error_id={} "
+            "error=\"{}\"",
+            account_id_, *local, f.input_order->OrderRef, error_id, error_msg);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td on_err_rtn_order_insert failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td on_err_rtn_order_insert failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
@@ -1663,13 +1706,14 @@ void AccountSession::on_err_rtn_order_action(const OnErrRtnOrderActionField& f) 
     try {
         if (f.rsp_info && f.rsp_info->ErrorID != 0) {
             std::string error_msg = dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg);
-            SPDLOG_WARN("td err rtn order action | account={} error_id={} error=\"{}\" order_ref={}",
-                        account_id_, f.rsp_info->ErrorID, error_msg,
-                        f.order_action ? f.order_action->OrderRef : "");
+            SPDLOG_WARN(
+                "td err rtn order action | account={} error_id={} error=\"{}\" order_ref={}",
+                account_id_, f.rsp_info->ErrorID, error_msg,
+                f.order_action ? f.order_action->OrderRef : "");
         }
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td on_err_rtn_order_action failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td on_err_rtn_order_action failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
@@ -1698,11 +1742,10 @@ void AccountSession::on_rsp_transfer(const OnRspFromBankToFutureByFutureField& f
 
         platform::write_ext_json(event_writer_, DZ_FRAME_TD_TRANSFER_RSP, rec);
 
-        SPDLOG_INFO("td rsp transfer | account={} trade_code={} amount={} error_id={}",
-                    account_id_, f.req_transfer->TradeCode, f.req_transfer->TradeAmount, rec.error_id);
+        SPDLOG_INFO("td rsp transfer | account={} trade_code={} amount={} error_id={}", account_id_,
+                    f.req_transfer->TradeCode, f.req_transfer->TradeAmount, rec.error_id);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td on_rsp_transfer failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td on_rsp_transfer failed | account={} error=\"{}\"", account_id_, e.what());
     }
 }
 
@@ -1724,11 +1767,10 @@ void AccountSession::on_rtn_transfer(const OnRtnFromBankToFutureByFutureField& f
 
         platform::write_ext_json(event_writer_, DZ_FRAME_TD_TRANSFER_RTN, rec);
 
-        SPDLOG_INFO("td rtn transfer | account={} trade_code={} amount={} error_id={}",
-                    account_id_, f.rsp_transfer.TradeCode, f.rsp_transfer.TradeAmount, rec.error_id);
+        SPDLOG_INFO("td rtn transfer | account={} trade_code={} amount={} error_id={}", account_id_,
+                    f.rsp_transfer.TradeCode, f.rsp_transfer.TradeAmount, rec.error_id);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td on_rtn_transfer failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td on_rtn_transfer failed | account={} error=\"{}\"", account_id_, e.what());
     }
 }
 
@@ -1747,17 +1789,18 @@ void AccountSession::on_rsp_user_password_update(const OnRspUserPasswordUpdateFi
 
         platform::write_ext_json(event_writer_, DZ_FRAME_TD_PASSWORD_UPDATE_RSP, rec);
 
-        SPDLOG_INFO("td rsp user password update | account={} error_id={}",
-                    account_id_, rec.error_id);
+        SPDLOG_INFO("td rsp user password update | account={} error_id={}", account_id_,
+                    rec.error_id);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td on_rsp_user_password_update failed | account={} error=\"{}\"",
-                     account_id_, e.what());
+        SPDLOG_ERROR("td on_rsp_user_password_update failed | account={} error=\"{}\"", account_id_,
+                     e.what());
     }
 }
 
 // === on_rsp_trading_account_password_update: 修改资金密码响应 ===
 // 转 platform::DzPasswordUpdateRsp (password_type="A"), 推 SHM (JSON, 契约 td-account-ops)
-void AccountSession::on_rsp_trading_account_password_update(const OnRspTradingAccountPasswordUpdateField& f) {
+void AccountSession::on_rsp_trading_account_password_update(
+    const OnRspTradingAccountPasswordUpdateField& f) {
     try {
         platform::DzPasswordUpdateRsp rec;
         rec.account_id = account_id_;
@@ -1770,8 +1813,8 @@ void AccountSession::on_rsp_trading_account_password_update(const OnRspTradingAc
 
         platform::write_ext_json(event_writer_, DZ_FRAME_TD_PASSWORD_UPDATE_RSP, rec);
 
-        SPDLOG_INFO("td rsp trading account password update | account={} error_id={}",
-                    account_id_, rec.error_id);
+        SPDLOG_INFO("td rsp trading account password update | account={} error_id={}", account_id_,
+                    rec.error_id);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td on_rsp_trading_account_password_update failed | account={} error=\"{}\"",
                      account_id_, e.what());

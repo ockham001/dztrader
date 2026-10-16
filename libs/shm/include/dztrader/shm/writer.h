@@ -80,9 +80,7 @@ public:
         return true;
     }
 
-    bool write_ext_frame(DzFrameType frame_type,
-                         const std::byte* data,
-                         uint32_t size) noexcept {
+    bool write_ext_frame(DzFrameType frame_type, const std::byte* data, uint32_t size) noexcept {
         uint32_t padded_size = (size + 7u) & ~7u;
         auto* frame = open_frame(frame_type, sizeof(DzExtFrameHeader) + padded_size);
         if (frame == nullptr) {

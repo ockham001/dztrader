@@ -35,11 +35,9 @@ namespace {
 /// 策略可见帧清单（策略经 dz_next_event / dz_next_md 识别消费）。
 /// 增删策略可见帧属于对外契约变更, 必须显式改这里。
 constexpr DzFrameType kStrategyVisibleFrames[] = {
-    DZ_FRAME_SHUTDOWN,           DZ_FRAME_TICK,
-    DZ_FRAME_ORDER_REPORT,       DZ_FRAME_TRADE_REPORT,
-    DZ_FRAME_POSITION_INFO,      DZ_FRAME_TRADING_ACCOUNT,
-    DZ_FRAME_ACCOUNT_STATUS,
-    DZ_FRAME_UI_INPUT,           DZ_FRAME_SCHEDULE,
+    DZ_FRAME_SHUTDOWN,       DZ_FRAME_TICK,          DZ_FRAME_ORDER_REPORT,
+    DZ_FRAME_TRADE_REPORT,   DZ_FRAME_POSITION_INFO, DZ_FRAME_TRADING_ACCOUNT,
+    DZ_FRAME_ACCOUNT_STATUS, DZ_FRAME_UI_INPUT,      DZ_FRAME_SCHEDULE,
 };
 
 constexpr std::size_t kStrategyVisibleCount =

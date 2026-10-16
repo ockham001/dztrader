@@ -13,7 +13,8 @@ namespace dztrader::webui {
 class ProgressDomainService {
 public:
     ProgressDomainService(MirrorStore& mirror, WsBroadcaster& ws)
-        : mirror_(mirror), ws_(ws) {}
+        : mirror_(mirror),
+          ws_(ws) {}
 
     void on_rtn_progress(const std::string& source, const nlohmann::json& payload) {
         mirror_.update(source, "progress", payload);

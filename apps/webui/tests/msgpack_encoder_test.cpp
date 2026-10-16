@@ -34,8 +34,8 @@ TEST(MsgpackEncoderTest, EncodesTickWithFields) {
     const msgpack::object obj = oh.get();
     ASSERT_EQ(obj.type, msgpack::type::ARRAY);
     ASSERT_EQ(obj.via.array.size, 3u);
-    EXPECT_EQ(obj.via.array.ptr[0].as<int>(), 1);       // msg_type = tick
-    EXPECT_EQ(obj.via.array.ptr[1].as<uint64_t>(), 42u); // seq
+    EXPECT_EQ(obj.via.array.ptr[0].as<int>(), 1);         // msg_type = tick
+    EXPECT_EQ(obj.via.array.ptr[1].as<uint64_t>(), 42u);  // seq
 
     auto payload = obj.via.array.ptr[2].as<std::map<std::string, msgpack::object>>();
     EXPECT_EQ(payload["instrument_id"].as<std::string>(), "rb2510");

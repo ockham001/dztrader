@@ -55,4 +55,4 @@ int pid();
 
 }  // namespace dztrader::this_process
 
-#endif  /* DZTRADER_CORE_THIS_PROCESS_H_ */
+#endif /* DZTRADER_CORE_THIS_PROCESS_H_ */

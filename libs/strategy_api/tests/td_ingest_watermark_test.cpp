@@ -38,8 +38,7 @@ protected:
     DzContext* ctx_ = nullptr;
 
     void SetUp() override {
-        home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_ingest_wm")
-                    .string();
+        home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_ingest_wm").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         std::filesystem::create_directories(home_ + "/db");
@@ -67,15 +66,15 @@ protected:
         db_path_ = std::filesystem::path(home_) / "db" / "td.db";
         {
             auto database = dztrader::db::Database::open(
-                dztrader::db::Config{.backend = "sqlite",
-                                     .options = {{"path", db_path_.string()}}},
+                dztrader::db::Config{.backend = "sqlite", .options = {{"path", db_path_.string()}}},
                 dztrader::tdstore::schemas());
             database->migrate();
         }
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         // 四表预置 (账户 CTP001): orders 最大 seq=5, trades=7, positions=9, trading_accounts=11
         // → W 必须取四表最大 = 11 (非任何单表的 5/7/9)。
-        SQLite::Statement o(db,
+        SQLite::Statement o(
+            db,
             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
             " exchange_id, direction, position_effect, price_type, status, price, volume,"
             " volume_traded, strategy_id, seq)"
@@ -90,7 +89,8 @@ protected:
             o.exec();
             o.reset();
         }
-        SQLite::Statement t(db,
+        SQLite::Statement t(
+            db,
             "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
             " exchange_id, direction, position_effect, price, volume, trade_time, strategy_id, seq)"
             " VALUES ('CTP001', '20260901', ?, ?, 'IF2603', 'CFFEX', '1', '1', ?, ?, ?, 'own', ?)");
@@ -105,7 +105,8 @@ protected:
             t.reset();
         }
         // positions: seq 8, 9 (两个方向)
-        SQLite::Statement p(db,
+        SQLite::Statement p(
+            db,
             "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
             " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
             " VALUES ('CTP001', '20260901', 'IF2603', 'CFFEX', ?, 3, 0, 3, 0, 3950.0, ?)");
@@ -117,7 +118,8 @@ protected:
         p.bind(2, static_cast<int64_t>(9));
         p.exec();
         // trading_accounts: seq 11 (留 seq 10 空洞模拟取号交错)
-        SQLite::Statement a(db,
+        SQLite::Statement a(
+            db,
             "INSERT INTO trading_accounts (account_id, trading_day, balance, available, frozen,"
             " commission, margin, withdraw_quota, deposit, withdraw, seq)"
             " VALUES ('CTP001', '20260901', 100000.0, 90000.0, 1000.0, 0, 9000, 0, 0, 0, 11)");
@@ -147,7 +149,8 @@ protected:
     }
 };
 
-// W = 四表最大 seq: seq ≤ DZ_FRAME_PRELOAD_EVENT_SHM 的帧被拦截 (含 orders 表快照外但 ≤ 其他表 max 的帧)。
+// W = 四表最大 seq: seq ≤ DZ_FRAME_PRELOAD_EVENT_SHM 的帧被拦截 (含 orders 表快照外但 ≤ 其他表 max
+// 的帧)。
 TEST_F(IngestWatermarkTest, WatermarkTakesMaxAcrossFourTables) {
     init_ctx();
     // seq=6: > orders 表 max(5) 但 ≤ trades 表 max(7) → 快照已含, 必须拦截。

@@ -241,7 +241,7 @@ TEST_F(ChannelMetaTest, ReaderWriterMapAddRemoveSetIndex) {
     EXPECT_FALSE(meta.add_reader("stg.r1", 1234));  // 重复
     EXPECT_TRUE(meta.add_writer("gw.w1", 5678));
 
-    EXPECT_EQ(meta.min_reader_page_index(), 0u);     // 初值 0
+    EXPECT_EQ(meta.min_reader_page_index(), 0u);  // 初值 0
     EXPECT_EQ(meta.min_writer_page_index(), 0u);
 
     meta.set_reader_page_index("stg.r1", 5);
@@ -307,8 +307,8 @@ TEST_F(ChannelMetaTest, OpenOrCreateToleratesCorruptActivePageChain) {
         // 页 0 追加一个 8 字节空帧, nwp=16: 链 = [0,8) 初始填充 + [8,16) 空帧
         bip2::file_mapping mfile{page_path().string().c_str(), bip2::read_write};
         bip2::mapped_region region{mfile, bip2::read_write, 0, 1 * MB};
-        auto* hdr = reinterpret_cast<DzFrameHeader*>(
-            static_cast<std::byte*>(region.get_address()) + 8);
+        auto* hdr =
+            reinterpret_cast<DzFrameHeader*>(static_cast<std::byte*>(region.get_address()) + 8);
         hdr->frame_type = DZ_FRAME_TICK;
         hdr->frame_size = 8;
         meta.next_write_pos()->store(16, boost::memory_order_release);
@@ -323,8 +323,8 @@ TEST_F(ChannelMetaTest, OpenOrCreateToleratesCorruptActivePageChain) {
     {
         bip2::file_mapping mfile{page_path().string().c_str(), bip2::read_write};
         bip2::mapped_region region{mfile, bip2::read_write, 0, 1 * MB};
-        auto* hdr = reinterpret_cast<DzFrameHeader*>(
-            static_cast<std::byte*>(region.get_address()) + 8);
+        auto* hdr =
+            reinterpret_cast<DzFrameHeader*>(static_cast<std::byte*>(region.get_address()) + 8);
         hdr->frame_size = 7;
     }
     EXPECT_NO_THROW({

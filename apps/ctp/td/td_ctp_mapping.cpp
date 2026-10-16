@@ -4,9 +4,9 @@
 #include <cstring>
 #include <format>
 
-#include <dztrader/core/encoding.h>      // to_utf8_from_gbk
+#include <dztrader/core/encoding.h>     // to_utf8_from_gbk
 #include <dztrader/core/string_util.h>  // copy_string
-#include <dztrader/date_time/date.h>     // Date
+#include <dztrader/date_time/date.h>    // Date
 
 namespace dztrader::ctp {
 
@@ -76,8 +76,8 @@ int32_t parse_ctp_date(const char* yyyymmdd) noexcept {
         }
     }
 
-    int32_t y = (yyyymmdd[0] - '0') * 1000 + (yyyymmdd[1] - '0') * 100 +
-                (yyyymmdd[2] - '0') * 10 + (yyyymmdd[3] - '0');
+    int32_t y = (yyyymmdd[0] - '0') * 1000 + (yyyymmdd[1] - '0') * 100 + (yyyymmdd[2] - '0') * 10 +
+                (yyyymmdd[3] - '0');
     int32_t m = (yyyymmdd[4] - '0') * 10 + (yyyymmdd[5] - '0');
     int32_t d = (yyyymmdd[6] - '0') * 10 + (yyyymmdd[7] - '0');
 
@@ -95,16 +95,26 @@ int32_t parse_ctp_date(const char* yyyymmdd) noexcept {
 
 DzOrderStatus STATUS_CTP2VT(char ctp_status) noexcept {
     switch (ctp_status) {
-        case THOST_FTDC_OST_AllTraded:               return DZ_ORDER_ALL_TRADED;    // '0'
-        case THOST_FTDC_OST_PartTradedQueueing:       return DZ_ORDER_PART_TRADED;   // '1'
-        case THOST_FTDC_OST_PartTradedNotQueueing:    return DZ_ORDER_PART_TRADED;   // '2'
-        case THOST_FTDC_OST_NoTradeQueueing:          return DZ_ORDER_NOT_TRADED;    // '3'
-        case THOST_FTDC_OST_NoTradeNotQueueing:       return DZ_ORDER_CANCELLED;     // '4'
-        case THOST_FTDC_OST_Canceled:                 return DZ_ORDER_CANCELLED;     // '5'
-        case THOST_FTDC_OST_NotTouched:               return DZ_ORDER_NOT_TRADED;    // 'b'
-        case THOST_FTDC_OST_Touched:                  return DZ_ORDER_PART_TRADED;   // 'c'
-        case THOST_FTDC_OST_Unknown:                  return DZ_ORDER_SUBMITTING;    // 'a'
-        default:                                      return DZ_ORDER_SUBMITTING;    // 兜底
+        case THOST_FTDC_OST_AllTraded:
+            return DZ_ORDER_ALL_TRADED;  // '0'
+        case THOST_FTDC_OST_PartTradedQueueing:
+            return DZ_ORDER_PART_TRADED;  // '1'
+        case THOST_FTDC_OST_PartTradedNotQueueing:
+            return DZ_ORDER_PART_TRADED;  // '2'
+        case THOST_FTDC_OST_NoTradeQueueing:
+            return DZ_ORDER_NOT_TRADED;  // '3'
+        case THOST_FTDC_OST_NoTradeNotQueueing:
+            return DZ_ORDER_CANCELLED;  // '4'
+        case THOST_FTDC_OST_Canceled:
+            return DZ_ORDER_CANCELLED;  // '5'
+        case THOST_FTDC_OST_NotTouched:
+            return DZ_ORDER_NOT_TRADED;  // 'b'
+        case THOST_FTDC_OST_Touched:
+            return DZ_ORDER_PART_TRADED;  // 'c'
+        case THOST_FTDC_OST_Unknown:
+            return DZ_ORDER_SUBMITTING;  // 'a'
+        default:
+            return DZ_ORDER_SUBMITTING;  // 兜底
     }
 }
 
@@ -151,7 +161,7 @@ OrderTypeTriplet ORDERTYPE_VT2CTP(DzPriceType t) noexcept {
 // ============================================================================
 
 CThostFtdcInputOrderField to_input_order_field(const DzOrderReq& req,
-                                                const OrderBuildContext& ctx) noexcept {
+                                               const OrderBuildContext& ctx) noexcept {
     CThostFtdcInputOrderField f{};
 
     // 标识字段
@@ -160,8 +170,7 @@ CThostFtdcInputOrderField to_input_order_field(const DzOrderReq& req,
     copy_to_dz(f.ExchangeID, ctx.exchange_id.c_str());
 
     // OrderRef: 12 位补零 (CTP TThostFtdcOrderRefType[13], 末位留给 null)
-    std::snprintf(f.OrderRef, sizeof(f.OrderRef), "%012lld",
-                  static_cast<long long>(ctx.order_ref));
+    std::snprintf(f.OrderRef, sizeof(f.OrderRef), "%012lld", static_cast<long long>(ctx.order_ref));
 
     f.RequestID = ctx.request_id;
 
@@ -170,11 +179,21 @@ CThostFtdcInputOrderField to_input_order_field(const DzOrderReq& req,
 
     // 开平标志: CombOffsetFlag[0]
     switch (req.position_effect) {
-        case DZ_POSITION_EFFECT_OPEN:           f.CombOffsetFlag[0] = THOST_FTDC_OF_Open;            break;
-        case DZ_POSITION_EFFECT_CLOSE:          f.CombOffsetFlag[0] = THOST_FTDC_OF_Close;          break;
-        case DZ_POSITION_EFFECT_CLOSE_TODAY:    f.CombOffsetFlag[0] = THOST_FTDC_OF_CloseToday;     break;
-        case DZ_POSITION_EFFECT_CLOSE_YESTDAY:  f.CombOffsetFlag[0] = THOST_FTDC_OF_CloseYesterday; break;
-        default:                                f.CombOffsetFlag[0] = THOST_FTDC_OF_Open;            break;
+        case DZ_POSITION_EFFECT_OPEN:
+            f.CombOffsetFlag[0] = THOST_FTDC_OF_Open;
+            break;
+        case DZ_POSITION_EFFECT_CLOSE:
+            f.CombOffsetFlag[0] = THOST_FTDC_OF_Close;
+            break;
+        case DZ_POSITION_EFFECT_CLOSE_TODAY:
+            f.CombOffsetFlag[0] = THOST_FTDC_OF_CloseToday;
+            break;
+        case DZ_POSITION_EFFECT_CLOSE_YESTDAY:
+            f.CombOffsetFlag[0] = THOST_FTDC_OF_CloseYesterday;
+            break;
+        default:
+            f.CombOffsetFlag[0] = THOST_FTDC_OF_Open;
+            break;
     }
 
     // 价格类型三元组
@@ -209,8 +228,8 @@ CThostFtdcInputOrderField to_input_order_field(const DzOrderReq& req,
 // ============================================================================
 
 OrderRecord to_order_record(const CThostFtdcOrderField& o,
-                             const std::string& account_id,
-                             int32_t trading_day) noexcept {
+                            const std::string& account_id,
+                            int32_t trading_day) noexcept {
     OrderRecord r{};
 
     // ---- base (DzOrderReport) ----
@@ -225,18 +244,34 @@ OrderRecord to_order_record(const CThostFtdcOrderField& o,
 
     // 开平标志 (CombOffsetFlag[0])
     switch (o.CombOffsetFlag[0]) {
-        case THOST_FTDC_OF_Open:           r.base.position_effect = DZ_POSITION_EFFECT_OPEN;           break;
-        case THOST_FTDC_OF_Close:          r.base.position_effect = DZ_POSITION_EFFECT_CLOSE;          break;
-        case THOST_FTDC_OF_CloseToday:     r.base.position_effect = DZ_POSITION_EFFECT_CLOSE_TODAY;    break;
-        case THOST_FTDC_OF_CloseYesterday: r.base.position_effect = DZ_POSITION_EFFECT_CLOSE_YESTDAY;  break;
-        default:                           r.base.position_effect = DZ_POSITION_EFFECT_OPEN;           break;
+        case THOST_FTDC_OF_Open:
+            r.base.position_effect = DZ_POSITION_EFFECT_OPEN;
+            break;
+        case THOST_FTDC_OF_Close:
+            r.base.position_effect = DZ_POSITION_EFFECT_CLOSE;
+            break;
+        case THOST_FTDC_OF_CloseToday:
+            r.base.position_effect = DZ_POSITION_EFFECT_CLOSE_TODAY;
+            break;
+        case THOST_FTDC_OF_CloseYesterday:
+            r.base.position_effect = DZ_POSITION_EFFECT_CLOSE_YESTDAY;
+            break;
+        default:
+            r.base.position_effect = DZ_POSITION_EFFECT_OPEN;
+            break;
     }
 
     // 价格类型: 由 OrderPriceType 反推 (FAK/FOK 在 OrderField 中无独立标志, 一律归为 LIMIT)
     switch (o.OrderPriceType) {
-        case THOST_FTDC_OPT_AnyPrice:  r.base.price_type = DZ_PRICE_MARKET; break;
-        case THOST_FTDC_OPT_LimitPrice: r.base.price_type = DZ_PRICE_LIMIT; break;
-        default:                        r.base.price_type = DZ_PRICE_LIMIT; break;
+        case THOST_FTDC_OPT_AnyPrice:
+            r.base.price_type = DZ_PRICE_MARKET;
+            break;
+        case THOST_FTDC_OPT_LimitPrice:
+            r.base.price_type = DZ_PRICE_LIMIT;
+            break;
+        default:
+            r.base.price_type = DZ_PRICE_LIMIT;
+            break;
     }
 
     r.base.status = STATUS_CTP2VT(o.OrderStatus);
@@ -249,17 +284,17 @@ OrderRecord to_order_record(const CThostFtdcOrderField& o,
     // ---- CTP 扩展字段 ----
     copy_to_dz(r.order_ref, o.OrderRef);
     copy_to_dz(r.external_order_id, o.OrderSysID);
-    r.is_external = 0;          // 留 0, AccountSession 后填
-    r.volume_canceled = 0;      // 留 0, AccountSession 在 on_rtn_order 中推导
-    r.error_id = 0;             // OnRtnOrder 不带 ErrorID, 留 0; 拒单场景由 OnErrRtnOrderInsert 填
+    r.is_external = 0;      // 留 0, AccountSession 后填
+    r.volume_canceled = 0;  // 留 0, AccountSession 在 on_rtn_order 中推导
+    r.error_id = 0;         // OnRtnOrder 不带 ErrorID, 留 0; 拒单场景由 OnErrRtnOrderInsert 填
 
     // trading_day[9]: "YYYYMMDD" 文本 (SQL 列, 从 DzDate 距纪元天数转换)
     // Date 的 year/month/day 均为 constexpr noexcept, 安全用于 noexcept 函数
     {
         dztrader::Date d{trading_day};
-        auto* end = std::format_to_n(r.trading_day, sizeof(r.trading_day) - 1,
-                                     "{:04d}{:02d}{:02d}",
-                                     d.year(), d.month(), d.day()).out;
+        auto* end = std::format_to_n(r.trading_day, sizeof(r.trading_day) - 1, "{:04d}{:02d}{:02d}",
+                                     d.year(), d.month(), d.day())
+                        .out;
         *end = '\0';
     }
 
@@ -284,8 +319,8 @@ OrderRecord to_order_record(const CThostFtdcOrderField& o,
 // ============================================================================
 
 TradeRecord to_trade_record(const CThostFtdcTradeField& t,
-                             const std::string& account_id,
-                             int32_t trading_day) noexcept {
+                            const std::string& account_id,
+                            int32_t trading_day) noexcept {
     TradeRecord r{};
 
     // ---- base (DzTradeReport) ----
@@ -298,11 +333,20 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
     r.base.direction = (t.Direction == THOST_FTDC_D_Buy) ? DZ_DIRECTION_LONG : DZ_DIRECTION_SHORT;
     r.base.position_effect = DZ_POSITION_EFFECT_OPEN;  // 兜底
     switch (t.OffsetFlag) {
-        case THOST_FTDC_OF_Open:           r.base.position_effect = DZ_POSITION_EFFECT_OPEN;           break;
-        case THOST_FTDC_OF_Close:          r.base.position_effect = DZ_POSITION_EFFECT_CLOSE;          break;
-        case THOST_FTDC_OF_CloseToday:     r.base.position_effect = DZ_POSITION_EFFECT_CLOSE_TODAY;    break;
-        case THOST_FTDC_OF_CloseYesterday: r.base.position_effect = DZ_POSITION_EFFECT_CLOSE_YESTDAY;  break;
-        default:                           break;
+        case THOST_FTDC_OF_Open:
+            r.base.position_effect = DZ_POSITION_EFFECT_OPEN;
+            break;
+        case THOST_FTDC_OF_Close:
+            r.base.position_effect = DZ_POSITION_EFFECT_CLOSE;
+            break;
+        case THOST_FTDC_OF_CloseToday:
+            r.base.position_effect = DZ_POSITION_EFFECT_CLOSE_TODAY;
+            break;
+        case THOST_FTDC_OF_CloseYesterday:
+            r.base.position_effect = DZ_POSITION_EFFECT_CLOSE_YESTDAY;
+            break;
+        default:
+            break;
     }
 
     r.base.price = t.Price;
@@ -314,9 +358,9 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
     // trading_day[9]: "YYYYMMDD" 文本 (SQL 列, 从 DzDate 距纪元天数转换)
     {
         dztrader::Date d{trading_day};
-        auto* end = std::format_to_n(r.trading_day, sizeof(r.trading_day) - 1,
-                                     "{:04d}{:02d}{:02d}",
-                                     d.year(), d.month(), d.day()).out;
+        auto* end = std::format_to_n(r.trading_day, sizeof(r.trading_day) - 1, "{:04d}{:02d}{:02d}",
+                                     d.year(), d.month(), d.day())
+                        .out;
         *end = '\0';
     }
 
@@ -328,15 +372,13 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
             r.trade_date = std::stoll(t.TradeDate);
         } catch (...) {
             dztrader::Date d{trading_day};
-            r.trade_date = static_cast<int64_t>(d.year()) * 10000
-                         + static_cast<int64_t>(d.month()) * 100
-                         + static_cast<int64_t>(d.day());
+            r.trade_date = static_cast<int64_t>(d.year()) * 10000 +
+                           static_cast<int64_t>(d.month()) * 100 + static_cast<int64_t>(d.day());
         }
     } else {
         dztrader::Date d{trading_day};
-        r.trade_date = static_cast<int64_t>(d.year()) * 10000
-                     + static_cast<int64_t>(d.month()) * 100
-                     + static_cast<int64_t>(d.day());
+        r.trade_date = static_cast<int64_t>(d.year()) * 10000 +
+                       static_cast<int64_t>(d.month()) * 100 + static_cast<int64_t>(d.day());
     }
 
     // trade_time: epoch seconds (优先用 CTP TradeDate, 失败回退 trading_day)
@@ -360,21 +402,30 @@ namespace {
 /// 注意: 商品期权是 SpotOption('6') 而非 Options('2'); EFP('5')/TAS('7')/MI('I') 暴露为 UNKNOWN
 int32_t product_class_from_ctp(TThostFtdcProductClassType pc) noexcept {
     switch (pc) {
-        case THOST_FTDC_PC_Futures:     return DZ_PRODUCT_FUTURES;
-        case THOST_FTDC_PC_Options:     return DZ_PRODUCT_OPTION;
-        case THOST_FTDC_PC_SpotOption:  return DZ_PRODUCT_OPTION;
-        case THOST_FTDC_PC_Combination: return DZ_PRODUCT_SPREAD;
-        case THOST_FTDC_PC_Spot:        return DZ_PRODUCT_SPOT;
-        default:                        return DZ_PRODUCT_UNKNOWN;
+        case THOST_FTDC_PC_Futures:
+            return DZ_PRODUCT_FUTURES;
+        case THOST_FTDC_PC_Options:
+            return DZ_PRODUCT_OPTION;
+        case THOST_FTDC_PC_SpotOption:
+            return DZ_PRODUCT_OPTION;
+        case THOST_FTDC_PC_Combination:
+            return DZ_PRODUCT_SPREAD;
+        case THOST_FTDC_PC_Spot:
+            return DZ_PRODUCT_SPOT;
+        default:
+            return DZ_PRODUCT_UNKNOWN;
     }
 }
 
 /// CTP OptionsType -> DZ_OPTION_* (0=非期权)
 int32_t option_type_from_ctp(TThostFtdcOptionsTypeType type) noexcept {
     switch (type) {
-        case THOST_FTDC_CP_CallOptions: return DZ_OPTION_CALL;  // 1
-        case THOST_FTDC_CP_PutOptions:  return DZ_OPTION_PUT;   // -1
-        default:                        return 0;               // 非期权
+        case THOST_FTDC_CP_CallOptions:
+            return DZ_OPTION_CALL;  // 1
+        case THOST_FTDC_CP_PutOptions:
+            return DZ_OPTION_PUT;  // -1
+        default:
+            return 0;  // 非期权
     }
 }
 
@@ -389,7 +440,7 @@ tdstore::InstrumentRecord to_instrument_record(const CThostFtdcInstrumentField& 
     r.name = dztrader::to_utf8_from_gbk(f.InstrumentName);
     r.product_class = product_class_from_ctp(f.ProductClass);
     r.product_code = f.ProductID;
-    r.settle_cycle = -1;                 // CTP 衍生品语义
+    r.settle_cycle = -1;  // CTP 衍生品语义
     r.currency = "CNY";
     r.volume_multiple = static_cast<double>(f.VolumeMultiple);
     r.volume_step = 1.0;
@@ -418,16 +469,16 @@ tdstore::InstrumentRecord to_instrument_record(const CThostFtdcInstrumentField& 
 // ============================================================================
 
 DzTradingAccount to_dz_trading_account(const CThostFtdcTradingAccountField& a,
-                                        const std::string& account_id,
-                                        int32_t trading_day) noexcept {
+                                       const std::string& account_id,
+                                       int32_t trading_day) noexcept {
     DzTradingAccount r{};
 
     copy_to_dz(r.account_id, account_id.c_str());
     r.balance = a.Balance;
     r.available = a.Available;
-    r.frozen = a.FrozenMargin;     // CTP FrozenMargin -> DZ frozen
+    r.frozen = a.FrozenMargin;  // CTP FrozenMargin -> DZ frozen
     r.commission = a.Commission;
-    r.margin = a.CurrMargin;       // CTP CurrMargin -> DZ margin
+    r.margin = a.CurrMargin;  // CTP CurrMargin -> DZ margin
     r.withdraw_quota = a.WithdrawQuota;
     r.deposit = a.Deposit;
     r.withdraw = a.Withdraw;
@@ -441,9 +492,9 @@ DzTradingAccount to_dz_trading_account(const CThostFtdcTradingAccountField& a,
 // ============================================================================
 
 DzPositionInfo to_dz_position(const CThostFtdcInvestorPositionField& p,
-                               const std::string& account_id,
-                               int32_t trading_day,
-                               double volume_multiple) noexcept {
+                              const std::string& account_id,
+                              int32_t trading_day,
+                              double volume_multiple) noexcept {
     DzPositionInfo r{};
 
     copy_to_dz(r.instrument_id, p.InstrumentID);
@@ -452,10 +503,14 @@ DzPositionInfo to_dz_position(const CThostFtdcInvestorPositionField& p,
 
     // 持仓方向: CTP 净持仓('1') 归为多头 (DZ 仅两态); 多('2') -> LONG, 空('3') -> SHORT
     switch (p.PosiDirection) {
-        case THOST_FTDC_PD_Short: r.direction = DZ_DIRECTION_SHORT; break;
+        case THOST_FTDC_PD_Short:
+            r.direction = DZ_DIRECTION_SHORT;
+            break;
         case THOST_FTDC_PD_Long:
         case THOST_FTDC_PD_Net:
-        default:                  r.direction = DZ_DIRECTION_LONG;  break;
+        default:
+            r.direction = DZ_DIRECTION_LONG;
+            break;
     }
 
     // 持仓量: CTP 持仓查询响应中 Position 为总持仓口径 (含今昨), 映射到 DZ 总持仓.

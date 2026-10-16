@@ -125,8 +125,8 @@ void run_schema(sqlite3* db) {
         }
         sqlite3_finalize(stmt);
         if (!has_user_agent) {
-            rc = sqlite3_exec(db, "ALTER TABLE login_history ADD COLUMN user_agent TEXT;",
-                              nullptr, nullptr, &err_msg);
+            rc = sqlite3_exec(db, "ALTER TABLE login_history ADD COLUMN user_agent TEXT;", nullptr,
+                              nullptr, &err_msg);
             if (rc != SQLITE_OK) {
                 const std::string err = err_msg ? err_msg : "unknown";
                 sqlite3_free(err_msg);
@@ -134,8 +134,8 @@ void run_schema(sqlite3* db) {
             }
         }
         if (!has_reason) {
-            rc = sqlite3_exec(db, "ALTER TABLE login_history ADD COLUMN reason TEXT;",
-                              nullptr, nullptr, &err_msg);
+            rc = sqlite3_exec(db, "ALTER TABLE login_history ADD COLUMN reason TEXT;", nullptr,
+                              nullptr, &err_msg);
             if (rc != SQLITE_OK) {
                 const std::string err = err_msg ? err_msg : "unknown";
                 sqlite3_free(err_msg);
@@ -162,12 +162,14 @@ void run_schema(sqlite3* db) {
         sqlite3_finalize(stmt);
         if (!has_default_password_ack) {
             rc = sqlite3_exec(db,
-                "ALTER TABLE users ADD COLUMN default_password_acknowledged INTEGER NOT NULL DEFAULT 0;",
-                nullptr, nullptr, &err_msg);
+                              "ALTER TABLE users ADD COLUMN default_password_acknowledged INTEGER "
+                              "NOT NULL DEFAULT 0;",
+                              nullptr, nullptr, &err_msg);
             if (rc != SQLITE_OK) {
                 const std::string err = err_msg ? err_msg : "unknown";
                 sqlite3_free(err_msg);
-                throw std::runtime_error("failed to add default_password_acknowledged column: " + err);
+                throw std::runtime_error("failed to add default_password_acknowledged column: " +
+                                         err);
             }
         }
     }
@@ -197,8 +199,8 @@ void run_schema(sqlite3* db) {
     // SQLite 3.35+ 支持 ALTER TABLE DROP COLUMN; 旧版本降级为重建表.
     {
         // 1. 删除 market_source_schedules 表 (若存在)
-        rc = sqlite3_exec(db, "DROP TABLE IF EXISTS market_source_schedules;",
-                          nullptr, nullptr, &err_msg);
+        rc = sqlite3_exec(db, "DROP TABLE IF EXISTS market_source_schedules;", nullptr, nullptr,
+                          &err_msg);
         if (rc != SQLITE_OK) {
             const std::string err = err_msg ? err_msg : "unknown";
             sqlite3_free(err_msg);
@@ -221,8 +223,8 @@ void run_schema(sqlite3* db) {
         }
         sqlite3_finalize(stmt);
         if (has_auto_login_col) {
-            rc = sqlite3_exec(db, "ALTER TABLE market_sources DROP COLUMN auto_login;",
-                              nullptr, nullptr, &err_msg);
+            rc = sqlite3_exec(db, "ALTER TABLE market_sources DROP COLUMN auto_login;", nullptr,
+                              nullptr, &err_msg);
             if (rc != SQLITE_OK) {
                 std::string err = err_msg ? err_msg : "unknown";
                 sqlite3_free(err_msg);
@@ -272,8 +274,9 @@ void seed_admin_user(sqlite3* db, const std::string& username, const std::string
     const std::string password_hash = hash_password(password);
     const std::string now = now_iso();
 
-    const char* sql = "INSERT INTO users (username, display_name, password_hash, role, status, "
-                      "created_at, updated_at) VALUES (?, ?, ?, 'admin', 'offline', ?, ?)";
+    const char* sql =
+        "INSERT INTO users (username, display_name, password_hash, role, status, "
+        "created_at, updated_at) VALUES (?, ?, ?, 'admin', 'offline', ?, ?)";
     dz_prepare_v2(db, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, username.c_str(), -1, SQLITE_TRANSIENT);

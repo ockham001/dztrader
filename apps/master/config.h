@@ -23,11 +23,11 @@ enum class Category : uint8_t { GatewayMd, GatewayTd, Strategy, WebUI };
 
 /// 单个进程条目（来自 dztraderd.json 配置）。
 struct ProcessEntry {
-    std::string name;                              // "dzmd_ctp", "dztd_ctp", "my_strategy"
+    std::string name;  // "dzmd_ctp", "dztd_ctp", "my_strategy"
     Category category;
-    std::filesystem::path exe;                     // boost::process 参数 1 (可能为空, launch_child 时按需扫描填充)
-    std::vector<std::string> args;                 // boost::process 参数 2
-    std::filesystem::path start_dir;               // process_start_dir
+    std::filesystem::path exe;      // boost::process 参数 1 (可能为空, launch_child 时按需扫描填充)
+    std::vector<std::string> args;  // boost::process 参数 2
+    std::filesystem::path start_dir;                   // process_start_dir
     std::unordered_map<std::string, std::string> env;  // 合并到 process_environment
     platform::RestartPolicy restart;
 
@@ -58,7 +58,8 @@ struct MasterConfig {
     uint64_t cleanup_max_page_count = 200;
     uint64_t cleanup_max_page_age_hours = 24;
 
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(MasterConfig, single_stop_timeout_sec,
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(MasterConfig,
+                                                single_stop_timeout_sec,
                                                 md_ready_timeout_sec,
                                                 cleanup_max_page_count,
                                                 cleanup_max_page_age_hours)
@@ -67,8 +68,7 @@ struct MasterConfig {
     static MasterConfig load(const std::filesystem::path& path,
                              const std::string& section = "master");
     /// 原子写入到 "master" section (保留其他 section 不变)
-    void save(const std::filesystem::path& path,
-              const std::string& section = "master") const;
+    void save(const std::filesystem::path& path, const std::string& section = "master") const;
 };
 
 /// SHM 全局参数 (仅 meta_file_size, 启动后不变; event 子段由 EventShmConfig 类管理)。
@@ -81,16 +81,15 @@ struct ShmGlobalConfig {
     static ShmGlobalConfig load(const std::filesystem::path& path,
                                 const std::string& section = "shm");
     /// 原子写入 "shm" section (保留 event 子段不变)
-    void save(const std::filesystem::path& path,
-              const std::string& section = "shm") const;
+    void save(const std::filesystem::path& path, const std::string& section = "shm") const;
 };
 
 /// dztraderd.json 解析结果 (启动时聚合加载,运行时不再使用)
 /// 注: log section 不在此结构体中——ShmManager 内部的 LogConfig 类自行加载
 /// 注: shm.event 子段不在此结构体中——ShmManager 内部的 EventShmConfig 类自行加载
 struct Config {
-    MasterConfig master;                                       // 从 "master" section 读
-    ShmGlobalConfig shm_global;                                // 从 "shm" section 读 (仅 meta_file_size)
+    MasterConfig master;         // 从 "master" section 读
+    ShmGlobalConfig shm_global;  // 从 "shm" section 读 (仅 meta_file_size)
     std::vector<ProcessEntry> entries;
 };
 
@@ -126,8 +125,7 @@ void write_strategy_section(const std::filesystem::path& config_path,
                             const nlohmann::json& strategy_entry);
 
 /// 从 dztraderd.json 的 strategy section 删除指定 name 的策略条目（不存在则无操作）。
-void remove_strategy_section(const std::filesystem::path& config_path,
-                             const std::string& name);
+void remove_strategy_section(const std::filesystem::path& config_path, const std::string& name);
 
 /// 从 dztraderd.json 删除 [md.<name>] 或 [td.<name>] 段（若不存在则无操作）。
 void remove_gateway_section(const std::filesystem::path& config_path,

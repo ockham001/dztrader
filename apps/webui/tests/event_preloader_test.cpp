@@ -121,7 +121,7 @@ TEST_F(EventPreloaderTest, ScheduleFiresDueCallback) {
     preloader.schedule_event_shm_preload(make_params(0, 0), std::chrono::milliseconds(0));
     EXPECT_FALSE(preloader.idle());
     preloader.tick_due();
-    EXPECT_TRUE(preloader.idle());                                // 已消费
+    EXPECT_TRUE(preloader.idle());  // 已消费
     EXPECT_EQ(meta_->min_reader_page_index(), reader_->current_page_id());
 }
 

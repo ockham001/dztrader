@@ -68,7 +68,8 @@ void WsController::handleNewConnection(const drogon::HttpRequestPtr& req,
             SPDLOG_DEBUG("role lookup failed, treat as non-admin | user={}", user_id);
         }
     }
-    sessions_[conn] = Session{.user_id = user_id, .subscribed_log_file = "", .log_cursor = {}, .is_admin = is_admin};
+    sessions_[conn] = Session{
+        .user_id = user_id, .subscribed_log_file = "", .log_cursor = {}, .is_admin = is_admin};
     SPDLOG_INFO("ws connected | user={}", user_id);
 
     // 连接即推全量镜像快照: 前端以此构建初始状态, 之后按增量帧更新
@@ -182,8 +183,9 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
         const std::string source = payload.value("source", "");
         const uint64_t seq = msg.value("seq", static_cast<uint64_t>(0));
         // 定向回执：把服务返回的完整消息帧发给发起连接
-        MdControlDomainService::Reply reply =
-            [conn](nlohmann::json frame) { conn->send(frame.dump()); };
+        MdControlDomainService::Reply reply = [conn](nlohmann::json frame) {
+            conn->send(frame.dump());
+        };
         if (type == "md_connect") {
             md_control_.handle_md_connect(is_admin, source, seq, reply);
         } else {
@@ -192,10 +194,11 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
     } else if (type == "query_md_subscriptions") {
         // P2 任务③：下沉到 MdControlDomainService（透传，dzweb 不校验互斥）
         const uint64_t seq = msg.value("seq", static_cast<uint64_t>(0));
-        MdControlDomainService::Reply reply =
-            [conn](nlohmann::json frame) { conn->send(frame.dump()); };
-        md_control_.handle_query_md_subscriptions(
-            payload.value("source", std::string{}), seq, payload, reply);
+        MdControlDomainService::Reply reply = [conn](nlohmann::json frame) {
+            conn->send(frame.dump());
+        };
+        md_control_.handle_query_md_subscriptions(payload.value("source", std::string{}), seq,
+                                                  payload, reply);
     } else if (type == "subscribe_log") {
         std::string file = payload.value("file", "");
         if (file.empty()) {
@@ -226,7 +229,8 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
             return;
         }
         sessions_[conn].subscribed_log_file = file;
-        sessions_[conn].tail_fail_count = 0;  // 重订阅重置失败计数（跨订阅残留会使新订阅的 auto-unsubscribe 阈值被预支）
+        sessions_[conn].tail_fail_count =
+            0;  // 重订阅重置失败计数（跨订阅残留会使新订阅的 auto-unsubscribe 阈值被预支）
         // 基线 = 订阅时刻文件末尾（只追新增）：分块数换行，不逐行 parse
         try {
             dztrader::webui::LogService svc(dztrader::paths::logs());
@@ -244,7 +248,7 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
         sessions_[conn].subscribed_log_file.clear();
         sessions_[conn].log_cursor = {};
         sessions_[conn].tail_fail_count = 0;  // 退订清零，下次订阅从满额阈值开始
-        stop_log_tail_timer_if_idle();  // 无订阅时关闭轮询
+        stop_log_tail_timer_if_idle();        // 无订阅时关闭轮询
         const nlohmann::json ack = {{"type", "unsubscribe_log_ack"}, {"seq", msg.value("seq", 0)}};
         conn->send(ack.dump());
     } else {
@@ -321,8 +325,7 @@ void WsController::start_log_tail_timer() {
     // 惰性启动：首个日志订阅建立时才开启 500ms 轮询（无订阅时零定时器唤醒）
     // 定时器注册到连接所在的 IO 循环，on_timer/poll_log_tail 与 WS 回调同线程串行，
     // sessions_ 与 log_tail_timer_active_ 无跨线程竞争（消除 check-then-act 误杀定时器）
-    log_tail_timer_ = io_loop_->runEvery(
-        kLogTailIntervalSec, [this]() { on_timer(); });
+    log_tail_timer_ = io_loop_->runEvery(kLogTailIntervalSec, [this]() { on_timer(); });
 }
 
 void WsController::stop_log_tail_timer_if_idle() {
@@ -408,7 +411,8 @@ void WsController::poll_log_tail() {
             if (pushed < static_cast<int>(content.lines.size())) {
                 for (int i = static_cast<int>(content.lines.size()) - 1; i >= pushed; --i) {
                     it->second.log_cursor.byte_offset -=
-                        static_cast<long long>(content.lines[static_cast<size_t>(i)].raw.size()) + 1;
+                        static_cast<long long>(content.lines[static_cast<size_t>(i)].raw.size()) +
+                        1;
                     it->second.log_cursor.line_no -= 1;
                 }
             } else if (pushed > 0) {

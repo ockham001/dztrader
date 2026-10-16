@@ -273,8 +273,8 @@ TEST_F(ScheduleApiTest, PreloadMdShmOwnSourceSchedulesInternalTimer) {
     {
         MultiWriter writer = MultiWriter::create(open_event_meta(), "schedule_test_writer");
         const auto* raw = reinterpret_cast<const std::byte*>(&params);
-        ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_PRELOAD_MD_SHM, "test_md", raw,
-                                                sizeof(params)));
+        ASSERT_TRUE(
+            writer.write_ext_inst_frame(DZ_FRAME_PRELOAD_MD_SHM, "test_md", raw, sizeof(params)));
         writer.notify_subscribers();
     }
     EXPECT_EQ(dz_next_event(ctx_), nullptr);  // 用户不可见
@@ -411,20 +411,19 @@ TEST_P(TdUnfilteredFramesTest, StillDelivered) {
     EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), p.type);
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    TdUnfiltered, TdUnfilteredFramesTest,
-    ::testing::Values(
-        TdUnfilteredFrameParam{DZ_FRAME_POSITION_INFO},
-        TdUnfilteredFrameParam{DZ_FRAME_TRADING_ACCOUNT},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_RISK_REJECT},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_REQ},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_RSP},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_RTN},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_PASSWORD_UPDATE_REQ},
-        TdUnfilteredFrameParam{DZ_FRAME_TD_PASSWORD_UPDATE_RSP}),
-    [](const ::testing::TestParamInfo<TdUnfilteredFrameParam>& info) {
-        return std::format("frame_{}", info.param.type);
-    });
+INSTANTIATE_TEST_SUITE_P(TdUnfiltered,
+                         TdUnfilteredFramesTest,
+                         ::testing::Values(TdUnfilteredFrameParam{DZ_FRAME_POSITION_INFO},
+                                           TdUnfilteredFrameParam{DZ_FRAME_TRADING_ACCOUNT},
+                                           TdUnfilteredFrameParam{DZ_FRAME_TD_RISK_REJECT},
+                                           TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_REQ},
+                                           TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_RSP},
+                                           TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_RTN},
+                                           TdUnfilteredFrameParam{DZ_FRAME_TD_PASSWORD_UPDATE_REQ},
+                                           TdUnfilteredFrameParam{DZ_FRAME_TD_PASSWORD_UPDATE_RSP}),
+                         [](const ::testing::TestParamInfo<TdUnfilteredFrameParam>& info) {
+                             return std::format("frame_{}", info.param.type);
+                         });
 
 // ── 截断帧防御: frame_size 不足 payload 的 TD 回报被拦截而非越界读 ──
 
@@ -523,7 +522,8 @@ TEST_F(ScheduleApiTest, TimerBurstBeyondBufferIsNotLost) {
     std::atomic<bool> done{false};
     std::thread rescue = rescue_wait(done, 6000);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (fired.size() < static_cast<size_t>(kCount) && std::chrono::steady_clock::now() < deadline) {
+    while (fired.size() < static_cast<size_t>(kCount) &&
+           std::chrono::steady_clock::now() < deadline) {
         dz_wait(ctx_);
         for (;;) {
             const void* frame = dz_next_event(ctx_);

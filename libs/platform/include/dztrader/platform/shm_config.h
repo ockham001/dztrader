@@ -64,9 +64,9 @@ public:
 
     /// 预加载点只读视图(封装 JSON 解析,供 maintenance 遍历)
     struct PreloadPointView {
-        std::string time;       ///< "HH:MM"
-        uint32_t pages = 0;     ///< 预加载页数
-        uint64_t bytes = 0;     ///< 预加载字节数
+        std::string time;    ///< "HH:MM"
+        uint32_t pages = 0;  ///< 预加载页数
+        uint64_t bytes = 0;  ///< 预加载字节数
     };
 
     /// 只读访问器(maintenance 用)

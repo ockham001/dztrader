@@ -75,8 +75,8 @@ TEST_F(WebuiShmWriterTest, WriteSetEventShmConfig) {
     // 无 instance_id 帧: 使用 8B DzExtFrameHeader (而非 72B DzExtInstFrameHeader)。
     // 注: 不能对 DzExtFrame 调用 ext_inst_id() 判空——它会按 72B 头解读 data_size+payload,
     //     恒非空; 正确判定是按帧大小区分两种扩展头布局
-    EXPECT_EQ(view.frame_size(), sizeof(DzFrameHeader) + sizeof(DzExtFrameHeader)
-                                     + ((view.ext_payload_size() + 7) & ~7u));
+    EXPECT_EQ(view.frame_size(), sizeof(DzFrameHeader) + sizeof(DzExtFrameHeader) +
+                                     ((view.ext_payload_size() + 7) & ~7u));
 }
 
 TEST_F(WebuiShmWriterTest, WriteSetEventShmConfigNullWriterNoCrash) {

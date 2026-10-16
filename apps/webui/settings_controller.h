@@ -17,8 +17,7 @@ namespace dztrader::webui {
 
 /// 「系统设置」页后端：主进程(dztraderd.json)只读展示 + 事件通道(SET_EVENT_SHM_CONFIG)
 /// + webui.json(共享 WebuiConfig 持有者热生效)。全部 admin-only。
-class SettingsCtrl : public drogon::HttpController<SettingsCtrl, false>,
-                     public ControllerBase {
+class SettingsCtrl : public drogon::HttpController<SettingsCtrl, false>, public ControllerBase {
 public:
     SettingsCtrl(std::shared_ptr<Repository> repo,
                  std::shared_ptr<ShmWriter> shm_writer,
@@ -33,7 +32,8 @@ public:
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(SettingsCtrl::set_event_shm_config,
-                  "/api/settings/event-shm-config", drogon::Put);
+                  "/api/settings/event-shm-config",
+                  drogon::Put);
     ADD_METHOD_TO(SettingsCtrl::get_master, "/api/settings/master", drogon::Get);
     ADD_METHOD_TO(SettingsCtrl::get_webui, "/api/settings/webui", drogon::Get);
     ADD_METHOD_TO(SettingsCtrl::set_webui, "/api/settings/webui", drogon::Put);

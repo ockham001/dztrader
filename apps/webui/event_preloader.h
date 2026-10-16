@@ -33,8 +33,7 @@ public:
     /// 随机延迟后排定一次预加载。tag 固定 "event_shm_maint"：连续广播自动替换，
     /// 只保留最新一次（对齐 md_api_scheduled.cpp 的 timer_queue_ 语义）。
     /// delay 由调用方注入（生产传 core::random_jitter(0,5000)，测试传 0 便于同步断言）。
-    void schedule_event_shm_preload(const DzShmPreload& params,
-                                    std::chrono::milliseconds delay);
+    void schedule_event_shm_preload(const DzShmPreload& params, std::chrono::milliseconds delay);
 
     /// TimerQueue 到期回调：reader 半边就地执行 + writer 半边投递 IO 线程。
     /// 名字对齐 md_api_scheduled.cpp 的 on_event_shm_timer(params)。

@@ -10,7 +10,8 @@ namespace dztrader::webui {
 class NotifyCtrl : public drogon::HttpController<NotifyCtrl, false>, public ControllerBase {
 public:
     NotifyCtrl(std::shared_ptr<Repository> repo, std::shared_ptr<NotifyCache> notify_cache)
-        : ControllerBase(std::move(repo)), notify_cache_(std::move(notify_cache)) {}
+        : ControllerBase(std::move(repo)),
+          notify_cache_(std::move(notify_cache)) {}
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(NotifyCtrl::get_recent, "/api/notifications", drogon::Get);

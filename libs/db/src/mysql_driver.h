@@ -90,12 +90,14 @@ private:
 class MysqlSession final : public Session {
 public:
     MysqlSession(const MysqlDatabaseImpl* owner,
-                 std::unique_ptr<internal::MysqlConnection> connection, bool read_only);
+                 std::unique_ptr<internal::MysqlConnection> connection,
+                 bool read_only);
     ~MysqlSession() override;
 
     void upsert(std::string_view collection, std::span<const Row> rows) override;
     uint64_t remove(std::string_view collection, const Filter& filter) override;
-    [[nodiscard]] ResultSet find(std::string_view collection, const Filter& filter,
+    [[nodiscard]] ResultSet find(std::string_view collection,
+                                 const Filter& filter,
                                  const FindOptions& options) override;
     [[nodiscard]] ResultSet aggregate(std::string_view collection,
                                       const Aggregation& aggregation) override;
@@ -121,7 +123,8 @@ private:
 /// 写事务句柄：析构未 commit 则回滚；commit 失败时作用域保持, 由析构兜底
 class MysqlTransaction final : public Transaction {
 public:
-    explicit MysqlTransaction(MysqlSession& session) : session_(&session) {}
+    explicit MysqlTransaction(MysqlSession& session)
+        : session_(&session) {}
     ~MysqlTransaction() override;
 
     void commit() override;
@@ -135,7 +138,8 @@ private:
 /// 只读快照句柄：析构结束只读作用域 (异常吞掉)
 class MysqlSnapshot final : public Snapshot {
 public:
-    explicit MysqlSnapshot(MysqlSession& session) : session_(&session) {}
+    explicit MysqlSnapshot(MysqlSession& session)
+        : session_(&session) {}
     ~MysqlSnapshot() override;
 
 private:

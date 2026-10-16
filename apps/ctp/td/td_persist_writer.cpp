@@ -27,7 +27,8 @@ namespace dztrader::ctp {
 // ============================================================================
 
 PersistWriter::PersistWriter(std::string db_path, size_t max_queue_size)
-    : db_path_(std::move(db_path)), max_queue_size_(max_queue_size) {}
+    : db_path_(std::move(db_path)),
+      max_queue_size_(max_queue_size) {}
 
 PersistWriter::~PersistWriter() {
     // I4: 析构仅作 best-effort 兜底 (短超时 1s + 不 quick_exit)
@@ -53,11 +54,13 @@ void PersistWriter::open() {
     SPDLOG_INFO("opening database | path={}", db_path_);
 
     // 统一 DB 接口: schema 由 tdstore 声明 (字段序 = 建表列序), migrate 幂等
-    dztrader::db::Config config{
-        .backend = "sqlite",
-        .options = {{"path", db_path_}, {"journal_mode", "wal"}, {"synchronous", "full"},
-                    {"busy_timeout_ms", "5000"}, {"cache_size_kb", "8000"},
-                    {"temp_store", "memory"}}};
+    dztrader::db::Config config{.backend = "sqlite",
+                                .options = {{"path", db_path_},
+                                            {"journal_mode", "wal"},
+                                            {"synchronous", "full"},
+                                            {"busy_timeout_ms", "5000"},
+                                            {"cache_size_kb", "8000"},
+                                            {"temp_store", "memory"}}};
     database_ = dztrader::db::Database::open(config, dztrader::tdstore::schemas());
     database_->migrate();
     // Writer 线程独占会话 (open 后 start_writer 前主线程不得复用)
@@ -198,9 +201,8 @@ uint64_t PersistWriter::enqueue_flush_signal() {
     }
     auto token = next_flush_token_++;
     pending_flushes_.emplace(token, std::promise<void>{});
-    queue_.push(PersistTask{.kind = PersistTask::Kind::FlushSignal,
-                            .account_id = "",
-                            .flush_token = token});
+    queue_.push(PersistTask{
+        .kind = PersistTask::Kind::FlushSignal, .account_id = "", .flush_token = token});
     lk.unlock();
     cv_empty_.notify_one();
     return token;
@@ -324,8 +326,8 @@ void PersistWriter::writer_loop() {
             }
             SPDLOG_DEBUG("persist batch committed | count={}", batch.size());
         } catch (const SQLite::Exception& e) {
-            SPDLOG_ERROR("persist batch failed, dropping | count={} error=\"{}\"",
-                         batch.size(), e.what());
+            SPDLOG_ERROR("persist batch failed, dropping | count={} error=\"{}\"", batch.size(),
+                         e.what());
             fail_flushed_tokens(batch);
         } catch (const std::exception& e) {
             SPDLOG_ERROR("persist batch failed (std), dropping | count={} error=\"{}\"",
@@ -403,8 +405,12 @@ void PersistWriter::execute_batch(std::vector<PersistTask>& batch,
     const auto flush_pending = [&]() {
         if (has_pending && !pending_rows.empty()) {
             switch (pending_kind) {
-                case PersistTask::Kind::Order: writer_session_->upsert("orders", pending_rows); break;
-                case PersistTask::Kind::Trade: writer_session_->upsert("trades", pending_rows); break;
+                case PersistTask::Kind::Order:
+                    writer_session_->upsert("orders", pending_rows);
+                    break;
+                case PersistTask::Kind::Trade:
+                    writer_session_->upsert("trades", pending_rows);
+                    break;
                 case PersistTask::Kind::Position:
                     writer_session_->upsert("positions", pending_rows);
                     break;
@@ -414,7 +420,8 @@ void PersistWriter::execute_batch(std::vector<PersistTask>& batch,
                 case PersistTask::Kind::Instrument:
                     writer_session_->upsert("instruments", pending_rows);
                     break;
-                default: break;
+                default:
+                    break;
             }
         }
         has_pending = false;
@@ -450,9 +457,9 @@ void PersistWriter::execute_batch(std::vector<PersistTask>& batch,
                 break;
             }
             case PersistTask::Kind::TradingAccount:
-                accumulate(task.kind, tdstore::make_trading_account_row(
-                                          std::get<DzTradingAccount>(task.data),
-                                          format_trading_day(task.trading_day)));
+                accumulate(task.kind,
+                           tdstore::make_trading_account_row(std::get<DzTradingAccount>(task.data),
+                                                             format_trading_day(task.trading_day)));
                 break;
             case PersistTask::Kind::PositionRebuild: {
                 // 单事务重灌 (spec §3.2 全量语义): 先落此前任务保持 FIFO, 再原位

@@ -24,7 +24,8 @@ public:
         last_filter = filter;
         return 2;
     }
-    ResultSet find(std::string_view collection, const Filter& filter,
+    ResultSet find(std::string_view collection,
+                   const Filter& filter,
                    const FindOptions& options) override {
         calls.emplace_back("find:" + std::string(collection));
         last_filter = filter;
@@ -61,8 +62,8 @@ TEST(DbCollectionTest, FindOneKeepsSortIgnoresPaging) {
         std::vector<Row>{Row{std::vector<Value>{int64_t{5}}}, Row{std::vector<Value>{int64_t{9}}}});
     Collection orders(session, "orders");
 
-    const auto row = orders.find_one({}, FindOptions{.sort = {{"seq", SortOrder::Descending}},
-                                                     .offset = 3, .limit = 10});
+    const auto row = orders.find_one(
+        {}, FindOptions{.sort = {{"seq", SortOrder::Descending}}, .offset = 3, .limit = 10});
     ASSERT_TRUE(row.has_value());
     EXPECT_EQ(row->get<int64_t>(0), 5);
     EXPECT_EQ(session.last_options.limit, 1);

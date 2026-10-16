@@ -20,20 +20,21 @@ namespace dztrader::platform {
 
 // T → JSON → 含 instance_id 帧（无 error 字段）。返回 true = 写入 + 唤醒订阅者成功。
 template <typename T>
-bool write_ext_inst_json(shm::MultiWriter& w, DzFrameType type,
-                         std::string_view instance_id, const T& obj) {
+bool write_ext_inst_json(shm::MultiWriter& w,
+                         DzFrameType type,
+                         std::string_view instance_id,
+                         const T& obj) {
     try {
         if (!shm::write_ext_inst_json(w, type, instance_id, obj)) {
-            spdlog::error("frame write failed: type={} target={}",
-                          static_cast<int>(type), instance_id);
+            spdlog::error("frame write failed: type={} target={}", static_cast<int>(type),
+                          instance_id);
             return false;
         }
         // 契约 shm: 写入任何帧都必须唤醒等待进程 (接收方阻塞在 NamedSemaphore::wait)
         w.notify_subscribers();
         return true;
     } catch (const std::exception& e) {
-        spdlog::error("frame serialize failed: type={} err={}",
-                      static_cast<int>(type), e.what());
+        spdlog::error("frame serialize failed: type={} err={}", static_cast<int>(type), e.what());
         return false;
     }
 }
@@ -50,40 +51,41 @@ bool write_ext_json(shm::MultiWriter& w, DzFrameType type, const T& obj) {
         w.notify_subscribers();
         return true;
     } catch (const std::exception& e) {
-        spdlog::error("frame serialize failed: type={} err={}",
-                      static_cast<int>(type), e.what());
+        spdlog::error("frame serialize failed: type={} err={}", static_cast<int>(type), e.what());
         return false;
     }
 }
 
 // T → JSON → 含 instance_id 帧（可选 error 字段）。返回 true = 写入 + 唤醒订阅者成功。
 template <typename T>
-bool write_ext_inst_json_opt_error(shm::MultiWriter& w, DzFrameType type,
-                                   std::string_view instance_id, const T& obj,
+bool write_ext_inst_json_opt_error(shm::MultiWriter& w,
+                                   DzFrameType type,
+                                   std::string_view instance_id,
+                                   const T& obj,
                                    std::optional<std::string> error) {
     try {
         nlohmann::json j = obj;
         if (error) j["error"] = *error;
         const auto str = j.dump();
         if (!w.write_ext_inst_frame(type, instance_id.data(),
-                reinterpret_cast<const std::byte*>(str.data()),
-                static_cast<uint32_t>(str.size()))) {
-            spdlog::error("frame write failed: type={} target={} size={}",
-                          static_cast<int>(type), instance_id, str.size());
+                                    reinterpret_cast<const std::byte*>(str.data()),
+                                    static_cast<uint32_t>(str.size()))) {
+            spdlog::error("frame write failed: type={} target={} size={}", static_cast<int>(type),
+                          instance_id, str.size());
             return false;
         }
         w.notify_subscribers();
         return true;
     } catch (const std::exception& e) {
-        spdlog::error("frame serialize failed: type={} err={}",
-                      static_cast<int>(type), e.what());
+        spdlog::error("frame serialize failed: type={} err={}", static_cast<int>(type), e.what());
         return false;
     }
 }
 
 // 已构造的 json 对象 → 含 instance_id 帧（可选 error，CTP 帧用）。
 // 返回 true = 写入 + 唤醒订阅者成功。
-inline bool write_ext_inst_json_obj(shm::MultiWriter& w, DzFrameType type,
+inline bool write_ext_inst_json_obj(shm::MultiWriter& w,
+                                    DzFrameType type,
                                     std::string_view instance_id,
                                     const nlohmann::json& payload,
                                     std::optional<std::string> error = std::nullopt) {
@@ -92,29 +94,29 @@ inline bool write_ext_inst_json_obj(shm::MultiWriter& w, DzFrameType type,
         if (error) j["error"] = *error;
         const auto str = j.dump();
         if (!w.write_ext_inst_frame(type, instance_id.data(),
-                reinterpret_cast<const std::byte*>(str.data()),
-                static_cast<uint32_t>(str.size()))) {
-            spdlog::error("frame write failed: type={} target={} size={}",
-                          static_cast<int>(type), instance_id, str.size());
+                                    reinterpret_cast<const std::byte*>(str.data()),
+                                    static_cast<uint32_t>(str.size()))) {
+            spdlog::error("frame write failed: type={} target={} size={}", static_cast<int>(type),
+                          instance_id, str.size());
             return false;
         }
         w.notify_subscribers();
         return true;
     } catch (const std::exception& e) {
-        spdlog::error("frame serialize failed: type={} err={}",
-                      static_cast<int>(type), e.what());
+        spdlog::error("frame serialize failed: type={} err={}", static_cast<int>(type), e.what());
         return false;
     }
 }
 
 // 空/二进制 payload → 含 instance_id 帧（控制信号用，默认空 payload）。
 // 返回 true = 写入 + 唤醒订阅者成功。
-inline bool write_ext_inst_raw(shm::MultiWriter& w, DzFrameType type,
+inline bool write_ext_inst_raw(shm::MultiWriter& w,
+                               DzFrameType type,
                                std::string_view instance_id,
-                               const std::byte* data = nullptr, uint32_t size = 0) {
+                               const std::byte* data = nullptr,
+                               uint32_t size = 0) {
     if (!w.write_ext_inst_frame(type, instance_id.data(), data, size)) {
-        spdlog::error("frame write failed: type={} target={}",
-                      static_cast<int>(type), instance_id);
+        spdlog::error("frame write failed: type={} target={}", static_cast<int>(type), instance_id);
         return false;
     }
     w.notify_subscribers();
@@ -122,8 +124,10 @@ inline bool write_ext_inst_raw(shm::MultiWriter& w, DzFrameType type,
 }
 
 // 空/二进制 payload → 无 instance_id 帧。返回 true = 写入 + 唤醒订阅者成功。
-inline bool write_ext_raw(shm::MultiWriter& w, DzFrameType type,
-                          const std::byte* data = nullptr, uint32_t size = 0) {
+inline bool write_ext_raw(shm::MultiWriter& w,
+                          DzFrameType type,
+                          const std::byte* data = nullptr,
+                          uint32_t size = 0) {
     if (!w.write_ext_frame(type, data, size)) {
         spdlog::error("frame write failed: type={}", static_cast<int>(type));
         return false;
@@ -137,8 +141,8 @@ inline bool write_ext_raw(shm::MultiWriter& w, DzFrameType type,
 template <typename T>
 bool write_struct(shm::MultiWriter& w, DzFrameType type, const T& payload) {
     if (!w.write_frame(type, payload)) {
-        spdlog::error("struct frame write failed: type={} size={}",
-                      static_cast<int>(type), sizeof(T));
+        spdlog::error("struct frame write failed: type={} size={}", static_cast<int>(type),
+                      sizeof(T));
         return false;
     }
     w.notify_subscribers();

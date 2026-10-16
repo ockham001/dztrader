@@ -14,9 +14,7 @@ namespace dztrader::strategy_api_internal {
 
 class VectorResultSet : public ResultSetImpl {
 public:
-    VectorResultSet(std::vector<ColumnMeta> columns,
-                    std::vector<Row> rows,
-                    int32_t status = 0);
+    VectorResultSet(std::vector<ColumnMeta> columns, std::vector<Row> rows, int32_t status = 0);
 
     bool next() override;
     int32_t status() const override;

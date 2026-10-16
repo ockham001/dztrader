@@ -26,14 +26,10 @@ std::string col_text(sqlite3_stmt* stmt, int col) {
 }
 
 /// sqlite3 列读取: 整数列。
-int64_t col_int(sqlite3_stmt* stmt, int col) {
-    return sqlite3_column_int64(stmt, col);
-}
+int64_t col_int(sqlite3_stmt* stmt, int col) { return sqlite3_column_int64(stmt, col); }
 
 /// sqlite3 列读取: 浮点列。
-double col_double(sqlite3_stmt* stmt, int col) {
-    return sqlite3_column_double(stmt, col);
-}
+double col_double(sqlite3_stmt* stmt, int col) { return sqlite3_column_double(stmt, col); }
 
 /// "YYYYMMDD" 文本 -> DzDate (距纪元天数); 非法回落 0。
 int32_t parse_trading_day_to_epoch(const std::string& text) {
@@ -76,44 +72,41 @@ std::string latest_trading_day(sqlite3* db, const std::string& account_id) {
 }  // namespace
 
 TdDataService::TdDataService(FrameRouter& router, std::function<std::string()> td_db_path)
-    : router_(router), td_db_path_(std::move(td_db_path)) {
+    : router_(router),
+      td_db_path_(std::move(td_db_path)) {
     register_handlers(router_);
 }
 
 void TdDataService::register_handlers(FrameRouter& router) {
-    // DZ_FRAME_ORDER_REPORT-DZ_FRAME_TRADING_ACCOUNT 为二进制 struct payload（write_struct 写帧），register_json 的 JSON decode
-    // 必失败——必须 register_raw。handler 在监听线程同步执行、FrameView 有效期内解析，
-    // 拷贝字段后经 poster 投递到 IO 线程执行实际更新（与 REST/WS 连接回调同线程串行，
-    // 镜像/gate 访问无竞争；严禁捕获 FrameView 引用）。
+    // DZ_FRAME_ORDER_REPORT-DZ_FRAME_TRADING_ACCOUNT 为二进制 struct payload（write_struct
+    // 写帧），register_json 的 JSON decode 必失败——必须 register_raw。handler
+    // 在监听线程同步执行、FrameView 有效期内解析， 拷贝字段后经 poster 投递到 IO
+    // 线程执行实际更新（与 REST/WS 连接回调同线程串行， 镜像/gate 访问无竞争；严禁捕获 FrameView
+    // 引用）。
     const auto post = [this](std::function<void()> f) { router_.poster()(std::move(f)); };
-    router.register_raw(DZ_FRAME_ORDER_REPORT,
-        [this, post](const shm::FrameView& v) {
-            const DzOrderReport rpt = v.payload<DzOrderReport>();  // 值拷贝, 投递安全
-            post([this, rpt]() { on_order_report(rpt); });
-        });
-    router.register_raw(DZ_FRAME_TRADE_REPORT,
-        [this, post](const shm::FrameView& v) {
-            const DzTradeReport rpt = v.payload<DzTradeReport>();
-            post([this, rpt]() { on_trade_report(rpt); });
-        });
-    router.register_raw(DZ_FRAME_POSITION_INFO,
-        [this, post](const shm::FrameView& v) {
-            const DzPositionInfo pos = v.payload<DzPositionInfo>();
-            post([this, pos]() { on_position_info(pos); });
-        });
-    router.register_raw(DZ_FRAME_TRADING_ACCOUNT,
-        [this, post](const shm::FrameView& v) {
-            const DzTradingAccount acct = v.payload<DzTradingAccount>();
-            post([this, acct]() { on_trading_account(acct); });
-        });
+    router.register_raw(DZ_FRAME_ORDER_REPORT, [this, post](const shm::FrameView& v) {
+        const DzOrderReport rpt = v.payload<DzOrderReport>();  // 值拷贝, 投递安全
+        post([this, rpt]() { on_order_report(rpt); });
+    });
+    router.register_raw(DZ_FRAME_TRADE_REPORT, [this, post](const shm::FrameView& v) {
+        const DzTradeReport rpt = v.payload<DzTradeReport>();
+        post([this, rpt]() { on_trade_report(rpt); });
+    });
+    router.register_raw(DZ_FRAME_POSITION_INFO, [this, post](const shm::FrameView& v) {
+        const DzPositionInfo pos = v.payload<DzPositionInfo>();
+        post([this, pos]() { on_position_info(pos); });
+    });
+    router.register_raw(DZ_FRAME_TRADING_ACCOUNT, [this, post](const shm::FrameView& v) {
+        const DzTradingAccount acct = v.payload<DzTradingAccount>();
+        post([this, acct]() { on_trading_account(acct); });
+    });
 
     // 2018 ACCOUNT_STATUS (struct payload, 契约 account-status): Ready → rebuild();
     // Offline → 清空该账户镜像 (spec §5.5"清空必须显式", 防幽灵持仓残留)。
-    router.register_raw(DZ_FRAME_ACCOUNT_STATUS,
-        [this, post](const shm::FrameView& v) {
-            const DzAccountStatus st = v.payload<DzAccountStatus>();
-            post([this, st]() { on_account_status(st); });
-        });
+    router.register_raw(DZ_FRAME_ACCOUNT_STATUS, [this, post](const shm::FrameView& v) {
+        const DzAccountStatus st = v.payload<DzAccountStatus>();
+        post([this, st]() { on_account_status(st); });
+    });
 }
 
 void TdDataService::on_order_report(const DzOrderReport& rpt) {
@@ -394,11 +387,10 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
     const auto accumulate = [&account_max_seq](uint64_t seq) {
         account_max_seq = std::max(account_max_seq, seq);
     };
-    for (const char* table :
-         {"positions", "trading_accounts", "orders", "trades"}) {
+    for (const char* table : {"positions", "trading_accounts", "orders", "trades"}) {
         sqlite3_stmt* stmt = nullptr;
-        const std::string sql = std::string("SELECT COALESCE(MAX(seq), 0) FROM ") + table +
-                                " WHERE account_id = ?";
+        const std::string sql =
+            std::string("SELECT COALESCE(MAX(seq), 0) FROM ") + table + " WHERE account_id = ?";
         if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
             if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -420,9 +412,11 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
     if (account_max_seq > 0) {
         gate_.set_watermark(account_id, account_max_seq);
     }
-    SPDLOG_INFO("td data mirror rebuilt | account={} path={} positions={} accounts={} orders={} trades={} W={}",
-                account_id, path, positions_.size(), trading_accounts_.size(), orders_.size(),
-                trades_.size(), account_max_seq);
+    SPDLOG_INFO(
+        "td data mirror rebuilt | account={} path={} positions={} accounts={} orders={} trades={} "
+        "W={}",
+        account_id, path, positions_.size(), trading_accounts_.size(), orders_.size(),
+        trades_.size(), account_max_seq);
 }
 
 void TdDataService::set_watermark(const std::string& account_id, uint64_t w) {

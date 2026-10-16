@@ -22,8 +22,7 @@ TEST(TdEventsTest, EventTypeValues) {
 TEST(TdEventsTest, OnRtnOrderFieldLayout) {
     static_assert(sizeof(OnRtnOrderField) >= sizeof(CThostFtdcOrderField),
                   "OnRtnOrderField must hold CThostFtdcOrderField");
-    static_assert(offsetof(OnRtnOrderField, order) == 0,
-                  "order should be first field");
+    static_assert(offsetof(OnRtnOrderField, order) == 0, "order should be first field");
     OnRtnOrderField f{};
     f.order.OrderRef[0] = '1';
     f.rsp_time = std::chrono::system_clock::now();
@@ -33,8 +32,7 @@ TEST(TdEventsTest, OnRtnOrderFieldLayout) {
 TEST(TdEventsTest, OnRspAuthenticateFieldLayout) {
     static_assert(offsetof(OnRspAuthenticateField, request_id) > 0,
                   "request_id should not be first (after optionals)");
-    static_assert(offsetof(OnRspAuthenticateField, is_last) > 0,
-                  "is_last should not be first");
+    static_assert(offsetof(OnRspAuthenticateField, is_last) > 0, "is_last should not be first");
     OnRspAuthenticateField f{};
     f.request_id = 42;
     f.is_last = true;
@@ -102,5 +100,6 @@ TEST(TdEventsTest, TdDeleteEventDataAllTdTypes) {
     test_type(EventType::OnRspFromBankToFutureByFuture, new OnRspFromBankToFutureByFutureField{});
     test_type(EventType::OnRtnFromBankToFutureByFuture, new OnRtnFromBankToFutureByFutureField{});
     test_type(EventType::OnRspUserPasswordUpdate, new OnRspUserPasswordUpdateField{});
-    test_type(EventType::OnRspTradingAccountPasswordUpdate, new OnRspTradingAccountPasswordUpdateField{});
+    test_type(EventType::OnRspTradingAccountPasswordUpdate,
+              new OnRspTradingAccountPasswordUpdateField{});
 }

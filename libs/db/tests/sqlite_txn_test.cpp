@@ -15,8 +15,8 @@ std::filesystem::path unique_db_path(const std::string& name) {
     std::mt19937 gen(rd());
     std::uniform_int_distribution<uint32_t> dist;
     return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
-            std::to_string(dist(gen)) + ".db");
+           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
+            "_" + std::to_string(dist(gen)) + ".db");
 }
 
 // 集合名避开 td 旧迁移表 orders（其 v1..v5 建表含 order_ref/exchange_id 等额外 NOT NULL 列）
@@ -97,10 +97,10 @@ TEST_F(SqliteTxnTest, NestedScopeRejected) {
 TEST_F(SqliteTxnTest, BeginTransactionBusyIsWrappedAndKeepsScopeFree) {
     auto locker = database_->session();
     auto lock_txn = locker->begin_transaction();  // 持 WAL 写锁
-    auto no_wait_db = Database::open(
-        Config{.backend = "sqlite",
-               .options = {{"path", path_.string()}, {"busy_timeout_ms", "0"}}},
-        orders_schema());
+    auto no_wait_db =
+        Database::open(Config{.backend = "sqlite",
+                              .options = {{"path", path_.string()}, {"busy_timeout_ms", "0"}}},
+                       orders_schema());
     auto victim = no_wait_db->session();
 
     DzErrorCode code = DZ_EC_OK;

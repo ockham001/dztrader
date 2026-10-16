@@ -6,15 +6,14 @@
 namespace dztrader::strategy_api_internal {
 
 CursorResultSet::CursorResultSet(std::vector<ColumnMeta> columns, int32_t status)
-    : columns_(std::move(columns)), status_(status) {}
+    : columns_(std::move(columns)),
+      status_(status) {}
 
 bool CursorResultSet::next() { return false; }
 
 int32_t CursorResultSet::status() const { return status_; }
 
-uint32_t CursorResultSet::column_count() const {
-    return static_cast<uint32_t>(columns_.size());
-}
+uint32_t CursorResultSet::column_count() const { return static_cast<uint32_t>(columns_.size()); }
 
 DzColumnType CursorResultSet::column_type(uint32_t index) const {
     if (index >= columns_.size()) return DZ_COL_TYPE_NULL;

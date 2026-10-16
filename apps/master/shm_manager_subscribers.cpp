@@ -38,8 +38,12 @@ bool is_registered_process(const ProcessSupervisor* supervisor, std::string_view
 
 /// 写读者接入/断开 RTN 帧 (契约 shm: instance_id=请求进程名,
 /// payload={channel, ok, message 失败必填})
-void write_md_reader_rtn(shm::MultiWriter& w, DzFrameType type, std::string_view subscriber,
-                         std::string_view channel, bool ok, std::string_view message = "") {
+void write_md_reader_rtn(shm::MultiWriter& w,
+                         DzFrameType type,
+                         std::string_view subscriber,
+                         std::string_view channel,
+                         bool ok,
+                         std::string_view message = "") {
     nlohmann::json payload = {{"channel", channel}, {"ok", ok}};
     if (!ok) {
         payload["message"] = message;  // 失败时必填 (契约 shm)
@@ -181,28 +185,28 @@ void ShmManager::handle_md_reader_register(const shm::FrameView& view) {
     }
     if (it->second.status != MdChannelStatus::Running || !it->second.meta) {
         // 行情进程未运行 (Stopped 待重启): 元数据保留但进程未拉起
-        SPDLOG_WARN(
-            "md reader register rejected | reason=md_not_running channel={} subscriber={}",
-            channel_name, subscriber);
+        SPDLOG_WARN("md reader register rejected | reason=md_not_running channel={} subscriber={}",
+                    channel_name, subscriber);
         write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_REGISTER, subscriber,
                             channel_name, false, "market process not running");
         return;
     }
     if (!it->second.ready) {
         // 通道未就绪: 行情进程尚未发出 NOTIFY_MD_STARTED (含在途停止场景)
-        SPDLOG_WARN("md reader register rejected | reason=channel_not_ready channel={} subscriber={}",
-                    channel_name, subscriber);
+        SPDLOG_WARN(
+            "md reader register rejected | reason=channel_not_ready channel={} subscriber={}",
+            channel_name, subscriber);
         write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_REGISTER, subscriber,
                             channel_name, false, "channel not ready");
         return;
     }
 
     const bool added = it->second.meta->add_reader(subscriber, /*pid=*/0);
-    SPDLOG_INFO("md reader registered | channel={} subscriber={} new={}", channel_name,
-                subscriber, added);
+    SPDLOG_INFO("md reader registered | channel={} subscriber={} new={}", channel_name, subscriber,
+                added);
     notify_md_channel_subscriber_update(channel_name);
-    write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_REGISTER, subscriber,
-                        channel_name, true);
+    write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_REGISTER, subscriber, channel_name,
+                        true);
 }
 
 void ShmManager::handle_md_reader_unregister(const shm::FrameView& view) {
@@ -243,8 +247,8 @@ void ShmManager::handle_md_reader_unregister(const shm::FrameView& view) {
     it->second.meta->remove_reader(subscriber);
     SPDLOG_INFO("md reader unregistered | channel={} subscriber={}", channel_name, subscriber);
     notify_md_channel_subscriber_update(channel_name);
-    write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_UNREGISTER, subscriber,
-                        channel_name, true);
+    write_md_reader_rtn(event_writer_, DZ_FRAME_RTN_MD_READER_UNREGISTER, subscriber, channel_name,
+                        true);
 }
 
 void ShmManager::remove_reader_from_all_md_channels(const std::string& sub_name) {

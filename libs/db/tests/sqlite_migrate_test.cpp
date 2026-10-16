@@ -18,8 +18,8 @@ std::filesystem::path unique_db_path(const std::string& name) {
     std::mt19937 gen(rd());
     std::uniform_int_distribution<uint32_t> dist;
     return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
-            std::to_string(dist(gen)) + ".db");
+           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
+            "_" + std::to_string(dist(gen)) + ".db");
 }
 
 int64_t raw_scalar(const std::filesystem::path& path, const std::string& sql) {
@@ -42,14 +42,13 @@ const std::vector<ResourceSchema>& test_schemas() {
 
 TEST(SqliteMigrateTest, TdMigrationsCreateV5Schema) {
     const auto path = unique_db_path("dz_sqlite_migrate");
-    auto database =
-        Database::open(Config{.backend = "sqlite", .options = {{"path", path.string()}}},
-                       test_schemas());
+    auto database = Database::open(
+        Config{.backend = "sqlite", .options = {{"path", path.string()}}}, test_schemas());
     database->migrate();
     EXPECT_EQ(raw_scalar(path, "SELECT COUNT(*) FROM schema_version WHERE version=5"), 1);
-    EXPECT_GT(raw_scalar(path,
-                         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='orders'"),
-              0);
+    EXPECT_GT(
+        raw_scalar(path, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='orders'"),
+        0);
     EXPECT_GT(raw_scalar(path,
                          "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
                          "AND name='trading_accounts'"),
@@ -64,9 +63,8 @@ TEST(SqliteMigrateTest, TdMigrationsCreateV5Schema) {
 
 TEST(SqliteMigrateTest, MigrateIsIdempotent) {
     const auto path = unique_db_path("dz_sqlite_migrate_idem");
-    auto database =
-        Database::open(Config{.backend = "sqlite", .options = {{"path", path.string()}}},
-                       test_schemas());
+    auto database = Database::open(
+        Config{.backend = "sqlite", .options = {{"path", path.string()}}}, test_schemas());
     database->migrate();
     database->migrate();
     EXPECT_EQ(raw_scalar(path, "SELECT COUNT(*) FROM schema_version"), 5);

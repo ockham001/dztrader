@@ -137,7 +137,8 @@ TEST_F(TdDataSyncIntegrationTest, ReplayStormDedupEndToEnd) {
     // ---- 重放风暴: CTP 重放同 50 条 (同 order_id/同字段) → 全 kSkip ----
     for (const auto& rec : seed) {
         bool warn = false;
-        EXPECT_EQ(ReportFilter::Verdict::kSkip, filter.check_order(rec, &warn)) << rec.base.order_id;
+        EXPECT_EQ(ReportFilter::Verdict::kSkip, filter.check_order(rec, &warn))
+            << rec.base.order_id;
         EXPECT_FALSE(warn);
     }
 
@@ -162,7 +163,8 @@ TEST_F(TdDataSyncIntegrationTest, ReplayStormDedupEndToEnd) {
         ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
         w.stop();
     }
-    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE account_id='acc1'"), kCount);  // 覆盖非新增
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE account_id='acc1'"),
+              kCount);  // 覆盖非新增
     EXPECT_EQ(scalar_int("SELECT volume_traded FROM orders WHERE order_id=8"), 4);
     EXPECT_EQ(scalar_int("SELECT seq FROM orders WHERE order_id=8"), new_seq);
 
@@ -202,8 +204,8 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
 
     // ===================== 变体 A: 首帧 DZ_FRAME_NOTIFY_UI 无断档 =====================
     {
-        // 生产者: 帧已写 (内存已见 seq DZ_FRAME_NOTIFY_UI-105), persist 入队但 Writer 未启动 (未提交)
-        // 队列堆积, 无 Writer 线程持锁 → 消费者可无锁快照.
+        // 生产者: 帧已写 (内存已见 seq DZ_FRAME_NOTIFY_UI-105), persist 入队但 Writer 未启动
+        // (未提交) 队列堆积, 无 Writer 线程持锁 → 消费者可无锁快照.
         PersistWriter w(db_path_);
         w.open();  // 不 start_writer: 任务入队未提交, 不占写锁
         std::vector<OrderRecord> inflight;
@@ -231,16 +233,16 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
         EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE account_id='acc1'"), 105);
     }
 
-    // ===================== 变体 B: 首帧 106 → gap(DZ_FRAME_NOTIFY_UI,105) → 回补 =====================
-    // 独立临时库: 先提交 1..100 (W=100 快照), 帧 DZ_FRAME_NOTIFY_UI-105 在 reader 开启前完成写入,
-    // DB 提交在后 (在途窗口).
+    // ===================== 变体 B: 首帧 106 → gap(DZ_FRAME_NOTIFY_UI,105) → 回补
+    // ===================== 独立临时库: 先提交 1..100 (W=100 快照), 帧 DZ_FRAME_NOTIFY_UI-105 在
+    // reader 开启前完成写入, DB 提交在后 (在途窗口).
     std::filesystem::path tmp2 = unique_temp_dir("dz_td_data_sync_it_b");
     std::filesystem::create_directories(tmp2);
     const std::string db2 = (tmp2 / "b.db").string();
     std::filesystem::remove(db2);
     std::filesystem::remove(db2 + "-journal");
-    {   // 变体 B 作用域: 内层 w/ro/ro2 三个 SQLite 句柄全部析构后才允许删库
-        {   // 首个 PersistWriter 独立作用域
+    {      // 变体 B 作用域: 内层 w/ro/ro2 三个 SQLite 句柄全部析构后才允许删库
+        {  // 首个 PersistWriter 独立作用域
             PersistWriter w(db2);
             w.open();
             w.start_writer();
@@ -288,7 +290,7 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
         ASSERT_EQ(backfilled.size(), 5u);
         EXPECT_EQ(backfilled.front().base.seq, 101u);
         EXPECT_EQ(backfilled.back().base.seq, 105u);
-    }   // PersistWriter w / ro / ro2 在此析构, 释放 db2 的 SQLite 句柄
+    }  // PersistWriter w / ro / ro2 在此析构, 释放 db2 的 SQLite 句柄
 
     // 临时库删除必须在其内所有 SQLite 句柄析构之后: Windows 不允许删除仍被占用的
     // 文件(remove_all 抛 filesystem_error), Linux 允许删除已打开的文件, 故该顺序
@@ -499,17 +501,24 @@ TEST_F(TdDataSyncIntegrationTest, PositionUpsertThenRebuildThenClear) {
                           .trading_day = 20260910});
     auto token = w.enqueue_flush_signal();
     ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
-    EXPECT_EQ(scalar_int("SELECT seq FROM positions WHERE account_id='acc1' AND instrument_id='IF2506'"), 5);
+    EXPECT_EQ(
+        scalar_int("SELECT seq FROM positions WHERE account_id='acc1' AND instrument_id='IF2506'"),
+        5);
     // 2) 重灌: 未变化行沿用 seq 5 + 新行 seq 6
-    w.enqueue(PersistTask{.kind = PersistTask::Kind::PositionRebuild,
-                          .data = std::vector<DzPositionInfo>{make_pos("IF2506", 5), make_pos("rb2510", 6)},
-                          .account_id = "acc1",
-                          .trading_day = 20260910});
+    w.enqueue(PersistTask{
+        .kind = PersistTask::Kind::PositionRebuild,
+        .data = std::vector<DzPositionInfo>{make_pos("IF2506", 5), make_pos("rb2510", 6)},
+        .account_id = "acc1",
+        .trading_day = 20260910});
     token = w.enqueue_flush_signal();
     ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 2);
-    EXPECT_EQ(scalar_int("SELECT seq FROM positions WHERE account_id='acc1' AND instrument_id='IF2506'"), 5);
-    EXPECT_EQ(scalar_int("SELECT seq FROM positions WHERE account_id='acc1' AND instrument_id='rb2510'"), 6);
+    EXPECT_EQ(
+        scalar_int("SELECT seq FROM positions WHERE account_id='acc1' AND instrument_id='IF2506'"),
+        5);
+    EXPECT_EQ(
+        scalar_int("SELECT seq FROM positions WHERE account_id='acc1' AND instrument_id='rb2510'"),
+        6);
     // 3) 空组重灌 = 清空 (全平幽灵持仓清除)
     w.enqueue(PersistTask{.kind = PersistTask::Kind::PositionRebuild,
                           .data = std::vector<DzPositionInfo>{},

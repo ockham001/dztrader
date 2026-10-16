@@ -13,7 +13,9 @@
 
 #include "event_preloader.h"
 
-namespace dztrader::shm { class FrameView; }
+namespace dztrader::shm {
+class FrameView;
+}
 
 namespace dztrader::webui {
 

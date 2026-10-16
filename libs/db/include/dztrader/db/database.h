@@ -61,7 +61,8 @@ public:
 
     virtual void upsert(std::string_view collection, std::span<const Row> rows) = 0;
     virtual uint64_t remove(std::string_view collection, const Filter& filter) = 0;
-    [[nodiscard]] virtual ResultSet find(std::string_view collection, const Filter& filter = {},
+    [[nodiscard]] virtual ResultSet find(std::string_view collection,
+                                         const Filter& filter = {},
                                          const FindOptions& options = {}) = 0;
     [[nodiscard]] virtual ResultSet aggregate(std::string_view collection,
                                               const Aggregation& aggregation) = 0;

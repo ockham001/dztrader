@@ -38,9 +38,11 @@ struct Condition {
 class Filter {
 public:
     Filter() = default;
-    Filter(std::initializer_list<Condition> conditions) : conditions_(conditions) {}
+    Filter(std::initializer_list<Condition> conditions)
+        : conditions_(conditions) {}
     /// 单条件隐式转换（find/remove/count 直接接 filters::eq(...)）
-    Filter(Condition condition) : conditions_{std::move(condition)} {}
+    Filter(Condition condition)
+        : conditions_{std::move(condition)} {}
 
     [[nodiscard]] bool empty() const noexcept { return conditions_.empty(); }
     [[nodiscard]] std::span<const Condition> conditions() const noexcept { return conditions_; }
@@ -56,9 +58,8 @@ private:
 
 /// 可映射为 Value 的标量（concept 约束规避 variant 的 const char*→bool 静默误选）
 template <typename T>
-concept ScalarValue = (std::integral<T> && !std::same_as<T, bool>) ||
-                      std::floating_point<T> || std::same_as<T, bool> ||
-                      std::convertible_to<T, std::string_view>;
+concept ScalarValue = (std::integral<T> && !std::same_as<T, bool>) || std::floating_point<T> ||
+                      std::same_as<T, bool> || std::convertible_to<T, std::string_view>;
 
 namespace filters {
 namespace detail {
@@ -83,22 +84,28 @@ template <ScalarValue T>
 
 }  // namespace detail
 
-template <ScalarValue T> [[nodiscard]] Condition eq(std::string field, T value) {
+template <ScalarValue T>
+[[nodiscard]] Condition eq(std::string field, T value) {
     return detail::make(std::move(field), CompareOp::Eq, value);
 }
-template <ScalarValue T> [[nodiscard]] Condition ne(std::string field, T value) {
+template <ScalarValue T>
+[[nodiscard]] Condition ne(std::string field, T value) {
     return detail::make(std::move(field), CompareOp::Ne, value);
 }
-template <ScalarValue T> [[nodiscard]] Condition gt(std::string field, T value) {
+template <ScalarValue T>
+[[nodiscard]] Condition gt(std::string field, T value) {
     return detail::make(std::move(field), CompareOp::Gt, value);
 }
-template <ScalarValue T> [[nodiscard]] Condition gte(std::string field, T value) {
+template <ScalarValue T>
+[[nodiscard]] Condition gte(std::string field, T value) {
     return detail::make(std::move(field), CompareOp::Gte, value);
 }
-template <ScalarValue T> [[nodiscard]] Condition lt(std::string field, T value) {
+template <ScalarValue T>
+[[nodiscard]] Condition lt(std::string field, T value) {
     return detail::make(std::move(field), CompareOp::Lt, value);
 }
-template <ScalarValue T> [[nodiscard]] Condition lte(std::string field, T value) {
+template <ScalarValue T>
+[[nodiscard]] Condition lte(std::string field, T value) {
     return detail::make(std::move(field), CompareOp::Lte, value);
 }
 template <ScalarValue T>
@@ -155,7 +162,8 @@ struct Column {
 class Row {
 public:
     Row() = default;
-    explicit Row(std::vector<Value> values) : values_(std::move(values)) {}
+    explicit Row(std::vector<Value> values)
+        : values_(std::move(values)) {}
 
     template <typename T>
     [[nodiscard]] T get(size_t index) const {
@@ -180,7 +188,8 @@ class ResultSet {
 public:
     ResultSet() = default;
     ResultSet(std::vector<Column> columns, std::vector<Row> rows)
-        : columns_(std::move(columns)), rows_(std::move(rows)) {}
+        : columns_(std::move(columns)),
+          rows_(std::move(rows)) {}
 
     [[nodiscard]] std::span<const Column> columns() const noexcept { return columns_; }
     [[nodiscard]] std::span<const Row> rows() const noexcept { return rows_; }

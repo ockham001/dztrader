@@ -98,8 +98,8 @@ CThostFtdcInvestorPositionField make_position_field() {
     std::strcpy(f.InstrumentID, "IF2506");
     std::strcpy(f.ExchangeID, "CFFEX");
     f.PosiDirection = THOST_FTDC_PD_Long;
-    f.Position = 10;       // 总持仓
-    f.YdPosition = 6;      // 昨仓
+    f.Position = 10;   // 总持仓
+    f.YdPosition = 6;  // 昨仓
     f.LongFrozen = 2;
     f.ShortFrozen = 1;
     f.PositionCost = 39000.0;  // 10 手 @ 3900
@@ -108,8 +108,8 @@ CThostFtdcInvestorPositionField make_position_field() {
 }
 
 /// 辅助: 构造一个 DzOrderReq
-DzOrderReq make_order_req(DzPriceType pt, DzDirection dir, DzPositionEffect off,
-                          int32_t volume, double price = 3900.0) {
+DzOrderReq make_order_req(
+    DzPriceType pt, DzDirection dir, DzPositionEffect off, int32_t volume, double price = 3900.0) {
     DzOrderReq r{};
     r.order_id = 42;
     std::strcpy(r.strategy_id, "strat1");
@@ -144,10 +144,10 @@ TEST(ParseCtpTimeTest, NullReturns) {
 
 TEST(ParseCtpTimeTest, InvalidFormat) {
     EXPECT_EQ(parse_ctp_time("abc"), -1);
-    EXPECT_EQ(parse_ctp_time("9:30:00"), -1);   // 长度不足
-    EXPECT_EQ(parse_ctp_time("09:30"), -1);     // 长度不足
+    EXPECT_EQ(parse_ctp_time("9:30:00"), -1);      // 长度不足
+    EXPECT_EQ(parse_ctp_time("09:30"), -1);        // 长度不足
     EXPECT_EQ(parse_ctp_time("09:30:00:00"), -1);  // 长度过长
-    EXPECT_EQ(parse_ctp_time("09:30:0a"), -1);  // 非数字
+    EXPECT_EQ(parse_ctp_time("09:30:0a"), -1);     // 非数字
 }
 
 TEST(ParseCtpTimeTest, OutOfRange) {
@@ -173,9 +173,9 @@ TEST(ParseCtpDateTest, NullReturns) {
 
 TEST(ParseCtpDateTest, InvalidFormat) {
     EXPECT_EQ(parse_ctp_date("abc"), DZ_DATE_NA);
-    EXPECT_EQ(parse_ctp_date("2026072"), DZ_DATE_NA);   // 长度不足
+    EXPECT_EQ(parse_ctp_date("2026072"), DZ_DATE_NA);    // 长度不足
     EXPECT_EQ(parse_ctp_date("202607277"), DZ_DATE_NA);  // 长度过长
-    EXPECT_EQ(parse_ctp_date("2026072a"), DZ_DATE_NA);  // 非数字
+    EXPECT_EQ(parse_ctp_date("2026072a"), DZ_DATE_NA);   // 非数字
 }
 
 TEST(ParseCtpDateTest, InvalidDate) {
@@ -195,15 +195,15 @@ TEST(ParseCtpDateTest, EpochDayCollidesWithNa) {
 // ============================================================================
 
 TEST(StatusCtp2VtTest, Map) {
-    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_AllTraded), DZ_ORDER_ALL_TRADED);             // '0'
-    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_PartTradedQueueing), DZ_ORDER_PART_TRADED);   // '1'
+    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_AllTraded), DZ_ORDER_ALL_TRADED);               // '0'
+    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_PartTradedQueueing), DZ_ORDER_PART_TRADED);     // '1'
     EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_PartTradedNotQueueing), DZ_ORDER_PART_TRADED);  // '2'
-    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_NoTradeQueueing), DZ_ORDER_NOT_TRADED);       // '3'
-    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_NoTradeNotQueueing), DZ_ORDER_CANCELLED);     // '4'
-    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_Canceled), DZ_ORDER_CANCELLED);               // '5'
-    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_Unknown), DZ_ORDER_SUBMITTING);               // 'a'
-    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_NotTouched), DZ_ORDER_NOT_TRADED);            // 'b'
-    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_Touched), DZ_ORDER_PART_TRADED);              // 'c'
+    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_NoTradeQueueing), DZ_ORDER_NOT_TRADED);         // '3'
+    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_NoTradeNotQueueing), DZ_ORDER_CANCELLED);       // '4'
+    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_Canceled), DZ_ORDER_CANCELLED);                 // '5'
+    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_Unknown), DZ_ORDER_SUBMITTING);                 // 'a'
+    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_NotTouched), DZ_ORDER_NOT_TRADED);              // 'b'
+    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_Touched), DZ_ORDER_PART_TRADED);                // 'c'
 }
 
 TEST(StatusCtp2VtTest, UnknownDefault) {
@@ -279,8 +279,8 @@ TEST(ToInputOrderFieldTest, LimitBuyOpen) {
 }
 
 TEST(ToInputOrderFieldTest, SellCloseToday) {
-    auto req = make_order_req(DZ_PRICE_LIMIT, DZ_DIRECTION_SHORT,
-                              DZ_POSITION_EFFECT_CLOSE_TODAY, 3);
+    auto req =
+        make_order_req(DZ_PRICE_LIMIT, DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE_TODAY, 3);
     OrderBuildContext ctx{"acc1", 999, 2, "SHFE"};
     auto f = to_input_order_field(req, ctx);
 
@@ -290,8 +290,8 @@ TEST(ToInputOrderFieldTest, SellCloseToday) {
 }
 
 TEST(ToInputOrderFieldTest, BuyCloseYesterday) {
-    auto req = make_order_req(DZ_PRICE_LIMIT, DZ_DIRECTION_LONG,
-                              DZ_POSITION_EFFECT_CLOSE_YESTDAY, 2);
+    auto req =
+        make_order_req(DZ_PRICE_LIMIT, DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_CLOSE_YESTDAY, 2);
     OrderBuildContext ctx{"acc1", 1, 3, "SHFE"};
     auto f = to_input_order_field(req, ctx);
 
@@ -300,8 +300,7 @@ TEST(ToInputOrderFieldTest, BuyCloseYesterday) {
 }
 
 TEST(ToInputOrderFieldTest, Close) {
-    auto req = make_order_req(DZ_PRICE_LIMIT, DZ_DIRECTION_SHORT,
-                              DZ_POSITION_EFFECT_CLOSE, 1);
+    auto req = make_order_req(DZ_PRICE_LIMIT, DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 1);
     OrderBuildContext ctx{"acc1", 1, 4, "CFFEX"};
     auto f = to_input_order_field(req, ctx);
 
@@ -310,8 +309,7 @@ TEST(ToInputOrderFieldTest, Close) {
 
 TEST(ToInputOrderFieldTest, FokMinVolume) {
     // FOK 模拟: MinVolume 应等于 volume
-    auto req = make_order_req(DZ_PRICE_FOK, DZ_DIRECTION_LONG,
-                              DZ_POSITION_EFFECT_OPEN, 7);
+    auto req = make_order_req(DZ_PRICE_FOK, DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_OPEN, 7);
     OrderBuildContext ctx{"acc1", 1, 5, "CFFEX"};
     auto f = to_input_order_field(req, ctx);
 
@@ -323,8 +321,7 @@ TEST(ToInputOrderFieldTest, FokMinVolume) {
 
 TEST(ToInputOrderFieldTest, FakMinVolume) {
     // FAK: MinVolume 保持 1 (允许部分成交)
-    auto req = make_order_req(DZ_PRICE_FAK, DZ_DIRECTION_LONG,
-                              DZ_POSITION_EFFECT_OPEN, 7);
+    auto req = make_order_req(DZ_PRICE_FAK, DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_OPEN, 7);
     OrderBuildContext ctx{"acc1", 1, 6, "CFFEX"};
     auto f = to_input_order_field(req, ctx);
 
@@ -381,8 +378,8 @@ TEST(ToOrderRecordTest, BasicFields) {
     // 扩展字段
     EXPECT_STREQ(r.order_ref, "123");
     EXPECT_STREQ(r.external_order_id, "EXT001");
-    EXPECT_EQ(r.is_external, 0);        // 留 0, AccountSession 后填
-    EXPECT_EQ(r.volume_canceled, 0);    // 留 0, AccountSession 后推导
+    EXPECT_EQ(r.is_external, 0);      // 留 0, AccountSession 后填
+    EXPECT_EQ(r.volume_canceled, 0);  // 留 0, AccountSession 后推导
     EXPECT_EQ(r.error_id, 0);
 }
 
@@ -504,7 +501,7 @@ TEST(ToInstrumentRecordTest, Futures) {
     auto r = to_instrument_record(f, "20260101");
 
     EXPECT_EQ(r.instrument_id, "IF2506");
-    EXPECT_EQ(r.symbol, "IF2506");              // CTP 裸码: symbol == instrument_id
+    EXPECT_EQ(r.symbol, "IF2506");  // CTP 裸码: symbol == instrument_id
     EXPECT_EQ(r.exchange_id, "CFFEX");
     EXPECT_EQ(r.product_class, DZ_PRODUCT_FUTURES);
     EXPECT_EQ(r.product_code, "IF");
@@ -520,9 +517,9 @@ TEST(ToInstrumentRecordTest, Futures) {
     EXPECT_EQ(r.is_inverse, 0);
     EXPECT_EQ(r.listed_date, parse_ctp_date("20260119"));    // OpenDate
     EXPECT_EQ(r.delisted_date, parse_ctp_date("20260619"));  // ExpireDate
-    EXPECT_EQ(r.option_type, 0);                   // 非期权
+    EXPECT_EQ(r.option_type, 0);                             // 非期权
     EXPECT_EQ(r.update_day, "20260101");
-    EXPECT_EQ(r.updated_at, 0);                    // 由调用方填 epoch ms
+    EXPECT_EQ(r.updated_at, 0);  // 由调用方填 epoch ms
 }
 
 TEST(ToInstrumentRecordTest, OptionCall) {
@@ -536,7 +533,7 @@ TEST(ToInstrumentRecordTest, OptionCall) {
 
     auto r = to_instrument_record(f, "20260101");
     EXPECT_EQ(r.product_class, DZ_PRODUCT_OPTION);
-    EXPECT_EQ(r.option_type, DZ_OPTION_CALL);      // 1
+    EXPECT_EQ(r.option_type, DZ_OPTION_CALL);  // 1
     EXPECT_DOUBLE_EQ(r.option_strike, 4800.0);
     EXPECT_EQ(r.underlying_id, "SR509");
 }
@@ -548,7 +545,7 @@ TEST(ToInstrumentRecordTest, OptionPut) {
     f.StrikePrice = 4800.0;
 
     auto r = to_instrument_record(f, "20260101");
-    EXPECT_EQ(r.option_type, DZ_OPTION_PUT);       // -1
+    EXPECT_EQ(r.option_type, DZ_OPTION_PUT);  // -1
     EXPECT_DOUBLE_EQ(r.option_strike, 4800.0);
 }
 
@@ -614,7 +611,7 @@ TEST(ToInstrumentRecordTest, ProductCodeAndUnderlyingMultiple) {
 TEST(ToInstrumentRecordTest, MoneyDefaults) {
     auto f = make_instrument_field();
     auto r = to_instrument_record(f, "20260101");
-    EXPECT_EQ(r.settle_cycle, -1);   // CTP 衍生品语义: 不适用
+    EXPECT_EQ(r.settle_cycle, -1);  // CTP 衍生品语义: 不适用
     EXPECT_EQ(r.currency, "CNY");
     EXPECT_DOUBLE_EQ(r.volume_step, 1.0);
     EXPECT_EQ(r.base_asset, "");
@@ -654,7 +651,7 @@ TEST(ToDzPositionTest, LongPositionMapsFields) {
     EXPECT_STREQ(p.account_id, "acc1");
     EXPECT_EQ(p.direction, DZ_DIRECTION_LONG);
     EXPECT_EQ(p.volume, 10);
-    EXPECT_EQ(p.frozen_volume, 3);  // LongFrozen(2) + ShortFrozen(1)
+    EXPECT_EQ(p.frozen_volume, 3);      // LongFrozen(2) + ShortFrozen(1)
     EXPECT_DOUBLE_EQ(p.price, 3900.0);  // PositionCost / (Position * 1.0)
     EXPECT_EQ(p.yd_volume, 6);
     EXPECT_EQ(p.today_volume, 4);  // 总 - 昨

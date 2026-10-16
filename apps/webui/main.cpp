@@ -77,8 +77,8 @@ int main(int argc, char* argv[]) {
 
     // 根据 TOML 配置调整日志级别 (统一用 LogConfig::parse_level, 契约 log)
     // 非法级别容错为 info
-    auto webui_level = dztrader::platform::LogConfig::parse_level(cfg.log_level)
-                           .value_or(spdlog::level::info);
+    auto webui_level =
+        dztrader::platform::LogConfig::parse_level(cfg.log_level).value_or(spdlog::level::info);
 
     // 初始化项目标准日志（与 dztraderd/dzmd_ctp 一致）
     // logger 名 = 可执行文件名（不含扩展名），避免硬编码
@@ -133,7 +133,9 @@ int main(int argc, char* argv[]) {
 
     // 默认密码告警：配置未显式指定 password 时使用弱密码 88888888，提醒立即修改
     if (cfg.admin_password_is_default) {
-        SPDLOG_WARN("default admin password in use | password=88888888 action=change_now advice=\"edit admin.password in configs/webui.json or login to change\"");
+        SPDLOG_WARN(
+            "default admin password in use | password=88888888 action=change_now advice=\"edit "
+            "admin.password in configs/webui.json or login to change\"");
     }
 
     auto repo = std::make_shared<dztrader::webui::Repository>(dztrader::paths::db() / "webui.db");
@@ -153,7 +155,8 @@ int main(int argc, char* argv[]) {
             dztrader::shm::MultiWriter::create(event_meta, "dzweb"));
         SPDLOG_INFO("shm initialized | channels={}", dztrader::shm::channel_name("dzevent"));
     } catch (const std::exception& e) {
-        SPDLOG_WARN("shm init failed | error=\"{}\" mode=api-only advice=start_dztraderd", e.what());
+        SPDLOG_WARN("shm init failed | error=\"{}\" mode=api-only advice=start_dztraderd",
+                    e.what());
     }
     // ShmWriter 注入同一 MultiWriter 实例：ControlDomainService 处理
     // UPDATE_SHM_EVENT_SUBSCRIBER 刷新的是同一份订阅者缓存，动态重启的子进程
@@ -166,8 +169,9 @@ int main(int argc, char* argv[]) {
 
     // 单 IO 线程 + 独立主循环：drogon setThreadNum(1) 创建 1 个 DrogonIoLoop 线程承接所有
     // REST/WS 连接回调；app().getLoop() 是独立主循环（不参与连接分发，勿用于连接相关定时器）。
-    // tail 定时器等须注册到 IO 循环（getIOLoop(0)）以与 WS 回调同线程串行，避免 sessions_ 数据竞争。
-    // 本重构 LogCtrl 直调 self_log_ + 写 mirror_ 依赖此串行化（HTTP 与 WS 回调同在 IO 线程）
+    // tail 定时器等须注册到 IO 循环（getIOLoop(0)）以与 WS 回调同线程串行，避免 sessions_
+    // 数据竞争。 本重构 LogCtrl 直调 self_log_ + 写 mirror_ 依赖此串行化（HTTP 与 WS 回调同在 IO
+    // 线程）
     drogon::app().setThreadNum(1);
     drogon::app().addListener(cfg.server_listen, cfg.server_port);
 
@@ -205,17 +209,17 @@ int main(int argc, char* argv[]) {
     // 作为数据变更通知/踢人能力注入各 controller（取代原全局函数指针）
     // P2 任务③：出方向行情控制领域服务（md_connect/disconnect/query_md_subscriptions）
     // 在 ws_ctrl 之前构造，注入 WsController 用于 C2S 下沉
-    auto md_control_domain =
-        std::make_shared<dztrader::webui::MdControlDomainService>(*process_mirror, event_writer.get());
+    auto md_control_domain = std::make_shared<dztrader::webui::MdControlDomainService>(
+        *process_mirror, event_writer.get());
     auto ws_ctrl = std::make_shared<dztrader::webui::WsController>(
-        cfg, repo, event_writer, self_log,
-        *mirror_store, *md_control_domain);
+        cfg, repo, event_writer, self_log, *mirror_store, *md_control_domain);
     drogon::app().registerController(ws_ctrl);
 
     // 注册 /api/login 控制器
     // 共享 WebuiConfig 持有者: SettingsCtrl 热生效 token_ttl_sec 时 LoginCtrl 同步可见
     auto webui_cfg_holder = std::make_shared<dztrader::webui::WebuiConfig>(cfg);
-    auto login_ctrl = std::make_shared<dztrader::webui::LoginCtrl>(webui_cfg_holder, repo, *ws_ctrl);
+    auto login_ctrl =
+        std::make_shared<dztrader::webui::LoginCtrl>(webui_cfg_holder, repo, *ws_ctrl);
     drogon::app().registerController(login_ctrl);
 
     // 注册其他业务控制器（Task 3、Task 4），注入 DataChangeNotifier（数据变更通知/踢人）
@@ -223,18 +227,15 @@ int main(int argc, char* argv[]) {
         std::make_shared<dztrader::webui::UserCtrl>(repo, cfg, *ws_ctrl));
     drogon::app().registerController(
         std::make_shared<dztrader::webui::SecurityCtrl>(repo, *ws_ctrl));
-    drogon::app().registerController(
-        std::make_shared<dztrader::webui::MarketSourceCtrl>(
-            repo, shm_writer, process_mirror, *ws_ctrl));
+    drogon::app().registerController(std::make_shared<dztrader::webui::MarketSourceCtrl>(
+        repo, shm_writer, process_mirror, *ws_ctrl));
     drogon::app().registerController(
         std::make_shared<dztrader::webui::ProcessCtrl>(repo, process_mirror));
 
     // 系统设置控制器: 只读展示 dztraderd.json (master 路径固定) + 事件通道(SET_EVENT_SHM_CONFIG)
     // + webui.json (共享 webui_cfg_holder 与 LoginCtrl, token_ttl_sec 热生效)
     auto settings_ctrl = std::make_shared<dztrader::webui::SettingsCtrl>(
-        repo, shm_writer,
-        dztrader::paths::configs() / "dztraderd.json",
-        config_path,
+        repo, shm_writer, dztrader::paths::configs() / "dztraderd.json", config_path,
         webui_cfg_holder);
     drogon::app().registerController(settings_ctrl);
 
@@ -247,53 +248,50 @@ int main(int argc, char* argv[]) {
     // JWT 全局认证（pre-handling advice）
     // 对所有 /api/* 路由生效，跳过 /api/login 与非 /api/ 路径（如静态文件、/health）
     auto jwt_secret = cfg.jwt_secret;
-    drogon::app().registerPreHandlingAdvice(
-        [jwt_secret](const drogon::HttpRequestPtr& req,
-                     drogon::AdviceCallback&& cb,
-                     const drogon::AdviceChainCallback& ccb) {
-            const std::string& path = req->getPath();
-            if (path == "/api/login" || path == "/health" || path == "/api/system/info" ||
-                !path.starts_with("/api/")) {
-                ccb();
-                return;
-            }
-            std::string token;
-            auto auth = req->getHeader("Authorization");
-            if (auth.size() >= 7 && auth.starts_with("Bearer ")) {
-                token = auth.substr(7);
-            }
-            if (token.empty()) {
-                auto resp = drogon::HttpResponse::newHttpResponse();
-                resp->setStatusCode(drogon::k401Unauthorized);
-                resp->setContentTypeString("application/json");
-                resp->setBody(R"({"error":"unauthorized"})");
-                cb(resp);
-                return;
-            }
-            std::string user_id;
-            if (!dztrader::webui::jwt_verify(token, jwt_secret, user_id)) {
-                auto resp = drogon::HttpResponse::newHttpResponse();
-                resp->setStatusCode(drogon::k401Unauthorized);
-                resp->setContentTypeString("application/json");
-                resp->setBody(R"({"error":"invalid_token"})");
-                cb(resp);
-                return;
-            }
-            req->getAttributes()->insert("user_id", user_id);
+    drogon::app().registerPreHandlingAdvice([jwt_secret](const drogon::HttpRequestPtr& req,
+                                                         drogon::AdviceCallback&& cb,
+                                                         const drogon::AdviceChainCallback& ccb) {
+        const std::string& path = req->getPath();
+        if (path == "/api/login" || path == "/health" || path == "/api/system/info" ||
+            !path.starts_with("/api/")) {
             ccb();
-        });
+            return;
+        }
+        std::string token;
+        auto auth = req->getHeader("Authorization");
+        if (auth.size() >= 7 && auth.starts_with("Bearer ")) {
+            token = auth.substr(7);
+        }
+        if (token.empty()) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k401Unauthorized);
+            resp->setContentTypeString("application/json");
+            resp->setBody(R"({"error":"unauthorized"})");
+            cb(resp);
+            return;
+        }
+        std::string user_id;
+        if (!dztrader::webui::jwt_verify(token, jwt_secret, user_id)) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k401Unauthorized);
+            resp->setContentTypeString("application/json");
+            resp->setBody(R"({"error":"invalid_token"})");
+            cb(resp);
+            return;
+        }
+        req->getAttributes()->insert("user_id", user_id);
+        ccb();
+    });
 
     // ===== 领域服务装配（镜像 + 广播，行为等价搬迁自 WsController::handle_*） =====
     // LogDomainService 归并 log_control（P4 Task 6）：持有 self_log + event_writer，
     // handle_log_control 直调 LogConfig / 写 SHM / NOTIFY_UI / publish 回推
-    auto log_domain =
-        std::make_shared<dztrader::webui::LogDomainService>(
-            *mirror_store, *ws_ctrl, *self_log, event_writer.get());
+    auto log_domain = std::make_shared<dztrader::webui::LogDomainService>(
+        *mirror_store, *ws_ctrl, *self_log, event_writer.get());
 
     // 日志查看与配置操作: set_level/flush 经 LogDomainService::handle_log_control 分发,
     // 进程级别由 WS 镜像(log_config)推送, 不依赖独立缓存类
-    drogon::app().registerController(
-        std::make_shared<dztrader::webui::LogCtrl>(repo, log_domain));
+    drogon::app().registerController(std::make_shared<dztrader::webui::LogCtrl>(repo, log_domain));
     auto control_domain =
         std::make_shared<dztrader::webui::ControlDomainService>(exe_stem, event_writer.get());
     auto process_domain =
@@ -330,62 +328,71 @@ int main(int argc, char* argv[]) {
     // EventMonitor 由 main 持有并直调 start/stop（WsController 不再涉及）。
     // 生命周期：main 栈上 router 先声明、event_monitor 后声明（析构相反），
     // 监听线程在 drogon run 返回后经 event_monitor->stop() join，无线程在 router 析构后访问
-    auto event_monitor = std::make_unique<dztrader::webui::EventMonitor>(shm_dir, router,
-                                                                         event_writer);
-    router.register_json<nlohmann::json>(DZ_FRAME_RTN_LOG_CONFIG, true,
-        [log_domain](const std::string& s, const nlohmann::json& p) {
+    auto event_monitor =
+        std::make_unique<dztrader::webui::EventMonitor>(shm_dir, router, event_writer);
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_RTN_LOG_CONFIG, true, [log_domain](const std::string& s, const nlohmann::json& p) {
             log_domain->on_rtn_log_config(s, p);
         });
-    router.register_raw(DZ_FRAME_SHUTDOWN,
-        [control_domain](const dztrader::shm::FrameView& v) {
-            control_domain->on_shutdown(std::string(v.ext_inst_id()));
-        });
+    router.register_raw(DZ_FRAME_SHUTDOWN, [control_domain](const dztrader::shm::FrameView& v) {
+        control_domain->on_shutdown(std::string(v.ext_inst_id()));
+    });
     router.register_raw(DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER,
-        [control_domain](const dztrader::shm::FrameView&) { control_domain->on_update_subscribers(); });
+                        [control_domain](const dztrader::shm::FrameView&) {
+                            control_domain->on_update_subscribers();
+                        });
     // 事件通道预加载广播: 监听线程解析 payload 后随机延迟执行
     // (reader 半边就地 / writer 半边投递 IO 线程, 见 event_preloader.h)
     router.register_raw(DZ_FRAME_PRELOAD_EVENT_SHM,
-        [monitor = event_monitor.get()](const dztrader::shm::FrameView& v) {
-            monitor->schedule_event_shm_preload(v.payload<DzShmPreload>());
-        });
-    router.register_json<nlohmann::json>(DZ_FRAME_RTN_PROCESS_STATUS, false,
+                        [monitor = event_monitor.get()](const dztrader::shm::FrameView& v) {
+                            monitor->schedule_event_shm_preload(v.payload<DzShmPreload>());
+                        });
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_RTN_PROCESS_STATUS, false,
         [process_domain](const std::string&, const nlohmann::json& p) {
             process_domain->on_rtn_process_status(p);
         });
-    router.register_json<nlohmann::json>(DZ_FRAME_RTN_PROCESS_CONFIG, false,
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_RTN_PROCESS_CONFIG, false,
         [process_domain](const std::string&, const nlohmann::json& p) {
             process_domain->on_rtn_process_config(p);
         });
-    router.register_json<nlohmann::json>(DZ_FRAME_RTN_MD_CONFIG, true,
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_RTN_MD_CONFIG, true,
         [md_config_domain](const std::string& s, const nlohmann::json& p) {
             md_config_domain->on_rtn_md_config(s, p);
         });
-    router.register_json<nlohmann::json>(DZ_FRAME_RTN_MD_STATUS, true,
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_RTN_MD_STATUS, true,
         [md_status_domain](const std::string& s, const nlohmann::json& p) {
             md_status_domain->on_rtn_md_status(s, p);
         });
-    router.register_json<nlohmann::json>(DZ_FRAME_RTN_MD_SUBSCRIPTIONS, true,
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_RTN_MD_SUBSCRIPTIONS, true,
         [subscription_domain](const std::string& s, const nlohmann::json& p) {
             subscription_domain->on_rtn_md_subscriptions(s, p);
         });
-    router.register_json<nlohmann::json>(DZ_FRAME_NOTIFY_UI, false,
-        [notify_domain](const std::string&, const nlohmann::json& p) {
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_NOTIFY_UI, false, [notify_domain](const std::string&, const nlohmann::json& p) {
             notify_domain->on_notify_ui(p);
         });
     // P2 补缺 4 帧：Shm/AutoLogin/Progress 领域服务（Task 1 定义，has_instance_id 与写端帧头一致）
     router.register_json<nlohmann::json>(DZ_FRAME_RTN_EVENT_SHM_CONFIG, false,
-        [shm_domain](const std::string&, const nlohmann::json& p) {
-            shm_domain->on_rtn_event_shm_config(p);
-        });
-    router.register_json<nlohmann::json>(DZ_FRAME_RTN_MD_SHM_CONFIG, true,
+                                         [shm_domain](const std::string&, const nlohmann::json& p) {
+                                             shm_domain->on_rtn_event_shm_config(p);
+                                         });
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_RTN_MD_SHM_CONFIG, true,
         [shm_domain](const std::string& s, const nlohmann::json& p) {
             shm_domain->on_rtn_md_shm_config(s, p);
         });
-    router.register_json<nlohmann::json>(DZ_FRAME_RTN_AUTO_LOGIN, true,
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_RTN_AUTO_LOGIN, true,
         [auto_login_domain](const std::string& s, const nlohmann::json& p) {
             auto_login_domain->on_rtn_auto_login(s, p);
         });
-    router.register_json<nlohmann::json>(DZ_FRAME_RTN_PROGRESS, true,
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_RTN_PROGRESS, true,
         [progress_domain](const std::string& s, const nlohmann::json& p) {
             progress_domain->on_rtn_progress(s, p);
         });
@@ -418,9 +425,8 @@ int main(int argc, char* argv[]) {
     const fs::path frontend_dist = dztrader::this_process::exe_dir() / "web";
     if (fs::exists(frontend_dist / "index.html")) {
         drogon::app().setDocumentRoot(frontend_dist.string());
-        drogon::app().setFileTypes({"html", "js", "css", "png", "jpg", "jpeg", "gif",
-                                    "svg", "ico", "woff", "woff2", "ttf", "eot",
-                                    "json", "map"});
+        drogon::app().setFileTypes({"html", "js", "css", "png", "jpg", "jpeg", "gif", "svg", "ico",
+                                    "woff", "woff2", "ttf", "eot", "json", "map"});
         SPDLOG_INFO("frontend serving | path={}", frontend_dist.string());
     } else {
         SPDLOG_INFO("frontend dist not found | mode=api-only");
@@ -454,8 +460,8 @@ int main(int argc, char* argv[]) {
         },
         {drogon::Get});
 
-    SPDLOG_INFO("webui starting | listen={}:{} shm_dir={}",
-                cfg.server_listen, cfg.server_port, shm_dir.string());
+    SPDLOG_INFO("webui starting | listen={}:{} shm_dir={}", cfg.server_listen, cfg.server_port,
+                shm_dir.string());
     drogon::app().run();
 
     // drogon 退出后停止事件通道监听线程

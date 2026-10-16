@@ -10,7 +10,8 @@ namespace dztrader::webui {
 class ProcessCtrl : public drogon::HttpController<ProcessCtrl, false>, public ControllerBase {
 public:
     ProcessCtrl(std::shared_ptr<Repository> repo, std::shared_ptr<ProcessMirror> process_mirror)
-        : ControllerBase(std::move(repo)), process_mirror_(std::move(process_mirror)) {}
+        : ControllerBase(std::move(repo)),
+          process_mirror_(std::move(process_mirror)) {}
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(ProcessCtrl::get_all, "/api/processes", drogon::Get);

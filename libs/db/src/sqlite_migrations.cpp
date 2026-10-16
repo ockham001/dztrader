@@ -24,54 +24,56 @@ void migration_v1(SQLite::Database& db) {
     db.exec(
         "CREATE TABLE IF NOT EXISTS orders ("
         "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "    account_id TEXT NOT NULL,"           // base.account_id
-        "    trading_day TEXT NOT NULL,"          // trading_day (SQL 扩展)
-        "    order_id INTEGER NOT NULL,"          // base.order_id
-        "    order_ref TEXT NOT NULL,"            // order_ref (SQL 扩展)
-        "    external_order_id TEXT,"             // external_order_id (SQL 扩展)
-        "    is_external INTEGER NOT NULL DEFAULT 0," // is_external (SQL 扩展)
-        "    instrument_id TEXT NOT NULL,"        // base.instrument_id
-        "    exchange_id TEXT NOT NULL,"          // base.exchange_id
-        "    direction CHAR(1),"                  // base.direction
-        "    position_effect CHAR(1),"            // base.position_effect
-        "    price_type CHAR(1),"                 // base.price_type
-        "    status CHAR(1),"                     // base.status
-        "    price REAL,"                         // base.price
-        "    volume INTEGER,"                     // base.volume (委托数量)
-        "    volume_traded INTEGER,"              // base.volume_traded
-        "    volume_canceled INTEGER,"            // volume_canceled (SQL 扩展)
-        "    insert_time INTEGER,"                // insert_time (SQL 扩展)
-        "    update_time INTEGER,"                // update_time (SQL 扩展)
-        "    error_id INTEGER,"                   // error_id (SQL 扩展)
-        "    error_msg TEXT,"                     // error_msg (SQL 扩展)
-        "    strategy_id TEXT,"                   // base.strategy_id
-        "    remark TEXT,"                        // base.remark
+        "    account_id TEXT NOT NULL,"                // base.account_id
+        "    trading_day TEXT NOT NULL,"               // trading_day (SQL 扩展)
+        "    order_id INTEGER NOT NULL,"               // base.order_id
+        "    order_ref TEXT NOT NULL,"                 // order_ref (SQL 扩展)
+        "    external_order_id TEXT,"                  // external_order_id (SQL 扩展)
+        "    is_external INTEGER NOT NULL DEFAULT 0,"  // is_external (SQL 扩展)
+        "    instrument_id TEXT NOT NULL,"             // base.instrument_id
+        "    exchange_id TEXT NOT NULL,"               // base.exchange_id
+        "    direction CHAR(1),"                       // base.direction
+        "    position_effect CHAR(1),"                 // base.position_effect
+        "    price_type CHAR(1),"                      // base.price_type
+        "    status CHAR(1),"                          // base.status
+        "    price REAL,"                              // base.price
+        "    volume INTEGER,"                          // base.volume (委托数量)
+        "    volume_traded INTEGER,"                   // base.volume_traded
+        "    volume_canceled INTEGER,"                 // volume_canceled (SQL 扩展)
+        "    insert_time INTEGER,"                     // insert_time (SQL 扩展)
+        "    update_time INTEGER,"                     // update_time (SQL 扩展)
+        "    error_id INTEGER,"                        // error_id (SQL 扩展)
+        "    error_msg TEXT,"                          // error_msg (SQL 扩展)
+        "    strategy_id TEXT,"                        // base.strategy_id
+        "    remark TEXT,"                             // base.remark
         "    UNIQUE(account_id, order_id)"
         ")");
     db.exec("CREATE INDEX IF NOT EXISTS idx_orders_account_day ON orders(account_id, trading_day)");
-    db.exec("CREATE INDEX IF NOT EXISTS idx_orders_day_instr ON orders(trading_day, instrument_id)");
+    db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_orders_day_instr ON orders(trading_day, instrument_id)");
 
     // trades: 成交记录 (TradeRecord = DzTradeReport + SQL 扩展字段)
     db.exec(
         "CREATE TABLE IF NOT EXISTS trades ("
         "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "    account_id TEXT NOT NULL,"           // base.account_id
-        "    trading_day TEXT NOT NULL,"          // trading_day (SQL 扩展)
-        "    trade_id TEXT NOT NULL,"             // base.trade_id
-        "    order_id INTEGER NOT NULL,"          // base.order_id
-        "    instrument_id TEXT NOT NULL,"        // base.instrument_id
-        "    exchange_id TEXT NOT NULL,"          // base.exchange_id
-        "    direction CHAR(1),"                  // base.direction
-        "    position_effect CHAR(1),"            // base.position_effect
-        "    price REAL NOT NULL,"                // base.price
-        "    volume INTEGER NOT NULL,"            // base.volume
-        "    trade_time INTEGER,"                 // trade_time (SQL 扩展)
-        "    trade_date INTEGER,"                 // trade_date (SQL 扩展)
-        "    commission REAL,"                    // commission (SQL 扩展)
-        "    strategy_id TEXT,"                   // base.strategy_id
+        "    account_id TEXT NOT NULL,"     // base.account_id
+        "    trading_day TEXT NOT NULL,"    // trading_day (SQL 扩展)
+        "    trade_id TEXT NOT NULL,"       // base.trade_id
+        "    order_id INTEGER NOT NULL,"    // base.order_id
+        "    instrument_id TEXT NOT NULL,"  // base.instrument_id
+        "    exchange_id TEXT NOT NULL,"    // base.exchange_id
+        "    direction CHAR(1),"            // base.direction
+        "    position_effect CHAR(1),"      // base.position_effect
+        "    price REAL NOT NULL,"          // base.price
+        "    volume INTEGER NOT NULL,"      // base.volume
+        "    trade_time INTEGER,"           // trade_time (SQL 扩展)
+        "    trade_date INTEGER,"           // trade_date (SQL 扩展)
+        "    commission REAL,"              // commission (SQL 扩展)
+        "    strategy_id TEXT,"             // base.strategy_id
         "    UNIQUE(account_id, trade_id)"
         ")");
-    db.exec("CREATE INDEX IF NOT EXISTS idx_trades_day_instr ON trades(trading_day, instrument_id)");
+    db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_trades_day_instr ON trades(trading_day, instrument_id)");
     db.exec("CREATE INDEX IF NOT EXISTS idx_trades_account_day ON trades(account_id, trading_day)");
 
     // margin_rates: 保证金率 (直接复用 DzMarginRate)
@@ -88,7 +90,7 @@ void migration_v1(SQLite::Database& db) {
         "    long_margin_ratio_by_volume REAL,"
         "    short_margin_ratio_by_money REAL,"
         "    short_margin_ratio_by_volume REAL,"
-        "    date INTEGER,"                       // DzDate (距纪元天数)
+        "    date INTEGER,"  // DzDate (距纪元天数)
         "    UNIQUE(account_id, date, product_code)"
         ")");
 
@@ -106,7 +108,7 @@ void migration_v1(SQLite::Database& db) {
         "    close_ratio_by_volume REAL,"
         "    close_today_ratio_by_money REAL,"
         "    close_today_ratio_by_volume REAL,"
-        "    date INTEGER,"                       // DzDate
+        "    date INTEGER,"  // DzDate
         "    UNIQUE(account_id, date, product_code)"
         ")");
 
@@ -117,16 +119,16 @@ void migration_v1(SQLite::Database& db) {
         "    exchange_id TEXT NOT NULL,"
         "    name TEXT,"
         "    product CHAR(1),"
-        "    volume_multiple REAL,"               // v3: 字段已变 double (v1 曾为 INTEGER)
+        "    volume_multiple REAL,"  // v3: 字段已变 double (v1 曾为 INTEGER)
         "    price_tick REAL,"
         "    min_order_volume INTEGER,"
         "    max_order_volume INTEGER,"
         "    option_type CHAR(1),"
         "    option_strike REAL,"
         "    option_underlying TEXT,"
-        "    option_listed INTEGER,"              // DzDate
-        "    option_expiry INTEGER,"              // DzDate
-        "    update_day TEXT"                     // SQL 扩展
+        "    option_listed INTEGER,"  // DzDate
+        "    option_expiry INTEGER,"  // DzDate
+        "    update_day TEXT"         // SQL 扩展
         ")");
 }
 
@@ -308,8 +310,10 @@ void migration_v4(SQLite::Database& db) {
     db.exec("ALTER TABLE instruments RENAME COLUMN max_order_volume TO max_limit_order_volume");
     db.exec("ALTER TABLE instruments RENAME COLUMN expiry_date TO delisted_date");
     db.exec("ALTER TABLE instruments ADD COLUMN product_code TEXT NOT NULL DEFAULT ''");
-    db.exec("ALTER TABLE instruments ADD COLUMN min_market_order_volume INTEGER NOT NULL DEFAULT 0");
-    db.exec("ALTER TABLE instruments ADD COLUMN max_market_order_volume INTEGER NOT NULL DEFAULT 0");
+    db.exec(
+        "ALTER TABLE instruments ADD COLUMN min_market_order_volume INTEGER NOT NULL DEFAULT 0");
+    db.exec(
+        "ALTER TABLE instruments ADD COLUMN max_market_order_volume INTEGER NOT NULL DEFAULT 0");
     db.exec("ALTER TABLE instruments ADD COLUMN underlying_multiple REAL NOT NULL DEFAULT 0");
     db.exec("ALTER TABLE instruments ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0");
 }
@@ -328,16 +332,27 @@ int current_version(SQLite::Database& db) {
 
 void apply_one(SQLite::Database& db, int version) {
     switch (version) {
-        case 1: migration_v1(db); break;
-        case 2: migration_v2(db); break;
-        case 3: migration_v3(db); break;
-        case 4: migration_v4(db); break;
-        case 5: migration_v5(db); break;
-        default: throw Exception(DZ_EC_DB_MIGRATE_FAILED, "unknown migration: version={}", version);
+        case 1:
+            migration_v1(db);
+            break;
+        case 2:
+            migration_v2(db);
+            break;
+        case 3:
+            migration_v3(db);
+            break;
+        case 4:
+            migration_v4(db);
+            break;
+        case 5:
+            migration_v5(db);
+            break;
+        default:
+            throw Exception(DZ_EC_DB_MIGRATE_FAILED, "unknown migration: version={}", version);
     }
     const auto now = std::chrono::system_clock::now();
-    const auto ts = std::format("{:%FT%TZ}",
-                                std::chrono::zoned_time{std::chrono::locate_zone("UTC"), now});
+    const auto ts =
+        std::format("{:%FT%TZ}", std::chrono::zoned_time{std::chrono::locate_zone("UTC"), now});
     SQLite::Statement ins(db, "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)");
     ins.bind(1, version);
     ins.bind(2, ts);
@@ -361,8 +376,7 @@ std::string sqlite_type(ValueType type) {
 std::string quote_identifier(std::string_view name) { return "\"" + std::string(name) + "\""; }
 
 bool table_exists(SQLite::Database& db, std::string_view name) {
-    SQLite::Statement stmt(
-        db, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?");
+    SQLite::Statement stmt(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?");
     stmt.bind(1, std::string(name));
     return stmt.executeStep() && stmt.getColumn(0).getInt() > 0;
 }
@@ -413,9 +427,9 @@ void create_missing_collections(SQLite::Database& db, std::span<const ResourceSc
             sql += ")";
             db.exec(sql);
             for (const IndexSchema& index : schema.indexes) {
-                std::string create =
-                    "CREATE " + std::string(index.unique ? "UNIQUE " : "") + "INDEX IF NOT EXISTS " +
-                    quote_identifier(index.name) + " ON " + quote_identifier(schema.name) + " (";
+                std::string create = "CREATE " + std::string(index.unique ? "UNIQUE " : "") +
+                                     "INDEX IF NOT EXISTS " + quote_identifier(index.name) +
+                                     " ON " + quote_identifier(schema.name) + " (";
                 for (size_t i = 0; i < index.fields.size(); ++i) {
                     if (i > 0) {
                         create += ", ";

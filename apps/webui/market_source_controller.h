@@ -21,7 +21,8 @@ std::string process_name_for_source_type(const std::string& source_type);
 // dzmd_ctp -> ctp, dzmd_ctp_1234 -> ctp, 未知前缀 -> ""
 std::string extract_ui_card(const std::string& process_name);
 
-class MarketSourceCtrl : public drogon::HttpController<MarketSourceCtrl, false>, public ControllerBase {
+class MarketSourceCtrl : public drogon::HttpController<MarketSourceCtrl, false>,
+                         public ControllerBase {
 public:
     MarketSourceCtrl(std::shared_ptr<Repository> repo,
                      std::shared_ptr<ShmWriter> shm_writer,
@@ -41,22 +42,29 @@ public:
     ADD_METHOD_TO(MarketSourceCtrl::remove, "/api/market-sources/{1}", drogon::Delete);
     ADD_METHOD_TO(MarketSourceCtrl::login, "/api/market-sources/{1}/login", drogon::Post);
     ADD_METHOD_TO(MarketSourceCtrl::logout, "/api/market-sources/{1}/logout", drogon::Post);
-    ADD_METHOD_TO(MarketSourceCtrl::set_auto_login, "/api/market-sources/{1}/auto-login", drogon::Put);
+    ADD_METHOD_TO(MarketSourceCtrl::set_auto_login,
+                  "/api/market-sources/{1}/auto-login",
+                  drogon::Put);
     // Broker CRUD (Wave 2C): 走 SHM 配置变更流程, 不再使用 DB 持久化
-    ADD_METHOD_TO(MarketSourceCtrl::add_broker,
-                  "/api/market-sources/{1}/brokers", drogon::Post);
+    ADD_METHOD_TO(MarketSourceCtrl::add_broker, "/api/market-sources/{1}/brokers", drogon::Post);
     ADD_METHOD_TO(MarketSourceCtrl::remove_broker,
-                  "/api/market-sources/{1}/brokers/{2}", drogon::Delete);
+                  "/api/market-sources/{1}/brokers/{2}",
+                  drogon::Delete);
     ADD_METHOD_TO(MarketSourceCtrl::update_broker,
-                  "/api/market-sources/{1}/brokers/{2}", drogon::Put);
+                  "/api/market-sources/{1}/brokers/{2}",
+                  drogon::Put);
     ADD_METHOD_TO(MarketSourceCtrl::update_broker_frontends,
-                  "/api/market-sources/{1}/brokers/{2}/frontends", drogon::Put);
+                  "/api/market-sources/{1}/brokers/{2}/frontends",
+                  drogon::Put);
     ADD_METHOD_TO(MarketSourceCtrl::set_current_broker,
-                  "/api/market-sources/{1}/current-broker", drogon::Put);
+                  "/api/market-sources/{1}/current-broker",
+                  drogon::Put);
     ADD_METHOD_TO(MarketSourceCtrl::set_subscribe_params,
-                  "/api/market-sources/{1}/subscribe-params", drogon::Put);
+                  "/api/market-sources/{1}/subscribe-params",
+                  drogon::Put);
     ADD_METHOD_TO(MarketSourceCtrl::set_shm_config,
-                  "/api/market-sources/{1}/shm-config", drogon::Put);
+                  "/api/market-sources/{1}/shm-config",
+                  drogon::Put);
     ADD_METHOD_TO(MarketSourceCtrl::start, "/api/market-sources/{1}/start", drogon::Post);
     ADD_METHOD_TO(MarketSourceCtrl::stop, "/api/market-sources/{1}/stop", drogon::Post);
     ADD_METHOD_TO(MarketSourceCtrl::get_config, "/api/market-sources/{1}/config", drogon::Get);
@@ -70,17 +78,22 @@ public:
     void list_available(const drogon::HttpRequestPtr& req,
                         std::function<void(const drogon::HttpResponsePtr&)>&& callback);
     void get(const drogon::HttpRequestPtr& req,
-             std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
+             std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+             int64_t id);
     void create(const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& callback);
     void update(const drogon::HttpRequestPtr& req,
-                std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
+                std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                int64_t id);
     void remove(const drogon::HttpRequestPtr& req,
-                std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
+                std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                int64_t id);
     void login(const drogon::HttpRequestPtr& req,
-               std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
+               std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+               int64_t id);
     void logout(const drogon::HttpRequestPtr& req,
-                std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
+                std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                int64_t id);
     /// PUT /api/market-sources/{id}/auto-login - 全量设置自动登录/登出排程
     /// Body: {enabled: bool, schedules: [{login_time, logout_time}, ...]}（契约 auto-login）
     /// 直发 SET_AUTO_LOGIN 帧, 最终状态由 WS auto_login 推送决定
@@ -97,24 +110,27 @@ public:
     /// 若删除的是当前选中, 子进程自动置空 current_broker_name (spec D-C4)
     void remove_broker(const drogon::HttpRequestPtr& req,
                        std::function<void(const drogon::HttpResponsePtr&)>&& callback,
-                       int64_t id, const std::string& broker_name);
+                       int64_t id,
+                       const std::string& broker_name);
     /// PUT /api/market-sources/{id}/brokers/{broker_name} - 编辑经纪商字段
     /// Body: 完整 BrokerEntry (name 必须与 URL 中一致, 其余字段可改)
     void update_broker(const drogon::HttpRequestPtr& req,
                        std::function<void(const drogon::HttpResponsePtr&)>&& callback,
-                       int64_t id, const std::string& broker_name);
+                       int64_t id,
+                       const std::string& broker_name);
     /// PUT /api/market-sources/{id}/brokers/{broker_name}/frontends - 替换前置地址列表
     /// Body: {frontends: [{address, label, enabled}, ...]}
     void update_broker_frontends(const drogon::HttpRequestPtr& req,
                                  std::function<void(const drogon::HttpResponsePtr&)>&& callback,
-                                 int64_t id, const std::string& broker_name);
+                                 int64_t id,
+                                 const std::string& broker_name);
     /// PUT /api/market-sources/{id}/current-broker - 切换当前选中经纪商
     /// Body: {name: "broker_name"} 或 {name: ""} 清空选中
     void set_current_broker(const drogon::HttpRequestPtr& req,
                             std::function<void(const drogon::HttpResponsePtr&)>&& callback,
                             int64_t id);
-    /// PUT /api/market-sources/{id}/subscribe-params - 修改订阅参数 (SetSubscribeParams, 无状态保护)
-    /// Body: 4 个可选字段 {subscribe_batch_size?, subscribe_batch_delay_ms?,
+    /// PUT /api/market-sources/{id}/subscribe-params - 修改订阅参数 (SetSubscribeParams,
+    /// 无状态保护) Body: 4 个可选字段 {subscribe_batch_size?, subscribe_batch_delay_ms?,
     ///        sub_check_interval_ms?, sub_max_retry?}，缺失=保留旧值 (契约 md-config)
     /// dzweb 透传不解析; 类型/范围校验由子进程负责; 最终状态由 WS md_rtn_config 推送
     void set_subscribe_params(const drogon::HttpRequestPtr& req,
@@ -129,13 +145,17 @@ public:
                         int64_t id);
     /// POST /api/market-sources/{id}/start - 启动行情源进程 (PROCESS_CONTROL action=start)
     void start(const drogon::HttpRequestPtr& req,
-               std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
+               std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+               int64_t id);
     /// POST /api/market-sources/{id}/stop - 停止行情源进程 (PROCESS_CONTROL action=stop)
     void stop(const drogon::HttpRequestPtr& req,
-              std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
-    /// GET /api/market-sources/{id}/config - 读取行情源配置 (从 ProcessMirror 读取 dzmd_ctp 上报的运行时配置)
+              std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+              int64_t id);
+    /// GET /api/market-sources/{id}/config - 读取行情源配置 (从 ProcessMirror 读取 dzmd_ctp
+    /// 上报的运行时配置)
     void get_config(const drogon::HttpRequestPtr& req,
-                    std::function<void(const drogon::HttpResponsePtr&)>&& callback, int64_t id);
+                    std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                    int64_t id);
     /// POST /api/market-sources/refresh - 触发 SHM 全量查询 (WS 断连恢复后补拉镜像)
     /// 写 QUERY_ALL 帧, master 响应配置+进程状态, 子进程响应各自配置, 通过 WS 推送
     void refresh(const drogon::HttpRequestPtr& req,
@@ -159,23 +179,21 @@ private:
     bool is_process_running_in_mirror(int64_t source_id) const;
 
     /// op-based 配置下发辅助: 检查 source 存在 + 进程在镜像中 running + write_md_set_config
-    /// op_name: MdConfigOp 序列化后的字符串 (如 "AddBroker"), 子进程用 DZ_JSON_ENUM 宏 (magic_enum) 反序列化
-    /// params: op 携带的参数 JSON (结构随 op 变化, 由子进程 switch(op) 解析)
-    /// 成功: 返回 nullopt (caller 应返回 200 ok=dispatched)
-    /// 失败: 返回 HTTP 错误响应 (404 source 不存在 / 503 进程未运行 / 500 SHM 写入失败)
-    std::optional<drogon::HttpResponsePtr> dispatch_op(
-        int64_t source_id,
-        const std::string& log_label,
-        const std::string& op_name,
-        const nlohmann::json& params);
+    /// op_name: MdConfigOp 序列化后的字符串 (如 "AddBroker"), 子进程用 DZ_JSON_ENUM 宏 (magic_enum)
+    /// 反序列化 params: op 携带的参数 JSON (结构随 op 变化, 由子进程 switch(op) 解析) 成功: 返回
+    /// nullopt (caller 应返回 200 ok=dispatched) 失败: 返回 HTTP 错误响应 (404 source 不存在 / 503
+    /// 进程未运行 / 500 SHM 写入失败)
+    std::optional<drogon::HttpResponsePtr> dispatch_op(int64_t source_id,
+                                                       const std::string& log_label,
+                                                       const std::string& op_name,
+                                                       const nlohmann::json& params);
 
     /// 下发守卫（dispatch_op 与 set_auto_login 共用）: source 存在 (404) +
     /// 进程在镜像中 running (503) + shm_writer 就绪 (503)
     /// 成功: 返回 nullopt, process_name 输出目标进程名; 失败: 返回 HTTP 错误响应
-    std::optional<drogon::HttpResponsePtr> guard_process_dispatch(
-        int64_t source_id,
-        const std::string& log_label,
-        std::string& process_name);
+    std::optional<drogon::HttpResponsePtr> guard_process_dispatch(int64_t source_id,
+                                                                  const std::string& log_label,
+                                                                  std::string& process_name);
 };
 
 }  // namespace dztrader::webui

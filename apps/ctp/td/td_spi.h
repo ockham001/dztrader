@@ -39,51 +39,64 @@ public:
     // === 认证 / 登录 / 登出 ===
     void OnRspAuthenticate(CThostFtdcRspAuthenticateField* pRspAuthenticateField,
                            CThostFtdcRspInfoField* pRspInfo,
-                           int nRequestID, bool bIsLast) override;
+                           int nRequestID,
+                           bool bIsLast) override;
     void OnRspUserLogin(CThostFtdcRspUserLoginField* pRspUserLogin,
                         CThostFtdcRspInfoField* pRspInfo,
-                        int nRequestID, bool bIsLast) override;
+                        int nRequestID,
+                        bool bIsLast) override;
     void OnRspUserLogout(CThostFtdcUserLogoutField* pUserLogout,
                          CThostFtdcRspInfoField* pRspInfo,
-                         int nRequestID, bool bIsLast) override;
+                         int nRequestID,
+                         bool bIsLast) override;
     void OnRspError(CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bIsLast) override;
 
     // === 结算单 / 密码 ===
     void OnRspSettlementInfoConfirm(CThostFtdcSettlementInfoConfirmField* pSettlementInfoConfirm,
-                                     CThostFtdcRspInfoField* pRspInfo,
-                                     int nRequestID, bool bIsLast) override;
+                                    CThostFtdcRspInfoField* pRspInfo,
+                                    int nRequestID,
+                                    bool bIsLast) override;
     void OnRspUserPasswordUpdate(CThostFtdcUserPasswordUpdateField* pUserPasswordUpdate,
-                                  CThostFtdcRspInfoField* pRspInfo,
-                                  int nRequestID, bool bIsLast) override;
+                                 CThostFtdcRspInfoField* pRspInfo,
+                                 int nRequestID,
+                                 bool bIsLast) override;
     void OnRspTradingAccountPasswordUpdate(
         CThostFtdcTradingAccountPasswordUpdateField* pTradingAccountPasswordUpdate,
         CThostFtdcRspInfoField* pRspInfo,
-        int nRequestID, bool bIsLast) override;
+        int nRequestID,
+        bool bIsLast) override;
 
     // === 查询响应 ===
-    void OnRspQryOrder(CThostFtdcOrderField* pOrder, CThostFtdcRspInfoField* pRspInfo,
-                       int nRequestID, bool bIsLast) override;
+    void OnRspQryOrder(CThostFtdcOrderField* pOrder,
+                       CThostFtdcRspInfoField* pRspInfo,
+                       int nRequestID,
+                       bool bIsLast) override;
     void OnRspQryInvestorPosition(CThostFtdcInvestorPositionField* pInvestorPosition,
-                                   CThostFtdcRspInfoField* pRspInfo,
-                                   int nRequestID, bool bIsLast) override;
+                                  CThostFtdcRspInfoField* pRspInfo,
+                                  int nRequestID,
+                                  bool bIsLast) override;
     void OnRspQryTradingAccount(CThostFtdcTradingAccountField* pTradingAccount,
-                                 CThostFtdcRspInfoField* pRspInfo,
-                                 int nRequestID, bool bIsLast) override;
+                                CThostFtdcRspInfoField* pRspInfo,
+                                int nRequestID,
+                                bool bIsLast) override;
     void OnRspQryInstrument(CThostFtdcInstrumentField* pInstrument,
-                             CThostFtdcRspInfoField* pRspInfo,
-                             int nRequestID, bool bIsLast) override;
+                            CThostFtdcRspInfoField* pRspInfo,
+                            int nRequestID,
+                            bool bIsLast) override;
 
     // === 报单录入 / 操作 ===
     void OnRspOrderInsert(CThostFtdcInputOrderField* pInputOrder,
-                           CThostFtdcRspInfoField* pRspInfo,
-                           int nRequestID, bool bIsLast) override;
+                          CThostFtdcRspInfoField* pRspInfo,
+                          int nRequestID,
+                          bool bIsLast) override;
     void OnRspOrderAction(CThostFtdcInputOrderActionField* pInputOrderAction,
-                           CThostFtdcRspInfoField* pRspInfo,
-                           int nRequestID, bool bIsLast) override;
+                          CThostFtdcRspInfoField* pRspInfo,
+                          int nRequestID,
+                          bool bIsLast) override;
     void OnErrRtnOrderInsert(CThostFtdcInputOrderField* pInputOrder,
-                              CThostFtdcRspInfoField* pRspInfo) override;
+                             CThostFtdcRspInfoField* pRspInfo) override;
     void OnErrRtnOrderAction(CThostFtdcOrderActionField* pOrderAction,
-                              CThostFtdcRspInfoField* pRspInfo) override;
+                             CThostFtdcRspInfoField* pRspInfo) override;
 
     // === 实时回报 (核心路径) ===
     void OnRtnOrder(CThostFtdcOrderField* pOrder) override;
@@ -91,8 +104,9 @@ public:
 
     // === 出入金 ===
     void OnRspFromBankToFutureByFuture(CThostFtdcReqTransferField* pReqTransfer,
-                                        CThostFtdcRspInfoField* pRspInfo,
-                                        int nRequestID, bool bIsLast) override;
+                                       CThostFtdcRspInfoField* pRspInfo,
+                                       int nRequestID,
+                                       bool bIsLast) override;
     void OnRtnFromBankToFutureByFuture(CThostFtdcRspTransferField* pRspTransfer) override;
 
 private:

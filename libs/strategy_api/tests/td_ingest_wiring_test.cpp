@@ -61,8 +61,8 @@ protected:
     DzContext* ctx_ = nullptr;
 
     void SetUp() override {
-        home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_ingest_wiring")
-                    .string();
+        home_ =
+            (std::filesystem::temp_directory_path() / "dz_test_strategy_ingest_wiring").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         std::filesystem::create_directories(home_ + "/db");
@@ -74,15 +74,15 @@ protected:
         db_path_ = std::filesystem::path(home_) / "db" / "td.db";
         {
             auto database = dztrader::db::Database::open(
-                dztrader::db::Config{.backend = "sqlite",
-                                     .options = {{"path", db_path_.string()}}},
+                dztrader::db::Config{.backend = "sqlite", .options = {{"path", db_path_.string()}}},
                 dztrader::tdstore::schemas());
             database->migrate();
         }
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         // 预置快照行: 账户 CTP001, orders seq 1..5 (W 快照 = MAX(seq) = 5)
         {
-            SQLite::Statement ins(db,
+            SQLite::Statement ins(
+                db,
                 "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
                 " exchange_id, direction, position_effect, price_type, status, price, volume,"
                 " volume_traded, strategy_id, seq)"
@@ -138,7 +138,8 @@ TEST_F(IngestWiringTest, GapTriggersBackfillReplay) {
     // 模拟启动竞态窗口: 快照查询后落库的行 (在途窗口事件), 首帧到达前已提交
     {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
-        SQLite::Statement ins(db,
+        SQLite::Statement ins(
+            db,
             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
             " exchange_id, direction, position_effect, price_type, status, price, volume,"
             " volume_traded, strategy_id, seq)"
@@ -175,8 +176,9 @@ TEST_F(IngestWiringTest, GapTriggersBackfillReplay) {
     ASSERT_NE(f, nullptr);
     EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
     EXPECT_EQ(6u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
-    EXPECT_STREQ("IF2603",
-                 FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().instrument_id);
+    EXPECT_STREQ(
+        "IF2603",
+        FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().instrument_id);
 
     f = dz_next_event(ctx_);
     ASSERT_NE(f, nullptr);
@@ -191,7 +193,8 @@ TEST_F(IngestWiringTest, GapTriggersBackfillReplay) {
 TEST_F(IngestWiringTest, BackfillReplayFiltersByStrategy) {
     {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
-        SQLite::Statement ins(db,
+        SQLite::Statement ins(
+            db,
             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
             " exchange_id, direction, position_effect, price_type, status, price, volume,"
             " volume_traded, strategy_id, seq)"
@@ -376,7 +379,8 @@ TEST_F(IngestWiringTest, BackfillFillsOrderAndTradeTime) {
     // 回补区间 6..7: orders 两行 + trades 两行, 均填时间戳
     {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
-        SQLite::Statement ins(db,
+        SQLite::Statement ins(
+            db,
             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
             " exchange_id, direction, position_effect, price_type, status, price, volume,"
             " volume_traded, strategy_id, insert_time, update_time, seq)"
@@ -390,7 +394,7 @@ TEST_F(IngestWiringTest, BackfillFillsOrderAndTradeTime) {
         ins.bind(4, static_cast<int64_t>(1));
         ins.bind(5, own);
         ins.bind(6, static_cast<int64_t>(4 * 86400 + 9 * 3600 + 15 * 60 + 5));  // insert 09:15:05
-        ins.bind(7, static_cast<int64_t>(0));  // update_time 空
+        ins.bind(7, static_cast<int64_t>(0));                                   // update_time 空
         ins.bind(8, static_cast<int64_t>(6));
         ins.exec();
         ins.reset();
@@ -400,12 +404,13 @@ TEST_F(IngestWiringTest, BackfillFillsOrderAndTradeTime) {
         ins.bind(3, static_cast<int64_t>(2));
         ins.bind(4, static_cast<int64_t>(2));
         ins.bind(5, own);
-        ins.bind(6, static_cast<int64_t>(4 * 86400 + 9 * 3600 + 16 * 60 + 0));  // insert 09:16:00
+        ins.bind(6, static_cast<int64_t>(4 * 86400 + 9 * 3600 + 16 * 60 + 0));    // insert 09:16:00
         ins.bind(7, static_cast<int64_t>(4 * 86400 + 11 * 3600 + 30 * 60 + 45));  // update 11:30:45
         ins.bind(8, static_cast<int64_t>(7));
         ins.exec();
 
-        SQLite::Statement tins(db,
+        SQLite::Statement tins(
+            db,
             "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
             " exchange_id, direction, position_effect, price, volume, trade_time, strategy_id, seq)"
             " VALUES ('CTP001', '20260901', ?, ?, 'IF2603', 'CFFEX', '1', '1', ?, ?, ?, ?, ?)");
@@ -485,7 +490,8 @@ TEST_F(IngestWiringTest, BackfillBufferOverflowInterceptsTrigger) {
     // 用 W=5 账户, gap 宽 600 (seq 6..605), orders 表 600 行 > 512 槽, 必然溢出。
     {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
-        SQLite::Statement ins(db,
+        SQLite::Statement ins(
+            db,
             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
             " exchange_id, direction, position_effect, price_type, status, price, volume,"
             " volume_traded, strategy_id, seq)"
@@ -551,7 +557,8 @@ TEST_F(IngestWiringTest, ResetReAdmitNotFilteredByWatermark) {
         db.exec("DELETE FROM orders");
         // 新基准 seq 1,2 (重置后 DB 从头累计): 重置后首帧 seq=3 的 gap [1,2]
         // 可由 DB 覆盖 (回补重试语义: 行存在则不拦截)
-        SQLite::Statement ins(db,
+        SQLite::Statement ins(
+            db,
             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
             " exchange_id, direction, position_effect, price_type, status, price, volume,"
             " volume_traded, strategy_id, seq)"
@@ -587,7 +594,8 @@ TEST_F(IngestWiringTest, BackfillToleratesMissingTable) {
     {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         db.exec("DROP TABLE positions");
-        SQLite::Statement ins(db,
+        SQLite::Statement ins(
+            db,
             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
             " exchange_id, direction, position_effect, price_type, status, price, volume,"
             " volume_traded, strategy_id, seq)"
@@ -627,12 +635,14 @@ TEST_F(IngestWiringTest, BackfillDispatchesPositionAndTradingAccount) {
     // gap 区间 6,7: positions 一行 (seq 6) + trading_accounts 一行 (seq 7)
     {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
-        SQLite::Statement pins(db,
+        SQLite::Statement pins(
+            db,
             "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
             " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
             " VALUES ('CTP001', '20260901', 'IF2603', 'CFFEX', '1', 3, 1, 3, 2, 3950.5, 6)");
         pins.exec();
-        SQLite::Statement ains(db,
+        SQLite::Statement ains(
+            db,
             "INSERT INTO trading_accounts (account_id, trading_day, balance, available, frozen,"
             " commission, margin, withdraw_quota, deposit, withdraw, seq)"
             " VALUES ('CTP001', '20260901', 100000.5, 90000.25, 1000.0, 12.5, 9000.0,"
@@ -712,7 +722,8 @@ TEST_F(IngestWiringTest, GapBackfillRetriesUntilRowsCommitted) {
     // 模拟 persist 提交: gap 行入库
     {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
-        SQLite::Statement ins(db,
+        SQLite::Statement ins(
+            db,
             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
             " exchange_id, direction, position_effect, price_type, status, price, volume,"
             " volume_traded, strategy_id, seq)"
@@ -770,21 +781,19 @@ TEST_F(IngestWiringTest, GapBackfillRetryExhaustedReleasesTrigger) {
         f = dz_next_event(ctx_);
         if (f != nullptr) {
             ++drained;
-            first_seq = FrameView(static_cast<const std::byte*>(f))
-                            .payload<DzOrderReport>()
-                            .seq;
+            first_seq = FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq;
         }
     }
-    ASSERT_NE(f, nullptr);       // 耗尽后触发帧确实放行 (不永久卡死)
-    EXPECT_EQ(1u, drained);      // 只放行触发帧, 无回补帧 (行确已丢失)
-    EXPECT_EQ(8u, first_seq);    // 放行的正是暂存的触发帧
+    ASSERT_NE(f, nullptr);     // 耗尽后触发帧确实放行 (不永久卡死)
+    EXPECT_EQ(1u, drained);    // 只放行触发帧, 无回补帧 (行确已丢失)
+    EXPECT_EQ(8u, first_seq);  // 放行的正是暂存的触发帧
     EXPECT_EQ(nullptr, dz_next_event(ctx_));
 }
 
-// 评审发现 4: DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 帧 (POSITION_INFO / TRADING_ACCOUNT) 过 gate — W 过滤拦截
-// seq ≤ W 的帧, seq > W 放行 (全量放行语义, 不经 strategy_id 定向)。
-// seq 取值与 DB 快照连续 (W=5, 首帧 6): 避免合成空洞触发回补重试 (见发现 3 测试)。
-TEST_F(IngestWiringTest, PositionAndTradingAccountGoThroughGate) {    // seq ≤ W=5: 拦截
+// 评审发现 4: DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 帧 (POSITION_INFO / TRADING_ACCOUNT)
+// 过 gate — W 过滤拦截 seq ≤ W 的帧, seq > W 放行 (全量放行语义, 不经 strategy_id 定向)。 seq
+// 取值与 DB 快照连续 (W=5, 首帧 6): 避免合成空洞触发回补重试 (见发现 3 测试)。
+TEST_F(IngestWiringTest, PositionAndTradingAccountGoThroughGate) {  // seq ≤ W=5: 拦截
     {
         DzPositionInfo p{};
         dztrader::copy_string(p.account_id, "CTP001", true);
@@ -837,7 +846,8 @@ TEST_F(IngestWiringTest, GapRetryStagesSubsequentFramesThenDeliversInSeqOrder) {
     // seq9 新状态到达 → 终态回退)。
     auto insert_gap_rows = [this]() {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
-        SQLite::Statement ins(db,
+        SQLite::Statement ins(
+            db,
             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
             " exchange_id, direction, position_effect, price_type, status, price, volume,"
             " volume_traded, strategy_id, seq)"
@@ -922,8 +932,8 @@ TEST_F(IngestWiringTest, GapRetryStagesSubsequentFramesThenDeliversInSeqOrder) {
     EXPECT_EQ(nullptr, dz_next_event(ctx_));
 }
 
-// 终检发现 B 回归: 重试期间到达的 DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 绝对态帧同样暂存 (次序无关紧要但统一处理),
-// 不直接放行。
+// 终检发现 B 回归: 重试期间到达的 DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 绝对态帧同样暂存
+// (次序无关紧要但统一处理), 不直接放行。
 TEST_F(IngestWiringTest, GapRetryStagesPositionFrameDuringRetry) {
     // gap 6,7 无行 (首次回补不足)
     DzPositionInfo trigger{};
@@ -942,12 +952,14 @@ TEST_F(IngestWiringTest, GapRetryStagesPositionFrameDuringRetry) {
     // 覆盖: 行 6,7 提交 → 触发帧(8) → 回补(6,7) → 暂存(9)
     {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
-        SQLite::Statement pins(db,
+        SQLite::Statement pins(
+            db,
             "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
             " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
             " VALUES ('CTP001', '20260901', 'IF2603', 'CFFEX', '1', 3, 1, 3, 2, 3950.5, 6)");
         pins.exec();
-        SQLite::Statement pins2(db,
+        SQLite::Statement pins2(
+            db,
             "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
             " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
             " VALUES ('CTP001', '20260901', 'IF2606', 'CFFEX', '1', 5, 0, 5, 0, 4000.0, 7)");
@@ -1013,7 +1025,8 @@ TEST_F(IngestWiringTest, AccountStatusFlipToReadyResetsGateForReusedSeq) {
     {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         db.exec("DELETE FROM orders");
-        SQLite::Statement ins(db,
+        SQLite::Statement ins(
+            db,
             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
             " exchange_id, direction, position_effect, price_type, status, price, volume,"
             " volume_traded, strategy_id, seq)"
@@ -1067,8 +1080,7 @@ TEST_F(IngestWiringTest, FirstReadyDoesNotResetGate) {
         DzAccountStatus ready{};
         dztrader::copy_string(ready.account_id, "CTP001", true);
         ready.state = DZ_ACCOUNT_READY;
-        ready.trading_day =
-            dztrader::Date::from_year_month_day(2026, 9, 1).days_since_epoch();
+        ready.trading_day = dztrader::Date::from_year_month_day(2026, 9, 1).days_since_epoch();
         emit_struct(DZ_FRAME_ACCOUNT_STATUS, ready);
     }
     ASSERT_NE(nullptr, dz_next_event(ctx_));
@@ -1093,7 +1105,8 @@ TEST_F(IngestWiringTest, GapCoverageToleratesDeletedPositionRow) {
     //   全平删行 — 模拟先建仓后全平: positions 表 DELETE, 该 seq 在 DB 无行)。
     {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
-        SQLite::Statement o1(db,
+        SQLite::Statement o1(
+            db,
             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
             " exchange_id, direction, position_effect, price_type, status, price, volume,"
             " volume_traded, strategy_id, seq)"
@@ -1115,7 +1128,8 @@ TEST_F(IngestWiringTest, GapCoverageToleratesDeletedPositionRow) {
         o1.bind(6, static_cast<int64_t>(8));
         o1.exec();
         // positions seq 7 存在 → 模拟 PositionRebuild 全平删行 (INSERT 后 DELETE)。
-        SQLite::Statement pin(db,
+        SQLite::Statement pin(
+            db,
             "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
             " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
             " VALUES ('CTP001', '20260901', 'IF2603', 'CFFEX', '1', 3, 0, 3, 0, 3950.0, 7)");

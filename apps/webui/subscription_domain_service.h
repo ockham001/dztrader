@@ -14,10 +14,12 @@ namespace dztrader::webui {
 /// - payload 拷贝后注入 source 字段，再整体作为广播 payload（原实现 std::move 语义等价，
 ///   消息内容逐字节一致）；
 /// - 原实现无 try/catch，本服务按任务要求统一包裹 try/catch 记 WARN（正常路径行为不变）。
-/// 线程安全：依赖 dzweb 固定单线程事件循环（thread_num=1），所有访问均发生在主循环串行执行，不加锁。
+/// 线程安全：依赖 dzweb
+/// 固定单线程事件循环（thread_num=1），所有访问均发生在主循环串行执行，不加锁。
 class SubscriptionDomainService {
 public:
-    explicit SubscriptionDomainService(WsBroadcaster& ws) : ws_(ws) {}
+    explicit SubscriptionDomainService(WsBroadcaster& ws)
+        : ws_(ws) {}
 
     void on_rtn_md_subscriptions(const std::string& source, const nlohmann::json& payload) {
         try {

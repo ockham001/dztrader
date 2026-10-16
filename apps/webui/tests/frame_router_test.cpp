@@ -21,7 +21,9 @@ FrameRouter make_router() {
 // 因此只读到"本用例写入之后"的帧——多用例共享 dzevent 通道天然隔离，无需 drain。
 // 返回 {FrameView, Reader}：Reader 必须随 FrameView 存活（析构会 unmap 页映射，
 // 导致 FrameView 悬垂——首轮实测 SEH 0xc0000005），测试体内保持 reader 到断言结束。
-std::pair<shm::FrameView, shm::Reader> write_and_read(DzFrameType type, const std::string& inst, const nlohmann::json& payload) {
+std::pair<shm::FrameView, shm::Reader> write_and_read(DzFrameType type,
+                                                      const std::string& inst,
+                                                      const nlohmann::json& payload) {
     auto shm_dir = dztrader::paths::shm();
     const shm::ChannelConfig evt_cfg{
         .channel_name = dztrader::shm::channel_name("dzevent"),
@@ -32,9 +34,11 @@ std::pair<shm::FrameView, shm::Reader> write_and_read(DzFrameType type, const st
         .prefetch_memory = false,
     };
     (void)shm::ChannelMeta::open_or_create(evt_cfg);
-    auto reader = shm::Reader::create(dztrader::shm::channel_name("dzevent"), shm_dir, "test_router_reader");
+    auto reader =
+        shm::Reader::create(dztrader::shm::channel_name("dzevent"), shm_dir, "test_router_reader");
     auto meta = shm::ChannelMeta::open_only(dztrader::shm::channel_name("dzevent"), shm_dir);
-    auto writer = shm::MultiWriter::create(std::make_shared<shm::ChannelMeta>(std::move(meta)), "test_router_writer");
+    auto writer = shm::MultiWriter::create(std::make_shared<shm::ChannelMeta>(std::move(meta)),
+                                           "test_router_writer");
     if (inst.empty()) {
         shm::write_ext_json(writer, type, payload);
     } else {
@@ -51,11 +55,13 @@ TEST(FrameRouterTest, DispatchToRegisteredJsonHandler) {
     std::string got_source;
     nlohmann::json got_payload;
     router.register_json<nlohmann::json>(DZ_FRAME_RTN_LOG_CONFIG, true,
-        [&](const std::string& source, const nlohmann::json& p) {
-            got_source = source; got_payload = p;
-        });
-    auto [view, reader] = write_and_read(DZ_FRAME_RTN_LOG_CONFIG, "dzmd_ctp",
-                                         nlohmann::json{{"level", "info"}, {"flush_on", "warning"}});
+                                         [&](const std::string& source, const nlohmann::json& p) {
+                                             got_source = source;
+                                             got_payload = p;
+                                         });
+    auto [view, reader] =
+        write_and_read(DZ_FRAME_RTN_LOG_CONFIG, "dzmd_ctp",
+                       nlohmann::json{{"level", "info"}, {"flush_on", "warning"}});
     (void)reader;
     router.dispatch(view);
     EXPECT_EQ(got_source, "dzmd_ctp");
@@ -76,7 +82,8 @@ TEST(FrameRouterTest, DispatchNonInstJsonHandler) {
 
 TEST(FrameRouterTest, UnregisteredTypeIgnored) {
     auto router = make_router();
-    auto [view, reader] = write_and_read(DZ_FRAME_RTN_MD_STATUS, "dzmd_ctp", nlohmann::json::object());
+    auto [view, reader] =
+        write_and_read(DZ_FRAME_RTN_MD_STATUS, "dzmd_ctp", nlohmann::json::object());
     (void)reader;
     EXPECT_NO_THROW(router.dispatch(view));  // 未注册：忽略不崩
 }
@@ -84,8 +91,10 @@ TEST(FrameRouterTest, UnregisteredTypeIgnored) {
 TEST(FrameRouterTest, RawHandlerReceivesFrame) {
     auto router = make_router();
     int calls = 0;
-    router.register_raw(DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER, [&](const shm::FrameView&) { ++calls; });
-    auto [view, reader] = write_and_read(DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER, "", nlohmann::json::object());
+    router.register_raw(DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER,
+                        [&](const shm::FrameView&) { ++calls; });
+    auto [view, reader] =
+        write_and_read(DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER, "", nlohmann::json::object());
     (void)reader;
     router.dispatch(view);
     EXPECT_EQ(calls, 1);
@@ -93,10 +102,11 @@ TEST(FrameRouterTest, RawHandlerReceivesFrame) {
 
 TEST(FrameRouterTest, HandlerExceptionIsolated) {
     auto router = make_router();
-    router.register_json<nlohmann::json>(DZ_FRAME_RTN_LOG_CONFIG, true,
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_RTN_LOG_CONFIG, true,
         [&](const std::string&, const nlohmann::json&) { throw std::runtime_error("boom"); });
     router.register_json<nlohmann::json>(DZ_FRAME_RTN_MD_STATUS, true,
-        [&](const std::string&, const nlohmann::json&) {});
+                                         [&](const std::string&, const nlohmann::json&) {});
     auto [v1, r1] = write_and_read(DZ_FRAME_RTN_LOG_CONFIG, "a", nlohmann::json{{"level", "info"}});
     (void)r1;
     auto [v2, r2] = write_and_read(DZ_FRAME_RTN_MD_STATUS, "b", nlohmann::json::object());
