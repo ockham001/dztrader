@@ -196,11 +196,14 @@ OptionsMap env_options() {
         if (suffix.empty() || !std::all_of(suffix.begin(), suffix.end(), is_env_key_char)) {
             continue;
         }
-        const std::string value = entry.value().string();
-        if (value.empty()) {
-            continue;  // 空值视为未设置（避免用空串覆盖文件里的有效值）
+        // 空值视为未设置（避免用空串覆盖文件里的有效值）。判空必须先于 string() 转换:
+        // 本仓 boost 的 process v2 在 Windows 上对空值调用 string() 会抛
+        // size_as_utf8 ERROR_INVALID_PARAMETER (boostorg/process#554)，转换前拦下。
+        const auto raw_value = entry.value();
+        if (raw_value.empty()) {
+            continue;
         }
-        out[to_lower_ascii(suffix)] = value;
+        out[to_lower_ascii(suffix)] = raw_value.string();
     }
     return out;
 }
