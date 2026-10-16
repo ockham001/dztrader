@@ -13,7 +13,7 @@
 
 **该目录下所有文件的改动，必须先向我说明改动内容并取得确认，才能动手。**
 
-这条规则的原始载体（一个锁定的说明文件）已在历史提交中删除，本条是全仓**唯一**存活的记录。不要以"顺手改一下"绕过。
+这条规则的原始载体（一个锁定的说明文件）已在历史提交中删除；本条是全仓**权威**记录（`CONTRIBUTING.md` 的同类表述指向本节）。不要以"顺手改一下"绕过。
 
 ### 2. `DZTRADER_HOME` 必须指向项目内
 
@@ -88,7 +88,7 @@
 3. **删除旧方案前：全仓 grep 确认无引用。** 删除本身值得记录时，作为对应 ADR 的 Consequences
 4. **发现文档与代码漂移：以代码/契约为准，当场修文档，随同一次提交**，不留"以后再说"
 
-**仓库是唯一记忆。** 计划与决策一律落 `docs/`，不做工具私有 plans。工具目录只有 `.opencode/`；其他工具的历史产物归档到 `docs/plans/`（前缀 `legacy-tool-`）。
+**仓库（含其 GitHub Issues）是唯一记忆。** 决策落 `docs/`（ADR / 契约 / 文档），设计与计划落 GitHub Issues（见「标准开发循环」）；不做工具私有 plans。工具目录只有 `.opencode/`；其他工具的历史产物归档到 `docs/plans/`（前缀 `legacy-tool-`）。
 
 ### ADR（架构决策记录）
 
@@ -146,10 +146,28 @@
 ### 日常工作流（单人 + AI 协作）
 
 1. **开工前必读**：本文 → [docs/README.md](docs/README.md)（文档地图与冲突裁决规则）→ 相关帧契约（先读 `general.md`）
-2. **小步提交**：一个提交只做一件事，每步可验证（构建 + 相关测试）。提交信息**中文**，前缀 `fix:` / `feat:` / `refactor:` / `docs:` / `test:` / `chore:`
+2. **小步提交**：一个提交只做一件事，每步可验证（构建 + 相关测试）。提交信息**中文**，前缀 `fix:` / `feat:` / `refactor:` / `docs:` / `test:` / `chore:` / `perf:` / `style:` / `build:` / `ci:`
 3. **push 前自检**：见 [docs/development-checklist.md](docs/development-checklist.md) 的 C 段（**那是权威且更全的清单** —— 含 `type-check` / `lint` / `lint:css` / 契约 Freshness 门禁）。push 后等 CI 绿再开下一波；**CI 红先修红，不叠加新改动**
 4. **大改动先写文档**：spec 设计 + plan 实施计划（checkbox 制），我确认后再实现
 5. **收尾**：工作区保持干净（运行产物已 gitignore；临时诊断脚本要么通用化提交、要么删除）。每波改动结束 `git status` 干净 + `git log` 可读 + CI 绿
+
+### 标准开发循环（mattpocock 技能链路）
+
+主循环（跑在既有硬门禁之上；按改动规模可裁剪）：
+
+1. **设计定稿** —— `grill-with-docs`：问到无分歧；术语入 `GLOSSARY.md`、决策入 `docs/adr/`（当场）。大而模糊的探索用 `wayfinder` 建决策地图，收敛后并回 `to-spec`。
+2. **立 spec** —— `to-spec` 写 GitHub Issue。涉及帧契约的 spec 必须先列契约影响面（哪份契约、哪些帧号），先改契约再改代码；满足 ADR 触发条件的在 spec 注明。
+3. **拆票** —— `to-tickets`：tracer-bullet 子 issue + 原生阻塞边。
+4. **实现** —— `implement` 单票（默认）或 `implement-spec` 大特性（worktree 内先跑 `setup`）。
+5. **审查** —— `code-review`：从固定点起，双轴（仓库规范 / spec 一致性）。
+6. **收尾** —— 动契约或有决策：契约、docs 地图、ADR 随同提交（`general.md` §11.3 checklist）；等 CI 绿；波末 `retro`。
+7. **交接** —— `handoff` 写临时目录。
+
+上下文纪律：步骤 1–3 保持同一未打断窗口；每张票 `implement` 换新上下文；`retro` 在被复盘会话内、clear 之前跑。
+
+备选入口：`diagnosing-bugs`（疑难 bug）｜`research`（后台调研成文）｜`prototype`（设计探查，经 `handoff` 双向桥接）｜`triage`（外部 issue 分诊）。
+
+维护节奏：技能用 `npx skills@latest update` 更新（新增技能需重跑 `add`）；opencode 版本对比 [changelog](https://opencode.ai/changelog)；`doctor` 子代理体检；clang-format / conan 为固定版本，本地与 CI 保持一致（升级时同一次提交改两边）。
 
 ### 组合变更的特别提醒
 
@@ -189,6 +207,17 @@
 | [docs/components/](docs/components/) | 组件级设计（线程模型、通道、会话） |
 | [docs/ui-trading.md](docs/ui-trading.md) | UI 系统与交易接口规划（蓝图级） |
 | [docs/adr/](docs/adr/) | 架构决策记录，按编号追溯 |
-| [docs/agents/build-appendix.md](docs/agents/build-appendix.md) | 构建外围细节：工具链、MSVC 激活、clangd、预设、输出布局、单测约定、install、conan、前端机制、部署产物分析、跨平台 `#error` 模板 |
+| [GLOSSARY.md](GLOSSARY.md) | 领域术语表（`domain-modeling` 随改随更） |
+| [docs/agents/](docs/agents/) | 技能配置（issue 载体 / 域文档规则 / 分诊标签）与构建外围细节（build-appendix） |
 
-`docs/specs/`、`docs/plans/`、`docs/superpowers/` 是**本地归档**（不在版本控制内），与现状冲突时以帧契约与代码为准，**不修改**。
+`docs/specs/`、`docs/plans/`、`docs/superpowers/` 是**本地归档**（不在版本控制内）且**已冻结** —— 新设计与计划走 GitHub Issues；与现状冲突时以帧契约与代码为准，**不修改**。
+
+---
+
+## Agent skills
+
+工程技能（mattpocock skills，全局安装于 `~/.agents/skills/`）按本仓配置工作：
+
+- **Issue 载体**：GitHub Issues —— `gh` CLI、原生 sub-issue 与阻塞边；PR 不作为请求入口。见 [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md)
+- **分诊标签**：`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`。见 [docs/agents/triage-labels.md](docs/agents/triage-labels.md)
+- **域文档**：根 [GLOSSARY.md](GLOSSARY.md) + [docs/adr/](docs/adr/)（ADR 现行模板、编号只增、不引用本地归档）。见 [docs/agents/domain.md](docs/agents/domain.md)
