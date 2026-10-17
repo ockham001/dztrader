@@ -4,6 +4,7 @@
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/env.h>
 #include <dztrader/core/string_util.h>
+#include <dztrader/core/this_process.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/named_semaphore.h>
 #include <dztrader/shm/writer.h>
@@ -15,9 +16,11 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -120,20 +123,19 @@ public:
     }
 
     /// 防挂死兜底: timeout_ms 后强制写 SHUTDOWN 并唤醒策略信号量
-    /// (正常路径策略侧自退出, 不触发)。信号量名与 DzContext 构造一致
-    /// (strategy_identity: "stg." + exe_stem), 写帧 notify_subscribers
-    /// 对本测试进程无效 -- 订阅者列表为空, 见类头注释。
-    void start_rescue(const std::string& strategy_id, int timeout_ms) {
-        rescue_thread_ = std::thread([this, strategy_id, timeout_ms] {
+    /// (正常路径策略侧自退出, 不触发)。策略 ID 由 exe_stem 直接计算
+    /// (dz_init 身份 = 可执行文件名), 不依赖 on_start 时才写入的局部变量 --
+    /// 否则调用点(均在 run_strategy 之前)传入空串, 兜底会静默失效并挂到 ctest 超时。
+    /// 信号量名与 DzContext 构造一致 (strategy_identity: "stg." + exe_stem)。
+    void start_rescue(int timeout_ms) {
+        rescue_thread_ = std::thread([this, timeout_ms] {
             for (int i = 0; i < timeout_ms / 50; ++i) {
                 if (done_.load()) {
                     return;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
-            if (strategy_id.empty()) {
-                return;
-            }
+            const std::string strategy_id = dztrader::this_process::exe_stem();
             if (!write_shutdown(strategy_id)) {
                 return;  // 写帧失败: 下面 notify 也无意义
             }
@@ -219,22 +221,25 @@ public:
 static_assert(dztrader::Strategy<FullStrategy>);
 static_assert(dztrader::Strategy<dztrader::StrategyBase>);
 
-// concept 负例 (编译期锁定: 缺失/拼错必选回调不得通过 Strategy)
+// concept 约束 (on_start 必选, on_tick 可选; 拼错的可选回调由启动自检行暴露)
 namespace {
 struct MissingOnStart {
     void on_tick(const DzTick&) {}
 };
-struct MissingOnTick {
+struct WithoutOnTick {
     void on_start(DzContext*) {}
 };
 struct MisspelledTick {
     void on_start(DzContext*) {}
-    void onTick(const DzTick&) {}  // 驼峰拼写错误
+    void onTick(const DzTick&) {}  // 驼峰拼写错误: on_tick 探测为否, 不再是编译错误
 };
 static_assert(!dztrader::Strategy<MissingOnStart>);
-static_assert(!dztrader::Strategy<MissingOnTick>);
-static_assert(!dztrader::Strategy<MisspelledTick>);
+static_assert(dztrader::Strategy<WithoutOnTick>);
+static_assert(!dztrader::strategy_engine_internal::HasOnTick<WithoutOnTick>);
+static_assert(dztrader::Strategy<MisspelledTick>);
+static_assert(!dztrader::strategy_engine_internal::HasOnTick<MisspelledTick>);
 }  // namespace
+
 
 // ── run_strategy 端到端 ──
 //
@@ -274,7 +279,7 @@ TEST_F(StrategyEngineTest, RunStrategyDispatchesMdTickThenExitsOnShutdown) {
 
     HookStrategy hook{strategy, strategy_id, tick_written, shutdown_written, *this};
 
-    start_rescue(strategy_id, 15000);
+    start_rescue(15000);
     const int32_t rc = dztrader::run_strategy(hook);
     join_threads();
 
@@ -324,7 +329,7 @@ TEST_F(StrategyEngineTest, MinimalStrategyStillExitsCleanlyWithoutOptionalCallba
 
     HookStrategy hook{strategy, strategy_id, shutdown_written, *this};
 
-    start_rescue(strategy_id, 15000);
+    start_rescue(15000);
     const int32_t rc = dztrader::run_strategy(hook);
     join_threads();
 
@@ -376,7 +381,7 @@ TEST_F(StrategyEngineTest, ScheduleCallbackReceivesDzScheduleEventPayload) {
 
     HookStrategy hook{strategy, strategy_id, shutdown_written, *this};
 
-    start_rescue(strategy_id, 15000);
+    start_rescue(15000);
     const int32_t rc = dztrader::run_strategy(hook);
     join_threads();
 
@@ -430,7 +435,7 @@ TEST_F(StrategyEngineTest, ExceptionInOnTickIsCaughtAndEngineKeepsRunning) {
 
     HookStrategy hook{strategy, strategy_id, *this};
 
-    start_rescue(strategy_id, 15000);
+    start_rescue(15000);
     const int32_t rc = dztrader::run_strategy(hook);
     join_threads();
 
@@ -482,7 +487,7 @@ TEST_F(StrategyEngineTest, ExceptionInOnErrorDoesNotEscapeEngine) {
 
     HookStrategy hook{strategy, strategy_id, *this};
 
-    start_rescue(strategy_id, 15000);
+    start_rescue(15000);
     const int32_t rc = dztrader::run_strategy(hook);
     join_threads();
 
@@ -589,7 +594,7 @@ TEST_F(StrategyEngineTest, TradeAndOrderReportsDispatchedWithPayload) {
 
     HookStrategy hook{strategy, strategy_id, shutdown_written, *this};
 
-    start_rescue(strategy_id, 15000);
+    start_rescue(15000);
     const int32_t rc = dztrader::run_strategy(hook);
     join_threads();
 
@@ -648,7 +653,7 @@ TEST_F(StrategyEngineTest, PositionAndAccountFramesDispatchedUnfiltered) {
 
     HookStrategy hook{strategy, strategy_id, shutdown_written, *this};
 
-    start_rescue(strategy_id, 15000);
+    start_rescue(15000);
     const int32_t rc = dztrader::run_strategy(hook);
     join_threads();
 
@@ -698,7 +703,7 @@ TEST_F(StrategyEngineTest, UserInputFrameDirectedToOwnStrategyDispatched) {
 
     HookStrategy hook{strategy, strategy_id, shutdown_written, *this};
 
-    start_rescue(strategy_id, 15000);
+    start_rescue(15000);
     const int32_t rc = dztrader::run_strategy(hook);
     join_threads();
 
@@ -749,7 +754,7 @@ TEST_F(StrategyEngineTest, AccountStatusFrameDispatchedUnfiltered) {
 
     HookStrategy hook{strategy, strategy_id, shutdown_written, *this};
 
-    start_rescue(strategy_id, 15000);
+    start_rescue(15000);
     const int32_t rc = dztrader::run_strategy(hook);
     join_threads();
 
@@ -804,7 +809,7 @@ TEST_F(StrategyEngineTest, AccountStatusWrongSizeFrameNotDispatched) {
 
     HookStrategy hook{strategy, strategy_id, shutdown_written, *this};
 
-    start_rescue(strategy_id, 15000);
+    start_rescue(15000);
     const int32_t rc = dztrader::run_strategy(hook);
     join_threads();
 
@@ -813,6 +818,313 @@ TEST_F(StrategyEngineTest, AccountStatusWrongSizeFrameNotDispatched) {
     EXPECT_EQ(strategy.account_status_count, 0);
     EXPECT_TRUE(shutdown_written.load());
     EXPECT_EQ(strategy.stop_count, 1);
+}
+
+// ── 启动自检 / 生命周期承诺 / 边界防御 ──
+
+/// std::cout 捕获: 启动自检行走 stdout (master 以 info 级转发), 测试需断言探测清单
+class CoutCapture {
+public:
+    CoutCapture()
+        : old_(std::cout.rdbuf(buffer_.rdbuf())) {}
+    ~CoutCapture() { std::cout.rdbuf(old_); }
+    CoutCapture(const CoutCapture&) = delete;
+    CoutCapture& operator=(const CoutCapture&) = delete;
+    [[nodiscard]] std::string str() const { return buffer_.str(); }
+
+private:
+    std::ostringstream buffer_;
+    std::streambuf* old_;
+};
+
+TEST_F(StrategyEngineTest, StartupSelfCheckListsAllProbes) {
+    FullStrategy strategy;
+    std::string strategy_id;
+    std::atomic<bool> shutdown_written{false};
+
+    struct HookStrategy {
+        FullStrategy& inner;
+        std::string& strategy_id;
+        std::atomic<bool>& shutdown_written;
+        StrategyEngineTest& fixture;
+
+        void on_start(DzContext* ctx) {
+            inner.on_start(ctx);
+            strategy_id = dz_strategy_id(ctx);
+            (void)dz_schedule_after(ctx, 100);
+        }
+        void on_stop() { inner.on_stop(); }
+        void on_tick(const DzTick& tick) { inner.on_tick(tick); }
+        void on_trade_report(const DzTradeReport&) {}
+        void on_account_status(const DzAccountStatus& status) { inner.on_account_status(status); }
+        void on_schedule(const DzScheduleEvent& ev) {
+            inner.on_schedule(ev);
+            shutdown_written.store(fixture.write_shutdown(strategy_id));
+        }
+    };
+    static_assert(dztrader::Strategy<HookStrategy>);
+    static_assert(dztrader::strategy_engine_internal::HasOnTick<HookStrategy>);
+    static_assert(dztrader::strategy_engine_internal::HasOnAccountStatus<HookStrategy>);
+
+    HookStrategy hook{strategy, strategy_id, shutdown_written, *this};
+    std::string self_check;
+    {
+        CoutCapture capture;
+        start_rescue(15000);
+        const int32_t rc = dztrader::run_strategy(hook);
+        join_threads();
+        self_check = capture.str();
+        EXPECT_EQ(rc, 0);
+    }
+    // 完整探测清单 (字段顺序 = report_start 格式): Hook 实现
+    // stop/tick/trade/account_status/schedule, 其余 no
+    const std::string expected =
+        "strategy callbacks | stop=yes tick=yes trade=yes order=no position=no account=no "
+        "account_status=yes schedule=yes input=no error=no\n";
+    EXPECT_EQ(self_check, expected);
+}
+
+TEST_F(StrategyEngineTest, StrategyWithoutOnTickRunsAndSelfCheckShowsTickNo) {
+    std::string strategy_id;
+    std::atomic<bool> shutdown_written{false};
+    int stop_count = 0;
+
+    struct NoTickStrategy {
+        std::string& strategy_id;
+        std::atomic<bool>& shutdown_written;
+        StrategyEngineTest& fixture;
+        int& stop_count;
+
+        void on_start(DzContext* ctx) {
+            strategy_id = dz_strategy_id(ctx);
+            (void)dz_schedule_after(ctx, 100);
+        }
+        void on_stop() { ++stop_count; }
+        void on_schedule(const DzScheduleEvent&) {
+            shutdown_written.store(fixture.write_shutdown(strategy_id));
+        }
+    };
+    static_assert(dztrader::Strategy<NoTickStrategy>);
+    static_assert(!dztrader::strategy_engine_internal::HasOnTick<NoTickStrategy>);
+
+    static_assert(!dztrader::strategy_engine_internal::HasOnAccountStatus<NoTickStrategy>);
+
+    NoTickStrategy strategy{strategy_id, shutdown_written, *this, stop_count};
+    ASSERT_TRUE(write_tick(1234.5));  // 无 on_tick: 引擎仍排空 md 帧, 只是不派发
+    std::string self_check;
+    {
+        CoutCapture capture;
+        start_rescue(15000);
+        const int32_t rc = dztrader::run_strategy(strategy);
+        join_threads();
+        self_check = capture.str();
+        EXPECT_EQ(rc, 0);
+    }
+    const std::string expected =
+        "strategy callbacks | stop=yes tick=no trade=no order=no position=no account=no "
+        "account_status=no schedule=yes input=no error=no\n";
+    EXPECT_EQ(self_check, expected);
+    EXPECT_TRUE(shutdown_written.load());
+    EXPECT_EQ(stop_count, 1);
+}
+
+TEST_F(StrategyEngineTest, OnStopExceptionIsNotForwardedToOnError) {
+    std::string strategy_id;
+    std::atomic<bool> shutdown_written{false};
+    int stop_count = 0;
+    int error_count = 0;
+
+    struct HookStrategy {
+        std::string& strategy_id;
+        std::atomic<bool>& shutdown_written;
+        StrategyEngineTest& fixture;
+        int& stop_count;
+        int& error_count;
+
+        void on_start(DzContext* ctx) {
+            strategy_id = dz_strategy_id(ctx);
+            (void)dz_schedule_after(ctx, 100);
+        }
+        void on_stop() {
+            ++stop_count;
+            throw std::runtime_error("on_stop failed");
+        }
+        void on_schedule(const DzScheduleEvent&) {
+            shutdown_written.store(fixture.write_shutdown(strategy_id));
+        }
+        void on_error(DzErrorCode, std::string_view) { ++error_count; }
+    };
+    static_assert(dztrader::Strategy<HookStrategy>);
+
+    HookStrategy hook{strategy_id, shutdown_written, *this, stop_count, error_count};
+    start_rescue(15000);
+    const int32_t rc = dztrader::run_strategy(hook);
+    join_threads();
+
+    EXPECT_EQ(rc, 0);
+    EXPECT_EQ(stop_count, 1);
+    EXPECT_EQ(error_count, 0);  // on_stop 异常只走 dz_diag, 不触发 on_error
+}
+
+TEST_F(StrategyEngineTest, MalformedUiInputFramesAreDropped) {
+    FullStrategy strategy;
+    constexpr size_t kMinExtSize = sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader);
+
+    // 1) 帧长不足 ext 头
+    std::vector<std::byte> too_short(sizeof(DzFrameHeader), std::byte{0});
+    auto* short_hdr = reinterpret_cast<DzFrameHeader*>(too_short.data());
+    short_hdr->frame_size = static_cast<uint32_t>(too_short.size());
+    short_hdr->frame_type = DZ_FRAME_UI_INPUT;
+    dztrader::strategy_engine_internal::dispatch_ui_input(strategy, too_short.data());
+
+    // 2) data_size 越出帧尾
+    std::vector<std::byte> out_of_frame(kMinExtSize, std::byte{0});
+    auto* out_hdr = reinterpret_cast<DzFrameHeader*>(out_of_frame.data());
+    out_hdr->frame_size = static_cast<uint32_t>(out_of_frame.size());
+    out_hdr->frame_type = DZ_FRAME_UI_INPUT;
+    auto* out_ext =
+        reinterpret_cast<DzExtInstFrameHeader*>(out_of_frame.data() + sizeof(DzFrameHeader));
+    dztrader::copy_string(out_ext->instance_id, "stg_test", true);
+    out_ext->data_size = 512;
+    dztrader::strategy_engine_internal::dispatch_ui_input(strategy, out_of_frame.data());
+
+    // 3) instance_id 无 NUL 终止符
+    std::vector<std::byte> no_terminator(kMinExtSize, std::byte{0});
+    auto* term_hdr = reinterpret_cast<DzFrameHeader*>(no_terminator.data());
+    term_hdr->frame_size = static_cast<uint32_t>(no_terminator.size());
+    term_hdr->frame_type = DZ_FRAME_UI_INPUT;
+    auto* term_ext =
+        reinterpret_cast<DzExtInstFrameHeader*>(no_terminator.data() + sizeof(DzFrameHeader));
+    std::memset(term_ext->instance_id, 'x', sizeof(DzInstanceId));
+    term_ext->data_size = 0;
+    dztrader::strategy_engine_internal::dispatch_ui_input(strategy, no_terminator.data());
+
+    EXPECT_EQ(strategy.input_count, 0);
+
+    // 4) 良构帧仍正常分发 (帧契约要求 frame_size 为 8 的倍数: 80 + 8)
+    std::vector<std::byte> valid(kMinExtSize + 8, std::byte{0});
+    auto* valid_hdr = reinterpret_cast<DzFrameHeader*>(valid.data());
+    valid_hdr->frame_size = static_cast<uint32_t>(valid.size());
+    valid_hdr->frame_type = DZ_FRAME_UI_INPUT;
+    auto* valid_ext = reinterpret_cast<DzExtInstFrameHeader*>(valid.data() + sizeof(DzFrameHeader));
+    dztrader::copy_string(valid_ext->instance_id, "stg_test", true);
+    valid_ext->data_size = 3;
+    std::memcpy(valid.data() + kMinExtSize, "abc", 3);
+    dztrader::strategy_engine_internal::dispatch_ui_input(strategy, valid.data());
+
+    EXPECT_EQ(strategy.input_count, 1);
+    EXPECT_EQ(strategy.last_input, "abc");
+    EXPECT_EQ(strategy.last_instance_id, "stg_test");
+}
+
+TEST_F(StrategyEngineTest, MalformedUiInputViaHandleEventDropped) {
+    // 路由层 (handle_event) 也必须走防御分支, 防止有人只保留 helper 而回退分支
+    FullStrategy strategy;
+    bool running = true;
+    std::vector<std::byte> too_short(sizeof(DzFrameHeader), std::byte{0});
+    auto* hdr = reinterpret_cast<DzFrameHeader*>(too_short.data());
+    hdr->frame_size = static_cast<uint32_t>(too_short.size());
+    hdr->frame_type = DZ_FRAME_UI_INPUT;
+    dztrader::strategy_engine_internal::handle_event(strategy, too_short.data(), running);
+    EXPECT_EQ(strategy.input_count, 0);
+    EXPECT_TRUE(running);
+}
+
+TEST_F(StrategyEngineTest, MalformedShutdownDirectCallStopsSafely) {
+    // SDK 分发层会先丢弃畸形 SHUTDOWN; 此用例锁定引擎直调时的 fail-safe 语义
+    FullStrategy strategy;
+    bool running = true;
+    std::vector<std::byte> too_short(sizeof(DzFrameHeader), std::byte{0});
+    auto* hdr = reinterpret_cast<DzFrameHeader*>(too_short.data());
+    hdr->frame_size = static_cast<uint32_t>(too_short.size());
+    hdr->frame_type = DZ_FRAME_SHUTDOWN;
+    dztrader::strategy_engine_internal::handle_event(strategy, too_short.data(), running);
+    EXPECT_FALSE(running);
+    EXPECT_EQ(strategy.stop_count, 1);
+}
+
+TEST_F(StrategyEngineTest, PayloadSizeMismatchFramesAreDropped) {
+    FullStrategy strategy;
+    bool running = true;
+
+    // ORDER_REPORT: 超长/欠长丢弃, 正常帧分发 (控制组证明派发路径存在)
+    std::vector<std::byte> order_oversized(sizeof(DzFrameHeader) + sizeof(DzOrderReport) + 8,
+                                           std::byte{0});
+    auto* oversized_hdr = reinterpret_cast<DzFrameHeader*>(order_oversized.data());
+    oversized_hdr->frame_size = static_cast<uint32_t>(order_oversized.size());
+    oversized_hdr->frame_type = DZ_FRAME_ORDER_REPORT;
+    dztrader::strategy_engine_internal::handle_event(strategy, order_oversized.data(), running);
+    EXPECT_EQ(strategy.order_count, 0);
+    EXPECT_TRUE(running);
+
+    std::vector<std::byte> order_undersized(sizeof(DzFrameHeader) + 8, std::byte{0});
+    auto* undersized_hdr = reinterpret_cast<DzFrameHeader*>(order_undersized.data());
+    undersized_hdr->frame_size = static_cast<uint32_t>(order_undersized.size());
+    undersized_hdr->frame_type = DZ_FRAME_ORDER_REPORT;
+    dztrader::strategy_engine_internal::handle_event(strategy, order_undersized.data(), running);
+    EXPECT_EQ(strategy.order_count, 0);
+
+    std::vector<std::byte> order_valid(sizeof(DzFrameHeader) + sizeof(DzOrderReport), std::byte{0});
+    auto* valid_order_hdr = reinterpret_cast<DzFrameHeader*>(order_valid.data());
+    valid_order_hdr->frame_size = static_cast<uint32_t>(order_valid.size());
+    valid_order_hdr->frame_type = DZ_FRAME_ORDER_REPORT;
+    dztrader::strategy_engine_internal::handle_event(strategy, order_valid.data(), running);
+    EXPECT_EQ(strategy.order_count, 1);
+
+    // TICK: 超长丢弃, 正常帧分发
+    std::vector<std::byte> tick_oversized(sizeof(DzFrameHeader) + sizeof(DzTick) + 8, std::byte{0});
+    auto* bad_tick_hdr = reinterpret_cast<DzFrameHeader*>(tick_oversized.data());
+    bad_tick_hdr->frame_size = static_cast<uint32_t>(tick_oversized.size());
+    bad_tick_hdr->frame_type = DZ_FRAME_TICK;
+    dztrader::strategy_engine_internal::handle_md(strategy, tick_oversized.data());
+    EXPECT_EQ(strategy.tick_count, 0);
+
+    std::vector<std::byte> tick_valid(sizeof(DzFrameHeader) + sizeof(DzTick), std::byte{0});
+    auto* valid_tick_hdr = reinterpret_cast<DzFrameHeader*>(tick_valid.data());
+    valid_tick_hdr->frame_size = static_cast<uint32_t>(tick_valid.size());
+    valid_tick_hdr->frame_type = DZ_FRAME_TICK;
+    dztrader::strategy_engine_internal::handle_md(strategy, tick_valid.data());
+    EXPECT_EQ(strategy.tick_count, 1);
+}
+
+TEST_F(StrategyEngineTest, InitFailureReportsErrorBeforeOnStart) {
+    // 缺 DZTRADER_MD_SOURCE -> dz_init 失败 -> on_error 在 on_start 之前被调用。
+    // 若 dz_init 意外成功, on_start 排的定时器会写 SHUTDOWN, 保证用例快速失败而非挂死。
+    const auto previous = dztrader::env::get("DZTRADER_MD_SOURCE");
+    dztrader::env::unset("DZTRADER_MD_SOURCE");
+    FullStrategy inner;
+    std::string strategy_id;
+
+    struct HookStrategy {
+        FullStrategy& inner;
+        StrategyEngineTest& fixture;
+        std::string& strategy_id;
+
+        void on_start(DzContext* ctx) {
+            inner.on_start(ctx);
+            strategy_id = dz_strategy_id(ctx);
+            (void)dz_schedule_after(ctx, 100);
+        }
+        void on_schedule(const DzScheduleEvent& ev) {
+            inner.on_schedule(ev);
+            (void)fixture.write_shutdown(strategy_id);
+        }
+        void on_error(DzErrorCode code, std::string_view msg) { inner.on_error(code, msg); }
+    };
+    static_assert(dztrader::Strategy<HookStrategy>);
+
+    HookStrategy hook{inner, *this, strategy_id};
+    const int32_t rc = dztrader::run_strategy(hook);
+    if (previous.has_value()) {
+        dztrader::env::set("DZTRADER_MD_SOURCE", *previous);
+    } else {
+        dztrader::env::unset("DZTRADER_MD_SOURCE");
+    }
+
+    EXPECT_NE(rc, 0);
+    EXPECT_EQ(inner.start_count, 0);
+    EXPECT_EQ(inner.error_count, 1);
+    EXPECT_NE(inner.error_code, 0);
 }
 
 }  // namespace
