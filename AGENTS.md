@@ -69,7 +69,7 @@
 
 这 7 条是**代码的前置条件**，无法从代码或 git 历史推导。改动前必须理解，违反会产出"能编译、测试也过、运行时静默出错"的东西。
 
-1. **一个策略一个进程**，提供 c / c++ / python 接口
+1. **一个策略一个进程**，提供 c / c++ 接口（Python 绑定规划中，尚未实现）
 2. **一个行情源一个进程**
 3. **一个交易接口一个进程**，同接口多账户同进程
 4. **主进程**负责启停子进程、管理共享内存
@@ -202,7 +202,7 @@
 | [README.md](README.md) | 项目简介、特性、**4 命令工作流与命令详解**、调试流程、部署 |
 | [docs/README.md](docs/README.md) | 文档地图：活跃真相源 / 架构参考分层与冲突裁决规则 |
 | [docs/frame_contracts/](docs/frame_contracts/README.md) | 帧协议唯一语义真相源（先读 `general.md` 总则） |
-| [docs/development-checklist.md](docs/development-checklist.md) | 新功能门禁清单（前端 / 后台 / 提交前三段） |
+| [docs/development-checklist.md](docs/development-checklist.md) | 新功能门禁清单（前端 / 后台 / 提交前 / 策略 SDK 四段） |
 | [docs/architecture.md](docs/architecture.md) | 依赖方向、静态库策略、进程模型（蓝图级，细节以代码与契约为准） |
 | [docs/components/](docs/components/) | 组件级设计（线程模型、通道、会话） |
 | [docs/ui-trading.md](docs/ui-trading.md) | UI 系统与交易接口规划（蓝图级） |

@@ -22,7 +22,7 @@
 | 行情连接与订阅 | 连接请求、订阅/退订、订阅查询、行情生命周期通知 |
 | 行情网关配置 | SET/RTN_MD_CONFIG |
 | 行情网关状态 | RTN_MD_STATUS |
-| 策略 | 策略用户输入/输出、逻辑持仓 |
+| 策略 | 策略用户输入/输出、逻辑持仓、本地调度 |
 | WebSocket 协议 | frontend ↔ dzweb 的 WS 信封与差异、前端行为义务 |
 | REST API | frontend ↔ dzweb 的 REST 端点 |
 | 交易委托请求 | TD_ORDER_REQ / TD_ORDER_CANCEL_REQ |

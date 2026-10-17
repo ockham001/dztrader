@@ -1,6 +1,6 @@
 # 新功能开发 Checklist（P6 持续门禁配套）
 
-> **用途**：新增或改动功能（前端组件/store/composable、后端 controller/领域服务/契约）时，
+> **用途**：新增或改动功能（前端组件/store/composable、后端 controller/领域服务/契约、策略 SDK）时，
 > 逐项对照。每一项都对应**已有的自动化检查**——不是人肉勾选，而是"做对了 CI 自然绿"。
 > 提交时若某项对应的 CI 门禁未包含到你的改动，说明该改动可能越过了系统边界，需复核。
 >
@@ -44,3 +44,15 @@
 
 > 若某项门禁**当前未在你的改动上跑**（例如只改了一个 `.vue` 但改了全局样式），
 > 请人工确认它确无跨层影响——机器门禁覆盖不到的正是这类"看似局部其实全局"的改动。
+
+---
+
+## D. 策略 SDK（`libs/strategy_api`）
+
+| # | 动作 | 对应的自动化门禁 / 检查 |
+|---|------|--------------------------|
+| D1 | 改 C 接口 / 公开头文件 | `ctest` 全绿；`-Werror`（Release）/ `-Wconversion` 由构建脚本强制 |
+| D2 | 改 `dz_next_event` 白名单/拦截、引擎回调或生命周期 | **先改 `docs/frame_contracts/strategy.md`**（白名单/拦截清单/引擎注释同步），再改代码与测试；`general.md` §11.3 checklist |
+| D3 | 新增/修改 `DZ_API` 函数或错误码 | 头文件 doxygen + `dz_errstr` 映射 + 至少一条测试（错误路径也要覆盖） |
+| D4 | 改 C++ 引擎（`strategy_engine.h`/`strategy_base.h`） | 引擎测试套件（`StrategyEngineTest`）全绿；启动自检行/回调探测变更需同步注释与测试 |
+| D5 | 策略 SDK 变更（无前端/契约联动时） | 仍须跑 C 段的 log-format / clang-format / docs-links 三项本地预检 |

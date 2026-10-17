@@ -73,7 +73,7 @@ Ninja 单配置，每个 config 独立 binaryDir：`build/<plat>/x86_64/<Release
 
 - 每个 `*_test.cpp` 独立编译运行，`gtest_discover_tests` 自动注册，输出到 `${DZ_TESTS_DIR}`。标准模板见各模块 `CMakeLists.txt`
 - **部分模块的测试有意只编译源码子集**，换取与外部依赖解耦：
-  - `strategy_api` 测试不含 `api.cpp`（测试内部类，避免导出符号）
+  - `strategy_api` 测试约一半只编译内部类；`SDK_API_TESTS` 名单（notify_ui/trade/md/schedule/engine/db/db_instruments/td_ingest_*）额外编入 `api.cpp` + `db_database.cpp`，覆盖 C 接口完整写读路径（名单以 `libs/strategy_api/CMakeLists.txt` 为准）
   - `ctp` 测试不含 `md_main.cpp` / `md_api.cpp` / `md_spi.cpp`（避免链接 CTP 库）
   - 代价：这些源文件被重复编译。**这是有意取舍，不要当成待优化的重复劳动去"修复"**
 - 需要 `DZTRADER_HOME` 的测试在 `SetUp` 里创建临时目录并设置该变量、`TearDown` 恢复。它们是 `test-base` 强制注入规则的**唯一豁免**（见 AGENTS.md 硬门禁 2）

@@ -2,7 +2,7 @@
 
 本文件覆盖 `DZ_FRAME_SET_EVENT_SHM_CONFIG`、`DZ_FRAME_RTN_EVENT_SHM_CONFIG`、`DZ_FRAME_SET_MD_SHM_CONFIG`、`DZ_FRAME_RTN_MD_SHM_CONFIG`、`DZ_FRAME_PRELOAD_EVENT_SHM`、`DZ_FRAME_PRELOAD_MD_SHM`、`DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER`、`DZ_FRAME_UPDATE_SHM_MD_SUBSCRIBER`、`DZ_FRAME_REQUEST_MD_READER_REGISTER`、`DZ_FRAME_RTN_MD_READER_REGISTER`、`DZ_FRAME_REQUEST_MD_READER_UNREGISTER`、`DZ_FRAME_RTN_MD_READER_UNREGISTER` 十二个帧。总则见《帧契约：通用规则》。
 
-- 事件通道（SET/RTN/预加载/订阅者刷新）：帧头无 `instance_id`（`DzExtFrameHeader`），目标/来源均为 master（唯一），所有进程可见，dzweb 消费。
+- 事件通道（SET/RTN/订阅者刷新）：帧头无 `instance_id`（`DzExtFrameHeader`），目标/来源均为 master（唯一），所有进程可见，dzweb 消费。**例外**：`PRELOAD_EVENT_SHM` 是 basic 帧（仅 `DzFrameHeader` + `DzShmPreload`，无扩展头），与 master 写端 `write_struct` 一致。
 - 行情通道（SET/RTN/预加载/订阅者刷新）：均含 `instance_id`（`DzExtInstFrameHeader`）= 行情进程名（与通道名一致：一个进程一个数据通道）。
 - 例外：读者接入/断开的 RTN 帧（`RTN_MD_READER_REGISTER`/`RTN_MD_READER_UNREGISTER`）帧头 `instance_id` = **请求进程名**（master 逻辑定向回请求方，目标通道在 payload `channel`），不适用上述惯例。
 
@@ -101,7 +101,7 @@
 
 | 帧类型 | 逻辑方向 | 帧头 |
 |--------|------|------|
-| `PRELOAD_EVENT_SHM` | master → 所有子进程 | `DzExtFrameHeader`（无 `instance_id`） |
+| `PRELOAD_EVENT_SHM` | master → 所有子进程 | basic（无扩展头；`DzFrameHeader` + `DzShmPreload`） |
 | `PRELOAD_MD_SHM` | 行情进程 → 订阅该行情源的进程 | `DzExtInstFrameHeader`（`instance_id` = 通道名） |
 
 **触发场景**（两帧一致）：

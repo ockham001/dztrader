@@ -6,6 +6,8 @@
 
 类型层真相源：`libs/platform/include/dztrader/platform/td_account_ops.h`。
 
+**策略侧**：五帧均非策略可见，策略 SDK 在 `dz_next_event` 直接丢弃（《帧契约：策略》拦截清单）。
+
 **实现状态（未接线）**：td 仅产出 `TRANSFER_RSP`/`TRANSFER_RTN`/`PASSWORD_UPDATE_RSP`；`TRANSFER_REQ`/`PASSWORD_UPDATE_REQ` 无生产者（td 未实现对应 CTP 请求调用）；且 td 当前仅接线银行→期货方向（`OnRsp`/`OnRtnFromBankToFutureByFuture`），`trade_code="202002"`（期货→银行）无响应处理，接线时需补对应 SPI 回调。dzweb 无消费、无镜像 domain、无 WS 消息、无 REST 端点、前端无入口。本契约先定义语义，实现滞后按总则 §11.3 checklist 跟踪。
 
 ---

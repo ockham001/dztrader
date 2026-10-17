@@ -43,6 +43,10 @@
 | mysql | Boost.MySQL + 静态 OpenSSL/ZLIB/boost_charconv | 同上，CMake `DZ_WITH_MYSQL=ON`（默认） | 驱动/一致性/真机集成已验；**td 写端与 dzweb 读端仍为 SQLite，切换属后续阶段** |
 | mongo / 原版 MySQL | 动态库插件（环境变量注入）或代理适配器（独立服务进程） | 未实现 | 只留驱动注册缝，接口不变 |
 
+**策略进程可见后端收敛为 `sqlite` + `mysql`**（均已静态内嵌，单文件 SDK；ADR 0019）：其他后端
+当前均未实现；若将来实现，也只用于平台/归档侧——策略需要读取时由对应进程镜像成 sqlite/mysql，
+或等未来代理适配器（另立 ADR）。
+
 选择规则（`db::resolve_config("td")` 是唯一入口）：环境变量 `DZTRADER_DB_BACKEND` /
 `DZTRADER_DB_OPT_<KEY>` > `<DZTRADER_HOME>/configs/database.json` 的 `td` 段（缺失自动生成，
 不提交模板）> 内置默认（sqlite + `<DZTRADER_HOME>/db/td.db`）。
@@ -69,16 +73,20 @@ md(N-1个,单进程写,自旋锁仅订阅者列表)：写帧→原子更新next_
 订阅：策略经 `dz_subscribe`/`dz_unsubscribe` 直发行情进程（`REQUEST_MD_SUBSCRIBE`，`instance_id`=行情进程名，契约 md-subscription），不再经 master 转发
 行情源：公开策略 SDK 单行情源，内嵌 `DzContext`（`dz_next_md(ctx)`/`dz_md_source_name(ctx)`）。源名由 master 经策略配置 `md_source` 注入环境变量 `DZTRADER_MD_SOURCE`，`dz_init` 必选（缺失/为空返回 NULL + `DZ_EC_MD_SOURCE_NOT_CONFIGURED`）；无 `DzMdSource` 句柄与 create/destroy API。订阅期望集合由 SDK 维护，md 重启后 `dz_next_event` 内部自动补订阅（不重开 reader）；策略 reader 与进程同生命周期，master 在 spawn 前预注册、退出后清理（`REQUEST_MD_READER_REGISTER`–`RTN_MD_READER_UNREGISTER` 四帧保留给手工/外部进程）
 
-事件/定时器：`dz_next_event` 拦截平台内部帧（preload 随机延迟预加载、订阅者刷新、md 重启补订阅等由 SDK 内部消费），仅放行 TD 回报/用户输入/SHUTDOWN 帧；单次调用最多连续消费 32 条内部帧防饿死 `dz_next_md`。`dz_wait` 无定时器时无限阻塞、有定时器时等待至最近到期（对齐 dzmd_ctp 主循环）。定时器 API `dz_schedule_after/every/at/daily/cancel/cancel_all`（纯 C），触发帧 `DZ_FRAME_SCHEDULE` 本地合成经 `dz_next_event` 返回（不写共享内存）；内部 preload 随机延迟与用户定时器共用单 `TimerQueue`，内部 ID 用户不可见（防误删）。`dz_wait_for`/`dz_preload_event`/`dz_preload_md`/`dz_on_md_started` 已移除。
+事件/定时器：`dz_next_event` 拦截平台内部帧（preload 随机延迟预加载、订阅者刷新、md 重启补订阅等由 SDK 内部消费），仅放行 TD 回报（委托/成交/持仓/资金/账户状态）/用户输入/SHUTDOWN 帧，风控拒绝/出入金/改密帧直接丢弃；单次调用最多连续消费 32 条内部帧防饿死 `dz_next_md`。`dz_wait` 无定时器时无限阻塞、有定时器时等待至最近到期（对齐 dzmd_ctp 主循环）。定时器 API `dz_schedule_after/every/at/daily/cancel/cancel_all`（纯 C），触发帧 `DZ_FRAME_SCHEDULE` 本地合成经 `dz_next_event` 返回（不写共享内存）；内部 preload 随机延迟与用户定时器共用单 `TimerHeap`，内部 ID 用户不可见（防误删）。`dz_wait_for`/`dz_preload_event`/`dz_preload_md`/`dz_on_md_started` 已移除。
 
 ## 策略接口约束
 
-- 纯C(dz_前缀,DZ_API导出),二进制兼容
-- 唯一允许暴露的第三方库:nlohmann/json(内置)
-- 不提供日志,提供dz_strategy_home()返回策略exe所在目录
-- 实盘/回测不放进C接口,回测通过回放进程往shm写历史数据
-- K线各策略自行计算,C接口只提供tick
-- 驱动:事件驱动(默认)+硬轮询(后期)
+- C 接口(`dz_` 前缀, `DZ_API` 导出)二进制兼容；C++ 为 header-only 引擎(`run_strategy`/`StrategyBase`，
+  `dztrader/strategy_engine.h`)，不产生独立二进制接口
+- 唯一允许暴露的第三方库: nlohmann/json(内置)
+- 不提供日志,提供 `dz_strategy_home()` 返回策略 exe 所在目录
+- 实盘/回测不放进 C 接口,回测通过回放进程往 shm 写历史数据
+- **实时行情只推 tick**: 不提供 bar 推送、引擎内不做 K 线聚合；K 线由策略自行聚合
+  （SDK header 模板为 ADR 0018 规划项，尚未实现）。历史 K 线查询属归档域，未实现
+- 策略生命周期：SDK 对 SHUTDOWN 做内部清理后放行，C 策略自行识别退出；C++ 引擎自动调 `on_stop`
+  并结束主循环，另支持策略自主退出(should_exit/exit_code)
+- 驱动: 事件驱动(默认)+硬轮询(后期)
 
 ## 依赖禁止
 

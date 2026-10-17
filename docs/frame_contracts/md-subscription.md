@@ -146,7 +146,7 @@
 
 > 与 UI 状态的关系：本组帧仅服务后台订阅进程，前端 UI 不消费。前端判断行情进程的运行/停止状态以《帧契约：进程》的 `RTN_PROCESS_STATUS` / `RTN_PROCESS_CONFIG` 为准；判断登录/健康细粒度状态以 `RTN_PROGRESS`（契约 progress）为准。
 
-> 普通策略 SDK 语义：策略进程收到 `NOTIFY_MD_STARTED` 后由 SDK 自动按期望订阅集合全量补订阅（期望集合由 SDK 维护；不重开 reader、不重新接入），`instance_id` 非本策略绑定源时忽略；收到 `NOTIFY_MD_STOPPED` 由策略模板忽略（reader 保持打开）。策略读者生命周期与进程同长，md 停止/删除时不关闭——由 master 在 spawn 前预注册、退出后清理，不再依赖 DZ_FRAME_REQUEST_MD_READER_REGISTER/DZ_FRAME_REQUEST_MD_READER_UNREGISTER 帧做运行时握手（DZ_FRAME_REQUEST_MD_READER_REGISTER–DZ_FRAME_RTN_MD_READER_UNREGISTER 保留供手工/外部进程接入）。
+> 普通策略 SDK 语义：策略进程收到 `NOTIFY_MD_STARTED` 后由 SDK 自动按期望订阅集合全量补订阅（期望集合由 SDK 维护；不重开 reader、不重新接入），`instance_id` 非本策略绑定源时忽略；收到 `NOTIFY_MD_STOPPED` 由策略 SDK 拦截忽略（reader 保持打开）。策略读者生命周期与进程同长，md 停止/删除时不关闭——由 master 在 spawn 前预注册、退出后清理，不再依赖 DZ_FRAME_REQUEST_MD_READER_REGISTER/DZ_FRAME_REQUEST_MD_READER_UNREGISTER 帧做运行时握手（DZ_FRAME_REQUEST_MD_READER_REGISTER–DZ_FRAME_RTN_MD_READER_UNREGISTER 保留供手工/外部进程接入）。
 
 ### DZ_FRAME_NOTIFY_MD_STARTED
 
@@ -164,5 +164,5 @@
 
 **约束**：
 - `instance_id` 标识被停止的行情源，非策略进程据此断开接入对应行情通道（旧句柄失效），此前订阅的合约随之无效
-- 普通策略模板忽略该帧（reader 保持打开，重启后由 SDK 自动恢复订阅）
+- 策略 SDK 拦截并忽略该帧（reader 保持打开，重启后由 SDK 自动恢复订阅）
 - 仅后台进程消费，dzweb / 前端不处理，不据此判断行情进程状态

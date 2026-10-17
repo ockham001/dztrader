@@ -24,7 +24,7 @@
 | [td-account-ops](td-account-ops.md) | 出入金与改密 | `TD_TRANSFER_REQ`/`TD_TRANSFER_RSP`/`TD_TRANSFER_RTN`、`TD_PASSWORD_UPDATE_REQ`/`TD_PASSWORD_UPDATE_RSP` | `libs/platform/.../td_account_ops.h` |
 | [td-risk-reject](td-risk-reject.md) | 风控拒绝通知 | `TD_RISK_REJECT` | `libs/platform/.../risk_reject.h` |
 | [instrument](instrument.md) | 合约信息 | （无帧，DB 查询） | `libs/tdstore/.../records.h` |
-| [strategy](strategy.md) | 策略帧 | `UI_INPUT`/`OUTPUT_UI`/`SET_LOGICAL_POSITION` | `libs/core/.../core_struct.h` |
+| [strategy](strategy.md) | 策略帧与本地调度 | `UI_INPUT`/`OUTPUT_UI`/`SET_LOGICAL_POSITION`/`SCHEDULE` | `libs/strategy_api/.../struct.h`、`libs/core/.../core_struct.h` |
 
 ## 阅读顺序
 
