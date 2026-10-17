@@ -240,6 +240,24 @@ static_assert(dztrader::Strategy<MisspelledTick>);
 static_assert(!dztrader::strategy_engine_internal::HasOnTick<MisspelledTick>);
 }  // namespace
 
+// exit_code 只接受精确 int32_t (拒绝 bool/int64 等可转换类型导致的静默收窄)
+namespace {
+struct BadExitCodeBool {
+    void on_start(DzContext*) {}
+    bool exit_code() const noexcept { return true; }
+};
+struct BadExitCodeInt64 {
+    void on_start(DzContext*) {}
+    int64_t exit_code() const noexcept { return 0; }
+};
+struct GoodExitCode {
+    void on_start(DzContext*) {}
+    int32_t exit_code() const noexcept { return 0; }
+};
+static_assert(!dztrader::strategy_engine_internal::HasExitCode<BadExitCodeBool>);
+static_assert(!dztrader::strategy_engine_internal::HasExitCode<BadExitCodeInt64>);
+static_assert(dztrader::strategy_engine_internal::HasExitCode<GoodExitCode>);
+}  // namespace
 
 // ── run_strategy 端到端 ──
 //
@@ -880,7 +898,7 @@ TEST_F(StrategyEngineTest, StartupSelfCheckListsAllProbes) {
     // stop/tick/trade/account_status/schedule, 其余 no
     const std::string expected =
         "strategy callbacks | stop=yes tick=yes trade=yes order=no position=no account=no "
-        "account_status=yes schedule=yes input=no error=no\n";
+        "account_status=yes schedule=yes input=no error=no self_exit=no exit_code=no\n";
     EXPECT_EQ(self_check, expected);
 }
 
@@ -922,7 +940,7 @@ TEST_F(StrategyEngineTest, StrategyWithoutOnTickRunsAndSelfCheckShowsTickNo) {
     }
     const std::string expected =
         "strategy callbacks | stop=yes tick=no trade=no order=no position=no account=no "
-        "account_status=no schedule=yes input=no error=no\n";
+        "account_status=no schedule=yes input=no error=no self_exit=no exit_code=no\n";
     EXPECT_EQ(self_check, expected);
     EXPECT_TRUE(shutdown_written.load());
     EXPECT_EQ(stop_count, 1);
@@ -1125,6 +1143,204 @@ TEST_F(StrategyEngineTest, InitFailureReportsErrorBeforeOnStart) {
     EXPECT_EQ(inner.start_count, 0);
     EXPECT_EQ(inner.error_count, 1);
     EXPECT_NE(inner.error_code, 0);
+}
+
+// ── 自主退出 ──
+
+TEST_F(StrategyEngineTest, SelfExitReturnsCodeAndCallsOnStop) {
+    int stop_count = 0;
+    int start_count = 0;
+    std::string strategy_id;
+
+    struct HookStrategy {
+        int& stop_count;
+        int& start_count;
+        std::string& strategy_id;
+        StrategyEngineTest& fixture;
+
+        void on_start(DzContext* ctx) {
+            ++start_count;
+            strategy_id = dz_strategy_id(ctx);
+            (void)dz_schedule_after(ctx, 100);  // 回归兜底: 不退出时由定时器写 SHUTDOWN
+        }
+        void on_schedule(const DzScheduleEvent&) { (void)fixture.write_shutdown(strategy_id); }
+        void on_stop() { ++stop_count; }
+        bool should_exit() const noexcept { return true; }
+        int32_t exit_code() const noexcept { return 42; }
+    };
+    static_assert(dztrader::Strategy<HookStrategy>);
+    static_assert(dztrader::strategy_engine_internal::HasShouldExit<HookStrategy>);
+    static_assert(dztrader::strategy_engine_internal::HasExitCode<HookStrategy>);
+
+    HookStrategy hook{stop_count, start_count, strategy_id, *this};
+    std::string out;
+    int32_t rc = 0;
+    {
+        CoutCapture capture;
+        rc = dztrader::run_strategy(hook);
+        out = capture.str();
+    }
+    EXPECT_EQ(rc, 42);
+    EXPECT_EQ(start_count, 1);
+    EXPECT_EQ(stop_count, 1);
+    EXPECT_NE(out.find("strategy exit | reason=self code=42\n"), std::string::npos) << out;
+    // dz_release 已执行: 同进程可再次 dz_init
+    DzContext* reinit = dz_init();
+    ASSERT_NE(reinit, nullptr) << dz_errmsg();
+    dz_release(reinit);
+}
+
+TEST_F(StrategyEngineTest, SelfExitRequestedFromCallbackExitsAfterPump) {
+    std::string strategy_id;
+    int stop_count = 0;
+
+    struct HookStrategy {
+        std::string& strategy_id;
+        StrategyEngineTest& fixture;
+        int& stop_count;
+        bool exit_requested = false;
+
+        void on_start(DzContext* ctx) {
+            strategy_id = dz_strategy_id(ctx);
+            (void)dz_schedule_after(ctx, 100);
+        }
+        void on_schedule(const DzScheduleEvent&) { exit_requested = true; }
+        bool should_exit() const noexcept { return exit_requested; }
+        void on_stop() { ++stop_count; }
+    };
+    static_assert(dztrader::Strategy<HookStrategy>);
+    static_assert(dztrader::strategy_engine_internal::HasShouldExit<HookStrategy>);
+    static_assert(!dztrader::strategy_engine_internal::HasExitCode<HookStrategy>);
+
+    HookStrategy hook{strategy_id, *this, stop_count};
+    start_rescue(15000);
+    std::string out;
+    int32_t rc = 0;
+    {
+        CoutCapture capture;
+        rc = dztrader::run_strategy(hook);
+        out = capture.str();
+    }
+    join_threads();
+
+    // 无 exit_code(): 默认 0; 必须走自主退出路径而非 SHUTDOWN 路径
+    EXPECT_EQ(rc, 0);
+    EXPECT_EQ(stop_count, 1);
+    EXPECT_TRUE(hook.exit_requested);
+    EXPECT_NE(out.find("strategy exit | reason=self code=0\n"), std::string::npos) << out;
+}
+
+TEST_F(StrategyEngineTest, ThrowingShouldExitReportedOnceAndDoesNotExit) {
+    std::string strategy_id;
+    std::atomic<bool> shutdown_written{false};
+    int stop_count = 0;
+    int error_count = 0;
+
+    struct HookStrategy {
+        std::string& strategy_id;
+        StrategyEngineTest& fixture;
+        std::atomic<bool>& shutdown_written;
+        int& stop_count;
+        int& error_count;
+
+        void on_start(DzContext* ctx) {
+            strategy_id = dz_strategy_id(ctx);
+            (void)dz_schedule_after(ctx, 100);
+        }
+        void on_schedule(const DzScheduleEvent&) {
+            shutdown_written.store(fixture.write_shutdown(strategy_id));
+        }
+        bool should_exit() { throw std::runtime_error("should_exit failed"); }
+        void on_stop() { ++stop_count; }
+        void on_error(DzErrorCode, std::string_view) { ++error_count; }
+    };
+    static_assert(dztrader::Strategy<HookStrategy>);
+    static_assert(dztrader::strategy_engine_internal::HasShouldExit<HookStrategy>);
+
+    HookStrategy hook{strategy_id, *this, shutdown_written, stop_count, error_count};
+    start_rescue(15000);
+    std::string out;
+    int32_t rc = 0;
+    {
+        CoutCapture capture;
+        rc = dztrader::run_strategy(hook);
+        out = capture.str();
+    }
+    join_threads();
+
+    EXPECT_EQ(rc, 0);                                              // SHUTDOWN 正常退出
+    EXPECT_TRUE(shutdown_written.load());                          // 确实走 SHUTDOWN 路径
+    EXPECT_EQ(stop_count, 1);                                      // 仅 SHUTDOWN 路径调 on_stop
+    EXPECT_EQ(error_count, 1);                                     // 探测异常只上报一次 (不刷屏)
+    EXPECT_EQ(out.find("reason=self"), std::string::npos) << out;  // 未走自主退出
+}
+
+TEST_F(StrategyEngineTest, SelfExitWithThrowingExitCodeUsesZeroAndReportsOnce) {
+    std::string strategy_id;
+    int stop_count = 0;
+    int error_count = 0;
+
+    struct HookStrategy {
+        std::string& strategy_id;
+        StrategyEngineTest& fixture;
+        int& stop_count;
+        int& error_count;
+
+        void on_start(DzContext* ctx) {
+            strategy_id = dz_strategy_id(ctx);
+            (void)dz_schedule_after(ctx, 500);  // 回归兜底: 不退出时写 SHUTDOWN
+        }
+        void on_schedule(const DzScheduleEvent&) { (void)fixture.write_shutdown(strategy_id); }
+        void on_stop() { ++stop_count; }
+        void on_error(DzErrorCode, std::string_view) { ++error_count; }
+        bool should_exit() const noexcept { return true; }
+        int32_t exit_code() const { throw std::runtime_error("exit_code failed"); }
+    };
+    static_assert(dztrader::Strategy<HookStrategy>);
+    static_assert(dztrader::strategy_engine_internal::HasExitCode<HookStrategy>);
+
+    HookStrategy hook{strategy_id, *this, stop_count, error_count};
+    std::string out;
+    int32_t rc = 0;
+    {
+        CoutCapture capture;
+        rc = dztrader::run_strategy(hook);
+        out = capture.str();
+    }
+    EXPECT_EQ(rc, 0);  // 异常 -> 退出码按 0
+    EXPECT_EQ(stop_count, 1);
+    EXPECT_EQ(error_count, 1);  // exit_code 异常上报一次
+    EXPECT_NE(out.find("strategy exit | reason=self code=0\n"), std::string::npos) << out;
+}
+
+TEST_F(StrategyEngineTest, SelfExitNegativeCodeIsReturned) {
+    int stop_count = 0;
+
+    struct HookStrategy {
+        int& stop_count;
+
+        void on_start(DzContext*) {}
+        void on_stop() { ++stop_count; }
+        bool should_exit() const noexcept { return true; }
+        int32_t exit_code() const noexcept { return -3; }
+    };
+    static_assert(dztrader::Strategy<HookStrategy>);
+    static_assert(dztrader::strategy_engine_internal::HasExitCode<HookStrategy>);
+
+    HookStrategy hook{stop_count};
+    start_rescue(2000);  // 防御: 探测回归时不挂死 (2s 后兜底 SHUTDOWN)
+    std::string out;
+    int32_t rc = 0;
+    {
+        CoutCapture capture;
+        rc = dztrader::run_strategy(hook);
+        out = capture.str();
+    }
+    join_threads();
+
+    EXPECT_EQ(rc, -3);  // 负值原样返回 (契约只建议 0-127, 不做钳制)
+    EXPECT_EQ(stop_count, 1);
+    EXPECT_NE(out.find("strategy exit | reason=self code=-3\n"), std::string::npos) << out;
 }
 
 }  // namespace

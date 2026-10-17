@@ -26,13 +26,23 @@
  *     进程内最后一个用户回调; on_stop 抛异常只走 dz_diag (不触发 on_error),
  *     不影响退出
  *
+ * 自主退出 (可选):
+ *   - 实现 bool should_exit() 返回 true 即请求优雅退出; 引擎在 on_start 后与
+ *     每批事件泵 (64/8 上限) 后探测, 命中后调 on_stop、释放会话、返回退出码;
+ *     双通道持续饱和时也不会被饿死
+ *   - 可选 int32_t exit_code() 指定进程退出码 (默认 0, 建议 0-127;
+ *     只接受精确 int32_t 返回值, 不做隐式收窄); 退出时 stdout 输出一行
+ *     strategy exit | reason=self code=N
+ *   - 后台线程请求退出: 置用户侧 atomic 标志 + dz_notify_self 唤醒引擎等待
+ *   - master 语义: 0=Stopped 不重启; 非 0=Crashed (策略类默认 restart 关闭)
+ *
  * 线程模型 (api.h 句柄契约: SDK 非线程安全):
  *   - 全部回调运行于唯一事件循环线程; 除 dz_notify_self 外, 任何 dz_* C API
  *     只能在回调内 (即引擎线程) 调用, 用户自建线程须在进程退出前 join
  *   - 回调参数是 SHM/SDK 缓冲的引用, 仅在本次回调返回前有效, 需留存请拷贝
  *
  * 自检: 启动时向 stdout 输出一行回调探测清单 (stop/tick/trade/order/position/
- * account/account_status/schedule/input/error 的 yes/no),
+ * account/account_status/schedule/input/error/self_exit/exit_code 的 yes/no),
  * 将"回调名拼错导致永不触发"的静默失败暴露在首次运行。
  * 注意: 继承 StrategyBase 的策略各项恒为 yes (基类提供全部空实现),
  * 拼写错误的 override 由编译器 override 检查兜底。
@@ -80,6 +90,18 @@ concept HasOnStop = requires(T t) { t.on_stop(); };
 
 template <typename T>
 concept HasOnTick = requires(T t, const DzTick& tick) { t.on_tick(tick); };
+
+template <typename T>
+concept HasShouldExit = requires(T t) {
+    { t.should_exit() } -> std::convertible_to<bool>;
+};
+
+/// 退出码必须精确是 int32_t: 拒绝 bool/double/uint64 等可转换类型,
+/// 避免静默收窄与 stdout/进程退出码不一致。
+template <typename T>
+concept HasExitCode = requires(T t) {
+    t.exit_code();
+} && std::same_as<std::remove_cvref_t<decltype(std::declval<T&>().exit_code())>, int32_t>;
 
 template <typename T>
 concept HasOnTradeReport = requires(T t, const DzTradeReport& rpt) { t.on_trade_report(rpt); };
@@ -215,6 +237,46 @@ void dispatch_on_stop(StrategyT& strategy) noexcept {
         } catch (...) {
             dz_diag("on_stop threw | error=\"unknown exception\"");
         }
+    }
+}
+
+/// 策略自主退出探测 (should_exit 抛异常按回调异常上报, 同一进程只报一次, 视为未请求)
+template <typename StrategyT>
+bool exit_requested(StrategyT& strategy, bool& probe_error_reported) noexcept {
+    if constexpr (!HasShouldExit<StrategyT>) {
+        return false;
+    } else {
+        try {
+            return strategy.should_exit();
+        } catch (const std::exception& e) {
+            if (!probe_error_reported) [[unlikely]] {
+                probe_error_reported = true;
+                report_callback_error(strategy, "should_exit", e);
+            }
+        } catch (...) {
+            if (!probe_error_reported) [[unlikely]] {
+                probe_error_reported = true;
+                report_callback_unknown(strategy, "should_exit");
+            }
+        }
+        return false;
+    }
+}
+
+/// 自主退出码探测 (默认 0; exit_code 抛异常上报后按 0 处理)
+template <typename StrategyT>
+int32_t requested_exit_code(StrategyT& strategy) noexcept {
+    if constexpr (!HasExitCode<StrategyT>) {
+        return 0;
+    } else {
+        try {
+            return static_cast<int32_t>(strategy.exit_code());
+        } catch (const std::exception& e) {
+            report_callback_error(strategy, "exit_code", e);
+        } catch (...) {
+            report_callback_unknown(strategy, "exit_code");
+        }
+        return 0;
     }
 }
 
@@ -380,10 +442,14 @@ void handle_event(StrategyT& strategy, const std::byte* frame, bool& running) no
 }
 
 /// 批次泵: md 上限 64 / event 上限 8, 双通道均空且未收到退出请求时返回,
-/// 由调用方 dz_wait 阻塞等待。SHUTDOWN 后立即停止本批剩余派发,
-/// 保证 on_stop 是最后一个用户回调。
+/// 由调用方 dz_wait 阻塞等待。每批后探测自主退出 (双通道持续饱和时不会被饿死);
+/// SHUTDOWN 后立即停止本批剩余派发, 保证 on_stop 是最后一个用户回调。
 template <typename StrategyT>
-void pump_once(StrategyT& strategy, DzContext* ctx, bool& running) {
+void pump_once(StrategyT& strategy,
+               DzContext* ctx,
+               bool& running,
+               bool& self_exit,
+               bool& exit_probe_error_reported) {
     for (;;) {
         int md_count = 0;
         int event_count = 0;
@@ -401,8 +467,16 @@ void pump_once(StrategyT& strategy, DzContext* ctx, bool& running) {
             }
             handle_event(strategy, frame, running);
         }
-        if (!running || (md_count < 64 && event_count < 8)) {
-            break;
+        if (!running) {
+            return;  // SHUTDOWN: on_stop 已在分发层调用
+        }
+        // 自主退出探测点: 每批 64/8 之后 (md+event 双饱和时仍能及时退出)
+        if (exit_requested(strategy, exit_probe_error_reported)) {
+            self_exit = true;
+            return;
+        }
+        if (md_count < 64 && event_count < 8) {
+            return;  // 双通道已取空
         }
     }
 }
@@ -415,12 +489,13 @@ template <typename StrategyT>
 void report_start() noexcept {
     std::cout << std::format(
         "strategy callbacks | stop={} tick={} trade={} order={} position={} "
-        "account={} account_status={} schedule={} input={} error={}\n",
+        "account={} account_status={} schedule={} input={} error={} self_exit={} exit_code={}\n",
         HasOnStop<StrategyT> ? "yes" : "no", HasOnTick<StrategyT> ? "yes" : "no",
         HasOnTradeReport<StrategyT> ? "yes" : "no", HasOnOrderReport<StrategyT> ? "yes" : "no",
         HasOnPositionInfo<StrategyT> ? "yes" : "no", HasOnTradingAccount<StrategyT> ? "yes" : "no",
         HasOnAccountStatus<StrategyT> ? "yes" : "no", HasOnSchedule<StrategyT> ? "yes" : "no",
-        HasOnUiInput<StrategyT> ? "yes" : "no", HasOnError<StrategyT> ? "yes" : "no");
+        HasOnUiInput<StrategyT> ? "yes" : "no", HasOnError<StrategyT> ? "yes" : "no",
+        HasShouldExit<StrategyT> ? "yes" : "no", HasExitCode<StrategyT> ? "yes" : "no");
     std::cout.flush();  // master 管道块缓冲: 显式排空, 保证自检行不滞留
 }
 
@@ -459,9 +534,10 @@ namespace dztrader {
 template <typename T>
 concept Strategy = requires(T t, DzContext* ctx) { t.on_start(ctx); };
 
-/// 运行策略直至收到 DZ_FRAME_SHUTDOWN。
-/// 返回值: 正常 SHUTDOWN 退出 0; dz_init 失败返回其错误码;
-/// on_start 抛异常返回 DZ_EC_INTERNAL (会话已释放, 带病初始化的策略不进入主循环)。
+/// 运行策略直至收到 DZ_FRAME_SHUTDOWN 或策略自主退出 (should_exit 探测)。
+/// 返回值: SHUTDOWN 退出 0; 自主退出返回 exit_code() (默认 0);
+/// dz_init 失败返回其错误码; on_start 抛异常返回 DZ_EC_INTERNAL
+/// (会话已释放, 带病初始化的策略不进入主循环)。
 /// 无 on_tick 的策略不接收行情 (见头注释), 其余可选回调按编译期探测调用。
 template <Strategy StrategyT>
 int32_t run_strategy(StrategyT& strategy) {
@@ -476,15 +552,32 @@ int32_t run_strategy(StrategyT& strategy) {
     }
 
     bool running = true;
-    while (true) {
-        strategy_engine_internal::pump_once(strategy, ctx, running);
-        if (!running) {
+    bool self_exit = false;
+    bool exit_probe_error_reported = false;
+    // 自主退出检查点: on_start 后 + 事件泵每批 64/8 后 (泵内回调可能置用户退出标志,
+    // 双通道持续饱和时由 pump_once 内部探测, 不会饿死)
+    for (;;) {
+        if (strategy_engine_internal::exit_requested(strategy, exit_probe_error_reported)) {
+            self_exit = true;
+            break;
+        }
+        strategy_engine_internal::pump_once(strategy, ctx, running, self_exit,
+                                            exit_probe_error_reported);
+        if (!running || self_exit) {
             break;  // SHUTDOWN: on_stop 已在分发层调用 (进程内最后一个用户回调)
         }
         dz_wait(ctx);
     }
+
+    int32_t exit_code = 0;
+    if (self_exit) {
+        exit_code = strategy_engine_internal::requested_exit_code(strategy);
+        strategy_engine_internal::dispatch_on_stop(strategy);
+        std::cout << std::format("strategy exit | reason=self code={}\n", exit_code);
+        std::cout.flush();  // master 管道块缓冲: 显式排空, 保证退出行不滞留
+    }
     dz_release(ctx);
-    return 0;
+    return exit_code;
 }
 
 }  // namespace dztrader
