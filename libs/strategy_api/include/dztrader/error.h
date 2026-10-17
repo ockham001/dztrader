@@ -8,6 +8,7 @@
  *   - 策略接口 (-2002 ~ -2999)
  *   - 交易 (-3001 ~ -3999)
  *   - 行情 (-4001 ~ -4999)
+ *   - 主进程 (-5001 ~ -5999)
  *   - 数据库 (-6001 ~ -6999)
  */
 #ifndef DZTRADER_ERROR_H_
@@ -40,6 +41,8 @@ typedef int32_t DzErrorCode;
 #define DZ_EC_TIMEOUT ((DzErrorCode)(-8))
 /** @brief 系统错误 */
 #define DZ_EC_SYSTEM ((DzErrorCode)(-9))
+/** @brief 功能未实现（接口保留，当前版本不可用） */
+#define DZ_EC_NOT_IMPLEMENTED ((DzErrorCode)(-10))
 
 /* ── 共享内存 ── */
 

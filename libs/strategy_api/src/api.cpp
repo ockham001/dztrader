@@ -833,6 +833,45 @@ bool is_own_report(const DzContext* ctx, const std::byte* frame) noexcept {
 /// NOTIFY_MD_STARTED 自动补订阅 (定义见 write_subscribe_req 之后)
 void on_md_started_internal(DzContext* ctx, const std::byte* frame);
 
+/// 有界 C 字符串长度: 最多扫 max 字节, 未找到 NUL 返回 max
+std::size_t bounded_cstr_len(const char* s, std::size_t max) noexcept {
+    std::size_t len = 0;
+    while (len < max && s[len] != '\0') {
+        ++len;
+    }
+    return len;
+}
+
+/// 变长 ext_inst 帧防御: 校验帧长可容纳 ext 头、data_size 不越帧尾、instance_id 有终止符。
+/// 返回 false 表示坏帧 (已诊断), 调用方直接丢弃。
+bool valid_ext_inst_frame(const std::byte* frame, const char* what) noexcept {
+    constexpr std::size_t kMinSize = sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader);
+    const shm::FrameView view(frame);
+    if (view.frame_size() < kMinSize) {
+        dz_diag(std::format("frame dropped | reason=frame_too_short frame={} frame_size={}", what,
+                            view.frame_size())
+                    .c_str());
+        return false;
+    }
+    const auto& ext = view.ext_inst_header();
+    const std::size_t max_data_size = static_cast<std::size_t>(view.frame_size()) - kMinSize;
+    if (ext.data_size > max_data_size) {
+        dz_diag(std::format("frame dropped | reason=payload_out_of_frame frame={} frame_size={} "
+                            "data_size={}",
+                            what, view.frame_size(), ext.data_size)
+                    .c_str());
+        return false;
+    }
+    if (bounded_cstr_len(ext.instance_id, sizeof(DzInstanceId)) == sizeof(DzInstanceId)) {
+        dz_diag(std::format("frame dropped | reason=instance_id_not_terminated frame={} "
+                            "frame_size={}",
+                            what, view.frame_size())
+                    .c_str());
+        return false;
+    }
+    return true;
+}
+
 /// 单帧分派: 用户帧返回 true (放行给策略用户), 其余返回 false (SDK 内部消费/丢弃)。
 /// 逐帧类型 switch, 替代原 is_user_frame 白名单 + handle_internal_frame 双开关。
 bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
@@ -853,8 +892,14 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
             return admit_trade_report(ctx, shm::FrameView(frame).payload<DzTradeReport>());
         case DZ_FRAME_UI_INPUT:
             // 定向帧: 仅 instance_id == 裸策略名 的属于本策略
+            if (!valid_ext_inst_frame(frame, "ui_input")) {
+                return false;
+            }
             return std::string_view(shm::FrameView(frame).ext_inst_id()) == ctx->strategy_id;
         case DZ_FRAME_SHUTDOWN:
+            if (!valid_ext_inst_frame(frame, "shutdown")) {
+                return false;
+            }
             if (std::string_view(shm::FrameView(frame).ext_inst_id()) == ctx->strategy_id) {
                 ctx->internal_cleanup_on_shutdown();  // 内部清理后再放行
                 return true;
@@ -889,11 +934,14 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
         case DZ_FRAME_NOTIFY_MD_STARTED:
             on_md_started_internal(ctx, frame);
             return false;
-        // 其余 TD 回报帧 DZ_FRAME_POSITION_INFO-DZ_FRAME_ACCOUNT_STATUS (持仓/资金/网关状态等):
-        // 暂不按策略过滤, 全量放行。 DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 为 ingest 帧
-        // (含 seq/account_id): 完整帧过 gate (W 过滤/断档/倒退), 截断帧保持透传 (既有语义:
-        // 不按策略过滤, 引擎侧 payload_size_matches 丢弃); 除上述四个 ingest 帧外的 TD 回报帧无 seq
-        // 字段, 不 ingest, 直接全量放行。
+        case DZ_FRAME_NOTIFY_MD_STOPPED:
+            // 行情源停止通知: 非策略可见 (reader 保持打开, 重启后由 SDK 自动补订阅);
+            // 显式列出避免依赖 default 语义 (契约 md-subscription)
+            return false;
+        // 以下持仓/资金/账户状态帧不按策略过滤, 全量放行 (UI 域 TD 帧已在上方丢弃):
+        // DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 为 ingest 帧 (含 seq/account_id):
+        // 完整帧过 gate (W 过滤/断档/倒退), 截断帧保持透传 (既有语义: 不按策略过滤,
+        // 引擎侧 payload_size_matches 丢弃)。
         case DZ_FRAME_POSITION_INFO: {
             const shm::FrameView view(frame);
             if (view.frame_size() < sizeof(DzFrameHeader) + sizeof(DzPositionInfo)) {
@@ -922,13 +970,15 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
             }
             return true;  // 2018 仍全量放行给策略用户 (on_account_status 回调, 引擎测试覆盖)
         }
+        // UI 域 TD 帧 (风控拒绝/出入金/改密): 非策略可见, SDK 直接丢弃
+        // (契约 td-risk-reject "非策略可见: 策略 SDK 直接丢弃"; 拒单信息由 ORDER_REPORT 提供)
         case DZ_FRAME_TD_RISK_REJECT:
         case DZ_FRAME_TD_TRANSFER_REQ:
         case DZ_FRAME_TD_TRANSFER_RSP:
         case DZ_FRAME_TD_TRANSFER_RTN:
         case DZ_FRAME_TD_PASSWORD_UPDATE_REQ:
         case DZ_FRAME_TD_PASSWORD_UPDATE_RSP:
-            return true;
+            return false;
         default:
             return false;  // 其余平台帧 (日志/SHM 配置/进程控制/TD 控制帧等) 丢弃
     }
@@ -1372,7 +1422,11 @@ DZ_API bool dz_set_logical_position(DzContext* ctx,
     copy_string(pos->account_id, account_id, true);
     copy_string(pos->instrument_id, instrument_id, true);
     copy_string(pos->strategy_id, ctx->strategy_id, true);
-    pos->net_volume = net_volume;
+    // 契约 strategy §SET_LOGICAL_POSITION: account_id/instrument_id 为空串表示通配,
+    // 此时 net_volume 忽略并固定为 0 (全清); 非通配时保留调用方值
+    const bool wildcard = (account_id == nullptr || account_id[0] == '\0') ||
+                          (instrument_id == nullptr || instrument_id[0] == '\0');
+    pos->net_volume = wildcard ? 0 : net_volume;
     ctx->event_writer.close_frame();
     ctx->event_writer.notify_subscribers();
     return true;
@@ -1709,13 +1763,16 @@ DZ_API DzResultSet* dz_db_query_bar(DzDatabase* db,
                                     DzAdjustType adjust_type,
                                     DzDate start_date,
                                     DzDate end_date) {
+    // 归档域 (tick/bar) 尚未落地: 接口保留但恒失败, 不做"看起来能用"的假查询
+    // (ADR 0018/0019; schema/生产者/查询随归档域 spec 一起设计)
     (void)db;
     (void)instrument_id;
     (void)bar_period;
     (void)adjust_type;
     (void)start_date;
     (void)end_date;
-    LastError::set(DZ_EC_SYSTEM, "bar query not implemented");
+    LastError::set(DZ_EC_NOT_IMPLEMENTED,
+                   "bar query not implemented | reason=archive_domain_pending_spec");
     return NULL;
 }
 DZ_API DzResultSet* dz_db_query_instruments(DzDatabase* db,

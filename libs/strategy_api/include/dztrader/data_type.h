@@ -191,7 +191,7 @@ typedef int8_t DzPositionEffect;
 /** @brief 平昨 */
 #define DZ_POSITION_EFFECT_CLOSE_YESTDAY ((DzPositionEffect)4)
 /** @brief 自动拆分 (拆分优先级序列由账户级配置决定: 如 平今-平昨-开仓;
- *         零初始化即 AUTO, 首版仅定义不实现) */
+ *         零初始化即 AUTO, 首版仅定义不实现, td 收到 AUTO 委托直接拒单) */
 #define DZ_POSITION_EFFECT_AUTO ((DzPositionEffect)0)
 
 /* ==========================================================

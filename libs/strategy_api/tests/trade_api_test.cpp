@@ -4,6 +4,7 @@
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/core_struct.h>
 #include <dztrader/core/env.h>
+#include <dztrader/core/this_process.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/reader.h>
@@ -14,6 +15,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 
 using dztrader::shm::ChannelConfig;
@@ -129,6 +131,43 @@ TEST_F(TradeApiTest, SetLogicalPositionWritesFrame) {
     EXPECT_EQ(pos->net_volume, 3);
 }
 
+TEST_F(TradeApiTest, SetLogicalPositionWildcardZeroesNetVolume) {
+    // 契约 strategy: account/instrument 为空串表示通配, net_volume 忽略并固定为 0;
+    // 非通配字段与 strategy_id 必须原样保留
+    ASSERT_TRUE(dz_set_logical_position(ctx_, "", "IF2401", 5));
+    const auto* account_wildcard =
+        static_cast<const DzLogicalPosition*>(read_next_basic(DZ_FRAME_SET_LOGICAL_POSITION));
+    ASSERT_NE(account_wildcard, nullptr);
+    EXPECT_EQ(account_wildcard->net_volume, 0);
+    EXPECT_STREQ(account_wildcard->account_id, "");
+    EXPECT_STREQ(account_wildcard->instrument_id, "IF2401");
+    EXPECT_STREQ(account_wildcard->strategy_id, dz_strategy_id(ctx_));
+
+    ASSERT_TRUE(dz_set_logical_position(ctx_, "CTP001", nullptr, -2));
+    const auto* instrument_wildcard =
+        static_cast<const DzLogicalPosition*>(read_next_basic(DZ_FRAME_SET_LOGICAL_POSITION));
+    ASSERT_NE(instrument_wildcard, nullptr);
+    EXPECT_EQ(instrument_wildcard->net_volume, 0);
+    EXPECT_STREQ(instrument_wildcard->account_id, "CTP001");
+    EXPECT_STREQ(instrument_wildcard->instrument_id, "");
+    EXPECT_STREQ(instrument_wildcard->strategy_id, dz_strategy_id(ctx_));
+
+    // 双通配 (NULL/NULL): 仍写帧, net_volume 置 0
+    ASSERT_TRUE(dz_set_logical_position(ctx_, nullptr, nullptr, 7));
+    const auto* both_wildcard =
+        static_cast<const DzLogicalPosition*>(read_next_basic(DZ_FRAME_SET_LOGICAL_POSITION));
+    ASSERT_NE(both_wildcard, nullptr);
+    EXPECT_EQ(both_wildcard->net_volume, 0);
+    EXPECT_STREQ(both_wildcard->strategy_id, dz_strategy_id(ctx_));
+
+    // 非通配负值原样保留
+    ASSERT_TRUE(dz_set_logical_position(ctx_, "CTP001", "IF2401", -4));
+    const auto* explicit_pos =
+        static_cast<const DzLogicalPosition*>(read_next_basic(DZ_FRAME_SET_LOGICAL_POSITION));
+    ASSERT_NE(explicit_pos, nullptr);
+    EXPECT_EQ(explicit_pos->net_volume, -4);
+}
+
 TEST_F(TradeApiTest, QueryAccountStatusWritesBasicFrame) {
     ASSERT_TRUE(dz_query_account_status(ctx_, "CTP001"));
     const auto* req =
@@ -188,6 +227,58 @@ TEST_F(TradeApiTest, ReinitAfterReleaseSucceeds) {
 TEST_F(TradeApiTest, StrategyHomeNonEmpty) {
     EXPECT_NE(dz_strategy_home(ctx_), nullptr);
     EXPECT_NE(dz_strategy_home(ctx_)[0], '\0');
+}
+
+TEST_F(TradeApiTest, StrategyHomeEndsWithSeparator) {
+    // api.h: 策略目录 = 可执行文件所在目录 + 平台分隔符; 已有分隔符不重复追加
+    const std::string home = dz_strategy_home(ctx_);
+    ASSERT_FALSE(home.empty());
+    constexpr char kPreferredSeparator =
+        static_cast<char>(std::filesystem::path::preferred_separator);
+    EXPECT_EQ(home.back(), kPreferredSeparator);
+    // 断言完整路径: exe_dir + 单个分隔符 (排除错路径/双分隔符)
+    std::string expected = dztrader::this_process::exe_dir().string();
+    if (expected.empty() || expected.back() != kPreferredSeparator) {
+        expected.push_back(kPreferredSeparator);
+    }
+    EXPECT_EQ(home, expected);
+}
+
+TEST_F(TradeApiTest, OutputUiWritesExtInstFrame) {
+    constexpr std::string_view kText = R"({"action":"paused"})";
+    ASSERT_TRUE(dz_output_ui(ctx_, std::string(kText).c_str()));
+    const std::byte* frame = probe_->next_frame();
+    ASSERT_NE(frame, nullptr);
+    const auto view = dztrader::shm::FrameView(frame);
+    EXPECT_EQ(view.type(), DZ_FRAME_OUTPUT_UI);
+    EXPECT_STREQ(view.ext_inst_id(), dz_strategy_id(ctx_));
+    EXPECT_EQ(view.ext_inst_payload_size(), kText.size());
+    EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(view.ext_inst_payload()),
+                               view.ext_inst_payload_size()),
+              kText);
+}
+
+TEST_F(TradeApiTest, QueryBarReturnsNotImplemented) {
+    // 归档域未实现: 保留接口但恒失败, 不是"看起来能用"的查询
+    EXPECT_EQ(dz_db_query_bar(nullptr, "IF2401", 60, DZ_ADJUST_NONE, 0, 0), nullptr);
+    EXPECT_EQ(dz_errcode(), DZ_EC_NOT_IMPLEMENTED);
+}
+
+TEST_F(TradeApiTest, DbCloseIsNoFail) {
+    EXPECT_TRUE(dz_db_close(nullptr));  // NULL 安全 no-op
+}
+
+TEST(DzErrstrTest, MapsDbAndNotImplementedCodes) {
+    EXPECT_STREQ(dz_errstr(DZ_EC_DB_OPEN_FAILED), "db open failed");
+    EXPECT_STREQ(dz_errstr(DZ_EC_DB_CLOSED), "db closed");
+    EXPECT_STREQ(dz_errstr(DZ_EC_DB_QUERY_FAILED), "db query failed");
+    EXPECT_STREQ(dz_errstr(DZ_EC_DB_WRITE_FAILED), "db write failed");
+    EXPECT_STREQ(dz_errstr(DZ_EC_DB_MIGRATE_FAILED), "db migrate failed");
+    EXPECT_STREQ(dz_errstr(DZ_EC_DB_UNSUPPORTED_BACKEND), "db unsupported backend");
+    EXPECT_STREQ(dz_errstr(DZ_EC_DB_UNSUPPORTED_CAPABILITY), "db unsupported capability");
+    EXPECT_STREQ(dz_errstr(DZ_EC_DB_TRANSACTION_FAILED), "db transaction failed");
+    EXPECT_STREQ(dz_errstr(DZ_EC_NOT_IMPLEMENTED), "not implemented");
+    EXPECT_STREQ(dz_errstr(-99999), "unknown error");
 }
 
 TEST_F(TradeApiTest, NotifySelfWakesWait) {

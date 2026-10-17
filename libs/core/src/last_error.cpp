@@ -33,6 +33,8 @@ const char* LastError::str(DzErrorCode code) noexcept {
             return "timeout";
         case DZ_EC_SYSTEM:
             return "system error";
+        case DZ_EC_NOT_IMPLEMENTED:
+            return "not implemented";
         /* ── 共享内存 ── */
         case DZ_EC_SHM_CREATE_FAILED:
             return "shm create failed";
@@ -158,6 +160,23 @@ const char* LastError::str(DzErrorCode code) noexcept {
             return "master already running";
         case DZ_EC_MASTER_DB_FAILED:
             return "master db failed";
+        /* ── 数据库 ── */
+        case DZ_EC_DB_OPEN_FAILED:
+            return "db open failed";
+        case DZ_EC_DB_CLOSED:
+            return "db closed";
+        case DZ_EC_DB_QUERY_FAILED:
+            return "db query failed";
+        case DZ_EC_DB_WRITE_FAILED:
+            return "db write failed";
+        case DZ_EC_DB_MIGRATE_FAILED:
+            return "db migrate failed";
+        case DZ_EC_DB_UNSUPPORTED_BACKEND:
+            return "db unsupported backend";
+        case DZ_EC_DB_UNSUPPORTED_CAPABILITY:
+            return "db unsupported capability";
+        case DZ_EC_DB_TRANSACTION_FAILED:
+            return "db transaction failed";
         default:
             return "unknown error";
     }

@@ -82,6 +82,14 @@ struct DzContext {
                               true);
         dztrader::copy_string(this->strategy_id, strategy_id.c_str(), true);
         strategy_home = dztrader::this_process::exe_dir().string();
+        // api.h 契约: 策略目录以分隔符结尾, 便于调用方直接拼接文件名。
+        // path::preferred_separator 在 Windows 是 wchar_t; 显式收窄为 char 表达意图,
+        // 不依赖编译器对常量折叠的告警抑制 (GCC 侧本就是 char)。
+        constexpr char kPreferredSeparator =
+            static_cast<char>(std::filesystem::path::preferred_separator);
+        if (!strategy_home.empty() && strategy_home.back() != kPreferredSeparator) {
+            strategy_home.push_back(kPreferredSeparator);
+        }
     }
 
     DzContext()
@@ -282,7 +290,8 @@ struct DzContext {
     uint32_t timer_frame_head = 0;   ///< 下一个可写槽位
     uint32_t timer_frame_count = 0;  ///< 待领取帧数
 
-    /// 缓冲满时推迟投递的触发 (稳定 ID, 保序)。领取腾槽时逐条补投, 绝不丢帧;
+    /// 缓冲满时推迟投递的触发 (稳定 ID, 保序)。领取腾槽时逐条补投, 正常路径不丢帧
+    /// (定时器重排极端异常见契约 strategy §SCHEDULE);
     /// 已取消 ID 在补投时按注册表过滤 (取消语义覆盖)。
     std::vector<DzTimerId> deferred_fires;
 
@@ -338,7 +347,7 @@ struct DzContext {
     }
     /// 取下一帧本地定时器帧 (缓冲空且无 deferred 时返回 nullptr)
     [[nodiscard]] const void* pop_timer_frame() {
-        // 腾出槽位后优先补投 deferred (缓冲满时推迟的触发), 绝不丢帧
+        // 腾出槽位后优先补投 deferred (缓冲满时推迟的触发), 正常路径不丢帧
         while (timer_frame_count == 0 && !deferred_fires.empty()) {
             const DzTimerId id = deferred_fires.front();
             deferred_fires.erase(deferred_fires.begin());
@@ -377,7 +386,8 @@ struct DzContext {
         }
         if (timer_frame_count >= TIMER_FRAME_SLOTS) {
             // 缓冲满: 推迟投递 (领取腾槽时补投), 一次性保持注册表直到真正投递。
-            // 周期/每日先重排后入 deferred: rearm 异常时最坏丢一帧, 定时器不静默死亡。
+            // 周期/每日先重排后入 deferred: rearm 极端异常 (如 OOM) 时该次触发丢失,
+            // 且该定时器可能停止触发 (dz_next_event 诊断, 见契约 strategy §SCHEDULE)。
             if (it->second.kind != UserTimerEntry::Kind::After &&
                 it->second.kind != UserTimerEntry::Kind::AtOnce) {
                 rearm_user_timer(it, now);
@@ -448,12 +458,13 @@ struct DzContext {
     }
     /// SHUTDOWN 时 SDK 内部资源清理 (可扩展: 将来新增清理动作在此追加)
     void internal_cleanup_on_shutdown() {
-        // 当前动作: 取消内部预加载定时器 + 清本地定时器帧缓冲。
+        // 当前动作: 取消内部预加载定时器 + 清本地定时器帧缓冲与推迟投递队列。
         // 用户定时器不动 (由用户随进程退出自然消亡); 将来新增清理动作在此追加。
         internal_event_preload.reset();
         internal_md_preload.reset();
         timers.remove_token(INTERNAL_TOKEN_EVENT);
         timers.remove_token(INTERNAL_TOKEN_MD);
+        deferred_fires.clear();
         timer_frame_head = 0;
         timer_frame_count = 0;
     }

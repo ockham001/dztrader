@@ -91,10 +91,13 @@ DZ_API void dz_wait(DzContext* ctx);
  * 非阻塞，推进游标返回下一帧指针。无新帧则返回 NULL。
  * 返回的指针指向 DzFrameHeader，按 frame_type 解析 payload。
  *
- * 处理优先级：用户帧 > 定时器帧 > 内部帧。
+ * 处理优先级：回补帧 > 用户帧 > 定时器帧 > 内部帧。
+ *   - 断档回补帧（SDK 按账户级 seq 水位从 td 库查回后合成）前置返回，先于任何实时帧；
  *   - 用户帧（本策略 TD 回报、定向本策略的 UI_INPUT、SHUTDOWN）直接返回，零计时器开销；
- *     ORDER_REPORT/TRADE_REPORT 按 payload strategy_id == 本策略裸名定向（空/他策略拦截），
- *     其余 TD 回报（持仓/资金等）暂不过滤全量放行，UI_INPUT/SHUTDOWN 按 instance_id 定向；
+ *     ORDER_REPORT/TRADE_REPORT 按 payload strategy_id == 本策略裸名定向（空/他策略拦截）；
+ *     POSITION_INFO/TRADING_ACCOUNT 不按策略过滤、全量放行，但先过账户级 ingest 过滤
+ *     （seq ≤ 水位/重复成交不回传，断档由回补补齐）；UI_INPUT/SHUTDOWN 按 instance_id 定向；
+ *     UI 域 TD 帧（风控拒绝/出入金/改密）由 SDK 直接丢弃，不返回策略用户；
  *   - 通道无用户帧时（通道空或 32 上限让位）触发到期定时器并返回定时器帧；
  *   - 平台内部帧（SHM 预加载通知、订阅者刷新、日志/SHM 配置等）由 SDK
  *     内部消费，不返回给策略；其中 PRELOAD_EVENT_SHM / PRELOAD_MD_SHM
@@ -103,8 +106,13 @@ DZ_API void dz_wait(DzContext* ctx);
  *   - 每次调用最多连续消费 32 条内部帧，超过则本次让位（优先返回已到期
  *     定时器帧，否则 NULL，下次调用继续处理），防止内部帧洪峰饿死 dz_next_md。
  *
+ * ingest 语义（契约 strategy "SDK ingest 过滤职责"）：TD 推送帧在返回策略用户前
+ * 完成账户级 seq 水位过滤/断档回补/成交去重/seq 倒退重置，策略回调语义不受影响。
+ *
  * 定时器帧（DZ_FRAME_SCHEDULE，dz_schedule_* 触发）为 SDK 本地合成，
  * 指针仅在下次 dz_next_event / dz_release 调用前有效，需要留存请自行拷贝。
+ * 调用约定：取完所有已就绪事件帧后再调用 dz_wait（dz_wait 只看堆定时器，
+ * 不看已合成未领取的定时器帧）。
  *
  * @return 帧指针，无数据返回 NULL
  */
@@ -147,7 +155,7 @@ DZ_API void dz_notify_self(DzContext* ctx);
  *
  * @param ctx      策略运行环境
  * @param delay_ms 延迟毫秒数，必须 > 0
- * @return 定时器 ID（>=0）；失败返回 DZ_TIMER_INVALID（调 dz_errcode 获取错误码）
+ * @return 定时器 ID（uint64）；失败返回 DZ_TIMER_INVALID（调 dz_errcode 获取错误码）
  */
 DZ_API DzTimerId dz_schedule_after(DzContext* ctx, int32_t delay_ms);
 
@@ -379,15 +387,18 @@ DZ_API DzDatabase* dz_db_open(const char* path);
  *
  * @return 非 NULL 为句柄，NULL 为失败（调 dz_errcode() 获取错误码：配置非法 =
  *         `DZ_EC_INVALID_PARAM`；后端未编入 = `DZ_EC_DB_UNSUPPORTED_BACKEND`；
- *         库不存在/连不上 = `DZ_EC_DB_OPEN_FAILED`）
+ *         库不存在/连不上 = `DZ_EC_DB_OPEN_FAILED`；配置不可读/默认段生成失败 =
+ *         `DZ_EC_SYSTEM`）
  */
 DZ_API DzDatabase* dz_db_open_default(void);
 
 /**
  * @brief 关闭数据库
  *
+ * 释放句柄；无失败路径，恒返回 true（NULL 为安全 no-op）。
+ *
  * @param db  数据库句柄
- * @return true 成功，false 失败（调 dz_errcode() 获取错误码）
+ * @return 恒为 true
  */
 DZ_API bool dz_db_close(DzDatabase* db);
 
@@ -395,7 +406,7 @@ DZ_API bool dz_db_close(DzDatabase* db);
  *  DzResultSet — 查询结果集（不透明结构体 + 独立函数）
  *
  *  统一的二维表格结果集，逐行遍历、按列索引取值。
- *  适用于数据库查询和实时数据查询（行情快照、持仓等）。
+ *  适用于数据库查询（当前仅 td 库只读查询；无实时查询入口）。
  *  策略负责调用 dz_resultset_close() 释放。
  *
  *  使用模式：
@@ -570,15 +581,19 @@ DZ_API DzResultSet* dz_db_query_position(DzDatabase* db,
 DZ_API DzResultSet* dz_db_query_trading_account(DzDatabase* db, const char* account_id);
 
 /**
- * @brief 查询 K 线数据
+ * @brief 查询 K 线数据（归档域，**当前未实现**）
  *
- * @param db             数据库句柄
- * @param instrument_id  合约代码，NULL 表示全部
- * @param bar_period     K 线周期（秒数，60=1分钟, 300=5分钟, 86400=日线）
- * @param adjust_type    复权方式
+ * 归档域（tick/bar 历史存储）尚未落地：本接口保留声明，但恒返回 NULL 且
+ * `dz_errcode()` 为 `DZ_EC_NOT_IMPLEMENTED`。schema、生产者与查询语义随归档域
+ * spec 一起设计（ADR 0018/0019）；策略侧实时 K 线由策略自行聚合，不经本接口。
+ *
+ * @param db             数据库句柄（当前忽略）
+ * @param instrument_id  合约代码
+ * @param bar_period     K 线周期（秒数）
+ * @param adjust_type    复权方式（语义随归档域 spec 定稿）
  * @param start_date     起始日期（距纪元天数），0 表示不限定
  * @param end_date       结束日期（距纪元天数），0 表示不限定
- * @return 非 NULL 为结果集（需 dz_resultset_close），NULL 为失败（调 dz_errcode() 获取错误码）
+ * @return 恒为 NULL（`DZ_EC_NOT_IMPLEMENTED`）
  */
 DZ_API DzResultSet* dz_db_query_bar(DzDatabase* db,
                                     const char* instrument_id,

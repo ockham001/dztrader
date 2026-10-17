@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <memory>
@@ -289,7 +290,7 @@ TEST_F(ScheduleApiTest, PreloadMdShmOwnSourceSchedulesInternalTimer) {
     EXPECT_LT(elapsed, std::chrono::seconds(6));
 }
 
-// ── 处理优先级: 用户帧 > 定时器帧 > 内部帧 ──
+// ── 处理优先级: 回补帧 > 用户帧 > 定时器帧 > 内部帧 ──
 
 TEST_F(ScheduleApiTest, UserFrameTakesPriorityOverBufferedTimerFrame) {
     const DzTimerId tid = dz_schedule_after(ctx_, 20);
@@ -393,7 +394,7 @@ TEST_F(ScheduleApiTest, OtherInstanceUserInputIntercepted) {
     EXPECT_EQ(dz_next_event(ctx_), nullptr);
 }
 
-// ── 其余 TD 回报 (DZ_FRAME_TD_RISK_REJECT 起, 无 seq): 暂不按策略过滤, 全量放行 ──
+// ── 持仓/资金推送: 不按策略过滤, 全量放行 (类型级; 完整帧 ingest 见 td_ingest_wiring_test) ──
 
 struct TdUnfilteredFrameParam {
     DzFrameType type;
@@ -414,16 +415,24 @@ TEST_P(TdUnfilteredFramesTest, StillDelivered) {
 INSTANTIATE_TEST_SUITE_P(TdUnfiltered,
                          TdUnfilteredFramesTest,
                          ::testing::Values(TdUnfilteredFrameParam{DZ_FRAME_POSITION_INFO},
-                                           TdUnfilteredFrameParam{DZ_FRAME_TRADING_ACCOUNT},
-                                           TdUnfilteredFrameParam{DZ_FRAME_TD_RISK_REJECT},
-                                           TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_REQ},
-                                           TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_RSP},
-                                           TdUnfilteredFrameParam{DZ_FRAME_TD_TRANSFER_RTN},
-                                           TdUnfilteredFrameParam{DZ_FRAME_TD_PASSWORD_UPDATE_REQ},
-                                           TdUnfilteredFrameParam{DZ_FRAME_TD_PASSWORD_UPDATE_RSP}),
+                                           TdUnfilteredFrameParam{DZ_FRAME_TRADING_ACCOUNT}),
                          [](const ::testing::TestParamInfo<TdUnfilteredFrameParam>& info) {
                              return std::format("frame_{}", info.param.type);
                          });
+
+// ── UI 域 TD 帧 (风控拒绝/出入金/改密): 非策略可见, SDK 直接丢弃 ──
+
+TEST_F(ScheduleApiTest, UiDomainTdFramesIntercepted) {
+    constexpr DzFrameType kIntercepted[] = {
+        DZ_FRAME_TD_RISK_REJECT,  DZ_FRAME_TD_TRANSFER_REQ,        DZ_FRAME_TD_TRANSFER_RSP,
+        DZ_FRAME_TD_TRANSFER_RTN, DZ_FRAME_TD_PASSWORD_UPDATE_REQ, DZ_FRAME_TD_PASSWORD_UPDATE_RSP};
+    for (const DzFrameType type : kIntercepted) {
+        DzShmPreload dummy{};
+        emit_struct(type, dummy);
+        EXPECT_EQ(dz_next_event(ctx_), nullptr)
+            << "frame type " << type << " should be intercepted";
+    }
+}
 
 // ── 截断帧防御: frame_size 不足 payload 的 TD 回报被拦截而非越界读 ──
 
@@ -545,6 +554,101 @@ TEST_F(ScheduleApiTest, TimerBurstBeyondBufferIsNotLost) {
     done = true;
     rescue.join();
     EXPECT_EQ(fired, ids);  // 40 帧无丢失 (32 缓冲 + 8 deferred 补投)
+}
+
+// ── SDK 层帧边界防御 (valid_ext_inst_frame) ──
+
+TEST_F(ScheduleApiTest, SdkRejectsMalformedUiInputFrames) {
+    const std::string strategy_id = dz_strategy_id(ctx_);
+    auto write_raw_ext = [&](uint32_t payload_bytes, const char* instance, uint32_t declared_size,
+                             bool terminate) {
+        MultiWriter writer = MultiWriter::create(open_event_meta(), "schedule_test_writer");
+        std::byte* raw = writer.open_frame(DZ_FRAME_UI_INPUT, payload_bytes);
+        ASSERT_NE(raw, nullptr);
+        auto* ext = reinterpret_cast<DzExtInstFrameHeader*>(raw);
+        if (terminate && instance != nullptr) {
+            dztrader::copy_string(ext->instance_id, instance, true);
+        } else {
+            std::memset(ext->instance_id, 'x', sizeof(DzInstanceId));
+        }
+        ext->data_size = declared_size;
+        writer.close_frame();
+        writer.notify_subscribers();
+    };
+
+    // 1) 帧长不足 ext 头 (仅帧头)
+    {
+        MultiWriter writer = MultiWriter::create(open_event_meta(), "schedule_test_writer");
+        std::byte* raw = writer.open_frame(DZ_FRAME_UI_INPUT, 0);
+        ASSERT_NE(raw, nullptr);
+        writer.close_frame();
+        writer.notify_subscribers();
+    }
+    EXPECT_EQ(dz_next_event(ctx_), nullptr);
+
+    // 2) data_size 越出帧尾
+    write_raw_ext(static_cast<uint32_t>(sizeof(DzExtInstFrameHeader)), strategy_id.c_str(), 512,
+                  true);
+    EXPECT_EQ(dz_next_event(ctx_), nullptr);
+
+    // 3) instance_id 无 NUL 终止符
+    write_raw_ext(static_cast<uint32_t>(sizeof(DzExtInstFrameHeader)), nullptr, 0, false);
+    EXPECT_EQ(dz_next_event(ctx_), nullptr);
+
+    // 4) 合法帧仍正常送达
+    const std::string payload = R"({"k":1})";
+    {
+        MultiWriter writer = MultiWriter::create(open_event_meta(), "schedule_test_writer");
+        ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, strategy_id.c_str(),
+                                                reinterpret_cast<const std::byte*>(payload.data()),
+                                                static_cast<uint32_t>(payload.size())));
+        writer.notify_subscribers();
+    }
+    const void* frame = dz_next_event(ctx_);
+    ASSERT_NE(frame, nullptr);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_UI_INPUT);
+}
+
+TEST_F(ScheduleApiTest, SdkRejectsMalformedShutdownFrame) {
+    // 帧长不足 ext 头: SDK 丢弃, 不做内部清理, 会话仍可用
+    {
+        MultiWriter writer = MultiWriter::create(open_event_meta(), "schedule_test_writer");
+        std::byte* raw = writer.open_frame(DZ_FRAME_SHUTDOWN, 0);
+        ASSERT_NE(raw, nullptr);
+        writer.close_frame();
+        writer.notify_subscribers();
+    }
+    EXPECT_EQ(dz_next_event(ctx_), nullptr);
+
+    // 合法 SHUTDOWN 仍送达 (证明上一条不是把通道/游标弄坏)
+    emit_ext_inst(DZ_FRAME_SHUTDOWN, dz_strategy_id(ctx_));
+    const void* frame = dz_next_event(ctx_);
+    ASSERT_NE(frame, nullptr);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_SHUTDOWN);
+}
+
+TEST_F(ScheduleApiTest, ShutdownClearsDeferredTimerFrames) {
+    // 32 槽 + 1 deferred: 制造 deferred 队列非空的现场, SHUTDOWN 必须一并清掉
+    constexpr int kBufferSlots = 32;
+    constexpr int kCount = kBufferSlots + 1;
+    for (int i = 0; i < kCount; ++i) {
+        ASSERT_NE(dz_schedule_after(ctx_, 20), DZ_TIMER_INVALID);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+
+    int delivered = 0;
+    while (delivered < kBufferSlots) {
+        const void* frame = dz_next_event(ctx_);
+        ASSERT_NE(frame, nullptr) << "delivered=" << delivered;
+        EXPECT_EQ(FrameView(static_cast<const std::byte*>(frame)).type(), DZ_FRAME_SCHEDULE);
+        ++delivered;
+    }
+    // 第 33 个触发此刻留在 deferred 队列; SHUTDOWN 清理后不得再投递
+    emit_ext_inst(DZ_FRAME_SHUTDOWN, dz_strategy_id(ctx_));
+    const void* shutdown = dz_next_event(ctx_);
+    ASSERT_NE(shutdown, nullptr);
+    EXPECT_EQ(FrameView(static_cast<const std::byte*>(shutdown)).type(), DZ_FRAME_SHUTDOWN);
+    EXPECT_EQ(dz_next_event(ctx_), nullptr);
 }
 
 }  // namespace
