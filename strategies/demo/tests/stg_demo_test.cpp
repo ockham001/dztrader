@@ -9,6 +9,9 @@
  * writer.notify_subscribers() 唤不醒策略, 故直连 "stg.<策略名>" 信号量)。
  *
  * 不测内部函数/私有状态: 断言只落在 OUTPUT_UI 文本行与进程退出码上。
+ *
+ * 唯一例外: dz_init 失败诊断在进程边界验证 (运行示例子进程并捕获 stderr) ——
+ * dz_diag 由动态 SDK 实现, Windows 上 DLL 的静态 CRT stderr 无法被进程内截获。
  */
 #include <gtest/gtest.h>
 
@@ -33,7 +36,10 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -71,6 +77,15 @@ void create_md_channel(const std::filesystem::path& shm_dir) {
         .prefetch_memory = false,
     };
     (void)dztrader::shm::ChannelMeta::open_or_create(cfg);
+}
+
+/// 示例可执行文件路径: 测试 exe 在 <out>/tests/, 示例在 <out>/ (Windows 补 .exe)
+std::filesystem::path demo_exe_path() {
+    auto path = dztrader::this_process::exe_dir().parent_path() / "stg_demo";
+#ifdef _WIN32
+    path += ".exe";
+#endif
+    return path;
 }
 
 /// 文本拆行 (md dump 单帧多行); 空文本返回空
@@ -893,11 +908,21 @@ protected:
 };
 
 TEST_F(StgDemoInitFailureTest, InitFailureIsDiagnosedOnStderr) {
-    testing::internal::CaptureStderr();
-    dztrader::demo::DemoStrategy strategy;
-    const int32_t rc = dztrader::run_strategy(strategy);
-    const std::string diagnostics = testing::internal::GetCapturedStderr();
-    EXPECT_NE(rc, 0);
+    // dz_diag 由动态 SDK 实现 (Windows 上 DLL 自带静态 CRT): 进程内
+    // CaptureStderr 只能截获测试 exe 的 CRT, 截不到 DLL 的 stderr。
+    // 故在进程边界验证 —— 与 master 捕获策略 stderr 的真实路径一致:
+    // 无事件通道 -> dz_init 失败 -> on_error 经 dz_diag 输出诊断后非零退出。
+    const auto err_path = home_ / "stderr.txt";
+    const auto out_path = home_ / "stdout.txt";
+    const std::string command = "\"" + demo_exe_path().string() + "\" > \"" + out_path.string() +
+                                "\" 2> \"" + err_path.string() + "\"";
+    const int rc = std::system(command.c_str());
+    EXPECT_NE(rc, 0) << "stg_demo should exit non-zero when dz_init fails";
+
+    std::ifstream err_stream(err_path, std::ios::binary);
+    ASSERT_TRUE(err_stream) << "open " << err_path << " failed";
+    const std::string diagnostics((std::istreambuf_iterator<char>(err_stream)),
+                                  std::istreambuf_iterator<char>());
     EXPECT_NE(diagnostics.find("strategy init failed"), std::string::npos) << diagnostics;
 }
 
