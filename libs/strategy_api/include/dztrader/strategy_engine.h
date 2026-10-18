@@ -33,11 +33,11 @@
  *   - 可选 int32_t exit_code() 指定进程退出码 (默认 0, 建议 0-127;
  *     只接受精确 int32_t 返回值, 不做隐式收窄); 退出时 stdout 输出一行
  *     strategy exit | reason=self code=N
- *   - 后台线程请求退出: 置用户侧 atomic 标志 + dz_notify_self 唤醒引擎等待
+ *   - 后台线程请求退出: 置用户侧 atomic 标志 + dz_wakeup 唤醒引擎等待
  *   - master 语义: 0=Stopped 不重启; 非 0=Crashed (策略类默认 restart 关闭)
  *
  * 线程模型 (api.h 句柄契约: SDK 非线程安全):
- *   - 全部回调运行于唯一事件循环线程; 除 dz_notify_self 外, 任何 dz_* C API
+ *   - 全部回调运行于唯一事件循环线程; 除 dz_wakeup 外, 任何 dz_* C API
  *     只能在回调内 (即引擎线程) 调用, 用户自建线程须在进程退出前 join
  *   - 回调参数是 SHM/SDK 缓冲的引用, 仅在本次回调返回前有效, 需留存请拷贝
  *

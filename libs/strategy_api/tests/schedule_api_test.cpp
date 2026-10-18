@@ -142,8 +142,8 @@ protected:
         return nullptr;
     }
 
-    /// 兜底线程: timeout 后 notify 唤醒 dz_wait, 防实现缺陷导致测试挂死。
-    /// done 置位后线程尽快退出 (不 notify)。
+    /// 兜底线程: timeout 后 wakeup 唤醒 dz_wait, 防实现缺陷导致测试挂死。
+    /// done 置位后线程尽快退出 (不 wakeup)。
     std::thread rescue_wait(std::atomic<bool>& done, uint32_t timeout_ms) {
         return std::thread([&done, this, timeout_ms] {
             const int steps = static_cast<int>(timeout_ms / 100);
@@ -153,7 +153,7 @@ protected:
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
-            dz_notify_self(ctx_);
+            dz_wakeup(ctx_);
         });
     }
 };

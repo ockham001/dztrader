@@ -281,18 +281,18 @@ TEST(DzErrstrTest, MapsDbAndNotImplementedCodes) {
     EXPECT_STREQ(dz_errstr(-99999), "unknown error");
 }
 
-TEST_F(TradeApiTest, NotifySelfWakesWait) {
-    dz_notify_self(ctx_);  // 投递一次信号量
-    dz_wait(ctx_);         // 已有计数应立即返回 (挂起即失败)
+TEST_F(TradeApiTest, WakeupWakesWait) {
+    dz_wakeup(ctx_);  // 投递一次信号量
+    dz_wait(ctx_);    // 已有计数应立即返回 (挂起即失败)
 }
 
-TEST_F(TradeApiTest, WaitReturnsAfterNotify) {
-    std::thread notifier([this]() {
+TEST_F(TradeApiTest, WaitReturnsAfterWakeup) {
+    std::thread waker([this]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        dz_notify_self(ctx_);
+        dz_wakeup(ctx_);
     });
-    dz_wait(ctx_);  // 阻塞至 notifier 投递信号量
-    notifier.join();
+    dz_wait(ctx_);  // 阻塞至 waker 投递信号量
+    waker.join();
 }
 
 }  // namespace

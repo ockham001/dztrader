@@ -69,6 +69,17 @@ DZ_API void dz_release(DzContext* ctx);
 
 DZ_API const char* dz_md_source_name(DzContext* ctx);
 
+/* ── 事件循环 ──
+ * 标准主循环（C++ 引擎 run_strategy 即此形态）：
+ *   for (;;) {
+ *       while ((frame = dz_next_md(ctx)) != NULL) handle_md(frame);
+ *       while ((frame = dz_next_event(ctx)) != NULL) handle_event(frame);
+ *       dz_wait(ctx);   // 双通道取空后阻塞，直到新数据到达或定时器到期
+ *   }
+ * dz_wait 只等待不取帧；dz_next_md/dz_next_event 非阻塞推进游标；
+ * 定时器推进唯一在 dz_next_event（无用户帧时触发并返回定时器帧）；
+ * 后台线程置用户退出标志后可调 dz_wakeup(ctx) 唤醒事件循环。 */
+
 /**
  * @brief 阻塞等待，直到有新数据可读或最近一个定时器到期
  *
@@ -130,16 +141,16 @@ DZ_API const void* dz_next_event(DzContext* ctx);
 DZ_API const void* dz_next_md(DzContext* ctx);
 
 /**
- * @brief 自通知：唤醒自身信号量
+ * @brief 唤醒事件循环：post 自身信号量
  *
- * 策略被唤醒后自行检查共享内存通道是否有新数据。
+ * 后台线程置位用户退出标志后调用，可让阻塞中的 dz_wait 立即返回；
+ * 被唤醒后策略自行检查共享内存通道是否有新数据。
  *
  * 线程安全：可在任意线程调用（底层 sem_post/ReleaseSemaphore 线程安全），
  * 前提是 ctx 在调用期间存活（子线程 join 需先于 dz_release）。
  * 典型用法：后台线程（定时器/数据线程）唤醒主事件循环。
- *
  */
-DZ_API void dz_notify_self(DzContext* ctx);
+DZ_API void dz_wakeup(DzContext* ctx);
 
 /* ── 定时器 ──
  *

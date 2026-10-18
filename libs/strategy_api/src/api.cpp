@@ -1090,7 +1090,7 @@ DZ_API const void* dz_next_md(DzContext* ctx) {
 
 DZ_API const char* dz_md_source_name(DzContext* ctx) { return ctx->md_source_name; }
 
-DZ_API void dz_notify_self(DzContext* ctx) { ctx->sem.notify(); }
+DZ_API void dz_wakeup(DzContext* ctx) { ctx->sem.notify(); }
 
 /* ── 定时器 ── */
 
