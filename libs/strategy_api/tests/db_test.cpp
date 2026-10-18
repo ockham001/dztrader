@@ -494,13 +494,19 @@ TEST_F(IngestDbCacheTest, ReusesHandleAndReopensOnConfigChange) {
     EXPECT_EQ(first.db, again.db);  // 同配置命中缓存
     EXPECT_EQ(1u, dztrader::strategy_api_internal::ingest_open_attempts_for_test());  // 命中不重开
 
+    // 配置变化 → 关旧句柄后重开。用打开次数断言而非指针不等: 旧句柄释放后
+    // 分配器可能把同一地址复用给新句柄 (Windows MSVC 已实测偶发)。
     const auto changed = dztrader::strategy_api_internal::acquire_ingest_db(config_b);
     ASSERT_NE(nullptr, changed.db);
-    EXPECT_NE(first.db, changed.db);  // 配置变化 → 重开
+    EXPECT_EQ(2u, dztrader::strategy_api_internal::ingest_open_attempts_for_test());
 
     const auto back = dztrader::strategy_api_internal::acquire_ingest_db(config_a);
     ASSERT_NE(nullptr, back.db);
-    EXPECT_NE(changed.db, back.db);  // 同时只有一份句柄 (旧句柄已关)
+    EXPECT_EQ(3u, dztrader::strategy_api_internal::ingest_open_attempts_for_test());
+    // 命中缓存不再打开 (同时只有一份句柄, 旧句柄已关)
+    const auto back_again = dztrader::strategy_api_internal::acquire_ingest_db(config_a);
+    EXPECT_EQ(back.db, back_again.db);
+    EXPECT_EQ(3u, dztrader::strategy_api_internal::ingest_open_attempts_for_test());
 }
 
 // 关闭退避 (0ms) 时保持"失败不缓存, 每次调用重试一次, 同一配置只报一次"的原语义。
