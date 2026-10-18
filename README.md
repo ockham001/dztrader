@@ -13,7 +13,7 @@
 - **多进程架构**：一策略一进程，崩溃隔离
 - **共享内存 IPC**：零拷贝进程间通信
 - **多接口架构**：已实现 CTP（行情 + 交易）；XTP 等 20+ 券商 API 为规划项
-- **C/C++ 策略接口**：C 接口保证 ABI 兼容，可直接用 C 开发；C++ 提供 header-only 引擎（`run_strategy`/`StrategyBase`，见 `dztrader/strategy_engine.h`）；策略模板/脚手架后续按需补充
+- **C/C++ 策略接口**：C 接口保证 ABI 兼容（`dz_*` 前缀、`DZ_API` 导出）；C++ 提供 header-only 引擎（`run_strategy`/`StrategyBase`，见 `dztrader/strategy_engine.h`）；C 层纯 C 编译支持随 #7 落地（当前仅按 C++20 编译验证）；策略模板/脚手架后续按需补充
 - **Python 绑定**：pybind11，规划中（尚未实现）
 - **7×24 运行**：健壮的进程管理、崩溃恢复、过期数据保护
 - **跨平台**：Windows（MSVC 2022）和 Linux（GCC 13）
@@ -136,7 +136,7 @@
 {"name": "stg_demo", "exe": "<绝对路径>/stg_demo", "md_source": "dzmd_ctp"}
 ```
 
-示例源码只含 `strategies/demo/` 下的文件、仅链接策略 SDK，不依赖网关/WebUI 内部库。UI 输入/输出的端到端验证见 `strategies/demo/tests/stg_demo_test.cpp`（帧边界进程内测试）与冒烟测试。
+示例策略本体（`stg_demo.cpp` + `stg_demo_strategy.*`）只 include 策略 SDK 公开头文件、链接**自包含动态库** `dzstrategy_sdk`（Linux `libdzstrategy_sdk.so` / Windows `dzstrategy_sdk.dll` + 导入库），不定义静态链接宏 `DZ_API_COMPILE_STATIC`、不接触任何第三方库，也不依赖网关/WebUI 内部库；运行时动态库与策略可执行位于同一目录（Linux `$ORIGIN` rpath，Windows 加载器搜索 exe 所在目录）。UI 输入/输出的端到端验证见 `strategies/demo/tests/stg_demo_test.cpp`（帧边界进程内测试，测试侧额外链接内部库作探针）与冒烟测试。
 
 ## 安装与部署
 
