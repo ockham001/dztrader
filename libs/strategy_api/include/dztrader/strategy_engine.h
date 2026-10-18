@@ -23,7 +23,7 @@
  *     转发, 否则 stderr 诊断行), 进程继续运行; 消息带回调名
  *   - on_error 可能在 on_start 之前被调用 (dz_init 失败时, 用于报告初始化错误)
  *   - DZ_FRAME_SHUTDOWN 先置停止标志再调 on_stop, on_stop 为
- *     进程内最后一个用户回调; on_stop 抛异常只走 dz_diag (不触发 on_error),
+ *     进程内最后一个用户回调; on_stop 抛异常只写 stderr 诊断行 (不触发 on_error),
  *     不影响退出
  *
  * 自主退出 (可选):
@@ -130,7 +130,7 @@ template <typename T>
 concept HasOnAccountStatus =
     requires(T t, const DzAccountStatus& status) { t.on_account_status(status); };
 
-/* ── 异常报告: 分发层捕获 → report_error 转发/兜底 → dz_diag (导出诊断输出) 终端。
+/* ── 异常报告: 分发层捕获 → report_error 转发/兜底 → stderr 诊断行 (master 捕获转发进日志)。
       report_error noexcept: 用户 on_error 再抛异常也在此消化,
       异常不逃逸出引擎。 ── */
 
@@ -140,15 +140,16 @@ void report_error(StrategyT& strategy, DzErrorCode errcode, std::string_view mes
         try {
             strategy.on_error(errcode, message);
         } catch (const std::exception& e) {
-            dz_diag(std::format("on_error threw | reason=\"{}\" original=\"{}\"", e.what(), message)
-                        .c_str());
+            std::cerr << std::format("on_error threw | reason=\"{}\" original=\"{}\"", e.what(),
+                                     message)
+                      << '\n';
         } catch (...) {
-            dz_diag(
-                std::format("on_error threw unknown exception | original=\"{}\"", message).c_str());
+            std::cerr << std::format("on_error threw unknown exception | original=\"{}\"", message)
+                      << '\n';
         }
     } else {
-        dz_diag(
-            std::format("callback exception | code={} message=\"{}\"", errcode, message).c_str());
+        std::cerr << std::format("callback exception | code={} message=\"{}\"", errcode, message)
+                  << '\n';
     }
 }
 
@@ -201,10 +202,11 @@ inline void diag_payload_size_mismatch(const std::byte* frame,
     }
     reported = true;
     const DzFrameHeader& hdr = frame_header(frame);
-    dz_diag(std::format("frame dropped | reason=payload_size_mismatch frame_type={} frame_size={} "
-                        "expected_payload_size={}",
-                        hdr.frame_type, hdr.frame_size, expected_payload_size)
-                .c_str());
+    std::cerr << std::format(
+                     "frame dropped | reason=payload_size_mismatch frame_type={} frame_size={} "
+                     "expected_payload_size={}",
+                     hdr.frame_type, hdr.frame_size, expected_payload_size)
+              << '\n';
 }
 
 /// 回调异常上报: 消息带回调名; 实现 on_error 则转发, 否则 stderr 诊断行
@@ -225,7 +227,7 @@ void report_callback_unknown(StrategyT& strategy, const char* callback) noexcept
             .c_str());
 }
 
-/// on_stop 派发: 异常只走 dz_diag, 不触发 on_error
+/// on_stop 派发: 异常只写 stderr 诊断行, 不触发 on_error
 /// (保证 on_stop 是进程内最后一个用户回调)
 template <typename StrategyT>
 void dispatch_on_stop(StrategyT& strategy) noexcept {
@@ -233,9 +235,9 @@ void dispatch_on_stop(StrategyT& strategy) noexcept {
         try {
             strategy.on_stop();
         } catch (const std::exception& e) {
-            dz_diag(std::format("on_stop threw | error=\"{}\"", e.what()).c_str());
+            std::cerr << std::format("on_stop threw | error=\"{}\"", e.what()) << '\n';
         } catch (...) {
-            dz_diag("on_stop threw | error=\"unknown exception\"");
+            std::cerr << "on_stop threw | error=\"unknown exception\"" << '\n';
         }
     }
 }
@@ -308,27 +310,29 @@ void dispatch_ui_input(StrategyT& strategy, const std::byte* frame) noexcept {
     constexpr size_t kMinSize = sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader);
     const DzFrameHeader& hdr = frame_header(frame);
     if (hdr.frame_size < kMinSize) [[unlikely]] {
-        dz_diag(std::format("ui input frame dropped | reason=frame_too_short frame_size={}",
-                            hdr.frame_size)
-                    .c_str());
+        std::cerr << std::format("ui input frame dropped | reason=frame_too_short frame_size={}",
+                                 hdr.frame_size)
+                  << '\n';
         return;
     }
     const auto& ext =
         *std::launder(reinterpret_cast<const DzExtInstFrameHeader*>(frame + sizeof(DzFrameHeader)));
     const size_t max_data_size = static_cast<size_t>(hdr.frame_size) - kMinSize;
     if (ext.data_size > max_data_size) [[unlikely]] {
-        dz_diag(std::format("ui input frame dropped | reason=payload_out_of_frame frame_size={} "
-                            "data_size={}",
-                            hdr.frame_size, ext.data_size)
-                    .c_str());
+        std::cerr << std::format(
+                         "ui input frame dropped | reason=payload_out_of_frame frame_size={} "
+                         "data_size={}",
+                         hdr.frame_size, ext.data_size)
+                  << '\n';
         return;
     }
     const size_t instance_id_len = bounded_strlen(ext.instance_id, sizeof(DzInstanceId));
     if (instance_id_len == sizeof(DzInstanceId)) [[unlikely]] {
-        dz_diag(std::format("ui input frame dropped | reason=instance_id_not_terminated "
-                            "frame_size={}",
-                            hdr.frame_size)
-                    .c_str());
+        std::cerr << std::format(
+                         "ui input frame dropped | reason=instance_id_not_terminated "
+                         "frame_size={}",
+                         hdr.frame_size)
+                  << '\n';
         return;
     }
     const auto* data = reinterpret_cast<const char*>(frame + kMinSize);
@@ -417,10 +421,10 @@ void handle_event(StrategyT& strategy, const std::byte* frame, bool& running) no
                 sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader)) [[unlikely]] {
                 // 畸形 SHUTDOWN 仍然退出 (fail-safe): 通道已不可信, 停比继续安全。
                 // 公开路径下 SDK 分发层已先丢弃畸形帧, 本分支仅防御直接调用 handle_event。
-                dz_diag(
-                    std::format("shutdown frame malformed | reason=frame_too_short frame_size={}",
-                                frame_header(frame).frame_size)
-                        .c_str());
+                std::cerr << std::format(
+                                 "shutdown frame malformed | reason=frame_too_short frame_size={}",
+                                 frame_header(frame).frame_size)
+                          << '\n';
             }
             dispatch_on_stop(strategy);
             break;
@@ -479,8 +483,7 @@ void pump_once(StrategyT& strategy,
 
 /* ── 启动自检与生命周期回调 ── */
 
-/// 启动自检: 正常启动的一次性信息, 走 stdout (master 以 info 级转发),
-/// 不带 [dzsdk] 诊断前缀 (该前缀专属 stderr 诊断 dz_diag)。
+/// 启动自检: 正常启动的一次性信息, 走 stdout (master 以 info 级转发)。
 template <typename StrategyT>
 void report_start() noexcept {
     std::cout << std::format(

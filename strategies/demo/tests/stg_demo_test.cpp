@@ -10,8 +10,8 @@
  *
  * 不测内部函数/私有状态: 断言只落在 OUTPUT_UI 文本行与进程退出码上。
  *
- * 唯一例外: dz_init 失败诊断在进程边界验证 (运行示例子进程并捕获 stderr) ——
- * dz_diag 由动态 SDK 实现, Windows 上 DLL 的静态 CRT stderr 无法被进程内截获。
+ * 唯一例外: dz_init 失败诊断在进程边界验证 (运行示例子进程并捕获 stderr),
+ * 与 master 捕获子进程 stderr 的真实路径一致。
  */
 #include <gtest/gtest.h>
 
@@ -912,10 +912,8 @@ protected:
 };
 
 TEST_F(StgDemoInitFailureTest, InitFailureIsDiagnosedOnStderr) {
-    // dz_diag 由动态 SDK 实现 (Windows 上 DLL 自带静态 CRT): 进程内
-    // CaptureStderr 只能截获测试 exe 的 CRT, 截不到 DLL 的 stderr。
-    // 故在进程边界验证 —— 与 master 捕获策略 stderr 的真实路径一致:
-    // 无事件通道 -> dz_init 失败 -> on_error 经 dz_diag 输出诊断后非零退出。
+    // 在进程边界验证 —— 与 master 捕获策略 stderr 的真实路径一致:
+    // 无事件通道 -> dz_init 失败 -> on_error 写 stderr 诊断后非零退出。
     // boost::process::v2 直接把子进程 stderr 重定向到文件 (不经 shell, 跨平台)。
     const auto err_path = home_ / "stderr.txt";
     std::FILE* err_file = std::fopen(err_path.string().c_str(), "wb");

@@ -27,6 +27,7 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <iostream>
 #include <limits>
 #include <optional>
 #include <set>
@@ -155,11 +156,11 @@ struct DzContext {
     /// 超槽 (槽容量 = 联合最大 payload) 记 ERROR 并返回 false (宁缺勿乱)。
     bool enqueue_replay_frame(DzFrameType type, const void* payload, uint32_t payload_size) {
         if (replay_frame_count >= REPLAY_FRAME_SLOTS) {
-            dz_diag("replay frame buffer overflow, backfill truncated");
+            std::cerr << "replay frame buffer overflow, backfill truncated" << '\n';
             return false;
         }
         if (payload_size > REPLAY_FRAME_MAX_PAYLOAD) {
-            dz_diag("replay frame payload too large, frame dropped");
+            std::cerr << "replay frame payload too large, frame dropped" << '\n';
             return false;
         }
         auto& slot = replay_frames[replay_frame_head];
@@ -489,11 +490,11 @@ private:
             }
             event_writer.close_old_pages();
         } catch (const dztrader::Exception& e) {
-            dz_diag((std::string("event channel preload failed: ") + e.what()).c_str());
+            std::cerr << (std::string("event channel preload failed: ") + e.what()) << '\n';
         } catch (const std::exception& e) {
-            dz_diag((std::string("event channel preload failed: ") + e.what()).c_str());
+            std::cerr << (std::string("event channel preload failed: ") + e.what()) << '\n';
         } catch (...) {
-            dz_diag("event channel preload failed: unknown exception");
+            std::cerr << "event channel preload failed: unknown exception" << '\n';
         }
     }
 
@@ -508,11 +509,11 @@ private:
             }
             md_reader.release_old_pages();
         } catch (const dztrader::Exception& e) {
-            dz_diag((std::string("md channel preload failed: ") + e.what()).c_str());
+            std::cerr << (std::string("md channel preload failed: ") + e.what()) << '\n';
         } catch (const std::exception& e) {
-            dz_diag((std::string("md channel preload failed: ") + e.what()).c_str());
+            std::cerr << (std::string("md channel preload failed: ") + e.what()) << '\n';
         } catch (...) {
-            dz_diag("md channel preload failed: unknown exception");
+            std::cerr << "md channel preload failed: unknown exception" << '\n';
         }
     }
 

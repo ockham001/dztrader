@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <format>
+#include <iostream>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -269,10 +270,10 @@ void DemoStrategy::on_account_status(const DzAccountStatus& status) {
 void DemoStrategy::on_error(DzErrorCode errcode, std::string_view message) {
     if (ctx_ == nullptr) {
         // dz_init 失败时引擎在 on_start 之前调用 on_error: 无会话即无 UI 通道,
-        // 用 SDK 诊断通道 (stderr, 英文) 保留唯一错误信息, 否则进程只剩退出码。
-        dz_diag(std::format("strategy init failed | code={} message=\"{}\"",
-                            static_cast<int>(errcode), message)
-                    .c_str());
+        // 写 stderr (英文) 保留唯一错误信息, 由 master 捕获转发进日志, 否则进程只剩退出码。
+        std::cerr << std::format("strategy init failed | code={} message=\"{}\"",
+                                 static_cast<int>(errcode), message)
+                  << '\n';
         return;
     }
     emit_line(std::format("[error] source=engine errcode={} message=\"{}\" 引擎回调异常",
@@ -529,11 +530,11 @@ void DemoStrategy::emit_line(std::string_view line) {
     }
     const std::string text(line);  // dz_output_ui 要求 NUL 结尾
     if (!dz_output_ui(ctx_, text.c_str())) {
-        // 演示工具不中断命令处理; 诊断走 SDK stderr (英文, 符合日志文本规则)。
+        // 演示工具不中断命令处理; 诊断写 stderr (英文, 符合日志文本规则)。
         // 注意: 超页截断由 SDK 按契约处理且返回 true, 不会走到这里。
-        dz_diag(std::format("ui output failed | errcode={} message=\"{}\"",
-                            static_cast<int>(dz_errcode()), dz_errmsg())
-                    .c_str());
+        std::cerr << std::format("ui output failed | errcode={} message=\"{}\"",
+                                 static_cast<int>(dz_errcode()), dz_errmsg())
+                  << '\n';
     }
 }
 

@@ -2,7 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdio>
+#include <iostream>
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
@@ -128,10 +128,11 @@ void report_non_sqlite_backend_once(const std::string& backend) {
         return;
     }
     reported = backend;
-    dz_diag(std::format("db backend is not sqlite, platform write side not migrated in this "
-                        "release, verify writer backend matches | backend={}",
-                        backend)
-                .c_str());
+    std::cerr << std::format(
+                     "db backend is not sqlite, platform write side not migrated in this "
+                     "release, verify writer backend matches | backend={}",
+                     backend)
+              << '\n';
 }
 
 /// 配置解析失败一次性诊断 (FIX-3): 配置错误 (如 database.json 损坏) 不是"库不存在",
@@ -144,10 +145,11 @@ void report_ingest_config_error_once(const std::string& error) {
         return;
     }
     reported = error;
-    dz_diag(std::format("td ingest db config invalid, backfill disabled (degraded, no "
-                        "filtering) | error=\"{}\"",
-                        error)
-                .c_str());
+    std::cerr << std::format(
+                     "td ingest db config invalid, backfill disabled (degraded, no "
+                     "filtering) | error=\"{}\"",
+                     error)
+              << '\n';
 }
 
 /// 诊断用的目标描述: 只含 sqlite path 或 mysql host:port — 绝不输出 password (FIX-3)。
@@ -192,10 +194,11 @@ DzDatabase* open_td_db() {
         return acquired.db;
     }
     if (acquired.report) {
-        dz_diag(std::format("td ingest db unavailable (degraded, no filtering) | backend={} "
-                            "target=\"{}\" error=\"{}\"",
-                            config.backend, config_target(config), acquired.error)
-                    .c_str());
+        std::cerr << std::format(
+                         "td ingest db unavailable (degraded, no filtering) | backend={} "
+                         "target=\"{}\" error=\"{}\"",
+                         config.backend, config_target(config), acquired.error)
+                  << '\n';
     }
     return nullptr;
 }
@@ -235,15 +238,15 @@ void load_all_watermarks(DzContext* ctx) {
             ctx->ingest_gate.set_watermark(acct, w);
         }
         if (!max_seq.empty()) {
-            dz_diag(
-                std::format("td ingest watermarks loaded | accounts={}", max_seq.size()).c_str());
+            std::cerr << std::format("td ingest watermarks loaded | accounts={}", max_seq.size())
+                      << '\n';
         }
     } catch (const std::exception& e) {
-        dz_diag(
-            (std::string("td ingest watermark load failed (degraded, no filtering): ") + e.what())
-                .c_str());
+        std::cerr << (std::string("td ingest watermark load failed (degraded, no filtering): ") +
+                      e.what())
+                  << '\n';
     } catch (...) {
-        dz_diag("td ingest watermark load failed (degraded, no filtering)");
+        std::cerr << "td ingest watermark load failed (degraded, no filtering)" << '\n';
     }
 }
 
@@ -273,10 +276,11 @@ uint64_t rebuild_watermark(const std::string& account_id) {
         }
         return max_seq;
     } catch (const std::exception& e) {
-        dz_diag((std::string("td ingest watermark rebuild failed (reset to empty): ") + e.what())
-                    .c_str());
+        std::cerr << (std::string("td ingest watermark rebuild failed (reset to empty): ") +
+                      e.what())
+                  << '\n';
     } catch (...) {
-        dz_diag("td ingest watermark rebuild failed (reset to empty)");
+        std::cerr << "td ingest watermark rebuild failed (reset to empty)" << '\n';
     }
     return 0;
 }
@@ -373,10 +377,11 @@ void on_account_status_gate_reset(DzContext* ctx, const DzAccountStatus& st) {
     // 作废在途 gap 重试: 旧 regime 的回补区间在新水位下无意义, 暂存帧/触发帧不得在
     // 重置后补发 (否则旧状态覆盖新状态)。
     if (ctx->gap_retry.active && ctx->gap_retry.account_id == account) {
-        dz_diag("ingest gap retry cancelled on account status flip to ready");
+        std::cerr << "ingest gap retry cancelled on account status flip to ready" << '\n';
         ctx->gap_retry.clear();
     }
-    dz_diag((std::string("ingest gate reset on 2018 offline->ready: account=") + account).c_str());
+    std::cerr << (std::string("ingest gate reset on 2018 offline->ready: account=") + account)
+              << '\n';
 }
 
 /// 断档回补重试上限 (契约 td-data-sync §5.2 "几十 ms 短重试; 耗尽放行"):
@@ -407,7 +412,7 @@ GapBackfillRows query_gap_tables(DzDatabase* db,
             *ok = true;
             return strategy_api_internal::db_query_seq_range(db, resource, account_id, from, to);
         } catch (const std::exception& e) {
-            dz_diag((std::string("ingest backfill table skipped: ") + e.what()).c_str());
+            std::cerr << (std::string("ingest backfill table skipped: ") + e.what()) << '\n';
             return DbQueryResult{};
         }
     };
@@ -623,13 +628,13 @@ bool release_held_trigger(DzContext* ctx) {
         // 防御: 无暂存触发帧 (理论不可达) — 仍派发暂存帧, 不整体跳过
     } else if (!ctx->enqueue_replay_frame(rt.trigger_type, rt.trigger_payload.data(),
                                           static_cast<uint32_t>(rt.trigger_payload.size()))) {
-        dz_diag("ingest gap retry trigger release dropped (replay buffer full)");
+        std::cerr << "ingest gap retry trigger release dropped (replay buffer full)" << '\n';
         ok = false;
     }
     for (const auto& sf : rt.staged_frames) {
         if (!ctx->enqueue_replay_frame(sf.type, sf.payload.data(),
                                        static_cast<uint32_t>(sf.payload.size()))) {
-            dz_diag("ingest gap retry staged frame dropped (replay buffer full)");
+            std::cerr << "ingest gap retry staged frame dropped (replay buffer full)" << '\n';
             ok = false;
         }
     }
@@ -660,19 +665,21 @@ void drive_gap_retry(DzContext* ctx) {
         }
     }
     if (covered && enqueued) {
-        dz_diag("ingest gap backfill retry covered, trigger released");
+        std::cerr << "ingest gap backfill retry covered, trigger released" << '\n';
         rt.clear();
         return;
     }
     if (covered && !enqueued) {
         // 覆盖但缓冲溢出 (回补被截断): 与首次溢出语义一致, 不再重试
         // (缓冲已满, 再查同区间仍溢出)。
-        dz_diag("ingest gap backfill retry overflow, give up retry");
+        std::cerr << "ingest gap backfill retry overflow, give up retry" << '\n';
         rt.clear();
         return;
     }
     if (++rt.attempts >= kGapRetryMax) {
-        dz_diag("ingest gap backfill retry exhausted, release trigger frame (treat as crash loss)");
+        std::cerr
+            << "ingest gap backfill retry exhausted, release trigger frame (treat as crash loss)"
+            << '\n';
         release_held_trigger(ctx);
         rt.clear();
     }
@@ -699,7 +706,7 @@ bool handle_gap(DzContext* ctx, const std::byte* trigger_frame) {
             if (!ctx->gap_retry.stage(
                     view.type(), trigger_frame + sizeof(DzFrameHeader),
                     static_cast<uint32_t>(view.frame_size() - sizeof(DzFrameHeader)))) {
-                dz_diag("ingest gap retry staged frame overflow, drop frame");
+                std::cerr << "ingest gap retry staged frame overflow, drop frame" << '\n';
             }
         }
         // 每次调用顺带驱动一次重试 (无新 gap — gate 的 pending_gap 已被首次尝试消费)。
@@ -712,7 +719,7 @@ bool handle_gap(DzContext* ctx, const std::byte* trigger_frame) {
     }
     DzDatabase* db = open_td_db();
     if (db == nullptr) {
-        dz_diag("ingest gap but td db unavailable, skip backfill");
+        std::cerr << "ingest gap but td db unavailable, skip backfill" << '\n';
         return true;  // 无库: 不拦截触发帧 (降级全放行语义)
     }
     GapBackfillRows rows;
@@ -725,7 +732,7 @@ bool handle_gap(DzContext* ctx, const std::byte* trigger_frame) {
                                  trigger_frame + sizeof(DzFrameHeader),
                                  static_cast<uint32_t>(view.frame_size() - sizeof(DzFrameHeader)));
         }
-        dz_diag("ingest gap backfill incomplete (rows not committed yet), will retry");
+        std::cerr << "ingest gap backfill incomplete (rows not committed yet), will retry" << '\n';
         return false;
     }
     if (!enqueue_gap_rows(ctx, rows)) {
@@ -747,7 +754,7 @@ bool ingest_td_frame(DzContext* ctx, const std::byte* frame) {
     // 暂存/回放路径会按全量 payload memcpy 越界写坏相邻槽。ingest 层统一加上界钳制:
     // payload 超 replay 槽联合容量 (最大 Dz*Report) 即拦截 + 日志 (宁缺勿乱)。
     if (view.frame_size() > sizeof(DzFrameHeader) + DzContext::REPLAY_FRAME_MAX_PAYLOAD) {
-        dz_diag("ingest td frame payload exceeds replay slot capacity, frame dropped");
+        std::cerr << "ingest td frame payload exceeds replay slot capacity, frame dropped" << '\n';
         return false;
     }
     const auto& v = view.payload<ReportT>();
@@ -757,7 +764,7 @@ bool ingest_td_frame(DzContext* ctx, const std::byte* frame) {
         // 终检发现 D: 重置路径作废该账户在途 gap 重试 — 旧 regime 的回补区间
         // (回补行/触发帧/暂存帧) 在新水位下无意义, 不得在重置后补发 (旧状态覆盖新状态)。
         if (ctx->gap_retry.active && ctx->gap_retry.account_id == v.account_id) {
-            dz_diag("ingest gap retry cancelled on account reset");
+            std::cerr << "ingest gap retry cancelled on account reset" << '\n';
             ctx->gap_retry.clear();
         }
     }
@@ -848,25 +855,27 @@ bool valid_ext_inst_frame(const std::byte* frame, const char* what) noexcept {
     constexpr std::size_t kMinSize = sizeof(DzFrameHeader) + sizeof(DzExtInstFrameHeader);
     const shm::FrameView view(frame);
     if (view.frame_size() < kMinSize) {
-        dz_diag(std::format("frame dropped | reason=frame_too_short frame={} frame_size={}", what,
-                            view.frame_size())
-                    .c_str());
+        std::cerr << std::format("frame dropped | reason=frame_too_short frame={} frame_size={}",
+                                 what, view.frame_size())
+                  << '\n';
         return false;
     }
     const auto& ext = view.ext_inst_header();
     const std::size_t max_data_size = static_cast<std::size_t>(view.frame_size()) - kMinSize;
     if (ext.data_size > max_data_size) {
-        dz_diag(std::format("frame dropped | reason=payload_out_of_frame frame={} frame_size={} "
-                            "data_size={}",
-                            what, view.frame_size(), ext.data_size)
-                    .c_str());
+        std::cerr << std::format(
+                         "frame dropped | reason=payload_out_of_frame frame={} frame_size={} "
+                         "data_size={}",
+                         what, view.frame_size(), ext.data_size)
+                  << '\n';
         return false;
     }
     if (bounded_cstr_len(ext.instance_id, sizeof(DzInstanceId)) == sizeof(DzInstanceId)) {
-        dz_diag(std::format("frame dropped | reason=instance_id_not_terminated frame={} "
-                            "frame_size={}",
-                            what, view.frame_size())
-                    .c_str());
+        std::cerr << std::format(
+                         "frame dropped | reason=instance_id_not_terminated frame={} "
+                         "frame_size={}",
+                         what, view.frame_size())
+                  << '\n';
         return false;
     }
     return true;
@@ -1017,9 +1026,9 @@ DZ_API const void* dz_next_event(DzContext* ctx) {
         try {
             drive_gap_retry(ctx);
         } catch (const std::exception& e) {
-            dz_diag((std::string("gap retry drive failed: ") + e.what()).c_str());
+            std::cerr << (std::string("gap retry drive failed: ") + e.what()) << '\n';
         } catch (...) {
-            dz_diag("gap retry drive failed: unknown exception");
+            std::cerr << "gap retry drive failed: unknown exception" << '\n';
         }
     }
     for (;;) {
@@ -1055,9 +1064,9 @@ DZ_API const void* dz_next_event(DzContext* ctx) {
                 return frame;  // 用户帧最高优先
             }
         } catch (const std::exception& e) {
-            dz_diag((std::string("frame dispatch failed: ") + e.what()).c_str());
+            std::cerr << (std::string("frame dispatch failed: ") + e.what()) << '\n';
         } catch (...) {
-            dz_diag("frame dispatch failed: unknown exception");
+            std::cerr << "frame dispatch failed: unknown exception" << '\n';
         }
         if (++internal_count >= kMaxInternalFramesPerCall) {
             break;  // 连续 32 条内部帧: 让位, 防饿死 dz_next_md
@@ -1067,9 +1076,9 @@ DZ_API const void* dz_next_event(DzContext* ctx) {
     try {
         ctx->tick_timers();
     } catch (const std::exception& e) {
-        dz_diag((std::string("timer tick failed: ") + e.what()).c_str());
+        std::cerr << (std::string("timer tick failed: ") + e.what()) << '\n';
     } catch (...) {
-        dz_diag("timer tick failed: unknown exception");
+        std::cerr << "timer tick failed: unknown exception" << '\n';
     }
     return ctx->pop_timer_frame();
 }
@@ -1390,11 +1399,11 @@ void on_md_started_internal(DzContext* ctx, const std::byte* frame) {
                                ctx->md_desired_instruments.end());
         (void)write_subscribe_req(ctx, req);
     } catch (const Exception& e) {
-        dz_diag((std::string("auto resubscribe on md started failed: ") + e.what()).c_str());
+        std::cerr << (std::string("auto resubscribe on md started failed: ") + e.what()) << '\n';
     } catch (const std::exception& e) {
-        dz_diag((std::string("auto resubscribe on md started failed: ") + e.what()).c_str());
+        std::cerr << (std::string("auto resubscribe on md started failed: ") + e.what()) << '\n';
     } catch (...) {
-        dz_diag("auto resubscribe on md started failed: unknown exception");
+        std::cerr << "auto resubscribe on md started failed: unknown exception" << '\n';
     }
 }
 
@@ -1814,17 +1823,6 @@ DZ_API DzResultSet* dz_db_query_instruments(DzDatabase* db,
 DZ_API int32_t dz_errcode(void) { return dztrader::LastError::code(); }
 DZ_API const char* dz_errstr(int32_t errcode) { return dztrader::LastError::str(errcode); }
 DZ_API const char* dz_errmsg(void) { return dztrader::LastError::msg(); }
-
-/* ── SDK 诊断输出 ── */
-
-DZ_API void dz_diag(const char* message) {
-    if (message == nullptr) {
-        return;
-    }
-    std::fputs("[dzsdk] ", stderr);
-    std::fputs(message, stderr);
-    std::fputc('\n', stderr);
-}
 
 /* ── 版本信息 ── */
 

@@ -977,7 +977,7 @@ TEST_F(StrategyEngineTest, OnStopExceptionIsNotForwardedToOnError) {
 
     EXPECT_EQ(rc, 0);
     EXPECT_EQ(stop_count, 1);
-    EXPECT_EQ(error_count, 0);  // on_stop 异常只走 dz_diag, 不触发 on_error
+    EXPECT_EQ(error_count, 0);  // on_stop 异常只写 stderr 诊断行, 不触发 on_error
 }
 
 TEST_F(StrategyEngineTest, MalformedUiInputFramesAreDropped) {
