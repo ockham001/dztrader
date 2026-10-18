@@ -1,10 +1,9 @@
 # ============================================================
 # 策略接口 SDK: 同一源码,两种链接方式
-#   dzstrategy_sdk_static -> 链接进平台各进程 + 当前示例策略 stg_demo
-#                            (DZ_API_COMPILE_STATIC; 策略自包含单文件, 无部署依赖)
-#   dzstrategy_sdk        -> dzstrategy_sdk.dll/.so (DZ_API_EXPORTS)
-#                            预留给"分发编译后策略"的形态: ABI 稳定边界 + 独立更新,
-#                            默认不构建 (策略需要时 --target dzstrategy_sdk)
+#   dzstrategy_sdk        -> 对外交付形态: 自包含动态库 dzstrategy_sdk.dll/.so
+#                            (DZ_API_EXPORTS; 第三方依赖全部静态吸收, 默认构建)
+#   dzstrategy_sdk_static -> 仓内/平台内部使用 (DZ_API_COMPILE_STATIC), 非交付物
+# 示例策略 stg_demo 是动态库的第一个消费者 (strategies/demo, ADR 0020)
 # 测试直接测试内部类（result_set 等），不链接 api.cpp
 # ============================================================
 
@@ -20,7 +19,8 @@ set(SDK_SOURCES
 set(SDK_INTERNAL_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # ============================================================
-# dzstrategy_sdk_static: 静态库，链接进平台进程
+# dzstrategy_sdk_static: 静态库，仓内/平台内部使用 (ADR 0020 保留)
+# 交付形态切到动态库后仓内暂无消费者; 不作为对外交付物, 不承诺 CMake 暴露面。
 # ============================================================
 add_library(dzstrategy_sdk_static STATIC ${SDK_SOURCES})
 target_include_directories(dzstrategy_sdk_static PRIVATE ${SDK_INTERNAL_INCLUDES})
@@ -32,22 +32,30 @@ target_link_libraries(dzstrategy_sdk_static
 )
 
 # ============================================================
-# dzstrategy_sdk: 动态库 dzstrategy_sdk.dll/.so
-# 默认不构建（策略才需要），通过 --target dzstrategy_sdk 单独构建
+# dzstrategy_sdk: 自包含动态库 dzstrategy_sdk.dll/.so (对外交付形态, ADR 0020)
+# 只有 strategy_api_headers 是公开接口: 内部库与第三方一律 PRIVATE, 消费者
+# 只 include 公开头文件 + 链接本库, 不继承任何第三方 include/link 依赖。
+# 输出到构建根:Windows DLL 用 RUNTIME_OUTPUT_DIRECTORY,Linux .so 用 LIBRARY_OUTPUT_DIRECTORY
 # ============================================================
 add_library(dzstrategy_sdk SHARED ${SDK_SOURCES})
 target_include_directories(dzstrategy_sdk PRIVATE ${SDK_INTERNAL_INCLUDES})
 target_compile_definitions(dzstrategy_sdk PRIVATE DZ_API_EXPORTS)
 set_target_properties(dzstrategy_sdk PROPERTIES
-    EXCLUDE_FROM_ALL TRUE
-    # 输出到 build 根:Windows DLL 用 RUNTIME_OUTPUT_DIRECTORY,Linux .so 用 LIBRARY_OUTPUT_DIRECTORY
     RUNTIME_OUTPUT_DIRECTORY ${DZ_OUTPUT_DIR}
     LIBRARY_OUTPUT_DIRECTORY ${DZ_OUTPUT_DIR}
 )
 target_link_libraries(dzstrategy_sdk
-    PRIVATE dztrading
-    PUBLIC strategy_api_headers dzcore dzshm dzdb dztdstore
-    PUBLIC Boost::boost nlohmann_json::nlohmann_json SQLiteCpp
+    PUBLIC strategy_api_headers
+    PRIVATE dztrading dzcore dzshm dzdb dztdstore
+    PRIVATE Boost::boost nlohmann_json::nlohmann_json SQLiteCpp
+)
+# 安装: 动态库与示例可执行同目录 (Linux $ORIGIN rpath / Windows DLL 同目录)。
+# 本票只安装动态库本身以保证「示例随装可运行」; 符号收敛/SONAME/头文件/
+# 导入库/许可声明等完整分发包属 #7 —— 在此之前该安装不是对外分发包。
+install(TARGETS dzstrategy_sdk
+    RUNTIME DESTINATION ${DZ_INSTALL_DIR}
+    LIBRARY DESTINATION ${DZ_INSTALL_DIR}
+    ARCHIVE DESTINATION ${DZ_INSTALL_DIR}
 )
 
 # ============================================================
