@@ -41,6 +41,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -160,6 +161,12 @@ protected:
         orig_home_ = dztrader::env::get("DZTRADER_HOME");
         dztrader::env::set("DZTRADER_HOME", home_.string());
         dztrader::env::set("DZTRADER_MD_SOURCE", "test_md");
+#ifdef _WIN32
+        // boost env::set 走 SetEnvironmentVariableW, 而示例策略用 std::getenv 展示源名;
+        // MSVC CRT 的 getenv 读的是 CRT 环境副本, 进程内改环境需同步该副本。
+        // (生产路径由 master 在 CreateProcess 时注入, 子进程 CRT 启动即读到, 无此差异)
+        (void)_putenv_s("DZTRADER_MD_SOURCE", "test_md");
+#endif
         create_event_channel(home_ / "shm");
         create_md_channel(home_ / "shm");
         strategy_id_ = dztrader::this_process::exe_stem();  // 策略身份 = 测试 exe 名
