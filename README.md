@@ -119,16 +119,24 @@
 
 ## 策略示例（stg_demo）
 
-`stg_demo`（`strategies/demo/`）是命令行示例策略，演示策略 SDK 的下单/撤单/行情订阅闭环。运行前提：dztraderd 已启动且 `DZTRADER_HOME` 指向同一运行目录。
+`stg_demo`（`strategies/demo/`）是**常驻示例策略**：由 master 按策略生命周期托管启动（绑定行情源就绪后拉起），启动输出 `[ready]` 横幅；全部交互经 `UI_INPUT` 文本命令驱动，结果以 `OUTPUT_UI` 文本行返回（行首 ASCII 类别标签 + `key=value` + 中文正文）。不解析命令行参数、不做控制台交互；回报/成交/持仓/资金/账户状态异步转成文本行。
 
-```bash
-stg_demo info                        # 策略身份 + SDK 版本（策略ID = 可执行文件名）
-stg_demo order CTP001 IF2606 100 1   # 下限价开仓单并等回报（账户未连接 -> 拒单回报）
-stg_demo md dzmd_ctp IF2606          # 订阅行情，观察 10s 打印 tick
-stg_demo cancel CTP001 12345         # 发撤单请求
+| 命令 | 说明 |
+|---|---|
+| `help` / `info` | 命令列表 / 策略身份、行情源、SDK 版本与策略目录 |
+| `md add <合约...>` / `md del <合约...>` | 增量订阅 / 退订（退订同时清空该合约 tick 缓存） |
+| `md list` / `md dump [n]` | 当前订阅集合 / 最近 tick（每合约缓存上限 100 条、每合约时间正序，`n` 限制每合约条数） |
+| `order <账户> <合约> <价格> <手数> [long\|short]` | 下限价开仓单并输出 `order_id`；回报以 `[report]` 行回显（空账户为 `status=REJECTED(拒单)`） |
+| `cancel <账户> <订单ID>` / `account [账户]` | 发送撤单请求 / 查询账户登录状态 |
+| `quit` | 策略自主退出（exit 0），`on_stop` 输出 `[stop]` 收尾行 |
+
+运行前提：master（`dztraderd`）已启动且 `DZTRADER_HOME` 一致；在 `dztraderd.json` 的 `strategy` 段注册（`name` 必须与可执行文件名一致，`md_source` 必填、无 `args`）：
+
+```json
+{"name": "stg_demo", "exe": "<绝对路径>/stg_demo", "md_source": "dzmd_ctp"}
 ```
 
-退出码供脚本/测试机器断言：`0` 成功 · `2` 用法/初始化错误 · `3` 下单被拒（空账户拒单闭环）· `4` 等待回报超时。由 master 托管运行时，在 `dztraderd.json` 的 `strategy` 段注册：`{"name": "stg_demo", "exe": "<绝对路径>/stg_demo", "args": ["info"]}`（`name` 必须与可执行文件名一致）。
+示例源码只含 `strategies/demo/` 下的文件、仅链接策略 SDK，不依赖网关/WebUI 内部库。UI 输入/输出的端到端验证见 `strategies/demo/tests/stg_demo_test.cpp`（帧边界进程内测试）与冒烟测试。
 
 ## 安装与部署
 
