@@ -55,7 +55,6 @@ target_link_libraries(dzstrategy_sdk
 install(TARGETS dzstrategy_sdk
     RUNTIME DESTINATION ${DZ_INSTALL_DIR}
     LIBRARY DESTINATION ${DZ_INSTALL_DIR}
-    ARCHIVE DESTINATION ${DZ_INSTALL_DIR}
 )
 
 # ============================================================

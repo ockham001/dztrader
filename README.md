@@ -138,6 +138,8 @@
 
 示例策略本体（`stg_demo.cpp` + `stg_demo_strategy.*`）只 include 策略 SDK 公开头文件、链接**自包含动态库** `dzstrategy_sdk`（Linux `libdzstrategy_sdk.so` / Windows `dzstrategy_sdk.dll` + 导入库），不定义静态链接宏 `DZ_API_COMPILE_STATIC`、不接触任何第三方库，也不依赖网关/WebUI 内部库；运行时动态库与策略可执行位于同一目录（Linux `$ORIGIN` rpath，Windows 加载器搜索 exe 所在目录）。UI 输入/输出的端到端验证见 `strategies/demo/tests/stg_demo_test.cpp`（帧边界进程内测试，测试侧额外链接内部库作探针）与冒烟测试。
 
+策略初始化失败（`dz_init` 失败）时还没有 UI 会话，`on_error` 无法写 `OUTPUT_UI`；该分支的诊断改走 SDK stderr（`dz_diag`，由 master 捕获进日志），进程以非零码退出。
+
 ## 安装与部署
 
 ### 本机安装

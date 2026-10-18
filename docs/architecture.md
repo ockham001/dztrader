@@ -92,7 +92,7 @@ md(N-1个,单进程写,自旋锁仅订阅者列表)：写帧→原子更新next_
 
 ## 依赖禁止
 
-- `dzstrategy_sdk` 面向策略分发，为自包含动态库：第三方依赖静态吸收、运行时只依赖系统基础库（ADR 0020）；导出符号收敛为仅 `dz_*`（#7）；实现依赖 dzcore/dzshm（`api.cpp` 使用 `LastError`、shm writer/reader），依赖方向为内部库，非 ABI 暴露面
+- `dzstrategy_sdk` 面向策略分发，为自包含动态库：第三方依赖静态吸收、运行时只依赖系统基础库（ADR 0020）；导出符号收敛为仅 `dz_*`（#7）；实现依赖 dztrading/dzcore/dzshm/dzdb/dztdstore（内部库静态链入：`LastError`、shm writer/reader、DB 记录与 td 数据同步），依赖方向为内部库，非 ABI 暴露面
 - dzlog独立库,仅平台进程使用
 
 ## Reference Projects
