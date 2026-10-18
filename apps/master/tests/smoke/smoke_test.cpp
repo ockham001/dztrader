@@ -161,6 +161,8 @@ bool frame_is_basic_struct(DzFrameType t) {
         case DZ_FRAME_TD_ORDER_REQ:
         case DZ_FRAME_TD_ORDER_CANCEL_REQ:
         case DZ_FRAME_TD_QUERY_ACCOUNT_STATUS:
+        case DZ_FRAME_PRELOAD_EVENT_SHM:
+        case DZ_FRAME_PRELOAD_MD_SHM:
         case DZ_FRAME_ORDER_REPORT:
         case DZ_FRAME_TRADE_REPORT:
         case DZ_FRAME_POSITION_INFO:
@@ -351,6 +353,17 @@ protected:
     }
 
     void TearDown() override {
+        // 断言提前失败时策略/网关可能仍在跑: 经事件通道补发定向 SHUTDOWN, 给 master
+        // 一个回收窗口, 避免常驻 stg_demo 成为占全局信号量的孤儿进程 (Windows 还会
+        // 阻塞临时 home 删除)。成功路径测试已自行停止策略, 不重复付出等待成本。
+        if (::testing::Test::HasFailure() && writer_ && master_ && master_->pid() != 0 &&
+            process_alive(static_cast<uint32_t>(master_->pid()))) {
+            for (const char* target : {"stg_demo", "dzmd_ctp", "dztd_ctp", "dzweb"}) {
+                platform::write_ext_inst_raw(*writer_, DZ_FRAME_SHUTDOWN, target);
+            }
+            writer_->notify_subscribers();
+            ioc_.run_for(1500ms);
+        }
         reader_.reset();
         writer_.reset();
         // 兜底: 断言提前失败时 master 可能还活着 (A5 的强杀没走到), 按 liveness 清理
@@ -386,8 +399,9 @@ protected:
     }
 
     /// 打开事件通道 writer/reader (master 启动后创建通道)。
-    /// 5ms 快速轮询: reader 必须在策略进程启动前定位, 否则会错过一次性的 [ready] 输出
-    /// (通道在 master 初始化时创建, 早于子进程 spawn, 故成功打开即可保证早于策略启动)
+    /// 5ms 快速轮询: 通道在 master 初始化时创建、早于子进程 spawn, 因此成功打开通常
+    /// 早于策略启动; 但"打开即保证早于策略启动"并非硬契约 —— 极端调度下仍可能错过
+    /// 一次性的 [ready], 故 ready 断言失败时输出已收 OUTPUT_UI 行供诊断。
     bool open_event_channel() {
         for (int i = 0; i < 4000; ++i) {  // 20s
             try {
@@ -435,13 +449,18 @@ protected:
                 summary += " inst=" + df.instance_id + " ui_input=" + df.text;
             } else if (df.type == DZ_FRAME_OUTPUT_UI) {
                 // 策略上行文本帧 (契约 strategy: 变长 UTF-8 文本, 无固定 schema, 不是 JSON):
-                // 拷出累积供 UI E2E 断言 (帧指针在下次 next_frame 失效)
+                // 只收 instance_id == 裸策略名的帧 (身份边界断言), 拷出累积供 UI E2E 断言
                 df.instance_id = std::string(view.ext_inst_id());
                 const auto size = view.ext_inst_payload_size();
                 df.text.assign(reinterpret_cast<const char*>(view.ext_inst_payload()), size);
-                ui_frames_.push_back(df.text);
-                for (auto& line : split_text_lines(df.text)) {
-                    ui_lines_.push_back(std::move(line));
+                if (df.instance_id != "stg_demo") {
+                    ++unexpected_ui_instance_count_;
+                    summary += " unexpected_ui_instance=" + df.instance_id;
+                } else {
+                    ui_frames_.push_back(df.text);
+                    for (auto& line : split_text_lines(df.text)) {
+                        ui_lines_.push_back(std::move(line));
+                    }
                 }
                 summary += " inst=" + df.instance_id + " text=" + df.text;
             } else if (frame_is_basic_struct(df.type)) {
@@ -452,15 +471,23 @@ protected:
                 const auto size = view.ext_inst_payload_size();
                 if (size > 0) {
                     const auto* data = reinterpret_cast<const char*>(view.ext_inst_payload());
-                    df.payload = nlohmann::json::parse(data, data + size);
-                    df.has_payload = true;
+                    try {
+                        df.payload = nlohmann::json::parse(data, data + size);
+                        df.has_payload = true;
+                    } catch (const std::exception&) {
+                        summary += " undecodable_json";  // 布局错配/非 JSON: 只诊断不中断
+                    }
                 }
             } else {
                 const auto size = view.ext_payload_size();
                 if (size > 0) {
                     const auto* data = reinterpret_cast<const char*>(view.ext_payload());
-                    df.payload = nlohmann::json::parse(data, data + size);
-                    df.has_payload = true;
+                    try {
+                        df.payload = nlohmann::json::parse(data, data + size);
+                        df.has_payload = true;
+                    } catch (const std::exception&) {
+                        summary += " undecodable_json";
+                    }
                 }
             }
             if (df.has_payload) {
@@ -501,6 +528,15 @@ protected:
         return saw_ui_line(prefix, needle);
     }
 
+    /// 失败诊断: 已收 OUTPUT_UI 全文
+    std::string dump_ui_lines() const {
+        std::string out = "--- OUTPUT_UI lines ---\n";
+        for (const auto& line : ui_lines_) {
+            out += "  " + line + "\n";
+        }
+        return out;
+    }
+
     /// 最近一条以 prefix 开头的 OUTPUT_UI 行 (用于"最新一条"类断言)
     std::optional<std::string> last_ui_line(std::string_view prefix) const {
         for (auto it = ui_lines_.rbegin(); it != ui_lines_.rend(); ++it) {
@@ -509,6 +545,12 @@ protected:
             }
         }
         return std::nullopt;
+    }
+
+    /// 最近一条以 prefix 开头的 OUTPUT_UI 行是否含 needle
+    bool last_line_contains(std::string_view prefix, std::string_view needle) const {
+        const auto line = last_ui_line(prefix);
+        return line.has_value() && line->find(needle) != std::string::npos;
     }
 
     /// 最近一条 [order] action=order 行的 order_id (nullopt = 未找到/解析失败)
@@ -591,6 +633,8 @@ protected:
     /// 策略 OUTPUT_UI 帧与拆行后的文本 (UI E2E 断言用)
     std::vector<std::string> ui_frames_;
     std::vector<std::string> ui_lines_;
+    /// instance_id != stg_demo 的 OUTPUT_UI 帧数 (身份边界回归)
+    std::size_t unexpected_ui_instance_count_ = 0;
     /// 契约 account-status: 排空中捕获的 DZ_FRAME_ACCOUNT_STATUS 账户状态帧 payload (帧指针会失效,
     /// 拷出)
     std::vector<DzAccountStatus> account_status_frames_;
@@ -657,6 +701,9 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     //     PROCESS_CONTROL 停止 -> Stopped 且无 Crashed。策略不再解析 argv/退出码,
     //     旧 CLI 断言已删除。
     bool saw_strategy_crashed = false;
+    bool saw_stop_succeeded_event = false;
+    bool saw_stopping = false;
+    bool saw_terminal_stopped = false;
     const auto drain_strategy_state = [&](const std::string& wanted) {
         for (auto& f : drain_available(*reader_)) {
             if (f.type != DZ_FRAME_RTN_PROCESS_STATUS ||
@@ -664,8 +711,19 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
                 continue;
             }
             const std::string state = f.payload.value("state", "");
+            const std::string event = f.payload.value("event", "");
             if (state == "Crashed") {
                 saw_strategy_crashed = true;
+            }
+            if (state == "Stopping") {
+                saw_stopping = true;
+            }
+            if (event == "StopSucceeded") {
+                saw_stop_succeeded_event = true;
+            }
+            // 契约 process: 终态 Stopped 由进程退出触发, event 缺失 (区别于 StopFailed)
+            if (state == "Stopped" && !f.payload.contains("event")) {
+                saw_terminal_stopped = true;
             }
             if (state == wanted) {
                 return true;
@@ -681,7 +739,8 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     // 1b-1. 就绪横幅: 启动后一次性的 [ready] 输出 (master 托管的常驻策略已进入事件循环)
     ASSERT_TRUE(wait_until([&] { return pump_and_saw_ui_line("[ready] ", "strategy=stg_demo"); },
                            5000, [] {}))
-        << "stg_demo did not emit [ready] banner";
+        << "stg_demo did not emit [ready] banner\n"
+        << dump_ui_lines();
 
     // 1b-2. UI 帧回路: Running 可能早于策略事件 reader 打开, 首帧有理论丢失窗口,
     //       故用可重发的 info 命令握手, 收到回执后再发一次性命令 (下同)
@@ -741,14 +800,19 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     ASSERT_TRUE(
         wait_until([&] { return pump_and_saw_ui_line("[order] ", "action=cancel"); }, 5000, [] {}))
         << "stg_demo did not answer cancel";
+    // 先排空并清掉查询前已收的输出行 (td 启动期/快照重推的 Offline 状态行不能当作
+    // account 查询链路的证据), 再断言查询后的新增行
+    (void)drain_available(*reader_);
+    ui_lines_.clear();
     ASSERT_TRUE(send_ui_input("account CTP001")) << "write UI_INPUT(account) failed";
     ASSERT_TRUE(
         wait_until([&] { return pump_and_saw_ui_line("[account] ", "action=query"); }, 5000, [] {}))
         << "stg_demo did not answer account";
-    // 查询触发 td 对未连接账户的 Offline 权威应答 (账户级广播) -> 策略输出 account status 行
     ASSERT_TRUE(wait_until([&] { return pump_and_saw_ui_line("[account] ", "action=status"); },
                            5000, [] {}))
         << "stg_demo did not output account status for configured CTP001";
+    ASSERT_TRUE(last_ui_line("[account] action=status").has_value()) << dump_ui_lines();
+    EXPECT_TRUE(last_line_contains("[account] action=status", "account=CTP001")) << dump_ui_lines();
 
     // 1b-7. 常驻性: 完成上述交互后策略仍处于 Running (未被交互/异常终止)
     ASSERT_TRUE(
@@ -767,10 +831,17 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     const bool strategy_stopped =
         wait_until([&] { return drain_strategy_state("Stopped"); }, 15000, send_query_snapshot);
     ASSERT_TRUE(strategy_stopped) << "stg_demo did not reach Stopped within 15s after Stop";
+    // 只有"经 master 正常停止"才同时具备: StopSucceeded 事件 + Stopping 中间态 +
+    // 无 event 的终态 Stopped (StopFailed 也回 state=Stopped, 不能只断言 Stopped)
+    EXPECT_TRUE(saw_stop_succeeded_event) << "no StopSucceeded event in RTN_PROCESS_STATUS";
+    EXPECT_TRUE(saw_stopping) << "no Stopping intermediate state in RTN_PROCESS_STATUS";
+    EXPECT_TRUE(saw_terminal_stopped) << "no terminal Stopped (event-less) status";
     EXPECT_FALSE(saw_strategy_crashed) << "stg_demo crashed on Stop (must exit 0)";
     (void)drain_available(*reader_);
     EXPECT_TRUE(saw_ui_line("[stop] ", "reason=shutdown"))
         << "stg_demo did not output [stop] on shutdown";
+    EXPECT_EQ(unexpected_ui_instance_count_, 0U)
+        << "OUTPUT_UI frame with instance_id != stg_demo observed (identity boundary)";
 
     // 2. 帧回路: SET_LOG_CONFIG 空 patch -> RTN_LOG_CONFIG (契约 log 回环, 配置缺失自愈路径)
     auto send_set_log_config = [&] {

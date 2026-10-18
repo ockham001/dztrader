@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -176,13 +177,22 @@ const char* account_state_name(DzAccountState state) {
 /// tick 输出的时间正序键 (日期 + 当日秒 + 微秒)
 auto tick_time_key(const DzTick& tick) { return std::tuple{tick.date, tick.time, tick.subseconds}; }
 
+/// 价格格式化: CTP 行情无值/无效档位用 DBL_MAX 哨兵透传 (md_spi 注释: 由消费者处理),
+/// 演示输出归一为 "-", 避免 300+ 位数字撑爆一行并干扰 dump 可读性
+std::string format_price(double price) {
+    if (!std::isfinite(price) || std::fabs(price) >= std::numeric_limits<double>::max() / 2.0) {
+        return "-";
+    }
+    return std::format("{:.3f}", price);
+}
+
 std::string format_tick_line(const DzTick& tick) {
     return std::format(
-        "[tick] instrument={} time={} last={:.3f} volume={} bid1={:.3f}/{} "
-        "ask1={:.3f}/{} oi={} 缓存行情",
-        tick.instrument_id, format_time(tick.time, tick.subseconds), tick.last_price, tick.volume,
-        tick.bid_price[0], tick.bid_volume[0], tick.ask_price[0], tick.ask_volume[0],
-        tick.open_interest);
+        "[tick] instrument={} time={} last={} volume={} bid1={}/{} ask1={}/{} "
+        "oi={} 缓存行情",
+        tick.instrument_id, format_time(tick.time, tick.subseconds), format_price(tick.last_price),
+        tick.volume, format_price(tick.bid_price[0]), tick.bid_volume[0],
+        format_price(tick.ask_price[0]), tick.ask_volume[0], tick.open_interest);
 }
 
 }  // namespace
@@ -257,9 +267,14 @@ void DemoStrategy::on_account_status(const DzAccountStatus& status) {
 }
 
 void DemoStrategy::on_error(DzErrorCode errcode, std::string_view message) {
-    // dz_init 失败时引擎会在 on_start 之前调用 on_error, 此时没有可用会话 (ctx_ == nullptr),
-    // emit_line 静默丢弃 —— 该路径的错误行由引擎自身的启动失败诊断承担 (契约 strategy:
-    // UI 输出必须经 dz_output_ui, 无会话即无 UI 通道)。初始化后的回调异常正常输出 error 行。
+    if (ctx_ == nullptr) {
+        // dz_init 失败时引擎在 on_start 之前调用 on_error: 无会话即无 UI 通道,
+        // 用 SDK 诊断通道 (stderr, 英文) 保留唯一错误信息, 否则进程只剩退出码。
+        dz_diag(std::format("strategy init failed | code={} message=\"{}\"",
+                            static_cast<int>(errcode), message)
+                    .c_str());
+        return;
+    }
     emit_line(std::format("[error] source=engine errcode={} message=\"{}\" 引擎回调异常",
                           static_cast<int>(errcode), message));
 }
@@ -513,7 +528,13 @@ void DemoStrategy::emit_line(std::string_view line) {
         return;
     }
     const std::string text(line);  // dz_output_ui 要求 NUL 结尾
-    (void)dz_output_ui(ctx_, text.c_str());
+    if (!dz_output_ui(ctx_, text.c_str())) {
+        // 演示工具不中断命令处理; 诊断走 SDK stderr (英文, 符合日志文本规则)。
+        // 注意: 超页截断由 SDK 按契约处理且返回 true, 不会走到这里。
+        dz_diag(std::format("ui output failed | errcode={} message=\"{}\"",
+                            static_cast<int>(dz_errcode()), dz_errmsg())
+                    .c_str());
+    }
 }
 
 void DemoStrategy::emit_md_list() {
@@ -548,6 +569,9 @@ void DemoStrategy::emit_md_dump(std::size_t limit) {
         for (const DzTick& tick : cache) {
             sorted.push_back(&tick);
         }
+        // 排序键 = (交易日 date, 当日秒 time, 微秒): 缓存的"时间正序"定义。夜盘 tick 的
+        // date 为次一交易日, 故跨夜盘时按交易日内时间排序 (21:00 早于次日 09:00 的自然
+        // 日历序不在此键语义内) —— 演示输出以交易日视角为准。
         std::stable_sort(sorted.begin(), sorted.end(), [](const DzTick* lhs, const DzTick* rhs) {
             return tick_time_key(*lhs) < tick_time_key(*rhs);
         });

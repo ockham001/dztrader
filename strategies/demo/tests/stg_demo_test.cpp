@@ -34,6 +34,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -120,15 +121,24 @@ std::optional<std::string> find_tick_time(std::string_view line) {
     return std::string(line.substr(pos + key.size(), 15));
 }
 
+/// 策略写出的订阅/退订请求帧: 帧头来源 + 解码 payload
+struct CapturedSubscribe {
+    std::string frame_instance_id;
+    dztrader::SubscribeReq req;
+};
+
 class StgDemoTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        home_ = std::filesystem::temp_directory_path() / "dz_test_stg_demo";
+        // pid 后缀: 同机并行跑本测试二进制 (如双 worktree) 时互不删对方的 shm 目录
+        home_ = std::filesystem::temp_directory_path() /
+                ("dz_test_stg_demo_" + std::to_string(dztrader::this_process::pid()));
         std::error_code ec;
         std::filesystem::remove_all(home_, ec);
         std::filesystem::create_directories(home_ / "shm", ec);
         ASSERT_FALSE(ec) << "create temp home failed: " << ec.message();
         // paths::shm() 按 DZTRADER_HOME 进程内缓存: 同二进制全部用例共用同一 home
+        orig_home_ = dztrader::env::get("DZTRADER_HOME");
         dztrader::env::set("DZTRADER_HOME", home_.string());
         dztrader::env::set("DZTRADER_MD_SOURCE", "test_md");
         create_event_channel(home_ / "shm");
@@ -162,9 +172,16 @@ protected:
         if (rescue_.joinable()) {
             rescue_.join();
         }
+        EXPECT_EQ(unexpected_ui_instance_count_, 0U)
+            << "OUTPUT_UI frame with unexpected instance_id observed (identity boundary)";
         probe_.reset();  // 先释放 mmap 再删目录
         std::error_code ec;
         std::filesystem::remove_all(home_, ec);
+        if (orig_home_) {
+            dztrader::env::set("DZTRADER_HOME", *orig_home_);
+        } else {
+            dztrader::env::unset("DZTRADER_HOME");
+        }
     }
 
     // ---- 通道与帧 helpers (全部只经帧通道, 不碰策略内部) ----
@@ -245,15 +262,24 @@ protected:
             }
             const dztrader::shm::FrameView view(frame);
             if (view.type() == DZ_FRAME_REQUEST_MD_SUBSCRIBE) {
-                // 策略写出的订阅/退订请求帧 (行情订阅帧边界): 解码留作 md del 退订断言
+                // 策略写出的订阅/退订请求帧 (行情订阅帧边界): 解码留作订阅/退订断言;
+                // 帧头 instance_id 应为绑定的行情源名, payload.instance_id 应为 stg.<策略名>
                 try {
-                    subscribe_reqs_.push_back(
-                        dztrader::shm::decode_ext_inst_json<dztrader::SubscribeReq>(view));
+                    CapturedSubscribe captured;
+                    captured.frame_instance_id = std::string(view.ext_inst_id());
+                    captured.req =
+                        dztrader::shm::decode_ext_inst_json<dztrader::SubscribeReq>(view);
+                    subscribe_reqs_.push_back(std::move(captured));
                 } catch (const std::exception&) {
                 }
                 continue;
             }
             if (view.type() != DZ_FRAME_OUTPUT_UI) {
+                continue;
+            }
+            // 身份边界: 策略上行帧的 instance_id 必须是本策略裸名
+            if (std::string_view(view.ext_inst_id()) != strategy_id_) {
+                ++unexpected_ui_instance_count_;
                 continue;
             }
             std::string text(reinterpret_cast<const char*>(view.ext_inst_payload()),
@@ -283,17 +309,28 @@ protected:
 
     /// 已写出的行情订阅请求帧中, 是否存在指定动作且包含该合约的请求
     bool saw_subscribe_action(dztrader::SubscribeAction action, std::string_view instrument) const {
-        for (const auto& req : subscribe_reqs_) {
-            if (req.action != action) {
+        for (const auto& captured : subscribe_reqs_) {
+            if (captured.req.action != action) {
                 continue;
             }
-            for (const auto& listed : req.instruments) {
+            for (const auto& listed : captured.req.instruments) {
                 if (listed == instrument) {
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    /// 订阅帧身份边界: 帧头 instance_id = 绑定行情源名, payload.instance_id = stg.<策略名>
+    bool subscribe_identity_all_valid() const {
+        for (const auto& captured : subscribe_reqs_) {
+            if (captured.frame_instance_id != "test_md" ||
+                captured.req.instance_id != "stg." + strategy_id_) {
+                return false;
+            }
+        }
+        return true;
     }
 
     bool any_line(std::string_view prefix, std::string_view needle) const {
@@ -391,12 +428,32 @@ protected:
         wake_strategy();
     }
 
-    void inject_order_report(DzOrderId order_id, DzOrderStatus status) {
+    /// 注入一条含 CTP DBL_MAX 哨兵档位价格的 tick (md_spi 对无效档位原样透传)
+    void push_sentinel_price_tick() {
+        dztrader::shm::MultiWriter writer =
+            dztrader::shm::MultiWriter::create(open_md_meta(), "stg_demo_test_md_writer");
+        DzTick tick{};
+        dztrader::copy_string(tick.instrument_id, "IF2606", true);
+        tick.time = 1;
+        tick.last_price = 100.5;
+        tick.bid_price[0] = std::numeric_limits<double>::max();
+        tick.ask_price[0] = -std::numeric_limits<double>::max();
+        tick.bid_volume[0] = 7;
+        tick.ask_volume[0] = 8;
+        EXPECT_TRUE(writer.write_frame(DZ_FRAME_TICK, tick));
+        wake_strategy();
+    }
+
+    void inject_order_report(DzOrderId order_id,
+                             DzOrderStatus status,
+                             std::string_view strategy_override = {}) {
         dztrader::shm::MultiWriter writer =
             dztrader::shm::MultiWriter::create(open_event_meta(), "stg_demo_test_writer");
         DzOrderReport report{};
         report.order_id = order_id;
-        dztrader::copy_string(report.strategy_id, strategy_id_.c_str(), true);
+        const std::string report_strategy =
+            strategy_override.empty() ? strategy_id_ : std::string(strategy_override);
+        dztrader::copy_string(report.strategy_id, report_strategy.c_str(), true);
         dztrader::copy_string(report.account_id, "CTP001", true);
         dztrader::copy_string(report.instrument_id, "IF2606", true);
         report.direction = DZ_DIRECTION_SHORT;
@@ -407,6 +464,56 @@ protected:
         report.volume = 2;
         report.seq = 1;
         EXPECT_TRUE(writer.write_frame(DZ_FRAME_ORDER_REPORT, report));
+        writer.notify_subscribers();
+        wake_strategy();
+    }
+
+    void inject_trade_report(DzOrderId order_id, std::string_view trade_id, uint64_t seq) {
+        dztrader::shm::MultiWriter writer =
+            dztrader::shm::MultiWriter::create(open_event_meta(), "stg_demo_test_writer");
+        DzTradeReport report{};
+        report.order_id = order_id;
+        report.trade_id[0] = '\0';
+        dztrader::copy_string(report.trade_id, std::string(trade_id).c_str(), true);
+        dztrader::copy_string(report.strategy_id, strategy_id_.c_str(), true);
+        dztrader::copy_string(report.account_id, "CTP001", true);
+        dztrader::copy_string(report.instrument_id, "IF2606", true);
+        report.price = 100.5;
+        report.volume = 1;
+        report.direction = DZ_DIRECTION_SHORT;
+        report.position_effect = DZ_POSITION_EFFECT_OPEN;
+        report.seq = seq;
+        EXPECT_TRUE(writer.write_frame(DZ_FRAME_TRADE_REPORT, report));
+        writer.notify_subscribers();
+        wake_strategy();
+    }
+
+    void inject_position_info(uint64_t seq) {
+        dztrader::shm::MultiWriter writer =
+            dztrader::shm::MultiWriter::create(open_event_meta(), "stg_demo_test_writer");
+        DzPositionInfo info{};
+        dztrader::copy_string(info.account_id, "CTP001", true);
+        dztrader::copy_string(info.instrument_id, "IF2606", true);
+        info.direction = DZ_DIRECTION_SHORT;
+        info.volume = 3;
+        info.frozen_volume = 1;
+        info.price = 100.5;
+        info.seq = seq;
+        EXPECT_TRUE(writer.write_frame(DZ_FRAME_POSITION_INFO, info));
+        writer.notify_subscribers();
+        wake_strategy();
+    }
+
+    void inject_trading_account(double balance, uint64_t seq) {
+        dztrader::shm::MultiWriter writer =
+            dztrader::shm::MultiWriter::create(open_event_meta(), "stg_demo_test_writer");
+        DzTradingAccount account{};
+        dztrader::copy_string(account.account_id, "CTP001", true);
+        account.balance = balance;
+        account.available = balance - 100.0;
+        account.margin = 100.0;
+        account.seq = seq;
+        EXPECT_TRUE(writer.write_frame(DZ_FRAME_TRADING_ACCOUNT, account));
         writer.notify_subscribers();
         wake_strategy();
     }
@@ -452,6 +559,7 @@ protected:
     }
 
     std::filesystem::path home_;
+    std::optional<std::string> orig_home_;
     std::string strategy_id_;
     dztrader::demo::DemoStrategy strategy_;
     std::thread strategy_thread_;
@@ -461,8 +569,10 @@ protected:
     std::optional<dztrader::shm::Reader> probe_;
     std::vector<std::string> output_frames_;
     std::vector<std::string> output_lines_;
-    /// 策略写出的行情订阅/退订请求帧 (解码后)
-    std::vector<dztrader::SubscribeReq> subscribe_reqs_;
+    /// 策略写出的行情订阅/退订请求帧 (帧头来源 + 解码 payload)
+    std::vector<CapturedSubscribe> subscribe_reqs_;
+    /// instance_id != 本策略名的 OUTPUT_UI 帧数 (身份边界回归断言)
+    std::size_t unexpected_ui_instance_count_ = 0;
 };
 
 // ── 就绪横幅与身份 ──
@@ -484,8 +594,15 @@ TEST_F(StgDemoTest, ReadyBannerAndInfoExposeIdentity) {
     send_command("info");
     ASSERT_TRUE(wait_until([&] { return count_lines("[info] ", "strategy=") >= 1; }))
         << dump_output();
-    EXPECT_TRUE(any_line("[info] ", "md_source=test_md")) << dump_output();
-    EXPECT_TRUE(any_line("[info] ", "home=")) << dump_output();
+    // 只认最新一条 info 行, 且 strategy 值必须是本策略名
+    EXPECT_TRUE(last_line_contains("[info] ", "strategy=" + strategy_id_)) << dump_output();
+    EXPECT_TRUE(last_line_contains("[info] ", "md_source=test_md")) << dump_output();
+    EXPECT_TRUE(last_line_contains("[info] ", "home=")) << dump_output();
+
+    // on_start 不自动订阅: 初始订阅集合为空
+    send_command("md list");
+    ASSERT_TRUE(wait_until([&] { return any_line("[md] ", "action=list"); })) << dump_output();
+    EXPECT_TRUE(last_line_contains("[md] action=list", "count=0")) << dump_output();
 }
 
 // ── help 命令列表 ──
@@ -497,7 +614,7 @@ TEST_F(StgDemoTest, HelpListsEveryCommand) {
         << dump_output();
     for (const std::string_view command : {"help", "info", "md add", "md del", "md list", "md dump",
                                            "order", "cancel", "account", "quit"}) {
-        EXPECT_TRUE(any_line("[info] ", "command=") && any_line("[info] ", command))
+        EXPECT_TRUE(any_line("[info] command=", command))
             << "missing help line for: " << command << "\n"
             << dump_output();
     }
@@ -528,10 +645,77 @@ TEST_F(StgDemoTest, InvalidInputEmitsErrorButKeepsRunning) {
     ASSERT_TRUE(wait_until([&] { return any_line("[error] ", "reason=invalid_direction"); }))
         << dump_output();
 
+    send_command("order CTP001 IF2606 100 0");
+    ASSERT_TRUE(wait_until([&] { return any_line("[error] ", "reason=invalid_volume"); }))
+        << dump_output();
+
+    send_command("order CTP001 IF2606 100 1 long extra");
+    ASSERT_TRUE(wait_until([&] { return any_line("[error] ", "reason=invalid_arguments"); }))
+        << dump_output();
+
+    send_command("info extra");
+    ASSERT_TRUE(wait_until([&] { return any_line("[error] ", "reason=unexpected_args"); }))
+        << dump_output();
+
+    send_command("md dump 0");
+    ASSERT_TRUE(wait_until([&] { return any_line("[error] ", "reason=invalid_count"); }))
+        << dump_output();
+
+    send_command("md dump -1");
+    ASSERT_TRUE(wait_until([&] { return count_lines("[error] ", "reason=invalid_count") >= 2; }))
+        << dump_output();
+
+    send_command("cancel CTP001 notanumber");
+    ASSERT_TRUE(wait_until([&] { return any_line("[error] ", "reason=invalid_order_id"); }))
+        << dump_output();
+
     // 进程仍响应: 非法输入不破坏事件循环
     send_command("info");
     ASSERT_TRUE(wait_until([&] { return count_lines("[info] ", "strategy=") >= 1; }))
         << dump_output();
+}
+
+// ── 未订阅合约: tick 不缓存, md del 仍回执 ──
+
+TEST_F(StgDemoTest, UnsubscribedInstrumentTicksAreNotCached) {
+    ASSERT_TRUE(start_strategy()) << dump_output();
+
+    // on_start 不自动订阅; 未订阅合约的 tick 到达后不得进入缓存
+    push_ticks_descending("IF9999", 3);
+    std::string dump;
+    ASSERT_TRUE(request_dump_until(
+        "md dump", [](const std::string& frame) { return find_key_number(frame, " count=") == 0; },
+        dump))
+        << dump_output();
+    EXPECT_EQ(dump.find("instrument=IF9999"), std::string::npos) << dump;
+
+    // 退订一个从未订阅的合约: 仍写退订请求并回执, 订阅集合保持为空
+    send_command("md del IF9999");
+    ASSERT_TRUE(wait_until([&] {
+        return last_line_contains("[md] action=del", "IF9999") &&
+               saw_subscribe_action(dztrader::SubscribeAction::Unsubscribe, "IF9999");
+    })) << dump_output();
+    send_command("md list");
+    ASSERT_TRUE(wait_until([&] { return any_line("[md] ", "action=list"); })) << dump_output();
+    EXPECT_TRUE(last_line_contains("[md] action=list", "count=0")) << dump_output();
+}
+
+// ── CTP DBL_MAX 哨兵价格 → "-" (不输出 300+ 位数字) ──
+
+TEST_F(StgDemoTest, SentinelPricesRenderAsDash) {
+    ASSERT_TRUE(start_strategy()) << dump_output();
+    send_command("md add IF2606");
+    ASSERT_TRUE(wait_until([&] { return any_line("[md] ", "action=add"); })) << dump_output();
+    push_sentinel_price_tick();
+
+    std::string dump;
+    ASSERT_TRUE(request_dump_until(
+        "md dump 1",
+        [](const std::string& frame) { return find_key_number(frame, " count=") == 1; }, dump))
+        << dump_output();
+    EXPECT_NE(dump.find("bid1=-/7"), std::string::npos) << dump;
+    EXPECT_NE(dump.find("ask1=-/8"), std::string::npos) << dump;
+    EXPECT_EQ(dump.find("1.79769"), std::string::npos) << dump;
 }
 
 // ── md 订阅集合 + tick 环形缓存 + dump 时间正序 + del 清缓存 ──
@@ -550,6 +734,7 @@ TEST_F(StgDemoTest, MdCacheDumpAndDelLifecycle) {
         return saw_subscribe_action(dztrader::SubscribeAction::Subscribe, "IF2606") &&
                saw_subscribe_action(dztrader::SubscribeAction::Subscribe, "IF2609");
     })) << dump_output();
+    EXPECT_TRUE(subscribe_identity_all_valid()) << dump_output();
 
     send_command("md list");
     ASSERT_TRUE(wait_until([&] { return any_line("[md] ", "action=list"); })) << dump_output();
@@ -627,9 +812,31 @@ TEST_F(StgDemoTest, TradingCommandsAndReportsBecomeUiLines) {
     EXPECT_TRUE(any_line("[report] ", "order_id=" + std::to_string(order_id))) << dump_output();
     EXPECT_TRUE(any_line("[report] ", "traded=0")) << dump_output();
 
+    // 定向过滤负例: 他策略的 ORDER_REPORT 不得转成本策略的 [report] 行
+    inject_order_report(static_cast<DzOrderId>(order_id) + 1, DZ_ORDER_REJECTED, "other_strategy");
+    send_command("info");  // 握手: 确保事件泵已处理注入帧
+    ASSERT_TRUE(wait_until([&] { return any_line("[info] ", "strategy=" + strategy_id_); }))
+        << dump_output();
+    EXPECT_TRUE(output_lines_.empty() == false);
+    EXPECT_TRUE(!any_line("[report] ", "order_id=" + std::to_string(order_id + 1)))
+        << dump_output();
+
+    // 成交/持仓/资金异步推送 → 各自的文本行 (父 spec 保留的调试能力)
+    inject_trade_report(static_cast<DzOrderId>(order_id), "T0001", 2);
+    ASSERT_TRUE(wait_until([&] { return any_line("[trade] ", "trade_id=T0001"); }))
+        << dump_output();
+    EXPECT_TRUE(any_line("[trade] ", "price=100.500")) << dump_output();
+    inject_position_info(3);
+    ASSERT_TRUE(wait_until([&] { return any_line("[position] ", "volume=3"); })) << dump_output();
+    EXPECT_TRUE(any_line("[position] ", "instrument=IF2606")) << dump_output();
+    inject_trading_account(12345.0, 4);
+    ASSERT_TRUE(wait_until([&] { return any_line("[account] ", "action=fund"); })) << dump_output();
+    EXPECT_TRUE(any_line("[account] ", "balance=12345.00")) << dump_output();
+
     send_command("cancel CTP001 " + std::to_string(order_id));
     ASSERT_TRUE(wait_until([&] { return any_line("[order] ", "action=cancel"); })) << dump_output();
-    EXPECT_TRUE(any_line("[order] ", "order_id=" + std::to_string(order_id))) << dump_output();
+    EXPECT_TRUE(last_line_contains("[order] action=cancel", "order_id=" + std::to_string(order_id)))
+        << dump_output();
 
     send_command("account CTP001");
     ASSERT_TRUE(wait_until([&] { return any_line("[account] ", "action=query"); }))
@@ -658,6 +865,40 @@ TEST_F(StgDemoTest, QuitExitsZeroWithStopOutput) {
     pump_output();
     EXPECT_EQ(exit_code_, 0) << dump_output();
     EXPECT_TRUE(any_line("[stop] ", "reason=self")) << dump_output();
+}
+
+// ── dz_init 失败: 无会话的 on_error 经 SDK 诊断通道保留错误 (不再只剩退出码) ──
+
+class StgDemoInitFailureTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        // 与主 fixture 相同的进程级缓存的 home 路径 (paths::shm 进程内缓存),
+        // 但故意不创建事件/行情通道 -> dz_init 必失败
+        home_ = std::filesystem::temp_directory_path() /
+                ("dz_test_stg_demo_" + std::to_string(dztrader::this_process::pid()));
+        std::error_code ec;
+        std::filesystem::remove_all(home_, ec);
+        std::filesystem::create_directories(home_ / "shm", ec);
+        ASSERT_FALSE(ec) << "create temp home failed: " << ec.message();
+        dztrader::env::set("DZTRADER_HOME", home_.string());
+        dztrader::env::set("DZTRADER_MD_SOURCE", "test_md");
+    }
+
+    void TearDown() override {
+        std::error_code ec;
+        std::filesystem::remove_all(home_, ec);
+    }
+
+    std::filesystem::path home_;
+};
+
+TEST_F(StgDemoInitFailureTest, InitFailureIsDiagnosedOnStderr) {
+    testing::internal::CaptureStderr();
+    dztrader::demo::DemoStrategy strategy;
+    const int32_t rc = dztrader::run_strategy(strategy);
+    const std::string diagnostics = testing::internal::GetCapturedStderr();
+    EXPECT_NE(rc, 0);
+    EXPECT_NE(diagnostics.find("strategy init failed"), std::string::npos) << diagnostics;
 }
 
 // ── SHUTDOWN (master 停止路径): exit 0 + on_stop 收尾输出 ──
