@@ -13,6 +13,11 @@ add_library(stg_demo_core STATIC
 )
 target_include_directories(stg_demo_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(stg_demo_core PUBLIC dzstrategy_sdk)
+# MSVC /W4 /WX: 示例读取 master 注入的 DZTRADER_MD_SOURCE 用于身份展示,
+# std::getenv 在 MSVC 触发 C4996 (建议 _dupenv_s); 与仓内其他 getenv 目标一致关闭该弃用告警。
+if(WIN32)
+    target_compile_definitions(stg_demo_core PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
 
 add_executable(stg_demo
     stg_demo.cpp
