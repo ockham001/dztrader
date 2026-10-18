@@ -31,12 +31,16 @@
 #include <dztrader/shm/writer.h>
 #include <dztrader/strategy_engine.h>
 
+#include <boost/asio/io_context.hpp>
+#include <boost/process/v2/process.hpp>
+#include <boost/process/v2/stdio.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -912,11 +916,16 @@ TEST_F(StgDemoInitFailureTest, InitFailureIsDiagnosedOnStderr) {
     // CaptureStderr 只能截获测试 exe 的 CRT, 截不到 DLL 的 stderr。
     // 故在进程边界验证 —— 与 master 捕获策略 stderr 的真实路径一致:
     // 无事件通道 -> dz_init 失败 -> on_error 经 dz_diag 输出诊断后非零退出。
+    // boost::process::v2 直接把子进程 stderr 重定向到文件 (不经 shell, 跨平台)。
     const auto err_path = home_ / "stderr.txt";
-    const auto out_path = home_ / "stdout.txt";
-    const std::string command = "\"" + demo_exe_path().string() + "\" > \"" + out_path.string() +
-                                "\" 2> \"" + err_path.string() + "\"";
-    const int rc = std::system(command.c_str());
+    std::FILE* err_file = std::fopen(err_path.string().c_str(), "wb");
+    ASSERT_NE(err_file, nullptr) << "open " << err_path << " failed";
+    boost::asio::io_context ioc;
+    boost::process::v2::process demo(
+        ioc, demo_exe_path().string(), {},
+        boost::process::v2::process_stdio{.in = nullptr, .out = nullptr, .err = err_file});
+    const int rc = demo.wait();
+    std::fclose(err_file);
     EXPECT_NE(rc, 0) << "stg_demo should exit non-zero when dz_init fails";
 
     std::ifstream err_stream(err_path, std::ios::binary);
