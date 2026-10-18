@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <format>
 #include <iostream>
 #include <limits>
@@ -24,6 +25,13 @@ namespace {
 /// 格式由策略自行约定; 稳定锚点供测试/冒烟机器断言)。
 
 constexpr std::string_view kOrderUsage = "order <账户> <合约> <价格> <手数> [long|short]";
+
+/// 行情源名: SDK 不提供查询 API; master 注入 DZTRADER_MD_SOURCE,
+/// dz_init 成功即保证已注入且非空 (缺失/为空返回 DZ_EC_MD_SOURCE_NOT_CONFIGURED)。
+const char* md_source_name() {
+    const char* const value = std::getenv("DZTRADER_MD_SOURCE");
+    return value != nullptr ? value : "";
+}
 
 /// 空白分词: 连续空白折叠, 无引号/转义 (UI_INPUT 文本命令语法)
 std::vector<std::string_view> split_ws(std::string_view text) {
@@ -202,7 +210,7 @@ void DemoStrategy::on_start(DzContext* ctx) {
     ctx_ = ctx;
     emit_line(std::format(
         "[ready] strategy={} md_source={} sdk={} home={} 示例策略就绪，输入 help 查看命令",
-        dz_strategy_id(ctx), dz_md_source_name(ctx), dz_version_string(), dz_strategy_home(ctx)));
+        dz_strategy_id(ctx), md_source_name(), dz_version_string(), dz_strategy_home(ctx)));
 }
 
 void DemoStrategy::on_stop() {
@@ -337,7 +345,7 @@ void DemoStrategy::cmd_info(std::span<const std::string_view> args) {
         return;
     }
     emit_line(std::format("[info] strategy={} md_source={} sdk={} home={} 示例策略身份",
-                          dz_strategy_id(ctx_), dz_md_source_name(ctx_), dz_version_string(),
+                          dz_strategy_id(ctx_), md_source_name(), dz_version_string(),
                           dz_strategy_home(ctx_)));
 }
 

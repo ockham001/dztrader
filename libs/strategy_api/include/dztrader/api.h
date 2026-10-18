@@ -67,8 +67,6 @@ DZ_API void dz_release(DzContext* ctx);
  * release 后重新 dz_init() 获得全新会话；事件信号量为同名复用（不重置计数），
  * 若 release 前有未消费的通知，新会话首次 dz_wait 可能立即返回（dz_next_event 排空自愈）。 */
 
-DZ_API const char* dz_md_source_name(DzContext* ctx);
-
 /* ── 事件循环 ──
  * 标准主循环（C++ 引擎 run_strategy 即此形态）：
  *   for (;;) {
