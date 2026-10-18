@@ -15,13 +15,14 @@
 
 策略接口是底层，头文件零内部依赖。所有内部模块头文件依赖策略接口层。
 源码依赖方向相反：策略接口.cpp依赖core/shm/db/trading。
+策略接口的公开头文件零第三方：C 层为纯 C（C11）可编译，C++ 层仅依赖标准库（C++20）（ADR 0020）。
 
 ## 静态库策略
 
 | 类别 | 链接方式 | 原因 |
 |------|---------|------|
 | 项目内部库 | 静态 | 稳定优先 |
-| 策略接口库 | 静态为主(`dzstrategy_sdk_static`, 链接进平台进程与示例策略)；动态(`dzstrategy_sdk`)仅按需 `--target` 构建 | 分发编译后策略的形态预留，ABI 稳定边界 |
+| 策略接口库 | 对外交付=自包含动态库(`dzstrategy_sdk`，第三方静态吸收)；静态(`dzstrategy_sdk_static`)仅仓内/平台内部使用 | 外部策略作者只需头文件+动态库，构建/运行不接触第三方；ABI 稳定边界（ADR 0020） |
 | Qt | 动态 | LGPL |
 | 闭源SDK | 动态 | 无选择 |
 | CRT(MSVC) | 静态(/MT) | 避免vcredist |
@@ -43,7 +44,7 @@
 | mysql | Boost.MySQL + 静态 OpenSSL/ZLIB/boost_charconv | 同上，CMake `DZ_WITH_MYSQL=ON`（默认） | 驱动/一致性/真机集成已验；**td 写端与 dzweb 读端仍为 SQLite，切换属后续阶段** |
 | mongo / 原版 MySQL | 动态库插件（环境变量注入）或代理适配器（独立服务进程） | 未实现 | 只留驱动注册缝，接口不变 |
 
-**策略进程可见后端收敛为 `sqlite` + `mysql`**（均已静态内嵌，单文件 SDK；ADR 0019）：其他后端
+**策略进程可见后端收敛为 `sqlite` + `mysql`**（均已静态内嵌进 SDK，对外经自包含动态库交付；ADR 0016/0019/0020）：其他后端
 当前均未实现；若将来实现，也只用于平台/归档侧——策略需要读取时由对应进程镜像成 sqlite/mysql，
 或等未来代理适配器（另立 ADR）。
 
@@ -79,7 +80,8 @@ md(N-1个,单进程写,自旋锁仅订阅者列表)：写帧→原子更新next_
 
 - C 接口(`dz_` 前缀, `DZ_API` 导出)二进制兼容；C++ 为 header-only 引擎(`run_strategy`/`StrategyBase`，
   `dztrader/strategy_engine.h`)，不产生独立二进制接口
-- 唯一允许暴露的第三方库: nlohmann/json(内置)
+- 公开面（头文件/导出符号/运行时依赖闭包）不暴露任何第三方（ADR 0020）；C 层纯 C 可编译，
+  C++ 层仅依赖标准库
 - 不提供日志,提供 `dz_strategy_home()` 返回策略 exe 所在目录
 - 实盘/回测不放进 C 接口,回测通过回放进程往 shm 写历史数据
 - **实时行情只推 tick**: 不提供 bar 推送、引擎内不做 K 线聚合；K 线由策略自行聚合
@@ -90,7 +92,7 @@ md(N-1个,单进程写,自旋锁仅订阅者列表)：写帧→原子更新next_
 
 ## 依赖禁止
 
-- `dzstrategy_sdk` 面向策略分发，仅允许暴露 `nlohmann/json`；实现依赖 dzcore/dzshm（`api.cpp` 使用 `LastError`、shm writer/reader），依赖方向为内部库，非 ABI 暴露面
+- `dzstrategy_sdk` 面向策略分发，为自包含动态库：第三方依赖静态吸收，导出符号仅 `dz_*`，运行时只依赖系统基础库（ADR 0020）；实现依赖 dzcore/dzshm（`api.cpp` 使用 `LastError`、shm writer/reader），依赖方向为内部库，非 ABI 暴露面
 - dzlog独立库,仅平台进程使用
 
 ## Reference Projects
