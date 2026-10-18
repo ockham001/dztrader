@@ -552,10 +552,11 @@ TEST_F(IngestDbCacheTest, BackoffSuppressesRetryWithinWindow) {
 }
 
 // WP3b 退避: 窗口过后重试 — 库在窗口内恢复也不提前尝试, 窗口一到即成功;
-// 成功后缓存命中不再重开 (成功路径不受退避影响)。
+// 成功后缓存命中不再重开 (成功路径不受退避影响)。窗口到期用测试钩子立即
+// 结束, 不 sleep: Windows CI 上 create_td_db 较慢, 靠墙钟窗口判定会偶发越过。
 TEST_F(IngestDbCacheTest, RetriesAfterWindowAndThenServesFromCache) {
     dztrader::strategy_api_internal::set_ingest_failure_backoff_for_test(
-        std::chrono::milliseconds(100));
+        std::chrono::milliseconds(60000));
     const auto config = make_config("warm.db");
     const auto failed = dztrader::strategy_api_internal::acquire_ingest_db(config);
     EXPECT_EQ(nullptr, failed.db);
@@ -568,7 +569,7 @@ TEST_F(IngestDbCacheTest, RetriesAfterWindowAndThenServesFromCache) {
     EXPECT_EQ(nullptr, within.db);
     EXPECT_EQ(1u, dztrader::strategy_api_internal::ingest_open_attempts_for_test());
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    dztrader::strategy_api_internal::expire_ingest_backoff_for_test();
     const auto after = dztrader::strategy_api_internal::acquire_ingest_db(config);
     ASSERT_NE(nullptr, after.db);  // 窗口过后重试成功
     EXPECT_EQ(2u, dztrader::strategy_api_internal::ingest_open_attempts_for_test());

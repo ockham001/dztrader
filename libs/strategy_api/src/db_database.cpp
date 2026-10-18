@@ -149,6 +149,12 @@ void reset_ingest_cache_for_test() {
     cache.open_attempts = 0;
 }
 
+void expire_ingest_backoff_for_test() {
+    IngestDbCache& cache = ingest_db_cache();
+    const std::lock_guard<std::mutex> lock(cache.mutex);
+    cache.retry_not_before.reset();
+}
+
 uint64_t ingest_open_attempts_for_test() {
     IngestDbCache& cache = ingest_db_cache();
     const std::lock_guard<std::mutex> lock(cache.mutex);

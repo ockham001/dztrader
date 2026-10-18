@@ -101,6 +101,11 @@ struct IngestDbAcquire {
 void set_ingest_failure_backoff_for_test(std::chrono::milliseconds backoff);
 
 /**
+ * @brief 仅测试: 立即结束当前失败退避窗口 (不改变退避时长); 生产代码不调用
+ */
+void expire_ingest_backoff_for_test();
+
+/**
  * @brief 仅测试: 清空 ingest 缓存 (句柄/失败去重/退避/尝试计数) 并恢复默认退避
  */
 void reset_ingest_cache_for_test();
