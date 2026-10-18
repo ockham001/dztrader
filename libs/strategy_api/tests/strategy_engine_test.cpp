@@ -24,7 +24,6 @@
 
 namespace {
 
-using dztrader::DzUiInput;
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::MultiWriter;
@@ -179,10 +178,9 @@ public:
         ++schedule_count;
         timer_id = ev.timer_id;
     }
-    void on_ui_input(const DzUiInput& input) {
+    void on_ui_input(std::string_view data) {
         ++input_count;
-        last_instance_id = std::string(input.instance_id);
-        last_input = std::string(input.data, input.data_size);
+        last_input = std::string(data);
     }
     void on_error(DzErrorCode code, std::string_view message) {
         ++error_count;
@@ -211,7 +209,6 @@ public:
     std::string last_position_instrument;
     std::string last_account_id;
     DzTimerId timer_id = 0;
-    std::string last_instance_id;
     std::string last_input;
     DzErrorCode error_code = 0;
     std::string error_message;
@@ -710,7 +707,7 @@ TEST_F(StrategyEngineTest, UserInputFrameDirectedToOwnStrategyDispatched) {
         }
         void on_stop() { inner.on_stop(); }
         void on_tick(const DzTick& tick) { inner.on_tick(tick); }
-        void on_ui_input(const DzUiInput& input) { inner.on_ui_input(input); }
+        void on_ui_input(std::string_view data) { inner.on_ui_input(data); }
         void on_schedule(const DzScheduleEvent& ev) {
             inner.on_schedule(ev);
             shutdown_written.store(fixture.write_shutdown(strategy_id));
@@ -728,7 +725,6 @@ TEST_F(StrategyEngineTest, UserInputFrameDirectedToOwnStrategyDispatched) {
     EXPECT_EQ(rc, 0);
     EXPECT_EQ(strategy.input_count, 1);
     // instance_id 透传帧扩展头: SDK 已定向过滤, 引擎收到的必为本策略输入
-    EXPECT_EQ(strategy.last_instance_id, strategy_id);
     EXPECT_EQ(strategy.last_input, R"({"action":"pause","reason":"manual"})");
     EXPECT_TRUE(shutdown_written.load());
     EXPECT_EQ(strategy.stop_count, 1);
@@ -1032,7 +1028,6 @@ TEST_F(StrategyEngineTest, MalformedUiInputFramesAreDropped) {
 
     EXPECT_EQ(strategy.input_count, 1);
     EXPECT_EQ(strategy.last_input, "abc");
-    EXPECT_EQ(strategy.last_instance_id, "stg_test");
 }
 
 TEST_F(StrategyEngineTest, MalformedUiInputViaHandleEventDropped) {

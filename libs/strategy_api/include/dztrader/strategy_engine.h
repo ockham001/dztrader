@@ -120,7 +120,7 @@ template <typename T>
 concept HasOnSchedule = requires(T t, const DzScheduleEvent& ev) { t.on_schedule(ev); };
 
 template <typename T>
-concept HasOnUiInput = requires(T t, const DzUiInput& input) { t.on_ui_input(input); };
+concept HasOnUiInput = requires(T t, std::string_view data) { t.on_ui_input(data); };
 
 template <typename T>
 concept HasOnError =
@@ -333,11 +333,7 @@ void dispatch_ui_input(StrategyT& strategy, const std::byte* frame) noexcept {
     }
     const auto* data = reinterpret_cast<const char*>(frame + kMinSize);
     try {
-        strategy.on_ui_input(DzUiInput{
-            .instance_id = std::string_view(ext.instance_id, instance_id_len),
-            .data = data,
-            .data_size = ext.data_size,
-        });
+        strategy.on_ui_input(std::string_view(data, ext.data_size));
     } catch (const std::exception& e) {
         report_callback_error(strategy, "on_ui_input", e);
     } catch (...) {

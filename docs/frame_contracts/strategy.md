@@ -18,13 +18,13 @@
 
 **语义**：向指定策略进程投递用户输入（UI → 策略）
 **数据流**：形态 3（总则 §4.2）——前端 → dzweb → 目标策略进程（帧头 `instance_id` = 目标裸策略名，如 `stg_demo`）；无 RTN，单向投递（fire-and-forget）
-**Payload**：变长 UTF-8 文本或 JSON（策略自行组织格式），无固定 schema
+**Payload**：变长 payload（内容与编码由策略自行约定，无固定 schema）；长度 = 扩展头 `data_size`
 
 **时序**：无同步响应、无 RTN；本契约不规定策略的响应义务，前端不设 pending
 
 **约束**：
 - 定向帧，仅 `instance_id` 匹配的策略进程处理（策略 SDK 按自身裸策略名匹配）
-- 策略侧接收 API 由 SDK 提供（`on_ui_input` 回调，见 `strategy_base.h`）；SDK 按 `instance_id` == 本策略名 定向过滤后再回调
+- 策略侧接收 API 由 SDK 提供：`void on_ui_input(std::string_view data)`（见 `strategy_base.h`）；SDK 按 `instance_id` == 本策略名 定向过滤后再回调
 - 发送方（dzweb）未知策略是否存活时，帧可能无人认领被丢弃（总则 §4.1）
 
 **镜像**：不进 dzweb 镜像
