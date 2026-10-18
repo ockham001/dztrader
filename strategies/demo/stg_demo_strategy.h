@@ -3,7 +3,7 @@
  * @brief stg_demo 常驻示例策略: UI_INPUT 文本命令驱动, 结果经 OUTPUT_UI 文本行输出
  *
  * 进程入口 (stg_demo.cpp) 只调用 dztrader::run_strategy; 本类不解析 argv、
- * 不做控制台交互。master 托管启动后, UI 经 UI_INPUT 帧投递文本命令
+ * 不做终端交互。master 托管启动后, UI 经 UI_INPUT 帧投递文本命令
  * (语法 `<命令> [参数...]`: 空白分词、命令小写、无引号), 策略把结果写成
  * OUTPUT_UI 帧文本行 —— 行首 ASCII 类别标签 + key=value + 中文正文;
  * md dump 为单帧多行 (逐 tick 一行), 其余命令单帧一行。
