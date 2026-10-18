@@ -156,13 +156,14 @@ bool frame_has_inst(DzFrameType t) {
 /// basic 帧 (定长结构体 payload 紧跟 DzFrameHeader, 无 ext 头): 无法按 JSON 解析。
 /// 策略/交易链路会在事件通道产生此类帧 (TD_ORDER_REQ=DZ_FRAME_TD_ORDER_REQ /
 /// ORDER_REPORT=DZ_FRAME_ORDER_REPORT), 混在 ext 帧里, drain 时只记摘要跳过 payload 解析。
+/// 注意: PRELOAD_MD_SHM 不是 basic (ext-inst 头, 契约 SHM 通道配置), 见 drain_available
+/// 中的显式分支; 只有 PRELOAD_EVENT_SHM 是 basic。
 bool frame_is_basic_struct(DzFrameType t) {
     switch (t) {
         case DZ_FRAME_TD_ORDER_REQ:
         case DZ_FRAME_TD_ORDER_CANCEL_REQ:
         case DZ_FRAME_TD_QUERY_ACCOUNT_STATUS:
         case DZ_FRAME_PRELOAD_EVENT_SHM:
-        case DZ_FRAME_PRELOAD_MD_SHM:
         case DZ_FRAME_ORDER_REPORT:
         case DZ_FRAME_TRADE_REPORT:
         case DZ_FRAME_POSITION_INFO:
@@ -463,6 +464,20 @@ protected:
                     }
                 }
                 summary += " inst=" + df.instance_id + " text=" + df.text;
+            } else if (df.type == DZ_FRAME_PRELOAD_MD_SHM) {
+                // 《帧契约：SHM 通道配置》: PRELOAD_MD_SHM 是 ext-inst 帧 (instance_id =
+                // 行情通道名), payload = struct DzShmPreload (非 JSON); 与 basic 的
+                // PRELOAD_EVENT_SHM 布局不同, 不能按 basic 跳过, 也不能当 JSON 解析。
+                df.instance_id = std::string(view.ext_inst_id());
+                summary += " preload_md inst=" + df.instance_id;
+                if (view.ext_inst_payload_size() >= sizeof(DzShmPreload)) {
+                    DzShmPreload params{};
+                    std::memcpy(&params, view.ext_inst_payload(), sizeof(params));
+                    summary += " pages=" + std::to_string(params.pages) +
+                               " bytes=" + std::to_string(params.bytes);
+                } else {
+                    summary += " short_payload";
+                }
             } else if (frame_is_basic_struct(df.type)) {
                 summary += " basic";
             } else if (frame_has_inst(df.type)) {
@@ -784,6 +799,9 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
 
     // 1b-5. 空账户拒单闭环 (UI 驱动): order -> [order] order_id -> td no_session 推
     //       REJECTED 回报 (strategy_id 定向 stg_demo) -> 策略输出 [report] status=REJECTED(拒单)
+    // 注意: 本断言只在临时 home 的 TD 库为空 (账户无 seq 水位) 时成立; 真实环境有历史
+    // 水位时 no_session 拒单 seq=0 会被 ingest 吞掉 —— 见 #13, 修复后本条应改为
+    // 「预置历史水位」场景 (修复前保留空库前提, 不做假绿覆盖)。
     ASSERT_TRUE(send_ui_input("order CTP001 IF2606 100.0 1")) << "write UI_INPUT(order) failed";
     ASSERT_TRUE(
         wait_until([&] { return pump_and_saw_ui_line("[order] ", "action=order"); }, 10000, [] {}))
