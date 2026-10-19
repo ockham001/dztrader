@@ -21,6 +21,7 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <random>
 
 namespace dztrader::webui {
 namespace {
@@ -79,10 +80,55 @@ struct ShmFixture {
         }
         return last;
     }
+
+    /// 最后一帧的完整读取结果：type + instance_id + JSON payload
+    /// （type-only 断言会放过"写空帧/错帧"，出方向用例必须逐字段锁定）。
+    struct Frame {
+        DzFrameType type = static_cast<DzFrameType>(-1);
+        std::string instance_id;    ///< 仅 has_inst_id=true 时填充
+        uint32_t payload_size = 0;  ///< 扩展 payload 字节数
+        nlohmann::json payload;     ///< 仅 payload_size>0 时解析
+    };
+
+    /// 排空 reader，返回最后一帧。@param has_inst_id true=DzExtInstFrameHeader
+    /// （SET/FLUSH/md_control 定向帧），false=DzExtFrameHeader（NOTIFY_UI 等广播帧）。
+    Frame last_frame(bool has_inst_id) {
+        Frame out;
+        while (const auto* f = reader->next_frame()) {
+            const shm::FrameView v(f);
+            out.type = v.type();
+            const std::byte* payload = nullptr;
+            if (has_inst_id) {
+                out.instance_id = v.ext_inst_id();
+                out.payload_size = v.ext_inst_payload_size();
+                payload = v.ext_inst_payload();
+            } else {
+                out.payload_size = v.ext_payload_size();
+                payload = v.ext_payload();
+            }
+            if (out.payload_size > 0) {
+                out.payload = nlohmann::json::parse(
+                    reinterpret_cast<const char*>(payload),
+                    reinterpret_cast<const char*>(payload) + out.payload_size);
+            }
+        }
+        return out;
+    }
 };
 
 // ===== LogDomainService::handle_log_control（迁移自 log_control_test.cpp，
 // dispatch_log_control 归并后行为等价：self 直调/其他 SHM/失败 NOTIFY_UI/未知类型）=====
+
+/// 进程唯一配置文件路径（PID + 随机后缀）：新写用例按 §3.5 唯一化，避免并发
+/// ctest 运行共用同名 config。
+std::filesystem::path unique_cfg_path(const std::string& name) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint32_t> dist;
+    return std::filesystem::temp_directory_path() /
+           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
+            "_" + std::to_string(dist(gen)) + ".json");
+}
 
 // 自身 target：直调 LogConfig，不写 SHM，publish 推当前生效值（镜像 + 广播）
 TEST(LogDomainServiceTest, SelfTargetDirectCallsLogConfig) {
@@ -144,7 +190,14 @@ TEST(LogDomainServiceTest, SelfTargetSetFailureNotifiesUi) {
     // publish 回推旧值
     ASSERT_EQ(ws.messages.size(), 1u);
     EXPECT_EQ(ws.messages[0].data["level"], "debug");
-    EXPECT_EQ(fx.last_type(), DZ_FRAME_NOTIFY_UI);  // 契约：失败必发 NOTIFY_UI
+    // 失败四件套 (契约 log + 总则 §8): 必发 NOTIFY_UI 错误弹窗 — source/level/popup/message
+    // 逐字段锁定
+    const auto frame = fx.last_frame(/*has_inst_id=*/false);
+    EXPECT_EQ(frame.type, DZ_FRAME_NOTIFY_UI);
+    EXPECT_EQ(frame.payload["source"], dztrader::this_process::exe_stem());
+    EXPECT_EQ(frame.payload["level"], "error");
+    EXPECT_TRUE(frame.payload["popup"].get<bool>());
+    EXPECT_FALSE(frame.payload["message"].get<std::string>().empty());
 }
 
 // 其他进程 target：写 SHM SET_LOG_CONFIG 帧，不改自身
@@ -164,7 +217,11 @@ TEST(LogDomainServiceTest, OtherTargetWritesShmFrame) {
     EXPECT_EQ(self_log.current().at("level"), "debug");  // 自身不被改写
     EXPECT_TRUE(mirror.instance("dzweb").empty());       // 其他进程分支不 publish
     EXPECT_TRUE(ws.messages.empty());
-    EXPECT_EQ(fx.last_type(), DZ_FRAME_SET_LOG_CONFIG);  // 帧已写入 SHM
+    // 帧内容逐字段锁定: instance_id=目标, payload=增量 patch (level 未被丢弃)
+    const auto frame = fx.last_frame(/*has_inst_id=*/true);
+    EXPECT_EQ(frame.type, DZ_FRAME_SET_LOG_CONFIG);
+    EXPECT_EQ(frame.instance_id, "dzmd_ctp");
+    EXPECT_EQ(frame.payload["level"], "debug");
     std::filesystem::remove(cfg_path);
 }
 
@@ -184,7 +241,7 @@ TEST(LogDomainServiceTest, OtherTargetNoWriterFails) {
     std::filesystem::remove(cfg_path);
 }
 
-// FLUSH 其他进程: 帧写入成功 -> Ok + 帧类型正确
+// FLUSH 其他进程: 帧写入成功 -> Ok + instance_id=目标 + 空 payload
 TEST(LogDomainServiceTest, FlushOtherTargetWritesFrame) {
     ShmFixture fx;
     auto cfg_path = std::filesystem::temp_directory_path() / "dzweb_dispatch_flush.json";
@@ -197,7 +254,62 @@ TEST(LogDomainServiceTest, FlushOtherTargetWritesFrame) {
     LogDomainService svc(mirror, ws, self_log, &*fx.writer);
     const auto r = svc.handle_log_control("dzmd_ctp", DZ_FRAME_FLUSH_LOG, nlohmann::json::object());
     EXPECT_EQ(r, LogControlResult::Ok);
-    EXPECT_EQ(fx.last_type(), DZ_FRAME_FLUSH_LOG);
+    const auto frame = fx.last_frame(/*has_inst_id=*/true);
+    EXPECT_EQ(frame.type, DZ_FRAME_FLUSH_LOG);
+    EXPECT_EQ(frame.instance_id, "dzmd_ctp");
+    EXPECT_EQ(frame.payload_size, 0u);  // 契约 log: FLUSH payload 为空
+    std::filesystem::remove(cfg_path);
+}
+
+// FLUSH 自身 target: 短路径直接 flush — Ok, 无帧, 无回推 (契约 log: 形态 2 短路)
+TEST(LogDomainServiceTest, FlushSelfTargetShortPathNoFrame) {
+    ShmFixture fx;
+    auto cfg_path = unique_cfg_path("dzweb_dispatch_flush_self");
+    std::filesystem::remove(cfg_path);
+    dztrader::platform::LogConfig self_log("dzweb", cfg_path);
+    self_log.load();
+
+    MirrorStore mirror;
+    FakeBroadcaster ws;
+    LogDomainService svc(mirror, ws, self_log, &*fx.writer);
+    const auto r = svc.handle_log_control(dztrader::this_process::exe_stem(), DZ_FRAME_FLUSH_LOG,
+                                          nlohmann::json::object());
+    EXPECT_EQ(r, LogControlResult::Ok);
+    EXPECT_EQ(fx.last_type(), static_cast<DzFrameType>(-1));  // 即使 writer 可用也不写帧
+    EXPECT_TRUE(ws.messages.empty());                         // 动作帧无回推
+    std::filesystem::remove(cfg_path);
+}
+
+// FLUSH 自身 target 且 writer 缺失 (API-only): 短路径不依赖事件通道, 仍 Ok
+TEST(LogDomainServiceTest, FlushSelfTargetWithoutWriterStillOk) {
+    auto cfg_path = unique_cfg_path("dzweb_dispatch_flush_self_nowriter");
+    std::filesystem::remove(cfg_path);
+    dztrader::platform::LogConfig self_log("dzweb", cfg_path);
+    self_log.load();
+
+    MirrorStore mirror;
+    FakeBroadcaster ws;
+    LogDomainService svc(mirror, ws, self_log, nullptr);
+    const auto r = svc.handle_log_control(dztrader::this_process::exe_stem(), DZ_FRAME_FLUSH_LOG,
+                                          nlohmann::json::object());
+    EXPECT_EQ(r, LogControlResult::Ok);
+    EXPECT_TRUE(ws.messages.empty());
+    std::filesystem::remove(cfg_path);
+}
+
+// FLUSH 其他进程 target 且 writer 缺失: WriteFailed, 不产生任何帧
+TEST(LogDomainServiceTest, FlushOtherTargetNoWriterFails) {
+    auto cfg_path = unique_cfg_path("dzweb_dispatch_flush_nowriter");
+    std::filesystem::remove(cfg_path);
+    dztrader::platform::LogConfig self_log("dzweb", cfg_path);
+    self_log.load();
+
+    MirrorStore mirror;
+    FakeBroadcaster ws;
+    LogDomainService svc(mirror, ws, self_log, nullptr);
+    const auto r = svc.handle_log_control("dzmd_ctp", DZ_FRAME_FLUSH_LOG, nlohmann::json::object());
+    EXPECT_EQ(r, LogControlResult::WriteFailed);
+    EXPECT_TRUE(ws.messages.empty());
     std::filesystem::remove(cfg_path);
 }
 
@@ -493,7 +605,11 @@ TEST(MdControlDomainServiceTest, MdConnectOkWritesRequestFrame) {
     EXPECT_EQ(replies[0]["seq"], 1);
     EXPECT_EQ(replies[0]["payload"]["source"], "dzmd_ctp");
     EXPECT_EQ(replies[0]["payload"]["ok"], true);
-    EXPECT_EQ(fx.last_type(), DZ_FRAME_REQUEST_MD_CONNECT);
+    const auto frame = fx.last_frame(/*has_inst_id=*/true);
+    EXPECT_EQ(frame.type, DZ_FRAME_REQUEST_MD_CONNECT);
+    EXPECT_EQ(frame.instance_id,
+              "dzmd_ctp");  // 契约 md-subscription: 定向帧 instance_id = 目标行情进程名
+    EXPECT_EQ(frame.payload_size, 0u);
 }
 
 // md_disconnect 守卫通过：写 DZ_FRAME_REQUEST_MD_DISCONNECT + 回 md_disconnect_ack
@@ -514,7 +630,10 @@ TEST(MdControlDomainServiceTest, MdDisconnectOkWritesDisconnectFrame) {
     ASSERT_EQ(replies.size(), 1u);
     EXPECT_EQ(replies[0]["type"], "md_disconnect_ack");
     EXPECT_EQ(replies[0]["payload"]["ok"], true);
-    EXPECT_EQ(fx.last_type(), DZ_FRAME_REQUEST_MD_DISCONNECT);
+    const auto frame = fx.last_frame(/*has_inst_id=*/true);
+    EXPECT_EQ(frame.type, DZ_FRAME_REQUEST_MD_DISCONNECT);
+    EXPECT_EQ(frame.instance_id, "dzmd_ctp");
+    EXPECT_EQ(frame.payload_size, 0u);
 }
 
 // md_disconnect 守卫失败（writer 缺失）：回 error，不写帧（API-only 无事件通道）
@@ -548,7 +667,12 @@ TEST(MdControlDomainServiceTest, QuerySubscriptionsOkWritesQueryFrame) {
     EXPECT_EQ(replies[0]["type"], "query_md_subscriptions_ack");
     EXPECT_EQ(replies[0]["seq"], 5);
     EXPECT_EQ(replies[0]["payload"]["ok"], true);
-    EXPECT_EQ(fx.last_type(), DZ_FRAME_QUERY_MD_SUBSCRIPTIONS);
+    const auto frame = fx.last_frame(/*has_inst_id=*/true);
+    EXPECT_EQ(frame.type, DZ_FRAME_QUERY_MD_SUBSCRIPTIONS);
+    EXPECT_EQ(frame.instance_id, "dzmd_ctp");
+    EXPECT_EQ(frame.payload["query"], "unsuccessful");
+    EXPECT_FALSE(frame.payload.contains(
+        "source"));  // 回执 source 即定向帧 instance_id, 不重复进 SHM payload
 }
 
 // query_md_subscriptions 缺 payload：回 error，不写帧
