@@ -110,7 +110,7 @@ describe('useProcessStore', () => {
       const store = useProcessStore()
       const result = await store.start(1, 'dzmd_ctp')
       expect(result).toBe(true)
-      expect(marketSourcesApi.start).toHaveBeenCalledWith(1, undefined)
+      expect(marketSourcesApi.start).toHaveBeenCalledWith(1, undefined)  // 无 data
       const { pending } = marketSourcePending
       expect(pending['source:1:start']).toBe(true)  // 成功保持挂起
 

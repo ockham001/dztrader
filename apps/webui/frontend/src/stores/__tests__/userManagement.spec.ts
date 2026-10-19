@@ -54,11 +54,6 @@ function mockUser(over = {}): Record<string, unknown> {
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
-  vi.useFakeTimers()
-})
-
-afterEach(() => {
-  vi.useRealTimers()
 })
 
 describe('useUserManagementStore (P3 任务6 原型残留清理)', () => {
@@ -137,6 +132,14 @@ describe('useUserManagementStore (P3 任务6 原型残留清理)', () => {
   })
 
   describe('toggleLoginLockout（安全开关）', () => {
+    // 仅本组使用 fake timers（minPendingMs 300）；不改变既有 createUser/removeUser 运行环境
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
     it('成功：全量提交 setConfig，minDelay 后应用服务端返回并清错误', async () => {
       const updated: SecurityConfig = {
         login_lockout_enabled: true,

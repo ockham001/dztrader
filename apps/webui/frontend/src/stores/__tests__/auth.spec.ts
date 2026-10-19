@@ -113,9 +113,10 @@ describe('useAuthStore.login / logout（主登录链路）', () => {
     const apiError = new ApiError(401, { error: 'invalid_credentials' })
     mockedAuthApi.login.mockRejectedValue(apiError)
     const auth = useAuthStore()
+    auth.token = 'existing-token'  // 已有会话：失败不得写/清 token
     await expect(auth.login({ username: 'regular', password: 'bad' })).rejects.toBe(apiError)
     expect(auth.error).toBe('invalid_credentials')
-    expect(auth.token).toBeNull()  // 失败不写 token
+    expect(auth.token).toBe('existing-token')  // 失败不写 token
     expect(auth.loading).toBe(false)
     expect(localStorage.getItem('jwt_token')).toBeNull()
   })

@@ -112,13 +112,14 @@ describe('useMdConfigStore', () => {
       expect(store.configs['dzmd_ctp'].current_broker_name).toBe('b1')
     })
 
-    it('非法 payload（缺 source/config/null）忽略不写', () => {
+    it('非法 payload（缺 source/config/null）忽略不写且不清已有镜像', () => {
       const store = useMdConfigStore()
+      store.applyMdConfig({ source: 'dzmd_ctp', config: configPayload })
       store.applyMdConfig({} as never)
       store.applyMdConfig({ source: 'dzmd_ctp' } as never)
       store.applyMdConfig({ config: configPayload } as never)
       store.applyMdConfig(null as never)
-      expect(Object.keys(store.configs)).toHaveLength(0)
+      expect(store.configs['dzmd_ctp']).toEqual(configPayload)
     })
 
     it('到达时批量清全部配置类 pending（对照 setMdConfig 清 11 字段语义）', async () => {
@@ -164,11 +165,17 @@ describe('useMdConfigStore', () => {
       expect(store.statuses['dzmd_ctp']).toEqual({ source: 'dzmd_ctp', status: { login_state: 'online' } })
     })
 
-    it('后到完整覆盖先到', () => {
+    it('后到完整覆盖先到（缺失字段不残留）', () => {
       const store = useMdConfigStore()
-      store.applyMdStatus({ source: 'dzmd_ctp', status: { login_state: 'online' } })
+      store.applyMdStatus({
+        source: 'dzmd_ctp',
+        status: { login_state: 'online', api_version: 'v6.7.2' },
+      })
       store.applyMdStatus({ source: 'dzmd_ctp', status: { login_state: 'offline' } })
-      expect(store.statuses['dzmd_ctp'].status.login_state).toBe('offline')
+      expect(store.statuses['dzmd_ctp']).toEqual({
+        source: 'dzmd_ctp',
+        status: { login_state: 'offline' },
+      })
     })
 
     it('写镜像但不清 pending（契约 md-status 无状态字段；pending 由 RTN_PROGRESS 驱动）', async () => {
@@ -184,10 +191,11 @@ describe('useMdConfigStore', () => {
       expect(marketSourcePending.pending['source:1:login']).toBe(true)
     })
 
-    it('非法 payload（缺 source/null）忽略不写且不清已有镜像', () => {
+    it('非法 payload（缺 source/status/null）忽略不写且不清已有镜像', () => {
       const store = useMdConfigStore()
       store.applyMdStatus({ source: 'dzmd_ctp', status: { api_version: 'v6.7.2' } })
       store.applyMdStatus({} as never)
+      store.applyMdStatus({ source: 'dzmd_ctp' } as never)  // 缺 status
       store.applyMdStatus(null as never)
       expect(store.statuses['dzmd_ctp']).toEqual({
         source: 'dzmd_ctp',

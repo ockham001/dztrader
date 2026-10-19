@@ -32,6 +32,8 @@ vi.mock('@/api/marketSources', () => ({
     updateBroker: vi.fn(),
     setCurrentBroker: vi.fn(),
     updateFrontends: vi.fn(),
+    setSubscribeParams: vi.fn(),
+    setShmConfig: vi.fn(),
   },
 }))
 
@@ -123,7 +125,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(s.subscribeBatchDelayMs).toBeNull()
       expect(s.subCheckIntervalMs).toBeNull()
       expect(s.subMaxRetry).toBeNull()
-      // 17 个 pending 字段默认 false
+      // 18 个 pending 字段默认 false
       expect(s.loginPending).toBe(false)
       expect(s.logoutPending).toBe(false)
       expect(s.autoLoginPending).toBe(false)
@@ -210,9 +212,11 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(s.subCheckIntervalMs).toBe(3000)
       expect(s.subMaxRetry).toBe(4)
 
-      // 置位路径：两个 pending 字段分别聚合自 source:{id}:{op}
-      await marketSourcePending.run('source:1:subscribe_params', () => Promise.resolve('x'))
-      await marketSourcePending.run('source:1:shm_config', () => Promise.resolve('x'))
+      // 置位路径：走真实薄代理操作，证明操作 key 与聚合 key 端到端一致
+      vi.mocked(marketSourcesApi.setSubscribeParams).mockResolvedValue({ ok: true })
+      vi.mocked(marketSourcesApi.setShmConfig).mockResolvedValue({ ok: true })
+      await store.setSubscribeParams(1, { subscribe_batch_size: 600 })
+      await store.setShmConfig(1, { check_pages: 2 })
       expect(store.sources[0].subscribeParamsPending).toBe(true)
       expect(store.sources[0].shmConfigPending).toBe(true)
     })
@@ -706,6 +710,9 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       const xtp = store.sources.find(s => s.id === 2)!
       expect(ctp.logoutPending).toBe(true)
       expect(xtp.logoutPending).toBe(false)
+      // HTTP 成功不清 pending：logout pending 挂起时再次 batchLogout 不重复下发
+      await store.batchLogout()
+      expect(marketSourcesApi.logout).toHaveBeenCalledTimes(1)
       await vi.advanceTimersByTimeAsync(10_000)
     })
 
@@ -725,6 +732,9 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       const xtp = store.sources.find(s => s.id === 2)!
       expect(ctp.autoLoginPending).toBe(true)
       expect(xtp.autoLoginPending).toBe(false)  // 镜像默认 false，无需翻转
+      // autoLogin pending 挂起时再次批量翻转不重复下发
+      await store.batchToggleAutoLogin(false)
+      expect(marketSourcesApi.setAutoLogin).toHaveBeenCalledTimes(1)
       await vi.advanceTimersByTimeAsync(10_000)
     })
   })
