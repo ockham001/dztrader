@@ -53,6 +53,16 @@ const std::filesystem::path& db();
  */
 const std::filesystem::path& td_db();
 
+/**
+ * @brief 清空全部路径缓存（仅测试使用）
+ *
+ * 测试 fixture 在修改 `DZTRADER_HOME` 后调用一次，使后续 `paths::*`
+ * 按新环境重新解析。产品代码不得调用。
+ *
+ * @warning 调用后此前取得的路径引用全部失效，调用方不得跨重置持有引用。
+ */
+void reset_for_test();
+
 }  // namespace dztrader::paths
 
 #endif /* DZTRADER_CORE_PATH_H_ */

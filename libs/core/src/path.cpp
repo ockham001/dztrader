@@ -11,6 +11,8 @@
 
 #include <filesystem>
 #include <format>
+#include <mutex>
+#include <optional>
 #include <string_view>
 
 namespace dztrader::paths {
@@ -50,75 +52,91 @@ void ensure_exists(const std::filesystem::path& dir) {
     }
 }
 
+/// 路径缓存。所有访问均在 g_cache_mutex 保护下进行。
+struct PathCache {
+    std::optional<std::filesystem::path> home;
+    std::optional<std::filesystem::path> configs;
+    std::optional<std::filesystem::path> shm;
+    std::optional<std::filesystem::path> logs;
+    std::optional<std::filesystem::path> cache;
+    std::optional<std::filesystem::path> strategies;
+    std::optional<std::filesystem::path> db;
+    std::optional<std::filesystem::path> td_db;
+};
+
+std::mutex g_cache_mutex;
+PathCache g_cache;
+
+/// 取缓存的 home。调用者必须持有 g_cache_mutex。
+const std::filesystem::path& home_locked() {
+    if (!g_cache.home) {
+        auto p = compute_home();
+        ensure_exists(p);
+        g_cache.home = std::move(p);
+    }
+    return *g_cache.home;
+}
+
+/// 取缓存的子目录。调用者必须持有 g_cache_mutex。
+const std::filesystem::path& subdir_locked(std::optional<std::filesystem::path>& slot,
+                                           const char* name) {
+    if (!slot) {
+        auto d = home_locked() / name;
+        ensure_exists(d);
+        slot = std::move(d);
+    }
+    return *slot;
+}
+
 }  // namespace
 
 const std::filesystem::path& home() {
-    static const auto CACHED_HOME = [] {
-        auto p = compute_home();
-        ensure_exists(p);
-        return p;
-    }();
-    return CACHED_HOME;
+    std::lock_guard<std::mutex> lock(g_cache_mutex);
+    return home_locked();
 }
 
 const std::filesystem::path& configs() {
-    static const auto CACHED = [] {
-        auto d = home() / "configs";
-        ensure_exists(d);
-        return d;
-    }();
-    return CACHED;
+    std::lock_guard<std::mutex> lock(g_cache_mutex);
+    return subdir_locked(g_cache.configs, "configs");
 }
 
 const std::filesystem::path& shm() {
-    static const auto CACHED = [] {
-        auto d = home() / "shm";
-        ensure_exists(d);
-        return d;
-    }();
-    return CACHED;
+    std::lock_guard<std::mutex> lock(g_cache_mutex);
+    return subdir_locked(g_cache.shm, "shm");
 }
 
 const std::filesystem::path& logs() {
-    static const auto CACHED = [] {
-        auto d = home() / "logs";
-        ensure_exists(d);
-        return d;
-    }();
-    return CACHED;
+    std::lock_guard<std::mutex> lock(g_cache_mutex);
+    return subdir_locked(g_cache.logs, "logs");
 }
 
 const std::filesystem::path& cache() {
-    static const auto CACHED = [] {
-        auto d = home() / "cache";
-        ensure_exists(d);
-        return d;
-    }();
-    return CACHED;
+    std::lock_guard<std::mutex> lock(g_cache_mutex);
+    return subdir_locked(g_cache.cache, "cache");
 }
 
 const std::filesystem::path& strategies() {
-    static const auto CACHED = [] {
-        auto d = home() / "strategies";
-        ensure_exists(d);
-        return d;
-    }();
-    return CACHED;
+    std::lock_guard<std::mutex> lock(g_cache_mutex);
+    return subdir_locked(g_cache.strategies, "strategies");
 }
 
 const std::filesystem::path& db() {
-    static const auto CACHED = [] {
-        auto d = home() / "db";
-        ensure_exists(d);
-        return d;
-    }();
-    return CACHED;
+    std::lock_guard<std::mutex> lock(g_cache_mutex);
+    return subdir_locked(g_cache.db, "db");
 }
 
 const std::filesystem::path& td_db() {
-    // db() 已保证目录存在, 此处不重复 ensure
-    static const auto CACHED = db() / "td.db";
-    return CACHED;
+    std::lock_guard<std::mutex> lock(g_cache_mutex);
+    if (!g_cache.td_db) {
+        // db() 已保证目录存在, 此处不重复 ensure
+        g_cache.td_db = subdir_locked(g_cache.db, "db") / "td.db";
+    }
+    return *g_cache.td_db;
+}
+
+void reset_for_test() {
+    std::lock_guard<std::mutex> lock(g_cache_mutex);
+    g_cache = PathCache{};
 }
 
 }  // namespace dztrader::paths

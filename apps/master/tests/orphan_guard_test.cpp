@@ -89,6 +89,9 @@ protected:
         // 保存并覆盖 DZTRADER_HOME，使 paths::cache() 指向临时目录
         orig_home_ = dztrader::env::get("DZTRADER_HOME");
         dztrader::env::set("DZTRADER_HOME", tmp_dir_.string());
+        // paths::* 为进程级缓存: 每个用例换 home 后必须重置, 否则后续用例
+        // 仍指向首个用例的目录 (ctest 逐例独立进程掩盖此问题, 直跑会红)
+        dztrader::paths::reset_for_test();
     }
 
     void TearDown() override {
@@ -97,6 +100,7 @@ protected:
         } else {
             dztrader::env::unset("DZTRADER_HOME");
         }
+        dztrader::paths::reset_for_test();
         std::filesystem::remove_all(tmp_dir_);
     }
 
