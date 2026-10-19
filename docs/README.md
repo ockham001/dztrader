@@ -8,6 +8,7 @@
 |------|------|
 | [frame_contracts/](frame_contracts/README.md) | **帧协议与 frontend↔dzweb 协议的唯一语义真相源**（无编号；**先读 [general](frame_contracts/general.md) 总则**）。开发 IPC/UI 联动前必读 |
 | [development-checklist.md](development-checklist.md) | **新功能开发门禁清单**（P6）：A 前端/B 后台/C 提交前/D 策略 SDK 四段，每项映射到自动化检查 |
+| [unit-test-standard.md](unit-test-standard.md) | **单元测试判据的唯一来源**：有效性/覆盖/一致性/成本/基建五组条目，供撰写与审查逐条对照 |
 | 仓库根 `README.md` | 构建/运行/部署指南 |
 
 ## 架构参考（蓝图级，方向性）
@@ -34,6 +35,6 @@
 
 1. 帧协议/WS/REST → `frame_contracts/`（当前版本）
 2. 代码与契约冲突时，契约是语义真相源；修实现需走对应模块流程
-3. 硬门禁与工作方式 → 根 `AGENTS.md`；门禁清单细节 → `development-checklist.md`
+3. 硬门禁与工作方式 → 根 `AGENTS.md`；门禁清单细节 → `development-checklist.md`；测试判据 → `unit-test-standard.md`
 4. 架构参考（architecture.md / ui-trading.md / components/）为蓝图级：与代码和契约冲突时以后者为准
 5. 本地历史归档（docs/plans|specs|superpowers，不在版本控制内）：与现状冲突时以契约与代码为准，归档内容不修改

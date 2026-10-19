@@ -71,6 +71,8 @@ Ninja 单配置，每个 config 独立 binaryDir：`build/<plat>/x86_64/<Release
 
 ## 单元测试约定
 
+> 本节讲**机制**（怎么编译、注册、跑）；**判据**（测试该怎么写、怎么判）见 [../unit-test-standard.md](../unit-test-standard.md)。
+
 - 每个 `*_test.cpp` 独立编译运行，`gtest_discover_tests` 自动注册，输出到 `${DZ_TESTS_DIR}`。标准模板见各模块 `CMakeLists.txt`
 - **部分模块的测试有意只编译源码子集**，换取与外部依赖解耦：
   - `strategy_api` 测试约一半只编译内部类；`SDK_API_TESTS` 名单（notify_ui/trade/md/schedule/engine/db/db_instruments/td_ingest_*）额外编入 `api.cpp` + `db_database.cpp`，覆盖 C 接口完整写读路径（名单以 `libs/strategy_api/CMakeLists.txt` 为准）

@@ -203,6 +203,7 @@
 | [docs/README.md](docs/README.md) | 文档地图：活跃真相源 / 架构参考分层与冲突裁决规则 |
 | [docs/frame_contracts/](docs/frame_contracts/README.md) | 帧协议唯一语义真相源（先读 `general.md` 总则） |
 | [docs/development-checklist.md](docs/development-checklist.md) | 新功能门禁清单（前端 / 后台 / 提交前 / 策略 SDK 四段） |
+| [docs/unit-test-standard.md](docs/unit-test-standard.md) | 单元测试判据（有效性 / 覆盖 / 一致性 / 成本 / 基建），撰写与审查逐条对照 |
 | [docs/architecture.md](docs/architecture.md) | 依赖方向、静态库策略、进程模型（蓝图级，细节以代码与契约为准） |
 | [docs/components/](docs/components/) | 组件级设计（线程模型、通道、会话） |
 | [docs/ui-trading.md](docs/ui-trading.md) | UI 系统与交易接口规划（蓝图级） |
