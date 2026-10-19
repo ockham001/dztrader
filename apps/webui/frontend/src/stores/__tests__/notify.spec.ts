@@ -27,6 +27,7 @@ describe('useNotifyStore', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -132,13 +133,15 @@ describe('useNotifyStore', () => {
     expect(toastMocks.info).toHaveBeenCalledTimes(1)
   })
 
-  // 契约 notify-ui: payload 携带发送方 Unix 秒级 timestamp，前端透传使用而非本地时间
-  it('timestamp 透传：使用调用方提供的时间戳，缺省回退本地时间', () => {
+  // 契约 notify-ui: payload 为 Unix 秒级 timestamp；store 统一换算为毫秒，缺省回退本地毫秒
+  it('timestamp 统一毫秒：payload 秒级 ×1000，缺省为固定墙钟的精确毫秒', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-19T12:00:00Z'))
     const store = useNotifyStore()
-    const ts = 1755300000
-    store.push('透传消息', 'dzmd_ctp', 'error', false, ts)
-    expect(store.items[0].timestamp).toBe(ts)
+    const tsSec = 1755300000
+    store.push('透传消息', 'dzmd_ctp', 'error', false, tsSec)
+    expect(store.items[0].timestamp).toBe(tsSec * 1000)
     store.push('本地时间消息')
-    expect(store.items[1].timestamp).toBeGreaterThan(ts)
+    expect(store.items[1].timestamp).toBe(Date.parse('2026-10-19T12:00:00Z'))
   })
 })

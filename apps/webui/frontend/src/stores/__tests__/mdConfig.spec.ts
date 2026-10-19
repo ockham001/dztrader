@@ -87,9 +87,16 @@ describe('useMdConfigStore', () => {
       expect(store.configs['dzmd_ctp']).toEqual(configPayload)
     })
 
-    it('后到完整覆盖先到', () => {
+    it('后到完整覆盖先到（可选字段不残留，契约：始终全量）', () => {
       const store = useMdConfigStore()
-      store.applyMdConfig({ source: 'dzmd_ctp', config: configPayload })
+      // 首帧含全部可选字段；次帧省略 → 若误用 {...old, ...new} 合并, 旧字段会残留
+      store.applyMdConfig({ source: 'dzmd_ctp', config: {
+        ...configPayload,
+        subscribe_batch_size: 500,
+        subscribe_batch_delay_ms: 1200,
+        sub_check_interval_ms: 3000,
+        sub_max_retry: 4,
+      }})
       store.applyMdConfig({
         source: 'dzmd_ctp',
         config: { brokers: [], current_broker_name: '' },
@@ -105,13 +112,14 @@ describe('useMdConfigStore', () => {
       expect(store.configs['dzmd_ctp'].current_broker_name).toBe('b1')
     })
 
-    it('非法 payload（缺 source/config/null）忽略不写', () => {
+    it('非法 payload（缺 source/config/null）忽略不写且不清已有镜像', () => {
       const store = useMdConfigStore()
+      store.applyMdConfig({ source: 'dzmd_ctp', config: configPayload })
       store.applyMdConfig({} as never)
       store.applyMdConfig({ source: 'dzmd_ctp' } as never)
       store.applyMdConfig({ config: configPayload } as never)
       store.applyMdConfig(null as never)
-      expect(Object.keys(store.configs)).toHaveLength(0)
+      expect(store.configs['dzmd_ctp']).toEqual(configPayload)
     })
 
     it('到达时批量清全部配置类 pending（对照 setMdConfig 清 11 字段语义）', async () => {
@@ -157,11 +165,17 @@ describe('useMdConfigStore', () => {
       expect(store.statuses['dzmd_ctp']).toEqual({ source: 'dzmd_ctp', status: { login_state: 'online' } })
     })
 
-    it('后到完整覆盖先到', () => {
+    it('后到完整覆盖先到（缺失字段不残留）', () => {
       const store = useMdConfigStore()
-      store.applyMdStatus({ source: 'dzmd_ctp', status: { login_state: 'online' } })
+      store.applyMdStatus({
+        source: 'dzmd_ctp',
+        status: { login_state: 'online', api_version: 'v6.7.2' },
+      })
       store.applyMdStatus({ source: 'dzmd_ctp', status: { login_state: 'offline' } })
-      expect(store.statuses['dzmd_ctp'].status.login_state).toBe('offline')
+      expect(store.statuses['dzmd_ctp']).toEqual({
+        source: 'dzmd_ctp',
+        status: { login_state: 'offline' },
+      })
     })
 
     it('写镜像但不清 pending（契约 md-status 无状态字段；pending 由 RTN_PROGRESS 驱动）', async () => {
@@ -177,11 +191,16 @@ describe('useMdConfigStore', () => {
       expect(marketSourcePending.pending['source:1:login']).toBe(true)
     })
 
-    it('非法 payload（缺 source/null）忽略不写', () => {
+    it('非法 payload（缺 source/status/null）忽略不写且不清已有镜像', () => {
       const store = useMdConfigStore()
+      store.applyMdStatus({ source: 'dzmd_ctp', status: { api_version: 'v6.7.2' } })
       store.applyMdStatus({} as never)
+      store.applyMdStatus({ source: 'dzmd_ctp' } as never)  // 缺 status
       store.applyMdStatus(null as never)
-      expect(Object.keys(store.statuses)).toHaveLength(0)
+      expect(store.statuses['dzmd_ctp']).toEqual({
+        source: 'dzmd_ctp',
+        status: { api_version: 'v6.7.2' },
+      })
     })
   })
 
@@ -199,12 +218,13 @@ describe('useMdConfigStore', () => {
       expect(store.autoLogins['dzmd_ctp']).toEqual({ enabled: false, schedules: [] })
     })
 
-    it('非法 payload（非对象/缺字段）忽略不写', () => {
+    it('非法 payload（非对象/缺字段）忽略不写且不清已有镜像', () => {
       const store = useMdConfigStore()
+      store.applyAutoLogin('dzmd_ctp', autoLoginPayload)
       store.applyAutoLogin('dzmd_ctp', null)
       store.applyAutoLogin('dzmd_ctp', { enabled: true })
       store.applyAutoLogin('dzmd_ctp', { schedules: [] })
-      expect(Object.keys(store.autoLogins)).toHaveLength(0)
+      expect(store.autoLogins['dzmd_ctp']).toEqual(autoLoginPayload)
     })
 
     it('到达时批量清排程类 pending（auto_login/schedule_add/schedule_remove）', async () => {
@@ -448,14 +468,17 @@ describe('useMdConfigStore', () => {
       vi.mocked(marketSourcesApi.updateBroker).mockResolvedValue({ ok: true })
       vi.mocked(marketSourcesApi.setCurrentBroker).mockResolvedValue({ ok: true })
       const store = useMdConfigStore()
-      await store.addBroker(1, 'dzmd_ctp', { name: 'b2', broker_id: 'x', user_id: 'u', password: 'p', product_info: 'pi' })
+      const addBody = { name: 'b2', broker_id: 'x', user_id: 'u', password: 'p', product_info: 'pi' }
+      const updateBody = { name: 'b1', broker_id: 'x', user_id: 'u', password: 'p', product_info: 'pi', frontends: [] }
+      await store.addBroker(1, 'dzmd_ctp', addBody)
       await store.removeBroker(1, 'dzmd_ctp', 'b1')
-      await store.updateBroker(1, 'dzmd_ctp', 'b1', { name: 'b1', broker_id: 'x', user_id: 'u', password: 'p', product_info: 'pi', frontends: [] })
+      await store.updateBroker(1, 'dzmd_ctp', 'b1', updateBody)
       await store.selectBroker(1, 'dzmd_ctp', 'b1')
 
-      expect(marketSourcesApi.addBroker).toHaveBeenCalledTimes(1)
+      // 契约 md-config BrokerEntry：完整请求体锚定（字段缺失/错位必须变红）
+      expect(marketSourcesApi.addBroker).toHaveBeenCalledWith(1, addBody)
       expect(marketSourcesApi.removeBroker).toHaveBeenCalledWith(1, 'b1')
-      expect(marketSourcesApi.updateBroker).toHaveBeenCalledTimes(1)
+      expect(marketSourcesApi.updateBroker).toHaveBeenCalledWith(1, 'b1', updateBody)
       expect(marketSourcesApi.setCurrentBroker).toHaveBeenCalledWith(1, 'b1')
       expect(marketSourcePending.pending['source:1:broker_add']).toBe(true)
       expect(marketSourcePending.pending['source:1:broker_remove']).toBe(true)
@@ -480,6 +503,18 @@ describe('useMdConfigStore', () => {
   })
 
   describe('frontend 系列', () => {
+    // 双前置 fixture：区分「只改目标」与「整体替换/全部翻转」
+    const configTwoFrontends = {
+      brokers: [{
+        ...configPayload.brokers[0],
+        frontends: [
+          { address: 'a1', label: 'L1', enabled: false },
+          { address: 'a2', label: 'L2', enabled: false },
+        ],
+      }],
+      current_broker_name: 'b1',
+    }
+
     it('addFrontend: 无镜像/无 broker 时不发请求并返回 false', async () => {
       const store = useMdConfigStore()
       const result = await store.addFrontend(1, 'dzmd_ctp', 'nope', 'a9', 'L9')
@@ -515,6 +550,8 @@ describe('useMdConfigStore', () => {
       const r = await store.removeFrontend(1, 'dzmd_ctp', 'b1', 'a1')
       expect(r).toBe(true)
       expect(marketSourcesApi.updateFrontends).toHaveBeenCalledTimes(2)
+      // 第二次装置体：仅删除目标 a1（空列表），而非重复/全量旧列表
+      expect(marketSourcesApi.updateFrontends).toHaveBeenNthCalledWith(2, 1, 'b1', [])
       expect(marketSourcePending.pending['source:1:frontend_remove']).toBe(true)
 
       // 收尾：add 走 10s 超时兜底
@@ -523,14 +560,15 @@ describe('useMdConfigStore', () => {
       expect(marketSourcePending.pending['source:1:frontend_add']).toBe(false)
     })
 
-    it('setFrontendEnabled: 只改目标前置 enabled', async () => {
+    it('setFrontendEnabled: 只改目标前置 enabled，其余前置原样保留', async () => {
       const store = useMdConfigStore()
-      store.applyMdConfig({ source: 'dzmd_ctp', config: configPayload })
+      store.applyMdConfig({ source: 'dzmd_ctp', config: configTwoFrontends })
       vi.mocked(marketSourcesApi.updateFrontends).mockResolvedValue({ ok: true })
       const result = await store.setFrontendEnabled(1, 'dzmd_ctp', 'b1', 'a1', true)
       expect(result).toBe(true)
       expect(marketSourcesApi.updateFrontends).toHaveBeenCalledWith(1, 'b1', [
         { address: 'a1', label: 'L1', enabled: true },
+        { address: 'a2', label: 'L2', enabled: false },
       ])
     })
 
@@ -542,14 +580,15 @@ describe('useMdConfigStore', () => {
       expect(marketSourcesApi.updateFrontends).not.toHaveBeenCalled()
     })
 
-    it('editFrontend: 改地址后整体下发', async () => {
+    it('editFrontend: 改地址后整体下发，其余前置原样保留', async () => {
       const store = useMdConfigStore()
-      store.applyMdConfig({ source: 'dzmd_ctp', config: configPayload })
+      store.applyMdConfig({ source: 'dzmd_ctp', config: configTwoFrontends })
       vi.mocked(marketSourcesApi.updateFrontends).mockResolvedValue({ ok: true })
       const result = await store.editFrontend(1, 'dzmd_ctp', 'b1', 'a1', 'a9')
       expect(result).toBe(true)
       expect(marketSourcesApi.updateFrontends).toHaveBeenCalledWith(1, 'b1', [
         { address: 'a9', label: 'L1', enabled: false },
+        { address: 'a2', label: 'L2', enabled: false },
       ])
     })
   })
@@ -600,12 +639,31 @@ describe('useMdConfigStore', () => {
       expect(store.shmConfigs['dzmd_ctp'].check_interval_min).toBe(5)
     })
 
-    it('applyMdShmConfig 非法 payload 忽略不写', () => {
+    it('applyMdShmConfig 后到完整覆盖先到（缺失 preload key 不残留）', () => {
       const store = useMdConfigStore()
+      store.applyMdShmConfig('dzmd_ctp', shmPayload)
+      store.applyMdShmConfig('dzmd_ctp', {
+        page_size_mb: 1024,
+        preload_points: {},
+        check_interval_min: 0,
+        check_pages: 0,
+        check_bytes: 0,
+      })
+      expect(store.shmConfigs['dzmd_ctp']).toEqual({
+        page_size_mb: 1024,
+        preload_points: {},
+        check_interval_min: 0,
+        check_pages: 0,
+        check_bytes: 0,
+      })
+    })
+
+    it('applyMdShmConfig 非法 payload 忽略不写且不清已有镜像', () => {
+      const store = useMdConfigStore()
+      store.applyMdShmConfig('dzmd_ctp', shmPayload)
       store.applyMdShmConfig('dzmd_ctp', { page_size_mb: 'x' })
-      expect(store.shmConfigs['dzmd_ctp']).toBeUndefined()
       store.applyMdShmConfig('dzmd_ctp', null)
-      expect(store.shmConfigs['dzmd_ctp']).toBeUndefined()
+      expect(store.shmConfigs['dzmd_ctp']).toEqual(shmPayload)
     })
 
     it('setShmConfig 下发 patch 并注册 pending，md_shm_config 到达清除', async () => {
@@ -625,6 +683,22 @@ describe('useMdConfigStore', () => {
       await store.setShmConfig(1, 'dzmd_ctp', { preload_points: { '08:45': null } })
       expect(marketSourcesApi.setShmConfig).toHaveBeenCalledWith(1,
         { preload_points: { '08:45': null } })
+    })
+
+    it('setShmConfig 空 patch 幂等成功：不下发、不挂 pending', async () => {
+      const store = useMdConfigStore()
+      const r = await store.setShmConfig(1, 'dzmd_ctp', {})
+      expect(r).toBe(true)
+      expect(marketSourcesApi.setShmConfig).not.toHaveBeenCalled()
+      expect(marketSourcePending.pending['source:1:shm_config']).toBeUndefined()
+    })
+
+    it('setShmConfig HTTP 失败返回 false 并清 pending', async () => {
+      vi.mocked(marketSourcesApi.setShmConfig).mockRejectedValue(new Error('503'))
+      const store = useMdConfigStore()
+      const r = await store.setShmConfig(1, 'dzmd_ctp', { check_pages: 2 })
+      expect(r).toBe(false)
+      expect(marketSourcePending.pending['source:1:shm_config']).toBe(false)
     })
   })
 })

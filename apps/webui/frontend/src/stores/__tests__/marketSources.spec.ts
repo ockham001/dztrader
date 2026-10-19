@@ -32,6 +32,8 @@ vi.mock('@/api/marketSources', () => ({
     updateBroker: vi.fn(),
     setCurrentBroker: vi.fn(),
     updateFrontends: vi.fn(),
+    setSubscribeParams: vi.fn(),
+    setShmConfig: vi.fn(),
   },
 }))
 
@@ -118,7 +120,12 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(s.tradingDay).toBe('--')
       expect(s.subscribeCount).toBe(0)
       expect(s.subscribeTotal).toBe(0)
-      // 17 个 pending 字段默认 false
+      // 契约 md-config 订阅参数：镜像未到达为 null
+      expect(s.subscribeBatchSize).toBeNull()
+      expect(s.subscribeBatchDelayMs).toBeNull()
+      expect(s.subCheckIntervalMs).toBeNull()
+      expect(s.subMaxRetry).toBeNull()
+      // 18 个 pending 字段默认 false
       expect(s.loginPending).toBe(false)
       expect(s.logoutPending).toBe(false)
       expect(s.autoLoginPending).toBe(false)
@@ -135,6 +142,8 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(s.startPending).toBe(false)
       expect(s.stopPending).toBe(false)
       expect(s.removePending).toBe(false)
+      expect(s.subscribeParamsPending).toBe(false)
+      expect(s.shmConfigPending).toBe(false)
     })
 
     describe('md_status 聚合桥接（契约 md-status）', () => {
@@ -181,6 +190,35 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
         expect(s.subscribeCount).toBe(0)
         expect(s.subscribeTotal).toBe(0)
       })
+    })
+
+    it('md-config 订阅参数四字段聚合 + subscribeParams/shmConfig pending', async () => {
+      await loadDb()
+      const store = useMarketSourcesStore()
+      expect(store.sources[0].subscribeBatchSize).toBeNull()
+      expect(store.sources[0].subscribeParamsPending).toBe(false)
+      expect(store.sources[0].shmConfigPending).toBe(false)
+
+      useMdConfigStore().applyMdConfig({ source: 'dzmd_ctp', config: {
+        ...configPayload,
+        subscribe_batch_size: 500,
+        subscribe_batch_delay_ms: 1200,
+        sub_check_interval_ms: 3000,
+        sub_max_retry: 4,
+      }})
+      const s = store.sources[0]
+      expect(s.subscribeBatchSize).toBe(500)
+      expect(s.subscribeBatchDelayMs).toBe(1200)
+      expect(s.subCheckIntervalMs).toBe(3000)
+      expect(s.subMaxRetry).toBe(4)
+
+      // 置位路径：走真实薄代理操作，证明操作 key 与聚合 key 端到端一致
+      vi.mocked(marketSourcesApi.setSubscribeParams).mockResolvedValue({ ok: true })
+      vi.mocked(marketSourcesApi.setShmConfig).mockResolvedValue({ ok: true })
+      await store.setSubscribeParams(1, { subscribe_batch_size: 600 })
+      await store.setShmConfig(1, { check_pages: 2 })
+      expect(store.sources[0].subscribeParamsPending).toBe(true)
+      expect(store.sources[0].shmConfigPending).toBe(true)
     })
 
     it('领域 store 写入后聚合回填（process_state / loginState / brokers / schedules / auto_login / 选中）', async () => {
@@ -231,6 +269,17 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       // 清理 start pending (防 fake timer 挂起)
       process.applyProcessStatus({ name: 'dzmd_ctp', state: 'Running', pid: 1, event: 'StartSucceeded' })
       await nextTick()
+    })
+
+    it('loadSources 失败：设置 error、复位 loading、保留原列表', async () => {
+      await loadDb()
+      const store = useMarketSourcesStore()
+      const before = store.sources.map(s => ({ id: s.id, display_name: s.display_name }))
+      vi.mocked(marketSourcesApi.list).mockRejectedValue(new Error('db down'))
+      await store.loadSources()
+      expect(store.error).toBe('db down')
+      expect(store.loading).toBe(false)
+      expect(store.sources.map(s => ({ id: s.id, display_name: s.display_name }))).toEqual(before)
     })
 
     it('expanded 为本地 UI 状态, toggleExpand 切换', async () => {
@@ -467,6 +516,13 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       const p = store.addAndStartSource('dzmd_ctp', 'CTP主行情')
       expect(store.sources).toHaveLength(0)
       await p
+      // create 体：source_type 由进程名 tail 大写派生；start 透传 display_name
+      expect(marketSourcesApi.create).toHaveBeenCalledWith({
+        source_type: 'CTP',
+        source_name: 'dzmd_ctp',
+        display_name: 'CTP主行情',
+      })
+      expect(marketSourcesApi.start).toHaveBeenCalledWith(1, { display_name: 'CTP主行情' })
       // HTTP 成功不清: 等 WS 推送晋升
       expect(store.sources).toHaveLength(0)
       expect(store.error).toBeNull()
@@ -632,7 +688,53 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       await nextTick()
       await store.batchLogin()
       expect(marketSourcesApi.login).toHaveBeenCalledTimes(1)
+      // HTTP 成功不清 pending：loginPending 仍为 true，再次 batchLogin 不得重复下发
+      expect(store.sources[0].loginPending).toBe(true)
+      await store.batchLogin()
+      expect(marketSourcesApi.login).toHaveBeenCalledTimes(1)
       // 等超时兜底清 (防 fake timer 挂起)
+      await vi.advanceTimersByTimeAsync(10_000)
+    })
+
+    it('batchLogout 只登出 online 且未 logout pending 的 source', async () => {
+      vi.mocked(marketSourcesApi.list).mockResolvedValue([dbSource, dbSourceB])
+      vi.mocked(marketSourcesApi.logout).mockResolvedValue({ ok: true })
+      const store = useMarketSourcesStore()
+      await store.loadSources()
+      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 4 })
+      await nextTick()
+      await store.batchLogout()
+      expect(marketSourcesApi.logout).toHaveBeenCalledTimes(1)
+      expect(marketSourcesApi.logout).toHaveBeenCalledWith(1)  // 仅 online 的 ctp；xtp 为 offline
+      const ctp = store.sources.find(s => s.id === 1)!
+      const xtp = store.sources.find(s => s.id === 2)!
+      expect(ctp.logoutPending).toBe(true)
+      expect(xtp.logoutPending).toBe(false)
+      // HTTP 成功不清 pending：logout pending 挂起时再次 batchLogout 不重复下发
+      await store.batchLogout()
+      expect(marketSourcesApi.logout).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(10_000)
+    })
+
+    it('batchToggleAutoLogin 只翻转镜像值不同且未 pending 的 source', async () => {
+      vi.mocked(marketSourcesApi.list).mockResolvedValue([dbSource, dbSourceB])
+      vi.mocked(marketSourcesApi.setAutoLogin).mockResolvedValue({ ok: true })
+      const store = useMarketSourcesStore()
+      await store.loadSources()
+      useMdConfigStore().applyAutoLogin('dzmd_ctp', autoLoginPayload)  // enabled=true
+      await store.batchToggleAutoLogin(false)
+      expect(marketSourcesApi.setAutoLogin).toHaveBeenCalledTimes(1)
+      expect(marketSourcesApi.setAutoLogin).toHaveBeenCalledWith(1, {
+        enabled: false,
+        schedules: autoLoginPayload.schedules,
+      })
+      const ctp = store.sources.find(s => s.id === 1)!
+      const xtp = store.sources.find(s => s.id === 2)!
+      expect(ctp.autoLoginPending).toBe(true)
+      expect(xtp.autoLoginPending).toBe(false)  // 镜像默认 false，无需翻转
+      // autoLogin pending 挂起时再次批量翻转不重复下发
+      await store.batchToggleAutoLogin(false)
+      expect(marketSourcesApi.setAutoLogin).toHaveBeenCalledTimes(1)
       await vi.advanceTimersByTimeAsync(10_000)
     })
   })
@@ -659,6 +761,20 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       await loadDb()
       const s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
       expect(s.progressView).toEqual({ current: 0, min: 0, max: 1 })  // 默认 offline
+    })
+
+    it('current > max 时钳制到 max（契约 progress 防御性钳制）', async () => {
+      await loadDb()
+      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 9, desc: '越界' })
+      const s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
+      expect(s.progressView).toEqual({ current: 4, min: 0, max: 4, desc: '越界' })
+    })
+
+    it('current < min 时钳制到 min（契约 progress 防御性钳制）', async () => {
+      await loadDb()
+      useProgressStore().applyProgress('dzmd_ctp', { min: 10, max: 14, current: 3 })
+      const s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
+      expect(s.progressView).toEqual({ current: 10, min: 10, max: 14 })
     })
 
     it('不确定进度（max<=min）保留原值', async () => {

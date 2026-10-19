@@ -1,7 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useUserManagementStore } from '../userManagement'
 import { usersApi } from '@/api/users'
+import { securityApi } from '@/api/security'
+import type { SecurityConfig } from '@/types/api'
 
 // P3 任务6：userManagement 原型残留清理。
 // 目标：createUser 失败不再本地插假用户（Date.now() id）/removeUser 不再乐观先删后调 API
@@ -126,6 +128,71 @@ describe('useUserManagementStore (P3 任务6 原型残留清理)', () => {
       expect(ok).toBe(false)
       expect(store.users[0].removePending).toBe(false) // 失败恢复
       expect(store.users).toHaveLength(1)
+    })
+  })
+
+  describe('toggleLoginLockout（安全开关）', () => {
+    // 仅本组使用 fake timers（minPendingMs 300）；不改变既有 createUser/removeUser 运行环境
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('成功：全量提交 setConfig，minDelay 后应用服务端返回并清错误', async () => {
+      const updated: SecurityConfig = {
+        login_lockout_enabled: true,
+        access_mode: 'auto',
+        max_failed_attempts: 5,
+        lockout_duration_sec: 1800,
+      }
+      vi.mocked(securityApi.setConfig).mockResolvedValue(updated)
+      const store = useUserManagementStore()
+      const p = store.toggleLoginLockout(true)
+      expect(store.securityConfig.lockoutPending).toBe(true)
+      // 契约 rest：PUT /api/security/config 全量下发（当前值 + 目标开关）
+      expect(securityApi.setConfig).toHaveBeenCalledWith({
+        login_lockout_enabled: true,
+        access_mode: 'auto',
+        max_failed_attempts: 5,
+        lockout_duration_sec: 1800,
+      })
+      await vi.advanceTimersByTimeAsync(300)
+      await p
+      expect(store.securityConfig.login_lockout_enabled).toBe(true)
+      expect(store.securityConfig.lockoutPending).toBe(false)
+      expect(store.securityConfig.lockoutError).toBeNull()
+    })
+
+    it('失败：清 pending、置 lockoutError，开关保持原值', async () => {
+      vi.mocked(securityApi.setConfig).mockRejectedValue(new Error('503'))
+      const store = useUserManagementStore()
+      const p = store.toggleLoginLockout(true)
+      await vi.advanceTimersByTimeAsync(300)
+      await p
+      expect(store.securityConfig.login_lockout_enabled).toBe(false)  // 非乐观, 不回滚出假状态
+      expect(store.securityConfig.lockoutPending).toBe(false)
+      expect(store.securityConfig.lockoutError).toBe('同步失败')
+    })
+
+    it('pending 中再次调用不重复发请求（防重入）', async () => {
+      let resolveConfig!: (v: SecurityConfig) => void
+      vi.mocked(securityApi.setConfig).mockImplementation(
+        () => new Promise<SecurityConfig>(res => { resolveConfig = res }))
+      const store = useUserManagementStore()
+      const p = store.toggleLoginLockout(true)
+      await store.toggleLoginLockout(false)  // 挂起期间直接返回
+      expect(securityApi.setConfig).toHaveBeenCalledTimes(1)
+      resolveConfig({
+        login_lockout_enabled: true,
+        access_mode: 'auto',
+        max_failed_attempts: 5,
+        lockout_duration_sec: 1800,
+      })
+      await vi.advanceTimersByTimeAsync(300)
+      await p
+      expect(store.securityConfig.lockoutPending).toBe(false)
     })
   })
 })

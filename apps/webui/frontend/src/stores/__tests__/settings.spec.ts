@@ -42,10 +42,27 @@ describe('useSettingsStore', () => {
       expect(store.eventShmConfig).toEqual(validPayload)
     })
 
-    it('非法 payload 忽略不写', () => {
+    it('非法 payload 逐字段校验：已有合法镜像保持不变', () => {
       const store = useSettingsStore()
-      store.applyEventShmConfig({ page_size_mb: 'x', check_pages: 1 })
-      expect(store.eventShmConfig).toBeNull()
+      store.applyEventShmConfig(validPayload)
+      // 其余字段完整，仅单个字段类型非法 → 证明逐字段校验生效（而非靠缺字段整体拒绝）
+      const invalidCases: [string, unknown][] = [
+        ['page_size_mb', 'x'],
+        ['check_interval_min', null],
+        ['check_pages', '5'],
+        ['check_bytes', {}],
+      ]
+      for (const [field, value] of invalidCases) {
+        store.applyEventShmConfig({ ...validPayload, [field]: value })
+        expect(store.eventShmConfig, `field=${field}`).toEqual(validPayload)
+      }
+      // preload_points 缺失 / null
+      const withoutPreload: Record<string, unknown> = { ...validPayload }
+      delete withoutPreload.preload_points
+      store.applyEventShmConfig(withoutPreload as never)
+      expect(store.eventShmConfig).toEqual(validPayload)
+      store.applyEventShmConfig({ ...validPayload, preload_points: null })
+      expect(store.eventShmConfig).toEqual(validPayload)
     })
 
     it('非法 preload_points 形状（条目缺 bytes）→ 镜像不变', () => {
@@ -188,6 +205,17 @@ describe('useSettingsStore', () => {
       // 保存成功后回填镜像 (getWebui 被调)
       expect(settingsApi.getWebui).toHaveBeenCalled()
       expect(store.webui).toEqual({ ...webuiView, token_ttl_sec: 7200 })
+    })
+
+    it('setWebui PUT 成功但回填 GET 失败 → 仍返回 true、webui 置 null', async () => {
+      vi.mocked(settingsApi.setWebui).mockResolvedValue({ ok: true })
+      vi.mocked(settingsApi.getWebui).mockRejectedValue(new Error('503'))
+      const store = useSettingsStore()
+      store.webui = { ...webuiView }
+      const r = await store.setWebui({ token_ttl_sec: 7200 })
+      expect(r).toBe(true)  // 仅 PUT 失败判定保存失败
+      expect(settingsApi.getWebui).toHaveBeenCalled()
+      expect(store.webui).toBeNull()  // loadWebui 内部 catch 置 null
     })
 
     it('setWebui PUT 失败 → 返回 false 且不回填', async () => {
