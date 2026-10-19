@@ -26,13 +26,12 @@ export const useNotifyStore = defineStore('notify', () => {
   const popupQueue = ref<NotifyItem[]>([])
   const popupCurrent = computed<NotifyItem | null>(() => popupQueue.value[0] ?? null)
 
-  // timestamp 优先用透传值（契约 notify-ui payload 字段，Unix 秒级），缺省回退 Date.now()（毫秒级）。
-  // 注意：两者单位不同——透传为秒、本地回退为毫秒。当前 items[].timestamp 无下游消费；
-  // 若将来做排序/展示必须先统一单位（见 wsHandlers notify_ui 透传处约定）。
+  // timestamp 统一为毫秒：契约 notify-ui payload 为 Unix 秒级，转换后存储；
+  // 缺省回退 Date.now()（毫秒）。items[].timestamp 无下游消费，统一单位避免隐式混用。
   function push(message: string, source?: string, level?: NotifyLevel, popup?: boolean, timestamp?: number): void {
     if (!message) return // 空消息不弹 toast 不缓存（与 marketSources.setNotifyUi 行为一致）
     const lv = level ?? 'error' // level 缺失时默认 error（与现有 handler 规范化一致）
-    const ts = timestamp ?? Date.now()
+    const ts = timestamp === undefined ? Date.now() : timestamp * 1000
     if (MAX_ITEMS > 0) {
       items.value.push({ source, message, level: lv, timestamp: ts, popup })
       if (items.value.length > MAX_ITEMS) {
