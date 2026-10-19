@@ -634,11 +634,11 @@ TEST_F(IngestWiringTest, ResetReAdmitNotFilteredByWatermark) {
     // 新水位取值钉住: seq=2 (== 重建后 DB MAX) 必须被拦截。
     // 若 rebuild_watermark 退化为 0, seq=2 会作为 gap [1,1] 触发回补 (返回 seq=1 而非 nullptr)。
     {
-        DzOrderReport rpt{};
-        dztrader::copy_string(rpt.account_id, "CTP001", true);
-        dztrader::copy_string(rpt.strategy_id, dz_strategy_id(ctx_), true);
-        rpt.seq = 2;
-        emit_struct(DZ_FRAME_ORDER_REPORT, rpt);
+        DzOrderReport at_watermark{};
+        dztrader::copy_string(at_watermark.account_id, "CTP001", true);
+        dztrader::copy_string(at_watermark.strategy_id, dz_strategy_id(ctx_), true);
+        at_watermark.seq = 2;
+        emit_struct(DZ_FRAME_ORDER_REPORT, at_watermark);
     }
     EXPECT_EQ(nullptr, dz_next_event(ctx_));
 }
