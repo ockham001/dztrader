@@ -110,6 +110,7 @@ describe('useProcessStore', () => {
       const store = useProcessStore()
       const result = await store.start(1, 'dzmd_ctp')
       expect(result).toBe(true)
+      expect(marketSourcesApi.start).toHaveBeenCalledWith(1, undefined)
       const { pending } = marketSourcePending
       expect(pending['source:1:start']).toBe(true)  // 成功保持挂起
 
@@ -144,6 +145,15 @@ describe('useProcessStore', () => {
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('行情源启动超时'))
     })
 
+    it('start 透传 data（display_name，addAndStartSource 路径）', async () => {
+      vi.mocked(marketSourcesApi.start).mockResolvedValue({ ok: true, source: 'dzmd_ctp' })
+      const store = useProcessStore()
+      await store.start(1, 'dzmd_ctp', { display_name: 'CTP主行情' })
+      expect(marketSourcesApi.start).toHaveBeenCalledWith(1, { display_name: 'CTP主行情' })
+      store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Running', pid: 1, event: 'StartSucceeded' })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
     it('同 key 已 pending 时防重入：不重复发 HTTP 并返回 false', async () => {
       vi.mocked(marketSourcesApi.start).mockImplementation(() => new Promise(() => {}))
       const store = useProcessStore()
@@ -165,6 +175,7 @@ describe('useProcessStore', () => {
       const store = useProcessStore()
       const result = await store.stop(1, 'dzmd_ctp')
       expect(result).toBe(true)
+      expect(marketSourcesApi.stop).toHaveBeenCalledWith(1)
       const { pending } = marketSourcePending
       expect(pending['source:1:stop']).toBe(true)
       store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Stopping', pid: 1, event: 'StopSucceeded' })
@@ -203,6 +214,7 @@ describe('useProcessStore', () => {
       const store = useProcessStore()
       const result = await store.removeSource(1, 'dzmd_ctp')
       expect(result).toBe(true)
+      expect(marketSourcesApi.remove).toHaveBeenCalledWith(1)
       const { pending } = marketSourcePending
       expect(pending['source:1:remove']).toBe(true)
       store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Stopped', pid: 0, event: 'RemoveSucceeded' })
@@ -260,16 +272,45 @@ describe('useProcessStore', () => {
       expect(marketSourcePending.pending['source:1:start']).toBe(true)  // 自发变化不清 pending
     })
 
-    it('未知 event 忽略（不抛不写）', async () => {
+    it('未知 event 不清 pending（状态仍按完整状态写入）', async () => {
+      vi.mocked(marketSourcesApi.start).mockResolvedValue({ ok: true, source: 'dzmd_ctp' })
       const store = useProcessStore()
+      await store.start(1, 'dzmd_ctp')
+      expect(marketSourcePending.pending['source:1:start']).toBe(true)
+
       store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Running', pid: 1, event: 'Unknown' as never })
-      expect(Object.keys(marketSourcePending.pending)).toHaveLength(0)
+      // 未知 event 不参与 pending 清理；status 镜像照常覆盖（契约 process 单条完整状态）
+      expect(marketSourcePending.pending['source:1:start']).toBe(true)
+      expect(store.statuses['dzmd_ctp']).toEqual({
+        name: 'dzmd_ctp', state: 'Running', pid: 1, event: 'Unknown',
+      })
+      marketSourcePending.resolve('source:1:start')
     })
 
-    it('未经过本 store 的 target 忽略（无 name→id 记录，pending 不存在）', async () => {
+    it('未记录 target 的 event 不清其他 source 的 pending', async () => {
+      vi.mocked(marketSourcesApi.start).mockResolvedValue({ ok: true, source: 'dzmd_xtp' })
       const store = useProcessStore()
+      await store.start(2, 'dzmd_xtp')
+      expect(marketSourcePending.pending['source:2:start']).toBe(true)
+
       store.applyProcessStatus({ name: 'never-ran', state: 'Running', pid: 1, event: 'StartSucceeded' })
-      expect(Object.keys(marketSourcePending.pending)).toHaveLength(0)
+      // 守卫按 name→id 映射命中；未记录 target 不得清任何 pending，也不新增 key
+      expect(marketSourcePending.pending['source:2:start']).toBe(true)
+      expect(Object.keys(marketSourcePending.pending)).toEqual(['source:2:start'])
+      expect(store.statuses['never-ran'].state).toBe('Running')
+      marketSourcePending.resolve('source:2:start')
+    })
+
+    it('event=null（自发状态变化）不清 pending（契约 webui-ws §2.2）', async () => {
+      vi.mocked(marketSourcesApi.start).mockResolvedValue({ ok: true, source: 'dzmd_ctp' })
+      const store = useProcessStore()
+      await store.start(1, 'dzmd_ctp')
+      expect(marketSourcePending.pending['source:1:start']).toBe(true)
+
+      store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Crashed', pid: 0, event: null })
+      expect(marketSourcePending.pending['source:1:start']).toBe(true)
+      expect(store.statuses['dzmd_ctp'].state).toBe('Crashed')
+      marketSourcePending.resolve('source:1:start')
     })
 
     // 回归（Remove 流程）：configs 已无该进程（RTN_PROCESS_CONFIG 先到）时，
