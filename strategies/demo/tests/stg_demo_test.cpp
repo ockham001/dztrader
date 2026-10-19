@@ -21,6 +21,7 @@
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/core_struct.h>
 #include <dztrader/core/env.h>
+#include <dztrader/core/path.h>
 #include <dztrader/core/string_util.h>
 #include <dztrader/core/this_process.h>
 #include <dztrader/shm/channel_meta.h>
@@ -159,7 +160,9 @@ protected:
         ASSERT_FALSE(ec) << "create temp home failed: " << ec.message();
         // paths::shm() 按 DZTRADER_HOME 进程内缓存: 同二进制全部用例共用同一 home
         orig_home_ = dztrader::env::get("DZTRADER_HOME");
+        orig_md_source_ = dztrader::env::get("DZTRADER_MD_SOURCE");
         dztrader::env::set("DZTRADER_HOME", home_.string());
+        dztrader::paths::reset_for_test();  // 清空进程级缓存, 指向本用例 home
         dztrader::env::set("DZTRADER_MD_SOURCE", "test_md");
 #ifdef _WIN32
         // boost env::set 走 SetEnvironmentVariableW, 而示例策略用 std::getenv 展示源名;
@@ -208,6 +211,12 @@ protected:
         } else {
             dztrader::env::unset("DZTRADER_HOME");
         }
+        if (orig_md_source_) {
+            dztrader::env::set("DZTRADER_MD_SOURCE", *orig_md_source_);
+        } else {
+            dztrader::env::unset("DZTRADER_MD_SOURCE");
+        }
+        dztrader::paths::reset_for_test();
     }
 
     // ---- 通道与帧 helpers (全部只经帧通道, 不碰策略内部) ----
@@ -586,6 +595,7 @@ protected:
 
     std::filesystem::path home_;
     std::optional<std::string> orig_home_;
+    std::optional<std::string> orig_md_source_;
     std::string strategy_id_;
     dztrader::demo::DemoStrategy strategy_;
     std::thread strategy_thread_;
@@ -906,16 +916,32 @@ protected:
         std::filesystem::remove_all(home_, ec);
         std::filesystem::create_directories(home_ / "shm", ec);
         ASSERT_FALSE(ec) << "create temp home failed: " << ec.message();
+        orig_home_ = dztrader::env::get("DZTRADER_HOME");
+        orig_md_source_ = dztrader::env::get("DZTRADER_MD_SOURCE");
         dztrader::env::set("DZTRADER_HOME", home_.string());
+        dztrader::paths::reset_for_test();  // 清空进程级缓存, 指向本用例 home
         dztrader::env::set("DZTRADER_MD_SOURCE", "test_md");
     }
 
     void TearDown() override {
         std::error_code ec;
         std::filesystem::remove_all(home_, ec);
+        if (orig_home_) {
+            dztrader::env::set("DZTRADER_HOME", *orig_home_);
+        } else {
+            dztrader::env::unset("DZTRADER_HOME");
+        }
+        if (orig_md_source_) {
+            dztrader::env::set("DZTRADER_MD_SOURCE", *orig_md_source_);
+        } else {
+            dztrader::env::unset("DZTRADER_MD_SOURCE");
+        }
+        dztrader::paths::reset_for_test();
     }
 
     std::filesystem::path home_;
+    std::optional<std::string> orig_home_;
+    std::optional<std::string> orig_md_source_;
 };
 
 TEST_F(StgDemoInitFailureTest, InitFailureIsDiagnosedOnStderr) {

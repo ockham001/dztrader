@@ -2,6 +2,7 @@
 
 #include <dztrader/api.h>
 #include <dztrader/core/env.h>
+#include <dztrader/core/path.h>
 #include <dztrader/db/database.h>
 #include <dztrader/error.h>
 #include <dztrader/shm/channel_meta.h>
@@ -18,6 +19,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -328,12 +330,15 @@ class DbOpenDefaultTest : public ::testing::Test {
 protected:
     std::string home_;
     std::string db_path_;
+    std::optional<std::string> orig_home_;
 
     void SetUp() override {
         home_ = (std::filesystem::temp_directory_path() / "dz_test_db_open_default").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/db");
+        orig_home_ = dztrader::env::get("DZTRADER_HOME");
         dztrader::env::set("DZTRADER_HOME", home_);
+        dztrader::paths::reset_for_test();  // 清空进程级缓存, 指向本用例 home
         dztrader::env::unset("DZTRADER_DB_BACKEND");
         dztrader::env::unset("DZTRADER_DB_OPT_PATH");
         db_path_ = home_ + "/db/td.db";
@@ -342,6 +347,12 @@ protected:
     void TearDown() override {
         dztrader::env::unset("DZTRADER_DB_BACKEND");
         dztrader::env::unset("DZTRADER_DB_OPT_PATH");
+        if (orig_home_) {
+            dztrader::env::set("DZTRADER_HOME", *orig_home_);
+        } else {
+            dztrader::env::unset("DZTRADER_HOME");
+        }
+        dztrader::paths::reset_for_test();
         std::filesystem::remove_all(home_);
     }
 };
@@ -621,13 +632,18 @@ class IngestConfigErrorTest : public ::testing::Test {
 protected:
     std::string home_;
     DzContext* ctx_ = nullptr;
+    std::optional<std::string> orig_home_;
+    std::optional<std::string> orig_md_source_;
 
     void SetUp() override {
         home_ = (std::filesystem::temp_directory_path() / "dz_test_ingest_config_error").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         std::filesystem::create_directories(home_ + "/configs");
+        orig_home_ = dztrader::env::get("DZTRADER_HOME");
+        orig_md_source_ = dztrader::env::get("DZTRADER_MD_SOURCE");
         dztrader::env::set("DZTRADER_HOME", home_);
+        dztrader::paths::reset_for_test();  // 清空进程级缓存, 指向本用例 home
         dztrader::env::set("DZTRADER_MD_SOURCE", "test_md");
         dztrader::env::unset("DZTRADER_DB_BACKEND");
         dztrader::env::unset("DZTRADER_DB_OPT_PATH");
@@ -662,6 +678,17 @@ protected:
             dz_release(ctx_);
             ctx_ = nullptr;
         }
+        if (orig_home_) {
+            dztrader::env::set("DZTRADER_HOME", *orig_home_);
+        } else {
+            dztrader::env::unset("DZTRADER_HOME");
+        }
+        if (orig_md_source_) {
+            dztrader::env::set("DZTRADER_MD_SOURCE", *orig_md_source_);
+        } else {
+            dztrader::env::unset("DZTRADER_MD_SOURCE");
+        }
+        dztrader::paths::reset_for_test();
         std::filesystem::remove_all(home_);
     }
 };

@@ -56,6 +56,7 @@ protected:
         std::filesystem::create_directories(tmp_dir_);
         orig_home_ = dztrader::env::get("DZTRADER_HOME");
         dztrader::env::set("DZTRADER_HOME", tmp_dir_.string());
+        dztrader::paths::reset_for_test();  // 清空进程级缓存, 指向本用例 home
         // 最小 dztraderd.json (init 配置由参数注入, 文件仅供 parse_master_json 测试用)
         // shm.event 含 page_size_mb=1 (测试用小页面, 降低内存占用)
         cfg_path_ = tmp_dir_ / "dztraderd.json";
@@ -68,6 +69,7 @@ protected:
         } else {
             dztrader::env::unset("DZTRADER_HOME");
         }
+        dztrader::paths::reset_for_test();
         std::filesystem::remove_all(tmp_dir_);
     }
 
@@ -400,6 +402,7 @@ protected:
                    std::to_string(dist(gen));
         orig_home_ = dztrader::env::get("DZTRADER_HOME");
         dztrader::env::set("DZTRADER_HOME", tmp_dir_.string());
+        dztrader::paths::reset_for_test();  // 清空进程级缓存, 指向本用例 home
         // 最小 dztraderd.json + md section 注册 dzmd_ctp (registry 从文件加载,
         // display_name="CTP行情" 供 SET/快照用例断言旧值/全量 map)
         cfg_path_ = tmp_dir_ / "dztraderd.json";
@@ -425,6 +428,7 @@ protected:
         } else {
             dztrader::env::unset("DZTRADER_HOME");
         }
+        dztrader::paths::reset_for_test();
         std::filesystem::remove_all(tmp_dir_);
     }
 

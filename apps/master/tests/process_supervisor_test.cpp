@@ -51,6 +51,7 @@ protected:
         std::filesystem::create_directories(tmp_dir_);
         orig_home_ = dztrader::env::get("DZTRADER_HOME");
         dztrader::env::set("DZTRADER_HOME", tmp_dir_.string());
+        dztrader::paths::reset_for_test();  // 清空进程级缓存, 指向本用例 home
 
         worker_exe_ = dztrader::this_process::exe_dir() /
                       "test_worker"
@@ -76,6 +77,7 @@ protected:
         // 若先删除文件，~ChannelMetaImpl() 析构 managed_mapped_file/ProcessMutex
         // 时会访问已删除文件，触发 SEH 0xc0000005。
         if (shm_mgr_) shm_mgr_->release_all();
+        dztrader::paths::reset_for_test();
         std::filesystem::remove_all(tmp_dir_);
     }
 

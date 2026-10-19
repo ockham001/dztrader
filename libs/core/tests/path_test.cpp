@@ -2,38 +2,91 @@
 #include <winsock2.h>
 #endif
 
+#include <dztrader/core/env.h>
 #include <dztrader/core/exception.h>
 #include <dztrader/core/path.h>
 #include <dztrader/error.h>
 
-#include <boost/process/v2/environment.hpp>
-
 #include <filesystem>
+#include <optional>
+#include <random>
 #include <string>
+#include <string_view>
 
 #include <gtest/gtest.h>
 
-namespace bp2env = boost::process::v2::environment;
 namespace paths = dztrader::paths;
+
+namespace {
+
+/// 每个用例唯一临时目录（随机后缀：同一进程内连续用例、并行测试 exe 均不冲突）
+std::filesystem::path unique_temp_dir(std::string_view name) {
+    std::random_device rd;
+    return std::filesystem::temp_directory_path() /
+           (std::string(name) + "_" + std::to_string(rd()));
+}
+
+/// 临时切换 DZTRADER_HOME 并重置 paths 缓存；析构时恢复环境并再次重置。
+class ScopedHome {
+public:
+    explicit ScopedHome(const std::filesystem::path& home)
+        : orig_(dztrader::env::get("DZTRADER_HOME")) {
+        dztrader::env::set("DZTRADER_HOME", home.string());
+        paths::reset_for_test();
+    }
+
+    ~ScopedHome() {
+        if (orig_) {
+            dztrader::env::set("DZTRADER_HOME", *orig_);
+        } else {
+            dztrader::env::unset("DZTRADER_HOME");
+        }
+        paths::reset_for_test();
+    }
+
+    ScopedHome(const ScopedHome&) = delete;
+    ScopedHome& operator=(const ScopedHome&) = delete;
+
+private:
+    std::optional<std::string> orig_;
+};
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // home() — DZTRADER_HOME 已设置
-// 使用跨平台临时目录作为测试路径
 // ---------------------------------------------------------------------------
 
 TEST(PathsTest, HomeFromEnvVar) {
-    const auto test_home = std::filesystem::temp_directory_path() / "dztrader_test_home";
-    bp2env::set("DZTRADER_HOME", test_home.string().c_str());
-    EXPECT_EQ(paths::home(), test_home);
-    bp2env::unset("DZTRADER_HOME");
+    const auto test_home = unique_temp_dir("dztrader_test_home");
+    {
+        ScopedHome guard(test_home);
+        EXPECT_EQ(paths::home(), test_home);
+    }
+    std::filesystem::remove_all(test_home);
 }
 
-// 注意：paths::home() 使用 magic static，首次调用后缓存。
-// 以下测试假设测试运行顺序：先 HomeFromEnvVar（设置 DZTRADER_HOME），
-// 再 HomeSubDirs。由于 magic static 只初始化一次，后续测试无法重新触发。
+// reset_for_test(): 换环境变量后清缓存, 下一次调用按新 home 重新解析。
+TEST(PathsTest, ResetForTestReResolvesHome) {
+    const auto home_a = unique_temp_dir("dztrader_test_home_a");
+    const auto home_b = unique_temp_dir("dztrader_test_home_b");
+    {
+        ScopedHome guard(home_a);
+        EXPECT_EQ(paths::home(), home_a);
+
+        dztrader::env::set("DZTRADER_HOME", home_b.string());
+        paths::reset_for_test();
+        EXPECT_EQ(paths::home(), home_b);
+    }
+    std::filesystem::remove_all(home_a);
+    std::filesystem::remove_all(home_b);
+}
+
+// ---------------------------------------------------------------------------
+// 子目录布局（使用 test-base 注入的 DZTRADER_HOME, 不依赖用例执行顺序）
+// ---------------------------------------------------------------------------
 
 TEST(PathsTest, HomeSubDirs) {
-    // home() 已在 HomeFromEnvVar 中初始化
     EXPECT_EQ(paths::configs(), paths::home() / "configs");
     EXPECT_EQ(paths::logs(), paths::home() / "logs");
     EXPECT_EQ(paths::shm(), paths::home() / "shm");
@@ -64,11 +117,10 @@ TEST(PathsTest, SubDirPathsContainParent) {
 }
 
 // ---------------------------------------------------------------------------
-// 缓存一致性：多次调用返回同一引用（magic static）
+// 缓存一致性：多次调用返回同一引用
 // ---------------------------------------------------------------------------
 
 TEST(PathsTest, CachedReferencesConsistent) {
-    // home() 已初始化，多次调用应返回同一引用
     const auto& h1 = paths::home();
     const auto& h2 = paths::home();
     EXPECT_EQ(&h1, &h2);
