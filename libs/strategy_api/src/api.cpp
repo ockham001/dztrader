@@ -738,6 +738,9 @@ bool handle_gap(DzContext* ctx, const std::byte* trigger_frame) {
     if (!enqueue_gap_rows(ctx, rows)) {
         return false;  // 缓冲溢出: 拦截触发帧, 宁缺勿乱 (不重试, 缓冲已满)
     }
+    // 回补行已入 replay。本帧继续走 dispatch (定向过滤/成交去重), 随后由
+    // dz_next_event 暂存为延迟触发帧, replay 清空后再交付 (回补行 → 触发帧,
+    // 契约 td-data-sync §回补交付序)。
     return true;
 }
 
@@ -835,6 +838,29 @@ bool is_own_report(const DzContext* ctx, const std::byte* frame) noexcept {
     }
     const auto& rpt = view.payload<ReportT>();
     return std::string_view(rpt.strategy_id) == std::string_view(ctx->strategy_id);
+}
+
+/// 取出下一条本策略可见的回补帧: ORDER/TRADE 按 strategy_id 定向丢弃他策略/外部单,
+/// 其余帧类型原样返回。无可用回补帧返回 nullptr。
+const void* pop_own_replay_frame(DzContext* ctx) {
+    for (;;) {
+        const void* replay = ctx->pop_replay_frame();
+        if (replay == nullptr) {
+            return nullptr;
+        }
+        const auto* bytes = static_cast<const std::byte*>(replay);
+        const DzFrameType rtype = shm::FrameView(bytes).type();
+        if (rtype == DZ_FRAME_ORDER_REPORT) {
+            if (!is_own_report<DzOrderReport>(ctx, bytes)) {
+                continue;  // 他策略/外部单回补: 定向丢弃
+            }
+        } else if (rtype == DZ_FRAME_TRADE_REPORT) {
+            if (!is_own_report<DzTradeReport>(ctx, bytes)) {
+                continue;
+            }
+        }
+        return replay;
+    }
 }
 
 /// NOTIFY_MD_STARTED 自动补订阅 (定义见 write_subscribe_req 之后)
@@ -1013,10 +1039,10 @@ DZ_API void dz_wait(DzContext* ctx) {
 }
 
 DZ_API const void* dz_next_event(DzContext* ctx) {
-    // 处理优先级: 回补帧 > 用户帧 > 定时器帧 > 内部帧。
+    // 处理优先级: 回补帧 > 延迟触发帧 > 用户帧 > 定时器帧 > 内部帧。
     // 回补帧 (断档回补合成的 Dz*Report) 前置 FIFO 派发: 先于任何 shm 实时帧,
-    // 保证回补数据按 seq 序在触发帧之后、后续实时帧之前送达 (契约 strategy:
-    // 启动竞态窗口的缺失区间由回补补齐, 无断档)。
+    // 交付序 = 回补行 → 触发帧 → 暂存帧 (契约 td-data-sync §回补交付序:
+    // 同键时回补旧状态不得覆盖新状态)。
     // 回补帧已过 ingest gate (W/断档/去重), 不再重复过滤; 但
     // DZ_FRAME_ORDER_REPORT/DZ_FRAME_TRADE_REPORT 仍按 strategy_id 定向 (回补查询按账户全量,
     // 含他策略/外部单, 仅本策略放行)。 断档回补重试驱动 (契约 td-data-sync §5.2):
@@ -1031,22 +1057,14 @@ DZ_API const void* dz_next_event(DzContext* ctx) {
             std::cerr << "gap retry drive failed: unknown exception" << '\n';
         }
     }
-    for (;;) {
-        const void* replay = ctx->pop_replay_frame();
-        if (replay == nullptr) {
-            break;
-        }
-        const DzFrameType rtype = shm::FrameView(static_cast<const std::byte*>(replay)).type();
-        if (rtype == DZ_FRAME_ORDER_REPORT) {
-            if (!is_own_report<DzOrderReport>(ctx, static_cast<const std::byte*>(replay))) {
-                continue;  // 他策略/外部单回补: 定向丢弃
-            }
-        } else if (rtype == DZ_FRAME_TRADE_REPORT) {
-            if (!is_own_report<DzTradeReport>(ctx, static_cast<const std::byte*>(replay))) {
-                continue;
-            }
-        }
+    if (const void* replay = pop_own_replay_frame(ctx); replay != nullptr) {
         return replay;
+    }
+    // 首次覆盖路径的触发帧: 已通过 dispatch (含成交去重), 但回补行先派发 —
+    // replay 清空前暂存, 避免新状态先于回补旧状态到达。
+    if (ctx->has_deferred_user_frame) {
+        ctx->has_deferred_user_frame = false;
+        return ctx->deferred_user_frame.data();
     }
     // 用户帧路径零计时器开销 (不 tick 不 pop); 通道无用户帧 (空/32 让位) 时才
     // tick 定时器并返回定时器帧; 内部帧在扫描用户帧时顺带消费 (轻量处理,
@@ -1058,15 +1076,27 @@ DZ_API const void* dz_next_event(DzContext* ctx) {
         if (frame == nullptr) {
             break;  // 通道空: 服务计时器
         }
-        const DzFrameType type = shm::FrameView(frame).type();
+        const shm::FrameView view(frame);
+        const DzFrameType type = view.type();
+        bool delivered = false;
         try {
-            if (dispatch_frame(ctx, frame, type)) {
-                return frame;  // 用户帧最高优先
-            }
+            delivered = dispatch_frame(ctx, frame, type);
         } catch (const std::exception& e) {
             std::cerr << (std::string("frame dispatch failed: ") + e.what()) << '\n';
         } catch (...) {
             std::cerr << "frame dispatch failed: unknown exception" << '\n';
+        }
+        // dispatch 期间可能产生回补帧 (断档): 回补行必须先于本帧返回。
+        // 本帧已通过 ingest/去重 → 暂存为延迟触发帧, replay 清空后再交付。
+        if (const void* replay = pop_own_replay_frame(ctx); replay != nullptr) {
+            if (delivered) {
+                ctx->deferred_user_frame.assign(frame, frame + view.frame_size());
+                ctx->has_deferred_user_frame = true;
+            }
+            return replay;
+        }
+        if (delivered) {
+            return frame;  // 用户帧最高优先
         }
         if (++internal_count >= kMaxInternalFramesPerCall) {
             break;  // 连续 32 条内部帧: 让位, 防饿死 dz_next_md

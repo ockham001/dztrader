@@ -102,7 +102,9 @@ DZ_API void dz_wait(DzContext* ctx);
  *
  * 处理优先级：回补帧 > 用户帧 > 定时器帧 > 内部帧。
  *   - 断档回补帧（SDK 按账户级 seq 水位从 td 库查回后合成）前置返回，先于任何实时帧；
- *   - 用户帧（本策略 TD 回报、定向本策略的 UI_INPUT、SHUTDOWN）直接返回，零计时器开销；
+ *     断档触发帧在回补行之后、后续实时帧之前返回（契约 td-data-sync §回补交付序）；
+ *   - 用户帧（本策略 TD 回报、定向本策略的 UI_INPUT、SHUTDOWN）直接返回，零计时器开销
+ *     （断档触发帧除外：在回补行之后返回，见上条）；
  *     ORDER_REPORT/TRADE_REPORT 按 payload strategy_id == 本策略裸名定向（空/他策略拦截）；
  *     POSITION_INFO/TRADING_ACCOUNT 不按策略过滤、全量放行，但先过账户级 ingest 过滤
  *     （seq ≤ 水位/重复成交不回传，断档由回补补齐）；UI_INPUT/SHUTDOWN 按 instance_id 定向；

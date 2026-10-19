@@ -148,6 +148,12 @@ struct DzContext {
     uint32_t replay_frame_head = 0;   ///< 下一个可写槽位
     uint32_t replay_frame_count = 0;  ///< 待领取帧数
 
+    /// 回补帧先行时暂存的触发帧 (完整帧副本): 回补 replay 清空前不返回,
+    /// 保证交付序 = 回补行 → 触发帧 → 暂存帧 (契约 td-data-sync §回补交付序)。
+    /// has_deferred_user_frame=false 时内容无效; 下一轮 defer 前不会被改写。
+    std::vector<std::byte> deferred_user_frame;
+    bool has_deferred_user_frame = false;
+
     /// 入回补帧缓冲 (FIFO)。
     /// 缓冲满 (仅 gap 区间过宽时发生): 记 ERROR 并返回 false, 调用方 (handle_gap)
     /// 拦截触发帧 (保证帧不丢、触发帧也不放行, 宁缺勿乱)。返回 true = 已入缓冲。

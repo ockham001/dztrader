@@ -113,6 +113,24 @@ TEST(TdIngestGate, TradeDedupExplicitDayChangeAllowsSameTradeAcrossDays) {
     EXPECT_FALSE(g.admit_trade("A", "20260902", "T1"));  // 新日段正常去重
 }
 
+// spec §5.4: 同日重复调用 on_trading_day_changed 为 no-op — 不得误删当前日去重段
+// (否则二道防线失效, 同日重复成交会被放行)。
+TEST(TdIngestGate, TradeDedupSameDayRepeatDayChangeIsNoop) {
+    TdIngestGate g;
+    (void)g.admit_trade("A", "20260901", "T1");
+    g.on_trading_day_changed("A", "20260901");           // 同日重复推送 ACCOUNT_STATUS
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));  // 旧键仍被拦截
+}
+
+// spec §5.4: new_trading_day == nullptr 时无条件清段 (强制重建语义)。
+TEST(TdIngestGate, TradeDedupNullptrDayChangeClearsUnconditionally) {
+    TdIngestGate g;
+    (void)g.admit_trade("A", "20260901", "T1");
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));
+    g.on_trading_day_changed("A", nullptr);
+    EXPECT_TRUE(g.admit_trade("A", "20260901", "T1"));  // 旧段已清, 可重新准入
+}
+
 // 首帧 seq == W+1 (无空洞) 不记 gap; seq ≤ W 的首帧不记 gap。
 TEST(TdIngestGate, NoGapWhenSequentialOrBelowWatermark) {
     TdIngestGate g;
