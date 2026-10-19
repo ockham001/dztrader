@@ -3,24 +3,13 @@
 #include <cstdio>
 #include <fstream>
 #include <filesystem>
-#include <random>
 #include "log_service.h"
-#include <dztrader/core/this_process.h>
+#include "unique_temp.h"
 
 using dztrader::webui::LogService;
+using dztrader::webui::test::unique_temp_dir;
 
 namespace fs = std::filesystem;
-
-/// 进程唯一临时目录名（PID + 随机数）：ctest -j 并行时避免多个用例/测试 exe
-/// 共用固定目录名（如 dz_log_service_test / dz_tail_cursor_*）导致冲突。
-fs::path unique_temp_dir(const std::string& name) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return fs::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-            "_" + std::to_string(dist(gen)));
-}
 
 class LogServiceTest : public ::testing::Test {
 protected:
@@ -792,6 +781,41 @@ TEST(LogServiceTailCursor, BaselineSkipsExistingContent) {
     EXPECT_EQ(c2.lines[0].parsed, true);
 
     fs::remove_all(tmp);
+}
+
+// ---- 从 ws_log_tail_test.cpp 迁入：原文件只测了 LogService，未触碰 WsController ----
+// （WS tail 契约覆盖见 ws_log_tail_test.cpp 的 LogTailManager 用例）
+
+TEST_F(LogServiceTest, ReadContentReadsAppendedContent) {
+    write_log_file("append.log",
+                   {"2026-07-13T14:23:45.000000000+08:00 info test [func=m file=f.cpp:1 pid=1 "
+                    "tid=2] line1"});
+    auto c1 = svc_->read_content("append.log", 0, 500, "", "", "", "");
+    ASSERT_EQ(c1.lines.size(), 1u);
+    EXPECT_EQ(c1.lines[0].msg, "line1");
+
+    {
+        std::ofstream ofs(tmp_dir_ / "append.log", std::ios::app);
+        ofs << "2026-07-13T14:23:46.000000000+08:00 warning test [func=m file=f.cpp:2 pid=1 "
+               "tid=3] line2\n";
+    }
+
+    auto c2 = svc_->read_content("append.log", 0, 500, "", "", "", "");
+    ASSERT_EQ(c2.lines.size(), 2u);
+    EXPECT_EQ(c2.lines[1].msg, "line2");
+}
+
+TEST_F(LogServiceTest, ReadContentFromOffsetSkipsLines) {
+    write_log_file(
+        "offset.log",
+        {"2026-07-13T14:23:45.000000000+08:00 info test [func=m file=f.cpp:1 pid=1 tid=2] line1",
+         "2026-07-13T14:23:46.000000000+08:00 info test [func=m file=f.cpp:2 pid=1 tid=3] line2",
+         "2026-07-13T14:23:47.000000000+08:00 info test [func=m file=f.cpp:3 pid=1 tid=4] line3"});
+
+    auto c = svc_->read_content("offset.log", 2, 500, "", "", "", "");
+    ASSERT_EQ(c.lines.size(), 1u);
+    EXPECT_EQ(c.lines[0].n, 3);
+    EXPECT_EQ(c.lines[0].msg, "line3");
 }
 
 TEST(LogServiceTailCursor, CrLfLineParsedTrue) {

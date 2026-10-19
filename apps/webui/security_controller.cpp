@@ -1,6 +1,7 @@
 #include "security_controller.h"
 
 #include <algorithm>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include <string>
@@ -9,6 +10,36 @@
 namespace dztrader::webui {
 
 using Json = nlohmann::json;
+
+namespace {
+
+/// 读取可选整型字段: 缺失返回 true 且不改 out; 类型不符/超出 int 范围返回 false。
+/// 显式分支（而非 get<int>() 直接转换）避免 uint64 溢出静默回绕或 out_of_range 逃逸。
+bool read_optional_int(const nlohmann::json& body, const char* key, int& out) {
+    if (!body.contains(key)) {
+        return true;
+    }
+    const auto& v = body[key];
+    int64_t value = 0;
+    if (v.is_number_unsigned()) {
+        const auto uv = v.get<uint64_t>();
+        if (uv > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+            return false;
+        }
+        value = static_cast<int64_t>(uv);
+    } else if (v.is_number_integer()) {
+        value = v.get<int64_t>();
+        if (value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max()) {
+            return false;
+        }
+    } else {
+        return false;
+    }
+    out = static_cast<int>(value);
+    return true;
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -77,12 +108,38 @@ void SecurityCtrl::set_config(
         callback(error_response(drogon::k400BadRequest, "bad request"));
         return;
     }
+    if (!body.is_object()) {
+        callback(error_response(drogon::k400BadRequest, "bad request"));
+        return;
+    }
 
+    // 字段类型/范围防御: body.value(...) 在类型不符时抛 type_error 逃逸为 500;
+    // 显式检查后统一回 400（整型溢出同样拒绝，不静默回绕）
     SecurityConfig config;
-    config.login_lockout_enabled = body.value("login_lockout_enabled", true);
-    config.access_mode = body.value("access_mode", "auto");
-    config.max_failed_attempts = body.value("max_failed_attempts", 5);
-    config.lockout_duration_sec = body.value("lockout_duration_sec", 900);
+    if (body.contains("login_lockout_enabled")) {
+        if (!body["login_lockout_enabled"].is_boolean()) {
+            callback(error_response(drogon::k400BadRequest, "invalid login_lockout_enabled"));
+            return;
+        }
+        config.login_lockout_enabled = body["login_lockout_enabled"].get<bool>();
+    }
+    if (body.contains("access_mode")) {
+        if (!body["access_mode"].is_string()) {
+            callback(error_response(drogon::k400BadRequest, "invalid access_mode"));
+            return;
+        }
+        config.access_mode = body["access_mode"].get<std::string>();
+    } else {
+        config.access_mode = "auto";
+    }
+    if (!read_optional_int(body, "max_failed_attempts", config.max_failed_attempts)) {
+        callback(error_response(drogon::k400BadRequest, "invalid max_failed_attempts"));
+        return;
+    }
+    if (!read_optional_int(body, "lockout_duration_sec", config.lockout_duration_sec)) {
+        callback(error_response(drogon::k400BadRequest, "invalid lockout_duration_sec"));
+        return;
+    }
 
     if (config.access_mode != "auto" && config.access_mode != "whitelist" &&
         config.access_mode != "blacklist") {
@@ -184,7 +241,7 @@ void SecurityCtrl::remove_blacklist(
         return;
     }
     if (!repo_->remove_from_blacklist(id)) {
-        callback(error_response(drogon::k404NotFound, "entry not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
     notifier_.broadcast_data_changed("blacklist");
@@ -269,7 +326,7 @@ void SecurityCtrl::remove_whitelist(
         return;
     }
     if (!repo_->remove_from_whitelist(id)) {
-        callback(error_response(drogon::k404NotFound, "entry not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
     notifier_.broadcast_data_changed("whitelist");
@@ -347,7 +404,7 @@ void SecurityCtrl::ack_default_password(
     const std::string username = req->getAttributes()->get<std::string>("user_id");
     auto user = repo_->get_user_by_username(username);
     if (!user.has_value()) {
-        callback(error_response(drogon::k404NotFound, "user_not_found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
 

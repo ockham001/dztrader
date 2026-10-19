@@ -7,6 +7,8 @@
 
 #include <nlohmann/json.hpp>
 #include <memory>
+#include <utility>
+#include <vector>
 
 namespace dztrader::webui {
 namespace {
@@ -74,6 +76,8 @@ TEST_F(AuthControllerTest, LoginSuccessReturns200) {
     EXPECT_EQ(user["role"].get<std::string>(), "user");
     // password_hash must never appear in the response
     EXPECT_FALSE(user.contains("password_hash"));
+    // 普通用户不触发默认密码告警
+    EXPECT_FALSE(body["is_default_password"].get<bool>());
 }
 
 // 2. Wrong password → 401 invalid_credentials
@@ -183,6 +187,94 @@ TEST_F(AuthControllerTest, LoginBadJsonReturns400) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
     auto body = parse_body(resp);
     EXPECT_EQ(body["error"].get<std::string>(), "bad request");
+}
+
+// 9b. 空 username / 空 password → 400（契约 rest §2.1 校验）
+TEST_F(AuthControllerTest, LoginEmptyFieldsReturn400) {
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"", "password123"},
+        {"testuser", ""},
+        {"", ""},
+    };
+    for (const auto& [username, password] : cases) {
+        auto resp = do_login(username, password);
+        EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest)
+            << "username=" << username << " password=" << password;
+        EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "bad request");
+    }
+}
+
+// 9c. IP 限制（契约 rest §2.2: access_mode + 黑白名单）
+TEST_F(AuthControllerTest, LoginBlacklistedIpReturns401IpBanned) {
+    auto req = drogon::HttpRequest::newHttpRequest();
+    req->setMethod(drogon::Post);
+    const std::string peer_ip = req->getPeerAddr().toIp();
+    ASSERT_TRUE(repo_->add_to_blacklist(peer_ip, "test ban", "manual"));
+
+    auto sec = repo_->get_security_config();
+    sec.access_mode = "blacklist";
+    ASSERT_TRUE(repo_->set_security_config(sec));
+
+    req->setBody(R"({"username":"testuser","password":"password123"})");
+    drogon::HttpResponsePtr captured;
+    ctrl_->login(req, [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
+    ASSERT_NE(captured.get(), nullptr);
+    EXPECT_EQ(captured->getStatusCode(), drogon::k401Unauthorized);
+    EXPECT_EQ(parse_body(captured)["error"].get<std::string>(), "ip_banned");
+}
+
+TEST_F(AuthControllerTest, LoginWhitelistModeRejectsUnlistedIp) {
+    auto req = drogon::HttpRequest::newHttpRequest();
+    req->setMethod(drogon::Post);
+    const std::string peer_ip = req->getPeerAddr().toIp();
+
+    auto sec = repo_->get_security_config();
+    sec.access_mode = "whitelist";
+    ASSERT_TRUE(repo_->set_security_config(sec));
+
+    req->setBody(R"({"username":"testuser","password":"password123"})");
+    drogon::HttpResponsePtr rejected;
+    ctrl_->login(req, [&rejected](const drogon::HttpResponsePtr& r) { rejected = r; });
+    ASSERT_NE(rejected.get(), nullptr);
+    EXPECT_EQ(rejected->getStatusCode(), drogon::k401Unauthorized);
+    EXPECT_EQ(parse_body(rejected)["error"].get<std::string>(), "ip_banned");
+
+    // 白名单放行后正常登录
+    ASSERT_TRUE(repo_->add_to_whitelist(peer_ip, "test allow"));
+    auto req2 = drogon::HttpRequest::newHttpRequest();
+    req2->setMethod(drogon::Post);
+    req2->setBody(R"({"username":"testuser","password":"password123"})");
+    drogon::HttpResponsePtr allowed;
+    ctrl_->login(req2, [&allowed](const drogon::HttpResponsePtr& r) { allowed = r; });
+    ASSERT_NE(allowed.get(), nullptr);
+    EXPECT_EQ(allowed->getStatusCode(), drogon::k200OK);
+}
+
+// 11. is_default_password 分支（前端 stores/auth.ts 依赖该字段触发默认密码告警）
+TEST_F(AuthControllerTest, LoginAdminWithUnackedDefaultPasswordFlagsTrue) {
+    cfg_->admin_password_is_default = true;
+    repo_->create_user("admin", "Administrator", "", "admin_pass", "admin");
+
+    auto resp = do_login("admin", "admin_pass");
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_TRUE(parse_body(resp)["is_default_password"].get<bool>());
+
+    // 确认告警后不再提示
+    auto admin = repo_->get_user_by_username("admin");
+    ASSERT_TRUE(admin.has_value());
+    ASSERT_TRUE(repo_->ack_default_password(admin->id));
+    auto resp2 = do_login("admin", "admin_pass");
+    ASSERT_EQ(resp2->getStatusCode(), drogon::k200OK);
+    EXPECT_FALSE(parse_body(resp2)["is_default_password"].get<bool>());
+}
+
+TEST_F(AuthControllerTest, LoginAdminWithCustomPasswordFlagsFalse) {
+    // 配置已改非默认密码 -> 即便 admin 未 ack 也不告警
+    cfg_->admin_password_is_default = false;
+    repo_->create_user("admin", "Administrator", "", "admin_pass", "admin");
+    auto resp = do_login("admin", "admin_pass");
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_FALSE(parse_body(resp)["is_default_password"].get<bool>());
 }
 
 // 10. The token in the response can be verified with jwt_verify

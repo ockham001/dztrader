@@ -69,6 +69,9 @@ TEST_F(UserControllerTest, CreateAsAdminReturns201) {
     EXPECT_EQ(body["username"].get<std::string>(), "newuser");
     EXPECT_EQ(body["role"].get<std::string>(), "user");
     EXPECT_EQ(body["status"].get<std::string>(), "offline");
+    // 契约 rest §1: 变更 DB 成功后广播 data_changed{users}
+    ASSERT_EQ(notifier_->scopes.size(), 1u);
+    EXPECT_EQ(notifier_->scopes[0], "users");
 }
 
 TEST_F(UserControllerTest, CreateAsNonAdminReturns403) {
@@ -136,6 +139,7 @@ TEST_F(UserControllerTest, GetNonexistentReturns404) {
     auto req = admin_req();
     auto resp = invoke(&UserCtrl::get, req, 99999);
     EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
 }
 
 // ---- me（角色降级后前端刷新缓存，与后端踢降级用户 WS 连接配套）----
@@ -182,6 +186,8 @@ TEST_F(UserControllerTest, UpdateUser) {
     EXPECT_EQ(body["display_name"].get<std::string>(), "Updated");
     EXPECT_EQ(body["email"].get<std::string>(), "up@t.com");
     EXPECT_EQ(body["role"].get<std::string>(), "admin");
+    ASSERT_EQ(notifier_->scopes.size(), 1u);
+    EXPECT_EQ(notifier_->scopes[0], "users");
 }
 
 TEST_F(UserControllerTest, UpdateNonexistentReturns404) {
@@ -189,6 +195,7 @@ TEST_F(UserControllerTest, UpdateNonexistentReturns404) {
     req->setBody(R"({"display_name":"x"})");
     auto resp = invoke(&UserCtrl::update, req, 99999);
     EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
 }
 
 // ---- 角色降级踢连接（契约 webui-ws §2.3：降低权限后须强制断开该用户已建立的 WS 连接）----
@@ -229,12 +236,34 @@ TEST_F(UserControllerTest, RemoveUserReturns204) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k204NoContent);
     // Verify gone
     EXPECT_FALSE(repo_->get_user_by_id(user_id_).has_value());
+    // 契约 rest §2.2: 删后强制断开其 WS 连接并广播 users
+    ASSERT_EQ(notifier_->kicked.size(), 1u);
+    EXPECT_EQ(notifier_->kicked[0], "regular");
+    ASSERT_EQ(notifier_->scopes.size(), 1u);
+    EXPECT_EQ(notifier_->scopes[0], "users");
+}
+
+TEST_F(UserControllerTest, RemoveSelfReturns403) {
+    auto resp = invoke(&UserCtrl::remove, admin_req(), admin_id_);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "cannot delete yourself");
+    EXPECT_TRUE(repo_->get_user_by_id(admin_id_).has_value());
+}
+
+TEST_F(UserControllerTest, RemoveOtherAdminReturns403) {
+    const int64_t second_admin = repo_->create_user("admin2", "Admin 2", "", "pw", "admin");
+    auto resp = invoke(&UserCtrl::remove, admin_req(), second_admin);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "cannot delete admin user");
+    EXPECT_TRUE(repo_->get_user_by_id(second_admin).has_value());
+    EXPECT_TRUE(notifier_->kicked.empty());
 }
 
 TEST_F(UserControllerTest, RemoveNonexistentReturns404) {
     auto req = admin_req();
     auto resp = invoke(&UserCtrl::remove, req, 99999);
     EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
 }
 
 // ---- update_status ----
@@ -246,6 +275,11 @@ TEST_F(UserControllerTest, DisableUser) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
     auto body = parse_body(resp);
     EXPECT_EQ(body["status"].get<std::string>(), "disabled");
+    // 契约 rest §2.2: 禁用时强制断开其 WS 连接
+    ASSERT_EQ(notifier_->kicked.size(), 1u);
+    EXPECT_EQ(notifier_->kicked[0], "regular");
+    ASSERT_EQ(notifier_->scopes.size(), 1u);
+    EXPECT_EQ(notifier_->scopes[0], "users");
 }
 
 TEST_F(UserControllerTest, EnableUser) {
@@ -292,12 +326,53 @@ TEST_F(UserControllerTest, UpdateStatusNonexistentReturns404) {
     req->setBody(R"({"status":"locked"})");
     auto resp = invoke(&UserCtrl::update_status, req, 99999);
     EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
+}
+
+TEST_F(UserControllerTest, UpdateStatusAdminDisableOrLockReturns403) {
+    // 契约防误操作: 禁用/锁定管理员 403（状态不变）
+    for (const char* body : {R"({"status":"disabled"})", R"({"status":"locked"})"}) {
+        auto req = admin_req();
+        req->setBody(body);
+        auto resp = invoke(&UserCtrl::update_status, req, admin_id_);
+        EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden) << body;
+        EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "cannot disable or lock admin user")
+            << body;
+    }
+    auto admin = repo_->get_user_by_id(admin_id_);
+    ASSERT_TRUE(admin.has_value());
+    EXPECT_EQ(admin->status, "offline");
+    EXPECT_TRUE(notifier_->kicked.empty());
+}
+
+TEST_F(UserControllerTest, NonAdminForbiddenEndpoints) {
+    // list / get(other) / update / update_status / reset_password 均要求 admin
+    auto list = invoke(&UserCtrl::list, user_req());
+    EXPECT_EQ(list->getStatusCode(), drogon::k403Forbidden);
+
+    auto get_other = invoke(&UserCtrl::get, user_req(), admin_id_);
+    EXPECT_EQ(get_other->getStatusCode(), drogon::k403Forbidden);
+
+    auto upd = user_req();
+    upd->setBody(R"({"display_name":"x"})");
+    EXPECT_EQ(invoke(&UserCtrl::update, upd, user_id_)->getStatusCode(), drogon::k403Forbidden);
+
+    auto st = user_req();
+    st->setBody(R"({"status":"disabled"})");
+    EXPECT_EQ(invoke(&UserCtrl::update_status, st, user_id_)->getStatusCode(),
+              drogon::k403Forbidden);
+
+    auto pw = user_req();
+    pw->setBody(R"({"new_password":"x"})");
+    EXPECT_EQ(invoke(&UserCtrl::reset_password, pw, user_id_)->getStatusCode(),
+              drogon::k403Forbidden);
 }
 
 TEST_F(UserControllerTest, GetPermissionsNonexistentReturns404) {
     auto req = admin_req();
     auto resp = invoke(&UserCtrl::get_permissions, req, 99999);
     EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
 }
 
 TEST_F(UserControllerTest, UpdatePermissionsNonexistentReturns404) {
@@ -305,6 +380,7 @@ TEST_F(UserControllerTest, UpdatePermissionsNonexistentReturns404) {
     req->setBody(R"({"permissions":[]})");
     auto resp = invoke(&UserCtrl::update_permissions, req, 99999);
     EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
 }
 
 // ---- reset_password ----
@@ -314,6 +390,20 @@ TEST_F(UserControllerTest, ResetPassword) {
     req->setBody(R"({"new_password":"newsecret"})");
     auto resp = invoke(&UserCtrl::reset_password, req, user_id_);
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    // 断言新密码生效、旧密码失效（控制器未真正改密但返回 200 时必红）
+    auto hash = repo_->get_password_hash("regular");
+    ASSERT_TRUE(hash.has_value());
+    EXPECT_TRUE(verify_password("newsecret", *hash));
+    EXPECT_FALSE(verify_password("pass", *hash));
+}
+
+TEST_F(UserControllerTest, ResetPasswordNonexistentReturns404) {
+    auto req = admin_req();
+    req->setBody(R"({"new_password":"x"})");
+    auto resp = invoke(&UserCtrl::reset_password, req, 99999);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
 }
 
 TEST_F(UserControllerTest, ResetPasswordEmptyReturns400) {
@@ -331,13 +421,35 @@ TEST_F(UserControllerTest, ResetPasswordNonDefaultDoesNotResetAck) {
     ASSERT_TRUE(u.has_value());
     EXPECT_EQ(u->default_password_acknowledged, 1);
 
-    // 2. 调用 reset_password 改为强密码
-    ASSERT_TRUE(repo_->reset_password(user_id_, "StrongPass123!"));
+    // 2. 经控制器改为强密码（必须走 UserCtrl 而非直接调仓库）
+    auto req = admin_req();
+    req->setBody(R"({"new_password":"StrongPass123!"})");
+    auto resp = invoke(&UserCtrl::reset_password, req, user_id_);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
 
     // 3. 验证 default_password_acknowledged 仍为 1(未重置)
     u = repo_->get_user_by_id(user_id_);
     ASSERT_TRUE(u.has_value());
     EXPECT_EQ(u->default_password_acknowledged, 1);
+    auto hash = repo_->get_password_hash("regular");
+    ASSERT_TRUE(hash.has_value());
+    EXPECT_TRUE(verify_password("StrongPass123!", *hash));
+}
+
+// 改回默认密码时应重置 ack（会再次触发默认密码告警）
+TEST_F(UserControllerTest, ResetPasswordToDefaultResetsAck) {
+    ASSERT_TRUE(repo_->ack_default_password(user_id_));
+    auto req = admin_req();
+    req->setBody(std::string(R"({"new_password":")") + kDefaultAdminPassword + R"("})");
+    auto resp = invoke(&UserCtrl::reset_password, req, user_id_);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    auto u = repo_->get_user_by_id(user_id_);
+    ASSERT_TRUE(u.has_value());
+    EXPECT_EQ(u->default_password_acknowledged, 0);
+    auto hash = repo_->get_password_hash("regular");
+    ASSERT_TRUE(hash.has_value());
+    EXPECT_TRUE(verify_password(kDefaultAdminPassword, *hash));
 }
 
 // ---- permissions ----
@@ -358,13 +470,117 @@ TEST_F(UserControllerTest, UpdateAndGetPermissions) {
     auto resp = invoke(&UserCtrl::update_permissions, req, user_id_);
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
     auto body = parse_body(resp);
-    EXPECT_EQ(body.size(), 2);
+    ASSERT_EQ(body.size(), 2u);
 
     // Now get permissions
     auto get_req = admin_req();
     auto get_resp = invoke(&UserCtrl::get_permissions, get_req, user_id_);
     auto get_body = parse_body(get_resp);
-    EXPECT_EQ(get_body.size(), 2);
+    ASSERT_EQ(get_body.size(), 2u);
+
+    // 逐项断言三个字段（granted 翻转或字段丢失必须变红）；顺序无关，按 id 查找
+    auto find_perm = [](const nlohmann::json& arr, const std::string& id) -> nlohmann::json {
+        for (const auto& p : arr) {
+            if (p.value("id", "") == id) {
+                return p;
+            }
+        }
+        return nullptr;
+    };
+    const auto acct = find_perm(get_body, "CTP-001");
+    ASSERT_FALSE(acct.is_null());
+    EXPECT_EQ(acct["type"].get<std::string>(), "account");
+    EXPECT_TRUE(acct["granted"].get<bool>());
+
+    const auto strat = find_perm(get_body, "MACD");
+    ASSERT_FALSE(strat.is_null());
+    EXPECT_EQ(strat["type"].get<std::string>(), "strategy");
+    EXPECT_FALSE(strat["granted"].get<bool>());
+
+    // 契约 rest §1: 变更 DB 成功后广播 data_changed{users}
+    ASSERT_EQ(notifier_->scopes.size(), 1u);
+    EXPECT_EQ(notifier_->scopes[0], "users");
+}
+
+TEST_F(UserControllerTest, UpdatePermissionsRejectsMissingOrNonArray) {
+    for (const char* body : {R"({})", R"({"permissions":{}})"}) {
+        auto req = admin_req();
+        req->setBody(body);
+        auto resp = invoke(&UserCtrl::update_permissions, req, user_id_);
+        EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest) << body;
+    }
+}
+
+// ---- 非法 JSON 统一 400（禁止解析异常逃逸）----
+
+TEST_F(UserControllerTest, MutatingEndpointsRejectInvalidJson) {
+    auto create = admin_req();
+    create->setBody("{not json");
+    EXPECT_EQ(invoke(&UserCtrl::create, create)->getStatusCode(), drogon::k400BadRequest);
+
+    auto update = admin_req();
+    update->setBody("{not json");
+    EXPECT_EQ(invoke(&UserCtrl::update, update, user_id_)->getStatusCode(), drogon::k400BadRequest);
+
+    auto status = admin_req();
+    status->setBody("{not json");
+    EXPECT_EQ(invoke(&UserCtrl::update_status, status, user_id_)->getStatusCode(),
+              drogon::k400BadRequest);
+
+    auto reset = admin_req();
+    reset->setBody("{not json");
+    EXPECT_EQ(invoke(&UserCtrl::reset_password, reset, user_id_)->getStatusCode(),
+              drogon::k400BadRequest);
+
+    auto perms = admin_req();
+    perms->setBody("{not json");
+    EXPECT_EQ(invoke(&UserCtrl::update_permissions, perms, user_id_)->getStatusCode(),
+              drogon::k400BadRequest);
+}
+
+// ---- POST /api/auth/change-password（契约 rest §2.1：任意已认证用户）----
+
+TEST_F(UserControllerTest, ChangePasswordWithoutAuthContextReturns401) {
+    auto req = drogon::HttpRequest::newHttpRequest();
+    req->setBody(R"({"new_password":"newpw"})");
+    auto resp = invoke(&UserCtrl::change_password, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k401Unauthorized);
+}
+
+TEST_F(UserControllerTest, ChangePasswordUnknownUserReturns404) {
+    auto req = drogon::HttpRequest::newHttpRequest();
+    req->getAttributes()->insert("user_id", std::string("ghost"));
+    req->setBody(R"({"new_password":"newpw"})");
+    auto resp = invoke(&UserCtrl::change_password, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
+}
+
+TEST_F(UserControllerTest, ChangePasswordInvalidJsonReturns400) {
+    auto req = user_req();
+    req->setBody("{not json");
+    auto resp = invoke(&UserCtrl::change_password, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(UserControllerTest, ChangePasswordEmptyReturns400) {
+    auto req = user_req();
+    req->setBody(R"({"new_password":""})");
+    auto resp = invoke(&UserCtrl::change_password, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(UserControllerTest, ChangePasswordSucceedsAndTakesEffect) {
+    auto req = user_req();
+    req->setBody(R"({"new_password":"MyNewPass!"})");
+    auto resp = invoke(&UserCtrl::change_password, req);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    // 新密码生效、旧密码失效
+    auto hash = repo_->get_password_hash("regular");
+    ASSERT_TRUE(hash.has_value());
+    EXPECT_TRUE(verify_password("MyNewPass!", *hash));
+    EXPECT_FALSE(verify_password("pass", *hash));
 }
 
 TEST_F(UserControllerTest, UpdatePermissionsNonAdminReturns403) {

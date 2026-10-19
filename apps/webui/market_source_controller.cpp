@@ -117,7 +117,7 @@ void MarketSourceCtrl::update(
     const std::string display_name = body.value("display_name", "");
     auto source = repo_->get_market_source(id);
     if (!source.has_value()) {
-        callback(error_response(drogon::k404NotFound, "market source not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
     // display_name 走 DB; auto_login 由 PUT /auto-login 端点单独处理走 SHM
@@ -147,7 +147,7 @@ void MarketSourceCtrl::remove(
     }
     auto source = repo_->get_market_source(id);
     if (!source.has_value()) {
-        callback(error_response(drogon::k404NotFound, "market source not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
     std::string process_name = process_name_for_source_type(source->source_type);
@@ -198,7 +198,7 @@ void MarketSourceCtrl::login(
             callback(error_response(drogon::k403Forbidden, "forbidden"));
             return;
         case ControlGuard::SourceInvalid:
-            callback(error_response(drogon::k404NotFound, "market source not found"));
+            callback(error_response(drogon::k404NotFound, "not found"));
             return;
         case ControlGuard::ChannelUnavailable:
             SPDLOG_WARN("shm not available, cannot send md_connect | source={}", source_name);
@@ -241,7 +241,7 @@ void MarketSourceCtrl::logout(
             callback(error_response(drogon::k403Forbidden, "forbidden"));
             return;
         case ControlGuard::SourceInvalid:
-            callback(error_response(drogon::k404NotFound, "market source not found"));
+            callback(error_response(drogon::k404NotFound, "not found"));
             return;
         case ControlGuard::ChannelUnavailable:
             SPDLOG_WARN("shm not available, cannot send md_disconnect | source={}", source_name);
@@ -277,7 +277,7 @@ void MarketSourceCtrl::start(
     }
     auto source = repo_->get_market_source(id);
     if (!source.has_value()) {
-        callback(error_response(drogon::k404NotFound, "market source not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
     if (!shm_writer_ || !shm_writer_->is_ready()) {
@@ -337,7 +337,7 @@ void MarketSourceCtrl::stop(
     }
     auto source = repo_->get_market_source(id);
     if (!source.has_value()) {
-        callback(error_response(drogon::k404NotFound, "market source not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
     if (!shm_writer_ || !shm_writer_->is_ready()) {

@@ -128,7 +128,7 @@ void MarketSourceCtrl::get(const drogon::HttpRequestPtr& req,
     (void)req;
     auto source = repo_->get_market_source(id);
     if (!source.has_value()) {
-        callback(error_response(drogon::k404NotFound, "market source not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
     callback(json_response(drogon::k200OK, market_source_detail(*source)));
@@ -146,7 +146,7 @@ void MarketSourceCtrl::get_config(const drogon::HttpRequestPtr& req,
     }
     auto source = repo_->get_market_source(id);
     if (!source.has_value()) {
-        callback(error_response(drogon::k404NotFound, "market source not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
     auto config_opt = get_config_from_mirror(id);

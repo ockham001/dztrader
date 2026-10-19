@@ -88,7 +88,7 @@ void UserCtrl::get(const drogon::HttpRequestPtr& req,
 
     auto user = repo_->get_user_by_id(id);
     if (!user.has_value()) {
-        callback(error_response(drogon::k404NotFound, "user not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
     callback(json_response(drogon::k200OK, user_to_json(*user)));
@@ -108,7 +108,7 @@ void UserCtrl::me(const drogon::HttpRequestPtr& req,
     const std::string username = req->getAttributes()->get<std::string>("user_id");
     auto user = repo_->get_user_by_username(username);
     if (!user.has_value()) {
-        callback(error_response(drogon::k404NotFound, "user not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
     callback(json_response(drogon::k200OK, user_to_json(*user)));
@@ -183,13 +183,13 @@ void UserCtrl::update(const drogon::HttpRequestPtr& req,
     // （Session.is_admin 连接时缓存，降权后旧连接仍可绕过 md_connect 等 admin 预检）。
     auto before = repo_->get_user_by_id(id);
     if (!before.has_value()) {
-        callback(error_response(drogon::k404NotFound, "user not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
     const bool was_admin = before->role == "admin";
 
     if (!repo_->update_user(id, display_name, email, role)) {
-        callback(error_response(drogon::k404NotFound, "user not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
 
@@ -217,7 +217,7 @@ void UserCtrl::remove(const drogon::HttpRequestPtr& req,
     // 查目标用户：用于自删检测、admin 保护、删后踢人
     auto target = repo_->get_user_by_id(id);
     if (!target.has_value()) {
-        callback(error_response(drogon::k404NotFound, "user not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
 
@@ -281,7 +281,7 @@ void UserCtrl::update_status(
 
     auto target = repo_->get_user_by_id(id);
     if (!target.has_value()) {
-        callback(error_response(drogon::k404NotFound, "user not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
 
@@ -341,7 +341,7 @@ void UserCtrl::reset_password(
     }
 
     if (!repo_->reset_password(id, new_password)) {
-        callback(error_response(drogon::k404NotFound, "user not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
 
@@ -362,7 +362,7 @@ void UserCtrl::get_permissions(
     }
 
     if (!repo_->get_user_by_id(id).has_value()) {
-        callback(error_response(drogon::k404NotFound, "user not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
     auto perms = repo_->get_user_permissions(id);
@@ -400,7 +400,7 @@ void UserCtrl::update_permissions(
     }
 
     if (!repo_->get_user_by_id(id).has_value()) {
-        callback(error_response(drogon::k404NotFound, "user not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
 
@@ -443,7 +443,7 @@ void UserCtrl::change_password(
     const std::string username = req->getAttributes()->get<std::string>("user_id");
     auto user = repo_->get_user_by_username(username);
     if (!user.has_value()) {
-        callback(error_response(drogon::k404NotFound, "user not found"));
+        callback(error_response(drogon::k404NotFound, "not found"));
         return;
     }
 

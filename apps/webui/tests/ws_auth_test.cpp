@@ -1,0 +1,44 @@
+#include <gtest/gtest.h>
+
+#include <string>
+
+#include "ws_auth.h"
+
+namespace dztrader::webui {
+namespace {
+
+// ---- /ws 连接鉴权（契约 webui-ws §1）：query token 优先，其次 Authorization: Bearer ----
+
+TEST(WsAuthTest, AuthenticateAcceptsQueryTokenAndHeaderFallback) {
+    const std::string secret = "test_secret";
+    const std::string token = jwt_sign("alice", 3600, secret);
+
+    auto via_query = ws_authenticate(token, "", secret);
+    ASSERT_TRUE(via_query.has_value());
+    EXPECT_EQ(*via_query, "alice");
+
+    auto via_header = ws_authenticate("", "Bearer " + token, secret);
+    ASSERT_TRUE(via_header.has_value());
+    EXPECT_EQ(*via_header, "alice");
+
+    // query 优先于 header（header 无效也不影响）
+    auto both = ws_authenticate(token, "Bearer garbage", secret);
+    ASSERT_TRUE(both.has_value());
+    EXPECT_EQ(*both, "alice");
+}
+
+TEST(WsAuthTest, AuthenticateRejectsInvalidTokens) {
+    const std::string secret = "test_secret";
+    const std::string token = jwt_sign("alice", 3600, secret);
+
+    EXPECT_FALSE(ws_authenticate("", "", secret).has_value());
+    EXPECT_FALSE(ws_authenticate("garbage", "", secret).has_value());
+    EXPECT_FALSE(ws_authenticate("", "garbage", secret).has_value());
+    // 非 Bearer scheme 不提取
+    EXPECT_FALSE(ws_authenticate("", "Basic " + token, secret).has_value());
+    // 签名密钥不符
+    EXPECT_FALSE(ws_authenticate("", "Bearer " + token, "wrong_secret").has_value());
+}
+
+}  // namespace
+}  // namespace dztrader::webui

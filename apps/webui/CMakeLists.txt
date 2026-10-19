@@ -21,6 +21,7 @@ add_library(dzweb_obj OBJECT
     event_preloader.cpp
     auth_controller.cpp
     ws_controller.cpp
+    ws_log_tail.cpp
     db_init.cpp
     repository.cpp
     shm_writer.cpp

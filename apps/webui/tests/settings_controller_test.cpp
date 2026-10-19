@@ -14,12 +14,11 @@
 #include <fstream>
 #include <memory>
 #include <optional>
-#include <random>
 
 #include "settings_controller.h"
 #include "repository.h"
 #include "shm_writer.h"
-#include <dztrader/core/this_process.h>
+#include "unique_temp.h"
 
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
@@ -39,19 +38,17 @@ protected:
     std::shared_ptr<WebuiConfig> webui_cfg_;
     std::filesystem::path master_path_;
     std::filesystem::path webui_path_;
+    std::filesystem::path blocker_path_;  // 500 用例的不可写路径哨兵
 
     static constexpr uint64_t MB = 1024 * 1024;
 
-    /// 每用例唯一 token（PID + 随机数）：ctest -j 并行时同二进制各用例作为独立进程运行，
-    /// 固定目录/文件名会互相删改冲突，故 shm 目录、channel 名、JSON 文件均基于此唯一化。
+    /// 每用例唯一后缀（unique_temp.h: PID + 随机数）：ctest -j 并行时同二进制各用例
+    /// 作为独立进程运行，固定目录/文件名会互相删改冲突，故 shm 目录、channel 名、
+    /// JSON 文件均基于此唯一化。
     std::string uid_;
 
     void SetUp() override {
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_int_distribution<uint32_t> dist;
-        uid_ = std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
-               std::to_string(dist(gen));
+        uid_ = dztrader::webui::test::unique_suffix();
 
         repo_ = std::make_shared<Repository>(":memory:");
         // 种子 admin/普通用户: is_admin 按 user_id attribute 查库判 role
@@ -116,6 +113,10 @@ protected:
         std::filesystem::remove_all(shm_dir_);
         std::filesystem::remove(webui_path_);
         std::filesystem::remove(master_path_);
+        if (!blocker_path_.empty()) {
+            std::error_code ec;
+            std::filesystem::remove_all(blocker_path_, ec);
+        }
         remove_corrupt_backups();
     }
 
@@ -157,8 +158,14 @@ TEST_F(SettingsControllerTest, SetEventShmConfigRejectsNonObject) {
 }
 
 TEST_F(SettingsControllerTest, SetEventShmConfigDispatches) {
+    // 契约 shm §SET: 合并 patch 整体透传（dzweb 不解析），事件通道帧无 instance_id
+    const nlohmann::json body = {
+        {"check_interval_min", 10},
+        {"preload_points", {{"08:45", {{"pages", 2}, {"bytes", 0}}}}},
+        {"page_size_mb", 64},
+    };
     auto req = admin_req();
-    req->setBody(R"({"check_interval_min":10})");
+    req->setBody(body.dump());
     auto resp = invoke(&SettingsCtrl::set_event_shm_config, req);
     ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
     EXPECT_EQ(parse_body(resp)["message"], "dispatched");
@@ -167,6 +174,10 @@ TEST_F(SettingsControllerTest, SetEventShmConfigDispatches) {
     ASSERT_NE(frame, nullptr);
     auto view = dztrader::shm::FrameView(frame);
     EXPECT_EQ(view.type(), DZ_FRAME_SET_EVENT_SHM_CONFIG);
+    const auto* data = reinterpret_cast<const char*>(view.ext_payload());
+    const auto payload = nlohmann::json::parse(data, data + view.ext_payload_size());
+    EXPECT_EQ(payload, body);
+    EXPECT_FALSE(payload.contains("instance_id"));
 }
 
 TEST_F(SettingsControllerTest, SetEventShmConfigReturns503WhenWriterNotReady) {
@@ -246,6 +257,51 @@ TEST_F(SettingsControllerTest, SetWebuiRejectsUnknownField) {
     auto resp = invoke(&SettingsCtrl::set_webui, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
     // 拒绝不改状态: 共享持有者保持原值 (热生效字段未被误改)
+    EXPECT_EQ(webui_cfg_->token_ttl_sec, 3600);
+}
+
+TEST_F(SettingsControllerTest, SetWebuiEmptyObjectReturns400) {
+    auto req = admin_req();
+    req->setBody(R"({})");
+    auto resp = invoke(&SettingsCtrl::set_webui, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(SettingsControllerTest, SetWebuiNonObjectReturns400) {
+    auto req = admin_req();
+    req->setBody(R"([{"token_ttl_sec":7200}])");
+    auto resp = invoke(&SettingsCtrl::set_webui, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(SettingsControllerTest, SetWebuiRejectsNonUnsignedValues) {
+    // 字符串/负数/浮点均不是无符号整数 -> 400，且不得热生效
+    for (const char* body : {R"({"token_ttl_sec":"7200"})", R"({"token_ttl_sec":-1})",
+                             R"({"notify_cache_size":-5})", R"({"notify_cache_size":1.5})"}) {
+        auto req = admin_req();
+        req->setBody(body);
+        auto resp = invoke(&SettingsCtrl::set_webui, req);
+        EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest) << body;
+        EXPECT_EQ(webui_cfg_->token_ttl_sec, 3600) << body;
+        EXPECT_EQ(webui_cfg_->notify_cache_size, 100u) << body;
+    }
+}
+
+TEST_F(SettingsControllerTest, SetWebuiReturns500WhenPersistFails) {
+    // webui.json 路径的父级是普通文件 -> 无法创建/写入 -> save 抛 -> 500，热生效值不变
+    blocker_path_ = std::filesystem::temp_directory_path() / ("dz_settings_blocker_" + uid_);
+    {
+        std::ofstream ofs(blocker_path_);
+        ofs << "x";
+    }
+    auto ctrl = std::make_shared<SettingsCtrl>(repo_, nullptr, master_path_,
+                                               blocker_path_ / "webui.json", webui_cfg_);
+    auto req = admin_req();
+    req->setBody(R"({"token_ttl_sec":7200})");
+    drogon::HttpResponsePtr captured;
+    ctrl->set_webui(req, [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
+    ASSERT_NE(captured.get(), nullptr);
+    EXPECT_EQ(captured->getStatusCode(), drogon::k500InternalServerError);
     EXPECT_EQ(webui_cfg_->token_ttl_sec, 3600);
 }
 
