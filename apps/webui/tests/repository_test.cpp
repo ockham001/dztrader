@@ -1,7 +1,13 @@
 #include <gtest/gtest.h>
 #include "repository.h"
 #include "db_init.h"
+#include <sqlite3.h>
+#include <dztrader/core/this_process.h>
 #include <algorithm>
+#include <filesystem>
+#include <random>
+#include <stdexcept>
+#include <string>
 
 namespace dztrader::webui {
 namespace {
@@ -22,6 +28,23 @@ TEST_F(RepositoryTest, CreateAndGetUser) {
     EXPECT_EQ(user->display_name, "Test User");
     EXPECT_EQ(user->role, "user");
     EXPECT_EQ(user->status, "offline");
+}
+
+TEST_F(RepositoryTest, CreateUserRejectsDuplicateUsername) {
+    const int64_t id = repo_.create_user("dupuser", "First", "", "pass", "user");
+    ASSERT_GT(id, 0);
+
+    // UNIQUE(username) 冲突必须显式失败，不得静默返回旧 rowid（旧实现返回首次插入的 id）
+    EXPECT_THROW(repo_.create_user("dupuser", "Second", "", "pass2", "admin"), std::runtime_error);
+
+    // 原用户与用户总数均未被改动
+    const auto users = repo_.list_users("", "", "", 1, 10);
+    EXPECT_EQ(users.total, 1);
+    auto user = repo_.get_user_by_username("dupuser");
+    ASSERT_TRUE(user.has_value());
+    EXPECT_EQ(user->id, id);
+    EXPECT_EQ(user->display_name, "First");
+    EXPECT_EQ(user->role, "user");
 }
 
 TEST_F(RepositoryTest, PasswordHashAndVerify) {
@@ -62,15 +85,112 @@ TEST_F(RepositoryTest, PasswordHashRejectsMalformed) {
 }
 
 TEST_F(RepositoryTest, ListUsersWithFilter) {
-    repo_.create_user("admin1", "Admin One", "a1@test.com", "pass", "admin");
-    repo_.create_user("user1", "User One", "u1@test.com", "pass", "user");
-    repo_.create_user("user2", "User Two", "u2@test.com", "pass", "user");
+    const int64_t admin_id =
+        repo_.create_user("admin_one", "Alice Admin", "a1@test.com", "pass", "admin");
+    const int64_t user1 =
+        repo_.create_user("user_one", "Bob O'Brien", "u1@test.com", "pass", "user");
+    const int64_t user2 = repo_.create_user("user_two", "Carol 100%", "", "pass", "user");
+    const int64_t user3 = repo_.create_user("user_three", "Dave", "", "pass", "user");
+    ASSERT_TRUE(repo_.update_user_status(user2, "disabled"));
 
+    // role 过滤：断言内容而非只有总数
     auto result = repo_.list_users("", "user", "", 1, 10);
-    EXPECT_EQ(result.total, 2);
+    EXPECT_EQ(result.total, 3);
+    ASSERT_EQ(result.users.size(), 3u);
+    EXPECT_EQ(result.users[0].id, user1);
+    EXPECT_EQ(result.users[1].id, user2);
+    EXPECT_EQ(result.users[2].id, user3);
 
     auto admin_result = repo_.list_users("", "admin", "", 1, 10);
     EXPECT_EQ(admin_result.total, 1);
+    ASSERT_EQ(admin_result.users.size(), 1u);
+    EXPECT_EQ(admin_result.users[0].id, admin_id);
+
+    // search 命中 username
+    auto by_username = repo_.list_users("user_on", "", "", 1, 10);
+    EXPECT_EQ(by_username.total, 1);
+    ASSERT_EQ(by_username.users.size(), 1u);
+    EXPECT_EQ(by_username.users[0].id, user1);
+
+    // search 命中 display_name（含单引号，绑定参数而非字符串拼接）
+    auto by_display = repo_.list_users("O'Brien", "", "", 1, 10);
+    EXPECT_EQ(by_display.total, 1);
+    ASSERT_EQ(by_display.users.size(), 1u);
+    EXPECT_EQ(by_display.users[0].id, user1);
+
+    // 注入样式输入只按字面量匹配，不得返回全量
+    auto injected = repo_.list_users("' OR 1=1 --", "", "", 1, 10);
+    EXPECT_EQ(injected.total, 0);
+    EXPECT_TRUE(injected.users.empty());
+
+    // search 含 %（LIKE 元字符/注入面）：输入照常绑定，不得报错或返回全量
+    auto percent = repo_.list_users("100%", "", "", 1, 10);
+    EXPECT_EQ(percent.total, 1);
+    ASSERT_EQ(percent.users.size(), 1u);
+    EXPECT_EQ(percent.users[0].id, user2);
+
+    // status 过滤
+    auto disabled = repo_.list_users("", "", "disabled", 1, 10);
+    EXPECT_EQ(disabled.total, 1);
+    ASSERT_EQ(disabled.users.size(), 1u);
+    EXPECT_EQ(disabled.users[0].id, user2);
+    EXPECT_EQ(disabled.users[0].status, "disabled");
+
+    // page>1 切片：ORDER BY id, LIMIT/OFFSET
+    auto page1 = repo_.list_users("", "", "", 1, 2);
+    ASSERT_EQ(page1.total, 4);
+    ASSERT_EQ(page1.users.size(), 2u);
+    EXPECT_EQ(page1.users[0].id, admin_id);
+    EXPECT_EQ(page1.users[1].id, user1);
+
+    auto page2 = repo_.list_users("", "", "", 2, 2);
+    ASSERT_EQ(page2.total, 4);
+    ASSERT_EQ(page2.users.size(), 2u);
+    EXPECT_EQ(page2.users[0].id, user2);
+    EXPECT_EQ(page2.users[1].id, user3);
+
+    auto page3 = repo_.list_users("", "", "", 3, 2);
+    EXPECT_EQ(page3.total, 4);
+    EXPECT_TRUE(page3.users.empty());
+}
+
+TEST_F(RepositoryTest, MutatorsRejectUnknownIdsWithoutSideEffects) {
+    const int64_t uid = repo_.create_user("mutuser", "Mut User", "mut@test.com", "pass", "user");
+    const int64_t src_id = repo_.create_market_source("CTP", "mut_src", "Mut Src");
+    ASSERT_TRUE(repo_.add_to_blacklist("10.0.0.9", "reason", "manual"));
+
+    const auto hash_before = repo_.get_password_hash("mutuser");
+    ASSERT_TRUE(hash_before.has_value());
+
+    constexpr int64_t kMissingId = 999999;
+    EXPECT_FALSE(repo_.update_user(kMissingId, "Changed", "x@test.com", "admin"));
+    EXPECT_FALSE(repo_.delete_user(kMissingId));
+    EXPECT_FALSE(repo_.update_user_status(kMissingId, "disabled"));
+    EXPECT_FALSE(repo_.reset_password(kMissingId, "new-password"));
+    EXPECT_FALSE(repo_.ack_default_password(kMissingId));
+    EXPECT_FALSE(repo_.update_market_source(kMissingId, "Changed"));
+    EXPECT_FALSE(repo_.delete_market_source(kMissingId));
+    EXPECT_FALSE(repo_.set_market_source_added(kMissingId, false));
+    EXPECT_FALSE(repo_.remove_from_blacklist(kMissingId));
+
+    // 数据库状态未被改动
+    auto user = repo_.get_user_by_id(uid);
+    ASSERT_TRUE(user.has_value());
+    EXPECT_EQ(user->display_name, "Mut User");
+    EXPECT_EQ(user->email, "mut@test.com");
+    EXPECT_EQ(user->role, "user");
+    EXPECT_EQ(user->status, "offline");
+    EXPECT_EQ(user->default_password_acknowledged, 0);
+    EXPECT_EQ(repo_.get_password_hash("mutuser"), hash_before);
+
+    auto src = repo_.get_market_source(src_id);
+    ASSERT_TRUE(src.has_value());
+    EXPECT_EQ(src->display_name, "Mut Src");
+    EXPECT_TRUE(src->is_added);
+
+    const auto blacklist = repo_.list_blacklist();
+    ASSERT_EQ(blacklist.size(), 1u);
+    EXPECT_EQ(blacklist[0].ip, "10.0.0.9");
 }
 
 TEST_F(RepositoryTest, UpdateUserStatus) {
@@ -152,22 +272,146 @@ TEST_F(RepositoryTest, MarketSourceIsAddedLifecycle) {
 }
 
 TEST_F(RepositoryTest, LoginHistory) {
-    repo_.add_login_history("admin", "192.168.1.1", "Chrome/Windows", true);
-    repo_.add_login_history("admin", "192.168.1.1", "Chrome/Windows", false);
+    repo_.add_login_history("admin", "192.168.1.1", "Chrome/Windows", true, "UA-chrome", "");
+    repo_.add_login_history("admin", "192.168.1.2", "Firefox/Linux", false, "UA-firefox",
+                            "bad password");
     repo_.add_login_history("user1", "10.0.0.1", "Safari/macOS", true);
 
     auto result = repo_.get_login_history(1, 10);
-    EXPECT_EQ(result.total, 3);
+    ASSERT_EQ(result.total, 3);
+    ASSERT_EQ(result.entries.size(), 3u);
+
+    // id DESC：最后写入的最先返回，字段逐项映射
+    EXPECT_GT(result.entries[0].id, result.entries[1].id);
+    EXPECT_GT(result.entries[1].id, result.entries[2].id);
+
+    EXPECT_EQ(result.entries[0].username, "user1");
+    EXPECT_EQ(result.entries[0].ip, "10.0.0.1");
+    EXPECT_EQ(result.entries[0].device, "Safari/macOS");
+    EXPECT_TRUE(result.entries[0].success);
+    EXPECT_EQ(result.entries[0].user_agent, "");  // 未提供 → NULL → 空串
+    EXPECT_EQ(result.entries[0].reason, "");
+
+    EXPECT_EQ(result.entries[1].username, "admin");
+    EXPECT_EQ(result.entries[1].ip, "192.168.1.2");
+    EXPECT_EQ(result.entries[1].device, "Firefox/Linux");
+    EXPECT_FALSE(result.entries[1].success);
+    EXPECT_EQ(result.entries[1].user_agent, "UA-firefox");
+    EXPECT_EQ(result.entries[1].reason, "bad password");
+
+    EXPECT_EQ(result.entries[2].username, "admin");
+    EXPECT_EQ(result.entries[2].ip, "192.168.1.1");
+    EXPECT_TRUE(result.entries[2].success);
+    EXPECT_EQ(result.entries[2].user_agent, "UA-chrome");
+
+    // 分页
+    auto page2 = repo_.get_login_history(2, 2);
+    ASSERT_EQ(page2.total, 3);
+    ASSERT_EQ(page2.entries.size(), 1u);
+    EXPECT_EQ(page2.entries[0].ip, "192.168.1.1");
+
+    // start/end 显式区间优先于 days
+    auto in_range =
+        repo_.get_login_history(1, 10, 1, "2000-01-01T00:00:00Z", "9999-12-31T23:59:59Z");
+    EXPECT_EQ(in_range.total, 3);
+    auto future = repo_.get_login_history(1, 10, 1, "9999-01-01T00:00:00Z", "");
+    EXPECT_EQ(future.total, 0);
+    auto past = repo_.get_login_history(1, 10, 1, "", "2000-01-01T00:00:00Z");
+    EXPECT_EQ(past.total, 0);
+}
+
+TEST(RepositoryLoginHistoryFilterTest, DaysFilterExcludesOldEntries) {
+    // 作用域退出即删除临时库文件（含 ASSERT 提前返回路径）
+    struct TempDbFileGuard {
+        std::filesystem::path path;
+        ~TempDbFileGuard() {
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+        }
+    };
+
+    std::random_device rd;
+    TempDbFileGuard db_guard{std::filesystem::temp_directory_path() /
+                             ("dz_webui_repo_history_" +
+                              std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
+                              "_" + std::to_string(rd()))};
+    const auto& db_path = db_guard.path;
+    std::filesystem::remove_all(db_path);
+
+    {
+        Repository repo(db_path);
+
+        // 直接写入一条 2000 年的旧记录（Repository 没有自定义时间入口）
+        sqlite3* raw = nullptr;
+        ASSERT_EQ(sqlite3_open(db_path.string().c_str(), &raw), SQLITE_OK);
+        char* err = nullptr;
+        const int rc = sqlite3_exec(
+            raw,
+            "INSERT INTO login_history (username, ip, device, success, created_at, user_agent, "
+            "reason) VALUES ('old', '1.2.3.4', 'old-device', 1, '2000-01-01T00:00:00Z', NULL, "
+            "NULL)",
+            nullptr, nullptr, &err);
+        if (err != nullptr) {
+            sqlite3_free(err);
+        }
+        sqlite3_close(raw);
+        ASSERT_EQ(rc, SQLITE_OK);
+
+        repo.add_login_history("now", "5.6.7.8", "new-device", true);
+
+        const auto recent = repo.get_login_history(1, 10, /*days=*/1);
+        EXPECT_EQ(recent.total, 1);
+        ASSERT_EQ(recent.entries.size(), 1u);
+        EXPECT_EQ(recent.entries[0].username, "now");
+
+        const auto wide = repo.get_login_history(1, 10, /*days=*/100000);
+        EXPECT_EQ(wide.total, 2);
+        ASSERT_EQ(wide.entries.size(), 2u);
+        EXPECT_EQ(wide.entries[0].username, "now");  // id DESC
+        EXPECT_EQ(wide.entries[1].username, "old");
+    }
 }
 
 TEST_F(RepositoryTest, Permissions) {
     const int64_t uid = repo_.create_user("permuser", "Perm User", "", "pass", "user");
-    repo_.set_user_permission(uid, "account", "CTP-主力账户", true);
-    repo_.set_user_permission(uid, "strategy", "MACD_V3", true);
-    repo_.set_user_permission(uid, "strategy", "Grid_BTC", false);
+    EXPECT_TRUE(repo_.set_user_permission(uid, "account", "CTP-主力账户", true));
+    EXPECT_TRUE(repo_.set_user_permission(uid, "strategy", "MACD_V3", true));
+    EXPECT_TRUE(repo_.set_user_permission(uid, "strategy", "Grid_BTC", false));
 
     auto perms = repo_.get_user_permissions(uid);
-    EXPECT_EQ(perms.size(), 3);
+    ASSERT_EQ(perms.size(), 3u);
+
+    auto find_perm = [&perms](const std::string& type, const std::string& id) -> const Permission* {
+        for (const auto& p : perms) {
+            if (p.type == type && p.id == id) {
+                return &p;
+            }
+        }
+        return nullptr;
+    };
+
+    const Permission* account = find_perm("account", "CTP-主力账户");
+    ASSERT_NE(account, nullptr);
+    EXPECT_TRUE(account->granted);
+
+    const Permission* macd = find_perm("strategy", "MACD_V3");
+    ASSERT_NE(macd, nullptr);
+    EXPECT_TRUE(macd->granted);
+
+    const Permission* grid = find_perm("strategy", "Grid_BTC");
+    ASSERT_NE(grid, nullptr);
+    EXPECT_FALSE(grid->granted);
+
+    // 同 (type, perm_id) 二次写入覆盖 granted（ON CONFLICT DO UPDATE），不新增条目
+    EXPECT_TRUE(repo_.set_user_permission(uid, "strategy", "MACD_V3", false));
+    perms = repo_.get_user_permissions(uid);
+    ASSERT_EQ(perms.size(), 3u);
+    macd = find_perm("strategy", "MACD_V3");
+    ASSERT_NE(macd, nullptr);
+    EXPECT_FALSE(macd->granted);
+    account = find_perm("account", "CTP-主力账户");
+    ASSERT_NE(account, nullptr);
+    EXPECT_TRUE(account->granted);  // 其他条目不受影响
 }
 
 }  // anonymous namespace

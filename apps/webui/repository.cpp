@@ -376,7 +376,15 @@ int64_t Repository::create_user(const std::string& username,
     sqlite3_bind_text(stmt, 5, role.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 6, now.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 7, now.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_step(stmt);
+    const int rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE) {
+        // users.username UNIQUE（db_init.cpp）：冲突时 step 失败且未插入。
+        // 必须显式报错——静默返回 sqlite3_last_insert_rowid 的陈旧值会被调用方
+        // 当成新用户 id（REST 层已预检 409，此路径防御并发竞态）
+        const std::string err = sqlite3_errmsg(db_);
+        sqlite3_finalize(stmt);
+        throw std::runtime_error("create user failed: " + err);
+    }
     int64_t const id = sqlite3_last_insert_rowid(db_);
     sqlite3_finalize(stmt);
     return id;

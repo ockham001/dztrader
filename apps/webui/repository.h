@@ -102,6 +102,8 @@ public:
                               const std::string& status_filter,
                               int page,
                               int page_size);
+    /// 创建用户并返回新用户 id。
+    /// @throws std::runtime_error 插入失败（如 username 唯一约束冲突）
     int64_t create_user(const std::string& username,
                         const std::string& display_name,
                         const std::string& email,

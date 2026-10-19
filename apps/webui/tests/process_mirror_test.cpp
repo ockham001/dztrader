@@ -17,7 +17,9 @@ TEST(ProcessMirrorTest, UpdateAndGetStatus) {
     s.name = "dzmd_ctp";
     s.state = dztrader::platform::ChildState::Running;
     s.pid = 12345;
+    s.display_name = "CTP 行情";
     s.message = "ok";
+    s.event = dztrader::platform::ProcessEvent::StartSucceeded;
     mirror.update_status("dzmd_ctp", s);
 
     auto all = mirror.get_all();
@@ -25,6 +27,31 @@ TEST(ProcessMirrorTest, UpdateAndGetStatus) {
     EXPECT_EQ(all[0].name, "dzmd_ctp");
     EXPECT_EQ(all[0].state, dztrader::platform::ChildState::Running);
     EXPECT_EQ(all[0].pid, 12345);
+    EXPECT_EQ(all[0].display_name, "CTP 行情");
+    EXPECT_EQ(all[0].message, "ok");
+    ASSERT_TRUE(all[0].event.has_value());
+    EXPECT_EQ(*all[0].event, dztrader::platform::ProcessEvent::StartSucceeded);
+
+    auto got = mirror.get_status("dzmd_ctp");
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(got->display_name, "CTP 行情");
+    EXPECT_EQ(got->message, "ok");
+    ASSERT_TRUE(got->event.has_value());
+    EXPECT_EQ(*got->event, dztrader::platform::ProcessEvent::StartSucceeded);
+}
+
+TEST(ProcessMirrorTest, StatusMissingOptionalFieldsStayEmpty) {
+    ProcessMirror mirror;
+    dztrader::platform::ProcessStatus s;
+    s.name = "dzmd_ctp";
+    s.state = dztrader::platform::ChildState::Stopped;
+    mirror.update_status("dzmd_ctp", s);  // display_name/message/event 均未设置
+
+    auto got = mirror.get_status("dzmd_ctp");
+    ASSERT_TRUE(got.has_value());
+    EXPECT_TRUE(got->display_name.empty());
+    EXPECT_TRUE(got->message.empty());
+    EXPECT_FALSE(got->event.has_value());  // 缺失 = nullopt（自发状态变化）
 }
 
 TEST(ProcessMirrorTest, UpdateAndGetConfig) {
@@ -60,12 +87,22 @@ TEST(ProcessMirrorTest, Clear) {
     s.name = "dzmd_ctp";
     mirror.update_status("dzmd_ctp", s);
     mirror.update_config("dzmd_ctp", nlohmann::json{{"log_level", "info"}});
+    mirror.update_gateway_status("dzmd_ctp", nlohmann::json{{"login_state", "online"}});
+    mirror.update_process_configs(nlohmann::json{
+        {"dzmd_ctp",
+         {{"args", {"--config", "ctp.json"}},
+          {"env", {{"LOG_LEVEL", "debug"}}},
+          {"restart", {{"enabled", true}, {"max_attempts", 3}, {"backoff_sec", 7}}}}}});
     ASSERT_EQ(mirror.get_all().size(), 1u);
     ASSERT_TRUE(mirror.get_config("dzmd_ctp").has_value());
+    ASSERT_TRUE(mirror.get_gateway_status("dzmd_ctp").has_value());
+    ASSERT_TRUE(mirror.get_process_config("dzmd_ctp").has_value());
 
     mirror.clear();
     EXPECT_TRUE(mirror.get_all().empty());
     EXPECT_FALSE(mirror.get_config("dzmd_ctp").has_value());
+    EXPECT_FALSE(mirror.get_gateway_status("dzmd_ctp").has_value());
+    EXPECT_FALSE(mirror.get_process_config("dzmd_ctp").has_value());
 }
 
 TEST(ProcessMirrorTest, UpdateConfigOnly) {
@@ -134,16 +171,28 @@ TEST(ProcessMirrorTest, UpdateProcessConfigsEntryDisappearanceCleansInstanceMirr
     mirror.update_gateway_status("dzmd_ctp", nlohmann::json{{"api_version", "v6.7.2"}});
     mirror.update_process_configs(nlohmann::json{
         {"dzmd_ctp",
-         {{"args", nlohmann::json::array()},
-          {"env", nlohmann::json::object()},
+         {{"args", {"--config", "ctp.json"}},
+          {"env", {{"LOG_LEVEL", "debug"}, {"BROKER", "ctp"}}},
           {"restart", {{"enabled", true}, {"max_attempts", 5}, {"backoff_sec", 5}}}}}});
     ASSERT_TRUE(mirror.get_status("dzmd_ctp").has_value());
+
+    // 全量读取：args/env/restart 逐字段（存成空对象/空数组会红）
+    const auto cfg = mirror.get_process_config("dzmd_ctp");
+    ASSERT_TRUE(cfg.has_value());
+    EXPECT_EQ(cfg->at("args"), (nlohmann::json{"--config", "ctp.json"}));
+    EXPECT_EQ(cfg->at("env").at("LOG_LEVEL"), "debug");
+    EXPECT_EQ(cfg->at("env").at("BROKER"), "ctp");
+    EXPECT_EQ(cfg->at("env").size(), 2u);
+    EXPECT_EQ(cfg->at("restart").at("enabled"), true);
+    EXPECT_EQ(cfg->at("restart").at("max_attempts"), 5);
+    EXPECT_EQ(cfg->at("restart").at("backoff_sec"), 5);
 
     // 118 全量覆盖: dzmd_ctp 条目消失 → 实例镜像清理
     mirror.update_process_configs(nlohmann::json::object());
     EXPECT_FALSE(mirror.get_status("dzmd_ctp").has_value());
     EXPECT_FALSE(mirror.get_config("dzmd_ctp").has_value());
     EXPECT_FALSE(mirror.get_gateway_status("dzmd_ctp").has_value());
+    EXPECT_FALSE(mirror.get_process_config("dzmd_ctp").has_value());
     EXPECT_TRUE(mirror.get_all().empty());  // list API 不再返回残留 Stopping
 
     // 其他仍注册的进程不受影响
