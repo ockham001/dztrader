@@ -148,7 +148,9 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
   // 不再承担 pending 清理（契约 md-status 无状态字段）：login/logout pending 由
   // RTN_PROGRESS 状态转移驱动（契约 progress，见下方 watch）。
   function applyMdStatus(payload: MdRtnStatusPayload): void {
-    if (!payload || !payload.source) return
+    // 契约 webui-ws §2.2: payload 必须含 source + status（对象）；缺 status 的非法帧
+    // 不得覆盖已有镜像（与 applyMdConfig 对 source/config 的校验对齐）
+    if (!payload || !payload.source || !payload.status || typeof payload.status !== 'object') return
     statuses.value[payload.source] = payload
   }
 
