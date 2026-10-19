@@ -9,13 +9,13 @@
 #include <string>
 #include <memory>
 #include "config.h"
-#include "log_service.h"
 #include "repository.h"
 #include "mirror_store.h"
 #include "process_mirror.h"
 #include "ws_broadcaster.h"
 #include "data_change_notifier.h"
 #include "md_control_domain_service.h"
+#include "ws_log_tail.h"
 
 namespace dztrader::webui {
 
@@ -82,15 +82,15 @@ private:
     /// （P2 任务③：三个 C2S 分支下沉到服务，WsController 仅负责连接/鉴权/会话/routing）
     MdControlDomainService& md_control_;
 
-    /// 单连接订阅状态
+    /// 单连接会话状态（日志 tail 订阅由 LogTailManager 按连接身份维护）
     struct Session {
         std::string user_id;
-        std::string subscribed_log_file;    // empty = no subscription
-        LogService::TailCursor log_cursor;  // tail 游标（字节偏移+行号，增量读）
-        int tail_fail_count = 0;            // 连续 send 失败次数；达到 3 自动退订
-        bool is_admin = false;              // 连接时按 DB 角色缓存（admin 角色控制消息预检）
+        bool is_admin = false;  // 连接时按 DB 角色缓存（admin 角色控制消息预检）
     };
     std::unordered_map<drogon::WebSocketConnectionPtr, Session> sessions_;
+
+    /// 日志 tail 订阅/轮询状态机（不依赖 drogon 连接对象，可单测）
+    LogTailManager log_tail_;
 
     /// 日志 tail 惰性定时器（用户裁决：接受 tail 期间 500ms 轮询；无订阅时关闭）
     static constexpr double kLogTailIntervalSec = 0.5;
