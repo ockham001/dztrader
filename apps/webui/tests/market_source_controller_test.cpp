@@ -10,13 +10,105 @@
 #include <memory>
 #include <dztrader/data_type.h>
 #include <dztrader/core/core_data_type.h>
+#include <dztrader/platform/process.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
+#include "unique_temp.h"
 
 namespace dztrader::webui {
 namespace {
+
+/// 构造独立事件通道，返回就绪 ShmWriter 与捕获 Reader（帧断言用）。
+/// 通道名/目录按 pid+随机数唯一化：ctest -j 下不同测试进程互不干扰（§3.5）。
+struct ReadyShmFixture {
+    std::string channel_name;
+    std::filesystem::path shm_dir;
+    std::shared_ptr<shm::ChannelMeta> meta;
+    std::shared_ptr<shm::MultiWriter> writer;
+    std::optional<shm::Reader> reader;
+    static constexpr uint64_t MB = 1024ull * 1024;
+
+    ReadyShmFixture() {
+        channel_name = "dz_test_msctrl_" + test::unique_suffix();
+        shm_dir = std::filesystem::temp_directory_path() / channel_name;
+        std::filesystem::remove_all(shm_dir);
+        std::filesystem::create_directories(shm_dir);
+        const shm::ChannelConfig cfg{.channel_name = channel_name,
+                                     .shm_dir = shm_dir,
+                                     .meta_file_size = 4 * MB,
+                                     .page_size = 1 * MB,
+                                     .lock_memory = false,
+                                     .prefetch_memory = false};
+        meta = std::make_shared<shm::ChannelMeta>(shm::ChannelMeta::open_or_create(cfg));
+        writer = std::make_shared<shm::MultiWriter>(shm::MultiWriter::create(meta, "test_writer"));
+        reader = shm::Reader::create(meta, "test_reader");
+    }
+    ~ReadyShmFixture() {
+        reader.reset();
+        writer.reset();
+        meta.reset();
+        std::filesystem::remove_all(shm_dir);
+    }
+    ReadyShmFixture(const ReadyShmFixture&) = delete;
+    ReadyShmFixture& operator=(const ReadyShmFixture&) = delete;
+
+    struct Captured {
+        bool found = false;
+        nlohmann::json payload;
+    };
+
+    /// 排空 reader，返回第一个匹配 type（+ instance_id）的定向帧 payload
+    Captured capture_inst_frame(DzFrameType type, const std::string& instance) {
+        Captured out;
+        while (const auto* raw = reader->next_frame()) {
+            const shm::FrameView view(raw);
+            if (view.type() != type) {
+                continue;
+            }
+            if (std::string(view.ext_inst_id()) != instance) {
+                continue;
+            }
+            const auto* data = reinterpret_cast<const char*>(view.ext_inst_payload());
+            out.payload = nlohmann::json::parse(data, data + view.ext_inst_payload_size());
+            out.found = true;
+            break;
+        }
+        return out;
+    }
+
+    /// 排空 reader，返回第一个匹配 type 的无 instance_id 帧 payload（空 payload → {}）
+    Captured capture_ext_frame(DzFrameType type) {
+        Captured out;
+        while (const auto* raw = reader->next_frame()) {
+            const shm::FrameView view(raw);
+            if (view.type() != type) {
+                continue;
+            }
+            const auto size = view.ext_payload_size();
+            if (size == 0) {
+                out.payload = nlohmann::json::object();
+            } else {
+                const auto* data = reinterpret_cast<const char*>(view.ext_payload());
+                out.payload = nlohmann::json::parse(data, data + size);
+            }
+            out.found = true;
+            break;
+        }
+        return out;
+    }
+};
+
+/// Helper: 填充 process_mirror_ 的 status 使 is_process_running_in_mirror 返回 true.
+/// Phase 2b 起 dispatch_op 不再读镜像 detail/config (只检查进程 running 状态),
+/// 故仅需 update_status; detail 填充由具体测试自行准备 (如 get_config 脱敏测试).
+void prime_mirror_for_dispatch(ProcessMirror& mirror, const std::string& process_name) {
+    dztrader::platform::ProcessStatus s;
+    s.name = process_name;
+    s.state = dztrader::platform::ChildState::Running;
+    mirror.update_status(process_name, s);
+}
 
 class MarketSourceControllerTest : public ::testing::Test {
 protected:
@@ -64,6 +156,27 @@ protected:
         return nlohmann::json::parse(resp->getBody());
     }
 
+    /// 就绪 writer 注入（配合 ReadyShmFixture 断言写入帧）
+    void use_ready_shm(ReadyShmFixture& shm) {
+        shm_writer_ = std::make_shared<ShmWriter>(shm.writer);
+        ctrl_ = std::make_shared<MarketSourceCtrl>(repo_, shm_writer_, process_mirror_, *notifier_);
+    }
+
+    /// 契约 rest §1: 404 统一错误体 {"error":"not found"}
+    void expect_not_found(const drogon::HttpResponsePtr& resp) {
+        ASSERT_NE(resp.get(), nullptr);
+        EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+        EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
+    }
+
+    /// 下发类用例通用前置: 创建 source + 镜像 Running + 注入就绪 writer（返回 source id）
+    int64_t prepare_ready_dispatch(ReadyShmFixture& shm, const std::string& source_name) {
+        const int64_t id = create_source(source_name);
+        prime_mirror_for_dispatch(*process_mirror_, "dzmd_ctp");
+        use_ready_shm(shm);
+        return id;
+    }
+
     /// Helper to create a market source via the controller and return its id.
     int64_t create_source(const std::string& name = "ctp_main") {
         auto req = admin_req();
@@ -74,16 +187,6 @@ protected:
         return parse_body(resp)["id"].get<int64_t>();
     }
 };
-
-/// Helper: 填充 process_mirror_ 的 status 使 is_process_running_in_mirror 返回 true.
-/// Phase 2b 起 dispatch_op 不再读镜像 detail/config (只检查进程 running 状态),
-/// 故仅需 update_status; detail 填充由具体测试自行准备 (如 get_config 脱敏测试).
-void prime_mirror_for_dispatch(ProcessMirror& mirror, const std::string& process_name) {
-    dztrader::platform::ProcessStatus s;
-    s.name = process_name;
-    s.state = dztrader::platform::ChildState::Running;
-    mirror.update_status(process_name, s);
-}
 
 // ---- create + get ----
 
@@ -194,7 +297,7 @@ TEST_F(MarketSourceControllerTest, ListAsNonAdminReturns200) {
 TEST_F(MarketSourceControllerTest, GetNonexistentMarketSourceReturns404) {
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::get, req, int64_t{99999});
-    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    expect_not_found(resp);
 }
 
 // ---- update ----
@@ -221,14 +324,14 @@ TEST_F(MarketSourceControllerTest, UpdateNonexistentReturns404) {
     auto req = admin_req();
     req->setBody(R"({"display_name":"X"})");
     auto resp = invoke(&MarketSourceCtrl::update, req, int64_t{99999});
-    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    expect_not_found(resp);
 }
 
 // ---- delete ----
 
-TEST_F(MarketSourceControllerTest, DeleteReturns503WhenShmWriteFails) {
+TEST_F(MarketSourceControllerTest, DeleteReturns503WhenWriterNotReady) {
     // 契约 rest §1: 写入事件通道失败 = 端点唯一职责失败 -> 503（不再是 200 {ok:false}）
-    // 测试环境 writer 未就绪（temp 目录无通道），write_process_control 返回 false
+    // 测试环境 writer 未就绪（temp 目录无通道）-> guard 直接 503
     const int64_t id = create_source("ctp_del");
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::remove, req, id);
@@ -248,7 +351,7 @@ TEST_F(MarketSourceControllerTest, DeleteAsNonAdminReturns403) {
 TEST_F(MarketSourceControllerTest, DeleteNonexistentReturns404) {
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::remove, req, int64_t{99999});
-    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    expect_not_found(resp);
 }
 
 // ---- login (Wave 2C: SHM md_connect only, no DB write) ----
@@ -274,7 +377,7 @@ TEST_F(MarketSourceControllerTest, LoginAsNonAdminReturns403) {
 TEST_F(MarketSourceControllerTest, LoginNonexistentReturns404) {
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::login, req, int64_t{99999});
-    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    expect_not_found(resp);
 }
 
 // ---- logout ----
@@ -298,7 +401,7 @@ TEST_F(MarketSourceControllerTest, LogoutAsNonAdminReturns403) {
 TEST_F(MarketSourceControllerTest, LogoutNonexistentReturns404) {
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::logout, req, int64_t{99999});
-    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    expect_not_found(resp);
 }
 
 // ---- auto-login toggle ----
@@ -316,7 +419,7 @@ TEST_F(MarketSourceControllerTest, ToggleAutoLoginNonexistentReturns404) {
     auto req = admin_req();
     req->setBody(R"({"enabled":true})");
     auto resp = invoke(&MarketSourceCtrl::set_auto_login, req, int64_t{99999});
-    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    expect_not_found(resp);
 }
 
 TEST_F(MarketSourceControllerTest, ToggleAutoLoginRejectsNonBooleanEnabled) {
@@ -375,7 +478,7 @@ TEST_F(MarketSourceControllerTest, SetAutoLoginNonexistentSourceReturns404) {
     auto req = admin_req();
     req->setBody(R"({"enabled":true,"schedules":[]})");
     auto resp = invoke(&MarketSourceCtrl::set_auto_login, req, int64_t{99999});
-    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    expect_not_found(resp);
 }
 
 TEST_F(MarketSourceControllerTest, SetAutoLoginRejectsWhenProcessNotRunning) {
@@ -429,7 +532,7 @@ TEST_F(MarketSourceControllerTest, AddBrokerNonexistentSourceReturns404) {
     auto req = admin_req();
     req->setBody(R"({"name":"b1"})");
     auto resp = invoke(&MarketSourceCtrl::add_broker, req, int64_t{99999});
-    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    expect_not_found(resp);
 }
 
 TEST_F(MarketSourceControllerTest, AddBrokerRejectsWhenProcessNotRunning) {
@@ -466,7 +569,7 @@ TEST_F(MarketSourceControllerTest, RemoveBrokerAsNonAdminReturns403) {
 TEST_F(MarketSourceControllerTest, RemoveBrokerNonexistentSourceReturns404) {
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::remove_broker, req, int64_t{99999}, std::string{"b1"});
-    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    expect_not_found(resp);
 }
 
 TEST_F(MarketSourceControllerTest, RemoveBrokerRejectsWhenProcessNotRunning) {
@@ -498,7 +601,7 @@ TEST_F(MarketSourceControllerTest, UpdateBrokerNonexistentSourceReturns404) {
     auto req = admin_req();
     req->setBody(R"({"name":"b1"})");
     auto resp = invoke(&MarketSourceCtrl::update_broker, req, int64_t{99999}, std::string{"b1"});
-    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    expect_not_found(resp);
 }
 
 TEST_F(MarketSourceControllerTest, UpdateBrokerRejectsWhenProcessNotRunning) {
@@ -549,7 +652,7 @@ TEST_F(MarketSourceControllerTest, SetCurrentBrokerNonexistentSourceReturns404) 
     auto req = admin_req();
     req->setBody(R"({"name":"b1"})");
     auto resp = invoke(&MarketSourceCtrl::set_current_broker, req, int64_t{99999});
-    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    expect_not_found(resp);
 }
 
 TEST_F(MarketSourceControllerTest, SetCurrentBrokerRejectsWhenProcessNotRunning) {
@@ -560,13 +663,20 @@ TEST_F(MarketSourceControllerTest, SetCurrentBrokerRejectsWhenProcessNotRunning)
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
 }
 
-TEST_F(MarketSourceControllerTest, SetCurrentBrokerEmptyNameAllowed) {
-    // name="" 表示清空选中 (合法), 仍需进程在跑才能下发
-    const int64_t id = create_source("ctp_cur3");
+TEST_F(MarketSourceControllerTest, SetCurrentBrokerEmptyNameDispatched) {
+    // name="" 表示清空选中 (合法): 就绪 writer 下必须 200 且帧参数原样
+    ReadyShmFixture shm;
+    const int64_t id = prepare_ready_dispatch(shm, "ctp_cur3");
+
     auto req = admin_req();
     req->setBody(R"({"name":""})");
     auto resp = invoke(&MarketSourceCtrl::set_current_broker, req, id);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    auto cap = shm.capture_inst_frame(DZ_FRAME_SET_MD_CONFIG, "dzmd_ctp");
+    ASSERT_TRUE(cap.found);
+    EXPECT_EQ(cap.payload["op"], "SetCurrentBroker");
+    EXPECT_EQ(cap.payload["params"]["name"], "");
 }
 
 // ---- list_available: added = DB 存在且 is_added=1（契约 rest §2.3 修订）----
@@ -685,7 +795,7 @@ TEST_F(MarketSourceControllerTest, GetConfigAsNonAdminReturns403) {
 TEST_F(MarketSourceControllerTest, GetConfigNonexistentSourceReturns404) {
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::get_config, req, int64_t{99999});
-    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    expect_not_found(resp);
 }
 
 TEST_F(MarketSourceControllerTest, GetConfigRejectsWhenMirrorNotReady) {
@@ -695,16 +805,19 @@ TEST_F(MarketSourceControllerTest, GetConfigRejectsWhenMirrorNotReady) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
 }
 
-// ---- start / stop: writer 未就绪 -> 503（契约 rest §1）----
+// ---- start / stop / delete: writer 未就绪 -> 503（契约 rest §1）----
+// 注: write_process_control 返回 false 的分支由
+// StartReturns503WhenReadyWriterRejectsOversizedFrame 覆盖（stop/delete 载荷固定，
+// 无法在真实通道上确定性地触发写失败；三者共用同一 503 映射代码）
 
-TEST_F(MarketSourceControllerTest, StartReturns503WhenShmWriteFails) {
+TEST_F(MarketSourceControllerTest, StartReturns503WhenWriterNotReady) {
     const int64_t id = create_source("ctp_start_w");
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::start, req, id);
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
 }
 
-TEST_F(MarketSourceControllerTest, StopReturns503WhenShmWriteFails) {
+TEST_F(MarketSourceControllerTest, StopReturns503WhenWriterNotReady) {
     const int64_t id = create_source("ctp_stop_w");
     auto req = admin_req();
     auto resp = invoke(&MarketSourceCtrl::stop, req, id);
@@ -763,72 +876,12 @@ TEST_F(MarketSourceControllerTest, RemoveNoBroadcastWhenWriteFails) {
 
 // ---- shm-config: 空对象 {} = no-op 透传（契约 shm §SET，I7）----
 
-/// 构造独立事件通道，返回就绪 ShmWriter 与捕获 Reader。
-/// 使 guard_process_dispatch 的 is_ready 通过，并能读到写入的 SET_MD_SHM_CONFIG 帧。
-struct ReadyShmFixture {
-    std::string channel_name;
-    std::filesystem::path shm_dir;
-    std::shared_ptr<shm::ChannelMeta> meta;
-    std::shared_ptr<shm::MultiWriter> writer;
-    std::optional<shm::Reader> reader;
-    static constexpr uint64_t MB = 1024ull * 1024;
-
-    ReadyShmFixture() {
-        channel_name = "dz_test_shmcfg_" + std::to_string(reinterpret_cast<uintptr_t>(this));
-        shm_dir = std::filesystem::temp_directory_path() / channel_name;
-        std::filesystem::remove_all(shm_dir);
-        std::filesystem::create_directories(shm_dir);
-        const shm::ChannelConfig cfg{.channel_name = channel_name,
-                                     .shm_dir = shm_dir,
-                                     .meta_file_size = 4 * MB,
-                                     .page_size = 1 * MB,
-                                     .lock_memory = false,
-                                     .prefetch_memory = false};
-        meta = std::make_shared<shm::ChannelMeta>(shm::ChannelMeta::open_or_create(cfg));
-        writer = std::make_shared<shm::MultiWriter>(shm::MultiWriter::create(meta, "test_writer"));
-        reader = shm::Reader::create(meta, "test_reader");
-    }
-    ~ReadyShmFixture() {
-        reader.reset();
-        writer.reset();
-        meta.reset();
-        std::filesystem::remove_all(shm_dir);
-    }
-    // 排空 reader，返回最后一帧是否与目标 instance 匹配的 SET_MD_SHM_CONFIG 及 payload
-    struct Captured {
-        bool found = false;
-        nlohmann::json payload;
-    };
-    Captured capture_shm_config(const std::string& instance) {
-        Captured out;
-        while (const auto* raw = reader->next_frame()) {
-            const shm::FrameView view(raw);
-            if (view.type() != DZ_FRAME_SET_MD_SHM_CONFIG) {
-                continue;
-            }
-            if (std::string(view.ext_inst_id()) != instance) {
-                continue;
-            }
-            const auto* data = reinterpret_cast<const char*>(view.ext_inst_payload());
-            out.payload = nlohmann::json::parse(data, data + view.ext_inst_payload_size());
-            out.found = true;
-            break;
-        }
-        return out;
-    }
-};
-
 TEST_F(MarketSourceControllerTest, SetShmConfigEmptyObjectIsNoop_Dispatched200) {
     // 契约 shm §SET: 空对象 {} = 无操作 no-op, 仍回 RTN（透传给网关，由网关回当前值）。
     // 此前的实现把空 body 判为 400，与契约矛盾；修复后应放行透传。
     // 镜像就绪 + writer 就绪时，set_shm_config 应返回 200 dispatched。
-    const int64_t id = create_source("ctp_shmcfg_empty");
-    prime_mirror_for_dispatch(*process_mirror_, "dzmd_ctp");
-
     ReadyShmFixture shm;
-    shm_writer_ = std::make_shared<ShmWriter>(shm.writer);
-    notifier_ = std::make_shared<FakeDataChangeNotifier>();
-    ctrl_ = std::make_shared<MarketSourceCtrl>(repo_, shm_writer_, process_mirror_, *notifier_);
+    const int64_t id = prepare_ready_dispatch(shm, "ctp_shmcfg_empty");
 
     auto req = admin_req();
     req->setBody(R"({})");
@@ -836,7 +889,7 @@ TEST_F(MarketSourceControllerTest, SetShmConfigEmptyObjectIsNoop_Dispatched200) 
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
 
     // 网关收到 payload 为 {} 的 SET_MD_SHM_CONFIG 帧
-    auto cap = shm.capture_shm_config("dzmd_ctp");
+    auto cap = shm.capture_inst_frame(DZ_FRAME_SET_MD_SHM_CONFIG, "dzmd_ctp");
     ASSERT_TRUE(cap.found) << "应写入 SET_MD_SHM_CONFIG 帧 (instance=dzmd_ctp)";
     EXPECT_TRUE(cap.payload.is_object());
     EXPECT_TRUE(cap.payload.empty());
@@ -849,6 +902,346 @@ TEST_F(MarketSourceControllerTest, SetShmConfigNonObjectBodyReturns400) {
     req->setBody(R"([1,2])");
     auto resp = invoke(&MarketSourceCtrl::set_shm_config, req, id);
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+// ---- 契约 rest §2.3: DELETE 成功路径（下发 Remove + is_added=0 + 广播）----
+
+TEST_F(MarketSourceControllerTest, DeleteDispatchesRemoveMarksAddedAndBroadcasts) {
+    ReadyShmFixture shm;
+    const int64_t id = prepare_ready_dispatch(shm, "ctp_del_ok");
+    notifier_->scopes.clear();  // create_source 已广播一次，只统计 remove
+
+    auto resp = invoke(&MarketSourceCtrl::remove, admin_req(), id);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_EQ(parse_body(resp)["ok"], true);
+
+    auto cap = shm.capture_ext_frame(DZ_FRAME_REQUEST_PROCESS_CONTROL);
+    ASSERT_TRUE(cap.found) << "应写入 REQUEST_PROCESS_CONTROL 帧";
+    const auto control = cap.payload.get<platform::ProcessControlReq>();
+    EXPECT_EQ(control.action, platform::ProcessAction::Remove);
+    EXPECT_EQ(control.target, "dzmd_ctp");
+
+    // 契约 rest §2.3: 下发成功即标记 is_added=0（主表记录保留）
+    auto row = repo_->get_market_source(id);
+    ASSERT_TRUE(row.has_value());
+    EXPECT_FALSE(row->is_added);
+    ASSERT_EQ(notifier_->scopes.size(), 1u);
+    EXPECT_EQ(notifier_->scopes[0], "market_sources");
+}
+
+// ---- start/stop: 就绪 writer 成功路径 + 写失败 + 403/404 ----
+
+TEST_F(MarketSourceControllerTest, StartDispatchesProcessControlWithConfig) {
+    const int64_t id = create_source("ctp_start_ok");
+    ReadyShmFixture shm;
+    use_ready_shm(shm);
+
+    auto req = admin_req();
+    req->setBody(R"({"display_name":"CTP Main"})");
+    auto resp = invoke(&MarketSourceCtrl::start, req, id);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_EQ(parse_body(resp)["ok"], true);
+
+    auto cap = shm.capture_ext_frame(DZ_FRAME_REQUEST_PROCESS_CONTROL);
+    ASSERT_TRUE(cap.found);
+    const auto control = cap.payload.get<platform::ProcessControlReq>();
+    EXPECT_EQ(control.action, platform::ProcessAction::Start);
+    EXPECT_EQ(control.target, "dzmd_ctp");
+    ASSERT_TRUE(control.config.has_value());
+    EXPECT_EQ(control.config->at("display_name"), "CTP Main");
+}
+
+TEST_F(MarketSourceControllerTest, StopDispatchesProcessControl) {
+    const int64_t id = create_source("ctp_stop_ok");
+    ReadyShmFixture shm;
+    use_ready_shm(shm);
+
+    auto resp = invoke(&MarketSourceCtrl::stop, admin_req(), id);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    auto cap = shm.capture_ext_frame(DZ_FRAME_REQUEST_PROCESS_CONTROL);
+    ASSERT_TRUE(cap.found);
+    const auto control = cap.payload.get<platform::ProcessControlReq>();
+    EXPECT_EQ(control.action, platform::ProcessAction::Stop);
+    EXPECT_EQ(control.target, "dzmd_ctp");
+    EXPECT_FALSE(control.config.has_value());
+}
+
+TEST_F(MarketSourceControllerTest, StartReturns503WhenReadyWriterRejectsOversizedFrame) {
+    // writer 就绪但单帧超过 page_size(1MB) -> write_process_control 返回 false -> 503
+    // （修复前 "ShmWriteFails" 用例实际只覆盖 writer 未就绪分支）
+    const int64_t id = create_source("ctp_start_big");
+    ReadyShmFixture shm;
+    use_ready_shm(shm);
+
+    auto req = admin_req();
+    req->setBody(R"({"display_name":")" + std::string(1500000, 'x') + R"("})");
+    auto resp = invoke(&MarketSourceCtrl::start, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "shm write failed");
+}
+
+TEST_F(MarketSourceControllerTest, StartAsNonAdminReturns403) {
+    const int64_t id = create_source("ctp_start_403");
+    auto resp = invoke(&MarketSourceCtrl::start, user_req(), id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+}
+
+TEST_F(MarketSourceControllerTest, StartNonexistentReturns404) {
+    auto resp = invoke(&MarketSourceCtrl::start, admin_req(), int64_t{99999});
+    expect_not_found(resp);
+}
+
+TEST_F(MarketSourceControllerTest, StopAsNonAdminReturns403) {
+    const int64_t id = create_source("ctp_stop_403");
+    auto resp = invoke(&MarketSourceCtrl::stop, user_req(), id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+}
+
+TEST_F(MarketSourceControllerTest, StopNonexistentReturns404) {
+    auto resp = invoke(&MarketSourceCtrl::stop, admin_req(), int64_t{99999});
+    expect_not_found(resp);
+}
+
+// ---- broker CRUD: 契约 md-config SET_MD_CONFIG 的 op/params 锚定 ----
+
+TEST_F(MarketSourceControllerTest, AddBrokerDispatchesAddBrokerOp) {
+    ReadyShmFixture shm;
+    const int64_t id = prepare_ready_dispatch(shm, "ctp_op_add");
+
+    auto req = admin_req();
+    req->setBody(
+        R"({"name":"b1","broker_id":"B1","user_id":"u1","password":"p1","product_info":"pi"})");
+    auto resp = invoke(&MarketSourceCtrl::add_broker, req, id);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_EQ(parse_body(resp)["message"], "dispatched");
+
+    auto cap = shm.capture_inst_frame(DZ_FRAME_SET_MD_CONFIG, "dzmd_ctp");
+    ASSERT_TRUE(cap.found);
+    ASSERT_EQ(cap.payload["op"], "AddBroker");
+    EXPECT_EQ(cap.payload["params"]["name"], "b1");
+    EXPECT_EQ(cap.payload["params"]["broker_id"], "B1");
+    EXPECT_EQ(cap.payload["params"]["user_id"], "u1");
+    EXPECT_EQ(cap.payload["params"]["password"], "p1");
+    EXPECT_EQ(cap.payload["params"]["product_info"], "pi");
+}
+
+TEST_F(MarketSourceControllerTest, RemoveBrokerDispatchesRemoveBrokerOp) {
+    ReadyShmFixture shm;
+    const int64_t id = prepare_ready_dispatch(shm, "ctp_op_rm");
+
+    auto resp = invoke(&MarketSourceCtrl::remove_broker, admin_req(), id, std::string{"b1"});
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    auto cap = shm.capture_inst_frame(DZ_FRAME_SET_MD_CONFIG, "dzmd_ctp");
+    ASSERT_TRUE(cap.found);
+    ASSERT_EQ(cap.payload["op"], "RemoveBroker");
+    const nlohmann::json expected = {{"name", "b1"}};
+    EXPECT_EQ(cap.payload["params"], expected);
+}
+
+TEST_F(MarketSourceControllerTest, UpdateBrokerDefaultsPasswordToMask) {
+    // 契约 md-config: UpdateBroker 的 password 缺失/空/"****" 均保留旧值；
+    // dzweb 对缺失字段补 "****"，不把明文空串发给网关
+    ReadyShmFixture shm;
+    const int64_t id = prepare_ready_dispatch(shm, "ctp_op_upd");
+
+    auto req = admin_req();
+    req->setBody(R"({"name":"b1","broker_id":"B1","user_id":"u1","product_info":"pi"})");
+    auto resp = invoke(&MarketSourceCtrl::update_broker, req, id, std::string{"b1"});
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    auto cap = shm.capture_inst_frame(DZ_FRAME_SET_MD_CONFIG, "dzmd_ctp");
+    ASSERT_TRUE(cap.found);
+    ASSERT_EQ(cap.payload["op"], "UpdateBroker");
+    EXPECT_EQ(cap.payload["params"]["name"], "b1");
+    EXPECT_EQ(cap.payload["params"]["password"], "****");
+}
+
+TEST_F(MarketSourceControllerTest, UpdateBrokerPassesExplicitPassword) {
+    ReadyShmFixture shm;
+    const int64_t id = prepare_ready_dispatch(shm, "ctp_op_upd2");
+
+    auto req = admin_req();
+    req->setBody(R"({"name":"b1","password":"secret"})");
+    auto resp = invoke(&MarketSourceCtrl::update_broker, req, id, std::string{"b1"});
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    auto cap = shm.capture_inst_frame(DZ_FRAME_SET_MD_CONFIG, "dzmd_ctp");
+    ASSERT_TRUE(cap.found);
+    EXPECT_EQ(cap.payload["params"]["password"], "secret");
+}
+
+TEST_F(MarketSourceControllerTest, UpdateBrokerFrontendsDispatchesSetFrontendsOp) {
+    ReadyShmFixture shm;
+    const int64_t id = prepare_ready_dispatch(shm, "ctp_op_fe");
+
+    const nlohmann::json frontends = nlohmann::json::array(
+        {{{"address", "tcp://1.2.3.4:10131"}, {"label", "电信"}, {"enabled", true}}});
+    auto req = admin_req();
+    req->setBody(nlohmann::json{{"frontends", frontends}}.dump());
+    auto resp = invoke(&MarketSourceCtrl::update_broker_frontends, req, id, std::string{"b1"});
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    auto cap = shm.capture_inst_frame(DZ_FRAME_SET_MD_CONFIG, "dzmd_ctp");
+    ASSERT_TRUE(cap.found);
+    ASSERT_EQ(cap.payload["op"], "SetFrontends");
+    EXPECT_EQ(cap.payload["params"]["name"], "b1");
+    EXPECT_EQ(cap.payload["params"]["frontends"], frontends);
+}
+
+// ---- subscribe-params: SetSubscribeParams 透传 + 错误/守卫分支 ----
+
+TEST_F(MarketSourceControllerTest, SetSubscribeParamsDispatchesSelectedFields) {
+    ReadyShmFixture shm;
+    const int64_t id = prepare_ready_dispatch(shm, "ctp_sub_p");
+
+    auto req = admin_req();
+    req->setBody(R"({"subscribe_batch_size":500,"sub_max_retry":2,"unknown":9})");
+    auto resp = invoke(&MarketSourceCtrl::set_subscribe_params, req, id);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    auto cap = shm.capture_inst_frame(DZ_FRAME_SET_MD_CONFIG, "dzmd_ctp");
+    ASSERT_TRUE(cap.found);
+    ASSERT_EQ(cap.payload["op"], "SetSubscribeParams");
+    // 只透传 4 个契约字段，缺失字段不下发（网关保留旧值）
+    const nlohmann::json expected = {{"subscribe_batch_size", 500}, {"sub_max_retry", 2}};
+    EXPECT_EQ(cap.payload["params"], expected);
+}
+
+TEST_F(MarketSourceControllerTest, SetSubscribeParamsEmptyObjectReturns400) {
+    const int64_t id = create_source("ctp_sub_empty");
+    auto req = admin_req();
+    req->setBody(R"({})");
+    auto resp = invoke(&MarketSourceCtrl::set_subscribe_params, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(MarketSourceControllerTest, SetSubscribeParamsNonObjectReturns400) {
+    const int64_t id = create_source("ctp_sub_arr");
+    auto req = admin_req();
+    req->setBody(R"([1,2])");
+    auto resp = invoke(&MarketSourceCtrl::set_subscribe_params, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(MarketSourceControllerTest, SetSubscribeParamsInvalidJsonReturns400) {
+    const int64_t id = create_source("ctp_sub_bad");
+    auto req = admin_req();
+    req->setBody("{not json");
+    auto resp = invoke(&MarketSourceCtrl::set_subscribe_params, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(MarketSourceControllerTest, SetSubscribeParamsAsNonAdminReturns403) {
+    const int64_t id = create_source("ctp_sub_403");
+    auto req = user_req();
+    req->setBody(R"({"subscribe_batch_size":500})");
+    auto resp = invoke(&MarketSourceCtrl::set_subscribe_params, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+}
+
+TEST_F(MarketSourceControllerTest, SetSubscribeParamsNonexistentReturns404) {
+    auto req = admin_req();
+    req->setBody(R"({"subscribe_batch_size":500})");
+    auto resp = invoke(&MarketSourceCtrl::set_subscribe_params, req, int64_t{99999});
+    expect_not_found(resp);
+}
+
+TEST_F(MarketSourceControllerTest, SetSubscribeParamsRejectsWhenProcessNotRunning) {
+    // writer 就绪但镜像无 Running 状态 -> 503 (ProcessNotRunning)
+    const int64_t id = create_source("ctp_sub_503");
+    ReadyShmFixture shm;
+    use_ready_shm(shm);
+
+    auto req = admin_req();
+    req->setBody(R"({"subscribe_batch_size":500})");
+    auto resp = invoke(&MarketSourceCtrl::set_subscribe_params, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+}
+
+// ---- refresh: 契约 rest §2.3 POST /api/market-sources/refresh ----
+
+TEST_F(MarketSourceControllerTest, RefreshWritesQueryFullSnapshot) {
+    ReadyShmFixture shm;
+    use_ready_shm(shm);
+
+    auto resp = invoke(&MarketSourceCtrl::refresh, admin_req());
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_EQ(parse_body(resp)["ok"], true);
+
+    auto cap = shm.capture_ext_frame(DZ_FRAME_QUERY_FULL_SNAPSHOT);
+    EXPECT_TRUE(cap.found) << "应写入 QUERY_FULL_SNAPSHOT 帧";
+}
+
+TEST_F(MarketSourceControllerTest, RefreshAsNonAdminReturns403) {
+    auto resp = invoke(&MarketSourceCtrl::refresh, user_req());
+    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+}
+
+TEST_F(MarketSourceControllerTest, RefreshReturns503WhenWriterNotReady) {
+    auto resp = invoke(&MarketSourceCtrl::refresh, admin_req());
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+}
+
+// ---- shm-config: RFC 7386 merge patch 逐字段透传 + 守卫分支 ----
+
+TEST_F(MarketSourceControllerTest, SetShmConfigPassthroughMergePatchVerbatim) {
+    ReadyShmFixture shm;
+    const int64_t id = prepare_ready_dispatch(shm, "ctp_shmcfg_patch");
+
+    nlohmann::json body;
+    body["check_interval_min"] = 10;
+    body["preload_points"]["08:45"]["pages"] = 2;
+    body["preload_points"]["09:00"] = nullptr;  // 契约 shm: null = 删除该时间点
+    body["page_size_mb"] = 64;                  // 透传无害，网关跳过
+    auto req = admin_req();
+    req->setBody(body.dump());
+    auto resp = invoke(&MarketSourceCtrl::set_shm_config, req, id);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    auto cap = shm.capture_inst_frame(DZ_FRAME_SET_MD_SHM_CONFIG, "dzmd_ctp");
+    ASSERT_TRUE(cap.found);
+    // dzweb 不解析 payload：请求体逐字段原样透传
+    EXPECT_EQ(cap.payload, body);
+    EXPECT_TRUE(cap.payload["preload_points"]["09:00"].is_null());
+    EXPECT_EQ(cap.payload["page_size_mb"], 64);
+}
+
+TEST_F(MarketSourceControllerTest, SetShmConfigAsNonAdminReturns403) {
+    const int64_t id = create_source("ctp_shmcfg_403");
+    auto req = user_req();
+    req->setBody(R"({})");
+    auto resp = invoke(&MarketSourceCtrl::set_shm_config, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+}
+
+TEST_F(MarketSourceControllerTest, SetShmConfigNonexistentReturns404) {
+    auto req = admin_req();
+    req->setBody(R"({})");
+    auto resp = invoke(&MarketSourceCtrl::set_shm_config, req, int64_t{99999});
+    expect_not_found(resp);
+}
+
+TEST_F(MarketSourceControllerTest, SetShmConfigReturns503WhenProcessNotRunning) {
+    const int64_t id = create_source("ctp_shmcfg_503p");
+    ReadyShmFixture shm;
+    use_ready_shm(shm);
+
+    auto req = admin_req();
+    req->setBody(R"({})");
+    auto resp = invoke(&MarketSourceCtrl::set_shm_config, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+}
+
+TEST_F(MarketSourceControllerTest, SetShmConfigReturns503WhenWriterNotReady) {
+    const int64_t id = create_source("ctp_shmcfg_503w");
+    prime_mirror_for_dispatch(*process_mirror_, "dzmd_ctp");
+
+    auto req = admin_req();
+    req->setBody(R"({})");
+    auto resp = invoke(&MarketSourceCtrl::set_shm_config, req, id);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
 }
 
 }  // anonymous namespace

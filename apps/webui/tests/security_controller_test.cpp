@@ -5,6 +5,8 @@
 
 #include <nlohmann/json.hpp>
 #include <memory>
+#include <utility>
+#include <vector>
 
 namespace dztrader::webui {
 namespace {
@@ -80,6 +82,9 @@ TEST_F(SecurityControllerTest, SetConfigReturns200) {
     EXPECT_EQ(body["max_failed_attempts"].get<int>(), 3);
     EXPECT_EQ(body["lockout_duration_sec"].get<int>(), 600);
     EXPECT_FALSE(body["login_lockout_enabled"].get<bool>());
+    // 契约 rest §1: 变更 DB 成功后广播 data_changed{security_config}
+    ASSERT_EQ(notifier_->scopes.size(), 1u);
+    EXPECT_EQ(notifier_->scopes[0], "security_config");
 
     // Verify the change persisted.
     auto get_resp = invoke(&SecurityCtrl::get_config, admin_req());
@@ -98,6 +103,37 @@ TEST_F(SecurityControllerTest, SetConfigAsNonAdminReturns403) {
 TEST_F(SecurityControllerTest, SetConfigInvalidAccessModeReturns400) {
     auto req = admin_req();
     req->setBody(R"({"access_mode":"bogus"})");
+    auto resp = invoke(&SecurityCtrl::set_config, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+    // 校验失败不得广播
+    EXPECT_TRUE(notifier_->scopes.empty());
+}
+
+TEST_F(SecurityControllerTest, SetConfigRejectsFieldTypeMismatch) {
+    // 契约 rest §1: 类型不符/整型越界必须 400（此前 body.value 抛 type_error、
+    // get<int> 溢出抛 out_of_range 逃逸为 500）
+    const std::pair<const char*, const char*> cases[] = {
+        {R"({"login_lockout_enabled":"yes"})", "login_lockout_enabled"},
+        {R"({"access_mode":5})", "access_mode"},
+        {R"({"max_failed_attempts":"5"})", "max_failed_attempts"},
+        {R"({"lockout_duration_sec":900.5})", "lockout_duration_sec"},
+        {R"({"max_failed_attempts":3000000000})", "max_failed_attempts out of int range"},
+        {R"({"max_failed_attempts":9999999999999999999})", "max_failed_attempts uint64"},
+        {R"({"lockout_duration_sec":9999999999999999999})", "lockout_duration_sec uint64"},
+    };
+    for (const auto& [body, name] : cases) {
+        auto req = admin_req();
+        req->setBody(body);
+        auto resp = invoke(&SecurityCtrl::set_config, req);
+        EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest) << name;
+        EXPECT_TRUE(notifier_->scopes.empty()) << name;
+    }
+    EXPECT_EQ(notifier_->scopes.size(), 0u);
+}
+
+TEST_F(SecurityControllerTest, SetConfigNonObjectReturns400) {
+    auto req = admin_req();
+    req->setBody(R"([1,2])");
     auto resp = invoke(&SecurityCtrl::set_config, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
 }
@@ -123,6 +159,9 @@ TEST_F(SecurityControllerTest, BlacklistLifecycle) {
     EXPECT_EQ(added["source"].get<std::string>(), "manual");
     const int64_t entry_id = added["id"].get<int64_t>();
     ASSERT_GT(entry_id, 0);
+    // 契约 rest §1: 变更 DB 成功后广播 data_changed{blacklist}
+    ASSERT_EQ(notifier_->scopes.size(), 1u);
+    EXPECT_EQ(notifier_->scopes[0], "blacklist");
 
     // List
     auto list_resp = invoke(&SecurityCtrl::list_blacklist, admin_req());
@@ -135,6 +174,8 @@ TEST_F(SecurityControllerTest, BlacklistLifecycle) {
     // Remove
     auto del_resp = invoke(&SecurityCtrl::remove_blacklist, admin_req(), entry_id);
     EXPECT_EQ(del_resp->getStatusCode(), drogon::k204NoContent);
+    ASSERT_EQ(notifier_->scopes.size(), 2u);
+    EXPECT_EQ(notifier_->scopes[1], "blacklist");
 
     // Verify gone
     auto list_after = invoke(&SecurityCtrl::list_blacklist, admin_req());
@@ -164,6 +205,9 @@ TEST_F(SecurityControllerTest, AddBlacklistMissingIpReturns400) {
 TEST_F(SecurityControllerTest, RemoveBlacklistNonexistentReturns404) {
     auto resp = invoke(&SecurityCtrl::remove_blacklist, admin_req(), 99999);
     EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    // 契约 rest §1: 404 统一错误体
+    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
+    EXPECT_TRUE(notifier_->scopes.empty());
 }
 
 // ---- whitelist lifecycle ----
@@ -177,6 +221,9 @@ TEST_F(SecurityControllerTest, WhitelistLifecycle) {
     EXPECT_EQ(added["ip"].get<std::string>(), "10.0.0.1");
     const int64_t entry_id = added["id"].get<int64_t>();
     ASSERT_GT(entry_id, 0);
+    // 契约 rest §1: 变更 DB 成功后广播 data_changed{whitelist}
+    ASSERT_EQ(notifier_->scopes.size(), 1u);
+    EXPECT_EQ(notifier_->scopes[0], "whitelist");
 
     auto list_resp = invoke(&SecurityCtrl::list_whitelist, admin_req());
     EXPECT_EQ(list_resp->getStatusCode(), drogon::k200OK);
@@ -185,6 +232,8 @@ TEST_F(SecurityControllerTest, WhitelistLifecycle) {
 
     auto del_resp = invoke(&SecurityCtrl::remove_whitelist, admin_req(), entry_id);
     EXPECT_EQ(del_resp->getStatusCode(), drogon::k204NoContent);
+    ASSERT_EQ(notifier_->scopes.size(), 2u);
+    EXPECT_EQ(notifier_->scopes[1], "whitelist");
 
     auto list_after = invoke(&SecurityCtrl::list_whitelist, admin_req());
     auto after_body = parse_body(list_after);
@@ -205,6 +254,28 @@ TEST_F(SecurityControllerTest, AddWhitelistDuplicateReturns409) {
 TEST_F(SecurityControllerTest, RemoveWhitelistNonexistentReturns404) {
     auto resp = invoke(&SecurityCtrl::remove_whitelist, admin_req(), 99999);
     EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
+    EXPECT_TRUE(notifier_->scopes.empty());
+}
+
+TEST_F(SecurityControllerTest, FailedIpMutationsDoNotBroadcast) {
+    // 409 duplicate / 404 remove: DB 未变 -> 不广播
+    auto add = admin_req();
+    add->setBody(R"({"ip":"7.7.7.7"})");
+    ASSERT_EQ(invoke(&SecurityCtrl::add_blacklist, add)->getStatusCode(), drogon::k201Created);
+    notifier_->scopes.clear();
+
+    auto dup = admin_req();
+    dup->setBody(R"({"ip":"7.7.7.7"})");
+    EXPECT_EQ(invoke(&SecurityCtrl::add_blacklist, dup)->getStatusCode(), drogon::k409Conflict);
+
+    auto missing = admin_req();
+    missing->setBody(R"({"ip":"8.8.8.8"})");
+    EXPECT_EQ(invoke(&SecurityCtrl::add_whitelist, missing)->getStatusCode(), drogon::k201Created);
+    notifier_->scopes.clear();
+    EXPECT_EQ(invoke(&SecurityCtrl::remove_whitelist, admin_req(), int64_t{99999})->getStatusCode(),
+              drogon::k404NotFound);
+    EXPECT_TRUE(notifier_->scopes.empty());
 }
 
 // ---- login history ----
@@ -255,6 +326,36 @@ TEST_F(SecurityControllerTest, LoginHistoryAsNonAdminReturns403) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
 }
 
+TEST_F(SecurityControllerTest, LoginHistoryRejectsInvalidPagination) {
+    // std::stoi 抛 invalid_argument/out_of_range -> 400（禁止异常逃逸 handler）
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"page", "abc"},
+        {"page_size", "x"},
+        {"days", "y"},
+        {"page", "999999999999999999999"},
+    };
+    for (const auto& [key, value] : cases) {
+        auto req = admin_req();
+        req->setParameter(key, value);
+        auto resp = invoke(&SecurityCtrl::login_history, req);
+        EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest) << key << "=" << value;
+    }
+}
+
+TEST_F(SecurityControllerTest, LoginHistoryNormalizesNonPositivePagination) {
+    for (int i = 0; i < 3; ++i) {
+        repo_->add_login_history("admin", "1.2.3.4", "web", true);
+    }
+    auto req = admin_req();
+    req->setParameter("page", "0");
+    req->setParameter("page_size", "0");
+    auto resp = invoke(&SecurityCtrl::login_history, req);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    auto body = parse_body(resp);
+    EXPECT_EQ(body["total"].get<int>(), 3);
+    EXPECT_EQ(body["entries"].size(), 3u);  // page<1 -> 1, page_size<1 -> 20
+}
+
 // ---- All mutating endpoints as non-admin return 403 ----
 
 TEST_F(SecurityControllerTest, AllEndpointsAsNonAdminReturn403) {
@@ -287,6 +388,49 @@ TEST_F(SecurityControllerTest, AllEndpointsAsNonAdminReturn403) {
 
     auto get_cfg = invoke(&SecurityCtrl::get_config, req);
     EXPECT_EQ(get_cfg->getStatusCode(), drogon::k403Forbidden);
+
+    // 契约 rest §2.2: ack-default-password 也必须只允许 admin
+    auto ack = invoke(&SecurityCtrl::ack_default_password, req);
+    EXPECT_EQ(ack->getStatusCode(), drogon::k403Forbidden);
+}
+
+// ---- ack-default-password（契约 rest §2.2）----
+// 注: 401 no_user / 404 not found / 500 update_failed 是防御分支——生产由 JWT 中间件
+// 保证 user_id 属性存在，且 is_admin 已按 DB 校验 admin 存在；同一调用内随后的
+// 用户查找与 UPDATE 不会失败。仓库无故障注入 seams（不引入 GMock），故不可达。
+
+TEST_F(SecurityControllerTest, AckDefaultPasswordSetsFlagAndReturns200) {
+    auto resp = invoke(&SecurityCtrl::ack_default_password, admin_req());
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_EQ(parse_body(resp)["ok"], true);
+
+    auto user = repo_->get_user_by_id(admin_id_);
+    ASSERT_TRUE(user.has_value());
+    EXPECT_EQ(user->default_password_acknowledged, 1);
+}
+
+TEST_F(SecurityControllerTest, AckDefaultPasswordAsNonAdminReturns403) {
+    auto resp = invoke(&SecurityCtrl::ack_default_password, user_req());
+    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "admin_only");
+
+    auto user = repo_->get_user_by_id(user_id_);
+    ASSERT_TRUE(user.has_value());
+    EXPECT_EQ(user->default_password_acknowledged, 0);
+}
+
+TEST_F(SecurityControllerTest, AckDefaultPasswordWithoutAuthContextReturns403) {
+    auto req = drogon::HttpRequest::newHttpRequest();
+    auto resp = invoke(&SecurityCtrl::ack_default_password, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+}
+
+TEST_F(SecurityControllerTest, AckDefaultPasswordUnknownUserIsRejected) {
+    // 未知 username 在 admin 门槛即被拒（404 分支在其后，防御不可达；见上方说明）
+    auto req = drogon::HttpRequest::newHttpRequest();
+    req->getAttributes()->insert("user_id", std::string("ghost"));
+    auto resp = invoke(&SecurityCtrl::ack_default_password, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
 }
 
 }  // anonymous namespace

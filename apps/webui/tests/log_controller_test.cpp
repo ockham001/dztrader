@@ -6,6 +6,7 @@
 #include "repository.h"
 #include "config.h"
 #include "mirror_store.h"
+#include "unique_temp.h"
 #include "ws_broadcaster.h"
 #include <dztrader/core/path.h>
 #include <dztrader/platform/log_config.h>
@@ -21,6 +22,11 @@ class FakeBroadcaster : public dztrader::webui::WsBroadcaster {
 public:
     void broadcast(const std::string&, const std::string&, const nlohmann::json&) override {}
 };
+
+/// 唯一化日志文件名（§3.5）：ctest -j 下用例为独立进程，固定名会与并发用例冲突
+std::string unique_log(const std::string& base) {
+    return base + "_" + dztrader::webui::test::unique_suffix() + ".log";
+}
 }  // namespace
 
 class LogControllerTest : public ::testing::Test {
@@ -79,40 +85,67 @@ protected:
 TEST_F(LogControllerTest, GetFilesReturnsList) {
     // Write a test log file to paths::logs()
     auto log_dir = dztrader::paths::logs();
-    std::ofstream ofs(log_dir / "test_logctrl.log");
-    ofs << "2026-07-13T14:23:45.000000000+08:00 info test_logctrl [func=main file=main.cpp:1 pid=1 "
-           "tid=2] test\n";
+    const std::string file_name = unique_log("test_logctrl");
+    const std::string content =
+        "2026-07-13T14:23:45.000000000+08:00 info test_logctrl [func=main file=main.cpp:1 pid=1 "
+        "tid=2] test\n";
+    std::ofstream ofs(log_dir / file_name);
+    ofs << content;
     ofs.close();
 
     auto req = admin_req();
     auto resp = invoke(&LogCtrl::get_files, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
     auto body = parse_resp(resp);
-    EXPECT_TRUE(body.is_array());
+    ASSERT_TRUE(body.is_array());
+
+    // 刚写入的文件必须被列出，且 size/mtime 正确（文件未被列出或 ofstream 打开失败必红）
+    bool found = false;
+    for (const auto& f : body) {
+        if (f.value("name", "") == file_name) {
+            found = true;
+            EXPECT_EQ(f.value("logger", ""), file_name.substr(0, file_name.size() - 4));
+            EXPECT_EQ(f["size"].get<uintmax_t>(), content.size());
+            EXPECT_FALSE(f.value("mtime", "").empty());
+        }
+    }
+    EXPECT_TRUE(found) << file_name << " 应出现在文件列表中";
+
     // Clean up
-    fs::remove(log_dir / "test_logctrl.log");
+    fs::remove(log_dir / file_name);
 }
 
 TEST_F(LogControllerTest, GetContentReturnsLines) {
     auto log_dir = dztrader::paths::logs();
-    std::ofstream ofs(log_dir / "test_content.log");
+    const std::string file_name = unique_log("test_content");
+    std::ofstream ofs(log_dir / file_name);
     ofs << "2026-07-13T14:23:45.000000000+08:00 info test_content [func=main file=main.cpp:1 pid=1 "
            "tid=2] hello\n";
     ofs.close();
 
     auto req = admin_req();
     // drogon HttpRequest::setPath does not parse query strings; use setParameter.
-    req->setParameter("file", "test_content.log");
+    req->setParameter("file", file_name);
     req->setParameter("limit", "500");
     auto resp = invoke(&LogCtrl::get_content, req);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
 
-    fs::remove(log_dir / "test_content.log");
+    // 解析 body：行数/内容/total 必须正确（行内容丢失或 total 错误必红）
+    auto body = parse_resp(resp);
+    ASSERT_EQ(body["lines"].size(), 1u);
+    EXPECT_EQ(body["lines"][0]["n"].get<int>(), 1);
+    EXPECT_EQ(body["lines"][0]["level"].get<std::string>(), "info");
+    EXPECT_EQ(body["lines"][0]["logger"].get<std::string>(), "test_content");
+    EXPECT_EQ(body["lines"][0]["msg"].get<std::string>(), "hello");
+    EXPECT_EQ(body["total"].get<int>(), 1);
+
+    fs::remove(log_dir / file_name);
 }
 
 TEST_F(LogControllerTest, GetStatsReturnsCounts) {
     auto log_dir = dztrader::paths::logs();
-    std::ofstream ofs(log_dir / "test_stats.log");
+    const std::string file_name = unique_log("test_stats");
+    std::ofstream ofs(log_dir / file_name);
     ofs << "2026-07-13T14:23:45.000000000+08:00 info test_stats [func=m file=f.cpp:1 pid=1 tid=2] "
            "a\n";
     ofs << "2026-07-13T14:23:46.000000000+08:00 warning test_stats [func=m file=f.cpp:2 pid=1 "
@@ -120,11 +153,92 @@ TEST_F(LogControllerTest, GetStatsReturnsCounts) {
     ofs.close();
 
     auto req = admin_req();
-    req->setParameter("file", "test_stats.log");
+    req->setParameter("file", file_name);
     auto resp = invoke(&LogCtrl::get_stats, req);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
 
-    fs::remove(log_dir / "test_stats.log");
+    auto body = parse_resp(resp);
+    EXPECT_EQ(body["total"].get<int>(), 2);
+    ASSERT_EQ(body["by_level"].size(), 2u);
+    EXPECT_EQ(body["by_level"]["info"].get<int>(), 1);
+    EXPECT_EQ(body["by_level"]["warning"].get<int>(), 1);
+    EXPECT_FALSE(body["timespan"].get<std::string>().empty());
+
+    fs::remove(log_dir / file_name);
+}
+
+// ---- 契约 rest §2.5: timeline / aggregate ----
+
+TEST_F(LogControllerTest, GetTimelineReturnsBuckets) {
+    auto log_dir = dztrader::paths::logs();
+    const std::string file_name = unique_log("test_timeline");
+    std::ofstream ofs(log_dir / file_name);
+    ofs << "2026-07-13T14:23:45.000000000+08:00 info test_tl [func=m file=f.cpp:1 pid=1 tid=2] "
+           "a\n";
+    ofs << "2026-07-13T14:23:46.000000000+08:00 warning test_tl [func=m file=f.cpp:2 pid=1 "
+           "tid=3] b\n";
+    ofs << "2026-07-13T14:25:00.000000000+08:00 error test_tl [func=m file=f.cpp:3 pid=1 tid=4] "
+           "c\n";
+    ofs.close();
+
+    auto req = admin_req();
+    req->setParameter("file", file_name);
+    req->setParameter("bucket", "minute");
+    auto resp = invoke(&LogCtrl::get_timeline, req);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    auto body = parse_resp(resp);
+    ASSERT_EQ(body.size(), 2u);  // 14:23 一桶（info+warning）、14:25 一桶（error）
+    EXPECT_EQ(body[0]["counts"]["info"].get<int>(), 1);
+    EXPECT_EQ(body[0]["counts"]["warning"].get<int>(), 1);
+    EXPECT_EQ(body[1]["counts"]["error"].get<int>(), 1);
+    EXPECT_FALSE(body[0]["ts"].get<std::string>().empty());
+
+    fs::remove(log_dir / file_name);
+}
+
+TEST_F(LogControllerTest, GetTimelineMissingFileReturns400) {
+    auto req = admin_req();
+    auto resp = invoke(&LogCtrl::get_timeline, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(LogControllerTest, GetAggregateReturnsGroups) {
+    auto log_dir = dztrader::paths::logs();
+    const std::string file_name = unique_log("test_agg_ok");
+    std::ofstream ofs(log_dir / file_name);
+    ofs << "2026-07-13T14:23:45.000000000+08:00 error test_agg [func=m file=f.cpp:1 pid=1 tid=2] "
+           "connect failed\n";
+    ofs << "2026-07-13T14:23:46.000000000+08:00 error test_agg [func=m file=f.cpp:2 pid=1 tid=3] "
+           "connect failed\n";
+    ofs << "2026-07-13T14:23:47.000000000+08:00 error test_agg [func=m file=f.cpp:3 pid=1 tid=4] "
+           "other failure\n";
+    ofs.close();
+
+    auto req = admin_req();
+    req->setParameter("file", file_name);
+    auto resp = invoke(&LogCtrl::get_aggregate, req);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    auto body = parse_resp(resp);
+    ASSERT_TRUE(body.is_array());
+    ASSERT_GE(body.size(), 2u);
+    // 按 count 降序：相同消息的两条聚为一组
+    EXPECT_EQ(body[0]["count"].get<int>(), 2);
+    EXPECT_FALSE(body[0]["msg_pattern"].get<std::string>().empty());
+    EXPECT_EQ(body[0]["samples"].size(), 2u);
+    EXPECT_FALSE(body[0]["first_ts"].get<std::string>().empty());
+    EXPECT_FALSE(body[0]["last_ts"].get<std::string>().empty());
+
+    fs::remove(log_dir / file_name);
+}
+
+TEST_F(LogControllerTest, MissingFileParameterReturns400) {
+    // content/stats/aggregate 缺 file -> 400（各分支独立）
+    EXPECT_EQ(invoke(&LogCtrl::get_content, admin_req())->getStatusCode(), drogon::k400BadRequest);
+    EXPECT_EQ(invoke(&LogCtrl::get_stats, admin_req())->getStatusCode(), drogon::k400BadRequest);
+    EXPECT_EQ(invoke(&LogCtrl::get_aggregate, admin_req())->getStatusCode(),
+              drogon::k400BadRequest);
 }
 
 TEST_F(LogControllerTest, PostLevelRequiresAdmin) {
@@ -139,6 +253,47 @@ TEST_F(LogControllerTest, PostLevelRejectsInvalidLevel) {
     req->setBody(R"({"targets":["dztraderd"],"level":"INVALID"})");
     auto resp = invoke(&LogCtrl::set_level, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+// 契约 log §SET_LOG_CONFIG: warn/err 为输入别名，接受并规范化为 warning/error
+TEST_F(LogControllerTest, PostLevelNormalizesWarnAndErrAliases) {
+    auto req = admin_req();
+    req->setBody(R"({"targets":["dzmd_ctp"],"level":"warn"})");
+    auto resp = invoke(&LogCtrl::set_level, req);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    auto body = parse_resp(resp);
+    ASSERT_EQ(body["results"].size(), 1u);
+    EXPECT_EQ(body["results"][0]["new"].get<std::string>(), "warning");
+
+    auto req2 = admin_req();
+    req2->setBody(R"({"targets":["dzmd_ctp"],"level":"err"})");
+    auto resp2 = invoke(&LogCtrl::set_level, req2);
+    ASSERT_EQ(resp2->getStatusCode(), drogon::k200OK);
+    EXPECT_EQ(parse_resp(resp2)["results"][0]["new"].get<std::string>(), "error");
+}
+
+TEST_F(LogControllerTest, PostLevelRejectsEmptyTargets) {
+    auto req = admin_req();
+    req->setBody(R"({"targets":[],"level":"warning"})");
+    EXPECT_EQ(invoke(&LogCtrl::set_level, req)->getStatusCode(), drogon::k400BadRequest);
+    auto req2 = admin_req();
+    req2->setBody(R"({"level":"warning"})");
+    EXPECT_EQ(invoke(&LogCtrl::set_level, req2)->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(LogControllerTest, PostFlushRejectsEmptyTargets) {
+    auto req = admin_req();
+    req->setBody(R"({"targets":[]})");
+    EXPECT_EQ(invoke(&LogCtrl::flush_log, req)->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(LogControllerTest, PostLogEndpointsRejectInvalidJson) {
+    auto lvl = admin_req();
+    lvl->setBody("{not json");
+    EXPECT_EQ(invoke(&LogCtrl::set_level, lvl)->getStatusCode(), drogon::k400BadRequest);
+    auto fl = admin_req();
+    fl->setBody("{not json");
+    EXPECT_EQ(invoke(&LogCtrl::flush_log, fl)->getStatusCode(), drogon::k400BadRequest);
 }
 
 // 契约 rest §1: 响应 ok 表示"已写事件通道"。event_writer 为空（API-only 模式）
@@ -202,50 +357,53 @@ TEST_F(LogControllerTest, GetFilesAcceptsNumericLimit) {
 // get_content 的 limit 同样要隔离；需带 file 参数
 TEST_F(LogControllerTest, GetContentRejectsNonNumericLimit) {
     auto log_dir = dztrader::paths::logs();
-    std::ofstream ofs(log_dir / "test_content_limit.log");
+    const std::string file_name = unique_log("test_content_limit");
+    std::ofstream ofs(log_dir / file_name);
     ofs << "2026-07-13T14:23:45.000000000+08:00 info test_content [func=m file=f.cpp:1 pid=1 "
            "tid=2] a\n";
     ofs.close();
 
     auto req = admin_req();
-    req->setParameter("file", "test_content_limit.log");
+    req->setParameter("file", file_name);
     req->setParameter("limit", "abc");
     auto resp = invoke(&LogCtrl::get_content, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
 
-    fs::remove(log_dir / "test_content_limit.log");
+    fs::remove(log_dir / file_name);
 }
 
 // get_content 的 offset 同样要隔离；需带 file 参数
 TEST_F(LogControllerTest, GetContentRejectsNonNumericOffset) {
     auto log_dir = dztrader::paths::logs();
-    std::ofstream ofs(log_dir / "test_content_offset.log");
+    const std::string file_name = unique_log("test_content_offset");
+    std::ofstream ofs(log_dir / file_name);
     ofs << "2026-07-13T14:23:45.000000000+08:00 info test_content [func=m file=f.cpp:1 pid=1 "
            "tid=2] a\n";
     ofs.close();
 
     auto req = admin_req();
-    req->setParameter("file", "test_content_offset.log");
+    req->setParameter("file", file_name);
     req->setParameter("offset", "abc");
     auto resp = invoke(&LogCtrl::get_content, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
 
-    fs::remove(log_dir / "test_content_offset.log");
+    fs::remove(log_dir / file_name);
 }
 
 // get_aggregate 的 limit 同样要隔离；需带 file 参数
 TEST_F(LogControllerTest, GetAggregateRejectsNonNumericLimit) {
     auto log_dir = dztrader::paths::logs();
-    std::ofstream ofs(log_dir / "test_agg_limit.log");
+    const std::string file_name = unique_log("test_agg_limit");
+    std::ofstream ofs(log_dir / file_name);
     ofs << "2026-07-13T14:23:45.000000000+08:00 error test_agg [func=m file=f.cpp:1 pid=1 tid=2] "
            "boom\n";
     ofs.close();
 
     auto req = admin_req();
-    req->setParameter("file", "test_agg_limit.log");
+    req->setParameter("file", file_name);
     req->setParameter("limit", "def");
     auto resp = invoke(&LogCtrl::get_aggregate, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
 
-    fs::remove(log_dir / "test_agg_limit.log");
+    fs::remove(log_dir / file_name);
 }
