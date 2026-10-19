@@ -89,7 +89,7 @@ TEST_F(LogControllerTest, GetFilesReturnsList) {
     const std::string content =
         "2026-07-13T14:23:45.000000000+08:00 info test_logctrl [func=main file=main.cpp:1 pid=1 "
         "tid=2] test\n";
-    std::ofstream ofs(log_dir / file_name);
+    std::ofstream ofs(log_dir / file_name, std::ios::binary);
     ofs << content;
     ofs.close();
 
@@ -118,7 +118,7 @@ TEST_F(LogControllerTest, GetFilesReturnsList) {
 TEST_F(LogControllerTest, GetContentReturnsLines) {
     auto log_dir = dztrader::paths::logs();
     const std::string file_name = unique_log("test_content");
-    std::ofstream ofs(log_dir / file_name);
+    std::ofstream ofs(log_dir / file_name, std::ios::binary);
     ofs << "2026-07-13T14:23:45.000000000+08:00 info test_content [func=main file=main.cpp:1 pid=1 "
            "tid=2] hello\n";
     ofs.close();
@@ -145,7 +145,7 @@ TEST_F(LogControllerTest, GetContentReturnsLines) {
 TEST_F(LogControllerTest, GetStatsReturnsCounts) {
     auto log_dir = dztrader::paths::logs();
     const std::string file_name = unique_log("test_stats");
-    std::ofstream ofs(log_dir / file_name);
+    std::ofstream ofs(log_dir / file_name, std::ios::binary);
     ofs << "2026-07-13T14:23:45.000000000+08:00 info test_stats [func=m file=f.cpp:1 pid=1 tid=2] "
            "a\n";
     ofs << "2026-07-13T14:23:46.000000000+08:00 warning test_stats [func=m file=f.cpp:2 pid=1 "
@@ -172,7 +172,7 @@ TEST_F(LogControllerTest, GetStatsReturnsCounts) {
 TEST_F(LogControllerTest, GetTimelineReturnsBuckets) {
     auto log_dir = dztrader::paths::logs();
     const std::string file_name = unique_log("test_timeline");
-    std::ofstream ofs(log_dir / file_name);
+    std::ofstream ofs(log_dir / file_name, std::ios::binary);
     ofs << "2026-07-13T14:23:45.000000000+08:00 info test_tl [func=m file=f.cpp:1 pid=1 tid=2] "
            "a\n";
     ofs << "2026-07-13T14:23:46.000000000+08:00 warning test_tl [func=m file=f.cpp:2 pid=1 "
@@ -206,7 +206,7 @@ TEST_F(LogControllerTest, GetTimelineMissingFileReturns400) {
 TEST_F(LogControllerTest, GetAggregateReturnsGroups) {
     auto log_dir = dztrader::paths::logs();
     const std::string file_name = unique_log("test_agg_ok");
-    std::ofstream ofs(log_dir / file_name);
+    std::ofstream ofs(log_dir / file_name, std::ios::binary);
     ofs << "2026-07-13T14:23:45.000000000+08:00 error test_agg [func=m file=f.cpp:1 pid=1 tid=2] "
            "connect failed\n";
     ofs << "2026-07-13T14:23:46.000000000+08:00 error test_agg [func=m file=f.cpp:2 pid=1 tid=3] "
@@ -358,7 +358,7 @@ TEST_F(LogControllerTest, GetFilesAcceptsNumericLimit) {
 TEST_F(LogControllerTest, GetContentRejectsNonNumericLimit) {
     auto log_dir = dztrader::paths::logs();
     const std::string file_name = unique_log("test_content_limit");
-    std::ofstream ofs(log_dir / file_name);
+    std::ofstream ofs(log_dir / file_name, std::ios::binary);
     ofs << "2026-07-13T14:23:45.000000000+08:00 info test_content [func=m file=f.cpp:1 pid=1 "
            "tid=2] a\n";
     ofs.close();
@@ -376,7 +376,7 @@ TEST_F(LogControllerTest, GetContentRejectsNonNumericLimit) {
 TEST_F(LogControllerTest, GetContentRejectsNonNumericOffset) {
     auto log_dir = dztrader::paths::logs();
     const std::string file_name = unique_log("test_content_offset");
-    std::ofstream ofs(log_dir / file_name);
+    std::ofstream ofs(log_dir / file_name, std::ios::binary);
     ofs << "2026-07-13T14:23:45.000000000+08:00 info test_content [func=m file=f.cpp:1 pid=1 "
            "tid=2] a\n";
     ofs.close();
@@ -394,7 +394,7 @@ TEST_F(LogControllerTest, GetContentRejectsNonNumericOffset) {
 TEST_F(LogControllerTest, GetAggregateRejectsNonNumericLimit) {
     auto log_dir = dztrader::paths::logs();
     const std::string file_name = unique_log("test_agg_limit");
-    std::ofstream ofs(log_dir / file_name);
+    std::ofstream ofs(log_dir / file_name, std::ios::binary);
     ofs << "2026-07-13T14:23:45.000000000+08:00 error test_agg [func=m file=f.cpp:1 pid=1 tid=2] "
            "boom\n";
     ofs.close();

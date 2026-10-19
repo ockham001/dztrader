@@ -49,13 +49,15 @@ protected:
     void write_lines(const std::string& name, const std::vector<std::string>& lines) {
         const fs::path path = tmp_dir_ / name;
         fs::create_directories(path.parent_path());
-        std::ofstream ofs(path);
+        // binary: 与生产日志字节一致（LF）。Windows 文本模式会把 \n 转成 \r\n，
+        // 改变游标字节偏移（回退按 raw.size()+1 计算）并污染 raw 断言
+        std::ofstream ofs(path, std::ios::binary);
         for (const auto& l : lines) {
             ofs << l << "\n";
         }
     }
     void append_lines(const std::string& name, const std::vector<std::string>& lines) {
-        std::ofstream ofs(tmp_dir_ / name, std::ios::app);
+        std::ofstream ofs(tmp_dir_ / name, std::ios::app | std::ios::binary);
         for (const auto& l : lines) {
             ofs << l << "\n";
         }
