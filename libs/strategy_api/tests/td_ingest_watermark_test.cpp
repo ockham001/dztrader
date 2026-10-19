@@ -193,6 +193,53 @@ TEST_F(IngestWatermarkTest, WatermarkTakesMaxAcrossFourTables) {
     EXPECT_EQ(12u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
 }
 
+// 契约 (td-data-sync §W 水位过滤): W 查询不带日过滤 — 跨日累积单调, 含历史高 seq。
+// 若退化为"只查最新交易日 MAX(seq)" (dzweb 镜像的日界语义), 旧日高 seq 不计入 W,
+// seq=13 会被误判为断档。
+TEST_F(IngestWatermarkTest, WatermarkMaxIgnoresTradingDayFilter) {
+    // 旧交易日行携带全表最大 seq=13 (当前最新日四表最大 11)
+    {
+        SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
+        SQLite::Statement ins(
+            db,
+            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
+            " exchange_id, direction, position_effect, price_type, status, price, volume,"
+            " volume_traded, strategy_id, seq)"
+            " VALUES ('CTP001', '20260831', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " ?, ?, ?, 'own', ?)");
+        ins.bind(1, static_cast<int64_t>(9013));
+        ins.bind(2, 4900.0);
+        ins.bind(3, static_cast<int64_t>(1));
+        ins.bind(4, static_cast<int64_t>(1));
+        ins.bind(5, static_cast<int64_t>(13));
+        ins.exec();
+    }
+    init_ctx();  // W 必须 = 13 (旧日行参与 MAX)
+
+    // seq=13 == W → 快照已含, 拦截
+    {
+        DzOrderReport rpt{};
+        dztrader::copy_string(rpt.account_id, "CTP001", true);
+        dztrader::copy_string(rpt.strategy_id, dz_strategy_id(ctx_), true);
+        rpt.seq = 13;
+        emit_struct(DZ_FRAME_ORDER_REPORT, rpt);
+    }
+    EXPECT_EQ(nullptr, dz_next_event(ctx_));
+
+    // seq=14 = W+1 → 放行。若 W 退化只看最新日 (11), seq=13 会先触发 gap [12,12]
+    // 并把本帧暂存, 此处返回 nullptr (用例失败)。
+    {
+        DzOrderReport rpt{};
+        dztrader::copy_string(rpt.account_id, "CTP001", true);
+        dztrader::copy_string(rpt.strategy_id, dz_strategy_id(ctx_), true);
+        rpt.seq = 14;
+        emit_struct(DZ_FRAME_ORDER_REPORT, rpt);
+    }
+    const void* f = dz_next_event(ctx_);
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(14u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
+}
+
 // DZ_FRAME_POSITION_INFO (positions) 帧同样受四表 W 过滤: seq=9 (positions 表自身快照行) 拦截。
 TEST_F(IngestWatermarkTest, PositionFrameFilteredByCrossTableWatermark) {
     init_ctx();

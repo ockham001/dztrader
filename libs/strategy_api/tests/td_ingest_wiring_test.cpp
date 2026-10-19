@@ -16,7 +16,9 @@
 #include <SQLiteCpp/Statement.h>
 
 #include "db_database.h"
+#include "strategy_context.h"
 
+#include <array>
 #include <filesystem>
 #include <string>
 
@@ -141,7 +143,7 @@ TEST_F(IngestWiringTest, WatermarkFilterSkipsSnapshotFrames) {
 }
 
 // 断档回补: 首帧 seq > W+1 → gap → 查库回补区间行 → 前置 replay FIFO 派发。
-// 触发帧 (seq=8) 先返回, 其后回补帧按 seq 序送达, 实时帧 (seq=9) 在后。
+// 交付序 = 回补行 (seq 6,7) → 触发帧 (seq 8) (契约 td-data-sync §回补交付序)。
 TEST_F(IngestWiringTest, GapTriggersBackfillReplay) {
     // 模拟启动竞态窗口: 快照查询后落库的行 (在途窗口事件), 首帧到达前已提交
     {
@@ -173,14 +175,8 @@ TEST_F(IngestWiringTest, GapTriggersBackfillReplay) {
     trigger.seq = 8;
     emit_struct(DZ_FRAME_ORDER_REPORT, trigger);
 
-    // 触发帧先返回
+    // 回补帧先行: seq 6, 7 (FIFO, 按 seq 序)
     const void* f = dz_next_event(ctx_);
-    ASSERT_NE(f, nullptr);
-    EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
-    EXPECT_EQ(8u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
-
-    // 回补帧前置派发: seq 6, 7 (FIFO)
-    f = dz_next_event(ctx_);
     ASSERT_NE(f, nullptr);
     EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
     EXPECT_EQ(6u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
@@ -193,7 +189,13 @@ TEST_F(IngestWiringTest, GapTriggersBackfillReplay) {
     EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
     EXPECT_EQ(7u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
 
-    // 回补派发完: 通道空 -> nullptr
+    // 触发帧 seq=8 在回补行之后 (同键旧状态不得覆盖新状态)
+    f = dz_next_event(ctx_);
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
+    EXPECT_EQ(8u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
+
+    // 派发完: 通道空 -> nullptr
     EXPECT_EQ(nullptr, dz_next_event(ctx_));
 }
 
@@ -232,9 +234,11 @@ TEST_F(IngestWiringTest, BackfillReplayFiltersByStrategy) {
     trigger.seq = 8;
     emit_struct(DZ_FRAME_ORDER_REPORT, trigger);
 
-    // 触发帧返回
-    ASSERT_NE(nullptr, dz_next_event(ctx_));
-    // 回补帧 (6,7) 均非本策略: 被定向过滤, 无回放
+    // 回补帧 (6,7) 均非本策略: 被定向过滤, 直接返回触发帧
+    const void* f = dz_next_event(ctx_);
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
+    EXPECT_EQ(8u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
     EXPECT_EQ(nullptr, dz_next_event(ctx_));
 }
 
@@ -328,19 +332,46 @@ TEST_F(IngestWiringTest, AccountStatusTradingDayChangeClearsTradeDedup) {
     ASSERT_NE(stf, nullptr);
     EXPECT_EQ(DZ_FRAME_ACCOUNT_STATUS, FrameView(static_cast<const std::byte*>(stf)).type());
 
-    // 新交易日同 trade_id: 不被旧日段拦截 (seq=8)
+    // 可区分场景: ACCOUNT_STATUS 后首笔成交仍用旧日 date (2026-09-01) 且同 trade_id。
+    // 接线生效 (on_trading_day_changed 已清旧段) → 放行; 若删掉接线, admit_trade 命中
+    // 旧段 T1 → 拦截, 本断言失败 (旧用例用新日 date, admit_trade 自清即可通过, 不可区分)。
     {
         DzTradeReport rpt{};
         dztrader::copy_string(rpt.account_id, "CTP001", true);
         dztrader::copy_string(rpt.strategy_id, own, true);
         dztrader::copy_string(rpt.trade_id, "T1", true);
-        rpt.date = day_dz(2026, 9, 2);
+        rpt.date = day_dz(2026, 9, 1);
         rpt.seq = 8;
         emit_struct(DZ_FRAME_TRADE_REPORT, rpt);
     }
     const void* f = dz_next_event(ctx_);
     ASSERT_NE(f, nullptr);
     EXPECT_EQ(8u, FrameView(static_cast<const std::byte*>(f)).payload<DzTradeReport>().seq);
+
+    // 新交易日同 trade_id: 放行 (seq=9); 新日段去重仍生效 (同键 seq=10 拦截)
+    {
+        DzTradeReport rpt{};
+        dztrader::copy_string(rpt.account_id, "CTP001", true);
+        dztrader::copy_string(rpt.strategy_id, own, true);
+        dztrader::copy_string(rpt.trade_id, "T1", true);
+        rpt.date = day_dz(2026, 9, 2);
+        rpt.seq = 9;
+        emit_struct(DZ_FRAME_TRADE_REPORT, rpt);
+    }
+    f = dz_next_event(ctx_);
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(9u, FrameView(static_cast<const std::byte*>(f)).payload<DzTradeReport>().seq);
+
+    {
+        DzTradeReport rpt{};
+        dztrader::copy_string(rpt.account_id, "CTP001", true);
+        dztrader::copy_string(rpt.strategy_id, own, true);
+        dztrader::copy_string(rpt.trade_id, "T1", true);
+        rpt.date = day_dz(2026, 9, 2);
+        rpt.seq = 10;
+        emit_struct(DZ_FRAME_TRADE_REPORT, rpt);
+    }
+    EXPECT_EQ(nullptr, dz_next_event(ctx_));
 }
 
 // 评审发现 1: TRADE_REPORT 非本策略 (strategy_id 不匹配) 在 admit_trade 之前即被定向过滤,
@@ -448,9 +479,6 @@ TEST_F(IngestWiringTest, BackfillFillsOrderAndTradeTime) {
     trigger.seq = 8;
     emit_struct(DZ_FRAME_ORDER_REPORT, trigger);
 
-    // 触发帧 seq=8
-    ASSERT_NE(nullptr, dz_next_event(ctx_));
-
     // 回补 FIFO: 先 orders (表序), seq 6, 7
     {
         const void* f = dz_next_event(ctx_);
@@ -487,6 +515,15 @@ TEST_F(IngestWiringTest, BackfillFillsOrderAndTradeTime) {
         const DzTradeReport& t2 = view.payload<DzTradeReport>();
         EXPECT_EQ(7u, t2.seq);
         EXPECT_EQ(12 * 3600 + 3 * 60 + 4, t2.time);
+    }
+
+    // 触发帧 seq=8 在全部回补行之后
+    {
+        const void* f = dz_next_event(ctx_);
+        ASSERT_NE(f, nullptr);
+        const auto view = FrameView(static_cast<const std::byte*>(f));
+        EXPECT_EQ(DZ_FRAME_ORDER_REPORT, view.type());
+        EXPECT_EQ(8u, view.payload<DzOrderReport>().seq);
     }
 
     EXPECT_EQ(nullptr, dz_next_event(ctx_));
@@ -593,6 +630,17 @@ TEST_F(IngestWiringTest, ResetReAdmitNotFilteredByWatermark) {
     ASSERT_NE(f, nullptr);
     EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
     EXPECT_EQ(3u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
+
+    // 新水位取值钉住: seq=2 (== 重建后 DB MAX) 必须被拦截。
+    // 若 rebuild_watermark 退化为 0, seq=2 会作为 gap [1,1] 触发回补 (返回 seq=1 而非 nullptr)。
+    {
+        DzOrderReport rpt{};
+        dztrader::copy_string(rpt.account_id, "CTP001", true);
+        dztrader::copy_string(rpt.strategy_id, dz_strategy_id(ctx_), true);
+        rpt.seq = 2;
+        emit_struct(DZ_FRAME_ORDER_REPORT, rpt);
+    }
+    EXPECT_EQ(nullptr, dz_next_event(ctx_));
 }
 
 // 评审发现 4: 逐表容错 — positions 表缺失时, orders 区间行仍回补 (覆盖判定按
@@ -624,13 +672,17 @@ TEST_F(IngestWiringTest, BackfillToleratesMissingTable) {
     trigger.seq = 7;  // gap [6,6]
     emit_struct(DZ_FRAME_ORDER_REPORT, trigger);
 
-    // 触发帧返回
-    ASSERT_NE(nullptr, dz_next_event(ctx_));
-    // orders 回补 seq=6 正常送达 (positions 表缺失被跳过, 不阻断覆盖判定)
+    // orders 回补 seq=6 正常送达 (positions 表缺失被跳过, 不阻断覆盖判定),
+    // 触发帧 seq=7 在其后
     const void* f = dz_next_event(ctx_);
     ASSERT_NE(f, nullptr);
     EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
     EXPECT_EQ(6u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
+
+    f = dz_next_event(ctx_);
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
+    EXPECT_EQ(7u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
     EXPECT_EQ(nullptr, dz_next_event(ctx_));
 }
 
@@ -664,9 +716,6 @@ TEST_F(IngestWiringTest, BackfillDispatchesPositionAndTradingAccount) {
     dztrader::copy_string(trigger.strategy_id, dz_strategy_id(ctx_), true);
     trigger.seq = 8;
     emit_struct(DZ_FRAME_ORDER_REPORT, trigger);
-
-    // 触发帧先返回
-    ASSERT_NE(nullptr, dz_next_event(ctx_));
 
     // 回补: positions 行 → DZ_FRAME_POSITION_INFO (帧 DZ_FRAME_POSITION_INFO)
     {
@@ -704,6 +753,15 @@ TEST_F(IngestWiringTest, BackfillDispatchesPositionAndTradingAccount) {
         EXPECT_DOUBLE_EQ(2000.0, acct.deposit);
         EXPECT_DOUBLE_EQ(1000.0, acct.withdraw);
         EXPECT_EQ(7u, acct.seq);
+    }
+
+    // 触发帧 seq=8 在回补行之后
+    {
+        const void* f = dz_next_event(ctx_);
+        ASSERT_NE(f, nullptr);
+        const auto view = FrameView(static_cast<const std::byte*>(f));
+        EXPECT_EQ(DZ_FRAME_ORDER_REPORT, view.type());
+        EXPECT_EQ(8u, view.payload<DzOrderReport>().seq);
     }
 
     EXPECT_EQ(nullptr, dz_next_event(ctx_));
@@ -847,7 +905,7 @@ TEST_F(IngestWiringTest, PositionAndTradingAccountGoThroughGate) {  // seq ≤ W
 // 状态不回退 (旧代码: 后续帧直接放行 → 旧状态覆盖新状态且无再修复)。
 // 场景: W=5, gap [6,7] 未提交; 触发帧 seq=8 (order 100 PART_TRADED) 拦截暂存;
 // 期间 seq=9 后续帧 (order 100 FILLED) 到达 → 也暂存; 行 6,7 提交后重试覆盖 →
-// 派发序 = 触发帧(8) → 回补(6,7) → 暂存帧(9); 同键 order 100 终态 = FILLED 不回退。
+// 派发序 = 回补(6,7) → 触发帧(8) → 暂存帧(9); 同键 order 100 终态 = FILLED 不回退。
 TEST_F(IngestWiringTest, GapRetryStagesSubsequentFramesThenDeliversInSeqOrder) {
     // 构造 gap 区间行 6,7: seq6 = order 101 (他键), seq7 = order 100 旧状态 PART_TRADED
     // (回补后到达, 与触发/后续帧同键 order 100 — 若不暂存后续帧, seq7 旧状态会晚于
@@ -957,7 +1015,7 @@ TEST_F(IngestWiringTest, GapRetryStagesPositionFrameDuringRetry) {
     emit_struct(DZ_FRAME_POSITION_INFO, later);
     EXPECT_EQ(nullptr, dz_next_event(ctx_));  // 暂存拦截
 
-    // 覆盖: 行 6,7 提交 → 触发帧(8) → 回补(6,7) → 暂存(9)
+    // 覆盖: 行 6,7 提交 → 回补(6,7) → 触发帧(8) → 暂存(9)
     {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         SQLite::Statement pins(
@@ -1080,6 +1138,82 @@ TEST_F(IngestWiringTest, AccountStatusFlipToReadyResetsGateForReusedSeq) {
     EXPECT_EQ(3u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
 }
 
+// 契约 (td-data-sync §SDK ACCOUNT_STATUS Offline→Ready): 翻转须 reset_account +
+// 清该账户 gap_retry — 旧 regime 的触发帧/暂存帧在新水位下无意义, 不得在重置后补发
+// (否则旧状态覆盖新状态)。
+TEST_F(IngestWiringTest, AccountStatusReadyFlipCancelsPendingGapRetry) {
+    auto day_dz = [](int y, int m, int d) {
+        return dztrader::Date::from_year_month_day(y, m, d).days_since_epoch();
+    };
+    // gap [6,7] 未提交 → 触发帧 seq=8 拦截, gap_retry 挂起
+    DzOrderReport trigger{};
+    dztrader::copy_string(trigger.account_id, "CTP001", true);
+    dztrader::copy_string(trigger.strategy_id, dz_strategy_id(ctx_), true);
+    trigger.seq = 8;
+    emit_struct(DZ_FRAME_ORDER_REPORT, trigger);
+    EXPECT_EQ(nullptr, dz_next_event(ctx_));
+
+    // Offline → Ready 翻转 (DZ_FRAME_ACCOUNT_STATUS 不参与 TD ingest, 全量放行)
+    {
+        DzAccountStatus offline{};
+        dztrader::copy_string(offline.account_id, "CTP001", true);
+        offline.state = DZ_ACCOUNT_OFFLINE;
+        offline.trading_day = 0;
+        emit_struct(DZ_FRAME_ACCOUNT_STATUS, offline);
+    }
+    ASSERT_NE(nullptr, dz_next_event(ctx_));
+    {
+        DzAccountStatus ready{};
+        dztrader::copy_string(ready.account_id, "CTP001", true);
+        ready.state = DZ_ACCOUNT_READY;
+        ready.trading_day = day_dz(2026, 9, 1);
+        emit_struct(DZ_FRAME_ACCOUNT_STATUS, ready);
+    }
+    const void* f = dz_next_event(ctx_);
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(DZ_FRAME_ACCOUNT_STATUS, FrameView(static_cast<const std::byte*>(f)).type());
+
+    // 重试状态已被清 (直接断言 + 行为双保险): 行为侧反复推进也不得释放旧触发帧
+    // (未取消时重试计数到 kGapRetryMax=10 即放行 seq=8; 12 次调用覆盖该上限)。
+    EXPECT_FALSE(ctx_->gap_retry.active);
+    for (int i = 0; i < 12; ++i) {
+        EXPECT_EQ(nullptr, dz_next_event(ctx_)) << "call=" << i;
+    }
+
+    // 新 regime 仍正常: 重置后 W 重查 = 5, seq=6 放行
+    {
+        DzOrderReport fresh{};
+        dztrader::copy_string(fresh.account_id, "CTP001", true);
+        dztrader::copy_string(fresh.strategy_id, dz_strategy_id(ctx_), true);
+        fresh.seq = 6;
+        emit_struct(DZ_FRAME_ORDER_REPORT, fresh);
+    }
+    f = dz_next_event(ctx_);
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
+    EXPECT_EQ(6u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
+}
+
+// 暂存上限 512: 超出丢弃 (宁缺勿乱)。集成路径受 kGapRetryMax=10 限制, 重试耗尽前
+// 不可能堆到 512 条后续帧, 故直接验证状态机上限与末条丢弃语义。
+TEST(GapRetryState, StageCapsAt512AndDropsOverflow) {
+    DzContext::GapRetryState rt;
+    std::array<std::byte, sizeof(DzOrderReport)> payload{};
+    const auto size = static_cast<uint32_t>(payload.size());
+    for (size_t i = 0; i < DzContext::GapRetryState::kMaxStaged; ++i) {
+        payload[0] = static_cast<std::byte>(i & 0xFF);  // 各帧可区分: 钉住"末条"是哪条
+        ASSERT_TRUE(rt.stage(DZ_FRAME_ORDER_REPORT, payload.data(), size)) << "i=" << i;
+    }
+    EXPECT_EQ(DzContext::GapRetryState::kMaxStaged, rt.staged_frames.size());
+    EXPECT_EQ(std::byte{0x00}, rt.staged_frames.front().payload[0]);
+    EXPECT_EQ(std::byte{0xFF}, rt.staged_frames.back().payload[0]);  // 第 512 条 (i=511)
+
+    payload[0] = std::byte{0xAA};
+    EXPECT_FALSE(rt.stage(DZ_FRAME_ORDER_REPORT, payload.data(), size));  // 第 513 条丢弃
+    EXPECT_EQ(DzContext::GapRetryState::kMaxStaged, rt.staged_frames.size());
+    EXPECT_EQ(std::byte{0xFF}, rt.staged_frames.back().payload[0]);  // 末条未被覆盖成 0xAA
+}
+
 // 终检发现 D: 2018 Ready (非翻转, 首见即 Ready) 不得误触 gate 重置 — 否则启动
 // 首次 Ready 就把已装载水位清掉, 破坏 W 过滤。首见状态视为未知 (不重置)。
 TEST_F(IngestWiringTest, FirstReadyDoesNotResetGate) {
@@ -1156,20 +1290,22 @@ TEST_F(IngestWiringTest, GapCoverageToleratesDeletedPositionRow) {
     trigger.seq = 9;
     emit_struct(DZ_FRAME_ORDER_REPORT, trigger);
 
-    // 覆盖成功 (首查即覆盖, handle_gap 放行路径): 触发帧先返回, 回补帧随后 (同
-    // GapTriggersBackfillReplay 语义)。不耗尽不回补现存行 (缺条修复)。
+    // 覆盖成功 (首查即覆盖, handle_gap 放行路径): 回补行 (orders 6,8) 先返回,
+    // 触发帧 9 随后 (同 GapTriggersBackfillReplay 语义)。
     const void* f = dz_next_event(ctx_);
     ASSERT_NE(f, nullptr);
     EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
-    EXPECT_EQ(9u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
-
-    f = dz_next_event(ctx_);
-    ASSERT_NE(f, nullptr);
     EXPECT_EQ(6u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
 
     f = dz_next_event(ctx_);
     ASSERT_NE(f, nullptr);
+    EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
     EXPECT_EQ(8u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
+
+    f = dz_next_event(ctx_);
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(f)).type());
+    EXPECT_EQ(9u, FrameView(static_cast<const std::byte*>(f)).payload<DzOrderReport>().seq);
 
     EXPECT_EQ(nullptr, dz_next_event(ctx_));
 }

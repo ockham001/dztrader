@@ -290,7 +290,7 @@ TEST_F(ScheduleApiTest, PreloadMdShmOwnSourceSchedulesInternalTimer) {
     EXPECT_LT(elapsed, std::chrono::seconds(6));
 }
 
-// ── 处理优先级: 回补帧 > 用户帧 > 定时器帧 > 内部帧 ──
+// ── 处理优先级: 回补帧 > 延迟触发帧 > 用户帧 > 定时器帧 > 内部帧 ──
 
 TEST_F(ScheduleApiTest, UserFrameTakesPriorityOverBufferedTimerFrame) {
     const DzTimerId tid = dz_schedule_after(ctx_, 20);
