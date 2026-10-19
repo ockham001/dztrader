@@ -42,7 +42,12 @@ protected:
         std::filesystem::remove(db_path_);
         std::filesystem::remove(db_path_ + "-journal");
     }
-    void TearDown() override { std::filesystem::remove_all(tmp_dir_); }
+    void TearDown() override {
+        std::filesystem::remove_all(tmp_dir_);
+        for (const auto& dir : extra_dirs_) {
+            std::filesystem::remove_all(dir);
+        }
+    }
 
     /// 只读连接 (与生产 td_persist_writer.cpp:125 一致设置 busy_timeout,
     /// 防写入提交期间同进程另一连接报 database is locked).
@@ -64,6 +69,8 @@ protected:
 
     std::filesystem::path tmp_dir_;
     std::string db_path_;
+    /// 用例内另起的临时库目录 (失败路径也必须清理: TearDown 统一删除).
+    std::vector<std::filesystem::path> extra_dirs_;
 };
 
 /// 构造委托记录. seq 为唯一区分点, 其余字段同基准可复现.
@@ -238,6 +245,7 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
     // reader 开启前完成写入, DB 提交在后 (在途窗口).
     std::filesystem::path tmp2 = unique_temp_dir("dz_td_data_sync_it_b");
     std::filesystem::create_directories(tmp2);
+    extra_dirs_.push_back(tmp2);  // 断言提前返回时也由 TearDown 清理
     const std::string db2 = (tmp2 / "b.db").string();
     std::filesystem::remove(db2);
     std::filesystem::remove(db2 + "-journal");
@@ -292,24 +300,42 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
         EXPECT_EQ(backfilled.back().base.seq, 105u);
     }  // PersistWriter w / ro / ro2 在此析构, 释放 db2 的 SQLite 句柄
 
-    // 临时库删除必须在其内所有 SQLite 句柄析构之后: Windows 不允许删除仍被占用的
-    // 文件(remove_all 抛 filesystem_error), Linux 允许删除已打开的文件, 故该顺序
-    // 问题仅在 Windows CI 暴露。
-    std::filesystem::remove_all(tmp2);
+    // tmp2 由 TearDown 统一删除 (断言提前返回的失败路径也覆盖); 此时块内 SQLite 句柄
+    // 均已析构 — Windows 不允许删除仍被占用的文件, 顺序由作用域保证。
 }
 
 // ============================================================================
 // 场景 3: 重置后重建 (spec §5.5 倒退检测 + reset + 新水位)
-// gate 应用到 5001 → 收到倒退 seq 3 → detect_reset → reset(新W=2) → 新流正常
+// 生产端重置 (DB 清空/重加) 后, 消费端 detect_reset → 重查 DB 得 new_w → reset_account。
+// 本用例把 new_w 接到真实 query_max_seq (而非硬编码), 验证重置后新流按 DB 水位放行。
+// (消费端 detect_reset→rebuild→reset 接线的端到端用例在 libs/strategy_api/td_ingest_wiring_test;
+// 本文件覆盖 gate + DB 水位原语)
 // ============================================================================
-TEST_F(TdDataSyncIntegrationTest, ResetThenRebuild) {
+TEST_F(TdDataSyncIntegrationTest, ResetThenRebuildWatermarkFromDb) {
+    // 预置「重置后」的 DB: 新流 seq 1..2 已落库
+    {
+        PersistWriter w(db_path_);
+        w.open();
+        w.start_writer();
+        for (int i = 1; i <= 2; ++i) {
+            w.enqueue(PersistTask{.kind = PersistTask::Kind::Order,
+                                  .data = make_order(i, static_cast<uint64_t>(i))});
+        }
+        auto token = w.enqueue_flush_signal();
+        ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+        w.stop();
+    }
+    SQLite::Database ro(db_path_, SQLite::OPEN_READONLY);
+    const uint64_t new_w = query_max_seq(ro, "acc1");  // 真实重查 DB 水位
+    ASSERT_EQ(new_w, 2u);
+
     dztrader::TdIngestGate gate;
     gate.set_watermark("acc1", 5000);
     EXPECT_EQ(dztrader::TdIngestGate::Verdict::kApply, gate.admit("acc1", 5001));
 
-    // 生产端重置 (DB 清空/重加), 消费者收到倒退帧
+    // 生产端重置, 消费者收到倒退帧 → 重查 DB 后按新水位重置
     EXPECT_TRUE(gate.detect_reset("acc1", 3));
-    gate.reset_account("acc1", 2);  // 重查 DB 得新 W=2
+    gate.reset_account("acc1", new_w);
 
     // 重置后新流正常: 3 > 2 → kApply; 且 no gap (顺序首帧)
     EXPECT_EQ(dztrader::TdIngestGate::Verdict::kApply, gate.admit("acc1", 3));
@@ -321,13 +347,14 @@ TEST_F(TdDataSyncIntegrationTest, ResetThenRebuild) {
 }
 
 // ============================================================================
-// 场景 4: 重连重建基准 (spec §4.3; 覆盖审查③发现的 §4.3 遗漏:
-// 预扫缓存须按连接生命周期刷新, 非 TdApi 一次性)
-// 断开前 flush 一批 → 重连时重建 SessionBootData (增量装载 seq>上次水位)
-// → 重放同一批全 kSkip (重建基准正确去重, 无重推风暴)
+// 场景 4: 重连重建基准 (spec §4.3) — 覆盖**增量装载原语**:
+// 生产重连路径 (AccountSession::reload_incremental) 用 load_*_since(max_seq_at_disconnect)
+// 装载断连期间新增行、合并进过滤器基准, 并把水位推进到 query_max_seq。
+// TdApi::boot_cache_ 的连接生命周期刷新无 AccountSession 级测试基建, 本用例覆盖其原语
+// 组合 (首连全量在 td_prescan_test 与本文件其他用例覆盖)。
 // ============================================================================
-TEST_F(TdDataSyncIntegrationTest, ReconnectRebuildsBaseline) {
-    // ---- 第一次连接周期: 落一批入库 (seq 1..10), 基准 = 全量 ----
+TEST_F(TdDataSyncIntegrationTest, ReconnectIncrementalReloadSkipsReplayedRows) {
+    // ---- 第一次连接周期: 落一批入库 (seq 1..10), 全量基准 ----
     std::vector<OrderRecord> batch1;
     for (int i = 1; i <= 10; ++i) {
         batch1.push_back(make_order(i, static_cast<uint64_t>(i)));
@@ -344,16 +371,16 @@ TEST_F(TdDataSyncIntegrationTest, ReconnectRebuildsBaseline) {
         w.stop();
     }
 
-    // 首次连接装载 (模拟 connect 时预扫缓存): 全量基准 + 水位
+    // 首连: 全量预扫装载基准 (模拟 connect 时 boot)
     SQLite::Database ro1(db_path_, SQLite::OPEN_READONLY);
     auto boot1 = prescan_accounts(ro1, {"acc1"});
-    EXPECT_EQ(boot1.at("acc1").start_seq, 10u);
+    ASSERT_EQ(boot1.at("acc1").start_seq, 10u);
     auto filter1 = ReportFilter::load(boot1.at("acc1").orders, boot1.at("acc1").trades);
     for (const auto& rec : batch1) {
         EXPECT_EQ(ReportFilter::Verdict::kSkip, filter1.check_order(rec));
     }
 
-    // ---- 运行期: 断连后又有新提交 (seq 11..15, 模拟断连期间生产端持续) ----
+    // ---- 断连期间: 生产端继续提交 seq 11..15 ----
     std::vector<OrderRecord> batch2;
     for (int i = 11; i <= 15; ++i) {
         batch2.push_back(make_order(i, static_cast<uint64_t>(i)));
@@ -370,16 +397,23 @@ TEST_F(TdDataSyncIntegrationTest, ReconnectRebuildsBaseline) {
         w.stop();
     }
 
-    // ---- 重连: 预扫缓存必须按连接生命周期刷新 (非 TdApi 一次性) ----
-    // 旧缓存若复用 (start_seq=10 且基准=seq1..10), 重放 seq 11..15 会被误判 kForward → 重推风暴.
-    // 重连装载 = 全量重扫 (prescan_accounts 重新装载) → 基准含 11..15 → 重放全 kSkip.
+    // ---- 重连: 增量装载 seq > 断连水位 (10) → 恰好 11..15, 合并后重放全 kSkip ----
+    // 旧基准若原样复用 (start_seq=10, 基准=seq1..10), 重放 11..15 会被误判 kForward → 重推风暴。
     SQLite::Database ro2(db_path_, SQLite::OPEN_READONLY);
-    auto boot2 = prescan_accounts(ro2, {"acc1"});
-    EXPECT_EQ(boot2.at("acc1").start_seq, 15u);
-    auto filter2 = ReportFilter::load(boot2.at("acc1").orders, boot2.at("acc1").trades);
-    for (const auto& rec : batch2) {
-        EXPECT_EQ(ReportFilter::Verdict::kSkip, filter2.check_order(rec));
+    auto orders_since = load_orders_since(ro2, "acc1", 10u);
+    auto trades_since = load_trades_since(ro2, "acc1", 10u);
+    ASSERT_EQ(orders_since.size(), batch2.size());
+    EXPECT_EQ(orders_since.front().base.seq, 11u);
+    EXPECT_EQ(orders_since.back().base.seq, 15u);
+    EXPECT_TRUE(trades_since.empty());
+    for (const auto& rec : orders_since) {
+        filter1.accept_order(rec);
     }
+    for (const auto& rec : batch2) {
+        EXPECT_EQ(ReportFilter::Verdict::kSkip, filter1.check_order(rec));
+    }
+    // 水位推进到本次装载的最大 seq (重连后的新水位)
+    EXPECT_EQ(query_max_seq(ro2, "acc1"), 15u);
 }
 
 // ============================================================================
@@ -426,10 +460,13 @@ TEST_F(TdDataSyncIntegrationTest, CrossDayAccumulation) {
 }
 
 // ============================================================================
-// 终检发现 4(c): 吞同不推进 W — 重放风暴全吞后, query_max_seq / DB MAX(seq)
-// 不变 (kSkip 路径: 不推不落不分配 seq, 消费端水位不被重放污染)
+// 终检发现 4(c): 吞同不推进 W — 重放风暴全吞后, 消费端水位不被重放推进, 基准不被污染
+// (状态变化的记录仍 kForward)。
+// 说明: 「生产端 kSkip 不落库/不分配 seq」由 AccountSession::on_rtn_order 的早退保证;
+// 该路径无测试基建 (需 CTP/SHM 全套), 本用例不覆盖 — 重放循环期间没有 Writer 在跑,
+// 任何「事后 DB 行数/MAX(seq) 不变」的断言都恒真 (§1.1), 已删除。
 // ============================================================================
-TEST_F(TdDataSyncIntegrationTest, ReplayStormSkipsLeaveWatermarkUnchanged) {
+TEST_F(TdDataSyncIntegrationTest, ReplayStormSkipsDoNotAdvanceConsumerWatermark) {
     // 生产端落一批入库 (seq 1..30), W = 30
     constexpr int kCount = 30;
     std::vector<OrderRecord> seed;
@@ -451,24 +488,28 @@ TEST_F(TdDataSyncIntegrationTest, ReplayStormSkipsLeaveWatermarkUnchanged) {
     SQLite::Database ro(db_path_, SQLite::OPEN_READONLY);
     const uint64_t w_before = query_max_seq(ro, "acc1");
     ASSERT_EQ(w_before, static_cast<uint64_t>(kCount));
-    const int64_t rows_before = scalar_int("SELECT COUNT(*) FROM orders WHERE account_id='acc1'");
 
     // 消费端装载基准后重放同一批 → 全 kSkip (吞同)
     auto filter = ReportFilter::load(load_orders(ro, "acc1"), load_trades(ro, "acc1"));
     for (const auto& rec : seed) {
         bool warn = false;
         ASSERT_EQ(ReportFilter::Verdict::kSkip, filter.check_order(rec, &warn));
+        EXPECT_FALSE(warn);
     }
 
-    // 消费端水位 (gate) 不被重放推进: kSkip 后仍应按 W=30 过滤, 31 才放行
+    // 吞同不得污染基准: 状态变化的记录仍须 kForward (check_order 是 const 纯函数)
+    OrderRecord changed = seed[7];
+    changed.base.volume_traded = 3;
+    changed.update_time = 2000;
+    bool warn = false;
+    EXPECT_EQ(ReportFilter::Verdict::kForward, filter.check_order(changed, &warn));
+    EXPECT_FALSE(warn);
+
+    // 消费端水位 (gate) 不因重放推进: W 本身仍 kSkip, W+1 才放行
     dztrader::TdIngestGate gate;
     gate.set_watermark("acc1", w_before);
     EXPECT_EQ(dztrader::TdIngestGate::Verdict::kSkip, gate.admit("acc1", w_before));
     EXPECT_EQ(dztrader::TdIngestGate::Verdict::kApply, gate.admit("acc1", w_before + 1));
-
-    // DB 无新行, MAX(seq) 不变 (kSkip: 不推不落不分配 seq)
-    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE account_id='acc1'"), rows_before);
-    EXPECT_EQ(query_max_seq(ro, "acc1"), w_before);
 }
 
 // ============================================================================

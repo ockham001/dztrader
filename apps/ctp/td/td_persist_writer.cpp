@@ -303,7 +303,7 @@ void PersistWriter::writer_loop() {
         // 为集合 (预扫描 batch), 对每个 set_exception + erase: wait_flush 捕获异常返回
         // false, 语义正确 — 失败场景下批事务已回滚, "此前任务未完成提交"须以 false 显式表达。
         // (注释: set_value 仅在批 commit 成功后执行, 保证 wait_flush 返回 true ⇒ 已提交。
-        //  既有 FlushReturnsFalseWhenBatchCommitFails 测试的"超时不 set"语义升级为
+        //  既有 BatchFailureFinalizesFlushWaiter 测试的"超时不 set"语义升级为
         //  "显式 set_exception" — 同一不变量: 失败必 false, 且不再泄漏/饿死等待者。)
         std::vector<uint64_t> flushed_tokens;
         try {

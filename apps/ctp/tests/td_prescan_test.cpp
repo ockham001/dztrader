@@ -1,9 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstring>
+#include <exception>
 #include <filesystem>
+#include <fstream>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <SQLiteCpp/Database.h>
@@ -50,8 +54,13 @@ protected:
         return SQLite::Database(db_path_, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
     }
 
-    /// 独立只读连接 (模拟 TdApi 预扫 / 运行期兜底的独立连接).
-    SQLite::Database open_ro() { return SQLite::Database(db_path_, SQLite::OPEN_READONLY); }
+    /// 独立只读连接 (模拟 TdApi 预扫 / 运行期兜底的独立连接; busy_timeout 与
+    /// TdApi::ensure_prescan_db 的只读连接一致, 防提交窗口内误报 database is locked).
+    SQLite::Database open_ro() {
+        SQLite::Database db(db_path_, SQLite::OPEN_READONLY);
+        db.exec("PRAGMA busy_timeout=5000");
+        return db;
+    }
 
     std::filesystem::path tmp_dir_;
     std::string db_path_;
@@ -158,21 +167,124 @@ void insert_taccount(SQLite::Database& db, const std::string& acct, int64_t seq)
 }
 
 // ============================================================================
-// query_max_seq: 四表取最大 (orders/trades/positions/trading_accounts)
+// query_max_seq: 四表取大 — 每张表各自成为最大值时都必须被计入.
+// 拆四例 (而非只让 positions 当最大): 漏掉任一表时, 对应用例必然红 (§1.3).
 // ============================================================================
 
-TEST_F(TdPrescanTest, QueryMaxSeqAcrossFourTables) {
+TEST_F(TdPrescanTest, QueryMaxSeqOrdersIsMax) {
     {
         auto db = open_rw();
-        insert_order(db, "acc1", 1, "000000000001", 5, DZ_ORDER_ALL_TRADED, 5, 0, 1000,
+        insert_order(db, "acc1", 1, "000000000001", 20, DZ_ORDER_ALL_TRADED, 5, 0, 1000,
                      DZ_DIRECTION_LONG);
         insert_trade(db, "acc1", "T001", 9, 1);
         insert_position(db, "acc1", "IF2506", 12, DZ_DIRECTION_LONG);
         insert_taccount(db, "acc1", 3);
     }
     auto ro = open_ro();
-    EXPECT_EQ(query_max_seq(ro, "acc1"), 12u);  // positions 最大 (四表取大)
+    EXPECT_EQ(query_max_seq(ro, "acc1"), 20u);
     EXPECT_EQ(query_max_seq(ro, "other"), 0u);  // 空账户 -> 0
+}
+
+TEST_F(TdPrescanTest, QueryMaxSeqTradesIsMax) {
+    {
+        auto db = open_rw();
+        insert_order(db, "acc1", 1, "000000000001", 5, DZ_ORDER_ALL_TRADED, 5, 0, 1000,
+                     DZ_DIRECTION_LONG);
+        insert_trade(db, "acc1", "T001", 20, 1);
+        insert_position(db, "acc1", "IF2506", 12, DZ_DIRECTION_LONG);
+        insert_taccount(db, "acc1", 3);
+    }
+    auto ro = open_ro();
+    EXPECT_EQ(query_max_seq(ro, "acc1"), 20u);
+}
+
+TEST_F(TdPrescanTest, QueryMaxSeqPositionsIsMax) {
+    {
+        auto db = open_rw();
+        insert_order(db, "acc1", 1, "000000000001", 5, DZ_ORDER_ALL_TRADED, 5, 0, 1000,
+                     DZ_DIRECTION_LONG);
+        insert_trade(db, "acc1", "T001", 9, 1);
+        insert_position(db, "acc1", "IF2506", 20, DZ_DIRECTION_LONG);
+        insert_taccount(db, "acc1", 3);
+    }
+    auto ro = open_ro();
+    EXPECT_EQ(query_max_seq(ro, "acc1"), 20u);
+}
+
+TEST_F(TdPrescanTest, QueryMaxSeqTradingAccountsIsMax) {
+    {
+        auto db = open_rw();
+        insert_order(db, "acc1", 1, "000000000001", 5, DZ_ORDER_ALL_TRADED, 5, 0, 1000,
+                     DZ_DIRECTION_LONG);
+        insert_trade(db, "acc1", "T001", 9, 1);
+        insert_position(db, "acc1", "IF2506", 12, DZ_DIRECTION_LONG);
+        insert_taccount(db, "acc1", 20);
+    }
+    auto ro = open_ro();
+    EXPECT_EQ(query_max_seq(ro, "acc1"), 20u);
+}
+
+// ============================================================================
+// 边界: 缺表 / 损坏库 / 并发写锁窗口 (§1.4)
+// ============================================================================
+
+// 缺表: 老库或半迁移库 (缺 trading_accounts) → 预扫抛异常, 由调用方降级
+// (TdApi::prescan_all_accounts 清缓存 / load_boot_data 回落空基准), 不得读出错值.
+TEST_F(TdPrescanTest, QueryMaxSeqThrowsOnMissingTable) {
+    {
+        auto db = open_rw();
+        insert_order(db, "acc1", 1, "000000000001", 5, DZ_ORDER_ALL_TRADED, 5, 0, 1000,
+                     DZ_DIRECTION_LONG);
+        db.exec("DROP TABLE trading_accounts");
+    }
+    auto ro = open_ro();
+    EXPECT_THROW((void)query_max_seq(ro, "acc1"), std::exception);
+}
+
+// 损坏库: 非 SQLite 文件 → 预扫抛异常 (由调用方降级), 不得静默返回 0.
+TEST_F(TdPrescanTest, QueryMaxSeqThrowsOnCorruptDatabase) {
+    {
+        std::ofstream garbage(db_path_, std::ios::binary | std::ios::trunc);
+        garbage << "this is not a sqlite database";
+    }
+    EXPECT_THROW(
+        {
+            SQLite::Database ro(db_path_, SQLite::OPEN_READONLY);
+            (void)query_max_seq(ro, "acc1");
+        },
+        std::exception);
+}
+
+// 并发写窗口: 预扫只读连接 (fixture open_ro 已设生产同款 busy_timeout=5000,
+// 见 TdApi::ensure_prescan_db) — 另一连接持 EXCLUSIVE 锁 300ms 时预扫等待而非立即
+// database is locked。回滚日志模式模拟 WAL 转换降级后的生产状态 (WAL 下写不阻塞读,
+// 不构成该窗口)。锁持有方的 COMMIT 无条件释放 (无环等待, Windows 同样成立)。
+TEST_F(TdPrescanTest, PrescanWaitsOutExclusiveLockWindow) {
+    {
+        auto db = open_rw();
+        insert_order(db, "acc1", 1, "000000000001", 7, DZ_ORDER_ALL_TRADED, 5, 0, 1000,
+                     DZ_DIRECTION_LONG);
+        db.exec("PRAGMA journal_mode=delete");
+    }
+    auto locker = open_rw();
+    locker.exec("BEGIN EXCLUSIVE");
+    bool release_ok = true;
+    std::thread releaser([&locker, &release_ok] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        try {
+            locker.exec("COMMIT");
+        } catch (const std::exception&) {
+            release_ok = false;
+        }
+    });
+
+    auto ro = open_ro();
+    uint64_t max_seq = 0;
+    EXPECT_NO_THROW(max_seq = query_max_seq(ro, "acc1"));
+    EXPECT_EQ(max_seq, 7u);
+
+    releaser.join();
+    EXPECT_TRUE(release_ok);
 }
 
 // ============================================================================

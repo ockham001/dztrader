@@ -9,6 +9,9 @@ using namespace dztrader::ctp;
 // 两查询 (持仓/资金) 完成 (含失败降级) 才可进入收尾序列; 查询失败不阻塞 Ready;
 // 收尾序列线性推进 kQueryPosition -> kQueryAccount -> kReplay -> kFlush
 // -> kReady -> kDone (kReady 前必须经过 kFlush, 保证 flush 屏障先于 Ready).
+// 覆盖边界: 本文件只测状态机相位; kFlush 的真实屏障行为 (drive_finalizer 实际
+// enqueue_flush_signal/wait_flush 后才转 Ready, 超时仍继续) 属 AccountSession 级 —
+// 该层无测试基建 (需 CTP/SHM 全套), 不在本文件覆盖范围.
 // ============================================================================
 
 TEST(LoginFinalizer, TwoQueriesCompleteBeforeReplay) {
@@ -48,6 +51,22 @@ TEST(LoginFinalizer, AccountDoneTwiceIsIdempotent) {
     fin.on_account_done();
     EXPECT_EQ(Phase::kReplay, fin.phase());
     fin.on_account_done();  // 迟到/重复 is_last 不破坏相位
+    EXPECT_EQ(Phase::kReplay, fin.phase());
+    EXPECT_TRUE(fin.can_reach_ready());
+}
+
+// §2.2 缺失: 重复/迟到的持仓 is_last — on_rsp_qry_investor_position 的
+// phase_ != kQueryPosition 忽略分支 (含 kReplay 后再次到达) 不得把相位打回查询阶段.
+TEST(LoginFinalizer, PositionDoneTwiceIsIdempotent) {
+    LoginFinalizer fin;
+    fin.on_position_done();
+    EXPECT_EQ(Phase::kQueryAccount, fin.phase());
+    fin.on_position_done();  // 迟到/重复 is_last: 相位不回退
+    EXPECT_EQ(Phase::kQueryAccount, fin.phase());
+
+    fin.on_account_done();
+    ASSERT_EQ(Phase::kReplay, fin.phase());
+    fin.on_position_done();  // kReplay 后再次到达: 不破坏收尾相位
     EXPECT_EQ(Phase::kReplay, fin.phase());
     EXPECT_TRUE(fin.can_reach_ready());
 }
