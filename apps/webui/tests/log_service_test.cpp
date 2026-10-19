@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <filesystem>
@@ -24,6 +25,7 @@ fs::path unique_temp_dir(const std::string& name) {
 class LogServiceTest : public ::testing::Test {
 protected:
     fs::path tmp_dir_;
+    fs::path outside_file_;  // 路径穿越哨兵 (tmp 目录外), TearDown 清理
     std::unique_ptr<dztrader::webui::LogService> svc_;
 
     void SetUp() override {
@@ -32,13 +34,35 @@ protected:
         fs::create_directories(tmp_dir_);
         svc_ = std::make_unique<dztrader::webui::LogService>(tmp_dir_);
     }
-    void TearDown() override { fs::remove_all(tmp_dir_); }
+    void TearDown() override {
+        fs::remove_all(tmp_dir_);
+        if (!outside_file_.empty()) {
+            std::error_code ec;
+            fs::remove(outside_file_, ec);
+        }
+    }
 
-    void write_log_file(const std::string& name, const std::vector<std::string>& lines) {
-        std::ofstream ofs(tmp_dir_ / name);
+    static void write_lines(const fs::path& path, const std::vector<std::string>& lines) {
+        std::ofstream ofs(path);
         for (const auto& l : lines) {
             ofs << l << "\n";
         }
+    }
+
+    void write_log_file(const std::string& name, const std::vector<std::string>& lines) {
+        write_lines(tmp_dir_ / name, lines);
+    }
+
+    /// 在 tmp 目录之外创建带哨兵行的日志文件, 返回相对 tmp_dir_ 的穿越路径 ("../<name>")。
+    /// 若 is_path_safe 失效, 读取会命中哨兵行 —— 断言 0 行才能证明"路径被拒", 而非
+    /// "文件不存在"。
+    std::string write_outside_sentinel() {
+        const fs::path base = unique_temp_dir("dz_log_sentinel");
+        outside_file_ = base.parent_path() / (base.filename().string() + ".log");
+        write_lines(outside_file_,
+                    {"2026-07-13T14:23:45.000000000+08:00 info sentinel [func=x file=f.cpp:1 "
+                     "pid=1 tid=2] outside tmp dir"});
+        return "../" + outside_file_.filename().string();
     }
 };
 
@@ -60,14 +84,50 @@ TEST_F(LogServiceTest, ListFilesFiltersByLogger) {
     EXPECT_EQ(files[0].logger, "dztraderd");
 }
 
+TEST_F(LogServiceTest, ListFilesFiltersByDateSuffix) {
+    write_log_file("svc_2026-07-12.log", {"x"});
+    write_log_file("svc_2026-07-13.log", {"x"});
+    write_log_file("svc.log", {"x"});  // 无日期后缀
+
+    auto hit = svc_->list_files("", "2026-07-12", 30, 0);
+    ASSERT_EQ(hit.size(), 1u);
+    EXPECT_EQ(hit[0].name, "svc_2026-07-12.log");
+    EXPECT_EQ(hit[0].logger, "svc");  // 日期后缀不计入 logger
+
+    // 不命中 (无该日文件) 与无后缀文件都不返回
+    EXPECT_TRUE(svc_->list_files("", "2026-07-14", 30, 0).empty());
+}
+
 TEST_F(LogServiceTest, ListFilesPaginates) {
+    // 显式设递增 mtime (老 → 新), 使降序排序确定: svc4,svc3,svc2,svc1,svc0。
+    // 快速连写 5 个文件 mtime 可能同值, 排序不稳定 → 顺序断言会随实现漂移。
+    const auto base = fs::file_time_type::clock::now() - std::chrono::seconds(5);
     for (int i = 0; i < 5; ++i) {
-        write_log_file("svc" + std::to_string(i) + ".log", {"x"});
+        const std::string name = "svc" + std::to_string(i) + ".log";
+        write_log_file(name, {"x"});
+        fs::last_write_time(tmp_dir_ / name, base + std::chrono::seconds(i));
     }
+
+    const auto all = svc_->list_files("", "", 30, 0);
+    ASSERT_EQ(all.size(), 5u);
+    ASSERT_EQ(all[0].name, "svc4.log");  // mtime 最新在前
+
     auto page1 = svc_->list_files("", "", 2, 0);
     auto page2 = svc_->list_files("", "", 2, 2);
     ASSERT_EQ(page1.size(), 2u);
     ASSERT_EQ(page2.size(), 2u);
+    std::vector<std::string> names1;
+    for (const auto& f : page1) {
+        names1.push_back(f.name);
+    }
+    std::vector<std::string> names2;
+    for (const auto& f : page2) {
+        names2.push_back(f.name);
+    }
+    // 两页 = 全量列表的逐段切片 (忽略 offset / 排序抖动 / 两页重叠都会失败)
+    EXPECT_EQ(names1, (std::vector<std::string>{all[0].name, all[1].name}));
+    EXPECT_EQ(names2, (std::vector<std::string>{all[2].name, all[3].name}));
+    EXPECT_EQ(names2[0], all[2].name);  // page2 首条 == 全量列表第 3 条
 }
 
 TEST_F(LogServiceTest, ReadContentReturnsParsedLines) {
@@ -150,6 +210,36 @@ TEST_F(LogServiceTest, ReadContentFiltersByKeyword) {
     auto content = svc_->read_content("dztraderd.log", 0, 500, "", "rejected", "", "");
     ASSERT_EQ(content.lines.size(), 1u);
     EXPECT_NE(content.lines[0].msg.find("rejected"), std::string::npos);
+}
+
+TEST_F(LogServiceTest, ReadContentFiltersByTimeRange) {
+    write_log_file("dztraderd.log", {
+                                        "2026-07-13T14:23:45.000000000+08:00 info dztraderd "
+                                        "[func=m file=f.cpp:1 pid=1 tid=2] line1",
+                                        "2026-07-13T14:23:46.000000000+08:00 warning dztraderd "
+                                        "[func=m file=f.cpp:2 pid=1 tid=3] line2",
+                                        "2026-07-13T14:23:47.000000000+08:00 error dztraderd "
+                                        "[func=m file=f.cpp:3 pid=1 tid=4] line3",
+                                    });
+    const std::string ts2 = "2026-07-13T14:23:46.000000000+08:00";
+
+    // 下界含边界: from_ts = line2 时间戳 (inclusive)
+    auto from2 = svc_->read_content("dztraderd.log", 0, 500, "", "", ts2, "");
+    ASSERT_EQ(from2.lines.size(), 2u);
+    EXPECT_EQ(from2.lines.front().ts, ts2);
+    EXPECT_EQ(from2.lines.back().ts, "2026-07-13T14:23:47.000000000+08:00");
+
+    // 上界含边界: to_ts = line2 时间戳 (inclusive)
+    auto to2 = svc_->read_content("dztraderd.log", 0, 500, "", "", "", ts2);
+    ASSERT_EQ(to2.lines.size(), 2u);
+    EXPECT_EQ(to2.lines.front().ts, "2026-07-13T14:23:45.000000000+08:00");
+    EXPECT_EQ(to2.lines.back().ts, ts2);
+
+    // 全区间 (含首尾): 3 条
+    auto all =
+        svc_->read_content("dztraderd.log", 0, 500, "", "", "2026-07-13T14:23:45.000000000+08:00",
+                           "2026-07-13T14:23:47.000000000+08:00");
+    EXPECT_EQ(all.lines.size(), 3u);
 }
 
 TEST_F(LogServiceTest, ReadContentNonexistentFileReturnsEmpty) {
@@ -442,9 +532,37 @@ TEST_F(LogServiceTest, ReadContentFromSubdirectoryPath) {
 TEST_F(LogServiceTest, PathTraversalRejected) {
     write_log_file("dztraderd.log", {"line1"});
 
-    auto content = svc_->read_content("../etc/passwd", 0, 500, "", "", "", "");
+    // 不存在的穿越目标: 拒绝 (0 行)
+    auto missing = svc_->read_content("../etc/passwd", 0, 500, "", "", "", "");
+    EXPECT_EQ(missing.lines.size(), 0u);
+    EXPECT_EQ(missing.total, 0);
+
+    // 存在的穿越目标 (哨兵, tmp_dir_ 外): 仍必须 0 行 —— 证明的是"路径被拒",
+    // 而非"文件不存在" (is_path_safe 失效会读到哨兵行 → 本断言变红)
+    const std::string traversal = write_outside_sentinel();
+    auto content = svc_->read_content(traversal, 0, 500, "", "", "", "");
     EXPECT_EQ(content.lines.size(), 0u);
     EXPECT_EQ(content.total, 0);
+}
+
+// read_tail 同型: 穿越路径拒绝且游标不推进
+TEST_F(LogServiceTest, ReadTailPathTraversalRejected) {
+    const std::string traversal = write_outside_sentinel();
+
+    LogService::TailCursor cur;
+    auto c = svc_->read_tail(traversal, cur, 0);
+    EXPECT_EQ(c.lines.size(), 0u);
+    EXPECT_EQ(cur.byte_offset, 0);
+    EXPECT_EQ(cur.line_no, 0);
+}
+
+// tail_baseline 同型: 穿越路径回 {0,0} (若失效会扫到哨兵行 → line_no=1)
+TEST_F(LogServiceTest, TailBaselinePathTraversalRejected) {
+    const std::string traversal = write_outside_sentinel();
+
+    auto cur = svc_->tail_baseline(traversal);
+    EXPECT_EQ(cur.byte_offset, 0);
+    EXPECT_EQ(cur.line_no, 0);
 }
 
 TEST_F(LogServiceTest, ReadTailFromSubdirectoryPath) {

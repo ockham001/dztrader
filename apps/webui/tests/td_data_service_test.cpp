@@ -1,6 +1,7 @@
 #include "td_data_service.h"
 #include "frame_router.h"
 
+#include <dztrader/core/this_process.h>
 #include <dztrader/date_time/date.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/struct.h>
@@ -8,10 +9,13 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <random>
 #include <string>
 #include <thread>
 
@@ -19,6 +23,18 @@ namespace dztrader::webui {
 namespace {
 
 using dztrader::TdIngestGate;
+
+/// 进程唯一临时目录名（PID + 随机数）：ctest -j 下每个用例是独立进程却可能与
+/// 同二进制其他用例/其他测试 exe 并发，固定目录名（如 dz_webui_td_data_service_test）
+/// 会被并发用例互相删库（unable to open database file）。
+std::filesystem::path unique_temp_dir(const std::string& name) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint32_t> dist;
+    return std::filesystem::temp_directory_path() /
+           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
+            "_" + std::to_string(dist(gen)));
+}
 
 // sqlite3 便利封装（测试用具，仅测试用）
 namespace {
@@ -42,7 +58,7 @@ protected:
     std::string db_path_;
 
     void SetUp() override {
-        dir_ = std::filesystem::temp_directory_path() / "dz_webui_td_data_service_test";
+        dir_ = unique_temp_dir("dz_webui_td_data_service_test");
         std::filesystem::remove_all(dir_);
         std::filesystem::create_directories(dir_);
         db_path_ = (dir_ / "td.db").string();
@@ -201,6 +217,157 @@ TEST_F(TdDataServiceTest, MirrorBuiltFromFramesAfterWatermark) {
     ASSERT_EQ(1u, positions.size());
     EXPECT_STREQ(positions[0].instrument_id, "IF2603");
     EXPECT_EQ(2, positions[0].volume);
+}
+
+// 契约 td-data-sync: TRADING_ACCOUNT 绝对态覆盖 — 同账户后到覆盖, 且与其余三帧同受 W 过滤。
+// (补 §2.1: 此前全文件无 TRADING_ACCOUNT 帧摄入路径用例 — 该帧只有 DB 重建路径)
+TEST_F(TdDataServiceTest, TradingAccountFrameOverwritesSameAccount) {
+    FrameRouter router([](std::function<void()> f) { f(); });
+    auto svc = make_service(router);
+    svc.set_watermark("CTP001", 10);
+
+    // seq=10 (≤ W=10, 快照已含): 过滤, 不入镜像
+    DzTradingAccount w{};
+    dztrader::copy_string(w.account_id, "CTP001", true);
+    w.balance = 1.0;
+    w.seq = 10;
+    feed_frame(router, DZ_FRAME_TRADING_ACCOUNT, w);
+    EXPECT_EQ(0u, svc.trading_accounts().size());
+
+    // seq=11 (> W): 准入
+    DzTradingAccount a1{};
+    dztrader::copy_string(a1.account_id, "CTP001", true);
+    a1.balance = 100.0;
+    a1.available = 50.0;
+    a1.margin = 30.0;
+    a1.seq = 11;
+    feed_frame(router, DZ_FRAME_TRADING_ACCOUNT, a1);
+    ASSERT_EQ(1u, svc.trading_accounts().size());
+    EXPECT_DOUBLE_EQ(100.0, svc.trading_accounts()[0].balance);
+
+    // seq=12 同账户: 绝对态整帧覆盖, 不新增 (margin 置 0 — 逐字段合并会残留 30)
+    DzTradingAccount a2{};
+    dztrader::copy_string(a2.account_id, "CTP001", true);
+    a2.balance = 200.0;
+    a2.available = 180.0;
+    a2.margin = 0.0;
+    a2.seq = 12;
+    feed_frame(router, DZ_FRAME_TRADING_ACCOUNT, a2);
+    ASSERT_EQ(1u, svc.trading_accounts().size());
+    EXPECT_DOUBLE_EQ(200.0, svc.trading_accounts()[0].balance);
+    EXPECT_DOUBLE_EQ(180.0, svc.trading_accounts()[0].available);
+    EXPECT_DOUBLE_EQ(0.0, svc.trading_accounts()[0].margin);
+}
+
+// 契约 td-data-sync: POSITION_INFO 同 (account_id, instrument_id, direction) 后到覆盖;
+// 键不同则各成一条。W 过滤同其余三帧。
+TEST_F(TdDataServiceTest, PositionFrameOverwritesSameKey) {
+    FrameRouter router([](std::function<void()> f) { f(); });
+    auto svc = make_service(router);
+    svc.set_watermark("CTP001", 20);
+
+    // seq=20 (≤ W=20): 过滤
+    DzPositionInfo pw{};
+    dztrader::copy_string(pw.account_id, "CTP001", true);
+    dztrader::copy_string(pw.instrument_id, "IF2603", true);
+    dztrader::copy_string(pw.exchange_id, "CFFEX", true);
+    pw.direction = DZ_DIRECTION_LONG;
+    pw.volume = 1;
+    pw.seq = 20;
+    feed_frame(router, DZ_FRAME_POSITION_INFO, pw);
+    EXPECT_EQ(0u, svc.positions().size());
+
+    // seq=21 首见键: 入
+    DzPositionInfo p1{};
+    dztrader::copy_string(p1.account_id, "CTP001", true);
+    dztrader::copy_string(p1.instrument_id, "IF2603", true);
+    dztrader::copy_string(p1.exchange_id, "CFFEX", true);
+    p1.direction = DZ_DIRECTION_LONG;
+    p1.volume = 2;
+    p1.seq = 21;
+    feed_frame(router, DZ_FRAME_POSITION_INFO, p1);
+    ASSERT_EQ(1u, svc.positions().size());
+    EXPECT_EQ(2, svc.positions()[0].volume);
+
+    // seq=22 同键后到: 整帧覆盖, 不新增
+    DzPositionInfo p2{};
+    dztrader::copy_string(p2.account_id, "CTP001", true);
+    dztrader::copy_string(p2.instrument_id, "IF2603", true);
+    dztrader::copy_string(p2.exchange_id, "CFFEX", true);
+    p2.direction = DZ_DIRECTION_LONG;
+    p2.volume = 5;
+    p2.seq = 22;
+    feed_frame(router, DZ_FRAME_POSITION_INFO, p2);
+    ASSERT_EQ(1u, svc.positions().size());
+    EXPECT_EQ(5, svc.positions()[0].volume);
+
+    // seq=23 不同合约 = 不同键: 新条目
+    DzPositionInfo p3{};
+    dztrader::copy_string(p3.account_id, "CTP001", true);
+    dztrader::copy_string(p3.instrument_id, "IF2606", true);
+    dztrader::copy_string(p3.exchange_id, "CFFEX", true);
+    p3.direction = DZ_DIRECTION_LONG;
+    p3.volume = 7;
+    p3.seq = 23;
+    feed_frame(router, DZ_FRAME_POSITION_INFO, p3);
+    ASSERT_EQ(2u, svc.positions().size());
+}
+
+// 契约 td-data-sync / spec §5.4: 成交去重二道防线 — 同 (account_id, trading_day, trade_id)
+// 只入一条; 同 trade_id 不同 trading_day 两条都入; seq ≤ W 先被过滤。
+// (补 §2.2: 此前全文件仅一条成交帧, 删掉 on_trade_report 的 admit_trade 调用也不会红)
+TEST_F(TdDataServiceTest, TradeReportDeduplicatesByDayAndTradeId) {
+    FrameRouter router([](std::function<void()> f) { f(); });
+    auto svc = make_service(router);
+    svc.set_watermark("CTP001", 30);
+
+    const auto day1 = dztrader::Date::from_year_month_day(2026, 9, 1).days_since_epoch();
+    const auto day2 = dztrader::Date::from_year_month_day(2026, 9, 2).days_since_epoch();
+
+    // seq=30 (≤ W=30): W 过滤 (即使 (day, trade_id) 首次见)
+    DzTradeReport filtered{};
+    dztrader::copy_string(filtered.account_id, "CTP001", true);
+    dztrader::copy_string(filtered.trade_id, "TRD1", true);
+    filtered.date = day1;
+    filtered.volume = 1;
+    filtered.seq = 30;
+    feed_frame(router, DZ_FRAME_TRADE_REPORT, filtered);
+    EXPECT_EQ(0u, svc.trades().size());
+
+    // seq=31: 首见 (day1, TRD1) → 入
+    DzTradeReport t1{};
+    dztrader::copy_string(t1.account_id, "CTP001", true);
+    dztrader::copy_string(t1.trade_id, "TRD1", true);
+    t1.date = day1;
+    t1.volume = 3;
+    t1.seq = 31;
+    feed_frame(router, DZ_FRAME_TRADE_REPORT, t1);
+    ASSERT_EQ(1u, svc.trades().size());
+    EXPECT_EQ(3, svc.trades()[0].volume);
+
+    // seq=32: 同 (day1, TRD1) 二次上报 → 去重拦截, 镜像不增不改
+    DzTradeReport dup{};
+    dztrader::copy_string(dup.account_id, "CTP001", true);
+    dztrader::copy_string(dup.trade_id, "TRD1", true);
+    dup.date = day1;
+    dup.volume = 9;
+    dup.seq = 32;
+    feed_frame(router, DZ_FRAME_TRADE_REPORT, dup);
+    ASSERT_EQ(1u, svc.trades().size());
+    EXPECT_EQ(3, svc.trades()[0].volume);
+
+    // seq=33: 同 trade_id 不同交易日 → 两日各自首次, 都入
+    DzTradeReport t2{};
+    dztrader::copy_string(t2.account_id, "CTP001", true);
+    dztrader::copy_string(t2.trade_id, "TRD1", true);
+    t2.date = day2;
+    t2.volume = 4;
+    t2.seq = 33;
+    feed_frame(router, DZ_FRAME_TRADE_REPORT, t2);
+    ASSERT_EQ(2u, svc.trades().size());
+    EXPECT_EQ(day1, svc.trades()[0].date);
+    EXPECT_EQ(day2, svc.trades()[1].date);
+    EXPECT_EQ(4, svc.trades()[1].volume);
 }
 
 // spec §4.2/§5.5: 2018 Ready → rebuild() — 临时库放 2 行持仓 → 收 2018 Ready → 镜像 2 条。
@@ -465,11 +632,62 @@ TEST_F(TdDataServiceTest, RebuildDegradeResetsWatermarkToZero) {
     EXPECT_EQ(2, svc.positions()[0].volume);
 }
 
-// 发现 1 回归 (评审 Important): rebuild() 的只读连接必须设 busy_timeout (与生产写端一致),
-// 否则 td Writer 批量提交持写锁窗口内 rebuild() 立即 SQLITE_BUSY → 清镜像+W=0 降级,
-// dzweb 镜像永久停在"全放行但无快照", 直到下一 Ready/Offline 才重试。
-// 测试: 另一连接持写锁, 释放线程 200ms 后 COMMIT — busy_timeout=5000 让 rebuild 阻塞等待
-// 到锁释放后成功重建; 无 busy_timeout 则首个 SELECT 立即 SQLITE_BUSY, 镜像为空。
+// 契约 td-data-sync 重置 / spec §5.5: seq 倒退 (不发 ACCOUNT_STATUS) → detect_reset →
+// rebuild(account, reset_gate=true): 清该账户镜像 + 从 DB 重查 + 重设 W, 倒退帧重新 admit。
+// (补 §2.2: 此前倒退重置路径从未触发 — 唯一低 seq 帧走的是 Ready→rebuild 路径)
+TEST_F(TdDataServiceTest, BackwardSeqTriggersResetRebuildFromDb) {
+    {
+        sqlite3* db = open_write(db_path_);
+        create_schema(db);
+        insert_position(db, "CTP001", "FROM_DB", 3, 40);  // 快照行 seq=40
+        sqlite3_close(db);
+    }
+
+    FrameRouter router([](std::function<void()> f) { f(); });
+    auto svc = make_service(router);
+
+    // 先应用 seq=101 (last_applied=101), 镜像含在途行 IN_FLIGHT
+    DzPositionInfo p_old{};
+    dztrader::copy_string(p_old.account_id, "CTP001", true);
+    dztrader::copy_string(p_old.instrument_id, "IN_FLIGHT", true);
+    dztrader::copy_string(p_old.exchange_id, "CFFEX", true);
+    p_old.direction = DZ_DIRECTION_LONG;
+    p_old.volume = 9;
+    p_old.seq = 101;
+    feed_frame(router, DZ_FRAME_POSITION_INFO, p_old);
+    ASSERT_EQ(1u, svc.positions().size());
+
+    // 直接喂 seq=41 (倒退; 41 = 新 W+1, 不武装 gap 补查 — 隔离 reset 路径本身):
+    // 清镜像 + DB 重查 + 帧重新 admit 落地
+    DzPositionInfo p_new{};
+    dztrader::copy_string(p_new.account_id, "CTP001", true);
+    dztrader::copy_string(p_new.instrument_id, "NEW", true);
+    dztrader::copy_string(p_new.exchange_id, "CFFEX", true);
+    p_new.direction = DZ_DIRECTION_LONG;
+    p_new.volume = 6;
+    p_new.seq = 41;
+    feed_frame(router, DZ_FRAME_POSITION_INFO, p_new);
+
+    // 断言: 重置前的镜像行已清 (IN_FLIGHT 不在), DB 快照行已重查入镜像 (FROM_DB),
+    // 倒退帧亦落地 (NEW)。若 detect_reset 分支消失: IN_FLIGHT 残留且 FROM_DB 缺席。
+    const auto& positions = svc.positions();
+    ASSERT_EQ(2u, positions.size());
+    EXPECT_STREQ(positions[0].instrument_id, "FROM_DB");
+    EXPECT_EQ(3, positions[0].volume);
+    EXPECT_STREQ(positions[1].instrument_id, "NEW");
+    EXPECT_EQ(6, positions[1].volume);
+}
+
+// 发现 1 回归 (评审 Important) + 批次 7 复审: rebuild() 的只读连接必须设 busy_timeout
+// (与生产写端一致), 否则 td Writer 提交持排他锁窗口内 rebuild() 立即 SQLITE_BUSY →
+// 清镜像+W=0 降级, dzweb 镜像永久停在"全放行但无快照", 直到下一 Ready/Offline 才重试。
+//
+// 场景构造 (2026-10 探针实证): BEGIN IMMEDIATE 持 RESERVED, 不阻塞读者 — 用它当"写锁"
+// 到不了 busy 路径 (旧版无 busy_timeout 也恒绿); 改用 BEGIN EXCLUSIVE 持排他锁:
+// 新读者立即 SQLITE_BUSY, 直到 COMMIT 释放。
+// 握手: (1) 探针连接 (busy_timeout=0) SELECT 必 BUSY = 锁已真实持有; (2) entering 标志 =
+// 主线程即将进入 rebuild 调用, 释放线程再持锁 400ms 后 COMMIT; (3) 断言 rebuild 耗时 ≥200ms
+// = 确实等待了锁 (未接线时首个 SELECT 立即 BUSY 降级, 耗时趋零且镜像为空)。
 TEST_F(TdDataServiceTest, RebuildWaitsOutWriteLockInsteadOfDegrading) {
     {
         sqlite3* db = open_write(db_path_);
@@ -479,34 +697,54 @@ TEST_F(TdDataServiceTest, RebuildWaitsOutWriteLockInsteadOfDegrading) {
         sqlite3_close(db);
     }
 
-    // 持有写锁的连接 (BEGIN IMMEDIATE 抢占写锁)。
+    // 持排他锁的连接。
     sqlite3* locker = nullptr;
     ASSERT_EQ(SQLITE_OK,
               sqlite3_open_v2(db_path_.c_str(), &locker, SQLITE_OPEN_READWRITE, nullptr));
     char* err = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_exec(locker, "BEGIN IMMEDIATE", nullptr, nullptr, &err));
+    ASSERT_EQ(SQLITE_OK, sqlite3_exec(locker, "BEGIN EXCLUSIVE", nullptr, nullptr, &err));
 
-    // 200ms 后释放写锁 (此时 rebuild 若 busy_timeout 生效, 应阻塞等待而非降级)。
-    std::thread releaser([locker]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    // 握手 1: 新读者被拒 = 排他锁已真实持有 (锁语义若再变, 此处先红而非静默失效)。
+    {
+        sqlite3* probe = nullptr;
+        ASSERT_EQ(SQLITE_OK,
+                  sqlite3_open_v2(db_path_.c_str(), &probe, SQLITE_OPEN_READONLY, nullptr));
+        sqlite3_busy_timeout(probe, 0);
+        EXPECT_EQ(SQLITE_BUSY,
+                  sqlite3_exec(probe, "SELECT COUNT(*) FROM positions", nullptr, nullptr, nullptr));
+        sqlite3_close(probe);
+    }
+
+    // 握手 2: 主线程即将进入 rebuild 时置 entering, 释放线程再持锁 400ms 后释放
+    // (主线程在 400ms 内进入 SELECT 即被排他锁阻塞)。jthread: 失败路径自动 join,
+    // 防析构 joinable thread → std::terminate。
+    std::atomic<bool> entering{false};
+    std::jthread releaser([locker, &entering]() {
+        while (!entering.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
         sqlite3_exec(locker, "COMMIT", nullptr, nullptr, nullptr);
         sqlite3_close(locker);
     });
 
     FrameRouter router([](std::function<void()> f) { f(); });
     auto svc = make_service(router);
-    // 同步 rebuild (若 sqlite3_busy_timeout 未接线, 首个 SELECT 立即 BUSY → 镜像 0 条)。
-    svc.rebuild("CTP001");
-
+    entering.store(true, std::memory_order_release);
+    const auto t0 = std::chrono::steady_clock::now();
+    svc.rebuild("CTP001");  // busy_timeout 未接线 → 首个 SELECT 立即 BUSY → 镜像 0 条
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
     releaser.join();
 
-    // busy_timeout 生效: 阻塞到锁释放后成功重建 2 条, 而非降级为空镜像。
+    // 断言 1: busy_timeout 生效, 阻塞到锁释放后成功重建 2 条, 而非降级为空镜像。
     const auto& positions = svc.positions();
     ASSERT_EQ(2u, positions.size());
     EXPECT_STREQ(positions[0].instrument_id, "IF2603");
     EXPECT_EQ(2, positions[0].volume);
     EXPECT_STREQ(positions[1].instrument_id, "IF2606");
     EXPECT_EQ(5, positions[1].volume);
+    // 断言 2: rebuild 实际等待了锁窗口 (排他锁持 400ms; 未等待则耗时趋零)。
+    EXPECT_GE(elapsed, std::chrono::milliseconds(200));
 }
 
 // 终检发现 E【Important】: dzweb gap→rebuild 触发 — 启动快照 W 落后于 DB (orders/trades/
@@ -574,7 +812,8 @@ TEST_F(TdDataServiceTest, GapTriggersRebuildToFillMissingRows) {
 // 终检发现 G【Important】: dzweb rebuild 镜像日界 — orders/trades 只装当日行,
 // 跨日历史行不入镜像 (防镜像随历史线性增长 0.9GB/年)。
 TEST_F(TdDataServiceTest, RebuildMirrorOnlyCurrentTradingDay) {
-    // 两日 orders: 20260901 (昨日) seq 1,2 + 20260902 (今日) seq 3; trades 同
+    // 两日 orders: 20260901 (昨日) seq 1,2 + 20260902 (今日) seq 3;
+    // trades: 昨日 T1 seq=5 (高于任何当日行, 用于锁定 W 聚合不带日过滤), 今日 T2 seq=3
     {
         sqlite3* db = open_write(db_path_);
         create_schema(db);
@@ -592,7 +831,7 @@ TEST_F(TdDataServiceTest, RebuildMirrorOnlyCurrentTradingDay) {
                  "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
                  " exchange_id, direction, position_effect, price, volume, strategy_id, seq)"
                  " VALUES ('CTP001', '20260901', 'T1', 1, 'IF2603', 'CFFEX', '1', '1', 3800.0, 1,"
-                 " 'stg1', 1),"
+                 " 'stg1', 5),"
                  "        ('CTP001', '20260902', 'T2', 3, 'IF2603', 'CFFEX', '1', '1', 3802.0, 1,"
                  " 'stg1', 3)");
         sqlite3_close(db);
@@ -615,16 +854,24 @@ TEST_F(TdDataServiceTest, RebuildMirrorOnlyCurrentTradingDay) {
     const auto& trades = svc.trades();
     ASSERT_EQ(1u, trades.size());
     EXPECT_STREQ(trades[0].trade_id, "T2");
-    // W 不带日过滤: 取四表 MAX(seq) = 3 (含昨日高 seq), 过滤 seq≤3 的帧
-    svc.set_watermark("CTP001", 100);  // 覆盖注入以便观察 (实测由 rebuild 内部设 W=3)
-    // 直接观察: 重建后 W=3 → seq=3 帧被过滤 (快照已含)
+    // W 不带日过滤: rebuild 取四表 MAX(seq) = 5 (昨日 trade 行, 高于任何当日行)。
+    // 两侧断言: seq=5 (≤ W, 快照已含) 过滤不增; seq=6 (> W) 准入。
     DzOrderReport dup{};
     dztrader::copy_string(dup.account_id, "CTP001", true);
     dztrader::copy_string(dup.strategy_id, "stg1", true);
     dup.order_id = 3;
-    dup.seq = 3;
+    dup.seq = 5;
     feed_frame(router, DZ_FRAME_ORDER_REPORT, dup);
-    EXPECT_EQ(1u, svc.orders().size());  // 未新增 (W 已含)
+    EXPECT_EQ(1u, svc.orders().size());  // 未新增 (W=5 已含; 若 W 被日过滤成 3 则误准入)
+
+    DzOrderReport next{};
+    dztrader::copy_string(next.account_id, "CTP001", true);
+    dztrader::copy_string(next.strategy_id, "stg1", true);
+    next.order_id = 6;
+    next.seq = 6;
+    feed_frame(router, DZ_FRAME_ORDER_REPORT, next);
+    ASSERT_EQ(2u, svc.orders().size());
+    EXPECT_EQ(6, svc.orders()[1].order_id);
 }
 
 // 第二轮复审发现 G 回归: dzweb rebuild 的 W 聚合必须与镜像装载在同一只读事务快照内
