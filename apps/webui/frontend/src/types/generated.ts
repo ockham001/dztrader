@@ -17,8 +17,8 @@ export interface ProcessStatusPayload {
     display_name?: string
     /** 状态说明/失败原因；缺省为空串 */
     message?: string
-    /** 操作结果事件；缺失=自发状态变化 */
-    event?: ProcessEvent
+    /** 操作结果事件；缺失或 null 均为自发状态变化（契约 webui-ws §2.2） */
+    event?: ProcessEvent | null
 }
 
 export interface ProgressStatus {

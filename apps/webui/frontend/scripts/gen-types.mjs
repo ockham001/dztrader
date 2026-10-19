@@ -15,10 +15,12 @@ const schema = JSON.parse(readFileSync(schemaPath, 'utf8'))
 // 标量/引用类型到 TS 的映射（不含可选标记）
 function tsType(propDef) {
   if (propDef.$ref) return propDef.$ref.split('/').pop()
+  if (Array.isArray(propDef.anyOf)) return propDef.anyOf.map(tsType).join(' | ')
   if (propDef.items?.$ref) return `${propDef.items.$ref.split('/').pop()}[]`
   if (propDef.type === 'string') return 'string'
   if (propDef.type === 'integer' || propDef.type === 'number') return 'number'
   if (propDef.type === 'boolean') return 'boolean'
+  if (propDef.type === 'null') return 'null'
   if (propDef.type === 'array') return 'unknown[]'
   if (propDef.type === 'object' && propDef.additionalProperties) {
     return `Record<string, ${tsType(propDef.additionalProperties)}>`

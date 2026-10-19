@@ -23,7 +23,10 @@
         "pid": { "type": "integer", "description": "进程 PID，未运行时为 0" },
         "display_name": { "type": "string", "description": "用户可读显示名；缺省为空串" },
         "message": { "type": "string", "description": "状态说明/失败原因；缺省为空串" },
-        "event": { "$ref": "#/$defs/ProcessEvent", "description": "操作结果事件；缺失=自发状态变化" }
+        "event": {
+          "description": "操作结果事件；缺失或 null 均为自发状态变化（契约 webui-ws §2.2）",
+          "anyOf": [{ "$ref": "#/$defs/ProcessEvent" }, { "type": "null" }]
+        }
       }
     },
     "ProgressStatus": {
