@@ -22,7 +22,7 @@ std::optional<drogon::HttpResponsePtr> MarketSourceCtrl::guard_process_dispatch(
     auto source = repo_->get_market_source(source_id);
     if (!source.has_value()) {
         SPDLOG_WARN("op dispatch rejected: source not found | source_id={}", source_id);
-        return error_response(drogon::k404NotFound, "market source not found");
+        return error_response(drogon::k404NotFound, "not found");
     }
     process_name = process_name_for_source_type(source->source_type);
 
@@ -46,7 +46,7 @@ std::optional<drogon::HttpResponsePtr> MarketSourceCtrl::guard_process_dispatch(
                                   "dzmd_ctp not running, cannot apply config");
         case ControlGuard::SourceInvalid:
             // 已在上文 404 拦截，理论不可达
-            return error_response(drogon::k404NotFound, "market source not found");
+            return error_response(drogon::k404NotFound, "not found");
     }
     return std::nullopt;
 }
