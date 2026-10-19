@@ -62,8 +62,17 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
       const prog = progress.progress[name]
       const loginState = progressLoginState(prog) ?? loginStateCache.value[name] ?? 'offline'
       // P3: StatusIndicator 直连数据——有镜像用真实值, 无镜像回落三值映射
+      // 契约 progress: 确定进度（max>min）时 current 超出 [min,max] 钳制展示（防御性，不报错）；
+      // 不确定进度（max<=min）时 current 无状态含义, 原样透传（契约：仅确定进度钳制）
       const progressView = prog
-        ? { current: prog.current, min: prog.min, max: prog.max, desc: prog.desc }
+        ? {
+            current: prog.max > prog.min
+              ? Math.min(Math.max(prog.current, prog.min), prog.max)
+              : prog.current,
+            min: prog.min,
+            max: prog.max,
+            desc: prog.desc,
+          }
         : {
             current: loginState === 'online' ? 1 : loginState === 'pending' ? 0.5 : 0,
             min: 0,
