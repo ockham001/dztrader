@@ -19,6 +19,17 @@ target_compile_definitions(dzlog PUBLIC
 )
 
 # ============================================================
+# 测试 helper：terminate handler 需要真实子进程，不用 gtest death test
+# （Windows death test 会重新执行测试二进制，父进程临时目录/环境无法可靠传递）
+# ============================================================
+add_executable(dzlog_terminate_helper tests/terminate_helper.cpp)
+target_link_libraries(dzlog_terminate_helper PRIVATE dzlog)
+set_target_properties(dzlog_terminate_helper PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
+)
+install(TARGETS dzlog_terminate_helper RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
+
+# ============================================================
 # 单元测试：每个 *_test.cpp 独立编译
 # ============================================================
 file(GLOB LOG_TESTS CONFIGURE_DEPENDS

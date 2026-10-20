@@ -3,6 +3,7 @@
 #include <dztrader/error.h>
 #include <dztrader/log/log.h>
 #include <filesystem>
+#include <fstream>
 #include <gtest/gtest.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -27,12 +28,12 @@ dztrader::log::LoggerSetup make_config(const std::string& test_name) {
     return config;
 }
 
-void expect_throws_invalid_param(auto fn) {
+void expect_throws(DzErrorCode expected_code, auto fn) {
     try {
         fn();
         FAIL() << "Expected Exception";
     } catch (const dztrader::Exception& e) {
-        EXPECT_EQ(e.code(), DZ_EC_INVALID_PARAM);
+        EXPECT_EQ(e.code(), expected_code);
     }
 }
 
@@ -108,35 +109,56 @@ TEST_F(SetDefaultLoggerTest, EmptyProcessNameThrows) {
     dztrader::log::LoggerSetup config;
     config.logger_name = "";
     config.log_dir = test_root() / "empty_name";
-    expect_throws_invalid_param([&] { dztrader::log::set_default_logger(config); });
+    expect_throws(DZ_EC_INVALID_PARAM, [&] { dztrader::log::set_default_logger(config); });
 }
 
 TEST_F(SetDefaultLoggerTest, EmptyLogDirThrows) {
     dztrader::log::LoggerSetup config;
     config.logger_name = "empty_dir_test";
     config.log_dir = "";
-    expect_throws_invalid_param([&] { dztrader::log::set_default_logger(config); });
+    expect_throws(DZ_EC_INVALID_PARAM, [&] { dztrader::log::set_default_logger(config); });
 }
 
 TEST_F(SetDefaultLoggerTest, ProcessNameWithSlashThrows) {
     dztrader::log::LoggerSetup config;
     config.logger_name = "sub/dir";
     config.log_dir = test_root() / "path_sep_slash";
-    expect_throws_invalid_param([&] { dztrader::log::set_default_logger(config); });
+    expect_throws(DZ_EC_INVALID_PARAM, [&] { dztrader::log::set_default_logger(config); });
 }
 
 TEST_F(SetDefaultLoggerTest, ProcessNameWithBackslashThrows) {
     dztrader::log::LoggerSetup config;
     config.logger_name = "sub\\dir";
     config.log_dir = test_root() / "path_sep_backslash";
-    expect_throws_invalid_param([&] { dztrader::log::set_default_logger(config); });
+    expect_throws(DZ_EC_INVALID_PARAM, [&] { dztrader::log::set_default_logger(config); });
 }
 
 TEST_F(SetDefaultLoggerTest, ProcessNameWithColonThrows) {
     dztrader::log::LoggerSetup config;
     config.logger_name = "sub:dir";
     config.log_dir = test_root() / "path_sep_colon";
-    expect_throws_invalid_param([&] { dztrader::log::set_default_logger(config); });
+    expect_throws(DZ_EC_INVALID_PARAM, [&] { dztrader::log::set_default_logger(config); });
+}
+
+TEST_F(SetDefaultLoggerTest, LogDirPointsToRegularFileThrowsSystem) {
+    const auto blocked = test_root() / "blocked_log_dir";
+    {
+        std::ofstream file(blocked);
+        ASSERT_TRUE(file.is_open());
+        file << "not a directory";
+    }
+
+    auto logger_before = spdlog::default_logger();
+
+    dztrader::log::LoggerSetup config;
+    config.logger_name = "blocked";
+    config.log_dir = blocked;
+    // create_directories 对已存在的普通文件返回错误，归类为系统错误
+    expect_throws(DZ_EC_SYSTEM, [&] { dztrader::log::set_default_logger(config); });
+
+    // 失败发生在创建 sink / 安装 terminate handler 之前，不得替换全局 logger
+    EXPECT_EQ(spdlog::default_logger(), logger_before);
+    EXPECT_TRUE(std::filesystem::is_regular_file(blocked));
 }
 
 TEST_F(SetDefaultLoggerTest, SetDefaultLoggerIdempotent) {

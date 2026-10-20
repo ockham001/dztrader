@@ -2,6 +2,7 @@
 #include <dztrader/log/log.h>
 #include <dztrader/core/exception.h>
 #include <dztrader/error.h>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
@@ -13,20 +14,39 @@ extern const std::filesystem::path& test_root();
 
 namespace {
 
+// 本地日期（与 daily_file_sink 的 calc_filename 一致，取本地时间）
+std::string local_date_string() {
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#ifdef _WIN32
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    char buffer[11] = {};
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%d", &local);
+    return buffer;
+}
+
+std::filesystem::path find_log_file(const std::filesystem::path& log_dir,
+                                    const std::string& logger_name) {
+    // daily_sink 命名规则: <logger_name>_YYYY-MM-DD.log
+    const std::string prefix = logger_name + "_";
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(log_dir, ec)) {
+        if (!entry.is_regular_file()) continue;
+        const std::string fname = entry.path().filename().string();
+        if (fname.starts_with(prefix) && fname.ends_with(".log")) {
+            return entry.path();
+        }
+    }
+    return {};
+}
+
 // 读取 logger 当天日志文件的最后一行
 std::string read_last_log_line(const std::filesystem::path& log_dir,
                                const std::string& logger_name) {
-    // daily_sink 命名规则: <logger_name>_YYYY-MM-DD.log
-    std::string prefix = logger_name + "_";
-    std::filesystem::path target;
-    for (auto& entry : std::filesystem::directory_iterator(log_dir)) {
-        if (!entry.is_regular_file()) continue;
-        std::string fname = entry.path().filename().string();
-        if (fname.starts_with(prefix) && fname.ends_with(".log")) {
-            target = entry.path();
-            break;
-        }
-    }
+    const auto target = find_log_file(log_dir, logger_name);
     if (target.empty()) return "";
     std::ifstream ifs(target);
     std::string line, last;
@@ -52,6 +72,8 @@ TEST_F(NanosecondPatternTest, FilePatternContainsNanosecondSpecifier) {
 }
 
 TEST_F(NanosecondPatternTest, WrittenLogHasNineDigitFraction) {
+    const std::string date_before = local_date_string();
+
     dztrader::log::LoggerSetup config;
     config.logger_name = "nano_test";
     config.enable_console = false;
@@ -63,6 +85,17 @@ TEST_F(NanosecondPatternTest, WrittenLogHasNineDigitFraction) {
 
     SPDLOG_INFO("nanosecond precision test");
     spdlog::default_logger()->flush();
+
+    const std::string date_after = local_date_string();
+
+    const auto file = find_log_file(config.log_dir, "nano_test");
+    ASSERT_FALSE(file.empty()) << "log file should match <logger_name>_<date>.log";
+    const std::string filename = file.filename().string();
+    // daily_sink.h 的 calc_filename 固定为 <logger_name>_YYYY-MM-DD.log，
+    // apps/webui/log_service.cpp 按该后缀解析日期；允许跨本地午夜时取写入侧日期。
+    EXPECT_TRUE(filename == "nano_test_" + date_after + ".log" ||
+                filename == "nano_test_" + date_before + ".log")
+        << "log filename should be nano_test_<YYYY-MM-DD>.log, got: " << filename;
 
     std::string line = read_last_log_line(config.log_dir, "nano_test");
     ASSERT_FALSE(line.empty()) << "log file should have at least one line";
