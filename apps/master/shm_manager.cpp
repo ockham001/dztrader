@@ -12,7 +12,6 @@
 #include <boost/asio/post.hpp>
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -23,7 +22,6 @@
 namespace dztrader::master {
 
 using dztrader::platform::mb_to_bytes;
-using dztrader::platform::MIN_PAGE_SIZE_BYTES;
 
 ShmManager::ShmManager(const ShmGlobalConfig& shm_global,
                        const std::filesystem::path& cfg_path,
@@ -58,11 +56,6 @@ ShmManager::ShmManager(const ShmGlobalConfig& shm_global,
                           e.what());
           }
           event_page_size_ = mb_to_bytes(page_size_mb);
-          if (event_page_size_ < MIN_PAGE_SIZE_BYTES) {
-              SPDLOG_WARN("event page_size_mb too small, clamped to 1MB | config={} actual={}",
-                          page_size_mb, 1);
-              event_page_size_ = MIN_PAGE_SIZE_BYTES;
-          }
           const auto& shm_dir = dztrader::paths::shm();
           shm::ChannelConfig event_cfg{
               .channel_name = shm::channel_name("dzevent"),
@@ -106,11 +99,6 @@ ShmManager::ShmManager(const ShmGlobalConfig& shm_global,
         [this](const std::string& name, const nlohmann::json& full) {
             apply_process_config(name, full);
         });
-
-    // event_page_size_ 已在 event_meta_ 创建 lambda 中从文件读取并赋值,
-    // 此处从 event_shm_config_ 再赋一次保证一致性 (同源数据, 值相同)
-    event_page_size_ = std::max<uint64_t>(event_shm_config_.page_size_mb() * 1024 * 1024,
-                                          dztrader::platform::MIN_PAGE_SIZE_BYTES);
 }
 
 void ShmManager::create_md_channel(std::string_view source_name) {
@@ -135,12 +123,6 @@ void ShmManager::create_md_channel(std::string_view source_name) {
     } else {
         SPDLOG_ERROR("failed to read md page size, using default | source={}", source_name);
     }
-    if (page_size < MIN_PAGE_SIZE_BYTES) {
-        SPDLOG_WARN("md page_size too small, clamped to 1MB | source={} actual={}", source_name,
-                    MIN_PAGE_SIZE_BYTES);
-        page_size = MIN_PAGE_SIZE_BYTES;
-    }
-
     // 停止/tombstone 复用: page_size 与 last_page_size 不一致 -> 重置通道
     // (契约 4.8: 比较必须用 MdChannelState.last_page_size, 不能只重读 <source>.json;
     //  tombstone 场景该文件可能已随 Remove 删除, 默认值会误判为变更)
@@ -379,7 +361,7 @@ std::optional<uint64_t> ShmManager::read_md_page_size(const std::string& source_
     auto json_path = dztrader::paths::configs() / (source_name + ".json");
 
     if (!fs::exists(json_path)) {
-        // 文件不存在: 不是失败 (新行情源首次启动), 使用前缀感知默认
+        // 文件不存在: 不是失败 (新行情源首次启动), 使用默认值
         SPDLOG_INFO("config not found, using default md_page_size | source={} path={}", source_name,
                     json_path.string());
         return kDefaultMdPageSize;
@@ -393,26 +375,20 @@ std::optional<uint64_t> ShmManager::read_md_page_size(const std::string& source_
             ifs >> cfg;
         }
         if (!cfg.contains("shm") || !cfg["shm"].contains("page_size_mb")) {
-            // 字段缺失: 使用前缀感知默认 (不是失败)
+            // 字段缺失: 使用默认值 (不是失败)
             return kDefaultMdPageSize;
         }
         const auto& ps = cfg["shm"]["page_size_mb"];
         if (!ps.is_number_integer() && !ps.is_number_float()) {
-            // 类型非法: 使用前缀感知默认 (不是失败)
+            // 类型非法: 使用默认值 (不是失败)
             return kDefaultMdPageSize;
         }
-        uint64_t page_size_mb = ps.get<uint64_t>();
-        if (page_size_mb == 0) {
-            // 字段为 0: 使用前缀感知默认 (不是失败)
+        const int64_t page_size_mb = ps.get<int64_t>();
+        if (page_size_mb < 1) {
+            // 字段 <1: 使用默认值 (不是失败)
             return kDefaultMdPageSize;
         }
-        uint64_t page_size = mb_to_bytes(page_size_mb);
-        if (page_size < MIN_PAGE_SIZE_BYTES) {
-            SPDLOG_WARN("md_page_size too small, clamped to 1MB | source={} size_mb={}",
-                        source_name, page_size_mb);
-            page_size = MIN_PAGE_SIZE_BYTES;
-        }
-        return page_size;
+        return mb_to_bytes(static_cast<uint64_t>(page_size_mb));
     } catch (const std::exception& e) {
         // 失败路径 C: 文件存在但解析失败 (malformed json)
         SPDLOG_ERROR("failed to read md_page_size | source={} error=\"{}\"", source_name, e.what());
