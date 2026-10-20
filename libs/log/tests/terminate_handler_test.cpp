@@ -1,9 +1,8 @@
-#include <dztrader/core/this_process.h>
 #include <dztrader/log/log.h>
+#include <cctype>
 #include <exception>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <gtest/gtest.h>
 #include <iterator>
 #include <spdlog/spdlog.h>
@@ -17,21 +16,27 @@ namespace {
 /// 死亡测试子进程的日志目录握手文件。
 ///
 /// Windows 的 gtest death test 会重新执行二进制，父进程的 test_root() 不继承；
-/// 环境变量在 Windows 子进程里也不可靠。改用文件握手：路径由「可执行文件绝对路径 +
-/// 当前测试名」哈希得到，父进程写入、子进程读取，双方无需共享内存或环境块。
+/// 环境变量与 temp 目录在子进程里都不保证一致。gtest 明确把子进程 cwd 设为
+/// original_working_dir，因此把握手文件放在 cwd，文件名带当前测试名避免并行冲突。
 std::filesystem::path death_dir_file() {
-    const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
-    const std::string test_name =
-        info != nullptr ? std::string(info->test_suite_name()) + "." + info->name() : "unknown";
-    const std::string key = dztrader::this_process::exe_path().string() + "|" + test_name;
-    const auto hash = std::hash<std::string>{}(key);
-    return std::filesystem::temp_directory_path() /
-           ("dzlog-death-dir-" + std::to_string(hash) + ".txt");
+    // gtest 把 --gtest_filter 原样传给死亡测试子进程；用它做文件名比
+    // current_test_info() 更早可用，也避免父/子进程的测试上下文差异。
+    std::string name = ::testing::GTEST_FLAG(filter);
+    for (char& c : name) {
+        if (!std::isalnum(static_cast<unsigned char>(c))) {
+            c = '_';
+        }
+    }
+    if (name.empty()) {
+        name = "all";
+    }
+    return std::filesystem::current_path() / (".dzlog-death-dir-" + name + ".txt");
 }
 
 void set_death_log_dir(const std::filesystem::path& dir) {
     std::ofstream out(death_dir_file(), std::ios::binary | std::ios::trunc);
     out << dir.string();
+    out.close();
 }
 
 void clear_death_log_dir() {
@@ -100,6 +105,8 @@ TEST_F(TerminateHandlerTest, TerminateHandlerInstalledAfterSetDefaultLogger) {
 TEST_F(TerminateHandlerTest, TerminatesProcessViaAbort) {
     const auto log_dir = test_root() / "th_abort";
     set_death_log_dir(log_dir);
+    ASSERT_TRUE(std::filesystem::exists(death_dir_file()))
+        << "failed to write death dir handshake | file=" << death_dir_file();
     // handler 必须在死亡测试子进程内安装：Windows 的子进程是重新执行的二进制，
     // 父进程里安装的 handler 不存在。
     EXPECT_DEATH(
@@ -126,6 +133,8 @@ TEST_F(TerminateHandlerTest, TerminatesProcessViaAbort) {
 TEST_F(TerminateHandlerTest, LogsUncaughtExceptionBeforeAbort) {
     const auto log_dir = test_root() / "th_uncaught";
     set_death_log_dir(log_dir);
+    ASSERT_TRUE(std::filesystem::exists(death_dir_file()))
+        << "failed to write death dir handshake | file=" << death_dir_file();
     EXPECT_DEATH(
         {
             setup_log_at(death_log_dir(), "th_uncaught");
