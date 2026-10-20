@@ -3,21 +3,29 @@
     dztrader 测试脚本（Windows，Ninja 单配置）
 
     config 来源优先级: -Config 参数 > .dztrader_dev/.config 粘性文件 > Release
+    分层档: 默认 fast（秒级单测）；slow = 穷举/慢速；perf = 无阈值基准
 
 .PARAMETER Config
     测试配置：Release 或 Debug（默认读粘性 config，无则 Release）
+
+.PARAMETER Label
+    测试分层：fast（默认）/ slow / perf
 
 .PARAMETER TestName
     只运行匹配的测试（正则，可选）
 
 .EXAMPLE
-    .\scripts\test.ps1                      # 跟随粘性 config
+    .\scripts\test.ps1                      # 跟随粘性 config；默认 fast 档
     .\scripts\test.ps1 -Config Debug        # 临时测试 Debug
+    .\scripts\test.ps1 -Label slow          # 只跑 slow 穷举档
     .\scripts\test.ps1 -TestName TimeTest   # 只跑 TimeTest
 #>
 param(
     [ValidateSet('Release', 'Debug')]
     [string]$Config,
+
+    [ValidateSet('fast', 'slow', 'perf')]
+    [string]$Label = 'fast',
 
     [string]$TestName
 )
@@ -36,7 +44,11 @@ if (-not $Config) {
 # 激活 MSVC 环境（Ninja 生成器必需）
 . "$PSScriptRoot\Activate-MSVC.ps1"
 
-$preset = "win-$($Config.ToLower())"
+$preset = switch ($Label) {
+    'slow' { "win-$($Config.ToLower())-slow" }
+    'perf' { "win-$($Config.ToLower())-perf" }
+    default { "win-$($Config.ToLower())" }
+}
 
 $ctestArgs = @('--preset', $preset)
 if ($TestName) { $ctestArgs += @('-R', $TestName) }

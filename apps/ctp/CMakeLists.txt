@@ -192,7 +192,7 @@ foreach(testfile ${MD_CTP_TESTS})
     set_target_properties(dzmd_ctp_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
-    gtest_discover_tests(dzmd_ctp_${testname})
+    gtest_discover_tests(dzmd_ctp_${testname} PROPERTIES LABELS fast)
     install(TARGETS dzmd_ctp_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()
 
@@ -288,6 +288,6 @@ foreach(testfile ${TD_CTP_TESTS})
             td/td_prescan.cpp)
         target_link_libraries(dztd_ctp_${testname} PRIVATE dztdstore dztrading)
     endif()
-    gtest_discover_tests(dztd_ctp_${testname})
+    gtest_discover_tests(dztd_ctp_${testname} PROPERTIES LABELS fast)
     install(TARGETS dztd_ctp_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()

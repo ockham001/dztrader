@@ -36,7 +36,7 @@
 - [ ] `npm run type-check` ✅
 - [ ] `npm run lint` + `npm run lint:css` ✅（0 error / 0 warning）
 - [ ] `npm test` 全绿（前端 vitest）
-- [ ] `ctest` 全绿（后台；含冒烟 smoke）
+- [ ] `./scripts/test.sh` 全绿（后台 fast 门禁；含冒烟 smoke）；穷举/基准按需 `--label slow` / `--label perf`（Windows `-Label`）
 - [ ] C++ 格式（clang-format 21.x）与日志格式（`python scripts/check_log_format.py apps/ libs/`）——已接入 CI（linux job），本地可预检
 - [ ] 文档链接（`python scripts/check_docs_links.py`）与提交信息前缀——已接入 CI（linux job）
 - [ ] `git status` 干净，改动为小步提交（信息中文，`fix:/feat:/refactor:/docs:/test:/chore:/perf:/style:/build:/ci:` 前缀）

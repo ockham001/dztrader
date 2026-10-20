@@ -114,43 +114,104 @@
             "description": "测试运行环境：强制 DZTRADER_HOME 指向项目内 .dztrader_dev，屏蔽系统级同名环境变量（自管临时目录的测试在 SetUp 内自行覆盖，不受影响）",
             "environment": {
                 "DZTRADER_HOME": "${sourceDir}/.dztrader_dev"
+            },
+            "execution": {
+                "noTestsAction": "error",
+                "stopOnFailure": false
+            }
+        },
+        {
+            "name": "test-fast-base",
+            "hidden": true,
+            "description": "默认门禁：只跑 fast 标签（秒级单测）",
+            "inherits": "test-base",
+            "filter": {
+                "include": {
+                    "label": "fast"
+                }
+            }
+        },
+        {
+            "name": "test-slow-base",
+            "hidden": true,
+            "description": "显式慢速档：穷举/慢速用例（不进默认门禁）",
+            "inherits": "test-base",
+            "filter": {
+                "include": {
+                    "label": "slow"
+                }
+            }
+        },
+        {
+            "name": "test-perf-base",
+            "hidden": true,
+            "description": "显式基准档：无阈值 PerfBench",
+            "inherits": "test-base",
+            "filter": {
+                "include": {
+                    "label": "perf"
+                }
             }
         },
         {
             "name": "win-release",
             "configurePreset": "win-release",
-            "inherits": "test-base",
-            "execution": {
-                "noTestsAction": "error",
-                "stopOnFailure": false
-            }
+            "inherits": "test-fast-base"
+        },
+        {
+            "name": "win-release-slow",
+            "configurePreset": "win-release",
+            "inherits": "test-slow-base"
+        },
+        {
+            "name": "win-release-perf",
+            "configurePreset": "win-release",
+            "inherits": "test-perf-base"
         },
         {
             "name": "win-debug",
             "configurePreset": "win-debug",
-            "inherits": "test-base",
-            "execution": {
-                "noTestsAction": "error",
-                "stopOnFailure": false
-            }
+            "inherits": "test-fast-base"
+        },
+        {
+            "name": "win-debug-slow",
+            "configurePreset": "win-debug",
+            "inherits": "test-slow-base"
+        },
+        {
+            "name": "win-debug-perf",
+            "configurePreset": "win-debug",
+            "inherits": "test-perf-base"
         },
         {
             "name": "linux-release",
             "configurePreset": "linux-release",
-            "inherits": "test-base",
-            "execution": {
-                "noTestsAction": "error",
-                "stopOnFailure": false
-            }
+            "inherits": "test-fast-base"
+        },
+        {
+            "name": "linux-release-slow",
+            "configurePreset": "linux-release",
+            "inherits": "test-slow-base"
+        },
+        {
+            "name": "linux-release-perf",
+            "configurePreset": "linux-release",
+            "inherits": "test-perf-base"
         },
         {
             "name": "linux-debug",
             "configurePreset": "linux-debug",
-            "inherits": "test-base",
-            "execution": {
-                "noTestsAction": "error",
-                "stopOnFailure": false
-            }
+            "inherits": "test-fast-base"
+        },
+        {
+            "name": "linux-debug-slow",
+            "configurePreset": "linux-debug",
+            "inherits": "test-slow-base"
+        },
+        {
+            "name": "linux-debug-perf",
+            "configurePreset": "linux-debug",
+            "inherits": "test-perf-base"
         }
     ]
 }

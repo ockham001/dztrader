@@ -1,13 +1,15 @@
+#include "date_time_exhaustive_cases.h"
+
 #include <dztrader/date_time/date_time.h>
 
 #include <chrono>
-#include <cstdlib>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
 #include <gtest/gtest.h>
 
 using namespace dztrader;
+using namespace dztrader::strategy_api::test;
 
 class DateTimeTest : public ::testing::Test {
 protected:
@@ -629,85 +631,15 @@ TEST_F(DateTimeTest, OperatorStream) {
     EXPECT_EQ(oss.str(), "2024-03-15 14:30:45");
 }
 
-TEST_F(DateTimeTest, DISABLED_YearRange1980To2100) {
-    auto start = std::chrono::sys_days{std::chrono::year_month_day{
-        std::chrono::year{1980}, std::chrono::month{1}, std::chrono::day{1}}};
-    auto end = std::chrono::sys_days{std::chrono::year_month_day{
-        std::chrono::year{2100}, std::chrono::month{12}, std::chrono::day{31}}};
-
-    for (auto dp = start; dp <= end; dp += std::chrono::days{1}) {
-        Date d{std::chrono::year_month_day{dp}};
-        Time t{9, 30, 0};
-        DateTime dt{d, t};
-
-        EXPECT_EQ(dt.date(), d) << "Date mismatch for " << d.to_string();
-        EXPECT_EQ(dt.time(), t) << "Time mismatch for " << d.to_string();
-        EXPECT_EQ(dt.year(), d.year());
-        EXPECT_EQ(dt.month(), d.month());
-        EXPECT_EQ(dt.day(), d.day());
-        EXPECT_EQ(dt.weekday(), d.weekday());
-    }
+// 抽样版留在 fast 门禁；全量穷举见 date_time_exhaustive_test.cpp（slow 标签）。
+TEST_F(DateTimeTest, YearRangeSampled) {
+    check_date_time_year_range(range_start_1980(), range_end_2100(), std::chrono::days{29});
 }
 
-TEST_F(DateTimeTest, DISABLED_NightSessionExhaustive) {
-    auto start = std::chrono::sys_days{std::chrono::year_month_day{
-        std::chrono::year{1980}, std::chrono::month{1}, std::chrono::day{1}}};
-    auto end = std::chrono::sys_days{std::chrono::year_month_day{
-        std::chrono::year{2100}, std::chrono::month{12}, std::chrono::day{31}}};
-
-    for (auto dp = start; dp <= end; dp += std::chrono::days{1}) {
-        Date d{std::chrono::year_month_day{dp}};
-        auto wd = d.weekday();
-        for (int32_t h = 0; h < 24; ++h) {
-            DateTime action{d, Time{h, 0, 0}};
-            auto trading = DateTime::action_day_to_trading_day(action);
-            if (wd == Weekday::Saturday || wd == Weekday::Sunday) {
-                EXPECT_THROW(DateTime::trading_day_to_action_day(trading), std::invalid_argument)
-                    << "Should throw for trading_day weekday="
-                    << static_cast<int>(trading.weekday());
-                continue;
-            }
-            auto action2 = DateTime::trading_day_to_action_day(trading);
-            EXPECT_EQ(action.date(), action2.date())
-                << "Round-trip failed: " << d.to_string() << " h=" << h;
-        }
-    }
+TEST_F(DateTimeTest, NightSessionSampled) {
+    check_night_session(range_start_1980(), range_end_2100(), std::chrono::days{31});
 }
 
-TEST_F(DateTimeTest, DISABLED_MarketDataSimulation) {
-    constexpr int64_t TICK_COUNT = 1000000;
-    constexpr int64_t START_TS = 1704067200;
-    constexpr int64_t END_TS = 1735689600;
+TEST_F(DateTimeTest, MarketDataSimulationSampled) { check_market_data_simulation(50000); }
 
-    std::srand(42);
-    for (int64_t i = 0; i < TICK_COUNT; ++i) {
-        int64_t ts = START_TS + (std::rand() % static_cast<int>(END_TS - START_TS));
-        auto dt = DateTime::from_timestamp(ts);
-        auto str = dt.to_string();
-        auto dt2 = DateTime::from_string(str);
-        EXPECT_EQ(dt.seconds_since_epoch(), dt2.seconds_since_epoch())
-            << "Round-trip failed at tick " << i;
-
-        if (i > 0) {
-            int64_t ts2 = START_TS + (std::rand() % static_cast<int>(END_TS - START_TS));
-            auto dt3 = DateTime::from_timestamp(ts2);
-            auto diff = dt3 - dt;
-            EXPECT_EQ(std::chrono::duration_cast<std::chrono::seconds>(diff).count(),
-                      dt3.seconds_since_epoch() - dt.seconds_since_epoch());
-        }
-    }
-}
-
-TEST_F(DateTimeTest, DISABLED_TimezoneRoundTrip) {
-    for (int32_t y = 1980; y <= 2100; ++y) {
-        for (int32_t m = 1; m <= 12; ++m) {
-            for (int32_t h : {0, 6, 12, 18}) {
-                auto dt = DateTime::from_ymd_hms(y, m, 1, h, 0, 0);
-                auto local = DateTime::system_to_local(dt);
-                auto sys = DateTime::local_to_system(local);
-                EXPECT_EQ(dt.nanosecs_since_epoch(), sys.nanosecs_since_epoch())
-                    << "Timezone round-trip failed: " << y << "-" << m << "-1 " << h << ":00";
-            }
-        }
-    }
-}
+TEST_F(DateTimeTest, TimezoneRoundTripSampled) { check_timezone_round_trip(1980, 2100, 10); }

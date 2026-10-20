@@ -68,7 +68,7 @@ else()
         COMMENT "Copy dzstrategy_sdk next to stg_demo_test"
     )
 endif()
-gtest_discover_tests(stg_demo_test PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
+gtest_discover_tests(stg_demo_test PROPERTIES LABELS fast RUN_SERIAL TRUE TIMEOUT 120)
 
 install(TARGETS stg_demo RUNTIME DESTINATION ${DZ_INSTALL_DIR})
 install(TARGETS stg_demo_test RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
