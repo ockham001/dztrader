@@ -13,6 +13,23 @@
 namespace dztrader::strategy_api::test {
 
 /**
+ * @brief 单个日期的 round-trip / 星期 / add_days 检查。
+ */
+inline void check_date(std::chrono::sys_days dp) {
+    Date d{std::chrono::year_month_day{dp}};
+    auto ymd = d.year_month_day();
+    Date d2(ymd);
+    EXPECT_EQ(d, d2) << "Round-trip failed for " << d.to_string();
+
+    auto chrono_wd = std::chrono::weekday{dp};
+    EXPECT_EQ(d.weekday(), static_cast<Weekday>(chrono_wd.iso_encoding()))
+        << "Weekday mismatch for " << d.to_string();
+
+    Date next = d.add_days(1);
+    EXPECT_EQ(d.days_to(next), 1) << "days_to(next) != 1 for " << d.to_string();
+}
+
+/**
  * @brief 1980–2100 日期 round-trip / 星期 / add_days 检查。
  *
  * 断言本体与穷举版一致，由调用方通过 step 控制抽样密度：fast 门禁用较大步长，
@@ -22,17 +39,7 @@ inline void check_date_year_range(std::chrono::sys_days start,
                                   std::chrono::sys_days end,
                                   std::chrono::days step) {
     for (auto dp = start; dp <= end; dp += step) {
-        Date d{std::chrono::year_month_day{dp}};
-        auto ymd = d.year_month_day();
-        Date d2(ymd);
-        EXPECT_EQ(d, d2) << "Round-trip failed for " << d.to_string();
-
-        auto chrono_wd = std::chrono::weekday{dp};
-        EXPECT_EQ(d.weekday(), static_cast<Weekday>(chrono_wd.iso_encoding()))
-            << "Weekday mismatch for " << d.to_string();
-
-        Date next = d.add_days(1);
-        EXPECT_EQ(d.days_to(next), 1) << "days_to(next) != 1 for " << d.to_string();
+        check_date(dp);
     }
 }
 

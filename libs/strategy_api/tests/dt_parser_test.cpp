@@ -136,6 +136,12 @@ TEST(ParserTest, SubsecondTAndSConsistent) {
     EXPECT_EQ(fields_s.subsecond.value(), fields_t.subsecond.value());
 }
 
+// 小数点后必须至少一位数字（dt_parser.h 的 %S 与 %T 两处分支）。
+TEST(ParserTest, SubsecondEmptyFractionThrows) {
+    EXPECT_THROW(DateTimeParser::parse("45.", "%S"), std::invalid_argument);
+    EXPECT_THROW(DateTimeParser::parse("14:30:45.", "%T"), std::invalid_argument);
+}
+
 TEST(ParserTest, CheckHhMmSsHourOutOfRange) {
     DateTimeParser::ParsedFields fields;
     fields.hour = std::chrono::hours{24};
@@ -159,6 +165,28 @@ TEST(ParserTest, CheckHhMmSsSubsecondOutOfRange) {
     fields.second = std::chrono::seconds{0};
     fields.subsecond = std::chrono::nanoseconds{1'000'000'000};
     EXPECT_THROW(DateTimeParser::check_hh_mm_ss(fields), std::out_of_range);
+}
+
+// 恰好等于上限（23/59/59/999999999）必须接受；把 > 误写成 >= 会变红。
+TEST(ParserTest, CheckHhMmSsMaxValuesAccepted) {
+    auto fields = DateTimeParser::parse("23:59:59.999999999", "%T");
+    ASSERT_TRUE(fields.hour.has_value());
+    ASSERT_TRUE(fields.minute.has_value());
+    ASSERT_TRUE(fields.second.has_value());
+    ASSERT_TRUE(fields.subsecond.has_value());
+    EXPECT_EQ(fields.hour->count(), 23);
+    EXPECT_EQ(fields.minute->count(), 59);
+    EXPECT_EQ(fields.second->count(), 59);
+    EXPECT_EQ(fields.subsecond->count(), 999999999);
+    EXPECT_NO_THROW(DateTimeParser::check_hh_mm_ss(fields));
+}
+
+// 格式串字面量 %%：输入必须出现一个 %。
+TEST(ParserTest, LiteralPercentPair) {
+    auto fields = DateTimeParser::parse("2024%", "%Y%%");
+    ASSERT_TRUE(fields.year.has_value());
+    EXPECT_EQ(static_cast<int>(fields.year.value()), 2024);
+    EXPECT_THROW(DateTimeParser::parse("2024x", "%Y%%"), std::invalid_argument);
 }
 
 TEST(ParserTest, ErrorLiteralMismatch) {

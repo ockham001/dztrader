@@ -69,9 +69,12 @@ public:
                     case 'T':
                         T_formatter(result, ch, fraction);
                         break;
-                    default:
-                        result.push_back(ch);
+                    case '%':
+                        result.push_back('%');
                         break;
+                    default:
+                        throw std::invalid_argument(
+                            std::format("unsupported format specifier | specifier=%{}", ch));
                 }
                 escape = false;
             } else if (ch == '%') {
@@ -111,6 +114,7 @@ private:
         if (!month.has_value()) {
             dest.push_back(ch);
         } else {
+            check_range(month.value(), 1, 12, "month");
             pad_2_digits(month.value(), dest);
         }
     };
@@ -120,6 +124,7 @@ private:
         if (!weekday.has_value()) {
             dest.push_back(ch);
         } else {
+            check_range(weekday.value(), 1, 7, "weekday");
             pad_1_digits(weekday.value(), dest);
         }
     }
@@ -129,6 +134,7 @@ private:
         if (!day.has_value()) {
             dest.push_back(ch);
         } else {
+            check_range(day.value(), 1, 31, "day");
             pad_2_digits(day.value(), dest);
         }
     }
@@ -138,6 +144,7 @@ private:
         if (!hour.has_value()) {
             dest.push_back(ch);
         } else {
+            check_range(hour.value(), 0, 23, "hour");
             pad_2_digits(hour.value(), dest);
         }
     }
@@ -147,6 +154,7 @@ private:
         if (!minute.has_value()) {
             dest.push_back(ch);
         } else {
+            check_range(minute.value(), 0, 59, "minute");
             pad_2_digits(minute.value(), dest);
         }
     }
@@ -157,6 +165,7 @@ private:
             dest.push_back(ch);
             return;
         }
+        check_range(second.value(), 0, 59, "second");
         // 输出整数秒（已保证为 0-59）
         pad_2_digits(second.value(), dest);
 
@@ -164,10 +173,17 @@ private:
             return;
         }
 
+        const int64_t subsecond_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(subsecond.value()).count();
+        if (subsecond_ns < 0 || subsecond_ns > 999'999'999) [[unlikely]] {
+            throw std::out_of_range(std::format(
+                "subsecond value out of range | ns={} range=0-999999999", subsecond_ns));
+        }
+
         if (fraction == 0) {
             return;  // 没有小数部分
         }
-        if (subsecond.value() == DurationType::zero() && fraction < 0) {
+        if (subsecond_ns == 0 && fraction < 0) {
             return;  // 没有小数部分
         }
 
@@ -196,9 +212,7 @@ private:
         assert(idx >= 0 && idx < 10);
 
         const int64_t divisor = POWERS_10[idx];  // NOLINT
-        const int64_t display_value =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(subsecond.value()).count() /
-            divisor;
+        const int64_t display_value = subsecond_ns / divisor;
 
         // 使用 std::to_chars 进行无分配整数转换
         char buffer[16];  // 足够容纳最多9位数字
@@ -246,6 +260,18 @@ private:
         M_formatter(dest, ch);
         dest.push_back(':');
         S_formatter(dest, ch, fraction);
+    }
+
+    // 校验字段语义范围；宽度由 pad_*_digits 另行检查。
+    static void check_range(int32_t value,
+                            int32_t min_value,
+                            int32_t max_value,
+                            const char* field) {
+        if (value < min_value || value > max_value) [[unlikely]] {
+            throw std::out_of_range(
+                std::format("value out of range | field={} value={} range={}-{}", field, value,
+                            min_value, max_value));
+        }
     }
 
     template <typename DigitType>

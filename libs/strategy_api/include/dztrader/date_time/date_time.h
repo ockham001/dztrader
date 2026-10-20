@@ -341,9 +341,11 @@ public:
 
     static DateTime local_now() { return system_to_local(DateTime::system_now()); }
 
+    // 模板参数仅用于测试注入失败实现以覆盖 fallback 分支；生产调用使用默认值。
+    template <bool (*LocalTimeFn)(std::tm&, std::time_t) noexcept = details::local_time>
     static DateTime system_to_local(const DateTime& system_time) {
         std::tm local_tm;  // NOLINT
-        if (details::local_time(local_tm, system_time.timestamp<int64_t>())) [[likely]] {
+        if (LocalTimeFn(local_tm, system_time.timestamp<int64_t>())) [[likely]] {
             const auto local_days = std::chrono::local_days{std::chrono::year_month_day{
                 std::chrono::year{local_tm.tm_year + 1900},
                 std::chrono::month{static_cast<uint32_t>(local_tm.tm_mon) + 1},
@@ -366,6 +368,8 @@ public:
         }
     }
 
+    // 模板参数仅用于测试注入失败实现以覆盖 fallback 分支；生产调用使用默认值。
+    template <std::time_t (*MktimeFn)(std::tm*) = ::mktime>
     static DateTime local_to_system(const DateTime& local_time) {
         const auto local_ymd = local_time.year_month_day();
         const auto local_hms = local_time.hh_mm_ss<std::chrono::nanoseconds>();
@@ -379,7 +383,7 @@ public:
         local_tm.tm_isdst = -1;
 
         errno = 0;
-        time_t result = ::mktime(&local_tm);
+        time_t result = MktimeFn(&local_tm);
 
         // C 标准规定 mktime 失败返回 (time_t)-1；errno 是 POSIX 扩展，不保证一定设置。
         // 两者都检查：result != -1 优先（覆盖标准失败语义），errno == 0 作辅助诊断。
