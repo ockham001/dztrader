@@ -69,8 +69,7 @@ int run_probe(const std::filesystem::path& exe, const std::filesystem::path& exp
     try {
         boost::asio::io_context ioc;
         boost::process::v2::process proc(
-            ioc, exe.string(),
-            std::vector<std::string>{"--app-root-probe", expected.string()});
+            ioc, exe.string(), std::vector<std::string>{"--app-root-probe", expected.string()});
         return proc.wait();
     } catch (...) {
         return -1;
