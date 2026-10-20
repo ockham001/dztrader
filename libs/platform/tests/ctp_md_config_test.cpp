@@ -77,6 +77,21 @@ TEST(CtpMdConfigDataSerialization, OpReqRoundTrip) {
     EXPECT_EQ(restored.params["name"], "simnow");
 }
 
+TEST(CtpMdConfigOpReqSerialization, MissingOpThrows) {
+    const auto payload = nlohmann::json::parse(R"({"params": {"name": "simnow"}})");
+    EXPECT_THROW(payload.get<CtpMdConfigOpReq>(), nlohmann::json::exception);
+}
+
+TEST(CtpMdConfigOpReqSerialization, InvalidOpThrows) {
+    const auto payload = nlohmann::json::parse(R"({"op": "NoSuchOp", "params": {}})");
+    EXPECT_THROW(payload.get<CtpMdConfigOpReq>(), nlohmann::json::exception);
+}
+
+TEST(CtpMdConfigOpReqSerialization, MissingParamsThrows) {
+    const auto payload = nlohmann::json::parse(R"({"op": "AddBroker"})");
+    EXPECT_THROW(payload.get<CtpMdConfigOpReq>(), nlohmann::json::exception);
+}
+
 TEST(IsConnectionOp, AllOps) {
     EXPECT_FALSE(dztrader::platform::is_ctp_connection_op(CtpMdConfigOp::AddBroker));
     EXPECT_TRUE(dztrader::platform::is_ctp_connection_op(CtpMdConfigOp::RemoveBroker));
