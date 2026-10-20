@@ -179,7 +179,8 @@ public:
     void handle_frame(const std::byte* frame);
 
     /// 读取指定行情源的 page_size (从 <source_name>.json 的 shm.page_size_mb 字段)
-    /// 若文件不存在或字段缺失, 返回 kDefaultMdPageSize (1024MB, 与 MdShmConfig 默认值一致)
+    /// 若文件不存在、字段缺失、类型非法或值 <1, 返回 kDefaultMdPageSize
+    /// (1024MB, 与 MdShmConfig 默认值一致)
     /// 若文件存在但解析失败 (malformed json), 返回 nullopt 表示失败
     /// (失败路径 C: 调用方应据此发 notify_ui 并阻止 spawn)
     std::optional<uint64_t> read_md_page_size(const std::string& source_name);

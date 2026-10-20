@@ -78,7 +78,7 @@ std::optional<std::string> ShmConfigBase::validate(const nlohmann::json& cfg) {
         const int64_t v = get_int_value(c[key]);
         return v >= lo && v <= hi;
     };
-    // page_size_mb:契约未给上界,只要求 >= 1(0/负数无意义)
+    // page_size_mb:契约合法范围 [1MB,64GB];SET 只校验下界,上界由通道创建硬校验
     if (!cfg.contains("page_size_mb") || !is_integer_value(cfg["page_size_mb"])) {
         return "invalid page_size_mb";
     }

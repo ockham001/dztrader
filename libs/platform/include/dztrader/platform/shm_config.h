@@ -120,9 +120,6 @@ private:
 
 namespace dztrader::platform {
 
-/// 最小合法 page size 字节数 (1MB)
-inline constexpr uint64_t MIN_PAGE_SIZE_BYTES = 1ULL * 1024 * 1024;
-
 /// MB 转 bytes
 constexpr uint64_t mb_to_bytes(uint64_t mb) { return mb * 1024 * 1024; }
 

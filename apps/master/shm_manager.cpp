@@ -99,10 +99,6 @@ ShmManager::ShmManager(const ShmGlobalConfig& shm_global,
         [this](const std::string& name, const nlohmann::json& full) {
             apply_process_config(name, full);
         });
-
-    // event_page_size_ 已在 event_meta_ 创建 lambda 中从文件读取并赋值,
-    // 此处从 event_shm_config_ 再赋一次保证一致性 (同源数据, 值相同)
-    event_page_size_ = mb_to_bytes(event_shm_config_.page_size_mb());
 }
 
 void ShmManager::create_md_channel(std::string_view source_name) {
@@ -365,7 +361,7 @@ std::optional<uint64_t> ShmManager::read_md_page_size(const std::string& source_
     auto json_path = dztrader::paths::configs() / (source_name + ".json");
 
     if (!fs::exists(json_path)) {
-        // 文件不存在: 不是失败 (新行情源首次启动), 使用前缀感知默认
+        // 文件不存在: 不是失败 (新行情源首次启动), 使用默认值
         SPDLOG_INFO("config not found, using default md_page_size | source={} path={}", source_name,
                     json_path.string());
         return kDefaultMdPageSize;
@@ -379,17 +375,17 @@ std::optional<uint64_t> ShmManager::read_md_page_size(const std::string& source_
             ifs >> cfg;
         }
         if (!cfg.contains("shm") || !cfg["shm"].contains("page_size_mb")) {
-            // 字段缺失: 使用前缀感知默认 (不是失败)
+            // 字段缺失: 使用默认值 (不是失败)
             return kDefaultMdPageSize;
         }
         const auto& ps = cfg["shm"]["page_size_mb"];
         if (!ps.is_number_integer() && !ps.is_number_float()) {
-            // 类型非法: 使用前缀感知默认 (不是失败)
+            // 类型非法: 使用默认值 (不是失败)
             return kDefaultMdPageSize;
         }
         const int64_t page_size_mb = ps.get<int64_t>();
         if (page_size_mb < 1) {
-            // 字段 <1: 使用前缀感知默认 (不是失败)
+            // 字段 <1: 使用默认值 (不是失败)
             return kDefaultMdPageSize;
         }
         return mb_to_bytes(static_cast<uint64_t>(page_size_mb));
