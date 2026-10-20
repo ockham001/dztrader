@@ -84,7 +84,7 @@ foreach(testfile ${WEBUI_TESTS})
         ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )
     set_target_properties(dzweb_${testname} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR})
-    gtest_discover_tests(dzweb_${testname})
+    gtest_discover_tests(dzweb_${testname} PROPERTIES LABELS fast)
 endforeach()
 
 # ============================================================

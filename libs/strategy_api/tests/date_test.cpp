@@ -1,3 +1,5 @@
+#include "date_exhaustive_cases.h"
+
 #include <dztrader/date_time/date.h>
 
 #include <chrono>
@@ -5,6 +7,7 @@
 #include <gtest/gtest.h>
 
 using namespace dztrader;
+using namespace dztrader::strategy_api::test;
 
 class DateTest : public ::testing::Test {
 protected:
@@ -488,50 +491,11 @@ TEST_F(DateTest, OperatorStream) {
     EXPECT_EQ(oss.str(), "2024-03-15");
 }
 
-TEST_F(DateTest, DISABLED_YearRange1980To2100) {
-    auto start = std::chrono::sys_days{std::chrono::year_month_day{
-        std::chrono::year{1980}, std::chrono::month{1}, std::chrono::day{1}}};
-    auto end = std::chrono::sys_days{std::chrono::year_month_day{
-        std::chrono::year{2100}, std::chrono::month{12}, std::chrono::day{31}}};
-
-    for (auto dp = start; dp <= end; dp += std::chrono::days{1}) {
-        Date d{std::chrono::year_month_day{dp}};
-        auto ymd = d.year_month_day();
-        Date d2(ymd);
-        EXPECT_EQ(d, d2) << "Round-trip failed for " << d.to_string();
-
-        auto chrono_wd = std::chrono::weekday{dp};
-        EXPECT_EQ(d.weekday(), static_cast<Weekday>(chrono_wd.iso_encoding()))
-            << "Weekday mismatch for " << d.to_string();
-
-        Date next = d.add_days(1);
-        EXPECT_EQ(d.days_to(next), 1) << "days_to(next) != 1 for " << d.to_string();
-    }
+// 抽样版留在 fast 门禁；全量穷举见 date_exhaustive_test.cpp（slow 标签）。
+TEST_F(DateTest, YearRangeSampled) {
+    check_date_year_range(range_start_1980(), range_end_2100(), std::chrono::days{29});
 }
 
-TEST_F(DateTest, DISABLED_MonthEndTruncationExhaustive) {
-    for (int32_t y = 1980; y <= 2100; ++y) {
-        for (int32_t m = 1; m <= 12; ++m) {
-            for (int32_t day = 28; day <= 31; ++day) {
-                auto ymd = std::chrono::year_month_day{
-                    std::chrono::year{y}, std::chrono::month{static_cast<uint32_t>(m)},
-                    std::chrono::day{static_cast<uint32_t>(day)}};
-                if (!ymd.ok()) continue;
-
-                Date d{ymd};
-                for (int32_t delta = -24; delta <= 24; ++delta) {
-                    auto result = d.add_months(delta);
-                    auto result_ymd = result.year_month_day();
-                    EXPECT_TRUE(result_ymd.ok())
-                        << "Invalid date from " << y << "-" << m << "-" << day << " + " << delta
-                        << " months = " << result.to_string();
-
-                    auto last_day = Date::from_year_month_day_last(result.year(), result.month());
-                    EXPECT_LE(result.day(), last_day.day())
-                        << "Day exceeds month end from " << y << "-" << m << "-" << day << " + "
-                        << delta << " months";
-                }
-            }
-        }
-    }
+TEST_F(DateTest, MonthEndTruncationSampled) {
+    check_date_month_end_truncation(1980, 2100, 4, -24, 24, 3);
 }

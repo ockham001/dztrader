@@ -65,7 +65,7 @@ foreach(testfile ${MAIN_ENGINE_TESTS})
     set_target_properties(dztraderd_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
-    gtest_discover_tests(dztraderd_${testname})
+    gtest_discover_tests(dztraderd_${testname} PROPERTIES LABELS fast)
     install(TARGETS dztraderd_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()
 
@@ -79,5 +79,5 @@ target_link_libraries(dz_smoke_test PRIVATE dztraderd_obj GTest::gtest)
 set_target_properties(dz_smoke_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
 )
-gtest_discover_tests(dz_smoke_test PROPERTIES RUN_SERIAL TRUE)
+gtest_discover_tests(dz_smoke_test PROPERTIES LABELS fast RUN_SERIAL TRUE)
 install(TARGETS dz_smoke_test RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)

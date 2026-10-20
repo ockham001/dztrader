@@ -81,6 +81,12 @@ set(SDK_API_TESTS
     td_ingest_nodb_test
     td_ingest_watermark_test
 )
+
+# 穷举/慢速用例单独成 target, 打 slow 标签; 默认 fast 门禁只跑对应抽样版。
+set(SDK_SLOW_TESTS
+    date_exhaustive_test
+    date_time_exhaustive_test
+)
 file(GLOB SDK_TESTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${SDK_TESTS})
@@ -111,10 +117,14 @@ foreach(testfile ${SDK_TESTS})
     # gtest_discover_tests 把每个用例注册为独立 ctest 测试, -j 并行时同二进制
     # 多进程共用同一通道文件互相踩踏 -> RUN_SERIAL 串行化;
     # 均为秒级用例, TIMEOUT 60 防挂死兜底失效时拖死 CI
-    if(testname IN_LIST SDK_API_TESTS)
-        gtest_discover_tests(dzstrategy_sdk_${testname} PROPERTIES RUN_SERIAL TRUE TIMEOUT 60)
+    # 测试分层标签: fast = 默认门禁; slow = 显式穷举/慢速档, 与 RUN_SERIAL/TIMEOUT 正交
+    if(testname IN_LIST SDK_SLOW_TESTS)
+        gtest_discover_tests(dzstrategy_sdk_${testname} PROPERTIES LABELS slow)
+    elseif(testname IN_LIST SDK_API_TESTS)
+        gtest_discover_tests(dzstrategy_sdk_${testname}
+            PROPERTIES LABELS fast RUN_SERIAL TRUE TIMEOUT 60)
     else()
-        gtest_discover_tests(dzstrategy_sdk_${testname})
+        gtest_discover_tests(dzstrategy_sdk_${testname} PROPERTIES LABELS fast)
     endif()
     install(TARGETS dzstrategy_sdk_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()

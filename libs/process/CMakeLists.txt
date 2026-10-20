@@ -26,6 +26,6 @@ foreach(testfile ${PROCESS_TESTS})
     set_target_properties(dzprocess_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
-    gtest_discover_tests(dzprocess_${testname})
+    gtest_discover_tests(dzprocess_${testname} PROPERTIES LABELS fast)
     install(TARGETS dzprocess_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()
