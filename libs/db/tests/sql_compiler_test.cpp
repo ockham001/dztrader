@@ -61,6 +61,9 @@ TEST(SqlCompilerTest, DialectQuoteCharacters) {
     EXPECT_EQ(internal::kMysqlDialect.ident_quote, '`');
     EXPECT_EQ(internal::quote_ident(internal::kSqliteDialect, "seq"), "\"seq\"");
     EXPECT_EQ(internal::quote_ident(internal::kMysqlDialect, "seq"), "`seq`");
+    // 标识符内嵌引用符按方言加倍转义，避免生成非法 SQL
+    EXPECT_EQ(internal::quote_ident(internal::kSqliteDialect, "we\"ird"), "\"we\"\"ird\"");
+    EXPECT_EQ(internal::quote_ident(internal::kMysqlDialect, "we`ird"), "`we``ird`");
 }
 
 TEST(SqlCompilerTest, FindFieldWhitelist) {
@@ -111,7 +114,10 @@ TEST(SqlCompilerTest, CompileFilterInValues) {
     const internal::CompiledFilter compiled =
         internal::compile_filter(conditions, orders_schema(), internal::kSqliteDialect);
     EXPECT_EQ(compiled.where, "\"account_id\" IN (?, ?, ?)");
-    EXPECT_EQ(compiled.params.size(), accounts.size());
+    ASSERT_EQ(compiled.params.size(), accounts.size());
+    for (size_t i = 0; i < accounts.size(); ++i) {
+        EXPECT_EQ(std::get<std::string>(compiled.params[i]), accounts[i]);
+    }
 }
 
 TEST(SqlCompilerTest, CompileFilterEmptyInIsConstantFalse) {
@@ -255,6 +261,11 @@ TEST(SqlCompilerTest, BuildAggregateSqlCount) {
     EXPECT_EQ(internal::build_aggregate_sql(orders_schema(), db::AggregateOp::Count, "", {}, {}, {},
                                             internal::kMysqlDialect),
               "SELECT COUNT(*) FROM `orders`");
+    // Count + 非空 group_by：分组列前置，COUNT(*) 忽略 field
+    const std::vector<std::string> group_by{"account_id"};
+    EXPECT_EQ(internal::build_aggregate_sql(orders_schema(), db::AggregateOp::Count, "nope",
+                                            group_by, {}, {}, internal::kSqliteDialect),
+              "SELECT \"account_id\", COUNT(*) FROM \"orders\" GROUP BY \"account_id\"");
 }
 
 TEST(SqlCompilerTest, BuildAggregateSqlGroupAndFunctions) {

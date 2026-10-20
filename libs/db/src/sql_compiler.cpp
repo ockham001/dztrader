@@ -85,7 +85,12 @@ std::string quote_ident(const SqlDialect& dialect, std::string_view ident) {
     std::string quoted;
     quoted.reserve(ident.size() + 2);
     quoted += dialect.ident_quote;
-    quoted += ident;
+    for (const char ch : ident) {
+        quoted += ch;
+        if (ch == dialect.ident_quote) {
+            quoted += ch;  // SQL 标准 "" / MySQL 反引号加倍
+        }
+    }
     quoted += dialect.ident_quote;
     return quoted;
 }

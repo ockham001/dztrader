@@ -13,11 +13,11 @@ public:
     Filter last_filter;
     FindOptions last_options;
     Aggregation last_aggregation;
-    size_t upserted = 0;
+    std::vector<Row> last_rows;
 
     void upsert(std::string_view collection, std::span<const Row> rows) override {
         calls.emplace_back("upsert:" + std::string(collection));
-        upserted = rows.size();
+        last_rows.assign(rows.begin(), rows.end());
     }
     uint64_t remove(std::string_view collection, const Filter& filter) override {
         calls.emplace_back("remove:" + std::string(collection));
@@ -49,10 +49,20 @@ TEST(DbCollectionTest, ForwardsOperations) {
 
     const Row row{std::vector<Value>{int64_t{1}}};
     orders.upsert(std::span<const Row>(&row, 1));
-    EXPECT_EQ(session.upserted, 1u);
+    ASSERT_EQ(session.last_rows.size(), 1u);
+    EXPECT_EQ(session.last_rows[0].get<int64_t>(0), 1);
 
     EXPECT_EQ(orders.remove(filters::eq("account_id", std::string("a"))), 2u);
-    EXPECT_EQ(session.last_filter.conditions().size(), 1u);
+
+    const std::vector<std::string> expected_calls{"upsert:orders", "remove:orders"};
+    EXPECT_EQ(session.calls, expected_calls);
+
+    const std::span<const Condition> conditions = session.last_filter.conditions();
+    ASSERT_EQ(conditions.size(), 1u);
+    EXPECT_EQ(conditions[0].field, "account_id");
+    EXPECT_EQ(conditions[0].op, CompareOp::Eq);
+    ASSERT_EQ(conditions[0].values.size(), 1u);
+    EXPECT_EQ(std::get<std::string>(conditions[0].values[0]), "a");
 }
 
 TEST(DbCollectionTest, FindOneKeepsSortIgnoresPaging) {
@@ -68,6 +78,19 @@ TEST(DbCollectionTest, FindOneKeepsSortIgnoresPaging) {
     EXPECT_EQ(row->get<int64_t>(0), 5);
     EXPECT_EQ(session.last_options.limit, 1);
     EXPECT_EQ(session.last_options.offset, 0);
+    ASSERT_EQ(session.last_options.sort.size(), 1u);
+    EXPECT_EQ(session.last_options.sort[0].field, "seq");
+    EXPECT_EQ(session.last_options.sort[0].order, SortOrder::Descending);
+    EXPECT_EQ(session.calls, std::vector<std::string>{"find:orders"});
+}
+
+TEST(DbCollectionTest, FindOneEmptyResultReturnsNullopt) {
+    FakeSession session;
+    Collection orders(session, "orders");
+
+    EXPECT_FALSE(orders.find_one().has_value());
+    EXPECT_EQ(session.last_options.limit, 1);
+    EXPECT_EQ(session.last_options.offset, 0);
 }
 
 TEST(DbCollectionTest, CountUsesAggregate) {
@@ -77,7 +100,14 @@ TEST(DbCollectionTest, CountUsesAggregate) {
     Collection orders(session, "orders");
 
     EXPECT_EQ(orders.count(filters::eq("account_id", std::string("a"))), 7u);
+    EXPECT_EQ(session.calls, std::vector<std::string>{"aggregate:orders"});
     EXPECT_EQ(session.last_aggregation.op, AggregateOp::Count);
+    const std::span<const Condition> conditions = session.last_aggregation.filter.conditions();
+    ASSERT_EQ(conditions.size(), 1u);
+    EXPECT_EQ(conditions[0].field, "account_id");
+    EXPECT_EQ(conditions[0].op, CompareOp::Eq);
+    ASSERT_EQ(conditions[0].values.size(), 1u);
+    EXPECT_EQ(std::get<std::string>(conditions[0].values[0]), "a");
 }
 
 TEST(DbCapabilityTest, HasRequiresAllBits) {

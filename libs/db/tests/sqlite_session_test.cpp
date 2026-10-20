@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <dztrader/core/exception.h>
 #include <dztrader/core/this_process.h>
 #include <dztrader/db/database.h>
+#include <dztrader/error.h>
 
 #include <filesystem>
 #include <random>
@@ -9,6 +11,16 @@
 using namespace dztrader::db;
 
 namespace {
+
+template <typename Call>
+DzErrorCode code_of(Call&& call) {
+    try {
+        call();
+    } catch (const dztrader::Exception& e) {
+        return e.code();
+    }
+    return DZ_EC_OK;
+}
 
 std::filesystem::path unique_db_path(const std::string& name) {
     std::random_device rd;
@@ -124,6 +136,26 @@ TEST_F(SqliteSessionTest, InAndRangeFilters) {
     const auto result = session_->find("session_orders", f);
     ASSERT_EQ(result.size(), 1u);
     EXPECT_EQ(result.rows()[0].get<std::string>(4), "al");
+}
+
+TEST_F(SqliteSessionTest, UnknownCollectionMapsToQueryFailed) {
+    EXPECT_EQ(code_of([&] { (void)session_->find("no_such_collection"); }), DZ_EC_DB_QUERY_FAILED);
+}
+
+TEST_F(SqliteSessionTest, UnknownAggregateFieldMapsToQueryFailed) {
+    Aggregation aggregation;
+    aggregation.op = AggregateOp::Max;
+    aggregation.field = "missing";
+    EXPECT_EQ(code_of([&] { (void)session_->aggregate("session_orders", aggregation); }),
+              DZ_EC_DB_QUERY_FAILED);
+}
+
+TEST_F(SqliteSessionTest, UnknownGroupByFieldMapsToQueryFailed) {
+    Aggregation aggregation;
+    aggregation.op = AggregateOp::Count;
+    aggregation.group_by = {"missing"};
+    EXPECT_EQ(code_of([&] { (void)session_->aggregate("session_orders", aggregation); }),
+              DZ_EC_DB_QUERY_FAILED);
 }
 
 TEST_F(SqliteSessionTest, RealDeclaredColumnReadsIntegerStorageAsDouble) {
