@@ -1,58 +1,50 @@
+#include <dztrader/core/this_process.h>
 #include <dztrader/log/log.h>
-#include <array>
-#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <gtest/gtest.h>
 #include <iterator>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <string>
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
 extern const std::filesystem::path& test_root();
 
 namespace {
 
-#ifdef _WIN32
-constexpr wchar_t DEATH_LOG_DIR_ENV[] = L"DZLOG_TEST_DEATH_LOG_DIR";
-
-/// Windows 死亡测试通过重新执行本二进制创建子进程，父进程的 test_root() 不会被子进程继承；
-/// 日志目录经进程环境块传递，子进程启动时从父进程环境块继承。
-void set_death_log_dir(const std::filesystem::path& dir) {
-    ::SetEnvironmentVariableW(DEATH_LOG_DIR_ENV, dir.c_str());
+/// 死亡测试子进程的日志目录握手文件。
+///
+/// Windows 的 gtest death test 会重新执行二进制，父进程的 test_root() 不继承；
+/// 环境变量在 Windows 子进程里也不可靠。改用文件握手：路径由「可执行文件绝对路径 +
+/// 当前测试名」哈希得到，父进程写入、子进程读取，双方无需共享内存或环境块。
+std::filesystem::path death_dir_file() {
+    const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
+    const std::string test_name =
+        info != nullptr ? std::string(info->test_suite_name()) + "." + info->name() : "unknown";
+    const std::string key = dztrader::this_process::exe_path().string() + "|" + test_name;
+    const auto hash = std::hash<std::string>{}(key);
+    return std::filesystem::temp_directory_path() /
+           ("dzlog-death-dir-" + std::to_string(hash) + ".txt");
 }
 
-void clear_death_log_dir() { ::SetEnvironmentVariableW(DEATH_LOG_DIR_ENV, nullptr); }
+void set_death_log_dir(const std::filesystem::path& dir) {
+    std::ofstream out(death_dir_file(), std::ios::binary | std::ios::trunc);
+    out << dir.string();
+}
+
+void clear_death_log_dir() {
+    std::error_code ec;
+    std::filesystem::remove(death_dir_file(), ec);
+}
 
 std::filesystem::path death_log_dir() {
-    std::array<wchar_t, 32768> buffer{};
-    const DWORD length = ::GetEnvironmentVariableW(DEATH_LOG_DIR_ENV, buffer.data(),
-                                                   static_cast<DWORD>(buffer.size()));
-    if (length == 0 || length >= buffer.size()) {
-        return {};
-    }
-    return std::filesystem::path(std::wstring(buffer.data(), length));
+    std::ifstream in(death_dir_file(), std::ios::binary);
+    std::string value;
+    std::getline(in, value);
+    return value.empty() ? std::filesystem::path{} : std::filesystem::path(value);
 }
-#else
-constexpr const char* DEATH_LOG_DIR_ENV = "DZLOG_TEST_DEATH_LOG_DIR";
-
-/// Linux 死亡测试 fork 出子进程，环境与内存均被继承；统一走环境变量使两平台路径逻辑一致。
-void set_death_log_dir(const std::filesystem::path& dir) {
-    ::setenv(DEATH_LOG_DIR_ENV, dir.c_str(), 1);
-}
-
-void clear_death_log_dir() { ::unsetenv(DEATH_LOG_DIR_ENV); }
-
-std::filesystem::path death_log_dir() {
-    const char* value = std::getenv(DEATH_LOG_DIR_ENV);
-    return value != nullptr ? std::filesystem::path(value) : std::filesystem::path{};
-}
-#endif
 
 void setup_log_at(const std::filesystem::path& log_dir, const std::string& logger_name) {
     dztrader::log::LoggerSetup config;
