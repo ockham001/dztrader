@@ -325,6 +325,9 @@ void migration_v5(SQLite::Database& db) {
     db.exec("DROP TABLE IF EXISTS commission_rates");
 }
 
+/// 代码内置的最新 td schema 版本（migration_v1..v5）
+constexpr int kLatestMigrationVersion = 5;
+
 int current_version(SQLite::Database& db) {
     SQLite::Statement q(db, "SELECT COALESCE(MAX(version), 0) FROM schema_version");
     return q.executeStep() ? q.getColumn(0).getInt() : 0;
@@ -391,7 +394,15 @@ void apply_td_migrations(SQLite::Database& db) {
             "    version INTEGER PRIMARY KEY,"
             "    applied_at TEXT NOT NULL)");
         const int current = current_version(db);
-        for (int version = current + 1; version <= 5; ++version) {
+        // 库版本超前于代码: 拒绝而非静默 no-op, 与 mysql 侧行为对齐
+        // (mysql_driver.cpp: db_version > code_version 同样抛 DZ_EC_DB_MIGRATE_FAILED)
+        if (current > kLatestMigrationVersion) {
+            throw Exception(DZ_EC_DB_MIGRATE_FAILED,
+                            "sqlite schema version is newer than code | db_version={} "
+                            "code_version={}",
+                            current, kLatestMigrationVersion);
+        }
+        for (int version = current + 1; version <= kLatestMigrationVersion; ++version) {
             apply_one(db, version);
         }
         txn.commit();

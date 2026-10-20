@@ -32,7 +32,19 @@ std::filesystem::path unique_db_path(std::string_view name) {
 constexpr std::string_view kCollection = "conformance_orders";
 
 db::Row make_order(std::string account, int64_t order_id, int64_t seq) {
-    return db::Row{std::vector<db::Value>{std::monostate{}, std::move(account), order_id, seq}};
+    return db::Row{std::vector<db::Value>{std::monostate{}, std::move(account), order_id, seq,
+                                          std::monostate{}, true}};
+}
+
+/// 捕获异常码；未抛异常返回 DZ_EC_OK（负例断言具体码而非"抛了某种异常"）
+template <typename Call>
+DzErrorCode code_of(Call&& call) {
+    try {
+        call();
+    } catch (const dztrader::Exception& e) {
+        return e.code();
+    }
+    return DZ_EC_OK;
 }
 
 std::unique_ptr<db::Database> make_sqlite(const std::filesystem::path& path,
@@ -63,7 +75,9 @@ const std::vector<db::ResourceSchema>& conformance_schemas() {
                            .fields = {{"id", db::ValueType::Int64, false, true, true},
                                       {"account_id", db::ValueType::String, false, false, false},
                                       {"order_id", db::ValueType::Int64, false, false, false},
-                                      {"seq", db::ValueType::Int64, false, false, false}},
+                                      {"seq", db::ValueType::Int64, false, false, false},
+                                      {"price", db::ValueType::Float64, true, false, false},
+                                      {"active", db::ValueType::Bool, false, false, false}},
                            .indexes = {{"uq_orders", {"account_id", "order_id"}, true}}}};
     return kSchemas;
 }
@@ -131,7 +145,7 @@ TEST_P(ConformanceTest, FindSortPage) {
         db::FindOptions{.sort = {{"seq", db::SortOrder::Descending}}, .offset = 1, .limit = 1});
     ASSERT_EQ(result.size(), 1u);
     EXPECT_EQ(result.rows()[0].get<int64_t>(3), 2);
-    ASSERT_EQ(result.columns().size(), 4u);
+    ASSERT_EQ(result.columns().size(), 6u);
     EXPECT_EQ(result.columns()[0].name, "id");
 }
 
@@ -139,8 +153,10 @@ TEST_P(ConformanceTest, FindEmptyColumns) {
     const auto result =
         session_->find(kCollection, db::filters::eq("account_id", std::string("none")));
     EXPECT_TRUE(result.empty());
-    ASSERT_EQ(result.columns().size(), 4u);
+    ASSERT_EQ(result.columns().size(), 6u);
     EXPECT_EQ(result.columns()[3].name, "seq");
+    EXPECT_EQ(result.columns()[4].name, "price");
+    EXPECT_EQ(result.columns()[5].name, "active");
 }
 
 // FIX-2：无 Filter 全量 find 必须按 schema 声明类型解码（String 仍是 string，
@@ -151,11 +167,36 @@ TEST_P(ConformanceTest, FindAllDecodesDeclaredTypes) {
     const auto result = session_->find(kCollection);
     ASSERT_EQ(result.size(), 1u);
     const db::Row& row = result.rows()[0];
-    ASSERT_EQ(row.size(), 4u);
+    ASSERT_EQ(row.size(), 6u);
     EXPECT_EQ(std::get<int64_t>(row.values()[0]) > 0, true) << "自增 id 应为整数";
     EXPECT_EQ(std::get<std::string>(row.values()[1]), "a");
     EXPECT_EQ(row.get<int64_t>(2), 7);
     EXPECT_EQ(row.get<int64_t>(3), 42);
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(row.values()[4]))
+        << "nullable price 为 NULL";
+    EXPECT_EQ(std::get<bool>(row.values()[5]), true);
+}
+
+// Bool / 可空 Float64 的跨驱动往返: NULL 必须保持 monostate, false 不得被读成 true
+TEST_P(ConformanceTest, NullAndBoolRoundTrip) {
+    const db::Row rows[] = {
+        make_order("a", 1, 10),
+        db::Row{std::vector<db::Value>{std::monostate{}, std::string("a"), int64_t{2}, int64_t{20},
+                                       12.5, false}},
+    };
+    session_->upsert(kCollection, rows);
+    const auto result = session_->find(
+        kCollection, {}, db::FindOptions{.sort = {{"order_id", db::SortOrder::Ascending}}});
+    ASSERT_EQ(result.size(), 2u);
+    const db::Row& first = result.rows()[0];
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(first.values()[4]));
+    EXPECT_EQ(std::get<bool>(first.values()[5]), true);
+    const db::Row& second = result.rows()[1];
+    EXPECT_DOUBLE_EQ(std::get<double>(second.values()[4]), 12.5);
+    EXPECT_EQ(std::get<bool>(second.values()[5]), false);
+    ASSERT_EQ(result.columns().size(), 6u);
+    EXPECT_EQ(result.columns()[4].type, db::ValueType::Float64);
+    EXPECT_EQ(result.columns()[5].type, db::ValueType::Bool);
 }
 
 TEST_P(ConformanceTest, RemoveCount) {
@@ -242,8 +283,8 @@ TEST_P(ConformanceTest, SnapshotStableView) {
     session_->upsert(kCollection, seed);
     auto snapshot = session_->begin_snapshot();
     const db::Row late = make_order("a", 2, 20);
-    EXPECT_THROW(session_->upsert(kCollection, std::span<const db::Row>(&late, 1)),
-                 dztrader::Exception);
+    EXPECT_EQ(code_of([&] { session_->upsert(kCollection, std::span<const db::Row>(&late, 1)); }),
+              DZ_EC_PERMISSION_DENIED);
     auto writer = database_->session();
     writer->upsert(kCollection, std::span<const db::Row>(&late, 1));
     const auto result = session_->find(kCollection);
@@ -252,12 +293,93 @@ TEST_P(ConformanceTest, SnapshotStableView) {
     EXPECT_EQ(session_->find(kCollection).size(), 2u);
 }
 
+// 快照作用域内的写守卫: remove 与 begin_transaction 同样必须拒绝
+TEST_P(ConformanceTest, SnapshotRejectsRemoveAndTransaction) {
+    auto snapshot = session_->begin_snapshot();
+    EXPECT_EQ(code_of([&] { (void)session_->remove(kCollection, {}); }), DZ_EC_PERMISSION_DENIED);
+    EXPECT_EQ(code_of([&] { (void)session_->begin_transaction(); }), DZ_EC_PERMISSION_DENIED);
+}
+
+// 显式事务收尾: commit 后换 Session 必须可见, rollback 后必须不可见
+TEST_P(ConformanceTest, TransactionCommitAndRollback) {
+    {
+        auto txn = session_->begin_transaction();
+        const db::Row row = make_order("a", 1, 10);
+        session_->upsert(kCollection, std::span<const db::Row>(&row, 1));
+        txn->commit();
+    }
+    {
+        auto verifier = database_->session();  // 另一连接: 只看得见已提交数据
+        EXPECT_EQ(verifier->find(kCollection).size(), 1u);
+    }
+    {
+        auto txn = session_->begin_transaction();
+        const db::Row row = make_order("a", 2, 20);
+        session_->upsert(kCollection, std::span<const db::Row>(&row, 1));
+        txn->rollback();
+    }
+    auto verifier = database_->session();
+    EXPECT_EQ(verifier->find(kCollection).size(), 1u);
+}
+
+TEST_P(ConformanceTest, NestedTransactionRejected) {
+    auto txn = session_->begin_transaction();
+    EXPECT_EQ(code_of([&] { (void)session_->begin_transaction(); }), DZ_EC_DB_TRANSACTION_FAILED);
+    txn->rollback();
+    auto retry = session_->begin_transaction();  // 拒绝后作用域仍可重新开启
+    retry->commit();
+}
+
 TEST_P(ConformanceTest, ReadOnlyRejectsWrites) {
     auto ro = database_->session(/*read_only=*/true);
     const db::Row row = make_order("a", 1, 1);
-    EXPECT_THROW(ro->upsert(kCollection, std::span<const db::Row>(&row, 1)), dztrader::Exception);
-    EXPECT_THROW((void)ro->begin_transaction(), dztrader::Exception);
+    EXPECT_EQ(code_of([&] { ro->upsert(kCollection, std::span<const db::Row>(&row, 1)); }),
+              DZ_EC_PERMISSION_DENIED);
+    EXPECT_EQ(code_of([&] { (void)ro->remove(kCollection, {}); }), DZ_EC_PERMISSION_DENIED);
+    EXPECT_EQ(code_of([&] { (void)ro->begin_transaction(); }), DZ_EC_PERMISSION_DENIED);
     EXPECT_NO_THROW((void)ro->find(kCollection));
+}
+
+TEST_P(ConformanceTest, UnregisteredCollectionMapsToQueryFailed) {
+    const db::Row row = make_order("a", 1, 1);
+    EXPECT_EQ(code_of([&] { session_->upsert("no_such", std::span<const db::Row>(&row, 1)); }),
+              DZ_EC_DB_QUERY_FAILED);
+    EXPECT_EQ(code_of([&] { (void)session_->find("no_such"); }), DZ_EC_DB_QUERY_FAILED);
+    EXPECT_EQ(code_of([&] { (void)session_->remove("no_such", {}); }), DZ_EC_DB_QUERY_FAILED);
+    EXPECT_EQ(code_of([&] { (void)session_->aggregate("no_such", db::Aggregation{}); }),
+              DZ_EC_DB_QUERY_FAILED);
+}
+
+// 白名单外的过滤字段: 两个驱动共用 compile_filter, 必须映射同一错误码
+TEST_P(ConformanceTest, UnknownFilterFieldMapsToQueryFailed) {
+    EXPECT_EQ(
+        code_of([&] { (void)session_->find(kCollection, db::filters::eq("missing", int64_t{1})); }),
+        DZ_EC_DB_QUERY_FAILED);
+    EXPECT_EQ(code_of([&] {
+                  (void)session_->remove(kCollection, db::filters::eq("missing", int64_t{1}));
+              }),
+              DZ_EC_DB_QUERY_FAILED);
+    db::Aggregation aggregation;
+    aggregation.filter = db::filters::eq("missing", int64_t{1});
+    EXPECT_EQ(code_of([&] { (void)session_->aggregate(kCollection, aggregation); }),
+              DZ_EC_DB_QUERY_FAILED);
+}
+
+// 行宽不匹配: 写失败且不得留下部分数据 (批量路径的原子性)
+TEST_P(ConformanceTest, RowWidthMismatchMapsToWriteFailed) {
+    const db::Row short_row{std::vector<db::Value>{std::monostate{}, std::string("a"), int64_t{1},
+                                                   int64_t{10}, std::monostate{}}};
+    EXPECT_EQ(
+        code_of([&] { session_->upsert(kCollection, std::span<const db::Row>(&short_row, 1)); }),
+        DZ_EC_DB_WRITE_FAILED);
+    EXPECT_EQ(session_->find(kCollection).size(), 0u);
+
+    const db::Row long_row{std::vector<db::Value>{std::monostate{}, std::string("a"), int64_t{1},
+                                                  int64_t{10}, std::monostate{}, true, int64_t{0}}};
+    EXPECT_EQ(
+        code_of([&] { session_->upsert(kCollection, std::span<const db::Row>(&long_row, 1)); }),
+        DZ_EC_DB_WRITE_FAILED);
+    EXPECT_EQ(session_->find(kCollection).size(), 0u);
 }
 
 TEST_P(ConformanceTest, CapabilitiesCoverAllFour) {

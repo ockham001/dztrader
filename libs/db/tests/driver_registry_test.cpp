@@ -5,6 +5,7 @@
  */
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -12,6 +13,7 @@
 #include <random>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 #include <dztrader/core/this_process.h>
@@ -32,6 +34,15 @@ std::filesystem::path unique_db_path(std::string_view name) {
            (std::string(name) + "_" +
             std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
             std::to_string(dist(gen)) + ".db");
+}
+
+/// 注册表是进程级 static: backend 名带 pid + 进程内序号, 使 --gtest_repeat 不撞名
+/// (等价于 §1.5 的 pid/随机后缀要求; 不引入仅测试可见的生产清理 API)
+std::string unique_backend_name(std::string_view prefix) {
+    static std::atomic<uint64_t> next{0};
+    return std::string(prefix) + "_" +
+           std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
+           std::to_string(next.fetch_add(1));
 }
 
 struct FactoryProbe {
@@ -85,9 +96,10 @@ CaughtError catch_error(Fn&& fn) {
 }  // namespace
 
 TEST(DriverRegistryTest, RegisterAndHasDriver) {
-    internal::register_driver("reg_probe", &make_stub);
-    EXPECT_TRUE(internal::has_driver("reg_probe"));
-    EXPECT_FALSE(internal::has_driver("reg_probe_missing"));
+    const std::string backend = unique_backend_name("reg_probe");
+    internal::register_driver(backend, &make_stub);
+    EXPECT_TRUE(internal::has_driver(backend));
+    EXPECT_FALSE(internal::has_driver(backend + "_missing"));
 }
 
 TEST(DriverRegistryTest, EmptyBackendRejected) {
@@ -97,12 +109,13 @@ TEST(DriverRegistryTest, EmptyBackendRejected) {
 }
 
 TEST(DriverRegistryTest, DuplicateBackendRejected) {
-    internal::register_driver("reg_duplicate", &make_stub);
+    const std::string backend = unique_backend_name("reg_duplicate");
+    internal::register_driver(backend, &make_stub);
     const CaughtError error =
-        catch_error([] { internal::register_driver("reg_duplicate", &make_stub); });
+        catch_error([&backend] { internal::register_driver(backend, &make_stub); });
     EXPECT_TRUE(error.caught);
     EXPECT_EQ(error.code, DZ_EC_INVALID_PARAM);
-    EXPECT_EQ(error.message, "driver already registered | backend=reg_duplicate");
+    EXPECT_EQ(error.message, "driver already registered | backend=" + backend);
 }
 
 TEST(DriverRegistryTest, NullFactoryRejected) {
@@ -124,13 +137,14 @@ TEST(DriverRegistryTest, EnsureRegistersBuiltinDriversIdempotently) {
 }
 
 TEST(DriverRegistryTest, CreateDatabaseDispatchesToRegisteredFactory) {
-    internal::register_driver("reg_dispatch", &make_stub);
+    const std::string backend = unique_backend_name("reg_dispatch");
+    internal::register_driver(backend, &make_stub);
     probe() = FactoryProbe{};
-    const db::Config config{.backend = "reg_dispatch", .options = {{"path", "x"}}};
+    const db::Config config{.backend = backend, .options = {{"path", "x"}}};
     const std::unique_ptr<db::Database> database = internal::create_database(config, {});
     ASSERT_NE(database, nullptr);
     EXPECT_EQ(probe().calls, 1);
-    EXPECT_EQ(probe().backend, "reg_dispatch");
+    EXPECT_EQ(probe().backend, backend);
     EXPECT_EQ(probe().option_count, 1u);
     EXPECT_EQ(database->capabilities(), db::Capability::None);
 }

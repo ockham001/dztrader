@@ -10,6 +10,16 @@ using namespace dztrader::db;
 
 namespace {
 
+template <typename Call>
+DzErrorCode code_of(Call&& call) {
+    try {
+        call();
+    } catch (const dztrader::Exception& e) {
+        return e.code();
+    }
+    return DZ_EC_OK;
+}
+
 std::filesystem::path unique_db_path(const std::string& name) {
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -75,7 +85,20 @@ TEST_F(SqliteTxnTest, TransactionCommitPersists) {
     const Row row = make_order("a", 1, "cu", 1);
     session_->upsert("session_orders", std::span<const Row>(&row, 1));
     txn->commit();
-    EXPECT_EQ(session_->find("session_orders").size(), 1u);
+    txn.reset();  // 先释放事务句柄, 再用另一连接验证: commit 空操作时此处必须为 0
+    auto verifier = database_->session();
+    EXPECT_EQ(verifier->find("session_orders").size(), 1u);
+}
+
+// 批量 upsert 第二行列数错误: 整批回滚, 第一行不得落库 (owned scope 的失败分支)
+TEST_F(SqliteTxnTest, BatchUpsertRollsBackOnSecondRowWidthMismatch) {
+    const Row first = make_order("a", 1, "cu", 1);
+    const Row second{std::vector<Value>{std::monostate{}, std::string("a"), std::string("20260917"),
+                                        int64_t{2}, std::string("cu"),
+                                        std::monostate{}}};  // 6 != 7
+    const Row rows[] = {first, second};
+    EXPECT_EQ(code_of([&] { session_->upsert("session_orders", rows); }), DZ_EC_DB_WRITE_FAILED);
+    EXPECT_EQ(session_->find("session_orders").size(), 0u);
 }
 
 TEST_F(SqliteTxnTest, CommitTwiceRejected) {
@@ -121,8 +144,12 @@ TEST_F(SqliteTxnTest, SnapshotSeesStableViewAndRejectsWrites) {
     session_->upsert("session_orders", seed);
     auto snapshot = session_->begin_snapshot();
     const Row late = make_order("a", 2, "cu", 20);
-    EXPECT_THROW(session_->upsert("session_orders", std::span<const Row>(&late, 1)),
-                 dztrader::Exception);
+    EXPECT_EQ(code_of([&] { session_->upsert("session_orders", std::span<const Row>(&late, 1)); }),
+              DZ_EC_PERMISSION_DENIED);
+    // 快照内的 remove 与 begin_transaction 同样必须拒绝
+    EXPECT_EQ(code_of([&] { (void)session_->remove("session_orders", {}); }),
+              DZ_EC_PERMISSION_DENIED);
+    EXPECT_EQ(code_of([&] { (void)session_->begin_transaction(); }), DZ_EC_PERMISSION_DENIED);
     auto writer = database_->session();
     writer->upsert("session_orders", std::span<const Row>(&late, 1));
     const auto result = session_->find("session_orders");
@@ -134,7 +161,9 @@ TEST_F(SqliteTxnTest, SnapshotSeesStableViewAndRejectsWrites) {
 TEST_F(SqliteTxnTest, ReadOnlySessionRejectsWrites) {
     auto ro = database_->session(/*read_only=*/true);
     const Row row = make_order("a", 1, "cu", 1);
-    EXPECT_THROW(ro->upsert("session_orders", std::span<const Row>(&row, 1)), dztrader::Exception);
-    EXPECT_THROW((void)ro->begin_transaction(), dztrader::Exception);
+    EXPECT_EQ(code_of([&] { ro->upsert("session_orders", std::span<const Row>(&row, 1)); }),
+              DZ_EC_PERMISSION_DENIED);
+    EXPECT_EQ(code_of([&] { (void)ro->remove("session_orders", {}); }), DZ_EC_PERMISSION_DENIED);
+    EXPECT_EQ(code_of([&] { (void)ro->begin_transaction(); }), DZ_EC_PERMISSION_DENIED);
     EXPECT_NO_THROW((void)ro->find("session_orders"));
 }

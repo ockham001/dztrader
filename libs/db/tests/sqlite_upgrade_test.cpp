@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <iterator>
 #include <map>
 #include <random>
 #include <string>
@@ -196,18 +197,24 @@ TEST(SqliteUpgradeTest, V1WithDataUpgradesToV5PreservingRows) {
         SQLite::Database db(path.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         create_v1_schema(db);
         // 2 单 2 成 2 合约: 覆盖 v2 重建保数据 / v3 类型搬运 / v4 改名
+        // 第一单/第一成逐列填满互异值, 供 v2 位置式 INSERT 的 23/15 列逐列断言
         db.exec(
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id, "
-            "exchange_id, status, price, volume) "
-            "VALUES ('acc1', '20260726', 1, '000001', 'IF2506', 'CFFEX', '4', 3900.0, 2)");
+            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, external_order_id, "
+            "is_external, instrument_id, exchange_id, direction, position_effect, price_type, "
+            "status, price, volume, volume_traded, volume_canceled, insert_time, update_time, "
+            "error_id, error_msg, strategy_id, remark) "
+            "VALUES ('acc1', '20260726', 1, 'REF1', 'EXT1', 1, 'IF2506', 'CFFEX', '0', '1', '2', "
+            "'4', 3900.5, 2, 1, 1, 1001, 1002, 7, 'err1', 'strat1', 'note1')");
         db.exec(
             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id, "
             "exchange_id, status, price, volume) "
             "VALUES ('acc1', '20260726', 2, '000002', 'IF2506', 'CFFEX', '1', 3899.0, 1)");
         db.exec(
             "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id, "
-            "exchange_id, price, volume) "
-            "VALUES ('acc1', '20260726', 'T1', 1, 'IF2506', 'CFFEX', 3900.0, 1)");
+            "exchange_id, direction, position_effect, price, volume, trade_time, trade_date, "
+            "commission, strategy_id) "
+            "VALUES ('acc1', '20260726', 'T1', 1, 'IF2506', 'CFFEX', '0', '2', 3900.25, 1, 123456, "
+            "20260726, 1.5, 'strat1')");
         db.exec(
             "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id, "
             "exchange_id, price, volume) "
@@ -238,13 +245,53 @@ TEST(SqliteUpgradeTest, V1WithDataUpgradesToV5PreservingRows) {
     // v2..v5 全部应用
     EXPECT_EQ(raw_scalar(path, "SELECT MAX(version) FROM schema_version"), 5);
     EXPECT_EQ(raw_scalar(path, "SELECT COUNT(*) FROM schema_version"), 5);
-    // v2 重建保数据
+    // v2 重建保数据: orders 23 列 / trades 15 列位置式 INSERT 逐列断言
+    // (列错位或丢失时, 只抽验 status/volume/price 不会变红)
     EXPECT_EQ(raw_scalar(path, "SELECT COUNT(*) FROM orders"), 2);
-    EXPECT_EQ(raw_scalar(path, "SELECT status FROM orders WHERE account_id='acc1' AND order_id=1"),
-              4);
-    EXPECT_EQ(raw_scalar(path, "SELECT volume FROM orders WHERE account_id='acc1' AND order_id=1"),
-              2);
+    const std::string order_where = " WHERE account_id='acc1' AND order_id=1";
+    EXPECT_EQ(raw_scalar(path, "SELECT id FROM orders" + order_where), 1);
+    EXPECT_EQ(raw_string(path, "SELECT account_id FROM orders" + order_where), "acc1");
+    EXPECT_EQ(raw_string(path, "SELECT trading_day FROM orders" + order_where), "20260726");
+    EXPECT_EQ(raw_scalar(path, "SELECT order_id FROM orders" + order_where), 1);
+    EXPECT_EQ(raw_string(path, "SELECT order_ref FROM orders" + order_where), "REF1");
+    EXPECT_EQ(raw_string(path, "SELECT external_order_id FROM orders" + order_where), "EXT1");
+    EXPECT_EQ(raw_scalar(path, "SELECT is_external FROM orders" + order_where), 1);
+    EXPECT_EQ(raw_string(path, "SELECT instrument_id FROM orders" + order_where), "IF2506");
+    EXPECT_EQ(raw_string(path, "SELECT exchange_id FROM orders" + order_where), "CFFEX");
+    EXPECT_EQ(raw_string(path, "SELECT direction FROM orders" + order_where), "0");
+    EXPECT_EQ(raw_string(path, "SELECT position_effect FROM orders" + order_where), "1");
+    EXPECT_EQ(raw_string(path, "SELECT price_type FROM orders" + order_where), "2");
+    EXPECT_EQ(raw_string(path, "SELECT status FROM orders" + order_where), "4");
+    EXPECT_DOUBLE_EQ(raw_double(path, "SELECT price FROM orders" + order_where), 3900.5);
+    EXPECT_EQ(raw_scalar(path, "SELECT volume FROM orders" + order_where), 2);
+    EXPECT_EQ(raw_scalar(path, "SELECT volume_traded FROM orders" + order_where), 1);
+    EXPECT_EQ(raw_scalar(path, "SELECT volume_canceled FROM orders" + order_where), 1);
+    EXPECT_EQ(raw_scalar(path, "SELECT insert_time FROM orders" + order_where), 1001);
+    EXPECT_EQ(raw_scalar(path, "SELECT update_time FROM orders" + order_where), 1002);
+    EXPECT_EQ(raw_scalar(path, "SELECT error_id FROM orders" + order_where), 7);
+    EXPECT_EQ(raw_string(path, "SELECT error_msg FROM orders" + order_where), "err1");
+    EXPECT_EQ(raw_string(path, "SELECT strategy_id FROM orders" + order_where), "strat1");
+    EXPECT_EQ(raw_string(path, "SELECT remark FROM orders" + order_where), "note1");
+    EXPECT_EQ(raw_scalar(path, "SELECT seq FROM orders" + order_where), 0);
+
     EXPECT_EQ(raw_scalar(path, "SELECT COUNT(*) FROM trades"), 2);
+    const std::string trade_where = " WHERE account_id='acc1' AND trade_id='T1'";
+    EXPECT_EQ(raw_scalar(path, "SELECT id FROM trades" + trade_where), 1);
+    EXPECT_EQ(raw_string(path, "SELECT account_id FROM trades" + trade_where), "acc1");
+    EXPECT_EQ(raw_string(path, "SELECT trading_day FROM trades" + trade_where), "20260726");
+    EXPECT_EQ(raw_string(path, "SELECT trade_id FROM trades" + trade_where), "T1");
+    EXPECT_EQ(raw_scalar(path, "SELECT order_id FROM trades" + trade_where), 1);
+    EXPECT_EQ(raw_string(path, "SELECT instrument_id FROM trades" + trade_where), "IF2506");
+    EXPECT_EQ(raw_string(path, "SELECT exchange_id FROM trades" + trade_where), "CFFEX");
+    EXPECT_EQ(raw_string(path, "SELECT direction FROM trades" + trade_where), "0");
+    EXPECT_EQ(raw_string(path, "SELECT position_effect FROM trades" + trade_where), "2");
+    EXPECT_DOUBLE_EQ(raw_double(path, "SELECT price FROM trades" + trade_where), 3900.25);
+    EXPECT_EQ(raw_scalar(path, "SELECT volume FROM trades" + trade_where), 1);
+    EXPECT_EQ(raw_scalar(path, "SELECT trade_time FROM trades" + trade_where), 123456);
+    EXPECT_EQ(raw_scalar(path, "SELECT trade_date FROM trades" + trade_where), 20260726);
+    EXPECT_DOUBLE_EQ(raw_double(path, "SELECT commission FROM trades" + trade_where), 1.5);
+    EXPECT_EQ(raw_string(path, "SELECT strategy_id FROM trades" + trade_where), "strat1");
+    EXPECT_EQ(raw_scalar(path, "SELECT seq FROM trades" + trade_where), 0);
     EXPECT_DOUBLE_EQ(raw_double(path, "SELECT price FROM trades WHERE trade_id='T2'"), 3901.5);
     // v3 重建保数据 + 类型搬运 (ASCII '70' -> 1, 文本枚举 '13' -> 13)
     EXPECT_EQ(raw_scalar(path, "SELECT COUNT(*) FROM instruments"), 2);
@@ -382,5 +429,150 @@ TEST(SqliteUpgradeTest, InstrumentsPrimaryKeyRejectsDuplicate) {
             SQLite::Exception);
         EXPECT_EQ(raw_scalar(path, "SELECT COUNT(*) FROM instruments"), 1);
     }
+    remove_db_files(path);
+}
+
+// ============================================================================
+// v2 失败回滚: 整轮迁移包在单事务里 (sqlite_migrations.cpp apply_td_migrations).
+// 成功路径用例无法发现"半迁移": 这里预置缺 seq 列的 positions 表, 使 v2 在
+// orders/trades 重建之后建 idx_positions_acct_seq 时失败, 从而验证此前 DDL/数据
+// 变更随事务整体回滚.
+// ============================================================================
+TEST(SqliteUpgradeTest, V2FailureRollsBackWholeMigration) {
+    const auto path = unique_db_path("dz_sqlite_upgrade_v2_fail");
+    {
+        SQLite::Database db(path.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+        create_v1_schema(db);
+        db.exec(
+            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id, "
+            "exchange_id, status, price, volume) "
+            "VALUES ('acc1', '20260726', 1, '000001', 'IF2506', 'CFFEX', '4', 3900.0, 2)");
+        db.exec(
+            "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id, "
+            "exchange_id, price, volume) "
+            "VALUES ('acc1', '20260726', 'T1', 1, 'IF2506', 'CFFEX', 3900.0, 1)");
+        db.exec("CREATE TABLE positions (account_id TEXT NOT NULL)");
+        db.exec(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
+        db.exec(
+            "INSERT INTO schema_version (version, applied_at) VALUES (1, '2026-01-01T00:00:00Z')");
+    }
+
+    DzErrorCode code = DZ_EC_OK;
+    try {
+        open_and_migrate(path);
+    } catch (const dztrader::Exception& e) {
+        code = e.code();
+    }
+    EXPECT_EQ(code, DZ_EC_DB_MIGRATE_FAILED);
+
+    // 版本停在 v1
+    EXPECT_EQ(raw_scalar(path, "SELECT MAX(version) FROM schema_version"), 1);
+    EXPECT_EQ(raw_scalar(path, "SELECT COUNT(*) FROM schema_version"), 1);
+    // orders 仍是 v1 结构 (无 seq), 旧数据原样
+    const auto order_columns = raw_columns(path, "orders");
+    EXPECT_EQ(order_columns.count("seq"), 0u);
+    EXPECT_EQ(raw_scalar(path, "SELECT COUNT(*) FROM orders"), 1);
+    EXPECT_EQ(raw_scalar(path, "SELECT status FROM orders WHERE order_id=1"), 4);
+    EXPECT_EQ(raw_scalar(path, "SELECT volume FROM orders WHERE order_id=1"), 2);
+    EXPECT_DOUBLE_EQ(raw_double(path, "SELECT price FROM orders WHERE order_id=1"), 3900.0);
+    // trades 仍是 v1 结构 (无 seq), 旧数据原样
+    const auto trade_columns = raw_columns(path, "trades");
+    EXPECT_EQ(trade_columns.count("seq"), 0u);
+    EXPECT_EQ(raw_scalar(path, "SELECT COUNT(*) FROM trades"), 1);
+    EXPECT_EQ(raw_string(path, "SELECT trade_id FROM trades"), "T1");
+    // 无半迁移残留: v2 建过的中间表/后续表都不存在
+    EXPECT_EQ(raw_scalar(path,
+                         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+                         "AND name IN ('orders_v2','trades_v2','trading_accounts')"),
+              0);
+    // 预置的 positions 保持原样 (未补列)
+    EXPECT_EQ(raw_columns(path, "positions").count("seq"), 0u);
+
+    remove_db_files(path);
+}
+
+// ============================================================================
+// v3 product CASE 的 20 个 WHEN 逐个分支 + ELSE 0; 另验证真实期权字段
+// (option_type / v1 option_listed / v1 option_expiry, 均非 -1 哨兵) 原值保留.
+// ============================================================================
+TEST(SqliteUpgradeTest, V3ProductClassMapsEveryCaseBranch) {
+    struct CaseRow {
+        const char* product;
+        int64_t expected;
+    };
+    const CaseRow cases[] = {
+        {"70", 1}, {"79", 2}, {"83", 4},  // ASCII 'F'/'O'/'S'
+        {"F", 1},  {"O", 2},  {"S", 4},   // 字符形态
+        {"1", 1},  {"2", 2},  {"3", 3},   {"4", 4},   {"5", 5},   {"6", 6},   {"7", 7},
+        {"8", 8},  {"9", 9},  {"10", 10}, {"11", 11}, {"12", 12}, {"13", 13}, {"14", 14},
+    };
+    const auto path = unique_db_path("dz_sqlite_upgrade_v3_case");
+    {
+        SQLite::Database db(path.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+        create_v1_schema(db);
+        // v3 目标是 NOT NULL DEFAULT 0, 而 v1 这些列可空: 必须显式给值避免 NULL 搬运失败
+        SQLite::Statement ins(
+            db,
+            "INSERT INTO instruments (instrument_id, exchange_id, product, option_type, "
+            "option_strike, option_listed, option_expiry, option_underlying, min_order_volume, "
+            "max_order_volume, volume_multiple, price_tick) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1.0, 0.0)");
+        auto insert_row = [&](const std::string& id, const std::string& product,
+                              const std::string& option_type, double strike, int64_t listed,
+                              int64_t expiry, const std::string& underlying) {
+            ins.bind(1, id);
+            ins.bind(2, std::string("CFFEX"));
+            ins.bind(3, product);
+            ins.bind(4, option_type);
+            ins.bind(5, strike);
+            ins.bind(6, listed);
+            ins.bind(7, expiry);
+            ins.bind(8, underlying);
+            ins.exec();
+            ins.reset();
+        };
+        for (size_t i = 0; i < std::size(cases); ++i) {
+            insert_row("CASE_" + std::to_string(i), cases[i].product, "0", 0.0, -1, -1, "");
+        }
+        insert_row("CASE_ELSE", "99", "0", 0.0, -1, -1, "");  // ELSE 0
+        // 非哨兵真实值: v3 必须原值搬运, 不得被 CASE WHEN -1 归零
+        insert_row("OPT_REAL", "70", "2", 12.5, 20260101, 20261231, "IF2506");
+        db.exec(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
+        db.exec(
+            "INSERT INTO schema_version (version, applied_at) VALUES (1, '2026-01-01T00:00:00Z')");
+    }
+
+    open_and_migrate(path);
+
+    for (size_t i = 0; i < std::size(cases); ++i) {
+        SCOPED_TRACE(cases[i].product);
+        EXPECT_EQ(
+            raw_scalar(path, "SELECT product_class FROM instruments WHERE instrument_id='CASE_" +
+                                 std::to_string(i) + "'"),
+            cases[i].expected);
+    }
+    EXPECT_EQ(
+        raw_scalar(path, "SELECT product_class FROM instruments WHERE instrument_id='CASE_ELSE'"),
+        0);
+    EXPECT_EQ(
+        raw_scalar(path, "SELECT option_type FROM instruments WHERE instrument_id='OPT_REAL'"), 2);
+    // v1 的 option_listed/option_expiry 在 v3 改名为 listed_date/expiry_date,
+    // expiry_date 再经 v4 改名 delisted_date; 非 -1 哨兵必须原值保留
+    EXPECT_EQ(
+        raw_scalar(path, "SELECT listed_date FROM instruments WHERE instrument_id='OPT_REAL'"),
+        20260101);
+    EXPECT_EQ(
+        raw_scalar(path, "SELECT delisted_date FROM instruments WHERE instrument_id='OPT_REAL'"),
+        20261231);
+    EXPECT_DOUBLE_EQ(
+        raw_double(path, "SELECT option_strike FROM instruments WHERE instrument_id='OPT_REAL'"),
+        12.5);
+    // v3 把 option_underlying 改名为 underlying_id
+    EXPECT_EQ(
+        raw_string(path, "SELECT underlying_id FROM instruments WHERE instrument_id='OPT_REAL'"),
+        "IF2506");
+
     remove_db_files(path);
 }

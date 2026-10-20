@@ -38,7 +38,8 @@ inline constexpr SqlDialect kSqliteDialect{'"', "-1"};
 /// MySQL 方言常量
 inline constexpr SqlDialect kMysqlDialect{'`', "18446744073709551615"};
 
-/// 标识符引用（仅用于 schema 声明的表名/列名，不接受用户输入）
+/// 标识符引用（仅用于 schema 声明的表名/列名，不接受用户输入）；
+/// 内嵌引用符按方言加倍转义（SQL 标准 ""，MySQL 反引号）
 [[nodiscard]] std::string quote_ident(const SqlDialect& dialect, std::string_view ident);
 
 /// schema 字段白名单查找；未注册字段返回 nullptr

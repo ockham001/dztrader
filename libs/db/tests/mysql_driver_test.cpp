@@ -244,18 +244,37 @@ TEST_F(MysqlDriverTest, MigrateRejectsVersionSkew) {
     EXPECT_NO_THROW(same->migrate());
 }
 
-TEST_F(MysqlDriverTest, MigrateRequiresExplicitSchemaVersion) {
-    auto database = db::Database::open(mysql_env::config_for(database_name_), probe_schemas());
+// ---------------------------------------------------------------- 无服务器用例
+// migrate 的版本校验与选项解析都在建连之前完成，必须在 CI 实跑（不依赖 DZ_TEST_MYSQL_*）
+
+TEST(MysqlNoServerTest, MigrateRequiresExplicitSchemaVersion) {
+    const db::Config no_version{.backend = "mysql",
+                                .options = {{"host", "127.0.0.1"}, {"database", "dz_no_server"}}};
+    auto database = db::Database::open(no_version, probe_schemas());
     EXPECT_EQ(code_of([&] { database->migrate(); }), DZ_EC_INVALID_PARAM);
-    EXPECT_EQ(code_of([&] {
-                  (void)db::Database::open(
-                      mysql_env::config_for(database_name_, {{"schema_version", "abc"}}),
-                      probe_schemas());
-              }),
+
+    const db::Config bad_version{
+        .backend = "mysql",
+        .options = {
+            {"host", "127.0.0.1"}, {"database", "dz_no_server"}, {"schema_version", "abc"}}};
+    EXPECT_EQ(code_of([&] { (void)db::Database::open(bad_version, probe_schemas()); }),
               DZ_EC_INVALID_PARAM);
 }
 
-TEST_F(MysqlDriverTest, ConnectFailuresMapToOpenFailed) {
+TEST(MysqlNoServerTest, ConnectFailuresMapToOpenFailed) {
+    // 127.0.0.1:1 无监听（拒绝连接）：session() 建连即失败，映射为 DZ_EC_DB_OPEN_FAILED
+    const db::Config refused{.backend = "mysql",
+                             .options = {{"host", "127.0.0.1"},
+                                         {"port", "1"},
+                                         {"connect_timeout_ms", "1000"},
+                                         {"schema_version", "1"}}};
+    auto database = db::Database::open(refused, probe_schemas());
+    EXPECT_EQ(code_of([&] { (void)database->session(); }), DZ_EC_DB_OPEN_FAILED);
+}
+
+// ---------------------------------------------------------------- 连接与 DDL
+
+TEST_F(MysqlDriverTest, ConnectFailuresWithServerMapToOpenFailed) {
     auto wrong_password = db::Database::open(
         mysql_env::config_for(database_name_,
                               {{"password", "definitely-wrong"}, {"schema_version", "1"}}),
@@ -335,6 +354,23 @@ TEST_F(MysqlDriverTest, RemoveCountsAffectedRows) {
     EXPECT_EQ(session_->find(kCollection).size(), 1u);
     EXPECT_EQ(session_->remove(kCollection, db::Filter{}), 1u) << "无 WHERE 即清表";
     EXPECT_EQ(session_->find(kCollection).size(), 0u);
+}
+
+TEST_F(MysqlDriverTest, UpsertBatchIsAtomicAndEmptySpanIsNoOp) {
+    open_migrated();
+    const db::Row valid = make_row("a", 1, 1.0, true, std::monostate{});
+    // 第二行字段数不足：首行已执行，必须由驱动自开事务整体回滚
+    const db::Row short_row{std::vector<db::Value>{std::monostate{}, std::string("b")}};
+    const db::Row batch[] = {valid, short_row};
+    EXPECT_EQ(code_of([&] { session_->upsert(kCollection, batch); }), DZ_EC_DB_WRITE_FAILED);
+    EXPECT_EQ(mysql_env::scalar(database_name_, "SELECT COUNT(*) FROM mysql_probe"),
+              std::optional<std::string>("0"))
+        << "second row failure must roll back the first row";
+
+    EXPECT_NO_THROW(session_->upsert(kCollection, std::span<const db::Row>{}));
+    EXPECT_EQ(mysql_env::scalar(database_name_, "SELECT COUNT(*) FROM mysql_probe"),
+              std::optional<std::string>("0"))
+        << "empty span is a no-op";
 }
 
 // ---------------------------------------------------------------- 事务与快照

@@ -171,6 +171,12 @@ TEST(MysqlSqlTest, UpsertSelfAssignWhenOnlyAutoIncrement) {
               "INSERT INTO `counter` (`id`) VALUES (?) ON DUPLICATE KEY UPDATE `id`=`id`");
 }
 
+TEST(MysqlSqlTest, UpsertRejectsEmptyFields) {
+    const db::ResourceSchema no_fields{.name = "t", .fields = {}, .indexes = {}};
+    EXPECT_EQ(code_of([&] { (void)internal_ns::build_mysql_upsert_sql(no_fields); }),
+              DZ_EC_INVALID_PARAM);
+}
+
 TEST(MysqlSqlTest, VersionTableShape) {
     EXPECT_EQ(internal_ns::kMysqlSchemaVersionTable, "schema_version");
     const std::string_view ddl = internal_ns::mysql_schema_version_ddl();
