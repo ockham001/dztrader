@@ -188,7 +188,11 @@ protected:
                 if (view.type() != DZ_FRAME_SCHEDULE) {
                     continue;
                 }
-                ids.push_back(view.payload<DzScheduleEvent>().timer_id);
+                const DzTimerId fired = view.payload<DzScheduleEvent>().timer_id;
+                if (fired == guard) {
+                    continue;  // 收集窗口的兜底定时器不是被测对象
+                }
+                ids.push_back(fired);
             }
         }
         (void)dz_schedule_cancel(ctx_, guard);
