@@ -36,6 +36,16 @@ TEST(JsonEnumTest, SerializesAsString) {
     EXPECT_EQ(j.get<std::string>(), "Red");
 }
 
+// 越界值：magic_enum::enum_name 返回空 string_view，to_json 静默产出空串且不抛异常。
+// 宏的现状契约是「序列化不校验范围，反序列化才校验」；此处显式钉住该产物形态，
+// 避免 magic_enum/nlohmann 升级时行为漂移而无人察觉。
+TEST(JsonEnumTest, OutOfRangeValueSerializesAsEmptyString) {
+    nlohmann::json j = static_cast<TestColor>(42);
+    ASSERT_TRUE(j.is_string());
+    EXPECT_EQ(j.get<std::string>(), "");
+    EXPECT_THROW(j.get<TestColor>(), nlohmann::json::exception);
+}
+
 TEST(JsonEnumTest, InvalidEnumStringThrows) {
     nlohmann::json j = "Yellow";
     EXPECT_THROW(j.get<TestColor>(), nlohmann::json::exception);

@@ -64,10 +64,19 @@ TEST(TimerQueue, CancelPreventsTrigger) {
     EXPECT_FALSE(called);
 }
 
-TEST(TimerQueue, CancelInvalidIdNoThrow) {
+TEST(TimerQueue, CancelInvalidIdKeepsExistingTimers) {
     TimerQueue tq;
+    bool called = false;
+    tq.schedule_after(0ms, [&] { called = true; });
+
+    // 无效 id（不存在 / 0）必须是无操作，不能误伤已在队列中的定时器
     EXPECT_NO_THROW(tq.cancel(99999));
     EXPECT_NO_THROW(tq.cancel(0));
+
+    EXPECT_FALSE(called);
+    tq.tick();
+    EXPECT_TRUE(called);
+    EXPECT_TRUE(tq.empty());
 }
 
 TEST(TimerQueue, CancelDoesNotAffectOtherTimers) {
@@ -195,15 +204,23 @@ TEST(TimerQueue, TimerIdsAreUnique) {
 
 // ── 带标签去重调度 ──
 
-TEST(TimerQueue, IgnoredSkipsDuplicateTag) {
+// ignored 语义：同 tag 的第二次调度被完全忽略——沿用原 deadline 和原回调，
+// 不能是「取消旧的、换成新 deadline/回调但复用 id」。
+TEST(TimerQueue, IgnoredSkipsDuplicateTagKeepsOriginalTimer) {
     TimerQueue tq;
-    int count = 0;
-    auto id1 = tq.schedule_after_ignored("tag1", 0ms, [&] { ++count; });
-    auto id2 = tq.schedule_after_ignored("tag1", 0ms, [&] { ++count; });
+    int first_count = 0;
+    int second_count = 0;
+    auto id1 = tq.schedule_after_ignored("tag1", 10s, [&] { ++first_count; });
+    auto id2 = tq.schedule_after_ignored("tag1", 0ms, [&] { ++second_count; });
 
     EXPECT_EQ(id1, id2);
     tq.tick();
-    EXPECT_EQ(count, 1);
+    EXPECT_EQ(first_count, 0);
+    EXPECT_EQ(second_count, 0);  // 第二次传入的回调未被安装
+
+    // 原 10s 定时器仍在队列中（若被 0ms 替换，这里已经触发并变空）
+    ASSERT_FALSE(tq.empty());
+    EXPECT_GT(tq.next_timeout(), 9s);
 }
 
 TEST(TimerQueue, IgnoredDifferentTagsBothSchedule) {
@@ -407,13 +424,17 @@ TEST(TimerQueue, NextTimeoutAfterPartialTick) {
     EXPECT_LE(to, std::chrono::hours(1));
 }
 
-// 回调内取消其他待触发定时器不应崩溃 (迭代器安全)
+// 回调内取消其他待触发定时器不应崩溃 (迭代器安全)。
+// 已到期定时器按插入顺序触发（MultipleTimersTriggerInOrder 已钉住该确定性），
+// 因此先插入的 b 必先执行并置位，随后 cancel 对已 erase 的 id 为无操作。
 TEST(TimerQueue, CancelOtherTimerInCallback) {
     TimerQueue tq;
     bool called_b = false;
     auto id_b = tq.schedule_after(0ms, [&] { called_b = true; });
-    tq.schedule_after(0ms, [&] { tq.cancel(id_b); });  // 回调内取消 b
-    EXPECT_NO_FATAL_FAILURE(tq.tick());                // 不应崩溃 (b 是否已触发取决于顺序)
+    tq.schedule_after(0ms, [&] { tq.cancel(id_b); });
+
+    EXPECT_NO_FATAL_FAILURE(tq.tick());
+    EXPECT_TRUE(called_b);
 }
 
 // 回调内用 replace 重新调度同 tag 不应崩溃
