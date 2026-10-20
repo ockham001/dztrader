@@ -1,3 +1,4 @@
+#include <dztrader/core/this_process.h>
 #include <dztrader/log/log.h>
 #include <cctype>
 #include <exception>
@@ -30,7 +31,7 @@ std::filesystem::path death_dir_file() {
     if (name.empty()) {
         name = "all";
     }
-    return std::filesystem::current_path() / (".dzlog-death-dir-" + name + ".txt");
+    return dztrader::this_process::exe_path().parent_path() / (".dzlog-death-dir-" + name + ".txt");
 }
 
 void set_death_log_dir(const std::filesystem::path& dir) {
