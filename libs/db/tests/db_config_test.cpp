@@ -17,9 +17,11 @@
 
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 namespace {
 
@@ -48,13 +50,24 @@ std::string option(const Config& config, std::string_view key) {
     return it == config.options.end() ? std::string() : it->second;
 }
 
+DzErrorCode resolve_error() {
+    try {
+        (void)dztrader::db::resolve_config("td");
+    } catch (const dztrader::Exception& e) {
+        return e.code();
+    }
+    return DZ_EC_OK;
+}
+
 /// 配置解析套件：临时 DZTRADER_HOME + 临时 configs/database.json。
 class DbConfigTest : public ::testing::Test {
 protected:
     fs::path home_;
     fs::path config_file_;
+    std::optional<std::string> original_home_;
 
     void SetUp() override {
+        original_home_ = dztrader::env::get("DZTRADER_HOME");
         home_ = fs::temp_directory_path() / "dz_test_db_config";
         fs::remove_all(home_);
         fs::create_directories(home_ / "configs");
@@ -64,7 +77,17 @@ protected:
         clear_env();
     }
 
-    void TearDown() override { clear_env(); }
+    void TearDown() override {
+        clear_env();
+        // 恢复调用方传入的 DZTRADER_HOME (ctest 注入 .dztrader_dev), 并清掉临时 home
+        if (original_home_.has_value()) {
+            dztrader::env::set("DZTRADER_HOME", *original_home_);
+        } else {
+            dztrader::env::unset("DZTRADER_HOME");
+        }
+        std::error_code ec;
+        fs::remove_all(home_, ec);
+    }
 
     static void clear_env() {
         for (const char* key :
@@ -166,6 +189,31 @@ TEST_F(DbConfigTest, NonObjectRootThrows) {
     } catch (const dztrader::Exception& e) {
         EXPECT_EQ(DZ_EC_INVALID_PARAM, e.code());
     }
+}
+
+// 结构校验分支: 段/字段类型必须与 config.h 的承诺一致, 一律 DZ_EC_INVALID_PARAM 且不改写文件
+TEST_F(DbConfigTest, StructuralViolationsThrowAndKeepFile) {
+    const std::string cases[] = {
+        R"({"td": 1})",                            // 段非 object
+        R"({"td": {"backend": 5}})",               // backend 非 string
+        R"({"td": {"options": []}})",              // options 非 object
+        R"({"td": {"options": {"path": []}}})",    // option 值为数组
+        R"({"td": {"options": {"path": {}}}})",    // option 值为对象
+        R"({"td": {"options": {"path": null}}})",  // option 值为 null
+    };
+    for (const std::string& content : cases) {
+        SCOPED_TRACE(content);
+        write_file(config_file_, content);
+        EXPECT_EQ(resolve_error(), DZ_EC_INVALID_PARAM);
+        EXPECT_EQ(read_file(config_file_), content);
+    }
+}
+
+// 配置文件不可读/默认段写入失败 -> DZ_EC_SYSTEM (configs 被普通文件占位)
+TEST_F(DbConfigTest, UnwritableConfigsPathMapsToSystem) {
+    fs::remove_all(home_ / "configs");
+    write_file(home_ / "configs", "not a directory");
+    EXPECT_EQ(resolve_error(), DZ_EC_SYSTEM);
 }
 
 // domain 段缺失: 生成该段默认, 保留文件其他段; 已有段不被重写。

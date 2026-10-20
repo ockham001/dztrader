@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <SQLiteCpp/Database.h>
+#include <SQLiteCpp/Statement.h>
+
 #include <dztrader/core/exception.h>
 #include <dztrader/core/this_process.h>
 #include <dztrader/db/database.h>
@@ -7,6 +10,7 @@
 
 #include <filesystem>
 #include <random>
+#include <string>
 
 using namespace dztrader::db;
 
@@ -29,6 +33,12 @@ std::filesystem::path unique_db_path(const std::string& name) {
     return std::filesystem::temp_directory_path() /
            (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
             "_" + std::to_string(dist(gen)) + ".db");
+}
+
+std::string raw_string(const std::filesystem::path& path, const std::string& sql) {
+    SQLite::Database db(path.string(), SQLite::OPEN_READONLY);
+    SQLite::Statement q(db, sql);
+    return q.executeStep() ? q.getColumn(0).getString() : "";
 }
 
 // 集合名避开 td 旧迁移表 orders（其 v1..v5 建表含 order_ref/exchange_id 等额外 NOT NULL 列）
@@ -88,13 +98,20 @@ TEST_F(SqliteSessionTest, FindSortsAndPagesWithSchemaColumns) {
     const Row rows[] = {make_order("a", 1, "cu", 1), make_order("a", 2, "cu", 2),
                         make_order("a", 3, "cu", 3)};
     session_->upsert("session_orders", rows);
-    const auto result = session_->find(
+    // 断言排序列本身 (seq=6): offset=0/limit=1 下升序必须得 1、降序必须得 3,
+    // 原用例取 offset=1 且断言 order_id, 升降序/忽略 ORDER BY 都得同一个 2
+    const auto descending = session_->find(
         "session_orders", {},
-        FindOptions{.sort = {{"seq", SortOrder::Descending}}, .offset = 1, .limit = 1});
-    ASSERT_EQ(result.size(), 1u);
-    EXPECT_EQ(result.rows()[0].get<int64_t>(3), 2);
-    ASSERT_EQ(result.columns().size(), 7u);
-    EXPECT_EQ(result.columns()[0].name, "id");
+        FindOptions{.sort = {{"seq", SortOrder::Descending}}, .offset = 0, .limit = 1});
+    ASSERT_EQ(descending.size(), 1u);
+    EXPECT_EQ(descending.rows()[0].get<int64_t>(6), 3);
+    const auto ascending = session_->find(
+        "session_orders", {},
+        FindOptions{.sort = {{"seq", SortOrder::Ascending}}, .offset = 0, .limit = 1});
+    ASSERT_EQ(ascending.size(), 1u);
+    EXPECT_EQ(ascending.rows()[0].get<int64_t>(6), 1);
+    ASSERT_EQ(descending.columns().size(), 7u);
+    EXPECT_EQ(descending.columns()[0].name, "id");
 }
 
 TEST_F(SqliteSessionTest, FindEmptyStillReturnsSchemaColumns) {
@@ -128,14 +145,17 @@ TEST_F(SqliteSessionTest, AggregateMaxGroupBy) {
 }
 
 TEST_F(SqliteSessionTest, InAndRangeFilters) {
+    // seq=25 在范围 [15,30) 内但 instrument 不在 in 集合: 删掉 in 条件结果会变 2 行
     const Row rows[] = {make_order("a", 1, "cu", 10), make_order("a", 2, "al", 20),
-                        make_order("a", 3, "zn", 30)};
+                        make_order("a", 3, "zn", 30), make_order("a", 4, "zn", 25)};
     session_->upsert("session_orders", rows);
     const Filter f = {filters::gte("seq", 15), filters::lt("seq", 30),
                       filters::in("instrument_id", {"cu", "al"})};
     const auto result = session_->find("session_orders", f);
     ASSERT_EQ(result.size(), 1u);
     EXPECT_EQ(result.rows()[0].get<std::string>(4), "al");
+    const Filter range_only = {filters::gte("seq", 15), filters::lt("seq", 30)};
+    EXPECT_EQ(session_->find("session_orders", range_only).size(), 2u);
 }
 
 TEST_F(SqliteSessionTest, UnknownCollectionMapsToQueryFailed) {
@@ -158,14 +178,56 @@ TEST_F(SqliteSessionTest, UnknownGroupByFieldMapsToQueryFailed) {
               DZ_EC_DB_QUERY_FAILED);
 }
 
-TEST_F(SqliteSessionTest, RealDeclaredColumnReadsIntegerStorageAsDouble) {
-    // SQLite REAL affinity 下 3800.0 可能以 INTEGER 存储；按 schema 类型强制读为 double
+TEST_F(SqliteSessionTest, RealDeclaredColumnStoresIntegerAsReal) {
+    // 事实校正: REAL affinity 会把整数 bind 转成 REAL 存储 (typeof='real'),
+    // 原注释"3800.0 可能以 INTEGER 存储"不成立
     Row row = make_order("a", 9, "cu", 99);
     std::vector<Value> values(row.values().begin(), row.values().end());
     values[5] = int64_t{3800};
     const Row stored{std::move(values)};
     session_->upsert("session_orders", std::span<const Row>(&stored, 1));
+    EXPECT_EQ(raw_string(path_, "SELECT typeof(price) FROM session_orders WHERE order_id=9"),
+              "real");
     const auto result = session_->find("session_orders", filters::eq("order_id", 9));
     ASSERT_EQ(result.size(), 1u);
     EXPECT_DOUBLE_EQ(result.rows()[0].get<double>(5), 3800.0);
+}
+
+// 声明类型为 Float64、实际列却按 INTEGER affinity 建表 (schema 与既有表漂移) 时,
+// read_column 的 SQLITE_INTEGER 分支必须按 double 解码. 真实库中该形态无法由
+// 正常 upsert 产生 (REAL affinity 必然转 REAL), 故用 raw SQLite 预建表制造存储类型.
+TEST(SqliteSessionStorageTypeTest, ReadsIntegerStorageInRealDeclaredColumn) {
+    const auto path = unique_db_path("dz_sqlite_session_int_storage");
+    {
+        SQLite::Database db(path.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+        db.exec(
+            "CREATE TABLE session_orders ("
+            "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "    account_id TEXT NOT NULL,"
+            "    trading_day TEXT NOT NULL,"
+            "    order_id INTEGER NOT NULL,"
+            "    instrument_id TEXT NOT NULL,"
+            "    price INTEGER,"  // 与 schema 声明的 Float64 不同 -> INTEGER 存储
+            "    seq INTEGER NOT NULL)");
+    }
+    auto database = Database::open(
+        Config{.backend = "sqlite", .options = {{"path", path.string()}}}, orders_schema());
+    database->migrate();  // 表已存在: create_missing_collections 跳过建表
+    auto session = database->session();
+    Row row = make_order("a", 9, "cu", 99);
+    std::vector<Value> values(row.values().begin(), row.values().end());
+    values[5] = int64_t{3800};
+    const Row stored{std::move(values)};
+    session->upsert("session_orders", std::span<const Row>(&stored, 1));
+    ASSERT_EQ(raw_string(path, "SELECT typeof(price) FROM session_orders WHERE order_id=9"),
+              "integer");
+    const auto result = session->find("session_orders", filters::eq("order_id", 9));
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_DOUBLE_EQ(result.rows()[0].get<double>(5), 3800.0);
+    session.reset();
+    database.reset();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(path.string() + "-wal", ec);
+    std::filesystem::remove(path.string() + "-shm", ec);
 }
