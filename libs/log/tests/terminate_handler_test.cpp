@@ -76,7 +76,7 @@ std::string read_all_logs(const std::filesystem::path& log_dir) {
         return content;
     }
     for (const auto& entry : std::filesystem::directory_iterator(log_dir, ec)) {
-        if (!entry.is_regular_file()) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".log") {
             continue;
         }
         std::ifstream input(entry.path(), std::ios::binary);
@@ -113,10 +113,18 @@ TEST_F(TerminateHandlerTest, TerminatesProcessViaAbort) {
     EXPECT_DEATH(
         {
             setup_log_at(death_log_dir(), "th_abort");
+            // marker 证明子进程拿到了父进程的日志目录；若 marker 缺失，
+            // 说明跨进程路径传递失败，而不是 handler 没落盘。
+            {
+                std::ofstream marker(death_log_dir() / "marker.txt", std::ios::binary);
+                marker << "child-ran";
+            }
             std::terminate();
         },
         ".*");
 
+    EXPECT_TRUE(std::filesystem::exists(log_dir / "marker.txt"))
+        << "death test child did not receive log dir | dir=" << log_dir;
     const std::string content = read_all_logs(log_dir);
     EXPECT_FALSE(content.empty()) << "terminate handler should write to log | dir=" << log_dir;
     EXPECT_NE(content.find("std::terminate called (no active exception)"), std::string::npos)
@@ -129,6 +137,10 @@ TEST_F(TerminateHandlerTest, LogsUncaughtExceptionBeforeAbort) {
     EXPECT_DEATH(
         {
             setup_log_at(death_log_dir(), "th_uncaught");
+            {
+                std::ofstream marker(death_log_dir() / "marker.txt", std::ios::binary);
+                marker << "child-ran";
+            }
             try {
                 throw std::runtime_error("boom from death test");
             } catch (...) {
@@ -137,6 +149,8 @@ TEST_F(TerminateHandlerTest, LogsUncaughtExceptionBeforeAbort) {
         },
         ".*");
 
+    EXPECT_TRUE(std::filesystem::exists(log_dir / "marker.txt"))
+        << "death test child did not receive log dir | dir=" << log_dir;
     const std::string content = read_all_logs(log_dir);
     EXPECT_FALSE(content.empty()) << "terminate handler should write to log | dir=" << log_dir;
     EXPECT_NE(content.find("uncaught exception"), std::string::npos) << "log content: " << content;

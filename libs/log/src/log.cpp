@@ -23,17 +23,27 @@ namespace {
 /// 用 SEH __try/__except 包裹 boost::stacktrace 调用，使其在信号/terminate 上下文中
 /// 偶发触发的异常（如无效符号访问）被吞掉，仍能记录 reason 便于事后排查。
 /// 注意：MSVC 不允许同一函数中既有 __try/__except 又有带析构函数的 C++ 栈对象，
-/// 故拆分为 impl (含 boost::stacktrace 对象) + safe (含 __try/__except, 仅 POD/引用) 两层。
+/// 故拆分为 impl (含 boost::stacktrace 对象) + seh (仅 __try/__except 与引用) +
+/// safe (C++ try/catch) 三层。SEH 不捕获 C++ 异常，safe 层必须同时兜住，
+/// 否则 boost::stacktrace 抛 bad_alloc 等 C++ 异常时 handler 会跳过落盘。
 void capture_stacktrace_impl(std::string& out) {
     auto st = boost::stacktrace::stacktrace();
     out = boost::stacktrace::to_string(st);
 }
 
-bool capture_stacktrace_safe(std::string& out) {
+bool capture_stacktrace_seh(std::string& out) {
     __try {
         capture_stacktrace_impl(out);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool capture_stacktrace_safe(std::string& out) {
+    try {
+        return capture_stacktrace_seh(out);
+    } catch (...) {
         return false;
     }
 }
