@@ -32,6 +32,11 @@ void expect_abandoned_recovery(const std::string& mutex_name, Stop stop) {
 
     stop(proc);
     int status = wait_with_timeout(proc, std::chrono::seconds(5));
+    if (status == -1) {
+        // Windows 的 request_exit/interrupt 对无控制台子进程可能无效；
+        // wait_with_timeout 超时时已 terminate，再等一次确认进程死亡。
+        status = wait_with_timeout(proc, std::chrono::seconds(5));
+    }
     ASSERT_NE(status, -1) << "helper still running after stop request";
     EXPECT_FALSE(proc.running()) << "helper still running after stop request";
 
