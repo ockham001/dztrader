@@ -7,14 +7,17 @@
 #include <dztrader/core/this_process.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/frame_view.h>
+#include <dztrader/shm/named_semaphore.h>
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
 
 #include "output_limit.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -91,6 +94,43 @@ protected:
         const auto view = dztrader::shm::FrameView(frame);
         EXPECT_EQ(view.type(), type);
         return frame + sizeof(DzFrameHeader);
+    }
+
+    /// 排空本策略信号量的残留计数: 通道写帧 (notify_subscribers) 与告警都会 notify
+    /// 本策略信号量, 用例间/跨运行残留会让 dz_wait 提前返回。非阻塞 wait_for(0)
+    /// 逐个消费, 直至计数为 0 (排空后才可断言「下一次 dz_wait 必须阻塞」)。
+    void drain_signal() {
+        dztrader::shm::NamedSemaphore sem(std::string(dztrader::STRATEGY_PREFIX) + "." +
+                                          dztrader::this_process::exe_stem());
+        while (sem.wait_for(0)) {
+        }
+    }
+
+    /// 把事件通道推到当前页末尾 (只剩 8 字节), 并在下一页文件名处放一个目录,
+    /// 使跨页 get_page 必然失败: 后续 open_frame 返回 nullptr。不删除/改写已映射页
+    /// 文件 (Windows 下映射中的文件不可删), 因此对 Windows/Linux 同时有效。
+    void break_event_channel_page_growth() {
+        auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_only(
+            dztrader::shm::channel_name(dztrader::CHANNEL_NAME_EVENT), home_ + "/shm"));
+        const uint64_t page_size = meta->page_size();
+        const uint64_t offset = meta->next_write_pos()->load() % page_size;
+        // 帧长 = 帧头 + data_size; 结束时 nwp 距页尾恰好 8 字节 (不足一帧帧头)
+        const uint64_t filler_size = page_size - offset - sizeof(DzFrameHeader) - 8;
+        ASSERT_EQ(filler_size % 8, 0u);
+        MultiWriter writer = MultiWriter::create(meta, "trade_test_page_filler");
+        std::byte* raw = writer.open_frame(DZ_FRAME_NOTIFY_UI, static_cast<uint32_t>(filler_size));
+        ASSERT_NE(raw, nullptr);
+        writer.close_frame();
+        const uint64_t nwp = meta->next_write_pos()->load();
+        ASSERT_EQ(nwp % page_size, page_size - 8);
+
+        // 本帧起点仍在当前页, 下一次写必然跨到下一页
+        const auto next_page_path =
+            meta->page_dir() / std::format("{:08d}.dat", nwp / page_size + 1);
+        std::error_code ec;
+        ASSERT_TRUE(std::filesystem::create_directory(next_page_path, ec)) << ec.message();
+        while (probe_->next_frame() != nullptr) {
+        }  // 消费填充帧, 之后 probe 流必须保持为空
     }
 };
 
@@ -318,18 +358,62 @@ TEST(DzErrstrTest, MapsDbAndNotImplementedCodes) {
     EXPECT_STREQ(dz_errstr(-99999), "unknown error");
 }
 
+TEST_F(TradeApiTest, PlaceOrderFailsWhenEventChannelCannotGrow) {
+    break_event_channel_page_growth();
+    // open_frame 跨页失败 (通道无法扩展): 返回 -1 + 底层错误码, 不写帧
+    EXPECT_EQ(dz_place_order(ctx_, "CTP001", "IF2401", DZ_DIRECTION_LONG, DZ_PRICE_LIMIT, 1, 1,
+                             DZ_POSITION_EFFECT_OPEN),
+              -1);
+    EXPECT_EQ(dz_errcode(), DZ_EC_SHM_OPEN_FAILED);
+    EXPECT_EQ(probe_->next_frame(), nullptr);
+}
+
+TEST_F(TradeApiTest, CancelOrderFailsWhenEventChannelCannotGrow) {
+    break_event_channel_page_growth();
+    EXPECT_FALSE(dz_cancel_order(ctx_, "CTP001", 42));
+    EXPECT_EQ(dz_errcode(), DZ_EC_SHM_OPEN_FAILED);
+    EXPECT_EQ(probe_->next_frame(), nullptr);
+}
+
 TEST_F(TradeApiTest, WakeupWakesWait) {
-    dz_wakeup(ctx_);  // 投递一次信号量
-    dz_wait(ctx_);    // 已有计数应立即返回 (挂起即失败)
+    drain_signal();
+    dz_wakeup(ctx_);  // 投递一次信号量计数
+    const auto t0 = std::chrono::steady_clock::now();
+    dz_wait(ctx_);  // 已有计数: 必须立即返回 (阻塞即证明计数丢失)
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    EXPECT_LT(elapsed, std::chrono::milliseconds(500));
+
+    // 计数已被消费: 下一次 dz_wait 必须阻塞 (未阻塞说明信号量未计数/消费无效)。
+    // 断死由 ctest TIMEOUT 兜底; 正常路径下方 dz_wakeup 必定解除阻塞。
+    std::atomic<bool> returned{false};
+    std::thread waiter([this, &returned] {
+        dz_wait(ctx_);
+        returned = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_FALSE(returned.load());
+    dz_wakeup(ctx_);
+    waiter.join();
+    EXPECT_TRUE(returned.load());
 }
 
 TEST_F(TradeApiTest, WaitReturnsAfterWakeup) {
-    std::thread waker([this]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    drain_signal();
+    // waker 在 delay 后置位并投递信号量: 返回时 notified 必为 true, 且耗时不低于
+    // 下界 — dz_wait 未阻塞/立即返回两种缺陷都会变红。
+    constexpr auto kDelay = std::chrono::milliseconds(100);
+    std::atomic<bool> notified{false};
+    std::thread waker([this, &notified, kDelay]() {
+        std::this_thread::sleep_for(kDelay);
+        notified = true;
         dz_wakeup(ctx_);
     });
-    dz_wait(ctx_);  // 阻塞至 waker 投递信号量
+    const auto t0 = std::chrono::steady_clock::now();
+    dz_wait(ctx_);
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
     waker.join();
+    EXPECT_TRUE(notified.load());
+    EXPECT_GE(elapsed, std::chrono::milliseconds(50));
 }
 
 }  // namespace

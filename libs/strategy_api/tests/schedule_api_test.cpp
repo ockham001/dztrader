@@ -2,6 +2,7 @@
 
 #include <dztrader/api.h>
 #include <dztrader/core/core_data_type.h>
+#include <dztrader/core/core_struct.h>
 #include <dztrader/core/env.h>
 #include <dztrader/core/string_util.h>
 #include <dztrader/date_time/date_time.h>
@@ -20,6 +21,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
@@ -156,16 +158,56 @@ protected:
             dz_wakeup(ctx_);
         });
     }
+
+    /// 阻塞等待到 steady_clock 截止点 (定时器到期)。dz_wait 可能被残留信号量计数
+    /// 提前唤醒, 故循环至截止点; 不以墙钟 sleep 当同步手段。
+    void wait_until(std::chrono::steady_clock::time_point deadline) {
+        while (std::chrono::steady_clock::now() < deadline) {
+            dz_wait(ctx_);
+        }
+    }
+
+    /// 在 duration_ms 窗口内收集全部定时器触发 ID (守卫定时器保证 dz_wait 会返回)。
+    std::vector<DzTimerId> collect_timer_ids(uint32_t duration_ms) {
+        std::vector<DzTimerId> ids;
+        const DzTimerId guard = dz_schedule_after(ctx_, static_cast<int32_t>(duration_ms) + 500);
+        if (guard == DZ_TIMER_INVALID) {
+            ADD_FAILURE() << "guard schedule failed: " << dz_errmsg();
+            return ids;
+        }
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(duration_ms);
+        while (std::chrono::steady_clock::now() < deadline) {
+            dz_wait(ctx_);
+            for (;;) {
+                const void* frame = dz_next_event(ctx_);
+                if (frame == nullptr) {
+                    break;
+                }
+                const auto view = FrameView(static_cast<const std::byte*>(frame));
+                if (view.type() != DZ_FRAME_SCHEDULE) {
+                    continue;
+                }
+                ids.push_back(view.payload<DzScheduleEvent>().timer_id);
+            }
+        }
+        (void)dz_schedule_cancel(ctx_, guard);
+        return ids;
+    }
 };
 
 // ── dz_schedule_after / dz_schedule_every ──
 
 TEST_F(ScheduleApiTest, ScheduleAfterFiresOnceWithTimerFrame) {
+    const auto scheduled_at = std::chrono::steady_clock::now();
     const DzTimerId id = dz_schedule_after(ctx_, 30);
     ASSERT_NE(id, DZ_TIMER_INVALID);
     const auto* ev = wait_timer_frame(id, 1500);
+    const auto elapsed = std::chrono::steady_clock::now() - scheduled_at;
     ASSERT_NE(ev, nullptr);
     EXPECT_EQ(ev->timer_id, id);
+    // 触发时刻下界: "到期前/立即触发" 的实现必红
+    EXPECT_GE(elapsed, std::chrono::milliseconds(30));
     // 一次性: 不再触发
     EXPECT_EQ(wait_timer_frame(id, 300), nullptr);
     // 已触发: cancel 返回 false + TIMER_NOT_FOUND
@@ -183,12 +225,17 @@ TEST_F(ScheduleApiTest, ScheduleRejectsInvalidDelay) {
 }
 
 TEST_F(ScheduleApiTest, ScheduleEveryFiresRepeatedlyAndCancelStops) {
+    const auto scheduled_at = std::chrono::steady_clock::now();
     const DzTimerId id = dz_schedule_every(ctx_, 30);
     ASSERT_NE(id, DZ_TIMER_INVALID);
     for (int i = 0; i < 3; ++i) {
         const auto* ev = wait_timer_frame(id, 1500);
+        const auto elapsed = std::chrono::steady_clock::now() - scheduled_at;
         ASSERT_NE(ev, nullptr);
         EXPECT_EQ(ev->timer_id, id);
+        // 第 i+1 次触发不得早于 (i+1)*delay (绝对下界, 不受观测线程调度延迟影响):
+        // 立即触发或间隔塌缩的实现必红
+        EXPECT_GE(elapsed, std::chrono::milliseconds(30 * (i + 1)));
     }
     EXPECT_TRUE(dz_schedule_cancel(ctx_, id));
     EXPECT_EQ(wait_timer_frame(id, 300), nullptr);
@@ -205,15 +252,42 @@ TEST_F(ScheduleApiTest, ScheduleRejectsInvalidTimeOfDay) {
     EXPECT_EQ(dz_errcode(), DZ_EC_INVALID_PARAM);
 }
 
+TEST_F(ScheduleApiTest, ScheduleAcceptsTimeOfDayBounds) {
+    // 契约 strategy §SCHEDULE: 参数为距午夜毫秒数, 合法区间端点 [0, 86_399_999] 必须接受
+    const DzTimerId midnight = dz_schedule_at(ctx_, 0);
+    ASSERT_NE(midnight, DZ_TIMER_INVALID) << dz_errmsg();
+    const DzTimerId last_ms = dz_schedule_at(ctx_, 86'399'999);
+    ASSERT_NE(last_ms, DZ_TIMER_INVALID) << dz_errmsg();
+    EXPECT_NE(midnight, last_ms);
+    // 均未到期 (排到次日), 仍可取消
+    EXPECT_TRUE(dz_schedule_cancel(ctx_, midnight));
+    EXPECT_TRUE(dz_schedule_cancel(ctx_, last_ms));
+}
+
 TEST_F(ScheduleApiTest, ScheduleAtFiresAtNextOccurrence) {
     const int32_t now_tod = dztrader::DateTime::local_now().millisecs_since_midnight();
     const int32_t target = (now_tod + 1000) % 86'400'000;
+    const auto scheduled_at = std::chrono::steady_clock::now();
     const DzTimerId id = dz_schedule_at(ctx_, target);
     ASSERT_NE(id, DZ_TIMER_INVALID);
     const auto* ev = wait_timer_frame(id, 3000);
+    const auto elapsed = std::chrono::steady_clock::now() - scheduled_at;
     ASSERT_NE(ev, nullptr);
     EXPECT_EQ(ev->timer_id, id);
+    // 触发时刻下界: 目标 = 当前时刻 + ~1s, 立即触发必红
+    EXPECT_GE(elapsed, std::chrono::milliseconds(900));
     EXPECT_EQ(wait_timer_frame(id, 300), nullptr);  // 一次性
+}
+
+TEST_F(ScheduleApiTest, ScheduleAtCurrentTimeOfDayDeferredToNextDay) {
+    // next_time_of_day_delay 的 delta <= 0 分支 (已过/恰好等于当前时刻) 必须排到次日,
+    // 不得立即触发。用「窗口内无定时器帧」确定性锚定, 不依赖午夜前 1 秒。
+    const int32_t now_tod = dztrader::DateTime::local_now().millisecs_since_midnight();
+    const DzTimerId id = dz_schedule_at(ctx_, now_tod);
+    ASSERT_NE(id, DZ_TIMER_INVALID) << dz_errmsg();
+    const auto ids = collect_timer_ids(300);
+    EXPECT_TRUE(ids.empty()) << "timer fired immediately instead of next day";
+    EXPECT_TRUE(dz_schedule_cancel(ctx_, id));  // 仍在注册表 (未触发)
 }
 
 TEST_F(ScheduleApiTest, ScheduleDailyFiresFirstOccurrence) {
@@ -224,6 +298,15 @@ TEST_F(ScheduleApiTest, ScheduleDailyFiresFirstOccurrence) {
     const auto* ev = wait_timer_frame(id, 3000);
     ASSERT_NE(ev, nullptr);
     EXPECT_EQ(ev->timer_id, id);
+
+    // 首次触发后按 wall clock 重算次日: 排一个短 after 并排空事件, 窗口内只允许
+    // 短定时器触发 — Daily 立即重触发/重排失败导致保持到期, 都会在这里出帧。
+    const DzTimerId short_id = dz_schedule_after(ctx_, 30);
+    ASSERT_NE(short_id, DZ_TIMER_INVALID);
+    const auto ids = collect_timer_ids(300);
+    ASSERT_EQ(ids.size(), 1u) << "unexpected timer fires after daily first occurrence";
+    EXPECT_EQ(ids.front(), short_id);
+
     EXPECT_TRUE(dz_schedule_cancel(ctx_, id));  // 已重排到次日, cancel 停掉
 }
 
@@ -295,11 +378,11 @@ TEST_F(ScheduleApiTest, PreloadMdShmOwnSourceSchedulesInternalTimer) {
 TEST_F(ScheduleApiTest, UserFrameTakesPriorityOverBufferedTimerFrame) {
     const DzTimerId tid = dz_schedule_after(ctx_, 20);
     ASSERT_NE(tid, DZ_TIMER_INVALID);
-    // 先确保定时器已到期 (dz_wait 可能被残留信号量计数提前唤醒, 不能依赖其等待)
-    std::this_thread::sleep_for(std::chrono::milliseconds(30));
-    dz_wait(ctx_);  // tick: 定时器帧合成进缓冲 (未领取)
+    // 等到定时器确实到期 (dz_wait 可能被残留信号量计数提前唤醒, 故循环至截止点);
+    // +5ms 余量覆盖调度调用本身耗时, 保证 dz_next_event 首次 tick 即可产出触发帧
+    wait_until(std::chrono::steady_clock::now() + std::chrono::milliseconds(25));
 
-    // 用户帧到达: 优先于已缓冲定时器帧返回
+    // 用户帧到达: 优先于已到期定时器帧返回
     emit_ext_inst(DZ_FRAME_UI_INPUT, dz_strategy_id(ctx_));
     const void* frame = dz_next_event(ctx_);
     ASSERT_NE(frame, nullptr);
@@ -431,6 +514,93 @@ TEST_F(ScheduleApiTest, UiDomainTdFramesIntercepted) {
         emit_struct(type, dummy);
         EXPECT_EQ(dz_next_event(ctx_), nullptr)
             << "frame type " << type << " should be intercepted";
+    }
+}
+
+// ── 契约 strategy《策略 SDK 事件拦截总则》逐项锚定 ──
+
+namespace {
+
+enum class FrameLayout {
+    kBasic,    ///< 仅帧头 + struct payload
+    kExt,      ///< 帧头 + 无 instance_id 扩展头
+    kExtInst,  ///< 帧头 + 含 instance_id 扩展头
+};
+
+struct InterceptedFrameCase {
+    const char* name;
+    DzFrameType type;
+    FrameLayout layout;
+    const char* instance;     ///< kExtInst: 帧头 instance_id
+    const char* strategy_id;  ///< kBasic 定向帧: payload strategy_id
+};
+
+}  // namespace
+
+TEST_F(ScheduleApiTest, PlatformFramesInterceptedPerContract) {
+    // 拦截总则 (契约 strategy §策略 SDK 事件拦截总则): 非本策略不可见的帧一律丢弃,
+    // 逐项 emit 并断言 dz_next_event 为 nullptr。
+    const InterceptedFrameCase cases[] = {
+        {"NOTIFY_MD_STOPPED_own", DZ_FRAME_NOTIFY_MD_STOPPED, FrameLayout::kExtInst, "test_md",
+         nullptr},
+        {"NOTIFY_MD_STOPPED_other", DZ_FRAME_NOTIFY_MD_STOPPED, FrameLayout::kExtInst, "other_md",
+         nullptr},
+        {"ORDER_REPORT_other_strategy", DZ_FRAME_ORDER_REPORT, FrameLayout::kBasic, nullptr,
+         "other_strategy"},
+        {"ORDER_REPORT_empty_strategy", DZ_FRAME_ORDER_REPORT, FrameLayout::kBasic, nullptr, ""},
+        {"TRADE_REPORT_other_strategy", DZ_FRAME_TRADE_REPORT, FrameLayout::kBasic, nullptr,
+         "other_strategy"},
+        {"TRADE_REPORT_empty_strategy", DZ_FRAME_TRADE_REPORT, FrameLayout::kBasic, nullptr, ""},
+        {"UI_INPUT_other_strategy", DZ_FRAME_UI_INPUT, FrameLayout::kExtInst, "other_strategy",
+         nullptr},
+        {"SHUTDOWN_other_strategy", DZ_FRAME_SHUTDOWN, FrameLayout::kExtInst, "other_strategy",
+         nullptr},
+        {"OUTPUT_UI_echo_other_strategy", DZ_FRAME_OUTPUT_UI, FrameLayout::kExtInst,
+         "other_strategy", nullptr},
+        {"SET_LOGICAL_POSITION_echo_other_strategy", DZ_FRAME_SET_LOGICAL_POSITION,
+         FrameLayout::kBasic, nullptr, "other_strategy"},
+        // 其余平台帧: 日志/SHM 配置、进程控制、md 控制、TD 控制
+        {"NOTIFY_UI", DZ_FRAME_NOTIFY_UI, FrameLayout::kExt, nullptr, nullptr},
+        {"SET_LOG_CONFIG", DZ_FRAME_SET_LOG_CONFIG, FrameLayout::kBasic, nullptr, nullptr},
+        {"RTN_PROCESS_STATUS", DZ_FRAME_RTN_PROCESS_STATUS, FrameLayout::kExtInst, "dzmaster",
+         nullptr},
+        {"REQUEST_MD_CONNECT", DZ_FRAME_REQUEST_MD_CONNECT, FrameLayout::kExtInst, "test_md",
+         nullptr},
+        {"NOTIFY_TD_STARTED", DZ_FRAME_NOTIFY_TD_STARTED, FrameLayout::kExtInst, "dztd_ctp",
+         nullptr},
+        {"TD_RTN_STATUS", DZ_FRAME_TD_RTN_STATUS, FrameLayout::kExtInst, "dztd_ctp", nullptr},
+    };
+
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.name);
+        switch (c.layout) {
+            case FrameLayout::kExtInst:
+                emit_ext_inst(c.type, c.instance);
+                break;
+            case FrameLayout::kExt:
+                emit_ext(c.type);
+                break;
+            case FrameLayout::kBasic:
+                if (c.type == DZ_FRAME_ORDER_REPORT) {
+                    DzOrderReport rpt{};
+                    dztrader::copy_string(rpt.strategy_id, c.strategy_id, true);
+                    emit_struct(c.type, rpt);
+                } else if (c.type == DZ_FRAME_TRADE_REPORT) {
+                    DzTradeReport rpt{};
+                    dztrader::copy_string(rpt.strategy_id, c.strategy_id, true);
+                    emit_struct(c.type, rpt);
+                } else if (c.type == DZ_FRAME_SET_LOGICAL_POSITION) {
+                    DzLogicalPosition pos{};
+                    dztrader::copy_string(pos.strategy_id, c.strategy_id, true);
+                    emit_struct(c.type, pos);
+                } else {
+                    DzShmPreload dummy{};
+                    emit_struct(c.type, dummy);
+                }
+                break;
+        }
+        EXPECT_EQ(dz_next_event(ctx_), nullptr)
+            << "frame type " << c.type << " should be intercepted";
     }
 }
 
@@ -634,7 +804,9 @@ TEST_F(ScheduleApiTest, ShutdownClearsDeferredTimerFrames) {
     for (int i = 0; i < kCount; ++i) {
         ASSERT_NE(dz_schedule_after(ctx_, 20), DZ_TIMER_INVALID);
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    // 等到全部定时器到期 (dz_wait 可能被残留计数提前唤醒, 循环至截止点);
+    // +5ms 余量覆盖 33 次调度调用耗时, 保证首次 tick 全部到期进缓冲
+    wait_until(std::chrono::steady_clock::now() + std::chrono::milliseconds(25));
 
     int delivered = 0;
     while (delivered < kBufferSlots) {
