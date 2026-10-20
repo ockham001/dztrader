@@ -22,10 +22,16 @@ TEST(ToUtf8FromSystem, AsciiUnchanged) {
     EXPECT_EQ(to_utf8_from_system("hello world"), "hello world");
 }
 
-TEST(ToUtf8FromSystem, DoesNotCrashOnInvalidBytes) {
-    // 0xFF 超出 GBK 首字节上限 (0xFE), 为无效字节
+TEST(ToUtf8FromSystem, InvalidBytesReturnUsableString) {
+    // 0xFF 超出 GBK 首字节上限 (0xFE), 为无效字节。
+    // 契约: 失败时返回原串或带替换字符的 UTF-8, 不返回空串。
     const std::string invalid = std::string("\xFF\xFE\x80", 3);
-    EXPECT_NO_THROW((void)to_utf8_from_system(invalid));
+    const std::string result = to_utf8_from_system(invalid);
+#ifndef _WIN32
+    EXPECT_EQ(result, invalid);  // Linux 直返原串
+#else
+    EXPECT_FALSE(result.empty());
+#endif
 }
 
 #ifdef _WIN32
@@ -73,10 +79,15 @@ TEST(ToUtf8FromGbk, AsciiUnchanged) {
     EXPECT_EQ(to_utf8_from_gbk("hello world"), "hello world");
 }
 
-TEST(ToUtf8FromGbk, DoesNotCrashOnInvalidBytes) {
-    // 无效 GBK 字节, 必须不崩溃 (可乱码, 可返回原串)
+TEST(ToUtf8FromGbk, InvalidBytesReturnUsableString) {
+    // 无效 GBK 字节: 契约要求失败时返回原串或带替换字符的 UTF-8, 不返回空串。
     const std::string invalid = std::string("\xFF\xFE\x80", 3);
-    EXPECT_NO_THROW((void)to_utf8_from_gbk(invalid));
+    const std::string result = to_utf8_from_gbk(invalid);
+#ifndef _WIN32
+    EXPECT_EQ(result, invalid);  // Linux 直返原串
+#else
+    EXPECT_FALSE(result.empty());
+#endif
 }
 
 #ifdef _WIN32

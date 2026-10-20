@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 namespace paths = dztrader::paths;
+namespace env = dztrader::env;
 
 namespace {
 
@@ -26,67 +27,114 @@ std::filesystem::path unique_temp_dir(std::string_view name) {
            (std::string(name) + "_" + std::to_string(rd()));
 }
 
-/// 临时切换 DZTRADER_HOME 并重置 paths 缓存；析构时恢复环境并再次重置。
-class ScopedHome {
-public:
-    explicit ScopedHome(const std::filesystem::path& home)
-        : orig_(dztrader::env::get("DZTRADER_HOME")) {
-        dztrader::env::set("DZTRADER_HOME", home.string());
-        paths::reset_for_test();
-    }
-
-    ~ScopedHome() {
-        if (orig_) {
-            dztrader::env::set("DZTRADER_HOME", *orig_);
-        } else {
-            dztrader::env::unset("DZTRADER_HOME");
-        }
-        paths::reset_for_test();
-    }
-
-    ScopedHome(const ScopedHome&) = delete;
-    ScopedHome& operator=(const ScopedHome&) = delete;
-
-private:
-    std::optional<std::string> orig_;
-};
-
 }  // namespace
+
+/// 每个用例独占一个 DZTRADER_HOME；TearDown 恢复 test-base 注入的原值并清缓存。
+///
+/// paths::* 的缓存在 path.cpp 内由 g_cache 持有（不再使用 magic static），
+/// reset_for_test() 是唯一的清缓存入口。用例不再依赖执行顺序，也不再依赖
+/// test-base 注入值作为被测输入。
+class PathsTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        dztrader_home_ = env::get("DZTRADER_HOME");
+#ifdef _WIN32
+        os_home_key_ = "USERPROFILE";
+#else
+        os_home_key_ = "HOME";
+#endif
+        os_home_ = env::get(os_home_key_);
+
+        test_home_ = unique_temp_dir("dztrader_test_home");
+        env::set("DZTRADER_HOME", test_home_.string());
+        paths::reset_for_test();
+    }
+
+    void TearDown() override {
+        paths::reset_for_test();
+        restore_env("DZTRADER_HOME", dztrader_home_);
+        restore_env(os_home_key_, os_home_);
+        std::error_code ec;
+        std::filesystem::remove_all(test_home_, ec);
+    }
+
+    static void restore_env(std::string_view key, const std::optional<std::string>& value) {
+        if (value.has_value()) {
+            env::set(key, *value);
+        } else {
+            env::unset(key);
+        }
+    }
+
+    std::optional<std::string> dztrader_home_;
+    std::optional<std::string> os_home_;
+    std::string os_home_key_;
+    std::filesystem::path test_home_;
+};
 
 // ---------------------------------------------------------------------------
 // home() — DZTRADER_HOME 已设置
 // ---------------------------------------------------------------------------
 
-TEST(PathsTest, HomeFromEnvVar) {
-    const auto test_home = unique_temp_dir("dztrader_test_home");
-    {
-        ScopedHome guard(test_home);
-        EXPECT_EQ(paths::home(), test_home);
-    }
-    std::filesystem::remove_all(test_home);
+TEST_F(PathsTest, HomeFromEnvVar) {
+    EXPECT_EQ(paths::home(), test_home_);
+    EXPECT_TRUE(std::filesystem::exists(test_home_));
+}
+
+// ---------------------------------------------------------------------------
+// home() — DZTRADER_HOME 是相对路径时归一化为绝对路径
+// ---------------------------------------------------------------------------
+
+TEST_F(PathsTest, RelativeHomeIsNormalized) {
+    const auto relative =
+        std::filesystem::path(unique_temp_dir("dztrader_test_rel_home").filename());
+    const auto expected = std::filesystem::absolute(relative);
+
+    env::set("DZTRADER_HOME", relative.string());
+    paths::reset_for_test();
+
+    EXPECT_TRUE(paths::home().is_absolute());
+    EXPECT_EQ(paths::home(), expected);
+
+    std::error_code ec;
+    std::filesystem::remove_all(expected, ec);
+}
+
+// ---------------------------------------------------------------------------
+// home() — 未设置 DZTRADER_HOME 时回退到 $HOME/.dztrader
+// ---------------------------------------------------------------------------
+
+TEST_F(PathsTest, FallsBackToOsHomeWhenEnvUnset) {
+    const auto fake_os_home = unique_temp_dir("dztrader_test_os_home");
+    env::unset("DZTRADER_HOME");
+    env::set(os_home_key_, fake_os_home.string());
+    paths::reset_for_test();
+
+    EXPECT_EQ(paths::home(), fake_os_home / ".dztrader");
+    EXPECT_TRUE(std::filesystem::exists(fake_os_home / ".dztrader"));
+
+    std::error_code ec;
+    std::filesystem::remove_all(fake_os_home, ec);
 }
 
 // reset_for_test(): 换环境变量后清缓存, 下一次调用按新 home 重新解析。
-TEST(PathsTest, ResetForTestReResolvesHome) {
-    const auto home_a = unique_temp_dir("dztrader_test_home_a");
+TEST_F(PathsTest, ResetForTestReResolvesHome) {
     const auto home_b = unique_temp_dir("dztrader_test_home_b");
-    {
-        ScopedHome guard(home_a);
-        EXPECT_EQ(paths::home(), home_a);
+    EXPECT_EQ(paths::home(), test_home_);
 
-        dztrader::env::set("DZTRADER_HOME", home_b.string());
-        paths::reset_for_test();
-        EXPECT_EQ(paths::home(), home_b);
-    }
-    std::filesystem::remove_all(home_a);
-    std::filesystem::remove_all(home_b);
+    env::set("DZTRADER_HOME", home_b.string());
+    paths::reset_for_test();
+    EXPECT_EQ(paths::home(), home_b);
+
+    std::error_code ec;
+    std::filesystem::remove_all(home_b, ec);
 }
 
 // ---------------------------------------------------------------------------
-// 子目录布局（使用 test-base 注入的 DZTRADER_HOME, 不依赖用例执行顺序）
+// 子目录布局
 // ---------------------------------------------------------------------------
 
-TEST(PathsTest, HomeSubDirs) {
+TEST_F(PathsTest, HomeSubDirs) {
     EXPECT_EQ(paths::configs(), paths::home() / "configs");
     EXPECT_EQ(paths::logs(), paths::home() / "logs");
     EXPECT_EQ(paths::shm(), paths::home() / "shm");
@@ -95,17 +143,17 @@ TEST(PathsTest, HomeSubDirs) {
     EXPECT_EQ(paths::db(), paths::home() / "db");
 }
 
-TEST(PathsTest, HomeIsAbsolute) { EXPECT_TRUE(paths::home().is_absolute()); }
+TEST_F(PathsTest, HomeIsAbsolute) { EXPECT_TRUE(paths::home().is_absolute()); }
 
-TEST(PathsTest, SubDirsAreAbsolute) {
+TEST_F(PathsTest, SubDirsAreAbsolute) {
     EXPECT_TRUE(paths::configs().is_absolute());
     EXPECT_TRUE(paths::logs().is_absolute());
     EXPECT_TRUE(paths::shm().is_absolute());
 }
 
-TEST(PathsTest, HomeNeverEmpty) { EXPECT_FALSE(paths::home().empty()); }
+TEST_F(PathsTest, HomeNeverEmpty) { EXPECT_FALSE(paths::home().empty()); }
 
-TEST(PathsTest, SubDirPathsContainParent) {
+TEST_F(PathsTest, SubDirPathsContainParent) {
     // 所有子目录应以 home() 为前缀
     const auto h = paths::home().string();
     EXPECT_TRUE(paths::configs().string().find(h) == 0);
@@ -120,7 +168,7 @@ TEST(PathsTest, SubDirPathsContainParent) {
 // 缓存一致性：多次调用返回同一引用
 // ---------------------------------------------------------------------------
 
-TEST(PathsTest, CachedReferencesConsistent) {
+TEST_F(PathsTest, CachedReferencesConsistent) {
     const auto& h1 = paths::home();
     const auto& h2 = paths::home();
     EXPECT_EQ(&h1, &h2);
@@ -138,7 +186,7 @@ TEST(PathsTest, CachedReferencesConsistent) {
 // 所有子目录均已创建且可访问
 // ---------------------------------------------------------------------------
 
-TEST(PathsTest, AllSubDirsExist) {
+TEST_F(PathsTest, AllSubDirsExist) {
     EXPECT_TRUE(std::filesystem::exists(paths::configs()));
     EXPECT_TRUE(std::filesystem::exists(paths::shm()));
     EXPECT_TRUE(std::filesystem::exists(paths::logs()));

@@ -4,6 +4,7 @@
 
 #include <dztrader/core/env.h>
 #include <dztrader/core/exception.h>
+#include <dztrader/error.h>
 
 #include <boost/process/v2/environment.hpp>
 
@@ -76,6 +77,32 @@ TEST(EnvTest, UnsetRemovesVar) {
     env::unset("DZTRADER_TEST_VAR_UNSET");
     auto val = env::get("DZTRADER_TEST_VAR_UNSET");
     EXPECT_FALSE(val.has_value());
+}
+
+// ---------------------------------------------------------------------------
+// env::set / env::unset — 非法 key 的错误路径
+// key 含 '=' 时 POSIX setenv/unsetenv 返回 EINVAL，Windows
+// SetEnvironmentVariableW 同样拒绝，属可稳定构造的错误路径。
+// ---------------------------------------------------------------------------
+
+TEST(EnvTest, SetInvalidKeyThrows) {
+    try {
+        env::set("A=B", "v");
+        FAIL() << "expected Exception for invalid key";
+    } catch (const dztrader::Exception& e) {
+        EXPECT_EQ(e.code(), DZ_EC_SYSTEM);
+        EXPECT_NE(std::string(e.what()).find("A=B"), std::string::npos);
+    }
+}
+
+TEST(EnvTest, UnsetInvalidKeyThrows) {
+    try {
+        env::unset("A=B");
+        FAIL() << "expected Exception for invalid key";
+    } catch (const dztrader::Exception& e) {
+        EXPECT_EQ(e.code(), DZ_EC_SYSTEM);
+        EXPECT_NE(std::string(e.what()).find("A=B"), std::string::npos);
+    }
 }
 
 // ---------------------------------------------------------------------------

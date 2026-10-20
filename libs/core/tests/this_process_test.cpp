@@ -4,12 +4,79 @@
 
 #include <dztrader/core/this_process.h>
 
+#include <boost/asio/io_context.hpp>
+#include <boost/process/v2/process.hpp>
+
 #include <filesystem>
+#include <fstream>
+#include <random>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 namespace this_process = dztrader::this_process;
+
+namespace {
+
+/// 每个探针唯一临时目录（随机后缀：同进程重复运行、并行测试 exe 均不冲突）
+std::filesystem::path unique_temp_dir(std::string_view name) {
+    std::random_device rd;
+    return std::filesystem::temp_directory_path() /
+           (std::string(name) + "_" + std::to_string(rd()));
+}
+
+/// 临时目录 RAII：断言失败提前返回时也能清理。
+class ScopedTempDir {
+public:
+    explicit ScopedTempDir(std::string_view name)
+        : path_(unique_temp_dir(name)) {
+        std::filesystem::create_directories(path_);
+    }
+
+    ~ScopedTempDir() {
+        std::error_code ec;
+        std::filesystem::remove_all(path_, ec);
+    }
+
+    ScopedTempDir(const ScopedTempDir&) = delete;
+    ScopedTempDir& operator=(const ScopedTempDir&) = delete;
+
+    const std::filesystem::path& path() const { return path_; }
+
+private:
+    std::filesystem::path path_;
+};
+
+/// 把当前测试二进制复制到 <root>/a/b/tests/：
+/// exe_dir 的 4 个检查目录（tests、b、a、root）全部落在 root 内，
+/// 因此探针结果不受构建目录/系统临时目录中是否存在 dztraderd 影响。
+std::filesystem::path copy_test_exe(const std::filesystem::path& root) {
+    const auto dir = root / "a" / "b" / "tests";
+    std::filesystem::create_directories(dir);
+    const auto dest = dir / this_process::exe_path().filename();
+    std::filesystem::copy_file(this_process::exe_path(), dest,
+                               std::filesystem::copy_options::overwrite_existing);
+    return dest;
+}
+
+/// 以 --app-root-probe 运行子进程，返回其退出码（-1 表示无法取得退出码）。
+///
+/// 不用 std::system：Windows 上 cmd /c 会剥掉命令首尾引号，路径含空格时
+/// 直接解析失败；Boost.Process v2 直接 CreateProcess/posix_spawn，跨平台一致。
+int run_probe(const std::filesystem::path& exe, const std::filesystem::path& expected) {
+    try {
+        boost::asio::io_context ioc;
+        boost::process::v2::process proc(
+            ioc, exe.string(), std::vector<std::string>{"--app-root-probe", expected.string()});
+        return proc.wait();
+    } catch (...) {
+        return -1;
+    }
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // exe_path — 返回非空绝对路径
@@ -102,4 +169,31 @@ TEST(ThisProcessTest, ExeDirContainsExePath) {
     const auto& exe = this_process::exe_path();
     const auto& dir = this_process::exe_dir();
     EXPECT_TRUE(exe.string().find(dir.string()) == 0);
+}
+
+// ---------------------------------------------------------------------------
+// app_root — 从 exe_dir 向上最多 3 层查找 dztraderd[.exe]
+//
+// app_root() 是 magic static 且锚定 exe_dir()，同一进程内无法切换 exe 位置。
+// 两条分支通过把测试二进制复制到临时布局、以 --app-root-probe 运行子进程覆盖；
+// 检查的 4 个目录全部位于临时 root 内，不依赖真实仓库/构建目录。
+// ---------------------------------------------------------------------------
+
+TEST(ThisProcessTest, AppRootFoundInAncestor) {
+    ScopedTempDir root("dztrader_app_root_found");
+    const auto exe = copy_test_exe(root.path());
+#ifdef _WIN32
+    std::ofstream(root.path() / "dztraderd.exe").close();
+#else
+    std::ofstream(root.path() / "dztraderd").close();
+#endif
+
+    EXPECT_EQ(run_probe(exe, root.path()), 0);
+}
+
+TEST(ThisProcessTest, AppRootNotFoundThrows) {
+    ScopedTempDir root("dztrader_app_root_missing");
+    const auto exe = copy_test_exe(root.path());
+
+    EXPECT_EQ(run_probe(exe, std::filesystem::path("-")), 0);
 }
