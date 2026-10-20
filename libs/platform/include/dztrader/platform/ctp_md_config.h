@@ -48,11 +48,13 @@ inline bool is_ctp_connection_op(CtpMdConfigOp op) {
 // ===== 数据结构 =====
 
 /// SET payload 结构（契约 md-config DZ_FRAME_SET_MD_CONFIG）
+/// op/params 均为必填：缺任一字段即解码失败，禁止回退默认值
+/// （缺 op 回退默认值会被静默当作 AddBroker）
 struct CtpMdConfigOpReq {
     CtpMdConfigOp op;
     nlohmann::json params;
 
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(CtpMdConfigOpReq, op, params)
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE(CtpMdConfigOpReq, op, params)
 };
 
 /// 前置地址条目（契约 md-config CtpBrokerFrontend）
