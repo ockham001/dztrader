@@ -4,16 +4,15 @@
 
 #include <dztrader/core/this_process.h>
 
-#include <cstdlib>
+#include <boost/asio/io_context.hpp>
+#include <boost/process/v2/process.hpp>
+
 #include <filesystem>
 #include <fstream>
 #include <random>
 #include <string>
 #include <string_view>
-
-#ifndef _WIN32
-#include <sys/wait.h>
-#endif
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -63,18 +62,19 @@ std::filesystem::path copy_test_exe(const std::filesystem::path& root) {
 }
 
 /// 以 --app-root-probe 运行子进程，返回其退出码（-1 表示无法取得退出码）。
+///
+/// 不用 std::system：Windows 上 cmd /c 会剥掉命令首尾引号，路径含空格时
+/// 直接解析失败；Boost.Process v2 直接 CreateProcess/posix_spawn，跨平台一致。
 int run_probe(const std::filesystem::path& exe, const std::filesystem::path& expected) {
-    const std::string cmd =
-        "\"" + exe.string() + "\" --app-root-probe \"" + expected.string() + "\"";
-    const int status = std::system(cmd.c_str());
-#ifdef _WIN32
-    return status;
-#else
-    if (status == -1 || !WIFEXITED(status)) {
+    try {
+        boost::asio::io_context ioc;
+        boost::process::v2::process proc(
+            ioc, exe.string(),
+            std::vector<std::string>{"--app-root-probe", expected.string()});
+        return proc.wait();
+    } catch (...) {
         return -1;
     }
-    return WEXITSTATUS(status);
-#endif
 }
 
 }  // namespace
