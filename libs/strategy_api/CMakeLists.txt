@@ -80,6 +80,8 @@ set(SDK_API_TESTS
     td_ingest_wiring_test
     td_ingest_nodb_test
     td_ingest_watermark_test
+    # CloseIsSafe 经公开 API dz_resultset_close 断言 -> 需链接 api.cpp
+    result_set_test
 )
 
 # 穷举/慢速用例单独成 target, 打 slow 标签; 默认 fast 门禁只跑对应抽样版。

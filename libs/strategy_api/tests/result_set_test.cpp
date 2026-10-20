@@ -3,6 +3,7 @@
 #include <climits>
 #include <cfloat>
 
+#include <dztrader/api.h>
 #include <dztrader/error.h>
 #include "result_set.h"
 #include "vector_result_set.h"
@@ -148,5 +149,48 @@ TEST(ResultSetTest, TypeMismatch) {
 
 TEST(ResultSetTest, CloseIsSafe) {
     auto* rs = make_test_rs();
-    delete rs;
+    ASSERT_NE(rs, nullptr);
+    ASSERT_TRUE(dz_resultset_next(rs));  // 先经公开 API 使用, 再走公开 API 释放
+    EXPECT_STREQ(dz_resultset_column_name(rs, 0), "order_id");
+    dz_resultset_close(rs);
+    dz_resultset_close(nullptr);  // NULL 安全 no-op
+
+    // close(NULL) 之后空句柄语义保持: 各 getter 走契约缺省值
+    EXPECT_FALSE(dz_resultset_next(nullptr));
+    EXPECT_EQ(dz_resultset_status(nullptr), DZ_EC_INTERNAL);
+    EXPECT_EQ(dz_resultset_column_count(nullptr), 0u);
+    EXPECT_EQ(dz_resultset_column_type(nullptr, 0), DZ_COL_TYPE_NULL);
+    EXPECT_STREQ(dz_resultset_column_name(nullptr, 0), "");
+    EXPECT_TRUE(dz_resultset_is_null(nullptr, 0));
+    EXPECT_EQ(dz_resultset_get_int64(nullptr, 0), INT64_MAX);
+    EXPECT_DOUBLE_EQ(dz_resultset_get_float64(nullptr, 0), DBL_MAX);
+    EXPECT_STREQ(dz_resultset_get_string(nullptr, 0), "");
+    EXPECT_FALSE(dz_resultset_get_bool(nullptr, 0));
+}
+
+TEST(ResultSetTest, BeforeFirstNextReturnsDefaults) {
+    // 未 next() 即取值: current_row() == nullptr, 全部 getter 走缺省值分支
+    auto* rs = make_test_rs();
+    ASSERT_NE(rs, nullptr);
+    for (uint32_t column = 0; column < 4; ++column) {
+        EXPECT_TRUE(dz_resultset_is_null(rs, column)) << "column=" << column;
+        EXPECT_EQ(dz_resultset_get_int64(rs, column), INT64_MAX) << "column=" << column;
+        EXPECT_DOUBLE_EQ(dz_resultset_get_float64(rs, column), DBL_MAX) << "column=" << column;
+        EXPECT_STREQ(dz_resultset_get_string(rs, column), "") << "column=" << column;
+        EXPECT_FALSE(dz_resultset_get_bool(rs, column)) << "column=" << column;
+    }
+    dz_resultset_close(rs);
+}
+
+TEST(ResultSetTest, EmptyResultSetGettersReturnDefaults) {
+    // 空结果集: next() 恒 false, 取值同「未 next」缺省分支
+    auto* rs = make_empty_rs();
+    ASSERT_NE(rs, nullptr);
+    EXPECT_FALSE(dz_resultset_next(rs));
+    EXPECT_TRUE(dz_resultset_is_null(rs, 0));
+    EXPECT_EQ(dz_resultset_get_int64(rs, 0), INT64_MAX);
+    EXPECT_DOUBLE_EQ(dz_resultset_get_float64(rs, 0), DBL_MAX);
+    EXPECT_STREQ(dz_resultset_get_string(rs, 0), "");
+    EXPECT_FALSE(dz_resultset_get_bool(rs, 0));
+    dz_resultset_close(rs);
 }

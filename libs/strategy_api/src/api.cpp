@@ -1542,7 +1542,9 @@ DZ_API bool dz_notify_ui(DzContext* ctx, DzNotifyLevel level, const char* messag
     return false;
 }
 
-DZ_API bool dz_output_ui(DzContext* ctx, const char* data) {
+namespace dztrader {
+
+bool output_ui_write(DzContext* ctx, const char* data, uint64_t page_size) {
     if (!data) {
         LastError::set(DZ_EC_INVALID_PARAM, "data is null");
         return false;
@@ -1550,14 +1552,14 @@ DZ_API bool dz_output_ui(DzContext* ctx, const char* data) {
 
     // 同 dz_place_order: extern "C" 边界不允许异常逃逸; 体内操作均 noexcept, 免 try/catch,
     // static_assert 防止后续引入会抛异常的操作。
-    static_assert(noexcept(output_ui_max_payload(ctx->event_writer.page_size())));
+    static_assert(noexcept(output_ui_max_payload(page_size)));
     static_assert(noexcept(ctx->event_writer.write_ext_inst_frame(
         DZ_FRAME_OUTPUT_UI, ctx->strategy_id, reinterpret_cast<const std::byte*>(data), 0u)));
     static_assert(noexcept(ctx->event_writer.notify_subscribers()));
 
     const auto len = strlen(data);
     // 页感知上限
-    const auto cap = output_ui_max_payload(ctx->event_writer.page_size());
+    const auto cap = output_ui_max_payload(page_size);
     if (len > 0 && cap == 0) {
         LastError::set(DZ_EC_BUFFER_TOO_SMALL, "page too small for output frame");
         return false;
@@ -1572,6 +1574,12 @@ DZ_API bool dz_output_ui(DzContext* ctx, const char* data) {
     }
     ctx->event_writer.notify_subscribers();
     return true;
+}
+
+}  // namespace dztrader
+
+DZ_API bool dz_output_ui(DzContext* ctx, const char* data) {
+    return dztrader::output_ui_write(ctx, data, ctx->event_writer.page_size());
 }
 
 /* ── 数据库接口 ── */
