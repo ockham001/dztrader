@@ -193,6 +193,20 @@ TEST_F(LogConfigChannelTest, SetFlushOnSucceeds) {
     EXPECT_EQ(rtn["flush_on"], "warning");  // warn 规范化为 warning
 }
 
+// 7b. patch level=err 成功，规范化为 error
+TEST_F(LogConfigChannelTest, SetLevelErrCanonicalizesToError) {
+    dztrader::platform::LogConfig cfg("test_instance", cfg_path_);
+    cfg.load();
+
+    nlohmann::json patch = {{"level", "err"}};
+    cfg.set_log_config(patch);
+
+    cfg.rtn_log_config(*writer_);
+    auto rtn = read_last_rtn_log_config();
+    EXPECT_EQ(rtn["level"], "error");    // err 规范化为 error
+    EXPECT_EQ(rtn["flush_on"], "info");  // flush_on 不变
+}
+
 // 8. 空 patch {} 不改变 cfg_，仍走完整流程
 TEST_F(LogConfigChannelTest, SetEmptyPatchIsNoOp) {
     dztrader::platform::LogConfig cfg("test_instance", cfg_path_);
@@ -214,10 +228,12 @@ TEST_F(LogConfigChannelTest, SetNullFieldThrows) {
 
     nlohmann::json patch = {{"level", nullptr}};
     EXPECT_THROW(cfg.set_log_config(patch), std::runtime_error);
+    EXPECT_THROW(cfg.set_log_config({{"flush_on", nullptr}}), std::runtime_error);
 
     cfg.rtn_log_config(*writer_);
     auto rtn = read_last_rtn_log_config();
     EXPECT_EQ(rtn["level"], "debug");  // 仍是默认值
+    EXPECT_EQ(rtn["flush_on"], "info");
 }
 
 // 10. patch level=123(number) 抛 std::runtime_error，cfg_ 不变
@@ -227,10 +243,12 @@ TEST_F(LogConfigChannelTest, SetNonStringFieldThrows) {
 
     nlohmann::json patch = {{"level", 123}};
     EXPECT_THROW(cfg.set_log_config(patch), std::runtime_error);
+    EXPECT_THROW(cfg.set_log_config({{"flush_on", 123}}), std::runtime_error);
 
     cfg.rtn_log_config(*writer_);
     auto rtn = read_last_rtn_log_config();
     EXPECT_EQ(rtn["level"], "debug");
+    EXPECT_EQ(rtn["flush_on"], "info");
 }
 
 // 11. patch level="" 抛 std::runtime_error，cfg_ 不变
@@ -240,10 +258,12 @@ TEST_F(LogConfigChannelTest, SetEmptyStringThrows) {
 
     nlohmann::json patch = {{"level", ""}};
     EXPECT_THROW(cfg.set_log_config(patch), std::runtime_error);
+    EXPECT_THROW(cfg.set_log_config({{"flush_on", ""}}), std::runtime_error);
 
     cfg.rtn_log_config(*writer_);
     auto rtn = read_last_rtn_log_config();
     EXPECT_EQ(rtn["level"], "debug");
+    EXPECT_EQ(rtn["flush_on"], "info");
 }
 
 // 12. patch level="foobar" 抛异常，cfg_ 不变
@@ -253,10 +273,26 @@ TEST_F(LogConfigChannelTest, SetInvalidLevelThrows) {
 
     nlohmann::json patch = {{"level", "foobar"}};
     EXPECT_THROW(cfg.set_log_config(patch), std::runtime_error);
+    EXPECT_THROW(cfg.set_log_config({{"flush_on", "foobar"}}), std::runtime_error);
 
     cfg.rtn_log_config(*writer_);
     auto rtn = read_last_rtn_log_config();
     EXPECT_EQ(rtn["level"], "debug");
+    EXPECT_EQ(rtn["flush_on"], "info");
+}
+
+// 12b. 大写 INFO 非法（契约 log: 大小写敏感）
+TEST_F(LogConfigChannelTest, SetUppercaseLevelThrows) {
+    dztrader::platform::LogConfig cfg("test_instance", cfg_path_);
+    cfg.load();
+
+    EXPECT_THROW(cfg.set_log_config({{"level", "INFO"}}), std::runtime_error);
+    EXPECT_THROW(cfg.set_log_config({{"flush_on", "WARN"}}), std::runtime_error);
+
+    cfg.rtn_log_config(*writer_);
+    auto rtn = read_last_rtn_log_config();
+    EXPECT_EQ(rtn["level"], "debug");
+    EXPECT_EQ(rtn["flush_on"], "info");
 }
 
 // 13. patch 含 extra 字段：成功，extra 被忽略，cfg_ 不含 extra

@@ -89,6 +89,7 @@ TEST_F(PlatformFrameWriterTest, WriteRequestShutdown) {
     ASSERT_NE(frame, nullptr);
     auto view = dztrader::shm::FrameView(frame);
     EXPECT_EQ(view.type(), DZ_FRAME_SHUTDOWN);
+    EXPECT_STREQ(view.ext_inst_id(), "dzmd_ctp");  // 契约 process: 定向帧 instance_id = 目标进程名
 }
 
 // 测试 write_td_order_rpt：定长结构体帧
@@ -101,17 +102,30 @@ TEST_F(PlatformFrameWriterTest, WriteTdOrderRpt) {
     ASSERT_NE(frame, nullptr);
     auto view = dztrader::shm::FrameView(frame);
     EXPECT_EQ(view.type(), DZ_FRAME_ORDER_REPORT);
+    EXPECT_EQ(view.payload<DzOrderReport>().order_id, 12345u);
 }
 
-// 测试 write_set_md_config：JSON obj 帧
+// 测试 write_set_md_config：JSON obj 帧（fixture 用契约示例 op+params）
 TEST_F(PlatformFrameWriterTest, WriteSetMdConfig) {
-    nlohmann::json req = {{"instrument_id", "IF2401"}};
+    nlohmann::json req = {{"op", "AddBroker"},
+                          {"params",
+                           {{"name", "simnow"},
+                            {"broker_id", "9999"},
+                            {"user_id", "00001"},
+                            {"password", "123456"},
+                            {"product_info", ""}}}};
     dztrader::platform::write_ext_inst_json_obj(*writer_, DZ_FRAME_SET_MD_CONFIG, "dzmd_ctp", req);
 
     auto* frame = reader_->next_frame();
     ASSERT_NE(frame, nullptr);
     auto view = dztrader::shm::FrameView(frame);
     EXPECT_EQ(view.type(), DZ_FRAME_SET_MD_CONFIG);
+    EXPECT_STREQ(view.ext_inst_id(), "dzmd_ctp");
+    const auto* data = reinterpret_cast<const char*>(view.ext_inst_payload());
+    auto payload = nlohmann::json::parse(data, data + view.ext_inst_payload_size());
+    EXPECT_EQ(payload["op"], "AddBroker");
+    EXPECT_EQ(payload["params"]["name"], "simnow");
+    EXPECT_FALSE(payload.contains("instrument_id"));
 }
 
 // 测试 write_ext_json：写帧后必须 notify 订阅者 (契约 shm: 写入任何帧都唤醒等待进程)

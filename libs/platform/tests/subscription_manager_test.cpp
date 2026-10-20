@@ -175,6 +175,8 @@ TEST_F(SubscriptionManagerTest, QueryUnsuccessfulMode) {
     ASSERT_NE(rtn_frame, nullptr);
     FrameView rtn_view(rtn_frame);
     EXPECT_EQ(rtn_view.type(), DZ_FRAME_RTN_MD_SUBSCRIPTIONS);
+    EXPECT_STREQ(rtn_view.ext_inst_id(),
+                 "test_md");  // 契约 md-subscription: instance_id = 行情进程名
     auto rsp = nlohmann::json::parse(reinterpret_cast<const char*>(rtn_view.ext_inst_payload()),
                                      reinterpret_cast<const char*>(rtn_view.ext_inst_payload()) +
                                          rtn_view.ext_inst_payload_size());
@@ -208,6 +210,7 @@ TEST_F(SubscriptionManagerTest, QueryTruncation) {
     auto* rtn_frame = reader_->next_frame();
     ASSERT_NE(rtn_frame, nullptr);
     FrameView rtn_view(rtn_frame);
+    EXPECT_STREQ(rtn_view.ext_inst_id(), "test_md");
     auto rsp = nlohmann::json::parse(reinterpret_cast<const char*>(rtn_view.ext_inst_payload()),
                                      reinterpret_cast<const char*>(rtn_view.ext_inst_payload()) +
                                          rtn_view.ext_inst_payload_size());
@@ -228,6 +231,7 @@ TEST_F(SubscriptionManagerTest, QueryErrorResponses) {
         auto* rtn = reader_->next_frame();
         ASSERT_NE(rtn, nullptr);
         FrameView rv(rtn);
+        EXPECT_STREQ(rv.ext_inst_id(), "test_md");
         auto rsp = nlohmann::json::parse(
             reinterpret_cast<const char*>(rv.ext_inst_payload()),
             reinterpret_cast<const char*>(rv.ext_inst_payload()) + rv.ext_inst_payload_size());
@@ -243,6 +247,7 @@ TEST_F(SubscriptionManagerTest, QueryErrorResponses) {
         auto* rtn = reader_->next_frame();
         ASSERT_NE(rtn, nullptr);
         FrameView rv(rtn);
+        EXPECT_STREQ(rv.ext_inst_id(), "test_md");
         auto rsp = nlohmann::json::parse(
             reinterpret_cast<const char*>(rv.ext_inst_payload()),
             reinterpret_cast<const char*>(rv.ext_inst_payload()) + rv.ext_inst_payload_size());
@@ -257,6 +262,7 @@ TEST_F(SubscriptionManagerTest, QueryErrorResponses) {
         auto* rtn = reader_->next_frame();
         ASSERT_NE(rtn, nullptr);
         FrameView rv(rtn);
+        EXPECT_STREQ(rv.ext_inst_id(), "test_md");
         auto rsp = nlohmann::json::parse(
             reinterpret_cast<const char*>(rv.ext_inst_payload()),
             reinterpret_cast<const char*>(rv.ext_inst_payload()) + rv.ext_inst_payload_size());
@@ -274,6 +280,7 @@ TEST_F(SubscriptionManagerTest, QueryErrorResponses) {
         auto* rtn = reader_->next_frame();
         ASSERT_NE(rtn, nullptr);
         FrameView rv(rtn);
+        EXPECT_STREQ(rv.ext_inst_id(), "test_md");
         auto rsp = nlohmann::json::parse(
             reinterpret_cast<const char*>(rv.ext_inst_payload()),
             reinterpret_cast<const char*>(rv.ext_inst_payload()) + rv.ext_inst_payload_size());
@@ -435,6 +442,7 @@ TEST_F(SubscriptionManagerTest, QueryInstrumentsModeSkipsNonString) {
     auto* rtn_frame = reader_->next_frame();
     ASSERT_NE(rtn_frame, nullptr);
     FrameView rtn_view(rtn_frame);
+    EXPECT_STREQ(rtn_view.ext_inst_id(), "test_md");
     auto rsp = nlohmann::json::parse(reinterpret_cast<const char*>(rtn_view.ext_inst_payload()),
                                      reinterpret_cast<const char*>(rtn_view.ext_inst_payload()) +
                                          rtn_view.ext_inst_payload_size());
@@ -511,6 +519,154 @@ TEST_F(SubscriptionManagerTest, OrphanOptimisticUnsubConfirmedErases) {
     ASSERT_TRUE(sm_->on_sub_confirmed("IF2506", true));
     sm_->on_unsub_confirmed("IF2506");
     EXPECT_EQ(sm_->find_instrument("IF2506"), nullptr);
+}
+
+// Test 27: action=Subscribe replace=false does not unsubscribe existing instruments
+TEST_F(SubscriptionManagerTest, HandleSubscribeReqReplaceFalseKeepsExisting) {
+    sm_->subscribe("stg.alpha", {"IF2506"});
+    sm_->mark_pending({"IF2506"});
+    sm_->on_sub_confirmed("IF2506", true);
+
+    nlohmann::json req = {{"instance_id", "stg.alpha"},
+                          {"action", 0},  // Subscribe
+                          {"replace", false},
+                          {"instruments", {"IC2506"}}};
+    auto* f = write_and_read_frame(DZ_FRAME_REQUEST_MD_SUBSCRIBE, "test_md", req);
+    ASSERT_NE(f, nullptr);
+    auto result = sm_->handle_subscribe_req(FrameView(f));
+    EXPECT_EQ(result.instance_id, "stg.alpha");
+    EXPECT_TRUE(result.to_unsubscribe.empty());  // replace=false 不先退订旧合约
+    ASSERT_EQ(result.to_subscribe.size(), 1u);
+    EXPECT_EQ(result.to_subscribe[0], "IC2506");
+    const auto* old_info = sm_->find_instrument("IF2506");
+    ASSERT_NE(old_info, nullptr);
+    EXPECT_EQ(old_info->sub_state, SubState::Subscribed);
+}
+
+// Test 28: action=Unsubscribe frame dispatch
+TEST_F(SubscriptionManagerTest, HandleSubscribeReqUnsubscribeAction) {
+    sm_->subscribe("stg.alpha", {"IF2506", "IC2506"});
+    sm_->mark_pending({"IF2506", "IC2506"});
+    sm_->on_sub_confirmed("IF2506", true);
+    sm_->on_sub_confirmed("IC2506", true);
+
+    nlohmann::json req = {{"instance_id", "stg.alpha"},
+                          {"action", 1},  // Unsubscribe
+                          {"replace", false},
+                          {"instruments", {"IF2506"}}};
+    auto* f = write_and_read_frame(DZ_FRAME_REQUEST_MD_SUBSCRIBE, "test_md", req);
+    ASSERT_NE(f, nullptr);
+    auto result = sm_->handle_subscribe_req(FrameView(f));
+    EXPECT_TRUE(result.to_subscribe.empty());
+    ASSERT_EQ(result.to_unsubscribe.size(), 1u);
+    EXPECT_EQ(result.to_unsubscribe[0], "IF2506");
+    EXPECT_EQ(sm_->find_instrument("IC2506")->sub_state, SubState::Subscribed);
+}
+
+// Test 29: action=UnsubscribeAll frame dispatch (instruments ignored)
+TEST_F(SubscriptionManagerTest, HandleSubscribeReqUnsubscribeAllAction) {
+    sm_->subscribe("stg.alpha", {"IF2506", "IC2506"});
+    sm_->mark_pending({"IF2506", "IC2506"});
+    sm_->on_sub_confirmed("IF2506", true);
+    sm_->on_sub_confirmed("IC2506", true);
+
+    nlohmann::json req = {{"instance_id", "stg.alpha"},
+                          {"action", 2},  // UnsubscribeAll
+                          {"replace", false},
+                          {"instruments", {"IF2506"}}};
+    auto* f = write_and_read_frame(DZ_FRAME_REQUEST_MD_SUBSCRIBE, "test_md", req);
+    ASSERT_NE(f, nullptr);
+    auto result = sm_->handle_subscribe_req(FrameView(f));
+    EXPECT_TRUE(result.to_subscribe.empty());
+    // 忽略 instruments，退订该订阅者全部合约（map 有序）
+    EXPECT_EQ(result.to_unsubscribe, (std::vector<std::string>{"IC2506", "IF2506"}));
+}
+
+// Test 30: instruments mode truncation (41 requested, SUBSCRIPTION_QUERY_MAX=32)
+TEST_F(SubscriptionManagerTest, QueryTruncationInstrumentsMode) {
+    std::vector<std::string> instruments;
+    for (int i = 0; i < 41; ++i) {
+        instruments.push_back("IF" + std::to_string(2500 + i));
+    }
+
+    nlohmann::json req = {{"instruments", instruments}};
+    auto* query_frame = write_and_read_frame(DZ_FRAME_QUERY_MD_SUBSCRIPTIONS, "test_md", req);
+    ASSERT_NE(query_frame, nullptr);
+    sm_->handle_query_md_subscriptions(FrameView(query_frame));
+
+    auto* rtn_frame = reader_->next_frame();
+    ASSERT_NE(rtn_frame, nullptr);
+    FrameView rtn_view(rtn_frame);
+    EXPECT_STREQ(rtn_view.ext_inst_id(), "test_md");
+    auto rsp = nlohmann::json::parse(reinterpret_cast<const char*>(rtn_view.ext_inst_payload()),
+                                     reinterpret_cast<const char*>(rtn_view.ext_inst_payload()) +
+                                         rtn_view.ext_inst_payload_size());
+    EXPECT_EQ(rsp["returned_count"], 32);
+    EXPECT_EQ(rsp["total_matched"], 41);
+    EXPECT_TRUE(rsp["truncated"]);
+    EXPECT_EQ(rsp["subscriptions"].size(), 32u);
+}
+
+// Test 31: Pending stage truncation (Pending loop fills quota before NotRequested loop)
+TEST_F(SubscriptionManagerTest, QueryTruncationPendingStage) {
+    std::vector<std::string> instruments;
+    for (int i = 0; i < 40; ++i) {
+        instruments.push_back("IF" + std::to_string(2500 + i));
+    }
+    sm_->subscribe("stg.alpha", instruments);
+    sm_->mark_pending(instruments);
+
+    nlohmann::json req = {{"query", "unsuccessful"}};
+    auto* query_frame = write_and_read_frame(DZ_FRAME_QUERY_MD_SUBSCRIPTIONS, "test_md", req);
+    ASSERT_NE(query_frame, nullptr);
+    sm_->handle_query_md_subscriptions(FrameView(query_frame));
+
+    auto* rtn_frame = reader_->next_frame();
+    ASSERT_NE(rtn_frame, nullptr);
+    FrameView rtn_view(rtn_frame);
+    EXPECT_STREQ(rtn_view.ext_inst_id(), "test_md");
+    auto rsp = nlohmann::json::parse(reinterpret_cast<const char*>(rtn_view.ext_inst_payload()),
+                                     reinterpret_cast<const char*>(rtn_view.ext_inst_payload()) +
+                                         rtn_view.ext_inst_payload_size());
+    EXPECT_EQ(rsp["returned_count"], 32);
+    EXPECT_EQ(rsp["total_matched"], 40);
+    EXPECT_TRUE(rsp["truncated"]);
+    for (const auto& detail : rsp["subscriptions"]) {
+        EXPECT_EQ(detail["sub_state"], "Pending");
+    }
+}
+
+// Test 32: reset_pending_state only reverts Pending (Subscribed/NotRequested untouched)
+TEST_F(SubscriptionManagerTest, ResetPendingStateRevertsOnlyPending) {
+    sm_->subscribe("stg.alpha", {"IF2506", "IC2506", "rb2510"});
+    sm_->mark_pending({"IF2506", "IC2506"});  // rb2510 stays NotRequested
+    sm_->on_sub_confirmed("IF2506", true);    // Subscribed
+
+    sm_->reset_pending_state();
+
+    ASSERT_NE(sm_->find_instrument("IF2506"), nullptr);
+    EXPECT_EQ(sm_->find_instrument("IF2506")->sub_state, SubState::Subscribed);
+    ASSERT_NE(sm_->find_instrument("IC2506"), nullptr);
+    EXPECT_EQ(sm_->find_instrument("IC2506")->sub_state, SubState::NotRequested);
+    ASSERT_NE(sm_->find_instrument("rb2510"), nullptr);
+    EXPECT_EQ(sm_->find_instrument("rb2510")->sub_state, SubState::NotRequested);
+}
+
+// Test 33: on_unsub_confirmed keeps entry while other subscribers remain
+TEST_F(SubscriptionManagerTest, OnUnsubConfirmedKeepsEntryWithSubscribers) {
+    sm_->subscribe("stg.alpha", {"IF2506"});
+    sm_->subscribe("stg.beta", {"IF2506"});
+    sm_->mark_pending({"IF2506"});
+    sm_->on_sub_confirmed("IF2506", true);
+    sm_->unsubscribe("stg.alpha", {"IF2506"});  // stg.beta remains
+
+    sm_->on_unsub_confirmed("IF2506");
+
+    const auto* info = sm_->find_instrument("IF2506");
+    ASSERT_NE(info, nullptr);
+    EXPECT_EQ(info->subscribers.size(), 1u);
+    EXPECT_EQ(*info->subscribers.begin(), "stg.beta");
+    EXPECT_EQ(info->sub_state, SubState::Subscribed);
 }
 
 }  // namespace
