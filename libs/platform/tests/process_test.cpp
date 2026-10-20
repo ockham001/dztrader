@@ -400,7 +400,11 @@ TEST(ProcessTest, FromJsonRequiresRequiredFields) {
                  nlohmann::json::exception);
     // ProcessStatus: name/state/pid 必填（契约 process）
     EXPECT_THROW((nlohmann::json{{"state", "Running"}, {"pid", 1}}).get<ProcessStatus>(),
-                 nlohmann::json::exception);
+                 nlohmann::json::exception);  // 缺 name
+    EXPECT_THROW((nlohmann::json{{"name", "dzmd_ctp"}, {"pid", 1}}).get<ProcessStatus>(),
+                 nlohmann::json::exception);  // 缺 state
+    EXPECT_THROW((nlohmann::json{{"name", "dzmd_ctp"}, {"state", "Running"}}).get<ProcessStatus>(),
+                 nlohmann::json::exception);  // 缺 pid
     // SetProcessConfigReq: target 必填（契约 process；config 缺失已在
     // SetProcessConfigReqRejectsNullConfig 覆盖 null, 此处覆盖缺失与 target 缺失）
     EXPECT_THROW((nlohmann::json{{"config", nlohmann::json::object()}}).get<SetProcessConfigReq>(),

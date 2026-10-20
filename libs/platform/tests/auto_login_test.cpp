@@ -351,6 +351,45 @@ TEST_F(AutoLoginConfigTest, SetScheduleLoginEqualsLogoutThrows) {
         std::runtime_error);
 }
 
+// 15a. patch schedule 缺 login_time 抛异常（契约：缺失=校验失败）
+TEST_F(AutoLoginConfigTest, SetScheduleMissingLoginTimeThrows) {
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_);
+    cfg.load();
+
+    EXPECT_THROW(cfg.set_auto_login({{"schedules", nlohmann::json::array({
+                                                       {{"logout_time", "15:30"}},
+                                                   })}}),
+                 std::runtime_error);
+}
+
+// 15b. patch schedule 缺 logout_time 抛异常（契约：缺失=校验失败）
+TEST_F(AutoLoginConfigTest, SetScheduleMissingLogoutTimeThrows) {
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_);
+    cfg.load();
+
+    EXPECT_THROW(cfg.set_auto_login({{"schedules", nlohmann::json::array({
+                                                       {{"login_time", "08:45"}},
+                                                   })}}),
+                 std::runtime_error);
+}
+
+// 15c. patch schedule 时间非字符串/null 抛异常（契约：非字符串/null=校验失败）
+TEST_F(AutoLoginConfigTest, SetScheduleNonStringTimeThrows) {
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_);
+    cfg.load();
+
+    EXPECT_THROW(
+        cfg.set_auto_login({{"schedules", nlohmann::json::array({
+                                              {{"login_time", nullptr}, {"logout_time", "15:30"}},
+                                          })}}),
+        std::runtime_error);
+    EXPECT_THROW(
+        cfg.set_auto_login({{"schedules", nlohmann::json::array({
+                                              {{"login_time", "08:45"}, {"logout_time", 1530}},
+                                          })}}),
+        std::runtime_error);
+}
+
 // 16. patch 含未知字段：忽略，cfg_ 不含未知字段
 TEST_F(AutoLoginConfigTest, SetUnknownFieldIgnored) {
     dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_);

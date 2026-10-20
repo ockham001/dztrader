@@ -42,6 +42,16 @@ TEST(CtpMdConfigDataSerialization, DefaultConfig) {
     EXPECT_EQ(j["sub_max_retry"], 3);
 }
 
+TEST(CtpMdConfigDataSerialization, FrontendEnabledDefaultsTrue) {
+    CtpBrokerFrontend defaults;
+    EXPECT_TRUE(defaults.enabled);  // 契约 md-config: 默认 true
+
+    // JSON 缺失 enabled 时按默认 true 反序列化
+    const auto j = nlohmann::json::parse(R"({"address":"tcp://180.168.146.187:10131"})");
+    const auto frontend = j.get<CtpBrokerFrontend>();
+    EXPECT_TRUE(frontend.enabled);
+}
+
 TEST(CtpMdConfigDataSerialization, RoundTripWithBrokers) {
     CtpMdConfigData cfg;
     CtpBrokerEntry b;
@@ -333,6 +343,7 @@ TEST(ApplyConfigOp, AddBrokerMissingOptionalFields) {
     ASSERT_EQ(cfg.brokers.size(), 1u);
     EXPECT_EQ(cfg.brokers[0].broker_id, "");
     EXPECT_EQ(cfg.brokers[0].password, "");
+    EXPECT_TRUE(cfg.brokers[0].frontends.empty());  // 契约 md-config: AddBroker 默认空数组
 }
 
 TEST(ApplyConfigOp, RemoveBroker) {
@@ -829,6 +840,52 @@ TEST_F(CtpMdConfigTest, SetMdConfigFailureRollsBack) {
     // cfg_ 不变
     EXPECT_EQ(md.config().brokers.size(), state_before.brokers.size());
     EXPECT_EQ(md.config().subscribe_batch_size, state_before.subscribe_batch_size);
+}
+
+// 真实 save 失败（父目录不存在）：内存回滚 + RTN 上报旧值（脱敏）
+TEST_F(CtpMdConfigTest, SetMdConfigSaveFailureRollsBackAndRtnOldValue) {
+    const auto cfg_dir = cfg_path_.parent_path() / "sub";
+    const auto save_path = cfg_dir / "config.json";
+    std::filesystem::create_directories(cfg_dir);
+    {
+        std::ofstream ofs(save_path, std::ios::binary | std::ios::trunc);
+        ofs << R"({"md": {
+            "brokers": [{"name": "simnow", "broker_id": "9999", "user_id": "00001",
+                           "password": "old_pwd", "product_info": "", "frontends": []}],
+            "current_broker_name": "simnow",
+            "subscribe_batch_size": 1000,
+            "subscribe_batch_delay_ms": 1000,
+            "sub_check_interval_ms": 3000,
+            "sub_max_retry": 3
+        }})";
+    }
+
+    CtpMdConfig md("dzmd_ctp", save_path, *writer_);
+    md.load();
+    ASSERT_EQ(md.config().brokers.size(), 1u);
+    ASSERT_EQ(md.config().brokers[0].password, "old_pwd");
+
+    // 删除父目录，使 save 的 ofstream 必然失败
+    std::filesystem::remove_all(cfg_dir);
+    EXPECT_THROW(
+        md.set_md_config({CtpMdConfigOp::AddBroker, {{"name", "second"}, {"password", "new_pwd"}}}),
+        std::runtime_error);
+
+    // cfg_ 回滚为旧值
+    ASSERT_EQ(md.config().brokers.size(), 1u);
+    EXPECT_EQ(md.config().brokers[0].name, "simnow");
+    EXPECT_EQ(md.config().brokers[0].password, "old_pwd");
+    EXPECT_EQ(md.config().subscribe_batch_size, 1000);
+    EXPECT_FALSE(std::filesystem::exists(save_path));
+
+    // RTN 上报回滚后的旧值，password 脱敏
+    md.rtn_md_config();
+    auto rtn = read_last_rtn();
+    ASSERT_FALSE(rtn.is_null());
+    ASSERT_EQ(rtn["brokers"].size(), 1u);
+    EXPECT_EQ(rtn["brokers"][0]["name"], "simnow");
+    EXPECT_EQ(rtn["brokers"][0]["password"], "****");
+    EXPECT_EQ(rtn["subscribe_batch_size"], 1000);
 }
 
 TEST_F(CtpMdConfigTest, LoadDegradedRepairsFile) {
