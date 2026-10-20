@@ -1,3 +1,5 @@
+#include "test_util.h"
+
 #include <gtest/gtest.h>
 
 #include <dztrader/core/this_process.h>
@@ -71,7 +73,12 @@ protected:
         writer_ = std::make_shared<MultiWriter>(MultiWriter::create(meta_, "test_writer"));
     }
 
-    void TearDown() override { std::filesystem::remove_all(shm_dir_); }
+    void TearDown() override {
+        reader_.reset();
+        writer_.reset();
+        meta_.reset();
+        EXPECT_TRUE(dztrader::shm::test::cleanup_channel(channel_name_, shm_dir_, {"test_reader"}));
+    }
 
     /// 写一个大帧 (payload 近半页): 连写两个即跨页, 使 writer/reader 停在第 1 页
     void write_big_frame(DzFrameType type) {

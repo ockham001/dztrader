@@ -12,7 +12,7 @@ using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::NamedSemaphore;
 using dztrader::shm::SubscriberList;
-using dztrader::shm::test::cleanup_test_dir;
+using dztrader::shm::test::cleanup_channel;
 using dztrader::shm::test::MB;
 using dztrader::shm::test::test_shm_dir;
 using dztrader::shm::test::unique_channel_name;
@@ -27,7 +27,11 @@ protected:
         shm_dir_ = test_shm_dir(channel_name_);
     }
 
-    void TearDown() override { cleanup_test_dir(shm_dir_); }
+    void TearDown() override {
+        cleanup_channel(channel_name_, shm_dir_,
+                        {"sub_sync_1", "sub_sync_2", "sub_notify_test", "sub_first", "sub_second",
+                         "sub_old", "sub_new"});
+    }
 
     ChannelConfig make_config() {
         return ChannelConfig{

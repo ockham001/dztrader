@@ -1,3 +1,5 @@
+#include "test_util.h"
+
 #include <gtest/gtest.h>
 
 #include <dztrader/core/this_process.h>
@@ -76,10 +78,7 @@ protected:
         shm_writer_.reset();
         reader_.reset();
         meta_.reset();
-        dztrader::shm::NamedSemaphore::remove(reader_name_);
-        std::error_code ec;
-        std::filesystem::remove_all(shm_dir_, ec);
-        EXPECT_FALSE(ec);
+        EXPECT_TRUE(dztrader::shm::test::cleanup_channel(channel_name_, shm_dir_, {reader_name_}));
     }
 
     /// 取下一帧并断言类型；FrameView 在 reader_ 存活期间有效

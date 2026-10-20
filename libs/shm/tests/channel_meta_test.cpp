@@ -13,7 +13,7 @@
 
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
-using dztrader::shm::test::cleanup_test_dir;
+using dztrader::shm::test::cleanup_channel;
 using dztrader::shm::test::create_page_file;
 using dztrader::shm::test::MB;
 using dztrader::shm::test::test_shm_dir;
@@ -38,7 +38,7 @@ protected:
         };
     }
 
-    void TearDown() override { cleanup_test_dir(shm_dir_); }
+    void TearDown() override { cleanup_channel(channel_name_, shm_dir_); }
 };
 
 TEST_F(ChannelMetaTest, OpenOrCreateInitializesNextWritePos) {

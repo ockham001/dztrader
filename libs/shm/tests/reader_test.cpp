@@ -17,7 +17,7 @@ using dztrader::shm::ChannelMeta;
 using dztrader::shm::NamedSemaphore;
 using dztrader::shm::Reader;
 using dztrader::shm::SingleWriter;
-using dztrader::shm::test::cleanup_test_dir;
+using dztrader::shm::test::cleanup_channel;
 using dztrader::shm::test::MB;
 using dztrader::shm::test::test_shm_dir;
 using dztrader::shm::test::unique_channel_name;
@@ -32,7 +32,9 @@ protected:
         shm_dir_ = test_shm_dir(channel_name_);
     }
 
-    void TearDown() override { cleanup_test_dir(shm_dir_); }
+    void TearDown() override {
+        cleanup_channel(channel_name_, shm_dir_, {"test_sub", channel_name_});
+    }
 
     ChannelConfig make_config(uint64_t page_size = 1 * MB) {
         return ChannelConfig{
@@ -368,5 +370,5 @@ TEST(ReaderReleaseTest, ReleaseOldPagesUpdatesIndex) {
     reader.release_old_pages();
     // release 后 index 抬高到 current_page_id
     EXPECT_GE(meta->min_reader_page_index(), 1u);
-    cleanup_test_dir(dir);
+    cleanup_channel(channel, dir, {"stg.t"});
 }

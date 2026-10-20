@@ -1,3 +1,5 @@
+#include "test_util.h"
+
 #include <gtest/gtest.h>
 
 #include <drogon/drogon.h>
@@ -33,6 +35,7 @@ protected:
     std::shared_ptr<Repository> repo_;
     std::shared_ptr<SettingsCtrl> ctrl_;
     std::filesystem::path shm_dir_;
+    std::string channel_name_;
     std::shared_ptr<ChannelMeta> meta_;
     std::optional<Reader> reader_;
     std::shared_ptr<WebuiConfig> webui_cfg_;
@@ -55,10 +58,11 @@ protected:
         repo_->create_user("admin", "Administrator", "a@test.com", "pass", "admin");
         repo_->create_user("regular", "Regular User", "r@test.com", "pass", "user");
 
-        shm_dir_ = std::filesystem::temp_directory_path() / ("dz_test_settings_" + uid_);
+        channel_name_ = "dz_test_settings_" + uid_;
+        shm_dir_ = std::filesystem::temp_directory_path() / channel_name_;
         std::filesystem::remove_all(shm_dir_);
         ChannelConfig cfg{
-            .channel_name = "dz_test_settings_" + uid_,
+            .channel_name = channel_name_,
             .shm_dir = shm_dir_,
             .meta_file_size = 4 * MB,
             .page_size = 1 * MB,
@@ -110,7 +114,10 @@ protected:
     }
 
     void TearDown() override {
-        std::filesystem::remove_all(shm_dir_);
+        ctrl_.reset();
+        reader_.reset();
+        meta_.reset();
+        EXPECT_TRUE(dztrader::shm::test::cleanup_channel(channel_name_, shm_dir_));
         std::filesystem::remove(webui_path_);
         std::filesystem::remove(master_path_);
         if (!blocker_path_.empty()) {

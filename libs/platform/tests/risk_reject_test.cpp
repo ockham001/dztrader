@@ -1,3 +1,5 @@
+#include "test_util.h"
+
 #include <gtest/gtest.h>
 
 #include <dztrader/core/core_data_type.h>
@@ -49,7 +51,12 @@ protected:
         reader_ = Reader::create(meta_, "test_reader");
     }
 
-    void TearDown() override { std::filesystem::remove_all(shm_dir_); }
+    void TearDown() override {
+        reader_.reset();
+        writer_.reset();
+        meta_.reset();
+        EXPECT_TRUE(dztrader::shm::test::cleanup_channel(channel_name_, shm_dir_));
+    }
 };
 
 // 契约 td-risk-reject JSON schema 锁定

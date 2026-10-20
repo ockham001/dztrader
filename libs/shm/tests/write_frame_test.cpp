@@ -12,7 +12,7 @@ using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::Reader;
 using dztrader::shm::SingleWriter;
-using dztrader::shm::test::cleanup_test_dir;
+using dztrader::shm::test::cleanup_channel;
 using dztrader::shm::test::MB;
 using dztrader::shm::test::test_shm_dir;
 using dztrader::shm::test::unique_channel_name;
@@ -27,7 +27,7 @@ protected:
         shm_dir_ = test_shm_dir(channel_name_);
     }
 
-    void TearDown() override { cleanup_test_dir(shm_dir_); }
+    void TearDown() override { cleanup_channel(channel_name_, shm_dir_); }
 
     ChannelConfig make_config(uint64_t page_size = 1 * MB) {
         return ChannelConfig{

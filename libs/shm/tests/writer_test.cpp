@@ -21,7 +21,7 @@ using dztrader::shm::FrameView;
 using dztrader::shm::MultiWriter;
 using dztrader::shm::Reader;
 using dztrader::shm::SingleWriter;
-using dztrader::shm::test::cleanup_test_dir;
+using dztrader::shm::test::cleanup_channel;
 using dztrader::shm::test::MB;
 using dztrader::shm::test::spawn_helper;
 using dztrader::shm::test::test_shm_dir;
@@ -38,7 +38,9 @@ protected:
         shm_dir_ = test_shm_dir(channel_name_);
     }
 
-    void TearDown() override { cleanup_test_dir(shm_dir_); }
+    void TearDown() override {
+        cleanup_channel(channel_name_, shm_dir_, {"test_sub", "refresh_sub"});
+    }
 
     ChannelConfig make_config(uint64_t page_size = 1 * MB) {
         return ChannelConfig{
@@ -224,8 +226,6 @@ TEST_F(WriterTest, RefreshSubscribersAfterAdd) {
 
     (void)meta->add_reader("refresh_sub", 0);
     EXPECT_TRUE(writer.refresh_subscribers());
-
-    dztrader::shm::NamedSemaphore::remove("refresh_sub");
 }
 
 TEST_F(WriterTest, AccessorsUnchangedAfterAlignmentRejection) {
@@ -421,7 +421,7 @@ TEST(WriterCloseOldTest, CloseOldPagesUpdatesWriterIndex) {
     writer.write_frame(DZ_FRAME_TICK, tick);
     writer.close_old_pages();
     EXPECT_GE(meta->min_writer_page_index(), 0u);  // 不抛即基础通过
-    cleanup_test_dir(dir);
+    cleanup_channel(channel, dir);
 }
 
 // 死锁回归：MultiWriter 持续换页（write→meta）与并发 open_or_create ctor
@@ -466,7 +466,7 @@ TEST(WriterDeadlockTest, ConcurrentCtorAndPageCrossNoDeadlock) {
     EXPECT_NE(result, -1) << "helper deadlocked/hung (killed by 5s timeout)";
     EXPECT_EQ(result, 0) << "helper exited with non-zero status";
 
-    cleanup_test_dir(dir);
+    cleanup_channel(channel, dir);
 }
 
 TEST_F(WriterTest, OpenFrameRejectsFrameLargerThanPageSize) {

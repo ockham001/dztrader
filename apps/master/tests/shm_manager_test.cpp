@@ -1,3 +1,5 @@
+#include "test_util.h"
+
 #include "shm_manager.h"
 
 #include <dztrader/core/core_data_type.h>
@@ -423,6 +425,10 @@ protected:
         }
         shm_mgr_.reset();  // 先于 supervisor (supervisor 持有 mgr 引用)
         supervisor_.reset();
+        if (!gw_name_.empty()) {
+            EXPECT_TRUE(
+                dztrader::shm::test::cleanup_channel(gw_name_, dztrader::paths::shm(), {gw_name_}));
+        }
         if (orig_home_) {
             dztrader::env::set("DZTRADER_HOME", *orig_home_);
         } else {

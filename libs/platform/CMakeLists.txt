@@ -39,7 +39,7 @@ foreach(testfile ${PLATFORM_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
     add_executable(dzplatform_${testname} ${testfile} tests/test_main.cpp)
     target_link_libraries(dzplatform_${testname} PRIVATE
-        dzplatform_headers dzshm dzlog dzcore GTest::gtest
+        dzplatform_headers dzshm dzlog dzcore dzshm_test_support GTest::gtest
         spdlog::spdlog nlohmann_json::nlohmann_json)
     # 测试用指定初始化器只填部分字段，豁免 -Wmissing-field-initializers
     # (与 apps/ctp 测试目标的处理一致; MSVC 无此警告)

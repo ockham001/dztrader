@@ -60,7 +60,7 @@ foreach(testfile ${MAIN_ENGINE_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
     add_executable(dztraderd_${testname} ${testfile} tests/test_main.cpp)
     target_link_libraries(dztraderd_${testname} PRIVATE
-        dztraderd_obj GTest::gtest
+        dztraderd_obj dzshm_test_support GTest::gtest
     )
     set_target_properties(dztraderd_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
