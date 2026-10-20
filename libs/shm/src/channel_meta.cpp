@@ -8,7 +8,6 @@
 #include <boost/interprocess/managed_mapped_file.hpp>
 #include <boost/interprocess/managed_shared_memory.hpp>
 #include <boost/interprocess/mapped_region.hpp>
-#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <dztrader/core/encoding.h>
@@ -25,6 +24,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "page_file_util.h"
 
 namespace bip = boost::interprocess;
 
@@ -279,7 +280,12 @@ private:
 
     void open_existing_segment() {
         auto meta_path = shm_dir_ / channel_name_ / "meta.dat";
-        segment_ = bip::managed_mapped_file{bip::open_only, meta_path.string().c_str()};
+        try {
+            segment_ = bip::managed_mapped_file{bip::open_only, meta_path.string().c_str()};
+        } catch (const bip::interprocess_exception& e) {
+            throw Exception(DZ_EC_SHM_OPEN_FAILED, "open channel failed: channel={} err=\"{}\"",
+                            channel_name_, e.what());
+        }
     }
 
     void init_shared_objects_locked() {
@@ -357,16 +363,10 @@ private:
         }
         std::vector<std::filesystem::path> page_files;
         for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-            // 仅删除页文件 (stem 为纯数字页序号); 跳过 meta.dat 等非页文件,
+            // 仅删除数字页文件; 跳过 meta.dat 等非页文件,
             // 否则 page_size 重置会把正被本进程映射的 meta.dat 一并删除,
             // 导致重置后其他进程 open_only 按名打开失败 (子进程首启必败)
-            if (!entry.is_regular_file() || entry.path().extension() != ".dat") {
-                continue;
-            }
-            const auto stem = entry.path().stem().string();
-            if (stem.empty() || !std::all_of(stem.begin(), stem.end(), [](unsigned char c) {
-                    return std::isdigit(c) != 0;
-                })) {
+            if (!entry.is_regular_file() || !page_file_util_internal::is_page_file(entry.path())) {
                 continue;
             }
             page_files.push_back(entry.path());

@@ -152,14 +152,21 @@ class LockImpl {
 public:
     explicit LockImpl(const std::string& name) {
         const auto seg_name = "dz.lock." + name;
-        segment_ = bip::managed_shared_memory(bip::open_or_create, seg_name.c_str(),
-                                              4096  // 一页，segment header + 一个 mutex 绰绰有余
-        );
-        auto* wrapper = segment_.find_or_construct<PthreadMutexWrapper>("mutex")();
-        if (!wrapper) {
-            throw Exception(DZ_EC_SHM_LOCK_FAILED, "process lock construct failed: name={}", name);
+        try {
+            segment_ =
+                bip::managed_shared_memory(bip::open_or_create, seg_name.c_str(),
+                                           4096  // 一页，segment header + 一个 mutex 绰绰有余
+                );
+            auto* wrapper = segment_.find_or_construct<PthreadMutexWrapper>("mutex")();
+            if (!wrapper) {
+                throw Exception(DZ_EC_SHM_LOCK_FAILED, "process lock construct failed: name={}",
+                                name);
+            }
+            mutex_ = &wrapper->mutex;
+        } catch (const bip::interprocess_exception& e) {
+            throw Exception(DZ_EC_SHM_LOCK_FAILED, "process lock create failed: name={} err=\"{}\"",
+                            name, e.what());
         }
-        mutex_ = &wrapper->mutex;
     }
 
     ~LockImpl() = default;

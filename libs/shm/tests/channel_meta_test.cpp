@@ -1,33 +1,33 @@
-#include "test_util.h"
+#include "test_fixture.h"
 
 #include <boost/interprocess/file_mapping.hpp>
 #include <boost/interprocess/mapped_region.hpp>
 #include <dztrader/core/exception.h>
+#include <dztrader/error.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/common.h>
 #include <dztrader/struct.h>
 #include <filesystem>
 #include <format>
+#include <future>
 #include <gtest/gtest.h>
 #include <string>
+#include <thread>
 
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
-using dztrader::shm::test::cleanup_channel;
 using dztrader::shm::test::create_page_file;
+using dztrader::shm::test::GB;
 using dztrader::shm::test::MB;
-using dztrader::shm::test::test_shm_dir;
-using dztrader::shm::test::unique_channel_name;
 
-class ChannelMetaTest : public ::testing::Test {
+class ChannelMetaTest : public dztrader::shm::test::ShmTestBase {
 protected:
-    std::string channel_name_;
-    std::filesystem::path shm_dir_;
     ChannelConfig config_;
 
+    [[nodiscard]] std::string channel_prefix() const override { return "dz_test_meta"; }
+
     void SetUp() override {
-        channel_name_ = unique_channel_name("dz_test_meta");
-        shm_dir_ = test_shm_dir(channel_name_);
+        ShmTestBase::SetUp();
         config_ = ChannelConfig{
             .channel_name = channel_name_,
             .shm_dir = shm_dir_,
@@ -37,72 +37,37 @@ protected:
             .prefetch_memory = false,
         };
     }
-
-    void TearDown() override { cleanup_channel(channel_name_, shm_dir_); }
 };
 
 TEST_F(ChannelMetaTest, OpenOrCreateInitializesNextWritePos) {
-    ChannelConfig config{
-        .channel_name = channel_name_,
-        .shm_dir = shm_dir_,
-        .meta_file_size = 4 * MB,
-        .page_size = 1 * MB,
-        .lock_memory = false,
-        .prefetch_memory = false,
-    };
-
-    auto meta = ChannelMeta::open_or_create(config);
+    auto meta = ChannelMeta::open_or_create(config_);
     ASSERT_NE(meta.next_write_pos(), nullptr);
     EXPECT_GT(meta.next_write_pos()->load(), 0u);
 }
 
 TEST_F(ChannelMetaTest, OpenOrCreateCreatesPageZeroFile) {
-    ChannelConfig config{
-        .channel_name = channel_name_,
-        .shm_dir = shm_dir_,
-        .meta_file_size = 4 * MB,
-        .page_size = 1 * MB,
-        .lock_memory = false,
-        .prefetch_memory = false,
-    };
-
-    auto meta = ChannelMeta::open_or_create(config);
+    auto meta = ChannelMeta::open_or_create(config_);
     auto page0 = meta.page_dir() / std::format("{:08d}.dat", 0);
     EXPECT_TRUE(std::filesystem::exists(page0));
 }
 
 TEST_F(ChannelMetaTest, OpenExistingPreservesNextWritePos) {
-    ChannelConfig config{
-        .channel_name = channel_name_,
-        .shm_dir = shm_dir_,
-        .meta_file_size = 4 * MB,
-        .page_size = 1 * MB,
-        .lock_memory = false,
-        .prefetch_memory = false,
-    };
-
     uint64_t pos = 0;
     {
-        auto meta = ChannelMeta::open_or_create(config);
+        auto meta = ChannelMeta::open_or_create(config_);
         pos = meta.next_write_pos()->load();
         ASSERT_GT(pos, 0u);
     }
 
     {
-        auto meta = ChannelMeta::open_only(config.channel_name, config.shm_dir);
+        auto meta = ChannelMeta::open_only(config_.channel_name, config_.shm_dir);
         EXPECT_EQ(meta.next_write_pos()->load(), pos);
     }
 }
 
 TEST_F(ChannelMetaTest, PageSizeChangeCleansUpFiles) {
-    ChannelConfig config1{
-        .channel_name = channel_name_,
-        .shm_dir = shm_dir_,
-        .meta_file_size = 4 * MB,
-        .page_size = 1 * MB,
-        .lock_memory = false,
-        .prefetch_memory = false,
-    };
+    ChannelConfig config1 = config_;
+    config1.page_size = 1 * MB;
 
     {
         auto meta = ChannelMeta::open_or_create(config1);
@@ -111,14 +76,8 @@ TEST_F(ChannelMetaTest, PageSizeChangeCleansUpFiles) {
         create_page_file(dir, 2, 1 * MB);
     }
 
-    ChannelConfig config2{
-        .channel_name = channel_name_,
-        .shm_dir = shm_dir_,
-        .meta_file_size = 4 * MB,
-        .page_size = 2 * MB,
-        .lock_memory = false,
-        .prefetch_memory = false,
-    };
+    ChannelConfig config2 = config_;
+    config2.page_size = 2 * MB;
 
     auto meta = ChannelMeta::open_or_create(config2);
     auto dir = meta.page_dir();
@@ -136,14 +95,8 @@ TEST_F(ChannelMetaTest, PageSizeChangeCleansUpFiles) {
 // page_size 重置只清数字页文件: meta.dat 必须保留, 且重置后子进程视角
 // open_only 按名打开 meta.dat 必须成功 (回归: 旧实现误删 meta.dat)
 TEST_F(ChannelMetaTest, PageSizeChangeKeepsMetaFileAndReopenSucceeds) {
-    ChannelConfig config1{
-        .channel_name = channel_name_,
-        .shm_dir = shm_dir_,
-        .meta_file_size = 4 * MB,
-        .page_size = 1 * MB,
-        .lock_memory = false,
-        .prefetch_memory = false,
-    };
+    ChannelConfig config1 = config_;
+    config1.page_size = 1 * MB;
 
     {
         auto meta = ChannelMeta::open_or_create(config1);
@@ -152,14 +105,8 @@ TEST_F(ChannelMetaTest, PageSizeChangeKeepsMetaFileAndReopenSucceeds) {
         create_page_file(dir, 2, 1 * MB);
     }
 
-    ChannelConfig config2{
-        .channel_name = channel_name_,
-        .shm_dir = shm_dir_,
-        .meta_file_size = 4 * MB,
-        .page_size = 2 * MB,
-        .lock_memory = false,
-        .prefetch_memory = false,
-    };
+    ChannelConfig config2 = config_;
+    config2.page_size = 2 * MB;
 
     {
         auto meta = ChannelMeta::open_or_create(config2);
@@ -185,16 +132,7 @@ TEST_F(ChannelMetaTest, PageSizeChangeKeepsMetaFileAndReopenSucceeds) {
 }
 
 TEST_F(ChannelMetaTest, FirstFrameIsInvalidFill) {
-    ChannelConfig config{
-        .channel_name = channel_name_,
-        .shm_dir = shm_dir_,
-        .meta_file_size = 4 * MB,
-        .page_size = 1 * MB,
-        .lock_memory = false,
-        .prefetch_memory = false,
-    };
-
-    auto meta = ChannelMeta::open_or_create(config);
+    auto meta = ChannelMeta::open_or_create(config_);
     auto page0 = meta.page_dir() / std::format("{:08d}.dat", 0);
 
     boost::interprocess::file_mapping mfile(page0.string().c_str(), boost::interprocess::read_only);
@@ -207,29 +145,55 @@ TEST_F(ChannelMetaTest, FirstFrameIsInvalidFill) {
 }
 
 TEST_F(ChannelMetaTest, PageSizeValidationRejectsTooSmall) {
-    ChannelConfig config{
-        .channel_name = channel_name_,
-        .shm_dir = shm_dir_,
-        .meta_file_size = 4 * MB,
-        .page_size = 512,
-        .lock_memory = false,
-        .prefetch_memory = false,
-    };
+    auto config = config_;
+    config.page_size = 512;
+
+    EXPECT_THROW((void)ChannelMeta::open_or_create(config), dztrader::Exception);
+}
+
+TEST_F(ChannelMetaTest, PageSizeValidationRejectsTooLarge) {
+    auto config = config_;
+    config.page_size = 64 * GB + 1;
 
     EXPECT_THROW((void)ChannelMeta::open_or_create(config), dztrader::Exception);
 }
 
 TEST_F(ChannelMetaTest, MetaFileSizeValidationRejectsTooSmall) {
-    ChannelConfig config{
-        .channel_name = channel_name_,
-        .shm_dir = shm_dir_,
-        .meta_file_size = 100,
-        .page_size = 1 * MB,
-        .lock_memory = false,
-        .prefetch_memory = false,
-    };
+    auto config = config_;
+    config.meta_file_size = 100;
 
     EXPECT_THROW((void)ChannelMeta::open_or_create(config), dztrader::Exception);
+}
+
+TEST_F(ChannelMetaTest, MetaFileSizeValidationRejectsTooLarge) {
+    auto config = config_;
+    config.meta_file_size = 128 * MB + 1;
+
+    EXPECT_THROW((void)ChannelMeta::open_or_create(config), dztrader::Exception);
+}
+
+TEST_F(ChannelMetaTest, OpenOnlyMissingChannelThrows) {
+    try {
+        (void)ChannelMeta::open_only(channel_name_, shm_dir_);
+        FAIL() << "open_only should fail when the channel does not exist";
+    } catch (const dztrader::Exception& e) {
+        EXPECT_EQ(e.code(), DZ_EC_SHM_OPEN_FAILED);
+    }
+}
+
+TEST_F(ChannelMetaTest, OpenOnlyNonCreatorCannotAddReader) {
+    {
+        auto creator = ChannelMeta::open_or_create(config_);
+        (void)creator;
+    }
+    auto follower = ChannelMeta::open_only(channel_name_, shm_dir_);
+
+    try {
+        (void)follower.add_reader("stg.x", 0);
+        FAIL() << "add_reader should fail for a non-creator handle";
+    } catch (const dztrader::Exception& e) {
+        EXPECT_EQ(e.code(), DZ_EC_SHM_SUBSCRIBER_FAILED);
+    }
 }
 
 TEST_F(ChannelMetaTest, ReaderWriterMapAddRemoveSetIndex) {
@@ -263,49 +227,67 @@ TEST_F(ChannelMetaTest, SetPageIndexThrowsWhenKeyAbsent) {
     EXPECT_THROW(meta.set_reader_page_index("absent", 1), dztrader::Exception);
 }
 
-TEST_F(ChannelMetaTest, CreateMetaMutexSameNameAsPageMutexReplaced) {
+TEST_F(ChannelMetaTest, CreateMetaMutexReturnsSameKernelObject) {
     auto meta = ChannelMeta::open_or_create(config_);
-    auto m = meta.create_meta_mutex();  // 不抛异常即通过
-    (void)m;
+    auto first = meta.create_meta_mutex();
+    auto second = meta.create_meta_mutex();
+
+    std::promise<void> locked_promise;
+    auto locked = locked_promise.get_future();
+    std::promise<void> release_promise;
+    auto release = release_promise.get_future();
+    std::thread holder([&] {
+        first.lock();
+        locked_promise.set_value();
+        release.wait();
+        first.unlock();
+    });
+    locked.wait();
+
+    const bool acquired_while_held = second.try_lock();
+    if (acquired_while_held) {
+        second.unlock();
+    }
+    EXPECT_FALSE(acquired_while_held);
+
+    release_promise.set_value();
+    holder.join();
+    EXPECT_TRUE(second.try_lock());
+    second.unlock();
 }
 
 // ---- P3: 启动结构校验 (仅日志, 不抛异常、不修复) ----
 
-// ① nwp 错位: open_or_create 仅记 ERROR 日志, 不抛
+// ① nwp 错位: open_or_create 仅记 ERROR 日志, 不抛、不修复
 TEST_F(ChannelMetaTest, OpenOrCreateToleratesMisalignedNwp) {
     {
         auto meta = ChannelMeta::open_or_create(config_);
         meta.next_write_pos()->store(7, boost::memory_order_release);  // 7 % 8 != 0
     }
-    EXPECT_NO_THROW({
-        auto meta = ChannelMeta::open_or_create(config_);
-        (void)meta;
-    });
+    auto meta = ChannelMeta::open_or_create(config_);
+    EXPECT_EQ(meta.next_write_pos()->load(), 7u);
 }
 
-// ② 活跃页文件缺失: open_or_create 仅记 ERROR 日志, 不抛
+// ② 活跃页文件缺失: open_or_create 仅记 ERROR 日志, 不抛、不创建缺失页
 TEST_F(ChannelMetaTest, OpenOrCreateToleratesMissingActivePageFile) {
     {
         auto meta = ChannelMeta::open_or_create(config_);
         // nwp 推进到页 1, 但不创建页 1 文件
         meta.next_write_pos()->store(1 * MB + 8, boost::memory_order_release);
     }
-    EXPECT_NO_THROW({
-        auto meta = ChannelMeta::open_or_create(config_);
-        (void)meta;
-    });
+    auto meta = ChannelMeta::open_or_create(config_);
+    EXPECT_EQ(meta.next_write_pos()->load(), 1 * MB + 8);
+    EXPECT_FALSE(std::filesystem::exists(meta.page_dir() / std::format("{:08d}.dat", 1)));
 }
 
-// ③ 活跃页坏帧链: 链完好时静默通过; 破坏后仅记 WARN, 不抛
+// ③ 活跃页坏帧链: 链完好时静默通过; 破坏后仅记 WARN, 不抛、不修复
 TEST_F(ChannelMetaTest, OpenOrCreateToleratesCorruptActivePageChain) {
     namespace bip2 = boost::interprocess;
-    const auto page_path = [this]() {
-        return shm_dir_ / channel_name_ / std::format("{:08d}.dat", 0);
-    };
+    const auto page_path = shm_dir_ / channel_name_ / std::format("{:08d}.dat", 0);
     {
         auto meta = ChannelMeta::open_or_create(config_);
         // 页 0 追加一个 8 字节空帧, nwp=16: 链 = [0,8) 初始填充 + [8,16) 空帧
-        bip2::file_mapping mfile{page_path().string().c_str(), bip2::read_write};
+        bip2::file_mapping mfile{page_path.string().c_str(), bip2::read_write};
         bip2::mapped_region region{mfile, bip2::read_write, 0, 1 * MB};
         auto* hdr =
             reinterpret_cast<DzFrameHeader*>(static_cast<std::byte*>(region.get_address()) + 8);
@@ -313,22 +295,29 @@ TEST_F(ChannelMetaTest, OpenOrCreateToleratesCorruptActivePageChain) {
         hdr->frame_size = 8;
         meta.next_write_pos()->store(16, boost::memory_order_release);
     }
-    // 链完好: 校验通过, 不抛
-    EXPECT_NO_THROW({
-        auto meta = ChannelMeta::open_or_create(config_);
-        (void)meta;
-    });
-
-    // 破坏第 2 帧头 (frame_size=7 错位且 < 帧头) -> 校验仅 WARN, 不抛
+    // 链完好: 校验通过, 不抛, nwp 不变
     {
-        bip2::file_mapping mfile{page_path().string().c_str(), bip2::read_write};
+        auto meta = ChannelMeta::open_or_create(config_);
+        EXPECT_EQ(meta.next_write_pos()->load(), 16u);
+    }
+
+    // 破坏第 2 帧头 (frame_size=7 错位且 < 帧头) -> 校验仅 WARN, 不抛、不修复
+    {
+        bip2::file_mapping mfile{page_path.string().c_str(), bip2::read_write};
         bip2::mapped_region region{mfile, bip2::read_write, 0, 1 * MB};
         auto* hdr =
             reinterpret_cast<DzFrameHeader*>(static_cast<std::byte*>(region.get_address()) + 8);
         hdr->frame_size = 7;
     }
-    EXPECT_NO_THROW({
+    {
         auto meta = ChannelMeta::open_or_create(config_);
-        (void)meta;
-    });
+        EXPECT_EQ(meta.next_write_pos()->load(), 16u);
+    }
+    {
+        bip2::file_mapping mfile{page_path.string().c_str(), bip2::read_only};
+        bip2::mapped_region region{mfile, bip2::read_only, 8, sizeof(DzFrameHeader)};
+        auto* hdr = static_cast<const DzFrameHeader*>(region.get_address());
+        EXPECT_EQ(hdr->frame_type, DZ_FRAME_TICK);
+        EXPECT_EQ(hdr->frame_size, 7u);
+    }
 }

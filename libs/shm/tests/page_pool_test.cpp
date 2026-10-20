@@ -1,4 +1,4 @@
-#include "test_util.h"
+#include "test_fixture.h"
 
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/common.h>
@@ -13,21 +13,17 @@
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::PagePool;
-using dztrader::shm::test::cleanup_channel;
 using dztrader::shm::test::MB;
-using dztrader::shm::test::test_shm_dir;
-using dztrader::shm::test::unique_channel_name;
 
-class PagePoolTest : public ::testing::Test {
+class PagePoolTest : public dztrader::shm::test::ShmTestBase {
 protected:
-    std::string channel_name_;
-    std::filesystem::path shm_dir_;
     ChannelConfig config_;
     std::shared_ptr<ChannelMeta> meta_;
 
+    [[nodiscard]] std::string channel_prefix() const override { return "dz_test_pagepool"; }
+
     void SetUp() override {
-        channel_name_ = unique_channel_name("dz_test_pagepool");
-        shm_dir_ = test_shm_dir(channel_name_);
+        ShmTestBase::SetUp();
         config_ = {
             .channel_name = channel_name_,
             .shm_dir = shm_dir_,
@@ -41,7 +37,7 @@ protected:
 
     void TearDown() override {
         meta_.reset();
-        cleanup_channel(channel_name_, shm_dir_);
+        ShmTestBase::TearDown();
     }
 };
 

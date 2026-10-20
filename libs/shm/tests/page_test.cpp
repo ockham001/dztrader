@@ -1,4 +1,4 @@
-#include "test_util.h"
+#include "test_fixture.h"
 
 #include <boost/interprocess/file_mapping.hpp>
 #include <boost/interprocess/mapped_region.hpp>
@@ -15,21 +15,17 @@ using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::Page;
 using dztrader::shm::PagePool;
-using dztrader::shm::test::cleanup_channel;
 using dztrader::shm::test::MB;
-using dztrader::shm::test::test_shm_dir;
-using dztrader::shm::test::unique_channel_name;
 
-class PageTest : public ::testing::Test {
+class PageTest : public dztrader::shm::test::ShmTestBase {
 protected:
-    std::string channel_name_;
-    std::filesystem::path shm_dir_;
     ChannelConfig config_;
     std::shared_ptr<ChannelMeta> meta_;
 
+    [[nodiscard]] std::string channel_prefix() const override { return "dz_test_page"; }
+
     void SetUp() override {
-        channel_name_ = unique_channel_name("dz_test_page");
-        shm_dir_ = test_shm_dir(channel_name_);
+        ShmTestBase::SetUp();
         config_ = {
             .channel_name = channel_name_,
             .shm_dir = shm_dir_,
@@ -43,7 +39,7 @@ protected:
 
     void TearDown() override {
         meta_.reset();
-        cleanup_channel(channel_name_, shm_dir_);
+        ShmTestBase::TearDown();
     }
 };
 
@@ -74,11 +70,12 @@ TEST_F(PageTest, PageAddressWritable) {
     EXPECT_EQ(std::memcmp(region.get_address(), test_data, sizeof(test_data)), 0);
 }
 
-TEST_F(PageTest, PageIdFromFilename) {
+TEST_F(PageTest, PageIdMatchesRequestedId) {
     PagePool pool(meta_);
 
     auto page0 = pool.get_page(0);
     ASSERT_TRUE(page0.has_value());
+    EXPECT_EQ(page0->page_id(), 0u);
     EXPECT_TRUE(std::filesystem::exists(meta_->page_dir() / "00000000.dat"));
 
     auto page1 = pool.get_page(1);
@@ -96,7 +93,11 @@ TEST_F(PageTest, DataPointerOffsetAccess) {
     auto offset = sizeof(DzFrameHeader) + 8;
     std::memcpy(page->data() + offset, test_data, sizeof(test_data));
 
-    char buf[sizeof(test_data)];
-    std::memcpy(buf, page->data() + offset, sizeof(test_data));
-    EXPECT_EQ(std::memcmp(buf, test_data, sizeof(test_data)), 0);
+    // 独立映射复核落盘，避免写入与读回走同一地址导致恒真
+    boost::interprocess::file_mapping mfile((meta_->page_dir() / "00000000.dat").string().c_str(),
+                                            boost::interprocess::read_only);
+    boost::interprocess::mapped_region region(mfile, boost::interprocess::read_only, offset,
+                                              sizeof(test_data));
+
+    EXPECT_EQ(std::memcmp(region.get_address(), test_data, sizeof(test_data)), 0);
 }

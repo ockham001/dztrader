@@ -1,9 +1,10 @@
-#include "test_util.h"
+#include "test_fixture.h"
 
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/common.h>
 #include <dztrader/shm/page_cleaner.h>
 #include <filesystem>
+#include <fstream>
 #include <gtest/gtest.h>
 #include <memory>
 #include <string>
@@ -14,25 +15,21 @@ using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::CleanupPolicy;
 using dztrader::shm::PageCleaner;
-using dztrader::shm::test::cleanup_channel;
 using dztrader::shm::test::create_page_file;
 using dztrader::shm::test::MB;
 using dztrader::shm::test::spawn_helper;
-using dztrader::shm::test::test_shm_dir;
-using dztrader::shm::test::unique_channel_name;
 using dztrader::shm::test::wait_for_file;
 using dztrader::shm::test::wait_with_timeout;
 
-class PageCleanerTest : public ::testing::Test {
+class PageCleanerTest : public dztrader::shm::test::ShmTestBase {
 protected:
-    std::string channel_name_;
-    std::filesystem::path shm_dir_;
     ChannelConfig config_;
     std::shared_ptr<ChannelMeta> meta_;
 
+    [[nodiscard]] std::string channel_prefix() const override { return "dz_test_cleaner"; }
+
     void SetUp() override {
-        channel_name_ = unique_channel_name("dz_test_cleaner");
-        shm_dir_ = test_shm_dir(channel_name_);
+        ShmTestBase::SetUp();
         config_ = {
             .channel_name = channel_name_,
             .shm_dir = shm_dir_,
@@ -46,7 +43,7 @@ protected:
 
     void TearDown() override {
         meta_.reset();
-        cleanup_channel(channel_name_, shm_dir_);
+        ShmTestBase::TearDown();
     }
 };
 
@@ -160,18 +157,47 @@ TEST_F(PageCleanerTest, CombinedCountAndAgePolicy) {
     create_page_file(dir, 1, 1 * MB);
     create_page_file(dir, 2, 1 * MB);
     create_page_file(dir, 3, 1 * MB);
+    // page 0 是 open_or_create 的初始页；移除后 pages = {1,2,3}，便于精确断言。
+    std::filesystem::remove(dir / std::format("{:08d}.dat", 0));
 
     meta_->next_write_pos()->store(4 * 1 * MB, boost::memory_order_release);
 
-    auto old_path = dir / std::format("{:08d}.dat", 1);
+    auto count_path = dir / std::format("{:08d}.dat", 1);
+    auto age_path = dir / std::format("{:08d}.dat", 2);
+    auto retained_path = dir / std::format("{:08d}.dat", 3);
     auto old_time = std::filesystem::file_time_type::clock::now() - std::chrono::hours(48);
-    std::filesystem::last_write_time(old_path, old_time);
+    std::filesystem::last_write_time(age_path, old_time);
 
+    // page 1 只命中 count；page 2 只命中 age；page 3 两条都不命中
     CleanupPolicy policy{.max_page_count = 2, .max_page_age_hours = 24};
     PageCleaner cleaner(meta_, policy);
 
     size_t deleted = cleaner.cleanup();
-    EXPECT_GE(deleted, 1u);
+    EXPECT_EQ(deleted, 2u);
+    EXPECT_FALSE(std::filesystem::exists(count_path));
+    EXPECT_FALSE(std::filesystem::exists(age_path));
+    EXPECT_TRUE(std::filesystem::exists(retained_path));
+}
+
+TEST_F(PageCleanerTest, CleanupCountIgnoresMetaFile) {
+    auto dir = meta_->page_dir();
+    create_page_file(dir, 1, 1 * MB);
+    create_page_file(dir, 2, 1 * MB);
+    create_page_file(dir, 3, 1 * MB);
+    std::filesystem::remove(dir / std::format("{:08d}.dat", 0));
+    meta_->next_write_pos()->store(4 * 1 * MB, boost::memory_order_release);
+
+    // meta.dat 不是页文件，不得计入 max_page_count；否则 page 3 会被多删
+    ASSERT_TRUE(std::filesystem::exists(dir / "meta.dat"));
+    CleanupPolicy policy{.max_page_count = 1, .max_page_age_hours = 0};
+    PageCleaner cleaner(meta_, policy);
+    size_t deleted = cleaner.cleanup();
+
+    EXPECT_EQ(deleted, 2u);
+    EXPECT_TRUE(std::filesystem::exists(dir / "meta.dat"));
+    EXPECT_FALSE(std::filesystem::exists(dir / std::format("{:08d}.dat", 1)));
+    EXPECT_FALSE(std::filesystem::exists(dir / std::format("{:08d}.dat", 2)));
+    EXPECT_TRUE(std::filesystem::exists(dir / std::format("{:08d}.dat", 3)));
 }
 
 TEST_F(PageCleanerTest, CleanupRespectsReaderPageIndex) {
@@ -192,15 +218,26 @@ TEST_F(PageCleanerTest, CleanupRespectsReaderPageIndex) {
     EXPECT_TRUE(std::filesystem::exists(dir / std::format("{:08d}.dat", 1)));
 }
 
-TEST_F(PageCleanerTest, CleanupSkipsRemoveFailure) {
+TEST_F(PageCleanerTest, CleanupRespectsWriterPageIndex) {
     auto dir = meta_->page_dir();
     create_page_file(dir, 1, 1 * MB);
-    meta_->next_write_pos()->store(2 * 1 * MB, boost::memory_order_release);
-    // 无 reader/writer，floor = active = 2，page 1 应被删
+    create_page_file(dir, 2, 1 * MB);
+    create_page_file(dir, 3, 1 * MB);
+    // 移除初始页，pages = {1,2,3}，page 1 应删、page 2 受 writer 保护
+    std::filesystem::remove(dir / std::format("{:08d}.dat", 0));
+    meta_->next_write_pos()->store(4 * 1 * MB, boost::memory_order_release);
+
+    ASSERT_TRUE(meta_->add_writer("gw.slow", 1234));
+    meta_->set_writer_page_index("gw.slow", 2);  // writer 仍需 page 2
+
     CleanupPolicy policy{.max_page_count = 1, .max_page_age_hours = 0};
     PageCleaner cleaner(meta_, policy);
-    // 正常情况删除成功；此测试主要保证不抛
-    EXPECT_NO_THROW(cleaner.cleanup());
+    size_t deleted = cleaner.cleanup();
+
+    EXPECT_EQ(deleted, 1u);
+    EXPECT_FALSE(std::filesystem::exists(dir / std::format("{:08d}.dat", 1)));
+    EXPECT_TRUE(std::filesystem::exists(dir / std::format("{:08d}.dat", 2)));
+    EXPECT_TRUE(std::filesystem::exists(dir / std::format("{:08d}.dat", 3)));
 }
 
 // 多进程：另一进程以裸 file_mapping 持有 page 1（不注册 reader，对 cleaner 不可见）。
@@ -215,12 +252,13 @@ TEST_F(PageCleanerTest, CleanupMultiProcMappingHeld) {
     create_page_file(dir, 3, 1 * MB);
     meta_->next_write_pos()->store(3 * 1 * MB, boost::memory_order_release);  // active = page 3
 
-    auto signal_file = shm_dir_ / "helper_mapped";
+    auto ready_file = shm_dir_ / "helper_mapped";
+    auto release_file = shm_dir_ / "cleanup_done";
     boost::asio::io_context ctx;
-    // helper 持 page 1 的裸 mapping（非 reader），hold 3s 保证与 cleaner 重叠
+    // helper 持 page 1 的裸 mapping（非 reader），由 release_file 控制退出时机
     auto proc = spawn_helper(ctx, {"file_mapping_hold", channel_name_, shm_dir_.string(), "1",
-                                   "3000", signal_file.string()});
-    ASSERT_TRUE(wait_for_file(signal_file, std::chrono::seconds(5)))
+                                   ready_file.string(), release_file.string()});
+    ASSERT_TRUE(wait_for_file(ready_file, std::chrono::seconds(5)))
         << "helper failed to establish mapping";
 
     CleanupPolicy policy{.max_page_count = 1, .max_page_age_hours = 0};
@@ -233,6 +271,9 @@ TEST_F(PageCleanerTest, CleanupMultiProcMappingHeld) {
     // page 1 被 helper 映射：Linux 删除（inode 引用计数）、Windows 跳过（映射），
     // 行为平台相关，故不断言其存在性，由 helper 退出码验证 mapping 完整性。
 
+    {
+        std::ofstream ofs(release_file);
+    }
     int result = wait_with_timeout(proc, std::chrono::seconds(5));
     EXPECT_NE(result, -1) << "helper hung (killed by timeout)";
     EXPECT_EQ(result, 0) << "helper mapping was corrupted or unreadable";

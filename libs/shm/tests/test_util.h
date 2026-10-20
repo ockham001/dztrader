@@ -24,6 +24,7 @@ namespace dztrader::shm::test {
 
 constexpr uint64_t KB = 1024ULL;
 constexpr uint64_t MB = KB * 1024ULL;
+constexpr uint64_t GB = MB * 1024ULL;
 
 inline std::string unique_channel_name(const std::string& prefix) {
     auto ts = std::chrono::steady_clock::now().time_since_epoch().count();
