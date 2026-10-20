@@ -423,8 +423,14 @@ struct DzContext {
             timers.push(entry.next_deadline, id);
             return;
         }
-        // Daily: 每次触发按 wall clock 重算次日 (自动适应时区/夏令时)
-        entry.next_deadline = now + dztrader::next_time_of_day_delay(entry.time_of_day_ms);
+        // Daily: 每次触发按 wall clock 重算次日 (自动适应时区/夏令时)。
+        // 触发时刻可能因时钟/定时器粒度略早于目标毫秒, 此时 next_time_of_day_delay
+        // 会返回一个很小的正数; 若直接采用, 同一天会再次触发。触发后至少排到次日。
+        auto delay = dztrader::next_time_of_day_delay(entry.time_of_day_ms);
+        if (delay < std::chrono::hours(12)) {
+            delay += std::chrono::hours(24);
+        }
+        entry.next_deadline = now + delay;
         timers.push(entry.next_deadline, id);
     }
     DzTimerId schedule_user_timer(UserTimerEntry entry) {

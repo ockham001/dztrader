@@ -4,12 +4,15 @@
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/env.h>
 #include <dztrader/core/path.h>
+#include <dztrader/error.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
 #include <nlohmann/json.hpp>
 
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -99,13 +102,20 @@ protected:
 };
 
 TEST_F(NotifyUiTest, InfoLevelSerializedAsString) {
+    const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     ASSERT_TRUE(dz_notify_ui(ctx_, DZ_NOTIFY_INFO, "msg", false));
     const auto payload = read_notify_payload();
     EXPECT_EQ(payload["level"], "info");
     EXPECT_EQ(payload["source"], dz_strategy_id(ctx_));
     EXPECT_EQ(payload["message"], "msg");
     EXPECT_EQ(payload["popup"], false);
-    EXPECT_TRUE(payload.contains("timestamp"));
+
+    // 契约 notify-ui: timestamp 为 Unix 秒级 time_t; 毫秒值会超出上界、0 会低于下界。
+    ASSERT_TRUE(payload["timestamp"].is_number_integer());
+    const int64_t timestamp = payload["timestamp"].get<int64_t>();
+    const auto after = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    EXPECT_GE(timestamp, static_cast<int64_t>(before));
+    EXPECT_LE(timestamp, static_cast<int64_t>(after));
 }
 
 TEST_F(NotifyUiTest, WarnLevelSerializedAsString) {
@@ -125,10 +135,12 @@ TEST_F(NotifyUiTest, ErrorLevelSerializedAsString) {
 
 TEST_F(NotifyUiTest, InvalidLevelRejected) {
     EXPECT_FALSE(dz_notify_ui(ctx_, static_cast<DzNotifyLevel>(99), "msg", false));
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
 }
 
 TEST_F(NotifyUiTest, NullMessageRejected) {
     EXPECT_FALSE(dz_notify_ui(ctx_, DZ_NOTIFY_INFO, nullptr, false));
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
 }
 
 }  // namespace
