@@ -1,6 +1,8 @@
 #include <dztrader/date_time/dt_formatter.h>
 
 #include <chrono>
+#include <memory_resource>
+#include <string>
 #include <gtest/gtest.h>
 
 using namespace dztrader::details;
@@ -133,9 +135,10 @@ TEST(FormatterTest, EscapePercent) {
     EXPECT_EQ(f.format("%%", -1), "%");
 }
 
+// 契约：未知说明符属于格式/结构错误 → std::invalid_argument（与解析侧一致）。
 TEST(FormatterTest, UnknownSpecifier) {
     Formatter f{};
-    EXPECT_EQ(f.format("%Z", -1), "Z");
+    EXPECT_THROW(f.format("%Z", -1), std::invalid_argument);
 }
 
 // 异常分级约定（与实现 4328a32 一致, 也与 C++ 标准库惯例一致）:
@@ -162,6 +165,42 @@ TEST(FormatterTest, Pad4DigitsOutOfRange) {
     EXPECT_THROW(f2.format("%Y", -1), std::out_of_range);
 }
 
+// 字段语义边界：上界接受、越界拒绝（宽度检查之外，实现须校验 01-12/01-31/00-23/00-59/1-7）。
+TEST(FormatterTest, PadFieldSemanticBoundaries) {
+    EXPECT_EQ((Formatter{.month = 12}).format("%m", -1), "12");
+    EXPECT_EQ((Formatter{.day = 31}).format("%d", -1), "31");
+    EXPECT_EQ((Formatter{.hour = 23}).format("%H", -1), "23");
+    EXPECT_EQ((Formatter{.minute = 59}).format("%M", -1), "59");
+    EXPECT_EQ((Formatter{.second = 59}).format("%S", -1), "59");
+    EXPECT_EQ((Formatter{.weekday = 7}).format("%u", -1), "7");
+
+    EXPECT_THROW((Formatter{.month = 13}).format("%m", -1), std::out_of_range);
+    EXPECT_THROW((Formatter{.month = 0}).format("%m", -1), std::out_of_range);
+    EXPECT_THROW((Formatter{.day = 32}).format("%d", -1), std::out_of_range);
+    EXPECT_THROW((Formatter{.day = 0}).format("%d", -1), std::out_of_range);
+    EXPECT_THROW((Formatter{.hour = 24}).format("%H", -1), std::out_of_range);
+    EXPECT_THROW((Formatter{.minute = 60}).format("%M", -1), std::out_of_range);
+    EXPECT_THROW((Formatter{.second = 60}).format("%S", -1), std::out_of_range);
+    EXPECT_THROW((Formatter{.weekday = 8}).format("%u", -1), std::out_of_range);
+    EXPECT_THROW((Formatter{.weekday = 0}).format("%u", -1), std::out_of_range);
+}
+
+// 与解析侧对称：subsecond 合法区间 [0, 999999999] ns，>= 1s 或负值必须拒绝。
+TEST(FormatterTest, SubsecondOutOfRange) {
+    EXPECT_THROW((Formatter{.second = 45, .subsecond = std::chrono::nanoseconds{1000000000}})
+                     .format("%S", -1),
+                 std::out_of_range);
+    EXPECT_THROW((Formatter{.second = 45, .subsecond = std::chrono::nanoseconds{1500000000}})
+                     .format("%S", -1),
+                 std::out_of_range);
+    EXPECT_THROW(
+        (Formatter{.second = 45, .subsecond = std::chrono::nanoseconds{-1}}).format("%S", -1),
+        std::out_of_range);
+
+    MilliFormatter f{.second = 45, .subsecond = std::chrono::milliseconds{1000}};
+    EXPECT_THROW(f.format("%S", -1), std::out_of_range);
+}
+
 // 回归测试：格式串以单独的 % 结尾必须报错，不能静默丢弃
 TEST(FormatterTest, ErrorTrailingPercent) {
     Formatter f{.year = 2024};
@@ -180,6 +219,9 @@ TEST(FormatterTest, PureText) {
 }
 
 TEST(FormatterTest, StringTypeTemplate) {
-    DateTimeFormatter<std::string, std::chrono::nanoseconds> f{.year = 2024, .month = 3, .day = 15};
-    EXPECT_EQ(f.format("%F", -1), "2024-03-15");
+    // 用第二个 StringType（std::pmr::string）验证模板参数真正参与实例化。
+    DateTimeFormatter<std::pmr::string, std::chrono::nanoseconds> f{
+        .year = 2024, .month = 3, .day = 15};
+    const std::pmr::string formatted = f.format("%F", -1);
+    EXPECT_EQ(formatted, "2024-03-15");
 }

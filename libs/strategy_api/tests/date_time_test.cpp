@@ -2,7 +2,9 @@
 
 #include <dztrader/date_time/date_time.h>
 
+#include <cerrno>
 #include <chrono>
+#include <ctime>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -10,6 +12,19 @@
 
 using namespace dztrader;
 using namespace dztrader::strategy_api::test;
+
+namespace {
+
+/// @brief localtime 失败注入：执行 system_to_local 的 fallback 分支。
+bool always_failing_local_time(std::tm&, std::time_t) noexcept { return false; }
+
+/// @brief mktime 失败注入：执行 local_to_system 的 fallback 分支。
+std::time_t always_failing_mktime(std::tm*) {
+    errno = 0;
+    return static_cast<std::time_t>(-1);
+}
+
+}  // namespace
 
 class DateTimeTest : public ::testing::Test {
 protected:
@@ -114,14 +129,15 @@ TEST_F(DateTimeTest, SubsecondsMilli) {
 }
 
 TEST_F(DateTimeTest, SinceEpochVarious) {
+    // 2024-01-01T00:00:00Z 的精确常量；单位或量级错误必须变红。
     DateTime dt{Date{2024, 1, 1}, Time{0, 0, 0}};
-    EXPECT_GT(dt.days_since_epoch(), 0);
-    EXPECT_GT(dt.hours_since_epoch(), 0);
-    EXPECT_GT(dt.minutes_since_epoch(), 0);
-    EXPECT_GT(dt.seconds_since_epoch(), 0);
-    EXPECT_GT(dt.millisecs_since_epoch(), 0);
-    EXPECT_GT(dt.microsecs_since_epoch(), 0);
-    EXPECT_GT(dt.nanosecs_since_epoch(), 0);
+    EXPECT_EQ(dt.days_since_epoch(), 19723);
+    EXPECT_EQ(dt.hours_since_epoch(), 473352);
+    EXPECT_EQ(dt.minutes_since_epoch(), 28401120);
+    EXPECT_EQ(dt.seconds_since_epoch(), 1704067200);
+    EXPECT_EQ(dt.millisecs_since_epoch(), 1704067200000LL);
+    EXPECT_EQ(dt.microsecs_since_epoch(), 1704067200000000LL);
+    EXPECT_EQ(dt.nanosecs_since_epoch(), 1704067200000000000LL);
 }
 
 TEST_F(DateTimeTest, SinceMidnightVarious) {
@@ -130,8 +146,21 @@ TEST_F(DateTimeTest, SinceMidnightVarious) {
     EXPECT_EQ(dt.minutes_since_midnight(), 90);
     EXPECT_EQ(dt.seconds_since_midnight(), 5415);
     EXPECT_EQ(dt.millisecs_since_midnight(), 5415500);
-    EXPECT_GT(dt.microsecs_since_midnight(), 0);
-    EXPECT_GT(dt.nanosecs_since_midnight(), 0);
+    EXPECT_EQ(dt.microsecs_since_midnight(), 5415500000LL);
+    EXPECT_EQ(dt.nanosecs_since_midnight(), 5415500000000LL);
+}
+
+TEST_F(DateTimeTest, NegativeNanosecondDecomposition) {
+    // date_time.h 声明 subseconds() 始终非负；-1 ns 必须分解为 1969-12-31 23:59:59.999999999。
+    DateTime dt{-1};
+    EXPECT_EQ(dt.subseconds<std::chrono::nanoseconds>().count(), 999999999);
+    EXPECT_EQ(dt.hour(), 23);
+    EXPECT_EQ(dt.minute(), 59);
+    EXPECT_EQ(dt.second(), 59);
+    EXPECT_EQ(dt.nanosec(), 999);
+    EXPECT_EQ(dt.year(), 1969);
+    EXPECT_EQ(dt.month(), 12);
+    EXPECT_EQ(dt.day(), 31);
 }
 
 TEST_F(DateTimeTest, TimestampInt64) {
@@ -416,13 +445,31 @@ TEST_F(DateTimeTest, FromTimestampDouble) {
 }
 
 TEST_F(DateTimeTest, SystemNow) {
-    auto now = DateTime::system_now();
-    EXPECT_GT(now.nanosecs_since_epoch(), 0);
+    const auto before = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+    const auto now = DateTime::system_now();
+    const auto after = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                           .count();
+    EXPECT_GE(now.nanosecs_since_epoch(), before);
+    EXPECT_LE(now.nanosecs_since_epoch(), after);
 }
 
 TEST_F(DateTimeTest, LocalNow) {
-    auto now = DateTime::local_now();
-    EXPECT_GT(now.nanosecs_since_epoch(), 0);
+    const auto before = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+    const auto now = DateTime::local_now();
+    const auto after = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                           .count();
+    // local_now 是本地墙钟编码，不能直接与 UTC 窗口比较；与同一窗口内
+    // system_to_local 的结果对齐，仍能捕获单位/量级错误。
+    const auto expected = DateTime::system_to_local(DateTime{(before + after) / 2});
+    const int64_t diff = now.nanosecs_since_epoch() - expected.nanosecs_since_epoch();
+    EXPECT_LT(diff, 1000000000LL);
+    EXPECT_GT(diff, -1000000000LL);
 }
 
 TEST_F(DateTimeTest, SystemToLocalRoundTrip) {
@@ -433,45 +480,26 @@ TEST_F(DateTimeTest, SystemToLocalRoundTrip) {
 }
 
 // ========== C2 回归测试：时区 fallback 路径交叉验证 ==========
-// 说明：mktime/localtime_s 在正常时间戳下不会失败，无法直接触发 errno!=0 分支。
-// 此测试通过复现 fallback 逻辑（std::chrono::zoned_time）并与正常路径结果对比，
-// 验证 fallback 算法正确性。若两条路径结果一致，则 fallback 分支逻辑可信。
-
+// mktime/localtime_s 在合法时间戳下不会失败，fallback 无法由输入触发；生产实现
+// 通过模板参数暴露注入点（date_time.h），以下用例注入失败实现，直接执行生产
+// fallback 分支并与正常路径交叉比对（正常路径是独立实现，不是测试内复刻）。
 TEST_F(DateTimeTest, SystemToLocalFallbackMatchesNormalPath) {
-    // 用一个已知的系统时间点
     DateTime sys{Date{2024, 6, 15}, Time{12, 30, 45, 500}};
-    auto local_via_normal = DateTime::system_to_local(sys);
-
-    // 复现 fallback 逻辑：用 zoned_time 转换
-    auto local_via_fallback =
-        std::chrono::zoned_time(std::chrono::current_zone(),
-                                std::chrono::sys_time<std::chrono::nanoseconds>{
-                                    std::chrono::nanoseconds{sys.nanosecs_since_epoch()}})
-            .get_local_time();
-
-    // 两条路径结果应一致（纳秒级）
-    EXPECT_EQ(local_via_normal.nanosecs_since_epoch(),
-              local_via_fallback.time_since_epoch().count());
+    const auto normal = DateTime::system_to_local(sys);
+    const auto fallback = DateTime::system_to_local<always_failing_local_time>(sys);
+    EXPECT_EQ(normal.nanosecs_since_epoch(), fallback.nanosecs_since_epoch());
 }
 
 TEST_F(DateTimeTest, LocalToSystemFallbackMatchesNormalPath) {
-    // 用一个已知的本地时间点
     DateTime local{Date{2024, 6, 15}, Time{12, 30, 45, 500}};
-    auto sys_via_normal = DateTime::local_to_system(local);
-
-    // 复现 fallback 逻辑：用 zoned_time 转换
-    auto sys_via_fallback = std::chrono::zoned_time(
-        std::chrono::current_zone(),
-        std::chrono::local_time(std::chrono::nanoseconds{local.nanosecs_since_epoch()}));
-    auto sys_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        sys_via_fallback.get_sys_time().time_since_epoch());
-
-    // 两条路径结果应一致（纳秒级）
-    EXPECT_EQ(sys_via_normal.nanosecs_since_epoch(), sys_ns.count());
+    const auto normal = DateTime::local_to_system(local);
+    const auto fallback = DateTime::local_to_system<always_failing_mktime>(local);
+    EXPECT_EQ(normal.nanosecs_since_epoch(), fallback.nanosecs_since_epoch());
 }
 
 TEST_F(DateTimeTest, SystemToLocalRoundTripMultipleTimestamps) {
-    // 多个时间点的往返一致性，覆盖不同季节（夏令时/冬令时边界附近）
+    // 仅断言 system→local→system 往返恒等。DST 语义依赖宿主时区与平台 tzdata，
+    // 无法在 Linux/Windows CI 上固定，本用例不声称覆盖 DST。
     struct Ymd {
         int32_t y;
         int32_t m;
@@ -479,10 +507,10 @@ TEST_F(DateTimeTest, SystemToLocalRoundTripMultipleTimestamps) {
     };
     std::vector<Ymd> test_cases = {
         {2024, 1, 1},    // 冬
-        {2024, 3, 15},   // 春（部分时区夏令时切换附近）
+        {2024, 3, 15},   // 春
         {2024, 6, 21},   // 夏
         {2024, 9, 15},   // 秋
-        {2024, 11, 5},   // 秋（部分时区冬令时切换附近）
+        {2024, 11, 5},   // 秋末
         {2024, 12, 31},  // 冬
     };
     for (const auto& tc : test_cases) {
@@ -598,6 +626,8 @@ TEST_F(DateTimeTest, ActionTradingRoundTrip) {
          wd <= static_cast<int32_t>(Weekday::Friday); ++wd) {
         for (int32_t h = 0; h < 24; ++h) {
             if (wd == static_cast<int32_t>(Weekday::Monday) && h < 6) {
+                // 周一 0–6 点不是有效 action 时段（属于上周六夜盘），
+                // 其映射由 ActionTradingMondayBefore6MapsToSaturday 显式钉住。
                 continue;
             }
             Date d{2024, 1, wd};
@@ -607,6 +637,23 @@ TEST_F(DateTimeTest, ActionTradingRoundTrip) {
             EXPECT_EQ(action.date(), action2.date())
                 << "Round-trip failed: wd=" << wd << " h=" << h;
         }
+    }
+}
+
+// 周一 0–6 点属于上周六夜盘（业务日/交易日映射），不是有效 action 时段：
+//   action 周一 03:00 → trading 周一 03:00（action_day_to_trading_day 恒等）
+//   trading 周一 03:00 → action 上周六 03:00（trading_day_to_action_day 回退 2 天）
+// 因此该区间 action 往返不恒等；与已启用的 TradingDayToActionDayMondayBefore6 一致。
+TEST_F(DateTimeTest, ActionTradingMondayBefore6MapsToSaturday) {
+    for (int32_t h = 0; h < 6; ++h) {
+        const Date monday{2024, 1, 8};
+        const DateTime action{monday, Time{h, 0, 0}};
+
+        const auto trading = DateTime::action_day_to_trading_day(action);
+        EXPECT_EQ(trading.date(), monday) << "h=" << h;
+
+        const auto action_back = DateTime::trading_day_to_action_day(trading);
+        EXPECT_EQ(action_back, (DateTime{Date{2024, 1, 6}, Time{h, 0, 0}})) << "h=" << h;
     }
 }
 

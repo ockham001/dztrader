@@ -10,6 +10,8 @@
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
 
+#include "output_limit.h"
+
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -256,6 +258,41 @@ TEST_F(TradeApiTest, OutputUiWritesExtInstFrame) {
     EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(view.ext_inst_payload()),
                                view.ext_inst_payload_size()),
               kText);
+}
+
+TEST_F(TradeApiTest, OutputUiTruncatesPayloadAtPageCap) {
+    // 1MB 页的 payload 上限 = (1MB - 帧头 80) & ~7; 超出部分必须截断,
+    // 否则 open_frame 因 frame_size > page_size 直接失败 (页感知截断的回归锚点)
+    const uint64_t cap = dztrader::output_ui_max_payload(kMB);
+    const std::string oversized(static_cast<size_t>(cap) + 4096, 'x');
+    ASSERT_GT(oversized.size(), cap);
+    ASSERT_TRUE(dz_output_ui(ctx_, oversized.c_str()));
+
+    const std::byte* frame = probe_->next_frame();
+    ASSERT_NE(frame, nullptr);
+    const auto view = dztrader::shm::FrameView(frame);
+    EXPECT_EQ(view.type(), DZ_FRAME_OUTPUT_UI);
+    EXPECT_EQ(view.ext_inst_payload_size(), cap);
+    // 截断后的 payload 内容 = 原文前缀 (长度与内容同时可观察)
+    EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(view.ext_inst_payload()),
+                               view.ext_inst_payload_size()),
+              std::string_view(oversized).substr(0, static_cast<size_t>(cap)));
+}
+
+TEST_F(TradeApiTest, OutputUiRejectsPageWithoutPayloadRoom) {
+    // 真实通道页容量下限 1MB (shm ChannelMeta::validate_config), cap==0 经公开
+    // 入口不可达; 经 api.cpp 的页容量注入点覆盖防御分支: false + BUFFER_TOO_SMALL
+    EXPECT_FALSE(dztrader::output_ui_write(ctx_, "x", dztrader::kOutputUiFrameOverhead));
+    EXPECT_EQ(dz_errcode(), DZ_EC_BUFFER_TOO_SMALL);
+    EXPECT_EQ(probe_->next_frame(), nullptr);  // 拒绝时不得写帧
+
+    // 空 payload 不占 payload 空间: len==0 不触发 cap==0 拒绝
+    ASSERT_TRUE(dztrader::output_ui_write(ctx_, "", dztrader::kOutputUiFrameOverhead));
+    const std::byte* frame = probe_->next_frame();
+    ASSERT_NE(frame, nullptr);
+    const auto view = dztrader::shm::FrameView(frame);
+    EXPECT_EQ(view.type(), DZ_FRAME_OUTPUT_UI);
+    EXPECT_EQ(view.ext_inst_payload_size(), 0u);
 }
 
 TEST_F(TradeApiTest, QueryBarReturnsNotImplemented) {

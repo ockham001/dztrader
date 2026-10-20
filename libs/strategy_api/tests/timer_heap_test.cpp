@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <random>
+#include <utility>
 #include <vector>
 
 using dztrader::TimerHeap;
@@ -80,15 +81,23 @@ TEST(TimerHeap, RemoveTokenKeepsHeapProperty) {
     EXPECT_TRUE(heap.remove_token(49));    // 尾部
     EXPECT_FALSE(heap.remove_token(100));  // 不存在
     int64_t prev = -1;
-    int count = 0;
+    std::vector<uint64_t> popped_tokens;
     while (!heap.empty()) {
         const auto node = heap.pop();
         const int64_t ms = (node.deadline - base) / std::chrono::milliseconds(1);
         EXPECT_GE(ms, prev);
         prev = ms;
-        ++count;
+        popped_tokens.push_back(node.token);
     }
-    EXPECT_EQ(count, 47);
+    // 残留集合是取消语义的锚点: 总是删 index 0 的实现会留下 25/49, 此处变红
+    std::vector<uint64_t> expected_tokens;
+    for (uint64_t token = 0; token < 50; ++token) {
+        if (token != 0 && token != 25 && token != 49) {
+            expected_tokens.push_back(token);
+        }
+    }
+    std::sort(popped_tokens.begin(), popped_tokens.end());
+    EXPECT_EQ(popped_tokens, expected_tokens);
 }
 
 TEST(TimerHeap, RemoveTokenReplacementBubblesUp) {
@@ -104,31 +113,57 @@ TEST(TimerHeap, RemoveTokenReplacementBubblesUp) {
     }
     EXPECT_TRUE(heap.remove_token(101));
     int64_t prev = -1;
-    int count = 0;
+    std::vector<uint64_t> popped_tokens;
     while (!heap.empty()) {
         const auto node = heap.pop();
         const int64_t ms = (node.deadline - base) / std::chrono::milliseconds(1);
         EXPECT_GE(ms, prev);
         prev = ms;
-        ++count;
+        popped_tokens.push_back(node.token);
     }
-    EXPECT_EQ(count, 6);
+    // 被删的必须是 token 101 (而非 index 0 的 token 1): 残留集合逐 token 对齐
+    std::sort(popped_tokens.begin(), popped_tokens.end());
+    EXPECT_EQ(popped_tokens, (std::vector<uint64_t>{1, 2, 3, 4, 100, 102}));
 }
 
 TEST(TimerHeap, RemoveTokensBelowRebuildsHeap) {
     TimerHeap heap;
     const auto base = Clock::now();
     constexpr uint64_t kInternal = 1ull << 63;
-    for (int i = 0; i < 50; ++i) {
-        heap.push(base + std::chrono::milliseconds(i), static_cast<uint64_t>(i));
+    // 5 个内部条目 (token >= 阈值) 交错在用户条目之间; 过滤后按插入序残留
+    // [30, 10, 50, 20, 25] (非堆序), 重建循环必须真正下沉才能恢复堆性质。
+    const std::vector<std::pair<int64_t, uint64_t>> entries = {
+        {5, 1},               // 用户条目: 被过滤
+        {30, kInternal | 0},  // 内部条目: 保留
+        {100, 2},             // 用户条目: 被过滤
+        {10, kInternal | 1},  // 内部条目: 保留
+        {7, 3},               // 用户条目: 被过滤
+        {50, kInternal | 2},  // 内部条目: 保留
+        {20, kInternal | 3},  // 内部条目: 保留
+        {25, kInternal | 4},  // 内部条目: 保留
+    };
+    for (const auto& [ms, token] : entries) {
+        heap.push(base + std::chrono::milliseconds(ms), token);
     }
-    heap.push(base + std::chrono::milliseconds(5), kInternal);
     heap.remove_tokens_below(kInternal);
-    // 仅内部条目保留, 且堆性质保持
-    EXPECT_FALSE(heap.empty());
-    EXPECT_EQ(heap.top().token, kInternal);
-    EXPECT_EQ(heap.pop().token, kInternal);
-    EXPECT_TRUE(heap.empty());
+
+    // 重建后堆顶 = 最小 deadline; 跳过重建时堆顶是 30ms (首条残留)
+    ASSERT_FALSE(heap.empty());
+    EXPECT_EQ(heap.top().token, kInternal | 1);
+
+    std::vector<std::pair<int64_t, uint64_t>> popped;
+    while (!heap.empty()) {
+        const auto node = heap.pop();
+        popped.emplace_back((node.deadline - base) / std::chrono::milliseconds(1), node.token);
+    }
+    // deadline 升序 + 残留 token 集合: 两者共同锚定过滤与重建语义
+    EXPECT_EQ(popped, (std::vector<std::pair<int64_t, uint64_t>>{
+                          {10, kInternal | 1},
+                          {20, kInternal | 3},
+                          {25, kInternal | 4},
+                          {30, kInternal | 0},
+                          {50, kInternal | 2},
+                      }));
 }
 
 }  // namespace

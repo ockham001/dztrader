@@ -69,6 +69,7 @@ TEST_F(DateTest, ConstructorFromYearMonthWeekdayLast) {
                                              std::chrono::weekday_last{std::chrono::weekday{5u}}};
     Date d(ymwdl);
     EXPECT_EQ(d.month(), 3);
+    EXPECT_EQ(d.day(), 29);  // 2024-03 最后一个周五；第一个周五是 3/1
     EXPECT_EQ(d.weekday(), Weekday::Friday);
 }
 
@@ -477,6 +478,7 @@ TEST_F(DateTest, FromYearMonthDayLastInvalid) {
 TEST_F(DateTest, FromYearMonthWeekdayLast) {
     auto d = Date::from_year_month_weekday_last(2024, 3, 5);
     EXPECT_EQ(d.month(), 3);
+    EXPECT_EQ(d.day(), 29);  // 2024-03 最后一个周五；第一个周五是 3/1
     EXPECT_EQ(d.weekday(), Weekday::Friday);
 }
 
@@ -498,4 +500,29 @@ TEST_F(DateTest, YearRangeSampled) {
 
 TEST_F(DateTest, MonthEndTruncationSampled) {
     check_date_month_end_truncation(1980, 2100, 4, -24, 24, 3);
+}
+
+// 世纪/闰年边界 + 每月 1 日抽样（原 DISABLED_YearRange1980To2100 的 fast 覆盖）。
+TEST_F(DateTest, YearRangeCenturyBoundariesAndMonthStarts) {
+    const std::chrono::year_month_day boundaries[] = {
+        {std::chrono::year{1980}, std::chrono::month{1}, std::chrono::day{1}},
+        {std::chrono::year{2000}, std::chrono::month{2}, std::chrono::day{29}},
+        {std::chrono::year{2096}, std::chrono::month{2}, std::chrono::day{29}},
+        {std::chrono::year{2100}, std::chrono::month{12}, std::chrono::day{31}},
+    };
+    for (const auto& ymd : boundaries) {
+        check_date(std::chrono::sys_days{ymd});
+    }
+    for (int32_t y = 1980; y <= 2100; ++y) {
+        for (int32_t m = 1; m <= 12; ++m) {
+            check_date(std::chrono::sys_days{std::chrono::year_month_day{
+                std::chrono::year{y}, std::chrono::month{static_cast<uint32_t>(m)},
+                std::chrono::day{1}}});
+        }
+    }
+}
+
+// 30 日月末的 ±1/±2/±13 月偏移：补齐抽样版步长 3 漏掉的 |delta| ∈ {1, 2, 13}。
+TEST_F(DateTest, MonthEndTruncationAdjacentAndCrossYearOffsets) {
+    check_date_month_end_truncation(2023, 2024, 1, -13, 13, 1);
 }
