@@ -198,6 +198,18 @@ TEST_F(DbTest, QueryPositionAndTradingAccount) {
     dz_resultset_close(rs);
 }
 
+// NULL 句柄: 四个查询 API 均返回 NULL 且错误码 DZ_EC_INVALID_PARAM (契约 instrument §7 同语义)。
+TEST_F(DbTest, QueryNullHandleRejected) {
+    EXPECT_EQ(nullptr, dz_db_query_order(nullptr, "A", nullptr));
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+    EXPECT_EQ(nullptr, dz_db_query_trade(nullptr, "A", nullptr));
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+    EXPECT_EQ(nullptr, dz_db_query_position(nullptr, "A", nullptr));
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+    EXPECT_EQ(nullptr, dz_db_query_trading_account(nullptr, "A"));
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+}
+
 // 发现 1 回归 (评审 Important): db_open_readonly 必须设 busy_timeout (与生产写端一致),
 // 否则 SDK 水位装载/断档回补在 td Writer 批量提交 (持写锁) 窗口内立即 SQLITE_BUSY →
 // 查询返回 NULL (DZ_EC_SYSTEM), 消费端降级不过滤。
@@ -336,6 +348,7 @@ protected:
         home_ = (std::filesystem::temp_directory_path() / "dz_test_db_open_default").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/db");
+        std::filesystem::create_directories(home_ + "/configs");
         orig_home_ = dztrader::env::get("DZTRADER_HOME");
         dztrader::env::set("DZTRADER_HOME", home_);
         dztrader::paths::reset_for_test();  // 清空进程级缓存, 指向本用例 home
@@ -607,7 +620,8 @@ TEST_F(IngestDbCacheTest, BackoffIsPerConfigAndRetryKeepsReportOnce) {
     ASSERT_NE(nullptr, other.db);  // 换配置立即尝试, 不受 broken 的退避影响
     EXPECT_EQ(2u, dztrader::strategy_api_internal::ingest_open_attempts_for_test());
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    // 窗口到期用测试钩子立即结束, 不 sleep (与 RetriesAfterWindowAndThenServesFromCache 一致)
+    dztrader::strategy_api_internal::expire_ingest_backoff_for_test();
     const auto retried = dztrader::strategy_api_internal::acquire_ingest_db(broken);
     EXPECT_EQ(nullptr, retried.db);  // 窗口过后确实重试 (attempts +1)
     EXPECT_FALSE(retried.report);    // 同一配置的失败仍只诊断一次
