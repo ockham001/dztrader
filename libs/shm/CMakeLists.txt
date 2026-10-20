@@ -39,7 +39,8 @@ foreach(testfile ${SHM_TESTS})
     set_target_properties(dzshm_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
-    gtest_discover_tests(dzshm_${testname} PROPERTIES LABELS fast)
+    # 锁序/跨进程用例挂死时由 ctest 兜底；正常单例为秒级
+    gtest_discover_tests(dzshm_${testname} PROPERTIES LABELS fast TIMEOUT 120)
     install(TARGETS dzshm_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()
 

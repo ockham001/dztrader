@@ -1,5 +1,8 @@
-#include "test_util.h"
+#include "test_fixture.h"
 
+#include <atomic>
+#include <chrono>
+#include <cstring>
 #include <dztrader/error.h>
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/shm/channel_meta.h>
@@ -9,7 +12,6 @@
 #include <dztrader/shm/named_semaphore.h>
 #include <dztrader/struct.h>
 #include <gtest/gtest.h>
-#include <cstring>
 #include <thread>
 
 using dztrader::shm::ChannelConfig;
@@ -22,18 +24,12 @@ using dztrader::shm::test::MB;
 using dztrader::shm::test::test_shm_dir;
 using dztrader::shm::test::unique_channel_name;
 
-class ReaderTest : public ::testing::Test {
+class ReaderTest : public dztrader::shm::test::ShmTestBase {
 protected:
-    std::string channel_name_;
-    std::filesystem::path shm_dir_;
-
-    void SetUp() override {
-        channel_name_ = unique_channel_name("dz_test_reader");
-        shm_dir_ = test_shm_dir(channel_name_);
-    }
+    [[nodiscard]] std::string channel_prefix() const override { return "dz_test_reader"; }
 
     void TearDown() override {
-        cleanup_channel(channel_name_, shm_dir_, {"test_sub", channel_name_});
+        cleanup_channel(channel_name_, shm_dir_, {channel_name_ + ".sub", channel_name_});
     }
 
     ChannelConfig make_config(uint64_t page_size = 1 * MB) {
@@ -141,46 +137,41 @@ TEST_F(ReaderTest, ReaderCrossPageBoundary) {
     EXPECT_GT(meta->next_write_pos()->load(), page_size);
 }
 
-TEST_F(ReaderTest, WaitAndNotify) {
-    auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
-    Reader reader = Reader::create(meta, "stg.test");
-    NamedSemaphore sem(channel_name_);
-
-    std::thread notifier([&] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        sem.notify();
-    });
-
-    sem.wait();
-    notifier.join();
-}
-
 TEST_F(ReaderTest, NextFrameBlockingRead) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
-    (void)meta->add_reader("test_sub", 0);
+    (void)meta->add_reader(channel_name_ + ".sub", 0);
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
     Reader reader = Reader::create(meta, "stg.test");
     NamedSemaphore sem(channel_name_);
 
+    std::atomic<bool> write_ok{false};
     std::thread delayed_write([&] {
+        // 100ms 是测试输入（让 reader 先进入等待），不是同步原语；
+        // 下方用 wait_for 返回值 + 时间下界验证确实阻塞。
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         std::byte* payload = writer.open_frame(DZ_FRAME_TICK, test_data_size);
-        ASSERT_NE(payload, nullptr);
-        std::memset(payload, 0xAB, test_data_size);
-        writer.close_frame();
+        if (payload != nullptr) {
+            std::memset(payload, 0xAB, test_data_size);
+            writer.close_frame();
+            write_ok.store(true);
+        }
         sem.notify();
     });
 
+    auto start = std::chrono::steady_clock::now();
+    const bool notified = sem.wait_for(5000);
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - start)
+                       .count();
+    delayed_write.join();
+
+    ASSERT_TRUE(notified);
+    EXPECT_GE(elapsed, 50) << "reader returned before the delayed writer";
+    ASSERT_TRUE(write_ok.load());
     auto* frame = reader.next_frame();
-    if (!frame) {
-        sem.wait();
-        frame = reader.next_frame();
-    }
     ASSERT_NE(frame, nullptr);
     const auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
     EXPECT_EQ(hdr->frame_type, DZ_FRAME_TICK);
-
-    delayed_write.join();
 }
 
 TEST_F(ReaderTest, ReaderSkipsInitialInvalidFill) {
@@ -318,29 +309,6 @@ TEST_F(ReaderTest, ReadPositionUnchangedWhenNoNewData) {
     uint64_t pos = reader.read_position();
     EXPECT_EQ(reader.next_frame(), nullptr);
     EXPECT_EQ(reader.read_position(), pos);
-}
-
-TEST_F(ReaderTest, WaitForTimeout) {
-    auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
-    Reader reader = Reader::create(meta, "stg.test");
-    NamedSemaphore sem(channel_name_);
-
-    bool rc = sem.wait_for(100);
-    EXPECT_FALSE(rc);
-}
-
-TEST_F(ReaderTest, WaitForNotified) {
-    auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
-    Reader reader = Reader::create(meta, "stg.test");
-    NamedSemaphore sem(channel_name_);
-
-    std::thread notifier([&] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        sem.notify();
-    });
-
-    EXPECT_TRUE(sem.wait_for(5000));
-    notifier.join();
 }
 
 TEST(ReaderReleaseTest, ReleaseOldPagesUpdatesIndex) {

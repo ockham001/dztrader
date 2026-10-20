@@ -148,9 +148,12 @@ inline int channel_writer_write(const std::string& channel_name, const std::stri
     }
 }
 
-// MultiWriter: multi-producer scenario (crash/restart uses MultiWriter for recovery)
+// MultiWriter: multi-producer scenario (crash/restart uses MultiWriter for recovery).
+// `signal_file` is created only after open_frame succeeds, so the parent can
+// terminate the helper while it actually holds the write lock mid-frame.
 inline int channel_writer_open_frame(const std::string& channel_name,
-                                     const std::string& shm_dir_str) {
+                                     const std::string& shm_dir_str,
+                                     const std::string& signal_file) {
     try {
         std::filesystem::path shm_dir(shm_dir_str);
         ChannelConfig config{
@@ -170,6 +173,10 @@ inline int channel_writer_open_frame(const std::string& channel_name,
             return 1;
         }
         std::memset(payload, 0xAB, data_size);
+
+        if (!signal_file.empty()) {
+            std::ofstream ofs(signal_file);
+        }
 
         std::this_thread::sleep_for(std::chrono::hours(1));
         writer.close_frame();
@@ -232,13 +239,14 @@ inline int channel_writer_continuous_cross(const std::string& channel_name,
 //  - Windows: remove fails on a mapped file → the cleaner skips with a warning
 //    and leaves the file in place; the helper's mapping stays valid.
 // In both cases the cleaner must not throw and the helper's mapping must remain
-// readable. `signal_file` is created once the mapping is established so the
-// main process runs the cleaner only while the mapping is held.
+// readable. `ready_file` is created once the mapping is established; the helper
+// then waits for `release_file` so the main process runs the cleaner only while
+// the mapping is held, without a fixed-duration sleep.
 inline int file_mapping_hold(const std::string& channel_name,
                              const std::string& shm_dir_str,
                              uint64_t page_id,
-                             int hold_ms,
-                             const std::string& signal_file) {
+                             const std::string& ready_file,
+                             const std::string& release_file) {
     try {
         namespace bip = boost::interprocess;
         std::filesystem::path shm_dir(shm_dir_str);
@@ -269,11 +277,13 @@ inline int file_mapping_hold(const std::string& channel_name,
         // them, so the byte must be unchanged).
         addr[0] = static_cast<std::byte>(0xCD);
 
-        if (!signal_file.empty()) {
-            std::ofstream ofs(signal_file);
+        if (!ready_file.empty()) {
+            std::ofstream ofs(ready_file);
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(hold_ms));
+        if (!release_file.empty() && !wait_for_file(release_file, std::chrono::seconds(10))) {
+            return 3;
+        }
 
         if (addr[0] != static_cast<std::byte>(0xCD)) {
             return 2;
@@ -309,15 +319,15 @@ inline int run(int argc, char* argv[]) {
         return channel_writer_write(argv[1], argv[2]);
     }
     if (cmd == "channel_writer_open_frame" && argc >= 3) {
-        return channel_writer_open_frame(argv[1], argv[2]);
+        std::string sig = (argc >= 4) ? argv[3] : "";
+        return channel_writer_open_frame(argv[1], argv[2], sig);
     }
     if (cmd == "channel_writer_continuous_cross" && argc >= 3) {
         std::string sig = (argc >= 4) ? argv[3] : "";
         return channel_writer_continuous_cross(argv[1], argv[2], sig);
     }
-    if (cmd == "file_mapping_hold" && argc >= 5) {
-        std::string sig = (argc >= 6) ? argv[5] : "";
-        return file_mapping_hold(argv[1], argv[2], std::stoull(argv[3]), std::atoi(argv[4]), sig);
+    if (cmd == "file_mapping_hold" && argc >= 6) {
+        return file_mapping_hold(argv[1], argv[2], std::stoull(argv[3]), argv[4], argv[5]);
     }
 
     std::cerr << "unknown command or missing args: " << cmd << "\n";

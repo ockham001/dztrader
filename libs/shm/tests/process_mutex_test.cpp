@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <dztrader/error.h>
 #include <dztrader/shm/process_mutex.h>
 #include <filesystem>
 #include <gtest/gtest.h>
@@ -14,6 +15,36 @@ using dztrader::shm::test::spawn_helper;
 using dztrader::shm::test::wait_for_file;
 using dztrader::shm::test::wait_with_timeout;
 
+namespace {
+
+template <typename Stop>
+void expect_abandoned_recovery(const std::string& mutex_name, Stop stop) {
+    ProcessMutex::remove(mutex_name);
+
+    auto signal_file = std::filesystem::temp_directory_path() / ("dz_test_lock_" + mutex_name);
+
+    boost::asio::io_context ctx;
+    auto proc =
+        spawn_helper(ctx, {"mutex_lock_and_hold", mutex_name, "60000", signal_file.string()});
+
+    ASSERT_TRUE(wait_for_file(signal_file));
+    std::filesystem::remove(signal_file);
+
+    stop(proc);
+    int status = wait_with_timeout(proc, std::chrono::seconds(5));
+    ASSERT_NE(status, -1) << "helper still running after stop request";
+    EXPECT_FALSE(proc.running()) << "helper still running after stop request";
+
+    ProcessMutex mtx(mutex_name);
+    const bool recovered = mtx.try_lock();
+    if (recovered) {
+        mtx.unlock();
+    }
+    EXPECT_TRUE(recovered) << "abandoned mutex was not recovered";
+}
+
+}  // namespace
+
 class ProcessMutexTest : public ::testing::Test {
 protected:
     std::string mutex_name_;
@@ -25,12 +56,6 @@ protected:
 
     void TearDown() override { ProcessMutex::remove(mutex_name_); }
 };
-
-TEST_F(ProcessMutexTest, BasicLockUnlock) {
-    ProcessMutex mtx(mutex_name_);
-    mtx.lock();
-    mtx.unlock();
-}
 
 TEST_F(ProcessMutexTest, TryLock) {
     ProcessMutex mtx(mutex_name_);
@@ -64,7 +89,9 @@ TEST_F(ProcessMutexTest, MultiThreadContention) {
         threads.emplace_back([&] {
             for (int j = 0; j < kIncrements; ++j) {
                 std::scoped_lock<ProcessMutex> guard(mtx);
-                counter.fetch_add(1, std::memory_order_relaxed);
+                // load/store 而非 fetch_add：失去互斥时会丢更新，锁坏掉不能继续全绿
+                const int64_t current = counter.load(std::memory_order_relaxed);
+                counter.store(current + 1, std::memory_order_relaxed);
             }
         });
     }
@@ -104,67 +131,28 @@ TEST_F(ProcessMutexTest, CrossProcessMutualExclusion) {
 }
 
 TEST_F(ProcessMutexTest, AbandonedMutexRecovery) {
-    ProcessMutex::remove(mutex_name_);
-
-    auto signal_file = std::filesystem::temp_directory_path() / ("dz_test_lock_" + mutex_name_);
-
-    {
-        boost::asio::io_context ctx;
-        auto proc =
-            spawn_helper(ctx, {"mutex_lock_and_hold", mutex_name_, "60000", signal_file.string()});
-
-        ASSERT_TRUE(wait_for_file(signal_file));
-        std::filesystem::remove(signal_file);
-
-        proc.terminate();
-        wait_with_timeout(proc, std::chrono::seconds(2));
-    }
-
-    ProcessMutex mtx(mutex_name_);
-    mtx.lock();
-    mtx.unlock();
+    expect_abandoned_recovery(mutex_name_, [](bpv::process& proc) { proc.terminate(); });
 }
 
 TEST_F(ProcessMutexTest, AbandonedMutexRecoveryAfterRequestExit) {
-    ProcessMutex::remove(mutex_name_);
-
-    auto signal_file = std::filesystem::temp_directory_path() / ("dz_test_lock_" + mutex_name_);
-
-    {
-        boost::asio::io_context ctx;
-        auto proc =
-            spawn_helper(ctx, {"mutex_lock_and_hold", mutex_name_, "60000", signal_file.string()});
-
-        ASSERT_TRUE(wait_for_file(signal_file));
-        std::filesystem::remove(signal_file);
-
-        proc.request_exit();
-        wait_with_timeout(proc, std::chrono::seconds(5));
-    }
-
-    ProcessMutex mtx(mutex_name_);
-    mtx.lock();
-    mtx.unlock();
+    expect_abandoned_recovery(mutex_name_, [](bpv::process& proc) { proc.request_exit(); });
 }
 
 TEST_F(ProcessMutexTest, AbandonedMutexRecoveryAfterInterrupt) {
-    ProcessMutex::remove(mutex_name_);
+    expect_abandoned_recovery(mutex_name_, [](bpv::process& proc) { proc.interrupt(); });
+}
 
-    auto signal_file = std::filesystem::temp_directory_path() / ("dz_test_lock_" + mutex_name_);
+TEST_F(ProcessMutexTest, ConstructorThrowsForInvalidName) {
+#ifdef _WIN32
+    const std::string invalid_name = "bad\\name";
+#else
+    const std::string invalid_name(300, 'x');
+#endif
 
-    {
-        boost::asio::io_context ctx;
-        auto proc =
-            spawn_helper(ctx, {"mutex_lock_and_hold", mutex_name_, "60000", signal_file.string()});
-
-        ASSERT_TRUE(wait_for_file(signal_file));
-        std::filesystem::remove(signal_file);
-
-        proc.interrupt();
-        wait_with_timeout(proc, std::chrono::seconds(5));
+    try {
+        ProcessMutex mtx(invalid_name);
+        FAIL() << "ProcessMutex should reject an invalid name";
+    } catch (const dztrader::Exception& e) {
+        EXPECT_EQ(e.code(), DZ_EC_SHM_LOCK_FAILED);
     }
-
-    ProcessMutex mtx(mutex_name_);
-    mtx.lock();
-    mtx.unlock();
 }

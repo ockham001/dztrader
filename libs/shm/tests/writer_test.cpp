@@ -1,4 +1,4 @@
-#include "test_util.h"
+#include "test_fixture.h"
 
 #include <cstring>
 #include <string_view>
@@ -19,6 +19,7 @@ using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::FrameView;
 using dztrader::shm::MultiWriter;
+using dztrader::shm::NamedSemaphore;
 using dztrader::shm::Reader;
 using dztrader::shm::SingleWriter;
 using dztrader::shm::test::cleanup_channel;
@@ -26,21 +27,14 @@ using dztrader::shm::test::MB;
 using dztrader::shm::test::spawn_helper;
 using dztrader::shm::test::test_shm_dir;
 using dztrader::shm::test::unique_channel_name;
+using dztrader::shm::test::wait_for_file;
 using dztrader::shm::test::wait_with_timeout;
 
-class WriterTest : public ::testing::Test {
+class WriterTest : public dztrader::shm::test::ShmTestBase {
 protected:
-    std::string channel_name_;
-    std::filesystem::path shm_dir_;
+    [[nodiscard]] std::string channel_prefix() const override { return "dz_test_writer"; }
 
-    void SetUp() override {
-        channel_name_ = unique_channel_name("dz_test_writer");
-        shm_dir_ = test_shm_dir(channel_name_);
-    }
-
-    void TearDown() override {
-        cleanup_channel(channel_name_, shm_dir_, {"test_sub", "refresh_sub"});
-    }
+    void TearDown() override { cleanup_channel(channel_name_, shm_dir_, {channel_name_ + ".sub"}); }
 
     ChannelConfig make_config(uint64_t page_size = 1 * MB) {
         return ChannelConfig{
@@ -150,17 +144,23 @@ TEST_F(WriterTest, PayloadDataIntegrity) {
     }
 }
 
-TEST_F(WriterTest, RefreshSubscribers) {
+TEST_F(WriterTest, RefreshSubscribersNotifiesNewSubscriber) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
 
-    EXPECT_TRUE(writer.refresh_subscribers());
+    EXPECT_TRUE(writer.refresh_subscribers());  // 初始空缓存
 
-    (void)meta->add_reader("test_sub", 0);
+    const auto reader_name = channel_name_ + ".sub";
+    ASSERT_TRUE(meta->add_reader(reader_name, 0));
     EXPECT_TRUE(writer.refresh_subscribers());
+    writer.notify_subscribers();
+
+    NamedSemaphore sem(reader_name);
+    EXPECT_TRUE(sem.wait_for(1000)) << "refreshed subscriber was not notified";
 }
 
-TEST_F(WriterTest, OpenFrameRejectsZeroDataSize) {
+TEST_F(WriterTest, OpenFrameAcceptsZeroDataSize) {
+    // 零 payload 是合法控制帧：只写帧头，不拒绝
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
     SingleWriter writer = SingleWriter::create(meta, "gw.test");
 
@@ -216,16 +216,6 @@ TEST_F(WriterTest, NormalFrameIsNotPadding) {
     ASSERT_NE(frame, nullptr);
     auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
     EXPECT_NE(hdr->frame_type, DZ_FRAME_INVALID_FILL);
-}
-
-TEST_F(WriterTest, RefreshSubscribersAfterAdd) {
-    auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
-    SingleWriter writer = SingleWriter::create(meta, "gw.test");
-
-    EXPECT_TRUE(writer.refresh_subscribers());
-
-    (void)meta->add_reader("refresh_sub", 0);
-    EXPECT_TRUE(writer.refresh_subscribers());
 }
 
 TEST_F(WriterTest, AccessorsUnchangedAfterAlignmentRejection) {
@@ -353,13 +343,15 @@ TEST_F(WriterTest, WriterCrashMidFrame) {
     auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
     Reader reader = Reader::create(meta, "stg.test");
 
+    auto signal_file = shm_dir_ / "helper_open_frame";
     boost::asio::io_context ctx;
-    auto proc = spawn_helper(ctx, {"channel_writer_open_frame", channel_name_, shm_dir_.string()});
+    auto proc = spawn_helper(
+        ctx, {"channel_writer_open_frame", channel_name_, shm_dir_.string(), signal_file.string()});
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
+    ASSERT_TRUE(wait_for_file(signal_file, std::chrono::seconds(5)))
+        << "helper did not reach open_frame";
     proc.terminate();
-    wait_with_timeout(proc, std::chrono::seconds(2));
+    EXPECT_NE(wait_with_timeout(proc, std::chrono::seconds(2)), -1);
 
     auto* frame = reader.next_frame();
     EXPECT_EQ(frame, nullptr);
@@ -370,14 +362,15 @@ TEST_F(WriterTest, ProcessRestartAfterCrash) {
     Reader reader = Reader::create(meta, "stg.test");
 
     {
+        auto signal_file = shm_dir_ / "helper_open_frame_restart";
         boost::asio::io_context ctx;
-        auto proc =
-            spawn_helper(ctx, {"channel_writer_open_frame", channel_name_, shm_dir_.string()});
+        auto proc = spawn_helper(ctx, {"channel_writer_open_frame", channel_name_,
+                                       shm_dir_.string(), signal_file.string()});
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
+        ASSERT_TRUE(wait_for_file(signal_file, std::chrono::seconds(5)))
+            << "helper did not reach open_frame";
         proc.terminate();
-        wait_with_timeout(proc, std::chrono::seconds(2));
+        EXPECT_NE(wait_with_timeout(proc, std::chrono::seconds(2)), -1);
     }
 
     {
@@ -413,14 +406,16 @@ TEST(WriterCloseOldTest, CloseOldPagesUpdatesWriterIndex) {
 
     auto writer = SingleWriter::create(meta, "gw.t");
     EXPECT_EQ(meta->min_writer_page_index(), 0u);
+
+    // 写到跨入 page 1，close_old_pages 应把 writer index 抬到当前页 1
+    int frames_written = 0;
+    while (meta->next_write_pos()->load() <= 1 * MB) {
+        DzTick tick{};
+        ASSERT_TRUE(writer.write_frame(DZ_FRAME_TICK, tick));
+        ASSERT_LT(++frames_written, 20000);
+    }
     writer.close_old_pages();
-    // close_old_pages 后 index = page_.page_id()（初始为 0 或当前写页）
-    // 至少不抛异常且 index 被写入
-    // 写一帧后跨页，再 close_old_pages，index 应抬高
-    DzTick tick{};
-    writer.write_frame(DZ_FRAME_TICK, tick);
-    writer.close_old_pages();
-    EXPECT_GE(meta->min_writer_page_index(), 0u);  // 不抛即基础通过
+    EXPECT_EQ(meta->min_writer_page_index(), 1u);
     cleanup_channel(channel, dir);
 }
 

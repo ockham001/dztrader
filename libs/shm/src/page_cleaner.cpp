@@ -9,6 +9,8 @@
 #include <mutex>
 #include <spdlog/spdlog.h>
 
+#include "page_file_util.h"
+
 namespace dztrader::shm {
 
 PageCleaner::PageCleaner(std::shared_ptr<ChannelMeta> meta, CleanupPolicy policy)
@@ -32,10 +34,10 @@ size_t PageCleaner::cleanup() {
         return 0;
     }
 
-    // 收集所有 .dat 文件，按文件名排序（%08d.dat 天然有序 = 从旧到新）
+    // 只收集数字页文件（排除 meta.dat）；按文件名排序 = 从旧到新
     std::vector<std::filesystem::path> pages;
     for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-        if (entry.is_regular_file() && entry.path().extension() == ".dat") {
+        if (entry.is_regular_file() && page_file_util_internal::is_page_file(entry.path())) {
             pages.push_back(entry.path());
         }
     }

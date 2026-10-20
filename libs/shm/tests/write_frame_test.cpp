@@ -1,4 +1,4 @@
-#include "test_util.h"
+#include "test_fixture.h"
 
 #include <cstring>
 #include <dztrader/core/core_data_type.h>
@@ -7,27 +7,28 @@
 #include <dztrader/shm/writer.h>
 #include <dztrader/struct.h>
 #include <gtest/gtest.h>
+#include <memory>
+#include <vector>
+
+namespace {
+
+struct alignas(8) HugePayload {
+    std::byte data[1 * 1024 * 1024];
+};
+
+static_assert(sizeof(HugePayload) % 8 == 0);
+
+}  // namespace
 
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::Reader;
 using dztrader::shm::SingleWriter;
-using dztrader::shm::test::cleanup_channel;
 using dztrader::shm::test::MB;
-using dztrader::shm::test::test_shm_dir;
-using dztrader::shm::test::unique_channel_name;
 
-class WriteFrameTest : public ::testing::Test {
+class WriteFrameTest : public dztrader::shm::test::ShmTestBase {
 protected:
-    std::string channel_name_;
-    std::filesystem::path shm_dir_;
-
-    void SetUp() override {
-        channel_name_ = unique_channel_name("dz_test_write_frame");
-        shm_dir_ = test_shm_dir(channel_name_);
-    }
-
-    void TearDown() override { cleanup_channel(channel_name_, shm_dir_); }
+    [[nodiscard]] std::string channel_prefix() const override { return "dz_test_write_frame"; }
 
     ChannelConfig make_config(uint64_t page_size = 1 * MB) {
         return ChannelConfig{
@@ -88,6 +89,60 @@ TEST_F(WriteFrameTest, WriteFrameMultipleFrames) {
         EXPECT_EQ(hdr->frame_type, DZ_FRAME_PRELOAD_EVENT_SHM);
     }
     EXPECT_EQ(reader.next_frame(), nullptr);
+}
+
+TEST_F(WriteFrameTest, WriteFrameReturnsFalseWhenLargerThanPage) {
+    auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
+    SingleWriter writer = SingleWriter::create(meta, "gw.test");
+
+    const uint64_t nwp_before = meta->next_write_pos()->load();
+    auto payload = std::make_unique<HugePayload>();
+    EXPECT_FALSE(writer.write_frame(DZ_FRAME_TICK, *payload));
+    EXPECT_EQ(meta->next_write_pos()->load(), nwp_before);
+}
+
+TEST_F(WriteFrameTest, ExtWritersReturnFalseWhenLargerThanPage) {
+    auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
+    SingleWriter writer = SingleWriter::create(meta, "gw.test");
+
+    std::vector<std::byte> oversized(1 * MB);
+    const auto size = static_cast<uint32_t>(oversized.size());
+    const uint64_t nwp_before = meta->next_write_pos()->load();
+
+    EXPECT_FALSE(
+        writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, "inst.big", oversized.data(), size));
+    EXPECT_FALSE(writer.write_ext_frame(DZ_FRAME_UI_INPUT, oversized.data(), size));
+    EXPECT_EQ(meta->next_write_pos()->load(), nwp_before);
+}
+
+TEST_F(WriteFrameTest, WriteExtFrameUnalignedPadsAndSetsSize) {
+    auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(make_config()));
+    SingleWriter writer = SingleWriter::create(meta, "gw.test");
+    Reader reader = Reader::create(meta, "stg.test");
+
+    const std::byte data[] = {std::byte{0xAA}, std::byte{0xBB}, std::byte{0xCC}};
+    ASSERT_TRUE(writer.write_ext_frame(DZ_FRAME_UI_INPUT, data, sizeof(data)));
+
+    auto* frame = reader.next_frame();
+    ASSERT_NE(frame, nullptr);
+    auto* hdr = reinterpret_cast<const DzFrameHeader*>(frame);
+    constexpr uint32_t padded_size = static_cast<uint32_t>((sizeof(data) + 7u) & ~7u);
+    EXPECT_EQ(hdr->frame_type, DZ_FRAME_UI_INPUT);
+    EXPECT_EQ(hdr->frame_size, sizeof(DzFrameHeader) + sizeof(DzExtFrameHeader) + padded_size);
+
+    auto* ext_hdr = reinterpret_cast<const DzExtFrameHeader*>(static_cast<const std::byte*>(frame) +
+                                                              sizeof(DzFrameHeader));
+    EXPECT_EQ(ext_hdr->data_size, sizeof(data));
+    for (char c : ext_hdr->reserved) {
+        EXPECT_EQ(c, '\0');
+    }
+
+    auto* payload =
+        static_cast<const std::byte*>(frame) + sizeof(DzFrameHeader) + sizeof(DzExtFrameHeader);
+    EXPECT_EQ(std::memcmp(payload, data, sizeof(data)), 0);
+    for (uint32_t i = sizeof(data); i < padded_size; ++i) {
+        EXPECT_EQ(payload[i], std::byte{0});
+    }
 }
 
 TEST_F(WriteFrameTest, WriteExtFrameBinaryAligned) {
@@ -256,8 +311,10 @@ TEST_F(WriteFrameTest, WriteExtFrameInstanceIdTruncation) {
 
     auto* ext_hdr = reinterpret_cast<const DzExtInstFrameHeader*>(
         static_cast<const std::byte*>(frame) + sizeof(DzFrameHeader));
-    EXPECT_EQ(std::strlen(ext_hdr->instance_id), sizeof(DzStrategyId) - 1);
-    EXPECT_EQ(ext_hdr->instance_id[sizeof(DzStrategyId) - 1], '\0');
+    constexpr size_t max_id_len = sizeof(ext_hdr->instance_id) - 1;
+    EXPECT_EQ(std::strlen(ext_hdr->instance_id), max_id_len);
+    EXPECT_EQ(std::memcmp(ext_hdr->instance_id, long_id.data(), max_id_len), 0);
+    EXPECT_EQ(ext_hdr->instance_id[max_id_len], '\0');
 }
 
 TEST_F(WriteFrameTest, WriteExtFrameMixedTypes) {
