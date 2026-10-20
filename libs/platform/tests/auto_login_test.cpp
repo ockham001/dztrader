@@ -1,3 +1,5 @@
+#include "test_util.h"
+
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/platform/auto_login.h>
 #include <dztrader/shm/channel_meta.h>
@@ -56,8 +58,7 @@ protected:
         reader_.reset();
         writer_.reset();
         meta_.reset();
-        std::error_code ec;
-        std::filesystem::remove_all(shm_dir_, ec);
+        dztrader::shm::test::cleanup_channel(channel_name_, shm_dir_);
     }
 
     void write_cfg_file(const std::string& content) {

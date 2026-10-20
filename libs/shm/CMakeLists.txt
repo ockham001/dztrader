@@ -23,6 +23,11 @@ if(WIN32)
     )
 endif()
 
+# 测试共用的 shm 清理辅助头（tests/test_util.h），供 platform / master / webui 测试复用
+add_library(dzshm_test_support INTERFACE)
+target_include_directories(dzshm_test_support INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
 # ============================================================
 # 单元测试：每个 *_test.cpp 独立编译运行
 # ============================================================

@@ -15,7 +15,7 @@ using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::Page;
 using dztrader::shm::PagePool;
-using dztrader::shm::test::cleanup_test_dir;
+using dztrader::shm::test::cleanup_channel;
 using dztrader::shm::test::MB;
 using dztrader::shm::test::test_shm_dir;
 using dztrader::shm::test::unique_channel_name;
@@ -43,7 +43,7 @@ protected:
 
     void TearDown() override {
         meta_.reset();
-        cleanup_test_dir(shm_dir_);
+        cleanup_channel(channel_name_, shm_dir_);
     }
 };
 

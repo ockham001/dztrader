@@ -1,3 +1,5 @@
+#include "test_util.h"
+
 #include <gtest/gtest.h>
 
 #include <dztrader/core/this_process.h>
@@ -74,7 +76,7 @@ protected:
         reader_.reset();
         writer_.reset();
         meta_.reset();
-        std::filesystem::remove_all(shm_dir_);
+        dztrader::shm::test::cleanup_channel(channel_name_, shm_dir_);
     }
 
     /// 辅助: 写 JSON 帧到 writer, 从 reader 读回构造 FrameView

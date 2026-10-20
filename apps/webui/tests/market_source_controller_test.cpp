@@ -1,3 +1,5 @@
+#include "test_util.h"
+
 #include <gtest/gtest.h>
 #include "market_source_controller.h"
 #include "repository.h"
@@ -49,7 +51,7 @@ struct ReadyShmFixture {
         reader.reset();
         writer.reset();
         meta.reset();
-        std::filesystem::remove_all(shm_dir);
+        dztrader::shm::test::cleanup_channel(channel_name, shm_dir);
     }
     ReadyShmFixture(const ReadyShmFixture&) = delete;
     ReadyShmFixture& operator=(const ReadyShmFixture&) = delete;

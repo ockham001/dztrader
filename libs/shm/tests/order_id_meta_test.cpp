@@ -19,7 +19,11 @@ protected:
         shm_dir_ = test_shm_dir(name_);
     }
 
-    void TearDown() override { cleanup_test_dir(shm_dir_); }
+    void TearDown() override {
+        // OrderIdMeta 使用独立的 <name>.order_id 锁，不属于 ChannelMeta 的 .meta/.write。
+        dztrader::shm::ProcessMutex::remove(name_ + ".order_id");
+        cleanup_test_dir(shm_dir_);
+    }
 };
 
 TEST_F(OrderIdMetaTest, OpenOrCreateInitializesOrderId) {

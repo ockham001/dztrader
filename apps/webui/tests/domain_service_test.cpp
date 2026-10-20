@@ -1,3 +1,5 @@
+#include "test_util.h"
+
 #include "mirror_store.h"
 #include "ws_broadcaster.h"
 #include "log_domain_service.h"
@@ -70,7 +72,7 @@ struct ShmFixture {
         reader.reset();
         writer.reset();
         meta.reset();
-        std::filesystem::remove_all(shm_dir);
+        dztrader::shm::test::cleanup_channel(channel_name, shm_dir);
     }
     // 排空 reader，返回最后一帧类型
     DzFrameType last_type() {

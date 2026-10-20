@@ -77,6 +77,7 @@ foreach(testfile ${WEBUI_TESTS})
     add_executable(dzweb_${testname} ${testfile} ../master/tests/test_main.cpp)
     target_link_libraries(dzweb_${testname} PRIVATE
         dzweb_obj
+        dzshm_test_support
         GTest::gtest
     )
     target_include_directories(dzweb_${testname} PRIVATE

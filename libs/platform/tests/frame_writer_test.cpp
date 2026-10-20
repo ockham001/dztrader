@@ -1,3 +1,5 @@
+#include "test_util.h"
+
 #include <gtest/gtest.h>
 
 #include <dztrader/data_type.h>
@@ -50,7 +52,13 @@ protected:
         reader_ = Reader::create(meta_, "test_reader");
     }
 
-    void TearDown() override { std::filesystem::remove_all(shm_dir_); }
+    void TearDown() override {
+        reader_.reset();
+        writer_.reset();
+        meta_.reset();
+        EXPECT_TRUE(dztrader::shm::test::cleanup_channel(
+            channel_name_, shm_dir_, {"fw_test_ext_json_reader", "fw_test_ext_inst_json_reader"}));
+    }
 };
 
 // 测试 NotifyUi：验证无 instance_id 帧 JSON payload 正确 (source 在 payload, 不在帧头)

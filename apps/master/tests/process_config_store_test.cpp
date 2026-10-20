@@ -1,4 +1,6 @@
 // ProcessConfigStore 单测：镜像管理、SET 流水线、强保证、remove、RTN 帧
+#include "test_util.h"
+
 #include "process_config.h"
 
 #include <dztrader/core/core_data_type.h>  // DZ_FRAME_RTN_PROCESS_CONFIG (帧宏所在头)
@@ -79,7 +81,7 @@ protected:
         reader_.reset();
         writer_.reset();
         meta_.reset();
-        std::filesystem::remove_all(shm_dir_);
+        EXPECT_TRUE(dztrader::shm::test::cleanup_channel(channel_name_, shm_dir_));
     }
 
     // 排空 reader，返回最后一条 RTN_PROCESS_CONFIG 帧的 payload（无则 nullopt）

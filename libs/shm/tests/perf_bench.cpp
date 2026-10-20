@@ -14,6 +14,8 @@
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
 
+#include "test_util.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -90,6 +92,6 @@ int main() {
                 static_cast<long long>(ns.back()));
     std::printf("  (README 目标: 行情到策略 < 30μs = 30000 ns; 本基准为同进程下限参考)\n");
 
-    std::filesystem::remove_all(dir, ec);
+    dztrader::shm::test::cleanup_channel(channel, dir, {reader_name});
     return 0;
 }
