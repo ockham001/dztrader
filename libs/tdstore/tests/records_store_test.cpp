@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdio>
+#include <dztrader/core/exception.h>
 #include <dztrader/core/this_process.h>
 #include <dztrader/db/database.h>
 #include <dztrader/struct.h>
@@ -105,12 +106,25 @@ TEST_F(RecordsStoreTest, QueryInstrumentsEmptyResultKeepsColumnMeta) {
 
 TEST_F(RecordsStoreTest, QueryInstrumentsUnknownFieldThrows) {
     const std::vector<std::string> fields = {"nope"};
-    EXPECT_THROW(tdstore::query_instruments(*session_, "", fields), dztrader::Exception);
+    try {
+        (void)tdstore::query_instruments(*session_, "", fields);
+        FAIL() << "query_instruments should reject unknown field";
+    } catch (const dztrader::Exception& e) {
+        EXPECT_EQ(e.code(), DZ_EC_INVALID_PARAM);
+        EXPECT_NE(std::string(e.what()).find("nope"), std::string::npos) << "error=" << e.what();
+    }
 }
 
 TEST_F(RecordsStoreTest, QueryInstrumentsDuplicateFieldThrows) {
     const std::vector<std::string> fields = {"price_tick", "price_tick"};
-    EXPECT_THROW(tdstore::query_instruments(*session_, "", fields), dztrader::Exception);
+    try {
+        (void)tdstore::query_instruments(*session_, "", fields);
+        FAIL() << "query_instruments should reject duplicate field";
+    } catch (const dztrader::Exception& e) {
+        EXPECT_EQ(e.code(), DZ_EC_INVALID_PARAM);
+        EXPECT_NE(std::string(e.what()).find("price_tick"), std::string::npos)
+            << "error=" << e.what();
+    }
 }
 
 TEST_F(RecordsStoreTest, ToValueCharUsesCharacterCode) {
