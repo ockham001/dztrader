@@ -110,17 +110,27 @@ TEST_F(MdStateMachineTest, ReconnectFlow) {
     sm.on_req_login();
     sm.on_login_success("v6.7", "20260523", "09:00:00");
     EXPECT_EQ(sm.state(), MdState::LoggedIn);
+    sm.set_subscription_stats(5, 5);
 
-    // 断开连接
+    // 断开连接：契约要求三个字符串与 expected_subscribe_count 保留，
+    // subscribed_count 归零（重连成功后由新登录响应覆盖元信息）。
     sm.on_front_disconnected(0x1001);
     EXPECT_EQ(sm.state(), MdState::Disconnected);
     EXPECT_EQ(sm.status().progress_desc, "重连中...");
+    EXPECT_EQ(sm.status().sys_version, "v6.7");
+    EXPECT_EQ(sm.status().trading_day, "20260523");
+    EXPECT_EQ(sm.status().login_time, "09:00:00");
+    EXPECT_EQ(sm.status().expected_subscribe_count, 5u);
+    EXPECT_EQ(sm.status().subscribed_count, 0u);
 
     // 重连 (CTP 自动重连)
     auto notif = sm.on_front_connected();
     EXPECT_EQ(sm.state(), MdState::Connected);
     ASSERT_TRUE(notif.has_value());
     EXPECT_EQ((*notif)["message"].get<std::string>(), "行情连接成功");
+    EXPECT_EQ(sm.status().sys_version, "v6.7");
+    EXPECT_EQ(sm.status().trading_day, "20260523");
+    EXPECT_EQ(sm.status().login_time, "09:00:00");
 }
 
 TEST_F(MdStateMachineTest, ReqLoginFromConnectedTransitionsToLoggingIn) {
@@ -162,8 +172,16 @@ TEST_F(MdStateMachineTest, LoginFailedTransitionsToConnected) {
     sm.on_connect();
     sm.on_front_connected();
     sm.on_req_login();
+    sm.on_login_success("v6.7", "20260523", "09:00:00");
+    // 先造出非空 login_time：断线重连后再登录失败，验证失败分支会清空它。
+    sm.on_front_disconnected(0x1001);
+    sm.on_front_connected();
+    sm.on_req_login();
+    ASSERT_FALSE(sm.status().login_time.empty());
+
     auto notif = sm.on_login_failed();
     EXPECT_EQ(sm.state(), MdState::Connected);
+    EXPECT_TRUE(sm.status().login_time.empty());
     ASSERT_TRUE(notif.has_value());
     EXPECT_EQ((*notif)["message"].get<std::string>(), "行情登录失败");
     EXPECT_EQ((*notif)["level"].get<int>(), DZ_NOTIFY_ERROR);
@@ -174,8 +192,16 @@ TEST_F(MdStateMachineTest, LoginParseErrorTransitionsToConnected) {
     sm.on_connect();
     sm.on_front_connected();
     sm.on_req_login();
+    sm.on_login_success("v6.7", "20260523", "09:00:00");
+    // 解析失败同样必须清空过期登录时间。
+    sm.on_front_disconnected(0x1001);
+    sm.on_front_connected();
+    sm.on_req_login();
+    ASSERT_FALSE(sm.status().login_time.empty());
+
     auto notif = sm.on_login_parse_error();
     EXPECT_EQ(sm.state(), MdState::Connected);
+    EXPECT_TRUE(sm.status().login_time.empty());
     ASSERT_TRUE(notif.has_value());
     EXPECT_EQ((*notif)["message"].get<std::string>(), "行情登录失败");
     EXPECT_EQ((*notif)["level"].get<int>(), DZ_NOTIFY_ERROR);
@@ -297,15 +323,16 @@ TEST(DisconnectReasonStrTest, UnknownReason) {
 }
 
 TEST(TradingDayToDaysTest, ValidDate) {
-    EXPECT_NO_THROW(trading_day_to_days("20260523"));
-    auto days = trading_day_to_days("20260523");
-    EXPECT_GT(days, 0);
+    // 2026-05-23 距 1970-01-01 的精确天数；常量 1/差一天/算错日期都必须变红。
+    EXPECT_EQ(trading_day_to_days("20260523"), 20596);
 }
 
 TEST(TradingDayToDaysTest, InvalidFormat) {
     EXPECT_THROW(trading_day_to_days(""), std::runtime_error);
     EXPECT_THROW(trading_day_to_days("abc"), std::runtime_error);
     EXPECT_THROW(trading_day_to_days("20261301"), std::runtime_error);  // 非法月份
+    // 契约要求恰好 YYYYMMDD 8 位；9 字符不能按前 8 位静默解析。
+    EXPECT_THROW(trading_day_to_days("202605231"), std::runtime_error);
 }
 
 TEST(TradingDayToDaysTest, NullPointer) {
@@ -334,11 +361,19 @@ TEST_F(MdStateMachineTest, FullLifecycle) {
     sm.on_login_success("v6.7", "20260523", "09:00:00");
     EXPECT_EQ(sm.state(), MdState::LoggedIn);
     EXPECT_EQ(sm.status().progress_desc, "已登录");
+    EXPECT_EQ(sm.status().sys_version, "v6.7");
+    EXPECT_EQ(sm.status().trading_day, "20260523");
+    EXPECT_EQ(sm.status().login_time, "09:00:00");
+    sm.set_subscription_stats(5, 5);
 
-    // Disconnect
+    // Disconnect：进入 Idle 必须清空元信息并把订阅计数归零。
     sm.on_disconnect();
     EXPECT_EQ(sm.state(), MdState::Idle);
     EXPECT_EQ(sm.status().progress_desc, "未登录");
+    EXPECT_TRUE(sm.status().sys_version.empty());
+    EXPECT_TRUE(sm.status().trading_day.empty());
+    EXPECT_TRUE(sm.status().login_time.empty());
+    EXPECT_EQ(sm.status().subscribed_count, 0u);
 }
 
 // ============================================================================
