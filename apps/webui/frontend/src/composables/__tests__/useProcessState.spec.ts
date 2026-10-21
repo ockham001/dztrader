@@ -12,6 +12,10 @@ describe('processStateText', () => {
   it('未映射值原样返回（现有行为）', () => {
     expect(processStateText('unknown_state')).toBe('unknown_state')
   })
+  it('null / 空串回退为「未知」', () => {
+    expect(processStateText(null)).toBe('未知')
+    expect(processStateText('')).toBe('未知')
+  })
 })
 
 describe('processStateColor', () => {
@@ -22,6 +26,7 @@ describe('processStateColor', () => {
     expect(processStateColor('Stopping')).toBe('var(--status-alert-default)')
     expect(processStateColor('Stopped')).toBe('var(--text-tertiary)')
     expect(processStateColor('')).toBe('var(--text-tertiary)')
+    expect(processStateColor(null)).toBe('var(--text-tertiary)')
   })
 })
 

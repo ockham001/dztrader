@@ -7,7 +7,9 @@ import type {
 } from './generated'
 
 // 服务端 → 客户端每类消息的 data 载荷类型（判别联合核心）
-// 已收敛的用生成领域类型；未迁移的复杂域暂以 unknown，随 P1 迁移逐步收敛
+// 已收敛的用生成领域类型；未迁移的复杂域暂以 unknown，随 P1 迁移逐步收敛。
+// 注：`*_ack` 为控制消息（契约 webui-ws §2.4，payload 键），条目仅用于 type 全集完整性，
+// 前端当前不注册 ack handler（业务结果由领域消息/镜像推送表达，契约 §2.4）。
 export interface WsDataByType {
   snapshot: unknown                              // 结构特殊：Record<instance_id, Partial<DomainPayloads>>（镜像）
   process_status: ProcessStatusPayload
@@ -27,17 +29,30 @@ export interface WsDataByType {
   md_shm_config: ShmConfigView
   auto_login: AutoLoginPayload
   progress: ProgressStatus
+  // 契约 webui-ws §2.4 控制消息 ACK（payload 键）
+  md_connect_ack: { source: string; ok: boolean }
+  md_disconnect_ack: { source: string; ok: boolean }
+  subscribe_log_ack: { file: string }
+  unsubscribe_log_ack: Record<string, never>
+  query_md_subscriptions_ack: { source: string; ok: boolean }
 }
 
 // 服务端 → 客户端消息 type 联合（= WsDataByType 的 key）
 export type WsServerMessageType = keyof WsDataByType
 
-export interface WsServerMessage<T extends WsServerMessageType = WsServerMessageType> {
-  type: T
-  data?: WsDataByType[T]   // 领域消息（data 键）
-  payload?: unknown        // 控制消息（payload 键）
-  instance_id?: string
-}
+// 按 type 分布的真判别联合：值层面 `msg.type === 'x'` 才能把 msg.data 收窄到
+// WsDataByType['x']。若写成单一 interface + 泛型默认值，data 类型是联合索引
+// （含 unknown 键）→ 收窄失效。
+export type WsServerMessage<T extends WsServerMessageType = WsServerMessageType> =
+  T extends WsServerMessageType
+    ? {
+        type: T
+        data?: WsDataByType[T]   // 领域消息（data 键）
+        payload?: unknown        // 控制消息（payload 键）
+        instance_id?: string
+        seq?: number
+      }
+    : never
 
 // 客户端 → 服务端
 export type WsClientMessageType = 'ping' | 'md_connect' | 'md_disconnect'

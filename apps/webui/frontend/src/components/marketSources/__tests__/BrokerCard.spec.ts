@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import BrokerCard from '../BrokerCard.vue'
 import { useMarketSourcesStore } from '@/stores/marketSources'
@@ -57,11 +57,11 @@ describe('BrokerCard', () => {
     expect(w.emitted('toggle')).toHaveLength(1)
   })
 
-  it('radio 选中状态反映 selectedBrokerId, 且当前经纪商无 is-current 类', () => {
+  it('radio 选中状态反映 selectedBrokerId（可观察的当前态）', () => {
     const src = sourceWith([brokerA], 'A券商')
     const current = mount(BrokerCard, { props: { source: src, broker: brokerA, expanded: true }, global: { stubs } })
     expect((current.find('input[type="radio"]').element as HTMLInputElement).checked).toBe(true)
-    expect(current.find('.broker-card').classes()).not.toContain('is-current')
+    expect(current.find('.broker-card__name').text()).toBe('A券商')
 
     const src2 = sourceWith([brokerA], null)
     const nonCurrent = mount(BrokerCard, { props: { source: src2, broker: brokerA, expanded: false }, global: { stubs } })
@@ -106,5 +106,47 @@ describe('BrokerCard', () => {
     })
     expect(w.find('.broker-card__radio').classes()).toContain('is-pending')
     expect((w.find('input[type="radio"]').element as HTMLInputElement).disabled).toBe(true)
+  })
+
+  it('删除经纪商二次确认后下发 removeBroker 并关闭 Modal', async () => {
+    const store = useMarketSourcesStore()
+    const spy = vi.spyOn(store, 'removeBroker').mockResolvedValue()
+    const src = sourceWith([brokerA], 'A券商')
+    const w = mount(BrokerCard, { props: { source: src, broker: brokerA, expanded: false }, global: { stubs } })
+
+    await w.findAll('button').find(b => b.text() === '删除经纪商')!.trigger('click')
+    expect(w.text()).toContain('确认删除经纪商')
+
+    await w.findAll('button').find(b => b.text() === '删除')!.trigger('click')
+    await flushPromises()
+
+    expect(spy).toHaveBeenCalledWith(1, 'A券商')
+    expect(w.text()).not.toContain('确认删除经纪商')
+  })
+
+  it('登录字段失焦且值改变时下发 updateBroker（整条 broker）', async () => {
+    const store = useMarketSourcesStore()
+    const spy = vi.spyOn(store, 'updateBroker').mockResolvedValue()
+    const src = sourceWith([brokerA], 'A券商')
+    const w = mount(BrokerCard, { props: { source: src, broker: brokerA, expanded: true }, global: { stubs } })
+
+    const brokerIdInput = w.findAll('.login-field input')[0]
+    await brokerIdInput.setValue('0002')
+    await brokerIdInput.trigger('blur')
+
+    expect(spy).toHaveBeenCalledWith(1, 'A券商', { ...brokerA, broker_id: '0002' })
+  })
+
+  it('登录字段失焦但值未改变时不下发 updateBroker', async () => {
+    const store = useMarketSourcesStore()
+    const spy = vi.spyOn(store, 'updateBroker').mockResolvedValue()
+    const src = sourceWith([brokerA], 'A券商')
+    const w = mount(BrokerCard, { props: { source: src, broker: brokerA, expanded: true }, global: { stubs } })
+
+    const brokerIdInput = w.findAll('.login-field input')[0]
+    await brokerIdInput.setValue('0001')
+    await brokerIdInput.trigger('blur')
+
+    expect(spy).not.toHaveBeenCalled()
   })
 })

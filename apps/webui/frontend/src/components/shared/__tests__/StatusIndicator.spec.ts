@@ -31,19 +31,51 @@ describe('StatusIndicator', () => {
     expect(wrapper.classes()).toContain('ds-status--loading')
   })
 
-  // 自定义文本应正确渲染
+  // 自定义文本应正确渲染（三态各自生效）
   it('应支持自定义 idle/loading/done 文本', () => {
+    const baseProps = {
+      min: 0,
+      max: 1,
+      idleText: '离线',
+      loadingText: '连接中',
+      doneText: '在线',
+    }
+    const idle = mount(StatusIndicator, { props: { ...baseProps, current: 0 } })
+    expect(idle.text()).toContain('离线')
+
+    const loading = mount(StatusIndicator, { props: { ...baseProps, current: 0.5 } })
+    expect(loading.text()).toContain('连接中')
+
+    const done = mount(StatusIndicator, { props: { ...baseProps, current: 1 } })
+    expect(done.text()).toContain('在线')
+  })
+
+  // 契约 progress: max <= min（含 max==0）为不确定进度，current 值忽略
+  it('max <= min 时进入不确定进度分支（max==0）', () => {
     const wrapper = mount(StatusIndicator, {
-      props: {
-        current: 0.5,
-        min: 0,
-        max: 1,
-        idleText: '离线',
-        loadingText: '连接中',
-        doneText: '在线',
-      },
+      props: { current: 0, min: 0, max: 0 },
     })
-    expect(wrapper.text()).toContain('连接中')
+    expect(wrapper.classes()).toContain('ds-status--indeterminate')
+    expect(wrapper.classes()).not.toContain('ds-status--idle')
+    expect(wrapper.classes()).not.toContain('ds-status--done')
+    // 不确定进度无填充比例
+    expect(wrapper.attributes('style') ?? '').not.toContain('--ds-status-fill')
+  })
+
+  it('max < min 时同样为不确定进度，且忽略 current', () => {
+    const wrapper = mount(StatusIndicator, {
+      props: { current: 5, min: 10, max: 3 },
+    })
+    expect(wrapper.classes()).toContain('ds-status--indeterminate')
+    expect(wrapper.classes()).not.toContain('ds-status--loading')
+    expect(wrapper.attributes('style') ?? '').not.toContain('--ds-status-fill')
+  })
+
+  it('不确定进度优先展示 desc 文案', () => {
+    const wrapper = mount(StatusIndicator, {
+      props: { current: 0, min: 0, max: 0, desc: '订阅合约中' },
+    })
+    expect(wrapper.find('.ds-status__text').text()).toBe('订阅合约中')
   })
 
   // mini 模式应添加 mini 类名

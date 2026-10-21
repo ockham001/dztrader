@@ -746,6 +746,8 @@ pre {
     .ds-status--loading .ds-status__bar-fill { width: var(--ds-status-fill, 0%); }
 
     /* Indeterminate animation: JS adds .ds-status--indeterminate when no fill is set */
+    .ds-status--indeterminate .ds-status__text { display: none; }
+    .ds-status--indeterminate .ds-status__progress { display: flex; }
     .ds-status--indeterminate .ds-status__bar-fill {
         width: 40%;
         animation: ds-status-indeterminate 1.5s ease-in-out infinite;

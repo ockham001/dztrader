@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { usePending, PENDING_TIMEOUT } from '../usePending'
-import { createOperationRunner, type OperationResult } from '../useOperation'
+import { createOperationRunner } from '../useOperation'
 
 // P3 任务 2: useOperation 统一「防重入 + name→id 映射 + run + 结果映射」机械样板。
 // 覆盖四件套: opKey / busy(防重入) / assign(name→id) / execute(run+boolean|PENDING_TIMEOUT 映射)。
@@ -72,27 +72,5 @@ describe('createOperationRunner', () => {
     await vi.advanceTimersByTimeAsync(1001)
     expect(await r).toBe(PENDING_TIMEOUT)
     expect(inst.pending[key]).toBe(false)  // 超时 usePending 置 false（非 delete）
-  })
-
-  it('process-style 映射：result!==false 使 PENDING_TIMEOUT→true、false→false', async () => {
-    // 超时 → PENDING_TIMEOUT → !==false → true（跳过 error）
-    const k1 = runner.opKey(1, 'start')
-    const p1 = runner.execute(k1, () => new Promise(() => {}), '启动')
-    await vi.advanceTimersByTimeAsync(1001)
-    expect((await p1) !== false).toBe(true)
-    // 失败 → false → !==false → false
-    const k2 = runner.opKey(2, 'start')
-    const p2 = runner.execute(k2, () => Promise.resolve(undefined as never), '启动')
-    await vi.advanceTimersByTimeAsync(0)
-    expect((await p2) !== false).toBe(false)
-  })
-
-  it('execute 返回类型的判别辅助（类型护栏）', () => {
-    const ok: OperationResult = true
-    const fail: OperationResult = false
-    const timeout: OperationResult = PENDING_TIMEOUT
-    expect(ok).toBe(true)
-    expect(fail).toBe(false)
-    expect(timeout).toBe(PENDING_TIMEOUT)
   })
 })

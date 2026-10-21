@@ -16,10 +16,10 @@ beforeAll(() => {
   ;(globalThis as Record<string, unknown>).IntersectionObserver = IOStub
 })
 
-// stub 子组件
+// stub 子组件（Modal 模拟真实 v-if="open"：未打开时 slot 不渲染，避免"即使 open 逻辑坏掉也通过"）
 const sharedStubs = {
   Icon: { template: '<span class="icon" />' },
-  Modal: { props: ['open', 'title'], emits: ['close'], template: '<div class="modal-stub"><slot /></div><div class="modal-footer-stub"><slot name="footer" /></div>' },
+  Modal: { props: ['open', 'title'], emits: ['close'], template: '<div v-if="open" class="modal-stub"><slot /></div><div v-if="open" class="modal-footer-stub"><slot name="footer" /></div>' },
   Dropdown: { props: ['modelValue'], template: '<span class="dropdown-stub">{{ modelValue }}</span>' },
   SyncSwitch: { props: ['modelValue', 'pending'], emits: ['change'], template: '<button type="button" class="sync-switch" @click="$emit(\'change\', !modelValue)" />' },
   SyncSelect: { props: ['items', 'modelValue'], emits: ['change'], template: '<button type="button" class="sync-select" @click="$emit(\'change\', \'blacklist\')">{{ modelValue }}</button>' },
@@ -77,6 +77,9 @@ describe('UserManagementView', () => {
   it('打开添加用户 modal 时默认保存按钮禁用（空用户名）', async () => {
     const w = mount(UserManagementView, { global: { stubs: sharedStubs } })
     await flushPromises()
+    // Modal 未打开时 slot 不应渲染
+    expect(w.findAll('button').find(b => b.text() === '保存')).toBeUndefined()
+
     const addBtn = w.findAll('button').find(b => b.text().includes('添加用户'))
     await addBtn!.trigger('click')
     await w.vm.$nextTick()
@@ -84,15 +87,22 @@ describe('UserManagementView', () => {
     expect(saveBtn?.attributes('disabled')).toBeDefined()
   })
 
-  it('登录失败锁定开关切换调用 store.toggleLoginLockout', async () => {
+  it('登录失败锁定开关切换调用 store.toggleLoginLockout，并以当前镜像值下发', async () => {
     const store = useUserManagementStore()
-    vi.spyOn(store, 'toggleLoginLockout').mockResolvedValue()
+    const spy = vi.spyOn(store, 'toggleLoginLockout').mockResolvedValue()
     const w = mount(UserManagementView, { global: { stubs: sharedStubs } })
     await flushPromises()
     const sw = w.find('.sync-switch')
-    if (sw.exists()) {
-      await sw.trigger('click')
-      expect(store.toggleLoginLockout).toHaveBeenCalled()
-    }
+    expect(sw.exists()).toBe(true)
+
+    await sw.trigger('click')
+    expect(spy).toHaveBeenCalledWith(true)
+
+    // 模拟异步下发成功后镜像回推 true，再次点击应下发 false
+    store.securityConfig.login_lockout_enabled = true
+    await w.vm.$nextTick()
+    await sw.trigger('click')
+    expect(spy).toHaveBeenLastCalledWith(false)
+    expect(spy).toHaveBeenCalledTimes(2)
   })
 })
