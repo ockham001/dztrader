@@ -1108,9 +1108,10 @@ TEST_F(ConfigTest, DefaultConfigIncludesWebui) {
     ASSERT_TRUE(std::filesystem::exists(path));
 
     auto cfg = parse_master_json(path);
-    ASSERT_EQ(cfg.entries.size(), 1u);
-    const auto& w = cfg.entries[0];
-    EXPECT_EQ(w.name, "dzweb");
+    const auto it = std::find_if(cfg.entries.begin(), cfg.entries.end(),
+                                 [](const ProcessEntry& e) { return e.name == "dzweb"; });
+    ASSERT_NE(it, cfg.entries.end());
+    const auto& w = *it;
     EXPECT_EQ(w.category, Category::WebUI);
     // 契约 process: exe 和 start_dir 不持久化, 留空由 launch_child 填充
     EXPECT_TRUE(w.exe.empty());
@@ -1138,8 +1139,14 @@ TEST_F(ConfigTest, DefaultConfigCreatesParentDirectoriesAndDefaults) {
     EXPECT_EQ(cfg.master.single_stop_timeout_sec, 3);
     EXPECT_EQ(cfg.master.md_ready_timeout_sec, 5);
     EXPECT_EQ(cfg.shm_global.meta_file_size, 1 * 1024 * 1024);
-    ASSERT_EQ(cfg.entries.size(), 1u);
-    EXPECT_EQ(cfg.entries[0].name, "dzweb");
+    // 默认条目: dzweb + internal.dzsysmon
+    ASSERT_EQ(cfg.entries.size(), 2u);
+    EXPECT_EQ(std::count_if(cfg.entries.begin(), cfg.entries.end(),
+                            [](const ProcessEntry& e) { return e.name == "dzweb"; }),
+              1);
+    EXPECT_EQ(std::count_if(cfg.entries.begin(), cfg.entries.end(),
+                            [](const ProcessEntry& e) { return e.name == "dzsysmon"; }),
+              1);
 }
 
 TEST_F(ConfigTest, DefaultConfigNotOverwriteExisting) {
@@ -1151,19 +1158,25 @@ TEST_F(ConfigTest, DefaultConfigNotOverwriteExisting) {
     EXPECT_TRUE(cfg.entries.empty());  // 已有文件不含 webui 段, 不覆盖
 }
 
-// 默认配置生成器预留 internal 段; dzsysmon 默认条目由后续票随可执行文件一起加入
-TEST_F(ConfigTest, DefaultConfigIncludesEmptyInternalSection) {
+// 默认配置生成器写入 internal.dzsysmon 默认条目（issue #70: 随可执行文件一起加入）
+TEST_F(ConfigTest, DefaultConfigIncludesDzsysmonInternalEntry) {
     auto path = tmp_dir_ / "default_internal.json";
     generate_default_config(path);
     const auto data = read_json(path);
     ASSERT_TRUE(data.contains("internal"));
-    EXPECT_TRUE(data["internal"].is_object());
-    EXPECT_TRUE(data["internal"].empty());
+    ASSERT_TRUE(data["internal"].is_object());
+    ASSERT_TRUE(data["internal"].contains("dzsysmon"));
+    EXPECT_TRUE(data["internal"]["dzsysmon"]["args"].is_array());
 
     auto cfg = parse_master_json(path);
-    EXPECT_EQ(std::count_if(cfg.entries.begin(), cfg.entries.end(),
-                            [](const ProcessEntry& e) { return e.category == Category::Internal; }),
-              0);
+    const auto it = std::find_if(cfg.entries.begin(), cfg.entries.end(), [](const ProcessEntry& e) {
+        return e.category == Category::Internal;
+    });
+    ASSERT_NE(it, cfg.entries.end());
+    EXPECT_EQ(it->name, "dzsysmon");
+    EXPECT_TRUE(it->restart.enabled);
+    EXPECT_EQ(it->restart.max_attempts, 5);
+    EXPECT_EQ(it->restart.backoff_sec, 5);
 }
 
 }  // namespace

@@ -95,6 +95,12 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 | GET `/api/settings/master` | 只读展示 dztraderd.json `[master]`/`[shm]` 段（admin）；固定读默认路径 `$DZTRADER_HOME/configs/dztraderd.json`，master 以 argv[1] 自定义配置启动时展示值不代表实际生效配置 | 直接读文件，清理策略/停止超时/`page_size_mb`/`meta_file_size` 仅配置文件可改 |
 | GET/PUT `/api/settings/webui` | 读取 / 修改 webui.json（admin；仅 `token_ttl_sec` 与 `notify_cache_size` 可改，`jwt_secret` 仅回传是否存在） | `token_ttl_sec` 热生效（下次登录签发生效），`notify_cache_size` 持久化重启生效 |
 
+### 2.8 资源监控
+
+| 方法/路径 | 语义 | 帧/镜像联动 |
+|---|---|---|
+| GET `/api/sysmon/snapshot` | 当前系统监控快照（任意已认证用户）；镜像尚未就绪（dzsysmon 未上报）时回 `503 {"error":"sysmon snapshot not available"}` | 读取镜像 `sysmon_snapshot` 域（固定实例 `dzsysmon`，契约 sysmon §5）；由 `RTN_SYSMON_SNAPSHOT` 更新 |
+
 ---
 
 ## 3. 真相源声明

@@ -80,3 +80,17 @@ TEST(FrameTypes, TradePushClusterIsContiguous) {
     EXPECT_GE(DZ_FRAME_UI_INPUT, kSegmentStrategyBegin);
     EXPECT_LE(DZ_FRAME_SCHEDULE, kSegmentStrategyEnd);
 }
+
+// ── 系统监控帧: 系统帧段内连续分配（契约 sysmon；总则 §3 段内追加规则） ──
+
+TEST(FrameTypes, SysmonClusterIsContiguousInSystemSegment) {
+    // 段边界（不是单个帧值）：系统帧段 0-31，见总则 §3 值域表
+    constexpr DzFrameType kSystemSegmentBegin = 0;
+    constexpr DzFrameType kSystemSegmentEnd = 31;
+    EXPECT_GE(DZ_FRAME_RTN_SYSMON_SNAPSHOT, kSystemSegmentBegin);
+    EXPECT_LE(DZ_FRAME_RTN_SYSMON_CONFIG, kSystemSegmentEnd);
+    // 总则 §3 分配规则：新帧追加在段尾（当前段尾 = 策略可见帧 SHUTDOWN），禁止插空档。
+    EXPECT_EQ(DZ_FRAME_RTN_SYSMON_SNAPSHOT, DZ_FRAME_SHUTDOWN + 1);
+    EXPECT_EQ(DZ_FRAME_SET_SYSMON_CONFIG, DZ_FRAME_RTN_SYSMON_SNAPSHOT + 1);
+    EXPECT_EQ(DZ_FRAME_RTN_SYSMON_CONFIG, DZ_FRAME_SET_SYSMON_CONFIG + 1);
+}

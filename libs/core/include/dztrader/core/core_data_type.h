@@ -54,6 +54,12 @@ DZ_BEGIN_C_DECLS
 #define DZ_FRAME_RTN_AUTO_LOGIN ((DzFrameType)19)
 /** @brief 进度推送 (进程→dzweb, 契约 progress) */
 #define DZ_FRAME_RTN_PROGRESS ((DzFrameType)20)
+/** @brief 系统监控实时快照推送 (dzsysmon→dzweb, 无 instance_id, 契约 sysmon) */
+#define DZ_FRAME_RTN_SYSMON_SNAPSHOT ((DzFrameType)25)
+/** @brief 运行期修改系统监控配置 (dzweb→dzsysmon, 契约 sysmon) */
+#define DZ_FRAME_SET_SYSMON_CONFIG ((DzFrameType)26)
+/** @brief 回推当前生效的系统监控配置 (dzsysmon→dzweb, 契约 sysmon) */
+#define DZ_FRAME_RTN_SYSMON_CONFIG ((DzFrameType)27)
 
 /* ── UI 帧（32-63）: 逻辑持仓、策略上行输出 ── */
 /** @brief 设置逻辑持仓 (策略→平台, 契约 strategy) */

@@ -4,6 +4,7 @@
 import type {
   ProcessStatusPayload, ProgressStatus, LogConfigPayload, AutoLoginPayload, NotifyUiPayload,
   MdRtnConfigPayload, MdRtnStatusPayload, ShmConfigView, LogLine,
+  SysmonSnapshotPayload, SysmonConfigPayload,
 } from './generated'
 
 // 服务端 → 客户端每类消息的 data 载荷类型（判别联合核心）
@@ -29,6 +30,9 @@ export interface WsDataByType {
   md_shm_config: ShmConfigView
   auto_login: AutoLoginPayload
   progress: ProgressStatus
+  // 契约 sysmon: 快照域（固定实例 dzsysmon）与运行期配置，前端消费随资源监控页票接入
+  sysmon_snapshot: SysmonSnapshotPayload
+  sysmon_config: SysmonConfigPayload
   // 契约 webui-ws §2.4 控制消息 ACK（payload 键）
   md_connect_ack: { source: string; ok: boolean }
   md_disconnect_ack: { source: string; ok: boolean }

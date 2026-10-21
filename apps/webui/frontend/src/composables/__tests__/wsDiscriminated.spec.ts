@@ -3,6 +3,7 @@ import type { WsDataByType, WsServerMessage, WsServerMessageType } from '@/types
 import type {
   ProcessStatusPayload, ProgressStatus, ShmConfigView, MdRtnConfigPayload, MdRtnStatusPayload,
   NotifyUiPayload, AutoLoginPayload, LogConfigPayload, LogLine,
+  SysmonSnapshotPayload, SysmonConfigPayload,
 } from '@/types/generated'
 
 // 判别联合编译期保障：WsDataByType 的 type→payload 映射必须与契约单源（generated）一致。
@@ -23,6 +24,8 @@ describe('WsDataByType 判别联合（契约单源一致性）', () => {
       | 'md_shm_config'
       | 'auto_login'
       | 'progress'
+      | 'sysmon_snapshot'
+      | 'sysmon_config'
       | 'log_line'
       | 'log_tail_unsubscribed'
       | 'data_changed'
@@ -60,6 +63,11 @@ describe('WsDataByType 判别联合（契约单源一致性）', () => {
 
   it('md_rtn_config → MdRtnConfigPayload（source + config）', () => {
     expectTypeOf<WsDataByType['md_rtn_config']>().toEqualTypeOf<MdRtnConfigPayload>()
+  })
+
+  it('sysmon_snapshot / sysmon_config 与 generated 同源（契约 sysmon）', () => {
+    expectTypeOf<WsDataByType['sysmon_snapshot']>().toEqualTypeOf<SysmonSnapshotPayload>()
+    expectTypeOf<WsDataByType['sysmon_config']>().toEqualTypeOf<SysmonConfigPayload>()
   })
 
   it('md_rtn_status / auto_login 与 generated 同源', () => {

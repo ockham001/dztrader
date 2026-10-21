@@ -37,6 +37,7 @@ add_library(dzweb_obj OBJECT
     notify_controller.cpp
     settings_controller.cpp
     td_data_service.cpp
+    sysmon_controller.cpp
 )
 target_link_libraries(dzweb_obj PUBLIC
     Drogon::Drogon

@@ -16,6 +16,7 @@
 - **C/C++ 策略接口**：C 接口保证 ABI 兼容（`dz_*` 前缀、`DZ_API` 导出）；C++ 提供 header-only 引擎（`run_strategy`/`StrategyBase`，见 `dztrader/strategy_engine.h`）；C 层纯 C 编译支持随 #7 落地（当前仅按 C++20 编译验证）；策略模板/脚手架后续按需补充
 - **Python 绑定**：pybind11，规划中（尚未实现）
 - **7×24 运行**：健壮的进程管理、崩溃恢复、过期数据保护
+- **资源监控**：内部进程 `dzsysmon` 采集本机资源指标并经事件通道推送 WebUI（首版：系统信息 + CPU 总使用率；历史 / 告警为后续票）
 - **跨平台**：Windows（MSVC 2022）和 Linux（GCC 13）
 - **前端**：WebUI 已实现（Vue3 + dzweb）；Qt 为规划项
 - **C++20**：Concepts、Ranges、Format

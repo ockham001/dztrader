@@ -159,6 +159,260 @@
         "source": { "type": "string", "description": "行情源进程名" },
         "status": { "type": "object", "additionalProperties": true, "description": "网关状态（结构随接口类型）" }
       }
+    },
+    "SysmonSamplingMeta": {
+      "type": "object",
+      "required": ["measure_interval_ms", "last_sample_unix_ms", "missed_ticks"],
+      "properties": {
+        "measure_interval_ms": { "type": "integer", "description": "当前计量间隔（毫秒）" },
+        "last_sample_unix_ms": { "type": "integer", "description": "最近一次计量成功的 Unix 毫秒时间；0=尚无样本" },
+        "missed_ticks": { "type": "integer", "description": "累计错过的计量 tick 数（缺口标记）" }
+      }
+    },
+    "SysmonPlatformInfo": {
+      "type": "object",
+      "required": ["family", "version", "kernel", "arch", "build"],
+      "properties": {
+        "family": { "type": "string", "description": "平台家族：windows / linux" },
+        "version": { "type": "string", "description": "真实 OS 版本" },
+        "kernel": { "type": "string", "description": "Linux 内核 release；Windows 为 NT 版本号" },
+        "arch": { "type": "string", "description": "架构标识" },
+        "build": { "type": "integer", "description": "Windows build 号（区分 Win10/Win11）；Linux 为 0" }
+      }
+    },
+    "SysmonSystemInfo": {
+      "type": "object",
+      "required": ["hostname", "cpu_model", "logical_cores", "boot_time_unix_sec", "uptime_sec"],
+      "properties": {
+        "hostname": { "type": "string", "description": "主机名" },
+        "cpu_model": { "type": "string", "description": "CPU 型号；取不到时为空串" },
+        "logical_cores": { "type": "integer", "description": "逻辑核数" },
+        "boot_time_unix_sec": { "type": "integer", "description": "启动时间（Unix 秒）" },
+        "uptime_sec": { "type": "integer", "description": "运行时长（秒）" }
+      }
+    },
+    "SysmonCpuTotal": {
+      "type": "object",
+      "required": ["usage_ratio"],
+      "properties": {
+        "usage_ratio": {
+          "description": "总使用率 [0,1]；null=首次采样/计数器不可用（不得用 0 冒充）",
+          "anyOf": [{ "type": "number" }, { "type": "null" }]
+        }
+      }
+    },
+    "SysmonCpuCore": {
+      "type": "object",
+      "required": ["index", "usage_ratio", "saturated"],
+      "properties": {
+        "index": { "type": "integer", "description": "核 index" },
+        "usage_ratio": {
+          "description": "单核使用率 [0,1]；null=不可用",
+          "anyOf": [{ "type": "number" }, { "type": "null" }]
+        },
+        "saturated": { "type": "boolean", "description": "是否处于持续饱和状态" }
+      }
+    },
+    "SysmonLoadAverage": {
+      "type": "object",
+      "required": ["one", "five", "fifteen", "semantic"],
+      "properties": {
+        "one": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "five": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "fifteen": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "semantic": { "type": "string", "description": "口径：load_average（Linux）/ processor_queue（Windows 代理量）" }
+      }
+    },
+    "SysmonCpuInfo": {
+      "type": "object",
+      "required": ["total", "cores", "saturated_cores", "load_average", "context_switches_per_sec", "interrupts_per_sec"],
+      "properties": {
+        "total": { "$ref": "#/$defs/SysmonCpuTotal" },
+        "cores": { "type": "array", "items": { "$ref": "#/$defs/SysmonCpuCore" }, "description": "每核使用率（不可用时为空数组）" },
+        "saturated_cores": { "type": "array", "items": { "type": "integer" }, "description": "持续饱和的核 index 集合" },
+        "load_average": {
+          "description": "系统负载；null=不提供/不可用（Windows 为处理器队列长度代理量，语义不同）",
+          "anyOf": [{ "$ref": "#/$defs/SysmonLoadAverage" }, { "type": "null" }]
+        },
+        "context_switches_per_sec": {
+          "anyOf": [{ "type": "number" }, { "type": "null" }]
+        },
+        "interrupts_per_sec": {
+          "anyOf": [{ "type": "number" }, { "type": "null" }]
+        }
+      }
+    },
+    "SysmonMemoryInfo": {
+      "type": "object",
+      "required": ["total_bytes", "available_bytes", "used_bytes", "used_ratio"],
+      "properties": {
+        "total_bytes": { "type": "integer" },
+        "available_bytes": { "type": "integer" },
+        "used_bytes": { "type": "integer", "description": "唯一口径：total_bytes - available_bytes" },
+        "used_ratio": { "anyOf": [{ "type": "number" }, { "type": "null" }] }
+      }
+    },
+    "SysmonSwapInfo": {
+      "type": "object",
+      "required": ["total_bytes", "used_bytes", "used_ratio"],
+      "properties": {
+        "total_bytes": { "type": "integer", "description": "0 = 本机无交换分区" },
+        "used_bytes": { "type": "integer" },
+        "used_ratio": { "anyOf": [{ "type": "number" }, { "type": "null" }] }
+      }
+    },
+    "SysmonVolumeInfo": {
+      "type": "object",
+      "required": ["mount", "total_bytes", "used_bytes", "used_ratio"],
+      "properties": {
+        "mount": { "type": "string", "description": "挂载点/盘符" },
+        "total_bytes": { "type": "integer" },
+        "used_bytes": { "type": "integer" },
+        "used_ratio": { "anyOf": [{ "type": "number" }, { "type": "null" }] }
+      }
+    },
+    "SysmonDiskIoInfo": {
+      "type": "object",
+      "required": ["device", "read_bytes_per_sec", "write_bytes_per_sec", "read_iops", "write_iops", "latency_ms", "queue_depth", "utilization"],
+      "properties": {
+        "device": { "type": "string", "description": "物理盘标识" },
+        "read_bytes_per_sec": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "write_bytes_per_sec": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "read_iops": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "write_iops": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "latency_ms": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "queue_depth": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "utilization": { "anyOf": [{ "type": "number" }, { "type": "null" }] }
+      }
+    },
+    "SysmonNetworkInfo": {
+      "type": "object",
+      "required": ["interface", "rx_bytes_total", "tx_bytes_total", "rx_bytes_per_sec", "tx_bytes_per_sec", "rx_errors_per_sec", "tx_errors_per_sec", "rx_drops_per_sec", "tx_drops_per_sec", "is_virtual"],
+      "properties": {
+        "interface": { "type": "string", "description": "网卡名" },
+        "rx_bytes_total": { "type": "integer" },
+        "tx_bytes_total": { "type": "integer" },
+        "rx_bytes_per_sec": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "tx_bytes_per_sec": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "rx_errors_per_sec": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "tx_errors_per_sec": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "rx_drops_per_sec": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "tx_drops_per_sec": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "is_virtual": { "type": "boolean", "description": "是否虚拟网卡" }
+      }
+    },
+    "SysmonShmDirInfo": {
+      "type": "object",
+      "required": ["path", "total_bytes", "page_files", "oldest_file_age_sec"],
+      "properties": {
+        "path": { "type": "string" },
+        "total_bytes": { "type": "integer" },
+        "page_files": { "type": "integer" },
+        "oldest_file_age_sec": { "anyOf": [{ "type": "integer" }, { "type": "null" }] }
+      }
+    },
+    "SysmonAvailabilityEntry": {
+      "type": "object",
+      "required": ["available"],
+      "properties": {
+        "available": { "type": "boolean" },
+        "reason": { "type": "string", "description": "不可用原因；available=true 时省略" }
+      }
+    },
+    "SysmonAvailability": {
+      "type": "object",
+      "required": ["platform_description", "metrics", "semantic_hints"],
+      "properties": {
+        "platform_description": { "type": "string", "description": "人类可读平台描述（Windows 含 build 号）" },
+        "metrics": { "type": "object", "additionalProperties": { "$ref": "#/$defs/SysmonAvailabilityEntry" }, "description": "按指标可用性映射" },
+        "semantic_hints": { "type": "object", "additionalProperties": { "type": "string" }, "description": "跨平台语义提示" }
+      }
+    },
+    "SysmonSnapshotPayload": {
+      "type": "object",
+      "required": ["source", "timestamp", "sampling", "platform", "system", "cpu", "memory", "swap", "volumes", "disk_io", "network", "shm_dir", "availability"],
+      "properties": {
+        "source": { "type": "string", "description": "发送方进程名（固定 dzsysmon；无 instance_id 帧来源显式携带，general §5）" },
+        "timestamp": { "type": "integer", "description": "快照生成时刻（Unix 毫秒）" },
+        "sampling": { "$ref": "#/$defs/SysmonSamplingMeta" },
+        "platform": { "$ref": "#/$defs/SysmonPlatformInfo" },
+        "system": { "$ref": "#/$defs/SysmonSystemInfo" },
+        "cpu": { "$ref": "#/$defs/SysmonCpuInfo" },
+        "memory": { "anyOf": [{ "$ref": "#/$defs/SysmonMemoryInfo" }, { "type": "null" }] },
+        "swap": { "anyOf": [{ "$ref": "#/$defs/SysmonSwapInfo" }, { "type": "null" }] },
+        "volumes": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/SysmonVolumeInfo" } }, { "type": "null" }] },
+        "disk_io": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/SysmonDiskIoInfo" } }, { "type": "null" }] },
+        "network": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/SysmonNetworkInfo" } }, { "type": "null" }] },
+        "shm_dir": { "anyOf": [{ "$ref": "#/$defs/SysmonShmDirInfo" }, { "type": "null" }] },
+        "availability": { "$ref": "#/$defs/SysmonAvailability" }
+      }
+    },
+    "SysmonSamplingConfigPayload": {
+      "type": "object",
+      "required": ["measure_interval_ms", "record_interval_sec", "phase_offset_sec", "groups"],
+      "properties": {
+        "measure_interval_ms": { "type": "integer", "description": "计量间隔 [100,60000]" },
+        "record_interval_sec": { "type": "integer", "description": "记录间隔 [1,86400]" },
+        "phase_offset_sec": { "type": "integer", "description": "记录相位偏移 [0,86400]" },
+        "groups": { "type": "object", "additionalProperties": { "type": "boolean" }, "description": "启用的指标大类" }
+      }
+    },
+    "SysmonDiskConfigPayload": {
+      "type": "object",
+      "required": ["watch_paths", "devices"],
+      "properties": {
+        "watch_paths": { "type": "array", "items": { "type": "string" }, "description": "关注路径" },
+        "devices": { "type": "array", "items": { "type": "string" }, "description": "设备范围（空=全部物理盘）" }
+      }
+    },
+    "SysmonNetworkConfigPayload": {
+      "type": "object",
+      "required": ["hide_virtual"],
+      "properties": {
+        "hide_virtual": { "type": "boolean", "description": "是否隐藏虚拟网卡" }
+      }
+    },
+    "SysmonHistoryConfigPayload": {
+      "type": "object",
+      "required": ["enabled", "raw_retention_hours", "max_retention_days", "max_bytes"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "raw_retention_hours": { "type": "integer" },
+        "max_retention_days": { "type": "integer" },
+        "max_bytes": { "type": "integer", "description": "总量上限；0=不限制" }
+      }
+    },
+    "SysmonRealtimeConfigPayload": {
+      "type": "object",
+      "required": ["push_interval_sec"],
+      "properties": {
+        "push_interval_sec": { "type": "integer", "description": "推送间隔 [1,3600]" }
+      }
+    },
+    "SysmonAlertsConfigPayload": {
+      "type": "object",
+      "required": ["cpu_sustain_used_pct", "cpu_sustain_samples", "memory_used_pct", "swap_used_pct", "volume_free_pct", "volume_free_bytes", "cooldown_sec"],
+      "properties": {
+        "cpu_sustain_used_pct": { "type": "number" },
+        "cpu_sustain_samples": { "type": "integer" },
+        "memory_used_pct": { "type": "number" },
+        "swap_used_pct": { "type": "number" },
+        "volume_free_pct": { "type": "number" },
+        "volume_free_bytes": { "type": "integer" },
+        "cooldown_sec": { "type": "integer" }
+      }
+    },
+    "SysmonConfigPayload": {
+      "type": "object",
+      "required": ["sampling", "disk", "network", "history", "realtime", "alerts"],
+      "properties": {
+        "sampling": { "$ref": "#/$defs/SysmonSamplingConfigPayload" },
+        "disk": { "$ref": "#/$defs/SysmonDiskConfigPayload" },
+        "network": { "$ref": "#/$defs/SysmonNetworkConfigPayload" },
+        "history": { "$ref": "#/$defs/SysmonHistoryConfigPayload" },
+        "realtime": { "$ref": "#/$defs/SysmonRealtimeConfigPayload" },
+        "alerts": { "$ref": "#/$defs/SysmonAlertsConfigPayload" }
+      }
     }
   }
 }

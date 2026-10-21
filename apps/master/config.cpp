@@ -470,9 +470,12 @@ void generate_default_config(const std::filesystem::path& json_path) {
     webui["args"] = nlohmann::json::array();
     webui["restart"] = {{"enabled", true}, {"max_attempts", 5}, {"backoff_sec", 5}};
 
-    // internal section: 预置空段 (无内部进程). dzsysmon 默认条目由后续票
-    // 随可执行文件一起加入, 避免默认配置拉起不存在的可执行文件。
+    // internal section: 内部进程。默认条目 dzsysmon（随可执行文件一起可拉起）；
+    // 默认重启策略与网关一致（enabled/5 次/5s 退避）。
     nlohmann::json internal = nlohmann::json::object();
+    internal["dzsysmon"] = {
+        {"args", nlohmann::json::array()},
+        {"restart", {{"enabled", true}, {"max_attempts", 5}, {"backoff_sec", 5}}}};
 
     nlohmann::json full = {{"log", {{"level", "info"}, {"flush_on", "warning"}}},
                            {"master", {{"single_stop_timeout_sec", 3}}},

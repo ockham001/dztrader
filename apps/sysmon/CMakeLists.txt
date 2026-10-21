@@ -1,0 +1,63 @@
+# ============================================================
+# dzsysmon：内部系统监控进程（契约 sysmon）
+#
+# 职责：周期采集本机 CPU/系统信息，按 realtime.push_interval_sec 向事件通道
+#       推送 RTN_SYSMON_SNAPSHOT；响应 SET_SYSMON_CONFIG/SET_LOG_CONFIG 等定向帧。
+#
+# dzsysmon_obj：OBJECT 库（可复用源文件），测试链接它而无需拉入 main.cpp。
+# ============================================================
+add_library(dzsysmon_obj OBJECT
+    config.cpp
+    cpu_usage.cpp
+    snapshot_builder.cpp
+)
+target_include_directories(dzsysmon_obj PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(dzsysmon_obj
+    PUBLIC dzplatform_headers dzcore dzlog dzshm Boost::boost
+)
+if(WIN32)
+    # std::getenv / _CRT 安全函数告警在 MSVC Release（/WX）下升级为错误
+    target_compile_definitions(dzsysmon_obj PUBLIC _CRT_SECURE_NO_WARNINGS)
+endif()
+
+# ============================================================
+# dzsysmon：主可执行文件
+# 输出到构建目录根（DZ_OUTPUT_DIR），输出名 dzsysmon
+# ============================================================
+add_executable(dzsysmon main.cpp)
+target_link_libraries(dzsysmon PRIVATE dzsysmon_obj)
+if(WIN32)
+    target_compile_definitions(dzsysmon PRIVATE _CRT_SECURE_NO_WARNINGS)
+    # 平台版本探测走 ntdll!RtlGetVersion（advapi32 为注册表读取 CPU 型号所需）
+    target_link_libraries(dzsysmon PRIVATE advapi32)
+endif()
+set_target_properties(dzsysmon PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${DZ_OUTPUT_DIR}
+)
+install(TARGETS dzsysmon RUNTIME DESTINATION ${DZ_INSTALL_DIR})
+
+# ============================================================
+# 单元测试：每个 *_test.cpp 独立编译
+# 纯函数/配置测试不依赖真实时钟长睡眠，全部 fast label。
+# ============================================================
+file(GLOB DZSYSMON_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
+foreach(testfile ${DZSYSMON_TESTS})
+    get_filename_component(testname ${testfile} NAME_WE)
+    add_executable(dzsysmon_${testname} ${testfile} ../master/tests/test_main.cpp)
+    target_link_libraries(dzsysmon_${testname} PRIVATE
+        dzsysmon_obj
+        dzshm_test_support
+        GTest::gtest
+    )
+    target_include_directories(dzsysmon_${testname} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
+    set_target_properties(dzsysmon_${testname} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
+    )
+    gtest_discover_tests(dzsysmon_${testname} PROPERTIES LABELS fast)
+    install(TARGETS dzsysmon_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
+endforeach()

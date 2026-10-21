@@ -19,6 +19,7 @@
 | 进程 | 进程控制/状态/配置 + 优雅退出请求 |
 | 自动登录/登出排程 | SET/RTN_AUTO_LOGIN |
 | 进度推送 | RTN_PROGRESS |
+| 系统监控 | 实时快照 RTN_SYSMON_SNAPSHOT + 运行期配置 SET/RTN_SYSMON_CONFIG |
 | 行情连接与订阅 | 连接请求、订阅/退订、订阅查询、行情生命周期通知 |
 | 行情网关配置 | SET/RTN_MD_CONFIG |
 | 行情网关状态 | RTN_MD_STATUS |
@@ -213,6 +214,7 @@
 ## 9. 镜像总则（dzweb）
 
 - dzweb 为每个实例维护镜像（key = `instance_id`，无 `instance_id` 帧挂固定 `dztraderd`）；收到 RTN 更新对应 domain 并 WS 推送。
+  - 例外：发送方为**唯一固定内部进程**的无 `instance_id` 帧，由对应契约声明固定挂载实例（如契约 sysmon 的快照帧固定挂 `dzsysmon`）。
 - RTN 全量覆盖：前端直接整体覆盖本地镜像，覆盖天然含删除。
 - 镜像 domain 名与 WS 消息的映射见契约 webui-ws；镜像不进"高频数据"。
 - 仅查询响应（如订阅详情）不进镜像，dzweb 透传广播。

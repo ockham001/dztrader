@@ -163,3 +163,217 @@ export interface MdRtnStatusPayload {
     /** 网关状态（结构随接口类型） */
     status: Record<string, unknown>
 }
+
+export interface SysmonSamplingMeta {
+    /** 当前计量间隔（毫秒） */
+    measure_interval_ms: number
+    /** 最近一次计量成功的 Unix 毫秒时间；0=尚无样本 */
+    last_sample_unix_ms: number
+    /** 累计错过的计量 tick 数（缺口标记） */
+    missed_ticks: number
+}
+
+export interface SysmonPlatformInfo {
+    /** 平台家族：windows / linux */
+    family: string
+    /** 真实 OS 版本 */
+    version: string
+    /** Linux 内核 release；Windows 为 NT 版本号 */
+    kernel: string
+    /** 架构标识 */
+    arch: string
+    /** Windows build 号（区分 Win10/Win11）；Linux 为 0 */
+    build: number
+}
+
+export interface SysmonSystemInfo {
+    /** 主机名 */
+    hostname: string
+    /** CPU 型号；取不到时为空串 */
+    cpu_model: string
+    /** 逻辑核数 */
+    logical_cores: number
+    /** 启动时间（Unix 秒） */
+    boot_time_unix_sec: number
+    /** 运行时长（秒） */
+    uptime_sec: number
+}
+
+export interface SysmonCpuTotal {
+    /** 总使用率 [0,1]；null=首次采样/计数器不可用（不得用 0 冒充） */
+    usage_ratio: number | null
+}
+
+export interface SysmonCpuCore {
+    /** 核 index */
+    index: number
+    /** 单核使用率 [0,1]；null=不可用 */
+    usage_ratio: number | null
+    /** 是否处于持续饱和状态 */
+    saturated: boolean
+}
+
+export interface SysmonLoadAverage {
+    one: number | null
+    five: number | null
+    fifteen: number | null
+    /** 口径：load_average（Linux）/ processor_queue（Windows 代理量） */
+    semantic: string
+}
+
+export interface SysmonCpuInfo {
+    total: SysmonCpuTotal
+    /** 每核使用率（不可用时为空数组） */
+    cores: SysmonCpuCore[]
+    /** 持续饱和的核 index 集合 */
+    saturated_cores: number[]
+    /** 系统负载；null=不提供/不可用（Windows 为处理器队列长度代理量，语义不同） */
+    load_average: SysmonLoadAverage | null
+    context_switches_per_sec: number | null
+    interrupts_per_sec: number | null
+}
+
+export interface SysmonMemoryInfo {
+    total_bytes: number
+    available_bytes: number
+    /** 唯一口径：total_bytes - available_bytes */
+    used_bytes: number
+    used_ratio: number | null
+}
+
+export interface SysmonSwapInfo {
+    /** 0 = 本机无交换分区 */
+    total_bytes: number
+    used_bytes: number
+    used_ratio: number | null
+}
+
+export interface SysmonVolumeInfo {
+    /** 挂载点/盘符 */
+    mount: string
+    total_bytes: number
+    used_bytes: number
+    used_ratio: number | null
+}
+
+export interface SysmonDiskIoInfo {
+    /** 物理盘标识 */
+    device: string
+    read_bytes_per_sec: number | null
+    write_bytes_per_sec: number | null
+    read_iops: number | null
+    write_iops: number | null
+    latency_ms: number | null
+    queue_depth: number | null
+    utilization: number | null
+}
+
+export interface SysmonNetworkInfo {
+    /** 网卡名 */
+    interface: string
+    rx_bytes_total: number
+    tx_bytes_total: number
+    rx_bytes_per_sec: number | null
+    tx_bytes_per_sec: number | null
+    rx_errors_per_sec: number | null
+    tx_errors_per_sec: number | null
+    rx_drops_per_sec: number | null
+    tx_drops_per_sec: number | null
+    /** 是否虚拟网卡 */
+    is_virtual: boolean
+}
+
+export interface SysmonShmDirInfo {
+    path: string
+    total_bytes: number
+    page_files: number
+    oldest_file_age_sec: number | null
+}
+
+export interface SysmonAvailabilityEntry {
+    available: boolean
+    /** 不可用原因；available=true 时省略 */
+    reason?: string
+}
+
+export interface SysmonAvailability {
+    /** 人类可读平台描述（Windows 含 build 号） */
+    platform_description: string
+    /** 按指标可用性映射 */
+    metrics: Record<string, SysmonAvailabilityEntry>
+    /** 跨平台语义提示 */
+    semantic_hints: Record<string, string>
+}
+
+export interface SysmonSnapshotPayload {
+    /** 发送方进程名（固定 dzsysmon；无 instance_id 帧来源显式携带，general §5） */
+    source: string
+    /** 快照生成时刻（Unix 毫秒） */
+    timestamp: number
+    sampling: SysmonSamplingMeta
+    platform: SysmonPlatformInfo
+    system: SysmonSystemInfo
+    cpu: SysmonCpuInfo
+    memory: SysmonMemoryInfo | null
+    swap: SysmonSwapInfo | null
+    volumes: SysmonVolumeInfo[] | null
+    disk_io: SysmonDiskIoInfo[] | null
+    network: SysmonNetworkInfo[] | null
+    shm_dir: SysmonShmDirInfo | null
+    availability: SysmonAvailability
+}
+
+export interface SysmonSamplingConfigPayload {
+    /** 计量间隔 [100,60000] */
+    measure_interval_ms: number
+    /** 记录间隔 [1,86400] */
+    record_interval_sec: number
+    /** 记录相位偏移 [0,86400] */
+    phase_offset_sec: number
+    /** 启用的指标大类 */
+    groups: Record<string, boolean>
+}
+
+export interface SysmonDiskConfigPayload {
+    /** 关注路径 */
+    watch_paths: string[]
+    /** 设备范围（空=全部物理盘） */
+    devices: string[]
+}
+
+export interface SysmonNetworkConfigPayload {
+    /** 是否隐藏虚拟网卡 */
+    hide_virtual: boolean
+}
+
+export interface SysmonHistoryConfigPayload {
+    enabled: boolean
+    raw_retention_hours: number
+    max_retention_days: number
+    /** 总量上限；0=不限制 */
+    max_bytes: number
+}
+
+export interface SysmonRealtimeConfigPayload {
+    /** 推送间隔 [1,3600] */
+    push_interval_sec: number
+}
+
+export interface SysmonAlertsConfigPayload {
+    cpu_sustain_used_pct: number
+    cpu_sustain_samples: number
+    memory_used_pct: number
+    swap_used_pct: number
+    volume_free_pct: number
+    volume_free_bytes: number
+    cooldown_sec: number
+}
+
+export interface SysmonConfigPayload {
+    sampling: SysmonSamplingConfigPayload
+    disk: SysmonDiskConfigPayload
+    network: SysmonNetworkConfigPayload
+    history: SysmonHistoryConfigPayload
+    realtime: SysmonRealtimeConfigPayload
+    alerts: SysmonAlertsConfigPayload
+}

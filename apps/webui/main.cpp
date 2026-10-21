@@ -40,6 +40,8 @@
 #include "subscription_domain_service.h"
 #include "notify_domain_service.h"
 #include "td_data_service.h"
+#include "sysmon_domain_service.h"
+#include "sysmon_controller.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -231,6 +233,9 @@ int main(int argc, char* argv[]) {
         repo, shm_writer, process_mirror, *ws_ctrl));
     drogon::app().registerController(
         std::make_shared<dztrader::webui::ProcessCtrl>(repo, process_mirror));
+    // 系统监控 REST（契约 rest §2.8）：当前快照查询，读取共享镜像
+    drogon::app().registerController(
+        std::make_shared<dztrader::webui::SysmonCtrl>(repo, mirror_store));
 
     // 系统设置控制器: 只读展示 dztraderd.json (master 路径固定) + 事件通道(SET_EVENT_SHM_CONFIG)
     // + webui.json (共享 webui_cfg_holder 与 LoginCtrl, token_ttl_sec 热生效)
@@ -309,6 +314,9 @@ int main(int argc, char* argv[]) {
         std::make_shared<dztrader::webui::AutoLoginDomainService>(*mirror_store, *ws_ctrl);
     auto progress_domain =
         std::make_shared<dztrader::webui::ProgressDomainService>(*mirror_store, *ws_ctrl);
+    // 系统监控领域服务（契约 sysmon）：快照与配置帧的镜像 + WS 广播
+    auto sysmon_domain =
+        std::make_shared<dztrader::webui::SysmonDomainService>(*mirror_store, *ws_ctrl);
 
     // self log_config 镜像初值（原 WsController 构造内逻辑，契约 log：dzweb 自身纳入镜像）
     mirror_store->update(exe_stem, "log_config", self_log->current());
@@ -395,6 +403,17 @@ int main(int argc, char* argv[]) {
         DZ_FRAME_RTN_PROGRESS, true,
         [progress_domain](const std::string& s, const nlohmann::json& p) {
             progress_domain->on_rtn_progress(s, p);
+        });
+    // 系统监控：快照帧无 instance_id（发送方固定 dzsysmon），配置帧定向
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_RTN_SYSMON_SNAPSHOT, false,
+        [sysmon_domain](const std::string&, const nlohmann::json& p) {
+            sysmon_domain->on_rtn_sysmon_snapshot(p);
+        });
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_RTN_SYSMON_CONFIG, true,
+        [sysmon_domain](const std::string& s, const nlohmann::json& p) {
+            sysmon_domain->on_rtn_sysmon_config(s, p);
         });
 
     // 启动事件通道监听线程（替代原 50ms 轮询的 event channel 部分）

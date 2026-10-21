@@ -13,6 +13,7 @@
 | [process](process.md) | 进程 | `REQUEST_PROCESS_CONTROL`、`RTN_PROCESS_STATUS`、`SET/RTN_PROCESS_CONFIG`、`SHUTDOWN` | `libs/platform/.../process.h` |
 | [auto-login](auto-login.md) | 自动登录/登出排程 | `SET/RTN_AUTO_LOGIN` | `libs/platform/.../auto_login.h` |
 | [progress](progress.md) | 进度推送 | `RTN_PROGRESS` | `libs/platform/.../progress.h` |
+| [sysmon](sysmon.md) | 系统监控 | `RTN_SYSMON_SNAPSHOT`、`SET/RTN_SYSMON_CONFIG` | `libs/platform/.../sysmon.h` |
 | [md-subscription](md-subscription.md) | 行情连接与订阅 | `REQUEST_MD_CONNECT/DISCONNECT`、`REQUEST_MD_SUBSCRIBE`、`QUERY/RTN_MD_SUBSCRIPTIONS`、`NOTIFY_MD_STARTED/STOPPED` | `libs/platform/.../subscription_manager.h`、`libs/core/.../core_struct.h` |
 | [md-config](md-config.md) | 行情网关配置 | `SET/RTN_MD_CONFIG` | `libs/platform/.../ctp_md_config.h` |
 | [md-status](md-status.md) | 行情网关状态 | `RTN_MD_STATUS` | 发送方进程（CTP：`apps/ctp/md/md_state.h`） |

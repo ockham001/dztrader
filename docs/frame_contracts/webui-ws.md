@@ -52,6 +52,8 @@ domain 清单与挂载实例：
 | `progress` | 各进程（TD 为账户 ID） | `{ min, max, current, desc }` | progress |
 | `md_config` | 各行情进程 | 脱敏行情配置 | md-config |
 | `md_status` | 各行情进程 | 行情网关状态 | md-status |
+| `sysmon_snapshot` | 固定 `dzsysmon` | 系统监控快照 | sysmon |
+| `sysmon_config` | 固定 `dzsysmon` | 系统监控全量生效配置 | sysmon |
 
 > 注：
 > - `md_rtn_subscriptions`（契约 md-subscription）为查询响应，**不进镜像**，故不在快照中。
@@ -73,6 +75,8 @@ domain 清单与挂载实例：
 | `md_shm_config` | `RTN_MD_SHM_CONFIG` | SHM 行情通道配置 | 行情进程名 | shm |
 | `auto_login` | `RTN_AUTO_LOGIN` | `{ enabled, schedules }`；dzweb 读取时先校验，非法则记日志并忽略（不更新镜像、不广播） | 行情进程名 | auto-login |
 | `progress` | `RTN_PROGRESS` | `{ min, max, current, desc }` | 进程名 / `{进程}:{账户}` | progress |
+| `sysmon_snapshot` | `RTN_SYSMON_SNAPSHOT` | 系统监控快照（契约 sysmon §2） | `dzsysmon`（固定；帧头无实例标识） | sysmon |
+| `sysmon_config` | `RTN_SYSMON_CONFIG` | 全量生效配置（契约 sysmon §3） | `dzsysmon` | sysmon |
 
 - 未被 `process_config` 注册的进程：`process_status` 镜像不写入，但广播仍无条件发出（前端可感知未知进程状态）。
 - `md_shm_config` 前端已有消费（展示与编辑，pending 由本消息清除）；`event_shm_config` 前端已消费（系统设置页展示，编辑 pending 由本消息清除，入口契约 rest §2.7 `PUT /api/settings/event-shm-config`）。

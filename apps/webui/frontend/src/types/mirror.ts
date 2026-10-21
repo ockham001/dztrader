@@ -4,8 +4,8 @@
 // 载荷细化为 unknown 是终态（设计 §5.5 实现偏差：判别联合预留至交易数据扩展前实现）
 
 // LogConfigPayload / AutoLoginPayload / NotifyUiPayload 由契约单源生成（schema → generated.ts），禁止手写
-import type { LogConfigPayload, AutoLoginPayload, AutoLoginSchedule, NotifyUiPayload, ShmConfigView } from './generated'
-export type { AutoLoginPayload, AutoLoginSchedule, LogConfigPayload, NotifyUiPayload, ShmConfigView }
+import type { LogConfigPayload, AutoLoginPayload, AutoLoginSchedule, NotifyUiPayload, ShmConfigView, SysmonSnapshotPayload, SysmonConfigPayload } from './generated'
+export type { AutoLoginPayload, AutoLoginSchedule, LogConfigPayload, NotifyUiPayload, ShmConfigView, SysmonSnapshotPayload, SysmonConfigPayload }
 
 export interface ProgressPayload { min: number; max: number; current: number; desc?: string }
 
@@ -21,6 +21,9 @@ export interface DomainPayloads {
   event_shm_config?: unknown
   auto_login?: AutoLoginPayload
   progress?: ProgressPayload
+  // 契约 sysmon: 快照域与配置域固定挂载实例 dzsysmon，进快照（新连接立即拿到当前值）
+  sysmon_snapshot?: SysmonSnapshotPayload
+  sysmon_config?: SysmonConfigPayload
 }
 
 export type MirrorSnapshot = Record<string, Partial<DomainPayloads>>
