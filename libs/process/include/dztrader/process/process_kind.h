@@ -12,11 +12,12 @@
 
 namespace dztrader::process {
 
-/// 进程类别, 由可执行文件名前缀识别 (dzmd_/dztd_/dzweb)
+/// 进程类别, 由可执行文件名识别 (dzmd_/dztd_ 前缀, dzweb/dzsysmon 精确匹配)
 enum class ProcessKind : uint8_t {
     GatewayMd,  // dzmd_*
     GatewayTd,  // dztd_*
     WebUI,      // dzweb
+    Internal,   // dzsysmon (内部进程, 精确匹配)
     Unknown,
 };
 

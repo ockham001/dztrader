@@ -342,6 +342,64 @@ TEST_F(ProcessSupervisorTest, RestartAfterCrashSpawnsNewChild) {
     orphan_guard_.cleanup();
 }
 
+// 内部进程重启与网关一致地收到恢复参数: --recover 追加机制不按类别区分
+TEST_F(ProcessSupervisorTest, InternalProcessRestartReceivesRecoverArg) {
+    const auto marker = tmp_dir_ / "internal_crash_once.marker";
+    const auto argv_log = tmp_dir_ / "internal_argv.log";
+    auto entry =
+        make_internal_entry("dzsysmon", Category::Internal, {"crash_once", marker.string(), "7"});
+    entry.restart.enabled = true;
+    entry.restart.max_attempts = 2;
+    entry.restart.backoff_sec = 1;
+    entry.env["DZ_TEST_ARGV_DUMP"] = argv_log.string();
+    registry_.register_gateway(entry);
+
+    shm_mgr_ = std::make_unique<ShmManager>(make_default_shm_global(), cfg_path_);
+    orphan_guard_.startup();
+
+    ProcessSupervisor supervisor(ioc_, registry_, *shm_mgr_, orphan_guard_,
+                                 /*single_stop_timeout_sec=*/1);
+    supervisor.start_all();
+    // 内部进程随第二趟启动 (非 md/策略), 首启即 spawn
+    ASSERT_EQ(supervisor.children().size(), 1u);
+    const auto first_pid = static_cast<int>(supervisor.children()[0]->pid());
+    ASSERT_NE(first_pid, 0);
+
+    // 首崩 (exit 7) -> 1s 退避后自动重启 (重启实例读到 marker 后常驻)
+    ASSERT_TRUE(wait_for_io(std::chrono::milliseconds(5000),
+                            [&] { return supervisor.children().empty(); }));
+    ASSERT_TRUE(wait_for_io(std::chrono::milliseconds(3000), [&] {
+        auto child = supervisor.find_child("dzsysmon");
+        return child && child->state() == ChildState::Running &&
+               static_cast<int>(child->pid()) != first_pid;
+    }));
+
+    // 捕获两次 spawn 的 argv: 首启无 --recover, 重启追加 --recover。
+    // master 在 spawn 成功后立即推 Running, 子进程可能尚未执行到 argv 落盘, 必须轮询文件。
+    auto read_spawn_args = [&] {
+        std::vector<std::string> lines;
+        std::ifstream ifs(argv_log);
+        std::string line;
+        while (std::getline(ifs, line)) {
+            lines.push_back(line);
+        }
+        return lines;
+    };
+    ASSERT_TRUE(wait_for_io(std::chrono::milliseconds(3000),
+                            [&] { return read_spawn_args().size() >= 2u; }));
+    const auto spawn_args = read_spawn_args();
+    ASSERT_EQ(spawn_args.size(), 2u);
+    EXPECT_EQ(spawn_args[0].find("--recover"), std::string::npos);
+    EXPECT_NE(spawn_args[1].find("--recover"), std::string::npos);
+
+    supervisor.shutdown();
+    ioc_.restart();
+    ioc_.run_for(std::chrono::seconds(3));
+    EXPECT_EQ(supervisor.children().size(), 0u);
+
+    orphan_guard_.cleanup();
+}
+
 // Fix1: 崩溃退避窗口内 cancel_pending_restart 后不得"复活"进程
 // (Remove/显式停止在进程不运行路径取消挂起的退避重启定时器, 契约"remove 不重启")
 TEST_F(ProcessSupervisorTest, CancelPendingRestartPreventsRevival) {
@@ -570,19 +628,33 @@ TEST_F(ProcessSupervisorTest, StopRunningChildForceKilledOnTimeout) {
     orphan_guard_.cleanup();
 }
 
-// 整体关闭逆序分批 (纯函数): 策略 -> 交易 -> 行情 -> dzweb, 空批次不产生
+// 整体关闭逆序分批 (纯函数): 策略 -> 交易 -> 行情 -> 内部进程 -> dzweb, 空批次不产生
 TEST(ProcessShutdownBatches, ReverseOrderByCategory) {
     std::vector<std::pair<std::string, Category>> running{
         {"dzweb", Category::WebUI},    {"dzmd_ctp", Category::GatewayMd},
         {"stg_a", Category::Strategy}, {"dztd_ctp", Category::GatewayTd},
-        {"stg_b", Category::Strategy},
+        {"stg_b", Category::Strategy}, {"dzsysmon", Category::Internal},
     };
     auto batches = build_shutdown_batches(running);
-    ASSERT_EQ(batches.size(), 4u);
+    ASSERT_EQ(batches.size(), 5u);
     EXPECT_EQ(batches[0], (std::vector<std::string>{"stg_a", "stg_b"}));
     EXPECT_EQ(batches[1], (std::vector<std::string>{"dztd_ctp"}));
     EXPECT_EQ(batches[2], (std::vector<std::string>{"dzmd_ctp"}));
-    EXPECT_EQ(batches[3], (std::vector<std::string>{"dzweb"}));
+    EXPECT_EQ(batches[3], (std::vector<std::string>{"dzsysmon"}));
+    EXPECT_EQ(batches[4], (std::vector<std::string>{"dzweb"}));
+}
+
+// 内部进程批次位于行情网关之后、UI 之前 (md -> internal -> webui)
+TEST(ProcessShutdownBatches, InternalBatchBetweenMdAndWebui) {
+    auto batches = build_shutdown_batches({
+        {"dzweb", Category::WebUI},
+        {"dzsysmon", Category::Internal},
+        {"dzmd_ctp", Category::GatewayMd},
+    });
+    ASSERT_EQ(batches.size(), 3u);
+    EXPECT_EQ(batches[0], (std::vector<std::string>{"dzmd_ctp"}));
+    EXPECT_EQ(batches[1], (std::vector<std::string>{"dzsysmon"}));
+    EXPECT_EQ(batches[2], (std::vector<std::string>{"dzweb"}));
 }
 
 // 单一类别只产生一个批次; 空输入产生零批次
@@ -618,7 +690,7 @@ TEST_F(ProcessSupervisorTest, ShutdownStopsAllChildrenSequentially) {
     orphan_guard_.cleanup();
 }
 
-// 整体关闭多类别逐批推进: 四类各一进程, 依赖每批超时强制终止后进入下一批,
+// 整体关闭多类别逐批推进: 五类各一进程 (含内部进程), 依赖每批超时强制终止后进入下一批,
 // 全部退出后 children 清空 (验证批次间 timer 重建与推进链路)
 TEST_F(ProcessSupervisorTest, ShutdownStopsAllCategoriesSequentially) {
     registry_.register_strategy(make_strategy_entry("stg_a", {"longrun", "60"}));
@@ -626,23 +698,25 @@ TEST_F(ProcessSupervisorTest, ShutdownStopsAllCategoriesSequentially) {
         make_internal_entry("dztd_ctp", Category::GatewayTd, {"longrun", "60"}));
     registry_.register_gateway(
         make_internal_entry("dzmd_ctp", Category::GatewayMd, {"longrun", "60"}));
+    registry_.register_gateway(
+        make_internal_entry("dzsysmon", Category::Internal, {"longrun", "60"}));
     registry_.register_gateway(make_internal_entry("dzweb", Category::WebUI, {"longrun", "60"}));
 
     shm_mgr_ = std::make_unique<ShmManager>(make_default_shm_global(), cfg_path_);
     orphan_guard_.startup();
 
-    // single_stop_timeout_sec=1: 每批 1s 超时, 4 批最坏 4s, 测试可控
+    // single_stop_timeout_sec=1: 每批 1s 超时, 5 批最坏 5s, 测试可控
     ProcessSupervisor supervisor(ioc_, registry_, *shm_mgr_, orphan_guard_,
                                  /*single_stop_timeout_sec=*/1);
     supervisor.start_all();
-    ASSERT_EQ(supervisor.children().size(), 4u);  // 证明四类进程均 spawn
+    ASSERT_EQ(supervisor.children().size(), 5u);  // 证明五类进程均 spawn
 
     supervisor.shutdown();
     EXPECT_TRUE(supervisor.is_shutting_down());
 
     // worker 不读事件通道 -> SHUTDOWN 无效, 依赖各批超时强制终止
     ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(12));
+    ioc_.run_for(std::chrono::seconds(15));
     EXPECT_EQ(supervisor.children().size(), 0u);
 
     orphan_guard_.cleanup();

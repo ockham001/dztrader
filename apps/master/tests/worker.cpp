@@ -1,5 +1,6 @@
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -8,7 +9,24 @@
 
 static volatile bool g_running = true;
 
+// 测试可观测性: 设置 DZ_TEST_ARGV_DUMP 后, 每次启动把 argv[1..] 追加一行到该文件。
+// 用于验证 master 自动重启时统一追加的恢复参数 (--recover) 确实传给子进程。
+static void dump_argv_if_requested(int argc, char* argv[]) {
+    const char* dump_path = std::getenv("DZ_TEST_ARGV_DUMP");
+    if (dump_path == nullptr || dump_path[0] == '\0') {
+        return;
+    }
+    std::ofstream ofs(dump_path, std::ios::app);
+    for (int i = 1; i < argc; ++i) {
+        if (i > 1) ofs << ' ';
+        ofs << argv[i];
+    }
+    ofs << '\n';
+}
+
 int main(int argc, char* argv[]) {
+    dump_argv_if_requested(argc, argv);
+
     std::string name = (argc > 1) ? argv[1] : "worker";
     int runtime = 0;
 

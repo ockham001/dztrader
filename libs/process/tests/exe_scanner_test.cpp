@@ -169,6 +169,33 @@ TEST_F(ExeScannerTest, IdentifiesAllPrefixes) {
     EXPECT_EQ(result[2].kind, ProcessKind::WebUI);
 }
 
+// 内部进程: 精确匹配 dzsysmon (可执行文件名即进程身份)
+TEST_F(ExeScannerTest, IdentifiesInternalProcessByExactName) {
+    make_test_exe(tmp_root_, "dzsysmon");
+
+    auto result = scan_all_exes(tmp_root_);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].name, "dzsysmon");
+    EXPECT_EQ(result[0].kind, ProcessKind::Internal);
+    EXPECT_EQ(result[0].exe.stem().string(), "dzsysmon");
+    EXPECT_EQ(result[0].start_dir, tmp_root_);
+
+    auto found = find_exe_by_stem("dzsysmon", tmp_root_);
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(found->kind, ProcessKind::Internal);
+}
+
+// 精确匹配: dzsysmon_xxx / 前后缀变体一律不识别 (不引入 dz* 通配)
+TEST_F(ExeScannerTest, RejectsInternalNameLookalikes) {
+    make_test_exe(tmp_root_, "dzsysmon_worker");
+    make_test_exe(tmp_root_, "dzsysmonx");
+    make_test_exe(tmp_root_, "xdzsysmon");
+
+    auto result = scan_all_exes(tmp_root_);
+    EXPECT_TRUE(result.empty());
+    EXPECT_FALSE(find_exe_by_stem("dzsysmon_worker", tmp_root_).has_value());
+}
+
 TEST_F(ExeScannerTest, RejectsExecutableNonPrefixFiles) {
     // 可执行但不是 dzmd_/dztd_/dzweb 前缀 -> 一律跳过
     make_test_exe(tmp_root_, "dztraderd");

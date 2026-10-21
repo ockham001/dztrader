@@ -15,10 +15,10 @@ namespace dztrader::master {
 namespace {
 
 /// 构造订阅者名。命名规则（无 pid 后缀，进程名即身份，重启复用同名）：
-/// - 系统内部进程（GatewayMd/GatewayTd/WebUI）: <entry.name>
+/// - 非策略系统进程（GatewayMd/GatewayTd/Internal/WebUI）: <entry.name>
 ///   子进程通过 dztrader::this_process::exe_stem() 构造自己的 NamedSemaphore 名，
 ///   master 必须用相同名字注册才能 notify 到对应信号量。
-///   任务 B 后 entry.name 已与 exe stem 一致 (dzweb/dzmd_ctp/dztd_ctp),
+///   任务 B 后 entry.name 已与 exe stem 一致 (dzweb/dzmd_ctp/dztd_ctp/dzsysmon),
 ///   故直接用 entry.name 构造, 无需再走 exe.stem()。
 /// - 策略（Strategy）: stg.<name>
 /// 唯一性由 master 生命周期监督保证（退出即注销、启动即重置），无需 pid 区分实例。
@@ -33,11 +33,12 @@ std::string make_subscriber_name(const ProcessEntry& entry) {
 
 std::vector<std::vector<std::string>> build_shutdown_batches(
     const std::vector<std::pair<std::string, Category>>& running) {
-    // 逆序 = 启动顺序严格互逆: md 最先启动 → 最后停止; dzweb 最后启动 → 最后关闭
-    // (UI 最后关闭可展示进度)。类别遍历顺序即批次顺序。
+    // 逆序 = 启动依赖的反序: 依赖方先停, 被依赖方后停。
+    // 内部进程在行情网关之后、UI 之前: 监控进程要活到能记录其他进程的退出过程,
+    // 但无需活过 UI。dzweb 例外压到最后 (可展示关闭进度)。类别遍历顺序即批次顺序。
     std::vector<std::vector<std::string>> batches;
-    for (Category cat :
-         {Category::Strategy, Category::GatewayTd, Category::GatewayMd, Category::WebUI}) {
+    for (Category cat : {Category::Strategy, Category::GatewayTd, Category::GatewayMd,
+                         Category::Internal, Category::WebUI}) {
         std::vector<std::string> names;
         for (const auto& [name, category] : running) {
             if (category == cat) {
@@ -92,7 +93,7 @@ void ProcessSupervisor::start_all() {
 
     // 三趟启动编排 (契约 4.4):
     //   第一趟: 全部行情网关 (md 必须先行: 策略 SDK 需已存在的 md 通道 + 预注册 reader)
-    //   第二趟: td / webui 立即启动, 不等待 md ready
+    //   第二趟: td / 内部进程 / webui 立即启动, 不等待 md ready
     //   第三趟: 同步有界等待被策略引用的 md ready, 逐源启动绑定策略
     //           超时后未 ready 源的策略进 pending
     for (const auto& entry : entries) {
@@ -356,7 +357,7 @@ void ProcessSupervisor::shutdown() {
     md_ready_timers_.clear();
     pending_strategies_.clear();
 
-    // 冻结关闭批次 (逆序: 策略 → 交易 → 行情 → dzweb)
+    // 冻结关闭批次 (逆序: 策略 → 交易 → 行情 → 内部进程 → dzweb)
     std::vector<std::pair<std::string, Category>> running;
     for (auto& child : children_) {
         if (child && child->state() != ChildState::Stopped) {
@@ -398,10 +399,12 @@ void ProcessSupervisor::send_current_shutdown_batch() {
         if (any_running) {
             SPDLOG_INFO("shutdown batch {}/{} stopping | members={}", shutdown_batch_index_ + 1,
                         shutdown_batches_.size(), batch.size());
-            // 批次逐批串行, 最坏 N 批 × single_stop_timeout_sec_ (默认 3s, 四类批次最坏 12s)。
+            // 批次逐批串行, 最坏 N 批 × single_stop_timeout_sec_ (默认 3s, 五类批次最坏 15s)。
             // main.cpp 信号处理器中的 10s 硬超时仍是最终兜底: 硬超时回调先
             // force_terminate_all 强杀剩余子进程 (消除逐批超时后的尾批孤儿),
             // 再 release_all + ioc.stop。属既有安全网, 仅补强杀不改变语义。
+            // 已知边界: 全部子进程都卡死时硬超时早于逐批完成, 尾批可能收不到定向
+            // SHUTDOWN 而直接被强杀 (与既有"总时长有界"取舍一致, 本票不改变该语义)。
             // 批次超时定时器: 超时强制终止仍在运行的批次成员;
             // 取消由 advance_shutdown_batch 在批次完成时触发 (事件驱动, 无轮询)
             // 捕获排定下标: 防"旧 timer 已过期入队、批次已推进"时误杀新批次 (自检 P1)
@@ -1120,8 +1123,8 @@ void ProcessSupervisor::schedule_restart(const std::string& name,
 
     // 按值捕获 entry 用于重启
     auto entry_copy = entry;
-    // 崩溃恢复: 传 --recover 让子进程启动时自动补登
-    // 仅网关进程 (dzmd_*/dztd_*) 解析此参数, 其他进程忽略
+    // 崩溃恢复: 统一追加 --recover (不按类别区分)。各进程按自身语义解释:
+    // 网关用于补登; 内部进程 (dzsysmon) 用于历史连续性, 其余进程忽略。
     entry_copy.args.push_back("--recover");
 
     timer->async_wait([this, name, entry_copy, restart_count](const boost::system::error_code& ec) {

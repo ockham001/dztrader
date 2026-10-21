@@ -31,8 +31,8 @@
 
 namespace dztrader::master {
 
-/// 整体关闭逆序分批 (dztraderd 架构「停止与整体关闭」): 策略 → 交易网关 →
-/// 行情进程 → dzweb (UI 最后关闭, 可展示关闭进度), 与启动顺序严格互逆。
+/// 整体关闭按依赖逆序分批 (dztraderd 架构「停止与整体关闭」): 策略 → 交易网关 →
+/// 行情进程 → 内部进程 → dzweb (UI 例外最后关闭, 可展示关闭进度)。依赖方先停。
 /// 输入为关闭时刻运行中子进程的 (名字, 类别) 列表, 输出按批次组织的名字列表
 /// (空批次不产生)。纯函数, 供单元测试。
 std::vector<std::vector<std::string>> build_shutdown_batches(

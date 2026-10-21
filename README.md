@@ -84,7 +84,7 @@
 **run-dev** — `.\scripts\run-dev.ps1 [-Stop] [-NoBuild] [-Config Release|Debug]`
 - 默认含 build（先增量 build 再启动）
 - 自动设置 `DZTRADER_HOME=.dztrader_dev`（避免污染生产配置）
-- 启动 master（读 `$DZTRADER_HOME/configs/dztraderd.json`，缺失时自动生成默认配置；按其中 md/td 段自动拉起 dzweb + 网关等子进程）
+- 启动 master（读 `$DZTRADER_HOME/configs/dztraderd.json`，缺失时自动生成默认配置；按其中 md/td/internal 段自动拉起 dzweb + 网关 + 内部进程等子进程）
 - `-Stop`：强杀 master + `dztraderd --cleanup-orphans` 清理僵尸子进程
 - `-NoBuild`：跳过 build 直接启动（快，但可能跑旧代码）
 - Debug 时打印 `=== DEBUG BUILD - 仅本地调试，禁止部署生产 ===`

@@ -25,6 +25,8 @@ Category kind_to_category(process::ProcessKind kind) {
             return Category::GatewayTd;
         case process::ProcessKind::WebUI:
             return Category::WebUI;
+        case process::ProcessKind::Internal:
+            return Category::Internal;
         default:
             return Category::Strategy;
     }

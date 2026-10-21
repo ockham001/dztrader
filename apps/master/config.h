@@ -19,7 +19,8 @@
 namespace dztrader::master {
 
 /// 进程类别，决定默认重启策略和启动语义。
-enum class Category : uint8_t { GatewayMd, GatewayTd, Strategy, WebUI };
+/// Internal = 非策略、非行情/交易网关的内部子进程（如 dzsysmon）。
+enum class Category : uint8_t { GatewayMd, GatewayTd, Strategy, WebUI, Internal };
 
 /// 单个进程条目（来自 dztraderd.json 配置）。
 struct ProcessEntry {
@@ -31,7 +32,7 @@ struct ProcessEntry {
     std::unordered_map<std::string, std::string> env;  // 合并到 process_environment
     platform::RestartPolicy restart;
 
-    /// 用户可读显示名 (来自 dztraderd.json md/td section 的 display_name 字段,
+    /// 用户可读显示名 (来自 dztraderd.json md/td/internal section 的 display_name 字段,
     /// 或运行时通过 PROCESS_CONTROL start 帧动态注入)。
     /// 为空时前端 UI 应回退到 name 显示。
     std::string display_name;
@@ -101,9 +102,12 @@ Config parse_master_json(const std::filesystem::path& config_path);
 /// 文件已存在时不覆盖。失败抛 std::runtime_error。
 void generate_default_config(const std::filesystem::path& json_path);
 
-/// 向 dztraderd.json 写入 [md.<name>] 或 [td.<name>] 段（若已存在则覆盖）。
-/// category 决定写入 "md" 还是 "td" section。
-/// 契约 process: 内部进程 (dzmd_*/dztd_*/dzweb) 的 exe 路径和 start_dir 不持久化到 json。
+/// 向 dztraderd.json 写入 [md.<name>] / [td.<name>] / [internal.<name>] 段（若已存在则覆盖）。
+/// category 决定写入哪个 section (GatewayMd -> md, GatewayTd -> td,
+/// Internal -> internal)。Strategy 走 write_strategy_section, WebUI 正常路径走
+/// write_webui_section; 其余类别沿用历史兜底 td 段。
+/// 契约 process: 非策略进程 (dzmd_*/dztd_*/dzweb/dzsysmon) 的 exe 路径和 start_dir
+/// 不持久化到 json。
 void write_gateway_section(const std::filesystem::path& config_path,
                            Category category,
                            const std::string& gateway_name,
@@ -127,7 +131,8 @@ void write_strategy_section(const std::filesystem::path& config_path,
 /// 从 dztraderd.json 的 strategy section 删除指定 name 的策略条目（不存在则无操作）。
 void remove_strategy_section(const std::filesystem::path& config_path, const std::string& name);
 
-/// 从 dztraderd.json 删除 [md.<name>] 或 [td.<name>] 段（若不存在则无操作）。
+/// 从 dztraderd.json 删除 [md.<name>] / [td.<name>] / [internal.<name>] 段
+/// （若不存在则无操作）。section 路由同 write_gateway_section。
 void remove_gateway_section(const std::filesystem::path& config_path,
                             Category category,
                             const std::string& gateway_name);

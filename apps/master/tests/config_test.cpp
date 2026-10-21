@@ -92,6 +92,7 @@ TEST_F(ConfigTest, CategoryStr) {
     EXPECT_STREQ(category_str(Category::GatewayTd), "td");
     EXPECT_STREQ(category_str(Category::Strategy), "stg");
     EXPECT_STREQ(category_str(Category::WebUI), "webui");
+    EXPECT_STREQ(category_str(Category::Internal), "internal");
 }
 
 TEST_F(ConfigTest, DefaultRestartPolicy) {
@@ -112,6 +113,12 @@ TEST_F(ConfigTest, DefaultRestartPolicy) {
     EXPECT_TRUE(webui_policy.enabled);
     EXPECT_EQ(webui_policy.max_attempts, 5);
     EXPECT_EQ(webui_policy.backoff_sec, 5);
+
+    // 内部进程默认重启策略与既有网关一致
+    auto internal_policy = default_restart_policy(Category::Internal);
+    EXPECT_TRUE(internal_policy.enabled);
+    EXPECT_EQ(internal_policy.max_attempts, 5);
+    EXPECT_EQ(internal_policy.backoff_sec, 5);
 }
 
 TEST_F(ConfigTest, ParseMinimalJson) {
@@ -119,6 +126,62 @@ TEST_F(ConfigTest, ParseMinimalJson) {
     auto cfg = parse_master_json(config_path_);
     EXPECT_EQ(cfg.master.single_stop_timeout_sec, 3);
     EXPECT_TRUE(cfg.entries.empty());
+}
+
+// ---- internal 段 (内部进程, 形制与 md/td 网关段一致) ----
+
+TEST_F(ConfigTest, ParseInternalSection) {
+    write_json(R"({
+        "master": {},
+        "md": {"dzmd_ctp": {"args": []}},
+        "internal": {
+            "dzsysmon": {
+                "args": ["--config", "custom.json"],
+                "env": {"DZ_SYSMON_DEBUG": "1"},
+                "restart": {"enabled": true, "max_attempts": 3, "backoff_sec": 7},
+                "display_name": "系统监控"
+            }
+        }
+    })");
+    auto cfg = parse_master_json(config_path_);
+    ASSERT_EQ(cfg.entries.size(), 2u);
+    const auto wi = std::find_if(cfg.entries.begin(), cfg.entries.end(),
+                                 [](const ProcessEntry& e) { return e.name == "dzsysmon"; });
+    ASSERT_NE(wi, cfg.entries.end());
+    EXPECT_EQ(wi->category, Category::Internal);
+    EXPECT_EQ(wi->args, (std::vector<std::string>{"--config", "custom.json"}));
+    ASSERT_EQ(wi->env.count("DZ_SYSMON_DEBUG"), 1u);
+    EXPECT_EQ(wi->env.at("DZ_SYSMON_DEBUG"), "1");
+    EXPECT_TRUE(wi->restart.enabled);
+    EXPECT_EQ(wi->restart.max_attempts, 3);
+    EXPECT_EQ(wi->restart.backoff_sec, 7);
+    EXPECT_EQ(wi->display_name, "系统监控");
+    // 契约 process: 非策略进程 exe/start_dir 不持久化, 留空由 launch_child 扫描填充
+    EXPECT_TRUE(wi->exe.empty());
+    EXPECT_TRUE(wi->start_dir.empty());
+}
+
+// 段缺失 = 无内部进程; 段类型非 object 沿用既有"静默忽略"行为
+TEST_F(ConfigTest, ParseMissingInternalSectionYieldsNoInternalEntries) {
+    for (const char* json : {R"({"master": {}})", R"({"master": {}, "internal": []})"}) {
+        write_json(json);
+        auto cfg = parse_master_json(config_path_);
+        EXPECT_TRUE(cfg.entries.empty()) << json;
+    }
+}
+
+// 未知顶级段静默忽略 (既有行为不变, 不引入严格校验)
+TEST_F(ConfigTest, ParseUnknownSectionIgnored) {
+    write_json(R"({
+        "master": {},
+        "unknown_section": {"whatever": 1},
+        "sysmon": {"dzsysmon": {"args": []}},
+        "md": {"dzmd_ctp": {"args": []}}
+    })");
+    auto cfg = parse_master_json(config_path_);
+    ASSERT_EQ(cfg.entries.size(), 1u);
+    EXPECT_EQ(cfg.entries[0].name, "dzmd_ctp");
+    EXPECT_EQ(cfg.entries[0].category, Category::GatewayMd);
 }
 
 // ---- parse_master_json 错误路径 ----
@@ -902,6 +965,46 @@ TEST_F(ConfigTest, RemoveGatewaySectionByCategory) {
     EXPECT_EQ(cfg.entries[0].category, Category::GatewayTd);
 }
 
+// ---- internal 段持久化: 写入/删除按类别路由到 internal (不误写 md/td) ----
+
+TEST_F(ConfigTest, WriteInternalSectionRoutesToInternalSection) {
+    write_json(R"({"master": {}})");
+    write_gateway_section(config_path_, Category::Internal, "dzsysmon", {"--config", "x.json"},
+                          {.enabled = true, .max_attempts = 3, .backoff_sec = 7}, "系统监控");
+
+    const auto data = read_json();
+    ASSERT_TRUE(data.contains("internal"));
+    ASSERT_TRUE(data["internal"].contains("dzsysmon"));
+    EXPECT_FALSE(data.contains("md"));
+    EXPECT_FALSE(data.contains("td"));
+    const auto& entry = data["internal"]["dzsysmon"];
+    EXPECT_FALSE(entry.contains("exe"));
+    EXPECT_FALSE(entry.contains("start_dir"));
+    EXPECT_EQ(entry["display_name"], "系统监控");
+
+    auto cfg = parse_master_json(config_path_);
+    ASSERT_EQ(cfg.entries.size(), 1u);
+    EXPECT_EQ(cfg.entries[0].name, "dzsysmon");
+    EXPECT_EQ(cfg.entries[0].category, Category::Internal);
+    EXPECT_EQ(cfg.entries[0].args.size(), 2u);
+    EXPECT_EQ(cfg.entries[0].restart.max_attempts, 3);
+}
+
+TEST_F(ConfigTest, RemoveInternalSectionByCategory) {
+    write_json(R"({
+        "internal": {
+            "dzsysmon": {"args": []},
+            "other_internal": {"args": []}
+        }
+    })");
+    remove_gateway_section(config_path_, Category::Internal, "dzsysmon");
+
+    auto cfg = parse_master_json(config_path_);
+    ASSERT_EQ(cfg.entries.size(), 1u);
+    EXPECT_EQ(cfg.entries[0].name, "other_internal");
+    EXPECT_EQ(cfg.entries[0].category, Category::Internal);
+}
+
 // ---- MasterConfig (master section, 仅 single_stop_timeout_sec) ----
 
 TEST_F(ConfigTest, MasterConfigLoadDefault) {
@@ -1046,6 +1149,21 @@ TEST_F(ConfigTest, DefaultConfigNotOverwriteExisting) {
     auto cfg = parse_master_json(path);
     EXPECT_EQ(cfg.master.single_stop_timeout_sec, 10);
     EXPECT_TRUE(cfg.entries.empty());  // 已有文件不含 webui 段, 不覆盖
+}
+
+// 默认配置生成器预留 internal 段; dzsysmon 默认条目由后续票随可执行文件一起加入
+TEST_F(ConfigTest, DefaultConfigIncludesEmptyInternalSection) {
+    auto path = tmp_dir_ / "default_internal.json";
+    generate_default_config(path);
+    const auto data = read_json(path);
+    ASSERT_TRUE(data.contains("internal"));
+    EXPECT_TRUE(data["internal"].is_object());
+    EXPECT_TRUE(data["internal"].empty());
+
+    auto cfg = parse_master_json(path);
+    EXPECT_EQ(std::count_if(cfg.entries.begin(), cfg.entries.end(),
+                            [](const ProcessEntry& e) { return e.category == Category::Internal; }),
+              0);
 }
 
 }  // namespace

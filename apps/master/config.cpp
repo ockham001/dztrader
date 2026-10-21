@@ -52,7 +52,26 @@ std::filesystem::path resolve_exe(const std::string& exe_str) {
     return exe_path;
 }
 
-/// 从 md/td section 的 JSON object 解析单个 ProcessEntry
+/// md/td 网关段与 internal 段同形制, 共用段名路由 (三者都是"网关形制"条目)。
+/// Strategy/WebUI 正常路径各有独立写入函数, 不走本函数。
+std::string gateway_section_name(Category category) {
+    switch (category) {
+        case Category::GatewayMd:
+            return "md";
+        case Category::GatewayTd:
+            return "td";
+        case Category::Internal:
+            return "internal";
+        case Category::Strategy:
+        case Category::WebUI:
+            break;
+    }
+    // 历史兜底: 旧实现把非 md 类别一律落到 td 段。notify_removed_for_inactive 的
+    // WebUI 兜底依赖此行为, 本票不改变既有语义 (仅新增 Internal 分支)。
+    return "td";
+}
+
+/// 从 md/td/internal section 的 JSON object 解析单个 ProcessEntry
 ProcessEntry parse_gateway_entry(const std::string& name, Category cat, const nlohmann::json& val) {
     ProcessEntry entry;
     entry.name = name;
@@ -104,6 +123,8 @@ const char* category_str(Category cat) {
             return "stg";
         case Category::WebUI:
             return "webui";
+        case Category::Internal:
+            return "internal";
     }
     return "unknown";
 }
@@ -113,6 +134,7 @@ platform::RestartPolicy default_restart_policy(Category cat) {
         case Category::GatewayMd:
         case Category::GatewayTd:
         case Category::WebUI:
+        case Category::Internal:
             return {.enabled = true, .max_attempts = 5, .backoff_sec = 5};
         case Category::Strategy:
             return {.enabled = false, .max_attempts = 0, .backoff_sec = 5};
@@ -175,6 +197,13 @@ Config parse_master_json(const std::filesystem::path& config_path) {
         }
     }
 
+    // internal section: 内部进程 (非策略、非行情/交易网关; 段缺失 = 无内部进程)
+    if (data.contains("internal") && data["internal"].is_object()) {
+        for (const auto& [name, val] : data["internal"].items()) {
+            cfg.entries.push_back(parse_gateway_entry(name, Category::Internal, val));
+        }
+    }
+
     // webui section (单例,与 master 同级)
     if (data.contains("webui") && data["webui"].is_object()) {
         // 契约 4.1 规则 6: 非 Strategy 条目出现 md_source 视为配置错误
@@ -220,7 +249,7 @@ void write_gateway_section(const std::filesystem::path& config_path,
                            const std::vector<std::string>& args,
                            const platform::RestartPolicy& restart,
                            const std::string& display_name) {
-    std::string section = (category == Category::GatewayMd) ? "md" : "td";
+    std::string section = gateway_section_name(category);
 
     // load-modify-save: 读现有 section (map<name, entry>) -> 修改单个 gateway -> 原子写回
     nlohmann::json section_obj = nlohmann::json::object();
@@ -269,7 +298,7 @@ void write_webui_section(const std::filesystem::path& config_path,
 void remove_gateway_section(const std::filesystem::path& config_path,
                             Category category,
                             const std::string& gateway_name) {
-    std::string section = (category == Category::GatewayMd) ? "md" : "td";
+    std::string section = gateway_section_name(category);
 
     // load-modify-save: 读 section -> erase key -> 原子写回
     if (!std::filesystem::exists(config_path)) return;
@@ -441,9 +470,14 @@ void generate_default_config(const std::filesystem::path& json_path) {
     webui["args"] = nlohmann::json::array();
     webui["restart"] = {{"enabled", true}, {"max_attempts", 5}, {"backoff_sec", 5}};
 
+    // internal section: 预置空段 (无内部进程). dzsysmon 默认条目由后续票
+    // 随可执行文件一起加入, 避免默认配置拉起不存在的可执行文件。
+    nlohmann::json internal = nlohmann::json::object();
+
     nlohmann::json full = {{"log", {{"level", "info"}, {"flush_on", "warning"}}},
                            {"master", {{"single_stop_timeout_sec", 3}}},
                            {"webui", webui},
+                           {"internal", internal},
                            {"shm", {{"meta_file_size", 1 * 1024 * 1024}, {"event", shm_event}}}};
 
     std::ofstream ofs(json_path);

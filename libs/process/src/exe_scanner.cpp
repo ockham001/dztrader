@@ -41,7 +41,9 @@ bool is_executable(const std::filesystem::path& p) {
 /// "dzmd_ctp" -> ("dzmd_ctp", GatewayMd)
 /// "dztd_ctp" -> ("dztd_ctp", GatewayTd)
 /// "dzweb"    -> ("dzweb",    WebUI)
+/// "dzsysmon" -> ("dzsysmon", Internal)
 /// 退化检查: dzmd_/dztd_ 后必须非空 (stem.size() > 5)
+/// 内部进程只做精确匹配, 不引入 dz* 通配 (避免误认测试辅助可执行文件)
 bool parse_gateway_binary(const std::string& filename, std::string& name, ProcessKind& kind) {
     // Windows 上剥离扩展名
     std::string stem = std::filesystem::path(filename).stem().string();
@@ -59,6 +61,11 @@ bool parse_gateway_binary(const std::string& filename, std::string& name, Proces
     if (stem == "dzweb") {
         name = stem;
         kind = ProcessKind::WebUI;
+        return true;
+    }
+    if (stem == "dzsysmon") {
+        name = stem;
+        kind = ProcessKind::Internal;
         return true;
     }
     return false;

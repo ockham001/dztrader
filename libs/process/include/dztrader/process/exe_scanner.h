@@ -14,6 +14,7 @@
  * - 第二层: 扫描 root 下每个子目录 (仅该子目录, 不递归)
  * - 去重: 根目录优先, 二级子目录同 stem 跳过
  * - 识别前缀: dzmd_/dztd_/dzweb (stem 长度 > 5, 排除 "dzmd_" 退化)
+ * - 内部进程: 精确匹配 dzsysmon (无 dz* 通配, 避免误认测试辅助可执行文件)
  * - 跨平台: Windows .exe/.bat/.cmd, Linux owner_exec 权限位
  * - 失败路径 C: 子目录 IO 错误时打 WARN 并跳过该子目录
  */

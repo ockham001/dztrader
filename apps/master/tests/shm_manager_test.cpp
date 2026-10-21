@@ -860,6 +860,44 @@ TEST_F(ProcessControlFrameTest, SetProcessConfigOnStrategyPersistsToStrategySect
     EXPECT_FALSE(cfg.contains("md") && cfg["md"].contains("stg_persist"));
 }
 
+// 内部进程条目 SET_PROCESS_CONFIG: 持久化写 internal section (形制同网关段),
+// 不得误写 md/td 段 (persist 的段落路由按类别区分)
+TEST_F(ProcessControlFrameTest, SetProcessConfigOnInternalPersistsToInternalSection) {
+    ProcessEntry entry;
+    entry.name = "dzsysmon";
+    entry.category = Category::Internal;
+    entry.restart = default_restart_policy(Category::Internal);
+    entry.restart.enabled = false;
+    registry_.register_gateway(entry);
+    supervisor_.reset();
+    shm_mgr_.reset();
+    shm_mgr_ = std::make_unique<ShmManager>(make_default_shm_global(), cfg_path_);
+    supervisor_ = std::make_unique<ProcessSupervisor>(ioc_, registry_, *shm_mgr_, orphan_guard_);
+    shm_mgr_->set_supervisor(supervisor_.get());
+
+    auto writer = create_writer("fake_ui");
+
+    write_set_process_config_frame(
+        writer, "dzsysmon",
+        nlohmann::json{{"args", nlohmann::json::array({"--sampling-interval", "2"})}});
+    for (int i = 0; i < 10; ++i) {
+        shm_mgr_->drain_event_channel();
+    }
+
+    nlohmann::json cfg;
+    {
+        std::ifstream ifs(cfg_path_);
+        ifs >> cfg;
+    }
+    ASSERT_TRUE(cfg.contains("internal") && cfg["internal"].is_object());
+    ASSERT_TRUE(cfg["internal"].contains("dzsysmon"));
+    EXPECT_EQ(cfg["internal"]["dzsysmon"]["args"],
+              nlohmann::json::array({"--sampling-interval", "2"}));
+    // 不得误写 md/td 段
+    EXPECT_FALSE(cfg.contains("md") && cfg["md"].contains("dzsysmon"));
+    EXPECT_FALSE(cfg.contains("td") && cfg["td"].contains("dzsysmon"));
+}
+
 // 5. SET_PROCESS_CONFIG 非法 patch: store 强保证镜像不变, 118 推旧值 + NOTIFY_UI
 TEST_F(ProcessControlFrameTest, SetProcessConfigInvalidPushesOldMapAndNotify) {
     auto reader = create_reader("set_cfg_invalid_reader");

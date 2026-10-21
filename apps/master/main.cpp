@@ -246,7 +246,9 @@ int main(int argc, char* argv[]) {
                         try {
                             SPDLOG_WARN("hard timeout, forced exit");
                             // 先强杀剩余子进程, 避免逐批关闭最坏超时后残留孤儿
-                            // (整体关闭最坏 4 批 × 默认 3s = 12s > 本 10s 硬超时)
+                            // (整体关闭最坏 5 批 × 默认 3s = 15s > 本 10s 硬超时;
+                            //  全部子进程卡死时尾批可能未收到定向 SHUTDOWN 即被强杀,
+                            //  硬超时仅保证总时长有界且无孤儿, 既有语义不变)
                             supervisor.force_terminate_all();
                             shm_mgr->release_all();
                             orphan_guard.cleanup();
