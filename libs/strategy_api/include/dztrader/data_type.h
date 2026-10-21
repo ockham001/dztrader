@@ -398,4 +398,20 @@ typedef int16_t DzFrameType;
 /** @brief 策略调度触发 (dz_schedule_*; 仅 SDK 本地合成, 不写入共享内存) */
 #define DZ_FRAME_SCHEDULE ((DzFrameType)2003)
 
+/* ==========================================================
+ *  C++ 类型别名（仅 C++ 编译单元可见；C 层保持 Dz* 类型名）
+ * ========================================================== */
+
+#ifdef __cplusplus
+namespace dztrader {
+
+/** @brief 下单/成交/盘口量（等价 DzVolume，int32） */
+using Volume = DzVolume;
+
+/** @brief 持仓/聚合量（等价 DzLargeVolume，int64） */
+using LargeVolume = DzLargeVolume;
+
+}  // namespace dztrader
+#endif
+
 #endif /* DZTRADER_DATA_TYPE_H_ */

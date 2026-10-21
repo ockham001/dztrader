@@ -13,8 +13,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzLogicalPosition, {
     DzAccountId account_id;
     DzInstrumentId instrument_id;
     DzStrategyId strategy_id;
-    int32_t net_volume;
-    char reserved[4];
+    DzLargeVolume net_volume;  ///< 净手数（聚合量，正=多，负=空，0=无持仓）
 });
 
 DZ_DECLARE_ALIGNED_STRUCT(DzOrderReq, {

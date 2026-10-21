@@ -1442,7 +1442,7 @@ void on_md_started_internal(DzContext* ctx, const std::byte* frame) {
 DZ_API bool dz_set_logical_position(DzContext* ctx,
                                     const char* account_id,
                                     const char* instrument_id,
-                                    int32_t net_volume) {
+                                    DzLargeVolume net_volume) {
     // 同 dz_place_order: extern "C" 边界不允许异常逃逸; 体内操作均 noexcept, 免 try/catch,
     // static_assert 防止后续引入会抛异常的操作。
     static_assert(noexcept(

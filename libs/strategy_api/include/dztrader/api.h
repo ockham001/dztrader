@@ -313,13 +313,13 @@ DZ_API bool dz_unsubscribe(DzContext* ctx, const char* const instruments[], uint
  * 忽略，固定为 0）
  * @param instrument_id  合约代码，account_id 有效时 NULL/"" 表示该账户该策略的所有品种逻辑持仓设为
  * 0（net_volume 忽略，固定为 0）； account_id 为 NULL/"" 时此参数忽略
- * @param net_volume     净手数（正=多，负=空，0=无持仓）
+ * @param net_volume     净手数（DzLargeVolume 聚合量；正=多，负=空，0=无持仓）
  * @return true 成功，false 失败（调 dz_errcode() 获取错误码）
  */
 DZ_API bool dz_set_logical_position(DzContext* ctx,
                                     const char* account_id,
                                     const char* instrument_id,
-                                    int32_t net_volume);
+                                    DzLargeVolume net_volume);
 
 /**
  * @brief 查询账户登录状态（异步, fire-and-forget）

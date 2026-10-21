@@ -173,6 +173,16 @@ TEST_F(TradeApiTest, SetLogicalPositionWritesFrame) {
     EXPECT_EQ(pos->net_volume, 3);
 }
 
+TEST_F(TradeApiTest, SetLogicalPositionLargeVolumeRoundTrip) {
+    // 逻辑持仓为聚合量 (DzLargeVolume): 超过 int32 上限的值必须原样写入帧
+    constexpr DzLargeVolume kNetVolume = 5'000'000'000;
+    ASSERT_TRUE(dz_set_logical_position(ctx_, "CTP001", "IF2401", kNetVolume));
+    const auto* pos =
+        static_cast<const DzLogicalPosition*>(read_next_basic(DZ_FRAME_SET_LOGICAL_POSITION));
+    ASSERT_NE(pos, nullptr);
+    EXPECT_EQ(pos->net_volume, kNetVolume);
+}
+
 TEST_F(TradeApiTest, SetLogicalPositionWildcardZeroesNetVolume) {
     // 契约 strategy: account/instrument 为空串表示通配, net_volume 忽略并固定为 0;
     // 非通配字段与 strategy_id 必须原样保留
