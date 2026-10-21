@@ -104,6 +104,45 @@ TEST(OrderRefMapTest, NormalizeOrderRefLargeNumber) {
     EXPECT_EQ(*m.find_by_order_ref("999999999999"), 300);
 }
 
+TEST(OrderRefMapTest, NonNumericOrderRefPassedThrough) {
+    // 外部订单可能传入非数字 OrderRef: 原样返回, 不做补零归一化
+    OrderRefMap m;
+    m.insert_by_order_ref("EXT-1", 400);
+    EXPECT_EQ(m.size(), 1u);
+    const DzOrderId* p = m.find_by_order_ref("EXT-1");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(*p, 400);
+    // 非数字串不会被当成数字补零后匹配
+    EXPECT_EQ(m.find_by_order_ref("00000000EXT-1"), nullptr);
+    m.erase_by_order_ref("EXT-1");
+    EXPECT_EQ(m.find_by_order_ref("EXT-1"), nullptr);
+    EXPECT_EQ(m.size(), 0u);
+}
+
+TEST(OrderRefMapTest, ThirteenDigitOrderRefNotTruncated) {
+    // 超出 12 位但仍在 stoll 范围内: 原样保留, 不截断
+    OrderRefMap m;
+    const std::string ref = "1234567890123";
+    m.insert_by_order_ref(ref, 500);
+    const DzOrderId* p = m.find_by_order_ref(ref);
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(*p, 500);
+    EXPECT_EQ(m.size(), 1u);
+}
+
+TEST(OrderRefMapTest, OrderRefBeyondStollRangePassedThrough) {
+    // 20 位数字超出 long long 范围: stoll 抛异常后原样返回
+    OrderRefMap m;
+    const std::string ref = "99999999999999999999";
+    m.insert_by_order_ref(ref, 600);
+    const DzOrderId* p = m.find_by_order_ref(ref);
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(*p, 600);
+    m.erase_by_order_ref(ref);
+    EXPECT_EQ(m.find_by_order_ref(ref), nullptr);
+    EXPECT_EQ(m.size(), 0u);
+}
+
 TEST(OrderRefMapTest, Clear) {
     OrderRefMap m;
     m.insert_by_order_ref("1", 100);

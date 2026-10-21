@@ -63,6 +63,10 @@ bool should_push_account_status(DzAccountState last, DzAccountState next, bool f
 /// Date::from_string 抛异常在此消化。
 int32_t epoch_day_from_yyyymmdd(const std::string& yyyymmdd);
 
+/// 契约 account-status: 帧内 trading_day 仅 Ready 时为登录返回交易日, 其余状态恒 0。
+/// 非法/缺失交易日回落 0。
+int32_t account_status_trading_day(DzAccountState state, const std::string& trading_day);
+
 /// TdApi: CTP 交易网关进程级编排器 (设计 §1.1 多账户路由, §6.3 主循环)。
 ///
 /// 职责:

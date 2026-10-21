@@ -171,6 +171,75 @@ TEST_F(TdStateMachineTest, InstrumentsLoadFailedRollback) {
     EXPECT_EQ(sm.status().progress_desc, "已登录");
 }
 
+// --- 结算单确认失败回退 (C6: 回退 LoggedIn 等待重试) ---
+
+TEST_F(TdStateMachineTest, SettlementConfirmFailedRollsBackToLoggedIn) {
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_authenticate();
+    sm.on_authenticate_success();
+    sm.on_req_login();
+    sm.on_login_success("v", "20260726", "09:00:00");
+    sm.on_req_settlement_confirm();
+    auto notif = sm.on_settlement_confirm_failed("结算单未确认");
+    EXPECT_EQ(sm.state(), TdState::LoggedIn);
+    ASSERT_TRUE(notif.has_value());
+    EXPECT_EQ(notif->level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(notif->popup);
+    EXPECT_EQ(notif->message, "结算单确认失败: 结算单未确认");
+    EXPECT_EQ(sm.status().progress_current, 6);
+    EXPECT_EQ(sm.status().progress_desc, "已登录");
+    // 回退不移除登录信息 (仅 Confirming 失败, 会话仍有效)
+    EXPECT_EQ(sm.status().trading_day, "20260726");
+    EXPECT_EQ(sm.status().login_time, "09:00:00");
+}
+
+TEST_F(TdStateMachineTest, SettlementConfirmFailedFromNonConfirmingRejected) {
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_authenticate();
+    sm.on_authenticate_success();
+    sm.on_req_login();
+    sm.on_login_success("v", "20260726", "09:00:00");
+    // LoggedIn (非 Confirming) 拒绝
+    auto notif = sm.on_settlement_confirm_failed("err");
+    EXPECT_EQ(sm.state(), TdState::LoggedIn);
+    EXPECT_FALSE(notif.has_value());
+    EXPECT_EQ(sm.status().progress_current, 6);
+    // Idle 同样拒绝
+    TdStateMachine idle_sm;
+    EXPECT_FALSE(idle_sm.on_settlement_confirm_failed("err").has_value());
+    EXPECT_EQ(idle_sm.state(), TdState::Idle);
+}
+
+// --- 连接超时回退 (仅在 Connecting 有效) ---
+
+TEST_F(TdStateMachineTest, ConnectTimeoutRollsBackToIdle) {
+    sm.on_connect();
+    ASSERT_EQ(sm.state(), TdState::Connecting);
+    auto notif = sm.on_connect_timeout();
+    EXPECT_EQ(sm.state(), TdState::Idle);
+    ASSERT_TRUE(notif.has_value());
+    EXPECT_EQ(notif->level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(notif->popup);
+    EXPECT_EQ(notif->message, "交易连接超时");
+    EXPECT_EQ(sm.status().progress_current, 0);
+    EXPECT_EQ(sm.status().progress_desc, "未启动");
+}
+
+TEST_F(TdStateMachineTest, ConnectTimeoutFromNonConnectingRejected) {
+    // Idle 拒绝
+    EXPECT_FALSE(sm.on_connect_timeout().has_value());
+    EXPECT_EQ(sm.state(), TdState::Idle);
+
+    // Connected 拒绝 (已连上, 超时定时器不应回退状态)
+    sm.on_connect();
+    sm.on_front_connected();
+    EXPECT_FALSE(sm.on_connect_timeout().has_value());
+    EXPECT_EQ(sm.state(), TdState::Connected);
+    EXPECT_EQ(sm.status().progress_current, 2);
+}
+
 // --- 断线 ---
 
 TEST_F(TdStateMachineTest, FrontDisconnectedFromAnyState) {
@@ -286,7 +355,15 @@ TEST_F(TdStateMachineTest, DisconnectFromDisconnected) {
     EXPECT_EQ(sm.state(), TdState::Idle);
     ASSERT_TRUE(notif.has_value());
     EXPECT_EQ(notif->message, "交易已断开");
-    // was_authenticated_ 应已重置 (可通过再次走无认证路径登录失败验证)
+    // was_authenticated_ 已重置: 重连后走无认证路径登录失败应回退 Connected (而非 Authenticated)
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_login();
+    auto login_failed = sm.on_login_failed();
+    EXPECT_EQ(sm.state(), TdState::Connected);
+    ASSERT_TRUE(login_failed.has_value());
+    EXPECT_EQ(login_failed->level, DZ_NOTIFY_ERROR);
+    EXPECT_EQ(sm.status().progress_current, 2);
 }
 
 // --- Ready 状态 progress_current=10 (max) ---

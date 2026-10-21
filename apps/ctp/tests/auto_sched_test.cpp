@@ -192,6 +192,8 @@ TEST(Evaluate, LogoutPrioritizedOverLogin) {
     cfg.schedules.push_back({"09:00", "15:30"});
     cfg.schedules.push_back({"15:30", "23:00"});
     EXPECT_EQ(evaluate_sched_action(cfg, 2, "15:30", true), AutoSchedAction::Logout);
+    // 未登录时 logout 分支不得提前返回 None: 同刻应继续匹配第二段 login
+    EXPECT_EQ(evaluate_sched_action(cfg, 2, "15:30", false), AutoSchedAction::Login);
 }
 
 TEST(Evaluate, CrossMidnightLoginLogout) {
