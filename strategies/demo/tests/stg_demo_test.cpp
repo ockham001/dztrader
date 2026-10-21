@@ -661,6 +661,14 @@ TEST_F(StgDemoTest, HelpListsEveryCommand) {
 TEST_F(StgDemoTest, InvalidInputEmitsErrorButKeepsRunning) {
     ASSERT_TRUE(start_strategy()) << dump_output();
 
+    send_command("");
+    ASSERT_TRUE(wait_until([&] { return any_line("[error] ", "reason=empty_command"); }))
+        << dump_output();
+
+    send_command("md");
+    ASSERT_TRUE(wait_until([&] { return any_line("[error] ", "reason=missing_subcommand"); }))
+        << dump_output();
+
     send_command("bogus");
     ASSERT_TRUE(wait_until([&] { return any_line("[error] ", "cmd=bogus"); })) << dump_output();
     EXPECT_TRUE(any_line("[error] ", "reason=unknown_command")) << dump_output();
@@ -853,7 +861,6 @@ TEST_F(StgDemoTest, TradingCommandsAndReportsBecomeUiLines) {
     send_command("info");  // 握手: 确保事件泵已处理注入帧
     ASSERT_TRUE(wait_until([&] { return any_line("[info] ", "strategy=" + strategy_id_); }))
         << dump_output();
-    EXPECT_TRUE(output_lines_.empty() == false);
     EXPECT_TRUE(!any_line("[report] ", "order_id=" + std::to_string(order_id + 1)))
         << dump_output();
 
@@ -964,6 +971,13 @@ TEST_F(StgDemoInitFailureTest, InitFailureIsDiagnosedOnStderr) {
     const std::string diagnostics((std::istreambuf_iterator<char>(err_stream)),
                                   std::istreambuf_iterator<char>());
     EXPECT_NE(diagnostics.find("strategy init failed"), std::string::npos) << diagnostics;
+    EXPECT_NE(diagnostics.find("code="), std::string::npos) << diagnostics;
+    const auto message_pos = diagnostics.find("message=\"");
+    ASSERT_NE(message_pos, std::string::npos) << diagnostics;
+    constexpr std::string_view kMessagePrefix = "message=\"";
+    ASSERT_GT(diagnostics.size(), message_pos + kMessagePrefix.size()) << diagnostics;
+    // 非空 message: 起始引号之后不应立即是结束引号
+    EXPECT_NE(diagnostics[message_pos + kMessagePrefix.size()], '"') << diagnostics;
 }
 
 // ── SHUTDOWN (master 停止路径): exit 0 + on_stop 收尾输出 ──

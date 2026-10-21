@@ -13,7 +13,9 @@
 #include <algorithm>
 #include <fstream>
 #include <filesystem>
+#include <optional>
 #include <random>
+#include <string_view>
 
 namespace dztrader::master {
 namespace {
@@ -29,6 +31,34 @@ std::filesystem::path unique_temp_dir(const std::string& name) {
             "_" + std::to_string(dist(gen)));
 }
 
+/// 测试内临时覆盖环境变量, 析构时恢复原值 (未设置则 unset)。
+class ScopedEnvOverride {
+public:
+    ScopedEnvOverride(std::string_view key, std::string value)
+        : key_(key),
+          original_(dztrader::env::get(key)) {
+        dztrader::env::set(key_, value);
+    }
+
+    ~ScopedEnvOverride() {
+        try {
+            if (original_) {
+                dztrader::env::set(key_, *original_);
+            } else {
+                dztrader::env::unset(key_);
+            }
+        } catch (...) {
+        }
+    }
+
+    ScopedEnvOverride(const ScopedEnvOverride&) = delete;
+    ScopedEnvOverride& operator=(const ScopedEnvOverride&) = delete;
+
+private:
+    std::string key_;
+    std::optional<std::string> original_;
+};
+
 class ConfigTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -42,6 +72,15 @@ protected:
         config_path_ = tmp_dir_ / "dztraderd.json";
         std::ofstream ofs(config_path_);
         ofs << content;
+    }
+
+    nlohmann::json read_json() const { return read_json(config_path_); }
+
+    nlohmann::json read_json(const std::filesystem::path& path) const {
+        std::ifstream ifs(path);
+        nlohmann::json data;
+        ifs >> data;
+        return data;
     }
 
     std::filesystem::path tmp_dir_;
@@ -82,6 +121,46 @@ TEST_F(ConfigTest, ParseMinimalJson) {
     EXPECT_TRUE(cfg.entries.empty());
 }
 
+// ---- parse_master_json 错误路径 ----
+
+TEST_F(ConfigTest, ParseMasterJsonMissingFileThrows) {
+    const auto missing = tmp_dir_ / "nonexistent.json";
+    ASSERT_FALSE(std::filesystem::exists(missing));
+    EXPECT_THROW(parse_master_json(missing), std::runtime_error);
+}
+
+TEST_F(ConfigTest, ParseMasterJsonCorruptJsonThrows) {
+    write_json("{not valid json");
+    EXPECT_THROW(parse_master_json(config_path_), std::runtime_error);
+}
+
+TEST_F(ConfigTest, ParseMasterJsonRootArrayThrows) {
+    write_json(R"([{"master": {}}])");
+    EXPECT_THROW(parse_master_json(config_path_), std::runtime_error);
+}
+
+TEST_F(ConfigTest, ParseMasterJsonWrongFieldTypeThrows) {
+    // restart.max_attempts 期望整数, 传字符串是用户编辑配置的首要故障形态
+    write_json(R"({
+        "md": {"dzmd_ctp": {"restart": {"max_attempts": "five"}}}
+    })");
+    EXPECT_THROW(parse_master_json(config_path_), nlohmann::json::type_error);
+}
+
+TEST_F(ConfigTest, ParseStrategyMissingNameThrows) {
+    write_json(R"({
+        "strategy": [{"exe": "/path/to/alpha", "md_source": "dzmd_ctp"}]
+    })");
+    EXPECT_THROW(parse_master_json(config_path_), nlohmann::json::out_of_range);
+}
+
+TEST_F(ConfigTest, ParseStrategyMissingExeThrows) {
+    write_json(R"({
+        "strategy": [{"name": "alpha", "md_source": "dzmd_ctp"}]
+    })");
+    EXPECT_THROW(parse_master_json(config_path_), nlohmann::json::out_of_range);
+}
+
 // ---- F1: remove_gateway_section 删除指定网关段 ----
 TEST_F(ConfigTest, RemoveGatewaySectionDeletesEntry) {
     write_json(R"({
@@ -105,9 +184,32 @@ TEST_F(ConfigTest, RemoveGatewaySectionDeletesEntry) {
 }
 
 TEST_F(ConfigTest, RemoveGatewaySectionIdempotent) {
-    write_json(R"({"master": {}})");
-    // 不含 md 段, remove 应无操作不抛异常
-    EXPECT_NO_THROW(remove_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp"));
+    write_json(R"({
+        "master": {"single_stop_timeout_sec": 9},
+        "md": {
+            "dzmd_ctp": {"args": []},
+            "dzmd_other": {"args": []}
+        }
+    })");
+    // 目标不存在: 无操作, 条目集合与 master 段值不变
+    EXPECT_NO_THROW(remove_gateway_section(config_path_, Category::GatewayMd, "nonexistent"));
+    auto cfg1 = parse_master_json(config_path_);
+    ASSERT_EQ(cfg1.entries.size(), 2u);
+    EXPECT_NE(std::find_if(cfg1.entries.begin(), cfg1.entries.end(),
+                           [](const ProcessEntry& e) { return e.name == "dzmd_ctp"; }),
+              cfg1.entries.end());
+    EXPECT_NE(std::find_if(cfg1.entries.begin(), cfg1.entries.end(),
+                           [](const ProcessEntry& e) { return e.name == "dzmd_other"; }),
+              cfg1.entries.end());
+    EXPECT_EQ(cfg1.master.single_stop_timeout_sec, 9);
+
+    // 重复删除同一条目: 第二次为幂等无操作, 其余条目与 master 段值不变
+    remove_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp");
+    remove_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp");
+    auto cfg2 = parse_master_json(config_path_);
+    ASSERT_EQ(cfg2.entries.size(), 1u);
+    EXPECT_EQ(cfg2.entries[0].name, "dzmd_other");
+    EXPECT_EQ(cfg2.master.single_stop_timeout_sec, 9);
 }
 
 TEST_F(ConfigTest, RemoveGatewaySectionPreservesOthers) {
@@ -208,6 +310,92 @@ TEST_F(ConfigTest, WriteWebuiSectionOverwritesExisting) {
     EXPECT_FALSE(webui.contains("start_dir"));
 }
 
+// ---- remove_webui_section (生产在移除 dzweb 时调用) ----
+
+TEST_F(ConfigTest, RemoveWebuiSectionDeletesSection) {
+    write_json(R"({
+        "master": {},
+        "webui": {"args": ["--name", "dzweb"]}
+    })");
+    remove_webui_section(config_path_);
+    auto cfg = parse_master_json(config_path_);
+    EXPECT_TRUE(cfg.entries.empty());
+    EXPECT_FALSE(read_json().contains("webui"));
+}
+
+// 缺 webui 段: 幂等无操作, 其他段原样保留
+TEST_F(ConfigTest, RemoveWebuiSectionMissingIsIdempotent) {
+    write_json(R"({
+        "master": {"single_stop_timeout_sec": 9},
+        "md": {"dzmd_ctp": {"args": []}}
+    })");
+    EXPECT_NO_THROW(remove_webui_section(config_path_));
+    EXPECT_NO_THROW(remove_webui_section(config_path_));
+
+    auto cfg = parse_master_json(config_path_);
+    ASSERT_EQ(cfg.entries.size(), 1u);
+    EXPECT_EQ(cfg.entries[0].name, "dzmd_ctp");
+    EXPECT_EQ(cfg.master.single_stop_timeout_sec, 9);
+}
+
+TEST_F(ConfigTest, RemoveWebuiSectionPreservesOtherSections) {
+    write_json(R"({
+        "log": {"level": "debug"},
+        "master": {"single_stop_timeout_sec": 7},
+        "shm": {"meta_file_size": 2097152},
+        "webui": {"args": []},
+        "md": {"dzmd_ctp": {"args": []}}
+    })");
+    remove_webui_section(config_path_);
+
+    const auto data = read_json();
+    EXPECT_FALSE(data.contains("webui"));
+    EXPECT_EQ(data["log"]["level"], "debug");
+    EXPECT_EQ(data["master"]["single_stop_timeout_sec"], 7);
+    EXPECT_EQ(data["shm"]["meta_file_size"], 2097152);
+    EXPECT_TRUE(data["md"].contains("dzmd_ctp"));
+}
+
+TEST_F(ConfigTest, RemoveWebuiSectionCorruptJsonThrows) {
+    write_json("{not valid json");
+    EXPECT_THROW(remove_webui_section(config_path_), std::runtime_error);
+}
+
+// gateway/webui/strategy 三个写入函数都是 load-modify-save: 其他顶层段必须原样保留
+TEST_F(ConfigTest, WriteSectionsPreserveOtherTopLevelSections) {
+    write_json(R"({
+        "log": {"level": "debug", "flush_on": "trace"},
+        "master": {"single_stop_timeout_sec": 9, "md_ready_timeout_sec": 7},
+        "shm": {"meta_file_size": 2097152, "event": {"page_size_mb": 64}},
+        "md": {"dzmd_ctp": {"args": []}}
+    })");
+    const platform::RestartPolicy policy{.enabled = true, .max_attempts = 5, .backoff_sec = 5};
+    write_gateway_section(config_path_, Category::GatewayMd, "dzmd_ctp2", {"--arg"}, policy);
+    write_webui_section(config_path_, {"--name", "dzweb"}, policy);
+    write_strategy_section(config_path_, {{"name", "alpha"},
+                                          {"exe", "/path/to/alpha"},
+                                          {"md_source", "dzmd_ctp"},
+                                          {"args", nlohmann::json::array()}});
+
+    const auto data = read_json();
+    EXPECT_EQ(data["log"]["level"], "debug");
+    EXPECT_EQ(data["log"]["flush_on"], "trace");
+    EXPECT_EQ(data["master"]["single_stop_timeout_sec"], 9);
+    EXPECT_EQ(data["master"]["md_ready_timeout_sec"], 7);
+    EXPECT_EQ(data["shm"]["meta_file_size"], 2097152);
+    EXPECT_EQ(data["shm"]["event"]["page_size_mb"], 64);
+    EXPECT_TRUE(data["md"].contains("dzmd_ctp"));
+    EXPECT_TRUE(data["md"].contains("dzmd_ctp2"));
+    EXPECT_TRUE(data.contains("webui"));
+
+    // 解析结果同样保持: 原配置语义没有被三个写入函数破坏
+    auto cfg = parse_master_json(config_path_);
+    EXPECT_EQ(cfg.master.single_stop_timeout_sec, 9);
+    EXPECT_EQ(cfg.master.md_ready_timeout_sec, 7);
+    EXPECT_EQ(cfg.shm_global.meta_file_size, 2097152);
+    EXPECT_EQ(cfg.entries.size(), 4u);
+}
+
 // display_name 持久化往返: write 非空 display_name → parse 读回应一致
 TEST_F(ConfigTest, WriteGatewaySectionPersistsDisplayName) {
     write_json(R"({"master": {}})");
@@ -229,6 +417,15 @@ TEST_F(ConfigTest, WriteGatewaySectionEmptyDisplayNameSkipped) {
     auto cfg = parse_master_json(config_path_);
     ASSERT_EQ(cfg.entries.size(), 1u);
     EXPECT_TRUE(cfg.entries[0].display_name.empty());
+
+    // 直接解析 JSON: 空 display_name 与空 exe/start_dir 都不写 key
+    // (仅看解析结果无法区分"写空串"与"不写字段", 解析侧两者都是空串)
+    const auto data = read_json();
+    ASSERT_TRUE(data.contains("md"));
+    const auto& gw = data["md"]["dzmd_ctp"];
+    EXPECT_FALSE(gw.contains("display_name"));
+    EXPECT_FALSE(gw.contains("exe"));
+    EXPECT_FALSE(gw.contains("start_dir"));
 }
 
 // 旧 json 无 display_name 字段: parse 用 value 默认空串, 向后兼容
@@ -289,7 +486,8 @@ TEST_F(ConfigTest, ParseGatewayEntries) {
     EXPECT_EQ(md->category, Category::GatewayMd);
     EXPECT_EQ(md->args.size(), 1u);
     EXPECT_EQ(md->args[0], "--verbose");
-    EXPECT_TRUE(md->env.contains("LOG_LEVEL"));
+    ASSERT_TRUE(md->env.contains("LOG_LEVEL"));
+    EXPECT_EQ(md->env.at("LOG_LEVEL"), "debug");
     EXPECT_TRUE(md->restart.enabled);
 
     EXPECT_EQ(td->category, Category::GatewayTd);
@@ -298,26 +496,38 @@ TEST_F(ConfigTest, ParseGatewayEntries) {
 }
 
 TEST_F(ConfigTest, ParseStrategyEntries) {
-    write_json(R"({
-        "master": {},
-        "strategy": [
-            {
-                "name": "my_strategy",
-                "exe": "/home/user/strategies/my_strategy",
-                "md_source": "dzmd_ctp",
-                "args": ["--config", "strategy.toml"]
-            }
-        ]
-    })");
+    // 绝对路径必须用平台原生形式（Windows 的 /home/... 会被解析成当前盘符）。
+    const auto absolute_exe =
+        std::filesystem::temp_directory_path() / "dz_config_abs" / "my_strategy";
+    const nlohmann::json config = {
+        {"master", nlohmann::json::object()},
+        {"strategy", nlohmann::json::array({{{"name", "my_strategy"},
+                                             {"exe", absolute_exe.string()},
+                                             {"md_source", "dzmd_ctp"},
+                                             {"args", {"--config", "strategy.toml"}}},
+                                            {{"name", "relative_strategy"},
+                                             {"exe", "strategies/rel_strategy"},
+                                             {"md_source", "dzmd_ctp"}}})}};
+    write_json(config.dump());
+    const ScopedEnvOverride home_override("DZTRADER_HOME", tmp_dir_.string());
     auto cfg = parse_master_json(config_path_);
-    ASSERT_EQ(cfg.entries.size(), 1u);
+    ASSERT_EQ(cfg.entries.size(), 2u);
 
+    // 绝对 exe: 原样保留; 未给 start_dir 时默认取 exe 父目录
     const auto& s = cfg.entries[0];
     EXPECT_EQ(s.name, "my_strategy");
     EXPECT_EQ(s.category, Category::Strategy);
     EXPECT_EQ(s.args.size(), 2u);
     EXPECT_FALSE(s.restart.enabled);  // strategy default: no restart
     EXPECT_EQ(s.md_source, "dzmd_ctp");
+    EXPECT_EQ(s.exe, absolute_exe);
+    EXPECT_EQ(s.start_dir, absolute_exe.parent_path());
+
+    // 相对 exe: 拼 DZTRADER_HOME; start_dir 默认取解析后 exe 的父目录
+    const auto& rel = cfg.entries[1];
+    EXPECT_EQ(rel.name, "relative_strategy");
+    EXPECT_EQ(rel.exe, tmp_dir_ / "strategies" / "rel_strategy");
+    EXPECT_EQ(rel.start_dir, tmp_dir_ / "strategies");
 }
 
 // 策略携带 md_source: 解析进 ProcessEntry, 供启动编排与 env 注入
@@ -466,11 +676,25 @@ TEST_F(ConfigTest, MasterConfigMdReadyTimeoutDefault) {
     EXPECT_EQ(cfg.md_ready_timeout_sec, 5);
 }
 
+TEST_F(ConfigTest, MasterConfigSingleStopTimeoutLoadAndClamp) {
+    write_json(R"({"master": {"single_stop_timeout_sec": 0}})");
+    auto zero_cfg = parse_master_json(config_path_);
+    EXPECT_EQ(zero_cfg.master.single_stop_timeout_sec, 1);
+
+    write_json(R"({"master": {"single_stop_timeout_sec": -1}})");
+    auto negative_cfg = parse_master_json(config_path_);
+    EXPECT_EQ(negative_cfg.master.single_stop_timeout_sec, 1);
+}
+
 TEST_F(ConfigTest, MasterConfigMdReadyTimeoutLoadAndClamp) {
     write_json(R"({"master": {"md_ready_timeout_sec": 0}})");
-    auto cfg = parse_master_json(config_path_);
+    auto zero_cfg = parse_master_json(config_path_);
     // <1 clamp 到 1 (与 single_stop_timeout_sec 同规则)
-    EXPECT_EQ(cfg.master.md_ready_timeout_sec, 1);
+    EXPECT_EQ(zero_cfg.master.md_ready_timeout_sec, 1);
+
+    write_json(R"({"master": {"md_ready_timeout_sec": -1}})");
+    auto negative_cfg = parse_master_json(config_path_);
+    EXPECT_EQ(negative_cfg.master.md_ready_timeout_sec, 1);
 }
 
 TEST_F(ConfigTest, MasterConfigSavePreservesMdReadyTimeout) {
@@ -790,6 +1014,29 @@ TEST_F(ConfigTest, DefaultConfigIncludesWebui) {
     EXPECT_TRUE(w.start_dir.empty());
     EXPECT_TRUE(w.restart.enabled);
     EXPECT_EQ(w.restart.max_attempts, 5);
+}
+
+TEST_F(ConfigTest, DefaultConfigCreatesParentDirectoriesAndDefaults) {
+    const auto path = tmp_dir_ / "nested" / "configs" / "dztraderd.json";
+    ASSERT_FALSE(std::filesystem::exists(path.parent_path()));
+    generate_default_config(path);
+    ASSERT_TRUE(std::filesystem::exists(path));
+
+    // 默认文件是仓库无 *.example 模板时唯一的默认配置守卫
+    const auto data = read_json(path);
+    EXPECT_EQ(data["log"]["level"], "info");
+    EXPECT_EQ(data["log"]["flush_on"], "warning");
+    EXPECT_EQ(data["master"]["single_stop_timeout_sec"], 3);
+    EXPECT_EQ(data["shm"]["meta_file_size"], 1 * 1024 * 1024);
+    EXPECT_EQ(data["shm"]["event"]["page_size_mb"], 32);
+    EXPECT_EQ(data["shm"]["event"]["check_interval_min"], 5);
+
+    auto cfg = parse_master_json(path);
+    EXPECT_EQ(cfg.master.single_stop_timeout_sec, 3);
+    EXPECT_EQ(cfg.master.md_ready_timeout_sec, 5);
+    EXPECT_EQ(cfg.shm_global.meta_file_size, 1 * 1024 * 1024);
+    ASSERT_EQ(cfg.entries.size(), 1u);
+    EXPECT_EQ(cfg.entries[0].name, "dzweb");
 }
 
 TEST_F(ConfigTest, DefaultConfigNotOverwriteExisting) {
