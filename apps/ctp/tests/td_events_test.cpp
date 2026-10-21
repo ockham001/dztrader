@@ -1,10 +1,76 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstddef>
+#include <cstdlib>
+#include <new>
 
 #include "td/td_events.h"
 
 using namespace dztrader::ctp;
+
+namespace {
+
+// 释放计数: 替换全局 operator new/delete, 精确统计 td_delete_event_data
+// 是否对每种类型恰好 delete 一次. 若 switch 漏 case 走 default, 对象不会被释放,
+// 仅凭 e.data == nullptr 的旧断言无法发现 (实现无条件置空).
+std::atomic<bool> g_track_allocations{false};
+std::atomic<int> g_live_allocations{0};
+std::atomic<int> g_delete_calls{0};
+
+/// 在统计窗口内分配并释放一个事件 data, 断言恰好释放一次.
+template <typename Field>
+void expect_freed_exactly_once(EventType type) {
+    g_live_allocations.store(0, std::memory_order_relaxed);
+    g_delete_calls.store(0, std::memory_order_relaxed);
+
+    Event e{};
+    e.type = type;
+    g_track_allocations.store(true, std::memory_order_relaxed);
+    e.data = new Field{};
+    td_delete_event_data(e);
+    g_track_allocations.store(false, std::memory_order_relaxed);
+
+    EXPECT_EQ(e.data, nullptr) << "type=" << static_cast<int>(type);
+    EXPECT_EQ(g_live_allocations.load(std::memory_order_relaxed), 0)
+        << "type=" << static_cast<int>(type) << " data not freed";
+    EXPECT_EQ(g_delete_calls.load(std::memory_order_relaxed), 1)
+        << "type=" << static_cast<int>(type) << " delete count";
+}
+
+/// 统计窗口内的分配/释放原语 (malloc/free 成对, 避免 -Wmismatched-new-delete).
+void* tracked_alloc(std::size_t size) {
+    void* p = std::malloc(size);
+    if (p == nullptr) {
+        throw std::bad_alloc{};
+    }
+    if (g_track_allocations.load(std::memory_order_relaxed)) {
+        g_live_allocations.fetch_add(1, std::memory_order_relaxed);
+    }
+    return p;
+}
+
+void tracked_free(void* p) noexcept {
+    if (p != nullptr && g_track_allocations.load(std::memory_order_relaxed)) {
+        g_live_allocations.fetch_sub(1, std::memory_order_relaxed);
+        g_delete_calls.fetch_add(1, std::memory_order_relaxed);
+    }
+    std::free(p);
+}
+
+}  // namespace
+
+void* operator new(std::size_t size) { return tracked_alloc(size); }
+
+void* operator new[](std::size_t size) { return tracked_alloc(size); }
+
+void operator delete(void* p) noexcept { tracked_free(p); }
+
+void operator delete[](void* p) noexcept { tracked_free(p); }
+
+void operator delete(void* p, std::size_t) noexcept { tracked_free(p); }
+
+void operator delete[](void* p, std::size_t) noexcept { tracked_free(p); }
 
 // ============================================================================
 // TD 事件类型 + Field 结构测试
@@ -43,11 +109,8 @@ TEST(TdEventsTest, OnRspAuthenticateFieldLayout) {
 // --- td_delete_event_data 测试 ---
 
 TEST(TdEventsTest, TdDeleteEventDataOnRtnOrder) {
-    Event e{};
-    e.type = EventType::OnRtnOrder;
-    e.data = new OnRtnOrderField{};
-    td_delete_event_data(e);  // 不应崩溃, 应释放 data
-    EXPECT_EQ(e.data, nullptr);
+    // 恰好释放一次 (不是"不崩溃"或"指针被置空")
+    expect_freed_exactly_once<OnRtnOrderField>(EventType::OnRtnOrder);
 }
 
 TEST(TdEventsTest, TdDeleteEventDataOnUnknown) {
@@ -75,31 +138,34 @@ TEST(TdEventsTest, TdDeleteEventDataOnMdTypeWithNonNullData) {
     EXPECT_EQ(e.data, nullptr);
 }
 
-// 所有 TD 类型均能正确释放 (批量验证)
+// 所有 TD 类型均恰好释放一次 (批量验证; 漏 case 会泄漏并在此失败)
 TEST(TdEventsTest, TdDeleteEventDataAllTdTypes) {
-    auto test_type = [](EventType type, void* data) {
-        Event e{};
-        e.type = type;
-        e.data = data;
-        td_delete_event_data(e);
-        EXPECT_EQ(e.data, nullptr) << "type=" << static_cast<int>(type);
-    };
-    test_type(EventType::OnRspAuthenticate, new OnRspAuthenticateField{});
-    test_type(EventType::OnRspTdUserLogin, new OnRspTdUserLoginField{});
-    test_type(EventType::OnRspSettlementInfoConfirm, new OnRspSettlementInfoConfirmField{});
-    test_type(EventType::OnRspQryInstrument, new OnRspQryInstrumentField{});
-    test_type(EventType::OnRspQryTradingAccount, new OnRspQryTradingAccountField{});
-    test_type(EventType::OnRspQryInvestorPosition, new OnRspQryInvestorPositionField{});
-    test_type(EventType::OnRspQryOrder, new OnRspQryOrderField{});
-    test_type(EventType::OnRtnOrder, new OnRtnOrderField{});
-    test_type(EventType::OnRtnTrade, new OnRtnTradeField{});
-    test_type(EventType::OnRspOrderInsert, new OnRspOrderInsertField{});
-    test_type(EventType::OnRspOrderAction, new OnRspOrderActionField{});
-    test_type(EventType::OnErrRtnOrderInsert, new OnErrRtnOrderInsertField{});
-    test_type(EventType::OnErrRtnOrderAction, new OnErrRtnOrderActionField{});
-    test_type(EventType::OnRspFromBankToFutureByFuture, new OnRspFromBankToFutureByFutureField{});
-    test_type(EventType::OnRtnFromBankToFutureByFuture, new OnRtnFromBankToFutureByFutureField{});
-    test_type(EventType::OnRspUserPasswordUpdate, new OnRspUserPasswordUpdateField{});
-    test_type(EventType::OnRspTradingAccountPasswordUpdate,
-              new OnRspTradingAccountPasswordUpdateField{});
+    expect_freed_exactly_once<OnRspAuthenticateField>(EventType::OnRspAuthenticate);
+    expect_freed_exactly_once<OnRspTdUserLoginField>(EventType::OnRspTdUserLogin);
+    expect_freed_exactly_once<OnRspSettlementInfoConfirmField>(
+        EventType::OnRspSettlementInfoConfirm);
+    expect_freed_exactly_once<OnRspQryInstrumentField>(EventType::OnRspQryInstrument);
+    expect_freed_exactly_once<OnRspQryTradingAccountField>(EventType::OnRspQryTradingAccount);
+    expect_freed_exactly_once<OnRspQryInvestorPositionField>(EventType::OnRspQryInvestorPosition);
+    expect_freed_exactly_once<OnRspQryOrderField>(EventType::OnRspQryOrder);
+    expect_freed_exactly_once<OnRtnOrderField>(EventType::OnRtnOrder);
+    expect_freed_exactly_once<OnRtnTradeField>(EventType::OnRtnTrade);
+    expect_freed_exactly_once<OnRspOrderInsertField>(EventType::OnRspOrderInsert);
+    expect_freed_exactly_once<OnRspOrderActionField>(EventType::OnRspOrderAction);
+    expect_freed_exactly_once<OnErrRtnOrderInsertField>(EventType::OnErrRtnOrderInsert);
+    expect_freed_exactly_once<OnErrRtnOrderActionField>(EventType::OnErrRtnOrderAction);
+    expect_freed_exactly_once<OnRspFromBankToFutureByFutureField>(
+        EventType::OnRspFromBankToFutureByFuture);
+    expect_freed_exactly_once<OnRtnFromBankToFutureByFutureField>(
+        EventType::OnRtnFromBankToFutureByFuture);
+    expect_freed_exactly_once<OnRspUserPasswordUpdateField>(EventType::OnRspUserPasswordUpdate);
+    expect_freed_exactly_once<OnRspTradingAccountPasswordUpdateField>(
+        EventType::OnRspTradingAccountPasswordUpdate);
+}
+
+// td 版本 FrontConnected/Disconnected (含 account_id) 不能走 md 的 Event::delete_data,
+// 必须由 td_delete_event_data 释放; 这是该函数存在的首要特例.
+TEST(TdEventsTest, TdDeleteEventDataFrontConnectedAndDisconnected) {
+    expect_freed_exactly_once<OnTdFrontConnectedField>(EventType::OnFrontConnected);
+    expect_freed_exactly_once<OnTdFrontDisconnectedField>(EventType::OnFrontDisconnected);
 }

@@ -5,7 +5,6 @@
 
 #include <gtest/gtest.h>
 
-#include <dztrader/core/encoding.h>
 #include <dztrader/date_time/date.h>
 
 using namespace dztrader::ctp;
@@ -15,6 +14,8 @@ namespace {
 /// 辅助: 取一个固定的 trading_day (DzDate 距纪元天数) 用于测试.
 /// 对应 2026-07-27, 用 Date 类构造, 保证与生产转换路径一致.
 constexpr int32_t kTradingDay = dztrader::Date{2026, 7, 27}.days_since_epoch();
+/// 下一交易日 (2026-07-28), 用于验证 InsertDate/TradeDate 优先于 trading_day 参数.
+constexpr int32_t kNextTradingDay = dztrader::Date{2026, 7, 28}.days_since_epoch();
 
 /// 辅助: 构造一个最小可用的 CThostFtdcOrderField
 CThostFtdcOrderField make_order_field() {
@@ -381,6 +382,36 @@ TEST(ToOrderRecordTest, BasicFields) {
     EXPECT_EQ(r.is_external, 0);      // 留 0, AccountSession 后填
     EXPECT_EQ(r.volume_canceled, 0);  // 留 0, AccountSession 后推导
     EXPECT_EQ(r.error_id, 0);
+
+    // 时间/交易日字段 (TD 数据同步去重键依赖)
+    EXPECT_STREQ(r.trading_day, "20260727");
+    // InsertDate 为空 -> 回退 trading_day; 09:30:45 = 34245 秒
+    EXPECT_EQ(r.insert_time, static_cast<int64_t>(kTradingDay) * 86400 + 9 * 3600 + 30 * 60 + 45);
+    // UpdateTime 无对应 UpdateDate -> 日期部分取 trading_day; 09:31:00 = 34260 秒
+    EXPECT_EQ(r.update_time, static_cast<int64_t>(kTradingDay) * 86400 + 9 * 3600 + 31 * 60);
+}
+
+TEST(ToOrderRecordTest, InsertDateOverridesTradingDayForInsertTime) {
+    // 夜盘场景: InsertDate 与 trading_day 不同, insert_time 必须用 InsertDate.
+    auto of = make_order_field();
+    std::strcpy(of.InsertDate, "20260728");
+
+    auto r = to_order_record(of, "acc1", kTradingDay);
+    EXPECT_EQ(r.insert_time,
+              static_cast<int64_t>(kNextTradingDay) * 86400 + 9 * 3600 + 30 * 60 + 45);
+    // trading_day 文本/字段仍取参数, update_time 仍以 trading_day 为日期部分
+    EXPECT_STREQ(r.trading_day, "20260727");
+    EXPECT_EQ(r.update_time, static_cast<int64_t>(kTradingDay) * 86400 + 9 * 3600 + 31 * 60);
+}
+
+TEST(ToOrderRecordTest, EmptyTimesFallBackToZero) {
+    auto of = make_order_field();
+    std::strcpy(of.InsertTime, "");
+    std::strcpy(of.UpdateTime, "");
+
+    auto r = to_order_record(of, "acc1", kTradingDay);
+    EXPECT_EQ(r.insert_time, 0);
+    EXPECT_EQ(r.update_time, 0);
 }
 
 TEST(ToOrderRecordTest, SellCloseTodayMapping) {
@@ -403,6 +434,17 @@ TEST(ToOrderRecordTest, SellCloseYesterdayMapping) {
     auto r = to_order_record(of, "acc1", kTradingDay);
     EXPECT_EQ(r.base.direction, DZ_DIRECTION_SHORT);
     EXPECT_EQ(r.base.position_effect, DZ_POSITION_EFFECT_CLOSE_YESTDAY);
+}
+
+TEST(ToOrderRecordTest, CloseMapping) {
+    // CTP 通用平仓 (THOST_FTDC_OF_Close) -> DZ CLOSE (非 CLOSE_TODAY/CLOSE_YESTDAY)
+    auto of = make_order_field();
+    of.Direction = THOST_FTDC_D_Sell;
+    of.CombOffsetFlag[0] = THOST_FTDC_OF_Close;
+
+    auto r = to_order_record(of, "acc1", kTradingDay);
+    EXPECT_EQ(r.base.direction, DZ_DIRECTION_SHORT);
+    EXPECT_EQ(r.base.position_effect, DZ_POSITION_EFFECT_CLOSE);
 }
 
 TEST(ToOrderRecordTest, StatusAllTraded) {
@@ -470,6 +512,43 @@ TEST(ToTradeRecordTest, BasicFields) {
 
     // 扩展字段
     EXPECT_EQ(r.commission, 0.0);  // 留 0, AccountSession 后填
+
+    // 时间/交易日字段 (成交去重键 (account_id, trading_day, trade_id) 依赖)
+    EXPECT_STREQ(r.trading_day, "20260727");
+    // TradeDate 为空 -> trade_date 从 trading_day 重组为 YYYYMMDD int
+    EXPECT_EQ(r.trade_date, 20260727);
+    // trade_time = 日期 * 86400 + 09:30:45 秒数
+    EXPECT_EQ(r.trade_time, static_cast<int64_t>(kTradingDay) * 86400 + 9 * 3600 + 30 * 60 + 45);
+}
+
+TEST(ToTradeRecordTest, TradeDateOverridesTradingDay) {
+    // 跨日成交: TradeDate 优先于 trading_day 参数 (trade_date 与 trade_time 同步).
+    auto tf = make_trade_field();
+    std::strcpy(tf.TradeDate, "20260728");
+
+    auto r = to_trade_record(tf, "acc1", kTradingDay);
+    EXPECT_STREQ(r.trading_day, "20260727");
+    EXPECT_EQ(r.trade_date, 20260728);
+    EXPECT_EQ(r.trade_time,
+              static_cast<int64_t>(kNextTradingDay) * 86400 + 9 * 3600 + 30 * 60 + 45);
+}
+
+TEST(ToTradeRecordTest, EmptyTradeTimeFallsBackToZero) {
+    auto tf = make_trade_field();
+    std::strcpy(tf.TradeTime, "");
+
+    auto r = to_trade_record(tf, "acc1", kTradingDay);
+    EXPECT_EQ(r.trade_time, 0);
+}
+
+TEST(ToTradeRecordTest, SellCloseYesterdayMapping) {
+    auto tf = make_trade_field();
+    tf.Direction = THOST_FTDC_D_Sell;
+    tf.OffsetFlag = THOST_FTDC_OF_CloseYesterday;
+
+    auto r = to_trade_record(tf, "acc1", kTradingDay);
+    EXPECT_EQ(r.base.direction, DZ_DIRECTION_SHORT);
+    EXPECT_EQ(r.base.position_effect, DZ_POSITION_EFFECT_CLOSE_YESTDAY);
 }
 
 TEST(ToTradeRecordTest, SellCloseMapping) {
@@ -573,6 +652,24 @@ TEST(ToInstrumentRecordTest, SpotOptionIsOption) {
     EXPECT_EQ(r.option_type, DZ_OPTION_CALL);
 }
 
+TEST(ToInstrumentRecordTest, CombinationMapsToSpread) {
+    // 《帧契约：合约信息》§6: CTP Combination -> DZ_PRODUCT_SPREAD
+    auto f = make_instrument_field();
+    f.ProductClass = THOST_FTDC_PC_Combination;
+
+    auto r = to_instrument_record(f, "20260101");
+    EXPECT_EQ(r.product_class, DZ_PRODUCT_SPREAD);
+}
+
+TEST(ToInstrumentRecordTest, SpotMapsToSpot) {
+    // 《帧契约：合约信息》§6: CTP Spot -> DZ_PRODUCT_SPOT
+    auto f = make_instrument_field();
+    f.ProductClass = THOST_FTDC_PC_Spot;
+
+    auto r = to_instrument_record(f, "20260101");
+    EXPECT_EQ(r.product_class, DZ_PRODUCT_SPOT);
+}
+
 TEST(ToInstrumentRecordTest, EmptyDateIsNa) {
     // CTP 字段为空 -> DZ_DATE_NA(0), 非 v1 的 -1
     auto f = make_instrument_field();
@@ -585,16 +682,18 @@ TEST(ToInstrumentRecordTest, EmptyDateIsNa) {
 }
 
 TEST(ToInstrumentRecordTest, NameIsUtf8) {
-    // "沪" 的 GBK 字节; Linux 的 CTP SDK 已返回 UTF-8 (to_utf8_from_gbk 直返),
-    // Windows 下按代码页 936 转 UTF-8
+    // "沪" 的 GBK 字节. Windows SDK 返回 GBK, 需转 UTF-8;
+    // Linux SDK 已返回 UTF-8, to_utf8_from_gbk 为恒等透传.
     const std::string gbk = std::string("\xBB\xA6", 2);
     auto f = make_instrument_field();
     std::strcpy(f.InstrumentName, gbk.c_str());
 
     auto r = to_instrument_record(f, "20260101");
-    EXPECT_EQ(r.name, dztrader::to_utf8_from_gbk(gbk));
+    // 期望值硬编码且不经 to_utf8_from_gbk, 转换被改坏时两个平台都会红.
 #ifdef _WIN32
-    EXPECT_EQ(r.name, std::string("\xE6\xB2\xAA", 3));  // "沪" UTF-8
+    EXPECT_EQ(r.name, std::string("\xE6\xB2\xAA", 3));  // GBK "沪" -> UTF-8 "沪"
+#else
+    EXPECT_EQ(r.name, gbk);  // Linux 原样透传 (SDK 已是 UTF-8)
 #endif
 }
 

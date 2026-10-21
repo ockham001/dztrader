@@ -32,6 +32,13 @@
 
 namespace {
 
+/// 分段边界（《帧契约：通用规则》§3 值域表），不是单个帧值：
+/// 用于锁定“同接收域帧在段内稠密”的约定，防止整簇漂移到其他段。
+constexpr DzFrameType kSegmentMdLifecycleTradePushBegin = 1000;
+constexpr DzFrameType kSegmentMdLifecycleTradePushEnd = 1023;
+constexpr DzFrameType kSegmentStrategyBegin = 2000;
+constexpr DzFrameType kSegmentStrategyEnd = 2099;
+
 /// 策略可见帧清单（策略经 dz_next_event / dz_next_md 识别消费）。
 /// 增删策略可见帧属于对外契约变更, 必须显式改这里。
 constexpr DzFrameType kStrategyVisibleFrames[] = {
@@ -62,6 +69,14 @@ TEST(FrameTypes, TradePushClusterIsContiguous) {
     EXPECT_EQ(DZ_FRAME_TRADING_ACCOUNT, DZ_FRAME_ORDER_REPORT + 3);
     // 行情/交易生命周期帧与交易推送同段（同一段判定即进跳转表）
     EXPECT_LT(DZ_FRAME_NOTIFY_MD_STARTED, DZ_FRAME_ORDER_REPORT);
+    // 段区间断言: 仅比较相邻大小无法发现整簇被移到 1100-1123 (交易控制段)
+    EXPECT_GE(DZ_FRAME_NOTIFY_MD_STARTED, kSegmentMdLifecycleTradePushBegin);
+    EXPECT_LE(DZ_FRAME_NOTIFY_MD_STOPPED, kSegmentMdLifecycleTradePushEnd);
+    EXPECT_GE(DZ_FRAME_ORDER_REPORT, kSegmentMdLifecycleTradePushBegin);
+    EXPECT_LE(DZ_FRAME_TRADING_ACCOUNT, kSegmentMdLifecycleTradePushEnd);
     // 策略簇连号
     EXPECT_EQ(DZ_FRAME_SCHEDULE, DZ_FRAME_UI_INPUT + 3);
+    // 策略帧在 2000-2099 段
+    EXPECT_GE(DZ_FRAME_UI_INPUT, kSegmentStrategyBegin);
+    EXPECT_LE(DZ_FRAME_SCHEDULE, kSegmentStrategyEnd);
 }
