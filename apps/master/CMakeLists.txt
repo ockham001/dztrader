@@ -33,6 +33,11 @@ endif()
 # child_process_test 通过 this_process::exe_dir() / "test_worker" 查找
 # ============================================================
 add_executable(test_worker tests/worker.cpp)
+if(WIN32)
+    # worker.cpp 用 std::getenv 读测试注入的环境变量, MSVC 需要关掉 C4996
+    # (Release 的 /WX 会把它升级为错误; 与 dztraderd_obj 同款处理)
+    target_compile_definitions(test_worker PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
 set_target_properties(test_worker PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
 )
