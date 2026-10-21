@@ -38,9 +38,12 @@
 - [ ] `npm test` 全绿（前端 vitest）
 - [ ] `./scripts/test.sh` 全绿（后台 fast 门禁；含冒烟 smoke）；穷举/基准按需 `--label slow` / `--label perf`（Windows `-Label`）
 - [ ] C++ 格式（clang-format 21.x）与日志格式（`python scripts/check_log_format.py apps/ libs/`）——已接入 CI（linux job），本地可预检
+- [ ] 测试可移植性（`python scripts/check_test_portability.py`；禁止测试源码写死 `/home/`、`/Users/`、`/root/`）——已接入 CI（linux job）
 - [ ] 文档链接（`python scripts/check_docs_links.py`）与提交信息前缀——已接入 CI（linux job）
 - [ ] `git status` 干净，改动为小步提交（信息中文，`fix:/feat:/refactor:/docs:/test:/chore:/perf:/style:/build:/ci:` 前缀）
 - [ ] 契约/生成物有改动时 CI 的 Freshness 步骤绿
+
+> push 后等 CI：用 `./scripts/wait-ci.sh <pr>`，只输出状态变化和失败摘要；不要用 `gh run watch` 全量输出，也不要反复 tail 后台日志。
 
 > 若某项门禁**当前未在你的改动上跑**（例如只改了一个 `.vue` 但改了全局样式），
 > 请人工确认它确无跨层影响——机器门禁覆盖不到的正是这类"看似局部其实全局"的改动。
@@ -55,4 +58,4 @@
 | D2 | 改 `dz_next_event` 白名单/拦截、引擎回调或生命周期 | **先改 `docs/frame_contracts/strategy.md`**（白名单/拦截清单/引擎注释同步），再改代码与测试；`general.md` §11.3 checklist |
 | D3 | 新增/修改 `DZ_API` 函数或错误码 | 头文件 doxygen + `dz_errstr` 映射 + 至少一条测试（错误路径也要覆盖） |
 | D4 | 改 C++ 引擎（`strategy_engine.h`/`strategy_base.h`） | 引擎测试套件（`StrategyEngineTest`）全绿；启动自检行/回调探测变更需同步注释与测试 |
-| D5 | 策略 SDK 变更（无前端/契约联动时） | 仍须跑 C 段的 log-format / clang-format / docs-links 三项本地预检 |
+| D5 | 策略 SDK 变更（无前端/契约联动时） | 仍须跑 C 段的本地预检：log-format / clang-format / test-portability / docs-links |

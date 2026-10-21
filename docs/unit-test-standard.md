@@ -57,6 +57,7 @@
 | 3.5 | **临时资源唯一化**：优先 `pid`/`uid`/随机后缀，避免固定名；用完清理；不写 `DZTRADER_HOME` 与系统临时目录以外的路径 | 固定名目录跨运行残留（`.dztrader_dev/` 下可见残留证据） |
 | 3.6 | **日志断言合规**：断言日志文本时与 `scripts/check_log_format.py` 的规则一致（小写开头、无句号、`prose \| k=v`） | 断言了不合规的日志文本，等于把错误格式钉死 |
 | 3.7 | **前端专段**：`vi.mock` 不得掩盖真实交互（mock 的是边界而非被测对象）；store 断言看状态迁移与副作用；不测真实布局（jsdom 局限），不依赖时间/随机 | mock 掉被测对象本身，测试变成同义反复 |
+| 3.8 | **跨平台测试**：绝对路径用 `std::filesystem::temp_directory_path()` / `std::filesystem::absolute()` 构造，不写死 `/home/`、`/Users/`、`/root/`；定时器/调度测试的收集器必须过滤自身 guard timer id；时间断言用下界/条件等待，不依赖 Windows 计时粒度 | Linux 绿但 Windows 红；guard 帧被当作被测帧；绝对路径被解析到当前盘符 |
 
 ## 4. 成本
 
