@@ -97,6 +97,9 @@ jobs:
       - name: Log Format Check
         run: python scripts/check_log_format.py apps/ libs/
 
+      - name: Test Portability Check
+        run: python scripts/check_test_portability.py
+
       - name: Install clang-format 21 (apt.llvm.org, official LLVM)
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
