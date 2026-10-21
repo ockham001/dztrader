@@ -30,7 +30,7 @@ std::string disconnect_reason_str(int reason) {
 
 int32_t trading_day_to_days(const char* s) {
     using namespace std::chrono;
-    if (!s || std::strlen(s) < 8) {
+    if (!s || std::strlen(s) != 8) {
         throw std::runtime_error("invalid trading day format");
     }
     auto digit = [](char c) -> int { return (c >= '0' && c <= '9') ? c - '0' : -1; };
