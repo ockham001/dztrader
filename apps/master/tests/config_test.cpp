@@ -496,22 +496,19 @@ TEST_F(ConfigTest, ParseGatewayEntries) {
 }
 
 TEST_F(ConfigTest, ParseStrategyEntries) {
-    write_json(R"({
-        "master": {},
-        "strategy": [
-            {
-                "name": "my_strategy",
-                "exe": "/home/user/strategies/my_strategy",
-                "md_source": "dzmd_ctp",
-                "args": ["--config", "strategy.toml"]
-            },
-            {
-                "name": "relative_strategy",
-                "exe": "strategies/rel_strategy",
-                "md_source": "dzmd_ctp"
-            }
-        ]
-    })");
+    // 绝对路径必须用平台原生形式（Windows 的 /home/... 会被解析成当前盘符）。
+    const auto absolute_exe =
+        std::filesystem::temp_directory_path() / "dz_config_abs" / "my_strategy";
+    const nlohmann::json config = {
+        {"master", nlohmann::json::object()},
+        {"strategy", nlohmann::json::array({{{"name", "my_strategy"},
+                                             {"exe", absolute_exe.string()},
+                                             {"md_source", "dzmd_ctp"},
+                                             {"args", {"--config", "strategy.toml"}}},
+                                            {{"name", "relative_strategy"},
+                                             {"exe", "strategies/rel_strategy"},
+                                             {"md_source", "dzmd_ctp"}}})}};
+    write_json(config.dump());
     const ScopedEnvOverride home_override("DZTRADER_HOME", tmp_dir_.string());
     auto cfg = parse_master_json(config_path_);
     ASSERT_EQ(cfg.entries.size(), 2u);
@@ -523,8 +520,8 @@ TEST_F(ConfigTest, ParseStrategyEntries) {
     EXPECT_EQ(s.args.size(), 2u);
     EXPECT_FALSE(s.restart.enabled);  // strategy default: no restart
     EXPECT_EQ(s.md_source, "dzmd_ctp");
-    EXPECT_EQ(s.exe, std::filesystem::path("/home/user/strategies/my_strategy"));
-    EXPECT_EQ(s.start_dir, std::filesystem::path("/home/user/strategies"));
+    EXPECT_EQ(s.exe, absolute_exe);
+    EXPECT_EQ(s.start_dir, absolute_exe.parent_path());
 
     // 相对 exe: 拼 DZTRADER_HOME; start_dir 默认取解析后 exe 的父目录
     const auto& rel = cfg.entries[1];
