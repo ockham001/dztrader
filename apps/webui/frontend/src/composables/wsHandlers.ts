@@ -12,6 +12,7 @@ import { useProcessStore } from '@/stores/process'
 import { useProgressStore } from '@/stores/progress'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useSettingsStore } from '@/stores/settings'
+import { useSysmonStore } from '@/stores/sysmon'
 import type { ProcessStatusPayload, MdConfigPayload } from '@/types/api'
 
 registerHandler('data_changed', (payload) => {
@@ -91,6 +92,10 @@ registerHandler('snapshot', (payload) => {
           break
         case 'progress':
           progressStore.applyProgress(instanceId, value)
+          break
+        case 'sysmon_snapshot':
+          // 契约 sysmon: 快照域固定挂 dzsysmon；重连后恢复顶栏/监控页实时镜像
+          useSysmonStore().applySnapshot(value)
           break
         // log_config 已由上方 applySnapshot 整体重建并兜底清 set_level pending
       }
@@ -204,4 +209,10 @@ registerHandler('event_shm_config', (payload) => {
   // 契约 shm: RTN_EVENT_SHM_CONFIG → WS event_shm_config (data=ShmConfig 全量, 挂 dztraderd)
   // 到达清事件通道配置 pending; 系统设置页展示镜像
   useSettingsStore().applyEventShmConfig(payload)
+})
+
+registerHandler('sysmon_snapshot', (payload) => {
+  // 契约 sysmon: RTN_SYSMON_SNAPSHOT → WS sysmon_snapshot（固定实例 dzsysmon）
+  // 顶栏 CPU 徽章与资源监控页消费同一镜像，刷新基线由发送方推送间隔（默认 5s）决定
+  useSysmonStore().applySnapshot(payload)
 })

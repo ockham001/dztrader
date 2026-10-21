@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import ThemeDropdown from './ThemeDropdown.vue'
 import { useWebSocket } from '@/composables/wsClient'
+import { useSysmonStore } from '@/stores/sysmon'
 
 const emit = defineEmits<{ toggleMobile: [] }>()
 
@@ -23,6 +24,48 @@ const connStatus = computed<{ text: string; dotClass: string }>(() => {
     default:
       return { text: '已断开', dotClass: 'topbar__conn-dot--error' }
   }
+})
+
+// 顶栏 CPU 徽章：契约 sysmon 实时快照（固定实例 dzsysmon）。
+// 首次挂载经 REST 补拉镜像，之后只由 WS 推送刷新 —— 刷新基线由发送方
+// realtime.push_interval_sec（默认 5s）决定，前端不轮询、不改 WS 契约。
+const sysmon = useSysmonStore()
+onMounted(() => { void sysmon.init() })
+
+const CPU_WARN_RATIO = 0.7
+const CPU_DANGER_RATIO = 0.9
+
+interface CpuBadge {
+  text: string
+  stateClass: string
+  title: string
+}
+
+const cpuBadge = computed<CpuBadge>(() => {
+  const entry = sysmon.availabilityOf('cpu.total')
+  if (!sysmon.snapshot) {
+    // 快照尚未到达：显示等待态，不得用假数字占位
+    return {
+      text: '—',
+      stateClass: 'topbar__resource--unavailable',
+      title: 'CPU 使用率（等待 dzsysmon 快照）',
+    }
+  }
+  if (!entry || !entry.available || sysmon.cpuUsageRatio === null) {
+    // 不可用/首次采样：按契约显示不可用，不得用 0 冒充（契约 sysmon §2.7）
+    return {
+      text: '不可用',
+      stateClass: 'topbar__resource--unavailable',
+      title: entry?.reason ? `CPU 使用率不可用: ${entry.reason}` : 'CPU 使用率不可用',
+    }
+  }
+  const percent = Math.round(sysmon.cpuUsageRatio * 100)
+  const stateClass = sysmon.cpuUsageRatio >= CPU_DANGER_RATIO
+    ? 'topbar__resource--danger'
+    : sysmon.cpuUsageRatio >= CPU_WARN_RATIO
+      ? 'topbar__resource--warn'
+      : 'topbar__resource--normal'
+  return { text: `${percent}%`, stateClass, title: `CPU 使用率 ${percent}%` }
 })
 </script>
 
@@ -59,25 +102,16 @@ const connStatus = computed<{ text: string; dotClass: string }>(() => {
           </span>
         </span>
         <span class="topbar__resource-divider"></span>
-        <span class="topbar__resource topbar__resource--ntp topbar__resource--normal" id="resNtp" title="NTP时钟同步">
-          <span class="res-label">NTP</span>
-          <span class="res-value">+12ms</span>
-        </span>
-        <span class="topbar__resource topbar__resource--cpu topbar__resource--normal" id="resCpu" title="CPU">
+        <!-- 资源徽章：仅保留已接入实时快照的 CPU；内存/磁盘/NTP 假数字已删除，
+             随对应指标票（#74/#75）补回真实徽章 -->
+        <span
+          class="topbar__resource topbar__resource--cpu"
+          :class="cpuBadge.stateClass"
+          id="resCpu"
+          :title="cpuBadge.title"
+        >
           <span class="res-label">CPU</span>
-          <span class="res-value">23%</span>
-        </span>
-        <span class="topbar__resource topbar__resource--mem topbar__resource--warn" id="resMem" title="内存">
-          <span class="res-label">RAM</span>
-          <span class="res-value">76%</span>
-        </span>
-        <span class="topbar__resource topbar__resource--disk topbar__resource--danger" id="resDisk0" title="C:">
-          <span class="res-label">C:</span>
-          <span class="res-value">93%</span>
-        </span>
-        <span class="topbar__resource topbar__resource--disk topbar__resource--normal" id="resDisk1" title="D:">
-          <span class="res-label">D:</span>
-          <span class="res-value">45%</span>
+          <span class="res-value">{{ cpuBadge.text }}</span>
         </span>
       </div>
     </div>
@@ -110,5 +144,10 @@ const connStatus = computed<{ text: string; dotClass: string }>(() => {
 
 .topbar__conn-dot--error {
   background: var(--status-error-default);
+}
+
+/* 指标不可用 / 快照未到达：中性色，不得用状态色或 0 冒充数据 */
+.topbar__resource--unavailable .res-value {
+  color: var(--text-tertiary);
 }
 </style>
