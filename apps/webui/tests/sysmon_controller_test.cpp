@@ -101,7 +101,9 @@ TEST_F(SysmonControllerTest, ReturnsCurrentSnapshot) {
     auto resp = invoke();
     ASSERT_NE(resp, nullptr);
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
-    EXPECT_EQ(nlohmann::json::parse(resp->getBody()), snapshot);
+    // 用 operator== 布尔比较而非 EXPECT_EQ：避免 gtest 实例化 nlohmann::json 的
+    // printer（MSVC /O2 下 gtest-printers.h 会因此触发 C4702，Release /WX 转错误）。
+    EXPECT_TRUE(nlohmann::json::parse(resp->getBody()) == snapshot);
 }
 
 TEST_F(SysmonControllerTest, Returns503BeforeFirstReport) {

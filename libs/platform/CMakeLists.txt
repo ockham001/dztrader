@@ -49,6 +49,11 @@ foreach(testfile ${PLATFORM_TESTS})
     set_target_properties(dzplatform_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
+    if(MSVC AND testname STREQUAL "sysmon_test")
+        # gtest 1.17 gtest-printers.h 在 MSVC /O2 下对 nlohmann::json 相关模板实例化
+        # 偶发 C4702（unreachable code），Release /WX 会升级为错误；仅豁免测试目标。
+        target_compile_options(dzplatform_${testname} PRIVATE /wd4702)
+    endif()
     gtest_discover_tests(dzplatform_${testname} PROPERTIES LABELS fast)
     install(TARGETS dzplatform_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()

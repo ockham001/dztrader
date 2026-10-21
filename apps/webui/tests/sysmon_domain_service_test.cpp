@@ -101,7 +101,7 @@ TEST(SysmonDomainServiceTest, SnapshotUpdatesMirrorAndBroadcasts) {
     ASSERT_EQ(ws.messages.size(), 1u);
     EXPECT_EQ(ws.messages[0].type, "sysmon_snapshot");
     EXPECT_EQ(ws.messages[0].instance_id, "dzsysmon");
-    EXPECT_EQ(ws.messages[0].data, snapshot);
+    EXPECT_TRUE(ws.messages[0].data == snapshot);  // 避免 gtest 打印 nlohmann::json（MSVC C4702）
 }
 
 TEST(SysmonDomainServiceTest, SnapshotIncludedInWsSnapshot) {
