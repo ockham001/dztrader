@@ -34,6 +34,8 @@ describe('SyncSwitch', () => {
     })
     const input = wrapper.find('input')
     expect(input.element.disabled).toBe(true)
+    await input.trigger('change')
+    expect(wrapper.emitted('change')).toBeUndefined()
   })
 
   it('does not emit change when disabled', () => {

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 import SyncSelect from '../SyncSelect.vue'
 
@@ -30,6 +31,34 @@ describe('SyncSelect', () => {
     expect(wrapper.find('.ds-sync-select__menu').exists()).toBe(false)
     await wrapper.find('.ds-sync-select__trigger').trigger('click')
     expect(wrapper.find('.ds-sync-select__menu').exists()).toBe(true)
+  })
+
+  it('仅在打开时 emit open（关闭不重复触发）', async () => {
+    const wrapper = mount(SyncSelect, {
+      props: { items, modelValue: 'a' },
+    })
+    const trigger = wrapper.find('.ds-sync-select__trigger')
+    await trigger.trigger('click')
+    expect(wrapper.emitted('open')).toHaveLength(1)
+
+    await trigger.trigger('click')  // 关闭
+    expect(wrapper.emitted('open')).toHaveLength(1)
+
+    await trigger.trigger('click')  // 再次打开
+    expect(wrapper.emitted('open')).toHaveLength(2)
+  })
+
+  it('点击组件外部关闭菜单', async () => {
+    const wrapper = mount(SyncSelect, {
+      props: { items, modelValue: 'a' },
+    })
+    await wrapper.find('.ds-sync-select__trigger').trigger('click')
+    expect(wrapper.find('.ds-sync-select__menu').exists()).toBe(true)
+
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(wrapper.find('.ds-sync-select__menu').exists()).toBe(false)
+    wrapper.unmount()
   })
 
   it('emits change with value on item select', async () => {

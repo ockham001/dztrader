@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { nextTick } from 'vue'
 import type { Ref } from 'vue'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -49,7 +49,12 @@ vi.mock('vue-virtual-scroller', () => ({
 
 // 子组件 stub（只留必要的模板定位结构）
 const stubs = {
-  Dropdown: { template: '<div class="stub-dropdown" />' },
+  // 点击后模拟选择 error 级别，驱动 handleLevelChange
+  Dropdown: {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template: '<button type="button" class="stub-dropdown" @click="$emit(\'update:modelValue\', \'error\')" />',
+  },
 }
 
 /** 让断连→重连：connectionState 从 connected 走到 reconnecting 再回 connected，并等待 watch 触发 */
@@ -67,6 +72,10 @@ describe('LogViewerTab WS 重连恢复与防抖清理', () => {
     wsMocks.state.ref!.value = 'connected'
     wsMocks.subscribeLog.mockClear()
     wsMocks.unsubscribeLog.mockClear()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it('断线→重连且 tailEnabled 时按当前文件重建日志订阅（I1）', async () => {
@@ -100,10 +109,84 @@ describe('LogViewerTab WS 重连恢复与防抖清理', () => {
     w.unmount()
   })
 
+  it('tail 开关：开启订阅当前文件，关闭退订', async () => {
+    const store = useLogsStore()
+    store.selectedFile = '/logs/trade.log'
+    store.tailEnabled = false
+
+    const w = mount(LogViewerTab, { global: { stubs } })
+    const tail = w.find('.log-viewer__toolbar-row--actions input[type="checkbox"]')
+
+    await tail.setValue(true)
+    expect(store.tailEnabled).toBe(true)
+    expect(wsMocks.subscribeLog).toHaveBeenCalledWith('/logs/trade.log')
+
+    await tail.setValue(false)
+    expect(store.tailEnabled).toBe(false)
+    expect(wsMocks.unsubscribeLog).toHaveBeenCalledTimes(1)
+
+    w.unmount()
+    // 关闭后卸载不应再退订
+    expect(wsMocks.unsubscribeLog).toHaveBeenCalledTimes(1)
+  })
+
+  it('切换日志级别时关闭 tail 并退订，然后按新级别加载内容', async () => {
+    const store = useLogsStore()
+    store.selectedFile = '/logs/trade.log'
+    store.tailEnabled = true
+    const loadSpy = vi.spyOn(store, 'loadContent').mockResolvedValue()
+
+    const w = mount(LogViewerTab, { global: { stubs } })
+    wsMocks.subscribeLog.mockClear()
+    wsMocks.unsubscribeLog.mockClear()
+
+    await w.find('.stub-dropdown').trigger('click')
+    await flushPromises()
+
+    expect(store.levelFilter).toBe('error')
+    expect(wsMocks.unsubscribeLog).toHaveBeenCalledTimes(1)
+    expect(store.tailEnabled).toBe(false)
+    expect(loadSpy).toHaveBeenCalledTimes(1)
+
+    w.unmount()
+  })
+
+  it('卸载时 tailEnabled=true 退订日志', () => {
+    const store = useLogsStore()
+    store.selectedFile = '/logs/trade.log'
+    store.tailEnabled = true
+
+    const w = mount(LogViewerTab, { global: { stubs } })
+    wsMocks.unsubscribeLog.mockClear()
+    w.unmount()
+
+    expect(wsMocks.unsubscribeLog).toHaveBeenCalledTimes(1)
+  })
+
+  it('关键字输入 300ms 防抖后才加载内容（fake timers）', async () => {
+    const store = useLogsStore()
+    store.tailEnabled = false
+    const loadContentSpy = vi.spyOn(store, 'loadContent').mockResolvedValue()
+    vi.useFakeTimers()
+
+    const w = mount(LogViewerTab, { global: { stubs } })
+    await w.find('input[placeholder="关键字搜索..."]').setValue('biz')
+
+    await vi.advanceTimersByTimeAsync(299)
+    expect(loadContentSpy).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(store.keyword).toBe('biz')
+    expect(loadContentSpy).toHaveBeenCalledTimes(1)
+
+    w.unmount()
+  })
+
   it('卸载时清理未触发的关键字防抖定时器，避免卸载后改共享 store 状态（M14）', async () => {
     const store = useLogsStore()
     store.tailEnabled = false
-    const loadContentSpy = vi.spyOn(store, 'loadContent')
+    const loadContentSpy = vi.spyOn(store, 'loadContent').mockResolvedValue()
+    vi.useFakeTimers()
 
     const w = mount(LogViewerTab, { global: { stubs } })
 
@@ -111,8 +194,8 @@ describe('LogViewerTab WS 重连恢复与防抖清理', () => {
     await w.find('input[placeholder="关键字搜索..."]').setValue('biz')
     w.unmount()
 
-    await new Promise(resolve => setTimeout(resolve, 350))
-
+    await vi.advanceTimersByTimeAsync(350)
     expect(loadContentSpy).not.toHaveBeenCalled()
+    expect(store.keyword).toBe('')
   })
 })

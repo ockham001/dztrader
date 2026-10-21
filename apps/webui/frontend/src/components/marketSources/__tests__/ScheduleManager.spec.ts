@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { nextTick } from 'vue'
-import { mount } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ScheduleManager from '../ScheduleManager.vue'
 import { useMarketSourcesStore } from '@/stores/marketSources'
@@ -45,6 +45,54 @@ describe('ScheduleManager', () => {
     await tps[1].setValue('15:30')
     await w.findAll('button.ds-btn--primary')[0].trigger('click')
     expect(spy).toHaveBeenCalledWith(1, '09:00', '15:30')
+  })
+
+  it('login > logout 跨午夜时段合法，正常下发', async () => {
+    const store = useMarketSourcesStore()
+    const spy = vi.spyOn(store, 'addSchedule').mockResolvedValue()
+    const source = makeSource({ id: 1, source_type: 'CTP', source_name: 'dzmd_ctp', display_name: 'CTP' })
+    const w = mount(ScheduleManager, { props: { source }, global: { stubs } })
+    await w.find('button.ds-btn--tertiary').trigger('click')
+    const tps = w.findAll('input.tp')
+    await tps[0].setValue('20:45')
+    await tps[1].setValue('02:30')
+    await w.findAll('button.ds-btn--primary')[0].trigger('click')
+
+    expect(spy).toHaveBeenCalledWith(1, '20:45', '02:30')
+    expect(w.text()).not.toContain('不能相同')
+  })
+
+  it('添加成功后关闭 Modal', async () => {
+    const store = useMarketSourcesStore()
+    vi.spyOn(store, 'addSchedule').mockResolvedValue()
+    const source = makeSource({ id: 1, source_type: 'CTP', source_name: 'dzmd_ctp', display_name: 'CTP' })
+    const w = mount(ScheduleManager, { props: { source }, global: { stubs } })
+    await w.find('button.ds-btn--tertiary').trigger('click')
+    expect(w.find('input.tp').exists()).toBe(true)
+
+    await w.findAll('button.ds-btn--primary')[0].trigger('click')
+    await flushPromises()
+    expect(w.find('input.tp').exists()).toBe(false)
+  })
+
+  it('store 拒绝时保持 Modal 打开且可重试', async () => {
+    const store = useMarketSourcesStore()
+    const spy = vi.spyOn(store, 'addSchedule').mockRejectedValue(new Error('add schedule failed'))
+    const source = makeSource({ id: 1, source_type: 'CTP', source_name: 'dzmd_ctp', display_name: 'CTP' })
+    const w = mount(ScheduleManager, { props: { source }, global: { stubs } })
+    await w.find('button.ds-btn--tertiary').trigger('click')
+    const tps = w.findAll('input.tp')
+    await tps[0].setValue('09:00')
+    await tps[1].setValue('15:30')
+
+    await w.findAll('button.ds-btn--primary')[0].trigger('click')
+    await flushPromises()
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(w.find('input.tp').exists()).toBe(true)  // 失败不关窗
+
+    await w.findAll('button.ds-btn--primary')[0].trigger('click')
+    await flushPromises()
+    expect(spy).toHaveBeenCalledTimes(2)  // 可重试
   })
 
   it('跨午夜时段（login > logout）显示标识', () => {

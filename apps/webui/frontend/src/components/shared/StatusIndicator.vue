@@ -19,16 +19,18 @@ const props = withDefaults(defineProps<{
   mini: false,
 })
 
-type StatusState = 'idle' | 'loading' | 'done'
+type StatusState = 'idle' | 'loading' | 'done' | 'indeterminate'
 
 const state = computed<StatusState>(() => {
+  // 契约 progress: max <= min（含 max==0）为不确定进度，current 值忽略
+  if (props.max <= props.min) return 'indeterminate'
   if (props.current <= props.min) return 'idle'
   if (props.current >= props.max) return 'done'
   return 'loading'
 })
 
 // 文本源: 后端 desc 优先（契约 progress: desc 为展示文案，状态判定仍走数值映射），
-// 未提供时回落调用方三态固定文案
+// 未提供时回落调用方三态固定文案；不确定进度复用 loading 文案
 const text = computed(() => {
   if (props.desc) return props.desc
   if (state.value === 'idle') return props.idleText
@@ -38,12 +40,11 @@ const text = computed(() => {
 
 const fillPercent = computed(() => {
   if (state.value !== 'loading') return null
-  if (props.max === props.min) return 0
   return ((props.current - props.min) / (props.max - props.min)) * 100
 })
 
 const isIndeterminate = computed(() => {
-  return state.value === 'loading' && fillPercent.value === null
+  return state.value === 'indeterminate'
 })
 
 const stateClass = computed(() => {

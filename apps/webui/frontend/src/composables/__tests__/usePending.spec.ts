@@ -35,12 +35,23 @@ describe('usePending', () => {
     expect(pending['a:op2']).toBe(false)
   })
 
-  it('超时清 pending 并提示', async () => {
+  it('超时清 pending 并提示（opLabel 优先，无 opLabel 回落 key）', async () => {
+    const toast = useToastStore()
+    const errorSpy = vi.spyOn(toast, 'error')
     const { pending, run } = inst
-    const p = run('a:slow', () => new Promise(() => {}), { timeout: 1000 })
+
+    const p = run('a:slow', () => new Promise(() => {}), { timeout: 1000, opLabel: '行情源登录' })
     await vi.advanceTimersByTimeAsync(1001)
     expect(pending['a:slow']).toBe(false)
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    expect(errorSpy).toHaveBeenLastCalledWith('行情源登录超时')
     await p
+
+    const p2 = run('b:slow', () => new Promise(() => {}), { timeout: 1000 })
+    await vi.advanceTimersByTimeAsync(1001)
+    expect(errorSpy).toHaveBeenCalledTimes(2)
+    expect(errorSpy).toHaveBeenLastCalledWith('b:slow 操作超时')
+    await p2
   })
 
   it('fail 清 pending', async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useSettingsStore } from '@/stores/settings'
 import SettingsView from '../SettingsView.vue'
@@ -58,19 +58,29 @@ describe('SettingsView', () => {
     expect(setSpy).not.toHaveBeenCalled()
   })
 
-  it('切换到 WebUI 页签渲染其表单', async () => {
+  it('切换到 WebUI 页签后字段由 store 渲染，保存提交表单值', async () => {
     const store = useSettingsStore()
     // WebUI tab 内容依赖 store.webui 存在（缺省显示"加载中..."），先赋镜像值
     store.webui = {
       server_listen: '0.0.0.0', server_port: 8080, token_ttl_sec: 3600,
       jwt_secret_set: true, notify_cache_size: 100,
     }
+    const saveSpy = vi.spyOn(store, 'setWebui').mockResolvedValue(true)
     const w = mount(SettingsView, { global: { stubs: sharedStubs } })
     const webuiTab = w.findAll('button').find(b => b.text() === 'WebUI')
     await webuiTab!.trigger('click')
     await w.vm.$nextTick()
-    // WebUI 表单含"保存配置"按钮
+
+    const inputs = w.findAll('input[type="number"]')
+    expect((inputs[0].element as HTMLInputElement).value).toBe('3600')
+    expect((inputs[1].element as HTMLInputElement).value).toBe('100')
+
+    await inputs[0].setValue('7200')
+    await inputs[1].setValue('200')
     const saveBtn = w.findAll('button').find(b => b.text().includes('保存配置'))
-    expect(saveBtn?.exists()).toBe(true)
+    await saveBtn!.trigger('click')
+    await flushPromises()
+
+    expect(saveSpy).toHaveBeenCalledWith({ token_ttl_sec: 7200, notify_cache_size: 200 })
   })
 })
