@@ -1124,7 +1124,7 @@ void ProcessSupervisor::schedule_restart(const std::string& name,
     // 仅网关进程 (dzmd_*/dztd_*) 解析此参数, 其他进程忽略
     entry_copy.args.push_back("--recover");
 
-    timer->async_wait([this, name, entry_copy](const boost::system::error_code& ec) {
+    timer->async_wait([this, name, entry_copy, restart_count](const boost::system::error_code& ec) {
         if (ec) {
             // 被 cancel 时不 erase, 避免误删后续 timer:
             // 若 schedule_restart 同名再次调用, 旧 timer T1 被 cancel 后回调以 ec=aborted 触发,
@@ -1143,7 +1143,12 @@ void ProcessSupervisor::schedule_restart(const std::string& name,
             SPDLOG_INFO("restarting child | name={}", name);
             // 重启走 launch_child：成功推 Running；spawn 失败推 Crashed + 终止重启循环
             // （launch_child 失败路径不安排下一次重启，符合契约"重启 spawn 失败终止循环"）
-            (void)launch_child(entry_copy);
+            if (launch_child(entry_copy)) {
+                // launch_child 成功会按"手动启动"语义重置 restart_counts_；自动重启必须
+                // 保留连续崩溃计数，否则每次重启都归零，max_attempts 永远无法达到
+                // (契约 process: 达到 max_attempts 停止重启)。
+                restart_counts_[name] = restart_count;
+            }
         } catch (const std::exception& e) {
             SPDLOG_CRITICAL("restart failed | name={} error=\"{}\"", name, e.what());
         }

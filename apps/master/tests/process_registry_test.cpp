@@ -56,7 +56,10 @@ TEST_F(ProcessRegistryTest, EmptyDirectoryNoError) {
 
     ProcessRegistry registry;
     // app_root() 锚点固定为构建目录；本测试验证最小配置下 load() 不抛异常（"NoError" 语义）。
-    EXPECT_NO_THROW(registry.load(config_path_));
+    ASSERT_NO_THROW(registry.load(config_path_));
+    // 空配置 → 空表, 且旧 entries 被清空（load 先 clear）
+    EXPECT_TRUE(registry.entries().empty());
+    EXPECT_EQ(registry.find("anything"), nullptr);
 }
 
 TEST_F(ProcessRegistryTest, StrategyFromConfig) {
@@ -147,8 +150,15 @@ TEST_F(ProcessRegistryTest, RegisterDuplicateThrows) {
     registry.register_strategy(entry);
     ASSERT_NE(registry.find("dup_strat"), nullptr);
 
-    // 重复注册应抛出 dztrader::Exception（DZ_EC_ALREADY_EXISTS）
-    EXPECT_THROW(registry.register_strategy(entry), dztrader::Exception);
+    // 重复注册应抛出 dztrader::Exception(DZ_EC_ALREADY_EXISTS)（process_registry.h 承诺）
+    try {
+        registry.register_strategy(entry);
+        FAIL() << "duplicate register_strategy should throw";
+    } catch (const dztrader::Exception& e) {
+        EXPECT_EQ(e.code(), DZ_EC_ALREADY_EXISTS);
+    }
+    // 失败不改动注册表
+    EXPECT_EQ(registry.entries().size(), 1u);
 }
 
 }  // namespace

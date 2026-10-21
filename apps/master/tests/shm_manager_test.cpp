@@ -5,6 +5,7 @@
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/core_struct.h>
 #include <dztrader/core/env.h>
+#include <dztrader/core/exception.h>
 #include <dztrader/core/path.h>
 #include <dztrader/core/this_process.h>
 #include <dztrader/platform/frame_codec.h>
@@ -15,6 +16,7 @@
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
 #include <dztrader/data_type.h>
+#include <dztrader/date_time/date_time.h>
 #include <dztrader/log/log.h>
 #include "orphan_guard.h"
 #include "process_registry.h"
@@ -80,10 +82,15 @@ protected:
     std::optional<std::string> orig_home_;
 };
 
-TEST_F(ShmManagerTest, InitCreatesEventChannelAndWriterReaderCleaner) {
+TEST_F(ShmManagerTest, InitCreatesEventChannelAndRegistersMasterReader) {
     ShmManager mgr(make_default_shm_global(), cfg_path_);
-    // 构造后 event_writer_/event_reader_ 可用：send_shutdown 能写入定向 SHUTDOWN
-    EXPECT_NO_THROW(mgr.send_shutdown("dztraderd"));
+
+    // 构造完成即可观察: event 通道按配置建立 (1MB), master 自己已在 readers 表
+    EXPECT_TRUE(std::filesystem::exists(dztrader::paths::shm() / "dzevent" / "meta.dat"));
+    auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
+    EXPECT_EQ(meta.page_size(), 1u * 1024 * 1024);
+    auto names = meta.reader_names();
+    EXPECT_NE(std::find(names.begin(), names.end(), "dztraderd"), names.end());
 }
 
 TEST_F(ShmManagerTest, SendShutdownWithTargetWritesInstFrame) {
@@ -106,31 +113,257 @@ TEST_F(ShmManagerTest, SendShutdownWithTargetWritesInstFrame) {
     EXPECT_GE(seen, 1);
 }
 
-TEST_F(ShmManagerTest, CleanupOldPagesNoThrow) {
-    ShmManager mgr(make_default_shm_global(), cfg_path_);
-    // 无 page 文件时 cleanup 应安全返回 0
-    EXPECT_NO_THROW(mgr.cleanup_old_pages());
+TEST_F(ShmManagerTest, CleanupOldPagesDeletesOldPageFiles) {
+    // 保留最近 1 个页文件 (max_page_age_hours=0 与 count 同时生效时满足任一即删)
+    ShmManager mgr(make_default_shm_global(), cfg_path_,
+                   shm::CleanupPolicy{.max_page_count = 1, .max_page_age_hours = 0});
+    mgr.create_md_channel("dzmd_ctp");
+    auto* state = mgr.md_channel_state("dzmd_ctp");
+    ASSERT_NE(state, nullptr);
+
+    const auto page_dir = dztrader::paths::shm() / "dzmd_ctp";
+    ASSERT_TRUE(std::filesystem::exists(page_dir / "00000000.dat"));
+    shm::test::create_page_file(page_dir, 1, 4096);
+    shm::test::create_page_file(page_dir, 2, 4096);
+    // 模拟已写满 3 页: active page = 3, 无 reader/writer 登记 -> 删除下限 = 3
+    state->meta->next_write_pos()->store(state->last_page_size * 3);
+
+    mgr.cleanup_old_pages();
+
+    // 删除下限内且超出保留数量的旧页被删除, 最新页保留
+    EXPECT_FALSE(std::filesystem::exists(page_dir / "00000000.dat"));
+    EXPECT_FALSE(std::filesystem::exists(page_dir / "00000001.dat"));
+    EXPECT_TRUE(std::filesystem::exists(page_dir / "00000002.dat"));
 }
 
-TEST_F(ShmManagerTest, PollEventChannelReadsStatusFrame) {
+TEST_F(ShmManagerTest, CleanupOldPagesWithoutPageFilesIsNoOp) {
+    ShmManager mgr(make_default_shm_global(), cfg_path_);
+    const auto page_dir = dztrader::paths::shm() / "dzevent";
+    const auto before = std::filesystem::file_size(page_dir / "00000000.dat");
+
+    EXPECT_NO_THROW(mgr.cleanup_old_pages());
+
+    // 无旧页可删: 活跃页保留且大小不变 (只断言不抛会漏掉误删活跃页)
+    EXPECT_TRUE(std::filesystem::exists(page_dir / "00000000.dat"));
+    EXPECT_EQ(std::filesystem::file_size(page_dir / "00000000.dat"), before);
+}
+
+// ============================================================================
+// page_size_mb 边界 (契约 shm: 合法范围 [1MB, 64GB]; <1 视为内容非法用默认值,
+// 上界由通道创建硬校验 — 见 #32)
+// ============================================================================
+
+namespace {
+
+void write_event_page_size_cfg(const std::filesystem::path& path, int64_t page_size_mb) {
+    nlohmann::json cfg = {{"log", nlohmann::json::object()},
+                          {"master", nlohmann::json::object()},
+                          {"shm",
+                           {{"meta_file_size", 1 * 1024 * 1024},
+                            {"event",
+                             {{"page_size_mb", page_size_mb},
+                              {"preload_points", nlohmann::json::object()},
+                              {"check_interval_min", 5},
+                              {"check_pages", 1},
+                              {"check_bytes", 0}}}}}};
+    std::ofstream(path) << cfg.dump(2);
+}
+
+}  // namespace
+
+TEST_F(ShmManagerTest, EventPageSizeAtLowerBoundIsOneMb) {
+    write_event_page_size_cfg(cfg_path_, 1);
+
     ShmManager mgr(make_default_shm_global(), cfg_path_);
 
-    // 用独立 MultiWriter 模拟子进程写一个 RTN_MD_STATUS 帧
     auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
-    auto writer =
-        shm::MultiWriter::create(std::make_shared<shm::ChannelMeta>(std::move(meta)), "fake_md");
-    nlohmann::json status = {{"state", 4}, {"trading_day", "20260704"}};
-    std::string payload = status.dump();
-    ASSERT_TRUE(writer.write_ext_inst_frame(DZ_FRAME_RTN_MD_STATUS, "ctp",
-                                            reinterpret_cast<const std::byte*>(payload.c_str()),
-                                            static_cast<uint32_t>(payload.size())));
+    EXPECT_EQ(meta.page_size(), 1u * 1024 * 1024);
+}
 
-    // master drain 应读到该帧（可能需多次 drain 排干初始化帧）
-    for (int i = 0; i < 10; ++i) {
-        mgr.drain_event_channel();
+TEST_F(ShmManagerTest, EventPageSizeZeroFallsBackToDefault64Mb) {
+    write_event_page_size_cfg(cfg_path_, 0);
+
+    ShmManager mgr(make_default_shm_global(), cfg_path_);
+
+    // 契约 shm + #32: page_size_mb < 1 视为内容非法, 事件通道回落默认 64MB
+    auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
+    EXPECT_EQ(meta.page_size(), 64u * 1024 * 1024);
+}
+
+// 64GB 上界的数值断言由 ReadMdPageSizeBoundaries 覆盖；这里不实际创建 64GB
+// 页文件（Windows/非稀疏文件系统会直接占盘，fast 门禁不可承受）。
+TEST_F(ShmManagerTest, EventPageSizeAboveUpperBoundThrows) {
+    write_event_page_size_cfg(cfg_path_, 65537);
+
+    try {
+        ShmManager mgr(make_default_shm_global(), cfg_path_);
+        FAIL() << "page_size_mb=65537 must be rejected by channel creation";
+    } catch (const dztrader::Exception& e) {
+        EXPECT_EQ(e.code(), DZ_EC_SHM_CREATE_FAILED);
     }
-    // 不直接断言内部 status_view_（private），仅验证 drain 不抛异常且 send_shutdown 仍可用
-    EXPECT_NO_THROW(mgr.send_shutdown("dztraderd"));
+}
+
+TEST_F(ShmManagerTest, ReadMdPageSizeBoundaries) {
+    std::filesystem::create_directories(dztrader::paths::configs());
+    const auto configs = dztrader::paths::configs();
+    std::ofstream(configs / "ps_one.json") << R"({"shm": {"page_size_mb": 1}})";
+    std::ofstream(configs / "ps_zero.json") << R"({"shm": {"page_size_mb": 0}})";
+    std::ofstream(configs / "ps_max.json") << R"({"shm": {"page_size_mb": 65536}})";
+    std::ofstream(configs / "ps_over.json") << R"({"shm": {"page_size_mb": 65537}})";
+
+    ShmManager mgr(make_default_shm_global(), cfg_path_);
+
+    auto one = mgr.read_md_page_size("ps_one");
+    ASSERT_TRUE(one.has_value());
+    EXPECT_EQ(*one, 1u * 1024 * 1024);
+
+    // #32: <1 视为内容非法, 行情通道回落默认 1024MB
+    auto zero = mgr.read_md_page_size("ps_zero");
+    ASSERT_TRUE(zero.has_value());
+    EXPECT_EQ(*zero, ShmManager::kDefaultMdPageSize);
+
+    auto max = mgr.read_md_page_size("ps_max");
+    ASSERT_TRUE(max.has_value());
+    EXPECT_EQ(*max, 64ull * 1024 * 1024 * 1024);
+
+    // 读取层只做范围下界默认; 上界由通道创建硬校验
+    auto over = mgr.read_md_page_size("ps_over");
+    ASSERT_TRUE(over.has_value());
+    EXPECT_EQ(*over, 65537ull * 1024 * 1024);
+}
+
+TEST_F(ShmManagerTest, CreateMdChannelAppliesPageSizeBounds) {
+    std::filesystem::create_directories(dztrader::paths::configs());
+    const auto configs = dztrader::paths::configs();
+    std::ofstream(configs / "md_one.json") << R"({"shm": {"page_size_mb": 1}})";
+    std::ofstream(configs / "md_over.json") << R"({"shm": {"page_size_mb": 65537}})";
+
+    ShmManager mgr(make_default_shm_global(), cfg_path_);
+
+    // 下界: 实际通道页大小 = 1MB
+    mgr.create_md_channel("md_one");
+    auto* one_state = mgr.md_channel_state("md_one");
+    ASSERT_NE(one_state, nullptr);
+    EXPECT_EQ(one_state->last_page_size, 1u * 1024 * 1024);
+    auto one_meta = shm::ChannelMeta::open_only("md_one", dztrader::paths::shm());
+    EXPECT_EQ(one_meta.page_size(), 1u * 1024 * 1024);
+
+    // 上界 65536→64GB 由 ReadMdPageSizeBoundaries 的读取层断言覆盖；
+    // 这里不实际创建 64GB 页文件（Windows/非稀疏文件系统会占盘）。
+
+    // 界外: 通道创建抛 DZ_EC_SHM_CREATE_FAILED
+    try {
+        mgr.create_md_channel("md_over");
+        FAIL() << "page_size_mb=65537 must be rejected by channel creation";
+    } catch (const dztrader::Exception& e) {
+        EXPECT_EQ(e.code(), DZ_EC_SHM_CREATE_FAILED);
+    }
+    EXPECT_EQ(mgr.md_channel_state("md_over"), nullptr);
+
+    // 回收 /dev/shm 内核命名对象 (新增通道名, 避免跨运行残留)
+    mgr.release_all();
+    shm::test::cleanup_channel("md_one", dztrader::paths::shm());
+    shm::test::cleanup_channel("md_over", dztrader::paths::shm());
+}
+
+TEST_F(ShmManagerTest, CreateMdChannelIsIdempotentWhileRunning) {
+    std::filesystem::create_directories(dztrader::paths::configs());
+    std::ofstream(dztrader::paths::configs() / "md_running.json")
+        << R"({"shm": {"page_size_mb": 2}})";
+
+    ShmManager mgr(make_default_shm_global(), cfg_path_);
+    mgr.create_md_channel("md_running");
+
+    auto* state = mgr.md_channel_state("md_running");
+    ASSERT_NE(state, nullptr);
+    ASSERT_EQ(state->last_page_size, 2u * 1024 * 1024);
+    ASSERT_TRUE(state->meta->add_reader("stg.alpha", /*pid=*/0));
+
+    // 宣告就绪 (ready=true): 幂等早返回必须保留 ready, 复用路径会把 ready 复位为 false
+    auto ready_meta =
+        shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
+    auto ready_writer = shm::MultiWriter::create(
+        std::make_shared<shm::ChannelMeta>(std::move(ready_meta)), "md_ready_sim");
+    ASSERT_TRUE(
+        platform::write_ext_inst_raw(ready_writer, DZ_FRAME_NOTIFY_MD_STARTED, "md_running"));
+    mgr.drain_event_channel();
+    ASSERT_TRUE(state->ready);
+
+    // Running 状态重复 create: 幂等早返回, 不重建、不清 readers、不改 page_size
+    EXPECT_NO_THROW(mgr.create_md_channel("md_running"));
+
+    auto* again = mgr.md_channel_state("md_running");
+    ASSERT_NE(again, nullptr);
+    EXPECT_EQ(again->last_page_size, 2u * 1024 * 1024);
+    EXPECT_TRUE(again->ready) << "running channel must not be re-initialized (ready kept)";
+    auto meta = shm::ChannelMeta::open_only("md_running", dztrader::paths::shm());
+    EXPECT_EQ(meta.page_size(), 2u * 1024 * 1024);
+    auto names = meta.reader_names();
+    EXPECT_NE(std::find(names.begin(), names.end(), "stg.alpha"), names.end());
+
+    // 回收 /dev/shm 内核命名对象 (新增通道名)
+    mgr.release_all();
+    shm::test::cleanup_channel("md_running", dztrader::paths::shm());
+}
+
+// ============================================================================
+// PRELOAD_EVENT_SHM (契约 shm): maintenance tick 与 preload_points 命中
+// ============================================================================
+
+TEST_F(ShmManagerTest, EventMaintenanceTickWritesPreloadFrame) {
+    ShmManager mgr(make_default_shm_global(), cfg_path_);
+    // reader 注册在 tick 之前 (只看到注册后的帧)
+    shm::Reader reader =
+        shm::Reader::create(shm::channel_name("dzevent"), dztrader::paths::shm(), "preload_probe");
+
+    mgr.run_event_maintenance_tick();
+
+    bool seen = false;
+    for (int i = 0; i < 32; ++i) {
+        const auto* frame = reader.next_frame();
+        if (!frame) break;
+        shm::FrameView view(frame);
+        if (view.type() != DZ_FRAME_PRELOAD_EVENT_SHM) continue;
+        const DzShmPreload params = view.payload<DzShmPreload>();
+        EXPECT_EQ(params.pages, 1u);  // dztraderd.json: check_pages=1
+        EXPECT_EQ(params.bytes, 0u);  // check_bytes=0
+        seen = true;
+    }
+    EXPECT_TRUE(seen) << "maintenance tick must broadcast PRELOAD_EVENT_SHM";
+}
+
+TEST_F(ShmManagerTest, PreloadPointMatchWritesPreloadFrame) {
+    const std::string now_hhmm = dztrader::DateTime::local_now().to_string("%H:%M");
+    nlohmann::json cfg = {{"log", nlohmann::json::object()},
+                          {"master", nlohmann::json::object()},
+                          {"shm",
+                           {{"meta_file_size", 1 * 1024 * 1024},
+                            {"event",
+                             {{"page_size_mb", 1},
+                              {"preload_points", {{now_hhmm, {{"pages", 2}, {"bytes", 0}}}}},
+                              {"check_interval_min", 5},
+                              {"check_pages", 0},
+                              {"check_bytes", 0}}}}}};
+    std::ofstream(cfg_path_) << cfg.dump(2);
+
+    ShmManager mgr(make_default_shm_global(), cfg_path_);
+    shm::Reader reader = shm::Reader::create(shm::channel_name("dzevent"), dztrader::paths::shm(),
+                                             "preload_point_probe");
+
+    mgr.on_event_preload_points_tick();
+
+    bool seen = false;
+    for (int i = 0; i < 32; ++i) {
+        const auto* frame = reader.next_frame();
+        if (!frame) break;
+        shm::FrameView view(frame);
+        if (view.type() != DZ_FRAME_PRELOAD_EVENT_SHM) continue;
+        const DzShmPreload params = view.payload<DzShmPreload>();
+        EXPECT_EQ(params.pages, 2u);  // 命中 preload_points 的 pages
+        EXPECT_EQ(params.bytes, 0u);
+        seen = true;
+    }
+    EXPECT_TRUE(seen) << "preload point " << now_hhmm << " must broadcast PRELOAD_EVENT_SHM";
 }
 
 TEST_F(ShmManagerTest, MasterHandlesSetLogLevelForSelf) {
@@ -306,73 +539,43 @@ TEST_F(ShmManagerTest, ReadMdPageSizeReturnsNulloptOnMalformedJson) {
     EXPECT_FALSE(size.has_value());
 }
 
-TEST_F(ShmManagerTest, SetSupervisorStoresPointer) {
-    ShmManager mgr(make_default_shm_global(), cfg_path_);
-    // 不能构造真正的 ProcessSupervisor (需要 io_context 等), 只验证 set_supervisor 可调用
-    // 用 nullptr 验证存储语义
-    mgr.set_supervisor(nullptr);
-    // 无 crash 即通过; 真正集成在 main.cpp 中
-}
-
-// ============================================================================
-// start_event_shm_maintenance / reschedule_event_shm_maintenance 测试
-// ============================================================================
-
-// I3-1: start_event_shm_maintenance 幂等性 — 重复调用不应崩溃或创建重复定时器
-// 验证方式: 第二次调用应走 "already started" 分支, recycle lambda 不被重复投递
-// poll 一次 io_context 确认无异常
-TEST_F(ShmManagerTest, StartEventShmMaintenanceIsIdempotent) {
-    ShmManager mgr(make_default_shm_global(), cfg_path_);
-
-    boost::asio::io_context ioc;
-    mgr.start_event_shm_maintenance(ioc);
-    mgr.start_event_shm_maintenance(ioc);  // 第二次调用应被忽略
-
-    // poll 不应崩溃 (定时器未到期, 但 poll 安全即可)
-    ioc.poll();
-    // 清理 (取消定时器, 避免析构时回调访问已销毁的 mgr)
-    mgr.release_all();
-    SUCCEED();  // 主要验证不崩溃
-}
-
-// I3-2: 不调 start 直接 reschedule 应是 no-op, 不崩溃
-// 验证 timer 为 null 时的早返回路径
-TEST_F(ShmManagerTest, RescheduleEventShmMaintenanceWithoutStartIsNoOp) {
-    ShmManager mgr(make_default_shm_global(), cfg_path_);
-    // 不调 start_event_shm_maintenance, 直接 reschedule
-    // 应该是 no-op (timer_ 为 null), 不崩溃
-    mgr.reschedule_event_shm_maintenance();
-    SUCCEED();
-}
-
-// I3-3: check_interval_min=0 时 start 不应创建 event_maintenance_timer_
-// 但 preload_points_timer_ 仍应被创建 (独立于 check_interval_min)
-// 验证方式: reschedule (check_interval_min=0) 不应崩溃, release_all 清理两个 timer
-TEST_F(ShmManagerTest, StartEventShmMaintenanceWithZeroIntervalIsDisabled) {
-    // check_interval_min = 0 (禁用周期检查)
-    nlohmann::json cfg = {{"log", {{"level", "info"}, {"flush_on", "warning"}}},
-                          {"master", {{"single_stop_timeout_sec", 3}}},
-                          {"shm",
-                           {{"meta_file_size", 1 * 1024 * 1024},
-                            {"event",
-                             {{"page_size_mb", 1},
-                              {"preload_points", nlohmann::json::object()},
-                              {"check_interval_min", 0},
-                              {"check_pages", 1},
-                              {"check_bytes", 0}}}}}};
+// set_supervisor 的可观察行为: 注入后加载 store 初始镜像 (display_name 真相源)
+TEST_F(ShmManagerTest, SetSupervisorLoadsInitialProcessConfigMirror) {
+    nlohmann::json cfg = {
+        {"log", nlohmann::json::object()},
+        {"master", nlohmann::json::object()},
+        {"shm",
+         {{"meta_file_size", 1 * 1024 * 1024},
+          {"event",
+           {{"page_size_mb", 1},
+            {"preload_points", nlohmann::json::object()},
+            {"check_interval_min", 5},
+            {"check_pages", 1},
+            {"check_bytes", 0}}}}},
+        {"md",
+         {{"dzmd_ctp",
+           {{"args", nlohmann::json::array()},
+            {"env", nlohmann::json::object()},
+            {"restart", {{"enabled", false}, {"max_attempts", 0}, {"backoff_sec", 5}}},
+            {"display_name", "CTP行情"}}}}}};
     std::ofstream(cfg_path_) << cfg.dump(2);
 
     ShmManager mgr(make_default_shm_global(), cfg_path_);
+    // 未注入 supervisor: 无 registry 可读, 镜像为空
+    EXPECT_EQ(mgr.display_name_of("dzmd_ctp"), "");
 
+    ProcessRegistry registry;
+    registry.load(cfg_path_);
     boost::asio::io_context ioc;
-    mgr.start_event_shm_maintenance(ioc);  // 应走 "disabled" 分支, 不创建 event_maintenance_timer_
+    OrphanGuard orphan_guard;
+    ProcessSupervisor supervisor(ioc, registry, mgr, orphan_guard);
+    mgr.set_supervisor(&supervisor);
 
-    // reschedule 也应走 "stopped" 分支 (timer 为 null)
-    mgr.reschedule_event_shm_maintenance();
-
-    // release_all 应安全 (preload_points_timer_ 仍存在, 需 cancel)
-    mgr.release_all();
-    SUCCEED();
+    // 注入后初始镜像来自 registry (契约 process: store 镜像为 display_name 真相源)
+    EXPECT_EQ(mgr.display_name_of("dzmd_ctp"), "CTP行情");
+    const auto* entry = mgr.process_config_store().find("dzmd_ctp");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ((*entry)["display_name"], "CTP行情");
 }
 
 // ============================================================================
@@ -474,13 +677,18 @@ protected:
         w.notify_subscribers();
     }
     // 排空 reader 并收集所有帧 (type -> payloads; 空 payload 帧记为空 json)
+    // order 非空时按写入顺序追加帧类型 (断言跨类型顺序, map 会丢失顺序)
     // 注意: 帧可能带 instance_id (如 RTN_LOG_CONFIG) — 按帧类型选择解析入口
-    std::map<DzFrameType, std::vector<nlohmann::json>> drain_all(shm::Reader& reader) {
+    std::map<DzFrameType, std::vector<nlohmann::json>> drain_all(
+        shm::Reader& reader, std::vector<DzFrameType>* order = nullptr) {
         std::map<DzFrameType, std::vector<nlohmann::json>> frames;
         for (int i = 0; i < 128; ++i) {
             const auto* frame = reader.next_frame();
             if (!frame) break;
             shm::FrameView view(frame);
+            if (order != nullptr) {
+                order->push_back(view.type());
+            }
             const bool has_inst =
                 (view.type() != DZ_FRAME_PRELOAD_EVENT_SHM &&
                  view.type() != DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER &&
@@ -733,7 +941,8 @@ TEST_F(ProcessControlFrameTest, StartUnregisteredGatewayDynamicallyRegistersAndS
         shm_mgr_->drain_event_channel();
     }
     {
-        auto frames = drain_all(reader);
+        std::vector<DzFrameType> order;
+        auto frames = drain_all(reader, &order);
         // 118 全量含新条目 (dzweb 注册守卫依赖; 必须先于 116)
         auto cit = frames.find(DZ_FRAME_RTN_PROCESS_CONFIG);
         ASSERT_NE(cit, frames.end());
@@ -747,6 +956,12 @@ TEST_F(ProcessControlFrameTest, StartUnregisteredGatewayDynamicallyRegistersAndS
         EXPECT_EQ(status["name"], gw_name_);
         EXPECT_EQ(status["event"], "StartSucceeded");
         EXPECT_EQ(status["state"], "Running");
+        // 契约 process: 帧顺序固定, 118 先于 116 (drain_all 的 map 丢顺序, 用 order 断言)
+        auto cfg_pos = std::find(order.begin(), order.end(), DZ_FRAME_RTN_PROCESS_CONFIG);
+        auto status_pos = std::find(order.begin(), order.end(), DZ_FRAME_RTN_PROCESS_STATUS);
+        ASSERT_NE(cfg_pos, order.end());
+        ASSERT_NE(status_pos, order.end());
+        EXPECT_LT(cfg_pos, status_pos) << "RTN_PROCESS_CONFIG must precede RTN_PROCESS_STATUS";
     }
     // registry 已含新条目
     EXPECT_NE(supervisor_->find_registry_entry(gw_name_), nullptr);
@@ -954,7 +1169,8 @@ void write_md_reader_frame(shm::MultiWriter& w,
 
 }  // namespace
 
-// 注册成功: 身份校验通过 + 通道存在 -> readers map 新增条目 + 下发 UPDATE_SHM_MD_SUBSCRIBER
+// 注册成功: 身份校验通过 + 通道存在 -> readers map 新增条目 + 先广播
+// UPDATE_SHM_MD_SUBSCRIBER (instance_id=通道名) 再回 RTN (契约 shm 固定时序)
 TEST_F(ProcessControlFrameTest, MdReaderRegisterAddsReaderAndNotifies) {
     register_strategy_for_test(registry_, "alpha");
     shm_mgr_->create_md_channel("dzmd_ctp");
@@ -962,12 +1178,26 @@ TEST_F(ProcessControlFrameTest, MdReaderRegisterAddsReaderAndNotifies) {
     auto writer = create_writer("stg_sim");
     mark_channel_ready(writer, "dzmd_ctp");
     shm_mgr_->drain_event_channel();
+    shm::Reader probe = create_reader("md_register_notify_probe");
     write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp", "stg.alpha");
     shm_mgr_->drain_event_channel();
 
     auto meta = shm::ChannelMeta::open_only("dzmd_ctp", dztrader::paths::shm());
     auto names = meta.reader_names();
     EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") != names.end());
+
+    // 按写入顺序收集帧, 断言 UPDATE 先于 RTN
+    std::vector<DzFrameType> seq;
+    for (int i = 0; i < 32; ++i) {
+        const auto* frame = probe.next_frame();
+        if (!frame) break;
+        seq.push_back(shm::FrameView(frame).type());
+    }
+    auto update_pos = std::find(seq.begin(), seq.end(), DZ_FRAME_UPDATE_SHM_MD_SUBSCRIBER);
+    auto rtn_pos = std::find(seq.begin(), seq.end(), DZ_FRAME_RTN_MD_READER_REGISTER);
+    ASSERT_NE(update_pos, seq.end()) << "register success must broadcast UPDATE_SHM_MD_SUBSCRIBER";
+    ASSERT_NE(rtn_pos, seq.end()) << "register success must reply RTN_MD_READER_REGISTER";
+    EXPECT_LT(update_pos, rtn_pos) << "UPDATE must precede RTN (契约 shm 固定时序)";
 }
 
 // 身份校验: 未注册的 subscriber 被拒绝, 且回 RTN 精确文案 "unknown subscriber"
@@ -1252,10 +1482,11 @@ TEST_F(ProcessControlFrameTest, MdReaderUnregisterMissingChannelReturnsOkRtn) {
 }
 
 // 停止后果: close_md_channel 标记 Stopped 但保留读者表与句柄 (契约 4.3/4.7,
-// 策略 reader 与进程同生命周期, PageCleaner 仍需遍历); 未就绪时读者接入被拒;
-// 重建+就绪后可再接入。
+// 策略 reader 与进程同生命周期, PageCleaner 仍需遍历); 关闭态拒绝**未注册读者**
+// (ok=false + "market process not running"); 重建+就绪后可再接入 (ok=true)。
 TEST_F(ProcessControlFrameTest, CloseMdChannelKeepsReadersAndRejectsUntilReady) {
     register_strategy_for_test(registry_, "alpha");
+    register_strategy_for_test(registry_, "beta");
     shm_mgr_->create_md_channel("dzmd_ctp");
 
     auto writer = create_writer("stg_sim");
@@ -1275,26 +1506,52 @@ TEST_F(ProcessControlFrameTest, CloseMdChannelKeepsReadersAndRejectsUntilReady) 
         EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") != names.end());
     }
 
-    // 关闭(Stopped)后接入被拒 (行情进程未运行), 不新增读者
-    write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp", "stg.alpha");
+    // 关闭态请求: 用尚未在 readers 表的 beta (add_reader 不幂等), 关闭校验失效即可观察到
+    shm::Reader probe = create_reader("closed_register_probe");
+    write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp", "stg.beta");
     shm_mgr_->drain_event_channel();
     {
         auto meta = shm::ChannelMeta::open_only("dzmd_ctp", dztrader::paths::shm());
         auto names = meta.reader_names();
-        EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") != names.end());
+        EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.beta") == names.end());
     }
+    bool rejected = false;
+    for (int i = 0; i < 16; ++i) {
+        const auto* frame = probe.next_frame();
+        if (!frame) break;
+        shm::FrameView view(frame);
+        if (view.type() == DZ_FRAME_RTN_MD_READER_REGISTER &&
+            std::string_view(view.ext_inst_id()) == "stg.beta") {
+            auto j = shm::decode_ext_inst_json<nlohmann::json>(view);
+            rejected = !j.value("ok", true) &&
+                       j.value("message", std::string{}) == "market process not running";
+        }
+    }
+    EXPECT_TRUE(rejected) << "closed channel must reject register with ok=false";
 
-    // 重建 (重启路径) + 就绪后接入成功
+    // 重建 (重启路径) + 就绪后接入成功: beta 新入表 + RTN ok=true
     shm_mgr_->create_md_channel("dzmd_ctp");
     mark_channel_ready(writer, "dzmd_ctp");
     shm_mgr_->drain_event_channel();
-    write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp", "stg.alpha");
+    write_md_reader_frame(writer, DZ_FRAME_REQUEST_MD_READER_REGISTER, "dzmd_ctp", "stg.beta");
     shm_mgr_->drain_event_channel();
     {
         auto meta = shm::ChannelMeta::open_only("dzmd_ctp", dztrader::paths::shm());
         auto names = meta.reader_names();
-        EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.alpha") != names.end());
+        EXPECT_TRUE(std::find(names.begin(), names.end(), "stg.beta") != names.end());
     }
+    bool accepted = false;
+    for (int i = 0; i < 16; ++i) {
+        const auto* frame = probe.next_frame();
+        if (!frame) break;
+        shm::FrameView view(frame);
+        if (view.type() == DZ_FRAME_RTN_MD_READER_REGISTER &&
+            std::string_view(view.ext_inst_id()) == "stg.beta") {
+            auto j = shm::decode_ext_inst_json<nlohmann::json>(view);
+            accepted = j.value("ok", false) && j.value("channel", "") == "dzmd_ctp";
+        }
+    }
+    EXPECT_TRUE(accepted) << "reopened+ready channel must accept register with ok=true";
 }
 
 // 移除语义: destroy_md_channel 清读者+删通道目录+删条目, 再注册回 channel not configured
@@ -1330,11 +1587,19 @@ TEST_F(ProcessControlFrameTest, DestroyMdChannelRemovesFilesAndEntry) {
     EXPECT_TRUE(rtn_conf);
 }
 
-// destroy 幂等: 重复调用不抛、无副作用
+// destroy 幂等: 重复调用不抛、通道持续不存在 (不复活/不重建)
 TEST_F(ProcessControlFrameTest, DestroyMdChannelIdempotent) {
     shm_mgr_->create_md_channel("dzmd_ctp");
+    const auto ch_dir = dztrader::paths::shm() / "dzmd_ctp";
+    ASSERT_TRUE(std::filesystem::exists(ch_dir));
+
     shm_mgr_->destroy_md_channel("dzmd_ctp");
+    EXPECT_EQ(shm_mgr_->md_channel_state("dzmd_ctp"), nullptr);
+    EXPECT_FALSE(std::filesystem::exists(ch_dir));
+
     EXPECT_NO_THROW(shm_mgr_->destroy_md_channel("dzmd_ctp"));  // 条目不存在 no-op
+    EXPECT_EQ(shm_mgr_->md_channel_state("dzmd_ctp"), nullptr);
+    EXPECT_FALSE(std::filesystem::exists(ch_dir));
 }
 
 // page_size 变更约束 (契约 4.8): 存在运行中绑定策略时拒绝启动 md (错误信息列出策略名);
@@ -1469,10 +1734,11 @@ TEST_F(ProcessControlFrameTest, RemoveInactiveGatewayFinalizesFully) {
     EXPECT_FALSE(cfg.contains("md") && cfg["md"].contains("dzmd_ctp"));
 
     // 帧序(写入顺序): DZ_FRAME_RTN_PROCESS_CONFIG(条目消失) -> DZ_FRAME_RTN_PROCESS_STATUS 自发
-    // Stopped -> DZ_FRAME_RTN_PROCESS_STATUS RemoveSucceeded。 一次性收集后断言: 118 先于 116 写入,
-    // 顺序 next_frame 扫描会先消费掉 118。 event 为 optional, 缺失时序列化省略该字段
+    // Stopped -> DZ_FRAME_RTN_PROCESS_STATUS RemoveSucceeded。 一次性收集后断言: 118 先于 116 写入;
+    // order 保留跨类型顺序 (map 按类型分组会丢顺序)。 event 为 optional, 缺失时序列化省略该字段
     // (platform/process.h to_json), value("event", "") 对自发帧返回空串、对请求帧返回事件名字符串。
-    auto frames = drain_all(reader);
+    std::vector<DzFrameType> order;
+    auto frames = drain_all(reader, &order);
     // 116: RemoveSucceeded + Stopped
     bool remove_ok = false;
     auto it = frames.find(DZ_FRAME_RTN_PROCESS_STATUS);
@@ -1489,6 +1755,13 @@ TEST_F(ProcessControlFrameTest, RemoveInactiveGatewayFinalizesFully) {
     auto cit = frames.find(DZ_FRAME_RTN_PROCESS_CONFIG);
     ASSERT_NE(cit, frames.end());
     EXPECT_FALSE(cit->second.back().contains("dzmd_ctp"));
+
+    // 契约 process: 118 先于 116
+    auto cfg_pos = std::find(order.begin(), order.end(), DZ_FRAME_RTN_PROCESS_CONFIG);
+    auto status_pos = std::find(order.begin(), order.end(), DZ_FRAME_RTN_PROCESS_STATUS);
+    ASSERT_NE(cfg_pos, order.end());
+    ASSERT_NE(status_pos, order.end());
+    EXPECT_LT(cfg_pos, status_pos) << "RTN_PROCESS_CONFIG must precede RTN_PROCESS_STATUS";
 
     // 二次 Remove 不幂等: RemoveFailed (registry/store 已全清, 与契约 process 一致)
     write_process_control_frame(writer, platform::ProcessAction::Remove, "dzmd_ctp");
@@ -1576,6 +1849,39 @@ TEST_F(ShmManagerTest, AccountStatusFrameBuildsMirror) {
 
     // 镜像命中: 无任何 2018 应答 (该网关 td 会权威应答)
     EXPECT_TRUE(collect_account_status_frames(reader).empty());
+}
+
+// 2018 Offline 移除分支 (契约 account-status): 真实网关名的 Offline 帧从镜像移除该账户,
+// 之后 2115 查询走 master 兜底 (gateway_name="")
+TEST_F(ShmManagerTest, AccountStatusOfflineRemovesFromMirror) {
+    ShmManager mgr(make_default_shm_global(), cfg_path_);
+
+    auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
+    auto writer =
+        shm::MultiWriter::create(std::make_shared<shm::ChannelMeta>(std::move(meta)), "fake_td");
+    write_account_status_frame(writer, "dztd_ctp", "CTP001", DZ_ACCOUNT_READY);
+    for (int i = 0; i < 10; ++i) {
+        mgr.drain_event_channel();
+    }
+    // td 主动断开/删账户: 同账户 Offline 帧 (gateway_name=真实网关名) 必从镜像移除
+    write_account_status_frame(writer, "dztd_ctp", "CTP001", DZ_ACCOUNT_OFFLINE);
+    for (int i = 0; i < 10; ++i) {
+        mgr.drain_event_channel();
+    }
+
+    shm::Reader reader = shm::Reader::create(shm::channel_name("dzevent"), dztrader::paths::shm(),
+                                             "offline_mirror_probe");
+    write_query_account_status_frame(writer, "CTP001");
+    for (int i = 0; i < 10; ++i) {
+        mgr.drain_event_channel();
+    }
+
+    // 镜像已移除: master 兜底回 Offline, gateway_name="" 标记非权威应答
+    auto frames = collect_account_status_frames(reader);
+    ASSERT_EQ(frames.size(), 1u);
+    EXPECT_STREQ(frames[0].account_id, "CTP001");
+    EXPECT_STREQ(frames[0].gateway_name, "");
+    EXPECT_EQ(frames[0].state, DZ_ACCOUNT_OFFLINE);
 }
 
 // 2115 未命中: 查询账户不在任何网关镜像中 -> master 兜底回 Offline (gateway_name="")

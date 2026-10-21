@@ -167,6 +167,8 @@ TEST_F(ProcessConfigStoreTest, SetProcessConfigPersistFailureKeepsMirror) {
     store_->load({{"dzmd_ctp", make_full_cfg()}});
     EXPECT_THROW(store_->set_process_config("dzmd_ctp", nlohmann::json{{"display_name", "新"}}),
                  std::runtime_error);
+    // 失败点钉在 persist：它必须已被调用一次（校验阶段提前抛则本断言变红）
+    ASSERT_EQ(persist_calls_.size(), 1u);
     EXPECT_TRUE(apply_calls_.empty());  // apply 未调用
     // 镜像不变（display_name 未被设置——make_full_cfg() 空名时不带该字段）
     EXPECT_FALSE((*store_->find("dzmd_ctp")).contains("display_name"));
@@ -211,14 +213,149 @@ TEST_F(ProcessConfigStoreTest, RemoveUnknownTargetThrows) {
     EXPECT_TRUE(persist_calls_.empty());
 }
 
+TEST_F(ProcessConfigStoreTest, RemovePersistFailureKeepsMirror) {
+    store_.reset();
+    store_.emplace(
+        *writer_,
+        [this](const std::string& name, const nlohmann::json& full) {
+            persist_calls_.push_back({name, full});
+            throw std::runtime_error("disk full");
+        },
+        [this](const std::string& name, const nlohmann::json& full) {
+            apply_calls_.push_back({name, full});
+        });
+    store_->load({{"dzmd_ctp", make_full_cfg("旧名")}});
+
+    EXPECT_THROW(store_->remove("dzmd_ctp"), std::runtime_error);
+    // persist 已尝试且失败；apply 未调用；镜像条目保留
+    ASSERT_EQ(persist_calls_.size(), 1u);
+    EXPECT_TRUE(persist_calls_[0].full.is_null());
+    EXPECT_TRUE(apply_calls_.empty());
+    const auto* kept = store_->find("dzmd_ctp");
+    ASSERT_NE(kept, nullptr);
+    EXPECT_EQ((*kept)["display_name"], "旧名");
+}
+
+TEST_F(ProcessConfigStoreTest, RemoveApplyFailureKeepsMirror) {
+    store_.reset();
+    store_.emplace(
+        *writer_,
+        [this](const std::string& name, const nlohmann::json& full) {
+            persist_calls_.push_back({name, full});
+        },
+        [this](const std::string& name, const nlohmann::json& full) {
+            apply_calls_.push_back({name, full});
+            throw std::runtime_error("apply failed");
+        });
+    store_->load({{"dzmd_ctp", make_full_cfg("旧名")}});
+
+    EXPECT_THROW(store_->remove("dzmd_ctp"), std::runtime_error);
+    ASSERT_EQ(persist_calls_.size(), 1u);
+    ASSERT_EQ(apply_calls_.size(), 1u);
+    EXPECT_TRUE(apply_calls_[0].full.is_null());
+    // 镜像条目保留（erase 在回调之后, 异常时未执行）
+    const auto* kept = store_->find("dzmd_ctp");
+    ASSERT_NE(kept, nullptr);
+    EXPECT_EQ((*kept)["display_name"], "旧名");
+}
+
+TEST_F(ProcessConfigStoreTest, RegisterProcessAddsEntry) {
+    const auto full = make_full_cfg("新进程");
+    EXPECT_NO_THROW(store_->register_process("dzmd_ctp", full));
+
+    ASSERT_EQ(persist_calls_.size(), 1u);
+    ASSERT_EQ(apply_calls_.size(), 1u);
+    EXPECT_EQ(persist_calls_[0].name, "dzmd_ctp");
+    EXPECT_EQ(persist_calls_[0].full["display_name"], "新进程");
+    EXPECT_EQ(apply_calls_[0].full["display_name"], "新进程");
+    const auto* stored = store_->find("dzmd_ctp");
+    ASSERT_NE(stored, nullptr);
+    EXPECT_EQ((*stored)["display_name"], "新进程");
+    // 全量字段组齐全（契约 process: args/env/restart 必现）
+    EXPECT_TRUE((*stored)["args"].is_array());
+    EXPECT_TRUE((*stored)["env"].is_object());
+    EXPECT_TRUE((*stored)["restart"].is_object());
+}
+
+TEST_F(ProcessConfigStoreTest, RegisterProcessDuplicateThrows) {
+    store_->load({{"dzmd_ctp", make_full_cfg("原名")}});
+
+    nlohmann::json dup = make_full_cfg("重复名");
+    EXPECT_THROW(store_->register_process("dzmd_ctp", dup), std::runtime_error);
+
+    // 已存在即失败：无回调、镜像保持原值
+    EXPECT_TRUE(persist_calls_.empty());
+    EXPECT_TRUE(apply_calls_.empty());
+    const auto* kept = store_->find("dzmd_ctp");
+    ASSERT_NE(kept, nullptr);
+    EXPECT_EQ((*kept)["display_name"], "原名");
+}
+
+TEST_F(ProcessConfigStoreTest, RegisterProcessInvalidConfigThrows) {
+    // 缺 args/env/restart 的必填字段组 → 校验失败
+    nlohmann::json invalid = {{"display_name", "坏配置"}};
+    EXPECT_THROW(store_->register_process("dzmd_ctp", invalid), std::runtime_error);
+
+    EXPECT_TRUE(persist_calls_.empty());
+    EXPECT_TRUE(apply_calls_.empty());
+    EXPECT_EQ(store_->find("dzmd_ctp"), nullptr);
+}
+
+TEST_F(ProcessConfigStoreTest, RegisterProcessPersistFailureKeepsMirror) {
+    store_.reset();
+    store_.emplace(
+        *writer_,
+        [this](const std::string& name, const nlohmann::json& full) {
+            persist_calls_.push_back({name, full});
+            throw std::runtime_error("disk full");
+        },
+        [this](const std::string& name, const nlohmann::json& full) {
+            apply_calls_.push_back({name, full});
+        });
+
+    EXPECT_THROW(store_->register_process("dzmd_ctp", make_full_cfg("新进程")), std::runtime_error);
+
+    ASSERT_EQ(persist_calls_.size(), 1u);
+    EXPECT_TRUE(apply_calls_.empty());
+    EXPECT_EQ(store_->find("dzmd_ctp"), nullptr);
+}
+
 TEST_F(ProcessConfigStoreTest, RtnProcessConfigWritesFullMap) {
-    store_->load({{"dzmd_ctp", make_full_cfg("CTP行情")}, {"dztd_ctp", make_full_cfg("CTP交易")}});
+    nlohmann::json md = make_full_cfg("CTP行情");
+    md["args"] = {"--name", "dzmd_ctp"};
+    md["env"] = {{"MD_KEY", "MD_VAL"}};
+    store_->load({{"dzmd_ctp", md}, {"dztd_ctp", make_full_cfg("CTP交易")}});
     store_->rtn_process_config();
     auto payload = last_rtn_payload();
     ASSERT_TRUE(payload.has_value());
     EXPECT_EQ(payload->size(), 2u);  // 全量（两个进程）
-    EXPECT_EQ((*payload)["dzmd_ctp"]["display_name"], "CTP行情");
-    EXPECT_EQ((*payload)["dztd_ctp"]["display_name"], "CTP交易");
+
+    // 契约 process: 全量角色下 args/env/restart 必须出现
+    const auto& md_out = (*payload)["dzmd_ctp"];
+    ASSERT_TRUE(md_out["args"].is_array());
+    ASSERT_EQ(md_out["args"].size(), 2u);
+    EXPECT_EQ(md_out["args"][0], "--name");
+    EXPECT_EQ(md_out["args"][1], "dzmd_ctp");
+    ASSERT_TRUE(md_out["env"].is_object());
+    EXPECT_EQ(md_out["env"]["MD_KEY"], "MD_VAL");
+    ASSERT_TRUE(md_out["restart"].is_object());
+    ASSERT_TRUE(md_out["restart"].contains("enabled"));
+    ASSERT_TRUE(md_out["restart"].contains("max_attempts"));
+    ASSERT_TRUE(md_out["restart"].contains("backoff_sec"));
+    EXPECT_EQ(md_out["restart"]["enabled"], true);
+    EXPECT_EQ(md_out["restart"]["max_attempts"], 5);
+    EXPECT_EQ(md_out["restart"]["backoff_sec"], 5);
+    EXPECT_EQ(md_out["display_name"], "CTP行情");
+
+    // 第二个条目同样必须携带三个必现字段组
+    const auto& td_out = (*payload)["dztd_ctp"];
+    EXPECT_TRUE(td_out["args"].is_array());
+    EXPECT_TRUE(td_out["env"].is_object());
+    ASSERT_TRUE(td_out["restart"].is_object());
+    EXPECT_TRUE(td_out["restart"].contains("enabled"));
+    EXPECT_TRUE(td_out["restart"].contains("max_attempts"));
+    EXPECT_TRUE(td_out["restart"].contains("backoff_sec"));
+    EXPECT_EQ(td_out["display_name"], "CTP交易");
 }
 
 TEST_F(ProcessConfigStoreTest, FindReturnsNullForUnknown) {
