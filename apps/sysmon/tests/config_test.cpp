@@ -123,12 +123,12 @@ TEST_F(ConfigTest, LoadRejectsBrokenJson) {
         std::ofstream ofs(cfg_path_, std::ios::binary | std::ios::trunc);
         ofs << "{not valid json";
     }
-    EXPECT_THROW(load_config(cfg_path_), std::runtime_error);
+    EXPECT_THROW((void)load_config(cfg_path_), std::runtime_error);
 }
 
 TEST_F(ConfigTest, LoadRejectsNonObjectRoot) {
     write_json(cfg_path_, nlohmann::json::array({1, 2, 3}));
-    EXPECT_THROW(load_config(cfg_path_), std::runtime_error);
+    EXPECT_THROW((void)load_config(cfg_path_), std::runtime_error);
 }
 
 TEST_F(ConfigTest, StorePatchMergesNestedObjects) {

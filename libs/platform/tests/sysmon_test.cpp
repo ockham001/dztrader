@@ -226,10 +226,15 @@ TEST(SysmonConfigTest, ApplyPatchMergesAndValidates) {
     EXPECT_EQ(merged["realtime"]["push_interval_sec"], 10);
     EXPECT_EQ(merged["sampling"]["measure_interval_ms"], 1000);  // 未提及字段保留
 
-    EXPECT_THROW(SysmonConfig::apply_patch(current, {{"realtime", {{"push_interval_sec", 0}}}}),
+    // [[nodiscard]] 返回值在 EXPECT_THROW 中被丢弃：显式 (void) 规避 MSVC C4834
+    // （Release /WX 下会升级为 C2220 错误）。
+    EXPECT_THROW(
+        (void)SysmonConfig::apply_patch(current, {{"realtime", {{"push_interval_sec", 0}}}}),
+        std::runtime_error);
+    EXPECT_THROW((void)SysmonConfig::apply_patch(current, {{"extra", nullptr}}),
                  std::runtime_error);
-    EXPECT_THROW(SysmonConfig::apply_patch(current, {{"extra", nullptr}}), std::runtime_error);
-    EXPECT_THROW(SysmonConfig::apply_patch(current, nlohmann::json::array()), std::runtime_error);
+    EXPECT_THROW((void)SysmonConfig::apply_patch(current, nlohmann::json::array()),
+                 std::runtime_error);
 }
 
 // 契约 sysmon §2.5：Windows 平台描述必须含 build 号（区分 Win10/Win11）。
