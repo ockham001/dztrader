@@ -98,6 +98,48 @@ protected:
     }
 };
 
+// 网卡信息的 C++ 字段名避开 Windows `interface` 宏，但 JSON 键必须是契约的 `interface`。
+TEST(SysmonSnapshotJsonTest, NetworkInfoSerializationKeepsContractKeys) {
+    SysmonNetworkInfo network;
+    network.interface_name = "eth0";
+    network.rx_bytes_total = 100;
+    network.tx_bytes_total = 200;
+    network.rx_bytes_per_sec = 1.5;
+    network.is_virtual = true;
+
+    const nlohmann::json j = network;
+    EXPECT_EQ(j["interface"], "eth0");
+    EXPECT_FALSE(j.contains("interface_name"));
+    EXPECT_EQ(j["rx_bytes_total"], 100);
+    EXPECT_DOUBLE_EQ(j["rx_bytes_per_sec"].get<double>(), 1.5);
+    EXPECT_TRUE(j["is_virtual"].get<bool>());
+
+    const auto decoded = j.get<SysmonNetworkInfo>();
+    EXPECT_EQ(decoded.interface_name, "eth0");
+    EXPECT_EQ(decoded.tx_bytes_total, 200u);
+    ASSERT_TRUE(decoded.rx_bytes_per_sec.has_value());
+    EXPECT_DOUBLE_EQ(*decoded.rx_bytes_per_sec, 1.5);
+    EXPECT_TRUE(decoded.is_virtual);
+}
+
+// 含网卡条目的快照应通过契约校验（network[] 的 `interface` 键与 per-entry 规则）。
+TEST(SysmonSnapshotValidateTest, AcceptsNetworkEntries) {
+    auto snap = make_snapshot();
+    auto j = nlohmann::json(snap);
+    j["network"] = nlohmann::json::array({{{"interface", "eth0"},
+                                           {"rx_bytes_total", 1},
+                                           {"tx_bytes_total", 2},
+                                           {"rx_bytes_per_sec", 0.5},
+                                           {"tx_bytes_per_sec", nullptr},
+                                           {"rx_errors_per_sec", nullptr},
+                                           {"tx_errors_per_sec", nullptr},
+                                           {"rx_drops_per_sec", nullptr},
+                                           {"tx_drops_per_sec", nullptr},
+                                           {"is_virtual", false}}});
+    j["availability"]["metrics"]["network"] = {{"available", true}};
+    EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
+}
+
 // 快照 JSON 结构应与契约一致（可选域序列化为 null、availability 不出现 null reason）。
 TEST(SysmonSnapshotJsonTest, DefaultSnapshotShape) {
     const auto snap = make_snapshot();

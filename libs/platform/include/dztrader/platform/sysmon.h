@@ -188,7 +188,9 @@ struct SysmonDiskIoInfo {
 
 /// 每网卡速率与累计量。
 struct SysmonNetworkInfo {
-    std::string interface;
+    /// 网卡名。C++ 字段不叫 `interface`：Windows SDK 的 COM 头（objbase.h）把它
+    /// 定义成 `struct` 宏，包含顺序变化即编译失败；JSON 键仍是契约规定的 `interface`。
+    std::string interface_name;
     uint64_t rx_bytes_total = 0;
     uint64_t tx_bytes_total = 0;
     std::optional<double> rx_bytes_per_sec;
@@ -198,18 +200,40 @@ struct SysmonNetworkInfo {
     std::optional<double> rx_drops_per_sec;
     std::optional<double> tx_drops_per_sec;
     bool is_virtual = false;
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonNetworkInfo,
-                                                interface,
-                                                rx_bytes_total,
-                                                tx_bytes_total,
-                                                rx_bytes_per_sec,
-                                                tx_bytes_per_sec,
-                                                rx_errors_per_sec,
-                                                tx_errors_per_sec,
-                                                rx_drops_per_sec,
-                                                tx_drops_per_sec,
-                                                is_virtual)
 };
+
+// 手写序列化：JSON 键 `interface` ↔ C++ 字段 `interface_name`（Windows `interface` 宏冲突）。
+inline void to_json(nlohmann::json& j, const SysmonNetworkInfo& n) {
+    j = nlohmann::json{{"interface", n.interface_name},
+                       {"rx_bytes_total", n.rx_bytes_total},
+                       {"tx_bytes_total", n.tx_bytes_total},
+                       {"rx_bytes_per_sec", n.rx_bytes_per_sec},
+                       {"tx_bytes_per_sec", n.tx_bytes_per_sec},
+                       {"rx_errors_per_sec", n.rx_errors_per_sec},
+                       {"tx_errors_per_sec", n.tx_errors_per_sec},
+                       {"rx_drops_per_sec", n.rx_drops_per_sec},
+                       {"tx_drops_per_sec", n.tx_drops_per_sec},
+                       {"is_virtual", n.is_virtual}};
+}
+
+inline void from_json(const nlohmann::json& j, SysmonNetworkInfo& n) {
+    n.interface_name = j.at("interface").get<std::string>();
+    n.rx_bytes_total = j.value("rx_bytes_total", uint64_t{0});
+    n.tx_bytes_total = j.value("tx_bytes_total", uint64_t{0});
+    const auto optional_number = [&j](const char* key) -> std::optional<double> {
+        if (!j.contains(key) || j[key].is_null()) {
+            return std::nullopt;
+        }
+        return j[key].get<double>();
+    };
+    n.rx_bytes_per_sec = optional_number("rx_bytes_per_sec");
+    n.tx_bytes_per_sec = optional_number("tx_bytes_per_sec");
+    n.rx_errors_per_sec = optional_number("rx_errors_per_sec");
+    n.tx_errors_per_sec = optional_number("tx_errors_per_sec");
+    n.rx_drops_per_sec = optional_number("rx_drops_per_sec");
+    n.tx_drops_per_sec = optional_number("tx_drops_per_sec");
+    n.is_virtual = j.value("is_virtual", false);
+}
 
 /// 共享内存目录占用。
 struct SysmonShmDirInfo {
