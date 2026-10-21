@@ -190,6 +190,90 @@ TEST(ApplyConfigOpTest, UpdateAccountPasswordEmptyKeepsOld) {
     EXPECT_EQ(cfg.accounts[0].broker.password, "old_pass");
 }
 
+TEST(ApplyConfigOpTest, UpdateAccountUpdatesBrokerAndTopLevelFields) {
+    TdConfig cfg;
+    AccountConfig acct = make_account("a1", "old_name", "old_pass");
+    acct.broker.broker_id = "old_broker";
+    acct.broker.user_id = "old_user";
+    acct.broker.product_info = "old_product";
+    acct.auth_code = "old_auth";
+    acct.app_id = "old_app";
+    acct.flow_dir = "old_flow";
+    acct.currency_id = "CNY";
+    BrokerFrontend old_fe;
+    old_fe.address = "old_addr";
+    old_fe.label = "old_label";
+    old_fe.enabled = true;
+    acct.broker.frontends.push_back(old_fe);
+    cfg.accounts.push_back(acct);
+
+    nlohmann::json frontends = nlohmann::json::array();
+    frontends.push_back({{"address", "new_addr"}, {"label", "new_label"}, {"enabled", false}});
+    auto req = make_req(TdConfigOp::UpdateAccount, {{"account_id", "a1"},
+                                                    {"broker",
+                                                     {{"name", "new_name"},
+                                                      {"broker_id", "new_broker"},
+                                                      {"user_id", "new_user"},
+                                                      {"product_info", "new_product"},
+                                                      {"password", "new_pass"},
+                                                      {"frontends", frontends}}},
+                                                    {"auth_code", "new_auth"},
+                                                    {"app_id", "new_app"},
+                                                    {"flow_dir", "new_flow"},
+                                                    {"currency_id", "USD"}});
+    apply_config_op(cfg, req);
+
+    EXPECT_EQ(cfg.accounts[0].broker.name, "new_name");
+    EXPECT_EQ(cfg.accounts[0].broker.broker_id, "new_broker");
+    EXPECT_EQ(cfg.accounts[0].broker.user_id, "new_user");
+    EXPECT_EQ(cfg.accounts[0].broker.product_info, "new_product");
+    EXPECT_EQ(cfg.accounts[0].broker.password, "new_pass");
+    EXPECT_EQ(cfg.accounts[0].auth_code, "new_auth");
+    EXPECT_EQ(cfg.accounts[0].app_id, "new_app");
+    EXPECT_EQ(cfg.accounts[0].flow_dir, "new_flow");
+    EXPECT_EQ(cfg.accounts[0].currency_id, "USD");
+    // frontends 提供时整体替换 (旧条目被丢弃)
+    ASSERT_EQ(cfg.accounts[0].broker.frontends.size(), 1u);
+    EXPECT_EQ(cfg.accounts[0].broker.frontends[0].address, "new_addr");
+    EXPECT_EQ(cfg.accounts[0].broker.frontends[0].label, "new_label");
+    EXPECT_FALSE(cfg.accounts[0].broker.frontends[0].enabled);
+}
+
+TEST(ApplyConfigOpTest, UpdateAccountOmittedTopLevelFieldsPreserved) {
+    TdConfig cfg;
+    AccountConfig acct = make_account("a1", "broker_name", "old_pass");
+    acct.broker.broker_id = "broker1";
+    acct.broker.user_id = "user1";
+    acct.broker.product_info = "prod1";
+    acct.auth_code = "auth";
+    acct.app_id = "app";
+    acct.flow_dir = "flow";
+    acct.currency_id = "USD";
+    BrokerFrontend fe;
+    fe.address = "addr1";
+    fe.label = "lbl1";
+    fe.enabled = true;
+    acct.broker.frontends.push_back(fe);
+    cfg.accounts.push_back(acct);
+
+    // 仅更新 broker_id, 其余字段 (含 frontends 与顶层四字段) 全部缺省
+    auto req = make_req(TdConfigOp::UpdateAccount,
+                        {{"account_id", "a1"}, {"broker", {{"broker_id", "b2"}}}});
+    apply_config_op(cfg, req);
+
+    EXPECT_EQ(cfg.accounts[0].broker.broker_id, "b2");
+    EXPECT_EQ(cfg.accounts[0].broker.name, "broker_name");
+    EXPECT_EQ(cfg.accounts[0].broker.user_id, "user1");
+    EXPECT_EQ(cfg.accounts[0].broker.product_info, "prod1");
+    EXPECT_EQ(cfg.accounts[0].broker.password, "old_pass");
+    EXPECT_EQ(cfg.accounts[0].auth_code, "auth");
+    EXPECT_EQ(cfg.accounts[0].app_id, "app");
+    EXPECT_EQ(cfg.accounts[0].flow_dir, "flow");
+    EXPECT_EQ(cfg.accounts[0].currency_id, "USD");
+    ASSERT_EQ(cfg.accounts[0].broker.frontends.size(), 1u);
+    EXPECT_EQ(cfg.accounts[0].broker.frontends[0].address, "addr1");
+}
+
 TEST(ApplyConfigOpTest, UpdateAccountNotFoundThrows) {
     // 关键决策: UpdateAccount 不存在抛 std::invalid_argument
     TdConfig cfg;
@@ -226,6 +310,43 @@ TEST(ApplyConfigOpTest, SetAccountCurrency) {
         make_req(TdConfigOp::SetAccountCurrency, {{"account_id", "a1"}, {"currency_id", "USD"}});
     apply_config_op(cfg, req);
     EXPECT_EQ(cfg.accounts[0].currency_id, "USD");
+}
+
+TEST(ApplyConfigOpTest, SetAccountEnabledUnknownIdLeavesAllAccountsUnchanged) {
+    // 目标不存在时静默 no-op: 不得误改首个/任一账户
+    TdConfig cfg;
+    cfg.accounts.push_back(make_account("a1"));
+    cfg.accounts.push_back(make_account("a2"));
+    auto req =
+        make_req(TdConfigOp::SetAccountEnabled, {{"account_id", "missing"}, {"enabled", false}});
+    EXPECT_NO_THROW(apply_config_op(cfg, req));
+    EXPECT_EQ(cfg.accounts.size(), 2u);
+    EXPECT_TRUE(cfg.accounts[0].enabled);
+    EXPECT_TRUE(cfg.accounts[1].enabled);
+}
+
+TEST(ApplyConfigOpTest, SetAccountRiskControlUnknownIdLeavesAllAccountsUnchanged) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_account("a1"));
+    cfg.accounts.push_back(make_account("a2"));
+    auto req =
+        make_req(TdConfigOp::SetAccountRiskControl, {{"account_id", "missing"}, {"enabled", true}});
+    EXPECT_NO_THROW(apply_config_op(cfg, req));
+    EXPECT_EQ(cfg.accounts.size(), 2u);
+    EXPECT_FALSE(cfg.accounts[0].risk_control_enabled);
+    EXPECT_FALSE(cfg.accounts[1].risk_control_enabled);
+}
+
+TEST(ApplyConfigOpTest, SetAccountCurrencyUnknownIdLeavesAllAccountsUnchanged) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_account("a1"));
+    cfg.accounts.push_back(make_account("a2"));
+    auto req = make_req(TdConfigOp::SetAccountCurrency,
+                        {{"account_id", "missing"}, {"currency_id", "USD"}});
+    EXPECT_NO_THROW(apply_config_op(cfg, req));
+    EXPECT_EQ(cfg.accounts.size(), 2u);
+    EXPECT_EQ(cfg.accounts[0].currency_id, "CNY");
+    EXPECT_EQ(cfg.accounts[1].currency_id, "CNY");
 }
 
 // 契约 auto-login 迁移完成: AddSchedule/RemoveSchedule/SetAutoLogin op 已移除,

@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 
 namespace dztrader::ctp {
 namespace {
@@ -92,6 +93,27 @@ TEST_F(TdConfigTest, LoadDefaultsOmittedFields) {
 TEST_F(TdConfigTest, LoadFileNotExistsReturnsDefaults) {
     auto cfg = TdConfig::load(tmp_dir_ / "nonexistent.json", "td");
     EXPECT_TRUE(cfg.accounts.empty());
+    EXPECT_EQ(cfg.qry_account_interval_s, 5);
+    EXPECT_EQ(cfg.qry_position_interval_s, 60);
+    EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);
+    EXPECT_TRUE(cfg.enable_lock_mode);
+}
+
+TEST_F(TdConfigTest, LoadMalformedJsonThrowsWithPath) {
+    path_ = tmp_dir_ / "dztd_ctp.json";
+    std::ofstream ofs(path_);
+    ofs << R"json({"td": {"qry_account_interval_s": )json";  // 截断的非法 JSON
+    ofs.close();
+
+    try {
+        auto cfg = TdConfig::load(path_, "td");
+        (void)cfg;
+        FAIL() << "expected std::runtime_error for malformed json";
+    } catch (const std::runtime_error& e) {
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("parse failed"), std::string::npos) << msg;
+        EXPECT_NE(msg.find(path_.string()), std::string::npos) << msg;
+    }
 }
 
 TEST_F(TdConfigTest, LoadSectionMissingReturnsDefaults) {
@@ -219,10 +241,13 @@ TEST_F(TdConfigTest, ValidateRejectsEmptyAccountId) {
     AccountConfig acct;
     acct.account_id = "";  // 空
     acct.broker.name = "b1";
+    // 显式填好其余必填字段, 隔离校验顺序 (否则会先命中 broker_id empty)
+    acct.broker.broker_id = "broker1";
+    acct.broker.user_id = "user1";
     cfg.accounts.push_back(acct);
     auto err = validate(cfg);
     ASSERT_TRUE(err.has_value());
-    EXPECT_NE(err->find("empty"), std::string::npos);
+    EXPECT_NE(err->find("account_id"), std::string::npos);
 }
 
 TEST_F(TdConfigTest, ValidateRejectsZeroQryInterval) {

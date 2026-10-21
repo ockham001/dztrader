@@ -205,4 +205,12 @@ int32_t epoch_day_from_yyyymmdd(const std::string& yyyymmdd) {
     }
 }
 
+int32_t account_status_trading_day(DzAccountState state, const std::string& trading_day) {
+    // 契约 account-status: Ready 时 = 登录返回交易日, Offline/LoggingIn 恒 0
+    if (state != DZ_ACCOUNT_READY || trading_day.empty()) {
+        return 0;
+    }
+    return epoch_day_from_yyyymmdd(trading_day);
+}
+
 }  // namespace dztrader::ctp

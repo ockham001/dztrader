@@ -895,10 +895,7 @@ void TdApi::write_account_status(const std::string& account_id,
     dztrader::copy_string(status.account_id, account_id.c_str(), true);
     dztrader::copy_string(status.gateway_name, name_.c_str(), true);
     status.state = state;
-    status.trading_day = 0;
-    if (state == DZ_ACCOUNT_READY && !trading_day.empty()) {
-        status.trading_day = epoch_day_from_yyyymmdd(trading_day);
-    }
+    status.trading_day = account_status_trading_day(state, trading_day);
     platform::write_struct(event_writer_, DZ_FRAME_ACCOUNT_STATUS, status);
 }
 
