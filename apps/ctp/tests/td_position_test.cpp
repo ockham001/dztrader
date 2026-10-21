@@ -115,8 +115,9 @@ TEST(PositionHoldingTradeTest, TradeClampsFrozenUntilOrderUpdate) {
     EXPECT_EQ(h.long_frozen(), 5);
     h.apply_trade(make_trade(DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 2, 3950.0));
     EXPECT_EQ(h.long_today(), 3);
-    EXPECT_LE(h.long_frozen(), 3);  // 成交先到也要夹取
-    EXPECT_GE(h.long_available_today(), 0);
+    // 夹取后的精确值: 冻结 = min(原冻结 5, 现持仓 3), 可用 = 0
+    EXPECT_EQ(h.long_frozen(), 3);
+    EXPECT_EQ(h.long_available_today(), 0);
 }
 
 TEST(PositionHoldingTradeTest, ShfeGenericCloseBeyondYdClamps) {
@@ -209,14 +210,34 @@ TEST(PositionHoldingFrozenTest, RebuildIsIdempotent) {
     EXPECT_FALSE(h.rebuild_active_orders(orders).any());  // 周期查询重复种入不刷帧
 }
 
+TEST(PositionHoldingFrozenTest, RebuildRemovesStaleOrders) {
+    // 整体重建必须移除快照中已消失的挂单, 否则残留挂单继续冻结持仓.
+    PositionHolding h{"IF2506", "CFFEX"};
+    h.apply_query_side(DZ_DIRECTION_LONG, 10, 0, 3900.0);
+    std::vector<ActiveOrderUpdate> two{
+        make_close("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 2),
+        make_close("2", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 3)};
+    EXPECT_TRUE(h.rebuild_active_orders(two).long_changed);
+    EXPECT_EQ(h.long_frozen(), 5);
+
+    // 新快照只剩 "2": "1" 的 2 手冻结必须释放
+    std::vector<ActiveOrderUpdate> one{
+        make_close("2", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 3)};
+    EXPECT_TRUE(h.rebuild_active_orders(one).long_changed);
+    EXPECT_EQ(h.long_frozen(), 3);
+    EXPECT_EQ(h.long_frozen_today(), 3);
+    EXPECT_EQ(h.long_available_today(), 7);
+}
+
 TEST(PositionHoldingQueryTest, ShrinkClampsFrozen) {
     PositionHolding h{"IF2506", "CFFEX"};
     h.apply_query_side(DZ_DIRECTION_LONG, 10, 0, 3900.0);
     h.apply_order(make_close("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 5));
     EXPECT_EQ(h.long_frozen(), 5);
     h.apply_query_side(DZ_DIRECTION_LONG, 2, 0, 4000.0);
-    EXPECT_LE(h.long_frozen(), 2);
-    EXPECT_GE(h.long_available_today(), 0);
+    // 缩量到 2: 冻结精确夹取为 2, 可用 = 0
+    EXPECT_EQ(h.long_frozen(), 2);
+    EXPECT_EQ(h.long_available_today(), 0);
 }
 
 TEST(PositionHoldingTradeTest, OpenPriceNotDilutedByZeroCost) {

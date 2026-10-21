@@ -291,6 +291,39 @@ TEST(OffsetConverterNoneTest, CloseTodayPassThrough) {
     EXPECT_EQ(result[0].position_effect, DZ_POSITION_EFFECT_CLOSE_TODAY);
 }
 
+TEST(OffsetConverterNoneTest, CloseWithoutPositionPassesThrough) {
+    PositionHolding h{"IF2506", "CFFEX"};  // 无持仓
+    auto req = make_order_req(DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 3);
+    auto result = OffsetConverter::convert_order_request(req, h, OffsetConvertMode::None);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].direction, DZ_DIRECTION_SHORT);
+    EXPECT_EQ(result[0].position_effect, DZ_POSITION_EFFECT_CLOSE);
+    EXPECT_EQ(result[0].volume, 3);
+    EXPECT_DOUBLE_EQ(result[0].price, 3900.0);
+}
+
+TEST(OffsetConverterNoneTest, CloseExceedingPositionPassesThrough) {
+    // None 模式不做可用持仓检查: 持仓 2 仍原样返回 5 手 (由风控/交易所拒绝).
+    PositionHolding h{"IF2506", "CFFEX"};
+    seed_side(h, DZ_DIRECTION_LONG, 2, 0);
+    auto req = make_order_req(DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 5);
+    auto result = OffsetConverter::convert_order_request(req, h, OffsetConvertMode::None);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].direction, DZ_DIRECTION_SHORT);
+    EXPECT_EQ(result[0].position_effect, DZ_POSITION_EFFECT_CLOSE);
+    EXPECT_EQ(result[0].volume, 5);
+}
+
+TEST(OffsetConverterNoneTest, NetDirectionPassesThrough) {
+    PositionHolding h{"IF2506", "CFFEX"};
+    auto req = make_order_req(DZ_DIRECTION_NET, DZ_POSITION_EFFECT_CLOSE, 3);
+    auto result = OffsetConverter::convert_order_request(req, h, OffsetConvertMode::None);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].direction, DZ_DIRECTION_NET);
+    EXPECT_EQ(result[0].position_effect, DZ_POSITION_EFFECT_CLOSE);
+    EXPECT_EQ(result[0].volume, 3);
+}
+
 // ============================================================================
 // OffsetConverter: Net 模式 (行为同 None)
 // ============================================================================
@@ -301,6 +334,38 @@ TEST(OffsetConverterNetTest, BehavesLikeNone) {
     auto req = make_order_req(DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 3);
     auto result = OffsetConverter::convert_order_request(req, h, OffsetConvertMode::Net);
     ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].position_effect, DZ_POSITION_EFFECT_CLOSE);
+    EXPECT_EQ(result[0].volume, 3);
+}
+
+TEST(OffsetConverterNetTest, CloseWithoutPositionPassesThrough) {
+    PositionHolding h{"IF2506", "CFFEX"};  // 无持仓
+    auto req = make_order_req(DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 3);
+    auto result = OffsetConverter::convert_order_request(req, h, OffsetConvertMode::Net);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].direction, DZ_DIRECTION_SHORT);
+    EXPECT_EQ(result[0].position_effect, DZ_POSITION_EFFECT_CLOSE);
+    EXPECT_EQ(result[0].volume, 3);
+    EXPECT_DOUBLE_EQ(result[0].price, 3900.0);
+}
+
+TEST(OffsetConverterNetTest, CloseExceedingPositionPassesThrough) {
+    PositionHolding h{"IF2506", "CFFEX"};
+    seed_side(h, DZ_DIRECTION_LONG, 2, 0);
+    auto req = make_order_req(DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 5);
+    auto result = OffsetConverter::convert_order_request(req, h, OffsetConvertMode::Net);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].direction, DZ_DIRECTION_SHORT);
+    EXPECT_EQ(result[0].position_effect, DZ_POSITION_EFFECT_CLOSE);
+    EXPECT_EQ(result[0].volume, 5);
+}
+
+TEST(OffsetConverterNetTest, NetDirectionPassesThrough) {
+    PositionHolding h{"IF2506", "CFFEX"};
+    auto req = make_order_req(DZ_DIRECTION_NET, DZ_POSITION_EFFECT_CLOSE, 3);
+    auto result = OffsetConverter::convert_order_request(req, h, OffsetConvertMode::Net);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].direction, DZ_DIRECTION_NET);
     EXPECT_EQ(result[0].position_effect, DZ_POSITION_EFFECT_CLOSE);
     EXPECT_EQ(result[0].volume, 3);
 }
@@ -338,6 +403,29 @@ TEST(OffsetConverterLockTest, OpenPassThrough) {
     ASSERT_EQ(result.size(), 1u);
     EXPECT_EQ(result[0].position_effect, DZ_POSITION_EFFECT_OPEN);
     EXPECT_EQ(result[0].volume, 5);
+}
+
+TEST(OffsetConverterLockTest, CloseYesterdayConvertsToOpen) {
+    // 平昨在 Lock 模式同样转为反向开仓: direction/volume/price 保留, effect=OPEN.
+    PositionHolding h{"IF2506", "CFFEX"};
+    auto req = make_order_req(DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_CLOSE_YESTDAY, 4, 3910.0);
+    auto result = OffsetConverter::convert_order_request(req, h, OffsetConvertMode::Lock);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].direction, DZ_DIRECTION_LONG);
+    EXPECT_EQ(result[0].position_effect, DZ_POSITION_EFFECT_OPEN);
+    EXPECT_EQ(result[0].volume, 4);
+    EXPECT_DOUBLE_EQ(result[0].price, 3910.0);
+}
+
+TEST(OffsetConverterLockTest, NetDirectionPassesThroughAsOpen) {
+    // NET 方向无反向语义: Lock 仍按 CLOSE 类转换, effect=OPEN, direction 不变.
+    PositionHolding h{"IF2506", "CFFEX"};
+    auto req = make_order_req(DZ_DIRECTION_NET, DZ_POSITION_EFFECT_CLOSE, 3);
+    auto result = OffsetConverter::convert_order_request(req, h, OffsetConvertMode::Lock);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].direction, DZ_DIRECTION_NET);
+    EXPECT_EQ(result[0].position_effect, DZ_POSITION_EFFECT_OPEN);
+    EXPECT_EQ(result[0].volume, 3);
 }
 
 // ============================================================================
@@ -510,6 +598,14 @@ TEST_F(OffsetConverterShfeTest, InsufficientPositionReturnsPartial) {
 TEST_F(OffsetConverterShfeTest, NoPositionReturnsEmpty) {
     // 无持仓, 平仓返回空 (调用方应拒绝)
     auto req = make_order_req(DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 5);
+    auto result = OffsetConverter::convert_order_request(req, h, OffsetConvertMode::Shfe);
+    EXPECT_TRUE(result.empty());
+}
+
+TEST_F(OffsetConverterShfeTest, NetDirectionReturnsEmpty) {
+    // NET 无多/空侧可拆, Shfe 模式返回空 (调用方按"无法拆分"拒绝, 不静默改单).
+    seed_side(h, DZ_DIRECTION_LONG, 10, 0);
+    auto req = make_order_req(DZ_DIRECTION_NET, DZ_POSITION_EFFECT_CLOSE, 5);
     auto result = OffsetConverter::convert_order_request(req, h, OffsetConvertMode::Shfe);
     EXPECT_TRUE(result.empty());
 }

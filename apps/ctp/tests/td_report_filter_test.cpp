@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -64,6 +65,27 @@ TEST(ReportFilterOrder, StatusFlipSameSecondForwards) {
     f.accept_order(rec);                                           // 更新基准为 part-traded
     auto flipped = make_order(1, DZ_ORDER_CANCELLED, 5, 0, 1000);  // 已撤销, vol=5, upd=1000
     EXPECT_EQ(Verdict::kForward, f.check_order(flipped));
+}
+
+TEST(ReportFilterOrder, VolumeTradedFlipSameSecondForwards) {
+    // 对比集含 volume_traded: 同 update_time/status 仅成交量推进也必须转发
+    auto f = ReportFilter::load({make_order(1, DZ_ORDER_PART_TRADED, 5, 0, 1000)}, {});
+    auto rec = make_order(1, DZ_ORDER_PART_TRADED, 6, 0, 1000);
+    EXPECT_EQ(Verdict::kForward, f.check_order(rec));
+}
+
+TEST(ReportFilterOrder, VolumeCanceledFlipSameSecondForwards) {
+    // 对比集含 volume_canceled: 同 update_time/status 仅撤单量变化也必须转发
+    auto f = ReportFilter::load({make_order(1, DZ_ORDER_PART_TRADED, 5, 1, 1000)}, {});
+    auto rec = make_order(1, DZ_ORDER_PART_TRADED, 5, 2, 1000);
+    EXPECT_EQ(Verdict::kForward, f.check_order(rec));
+}
+
+TEST(ReportFilterOrder, NonZeroVolumeCanceledIdenticalSkipped) {
+    // 非零 volume_canceled 的完全相等记录仍应跳过 (对比集用值比较而非零值判断)
+    auto f = ReportFilter::load({make_order(1, DZ_ORDER_CANCELLED, 5, 2, 1000)}, {});
+    auto rec = make_order(1, DZ_ORDER_CANCELLED, 5, 2, 1000);
+    EXPECT_EQ(Verdict::kSkip, f.check_order(rec));
 }
 
 TEST(ReportFilterOrder, OutdatedUpdateTimeDefensivelySkipped) {
@@ -214,6 +236,30 @@ TEST(ReportFilterTest, ActiveOrdersFilterByDayAndStatus) {
     auto active = f.active_orders(20260726);
     ASSERT_EQ(active.size(), 1u);
     EXPECT_EQ(active[0].base.order_id, 1);
+}
+
+TEST(ReportFilterTest, ActiveOrdersKeepsPartTradedAndExcludesAllTerminalStatuses) {
+    // 终态集合 = ALL_TRADED/CANCELLED/REJECTED; PART_TRADED 非终态必须保留.
+    ReportFilter f{"acc1"};
+    auto add = [&f](int64_t order_id, DzOrderStatus status) {
+        OrderRecord r{};
+        r.base.order_id = order_id;
+        r.base.date = 20260726;
+        r.base.status = status;
+        f.accept_order(r);
+    };
+    add(10, DZ_ORDER_NOT_TRADED);
+    add(11, DZ_ORDER_PART_TRADED);
+    add(12, DZ_ORDER_ALL_TRADED);
+    add(13, DZ_ORDER_CANCELLED);
+    add(14, DZ_ORDER_REJECTED);
+
+    auto active = f.active_orders(20260726);
+    std::set<int64_t> ids;
+    for (const auto& o : active) {
+        ids.insert(o.base.order_id);
+    }
+    EXPECT_EQ(ids, (std::set<int64_t>{10, 11}));
 }
 
 }  // namespace
