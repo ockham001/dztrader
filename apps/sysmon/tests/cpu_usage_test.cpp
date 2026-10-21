@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <vector>
 
 namespace dztrader::sysmon {
 namespace {
@@ -75,6 +76,85 @@ TEST(CpuUsageTest, IdleResetReturnsNullopt) {
 TEST(CpuUsageTest, ZeroDeltaReturnsNullopt) {
     // Δtotal=0（计数器未推进）不可计算
     EXPECT_EQ(compute_cpu_usage(make_times(100, 40), make_times(100, 40)), std::nullopt);
+}
+
+platform::RawCpuCoreTimes make_core(uint32_t index, uint64_t total_ticks, uint64_t idle_ticks) {
+    platform::RawCpuCoreTimes core;
+    core.index = index;
+    core.total_ticks = total_ticks;
+    core.idle_ticks = idle_ticks;
+    return core;
+}
+
+TEST(CpuUsageTest, CoreUsagesComputePerCoreBusyRatio) {
+    const std::vector<platform::RawCpuCoreTimes> prev = {make_core(0, 1000, 400),
+                                                         make_core(1, 1000, 1000)};
+    const std::vector<platform::RawCpuCoreTimes> cur = {make_core(0, 2000, 800),
+                                                        make_core(1, 3000, 3000)};
+    const auto usages = compute_core_usages(prev, cur);
+    ASSERT_EQ(usages.size(), 2U);
+    ASSERT_TRUE(usages[0].has_value());
+    EXPECT_DOUBLE_EQ(usages[0].value(), 0.6);
+    ASSERT_TRUE(usages[1].has_value());
+    EXPECT_DOUBLE_EQ(usages[1].value(), 0.0);
+}
+
+TEST(CpuUsageTest, CoreCountChangeMakesAllUsagesUnavailable) {
+    const std::vector<platform::RawCpuCoreTimes> prev = {make_core(0, 1000, 400)};
+    const std::vector<platform::RawCpuCoreTimes> cur = {make_core(0, 2000, 800),
+                                                        make_core(1, 1000, 500)};
+    const auto usages = compute_core_usages(prev, cur);
+    ASSERT_EQ(usages.size(), 2U);
+    EXPECT_FALSE(usages[0].has_value());
+    EXPECT_FALSE(usages[1].has_value());
+}
+
+TEST(CpuUsageTest, CoreIndexChangeMakesAllUsagesUnavailable) {
+    // 热插拔后同一位置换了 CPU 编号：不得把不同核的计数器做差。
+    const std::vector<platform::RawCpuCoreTimes> prev = {make_core(0, 1000, 400),
+                                                         make_core(1, 1000, 500)};
+    const std::vector<platform::RawCpuCoreTimes> cur = {make_core(1, 2000, 800),
+                                                        make_core(2, 2000, 1000)};
+    const auto usages = compute_core_usages(prev, cur);
+    ASSERT_EQ(usages.size(), 2U);
+    EXPECT_FALSE(usages[0].has_value());
+    EXPECT_FALSE(usages[1].has_value());
+}
+
+TEST(CpuUsageTest, CoreCounterResetOnlyAffectsThatCore) {
+    const std::vector<platform::RawCpuCoreTimes> prev = {make_core(0, 10'000'000'000ULL, 0),
+                                                         make_core(1, 1000, 400)};
+    const std::vector<platform::RawCpuCoreTimes> cur = {make_core(0, 100, 0),
+                                                        make_core(1, 2000, 800)};
+    const auto usages = compute_core_usages(prev, cur);
+    ASSERT_EQ(usages.size(), 2U);
+    EXPECT_FALSE(usages[0].has_value());
+    ASSERT_TRUE(usages[1].has_value());
+    EXPECT_DOUBLE_EQ(usages[1].value(), 0.6);
+}
+
+TEST(CpuUsageTest, RateDividesByElapsedSeconds) {
+    // Δcount = 1000，实际经过 2 秒 → 500/s
+    const auto rate = compute_rate(1000, 2000, 2.0);
+    ASSERT_TRUE(rate.has_value());
+    EXPECT_DOUBLE_EQ(rate.value(), 500.0);
+}
+
+TEST(CpuUsageTest, RateRequiresPositiveElapsed) {
+    EXPECT_EQ(compute_rate(1000, 2000, 0.0), std::nullopt);
+    EXPECT_EQ(compute_rate(1000, 2000, -1.0), std::nullopt);
+}
+
+TEST(CpuUsageTest, RateWrapsOn32BitCounters) {
+    constexpr uint64_t kMax32 = std::numeric_limits<uint32_t>::max();
+    // 2^32 回绕：prev=2^32-10 → 5，Δ=15；0.5 秒 → 30/s
+    const auto rate = compute_rate(kMax32 - 9, 5, 0.5);
+    ASSERT_TRUE(rate.has_value());
+    EXPECT_DOUBLE_EQ(rate.value(), 30.0);
+}
+
+TEST(CpuUsageTest, RateResetReturnsNullopt) {
+    EXPECT_EQ(compute_rate(10'000'000'000ULL, 100, 1.0), std::nullopt);
 }
 
 }  // namespace

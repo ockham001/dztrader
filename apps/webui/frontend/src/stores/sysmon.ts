@@ -1,7 +1,17 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { sysmonApi } from '@/api/sysmon'
-import type { SysmonAvailabilityEntry, SysmonSnapshotPayload } from '@/types/generated'
+import type {
+  SysmonAvailabilityEntry,
+  SysmonCpuCore,
+  SysmonLoadAverage,
+  SysmonSnapshotPayload,
+} from '@/types/generated'
+
+/** 有限数字校验：null / undefined / NaN / Infinity 一律视为不可用（不得用 0 冒充） */
+function toFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
 
 /**
  * 系统监控 store：契约 sysmon 快照域（固定实例 dzsysmon）的前端唯一写入点。
@@ -61,5 +71,89 @@ export const useSysmonStore = defineStore('sysmon', () => {
     return typeof ratio === 'number' && Number.isFinite(ratio) ? ratio : null
   })
 
-  return { snapshot, loaded, error, cpuUsageRatio, init, applySnapshot, availabilityOf }
+  /**
+   * 每核使用率（契约 sysmon §2.3）。仅当可用性映射标记 cpu.cores 可用时返回数组，
+   * 否则空数组 —— 视图据此区分「指标不可用」与「可用但暂无数据」，不得用 0 冒充。
+   * 核数随快照变化（热插拔 / 虚拟机缩放），每次按当前快照数组渲染，不跨快照合并。
+   */
+  const cpuCores = computed<SysmonCpuCore[]>(() => {
+    const s = snapshot.value
+    if (!s || s.availability.metrics['cpu.cores']?.available !== true) return []
+    const cores = Array.isArray(s.cpu?.cores) ? s.cpu.cores : []
+    return cores.map((core, position) => ({
+      // index 非法时退化为数组下标，保证列表 key / 展示稳定（正常 payload 不会走到）
+      index: typeof core?.index === 'number' && Number.isFinite(core.index) ? core.index : position,
+      usage_ratio: toFiniteNumber(core?.usage_ratio),
+      saturated: core?.saturated === true,
+    }))
+  })
+
+  /** 持续饱和核 index 集合（契约 sysmon §2.3）：cpu.cores 不可用时为空数组 */
+  const saturatedCores = computed<number[]>(() => {
+    const s = snapshot.value
+    if (!s || s.availability.metrics['cpu.cores']?.available !== true) return []
+    const indices = Array.isArray(s.cpu?.saturated_cores) ? s.cpu.saturated_cores : []
+    const unique = new Set<number>()
+    for (const index of indices) {
+      if (typeof index === 'number' && Number.isInteger(index) && index >= 0) unique.add(index)
+    }
+    return [...unique].sort((a, b) => a - b)
+  })
+
+  /**
+   * 系统负载（契约 sysmon §2.3）。仅在可用性映射标记可用且快照携带对象时返回；
+   * semantic 说明口径（Linux load_average / Windows processor_queue），前端不做跨口径比较。
+   */
+  const cpuLoadAverage = computed<SysmonLoadAverage | null>(() => {
+    const s = snapshot.value
+    if (!s || s.availability.metrics['cpu.load_average']?.available !== true) return null
+    const load = s.cpu?.load_average
+    if (!load || typeof load !== 'object') return null
+    return {
+      one: toFiniteNumber(load.one),
+      five: toFiniteNumber(load.five),
+      fifteen: toFiniteNumber(load.fifteen),
+      semantic: typeof load.semantic === 'string' ? load.semantic : '',
+    }
+  })
+
+  /**
+   * 每秒上下文切换 / 每秒中断（契约 sysmon §2.3、§2.5）。
+   * 两者共用可用性键 `cpu.context_switches`；值不可用时返回 null，不得用 0 冒充。
+   */
+  const cpuContextSwitchesPerSec = computed<number | null>(() => {
+    const s = snapshot.value
+    if (!s || s.availability.metrics['cpu.context_switches']?.available !== true) return null
+    return toFiniteNumber(s.cpu?.context_switches_per_sec)
+  })
+
+  const cpuInterruptsPerSec = computed<number | null>(() => {
+    const s = snapshot.value
+    if (!s || s.availability.metrics['cpu.context_switches']?.available !== true) return null
+    return toFiniteNumber(s.cpu?.interrupts_per_sec)
+  })
+
+  /** 跨平台语义提示（契约 sysmon §2.5）：缺失 / 非字符串返回空串，由视图决定是否展示 */
+  function semanticHint(key: string): string {
+    const hints = snapshot.value?.availability.semantic_hints
+    if (!hints || typeof hints !== 'object') return ''
+    const hint = hints[key]
+    return typeof hint === 'string' ? hint.trim() : ''
+  }
+
+  return {
+    snapshot,
+    loaded,
+    error,
+    cpuUsageRatio,
+    cpuCores,
+    saturatedCores,
+    cpuLoadAverage,
+    cpuContextSwitchesPerSec,
+    cpuInterruptsPerSec,
+    semanticHint,
+    init,
+    applySnapshot,
+    availabilityOf,
+  }
 })

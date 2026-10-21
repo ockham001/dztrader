@@ -3,12 +3,24 @@
 #include <format>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace dztrader::sysmon {
 namespace {
 
 /// 不可用原因（契约 sysmon §2.5 建议取值）。
 constexpr const char* kReasonNotImplemented = "not_implemented";
+constexpr const char* kReasonCollectFailed = "collect_failed";
+
+/// 跨平台语义提示的键：按指标键命名（契约 sysmon §2.5）。
+constexpr const char* kHintKeyLoadAverage = "cpu.load_average";
+
+/// Windows 负载代理的语义提示：明示与 Unix load average 不是同一个量，前端不得同轴比较。
+/// 英文、小写开头、无句号（与契约 reason 文案风格一致）。
+constexpr const char* kProcessorQueueHint =
+    "processor queue length proxy, not a unix load average; do not compare the two on the same "
+    "axis";
 
 void mark_available(platform::SysmonAvailability& availability, const char* key) {
     platform::SysmonAvailabilityEntry entry;
@@ -16,11 +28,17 @@ void mark_available(platform::SysmonAvailability& availability, const char* key)
     availability.metrics[key] = entry;
 }
 
-void mark_not_implemented(platform::SysmonAvailability& availability, const char* key) {
+void mark_unavailable(platform::SysmonAvailability& availability,
+                      const char* key,
+                      const char* reason) {
     platform::SysmonAvailabilityEntry entry;
     entry.available = false;
-    entry.reason = kReasonNotImplemented;
+    entry.reason = reason;
     availability.metrics[key] = entry;
+}
+
+void mark_not_implemented(platform::SysmonAvailability& availability, const char* key) {
+    mark_unavailable(availability, key, kReasonNotImplemented);
 }
 
 /// 人类可读平台描述：Windows 必须含 build 号（区分 Win10/Win11），Linux 带内核 release。
@@ -39,7 +57,7 @@ std::string make_platform_description(const platform::RawSystemInfo& info) {
 
 platform::SysmonSnapshot build_snapshot(std::string_view source,
                                         const platform::RawSystemInfo& system_info,
-                                        std::optional<double> cpu_usage_ratio,
+                                        const CpuMetrics& cpu_metrics,
                                         int32_t measure_interval_ms,
                                         int64_t last_sample_unix_ms,
                                         uint64_t missed_ticks,
@@ -69,13 +87,27 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
     snapshot.system.uptime_sec =
         now_sec > system_info.boot_time_unix_sec ? now_sec - system_info.boot_time_unix_sec : 0;
 
-    // cpu：本票只填总使用率；每核/负载/上下文切换/中断不可用（null/空数组，不得用 0 冒充）。
-    snapshot.cpu.total.usage_ratio = cpu_usage_ratio;
-    snapshot.cpu.cores.clear();
-    snapshot.cpu.saturated_cores.clear();
-    snapshot.cpu.load_average = std::nullopt;
-    snapshot.cpu.context_switches_per_sec = std::nullopt;
-    snapshot.cpu.interrupts_per_sec = std::nullopt;
+    // cpu：总量/每核/饱和标记/负载/速率。不可用一律 null 或空数组，不得用 0 冒充。
+    snapshot.cpu.total.usage_ratio = cpu_metrics.total_usage_ratio;
+    if (cpu_metrics.cores_collected) {
+        snapshot.cpu.cores = cpu_metrics.cores;
+        snapshot.cpu.saturated_cores = cpu_metrics.saturated_cores;
+        // 契约 sysmon §2.3：每核序列可用时长度恒等于逻辑核数（热插拔后以本次序列为准）。
+        if (!snapshot.cpu.cores.empty()) {
+            snapshot.system.logical_cores = static_cast<uint32_t>(snapshot.cpu.cores.size());
+        }
+    } else {
+        snapshot.cpu.cores.clear();
+        snapshot.cpu.saturated_cores.clear();
+    }
+    snapshot.cpu.load_average = cpu_metrics.load_average;
+    if (cpu_metrics.rates_collected) {
+        snapshot.cpu.context_switches_per_sec = cpu_metrics.context_switches_per_sec;
+        snapshot.cpu.interrupts_per_sec = cpu_metrics.interrupts_per_sec;
+    } else {
+        snapshot.cpu.context_switches_per_sec = std::nullopt;
+        snapshot.cpu.interrupts_per_sec = std::nullopt;
+    }
 
     // 其余指标域：本版本未采集（契约 §2 定稿形状为 null）。
     snapshot.memory = std::nullopt;
@@ -87,16 +119,40 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
 
     // availability：每帧必须覆盖全部 11 个固定键。
     snapshot.availability.platform_description = make_platform_description(system_info);
-    // 固定键集合全覆盖：system/cpu.total 可用，其余按 not_implemented 标记。
     for (const char* key : platform::SYSMON_METRIC_KEYS) {
-        if (std::string_view(key) == platform::SYSMON_METRIC_SYSTEM ||
-            std::string_view(key) == platform::SYSMON_METRIC_CPU_TOTAL) {
+        const std::string_view metric(key);
+        if (metric == platform::SYSMON_METRIC_SYSTEM ||
+            metric == platform::SYSMON_METRIC_CPU_TOTAL) {
             mark_available(snapshot.availability, key);
+        } else if (metric == platform::SYSMON_METRIC_CPU_CORES) {
+            if (cpu_metrics.cores_collected) {
+                mark_available(snapshot.availability, key);
+            } else {
+                mark_unavailable(snapshot.availability, key, kReasonCollectFailed);
+            }
+        } else if (metric == platform::SYSMON_METRIC_CPU_LOAD_AVERAGE) {
+            if (cpu_metrics.load_collected) {
+                mark_available(snapshot.availability, key);
+            } else {
+                mark_unavailable(snapshot.availability, key, kReasonCollectFailed);
+            }
+        } else if (metric == platform::SYSMON_METRIC_CPU_CONTEXT_SWITCHES) {
+            if (cpu_metrics.rates_collected) {
+                mark_available(snapshot.availability, key);
+            } else {
+                mark_unavailable(snapshot.availability, key, kReasonCollectFailed);
+            }
         } else {
             mark_not_implemented(snapshot.availability, key);
         }
     }
-    snapshot.availability.semantic_hints.clear();  // 当前版本为空对象
+
+    // semantic_hints：Windows 负载代理必须说明口径不同（契约 sysmon §2.5）。
+    snapshot.availability.semantic_hints.clear();
+    if (snapshot.cpu.load_average.has_value() &&
+        snapshot.cpu.load_average->semantic == platform::SYSMON_LOAD_SEMANTIC_PROCESSOR_QUEUE) {
+        snapshot.availability.semantic_hints[kHintKeyLoadAverage] = kProcessorQueueHint;
+    }
 
     return snapshot;
 }

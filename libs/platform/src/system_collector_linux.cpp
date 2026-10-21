@@ -23,6 +23,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -176,52 +177,118 @@ std::optional<int64_t> read_boot_time_unix_sec() {
     return std::nullopt;
 }
 
-/// 读取 /proc/stat 首行 "cpu " 的累计计数器。
+/// 解析 /proc/stat 单个 CPU 行（去掉 "cpu"/"cpuN" 前缀后）的累计计数器。
 ///
-/// total = user + nice + system + idle + iowait + irq + softirq + steal（不含
-/// guest/guest_nice：二者已包含在 user/nice 中）；idle = idle + iowait（iowait
-/// 不计入忙，契约 sysmon §2.7）。字段不足 4 个或不可解析时返回 std::nullopt。
-std::optional<RawCpuTimes> read_cpu_times() {
-    for (const auto& raw : read_lines("/proc/stat")) {
-        const auto line = trim(raw);
-        // "cpu " 带空格：排除 cpu0/cpu1 等单核行。
-        if (!line.starts_with("cpu ")) {
-            continue;
+/// 字段顺序：user nice system idle iowait irq softirq steal [guest guest_nice]。
+/// total = 前 8 个字段之和（不含 guest/guest_nice：二者已包含在 user/nice 中）；
+/// idle = idle + iowait（iowait 不计入忙，契约 sysmon §2.7）。字段不足 4 个或
+/// 不可解析时返回 std::nullopt。
+std::optional<RawCpuCoreTimes> parse_cpu_fields(std::string_view rest) {
+    std::array<uint64_t, 8> fields{};
+    std::size_t count = 0;
+    while (count < fields.size()) {
+        const auto token_begin = rest.find_first_not_of(" \t");
+        if (token_begin == std::string_view::npos) {
+            break;
         }
-        // 字段顺序：user nice system idle iowait irq softirq steal [guest guest_nice]。
-        std::array<uint64_t, 8> fields{};
-        std::size_t count = 0;
-        std::string_view rest = line.substr(4);
-        while (count < fields.size()) {
-            const auto token_begin = rest.find_first_not_of(" \t");
-            if (token_begin == std::string_view::npos) {
-                break;
-            }
-            rest.remove_prefix(token_begin);
-            const auto token_end = rest.find_first_of(" \t");
-            const auto value = parse_u64(rest.substr(0, token_end));
-            if (!value) {
-                return std::nullopt;
-            }
-            fields[count] = *value;
-            ++count;
-            if (token_end == std::string_view::npos) {
-                break;
-            }
-            rest.remove_prefix(token_end);
-        }
-        // 至少 user/nice/system/idle 四个字段才可用。
-        if (count < 4) {
+        rest.remove_prefix(token_begin);
+        const auto token_end = rest.find_first_of(" \t");
+        const auto value = parse_u64(rest.substr(0, token_end));
+        if (!value) {
             return std::nullopt;
         }
-        RawCpuTimes times;
-        for (std::size_t i = 0; i < count; ++i) {
-            times.total_ticks += fields[i];
+        fields[count] = *value;
+        ++count;
+        if (token_end == std::string_view::npos) {
+            break;
         }
-        times.idle_ticks = fields[3] + fields[4];
-        return times;
+        rest.remove_prefix(token_end);
     }
-    return std::nullopt;
+    // 至少 user/nice/system/idle 四个字段才可用。
+    if (count < 4) {
+        return std::nullopt;
+    }
+    RawCpuCoreTimes times;
+    for (std::size_t i = 0; i < count; ++i) {
+        times.total_ticks += fields[i];
+    }
+    times.idle_ticks = fields[3] + fields[4];
+    return times;
+}
+
+/// 读取 /proc/stat：全局 CPU 累计计数器、每核累计计数器、上下文切换与中断累计计数。
+///
+/// 单次读文件保证全局与每核同源；`ctxt`/`intr` 行缺失时对应字段为 std::nullopt
+/// （上层按可用性描述标记不可用）。全局 "cpu " 行缺失或不可解析时返回 std::nullopt。
+std::optional<RawCpuTimes> read_cpu_times() {
+    RawCpuTimes times;
+    bool have_total = false;
+    std::optional<uint64_t> context_switches;
+    std::optional<uint64_t> interrupts;
+    for (const auto& raw : read_lines("/proc/stat")) {
+        const auto line = trim(raw);
+        if (line.starts_with("cpu ")) {
+            // 全局行 "cpu "（带空格，排除 cpuN 单核行）。
+            const auto parsed = parse_cpu_fields(line.substr(4));
+            if (!parsed) {
+                return std::nullopt;
+            }
+            times.total_ticks = parsed->total_ticks;
+            times.idle_ticks = parsed->idle_ticks;
+            have_total = true;
+            continue;
+        }
+        if (line.starts_with("cpu")) {
+            // 单核行 "cpuN"：N 为 OS CPU 编号（热插拔后可能不连续）。
+            const auto index_end = line.find_first_of(" \t");
+            if (index_end == std::string_view::npos) {
+                continue;
+            }
+            const auto parsed_index = parse_u64(line.substr(3, index_end - 3));
+            if (!parsed_index || *parsed_index > std::numeric_limits<uint32_t>::max()) {
+                return std::nullopt;
+            }
+            const auto parsed = parse_cpu_fields(line.substr(index_end));
+            if (!parsed) {
+                return std::nullopt;
+            }
+            RawCpuCoreTimes core = *parsed;
+            core.index = static_cast<uint32_t>(*parsed_index);
+            times.cores.push_back(core);
+            continue;
+        }
+        if (line.starts_with("ctxt ")) {
+            context_switches = parse_u64(trim(line.substr(5)));
+            continue;
+        }
+        if (line.starts_with("intr ")) {
+            // 首个数字为总中断数，其后为各 IRQ 的累计计数。
+            const auto rest = trim(line.substr(5));
+            const auto token_end = rest.find_first_of(" \t");
+            interrupts = parse_u64(rest.substr(0, token_end));
+            continue;
+        }
+    }
+    if (!have_total) {
+        return std::nullopt;
+    }
+    times.context_switches = context_switches;
+    times.interrupts = interrupts;
+    return times;
+}
+
+/// 读取系统负载（真实 loadavg）：getloadavg 返回 3 个值，失败返回 std::nullopt。
+std::optional<RawLoadAverage> read_load_average() {
+    std::array<double, 3> values{};
+    if (::getloadavg(values.data(), static_cast<int>(values.size())) != 3) {
+        return std::nullopt;
+    }
+    RawLoadAverage load;
+    load.one = values[0];
+    load.five = values[1];
+    load.fifteen = values[2];
+    load.semantic = SYSMON_LOAD_SEMANTIC_LOAD_AVERAGE;
+    return load;
 }
 
 /// 采集一次系统信息（失败字段留空串/0，不抛异常）。
@@ -251,12 +318,14 @@ RawSystemInfo collect_system_info_linux() {
     return info;
 }
 
-/// Linux 采集器：无状态实现，不缓存（系统信息由调用方在启动时取一次）。
+/// Linux 采集器：可在单线程事件循环内重复调用，不缓存（系统信息由调用方在启动时取一次）。
 class LinuxSystemCollector final : public SystemCollector {
 public:
     RawSystemInfo collect_system_info() override { return collect_system_info_linux(); }
 
     std::optional<RawCpuTimes> collect_cpu_times() override { return read_cpu_times(); }
+
+    std::optional<RawLoadAverage> collect_load_average() override { return read_load_average(); }
 };
 
 }  // namespace

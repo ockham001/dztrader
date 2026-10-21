@@ -3,8 +3,9 @@ import { computed, onMounted } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import { useSysmonStore } from '@/stores/sysmon'
 
-// 资源监控页（#71 骨架）：系统信息与 CPU 总使用率接契约 sysmon 实时快照；
-// 内存 / 磁盘 / 网络区块按可用性映射渲染，未接入时显示明确空态（不得显示 0 冒充数据）。
+// 资源监控页：系统信息与 CPU 区块（总量 / 每核 / 系统负载 / 上下文切换与中断）
+// 接契约 sysmon 实时快照；内存 / 磁盘 / 网络区块按可用性映射渲染，
+// 未接入时显示明确空态（不得显示 0 冒充数据）。
 // 刷新基线由发送方 realtime.push_interval_sec（默认 5s）决定，本页不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
 
@@ -40,6 +41,18 @@ function formatRate(bytesPerSec: number | null | undefined): string {
   return `${formatBytes(bytesPerSec)}/s`
 }
 
+/** 系统负载 / 处理器队列长度：保留 2 位小数；null 一律显示不可用（不得用 0 冒充） */
+function formatLoadValue(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return UNAVAILABLE
+  return value.toFixed(2)
+}
+
+/** 速率型计数（每秒上下文切换 / 中断）：整数值 + /s；null 显示不可用 */
+function formatCountPerSec(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return UNAVAILABLE
+  return `${Math.round(value)}/s`
+}
+
 function formatDateTime(unixMs: number): string {
   const date = new Date(unixMs)
   if (Number.isNaN(date.getTime())) return UNAVAILABLE
@@ -67,8 +80,10 @@ function isAvailable(metric: string): boolean {
 function unavailableDesc(metric: string): string {
   const reason = sysmon.availabilityOf(metric)?.reason
   if (!reason) return '当前快照未提供该指标'
-  // reason 为契约约定的自由文案（建议取值 not_implemented/unsupported/no_permission/no_sensor）
-  return reason === 'not_implemented' ? '该指标将在后续版本接入' : reason
+  // reason 为契约约定的自由文案（建议取值 not_implemented/unsupported/no_permission/no_sensor/collect_failed）
+  if (reason === 'not_implemented') return '该指标将在后续版本接入'
+  if (reason === 'collect_failed') return '采集失败，暂不可用'
+  return reason
 }
 
 // ---- CPU 总使用率 ----
@@ -80,7 +95,30 @@ const cpuBarWidth = computed(() => {
   if (ratio === null) return '0%'
   return `${Math.min(100, Math.max(0, ratio * 100)).toFixed(1)}%`
 })
-const cpuEmptyDesc = computed(() => cpuAvailable.value ? '首次采样尚未完成' : unavailableDesc('cpu.total'))
+const cpuEmptyDesc = computed(() => cpuAvailable.value
+  ? '暂无可用采样（首次采样未完成或计数器重置）'
+  : unavailableDesc('cpu.total'))
+
+// ---- CPU 区块补全（#72）：每核 / 系统负载 / 上下文切换与中断 ----
+// 只按 availability.metrics 与数据语义渲染，不按 platform.family 分支。
+const cpuCoresAvailable = computed(() => isAvailable('cpu.cores'))
+const cpuCores = computed(() => sysmon.cpuCores)
+const coresEmptyDesc = computed(() => cpuCoresAvailable.value
+  ? '当前快照未提供每核数据'
+  : unavailableDesc('cpu.cores'))
+
+const loadAvailable = computed(() => isAvailable('cpu.load_average'))
+const loadAverage = computed(() => sysmon.cpuLoadAverage)
+const loadHint = computed(() => sysmon.semanticHint('cpu.load_average'))
+const loadEmptyDesc = computed(() => loadAvailable.value ? '当前快照未提供负载数据' : unavailableDesc('cpu.load_average'))
+// 口径由发送方 semantic 字段承载：processor_queue 只展示单值，不与 load average 同轴比较；
+// 契约外的未知 semantic 按 1/5/15 三项数值展示（不与其他口径做同轴比较）。
+const PROCESSOR_QUEUE_SEMANTIC = 'processor_queue'
+const loadIsProcessorQueue = computed(() => loadAverage.value?.semantic === PROCESSOR_QUEUE_SEMANTIC)
+
+const ratesAvailable = computed(() => isAvailable('cpu.context_switches'))
+const contextSwitches = computed(() => sysmon.cpuContextSwitchesPerSec)
+const interrupts = computed(() => sysmon.cpuInterruptsPerSec)
 
 // ---- 内存 / 磁盘（卷容量）/ 网络 ----
 const memoryAvailable = computed(() => isAvailable('memory'))
@@ -146,27 +184,108 @@ const network = computed(() => snapshot.value?.network ?? null)
         </dl>
       </section>
 
-      <!-- CPU 总使用率 -->
-      <section class="ds-card monitor-view__card" data-test="monitor-cpu">
+      <!-- CPU（#72 完整化）：总使用率 / 每核（含饱和标记）/ 系统负载 / 上下文切换与中断 -->
+      <section class="ds-card monitor-view__card monitor-view__card--wide" data-test="monitor-cpu">
         <h2 class="ds-card__title monitor-view__card-title">
-          <span class="monitor-view__card-icon"><Icon name="CPU" :size="14" /></span>CPU 总使用率
+          <span class="monitor-view__card-icon"><Icon name="CPU" :size="14" /></span>CPU
         </h2>
-        <template v-if="cpuRatio !== null">
-          <div class="monitor-view__metric" data-test="monitor-cpu-value">{{ cpuPercent }}</div>
-          <div
-            class="monitor-view__bar"
-            role="progressbar"
-            :aria-valuenow="Math.round(cpuRatio * 100)"
-            aria-valuemin="0"
-            aria-valuemax="100"
-          >
-            <div class="monitor-view__bar-fill" :style="{ width: cpuBarWidth }"></div>
+        <div class="monitor-view__cpu">
+          <!-- 总使用率 -->
+          <div class="monitor-view__cpu-panel">
+            <h3 class="monitor-view__panel-title">总使用率</h3>
+            <template v-if="cpuRatio !== null">
+              <div class="monitor-view__metric" data-test="monitor-cpu-value">{{ cpuPercent }}</div>
+              <div
+                class="monitor-view__bar"
+                role="progressbar"
+                :aria-valuenow="Math.round(cpuRatio * 100)"
+                aria-valuemin="0"
+                aria-valuemax="100"
+              >
+                <div class="monitor-view__bar-fill" :style="{ width: cpuBarWidth }"></div>
+              </div>
+              <div class="monitor-view__meta">{{ system?.logical_cores ?? '—' }} 逻辑核</div>
+            </template>
+            <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cpu-unavailable">
+              <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+              <div class="ds-empty__desc">{{ cpuEmptyDesc }}</div>
+            </div>
           </div>
-          <div class="monitor-view__meta">{{ system?.logical_cores ?? '—' }} 逻辑核</div>
-        </template>
-        <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cpu-unavailable">
-          <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
-          <div class="ds-empty__desc">{{ cpuEmptyDesc }}</div>
+
+          <!-- 系统负载：语义由 semantic 字段 + semantic_hints 承载，不与另一口径同轴比较 -->
+          <div class="monitor-view__cpu-panel" data-test="monitor-load">
+            <h3 class="monitor-view__panel-title">系统负载</h3>
+            <template v-if="loadAverage">
+              <dl class="monitor-view__load">
+                <div v-if="loadIsProcessorQueue" class="monitor-view__load-item">
+                  <dt class="monitor-view__load-label">处理器队列长度</dt>
+                  <dd class="monitor-view__load-value" data-test="monitor-load-queue">{{ formatLoadValue(loadAverage.one) }}</dd>
+                </div>
+                <template v-else>
+                  <div class="monitor-view__load-item">
+                    <dt class="monitor-view__load-label">1 分钟</dt>
+                    <dd class="monitor-view__load-value" data-test="monitor-load-one">{{ formatLoadValue(loadAverage.one) }}</dd>
+                  </div>
+                  <div class="monitor-view__load-item">
+                    <dt class="monitor-view__load-label">5 分钟</dt>
+                    <dd class="monitor-view__load-value" data-test="monitor-load-five">{{ formatLoadValue(loadAverage.five) }}</dd>
+                  </div>
+                  <div class="monitor-view__load-item">
+                    <dt class="monitor-view__load-label">15 分钟</dt>
+                    <dd class="monitor-view__load-value" data-test="monitor-load-fifteen">{{ formatLoadValue(loadAverage.fifteen) }}</dd>
+                  </div>
+                </template>
+              </dl>
+              <p v-if="loadHint" class="monitor-view__hint" data-test="monitor-load-hint">语义提示：{{ loadHint }}</p>
+            </template>
+            <div v-else class="ds-empty monitor-view__empty" data-test="monitor-load-unavailable">
+              <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+              <div class="ds-empty__desc">{{ loadEmptyDesc }}</div>
+            </div>
+          </div>
+
+          <!-- 上下文切换 / 中断（两者共用可用性键 cpu.context_switches） -->
+          <div class="monitor-view__cpu-panel" data-test="monitor-cpu-rates">
+            <h3 class="monitor-view__panel-title">上下文切换 / 中断</h3>
+            <dl class="monitor-view__rates">
+              <div class="monitor-view__rate-item">
+                <dt class="monitor-view__rate-label">上下文切换</dt>
+                <dd class="monitor-view__rate-value" data-test="monitor-context-switches">{{ formatCountPerSec(contextSwitches) }}</dd>
+              </div>
+              <div class="monitor-view__rate-item">
+                <dt class="monitor-view__rate-label">中断</dt>
+                <dd class="monitor-view__rate-value" data-test="monitor-interrupts">{{ formatCountPerSec(interrupts) }}</dd>
+              </div>
+            </dl>
+            <p v-if="!ratesAvailable" class="monitor-view__hint">{{ unavailableDesc('cpu.context_switches') }}</p>
+          </div>
+
+          <!-- 每核使用率（核数随快照变化；不可用 / 空数组分别显示明确空态） -->
+          <div class="monitor-view__cpu-panel monitor-view__cpu-panel--wide" data-test="monitor-cpu-cores">
+            <h3 class="monitor-view__panel-title">每核使用率</h3>
+            <ul v-if="cpuCores.length > 0" class="monitor-view__cores">
+              <li
+                v-for="core in cpuCores"
+                :key="core.index"
+                class="monitor-view__core"
+                :class="{ 'monitor-view__core--saturated': core.saturated }"
+                data-test="monitor-core"
+                :data-core-index="core.index"
+              >
+                <span class="monitor-view__core-index">核 {{ core.index }}</span>
+                <span class="monitor-view__core-value">{{ formatPercent(core.usage_ratio) }}</span>
+                <span
+                  v-if="core.saturated"
+                  class="ds-tag ds-tag--warning monitor-view__core-tag"
+                  data-test="monitor-core-saturated"
+                >饱和</span>
+              </li>
+            </ul>
+            <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
+              <div class="ds-empty__title">{{ cpuCoresAvailable ? '暂无每核数据' : UNAVAILABLE }}</div>
+              <div class="ds-empty__desc">{{ coresEmptyDesc }}</div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -349,6 +468,115 @@ const network = computed(() => snapshot.value?.network ?? null)
   padding: var(--spacer-20) var(--spacer-12);
 }
 
+/* ---- CPU 区块（#72）：总量 / 负载 / 速率面板 + 每核网格 ---- */
+.monitor-view__cpu {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--spacer-16) var(--spacer-24);
+}
+
+.monitor-view__cpu-panel {
+  min-width: 0;
+}
+
+.monitor-view__cpu-panel--wide {
+  grid-column: 1 / -1;
+}
+
+.monitor-view__panel-title {
+  margin: 0 0 var(--spacer-8);
+  color: var(--text-secondary);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  font-weight: var(--body-sm-strong-font-weight);
+}
+
+.monitor-view__cores {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--spacer-8);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.monitor-view__core {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-6);
+  min-width: 0;
+  padding: var(--spacer-4) var(--spacer-8);
+  border: 1px solid var(--border-neutral-l1);
+  border-radius: var(--radius-6);
+}
+
+/* 持续饱和核：警示样式 + 「饱和」标签（颜色/背景均取状态 token） */
+.monitor-view__core--saturated {
+  border-color: var(--status-warning-default);
+  background: var(--status-warning-surface-l1);
+}
+
+.monitor-view__core-index {
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  white-space: nowrap;
+}
+
+.monitor-view__core-value {
+  margin-left: auto;
+  color: var(--text-default);
+  font-family: var(--font-family-metric);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.monitor-view__core-tag {
+  flex: 0 0 auto;
+}
+
+.monitor-view__load,
+.monitor-view__rates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacer-8) var(--spacer-16);
+  margin: 0;
+}
+
+.monitor-view__load-item,
+.monitor-view__rate-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-2);
+  min-width: 0;
+}
+
+.monitor-view__load-label,
+.monitor-view__rate-label {
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
+.monitor-view__load-value,
+.monitor-view__rate-value {
+  margin: 0;
+  color: var(--text-default);
+  font-family: var(--font-family-metric);
+  font-size: var(--body-base-font-size);
+  line-height: var(--body-base-line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+.monitor-view__hint {
+  margin: var(--spacer-8) 0 0;
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
 .monitor-view__list {
   list-style: none;
   margin: 0;
@@ -404,6 +632,14 @@ const network = computed(() => snapshot.value?.network ?? null)
 
   .monitor-view__info {
     grid-template-columns: 1fr;
+  }
+
+  .monitor-view__cpu {
+    grid-template-columns: 1fr;
+  }
+
+  .monitor-view__cpu-panel--wide {
+    grid-column: auto;
   }
 }
 </style>

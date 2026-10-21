@@ -30,6 +30,10 @@ target_link_libraries(dzplatform_headers PUBLIC
     nlohmann_json::nlohmann_json magic_enum::magic_enum
     spdlog::spdlog
 )
+if(WIN32)
+    # sysmon 的 Windows 负载代理走 PDH（\System\Processor Queue Length，契约 sysmon §2.7）。
+    target_link_libraries(dzplatform_headers PUBLIC pdh)
+endif()
 
 # ============================================================
 # 单元测试

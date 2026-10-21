@@ -12,6 +12,7 @@
  */
 
 #include "config.h"
+#include "cpu_saturation.h"
 #include "cpu_usage.h"
 #include "snapshot_builder.h"
 #include "timer.h"
@@ -40,8 +41,10 @@
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -64,6 +67,21 @@ int64_t wall_clock_unix_ms() {
                         std::chrono::system_clock::now().time_since_epoch())
                         .count();
     return static_cast<int64_t>(ms);
+}
+
+/// 由每核累计计数器构造快照用的每核条目：本帧使用率未知时为 null，饱和标记由 tracker 写入。
+std::vector<platform::SysmonCpuCore> make_core_entries(
+    const std::vector<platform::RawCpuCoreTimes>& cores) {
+    std::vector<platform::SysmonCpuCore> entries;
+    entries.reserve(cores.size());
+    for (const auto& core : cores) {
+        platform::SysmonCpuCore entry;
+        entry.index = core.index;
+        entry.usage_ratio = std::nullopt;
+        entry.saturated = false;
+        entries.push_back(entry);
+    }
+    return entries;
 }
 
 /// dzsysmon 主对象：持有全部运行期状态。非线程安全，只在 io_context 线程访问。
@@ -134,10 +152,12 @@ private:
 
         collector_ = platform::make_system_collector();
         system_info_ = collector_->collect_system_info();
-        prev_cpu_times_ = collector_->collect_cpu_times();
-        if (!prev_cpu_times_.has_value()) {
+        if (const auto baseline = collector_->collect_cpu_times()) {
+            apply_baseline(*baseline);
+        } else {
             SPDLOG_WARN("initial cpu sample unavailable | reason=collect_failed");
         }
+        refresh_load_average();
 
         // 事件通道由 master 创建（open_only）；reader/writer 名 = 进程名，
         // 与 master 的 register_subscriber(entry.name) / make_subscriber_name 一致。
@@ -206,27 +226,128 @@ private:
             [this](const boost::system::error_code& next_ec) { on_measure(next_ec); });
     }
 
-    /// 采样一次 CPU 计数器并更新使用率/缺口标记。
+    /// 建立/重建计量基线：记录累计计数器与采样时刻；首帧使用率保持不可用（null），
+    /// 每核/速率的可用性能力标记为粘性（一旦确认可用，后续采样失败不改写；契约 sysmon §2.5）。
+    void apply_baseline(const platform::RawCpuTimes& times) {
+        prev_cpu_times_ = times;
+        prev_sample_time_ = std::chrono::steady_clock::now();
+        // 可用性（能力）标记是粘性的：一次采样失败不改写「平台是否支持该指标」。
+        metrics_.cores_collected = metrics_.cores_collected || !times.cores.empty();
+        if (!times.cores.empty()) {
+            metrics_.cores = make_core_entries(times.cores);
+        }
+        metrics_.saturated_cores.clear();
+        saturation_tracker_.reset();
+        // 可用性键 cpu.context_switches 以系统级上下文切换计数器为准；中断是独立计数器，
+        // 不可用时单独输出 null（契约 sysmon §2.3、§2.5）。
+        metrics_.rates_collected = metrics_.rates_collected || times.context_switches.has_value();
+        metrics_.context_switches_per_sec = std::nullopt;
+        metrics_.interrupts_per_sec = std::nullopt;
+    }
+
+    /// 本帧未采到任何 CPU 数值：能力标记保持粘性，数值全部置空（不得沿用旧帧冒充本帧，
+    /// 契约 sysmon §2.7）。核条目（若有）保留 index，仅把使用率/饱和标记置空。
+    void clear_cpu_values() {
+        metrics_.total_usage_ratio = std::nullopt;
+        for (auto& core : metrics_.cores) {
+            core.usage_ratio = std::nullopt;
+            core.saturated = false;
+        }
+        metrics_.saturated_cores.clear();
+        metrics_.context_switches_per_sec = std::nullopt;
+        metrics_.interrupts_per_sec = std::nullopt;
+    }
+
+    /// 采样一次系统负载（Linux 真实 loadavg / Windows 队列长度代理）。
+    /// 能力标记粘性；本帧采样失败时数值置 null（不得沿用上一帧冒充本帧，契约 §2.7）。
+    void refresh_load_average() {
+        const auto load = collector_->collect_load_average();
+        if (!load.has_value()) {
+            metrics_.load_average = std::nullopt;
+            return;
+        }
+        platform::SysmonLoadAverage average;
+        average.one = load->one;
+        average.five = load->five;
+        average.fifteen = load->fifteen;
+        average.semantic = load->semantic;
+        metrics_.load_average = average;
+        metrics_.load_collected = true;
+    }
+
+    /// 采样一次 CPU 计数器并更新使用率/每核/饱和标记/速率/缺口标记。
     void measure_once() {
+        const auto now = std::chrono::steady_clock::now();
         auto current = collector_->collect_cpu_times();
         if (!current.has_value()) {
-            ++missed_ticks_;  // 采集失败：跳过本次计量并记缺口（契约 sysmon §2.7）
+            ++missed_ticks_;     // 采集失败：跳过本次计量并记缺口（契约 sysmon §2.7）
+            clear_cpu_values();  // 本帧无值：不得把上一帧数值当本帧发布（能力标记保持粘性）
             SPDLOG_DEBUG("cpu measure skipped | reason=collect_failed");
+            refresh_load_average();  // 负载是独立 gauge，CPU 采集失败不影响其采样
             return;
         }
         if (!prev_cpu_times_.has_value()) {
-            prev_cpu_times_ = current;  // 首个成功样本只建立基线，不产出使用率
+            apply_baseline(*current);  // 首个成功样本只建立基线，不产出速率
+            refresh_load_average();
             return;
         }
-        const auto usage = compute_cpu_usage(prev_cpu_times_.value(), current.value());
-        prev_cpu_times_ = current;  // 无论是否可用都推进基线（计数器重置后重建基线）
-        if (!usage.has_value()) {
+        const double elapsed_seconds =
+            std::chrono::duration<double>(now - prev_sample_time_).count();
+        prev_sample_time_ = now;
+
+        // 总使用率与每核使用率（契约 sysmon §2.7：首次/计数器重置不可用，不得用 0 冒充）。
+        const auto total_usage = compute_cpu_usage(prev_cpu_times_.value(), current.value());
+        if (!current->cores.empty()) {
+            const auto core_usages = compute_core_usages(prev_cpu_times_->cores, current->cores);
+            metrics_.cores = make_core_entries(current->cores);
+            for (std::size_t i = 0; i < metrics_.cores.size(); ++i) {
+                metrics_.cores[i].usage_ratio =
+                    i < core_usages.size() ? core_usages[i] : std::nullopt;
+            }
+            metrics_.cores_collected = true;
+
+            // 饱和判定：阈值与连续次数取当前配置（默认 90% / 10 次；运行期修改随配置票）。
+            const double threshold_ratio =
+                std::clamp(config_.alerts.cpu_sustain_used_pct / 100.0, 0.0, 1.0);
+            const auto required_samples = static_cast<uint32_t>(config_.alerts.cpu_sustain_samples);
+            saturation_tracker_.update(metrics_.cores, threshold_ratio, required_samples);
+            metrics_.saturated_cores = saturation_tracker_.saturated_cores();
+        } else {
+            // 本帧未采到每核序列：保持能力标记（粘性）与已知核 index，数值/饱和置空，
+            // 不得沿用旧帧冒充本帧（契约 sysmon §2.7）。
+            for (auto& core : metrics_.cores) {
+                core.usage_ratio = std::nullopt;
+                core.saturated = false;
+            }
+            metrics_.saturated_cores.clear();
+        }
+
+        // 速率 = 累计计数器差值 / 实际经过秒数（契约 sysmon §2.7）。
+        // 能力标记粘性；任一侧计数器不可用/重置时本帧数值为 null，不得沿用旧帧。
+        metrics_.context_switches_per_sec = std::nullopt;
+        if (current->context_switches.has_value() &&
+            prev_cpu_times_->context_switches.has_value()) {
+            metrics_.rates_collected = true;
+            metrics_.context_switches_per_sec = compute_rate(
+                *prev_cpu_times_->context_switches, *current->context_switches, elapsed_seconds);
+        }
+        metrics_.interrupts_per_sec = std::nullopt;
+        if (current->interrupts.has_value() && prev_cpu_times_->interrupts.has_value()) {
+            metrics_.interrupts_per_sec =
+                compute_rate(*prev_cpu_times_->interrupts, *current->interrupts, elapsed_seconds);
+        }
+
+        if (total_usage.has_value()) {
+            metrics_.total_usage_ratio = total_usage;
+            last_sample_unix_ms_ = wall_clock_unix_ms();
+        } else {
+            // 计数器重置/Δtotal=0：本次输出不可用（不得沿用旧百分比冒充，契约 sysmon §2.7）。
+            metrics_.total_usage_ratio = std::nullopt;
             ++missed_ticks_;
             SPDLOG_DEBUG("cpu measure skipped | reason=counter_unavailable");
-            return;
         }
-        cpu_usage_ratio_ = usage;
-        last_sample_unix_ms_ = wall_clock_unix_ms();
+        prev_cpu_times_ = std::move(current);  // 无论是否可用都推进基线（重置后重建）
+        refresh_load_average();
     }
 
     void on_push(const boost::system::error_code& ec) {
@@ -268,9 +389,9 @@ private:
     /// 推送实时快照（RTN_SYSMON_SNAPSHOT，无 instance_id，仅本次 CPU/系统信息）。
     void push_snapshot() noexcept {
         try {
-            const auto snapshot = build_snapshot(
-                name_, system_info_, cpu_usage_ratio_, config_.sampling.measure_interval_ms,
-                last_sample_unix_ms_, missed_ticks_, wall_clock_unix_ms());
+            const auto snapshot =
+                build_snapshot(name_, system_info_, metrics_, config_.sampling.measure_interval_ms,
+                               last_sample_unix_ms_, missed_ticks_, wall_clock_unix_ms());
             (void)platform::write_ext_json(*event_writer_, DZ_FRAME_RTN_SYSMON_SNAPSHOT, snapshot);
         } catch (const std::exception& e) {
             SPDLOG_ERROR("push snapshot failed | error=\"{}\"", e.what());
@@ -436,7 +557,9 @@ private:
     std::unique_ptr<platform::SystemCollector> collector_;
     platform::RawSystemInfo system_info_;
     std::optional<platform::RawCpuTimes> prev_cpu_times_;
-    std::optional<double> cpu_usage_ratio_;
+    std::chrono::steady_clock::time_point prev_sample_time_{};
+    CpuMetrics metrics_;
+    CoreSaturationTracker saturation_tracker_;
     int64_t last_sample_unix_ms_ = 0;
     uint64_t missed_ticks_ = 0;
     std::shared_ptr<shm::ChannelMeta> event_meta_;

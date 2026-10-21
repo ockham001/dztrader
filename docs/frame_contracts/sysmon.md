@@ -24,7 +24,7 @@
 
 ## 2. 快照（RTN_SYSMON_SNAPSHOT）
 
-**语义**：推送当前实时快照。首版只填系统信息与 CPU 总使用率，其余域按本文档定稿的形状输出 `null` 并在可用性映射中标记不可用；已列出的指标域后续只填值、**不改形状**（新增指标类别属 additive 扩展，按总则 §11.3 同步契约、类型与前端 schema；消费方忽略未知字段）。
+**语义**：推送当前实时快照。当前版本（#72）填系统信息与 CPU 区块（总量、每核与饱和标记、系统负载、上下文切换/中断速率）；其余域按本文档定稿的形状输出 `null` 并在可用性映射中标记不可用。已列出的指标域后续只填值、**不改形状**（新增指标类别属 additive 扩展，按总则 §11.3 同步契约、类型与前端 schema；消费方忽略未知字段）。
 
 **来源识别**：帧头无 `instance_id`（形态 4、发送方固定 `dzsysmon`），按总则 §5 在 payload 中显式携带 `source`。
 
@@ -74,7 +74,7 @@
 |------|------|------|
 | `hostname` | string | 主机名（非空） |
 | `cpu_model` | string | CPU 型号；取不到时为空串 |
-| `logical_cores` | int | 逻辑核数（> 0） |
+| `logical_cores` | int | 逻辑核数（> 0）；每核序列可用时等于 `cpu.cores` 长度（热插拔/虚拟机缩放后以本次序列为准） |
 | `boot_time_unix_sec` | int | 启动时间（Unix 秒） |
 | `uptime_sec` | int | 运行时长（秒），由快照生成时刻与启动时间计算 |
 
@@ -83,11 +83,11 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `total.usage_ratio` | number \| null | 总使用率 `[0,1]`；`null` = 首次采样/计数器不可用（不得用 0 冒充） |
-| `cores` | array | 每核使用率（不可用时为空数组）：`{index:int, usage_ratio:number\|null, saturated:bool}` |
-| `saturated_cores` | array\<int\> | 当前处于持续饱和状态的核 index 集合 |
-| `load_average` | object \| null | `{one,five,fifteen: number\|null, semantic: string}`；`semantic` 说明口径（Linux `"load_average"`；Windows `"processor_queue"` 代理量）。**两者不是同一个量，前端不得同轴比较** |
-| `context_switches_per_sec` | number \| null | 每秒上下文切换（速率型，不可用为 null） |
-| `interrupts_per_sec` | number \| null | 每秒中断（速率型，不可用为 null） |
+| `cores` | array | 每核使用率（不可用时为空数组）：`{index:int, usage_ratio:number\|null, saturated:bool}`。`index` 为 OS CPU 编号（Linux `cpuN` 的 N；Windows 处理器序号），**不保证连续**；可用时数组长度 == `system.logical_cores` |
+| `saturated_cores` | array\<int\> | 当前处于持续饱和状态的核 index 集合（判定规则见 §2.7） |
+| `load_average` | object \| null | `{one,five,fifteen: number\|null, semantic: string}`。Linux：`semantic="load_average"`，三值为真实 1/5/15 分钟负载；Windows：`semantic="processor_queue"`，以处理器队列长度做指数加权移动平均后填三值（均为代理量）。**两者不是同一个量，前端不得同轴比较**；口径说明由 `availability.semantic_hints["cpu.load_average"]` 承载 |
+| `context_switches_per_sec` | number \| null | 每秒上下文切换：由累计计数器差值与实际采样间隔计算（§2.7）；首次采样为 null |
+| `interrupts_per_sec` | number \| null | 每秒中断：同上下文切换口径；首次采样为 null |
 
 ### 2.4 其余指标域
 
@@ -112,7 +112,7 @@
 |------|------|------|
 | `platform_description` | string | 人类可读平台描述，**Windows 必须含 build 号**（如 `"Windows 10 Pro (build 19045)"`） |
 | `metrics` | object | 按指标可用性映射，键集合见下；每个值为 `{available:bool, reason?:string}`；`available=false` 时 `reason` 必填 |
-| `semantic_hints` | object | 跨平台语义提示（key → 文案）；当前版本为空对象 |
+| `semantic_hints` | object | 跨平台语义提示（key → 文案），key 取指标键。当前版本定义 `cpu.load_average`：Windows 处理器队列长度代理量不是 Unix load average，不得同轴比较。无提示时为空对象 |
 
 `metrics` 键集合（固定，发送方每帧必须覆盖全部键）：
 
@@ -120,13 +120,16 @@
 
 `reason` 为自由文案（英文、小写开头、无句号），建议取值：
 - `not_implemented` —— 本版本尚未采集该指标
-- `unsupported` —— 本平台不支持（如 Windows 无 load average、无交换分区）
+- `unsupported` —— 本平台不支持（如无交换分区）
 - `no_permission` —— 计数器需特权/未开启
 - `no_sensor` —— 传感器不存在（如温度）
+- `collect_failed` —— 本次采集失败（能力存在但读不到；下一次采样可能恢复）
 
-> 当前版本实现 `system` 与 `cpu.total`；其余键固定为 `available=false` + `reason="not_implemented"`，对应域输出 `null`/空数组。
+> 当前版本（#72）实现 `system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`；其余键固定为 `available=false` + `reason="not_implemented"`，对应域输出 `null` 或空数组。
+>
+> `cpu.cores` / `cpu.load_average` / `cpu.context_switches` 的可用性表示**能力**（不是本帧数值是否就绪）：能力一旦确认，可用性为粘性 `true`，此后的采样失败只把数值置 `null`，不改写可用性。能力从未确认或平台不支持时可为 `available=false` + `reason="collect_failed"`（平台不支持也可用 `unsupported`；当前版本无法区分能力缺失与暂时失败，统一用 `collect_failed`；`reason` 为自由文案，本版本新增建议取值 `collect_failed`）。
 
-### 2.6 快照示例（首版节选）
+### 2.6 快照示例（当前版本节选）
 
 ```json
 {
@@ -134,8 +137,20 @@
   "timestamp": 1790000005000,
   "sampling": {"measure_interval_ms": 1000, "last_sample_unix_ms": 1790000005123, "missed_ticks": 0},
   "platform": {"family": "linux", "version": "Ubuntu 24.04.1 LTS", "kernel": "6.8.0-45-generic", "arch": "x86_64", "build": 0},
-  "system": {"hostname": "trade-01", "cpu_model": "AMD Ryzen 9 7950X 16-Core Processor", "logical_cores": 32, "boot_time_unix_sec": 1789990000, "uptime_sec": 10005},
-  "cpu": {"total": {"usage_ratio": 0.187}, "cores": [], "saturated_cores": [], "load_average": null, "context_switches_per_sec": null, "interrupts_per_sec": null},
+  "system": {"hostname": "trade-01", "cpu_model": "AMD Ryzen 9 7950X 16-Core Processor", "logical_cores": 4, "boot_time_unix_sec": 1789990000, "uptime_sec": 10005},
+  "cpu": {
+    "total": {"usage_ratio": 0.187},
+    "cores": [
+      {"index": 0, "usage_ratio": 0.21, "saturated": false},
+      {"index": 1, "usage_ratio": 0.95, "saturated": true},
+      {"index": 2, "usage_ratio": 0.05, "saturated": false},
+      {"index": 3, "usage_ratio": null, "saturated": false}
+    ],
+    "saturated_cores": [1],
+    "load_average": {"one": 0.42, "five": 0.51, "fifteen": 0.63, "semantic": "load_average"},
+    "context_switches_per_sec": 1234.5,
+    "interrupts_per_sec": 567.0
+  },
   "memory": null,
   "swap": null,
   "volumes": null,
@@ -147,9 +162,9 @@
     "metrics": {
       "system": {"available": true},
       "cpu.total": {"available": true},
-      "cpu.cores": {"available": false, "reason": "not_implemented"},
-      "cpu.load_average": {"available": false, "reason": "not_implemented"},
-      "cpu.context_switches": {"available": false, "reason": "not_implemented"},
+      "cpu.cores": {"available": true},
+      "cpu.load_average": {"available": true},
+      "cpu.context_switches": {"available": true},
       "memory": {"available": false, "reason": "not_implemented"},
       "swap": {"available": false, "reason": "not_implemented"},
       "volumes": {"available": false, "reason": "not_implemented"},
@@ -169,6 +184,11 @@
 - 计数器回绕：仅当上次与本次值均落在 32 位范围内且本次小于上次时按 32 位回绕计算；其余下降视为计数器重置，本次输出不可用（下一采样周期重建基线）。
 - Linux 忙闲口径：`iowait` 不计入忙；`guest`/`guest_nice` 不重复计入总量（已含于 user/nice）。
 - 两次采样间隔内 CPU 使用率 = `1 − Δidle/Δtotal`，结果钳制到 `[0,1]`。
+- 每核使用率：与总量同公式；核序列长度或 index 序列变化（热插拔 / 处理器组变化）视为基线失效，本次每核使用率全部 `null` 并重建基线。
+- 速率型指标（上下文切换 / 中断）：`Δcount / 实际经过秒数`（采样间隔用单调时钟测量），首次采样 `null`；`Δ时间 ≤ 0` 本次不可用。
+- **饱和核判定**：单核使用率连续 `alerts.cpu_sustain_samples` 次采样 **≥** `alerts.cpu_sustain_used_pct / 100` 即标记 `saturated=true`；任一采样严格低于阈值即清零解除；不可用样本（`usage_ratio=null`）不改变连续计数；核序列变化重置全部计数。阈值与连续次数取自当前配置（运行期修改语义随配置票 #81）。
+- Windows >64 逻辑核的机器上每核序列可能不可用（处理器组限制）：此时 `cpu.cores` 标记不可用、中断累计计数输出 `null`；不得用组内数据冒充全系统每核序列。
+- **本帧数值不得沿用上一帧**：某项能力可用但本帧数值未就绪或采集失败时，对应字段输出 `null`——每核序列整体未采到时 `cpu.cores` 保留已知核 index 条目、`usage_ratio` 全部 `null`、`saturated` 全部 `false`（从未获得过序列时 `cpu.cores` / `saturated_cores` 为空数组）；`availability` 的能力标记保持粘性，消费方据此显示"不可用"而不是旧数据。单个核的计数器不可用时该核 `usage_ratio=null`，不改变饱和判定的连续计数。
 - 采集失败（如 `/proc` 读取失败）跳过本次计量并累加 `sampling.missed_ticks`。
 
 ---
@@ -202,7 +222,7 @@
 
 `realtime`：`{push_interval_sec:int}`，默认 `5`，`[1, 3600]`；与计量频率解耦（事件通道每次写入会唤醒全部注册进程）。
 
-`alerts`：`{cpu_sustain_used_pct:number, cpu_sustain_samples:int, memory_used_pct:number, swap_used_pct:number, volume_free_pct:number, volume_free_bytes:int, cooldown_sec:int}`，默认 `90/10/90/50/10/1073741824/600`；百分比字段 `[0,100]`、`cpu_sustain_samples ∈ [1,3600]`、`cooldown_sec ∈ [0,86400]`。
+`alerts`：`{cpu_sustain_used_pct:number, cpu_sustain_samples:int, memory_used_pct:number, swap_used_pct:number, volume_free_pct:number, volume_free_bytes:int, cooldown_sec:int}`，默认 `90/10/90/50/10/1073741824/600`；百分比字段 `[0,100]`、`cpu_sustain_samples ∈ [1,3600]`、`cooldown_sec ∈ [0,86400]`。`cpu_sustain_used_pct` / `cpu_sustain_samples` 由发送方用于饱和核判定（§2.7）；阈值告警的触发与冷却由 #80 消费。
 
 ### 3.2 触发场景（RTN_SYSMON_CONFIG）
 
