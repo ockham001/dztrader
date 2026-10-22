@@ -273,8 +273,7 @@ TEST_F(IntradayBarGuardTest, RegressedTradingDayIsDroppedAsOutOfOrder) {
 
 /// @brief 交易日前进：累计基准重置为 0，新交易日首笔 delta 不被旧日累计污染
 ///
-/// 只断言差分基准（本票范围）；跨日的 close/open 生命周期与 bar 的 trading_day
-/// 归属由 #88 覆盖，本用例不锁定该行为。
+/// 只断言差分基准（本票范围）；跨日的空交易日/夜盘组合等完整生命周期由 #88 覆盖。
 TEST_F(IntradayBarGuardTest, ForwardTradingDayResetsCumulativeBasis) {
     accepted_reference_bar();  // 当日累计量 15、累计额 1545
 
@@ -290,6 +289,35 @@ TEST_F(IntradayBarGuardTest, ForwardTradingDayResetsCumulativeBasis) {
     expect_stats(0, 0, 0);
     EXPECT_EQ(builder_.current_bar().volume, 2);  // 5 - 3
     EXPECT_DOUBLE_EQ(builder_.current_bar().turnover, 205.0);
+}
+
+/// @brief 交易日前进但落在同一桶：开新根且量额以 0 为基准，绝不发布负量额
+TEST_F(IntradayBarGuardTest, ForwardTradingDayInSameBucketNeverPublishesNegativeVolume) {
+    accepted_reference_bar();  // 当日累计量 15、累计额 1545，最后 tick 09:00:10
+
+    // 09:00:30 仍属 09:00 桶，但已是新交易日、当日累计从 3 起
+    builder_.on_tick(make_tick(9 * 3600 + 30, 100.0, 3, 300.0, 7, TRADING_DAY + 1));
+    expect_stats(0, 0, 0);  // 跨日不算坏量
+    ASSERT_TRUE(builder_.has_current_bar());
+    const Bar& bar = builder_.current_bar();
+    EXPECT_EQ(bar.trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(bar.volume, 3);  // 以 0 为基准，不是 3 - 15
+    EXPECT_DOUBLE_EQ(bar.turnover, 300.0);
+    EXPECT_GE(bar.volume, 0);
+    EXPECT_GE(bar.turnover, 0.0);
+}
+
+/// @brief 跨日同桶 tick 之后交易日倒退仍按乱序丢弃（基准是最近已接受 tick，不是当前 bar）
+TEST_F(IntradayBarGuardTest, RegressedTradingDayAfterSameBucketCrossDayIsDropped) {
+    accepted_reference_bar();
+    builder_.on_tick(make_tick(9 * 3600 + 30, 100.0, 3, 300.0, 7, TRADING_DAY + 1));
+    ASSERT_TRUE(builder_.has_current_bar());
+    const Bar reference = builder_.current_bar();
+
+    builder_.on_tick(make_tick(9 * 3600 + 40, 101.0, 5, 505.0, 8, TRADING_DAY));  // 回到旧交易日
+    expect_stats(0, 1, 0);
+    ASSERT_TRUE(builder_.has_current_bar());
+    expect_bar_equal(builder_.current_bar(), reference);
 }
 
 /// @brief 各守卫互不串扰：四种缺陷交替出现时三个计数器各自精确递增
