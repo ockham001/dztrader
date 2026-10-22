@@ -768,11 +768,6 @@ public:
     std::vector<RawWatchPathInfo> collect_watch_paths(
         const std::vector<std::string>& paths) override {
         const auto mounts = read_mounts();
-        std::vector<std::string> mount_points;
-        mount_points.reserve(mounts.size());
-        for (const auto& mount : mounts) {
-            mount_points.push_back(mount.mount_point);
-        }
         std::vector<RawWatchPathInfo> results;
         results.reserve(paths.size());
         for (const auto& path : paths) {
@@ -803,7 +798,7 @@ public:
             // （tmpfs/overlay/fuse 等，按设备号判定）报 unsupported，不得回退到 "/"
             // （契约 sysmon §2.4；容器内 shm 目录常正好在 tmpfs 上）。
             const auto mount = system_collector_linux_internal::resolve_volume_mount_point(
-                *normalized, mount_points, /*root_mount_point=*/"/", /*out_reason=*/&reason);
+                *normalized, mounts, /*root_mount_point=*/"/", /*out_reason=*/&reason);
             if (!mount.has_value()) {
                 info.reason = reason.empty() ? std::string("collect_failed") : reason;
                 results.push_back(std::move(info));
@@ -857,6 +852,22 @@ std::string unescape_mount_field(std::string_view field) {
 }
 
 /// 判断路径是否以某个挂载点为前缀且落在路径分量边界上（`/home` 不匹配 `/home2`）。
+/// 挂载点排序：长度**降序**（最长前缀优先），同长度按字典序保证确定性。
+bool mount_point_longest_first(const MountEntry& lhs, const MountEntry& rhs) {
+    if (lhs.mount_point.size() != rhs.mount_point.size()) {
+        return lhs.mount_point.size() > rhs.mount_point.size();
+    }
+    return lhs.mount_point < rhs.mount_point;
+}
+
+/// 挂载点排序：长度**升序**（最短挂载点优先 = 该设备的代表视图）。
+bool mount_point_shortest_first(const MountEntry& lhs, const MountEntry& rhs) {
+    if (lhs.mount_point.size() != rhs.mount_point.size()) {
+        return lhs.mount_point.size() < rhs.mount_point.size();
+    }
+    return lhs.mount_point < rhs.mount_point;
+}
+
 bool is_mount_prefix(std::string_view path, std::string_view mount_point) {
     if (mount_point == "/") {
         return true;
@@ -935,13 +946,8 @@ std::vector<MountEntry> parse_mounts(std::string_view content, bool include_pseu
         }
         entries.push_back(std::move(entry));
     }
-    // 最长前缀匹配直接可用：按挂载点长度降序（同长度按字典序保证确定性）。
-    std::sort(entries.begin(), entries.end(), [](const MountEntry& lhs, const MountEntry& rhs) {
-        if (lhs.mount_point.size() != rhs.mount_point.size()) {
-            return lhs.mount_point.size() > rhs.mount_point.size();
-        }
-        return lhs.mount_point < rhs.mount_point;
-    });
+    // 最长前缀匹配直接可用：按挂载点长度降序。
+    std::sort(entries.begin(), entries.end(), mount_point_longest_first);
     return entries;
 }
 
@@ -956,14 +962,9 @@ std::vector<MountEntry> attach_devices(std::vector<MountEntry> entries) {
 }
 
 std::vector<MountEntry> deduplicate_by_device(std::vector<MountEntry> entries) {
-    // 先按"最短挂载点优先"挑选代表，再输出：这样 `/` 会成为 sda2 的代表，
+    // 先按"最短挂载点优先"挑选代表：这样 `/` 会成为 sda2 的代表，
     // 而 `/home/user` 这类 bind mount 不会重复出现。
-    std::sort(entries.begin(), entries.end(), [](const MountEntry& lhs, const MountEntry& rhs) {
-        if (lhs.mount_point.size() != rhs.mount_point.size()) {
-            return lhs.mount_point.size() < rhs.mount_point.size();
-        }
-        return lhs.mount_point < rhs.mount_point;
-    });
+    std::sort(entries.begin(), entries.end(), mount_point_shortest_first);
     std::vector<MountEntry> result;
     std::set<uint64_t> seen_devices;
     for (auto& entry : entries) {
@@ -973,12 +974,7 @@ std::vector<MountEntry> deduplicate_by_device(std::vector<MountEntry> entries) {
         result.push_back(std::move(entry));
     }
     // 输出顺序回到"挂载点长度降序"（供最长前缀匹配直接使用）。
-    std::sort(result.begin(), result.end(), [](const MountEntry& lhs, const MountEntry& rhs) {
-        if (lhs.mount_point.size() != rhs.mount_point.size()) {
-            return lhs.mount_point.size() > rhs.mount_point.size();
-        }
-        return lhs.mount_point < rhs.mount_point;
-    });
+    std::sort(result.begin(), result.end(), mount_point_longest_first);
     return result;
 }
 
@@ -1004,45 +1000,54 @@ std::optional<std::string> match_mount_point(std::string_view normalized_path,
     return std::nullopt;
 }
 
-std::optional<std::string> resolve_volume_mount_point(
-    const std::string& normalized_path,
-    const std::vector<std::string>& volume_mount_points,
-    const std::string& root_mount_point,
-    std::string* out_reason) {
-    // 先在不含根的集合里找最长前缀：命中即确定落在采集范围内的某个卷上。
-    std::optional<std::string> best;
-    for (const auto& mount_point : volume_mount_points) {
-        if (mount_point == "/") {
-            continue;
-        }
-        if (is_mount_prefix(normalized_path, mount_point)) {
-            if (!best.has_value() || mount_point.size() > best->size()) {
-                best = mount_point;
-            }
-        }
-    }
-    if (best.has_value()) {
-        return best;
-    }
-    // 没命中：只有"确实在根文件系统上"才归到根卷，否则视为不在采集范围。
-    // 无条件回退到 "/" 会把 tmpfs/overlay/fuse 上的路径谎报成根卷（契约 §2.4 禁止）。
-    struct stat root_info{};
+std::optional<std::string> resolve_volume_mount_point(const std::string& normalized_path,
+                                                      const std::vector<MountEntry>& volumes,
+                                                      const std::string& root_mount_point,
+                                                      std::string* out_reason) {
+    // 判据是**底层设备**而不是路径前缀：卷的语义是一块存储（契约 sysmon §2.4），
+    // 而一个卷可以有多个挂载点（bind mount），路径前缀只能看到其中一个视图。
+    // 1) 路径落在某个采集范围内挂载点的前缀上 → 直接采信（最常见、最省事）；
+    // 2) 否则用 st_dev 找同一设备在**卷列表里的代表挂载点**——这既覆盖非根的 bind mount
+    //    （/data 卷被 bind 到 /srv/app），也避免把 tmpfs/overlay 上的路径谎报成根卷。
     struct stat path_info{};
-    if (::stat(root_mount_point.c_str(), &root_info) != 0 ||
-        ::stat(normalized_path.c_str(), &path_info) != 0) {
+    if (::stat(normalized_path.c_str(), &path_info) != 0) {
         if (out_reason != nullptr) {
-            // stat 失败不是"卷不在采集范围"，是采集本身失败（权限/IO）。
             *out_reason = (errno == EACCES || errno == EPERM) ? "no_permission" : "collect_failed";
         }
         return std::nullopt;
     }
-    if (root_info.st_dev != path_info.st_dev) {
-        if (out_reason != nullptr) {
-            *out_reason = "unsupported";  // 落在被过滤的挂载点上（tmpfs/overlay/fuse 等）
+
+    // 1) 前缀命中：最精确的挂载点视图。
+    std::optional<std::string> prefix_best;
+    for (const auto& entry : volumes) {
+        if (entry.mount_point == "/") {
+            continue;
         }
-        return std::nullopt;
+        if (is_mount_prefix(normalized_path, entry.mount_point)) {
+            if (!prefix_best.has_value() || entry.mount_point.size() > prefix_best->size()) {
+                prefix_best = entry.mount_point;
+            }
+        }
     }
-    return root_mount_point;
+    if (prefix_best.has_value()) {
+        return prefix_best;
+    }
+
+    // 2) 设备命中：找同设备在卷列表里的代表（`/data` 之于 bind 到 /srv/app 的 sdb1）。
+    for (const auto& entry : volumes) {
+        if (entry.device != 0 && entry.device == static_cast<uint64_t>(path_info.st_dev)) {
+            return entry.mount_point;
+        }
+    }
+
+    // 3) 都没命中：路径确实在设备上，但该设备不在卷采集范围（tmpfs/overlay/fuse 等）。
+    //    根挂载点仍要再确认一次：`/` 自己可能就是被过滤的文件系统（容器里常见），
+    //    此时输出 "/" 会与 volumes[] 对不上、打红 §7 交叉校验。
+    if (out_reason != nullptr) {
+        *out_reason = "unsupported";
+    }
+    (void)root_mount_point;  // 语义由 device 判定覆盖；参数保留供调用方表达契约口径
+    return std::nullopt;
 }
 
 std::optional<std::string> normalize_path(const std::string& path) {

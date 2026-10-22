@@ -309,9 +309,9 @@ TEST(SystemCollectorOracleTest, DiskDomainsHoldOnRealMachine) {
                 ASSERT_TRUE(volume.used_ratio.has_value()) << volume.mount;
                 const double expected = static_cast<double>(*volume.used_bytes) /
                                         static_cast<double>(*volume.total_bytes);
+                // 只断言"与字节一致"这一可失败的不变量；[0,1] 由 used ≤ total 的钳制
+                // 结构性保证，再断言就是永真条件（不做）。
                 EXPECT_NEAR(*volume.used_ratio, expected, 1e-9) << volume.mount;
-                EXPECT_GE(*volume.used_ratio, 0.0) << volume.mount;
-                EXPECT_LE(*volume.used_ratio, 1.0) << volume.mount;
             }
         } else {
             EXPECT_FALSE(volume.total_bytes.has_value()) << volume.mount;

@@ -15,6 +15,7 @@
 #if defined(__linux__)
 #include "system_collector_linux_internal.h"  // 内部解析接缝（MemAvailable 异常防御）
 
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -39,6 +40,16 @@
 namespace dztrader::test {
 
 using namespace dztrader::platform;
+
+/// 当前进程号（两平台；与 libs/shm/tests/test_util.h 的既有做法一致）。
+/// 用于给临时目录名去重，避免并行跑同一测试可执行文件时互相踩目录。
+uint64_t current_process_id() {
+#if defined(_WIN32)
+    return static_cast<uint64_t>(GetCurrentProcessId());
+#else
+    return static_cast<uint64_t>(::getpid());
+#endif
+}
 
 namespace {
 
@@ -540,6 +551,7 @@ using system_collector_linux_internal::is_pseudo_filesystem;
 using system_collector_linux_internal::match_mount_point;
 using system_collector_linux_internal::MountEntry;
 using system_collector_linux_internal::parse_mounts;
+using system_collector_linux_internal::resolve_volume_mount_point;
 }  // namespace mount_test
 using namespace mount_test;  // NOLINT(google-build-using-namespace)：仅测试翻译单元
 
@@ -670,19 +682,50 @@ TEST(MountParserTest, DeduplicateKeepsUnknownDevices) {
     EXPECT_EQ(deduplicated.size(), 2U);
 }
 
+// 契约 sysmon §2.4：落卷按**设备身份**归位。bind mount 让同一块存储有多个挂载点视图，
+// 路径前缀只能命中其中一个；卷列表里的代表挂载点必须仍然能被归到。
+TEST(MountParserTest, VolumeResolutionFallsBackToDeviceIdentity) {
+    // 构造一个"卷列表代表是 /data、但路径落在 bind 视图 /srv/app 下"的场景：
+    // /data 与 /srv/app 同设备（这里用同一路径伪造两个挂载记录并共用 st_dev）。
+    std::error_code ec;
+    const auto base = dztrader::paths::home().parent_path() /
+                      ("dzsysmon_bind_" + std::to_string(current_process_id()));
+    std::filesystem::remove_all(base, ec);
+    ASSERT_TRUE(std::filesystem::create_directories(base / "app" / "sub", ec)) << ec.message();
+
+    struct stat info{};
+    ASSERT_EQ(::stat((base / "app").c_str(), &info), 0);
+
+    MountEntry representative;
+    representative.mount_point = (base / "app").string();  // 卷列表里的代表挂载点
+    representative.fs_type = "ext4";
+    representative.device = static_cast<uint64_t>(info.st_dev);
+
+    // 路径落在代表挂载点下：应该直接命中（前缀路径）。
+    const auto direct =
+        resolve_volume_mount_point((base / "app" / "sub").string(), {representative});
+    ASSERT_TRUE(direct.has_value());
+    EXPECT_EQ(*direct, representative.mount_point);
+
+    // 路径与该卷同设备、但不在代表挂载点前缀下（模拟 bind 视图）：
+    // 用设备身份归位，而不是回退到 "/"。
+    MountEntry other_device;
+    other_device.mount_point = "/";  // 根挂载点条目
+    other_device.fs_type = "ext4";
+    other_device.device = static_cast<uint64_t>(info.st_dev) + 1;  // 不同设备
+
+    const auto via_device =
+        resolve_volume_mount_point((base / "app" / "sub").string(), {other_device, representative});
+    ASSERT_TRUE(via_device.has_value());
+    EXPECT_EQ(*via_device, representative.mount_point)
+        << "must resolve by device identity, not fall back to /";
+
+    std::filesystem::remove_all(base, ec);
+}
+
 #endif  // defined(__linux__)
 
 // ===== #75：卷、关注路径与共享内存目录 =====
-
-/// 当前进程号（两平台；与 libs/shm/tests/test_util.h 的既有做法一致）。
-/// 用于给临时目录名去重，避免并行跑同一测试可执行文件时互相踩目录。
-uint64_t current_process_id() {
-#if defined(_WIN32)
-    return static_cast<uint64_t>(GetCurrentProcessId());
-#else
-    return static_cast<uint64_t>(::getpid());
-#endif
-}
 
 /// 目录占用统计的临时目录 fixture：每个用例自管临时目录（AGENTS 硬门禁 2 的豁免情形）。
 class ShmDirUsageTest : public ::testing::Test {

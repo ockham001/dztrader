@@ -107,22 +107,24 @@ struct MountEntry {
 [[nodiscard]] std::optional<std::string> match_mount_point(
     std::string_view normalized_path, const std::vector<std::string>& mount_points);
 
-/// 落卷的最长前缀匹配，区分"落在被过滤的文件系统上"与"真的没有对应卷"。
+/// 落卷解析：把路径归到它真正所在的**卷**（按设备身份，不是路径前缀）。
 ///
-/// 契约 sysmon §2.4 禁止"解析失败时回退到 `/`"。若是无条件回退，任何位于 tmpfs /
-/// overlay / fuse 等被过滤文件系统上的路径都会被谎报成根卷——而 shm 目录在容器里
-/// 恰恰常在 tmpfs 上。因此这里只在**路径确实落在根文件系统**时才归到 `/`：
-/// 用 `st_dev` 把路径与根挂载点做设备比对，设备不同即判定"占用了别的挂载点"。
+/// 契约 sysmon §2.4 禁止"解析失败时回退到 `/`"：无条件回退会把 tmpfs / overlay /
+/// fuse 上的路径（容器里的 shm 目录常正好如此）谎报成根卷。
+///
+/// 三步判定：① 路径前缀能命中某个卷挂载点 → 采信（最精确的视图）；
+/// ② 否则按 `st_dev` 找同设备在卷列表里的代表挂载点（覆盖 bind mount：`/data` 卷被
+/// bind 到 `/srv/app` 时仍归到 `/data`）；③ 都没有 → `unsupported`（确实不在采集范围）。
 ///
 /// @param normalized_path 已规范化的绝对路径
-/// @param volume_mount_points 卷采集范围内的挂载点（不含根时可无 `/`）
+/// @param volumes 卷采集范围内的挂载记录（带 `device`，用于按设备归位 bind mount）
 /// @param root_mount_point 根挂载点（通常 "/"）
 /// @param out_reason 失败原因（可为 nullptr）：`unsupported` = 落在被过滤的挂载点上，
 ///        `no_permission` / `collect_failed` = stat 失败（先尝试再判定设备）
 /// @return 匹配到的卷挂载点；std::nullopt = 路径不在任何采集范围内的卷上
 [[nodiscard]] std::optional<std::string> resolve_volume_mount_point(
     const std::string& normalized_path,
-    const std::vector<std::string>& volume_mount_points,
+    const std::vector<MountEntry>& volumes,
     const std::string& root_mount_point = "/",
     std::string* out_reason = nullptr);
 
