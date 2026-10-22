@@ -37,12 +37,13 @@ namespace dztrader::bar {
  * @tparam Sink bar 事件接收者：可选实现 on_bar_open / on_bar_update / on_bar_close，
  *              未实现视为空操作；回调不得抛异常
  *
- * @note 交易日变化按「换根」处理：`trading_day` 变大时先以 `is_final=true` 关闭当日最后
- *       一根 bar，再开新交易日首根（即便落在同一桶起点也换根），累计基准重置为 0，故新日
- *       首笔 tick 的量额 delta 从 0 起算、不跨日累加；`trading_day` 变小或 `date` 非正的
- *       tick 按乱序丢弃并计入 `out_of_order`；没有 tick 的交易日不生成空 bar（惰性收盘）。
- *       夜盘跨午夜不切日（`date` 未变即同一交易日）。集合竞价、续接（restore）由后续票
- *       定稿，公开方法只增不改。
+ * @note 交易日变化按「换根」处理：交易日变大的第一笔有效 tick 到来时，先以 `is_final=true`
+ *       关闭当日最后一根 bar，再开新交易日首根（即便落在同一桶起点也换根），累计基准重置
+ *       为 0，故新日首笔 tick 的量额 delta 从 0 起算、不跨日累加；被丢弃的新日 tick
+ *       （非交易小节/非法价格/坏量）不切日。`trading_day` 变小或 `date` 非正的 tick 按
+ *       乱序丢弃并计入 `out_of_order`；没有 tick 的交易日不生成空 bar（惰性收盘）。夜盘
+ *       跨午夜不切日（`date` 未变即同一交易日）。集合竞价、续接（restore）由后续票定稿，
+ *       公开方法只增不改。
  */
 template <class Sink = NullBarSink>
 class IntradayBarBuilder {
