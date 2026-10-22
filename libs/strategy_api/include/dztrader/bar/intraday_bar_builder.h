@@ -21,6 +21,10 @@ namespace dztrader::bar {
  * current_bar() 读取。构造时校验周期与小节表，非法输入抛 std::invalid_argument；
  * on_tick 热路径无哈希、无字符串、无堆分配、无异常。
  *
+ * 交易时段：tick 必须落在某个交易小节内（端点含，多小节间休息与非交易时段均为
+ * 丢弃并计入 stats().out_of_session），否则不改变任何 bar/累计状态、不触发回调。
+ * 小节末端（tsec == session.end_sec）的 tick 归前一根 bar。
+ *
  * 桶边界事件顺序：新 bar 首笔 tick 先 close 旧 bar（is_final=true），再 open 新 bar
  * （is_final=false），最后 update 新 bar；同桶 tick 只 update。无成交的桶不生成
  * bar（相邻 bar 的 begin_sec 可跳跃）。
@@ -53,13 +57,18 @@ public:
     }
 
     /**
-     * @brief 喂入一笔 tick：同桶更新当前 bar；跨桶先收旧 bar（close）再开新 bar（open）
-     *        并更新；每笔 tick 恰好一次 update
+     * @brief 喂入一笔 tick：非交易小节内的 tick 丢弃并计数；同桶更新当前 bar；跨桶先收
+     *        旧 bar（close）再开新 bar（open）并更新；每笔已接受 tick 恰好一次 update
      * @param tick 行情快照（调用方保证属于本实例绑定的合约）
      */
     void on_tick(const DzTick& tick) {
         const int32_t tsec = TradingTime::from_clock(tick.time);
-        const int32_t begin_sec = (tsec / period_sec_) * period_sec_;
+        int32_t bucket_tsec = tsec;
+        if (!tick_in_session(tsec, bucket_tsec)) {
+            ++stats_.out_of_session;
+            return;
+        }
+        const int32_t begin_sec = (bucket_tsec / period_sec_) * period_sec_;
         if (!has_bar_) {
             begin_bar(tick, begin_sec, tsec);
         } else if (begin_sec != bar_.begin_sec) {
@@ -77,7 +86,34 @@ public:
     /// @brief 当前形成中 bar（以 has_current_bar() 为 true 为前提，否则是调用方编程错误）
     [[nodiscard]] const Bar& current_bar() const noexcept { return bar_; }
 
+    /// @brief 累计丢弃计数（构造后从 0 开始）
+    [[nodiscard]] BarBuilderStats stats() const noexcept { return stats_; }
+
 private:
+    /**
+     * @brief 判定交易日内秒是否落在某个交易小节内（端点含），并给出分桶用有效时间
+     *
+     * 小节末端时刻的 tick 归前一根 bar：分桶用有效时间取 tsec-1；last_tick_sec
+     * 仍记录 tick 的真实 tsec。
+     *
+     * @param tsec 交易日内秒
+     * @param bucket_tsec [out] 分桶用有效时间（小节末端取 tsec-1）
+     * @return true = 在交易小节内；false = 小节休息或非交易时段
+     */
+    [[nodiscard]] bool tick_in_session(int32_t tsec, int32_t& bucket_tsec) const noexcept {
+        for (int32_t i = 0; i < table_.session_count; ++i) {
+            const TradingSession& session = table_.sessions[i];
+            if (tsec < session.begin_sec) {
+                return false;  // 小节按时间升序，后续小节开始更晚
+            }
+            if (tsec <= session.end_sec) {
+                bucket_tsec = (tsec == session.end_sec) ? tsec - 1 : tsec;
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// @brief 以 is_final=true 关闭当前 bar 并通知 sink（下一笔 tick 会开新 bar）
     void finalize_bar() {
         bar_.is_final = true;
@@ -141,15 +177,16 @@ private:
         }
     }
 
-    [[maybe_unused]] TradingSessionTable table_;  ///< 交易小节与竞价窗口表（按值保存）
-    int32_t period_sec_;                          ///< 周期秒数
-    Sink& sink_;                                  ///< bar 事件接收者（生命周期事件回调）
-    Bar bar_{};                                   ///< 当前形成中 bar
-    bool has_bar_ = false;                        ///< 是否已有形成中 bar
-    int64_t bar_start_cum_volume_ = 0;            ///< 本 bar 起始累计成交量基准
-    double bar_start_cum_turnover_ = 0.0;         ///< 本 bar 起始累计成交额基准
-    int64_t last_cum_volume_ = 0;                 ///< 上一笔已接受 tick 的累计成交量
-    double last_cum_turnover_ = 0.0;              ///< 上一笔已接受 tick 的累计成交额
+    TradingSessionTable table_;            ///< 交易小节与竞价窗口表（按值保存）
+    int32_t period_sec_;                   ///< 周期秒数
+    Sink& sink_;                           ///< bar 事件接收者（生命周期事件回调）
+    Bar bar_{};                            ///< 当前形成中 bar
+    BarBuilderStats stats_{};              ///< 丢弃计数（构造后从 0 累计）
+    bool has_bar_ = false;                 ///< 是否已有形成中 bar
+    int64_t bar_start_cum_volume_ = 0;     ///< 本 bar 起始累计成交量基准
+    double bar_start_cum_turnover_ = 0.0;  ///< 本 bar 起始累计成交额基准
+    int64_t last_cum_volume_ = 0;          ///< 上一笔已接受 tick 的累计成交量
+    double last_cum_turnover_ = 0.0;       ///< 上一笔已接受 tick 的累计成交额
 };
 
 }  // namespace dztrader::bar
