@@ -54,6 +54,8 @@ struct TradingTime {
  *
  * 标识 = (trading_day, begin_sec)；日线 period_sec = 0、begin_sec = 0（18:00 标记）。
  * 形成中的 bar 由 builder 通过 current_bar() 给出，is_final 区分已收/形成中。
+ * last_tick_sec 记录最后接收 tick 的真实交易日内秒：竞价首根可早于 begin_sec，
+ * 小节末端 tick 可等于 standard_end_sec()。
  * @note 字段名与语义在 ADR 0031 决策 9 定稿，后续不改。
  */
 struct Bar {
@@ -198,10 +200,10 @@ static_assert(std::is_trivially_copyable_v<TradingSessionTable>,
               "TradingSessionTable must be trivially copyable");
 
 /**
- * @brief tick→bar 合成的丢弃计数（构造/reset 后从 0 累计）
+ * @brief tick→bar 合成的丢弃计数（构造后从 0 累计）
  */
 struct BarBuilderStats {
-    uint64_t out_of_session = 0;  ///< 非交易时段/竞价窗口外的 tick 数
+    uint64_t out_of_session = 0;  ///< 不在任何交易小节内的 tick 数（竞价窗口 tick 暂计入）
     uint64_t out_of_order = 0;    ///< 时间倒退、交易日倒退的 tick 数
     uint64_t bad_volume = 0;      ///< 累计量/额倒退的 tick 数
 };

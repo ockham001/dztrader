@@ -32,7 +32,7 @@ namespace dztrader::bar {
  * @tparam Sink bar 事件接收者：可选实现 on_bar_open / on_bar_update / on_bar_close，
  *              未实现视为空操作；回调不得抛异常
  *
- * @note 交易日切换、集合竞价、乱序丢弃与续接（restore）由后续票追加，公开签名不变。
+ * @note 交易日切换、集合竞价、乱序丢弃与续接（restore）由后续票追加，公开方法只增不改。
  */
 template <class Sink = NullBarSink>
 class IntradayBarBuilder {
