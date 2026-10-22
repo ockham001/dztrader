@@ -59,6 +59,7 @@ describe('MonitorView 资源监控页（三种快照状态）', () => {
         'cpu.total': { available: false, reason: 'unsupported' },
         memory: { available: false, reason: 'disabled_by_config' },
         swap: { available: false, reason: 'disabled_by_config' },
+        volumes: { available: false, reason: 'not_implemented' },
       },
     }))
     const wrapper = await mountView()
@@ -535,5 +536,220 @@ describe('MonitorView 内存与交换（#74，可用性驱动）', () => {
     // 可用且字节有效时按唯一口径派生 50%，不因发送端比率缺失显示「不可用」
     expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
     expect(wrapper.find('[data-test="monitor-memory-meta"]').text()).toBe('16.0 GiB / 32.0 GiB')
+  })
+})
+
+describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目录，可用性驱动）', () => {
+  const GIB = 1024 ** 3
+  const MIB = 1024 ** 2
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('默认快照：3 个卷按 watched 优先排序，关注卷高亮并带「关注」标签', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+
+    const rows = wrapper.findAll('[data-test="monitor-disk-volume"]')
+    expect(rows).toHaveLength(3)
+    // 关注卷 /data 虽在 payload 中排第二，前端按 watched 优先排到首位
+    expect(rows[0].attributes('data-mount')).toBe('/data')
+    expect(rows[0].classes()).toContain('monitor-view__disk-row--watched')
+    expect(rows[0].find('[data-test="monitor-disk-volume-watched"]').exists()).toBe(true)
+    expect(rows[0].text()).toContain('25.0%')
+    expect(rows[0].text()).toContain('256.0 GiB / 1024.0 GiB')
+
+    expect(rows[1].attributes('data-mount')).toBe('/')
+    expect(rows[1].classes()).not.toContain('monitor-view__disk-row--watched')
+    expect(rows[1].find('[data-test="monitor-disk-volume-watched"]').exists()).toBe(false)
+    expect(rows[1].text()).toContain('40.0%')
+    expect(rows[2].attributes('data-mount')).toBe('/home')
+    expect(rows[2].text()).toContain('62.0%')
+
+    // 卷集合与数量完全由快照驱动，无硬编码盘符
+    expect(wrapper.find('[data-test="monitor-disk-unavailable"]').exists()).toBe(false)
+  })
+
+  it('卷 available=false：显示「不可用」+ 原因文案，绝不显示 0% / 0 B', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
+        { mount: '/backup', watched: false, available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+      ],
+    }))
+    const wrapper = await mountView()
+
+    const rows = wrapper.findAll('[data-test="monitor-disk-volume"]')
+    expect(rows).toHaveLength(2)
+    const backup = rows[1]
+    expect(backup.attributes('data-mount')).toBe('/backup')
+    expect(backup.text()).toContain('不可用')
+    expect(backup.find('[data-test="monitor-disk-volume-reason"]').text()).toBe('无访问权限')
+    // 不得用 0 冒充：不可用卷不出现百分比 / 字节数
+    expect(backup.text()).not.toContain('0%')
+    expect(backup.text()).not.toContain('0 B')
+    expect(backup.text()).not.toContain('GiB')
+  })
+
+  it('卷可读性脏数据（NaN/负数）：按不可用渲染，不显示 0', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/dirty', watched: false, available: true, total_bytes: Number.NaN, used_bytes: -1, used_ratio: 0 },
+      ],
+    }))
+    const wrapper = await mountView()
+
+    const row = wrapper.find('[data-test="monitor-disk-volume"]')
+    expect(row.text()).toContain('不可用')
+    expect(row.find('[data-test="monitor-disk-volume-reason"]').text()).toBe('采集失败')
+    expect(row.text()).not.toContain('0%')
+  })
+
+  it('volumes 不可用：显示不可用 + 原因空态，不渲染卷条目', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      metrics: { volumes: { available: false, reason: 'disabled_by_config' } },
+    }))
+    const wrapper = await mountView()
+
+    const empty = wrapper.find('[data-test="monitor-disk-unavailable"]')
+    expect(empty.exists()).toBe(true)
+    expect(empty.text()).toContain('不可用')
+    // 空态沿用既有 unavailableDesc：未映射的原因按裸 reason 展示
+    expect(empty.text()).toContain('disabled_by_config')
+    expect(wrapper.findAll('[data-test="monitor-disk-volume"]')).toHaveLength(0)
+  })
+
+  it('关注路径：渲染 path + 落卷；解析失败显示「未解析」+ 原因，不猜卷', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      watchPaths: [
+        { path: '/srv/dztrader/shm', mount: '/data', available: true },
+        { path: '/srv/dztrader/missing', mount: null, available: false, reason: 'path_not_found' },
+      ],
+    }))
+    const wrapper = await mountView()
+
+    const rows = wrapper.findAll('[data-test="monitor-watch-path"]')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].text()).toContain('/srv/dztrader/shm')
+    expect(rows[0].text()).toContain('落卷 /data')
+    expect(rows[1].text()).toContain('/srv/dztrader/missing')
+    expect(rows[1].find('[data-test="monitor-watch-path-unavailable"]').text()).toContain('未解析')
+    expect(rows[1].find('[data-test="monitor-watch-path-unavailable"]').text()).toContain('路径不存在或无法解析')
+  })
+
+  it('关注路径为空（本帧未采集）：不渲染该子区块', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ watchPaths: null }))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-watch-paths"]').exists()).toBe(false)
+  })
+
+  it('共享内存目录：渲染路径 / 占用 / 页文件数 / 最旧页文件年龄', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-shm-path"]').text()).toBe('/srv/dztrader/shm')
+    expect(wrapper.find('[data-test="monitor-shm-total"]').text()).toBe('720.0 MiB')
+    expect(wrapper.find('[data-test="monitor-shm-page-files"]').text()).toBe('12')
+    expect(wrapper.find('[data-test="monitor-shm-oldest-age"]').text()).toBe('8 分钟')
+    expect(wrapper.find('[data-test="monitor-shm-unavailable"]').exists()).toBe(false)
+  })
+
+  it('共享内存目录无页文件（oldest_file_age_sec=null）：不渲染该行，不显示 0 秒', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      shmDir: { path: '/srv/shm', total_bytes: 0, page_files: 0, oldest_file_age_sec: null },
+    }))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-shm-page-files"]').text()).toBe('0')
+    expect(wrapper.find('[data-test="monitor-shm-oldest-age"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-shm-dir"]').text()).not.toContain('0 秒')
+  })
+
+  it('共享内存目录不可用：显示不可用 + 原因；可用但本帧缺失显示「暂无数据」', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      metrics: { shm_dir: { available: false, reason: 'no_permission' } },
+    }))
+    const wrapper = await mountView()
+
+    const unavailable = wrapper.find('[data-test="monitor-shm-unavailable"]')
+    expect(unavailable.exists()).toBe(true)
+    expect(unavailable.text()).toContain('不可用')
+    expect(unavailable.text()).toContain('no_permission')
+    expect(wrapper.find('[data-test="monitor-shm-path"]').exists()).toBe(false)
+
+    // 能力粘性可用但本帧对象缺失 → 「暂无数据」而不是「不可用」
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({ shmDir: null }))
+    await wrapper.vm.$nextTick()
+    const empty = wrapper.find('[data-test="monitor-shm-empty"]')
+    expect(empty.exists()).toBe(true)
+    expect(empty.text()).toContain('暂无数据')
+    expect(wrapper.find('[data-test="monitor-shm-unavailable"]').exists()).toBe(false)
+  })
+
+  it('可用但 total_bytes=0 的特殊卷：使用率显示「—」而不是 0%，字节照常渲染', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/special', watched: false, available: true, total_bytes: 0, used_bytes: 0, used_ratio: null },
+      ],
+    }))
+    const wrapper = await mountView()
+
+    const row = wrapper.find('[data-test="monitor-disk-volume"]')
+    expect(row.find('.monitor-view__list-value').text()).toBe('—')
+    expect(row.text()).not.toContain('0.0%')
+    expect(row.text()).not.toContain('不可用')
+  })
+
+  it('不按 platform.family 分支：Windows 形状卷（C: / D:）照常按数据渲染', async () => {
+    const snapshot = makeSysmonSnapshot({
+      volumes: [
+        { mount: 'C:', watched: true, available: true, total_bytes: 500 * GIB, used_bytes: 250 * GIB, used_ratio: 0.5 },
+        { mount: 'D:', watched: false, available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+      ],
+      watchPaths: [{ path: 'C:\\dztrader\\shm', mount: 'C:', available: true }],
+      shmDir: { path: 'C:\\dztrader\\shm', total_bytes: 128 * MIB, page_files: 4, oldest_file_age_sec: 30 },
+    })
+    snapshot.platform = {
+      family: 'windows',
+      version: 'Windows 10 Pro',
+      kernel: '10.0.19045',
+      arch: 'x86_64',
+      build: 19045,
+    }
+    snapshot.availability.platform_description = 'Windows 10 Pro (build 19045)'
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(snapshot)
+    const wrapper = await mountView()
+
+    const rows = wrapper.findAll('[data-test="monitor-disk-volume"]')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].attributes('data-mount')).toBe('C:')
+    expect(rows[0].classes()).toContain('monitor-view__disk-row--watched')
+    expect(rows[0].text()).toContain('50.0%')
+    expect(rows[1].attributes('data-mount')).toBe('D:')
+    expect(rows[1].text()).toContain('不可用')
+    expect(wrapper.find('[data-test="monitor-shm-path"]').text()).toBe('C:\\dztrader\\shm')
+    expect(wrapper.find('[data-test="monitor-shm-oldest-age"]').text()).toBe('30 秒')
+  })
+
+  it('WS 推送更新：卷数量与关注标记随快照刷新（不重新 REST 拉取）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+    expect(wrapper.findAll('[data-test="monitor-disk-volume"]')).toHaveLength(3)
+
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/only', watched: true, available: true, total_bytes: 10 * GIB, used_bytes: 9 * GIB, used_ratio: 0.9 },
+      ],
+    }))
+    await wrapper.vm.$nextTick()
+
+    const rows = wrapper.findAll('[data-test="monitor-disk-volume"]')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].attributes('data-mount')).toBe('/only')
+    expect(rows[0].text()).toContain('90.0%')
+    expect(sysmonApi.getSnapshot).toHaveBeenCalledTimes(1)
   })
 })

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <format>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -45,6 +46,44 @@ void mark_not_implemented(platform::SysmonAvailability& availability, const char
     mark_unavailable(availability, key, kReasonNotImplemented);
 }
 
+/// 把原始卷读数转换为快照条目（契约 sysmon §2.4）：
+/// 容量读不到（total/free 任一为 nullopt）→ `available=false` + reason，三个容量字段为 null。
+/// `used_bytes = total − free` 并钳制到 `[0, total]`，`used_ratio` 由之计算（total=0 时为 null）。
+platform::SysmonVolumeInfo make_volume(const platform::RawVolumeInfo& raw, bool watched) {
+    platform::SysmonVolumeInfo volume;
+    volume.mount = raw.mount;
+    volume.watched = watched;
+    const bool readable = raw.total_bytes.has_value() && raw.free_bytes.has_value();
+    volume.available = readable;
+    if (!readable) {
+        // 读不到不是 0：容量字段全部 null，原因取采集层给出的口径。
+        volume.reason = raw.reason.empty() ? std::string(kReasonCollectFailed) : raw.reason;
+        return volume;
+    }
+    const uint64_t total = *raw.total_bytes;
+    volume.total_bytes = total;
+    const uint64_t free_bytes = std::min(*raw.free_bytes, total);
+    const uint64_t used_bytes = total - free_bytes;
+    volume.used_bytes = used_bytes;
+    if (total > 0) {
+        volume.used_ratio = static_cast<double>(used_bytes) / static_cast<double>(total);
+    }
+    return volume;
+}
+
+/// 把原始落卷解析结果转换为快照条目（契约 sysmon §2.4）：
+/// `mount` 为 nullopt ⇒ `available=false` + reason（不得猜卷）。
+platform::SysmonWatchPathInfo make_watch_path(const platform::RawWatchPathInfo& raw) {
+    platform::SysmonWatchPathInfo info;
+    info.path = raw.path;
+    info.mount = raw.mount;
+    info.available = raw.mount.has_value();
+    if (!info.available) {
+        info.reason = raw.reason.empty() ? std::string(kReasonCollectFailed) : raw.reason;
+    }
+    return info;
+}
+
 /// 人类可读平台描述：Windows 必须含 build 号（区分 Win10/Win11），Linux 带内核 release。
 std::string make_platform_description(const platform::RawSystemInfo& info) {
     if (info.os_family == "windows") {
@@ -64,6 +103,7 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
                                         const CpuMetrics& cpu_metrics,
                                         const TemperatureMetrics& temperature_metrics,
                                         const MemorySwapMetrics& memory_metrics,
+                                        const DiskMetrics& disk_metrics,
                                         int32_t measure_interval_ms,
                                         int64_t last_sample_unix_ms,
                                         uint64_t missed_ticks,
@@ -165,11 +205,50 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         snapshot.swap = swap;
     }
 
-    // 其余指标域：本版本未采集（契约 §2 定稿形状为 null）。
+    // 卷与关注路径（#75）：落卷解析先算出来，volumes[].watched 由它决定。
+    // watch_paths 不受 volumes 组开关影响（告警需要落卷信息，契约 sysmon §2.5）。
+    snapshot.watch_paths = std::nullopt;
+    if (disk_metrics.watch_paths.has_value()) {
+        std::vector<platform::SysmonWatchPathInfo> watch_paths;
+        watch_paths.reserve(disk_metrics.watch_paths->size());
+        for (const auto& raw : *disk_metrics.watch_paths) {
+            watch_paths.push_back(make_watch_path(raw));
+        }
+        snapshot.watch_paths = std::move(watch_paths);
+    }
+    std::set<std::string> watched_mounts;
+    if (snapshot.watch_paths.has_value()) {
+        for (const auto& info : *snapshot.watch_paths) {
+            if (info.mount.has_value()) {
+                watched_mounts.insert(*info.mount);
+            }
+        }
+    }
     snapshot.volumes = std::nullopt;
+    if (!disk_metrics.volumes_disabled && disk_metrics.volumes_collected &&
+        disk_metrics.volumes.has_value()) {
+        std::vector<platform::SysmonVolumeInfo> volumes;
+        volumes.reserve(disk_metrics.volumes->size());
+        for (const auto& raw : *disk_metrics.volumes) {
+            volumes.push_back(make_volume(raw, watched_mounts.contains(raw.mount)));
+        }
+        snapshot.volumes = std::move(volumes);
+    }
+
+    // 共享内存目录占用（#75）：目录不可读时整个对象为 null（不得输出全 0 的对象）。
+    snapshot.shm_dir = std::nullopt;
+    if (disk_metrics.shm_dir_collected && disk_metrics.shm_dir.has_value()) {
+        platform::SysmonShmDirInfo shm_dir;
+        shm_dir.path = disk_metrics.shm_dir->path;
+        shm_dir.total_bytes = disk_metrics.shm_dir->total_bytes;
+        shm_dir.page_files = disk_metrics.shm_dir->page_files;
+        shm_dir.oldest_file_age_sec = disk_metrics.shm_dir->oldest_file_age_sec;
+        snapshot.shm_dir = shm_dir;
+    }
+
+    // 其余指标域：本版本未采集（契约 §2 定稿形状为 null）。
     snapshot.disk_io = std::nullopt;
     snapshot.network = std::nullopt;
-    snapshot.shm_dir = std::nullopt;
 
     // availability：每帧必须覆盖全部 13 个固定键。
     snapshot.availability.platform_description = make_platform_description(system_info);
@@ -236,6 +315,21 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
                 mark_unavailable(snapshot.availability, key, kReasonUnsupported);
             } else {
                 mark_available(snapshot.availability, key);
+            }
+        } else if (metric == platform::SYSMON_METRIC_VOLUMES) {
+            // 配置关闭优先；能力可用但本帧未采集到数值时仍为 available（域为 null）。
+            if (disk_metrics.volumes_disabled) {
+                mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
+            } else if (disk_metrics.volumes_collected) {
+                mark_available(snapshot.availability, key);
+            } else {
+                mark_unavailable(snapshot.availability, key, kReasonCollectFailed);
+            }
+        } else if (metric == platform::SYSMON_METRIC_SHM_DIR) {
+            if (disk_metrics.shm_dir_collected) {
+                mark_available(snapshot.availability, key);
+            } else {
+                mark_unavailable(snapshot.availability, key, kReasonCollectFailed);
             }
         } else {
             mark_not_implemented(snapshot.availability, key);

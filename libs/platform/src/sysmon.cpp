@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <string_view>
 
 namespace dztrader::platform {
@@ -368,6 +369,10 @@ std::optional<std::string> validate_snapshot_swap(const json& swap) {
     return validate_optional_ratio(swap, "swap", "used_ratio");
 }
 
+/// 校验 `volumes[]`（契约 sysmon §2.4、§7）。
+///
+/// `available=false` 时三个容量字段**必须**为 null 且 `reason` 非空——这是"读不到不是 0"
+/// 在协议层的强制；`available=true` 时容量字段必须为整数且不得出现 `reason`。
 std::optional<std::string> validate_snapshot_volumes(const json& volumes) {
     if (volumes.is_null()) {
         return std::nullopt;
@@ -375,6 +380,7 @@ std::optional<std::string> validate_snapshot_volumes(const json& volumes) {
     if (!volumes.is_array()) {
         return err("volumes", "must be an array or null");
     }
+    std::set<std::string> mounts;
     for (std::size_t i = 0; i < volumes.size(); ++i) {
         const auto& volume = volumes[i];
         const std::string path = "volumes[" + std::to_string(i) + "]";
@@ -383,6 +389,36 @@ std::optional<std::string> validate_snapshot_volumes(const json& volumes) {
         }
         if (auto e = require_non_empty_string(volume, path, "mount")) {
             return e;
+        }
+        if (!mounts.insert(volume["mount"].get<std::string>()).second) {
+            return err(path + ".mount", "must be unique within the frame");
+        }
+        if (!volume.contains("watched") || !volume["watched"].is_boolean()) {
+            return err(path + ".watched", "must be a boolean");
+        }
+        if (!volume.contains("available") || !volume["available"].is_boolean()) {
+            return err(path + ".available", "must be a boolean");
+        }
+        const bool available = volume["available"].get<bool>();
+        const auto require_null = [&volume, &path](const char* key) -> std::optional<std::string> {
+            if (!volume.contains(key) || !volume[key].is_null()) {
+                return err(path + "." + key, "must be null when available=false");
+            }
+            return std::nullopt;
+        };
+        if (!available) {
+            if (auto e = require_non_empty_string(volume, path, "reason")) {
+                return e;
+            }
+            for (const char* key : {"total_bytes", "used_bytes", "used_ratio"}) {
+                if (auto e = require_null(key)) {
+                    return e;
+                }
+            }
+            continue;
+        }
+        if (volume.contains("reason")) {
+            return err(path + ".reason", "must be omitted when available=true");
         }
         if (auto e = require_uint(volume, path, "total_bytes")) {
             return e;
@@ -395,6 +431,73 @@ std::optional<std::string> validate_snapshot_volumes(const json& volumes) {
         }
         if (auto e = validate_optional_ratio(volume, path, "used_ratio")) {
             return e;
+        }
+    }
+    return std::nullopt;
+}
+
+/// 校验 `watch_paths[]`（契约 sysmon §2.4、§7）。
+///
+/// `available=true` 时 `mount` 必须非 null 且不得出现 `reason`；同帧 `volumes` 非 null 时该
+/// 挂载点必须出现在 `volumes[]` 中（落卷结果必须能对上一个真实卷），`volumes` 为 null
+/// （配置关闭卷采集）时不做交叉校验。`available=false` 时 `mount` 必须为 null 且 `reason` 非空。
+std::optional<std::string> validate_snapshot_watch_paths(const json& watch_paths,
+                                                         const json& volumes) {
+    if (watch_paths.is_null()) {
+        return std::nullopt;
+    }
+    if (!watch_paths.is_array()) {
+        return err("watch_paths", "must be an array or null");
+    }
+    std::set<std::string> known_mounts;
+    if (volumes.is_array()) {
+        for (const auto& volume : volumes) {
+            if (volume.is_object() && volume.contains("mount") && volume["mount"].is_string()) {
+                known_mounts.insert(volume["mount"].get<std::string>());
+            }
+        }
+    }
+    std::set<std::string> paths;
+    for (std::size_t i = 0; i < watch_paths.size(); ++i) {
+        const auto& item = watch_paths[i];
+        const std::string path = "watch_paths[" + std::to_string(i) + "]";
+        if (!item.is_object()) {
+            return err(path, "must be an object");
+        }
+        if (auto e = require_non_empty_string(item, path, "path")) {
+            return e;
+        }
+        if (!paths.insert(item["path"].get<std::string>()).second) {
+            return err(path + ".path", "must be unique within the frame");
+        }
+        if (!item.contains("available") || !item["available"].is_boolean()) {
+            return err(path + ".available", "must be a boolean");
+        }
+        if (!item.contains("mount")) {
+            return err(path + ".mount", "is required (null when unavailable)");
+        }
+        if (!item["available"].get<bool>()) {
+            if (!item["mount"].is_null()) {
+                return err(path + ".mount", "must be null when available=false");
+            }
+            if (auto e = require_non_empty_string(item, path, "reason")) {
+                return e;
+            }
+            continue;
+        }
+        if (!item["mount"].is_string()) {
+            return err(path + ".mount", "must be a non-empty string when available=true");
+        }
+        if (item["mount"].get<std::string>().empty()) {
+            return err(path + ".mount", "must be a non-empty string when available=true");
+        }
+        if (item.contains("reason")) {
+            return err(path + ".reason", "must be omitted when available=true");
+        }
+        // 仅当同帧携带了卷列表时才交叉校验（契约 sysmon §7）：配置关闭卷采集后
+        // volumes 为 null，但落卷信息仍要输出给路径感知告警用（#80）。
+        if (volumes.is_array() && !known_mounts.contains(item["mount"].get<std::string>())) {
+            return err(path + ".mount", "must reference a mount listed in volumes");
         }
     }
     return std::nullopt;
@@ -671,8 +774,8 @@ std::optional<std::string> SysmonSnapshot::validate(const nlohmann::json& payloa
         }
         return err(std::string("snapshot.") + key, "is required (null when unavailable)");
     };
-    for (const char* key :
-         {"temperature", "memory", "swap", "volumes", "disk_io", "network", "shm_dir"}) {
+    for (const char* key : {"temperature", "memory", "swap", "volumes", "watch_paths", "disk_io",
+                            "network", "shm_dir"}) {
         if (auto e = check_optional(key)) {
             return e;
         }
@@ -687,6 +790,9 @@ std::optional<std::string> SysmonSnapshot::validate(const nlohmann::json& payloa
         return e;
     }
     if (auto e = validate_snapshot_volumes(payload["volumes"])) {
+        return e;
+    }
+    if (auto e = validate_snapshot_watch_paths(payload["watch_paths"], payload["volumes"])) {
         return e;
     }
     if (auto e = validate_snapshot_disk_io(payload["disk_io"])) {

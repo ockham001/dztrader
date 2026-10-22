@@ -7,9 +7,12 @@ import type {
   SysmonCpuCore,
   SysmonLoadAverage,
   SysmonMemoryInfo,
+  SysmonShmDirInfo,
   SysmonSnapshotPayload,
   SysmonSwapInfo,
   SysmonTemperatureInfo,
+  SysmonVolumeInfo,
+  SysmonWatchPathInfo,
 } from '@/types/generated'
 
 /** 有限数字校验：null / undefined / NaN / Infinity 一律视为不可用（不得用 0 冒充） */
@@ -232,6 +235,122 @@ export const useSysmonStore = defineStore('sysmon', () => {
     }
   })
 
+  /**
+   * 卷容量与可用性（契约 sysmon §2.4，#75）。仅当可用性映射标记 `volumes` 可用且快照携带
+   * 数组时返回净化后的数组，否则空数组 —— 视图据此区分「指标不可用」与「可用但本帧无卷」。
+   *
+   * 与内存 / 交换不同：`available=false` 的卷**必须保留**（"卷存在但容量读不到"是真实事实，
+   * 消费方要能显示「不可用」+ 原因），但容量字段一律净化成 null，不得用 0 冒充。
+   * 净化规则：mount 为空串剔除；`used_bytes` 钳制到 `[0, total]`；`used_ratio` 按
+   * `used_bytes / total_bytes` 重算（不信任 payload 派生值，保证字节与百分比一致），
+   * `total_bytes = 0`（异常/特殊卷）时为 null。按 watched 优先、其次 mount 升序排序，
+   * 顶栏徽章因此天然把关注卷排在前面（不依赖发送端顺序）。
+   */
+  const volumes = computed<SysmonVolumeInfo[]>(() => {
+    const s = snapshot.value
+    if (!s || s.availability.metrics['volumes']?.available !== true) return []
+    const entries = Array.isArray(s.volumes) ? s.volumes : []
+    const result: SysmonVolumeInfo[] = []
+    for (const entry of entries) {
+      const mount = typeof entry?.mount === 'string' ? entry.mount.trim() : ''
+      if (!mount) continue
+      // available=false 的卷保留：容量不可读是真实事实，视图显示「不可用」+ reason
+      if (entry?.available !== true) {
+        result.push({
+          mount,
+          watched: entry?.watched === true,
+          available: false,
+          total_bytes: null,
+          used_bytes: null,
+          used_ratio: null,
+          reason: typeof entry.reason === 'string' && entry.reason.trim() ? entry.reason.trim() : undefined,
+        })
+        continue
+      }
+      const total = toNonNegativeInteger(entry.total_bytes)
+      const used = toNonNegativeInteger(entry.used_bytes)
+      // 标称可用但容量字段非法：按不可读处理（保留卷，容量 null），不得用 0 冒充
+      if (total === null || used === null) {
+        result.push({
+          mount,
+          watched: entry.watched === true,
+          available: false,
+          total_bytes: null,
+          used_bytes: null,
+          used_ratio: null,
+          reason: typeof entry.reason === 'string' && entry.reason.trim() ? entry.reason.trim() : 'collect_failed',
+        })
+        continue
+      }
+      const clampedUsed = Math.min(used, total)
+      result.push({
+        mount,
+        watched: entry.watched === true,
+        available: true,
+        total_bytes: total,
+        used_bytes: clampedUsed,
+        used_ratio: total > 0 ? clampedUsed / total : null,
+      })
+    }
+    return result.sort((a, b) => {
+      if (a.watched !== b.watched) return a.watched ? -1 : 1
+      return a.mount.localeCompare(b.mount)
+    })
+  })
+
+  /**
+   * 关注路径的落卷解析（契约 sysmon §2.4，#75）。仅当快照携带数组时返回过滤后的数组
+   * （`watch_paths` 没有独立可用性键，落卷解析不受 `volumes` 采集开关影响，见 §2.5）。
+   * path 为空串的条目剔除；`available=false` 的条目保留（`mount` 强制 null + reason），
+   * 视图据此显示「未解析」而不是猜一个卷。mount 由发送端与 `volumes[].mount` 相等比较，
+   * 前端不再二次匹配（契约保证同一帧内可直接相等比较）。
+   */
+  const watchPaths = computed<SysmonWatchPathInfo[]>(() => {
+    const s = snapshot.value
+    if (!s) return []
+    const entries = Array.isArray(s.watch_paths) ? s.watch_paths : []
+    const result: SysmonWatchPathInfo[] = []
+    for (const entry of entries) {
+      const path = typeof entry?.path === 'string' ? entry.path.trim() : ''
+      if (!path) continue
+      const mount = typeof entry?.mount === 'string' && entry.mount.trim() ? entry.mount.trim() : null
+      const available = entry?.available === true && mount !== null
+      result.push({
+        path,
+        mount: available ? mount : null,
+        available,
+        reason: available
+          ? undefined
+          : (typeof entry?.reason === 'string' && entry.reason.trim() ? entry.reason.trim() : 'collect_failed'),
+      })
+    }
+    return result
+  })
+
+  /**
+   * 共享内存目录占用（契约 sysmon §2.4，#75）：页清理是否生效的可观测项。
+   * 仅在可用性映射标记 `shm_dir` 可用且快照携带对象时返回净化后的对象，否则 null。
+   * `path` 非法或 `total_bytes` / `page_files` 非法（NaN/Infinity/负数/非整数）整块返回 null，
+   * 不用 0 冒充（契约明确：读取失败不得输出全 0 对象）；
+   * `oldest_file_age_sec` 非法/负数 → null（无页文件或本帧未读到，视图不渲染该行）。
+   */
+  const shmDirInfo = computed<SysmonShmDirInfo | null>(() => {
+    const s = snapshot.value
+    if (!s || s.availability.metrics['shm_dir']?.available !== true) return null
+    const info = s.shm_dir
+    if (!info || typeof info !== 'object') return null
+    const path = typeof info.path === 'string' ? info.path.trim() : ''
+    const total = toNonNegativeInteger(info.total_bytes)
+    const pageFiles = toNonNegativeInteger(info.page_files)
+    if (!path || total === null || pageFiles === null) return null
+    return {
+      path,
+      total_bytes: total,
+      page_files: pageFiles,
+      oldest_file_age_sec: toNonNegativeInteger(info.oldest_file_age_sec),
+    }
+  })
+
   /** 跨平台语义提示（契约 sysmon §2.5）：缺失 / 非字符串返回空串，由视图决定是否展示 */
   function semanticHint(key: string): string {
     const hints = snapshot.value?.availability.semantic_hints
@@ -254,6 +373,9 @@ export const useSysmonStore = defineStore('sysmon', () => {
     coreFrequencies,
     memoryInfo,
     swapInfo,
+    volumes,
+    watchPaths,
+    shmDirInfo,
     semanticHint,
     init,
     applySnapshot,

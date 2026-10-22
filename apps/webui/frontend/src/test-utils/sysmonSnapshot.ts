@@ -1,19 +1,24 @@
 // 测试夹具：契约 sysmon 快照（SysmonSnapshot）。
-// 默认形状 = #74 落地后的后端：system / cpu.total / cpu.cores / cpu.load_average /
-// cpu.context_switches / memory / swap 可用（每核 16 个、Linux 真实负载、速率有值、
-// 内存 32 GiB + 缓存/缓冲、交换 8 GiB），其余指标不可用（温度按 Linux 无传感器理由
-// no_sensor、每核频率按无 cpufreq 理由 unsupported，其余 not_implemented）；
-// resourceData=true 时额外填充卷 / 网卡数据并标记可用，用于「全部可用」渲染用例；
-// sensorData=true 时额外填充温度 / 每核频率并标记可用。
+// 默认形状 = #75 落地后的后端：system / cpu.total / cpu.cores / cpu.load_average /
+// cpu.context_switches / memory / swap / volumes / shm_dir 可用（每核 16 个、Linux 真实负载、
+// 速率有值、内存 32 GiB + 缓存/缓冲、交换 8 GiB、三个卷其中 /data 为关注卷、
+// 共享内存目录占用有值），其余指标不可用（温度按 Linux 无传感器理由 no_sensor、
+// 每核频率按无 cpufreq 理由 unsupported，disk_io / network not_implemented）；
+// watch_paths 默认给共享内存目录与数据库目录两条（落卷 /data）；
+// resourceData=true 时额外填充网卡数据并标记 network 可用（volumes / shm_dir 默认已可用），
+// 用于「全部可用」渲染用例；sensorData=true 时额外填充温度 / 每核频率并标记可用。
 import type {
   SysmonAvailabilityEntry,
   SysmonCoreFrequency,
   SysmonCpuCore,
   SysmonLoadAverage,
   SysmonMemoryInfo,
+  SysmonShmDirInfo,
   SysmonSnapshotPayload,
   SysmonSwapInfo,
   SysmonTemperatureInfo,
+  SysmonVolumeInfo,
+  SysmonWatchPathInfo,
 } from '@/types/generated'
 
 export const SYSMON_METRIC_KEYS = [
@@ -37,12 +42,18 @@ export interface SysmonSnapshotOptions {
   metrics?: Record<string, SysmonAvailabilityEntry>
   /** CPU 总使用率；null = 首次采样/不可用（不得用 0 冒充） */
   cpuUsageRatio?: number | null
-  /** 填充卷 / 网卡数据，并把对应指标标记为可用（模拟后续指标票落地后的快照） */
+  /** 填充网卡数据并标记 network 可用（#75 起 volumes / shm_dir 默认已可用） */
   resourceData?: boolean
   /** 内存对象；默认 #74 形状（32 GiB 总量 / 16 GiB 可用 / 0.5 比率 / 8 GiB 缓存 / 256 MiB 缓冲），null = 本帧未采集 */
   memory?: SysmonMemoryInfo | null
   /** 交换对象；默认 {total: 8 GiB, used: 2 GiB, ratio: 0.25}，null = 本帧未采集，total_bytes=0 = 无交换分区 */
   swap?: SysmonSwapInfo | null
+  /** 卷数组；默认 3 个卷（`/` 40% / `/data` 关注卷 25% / `/home` 62%），null = 本帧未采集（能力粘性） */
+  volumes?: SysmonVolumeInfo[] | null
+  /** 关注路径落卷解析；默认共享内存目录与数据库目录两条（均落 /data），null = 本帧未采集 */
+  watchPaths?: SysmonWatchPathInfo[] | null
+  /** 共享内存目录占用；默认 {path: /srv/dztrader/shm, 720 MiB, 12 页文件, 最旧 480s}，null = 本帧未采集 */
+  shmDir?: SysmonShmDirInfo | null
   /** 填充温度 / 每核频率数据，并把 temperature / cpu.frequency 标记为可用（模拟 #73 落地后的快照） */
   sensorData?: boolean
   /** 温度传感器读数；默认 null；sensorData=true 时默认两个 Linux hwmon 读数 */
@@ -90,6 +101,30 @@ const DEFAULT_SWAP: SysmonSwapInfo = {
 }
 
 /**
+ * 默认卷（#75 后端形状）：/ 40% 非关注、/data 25% 关注（承载 shm 与 db 目录）、/home 62% 非关注。
+ * 关注卷刻意不放数组首位，用于验证前端按 watched 优先排序而不是依赖发送端顺序。
+ */
+const DEFAULT_VOLUMES: SysmonVolumeInfo[] = [
+  { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
+  { mount: '/data', watched: true, available: true, total_bytes: 1024 * GIB, used_bytes: 256 * GIB, used_ratio: 0.25 },
+  { mount: '/home', watched: false, available: true, total_bytes: 50 * GIB, used_bytes: 31 * GIB, used_ratio: 0.62 },
+]
+
+/** 默认关注路径（#75）：共享内存目录与数据库目录，均落 /data（契约 sysmon §2.4） */
+const DEFAULT_WATCH_PATHS: SysmonWatchPathInfo[] = [
+  { path: '/srv/dztrader/shm', mount: '/data', available: true },
+  { path: '/srv/dztrader/db', mount: '/data', available: true },
+]
+
+/** 默认共享内存目录占用（#75）：720 MiB / 12 个页文件 / 最旧页文件 480s */
+const DEFAULT_SHM_DIR: SysmonShmDirInfo = {
+  path: '/srv/dztrader/shm',
+  total_bytes: 720 * MIB,
+  page_files: 12,
+  oldest_file_age_sec: 480,
+}
+
+/**
  * 默认每核数据：usage_ratio 各不相同且非 null（首次采样之外均有真实值），均未饱和。
  * 比例刻意避开整十百分比，避免「0.0%」之类字符串断言歧义。
  */
@@ -113,7 +148,9 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
       || key === 'cpu.context_switches'
       || key === 'memory'
       || key === 'swap'
-      || (resourceAvailable && (key === 'volumes' || key === 'network'))
+      || key === 'volumes'
+      || key === 'shm_dir'
+      || (resourceAvailable && key === 'network')
       || (sensorAvailable && (key === 'temperature' || key === 'cpu.frequency'))
     const reason = key === 'temperature'
       ? 'no_sensor'
@@ -182,9 +219,12 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
     swap: options.swap !== undefined
       ? options.swap
       : { ...DEFAULT_SWAP },
-    volumes: resourceAvailable
-      ? [{ mount: '/data', total_bytes: 1024 * GIB, used_bytes: 256 * GIB, used_ratio: 0.25 }]
-      : null,
+    volumes: options.volumes !== undefined
+      ? options.volumes
+      : DEFAULT_VOLUMES.map(volume => ({ ...volume })),
+    watch_paths: options.watchPaths !== undefined
+      ? options.watchPaths
+      : DEFAULT_WATCH_PATHS.map(watchPath => ({ ...watchPath })),
     disk_io: null,
     network: resourceAvailable
       ? [{
@@ -200,7 +240,7 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
           is_virtual: false,
         }]
       : null,
-    shm_dir: null,
+    shm_dir: options.shmDir !== undefined ? options.shmDir : { ...DEFAULT_SHM_DIR },
     availability: {
       platform_description: 'Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)',
       metrics,

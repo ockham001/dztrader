@@ -86,7 +86,9 @@ describe('useSysmonStore', () => {
     // #74 起后端每帧尝试采集内存 / 交换：默认夹具二者可用
     expect(store.availabilityOf('memory')).toEqual({ available: true })
     expect(store.availabilityOf('swap')).toEqual({ available: true })
-    expect(store.availabilityOf('volumes')).toEqual({ available: false, reason: 'not_implemented' })
+    // #75 起后端采集卷 / 共享内存目录：默认夹具二者可用
+    expect(store.availabilityOf('volumes')).toEqual({ available: true })
+    expect(store.availabilityOf('shm_dir')).toEqual({ available: true })
     expect(store.availabilityOf('not-a-metric')).toBeUndefined()
   })
 })
@@ -466,5 +468,215 @@ describe('useSysmonStore 内存与交换 computed（#74，可用性驱动）', (
       store.applySnapshot(makeSysmonSnapshot({ swap }))
       expect(store.swapInfo).toBeNull()
     }
+  })
+})
+
+describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75，可用性驱动）', () => {
+  const GIB = 1024 ** 3
+  const MIB = 1024 ** 2
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('无快照时 volumes / watchPaths / shmDirInfo 为空（不得伪造 0）', () => {
+    const store = useSysmonStore()
+
+    expect(store.volumes).toEqual([])
+    expect(store.watchPaths).toEqual([])
+    expect(store.shmDirInfo).toBeNull()
+  })
+
+  it('默认快照（#75 形状）返回净化后的卷 / 关注路径 / 共享内存目录', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot())
+
+    // watched 优先排序，其次按 mount 升序：/data 虽是数组第二项，仍排到首位
+    expect(store.volumes.map(volume => volume.mount)).toEqual(['/data', '/', '/home'])
+    expect(store.volumes[0]).toEqual({
+      mount: '/data',
+      watched: true,
+      available: true,
+      total_bytes: 1024 * GIB,
+      used_bytes: 256 * GIB,
+      used_ratio: 0.25,
+    })
+    expect(store.volumes[1].used_ratio).toBe(0.4)
+    expect(store.volumes[2].used_ratio).toBe(0.62)
+
+    expect(store.watchPaths).toEqual([
+      { path: '/srv/dztrader/shm', mount: '/data', available: true },
+      { path: '/srv/dztrader/db', mount: '/data', available: true },
+    ])
+    expect(store.shmDirInfo).toEqual({
+      path: '/srv/dztrader/shm',
+      total_bytes: 720 * MIB,
+      page_files: 12,
+      oldest_file_age_sec: 480,
+    })
+  })
+
+  it('volumes 不可用时为空数组（不渲染陈旧数据），watchPaths 不受 volumes 开关影响', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      metrics: { volumes: { available: false, reason: 'disabled_by_config' } },
+    }))
+
+    expect(store.volumes).toEqual([])
+    // 契约 sysmon §2.5：配置关闭 volumes 后 watch_paths 仍输出（告警需要它）
+    expect(store.watchPaths).toHaveLength(2)
+  })
+
+  it('shm_dir 不可用 / 可用但本帧对象缺失：返回 null（视图区分不可用与暂无数据）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      metrics: { shm_dir: { available: false, reason: 'collect_failed' } },
+    }))
+    expect(store.shmDirInfo).toBeNull()
+
+    store.applySnapshot(makeSysmonSnapshot({ shmDir: null }))
+    expect(store.availabilityOf('shm_dir')).toEqual({ available: true })
+    expect(store.shmDirInfo).toBeNull()
+  })
+
+  it('单个卷 available=false：保留卷（能显示不可用）但容量字段净化成 null', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
+        { mount: '/backup', watched: false, available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+      ],
+    }))
+
+    expect(store.volumes).toHaveLength(2)
+    const backup = store.volumes.find(volume => volume.mount === '/backup')
+    expect(backup).toEqual({
+      mount: '/backup',
+      watched: false,
+      available: false,
+      total_bytes: null,
+      used_bytes: null,
+      used_ratio: null,
+      reason: 'no_permission',
+    })
+  })
+
+  it('卷净化：脏 mount 剔除，used 钳制到 total，比率按 used/total 派生（不信任 payload）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      volumes: [
+        { mount: '', watched: false, available: true, total_bytes: 1 * GIB, used_bytes: 0, used_ratio: 0 },
+        { mount: '   ', watched: false, available: true, total_bytes: 1 * GIB, used_bytes: 0, used_ratio: 0 },
+        { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 400 * GIB, used_ratio: 2 },
+        { mount: '/data', watched: true, available: true, total_bytes: 100 * GIB, used_bytes: 10 * GIB, used_ratio: 0.9 },
+      ],
+    }))
+
+    expect(store.volumes.map(volume => volume.mount)).toEqual(['/data', '/'])
+    const root = store.volumes[1]
+    expect(root.used_bytes).toBe(100 * GIB)
+    expect(root.used_ratio).toBe(1)
+    const data = store.volumes[0]
+    expect(data.used_bytes).toBe(10 * GIB)
+    expect(data.used_ratio).toBe(0.1)
+  })
+
+  it('标称可用但容量字段非法（NaN/Infinity/负数/非整数）：按不可读处理，不得用 0 冒充', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/a', watched: false, available: true, total_bytes: Number.NaN, used_bytes: 0, used_ratio: 0 },
+        { mount: '/b', watched: false, available: true, total_bytes: Number.POSITIVE_INFINITY, used_bytes: 0, used_ratio: 0 },
+        { mount: '/c', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: -1, used_ratio: 0 },
+        { mount: '/d', watched: false, available: true, total_bytes: 1.5, used_bytes: 0, used_ratio: 0 },
+      ],
+    }))
+
+    expect(store.volumes).toHaveLength(4)
+    for (const volume of store.volumes) {
+      expect(volume.available).toBe(false)
+      expect(volume.total_bytes).toBeNull()
+      expect(volume.used_bytes).toBeNull()
+      expect(volume.used_ratio).toBeNull()
+      expect(volume.reason).toBe('collect_failed')
+    }
+  })
+
+  it('total_bytes=0 的特殊卷：保留 available=true，比率 null（不是 0%）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/special', watched: false, available: true, total_bytes: 0, used_bytes: 0, used_ratio: 0 },
+      ],
+    }))
+
+    expect(store.volumes).toEqual([
+      {
+        mount: '/special',
+        watched: false,
+        available: true,
+        total_bytes: 0,
+        used_bytes: 0,
+        used_ratio: null,
+      },
+    ])
+  })
+
+  it('watchPaths 防御：空 path 剔除，available=false 强制 mount=null 且补 reason', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      watchPaths: [
+        { path: '', mount: '/', available: true },
+        { path: '  ', mount: '/', available: true },
+        { path: '/srv/shm', mount: '/data', available: true },
+        // 解析失败：发送端不得猜卷，前端再兜一层（mount 置 null）
+        { path: '/srv/missing', mount: '/', available: false, reason: 'path_not_found' },
+        { path: '/srv/opaque', mount: null, available: true },
+      ],
+    }))
+
+    expect(store.watchPaths).toEqual([
+      { path: '/srv/shm', mount: '/data', available: true },
+      { path: '/srv/missing', mount: null, available: false, reason: 'path_not_found' },
+      { path: '/srv/opaque', mount: null, available: false, reason: 'collect_failed' },
+    ])
+  })
+
+  it('watchPaths 可用但本帧数组缺失：空数组（视图不渲染该子区块）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({ watchPaths: null }))
+    expect(store.watchPaths).toEqual([])
+  })
+
+  it('shmDirInfo 净化：path 非法 / 计数字段非法整块 null；最旧页文件年龄非法 → null', () => {
+    const store = useSysmonStore()
+
+    for (const shmDir of [
+      { path: '', total_bytes: 1 * MIB, page_files: 1, oldest_file_age_sec: 0 },
+      { path: '/srv/shm', total_bytes: Number.NaN, page_files: 1, oldest_file_age_sec: 0 },
+      { path: '/srv/shm', total_bytes: -1, page_files: 1, oldest_file_age_sec: 0 },
+      { path: '/srv/shm', total_bytes: 1 * MIB, page_files: Number.POSITIVE_INFINITY, oldest_file_age_sec: 0 },
+      { path: '/srv/shm', total_bytes: 1 * MIB, page_files: 1.5, oldest_file_age_sec: 0 },
+    ]) {
+      store.applySnapshot(makeSysmonSnapshot({ shmDir }))
+      expect(store.shmDirInfo).toBeNull()
+    }
+
+    // 无页文件：oldest_file_age_sec=null（视图不渲染该行，不是 0 秒）
+    store.applySnapshot(makeSysmonSnapshot({
+      shmDir: { path: '/srv/shm', total_bytes: 0, page_files: 0, oldest_file_age_sec: null },
+    }))
+    expect(store.shmDirInfo).toEqual({
+      path: '/srv/shm',
+      total_bytes: 0,
+      page_files: 0,
+      oldest_file_age_sec: null,
+    })
+
+    store.applySnapshot(makeSysmonSnapshot({
+      shmDir: { path: '/srv/shm', total_bytes: 1 * MIB, page_files: 1, oldest_file_age_sec: -5 },
+    }))
+    expect(store.shmDirInfo?.oldest_file_age_sec).toBeNull()
   })
 })

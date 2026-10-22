@@ -14,6 +14,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <thread>
@@ -168,7 +169,7 @@ TEST(SystemCollectorOracleTest, SensorAvailabilityReflectsRealHostAndValidates) 
     }
 
     const auto snapshot = build_snapshot("dzsysmon", info, cpu_metrics, temperature_metrics, {},
-                                         1000, 0, 0, 1'800'000'000'000);
+                                         DiskMetrics{}, 1000, 0, 0, 1'800'000'000'000);
     // 可用性（能力标记）必须与采集层事实一致；无设备不是失败，只是不可用。
     EXPECT_EQ(snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE).available,
               temperature_metrics.collected);
@@ -238,9 +239,9 @@ TEST(SystemCollectorOracleTest, MemoryAndSwapInvariantsHoldOnRealMachine) {
     memory_metrics.swap_collected = true;
     memory_metrics.swap_supported = swap->total_bytes > 0;
     memory_metrics.swap = swap;
-    const auto snapshot =
-        build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
-                       TemperatureMetrics{}, memory_metrics, 1000, 0, 0, 1'800'000'000'000);
+    const auto snapshot = build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
+                                         TemperatureMetrics{}, memory_metrics, DiskMetrics{}, 1000,
+                                         0, 0, 1'800'000'000'000);
     EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_MEMORY).available);
     ASSERT_TRUE(snapshot.memory.has_value());
     // 唯一口径：已用 = 总量 − 可用，且各分量非负、可用 ≤ 总量。
@@ -259,6 +260,87 @@ TEST(SystemCollectorOracleTest, MemoryAndSwapInvariantsHoldOnRealMachine) {
         }
     }
     // 快照形状/校验必须与契约一致（含无交换机器的 total=0 对象）。
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+// #75 真机 oracle：卷使用率自洽（已用 ≤ 总量、比率与字节一致）、落卷解析对得上同帧卷、
+// 共享内存目录占用可读时数值自洽。两平台同一组不变量（契约 sysmon §2.4、§7）。
+TEST(SystemCollectorOracleTest, DiskDomainsHoldOnRealMachine) {
+    const auto collector = platform::make_system_collector();
+    ASSERT_NE(collector, nullptr);
+
+    const auto volumes = collector->collect_volumes();
+    ASSERT_TRUE(volumes.has_value()) << "collect_volumes must work on a supported host";
+    ASSERT_FALSE(volumes->empty());
+
+    // 关注路径取当前工作目录（本机一定存在），落卷必须能在同帧卷列表里找到。
+    std::error_code ec;
+    const auto working_dir = std::filesystem::current_path(ec);
+    ASSERT_FALSE(ec) << ec.message();
+    const std::vector<std::string> watch_paths = {working_dir.string()};
+    const auto resolved = collector->collect_watch_paths(watch_paths);
+    ASSERT_EQ(resolved.size(), 1U);
+    ASSERT_TRUE(resolved[0].mount.has_value()) << "working directory must resolve to a volume";
+
+    DiskMetrics disk;
+    disk.volumes_collected = true;
+    disk.volumes = volumes;
+    disk.watch_paths = resolved;
+    // 用临时目录驱动 shm 目录统计，避免依赖本机真实 .dztrader_dev 状态：
+    // 真实路径的可用性由 collector 自身决定（可能不存在 → nullopt，这是合法降级）。
+    disk.shm_dir = collector->collect_shm_dir(working_dir.string());
+    disk.shm_dir_collected = disk.shm_dir.has_value();
+
+    const auto snapshot = build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
+                                         TemperatureMetrics{}, MemorySwapMetrics{}, disk, 1000, 0,
+                                         0, 1'800'000'000'000);
+
+    // 卷：可读卷的使用率必须与字节一致（自洽 oracle）；不可读卷不得有容量数值。
+    ASSERT_TRUE(snapshot.volumes.has_value());
+    bool watched_seen = false;
+    for (const auto& volume : *snapshot.volumes) {
+        if (volume.available) {
+            ASSERT_TRUE(volume.total_bytes.has_value()) << volume.mount;
+            ASSERT_TRUE(volume.used_bytes.has_value()) << volume.mount;
+            EXPECT_LE(*volume.used_bytes, *volume.total_bytes) << volume.mount;
+            if (*volume.total_bytes > 0) {
+                ASSERT_TRUE(volume.used_ratio.has_value()) << volume.mount;
+                const double expected = static_cast<double>(*volume.used_bytes) /
+                                        static_cast<double>(*volume.total_bytes);
+                EXPECT_NEAR(*volume.used_ratio, expected, 1e-9) << volume.mount;
+                EXPECT_GE(*volume.used_ratio, 0.0) << volume.mount;
+                EXPECT_LE(*volume.used_ratio, 1.0) << volume.mount;
+            }
+        } else {
+            EXPECT_FALSE(volume.total_bytes.has_value()) << volume.mount;
+            EXPECT_FALSE(volume.used_bytes.has_value()) << volume.mount;
+            EXPECT_FALSE(volume.used_ratio.has_value()) << volume.mount;
+            EXPECT_TRUE(volume.reason.has_value()) << volume.mount;
+        }
+        watched_seen = watched_seen || volume.watched;
+    }
+    // 落卷成功，必须有一个卷被标记为关注卷（路径感知告警的前提，#80）。
+    EXPECT_TRUE(watched_seen);
+
+    ASSERT_TRUE(snapshot.watch_paths.has_value());
+    ASSERT_EQ(snapshot.watch_paths->size(), 1U);
+    EXPECT_TRUE((*snapshot.watch_paths)[0].available);
+    ASSERT_TRUE((*snapshot.watch_paths)[0].mount.has_value());
+
+    // 共享内存目录占用（本用例用工作目录当替身）：字节/页文件数非负、年龄非负。
+    if (snapshot.shm_dir.has_value()) {
+        EXPECT_FALSE(snapshot.shm_dir->path.empty());
+        EXPECT_GE(snapshot.shm_dir->total_bytes, 0U);
+        if (snapshot.shm_dir->oldest_file_age_sec.has_value()) {
+            EXPECT_GE(*snapshot.shm_dir->oldest_file_age_sec, 0);
+        }
+        // 有页文件时页文件数 > 0 且年龄必须存在（两者是同一批文件的两种视图）。
+        if (snapshot.shm_dir->page_files > 0) {
+            EXPECT_TRUE(snapshot.shm_dir->oldest_file_age_sec.has_value());
+        }
+    }
+
+    // 整帧必须通过契约校验（含 volumes/watch_paths 的交叉校验）。
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 

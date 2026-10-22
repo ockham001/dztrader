@@ -5,9 +5,9 @@
 ## 职责与范围
 
 - **内部进程**（ADR 0025）：既非策略、亦非行情/交易网关，由主进程 `dztraderd` 按配置拉起、监护与关闭；7×24 采集本机资源指标并推送实时快照。
-- 已实现（#70/#72/#73/#74）：系统信息、CPU 总使用率、每核使用率与饱和核标记、系统负载、上下文切换/中断速率、温度（Linux hwmon）与每核频率（Linux cpufreq）、内存与交换（含缓存/缓冲）。快照形状一次定稿：已列出的指标域后续只填值、不改 payload 形状；新增指标类别按 additive 扩展并同步契约/类型/前端 schema（契约 sysmon §2）。
-- 前端（#71/#72/#73/#74）：WebUI「资源监控」页展示系统信息与完整 CPU 区块（总使用率、每核含饱和标记、系统负载、上下文切换/中断、每核频率），温度在可用时以独立卡片展示；内存卡片接实时快照（使用率、已用/总量、可用、缓存、缓冲）并含交换子区块（无交换分区显示明确文案），磁盘 / 网络区块仍按可用性映射显示明确空态（不得显示 0）；温度与每核频率区块**仅在可用时出现，不可用时整块不渲染**（与内存等区块的「不可用」空态不同）。顶栏 CPU 与内存徽章接实时快照，写死的 CPU / 内存 / 磁盘假数字与 NTP 徽章已删除。刷新基线由发送方 `realtime.push_interval_sec`（默认 5s）决定，前端不轮询、不改 WS 契约。
-- 后续票：卷与共享内存目录占用 #75、磁盘 I/O #76、网络 #77、历史写入 #78、历史查询 #79、阈值告警 #80、运行期配置 #81。
+- 已实现（#70/#72/#73/#74/#75）：系统信息、CPU 总使用率、每核使用率与饱和核标记、系统负载、上下文切换/中断速率、温度（Linux hwmon）与每核频率（Linux cpufreq）、内存与交换（含缓存/缓冲）、卷容量与关注路径落卷、共享内存目录占用。快照形状一次定稿：已列出的指标域后续只填值、不改 payload 形状；新增指标类别按 additive 扩展并同步契约/类型/前端 schema（契约 sysmon §2）。
+- 前端（#71/#72/#73/#74/#75）：WebUI「资源监控」页展示系统信息与完整 CPU 区块（总使用率、每核含饱和标记、系统负载、上下文切换/中断、每核频率），温度在可用时以独立卡片展示；内存卡片接实时快照（使用率、已用/总量、可用、缓存、缓冲）并含交换子区块（无交换分区显示明确文案）；磁盘区块展示各卷容量与使用率（关注卷高亮、读不到的卷显示「不可用」+ 原因）与共享内存目录占用（大小、页文件数、最旧页文件年龄）；网络区块仍按可用性映射显示明确空态（不得显示 0）。温度与每核频率区块**仅在可用时出现，不可用时整块不渲染**（与内存等区块的「不可用」空态不同）。顶栏 CPU / 内存 / 各盘卷徽章接实时快照，写死的 CPU / 内存 / 磁盘假数字与 NTP 徽章已删除。刷新基线由发送方 `realtime.push_interval_sec`（默认 5s）决定，前端不轮询、不改 WS 契约。
+- 后续票：磁盘 I/O #76、网络 #77、历史写入 #78、历史查询 #79、阈值告警 #80、运行期配置 #81。
 - 本进程不采集：进程级指标、GPU、SMART、风扇、电池、登录用户列表、NTP 时间偏移；不支持容器内采集（见「部署限制」）。
 
 ## 进程与编排
@@ -56,13 +56,14 @@
 - Windows >64 逻辑核时 NT 每核查询只覆盖调用线程所在处理器组：序列数与逻辑核数不一致时每核标记不可用（`collect_failed`）、中断累计计数输出 `null`；上下文切换来自系统级查询仍可用。不得用组内数据冒充全系统每核序列。
 - 内存与交换来源（#74；实现细节；契约只规定 payload 语义）：Linux 读 `/proc/meminfo`——`MemTotal` / `MemAvailable` / `Buffers` / `Cached` / `SReclaimable` / `SwapTotal` / `SwapFree`；`MemAvailable` 缺失、为 0 或大于总量时回退 `MemFree + Buffers + Cached + SReclaimable` 并钳制到 `[0, total]`，异常与回退记 WARN 日志，回退也无法计算时本次内存采集失败（该域 `null`，可用性粘性）；`cached_bytes = Cached + SReclaimable`，`buffers_bytes = Buffers`，两者均钳制到总量。Windows 读 `GetPerformanceInfo`（`psapi`）：`total = PhysicalTotal × PageSize`、`available = PhysicalAvailable × PageSize`（Windows 上"空闲"与"可用"同义，不单列 `free`）、`cached = SystemCache × PageSize`、`buffers` 不提供；交换为页面文件口径——`total = CommitLimit − PhysicalTotal`、`used = CommitTotal − PhysicalTotal` 并钳制（无页面文件时 `total = 0` → 可用性 `unsupported`）。
 - 内存唯一口径：`used_bytes = total_bytes − available_bytes`（Linux 取 `MemAvailable`；Windows 取 `PhysicalAvailable`），不得使用「总量 − 空闲」（ADR 0024）；交换同理 `used = total − free`。
+- 卷、关注路径与共享内存目录来源（#75；实现细节；契约只规定 payload 语义）：Linux 解析 `/proc/mounts`（还原八进制转义的挂载点、过滤伪文件系统与内存文件系统、同挂载点去重），`statvfs` 逐卷取容量；容量读不到（`EACCES`/`EPERM` → `no_permission`，其它 → `collect_failed`）的卷仍进数组、`total_bytes`/`free_bytes` 留 `nullopt`。Windows 用 `GetLogicalDrives` + `GetDriveTypeW` 只取 `DRIVE_FIXED` 固定盘，`GetDiskFreeSpaceExW` 取容量；`ERROR_ACCESS_DENIED` → `no_permission`。关注路径落卷：Linux 先 `weakly_canonical` 规范化（跟随符号链接、保留不存在的尾部）再按**路径分量边界**做最长前缀匹配（`/home` 不匹配 `/home2`）；Windows 用 `GetFullPathNameW` 规范化后由 `GetVolumePathNameW` 给出挂载点（正确处理目录挂载点与卷 GUID）。路径不存在 ⇒ `path_not_found`，解析不到卷 ⇒ 不得猜卷、不得回退到 `/`（契约 sysmon §2.4）。共享内存目录占用递归统计字节数（含 `meta.dat`）、页文件数（`<数字>.dat`，与 `libs/shm` 的页文件判定同口径）与最旧**页文件**年龄（`meta.dat` 不参与年龄计算——它不会随页清理消失，参与会把"页清理失效"掩盖成"有个旧文件"）；目录不可读返回 `nullopt` 而不是全 0 的对象（0 是"目录为空"这一真实事实）。
 
 ## 快照与可用性
 
 - `DZ_FRAME_RTN_SYSMON_SNAPSHOT`：形态 4 纯上行推送，无 `instance_id`，发送方固定 `dzsysmon`（payload `source` 显式携带来源，通用规则 §5）；dzweb 消费后更新镜像并 WS 广播 `sysmon_snapshot`，REST `GET /api/sysmon/snapshot` 读取镜像（契约 sysmon §5/§6、契约 rest、契约 webui-ws）。两个 sysmon 域均进快照域，WS 建连立即拿到当前值，供顶栏全局使用。
 - 类型层真相源：[`sysmon.h`](../../libs/platform/include/dztrader/platform/sysmon.h)（`SysmonSnapshot` 及 `validate`）。`null` **仅允许**出现在契约 §2 标注可空的位置，其余位置出现 `null` 为校验失败；dzweb 侧校验失败记日志并忽略（不更新镜像、不广播）。
 - **可用性描述**（关键设计）：每个快照必须携带 `availability`——`platform_description`（Windows 必含 build 号）、`metrics`（固定键集合，每帧全覆盖；`available=false` 时 `reason` 必填）、`semantic_hints`。前端按可用性渲染，**不按 OS 名硬编码分支**；不可用一律显示「不可用」，不显示 0。
-- 当前可用性（#74）：`system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`memory`、`swap` 可用；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon），Windows 上两者不提供（默认配置关闭对应 B 组开关 → `disabled_by_config`；显式开启后采集器恒报 `unsupported`）；无交换分区/无页面文件时 `swap` 为 `unsupported`；其余键固定 `available=false` + `reason="not_implemented"`，对应域输出 `null` / 空数组（契约 sysmon §2.5）。采集能力不可用时用 `reason="collect_failed"`（温度无传感器用 `no_sensor`、无 cpufreq/无交换用 `unsupported`）；能力可用但本帧数值未就绪时为 `available=true`、数值 `null`；配置关闭对应指标组时为 `available=false` + `reason="disabled_by_config"`。**数值不沿用上一帧**：本帧未采到即输出 `null`/空数组（能力标记粘性），避免把旧数据当当前值展示。
+- 当前可用性（#75）：`system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`memory`、`swap`、`volumes`、`shm_dir` 可用；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon），Windows 上两者不提供（默认配置关闭对应 B 组开关 → `disabled_by_config`；显式开启后采集器恒报 `unsupported`）；无交换分区/无页面文件时 `swap` 为 `unsupported`；`disk_io` / `network` 固定 `available=false` + `reason="not_implemented"`，对应域输出 `null`（契约 sysmon §2.5）。采集能力不可用时用 `reason="collect_failed"`（温度无传感器用 `no_sensor`、无 cpufreq/无交换用 `unsupported`）；能力可用但本帧数值未就绪时为 `available=true`、数值 `null`；配置关闭对应指标组时为 `available=false` + `reason="disabled_by_config"`。**数值不沿用上一帧**：本帧未采到即输出 `null`/空数组（能力标记粘性），避免把旧数据当当前值展示。
 - 渲染语义分两档：内存/交换/磁盘/网络等区块按可用性显示明确空态——不可用时显示「不可用」+ 原因（`swap` 的 `unsupported` 说明为「本机无交换分区/页面文件」），能力可用但本帧无数据时显示「暂无数据」；温度与每核频率区块**仅在可用时渲染，不可用时整块不出现**（不在前端按平台名分支，只看 `availability.metrics`）。后者避免在 Windows 等平台长期占据版面显示无意义空态。内存的 `used_bytes` / `used_ratio` 由前端按唯一口径重算，保证字节与百分比一致。
 - 饱和核判定（契约 sysmon §2.7）：单核使用率连续 `alerts.cpu_sustain_samples` 次采样 ≥ `alerts.cpu_sustain_used_pct / 100` 标记饱和，任一采样严格低于阈值即解除；不可用样本不改变计数；核序列变化（热插拔）重置计数。阈值/次数取当前配置，运行期编辑入口随 #81。
 - 跨平台语义差异：Windows 无原生 load average，以处理器队列长度做指数加权移动平均作为代理量（`semantic="processor_queue"`），与 Linux load average 不是同一个量；口径说明由 `availability.semantic_hints["cpu.load_average"]` 承载，前端只按该字段展示、不得同轴比较（不按 OS 名分支）。
@@ -93,7 +94,7 @@
 
 ## 告警（后续票）
 
-- #80 阈值告警：内存、交换、关注卷剩余空间（百分比与绝对容量两种形态）越限时复用既有 `DZ_FRAME_NOTIFY_UI`（不新增通知帧），带冷却防抖与恢复信号；路径感知只关注共享内存目录与数据库目录所在卷。
+- #80 阈值告警：内存、交换、关注卷剩余空间（百分比与绝对容量两种形态）越限时复用既有 `DZ_FRAME_NOTIFY_UI`（不新增通知帧），带冷却防抖与恢复信号；路径感知只关注共享内存目录与数据库目录所在卷——落卷解析与 `volumes[].watched` 已由 #75 提供（`watch_paths` 不受 `sampling.groups.volumes` 开关影响，关掉卷容量采集仍能定位关注卷）。
 - 当前状态：未实现（规划）；`alerts` 配置段已定义形状。
 
 ## 第三方归属

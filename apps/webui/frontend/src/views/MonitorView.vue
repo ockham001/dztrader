@@ -4,11 +4,13 @@ import Icon from '@/components/shared/Icon.vue'
 import { useSysmonStore } from '@/stores/sysmon'
 
 // 资源监控页：系统信息与 CPU 区块（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率）、
-// 温度、内存与交换接契约 sysmon 实时快照；磁盘 / 网络区块按可用性映射渲染，
-// 未接入时显示明确空态（不得显示 0 冒充数据）。
+// 温度、内存与交换、磁盘（卷容量 / 关注路径 / 共享内存目录）接契约 sysmon 实时快照；
+// 网络区块按可用性映射渲染，未接入时显示明确空态（不得显示 0 冒充数据）。
 // 内存 / 交换（#74）按可用性映射渲染：不可用显示「不可用」+ 原因，可用但本帧无数据
 // 显示「暂无数据」；交换在可用且总容量为 0 时显示「无交换分区」。
 // 温度 / 每核频率（B 组）按可用性映射渲染：不可用时整块不渲染（不是显示 0 / 不可用占位）。
+// 磁盘（#75）按可用性映射渲染：卷按 watched 优先排序并高亮关注卷；单个卷 available=false
+// 显示「不可用」+ 原因而不是 0；shm_dir 展示共享内存目录占用（页清理是否生效的可观测项）。
 // 刷新基线由发送方 realtime.push_interval_sec（默认 5s）决定，本页不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
 
@@ -64,6 +66,26 @@ function formatTemperature(celsius: number): string {
 /** 每核频率（MHz）：整数 + 单位；调用方只在指标可用时传入有效值 */
 function formatFrequency(mhz: number): string {
   return `${mhz} MHz`
+}
+
+/** 文件年龄（秒 → 可读时长）：页文件年龄是页清理是否生效的直接信号（契约 sysmon §2.4） */
+function formatAge(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return UNAVAILABLE
+  const total = Math.floor(seconds)
+  if (total < 60) return `${total} 秒`
+  if (total < 3_600) return `${Math.floor(total / 60)} 分钟`
+  if (total < 86_400) return `${Math.floor(total / 3_600)} 小时`
+  return `${Math.floor(total / 86_400)} 天`
+}
+
+/** 卷 / 关注路径的不可用原因（契约 sysmon §2.4 建议取值）：文案化，裸 reason 兜底 */
+function volumeReasonDesc(reason: string | undefined): string {
+  if (!reason) return '容量读取失败'
+  if (reason === 'no_permission') return '无访问权限'
+  if (reason === 'path_not_found') return '路径不存在或无法解析'
+  if (reason === 'collect_failed') return '采集失败'
+  if (reason === 'disabled_by_config') return '已在配置中关闭'
+  return reason
 }
 
 function formatDateTime(unixMs: number): string {
@@ -141,8 +163,8 @@ const temperatures = computed(() => sysmon.temperatures)
 const frequencyAvailable = computed(() => isAvailable('cpu.frequency'))
 const coreFrequencies = computed(() => sysmon.coreFrequencies)
 
-// ---- 内存 / 交换（#74）/ 磁盘（卷容量）/ 网络 ----
-// 内存 / 交换一律走 store 的净化 computed（可用性 + 数值防御），组件不直接读 payload 字段。
+// ---- 内存 / 交换（#74）/ 磁盘（#75：卷容量 / 关注路径 / 共享内存目录）/ 网络 ----
+// 内存 / 交换 / 磁盘一律走 store 的净化 computed（可用性 + 数值防御），组件不直接读 payload 字段。
 const memoryAvailable = computed(() => isAvailable('memory'))
 const memory = computed(() => sysmon.memoryInfo)
 const swapAvailable = computed(() => isAvailable('swap'))
@@ -156,7 +178,10 @@ const swapUnavailableDesc = computed(() => {
   return unavailableDesc('swap')
 })
 const volumesAvailable = computed(() => isAvailable('volumes'))
-const volumes = computed(() => snapshot.value?.volumes ?? null)
+const volumes = computed(() => sysmon.volumes)
+const watchPaths = computed(() => sysmon.watchPaths)
+const shmAvailable = computed(() => isAvailable('shm_dir'))
+const shmDir = computed(() => sysmon.shmDirInfo)
 const networkAvailable = computed(() => isAvailable('network'))
 const network = computed(() => snapshot.value?.network ?? null)
 </script>
@@ -431,21 +456,96 @@ const network = computed(() => snapshot.value?.network ?? null)
         </div>
       </section>
 
-      <!-- 磁盘（卷容量） -->
+      <!-- 磁盘（#75：卷容量 / 关注路径 / 共享内存目录），全部按 availability.metrics 渲染 -->
       <section class="ds-card monitor-view__card" data-test="monitor-disk">
         <h2 class="ds-card__title monitor-view__card-title">
           <span class="monitor-view__card-icon"><Icon name="Disk" :size="14" /></span>磁盘
         </h2>
-        <ul v-if="volumesAvailable && volumes && volumes.length > 0" class="monitor-view__list">
-          <li v-for="volume in volumes" :key="volume.mount" class="monitor-view__list-row">
-            <span class="monitor-view__list-label">{{ volume.mount }}</span>
-            <span class="monitor-view__list-value">{{ formatPercent(volume.used_ratio) }}</span>
-            <span class="monitor-view__list-meta">{{ formatBytes(volume.used_bytes) }} / {{ formatBytes(volume.total_bytes) }}</span>
-          </li>
-        </ul>
-        <div v-else class="ds-empty monitor-view__empty" data-test="monitor-disk-unavailable">
-          <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
-          <div class="ds-empty__desc">{{ volumesAvailable ? '当前快照未提供卷数据' : unavailableDesc('volumes') }}</div>
+
+        <!-- 卷：watched=true 高亮并排在前（store 已按 watched 优先排序）；
+             available=false 的卷显示「不可用」+ 原因，绝不显示 0 -->
+        <div class="monitor-view__subsection" data-test="monitor-disk-volumes">
+          <h3 class="monitor-view__panel-title">卷容量</h3>
+          <ul v-if="volumesAvailable && volumes.length > 0" class="monitor-view__list">
+            <li
+              v-for="volume in volumes"
+              :key="volume.mount"
+              class="monitor-view__list-row monitor-view__disk-row"
+              :class="{ 'monitor-view__disk-row--watched': volume.watched }"
+              data-test="monitor-disk-volume"
+              :data-mount="volume.mount"
+            >
+              <span class="monitor-view__list-label">{{ volume.mount }}</span>
+              <span v-if="volume.watched" class="ds-tag ds-tag--warning" data-test="monitor-disk-volume-watched">关注</span>
+              <template v-if="volume.available">
+                <!-- 可用但比率为 null（total_bytes=0 的异常/特殊卷）：显示「—」而不是 0% -->
+                <span class="monitor-view__list-value">{{ volume.used_ratio === null ? '—' : formatPercent(volume.used_ratio) }}</span>
+                <span class="monitor-view__list-meta">{{ formatBytes(volume.used_bytes) }} / {{ formatBytes(volume.total_bytes) }}</span>
+              </template>
+              <template v-else>
+                <span class="monitor-view__list-value">{{ UNAVAILABLE }}</span>
+                <span class="monitor-view__list-meta" data-test="monitor-disk-volume-reason">{{ volumeReasonDesc(volume.reason) }}</span>
+              </template>
+            </li>
+          </ul>
+          <div v-else class="ds-empty monitor-view__empty" data-test="monitor-disk-unavailable">
+            <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+            <div class="ds-empty__desc">{{ volumesAvailable ? '当前快照未提供卷数据' : unavailableDesc('volumes') }}</div>
+          </div>
+
+          <!-- 关注路径：落卷解析失败时显示「未解析」+ 原因（不猜卷、不回退到 /） -->
+          <ul
+            v-if="watchPaths.length > 0"
+            class="monitor-view__list monitor-view__subsection"
+            data-test="monitor-watch-paths"
+          >
+            <li
+              v-for="watchPath in watchPaths"
+              :key="watchPath.path"
+              class="monitor-view__list-row"
+              data-test="monitor-watch-path"
+            >
+              <span class="monitor-view__list-label">{{ watchPath.path }}</span>
+              <span v-if="watchPath.available" class="monitor-view__list-meta">落卷 {{ watchPath.mount }}</span>
+              <span v-else class="monitor-view__list-meta" data-test="monitor-watch-path-unavailable">
+                未解析 · {{ volumeReasonDesc(watchPath.reason) }}
+              </span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- 共享内存目录占用（页清理是否生效的可观测项）：不可用 / 可用但本帧未采集分别空态 -->
+        <div class="monitor-view__subsection" data-test="monitor-shm-dir">
+          <h3 class="monitor-view__panel-title">共享内存目录</h3>
+          <template v-if="shmDir">
+            <dl class="monitor-view__list">
+              <div class="monitor-view__list-row">
+                <dt class="monitor-view__list-label">路径</dt>
+                <dd class="monitor-view__list-value" data-test="monitor-shm-path">{{ shmDir.path }}</dd>
+              </div>
+              <div class="monitor-view__list-row">
+                <dt class="monitor-view__list-label">占用</dt>
+                <dd class="monitor-view__list-value" data-test="monitor-shm-total">{{ formatBytes(shmDir.total_bytes) }}</dd>
+              </div>
+              <div class="monitor-view__list-row">
+                <dt class="monitor-view__list-label">页文件</dt>
+                <dd class="monitor-view__list-value" data-test="monitor-shm-page-files">{{ shmDir.page_files }}</dd>
+              </div>
+              <!-- 无页文件时 oldest_file_age_sec 为 null：不渲染该行（不是 0 秒） -->
+              <div v-if="shmDir.oldest_file_age_sec != null" class="monitor-view__list-row">
+                <dt class="monitor-view__list-label">最旧页文件</dt>
+                <dd class="monitor-view__list-value" data-test="monitor-shm-oldest-age">{{ formatAge(shmDir.oldest_file_age_sec) }}</dd>
+              </div>
+            </dl>
+          </template>
+          <div v-else-if="shmAvailable" class="ds-empty monitor-view__empty" data-test="monitor-shm-empty">
+            <div class="ds-empty__title">暂无数据</div>
+            <div class="ds-empty__desc">当前快照未提供共享内存目录占用</div>
+          </div>
+          <div v-else class="ds-empty monitor-view__empty" data-test="monitor-shm-unavailable">
+            <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+            <div class="ds-empty__desc">{{ unavailableDesc('shm_dir') }}</div>
+          </div>
         </div>
       </section>
 
@@ -578,6 +678,18 @@ const network = computed(() => snapshot.value?.network ?? null)
 /* 内存卡片内的交换子区块（#74）：与内存数值之间留白，复用面板标题 / 列表样式 */
 .monitor-view__subsection {
   margin-top: var(--spacer-12);
+}
+
+/* 卷行（#75）：关注卷用左侧警示色描边 + 淡背景高亮（token 取状态色，不硬编码颜色） */
+.monitor-view__disk-row {
+  padding: var(--spacer-2) var(--spacer-6);
+  border-left: 2px solid transparent;
+  border-radius: var(--radius-4);
+}
+
+.monitor-view__disk-row--watched {
+  border-left-color: var(--status-warning-default);
+  background: var(--status-warning-surface-l1);
 }
 
 .monitor-view__bar {

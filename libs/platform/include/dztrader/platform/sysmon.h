@@ -186,15 +186,89 @@ struct SysmonSwapInfo {
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonSwapInfo, total_bytes, used_bytes, used_ratio)
 };
 
-/// 卷容量。
+/// 卷容量与可用性（契约 sysmon §2.4）。
+///
+/// `available=false` 表示卷存在但容量读不到（无权限/不可访问）：此时
+/// `total_bytes`/`used_bytes`/`used_ratio` 必须为 null，不得用 0 冒充；
+/// 该卷仍进数组（"存在但读不到"与"没有这个卷"是不同事实，消费方都要能显示）。
 struct SysmonVolumeInfo {
-    std::string mount;
-    uint64_t total_bytes = 0;
-    uint64_t used_bytes = 0;
-    std::optional<double> used_ratio;
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
-        SysmonVolumeInfo, mount, total_bytes, used_bytes, used_ratio)
+    std::string mount;      ///< 规范化挂载点（Linux 挂载目录；Windows 盘符根，如 `C:\\`）
+    bool watched = false;   ///< 承载了任一关注路径（快照 `watch_paths` 的落卷）
+    bool available = true;  ///< 容量是否可读
+    std::optional<uint64_t> total_bytes;  ///< available=false 时为 null
+    std::optional<uint64_t> used_bytes;   ///< available=false 时为 null
+    std::optional<double> used_ratio;     ///< available=false / total=0 时为 null
+    std::optional<std::string> reason;    ///< available=false 时的原因（英文、小写开头）
 };
+
+// 手写序列化：`reason` 在 available=true 时省略（契约 sysmon §7），
+// 且 available=false 时三个容量字段必须输出 null（不得省略、不得用 0）。
+inline void to_json(nlohmann::json& j, const SysmonVolumeInfo& v) {
+    j = nlohmann::json{{"mount", v.mount},
+                       {"watched", v.watched},
+                       {"available", v.available},
+                       {"total_bytes", v.total_bytes.has_value() ? nlohmann::json(*v.total_bytes)
+                                                                 : nlohmann::json(nullptr)},
+                       {"used_bytes", v.used_bytes.has_value() ? nlohmann::json(*v.used_bytes)
+                                                               : nlohmann::json(nullptr)},
+                       {"used_ratio", v.used_ratio.has_value() ? nlohmann::json(*v.used_ratio)
+                                                               : nlohmann::json(nullptr)}};
+    if (v.reason.has_value() && !v.reason->empty()) {
+        j["reason"] = *v.reason;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, SysmonVolumeInfo& v) {
+    v.mount = j.at("mount").get<std::string>();
+    v.watched = j.value("watched", false);
+    v.available = j.value("available", true);
+    v.total_bytes = j.value("total_bytes", nlohmann::json(nullptr)).is_null()
+                        ? std::nullopt
+                        : std::optional<uint64_t>(j["total_bytes"].get<uint64_t>());
+    v.used_bytes = j.value("used_bytes", nlohmann::json(nullptr)).is_null()
+                       ? std::nullopt
+                       : std::optional<uint64_t>(j["used_bytes"].get<uint64_t>());
+    v.used_ratio = (!j.contains("used_ratio") || j["used_ratio"].is_null())
+                       ? std::nullopt
+                       : std::optional<double>(j["used_ratio"].get<double>());
+    v.reason = (!j.contains("reason") || j["reason"].is_null())
+                   ? std::nullopt
+                   : std::optional<std::string>(j["reason"].get<std::string>());
+}
+
+/// 关注路径的落卷解析结果（契约 sysmon §2.4）。
+///
+/// 默认关注路径为共享内存目录与数据库目录（配置 `disk.watch_paths` 非空时以其为准）。
+/// 解析失败（路径不存在/无权限/解析不到卷）时 `mount` 为 null 且 `reason` 必填；
+/// 不得猜一个卷或回退到 `/`。
+struct SysmonWatchPathInfo {
+    std::string path;                   ///< 解析用路径（绝对路径，符号链接已跟随）
+    std::optional<std::string> mount;   ///< 所在卷挂载点，可与 volumes[].mount 相等比较
+    bool available = true;              ///< 落卷解析是否成功
+    std::optional<std::string> reason;  ///< available=false 时的原因
+};
+
+// 手写序列化：`reason` 在 available=true 时省略（契约 sysmon §7）。
+inline void to_json(nlohmann::json& j, const SysmonWatchPathInfo& w) {
+    j = nlohmann::json{
+        {"path", w.path},
+        {"mount", w.mount.has_value() ? nlohmann::json(*w.mount) : nlohmann::json(nullptr)},
+        {"available", w.available}};
+    if (w.reason.has_value() && !w.reason->empty()) {
+        j["reason"] = *w.reason;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, SysmonWatchPathInfo& w) {
+    w.path = j.at("path").get<std::string>();
+    w.mount = (!j.contains("mount") || j["mount"].is_null())
+                  ? std::nullopt
+                  : std::optional<std::string>(j["mount"].get<std::string>());
+    w.available = j.value("available", true);
+    w.reason = (!j.contains("reason") || j["reason"].is_null())
+                   ? std::nullopt
+                   : std::optional<std::string>(j["reason"].get<std::string>());
+}
 
 /// 每物理盘 I/O 速率（不可用时对应字段为 null）。
 struct SysmonDiskIoInfo {
@@ -266,12 +340,15 @@ inline void from_json(const nlohmann::json& j, SysmonNetworkInfo& n) {
     n.is_virtual = j.value("is_virtual", false);
 }
 
-/// 共享内存目录占用。
+/// 共享内存目录占用（契约 sysmon §2.4）：用于确认页清理机制没有失效。
+///
+/// `oldest_file_age_sec` 为最旧**页文件**的文件年龄（秒，0 = 刚写入）；无页文件时为 null。
+/// 目录不可读时整个对象为 null（可用性 collect_failed），不得输出全 0 的对象。
 struct SysmonShmDirInfo {
-    std::string path;
-    uint64_t total_bytes = 0;
-    uint64_t page_files = 0;
-    std::optional<int64_t> oldest_file_age_sec;
+    std::string path;          ///< 共享内存根目录绝对路径（$DZTRADER_HOME/shm）
+    uint64_t total_bytes = 0;  ///< 目录下全部普通文件字节数之和（递归）
+    uint64_t page_files = 0;   ///< 页文件数量（递归，`<数字>.dat`；不含 meta.dat）
+    std::optional<int64_t> oldest_file_age_sec;  ///< 最旧页文件年龄（秒）；无页文件为 null
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
         SysmonShmDirInfo, path, total_bytes, page_files, oldest_file_age_sec)
 };
@@ -336,6 +413,9 @@ struct SysmonSnapshot {
     std::optional<SysmonMemoryInfo> memory;  ///< null = 本版本未采集/不可用
     std::optional<SysmonSwapInfo> swap;
     std::optional<std::vector<SysmonVolumeInfo>> volumes;
+    /// 关注路径（共享内存目录 / 数据库目录）的落卷解析（契约 sysmon §2.4）；
+    /// null = 本帧未采集/不可用。
+    std::optional<std::vector<SysmonWatchPathInfo>> watch_paths;
     std::optional<std::vector<SysmonDiskIoInfo>> disk_io;
     std::optional<std::vector<SysmonNetworkInfo>> network;
     std::optional<SysmonShmDirInfo> shm_dir;
@@ -351,6 +431,7 @@ struct SysmonSnapshot {
                                                 memory,
                                                 swap,
                                                 volumes,
+                                                watch_paths,
                                                 disk_io,
                                                 network,
                                                 shm_dir,
