@@ -1,5 +1,6 @@
 #include "snapshot_builder.h"
 
+#include <algorithm>
 #include <format>
 #include <string>
 #include <string_view>
@@ -62,6 +63,7 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
                                         const platform::RawSystemInfo& system_info,
                                         const CpuMetrics& cpu_metrics,
                                         const TemperatureMetrics& temperature_metrics,
+                                        const MemorySwapMetrics& memory_metrics,
                                         int32_t measure_interval_ms,
                                         int64_t last_sample_unix_ms,
                                         uint64_t missed_ticks,
@@ -127,9 +129,43 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         snapshot.temperature = std::nullopt;
     }
 
-    // 其余指标域：本版本未采集（契约 §2 定稿形状为 null）。
+    // 内存/交换（#74）：瞬时 gauge。本帧未读到为 null，不得沿用上一帧；配置关闭优先。
+    // used 由 total - available/free 计算（契约 sysmon §2.4 的唯一口径），并做防御性钳制。
     snapshot.memory = std::nullopt;
+    if (!memory_metrics.disabled && memory_metrics.collected && memory_metrics.memory.has_value() &&
+        memory_metrics.memory->total_bytes > 0) {
+        const auto& raw = *memory_metrics.memory;
+        platform::SysmonMemoryInfo memory;
+        memory.total_bytes = raw.total_bytes;
+        memory.available_bytes = std::min(raw.available_bytes, raw.total_bytes);
+        memory.used_bytes = memory.total_bytes - memory.available_bytes;
+        memory.used_ratio =
+            static_cast<double>(memory.used_bytes) / static_cast<double>(memory.total_bytes);
+        if (raw.cached_bytes.has_value()) {
+            memory.cached_bytes = std::min(*raw.cached_bytes, memory.total_bytes);
+        }
+        if (raw.buffers_bytes.has_value()) {
+            memory.buffers_bytes = std::min(*raw.buffers_bytes, memory.total_bytes);
+        }
+        snapshot.memory = memory;
+    }
     snapshot.swap = std::nullopt;
+    if (!memory_metrics.swap_disabled && memory_metrics.swap_collected &&
+        memory_metrics.swap.has_value()) {
+        const auto& raw = *memory_metrics.swap;
+        platform::SysmonSwapInfo swap;
+        swap.total_bytes = raw.total_bytes;
+        // 防御：free 超过 total 时钳制，保证 used 落在 [0, total]。
+        const uint64_t free_bytes = std::min(raw.free_bytes, raw.total_bytes);
+        swap.used_bytes = raw.total_bytes - free_bytes;
+        if (raw.total_bytes > 0) {
+            swap.used_ratio =
+                static_cast<double>(swap.used_bytes) / static_cast<double>(raw.total_bytes);
+        }
+        snapshot.swap = swap;
+    }
+
+    // 其余指标域：本版本未采集（契约 §2 定稿形状为 null）。
     snapshot.volumes = std::nullopt;
     snapshot.disk_io = std::nullopt;
     snapshot.network = std::nullopt;
@@ -180,6 +216,26 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
             } else {
                 // Linux 无 hwmon 传感器（容器/虚拟机降级路径，契约 sysmon §2.5）。
                 mark_unavailable(snapshot.availability, key, kReasonNoSensor);
+            }
+        } else if (metric == platform::SYSMON_METRIC_MEMORY) {
+            // 配置关闭优先；能力可用但本帧未读到数值时仍为 available（数值为 null）。
+            if (memory_metrics.disabled) {
+                mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
+            } else if (memory_metrics.collected) {
+                mark_available(snapshot.availability, key);
+            } else {
+                mark_unavailable(snapshot.availability, key, kReasonCollectFailed);
+            }
+        } else if (metric == platform::SYSMON_METRIC_SWAP) {
+            if (memory_metrics.swap_disabled) {
+                mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
+            } else if (!memory_metrics.swap_collected) {
+                mark_unavailable(snapshot.availability, key, kReasonCollectFailed);
+            } else if (!memory_metrics.swap_supported) {
+                // 本机无交换分区/无页面文件（契约 sysmon §2.5：unsupported）。
+                mark_unavailable(snapshot.availability, key, kReasonUnsupported);
+            } else {
+                mark_available(snapshot.availability, key);
             }
         } else {
             mark_not_implemented(snapshot.availability, key);

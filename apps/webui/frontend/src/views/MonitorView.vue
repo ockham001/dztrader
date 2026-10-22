@@ -3,9 +3,11 @@ import { computed, onMounted } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import { useSysmonStore } from '@/stores/sysmon'
 
-// 资源监控页：系统信息与 CPU 区块（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率）、温度
-// 接契约 sysmon 实时快照；内存 / 磁盘 / 网络区块按可用性映射渲染，
+// 资源监控页：系统信息与 CPU 区块（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率）、
+// 温度、内存与交换接契约 sysmon 实时快照；磁盘 / 网络区块按可用性映射渲染，
 // 未接入时显示明确空态（不得显示 0 冒充数据）。
+// 内存 / 交换（#74）按可用性映射渲染：不可用显示「不可用」+ 原因，可用但本帧无数据
+// 显示「暂无数据」；交换在可用且总容量为 0 时显示「无交换分区」。
 // 温度 / 每核频率（B 组）按可用性映射渲染：不可用时整块不渲染（不是显示 0 / 不可用占位）。
 // 刷新基线由发送方 realtime.push_interval_sec（默认 5s）决定，本页不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
@@ -139,9 +141,20 @@ const temperatures = computed(() => sysmon.temperatures)
 const frequencyAvailable = computed(() => isAvailable('cpu.frequency'))
 const coreFrequencies = computed(() => sysmon.coreFrequencies)
 
-// ---- 内存 / 磁盘（卷容量）/ 网络 ----
+// ---- 内存 / 交换（#74）/ 磁盘（卷容量）/ 网络 ----
+// 内存 / 交换一律走 store 的净化 computed（可用性 + 数值防御），组件不直接读 payload 字段。
 const memoryAvailable = computed(() => isAvailable('memory'))
-const memory = computed(() => snapshot.value?.memory ?? null)
+const memory = computed(() => sysmon.memoryInfo)
+const swapAvailable = computed(() => isAvailable('swap'))
+const swapInfo = computed(() => sysmon.swapInfo)
+// 无交换分区是平台事实（契约 sysmon §2.5 的 unsupported），不是采集故障：给出明确文案，
+// 其余不可用原因仍按 unavailableDesc 展示。
+const swapUnavailableDesc = computed(() => {
+  if (sysmon.availabilityOf('swap')?.reason === 'unsupported') {
+    return '本机无交换分区/页面文件'
+  }
+  return unavailableDesc('swap')
+})
 const volumesAvailable = computed(() => isAvailable('volumes'))
 const volumes = computed(() => snapshot.value?.volumes ?? null)
 const networkAvailable = computed(() => isAvailable('network'))
@@ -355,18 +368,66 @@ const network = computed(() => snapshot.value?.network ?? null)
         </div>
       </section>
 
-      <!-- 内存 -->
+      <!-- 内存 / 交换（#74）：内存数值 + 卡片内交换子区块；不可用一律显式空态，不得显示 0 -->
       <section class="ds-card monitor-view__card" data-test="monitor-memory">
         <h2 class="ds-card__title monitor-view__card-title">
           <span class="monitor-view__card-icon"><Icon name="MEM" :size="14" /></span>内存
         </h2>
-        <template v-if="memoryAvailable && memory">
+        <template v-if="memory">
           <div class="monitor-view__metric" data-test="monitor-memory-value">{{ formatPercent(memory.used_ratio) }}</div>
-          <div class="monitor-view__meta">{{ formatBytes(memory.used_bytes) }} / {{ formatBytes(memory.total_bytes) }}</div>
+          <div class="monitor-view__meta" data-test="monitor-memory-meta">{{ formatBytes(memory.used_bytes) }} / {{ formatBytes(memory.total_bytes) }}</div>
+          <ul class="monitor-view__list monitor-view__subsection">
+            <li class="monitor-view__list-row">
+              <span class="monitor-view__list-label">可用</span>
+              <span class="monitor-view__list-value" data-test="monitor-memory-available">{{ formatBytes(memory.available_bytes) }}</span>
+            </li>
+            <!-- 缓存 / 缓冲：null = 本平台不提供/本帧未读到，不渲染该行（Windows 恒无缓冲） -->
+            <li v-if="memory.cached_bytes != null" class="monitor-view__list-row">
+              <span class="monitor-view__list-label">缓存</span>
+              <span class="monitor-view__list-value" data-test="monitor-memory-cached">{{ formatBytes(memory.cached_bytes) }}</span>
+            </li>
+            <li v-if="memory.buffers_bytes != null" class="monitor-view__list-row">
+              <span class="monitor-view__list-label">缓冲</span>
+              <span class="monitor-view__list-value" data-test="monitor-memory-buffers">{{ formatBytes(memory.buffers_bytes) }}</span>
+            </li>
+          </ul>
         </template>
+        <div v-else-if="memoryAvailable" class="ds-empty monitor-view__empty" data-test="monitor-memory-empty">
+          <div class="ds-empty__title">暂无数据</div>
+          <div class="ds-empty__desc">当前快照未提供内存数据</div>
+        </div>
         <div v-else class="ds-empty monitor-view__empty" data-test="monitor-memory-unavailable">
           <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
           <div class="ds-empty__desc">{{ unavailableDesc('memory') }}</div>
+        </div>
+
+        <!-- 交换子区块：可用且总量 > 0 → 使用率 + 已用/总量；可用但总量 0 → 无交换分区；
+             可用但本帧无对象 → 暂无数据；不可用 → 不可用 + 原因（不得显示 0） -->
+        <div class="monitor-view__subsection" data-test="monitor-swap">
+          <h3 class="monitor-view__panel-title">交换</h3>
+          <ul v-if="swapInfo && swapInfo.total_bytes > 0" class="monitor-view__list" data-test="monitor-memory-swap">
+            <li class="monitor-view__list-row">
+              <span class="monitor-view__list-label">使用率</span>
+              <span class="monitor-view__list-value">{{ formatPercent(swapInfo.used_ratio) }}</span>
+            </li>
+            <li class="monitor-view__list-row">
+              <span class="monitor-view__list-label">已用 / 总量</span>
+              <span class="monitor-view__list-meta">{{ formatBytes(swapInfo.used_bytes) }} / {{ formatBytes(swapInfo.total_bytes) }}</span>
+            </li>
+          </ul>
+          <div
+            v-else-if="swapAvailable && swapInfo"
+            class="monitor-view__meta"
+            data-test="monitor-memory-swap-none"
+          >无交换分区</div>
+          <div v-else-if="swapAvailable" class="ds-empty monitor-view__empty" data-test="monitor-memory-swap-empty">
+            <div class="ds-empty__title">暂无数据</div>
+            <div class="ds-empty__desc">当前快照未提供交换数据</div>
+          </div>
+          <div v-else class="ds-empty monitor-view__empty" data-test="monitor-memory-swap-unavailable">
+            <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+            <div class="ds-empty__desc">{{ swapUnavailableDesc }}</div>
+          </div>
         </div>
       </section>
 
@@ -512,6 +573,11 @@ const network = computed(() => snapshot.value?.network ?? null)
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
   color: var(--text-tertiary);
+}
+
+/* 内存卡片内的交换子区块（#74）：与内存数值之间留白，复用面板标题 / 列表样式 */
+.monitor-view__subsection {
+  margin-top: var(--spacer-12);
 }
 
 .monitor-view__bar {

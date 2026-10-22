@@ -34,10 +34,12 @@
 #include <windows.h>
 #include <pdh.h>
 #include <pdhmsg.h>  // PDH_CSTATUS_VALID_DATA / PDH_CSTATUS_NEW_DATA（部分 SDK 的 pdh.h 不引入）
+#include <psapi.h>   // GetPerformanceInfo：内存与页文件口径（契约 sysmon §2.4）
 #include <winreg.h>
 
 #include <dztrader/platform/system_collector.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -588,6 +590,68 @@ private:
     double fifteen_ = 0.0;
 };
 
+// ===== 内存与交换：GetPerformanceInfo（契约 sysmon §2.4、§2.7）=====
+//
+// PERFORMANCE_INFORMATION 的计数字段以页为单位（PageSize 字节/页）。psutil 仅作
+// 规格参考（ADR 0024）：Windows 上"空闲"与"可用"是同一个量（PhysicalAvailable），
+// 不得改用 Linux 的 MemFree 语义；页文件总量取"由页面文件支撑的提交上限"
+// （CommitLimit - PhysicalTotal），不是原始页面文件大小。
+
+/// 读取 PERFORMANCE_INFORMATION；失败返回 std::nullopt（采集失败降级，不抛异常）。
+std::optional<PERFORMANCE_INFORMATION> query_performance_information() {
+    PERFORMANCE_INFORMATION info{};
+    if (GetPerformanceInfo(&info, static_cast<DWORD>(sizeof(info))) == 0) {
+        return std::nullopt;
+    }
+    if (info.PageSize == 0) {
+        return std::nullopt;
+    }
+    return info;
+}
+
+/// 采集内存读数：总量/可用取物理内存页数，缓存取 SystemCache（Windows 无 buffers）。
+std::optional<RawMemoryInfo> query_memory_info() {
+    const auto info = query_performance_information();
+    if (!info.has_value() || info->PhysicalTotal == 0) {
+        return std::nullopt;
+    }
+    const uint64_t page_size = static_cast<uint64_t>(info->PageSize);
+    const uint64_t total_pages = static_cast<uint64_t>(info->PhysicalTotal);
+    RawMemoryInfo memory;
+    memory.total_bytes = total_pages * page_size;
+    // 可用 = PhysicalAvailable（"空闲"与"可用"同义，契约 sysmon §2.4）。
+    const uint64_t available_pages =
+        std::min(static_cast<uint64_t>(info->PhysicalAvailable), total_pages);
+    memory.available_bytes = available_pages * page_size;
+    // 缓存 = SystemCache；buffers 在 Windows 不提供（std::nullopt）。
+    memory.cached_bytes =
+        std::min(static_cast<uint64_t>(info->SystemCache), total_pages) * page_size;
+    return memory;
+}
+
+/// 采集页文件口径的交换读数（总量/已用见契约 sysmon §2.4 的 Windows 口径说明）。
+std::optional<RawSwapInfo> query_swap_info() {
+    const auto info = query_performance_information();
+    if (!info.has_value()) {
+        return std::nullopt;
+    }
+    const uint64_t page_size = static_cast<uint64_t>(info->PageSize);
+    const uint64_t physical_pages = static_cast<uint64_t>(info->PhysicalTotal);
+    const uint64_t commit_limit_pages = static_cast<uint64_t>(info->CommitLimit);
+    const uint64_t commit_total_pages = static_cast<uint64_t>(info->CommitTotal);
+    // 无页面文件时提交上限不超过物理内存 => total = 0（上层标记 unsupported）。
+    const uint64_t total_pages =
+        commit_limit_pages > physical_pages ? commit_limit_pages - physical_pages : 0;
+    // 已用 = 物理内存之外已提交的量，钳制到 [0, total]（提交量可小于物理内存）。
+    const uint64_t used_pages = commit_total_pages > physical_pages
+                                    ? std::min(commit_total_pages - physical_pages, total_pages)
+                                    : 0;
+    RawSwapInfo swap;
+    swap.total_bytes = total_pages * page_size;
+    swap.free_bytes = (total_pages - used_pages) * page_size;
+    return swap;
+}
+
 /// Windows 采集器：系统信息每次现取；负载代理持有 PDH 查询与加权状态。
 class WindowsSystemCollector final : public SystemCollector {
 public:
@@ -609,6 +673,10 @@ public:
     std::optional<std::vector<RawCoreFrequency>> collect_core_frequencies() override {
         return std::nullopt;
     }
+
+    std::optional<RawMemoryInfo> collect_memory() override { return query_memory_info(); }
+
+    std::optional<RawSwapInfo> collect_swap() override { return query_swap_info(); }
 
 private:
     WindowsLoadAverageSampler load_sampler_;

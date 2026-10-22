@@ -41,6 +41,10 @@ describe('MonitorView 资源监控页（三种快照状态）', () => {
     expect(wrapper.find('[role="progressbar"]').attributes('aria-valuenow')).toBe('19')
     // 内存 / 磁盘 / 网络按可用性渲染真实数据
     expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
+    expect(wrapper.find('[data-test="monitor-memory-meta"]').text()).toBe('16.0 GiB / 32.0 GiB')
+    expect(wrapper.find('[data-test="monitor-memory-available"]').text()).toBe('16.0 GiB')
+    expect(wrapper.find('[data-test="monitor-memory-cached"]').text()).toBe('8.0 GiB')
+    expect(wrapper.find('[data-test="monitor-memory-buffers"]').text()).toBe('256.0 MiB')
     expect(wrapper.find('[data-test="monitor-disk"]').text()).toContain('/data')
     expect(wrapper.find('[data-test="monitor-disk"]').text()).toContain('25.0%')
     expect(wrapper.find('[data-test="monitor-network"]').text()).toContain('eth0')
@@ -51,17 +55,26 @@ describe('MonitorView 资源监控页（三种快照状态）', () => {
   it('部分不可用：不可用指标显示明确空态（不得显示 0），其余真实数据照常渲染', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       cpuUsageRatio: null,
-      metrics: { 'cpu.total': { available: false, reason: 'unsupported' } },
+      metrics: {
+        'cpu.total': { available: false, reason: 'unsupported' },
+        memory: { available: false, reason: 'disabled_by_config' },
+        swap: { available: false, reason: 'disabled_by_config' },
+      },
     }))
     const wrapper = await mountView()
 
     expect(wrapper.find('[data-test="monitor-cpu-unavailable"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="monitor-cpu-unavailable"]').text()).toContain('不可用')
     expect(wrapper.find('[data-test="monitor-cpu-unavailable"]').text()).toContain('unsupported')
+    // 内存 / 交换不可用：明确空态 + 原因，不渲染任何数值
     expect(wrapper.find('[data-test="monitor-memory-unavailable"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-memory-unavailable"]').text()).toContain('disabled_by_config')
+    expect(wrapper.find('[data-test="monitor-memory-value"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-memory-swap-unavailable"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-memory-swap-unavailable"]').text()).toContain('disabled_by_config')
     expect(wrapper.find('[data-test="monitor-disk-unavailable"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="monitor-network-unavailable"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="monitor-memory-unavailable"]').text()).toContain('该指标将在后续版本接入')
+    expect(wrapper.find('[data-test="monitor-disk"]').text()).toContain('该指标将在后续版本接入')
     // 系统信息仍可用
     expect(wrapper.find('[data-test="monitor-system"]').text()).toContain('trade-01')
     // 不得用 0 冒充 CPU 数值
@@ -373,5 +386,154 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.find('[data-test="monitor-temperature"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-frequency"]').exists()).toBe(true)
+  })
+})
+
+describe('MonitorView 内存与交换（#74，可用性驱动）', () => {
+  const GIB = 1024 ** 3
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('默认快照：内存使用率 / 已用/总量 / 可用 / 缓存 / 缓冲与交换区块均渲染真实数据', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
+    expect(wrapper.find('[data-test="monitor-memory-meta"]').text()).toBe('16.0 GiB / 32.0 GiB')
+    expect(wrapper.find('[data-test="monitor-memory-available"]').text()).toBe('16.0 GiB')
+    expect(wrapper.find('[data-test="monitor-memory-cached"]').text()).toBe('8.0 GiB')
+    expect(wrapper.find('[data-test="monitor-memory-buffers"]').text()).toBe('256.0 MiB')
+
+    const swap = wrapper.find('[data-test="monitor-memory-swap"]')
+    expect(swap.exists()).toBe(true)
+    expect(swap.text()).toContain('25.0%')
+    expect(swap.text()).toContain('2.0 GiB / 8.0 GiB')
+    expect(wrapper.find('[data-test="monitor-memory-swap-none"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-memory-swap-unavailable"]').exists()).toBe(false)
+  })
+
+  it('Windows 式内存（buffers_bytes=null）：不渲染缓冲行，缓存与可用行保留', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      memory: {
+        total_bytes: 32 * GIB,
+        available_bytes: 16 * GIB,
+        used_bytes: 16 * GIB,
+        used_ratio: 0.5,
+        cached_bytes: 4 * GIB,
+        buffers_bytes: null,
+      },
+    }))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-memory-cached"]').text()).toBe('4.0 GiB')
+    expect(wrapper.find('[data-test="monitor-memory-buffers"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-memory-available"]').exists()).toBe(true)
+  })
+
+  it('缓存 / 缓冲均不可得（null）：两行都不渲染，不用 0 冒充', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      memory: {
+        total_bytes: 32 * GIB,
+        available_bytes: 16 * GIB,
+        used_bytes: 16 * GIB,
+        used_ratio: 0.5,
+        cached_bytes: null,
+        buffers_bytes: null,
+      },
+    }))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
+    expect(wrapper.find('[data-test="monitor-memory-cached"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-memory-buffers"]').exists()).toBe(false)
+  })
+
+  it('无交换分区（swap 可用且 total_bytes=0）：显示「无交换分区」，不显示 0%', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      swap: { total_bytes: 0, used_bytes: 0, used_ratio: null },
+    }))
+    const wrapper = await mountView()
+
+    const none = wrapper.find('[data-test="monitor-memory-swap-none"]')
+    expect(none.exists()).toBe(true)
+    expect(none.text()).toBe('无交换分区')
+    expect(wrapper.find('[data-test="monitor-memory-swap"]').exists()).toBe(false)
+    // 交换子区块不出现任何百分比数字
+    expect(wrapper.find('[data-test="monitor-swap"]').text()).not.toContain('%')
+  })
+
+  it('交换不可用（无交换分区 → unsupported）：显示「不可用」+ 明确无交换文案，不渲染 total=0 对象', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      swap: { total_bytes: 0, used_bytes: 0, used_ratio: null },
+      metrics: { swap: { available: false, reason: 'unsupported' } },
+    }))
+    const wrapper = await mountView()
+
+    const unavailable = wrapper.find('[data-test="monitor-memory-swap-unavailable"]')
+    expect(unavailable.exists()).toBe(true)
+    expect(unavailable.text()).toContain('不可用')
+    // 无交换是平台事实而非故障：给出明确文案，而不是把裸 reason 丢给用户
+    expect(unavailable.text()).toContain('本机无交换分区/页面文件')
+    expect(wrapper.find('[data-test="monitor-memory-swap"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-memory-swap-none"]').exists()).toBe(false)
+  })
+
+  it('交换可用但本帧对象缺失（能力粘性 / 未采集）：显示「暂无数据」而不是「不可用」', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ swap: null }))
+    const wrapper = await mountView()
+
+    const empty = wrapper.find('[data-test="monitor-memory-swap-empty"]')
+    expect(empty.exists()).toBe(true)
+    expect(empty.text()).toContain('暂无数据')
+    expect(wrapper.find('[data-test="monitor-memory-swap-unavailable"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-memory-swap"]').exists()).toBe(false)
+  })
+
+  it('内存可用但本帧对象缺失：显示「暂无数据」空态（不是不可用），交换仍独立渲染', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ memory: null }))
+    const wrapper = await mountView()
+
+    const empty = wrapper.find('[data-test="monitor-memory-empty"]')
+    expect(empty.exists()).toBe(true)
+    expect(empty.text()).toContain('暂无数据')
+    expect(wrapper.find('[data-test="monitor-memory-value"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-memory-unavailable"]').exists()).toBe(false)
+    // 交换可用性独立于内存：仍渲染真实数值
+    expect(wrapper.find('[data-test="monitor-memory-swap"]').exists()).toBe(true)
+  })
+
+  it('内存不可用但 payload 残留数据：按可用性显示不可用，不渲染陈旧数字', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      metrics: { memory: { available: false, reason: 'collect_failed' } },
+    }))
+    const wrapper = await mountView()
+
+    const unavailable = wrapper.find('[data-test="monitor-memory-unavailable"]')
+    expect(unavailable.exists()).toBe(true)
+    expect(unavailable.text()).toContain('采集失败，暂不可用')
+    expect(wrapper.find('[data-test="monitor-memory-value"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-memory"]').text()).not.toContain('50.0%')
+    expect(wrapper.find('[data-test="monitor-memory"]').text()).not.toContain('16.0 GiB')
+  })
+
+  it('内存比率由 used/total 派生（不信任 payload 的 used_ratio，保证字节与百分比一致）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      memory: {
+        total_bytes: 32 * GIB,
+        available_bytes: 16 * GIB,
+        used_bytes: 16 * GIB,
+        used_ratio: null,
+        cached_bytes: null,
+        buffers_bytes: null,
+      },
+    }))
+    const wrapper = await mountView()
+
+    // 可用且字节有效时按唯一口径派生 50%，不因发送端比率缺失显示「不可用」
+    expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
+    expect(wrapper.find('[data-test="monitor-memory-meta"]').text()).toBe('16.0 GiB / 32.0 GiB')
   })
 })

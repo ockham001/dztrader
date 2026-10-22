@@ -159,6 +159,7 @@ private:
         }
         refresh_load_average();
         refresh_sensor_metrics();
+        refresh_memory_metrics();
 
         // 事件通道由 master 创建（open_only）；reader/writer 名 = 进程名，
         // 与 master 的 register_subscriber(entry.name) / make_subscriber_name 一致。
@@ -339,10 +340,42 @@ private:
         refresh_core_frequencies();
     }
 
+    /// 采样一次内存与交换（#74；瞬时 gauge，能力标记粘性，配置组可关闭）。
+    /// 本帧读不到只清数值、不改写可用性；无交换/无页面文件由 `swap_supported` 区分
+    /// （快照可用性映射为 unsupported；契约 sysmon §2.4、§2.5）。
+    void refresh_memory_metrics() {
+        if (!group_enabled(platform::SYSMON_GROUP_MEMORY)) {
+            memory_metrics_.disabled = true;
+            memory_metrics_.memory = std::nullopt;
+        } else {
+            memory_metrics_.disabled = false;
+            const auto memory = collector_->collect_memory();
+            memory_metrics_.memory = memory;
+            if (memory.has_value()) {
+                memory_metrics_.collected = true;
+            }
+        }
+        if (!group_enabled(platform::SYSMON_GROUP_SWAP)) {
+            memory_metrics_.swap_disabled = true;
+            memory_metrics_.swap = std::nullopt;
+        } else {
+            memory_metrics_.swap_disabled = false;
+            const auto swap = collector_->collect_swap();
+            memory_metrics_.swap = swap;
+            if (swap.has_value()) {
+                memory_metrics_.swap_collected = true;
+                // 以本帧读数更新「确有交换」事实：运行时移除交换后可用性随之变为
+                // unsupported（契约 sysmon §2.5）；本帧读取失败（nullopt）保持上次能力标记。
+                memory_metrics_.swap_supported = swap->total_bytes > 0;
+            }
+        }
+    }
+
     /// 采样一次 CPU 计数器并更新使用率/每核/饱和标记/速率/缺口标记。
     void measure_once() {
         const auto now = std::chrono::steady_clock::now();
         refresh_sensor_metrics();  // 温度/频率是独立 gauge，CPU 采集失败也照样刷新
+        refresh_memory_metrics();  // 内存/交换同为独立 gauge，与 CPU 采集成败无关
         auto current = collector_->collect_cpu_times();
         if (!current.has_value()) {
             ++missed_ticks_;     // 采集失败：跳过本次计量并记缺口（契约 sysmon §2.7）
@@ -451,11 +484,11 @@ private:
         }
     }
 
-    /// 推送实时快照（RTN_SYSMON_SNAPSHOT，无 instance_id，仅本次系统信息/CPU/温度）。
+    /// 推送实时快照（RTN_SYSMON_SNAPSHOT，无 instance_id，含系统信息/CPU/温度/内存）。
     void push_snapshot() noexcept {
         try {
             const auto snapshot =
-                build_snapshot(name_, system_info_, metrics_, temperature_metrics_,
+                build_snapshot(name_, system_info_, metrics_, temperature_metrics_, memory_metrics_,
                                config_.sampling.measure_interval_ms, last_sample_unix_ms_,
                                missed_ticks_, wall_clock_unix_ms());
             (void)platform::write_ext_json(*event_writer_, DZ_FRAME_RTN_SYSMON_SNAPSHOT, snapshot);
@@ -626,6 +659,7 @@ private:
     std::chrono::steady_clock::time_point prev_sample_time_{};
     CpuMetrics metrics_;
     TemperatureMetrics temperature_metrics_;
+    MemorySwapMetrics memory_metrics_;
     CoreSaturationTracker saturation_tracker_;
     int64_t last_sample_unix_ms_ = 0;
     uint64_t missed_ticks_ = 0;

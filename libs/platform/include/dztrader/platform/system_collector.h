@@ -93,6 +93,28 @@ struct RawCoreFrequency {
     uint32_t mhz = 0;
 };
 
+/// 原始内存读数（契约 sysmon §2.4；瞬时 gauge，不做差值/聚合）。
+///
+/// 两平台共用 `available` 口径（Windows 上"空闲"与"可用"是同一个量，
+/// 即 `PhysicalAvailable`；不得改用 Linux 的 `MemFree` 语义）。
+struct RawMemoryInfo {
+    uint64_t total_bytes = 0;      ///< 物理内存总量（> 0；为 0 视为采集失败）
+    uint64_t available_bytes = 0;  ///< 可用内存总量（无交换即可分配的估计值）
+    /// 可回收文件页缓存（Linux `Cached + SReclaimable`；Windows `SystemCache`）。
+    /// std::nullopt = 本平台不提供/本次未读到。
+    std::optional<uint64_t> cached_bytes;
+    /// 内核文件系统元数据缓存（仅 Linux `Buffers`）；Windows 恒为 std::nullopt。
+    std::optional<uint64_t> buffers_bytes;
+};
+
+/// 原始交换分区/页文件读数（契约 sysmon §2.4）。
+struct RawSwapInfo {
+    /// 交换总量；0 = 本机无交换分区/无页面文件（采集本身成功，不是失败）。
+    uint64_t total_bytes = 0;
+    /// 未使用的交换量；total_bytes = 0 时为 0。
+    uint64_t free_bytes = 0;
+};
+
 /// 系统指标采集接缝。
 ///
 /// 唯一实现入口：`make_system_collector()`（按编译平台返回对应实现）。
@@ -124,6 +146,15 @@ public:
     /// @return 本平台不支持 / 无 cpufreq / 全部读取失败返回 std::nullopt；
     ///         至少一个核可读时返回非空数组（读取失败的单个核不进入数组）。
     virtual std::optional<std::vector<RawCoreFrequency>> collect_core_frequencies() = 0;
+
+    /// 采集内存读数（瞬时 gauge；契约 sysmon §2.4）。
+    /// @return 读取失败/总量不可用返回 std::nullopt；成功时 total_bytes > 0。
+    virtual std::optional<RawMemoryInfo> collect_memory() = 0;
+
+    /// 采集交换分区/页文件读数（瞬时 gauge；契约 sysmon §2.4）。
+    /// @return 读取失败返回 std::nullopt；本机无交换时返回 total_bytes = 0 的读数
+    ///         （"无交换"不是采集失败，由上层可用性映射标记 unsupported）。
+    virtual std::optional<RawSwapInfo> collect_swap() = 0;
 
 protected:
     SystemCollector() = default;

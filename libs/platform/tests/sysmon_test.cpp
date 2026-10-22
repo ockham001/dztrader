@@ -184,6 +184,33 @@ TEST(SysmonSnapshotJsonTest, DefaultSnapshotShape) {
     EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
 }
 
+// 契约 sysmon §2.4（#74）：内存 cached_bytes / buffers_bytes 允许 null（本平台不提供/
+// 本帧未读到）或非负整数且不超过 total_bytes。
+TEST(SysmonSnapshotValidateTest, AcceptsMemoryWithCacheFields) {
+    auto snap = make_snapshot();
+    snap.memory = SysmonMemoryInfo{.total_bytes = 1024,
+                                   .available_bytes = 512,
+                                   .used_bytes = 512,
+                                   .used_ratio = 0.5,
+                                   .cached_bytes = 256,
+                                   .buffers_bytes = 64};
+    snap.availability.metrics["memory"].available = true;
+    snap.availability.metrics["memory"].reason = std::nullopt;
+    const auto j = nlohmann::json(snap);
+    EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
+
+    // Windows：buffers 不提供（null），cached 仍可得。
+    auto windows_like = j;
+    windows_like["memory"]["buffers_bytes"] = nullptr;
+    EXPECT_EQ(SysmonSnapshot::validate(windows_like), std::nullopt);
+
+    // 两者都可为 null（平台不提供）。
+    auto no_cache = j;
+    no_cache["memory"]["cached_bytes"] = nullptr;
+    no_cache["memory"]["buffers_bytes"] = nullptr;
+    EXPECT_EQ(SysmonSnapshot::validate(no_cache), std::nullopt);
+}
+
 // 帧编解码：写入无 instance_id 快照帧 → 读出 → 解析 → 校验通过。
 TEST_F(SysmonFrameTest, SnapshotFrameRoundTrip) {
     const auto snap = make_snapshot();
@@ -230,6 +257,20 @@ TEST(SysmonSnapshotValidateTest, RejectsInvalidPayloads) {
         auto snap = make_snapshot();
         auto j = nlohmann::json(snap);
         j["memory"] = {{"total_bytes", 100}, {"available_bytes", 40}, {"used_bytes", 50}};
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
+    {  // memory.cached_bytes 超过 total_bytes
+        auto snap = make_snapshot();
+        auto j = nlohmann::json(snap);
+        j["memory"] = {{"total_bytes", 100}, {"available_bytes", 40}, {"used_bytes", 60},
+                       {"used_ratio", 0.6},  {"cached_bytes", 101},   {"buffers_bytes", 0}};
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
+    {  // memory.buffers_bytes 为负数
+        auto snap = make_snapshot();
+        auto j = nlohmann::json(snap);
+        j["memory"] = {{"total_bytes", 100}, {"available_bytes", 40}, {"used_bytes", 60},
+                       {"used_ratio", 0.6},  {"cached_bytes", 0},     {"buffers_bytes", -1}};
         EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
     }
     {  // 不可用但缺 reason

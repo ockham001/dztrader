@@ -330,7 +330,23 @@ std::optional<std::string> validate_snapshot_memory(const json& memory) {
     if (used != total - available) {
         return err("memory", "used_bytes must equal total_bytes - available_bytes");
     }
-    return validate_optional_ratio(memory, "memory", "used_ratio");
+    if (auto e = validate_optional_ratio(memory, "memory", "used_ratio")) {
+        return e;
+    }
+    // cached_bytes / buffers_bytes（契约 sysmon §2.4）：缺失或 null 合法（本平台不提供）；
+    // 出现时须为非负整数且不大于 total_bytes。
+    for (const char* key : {"cached_bytes", "buffers_bytes"}) {
+        if (!memory.contains(key) || memory[key].is_null()) {
+            continue;
+        }
+        if (auto e = require_uint(memory, "memory", key)) {
+            return e;
+        }
+        if (memory[key].get<uint64_t>() > total) {
+            return err(std::string("memory.") + key, "must not exceed total_bytes");
+        }
+    }
+    return std::nullopt;
 }
 
 std::optional<std::string> validate_snapshot_swap(const json& swap) {

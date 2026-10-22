@@ -66,7 +66,9 @@ inline constexpr std::array<const char*, 13> SYSMON_METRIC_KEYS = {
 inline constexpr std::array<const char*, 6> SYSMON_CONFIG_SECTIONS = {
     "sampling", "disk", "network", "history", "realtime", "alerts"};
 
-/// 配置 `sampling.groups` 的 B 组指标键（契约 sysmon §3.1）：温度与每核频率。
+/// 配置 `sampling.groups` 的指标键（契约 sysmon §3.1）：A 组内存/交换 + B 组温度与每核频率。
+inline constexpr const char* SYSMON_GROUP_MEMORY = "memory";
+inline constexpr const char* SYSMON_GROUP_SWAP = "swap";
 inline constexpr const char* SYSMON_GROUP_TEMPERATURE = "temperature";
 inline constexpr const char* SYSMON_GROUP_CPU_FREQUENCY = "cpu_frequency";
 
@@ -155,17 +157,28 @@ struct SysmonCpuInfo {
                                                 interrupts_per_sec)
 };
 
-/// 内存。唯一口径：`used_bytes = total_bytes - available_bytes`。
+/// 内存。唯一口径：`used_bytes = total_bytes - available_bytes`（契约 sysmon §2.4）。
 struct SysmonMemoryInfo {
     uint64_t total_bytes = 0;
     uint64_t available_bytes = 0;
     uint64_t used_bytes = 0;
     std::optional<double> used_ratio;  ///< used_bytes / total_bytes；total=0 时 null
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
-        SysmonMemoryInfo, total_bytes, available_bytes, used_bytes, used_ratio)
+    /// 可回收文件页缓存（Linux `Cached + SReclaimable`；Windows `SystemCache`）；
+    /// null = 本平台不提供/本帧未读到。信息项，不参与 used 口径。
+    std::optional<uint64_t> cached_bytes;
+    /// 内核文件系统元数据缓存（仅 Linux `Buffers`）；Windows 恒为 null。
+    std::optional<uint64_t> buffers_bytes;
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonMemoryInfo,
+                                                total_bytes,
+                                                available_bytes,
+                                                used_bytes,
+                                                used_ratio,
+                                                cached_bytes,
+                                                buffers_bytes)
 };
 
-/// 交换分区/页文件。total_bytes=0 表示本机无交换（availability 标记不可用）。
+/// 交换分区/页文件（契约 sysmon §2.4）。total_bytes=0 表示本机无交换/无页面文件
+/// （availability 标记 unsupported）；Windows 口径为页面文件支撑的提交量。
 struct SysmonSwapInfo {
     uint64_t total_bytes = 0;
     uint64_t used_bytes = 0;

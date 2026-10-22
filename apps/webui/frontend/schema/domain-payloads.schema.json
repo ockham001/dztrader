@@ -264,7 +264,15 @@
         "total_bytes": { "type": "integer" },
         "available_bytes": { "type": "integer" },
         "used_bytes": { "type": "integer", "description": "唯一口径：total_bytes - available_bytes" },
-        "used_ratio": { "anyOf": [{ "type": "number" }, { "type": "null" }] }
+        "used_ratio": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "cached_bytes": {
+          "description": "可回收文件页缓存（Linux Cached+SReclaimable / Windows SystemCache）；null = 本平台不提供/本帧未读到",
+          "anyOf": [{ "type": "integer" }, { "type": "null" }]
+        },
+        "buffers_bytes": {
+          "description": "内核文件系统元数据缓存（Linux Buffers）；仅 Linux；Windows 恒 null",
+          "anyOf": [{ "type": "integer" }, { "type": "null" }]
+        }
       }
     },
     "SysmonSwapInfo": {

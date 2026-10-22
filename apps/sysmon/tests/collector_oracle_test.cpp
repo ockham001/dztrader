@@ -167,8 +167,8 @@ TEST(SystemCollectorOracleTest, SensorAvailabilityReflectsRealHostAndValidates) 
         cpu_metrics.core_frequencies = std::move(items);
     }
 
-    const auto snapshot = build_snapshot("dzsysmon", info, cpu_metrics, temperature_metrics, 1000,
-                                         0, 0, 1'800'000'000'000);
+    const auto snapshot = build_snapshot("dzsysmon", info, cpu_metrics, temperature_metrics, {},
+                                         1000, 0, 0, 1'800'000'000'000);
     // 可用性（能力标记）必须与采集层事实一致；无设备不是失败，只是不可用。
     EXPECT_EQ(snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE).available,
               temperature_metrics.collected);
@@ -197,6 +197,68 @@ TEST(SystemCollectorOracleTest, SensorAvailabilityReflectsRealHostAndValidates) 
         EXPECT_EQ(entry.reason.value(), "unsupported");
     }
     // 无论设备是否存在，快照都必须通过契约校验（报告不可用而不是产出坏帧）。
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+// #74 真机 oracle：内存/交换口径不变量（契约 sysmon §2.4）——两平台同一口径
+// （used = total - available、available ≤ total）；各分量非负由 Raw* 的 uint64_t 类型
+// 结构性保证，无需运行时断言。无交换不是失败（total_bytes = 0 + availability
+// unsupported），快照仍通过契约校验。
+TEST(SystemCollectorOracleTest, MemoryAndSwapInvariantsHoldOnRealMachine) {
+    const auto collector = platform::make_system_collector();
+    ASSERT_NE(collector, nullptr);
+
+    const auto memory = collector->collect_memory();
+    ASSERT_TRUE(memory.has_value()) << "collect_memory must work on a supported host";
+    EXPECT_GT(memory->total_bytes, 0U);
+    EXPECT_LE(memory->available_bytes, memory->total_bytes);
+    if (memory->cached_bytes.has_value()) {
+        EXPECT_LE(*memory->cached_bytes, memory->total_bytes);
+    }
+    if (memory->buffers_bytes.has_value()) {
+        EXPECT_LE(*memory->buffers_bytes, memory->total_bytes);
+    }
+#if defined(_WIN32)
+    // 契约 sysmon §2.4：Windows 提供 SystemCache 缓存，但不提供 buffers。
+    EXPECT_TRUE(memory->cached_bytes.has_value());
+    EXPECT_FALSE(memory->buffers_bytes.has_value());
+#elif defined(__linux__)
+    EXPECT_TRUE(memory->cached_bytes.has_value());
+    EXPECT_TRUE(memory->buffers_bytes.has_value());
+#endif
+
+    // 无交换分区也是采集成功（total=0），不是读取失败。
+    const auto swap = collector->collect_swap();
+    ASSERT_TRUE(swap.has_value()) << "swap read must succeed even without swap space";
+    EXPECT_LE(swap->free_bytes, swap->total_bytes);
+
+    MemorySwapMetrics memory_metrics;
+    memory_metrics.collected = true;
+    memory_metrics.memory = memory;
+    memory_metrics.swap_collected = true;
+    memory_metrics.swap_supported = swap->total_bytes > 0;
+    memory_metrics.swap = swap;
+    const auto snapshot =
+        build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
+                       TemperatureMetrics{}, memory_metrics, 1000, 0, 0, 1'800'000'000'000);
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_MEMORY).available);
+    ASSERT_TRUE(snapshot.memory.has_value());
+    // 唯一口径：已用 = 总量 − 可用，且各分量非负、可用 ≤ 总量。
+    EXPECT_EQ(snapshot.memory->total_bytes, memory->total_bytes);
+    EXPECT_EQ(snapshot.memory->used_bytes, memory->total_bytes - memory->available_bytes);
+    EXPECT_LE(snapshot.memory->available_bytes, snapshot.memory->total_bytes);
+    if (snapshot.memory->used_ratio.has_value()) {
+        EXPECT_GE(*snapshot.memory->used_ratio, 0.0);
+        EXPECT_LE(*snapshot.memory->used_ratio, 1.0);
+    }
+    if (snapshot.swap.has_value()) {
+        EXPECT_LE(snapshot.swap->used_bytes, snapshot.swap->total_bytes);
+        if (snapshot.swap->used_ratio.has_value()) {
+            EXPECT_GE(*snapshot.swap->used_ratio, 0.0);
+            EXPECT_LE(*snapshot.swap->used_ratio, 1.0);
+        }
+    }
+    // 快照形状/校验必须与契约一致（含无交换机器的 total=0 对象）。
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 

@@ -26,22 +26,22 @@ const connStatus = computed<{ text: string; dotClass: string }>(() => {
   }
 })
 
-// 顶栏 CPU 徽章：契约 sysmon 实时快照（固定实例 dzsysmon）。
+// 顶栏资源徽章（CPU / 内存）：契约 sysmon 实时快照（固定实例 dzsysmon）。
 // 首次挂载经 REST 补拉镜像，之后只由 WS 推送刷新 —— 刷新基线由发送方
 // realtime.push_interval_sec（默认 5s）决定，前端不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
 onMounted(() => { void sysmon.init() })
 
-const CPU_WARN_RATIO = 0.7
-const CPU_DANGER_RATIO = 0.9
+const RESOURCE_WARN_RATIO = 0.7
+const RESOURCE_DANGER_RATIO = 0.9
 
-interface CpuBadge {
+interface ResourceBadge {
   text: string
   stateClass: string
   title: string
 }
 
-const cpuBadge = computed<CpuBadge>(() => {
+const cpuBadge = computed<ResourceBadge>(() => {
   const entry = sysmon.availabilityOf('cpu.total')
   if (!sysmon.snapshot) {
     // 快照尚未到达：显示等待态，不得用假数字占位
@@ -60,12 +60,40 @@ const cpuBadge = computed<CpuBadge>(() => {
     }
   }
   const percent = Math.round(sysmon.cpuUsageRatio * 100)
-  const stateClass = sysmon.cpuUsageRatio >= CPU_DANGER_RATIO
+  const stateClass = sysmon.cpuUsageRatio >= RESOURCE_DANGER_RATIO
     ? 'topbar__resource--danger'
-    : sysmon.cpuUsageRatio >= CPU_WARN_RATIO
+    : sysmon.cpuUsageRatio >= RESOURCE_WARN_RATIO
       ? 'topbar__resource--warn'
       : 'topbar__resource--normal'
   return { text: `${percent}%`, stateClass, title: `CPU 使用率 ${percent}%` }
+})
+
+// 内存徽章与 CPU 徽章同构：等待 / 不可用 / 百分比 + 阈值状态色；比率取自 store 净化后的
+// memoryInfo（可用性由 availability.metrics.memory 承载），0 不是合法占位（契约 sysmon §2.4）。
+const memBadge = computed<ResourceBadge>(() => {
+  const entry = sysmon.availabilityOf('memory')
+  if (!sysmon.snapshot) {
+    return {
+      text: '—',
+      stateClass: 'topbar__resource--unavailable',
+      title: '内存使用率（等待 dzsysmon 快照）',
+    }
+  }
+  const ratio = sysmon.memoryInfo?.used_ratio ?? null
+  if (!entry || !entry.available || ratio === null) {
+    return {
+      text: '不可用',
+      stateClass: 'topbar__resource--unavailable',
+      title: entry?.reason ? `内存使用率不可用: ${entry.reason}` : '内存使用率不可用',
+    }
+  }
+  const percent = Math.round(ratio * 100)
+  const stateClass = ratio >= RESOURCE_DANGER_RATIO
+    ? 'topbar__resource--danger'
+    : ratio >= RESOURCE_WARN_RATIO
+      ? 'topbar__resource--warn'
+      : 'topbar__resource--normal'
+  return { text: `${percent}%`, stateClass, title: `内存使用率 ${percent}%` }
 })
 </script>
 
@@ -102,8 +130,8 @@ const cpuBadge = computed<CpuBadge>(() => {
           </span>
         </span>
         <span class="topbar__resource-divider"></span>
-        <!-- 资源徽章：仅保留已接入实时快照的 CPU；内存/磁盘/NTP 假数字已删除，
-             随对应指标票（#74/#75）补回真实徽章 -->
+        <!-- 资源徽章：CPU（#71）/ 内存（#74）已接入实时快照；磁盘 / NTP 假数字已删除，
+             随对应指标票（#75）补回真实徽章 -->
         <span
           class="topbar__resource topbar__resource--cpu"
           :class="cpuBadge.stateClass"
@@ -112,6 +140,15 @@ const cpuBadge = computed<CpuBadge>(() => {
         >
           <span class="res-label">CPU</span>
           <span class="res-value">{{ cpuBadge.text }}</span>
+        </span>
+        <span
+          class="topbar__resource topbar__resource--mem"
+          :class="memBadge.stateClass"
+          id="resMem"
+          :title="memBadge.title"
+        >
+          <span class="res-label">MEM</span>
+          <span class="res-value">{{ memBadge.text }}</span>
         </span>
       </div>
     </div>

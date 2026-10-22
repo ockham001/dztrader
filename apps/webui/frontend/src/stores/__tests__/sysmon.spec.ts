@@ -83,7 +83,10 @@ describe('useSysmonStore', () => {
     store.applySnapshot(makeSysmonSnapshot())
 
     expect(store.availabilityOf('system')).toEqual({ available: true })
-    expect(store.availabilityOf('memory')).toEqual({ available: false, reason: 'not_implemented' })
+    // #74 起后端每帧尝试采集内存 / 交换：默认夹具二者可用
+    expect(store.availabilityOf('memory')).toEqual({ available: true })
+    expect(store.availabilityOf('swap')).toEqual({ available: true })
+    expect(store.availabilityOf('volumes')).toEqual({ available: false, reason: 'not_implemented' })
     expect(store.availabilityOf('not-a-metric')).toBeUndefined()
   })
 })
@@ -292,5 +295,176 @@ describe('useSysmonStore 温度与每核频率 computed（#73，可用性驱动�
     // 可用但快照为 null：空数组（视图显示「暂无数据」）
     store.applySnapshot(makeSysmonSnapshot({ sensorData: true, coreFrequencies: null }))
     expect(store.coreFrequencies).toEqual([])
+  })
+})
+
+describe('useSysmonStore 内存与交换 computed（#74，可用性驱动）', () => {
+  const GIB = 1024 ** 3
+  const MIB = 1024 ** 2
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('无快照时 memoryInfo / swapInfo 均为 null（不得伪造 0）', () => {
+    const store = useSysmonStore()
+
+    expect(store.memoryInfo).toBeNull()
+    expect(store.swapInfo).toBeNull()
+  })
+
+  it('默认快照（#74 形状）返回净化后的内存 / 交换对象', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot())
+
+    expect(store.memoryInfo).toEqual({
+      total_bytes: 32 * GIB,
+      available_bytes: 16 * GIB,
+      used_bytes: 16 * GIB,
+      used_ratio: 0.5,
+      cached_bytes: 8 * GIB,
+      buffers_bytes: 256 * MIB,
+    })
+    expect(store.swapInfo).toEqual({
+      total_bytes: 8 * GIB,
+      used_bytes: 2 * GIB,
+      used_ratio: 0.25,
+    })
+  })
+
+  it('memory / swap 不可用时返回 null（不渲染陈旧数据）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      metrics: {
+        memory: { available: false, reason: 'collect_failed' },
+        swap: { available: false, reason: 'unsupported' },
+      },
+    }))
+
+    expect(store.memoryInfo).toBeNull()
+    expect(store.swapInfo).toBeNull()
+  })
+
+  it('可用但本帧 payload 为 null（能力粘性 / 未采集）时返回 null，视图显示「暂无数据」', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({ memory: null, swap: null }))
+
+    expect(store.availabilityOf('memory')).toEqual({ available: true })
+    expect(store.memoryInfo).toBeNull()
+    expect(store.swapInfo).toBeNull()
+  })
+
+  it('内存核心口径防御：NaN/Infinity/负数/总量 0/可用 > 总量 → null，且 used 按唯一口径重算', () => {
+    const store = useSysmonStore()
+
+    store.applySnapshot(makeSysmonSnapshot({
+      memory: { total_bytes: Number.NaN, available_bytes: 0, used_bytes: 0, used_ratio: null, cached_bytes: null, buffers_bytes: null },
+    }))
+    expect(store.memoryInfo).toBeNull()
+
+    store.applySnapshot(makeSysmonSnapshot({
+      memory: { total_bytes: 32 * GIB, available_bytes: Number.POSITIVE_INFINITY, used_bytes: 0, used_ratio: null, cached_bytes: null, buffers_bytes: null },
+    }))
+    expect(store.memoryInfo).toBeNull()
+
+    store.applySnapshot(makeSysmonSnapshot({
+      memory: { total_bytes: 32 * GIB, available_bytes: -1, used_bytes: 0, used_ratio: null, cached_bytes: null, buffers_bytes: null },
+    }))
+    expect(store.memoryInfo).toBeNull()
+
+    // 总量 0 视为本次采集失败（契约 sysmon §2.4），不得按「无内存」渲染
+    store.applySnapshot(makeSysmonSnapshot({
+      memory: { total_bytes: 0, available_bytes: 0, used_bytes: 0, used_ratio: null, cached_bytes: null, buffers_bytes: null },
+    }))
+    expect(store.memoryInfo).toBeNull()
+
+    store.applySnapshot(makeSysmonSnapshot({
+      memory: { total_bytes: 16 * GIB, available_bytes: 32 * GIB, used_bytes: 0, used_ratio: 0.5, cached_bytes: null, buffers_bytes: null },
+    }))
+    expect(store.memoryInfo).toBeNull()
+
+    // used_bytes 与唯一口径不一致时以 total − available 为准（不信任发送端的 used）
+    store.applySnapshot(makeSysmonSnapshot({
+      memory: { total_bytes: 32 * GIB, available_bytes: 24 * GIB, used_bytes: 1, used_ratio: 0.25, cached_bytes: null, buffers_bytes: null },
+    }))
+    expect(store.memoryInfo).toEqual({
+      total_bytes: 32 * GIB,
+      available_bytes: 24 * GIB,
+      used_bytes: 8 * GIB,
+      used_ratio: 0.25,
+      cached_bytes: null,
+      buffers_bytes: null,
+    })
+  })
+
+  it('内存信息项防御：used_ratio 由 used/total 派生（不信任 payload），缓存与缓冲非法 → null', () => {
+    const store = useSysmonStore()
+    const base = {
+      total_bytes: 32 * GIB,
+      available_bytes: 16 * GIB,
+      used_bytes: 16 * GIB,
+    }
+
+    // payload 比率与字节口径矛盾时按 used/total 派生（契约 sysmon §2.4），保证两者一致。
+    store.applySnapshot(makeSysmonSnapshot({
+      memory: { ...base, used_ratio: 1.5, cached_bytes: -1, buffers_bytes: Number.NaN },
+    }))
+    expect(store.memoryInfo).toEqual({
+      ...base,
+      used_ratio: 0.5,
+      cached_bytes: null,
+      buffers_bytes: null,
+    })
+
+    store.applySnapshot(makeSysmonSnapshot({
+      memory: { ...base, used_ratio: -0.1, cached_bytes: 1.5, buffers_bytes: Number.POSITIVE_INFINITY },
+    }))
+    expect(store.memoryInfo).toEqual({
+      ...base,
+      used_ratio: 0.5,
+      cached_bytes: null,
+      buffers_bytes: null,
+    })
+
+    // Windows 式：缓存有值、缓冲恒 null（本平台不提供，不是 0）
+    store.applySnapshot(makeSysmonSnapshot({
+      memory: { ...base, used_ratio: 0.5, cached_bytes: 4 * GIB, buffers_bytes: null },
+    }))
+    expect(store.memoryInfo?.cached_bytes).toBe(4 * GIB)
+    expect(store.memoryInfo?.buffers_bytes).toBeNull()
+  })
+
+  it('交换防御：total=0 仍返回对象（无交换分区），used 钳制到 total，非法数值 → null', () => {
+    const store = useSysmonStore()
+
+    // 无交换分区：payload 为 total=0 的对象，比率为 null（契约 sysmon §2.4）
+    store.applySnapshot(makeSysmonSnapshot({ swap: { total_bytes: 0, used_bytes: 0, used_ratio: null } }))
+    expect(store.swapInfo).toEqual({ total_bytes: 0, used_bytes: 0, used_ratio: null })
+
+    // 发送端比率与 total=0 矛盾时按契约置 null
+    store.applySnapshot(makeSysmonSnapshot({ swap: { total_bytes: 0, used_bytes: 0, used_ratio: 0.5 } }))
+    expect(store.swapInfo).toEqual({ total_bytes: 0, used_bytes: 0, used_ratio: null })
+
+    // used 超过 total：钳制到 total（不得出现已用 > 总量），比率按钳制后 used/total 派生
+    store.applySnapshot(makeSysmonSnapshot({
+      swap: { total_bytes: 8 * GIB, used_bytes: 32 * GIB, used_ratio: 1.5 },
+    }))
+    expect(store.swapInfo).toEqual({ total_bytes: 8 * GIB, used_bytes: 8 * GIB, used_ratio: 1 })
+
+    // payload 比率与字节口径矛盾时按 used/total 派生（不信任 payload）
+    store.applySnapshot(makeSysmonSnapshot({
+      swap: { total_bytes: 8 * GIB, used_bytes: 2 * GIB, used_ratio: 0.9 },
+    }))
+    expect(store.swapInfo).toEqual({ total_bytes: 8 * GIB, used_bytes: 2 * GIB, used_ratio: 0.25 })
+
+    for (const swap of [
+      { total_bytes: Number.NaN, used_bytes: 0, used_ratio: null },
+      { total_bytes: 8 * GIB, used_bytes: -1, used_ratio: 0.25 },
+      { total_bytes: 8 * GIB, used_bytes: Number.POSITIVE_INFINITY, used_ratio: 0.25 },
+    ]) {
+      store.applySnapshot(makeSysmonSnapshot({ swap }))
+      expect(store.swapInfo).toBeNull()
+    }
   })
 })

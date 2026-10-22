@@ -24,7 +24,7 @@
 
 ## 2. 快照（RTN_SYSMON_SNAPSHOT）
 
-**语义**：推送当前实时快照。当前版本（#73）填系统信息与 CPU 区块（总量、每核与饱和标记、系统负载、上下文切换/中断速率、每核频率）、温度；其余域按本文档定稿的形状输出 `null` 并在可用性映射中标记不可用。已列出的指标域后续只填值、**不改形状**（新增指标类别属 additive 扩展，按总则 §11.3 同步契约、类型与前端 schema；消费方忽略未知字段）。
+**语义**：推送当前实时快照。当前版本（#74）填系统信息与 CPU 区块（总量、每核与饱和标记、系统负载、上下文切换/中断速率、每核频率）、温度、内存与交换；其余域按本文档定稿的形状输出 `null` 并在可用性映射中标记不可用。已列出的指标域后续只填值、**不改形状**（新增指标类别属 additive 扩展，按总则 §11.3 同步契约、类型与前端 schema；消费方忽略未知字段）。
 
 **来源识别**：帧头无 `instance_id`（形态 4、发送方固定 `dzsysmon`），按总则 §5 在 payload 中显式携带 `source`。
 
@@ -41,8 +41,8 @@
 | `system` | object | 系统信息（见下） |
 | `cpu` | object | CPU 区块（见下） |
 | `temperature` | array \| null | 温度传感器读数；`null` = 本平台不提供/无传感器/不可用（见 §2.4、可用性映射） |
-| `memory` | object \| null | 内存；`null` = 本版本未采集/不可用（见可用性映射） |
-| `swap` | object \| null | 交换分区/页文件 |
+| `memory` | object \| null | 内存（见 §2.4）；`null` = 本帧未采集/不可用（见可用性映射） |
+| `swap` | object \| null | 交换分区/页文件（见 §2.4）；无交换时为 `total_bytes = 0` 的对象，读取失败可为 `null` |
 | `volumes` | array \| null | 卷容量 |
 | `disk_io` | array \| null | 每物理盘 I/O |
 | `network` | array \| null | 每网卡收发 |
@@ -93,10 +93,12 @@
 
 ### 2.4 其余指标域
 
-`memory`：`{total_bytes:int, available_bytes:int, used_bytes:int, used_ratio:number|null}`。
-**唯一口径：`used_bytes = total_bytes − available_bytes`**（不得使用"总量 − 空闲"）；`used_ratio = used_bytes / total_bytes`，`total_bytes = 0` 时为 `null`。
+`memory`：`{total_bytes:int, available_bytes:int, used_bytes:int, used_ratio:number|null, cached_bytes:int|null, buffers_bytes:int|null}`。
+**唯一口径：`used_bytes = total_bytes − available_bytes`**（不得使用"总量 − 空闲"）；`used_ratio = used_bytes / total_bytes`，`total_bytes = 0` 时为 `null`（总量为 0 视为本次采集失败，不产出该对象）。
+`cached_bytes` 为可回收文件页缓存（Linux `Cached + SReclaimable`；Windows `SystemCache`），`buffers_bytes` 为内核文件系统元数据缓存（仅 Linux `Buffers`；Windows 不提供，恒为 `null`）。两者是信息项，**不参与** `used_bytes` 口径，也不得用于反推可用量；字段为 `null` = 本平台不提供/本帧未读到。
+Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得与 Linux `MemFree` 混用：快照**不单列** `free`，`available_bytes` 在 Windows 即系统报告的可用物理内存。
 
-`swap`：`{total_bytes:int, used_bytes:int, used_ratio:number|null}`。无交换分区时 `total_bytes = 0` 且可用性映射标记不可用。
+`swap`：`{total_bytes:int, used_bytes:int, used_ratio:number|null}`。无交换分区/无页面文件时 `total_bytes = 0`、`used_bytes = 0`、`used_ratio = null`，可用性映射标记不可用；读取失败时该对象也可以为 `null`（见可用性映射的 `collect_failed`）。**Windows 口径**：总量 = 由页面文件支撑的提交上限（`CommitLimit − PhysicalTotal`），已用 = 物理内存之外已提交的量（`CommitTotal − PhysicalTotal`，钳制到 `[0, total]`）；语义是"页面文件支撑的虚拟内存"，不是原始页面文件大小。
 
 `volumes[]`：`{mount:string, total_bytes:int, used_bytes:int, used_ratio:number|null}`。卷级"不可读/无权限"当前不进数组；若后续票需要区分"无此卷"与"读不到"，以 additive 字段（如 `available`/`reason`）扩展并同步契约、类型与前端 schema。
 
@@ -130,7 +132,9 @@
 - `collect_failed` —— 本次采集失败（能力存在但读不到；下一次采样可能恢复）
 - `disabled_by_config` —— 该指标类别已被配置关闭（`sampling.groups` 中对应开关为 false）
 
-> 当前版本（#73）实现 `system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon）——无 cpufreq 时 `cpu.frequency` 为 `unsupported`，无 hwmon 传感器时为 `temperature` = `no_sensor`；Windows 上两者不提供（默认配置关闭对应 B 组开关，故为 `disabled_by_config`；用户显式开启后采集器恒报 `unsupported`），也不提供整体频率。其余键固定为 `available=false` + `reason="not_implemented"`，对应域输出 `null` 或空数组。
+> 当前版本（#74）实现 `system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`memory`、`swap`；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon）——无 cpufreq 时 `cpu.frequency` 为 `unsupported`，无 hwmon 传感器时为 `temperature` = `no_sensor`；Windows 上两者不提供（默认配置关闭对应 B 组开关，故为 `disabled_by_config`；用户显式开启后采集器恒报 `unsupported`），也不提供整体频率。无交换分区/无页面文件的机器上 `swap` 为 `unsupported`。其余键固定为 `available=false` + `reason="not_implemented"`，对应域输出 `null` 或空数组。
+>
+> `memory` / `swap` 的可用性同为**能力粘性**：一次成功读到后可用性保持 `true`；`swap` 还须确认本机确有交换/页面文件（`total_bytes > 0`），否则为 `available=false` + `reason="unsupported"` 且 payload 输出 `total_bytes=0` 的对象。此后单帧读取失败只把对应域置 `null`，不改写可用性。配置关闭 `sampling.groups.memory` / `sampling.groups.swap` 时优先输出 `available=false` + `reason="disabled_by_config"`，对应域为 `null`；前端内存/交换区块按可用性显示明确空态（不显示 0）。
 >
 > `cpu.cores` / `cpu.load_average` / `cpu.context_switches` 的可用性表示**能力**（不是本帧数值是否就绪）：能力一旦确认，可用性为粘性 `true`，此后的采样失败只把数值置 `null`，不改写可用性。能力从未确认或平台不支持时可为 `available=false` + `reason="collect_failed"`（平台不支持也可用 `unsupported`；当前版本无法区分能力缺失与暂时失败，统一用 `collect_failed`；`reason` 为自由文案，本版本新增建议取值 `collect_failed`）。
 >
@@ -168,8 +172,15 @@
     {"sensor": "coretemp#hwmon3:Package id 0", "celsius": 45.5},
     {"sensor": "coretemp#hwmon3:Core 0", "celsius": 44.0}
   ],
-  "memory": null,
-  "swap": null,
+  "memory": {
+    "total_bytes": 34359738368,
+    "available_bytes": 17179869184,
+    "used_bytes": 17179869184,
+    "used_ratio": 0.5,
+    "cached_bytes": 8589934592,
+    "buffers_bytes": 268435456
+  },
+  "swap": {"total_bytes": 8589934592, "used_bytes": 2147483648, "used_ratio": 0.25},
   "volumes": null,
   "disk_io": null,
   "network": null,
@@ -183,8 +194,8 @@
       "cpu.load_average": {"available": true},
       "cpu.context_switches": {"available": true},
       "cpu.frequency": {"available": true},
-      "memory": {"available": false, "reason": "not_implemented"},
-      "swap": {"available": false, "reason": "not_implemented"},
+      "memory": {"available": true},
+      "swap": {"available": true},
       "volumes": {"available": false, "reason": "not_implemented"},
       "disk_io": {"available": false, "reason": "not_implemented"},
       "network": {"available": false, "reason": "not_implemented"},
@@ -209,6 +220,7 @@
 - Windows >64 逻辑核的机器上每核序列可能不可用（处理器组限制）：此时 `cpu.cores` 标记不可用、中断累计计数输出 `null`；不得用组内数据冒充全系统每核序列。
 - **本帧数值不得沿用上一帧**：某项能力可用但本帧数值未就绪或采集失败时，对应字段输出 `null`——每核序列整体未采到时 `cpu.cores` 保留已知核 index 条目、`usage_ratio` 全部 `null`、`saturated` 全部 `false`（从未获得过序列时 `cpu.cores` / `saturated_cores` 为空数组）；`availability` 的能力标记保持粘性，消费方据此显示"不可用"而不是旧数据。单个核的计数器不可用时该核 `usage_ratio=null`，不改变饱和判定的连续计数。
 - **温度 / 每核频率采集语义**：两者都是瞬时 gauge，不做差值或聚合（温度单位为摄氏度，频率四舍五入到整数 MHz）；传感器集合与核集合可在帧间变化，按本次读数输出，不沿用上一帧。读取失败的单个传感器/核不进入数组；能力可用但本帧一个都没读到时输出 `null`。配置 `sampling.groups.temperature=false` / `sampling.groups.cpu_frequency=false` 时跳过采集，可用性为 `disabled_by_config`、数值 `null`。Windows 不提供温度与每核频率（恒 `null`），也不提供整体频率。
+- **内存 / 交换采集语义**：两者都是瞬时 gauge，每次计量刷新，不做差值或聚合，不沿用上一帧。Linux 读 `/proc/meminfo`（`MemTotal`/`MemAvailable`/`Buffers`/`Cached`/`SReclaimable`/`SwapTotal`/`SwapFree`）；`MemAvailable` 缺失、为 0 或大于总量时按 `MemFree + Buffers + Cached + SReclaimable` 回退并钳制到 `[0, total]`，异常与回退均记日志；回退也无法计算时本次内存采集失败（该域 `null`，可用性按能力粘性）。Windows 读 `GetPerformanceInfo`（`PhysicalTotal`/`PhysicalAvailable`/`SystemCache`/`CommitLimit`/`CommitTotal`）。
 - 采集失败（如 `/proc` 读取失败）跳过本次计量并累加 `sampling.missed_ticks`。
 
 ---
@@ -289,7 +301,7 @@
 ## 7. 校验（除总则 §8 外的特殊规则）
 
 - 快照中 `null` **仅允许**出现在本文档 §2 明确标注 `| null` 的位置；其余位置出现 `null` 为校验失败。
-- `used_bytes` 必须等于 `total_bytes − available_bytes`（`memory`）；`used_bytes ≤ total_bytes`（`memory`/`swap`/`volumes`）。
+- `used_bytes` 必须等于 `total_bytes − available_bytes`（`memory`）；`used_bytes ≤ total_bytes`（`memory`/`swap`/`volumes`）；`memory.cached_bytes` / `memory.buffers_bytes` 缺失或 `null` 合法，出现时须为非负整数且不大于 `total_bytes`。
 - 比率为 `[0,1]`；字节/计数为非负整数；`boot_time_unix_sec`/`uptime_sec` 非负。
 - `availability.metrics` 中 `available=false` 时 `reason` 必须存在且非空；`available=true` 时不得出现 `reason`。
 - 未知字段忽略（前向兼容）。

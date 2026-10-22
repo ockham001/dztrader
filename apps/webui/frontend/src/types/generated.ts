@@ -248,6 +248,10 @@ export interface SysmonMemoryInfo {
     /** 唯一口径：total_bytes - available_bytes */
     used_bytes: number
     used_ratio: number | null
+    /** 可回收文件页缓存（Linux Cached+SReclaimable / Windows SystemCache）；null = 本平台不提供/本帧未读到 */
+    cached_bytes?: number | null
+    /** 内核文件系统元数据缓存（Linux Buffers）；仅 Linux；Windows 恒 null */
+    buffers_bytes?: number | null
 }
 
 export interface SysmonSwapInfo {

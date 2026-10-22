@@ -1,6 +1,10 @@
 // 06-sysmon 采集层真机 oracle 测试：断言两平台实现从真实 OS 系统调用拿到的原始数据满足契约不变量。
 #include <dztrader/platform/system_collector.h>
 
+#if defined(__linux__)
+#include "system_collector_linux_internal.h"  // 内部解析接缝（MemAvailable 异常防御）
+#endif
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -8,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -316,5 +321,198 @@ TEST(SystemCollectorTest, CoreFrequenciesFollowContract) {
         << "per-core index must be unique";
 #endif
 }
+
+// #74 真机 oracle：内存读数必须满足契约 sysmon §2.4 的口径不变量（两平台同一口径）。
+TEST(SystemCollectorTest, MemoryInfoFollowsContract) {
+    const auto collector = make_system_collector();
+    ASSERT_NE(collector, nullptr);
+
+    const auto memory = collector->collect_memory();
+    ASSERT_TRUE(memory.has_value()) << "collect_memory must work on a supported host";
+    EXPECT_GT(memory->total_bytes, 0u);
+    EXPECT_LE(memory->available_bytes, memory->total_bytes);
+    if (memory->cached_bytes.has_value()) {
+        EXPECT_LE(*memory->cached_bytes, memory->total_bytes);
+    }
+    if (memory->buffers_bytes.has_value()) {
+        EXPECT_LE(*memory->buffers_bytes, memory->total_bytes);
+    }
+#if defined(_WIN32)
+    // Windows 提供 SystemCache 缓存，但不提供 buffers（契约 sysmon §2.4）。
+    EXPECT_TRUE(memory->cached_bytes.has_value());
+    EXPECT_FALSE(memory->buffers_bytes.has_value());
+#elif defined(__linux__)
+    EXPECT_TRUE(memory->cached_bytes.has_value());
+    EXPECT_TRUE(memory->buffers_bytes.has_value());
+#endif
+}
+
+// #74 真机 oracle：交换读取成功且 free ≤ total；无交换分区/页面文件的机器 total = 0
+// （采集成功，不是失败；由可用性映射标记 unsupported）。
+TEST(SystemCollectorTest, SwapInfoFollowsContract) {
+    const auto collector = make_system_collector();
+    ASSERT_NE(collector, nullptr);
+
+    const auto swap = collector->collect_swap();
+    ASSERT_TRUE(swap.has_value()) << "swap read must succeed even without swap space";
+    EXPECT_LE(swap->free_bytes, swap->total_bytes);
+    // 字节量是 kB/页的整数倍：total 与 free 之差必须能被 1024 整除（Linux；Windows 页大小更小）。
+#if defined(__linux__)
+    EXPECT_EQ(swap->total_bytes % 1024u, 0u);
+    EXPECT_EQ(swap->free_bytes % 1024u, 0u);
+#endif
+}
+
+#if defined(__linux__)
+namespace {
+
+using dztrader::platform::system_collector_linux_internal::MemAvailableFallback;
+using dztrader::platform::system_collector_linux_internal::normalize_memory;
+using dztrader::platform::system_collector_linux_internal::normalize_swap;
+using dztrader::platform::system_collector_linux_internal::parse_meminfo;
+
+/// 典型 `/proc/meminfo` 内容（单位 kB；行为契约 sysmon §2.4、§2.7）。
+constexpr std::string_view kNormalMeminfo =
+    "MemTotal:       32797152 kB\n"
+    "MemFree:         1000000 kB\n"
+    "MemAvailable:   16398576 kB\n"
+    "Buffers:          500000 kB\n"
+    "Cached:          8000000 kB\n"
+    "SReclaimable:     400000 kB\n"
+    "SwapTotal:       8388604 kB\n"
+    "SwapFree:        6291453 kB\n";
+
+TEST(MeminfoParserTest, ParsesAndNormalizesNormalValues) {
+    const auto values = parse_meminfo(kNormalMeminfo);
+    const auto normalized = normalize_memory(values);
+    ASSERT_TRUE(normalized.memory.has_value());
+    EXPECT_EQ(normalized.fallback, MemAvailableFallback::None);
+    EXPECT_EQ(normalized.memory->total_bytes, 32'797'152ULL * 1024);
+    EXPECT_EQ(normalized.memory->available_bytes, 16'398'576ULL * 1024);
+    // cached = Cached + SReclaimable（可回收页缓存口径）。
+    EXPECT_EQ(normalized.memory->cached_bytes.value_or(0), (8'000'000ULL + 400'000ULL) * 1024);
+    EXPECT_EQ(normalized.memory->buffers_bytes.value_or(0), 500'000ULL * 1024);
+
+    const auto swap = normalize_swap(values);
+    ASSERT_TRUE(swap.has_value());
+    EXPECT_EQ(swap->total_bytes, 8'388'604ULL * 1024);
+    EXPECT_EQ(swap->free_bytes, 6'291'453ULL * 1024);
+}
+
+TEST(MeminfoParserTest, MemAvailableZeroFallsBackAndClampsToTotal) {
+    // MemAvailable = 0 是异常值：回退到 free + buffers + cached + sreclaimable 并钳制。
+    const auto values = parse_meminfo(
+        "MemTotal:        1000 kB\n"
+        "MemFree:          100 kB\n"
+        "MemAvailable:       0 kB\n"
+        "Buffers:           50 kB\n"
+        "Cached:           200 kB\n"
+        "SReclaimable:      50 kB\n"
+        "SwapTotal:          0 kB\n"
+        "SwapFree:           0 kB\n");
+    const auto normalized = normalize_memory(values);
+    EXPECT_EQ(normalized.fallback, MemAvailableFallback::Zero);
+    ASSERT_TRUE(normalized.memory.has_value());
+    // 100 + 50 + 200 + 50 = 400 kB ≤ total。
+    EXPECT_EQ(normalized.memory->available_bytes, 400ULL * 1024);
+    EXPECT_LE(normalized.memory->available_bytes, normalized.memory->total_bytes);
+}
+
+TEST(MeminfoParserTest, MemAvailableAboveTotalFallsBackAndClamps) {
+    const auto values = parse_meminfo(
+        "MemTotal:        1000 kB\n"
+        "MemFree:          100 kB\n"
+        "MemAvailable:    4096 kB\n"
+        "Buffers:           50 kB\n"
+        "Cached:           200 kB\n"
+        "SwapTotal:          0 kB\n"
+        "SwapFree:           0 kB\n");
+    const auto normalized = normalize_memory(values);
+    EXPECT_EQ(normalized.fallback, MemAvailableFallback::AboveTotal);
+    ASSERT_TRUE(normalized.memory.has_value());
+    EXPECT_EQ(normalized.memory->available_bytes, 350ULL * 1024);
+    EXPECT_LE(normalized.memory->available_bytes, normalized.memory->total_bytes);
+}
+
+TEST(MeminfoParserTest, MissingMemAvailableUsesFallback) {
+    // 老内核无 MemAvailable 行：回退到可回收量之和并记日志（由采集层负责日志）。
+    const auto values = parse_meminfo(
+        "MemTotal:        1000 kB\n"
+        "MemFree:          100 kB\n"
+        "Buffers:           50 kB\n"
+        "Cached:           200 kB\n"
+        "SwapTotal:          0 kB\n"
+        "SwapFree:           0 kB\n");
+    const auto normalized = normalize_memory(values);
+    EXPECT_EQ(normalized.fallback, MemAvailableFallback::Missing);
+    ASSERT_TRUE(normalized.memory.has_value());
+    EXPECT_EQ(normalized.memory->available_bytes, 350ULL * 1024);
+}
+
+TEST(MeminfoParserTest, FallbackWithoutRequiredFieldsFailsSafely) {
+    // MemAvailable 异常且缺少回退所需字段：本次内存采集失败（不得拿 0 冒充）。
+    const auto values = parse_meminfo(
+        "MemTotal:        1000 kB\n"
+        "MemAvailable:       0 kB\n"
+        "MemFree:          100 kB\n");
+    const auto normalized = normalize_memory(values);
+    EXPECT_EQ(normalized.fallback, MemAvailableFallback::Zero);
+    EXPECT_EQ(normalized.memory, std::nullopt);
+}
+
+TEST(MeminfoParserTest, MissingOrZeroTotalFailsSafely) {
+    EXPECT_EQ(normalize_memory(parse_meminfo("MemFree: 100 kB\n")).memory, std::nullopt);
+    EXPECT_EQ(normalize_memory(parse_meminfo("MemTotal: 0 kB\n")).memory, std::nullopt);
+}
+
+TEST(MeminfoParserTest, CachedAndBuffersClampedToTotal) {
+    // 异常内容防御：cached/buffers 超过总量时钳制，保证快照校验不会失败。
+    const auto values = parse_meminfo(
+        "MemTotal:        1000 kB\n"
+        "MemAvailable:     500 kB\n"
+        "Buffers:         4096 kB\n"
+        "Cached:          8192 kB\n");
+    const auto normalized = normalize_memory(values);
+    ASSERT_TRUE(normalized.memory.has_value());
+    EXPECT_EQ(normalized.memory->cached_bytes.value_or(0), 1000ULL * 1024);
+    EXPECT_EQ(normalized.memory->buffers_bytes.value_or(0), 1000ULL * 1024);
+}
+
+TEST(MeminfoParserTest, MalformedLinesAreIgnored) {
+    // 非数字/无冒号/未知键不参与解析；同名字段以首次成功解析为准。
+    const auto values = parse_meminfo(
+        "garbage line without colon\n"
+        "MemTotal:       1000 kB\n"
+        "MemTotal:       9999 kB\n"
+        "MemAvailable:  500 kB\n"
+        "SwapTotal:     abc kB\n"
+        "SwapFree:       100 kB\n");
+    const auto normalized = normalize_memory(values);
+    ASSERT_TRUE(normalized.memory.has_value());
+    EXPECT_EQ(normalized.memory->total_bytes, 1000ULL * 1024);
+    EXPECT_EQ(normalized.memory->available_bytes, 500ULL * 1024);
+    // SwapTotal 非法 → 交换读取失败（std::nullopt），不得用 0 冒充"无交换"。
+    EXPECT_EQ(normalize_swap(values), std::nullopt);
+}
+
+TEST(MeminfoParserTest, SwapWithoutSwapSpaceIsZeroNotFailure) {
+    const auto values =
+        parse_meminfo("MemTotal: 1000 kB\nMemAvailable: 500 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n");
+    const auto swap = normalize_swap(values);
+    ASSERT_TRUE(swap.has_value());
+    EXPECT_EQ(swap->total_bytes, 0u);
+    EXPECT_EQ(swap->free_bytes, 0u);
+}
+
+TEST(MeminfoParserTest, SwapFreeAboveTotalIsClamped) {
+    const auto values = parse_meminfo("SwapTotal: 1000 kB\nSwapFree: 4096 kB\n");
+    const auto swap = normalize_swap(values);
+    ASSERT_TRUE(swap.has_value());
+    EXPECT_EQ(swap->total_bytes, 1000ULL * 1024);
+    EXPECT_EQ(swap->free_bytes, 1000ULL * 1024);
+}
+
+}  // namespace
+#endif  // defined(__linux__)
 
 }  // namespace dztrader::test

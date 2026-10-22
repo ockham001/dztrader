@@ -14,6 +14,8 @@
 
 #if defined(__linux__)
 
+#include "system_collector_linux_internal.h"
+
 #include <dztrader/platform/system_collector.h>
 
 #include <sys/utsname.h>
@@ -27,6 +29,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -37,6 +40,8 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+
+#include <spdlog/spdlog.h>
 
 namespace dztrader::platform {
 namespace {
@@ -338,6 +343,102 @@ std::optional<RawLoadAverage> read_load_average() {
     return load;
 }
 
+// ===== 内存与交换（契约 sysmon §2.4、§2.7）=====
+
+/// `/proc/meminfo` 路径（内存与交换共用的数据源）。
+constexpr const char* kMeminfoPath = "/proc/meminfo";
+
+/// 读取整个文本文件；不可打开时返回空串（失败降级，不抛异常）。
+std::string read_file_contents(const char* path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        return {};
+    }
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+/// 记录 `MemAvailable` 异常回退（英文、小写开头、无句号；契约 sysmon §2.7）。
+void log_mem_available_fallback(system_collector_linux_internal::MemAvailableFallback fallback,
+                                const system_collector_linux_internal::MeminfoValues& values,
+                                const RawMemoryInfo& memory) {
+    const uint64_t total_kb = values.mem_total_kb.value_or(0);
+    const uint64_t available_kb = values.mem_available_kb.value_or(0);
+    switch (fallback) {
+        case system_collector_linux_internal::MemAvailableFallback::Missing:
+            SPDLOG_WARN(
+                "meminfo memavailable missing, using fallback | mem_total_kb={} "
+                "available_bytes={}",
+                total_kb, memory.available_bytes);
+            break;
+        case system_collector_linux_internal::MemAvailableFallback::Zero:
+            SPDLOG_WARN(
+                "meminfo memavailable zero, using fallback | mem_total_kb={} available_bytes={}",
+                total_kb, memory.available_bytes);
+            break;
+        case system_collector_linux_internal::MemAvailableFallback::AboveTotal:
+            SPDLOG_WARN(
+                "meminfo memavailable above total, using fallback | mem_total_kb={} "
+                "mem_available_kb={}",
+                total_kb, available_kb);
+            break;
+        case system_collector_linux_internal::MemAvailableFallback::None:
+            break;
+    }
+}
+
+/// `/proc/meminfo` 内存/交换读取器（契约 sysmon §2.4、§2.7）。
+///
+/// 日志去重：`MemAvailable` 持续异常或读取持续失败时只在状态首次出现时 WARN 一次，
+/// 避免 7x24 运行下每秒刷屏；恢复正常后重置去重标记。
+class LinuxMemorySwapReader {
+public:
+    /// 读取内存读数；总量不可用或回退也无法计算时返回 std::nullopt。
+    std::optional<RawMemoryInfo> read_memory() {
+        const auto values = read_meminfo();
+        const auto normalized = system_collector_linux_internal::normalize_memory(values);
+        if (!normalized.memory.has_value()) {
+            if (!memory_failure_logged_) {
+                SPDLOG_WARN("meminfo memory unavailable | path={}", kMeminfoPath);
+                memory_failure_logged_ = true;
+            }
+            return std::nullopt;
+        }
+        memory_failure_logged_ = false;
+        if (normalized.fallback == system_collector_linux_internal::MemAvailableFallback::None) {
+            memory_anomaly_logged_ = false;  // 恢复正常：下次异常重新记日志
+        } else if (!memory_anomaly_logged_) {
+            log_mem_available_fallback(normalized.fallback, values, *normalized.memory);
+            memory_anomaly_logged_ = true;
+        }
+        return normalized.memory;
+    }
+
+    /// 读取交换读数；`std::nullopt` = 采集失败，`total_bytes = 0` = 本机无交换。
+    std::optional<RawSwapInfo> read_swap() {
+        const auto swap = system_collector_linux_internal::normalize_swap(read_meminfo());
+        if (!swap.has_value()) {
+            if (!swap_failure_logged_) {
+                SPDLOG_WARN("meminfo swap unavailable | path={}", kMeminfoPath);
+                swap_failure_logged_ = true;
+            }
+            return std::nullopt;
+        }
+        swap_failure_logged_ = false;
+        return swap;
+    }
+
+private:
+    /// 读 `/proc/meminfo` 并解析；文件不可读时返回全 nullopt。
+    static system_collector_linux_internal::MeminfoValues read_meminfo() {
+        const std::string content = read_file_contents(kMeminfoPath);
+        return system_collector_linux_internal::parse_meminfo(content);
+    }
+
+    bool memory_anomaly_logged_ = false;  ///< MemAvailable 异常日志去重（恢复后重置）
+    bool memory_failure_logged_ = false;  ///< 内存采集失败日志去重（恢复后重置）
+    bool swap_failure_logged_ = false;    ///< 交换采集失败日志去重（恢复后重置）
+};
+
 // ===== 温度与每核频率（契约 sysmon §2.3、§2.4）=====
 
 /// sysfs 温度传感器根目录（每个子目录对应一颗传感器芯片）。
@@ -531,9 +632,175 @@ public:
     std::optional<std::vector<RawCoreFrequency>> collect_core_frequencies() override {
         return read_core_frequencies();
     }
+
+    std::optional<RawMemoryInfo> collect_memory() override { return memory_reader_.read_memory(); }
+
+    std::optional<RawSwapInfo> collect_swap() override { return memory_reader_.read_swap(); }
+
+private:
+    LinuxMemorySwapReader memory_reader_;
 };
 
 }  // namespace
+
+// ===== /proc/meminfo 解析与归一（内部接缝，供平台单测确定性覆盖）=====
+
+namespace system_collector_linux_internal {
+namespace {
+
+constexpr uint64_t kBytesPerKb = 1024;
+constexpr uint64_t kMaxU64 = std::numeric_limits<uint64_t>::max();
+
+/// 饱和加法：溢出时返回 false（异常值防御，不抛异常）。
+bool add_kb(uint64_t& accumulator, uint64_t value) {
+    if (accumulator > kMaxU64 - value) {
+        return false;
+    }
+    accumulator += value;
+    return true;
+}
+
+/// 可选 kB 相加：两者都缺失时返回 std::nullopt；溢出返回 std::nullopt。
+std::optional<uint64_t> add_optional_kb(std::optional<uint64_t> lhs, std::optional<uint64_t> rhs) {
+    if (!lhs.has_value() && !rhs.has_value()) {
+        return std::nullopt;
+    }
+    uint64_t sum = lhs.value_or(0);
+    if (rhs.has_value() && !add_kb(sum, *rhs)) {
+        return std::nullopt;
+    }
+    return sum;
+}
+
+/// kB 转 bytes 并钳制到总量；字段缺失返回 std::nullopt。
+std::optional<uint64_t> kb_to_bytes_clamped(std::optional<uint64_t> kb, uint64_t max_kb) {
+    if (!kb.has_value()) {
+        return std::nullopt;
+    }
+    return std::min(*kb, max_kb) * kBytesPerKb;
+}
+
+}  // namespace
+
+MeminfoValues parse_meminfo(std::string_view content) {
+    MeminfoValues values;
+    // 同名字段以首次解析成功为准（/proc 正常不会重复；防御性内容只取第一次）。
+    const auto assign = [](std::optional<uint64_t>& field, std::string_view raw_value) {
+        if (field.has_value()) {
+            return;
+        }
+        const auto value = parse_u64(raw_value);
+        if (value.has_value()) {
+            field = value;
+        }
+    };
+    std::string_view rest = content;
+    while (!rest.empty()) {
+        const auto newline = rest.find('\n');
+        const std::string_view raw_line =
+            newline == std::string_view::npos ? rest : rest.substr(0, newline);
+        rest = newline == std::string_view::npos ? std::string_view{} : rest.substr(newline + 1);
+        const auto line = trim(raw_line);
+        if (line.empty()) {
+            continue;
+        }
+        const auto colon = line.find(':');
+        if (colon == std::string_view::npos) {
+            continue;
+        }
+        const auto key = trim(line.substr(0, colon));
+        const auto value_field = trim(line.substr(colon + 1));
+        // 取第一个数字段（忽略 "kB" 等单位；无单位条目同样适用）。
+        const auto value_end = value_field.find_first_of(" \t");
+        const auto value_text = value_field.substr(0, value_end);
+        if (key == "MemTotal") {
+            assign(values.mem_total_kb, value_text);
+        } else if (key == "MemFree") {
+            assign(values.mem_free_kb, value_text);
+        } else if (key == "MemAvailable") {
+            assign(values.mem_available_kb, value_text);
+        } else if (key == "Buffers") {
+            assign(values.buffers_kb, value_text);
+        } else if (key == "Cached") {
+            assign(values.cached_kb, value_text);
+        } else if (key == "SReclaimable") {
+            assign(values.sreclaimable_kb, value_text);
+        } else if (key == "SwapTotal") {
+            assign(values.swap_total_kb, value_text);
+        } else if (key == "SwapFree") {
+            assign(values.swap_free_kb, value_text);
+        }
+    }
+    return values;
+}
+
+NormalizedMemory normalize_memory(const MeminfoValues& values) {
+    NormalizedMemory result;
+    if (!values.mem_total_kb.has_value() || *values.mem_total_kb == 0) {
+        return result;  // 总量不可用：本次内存采集失败
+    }
+    const uint64_t total_kb = *values.mem_total_kb;
+    if (total_kb > kMaxU64 / kBytesPerKb) {
+        return result;  // 异常内容：kB -> bytes 会溢出
+    }
+
+    // MemAvailable 正常时直接使用；缺失/为 0/大于总量时回退到可回收量之和。
+    uint64_t available_kb = 0;
+    bool use_fallback = false;
+    if (!values.mem_available_kb.has_value()) {
+        result.fallback = MemAvailableFallback::Missing;
+        use_fallback = true;
+    } else if (*values.mem_available_kb == 0) {
+        result.fallback = MemAvailableFallback::Zero;
+        use_fallback = true;
+    } else if (*values.mem_available_kb > total_kb) {
+        result.fallback = MemAvailableFallback::AboveTotal;
+        use_fallback = true;
+    }
+    if (!use_fallback) {
+        available_kb = *values.mem_available_kb;
+    } else {
+        if (!values.mem_free_kb.has_value() || !values.buffers_kb.has_value() ||
+            !values.cached_kb.has_value()) {
+            return result;  // 回退所需字段缺失：本次内存采集失败
+        }
+        available_kb = *values.mem_free_kb;
+        if (!add_kb(available_kb, *values.buffers_kb) || !add_kb(available_kb, *values.cached_kb) ||
+            (values.sreclaimable_kb.has_value() &&
+             !add_kb(available_kb, *values.sreclaimable_kb))) {
+            return result;  // 异常内容：回退求和溢出
+        }
+    }
+    // 防御：可用量不得超过总量（正常值不动；异常回退值钳制）。
+    available_kb = std::min(available_kb, total_kb);
+
+    RawMemoryInfo memory;
+    memory.total_bytes = total_kb * kBytesPerKb;
+    memory.available_bytes = available_kb * kBytesPerKb;
+    // cached = Cached + SReclaimable（可回收页缓存口径）；buffers 仅 Linux 提供。
+    memory.cached_bytes =
+        kb_to_bytes_clamped(add_optional_kb(values.cached_kb, values.sreclaimable_kb), total_kb);
+    memory.buffers_bytes = kb_to_bytes_clamped(values.buffers_kb, total_kb);
+    result.memory = memory;
+    return result;
+}
+
+std::optional<RawSwapInfo> normalize_swap(const MeminfoValues& values) {
+    if (!values.swap_total_kb.has_value() || !values.swap_free_kb.has_value()) {
+        return std::nullopt;
+    }
+    const uint64_t total_kb = *values.swap_total_kb;
+    if (total_kb > kMaxU64 / kBytesPerKb) {
+        return std::nullopt;  // 异常内容：kB -> bytes 会溢出
+    }
+    RawSwapInfo swap;
+    swap.total_bytes = total_kb * kBytesPerKb;
+    // 防御：SwapFree 超过 SwapTotal 时钳制，保证 used = total - free 落在 [0, total]。
+    swap.free_bytes = std::min(*values.swap_free_kb, total_kb) * kBytesPerKb;
+    return swap;
+}
+
+}  // namespace system_collector_linux_internal
 
 std::unique_ptr<SystemCollector> make_system_collector() {
     return std::make_unique<LinuxSystemCollector>();

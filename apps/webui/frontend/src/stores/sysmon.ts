@@ -6,13 +6,20 @@ import type {
   SysmonCoreFrequency,
   SysmonCpuCore,
   SysmonLoadAverage,
+  SysmonMemoryInfo,
   SysmonSnapshotPayload,
+  SysmonSwapInfo,
   SysmonTemperatureInfo,
 } from '@/types/generated'
 
 /** 有限数字校验：null / undefined / NaN / Infinity 一律视为不可用（不得用 0 冒充） */
 function toFiniteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/** 非负整数字节数校验：null / undefined / NaN / Infinity / 负数 / 非整数一律视为不可用 */
+function toNonNegativeInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null
 }
 
 /**
@@ -174,6 +181,57 @@ export const useSysmonStore = defineStore('sysmon', () => {
     return result
   })
 
+  /**
+   * 内存信息（契约 sysmon §2.4）。仅当可用性映射标记 `memory` 可用且快照携带对象时
+   * 返回净化后的对象，否则 null —— 视图据此区分「指标不可用」与「可用但本帧未采集」。
+   *
+   * 唯一口径 `used_bytes = total_bytes − available_bytes`、`used_ratio = used_bytes / total_bytes`
+   * 均按公式重算，不信任 payload 中的派生值（防发送端口径漂移，保证字节与百分比一致）。
+   * 核心口径非法（NaN/Infinity/负数/总量为 0/可用大于总量）时整块返回 null，不用 0 冒充；
+   * `cached_bytes` / `buffers_bytes` 非法/负数 → null（本平台不提供/本帧未读到，视图不渲染该行）。
+   */
+  const memoryInfo = computed<SysmonMemoryInfo | null>(() => {
+    const s = snapshot.value
+    if (!s || s.availability.metrics['memory']?.available !== true) return null
+    const memory = s.memory
+    if (!memory || typeof memory !== 'object') return null
+    const total = toNonNegativeInteger(memory.total_bytes)
+    const available = toNonNegativeInteger(memory.available_bytes)
+    if (total === null || available === null || total <= 0 || available > total) return null
+    const used = total - available
+    return {
+      total_bytes: total,
+      available_bytes: available,
+      used_bytes: used,
+      used_ratio: used / total,
+      cached_bytes: toNonNegativeInteger(memory.cached_bytes),
+      buffers_bytes: toNonNegativeInteger(memory.buffers_bytes),
+    }
+  })
+
+  /**
+   * 交换分区 / 页面文件信息（契约 sysmon §2.4）。仅当可用性映射标记 `swap` 可用且快照
+   * 携带对象时返回净化后的对象，否则 null。无交换时 payload 为 `total_bytes = 0` 的对象，
+   * 此时仍返回对象（视图显示「无交换分区」而非「不可用」），`used_ratio` 恒为 null。
+   * `used_bytes` 钳制到 `[0, total_bytes]`，`used_ratio` 按 `used_bytes / total_bytes` 重算
+   * （不信任 payload 中的派生值，保证字节与百分比一致）。
+   */
+  const swapInfo = computed<SysmonSwapInfo | null>(() => {
+    const s = snapshot.value
+    if (!s || s.availability.metrics['swap']?.available !== true) return null
+    const swap = s.swap
+    if (!swap || typeof swap !== 'object') return null
+    const total = toNonNegativeInteger(swap.total_bytes)
+    const used = toNonNegativeInteger(swap.used_bytes)
+    if (total === null || used === null) return null
+    const clampedUsed = Math.min(used, total)
+    return {
+      total_bytes: total,
+      used_bytes: clampedUsed,
+      used_ratio: total > 0 ? clampedUsed / total : null,
+    }
+  })
+
   /** 跨平台语义提示（契约 sysmon §2.5）：缺失 / 非字符串返回空串，由视图决定是否展示 */
   function semanticHint(key: string): string {
     const hints = snapshot.value?.availability.semantic_hints
@@ -194,6 +252,8 @@ export const useSysmonStore = defineStore('sysmon', () => {
     cpuInterruptsPerSec,
     temperatures,
     coreFrequencies,
+    memoryInfo,
+    swapInfo,
     semanticHint,
     init,
     applySnapshot,

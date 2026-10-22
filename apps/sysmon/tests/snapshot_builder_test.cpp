@@ -70,8 +70,9 @@ constexpr uint64_t kMissedTicks = 2;
 
 platform::SysmonSnapshot build_with(const platform::RawSystemInfo& info,
                                     const CpuMetrics& metrics,
-                                    const TemperatureMetrics& temperature = {}) {
-    return build_snapshot(kSourceName, info, metrics, temperature, kMeasureIntervalMs,
+                                    const TemperatureMetrics& temperature = {},
+                                    const MemorySwapMetrics& memory = {}) {
+    return build_snapshot(kSourceName, info, metrics, temperature, memory, kMeasureIntervalMs,
                           kLastSampleMs, kMissedTicks, kNowMs);
 }
 
@@ -90,6 +91,21 @@ CpuMetrics make_metrics_with_frequencies() {
     metrics.frequency_collected = true;
     metrics.core_frequencies =
         std::vector<platform::SysmonCoreFrequency>{{0, 4200}, {1, 3600}, {2, 3600}};
+    return metrics;
+}
+
+/// 本票（#74）落地后的典型内存/交换读数（Linux：cached/buffers 均可得，交换有值）。
+MemorySwapMetrics make_memory_metrics() {
+    MemorySwapMetrics metrics;
+    metrics.collected = true;
+    metrics.memory = platform::RawMemoryInfo{.total_bytes = 32ULL * 1024 * 1024 * 1024,
+                                             .available_bytes = 16ULL * 1024 * 1024 * 1024,
+                                             .cached_bytes = 8ULL * 1024 * 1024 * 1024,
+                                             .buffers_bytes = 256ULL * 1024 * 1024};
+    metrics.swap_collected = true;
+    metrics.swap_supported = true;
+    metrics.swap = platform::RawSwapInfo{.total_bytes = 8ULL * 1024 * 1024 * 1024,
+                                         .free_bytes = 6ULL * 1024 * 1024 * 1024};
     return metrics;
 }
 
@@ -297,8 +313,9 @@ TEST(SnapshotBuilderTest, RatesUnavailableIsNullWithReason) {
     EXPECT_EQ(entry.reason.value(), "collect_failed");
 }
 
-TEST(SnapshotBuilderTest, UnimplementedDomainsAreNull) {
+TEST(SnapshotBuilderTest, UncollectedDomainsAreNull) {
     const auto snapshot = build_with(make_linux_info(), make_full_metrics());
+    // #74 未传入内存/交换测量结果（等效能力从未确认）→ 域为 null + collect_failed。
     EXPECT_EQ(snapshot.memory, std::nullopt);
     EXPECT_EQ(snapshot.swap, std::nullopt);
     EXPECT_EQ(snapshot.volumes, std::nullopt);
@@ -310,7 +327,8 @@ TEST(SnapshotBuilderTest, UnimplementedDomainsAreNull) {
 }
 
 TEST(SnapshotBuilderTest, AvailabilityCoversAllThirteenKeys) {
-    const auto snapshot = build_with(make_linux_info(), make_full_metrics());
+    const auto snapshot = build_with(make_linux_info(), make_metrics_with_frequencies(),
+                                     make_temperature_metrics(), make_memory_metrics());
     const std::vector<std::string> expected = {
         platform::SYSMON_METRIC_SYSTEM,
         platform::SYSMON_METRIC_CPU_TOTAL,
@@ -332,33 +350,20 @@ TEST(SnapshotBuilderTest, AvailabilityCoversAllThirteenKeys) {
         EXPECT_TRUE(snapshot.availability.metrics.contains(key)) << key;
     }
 
-    // 本票已落地：system/cpu.total/cpu.cores/cpu.load_average/cpu.context_switches 可用。
+    // 已落地：system/cpu.*/memory/swap/temperature 在输入就绪时可用。
     for (const char* key :
          {platform::SYSMON_METRIC_SYSTEM, platform::SYSMON_METRIC_CPU_TOTAL,
           platform::SYSMON_METRIC_CPU_CORES, platform::SYSMON_METRIC_CPU_LOAD_AVERAGE,
-          platform::SYSMON_METRIC_CPU_CONTEXT_SWITCHES}) {
+          platform::SYSMON_METRIC_CPU_CONTEXT_SWITCHES, platform::SYSMON_METRIC_CPU_FREQUENCY,
+          platform::SYSMON_METRIC_MEMORY, platform::SYSMON_METRIC_SWAP,
+          platform::SYSMON_METRIC_TEMPERATURE}) {
         ASSERT_TRUE(snapshot.availability.metrics.contains(key));
         const auto& entry = snapshot.availability.metrics.at(key);
         EXPECT_TRUE(entry.available) << key;
         EXPECT_EQ(entry.reason, std::nullopt) << key;
     }
-    // #73：无读数时按平台能力标记（Linux：温度无传感器、每核频率无 cpufreq）。
-    {
-        const auto& frequency =
-            snapshot.availability.metrics.at(platform::SYSMON_METRIC_CPU_FREQUENCY);
-        EXPECT_FALSE(frequency.available);
-        ASSERT_TRUE(frequency.reason.has_value());
-        EXPECT_EQ(frequency.reason.value(), "unsupported");
-
-        const auto& temperature =
-            snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE);
-        EXPECT_FALSE(temperature.available);
-        ASSERT_TRUE(temperature.reason.has_value());
-        EXPECT_EQ(temperature.reason.value(), "no_sensor");
-    }
-    // 其余 6 键：available=false + reason="not_implemented"
-    for (const char* key : {platform::SYSMON_METRIC_MEMORY, platform::SYSMON_METRIC_SWAP,
-                            platform::SYSMON_METRIC_VOLUMES, platform::SYSMON_METRIC_DISK_IO,
+    // 其余 4 键：available=false + reason="not_implemented"
+    for (const char* key : {platform::SYSMON_METRIC_VOLUMES, platform::SYSMON_METRIC_DISK_IO,
                             platform::SYSMON_METRIC_NETWORK, platform::SYSMON_METRIC_SHM_DIR}) {
         const auto& entry = snapshot.availability.metrics.at(key);
         EXPECT_FALSE(entry.available) << key;
@@ -387,7 +392,8 @@ TEST(SnapshotBuilderTest, WindowsPlatformDescriptionContainsBuild) {
 
 TEST(SnapshotBuilderTest, SerializedSnapshotPassesPlatformValidation) {
     // 编码后必须能通过类型层唯一真相源的校验（形状契约的端到端自检）。
-    const auto snapshot = build_with(make_linux_info(), make_full_metrics());
+    const auto snapshot =
+        build_with(make_linux_info(), make_full_metrics(), {}, make_memory_metrics());
     const nlohmann::json payload = snapshot;
     EXPECT_EQ(platform::SysmonSnapshot::validate(payload), std::nullopt);
 
@@ -400,7 +406,12 @@ TEST(SnapshotBuilderTest, SerializedSnapshotPassesPlatformValidation) {
     EXPECT_DOUBLE_EQ(payload["cpu"]["context_switches_per_sec"].get<double>(), 1234.0);
     EXPECT_TRUE(payload["cpu"]["core_frequencies"].is_null());
     EXPECT_TRUE(payload["temperature"].is_null());
-    EXPECT_TRUE(payload["memory"].is_null());
+    ASSERT_FALSE(payload["memory"].is_null());
+    EXPECT_EQ(payload["memory"]["total_bytes"].get<uint64_t>(), 32ULL * 1024 * 1024 * 1024);
+    EXPECT_EQ(payload["memory"]["available_bytes"].get<uint64_t>(), 16ULL * 1024 * 1024 * 1024);
+    EXPECT_EQ(payload["memory"]["used_bytes"].get<uint64_t>(), 16ULL * 1024 * 1024 * 1024);
+    EXPECT_DOUBLE_EQ(payload["memory"]["used_ratio"].get<double>(), 0.5);
+    EXPECT_FALSE(payload["memory"].contains("free_bytes"));
     EXPECT_EQ(payload["availability"]["metrics"].size(), platform::SYSMON_METRIC_KEYS.size());
 }
 
@@ -554,6 +565,154 @@ TEST(SnapshotBuilderTest, SerializedSensorDataPassesPlatformValidation) {
     EXPECT_DOUBLE_EQ(payload["temperature"][0]["celsius"].get<double>(), 45.5);
 }
 
+// ===== #74 内存与交换 =====
+
+TEST(SnapshotBuilderTest, MemoryMappedAndValidated) {
+    const auto snapshot =
+        build_with(make_linux_info(), make_full_metrics(), {}, make_memory_metrics());
+    ASSERT_TRUE(snapshot.memory.has_value());
+    EXPECT_EQ(snapshot.memory->total_bytes, 32ULL * 1024 * 1024 * 1024);
+    EXPECT_EQ(snapshot.memory->available_bytes, 16ULL * 1024 * 1024 * 1024);
+    EXPECT_EQ(snapshot.memory->used_bytes, 16ULL * 1024 * 1024 * 1024);
+    ASSERT_TRUE(snapshot.memory->used_ratio.has_value());
+    EXPECT_DOUBLE_EQ(*snapshot.memory->used_ratio, 0.5);
+    ASSERT_TRUE(snapshot.memory->cached_bytes.has_value());
+    EXPECT_EQ(*snapshot.memory->cached_bytes, 8ULL * 1024 * 1024 * 1024);
+    ASSERT_TRUE(snapshot.memory->buffers_bytes.has_value());
+    EXPECT_EQ(*snapshot.memory->buffers_bytes, 256ULL * 1024 * 1024);
+
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_MEMORY);
+    EXPECT_TRUE(entry.available);
+    EXPECT_EQ(entry.reason, std::nullopt);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, MemoryClampsAnomalousValues) {
+    // 采集层已归一；快照构造再做一层防御：available/cached/buffers 不得超过 total
+    // （否则 used = total - available 会下溢、快照校验会失败）。
+    MemorySwapMetrics memory;
+    memory.collected = true;
+    memory.memory = platform::RawMemoryInfo{.total_bytes = 1024ULL,
+                                            .available_bytes = 4096ULL,
+                                            .cached_bytes = 4096ULL,
+                                            .buffers_bytes = 2048ULL};
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, memory);
+
+    ASSERT_TRUE(snapshot.memory.has_value());
+    EXPECT_EQ(snapshot.memory->available_bytes, 1024ULL);  // 钳制到 total
+    EXPECT_EQ(snapshot.memory->used_bytes, 0ULL);
+    ASSERT_TRUE(snapshot.memory->used_ratio.has_value());
+    EXPECT_DOUBLE_EQ(*snapshot.memory->used_ratio, 0.0);
+    EXPECT_EQ(snapshot.memory->cached_bytes.value_or(0), 1024ULL);
+    EXPECT_EQ(snapshot.memory->buffers_bytes.value_or(0), 1024ULL);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, MemoryCollectedButNoReadingKeepsAvailable) {
+    // 能力粘性：本帧读取失败只清数值，可用性保持 true（消费方显示「暂无数据」）。
+    MemorySwapMetrics memory;
+    memory.collected = true;
+    memory.memory = std::nullopt;
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, memory);
+
+    EXPECT_EQ(snapshot.memory, std::nullopt);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_MEMORY);
+    EXPECT_TRUE(entry.available);
+    EXPECT_EQ(entry.reason, std::nullopt);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, MemoryDisabledByConfigWinsOverCollected) {
+    auto memory = make_memory_metrics();
+    memory.disabled = true;
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, memory);
+
+    EXPECT_EQ(snapshot.memory, std::nullopt);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_MEMORY);
+    EXPECT_FALSE(entry.available);
+    ASSERT_TRUE(entry.reason.has_value());
+    EXPECT_EQ(entry.reason.value(), "disabled_by_config");
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, SwapMappedWithRatio) {
+    const auto snapshot =
+        build_with(make_linux_info(), make_full_metrics(), {}, make_memory_metrics());
+    ASSERT_TRUE(snapshot.swap.has_value());
+    EXPECT_EQ(snapshot.swap->total_bytes, 8ULL * 1024 * 1024 * 1024);
+    EXPECT_EQ(snapshot.swap->used_bytes, 2ULL * 1024 * 1024 * 1024);
+    ASSERT_TRUE(snapshot.swap->used_ratio.has_value());
+    EXPECT_DOUBLE_EQ(*snapshot.swap->used_ratio, 0.25);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_SWAP);
+    EXPECT_TRUE(entry.available);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, SwapWithoutSwapSpaceIsUnsupported) {
+    // 无交换分区/无页面文件：payload 输出 total=0 的对象，可用性 unavailable+unsupported
+    // （契约 sysmon §2.4、§2.5）；前端据此显示「无交换分区」而不是 0 或旧数据。
+    MemorySwapMetrics memory;
+    memory.collected = true;
+    memory.memory = platform::RawMemoryInfo{.total_bytes = 1024ULL,
+                                            .available_bytes = 512ULL,
+                                            .cached_bytes = std::nullopt,
+                                            .buffers_bytes = std::nullopt};
+    memory.swap_collected = true;
+    memory.swap_supported = false;
+    memory.swap = platform::RawSwapInfo{};
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, memory);
+
+    ASSERT_TRUE(snapshot.swap.has_value());
+    EXPECT_EQ(snapshot.swap->total_bytes, 0ULL);
+    EXPECT_EQ(snapshot.swap->used_bytes, 0ULL);
+    EXPECT_EQ(snapshot.swap->used_ratio, std::nullopt);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_SWAP);
+    EXPECT_FALSE(entry.available);
+    ASSERT_TRUE(entry.reason.has_value());
+    EXPECT_EQ(entry.reason.value(), "unsupported");
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, SwapClampsFreeAboveTotal) {
+    MemorySwapMetrics memory;
+    memory.swap_collected = true;
+    memory.swap_supported = true;
+    memory.swap = platform::RawSwapInfo{.total_bytes = 1024ULL, .free_bytes = 4096ULL};
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, memory);
+
+    ASSERT_TRUE(snapshot.swap.has_value());
+    EXPECT_EQ(snapshot.swap->used_bytes, 0ULL);
+    ASSERT_TRUE(snapshot.swap->used_ratio.has_value());
+    EXPECT_DOUBLE_EQ(*snapshot.swap->used_ratio, 0.0);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, SwapCollectedButNoReadingKeepsAvailable) {
+    MemorySwapMetrics memory;
+    memory.swap_collected = true;
+    memory.swap_supported = true;
+    memory.swap = std::nullopt;
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, memory);
+
+    EXPECT_EQ(snapshot.swap, std::nullopt);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_SWAP);
+    EXPECT_TRUE(entry.available);
+    EXPECT_EQ(entry.reason, std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, SwapDisabledByConfigWinsOverCollected) {
+    auto memory = make_memory_metrics();
+    memory.swap_disabled = true;
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, memory);
+
+    EXPECT_EQ(snapshot.swap, std::nullopt);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_SWAP);
+    EXPECT_FALSE(entry.available);
+    ASSERT_TRUE(entry.reason.has_value());
+    EXPECT_EQ(entry.reason.value(), "disabled_by_config");
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
 // 假采集器（实现 SystemCollector 接缝）确定性驱动速率计算与快照编码：
 // 同一组输入在任何机器/时间都产出同一结果（契约 sysmon 采购接缝测试要求）。
 class FakeCollector final : public platform::SystemCollector {
@@ -563,6 +722,8 @@ public:
     std::optional<platform::RawLoadAverage> load;
     std::optional<std::vector<platform::RawTemperature>> temperatures;
     std::optional<std::vector<platform::RawCoreFrequency>> core_frequencies;
+    std::optional<platform::RawMemoryInfo> memory;
+    std::optional<platform::RawSwapInfo> swap;
 
     platform::RawSystemInfo collect_system_info() override { return info; }
     std::optional<platform::RawCpuTimes> collect_cpu_times() override { return times; }
@@ -573,6 +734,8 @@ public:
     std::optional<std::vector<platform::RawCoreFrequency>> collect_core_frequencies() override {
         return core_frequencies;
     }
+    std::optional<platform::RawMemoryInfo> collect_memory() override { return memory; }
+    std::optional<platform::RawSwapInfo> collect_swap() override { return swap; }
 };
 
 TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {
