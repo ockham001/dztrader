@@ -15,18 +15,6 @@ protected:
     IntradayBarBuilder<RecordingSink> builder_{table_, 60, sink_};
 };
 
-/// @brief 首笔 tick 以 0 为 bar 起始基准：bar 量额 = 当日累计量额
-TEST_F(IntradayBarDataTest, FirstTickDeltaIsBasedOnZero) {
-    builder_.on_tick(make_tick(9 * 3600, 100.5, 10, 1005.0, 7));
-
-    ASSERT_TRUE(builder_.has_current_bar());
-    const Bar& bar = builder_.current_bar();
-    EXPECT_EQ(bar.volume, 10);
-    EXPECT_DOUBLE_EQ(bar.turnover, 1005.0);
-    EXPECT_EQ(bar.cum_volume, 10);
-    EXPECT_DOUBLE_EQ(bar.cum_turnover, 1005.0);
-}
-
 /// @brief 换桶后的新 bar 以「上一笔已接受 tick 的当日累计」为基准，同日沿用不重置
 TEST_F(IntradayBarDataTest, NewBarDeltaUsesPreviousAcceptedTickAsBasis) {
     builder_.on_tick(make_tick(9 * 3600, 100.0, 10, 1005.0, 7));       // 09:00 桶
@@ -65,22 +53,10 @@ TEST_F(IntradayBarDataTest, RepeatedSnapshotAddsZeroDelta) {
     EXPECT_EQ(bar.open_interest, 9);
 }
 
-/// @brief 多笔正增量在同一 bar 内累加：bar 量额始终等于最新累计减去 bar 起始基准
-TEST_F(IntradayBarDataTest, MultiplePositiveDeltasAccumulateWithinBar) {
-    builder_.on_tick(make_tick(9 * 3600, 100.0, 10, 1000.0, 7));
-    builder_.on_tick(make_tick(9 * 3600 + 10, 101.0, 13, 1313.0, 8));
-    builder_.on_tick(make_tick(9 * 3600 + 20, 102.0, 21, 2142.0, 9));
-    builder_.on_tick(make_tick(9 * 3600 + 30, 103.0, 22, 2266.0, 10));
-
-    ASSERT_TRUE(builder_.has_current_bar());
-    const Bar& bar = builder_.current_bar();
-    EXPECT_EQ(bar.volume, 22);  // 22 - 0
-    EXPECT_DOUBLE_EQ(bar.turnover, 2266.0);
-    EXPECT_EQ(bar.cum_volume, 22);
-    EXPECT_DOUBLE_EQ(bar.cum_turnover, 2266.0);
-}
-
 /// @brief 成交量与成交额同步累加：turnover 的 bar 内增量同样相对 bar 起始基准
+///
+/// 首笔 delta 以 0 为基准（见 NewBarDeltaUsesPreviousAcceptedTickAsBasis 的换桶对照）、
+/// 多笔正增量累加由本用例与 RepeatedSnapshotAddsZeroDelta 共同覆盖。
 TEST_F(IntradayBarDataTest, TurnoverTracksVolumeDeltaWithinBar) {
     // 成交额与成交量不成比例，可分辨「按额差分」与「按量推算」
     builder_.on_tick(make_tick(9 * 3600, 100.0, 10, 1000.0, 7));
@@ -125,7 +101,7 @@ TEST_F(IntradayBarDataTest, HighLowIgnoreTickAggregateExtremes) {
     EXPECT_DOUBLE_EQ(bar.close, 103.0);
 }
 
-/// @brief 日内容 bar 不写 bid/ask/涨跌停/昨收：这些 tick 字段不影响任何 bar 字段
+/// @brief 日内容 bar 不写 bid/ask/涨跌停/昨收：bar 全字段与不带这些字段的同一 tick 一致
 TEST_F(IntradayBarDataTest, QuoteFieldsDoNotPolluteBar) {
     DzTick tick = make_tick(9 * 3600, 100.0, 10, 1000.0, 7);
     tick.pre_close_price = 99.0;
@@ -134,15 +110,22 @@ TEST_F(IntradayBarDataTest, QuoteFieldsDoNotPolluteBar) {
     tick.bid_price[0] = 99.5;
     tick.ask_price[0] = 100.5;
 
-    Bar reference{};
-    {
-        RecordingSink sink;
-        IntradayBarBuilder<RecordingSink> plain(day_session_table(), 60, sink);
-        plain.on_tick(make_tick(9 * 3600, 100.0, 10, 1000.0, 7));
-        reference = plain.current_bar();
-    }
-
     builder_.on_tick(tick);
     ASSERT_TRUE(builder_.has_current_bar());
-    expect_bar_equal(builder_.current_bar(), reference);
+    const Bar& bar = builder_.current_bar();
+    // 逐字段字面量断言：报价字段没有可写入的落脚点
+    EXPECT_EQ(bar.trading_day, TRADING_DAY);
+    EXPECT_EQ(bar.begin_sec, TSEC_09_00);
+    EXPECT_EQ(bar.last_tick_sec, TSEC_09_00);
+    EXPECT_EQ(bar.period_sec, 60);
+    EXPECT_DOUBLE_EQ(bar.open, 100.0);
+    EXPECT_DOUBLE_EQ(bar.high, 100.0);
+    EXPECT_DOUBLE_EQ(bar.low, 100.0);
+    EXPECT_DOUBLE_EQ(bar.close, 100.0);
+    EXPECT_EQ(bar.volume, 10);
+    EXPECT_DOUBLE_EQ(bar.turnover, 1000.0);
+    EXPECT_EQ(bar.open_interest, 7);
+    EXPECT_EQ(bar.cum_volume, 10);
+    EXPECT_DOUBLE_EQ(bar.cum_turnover, 1000.0);
+    EXPECT_FALSE(bar.is_final);
 }

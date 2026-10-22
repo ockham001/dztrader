@@ -141,6 +141,64 @@ TEST_F(IntradayBarGuardTest, NaNTurnoverOnFirstTickIsDropped) {
     EXPECT_TRUE(sink_.events.empty());
 }
 
+/// @brief 累计成交额为正无穷：按坏量丢弃（Inf 能通过 >= 比较但会永久毒化后续差分）
+TEST_F(IntradayBarGuardTest, InfiniteTurnoverIsDroppedAsBadVolume) {
+    const Bar reference = accepted_reference_bar();
+
+    builder_.on_tick(make_tick(9 * 3600 + 20, 104.0, 18, kInf, 12));
+    expect_stats(0, 0, 1);
+    ASSERT_TRUE(builder_.has_current_bar());
+    expect_bar_equal(builder_.current_bar(), reference);
+
+    // 后续合法 tick 不被 Inf 基准毒化
+    builder_.on_tick(make_tick(9 * 3600 + 30, 105.0, 20, 2100.0, 13));
+    expect_stats(0, 0, 1);
+    EXPECT_EQ(builder_.current_bar().cum_volume, 20);
+    EXPECT_DOUBLE_EQ(builder_.current_bar().cum_turnover, 2100.0);
+}
+
+/// @brief 首笔 tick 的成交额为 Inf：同样按坏量丢弃（不建立 Inf bar）
+TEST_F(IntradayBarGuardTest, InfiniteTurnoverOnFirstTickIsDropped) {
+    builder_.on_tick(make_tick(9 * 3600, 100.5, 10, kInf, 7));
+
+    EXPECT_FALSE(builder_.has_current_bar());
+    expect_stats(0, 0, 1);
+    EXPECT_TRUE(sink_.events.empty());
+}
+
+/// @brief 被丢弃的 tick 不推进乱序基准：随后的合法 tick 只与最后一笔已接受 tick 比较
+TEST_F(IntradayBarGuardTest, DroppedTicksDoNotAdvanceOutOfOrderBaseline) {
+    accepted_reference_bar();  // 最后接受 tick 在 09:00:10
+
+    // 非法价格落在 09:00:20：若错误地推进乱序基准，此后的 09:00:15 会被误判为乱序
+    builder_.on_tick(make_tick(9 * 3600 + 20, kNaN, 16, 1600.0, 10));
+    expect_stats(0, 0, 0);
+
+    builder_.on_tick(make_tick(9 * 3600 + 15, 101.0, 17, 1717.0, 11));
+    expect_stats(0, 0, 0);  // 09:00:15 > 09:00:10，合法接受
+    ASSERT_TRUE(builder_.has_current_bar());
+    EXPECT_EQ(builder_.current_bar().last_tick_sec, TSEC_09_00 + 15);
+
+    // 坏量 tick 同样不推进基准
+    builder_.on_tick(make_tick(9 * 3600 + 40, 102.0, 1, 100.0, 12));  // 量额倒退被丢弃
+    expect_stats(0, 0, 1);
+    builder_.on_tick(make_tick(9 * 3600 + 25, 102.0, 18, 1836.0, 12));
+    expect_stats(0, 0, 1);
+    EXPECT_EQ(builder_.current_bar().last_tick_sec, TSEC_09_00 + 25);
+}
+
+/// @brief 坏量 tick 不改变任何 bar 字段（不只是不切桶）
+TEST_F(IntradayBarGuardTest, BadVolumeTickLeavesEveryBarFieldUnchanged) {
+    const Bar reference = accepted_reference_bar();
+    const std::size_t events_before = sink_.events.size();
+
+    builder_.on_tick(make_tick(9 * 3600 + 20, 200.0, 1, 100.0, 99));  // 价格/OI 都很有诱惑力
+    expect_stats(0, 0, 1);
+    ASSERT_TRUE(builder_.has_current_bar());
+    expect_bar_equal(builder_.current_bar(), reference);  // 一个字段都不许变
+    EXPECT_EQ(sink_.events.size(), events_before);
+}
+
 /// @brief 跨桶的坏量 tick 不触发 close/open：状态不前进，桶边界不会被坏数据推进
 TEST_F(IntradayBarGuardTest, BadVolumeTickInLaterBucketDoesNotCloseOrOpenBar) {
     const Bar reference = accepted_reference_bar();
@@ -213,16 +271,25 @@ TEST_F(IntradayBarGuardTest, RegressedTradingDayIsDroppedAsOutOfOrder) {
     expect_bar_equal(builder_.current_bar(), reference);
 }
 
-/// @brief 交易日前进不做坏量判定（跨日累计基准归零属交易日切换票，不在此误判为坏数据）
-TEST_F(IntradayBarGuardTest, ForwardTradingDayIsNotFlaggedAsBadVolume) {
-    accepted_reference_bar();  // 当日累计量 15
+/// @brief 交易日前进：累计基准重置为 0，新交易日首笔 delta 不被旧日累计污染
+///
+/// 只断言差分基准（本票范围）；跨日的 close/open 生命周期与 bar 的 trading_day
+/// 归属由 #88 覆盖，本用例不锁定该行为。
+TEST_F(IntradayBarGuardTest, ForwardTradingDayResetsCumulativeBasis) {
+    accepted_reference_bar();  // 当日累计量 15、累计额 1545
 
-    builder_.on_tick(
-        make_tick(9 * 3600 + 30, 100.0, 3, 300.0, 7, TRADING_DAY + 1));  // 新交易日累计 3
-    expect_stats(0, 0, 0);                                               // 既不是坏量也不是乱序
+    // 新交易日、新桶：若错误沿用旧日基准，volume 会算成 3-15=-12
+    builder_.on_tick(make_tick(9 * 3600 + 60, 100.0, 3, 300.0, 7, TRADING_DAY + 1));
+    expect_stats(0, 0, 0);  // 既不是坏量也不是乱序
+    ASSERT_TRUE(builder_.has_current_bar());
+    EXPECT_EQ(builder_.current_bar().begin_sec, TSEC_09_00 + 60);
+    EXPECT_EQ(builder_.current_bar().volume, 3);
+    EXPECT_DOUBLE_EQ(builder_.current_bar().turnover, 300.0);
 
-    builder_.on_tick(make_tick(9 * 3600 + 40, 101.0, 5, 505.0, 8, TRADING_DAY + 1));
+    builder_.on_tick(make_tick(9 * 3600 + 120, 101.0, 5, 505.0, 8, TRADING_DAY + 1));
     expect_stats(0, 0, 0);
+    EXPECT_EQ(builder_.current_bar().volume, 2);  // 5 - 3
+    EXPECT_DOUBLE_EQ(builder_.current_bar().turnover, 205.0);
 }
 
 /// @brief 各守卫互不串扰：四种缺陷交替出现时三个计数器各自精确递增

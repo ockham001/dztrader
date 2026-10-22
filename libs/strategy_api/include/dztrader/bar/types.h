@@ -203,9 +203,9 @@ static_assert(std::is_trivially_copyable_v<TradingSessionTable>,
  * @brief tick→bar 合成的丢弃计数（构造后从 0 累计）
  */
 struct BarBuilderStats {
-    uint64_t out_of_session = 0;  ///< 不在任何交易小节内的 tick 数（竞价窗口 tick 暂计入）
-    uint64_t out_of_order = 0;    ///< 时间倒退、交易日倒退的 tick 数
-    uint64_t bad_volume = 0;      ///< 累计量/额倒退的 tick 数
+    uint64_t out_of_session = 0;  ///< 不在任何交易小节内（含 time 越界）的 tick 数
+    uint64_t out_of_order = 0;    ///< 交易日非正/倒退、交易日内秒倒退的 tick 数
+    uint64_t bad_volume = 0;      ///< 同交易日内累计量/额倒退（含 NaN）的 tick 数
 };
 
 /**
