@@ -37,8 +37,12 @@ namespace dztrader::bar {
  * @tparam Sink bar 事件接收者：可选实现 on_bar_open / on_bar_update / on_bar_close，
  *              未实现视为空操作；回调不得抛异常
  *
- * @note 交易日变化按「换根」处理（累计基准按日重置、旧根先 close），但跨日的空交易日、
- *       夜盘组合等完整语义与集合竞价、续接（restore）由后续票定稿，公开方法只增不改。
+ * @note 交易日变化按「换根」处理：`trading_day` 变大时先以 `is_final=true` 关闭当日最后
+ *       一根 bar，再开新交易日首根（即便落在同一桶起点也换根），累计基准重置为 0，故新日
+ *       首笔 tick 的量额 delta 从 0 起算、不跨日累加；`trading_day` 变小或 `date` 非正的
+ *       tick 按乱序丢弃并计入 `out_of_order`；没有 tick 的交易日不生成空 bar（惰性收盘）。
+ *       夜盘跨午夜不切日（`date` 未变即同一交易日）。集合竞价、续接（restore）由后续票
+ *       定稿，公开方法只增不改。
  */
 template <class Sink = NullBarSink>
 class IntradayBarBuilder {
@@ -115,7 +119,7 @@ public:
         }
         const int32_t begin_sec = (match.bucket_tsec / period_sec_) * period_sec_;
         // 交易日变化与换桶同样开新根：累计基准按日重置，避免跨日沿用旧日基准产出负量额。
-        // （跨日的空交易日、夜盘组合等完整生命周期由 #88 定稿。）
+        // 同日换桶沿用当日基准；跨日（含同桶起点）先 close 旧根再 open 新根（#88）。
         if (!has_bar_) {
             begin_bar(tick, begin_sec, tsec);
         } else if (begin_sec != bar_.begin_sec || tick.date != bar_.trading_day) {
