@@ -21,11 +21,14 @@ namespace dztrader::bar {
  * current_bar() 读取。构造时校验周期与小节表，非法输入抛 std::invalid_argument；
  * on_tick 热路径无哈希、无字符串、无堆分配、无异常。
  *
- * @tparam Sink bar 事件接收者：可选实现 on_bar_open / on_bar_update / on_bar_close，
- *              未实现视为空操作
+ * 桶边界事件顺序：新 bar 首笔 tick 先 close 旧 bar（is_final=true），再 open 新 bar
+ * （is_final=false），最后 update 新 bar；同桶 tick 只 update。无成交的桶不生成
+ * bar（相邻 bar 的 begin_sec 可跳跃）。
  *
- * @note 本票只建立单 session、同桶内的最小路径；桶切换与交易日切换、集合竞价、
- *       续接（restore/is_final）的事件语义由后续票追加，公开签名不变。
+ * @tparam Sink bar 事件接收者：可选实现 on_bar_open / on_bar_update / on_bar_close，
+ *              未实现视为空操作；回调不得抛异常
+ *
+ * @note 交易日切换、集合竞价、乱序丢弃与续接（restore）由后续票追加，公开签名不变。
  */
 template <class Sink = NullBarSink>
 class IntradayBarBuilder {
@@ -50,16 +53,22 @@ public:
     }
 
     /**
-     * @brief 喂入一笔 tick：首笔建立形成中 bar，其后更新该 bar
+     * @brief 喂入一笔 tick：同桶更新当前 bar；跨桶先收旧 bar（close）再开新 bar（open）
+     *        并更新；每笔 tick 恰好一次 update
      * @param tick 行情快照（调用方保证属于本实例绑定的合约）
      */
     void on_tick(const DzTick& tick) {
         const int32_t tsec = TradingTime::from_clock(tick.time);
+        const int32_t begin_sec = (tsec / period_sec_) * period_sec_;
         if (!has_bar_) {
-            begin_bar(tick, (tsec / period_sec_) * period_sec_, tsec);
-            return;
+            begin_bar(tick, begin_sec, tsec);
+        } else if (begin_sec != bar_.begin_sec) {
+            finalize_bar();
+            begin_bar(tick, begin_sec, tsec);
+        } else {
+            update_bar(tick, tsec);
         }
-        update_bar(tick, tsec);
+        notify_update();
     }
 
     /// @brief 是否已有形成中 bar（首笔 tick 之前为 false）
@@ -69,6 +78,12 @@ public:
     [[nodiscard]] const Bar& current_bar() const noexcept { return bar_; }
 
 private:
+    /// @brief 以 is_final=true 关闭当前 bar 并通知 sink（下一笔 tick 会开新 bar）
+    void finalize_bar() {
+        bar_.is_final = true;
+        notify_close();
+    }
+
     /// @brief 用本笔 tick 建立新的形成中 bar
     void begin_bar(const DzTick& tick, int32_t begin_sec, int32_t tsec) {
         bar_start_cum_volume_ = last_cum_volume_;
@@ -83,6 +98,7 @@ private:
         bar_.is_final = false;
         has_bar_ = true;
         update_bar(tick, tsec);
+        notify_open();
     }
 
     /// @brief 用本笔 tick 更新形成中 bar 的 H/L/C、量额差、持仓量与最后 tick 时间
@@ -104,9 +120,30 @@ private:
         last_cum_turnover_ = tick.turnover;
     }
 
+    /// @brief 若 Sink 实现 on_bar_open 则通知新 bar 已打开（缺失视为空操作）
+    void notify_open() {
+        if constexpr (requires(Sink& sink, const Bar& bar) { sink.on_bar_open(bar); }) {
+            sink_.on_bar_open(bar_);
+        }
+    }
+
+    /// @brief 若 Sink 实现 on_bar_update 则通知当前 bar 已更新（缺失视为空操作）
+    void notify_update() {
+        if constexpr (requires(Sink& sink, const Bar& bar) { sink.on_bar_update(bar); }) {
+            sink_.on_bar_update(bar_);
+        }
+    }
+
+    /// @brief 若 Sink 实现 on_bar_close 则通知当前 bar 已收（缺失视为空操作）
+    void notify_close() {
+        if constexpr (requires(Sink& sink, const Bar& bar) { sink.on_bar_close(bar); }) {
+            sink_.on_bar_close(bar_);
+        }
+    }
+
     [[maybe_unused]] TradingSessionTable table_;  ///< 交易小节与竞价窗口表（按值保存）
     int32_t period_sec_;                          ///< 周期秒数
-    [[maybe_unused]] Sink& sink_;                 ///< bar 事件接收者（后续票接入回调）
+    Sink& sink_;                                  ///< bar 事件接收者（生命周期事件回调）
     Bar bar_{};                                   ///< 当前形成中 bar
     bool has_bar_ = false;                        ///< 是否已有形成中 bar
     int64_t bar_start_cum_volume_ = 0;            ///< 本 bar 起始累计成交量基准

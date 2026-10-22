@@ -10,28 +10,6 @@
 using namespace dztrader::bar;
 using namespace dztrader::strategy_api::test;
 
-namespace {
-
-constexpr DzDate TRADING_DAY = 20000;
-
-DzTick make_tick(int32_t clock,
-                 double last_price,
-                 DzVolume volume,
-                 double turnover,
-                 DzLargeVolume open_interest,
-                 DzDate date = TRADING_DAY) {
-    DzTick tick{};
-    tick.date = date;
-    tick.time = clock;
-    tick.last_price = last_price;
-    tick.volume = volume;
-    tick.turnover = turnover;
-    tick.open_interest = open_interest;
-    return tick;
-}
-
-}  // namespace
-
 class IntradayBarBuilderTest : public ::testing::Test {
 protected:
     TradingSessionTable table_ = day_session_table();
