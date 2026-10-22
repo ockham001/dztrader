@@ -4,7 +4,9 @@
 #include <dztrader/bar/types.h>
 #include <dztrader/struct.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <vector>
 
 namespace dztrader::strategy_api::test {
 
@@ -41,6 +43,44 @@ inline DzTick make_tick(DzTime clock,
     tick.turnover = turnover;
     tick.open_interest = open_interest;
     return tick;
+}
+
+/// @brief 一次 bar 事件的通知类型
+enum class EventKind { Open, Update, Close };
+
+/// @brief sink 收到的一次 bar 事件（携带该时刻的 bar 快照）
+struct BarEvent {
+    EventKind kind;
+    dztrader::bar::Bar bar;
+};
+
+/// @brief 记录完整事件序列的手写 fake sink（仓库零 GMock）
+class RecordingSink {
+public:
+    void on_bar_open(const dztrader::bar::Bar& bar) { events.push_back({EventKind::Open, bar}); }
+    void on_bar_update(const dztrader::bar::Bar& bar) {
+        events.push_back({EventKind::Update, bar});
+    }
+    void on_bar_close(const dztrader::bar::Bar& bar) { events.push_back({EventKind::Close, bar}); }
+
+    std::vector<BarEvent> events;
+};
+
+/// @brief 统计某一类 bar 事件的通知次数
+inline int count_events(const RecordingSink& sink, EventKind kind) {
+    return static_cast<int>(
+        std::count_if(sink.events.begin(), sink.events.end(),
+                      [kind](const BarEvent& event) { return event.kind == kind; }));
+}
+
+/// @brief 最后一类 bar 事件携带的 bar（不存在返回 nullptr）
+inline const dztrader::bar::Bar* last_event_bar(const RecordingSink& sink, EventKind kind) {
+    for (auto it = sink.events.rbegin(); it != sink.events.rend(); ++it) {
+        if (it->kind == kind) {
+            return &it->bar;
+        }
+    }
+    return nullptr;
 }
 
 /// @brief 单小节当日盘表（09:00–15:00），tick→bar 测试的公共合法表

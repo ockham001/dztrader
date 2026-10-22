@@ -3,7 +3,6 @@
 #include <dztrader/bar.h>
 
 #include <cstddef>
-#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -11,25 +10,6 @@ using namespace dztrader::bar;
 using namespace dztrader::strategy_api::test;
 
 namespace {
-
-/// @brief 一次 bar 事件的通知类型
-enum class EventKind { Open, Update, Close };
-
-/// @brief sink 收到的一次 bar 事件（携带该时刻的 bar 快照）
-struct BarEvent {
-    EventKind kind;
-    Bar bar;
-};
-
-/// @brief 记录完整事件序列的手写 fake sink
-class RecordingSink {
-public:
-    void on_bar_open(const Bar& bar) { events.push_back({EventKind::Open, bar}); }
-    void on_bar_update(const Bar& bar) { events.push_back({EventKind::Update, bar}); }
-    void on_bar_close(const Bar& bar) { events.push_back({EventKind::Close, bar}); }
-
-    std::vector<BarEvent> events;
-};
 
 /// @brief 只实现 update 回调的 sink（缺失的 open/close 应为空操作）
 class UpdateOnlySink {

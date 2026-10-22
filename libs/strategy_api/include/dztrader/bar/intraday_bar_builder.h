@@ -63,12 +63,12 @@ public:
      */
     void on_tick(const DzTick& tick) {
         const int32_t tsec = TradingTime::from_clock(tick.time);
-        int32_t bucket_tsec = tsec;
-        if (!tick_in_session(tsec, bucket_tsec)) {
+        const SessionMatch match = match_session(tsec);
+        if (!match.in_session) {
             ++stats_.out_of_session;
             return;
         }
-        const int32_t begin_sec = (bucket_tsec / period_sec_) * period_sec_;
+        const int32_t begin_sec = (match.bucket_tsec / period_sec_) * period_sec_;
         if (!has_bar_) {
             begin_bar(tick, begin_sec, tsec);
         } else if (begin_sec != bar_.begin_sec) {
@@ -86,10 +86,16 @@ public:
     /// @brief 当前形成中 bar（以 has_current_bar() 为 true 为前提，否则是调用方编程错误）
     [[nodiscard]] const Bar& current_bar() const noexcept { return bar_; }
 
-    /// @brief 累计丢弃计数（构造后从 0 开始）
+    /// @brief 累计丢弃计数（构造后从 0 累计）
     [[nodiscard]] BarBuilderStats stats() const noexcept { return stats_; }
 
 private:
+    /// @brief 交易小节匹配结果
+    struct SessionMatch {
+        bool in_session;      ///< true = tick 落在某个交易小节内
+        int32_t bucket_tsec;  ///< 分桶用有效时间（小节末端为 tsec-1）
+    };
+
     /**
      * @brief 判定交易日内秒是否落在某个交易小节内（端点含），并给出分桶用有效时间
      *
@@ -97,21 +103,19 @@ private:
      * 仍记录 tick 的真实 tsec。
      *
      * @param tsec 交易日内秒
-     * @param bucket_tsec [out] 分桶用有效时间（小节末端取 tsec-1）
-     * @return true = 在交易小节内；false = 小节休息或非交易时段
+     * @return 命中结果；未命中时 in_session=false
      */
-    [[nodiscard]] bool tick_in_session(int32_t tsec, int32_t& bucket_tsec) const noexcept {
+    [[nodiscard]] SessionMatch match_session(int32_t tsec) const noexcept {
         for (int32_t i = 0; i < table_.session_count; ++i) {
             const TradingSession& session = table_.sessions[i];
             if (tsec < session.begin_sec) {
-                return false;  // 小节按时间升序，后续小节开始更晚
+                return SessionMatch{false, tsec};  // 小节按时间升序，后续小节开始更晚
             }
             if (tsec <= session.end_sec) {
-                bucket_tsec = (tsec == session.end_sec) ? tsec - 1 : tsec;
-                return true;
+                return SessionMatch{true, (tsec == session.end_sec) ? tsec - 1 : tsec};
             }
         }
-        return false;
+        return SessionMatch{false, tsec};
     }
 
     /// @brief 以 is_final=true 关闭当前 bar 并通知 sink（下一笔 tick 会开新 bar）
