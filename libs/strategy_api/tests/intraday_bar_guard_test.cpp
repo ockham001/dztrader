@@ -112,6 +112,27 @@ TEST_F(IntradayBarGuardTest, VolumeRegressionIsDroppedAndCounted) {
     EXPECT_EQ(builder_.current_bar().last_tick_sec, TSEC_09_00 + 30);
 }
 
+/// @brief 仅累计成交量倒退、成交额仍在前进：量守卫单独生效（不被 turnover 检查掩盖）
+TEST_F(IntradayBarGuardTest, VolumeOnlyRegressionIsDroppedAndCounted) {
+    const Bar reference = accepted_reference_bar();  // 累计量 15、累计额 1545
+
+    // 量 14 < 15，但额 1600 > 1545：只有成交量守卫能拒掉这一笔
+    builder_.on_tick(make_tick(9 * 3600 + 20, 104.0, 14, 1600.0, 12));
+    expect_stats(0, 0, 1);
+    ASSERT_TRUE(builder_.has_current_bar());
+    expect_bar_equal(builder_.current_bar(), reference);
+}
+
+/// @brief 仅累计成交额倒退、成交量仍在前进：额守卫单独生效
+TEST_F(IntradayBarGuardTest, TurnoverOnlyRegressionIsDroppedAndCounted) {
+    const Bar reference = accepted_reference_bar();  // 累计量 15、累计额 1545
+
+    builder_.on_tick(make_tick(9 * 3600 + 20, 104.0, 18, 1500.0, 12));  // 量 18 > 15、额倒退
+    expect_stats(0, 0, 1);
+    ASSERT_TRUE(builder_.has_current_bar());
+    expect_bar_equal(builder_.current_bar(), reference);
+}
+
 /// @brief 累计成交额倒退（量前进）：丢弃并 bad_volume 精确递增
 TEST_F(IntradayBarGuardTest, TurnoverRegressionIsDroppedAndCounted) {
     const Bar reference = accepted_reference_bar();  // 累计额 1545
@@ -293,15 +314,40 @@ TEST_F(IntradayBarGuardTest, ForwardTradingDayResetsCumulativeBasis) {
 
 /// @brief 交易日前进但落在同一桶：开新根且量额以 0 为基准，绝不发布负量额
 TEST_F(IntradayBarGuardTest, ForwardTradingDayInSameBucketNeverPublishesNegativeVolume) {
-    accepted_reference_bar();  // 当日累计量 15、累计额 1545，最后 tick 09:00:10
+    const Bar reference =
+        accepted_reference_bar();  // 当日累计量 15、累计额 1545，最后 tick 09:00:10
+    const int closes_before = count_events(sink_, EventKind::Close);
+    const int opens_before = count_events(sink_, EventKind::Open);
 
     // 09:00:30 仍属 09:00 桶，但已是新交易日、当日累计从 3 起
     builder_.on_tick(make_tick(9 * 3600 + 30, 100.0, 3, 300.0, 7, TRADING_DAY + 1));
     expect_stats(0, 0, 0);  // 跨日不算坏量
+
+    // 交易日变化即便同桶也必须先 close 旧根、再 open 新根
+    EXPECT_EQ(count_events(sink_, EventKind::Close), closes_before + 1);
+    EXPECT_EQ(count_events(sink_, EventKind::Open), opens_before + 1);
+    const Bar* closed = last_event_bar(sink_, EventKind::Close);
+    ASSERT_NE(closed, nullptr);
+    EXPECT_TRUE(closed->is_final);
+    EXPECT_EQ(closed->trading_day, TRADING_DAY);
+    EXPECT_EQ(closed->begin_sec, TSEC_09_00);
+    // 被收的正是旧交易日那根，内容未被新日 tick 污染（is_final 由 close 置位，其余逐字段比对）
+    EXPECT_EQ(closed->last_tick_sec, reference.last_tick_sec);
+    EXPECT_DOUBLE_EQ(closed->open, reference.open);
+    EXPECT_DOUBLE_EQ(closed->high, reference.high);
+    EXPECT_DOUBLE_EQ(closed->low, reference.low);
+    EXPECT_DOUBLE_EQ(closed->close, reference.close);
+    EXPECT_EQ(closed->volume, reference.volume);
+    EXPECT_DOUBLE_EQ(closed->turnover, reference.turnover);
+    EXPECT_EQ(closed->open_interest, reference.open_interest);
+    EXPECT_EQ(closed->cum_volume, reference.cum_volume);
+    EXPECT_DOUBLE_EQ(closed->cum_turnover, reference.cum_turnover);
+
     ASSERT_TRUE(builder_.has_current_bar());
     const Bar& bar = builder_.current_bar();
     EXPECT_EQ(bar.trading_day, TRADING_DAY + 1);
-    EXPECT_EQ(bar.volume, 3);  // 以 0 为基准，不是 3 - 15
+    EXPECT_EQ(bar.begin_sec, TSEC_09_00);  // 同一桶：begin_sec 不变
+    EXPECT_EQ(bar.volume, 3);              // 以 0 为基准，不是 3 - 15
     EXPECT_DOUBLE_EQ(bar.turnover, 300.0);
     EXPECT_GE(bar.volume, 0);
     EXPECT_GE(bar.turnover, 0.0);
