@@ -169,3 +169,106 @@ describe('Topbar 资源徽章（契约 sysmon 实时快照）', () => {
     expect(sysmonApi.getSnapshot).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
+  const GIB = 1024 ** 3
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  function diskBadges(wrapper: Awaited<ReturnType<typeof mountTopbar>>) {
+    return wrapper.findAll('.topbar__resource--disk')
+  }
+
+  it('默认快照：按卷集合渲染徽章，关注卷排首位并带 --watched 高亮', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountTopbar()
+
+    const badges = diskBadges(wrapper)
+    expect(badges).toHaveLength(3)
+    // 关注卷 /data 在 payload 中排第二，徽章仍排首位（不依赖发送端顺序）
+    expect(badges[0].attributes('data-mount')).toBe('/data')
+    expect(badges[0].classes()).toContain('topbar__resource--watched')
+    // 标签取挂载点末段（顶栏窄条 overflow:hidden），完整路径在 data-mount / title 里
+    expect(badges[0].find('.res-label').text()).toBe('data')
+    expect(badges[0].attributes('data-mount')).toBe('/data')
+    expect(badges[0].find('.res-value').text()).toBe('25%')
+    expect(badges[0].attributes('title')).toBe('/data 使用率 25%（关注卷）')
+
+    expect(badges[1].attributes('data-mount')).toBe('/')
+    expect(badges[1].classes()).not.toContain('topbar__resource--watched')
+    expect(badges[1].find('.res-value').text()).toBe('40%')
+    expect(badges[2].attributes('data-mount')).toBe('/home')
+    expect(badges[2].find('.res-value').text()).toBe('62%')
+  })
+
+  it('不硬编码盘符或数量：卷集合随快照变化（Windows 盘符同样按数据渲染）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      volumes: [
+        { mount: 'C:', watched: false, available: true, total_bytes: 500 * GIB, used_bytes: 250 * GIB, used_ratio: 0.5 },
+        { mount: 'D:', watched: true, available: true, total_bytes: 1000 * GIB, used_bytes: 800 * GIB, used_ratio: 0.8 },
+      ],
+    }))
+    const wrapper = await mountTopbar()
+
+    const badges = diskBadges(wrapper)
+    expect(badges).toHaveLength(2)
+    expect(badges.map(badge => badge.attributes('data-mount'))).toEqual(['D:', 'C:'])
+    expect(badges[0].classes()).toContain('topbar__resource--watched')
+    expect(badges[0].find('.res-value').text()).toBe('80%')
+    expect(badges[0].classes()).toContain('topbar__resource--warn')
+    expect(badges[1].find('.res-value').text()).toBe('50%')
+    expect(badges[1].classes()).toContain('topbar__resource--normal')
+  })
+
+  it('单卷不可用：徽章显示「不可用」+ 原因，不得用 0 冒充', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
+        { mount: '/backup', watched: false, available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+      ],
+    }))
+    const wrapper = await mountTopbar()
+
+    const badges = diskBadges(wrapper)
+    expect(badges).toHaveLength(2)
+    expect(badges[1].find('.res-value').text()).toBe('不可用')
+    expect(badges[1].classes()).toContain('topbar__resource--unavailable')
+    expect(badges[1].attributes('title')).toBe('/backup 卷不可用: no_permission')
+    expect(badges[1].text()).not.toContain('0%')
+  })
+
+  it('volumes 不可用 / 快照未到达：不渲染盘徽章（不残留假数字）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockRejectedValue(new Error('HTTP 503'))
+    const wrapper = await mountTopbar()
+    expect(diskBadges(wrapper)).toHaveLength(0)
+
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({
+      metrics: { volumes: { available: false, reason: 'disabled_by_config' } },
+    }))
+    await wrapper.vm.$nextTick()
+    expect(diskBadges(wrapper)).toHaveLength(0)
+  })
+
+  it('WS 推送刷新盘徽章（不重新 REST 拉取）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountTopbar()
+    expect(diskBadges(wrapper)).toHaveLength(3)
+
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/only', watched: true, available: true, total_bytes: 10 * GIB, used_bytes: 9 * GIB, used_ratio: 0.9 },
+      ],
+    }))
+    await wrapper.vm.$nextTick()
+
+    const badges = diskBadges(wrapper)
+    expect(badges).toHaveLength(1)
+    expect(badges[0].attributes('data-mount')).toBe('/only')
+    expect(badges[0].find('.res-value').text()).toBe('90%')
+    expect(badges[0].classes()).toContain('topbar__resource--danger')
+    expect(sysmonApi.getSnapshot).toHaveBeenCalledTimes(1)
+  })
+})

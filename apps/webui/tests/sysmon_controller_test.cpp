@@ -48,6 +48,7 @@ nlohmann::json minimal_snapshot() {
         {"memory", nullptr},
         {"swap", nullptr},
         {"volumes", nullptr},
+        {"watch_paths", nullptr},
         {"disk_io", nullptr},
         {"network", nullptr},
         {"shm_dir", nullptr},

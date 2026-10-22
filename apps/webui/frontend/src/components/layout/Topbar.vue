@@ -26,7 +26,7 @@ const connStatus = computed<{ text: string; dotClass: string }>(() => {
   }
 })
 
-// 顶栏资源徽章（CPU / 内存）：契约 sysmon 实时快照（固定实例 dzsysmon）。
+// 顶栏资源徽章（CPU / 内存 / 各卷）：契约 sysmon 实时快照（固定实例 dzsysmon）。
 // 首次挂载经 REST 补拉镜像，之后只由 WS 推送刷新 —— 刷新基线由发送方
 // realtime.push_interval_sec（默认 5s）决定，前端不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
@@ -95,6 +95,78 @@ const memBadge = computed<ResourceBadge>(() => {
       : 'topbar__resource--normal'
   return { text: `${percent}%`, stateClass, title: `内存使用率 ${percent}%` }
 })
+
+/**
+ * 各盘徽章（#75）：卷集合与顺序全部由快照驱动，不硬编码盘符或数量。
+ * 关注卷（watched=true）在 store 里已排前，此处额外高亮（topbar__resource--watched）。
+ * 单个卷 available=false 显示「不可用」，标题带原因 —— 不得用 0 冒充（契约 sysmon §2.4）。
+ */
+interface DiskBadge {
+  mount: string
+  label: string
+  text: string
+  stateClass: string
+  watched: boolean
+  title: string
+}
+
+/**
+ * 徽章标签取挂载点的末段（`/data` → `data`、`C:\\` → `C:`、根挂载点保留 `/`）：
+ * 顶栏是横向窄条且 `overflow: hidden`，完整路径会把后面的徽章挤出可视区；
+ * 完整路径保留在 title 里。旧写死徽章同样是 `C:` / `D:` 这类短标签。
+ */
+function shortMountLabel(mount: string): string {
+  const trimmed = mount.replace(/[\\/]+$/, '')
+  if (!trimmed) return mount  // 根挂载点（"/"、"C:\\" 归一后为空）保留原样
+  const lastSeparator = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  if (lastSeparator < 0) return trimmed  // "C:" 之类无分隔符
+  const segment = trimmed.slice(lastSeparator + 1)
+  return segment || trimmed
+}
+
+const diskBadges = computed<DiskBadge[]>(() => {
+  if (!sysmon.snapshot) return []
+  return sysmon.volumes.map((volume) => {
+    if (!volume.available) {
+      return {
+        mount: volume.mount,
+        label: shortMountLabel(volume.mount),
+        text: '不可用',
+        stateClass: 'topbar__resource--unavailable',
+        watched: volume.watched,
+        title: volume.reason
+          ? `${volume.mount} 卷不可用: ${volume.reason}`
+          : `${volume.mount} 卷不可用`,
+      }
+    }
+    const ratio = volume.used_ratio
+    if (ratio === null) {
+      // 可用但比率为 null（total=0 的特殊卷）：显示不可用而不是 0%
+      return {
+        mount: volume.mount,
+        label: shortMountLabel(volume.mount),
+        text: '不可用',
+        stateClass: 'topbar__resource--unavailable',
+        watched: volume.watched,
+        title: `${volume.mount} 卷使用率不可用`,
+      }
+    }
+    const percent = Math.round(ratio * 100)
+    const stateClass = ratio >= RESOURCE_DANGER_RATIO
+      ? 'topbar__resource--danger'
+      : ratio >= RESOURCE_WARN_RATIO
+        ? 'topbar__resource--warn'
+        : 'topbar__resource--normal'
+    return {
+      mount: volume.mount,
+      label: shortMountLabel(volume.mount),
+      text: `${percent}%`,
+      stateClass,
+      watched: volume.watched,
+      title: `${volume.mount} 使用率 ${percent}%${volume.watched ? '（关注卷）' : ''}`,
+    }
+  })
+})
 </script>
 
 <template>
@@ -130,8 +202,8 @@ const memBadge = computed<ResourceBadge>(() => {
           </span>
         </span>
         <span class="topbar__resource-divider"></span>
-        <!-- 资源徽章：CPU（#71）/ 内存（#74）已接入实时快照；磁盘 / NTP 假数字已删除，
-             随对应指标票（#75）补回真实徽章 -->
+        <!-- 资源徽章：CPU（#71）/ 内存（#74）/ 各卷（#75）均已接入实时快照；
+             NTP 与写死的磁盘假数字已删除 -->
         <span
           class="topbar__resource topbar__resource--cpu"
           :class="cpuBadge.stateClass"
@@ -149,6 +221,19 @@ const memBadge = computed<ResourceBadge>(() => {
         >
           <span class="res-label">MEM</span>
           <span class="res-value">{{ memBadge.text }}</span>
+        </span>
+        <!-- 各盘徽章：卷集合 / 顺序完全由快照驱动，不硬编码盘符或数量；
+             关注卷额外加 --watched 高亮 -->
+        <span
+          v-for="badge in diskBadges"
+          :key="badge.mount"
+          class="topbar__resource topbar__resource--disk"
+          :class="[badge.stateClass, { 'topbar__resource--watched': badge.watched }]"
+          :data-mount="badge.mount"
+          :title="badge.title"
+        >
+          <span class="res-label">{{ badge.label }}</span>
+          <span class="res-value">{{ badge.text }}</span>
         </span>
       </div>
     </div>
@@ -186,5 +271,10 @@ const memBadge = computed<ResourceBadge>(() => {
 /* 指标不可用 / 快照未到达：中性色，不得用状态色或 0 冒充数据 */
 .topbar__resource--unavailable .res-value {
   color: var(--text-tertiary);
+}
+
+/* 关注卷徽章（#75）：标签用警示色 token 高亮，与数值状态色区分（不硬编码颜色） */
+.topbar__resource--watched .res-label {
+  color: var(--status-warning-default);
 }
 </style>

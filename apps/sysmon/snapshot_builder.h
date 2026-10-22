@@ -5,9 +5,10 @@
  * @file snapshot_builder.h
  * @brief RTN_SYSMON_SNAPSHOT payload 构造（契约 sysmon §2）。
  *
- * 本票（#74）填系统信息、CPU 总量/每核/饱和标记/负载/上下文切换与中断速率、每核频率、
- * 温度、内存与交换；磁盘/网络等其余指标域仍输出 `null`/空数组并在 `availability.metrics`
- * 标记 `available=false + reason="not_implemented"`。已列出的指标域后续只填值、不改形状。
+ * 本票（#75）填系统信息、CPU 总量/每核/饱和标记/负载/上下文切换与中断速率、每核频率、
+ * 温度、内存与交换、卷容量与关注路径落卷、共享内存目录占用；磁盘 I/O 与网络仍输出 `null`
+ * 并在 `availability.metrics` 标记 `available=false + reason="not_implemented"`。
+ * 已列出的指标域后续只填值、不改形状。
  *
  * 纯函数：不读时钟、不读配置全局状态，输入即快照的全部事实来源，便于用假数据测试。
  */
@@ -69,6 +70,28 @@ struct MemorySwapMetrics {
     std::optional<platform::RawSwapInfo> swap;
 };
 
+/// 磁盘卷、关注路径与共享内存目录的测量结果与能力标记（#75）。
+///
+/// `volumes_collected` / `shm_dir_collected` 为**能力粘性**标记（契约 sysmon §2.5）：
+/// 一次成功读到后保持 true，此后单帧失败只把对应域置 null。
+/// 单个卷不可读**不改写** `volumes_collected`——该卷以 `available=false` 进数组（§2.4），
+/// 只有一次一个卷都枚举不到时才是整体采集失败。
+struct DiskMetrics {
+    /// 配置关闭 sampling.groups.volumes（优先级最高：域为 null + disabled_by_config）。
+    bool volumes_disabled = false;
+    bool volumes_collected = false;  ///< 卷采集能力是否可用（粘性）
+    /// 本帧原始卷读数；nullopt = 本帧未采集到（能力可用但失败，或不可用）。
+    std::optional<std::vector<platform::RawVolumeInfo>> volumes;
+
+    /// 本帧关注路径落卷解析结果；nullopt = 本帧未采集到。
+    /// **不受** `volumes_disabled` 影响（告警需要落卷信息，见 #80）。
+    std::optional<std::vector<platform::RawWatchPathInfo>> watch_paths;
+
+    bool shm_dir_collected = false;  ///< 共享内存目录采集能力是否可用（粘性）
+    /// 本帧共享内存目录占用；nullopt = 本帧未读到（能力可用但失败，或不可用）。
+    std::optional<platform::RawShmDirInfo> shm_dir;
+};
+
 /**
  * @brief 构造一帧实时快照。
  *
@@ -77,6 +100,7 @@ struct MemorySwapMetrics {
  * @param cpu_metrics          CPU 区块的测量结果与能力标记
  * @param temperature_metrics  温度传感器的测量结果与能力标记
  * @param memory_metrics       内存/交换的测量结果与能力标记
+ * @param disk_metrics         卷/关注路径/共享内存目录的测量结果与能力标记（#75）
  * @param measure_interval_ms  当前计量间隔（毫秒）
  * @param last_sample_unix_ms  最近一次计量成功的墙钟时间（Unix 毫秒，0 = 尚无成功样本）
  * @param missed_ticks         累计错过的计量 tick 数
@@ -88,6 +112,7 @@ struct MemorySwapMetrics {
                                                       const CpuMetrics& cpu_metrics,
                                                       const TemperatureMetrics& temperature_metrics,
                                                       const MemorySwapMetrics& memory_metrics,
+                                                      const DiskMetrics& disk_metrics,
                                                       int32_t measure_interval_ms,
                                                       int64_t last_sample_unix_ms,
                                                       uint64_t missed_ticks,

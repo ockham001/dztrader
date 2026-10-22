@@ -24,7 +24,7 @@
 
 ## 2. 快照（RTN_SYSMON_SNAPSHOT）
 
-**语义**：推送当前实时快照。当前版本（#74）填系统信息与 CPU 区块（总量、每核与饱和标记、系统负载、上下文切换/中断速率、每核频率）、温度、内存与交换；其余域按本文档定稿的形状输出 `null` 并在可用性映射中标记不可用。已列出的指标域后续只填值、**不改形状**（新增指标类别属 additive 扩展，按总则 §11.3 同步契约、类型与前端 schema；消费方忽略未知字段）。
+**语义**：推送当前实时快照。当前版本（#75）填系统信息与 CPU 区块（总量、每核与饱和标记、系统负载、上下文切换/中断速率、每核频率）、温度、内存与交换、卷容量与关注路径落卷、共享内存目录占用；其余域按本文档定稿的形状输出 `null` 并在可用性映射中标记不可用。已列出的指标域后续只填值、**不改形状**（新增指标类别属 additive 扩展，按总则 §11.3 同步契约、类型与前端 schema；消费方忽略未知字段）。
 
 **来源识别**：帧头无 `instance_id`（形态 4、发送方固定 `dzsysmon`），按总则 §5 在 payload 中显式携带 `source`。
 
@@ -43,10 +43,11 @@
 | `temperature` | array \| null | 温度传感器读数；`null` = 本平台不提供/无传感器/不可用（见 §2.4、可用性映射） |
 | `memory` | object \| null | 内存（见 §2.4）；`null` = 本帧未采集/不可用（见可用性映射） |
 | `swap` | object \| null | 交换分区/页文件（见 §2.4）；无交换时为 `total_bytes = 0` 的对象，读取失败可为 `null` |
-| `volumes` | array \| null | 卷容量 |
+| `volumes` | array \| null | 卷容量与可用性（见 §2.4） |
+| `watch_paths` | array \| null | 关注路径（共享内存目录 / 数据库目录）的落卷解析（见 §2.4） |
 | `disk_io` | array \| null | 每物理盘 I/O |
 | `network` | array \| null | 每网卡收发 |
-| `shm_dir` | object \| null | 共享内存目录占用 |
+| `shm_dir` | object \| null | 共享内存目录占用（见 §2.4） |
 | `availability` | object | 可用性描述（见下），**每个快照必须携带** |
 
 ### 2.1 sampling
@@ -100,7 +101,19 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 `swap`：`{total_bytes:int, used_bytes:int, used_ratio:number|null}`。无交换分区/无页面文件时 `total_bytes = 0`、`used_bytes = 0`、`used_ratio = null`，可用性映射标记不可用；读取失败时该对象也可以为 `null`（见可用性映射的 `collect_failed`）。**Windows 口径**：总量 = 由页面文件支撑的提交上限（`CommitLimit − PhysicalTotal`），已用 = 物理内存之外已提交的量（`CommitTotal − PhysicalTotal`，钳制到 `[0, total]`）；语义是"页面文件支撑的虚拟内存"，不是原始页面文件大小。
 
-`volumes[]`：`{mount:string, total_bytes:int, used_bytes:int, used_ratio:number|null}`。卷级"不可读/无权限"当前不进数组；若后续票需要区分"无此卷"与"读不到"，以 additive 字段（如 `available`/`reason`）扩展并同步契约、类型与前端 schema。
+`volumes[]`：`{mount:string, watched:bool, available:bool, total_bytes:int|null, used_bytes:int|null, used_ratio:number|null, reason?:string}`。
+
+- `mount` 为规范化挂载点：Linux 取挂载目录（`/`、`/home`），Windows 取盘符根（`C:\`）。同一帧内唯一。
+- `watched` 表示该卷承载了任一关注路径（§2.4 `watch_paths`），消费方据此高亮。
+- `available=false`（`reason` 必填）表示**卷存在但容量读不到**（无权限、卷不可访问）。此时 `total_bytes`/`used_bytes`/`used_ratio` **必须为 `null`**，不得用 0 冒充；卷仍然进数组，因为"卷存在但读不到"与"根本没有这个卷"是不同事实，消费方都要能显示。
+- `available=true` 时 `total_bytes`/`used_bytes` 为非负整数且 `used_bytes ≤ total_bytes`；`used_ratio = used_bytes / total_bytes`，`total_bytes = 0`（异常/特殊卷）时为 `null`。
+- 采集范围：Linux 过滤伪文件系统（`proc`/`sysfs`/`devtmpfs`/`devpts`/`tmpfs`/`cgroup*`/`debugfs`/`tracefs`/`configfs`/`mqueue`/`hugetlbfs`/`autofs`/`binfmt_misc`/`nsfs`/`pstore`/`securityfs`/`fusectl`/`bpf` 等），同一挂载点只保留一条；Windows 覆盖固定盘（`GetDriveType` = `DRIVE_FIXED`）。
+
+`watch_paths[]`：`{path:string, mount:string|null, available:bool, reason?:string}`。关注路径为默认的共享内存目录与数据库目录（配置 `disk.watch_paths` 非空时以其为准，见 §3.1）。
+
+- `path` 为解析用的路径（绝对路径，符号链接已跟随）；`mount` 为其所在卷的挂载点，与同帧 `volumes[].mount` 可直接相等比较；`available=false` 时 `mount = null` 且 `reason` 必填。
+- 解析义务：先规范化路径（`weakly_canonical`：解析 `.`/`..` 与符号链接，保留不存在的尾部用于诊断），再对卷挂载点做最长前缀匹配；Windows 匹配大小写不敏感、分隔符统一（`/` 与 `\` 等价），Linux 大小写敏感。
+- 路径不存在或解析不到任何卷 ⇒ `available=false` + `reason`（`path_not_found`）；权限不足 ⇒ `no_permission`；路径所在卷不在采集范围（网络盘、可移动盘、光驱等非固定盘）⇒ `unsupported`；其它解析失败 ⇒ `collect_failed`。**不得**在解析失败时猜一个卷或回退到 `/`。
 
 `disk_io[]`：`{device:string, read_bytes_per_sec, write_bytes_per_sec, read_iops, write_iops, latency_ms, queue_depth, utilization}`，速率/计量字段均为 `number | null`（计数器不可用时为 `null` 而非 0）。
 
@@ -108,7 +121,12 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 `temperature[]`：`{sensor:string, celsius:number}`。`sensor` 为稳定标识且在单帧内唯一（Linux hwmon：`<name>#<hwmonN>:<label>`，无 label 时为 `<name>#<hwmonN>:tempN`；`<hwmonN>` 为 sysfs hwmon 目录名，保证同一启动周期内稳定、不同设备不冲突；病态驱动同一芯片重复 label 时追加 `-<n>` 兜底），`celsius` 为摄氏温度。温度为瞬时 gauge，不是累计计数器；传感器集合可在帧间变化。**不可用不是 0**：传感器缺失/读取失败/该指标未采集时输出 `null`（能力可用但本帧未读到，见 §2.7），不得输出 0。Windows 恒为 `null`（不提供温度）。Linux 读取**全部 hwmon 温度传感器**，不按设备类型过滤（厂商芯片经 hwmon 暴露的 GPU/网卡温度也会出现，但仅温度读数，不扩张 C 组指标范围）。
 
-`shm_dir`：`{path:string, total_bytes:int, page_files:int, oldest_file_age_sec:int|null}`。
+`shm_dir`：`{path:string, total_bytes:int, page_files:int, oldest_file_age_sec:int|null}`。共享内存目录占用，用于确认页清理机制没有失效。
+
+- `path` 为共享内存根目录的绝对路径（`$DZTRADER_HOME/shm`）；`total_bytes` 为该目录下全部普通文件字节数之和（递归，含 `meta.dat` 与页文件）。
+- `page_files` 为页文件数量（递归统计文件名形如 `<数字>.dat` 的页文件；通道目录内的页文件按目录展开，`meta.dat` 不计）。
+- `oldest_file_age_sec` 为**最旧页文件**的文件年龄（秒，`0` 表示刚写入）；没有页文件时为 `null`。口径明确取页文件而非目录内任意文件（#75）：`meta.dat` 不随页清理消失，若把它算进来，"页清理失效"会被长期存在的元数据文件掩盖成正常。页文件年龄是页清理是否生效的直接信号。
+- 目录不存在/不可读/无权限 ⇒ `shm_dir = null` + 可用性 `collect_failed`（能力粘性），**不得**输出全 0 的对象（0 是"目录为空"这一真实事实，不是读取失败）。
 
 ### 2.5 availability（关键设计）
 
@@ -132,11 +150,13 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - `collect_failed` —— 本次采集失败（能力存在但读不到；下一次采样可能恢复）
 - `disabled_by_config` —— 该指标类别已被配置关闭（`sampling.groups` 中对应开关为 false）
 
-> 当前版本（#74）实现 `system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`memory`、`swap`；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon）——无 cpufreq 时 `cpu.frequency` 为 `unsupported`，无 hwmon 传感器时为 `temperature` = `no_sensor`；Windows 上两者不提供（默认配置关闭对应 B 组开关，故为 `disabled_by_config`；用户显式开启后采集器恒报 `unsupported`），也不提供整体频率。无交换分区/无页面文件的机器上 `swap` 为 `unsupported`。其余键固定为 `available=false` + `reason="not_implemented"`，对应域输出 `null` 或空数组。
+> 当前版本（#75）实现 `system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`memory`、`swap`、`volumes`、`shm_dir`；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon）——无 cpufreq 时 `cpu.frequency` 为 `unsupported`，无 hwmon 传感器时为 `temperature` = `no_sensor`；Windows 上两者不提供（默认配置关闭对应 B 组开关，故为 `disabled_by_config`；用户显式开启后采集器恒报 `unsupported`），也不提供整体频率。无交换分区/无页面文件的机器上 `swap` 为 `unsupported`。`disk_io` / `network` 固定为 `available=false` + `reason="not_implemented"`，对应域输出 `null`。
 >
 > `memory` / `swap` 的可用性同为**能力粘性**：一次成功读到后可用性保持 `true`；`swap` 还须确认本机确有交换/页面文件（`total_bytes > 0`），否则为 `available=false` + `reason="unsupported"` 且 payload 输出 `total_bytes=0` 的对象。此后单帧读取失败只把对应域置 `null`，不改写可用性。配置关闭 `sampling.groups.memory` / `sampling.groups.swap` 时优先输出 `available=false` + `reason="disabled_by_config"`，对应域为 `null`；前端内存/交换区块按可用性显示明确空态（不显示 0）。
 >
 > `cpu.cores` / `cpu.load_average` / `cpu.context_switches` 的可用性表示**能力**（不是本帧数值是否就绪）：能力一旦确认，可用性为粘性 `true`，此后的采样失败只把数值置 `null`，不改写可用性。能力从未确认或平台不支持时可为 `available=false` + `reason="collect_failed"`（平台不支持也可用 `unsupported`；当前版本无法区分能力缺失与暂时失败，统一用 `collect_failed`；`reason` 为自由文案，本版本新增建议取值 `collect_failed`）。
+>
+> `volumes` / `shm_dir` 的可用性同为**能力粘性**：一次成功枚举到卷 / 读到目录后可用性保持 `true`，此后单帧失败只把对应域置 `null`，不改写可用性。配置关闭 `sampling.groups.volumes` 时优先 `available=false` + `reason="disabled_by_config"`、`volumes` 为 `null`；配置关闭后 `watch_paths` 仍输出（落卷解析不受卷容量采集开关影响，告警需要它，见 #80）。`shm_dir` 没有独立配置组（页清理有效性是基础可观测项），始终采集。**单个卷不可读**不改写 `volumes` 的整体可用性——该卷以 `available=false` 进数组（§2.4），整体仍为 `available=true`；只有当一次卷都枚举不到时才整体标记 `collect_failed`。
 >
 > `cpu.frequency` / `temperature` 的可用性同为**能力粘性**：一次成功读到后可用性保持 `true`，此后单帧读取失败只把数值置 `null`（温度允许空数组/`null`、频率允许 `null`），消费方据此保留区块并显示「暂无数据」而不是「不可用」。配置关闭对应组时优先输出 `available=false` + `reason="disabled_by_config"`，数值为 `null`。温度/频率不可用时前端**整块不渲染**（不是显示 0，也不是显示「不可用」占位）。
 
@@ -181,10 +201,19 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
     "buffers_bytes": 268435456
   },
   "swap": {"total_bytes": 8589934592, "used_bytes": 2147483648, "used_ratio": 0.25},
-  "volumes": null,
+  "volumes": [
+    {"mount": "/", "watched": false, "available": true, "total_bytes": 107374182400, "used_bytes": 42949672960, "used_ratio": 0.4},
+    {"mount": "/data", "watched": true, "available": true, "total_bytes": 1099511627776, "used_bytes": 274877906944, "used_ratio": 0.25},
+    {"mount": "/backup", "watched": false, "available": false, "total_bytes": null, "used_bytes": null, "used_ratio": null, "reason": "no_permission"}
+  ],
+  "watch_paths": [
+    {"path": "/srv/dztrader/shm", "mount": "/data", "available": true},
+    {"path": "/srv/dztrader/db", "mount": "/data", "available": true},
+    {"path": "/srv/dztrader/missing", "mount": null, "available": false, "reason": "path_not_found"}
+  ],
   "disk_io": null,
   "network": null,
-  "shm_dir": null,
+  "shm_dir": {"path": "/srv/dztrader/shm", "total_bytes": 754974720, "page_files": 12, "oldest_file_age_sec": 480},
   "availability": {
     "platform_description": "Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)",
     "metrics": {
@@ -196,10 +225,10 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
       "cpu.frequency": {"available": true},
       "memory": {"available": true},
       "swap": {"available": true},
-      "volumes": {"available": false, "reason": "not_implemented"},
+      "volumes": {"available": true},
       "disk_io": {"available": false, "reason": "not_implemented"},
       "network": {"available": false, "reason": "not_implemented"},
-      "shm_dir": {"available": false, "reason": "not_implemented"},
+      "shm_dir": {"available": true},
       "temperature": {"available": true}
     },
     "semantic_hints": {}
@@ -246,7 +275,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 | `phase_offset_sec` | int | 3 | `[0, 86400]` | 记录 tick 相位偏移，避开整点附近其它任务 |
 | `groups` | object\<string,bool\> | Linux：全部 true；Windows：`temperature`/`cpu_frequency` 为 false | 值必须 bool | 启用的指标大类：`cpu`/`memory`/`swap`/`volumes`/`disk_io`/`network`/`temperature`/`cpu_frequency`。`temperature` 与 `cpu_frequency` 属 B 组：Linux 默认开（有 hwmon / cpufreq 时）；Windows 默认关（平台上不可靠或不存在，需显式开启；本版本 Windows 采集器仍报告 `unsupported`）。缺少的键按 true 处理 |
 
-`disk`：`{watch_paths:string[], devices:string[]}`（元素非空；`watch_paths` 为空表示使用默认关注路径——共享内存目录与数据库目录所在卷）。
+`disk`：`{watch_paths:string[], devices:string[]}`（元素非空；`watch_paths` 为空表示使用默认关注路径——共享内存目录与数据库目录；非空时逐条解析并作为 `watch_paths[]` 输出，同时决定 `volumes[].watched`）。`watch_paths` 影响快照 `watch_paths` / `volumes[].watched`，运行期修改随 #81 生效。
 
 `network`：`{hide_virtual:bool}`，默认 `true`（隐藏 Hyper-V/WSL/Docker 虚拟网卡）。
 
@@ -302,6 +331,8 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 - 快照中 `null` **仅允许**出现在本文档 §2 明确标注 `| null` 的位置；其余位置出现 `null` 为校验失败。
 - `used_bytes` 必须等于 `total_bytes − available_bytes`（`memory`）；`used_bytes ≤ total_bytes`（`memory`/`swap`/`volumes`）；`memory.cached_bytes` / `memory.buffers_bytes` 缺失或 `null` 合法，出现时须为非负整数且不大于 `total_bytes`。
+- `volumes[]`：`mount` 非空且帧内唯一；`available=true` 时 `total_bytes`/`used_bytes` 必须为非负整数且 `used_bytes ≤ total_bytes`、`used_ratio` 为 `[0,1]` 或 `null`，且**不得**出现 `reason`；`available=false` 时 `reason` 必须非空、`total_bytes`/`used_bytes`/`used_ratio` **必须**为 `null`（禁止用 0 冒充）。
+- `watch_paths[]`：`path` 非空且帧内唯一；`available=true` 时 `mount` 必须非空且不得出现 `reason`，且**当同帧 `volumes` 非 `null` 时** `mount` 必须为 `volumes[].mount` 之一（`volumes` 为 `null` 时不交叉校验——配置关闭卷采集后落卷信息仍要能给告警用）；`available=false` 时 `mount` 必须为 `null` 且 `reason` 必须非空。
 - 比率为 `[0,1]`；字节/计数为非负整数；`boot_time_unix_sec`/`uptime_sec` 非负。
 - `availability.metrics` 中 `available=false` 时 `reason` 必须存在且非空；`available=true` 时不得出现 `reason`。
 - 未知字段忽略（前向兼容）。

@@ -53,10 +53,12 @@
 #include <format>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace dztrader::sysmon {
 namespace {
@@ -160,6 +162,7 @@ private:
         refresh_load_average();
         refresh_sensor_metrics();
         refresh_memory_metrics();
+        refresh_disk_metrics();
 
         // 事件通道由 master 创建（open_only）；reader/writer 名 = 进程名，
         // 与 master 的 register_subscriber(entry.name) / make_subscriber_name 一致。
@@ -371,11 +374,84 @@ private:
         }
     }
 
+    /// 采样一次卷容量、关注路径落卷与共享内存目录占用（#75）。
+    ///
+    /// 卷/目录能力标记粘性：一次成功后 available 保持 true，本帧失败只把域置 null
+    /// （契约 sysmon §2.5）。单个卷不可读不改写整体可用性——采集层把该卷以
+    /// "容量字段为 null + reason" 放进数组（契约 sysmon §2.4）。
+    /// `watch_paths` 不受 `sampling.groups.volumes` 影响（路径感知告警需要它，见 #80）。
+    void refresh_disk_metrics() {
+        if (!group_enabled("volumes")) {
+            disk_metrics_.volumes_disabled = true;
+            disk_metrics_.volumes = std::nullopt;
+        } else {
+            disk_metrics_.volumes_disabled = false;
+            const auto volumes = collector_->collect_volumes();
+            disk_metrics_.volumes = volumes;
+            if (volumes.has_value()) {
+                disk_metrics_.volumes_collected = true;
+            }
+        }
+        // 关注路径：配置非空以其为准，否则用默认的共享内存目录与数据库目录
+        // （契约 sysmon §2.4、§3.1）。
+        disk_metrics_.watch_paths = reconcile_watch_paths(
+            collector_->collect_watch_paths(resolve_watch_paths()), disk_metrics_.volumes);
+
+        const auto shm_dir = collector_->collect_shm_dir(dztrader::paths::shm().string());
+        disk_metrics_.shm_dir = shm_dir;
+        if (shm_dir.has_value()) {
+            disk_metrics_.shm_dir_collected = true;
+        }
+    }
+
+    /// 把落卷结果与同帧卷列表对齐（契约 sysmon §7：available=true 的 watch_path 必须指向
+    /// 同帧 volumes 里存在的挂载点）。
+    ///
+    /// 卷枚举与落卷解析是两次独立的 /proc 挂载表快照（契约把两者放在不同采集中），
+    /// 两者之间发生挂载表变化时落卷可能指向一个本帧未列出的挂载点。若照实上报，
+    /// dzweb 的契约校验会拒掉**整帧快照**（连 CPU/内存一起丢），对 7x24 监控代价太大；
+    /// 因此这里把对不上的条目降级为"本帧未解析成功"（不伪造卷，也不拖垮整帧）。
+    std::optional<std::vector<platform::RawWatchPathInfo>> reconcile_watch_paths(
+        std::optional<std::vector<platform::RawWatchPathInfo>> watch_paths,
+        const std::optional<std::vector<platform::RawVolumeInfo>>& volumes) {
+        // volumes 为 null（组关闭或本帧未采集）时契约不做交叉校验，原样上报。
+        if (!watch_paths.has_value() || !volumes.has_value()) {
+            return watch_paths;
+        }
+        std::set<std::string> mounts;
+        for (const auto& volume : *volumes) {
+            mounts.insert(volume.mount);
+        }
+        bool reconciled = false;
+        for (auto& info : *watch_paths) {
+            if (info.mount.has_value() && !mounts.contains(*info.mount)) {
+                info.mount = std::nullopt;
+                info.reason = "collect_failed";
+                reconciled = true;
+            }
+        }
+        if (reconciled) {
+            // 挂载表在两次读取之间变化：罕见但真实（umount/mount 竞态），记日志便于诊断。
+            SPDLOG_WARN("watch path mount missing from volume list | action=downgraded");
+        }
+        return watch_paths;
+    }
+
+    /// 关注路径列表：配置 `disk.watch_paths` 非空时以其为准，否则用默认的
+    /// 共享内存目录与数据库目录（契约 sysmon §3.1）。
+    std::vector<std::string> resolve_watch_paths() const {
+        if (!config_.disk.watch_paths.empty()) {
+            return config_.disk.watch_paths;
+        }
+        return {dztrader::paths::shm().string(), dztrader::paths::db().string()};
+    }
+
     /// 采样一次 CPU 计数器并更新使用率/每核/饱和标记/速率/缺口标记。
     void measure_once() {
         const auto now = std::chrono::steady_clock::now();
         refresh_sensor_metrics();  // 温度/频率是独立 gauge，CPU 采集失败也照样刷新
         refresh_memory_metrics();  // 内存/交换同为独立 gauge，与 CPU 采集成败无关
+        refresh_disk_metrics();    // 卷/落卷/共享内存目录同为独立事实，与 CPU 采集成败无关
         auto current = collector_->collect_cpu_times();
         if (!current.has_value()) {
             ++missed_ticks_;     // 采集失败：跳过本次计量并记缺口（契约 sysmon §2.7）
@@ -489,8 +565,8 @@ private:
         try {
             const auto snapshot =
                 build_snapshot(name_, system_info_, metrics_, temperature_metrics_, memory_metrics_,
-                               config_.sampling.measure_interval_ms, last_sample_unix_ms_,
-                               missed_ticks_, wall_clock_unix_ms());
+                               disk_metrics_, config_.sampling.measure_interval_ms,
+                               last_sample_unix_ms_, missed_ticks_, wall_clock_unix_ms());
             (void)platform::write_ext_json(*event_writer_, DZ_FRAME_RTN_SYSMON_SNAPSHOT, snapshot);
         } catch (const std::exception& e) {
             SPDLOG_ERROR("push snapshot failed | error=\"{}\"", e.what());
@@ -660,6 +736,7 @@ private:
     CpuMetrics metrics_;
     TemperatureMetrics temperature_metrics_;
     MemorySwapMetrics memory_metrics_;
+    DiskMetrics disk_metrics_;
     CoreSaturationTracker saturation_tracker_;
     int64_t last_sample_unix_ms_ = 0;
     uint64_t missed_ticks_ = 0;

@@ -37,14 +37,19 @@
 #include <psapi.h>   // GetPerformanceInfo：内存与页文件口径（契约 sysmon §2.4）
 #include <winreg.h>
 
+#include "system_collector_internal.h"
+
 #include <dztrader/platform/system_collector.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cwctype>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -652,6 +657,205 @@ std::optional<RawSwapInfo> query_swap_info() {
     return swap;
 }
 
+// ===== 卷、关注路径与共享内存目录（契约 sysmon §2.4）=====
+//
+// 卷枚举走 GetLogicalDrives + GetDriveTypeW（只要 DRIVE_FIXED 固定盘，契约 §2.4）；
+// 容量走 GetDiskFreeSpaceExW。容量读不到（无权限/卷不可访问）的卷仍进数组，
+// total/free 留 nullopt 并给 reason——"存在但读不到"不得用 0 冒充。
+// 关注路径的落卷解析用 GetVolumePathNameW（OS 自己给出的挂载点，天然处理
+// 驱动器挂载、目录挂载点与卷 GUID，不让本进程重实现一遍匹配规则）。
+
+/// UTF-8 转宽字符；转换失败返回空串。
+std::wstring utf8_to_wide(std::string_view text) {
+    if (text.empty()) {
+        return {};
+    }
+    const int input_length = static_cast<int>(text.size());
+    const int wide_length = MultiByteToWideChar(CP_UTF8, 0, text.data(), input_length, nullptr, 0);
+    if (wide_length <= 0) {
+        return {};
+    }
+    std::wstring wide(static_cast<std::size_t>(wide_length), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, 0, text.data(), input_length, wide.data(), wide_length) <= 0) {
+        return {};
+    }
+    return wide;
+}
+
+/// 盘符列表（`C:`、`D:` ...；不含尾部分隔符）。
+std::vector<std::string> list_fixed_drives() {
+    std::vector<std::string> drives;
+    const DWORD mask = GetLogicalDrives();
+    if (mask == 0) {
+        return drives;
+    }
+    for (int index = 0; index < 26; ++index) {
+        if ((mask & (1UL << static_cast<unsigned>(index))) == 0) {
+            continue;
+        }
+        const char letter = static_cast<char>('A' + index);
+        const std::wstring root = std::wstring(1, static_cast<wchar_t>(letter)) + L":\\";
+        if (GetDriveTypeW(root.c_str()) != DRIVE_FIXED) {
+            continue;  // 只覆盖固定盘：可移动/网络/光驱不是容量基线（契约 sysmon §2.4）
+        }
+        drives.push_back(std::string(1, letter) + ":");
+    }
+    return drives;
+}
+
+/// 递归统计目录占用（契约 sysmon §2.4）：总字节数、页文件数、最旧页文件年龄。
+std::optional<RawShmDirInfo> query_shm_dir(const std::string& shm_dir) {
+    const auto wide_dir = utf8_to_wide(shm_dir);
+    if (wide_dir.empty()) {
+        return std::nullopt;
+    }
+    std::error_code ec;
+    const std::filesystem::path root(wide_dir);
+    if (!std::filesystem::is_directory(root, ec) || ec) {
+        return std::nullopt;  // 目录不存在/不可读：不得输出全 0 的对象
+    }
+    // `is_directory()` 对无读取权限的目录仍为 true，而下面的递归迭代带
+    // skip_permission_denied 会静默产出 0 个条目 + ec=0 —— 那会把"无权限"谎报成
+    // "目录为空"的全 0 对象（契约 sysmon §2.4 禁止）。先探一次可读性。
+    {
+        std::error_code probe_ec;
+        const std::filesystem::directory_iterator probe(root, probe_ec);
+        if (probe_ec) {
+            return std::nullopt;
+        }
+    }
+    // 不需要深度上限：递归迭代器默认不跟随目录符号链接（无环），shm 树只有两层。
+    RawShmDirInfo info;
+    info.path = shm_dir;
+    const auto now = std::chrono::file_clock::now();
+    std::filesystem::recursive_directory_iterator it(
+        root, std::filesystem::directory_options::skip_permission_denied, ec);
+    const std::filesystem::recursive_directory_iterator end;
+    while (!ec && it != end) {
+        std::error_code entry_ec;
+        if (it->is_regular_file(entry_ec) && !entry_ec) {
+            const auto size = static_cast<uint64_t>(it->file_size(entry_ec));
+            if (!entry_ec) {
+                info.total_bytes += size;
+            }
+            const auto narrow = wide_to_utf8(it->path().filename().wstring());
+            if (system_collector_internal::is_shm_page_file_name(narrow)) {
+                ++info.page_files;
+                const auto write_time = it->last_write_time(entry_ec);
+                if (!entry_ec) {
+                    const auto age =
+                        std::chrono::duration_cast<std::chrono::seconds>(now - write_time);
+                    // 未来时间（时钟回拨/异常 mtime）按 0 处理，不给负年龄。
+                    const int64_t age_sec = age.count() > 0 ? age.count() : 0;
+                    if (!info.oldest_file_age_sec.has_value() ||
+                        age_sec > *info.oldest_file_age_sec) {
+                        info.oldest_file_age_sec = age_sec;
+                    }
+                }
+            }
+        }
+        it.increment(ec);
+    }
+    return info;
+}
+
+/// 规范化路径为绝对路径（`GetFullPathNameW`：解析 `.`/`..`、统一分隔符为 `\`）。
+/// @return 规范化后的 UTF-8 路径；失败返回 std::nullopt。
+std::optional<std::string> absolute_path(const std::string& path) {
+    const auto wide_path = utf8_to_wide(path);
+    if (wide_path.empty()) {
+        return std::nullopt;
+    }
+    const DWORD needed = GetFullPathNameW(wide_path.c_str(), 0, nullptr, nullptr);
+    if (needed == 0) {
+        return std::nullopt;
+    }
+    std::wstring absolute(static_cast<std::size_t>(needed), L'\0');
+    const DWORD written = GetFullPathNameW(wide_path.c_str(), needed, absolute.data(), nullptr);
+    if (written == 0 || written >= needed) {
+        return std::nullopt;
+    }
+    absolute.resize(written);
+    return wide_to_utf8(absolute);
+}
+
+/// 取挂载点所属的盘符根（`C:\mnt\vol2` → `C:\`；`C:` → `C:\`）。
+/// UNC（`\\server\share`）与卷 GUID 路径没有盘符根，返回空串（调用方判为不在范围）。
+std::string drive_root_of(const std::string& mount) {
+    if (mount.size() < 2 || mount[1] != ':') {
+        return {};
+    }
+    return mount.substr(0, 2) + "\\";
+}
+
+/// 用 GetVolumePathNameW 把路径解析到所在卷的挂载点（契约 sysmon §2.4）。
+/// @return 挂载点（带尾部分隔符的盘符根或目录挂载点）；失败返回 std::nullopt。
+std::optional<std::string> resolve_volume_mount(const std::string& path) {
+    // GetVolumePathNameW 要求绝对路径（调用方已用 absolute_path() 规范化）。
+    const auto absolute_path_string = absolute_path(path);
+    if (!absolute_path_string.has_value()) {
+        return std::nullopt;
+    }
+    const std::wstring absolute = utf8_to_wide(*absolute_path_string);
+    if (absolute.empty()) {
+        return std::nullopt;
+    }
+
+    // 挂载点缓冲区按 MAX_PATH 起步，长度不足时按 API 约定扩展。
+    std::wstring volume_path(MAX_PATH, L'\0');
+    while (true) {
+        if (GetVolumePathNameW(absolute.c_str(), volume_path.data(),
+                               static_cast<DWORD>(volume_path.size())) != 0) {
+            break;
+        }
+        if (GetLastError() != ERROR_FILENAME_EXCED_RANGE) {
+            return std::nullopt;
+        }
+        volume_path.resize(volume_path.size() * 2);
+        if (volume_path.size() > 32 * 1024) {
+            return std::nullopt;  // 病态长路径：放弃解析（调用方报 collect_failed）
+        }
+    }
+    std::wstring resolved = std::wstring(volume_path.c_str());
+    // 盘符统一成大写：query_volumes() 的挂载点由 'A'+index 生成（恒大写），而
+    // GetVolumePathNameW 会把调用方输入的大小写原样回显（`c:\` 得 `c:\`）。
+    // 契约 sysmon §2.4 要求 Windows 匹配大小写不敏感，消费方（快照构造的 watched
+    // 判定、dzweb 的 §7 交叉校验）用字符串相等比较，所以这里必须归一化，
+    // 否则小写盘符的关注路径永远对不上卷、整帧还会被交叉校验拒掉。
+    if (resolved.size() >= 2 && resolved[1] == L':') {
+        resolved[0] = static_cast<wchar_t>(std::towupper(resolved[0]));
+    }
+    return wide_to_utf8(resolved);
+}
+
+/// 采集卷列表与容量（契约 sysmon §2.4）；一个固定盘都没有时返回 std::nullopt。
+std::optional<std::vector<RawVolumeInfo>> query_volumes() {
+    const auto drives = list_fixed_drives();
+    if (drives.empty()) {
+        return std::nullopt;
+    }
+    std::vector<RawVolumeInfo> volumes;
+    volumes.reserve(drives.size());
+    for (const auto& drive : drives) {
+        RawVolumeInfo volume;
+        // 挂载点统一为带尾部分隔符的盘符根（`C:\\`），与 GetVolumePathNameW 返回口径一致。
+        volume.mount = drive + "\\";
+        const std::wstring wide_root = utf8_to_wide(volume.mount);
+        ULARGE_INTEGER free_to_caller{};
+        ULARGE_INTEGER total{};
+        ULARGE_INTEGER free_total{};
+        if (GetDiskFreeSpaceExW(wide_root.c_str(), &free_to_caller, &total, &free_total) != 0) {
+            volume.total_bytes = total.QuadPart;
+            volume.free_bytes = std::min(free_to_caller.QuadPart, total.QuadPart);
+        } else {
+            const DWORD error = GetLastError();
+            volume.reason = (error == ERROR_ACCESS_DENIED) ? "no_permission" : "collect_failed";
+        }
+        volumes.push_back(std::move(volume));
+    }
+    return volumes;
+}
+
 /// Windows 采集器：系统信息每次现取；负载代理持有 PDH 查询与加权状态。
 class WindowsSystemCollector final : public SystemCollector {
 public:
@@ -677,6 +881,70 @@ public:
     std::optional<RawMemoryInfo> collect_memory() override { return query_memory_info(); }
 
     std::optional<RawSwapInfo> collect_swap() override { return query_swap_info(); }
+
+    std::optional<std::vector<RawVolumeInfo>> collect_volumes() override { return query_volumes(); }
+
+    std::vector<RawWatchPathInfo> collect_watch_paths(
+        const std::vector<std::string>& paths) override {
+        std::vector<RawWatchPathInfo> results;
+        results.reserve(paths.size());
+        for (const auto& path : paths) {
+            RawWatchPathInfo info;
+            info.path = path;
+            // 路径不存在 ⇒ 如实报 path_not_found（GetVolumePathNameW 对不存在的尾部
+            // 仍可能返回父卷，不能据此报成功，契约 sysmon §2.4）。
+            const auto absolute = absolute_path(path);
+            if (!absolute.has_value()) {
+                info.reason = "path_not_found";
+                results.push_back(std::move(info));
+                continue;
+            }
+            // 契约 sysmon §2.4：path 是"解析用的路径（绝对路径）"，上报规范化结果而不是
+            // 调用方原始输入（分隔符已统一为 `\`、`.`/`..` 已解析）。
+            info.path = *absolute;
+            std::error_code exists_ec;
+            const bool exists =
+                std::filesystem::exists(std::filesystem::path(utf8_to_wide(*absolute)), exists_ec);
+            if (!exists || exists_ec) {
+                info.reason = "path_not_found";
+                results.push_back(std::move(info));
+                continue;
+            }
+            const auto mount = resolve_volume_mount(*absolute);
+            if (!mount.has_value()) {
+                // 路径存在但解析不到挂载点（极端长路径/卷服务异常）：不猜卷（契约 sysmon §2.4）。
+                info.reason = "collect_failed";
+                results.push_back(std::move(info));
+                continue;
+            }
+            // 卷容量只覆盖固定盘根（契约 sysmon §2.4）：落卷落在网络盘/可移动盘/UNC 上时
+            // 该挂载点不会出现在 volumes[] 里，照实报 mount 会让整帧交叉校验失败。
+            // 契约要求此类报 unsupported（"卷不在采集范围"），mount 留 null。
+            //
+            // 注意**不能**用"是否是固定盘"作为唯一判据：NTFS 支持把一个卷挂载成目录
+            // （`C:\mnt\vol2`）。这类路径的挂载点在 C: 上、GetDriveType 也是 FIXED，
+            // 但 `C:\mnt\vol2` 不等于 volumes[] 里的 `C:\`，同样会打红交叉校验。
+            // 判据统一为：挂载点的盘符根 == 该盘根的规范化形式（即挂载点就是卷根）。
+            const auto mount_root = drive_root_of(*mount);
+            const std::wstring wide_mount_root = utf8_to_wide(mount_root);
+            const bool in_scope =
+                wide_mount_root.size() >= 3 &&
+                GetDriveTypeW(wide_mount_root.substr(0, 3).c_str()) == DRIVE_FIXED &&
+                *mount == mount_root;
+            if (!in_scope) {
+                info.reason = "unsupported";
+                results.push_back(std::move(info));
+                continue;
+            }
+            info.mount = *mount;
+            results.push_back(std::move(info));
+        }
+        return results;
+    }
+
+    std::optional<RawShmDirInfo> collect_shm_dir(const std::string& shm_dir) override {
+        return query_shm_dir(shm_dir);
+    }
 
 private:
     WindowsLoadAverageSampler load_sampler_;

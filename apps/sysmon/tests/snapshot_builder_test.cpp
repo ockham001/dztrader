@@ -71,8 +71,9 @@ constexpr uint64_t kMissedTicks = 2;
 platform::SysmonSnapshot build_with(const platform::RawSystemInfo& info,
                                     const CpuMetrics& metrics,
                                     const TemperatureMetrics& temperature = {},
-                                    const MemorySwapMetrics& memory = {}) {
-    return build_snapshot(kSourceName, info, metrics, temperature, memory, kMeasureIntervalMs,
+                                    const MemorySwapMetrics& memory = {},
+                                    const DiskMetrics& disk = {}) {
+    return build_snapshot(kSourceName, info, metrics, temperature, memory, disk, kMeasureIntervalMs,
                           kLastSampleMs, kMissedTicks, kNowMs);
 }
 
@@ -319,6 +320,7 @@ TEST(SnapshotBuilderTest, UncollectedDomainsAreNull) {
     EXPECT_EQ(snapshot.memory, std::nullopt);
     EXPECT_EQ(snapshot.swap, std::nullopt);
     EXPECT_EQ(snapshot.volumes, std::nullopt);
+    EXPECT_EQ(snapshot.watch_paths, std::nullopt);
     EXPECT_EQ(snapshot.disk_io, std::nullopt);
     EXPECT_EQ(snapshot.network, std::nullopt);
     EXPECT_EQ(snapshot.shm_dir, std::nullopt);
@@ -362,9 +364,15 @@ TEST(SnapshotBuilderTest, AvailabilityCoversAllThirteenKeys) {
         EXPECT_TRUE(entry.available) << key;
         EXPECT_EQ(entry.reason, std::nullopt) << key;
     }
-    // 其余 4 键：available=false + reason="not_implemented"
-    for (const char* key : {platform::SYSMON_METRIC_VOLUMES, platform::SYSMON_METRIC_DISK_IO,
-                            platform::SYSMON_METRIC_NETWORK, platform::SYSMON_METRIC_SHM_DIR}) {
+    // #75 起 volumes/shm_dir 已实现：本用例未传盘测结果（能力从未确认）→ collect_failed。
+    for (const char* key : {platform::SYSMON_METRIC_VOLUMES, platform::SYSMON_METRIC_SHM_DIR}) {
+        const auto& entry = snapshot.availability.metrics.at(key);
+        EXPECT_FALSE(entry.available) << key;
+        ASSERT_TRUE(entry.reason.has_value()) << key;
+        EXPECT_EQ(entry.reason.value(), "collect_failed") << key;
+    }
+    // 其余 2 键仍未实现：available=false + reason="not_implemented"
+    for (const char* key : {platform::SYSMON_METRIC_DISK_IO, platform::SYSMON_METRIC_NETWORK}) {
         const auto& entry = snapshot.availability.metrics.at(key);
         EXPECT_FALSE(entry.available) << key;
         ASSERT_TRUE(entry.reason.has_value()) << key;
@@ -724,6 +732,9 @@ public:
     std::optional<std::vector<platform::RawCoreFrequency>> core_frequencies;
     std::optional<platform::RawMemoryInfo> memory;
     std::optional<platform::RawSwapInfo> swap;
+    std::optional<std::vector<platform::RawVolumeInfo>> volumes;
+    std::vector<platform::RawWatchPathInfo> watch_paths;
+    std::optional<platform::RawShmDirInfo> shm_dir;
 
     platform::RawSystemInfo collect_system_info() override { return info; }
     std::optional<platform::RawCpuTimes> collect_cpu_times() override { return times; }
@@ -736,6 +747,19 @@ public:
     }
     std::optional<platform::RawMemoryInfo> collect_memory() override { return memory; }
     std::optional<platform::RawSwapInfo> collect_swap() override { return swap; }
+    std::optional<std::vector<platform::RawVolumeInfo>> collect_volumes() override {
+        return volumes;
+    }
+    std::vector<platform::RawWatchPathInfo> collect_watch_paths(
+        const std::vector<std::string>& paths) override {
+        (void)paths;
+        return watch_paths;
+    }
+    std::optional<platform::RawShmDirInfo> collect_shm_dir(
+        const std::string& shm_dir_path) override {
+        (void)shm_dir_path;
+        return shm_dir;
+    }
 };
 
 TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {
@@ -804,6 +828,160 @@ TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {
     EXPECT_DOUBLE_EQ(*snapshot.cpu.total.usage_ratio, 0.25);
     EXPECT_EQ(snapshot.availability.metrics.at("cpu.cores").available, true);
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+// ===== #75：卷、关注路径与共享内存目录 =====
+
+/// #75 落地后的典型盘测数据：两个可读卷（其一被关注）+ 一个读不到容量的卷。
+DiskMetrics make_disk_metrics() {
+    DiskMetrics disk;
+    disk.volumes_collected = true;
+    disk.volumes = std::vector<platform::RawVolumeInfo>{
+        {.mount = "/",
+         .total_bytes = 100ULL * 1024 * 1024 * 1024,
+         .free_bytes = 40ULL * 1024 * 1024 * 1024,
+         .reason = ""},
+        {.mount = "/data",
+         .total_bytes = 1000ULL * 1024 * 1024 * 1024,
+         .free_bytes = 750ULL * 1024 * 1024 * 1024,
+         .reason = ""},
+        {.mount = "/backup",
+         .total_bytes = std::nullopt,
+         .free_bytes = std::nullopt,
+         .reason = "no_permission"},
+    };
+    disk.watch_paths = std::vector<platform::RawWatchPathInfo>{
+        {.path = "/srv/dztrader/shm", .mount = "/data", .reason = ""},
+        {.path = "/srv/dztrader/db", .mount = "/data", .reason = ""},
+    };
+    disk.shm_dir_collected = true;
+    disk.shm_dir = platform::RawShmDirInfo{.path = "/srv/dztrader/shm",
+                                           .total_bytes = 754'974'720,
+                                           .page_files = 12,
+                                           .oldest_file_age_sec = 480};
+    return disk;
+}
+
+TEST(SnapshotBuilderTest, DiskDomainsAreEncodedWhenCollected) {
+    const auto snapshot =
+        build_with(make_linux_info(), make_full_metrics(), {}, {}, make_disk_metrics());
+
+    ASSERT_TRUE(snapshot.volumes.has_value());
+    ASSERT_EQ(snapshot.volumes->size(), 3U);
+    // used = total - free，比率由之计算（契约 sysmon §2.4）。
+    const auto& root = (*snapshot.volumes)[0];
+    EXPECT_EQ(root.mount, "/");
+    EXPECT_FALSE(root.watched);
+    EXPECT_TRUE(root.available);
+    ASSERT_TRUE(root.total_bytes.has_value());
+    ASSERT_TRUE(root.used_bytes.has_value());
+    EXPECT_EQ(*root.used_bytes, 60ULL * 1024 * 1024 * 1024);
+    ASSERT_TRUE(root.used_ratio.has_value());
+    EXPECT_DOUBLE_EQ(*root.used_ratio, 0.6);
+
+    // 关注路径落在的卷被标记 watched（契约 sysmon §2.4）。
+    EXPECT_TRUE((*snapshot.volumes)[1].watched);
+
+    // 读不到容量的卷：available=false + reason，容量字段保持 null（不得用 0 冒充）。
+    const auto& backup = (*snapshot.volumes)[2];
+    EXPECT_EQ(backup.mount, "/backup");
+    EXPECT_FALSE(backup.available);
+    EXPECT_FALSE(backup.total_bytes.has_value());
+    EXPECT_FALSE(backup.used_bytes.has_value());
+    EXPECT_FALSE(backup.used_ratio.has_value());
+    ASSERT_TRUE(backup.reason.has_value());
+    EXPECT_EQ(*backup.reason, "no_permission");
+
+    ASSERT_TRUE(snapshot.watch_paths.has_value());
+    ASSERT_EQ(snapshot.watch_paths->size(), 2U);
+    ASSERT_TRUE((*snapshot.watch_paths)[0].mount.has_value());
+    EXPECT_EQ(*(*snapshot.watch_paths)[0].mount, "/data");
+    EXPECT_TRUE((*snapshot.watch_paths)[0].available);
+
+    ASSERT_TRUE(snapshot.shm_dir.has_value());
+    EXPECT_EQ(snapshot.shm_dir->path, "/srv/dztrader/shm");
+    EXPECT_EQ(snapshot.shm_dir->total_bytes, 754'974'720U);
+    EXPECT_EQ(snapshot.shm_dir->page_files, 12U);
+    ASSERT_TRUE(snapshot.shm_dir->oldest_file_age_sec.has_value());
+    EXPECT_EQ(*snapshot.shm_dir->oldest_file_age_sec, 480);
+
+    // 可用性与契约校验：整帧必须通过 SysmonSnapshot::validate。
+    EXPECT_TRUE(snapshot.availability.metrics.at("volumes").available);
+    EXPECT_TRUE(snapshot.availability.metrics.at("shm_dir").available);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, UnreadableVolumeStaysInArray) {
+    // 单个卷不可读不改写整体可用性：卷仍在数组里，整体仍 available（契约 sysmon §2.5）。
+    const auto snapshot =
+        build_with(make_linux_info(), make_full_metrics(), {}, {}, make_disk_metrics());
+    EXPECT_TRUE(snapshot.availability.metrics.at("volumes").available);
+    ASSERT_TRUE(snapshot.volumes.has_value());
+    EXPECT_EQ(snapshot.volumes->size(), 3U);
+}
+
+TEST(SnapshotBuilderTest, FailedWatchPathResolutionIsReportedNotGuessed) {
+    DiskMetrics disk = make_disk_metrics();
+    disk.watch_paths = std::vector<platform::RawWatchPathInfo>{
+        {.path = "/srv/dztrader/missing", .mount = std::nullopt, .reason = "path_not_found"},
+    };
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
+
+    ASSERT_TRUE(snapshot.watch_paths.has_value());
+    ASSERT_EQ(snapshot.watch_paths->size(), 1U);
+    const auto& info = (*snapshot.watch_paths)[0];
+    EXPECT_FALSE(info.available);
+    EXPECT_FALSE(info.mount.has_value());  // 不得猜卷、不得回退到 "/"
+    ASSERT_TRUE(info.reason.has_value());
+    EXPECT_EQ(*info.reason, "path_not_found");
+    // 落卷全失败时没有任何卷被标记 watched。
+    ASSERT_TRUE(snapshot.volumes.has_value());
+    for (const auto& volume : *snapshot.volumes) {
+        EXPECT_FALSE(volume.watched) << volume.mount;
+    }
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, WatchPathsAreNotGatedByVolumesGroup) {
+    // 告警需要落卷信息（#80）：关闭 volumes 组后 volumes 为 null，但 watch_paths 仍输出
+    // （契约 sysmon §2.5）。
+    DiskMetrics disk = make_disk_metrics();
+    disk.volumes_disabled = true;
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
+
+    EXPECT_EQ(snapshot.volumes, std::nullopt);
+    ASSERT_TRUE(snapshot.watch_paths.has_value());
+    EXPECT_EQ(snapshot.watch_paths->size(), 2U);
+    const auto& entry = snapshot.availability.metrics.at("volumes");
+    EXPECT_FALSE(entry.available);
+    ASSERT_TRUE(entry.reason.has_value());
+    EXPECT_EQ(*entry.reason, "disabled_by_config");
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, ShmDirUnavailableIsNullNotZeroObject) {
+    DiskMetrics disk = make_disk_metrics();
+    disk.shm_dir = std::nullopt;  // 本帧读不到（能力仍标记为已确认，粘性）
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
+
+    // 读不到不是"目录为空"：域为 null，可用性保持 available（粘性，契约 sysmon §2.5）。
+    EXPECT_EQ(snapshot.shm_dir, std::nullopt);
+    EXPECT_TRUE(snapshot.availability.metrics.at("shm_dir").available);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, DiskDomainsUnavailableBeforeFirstCollection) {
+    // 能力从未确认（本测试不传 disk 指标）：域为 null + collect_failed。
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics());
+    EXPECT_EQ(snapshot.volumes, std::nullopt);
+    EXPECT_EQ(snapshot.watch_paths, std::nullopt);
+    EXPECT_EQ(snapshot.shm_dir, std::nullopt);
+    for (const char* key : {"volumes", "shm_dir"}) {
+        const auto& entry = snapshot.availability.metrics.at(key);
+        EXPECT_FALSE(entry.available) << key;
+        ASSERT_TRUE(entry.reason.has_value()) << key;
+        EXPECT_EQ(*entry.reason, "collect_failed") << key;
+    }
 }
 
 }  // namespace

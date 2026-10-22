@@ -14,16 +14,23 @@
 
 #if defined(__linux__)
 
+#include "system_collector_internal.h"
 #include "system_collector_linux_internal.h"
 
 #include <dztrader/platform/system_collector.h>
 
+#include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/utsname.h>
 #include <unistd.h>
 
+#include <cerrno>
+
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -589,6 +596,125 @@ std::optional<std::vector<RawCoreFrequency>> read_core_frequencies() {
     return frequencies;
 }
 
+// ===== 卷、关注路径与共享内存目录（契约 sysmon §2.4）=====
+
+/// `/proc/mounts` 路径（卷枚举的数据源；容器内为宿主视图，§8 明确不支持容器语义）。
+constexpr const char* kProcMountsPath = "/proc/mounts";
+
+/// 统计目录占用的递归中间结果。
+struct DirectoryUsage {
+    uint64_t total_bytes = 0;
+    uint64_t page_files = 0;
+    std::optional<int64_t> oldest_page_age_sec;
+};
+
+/// 递归统计目录占用（契约 sysmon §2.4）：总字节数、页文件数、最旧页文件年龄。
+///
+/// 用 error_code 重载遍历，不抛异常；子目录不可读时跳过该子树（不使整次失败）。
+/// 不需要深度上限：`recursive_directory_iterator` 默认**不跟随目录符号链接**，
+/// 因此不存在环；真实 shm 目录树只有「根 / 通道目录」两层。
+DirectoryUsage scan_directory_usage(const std::filesystem::path& root,
+                                    std::chrono::file_clock::time_point now) {
+    DirectoryUsage usage;
+    std::error_code ec;
+    std::filesystem::recursive_directory_iterator it(
+        root, std::filesystem::directory_options::skip_permission_denied, ec);
+    const std::filesystem::recursive_directory_iterator end;
+    while (!ec && it != end) {
+        const auto& entry = *it;
+        std::error_code entry_ec;
+        if (entry.is_regular_file(entry_ec) && !entry_ec) {
+            const auto size = static_cast<uint64_t>(entry.file_size(entry_ec));
+            if (!entry_ec) {
+                usage.total_bytes += size;
+            }
+            if (system_collector_internal::is_shm_page_file_name(
+                    entry.path().filename().string())) {
+                ++usage.page_files;
+                const auto write_time = entry.last_write_time(entry_ec);
+                if (!entry_ec) {
+                    const auto age =
+                        std::chrono::duration_cast<std::chrono::seconds>(now - write_time);
+                    const int64_t age_sec = age.count();
+                    // 未来时间（时钟回拨/异常 mtime）按 0 处理，不给负年龄。
+                    const int64_t clamped = age_sec > 0 ? age_sec : 0;
+                    if (!usage.oldest_page_age_sec.has_value() ||
+                        clamped > *usage.oldest_page_age_sec) {
+                        usage.oldest_page_age_sec = clamped;
+                    }
+                }
+            }
+        }
+        it.increment(ec);
+    }
+    return usage;
+}
+
+/// 读取并解析 `/proc/mounts`；文件不可读时返回空列表（采集失败降级）。
+std::vector<system_collector_linux_internal::MountEntry> read_mounts() {
+    // 补设备号并按设备去重：bind mount 会让同一块存储出现多个挂载点，
+    // 卷语义是"一块底层存储"，不能列出多个容量相同的卷（契约 sysmon §2.4）。
+    return system_collector_linux_internal::deduplicate_by_device(
+        system_collector_linux_internal::attach_devices(
+            system_collector_linux_internal::parse_mounts(read_file_contents(kProcMountsPath))));
+}
+
+/// 采集卷列表与容量（契约 sysmon §2.4）：`statvfs` 逐卷取容量，读不到时留 nullopt + reason。
+std::optional<std::vector<RawVolumeInfo>> read_volumes() {
+    const auto mounts = read_mounts();
+    if (mounts.empty()) {
+        return std::nullopt;  // 一个卷都枚举不到 = 整体采集失败
+    }
+    std::vector<RawVolumeInfo> volumes;
+    volumes.reserve(mounts.size());
+    for (const auto& mount : mounts) {
+        RawVolumeInfo volume;
+        volume.mount = mount.mount_point;
+        struct statvfs stats{};
+        if (::statvfs(mount.mount_point.c_str(), &stats) == 0) {
+            const auto block_size =
+                static_cast<uint64_t>(stats.f_frsize != 0 ? stats.f_frsize : stats.f_bsize);
+            const uint64_t total = static_cast<uint64_t>(stats.f_blocks) * block_size;
+            const uint64_t free_bytes = static_cast<uint64_t>(stats.f_bavail) * block_size;
+            volume.total_bytes = total;
+            volume.free_bytes = std::min(free_bytes, total);
+        } else {
+            // 卷存在但容量读不到：保留条目并给出原因（不得用 0 冒充，契约 sysmon §2.4）。
+            volume.reason =
+                (errno == EACCES || errno == EPERM) ? "no_permission" : "collect_failed";
+        }
+        volumes.push_back(std::move(volume));
+    }
+    return volumes;
+}
+
+/// 采集共享内存目录占用（契约 sysmon §2.4）。
+std::optional<RawShmDirInfo> read_shm_dir(const std::string& shm_dir) {
+    std::error_code ec;
+    const std::filesystem::path root(shm_dir);
+    if (!std::filesystem::is_directory(root, ec) || ec) {
+        return std::nullopt;  // 目录不存在/不可读：不得输出全 0 的对象
+    }
+    // `is_directory()` 对 mode 0000 的目录仍返回 true（只需父目录可 stat），而下面的
+    // 递归迭代带 skip_permission_denied，会静默产出 0 个条目 + ec=0 —— 那会把"无权限"
+    // 谎报成"目录为空"的全 0 对象，正是契约 sysmon §2.4 禁止的。先探一次可读性：
+    // 根目录用**不带** skip_permission_denied 的迭代器，打不开就如实报不可用。
+    {
+        std::error_code probe_ec;
+        const std::filesystem::directory_iterator probe(root, probe_ec);
+        if (probe_ec) {
+            return std::nullopt;
+        }
+    }
+    const auto usage = scan_directory_usage(root, std::chrono::file_clock::now());
+    RawShmDirInfo info;
+    info.path = root.lexically_normal().string();
+    info.total_bytes = usage.total_bytes;
+    info.page_files = usage.page_files;
+    info.oldest_file_age_sec = usage.oldest_page_age_sec;
+    return info;
+}
+
 /// 采集一次系统信息（失败字段留空串/0，不抛异常）。
 RawSystemInfo collect_system_info_linux() {
     RawSystemInfo info;
@@ -637,6 +763,57 @@ public:
 
     std::optional<RawSwapInfo> collect_swap() override { return memory_reader_.read_swap(); }
 
+    std::optional<std::vector<RawVolumeInfo>> collect_volumes() override { return read_volumes(); }
+
+    std::vector<RawWatchPathInfo> collect_watch_paths(
+        const std::vector<std::string>& paths) override {
+        const auto mounts = read_mounts();
+        std::vector<RawWatchPathInfo> results;
+        results.reserve(paths.size());
+        for (const auto& path : paths) {
+            RawWatchPathInfo info;
+            info.path = path;
+            std::string reason;
+            const auto normalized = system_collector_linux_internal::normalize_path(path);
+            if (!normalized.has_value()) {
+                // 规范化失败：区分"不存在"与"权限不足"，不猜卷（契约 sysmon §2.4）。
+                std::error_code ec;
+                const bool exists = std::filesystem::exists(path, ec);
+                info.reason = (!ec && !exists) ? "path_not_found" : "collect_failed";
+                results.push_back(std::move(info));
+                continue;
+            }
+            info.path = *normalized;
+            // 规范化成功不等于路径可访问（weakly_canonical 保留不存在的尾部用于诊断）：
+            // 不存在 ⇒ path_not_found；无权限 ⇒ no_permission（`exists()` 两者都返回
+            // false，必须用带错误码的 status 区分，契约 sysmon §2.4 的 reason 取值）。
+            struct stat path_info{};
+            if (::stat(normalized->c_str(), &path_info) != 0) {
+                info.reason =
+                    (errno == EACCES || errno == EPERM) ? "no_permission" : "path_not_found";
+                results.push_back(std::move(info));
+                continue;
+            }
+            // 落卷：只有确实落在采集范围内的卷上才算解析成功。落在被过滤的文件系统
+            // （tmpfs/overlay/fuse 等，按设备号判定）报 unsupported，不得回退到 "/"
+            // （契约 sysmon §2.4；容器内 shm 目录常正好在 tmpfs 上）。
+            const auto mount = system_collector_linux_internal::resolve_volume_mount_point(
+                *normalized, mounts, /*root_mount_point=*/"/", /*out_reason=*/&reason);
+            if (!mount.has_value()) {
+                info.reason = reason.empty() ? std::string("collect_failed") : reason;
+                results.push_back(std::move(info));
+                continue;
+            }
+            info.mount = *mount;
+            results.push_back(std::move(info));
+        }
+        return results;
+    }
+
+    std::optional<RawShmDirInfo> collect_shm_dir(const std::string& shm_dir) override {
+        return read_shm_dir(shm_dir);
+    }
+
 private:
     LinuxMemorySwapReader memory_reader_;
 };
@@ -646,6 +823,243 @@ private:
 // ===== /proc/meminfo 解析与归一（内部接缝，供平台单测确定性覆盖）=====
 
 namespace system_collector_linux_internal {
+// ===== /proc/mounts 卷枚举与落卷解析（契约 sysmon §2.4）=====
+
+namespace {
+
+/// `/proc/mounts` 的八进制转义还原（`\040` = 空格、`\011` = tab 等）。
+/// 挂载点里常有空格（如 `\040`），不还原会让匹配与展示都对不上。
+std::string unescape_mount_field(std::string_view field) {
+    std::string result;
+    result.reserve(field.size());
+    for (std::size_t i = 0; i < field.size(); ++i) {
+        if (field[i] == '\\' && i + 3 < field.size()) {
+            const auto is_octal = [](char c) { return c >= '0' && c <= '7'; };
+            const char d0 = field[i + 1];
+            const char d1 = field[i + 2];
+            const char d2 = field[i + 3];
+            if (is_octal(d0) && is_octal(d1) && is_octal(d2)) {
+                const auto value =
+                    static_cast<char>(((d0 - '0') << 6) | ((d1 - '0') << 3) | (d2 - '0'));
+                result.push_back(value);
+                i += 3;
+                continue;
+            }
+        }
+        result.push_back(field[i]);
+    }
+    return result;
+}
+
+/// 判断路径是否以某个挂载点为前缀且落在路径分量边界上（`/home` 不匹配 `/home2`）。
+/// 挂载点排序：长度**降序**（最长前缀优先），同长度按字典序保证确定性。
+bool mount_point_longest_first(const MountEntry& lhs, const MountEntry& rhs) {
+    if (lhs.mount_point.size() != rhs.mount_point.size()) {
+        return lhs.mount_point.size() > rhs.mount_point.size();
+    }
+    return lhs.mount_point < rhs.mount_point;
+}
+
+/// 挂载点排序：长度**升序**（最短挂载点优先 = 该设备的代表视图）。
+bool mount_point_shortest_first(const MountEntry& lhs, const MountEntry& rhs) {
+    if (lhs.mount_point.size() != rhs.mount_point.size()) {
+        return lhs.mount_point.size() < rhs.mount_point.size();
+    }
+    return lhs.mount_point < rhs.mount_point;
+}
+
+bool is_mount_prefix(std::string_view path, std::string_view mount_point) {
+    if (mount_point == "/") {
+        return true;
+    }
+    if (!path.starts_with(mount_point)) {
+        return false;
+    }
+    return path.size() == mount_point.size() || path[mount_point.size()] == '/';
+}
+
+}  // namespace
+
+bool is_pseudo_filesystem(std::string_view fs_type) {
+    // 契约 sysmon §2.4：过滤内核伪文件系统、内存文件系统与无独立容量语义的挂载。
+    // 清单按**精确类型名**匹配（cgroup 与 cgroup2 各列一条）；只有 `fuse.*` 家族用前缀，
+    // 因为其类型名带实现后缀（如 `fuse.sshfs`）。
+    static constexpr std::array<std::string_view, 26> kPseudo = {
+        "proc",        "sysfs",      "devtmpfs", "devpts",     "tmpfs",   "ramfs",     "cgroup",
+        "cgroup2",     "debugfs",    "tracefs",  "configfs",   "mqueue",  "hugetlbfs", "autofs",
+        "binfmt_misc", "nsfs",       "pstore",   "securityfs", "fusectl", "bpf",       "efivarfs",
+        "selinuxfs",   "rpc_pipefs", "nfsd",     "overlay",    "squashfs"};
+    for (const auto candidate : kPseudo) {
+        if (fs_type == candidate) {
+            return true;
+        }
+    }
+    // `fuse.*` / `fuse.` 家族：用户态文件系统容量语义由实现决定，不作为卷基线。
+    return fs_type.starts_with("fuse.");
+}
+
+std::vector<MountEntry> parse_mounts(std::string_view content, bool include_pseudo) {
+    std::vector<MountEntry> entries;
+    std::set<std::string> seen_mounts;
+    std::string_view rest = content;
+    while (!rest.empty()) {
+        const auto newline = rest.find('\n');
+        const std::string_view raw_line =
+            newline == std::string_view::npos ? rest : rest.substr(0, newline);
+        rest = newline == std::string_view::npos ? std::string_view{} : rest.substr(newline + 1);
+        const auto line = trim(raw_line);
+        if (line.empty()) {
+            continue;
+        }
+        // 字段：device mount_point fs_type options [dump pass]
+        std::array<std::string_view, 3> fields{};
+        std::size_t field_count = 0;
+        std::string_view cursor = line;
+        while (field_count < fields.size()) {
+            const auto begin = cursor.find_first_not_of(" \t");
+            if (begin == std::string_view::npos) {
+                break;
+            }
+            cursor.remove_prefix(begin);
+            const auto end = cursor.find_first_of(" \t");
+            fields[field_count] = cursor.substr(0, end);
+            ++field_count;
+            if (end == std::string_view::npos) {
+                break;
+            }
+            cursor.remove_prefix(end);
+        }
+        if (field_count < 3) {
+            continue;
+        }
+        MountEntry entry;
+        entry.mount_point = unescape_mount_field(fields[1]);
+        entry.fs_type = std::string(fields[2]);
+        if (entry.mount_point.empty() || !entry.mount_point.starts_with('/')) {
+            continue;
+        }
+        if (!include_pseudo && is_pseudo_filesystem(entry.fs_type)) {
+            continue;
+        }
+        if (!seen_mounts.insert(entry.mount_point).second) {
+            continue;  // 同一挂载点只保留首次出现（bind mount 重复列出）
+        }
+        entries.push_back(std::move(entry));
+    }
+    // 最长前缀匹配直接可用：按挂载点长度降序。
+    std::sort(entries.begin(), entries.end(), mount_point_longest_first);
+    return entries;
+}
+
+std::vector<MountEntry> attach_devices(std::vector<MountEntry> entries) {
+    for (auto& entry : entries) {
+        struct stat info{};
+        if (::stat(entry.mount_point.c_str(), &info) == 0) {
+            entry.device = static_cast<uint64_t>(info.st_dev);
+        }
+    }
+    return entries;
+}
+
+std::vector<MountEntry> deduplicate_by_device(std::vector<MountEntry> entries) {
+    // 先按"最短挂载点优先"挑选代表：这样 `/` 会成为 sda2 的代表，
+    // 而 `/home/user` 这类 bind mount 不会重复出现。
+    std::sort(entries.begin(), entries.end(), mount_point_shortest_first);
+    std::vector<MountEntry> result;
+    std::set<uint64_t> seen_devices;
+    for (auto& entry : entries) {
+        if (entry.device != 0 && !seen_devices.insert(entry.device).second) {
+            continue;
+        }
+        result.push_back(std::move(entry));
+    }
+    // 输出顺序回到"挂载点长度降序"（供最长前缀匹配直接使用）。
+    std::sort(result.begin(), result.end(), mount_point_longest_first);
+    return result;
+}
+
+std::optional<std::string> match_mount_point(std::string_view normalized_path,
+                                             const std::vector<std::string>& mount_points) {
+    std::optional<std::string> best;
+    for (const auto& mount_point : mount_points) {
+        if (mount_point == "/") {
+            continue;  // 根挂载点最后兜底，避免抢先匹配
+        }
+        if (is_mount_prefix(normalized_path, mount_point)) {
+            if (!best.has_value() || mount_point.size() > best->size()) {
+                best = mount_point;
+            }
+        }
+    }
+    if (best.has_value()) {
+        return best;
+    }
+    if (std::ranges::find(mount_points, "/") != mount_points.end()) {
+        return std::string("/");
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> resolve_volume_mount_point(const std::string& normalized_path,
+                                                      const std::vector<MountEntry>& volumes,
+                                                      const std::string& root_mount_point,
+                                                      std::string* out_reason) {
+    // 判据是**底层设备**而不是路径前缀：卷的语义是一块存储（契约 sysmon §2.4），
+    // 而一个卷可以有多个挂载点（bind mount），路径前缀只能看到其中一个视图。
+    // 1) 路径落在某个采集范围内挂载点的前缀上 → 直接采信（最常见、最省事）；
+    // 2) 否则用 st_dev 找同一设备在**卷列表里的代表挂载点**——这既覆盖非根的 bind mount
+    //    （/data 卷被 bind 到 /srv/app），也避免把 tmpfs/overlay 上的路径谎报成根卷。
+    struct stat path_info{};
+    if (::stat(normalized_path.c_str(), &path_info) != 0) {
+        if (out_reason != nullptr) {
+            *out_reason = (errno == EACCES || errno == EPERM) ? "no_permission" : "collect_failed";
+        }
+        return std::nullopt;
+    }
+
+    // 1) 前缀命中：最精确的挂载点视图。
+    std::optional<std::string> prefix_best;
+    for (const auto& entry : volumes) {
+        if (entry.mount_point == "/") {
+            continue;
+        }
+        if (is_mount_prefix(normalized_path, entry.mount_point)) {
+            if (!prefix_best.has_value() || entry.mount_point.size() > prefix_best->size()) {
+                prefix_best = entry.mount_point;
+            }
+        }
+    }
+    if (prefix_best.has_value()) {
+        return prefix_best;
+    }
+
+    // 2) 设备命中：找同设备在卷列表里的代表（`/data` 之于 bind 到 /srv/app 的 sdb1）。
+    for (const auto& entry : volumes) {
+        if (entry.device != 0 && entry.device == static_cast<uint64_t>(path_info.st_dev)) {
+            return entry.mount_point;
+        }
+    }
+
+    // 3) 都没命中：路径确实在设备上，但该设备不在卷采集范围（tmpfs/overlay/fuse 等）。
+    //    根挂载点仍要再确认一次：`/` 自己可能就是被过滤的文件系统（容器里常见），
+    //    此时输出 "/" 会与 volumes[] 对不上、打红 §7 交叉校验。
+    if (out_reason != nullptr) {
+        *out_reason = "unsupported";
+    }
+    (void)root_mount_point;  // 语义由 device 判定覆盖；参数保留供调用方表达契约口径
+    return std::nullopt;
+}
+
+std::optional<std::string> normalize_path(const std::string& path) {
+    std::error_code ec;
+    const std::filesystem::path input(path);
+    const auto canonical = std::filesystem::weakly_canonical(input, ec);
+    if (ec) {
+        return std::nullopt;
+    }
+    return canonical.string();
+}
+
 namespace {
 
 constexpr uint64_t kBytesPerKb = 1024;
