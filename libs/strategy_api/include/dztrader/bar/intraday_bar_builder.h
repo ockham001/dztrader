@@ -8,6 +8,7 @@
 #include <dztrader/bar/types.h>
 #include <dztrader/struct.h>
 
+#include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -63,13 +64,52 @@ public:
     /**
      * @brief 喂入一笔 tick：非交易小节内的 tick 丢弃并计数；同桶更新当前 bar；跨桶先收
      *        旧 bar（close）再开新 bar（open）并更新；每笔已接受 tick 恰好一次 update
+     *
+     * 坏数据守卫按固定顺序判定，被丢弃的 tick 不改变任何 bar/累计/乱序基准、不触发回调：
+     * 1. `time` 越界（0..86399 之外）丢弃并计入 `out_of_session`；
+     * 2. `date` 非正或倒退丢弃并计入 `out_of_order`；
+     * 3. 非法价格（`last_price` 非正/NaN/Inf）跳过，不计数；
+     * 4. 交易日内秒倒退（严格小于上一笔已接受 tick）丢弃并计入 `out_of_order`；
+     * 5. 不在任何交易小节内丢弃并计入 `out_of_session`；
+     * 6. 同一交易日内累计量或累计额倒退（含 NaN）丢弃并计入 `bad_volume`。
+     *
      * @param tick 行情快照（调用方保证属于本实例绑定的合约）
      */
     void on_tick(const DzTick& tick) {
+        if (tick.time < 0 || tick.time > MAX_CLOCK_SEC) {
+            ++stats_.out_of_session;
+            return;
+        }
+        if (tick.date <= 0) {
+            ++stats_.out_of_order;
+            return;
+        }
+        if (!(tick.last_price > 0.0) || std::isinf(tick.last_price)) {
+            return;  // 非法价格只跳过，不计数、不推进任何基准
+        }
+        if (has_accepted_tick_) {
+            if (tick.date < last_accepted_day_ ||
+                (tick.date == last_accepted_day_ &&
+                 TradingTime::from_clock(tick.time) < last_accepted_tsec_)) {
+                ++stats_.out_of_order;
+                return;
+            }
+        }
         const int32_t tsec = TradingTime::from_clock(tick.time);
         const SessionMatch match = match_session(tsec);
         if (!match.in_session) {
             ++stats_.out_of_session;
+            return;
+        }
+        // 累计量额倒退只可能与当日基准比较；跨日基准重置为 0（不视为坏数据）。
+        // 基准取「上一笔已接受 tick 的累计」，首笔 tick 或跨日首笔以 0 为基准；
+        // NaN 成交额不参与比较，用 >= 的否定形式显式判出。
+        const bool same_day_basis = has_accepted_tick_ && tick.date == last_accepted_day_;
+        const int64_t basis_volume = same_day_basis ? last_cum_volume_ : 0;
+        const double basis_turnover = same_day_basis ? last_cum_turnover_ : 0.0;
+        if (static_cast<int64_t>(tick.volume) < basis_volume ||
+            !(tick.turnover >= basis_turnover)) {
+            ++stats_.bad_volume;
             return;
         }
         const int32_t begin_sec = (match.bucket_tsec / period_sec_) * period_sec_;
@@ -81,6 +121,9 @@ public:
         } else {
             update_bar(tick, tsec);
         }
+        has_accepted_tick_ = true;
+        last_accepted_day_ = tick.date;
+        last_accepted_tsec_ = tsec;
         notify_update();
     }
 
@@ -94,6 +137,9 @@ public:
     [[nodiscard]] BarBuilderStats stats() const noexcept { return stats_; }
 
 private:
+    /// @brief 一日内的最大墙钟秒数（23:59:59）；time 越界计入 out_of_session
+    static constexpr DzTime MAX_CLOCK_SEC = 86399;
+
     /// @brief 交易小节匹配结果
     struct SessionMatch {
         bool in_session;      ///< true = tick 落在某个交易小节内
@@ -195,6 +241,9 @@ private:
     double bar_start_cum_turnover_ = 0.0;  ///< 本 bar 起始累计成交额基准
     int64_t last_cum_volume_ = 0;          ///< 上一笔已接受 tick 的累计成交量
     double last_cum_turnover_ = 0.0;       ///< 上一笔已接受 tick 的累计成交额
+    bool has_accepted_tick_ = false;       ///< 是否已有被接受的 tick（乱序判定基准有效）
+    DzDate last_accepted_day_ = 0;         ///< 上一笔已接受 tick 的交易日
+    int32_t last_accepted_tsec_ = 0;       ///< 上一笔已接受 tick 的交易日内秒
 };
 
 }  // namespace dztrader::bar

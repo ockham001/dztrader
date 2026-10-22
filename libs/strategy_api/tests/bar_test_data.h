@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <vector>
 
+#include <gtest/gtest.h>
+
 namespace dztrader::strategy_api::test {
 
 /// @brief 09:00 的交易日内秒
@@ -75,6 +77,24 @@ public:
 
     std::vector<BarEvent> events;
 };
+
+/// @brief 断言两根 bar 的全部公开字段一致
+inline void expect_bar_equal(const dztrader::bar::Bar& actual, const dztrader::bar::Bar& expected) {
+    EXPECT_EQ(actual.trading_day, expected.trading_day);
+    EXPECT_EQ(actual.begin_sec, expected.begin_sec);
+    EXPECT_EQ(actual.last_tick_sec, expected.last_tick_sec);
+    EXPECT_EQ(actual.period_sec, expected.period_sec);
+    EXPECT_DOUBLE_EQ(actual.open, expected.open);
+    EXPECT_DOUBLE_EQ(actual.high, expected.high);
+    EXPECT_DOUBLE_EQ(actual.low, expected.low);
+    EXPECT_DOUBLE_EQ(actual.close, expected.close);
+    EXPECT_EQ(actual.volume, expected.volume);
+    EXPECT_DOUBLE_EQ(actual.turnover, expected.turnover);
+    EXPECT_EQ(actual.open_interest, expected.open_interest);
+    EXPECT_EQ(actual.cum_volume, expected.cum_volume);
+    EXPECT_DOUBLE_EQ(actual.cum_turnover, expected.cum_turnover);
+    EXPECT_EQ(actual.is_final, expected.is_final);
+}
 
 /// @brief 统计某一类 bar 事件的通知次数
 inline int count_events(const RecordingSink& sink, EventKind kind) {
