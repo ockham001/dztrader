@@ -353,7 +353,7 @@ TEST_F(IntradayBarGuardTest, ForwardTradingDayInSameBucketNeverPublishesNegative
     EXPECT_GE(bar.turnover, 0.0);
 }
 
-/// @brief 跨日同桶 tick 之后交易日倒退仍按乱序丢弃（基准是最近已接受 tick，不是当前 bar）
+/// @brief 跨日同桶 tick 之后交易日倒退仍按乱序丢弃（跨日已换根，基准是当前 bar 的交易日）
 TEST_F(IntradayBarGuardTest, RegressedTradingDayAfterSameBucketCrossDayIsDropped) {
     accepted_reference_bar();
     builder_.on_tick(make_tick(9 * 3600 + 30, 100.0, 3, 300.0, 7, TRADING_DAY + 1));
