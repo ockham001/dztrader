@@ -27,7 +27,8 @@
 | 文档 | 内容 |
 |------|------|
 | 仓库根 [AGENTS.md](../AGENTS.md) | 硬门禁（md 生产锁定、`DZTRADER_HOME`、编译期门禁、4 命令工作流、禁 `npm run build`）、架构不变量、方案收敛规则、代码约定、工作方式 |
-| [agents/build-appendix.md](agents/build-appendix.md) | 构建外围细节：工具链、MSVC 激活、clangd、预设、输出布局、单测约定、install、conan、前端机制、部署产物分析、跨平台 `#error` 模板 |
+| [agents/build-appendix.md](agents/build-appendix.md) | 构建外围细节：工具链、MSVC 激活、clangd、预设、输出布局、单测约定、install、conan、前端机制、部署产物分析、跨平台 `#error` 模板、沙箱缓存/临时目录 |
+| [agents/ticket-closeout.md](agents/ticket-closeout.md) | 每票收尾流程：冻结审查 / 门禁 / push scope / CI 等待 / 关 issue / 清理 |
 
 与 [development-checklist.md](development-checklist.md) 的分工：checklist 是**门禁清单的权威来源**（前端/后台/提交前三段），AGENTS.md 是硬门禁与工作方式的权威来源。
 

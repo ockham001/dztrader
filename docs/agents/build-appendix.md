@@ -6,6 +6,18 @@ CMake + Conan 2.x + Ninja + GTest。本文档记录**项目特有规则与非主
 
 ---
 
+## 运行环境：临时目录与缓存（DSH 沙箱）
+
+agent 会话可能跑在 workspace-write 沙箱里：只有仓库目录可写，`~` 下的共享缓存可能只读。
+
+- **`/tmp` 每次 bash 调用隔离**：跨调用要用的日志/快照写 `.cache/`（仓库已 gitignore），不要写 `/tmp`
+- **Conan 缓存**：默认 `~/.conan2`；不可写时 `scripts/setup.sh` 自动回退 `CONAN_HOME=<repo>/.cache/conan2`（首次会冷装依赖）
+- **npm 缓存**：默认 `~/.npm`；不可写时 `scripts/build.sh` / `scripts/preflight.sh` 自动设 `npm_config_cache=<repo>/.cache/npm`
+- **gh 缓存**：`~/.cache/gh` 不可写时 `scripts/wait-ci.sh` / `scripts/ci-log.sh` 自动设 `XDG_CACHE_HOME=<repo>/.cache`，避免 `gh run view --log-failed` 失败
+- 需要写共享缓存的 worktree 首建若仍被拒，再向用户申请一次 full access；不要反复重试同一命令
+
+---
+
 ## 工具链
 
 | 项 | 要求 |

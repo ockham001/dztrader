@@ -125,7 +125,7 @@
 - **禁止单引号包裹占位符**：错 `"user '{}' fail"`，对 `"user fail | user={}"`
 - **禁止多行 `===` banner**，必须合并为单行 `prose | k=v`。**禁止中文**（含函数名、变量名）
 - 非性能路径用异常，日志作为最终输出。`Exception ──catch──→ LastError::set()`（C 接口边界，**无日志**）/ `──→ spdlog`（平台代码，无 LastError）
-- 提交前跑 `python scripts/check_log_format.py apps/ libs/`；违规用 `// NOLINT(log-format)` 豁免
+- 提交前跑 `./scripts/preflight.sh`（日志格式/格式/文档链接/可移植性/前端，与 CI 同源）；日志违规用 `// NOLINT(log-format)` 豁免
 
 ### 跨平台
 
@@ -160,7 +160,7 @@
 3. **拆票** —— `to-tickets`：tracer-bullet 子 issue + 原生阻塞边。
 4. **实现** —— `implement` 单票（默认）或 `implement-spec` 大特性（worktree 内先跑 `setup`）。
 5. **审查** —— `code-review`：从固定点起，双轴（仓库规范 / spec 一致性）。
-6. **收尾** —— 动契约或有决策：契约、docs 地图、ADR 随同提交（`general.md` §11.3 checklist）；等 CI 绿；波末 `retro`。
+6. **收尾** —— 动契约或有决策：契约、docs 地图、ADR 随同提交（`general.md` §11.3 checklist）；等 CI 绿；波末 `retro`。每票的冻结审查→门禁→push→关 issue 见 [docs/agents/ticket-closeout.md](docs/agents/ticket-closeout.md)。
 7. **交接** —— `handoff` 写临时目录。
 
 上下文纪律：步骤 1–3 保持同一未打断窗口；每张票 `implement` 换新上下文；`retro` 在被复盘会话内、clear 之前跑。
@@ -178,10 +178,18 @@
 ### Worktree 与 Git 禁令
 
 - worktree 放 `.worktrees/`，`git worktree add .worktrees/<branch> -b <branch> main`
-- worktree 内**需重新跑 `setup`**（conan 缓存独立）
+- worktree 内**需重新跑 `setup`**（conan 缓存用户级共享；沙箱下 `~/.conan2` 只读时 `setup.sh` 自动回退 `CONAN_HOME=<repo>/.cache/conan2`，见 [build-appendix](docs/agents/build-appendix.md)）
+- **并行波（同一时间多个 ticket）必须一票一 worktree**；禁止在共享工作区同时改两条线
+- push 前跑 `./scripts/check-push-scope.sh <issue>`，确认 `@{u}..HEAD` 只含本票 commit
 - 多终端可在不同 worktree 并行；**禁止同一 worktree 同时操作**
 - 合并前确认共同祖先：`git merge-base main HEAD`，无则 cherry-pick
 - **禁止**：`--orphan`、`push --force` 到 main、未确认的 `reset --hard` / `clean -fd`、未经我同意推送远程（`git push` 为权限 ask，force 两式为 deny）
+
+### 本机沙箱（DSH）
+
+- **每次 bash 调用的 `/tmp` 相互隔离**：跨调用要用的日志/快照写 `.cache/`（已 gitignore），不要写 `/tmp`
+- `~/.conan2`、`~/.cache/gh`、`~/.npm` 在 workspace-write 下可能只读：`setup.sh` / `build.sh` / `wait-ci.sh` / `ci-log.sh` 已回退到仓库 `.cache/`；仍被拒时再申请一次更高权限，不要反复重试
+- 提交前门禁统一 `./scripts/preflight.sh`；CI 等待/失败日志统一 `./scripts/wait-ci.sh` / `./scripts/ci-log.sh`
 
 ---
 
