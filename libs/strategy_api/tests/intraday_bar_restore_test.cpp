@@ -465,9 +465,17 @@ TEST_F(IntradayBarRestoreTest, RestoreRejectsInvalidFinalCumulative) {
     nan_bar.cum_turnover = std::numeric_limits<double>::quiet_NaN();
     EXPECT_THROW(builder_.restore(nan_bar), std::invalid_argument);
 
+    Bar infinite_bar = restored_final_bar();
+    infinite_bar.cum_turnover = std::numeric_limits<double>::infinity();
+    EXPECT_THROW(builder_.restore(infinite_bar), std::invalid_argument);
+
     Bar negative_bar = restored_final_bar();
     negative_bar.cum_volume = -1;
     EXPECT_THROW(builder_.restore(negative_bar), std::invalid_argument);
+
+    Bar negative_turnover_bar = restored_final_bar();
+    negative_turnover_bar.cum_turnover = -1.0;
+    EXPECT_THROW(builder_.restore(negative_turnover_bar), std::invalid_argument);
 }
 
 // ---------------------------------------------------------------------------
