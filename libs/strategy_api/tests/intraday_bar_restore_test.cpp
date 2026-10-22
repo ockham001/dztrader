@@ -11,6 +11,7 @@
 #include <dztrader/bar.h>
 
 #include <cstdint>
+#include <limits>
 
 #include <gtest/gtest.h>
 
@@ -195,6 +196,34 @@ TEST_F(IntradayBarRestoreTest, RestoreFinalAppliesBucketRuleToAuctionTicks) {
     EXPECT_EQ(builder.stats().out_of_order, 1U);
 }
 
+TEST_F(IntradayBarRestoreTest, RestoreFinalAcceptedAuctionTickStartsAuctionBarWithRestoredBasis) {
+    // 11:00–11:29 是午盘（13:00）的开盘竞价窗口，目标桶 13:00 晚于恢复 bar 的 09:00 桶
+    const TradingSessionTable table = overlapping_auction_session_table();
+    RecordingSink sink;
+    IntradayBarBuilder<RecordingSink> builder(table, 60, sink);
+    builder.restore(restored_final_bar());
+
+    builder.on_tick(make_tick(11 * 3600 + 10 * 60, 105.0, 1010, 102010.0, 8));
+
+    EXPECT_TRUE(sink.events.empty());  // 竞价窗口内零回调
+    ASSERT_TRUE(builder.has_current_bar());
+    const Bar& bar = builder.current_bar();
+    EXPECT_EQ(bar.begin_sec, TSEC_13_00);
+    EXPECT_EQ(bar.last_tick_sec, TradingTime::from_clock(11 * 3600 + 10 * 60));
+    EXPECT_DOUBLE_EQ(bar.open, 105.0);
+    EXPECT_EQ(bar.volume, 10);               // 1010 - 恢复的累计 1000
+    EXPECT_DOUBLE_EQ(bar.turnover, 1010.0);  // 102010 - 恢复的累计 101000
+    EXPECT_FALSE(bar.is_final);
+
+    // 13:00 场内：暴露竞价 bar（补 open）后 update，量额基准仍为恢复的累计
+    builder.on_tick(make_tick(13 * 3600, 106.0, 1020, 103020.0, 9));
+    ASSERT_EQ(sink.events.size(), 2U);
+    EXPECT_EQ(sink.events[0].kind, EventKind::Open);
+    EXPECT_EQ(sink.events[0].bar.begin_sec, TSEC_13_00);
+    EXPECT_EQ(sink.events[1].kind, EventKind::Update);
+    EXPECT_EQ(sink.events[1].bar.volume, 20);  // 1020 - 恢复的累计 1000
+}
+
 // ---------------------------------------------------------------------------
 // restore forming：采纳为当前 bar，不重复 open
 // ---------------------------------------------------------------------------
@@ -311,6 +340,71 @@ TEST_F(IntradayBarRestoreTest, RestoreFormingCrossTradingDayClosesThenOpensWithZ
     EXPECT_EQ(opened.cum_volume, 7);
 }
 
+TEST_F(IntradayBarRestoreTest, RestoreFormingNightSessionBarContinuesAcrossSessions) {
+    const TradingSessionTable table = commodity_session_table();
+    RecordingSink sink;
+    IntradayBarBuilder<RecordingSink> builder(table, 60, sink);
+    // 夜盘 21:00 桶的形成中 bar，最后一笔 21:05
+    builder.restore(make_bar(TRADING_DAY, TSEC_21_00, TSEC_21_00 + 300, 60, 100.0, 101.0, 99.0,
+                             100.5, 100, 10050.0, 7, 1000, 100500.0, false));
+
+    // 同日日盘 09:30：跨小节、跨桶先 close 恢复 bar 再 open 新 bar
+    builder.on_tick(make_tick(9 * 3600 + 30 * 60, 102.0, 1010, 101505.0, 8));
+
+    ASSERT_EQ(sink.events.size(), 3U);
+    EXPECT_EQ(sink.events[0].kind, EventKind::Close);
+    EXPECT_EQ(sink.events[0].bar.begin_sec, TSEC_21_00);
+    EXPECT_TRUE(sink.events[0].bar.is_final);
+    EXPECT_EQ(sink.events[1].kind, EventKind::Open);
+    EXPECT_EQ(sink.events[1].bar.begin_sec, TSEC_09_30);
+    EXPECT_EQ(sink.events[1].bar.volume, 10);  // 1010 - 恢复的累计 1000
+    EXPECT_EQ(sink.events[1].bar.trading_day, TRADING_DAY);
+}
+
+TEST_F(IntradayBarRestoreTest, RestoreFormingAuctionBarContinuesAuctionOhlcOverride) {
+    const TradingSessionTable table = day_auction_session_table();
+    RecordingSink sink;
+    IntradayBarBuilder<RecordingSink> builder(table, 60, sink);
+    // 归档的 forming 竞价 bar：O=H=L=C，最后一笔 08:59:30 落在 09:00 桶的 Open 窗口内
+    builder.restore(make_bar(TRADING_DAY, TSEC_09_00,
+                             TradingTime::from_clock(8 * 3600 + 59 * 60 + 30), 60, 100.5, 100.5,
+                             100.5, 100.5, 10, 1005.0, 7, 10, 1005.0, false));
+    ASSERT_TRUE(builder.has_current_bar());
+    ASSERT_TRUE(sink.events.empty());  // 视为已 open，不补发 open
+
+    builder.on_tick(make_tick(8 * 3600 + 59 * 60 + 40, 103.0, 15, 1545.0, 8));
+
+    EXPECT_TRUE(sink.events.empty());  // 仍在竞价窗口内：零回调
+    const Bar& bar = builder.current_bar();
+    EXPECT_DOUBLE_EQ(bar.open, 103.0);  // 重启后继续按竞价口径覆盖 O=H=L=C
+    EXPECT_DOUBLE_EQ(bar.high, 103.0);
+    EXPECT_DOUBLE_EQ(bar.low, 103.0);
+    EXPECT_DOUBLE_EQ(bar.close, 103.0);
+    EXPECT_EQ(bar.volume, 15);  // 起始基准为 0
+    EXPECT_EQ(bar.cum_volume, 15);
+    EXPECT_EQ(bar.last_tick_sec, TradingTime::from_clock(8 * 3600 + 59 * 60 + 40));
+}
+
+TEST_F(IntradayBarRestoreTest, RestoreFormingAuctionBarSessionTickEmitsUpdateWithoutReopen) {
+    const TradingSessionTable table = day_auction_session_table();
+    RecordingSink sink;
+    IntradayBarBuilder<RecordingSink> builder(table, 60, sink);
+    builder.restore(make_bar(TRADING_DAY, TSEC_09_00,
+                             TradingTime::from_clock(8 * 3600 + 59 * 60 + 30), 60, 103.0, 103.0,
+                             103.0, 103.0, 15, 1545.0, 8, 15, 1545.0, false));
+
+    builder.on_tick(make_tick(9 * 3600 + 20, 104.0, 20, 2080.0, 9));  // 09:00:20 场内同桶
+
+    ASSERT_EQ(sink.events.size(), 1U);  // 视为已 open：只有 update，不补 open
+    EXPECT_EQ(sink.events[0].kind, EventKind::Update);
+    const Bar& bar = builder.current_bar();
+    EXPECT_DOUBLE_EQ(bar.open, 103.0);  // 竞价开盘价保留
+    EXPECT_DOUBLE_EQ(bar.high, 104.0);
+    EXPECT_DOUBLE_EQ(bar.close, 104.0);
+    EXPECT_EQ(bar.volume, 20);  // 20 - 起始基准 0
+    EXPECT_EQ(bar.last_tick_sec, TradingTime::from_clock(9 * 3600 + 20));
+}
+
 // ---------------------------------------------------------------------------
 // restore 前置条件校验：非法调用 fail-fast
 // ---------------------------------------------------------------------------
@@ -364,6 +458,16 @@ TEST_F(IntradayBarRestoreTest, RestoreRejectsInconsistentFormingCumulative) {
     Bar bar = restored_forming_bar();
     bar.volume = bar.cum_volume + 1;  // bar 内量大于当日累计量，无法反推起始基准
     EXPECT_THROW(builder_.restore(bar), std::invalid_argument);
+}
+
+TEST_F(IntradayBarRestoreTest, RestoreRejectsInvalidFinalCumulative) {
+    Bar nan_bar = restored_final_bar();
+    nan_bar.cum_turnover = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_THROW(builder_.restore(nan_bar), std::invalid_argument);
+
+    Bar negative_bar = restored_final_bar();
+    negative_bar.cum_volume = -1;
+    EXPECT_THROW(builder_.restore(negative_bar), std::invalid_argument);
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +529,21 @@ TEST_F(IntradayBarRestoreTest, ResetClearsRestoredFinalBasis) {
     EXPECT_EQ(builder_.current_bar().begin_sec, TSEC_09_00 + 60);
     EXPECT_EQ(builder_.current_bar().volume, 50);
     EXPECT_DOUBLE_EQ(builder_.current_bar().turnover, 5000.0);
+}
+
+TEST_F(IntradayBarRestoreTest, ResetAllowsEarlierTradingDayAfterwards) {
+    builder_.on_tick(make_tick(9 * 3600, 100.5, 10, 1005.0, 7, TRADING_DAY));
+    ASSERT_TRUE(builder_.has_current_bar());
+    builder_.reset();
+    sink_.events.clear();
+
+    // reset 清空交易日基准：早于 reset 前 bar 的交易日照常开新 bar，不算乱序
+    builder_.on_tick(make_tick(9 * 3600, 50.0, 7, 707.0, 5, TRADING_DAY - 1));
+
+    ASSERT_TRUE(builder_.has_current_bar());
+    EXPECT_EQ(builder_.current_bar().trading_day, TRADING_DAY - 1);
+    EXPECT_EQ(builder_.current_bar().volume, 7);
+    EXPECT_EQ(builder_.stats().out_of_order, 0U);
 }
 
 TEST_F(IntradayBarRestoreTest, ResetDropsPendingAuctionBars) {
