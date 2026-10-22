@@ -33,6 +33,7 @@
 #endif
 #include <windows.h>
 #include <pdh.h>
+#include <pdhmsg.h>  // PDH_CSTATUS_VALID_DATA / PDH_CSTATUS_NEW_DATA（部分 SDK 的 pdh.h 不引入）
 #include <winreg.h>
 
 #include <dztrader/platform/system_collector.h>
