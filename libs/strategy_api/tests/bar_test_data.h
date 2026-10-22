@@ -21,7 +21,7 @@ inline constexpr int32_t TSEC_02_30 = 30600;
 inline constexpr DzDate TRADING_DAY = 20000;
 
 /// @brief 构造一笔 tick→bar 测试用行情快照
-inline DzTick make_tick(int32_t clock,
+inline DzTick make_tick(DzTime clock,
                         double last_price,
                         DzVolume volume,
                         double turnover,

@@ -2,7 +2,7 @@
 
 #include <dztrader/bar.h>
 
-#include <cstdint>
+#include <cstddef>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -210,6 +210,13 @@ TEST(IntradayBarLifecyclePeriodTest, BucketSwitchEmitsCloseOpenUpdateForFiveMinu
     EXPECT_EQ(sink.events[4].bar.period_sec, 300);
     EXPECT_EQ(sink.events[4].bar.last_tick_sec, TSEC_09_00 + 300);
     EXPECT_EQ(sink.events[5].bar.begin_sec, TSEC_09_00 + 300);
+    // 新 bar 以本笔 tick 播种 O=H=L=C，量额基准接上一笔（16/1632 → 20/2020）
+    EXPECT_DOUBLE_EQ(sink.events[4].bar.open, 101.0);
+    EXPECT_DOUBLE_EQ(sink.events[4].bar.high, 101.0);
+    EXPECT_DOUBLE_EQ(sink.events[4].bar.low, 101.0);
+    EXPECT_DOUBLE_EQ(sink.events[4].bar.close, 101.0);
+    EXPECT_EQ(sink.events[4].bar.volume, 4);
+    EXPECT_DOUBLE_EQ(sink.events[4].bar.turnover, 388.0);
 }
 
 TEST(IntradayBarLifecycleSinkTest, SinkWithMissingCallbacksStillCompilesAndUpdates) {

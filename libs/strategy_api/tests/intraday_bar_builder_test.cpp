@@ -81,7 +81,8 @@ TEST_F(IntradayBarBuilderTest, TradingDayComesFromTick) {
 }
 
 TEST(IntradayBarBuilderGridTest, BeginSecIsFlooredToPeriodGrid) {
-    // 每个用例用独立 builder：本票只覆盖同桶内路径（桶切换由后续票追加）。
+    // 每个用例用独立 builder：本用例只覆盖单笔 tick 的网格取整（桶切换生命周期见
+    // intraday_bar_lifecycle_test.cpp）。
     struct GridCase {
         int32_t clock;
         int32_t period_sec;
