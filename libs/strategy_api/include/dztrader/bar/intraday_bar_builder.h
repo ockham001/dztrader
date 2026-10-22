@@ -29,9 +29,12 @@ namespace dztrader::bar {
  * 集合竞价：窗口命中优先于小节判定，窗口长度由 TradingSessionTable 描述（任意长度，
  * 一个交易日可有多个）。
  * - 命中 Open 窗口：tick 归目标小节首桶（floor(session.begin_sec / period_sec) * period_sec），
- *   按旧口径逐 tick 覆盖 O=H=L=C，量额累计差分、OI 取最后一笔；窗口内不回调任何 sink 事件，
- *   静默收尾的 bar 延迟到离开窗口后的第一笔有效 tick 处补发（从未暴露过的 bar 补发
- *   open（is_final=false）+ close（is_final=true），保证每根 bar 恰好 open 一次、close 一次）。
+ *   若该桶 bar 只有竞价 tick，按旧口径逐 tick 覆盖 O=H=L=C（同桶多笔竞价 tick 逐个覆盖）；
+ *   若为粗周期跨小节拼根、该桶已含场内 tick，则按普通 tick 静默并入，不覆盖已公开的
+ *   开盘价与高低点。量额累计差分、OI 取最后一笔；窗口内不回调任何 sink 事件，静默收尾的
+ *   bar 延迟到离开窗口后的第一笔有效 tick 处补发：从未暴露过的 bar 补发 open
+ *   （is_final=false）+ close（is_final=true），使每根补发的 bar 恰好 open/close 各一次。
+ *   补发依赖后续 tick：tick 流若在竞价窗口内结束，这些 bar 不补发（与惰性收盘一致）。
  * - 命中 Close 窗口：按普通小节内 tick 处理（含 tsec == session.end_sec 归前一根）。
  *
  * 周期可以是任意正整数秒：桶起点 = floor(tsec / period_sec) * period_sec（18:00 锚点
@@ -39,7 +42,7 @@ namespace dztrader::bar {
  * 拼进同一根 bar，不按小节切根。
  *
  * 桶边界事件顺序：新 bar 首笔 tick 先 close 旧 bar（is_final=true），再 open 新 bar
- * （is_final=false），最后 update 新 bar；同桶 tick 只 update。无成交的桶不生成
+ * （is_final=false），最后 update 新 bar；小节内同桶 tick 只 update。无成交的桶不生成
  * bar（相邻 bar 的 begin_sec 可跳跃）。
  *
  * @tparam Sink bar 事件接收者：可选实现 on_bar_open / on_bar_update / on_bar_close，
@@ -52,6 +55,11 @@ namespace dztrader::bar {
  *       乱序丢弃并计入 `out_of_order`；没有 tick 的交易日不生成空 bar（惰性收盘）。夜盘
  *       跨午夜不切日（`date` 未变即同一交易日）。续接（restore）由后续票定稿，公开方法
  *       只增不改。
+ *
+ * @note 竞价窗口内静默收尾的 bar 进入待补发队列（容量 = 单日竞价窗口数），离开窗口后的
+ *       第一笔有效 tick 按入队顺序补发。只有「跨交易日且窗口之间没有任何场内有效 tick」
+ *       的病态数据流会使队列溢出；溢出时丢弃最旧的待补发 bar，优先守住窗口内零回调
+ *       （策略安全），正常行情下一个场内 tick 即清空队列。
  */
 template <class Sink = NullBarSink>
 class IntradayBarBuilder {
@@ -76,9 +84,9 @@ public:
     }
 
     /**
-     * @brief 喂入一笔 tick：非交易小节/竞价窗口内的 tick 丢弃并计数；同桶更新当前 bar；
-     *        跨桶或交易日变化先收旧 bar（close）再开新 bar（open）并更新；小节内每笔已接受
-     *        tick 恰好一次 update（Open 竞价窗口内的 tick 只静默更新 bar 状态、不回调）
+     * @brief 喂入一笔 tick：不在任何交易小节或 Open 竞价窗口内的 tick 丢弃并计数；同桶更新
+     *        当前 bar；跨桶或交易日变化先收旧 bar（close）再开新 bar（open）并更新；小节内
+     *        每笔已接受 tick 恰好一次 update（Open 竞价窗口内的 tick 只静默更新 bar 状态）
      *
      * 坏数据守卫按下列固定顺序判定，被丢弃的 tick 不改变任何 bar/累计状态、不触发回调：
      * 1. `time` 越界（0..86399 之外）丢弃并计入 `out_of_session`；
@@ -139,10 +147,10 @@ public:
         // 交易日变化与换桶同样开新根：累计基准按日重置，避免跨日沿用旧日基准产出负量额。
         // 同日换桶沿用当日基准；跨日（含同桶起点）先 close 旧根再 open 新根（#88）。
         if (!has_bar_) {
-            begin_bar(tick, begin_sec, tsec, /*auction=*/false);
+            begin_bar(tick, begin_sec, tsec, BarOrigin::Session);
         } else if (begin_sec != bar_.begin_sec || tick.date != bar_.trading_day) {
             finalize_bar();
-            begin_bar(tick, begin_sec, tsec, /*auction=*/false);
+            begin_bar(tick, begin_sec, tsec, BarOrigin::Session);
         } else {
             expose_bar();  // 竞价建立的 bar 首次被场内 tick 暴露：先补 open 再 update
             update_bar(tick, tsec);
@@ -163,7 +171,7 @@ private:
     /// @brief 一日内的最大墙钟秒数（23:59:59）；time 越界计入 out_of_session
     static constexpr DzTime MAX_CLOCK_SEC = 86399;
 
-    /// @brief 竞价窗口内静默收尾的待补发 bar 容量（一个交易日竞价窗口数上界）
+    /// @brief 竞价窗口内静默收尾的待补发 bar 容量（以单日竞价窗口数为基准）
     static constexpr int32_t MAX_PENDING_BARS = TradingSessionTable::MAX_AUCTIONS;
 
     /// @brief 交易小节匹配结果
@@ -176,6 +184,12 @@ private:
     struct AuctionMatch {
         bool in_open_window;    ///< true = tick 落在某个 Open 竞价窗口内
         int32_t session_index;  ///< Open 窗口归属交易小节下标（Close 窗口无意义）
+    };
+
+    /// @brief 新 bar 的来源（决定 open 回调时机与 O=H=L=C 口径）
+    enum class BarOrigin {
+        Session,  ///< 小节内 tick：按普通口径建立并立即回调 open
+        Auction,  ///< Open 竞价窗口 tick：静默建立，等暴露或收尾时补发
     };
 
     /// @brief 竞价窗口内静默收尾、等待补发的 bar
@@ -258,10 +272,14 @@ private:
         const int32_t begin_sec =
             (table_.sessions[session_index].begin_sec / period_sec_) * period_sec_;
         if (!has_bar_) {
-            begin_bar(tick, begin_sec, tsec, /*auction=*/true);
+            begin_bar(tick, begin_sec, tsec, BarOrigin::Auction);
         } else if (begin_sec != bar_.begin_sec || tick.date != bar_.trading_day) {
             silently_finalize_bar();
-            begin_bar(tick, begin_sec, tsec, /*auction=*/true);
+            begin_bar(tick, begin_sec, tsec, BarOrigin::Auction);
+        } else if (bar_open_notified_) {
+            // 粗周期跨小节拼根：目标桶已含场内 tick（已暴露）。按普通 tick 静默并入，
+            // 不覆盖已公开的开盘价/高低点，避免竞价 tick 抹掉同桶更早的场内数据。
+            update_bar(tick, tsec);
         } else {
             update_auction_bar(tick, tsec);
         }
@@ -269,11 +287,15 @@ private:
 
     /// @brief 静默收尾当前 bar（竞价窗口内不回调），存入待补发队列
     ///
-    /// 容量上界 = 一个交易日的竞价窗口数；只有「跨交易日且窗口之间没有任何场内有效 tick」
-    /// 的病态序列才可能溢出，此时先补发已入队的事件，保证每根 bar 不丢 open/close。
+    /// 队列按单日竞价窗口数定容；只有「跨交易日且窗口之间没有任何场内有效 tick」的病态流
+    /// 才会溢出。溢出时丢弃最旧的待补发 bar：优先守住「竞价窗口内零回调」（策略不可能在
+    /// 竞价时段下单），正常行情下一个场内 tick 就会清空队列、不会走到这里。
     void silently_finalize_bar() {
         if (pending_count_ == MAX_PENDING_BARS) {
-            flush_pending_bars();
+            for (int32_t i = 1; i < pending_count_; ++i) {
+                pending_bars_[i - 1] = pending_bars_[i];
+            }
+            --pending_count_;
         }
         PendingBar& pending = pending_bars_[pending_count_];
         pending.bar = bar_;
@@ -319,9 +341,9 @@ private:
      * @param tick 行情快照
      * @param begin_sec 标准开始时间（交易日内秒）
      * @param tsec 本笔 tick 的交易日内秒
-     * @param auction true = 由 Open 竞价窗口建立：不回调 open，等首次暴露或收尾时补发
+     * @param origin 新 bar 来源：Auction 不回调 open，等首次暴露或收尾时补发
      */
-    void begin_bar(const DzTick& tick, int32_t begin_sec, int32_t tsec, bool auction) {
+    void begin_bar(const DzTick& tick, int32_t begin_sec, int32_t tsec, BarOrigin origin) {
         const bool same_day = has_bar_ && tick.date == bar_.trading_day;
         bar_start_cum_volume_ = same_day ? bar_.cum_volume : 0;
         bar_start_cum_turnover_ = same_day ? bar_.cum_turnover : 0.0;
@@ -329,16 +351,16 @@ private:
         bar_.trading_day = tick.date;
         bar_.begin_sec = begin_sec;
         bar_.period_sec = period_sec_;
-        bar_.open = tick.last_price;
-        bar_.high = tick.last_price;
-        bar_.low = tick.last_price;
         bar_.is_final = false;
         has_bar_ = true;
-        if (auction) {
+        if (origin == BarOrigin::Auction) {
             update_auction_bar(tick, tsec);
             bar_open_notified_ = false;
             return;
         }
+        bar_.open = tick.last_price;
+        bar_.high = tick.last_price;
+        bar_.low = tick.last_price;
         update_bar(tick, tsec);
         bar_open_notified_ = true;
         notify_open(bar_);

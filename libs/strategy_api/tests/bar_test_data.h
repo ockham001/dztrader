@@ -185,6 +185,18 @@ inline constexpr dztrader::bar::TradingSessionTable overlapping_auction_session_
     return table;
 }
 
+/// @brief 日盘三段小节表 + 10:30 小节的开盘竞价窗口 10:16:00–10:16:59
+///
+/// 粗周期（1 小时）下该窗口的目标桶 floor(10:30 / 1h) = 10:00，与 10:00–10:15 小节
+/// 的 tick 同桶（拼根），用于验证「目标桶已有场内 tick 时不覆盖已公开 O/H/L」。
+inline constexpr dztrader::bar::TradingSessionTable day_break_auction_session_table() {
+    dztrader::bar::TradingSessionTable table = day_break_session_table();
+    table.auction_count = 1;
+    table.auctions[0] = dztrader::bar::AuctionWindow{dztrader::bar::AuctionKind::Open, 1,
+                                                     TSEC_10_15 + 60, TSEC_10_15 + 119};
+    return table;
+}
+
 }  // namespace dztrader::strategy_api::test
 
 #endif  // DZTRADER_STRATEGY_API_TESTS_BAR_TEST_DATA_H_

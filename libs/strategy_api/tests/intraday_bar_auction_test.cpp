@@ -358,3 +358,63 @@ TEST(IntradayBarAuctionGridTest, OpenAuctionTargetBucketFloorsSessionBeginToPeri
     EXPECT_EQ(sink.events[1].bar.begin_sec, TSEC_09_00);
     EXPECT_EQ(builder.stats().out_of_session, 0U);
 }
+
+/// @brief 粗周期跨小节拼根：目标桶已含场内 tick 时，竞价 tick 静默并入、不覆盖已公开 O/H/L
+TEST(IntradayBarAuctionCollisionTest, AuctionTickMergesIntoExistingBucketWithoutOverwritingOhlc) {
+    const TradingSessionTable table = day_break_auction_session_table();
+    RecordingSink sink;
+    IntradayBarBuilder<RecordingSink> builder(table, 3600, sink);
+
+    builder.on_tick(make_tick(10 * 3600 + 5 * 60, 100.0, 10, 1000.0, 7));  // 10:05 场内
+    ASSERT_TRUE(builder.has_current_bar());
+    ASSERT_EQ(builder.current_bar().begin_sec, TSEC_10_00);
+    ASSERT_EQ(sink.events.size(), 2U);
+
+    // 10:16:10 落在 10:30 小节的开盘竞价窗口内；1 小时目标桶 = 10:00，与当前桶相同
+    builder.on_tick(make_tick(10 * 3600 + 16 * 60 + 10, 105.0, 12, 1212.0, 8));
+    EXPECT_EQ(sink.events.size(), 2U);  // 窗口内零回调
+    ASSERT_TRUE(builder.has_current_bar());
+    const Bar& bar = builder.current_bar();
+    EXPECT_DOUBLE_EQ(bar.open, 100.0);  // 已公开开盘价不被竞价 tick 覆盖
+    EXPECT_DOUBLE_EQ(bar.high, 105.0);  // 竞价 tick 按普通 tick 参与高低点
+    EXPECT_DOUBLE_EQ(bar.low, 100.0);
+    EXPECT_DOUBLE_EQ(bar.close, 105.0);
+    EXPECT_EQ(bar.volume, 12);
+    EXPECT_EQ(bar.last_tick_sec, TradingTime::from_clock(10 * 3600 + 16 * 60 + 10));
+
+    // 10:30 恢复场内：同桶只 update（bar 早已暴露过，不补发 open）
+    builder.on_tick(make_tick(10 * 3600 + 30 * 60, 99.0, 15, 1500.0, 9));
+    ASSERT_EQ(sink.events.size(), 3U);
+    EXPECT_EQ(sink.events[2].kind, EventKind::Update);
+    EXPECT_DOUBLE_EQ(sink.events[2].bar.open, 100.0);
+    EXPECT_DOUBLE_EQ(sink.events[2].bar.high, 105.0);
+    EXPECT_DOUBLE_EQ(sink.events[2].bar.low, 99.0);
+}
+
+/// @brief 病态跨日仅竞价流：待补发队列溢出时丢弃最旧 bar，任何窗口内仍零回调
+TEST(IntradayBarAuctionOverflowTest, PendingQueueOverflowDropsOldestBarWithoutWindowCallbacks) {
+    const TradingSessionTable table = day_auction_session_table();
+    RecordingSink sink;
+    IntradayBarBuilder<RecordingSink> builder(table, 60, sink);
+
+    // 连续 9 个交易日只喂开盘竞价 tick：8 根待补发填满队列，窗口内零回调
+    for (DzDate day = TRADING_DAY; day < TRADING_DAY + 9; ++day) {
+        builder.on_tick(make_tick(CLOCK_08_59_20, 100.0, 10, 1000.0, 7, day));
+    }
+    EXPECT_TRUE(sink.events.empty());
+    EXPECT_EQ(builder.stats().out_of_order, 0U);
+
+    // 第 10 个交易日竞价 tick：溢出丢弃最旧（D 日）bar，仍不回调
+    builder.on_tick(make_tick(CLOCK_08_59_20, 100.0, 10, 1000.0, 7, TRADING_DAY + 9));
+    EXPECT_TRUE(sink.events.empty());
+
+    // 第 10 个交易日开市：补发保留的 8 根（D+1..D+8），再暴露当前竞价 bar
+    builder.on_tick(make_tick(CLOCK_09_00_20, 101.0, 12, 1212.0, 8, TRADING_DAY + 9));
+    EXPECT_EQ(count_events(sink, EventKind::Open), 9);
+    EXPECT_EQ(count_events(sink, EventKind::Close), 8);
+    ASSERT_GE(sink.events.size(), 2U);
+    EXPECT_EQ(sink.events[0].kind, EventKind::Open);
+    EXPECT_EQ(sink.events[0].bar.trading_day, TRADING_DAY + 1);  // 最旧的 D 日已被丢弃
+    EXPECT_EQ(sink.events[1].kind, EventKind::Close);
+    EXPECT_EQ(sink.events[1].bar.trading_day, TRADING_DAY + 1);
+}
