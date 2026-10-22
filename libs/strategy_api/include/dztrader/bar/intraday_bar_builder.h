@@ -56,10 +56,11 @@ namespace dztrader::bar {
  *       跨午夜不切日（`date` 未变即同一交易日）。续接（restore）由后续票定稿，公开方法
  *       只增不改。
  *
- * @note 竞价窗口内静默收尾的 bar 进入待补发队列（容量 = 单日竞价窗口数），离开窗口后的
- *       第一笔有效 tick 按入队顺序补发。只有「跨交易日且窗口之间没有任何场内有效 tick」
- *       的病态数据流会使队列溢出；溢出时丢弃最旧的待补发 bar，优先守住窗口内零回调
- *       （策略安全），正常行情下一个场内 tick 即清空队列。
+ * @note 竞价窗口内静默收尾的 bar 进入待补发队列（容量 TradingSessionTable::MAX_AUCTIONS），
+ *       离开窗口后的第一笔有效 tick 按入队顺序补发。只有「跨交易日且窗口之间没有任何场内
+ *       有效 tick」的病态数据流会使队列溢出；溢出时优先丢弃从未向 sink 暴露过的待补发 bar
+ *       （不会留下悬空 open），全部已暴露时丢弃最旧的（其 close 不再补发）。宁可在病态流
+ *       上丢 bar 也守住窗口内零回调（策略安全），正常行情下一个场内 tick 即清空队列。
  */
 template <class Sink = NullBarSink>
 class IntradayBarBuilder {
@@ -287,20 +288,32 @@ private:
 
     /// @brief 静默收尾当前 bar（竞价窗口内不回调），存入待补发队列
     ///
-    /// 队列按单日竞价窗口数定容；只有「跨交易日且窗口之间没有任何场内有效 tick」的病态流
-    /// 才会溢出。溢出时丢弃最旧的待补发 bar：优先守住「竞价窗口内零回调」（策略不可能在
-    /// 竞价时段下单），正常行情下一个场内 tick 就会清空队列、不会走到这里。
+    /// 只有「跨交易日且窗口之间没有任何场内有效 tick」的病态流才会触发溢出；溢出时丢最旧
+    /// 的未暴露 bar，其次丢最旧的 bar。优先守住「竞价窗口内零回调」（策略不可能在竞价时段
+    /// 下单），正常行情下一个场内 tick 就会清空队列、不会走到这里。
     void silently_finalize_bar() {
         if (pending_count_ == MAX_PENDING_BARS) {
-            for (int32_t i = 1; i < pending_count_; ++i) {
-                pending_bars_[i - 1] = pending_bars_[i];
-            }
-            --pending_count_;
+            drop_one_pending_bar();
         }
         PendingBar& pending = pending_bars_[pending_count_];
         pending.bar = bar_;
         pending.needs_open = !bar_open_notified_;
         ++pending_count_;
+    }
+
+    /// @brief 队列溢出时丢弃一根待补发 bar：优先未暴露的（不会留下悬空 open），否则最旧
+    void drop_one_pending_bar() {
+        int32_t drop_index = 0;
+        for (int32_t i = 0; i < pending_count_; ++i) {
+            if (pending_bars_[i].needs_open) {
+                drop_index = i;
+                break;
+            }
+        }
+        for (int32_t i = drop_index + 1; i < pending_count_; ++i) {
+            pending_bars_[i - 1] = pending_bars_[i];
+        }
+        --pending_count_;
     }
 
     /// @brief 补发待发事件：从未暴露的 bar 先 open（is_final=false）再 close（is_final=true）

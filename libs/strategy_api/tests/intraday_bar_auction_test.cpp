@@ -391,30 +391,73 @@ TEST(IntradayBarAuctionCollisionTest, AuctionTickMergesIntoExistingBucketWithout
     EXPECT_DOUBLE_EQ(sink.events[2].bar.low, 99.0);
 }
 
-/// @brief 病态跨日仅竞价流：待补发队列溢出时丢弃最旧 bar，任何窗口内仍零回调
-TEST(IntradayBarAuctionOverflowTest, PendingQueueOverflowDropsOldestBarWithoutWindowCallbacks) {
+/// @brief 病态跨日仅竞价流：队列溢出时丢最旧未暴露 bar，任何窗口内仍零回调
+TEST(IntradayBarAuctionOverflowTest, PendingQueueOverflowDropsOldestUnexposedBarWithoutCallbacks) {
+    constexpr int32_t kMaxPending = TradingSessionTable::MAX_AUCTIONS;
     const TradingSessionTable table = day_auction_session_table();
     RecordingSink sink;
     IntradayBarBuilder<RecordingSink> builder(table, 60, sink);
 
-    // 连续 9 个交易日只喂开盘竞价 tick：8 根待补发填满队列，窗口内零回调
-    for (DzDate day = TRADING_DAY; day < TRADING_DAY + 9; ++day) {
-        builder.on_tick(make_tick(CLOCK_08_59_20, 100.0, 10, 1000.0, 7, day));
+    // 连续 kMaxPending + 1 个交易日只喂开盘竞价 tick：kMaxPending 根待补发填满队列
+    for (int32_t day_offset = 0; day_offset <= kMaxPending; ++day_offset) {
+        builder.on_tick(make_tick(CLOCK_08_59_20, 100.0, 10, 1000.0, 7, TRADING_DAY + day_offset));
     }
     EXPECT_TRUE(sink.events.empty());
     EXPECT_EQ(builder.stats().out_of_order, 0U);
 
-    // 第 10 个交易日竞价 tick：溢出丢弃最旧（D 日）bar，仍不回调
-    builder.on_tick(make_tick(CLOCK_08_59_20, 100.0, 10, 1000.0, 7, TRADING_DAY + 9));
+    // 再一个交易日竞价 tick：溢出丢最旧（D 日，未暴露）bar，仍不回调
+    builder.on_tick(make_tick(CLOCK_08_59_20, 100.0, 10, 1000.0, 7, TRADING_DAY + kMaxPending + 1));
     EXPECT_TRUE(sink.events.empty());
 
-    // 第 10 个交易日开市：补发保留的 8 根（D+1..D+8），再暴露当前竞价 bar
-    builder.on_tick(make_tick(CLOCK_09_00_20, 101.0, 12, 1212.0, 8, TRADING_DAY + 9));
-    EXPECT_EQ(count_events(sink, EventKind::Open), 9);
-    EXPECT_EQ(count_events(sink, EventKind::Close), 8);
+    // 该交易日开市：补发保留的 kMaxPending 根（D+1..），再暴露当前竞价 bar
+    builder.on_tick(make_tick(CLOCK_09_00_20, 101.0, 12, 1212.0, 8, TRADING_DAY + kMaxPending + 1));
+    EXPECT_EQ(count_events(sink, EventKind::Open), kMaxPending + 1);
+    EXPECT_EQ(count_events(sink, EventKind::Close), kMaxPending);
     ASSERT_GE(sink.events.size(), 2U);
     EXPECT_EQ(sink.events[0].kind, EventKind::Open);
     EXPECT_EQ(sink.events[0].bar.trading_day, TRADING_DAY + 1);  // 最旧的 D 日已被丢弃
     EXPECT_EQ(sink.events[1].kind, EventKind::Close);
     EXPECT_EQ(sink.events[1].bar.trading_day, TRADING_DAY + 1);
+}
+
+/// @brief 病态跨日仅竞价流：溢出优先丢弃未暴露 bar，已暴露 bar 仍补发 close
+TEST(IntradayBarAuctionOverflowTest, PendingQueueOverflowPrefersDroppingUnexposedBars) {
+    constexpr int32_t kMaxPending = TradingSessionTable::MAX_AUCTIONS;
+    const TradingSessionTable table = day_auction_session_table();
+    RecordingSink sink;
+    IntradayBarBuilder<RecordingSink> builder(table, 60, sink);
+
+    // 交易日 D：竞价 tick + 开市场内 tick，该 bar 已向 sink 暴露（open + update）
+    builder.on_tick(make_tick(CLOCK_08_59_20, 100.0, 10, 1000.0, 7, TRADING_DAY));
+    builder.on_tick(make_tick(CLOCK_09_00_20, 101.0, 12, 1212.0, 8, TRADING_DAY));
+    ASSERT_EQ(count_events(sink, EventKind::Open), 1);
+    ASSERT_EQ(count_events(sink, EventKind::Close), 0);
+
+    // 之后连续只喂竞价 tick：队列填满，已暴露的 D 日 bar 与后续未暴露 bar 同处队列
+    for (int32_t day_offset = 1; day_offset <= kMaxPending; ++day_offset) {
+        builder.on_tick(make_tick(CLOCK_08_59_20, 100.0, 10, 1000.0, 7, TRADING_DAY + day_offset));
+    }
+    EXPECT_EQ(sink.events.size(), 2U);  // 窗口内始终零回调
+
+    // 再一个交易日竞价 tick：溢出优先丢弃未暴露的 D+1 bar，已暴露的 D 日 bar 保留
+    builder.on_tick(make_tick(CLOCK_08_59_20, 100.0, 10, 1000.0, 7, TRADING_DAY + kMaxPending + 1));
+    EXPECT_EQ(sink.events.size(), 2U);
+
+    // 该交易日开市：D 日 bar 只补 close，其余未暴露 bar 补 open + close，再暴露当前 bar
+    builder.on_tick(make_tick(CLOCK_09_00_20, 101.0, 12, 1212.0, 8, TRADING_DAY + kMaxPending + 1));
+    EXPECT_EQ(count_events(sink, EventKind::Open), kMaxPending + 1);
+    EXPECT_EQ(count_events(sink, EventKind::Close), kMaxPending);
+
+    int32_t exposed_day_events = 0;
+    int32_t dropped_day_events = 0;
+    for (const BarEvent& event : sink.events) {
+        if (event.bar.trading_day == TRADING_DAY) {
+            ++exposed_day_events;
+        }
+        if (event.bar.trading_day == TRADING_DAY + 1) {
+            ++dropped_day_events;
+        }
+    }
+    EXPECT_EQ(exposed_day_events, 3);  // open + update（已暴露）+ 补发 close
+    EXPECT_EQ(dropped_day_events, 0);  // 溢出时优先丢弃未暴露的 D+1 bar
 }
