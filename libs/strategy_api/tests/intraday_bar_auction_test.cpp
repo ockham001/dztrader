@@ -222,6 +222,19 @@ TEST_F(IntradayBarAuctionTest, NextTradingDayNightAuctionIsSilentAndBackfillsPre
     EXPECT_EQ(sink_.events[4].bar.volume, 150);
 }
 
+/// @brief tick 流在竞价窗口内结束：静默收尾的 bar 不补发（与惰性收盘一致，已文档化）
+TEST_F(IntradayBarAuctionTest, StreamEndingInsideAuctionWindowLeavesPendingBarUnbackfilled) {
+    builder_.on_tick(make_tick(CLOCK_15_00_00, 100.0, 100, 10000.0, 7, TRADING_DAY));
+    // 新交易日竞价 tick 让 D 日末根静默收尾入队，随后流结束：没有窗口外 tick 触发补发
+    builder_.on_tick(make_tick(CLOCK_08_59_20, 101.0, 130, 13130.0, 8, TRADING_DAY + 1));
+
+    EXPECT_EQ(count_events(sink_, EventKind::Open), 1);
+    EXPECT_EQ(count_events(sink_, EventKind::Close), 0);  // D 日末根 close 未被补发
+    ASSERT_TRUE(builder_.has_current_bar());
+    EXPECT_EQ(builder_.current_bar().trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(builder_.current_bar().volume, 130);  // 新日累计基准归零
+}
+
 /// @brief 商品多小节 + 多个长度不同的 Open 窗口：各归其目标小节首桶；两个窗口内都零事件
 class IntradayBarCommodityAuctionTest : public ::testing::Test {
 protected:
