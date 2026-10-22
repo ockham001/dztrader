@@ -33,17 +33,13 @@
 
 ## C. 提交前（每次 push）
 
-- [ ] `npm run type-check` ✅
-- [ ] `npm run lint` + `npm run lint:css` ✅（0 error / 0 warning）
-- [ ] `npm test` 全绿（前端 vitest）
+- [ ] `./scripts/preflight.sh` 全绿（日志格式 / clang-format 21.x / 文档链接 / 测试可移植性 / 前端 `type-check` + `lint` + `lint:css` + `vitest` + `gen:types` 新鲜度，一条命令一个结论）——CI linux job 复用同脚本的 C 段（`--c-only`）；首次需先 `./scripts/build.sh` 生成 `node_modules`
+- [ ] `./scripts/build.sh --config release` 通过
 - [ ] `./scripts/test.sh` 全绿（后台 fast 门禁；含冒烟 smoke）；穷举/基准按需 `--label slow` / `--label perf`（Windows `-Label`）
-- [ ] C++ 格式（clang-format 21.x）与日志格式（`python scripts/check_log_format.py apps/ libs/`）——已接入 CI（linux job），本地可预检
-- [ ] 测试可移植性（`python scripts/check_test_portability.py`；禁止测试源码写死 `/home/`、`/Users/`、`/root/`）——已接入 CI（linux job）
-- [ ] 文档链接（`python scripts/check_docs_links.py`）与提交信息前缀——已接入 CI（linux job）
 - [ ] `git status` 干净，改动为小步提交（信息中文，`fix:/feat:/refactor:/docs:/test:/chore:/perf:/style:/build:/ci:` 前缀）
 - [ ] 契约/生成物有改动时 CI 的 Freshness 步骤绿
 
-> push 后等 CI：用 `./scripts/wait-ci.sh <pr>`，只输出状态变化和失败摘要；不要用 `gh run watch` 全量输出，也不要反复 tail 后台日志。
+> push 后等 CI：`./scripts/wait-ci.sh --sha "$(git rev-parse HEAD)"`（或 `--run <id>` / PR 号），只输出状态变化和失败摘要；失败用 `./scripts/ci-log.sh <run-id>` 只取错误行。不要 `gh run watch` 全量输出，也不要反复 tail 后台日志或 `sleep` 轮询。
 
 > 若某项门禁**当前未在你的改动上跑**（例如只改了一个 `.vue` 但改了全局样式），
 > 请人工确认它确无跨层影响——机器门禁覆盖不到的正是这类"看似局部其实全局"的改动。

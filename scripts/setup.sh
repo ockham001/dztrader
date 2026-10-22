@@ -31,6 +31,22 @@ case "$SKIP_CONFIGURE" in
 esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# DSH workspace-write 沙箱下 ~/.conan2 可能只读：回退到仓库内 CONAN_HOME（.cache/ 已 gitignore），
+# 避免 worktree setup 卡在权限申请上。
+if [ -z "${CONAN_HOME:-}" ]; then
+    conan_cache_ok=0
+    if mkdir -p "$HOME/.conan2" 2>/dev/null && touch "$HOME/.conan2/.dz_setup_probe" 2>/dev/null; then
+        conan_cache_ok=1
+    fi
+    rm -f "$HOME/.conan2/.dz_setup_probe" 2>/dev/null || true
+    if [ "$conan_cache_ok" -eq 0 ]; then
+        export CONAN_HOME="$REPO_ROOT/.cache/conan2"
+        mkdir -p "$CONAN_HOME"
+        echo "warning: ~/.conan2 is not writable; using CONAN_HOME=$CONAN_HOME (first install will be slow)" >&2
+    fi
+fi
+
 PROFILE="profiles/linux-gcc"
 CONFIG_CAP=$(echo "$CONFIG" | sed 's/^./\U&/')
 OUTPUT_FOLDER="build/linux/x86_64/$CONFIG_CAP"

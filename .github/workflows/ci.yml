@@ -94,12 +94,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Log Format Check
-        run: python scripts/check_log_format.py apps/ libs/
-
-      - name: Test Portability Check
-        run: python scripts/check_test_portability.py
-
       - name: Install clang-format 21 (apt.llvm.org, official LLVM)
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
@@ -108,11 +102,8 @@ jobs:
           sudo apt-get install -y clang-format-21
           clang-format-21 --version
 
-      - name: C++ Format Check (clang-format 21.x)
-        run: find libs apps \( -name '*.h' -o -name '*.cpp' \) -print0 | xargs -0 clang-format-21 --dry-run --Werror
-
-      - name: Docs Links Check
-        run: python scripts/check_docs_links.py
+      - name: Repo preflight (log format / C++ format / docs links / test portability)
+        run: ./scripts/preflight.sh --c-only
 
       - name: Commit Message Check (prefix)
         if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'

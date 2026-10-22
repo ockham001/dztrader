@@ -12,6 +12,22 @@
 
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# DSH workspace-write 沙箱下 ~/.npm 可能只读：回退到仓库内 npm cache（.cache/ 已 gitignore）
+if [ -z "${npm_config_cache:-}" ]; then
+    npm_cache_ok=0
+    if mkdir -p "$HOME/.npm" 2>/dev/null && touch "$HOME/.npm/.dz_build_probe" 2>/dev/null; then
+        npm_cache_ok=1
+    fi
+    rm -f "$HOME/.npm/.dz_build_probe" 2>/dev/null || true
+    if [ "$npm_cache_ok" -eq 0 ]; then
+        export npm_config_cache="$REPO_ROOT/.cache/npm"
+        mkdir -p "$npm_config_cache"
+        echo "warning: ~/.npm is not writable; using npm_config_cache=$npm_config_cache" >&2
+    fi
+fi
+
 CONFIG=""
 TARGET=""
 
