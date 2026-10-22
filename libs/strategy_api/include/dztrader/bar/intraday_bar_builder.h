@@ -25,6 +25,10 @@ namespace dztrader::bar {
  * 丢弃并计入 stats().out_of_session），否则不改变任何 bar/累计状态、不触发回调。
  * 小节末端（tsec == session.end_sec）的 tick 归前一根 bar。
  *
+ * 周期可以是任意正整数秒：桶起点 = floor(tsec / period_sec) * period_sec（18:00 锚点
+ * 整数网格），1 小时周期即自然整点对齐；小节休息落在桶内时，休息前后小节的 tick
+ * 拼进同一根 bar，不按小节切根。
+ *
  * 桶边界事件顺序：新 bar 首笔 tick 先 close 旧 bar（is_final=true），再 open 新 bar
  * （is_final=false），最后 update 新 bar；同桶 tick 只 update。无成交的桶不生成
  * bar（相邻 bar 的 begin_sec 可跳跃）。

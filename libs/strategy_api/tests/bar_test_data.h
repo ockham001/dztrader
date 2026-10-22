@@ -24,6 +24,16 @@ inline constexpr int32_t TSEC_09_30 = 55800;
 inline constexpr int32_t TSEC_11_30 = 63000;
 /// @brief 午盘小节开始（13:00）的交易日内秒
 inline constexpr int32_t TSEC_13_00 = 68400;
+/// @brief 10:00 的交易日内秒
+inline constexpr int32_t TSEC_10_00 = 57600;
+/// @brief 10:15 的交易日内秒
+inline constexpr int32_t TSEC_10_15 = 58500;
+/// @brief 10:30 的交易日内秒
+inline constexpr int32_t TSEC_10_30 = 59400;
+/// @brief 11:00 的交易日内秒
+inline constexpr int32_t TSEC_11_00 = 61200;
+/// @brief 13:30 的交易日内秒
+inline constexpr int32_t TSEC_13_30 = 70200;
 
 /// @brief tick→bar 测试默认交易日
 inline constexpr DzDate TRADING_DAY = 20000;
@@ -88,6 +98,19 @@ inline constexpr dztrader::bar::TradingSessionTable day_session_table() {
     dztrader::bar::TradingSessionTable table{};
     table.session_count = 1;
     table.sessions[0] = dztrader::bar::TradingSession{TSEC_09_00, TSEC_15_00};
+    return table;
+}
+
+/// @brief 日盘三段小节表：09:00–10:15、10:30–11:30、13:30–15:00
+///
+/// 早盘休息 10:15–10:30 落在 1 小时桶 10:00–11:00 内部，用于验证「跨休息拼根」：
+/// 休息前后的 tick 进入同一根 1 小时 bar，不按小节切根。
+inline constexpr dztrader::bar::TradingSessionTable day_break_session_table() {
+    dztrader::bar::TradingSessionTable table{};
+    table.session_count = 3;
+    table.sessions[0] = dztrader::bar::TradingSession{TSEC_09_00, TSEC_10_15};
+    table.sessions[1] = dztrader::bar::TradingSession{TSEC_10_30, TSEC_11_30};
+    table.sessions[2] = dztrader::bar::TradingSession{TSEC_13_30, TSEC_15_00};
     return table;
 }
 
