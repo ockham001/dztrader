@@ -53,6 +53,7 @@
 #include <format>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -394,13 +395,47 @@ private:
         // 关注路径：配置非空以其为准，否则用默认的共享内存目录与数据库目录
         // （契约 sysmon §2.4、§3.1）。
         watch_paths_ = resolve_watch_paths();
-        disk_metrics_.watch_paths = collector_->collect_watch_paths(watch_paths_);
+        disk_metrics_.watch_paths = reconcile_watch_paths(
+            collector_->collect_watch_paths(watch_paths_), disk_metrics_.volumes);
 
         const auto shm_dir = collector_->collect_shm_dir(dztrader::paths::shm().string());
         disk_metrics_.shm_dir = shm_dir;
         if (shm_dir.has_value()) {
             disk_metrics_.shm_dir_collected = true;
         }
+    }
+
+    /// 把落卷结果与同帧卷列表对齐（契约 sysmon §7：available=true 的 watch_path 必须指向
+    /// 同帧 volumes 里存在的挂载点）。
+    ///
+    /// 卷枚举与落卷解析是两次独立的 /proc 挂载表快照（契约把两者放在不同采集中），
+    /// 两者之间发生挂载表变化时落卷可能指向一个本帧未列出的挂载点。若照实上报，
+    /// dzweb 的契约校验会拒掉**整帧快照**（连 CPU/内存一起丢），对 7x24 监控代价太大；
+    /// 因此这里把对不上的条目降级为"本帧未解析成功"（不伪造卷，也不拖垮整帧）。
+    std::optional<std::vector<platform::RawWatchPathInfo>> reconcile_watch_paths(
+        std::optional<std::vector<platform::RawWatchPathInfo>> watch_paths,
+        const std::optional<std::vector<platform::RawVolumeInfo>>& volumes) {
+        // volumes 为 null（组关闭或本帧未采集）时契约不做交叉校验，原样上报。
+        if (!watch_paths.has_value() || !volumes.has_value()) {
+            return watch_paths;
+        }
+        std::set<std::string> mounts;
+        for (const auto& volume : *volumes) {
+            mounts.insert(volume.mount);
+        }
+        bool reconciled = false;
+        for (auto& info : *watch_paths) {
+            if (info.mount.has_value() && !mounts.contains(*info.mount)) {
+                info.mount = std::nullopt;
+                info.reason = "collect_failed";
+                reconciled = true;
+            }
+        }
+        if (reconciled) {
+            // 挂载表在两次读取之间变化：罕见但真实（umount/mount 竞态），记日志便于诊断。
+            SPDLOG_WARN("watch path mount missing from volume list | action=downgraded");
+        }
+        return watch_paths;
     }
 
     /// 关注路径列表：配置 `disk.watch_paths` 非空时以其为准，否则用默认的
