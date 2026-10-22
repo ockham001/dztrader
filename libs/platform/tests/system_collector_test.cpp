@@ -1,5 +1,16 @@
 // 06-sysmon 采集层真机 oracle 测试：断言两平台实现从真实 OS 系统调用拿到的原始数据满足契约不变量。
+#include <dztrader/core/path.h>
 #include <dztrader/platform/system_collector.h>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>  // GetCurrentProcessId：临时目录名去重（与 libs/shm/tests/test_util.h 同做法）
+#endif
 
 #if defined(__linux__)
 #include "system_collector_linux_internal.h"  // 内部解析接缝（MemAvailable 异常防御）
@@ -15,6 +26,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -662,13 +674,24 @@ TEST(MountParserTest, DeduplicateKeepsUnknownDevices) {
 
 // ===== #75：卷、关注路径与共享内存目录 =====
 
+/// 当前进程号（两平台；与 libs/shm/tests/test_util.h 的既有做法一致）。
+/// 用于给临时目录名去重，避免并行跑同一测试可执行文件时互相踩目录。
+uint64_t current_process_id() {
+#if defined(_WIN32)
+    return static_cast<uint64_t>(GetCurrentProcessId());
+#else
+    return static_cast<uint64_t>(::getpid());
+#endif
+}
+
 /// 目录占用统计的临时目录 fixture：每个用例自管临时目录（AGENTS 硬门禁 2 的豁免情形）。
 class ShmDirUsageTest : public ::testing::Test {
 protected:
     void SetUp() override {
         std::error_code ec;
         base_ = std::filesystem::temp_directory_path(ec) /
-                ("dzsysmon_shm_" + std::to_string(::getpid()) + "_" + std::to_string(counter_++));
+                ("dzsysmon_shm_" + std::to_string(current_process_id()) + "_" +
+                 std::to_string(counter_++));
         std::filesystem::remove_all(base_, ec);
         ASSERT_TRUE(std::filesystem::create_directories(base_, ec)) << ec.message();
     }
@@ -832,27 +855,121 @@ TEST(SystemCollectorTest, WatchPathsResolveToVolumes) {
     EXPECT_FALSE(resolved[1].reason.empty());
 }
 
-// 真机 oracle：落卷解析必须跟随符号链接（软链接指向另一卷时报告真实落卷）。
-TEST(SystemCollectorTest, WatchPathsFollowSymlinks) {
-    std::error_code ec;
-    const auto link = std::filesystem::temp_directory_path(ec) /
-                      ("dzsysmon_symlink_" + std::to_string(::getpid()));
-    std::filesystem::remove_all(link, ec);
+// 真机 oracle：落卷解析必须跟随符号链接——报告的必须是**目标**所在卷，而不是链接名
+// 所在卷（两者刻意放在同一次断言里比较，否则测试会"通过但证明不了跟随")。
+TEST(SystemCollectorTest, WatchPathsFollowSymlinksToTargetVolume) {
 #if defined(_WIN32)
-    GTEST_SKIP() << "symlink creation requires privileges on windows CI";
+    GTEST_SKIP() << "symlink creation requires developer mode/admin on windows";
 #else
-    // 链到 /tmp（若 /tmp 与项目不在同一卷，正好验证"跟随链接后落卷"）。
-    ASSERT_EQ(::symlink("/tmp", link.c_str()), 0) << std::strerror(errno);
     const auto collector = make_system_collector();
     ASSERT_NE(collector, nullptr);
 
-    const auto resolved = collector->collect_watch_paths({link.string() + "/"});
-    std::filesystem::remove_all(link, ec);
+    std::error_code ec;
+    const auto base = std::filesystem::temp_directory_path(ec) /
+                      ("dzsysmon_symlink_" + std::to_string(current_process_id()));
+    std::filesystem::remove_all(base, ec);
+    ASSERT_TRUE(std::filesystem::create_directories(base, ec)) << ec.message();
+
+    // 目标目录与链接名放在**不同**的卷上（目标在 $DZTRADER_HOME/shm 所在卷，
+    // 链接名放在临时目录卷 —— 两者在很多机器上恰好不同卷，相同也没关系：
+    // 下面用"目标路径自身的落卷"作为 oracle 比较，结论对两种情况都成立）。
+    const auto target = dztrader::paths::shm();
+    const auto link = base / "link_to_shm";
+    if (::symlink(target.c_str(), link.c_str()) != 0) {
+        std::filesystem::remove_all(base, ec);
+        GTEST_SKIP() << "cannot create symlink on this filesystem: " << std::strerror(errno);
+    }
+
+    const auto resolved = collector->collect_watch_paths({link.string()});
+    // 目标路径本身的落卷 = 期望值（oracle）。
+    const auto target_resolved = collector->collect_watch_paths({target.string()});
+    std::filesystem::remove_all(base, ec);
+
     ASSERT_EQ(resolved.size(), 1U);
-    ASSERT_TRUE(resolved[0].mount.has_value()) << "symlink target must resolve to a volume";
-    // 规范化后路径不再是被跟随前的链接名（weakly_canonical 解析了链接）。
-    EXPECT_EQ(resolved[0].path.find("dzsysmon_symlink_"), std::string::npos)
+    ASSERT_EQ(target_resolved.size(), 1U);
+    ASSERT_TRUE(target_resolved[0].mount.has_value()) << "shm dir must resolve to a volume";
+
+    // 关键断言：链接被跟随，落卷等于目标落卷（而不是链接名所在目录的卷）。
+    EXPECT_EQ(resolved[0].mount, target_resolved[0].mount)
+        << "symlink must resolve to the target volume: link=" << link.string()
+        << " target=" << target.string();
+    // 规范化后路径不再包含链接名（weakly_canonical 解析了链接）。
+    EXPECT_EQ(resolved[0].path.find("link_to_shm"), std::string::npos)
         << "path must be canonicalized: " << resolved[0].path;
+#endif
+}
+
+// 契约 sysmon §2.4 的 AC：权限不足时报告不可用，不得产出 0。
+// mode 0000 的目录仍能通过 is_directory()，若不做可读性探针就会谎报成"空目录"。
+TEST_F(ShmDirUsageTest, UnreadableDirectoryIsUnavailableNotZero) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "posix permission bits are not enforceable the same way on windows";
+#else
+    const auto unreadable = base_ / "noread";
+    std::error_code ec;
+    ASSERT_TRUE(std::filesystem::create_directories(unreadable, ec)) << ec.message();
+    write_file(unreadable / "00000000.dat", 4096);
+    ASSERT_EQ(::chmod(unreadable.c_str(), 0), 0) << std::strerror(errno);
+
+    const auto collector = make_system_collector();
+    ASSERT_NE(collector, nullptr);
+    const auto usage = collector->collect_shm_dir(unreadable.string());
+
+    // 恢复权限以便 TearDown 能删掉临时目录。
+    ASSERT_EQ(::chmod(unreadable.c_str(), 0700), 0) << std::strerror(errno);
+
+    // 无权限 = 读不到：必须是 nullopt，绝不能是 total_bytes=0 的对象（契约 §2.4）。
+    EXPECT_EQ(usage, std::nullopt)
+        << "unreadable shm dir must be unavailable, got total_bytes="
+        << (usage ? std::to_string(usage->total_bytes) : std::string("<null>"));
+#endif
+}
+
+// 契约 sysmon §2.4：落卷匹配的大小写语义跨平台不同——Linux 大小写敏感，
+// Windows 大小写不敏感（盘符归一化后与 volumes[].mount 可直接相等比较）。
+TEST(SystemCollectorTest, WatchPathMatchingRespectsPlatformCaseSemantics) {
+    const auto collector = make_system_collector();
+    ASSERT_NE(collector, nullptr);
+
+    // 基准目录必须落在**采集范围内的真实卷**上：临时目录常是 tmpfs（被 §2.4 过滤），
+    // 现在的落卷解析会如实把它判为 unsupported（不得回退到 "/"），
+    // 那样就测不到大小写语义了。用 DZTRADER_HOME 所在目录（ctest 注入，在项目卷上）。
+    std::error_code ec;
+    const auto base = dztrader::paths::home().parent_path() /
+                      ("dzsysmon_case_" + std::to_string(current_process_id()));
+    std::filesystem::remove_all(base, ec);
+    ASSERT_TRUE(std::filesystem::create_directories(base / "Data", ec)) << ec.message();
+
+    // 同一个真实目录，用不同大小写拼写。
+    const auto exact = (base / "Data").string();
+    const auto different_case = (base / "data").string();
+    const auto resolved = collector->collect_watch_paths({exact, different_case});
+    std::filesystem::remove_all(base, ec);
+    ASSERT_EQ(resolved.size(), 2U);
+
+    // 精确拼写必须解析成功（两平台）。
+    EXPECT_TRUE(resolved[0].mount.has_value()) << "exact-case path must resolve";
+
+#if defined(_WIN32)
+    // Windows：大小写不敏感——另一种拼写同样解析成功，且落卷相等。
+    // 这条断言同时覆盖盘符归一化（否则 mount 大小写与 volumes 不一致）。
+    EXPECT_TRUE(resolved[1].mount.has_value()) << "windows matching must be case-insensitive";
+    if (resolved[0].mount.has_value() && resolved[1].mount.has_value()) {
+        EXPECT_EQ(*resolved[0].mount, *resolved[1].mount);
+        // 盘符必须统一为大写，才能与 volumes[].mount 直接字符串比较（契约 §2.4/§7）。
+        const auto& mount = *resolved[0].mount;
+        if (mount.size() >= 1 && std::isalpha(static_cast<unsigned char>(mount[0])) != 0) {
+            EXPECT_EQ(mount[0],
+                      static_cast<char>(std::toupper(static_cast<unsigned char>(mount[0]))))
+                << "drive letter must be normalized to uppercase: " << mount;
+        }
+    }
+#else
+    // Linux：大小写敏感——拼错的路径不存在，必须如实报 path_not_found（不猜卷）。
+    EXPECT_FALSE(resolved[1].mount.has_value())
+        << "linux matching must be case-sensitive, got mount="
+        << resolved[1].mount.value_or("<none>");
+    EXPECT_EQ(resolved[1].reason, "path_not_found");
 #endif
 }
 

@@ -14,6 +14,7 @@
 
 #if defined(__linux__)
 
+#include "system_collector_internal.h"
 #include "system_collector_linux_internal.h"
 
 #include <dztrader/platform/system_collector.h>
@@ -600,20 +601,6 @@ std::optional<std::vector<RawCoreFrequency>> read_core_frequencies() {
 /// `/proc/mounts` 路径（卷枚举的数据源；容器内为宿主视图，§8 明确不支持容器语义）。
 constexpr const char* kProcMountsPath = "/proc/mounts";
 
-/// 页文件扩展名（`<数字>.dat`；与 shm 层 `page_file_util_internal::is_page_file` 同口径）。
-constexpr std::string_view kPageFileExtension = ".dat";
-
-/// 判断文件名是否页文件：`<数字>.dat`（不含 `meta.dat`）。
-/// 与 libs/shm 的判定口径保持一致，但这里不依赖 shm 内部头（采集层不链接 shm 私有接缝）。
-bool is_page_file_name(std::string_view filename) {
-    if (!filename.ends_with(kPageFileExtension)) {
-        return false;
-    }
-    const auto stem = filename.substr(0, filename.size() - kPageFileExtension.size());
-    return !stem.empty() && std::all_of(stem.begin(), stem.end(),
-                                        [](unsigned char c) { return std::isdigit(c) != 0; });
-}
-
 /// 统计目录占用的递归中间结果。
 struct DirectoryUsage {
     uint64_t total_bytes = 0;
@@ -624,21 +611,16 @@ struct DirectoryUsage {
 /// 递归统计目录占用（契约 sysmon §2.4）：总字节数、页文件数、最旧页文件年龄。
 ///
 /// 用 error_code 重载遍历，不抛异常；子目录不可读时跳过该子树（不使整次失败）。
-/// 深度上限防御符号链接环与异常深目录树。
+/// 不需要深度上限：`recursive_directory_iterator` 默认**不跟随目录符号链接**，
+/// 因此不存在环；真实 shm 目录树只有「根 / 通道目录」两层。
 DirectoryUsage scan_directory_usage(const std::filesystem::path& root,
                                     std::chrono::file_clock::time_point now) {
-    constexpr int kMaxDepth = 8;
     DirectoryUsage usage;
     std::error_code ec;
     std::filesystem::recursive_directory_iterator it(
         root, std::filesystem::directory_options::skip_permission_denied, ec);
     const std::filesystem::recursive_directory_iterator end;
     while (!ec && it != end) {
-        if (it.depth() > kMaxDepth) {
-            it.disable_recursion_pending();
-            it.increment(ec);
-            continue;
-        }
         const auto& entry = *it;
         std::error_code entry_ec;
         if (entry.is_regular_file(entry_ec) && !entry_ec) {
@@ -646,7 +628,8 @@ DirectoryUsage scan_directory_usage(const std::filesystem::path& root,
             if (!entry_ec) {
                 usage.total_bytes += size;
             }
-            if (is_page_file_name(entry.path().filename().string())) {
+            if (system_collector_internal::is_shm_page_file_name(
+                    entry.path().filename().string())) {
                 ++usage.page_files;
                 const auto write_time = entry.last_write_time(entry_ec);
                 if (!entry_ec) {
@@ -711,6 +694,17 @@ std::optional<RawShmDirInfo> read_shm_dir(const std::string& shm_dir) {
     const std::filesystem::path root(shm_dir);
     if (!std::filesystem::is_directory(root, ec) || ec) {
         return std::nullopt;  // 目录不存在/不可读：不得输出全 0 的对象
+    }
+    // `is_directory()` 对 mode 0000 的目录仍返回 true（只需父目录可 stat），而下面的
+    // 递归迭代带 skip_permission_denied，会静默产出 0 个条目 + ec=0 —— 那会把"无权限"
+    // 谎报成"目录为空"的全 0 对象，正是契约 sysmon §2.4 禁止的。先探一次可读性：
+    // 根目录用**不带** skip_permission_denied 的迭代器，打不开就如实报不可用。
+    {
+        std::error_code probe_ec;
+        const std::filesystem::directory_iterator probe(root, probe_ec);
+        if (probe_ec) {
+            return std::nullopt;
+        }
     }
     const auto usage = scan_directory_usage(root, std::chrono::file_clock::now());
     RawShmDirInfo info;
@@ -802,24 +796,13 @@ public:
                 results.push_back(std::move(info));
                 continue;
             }
-            const auto mount =
-                system_collector_linux_internal::match_mount_point(*normalized, mount_points);
+            // 落卷：只有确实落在采集范围内的卷上才算解析成功。落在被过滤的文件系统
+            // （tmpfs/overlay/fuse 等，按设备号判定）报 unsupported，不得回退到 "/"
+            // （契约 sysmon §2.4；容器内 shm 目录常正好在 tmpfs 上）。
+            const auto mount = system_collector_linux_internal::resolve_volume_mount_point(
+                *normalized, mount_points);
             if (!mount.has_value()) {
-                // 路径存在但在采集范围内匹配不到卷：可能是落在被过滤的文件系统上
-                // （tmpfs/overlay/容器等）。契约要求"卷不在采集范围"报 unsupported，
-                // 而不是 path_not_found；用未过滤的挂载表诊断（契约 sysmon §2.4）。
-                const auto all_mounts = system_collector_linux_internal::parse_mounts(
-                    read_file_contents(kProcMountsPath), /*include_pseudo=*/true);
-                std::vector<std::string> all_mount_points;
-                all_mount_points.reserve(all_mounts.size());
-                for (const auto& entry : all_mounts) {
-                    all_mount_points.push_back(entry.mount_point);
-                }
-                info.reason = system_collector_linux_internal::match_mount_point(*normalized,
-                                                                                 all_mount_points)
-                                      .has_value()
-                                  ? "unsupported"
-                                  : "path_not_found";
+                info.reason = "unsupported";
                 results.push_back(std::move(info));
                 continue;
             }
@@ -885,7 +868,8 @@ bool is_mount_prefix(std::string_view path, std::string_view mount_point) {
 
 bool is_pseudo_filesystem(std::string_view fs_type) {
     // 契约 sysmon §2.4：过滤内核伪文件系统、内存文件系统与无独立容量语义的挂载。
-    // 清单刻意用前缀匹配覆盖 cgroup/cgroup2、nsfs/nsfs、fuse.* 等家族。
+    // 清单按**精确类型名**匹配（cgroup 与 cgroup2 各列一条）；只有 `fuse.*` 家族用前缀，
+    // 因为其类型名带实现后缀（如 `fuse.sshfs`）。
     static constexpr std::array<std::string_view, 26> kPseudo = {
         "proc",        "sysfs",      "devtmpfs", "devpts",     "tmpfs",   "ramfs",     "cgroup",
         "cgroup2",     "debugfs",    "tracefs",  "configfs",   "mqueue",  "hugetlbfs", "autofs",
@@ -1015,6 +999,39 @@ std::optional<std::string> match_mount_point(std::string_view normalized_path,
         return std::string("/");
     }
     return std::nullopt;
+}
+
+std::optional<std::string> resolve_volume_mount_point(
+    const std::string& normalized_path,
+    const std::vector<std::string>& volume_mount_points,
+    const std::string& root_mount_point) {
+    // 先在不含根的集合里找最长前缀：命中即确定落在采集范围内的某个卷上。
+    std::optional<std::string> best;
+    for (const auto& mount_point : volume_mount_points) {
+        if (mount_point == "/") {
+            continue;
+        }
+        if (is_mount_prefix(normalized_path, mount_point)) {
+            if (!best.has_value() || mount_point.size() > best->size()) {
+                best = mount_point;
+            }
+        }
+    }
+    if (best.has_value()) {
+        return best;
+    }
+    // 没命中：只有"确实在根文件系统上"才归到根卷，否则视为不在采集范围。
+    // 无条件回退到 "/" 会把 tmpfs/overlay/fuse 上的路径谎报成根卷（契约 §2.4 禁止）。
+    struct stat root_info{};
+    struct stat path_info{};
+    if (::stat(root_mount_point.c_str(), &root_info) != 0 ||
+        ::stat(normalized_path.c_str(), &path_info) != 0) {
+        return std::nullopt;
+    }
+    if (root_info.st_dev != path_info.st_dev) {
+        return std::nullopt;  // 落在被过滤的挂载点上（tmpfs/overlay/fuse 等）
+    }
+    return root_mount_point;
 }
 
 std::optional<std::string> normalize_path(const std::string& path) {

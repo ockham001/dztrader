@@ -394,9 +394,8 @@ private:
         }
         // 关注路径：配置非空以其为准，否则用默认的共享内存目录与数据库目录
         // （契约 sysmon §2.4、§3.1）。
-        watch_paths_ = resolve_watch_paths();
         disk_metrics_.watch_paths = reconcile_watch_paths(
-            collector_->collect_watch_paths(watch_paths_), disk_metrics_.volumes);
+            collector_->collect_watch_paths(resolve_watch_paths()), disk_metrics_.volumes);
 
         const auto shm_dir = collector_->collect_shm_dir(dztrader::paths::shm().string());
         disk_metrics_.shm_dir = shm_dir;
@@ -738,8 +737,6 @@ private:
     TemperatureMetrics temperature_metrics_;
     MemorySwapMetrics memory_metrics_;
     DiskMetrics disk_metrics_;
-    /// 本帧关注路径（配置优先；默认共享内存目录与数据库目录）。
-    std::vector<std::string> watch_paths_;
     CoreSaturationTracker saturation_tracker_;
     int64_t last_sample_unix_ms_ = 0;
     uint64_t missed_ticks_ = 0;

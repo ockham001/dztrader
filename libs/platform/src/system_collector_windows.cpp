@@ -37,6 +37,8 @@
 #include <psapi.h>   // GetPerformanceInfo：内存与页文件口径（契约 sysmon §2.4）
 #include <winreg.h>
 
+#include "system_collector_internal.h"
+
 #include <dztrader/platform/system_collector.h>
 
 #include <algorithm>
@@ -46,6 +48,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cwctype>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -700,16 +703,6 @@ std::vector<std::string> list_fixed_drives() {
     return drives;
 }
 
-/// 判断文件名是否页文件：`<数字>.dat`（不含 `meta.dat`）。
-bool is_page_file_name(std::string_view filename) {
-    if (!filename.ends_with(".dat")) {
-        return false;
-    }
-    const auto stem = filename.substr(0, filename.size() - 4);
-    return !stem.empty() && std::all_of(stem.begin(), stem.end(),
-                                        [](unsigned char c) { return std::isdigit(c) != 0; });
-}
-
 /// 递归统计目录占用（契约 sysmon §2.4）：总字节数、页文件数、最旧页文件年龄。
 std::optional<RawShmDirInfo> query_shm_dir(const std::string& shm_dir) {
     const auto wide_dir = utf8_to_wide(shm_dir);
@@ -721,7 +714,17 @@ std::optional<RawShmDirInfo> query_shm_dir(const std::string& shm_dir) {
     if (!std::filesystem::is_directory(root, ec) || ec) {
         return std::nullopt;  // 目录不存在/不可读：不得输出全 0 的对象
     }
-    constexpr int kMaxDepth = 8;
+    // `is_directory()` 对无读取权限的目录仍为 true，而下面的递归迭代带
+    // skip_permission_denied 会静默产出 0 个条目 + ec=0 —— 那会把"无权限"谎报成
+    // "目录为空"的全 0 对象（契约 sysmon §2.4 禁止）。先探一次可读性。
+    {
+        std::error_code probe_ec;
+        const std::filesystem::directory_iterator probe(root, probe_ec);
+        if (probe_ec) {
+            return std::nullopt;
+        }
+    }
+    // 不需要深度上限：递归迭代器默认不跟随目录符号链接（无环），shm 树只有两层。
     RawShmDirInfo info;
     info.path = shm_dir;
     const auto now = std::chrono::file_clock::now();
@@ -729,11 +732,6 @@ std::optional<RawShmDirInfo> query_shm_dir(const std::string& shm_dir) {
         root, std::filesystem::directory_options::skip_permission_denied, ec);
     const std::filesystem::recursive_directory_iterator end;
     while (!ec && it != end) {
-        if (it.depth() > kMaxDepth) {
-            it.disable_recursion_pending();
-            it.increment(ec);
-            continue;
-        }
         std::error_code entry_ec;
         if (it->is_regular_file(entry_ec) && !entry_ec) {
             const auto size = static_cast<uint64_t>(it->file_size(entry_ec));
@@ -741,7 +739,7 @@ std::optional<RawShmDirInfo> query_shm_dir(const std::string& shm_dir) {
                 info.total_bytes += size;
             }
             const auto narrow = wide_to_utf8(it->path().filename().wstring());
-            if (is_page_file_name(narrow)) {
+            if (system_collector_internal::is_shm_page_file_name(narrow)) {
                 ++info.page_files;
                 const auto write_time = it->last_write_time(entry_ec);
                 if (!entry_ec) {
@@ -761,14 +759,13 @@ std::optional<RawShmDirInfo> query_shm_dir(const std::string& shm_dir) {
     return info;
 }
 
-/// 用 GetVolumePathNameW 把路径解析到所在卷的挂载点（契约 sysmon §2.4）。
-/// @return 挂载点（带尾部分隔符的盘符根或目录挂载点）；失败返回 std::nullopt。
-std::optional<std::string> resolve_volume_mount(const std::string& path) {
+/// 规范化路径为绝对路径（`GetFullPathNameW`：解析 `.`/`..`、统一分隔符为 `\`）。
+/// @return 规范化后的 UTF-8 路径；失败返回 std::nullopt。
+std::optional<std::string> absolute_path(const std::string& path) {
     const auto wide_path = utf8_to_wide(path);
     if (wide_path.empty()) {
         return std::nullopt;
     }
-    // GetVolumePathNameW 要求绝对路径；GetFullPathNameW 负责规范化（含 `.`/`..`）。
     const DWORD needed = GetFullPathNameW(wide_path.c_str(), 0, nullptr, nullptr);
     if (needed == 0) {
         return std::nullopt;
@@ -779,6 +776,21 @@ std::optional<std::string> resolve_volume_mount(const std::string& path) {
         return std::nullopt;
     }
     absolute.resize(written);
+    return wide_to_utf8(absolute);
+}
+
+/// 用 GetVolumePathNameW 把路径解析到所在卷的挂载点（契约 sysmon §2.4）。
+/// @return 挂载点（带尾部分隔符的盘符根或目录挂载点）；失败返回 std::nullopt。
+std::optional<std::string> resolve_volume_mount(const std::string& path) {
+    // GetVolumePathNameW 要求绝对路径（调用方已用 absolute_path() 规范化）。
+    const auto absolute_path_string = absolute_path(path);
+    if (!absolute_path_string.has_value()) {
+        return std::nullopt;
+    }
+    const std::wstring absolute = utf8_to_wide(*absolute_path_string);
+    if (absolute.empty()) {
+        return std::nullopt;
+    }
 
     // 挂载点缓冲区按 MAX_PATH 起步，长度不足时按 API 约定扩展。
     std::wstring volume_path(MAX_PATH, L'\0');
@@ -795,7 +807,15 @@ std::optional<std::string> resolve_volume_mount(const std::string& path) {
             return std::nullopt;  // 病态长路径：放弃解析（调用方报 collect_failed）
         }
     }
-    const std::wstring resolved = std::wstring(volume_path.c_str());
+    std::wstring resolved = std::wstring(volume_path.c_str());
+    // 盘符统一成大写：query_volumes() 的挂载点由 'A'+index 生成（恒大写），而
+    // GetVolumePathNameW 会把调用方输入的大小写原样回显（`c:\` 得 `c:\`）。
+    // 契约 sysmon §2.4 要求 Windows 匹配大小写不敏感，消费方（快照构造的 watched
+    // 判定、dzweb 的 §7 交叉校验）用字符串相等比较，所以这里必须归一化，
+    // 否则小写盘符的关注路径永远对不上卷、整帧还会被交叉校验拒掉。
+    if (resolved.size() >= 2 && resolved[1] == L':') {
+        resolved[0] = static_cast<wchar_t>(std::towupper(resolved[0]));
+    }
     return wide_to_utf8(resolved);
 }
 
@@ -864,17 +884,24 @@ public:
             info.path = path;
             // 路径不存在 ⇒ 如实报 path_not_found（GetVolumePathNameW 对不存在的尾部
             // 仍可能返回父卷，不能据此报成功，契约 sysmon §2.4）。
-            const auto wide_path = utf8_to_wide(path);
+            const auto absolute = absolute_path(path);
+            if (!absolute.has_value()) {
+                info.reason = "path_not_found";
+                results.push_back(std::move(info));
+                continue;
+            }
+            // 契约 sysmon §2.4：path 是"解析用的路径（绝对路径）"，上报规范化结果而不是
+            // 调用方原始输入（分隔符已统一为 `\`、`.`/`..` 已解析）。
+            info.path = *absolute;
             std::error_code exists_ec;
             const bool exists =
-                !wide_path.empty() &&
-                std::filesystem::exists(std::filesystem::path(wide_path), exists_ec);
+                std::filesystem::exists(std::filesystem::path(utf8_to_wide(*absolute)), exists_ec);
             if (!exists || exists_ec) {
                 info.reason = "path_not_found";
                 results.push_back(std::move(info));
                 continue;
             }
-            const auto mount = resolve_volume_mount(path);
+            const auto mount = resolve_volume_mount(*absolute);
             if (!mount.has_value()) {
                 // 路径存在但解析不到挂载点（极端长路径/卷服务异常）：不猜卷（契约 sysmon §2.4）。
                 info.reason = "collect_failed";

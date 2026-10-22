@@ -7,6 +7,7 @@
 #include "cpu_usage.h"
 #include "snapshot_builder.h"
 
+#include <dztrader/core/path.h>
 #include <dztrader/platform/system_collector.h>
 
 #include <gtest/gtest.h>
@@ -286,9 +287,10 @@ TEST(SystemCollectorOracleTest, DiskDomainsHoldOnRealMachine) {
     disk.volumes_collected = true;
     disk.volumes = volumes;
     disk.watch_paths = resolved;
-    // 用临时目录驱动 shm 目录统计，避免依赖本机真实 .dztrader_dev 状态：
-    // 真实路径的可用性由 collector 自身决定（可能不存在 → nullopt，这是合法降级）。
-    disk.shm_dir = collector->collect_shm_dir(working_dir.string());
+    // 共享内存目录用真实 $DZTRADER_HOME/shm（ctest 经 test-base preset 注入）：
+    // 这份数据同时驱动快照与下面的 oracle 比对，口径必须一致。
+    const auto shm_dir_path = dztrader::paths::shm();
+    disk.shm_dir = collector->collect_shm_dir(shm_dir_path.string());
     disk.shm_dir_collected = disk.shm_dir.has_value();
 
     const auto snapshot = build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
@@ -327,17 +329,43 @@ TEST(SystemCollectorOracleTest, DiskDomainsHoldOnRealMachine) {
     EXPECT_TRUE((*snapshot.watch_paths)[0].available);
     ASSERT_TRUE((*snapshot.watch_paths)[0].mount.has_value());
 
-    // 共享内存目录占用（本用例用工作目录当替身）：字节/页文件数非负、年龄非负。
-    if (snapshot.shm_dir.has_value()) {
-        EXPECT_FALSE(snapshot.shm_dir->path.empty());
-        EXPECT_GE(snapshot.shm_dir->total_bytes, 0U);
-        if (snapshot.shm_dir->oldest_file_age_sec.has_value()) {
-            EXPECT_GE(*snapshot.shm_dir->oldest_file_age_sec, 0);
+    // 共享内存目录占用：断言可失败的不变量（不能断言 uint64 >= 0 这类永真条件）：
+    //   - 页文件数与最旧年龄是同一批文件的两种视图：有页文件 ⟺ 年龄非空；
+    //   - 页文件字节数之和不可能超过目录总字节数（页文件是目录内容的子集）。
+    const auto shm_usage = collector->collect_shm_dir(shm_dir_path.string());
+    uint64_t page_file_bytes = 0;
+    std::error_code walk_ec;
+    {
+        std::filesystem::recursive_directory_iterator it(
+            shm_dir_path, std::filesystem::directory_options::skip_permission_denied, walk_ec);
+        const std::filesystem::recursive_directory_iterator end;
+        while (!walk_ec && it != end) {
+            std::error_code file_ec;
+            if (it->is_regular_file(file_ec) && !file_ec) {
+                const auto name = it->path().filename().string();
+                const bool is_page = name.size() > 4 && name.ends_with(".dat") &&
+                                     std::all_of(name.begin(), name.end() - 4, [](unsigned char c) {
+                                         return std::isdigit(c) != 0;
+                                     });
+                if (is_page) {
+                    page_file_bytes += static_cast<uint64_t>(it->file_size(file_ec));
+                }
+            }
+            it.increment(walk_ec);
         }
-        // 有页文件时页文件数 > 0 且年龄必须存在（两者是同一批文件的两种视图）。
-        if (snapshot.shm_dir->page_files > 0) {
-            EXPECT_TRUE(snapshot.shm_dir->oldest_file_age_sec.has_value());
-        }
+    }
+    if (!shm_usage.has_value()) {
+        // 目录不存在/不可读：合法降级，此时快照域必须为 null（不是全 0 的对象）。
+        EXPECT_EQ(snapshot.shm_dir, std::nullopt);
+    } else {
+        ASSERT_TRUE(snapshot.shm_dir.has_value());
+        EXPECT_EQ(snapshot.shm_dir->path, shm_usage->path);
+        EXPECT_EQ(snapshot.shm_dir->page_files, shm_usage->page_files);
+        EXPECT_LE(page_file_bytes, snapshot.shm_dir->total_bytes)
+            << "page file bytes cannot exceed total directory bytes";
+        EXPECT_EQ(snapshot.shm_dir->page_files > 0,
+                  snapshot.shm_dir->oldest_file_age_sec.has_value())
+            << "page_files and oldest_file_age_sec are two views of the same page-file set";
     }
 
     // 整帧必须通过契约校验（含 volumes/watch_paths 的交叉校验）。

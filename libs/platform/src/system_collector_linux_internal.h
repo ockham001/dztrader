@@ -103,9 +103,25 @@ struct MountEntry {
 /// 在已知挂载点集合中做最长前缀匹配，返回路径所在卷的挂载点（契约 sysmon §2.4）。
 ///
 /// `normalized_path` 必须已是绝对路径；匹配按**路径分量边界**（`/home` 不会匹配 `/home2`）。
-/// 找不到匹配返回 std::nullopt（调用方据此报 `path_not_found`，不得回退到 `/`）。
+/// 找不到匹配返回 std::nullopt（调用方据此报失败，不得回退到 `/`）。
 [[nodiscard]] std::optional<std::string> match_mount_point(
     std::string_view normalized_path, const std::vector<std::string>& mount_points);
+
+/// 落卷的最长前缀匹配，区分"落在被过滤的文件系统上"与"真的没有对应卷"。
+///
+/// 契约 sysmon §2.4 禁止"解析失败时回退到 `/`"。若是无条件回退，任何位于 tmpfs /
+/// overlay / fuse 等被过滤文件系统上的路径都会被谎报成根卷——而 shm 目录在容器里
+/// 恰恰常在 tmpfs 上。因此这里只在**路径确实落在根文件系统**时才归到 `/`：
+/// 用 `st_dev` 把路径与根挂载点做设备比对，设备不同即判定"占用了别的挂载点"。
+///
+/// @param normalized_path 已规范化的绝对路径
+/// @param volume_mount_points 卷采集范围内的挂载点（不含根时可无 `/`）
+/// @param root_mount_point 根挂载点（通常 "/"）
+/// @return 匹配到的卷挂载点；std::nullopt = 路径不在任何采集范围内的卷上
+[[nodiscard]] std::optional<std::string> resolve_volume_mount_point(
+    const std::string& normalized_path,
+    const std::vector<std::string>& volume_mount_points,
+    const std::string& root_mount_point = "/");
 
 /// 规范化路径（`weakly_canonical`：解析 `.`/`..` 与符号链接，保留不存在的尾部）。
 /// @return 规范化后的绝对路径；无法规范化（权限/IO 错误）返回 std::nullopt。
