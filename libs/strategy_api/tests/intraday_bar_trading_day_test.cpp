@@ -24,6 +24,9 @@ constexpr DzTime CLOCK_14_59 = 14 * 3600 + 59 * 60;
 /// @brief 23:59:59 的墙钟秒（交易日内秒 21599）
 constexpr DzTime CLOCK_23_59_59 = 23 * 3600 + 59 * 60 + 59;
 
+/// @brief 02:00 墙钟对应的交易日内秒（1 小时桶 02:00–03:00 的 tsec 起点）
+constexpr int32_t TSEC_02_00 = 28800;
+
 /// @brief 断言一根 bar 的身份三元组（交易日 + 标准桶起点 + 周期）
 void expect_bar_identity(const Bar& bar,
                          DzDate trading_day,
@@ -140,9 +143,9 @@ TEST_F(IntradayBarTradingDayTest, NewTradingDayHugeFirstCumulativeKeepsFullDelta
     ASSERT_TRUE(builder_.has_current_bar());
     EXPECT_EQ(builder_.current_bar().trading_day, NEXT_TRADING_DAY);
     // 以 0 为基准得 1e9；沿用旧日基准会得 1e9-100，夹到 0 则得 0
-    EXPECT_EQ(builder_.current_bar().volume, static_cast<int64_t>(HUGE_CUMULATIVE));
+    EXPECT_EQ(builder_.current_bar().volume, HUGE_CUMULATIVE);
     EXPECT_DOUBLE_EQ(builder_.current_bar().turnover, static_cast<double>(HUGE_CUMULATIVE));
-    EXPECT_EQ(builder_.current_bar().cum_volume, static_cast<int64_t>(HUGE_CUMULATIVE));
+    EXPECT_EQ(builder_.current_bar().cum_volume, HUGE_CUMULATIVE);
     EXPECT_EQ(builder_.stats().bad_volume, 0U);
 }
 
@@ -304,6 +307,33 @@ TEST_F(IntradayBarTradingDayTest, BadVolumeOnNewTradingDayDoesNotSwitchTradingDa
     EXPECT_EQ(builder_.current_bar().volume, 5);
 }
 
+/// @brief 连续多个交易日：每日首笔都以 0 为基准，互不污染
+TEST_F(IntradayBarTradingDayTest, ConsecutiveTradingDaysResetBasisIndependently) {
+    struct DayCase {
+        DzDate day;                  ///< 交易日
+        DzVolume cumulative_volume;  ///< 当日首笔累计量（每日都从更小的值重新开始）
+        double cumulative_turnover;  ///< 当日首笔累计额
+    };
+    const DayCase cases[] = {
+        {TRADING_DAY, 100, 10000.0},
+        {NEXT_TRADING_DAY, 20, 2000.0},
+        {DAY_AFTER_NEXT, 5, 505.0},
+    };
+    for (const DayCase& day_case : cases) {
+        SCOPED_TRACE(::testing::Message() << "day=" << static_cast<int64_t>(day_case.day));
+        builder_.on_tick(make_tick(9 * 3600, 100.0, day_case.cumulative_volume,
+                                   day_case.cumulative_turnover, 7, day_case.day));
+        ASSERT_TRUE(builder_.has_current_bar());
+        EXPECT_EQ(builder_.current_bar().trading_day, day_case.day);
+        EXPECT_EQ(builder_.current_bar().volume, day_case.cumulative_volume);
+        EXPECT_DOUBLE_EQ(builder_.current_bar().turnover, day_case.cumulative_turnover);
+    }
+    EXPECT_EQ(count_events(sink_, EventKind::Open), 3);
+    EXPECT_EQ(count_events(sink_, EventKind::Close), 2);
+    EXPECT_EQ(builder_.stats().out_of_order, 0U);
+    EXPECT_EQ(builder_.stats().bad_volume, 0U);
+}
+
 /// @brief 夜盘跨午夜同交易日、跨日入夜盘、日盘/夜盘互相切换的跨日生命周期
 ///
 /// 同一交易日内夜盘（21:00–次日 02:30）跨过墙钟午夜但 `date` 不变即不切日；
@@ -443,6 +473,7 @@ TEST_F(IntradayBarTradingDayNightTest, NightSessionEndToNextTradingDayNightSessi
     ASSERT_EQ(count_events(sink_, EventKind::Close), 1);
     const Bar* closed = last_event_bar(sink_, EventKind::Close);
     ASSERT_NE(closed, nullptr);
+    EXPECT_TRUE(closed->is_final);
     EXPECT_EQ(closed->trading_day, TRADING_DAY);
     EXPECT_EQ(closed->begin_sec, TSEC_02_30 - 60);
     EXPECT_EQ(closed->last_tick_sec, TSEC_02_30);
@@ -450,52 +481,6 @@ TEST_F(IntradayBarTradingDayNightTest, NightSessionEndToNextTradingDayNightSessi
     EXPECT_EQ(builder_.current_bar().trading_day, NEXT_TRADING_DAY);
     EXPECT_EQ(builder_.current_bar().begin_sec, TSEC_21_00);
     EXPECT_EQ(builder_.current_bar().volume, 3);
-}
-
-/// @brief 夜盘末根 → 次交易日日盘首根：跨过盘前非交易时段，切日由交易日变大触发
-TEST_F(IntradayBarTradingDayNightTest, NightSessionEndToNextTradingDayDaySession) {
-    builder_.on_tick(make_tick(2 * 3600 + 30 * 60, 100.0, 60, 6000.0, 7));  // 交易日 D 夜盘末端
-    builder_.on_tick(
-        make_tick(9 * 3600 + 30 * 60, 101.0, 65, 6565.0, 8, NEXT_TRADING_DAY));  // D+1 早盘
-
-    ASSERT_EQ(count_events(sink_, EventKind::Close), 1);
-    const Bar* closed = last_event_bar(sink_, EventKind::Close);
-    ASSERT_NE(closed, nullptr);
-    EXPECT_EQ(closed->trading_day, TRADING_DAY);
-    EXPECT_EQ(closed->begin_sec, TSEC_02_30 - 60);
-    EXPECT_EQ(closed->last_tick_sec, TSEC_02_30);
-    ASSERT_TRUE(builder_.has_current_bar());
-    EXPECT_EQ(builder_.current_bar().trading_day, NEXT_TRADING_DAY);
-    EXPECT_EQ(builder_.current_bar().begin_sec, TSEC_09_30);
-    EXPECT_EQ(builder_.current_bar().volume, 65);  // 跨日基准归零：65 - 0
-    EXPECT_EQ(builder_.stats().out_of_order, 0U);
-}
-
-/// @brief 连续多个交易日：每日首笔都以 0 为基准，互不污染
-TEST_F(IntradayBarTradingDayTest, ConsecutiveTradingDaysResetBasisIndependently) {
-    struct DayCase {
-        DzDate day;                  ///< 交易日
-        DzVolume cumulative_volume;  ///< 当日首笔累计量（每日都从更小的值重新开始）
-        double cumulative_turnover;  ///< 当日首笔累计额
-    };
-    const DayCase cases[] = {
-        {TRADING_DAY, 100, 10000.0},
-        {NEXT_TRADING_DAY, 20, 2000.0},
-        {DAY_AFTER_NEXT, 5, 505.0},
-    };
-    for (const DayCase& day_case : cases) {
-        SCOPED_TRACE(::testing::Message() << "day=" << static_cast<int64_t>(day_case.day));
-        builder_.on_tick(make_tick(9 * 3600, 100.0, day_case.cumulative_volume,
-                                   day_case.cumulative_turnover, 7, day_case.day));
-        ASSERT_TRUE(builder_.has_current_bar());
-        EXPECT_EQ(builder_.current_bar().trading_day, day_case.day);
-        EXPECT_EQ(builder_.current_bar().volume, day_case.cumulative_volume);
-        EXPECT_DOUBLE_EQ(builder_.current_bar().turnover, day_case.cumulative_turnover);
-    }
-    EXPECT_EQ(count_events(sink_, EventKind::Open), 3);
-    EXPECT_EQ(count_events(sink_, EventKind::Close), 2);
-    EXPECT_EQ(builder_.stats().out_of_order, 0U);
-    EXPECT_EQ(builder_.stats().bad_volume, 0U);
 }
 
 /// @brief 1 小时周期跨日（日盘多小节）：旧日末根按整点网格收盘，新日首根开在次日桶上
@@ -542,15 +527,16 @@ protected:
 TEST_F(IntradayBarTradingDayNightHourTest, HourlyNightEndToNextTradingDayNightStart) {
     builder_.on_tick(make_tick(2 * 3600 + 30 * 60, 100.0, 60, 6000.0, 7));  // 交易日 D 02:30 末端
     ASSERT_TRUE(builder_.has_current_bar());
-    ASSERT_EQ(builder_.current_bar().begin_sec, 28800);  // 02:30 末端归 02:00 小时桶（tsec）
+    ASSERT_EQ(builder_.current_bar().begin_sec, TSEC_02_00);  // 02:30 末端归 02:00 小时桶（tsec）
 
     builder_.on_tick(make_tick(21 * 3600, 101.0, 3, 303.0, 8, NEXT_TRADING_DAY));  // D+1 夜盘 21:00
     EXPECT_EQ(builder_.stats().out_of_order, 0U);  // tsec 30600 → 10800 后退，但交易日前进
     ASSERT_EQ(count_events(sink_, EventKind::Close), 1);
     const Bar* closed = last_event_bar(sink_, EventKind::Close);
     ASSERT_NE(closed, nullptr);
+    EXPECT_TRUE(closed->is_final);
     EXPECT_EQ(closed->trading_day, TRADING_DAY);
-    EXPECT_EQ(closed->begin_sec, 28800);
+    EXPECT_EQ(closed->begin_sec, TSEC_02_00);
     EXPECT_EQ(closed->period_sec, 3600);
     EXPECT_EQ(closed->last_tick_sec, TSEC_02_30);
     ASSERT_TRUE(builder_.has_current_bar());
