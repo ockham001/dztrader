@@ -147,6 +147,44 @@ inline constexpr dztrader::bar::TradingSessionTable commodity_session_table() {
     return table;
 }
 
+/// @brief 单小节日盘表 + 开盘竞价窗口 08:59:00–08:59:59（目标小节 0 的首桶 09:00）
+inline constexpr dztrader::bar::TradingSessionTable day_auction_session_table() {
+    dztrader::bar::TradingSessionTable table = day_session_table();
+    table.auction_count = 1;
+    table.auctions[0] = dztrader::bar::AuctionWindow{dztrader::bar::AuctionKind::Open, 0,
+                                                     TSEC_09_00 - 60, TSEC_09_00 - 1};
+    return table;
+}
+
+/// @brief 商品多小节表 + 三个竞价窗口，长度不同：
+///        夜盘开盘 20:59:30–20:59:59（30 秒，归 21:00 首桶）、
+///        早盘开盘 09:28:30–09:29:59（90 秒，归 09:30 首桶）、
+///        午盘收盘 14:58:00–15:00:00（120 秒，按普通 tick 处理、含小节末端）
+inline constexpr dztrader::bar::TradingSessionTable commodity_auction_session_table() {
+    dztrader::bar::TradingSessionTable table = commodity_session_table();
+    table.auction_count = 3;
+    table.auctions[0] = dztrader::bar::AuctionWindow{dztrader::bar::AuctionKind::Open, 0,
+                                                     TSEC_21_00 - 30, TSEC_21_00 - 1};
+    table.auctions[1] = dztrader::bar::AuctionWindow{dztrader::bar::AuctionKind::Open, 1,
+                                                     TSEC_09_30 - 90, TSEC_09_30 - 1};
+    table.auctions[2] = dztrader::bar::AuctionWindow{dztrader::bar::AuctionKind::Close, 2,
+                                                     TSEC_15_00 - 120, TSEC_15_00};
+    return table;
+}
+
+/// @brief 竞价窗口与前一小节重叠的表：11:00–11:29 是午盘（13:00）开盘竞价窗口，
+///        同时落在早盘小节 09:00–11:30 内，用于验证「窗口命中优先于 session 判定」
+inline constexpr dztrader::bar::TradingSessionTable overlapping_auction_session_table() {
+    dztrader::bar::TradingSessionTable table{};
+    table.session_count = 2;
+    table.sessions[0] = dztrader::bar::TradingSession{TSEC_09_00, TSEC_11_30};
+    table.sessions[1] = dztrader::bar::TradingSession{TSEC_13_00, TSEC_15_00};
+    table.auction_count = 1;
+    table.auctions[0] = dztrader::bar::AuctionWindow{dztrader::bar::AuctionKind::Open, 1,
+                                                     TSEC_11_00, TSEC_11_30 - 60};
+    return table;
+}
+
 }  // namespace dztrader::strategy_api::test
 
 #endif  // DZTRADER_STRATEGY_API_TESTS_BAR_TEST_DATA_H_
