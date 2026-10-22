@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted（2026-10-18）
+Accepted（2026-10-18）。决策 1 已由 [ADR 0031](0031-tick-bar-synthesis-component.md) 取代（2026-10-22）；决策 2/3/4/5 继续有效。
 
 ## Context
 
