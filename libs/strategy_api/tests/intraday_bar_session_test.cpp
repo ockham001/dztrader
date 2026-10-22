@@ -40,12 +40,12 @@ TEST_F(IntradayBarSessionTest, MultiSessionTableAssignsTicksToRespectiveSessionB
         int32_t begin_sec;
     };
     const SessionTickCase cases[] = {
-        {21 * 3600, TSEC_21_00},           // 21:00:00 夜盘开始
-        {23 * 3600, 18000},                // 23:00:00 夜盘
-        {30 * 60, 23400},                  // 次日 00:30 夜盘
-        {9 * 3600 + 30 * 60, TSEC_09_30},  // 09:30:00 早盘开始
-        {10 * 3600, 57600},                // 10:00 早盘
-        {13 * 3600, TSEC_13_00},           // 13:00:00 午盘开始
+        {21 * 3600, TSEC_21_00},                     // 21:00:00 夜盘开始
+        {23 * 3600, TSEC_21_00 + 2 * 3600},          // 23:00:00 夜盘
+        {30 * 60, TSEC_21_00 + 3 * 3600 + 30 * 60},  // 次日 00:30 夜盘
+        {9 * 3600 + 30 * 60, TSEC_09_30},            // 09:30:00 早盘开始
+        {10 * 3600, TSEC_09_30 + 30 * 60},           // 10:00 早盘
+        {13 * 3600, TSEC_13_00},                     // 13:00:00 午盘开始
     };
     int32_t expected_opens = 0;
     for (const SessionTickCase& session_tick : cases) {
@@ -62,10 +62,13 @@ TEST_F(IntradayBarSessionTest, MultiSessionTableAssignsTicksToRespectiveSessionB
 }
 
 TEST_F(IntradayBarSessionTest, TicksAcrossMidnightAdvanceInSameTradingDay) {
+    constexpr int32_t BUCKET_23_59 = TSEC_21_00 + 2 * 3600 + 59 * 60;
+    constexpr int32_t BUCKET_00_00 = TSEC_21_00 + 3 * 3600;
+
     builder_.on_tick(make_tick(23 * 3600 + 59 * 60 + 30, 100.0, 10, 1000.0, 7));  // 23:59:30
     ASSERT_TRUE(builder_.has_current_bar());
-    ASSERT_EQ(builder_.current_bar().begin_sec, 21540);      // 23:59 桶
-    ASSERT_EQ(builder_.current_bar().last_tick_sec, 21570);  // 23:59:30
+    ASSERT_EQ(builder_.current_bar().begin_sec, BUCKET_23_59);
+    ASSERT_EQ(builder_.current_bar().last_tick_sec, BUCKET_23_59 + 30);  // 23:59:30
 
     builder_.on_tick(make_tick(0, 101.0, 12, 1212.0, 8));  // 次日 00:00:00
     EXPECT_EQ(builder_.stats().out_of_session, 0U);
@@ -74,18 +77,18 @@ TEST_F(IntradayBarSessionTest, TicksAcrossMidnightAdvanceInSameTradingDay) {
     const Bar* last_close = last_event_bar(sink_, EventKind::Close);
     ASSERT_NE(last_close, nullptr);
     EXPECT_TRUE(last_close->is_final);
-    EXPECT_EQ(last_close->begin_sec, 21540);  // 23:59 桶
+    EXPECT_EQ(last_close->begin_sec, BUCKET_23_59);
     ASSERT_TRUE(builder_.has_current_bar());
     EXPECT_EQ(builder_.current_bar().trading_day, TRADING_DAY);  // 夜盘归属同一交易日
-    EXPECT_EQ(builder_.current_bar().begin_sec, 21600);          // 00:00 桶
-    EXPECT_EQ(builder_.current_bar().last_tick_sec, 21600);
+    EXPECT_EQ(builder_.current_bar().begin_sec, BUCKET_00_00);
+    EXPECT_EQ(builder_.current_bar().last_tick_sec, BUCKET_00_00);
     EXPECT_FALSE(builder_.current_bar().is_final);
 
     builder_.on_tick(make_tick(30, 99.0, 15, 1500.0, 9));  // 00:00:30 同桶更新
     EXPECT_EQ(count_events(sink_, EventKind::Open), 2);
     EXPECT_EQ(count_events(sink_, EventKind::Update), 3);
-    EXPECT_EQ(builder_.current_bar().begin_sec, 21600);
-    EXPECT_EQ(builder_.current_bar().last_tick_sec, 21630);  // 00:00:30
+    EXPECT_EQ(builder_.current_bar().begin_sec, BUCKET_00_00);
+    EXPECT_EQ(builder_.current_bar().last_tick_sec, BUCKET_00_00 + 30);  // 00:00:30
     EXPECT_DOUBLE_EQ(builder_.current_bar().low, 99.0);
     EXPECT_DOUBLE_EQ(builder_.current_bar().close, 99.0);
 }
@@ -110,8 +113,8 @@ TEST_F(IntradayBarSessionTest, SessionBreakTicksAreDroppedAndCounted) {
     EXPECT_EQ(count_events(sink_, EventKind::Update), 1);
     EXPECT_EQ(count_events(sink_, EventKind::Close), 0);
     const Bar& bar = builder_.current_bar();
-    EXPECT_EQ(bar.begin_sec, 57600);  // 10:00 桶
-    EXPECT_EQ(bar.last_tick_sec, 57600);
+    EXPECT_EQ(bar.begin_sec, TSEC_09_30 + 30 * 60);  // 10:00 桶
+    EXPECT_EQ(bar.last_tick_sec, TSEC_09_30 + 30 * 60);
     EXPECT_DOUBLE_EQ(bar.close, 100.0);
     EXPECT_EQ(bar.cum_volume, 10);
 
@@ -122,7 +125,7 @@ TEST_F(IntradayBarSessionTest, SessionBreakTicksAreDroppedAndCounted) {
     EXPECT_EQ(count_events(sink_, EventKind::Close), 1);
     const Bar* last_close = last_event_bar(sink_, EventKind::Close);
     ASSERT_NE(last_close, nullptr);
-    EXPECT_EQ(last_close->begin_sec, 57600);  // 10:00 桶
+    EXPECT_EQ(last_close->begin_sec, TSEC_09_30 + 30 * 60);  // 10:00 桶
     EXPECT_TRUE(last_close->is_final);
     EXPECT_EQ(builder_.current_bar().begin_sec, TSEC_13_00);
     EXPECT_EQ(builder_.current_bar().volume, 2);
@@ -146,45 +149,47 @@ TEST_F(IntradayBarSessionTest, NonTradingTimeTicksAreDroppedBeforeFirstBar) {
     EXPECT_EQ(builder_.current_bar().volume, 11);  // 首笔以 0 为基准
 }
 
-TEST_F(IntradayBarSessionTest, AfternoonSessionEndTickBelongsToPreviousBar) {
-    builder_.on_tick(make_tick(14 * 3600 + 59 * 60 + 30, 100.0, 10, 1000.0, 7));  // 14:59:30
-    builder_.on_tick(make_tick(15 * 3600, 101.0, 12, 1212.0, 8));  // 15:00:00 收盘时刻
+TEST_F(IntradayBarSessionTest, SessionEndTickBelongsToPreviousBar) {
+    struct SessionEndCase {
+        DzTime clock;      ///< 小节末端墙钟秒
+        int32_t end_tsec;  ///< 小节末端交易日内秒
+    };
+    const SessionEndCase cases[] = {
+        {15 * 3600, TSEC_15_00},           // 日盘 15:00:00 收盘
+        {2 * 3600 + 30 * 60, TSEC_02_30},  // 夜盘 02:30:00 收盘（下一小节为 09:30 早盘）
+    };
+    for (const SessionEndCase& session_end : cases) {
+        SCOPED_TRACE(::testing::Message() << "clock=" << session_end.clock);
+        RecordingSink sink;
+        IntradayBarBuilder<RecordingSink> builder(table_, 60, sink);
+        builder.on_tick(make_tick(session_end.clock - 30, 100.0, 10, 1000.0, 7));  // 末端前 30 秒
+        builder.on_tick(make_tick(session_end.clock, 101.0, 12, 1212.0, 8));       // 小节末端
 
-    EXPECT_EQ(builder_.stats().out_of_session, 0U);
-    EXPECT_EQ(count_events(sink_, EventKind::Open), 1);  // 不产生下一桶，也不产生下一 session 首根
-    EXPECT_EQ(count_events(sink_, EventKind::Update), 2);
-    EXPECT_EQ(count_events(sink_, EventKind::Close), 0);
-    const Bar& bar = builder_.current_bar();
-    EXPECT_EQ(bar.begin_sec, 75540);      // 14:59 桶
-    EXPECT_EQ(bar.last_tick_sec, 75600);  // 15:00:00，last_tick_sec 记录真实 tsec
-    EXPECT_DOUBLE_EQ(bar.close, 101.0);
-    EXPECT_EQ(bar.volume, 12);  // 首笔 tick 的 bar 量额基准为 0
-    EXPECT_FALSE(bar.is_final);
+        EXPECT_EQ(builder.stats().out_of_session, 0U);
+        EXPECT_EQ(count_events(sink, EventKind::Open), 1);  // 不产生下一桶或下一 session 首根
+        EXPECT_EQ(count_events(sink, EventKind::Update), 2);
+        EXPECT_EQ(count_events(sink, EventKind::Close), 0);
+        ASSERT_TRUE(builder.has_current_bar());
+        const Bar& bar = builder.current_bar();
+        EXPECT_EQ(bar.begin_sec, session_end.end_tsec - 60);  // 归前一分钟桶
+        EXPECT_EQ(bar.last_tick_sec, session_end.end_tsec);   // 真实 tsec
+        EXPECT_DOUBLE_EQ(bar.close, 101.0);
+        EXPECT_EQ(bar.volume, 12);  // 首笔 tick 的 bar 量额基准为 0
+        EXPECT_FALSE(bar.is_final);
 
-    builder_.on_tick(make_tick(15 * 3600 + 1, 102.0, 13, 1326.0, 9));  // 15:00:01 已收盘
-    EXPECT_EQ(builder_.stats().out_of_session, 1U);
-    EXPECT_EQ(count_events(sink_, EventKind::Update), 2);
-    EXPECT_EQ(builder_.current_bar().last_tick_sec, 75600);
+        builder.on_tick(make_tick(session_end.clock + 1, 102.0, 13, 1326.0, 9));  // 末端后 1 秒
+        EXPECT_EQ(builder.stats().out_of_session, 1U);
+        EXPECT_EQ(count_events(sink, EventKind::Update), 2);
+        EXPECT_EQ(builder.current_bar().last_tick_sec, session_end.end_tsec);
+    }
 }
 
 TEST_F(IntradayBarSessionTest, SessionEndTickUsesPreviousBucketWhenNoPriorTick) {
     builder_.on_tick(make_tick(15 * 3600, 101.0, 10, 1010.0, 7));  // 15:00:00 为该日第一笔
 
     ASSERT_TRUE(builder_.has_current_bar());
-    EXPECT_EQ(builder_.current_bar().begin_sec, 75540);      // 归 14:59 桶而非 15:00 桶
-    EXPECT_EQ(builder_.current_bar().last_tick_sec, 75600);  // 真实 tsec
+    EXPECT_EQ(builder_.current_bar().begin_sec, TSEC_15_00 - 60);  // 归 14:59 桶而非 15:00 桶
+    EXPECT_EQ(builder_.current_bar().last_tick_sec, TSEC_15_00);   // 真实 tsec
     EXPECT_EQ(count_events(sink_, EventKind::Open), 1);
     EXPECT_EQ(count_events(sink_, EventKind::Close), 0);
-}
-
-TEST_F(IntradayBarSessionTest, NightSessionEndTickBelongsToPreviousBar) {
-    builder_.on_tick(make_tick(2 * 3600 + 29 * 60 + 30, 100.0, 10, 1000.0, 7));  // 02:29:30
-    builder_.on_tick(make_tick(2 * 3600 + 30 * 60, 101.0, 12, 1212.0, 8));  // 02:30:00 夜盘收盘
-
-    EXPECT_EQ(builder_.stats().out_of_session, 0U);
-    EXPECT_EQ(count_events(sink_, EventKind::Open), 1);  // 不产生下一 session（09:30 早盘）首根
-    EXPECT_EQ(count_events(sink_, EventKind::Close), 0);
-    ASSERT_TRUE(builder_.has_current_bar());
-    EXPECT_EQ(builder_.current_bar().begin_sec, 30540);      // 02:29 桶
-    EXPECT_EQ(builder_.current_bar().last_tick_sec, 30600);  // 02:30:00，真实 tsec
 }
