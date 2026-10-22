@@ -51,9 +51,9 @@ SysmonSnapshot make_snapshot() {
     snap.network = std::nullopt;
     snap.shm_dir = std::nullopt;
     snap.availability.platform_description = "Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)";
-    for (const char* key :
-         {"system", "cpu.total", "cpu.cores", "cpu.load_average", "cpu.context_switches", "memory",
-          "swap", "volumes", "disk_io", "network", "shm_dir"}) {
+    for (const char* key : {"system", "cpu.total", "cpu.cores", "cpu.load_average",
+                            "cpu.context_switches", "cpu.frequency", "memory", "swap", "volumes",
+                            "disk_io", "network", "shm_dir", "temperature"}) {
         snap.availability.metrics[key] = {.available = false,
                                           .reason = std::string("not_implemented")};
     }
@@ -140,13 +140,44 @@ TEST(SysmonSnapshotValidateTest, AcceptsNetworkEntries) {
     EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
 }
 
+// 契约 sysmon §2.3/§2.4：temperature[] 与 cpu.core_frequencies[] 的合法条目通过校验，
+// 序列化键名与可空语义保持契约形状。
+TEST(SysmonSnapshotValidateTest, AcceptsTemperatureAndCoreFrequencies) {
+    auto snap = make_snapshot();
+    snap.cpu.core_frequencies = std::vector<SysmonCoreFrequency>{
+        SysmonCoreFrequency{.index = 0, .mhz = 3600},
+        SysmonCoreFrequency{.index = 2, .mhz = 3800},
+    };
+    snap.temperature = std::vector<SysmonTemperatureInfo>{
+        SysmonTemperatureInfo{.sensor = "coretemp:Package id 0", .celsius = 45.5},
+    };
+    snap.availability.metrics["cpu.frequency"] = {.available = true, .reason = std::nullopt};
+    snap.availability.metrics["temperature"] = {.available = true, .reason = std::nullopt};
+
+    auto j = nlohmann::json(snap);
+    ASSERT_TRUE(j["cpu"]["core_frequencies"].is_array());
+    EXPECT_EQ(j["cpu"]["core_frequencies"][0]["index"], 0);
+    EXPECT_EQ(j["cpu"]["core_frequencies"][0]["mhz"], 3600);
+    ASSERT_TRUE(j["temperature"].is_array());
+    EXPECT_EQ(j["temperature"][0]["sensor"], "coretemp:Package id 0");
+    EXPECT_DOUBLE_EQ(j["temperature"][0]["celsius"].get<double>(), 45.5);
+    EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
+
+    // null 表示本平台不可用/无传感器，是契约允许的形状（默认快照即 null）。
+    j["cpu"]["core_frequencies"] = nullptr;
+    j["temperature"] = nullptr;
+    EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
+}
+
 // 快照 JSON 结构应与契约一致（可选域序列化为 null、availability 不出现 null reason）。
 TEST(SysmonSnapshotJsonTest, DefaultSnapshotShape) {
     const auto snap = make_snapshot();
     const nlohmann::json j = snap;
     EXPECT_EQ(j["platform"]["family"], "linux");
     EXPECT_TRUE(j["memory"].is_null());
+    EXPECT_TRUE(j["temperature"].is_null());
     EXPECT_TRUE(j["cpu"]["load_average"].is_null());
+    EXPECT_TRUE(j["cpu"]["core_frequencies"].is_null());
     EXPECT_TRUE(j["cpu"]["cores"].is_array());
     EXPECT_FALSE(j["availability"]["metrics"]["system"].contains("reason"));
     EXPECT_EQ(j["availability"]["metrics"]["memory"]["reason"], "not_implemented");
@@ -249,6 +280,41 @@ TEST(SysmonSnapshotValidateTest, RejectsInvalidPayloads) {
         j["availability"]["metrics"]["system"]["reason"] = nullptr;
         EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
     }
+    {  // cpu.core_frequencies 键必须存在（null 允许，键必须在）
+        auto snap = make_snapshot();
+        auto j = nlohmann::json(snap);
+        j["cpu"].erase("core_frequencies");
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
+    {  // cpu.core_frequencies 非 null 时必须是数组，条目 index 非负、mhz > 0 且为整数
+        auto snap = make_snapshot();
+        auto j = nlohmann::json(snap);
+        j["cpu"]["core_frequencies"] = 0;
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+        j["cpu"]["core_frequencies"] = nlohmann::json::array({{{"index", 0}, {"mhz", 0}}});
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+        j["cpu"]["core_frequencies"] = nlohmann::json::array({{{"index", -1}, {"mhz", 3600}}});
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+        j["cpu"]["core_frequencies"] = nlohmann::json::array({{{"index", 0}, {"mhz", 1.5}}});
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+        j["cpu"]["core_frequencies"] = nlohmann::json::array({1});
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
+    {  // temperature 键必须存在（null 允许）；非 null 时 sensor 非空、celsius 为数字
+        auto snap = make_snapshot();
+        auto j = nlohmann::json(snap);
+        j.erase("temperature");
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+        j = nlohmann::json(snap);
+        j["temperature"] = 42;
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+        j["temperature"] = nlohmann::json::array({{{"sensor", ""}, {"celsius", 40.0}}});
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+        j["temperature"] = nlohmann::json::array({{{"sensor", "x"}, {"celsius", "hot"}}});
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+        j["temperature"] = nlohmann::json::array({{{"sensor", "x"}}});
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
 }
 
 // 配置：默认值合法、patch 合并生效、null/越界 patch 拒绝。
@@ -258,7 +324,20 @@ TEST(SysmonConfigTest, DefaultConfigValid) {
     ASSERT_EQ(SysmonConfig::validate(j), std::nullopt);
     EXPECT_EQ(j["sampling"]["measure_interval_ms"], 1000);
     EXPECT_EQ(j["realtime"]["push_interval_sec"], 5);
-    EXPECT_EQ(j["sampling"]["groups"].size(), 6u);
+    // 契约 sysmon §3.1：A 组六项 + B 组（温度 / 每核频率）共 8 项，全部必须出现在默认值里。
+    EXPECT_EQ(j["sampling"]["groups"].size(), 8u);
+    for (const char* group : {"cpu", "memory", "swap", "volumes", "disk_io", "network"}) {
+        EXPECT_TRUE(j["sampling"]["groups"][group].get<bool>()) << group;
+    }
+#if defined(_WIN32)
+    // 契约 sysmon §3.1：Windows 上温度/每核频率不可靠，默认关闭。
+    EXPECT_FALSE(j["sampling"]["groups"]["temperature"].get<bool>());
+    EXPECT_FALSE(j["sampling"]["groups"]["cpu_frequency"].get<bool>());
+#else
+    // 契约 sysmon §3.1：Linux 默认开启 B 组（无传感器时由可用性映射报告不可用）。
+    EXPECT_TRUE(j["sampling"]["groups"]["temperature"].get<bool>());
+    EXPECT_TRUE(j["sampling"]["groups"]["cpu_frequency"].get<bool>());
+#endif
 }
 
 TEST(SysmonConfigTest, ApplyPatchMergesAndValidates) {

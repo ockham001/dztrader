@@ -12,6 +12,9 @@ namespace {
 /// 不可用原因（契约 sysmon §2.5 建议取值）。
 constexpr const char* kReasonNotImplemented = "not_implemented";
 constexpr const char* kReasonCollectFailed = "collect_failed";
+constexpr const char* kReasonUnsupported = "unsupported";
+constexpr const char* kReasonNoSensor = "no_sensor";
+constexpr const char* kReasonDisabledByConfig = "disabled_by_config";
 
 /// 跨平台语义提示的键：按指标键命名（契约 sysmon §2.5）。
 constexpr const char* kHintKeyLoadAverage = "cpu.load_average";
@@ -58,6 +61,7 @@ std::string make_platform_description(const platform::RawSystemInfo& info) {
 platform::SysmonSnapshot build_snapshot(std::string_view source,
                                         const platform::RawSystemInfo& system_info,
                                         const CpuMetrics& cpu_metrics,
+                                        const TemperatureMetrics& temperature_metrics,
                                         int32_t measure_interval_ms,
                                         int64_t last_sample_unix_ms,
                                         uint64_t missed_ticks,
@@ -87,7 +91,7 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
     snapshot.system.uptime_sec =
         now_sec > system_info.boot_time_unix_sec ? now_sec - system_info.boot_time_unix_sec : 0;
 
-    // cpu：总量/每核/饱和标记/负载/速率。不可用一律 null 或空数组，不得用 0 冒充。
+    // cpu：总量/每核/饱和标记/负载/速率/每核频率。不可用一律 null 或空数组，不得用 0 冒充。
     snapshot.cpu.total.usage_ratio = cpu_metrics.total_usage_ratio;
     if (cpu_metrics.cores_collected) {
         snapshot.cpu.cores = cpu_metrics.cores;
@@ -108,6 +112,20 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         snapshot.cpu.context_switches_per_sec = std::nullopt;
         snapshot.cpu.interrupts_per_sec = std::nullopt;
     }
+    // 每核频率（#73）：配置关闭优先；能力可用时输出本帧读数（未读到为 null），
+    // 不沿用上一帧、也不用 0 冒充（契约 sysmon §2.3、§2.7）。
+    if (!cpu_metrics.frequency_disabled && cpu_metrics.frequency_collected) {
+        snapshot.cpu.core_frequencies = cpu_metrics.core_frequencies;
+    } else {
+        snapshot.cpu.core_frequencies = std::nullopt;
+    }
+
+    // 温度（#73）：瞬时 gauge，规则同每核频率。
+    if (!temperature_metrics.disabled && temperature_metrics.collected) {
+        snapshot.temperature = temperature_metrics.sensors;
+    } else {
+        snapshot.temperature = std::nullopt;
+    }
 
     // 其余指标域：本版本未采集（契约 §2 定稿形状为 null）。
     snapshot.memory = std::nullopt;
@@ -117,7 +135,7 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
     snapshot.network = std::nullopt;
     snapshot.shm_dir = std::nullopt;
 
-    // availability：每帧必须覆盖全部 11 个固定键。
+    // availability：每帧必须覆盖全部 13 个固定键。
     snapshot.availability.platform_description = make_platform_description(system_info);
     for (const char* key : platform::SYSMON_METRIC_KEYS) {
         const std::string_view metric(key);
@@ -141,6 +159,27 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
                 mark_available(snapshot.availability, key);
             } else {
                 mark_unavailable(snapshot.availability, key, kReasonCollectFailed);
+            }
+        } else if (metric == platform::SYSMON_METRIC_CPU_FREQUENCY) {
+            // 配置关闭优先；能力可用但本帧未读到数值时仍为 available（数值为 null）。
+            if (cpu_metrics.frequency_disabled) {
+                mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
+            } else if (cpu_metrics.frequency_collected) {
+                mark_available(snapshot.availability, key);
+            } else {
+                mark_unavailable(snapshot.availability, key, kReasonUnsupported);
+            }
+        } else if (metric == platform::SYSMON_METRIC_TEMPERATURE) {
+            if (temperature_metrics.disabled) {
+                mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
+            } else if (temperature_metrics.collected) {
+                mark_available(snapshot.availability, key);
+            } else if (system_info.os_family == "windows") {
+                // Windows 不提供温度（无可靠 API，契约 sysmon §8）。
+                mark_unavailable(snapshot.availability, key, kReasonUnsupported);
+            } else {
+                // Linux 无 hwmon 传感器（容器/虚拟机降级路径，契约 sysmon §2.5）。
+                mark_unavailable(snapshot.availability, key, kReasonNoSensor);
             }
         } else {
             mark_not_implemented(snapshot.availability, key);

@@ -201,3 +201,96 @@ describe('useSysmonStore CPU 区块 computed（#72）', () => {
     expect(store.semanticHint('other.key')).toBe('')
   })
 })
+
+describe('useSysmonStore 温度与每核频率 computed（#73，可用性驱动）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('默认快照按 #73 语义将 temperature / cpu.frequency 标记为不可用', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot())
+
+    // Linux 无 hwmon 传感器 → no_sensor；无 cpufreq → unsupported（契约 sysmon §2.5）。
+    expect(store.availabilityOf('temperature')).toEqual({ available: false, reason: 'no_sensor' })
+    expect(store.availabilityOf('cpu.frequency')).toEqual({ available: false, reason: 'unsupported' })
+  })
+
+  it('temperatures 仅在 temperature 可用时返回过滤后的读数，否则空数组', () => {
+    const store = useSysmonStore()
+    // 无快照 / 默认不可用：空数组，不得伪造 0
+    expect(store.temperatures).toEqual([])
+    store.applySnapshot(makeSysmonSnapshot())
+    expect(store.temperatures).toEqual([])
+
+    store.applySnapshot(makeSysmonSnapshot({ sensorData: true }))
+    expect(store.temperatures).toEqual([
+      { sensor: 'coretemp#hwmon3:Package id 0', celsius: 45.5 },
+      { sensor: 'coretemp#hwmon3:Core 0', celsius: 41.5 },
+    ])
+
+    // 数据仍在但可用性标记不可用：不得用陈旧数据冒充
+    store.applySnapshot(makeSysmonSnapshot({
+      sensorData: true,
+      metrics: { temperature: { available: false, reason: 'no_sensor' } },
+    }))
+    expect(store.temperatures).toEqual([])
+
+    // 过滤空 sensor / 非有限 celsius（可用性显式标记可用）
+    store.applySnapshot(makeSysmonSnapshot({
+      metrics: { temperature: { available: true } },
+      temperatures: [
+        { sensor: '', celsius: 30 },
+        { sensor: '   ', celsius: 31 },
+        { sensor: 'coretemp:Core 0', celsius: Number.NaN },
+        { sensor: 'coretemp:Core 1', celsius: Number.POSITIVE_INFINITY },
+        { sensor: ' coretemp:Core 2 ', celsius: 45.5 },
+      ],
+    }))
+    expect(store.temperatures).toEqual([{ sensor: 'coretemp:Core 2', celsius: 45.5 }])
+
+    // 可用但快照为 null：空数组（视图显示「暂无数据」）
+    store.applySnapshot(makeSysmonSnapshot({ sensorData: true, temperatures: null }))
+    expect(store.temperatures).toEqual([])
+  })
+
+  it('coreFrequencies 仅在 cpu.frequency 可用时返回过滤后的频率，否则空数组', () => {
+    const store = useSysmonStore()
+    // 无快照 / 默认不可用：空数组，不得伪造 0
+    expect(store.coreFrequencies).toEqual([])
+    store.applySnapshot(makeSysmonSnapshot())
+    expect(store.coreFrequencies).toEqual([])
+
+    store.applySnapshot(makeSysmonSnapshot({ sensorData: true }))
+    expect(store.coreFrequencies).toHaveLength(16)
+    expect(store.coreFrequencies[0]).toEqual({ index: 0, mhz: 3600 })
+    expect(store.coreFrequencies[15]).toEqual({ index: 15, mhz: 5100 })
+
+    // 数据仍在但可用性标记不可用：不得用陈旧数据冒充
+    store.applySnapshot(makeSysmonSnapshot({
+      sensorData: true,
+      metrics: { 'cpu.frequency': { available: false, reason: 'unsupported' } },
+    }))
+    expect(store.coreFrequencies).toEqual([])
+
+    // 过滤非法 index / 非正整频率（可用性显式标记可用）
+    store.applySnapshot(makeSysmonSnapshot({
+      metrics: { 'cpu.frequency': { available: true } },
+      coreFrequencies: [
+        { index: -1, mhz: 3600 },
+        { index: 1.5, mhz: 3600 },
+        { index: 2, mhz: 0 },
+        { index: 3, mhz: -100 },
+        { index: 4, mhz: Number.NaN },
+        { index: 5, mhz: Number.POSITIVE_INFINITY },
+        { index: 6, mhz: 3600 },
+      ],
+    }))
+    expect(store.coreFrequencies).toEqual([{ index: 6, mhz: 3600 }])
+
+    // 可用但快照为 null：空数组（视图显示「暂无数据」）
+    store.applySnapshot(makeSysmonSnapshot({ sensorData: true, coreFrequencies: null }))
+    expect(store.coreFrequencies).toEqual([])
+  })
+})

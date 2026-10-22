@@ -203,7 +203,8 @@ std::optional<std::string> validate_snapshot_cpu(const json& cpu) {
     if (auto e = validate_optional_ratio(cpu["total"], "cpu.total", "usage_ratio")) {
         return e;
     }
-    for (const char* key : {"load_average", "context_switches_per_sec", "interrupts_per_sec"}) {
+    for (const char* key :
+         {"core_frequencies", "load_average", "context_switches_per_sec", "interrupts_per_sec"}) {
         if (!cpu.contains(key)) {
             return err(std::string("cpu.") + key, "is required (null when unavailable)");
         }
@@ -238,6 +239,25 @@ std::optional<std::string> validate_snapshot_cpu(const json& cpu) {
             return err("cpu.saturated_cores", "elements must be non-negative integers");
         }
     }
+    if (cpu.contains("core_frequencies") && !cpu["core_frequencies"].is_null()) {
+        const auto& frequencies = cpu["core_frequencies"];
+        if (!frequencies.is_array()) {
+            return err("cpu.core_frequencies", "must be an array or null");
+        }
+        for (std::size_t i = 0; i < frequencies.size(); ++i) {
+            const auto& item = frequencies[i];
+            const std::string path = "cpu.core_frequencies[" + std::to_string(i) + "]";
+            if (!item.is_object()) {
+                return err(path, "must be an object");
+            }
+            if (auto e = require_uint(item, path, "index")) {
+                return e;
+            }
+            if (auto e = require_uint(item, path, "mhz", /*allow_zero=*/false)) {
+                return e;
+            }
+        }
+    }
     if (cpu.contains("load_average") && !cpu["load_average"].is_null()) {
         const auto& load = cpu["load_average"];
         if (!load.is_object()) {
@@ -262,6 +282,29 @@ std::optional<std::string> validate_snapshot_cpu(const json& cpu) {
     }
     if (auto e = validate_optional_rate(cpu, "cpu", "interrupts_per_sec")) {
         return e;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> validate_snapshot_temperature(const json& temperature) {
+    if (temperature.is_null()) {
+        return std::nullopt;
+    }
+    if (!temperature.is_array()) {
+        return err("temperature", "must be an array or null");
+    }
+    for (std::size_t i = 0; i < temperature.size(); ++i) {
+        const auto& item = temperature[i];
+        const std::string path = "temperature[" + std::to_string(i) + "]";
+        if (!item.is_object()) {
+            return err(path, "must be an object");
+        }
+        if (auto e = require_non_empty_string(item, path, "sensor")) {
+            return e;
+        }
+        if (!item.contains("celsius") || !is_number(item["celsius"])) {
+            return err(path + ".celsius", "must be a number");
+        }
     }
     return std::nullopt;
 }
@@ -612,10 +655,14 @@ std::optional<std::string> SysmonSnapshot::validate(const nlohmann::json& payloa
         }
         return err(std::string("snapshot.") + key, "is required (null when unavailable)");
     };
-    for (const char* key : {"memory", "swap", "volumes", "disk_io", "network", "shm_dir"}) {
+    for (const char* key :
+         {"temperature", "memory", "swap", "volumes", "disk_io", "network", "shm_dir"}) {
         if (auto e = check_optional(key)) {
             return e;
         }
+    }
+    if (auto e = validate_snapshot_temperature(payload["temperature"])) {
+        return e;
     }
     if (auto e = validate_snapshot_memory(payload["memory"])) {
         return e;
@@ -656,9 +703,27 @@ std::optional<std::string> SysmonSnapshot::validate(const nlohmann::json& payloa
 // ===== SysmonConfig =====
 
 std::map<std::string, bool> SysmonSamplingConfig::default_groups() {
+    // B 组（温度 / 每核频率）默认值按平台定（契约 sysmon §3.1）：Linux hwmon 与 cpufreq
+    // 普遍可用，默认开启；Windows 无可靠来源，默认关闭（用户可显式开启，采集器仍报
+    // 不可用，契约 sysmon §2.3/§2.4）。
+#if defined(_WIN32)
+    constexpr bool kTemperatureDefault = false;
+    constexpr bool kCpuFrequencyDefault = false;
+#elif defined(__linux__)
+    constexpr bool kTemperatureDefault = true;
+    constexpr bool kCpuFrequencyDefault = true;
+#else
+#error "unsupported platform: sysmon B-group defaults require _WIN32 or __linux__"
+#endif
     return {
-        {"cpu", true},     {"memory", true},  {"swap", true},
-        {"volumes", true}, {"disk_io", true}, {"network", true},
+        {"cpu", true},
+        {"memory", true},
+        {"swap", true},
+        {"volumes", true},
+        {"disk_io", true},
+        {"network", true},
+        {SYSMON_GROUP_TEMPERATURE, kTemperatureDefault},
+        {SYSMON_GROUP_CPU_FREQUENCY, kCpuFrequencyDefault},
     };
 }
 

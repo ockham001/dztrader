@@ -69,9 +69,28 @@ constexpr int32_t kMeasureIntervalMs = 1000;
 constexpr uint64_t kMissedTicks = 2;
 
 platform::SysmonSnapshot build_with(const platform::RawSystemInfo& info,
-                                    const CpuMetrics& metrics) {
-    return build_snapshot(kSourceName, info, metrics, kMeasureIntervalMs, kLastSampleMs,
-                          kMissedTicks, kNowMs);
+                                    const CpuMetrics& metrics,
+                                    const TemperatureMetrics& temperature = {}) {
+    return build_snapshot(kSourceName, info, metrics, temperature, kMeasureIntervalMs,
+                          kLastSampleMs, kMissedTicks, kNowMs);
+}
+
+/// 本票（#73）落地后的典型温度读数。
+TemperatureMetrics make_temperature_metrics() {
+    TemperatureMetrics temperature;
+    temperature.collected = true;
+    temperature.sensors = std::vector<platform::SysmonTemperatureInfo>{
+        {"coretemp:Package id 0", 45.5}, {"coretemp:Core 0", 44.0}};
+    return temperature;
+}
+
+/// 本票（#73）落地后的典型每核频率读数。
+CpuMetrics make_metrics_with_frequencies() {
+    CpuMetrics metrics = make_full_metrics();
+    metrics.frequency_collected = true;
+    metrics.core_frequencies =
+        std::vector<platform::SysmonCoreFrequency>{{0, 4200}, {1, 3600}, {2, 3600}};
+    return metrics;
 }
 
 TEST(SnapshotBuilderTest, MapsTimestampAndSampling) {
@@ -286,9 +305,11 @@ TEST(SnapshotBuilderTest, UnimplementedDomainsAreNull) {
     EXPECT_EQ(snapshot.disk_io, std::nullopt);
     EXPECT_EQ(snapshot.network, std::nullopt);
     EXPECT_EQ(snapshot.shm_dir, std::nullopt);
+    EXPECT_EQ(snapshot.temperature, std::nullopt);
+    EXPECT_EQ(snapshot.cpu.core_frequencies, std::nullopt);
 }
 
-TEST(SnapshotBuilderTest, AvailabilityCoversAllElevenKeys) {
+TEST(SnapshotBuilderTest, AvailabilityCoversAllThirteenKeys) {
     const auto snapshot = build_with(make_linux_info(), make_full_metrics());
     const std::vector<std::string> expected = {
         platform::SYSMON_METRIC_SYSTEM,
@@ -296,14 +317,17 @@ TEST(SnapshotBuilderTest, AvailabilityCoversAllElevenKeys) {
         platform::SYSMON_METRIC_CPU_CORES,
         platform::SYSMON_METRIC_CPU_LOAD_AVERAGE,
         platform::SYSMON_METRIC_CPU_CONTEXT_SWITCHES,
+        platform::SYSMON_METRIC_CPU_FREQUENCY,
         platform::SYSMON_METRIC_MEMORY,
         platform::SYSMON_METRIC_SWAP,
         platform::SYSMON_METRIC_VOLUMES,
         platform::SYSMON_METRIC_DISK_IO,
         platform::SYSMON_METRIC_NETWORK,
         platform::SYSMON_METRIC_SHM_DIR,
+        platform::SYSMON_METRIC_TEMPERATURE,
     };
     EXPECT_EQ(snapshot.availability.metrics.size(), expected.size());
+    EXPECT_EQ(expected.size(), platform::SYSMON_METRIC_KEYS.size());
     for (const auto& key : expected) {
         EXPECT_TRUE(snapshot.availability.metrics.contains(key)) << key;
     }
@@ -318,14 +342,25 @@ TEST(SnapshotBuilderTest, AvailabilityCoversAllElevenKeys) {
         EXPECT_TRUE(entry.available) << key;
         EXPECT_EQ(entry.reason, std::nullopt) << key;
     }
+    // #73：无读数时按平台能力标记（Linux：温度无传感器、每核频率无 cpufreq）。
+    {
+        const auto& frequency =
+            snapshot.availability.metrics.at(platform::SYSMON_METRIC_CPU_FREQUENCY);
+        EXPECT_FALSE(frequency.available);
+        ASSERT_TRUE(frequency.reason.has_value());
+        EXPECT_EQ(frequency.reason.value(), "unsupported");
+
+        const auto& temperature =
+            snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE);
+        EXPECT_FALSE(temperature.available);
+        ASSERT_TRUE(temperature.reason.has_value());
+        EXPECT_EQ(temperature.reason.value(), "no_sensor");
+    }
     // 其余 6 键：available=false + reason="not_implemented"
-    for (const auto& [key, entry] : snapshot.availability.metrics) {
-        if (key == platform::SYSMON_METRIC_SYSTEM || key == platform::SYSMON_METRIC_CPU_TOTAL ||
-            key == platform::SYSMON_METRIC_CPU_CORES ||
-            key == platform::SYSMON_METRIC_CPU_LOAD_AVERAGE ||
-            key == platform::SYSMON_METRIC_CPU_CONTEXT_SWITCHES) {
-            continue;
-        }
+    for (const char* key : {platform::SYSMON_METRIC_MEMORY, platform::SYSMON_METRIC_SWAP,
+                            platform::SYSMON_METRIC_VOLUMES, platform::SYSMON_METRIC_DISK_IO,
+                            platform::SYSMON_METRIC_NETWORK, platform::SYSMON_METRIC_SHM_DIR}) {
+        const auto& entry = snapshot.availability.metrics.at(key);
         EXPECT_FALSE(entry.available) << key;
         ASSERT_TRUE(entry.reason.has_value()) << key;
         EXPECT_EQ(entry.reason.value(), "not_implemented") << key;
@@ -363,6 +398,8 @@ TEST(SnapshotBuilderTest, SerializedSnapshotPassesPlatformValidation) {
     EXPECT_EQ(payload["cpu"]["saturated_cores"][0].get<uint32_t>(), 2U);
     EXPECT_EQ(payload["cpu"]["load_average"]["semantic"].get<std::string>(), "load_average");
     EXPECT_DOUBLE_EQ(payload["cpu"]["context_switches_per_sec"].get<double>(), 1234.0);
+    EXPECT_TRUE(payload["cpu"]["core_frequencies"].is_null());
+    EXPECT_TRUE(payload["temperature"].is_null());
     EXPECT_TRUE(payload["memory"].is_null());
     EXPECT_EQ(payload["availability"]["metrics"].size(), platform::SYSMON_METRIC_KEYS.size());
 }
@@ -386,6 +423,137 @@ TEST(SnapshotBuilderTest, SerializedFirstFramePassesValidationWithNullUsage) {
     EXPECT_TRUE(payload["cpu"]["context_switches_per_sec"].is_null());
 }
 
+TEST(SnapshotBuilderTest, TemperatureMappedWhenCollected) {
+    const auto snapshot =
+        build_with(make_linux_info(), make_full_metrics(), make_temperature_metrics());
+    ASSERT_TRUE(snapshot.temperature.has_value());
+    ASSERT_EQ(snapshot.temperature->size(), 2U);
+    EXPECT_EQ(snapshot.temperature->at(0).sensor, "coretemp:Package id 0");
+    EXPECT_DOUBLE_EQ(snapshot.temperature->at(0).celsius, 45.5);
+    EXPECT_EQ(snapshot.temperature->at(1).sensor, "coretemp:Core 0");
+    EXPECT_DOUBLE_EQ(snapshot.temperature->at(1).celsius, 44.0);
+
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE);
+    EXPECT_TRUE(entry.available);
+    EXPECT_EQ(entry.reason, std::nullopt);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, TemperatureCollectedButNoReadingKeepsAvailable) {
+    // 能力粘性（契约 sysmon §2.5、§2.7）：本帧未读到温度时数值 null，可用性仍为 true，
+    // 消费方据此保留区块并显示「暂无数据」而不是「不可用」。
+    TemperatureMetrics temperature;
+    temperature.collected = true;
+    temperature.sensors = std::nullopt;
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), temperature);
+
+    EXPECT_EQ(snapshot.temperature, std::nullopt);
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE).available);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, TemperatureUnavailableOnLinuxIsNoSensor) {
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics());
+    EXPECT_EQ(snapshot.temperature, std::nullopt);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE);
+    EXPECT_FALSE(entry.available);
+    ASSERT_TRUE(entry.reason.has_value());
+    EXPECT_EQ(entry.reason.value(), "no_sensor");
+}
+
+TEST(SnapshotBuilderTest, TemperatureUnavailableOnWindowsIsUnsupported) {
+    auto info = make_linux_info();
+    info.os_family = "windows";
+    info.os_version = "Windows 10 Pro";
+    info.kernel_version = "10.0.19045";
+    info.os_build = 19045;
+    const auto snapshot = build_with(info, make_full_metrics());
+
+    // 契约 sysmon §8：Windows 不提供温度（恒 null），可用性项不可用。
+    EXPECT_EQ(snapshot.temperature, std::nullopt);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE);
+    EXPECT_FALSE(entry.available);
+    ASSERT_TRUE(entry.reason.has_value());
+    EXPECT_EQ(entry.reason.value(), "unsupported");
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, TemperatureDisabledByConfigWinsOverCollected) {
+    auto temperature = make_temperature_metrics();
+    temperature.disabled = true;
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), temperature);
+
+    // 配置关闭优先：数值清空、可用性 disabled_by_config（契约 sysmon §2.5、§2.7）。
+    EXPECT_EQ(snapshot.temperature, std::nullopt);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE);
+    EXPECT_FALSE(entry.available);
+    ASSERT_TRUE(entry.reason.has_value());
+    EXPECT_EQ(entry.reason.value(), "disabled_by_config");
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, CoreFrequenciesMappedWhenCollected) {
+    const auto snapshot =
+        build_with(make_linux_info(), make_metrics_with_frequencies(), make_temperature_metrics());
+    ASSERT_TRUE(snapshot.cpu.core_frequencies.has_value());
+    ASSERT_EQ(snapshot.cpu.core_frequencies->size(), 3U);
+    EXPECT_EQ(snapshot.cpu.core_frequencies->at(0).index, 0U);
+    EXPECT_EQ(snapshot.cpu.core_frequencies->at(0).mhz, 4200U);
+    EXPECT_EQ(snapshot.cpu.core_frequencies->at(1).index, 1U);
+    EXPECT_EQ(snapshot.cpu.core_frequencies->at(1).mhz, 3600U);
+
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_CPU_FREQUENCY);
+    EXPECT_TRUE(entry.available);
+    EXPECT_EQ(entry.reason, std::nullopt);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, CoreFrequenciesCollectedButNoReadingKeepsAvailable) {
+    auto metrics = make_full_metrics();
+    metrics.frequency_collected = true;
+    metrics.core_frequencies = std::nullopt;
+    const auto snapshot = build_with(make_linux_info(), metrics);
+
+    EXPECT_EQ(snapshot.cpu.core_frequencies, std::nullopt);
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_CPU_FREQUENCY).available);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, CoreFrequenciesUnavailableIsUnsupported) {
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics());
+    EXPECT_EQ(snapshot.cpu.core_frequencies, std::nullopt);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_CPU_FREQUENCY);
+    EXPECT_FALSE(entry.available);
+    ASSERT_TRUE(entry.reason.has_value());
+    EXPECT_EQ(entry.reason.value(), "unsupported");
+}
+
+TEST(SnapshotBuilderTest, CoreFrequenciesDisabledByConfigWinsOverCollected) {
+    auto metrics = make_metrics_with_frequencies();
+    metrics.frequency_disabled = true;
+    const auto snapshot = build_with(make_linux_info(), metrics);
+
+    EXPECT_EQ(snapshot.cpu.core_frequencies, std::nullopt);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_CPU_FREQUENCY);
+    EXPECT_FALSE(entry.available);
+    ASSERT_TRUE(entry.reason.has_value());
+    EXPECT_EQ(entry.reason.value(), "disabled_by_config");
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, SerializedSensorDataPassesPlatformValidation) {
+    const auto snapshot =
+        build_with(make_linux_info(), make_metrics_with_frequencies(), make_temperature_metrics());
+    const nlohmann::json payload = snapshot;
+    EXPECT_EQ(platform::SysmonSnapshot::validate(payload), std::nullopt);
+    ASSERT_EQ(payload["cpu"]["core_frequencies"].size(), 3U);
+    EXPECT_EQ(payload["cpu"]["core_frequencies"][0]["index"].get<uint32_t>(), 0U);
+    EXPECT_EQ(payload["cpu"]["core_frequencies"][0]["mhz"].get<uint32_t>(), 4200U);
+    ASSERT_EQ(payload["temperature"].size(), 2U);
+    EXPECT_EQ(payload["temperature"][0]["sensor"].get<std::string>(), "coretemp:Package id 0");
+    EXPECT_DOUBLE_EQ(payload["temperature"][0]["celsius"].get<double>(), 45.5);
+}
+
 // 假采集器（实现 SystemCollector 接缝）确定性驱动速率计算与快照编码：
 // 同一组输入在任何机器/时间都产出同一结果（契约 sysmon 采购接缝测试要求）。
 class FakeCollector final : public platform::SystemCollector {
@@ -393,10 +561,18 @@ public:
     platform::RawSystemInfo info;
     std::optional<platform::RawCpuTimes> times;
     std::optional<platform::RawLoadAverage> load;
+    std::optional<std::vector<platform::RawTemperature>> temperatures;
+    std::optional<std::vector<platform::RawCoreFrequency>> core_frequencies;
 
     platform::RawSystemInfo collect_system_info() override { return info; }
     std::optional<platform::RawCpuTimes> collect_cpu_times() override { return times; }
     std::optional<platform::RawLoadAverage> collect_load_average() override { return load; }
+    std::optional<std::vector<platform::RawTemperature>> collect_temperatures() override {
+        return temperatures;
+    }
+    std::optional<std::vector<platform::RawCoreFrequency>> collect_core_frequencies() override {
+        return core_frequencies;
+    }
 };
 
 TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {

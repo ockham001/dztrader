@@ -213,6 +213,13 @@ export interface SysmonCpuCore {
     saturated: boolean
 }
 
+export interface SysmonCoreFrequency {
+    /** OS CPU 编号（不保证连续，与 cpu.cores[].index 同源） */
+    index: number
+    /** 当前频率（MHz，> 0） */
+    mhz: number
+}
+
 export interface SysmonLoadAverage {
     one: number | null
     five: number | null
@@ -225,6 +232,8 @@ export interface SysmonCpuInfo {
     total: SysmonCpuTotal
     /** 每核使用率（不可用时为空数组） */
     cores: SysmonCpuCore[]
+    /** 每核当前频率；null=本平台不提供/不可用（不可用时区块整块不渲染） */
+    core_frequencies: SysmonCoreFrequency[] | null
     /** 持续饱和的核 index 集合 */
     saturated_cores: number[]
     /** 系统负载；null=不提供/不可用（Windows 为处理器队列长度代理量，语义不同） */
@@ -290,6 +299,13 @@ export interface SysmonShmDirInfo {
     oldest_file_age_sec: number | null
 }
 
+export interface SysmonTemperatureInfo {
+    /** 传感器稳定标识（Linux hwmon：<name>#<hwmonN>:<label>，无 label 时用 tempN） */
+    sensor: string
+    /** 摄氏温度（瞬时 gauge，不是累计计数器） */
+    celsius: number
+}
+
 export interface SysmonAvailabilityEntry {
     available: boolean
     /** 不可用原因；available=true 时省略 */
@@ -314,6 +330,8 @@ export interface SysmonSnapshotPayload {
     platform: SysmonPlatformInfo
     system: SysmonSystemInfo
     cpu: SysmonCpuInfo
+    /** 温度传感器读数；null=本平台不提供/无传感器/不可用（不可用时区块整块不渲染） */
+    temperature: SysmonTemperatureInfo[] | null
     memory: SysmonMemoryInfo | null
     swap: SysmonSwapInfo | null
     volumes: SysmonVolumeInfo[] | null

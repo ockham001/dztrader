@@ -8,8 +8,8 @@
  * 规格与算法参考 psutil（BSD-3-Clause）：仅借鉴 OS API 选择、边界处理语义与测试不变量，
  * 不翻译其代码、不引入依赖；归属声明见仓库根 THIRD_PARTY_NOTICES.md。
  *
- * 采集失败一律降级：系统信息返回空串/0，CPU 计数器返回 std::nullopt，不抛异常
- * （契约 sysmon §2.7：采集失败跳过本次计量由上层记缺口）。
+ * 采集失败一律降级：系统信息返回空串/0，CPU 计数器/温度/每核频率返回 std::nullopt，
+ * 不抛异常（契约 sysmon §2.7：采集失败跳过本次计量由上层记缺口）。
  */
 
 #if defined(__linux__)
@@ -19,16 +19,19 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -64,6 +67,21 @@ std::optional<uint64_t> parse_u64(std::string_view text) {
     return value;
 }
 
+/// 解析有符号十进制整数（sysfs 温度可能为负）；空串、非数字、溢出均返回 std::nullopt。
+std::optional<int64_t> parse_i64(std::string_view text) {
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    int64_t value = 0;
+    const auto* first = text.data();
+    const auto* last = text.data() + text.size();
+    const auto [ptr, ec] = std::from_chars(first, last, value);
+    if (ec != std::errc() || ptr != last) {
+        return std::nullopt;
+    }
+    return value;
+}
+
 /// 逐行读取文本文件；文件不可打开时返回空列表（失败降级，不抛异常）。
 std::vector<std::string> read_lines(const char* path) {
     std::vector<std::string> lines;
@@ -76,6 +94,35 @@ std::vector<std::string> read_lines(const char* path) {
         lines.push_back(std::move(line));
     }
     return lines;
+}
+
+/// 读取 sysfs 文本文件的首个非空行并去掉两端空白；不可读或内容为空返回空串。
+std::string read_sysfs_line(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) {
+        return {};
+    }
+    std::string line;
+    while (std::getline(input, line)) {
+        const auto value = trim(line);
+        if (!value.empty()) {
+            return std::string(value);
+        }
+    }
+    return {};
+}
+
+/// 列出目录项（error_code 重载，不抛异常）；目录不可读时返回空列表。
+std::vector<std::filesystem::directory_entry> list_directory(const std::filesystem::path& path) {
+    std::vector<std::filesystem::directory_entry> entries;
+    std::error_code ec;
+    std::filesystem::directory_iterator it(path, ec);
+    const std::filesystem::directory_iterator end;
+    while (!ec && it != end) {
+        entries.push_back(*it);
+        it.increment(ec);
+    }
+    return entries;
 }
 
 /// 读取 /etc/os-release 为 key -> value（去掉值两侧的 shell 引号）。
@@ -291,6 +338,156 @@ std::optional<RawLoadAverage> read_load_average() {
     return load;
 }
 
+// ===== 温度与每核频率（契约 sysmon §2.3、§2.4）=====
+
+/// sysfs 温度传感器根目录（每个子目录对应一颗传感器芯片）。
+constexpr const char* kHwmonRoot = "/sys/class/hwmon";
+/// sysfs CPU 拓扑根目录（每个 `cpuN` 子目录对应一个逻辑核）。
+constexpr const char* kCpuRoot = "/sys/devices/system/cpu";
+/// 温度输入文件名：`temp<N>_input`（毫摄氏度）。
+constexpr std::string_view kTemperatureInputPrefix = "temp";
+constexpr std::string_view kTemperatureInputSuffix = "_input";
+/// 温度标签文件名后缀：`temp<N>_label`（可选，人类可读标签）。
+constexpr std::string_view kTemperatureLabelSuffix = "_label";
+
+/// 匹配 `temp<数字>_input` 文件名：返回中间的 N；不匹配返回 std::nullopt。
+std::optional<uint32_t> parse_temperature_input_index(std::string_view filename) {
+    if (!filename.starts_with(kTemperatureInputPrefix) ||
+        !filename.ends_with(kTemperatureInputSuffix)) {
+        return std::nullopt;
+    }
+    const auto digits = filename.substr(
+        kTemperatureInputPrefix.size(),
+        filename.size() - kTemperatureInputPrefix.size() - kTemperatureInputSuffix.size());
+    const auto value = parse_u64(digits);
+    if (!value || *value > std::numeric_limits<uint32_t>::max()) {
+        return std::nullopt;
+    }
+    return static_cast<uint32_t>(*value);
+}
+
+/// 匹配 `cpu<数字>` 目录名（排除 cpufreq/cpuidle 等）：返回 OS CPU 编号；不匹配返回 nullopt。
+std::optional<uint32_t> parse_cpu_index(std::string_view dirname) {
+    constexpr std::string_view kPrefix = "cpu";
+    if (!dirname.starts_with(kPrefix) || dirname.size() == kPrefix.size()) {
+        return std::nullopt;
+    }
+    const auto value = parse_u64(dirname.substr(kPrefix.size()));
+    if (!value || *value > std::numeric_limits<uint32_t>::max()) {
+        return std::nullopt;
+    }
+    return static_cast<uint32_t>(*value);
+}
+
+/// 把 `tempN_input` 路径换成同名 `tempN_label` 路径。
+std::filesystem::path temperature_label_path(const std::filesystem::path& input_path) {
+    auto filename = input_path.filename().string();
+    filename.resize(filename.size() - kTemperatureInputSuffix.size());
+    filename += kTemperatureLabelSuffix;
+    return input_path.parent_path() / filename;
+}
+
+/// 扫描 /sys/class/hwmon 读取温度传感器读数（契约 sysmon §2.4）。
+///
+/// 每个 hwmon 目录以 `name` 文件内容为传感器前缀（缺失时回退目录名，如 "hwmon0"）；
+/// `tempN_input` 为毫摄氏度，除以 1000 得摄氏温度；标识为
+/// `<name>#<hwmonN>:<label>`，无 label 时为 `<name>#<hwmonN>:tempN`。hwmon 目录名唯一，
+/// 因此标识在同一启动周期内稳定，且不随其它同名芯片出现/消失变化。单个传感器读取
+/// 失败只跳过该条；没有任何可读传感器时返回 std::nullopt（失败降级，不抛异常）。
+std::optional<std::vector<RawTemperature>> read_temperatures() {
+    std::vector<RawTemperature> readings;
+    std::set<std::string> used_sensors;
+    auto hwmon_dirs = list_directory(kHwmonRoot);
+    std::sort(hwmon_dirs.begin(), hwmon_dirs.end(),
+              [](const std::filesystem::directory_entry& lhs,
+                 const std::filesystem::directory_entry& rhs) {
+                  return lhs.path().filename().string() < rhs.path().filename().string();
+              });
+    for (const auto& hwmon_dir : hwmon_dirs) {
+        auto base_name = read_sysfs_line(hwmon_dir.path() / "name");
+        if (base_name.empty()) {
+            base_name = hwmon_dir.path().filename().string();
+        }
+        const auto hwmon_number = hwmon_dir.path().filename().string();
+        // 同一 hwmon 目录内按 tempN 的 N 数字序输出，保证顺序稳定。
+        std::vector<std::pair<uint32_t, std::filesystem::path>> inputs;
+        for (const auto& entry : list_directory(hwmon_dir.path())) {
+            if (const auto index =
+                    parse_temperature_input_index(entry.path().filename().string())) {
+                inputs.emplace_back(*index, entry.path());
+            }
+        }
+        std::sort(inputs.begin(), inputs.end(),
+                  [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+        for (const auto& [index, input_path] : inputs) {
+            const auto millidegrees = parse_i64(read_sysfs_line(input_path));
+            if (!millidegrees) {
+                continue;
+            }
+            const auto label = read_sysfs_line(temperature_label_path(input_path));
+            // hwmon 目录名唯一：常规硬件下标识含 `<hwmonN>` 即帧内唯一，且同帧其它
+            // 传感器出现/消失不会改变本传感器标识（契约 sysmon §2.4「稳定标识」）。
+            const std::string base_sensor =
+                base_name + "#" + hwmon_number + ":" +
+                (label.empty() ? "temp" + std::to_string(index) : label);
+            // 病态驱动（同一 hwmon 下重复 label，或 label 恰好等于另一项的 tempN 形态）
+            // 时追加 `-<n>` 直到帧内唯一；正常硬件不会进入该循环。
+            std::string sensor = base_sensor;
+            for (uint32_t suffix = 1; !used_sensors.insert(sensor).second; ++suffix) {
+                sensor = base_sensor + "-" + std::to_string(suffix);
+            }
+            RawTemperature reading;
+            reading.sensor = std::move(sensor);
+            reading.celsius = static_cast<double>(*millidegrees) / 1000.0;
+            readings.push_back(std::move(reading));
+        }
+    }
+    if (readings.empty()) {
+        return std::nullopt;
+    }
+    return readings;
+}
+
+/// 扫描 /sys/devices/system/cpu/<cpuN>/cpufreq/scaling_cur_freq 读取每核当前频率
+/// （kHz → MHz，四舍五入；契约 sysmon §2.3）。
+///
+/// 目录名 `cpuN` 的 N 即 OS CPU 编号（与 RawCpuCoreTimes::index 同源，不保证连续）；
+/// 读取失败或读数为 0 的核跳过；结果按 index 升序；全部不可读时返回 std::nullopt。
+std::optional<std::vector<RawCoreFrequency>> read_core_frequencies() {
+    std::vector<RawCoreFrequency> frequencies;
+    for (const auto& cpu_dir : list_directory(kCpuRoot)) {
+        const auto index = parse_cpu_index(cpu_dir.path().filename().string());
+        if (!index) {
+            continue;
+        }
+        const auto khz =
+            parse_u64(read_sysfs_line(cpu_dir.path() / "cpufreq" / "scaling_cur_freq"));
+        if (!khz || *khz == 0) {
+            continue;
+        }
+        // 防御异常内容：加 500 做四舍五入前先排除溢出，结果超出 uint32 的条目跳过。
+        if (*khz > std::numeric_limits<uint64_t>::max() - 500) {
+            continue;
+        }
+        const uint64_t mhz = (*khz + 500) / 1000;
+        if (mhz == 0 || mhz > std::numeric_limits<uint32_t>::max()) {
+            continue;
+        }
+        RawCoreFrequency frequency;
+        frequency.index = *index;
+        frequency.mhz = static_cast<uint32_t>(mhz);
+        frequencies.push_back(frequency);
+    }
+    std::sort(frequencies.begin(), frequencies.end(),
+              [](const RawCoreFrequency& lhs, const RawCoreFrequency& rhs) {
+                  return lhs.index < rhs.index;
+              });
+    if (frequencies.empty()) {
+        return std::nullopt;
+    }
+    return frequencies;
+}
+
 /// 采集一次系统信息（失败字段留空串/0，不抛异常）。
 RawSystemInfo collect_system_info_linux() {
     RawSystemInfo info;
@@ -326,6 +523,14 @@ public:
     std::optional<RawCpuTimes> collect_cpu_times() override { return read_cpu_times(); }
 
     std::optional<RawLoadAverage> collect_load_average() override { return read_load_average(); }
+
+    std::optional<std::vector<RawTemperature>> collect_temperatures() override {
+        return read_temperatures();
+    }
+
+    std::optional<std::vector<RawCoreFrequency>> collect_core_frequencies() override {
+        return read_core_frequencies();
+    }
 };
 
 }  // namespace

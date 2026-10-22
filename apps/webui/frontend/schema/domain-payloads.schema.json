@@ -213,6 +213,14 @@
         "saturated": { "type": "boolean", "description": "是否处于持续饱和状态" }
       }
     },
+    "SysmonCoreFrequency": {
+      "type": "object",
+      "required": ["index", "mhz"],
+      "properties": {
+        "index": { "type": "integer", "description": "OS CPU 编号（不保证连续，与 cpu.cores[].index 同源）" },
+        "mhz": { "type": "integer", "description": "当前频率（MHz，> 0）" }
+      }
+    },
     "SysmonLoadAverage": {
       "type": "object",
       "required": ["one", "five", "fifteen", "semantic"],
@@ -225,10 +233,17 @@
     },
     "SysmonCpuInfo": {
       "type": "object",
-      "required": ["total", "cores", "saturated_cores", "load_average", "context_switches_per_sec", "interrupts_per_sec"],
+      "required": ["total", "cores", "core_frequencies", "saturated_cores", "load_average", "context_switches_per_sec", "interrupts_per_sec"],
       "properties": {
         "total": { "$ref": "#/$defs/SysmonCpuTotal" },
         "cores": { "type": "array", "items": { "$ref": "#/$defs/SysmonCpuCore" }, "description": "每核使用率（不可用时为空数组）" },
+        "core_frequencies": {
+          "description": "每核当前频率；null=本平台不提供/不可用（不可用时区块整块不渲染）",
+          "anyOf": [
+            { "type": "array", "items": { "$ref": "#/$defs/SysmonCoreFrequency" } },
+            { "type": "null" }
+          ]
+        },
         "saturated_cores": { "type": "array", "items": { "type": "integer" }, "description": "持续饱和的核 index 集合" },
         "load_average": {
           "description": "系统负载；null=不提供/不可用（Windows 为处理器队列长度代理量，语义不同）",
@@ -311,6 +326,14 @@
         "oldest_file_age_sec": { "anyOf": [{ "type": "integer" }, { "type": "null" }] }
       }
     },
+    "SysmonTemperatureInfo": {
+      "type": "object",
+      "required": ["sensor", "celsius"],
+      "properties": {
+        "sensor": { "type": "string", "description": "传感器稳定标识（Linux hwmon：<name>#<hwmonN>:<label>，无 label 时用 tempN）" },
+        "celsius": { "type": "number", "description": "摄氏温度（瞬时 gauge，不是累计计数器）" }
+      }
+    },
     "SysmonAvailabilityEntry": {
       "type": "object",
       "required": ["available"],
@@ -330,7 +353,7 @@
     },
     "SysmonSnapshotPayload": {
       "type": "object",
-      "required": ["source", "timestamp", "sampling", "platform", "system", "cpu", "memory", "swap", "volumes", "disk_io", "network", "shm_dir", "availability"],
+      "required": ["source", "timestamp", "sampling", "platform", "system", "cpu", "temperature", "memory", "swap", "volumes", "disk_io", "network", "shm_dir", "availability"],
       "properties": {
         "source": { "type": "string", "description": "发送方进程名（固定 dzsysmon；无 instance_id 帧来源显式携带，general §5）" },
         "timestamp": { "type": "integer", "description": "快照生成时刻（Unix 毫秒）" },
@@ -338,6 +361,13 @@
         "platform": { "$ref": "#/$defs/SysmonPlatformInfo" },
         "system": { "$ref": "#/$defs/SysmonSystemInfo" },
         "cpu": { "$ref": "#/$defs/SysmonCpuInfo" },
+        "temperature": {
+          "description": "温度传感器读数；null=本平台不提供/无传感器/不可用（不可用时区块整块不渲染）",
+          "anyOf": [
+            { "type": "array", "items": { "$ref": "#/$defs/SysmonTemperatureInfo" } },
+            { "type": "null" }
+          ]
+        },
         "memory": { "anyOf": [{ "$ref": "#/$defs/SysmonMemoryInfo" }, { "type": "null" }] },
         "swap": { "anyOf": [{ "$ref": "#/$defs/SysmonSwapInfo" }, { "type": "null" }] },
         "volumes": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/SysmonVolumeInfo" } }, { "type": "null" }] },

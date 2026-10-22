@@ -158,6 +158,7 @@ private:
             SPDLOG_WARN("initial cpu sample unavailable | reason=collect_failed");
         }
         refresh_load_average();
+        refresh_sensor_metrics();
 
         // 事件通道由 master 创建（open_only）；reader/writer 名 = 进程名，
         // 与 master 的 register_subscriber(entry.name) / make_subscriber_name 一致。
@@ -275,9 +276,73 @@ private:
         metrics_.load_collected = true;
     }
 
+    /// 配置组开关（契约 sysmon §3.1）：缺少的键按 true 处理（默认全部启用）。
+    bool group_enabled(const char* group) const {
+        const auto it = config_.sampling.groups.find(group);
+        return it == config_.sampling.groups.end() || it->second;
+    }
+
+    /// 采样一次温度传感器（#73）。温度为瞬时 gauge，与 CPU 采集成败无关；能力标记粘性，
+    /// 本帧读不到时数值置 null，不沿用上一帧；配置关闭时清空数值并标记 disabled（契约 §2.7）。
+    void refresh_temperatures() {
+        if (!group_enabled(platform::SYSMON_GROUP_TEMPERATURE)) {
+            temperature_metrics_.disabled = true;
+            temperature_metrics_.sensors = std::nullopt;
+            return;
+        }
+        temperature_metrics_.disabled = false;
+        const auto readings = collector_->collect_temperatures();
+        if (!readings.has_value()) {
+            temperature_metrics_.sensors = std::nullopt;  // 本帧无值；能力标记保持粘性
+            return;
+        }
+        std::vector<platform::SysmonTemperatureInfo> sensors;
+        sensors.reserve(readings->size());
+        for (const auto& reading : *readings) {
+            platform::SysmonTemperatureInfo sensor;
+            sensor.sensor = reading.sensor;
+            sensor.celsius = reading.celsius;
+            sensors.push_back(std::move(sensor));
+        }
+        temperature_metrics_.sensors = std::move(sensors);
+        temperature_metrics_.collected = true;
+    }
+
+    /// 采样一次每核频率（#73）；语义同温度（瞬时 gauge、能力粘性、配置门控）。
+    void refresh_core_frequencies() {
+        if (!group_enabled(platform::SYSMON_GROUP_CPU_FREQUENCY)) {
+            metrics_.frequency_disabled = true;
+            metrics_.core_frequencies = std::nullopt;
+            return;
+        }
+        metrics_.frequency_disabled = false;
+        const auto readings = collector_->collect_core_frequencies();
+        if (!readings.has_value()) {
+            metrics_.core_frequencies = std::nullopt;
+            return;
+        }
+        std::vector<platform::SysmonCoreFrequency> frequencies;
+        frequencies.reserve(readings->size());
+        for (const auto& reading : *readings) {
+            platform::SysmonCoreFrequency frequency;
+            frequency.index = reading.index;
+            frequency.mhz = reading.mhz;
+            frequencies.push_back(frequency);
+        }
+        metrics_.core_frequencies = std::move(frequencies);
+        metrics_.frequency_collected = true;
+    }
+
+    /// 采样温度与每核频率；与 CPU 采集相互独立，每次计量都刷新。
+    void refresh_sensor_metrics() {
+        refresh_temperatures();
+        refresh_core_frequencies();
+    }
+
     /// 采样一次 CPU 计数器并更新使用率/每核/饱和标记/速率/缺口标记。
     void measure_once() {
         const auto now = std::chrono::steady_clock::now();
+        refresh_sensor_metrics();  // 温度/频率是独立 gauge，CPU 采集失败也照样刷新
         auto current = collector_->collect_cpu_times();
         if (!current.has_value()) {
             ++missed_ticks_;     // 采集失败：跳过本次计量并记缺口（契约 sysmon §2.7）
@@ -386,12 +451,13 @@ private:
         }
     }
 
-    /// 推送实时快照（RTN_SYSMON_SNAPSHOT，无 instance_id，仅本次 CPU/系统信息）。
+    /// 推送实时快照（RTN_SYSMON_SNAPSHOT，无 instance_id，仅本次系统信息/CPU/温度）。
     void push_snapshot() noexcept {
         try {
             const auto snapshot =
-                build_snapshot(name_, system_info_, metrics_, config_.sampling.measure_interval_ms,
-                               last_sample_unix_ms_, missed_ticks_, wall_clock_unix_ms());
+                build_snapshot(name_, system_info_, metrics_, temperature_metrics_,
+                               config_.sampling.measure_interval_ms, last_sample_unix_ms_,
+                               missed_ticks_, wall_clock_unix_ms());
             (void)platform::write_ext_json(*event_writer_, DZ_FRAME_RTN_SYSMON_SNAPSHOT, snapshot);
         } catch (const std::exception& e) {
             SPDLOG_ERROR("push snapshot failed | error=\"{}\"", e.what());
@@ -559,6 +625,7 @@ private:
     std::optional<platform::RawCpuTimes> prev_cpu_times_;
     std::chrono::steady_clock::time_point prev_sample_time_{};
     CpuMetrics metrics_;
+    TemperatureMetrics temperature_metrics_;
     CoreSaturationTracker saturation_tracker_;
     int64_t last_sample_unix_ms_ = 0;
     uint64_t missed_ticks_ = 0;

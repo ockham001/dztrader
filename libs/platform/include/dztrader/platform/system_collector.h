@@ -5,7 +5,7 @@
  * @file system_collector.h
  * @brief 平台无关的系统指标采集接缝（契约 sysmon）。
  *
- * 采集层只返回**原始累计计数器**与**原始系统信息**：
+ * 采集层只返回**原始累计计数器**、**原始系统信息**与**原始瞬时读数**（负载/温度/频率）：
  * - 不含百分比、不含增量、不做速率计算（由纯函数 `compute_cpu_usage` 承担）
  * - 不返回平台条件分支（两平台实现返回同一 struct，缺失值以空串/0/std::nullopt 表示）
  *
@@ -76,6 +76,23 @@ struct RawLoadAverage {
     std::string semantic;
 };
 
+/// 单个温度传感器原始读数（契约 sysmon §2.4）。
+struct RawTemperature {
+    /// 传感器稳定标识：Linux 为 `<hwmon name>#<hwmonN>:<label>`（无 label 时为
+    /// `<hwmon name>#<hwmonN>:tempN`；含 hwmon 目录名，保证帧内唯一且同启动周期稳定）。
+    std::string sensor;
+    /// 摄氏温度。
+    double celsius = 0.0;
+};
+
+/// 单核当前频率原始读数（契约 sysmon §2.3）。
+struct RawCoreFrequency {
+    /// 核 index（OS CPU 编号，与 `RawCpuCoreTimes::index` 同源）。不保证连续。
+    uint32_t index = 0;
+    /// 当前频率（MHz）。
+    uint32_t mhz = 0;
+};
+
 /// 系统指标采集接缝。
 ///
 /// 唯一实现入口：`make_system_collector()`（按编译平台返回对应实现）。
@@ -97,6 +114,16 @@ public:
     /// 采集一次系统负载（Linux 真实 loadavg；Windows 处理器队列长度代理）。
     /// @return 采集失败/本平台不可用返回 std::nullopt，上层按可用性描述标记不可用。
     virtual std::optional<RawLoadAverage> collect_load_average() = 0;
+
+    /// 采集温度传感器读数（Linux hwmon；Windows 不提供）。
+    /// @return 本平台不支持 / 无温度传感器 / 全部读取失败返回 std::nullopt；
+    ///         至少一个传感器可读时返回非空数组（读取失败的单个传感器不进入数组）。
+    virtual std::optional<std::vector<RawTemperature>> collect_temperatures() = 0;
+
+    /// 采集每核当前频率（Linux cpufreq；Windows 不提供）。
+    /// @return 本平台不支持 / 无 cpufreq / 全部读取失败返回 std::nullopt；
+    ///         至少一个核可读时返回非空数组（读取失败的单个核不进入数组）。
+    virtual std::optional<std::vector<RawCoreFrequency>> collect_core_frequencies() = 0;
 
 protected:
     SystemCollector() = default;

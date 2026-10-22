@@ -14,8 +14,8 @@
  * 不翻译其代码、不引入依赖；归属声明见仓库根 THIRD_PARTY_NOTICES.md。NT 结构体布局是
  * Windows 内核 ABI 事实（Windows Internals / phnt），本文件按事实重新声明。
  *
- * 采集失败一律降级：系统信息返回空串/0，CPU 计数器返回 std::nullopt，不抛异常
- * （契约 sysmon §2.7：采集失败跳过本次计量由上层记缺口）。
+ * 采集失败一律降级：系统信息返回空串/0，CPU 计数器返回 std::nullopt，温度与每核频率
+ * 本版本恒返回 std::nullopt，不抛异常（契约 sysmon §2.7：采集失败跳过本次计量由上层记缺口）。
  */
 
 #if defined(_WIN32)
@@ -596,6 +596,19 @@ public:
     std::optional<RawCpuTimes> collect_cpu_times() override { return query_cpu_times(); }
 
     std::optional<RawLoadAverage> collect_load_average() override { return load_sampler_.sample(); }
+
+    /// Windows 无可靠的跨硬件温度 API：WMI MSAcpi_ThermalZoneTemperature 依赖固件实现，
+    /// 台式机常缺失、返回值也常不可信，本版本不提供温度采集（契约 sysmon §2.4：
+    /// 本平台不支持时返回 std::nullopt，上层按可用性映射标记不可用）。
+    std::optional<std::vector<RawTemperature>> collect_temperatures() override {
+        return std::nullopt;
+    }
+
+    /// Windows 无公开的逐核当前频率 API，本版本也不提供整体频率（若后续提供必须标注
+    /// 口径）；每核频率报不可用（契约 sysmon §2.3：本平台不支持时返回 std::nullopt）。
+    std::optional<std::vector<RawCoreFrequency>> collect_core_frequencies() override {
+        return std::nullopt;
+    }
 
 private:
     WindowsLoadAverageSampler load_sampler_;

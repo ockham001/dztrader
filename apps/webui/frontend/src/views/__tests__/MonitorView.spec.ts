@@ -227,3 +227,151 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
     expect(wrapper.find('[data-test="monitor-interrupts"]').text()).toBe('不可用')
   })
 })
+
+describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('全部可用：温度卡片与每核频率面板渲染真实数据（45.5 °C / 3600 MHz）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ sensorData: true }))
+    const wrapper = await mountView()
+
+    const temperatureCard = wrapper.find('[data-test="monitor-temperature"]')
+    expect(temperatureCard.exists()).toBe(true)
+    expect(temperatureCard.text()).toContain('coretemp#hwmon3:Package id 0')
+    expect(temperatureCard.text()).toContain('45.5 °C')
+    expect(temperatureCard.text()).toContain('41.5 °C')
+    const sensors = wrapper.findAll('[data-test="monitor-temperature-sensor"]')
+    expect(sensors).toHaveLength(2)
+    expect(sensors[0].text()).toContain('45.5 °C')
+
+    // 每核频率面板位于 CPU 卡片内（宽面板，复用每核样式）
+    expect(wrapper.find('[data-test="monitor-cpu"] [data-test="monitor-frequency"]').exists()).toBe(true)
+    const frequencies = wrapper.findAll('[data-test="monitor-frequency-core"]')
+    expect(frequencies).toHaveLength(16)
+    expect(frequencies[0].attributes('data-core-index')).toBe('0')
+    expect(frequencies[0].text()).toContain('核 0')
+    expect(frequencies[0].text()).toContain('3600 MHz')
+    expect(frequencies[15].text()).toContain('5100 MHz')
+    expect(wrapper.find('[data-test="monitor-cpu"]').text()).not.toContain('不可用')
+  })
+
+  it('不可用：温度与每核频率区块整块不渲染（不显示 0 / 不可用占位）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-temperature"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-test="monitor-temperature-sensor"]')).toHaveLength(0)
+    expect(wrapper.find('[data-test="monitor-temperature-empty"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-frequency"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(0)
+    expect(wrapper.find('[data-test="monitor-frequency-empty"]').exists()).toBe(false)
+    // 不可用不是 0：不出现温度 / 频率数字
+    expect(wrapper.text()).not.toContain('°C')
+    expect(wrapper.find('[data-test="monitor-cpu"]').text()).not.toContain('MHz')
+  })
+
+  it('Windows 式快照（unsupported、数据为 null）：温度与每核频率区块整块不渲染', async () => {
+    const snapshot = makeSysmonSnapshot({
+      metrics: {
+        temperature: { available: false, reason: 'unsupported' },
+        'cpu.frequency': { available: false, reason: 'unsupported' },
+      },
+    })
+    snapshot.platform = {
+      family: 'windows',
+      version: 'Windows 10 Pro',
+      kernel: '10.0.19045',
+      arch: 'x86_64',
+      build: 19045,
+    }
+    snapshot.availability.platform_description = 'Windows 10 Pro (build 19045)'
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(snapshot)
+    const wrapper = await mountView()
+
+    // 区块可见性由 availability 决定，不按 platform.family 分支
+    expect(wrapper.find('[data-test="monitor-subtitle"]').text()).toContain('Windows 10 Pro (build 19045)')
+    expect(wrapper.find('[data-test="monitor-temperature"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-frequency"]').exists()).toBe(false)
+  })
+
+  it('可用但本帧无数据（null / 空数组）：温度与每核频率区块显示「暂无数据」空态，不显示 0', async () => {
+    // 能力粘性可用、本帧值为 null（契约 sysmon §2.5）：保留区块，显示「暂无数据」而不是「不可用」
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      sensorData: true,
+      temperatures: null,
+      coreFrequencies: null,
+    }))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-temperature"]').exists()).toBe(true)
+    const temperatureEmpty = wrapper.find('[data-test="monitor-temperature-empty"]')
+    expect(temperatureEmpty.exists()).toBe(true)
+    expect(temperatureEmpty.text()).toContain('暂无数据')
+    expect(wrapper.findAll('[data-test="monitor-temperature-sensor"]')).toHaveLength(0)
+
+    expect(wrapper.find('[data-test="monitor-frequency"]').exists()).toBe(true)
+    const frequencyEmpty = wrapper.find('[data-test="monitor-frequency-empty"]')
+    expect(frequencyEmpty.exists()).toBe(true)
+    expect(frequencyEmpty.text()).toContain('暂无数据')
+    expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(0)
+    expect(frequencyEmpty.text()).not.toContain('0 MHz')
+
+    // 空数组同样走空态（温度允许空数组；消费方不得据此隐藏区块）
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({
+      sensorData: true,
+      temperatures: [],
+      coreFrequencies: [],
+    }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="monitor-temperature-empty"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-frequency-empty"]').exists()).toBe(true)
+  })
+
+  it('非法值过滤：空 sensor / 非有限温度 / 非法 index 或 mhz 不渲染', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      sensorData: true,
+      temperatures: [
+        { sensor: '', celsius: 30 },
+        { sensor: 'coretemp:Core 0', celsius: Number.NaN },
+        { sensor: 'coretemp:Valid', celsius: 45.5 },
+      ],
+      coreFrequencies: [
+        { index: -1, mhz: 3600 },
+        { index: 2, mhz: 0 },
+        { index: 3, mhz: 3600 },
+      ],
+    }))
+    const wrapper = await mountView()
+
+    const sensors = wrapper.findAll('[data-test="monitor-temperature-sensor"]')
+    expect(sensors).toHaveLength(1)
+    expect(sensors[0].text()).toContain('coretemp:Valid')
+    expect(sensors[0].text()).toContain('45.5 °C')
+
+    const frequencies = wrapper.findAll('[data-test="monitor-frequency-core"]')
+    expect(frequencies).toHaveLength(1)
+    expect(frequencies[0].attributes('data-core-index')).toBe('3')
+    expect(frequencies[0].text()).toContain('3600 MHz')
+  })
+
+  it('组合可用性：仅温度可用时只渲染温度卡，仅频率可用时只渲染频率面板', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      sensorData: true,
+      metrics: { 'cpu.frequency': { available: false, reason: 'unsupported' } },
+    }))
+    const wrapper = await mountView()
+    expect(wrapper.find('[data-test="monitor-temperature"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-frequency"]').exists()).toBe(false)
+
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({
+      sensorData: true,
+      metrics: { temperature: { available: false, reason: 'no_sensor' } },
+    }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="monitor-temperature"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-frequency"]').exists()).toBe(true)
+  })
+})

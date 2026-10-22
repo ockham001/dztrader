@@ -36,31 +36,39 @@ inline constexpr const char* SYSMON_METRIC_CPU_TOTAL = "cpu.total";
 inline constexpr const char* SYSMON_METRIC_CPU_CORES = "cpu.cores";
 inline constexpr const char* SYSMON_METRIC_CPU_LOAD_AVERAGE = "cpu.load_average";
 inline constexpr const char* SYSMON_METRIC_CPU_CONTEXT_SWITCHES = "cpu.context_switches";
+inline constexpr const char* SYSMON_METRIC_CPU_FREQUENCY = "cpu.frequency";
 inline constexpr const char* SYSMON_METRIC_MEMORY = "memory";
 inline constexpr const char* SYSMON_METRIC_SWAP = "swap";
 inline constexpr const char* SYSMON_METRIC_VOLUMES = "volumes";
 inline constexpr const char* SYSMON_METRIC_DISK_IO = "disk_io";
 inline constexpr const char* SYSMON_METRIC_NETWORK = "network";
 inline constexpr const char* SYSMON_METRIC_SHM_DIR = "shm_dir";
+inline constexpr const char* SYSMON_METRIC_TEMPERATURE = "temperature";
 
 /// 可用性映射的固定键集合全集（契约 sysmon §2.5；每帧快照必须全覆盖）。
-inline constexpr std::array<const char*, 11> SYSMON_METRIC_KEYS = {
+inline constexpr std::array<const char*, 13> SYSMON_METRIC_KEYS = {
     SYSMON_METRIC_SYSTEM,
     SYSMON_METRIC_CPU_TOTAL,
     SYSMON_METRIC_CPU_CORES,
     SYSMON_METRIC_CPU_LOAD_AVERAGE,
     SYSMON_METRIC_CPU_CONTEXT_SWITCHES,
+    SYSMON_METRIC_CPU_FREQUENCY,
     SYSMON_METRIC_MEMORY,
     SYSMON_METRIC_SWAP,
     SYSMON_METRIC_VOLUMES,
     SYSMON_METRIC_DISK_IO,
     SYSMON_METRIC_NETWORK,
     SYSMON_METRIC_SHM_DIR,
+    SYSMON_METRIC_TEMPERATURE,
 };
 
 /// 配置 payload / 配置文件的业务段全集（契约 sysmon §3.1；顺序固定）。
 inline constexpr std::array<const char*, 6> SYSMON_CONFIG_SECTIONS = {
     "sampling", "disk", "network", "history", "realtime", "alerts"};
+
+/// 配置 `sampling.groups` 的 B 组指标键（契约 sysmon §3.1）：温度与每核频率。
+inline constexpr const char* SYSMON_GROUP_TEMPERATURE = "temperature";
+inline constexpr const char* SYSMON_GROUP_CPU_FREQUENCY = "cpu_frequency";
 
 // ===== 快照 payload（契约 sysmon §快照）=====
 
@@ -111,6 +119,13 @@ struct SysmonCpuCore {
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonCpuCore, index, usage_ratio, saturated)
 };
 
+/// 单核当前频率（契约 sysmon §2.3；`index` 与 `cpu.cores[].index` 同源）。
+struct SysmonCoreFrequency {
+    uint32_t index = 0;  ///< OS CPU 编号（不保证连续）
+    uint32_t mhz = 0;    ///< 当前频率（MHz，> 0）
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonCoreFrequency, index, mhz)
+};
+
 /// 系统负载（跨平台语义不同，`semantic` 说明口径）。
 struct SysmonLoadAverage {
     std::optional<double> one;
@@ -124,6 +139,8 @@ struct SysmonLoadAverage {
 struct SysmonCpuInfo {
     SysmonCpuTotal total;
     std::vector<SysmonCpuCore> cores;
+    /// 每核当前频率；null = 本平台不提供/不可用（契约 sysmon §2.3）。
+    std::optional<std::vector<SysmonCoreFrequency>> core_frequencies;
     std::vector<uint32_t> saturated_cores;
     std::optional<SysmonLoadAverage> load_average;  ///< null = 本平台不提供/不可用
     std::optional<double> context_switches_per_sec;
@@ -131,6 +148,7 @@ struct SysmonCpuInfo {
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonCpuInfo,
                                                 total,
                                                 cores,
+                                                core_frequencies,
                                                 saturated_cores,
                                                 load_average,
                                                 context_switches_per_sec,
@@ -245,6 +263,13 @@ struct SysmonShmDirInfo {
         SysmonShmDirInfo, path, total_bytes, page_files, oldest_file_age_sec)
 };
 
+/// 单个温度传感器读数（契约 sysmon §2.4；温度为瞬时 gauge，不是累计计数器）。
+struct SysmonTemperatureInfo {
+    std::string sensor;    ///< 传感器稳定标识（Linux hwmon：`<name>#<hwmonN>:<label>`）
+    double celsius = 0.0;  ///< 摄氏温度
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonTemperatureInfo, sensor, celsius)
+};
+
 /// 单个指标的可用性。
 struct SysmonAvailabilityEntry {
     bool available = false;
@@ -293,6 +318,8 @@ struct SysmonSnapshot {
     SysmonPlatformInfo platform;
     SysmonSystemInfo system;
     SysmonCpuInfo cpu;
+    /// 温度传感器读数；null = 本平台不提供/无传感器/不可用（契约 sysmon §2.4）。
+    std::optional<std::vector<SysmonTemperatureInfo>> temperature;
     std::optional<SysmonMemoryInfo> memory;  ///< null = 本版本未采集/不可用
     std::optional<SysmonSwapInfo> swap;
     std::optional<std::vector<SysmonVolumeInfo>> volumes;
@@ -307,6 +334,7 @@ struct SysmonSnapshot {
                                                 platform,
                                                 system,
                                                 cpu,
+                                                temperature,
                                                 memory,
                                                 swap,
                                                 volumes,
@@ -327,12 +355,14 @@ struct SysmonSamplingConfig {
     int32_t measure_interval_ms = 1000;  ///< 计量间隔，[100, 60000]
     int32_t record_interval_sec = 60;    ///< 记录间隔，[1, 86400]
     int32_t phase_offset_sec = 3;        ///< 记录相位偏移，[0, 86400]
-    /// 启用的指标大类（契约 #41 A/B 组）：cpu/memory/swap/volumes/disk_io/network。
+    /// 启用的指标大类（契约 #41 A/B 组）：cpu/memory/swap/volumes/disk_io/network/
+    /// temperature/cpu_frequency。温度与每核频率属 B 组：Linux 默认开，Windows 默认关
+    /// （平台不可靠或不存在，用户可在配置中显式开启；本版本 Windows 采集器仍报告不可用）。
     std::map<std::string, bool> groups;
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
         SysmonSamplingConfig, measure_interval_ms, record_interval_sec, phase_offset_sec, groups)
 
-    /// 默认启用的指标大类全集。
+    /// 默认启用的指标大类全集（平台相关默认值，契约 sysmon §3.1）。
     static std::map<std::string, bool> default_groups();
 };
 

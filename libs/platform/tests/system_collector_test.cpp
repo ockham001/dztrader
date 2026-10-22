@@ -256,4 +256,65 @@ TEST(SystemCollectorTest, LoadAverageReflectsPlatformSemantics) {
 #endif
 }
 
+// 契约 sysmon §2.4：Linux 有 hwmon 传感器时返回非空读数且数值合理；无传感器（CI/容器）
+// 报告不可用（std::nullopt）而不是失败。Windows 本版本不提供温度（必须为 std::nullopt）。
+TEST(SystemCollectorTest, TemperatureReadingsFollowContract) {
+    const auto collector = make_system_collector();
+    ASSERT_NE(collector, nullptr);
+
+    const auto temperatures = collector->collect_temperatures();
+#if defined(_WIN32)
+    EXPECT_FALSE(temperatures.has_value()) << "windows must not provide temperatures";
+#elif defined(__linux__)
+    if (!temperatures.has_value()) {
+        GTEST_SKIP() << "no readable hwmon temperature sensor on this host";
+    }
+    EXPECT_FALSE(temperatures->empty());
+    std::vector<std::string> sensors;
+    for (const auto& reading : *temperatures) {
+        // sensor 稳定标识形如 "<name>#<hwmonN>:<label>" / "...:tempN"，必须非空且帧内唯一
+        // （标识含 hwmon 目录名，契约 sysmon §2.4；病态重复 label 追加 -<n> 兜底）。
+        EXPECT_FALSE(reading.sensor.empty());
+        // 锁定标识格式：含 hwmon 目录名与 label/tempN 分隔符（防回退成不含 #hwmonN 的旧格式）。
+        EXPECT_NE(reading.sensor.find('#'), std::string::npos) << reading.sensor;
+        EXPECT_NE(reading.sensor.find(':'), std::string::npos) << reading.sensor;
+        sensors.push_back(reading.sensor);
+        // 真机温度必须是有限摄氏度，且落在物理上可能的工业/环境范围内。
+        EXPECT_TRUE(std::isfinite(reading.celsius)) << reading.sensor;
+        EXPECT_GE(reading.celsius, -50.0) << reading.sensor;
+        EXPECT_LE(reading.celsius, 200.0) << reading.sensor;
+    }
+    std::sort(sensors.begin(), sensors.end());
+    EXPECT_EQ(std::adjacent_find(sensors.begin(), sensors.end()), sensors.end())
+        << "temperature sensor identifiers must be unique within one snapshot";
+#endif
+}
+
+// 契约 sysmon §2.3：Linux 有 cpufreq 时返回非空每核频率（mhz > 0、index 唯一且升序）；
+// 无 cpufreq（CI/容器）报告不可用（std::nullopt）而不是失败。Windows 不提供每核频率。
+TEST(SystemCollectorTest, CoreFrequenciesFollowContract) {
+    const auto collector = make_system_collector();
+    ASSERT_NE(collector, nullptr);
+
+    const auto frequencies = collector->collect_core_frequencies();
+#if defined(_WIN32)
+    EXPECT_FALSE(frequencies.has_value()) << "windows must not provide core frequencies";
+#elif defined(__linux__)
+    if (!frequencies.has_value()) {
+        GTEST_SKIP() << "no readable cpufreq scaling_cur_freq on this host";
+    }
+    EXPECT_FALSE(frequencies->empty());
+    std::vector<uint32_t> indexes;
+    for (const auto& frequency : *frequencies) {
+        // mhz 为当前频率（MHz，> 0）；index 为 OS CPU 编号（与 cpu.cores[].index 同源）。
+        EXPECT_GT(frequency.mhz, 0u) << "cpu" << frequency.index;
+        indexes.push_back(frequency.index);
+    }
+    // 实现按 index 升序输出，且同一核最多出现一次。
+    EXPECT_TRUE(std::is_sorted(indexes.begin(), indexes.end())) << "core indexes must be sorted";
+    EXPECT_EQ(std::adjacent_find(indexes.begin(), indexes.end()), indexes.end())
+        << "per-core index must be unique";
+#endif
+}
+
 }  // namespace dztrader::test

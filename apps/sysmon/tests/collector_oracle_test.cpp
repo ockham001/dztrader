@@ -5,15 +5,20 @@
 // 这里从 dzsysmon 的消费面断言「百分比落在合法区间」与「首次采样不可用而非 0」。
 
 #include "cpu_usage.h"
+#include "snapshot_builder.h"
 
 #include <dztrader/platform/system_collector.h>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <cmath>
 #include <optional>
+#include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace dztrader::sysmon {
 namespace {
@@ -129,6 +134,70 @@ TEST(SystemCollectorOracleTest, PerCoreUsagesAndRatesValidOnRealMachine) {
     ASSERT_TRUE(interrupts_rate.has_value());
     EXPECT_TRUE(std::isfinite(*context_switches_rate));
     EXPECT_TRUE(std::isfinite(*interrupts_rate));
+}
+
+// #73 真机 oracle：温度与每核频率的可用性映射必须与采集层事实一致——有设备时可用且有值，
+// 无设备时（容器 / 虚拟机 / Windows）报告不可用且快照仍通过契约校验，测试不得失败
+// （issue #73 AC：Linux 真机 oracle 在无传感器的 CI 环境下报告不可用而不失败）。
+TEST(SystemCollectorOracleTest, SensorAvailabilityReflectsRealHostAndValidates) {
+    const auto collector = platform::make_system_collector();
+    ASSERT_NE(collector, nullptr);
+    const auto info = collector->collect_system_info();
+
+    CpuMetrics cpu_metrics;  // 本测试只关心温度/频率的可用性映射，CPU 其余域不参与断言
+    TemperatureMetrics temperature_metrics;
+    const auto temperatures = collector->collect_temperatures();
+    if (temperatures.has_value()) {
+        std::vector<platform::SysmonTemperatureInfo> sensors;
+        sensors.reserve(temperatures->size());
+        for (const auto& reading : *temperatures) {
+            sensors.push_back({reading.sensor, reading.celsius});
+        }
+        temperature_metrics.collected = true;
+        temperature_metrics.sensors = std::move(sensors);
+    }
+    const auto frequencies = collector->collect_core_frequencies();
+    if (frequencies.has_value()) {
+        std::vector<platform::SysmonCoreFrequency> items;
+        items.reserve(frequencies->size());
+        for (const auto& reading : *frequencies) {
+            items.push_back({reading.index, reading.mhz});
+        }
+        cpu_metrics.frequency_collected = true;
+        cpu_metrics.core_frequencies = std::move(items);
+    }
+
+    const auto snapshot = build_snapshot("dzsysmon", info, cpu_metrics, temperature_metrics, 1000,
+                                         0, 0, 1'800'000'000'000);
+    // 可用性（能力标记）必须与采集层事实一致；无设备不是失败，只是不可用。
+    EXPECT_EQ(snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE).available,
+              temperature_metrics.collected);
+    EXPECT_EQ(snapshot.availability.metrics.at(platform::SYSMON_METRIC_CPU_FREQUENCY).available,
+              cpu_metrics.frequency_collected);
+    if (temperatures.has_value()) {
+        ASSERT_TRUE(snapshot.temperature.has_value());
+        EXPECT_EQ(snapshot.temperature->size(), temperatures->size());
+    } else {
+        EXPECT_EQ(snapshot.temperature, std::nullopt);
+        const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE);
+        ASSERT_TRUE(entry.reason.has_value());
+        if (info.os_family == "windows") {
+            EXPECT_EQ(entry.reason.value(), "unsupported");
+        } else {
+            EXPECT_EQ(entry.reason.value(), "no_sensor");
+        }
+    }
+    if (frequencies.has_value()) {
+        ASSERT_TRUE(snapshot.cpu.core_frequencies.has_value());
+        EXPECT_EQ(snapshot.cpu.core_frequencies->size(), frequencies->size());
+    } else {
+        EXPECT_EQ(snapshot.cpu.core_frequencies, std::nullopt);
+        const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_CPU_FREQUENCY);
+        ASSERT_TRUE(entry.reason.has_value());
+        EXPECT_EQ(entry.reason.value(), "unsupported");
+    }
+    // 无论设备是否存在，快照都必须通过契约校验（报告不可用而不是产出坏帧）。
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 
 }  // namespace

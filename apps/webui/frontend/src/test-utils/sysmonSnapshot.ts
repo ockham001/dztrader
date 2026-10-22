@@ -1,12 +1,16 @@
 // 测试夹具：契约 sysmon 快照（SysmonSnapshot）。
-// 默认形状 = #72 落地后的后端：system / cpu.total / cpu.cores / cpu.load_average /
-// cpu.context_switches 可用（每核 16 个、Linux 真实负载、速率有值），其余指标不可用；
-// resourceData=true 时额外填充内存 / 卷 / 网卡数据并标记可用，用于「全部可用」渲染用例。
+// 默认形状 = #73 落地后的后端：system / cpu.total / cpu.cores / cpu.load_average /
+// cpu.context_switches 可用（每核 16 个、Linux 真实负载、速率有值），其余指标不可用
+// （温度按 Linux 无传感器理由 no_sensor、每核频率按无 cpufreq 理由 unsupported，其余
+// not_implemented）；resourceData=true 时额外填充内存 / 卷 / 网卡数据并标记可用，用于
+// 「全部可用」渲染用例；sensorData=true 时额外填充温度 / 每核频率并标记可用。
 import type {
   SysmonAvailabilityEntry,
+  SysmonCoreFrequency,
   SysmonCpuCore,
   SysmonLoadAverage,
   SysmonSnapshotPayload,
+  SysmonTemperatureInfo,
 } from '@/types/generated'
 
 export const SYSMON_METRIC_KEYS = [
@@ -15,12 +19,14 @@ export const SYSMON_METRIC_KEYS = [
   'cpu.cores',
   'cpu.load_average',
   'cpu.context_switches',
+  'cpu.frequency',
   'memory',
   'swap',
   'volumes',
   'disk_io',
   'network',
   'shm_dir',
+  'temperature',
 ] as const
 
 export interface SysmonSnapshotOptions {
@@ -30,6 +36,12 @@ export interface SysmonSnapshotOptions {
   cpuUsageRatio?: number | null
   /** 填充内存 / 卷 / 网卡数据，并把对应指标标记为可用（模拟后续指标票落地后的快照） */
   resourceData?: boolean
+  /** 填充温度 / 每核频率数据，并把 temperature / cpu.frequency 标记为可用（模拟 #73 落地后的快照） */
+  sensorData?: boolean
+  /** 温度传感器读数；默认 null；sensorData=true 时默认两个 Linux hwmon 读数 */
+  temperatures?: SysmonTemperatureInfo[] | null
+  /** 每核当前频率；默认 null；sensorData=true 时默认按核数填充 3600 + index*100 MHz */
+  coreFrequencies?: SysmonCoreFrequency[] | null
   /** 每核使用率；默认 16 个核（index 0..15，usage_ratio 各不相同且非 null，saturated=false），system.logical_cores 同步为数组长度 */
   cpuCores?: SysmonCpuCore[]
   /** 持续饱和的核 index 集合；默认 []。会把对应 core.saturated 置 true 并写入 cpu.saturated_cores */
@@ -47,6 +59,12 @@ export interface SysmonSnapshotOptions {
 const GIB = 1024 ** 3
 const MIB = 1024 ** 2
 
+/** 默认温度读数（模拟 Linux hwmon：<name>#<hwmonN>:<label>）；sensorData=true 时使用 */
+const DEFAULT_TEMPERATURES: SysmonTemperatureInfo[] = [
+  { sensor: 'coretemp#hwmon3:Package id 0', celsius: 45.5 },
+  { sensor: 'coretemp#hwmon3:Core 0', celsius: 41.5 },
+]
+
 /**
  * 默认每核数据：usage_ratio 各不相同且非 null（首次采样之外均有真实值），均未饱和。
  * 比例刻意避开整十百分比，避免「0.0%」之类字符串断言歧义。
@@ -61,6 +79,7 @@ export function makeSysmonCpuCores(count = 16): SysmonCpuCore[] {
 
 export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonSnapshotPayload {
   const resourceAvailable = options.resourceData === true
+  const sensorAvailable = options.sensorData === true
   const metrics: Record<string, SysmonAvailabilityEntry> = {}
   for (const key of SYSMON_METRIC_KEYS) {
     const available = key === 'system'
@@ -69,9 +88,13 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
       || key === 'cpu.load_average'
       || key === 'cpu.context_switches'
       || (resourceAvailable && (key === 'memory' || key === 'volumes' || key === 'network'))
+      || (sensorAvailable && (key === 'temperature' || key === 'cpu.frequency'))
+    const reason = key === 'temperature'
+      ? 'no_sensor'
+      : (key === 'cpu.frequency' ? 'unsupported' : 'not_implemented')
     metrics[key] = available
       ? { available: true }
-      : { available: false, reason: 'not_implemented' }
+      : { available: false, reason }
   }
   for (const [key, entry] of Object.entries(options.metrics ?? {})) {
     metrics[key] = { ...entry }
@@ -110,6 +133,11 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
         usage_ratio: options.cpuUsageRatio === undefined ? 0.187 : options.cpuUsageRatio,
       },
       cores,
+      core_frequencies: options.coreFrequencies !== undefined
+        ? options.coreFrequencies
+        : (sensorAvailable
+            ? cores.map(core => ({ index: core.index, mhz: 3600 + core.index * 100 }))
+            : null),
       saturated_cores: saturatedCores,
       load_average: options.cpuLoadAverage === undefined
         ? { one: 0.42, five: 0.51, fifteen: 0.63, semantic: 'load_average' }
@@ -119,6 +147,9 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
         : options.contextSwitchesPerSec,
       interrupts_per_sec: options.interruptsPerSec === undefined ? 567 : options.interruptsPerSec,
     },
+    temperature: options.temperatures !== undefined
+      ? options.temperatures
+      : (sensorAvailable ? DEFAULT_TEMPERATURES.map(reading => ({ ...reading })) : null),
     memory: resourceAvailable
       ? {
           total_bytes: 32 * GIB,

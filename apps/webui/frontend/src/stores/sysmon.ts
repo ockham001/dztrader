@@ -3,9 +3,11 @@ import { computed, ref } from 'vue'
 import { sysmonApi } from '@/api/sysmon'
 import type {
   SysmonAvailabilityEntry,
+  SysmonCoreFrequency,
   SysmonCpuCore,
   SysmonLoadAverage,
   SysmonSnapshotPayload,
+  SysmonTemperatureInfo,
 } from '@/types/generated'
 
 /** 有限数字校验：null / undefined / NaN / Infinity 一律视为不可用（不得用 0 冒充） */
@@ -133,6 +135,45 @@ export const useSysmonStore = defineStore('sysmon', () => {
     return toFiniteNumber(s.cpu?.interrupts_per_sec)
   })
 
+  /**
+   * 温度传感器读数（契约 sysmon §2.4，B 组可用性样板 #73）。仅当可用性映射标记
+   * `temperature` 可用时返回过滤后的数组，否则空数组 —— 视图据此整块不渲染
+   * （不可用不是 0，也不是「不可用」占位）。过滤空 sensor / 非有限 celsius。
+   */
+  const temperatures = computed<SysmonTemperatureInfo[]>(() => {
+    const s = snapshot.value
+    if (!s || s.availability.metrics['temperature']?.available !== true) return []
+    const readings = Array.isArray(s.temperature) ? s.temperature : []
+    const result: SysmonTemperatureInfo[] = []
+    for (const reading of readings) {
+      const sensor = typeof reading?.sensor === 'string' ? reading.sensor.trim() : ''
+      const celsius = toFiniteNumber(reading?.celsius)
+      if (!sensor || celsius === null) continue
+      result.push({ sensor, celsius })
+    }
+    return result
+  })
+
+  /**
+   * 每核当前频率（契约 sysmon §2.3，B 组可用性样板 #73）。仅当可用性映射标记
+   * `cpu.frequency` 可用时返回过滤后的数组，否则空数组 —— 视图据此整块不渲染。
+   * index 与 cpu.cores[].index 同源（OS CPU 编号，不保证连续）；mhz 须为正整数。
+   */
+  const coreFrequencies = computed<SysmonCoreFrequency[]>(() => {
+    const s = snapshot.value
+    if (!s || s.availability.metrics['cpu.frequency']?.available !== true) return []
+    const frequencies = Array.isArray(s.cpu?.core_frequencies) ? s.cpu.core_frequencies : []
+    const result: SysmonCoreFrequency[] = []
+    for (const frequency of frequencies) {
+      const index = frequency?.index
+      const mhz = frequency?.mhz
+      if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) continue
+      if (typeof mhz !== 'number' || !Number.isInteger(mhz) || mhz <= 0) continue
+      result.push({ index, mhz })
+    }
+    return result
+  })
+
   /** 跨平台语义提示（契约 sysmon §2.5）：缺失 / 非字符串返回空串，由视图决定是否展示 */
   function semanticHint(key: string): string {
     const hints = snapshot.value?.availability.semantic_hints
@@ -151,6 +192,8 @@ export const useSysmonStore = defineStore('sysmon', () => {
     cpuLoadAverage,
     cpuContextSwitchesPerSec,
     cpuInterruptsPerSec,
+    temperatures,
+    coreFrequencies,
     semanticHint,
     init,
     applySnapshot,

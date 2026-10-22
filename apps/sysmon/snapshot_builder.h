@@ -5,8 +5,8 @@
  * @file snapshot_builder.h
  * @brief RTN_SYSMON_SNAPSHOT payload 构造（契约 sysmon §2）。
  *
- * 本票（#72）填系统信息、CPU 总量/每核/饱和标记/负载/上下文切换与中断速率；
- * 内存/磁盘/网络等其余指标域仍输出 `null`/空数组并在 `availability.metrics` 标记
+ * 本票（#73）填系统信息、CPU 总量/每核/饱和标记/负载/上下文切换与中断速率、每核频率、
+ * 温度；内存/磁盘/网络等其余指标域仍输出 `null`/空数组并在 `availability.metrics` 标记
  * `available=false + reason="not_implemented"`。已列出的指标域后续只填值、不改形状。
  *
  * 纯函数：不读时钟、不读配置全局状态，输入即快照的全部事实来源，便于用假数据测试。
@@ -37,6 +37,18 @@ struct CpuMetrics {
     bool rates_collected = false;  ///< 上下文切换/中断累计计数器能力是否可用（粘性）
     std::optional<double> context_switches_per_sec;
     std::optional<double> interrupts_per_sec;
+    bool frequency_collected = false;  ///< 每核频率能力是否可用（粘性，契约 sysmon §2.7）
+    bool frequency_disabled = false;   ///< 配置关闭 cpu_frequency 组（优先级最高）
+    /// 本帧每核频率读数；nullopt = 本帧未读到（能力可用但未就绪，或不可用）。
+    std::optional<std::vector<platform::SysmonCoreFrequency>> core_frequencies;
+};
+
+/// 温度传感器的测量结果与能力标记（#73；温度为瞬时 gauge，不做差值/聚合）。
+struct TemperatureMetrics {
+    bool collected = false;  ///< 温度能力是否可用（粘性）
+    bool disabled = false;   ///< 配置关闭 temperature 组（优先级最高）
+    /// 本帧温度读数；nullopt = 本帧未读到（能力可用但未就绪，或不可用）。
+    std::optional<std::vector<platform::SysmonTemperatureInfo>> sensors;
 };
 
 /**
@@ -45,6 +57,7 @@ struct CpuMetrics {
  * @param source               发送方进程名（无 instance_id 帧的来源显式携带，general §5）
  * @param system_info          采集到的原始系统信息（进程启动时采集一次）
  * @param cpu_metrics          CPU 区块的测量结果与能力标记
+ * @param temperature_metrics  温度传感器的测量结果与能力标记
  * @param measure_interval_ms  当前计量间隔（毫秒）
  * @param last_sample_unix_ms  最近一次计量成功的墙钟时间（Unix 毫秒，0 = 尚无成功样本）
  * @param missed_ticks         累计错过的计量 tick 数
@@ -54,6 +67,7 @@ struct CpuMetrics {
 [[nodiscard]] platform::SysmonSnapshot build_snapshot(std::string_view source,
                                                       const platform::RawSystemInfo& system_info,
                                                       const CpuMetrics& cpu_metrics,
+                                                      const TemperatureMetrics& temperature_metrics,
                                                       int32_t measure_interval_ms,
                                                       int64_t last_sample_unix_ms,
                                                       uint64_t missed_ticks,

@@ -3,9 +3,10 @@ import { computed, onMounted } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import { useSysmonStore } from '@/stores/sysmon'
 
-// 资源监控页：系统信息与 CPU 区块（总量 / 每核 / 系统负载 / 上下文切换与中断）
+// 资源监控页：系统信息与 CPU 区块（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率）、温度
 // 接契约 sysmon 实时快照；内存 / 磁盘 / 网络区块按可用性映射渲染，
 // 未接入时显示明确空态（不得显示 0 冒充数据）。
+// 温度 / 每核频率（B 组）按可用性映射渲染：不可用时整块不渲染（不是显示 0 / 不可用占位）。
 // 刷新基线由发送方 realtime.push_interval_sec（默认 5s）决定，本页不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
 
@@ -51,6 +52,16 @@ function formatLoadValue(value: number | null | undefined): string {
 function formatCountPerSec(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return UNAVAILABLE
   return `${Math.round(value)}/s`
+}
+
+/** 温度（摄氏度）：保留 1 位小数 + 单位；调用方只在指标可用时传入有效值 */
+function formatTemperature(celsius: number): string {
+  return `${celsius.toFixed(1)} °C`
+}
+
+/** 每核频率（MHz）：整数 + 单位；调用方只在指标可用时传入有效值 */
+function formatFrequency(mhz: number): string {
+  return `${mhz} MHz`
 }
 
 function formatDateTime(unixMs: number): string {
@@ -119,6 +130,14 @@ const loadIsProcessorQueue = computed(() => loadAverage.value?.semantic === PROC
 const ratesAvailable = computed(() => isAvailable('cpu.context_switches'))
 const contextSwitches = computed(() => sysmon.cpuContextSwitchesPerSec)
 const interrupts = computed(() => sysmon.cpuInterruptsPerSec)
+
+// ---- 温度 / 每核频率（#73，B 组可用性样板）----
+// 与内存 / 磁盘等「不可用显示空态」的区块不同：对应指标不可用时整块不渲染，
+// 不是显示 0、也不是显示「不可用」占位。只按 availability.metrics 与数据渲染，不按 platform.family 分支。
+const temperatureAvailable = computed(() => isAvailable('temperature'))
+const temperatures = computed(() => sysmon.temperatures)
+const frequencyAvailable = computed(() => isAvailable('cpu.frequency'))
+const coreFrequencies = computed(() => sysmon.coreFrequencies)
 
 // ---- 内存 / 磁盘（卷容量）/ 网络 ----
 const memoryAvailable = computed(() => isAvailable('memory'))
@@ -286,6 +305,53 @@ const network = computed(() => snapshot.value?.network ?? null)
               <div class="ds-empty__desc">{{ coresEmptyDesc }}</div>
             </div>
           </div>
+
+          <!-- 每核频率（#73）：仅在 cpu.frequency 可用时渲染整块面板；不可用时整块不渲染 -->
+          <div
+            v-if="frequencyAvailable"
+            class="monitor-view__cpu-panel monitor-view__cpu-panel--wide"
+            data-test="monitor-frequency"
+          >
+            <h3 class="monitor-view__panel-title">每核频率</h3>
+            <ul v-if="coreFrequencies.length > 0" class="monitor-view__cores">
+              <li
+                v-for="frequency in coreFrequencies"
+                :key="frequency.index"
+                class="monitor-view__core"
+                data-test="monitor-frequency-core"
+                :data-core-index="frequency.index"
+              >
+                <span class="monitor-view__core-index">核 {{ frequency.index }}</span>
+                <span class="monitor-view__core-value">{{ formatFrequency(frequency.mhz) }}</span>
+              </li>
+            </ul>
+            <div v-else class="ds-empty monitor-view__empty" data-test="monitor-frequency-empty">
+              <div class="ds-empty__title">暂无数据</div>
+              <div class="ds-empty__desc">当前快照未提供每核频率</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 温度（#73）：仅在 temperature 可用时渲染整块卡片；不可用整块不渲染（不是显示 0） -->
+      <section v-if="temperatureAvailable" class="ds-card monitor-view__card" data-test="monitor-temperature">
+        <h2 class="ds-card__title monitor-view__card-title">
+          <span class="monitor-view__card-icon"><Icon name="system" :size="14" /></span>温度
+        </h2>
+        <ul v-if="temperatures.length > 0" class="monitor-view__list">
+          <li
+            v-for="reading in temperatures"
+            :key="reading.sensor"
+            class="monitor-view__list-row"
+            data-test="monitor-temperature-sensor"
+          >
+            <span class="monitor-view__list-label">{{ reading.sensor }}</span>
+            <span class="monitor-view__list-value">{{ formatTemperature(reading.celsius) }}</span>
+          </li>
+        </ul>
+        <div v-else class="ds-empty monitor-view__empty" data-test="monitor-temperature-empty">
+          <div class="ds-empty__title">暂无数据</div>
+          <div class="ds-empty__desc">当前快照未提供温度读数</div>
         </div>
       </section>
 

@@ -24,7 +24,7 @@
 
 ## 2. 快照（RTN_SYSMON_SNAPSHOT）
 
-**语义**：推送当前实时快照。当前版本（#72）填系统信息与 CPU 区块（总量、每核与饱和标记、系统负载、上下文切换/中断速率）；其余域按本文档定稿的形状输出 `null` 并在可用性映射中标记不可用。已列出的指标域后续只填值、**不改形状**（新增指标类别属 additive 扩展，按总则 §11.3 同步契约、类型与前端 schema；消费方忽略未知字段）。
+**语义**：推送当前实时快照。当前版本（#73）填系统信息与 CPU 区块（总量、每核与饱和标记、系统负载、上下文切换/中断速率、每核频率）、温度；其余域按本文档定稿的形状输出 `null` 并在可用性映射中标记不可用。已列出的指标域后续只填值、**不改形状**（新增指标类别属 additive 扩展，按总则 §11.3 同步契约、类型与前端 schema；消费方忽略未知字段）。
 
 **来源识别**：帧头无 `instance_id`（形态 4、发送方固定 `dzsysmon`），按总则 §5 在 payload 中显式携带 `source`。
 
@@ -40,6 +40,7 @@
 | `platform` | object | 平台信息（见下） |
 | `system` | object | 系统信息（见下） |
 | `cpu` | object | CPU 区块（见下） |
+| `temperature` | array \| null | 温度传感器读数；`null` = 本平台不提供/无传感器/不可用（见 §2.4、可用性映射） |
 | `memory` | object \| null | 内存；`null` = 本版本未采集/不可用（见可用性映射） |
 | `swap` | object \| null | 交换分区/页文件 |
 | `volumes` | array \| null | 卷容量 |
@@ -84,6 +85,7 @@
 |------|------|------|
 | `total.usage_ratio` | number \| null | 总使用率 `[0,1]`；`null` = 首次采样/计数器不可用（不得用 0 冒充） |
 | `cores` | array | 每核使用率（不可用时为空数组）：`{index:int, usage_ratio:number\|null, saturated:bool}`。`index` 为 OS CPU 编号（Linux `cpuN` 的 N；Windows 处理器序号），**不保证连续**；可用时数组长度 == `system.logical_cores` |
+| `core_frequencies` | array \| null | 每核当前频率：`{index:int, mhz:int}`；`index` 与 `cores[].index` 同源（OS CPU 编号，不保证连续），`mhz` 为四舍五入到整数的 MHz（> 0）。`null` = 本平台不提供/无 cpufreq/不可用（Windows 恒为 `null`）；读取失败的单个核不进入数组 |
 | `saturated_cores` | array\<int\> | 当前处于持续饱和状态的核 index 集合（判定规则见 §2.7） |
 | `load_average` | object \| null | `{one,five,fifteen: number\|null, semantic: string}`。Linux：`semantic="load_average"`，三值为真实 1/5/15 分钟负载；Windows：`semantic="processor_queue"`，以处理器队列长度做指数加权移动平均后填三值（均为代理量）。**两者不是同一个量，前端不得同轴比较**；口径说明由 `availability.semantic_hints["cpu.load_average"]` 承载 |
 | `context_switches_per_sec` | number \| null | 每秒上下文切换：由累计计数器差值与实际采样间隔计算（§2.7）；首次采样为 null |
@@ -102,6 +104,8 @@
 
 `network[]`：`{interface:string, rx_bytes_total:int, tx_bytes_total:int, rx_bytes_per_sec, tx_bytes_per_sec, rx_errors_per_sec, tx_errors_per_sec, rx_drops_per_sec, tx_drops_per_sec (均 number|null), is_virtual:bool}`。
 
+`temperature[]`：`{sensor:string, celsius:number}`。`sensor` 为稳定标识且在单帧内唯一（Linux hwmon：`<name>#<hwmonN>:<label>`，无 label 时为 `<name>#<hwmonN>:tempN`；`<hwmonN>` 为 sysfs hwmon 目录名，保证同一启动周期内稳定、不同设备不冲突；病态驱动同一芯片重复 label 时追加 `-<n>` 兜底），`celsius` 为摄氏温度。温度为瞬时 gauge，不是累计计数器；传感器集合可在帧间变化。**不可用不是 0**：传感器缺失/读取失败/该指标未采集时输出 `null`（能力可用但本帧未读到，见 §2.7），不得输出 0。Windows 恒为 `null`（不提供温度）。Linux 读取**全部 hwmon 温度传感器**，不按设备类型过滤（厂商芯片经 hwmon 暴露的 GPU/网卡温度也会出现，但仅温度读数，不扩张 C 组指标范围）。
+
 `shm_dir`：`{path:string, total_bytes:int, page_files:int, oldest_file_age_sec:int|null}`。
 
 ### 2.5 availability（关键设计）
@@ -116,18 +120,21 @@
 
 `metrics` 键集合（固定，发送方每帧必须覆盖全部键）：
 
-`system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`memory`、`swap`、`volumes`、`disk_io`、`network`、`shm_dir`。
+`system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`cpu.frequency`、`memory`、`swap`、`volumes`、`disk_io`、`network`、`shm_dir`、`temperature`。
 
 `reason` 为自由文案（英文、小写开头、无句号），建议取值：
 - `not_implemented` —— 本版本尚未采集该指标
-- `unsupported` —— 本平台不支持（如无交换分区）
+- `unsupported` —— 本平台不支持（如无交换分区、Windows 上的温度/频率）
 - `no_permission` —— 计数器需特权/未开启
 - `no_sensor` —— 传感器不存在（如温度）
 - `collect_failed` —— 本次采集失败（能力存在但读不到；下一次采样可能恢复）
+- `disabled_by_config` —— 该指标类别已被配置关闭（`sampling.groups` 中对应开关为 false）
 
-> 当前版本（#72）实现 `system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`；其余键固定为 `available=false` + `reason="not_implemented"`，对应域输出 `null` 或空数组。
+> 当前版本（#73）实现 `system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon）——无 cpufreq 时 `cpu.frequency` 为 `unsupported`，无 hwmon 传感器时为 `temperature` = `no_sensor`；Windows 上两者不提供（默认配置关闭对应 B 组开关，故为 `disabled_by_config`；用户显式开启后采集器恒报 `unsupported`），也不提供整体频率。其余键固定为 `available=false` + `reason="not_implemented"`，对应域输出 `null` 或空数组。
 >
 > `cpu.cores` / `cpu.load_average` / `cpu.context_switches` 的可用性表示**能力**（不是本帧数值是否就绪）：能力一旦确认，可用性为粘性 `true`，此后的采样失败只把数值置 `null`，不改写可用性。能力从未确认或平台不支持时可为 `available=false` + `reason="collect_failed"`（平台不支持也可用 `unsupported`；当前版本无法区分能力缺失与暂时失败，统一用 `collect_failed`；`reason` 为自由文案，本版本新增建议取值 `collect_failed`）。
+>
+> `cpu.frequency` / `temperature` 的可用性同为**能力粘性**：一次成功读到后可用性保持 `true`，此后单帧读取失败只把数值置 `null`（温度允许空数组/`null`、频率允许 `null`），消费方据此保留区块并显示「暂无数据」而不是「不可用」。配置关闭对应组时优先输出 `available=false` + `reason="disabled_by_config"`，数值为 `null`。温度/频率不可用时前端**整块不渲染**（不是显示 0，也不是显示「不可用」占位）。
 
 ### 2.6 快照示例（当前版本节选）
 
@@ -146,11 +153,21 @@
       {"index": 2, "usage_ratio": 0.05, "saturated": false},
       {"index": 3, "usage_ratio": null, "saturated": false}
     ],
+    "core_frequencies": [
+      {"index": 0, "mhz": 4200},
+      {"index": 1, "mhz": 3600},
+      {"index": 2, "mhz": 3600},
+      {"index": 3, "mhz": 4200}
+    ],
     "saturated_cores": [1],
     "load_average": {"one": 0.42, "five": 0.51, "fifteen": 0.63, "semantic": "load_average"},
     "context_switches_per_sec": 1234.5,
     "interrupts_per_sec": 567.0
   },
+  "temperature": [
+    {"sensor": "coretemp#hwmon3:Package id 0", "celsius": 45.5},
+    {"sensor": "coretemp#hwmon3:Core 0", "celsius": 44.0}
+  ],
   "memory": null,
   "swap": null,
   "volumes": null,
@@ -165,12 +182,14 @@
       "cpu.cores": {"available": true},
       "cpu.load_average": {"available": true},
       "cpu.context_switches": {"available": true},
+      "cpu.frequency": {"available": true},
       "memory": {"available": false, "reason": "not_implemented"},
       "swap": {"available": false, "reason": "not_implemented"},
       "volumes": {"available": false, "reason": "not_implemented"},
       "disk_io": {"available": false, "reason": "not_implemented"},
       "network": {"available": false, "reason": "not_implemented"},
-      "shm_dir": {"available": false, "reason": "not_implemented"}
+      "shm_dir": {"available": false, "reason": "not_implemented"},
+      "temperature": {"available": true}
     },
     "semantic_hints": {}
   }
@@ -189,6 +208,7 @@
 - **饱和核判定**：单核使用率连续 `alerts.cpu_sustain_samples` 次采样 **≥** `alerts.cpu_sustain_used_pct / 100` 即标记 `saturated=true`；任一采样严格低于阈值即清零解除；不可用样本（`usage_ratio=null`）不改变连续计数；核序列变化重置全部计数。阈值与连续次数取自当前配置（运行期修改语义随配置票 #81）。
 - Windows >64 逻辑核的机器上每核序列可能不可用（处理器组限制）：此时 `cpu.cores` 标记不可用、中断累计计数输出 `null`；不得用组内数据冒充全系统每核序列。
 - **本帧数值不得沿用上一帧**：某项能力可用但本帧数值未就绪或采集失败时，对应字段输出 `null`——每核序列整体未采到时 `cpu.cores` 保留已知核 index 条目、`usage_ratio` 全部 `null`、`saturated` 全部 `false`（从未获得过序列时 `cpu.cores` / `saturated_cores` 为空数组）；`availability` 的能力标记保持粘性，消费方据此显示"不可用"而不是旧数据。单个核的计数器不可用时该核 `usage_ratio=null`，不改变饱和判定的连续计数。
+- **温度 / 每核频率采集语义**：两者都是瞬时 gauge，不做差值或聚合（温度单位为摄氏度，频率四舍五入到整数 MHz）；传感器集合与核集合可在帧间变化，按本次读数输出，不沿用上一帧。读取失败的单个传感器/核不进入数组；能力可用但本帧一个都没读到时输出 `null`。配置 `sampling.groups.temperature=false` / `sampling.groups.cpu_frequency=false` 时跳过采集，可用性为 `disabled_by_config`、数值 `null`。Windows 不提供温度与每核频率（恒 `null`），也不提供整体频率。
 - 采集失败（如 `/proc` 读取失败）跳过本次计量并累加 `sampling.missed_ticks`。
 
 ---
@@ -212,7 +232,7 @@
 | `measure_interval_ms` | int | 1000 | `[100, 60000]` | 计量间隔；速率型指标的采样窗口 |
 | `record_interval_sec` | int | 60 | `[1, 86400]` | 记录间隔（历史写入用；当前版本未消费） |
 | `phase_offset_sec` | int | 3 | `[0, 86400]` | 记录 tick 相位偏移，避开整点附近其它任务 |
-| `groups` | object\<string,bool\> | 全部 true | 值必须 bool | 启用的指标大类：`cpu`/`memory`/`swap`/`volumes`/`disk_io`/`network`；平台相关默认（Windows 上需要额外权限或不可靠的指标，如温度/每核频率）由对应指标票在默认配置生成器落地 |
+| `groups` | object\<string,bool\> | Linux：全部 true；Windows：`temperature`/`cpu_frequency` 为 false | 值必须 bool | 启用的指标大类：`cpu`/`memory`/`swap`/`volumes`/`disk_io`/`network`/`temperature`/`cpu_frequency`。`temperature` 与 `cpu_frequency` 属 B 组：Linux 默认开（有 hwmon / cpufreq 时）；Windows 默认关（平台上不可靠或不存在，需显式开启；本版本 Windows 采集器仍报告 `unsupported`）。缺少的键按 true 处理 |
 
 `disk`：`{watch_paths:string[], devices:string[]}`（元素非空；`watch_paths` 为空表示使用默认关注路径——共享内存目录与数据库目录所在卷）。
 
@@ -279,4 +299,5 @@
 ## 8. 范围与明确不做
 
 - **不支持容器内采集**：容器内 `/proc` 报宿主容量，会给出错误的容量基线；部署文档写明（`docs/components/dzsysmon.md`），不做 cgroup v1/v2 感知。
+- **Windows 不提供温度与每核频率**（也不提供整体频率）：Windows 上温度需 WMI/厂商驱动、每核频率无可靠 API，两者恒为不可用；本版本不实现「整体频率 + 口径标注」形态。
 - 历史查询不走帧（dzweb 只读历史库）；告警复用 `NOTIFY_UI`；进程级指标、GPU、SMART、风扇、电池、登录用户列表不在本契约范围。
