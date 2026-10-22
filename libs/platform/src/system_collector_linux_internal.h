@@ -117,11 +117,14 @@ struct MountEntry {
 /// @param normalized_path 已规范化的绝对路径
 /// @param volume_mount_points 卷采集范围内的挂载点（不含根时可无 `/`）
 /// @param root_mount_point 根挂载点（通常 "/"）
+/// @param out_reason 失败原因（可为 nullptr）：`unsupported` = 落在被过滤的挂载点上，
+///        `no_permission` / `collect_failed` = stat 失败（先尝试再判定设备）
 /// @return 匹配到的卷挂载点；std::nullopt = 路径不在任何采集范围内的卷上
 [[nodiscard]] std::optional<std::string> resolve_volume_mount_point(
     const std::string& normalized_path,
     const std::vector<std::string>& volume_mount_points,
-    const std::string& root_mount_point = "/");
+    const std::string& root_mount_point = "/",
+    std::string* out_reason = nullptr);
 
 /// 规范化路径（`weakly_canonical`：解析 `.`/`..` 与符号链接，保留不存在的尾部）。
 /// @return 规范化后的绝对路径；无法规范化（权限/IO 错误）返回 std::nullopt。

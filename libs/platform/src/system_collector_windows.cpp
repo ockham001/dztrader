@@ -779,6 +779,15 @@ std::optional<std::string> absolute_path(const std::string& path) {
     return wide_to_utf8(absolute);
 }
 
+/// 取挂载点所属的盘符根（`C:\mnt\vol2` → `C:\`；`C:` → `C:\`）。
+/// UNC（`\\server\share`）与卷 GUID 路径没有盘符根，返回空串（调用方判为不在范围）。
+std::string drive_root_of(const std::string& mount) {
+    if (mount.size() < 2 || mount[1] != ':') {
+        return {};
+    }
+    return mount.substr(0, 2) + "\\";
+}
+
 /// 用 GetVolumePathNameW 把路径解析到所在卷的挂载点（契约 sysmon §2.4）。
 /// @return 挂载点（带尾部分隔符的盘符根或目录挂载点）；失败返回 std::nullopt。
 std::optional<std::string> resolve_volume_mount(const std::string& path) {
@@ -908,12 +917,20 @@ public:
                 results.push_back(std::move(info));
                 continue;
             }
-            // 卷容量只覆盖固定盘（契约 sysmon §2.4）：落卷落在网络盘/可移动盘/UNC 上时
-            // 该挂载点不会出现在 volumes[] 里，若照实报 mount 会让整帧交叉校验失败。
+            // 卷容量只覆盖固定盘根（契约 sysmon §2.4）：落卷落在网络盘/可移动盘/UNC 上时
+            // 该挂载点不会出现在 volumes[] 里，照实报 mount 会让整帧交叉校验失败。
             // 契约要求此类报 unsupported（"卷不在采集范围"），mount 留 null。
-            const std::wstring wide_mount = utf8_to_wide(*mount);
-            const bool in_scope = wide_mount.size() >= 3 && wide_mount[1] == L':' &&
-                                  GetDriveTypeW(wide_mount.substr(0, 3).c_str()) == DRIVE_FIXED;
+            //
+            // 注意**不能**用"是否是固定盘"作为唯一判据：NTFS 支持把一个卷挂载成目录
+            // （`C:\mnt\vol2`）。这类路径的挂载点在 C: 上、GetDriveType 也是 FIXED，
+            // 但 `C:\mnt\vol2` 不等于 volumes[] 里的 `C:\`，同样会打红交叉校验。
+            // 判据统一为：挂载点的盘符根 == 该盘根的规范化形式（即挂载点就是卷根）。
+            const auto mount_root = drive_root_of(*mount);
+            const std::wstring wide_mount_root = utf8_to_wide(mount_root);
+            const bool in_scope =
+                wide_mount_root.size() >= 3 &&
+                GetDriveTypeW(wide_mount_root.substr(0, 3).c_str()) == DRIVE_FIXED &&
+                *mount == mount_root;
             if (!in_scope) {
                 info.reason = "unsupported";
                 results.push_back(std::move(info));

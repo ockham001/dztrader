@@ -778,6 +778,7 @@ public:
         for (const auto& path : paths) {
             RawWatchPathInfo info;
             info.path = path;
+            std::string reason;
             const auto normalized = system_collector_linux_internal::normalize_path(path);
             if (!normalized.has_value()) {
                 // 规范化失败：区分"不存在"与"权限不足"，不猜卷（契约 sysmon §2.4）。
@@ -788,11 +789,13 @@ public:
                 continue;
             }
             info.path = *normalized;
-            // 规范化成功不等于路径存在（weakly_canonical 保留不存在的尾部用于诊断）：
-            // 路径不存在 ⇒ 如实报 path_not_found，不得因为能匹配到父卷就报成功。
-            std::error_code exists_ec;
-            if (!std::filesystem::exists(*normalized, exists_ec) || exists_ec) {
-                info.reason = "path_not_found";
+            // 规范化成功不等于路径可访问（weakly_canonical 保留不存在的尾部用于诊断）：
+            // 不存在 ⇒ path_not_found；无权限 ⇒ no_permission（`exists()` 两者都返回
+            // false，必须用带错误码的 status 区分，契约 sysmon §2.4 的 reason 取值）。
+            struct stat path_info{};
+            if (::stat(normalized->c_str(), &path_info) != 0) {
+                info.reason =
+                    (errno == EACCES || errno == EPERM) ? "no_permission" : "path_not_found";
                 results.push_back(std::move(info));
                 continue;
             }
@@ -800,9 +803,9 @@ public:
             // （tmpfs/overlay/fuse 等，按设备号判定）报 unsupported，不得回退到 "/"
             // （契约 sysmon §2.4；容器内 shm 目录常正好在 tmpfs 上）。
             const auto mount = system_collector_linux_internal::resolve_volume_mount_point(
-                *normalized, mount_points);
+                *normalized, mount_points, /*root_mount_point=*/"/", /*out_reason=*/&reason);
             if (!mount.has_value()) {
-                info.reason = "unsupported";
+                info.reason = reason.empty() ? std::string("collect_failed") : reason;
                 results.push_back(std::move(info));
                 continue;
             }
@@ -1004,7 +1007,8 @@ std::optional<std::string> match_mount_point(std::string_view normalized_path,
 std::optional<std::string> resolve_volume_mount_point(
     const std::string& normalized_path,
     const std::vector<std::string>& volume_mount_points,
-    const std::string& root_mount_point) {
+    const std::string& root_mount_point,
+    std::string* out_reason) {
     // 先在不含根的集合里找最长前缀：命中即确定落在采集范围内的某个卷上。
     std::optional<std::string> best;
     for (const auto& mount_point : volume_mount_points) {
@@ -1026,10 +1030,17 @@ std::optional<std::string> resolve_volume_mount_point(
     struct stat path_info{};
     if (::stat(root_mount_point.c_str(), &root_info) != 0 ||
         ::stat(normalized_path.c_str(), &path_info) != 0) {
+        if (out_reason != nullptr) {
+            // stat 失败不是"卷不在采集范围"，是采集本身失败（权限/IO）。
+            *out_reason = (errno == EACCES || errno == EPERM) ? "no_permission" : "collect_failed";
+        }
         return std::nullopt;
     }
     if (root_info.st_dev != path_info.st_dev) {
-        return std::nullopt;  // 落在被过滤的挂载点上（tmpfs/overlay/fuse 等）
+        if (out_reason != nullptr) {
+            *out_reason = "unsupported";  // 落在被过滤的挂载点上（tmpfs/overlay/fuse 等）
+        }
+        return std::nullopt;
     }
     return root_mount_point;
 }
