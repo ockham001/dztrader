@@ -1,16 +1,18 @@
 // 测试夹具：契约 sysmon 快照（SysmonSnapshot）。
-// 默认形状 = #75 落地后的后端：system / cpu.total / cpu.cores / cpu.load_average /
-// cpu.context_switches / memory / swap / volumes / shm_dir 可用（每核 16 个、Linux 真实负载、
+// 默认形状 = #76 落地后的后端：system / cpu.total / cpu.cores / cpu.load_average /
+// cpu.context_switches / memory / swap / volumes / disk_io / shm_dir 可用（每核 16 个、Linux 真实负载、
 // 速率有值、内存 32 GiB + 缓存/缓冲、交换 8 GiB、三个卷其中 /data 为关注卷、
-// 共享内存目录占用有值），其余指标不可用（温度按 Linux 无传感器理由 no_sensor、
-// 每核频率按无 cpufreq 理由 unsupported，disk_io / network not_implemented）；
+// 磁盘 I/O 两块盘、共享内存目录占用有值），其余指标不可用（温度按 Linux 无传感器理由 no_sensor、
+// 每核频率按无 cpufreq 理由 unsupported，network 仍 not_implemented）；
 // watch_paths 默认给共享内存目录与数据库目录两条（落卷 /data）；
-// resourceData=true 时额外填充网卡数据并标记 network 可用（volumes / shm_dir 默认已可用），
+// resourceData=true 时额外填充网卡数据并标记 network 可用（volumes / disk_io / shm_dir 默认已可用），
 // 用于「全部可用」渲染用例；sensorData=true 时额外填充温度 / 每核频率并标记可用。
+// semantic_hints 默认携带 #76 后端在 disk_io 能力可用时发送的口径提示；用例可按需覆盖。
 import type {
   SysmonAvailabilityEntry,
   SysmonCoreFrequency,
   SysmonCpuCore,
+  SysmonDiskIoInfo,
   SysmonLoadAverage,
   SysmonMemoryInfo,
   SysmonShmDirInfo,
@@ -54,6 +56,8 @@ export interface SysmonSnapshotOptions {
   watchPaths?: SysmonWatchPathInfo[] | null
   /** 共享内存目录占用；默认 {path: /srv/dztrader/shm, 720 MiB, 12 页文件, 最旧 480s}，null = 本帧未采集 */
   shmDir?: SysmonShmDirInfo | null
+  /** 磁盘 I/O；默认两块盘（#76 后端形状），null = 本帧未采集（能力粘性） */
+  diskIo?: SysmonDiskIoInfo[] | null
   /** 填充温度 / 每核频率数据，并把 temperature / cpu.frequency 标记为可用（模拟 #73 落地后的快照） */
   sensorData?: boolean
   /** 温度传感器读数；默认 null；sensorData=true 时默认两个 Linux hwmon 读数 */
@@ -70,7 +74,7 @@ export interface SysmonSnapshotOptions {
   contextSwitchesPerSec?: number | null
   /** 每秒中断；默认 567，null = 首次采样/不可用 */
   interruptsPerSec?: number | null
-  /** 跨平台语义提示（availability.semantic_hints）；默认空对象 */
+  /** 跨平台语义提示（availability.semantic_hints）；默认携带 disk_io 口径提示 */
   semanticHints?: Record<string, string>
 }
 
@@ -124,6 +128,38 @@ const DEFAULT_SHM_DIR: SysmonShmDirInfo = {
   oldest_file_age_sec: 480,
 }
 
+/** #76 后端在 disk_io 能力可用时发送的口径提示（契约 sysmon §2.5） */
+const DEFAULT_DISK_IO_HINT =
+  'latency is the average time per completed request, queue wait included; queue depth is the '
+  + 'instantaneous in-flight request count at the measurement tick, not an interval average'
+
+/**
+ * 默认磁盘 I/O（#76 后端形状）：两块盘，吞吐 / IOPS / 延迟 / 队列深度 / 利用率均有值。
+ * 刻意按 sda、nvme0n1 的发送顺序排列，用于验证前端按 device 升序排序而不是依赖发送端顺序。
+ */
+const DEFAULT_DISK_IO: SysmonDiskIoInfo[] = [
+  {
+    device: 'sda',
+    read_bytes_per_sec: 4 * MIB,
+    write_bytes_per_sec: 2 * MIB,
+    read_iops: 128,
+    write_iops: 64,
+    latency_ms: 1.25,
+    queue_depth: 2.5,
+    utilization: 0.35,
+  },
+  {
+    device: 'nvme0n1',
+    read_bytes_per_sec: 64 * MIB,
+    write_bytes_per_sec: 32 * MIB,
+    read_iops: 2048,
+    write_iops: 1024,
+    latency_ms: 0.45,
+    queue_depth: 1.25,
+    utilization: 0.72,
+  },
+]
+
 /**
  * 默认每核数据：usage_ratio 各不相同且非 null（首次采样之外均有真实值），均未饱和。
  * 比例刻意避开整十百分比，避免「0.0%」之类字符串断言歧义。
@@ -149,6 +185,7 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
       || key === 'memory'
       || key === 'swap'
       || key === 'volumes'
+      || key === 'disk_io'
       || key === 'shm_dir'
       || (resourceAvailable && key === 'network')
       || (sensorAvailable && (key === 'temperature' || key === 'cpu.frequency'))
@@ -225,7 +262,9 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
     watch_paths: options.watchPaths !== undefined
       ? options.watchPaths
       : DEFAULT_WATCH_PATHS.map(watchPath => ({ ...watchPath })),
-    disk_io: null,
+    disk_io: options.diskIo !== undefined
+      ? options.diskIo
+      : DEFAULT_DISK_IO.map(entry => ({ ...entry })),
     network: resourceAvailable
       ? [{
           interface: 'eth0',
@@ -244,7 +283,11 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
     availability: {
       platform_description: 'Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)',
       metrics,
-      semantic_hints: { ...(options.semanticHints ?? {}) },
+      // 后端只在 disk_io 能力可用时携带该口径提示（契约 sysmon §2.5），夹具保持一致。
+      semantic_hints: {
+        ...(options.semanticHints
+          ?? (metrics.disk_io?.available === true ? { disk_io: DEFAULT_DISK_IO_HINT } : {})),
+      },
     },
   }
 }

@@ -89,6 +89,8 @@ describe('useSysmonStore', () => {
     // #75 起后端采集卷 / 共享内存目录：默认夹具二者可用
     expect(store.availabilityOf('volumes')).toEqual({ available: true })
     expect(store.availabilityOf('shm_dir')).toEqual({ available: true })
+    // #76 起后端采集磁盘 I/O：默认夹具可用
+    expect(store.availabilityOf('disk_io')).toEqual({ available: true })
     expect(store.availabilityOf('not-a-metric')).toBeUndefined()
   })
 })
@@ -678,5 +680,167 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
       shmDir: { path: '/srv/shm', total_bytes: 1 * MIB, page_files: 1, oldest_file_age_sec: -5 },
     }))
     expect(store.shmDirInfo?.oldest_file_age_sec).toBeNull()
+  })
+})
+
+describe('useSysmonStore 磁盘 I/O computed（#76，可用性驱动）', () => {
+  const MIB = 1024 ** 2
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('无快照时 diskIo 为空数组（不得伪造 0）', () => {
+    const store = useSysmonStore()
+
+    expect(store.diskIo).toEqual([])
+  })
+
+  it('默认快照（#76 形状）返回净化后的磁盘数组，并按 device 升序排序', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot())
+
+    expect(store.availabilityOf('disk_io')).toEqual({ available: true })
+    // payload 顺序为 sda、nvme0n1；store 按 device localeCompare 升序重排
+    expect(store.diskIo.map(device => device.device)).toEqual(['nvme0n1', 'sda'])
+    expect(store.diskIo[0]).toEqual({
+      device: 'nvme0n1',
+      read_bytes_per_sec: 64 * MIB,
+      write_bytes_per_sec: 32 * MIB,
+      read_iops: 2048,
+      write_iops: 1024,
+      latency_ms: 0.45,
+      queue_depth: 1.25,
+      utilization: 0.72,
+    })
+    expect(store.diskIo[1].latency_ms).toBe(1.25)
+    expect(store.diskIo[1].utilization).toBe(0.35)
+  })
+
+  it('disk_io 不可用时为空数组（不渲染陈旧数据）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      metrics: { disk_io: { available: false, reason: 'no_permission' } },
+    }))
+
+    expect(store.diskIo).toEqual([])
+  })
+
+  it('可用但本帧 null / 空数组：空数组（视图显示「暂无数据」）', () => {
+    const store = useSysmonStore()
+
+    store.applySnapshot(makeSysmonSnapshot({ diskIo: null }))
+    expect(store.availabilityOf('disk_io')).toEqual({ available: true })
+    expect(store.diskIo).toEqual([])
+
+    store.applySnapshot(makeSysmonSnapshot({ diskIo: [] }))
+    expect(store.diskIo).toEqual([])
+  })
+
+  it('净化：空 device 剔除；负 / NaN / Infinity 数值 → null；合法 0 保持 0', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      diskIo: [
+        {
+          device: '',
+          read_bytes_per_sec: 1,
+          write_bytes_per_sec: 1,
+          read_iops: 1,
+          write_iops: 1,
+          latency_ms: 1,
+          queue_depth: 1,
+          utilization: 1,
+        },
+        {
+          device: '   ',
+          read_bytes_per_sec: 1,
+          write_bytes_per_sec: 1,
+          read_iops: 1,
+          write_iops: 1,
+          latency_ms: 1,
+          queue_depth: 1,
+          utilization: 1,
+        },
+        {
+          device: ' sda ',
+          read_bytes_per_sec: -1,
+          write_bytes_per_sec: Number.NaN,
+          read_iops: Number.POSITIVE_INFINITY,
+          write_iops: -0.5,
+          latency_ms: Number.NEGATIVE_INFINITY,
+          queue_depth: -2,
+          utilization: 0.5,
+        },
+        {
+          device: 'nvme0n1',
+          read_bytes_per_sec: 0,
+          write_bytes_per_sec: 0,
+          read_iops: 0,
+          write_iops: 0,
+          latency_ms: 0,
+          queue_depth: 0,
+          utilization: 0,
+        },
+      ],
+    }))
+
+    expect(store.diskIo.map(device => device.device)).toEqual(['nvme0n1', 'sda'])
+    expect(store.diskIo[1]).toEqual({
+      device: 'sda',
+      read_bytes_per_sec: null,
+      write_bytes_per_sec: null,
+      read_iops: null,
+      write_iops: null,
+      latency_ms: null,
+      queue_depth: null,
+      utilization: 0.5,
+    })
+    // 0 是合法真实值（计数器有效但当前无 I/O），不得被净化成 null
+    expect(store.diskIo[0]).toEqual({
+      device: 'nvme0n1',
+      read_bytes_per_sec: 0,
+      write_bytes_per_sec: 0,
+      read_iops: 0,
+      write_iops: 0,
+      latency_ms: 0,
+      queue_depth: 0,
+      utilization: 0,
+    })
+  })
+
+  it('utilization 必须是 [0,1] 比率：越界 / 非有限 → null，null 保持 null 不变成 0', () => {
+    const store = useSysmonStore()
+    const base = {
+      read_bytes_per_sec: null,
+      write_bytes_per_sec: null,
+      read_iops: null,
+      write_iops: null,
+      latency_ms: null,
+      queue_depth: null,
+    }
+    store.applySnapshot(makeSysmonSnapshot({
+      diskIo: [
+        { ...base, device: 'a', utilization: 1.5 },
+        { ...base, device: 'b', utilization: -0.1 },
+        { ...base, device: 'c', utilization: Number.NaN },
+        { ...base, device: 'd', utilization: Number.POSITIVE_INFINITY },
+        { ...base, device: 'e', utilization: null },
+        { ...base, device: 'f', utilization: 0 },
+        { ...base, device: 'g', utilization: 1 },
+      ],
+    }))
+
+    expect(store.diskIo.map(device => [device.device, device.utilization])).toEqual([
+      ['a', null],
+      ['b', null],
+      ['c', null],
+      ['d', null],
+      ['e', null],
+      ['f', 0],
+      ['g', 1],
+    ])
+    // null 保持 null（视图显示「不可用」），不得变成 0
+    expect(store.diskIo[4].read_bytes_per_sec).toBeNull()
   })
 })

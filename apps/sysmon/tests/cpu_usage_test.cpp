@@ -135,26 +135,50 @@ TEST(CpuUsageTest, CoreCounterResetOnlyAffectsThatCore) {
 
 TEST(CpuUsageTest, RateDividesByElapsedSeconds) {
     // Δcount = 1000，实际经过 2 秒 → 500/s
-    const auto rate = compute_rate(1000, 2000, 2.0);
+    const auto rate = compute_rate(1000, 2000, 2.0, kCpuCounterWrapSpan);
     ASSERT_TRUE(rate.has_value());
     EXPECT_DOUBLE_EQ(rate.value(), 500.0);
 }
 
 TEST(CpuUsageTest, RateRequiresPositiveElapsed) {
-    EXPECT_EQ(compute_rate(1000, 2000, 0.0), std::nullopt);
-    EXPECT_EQ(compute_rate(1000, 2000, -1.0), std::nullopt);
+    EXPECT_EQ(compute_rate(1000, 2000, 0.0, kCpuCounterWrapSpan), std::nullopt);
+    EXPECT_EQ(compute_rate(1000, 2000, -1.0, kCpuCounterWrapSpan), std::nullopt);
 }
 
 TEST(CpuUsageTest, RateWrapsOn32BitCounters) {
     constexpr uint64_t kMax32 = std::numeric_limits<uint32_t>::max();
     // 2^32 回绕：prev=2^32-10 → 5，Δ=15；0.5 秒 → 30/s
-    const auto rate = compute_rate(kMax32 - 9, 5, 0.5);
+    const auto rate = compute_rate(kMax32 - 9, 5, 0.5, kCpuCounterWrapSpan);
     ASSERT_TRUE(rate.has_value());
     EXPECT_DOUBLE_EQ(rate.value(), 30.0);
 }
 
 TEST(CpuUsageTest, RateResetReturnsNullopt) {
-    EXPECT_EQ(compute_rate(10'000'000'000ULL, 100, 1.0), std::nullopt);
+    EXPECT_EQ(compute_rate(10'000'000'000ULL, 100, 1.0, kCpuCounterWrapSpan), std::nullopt);
+}
+
+// #76 起 counter_delta / compute_rate 增加回绕跨度参数（磁盘 I/O 的原生位宽随采样携带）。
+TEST(CounterDeltaTest, NormalIncreaseAndWrapAndReset) {
+    EXPECT_EQ(counter_delta(10, 15, kCpuCounterWrapSpan), std::optional<uint64_t>(5));
+
+    constexpr uint64_t kMax32 = std::numeric_limits<uint32_t>::max();
+    // 32 位跨度内下降 ⇒ 回绕：(2^32 − (2^32−10)) + 5 = 15
+    EXPECT_EQ(counter_delta(kMax32 - 9, 5, kCpuCounterWrapSpan), std::optional<uint64_t>(15));
+
+    // 跨度 0 = 64 位计数器：下降一律视为重置（不得套用 32 位回绕）。
+    EXPECT_EQ(counter_delta(10, 5, 0), std::nullopt);
+    // 超出跨度范围的下降 ⇒ 重置
+    EXPECT_EQ(counter_delta(10'000'000'000ULL, 100, kCpuCounterWrapSpan), std::nullopt);
+}
+
+TEST(CounterDeltaTest, RateWithExplicitWrapSpan) {
+    constexpr uint64_t kMax32 = std::numeric_limits<uint32_t>::max();
+    // 32 位跨度：Δ=15 / 0.5s = 30/s
+    const auto wrapped = compute_rate(kMax32 - 9, 5, 0.5, kCpuCounterWrapSpan);
+    ASSERT_TRUE(wrapped.has_value());
+    EXPECT_DOUBLE_EQ(*wrapped, 30.0);
+    // 跨度 0：同样的下降按重置处理，本帧不可用
+    EXPECT_EQ(compute_rate(kMax32 - 9, 5, 0.5, 0), std::nullopt);
 }
 
 }  // namespace

@@ -20,12 +20,19 @@ constexpr const char* kReasonDisabledByConfig = "disabled_by_config";
 
 /// 跨平台语义提示的键：按指标键命名（契约 sysmon §2.5）。
 constexpr const char* kHintKeyLoadAverage = "cpu.load_average";
+constexpr const char* kHintKeyDiskIo = "disk_io";
 
 /// Windows 负载代理的语义提示：明示与 Unix load average 不是同一个量，前端不得同轴比较。
 /// 英文、小写开头、无句号（与契约 reason 文案风格一致）。
 constexpr const char* kProcessorQueueHint =
     "processor queue length proxy, not a unix load average; do not compare the two on the same "
     "axis";
+
+/// 每物理盘 I/O 的口径提示（#76）：延迟与队列深度是两个容易误读为区间平均的量。
+/// 英文、小写开头、无句号。
+constexpr const char* kDiskIoHint =
+    "latency is the average time per completed request, queue wait included; queue depth is the "
+    "instantaneous in-flight request count at the measurement tick, not an interval average";
 
 void mark_available(platform::SysmonAvailability& availability, const char* key) {
     platform::SysmonAvailabilityEntry entry;
@@ -246,8 +253,15 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         snapshot.shm_dir = shm_dir;
     }
 
-    // 其余指标域：本版本未采集（契约 §2 定稿形状为 null）。
+    // 每物理盘 I/O（#76）：配置关闭优先；能力可用但本帧未采到时为 null（能力标记粘性）。
+    // 条目内的派生字段可为 null（首次采样/计数器重置），不得用 0 冒充。
     snapshot.disk_io = std::nullopt;
+    if (!disk_metrics.disk_io_disabled && disk_metrics.disk_io_collected &&
+        disk_metrics.disk_io.has_value()) {
+        snapshot.disk_io = disk_metrics.disk_io;
+    }
+
+    // 网络：本版本未采集（契约 §2 定稿形状为 null）。
     snapshot.network = std::nullopt;
 
     // availability：每帧必须覆盖全部 13 个固定键。
@@ -331,16 +345,36 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
             } else {
                 mark_unavailable(snapshot.availability, key, kReasonCollectFailed);
             }
+        } else if (metric == platform::SYSMON_METRIC_DISK_IO) {
+            // 配置关闭优先；能力可用但本帧未采到数值时仍为 available（域为 null）。
+            // 不可用原因来自采集层（Linux collect_failed / Windows no_permission），
+            // 快照构造不按平台名猜（契约 sysmon §2.5）。
+            if (disk_metrics.disk_io_disabled) {
+                mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
+            } else if (disk_metrics.disk_io_collected) {
+                mark_available(snapshot.availability, key);
+            } else {
+                const std::string& reason =
+                    disk_metrics.disk_io_unavailable_reason.has_value() &&
+                            !disk_metrics.disk_io_unavailable_reason->empty()
+                        ? *disk_metrics.disk_io_unavailable_reason
+                        : std::string(kReasonCollectFailed);
+                mark_unavailable(snapshot.availability, key, reason.c_str());
+            }
         } else {
             mark_not_implemented(snapshot.availability, key);
         }
     }
 
-    // semantic_hints：Windows 负载代理必须说明口径不同（契约 sysmon §2.5）。
+    // semantic_hints：Windows 负载代理必须说明口径不同（契约 sysmon §2.5）；
+    // 每物理盘 I/O 的延迟与队列深度口径在能力可用时随快照携带（#76）。
     snapshot.availability.semantic_hints.clear();
     if (snapshot.cpu.load_average.has_value() &&
         snapshot.cpu.load_average->semantic == platform::SYSMON_LOAD_SEMANTIC_PROCESSOR_QUEUE) {
         snapshot.availability.semantic_hints[kHintKeyLoadAverage] = kProcessorQueueHint;
+    }
+    if (disk_metrics.disk_io_collected && !disk_metrics.disk_io_disabled) {
+        snapshot.availability.semantic_hints[kHintKeyDiskIo] = kDiskIoHint;
     }
 
     return snapshot;

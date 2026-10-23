@@ -14,6 +14,7 @@
 #include "config.h"
 #include "cpu_saturation.h"
 #include "cpu_usage.h"
+#include "disk_io.h"
 #include "snapshot_builder.h"
 #include "timer.h"
 
@@ -402,6 +403,45 @@ private:
         if (shm_dir.has_value()) {
             disk_metrics_.shm_dir_collected = true;
         }
+
+        refresh_disk_io();
+    }
+
+    /// 采样一次每物理盘 I/O（#76）：原始累计计数器 + 单调时钟测得的实际经过时间驱动纯函数。
+    ///
+    /// 配置关闭优先；本帧采集失败只清数值、能力标记保持粘性；本帧新出现的设备无基线，
+    /// 派生字段为 null（契约 sysmon §2.7：不得沿用上一帧、不得用 0 冒充）。
+    /// 失败原因由采集层随结果返回（Linux collect_failed / Windows no_permission），
+    /// 快照构造直接映射，不按平台名猜（契约 sysmon §2.5）。
+    void refresh_disk_io() {
+        if (!group_enabled("disk_io")) {
+            disk_metrics_.disk_io_disabled = true;
+            disk_metrics_.disk_io = std::nullopt;
+            // 重新开启时从新基线开始：关闭期间的间隔不能被当成当前速率的计量窗口。
+            disk_io_baseline_ = {};
+            return;
+        }
+        disk_metrics_.disk_io_disabled = false;
+        const auto now = std::chrono::steady_clock::now();
+        const auto raw = collector_->collect_disk_io();
+        if (!raw.unavailable_reason.empty()) {
+            disk_metrics_.disk_io = std::nullopt;  // 本帧无值；能力标记保持粘性
+            disk_metrics_.disk_io_unavailable_reason = raw.unavailable_reason;
+            return;
+        }
+        disk_metrics_.disk_io_collected = true;
+        // 速率窗口 = 两次成功采样之间实际经过的秒数（含采集失败时段，口径见契约 §2.7）。
+        double elapsed_seconds = 0.0;
+        if (disk_io_baseline_.valid) {
+            elapsed_seconds = std::chrono::duration<double>(now - disk_io_baseline_.time).count();
+        }
+        const std::vector<platform::RawDiskIoInfo> no_baseline;
+        disk_metrics_.disk_io =
+            compute_disk_io(disk_io_baseline_.valid ? disk_io_baseline_.disks : no_baseline,
+                            raw.disks, elapsed_seconds);
+        disk_io_baseline_.disks = raw.disks;
+        disk_io_baseline_.time = now;
+        disk_io_baseline_.valid = true;
     }
 
     /// 把落卷结果与同帧卷列表对齐（契约 sysmon §7：available=true 的 watch_path 必须指向
@@ -502,13 +542,15 @@ private:
         if (current->context_switches.has_value() &&
             prev_cpu_times_->context_switches.has_value()) {
             metrics_.rates_collected = true;
-            metrics_.context_switches_per_sec = compute_rate(
-                *prev_cpu_times_->context_switches, *current->context_switches, elapsed_seconds);
+            metrics_.context_switches_per_sec =
+                compute_rate(*prev_cpu_times_->context_switches, *current->context_switches,
+                             elapsed_seconds, kCpuCounterWrapSpan);
         }
         metrics_.interrupts_per_sec = std::nullopt;
         if (current->interrupts.has_value() && prev_cpu_times_->interrupts.has_value()) {
             metrics_.interrupts_per_sec =
-                compute_rate(*prev_cpu_times_->interrupts, *current->interrupts, elapsed_seconds);
+                compute_rate(*prev_cpu_times_->interrupts, *current->interrupts, elapsed_seconds,
+                             kCpuCounterWrapSpan);
         }
 
         if (total_usage.has_value()) {
@@ -560,7 +602,7 @@ private:
         }
     }
 
-    /// 推送实时快照（RTN_SYSMON_SNAPSHOT，无 instance_id，含系统信息/CPU/温度/内存）。
+    /// 推送实时快照（RTN_SYSMON_SNAPSHOT，无 instance_id，含系统信息/CPU/温度/内存/磁盘）。
     void push_snapshot() noexcept {
         try {
             const auto snapshot =
@@ -737,6 +779,13 @@ private:
     TemperatureMetrics temperature_metrics_;
     MemorySwapMetrics memory_metrics_;
     DiskMetrics disk_metrics_;
+    /// 每物理盘 I/O 的采样基线（上一次成功采样与其单调时钟时刻）。
+    struct DiskIoBaseline {
+        std::vector<platform::RawDiskIoInfo> disks;    ///< 上次成功采样的原始计数器
+        std::chrono::steady_clock::time_point time{};  ///< 上次成功采样的单调时钟时刻
+        bool valid = false;                            ///< 是否已有基线
+    };
+    DiskIoBaseline disk_io_baseline_;
     CoreSaturationTracker saturation_tracker_;
     int64_t last_sample_unix_ms_ = 0;
     uint64_t missed_ticks_ = 0;

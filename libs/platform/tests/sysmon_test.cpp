@@ -588,5 +588,115 @@ TEST(SysmonSnapshotJsonTest, DiskDomainsRoundTrip) {
     EXPECT_EQ(*watch_back.mount, "/data");
 }
 
+// ===== #76：每物理盘 I/O（契约 sysmon §2.4、§7）=====
+
+/// 序列化：disk_io[] 的键名与可空语义必须与契约一致（null = 计数器不可用而非 0）。
+TEST(SysmonSnapshotJsonTest, DiskIoInfoSerializationKeepsContractKeys) {
+    SysmonDiskIoInfo disk;
+    disk.device = "PhysicalDrive0";
+    disk.read_bytes_per_sec = 1'000'000.0;
+    disk.write_bytes_per_sec = std::nullopt;
+    disk.read_iops = 15.0;
+    disk.write_iops = 5.0;
+    disk.latency_ms = std::nullopt;
+    disk.queue_depth = 3.0;
+    disk.utilization = 0.5;
+
+    const auto json = nlohmann::json(disk);
+    EXPECT_EQ(json["device"], "PhysicalDrive0");
+    EXPECT_DOUBLE_EQ(json["read_bytes_per_sec"].get<double>(), 1'000'000.0);
+    // 计数器不可用的字段必须显式 null（不得省略、不得用 0）。
+    EXPECT_TRUE(json["write_bytes_per_sec"].is_null());
+    EXPECT_TRUE(json["latency_ms"].is_null());
+    EXPECT_DOUBLE_EQ(json["utilization"].get<double>(), 0.5);
+
+    // 首次采样：设备条目存在、派生字段全 null，是通过契约校验的合法形状。
+    auto snap = make_snapshot();
+    auto j = nlohmann::json(snap);
+    SysmonDiskIoInfo first_frame;
+    first_frame.device = "sda";
+    j["disk_io"] = nlohmann::json::array({nlohmann::json(first_frame)});
+    j["availability"]["metrics"]["disk_io"] = {{"available", true}};
+    EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
+}
+
+TEST(SysmonSnapshotValidateTest, AcceptsDiskIoEntries) {
+    auto snap = make_snapshot();
+    auto j = nlohmann::json(snap);
+    j["disk_io"] = nlohmann::json::array({{{"device", "sda"},
+                                           {"read_bytes_per_sec", 1'000'000.0},
+                                           {"write_bytes_per_sec", 0.0},
+                                           {"read_iops", 15.0},
+                                           {"write_iops", 5.0},
+                                           {"latency_ms", 1.25},
+                                           {"queue_depth", 3.0},
+                                           {"utilization", 0.5}},
+                                          {{"device", "nvme0n1"},
+                                           {"read_bytes_per_sec", nullptr},
+                                           {"write_bytes_per_sec", nullptr},
+                                           {"read_iops", nullptr},
+                                           {"write_iops", nullptr},
+                                           {"latency_ms", nullptr},
+                                           {"queue_depth", nullptr},
+                                           {"utilization", nullptr}}});
+    j["availability"]["metrics"]["disk_io"] = {{"available", true}};
+    EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
+}
+
+TEST(SysmonSnapshotValidateTest, RejectsInvalidDiskIoEntries) {
+    const auto with_disk = [](const nlohmann::json& entry) {
+        auto snap = make_snapshot();
+        auto j = nlohmann::json(snap);
+        j["disk_io"] = nlohmann::json::array({entry});
+        j["availability"]["metrics"]["disk_io"] = {{"available", true}};
+        return j;
+    };
+    const auto valid_entry = nlohmann::json{
+        {"device", "sda"},    {"read_bytes_per_sec", 1.0}, {"write_bytes_per_sec", nullptr},
+        {"read_iops", 1.0},   {"write_iops", nullptr},     {"latency_ms", nullptr},
+        {"queue_depth", 0.0}, {"utilization", 0.5}};
+
+    {  // utilization 是比率：[0,1] 之外非法
+        auto entry = valid_entry;
+        entry["utilization"] = 1.5;
+        EXPECT_TRUE(SysmonSnapshot::validate(with_disk(entry)).has_value());
+        entry["utilization"] = -0.1;
+        EXPECT_TRUE(SysmonSnapshot::validate(with_disk(entry)).has_value());
+    }
+    {  // 速率/延迟/队列深度为负数非法
+        for (const char* key : {"read_bytes_per_sec", "write_bytes_per_sec", "read_iops",
+                                "write_iops", "latency_ms", "queue_depth"}) {
+            auto entry = valid_entry;
+            entry[key] = -1;
+            EXPECT_TRUE(SysmonSnapshot::validate(with_disk(entry)).has_value()) << key;
+        }
+    }
+    {  // device 必须非空
+        auto entry = valid_entry;
+        entry["device"] = "";
+        EXPECT_TRUE(SysmonSnapshot::validate(with_disk(entry)).has_value());
+        entry.erase("device");
+        EXPECT_TRUE(SysmonSnapshot::validate(with_disk(entry)).has_value());
+    }
+    {  // 非 null 时必须是数字
+        auto entry = valid_entry;
+        entry["read_iops"] = "fast";
+        EXPECT_TRUE(SysmonSnapshot::validate(with_disk(entry)).has_value());
+    }
+    {  // disk_io 非 null 时必须是数组
+        auto snap = make_snapshot();
+        auto j = nlohmann::json(snap);
+        j["disk_io"] = 42;
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
+    {  // 同一帧内 device 唯一（契约 sysmon §2.4、§7）
+        auto snap = make_snapshot();
+        auto j = nlohmann::json(snap);
+        j["disk_io"] = nlohmann::json::array({valid_entry, valid_entry});
+        j["availability"]["metrics"]["disk_io"] = {{"available", true}};
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
+}
+
 }  // namespace
 }  // namespace dztrader::platform

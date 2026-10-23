@@ -3,34 +3,19 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <optional>
 #include <vector>
 
 namespace dztrader::sysmon {
 namespace {
 
-/// 计算单个累计计数器的增量。
-/// @return 增量；计数器重置（64 位范围内的下降）返回 std::nullopt
-std::optional<uint64_t> counter_delta(uint64_t prev, uint64_t cur) noexcept {
-    if (cur >= prev) {
-        return cur - prev;
-    }
-    // 仅当两次值都在 32 位范围内时按 2^32 回绕计算（契约 sysmon §2.7）。
-    if (prev <= std::numeric_limits<uint32_t>::max() &&
-        cur <= std::numeric_limits<uint32_t>::max()) {
-        return (kCpuCounterWrapSpan - prev) + cur;
-    }
-    return std::nullopt;  // 64 位计数器下降 = 重置
-}
-
 /// 由一组累计计数器计算使用率 = 1 − Δidle/Δtotal，钳制到 [0, 1]。
 std::optional<double> usage_from_counters(uint64_t prev_total,
                                           uint64_t prev_idle,
                                           uint64_t cur_total,
                                           uint64_t cur_idle) noexcept {
-    const auto total_delta = counter_delta(prev_total, cur_total);
-    const auto idle_delta = counter_delta(prev_idle, cur_idle);
+    const auto total_delta = counter_delta(prev_total, cur_total, kCpuCounterWrapSpan);
+    const auto idle_delta = counter_delta(prev_idle, cur_idle, kCpuCounterWrapSpan);
     if (!total_delta.has_value() || !idle_delta.has_value() || total_delta.value() == 0) {
         return std::nullopt;
     }
@@ -40,6 +25,17 @@ std::optional<double> usage_from_counters(uint64_t prev_total,
 }
 
 }  // namespace
+
+std::optional<uint64_t> counter_delta(uint64_t prev, uint64_t cur, uint64_t wrap_span) noexcept {
+    if (cur >= prev) {
+        return cur - prev;
+    }
+    // 仅当该计数器有 32 位回绕跨度且两次值都落在跨度内时按跨度回绕计算（契约 sysmon §2.7）。
+    if (wrap_span != 0 && prev < wrap_span && cur < wrap_span) {
+        return (wrap_span - prev) + cur;
+    }
+    return std::nullopt;  // 64 位计数器下降 / 超出跨度 = 计数器重置
+}
 
 std::optional<double> compute_cpu_usage(const platform::RawCpuTimes& prev,
                                         const platform::RawCpuTimes& cur) noexcept {
@@ -73,11 +69,14 @@ std::vector<std::optional<double>> compute_core_usages(
     return usages;
 }
 
-std::optional<double> compute_rate(uint64_t prev, uint64_t cur, double elapsed_seconds) noexcept {
+std::optional<double> compute_rate(uint64_t prev,
+                                   uint64_t cur,
+                                   double elapsed_seconds,
+                                   uint64_t wrap_span) noexcept {
     if (!(elapsed_seconds > 0.0)) {
         return std::nullopt;
     }
-    const auto delta = counter_delta(prev, cur);
+    const auto delta = counter_delta(prev, cur, wrap_span);
     if (!delta.has_value()) {
         return std::nullopt;  // 计数器重置：本次速率不可用
     }

@@ -365,18 +365,19 @@ TEST(SnapshotBuilderTest, AvailabilityCoversAllThirteenKeys) {
         EXPECT_EQ(entry.reason, std::nullopt) << key;
     }
     // #75 起 volumes/shm_dir 已实现：本用例未传盘测结果（能力从未确认）→ collect_failed。
-    for (const char* key : {platform::SYSMON_METRIC_VOLUMES, platform::SYSMON_METRIC_SHM_DIR}) {
+    for (const char* key : {platform::SYSMON_METRIC_VOLUMES, platform::SYSMON_METRIC_SHM_DIR,
+                            platform::SYSMON_METRIC_DISK_IO}) {
         const auto& entry = snapshot.availability.metrics.at(key);
         EXPECT_FALSE(entry.available) << key;
         ASSERT_TRUE(entry.reason.has_value()) << key;
         EXPECT_EQ(entry.reason.value(), "collect_failed") << key;
     }
-    // 其余 2 键仍未实现：available=false + reason="not_implemented"
-    for (const char* key : {platform::SYSMON_METRIC_DISK_IO, platform::SYSMON_METRIC_NETWORK}) {
-        const auto& entry = snapshot.availability.metrics.at(key);
-        EXPECT_FALSE(entry.available) << key;
-        ASSERT_TRUE(entry.reason.has_value()) << key;
-        EXPECT_EQ(entry.reason.value(), "not_implemented") << key;
+    // 网络仍未实现：available=false + reason="not_implemented"
+    {
+        const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_NETWORK);
+        EXPECT_FALSE(entry.available);
+        ASSERT_TRUE(entry.reason.has_value());
+        EXPECT_EQ(entry.reason.value(), "not_implemented");
     }
 }
 
@@ -735,6 +736,7 @@ public:
     std::optional<std::vector<platform::RawVolumeInfo>> volumes;
     std::vector<platform::RawWatchPathInfo> watch_paths;
     std::optional<platform::RawShmDirInfo> shm_dir;
+    platform::RawDiskIoSnapshot disk_io;
 
     platform::RawSystemInfo collect_system_info() override { return info; }
     std::optional<platform::RawCpuTimes> collect_cpu_times() override { return times; }
@@ -760,6 +762,7 @@ public:
         (void)shm_dir_path;
         return shm_dir;
     }
+    platform::RawDiskIoSnapshot collect_disk_io() override { return disk_io; }
 };
 
 TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {
@@ -798,7 +801,7 @@ TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {
     EXPECT_DOUBLE_EQ(*core_usages[1], 0.25);
 
     const auto switches_rate =
-        compute_rate(*first->context_switches, *second->context_switches, 2.0);
+        compute_rate(*first->context_switches, *second->context_switches, 2.0, kCpuCounterWrapSpan);
     ASSERT_TRUE(switches_rate.has_value());
     EXPECT_DOUBLE_EQ(*switches_rate, 300.0);
 
@@ -810,7 +813,8 @@ TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {
     }
     metrics.rates_collected = true;
     metrics.context_switches_per_sec = switches_rate;
-    metrics.interrupts_per_sec = compute_rate(*first->interrupts, *second->interrupts, 2.0);
+    metrics.interrupts_per_sec =
+        compute_rate(*first->interrupts, *second->interrupts, 2.0, kCpuCounterWrapSpan);
     fake.load = platform::RawLoadAverage{0.4, 0.5, 0.6, "load_average"};
     const auto load = fake.collect_load_average();
     ASSERT_TRUE(load.has_value());
@@ -982,6 +986,144 @@ TEST(SnapshotBuilderTest, DiskDomainsUnavailableBeforeFirstCollection) {
         ASSERT_TRUE(entry.reason.has_value()) << key;
         EXPECT_EQ(*entry.reason, "collect_failed") << key;
     }
+}
+
+// ===== #76：每物理盘 I/O（契约 sysmon §2.4、§2.5、§2.7）=====
+
+/// #76 落地后的典型盘测数据：两块物理盘、首帧之外各派生字段均有值。
+DiskMetrics make_disk_io_metrics() {
+    DiskMetrics disk;
+    disk.disk_io_collected = true;
+    disk.disk_io = std::vector<platform::SysmonDiskIoInfo>{
+        platform::SysmonDiskIoInfo{.device = "sda",
+                                   .read_bytes_per_sec = 1'000'000.0,
+                                   .write_bytes_per_sec = 2'000'000.0,
+                                   .read_iops = 15.0,
+                                   .write_iops = 5.0,
+                                   .latency_ms = 1.25,
+                                   .queue_depth = 3.0,
+                                   .utilization = 0.5},
+        platform::SysmonDiskIoInfo{.device = "nvme0n1",
+                                   .read_bytes_per_sec = 0.0,
+                                   .write_bytes_per_sec = 0.0,
+                                   .read_iops = 0.0,
+                                   .write_iops = 0.0,
+                                   .latency_ms = std::nullopt,
+                                   .queue_depth = 0.0,
+                                   .utilization = 0.0},
+    };
+    return disk;
+}
+
+TEST(SnapshotBuilderTest, DiskIoEncodedWhenCollected) {
+    const auto snapshot =
+        build_with(make_linux_info(), make_full_metrics(), {}, {}, make_disk_io_metrics());
+
+    ASSERT_TRUE(snapshot.disk_io.has_value());
+    ASSERT_EQ(snapshot.disk_io->size(), 2U);
+    const auto& first = (*snapshot.disk_io)[0];
+    EXPECT_EQ(first.device, "sda");
+    EXPECT_DOUBLE_EQ(first.read_bytes_per_sec.value(), 1'000'000.0);
+    EXPECT_DOUBLE_EQ(first.utilization.value(), 0.5);
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO).available);
+    // 口径提示随快照携带（契约 sysmon §2.5）：延迟是每请求平均，队列深度是瞬时值。
+    const auto hint = snapshot.availability.semantic_hints.at("disk_io");
+    EXPECT_FALSE(hint.empty());
+    EXPECT_NE(hint.find("latency"), std::string::npos);
+    EXPECT_NE(hint.find("queue depth"), std::string::npos);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, DiskIoFirstFrameValuesStayNullNotZero) {
+    // 首次采样：设备条目存在但派生字段全为 null（契约 sysmon §2.7：不得用 0 冒充）。
+    DiskMetrics disk;
+    disk.disk_io_collected = true;
+    platform::SysmonDiskIoInfo first_frame;
+    first_frame.device = "sda";
+    disk.disk_io = std::vector<platform::SysmonDiskIoInfo>{first_frame};
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
+
+    ASSERT_TRUE(snapshot.disk_io.has_value());
+    ASSERT_EQ(snapshot.disk_io->size(), 1U);
+    EXPECT_FALSE((*snapshot.disk_io)[0].read_bytes_per_sec.has_value());
+    EXPECT_FALSE((*snapshot.disk_io)[0].latency_ms.has_value());
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO).available);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, DiskIoCollectedButNoReadingKeepsAvailable) {
+    // 能力已确认（粘性）但本帧没采到：域为 null，可用性仍 available（契约 §2.5）。
+    DiskMetrics disk;
+    disk.disk_io_collected = true;
+    disk.disk_io = std::nullopt;
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
+
+    EXPECT_EQ(snapshot.disk_io, std::nullopt);
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO).available);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, DiskIoEmptyArrayWhenNoPhysicalDisk) {
+    // 采集成功但本机没有物理盘：空数组（不是 null，也不是不可用）。
+    DiskMetrics disk;
+    disk.disk_io_collected = true;
+    disk.disk_io = std::vector<platform::SysmonDiskIoInfo>{};
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
+
+    ASSERT_TRUE(snapshot.disk_io.has_value());
+    EXPECT_TRUE(snapshot.disk_io->empty());
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO).available);
+}
+
+TEST(SnapshotBuilderTest, DiskIoUnavailableReasonComesFromCollector) {
+    // 不可用原因来自采集层（Linux collect_failed / Windows no_permission），
+    // 快照构造不按平台名猜（契约 sysmon §2.5）。能力从未确认且采集层未给原因时兜底
+    // collect_failed。
+    const auto default_snapshot = build_with(make_linux_info(), make_full_metrics());
+    {
+        const auto& entry =
+            default_snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO);
+        EXPECT_FALSE(entry.available);
+        ASSERT_TRUE(entry.reason.has_value());
+        EXPECT_EQ(entry.reason.value(), "collect_failed");
+        EXPECT_EQ(default_snapshot.disk_io, std::nullopt);
+    }
+
+    DiskMetrics disk;
+    disk.disk_io_unavailable_reason = "no_permission";
+    const auto windows_snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
+    {
+        const auto& entry =
+            windows_snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO);
+        EXPECT_FALSE(entry.available);
+        ASSERT_TRUE(entry.reason.has_value());
+        EXPECT_EQ(entry.reason.value(), "no_permission");
+        EXPECT_EQ(windows_snapshot.disk_io, std::nullopt);
+    }
+}
+
+TEST(SnapshotBuilderTest, DiskIoSemanticHintOnlyWhenCapabilityAvailable) {
+    // 口径提示只在能力可用时携带：能力不可用时没有数值可解释（契约 sysmon §2.5）。
+    const auto unavailable_snapshot = build_with(make_linux_info(), make_full_metrics());
+    EXPECT_FALSE(unavailable_snapshot.availability.semantic_hints.contains("disk_io"));
+
+    const auto available_snapshot =
+        build_with(make_linux_info(), make_full_metrics(), {}, {}, make_disk_io_metrics());
+    ASSERT_TRUE(available_snapshot.availability.semantic_hints.contains("disk_io"));
+    EXPECT_FALSE(available_snapshot.availability.semantic_hints.at("disk_io").empty());
+}
+
+TEST(SnapshotBuilderTest, DiskIoDisabledByConfigWinsOverCollected) {
+    DiskMetrics disk = make_disk_io_metrics();
+    disk.disk_io_disabled = true;
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
+
+    EXPECT_EQ(snapshot.disk_io, std::nullopt);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO);
+    EXPECT_FALSE(entry.available);
+    ASSERT_TRUE(entry.reason.has_value());
+    EXPECT_EQ(entry.reason.value(), "disabled_by_config");
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 
 }  // namespace

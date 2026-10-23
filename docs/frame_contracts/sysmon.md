@@ -24,7 +24,7 @@
 
 ## 2. 快照（RTN_SYSMON_SNAPSHOT）
 
-**语义**：推送当前实时快照。当前版本（#75）填系统信息与 CPU 区块（总量、每核与饱和标记、系统负载、上下文切换/中断速率、每核频率）、温度、内存与交换、卷容量与关注路径落卷、共享内存目录占用；其余域按本文档定稿的形状输出 `null` 并在可用性映射中标记不可用。已列出的指标域后续只填值、**不改形状**（新增指标类别属 additive 扩展，按总则 §11.3 同步契约、类型与前端 schema；消费方忽略未知字段）。
+**语义**：推送当前实时快照。当前版本（#76）填系统信息与 CPU 区块（总量、每核与饱和标记、系统负载、上下文切换/中断速率、每核频率）、温度、内存与交换、卷容量与关注路径落卷、共享内存目录占用、每物理盘 I/O；网络域按本文档定稿的形状输出 `null` 并在可用性映射中标记不可用。已列出的指标域后续只填值、**不改形状**（新增指标类别属 additive 扩展，按总则 §11.3 同步契约、类型与前端 schema；消费方忽略未知字段）。
 
 **来源识别**：帧头无 `instance_id`（形态 4、发送方固定 `dzsysmon`），按总则 §5 在 payload 中显式携带 `source`。
 
@@ -115,7 +115,16 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - 解析义务：先规范化路径（`weakly_canonical`：解析 `.`/`..` 与符号链接，保留不存在的尾部用于诊断），再对卷挂载点做最长前缀匹配；Windows 匹配大小写不敏感、分隔符统一（`/` 与 `\` 等价），Linux 大小写敏感。
 - 路径不存在或解析不到任何卷 ⇒ `available=false` + `reason`（`path_not_found`）；权限不足 ⇒ `no_permission`；路径所在卷不在采集范围（网络盘、可移动盘、光驱等非固定盘）⇒ `unsupported`；其它解析失败 ⇒ `collect_failed`。**不得**在解析失败时猜一个卷或回退到 `/`。
 
-`disk_io[]`：`{device:string, read_bytes_per_sec, write_bytes_per_sec, read_iops, write_iops, latency_ms, queue_depth, utilization}`，速率/计量字段均为 `number | null`（计数器不可用时为 `null` 而非 0）。
+`disk_io[]`：每物理盘 I/O 派生值。字段为 `{device:string, read_bytes_per_sec, write_bytes_per_sec, read_iops, write_iops, latency_ms, queue_depth, utilization}`；除 `device` 外均为 `number | null`——**计数器不可用时为 `null` 而非 0**（契约 §2.7）。
+
+- `device` 为设备稳定标识：Linux 为内核块设备名（`sda` / `nvme0n1` 等**整盘**名，不含分区）；Windows 为 `PhysicalDrive<N>`（物理盘编号）。帧内唯一，可在帧间变化（热插拔/盘号增减）。
+- 采集范围只含**整块物理盘**：Linux 以 `/sys/block` 的整盘条目为准（分区天然不在其中），并排除 loop/ram/zram 内存与回环设备、`dm-*`/`md*`/bcache 聚合设备（其 I/O 已计入底层物理盘，单列会重复计数）与 `nbd`/`rbd`/`drbd` 网络块设备、`sr`/`sg`/`fd`/`pktcdvd` 光学/软驱/包写入等非存储设备；Windows 遍历 `PhysicalDrive0..PhysicalDrive32`，不存在的盘号与不支持计数器的盘（含无权限）跳过。**盘符/卷 × 物理盘的映射不在本版本范围**（Windows `device` 只有物理盘编号，见 §8）。
+- `read_bytes_per_sec` / `write_bytes_per_sec`：吞吐（字节/秒）；`read_iops` / `write_iops`：每秒完成的读/写请求数。四者 = Δ累计计数器 / Δ实际经过秒数（§2.7）。
+- `latency_ms`：**平均每完成请求的驻留时间（含排队）**，单位毫秒 = Δ(读服务时间 + 写服务时间) / Δ(读完成数 + 写完成数)。窗口内没有完成的请求时为 `null`（无定义，不是 0）。
+- `queue_depth`：**采样时刻的在途请求数**（瞬时 gauge，如 Linux `ios_in_progress` / Windows `QueueDepth`），**不是区间平均队列深度**；平台不提供该读数时为 `null`。
+- `utilization`：设备忙时间占比 = Δ忙时间 / Δt，钳制到 `[0,1]`；平台不提供忙时间、或 Δ忙时间超过计量窗口容忍上限（计数器口径异常，如系统时间跳变）时为 `null`（不钳成 100% 冒充满载）。
+- 首帧（无基线）**全部派生字段为 `null`**（含瞬时 gauge `queue_depth`：首次采样整块不可用，不得用 0 冒充）。本帧新出现的设备同样在没有基线时除 `device` 外全部 `null`；消失的设备不再输出。
+- 采集失败与不可用：Linux `/proc/diskstats` 或 `/sys/block` 不可读 ⇒ 整域 `null` + `collect_failed`；Windows 一个盘的性能计数器都读不到（无管理员权限、性能计数器未开启或盘不支持）⇒ 整域 `null` + `no_permission`（`no_permission` 的既有语义即"计数器需特权/未开启"，**Windows 上不可用是常态而非异常**）。单个盘读不到只是不进入数组，不改写整体可用性；空数组 = 采集成功但本机无物理盘（仅 Linux 会出现；Windows 上 `CreateFile` 对"盘不存在"与"无权限"都返回同一个失败，无法区分，故恒以 `null` + `no_permission` 表示不可用）。
 
 `network[]`：`{interface:string, rx_bytes_total:int, tx_bytes_total:int, rx_bytes_per_sec, tx_bytes_per_sec, rx_errors_per_sec, tx_errors_per_sec, rx_drops_per_sec, tx_drops_per_sec (均 number|null), is_virtual:bool}`。
 
@@ -136,7 +145,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 |------|------|------|
 | `platform_description` | string | 人类可读平台描述，**Windows 必须含 build 号**（如 `"Windows 10 Pro (build 19045)"`） |
 | `metrics` | object | 按指标可用性映射，键集合见下；每个值为 `{available:bool, reason?:string}`；`available=false` 时 `reason` 必填 |
-| `semantic_hints` | object | 跨平台语义提示（key → 文案），key 取指标键。当前版本定义 `cpu.load_average`：Windows 处理器队列长度代理量不是 Unix load average，不得同轴比较。无提示时为空对象 |
+| `semantic_hints` | object | 跨平台语义提示（key → 文案），key 取指标键。当前版本定义 `cpu.load_average`（Windows 处理器队列长度代理量不是 Unix load average，不得同轴比较）与 `disk_io`（延迟是每完成请求的平均驻留时间、含排队；队列深度是采样时刻的在途请求数，不是区间平均；该提示在 `disk_io` 能力可用时携带）。无提示时为空对象 |
 
 `metrics` 键集合（固定，发送方每帧必须覆盖全部键）：
 
@@ -150,7 +159,9 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - `collect_failed` —— 本次采集失败（能力存在但读不到；下一次采样可能恢复）
 - `disabled_by_config` —— 该指标类别已被配置关闭（`sampling.groups` 中对应开关为 false）
 
-> 当前版本（#75）实现 `system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`memory`、`swap`、`volumes`、`shm_dir`；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon）——无 cpufreq 时 `cpu.frequency` 为 `unsupported`，无 hwmon 传感器时为 `temperature` = `no_sensor`；Windows 上两者不提供（默认配置关闭对应 B 组开关，故为 `disabled_by_config`；用户显式开启后采集器恒报 `unsupported`），也不提供整体频率。无交换分区/无页面文件的机器上 `swap` 为 `unsupported`。`disk_io` / `network` 固定为 `available=false` + `reason="not_implemented"`，对应域输出 `null`。
+> 当前版本（#76）实现 `system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`memory`、`swap`、`volumes`、`shm_dir`、`disk_io`；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon）——无 cpufreq 时 `cpu.frequency` 为 `unsupported`，无 hwmon 传感器时为 `temperature` = `no_sensor`；Windows 上两者不提供（默认配置关闭对应 B 组开关，故为 `disabled_by_config`；用户显式开启后采集器恒报 `unsupported`），也不提供整体频率。无交换分区/无页面文件的机器上 `swap` 为 `unsupported`。`network` 固定为 `available=false` + `reason="not_implemented"`，对应域输出 `null`。
+>
+> `disk_io` 的可用性同为**能力粘性**：一次成功枚举到物理盘后 `available` 保持 `true`，此后单帧读取失败只把域置 `null`；**单个盘读不到不改写整体可用性**（读不到的盘不进数组）。一个盘都读不到时：Linux 为 `collect_failed`，Windows 为 `no_permission`（计数器需特权/未开启，契约 §2.4）。配置关闭 `sampling.groups.disk_io` 时优先输出 `available=false` + `reason="disabled_by_config"`、`disk_io` 为 `null`。
 >
 > `memory` / `swap` 的可用性同为**能力粘性**：一次成功读到后可用性保持 `true`；`swap` 还须确认本机确有交换/页面文件（`total_bytes > 0`），否则为 `available=false` + `reason="unsupported"` 且 payload 输出 `total_bytes=0` 的对象。此后单帧读取失败只把对应域置 `null`，不改写可用性。配置关闭 `sampling.groups.memory` / `sampling.groups.swap` 时优先输出 `available=false` + `reason="disabled_by_config"`，对应域为 `null`；前端内存/交换区块按可用性显示明确空态（不显示 0）。
 >
@@ -211,7 +222,14 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
     {"path": "/srv/dztrader/db", "mount": "/data", "available": true},
     {"path": "/srv/dztrader/missing", "mount": null, "available": false, "reason": "path_not_found"}
   ],
-  "disk_io": null,
+  "disk_io": [
+    {"device": "sda", "read_bytes_per_sec": 1048576.0, "write_bytes_per_sec": 524288.0,
+     "read_iops": 15.0, "write_iops": 5.0, "latency_ms": 1.25, "queue_depth": 3,
+     "utilization": 0.5},
+    {"device": "nvme0n1", "read_bytes_per_sec": 0.0, "write_bytes_per_sec": 0.0,
+     "read_iops": 0.0, "write_iops": 0.0, "latency_ms": null, "queue_depth": 0,
+     "utilization": 0.0}
+  ],
   "network": null,
   "shm_dir": {"path": "/srv/dztrader/shm", "total_bytes": 754974720, "page_files": 12, "oldest_file_age_sec": 480},
   "availability": {
@@ -226,12 +244,14 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
       "memory": {"available": true},
       "swap": {"available": true},
       "volumes": {"available": true},
-      "disk_io": {"available": false, "reason": "not_implemented"},
+      "disk_io": {"available": true},
       "network": {"available": false, "reason": "not_implemented"},
       "shm_dir": {"available": true},
       "temperature": {"available": true}
     },
-    "semantic_hints": {}
+    "semantic_hints": {
+      "disk_io": "latency is the average time per completed request, queue wait included; queue depth is the instantaneous in-flight request count at the measurement tick, not an interval average"
+    }
   }
 }
 ```
@@ -240,7 +260,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 - 速率与百分比均由纯函数从**原始累计计数器**差值计算（`SystemCollector` 只返回原始计数器，不含增量/百分比）。
 - **首次采样返回不可用**（`null`），不得返回 0。
-- 计数器回绕：仅当上次与本次值均落在 32 位范围内且本次小于上次时按 32 位回绕计算；其余下降视为计数器重置，本次输出不可用（下一采样周期重建基线）。
+- 计数器回绕：仅当上次与本次值均落在该计数器的位宽跨度内且本次小于上次时按跨度回绕计算（默认 32 位；磁盘 I/O 的时间计数器是「32 位毫秒计数器换算为微秒」，跨度见下条）；其余下降视为计数器重置，本次输出不可用（下一采样周期重建基线）。
 - Linux 忙闲口径：`iowait` 不计入忙；`guest`/`guest_nice` 不重复计入总量（已含于 user/nice）。
 - 两次采样间隔内 CPU 使用率 = `1 − Δidle/Δtotal`，结果钳制到 `[0,1]`。
 - 每核使用率：与总量同公式；核序列长度或 index 序列变化（热插拔 / 处理器组变化）视为基线失效，本次每核使用率全部 `null` 并重建基线。
@@ -248,9 +268,16 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - **饱和核判定**：单核使用率连续 `alerts.cpu_sustain_samples` 次采样 **≥** `alerts.cpu_sustain_used_pct / 100` 即标记 `saturated=true`；任一采样严格低于阈值即清零解除；不可用样本（`usage_ratio=null`）不改变连续计数；核序列变化重置全部计数。阈值与连续次数取自当前配置（运行期修改语义随配置票 #81）。
 - Windows >64 逻辑核的机器上每核序列可能不可用（处理器组限制）：此时 `cpu.cores` 标记不可用、中断累计计数输出 `null`；不得用组内数据冒充全系统每核序列。
 - **本帧数值不得沿用上一帧**：某项能力可用但本帧数值未就绪或采集失败时，对应字段输出 `null`——每核序列整体未采到时 `cpu.cores` 保留已知核 index 条目、`usage_ratio` 全部 `null`、`saturated` 全部 `false`（从未获得过序列时 `cpu.cores` / `saturated_cores` 为空数组）；`availability` 的能力标记保持粘性，消费方据此显示"不可用"而不是旧数据。单个核的计数器不可用时该核 `usage_ratio=null`，不改变饱和判定的连续计数。
+- **每物理盘 I/O 的计算语义**（契约 §2.4 `disk_io[]`）：
+  - 采集层只给原始累计计数器：Linux 读 `/proc/diskstats`（扇区数按内核 ABI 固定 ×512 得字节；`ms_reading` / `ms_writing` / `io_ticks` 是 32 位毫秒计数器，换算为微秒后上报）；Windows 读 `IOCTL_DISK_PERFORMANCE` 的 `DISK_PERFORMANCE`（`ReadTime`/`WriteTime`/`IdleTime` 为 100ns 累计值，换算为微秒；`QueryTime` 是查询时刻的系统时间锚点，`QueryTime − IdleTime` 的差值才是累计忙时间）。
+  - 派生值全部由纯函数从两次采样差值计算：吞吐/IOPS = Δ计数器 / Δ实际经过秒数（单调时钟测量）；`latency_ms` = Δ(读+写服务时间) / Δ(读+写完成数)；`utilization` = Δ忙时间 / Δt；`queue_depth` 直接取本帧瞬时读数（不做差值）。
+  - **首次采样（无基线）输出全部派生字段 `null`**，不得用 0 冒充。基线按 `device` 匹配：本帧新出现的设备等同首次采样；消失的设备不再输出。
+  - **计数器回绕按原生位宽处理**：采集层在每条原始计数器上携带该设备的回绕跨度（数据驱动，消费方不按平台分支）。计数类：Windows `ReadCount`/`WriteCount` 为 32 位 DWORD（跨度 `2^32`），Linux 为 64 位（跨度 0 = 不回绕，下降即重置）；时间类（微秒）：Linux 的 `ms_reading`/`ms_writing`/`io_ticks` 是 32 位毫秒计数器（跨度 `2^32 × 1000`），Windows 的 100ns 计数器为 64 位（0）；字节类：两平台均为 64 位（0）。仅当上次与本次值均落在跨度内且本次更小时按跨度回绕计算；其余下降视为计数器重置，本帧该字段 `null` 并在下一采样周期重建基线。32 位计数器上「回绕」与「重置」数值形态相同、无法区分，统一按回绕处理（与 CPU 计数器同一口径）；由此产生的单帧尖峰由下一帧的自然恢复收敛。
+  - **采样窗口**：速率的分母是两次**成功采样**之间实际经过的时间；采集失败期间基线不推进，因此恢复后的首帧速率是跨越该缺口的窗口平均（口径明确，非伪造瞬时值）。磁盘 I/O 采集失败只把该域置 `null`，**不累加** `sampling.missed_ticks`（该标记表示计量 tick 整体被跳过，不是单个指标域失败）。
+  - `utilization` 结果钳制到 `[0,1]`；若 Δ忙时间超过窗口的 1.5 倍，视为计数器口径异常（如 Windows `QueryTime` 受系统时间跳变影响），本帧输出 `null`，不得钳成 100%。窗口内完成请求数为 0 时 `latency_ms` 为 `null`（无定义）。
 - **温度 / 每核频率采集语义**：两者都是瞬时 gauge，不做差值或聚合（温度单位为摄氏度，频率四舍五入到整数 MHz）；传感器集合与核集合可在帧间变化，按本次读数输出，不沿用上一帧。读取失败的单个传感器/核不进入数组；能力可用但本帧一个都没读到时输出 `null`。配置 `sampling.groups.temperature=false` / `sampling.groups.cpu_frequency=false` 时跳过采集，可用性为 `disabled_by_config`、数值 `null`。Windows 不提供温度与每核频率（恒 `null`），也不提供整体频率。
 - **内存 / 交换采集语义**：两者都是瞬时 gauge，每次计量刷新，不做差值或聚合，不沿用上一帧。Linux 读 `/proc/meminfo`（`MemTotal`/`MemAvailable`/`Buffers`/`Cached`/`SReclaimable`/`SwapTotal`/`SwapFree`）；`MemAvailable` 缺失、为 0 或大于总量时按 `MemFree + Buffers + Cached + SReclaimable` 回退并钳制到 `[0, total]`，异常与回退均记日志；回退也无法计算时本次内存采集失败（该域 `null`，可用性按能力粘性）。Windows 读 `GetPerformanceInfo`（`PhysicalTotal`/`PhysicalAvailable`/`SystemCache`/`CommitLimit`/`CommitTotal`）。
-- 采集失败（如 `/proc` 读取失败）跳过本次计量并累加 `sampling.missed_ticks`。
+- **计量 tick 级**采集失败（如 `/proc/stat` 读取失败）跳过本次计量并累加 `sampling.missed_ticks`；单个指标域（如磁盘 I/O）采集失败只把该域置 `null`，不累加（该标记表示 tick 整体被跳过）。
 
 ---
 
@@ -333,6 +360,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - `used_bytes` 必须等于 `total_bytes − available_bytes`（`memory`）；`used_bytes ≤ total_bytes`（`memory`/`swap`/`volumes`）；`memory.cached_bytes` / `memory.buffers_bytes` 缺失或 `null` 合法，出现时须为非负整数且不大于 `total_bytes`。
 - `volumes[]`：`mount` 非空且帧内唯一；`available=true` 时 `total_bytes`/`used_bytes` 必须为非负整数且 `used_bytes ≤ total_bytes`、`used_ratio` 为 `[0,1]` 或 `null`，且**不得**出现 `reason`；`available=false` 时 `reason` 必须非空、`total_bytes`/`used_bytes`/`used_ratio` **必须**为 `null`（禁止用 0 冒充）。
 - `watch_paths[]`：`path` 非空且帧内唯一；`available=true` 时 `mount` 必须非空且不得出现 `reason`，且**当同帧 `volumes` 非 `null` 时** `mount` 必须为 `volumes[].mount` 之一（`volumes` 为 `null` 时不交叉校验——配置关闭卷采集后落卷信息仍要能给告警用）；`available=false` 时 `mount` 必须为 `null` 且 `reason` 必须非空。
+- `disk_io[]`：`device` 非空且帧内唯一；除 `device` 外的七个字段为 `null` 或数字——吞吐/IOPS/延迟/队列深度为 `>= 0`，`utilization` 为 `[0,1]` 内的比率或 `null`（首帧全 null 的条目合法）。
 - 比率为 `[0,1]`；字节/计数为非负整数；`boot_time_unix_sec`/`uptime_sec` 非负。
 - `availability.metrics` 中 `available=false` 时 `reason` 必须存在且非空；`available=true` 时不得出现 `reason`。
 - 未知字段忽略（前向兼容）。
@@ -343,4 +371,6 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 - **不支持容器内采集**：容器内 `/proc` 报宿主容量，会给出错误的容量基线；部署文档写明（`docs/components/dzsysmon.md`），不做 cgroup v1/v2 感知。
 - **Windows 不提供温度与每核频率**（也不提供整体频率）：Windows 上温度需 WMI/厂商驱动、每核频率无可靠 API，两者恒为不可用；本版本不实现「整体频率 + 口径标注」形态。
+- **磁盘 I/O 为整盘粒度**：不提供分区级 I/O。本版本的 `device` 只有物理盘标识（Windows `PhysicalDrive<N>`）；**卷/盘符 ↔ 物理盘映射**由后续票 #103 提供（ADR 0024 Consequences 的映射要求，本票不交付）。Windows 依赖性能计数器（diskperf）与访问权限，读不到时按 §2.4 报告不可用，不做提权或反复重试。
+- **磁盘 I/O 无历史/告警消费**：本契约只定义实时快照域；历史写入（#78）与阈值告警（#80）的消费范围随各自票定义。
 - 历史查询不走帧（dzweb 只读历史库）；告警复用 `NOTIFY_UI`；进程级指标、GPU、SMART、风扇、电池、登录用户列表不在本契约范围。

@@ -153,6 +153,59 @@ struct RawSwapInfo {
     uint64_t free_bytes = 0;
 };
 
+/// Windows 物理盘计数类累计计数器（`ReadCount`/`WriteCount`，DWORD）的 32 位回绕跨度。
+inline constexpr uint64_t DISK_IO_COUNT_WRAP_SPAN_32 = 1ULL << 32;
+
+/// Linux 毫秒累计计数器（`ms_reading`/`ms_writing`/`io_ticks`）换算为微秒后的回绕跨度。
+inline constexpr uint64_t DISK_IO_TIME_WRAP_SPAN_US = (1ULL << 32) * 1000ULL;
+
+/// 原始每物理盘 I/O 累计计数器（契约 sysmon §2.4；吞吐/IOPS/延迟/队列深度由纯函数计算）。
+///
+/// 时间字段统一为**微秒**：Linux `/proc/diskstats` 的毫秒计数器 ×1000，
+/// Windows `DISK_PERFORMANCE` 的 100ns 计数器 ÷10。
+///
+/// 回绕按计数器**原生位宽**处理；位宽随平台不同，因此作为数据随采样返回，
+/// 消费方按 `count_wrap_span` / `time_wrap_span` 处理而不按平台分支（契约 sysmon §2.7）：
+/// - 计数类（`read_count`/`write_count`）：Windows 为 32 位 DWORD，Linux 为 64 位；
+/// - 时间类（微秒）：Linux 的毫秒计数器为 32 位，Windows 的 100ns 计数器为 64 位；
+/// - 字节类（`read_bytes`/`write_bytes`）：两平台均为 64 位（不按回绕处理）。
+struct RawDiskIoInfo {
+    /// 设备标识：Linux 为内核块设备名（`sda` / `nvme0n1`）；Windows 为 `PhysicalDrive0`
+    /// 形式（与参考实现一致的物理盘编号，不含 `\\.\` 前缀）。
+    std::string device;
+    uint64_t read_count = 0;     ///< 累计完成的读请求数
+    uint64_t write_count = 0;    ///< 累计完成的写请求数
+    uint64_t read_bytes = 0;     ///< 累计读取字节数
+    uint64_t write_bytes = 0;    ///< 累计写入字节数
+    uint64_t read_time_us = 0;   ///< 累计读请求服务时间（微秒）
+    uint64_t write_time_us = 0;  ///< 累计写请求服务时间（微秒）
+    /// 累计设备忙时间（微秒，消费方只使用两次采样差值；Windows 用
+    /// `QueryTime − IdleTime` 的差值表示，见契约 sysmon §2.7）；
+    /// std::nullopt = 本平台不提供/本次未读到。
+    std::optional<uint64_t> busy_time_us;
+    /// 采样时刻的在途请求数（瞬时 gauge；不是区间平均队列深度）；
+    /// std::nullopt = 本平台不提供/本次未读到。
+    std::optional<uint64_t> in_flight;
+    /// 计数类累计计数器的 32 位回绕跨度；0 = 64 位计数器（下降一律视为重置）。
+    uint64_t count_wrap_span = 0;
+    /// 时间类累计计数器（微秒）的 32 位回绕跨度；0 = 64 位计数器（下降一律视为重置）。
+    uint64_t time_wrap_span = 0;
+};
+
+/// 每物理盘 I/O 的原始快照（契约 sysmon §2.4、§2.7）。
+///
+/// 成功与失败用 `unavailable_reason` 区分（空串 = 采集成功）：
+/// - 成功：`disks` 为本帧可读的物理盘；**可能为空** = 本机没有物理盘（不是失败）；
+/// - 失败：`disks` 为空，`unavailable_reason` 为可用性原因建议值（Linux `/proc`/`/sys`
+///   不可读 → `collect_failed`；Windows 计数器不可用/无权限 → `no_permission`）。
+///
+/// 单个设备读不到时只是不出现在 `disks` 里（契约 `disk_io[]` 没有 per-device 不可用表示）。
+/// 失败原因随结果返回，使快照构造不需要按平台名猜原因。
+struct RawDiskIoSnapshot {
+    std::vector<RawDiskIoInfo> disks;
+    std::string unavailable_reason;
+};
+
 /// 系统指标采集接缝。
 ///
 /// 唯一实现入口：`make_system_collector()`（按编译平台返回对应实现）。
@@ -213,6 +266,17 @@ public:
     /// @param shm_dir 共享内存根目录（由调用方按 `paths::shm()` 传入，便于测试用临时目录驱动）
     /// @return 目录不存在/不可读返回 std::nullopt（不得返回全 0 的对象伪装成功）。
     virtual std::optional<RawShmDirInfo> collect_shm_dir(const std::string& shm_dir) = 0;
+
+    /// 采集每物理盘 I/O 累计计数器（契约 sysmon §2.4、§2.7）。
+    ///
+    /// 采集范围只含整块物理设备：Linux 以 `/sys/block` 的整盘条目为准（分区不在其下），
+    /// 并排除 loop/ram/zram/dm-/md/sr 等虚拟或光学设备；Windows 遍历 `\\.\PhysicalDriveN`
+    /// 并用 `IOCTL_DISK_PERFORMANCE` 读取物理盘累计计数器（该能力依赖性能计数器已开启与
+    /// 访问权限，不可用是常态，见契约 sysmon §2.4）。
+    ///
+    /// 失败原因随结果返回（`RawDiskIoSnapshot::unavailable_reason`），由快照构造直接映射到
+    /// 可用性描述；消费方不按平台名猜原因。单个设备读不到时只是不出现在 `disks` 里。
+    virtual RawDiskIoSnapshot collect_disk_io() = 0;
 
 protected:
     SystemCollector() = default;

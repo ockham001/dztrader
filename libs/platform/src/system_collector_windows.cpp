@@ -33,8 +33,9 @@
 #endif
 #include <windows.h>
 #include <pdh.h>
-#include <pdhmsg.h>  // PDH_CSTATUS_VALID_DATA / PDH_CSTATUS_NEW_DATA（部分 SDK 的 pdh.h 不引入）
-#include <psapi.h>   // GetPerformanceInfo：内存与页文件口径（契约 sysmon §2.4）
+#include <pdhmsg.h>    // PDH_CSTATUS_VALID_DATA / PDH_CSTATUS_NEW_DATA（部分 SDK 的 pdh.h 不引入）
+#include <psapi.h>     // GetPerformanceInfo：内存与页文件口径（契约 sysmon §2.4）
+#include <winioctl.h>  // DISK_PERFORMANCE / IOCTL_DISK_PERFORMANCE：每物理盘 I/O（契约 sysmon §2.4）
 #include <winreg.h>
 
 #include "system_collector_internal.h"
@@ -856,6 +857,112 @@ std::optional<std::vector<RawVolumeInfo>> query_volumes() {
     return volumes;
 }
 
+// ===== 每物理盘 I/O：IOCTL_DISK_PERFORMANCE（契约 sysmon §2.4、§2.7）=====
+//
+// 每盘累计计数器来自 IOCTL_DISK_PERFORMANCE（输出 DISK_PERFORMANCE）。该能力依赖
+// 性能计数器已使能（diskperf）与访问权限，不可用是常态而非异常：不存在的盘号、
+// 不支持计数器的盘（ERROR_INVALID_FUNCTION / ERROR_NOT_SUPPORTED）、无权限或其它
+// 读取失败的盘都只跳过该盘，不伪造 0。物理盘编号不保证连续，按参考实现的做法
+// 遍历 `\\.\PhysicalDrive0` .. `\\.\PhysicalDrive32`，打不开即视为该编号不存在。
+
+/// 物理盘枚举上限（编号不保证连续，取 0..32 覆盖常见配置；与参考实现一致）。
+constexpr int kPhysicalDriveMaxIndex = 32;
+
+/// IOCTL_DISK_PERFORMANCE 输出缓冲区上限：驱动可能返回比公开结构更新的更大结构，
+/// 缓冲区不足时翻倍重试；上限防止病态驱动无限增长。
+constexpr std::size_t kMaxDiskPerformanceBufferSize = 1024 * 1024;
+
+/// DISK_PERFORMANCE 的 100ns 计时器转微秒（时间字段统一为微秒，契约 sysmon §2.4）。
+constexpr uint64_t kDiskPerfTicksPerUs = 10;
+
+/// 100ns 数转微秒（整除，向下取整）。
+uint64_t diskperf_ticks_to_us(uint64_t ticks_100ns) { return ticks_100ns / kDiskPerfTicksPerUs; }
+
+/// 读取单个物理盘的 DISK_PERFORMANCE；该盘不存在/不支持/读不到时返回 std::nullopt
+/// （调用方跳过该盘，不记错误——Windows 计数器不可用是常态）。
+std::optional<DISK_PERFORMANCE> query_disk_performance(int index) {
+    const std::wstring device_path = L"\\\\.\\PhysicalDrive" + std::to_wstring(index);
+    HANDLE device = CreateFileW(device_path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                OPEN_EXISTING, 0, nullptr);
+    if (device == INVALID_HANDLE_VALUE) {
+        return std::nullopt;  // 该编号物理盘不存在（正常，跳过，不记错误）
+    }
+    std::vector<std::byte> buffer(sizeof(DISK_PERFORMANCE));
+    DWORD returned = 0;
+    bool ioctl_ok = false;
+    while (true) {
+        if (DeviceIoControl(device, IOCTL_DISK_PERFORMANCE, nullptr, 0, buffer.data(),
+                            static_cast<DWORD>(buffer.size()), &returned, nullptr) != 0) {
+            ioctl_ok = true;
+            break;
+        }
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+            buffer.size() >= kMaxDiskPerformanceBufferSize) {
+            // ERROR_INVALID_FUNCTION / ERROR_NOT_SUPPORTED = 该盘不支持性能计数器；
+            // ERROR_ACCESS_DENIED 与其它错误同理：跳过该盘，不伪造 0。
+            break;
+        }
+        buffer.resize(std::min(buffer.size() * 2, kMaxDiskPerformanceBufferSize));
+    }
+    CloseHandle(device);
+    if (!ioctl_ok || static_cast<std::size_t>(returned) < sizeof(DISK_PERFORMANCE)) {
+        return std::nullopt;
+    }
+    // 缓冲区可能大于公开结构（驱动返回新版结构）：只取公开结构覆盖的前缀。
+    DISK_PERFORMANCE performance{};
+    std::memcpy(&performance, buffer.data(), sizeof(performance));
+    // QueryTime 是每次查询都会写入的系统时间锚点；为 0 说明计数器未填充（diskperf 关闭或
+    // 驱动不支持），此时结构体里其余字段的全 0 不是"读到了 0"，必须报不可用（契约 §2.4）。
+    if (performance.QueryTime.QuadPart <= 0) {
+        return std::nullopt;
+    }
+    return performance;
+}
+
+/// 采集每物理盘 I/O 累计计数器（契约 sysmon §2.4、§2.7）。
+///
+/// 一个盘都读不到 ⇒ `unavailable_reason = no_permission`（Windows 计数器需特权/未使能，
+/// 上层直接映射为可用性原因）；至少一个成功 ⇒ 按盘号升序返回非空数组、原因为空串。
+/// 单个盘读到 0 是"读到了 0"，与"读不到"分开：只有成功返回的盘才进入数组。
+RawDiskIoSnapshot query_disk_io() {
+    RawDiskIoSnapshot snapshot;
+    for (int index = 0; index <= kPhysicalDriveMaxIndex; ++index) {
+        const auto performance = query_disk_performance(index);
+        if (!performance.has_value()) {
+            continue;
+        }
+        RawDiskIoInfo disk;
+        disk.device = "PhysicalDrive" + std::to_string(index);
+        disk.read_count = static_cast<uint64_t>(performance->ReadCount);
+        disk.write_count = static_cast<uint64_t>(performance->WriteCount);
+        disk.read_bytes = large_integer_to_u64(performance->BytesRead);
+        disk.write_bytes = large_integer_to_u64(performance->BytesWritten);
+        disk.read_time_us = diskperf_ticks_to_us(large_integer_to_u64(performance->ReadTime));
+        disk.write_time_us = diskperf_ticks_to_us(large_integer_to_u64(performance->WriteTime));
+        // QueryTime 是本次查询的系统时间锚点、IdleTime 是累计空闲时间（同一 100ns 时间源）：
+        // 二者差值才是累计设备忙时间（至少一个 I/O 在处理的墙钟时间）。锚点小于空闲时间
+        // 属计数器重置/口径异常，本次留 std::nullopt，不输出回绕后的假值（契约 sysmon §2.7）。
+        if (performance->QueryTime.QuadPart >= performance->IdleTime.QuadPart) {
+            disk.busy_time_us = diskperf_ticks_to_us(static_cast<uint64_t>(
+                performance->QueryTime.QuadPart - performance->IdleTime.QuadPart));
+        }
+        // QueueDepth 是采样时刻的在途请求数（瞬时 gauge，契约 sysmon §2.4）。
+        disk.in_flight = static_cast<uint64_t>(performance->QueueDepth);
+        // Windows：ReadCount/WriteCount 是 32 位 DWORD（按 2^32 跨度处理回绕）；
+        // 字节与 100ns 时间计数器是 64 位（下降一律视为重置，契约 sysmon §2.7）。
+        disk.count_wrap_span = DISK_IO_COUNT_WRAP_SPAN_32;
+        disk.time_wrap_span = 0;
+        snapshot.disks.push_back(std::move(disk));
+    }
+    if (snapshot.disks.empty()) {
+        // Windows 上无法区分"本机没有物理盘"与"全部无权限/计数器未开启"（CreateFile 失败
+        // 对两者都返回 INVALID_HANDLE_VALUE）；按契约以 no_permission（计数器需特权/未开启）
+        // 表示不可用，绝不返回空数组伪装成功（契约 sysmon §2.4）。
+        snapshot.unavailable_reason = "no_permission";
+    }
+    return snapshot;
+}
+
 /// Windows 采集器：系统信息每次现取；负载代理持有 PDH 查询与加权状态。
 class WindowsSystemCollector final : public SystemCollector {
 public:
@@ -945,6 +1052,8 @@ public:
     std::optional<RawShmDirInfo> collect_shm_dir(const std::string& shm_dir) override {
         return query_shm_dir(shm_dir);
     }
+
+    RawDiskIoSnapshot collect_disk_io() override { return query_disk_io(); }
 
 private:
     WindowsLoadAverageSampler load_sampler_;

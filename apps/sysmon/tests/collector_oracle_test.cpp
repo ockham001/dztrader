@@ -5,6 +5,7 @@
 // 这里从 dzsysmon 的消费面断言「百分比落在合法区间」与「首次采样不可用而非 0」。
 
 #include "cpu_usage.h"
+#include "disk_io.h"
 #include "snapshot_builder.h"
 
 #include <dztrader/core/path.h>
@@ -128,10 +129,10 @@ TEST(SystemCollectorOracleTest, PerCoreUsagesAndRatesValidOnRealMachine) {
     ASSERT_TRUE(first->interrupts.has_value());
     ASSERT_TRUE(second->context_switches.has_value());
     ASSERT_TRUE(second->interrupts.has_value());
-    const auto context_switches_rate =
-        compute_rate(*first->context_switches, *second->context_switches, elapsed_seconds);
+    const auto context_switches_rate = compute_rate(
+        *first->context_switches, *second->context_switches, elapsed_seconds, kCpuCounterWrapSpan);
     const auto interrupts_rate =
-        compute_rate(*first->interrupts, *second->interrupts, elapsed_seconds);
+        compute_rate(*first->interrupts, *second->interrupts, elapsed_seconds, kCpuCounterWrapSpan);
     ASSERT_TRUE(context_switches_rate.has_value());
     ASSERT_TRUE(interrupts_rate.has_value());
     EXPECT_TRUE(std::isfinite(*context_switches_rate));
@@ -369,6 +370,131 @@ TEST(SystemCollectorOracleTest, DiskDomainsHoldOnRealMachine) {
     }
 
     // 整帧必须通过契约校验（含 volumes/watch_paths 的交叉校验）。
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+// #76 真机 oracle：首次采样返回不可用而非 0（契约 sysmon §2.7）；采集能力不可用时
+// 快照必须报告「不可用」+ 采集层给出的 reason，不得输出 0（Windows 计数器不可用是常态）。
+TEST(SystemCollectorOracleTest, DiskIoFirstSampleIsUnavailableNotZero) {
+    const auto collector = platform::make_system_collector();
+    ASSERT_NE(collector, nullptr);
+    const auto first = collector->collect_disk_io();
+
+    const auto info = collector->collect_system_info();
+    if (!first.unavailable_reason.empty()) {
+        // 采集能力不可用：失败原因由采集层给出，快照构造直接映射（不按平台名猜）。
+        DiskMetrics disk_metrics;
+        disk_metrics.disk_io_unavailable_reason = first.unavailable_reason;
+        const auto snapshot =
+            build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{},
+                           MemorySwapMetrics{}, disk_metrics, 1000, 0, 0, 1'800'000'000'000);
+        EXPECT_EQ(snapshot.disk_io, std::nullopt);
+        const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO);
+        EXPECT_FALSE(entry.available);
+        ASSERT_TRUE(entry.reason.has_value());
+        EXPECT_EQ(entry.reason.value(), first.unavailable_reason);
+        EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+        return;
+    }
+
+    // 首次采样（无基线）：设备条目存在，但全部派生字段 null——不得用 0 冒充。
+    const auto derived = compute_disk_io({}, first.disks, 1.0);
+    ASSERT_EQ(derived.size(), first.disks.size());
+    for (const auto& disk : derived) {
+        EXPECT_FALSE(disk.device.empty());
+        EXPECT_FALSE(disk.read_bytes_per_sec.has_value()) << disk.device;
+        EXPECT_FALSE(disk.write_bytes_per_sec.has_value()) << disk.device;
+        EXPECT_FALSE(disk.read_iops.has_value()) << disk.device;
+        EXPECT_FALSE(disk.write_iops.has_value()) << disk.device;
+        EXPECT_FALSE(disk.latency_ms.has_value()) << disk.device;
+        EXPECT_FALSE(disk.queue_depth.has_value()) << disk.device;
+        EXPECT_FALSE(disk.utilization.has_value()) << disk.device;
+    }
+
+    // 快照层同样必须是"条目存在 + 派生字段 null + 能力可用"（不是整块不可用）。
+    DiskMetrics disk_metrics;
+    disk_metrics.disk_io_collected = true;
+    disk_metrics.disk_io = derived;
+    const auto snapshot =
+        build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{}, MemorySwapMetrics{},
+                       disk_metrics, 1000, 0, 0, 1'800'000'000'000);
+    ASSERT_TRUE(snapshot.disk_io.has_value());
+    EXPECT_EQ(snapshot.disk_io->size(), first.disks.size());
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO).available);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+// #76 真机 oracle：第二次采样用实际经过时间算出的吞吐/IOPS/延迟/利用率落在合法区间，
+// 且整帧通过契约校验（契约 sysmon §2.4、§2.7）。
+TEST(SystemCollectorOracleTest, DiskIoDerivedValuesHoldOnRealMachine) {
+    const auto collector = platform::make_system_collector();
+    ASSERT_NE(collector, nullptr);
+    const auto first = collector->collect_disk_io();
+    if (!first.unavailable_reason.empty()) {
+        GTEST_SKIP() << "disk performance counters unavailable on this host";
+    }
+
+    // 条件轮询直到任一累计计数器推进（最多约 2s）；不写文件、不以固定 sleep 作为同步手段。
+    // 只保留最近一次**成功**采样：超时前最后一次采集失败不应让本用例假红。
+    const auto start = std::chrono::steady_clock::now();
+    const auto deadline = start + std::chrono::seconds(2);
+    platform::RawDiskIoSnapshot second;
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto sample = collector->collect_disk_io();
+        if (!sample.unavailable_reason.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+        second = sample;
+        bool advanced = false;
+        for (const auto& current : second.disks) {
+            for (const auto& previous : first.disks) {
+                if (current.device == previous.device &&
+                    current.read_count + current.write_count >
+                        previous.read_count + previous.write_count) {
+                    advanced = true;
+                }
+            }
+        }
+        if (advanced) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const double elapsed_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    ASSERT_FALSE(second.disks.empty()) << "collect_disk_io must keep working within one sampling";
+
+    const auto derived = compute_disk_io(first.disks, second.disks, elapsed_seconds);
+    ASSERT_EQ(derived.size(), second.disks.size());
+    bool any_value = false;
+    for (const auto& disk : derived) {
+        for (const auto* field :
+             {&disk.read_bytes_per_sec, &disk.write_bytes_per_sec, &disk.read_iops,
+              &disk.write_iops, &disk.latency_ms, &disk.queue_depth}) {
+            if (field->has_value()) {
+                any_value = true;
+                // 派生值必须有限（NaN/Infinity 说明计数窗口或公式异常）；
+                // 非负由 Δ计数器 ≥ 0 结构性保证，不再重复断言永真条件。
+                EXPECT_TRUE(std::isfinite(**field)) << disk.device;
+            }
+        }
+        if (disk.utilization.has_value()) {
+            EXPECT_GE(*disk.utilization, 0.0) << disk.device;
+            EXPECT_LE(*disk.utilization, 1.0) << disk.device;
+        }
+    }
+    // 有基线 + 正窗口时速率字段必然可计算；全 null 说明派生链路断开。
+    EXPECT_TRUE(any_value) << "derived disk io values must not be all null after a valid window";
+
+    DiskMetrics disk_metrics;
+    disk_metrics.disk_io_collected = true;
+    disk_metrics.disk_io = derived;
+    const auto snapshot = build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
+                                         TemperatureMetrics{}, MemorySwapMetrics{}, disk_metrics,
+                                         1000, 0, 0, 1'800'000'000'000);
+    ASSERT_TRUE(snapshot.disk_io.has_value());
+    EXPECT_EQ(snapshot.disk_io->size(), second.disks.size());
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 
