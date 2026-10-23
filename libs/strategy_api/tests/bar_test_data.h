@@ -57,6 +57,23 @@ inline DzTick make_tick(DzTime clock,
     return tick;
 }
 
+/// @brief 构造一笔日线测试用行情快照（当日累计 OHLC 由调用方给出）
+inline DzTick make_daily_tick(DzTime clock,
+                              double open_price,
+                              double highest_price,
+                              double lowest_price,
+                              double last_price,
+                              DzVolume volume,
+                              double turnover,
+                              DzLargeVolume open_interest,
+                              DzDate date = TRADING_DAY) {
+    DzTick tick = make_tick(clock, last_price, volume, turnover, open_interest, date);
+    tick.open_price = open_price;
+    tick.highest_price = highest_price;
+    tick.lowest_price = lowest_price;
+    return tick;
+}
+
 /// @brief 一次 bar 事件的通知类型
 enum class EventKind { Open, Update, Close };
 
