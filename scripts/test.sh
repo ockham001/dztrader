@@ -8,7 +8,7 @@
 #   ./scripts/test.sh                           # 跟随粘性 config；默认 fast 档
 #   ./scripts/test.sh --config debug            # 临时测试 Debug
 #   ./scripts/test.sh --label slow              # 只跑 slow 穷举档
-#   ./scripts/test.sh --label perf              # 只跑 PerfBench
+#   ./scripts/test.sh --label perf              # 只跑性能基准（PerfBench + BarPerfBench）
 #   ./scripts/test.sh --test-name TimeTest      # 只跑匹配 TimeTest 的测试
 
 set -euo pipefail

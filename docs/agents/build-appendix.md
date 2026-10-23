@@ -98,9 +98,94 @@ test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈�
 - **分层标签**（与 `RUN_SERIAL` / `TIMEOUT` 正交）：
   - `fast`：默认单测门禁，秒级用例；所有普通 `gtest_discover_tests` 注册必须带 `PROPERTIES LABELS fast`
   - `slow`：显式穷举/慢速档。`libs/strategy_api` 的 `SDK_SLOW_TESTS`（`date_exhaustive_test` / `date_time_exhaustive_test`）单独成 target 并打 `slow`；对应抽样版留在 `date_test.cpp` / `date_time_test.cpp` 的 `fast` 门禁
-  - `perf`：无阈值基准项（当前仅 `PerfBench`），不进默认门禁
+  - `perf`：无阈值基准项（`PerfBench`（SHM 往返）、`BarPerfBench`（tick→bar 四路径）），不进默认门禁；数值与记录方式见下节「性能基准」
   - 运行：`./scripts/test.sh`（fast）/ `-L slow` / `-L perf`（Windows 用 `-Label`）；等价直调 `ctest --preset linux-release[-slow|-perf]`
   - `slow` / `perf` 不在 CI 默认门禁内（CI 只跑 fast），按需本地手动运行；`fast` 过滤依赖构建期发现，必须先 build 再 test（未构建 target 的 `_NOT_BUILT` 回退不带标签）
+
+---
+
+## 性能基准
+
+基准与秒级单测分层（[单元测试判据 §4.3](../unit-test-standard.md)）：基准只**报告数值**、不做阈值断言，稳定后才升级为 CI 门禁。当前两项，都在 `perf` 标签下：
+
+| 基准 | 源码 | ctest 名 | 测什么 |
+|---|---|---|---|
+| `dz_shm_perf_bench` | `libs/shm/tests/perf_bench.cpp` | `PerfBench` | SHM 写帧→唤醒→读出往返延迟（README 30μs 目标的同进程下限） |
+| `dzstrategy_sdk_bar_perf_bench` | `libs/strategy_api/tests/bar_perf_bench.cpp` | `BarPerfBench` | tick→bar 四条热路径（update / 新 bar / 跨日 / 竞价）的 ns/tick 与 p99 |
+
+### 运行命令
+
+```bash
+./scripts/build.sh                                    # 先构建（基准不进默认 target 即可，build 全量包含）
+./scripts/test.sh --label perf                         # 跑全部 perf 基准（Release）
+./build/linux/x86_64/Release/tests/dzstrategy_sdk_bar_perf_bench   # 直接跑：完整输出最方便
+ctest --preset linux-release-perf -V                                  # 或经 ctest 并回显输出
+```
+
+Windows：`.\scripts\build.ps1` → `.\scripts\test.ps1 -Label perf`，可执行文件在 `build\windows\x86_64\Release\tests\`。
+
+**必须用 Release**（`-Werror` 与优化同时开启；Debug 数值无参考价值，基准会在报告头打印 `warning: debug build`）。跑之前关闭其它重负载，避免单次中断污染 p99。
+
+**看完整输出要直接跑可执行文件，或给 ctest 加 `-V`**：`ctest` 默认只在**失败时**回显输出，`--output-on-failure` 同样只在失败时回显（实测通过时 `amortized|fingerprint` 命中 0）；`--label perf` 跑完只给一行 Passed。要读数值加 `-V`（verbose，实测命中 3 处），或直接跑二进制。
+
+### 基准怎么测（读数值前必读）
+
+1. **计时用 RDTSC 不用 `steady_clock`**：本机成对读 `steady_clock` 约 17ns、成对读 RDTSC 约 9ns，而预算是 50ns/tick。TSC 频率在启动时用 `steady_clock` 标定后换算成 ns，故跨机器可比。
+2. **tick 块在计时循环之外生成，循环里只重放**。本基准迭代时踩过这个坑：早期版本把 296 字节的 `DzTick` 按值穿过 visitor 逐笔拷贝、并在每轮重放前重新生成整块，update 路径被量成约 46 ns/tick；改成「块只生成一次、循环里只按 const 引用重放」后，同一个组件量到约 13 ns/tick ——**3.5 倍差异全部来自基准自身开销**，与组件无关。判断依据是与独立墙钟测法对照。改动这个基准时，保持「块只生成一次」这个性质。
+3. **三套口径互为交叉校验**，三者应同量级（本机实测差 0–2ns）：
+   - `batch_mean` —— **最准的 ns/tick 均值**，每轮整段只读一对时钟。
+   - `net_p50` —— 逐笔分布，**p99 的来源**。逐笔计时必然扰动管线，且扣减空区间开销（8.8ns）是近似而非精确补偿，故 `net_p50` 略高于 `batch_mean`，应视为**偏保守的上界**。
+   - `wall_mean` —— 用 `steady_clock` 量同一段，不依赖 TSC 频率标定。墙钟区间比 TSC 区间多包了两次 `steady_clock` 读（约 17ns）与两次 rdtsc（约 9ns），合计约 26ns/轮；摊到 50–200 笔是 0.13–0.52 ns/tick，故也略高，同为上界。
+
+   三者出现数量级分歧（而非零点几纳秒）时，先怀疑基准本身（计时区间混入非被测操作、块被优化、tick 流落错路径），而不是组件性能变化。
+
+另有**自检**：计时前逐笔断言 builder 公开状态与日程独立推导的期望一致、丢弃计数为 0；再用 `CountingSink` 断言各路径的 sink 事件形态（竞价路径必须零回调）。任一不符直接退出 1。计时后打印终态指纹，可用来跨机器/跨 commit 快速判断「是否真的跑了同一份工作」——指纹相同 = 结果可比。
+
+### 结果记录方式
+
+**不记录到 CI 产物、不设阈值**。数值稳定后由人工把「机器 + 日期 + 一张结果表」追加到本文件末尾的**基线记录**，供后续对照。
+
+升级为 CI 门禁时的约定（先说清，避免下一个人自己发明口径）：
+
+- **门禁用 `batch_mean` 比上限、用 `net_p99` 比 p99 上限** —— `batch_mean` 是三套口径里最准的水平值（逐笔计时必然扰动管线，`net_p99` 是偏保守的上界）；`wall_mean` 只作交叉校验，不入门禁。
+- **每次门禁跑 5 次取中位数**，再与阈值比较；单次运行的 p99 抖动可达 ±5ns，单次比较会产生假红/假绿。本文件下方基线记录用 7 次，是人工记录的加严做法，不是门禁要求。
+- **阈值来自届时 CI runner 的实测基线**，不是 ADR 的 50ns 设计目标，也不是本机基线记录里的数字（机器代差可达数倍）。首次升级时把「哪台 runner、多少样本、算出多少」写进基线记录。
+
+比对本机改动前后时用同一台机器、同一 config，同样取多次运行的中位数。
+
+### 基线记录
+
+格式：每条记录一个四级标题（机器 + 日期），下附基准名与结果表。新增记录追加在末尾，**不修改历史记录**（与 ADR 一致：历史是证据）。
+
+#### 2026-10-23 · Intel Core i7-6700 @ 3.40GHz · Linux x86_64 · GCC 13.4 Release
+
+`dzstrategy_sdk_bar_perf_bench`，1 分钟周期、单合约、`NullBarSink`，9 次运行取中位数。本机 TSC 3.408 GHz，空区间成对读时钟 p50 = 8.80ns，p99 = 9.39ns。
+
+| 路径 | batch_mean | wall_mean | net_p50 | net_p99 | 50ns 目标（仅 update） |
+|---|---|---|---|---|---|
+| update（同桶更新） | 12.70 | 13.17 | 14.67 | 16.43 | met（目标的 33%） |
+| new-bar（换桶） | 21.93 | 22.08 | 21.13 | 24.65 | 不适用，仅报告 |
+| cross-day（跨交易日） | 19.93 | 20.49 | 21.13 | 22.89 | 不适用，仅报告 |
+| auction（竞价窗口内） | 11.33 | 11.65 | 13.50 | 14.08 | 不适用，仅报告 |
+
+`raw_p50` 落在 TSC 周期栅格上（1 cycle = 0.2934 ns），所以 `net_p50` 只取离散值：如 update 的 14.67ns 对应 80 cycles，cross-day 的 21.13ns 对应 102 cycles。相邻两次运行的单格跳动通常是整整一个周期栅格（约 0.3–0.6ns），**不是性能变化**——比对时看整行与多次中位数，不要比较相邻两次的单格。
+
+观察：换桶/跨日比同桶更新贵约 7–8ns —— 两者都多一次 `close` + `open` 事件派发（本基准 sink 为空实现，故这里是组件侧的事件分发成本，不含消费方 sink 自身开销）与累计基准重置，量级符合预期。竞价最便宜：窗口内只静默更新 bar 状态、不回调 sink。无需优化项。
+
+50ns 目标按 ADR 0031 决策 10 只覆盖**单周期更新**路径；另外三条路径按同一口径报告数值（供后续优化与 CI 门禁取基线），不套用该阈值。
+
+读表时注意两点，否则会过度解读路径间差异：
+
+- **路径间的工作量不完全对等。** update / auction 的 `setup` 段承担了「建立首根 bar」（`begin_bar`），new-bar / cross-day 的每笔被测 tick 都自带 `close` + `open`；竞价 case 的窗口首笔同样在 `setup`。所以「竞价最便宜」只部分来自「窗口内不回调 sink」，不能直接当作「竞价路径比换桶路径快一倍」的结论。
+- **每条路径重放同一条固定流**，分支预测器看到的是完全重复的模式，数值是**最佳情况**；混合负载（多合约、多周期、真实 tick 抖动）会更差。基准用于**同口径纵向对比**（改动前后、跨 commit），不是绝对值承诺。
+
+单次运行的 p99 抖动可达数 ns（机器负载高时实测到 ±5ns，明显大于均值的抖动），所以比对改动前后要用多次运行的中位数，不要拿单次 p99 下结论。
+
+与 ADR 0031 决策 10 的「静态估算约 10ns」对照：实测 `batch_mean` 12.70ns 比静态估算高约 2.7ns，差异来自交易小节/竞价表的定长循环查找、量额差分与 bar 状态更新——同量级，无误判。
+
+> 该机器为 2016 年 4 核桌面 CPU（非 CI runner）。升级 CI 门禁时阈值应以届时 CI runner 的实测基线为准，不能直接搬 50ns 或本表数值。
+
+<!-- 下一条基线记录（追加到这里，保持时间顺序） -->
 
 ---
 
