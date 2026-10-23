@@ -75,8 +75,8 @@ public:
      *        （open），随后 update 新日线
      *
      * 坏数据守卫按类注释的固定顺序判定；被丢弃的 tick 不建立/更新 bar、不推进交易日与量额基准、
-     * 不触发回调。累计量额基准取自最近一笔已接受 tick 的累计值（当前 bar，或 restore final 恢复
-     * 的基准；交易日变化必定换根，故跨交易日基准为 0）。
+     * 不触发回调。累计量额基准取自当前 bar 的累计值（同一交易日）；交易日变化必定换根、restore
+     * final 后的新交易日从 0 起算，故跨交易日基准为 0。
      *
      * @param tick 行情快照（调用方保证属于本实例绑定的合约）
      */
@@ -262,7 +262,7 @@ private:
     /**
      * @brief 用本笔 tick 建立新的形成中日线并通知 sink 打开
      *
-     * 日线起点基准恒为 0（当日累计字段即当日量额）；restore final 的基准在此消费掉。
+     * 日线起点基准恒为 0（当日累计字段即当日量额）。
      *
      * @param tick 行情快照
      * @param tsec 本笔 tick 的交易日内秒
@@ -274,7 +274,7 @@ private:
         bar_.period_sec = 0;
         bar_.is_final = false;
         has_bar_ = true;
-        restored_final_ = false;  // 恢复基准已在本根建立时消费
+        restored_final_ = false;  // 恢复的已收日线状态已进入新交易日，可清除
         update_bar(tick, tsec);
         notify_open(bar_);
     }
