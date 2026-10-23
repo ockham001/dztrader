@@ -284,6 +284,98 @@ TEST(DifferentialAcceptanceTest, WhitelistHasNoBarFieldExemptions) {
         << "Bar 公开字段数量变化时必须同步差分比较与白名单说明";
 }
 
+/// @brief oracle 的标准网格必须与旧版写死的时刻一致（硬编码期望，不经 TradingTime 换算）
+///
+/// 若 oracle 与 builder 共用同一套换算函数且在「18:00 锚点」上一起错，差分测试会同时错、
+/// 呈现假绿。这里用旧版源码里的墙钟时刻 + 手工算出的交易日内秒双重钉住：
+/// 09:00 → 54000、09:30 → 55800、10:00 → 57600、14:59 → 75540（均为 tsec = 墙钟秒 + 21600）。
+TEST(DifferentialAcceptanceTest, LegacyStdGridMatchesHandDerivedLegacyTimes) {
+    const auto grid = create_legacy_std_grid();
+    ASSERT_EQ(grid.size(), static_cast<std::size_t>(1440));
+
+    /// 9:00 / 9:30 / 10:00 / 14:59 四档在 1/3/5/15 分钟与 1 小时下的旧版桶起点（硬编码）
+    struct GridCase {
+        const char* key;                   ///< 旧版查表键 "HH:MM"
+        std::array<int32_t, 5> begin_sec;  ///< 1/3/5/15 分钟 + 1 小时的桶起点（交易日内秒）
+    };
+    // 3/5/15 分钟的桶边界：09:30 是 3/5/15 分钟的共同边界（54000 起逐档对齐）
+    // 1 小时：09:30 仍属 09:00–10:00 桶；10:00 是新的整点桶；14:59 属 14:00–15:00 桶
+    const std::array<GridCase, 4> cases = {{
+        {"09:00", {54000, 54000, 54000, 54000, 54000}},
+        {"09:30", {55800, 55800, 55800, 55800, 54000}},
+        {"10:00", {57600, 57600, 57600, 57600, 57600}},
+        {"14:59", {75540, 75420, 75300, 74700, 72000}},
+    }};
+    for (const GridCase& grid_case : cases) {
+        SCOPED_TRACE(::testing::Message() << "key=" << grid_case.key);
+        const auto found = grid.find(grid_case.key);
+        ASSERT_NE(found, grid.end()) << "legacy std grid missing key | key=" << grid_case.key;
+        for (std::size_t slot = 0; slot < grid_case.begin_sec.size(); ++slot) {
+            EXPECT_EQ(found->second.begin_sec[slot], grid_case.begin_sec[slot])
+                << "slot=" << slot << " key=" << grid_case.key;
+        }
+    }
+}
+
+/// @brief 比较器自身有牙：14 个字段逐个单独变更，必须恰好报出该字段（防将来漏比某字段仍全绿）
+TEST(DifferentialAcceptanceTest, BarFieldComparatorFlagsEachFieldIndividually) {
+    Bar expected{};
+    expected.trading_day = TRADING_DAY;
+    expected.begin_sec = TSEC_09_00;
+    expected.last_tick_sec = TSEC_09_00 + 59;
+    expected.period_sec = 60;
+    expected.open = 100.0;
+    expected.high = 102.0;
+    expected.low = 99.0;
+    expected.close = 101.0;
+    expected.volume = 40;
+    expected.turnover = 4040.0;
+    expected.open_interest = 7;
+    expected.cum_volume = 140;
+    expected.cum_turnover = 14140.0;
+    expected.is_final = true;
+
+    // 未变更时比较器必须报告一致（否则下面的逐字段断言会因「恒报不一致」而失效）
+    ASSERT_TRUE(compare_bar_fields(expected, expected).empty())
+        << "comparator must accept identical bars";
+
+    /// 只在一个字段上与 expected 不同的 bar
+    struct FieldMutation {
+        const char* field;  ///< 期望被报出的字段名
+        Bar actual;         ///< 单字段变更后的 bar
+    };
+    const auto mutated = [&expected](const auto& mutate) {
+        Bar bar = expected;
+        mutate(bar);
+        return bar;
+    };
+    const std::array<FieldMutation, 14> mutations = {{
+        {"trading_day", mutated([](Bar& bar) { bar.trading_day = TRADING_DAY + 1; })},
+        {"begin_sec", mutated([](Bar& bar) { bar.begin_sec = TSEC_09_00 + 60; })},
+        {"last_tick_sec", mutated([](Bar& bar) { bar.last_tick_sec = TSEC_09_00; })},
+        {"period_sec", mutated([](Bar& bar) { bar.period_sec = 300; })},
+        {"open", mutated([](Bar& bar) { bar.open = 100.5; })},
+        {"high", mutated([](Bar& bar) { bar.high = 103.0; })},
+        {"low", mutated([](Bar& bar) { bar.low = 98.0; })},
+        {"close", mutated([](Bar& bar) { bar.close = 101.5; })},
+        {"volume", mutated([](Bar& bar) { bar.volume = 41; })},
+        {"turnover", mutated([](Bar& bar) { bar.turnover = 4044.0; })},
+        {"open_interest", mutated([](Bar& bar) { bar.open_interest = 8; })},
+        {"cum_volume", mutated([](Bar& bar) { bar.cum_volume = 141; })},
+        {"cum_turnover", mutated([](Bar& bar) { bar.cum_turnover = 14144.0; })},
+        {"is_final", mutated([](Bar& bar) { bar.is_final = false; })},
+    }};
+
+    for (const FieldMutation& mutation : mutations) {
+        SCOPED_TRACE(::testing::Message() << "mutated field=" << mutation.field);
+        const std::vector<FieldMismatch> mismatches = compare_bar_fields(mutation.actual, expected);
+        ASSERT_EQ(mismatches.size(), static_cast<std::size_t>(1))
+            << "exactly one field must be flagged for a single-field mutation | field="
+            << mutation.field;
+        EXPECT_EQ(mismatches.front().field, mutation.field);
+    }
+}
+
 /// @brief 旧版查表只能表达整分钟、单分钟键、目标在小节内的 Open 窗口
 TEST(DifferentialAcceptanceTest, LegacyOracleRejectsUnexpressibleAuctionWindows) {
     std::string reason;
