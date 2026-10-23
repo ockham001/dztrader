@@ -30,6 +30,12 @@
  * 两者互为交叉校验：批量均值应接近逐笔 net_p50。批量 pass 同时用 steady_clock 量整段墙钟，
  * 给出不依赖 TSC 标定的第三个独立数值。
  *
+ * ## 测量边界
+ *
+ * 测的是**组件自身**的 on_tick 计算：sink 用 NullBarSink（三个回调都是空实现，内联后归零），
+ * 故消费方 sink 的自身开销不计入本基准；50ns 目标按 ADR 0031 决策 10 也只针对组件侧计算。
+ * 真实 sink（例如把 Bar 写进环形缓冲）会额外增加消费方开销，属消费方预算、不在本基准范围内。
+ *
  * ## 自检（防止量错路径）
  *
  * 计时前先用同一份块逐笔断言 builder 的公开状态（交易日 / 桶起点 / last_tick_sec /
@@ -97,7 +103,7 @@ constexpr int32_t AUCTION_BUCKET_BEGIN = (TSEC_09_30 / PERIOD_SEC) * PERIOD_SEC;
 /// @brief 竞价窗口起点（09:28:30）
 constexpr int32_t AUCTION_WINDOW_BEGIN = TSEC_09_30 - 90;
 
-/// @brief 每条路径的目标采样数（2e5 使 p99 由约 2e3 个尾部样本决定，抗单次中断噪声）
+/// @brief 每条路径的目标采样数（1e6 使 p99 由约 1e4 个尾部样本决定，抗单次中断噪声）
 constexpr int64_t TARGET_SAMPLES = 1000000;
 /// @brief 逐笔 pass 丢弃的预热轮数（分支预测与缓存状态稳定）
 constexpr int64_t WARMUP_REPS = 200;
@@ -345,6 +351,10 @@ private:
 };
 
 /// @brief 单小节 09:00–15:00 的表（update / 新 bar / 跨日 case 用）
+///
+/// @note 与 bar_test_data.h 的 day_session_table() 形状相同是有意重复：基准是独立可执行文件，
+///       只链 strategy_api_headers（不链 GTest），故不能复用那些带 GTest 依赖的测试辅助头。
+///       两表一旦漂移，本基准的契约自检会立刻失败（它按本表独立推导期望状态）。
 constexpr TradingSessionTable perf_day_table() {
     TradingSessionTable table{};
     table.session_count = 1;
