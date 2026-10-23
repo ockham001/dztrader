@@ -105,7 +105,7 @@ struct TradingSession {
  * @brief 集合竞价窗口类型
  */
 enum class AuctionKind : int32_t {
-    Open,   ///< 开盘竞价：tick 归后一小节首桶，窗口内不回调
+    Open,   ///< 开盘竞价：tick 归后一小节首桶，窗口内正常发事件（is_auction=true）
     Close,  ///< 收盘竞价：按小节内普通 tick 处理
 };
 

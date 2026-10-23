@@ -26,16 +26,16 @@ namespace dztrader::bar {
  * 交易时段均为丢弃并计入 stats().out_of_session），否则不改变任何 bar/累计状态、不触发
  * 回调。小节末端（tsec == session.end_sec）的 tick 归前一根 bar。
  *
- * 集合竞价：窗口命中优先于小节判定，窗口长度由 TradingSessionTable 描述（任意长度，
- * 一个交易日可有多个）。
+ * 集合竞价（ADR 0032）：窗口命中优先于小节判定，窗口长度由 TradingSessionTable 描述
+ * （任意长度，一个交易日可有多个）。
  * - 命中 Open 窗口：tick 归目标小节首桶（floor(session.begin_sec / period_sec) * period_sec），
- *   若该桶 bar 只有竞价 tick，按旧口径逐 tick 覆盖 O=H=L=C（同桶多笔竞价 tick 逐个覆盖）；
- *   若为粗周期跨小节拼根、该桶已含场内 tick，则按普通 tick 静默并入，不覆盖已公开的
- *   开盘价与高低点。量额累计差分、OI 取最后一笔；窗口内不回调任何 sink 事件，静默收尾的
- *   bar 延迟到离开窗口后的第一笔有效 tick 处补发：从未暴露过的 bar 补发 open
- *   （is_final=false）+ close（is_final=true），使每根补发的 bar 恰好 open/close 各一次。
- *   补发依赖后续 tick：tick 流若在竞价窗口内结束，这些 bar 不补发（与惰性收盘一致）。
- * - 命中 Close 窗口：按普通小节内 tick 处理（含 tsec == session.end_sec 归前一根）。
+ *   并按正常事件模型回调：窗口首笔先 close 上一根（实例首根例外）、再 open 新首根、再
+ *   update；窗口内后续每笔只 update；离开窗口后的第一笔连续交易 tick 只 update（同一根
+ *   bar 继续更新、不再 open）。若目标桶 bar 只由竞价 tick 建立，按旧口径逐笔覆盖
+ *   O=H=L=C；若为粗周期跨小节拼根、该桶已含场内 tick，则按普通 tick 并入，不覆盖已公开
+ *   的开盘价与高低点。量额累计差分、OI 取最后一笔。
+ * - 命中 Close 窗口：按普通小节内 tick 处理（含 tsec == session.end_sec 归前一根），
+ *   事件 is_auction 为 false。
  *
  * 周期可以是任意正整数秒：桶起点 = floor(tsec / period_sec) * period_sec（18:00 锚点
  * 整数网格），1 小时周期即自然整点对齐；小节休息落在桶内时，休息前后小节的 tick
@@ -43,13 +43,14 @@ namespace dztrader::bar {
  *
  * 桶边界事件顺序：新 bar 首笔 tick 先 close 旧 bar（is_final=true），再 open 新 bar
  * （is_final=false），最后 update 新 bar；小节内同桶 tick 只 update。无成交的桶不生成
- * bar（相邻 bar 的 begin_sec 可跳跃）。
+ * bar（相邻 bar 的 begin_sec 可跳跃）。Open 竞价窗口内同构：窗口首笔同样先 close 上一根
+ * → open 新的竞价首根 → update。
  *
  * 回调参数：三个 bar 回调的签名均为 `(const Bar&, bool is_auction)`（见 types.h 的
  * Sink 契约）。`is_auction` 表示**触发本次回调的 tick 是否处于 Open 竞价窗口**，是回调
  * 时刻的环境相位、不是被交出 bar 的属性；仅 Open 窗口标记，Close 窗口按普通 tick 处理、
- * 不标记，历史回放恒为 false。当前实现下 Open 窗口内的 tick 不触发回调，故每个回调都由
- * 窗口外 tick 触发、`is_auction` 恒为 false。
+ * 不标记，历史回放恒为 false。窗口首笔触发的 close 关闭的是上一根 bar，但 is_auction 取
+ * 本笔竞价 tick 的相位（true）。
  *
  * @tparam Sink bar 事件接收者：可选实现 on_bar_open / on_bar_update / on_bar_close，
  *              签名均为 `void(const Bar&, bool is_auction)`，未实现视为空操作；
@@ -69,14 +70,8 @@ namespace dztrader::bar {
  *       bar，其首笔量额 delta 基于恢复的累计基准。restore forming 采纳为当前形成中 bar
  *       （视为已 open、不再补发 open），同桶同秒或更晚 tick 只 update，跨桶/跨日先 close
  *       （is_final=true）再 open；若归档 bar 只由竞价 tick 建立，重启后同窗口竞价 tick 仍
- *       按竞价口径覆盖 O=H=L=C。reset() 清空当前 bar、待补发队列、交易日/累计基准与统计，
- *       保留配置与 sink 引用，用于回测重跑。
- *
- * @note 竞价窗口内静默收尾的 bar 进入待补发队列（容量 TradingSessionTable::MAX_AUCTIONS），
- *       离开窗口后的第一笔有效 tick 按入队顺序补发。只有「跨交易日且窗口之间没有任何场内
- *       有效 tick」的病态数据流会使队列溢出；溢出时优先丢弃从未向 sink 暴露过的待补发 bar
- *       （不会留下悬空 open），全部已暴露时丢弃最旧的（其 close 不再补发）。宁可在病态流
- *       上丢 bar 也守住窗口内零回调（策略安全），正常行情下一个场内 tick 即清空队列。
+ *       按竞价口径覆盖 O=H=L=C。reset() 清空当前 bar、交易日/累计基准与统计，保留配置与
+ *       sink 引用，用于回测重跑。
  */
 template <class Sink = NullBarSink>
 class IntradayBarBuilder {
@@ -102,8 +97,8 @@ public:
 
     /**
      * @brief 喂入一笔 tick：不在任何交易小节或 Open 竞价窗口内的 tick 丢弃并计数；同桶更新
-     *        当前 bar；跨桶或交易日变化先收旧 bar（close）再开新 bar（open）并更新；小节内
-     *        每笔已接受 tick 恰好一次 update（Open 竞价窗口内的 tick 只静默更新 bar 状态）
+     *        当前 bar；跨桶或交易日变化先收旧 bar（close）再开新 bar（open）并更新；每笔
+     *        已接受 tick 恰好一次 update（Open 竞价窗口内同样发事件，仅 is_auction=true）
      *
      * 坏数据守卫按下列固定顺序判定，被丢弃的 tick 不改变任何 bar/累计状态、不触发回调：
      * 1. `time` 越界（0..86399 之外）丢弃并计入 `out_of_session`；
@@ -114,9 +109,6 @@ public:
      * 5. restore final 后同交易日目标桶起点不大于恢复 bar 的 tick 丢弃并计入
      *    `out_of_order`（避免已收桶重新生成 bar；只丢弃、不消费恢复基准）；
      * 6. 同一交易日内累计量或累计额倒退（含 NaN/Inf）丢弃并计入 `bad_volume`。
-     *
-     * Open 竞价窗口内的 tick 只更新当前 bar 状态、不回调（见类注释）；窗口内静默收尾的 bar
-     * 在离开窗口后的第一笔有效 tick 处按序补发事件。
      *
      * 基准取自最近一笔已接受 tick 的累计量额：当前 bar，或 restore final 恢复的基准（同交易日
      * 时）。交易日变化必定换根（见下），故有当前 bar 时 `bar_.trading_day` 恒等于最近已接受
@@ -177,19 +169,11 @@ public:
             ++stats_.bad_volume;
             return;
         }
-        // 离开竞价窗口后的第一笔有效 tick：补发窗口内静默收尾的 bar（先 open 后 close）
-        flush_pending_bars();
         // 交易日变化与换桶同样开新根：累计基准按日重置，避免跨日沿用旧日基准产出负量额。
         // 同日换桶沿用当日基准；跨日（含同桶起点）先 close 旧根再 open 新根（#88）。
-        if (!has_bar_) {
-            begin_bar(tick, begin_sec, tsec, BarOrigin::Session);
-        } else if (begin_sec != bar_.begin_sec || tick.date != bar_.trading_day) {
-            finalize_bar();
-            begin_bar(tick, begin_sec, tsec, BarOrigin::Session);
-        } else {
-            expose_bar();  // 竞价建立的 bar 首次被场内 tick 暴露：先补 open 再 update
+        if (advance_bar(tick, begin_sec, tsec, false)) {
             update_bar(tick, tsec);
-            restored_auction_phase_ = false;  // 已含场内 tick：后续竞价 tick 归静默并入
+            bar_auction_only_ = false;  // 场内 tick 已并入：同桶后续竞价 tick 按普通 tick 合并
         }
         notify_update(bar_, false);
     }
@@ -238,19 +222,17 @@ public:
         adopt_forming_bar(bar);
     }
 
-    /// @brief 清空当前 bar、待补发队列、交易日/累计基准与统计，保留配置与 sink 引用
+    /// @brief 清空当前 bar、交易日/累计基准与统计，保留配置与 sink 引用
     ///
     /// 用于回测重跑：reset 后可重新 restore()，或从全新 tick 流开始完整序列。
     void reset() noexcept {
         bar_ = Bar{};
         has_bar_ = false;
-        bar_open_notified_ = false;
+        bar_auction_only_ = false;
         bar_start_cum_volume_ = 0;
         bar_start_cum_turnover_ = 0.0;
         restored_final_ = false;
         restored_final_bar_ = Bar{};
-        restored_auction_phase_ = false;
-        pending_count_ = 0;
         stats_ = BarBuilderStats{};
         tick_received_ = false;
     }
@@ -262,9 +244,6 @@ private:
     /// @brief 交易日内秒上限（23:59:59）；restore 校验用，与墙钟秒同域
     static constexpr int32_t MAX_TSEC = 86399;
 
-    /// @brief 竞价窗口内静默收尾的待补发 bar 容量（以单日竞价窗口数为基准）
-    static constexpr int32_t MAX_PENDING_BARS = TradingSessionTable::MAX_AUCTIONS;
-
     /// @brief 交易小节匹配结果
     struct SessionMatch {
         bool in_session;      ///< true = tick 落在某个交易小节内
@@ -275,18 +254,6 @@ private:
     struct AuctionMatch {
         bool in_open_window;    ///< true = tick 落在某个 Open 竞价窗口内
         int32_t session_index;  ///< Open 窗口归属交易小节下标（Close 窗口无意义）
-    };
-
-    /// @brief 新 bar 的来源（决定 open 回调时机与 O=H=L=C 口径）
-    enum class BarOrigin {
-        Session,  ///< 小节内 tick：按普通口径建立并立即回调 open
-        Auction,  ///< Open 竞价窗口 tick：静默建立，等暴露或收尾时补发
-    };
-
-    /// @brief 竞价窗口内静默收尾、等待补发的 bar
-    struct PendingBar {
-        Bar bar;          ///< 静默收尾的 bar 快照
-        bool needs_open;  ///< true = 该 bar 从未向 sink 暴露，补发时先 open 再 close
     };
 
     /**
@@ -397,7 +364,7 @@ private:
 
     /// @brief restore 前置状态：构造/reset 之后、任何 on_tick 之前，且尚未 restore 过
     [[nodiscard]] bool restore_allowed() const noexcept {
-        return !tick_received_ && !has_bar_ && !restored_final_ && pending_count_ == 0;
+        return !tick_received_ && !has_bar_ && !restored_final_;
     }
 
     /**
@@ -469,9 +436,10 @@ private:
     /**
      * @brief 采纳 restored forming bar 为当前形成中 bar（视为已 open，不补发 open 事件）
      *
-     * 若该 bar 只由竞价 tick 建立（最后一笔落在其目标桶的 Open 窗口内且 O=H=L=C），则标记
-     * 仍处竞价阶段：重启后同窗口竞价 tick 继续按竞价口径覆盖 O=H=L=C（与重启前的连续语义
-     * 一致），但始终不补发 open；首次场内 tick 之后该标记清除，竞价 tick 恢复静默并入。
+     * 若该 bar 只由竞价 tick 建立（最后一笔落在其目标桶的 Open 窗口内且 O=H=L=C），
+     * 重启后同窗口竞价 tick 继续按竞价口径覆盖 O=H=L=C（与重启前的连续语义一致），
+     * 但始终不补发 open；首次场内 tick 之后 bar 不再标记为竞价-only，后续竞价 tick
+     * （粗周期拼根的病态重叠流）按普通 tick 并入。
      *
      * @param bar 待续接的形成中 bar（校验已通过）
      */
@@ -479,13 +447,20 @@ private:
         bar_ = bar;
         bar_.is_final = false;
         has_bar_ = true;
-        bar_open_notified_ = true;
         bar_start_cum_volume_ = bar_.cum_volume - bar_.volume;
         bar_start_cum_turnover_ = bar_.cum_turnover - bar_.turnover;
-        restored_auction_phase_ = is_auction_only_bar(bar_);
+        bar_auction_only_ = is_auction_only_bar(bar_);
     }
 
-    /// @brief bar 是否只由 Open 竞价 tick 建立（最后一笔在其目标桶窗口内且 O=H=L=C）
+    /**
+     * @brief 归档的 forming bar 是否只由 Open 竞价 tick 建立（restore 采纳时判定一次）
+     *
+     * 判据：最后一笔落在其目标桶的 Open 窗口内，且 O=H=L=C。实时路径不能复用该判据
+     * （桶内已并入的场内 tick 可能恰好与竞价价相同、OHLC 仍然全等），故实时路径用
+     * `bar_auction_only_` 显式跟踪"是否含场内 tick"。归档 Bar 不带来源标记，该判据对
+     * "桶内含场内 tick 但 OHLC 恰好全等"的归档 bar 会误判为竞价-only（Bar 字段冻结、
+     * 无法从归档区分），属已知限制。
+     */
     [[nodiscard]] bool is_auction_only_bar(const Bar& bar) const noexcept {
         const AuctionMatch auction = match_auction(bar.last_tick_sec);
         return auction.in_open_window &&
@@ -494,91 +469,61 @@ private:
     }
 
     /**
-     * @brief 处理 Open 竞价窗口内的 tick：归目标小节首桶并静默更新，不回调 sink
+     * @brief 处理 Open 竞价窗口内的 tick：归目标小节首桶并按正常事件模型发事件
      *
-     * 换桶/跨日时先静默收尾当前 bar（存入待补发队列，离开窗口后补发），再建立竞价 bar。
+     * 换桶/跨日时先 close 当前 bar（is_auction=true），再建立竞价 bar（open+update）；
+     * 同桶后续竞价 tick 只 update。目标桶已含场内 tick（粗周期跨小节拼根）时按普通 tick
+     * 并入，不覆盖已公开的 O/H/L。
      *
      * @param tick 行情快照（价格/时间/量额守卫已在 on_tick 通过）
      * @param tsec 交易日内秒
      * @param begin_sec 目标桶起点（Open 窗口归属小节的首桶，交易日内秒）
      */
     void on_open_auction_tick(const DzTick& tick, int32_t tsec, int32_t begin_sec) {
+        if (advance_bar(tick, begin_sec, tsec, true)) {
+            if (bar_auction_only_) {
+                // 目标桶 bar 只由竞价 tick 建立：按旧口径逐笔覆盖 O=H=L=C
+                update_auction_bar(tick, tsec);
+            } else {
+                // 粗周期跨小节拼根：目标桶已含场内 tick（已公开）。按普通 tick 并入，
+                // 不覆盖已公开的开盘价/高低点，避免竞价 tick 抹掉同桶更早的场内数据。
+                update_bar(tick, tsec);
+            }
+        }
+        notify_update(bar_, true);
+    }
+
+    /**
+     * @brief 确保当前 bar 与本笔 tick 同桶：无当前 bar 时 open 新根，换桶/换日时先 close 再 open
+     *
+     * 同桶时由调用方继续更新（普通 tick 更新 H/L/C，竞价 tick 按 `bar_auction_only_`
+     * 决定覆盖还是合并）。
+     *
+     * @param tick 行情快照（价格/时间/量额守卫已通过）
+     * @param begin_sec 本笔 tick 的目标桶起点（交易日内秒）
+     * @param tsec 交易日内秒
+     * @param is_auction 本笔 tick 是否处于 Open 竞价窗口（open/close 事件相位与新根口径）
+     * @return true = 同桶，调用方需更新当前 bar；false = 已建立新根（无当前 bar 时只 open，
+     *         换桶/换日时先 close 再 open），本笔 tick 已并入新根，调用方无需再更新
+     */
+    bool advance_bar(const DzTick& tick, int32_t begin_sec, int32_t tsec, bool is_auction) {
         if (!has_bar_) {
-            begin_bar(tick, begin_sec, tsec, BarOrigin::Auction);
-        } else if (begin_sec != bar_.begin_sec || tick.date != bar_.trading_day) {
-            silently_finalize_bar();
-            begin_bar(tick, begin_sec, tsec, BarOrigin::Auction);
-        } else if (bar_open_notified_ && !restored_auction_phase_) {
-            // 粗周期跨小节拼根：目标桶已含场内 tick（已暴露）。按普通 tick 静默并入，
-            // 不覆盖已公开的开盘价/高低点，避免竞价 tick 抹掉同桶更早的场内数据。
-            update_bar(tick, tsec);
-        } else {
-            // 未暴露的竞价 bar，或 restore 的竞价 forming bar 仍处竞价阶段：按竞价口径
-            // 逐 tick 覆盖 O=H=L=C（后者视为已 open，但不补发 open 事件）。
-            update_auction_bar(tick, tsec);
+            begin_bar(tick, begin_sec, tsec, is_auction);
+            return false;
         }
-    }
-
-    /// @brief 静默收尾当前 bar（竞价窗口内不回调），存入待补发队列
-    ///
-    /// 只有「跨交易日且窗口之间没有任何场内有效 tick」的病态流才会触发溢出；溢出时丢最旧
-    /// 的未暴露 bar，其次丢最旧的 bar。优先守住「竞价窗口内零回调」（策略不可能在竞价时段
-    /// 下单），正常行情下一个场内 tick 就会清空队列、不会走到这里。
-    void silently_finalize_bar() {
-        if (pending_count_ == MAX_PENDING_BARS) {
-            drop_one_pending_bar();
+        if (begin_sec != bar_.begin_sec || tick.date != bar_.trading_day) {
+            finalize_bar(is_auction);
+            begin_bar(tick, begin_sec, tsec, is_auction);
+            return false;
         }
-        PendingBar& pending = pending_bars_[pending_count_];
-        pending.bar = bar_;
-        pending.needs_open = !bar_open_notified_;
-        ++pending_count_;
-    }
-
-    /// @brief 队列溢出时丢弃一根待补发 bar：优先未暴露的（不会留下悬空 open），否则最旧
-    void drop_one_pending_bar() {
-        int32_t drop_index = 0;
-        for (int32_t i = 0; i < pending_count_; ++i) {
-            if (pending_bars_[i].needs_open) {
-                drop_index = i;
-                break;
-            }
-        }
-        for (int32_t i = drop_index + 1; i < pending_count_; ++i) {
-            pending_bars_[i - 1] = pending_bars_[i];
-        }
-        --pending_count_;
-    }
-
-    /// @brief 补发待发事件：从未暴露的 bar 先 open（is_final=false）再 close（is_final=true）
-    void flush_pending_bars() {
-        for (int32_t i = 0; i < pending_count_; ++i) {
-            Bar& pending_bar = pending_bars_[i].bar;
-            if (pending_bars_[i].needs_open) {
-                notify_open(pending_bar, false);  // bar 建于窗口内，事件由窗口外 tick 触发
-            }
-            pending_bar.is_final = true;
-            notify_close(pending_bar, false);
-        }
-        pending_count_ = 0;
-    }
-
-    /// @brief 当前 bar 若尚未向 sink 暴露则补发 open（竞价建立、首次被场内 tick 暴露时）
-    void expose_bar() {
-        if (bar_open_notified_) {
-            return;
-        }
-        bar_open_notified_ = true;
-        notify_open(bar_, false);
+        return true;
     }
 
     /// @brief 以 is_final=true 关闭当前 bar 并通知 sink（下一笔 tick 会开新 bar）
-    ///
-    /// 从未暴露过的 bar（仅由竞价 tick 建立）在此补发 open（is_final=false）再 close，
-    /// 保证每根 bar 恰好 open 一次、close 一次。
-    void finalize_bar() {
-        expose_bar();
+    /// @param is_auction 触发收尾的 tick 是否处于 Open 竞价窗口（事件相位）
+    void finalize_bar(bool is_auction) {
         bar_.is_final = true;
-        notify_close(bar_, false);
+        notify_close(bar_, is_auction);
     }
 
     /**
@@ -590,9 +535,10 @@ private:
      * @param tick 行情快照
      * @param begin_sec 标准开始时间（交易日内秒）
      * @param tsec 本笔 tick 的交易日内秒
-     * @param origin 新 bar 来源：Auction 不回调 open，等首次暴露或收尾时补发
+     * @param is_auction 本笔 tick 是否处于 Open 竞价窗口：决定 open 事件相位与竞价
+     *                   O=H=L=C 覆盖口径
      */
-    void begin_bar(const DzTick& tick, int32_t begin_sec, int32_t tsec, BarOrigin origin) {
+    void begin_bar(const DzTick& tick, int32_t begin_sec, int32_t tsec, bool is_auction) {
         const bool same_day = has_day_basis() && tick.date == day_basis_trading_day();
         bar_start_cum_volume_ = same_day ? day_basis_cum_volume() : 0;
         bar_start_cum_turnover_ = same_day ? day_basis_cum_turnover() : 0.0;
@@ -602,19 +548,17 @@ private:
         bar_.period_sec = period_sec_;
         bar_.is_final = false;
         has_bar_ = true;
-        restored_final_ = false;  // 恢复基准已在本根建立时消费
-        restored_auction_phase_ = false;
-        if (origin == BarOrigin::Auction) {
+        restored_final_ = false;         // 恢复基准已在本根建立时消费
+        bar_auction_only_ = is_auction;  // 只由竞价 tick 建立：同桶后续竞价 tick 覆盖 O=H=L=C
+        if (is_auction) {
             update_auction_bar(tick, tsec);
-            bar_open_notified_ = false;
-            return;
+        } else {
+            bar_.open = tick.last_price;
+            bar_.high = tick.last_price;
+            bar_.low = tick.last_price;
+            update_bar(tick, tsec);
         }
-        bar_.open = tick.last_price;
-        bar_.high = tick.last_price;
-        bar_.low = tick.last_price;
-        update_bar(tick, tsec);
-        bar_open_notified_ = true;
-        notify_open(bar_, false);
+        notify_open(bar_, is_auction);
     }
 
     /// @brief 用本笔 tick 更新形成中 bar 的 H/L/C、量额差、持仓量与最后 tick 时间
@@ -675,21 +619,18 @@ private:
         }
     }
 
-    TradingSessionTable table_;                    ///< 交易小节与竞价窗口表（按值保存）
-    int32_t period_sec_;                           ///< 周期秒数
-    Sink& sink_;                                   ///< bar 事件接收者（生命周期事件回调）
-    Bar bar_{};                                    ///< 当前形成中 bar
-    BarBuilderStats stats_{};                      ///< 丢弃计数（构造后从 0 累计）
-    bool has_bar_ = false;                         ///< 是否已有形成中 bar
-    bool bar_open_notified_ = false;               ///< 当前 bar 的 open 事件是否已发给 sink
-    int64_t bar_start_cum_volume_ = 0;             ///< 本 bar 起始累计成交量基准
-    double bar_start_cum_turnover_ = 0.0;          ///< 本 bar 起始累计成交额基准
-    PendingBar pending_bars_[MAX_PENDING_BARS]{};  ///< 竞价窗口内静默收尾、待补发的 bar
-    int32_t pending_count_ = 0;                    ///< 待补发 bar 数
-    bool tick_received_ = false;                   ///< on_tick 是否已调用过（restore 前置状态）
-    bool restored_final_ = false;                  ///< 已 restore final，等待更晚 tick 开新 bar
-    Bar restored_final_bar_{};                     ///< restore final 的 bar（交易日/桶/累计基准）
-    bool restored_auction_phase_ = false;          ///< restore 的竞价 forming bar 仍处竞价阶段
+    TradingSessionTable table_;         ///< 交易小节与竞价窗口表（按值保存）
+    int32_t period_sec_;                ///< 周期秒数
+    Sink& sink_;                        ///< bar 事件接收者（生命周期事件回调）
+    Bar bar_{};                         ///< 当前形成中 bar
+    BarBuilderStats stats_{};           ///< 丢弃计数（构造后从 0 累计）
+    bool has_bar_ = false;              ///< 是否已有形成中 bar
+    bool bar_auction_only_ = false;     ///< 当前 bar 是否只由 Open 竞价 tick 建立（覆盖 O=H=L=C）
+    int64_t bar_start_cum_volume_ = 0;  ///< 本 bar 起始累计成交量基准
+    double bar_start_cum_turnover_ = 0.0;  ///< 本 bar 起始累计成交额基准
+    bool tick_received_ = false;           ///< on_tick 是否已调用过（restore 前置状态）
+    bool restored_final_ = false;          ///< 已 restore final，等待更晚 tick 开新 bar
+    Bar restored_final_bar_{};             ///< restore final 的 bar（交易日/桶/累计基准）
 };
 
 }  // namespace dztrader::bar
