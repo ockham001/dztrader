@@ -3,13 +3,14 @@
  * @brief tick→bar 热路径基准：量化 update / 新 bar / 跨日 / 竞价四条路径的 ns/tick 与 p99
  *
  * 对应 issue #93 与 ADR 0031 决策 10：单周期更新目标 p99 ≤ 50ns/tick，新 bar 创建、跨日、
- * 集合竞价路径单独报告。本基准**只报告数值、不做阈值断言**（仓库单测标准 4.3 要求基准与
- * 秒级单测分层；阈值待数值稳定后才升级为 CI 门禁）。
+ * 集合竞价路径单独报告（竞价路径的事件形态与 is_auction 语义见 ADR 0032）。本基准**只报告
+ * 数值、不做阈值断言**（仓库单测标准 4.3 要求基准与秒级单测分层；阈值待数值稳定后才升级为
+ * CI 门禁）。
  *
  * ## 测量口径
  *
  * 每个 case 的 tick 块分成三段：`setup`（建立初始 bar，不计时）→ `timed`（全部是被测路径的
- * tick，连续）→ `teardown`（让竞价待补发队列归零等收尾动作，不计时）。块在计时循环**之外**
+ * tick，连续）→ `teardown`（收尾动作，不计时）。块在计时循环**之外**
  * 生成一次，循环里反复用「新鲜 builder + 同一块」重放：这样测的是组件自身开销，不会混入
  * 每次重建 tick 数组的冷内存与分配成本（早期版本把 296 字节 `DzTick` 按值穿过 visitor 逐笔
  * 拷贝、并每轮重建整块，update 路径被量成约 46ns/tick；修正后同一组件约 13ns/tick）。
@@ -280,7 +281,7 @@ enum class Path {
     Update,    ///< 同桶 tick：只更新当前形成中 bar
     NewBar,    ///< 跨桶 tick：close 旧 bar + open 新 bar + update
     CrossDay,  ///< 跨交易日 tick：close 旧日 + open 新日 + update
-    Auction,   ///< Open 竞价窗口内 tick：静默更新（窗口内不回调 sink）
+    Auction,   ///< Open 竞价窗口内 tick：正常发事件（首笔 open+update、其后 update）
 };
 
 /// @brief 一个基准 case：路径 + 交易小节表 + 周期
@@ -443,9 +444,9 @@ Block build_block(const Case& the_case) {
             break;
         }
         case Path::Auction: {
-            // setup：窗口首笔建立竞价 bar（不回调）。timed：窗口内其余笔 → 纯竞价静默更新。
-            // teardown：窗口后的场内 tick（09:30:00）让待补发队列归零，使块可重复重放且不触发
-            // 只有病态流才会走到的队列溢出行；它与竞价 bar 同桶，只做暴露与 update。
+            // setup：窗口首笔建立竞价 bar（open + update）。timed：窗口内其余笔 → 纯竞价
+            // update 路径（每笔一次 update，is_auction=true）。teardown：窗口后的场内 tick
+            // （09:30:00）与竞价 bar 同桶，只做 update（相位切回 false）。
             constexpr int32_t TIMED_TICKS = AUCTION_WINDOW_TICKS - 1;  // 首笔在 setup
             block.setup.push_back(gen.next(TradingTime::to_clock(AUCTION_WINDOW_BEGIN), FIRST_DAY));
             block.setup_expect.push_back(
@@ -553,18 +554,35 @@ int64_t check_segment(IntradayBarBuilder<NullBarSink>& builder,
  * @brief 统计 sink（只用于路径身份自检，不参与计时）
  *
  * 每条路径必须产生的 sink 事件形态是路径定义的直接体现；用它断言「量到的确实是这条路径」，
- * 而不是只靠 tick 时间表反推。特别是竞价路径：ADR 0031 决策 5 要求窗口内零回调，若某次
- * 改动让窗口内开始回调，路径就不是竞价路径了，数值也不再有意义。
+ * 而不是只靠 tick 时间表反推。特别是竞价路径：ADR 0032 要求窗口内正常回调且事件携带
+ * `is_auction=true`，若某次改动退回静默窗口，路径就不是竞价路径了，数值也不再有意义。
  */
 class CountingSink {
 public:
-    void on_bar_open(const Bar&, bool) { ++opens; }
-    void on_bar_update(const Bar&, bool) { ++updates; }
-    void on_bar_close(const Bar&, bool) { ++closes; }
+    void on_bar_open(const Bar&, bool is_auction) {
+        ++opens;
+        count_auction(is_auction);
+    }
+    void on_bar_update(const Bar&, bool is_auction) {
+        ++updates;
+        count_auction(is_auction);
+    }
+    void on_bar_close(const Bar&, bool is_auction) {
+        ++closes;
+        count_auction(is_auction);
+    }
 
-    int64_t opens = 0;    ///< on_bar_open 次数
-    int64_t updates = 0;  ///< on_bar_update 次数
-    int64_t closes = 0;   ///< on_bar_close 次数
+    int64_t opens = 0;           ///< on_bar_open 次数
+    int64_t updates = 0;         ///< on_bar_update 次数
+    int64_t closes = 0;          ///< on_bar_close 次数
+    int64_t auction_events = 0;  ///< is_auction=true 的事件数
+
+private:
+    void count_auction(bool is_auction) {
+        if (is_auction) {
+            ++auction_events;
+        }
+    }
 };
 
 /// @brief 一条路径在 timed 段内必须产生的 sink 事件数
@@ -572,15 +590,17 @@ struct ExpectedEvents {
     int64_t opens;    ///< 期望 on_bar_open 次数
     int64_t updates;  ///< 期望 on_bar_update 次数
     int64_t closes;   ///< 期望 on_bar_close 次数
+    bool is_auction;  ///< 期望事件是否全部携带 is_auction=true
 };
 
 /**
  * @brief 该路径 timed 段的期望事件形态
  *
- * - update：同桶 tick 只 update，零 open/close（首笔建立 bar 在 setup 里）。
- * - new-bar：每笔跨桶 → 先 close 旧根 + open 新根 + update，各 N 次。
- * - cross-day：每笔换日 → 先 close 旧日 + open 新日 + update，各 N 次。
- * - auction：Open 窗口内静默更新，**零回调**（ADR 0031 决策 5）。
+ * - update：同桶 tick 只 update，零 open/close（首笔建立 bar 在 setup 里），is_auction=false。
+ * - new-bar：每笔跨桶 → 先 close 旧根 + open 新根 + update，各 N 次，is_auction=false。
+ * - cross-day：每笔换日 → 先 close 旧日 + open 新日 + update，各 N 次，is_auction=false。
+ * - auction：Open 窗口内每笔 tick 一次 update（首笔 open 在 setup 里），事件全部
+ *   `is_auction=true`（ADR 0032）。
  *
  * @param path 被测路径
  * @param timed_ticks timed 段 tick 数
@@ -589,11 +609,12 @@ struct ExpectedEvents {
 ExpectedEvents expected_events(Path path, int64_t timed_ticks) {
     switch (path) {
         case Path::Update:
+            return ExpectedEvents{0, timed_ticks, 0, false};
         case Path::Auction:
-            return ExpectedEvents{0, path == Path::Update ? timed_ticks : 0, 0};
+            return ExpectedEvents{0, timed_ticks, 0, true};
         case Path::NewBar:
         case Path::CrossDay:
-            return ExpectedEvents{timed_ticks, timed_ticks, timed_ticks};
+            return ExpectedEvents{timed_ticks, timed_ticks, timed_ticks, false};
     }
     // switch 已覆盖全部 Path 取值；走到这里说明新增了路径却没给它定义事件形态。
     // 不用「全零」兜底 —— 那会让新路径静默通过身份自检（AGENTS §四 禁止静默回退）。
@@ -866,7 +887,8 @@ bool run_case(const Case& the_case,
     }
 
     // 路径身份自检：用 CountingSink 重放 setup + timed，断言 sink 事件形态与该路径定义一致
-    // （特别是竞价路径必须在窗口内零回调）。setup 只建立状态，事件数单独扣掉。
+    // （特别是竞价路径的事件必须全部 is_auction=true，窗口内确实在发事件）。setup 只建立状态，
+    // 事件数单独扣掉。
     {
         CountingSink setup_sink;
         IntradayBarBuilder<CountingSink> setup_builder(the_case.table, the_case.period_sec,
@@ -881,15 +903,21 @@ bool run_case(const Case& the_case,
         const int64_t opens = setup_sink.opens - setup_events.opens;
         const int64_t updates = setup_sink.updates - setup_events.updates;
         const int64_t closes = setup_sink.closes - setup_events.closes;
+        const int64_t auction_events = setup_sink.auction_events - setup_events.auction_events;
         const ExpectedEvents want = expected_events(the_case.path, result.ticks_per_rep);
-        if (opens != want.opens || updates != want.updates || closes != want.closes) {
+        const int64_t total_events = want.opens + want.updates + want.closes;
+        const int64_t want_auction_events = want.is_auction ? total_events : 0;
+        if (opens != want.opens || updates != want.updates || closes != want.closes ||
+            auction_events != want_auction_events) {
             std::fprintf(stderr,
                          "path identity mismatch | case=%s opens=%lld/%lld updates=%lld/%lld "
-                         "closes=%lld/%lld\n",
+                         "closes=%lld/%lld auction_events=%lld/%lld\n",
                          the_case.name, static_cast<long long>(opens),
                          static_cast<long long>(want.opens), static_cast<long long>(updates),
                          static_cast<long long>(want.updates), static_cast<long long>(closes),
-                         static_cast<long long>(want.closes));
+                         static_cast<long long>(want.closes),
+                         static_cast<long long>(auction_events),
+                         static_cast<long long>(want_auction_events));
             return false;
         }
     }

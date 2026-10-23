@@ -205,7 +205,12 @@ TEST_F(IntradayBarRestoreTest, RestoreFinalAcceptedAuctionTickStartsAuctionBarWi
 
     builder.on_tick(make_tick(11 * 3600 + 10 * 60, 105.0, 1010, 102010.0, 8));
 
-    EXPECT_TRUE(sink.events.empty());  // 竞价窗口内零回调
+    // restore final 只恢复基准、不补 close；窗口首笔正常 open + update
+    ASSERT_EQ(sink.events.size(), 2U);
+    EXPECT_EQ(sink.events[0].kind, EventKind::Open);
+    EXPECT_TRUE(sink.events[0].is_auction);
+    EXPECT_EQ(sink.events[1].kind, EventKind::Update);
+    EXPECT_TRUE(sink.events[1].is_auction);
     ASSERT_TRUE(builder.has_current_bar());
     const Bar& bar = builder.current_bar();
     EXPECT_EQ(bar.begin_sec, TSEC_13_00);
@@ -215,13 +220,13 @@ TEST_F(IntradayBarRestoreTest, RestoreFinalAcceptedAuctionTickStartsAuctionBarWi
     EXPECT_DOUBLE_EQ(bar.turnover, 1010.0);  // 102010 - 恢复的累计 101000
     EXPECT_FALSE(bar.is_final);
 
-    // 13:00 场内：暴露竞价 bar（补 open）后 update，量额基准仍为恢复的累计
+    // 13:00 场内：同桶只 update（不再重复 open），量额基准仍为恢复的累计
     builder.on_tick(make_tick(13 * 3600, 106.0, 1020, 103020.0, 9));
-    ASSERT_EQ(sink.events.size(), 2U);
-    EXPECT_EQ(sink.events[0].kind, EventKind::Open);
-    EXPECT_EQ(sink.events[0].bar.begin_sec, TSEC_13_00);
-    EXPECT_EQ(sink.events[1].kind, EventKind::Update);
-    EXPECT_EQ(sink.events[1].bar.volume, 20);  // 1020 - 恢复的累计 1000
+    ASSERT_EQ(sink.events.size(), 3U);
+    EXPECT_EQ(sink.events[2].kind, EventKind::Update);
+    EXPECT_FALSE(sink.events[2].is_auction);
+    EXPECT_EQ(sink.events[2].bar.begin_sec, TSEC_13_00);
+    EXPECT_EQ(sink.events[2].bar.volume, 20);  // 1020 - 恢复的累计 1000
 }
 
 // ---------------------------------------------------------------------------
@@ -374,7 +379,11 @@ TEST_F(IntradayBarRestoreTest, RestoreFormingAuctionBarContinuesAuctionOhlcOverr
 
     builder.on_tick(make_tick(8 * 3600 + 59 * 60 + 40, 103.0, 15, 1545.0, 8));
 
-    EXPECT_TRUE(sink.events.empty());  // 仍在竞价窗口内：零回调
+    // 视为已 open：只 update（is_auction=true），不重复 open
+    ASSERT_EQ(sink.events.size(), 1U);
+    EXPECT_EQ(sink.events[0].kind, EventKind::Update);
+    EXPECT_TRUE(sink.events[0].is_auction);
+    EXPECT_EQ(count_events(sink, EventKind::Open), 0);
     const Bar& bar = builder.current_bar();
     EXPECT_DOUBLE_EQ(bar.open, 103.0);  // 重启后继续按竞价口径覆盖 O=H=L=C
     EXPECT_DOUBLE_EQ(bar.high, 103.0);
@@ -397,12 +406,41 @@ TEST_F(IntradayBarRestoreTest, RestoreFormingAuctionBarSessionTickEmitsUpdateWit
 
     ASSERT_EQ(sink.events.size(), 1U);  // 视为已 open：只有 update，不补 open
     EXPECT_EQ(sink.events[0].kind, EventKind::Update);
+    EXPECT_FALSE(sink.events[0].is_auction);  // 场内 tick 触发
     const Bar& bar = builder.current_bar();
     EXPECT_DOUBLE_EQ(bar.open, 103.0);  // 竞价开盘价保留
     EXPECT_DOUBLE_EQ(bar.high, 104.0);
     EXPECT_DOUBLE_EQ(bar.close, 104.0);
     EXPECT_EQ(bar.volume, 20);  // 20 - 起始基准 0
     EXPECT_EQ(bar.last_tick_sec, TradingTime::from_clock(9 * 3600 + 20));
+}
+
+TEST_F(IntradayBarRestoreTest, RestoreFormingAuctionBarCrossWindowClosesThenOpensNewBar) {
+    const TradingSessionTable table = commodity_auction_session_table();
+    RecordingSink sink;
+    IntradayBarBuilder<RecordingSink> builder(table, 60, sink);
+    // 归档的 forming 竞价 bar：夜盘 21:00 桶，最后一笔 20:59:40 落在夜盘 Open 窗口内
+    builder.restore(make_bar(TRADING_DAY, TSEC_21_00,
+                             TradingTime::from_clock(20 * 3600 + 59 * 60 + 40), 60, 100.0, 100.0,
+                             100.0, 100.0, 10, 1000.0, 7, 10, 1000.0, false));
+    ASSERT_TRUE(builder.has_current_bar());
+    ASSERT_TRUE(sink.events.empty());  // 视为已 open，不补发 open
+
+    // 早盘开盘竞价窗口首笔（跨桶）：先 close 恢复的竞价 bar（is_auction=true）→ open 新首根 →
+    // update
+    builder.on_tick(make_tick(9 * 3600 + 29 * 60, 101.0, 12, 1212.0, 8));
+
+    ASSERT_EQ(sink.events.size(), 3U);
+    EXPECT_EQ(sink.events[0].kind, EventKind::Close);
+    EXPECT_TRUE(sink.events[0].is_auction);
+    EXPECT_TRUE(sink.events[0].bar.is_final);
+    EXPECT_EQ(sink.events[0].bar.begin_sec, TSEC_21_00);
+    EXPECT_EQ(sink.events[1].kind, EventKind::Open);
+    EXPECT_TRUE(sink.events[1].is_auction);
+    EXPECT_EQ(sink.events[1].bar.begin_sec, TSEC_09_30);
+    EXPECT_EQ(sink.events[2].kind, EventKind::Update);
+    EXPECT_TRUE(sink.events[2].is_auction);
+    EXPECT_EQ(sink.events[2].bar.volume, 2);  // 12 - 恢复的累计 10
 }
 
 // ---------------------------------------------------------------------------
@@ -554,22 +592,23 @@ TEST_F(IntradayBarRestoreTest, ResetAllowsEarlierTradingDayAfterwards) {
     EXPECT_EQ(builder_.stats().out_of_order, 0U);
 }
 
-TEST_F(IntradayBarRestoreTest, ResetDropsPendingAuctionBars) {
+TEST_F(IntradayBarRestoreTest, ResetClearsAuctionBarAndRestoresFreshSequence) {
     const TradingSessionTable table = day_auction_session_table();
     RecordingSink sink;
     IntradayBarBuilder<RecordingSink> builder(table, 60, sink);
 
     builder.on_tick(make_tick(8 * 3600 + 59 * 60 + 30, 100.0, 10, 1000.0, 7));  // 竞价窗口
     ASSERT_TRUE(builder.has_current_bar());
-    ASSERT_TRUE(sink.events.empty());
+    ASSERT_EQ(sink.events.size(), 2U);  // 窗口内正常回调：open + update
 
     builder.reset();
     EXPECT_FALSE(builder.has_current_bar());
     sink.events.clear();
 
     builder.on_tick(make_tick(9 * 3600, 101.0, 20, 2020.0, 8));
-    ASSERT_EQ(sink.events.size(), 2U);  // open + update，无补发的竞价 bar
+    ASSERT_EQ(sink.events.size(), 2U);  // open + update，竞价 bar 不再补发
     EXPECT_EQ(sink.events[0].kind, EventKind::Open);
+    EXPECT_FALSE(sink.events[0].is_auction);
     EXPECT_EQ(sink.events[1].kind, EventKind::Update);
     EXPECT_EQ(sink.events[0].bar.begin_sec, TSEC_09_00);
     EXPECT_EQ(sink.events[0].bar.volume, 20);  // reset 后基准为 0
