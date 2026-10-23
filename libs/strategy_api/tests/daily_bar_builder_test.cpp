@@ -17,7 +17,7 @@ namespace {
 /// @brief 只实现 update 回调的 sink（缺失的 open/close 应为空操作）
 class UpdateOnlySink {
 public:
-    void on_bar_update(const Bar& bar) {
+    void on_bar_update(const Bar& bar, bool) {
         ++update_count;
         last_update = bar;
     }
@@ -244,6 +244,20 @@ TEST(DailyBarBuilderSinkTest, SinkWithMissingCallbacksStillCompilesAndUpdates) {
     EXPECT_EQ(sink.last_update.trading_day, TRADING_DAY + 1);
     EXPECT_EQ(sink.last_update.volume, 200);
     EXPECT_FALSE(sink.last_update.is_final);
+}
+
+/// @brief 日线回调恒携带 is_auction=false（日线无竞价相位）
+TEST(DailyBarBuilderSinkTest, SinkCallbacksCarryIsAuctionFalse) {
+    RecordingSink sink;
+    DailyBarBuilder<RecordingSink> builder(sink);
+    builder.on_tick(make_daily_tick(9 * 3600, 100.0, 102.0, 99.0, 101.0, 1000, 101000.0, 7));
+    builder.on_tick(
+        make_daily_tick(9 * 3600, 50.0, 51.0, 49.0, 50.5, 200, 10100.0, 3, TRADING_DAY + 1));
+
+    ASSERT_EQ(sink.events.size(), 5U);  // open + update + close + open + update
+    for (const BarEvent& event : sink.events) {
+        EXPECT_FALSE(event.is_auction);
+    }
 }
 
 /// @brief 不实现任何回调的 sink 仍能正常合成日线

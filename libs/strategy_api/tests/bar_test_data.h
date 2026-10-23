@@ -77,20 +77,25 @@ inline DzTick make_daily_tick(DzTime clock,
 /// @brief 一次 bar 事件的通知类型
 enum class EventKind { Open, Update, Close };
 
-/// @brief sink 收到的一次 bar 事件（携带该时刻的 bar 快照）
+/// @brief sink 收到的一次 bar 事件（携带该时刻的 bar 快照与触发 tick 的竞价相位）
 struct BarEvent {
     EventKind kind;
     dztrader::bar::Bar bar;
+    bool is_auction = false;  ///< 触发本次回调的 tick 是否处于 Open 竞价窗口
 };
 
 /// @brief 记录完整事件序列的手写 fake sink（仓库零 GMock）
 class RecordingSink {
 public:
-    void on_bar_open(const dztrader::bar::Bar& bar) { events.push_back({EventKind::Open, bar}); }
-    void on_bar_update(const dztrader::bar::Bar& bar) {
-        events.push_back({EventKind::Update, bar});
+    void on_bar_open(const dztrader::bar::Bar& bar, bool is_auction) {
+        events.push_back({EventKind::Open, bar, is_auction});
     }
-    void on_bar_close(const dztrader::bar::Bar& bar) { events.push_back({EventKind::Close, bar}); }
+    void on_bar_update(const dztrader::bar::Bar& bar, bool is_auction) {
+        events.push_back({EventKind::Update, bar, is_auction});
+    }
+    void on_bar_close(const dztrader::bar::Bar& bar, bool is_auction) {
+        events.push_back({EventKind::Close, bar, is_auction});
+    }
 
     std::vector<BarEvent> events;
 };

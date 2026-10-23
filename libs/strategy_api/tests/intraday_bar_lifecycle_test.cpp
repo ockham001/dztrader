@@ -14,7 +14,7 @@ namespace {
 /// @brief 只实现 update 回调的 sink（缺失的 open/close 应为空操作）
 class UpdateOnlySink {
 public:
-    void on_bar_update(const Bar& bar) {
+    void on_bar_update(const Bar& bar, bool) {
         ++update_count;
         last_update = bar;
     }
@@ -197,6 +197,18 @@ TEST(IntradayBarLifecycleSinkTest, SinkWithMissingCallbacksStillCompilesAndUpdat
     EXPECT_DOUBLE_EQ(sink.last_update.close, 102.0);
     EXPECT_EQ(sink.last_update.volume, 8);  // 新 bar 量额基准接上一笔（20 - 12）
     EXPECT_FALSE(sink.last_update.is_final);
+}
+
+/// @brief 连续交易 tick 的事件都携带 is_auction=false
+TEST_F(IntradayBarLifecycleTest, SinkCallbacksCarryIsAuctionFalse) {
+    builder_.on_tick(make_tick(9 * 3600, 100.5, 10, 1005.0, 7));
+    // 跨桶：close + open + update
+    builder_.on_tick(make_tick(9 * 3600 + 60, 101.0, 20, 2020.0, 8));
+
+    ASSERT_EQ(sink_.events.size(), 5U);  // open + update + close + open + update
+    for (const BarEvent& event : sink_.events) {
+        EXPECT_FALSE(event.is_auction);
+    }
 }
 
 TEST(IntradayBarLifecycleSinkTest, SinkWithNoCallbacksStillCompiles) {
