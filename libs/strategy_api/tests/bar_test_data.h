@@ -113,6 +113,24 @@ inline void expect_bar_equal(const dztrader::bar::Bar& actual, const dztrader::b
     EXPECT_EQ(actual.is_final, expected.is_final);
 }
 
+/// @brief 收集完整 bar 序列：已收 bar 按 close 事件顺序，末尾补当前形成中 bar
+///
+/// builder 类型模板化：日内容与日线 builder 都有 has_current_bar() / current_bar()，
+/// 差分测试与多周期矩阵测试共用同一实现（避免两份逐字重复的收集器）。
+template <class Builder>
+std::vector<dztrader::bar::Bar> emitted_bars(const RecordingSink& sink, const Builder& builder) {
+    std::vector<dztrader::bar::Bar> bars;
+    for (const BarEvent& event : sink.events) {
+        if (event.kind == EventKind::Close) {
+            bars.push_back(event.bar);
+        }
+    }
+    if (builder.has_current_bar()) {
+        bars.push_back(builder.current_bar());
+    }
+    return bars;
+}
+
 /// @brief 统计某一类 bar 事件的通知次数
 inline int count_events(const RecordingSink& sink, EventKind kind) {
     return static_cast<int>(

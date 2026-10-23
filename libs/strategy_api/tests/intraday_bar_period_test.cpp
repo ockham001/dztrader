@@ -48,21 +48,6 @@ std::vector<DzTick> matrix_tick_stream() {
     return ticks;
 }
 
-/// @brief 收集完整 bar 序列：已收 bar 按 close 事件顺序，末尾补当前形成中 bar
-std::vector<Bar> emitted_bars(const RecordingSink& sink,
-                              const IntradayBarBuilder<RecordingSink>& builder) {
-    std::vector<Bar> bars;
-    for (const BarEvent& event : sink.events) {
-        if (event.kind == EventKind::Close) {
-            bars.push_back(event.bar);
-        }
-    }
-    if (builder.has_current_bar()) {
-        bars.push_back(builder.current_bar());
-    }
-    return bars;
-}
-
 /// @brief 提取 bar 序列的 begin_sec（逐根断言的直接比较对象）
 std::vector<int32_t> begin_secs(const std::vector<Bar>& bars) {
     std::vector<int32_t> result;

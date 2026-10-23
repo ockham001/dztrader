@@ -88,6 +88,9 @@ set(SDK_API_TESTS
 set(SDK_SLOW_TESTS
     date_exhaustive_test
     date_time_exhaustive_test
+    # issue #92 差分验收全量档: 旧版查表语义 oracle × 多 seed / 多周期 / 多日流
+    # 对应 fast 抽样版是 bar_diff_test.cpp（每条路径各跑一次，进默认门禁）
+    bar_diff_exhaustive_test
 )
 file(GLOB SDK_TESTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
