@@ -130,31 +130,73 @@ TEST(DiskIoTest, CounterResetIsUnavailableNotDerivedFromStaleBaseline) {
     EXPECT_DOUBLE_EQ(*values[0].queue_depth, 2.0);
 }
 
-TEST(DiskIoTest, ThirtyTwoBitCounterWrapIsHandled) {
-    // Windows 的 ReadCount/WriteCount 是 32 位 DWORD；Linux 的毫秒计数器是 32 位。
+TEST(DiskIoTest, SixtyFourBitCounterResetWithSmallValuesIsUnavailable) {
+    // 64 位计数器（Linux 的计数/字节；两平台的字节）在数值都很小时发生重置：
+    // 不得套用 32 位回绕跨度算出一个约 4 GiB / 4.3e9 次的假增量。
+    auto prev = make_disk("sda");
+    prev.read_count = 100;
+    prev.read_bytes = 1'000'000;  // 均 < 2^32
+    auto cur = make_disk("sda");
+    cur.read_count = 5;
+    cur.read_bytes = 4096;
+
+    const auto values = compute_disk_io({prev}, {cur}, 1.0);
+    ASSERT_EQ(values.size(), 1U);
+    EXPECT_FALSE(values[0].read_iops.has_value());
+    EXPECT_FALSE(values[0].read_bytes_per_sec.has_value());
+}
+
+TEST(DiskIoTest, ThirtyTwoBitCountWrapIsHandledWhenSamplingDeclaresSpan) {
+    // Windows 的 ReadCount/WriteCount 是 32 位 DWORD：采样携带 2^32 跨度。
     // 两次值都落在跨度内且本次更小 ⇒ 按跨度回绕（契约 sysmon §2.7）。
     const uint64_t u32_max = std::numeric_limits<uint32_t>::max();
 
     platform::RawDiskIoInfo prev = make_disk("sda");
     prev.read_count = u32_max - 1;
     prev.write_count = 100;
-    prev.read_time_us = u32_max * 1000ULL - 1000;  // 32 位毫秒计数器的微秒表示
-    prev.busy_time_us = kDiskTimeCounterWrapSpanUs - 500'000;
+    prev.read_time_us = 1000;
 
     platform::RawDiskIoInfo cur = make_disk("sda");
     cur.read_count = 1;  // 回绕：Δ = 3
     cur.write_count = 100;
-    cur.read_time_us = 2000;     // 回绕：Δ = 1000 + 2000 = 3000us
-    cur.busy_time_us = 500'000;  // 回绕：Δ = 1s
+    cur.read_time_us = 2000;  // 64 位时间计数器：正常增量 1000us
     cur.in_flight = 0;
+    cur.count_wrap_span = platform::DISK_IO_COUNT_WRAP_SPAN_32;
 
     const auto values = compute_disk_io({prev}, {cur}, 2.0);
     ASSERT_EQ(values.size(), 1U);
     const auto& entry = values[0];
     ASSERT_TRUE(entry.read_iops.has_value());
     EXPECT_DOUBLE_EQ(*entry.read_iops, 1.5);  // 3 次 / 2s
+    // 平均延迟 = Δ读服务时间 1000us / Δ完成数 3 = 0.333ms。
     ASSERT_TRUE(entry.latency_ms.has_value());
-    // 回绕后 Δ读服务时间 = (跨度 - 上次) + 本次 = 2000 + 2000 = 4000us；Δ完成请求数 = 3。
+    EXPECT_DOUBLE_EQ(*entry.latency_ms, 1.0 / 3.0);
+}
+
+TEST(DiskIoTest, ThirtyTwoBitTimeCounterWrapIsHandledWhenSamplingDeclaresSpan) {
+    // Linux 的 ms_reading/ms_writing/io_ticks 是 32 位毫秒计数器：换算微秒后按
+    // 2^32 × 1000 跨度处理（采集层在采样里携带该跨度）。
+    const uint64_t u32_max = std::numeric_limits<uint32_t>::max();
+
+    platform::RawDiskIoInfo prev = make_disk("sda");
+    prev.read_count = 10;
+    prev.read_time_us = u32_max * 1000ULL - 1000;  // 32 位毫秒计数器的微秒表示
+    prev.busy_time_us = platform::DISK_IO_TIME_WRAP_SPAN_US - 500'000;
+
+    platform::RawDiskIoInfo cur = make_disk("sda");
+    cur.read_count = 13;
+    cur.read_time_us = 2000;     // 回绕：Δ = 1000 + 2000 = 3000us
+    cur.busy_time_us = 500'000;  // 回绕：Δ = 1s
+    cur.in_flight = 0;
+    cur.time_wrap_span = platform::DISK_IO_TIME_WRAP_SPAN_US;
+
+    const auto values = compute_disk_io({prev}, {cur}, 2.0);
+    ASSERT_EQ(values.size(), 1U);
+    const auto& entry = values[0];
+    ASSERT_TRUE(entry.read_iops.has_value());
+    EXPECT_DOUBLE_EQ(*entry.read_iops, 1.5);  // 3 次 / 2s（64 位计数无回绕）
+    ASSERT_TRUE(entry.latency_ms.has_value());
+    // 回绕后 Δ读服务时间 = (跨度 − 上次) + 本次 = 2000 + 2000 = 4000us；Δ完成数 = 3。
     EXPECT_DOUBLE_EQ(*entry.latency_ms, 4.0 / 3.0);
     ASSERT_TRUE(entry.utilization.has_value());
     EXPECT_DOUBLE_EQ(*entry.utilization, 0.5);  // 1s / 2s

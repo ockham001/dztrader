@@ -750,22 +750,24 @@ std::optional<std::vector<std::string>> read_physical_disk_names() {
 
 /// 采集每物理盘 I/O 累计计数器（契约 sysmon §2.4、§2.7）。
 ///
-/// `/proc/diskstats` 不可读或 `/sys/block` 不可读 ⇒ std::nullopt（整体采集失败）；
-/// 两者可读但没有物理盘 ⇒ 空数组（采集成功，本机没有物理盘不是失败）。
+/// `/proc/diskstats` 不可读或 `/sys/block` 不可读 ⇒ 失败（`unavailable_reason=collect_failed`）；
+/// 两者可读但没有物理盘 ⇒ 成功 + 空数组（本机没有物理盘不是失败）。
 /// 单个设备缺少统计行时只跳过该设备（不伪造 0）。
-std::optional<std::vector<RawDiskIoInfo>> read_disk_io() {
+RawDiskIoSnapshot read_disk_io() {
+    RawDiskIoSnapshot snapshot;
     const std::string stats = read_file_contents(kProcDiskstatsPath);
     if (stats.empty()) {
-        return std::nullopt;
+        snapshot.unavailable_reason = "collect_failed";
+        return snapshot;
     }
     const auto candidates = read_physical_disk_names();
     if (!candidates.has_value()) {
-        return std::nullopt;
+        snapshot.unavailable_reason = "collect_failed";
+        return snapshot;
     }
     const auto selected = system_collector_linux_internal::select_physical_disks(
         system_collector_linux_internal::parse_diskstats(stats), *candidates);
-    std::vector<RawDiskIoInfo> disks;
-    disks.reserve(selected.size());
+    snapshot.disks.reserve(selected.size());
     for (const auto& entry : selected) {
         RawDiskIoInfo disk;
         disk.device = entry.device;
@@ -777,9 +779,13 @@ std::optional<std::vector<RawDiskIoInfo>> read_disk_io() {
         disk.write_time_us = entry.write_time_us;
         disk.busy_time_us = entry.busy_time_us;
         disk.in_flight = entry.in_flight;
-        disks.push_back(std::move(disk));
+        // Linux：计数/字节计数器是 64 位（不按回绕处理）；时间字段来自 32 位毫秒计数器，
+        // 换算微秒后按 2^32 × 1000 跨度处理（契约 sysmon §2.7）。
+        disk.count_wrap_span = 0;
+        disk.time_wrap_span = DISK_IO_TIME_WRAP_SPAN_US;
+        snapshot.disks.push_back(std::move(disk));
     }
-    return disks;
+    return snapshot;
 }
 
 /// 采集一次系统信息（失败字段留空串/0，不抛异常）。
@@ -881,7 +887,7 @@ public:
         return read_shm_dir(shm_dir);
     }
 
-    std::optional<std::vector<RawDiskIoInfo>> collect_disk_io() override { return read_disk_io(); }
+    RawDiskIoSnapshot collect_disk_io() override { return read_disk_io(); }
 
 private:
     LinuxMemorySwapReader memory_reader_;
@@ -1365,9 +1371,9 @@ bool is_physical_disk_name(std::string_view name) {
     }
     // 契约 sysmon §2.4：只统计物理盘。聚合设备（dm-/md/bcache）的 I/O 已计在底层物理盘上，
     // 同时输出会造成重复计数；内存/网络/光学设备不是"盘"。
-    static constexpr std::array<std::string_view, 15> kNonPhysicalPrefixes = {
-        "loop", "ram", "zram", "dm-", "md",      "nbd",    "rbd", "drbd",
-        "ceph", "sr",  "sg",   "fd",  "pktcdvd", "bcache", "ublk"};
+    static constexpr std::array<std::string_view, 14> kNonPhysicalPrefixes = {
+        "loop", "ram", "zram", "dm-", "md",      "nbd",    "rbd",
+        "drbd", "sr",  "sg",   "fd",  "pktcdvd", "bcache", "ublk"};
     for (const auto prefix : kNonPhysicalPrefixes) {
         if (name.starts_with(prefix)) {
             return false;

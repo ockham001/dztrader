@@ -417,8 +417,11 @@ private:
             disk_metrics_.disk_io_disabled = false;
             const auto now = std::chrono::steady_clock::now();
             const auto raw = collector_->collect_disk_io();
-            if (!raw.has_value()) {
-                disk_metrics_.disk_io = std::nullopt;  // 本帧无值；能力标记保持粘性
+            if (!raw.unavailable_reason.empty()) {
+                // 本帧无值；能力标记保持粘性。失败原因由采集层给出（Linux collect_failed /
+                // Windows no_permission），快照构造直接映射，不按平台名猜（契约 sysmon §2.5）。
+                disk_metrics_.disk_io = std::nullopt;
+                disk_metrics_.disk_io_unavailable_reason = raw.unavailable_reason;
             } else {
                 disk_metrics_.disk_io_collected = true;
                 // 速率窗口 = 两次成功采样之间实际经过的秒数（含采集失败时段，口径见契约 §2.7）。
@@ -428,9 +431,10 @@ private:
                         std::chrono::duration<double>(now - prev_disk_io_time_).count();
                 }
                 const std::vector<platform::RawDiskIoInfo> no_baseline;
-                disk_metrics_.disk_io = compute_disk_io(
-                    disk_io_has_baseline_ ? *prev_disk_io_ : no_baseline, *raw, elapsed_seconds);
-                prev_disk_io_ = std::move(*raw);
+                disk_metrics_.disk_io =
+                    compute_disk_io(disk_io_has_baseline_ ? *prev_disk_io_ : no_baseline, raw.disks,
+                                    elapsed_seconds);
+                prev_disk_io_ = raw.disks;
                 prev_disk_io_time_ = now;
                 disk_io_has_baseline_ = true;
             }

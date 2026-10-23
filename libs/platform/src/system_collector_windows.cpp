@@ -911,6 +911,11 @@ std::optional<DISK_PERFORMANCE> query_disk_performance(int index) {
     // 缓冲区可能大于公开结构（驱动返回新版结构）：只取公开结构覆盖的前缀。
     DISK_PERFORMANCE performance{};
     std::memcpy(&performance, buffer.data(), sizeof(performance));
+    // QueryTime 是每次查询都会写入的系统时间锚点；为 0 说明计数器未填充（diskperf 关闭或
+    // 驱动不支持），此时结构体里其余字段的全 0 不是"读到了 0"，必须报不可用（契约 §2.4）。
+    if (performance.QueryTime.QuadPart <= 0) {
+        return std::nullopt;
+    }
     return performance;
 }
 
@@ -919,8 +924,8 @@ std::optional<DISK_PERFORMANCE> query_disk_performance(int index) {
 /// 一个盘都读不到 ⇒ std::nullopt（Windows 计数器需特权/未使能，上层按可用性标记不可用）；
 /// 至少一个成功 ⇒ 按盘号升序返回非空数组。单个盘读到 0 是"读到了 0"，与"读不到"分开：
 /// 只有成功返回的盘才进入数组。
-std::optional<std::vector<RawDiskIoInfo>> query_disk_io() {
-    std::vector<RawDiskIoInfo> disks;
+RawDiskIoSnapshot query_disk_io() {
+    RawDiskIoSnapshot snapshot;
     for (int index = 0; index <= kPhysicalDriveMaxIndex; ++index) {
         const auto performance = query_disk_performance(index);
         if (!performance.has_value()) {
@@ -943,12 +948,19 @@ std::optional<std::vector<RawDiskIoInfo>> query_disk_io() {
         }
         // QueueDepth 是采样时刻的在途请求数（瞬时 gauge，契约 sysmon §2.4）。
         disk.in_flight = static_cast<uint64_t>(performance->QueueDepth);
-        disks.push_back(std::move(disk));
+        // Windows：ReadCount/WriteCount 是 32 位 DWORD（按 2^32 跨度处理回绕）；
+        // 字节与 100ns 时间计数器是 64 位（下降一律视为重置，契约 sysmon §2.7）。
+        disk.count_wrap_span = DISK_IO_COUNT_WRAP_SPAN_32;
+        disk.time_wrap_span = 0;
+        snapshot.disks.push_back(std::move(disk));
     }
-    if (disks.empty()) {
-        return std::nullopt;
+    if (snapshot.disks.empty()) {
+        // Windows 上无法区分"本机没有物理盘"与"全部无权限/计数器未开启"（CreateFile 失败
+        // 对两者都返回 INVALID_HANDLE_VALUE）；按契约以 no_permission（计数器需特权/未开启）
+        // 表示不可用，绝不返回空数组伪装成功（契约 sysmon §2.4）。
+        snapshot.unavailable_reason = "no_permission";
     }
-    return disks;
+    return snapshot;
 }
 
 /// Windows 采集器：系统信息每次现取；负载代理持有 PDH 查询与加权状态。
@@ -1041,7 +1053,7 @@ public:
         return query_shm_dir(shm_dir);
     }
 
-    std::optional<std::vector<RawDiskIoInfo>> collect_disk_io() override { return query_disk_io(); }
+    RawDiskIoSnapshot collect_disk_io() override { return query_disk_io(); }
 
 private:
     WindowsLoadAverageSampler load_sampler_;

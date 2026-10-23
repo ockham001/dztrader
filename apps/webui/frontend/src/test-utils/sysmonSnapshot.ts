@@ -7,7 +7,7 @@
 // watch_paths 默认给共享内存目录与数据库目录两条（落卷 /data）；
 // resourceData=true 时额外填充网卡数据并标记 network 可用（volumes / disk_io / shm_dir 默认已可用），
 // 用于「全部可用」渲染用例；sensorData=true 时额外填充温度 / 每核频率并标记可用。
-// semantic_hints 默认空对象（发送方对 disk_io 恒带口径提示；用例按需显式覆盖以验证展示）。
+// semantic_hints 默认携带 #76 后端在 disk_io 能力可用时发送的口径提示；用例可按需覆盖。
 import type {
   SysmonAvailabilityEntry,
   SysmonCoreFrequency,
@@ -74,7 +74,7 @@ export interface SysmonSnapshotOptions {
   contextSwitchesPerSec?: number | null
   /** 每秒中断；默认 567，null = 首次采样/不可用 */
   interruptsPerSec?: number | null
-  /** 跨平台语义提示（availability.semantic_hints）；默认空对象 */
+  /** 跨平台语义提示（availability.semantic_hints）；默认携带 disk_io 口径提示 */
   semanticHints?: Record<string, string>
 }
 
@@ -132,6 +132,11 @@ const DEFAULT_SHM_DIR: SysmonShmDirInfo = {
  * 默认磁盘 I/O（#76 后端形状）：两块盘，吞吐 / IOPS / 延迟 / 队列深度 / 利用率均有值。
  * 刻意按 sda、nvme0n1 的发送顺序排列，用于验证前端按 device 升序排序而不是依赖发送端顺序。
  */
+/** #76 后端在 disk_io 能力可用时发送的口径提示（契约 sysmon §2.5） */
+const DEFAULT_DISK_IO_HINT =
+  'latency is the average time per completed request, queue wait included; queue depth is the '
+  + 'instantaneous in-flight request count at the measurement tick, not an interval average'
+
 const DEFAULT_DISK_IO: SysmonDiskIoInfo[] = [
   {
     device: 'sda',
@@ -278,7 +283,9 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
     availability: {
       platform_description: 'Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)',
       metrics,
-      semantic_hints: { ...(options.semanticHints ?? {}) },
+      semantic_hints: {
+        ...(options.semanticHints ?? { disk_io: DEFAULT_DISK_IO_HINT }),
+      },
     },
   }
 }

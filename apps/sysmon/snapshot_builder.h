@@ -97,6 +97,8 @@ struct DiskMetrics {
     /// 本帧每物理盘 I/O 派生值（`compute_disk_io` 的结果）；nullopt = 本帧未采到
     /// （能力可用但失败，或不可用；空数组 = 可用且本机无物理盘）。
     std::optional<std::vector<platform::SysmonDiskIoInfo>> disk_io;
+    /// 本帧采集失败原因（采集层给出；能力从未确认时用于可用性映射，不按平台名猜）。
+    std::optional<std::string> disk_io_unavailable_reason;
 };
 
 /**

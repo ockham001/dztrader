@@ -374,32 +374,32 @@ TEST(SystemCollectorOracleTest, DiskDomainsHoldOnRealMachine) {
 }
 
 // #76 真机 oracle：首次采样返回不可用而非 0（契约 sysmon §2.7）；采集能力不可用时
-// 快照必须报告「不可用」+ reason，不得输出 0（Windows 计数器不可用是常态）。
+// 快照必须报告「不可用」+ 采集层给出的 reason，不得输出 0（Windows 计数器不可用是常态）。
 TEST(SystemCollectorOracleTest, DiskIoFirstSampleIsUnavailableNotZero) {
     const auto collector = platform::make_system_collector();
     ASSERT_NE(collector, nullptr);
     const auto first = collector->collect_disk_io();
 
     const auto info = collector->collect_system_info();
-    if (!first.has_value()) {
-        // 采集能力不可用：一致性要求由快照层承载（可用性映射 + 域为 null）。
+    if (!first.unavailable_reason.empty()) {
+        // 采集能力不可用：失败原因由采集层给出，快照构造直接映射（不按平台名猜）。
+        DiskMetrics disk_metrics;
+        disk_metrics.disk_io_unavailable_reason = first.unavailable_reason;
         const auto snapshot =
             build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{},
-                           MemorySwapMetrics{}, DiskMetrics{}, 1000, 0, 0, 1'800'000'000'000);
+                           MemorySwapMetrics{}, disk_metrics, 1000, 0, 0, 1'800'000'000'000);
         EXPECT_EQ(snapshot.disk_io, std::nullopt);
         const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO);
         EXPECT_FALSE(entry.available);
         ASSERT_TRUE(entry.reason.has_value());
-        const std::string expected =
-            info.os_family == "windows" ? "no_permission" : "collect_failed";
-        EXPECT_EQ(entry.reason.value(), expected);
+        EXPECT_EQ(entry.reason.value(), first.unavailable_reason);
         EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
         return;
     }
 
     // 首次采样（无基线）：设备条目存在，但全部派生字段 null——不得用 0 冒充。
-    const auto derived = compute_disk_io({}, *first, 1.0);
-    ASSERT_EQ(derived.size(), first->size());
+    const auto derived = compute_disk_io({}, first.disks, 1.0);
+    ASSERT_EQ(derived.size(), first.disks.size());
     for (const auto& disk : derived) {
         EXPECT_FALSE(disk.device.empty());
         EXPECT_FALSE(disk.read_bytes_per_sec.has_value()) << disk.device;
@@ -419,7 +419,7 @@ TEST(SystemCollectorOracleTest, DiskIoFirstSampleIsUnavailableNotZero) {
         build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{}, MemorySwapMetrics{},
                        disk_metrics, 1000, 0, 0, 1'800'000'000'000);
     ASSERT_TRUE(snapshot.disk_io.has_value());
-    EXPECT_EQ(snapshot.disk_io->size(), first->size());
+    EXPECT_EQ(snapshot.disk_io->size(), first.disks.size());
     EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO).available);
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
@@ -430,44 +430,50 @@ TEST(SystemCollectorOracleTest, DiskIoDerivedValuesHoldOnRealMachine) {
     const auto collector = platform::make_system_collector();
     ASSERT_NE(collector, nullptr);
     const auto first = collector->collect_disk_io();
-    if (!first.has_value()) {
+    if (!first.unavailable_reason.empty()) {
         GTEST_SKIP() << "disk performance counters unavailable on this host";
     }
 
     // 条件轮询直到任一累计计数器推进（最多约 2s）；不写文件、不以固定 sleep 作为同步手段。
+    // 只保留最近一次**成功**采样：超时前最后一次采集失败不应让本用例假红。
     const auto start = std::chrono::steady_clock::now();
     const auto deadline = start + std::chrono::seconds(2);
-    std::optional<std::vector<platform::RawDiskIoInfo>> second;
+    platform::RawDiskIoSnapshot second;
     while (std::chrono::steady_clock::now() < deadline) {
-        second = collector->collect_disk_io();
-        if (second.has_value()) {
-            bool advanced = false;
-            for (const auto& current : *second) {
-                for (const auto& previous : *first) {
-                    if (current.device == previous.device &&
-                        current.read_count + current.write_count >
-                            previous.read_count + previous.write_count) {
-                        advanced = true;
-                    }
+        const auto sample = collector->collect_disk_io();
+        if (!sample.unavailable_reason.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+        second = sample;
+        bool advanced = false;
+        for (const auto& current : second.disks) {
+            for (const auto& previous : first.disks) {
+                if (current.device == previous.device &&
+                    current.read_count + current.write_count >
+                        previous.read_count + previous.write_count) {
+                    advanced = true;
                 }
             }
-            if (advanced) {
-                break;
-            }
+        }
+        if (advanced) {
+            break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     const double elapsed_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    ASSERT_TRUE(second.has_value()) << "collect_disk_io must keep working within one sampling";
+    ASSERT_FALSE(second.disks.empty()) << "collect_disk_io must keep working within one sampling";
 
-    const auto derived = compute_disk_io(*first, *second, elapsed_seconds);
-    ASSERT_EQ(derived.size(), second->size());
+    const auto derived = compute_disk_io(first.disks, second.disks, elapsed_seconds);
+    ASSERT_EQ(derived.size(), second.disks.size());
+    bool any_value = false;
     for (const auto& disk : derived) {
         for (const auto* field :
              {&disk.read_bytes_per_sec, &disk.write_bytes_per_sec, &disk.read_iops,
               &disk.write_iops, &disk.latency_ms, &disk.queue_depth}) {
             if (field->has_value()) {
+                any_value = true;
                 EXPECT_GE(**field, 0.0) << disk.device;
                 EXPECT_TRUE(std::isfinite(**field)) << disk.device;
             }
@@ -477,6 +483,8 @@ TEST(SystemCollectorOracleTest, DiskIoDerivedValuesHoldOnRealMachine) {
             EXPECT_LE(*disk.utilization, 1.0) << disk.device;
         }
     }
+    // 有基线 + 正窗口时速率字段必然可计算；全 null 说明派生链路断开。
+    EXPECT_TRUE(any_value) << "derived disk io values must not be all null after a valid window";
 
     DiskMetrics disk_metrics;
     disk_metrics.disk_io_collected = true;
@@ -485,8 +493,9 @@ TEST(SystemCollectorOracleTest, DiskIoDerivedValuesHoldOnRealMachine) {
                                          TemperatureMetrics{}, MemorySwapMetrics{}, disk_metrics,
                                          1000, 0, 0, 1'800'000'000'000);
     ASSERT_TRUE(snapshot.disk_io.has_value());
-    EXPECT_EQ(snapshot.disk_io->size(), second->size());
+    EXPECT_EQ(snapshot.disk_io->size(), second.disks.size());
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
+
 }  // namespace
 }  // namespace dztrader::sysmon

@@ -347,16 +347,19 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
             }
         } else if (metric == platform::SYSMON_METRIC_DISK_IO) {
             // 配置关闭优先；能力可用但本帧未采到数值时仍为 available（域为 null）。
+            // 不可用原因来自采集层（Linux collect_failed / Windows no_permission），
+            // 快照构造不按平台名猜（契约 sysmon §2.5）。
             if (disk_metrics.disk_io_disabled) {
                 mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
             } else if (disk_metrics.disk_io_collected) {
                 mark_available(snapshot.availability, key);
-            } else if (system_info.os_family == "windows") {
-                // Windows 物理盘性能计数器依赖计数器开启与访问权限，不可用是常态而非异常
-                // （契约 sysmon §2.4：reason 建议取值 `no_permission` 即「计数器需特权/未开启」）。
-                mark_unavailable(snapshot.availability, key, "no_permission");
             } else {
-                mark_unavailable(snapshot.availability, key, kReasonCollectFailed);
+                const std::string& reason =
+                    disk_metrics.disk_io_unavailable_reason.has_value() &&
+                            !disk_metrics.disk_io_unavailable_reason->empty()
+                        ? *disk_metrics.disk_io_unavailable_reason
+                        : std::string(kReasonCollectFailed);
+                mark_unavailable(snapshot.availability, key, reason.c_str());
             }
         } else {
             mark_not_implemented(snapshot.availability, key);
@@ -364,13 +367,15 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
     }
 
     // semantic_hints：Windows 负载代理必须说明口径不同（契约 sysmon §2.5）；
-    // 每物理盘 I/O 的延迟与队列深度口径始终随快照携带（#76）。
+    // 每物理盘 I/O 的延迟与队列深度口径在能力可用时随快照携带（#76）。
     snapshot.availability.semantic_hints.clear();
     if (snapshot.cpu.load_average.has_value() &&
         snapshot.cpu.load_average->semantic == platform::SYSMON_LOAD_SEMANTIC_PROCESSOR_QUEUE) {
         snapshot.availability.semantic_hints[kHintKeyLoadAverage] = kProcessorQueueHint;
     }
-    snapshot.availability.semantic_hints[kHintKeyDiskIo] = kDiskIoHint;
+    if (disk_metrics.disk_io_collected && !disk_metrics.disk_io_disabled) {
+        snapshot.availability.semantic_hints[kHintKeyDiskIo] = kDiskIoHint;
+    }
 
     return snapshot;
 }

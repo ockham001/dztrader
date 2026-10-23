@@ -318,7 +318,7 @@
         "write_iops": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "写 IOPS（每秒写请求数）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充）" },
         "latency_ms": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "平均每请求延迟（毫秒）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充）" },
         "queue_depth": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "采样时刻在途请求数（瞬时 gauge，不是累计计数器）；计数器不可用时为 null（不得用 0 冒充）" },
-        "utilization": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "设备利用率（[0,1] 比率）；计数器不可用时为 null（不得用 0 冒充）" }
+        "utilization": { "anyOf": [{ "type": "number" }, { "type": "null" }], "minimum": 0, "maximum": 1, "description": "设备利用率（[0,1] 比率）；计数器不可用时为 null（不得用 0 冒充）" }
       }
     },
     "SysmonNetworkInfo": {

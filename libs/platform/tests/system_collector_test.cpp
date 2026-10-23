@@ -1112,7 +1112,7 @@ TEST(SystemCollectorTest, DiskIoCountersFollowContractInvariants) {
     ASSERT_NE(collector, nullptr);
 
     const auto first = collector->collect_disk_io();
-    if (!first.has_value()) {
+    if (!first.unavailable_reason.empty()) {
         // Windows 的物理盘性能计数器依赖计数器开启与访问权限，不可用是常态而非异常
         // （契约 sysmon §2.4）；Linux 的 /proc/diskstats 在支持宿主上必须可读。
 #if defined(__linux__)
@@ -1124,34 +1124,38 @@ TEST(SystemCollectorTest, DiskIoCountersFollowContractInvariants) {
     }
     // 设备标识非空；同一帧内唯一（设备集合可在帧间变化，但不允许重复）。
 #if defined(__linux__)
-    EXPECT_FALSE(first->empty()) << "a supported linux host must expose at least one physical disk";
+    EXPECT_FALSE(first.disks.empty())
+        << "a supported linux host must expose at least one physical disk";
 #endif
     std::vector<std::string> devices;
-    for (const auto& disk : *first) {
+    for (const auto& disk : first.disks) {
         EXPECT_FALSE(disk.device.empty());
         devices.push_back(disk.device);
-        // 累计时间不可能超过"采集器能返回的整数范围"这类永真断言不做；
-        // 这里断言可失败的结构性不变量：忙时间不得多于读写时间之和的两倍这类口径不做
-        // （不同平台锚点不同），只检查时间字段存在性由平台分支覆盖。
+        // 回绕跨度随采样携带：Linux 计数/字节为 64 位、时间来自 32 位毫秒计数器；
+        // Windows 计数为 32 位 DWORD、时间/字节为 64 位（契约 sysmon §2.7）。
+#if defined(__linux__)
+        EXPECT_EQ(disk.count_wrap_span, 0ULL) << disk.device;
+        EXPECT_EQ(disk.time_wrap_span, DISK_IO_TIME_WRAP_SPAN_US) << disk.device;
+        EXPECT_TRUE(disk.busy_time_us.has_value()) << disk.device;
+        EXPECT_TRUE(disk.in_flight.has_value()) << disk.device;
+#elif defined(_WIN32)
+        EXPECT_EQ(disk.count_wrap_span, DISK_IO_COUNT_WRAP_SPAN_32) << disk.device;
+        EXPECT_EQ(disk.time_wrap_span, 0ULL) << disk.device;
+        EXPECT_TRUE(disk.in_flight.has_value()) << disk.device;
+#endif
     }
     std::sort(devices.begin(), devices.end());
     EXPECT_EQ(std::adjacent_find(devices.begin(), devices.end()), devices.end())
         << "disk device identifiers must be unique within one frame";
-#if defined(__linux__)
-    // Linux：`/proc/diskstats` 的 in-flight 与 io_ticks 恒存在。
-    for (const auto& disk : *first) {
-        EXPECT_TRUE(disk.busy_time_us.has_value()) << disk.device;
-        EXPECT_TRUE(disk.in_flight.has_value()) << disk.device;
-    }
-#endif
 
     // 条件轮询直到任一累计计数器推进（最多约 2s）；不以固定 sleep 作为同步手段
     // （docs/unit-test-standard.md §1.5）。空转机器上可能不推进，仍做单调性检查。
+    // 只保留最近一次**成功**采样：超时前最后一次采集失败不应让本用例假红。
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    std::optional<std::vector<RawDiskIoInfo>> second;
+    RawDiskIoSnapshot second;
     auto counters_advanced = [&first](const std::vector<RawDiskIoInfo>& current) {
         for (const auto& disk : current) {
-            for (const auto& previous : *first) {
+            for (const auto& previous : first.disks) {
                 if (previous.device == disk.device &&
                     disk.read_count + disk.write_count >
                         previous.read_count + previous.write_count) {
@@ -1162,19 +1166,22 @@ TEST(SystemCollectorTest, DiskIoCountersFollowContractInvariants) {
         return false;
     };
     while (std::chrono::steady_clock::now() < deadline) {
-        second = collector->collect_disk_io();
-        if (second.has_value() && counters_advanced(*second)) {
-            break;
+        const auto sample = collector->collect_disk_io();
+        if (sample.unavailable_reason.empty()) {
+            second = sample;
+            if (counters_advanced(sample.disks)) {
+                break;
+            }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    ASSERT_TRUE(second.has_value()) << "collect_disk_io must keep working within one sampling";
+    ASSERT_FALSE(second.disks.empty()) << "collect_disk_io must keep working within one sampling";
     // 累计计数器单调不减（两平台同一不变量；32 位计数器在 2s 内不会回绕）。
-    for (const auto& current : *second) {
+    for (const auto& current : second.disks) {
         const auto it = std::find_if(
-            first->begin(), first->end(),
+            first.disks.begin(), first.disks.end(),
             [&current](const auto& previous) { return previous.device == current.device; });
-        if (it == first->end()) {
+        if (it == first.disks.end()) {
             continue;  // 设备集合可在帧间变化
         }
         EXPECT_GE(current.read_count, it->read_count) << current.device;

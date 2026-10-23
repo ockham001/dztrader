@@ -230,8 +230,7 @@ TEST(SnapshotBuilderTest, LoadAverageMappedWithoutHintForRealLoadAverage) {
     EXPECT_DOUBLE_EQ(snapshot.cpu.load_average->one.value(), 0.42);
     EXPECT_TRUE(
         snapshot.availability.metrics.at(platform::SYSMON_METRIC_CPU_LOAD_AVERAGE).available);
-    // 真实 load average 不需要口径提示；disk_io 的延迟/队列深度提示恒随快照携带（#76）。
-    EXPECT_FALSE(snapshot.availability.semantic_hints.contains("cpu.load_average"));
+    EXPECT_TRUE(snapshot.availability.semantic_hints.empty());
 }
 
 TEST(SnapshotBuilderTest, ProcessorQueueLoadAddsSemanticHint) {
@@ -273,7 +272,7 @@ TEST(SnapshotBuilderTest, LoadUnavailableWhenAbsent) {
     EXPECT_FALSE(entry.available);
     ASSERT_TRUE(entry.reason.has_value());
     EXPECT_EQ(entry.reason.value(), "collect_failed");
-    EXPECT_FALSE(snapshot.availability.semantic_hints.contains("cpu.load_average"));
+    EXPECT_TRUE(snapshot.availability.semantic_hints.empty());
 }
 
 TEST(SnapshotBuilderTest, ContextSwitchAndInterruptRatesMapped) {
@@ -737,7 +736,7 @@ public:
     std::optional<std::vector<platform::RawVolumeInfo>> volumes;
     std::vector<platform::RawWatchPathInfo> watch_paths;
     std::optional<platform::RawShmDirInfo> shm_dir;
-    std::optional<std::vector<platform::RawDiskIoInfo>> disk_io;
+    platform::RawDiskIoSnapshot disk_io;
 
     platform::RawSystemInfo collect_system_info() override { return info; }
     std::optional<platform::RawCpuTimes> collect_cpu_times() override { return times; }
@@ -763,9 +762,7 @@ public:
         (void)shm_dir_path;
         return shm_dir;
     }
-    std::optional<std::vector<platform::RawDiskIoInfo>> collect_disk_io() override {
-        return disk_io;
-    }
+    platform::RawDiskIoSnapshot collect_disk_io() override { return disk_io; }
 };
 
 TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {
@@ -1077,23 +1074,23 @@ TEST(SnapshotBuilderTest, DiskIoEmptyArrayWhenNoPhysicalDisk) {
     EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO).available);
 }
 
-TEST(SnapshotBuilderTest, DiskIoUnavailableReasonsDependOnPlatform) {
-    // Linux：/proc 不可读 → collect_failed；Windows：计数器需特权/未开启 → no_permission
-    // （契约 sysmon §2.4/§2.5：不可用是常态而非异常，读不到与读到 0 必须区分）。
-    const auto linux_snapshot = build_with(make_linux_info(), make_full_metrics());
+TEST(SnapshotBuilderTest, DiskIoUnavailableReasonComesFromCollector) {
+    // 不可用原因来自采集层（Linux collect_failed / Windows no_permission），
+    // 快照构造不按平台名猜（契约 sysmon §2.5）。能力从未确认且采集层未给原因时兜底
+    // collect_failed。
+    const auto default_snapshot = build_with(make_linux_info(), make_full_metrics());
     {
-        const auto& entry = linux_snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO);
+        const auto& entry =
+            default_snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO);
         EXPECT_FALSE(entry.available);
         ASSERT_TRUE(entry.reason.has_value());
         EXPECT_EQ(entry.reason.value(), "collect_failed");
-        EXPECT_EQ(linux_snapshot.disk_io, std::nullopt);
+        EXPECT_EQ(default_snapshot.disk_io, std::nullopt);
     }
 
-    auto windows_info = make_linux_info();
-    windows_info.os_family = "windows";
-    windows_info.os_version = "Windows 10 Pro";
-    windows_info.os_build = 19045;
-    const auto windows_snapshot = build_with(windows_info, make_full_metrics());
+    DiskMetrics disk;
+    disk.disk_io_unavailable_reason = "no_permission";
+    const auto windows_snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
     {
         const auto& entry =
             windows_snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO);
@@ -1102,6 +1099,17 @@ TEST(SnapshotBuilderTest, DiskIoUnavailableReasonsDependOnPlatform) {
         EXPECT_EQ(entry.reason.value(), "no_permission");
         EXPECT_EQ(windows_snapshot.disk_io, std::nullopt);
     }
+}
+
+TEST(SnapshotBuilderTest, DiskIoSemanticHintOnlyWhenCapabilityAvailable) {
+    // 口径提示只在能力可用时携带：能力不可用时没有数值可解释（契约 sysmon §2.5）。
+    const auto unavailable_snapshot = build_with(make_linux_info(), make_full_metrics());
+    EXPECT_FALSE(unavailable_snapshot.availability.semantic_hints.contains("disk_io"));
+
+    const auto available_snapshot =
+        build_with(make_linux_info(), make_full_metrics(), {}, {}, make_disk_io_metrics());
+    ASSERT_TRUE(available_snapshot.availability.semantic_hints.contains("disk_io"));
+    EXPECT_FALSE(available_snapshot.availability.semantic_hints.at("disk_io").empty());
 }
 
 TEST(SnapshotBuilderTest, DiskIoDisabledByConfigWinsOverCollected) {

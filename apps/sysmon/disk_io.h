@@ -9,27 +9,19 @@
  * 一律由本文件的纯函数从两次采样差值计算：
  * - 首次采样（无基线）或采样窗口非法时全部派生字段为 `std::nullopt`（不得用 0 冒充，
  *   含瞬时 gauge `queue_depth`——保证"首次采样整块不可用"这一契约语义）
- * - 计数器回绕：仅当上次与本次值均落在回绕跨度内且本次更小时按跨度回绕计算；
- *   其余下降视为计数器重置，该字段本次输出不可用（下一采样周期重建基线）
+ * - 计数器回绕按采样携带的原生位宽跨度处理（`count_wrap_span` / `time_wrap_span`，
+ *   0 = 64 位计数器不回绕；字节计数器两平台均为 64 位）：仅当上次与本次值均落在
+ *   跨度内且本次更小时按跨度回绕，其余下降视为计数器重置、该字段本次不可用
  * - 设备集合可在帧间变化：新设备无基线、消失的设备不再输出；基线按设备标识匹配
  * - 利用率与延迟的派生口径见契约 sysmon §2.4、§2.7
  */
 
-#include <cstdint>
 #include <vector>
 
 #include <dztrader/platform/sysmon.h>
 #include <dztrader/platform/system_collector.h>
 
 namespace dztrader::sysmon {
-
-/// 时间类累计计数器的回绕跨度（微秒）：Linux 内核的毫秒计数器是 32 位，
-/// 采集层换算为微秒后跨度为 `(1 << 32) * 1000`（契约 sysmon §2.7）。
-inline constexpr uint64_t kDiskTimeCounterWrapSpanUs = (1ULL << 32) * 1000ULL;
-
-/// 计数/字节类累计计数器的回绕跨度（32 位计数器：Windows 的 `ReadCount`/`WriteCount`
-/// 为 DWORD；Linux 同名计数器为 64 位，按契约回绕规则同样以该跨度兜底）。
-inline constexpr uint64_t kDiskCounterWrapSpan = 1ULL << 32;
 
 /// 利用率合理性上限：Δ忙时间超过计量窗口 1.5 倍视为计数器口径异常
 /// （如 Windows `QueryTime` 受系统时间跳变影响），本帧 `utilization` 输出 `null`，

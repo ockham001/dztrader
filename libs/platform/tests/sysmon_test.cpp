@@ -609,7 +609,6 @@ TEST(SysmonSnapshotJsonTest, DiskIoInfoSerializationKeepsContractKeys) {
     EXPECT_TRUE(json["write_bytes_per_sec"].is_null());
     EXPECT_TRUE(json["latency_ms"].is_null());
     EXPECT_DOUBLE_EQ(json["utilization"].get<double>(), 0.5);
-    EXPECT_FALSE(json.contains("device_name"));
 
     // 首次采样：设备条目存在、派生字段全 null，是通过契约校验的合法形状。
     auto snap = make_snapshot();

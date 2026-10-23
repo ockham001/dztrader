@@ -69,10 +69,10 @@ describe('MonitorView 资源监控页（三种快照状态）', () => {
     expect(wrapper.find('[data-test="monitor-cpu-unavailable"]').text()).toContain('unsupported')
     // 内存 / 交换不可用：明确空态 + 原因，不渲染任何数值
     expect(wrapper.find('[data-test="monitor-memory-unavailable"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="monitor-memory-unavailable"]').text()).toContain('disabled_by_config')
+    expect(wrapper.find('[data-test="monitor-memory-unavailable"]').text()).toContain('已在配置中关闭')
     expect(wrapper.find('[data-test="monitor-memory-value"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-memory-swap-unavailable"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="monitor-memory-swap-unavailable"]').text()).toContain('disabled_by_config')
+    expect(wrapper.find('[data-test="monitor-memory-swap-unavailable"]').text()).toContain('已在配置中关闭')
     expect(wrapper.find('[data-test="monitor-disk-unavailable"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="monitor-network-unavailable"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="monitor-disk"]').text()).toContain('该指标将在后续版本接入')
@@ -616,8 +616,8 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
     const empty = wrapper.find('[data-test="monitor-disk-unavailable"]')
     expect(empty.exists()).toBe(true)
     expect(empty.text()).toContain('不可用')
-    // 空态沿用既有 unavailableDesc：未映射的原因按裸 reason 展示
-    expect(empty.text()).toContain('disabled_by_config')
+    // 空态沿用既有 unavailableDesc：disabled_by_config 映射为「已在配置中关闭」
+    expect(empty.text()).toContain('已在配置中关闭')
     expect(wrapper.findAll('[data-test="monitor-disk-volume"]')).toHaveLength(0)
   })
 
@@ -889,8 +889,14 @@ describe('MonitorView 磁盘 I/O（#76，可用性驱动）', () => {
     expect(hint.exists()).toBe(true)
     expect(hint.text()).toBe('语义提示：windows counters are per physical disk')
 
-    useSysmonStore().applySnapshot(makeSysmonSnapshot())
+    // 防御：payload 缺省 semantic_hints（前向兼容/发送方未提供）时不渲染提示行
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({ semanticHints: {} }))
     await wrapper.vm.$nextTick()
     expect(wrapper.find('[data-test="monitor-disk-io-hint"]').exists()).toBe(false)
+
+    // 默认夹具（#76 后端形状）自带 disk_io 口径提示：恢复后应重新显示
+    useSysmonStore().applySnapshot(makeSysmonSnapshot())
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="monitor-disk-io-hint"]').exists()).toBe(true)
   })
 })

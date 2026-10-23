@@ -66,12 +66,6 @@ function formatLatency(ms: number | null | undefined): string {
   return `${ms.toFixed(2)} ms`
 }
 
-/** 采样时刻队列深度（在途请求数，瞬时 gauge）：保留 2 位小数；null 一律显示不可用 */
-function formatQueueDepth(depth: number | null | undefined): string {
-  if (typeof depth !== 'number' || !Number.isFinite(depth)) return UNAVAILABLE
-  return depth.toFixed(2)
-}
-
 /** 速率型计数（每秒上下文切换 / 中断）：整数值 + /s；null 显示不可用 */
 function formatCountPerSec(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return UNAVAILABLE
@@ -138,6 +132,7 @@ function unavailableDesc(metric: string): string {
   // reason 为契约约定的自由文案（建议取值 not_implemented/unsupported/no_permission/no_sensor/collect_failed）
   if (reason === 'not_implemented') return '该指标将在后续版本接入'
   if (reason === 'collect_failed') return '采集失败，暂不可用'
+  if (reason === 'disabled_by_config') return '已在配置中关闭'
   return reason
 }
 
@@ -211,10 +206,11 @@ const diskIoHint = computed(() => sysmon.semanticHint('disk_io'))
 // 磁盘性能计数器最常见的不可用原因（Windows 非管理员 / 计数器未开启）给出可操作文案；
 // 其余 reason 走既有 unavailableDesc。
 const diskIoUnavailableDesc = computed(() => {
-  const reason = sysmon.availabilityOf('disk_io')?.reason
-  if (reason === 'no_permission') return '磁盘性能计数器不可用（需管理员权限或性能计数器未开启）'
-  if (reason === 'disabled_by_config') return '已在配置中关闭'
-  if (reason === 'collect_failed') return '采集失败，暂不可用'
+  // no_permission 在磁盘 I/O 语境下是「性能计数器需特权/未开启」，给出可操作文案；
+  // 其余原因（disabled_by_config / collect_failed / 未知）统一走既有 unavailableDesc。
+  if (sysmon.availabilityOf('disk_io')?.reason === 'no_permission') {
+    return '磁盘性能计数器不可用（需管理员权限或性能计数器未开启）'
+  }
   return unavailableDesc('disk_io')
 })
 const networkAvailable = computed(() => isAvailable('network'))
@@ -624,7 +620,7 @@ const network = computed(() => snapshot.value?.network ?? null)
                 </div>
                 <div class="monitor-view__io-metric">
                   <dt class="monitor-view__io-label">队列深度</dt>
-                  <dd class="monitor-view__io-value">{{ formatQueueDepth(device.queue_depth) }}</dd>
+                  <dd class="monitor-view__io-value">{{ formatLoadValue(device.queue_depth) }}</dd>
                 </div>
                 <div class="monitor-view__io-metric">
                   <dt class="monitor-view__io-label">利用率</dt>

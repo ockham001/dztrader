@@ -9,47 +9,19 @@
 #include <utility>
 #include <vector>
 
+#include "cpu_usage.h"
+
 namespace dztrader::sysmon {
 namespace {
-
-/// 计算单个累计计数器的增量（契约 sysmon §2.7 的回绕/重置规则）。
-///
-/// 本次 ≥ 上次 ⇒ 正常增量；否则仅当两次值都落在回绕跨度内时按跨度回绕，
-/// 其余下降视为计数器重置（本次不可用）。
-std::optional<uint64_t> counter_delta(uint64_t prev, uint64_t cur, uint64_t wrap_span) noexcept {
-    if (cur >= prev) {
-        return cur - prev;
-    }
-    if (wrap_span != 0 && prev < wrap_span && cur < wrap_span) {
-        return (wrap_span - prev) + cur;
-    }
-    return std::nullopt;
-}
-
-/// 时间类计数器（微秒）的增量；回绕跨度为 Linux 32 位毫秒计数器的微秒表示。
-std::optional<uint64_t> time_delta(uint64_t prev, uint64_t cur) noexcept {
-    return counter_delta(prev, cur, kDiskTimeCounterWrapSpanUs);
-}
-
-/// 速率型派生值：Δ累计计数 / 实际经过秒数。
-std::optional<double> compute_rate(uint64_t prev,
-                                   uint64_t cur,
-                                   uint64_t wrap_span,
-                                   double elapsed_seconds) noexcept {
-    const auto delta = counter_delta(prev, cur, wrap_span);
-    if (!delta.has_value()) {
-        return std::nullopt;  // 计数器重置：本帧速率不可用（不得沿用上一帧或输出 0）
-    }
-    return static_cast<double>(*delta) / elapsed_seconds;
-}
 
 /// 平均延迟（毫秒/请求）= Δ(读 + 写服务时间) / Δ(读 + 写完成请求数)。
 std::optional<double> compute_latency_ms(const platform::RawDiskIoInfo& prev,
                                          const platform::RawDiskIoInfo& cur) noexcept {
-    const auto read_time = time_delta(prev.read_time_us, cur.read_time_us);
-    const auto write_time = time_delta(prev.write_time_us, cur.write_time_us);
-    const auto read_count = counter_delta(prev.read_count, cur.read_count, kDiskCounterWrapSpan);
-    const auto write_count = counter_delta(prev.write_count, cur.write_count, kDiskCounterWrapSpan);
+    const auto read_time = counter_delta(prev.read_time_us, cur.read_time_us, cur.time_wrap_span);
+    const auto write_time =
+        counter_delta(prev.write_time_us, cur.write_time_us, cur.time_wrap_span);
+    const auto read_count = counter_delta(prev.read_count, cur.read_count, cur.count_wrap_span);
+    const auto write_count = counter_delta(prev.write_count, cur.write_count, cur.count_wrap_span);
     if (!read_time.has_value() || !write_time.has_value() || !read_count.has_value() ||
         !write_count.has_value()) {
         return std::nullopt;
@@ -69,7 +41,7 @@ std::optional<double> compute_utilization(const platform::RawDiskIoInfo& prev,
     if (!prev.busy_time_us.has_value() || !cur.busy_time_us.has_value()) {
         return std::nullopt;
     }
-    const auto busy_us = time_delta(*prev.busy_time_us, *cur.busy_time_us);
+    const auto busy_us = counter_delta(*prev.busy_time_us, *cur.busy_time_us, cur.time_wrap_span);
     if (!busy_us.has_value()) {
         return std::nullopt;
     }
@@ -114,14 +86,16 @@ std::vector<platform::SysmonDiskIoInfo> compute_disk_io(
             results.push_back(std::move(info));
             continue;
         }
-        info.read_bytes_per_sec = compute_rate(baseline->read_bytes, current.read_bytes,
-                                               kDiskCounterWrapSpan, elapsed_seconds);
-        info.write_bytes_per_sec = compute_rate(baseline->write_bytes, current.write_bytes,
-                                                kDiskCounterWrapSpan, elapsed_seconds);
-        info.read_iops = compute_rate(baseline->read_count, current.read_count,
-                                      kDiskCounterWrapSpan, elapsed_seconds);
-        info.write_iops = compute_rate(baseline->write_count, current.write_count,
-                                       kDiskCounterWrapSpan, elapsed_seconds);
+        // 字节计数器两平台均为 64 位：下降一律视为计数器重置（跨度 0）。
+        info.read_bytes_per_sec =
+            compute_rate(baseline->read_bytes, current.read_bytes, elapsed_seconds, 0);
+        info.write_bytes_per_sec =
+            compute_rate(baseline->write_bytes, current.write_bytes, elapsed_seconds, 0);
+        // 计数类与时间类的回绕跨度随采样携带（平台原生位宽，契约 sysmon §2.7）。
+        info.read_iops = compute_rate(baseline->read_count, current.read_count, elapsed_seconds,
+                                      current.count_wrap_span);
+        info.write_iops = compute_rate(baseline->write_count, current.write_count, elapsed_seconds,
+                                       current.count_wrap_span);
         info.latency_ms = compute_latency_ms(*baseline, current);
         // 队列深度是在途请求数的瞬时 gauge：直接从本帧读数取值，不做差值。
         if (current.in_flight.has_value()) {
