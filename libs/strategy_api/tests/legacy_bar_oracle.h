@@ -38,7 +38,6 @@
 #include <dztrader/bar/types.h>
 #include <dztrader/struct.h>
 
-#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <stdexcept>
@@ -212,6 +211,12 @@ struct LegacyMinuteEntry {
     std::unordered_map<std::string, LegacyMinuteEntry> lookup;
     for (int32_t i = 0; i < table.session_count; ++i) {
         const bar::TradingSession& session = table.sessions[i];
+        // 旧版以 "HH:MM" 字符串为键，小节端点不整分钟时无法表达（不能静默截断到分钟）
+        if (session.begin_sec % 60 != 0 || session.end_sec % 60 != 0) {
+            throw std::invalid_argument(
+                "legacy lookup: session is not minute aligned | begin_sec=" +
+                std::to_string(session.begin_sec) + " end_sec=" + std::to_string(session.end_sec));
+        }
         LegacyMinuteEntry last_entry;
         bool has_last_entry = false;
         for (int32_t tsec = session.begin_sec; tsec < session.end_sec; tsec += 60) {
