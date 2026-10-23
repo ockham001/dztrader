@@ -133,3 +133,19 @@ foreach(testfile ${SDK_TESTS})
     endif()
     install(TARGETS dzstrategy_sdk_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()
+
+# ============================================================
+# dzstrategy_sdk_bar_perf_bench: tick→bar 热路径基准 (#93, ADR 0031 决策 10)
+# 分别报告 update / 新 bar / 跨日 / 竞价四条路径的 ns/tick 与 p99,
+# 只输出数值不做阈值断言 (report-only, 阈值待数值稳定后升级为 CI 门禁)。
+# 被测组件是 header-only, 直接编译进基准, 不链接任何内部库或第三方依赖。
+# ============================================================
+add_executable(dzstrategy_sdk_bar_perf_bench tests/bar_perf_bench.cpp)
+target_link_libraries(dzstrategy_sdk_bar_perf_bench PRIVATE strategy_api_headers)
+set_target_properties(dzstrategy_sdk_bar_perf_bench PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
+)
+add_test(NAME BarPerfBench COMMAND dzstrategy_sdk_bar_perf_bench)
+# perf = 无阈值基准项, 不进默认 fast 门禁; ctest --preset <plat>-<config>-perf
+set_tests_properties(BarPerfBench PROPERTIES LABELS perf)
+install(TARGETS dzstrategy_sdk_bar_perf_bench RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)

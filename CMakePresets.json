@@ -145,7 +145,7 @@
         {
             "name": "test-perf-base",
             "hidden": true,
-            "description": "显式基准档：无阈值 PerfBench",
+            "description": "显式基准档：无阈值性能基准（PerfBench + BarPerfBench）",
             "inherits": "test-base",
             "filter": {
                 "include": {
