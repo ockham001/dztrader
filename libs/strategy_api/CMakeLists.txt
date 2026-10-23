@@ -88,6 +88,8 @@ set(SDK_API_TESTS
 set(SDK_SLOW_TESTS
     date_exhaustive_test
     date_time_exhaustive_test
+    # issue #92 差分验收: 旧版查表语义 oracle × 多 seed / 多周期 / 多日流的逐根逐字段比较
+    bar_diff_test
 )
 file(GLOB SDK_TESTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
