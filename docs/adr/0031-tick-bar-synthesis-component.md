@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted（2026-10-22）
+Accepted（2026-10-22）。决策 5 中"窗口内不调用任何 sink 回调"的部分由 [ADR 0032](0032-auction-window-strategy-events.md) 取代（2026-10-23）；决策 5 的其余内容（竞价 tick 归后一小节首桶、`O=H=L=C`、Close 窗口按普通 tick 处理）与其它决策继续有效。
 
 ## Context
 
