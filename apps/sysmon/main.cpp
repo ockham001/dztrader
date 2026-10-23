@@ -14,6 +14,7 @@
 #include "config.h"
 #include "cpu_saturation.h"
 #include "cpu_usage.h"
+#include "disk_io.h"
 #include "snapshot_builder.h"
 #include "timer.h"
 
@@ -402,6 +403,38 @@ private:
         if (shm_dir.has_value()) {
             disk_metrics_.shm_dir_collected = true;
         }
+
+        // 每物理盘 I/O（#76）：原始累计计数器 + 单调时钟测得的实际经过时间驱动纯函数。
+        // 配置关闭优先；本帧采集失败只清数值、能力标记保持粘性；本帧新出现的设备无基线，
+        // 派生字段为 null（契约 sysmon §2.7：不得沿用上一帧、不得用 0 冒充）。
+        if (!group_enabled("disk_io")) {
+            disk_metrics_.disk_io_disabled = true;
+            disk_metrics_.disk_io = std::nullopt;
+            // 重新开启时从新基线开始：关闭期间的间隔不能被当成当前速率的计量窗口。
+            disk_io_has_baseline_ = false;
+            prev_disk_io_.reset();
+        } else {
+            disk_metrics_.disk_io_disabled = false;
+            const auto now = std::chrono::steady_clock::now();
+            const auto raw = collector_->collect_disk_io();
+            if (!raw.has_value()) {
+                disk_metrics_.disk_io = std::nullopt;  // 本帧无值；能力标记保持粘性
+            } else {
+                disk_metrics_.disk_io_collected = true;
+                // 速率窗口 = 两次成功采样之间实际经过的秒数（含采集失败时段，口径见契约 §2.7）。
+                double elapsed_seconds = 0.0;
+                if (disk_io_has_baseline_) {
+                    elapsed_seconds =
+                        std::chrono::duration<double>(now - prev_disk_io_time_).count();
+                }
+                const std::vector<platform::RawDiskIoInfo> no_baseline;
+                disk_metrics_.disk_io = compute_disk_io(
+                    disk_io_has_baseline_ ? *prev_disk_io_ : no_baseline, *raw, elapsed_seconds);
+                prev_disk_io_ = std::move(*raw);
+                prev_disk_io_time_ = now;
+                disk_io_has_baseline_ = true;
+            }
+        }
     }
 
     /// 把落卷结果与同帧卷列表对齐（契约 sysmon §7：available=true 的 watch_path 必须指向
@@ -560,7 +593,7 @@ private:
         }
     }
 
-    /// 推送实时快照（RTN_SYSMON_SNAPSHOT，无 instance_id，含系统信息/CPU/温度/内存）。
+    /// 推送实时快照（RTN_SYSMON_SNAPSHOT，无 instance_id，含系统信息/CPU/温度/内存/磁盘）。
     void push_snapshot() noexcept {
         try {
             const auto snapshot =
@@ -737,6 +770,9 @@ private:
     TemperatureMetrics temperature_metrics_;
     MemorySwapMetrics memory_metrics_;
     DiskMetrics disk_metrics_;
+    std::optional<std::vector<platform::RawDiskIoInfo>> prev_disk_io_;
+    std::chrono::steady_clock::time_point prev_disk_io_time_{};
+    bool disk_io_has_baseline_ = false;
     CoreSaturationTracker saturation_tracker_;
     int64_t last_sample_unix_ms_ = 0;
     uint64_t missed_ticks_ = 0;

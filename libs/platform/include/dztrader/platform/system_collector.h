@@ -153,6 +153,30 @@ struct RawSwapInfo {
     uint64_t free_bytes = 0;
 };
 
+/// 原始每物理盘 I/O 累计计数器（契约 sysmon §2.4；吞吐/IOPS/延迟/队列深度由纯函数计算）。
+///
+/// 时间字段统一为**微秒**：Linux `/proc/diskstats` 的毫秒计数器 ×1000，
+/// Windows `DISK_PERFORMANCE` 的 100ns 计数器 ÷10。Linux 的毫秒计数器是 32 位，
+/// 其微秒表示的回绕跨度是 `(1 << 32) * 1000` 微秒（契约 sysmon §2.7 的回绕处理）；
+/// 计数/字节字段在 Windows 上分别来自 32 位 DWORD / 64 位 LARGE_INTEGER。
+struct RawDiskIoInfo {
+    /// 设备标识：Linux 为内核块设备名（`sda` / `nvme0n1`）；Windows 为 `PhysicalDrive0`
+    /// 形式（与参考实现一致的物理盘编号，不含 `\\.\` 前缀）。
+    std::string device;
+    uint64_t read_count = 0;     ///< 累计完成的读请求数
+    uint64_t write_count = 0;    ///< 累计完成的写请求数
+    uint64_t read_bytes = 0;     ///< 累计读取字节数
+    uint64_t write_bytes = 0;    ///< 累计写入字节数
+    uint64_t read_time_us = 0;   ///< 累计读请求服务时间（微秒）
+    uint64_t write_time_us = 0;  ///< 累计写请求服务时间（微秒）
+    /// 累计设备忙时间（微秒；"至少有一个 I/O 在处理"的墙钟时间）；
+    /// std::nullopt = 本平台不提供/本次未读到。
+    std::optional<uint64_t> busy_time_us;
+    /// 采样时刻的在途请求数（瞬时 gauge；不是区间平均队列深度）；
+    /// std::nullopt = 本平台不提供/本次未读到。
+    std::optional<uint64_t> in_flight;
+};
+
 /// 系统指标采集接缝。
 ///
 /// 唯一实现入口：`make_system_collector()`（按编译平台返回对应实现）。
@@ -213,6 +237,20 @@ public:
     /// @param shm_dir 共享内存根目录（由调用方按 `paths::shm()` 传入，便于测试用临时目录驱动）
     /// @return 目录不存在/不可读返回 std::nullopt（不得返回全 0 的对象伪装成功）。
     virtual std::optional<RawShmDirInfo> collect_shm_dir(const std::string& shm_dir) = 0;
+
+    /// 采集每物理盘 I/O 累计计数器（契约 sysmon §2.4、§2.7）。
+    ///
+    /// 采集范围只含整块物理设备：Linux 以 `/sys/block` 的整盘条目为准（分区不在其下），
+    /// 并排除 loop/ram/zram/dm-/md/sr 等虚拟或光学设备；Windows 遍历 `\\.\PhysicalDriveN`
+    /// 并用 `IOCTL_DISK_PERFORMANCE` 读取物理盘累计计数器（该能力依赖性能计数器已开启与
+    /// 访问权限，不可用是常态，见契约 sysmon §2.4）。
+    ///
+    /// 单个设备读不到时该设备**不出现**在结果里（契约 disk_io[] 没有 per-device 不可用表示）；
+    /// **一个设备都读不到**时返回 std::nullopt，由上层按可用性映射标记不可用
+    /// （Windows 计数器需特权/未开启；Linux `/proc` 不可读）。
+    /// @return 空数组 = 采集成功但本机没有物理盘（Linux；不是失败——Windows 打不开任何
+    ///         盘号时无法区分"没有盘"与"全部无权限"，恒以 std::nullopt 表示不可用）。
+    virtual std::optional<std::vector<RawDiskIoInfo>> collect_disk_io() = 0;
 
 protected:
     SystemCollector() = default;

@@ -5,9 +5,9 @@
  * @file snapshot_builder.h
  * @brief RTN_SYSMON_SNAPSHOT payload 构造（契约 sysmon §2）。
  *
- * 本票（#75）填系统信息、CPU 总量/每核/饱和标记/负载/上下文切换与中断速率、每核频率、
- * 温度、内存与交换、卷容量与关注路径落卷、共享内存目录占用；磁盘 I/O 与网络仍输出 `null`
- * 并在 `availability.metrics` 标记 `available=false + reason="not_implemented"`。
+ * 本票（#76）填系统信息、CPU 总量/每核/饱和标记/负载/上下文切换与中断速率、每核频率、
+ * 温度、内存与交换、卷容量与关注路径落卷、共享内存目录占用、每物理盘 I/O；网络仍输出
+ * `null` 并在 `availability.metrics` 标记 `available=false + reason="not_implemented"`。
  * 已列出的指标域后续只填值、不改形状。
  *
  * 纯函数：不读时钟、不读配置全局状态，输入即快照的全部事实来源，便于用假数据测试。
@@ -90,6 +90,13 @@ struct DiskMetrics {
     bool shm_dir_collected = false;  ///< 共享内存目录采集能力是否可用（粘性）
     /// 本帧共享内存目录占用；nullopt = 本帧未读到（能力可用但失败，或不可用）。
     std::optional<platform::RawShmDirInfo> shm_dir;
+
+    /// 配置关闭 sampling.groups.disk_io（优先级最高：域为 null + disabled_by_config）。
+    bool disk_io_disabled = false;
+    bool disk_io_collected = false;  ///< 每物理盘 I/O 采集能力是否可用（粘性）
+    /// 本帧每物理盘 I/O 派生值（`compute_disk_io` 的结果）；nullopt = 本帧未采到
+    /// （能力可用但失败，或不可用；空数组 = 可用且本机无物理盘）。
+    std::optional<std::vector<platform::SysmonDiskIoInfo>> disk_io;
 };
 
 /**
@@ -100,7 +107,8 @@ struct DiskMetrics {
  * @param cpu_metrics          CPU 区块的测量结果与能力标记
  * @param temperature_metrics  温度传感器的测量结果与能力标记
  * @param memory_metrics       内存/交换的测量结果与能力标记
- * @param disk_metrics         卷/关注路径/共享内存目录的测量结果与能力标记（#75）
+ * @param disk_metrics         卷/关注路径/共享内存目录/每物理盘 I/O 的测量结果与能力标记
+ *                             （#75、#76）
  * @param measure_interval_ms  当前计量间隔（毫秒）
  * @param last_sample_unix_ms  最近一次计量成功的墙钟时间（Unix 毫秒，0 = 尚无成功样本）
  * @param missed_ticks         累计错过的计量 tick 数

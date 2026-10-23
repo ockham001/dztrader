@@ -753,3 +753,144 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
     expect(sysmonApi.getSnapshot).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('MonitorView 磁盘 I/O（#76，可用性驱动）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('默认快照（能力可用）：两块盘按 device 升序渲染吞吐 / IOPS / 延迟 / 队列深度 / 利用率', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+
+    const rows = wrapper.findAll('[data-test="monitor-disk-io-row"]')
+    expect(rows).toHaveLength(2)
+    // payload 顺序为 sda、nvme0n1；store 按 device 升序重排
+    expect(rows[0].attributes('data-device')).toBe('nvme0n1')
+    expect(rows[1].attributes('data-device')).toBe('sda')
+
+    const nvmeValues = rows[0].findAll('.monitor-view__io-value').map(value => value.text())
+    expect(nvmeValues).toEqual([
+      '64.0 MiB/s',
+      '32.0 MiB/s',
+      '2048 IOPS',
+      '1024 IOPS',
+      '0.45 ms',
+      '1.25',
+      '72.0%',
+    ])
+
+    const sdaValues = rows[1].findAll('.monitor-view__io-value').map(value => value.text())
+    expect(sdaValues).toEqual([
+      '4.0 MiB/s',
+      '2.0 MiB/s',
+      '128 IOPS',
+      '64 IOPS',
+      '1.25 ms',
+      '2.50',
+      '35.0%',
+    ])
+
+    expect(wrapper.find('[data-test="monitor-disk-io-empty"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-disk-io-unavailable"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-disk-io"]').text()).not.toContain('不可用')
+  })
+
+  it('首帧 / 计数器重置（七项均 null）：逐项显示「不可用」，绝不显示 0', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      diskIo: [{
+        device: 'sda',
+        read_bytes_per_sec: null,
+        write_bytes_per_sec: null,
+        read_iops: null,
+        write_iops: null,
+        latency_ms: null,
+        queue_depth: null,
+        utilization: null,
+      }],
+    }))
+    const wrapper = await mountView()
+
+    const row = wrapper.find('[data-test="monitor-disk-io-row"]')
+    expect(row.attributes('data-device')).toBe('sda')
+    const values = row.findAll('.monitor-view__io-value').map(value => value.text())
+    expect(values).toHaveLength(7)
+    expect(values.every(value => value === '不可用')).toBe(true)
+    // 不得用 0 冒充：不出现 0 B/s、0 IOPS、0.00 ms、0.0%
+    expect(row.text()).not.toContain('0 B/s')
+    expect(row.text()).not.toContain('0 IOPS')
+    expect(row.text()).not.toContain('0.00 ms')
+    expect(row.text()).not.toContain('0.0%')
+    expect(wrapper.find('[data-test="monitor-disk-io-empty"]').exists()).toBe(false)
+  })
+
+  it('能力不可用（no_permission）：整块「不可用」+ 可操作文案，不渲染盘行', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      metrics: { disk_io: { available: false, reason: 'no_permission' } },
+    }))
+    const wrapper = await mountView()
+
+    const unavailable = wrapper.find('[data-test="monitor-disk-io-unavailable"]')
+    expect(unavailable.exists()).toBe(true)
+    expect(unavailable.text()).toContain('不可用')
+    expect(unavailable.text()).toContain('磁盘性能计数器不可用（需管理员权限或性能计数器未开启）')
+    expect(wrapper.findAll('[data-test="monitor-disk-io-row"]')).toHaveLength(0)
+  })
+
+  it('可用但本帧空数组 / null：显示「暂无数据」而不是「不可用」', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ diskIo: [] }))
+    const wrapper = await mountView()
+
+    const empty = wrapper.find('[data-test="monitor-disk-io-empty"]')
+    expect(empty.exists()).toBe(true)
+    expect(empty.text()).toContain('暂无数据')
+    expect(wrapper.find('[data-test="monitor-disk-io-unavailable"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-test="monitor-disk-io-row"]')).toHaveLength(0)
+
+    // 能力粘性可用、本帧值为 null（WS 推送）→ 同样走「暂无数据」，不改成「不可用」
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({ diskIo: null }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="monitor-disk-io-empty"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-disk-io-unavailable"]').exists()).toBe(false)
+  })
+
+  it('不可用原因文案：disabled_by_config / collect_failed / 未知 reason 分别映射', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({
+      metrics: { disk_io: { available: false, reason: 'disabled_by_config' } },
+    }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="monitor-disk-io-unavailable"]').text()).toContain('已在配置中关闭')
+
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({
+      metrics: { disk_io: { available: false, reason: 'collect_failed' } },
+    }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="monitor-disk-io-unavailable"]').text()).toContain('采集失败，暂不可用')
+
+    // 未知 reason 走既有 unavailableDesc：裸 reason 展示，不吞掉诊断信息
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({
+      metrics: { disk_io: { available: false, reason: 'some_new_reason' } },
+    }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="monitor-disk-io-unavailable"]').text()).toContain('some_new_reason')
+  })
+
+  it('semantic_hints.disk_io 非空：区块内显示「语义提示：…」；为空时不渲染', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      semanticHints: { disk_io: 'windows counters are per physical disk' },
+    }))
+    const wrapper = await mountView()
+
+    const hint = wrapper.find('[data-test="monitor-disk-io-hint"]')
+    expect(hint.exists()).toBe(true)
+    expect(hint.text()).toBe('语义提示：windows counters are per physical disk')
+
+    useSysmonStore().applySnapshot(makeSysmonSnapshot())
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="monitor-disk-io-hint"]').exists()).toBe(false)
+  })
+})

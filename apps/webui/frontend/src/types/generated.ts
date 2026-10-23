@@ -290,14 +290,21 @@ export interface SysmonWatchPathInfo {
 }
 
 export interface SysmonDiskIoInfo {
-    /** 物理盘标识 */
+    /** 物理盘标识（Linux 为 sda/nvme0n1 等内核设备名；Windows 为 PhysicalDrive0 等物理盘号） */
     device: string
+    /** 读吞吐（字节/秒）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充） */
     read_bytes_per_sec: number | null
+    /** 写吞吐（字节/秒）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充） */
     write_bytes_per_sec: number | null
+    /** 读 IOPS（每秒读请求数）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充） */
     read_iops: number | null
+    /** 写 IOPS（每秒写请求数）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充） */
     write_iops: number | null
+    /** 平均每请求延迟（毫秒）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充） */
     latency_ms: number | null
+    /** 采样时刻在途请求数（瞬时 gauge，不是累计计数器）；计数器不可用时为 null（不得用 0 冒充） */
     queue_depth: number | null
+    /** 设备利用率（[0,1] 比率）；计数器不可用时为 null（不得用 0 冒充） */
     utilization: number | null
 }
 

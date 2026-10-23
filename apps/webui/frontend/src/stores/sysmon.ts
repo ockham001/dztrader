@@ -5,6 +5,7 @@ import type {
   SysmonAvailabilityEntry,
   SysmonCoreFrequency,
   SysmonCpuCore,
+  SysmonDiskIoInfo,
   SysmonLoadAverage,
   SysmonMemoryInfo,
   SysmonShmDirInfo,
@@ -23,6 +24,11 @@ function toFiniteNumber(value: unknown): number | null {
 /** 非负整数字节数校验：null / undefined / NaN / Infinity / 负数 / 非整数一律视为不可用 */
 function toNonNegativeInteger(value: unknown): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null
+}
+
+/** 非负数值校验：null / undefined / NaN / Infinity / 负数一律视为不可用（不得用 0 冒充） */
+function toNonNegativeNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 }
 
 /**
@@ -351,6 +357,38 @@ export const useSysmonStore = defineStore('sysmon', () => {
     }
   })
 
+  /**
+   * 每物理盘 I/O（契约 sysmon §2.4，#76）。仅当可用性映射标记 `disk_io` 可用且快照携带
+   * 数组时返回净化后的数组，否则空数组 —— 视图据此区分「指标不可用」与「可用但暂无数据」。
+   *
+   * 七项计量字段一律净化：首次采样 / 计数器重置时发送端输出 null，**不得用 0 冒充**。
+   * 速率 / IOPS / 延迟 / 队列深度须为有限非负数（负数/NaN/Infinity → null，0 是合法真实值）；
+   * `utilization` 为 [0,1] 比率，越界/非有限 → null。`device` 为空串的条目剔除；
+   * 按 device `localeCompare` 升序排序，不依赖发送端顺序。
+   */
+  const diskIo = computed<SysmonDiskIoInfo[]>(() => {
+    const s = snapshot.value
+    if (!s || s.availability.metrics['disk_io']?.available !== true) return []
+    const devices = Array.isArray(s.disk_io) ? s.disk_io : []
+    const result: SysmonDiskIoInfo[] = []
+    for (const entry of devices) {
+      const device = typeof entry?.device === 'string' ? entry.device.trim() : ''
+      if (!device) continue
+      const utilization = toNonNegativeNumber(entry?.utilization)
+      result.push({
+        device,
+        read_bytes_per_sec: toNonNegativeNumber(entry?.read_bytes_per_sec),
+        write_bytes_per_sec: toNonNegativeNumber(entry?.write_bytes_per_sec),
+        read_iops: toNonNegativeNumber(entry?.read_iops),
+        write_iops: toNonNegativeNumber(entry?.write_iops),
+        latency_ms: toNonNegativeNumber(entry?.latency_ms),
+        queue_depth: toNonNegativeNumber(entry?.queue_depth),
+        utilization: utilization !== null && utilization <= 1 ? utilization : null,
+      })
+    }
+    return result.sort((a, b) => a.device.localeCompare(b.device))
+  })
+
   /** 跨平台语义提示（契约 sysmon §2.5）：缺失 / 非字符串返回空串，由视图决定是否展示 */
   function semanticHint(key: string): string {
     const hints = snapshot.value?.availability.semantic_hints
@@ -376,6 +414,7 @@ export const useSysmonStore = defineStore('sysmon', () => {
     volumes,
     watchPaths,
     shmDirInfo,
+    diskIo,
     semanticHint,
     init,
     applySnapshot,

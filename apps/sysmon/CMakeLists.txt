@@ -10,6 +10,7 @@ add_library(dzsysmon_obj OBJECT
     config.cpp
     cpu_saturation.cpp
     cpu_usage.cpp
+    disk_io.cpp
     snapshot_builder.cpp
 )
 target_include_directories(dzsysmon_obj PUBLIC

@@ -510,6 +510,7 @@ std::optional<std::string> validate_snapshot_disk_io(const json& disk_io) {
     if (!disk_io.is_array()) {
         return err("disk_io", "must be an array or null");
     }
+    std::set<std::string> devices;
     for (std::size_t i = 0; i < disk_io.size(); ++i) {
         const auto& item = disk_io[i];
         const std::string path = "disk_io[" + std::to_string(i) + "]";
@@ -519,11 +520,18 @@ std::optional<std::string> validate_snapshot_disk_io(const json& disk_io) {
         if (auto e = require_non_empty_string(item, path, "device")) {
             return e;
         }
+        if (!devices.insert(item["device"].get<std::string>()).second) {
+            return err(path + ".device", "must be unique within the frame");
+        }
         for (const char* key : {"read_bytes_per_sec", "write_bytes_per_sec", "read_iops",
-                                "write_iops", "latency_ms", "queue_depth", "utilization"}) {
+                                "write_iops", "latency_ms", "queue_depth"}) {
             if (auto e = validate_optional_rate(item, path, key)) {
                 return e;
             }
+        }
+        // utilization 是比率：null 或 [0,1]（契约 sysmon §2.4、§7）。
+        if (auto e = validate_optional_ratio(item, path, "utilization")) {
+            return e;
         }
     }
     return std::nullopt;

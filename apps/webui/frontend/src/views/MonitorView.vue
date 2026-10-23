@@ -11,6 +11,8 @@ import { useSysmonStore } from '@/stores/sysmon'
 // 温度 / 每核频率（B 组）按可用性映射渲染：不可用时整块不渲染（不是显示 0 / 不可用占位）。
 // 磁盘（#75）按可用性映射渲染：卷按 watched 优先排序并高亮关注卷；单个卷 available=false
 // 显示「不可用」+ 原因而不是 0；shm_dir 展示共享内存目录占用（页清理是否生效的可观测项）。
+// 磁盘 I/O（#76）按可用性映射渲染：每物理盘的吞吐 / IOPS / 延迟 / 队列深度 / 利用率，
+// 数值 null（首次采样/计数器重置）逐项显示「不可用」，能力不可用时整块显示原因。
 // 刷新基线由发送方 realtime.push_interval_sec（默认 5s）决定，本页不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
 
@@ -50,6 +52,24 @@ function formatRate(bytesPerSec: number | null | undefined): string {
 function formatLoadValue(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return UNAVAILABLE
   return value.toFixed(2)
+}
+
+/** 每秒 I/O 操作数（IOPS）：整数 + 单位；null 一律显示不可用（不得用 0 冒充） */
+function formatIops(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return UNAVAILABLE
+  return `${Math.round(value)} IOPS`
+}
+
+/** 平均每请求延迟（毫秒）：保留 2 位小数 + 单位；null 一律显示不可用 */
+function formatLatency(ms: number | null | undefined): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return UNAVAILABLE
+  return `${ms.toFixed(2)} ms`
+}
+
+/** 采样时刻队列深度（在途请求数，瞬时 gauge）：保留 2 位小数；null 一律显示不可用 */
+function formatQueueDepth(depth: number | null | undefined): string {
+  if (typeof depth !== 'number' || !Number.isFinite(depth)) return UNAVAILABLE
+  return depth.toFixed(2)
 }
 
 /** 速率型计数（每秒上下文切换 / 中断）：整数值 + /s；null 显示不可用 */
@@ -182,6 +202,21 @@ const volumes = computed(() => sysmon.volumes)
 const watchPaths = computed(() => sysmon.watchPaths)
 const shmAvailable = computed(() => isAvailable('shm_dir'))
 const shmDir = computed(() => sysmon.shmDirInfo)
+// ---- 磁盘 I/O（#76）：每物理盘吞吐 / IOPS / 延迟 / 队列深度 / 利用率，按可用性映射渲染 ----
+// 只在 availability.metrics 上分支，不按 platform.family 分支；数值 null（首次采样/计数器重置）
+// 逐项显示「不可用」，绝不显示 0。
+const diskIoAvailable = computed(() => isAvailable('disk_io'))
+const diskIo = computed(() => sysmon.diskIo)
+const diskIoHint = computed(() => sysmon.semanticHint('disk_io'))
+// 磁盘性能计数器最常见的不可用原因（Windows 非管理员 / 计数器未开启）给出可操作文案；
+// 其余 reason 走既有 unavailableDesc。
+const diskIoUnavailableDesc = computed(() => {
+  const reason = sysmon.availabilityOf('disk_io')?.reason
+  if (reason === 'no_permission') return '磁盘性能计数器不可用（需管理员权限或性能计数器未开启）'
+  if (reason === 'disabled_by_config') return '已在配置中关闭'
+  if (reason === 'collect_failed') return '采集失败，暂不可用'
+  return unavailableDesc('disk_io')
+})
 const networkAvailable = computed(() => isAvailable('network'))
 const network = computed(() => snapshot.value?.network ?? null)
 </script>
@@ -549,6 +584,68 @@ const network = computed(() => snapshot.value?.network ?? null)
         </div>
       </section>
 
+      <!-- 磁盘 I/O（#76）：按 availability.metrics 渲染；每盘吞吐 / IOPS / 延迟 / 队列深度 /
+           利用率，任一数值 null 逐项显示「不可用」（首次采样/计数器重置，绝不显示 0） -->
+      <section class="ds-card monitor-view__card" data-test="monitor-disk-io">
+        <h2 class="ds-card__title monitor-view__card-title">
+          <span class="monitor-view__card-icon"><Icon name="Disk" :size="14" /></span>磁盘 I/O
+        </h2>
+
+        <template v-if="diskIoAvailable">
+          <ul v-if="diskIo.length > 0" class="monitor-view__io-list">
+            <li
+              v-for="device in diskIo"
+              :key="device.device"
+              class="monitor-view__io-row"
+              data-test="monitor-disk-io-row"
+              :data-device="device.device"
+            >
+              <div class="monitor-view__io-device">{{ device.device }}</div>
+              <dl class="monitor-view__io-metrics">
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">读吞吐</dt>
+                  <dd class="monitor-view__io-value">{{ formatRate(device.read_bytes_per_sec) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">写吞吐</dt>
+                  <dd class="monitor-view__io-value">{{ formatRate(device.write_bytes_per_sec) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">读 IOPS</dt>
+                  <dd class="monitor-view__io-value">{{ formatIops(device.read_iops) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">写 IOPS</dt>
+                  <dd class="monitor-view__io-value">{{ formatIops(device.write_iops) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">延迟</dt>
+                  <dd class="monitor-view__io-value">{{ formatLatency(device.latency_ms) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">队列深度</dt>
+                  <dd class="monitor-view__io-value">{{ formatQueueDepth(device.queue_depth) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">利用率</dt>
+                  <dd class="monitor-view__io-value">{{ formatPercent(device.utilization) }}</dd>
+                </div>
+              </dl>
+            </li>
+          </ul>
+          <div v-else class="ds-empty monitor-view__empty" data-test="monitor-disk-io-empty">
+            <div class="ds-empty__title">暂无数据</div>
+            <div class="ds-empty__desc">当前快照未提供磁盘 I/O 数据</div>
+          </div>
+          <!-- 语义提示（如 Windows 计数器口径说明）：非空时展示，参考系统负载 hint 的做法 -->
+          <p v-if="diskIoHint" class="monitor-view__hint" data-test="monitor-disk-io-hint">语义提示：{{ diskIoHint }}</p>
+        </template>
+        <div v-else class="ds-empty monitor-view__empty" data-test="monitor-disk-io-unavailable">
+          <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+          <div class="ds-empty__desc">{{ diskIoUnavailableDesc }}</div>
+        </div>
+      </section>
+
       <!-- 网络 -->
       <section class="ds-card monitor-view__card" data-test="monitor-network">
         <h2 class="ds-card__title monitor-view__card-title">
@@ -690,6 +787,63 @@ const network = computed(() => snapshot.value?.network ?? null)
 .monitor-view__disk-row--watched {
   border-left-color: var(--status-warning-default);
   background: var(--status-warning-surface-l1);
+}
+
+/* ---- 磁盘 I/O（#76）：每个物理盘一块，指标网格窄屏自动换行（auto-fit），全部走设计 token ---- */
+.monitor-view__io-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-8);
+}
+
+.monitor-view__io-row {
+  display: grid;
+  gap: var(--spacer-8);
+  min-width: 0;
+  padding: var(--spacer-8) var(--spacer-12);
+  border: 1px solid var(--border-neutral-l1);
+  border-radius: var(--radius-6);
+}
+
+.monitor-view__io-device {
+  color: var(--text-default);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  font-weight: var(--body-sm-strong-font-weight);
+  overflow-wrap: anywhere;
+}
+
+.monitor-view__io-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: var(--spacer-4) var(--spacer-16);
+  margin: 0;
+}
+
+.monitor-view__io-metric {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-2);
+  min-width: 0;
+}
+
+.monitor-view__io-label {
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
+.monitor-view__io-value {
+  margin: 0;
+  color: var(--text-default);
+  font-family: var(--font-family-metric);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .monitor-view__bar {

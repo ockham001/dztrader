@@ -725,6 +725,96 @@ TEST(MountParserTest, VolumeResolutionFallsBackToDeviceIdentity) {
 
 #endif  // defined(__linux__)
 
+// ===== #76 内部接缝：/proc/diskstats 解析与物理盘过滤（契约 sysmon §2.4）=====
+#if defined(__linux__)
+namespace diskstats_test {
+using system_collector_linux_internal::is_physical_disk_name;
+using system_collector_linux_internal::parse_diskstats;
+using system_collector_linux_internal::select_physical_disks;
+}  // namespace diskstats_test
+using namespace diskstats_test;  // NOLINT(google-build-using-namespace)：仅测试翻译单元
+
+TEST(DiskstatsParserTest, ParsesWholeDiskLineIntoCollectorUnits) {
+    // 真实 /proc/diskstats 节选（5.5+ 格式：20 字段，前 11 项统计语义是内核 ABI）。
+    const std::string content =
+        "   8       0 sda 5979440 1325698 194490474 2837705 4142227 9585008 "
+        "412194506 16779003 0 5045106 21121076 11340 0 275034960 13410 474211 1490955\n";
+
+    const auto entries = parse_diskstats(content);
+    ASSERT_EQ(entries.size(), 1U);
+    const auto& disk = entries[0];
+    EXPECT_EQ(disk.device, "sda");
+    EXPECT_EQ(disk.read_count, 5979440ULL);
+    EXPECT_EQ(disk.write_count, 4142227ULL);
+    // 扇区固定按 512 字节换算（内核 ABI 口径）。
+    EXPECT_EQ(disk.read_bytes, 194490474ULL * 512ULL);
+    EXPECT_EQ(disk.write_bytes, 412194506ULL * 512ULL);
+    // 内核的毫秒计数器换算为微秒（采集接缝统一口径）。
+    EXPECT_EQ(disk.read_time_us, 2837705ULL * 1000ULL);
+    EXPECT_EQ(disk.write_time_us, 16779003ULL * 1000ULL);
+    EXPECT_EQ(disk.busy_time_us, 5045106ULL * 1000ULL);
+    EXPECT_EQ(disk.in_flight, 0ULL);
+}
+
+TEST(DiskstatsParserTest, ParsesLegacyFourteenFieldFormat) {
+    // 2.6+ 无 discard/flush 字段的 14 字段整盘行。
+    const std::string content = "   8       0 sda 10 20 1024 30 40 50 2048 60 2 70 80\n";
+    const auto entries = parse_diskstats(content);
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_EQ(entries[0].read_count, 10ULL);
+    EXPECT_EQ(entries[0].read_bytes, 1024ULL * 512ULL);
+    EXPECT_EQ(entries[0].write_bytes, 2048ULL * 512ULL);
+    EXPECT_EQ(entries[0].read_time_us, 30ULL * 1000ULL);
+    EXPECT_EQ(entries[0].write_time_us, 60ULL * 1000ULL);
+    EXPECT_EQ(entries[0].in_flight, 2ULL);
+    EXPECT_EQ(entries[0].busy_time_us, 70ULL * 1000ULL);
+}
+
+TEST(DiskstatsParserTest, SkipsMalformedAndLegacyShapedLines) {
+    const std::string content =
+        "\n"
+        "garbage line without numbers\n"
+        "   8       0 sda 1 2 3\n"                             // 老内核分区行（7 字段）
+        "   8       0 sdb x 2 3 4 5 6 7 8 9 10 11 12\n"        // 非数字统计项
+        "   3       0       8 hda 8 8 8 8 8 8 8 8 8 8 8\n"     // 2.4 格式（15 字段，name 在索引 3）
+        "   8      16 sdb 11 12 13 14 15 16 17 18 0 19 20\n";  // 合法 14 字段行
+    const auto entries = parse_diskstats(content);
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_EQ(entries[0].device, "sdb");
+}
+
+TEST(DiskstatsParserTest, PhysicalDiskNameFilterExcludesVirtualAndOpticalDevices) {
+    // 物理盘（含虚机/云主机的虚拟磁盘）必须保留。
+    for (const char* name :
+         {"sda", "sdb", "nvme0n1", "nvme1n2", "vda", "xvda", "mmcblk0", "pmem0", "dasda"}) {
+        EXPECT_TRUE(is_physical_disk_name(name)) << name;
+    }
+    // 聚合设备（dm-/md/bcache）、内存/网络/光学/软驱/虚拟块设备必须排除，
+    // 否则与底层物理盘重复计数或把非磁盘计入（契约 sysmon §2.4）。
+    for (const char* name :
+         {"loop0", "ram0", "zram0", "dm-0", "md0", "md127", "bcache0", "nbd0", "rbd0", "drbd0",
+          "sr0", "sg0", "fd0", "pktcdvd0", "ublk0", "vduse0", "zd0"}) {
+        EXPECT_FALSE(is_physical_disk_name(name)) << name;
+    }
+}
+
+TEST(DiskstatsParserTest, SelectPhysicalDisksKeepsCandidateOrderAndDropsPartitions) {
+    const std::string content =
+        "   8       0 sda 1 0 2048 10 2 0 4096 20 0 30 40\n"
+        "   8       1 sda1 1 0 1024 10 2 0 2048 20 0 30 40\n"  // 分区：不在 /sys/block 候选集
+        "   8      16 sdb 3 0 4096 30 4 0 8192 40 1 50 60\n";
+    const auto entries = parse_diskstats(content);
+    ASSERT_EQ(entries.size(), 3U);
+    // 候选顺序（/sys/block 排序结果）优先，分区被剔除。
+    const auto selected = select_physical_disks(entries, {"sdb", "sda"});
+    ASSERT_EQ(selected.size(), 2U);
+    EXPECT_EQ(selected[0].device, "sdb");
+    EXPECT_EQ(selected[1].device, "sda");
+    // 候选设备没有统计行：跳过（不伪造 0）。
+    EXPECT_TRUE(select_physical_disks(entries, {"sdc"}).empty());
+}
+#endif  // defined(__linux__)
+
 // ===== #75：卷、关注路径与共享内存目录 =====
 
 /// 目录占用统计的临时目录 fixture：每个用例自管临时目录（AGENTS 硬门禁 2 的豁免情形）。
@@ -1014,6 +1104,89 @@ TEST(SystemCollectorTest, WatchPathMatchingRespectsPlatformCaseSemantics) {
         << resolved[1].mount.value_or("<none>");
     EXPECT_EQ(resolved[1].reason, "path_not_found");
 #endif
+}
+
+// ===== #76 真机 oracle：每物理盘 I/O 累计计数器（契约 sysmon §2.4、§2.7）=====
+TEST(SystemCollectorTest, DiskIoCountersFollowContractInvariants) {
+    const auto collector = make_system_collector();
+    ASSERT_NE(collector, nullptr);
+
+    const auto first = collector->collect_disk_io();
+    if (!first.has_value()) {
+        // Windows 的物理盘性能计数器依赖计数器开启与访问权限，不可用是常态而非异常
+        // （契约 sysmon §2.4）；Linux 的 /proc/diskstats 在支持宿主上必须可读。
+#if defined(__linux__)
+        FAIL() << "linux /proc/diskstats and /sys/block must be readable on a supported host";
+#else
+        GTEST_SKIP() << "disk performance counters unavailable on this host "
+                        "(counters disabled or access denied)";
+#endif
+    }
+    // 设备标识非空；同一帧内唯一（设备集合可在帧间变化，但不允许重复）。
+#if defined(__linux__)
+    EXPECT_FALSE(first->empty()) << "a supported linux host must expose at least one physical disk";
+#endif
+    std::vector<std::string> devices;
+    for (const auto& disk : *first) {
+        EXPECT_FALSE(disk.device.empty());
+        devices.push_back(disk.device);
+        // 累计时间不可能超过"采集器能返回的整数范围"这类永真断言不做；
+        // 这里断言可失败的结构性不变量：忙时间不得多于读写时间之和的两倍这类口径不做
+        // （不同平台锚点不同），只检查时间字段存在性由平台分支覆盖。
+    }
+    std::sort(devices.begin(), devices.end());
+    EXPECT_EQ(std::adjacent_find(devices.begin(), devices.end()), devices.end())
+        << "disk device identifiers must be unique within one frame";
+#if defined(__linux__)
+    // Linux：`/proc/diskstats` 的 in-flight 与 io_ticks 恒存在。
+    for (const auto& disk : *first) {
+        EXPECT_TRUE(disk.busy_time_us.has_value()) << disk.device;
+        EXPECT_TRUE(disk.in_flight.has_value()) << disk.device;
+    }
+#endif
+
+    // 条件轮询直到任一累计计数器推进（最多约 2s）；不以固定 sleep 作为同步手段
+    // （docs/unit-test-standard.md §1.5）。空转机器上可能不推进，仍做单调性检查。
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    std::optional<std::vector<RawDiskIoInfo>> second;
+    auto counters_advanced = [&first](const std::vector<RawDiskIoInfo>& current) {
+        for (const auto& disk : current) {
+            for (const auto& previous : *first) {
+                if (previous.device == disk.device &&
+                    disk.read_count + disk.write_count >
+                        previous.read_count + previous.write_count) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    while (std::chrono::steady_clock::now() < deadline) {
+        second = collector->collect_disk_io();
+        if (second.has_value() && counters_advanced(*second)) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(second.has_value()) << "collect_disk_io must keep working within one sampling";
+    // 累计计数器单调不减（两平台同一不变量；32 位计数器在 2s 内不会回绕）。
+    for (const auto& current : *second) {
+        const auto it = std::find_if(
+            first->begin(), first->end(),
+            [&current](const auto& previous) { return previous.device == current.device; });
+        if (it == first->end()) {
+            continue;  // 设备集合可在帧间变化
+        }
+        EXPECT_GE(current.read_count, it->read_count) << current.device;
+        EXPECT_GE(current.write_count, it->write_count) << current.device;
+        EXPECT_GE(current.read_bytes, it->read_bytes) << current.device;
+        EXPECT_GE(current.write_bytes, it->write_bytes) << current.device;
+        EXPECT_GE(current.read_time_us, it->read_time_us) << current.device;
+        EXPECT_GE(current.write_time_us, it->write_time_us) << current.device;
+        if (it->busy_time_us.has_value() && current.busy_time_us.has_value()) {
+            EXPECT_GE(*current.busy_time_us, *it->busy_time_us) << current.device;
+        }
+    }
 }
 
 }  // namespace dztrader::test

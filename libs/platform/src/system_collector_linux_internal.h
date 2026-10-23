@@ -137,6 +137,45 @@ struct MountEntry {
 ///         本机无交换时返回 `total_bytes = 0` 的读数（不是失败）。
 [[nodiscard]] std::optional<RawSwapInfo> normalize_swap(const MeminfoValues& values);
 
+// ===== /proc/diskstats 每物理盘 I/O 计数器（契约 sysmon §2.4；Linux 实现内部接缝）=====
+
+/// `/proc/diskstats` 中一条记录的原始计数器（已换算为采集接缝口径）。
+///
+/// 扇区按内核固定口径 ×512 得字节（与参考实现一致）；内核的毫秒计数器 ×1000 得微秒。
+struct DiskstatsEntry {
+    std::string device;          ///< 内核块设备名（`sda` / `nvme0n1` / `sda1`）
+    uint64_t read_count = 0;     ///< 累计完成的读请求数
+    uint64_t write_count = 0;    ///< 累计完成的写请求数
+    uint64_t read_bytes = 0;     ///< 累计读取字节数（扇区数 × 512）
+    uint64_t write_bytes = 0;    ///< 累计写入字节数（扇区数 × 512）
+    uint64_t read_time_us = 0;   ///< 累计读服务时间（微秒）
+    uint64_t write_time_us = 0;  ///< 累计写服务时间（微秒）
+    uint64_t busy_time_us = 0;   ///< 累计设备忙时间（微秒）
+    uint64_t in_flight = 0;      ///< 采样时刻在途请求数（瞬时 gauge）
+};
+
+/// 解析 `/proc/diskstats` 文本（契约 sysmon §2.4、§2.7）。
+///
+/// 只解析内核 2.6+ 的整盘行格式（14 字段），以及 4.18+ 的 ≥18 字段格式（新增
+/// discard/flush 字段，前 11 项统计语义不变）；7 字段的分区行（老内核）与无法解析的
+/// 行直接跳过（不是整体失败）。分区行在新内核上也是完整字段，因此**本函数不做**过滤，
+/// 由 `select_physical_disks` 按 `/sys/block` 候选集过滤。
+[[nodiscard]] std::vector<DiskstatsEntry> parse_diskstats(std::string_view content);
+
+/// 判断 `/sys/block` 下的块设备名是否属于"物理盘"（契约 sysmon §2.4）。
+///
+/// 排除：内存/回环设备（loop/ram/zram）、设备映射与软件 RAID 聚合（dm-/md/bcache）、
+/// 网络块设备（nbd/rbd/drbd/ceph）、光学/软驱/包写入设备（sr/sg/fd/pktcdvd）以及
+/// 其它虚拟块设备（ublk/vduse）。物理盘 I/O 计在底层设备上，聚合设备计入会造成重复计数。
+[[nodiscard]] bool is_physical_disk_name(std::string_view name);
+
+/// 按 `/sys/block` 候选设备名过滤解析结果（契约 sysmon §2.4）。
+///
+/// 只保留候选集里的设备（候选来自 `/sys/block` 的整盘条目，分区天然不在其中），
+/// 输出顺序与候选顺序一致（候选应已排序，保证帧内顺序确定）；没有统计行的候选跳过。
+[[nodiscard]] std::vector<DiskstatsEntry> select_physical_disks(
+    std::vector<DiskstatsEntry> entries, const std::vector<std::string>& candidates);
+
 }  // namespace dztrader::platform::system_collector_linux_internal
 
 #endif  // DZTRADER_PLATFORM_SYSTEM_COLLECTOR_LINUX_INTERNAL_H_

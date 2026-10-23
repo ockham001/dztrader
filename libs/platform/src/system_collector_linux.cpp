@@ -715,6 +715,73 @@ std::optional<RawShmDirInfo> read_shm_dir(const std::string& shm_dir) {
     return info;
 }
 
+// ===== 每物理盘 I/O（契约 sysmon §2.4、§2.7）=====
+
+/// `/proc/diskstats` 与 `/sys/block`：每物理盘 I/O 计数器的数据源。
+/// `/sys/block` 只有整盘条目（分区挂在 `/sys/block/<disk>/` 下），用作物理盘候选集。
+constexpr const char* kProcDiskstatsPath = "/proc/diskstats";
+constexpr const char* kSysBlockPath = "/sys/block";
+
+/// `/proc/diskstats` 的扇区固定按 512 字节计（内核 ABI 口径，与设备逻辑块大小无关）。
+constexpr uint64_t kDiskSectorBytes = 512;
+
+/// 列出 `/sys/block` 下的物理盘名（已过滤虚拟/光学设备，按名称升序保证帧内顺序确定）。
+/// @return `/sys/block` 不可读时返回 std::nullopt（整体采集失败）；空数组 = 本机无物理盘。
+std::optional<std::vector<std::string>> read_physical_disk_names() {
+    std::error_code ec;
+    const std::filesystem::path sys_block(kSysBlockPath);
+    if (!std::filesystem::is_directory(sys_block, ec) || ec) {
+        return std::nullopt;
+    }
+    std::vector<std::string> names;
+    for (const auto& entry : list_directory(sys_block)) {
+        std::error_code entry_ec;
+        if (!entry.is_directory(entry_ec) || entry_ec) {
+            continue;  // `/sys/block` 下均为符号链接目录；非目录项不是块设备
+        }
+        const std::string name = entry.path().filename().string();
+        if (system_collector_linux_internal::is_physical_disk_name(name)) {
+            names.push_back(name);
+        }
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+/// 采集每物理盘 I/O 累计计数器（契约 sysmon §2.4、§2.7）。
+///
+/// `/proc/diskstats` 不可读或 `/sys/block` 不可读 ⇒ std::nullopt（整体采集失败）；
+/// 两者可读但没有物理盘 ⇒ 空数组（采集成功，本机没有物理盘不是失败）。
+/// 单个设备缺少统计行时只跳过该设备（不伪造 0）。
+std::optional<std::vector<RawDiskIoInfo>> read_disk_io() {
+    const std::string stats = read_file_contents(kProcDiskstatsPath);
+    if (stats.empty()) {
+        return std::nullopt;
+    }
+    const auto candidates = read_physical_disk_names();
+    if (!candidates.has_value()) {
+        return std::nullopt;
+    }
+    const auto selected = system_collector_linux_internal::select_physical_disks(
+        system_collector_linux_internal::parse_diskstats(stats), *candidates);
+    std::vector<RawDiskIoInfo> disks;
+    disks.reserve(selected.size());
+    for (const auto& entry : selected) {
+        RawDiskIoInfo disk;
+        disk.device = entry.device;
+        disk.read_count = entry.read_count;
+        disk.write_count = entry.write_count;
+        disk.read_bytes = entry.read_bytes;
+        disk.write_bytes = entry.write_bytes;
+        disk.read_time_us = entry.read_time_us;
+        disk.write_time_us = entry.write_time_us;
+        disk.busy_time_us = entry.busy_time_us;
+        disk.in_flight = entry.in_flight;
+        disks.push_back(std::move(disk));
+    }
+    return disks;
+}
+
 /// 采集一次系统信息（失败字段留空串/0，不抛异常）。
 RawSystemInfo collect_system_info_linux() {
     RawSystemInfo info;
@@ -813,6 +880,8 @@ public:
     std::optional<RawShmDirInfo> collect_shm_dir(const std::string& shm_dir) override {
         return read_shm_dir(shm_dir);
     }
+
+    std::optional<std::vector<RawDiskIoInfo>> collect_disk_io() override { return read_disk_io(); }
 
 private:
     LinuxMemorySwapReader memory_reader_;
@@ -1212,6 +1281,119 @@ std::optional<RawSwapInfo> normalize_swap(const MeminfoValues& values) {
     // 防御：SwapFree 超过 SwapTotal 时钳制，保证 used = total - free 落在 [0, total]。
     swap.free_bytes = std::min(*values.swap_free_kb, total_kb) * kBytesPerKb;
     return swap;
+}
+
+std::vector<DiskstatsEntry> parse_diskstats(std::string_view content) {
+    // 内核 2.6+ 整盘行：`major minor name` + 11 项统计（name 在索引 2）。
+    // 4.18+ 追加 discard 字段、5.5+ 追加 flush 字段，前 11 项统计语义不变。
+    constexpr std::size_t kMinWholeDiskFields = 14;
+    constexpr std::size_t kFieldsWithDiscard = 18;
+    constexpr std::size_t kFirstStatField = 3;
+
+    std::vector<DiskstatsEntry> entries;
+    std::size_t position = 0;
+    while (position < content.size()) {
+        const std::size_t line_end = content.find('\n', position);
+        const std::size_t line_length =
+            line_end == std::string_view::npos ? content.size() - position : line_end - position;
+        const std::string_view line = trim(content.substr(position, line_length));
+        position = line_end == std::string_view::npos ? content.size() : line_end + 1;
+        if (line.empty()) {
+            continue;
+        }
+        // 按空白切字段（行首行尾已 trim；多空格/制表符都合法）。
+        std::vector<std::string_view> fields;
+        std::size_t field_begin = 0;
+        while (field_begin < line.size()) {
+            while (field_begin < line.size() &&
+                   std::isspace(static_cast<unsigned char>(line[field_begin])) != 0) {
+                ++field_begin;
+            }
+            if (field_begin >= line.size()) {
+                break;
+            }
+            std::size_t field_end = field_begin;
+            while (field_end < line.size() &&
+                   std::isspace(static_cast<unsigned char>(line[field_end])) == 0) {
+                ++field_end;
+            }
+            fields.push_back(line.substr(field_begin, field_end - field_begin));
+            field_begin = field_end;
+        }
+        // 只接受整盘行格式；分区行（老内核 7 字段）与其它历史格式跳过（契约基线内核 ≥ 4.18）。
+        if (fields.size() != kMinWholeDiskFields && fields.size() < kFieldsWithDiscard) {
+            continue;
+        }
+        DiskstatsEntry entry;
+        entry.device = std::string(fields[2]);
+        // 索引：3 reads / 5 sectors_read / 6 ms_reading / 7 writes / 9 sectors_written /
+        //       10 ms_writing / 11 in_flight / 12 io_ticks / 13 weighted_io_ticks
+        const auto read_count = parse_u64(fields[kFirstStatField]);
+        const auto sectors_read = parse_u64(fields[kFirstStatField + 2]);
+        const auto read_time_ms = parse_u64(fields[kFirstStatField + 3]);
+        const auto write_count = parse_u64(fields[kFirstStatField + 4]);
+        const auto sectors_written = parse_u64(fields[kFirstStatField + 6]);
+        const auto write_time_ms = parse_u64(fields[kFirstStatField + 7]);
+        const auto in_flight = parse_u64(fields[kFirstStatField + 8]);
+        const auto io_ticks_ms = parse_u64(fields[kFirstStatField + 9]);
+        if (!read_count.has_value() || !sectors_read.has_value() || !read_time_ms.has_value() ||
+            !write_count.has_value() || !sectors_written.has_value() ||
+            !write_time_ms.has_value() || !in_flight.has_value() || !io_ticks_ms.has_value()) {
+            continue;  // 内容非法：跳过该行（不是整体失败）
+        }
+        if (*sectors_read > std::numeric_limits<uint64_t>::max() / kDiskSectorBytes ||
+            *sectors_written > std::numeric_limits<uint64_t>::max() / kDiskSectorBytes) {
+            continue;  // 异常内容：扇区换字节会溢出
+        }
+        entry.read_count = *read_count;
+        entry.write_count = *write_count;
+        entry.read_bytes = *sectors_read * kDiskSectorBytes;
+        entry.write_bytes = *sectors_written * kDiskSectorBytes;
+        // 内核的 ms_reading/ms_writing/io_ticks 是 32 位毫秒计数器，换算为微秒统一口径。
+        entry.read_time_us = *read_time_ms * 1000;
+        entry.write_time_us = *write_time_ms * 1000;
+        entry.busy_time_us = *io_ticks_ms * 1000;
+        entry.in_flight = *in_flight;
+        entries.push_back(std::move(entry));
+    }
+    return entries;
+}
+
+bool is_physical_disk_name(std::string_view name) {
+    if (name.empty()) {
+        return false;
+    }
+    // 契约 sysmon §2.4：只统计物理盘。聚合设备（dm-/md/bcache）的 I/O 已计在底层物理盘上，
+    // 同时输出会造成重复计数；内存/网络/光学设备不是"盘"。
+    static constexpr std::array<std::string_view, 15> kNonPhysicalPrefixes = {
+        "loop", "ram", "zram", "dm-", "md",      "nbd",    "rbd", "drbd",
+        "ceph", "sr",  "sg",   "fd",  "pktcdvd", "bcache", "ublk"};
+    for (const auto prefix : kNonPhysicalPrefixes) {
+        if (name.starts_with(prefix)) {
+            return false;
+        }
+    }
+    return !name.starts_with("vduse") && !name.starts_with("zd");
+}
+
+std::vector<DiskstatsEntry> select_physical_disks(std::vector<DiskstatsEntry> entries,
+                                                  const std::vector<std::string>& candidates) {
+    std::map<std::string, DiskstatsEntry> by_name;
+    for (auto& entry : entries) {
+        by_name.emplace(entry.device, std::move(entry));  // 同名行以首次出现为准
+    }
+    std::vector<DiskstatsEntry> selected;
+    selected.reserve(candidates.size());
+    for (const auto& name : candidates) {
+        if (!is_physical_disk_name(name)) {
+            continue;  // 双保险：候选集理论上已过滤
+        }
+        const auto it = by_name.find(name);
+        if (it != by_name.end()) {
+            selected.push_back(it->second);
+        }
+    }
+    return selected;
 }
 
 }  // namespace system_collector_linux_internal
