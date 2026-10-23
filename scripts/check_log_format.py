@@ -2,12 +2,15 @@
 """
 check_log_format.py — dztrader 日志格式 lint 脚本
 
-检测 spdlog 调用是否符合项目规范:
+检测 spdlog / LastError::set / throw std::* 的文本是否符合项目规范:
   - 格式: prose | k=v k=v （hybrid 模式）
   - prose 全英文小写开头，无句号
   - k=v 值含空格/等号/引号用双引号包裹
   - 禁止多行 banner（=== 装饰线）
   - 禁止单引号包裹占位符 '{}'（应用双引号或去引号）
+
+不在本 lint 范围：UI 通知（notify_ui_*）与策略输出等**面向用户的展示文案**允许中文，
+不按日志/错误文本规范检查；需要时由 review 按契约单独裁决。
 
 用法:
   python scripts/check_log_format.py apps/ libs/
@@ -35,6 +38,17 @@ SPDLOG_CALL_RE = re.compile(
     r'\b(?:spdlog::|SPDLOG_)(trace|debug|info|warn|error|critical|TRACE|DEBUG|INFO|WARN|ERROR|CRITICAL)\s*\('
 )
 
+# 其他非日志但受"错误文本规范"约束的调用（AGENTS §四：所有错误描述/异常消息）：
+#   LastError::set(code, "fmt | k={}", args...)   —— C 接口边界的上下文消息
+#   throw std::*("fmt | k={}")                     —— 异常消息
+# UI 通知（notify_ui_*）面向用户，可中文，故意不在此列。
+OTHER_CALL_RES = (
+    re.compile(r'\bLastError::set\s*\('),
+    re.compile(r'\bthrow\s+std::[A-Za-z_][A-Za-z0-9_]*(?:<[^>]*>)?\s*\('),
+)
+
+CALL_RES = (SPDLOG_CALL_RE, *OTHER_CALL_RES)
+
 # 字符串字面量提取：从调用起始处找第一个 "..." （支持转义）
 STRING_LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
@@ -56,21 +70,23 @@ class Violation:
 
 
 def extract_log_string(line: str) -> tuple[str, int] | None:
-    """从一行中提取 spdlog 调用的第一个字符串字面量。
+    """从一行中提取受检调用的第一个字符串字面量。
 
-    返回 (字符串内容, 起始列号) 或 None。
+    依次尝试 spdlog / LastError::set / throw std::*，返回 (字符串内容, 起始列号) 或 None。
     支持调用起始在同一行的跨行字符串（仅取首行内容）。
     """
-    m = SPDLOG_CALL_RE.search(line)
-    if not m:
-        return None
-    after_call = line[m.end():]
-    sm = STRING_LITERAL_RE.search(after_call)
-    if not sm:
-        return None
-    content = sm.group(1)
-    column = m.end() + sm.start() + 1  # 1-based
-    return content, column
+    for call_re in CALL_RES:
+        m = call_re.search(line)
+        if not m:
+            continue
+        after_call = line[m.end():]
+        sm = STRING_LITERAL_RE.search(after_call)
+        if not sm:
+            continue
+        content = sm.group(1)
+        column = m.end() + sm.start() + 1  # 1-based
+        return content, column
+    return None
 
 
 def check_string(content: str) -> list[tuple[str, str, str]]:
