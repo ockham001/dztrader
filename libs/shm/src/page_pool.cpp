@@ -63,7 +63,7 @@ std::optional<Page> PagePool::get_page(uint64_t page_id) noexcept {
         LastError::set(e.code(), e.what());
         return std::nullopt;
     } catch (const std::exception& e) {
-        LastError::set(DZ_EC_SHM_CREATE_FAILED, "get_page failed: {}", e.what());
+        LastError::set(DZ_EC_SHM_CREATE_FAILED, "get_page failed | error=\"{}\"", e.what());
         return std::nullopt;
     }
 }
@@ -109,7 +109,7 @@ bool PagePool::prefetch_page(uint64_t page_id) noexcept {
         LastError::set(e.code(), e.what());
         return false;
     } catch (const std::exception& e) {
-        LastError::set(DZ_EC_SHM_CREATE_FAILED, "prefetch_page failed: {}", e.what());
+        LastError::set(DZ_EC_SHM_CREATE_FAILED, "prefetch_page failed | error=\"{}\"", e.what());
         return false;
     }
 }

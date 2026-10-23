@@ -1,0 +1,53 @@
+name: Docs
+
+# 纯文档改动不进 ci.yml 的构建/测试矩阵（见 ci.yml 的 paths-ignore），
+# 这里只跑一个轻量 job：文档链接检查 + main push 的 commit message 前缀检查。
+on:
+  push:
+    branches: [main]
+    paths: &docs_paths
+      - "docs/**"
+      - "GLOSSARY.md"
+      - "README.md"
+      - "AGENTS.md"
+      - "CONTRIBUTING.md"
+      - "THIRD_PARTY_NOTICES.md"
+  pull_request:
+    paths: *docs_paths
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  docs:
+    name: Docs (links + commit prefix)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Docs links
+        run: python3 scripts/check_docs_links.py
+
+      - name: Commit Message Check (prefix)
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        shell: bash
+        run: |
+          fail=0
+          while IFS=$'\t' read -r sha subject; do
+            case "$subject" in Merge*|Revert*|fixup*|squash*) continue;; esac
+            if ! printf '%s' "$subject" | grep -qE '^(fix|feat|refactor|docs|test|chore|perf|style|build|ci)(\([^)]+\))?!?: .+'; then
+              echo "bad commit subject: $sha $subject"
+              fail=1
+            fi
+          done < <(git log --no-merges --format='%H%x09%s' "${{ github.event.before }}..${{ github.sha }}")
+          exit $fail

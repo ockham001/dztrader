@@ -3,11 +3,29 @@ name: CI
 on:
   push:
     branches: [main]
+    # 纯文档改动不跑构建/测试（另由 docs.yml 跑轻量 docs 检查）；文档与代码混合提交仍跑全量
+    paths-ignore: &docs_only_paths
+      - "docs/**"
+      - "GLOSSARY.md"
+      - "README.md"
+      - "AGENTS.md"
+      - "CONTRIBUTING.md"
+      - "THIRD_PARTY_NOTICES.md"
   pull_request:
+    paths-ignore: *docs_only_paths
+
+# 同一分支的新 push 取消上一次仍在跑的 PR run，避免 #93 那种「3 个 run 排队后被取代」的浪费。
+# main 的 push run 不取消（保持每个 merge commit 的验证结果）。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   windows:
     name: Windows (MSVC Release)
+    # Windows 只在 PR 上跑：PR 校验的是 merge-ref，已覆盖合并结果；main push 只跑 Linux，
+    # 省下每票 ~35–40 分钟的重复 Windows 验证（本波 11 票 Windows 全绿，MSVC 问题在 PR 也可见）。
+    if: github.event_name == 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 90
     env:

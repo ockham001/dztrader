@@ -485,7 +485,7 @@ void generate_default_config(const std::filesystem::path& json_path) {
 
     std::ofstream ofs(json_path);
     if (!ofs) {
-        throw std::runtime_error("无法创建配置文件: " + json_path.string());
+        throw std::runtime_error("create config file failed | path=\"" + json_path.string() + "\"");
     }
     ofs << full.dump(2);
 }
