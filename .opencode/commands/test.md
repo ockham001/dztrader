@@ -11,7 +11,7 @@ agent: build
 .\scripts\test.ps1                       # fast 门禁（跟随粘性 config）
 .\scripts\test.ps1 -Config Debug
 .\scripts\test.ps1 -Label slow           # 穷举/慢速档
-.\scripts\test.ps1 -Label perf           # PerfBench
+.\scripts\test.ps1 -Label perf           # 性能基准（PerfBench + BarPerfBench）
 .\scripts\test.ps1 -TestName TimeTest    # 单个测试
 ```
 
@@ -21,7 +21,7 @@ agent: build
 ./scripts/test.sh                        # fast 门禁
 ./scripts/test.sh --config debug
 ./scripts/test.sh --label slow           # 穷举/慢速档
-./scripts/test.sh --label perf           # PerfBench
+./scripts/test.sh --label perf           # 性能基准（PerfBench + BarPerfBench）
 ./scripts/test.sh --config release --test-name TimeTest
 ```
 

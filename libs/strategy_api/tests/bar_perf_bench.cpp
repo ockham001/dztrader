@@ -11,8 +11,8 @@
  * 每个 case 的 tick 块分成三段：`setup`（建立初始 bar，不计时）→ `timed`（全部是被测路径的
  * tick，连续）→ `teardown`（让竞价待补发队列归零等收尾动作，不计时）。块在计时循环**之外**
  * 生成一次，循环里反复用「新鲜 builder + 同一块」重放：这样测的是组件自身开销，不会混入
- * 每次重建 tick 数组的冷内存与分配成本（早期版本每次重放都重新生成块，含 296 字节
- * `DzTick` 的整块分配，把 3–4ns 的真实开销测成了 20ns 量级）。
+ * 每次重建 tick 数组的冷内存与分配成本（早期版本把 296 字节 `DzTick` 按值穿过 visitor 逐笔
+ * 拷贝、并每轮重建整块，update 路径被量成约 46ns/tick；修正后同一组件约 13ns/tick）。
  *
  * 计时区间只包含 `timed` 段，且 `timed` 段内**全部** tick 都属于被测路径，故分母就是路径
  * 自身的 tick 数，不受首笔建立 bar 或收尾笔污染。
@@ -40,8 +40,9 @@
  *
  * 计时前先用同一份块逐笔断言 builder 的公开状态（交易日 / 桶起点 / last_tick_sec /
  * is_final）与日程独立推导的期望一致，且丢弃计数恒为 0；不符则打印明细并退出 1。
- * 计时结束后把终态（当前 bar + 丢弃计数）折算成指纹打印并参与返回值，防止编译器把整段
- * 计时循环判为死代码消除。
+ * 计时结束后把终态（当前 bar + 丢弃计数）折算成指纹打印，并让计时区间产出的样本分布一路
+ * 参与报告输出，防止编译器把整段计时循环判为死代码消除；指纹本身还用于判断两次运行是否
+ * 真的跑了同一份工作。
  *
  * 运行命令、机器信息与结果记录方式见 docs/agents/build-appendix.md「性能基准」。
  */
@@ -55,21 +56,23 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
-// 本基准依赖 x86_64 RDTSC。仓库只支持 Windows/MSVC 与 Linux/GCC|x86_64，其余组合显式报错，
-// 不静默回退到精度不足的计时源（AGENTS §四 跨平台）。
+// 本基准依赖 x86_64 RDTSC。仓库支持 Windows/MSVC 与 Linux/GCC，两者都在 x86_64 上；
+// 其余组合显式 #error，不静默回退到精度不足的计时源（AGENTS §四 跨平台）。clang 与 GCC
+// 共用同一套 x86intrin 接口，故一并接受（`__GNUC__` 在 clang 下同样定义）。
 #if !defined(__x86_64__) && !defined(_M_X64)
 #error "bar_perf_bench requires x86_64 (rdtsc)"
 #endif
 
 #if defined(_MSC_VER)
 #include <intrin.h>
-#elif defined(__GNUC__) || defined(__clang__)
+#elif defined(__GNUC__)
 #include <cpuid.h>
 #include <x86intrin.h>
 #else
@@ -191,21 +194,17 @@ std::string compiler_name() {
     return "msvc " + std::to_string(_MSC_VER);
 #elif defined(__clang__)
     return "clang " + std::to_string(__clang_major__) + "." + std::to_string(__clang_minor__);
-#elif defined(__GNUC__)
-    return "gcc " + std::to_string(__GNUC__) + "." + std::to_string(__GNUC_MINOR__);
 #else
-    return "unknown";
+    return "gcc " + std::to_string(__GNUC__) + "." + std::to_string(__GNUC_MINOR__);
 #endif
 }
 
-/// @brief 平台标识
+/// @brief 平台标识（两个受支持平台在文件头已 gate，故无 else 分支）
 std::string platform_name() {
 #if defined(_WIN32)
     return "windows x86_64";
-#elif defined(__linux__)
-    return "linux x86_64";
 #else
-    return "unknown";
+    return "linux x86_64";
 #endif
 }
 
@@ -590,7 +589,10 @@ ExpectedEvents expected_events(Path path, int64_t timed_ticks) {
         case Path::CrossDay:
             return ExpectedEvents{timed_ticks, timed_ticks, timed_ticks};
     }
-    return ExpectedEvents{0, 0, 0};
+    // switch 已覆盖全部 Path 取值；走到这里说明新增了路径却没给它定义事件形态。
+    // 不用「全零」兜底 —— 那会让新路径静默通过身份自检（AGENTS §四 禁止静默回退）。
+    std::fprintf(stderr, "unsupported path in expected_events | path=%d\n", static_cast<int>(path));
+    std::abort();
 }
 
 /// @brief 把终态（当前 bar 与丢弃计数）折算进指纹（防止计时循环被优化掉，兼作可复现校验）
@@ -624,7 +626,7 @@ struct PassTally {
     std::vector<uint64_t> cycles;  ///< 计时区间周期数（批量：每轮一个；逐笔：每 tick 一个）
     uint64_t fingerprint = 1469598103934665603ULL;  ///< 终态指纹（FNV 偏移基，防循环被消除）
     int64_t ticks = 0;                              ///< 累计被测 tick 数
-    double wall_ns = 0.0;  ///< 整个 pass 的墙钟时长（独立于 TSC 标定的交叉校验）
+    double wall_ns = 0.0;  ///< 各轮 timed 段墙钟之和（不含 setup/teardown，独立于 TSC 标定）
 };
 
 /**
@@ -776,7 +778,9 @@ void print_results(const std::vector<CaseResult>& results) {
     }
 
     std::printf("\nraw = clock read pair included; net = raw minus empty-region overhead\n");
-    std::printf("cross-check: batch_mean and wall_mean should agree with net_p50 within ~2ns\n");
+    std::printf("cross-check: batch_mean / wall_mean / net_p50 should be the same order;\n");
+    std::printf("             an order-of-magnitude divergence means suspect the benchmark,\n");
+    std::printf("             not the component (see docs/agents/build-appendix.md)\n");
     // ADR 0031 决策 10 的 50ns 目标只覆盖「单周期更新」路径；其余三条路径按同口径报告、
     // 供后续优化与 CI 门禁取基线，不套用该阈值下结论。
     std::printf(
@@ -796,7 +800,8 @@ void print_results(const std::vector<CaseResult>& results) {
         std::printf("  %-12s %016llx\n", result.name,
                     static_cast<unsigned long long>(result.fingerprint));
     }
-    std::printf("\nrecord: docs/agents/build-appendix.md \"性能基准\" (machine, date, numbers)\n");
+    std::printf("\nrecord: docs/agents/build-appendix.md, section \"performance benchmarks\"\n");
+    std::printf("        (append machine + date + numbers to the baseline record)\n");
 }
 
 /**

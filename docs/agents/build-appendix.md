@@ -118,12 +118,15 @@ test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈�
 ```bash
 ./scripts/build.sh                                    # 先构建（基准不进默认 target 即可，build 全量包含）
 ./scripts/test.sh --label perf                         # 跑全部 perf 基准（Release）
-./build/linux/x86_64/Release/tests/dzstrategy_sdk_bar_perf_bench   # 或直接跑，输出更完整
+./build/linux/x86_64/Release/tests/dzstrategy_sdk_bar_perf_bench   # 直接跑：完整输出最方便
+ctest --preset linux-release-perf --output-on-failure                 # 或经 ctest 并回显输出
 ```
 
 Windows：`.\scripts\build.ps1` → `.\scripts\test.ps1 -Label perf`，可执行文件在 `build\windows\x86_64\Release\tests\`。
 
-**必须用 Release**（`-Werror` 与优化同时开启；Debug 数值无参考价值，基准会在报告头打印 `warning: debug build`）。跑之前关闭其它重负载，避免单次中断污染 p99。直接跑可执行文件比经 ctest 好：ctest 只回显 stdout，直接跑还能看到 `exit code` 与 stderr 的自检失败原因。
+**必须用 Release**（`-Werror` 与优化同时开启；Debug 数值无参考价值，基准会在报告头打印 `warning: debug build`）。跑之前关闭其它重负载，避免单次中断污染 p99。
+
+**看完整输出要直接跑可执行文件**：`ctest` 默认只在**失败时**回显测试输出（本仓的 `test.sh` / `test.ps1` 也没加 `--output-on-failure`），所以 `--label perf` 跑完只给一行 Passed；要读数值、看自检失败原因，直接跑二进制，或在 ctest 命令后加 `--output-on-failure`。
 
 ### 基准怎么测（读数值前必读）
 
@@ -145,7 +148,7 @@ Windows：`.\scripts\build.ps1` → `.\scripts\test.ps1 -Label perf`，可执行
 升级为 CI 门禁时的约定（先说清，避免下一个人自己发明口径）：
 
 - **门禁用 `batch_mean` 比上限、用 `net_p99` 比 p99 上限** —— `batch_mean` 是三套口径里最准的水平值（逐笔计时必然扰动管线，`net_p99` 是偏保守的上界）；`wall_mean` 只作交叉校验，不入门禁。
-- **每次门禁至少跑 5 次取中位数**，再与阈值比较；单次运行的 p99 抖动可达 ±5ns，单次比较会产生假红/假绿。
+- **每次门禁跑 5 次取中位数**，再与阈值比较；单次运行的 p99 抖动可达 ±5ns，单次比较会产生假红/假绿。本文件下方基线记录用 7 次，是人工记录的加严做法，不是门禁要求。
 - **阈值来自届时 CI runner 的实测基线**，不是 ADR 的 50ns 设计目标，也不是本机基线记录里的数字（机器代差可达数倍）。首次升级时把「哪台 runner、多少样本、算出多少」写进基线记录。
 
 比对本机改动前后时用同一台机器、同一 config，同样取多次运行的中位数。
