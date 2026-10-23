@@ -70,6 +70,10 @@
 #error "bar_perf_bench requires x86_64 (rdtsc)"
 #endif
 
+#if !defined(_WIN32) && !defined(__linux__)
+#error "bar_perf_bench supports only windows x86_64 and linux x86_64"
+#endif
+
 #if defined(_MSC_VER)
 #include <intrin.h>
 #elif defined(__GNUC__)
@@ -105,6 +109,8 @@ constexpr int32_t PERIOD_SEC = 60;
 constexpr int32_t AUCTION_BUCKET_BEGIN = (TSEC_09_30 / PERIOD_SEC) * PERIOD_SEC;
 /// @brief 竞价窗口起点（09:28:30）
 constexpr int32_t AUCTION_WINDOW_BEGIN = TSEC_09_30 - 90;
+/// @brief 竞价窗口长度（秒）；= 窗口 tick 数。改窗口终点时计时笔数自动跟随，不会静默量短
+constexpr int32_t AUCTION_WINDOW_TICKS = TSEC_09_30 - AUCTION_WINDOW_BEGIN;
 
 /// @brief 每条路径的目标采样数（1e6 使 p99 由约 1e4 个尾部样本决定，抗单次中断噪声）
 constexpr int64_t TARGET_SAMPLES = 1000000;
@@ -279,7 +285,7 @@ enum class Path {
 
 /// @brief 一个基准 case：路径 + 交易小节表 + 周期
 struct Case {
-    const char* name;           ///< 报告用路径名
+    const char* name;           ///< 报告用路径名（仅用于显示，不能作判据）
     Path path;                  ///< 被测路径
     TradingSessionTable table;  ///< 交易小节与竞价窗口表
     int32_t period_sec;         ///< 周期秒数
@@ -367,8 +373,8 @@ constexpr TradingSessionTable perf_auction_table() {
     table.session_count = 1;
     table.sessions[0] = TradingSession{TSEC_09_30, TSEC_15_00};
     table.auction_count = 1;
-    table.auctions[0] =
-        AuctionWindow{AuctionKind::Open, 0, AUCTION_WINDOW_BEGIN, AUCTION_WINDOW_BEGIN + 89};
+    table.auctions[0] = AuctionWindow{AuctionKind::Open, 0, AUCTION_WINDOW_BEGIN,
+                                      AUCTION_WINDOW_BEGIN + AUCTION_WINDOW_TICKS - 1};
     return table;
 }
 
@@ -437,10 +443,10 @@ Block build_block(const Case& the_case) {
             break;
         }
         case Path::Auction: {
-            // setup：窗口首笔建立竞价 bar（不回调）。timed：窗口内其余 89 笔 → 纯竞价静默更新。
+            // setup：窗口首笔建立竞价 bar（不回调）。timed：窗口内其余笔 → 纯竞价静默更新。
             // teardown：窗口后的场内 tick（09:30:00）让待补发队列归零，使块可重复重放且不触发
             // 只有病态流才会走到的队列溢出行；它与竞价 bar 同桶，只做暴露与 update。
-            constexpr int32_t TIMED_TICKS = 89;
+            constexpr int32_t TIMED_TICKS = AUCTION_WINDOW_TICKS - 1;  // 首笔在 setup
             block.setup.push_back(gen.next(TradingTime::to_clock(AUCTION_WINDOW_BEGIN), FIRST_DAY));
             block.setup_expect.push_back(
                 Expectation{FIRST_DAY, AUCTION_BUCKET_BEGIN, AUCTION_WINDOW_BEGIN});
@@ -650,10 +656,11 @@ void run_batch_pass(const Case& the_case, const Block& block, int64_t reps, Pass
             builder.on_tick(tick);
         }
         // 独立计时源：与 TSC 量同一段、但不依赖 TSC 频率标定。steady_clock 的读取必须落在
-        // TSC 计时区间**之外**（否则会把约 17ns/次的读取开销算进被测区间）。代价是墙钟区间
-        // 多含两次 rdtsc（约 9ns/次），分摊到 50–200 笔即 0.09–0.36 ns/tick，故 wall_mean
-        // 是略偏高的上界，仅作交叉校验，精度以 TSC 的 batch_mean 为准。setup/teardown 不计
-        // 入墙钟——分母只数 timed 笔，混入会让 wall_mean 系统性偏低。
+        // TSC 计时区间**之外**（否则会把读取开销算进被测区间）。代价是墙钟区间比 TSC 区间
+        // 多包两次 steady_clock（约 17ns）与两次 rdtsc（约 9ns），合计约 26ns/轮；摊到
+        // 50–200 笔即 0.13–0.52 ns/tick，故 wall_mean 是略偏高的上界，仅作交叉校验，精度以
+        // TSC 的 batch_mean 为准。setup/teardown 不计入墙钟——分母只数 timed 笔，混入会让
+        // wall_mean 系统性偏低。
         const auto wall_begin = std::chrono::steady_clock::now();
         const uint64_t timed_begin = tsc_now();
         for (const DzTick& tick : block.timed) {
@@ -715,7 +722,8 @@ void run_per_tick_pass(
 
 /// @brief 一个 case 的最终数值
 struct CaseResult {
-    const char* name = "";      ///< 路径名
+    const char* name = "";      ///< 路径名（显示用）
+    Path path = Path::Update;   ///< 被测路径（判据用，避免拿显示字符串做判断）
     int64_t reps = 0;           ///< 批量轮数
     int64_t ticks_per_rep = 0;  ///< 每轮被测 tick 数
     double batch_mean = 0.0;    ///< 批量计时 ns/tick 均值（无逐笔读时钟开销）
@@ -786,7 +794,7 @@ void print_results(const std::vector<CaseResult>& results) {
     std::printf(
         "target: p99 <= 50 ns/tick applies to the update path only (ADR 0031 decision 10)\n");
     for (const CaseResult& result : results) {
-        const bool is_target_path = std::strcmp(result.name, "update") == 0;
+        const bool is_target_path = result.path == Path::Update;
         if (is_target_path) {
             std::printf("target check | path=%s net_p99=%.2fns target=50ns %s\n", result.name,
                         result.net_p99, result.net_p99 <= 50.0 ? "met" : "missed");
@@ -822,6 +830,7 @@ bool run_case(const Case& the_case,
               CaseResult& result,
               Block& block) {
     result.name = the_case.name;
+    result.path = the_case.path;
     block = build_block(the_case);
     result.ticks_per_rep = block.timed_count();
     if (result.ticks_per_rep <= 0) {

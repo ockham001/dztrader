@@ -119,14 +119,14 @@ test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈�
 ./scripts/build.sh                                    # 先构建（基准不进默认 target 即可，build 全量包含）
 ./scripts/test.sh --label perf                         # 跑全部 perf 基准（Release）
 ./build/linux/x86_64/Release/tests/dzstrategy_sdk_bar_perf_bench   # 直接跑：完整输出最方便
-ctest --preset linux-release-perf --output-on-failure                 # 或经 ctest 并回显输出
+ctest --preset linux-release-perf -V                                  # 或经 ctest 并回显输出
 ```
 
 Windows：`.\scripts\build.ps1` → `.\scripts\test.ps1 -Label perf`，可执行文件在 `build\windows\x86_64\Release\tests\`。
 
 **必须用 Release**（`-Werror` 与优化同时开启；Debug 数值无参考价值，基准会在报告头打印 `warning: debug build`）。跑之前关闭其它重负载，避免单次中断污染 p99。
 
-**看完整输出要直接跑可执行文件**：`ctest` 默认只在**失败时**回显测试输出（本仓的 `test.sh` / `test.ps1` 也没加 `--output-on-failure`），所以 `--label perf` 跑完只给一行 Passed；要读数值、看自检失败原因，直接跑二进制，或在 ctest 命令后加 `--output-on-failure`。
+**看完整输出要直接跑可执行文件，或给 ctest 加 `-V`**：`ctest` 默认只在**失败时**回显输出，`--output-on-failure` 同样只在失败时回显（实测通过时 `amortized|fingerprint` 命中 0）；`--label perf` 跑完只给一行 Passed。要读数值加 `-V`（verbose，实测命中 3 处），或直接跑二进制。
 
 ### 基准怎么测（读数值前必读）
 
@@ -135,7 +135,7 @@ Windows：`.\scripts\build.ps1` → `.\scripts\test.ps1 -Label perf`，可执行
 3. **三套口径互为交叉校验**，三者应同量级（本机实测差 0–2ns）：
    - `batch_mean` —— **最准的 ns/tick 均值**，每轮整段只读一对时钟。
    - `net_p50` —— 逐笔分布，**p99 的来源**。逐笔计时必然扰动管线，且扣减空区间开销（8.8ns）是近似而非精确补偿，故 `net_p50` 略高于 `batch_mean`，应视为**偏保守的上界**。
-   - `wall_mean` —— 用 `steady_clock` 量同一段，不依赖 TSC 频率标定；墙钟区间多含两次 rdtsc，故也略高，同为上界。
+   - `wall_mean` —— 用 `steady_clock` 量同一段，不依赖 TSC 频率标定。墙钟区间比 TSC 区间多包了两次 `steady_clock` 读（约 17ns）与两次 rdtsc（约 9ns），合计约 26ns/轮；摊到 50–200 笔是 0.13–0.52 ns/tick，故也略高，同为上界。
 
    三者出现数量级分歧（而非零点几纳秒）时，先怀疑基准本身（计时区间混入非被测操作、块被优化、tick 流落错路径），而不是组件性能变化。
 
@@ -159,14 +159,16 @@ Windows：`.\scripts\build.ps1` → `.\scripts\test.ps1 -Label perf`，可执行
 
 #### 2026-10-23 · Intel Core i7-6700 @ 3.40GHz · Linux x86_64 · GCC 13.4 Release
 
-`dzstrategy_sdk_bar_perf_bench`，1 分钟周期、单合约、`NullBarSink`，7 次运行取中位数。本机 TSC 3.408 GHz，空区间成对读时钟 p50 = 8.80ns。
+`dzstrategy_sdk_bar_perf_bench`，1 分钟周期、单合约、`NullBarSink`，9 次运行取中位数。本机 TSC 3.408 GHz，空区间成对读时钟 p50 = 8.80ns，p99 = 9.39ns。
 
 | 路径 | batch_mean | wall_mean | net_p50 | net_p99 | 50ns 目标（仅 update） |
 |---|---|---|---|---|---|
-| update（同桶更新） | 13.02 | 13.50 | 14.67 | 17.02 | met（目标的 34%） |
-| new-bar（换桶） | 21.14 | 21.29 | 21.71 | 25.23 | 不适用，仅报告 |
-| cross-day（跨交易日） | 20.33 | 20.89 | 20.54 | 22.30 | 不适用，仅报告 |
-| auction（竞价窗口内） | 11.70 | 12.03 | 13.50 | 15.26 | 不适用，仅报告 |
+| update（同桶更新） | 12.70 | 13.17 | 14.67 | 16.43 | met（目标的 33%） |
+| new-bar（换桶） | 21.93 | 22.08 | 21.13 | 24.65 | 不适用，仅报告 |
+| cross-day（跨交易日） | 19.93 | 20.49 | 21.13 | 22.89 | 不适用，仅报告 |
+| auction（竞价窗口内） | 11.33 | 11.65 | 13.50 | 14.08 | 不适用，仅报告 |
+
+`raw_p50` 落在 TSC 周期栅格上（1 cycle = 0.2934 ns），所以 `net_p50` 只取离散值：如 update 的 14.67ns 对应 80 cycles，cross-day 的 21.13ns 对应 102 cycles。相邻两次运行的单格跳动通常是整整一个周期栅格（约 0.3–0.6ns），**不是性能变化**——比对时看整行与多次中位数，不要比较相邻两次的单格。
 
 观察：换桶/跨日比同桶更新贵约 7–8ns —— 两者都多一次 `close` + `open` 事件派发（本基准 sink 为空实现，故这里是组件侧的事件分发成本，不含消费方 sink 自身开销）与累计基准重置，量级符合预期。竞价最便宜：窗口内只静默更新 bar 状态、不回调 sink。无需优化项。
 
@@ -179,7 +181,7 @@ Windows：`.\scripts\build.ps1` → `.\scripts\test.ps1 -Label perf`，可执行
 
 单次运行的 p99 抖动可达数 ns（机器负载高时实测到 ±5ns，明显大于均值的抖动），所以比对改动前后要用多次运行的中位数，不要拿单次 p99 下结论。
 
-与 ADR 0031 决策 10 的「静态估算约 10ns」对照：实测 `batch_mean` 13.02ns 比静态估算高约 3ns，差异来自交易小节/竞价表的定长循环查找、量额差分与 bar 状态更新——同量级，无误判。
+与 ADR 0031 决策 10 的「静态估算约 10ns」对照：实测 `batch_mean` 12.70ns 比静态估算高约 2.7ns，差异来自交易小节/竞价表的定长循环查找、量额差分与 bar 状态更新——同量级，无误判。
 
 > 该机器为 2016 年 4 核桌面 CPU（非 CI runner）。升级 CI 门禁时阈值应以届时 CI runner 的实测基线为准，不能直接搬 50ns 或本表数值。
 
