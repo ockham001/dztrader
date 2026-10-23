@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed（2026-10-23 设计评审收敛；待确认后改 Accepted）
+Accepted（2026-10-23）
 
 ## Context
 
