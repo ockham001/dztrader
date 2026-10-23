@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# check-push-scope.sh — push 前确认上游区间只含本票 commit
+# check-push-scope.sh — push 前确认上游区间只含本票 commit，且不在 CI 进行中重复 push
 #
 # 并行波常见事故：主工作区同时有两条线的改动，提交父节点落在另一条线未 push
 # 的 commit 上，push 时把别人的票一起发布。本脚本在 push 前做机械检查。
+#
+# 第二个检查：同一分支已有 in-progress CI run 时拒绝 push——新 push 会取消/排队
+# 正在跑的 PR run（每次 ≈35–40 分钟），review 修复应攒成一个 commit 再推。
 #
 # 用法:
 #   ./scripts/check-push-scope.sh <issue-number> [--base <ref>]
 #
 # base 默认 @{u}（无上游时回退 origin/main）。逐个检查 `base..HEAD` 的
 # 非 merge commit，subject 必须含 `#<issue>`（全角/半角括号均可）。
+# CI 进行中时可用 PUSH_SCOPE_ALLOW_CI_BUSY=1 跳过第二个检查。
 #
-# 退出码: 0=区间为空或全部匹配, 1=发现不属于本票的 commit, 2=参数/引用错误
+# 退出码: 0=区间为空或全部匹配, 1=发现不属于本票的 commit, 2=参数/引用错误, 3=分支 CI 进行中
 
 set -uo pipefail
 
@@ -59,6 +63,38 @@ COMMITS="$(git log --no-merges --format='%h %s' "${BASE}..HEAD")"
 if [ -z "$COMMITS" ]; then
     echo "ok: ${BASE}..HEAD is empty (nothing to push)"
     exit 0
+fi
+
+check_ci_busy() {
+    local gh_bin="$1" branch active
+    branch="$(git branch --show-current 2>/dev/null || true)"
+    [ -n "$branch" ] || return 0
+    command -v "$gh_bin" >/dev/null 2>&1 || return 0
+    active="$("$gh_bin" run list --branch "$branch" --limit 10 \
+        --json databaseId,status,workflowName \
+        --jq '.[] | select(.status != "completed") | "\(.databaseId) \(.status) \(.workflowName)"' \
+        2>/dev/null || true)"
+    [ -n "$active" ] || return 0
+    echo "error: CI run(s) still in progress on branch '$branch'; a push will queue/cancel them (~35-40min each):" >&2
+    printf '  %s\n' "$active" >&2
+    echo "  wait with ./scripts/wait-ci.sh --run <id>, or set PUSH_SCOPE_ALLOW_CI_BUSY=1 to override" >&2
+    return 3
+}
+
+if [ "${PUSH_SCOPE_ALLOW_CI_BUSY:-0}" != "1" ]; then
+    GH_BIN="${GH:-gh}"
+    if ! command -v "$GH_BIN" >/dev/null 2>&1 && [ -x "$HOME/.local/bin/gh" ]; then
+        GH_BIN="$HOME/.local/bin/gh"
+    fi
+    # gh 缓存只读时回退仓库 .cache（与 wait-ci.sh 一致）
+    if [ -d "$HOME/.cache/gh" ]; then
+        if touch "$HOME/.cache/gh/.dz_scope_probe" 2>/dev/null; then
+            rm -f "$HOME/.cache/gh/.dz_scope_probe"
+        else
+            export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$ROOT/.cache}"
+        fi
+    fi
+    check_ci_busy "$GH_BIN" || exit $?
 fi
 
 echo "push scope: ${BASE}..HEAD"
