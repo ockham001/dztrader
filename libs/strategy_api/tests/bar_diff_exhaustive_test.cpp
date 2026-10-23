@@ -14,7 +14,6 @@
 
 #include <dztrader/bar.h>
 
-#include <array>
 #include <cstdint>
 #include <string>
 
