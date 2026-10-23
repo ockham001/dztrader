@@ -128,15 +128,15 @@ const DEFAULT_SHM_DIR: SysmonShmDirInfo = {
   oldest_file_age_sec: 480,
 }
 
-/**
- * 默认磁盘 I/O（#76 后端形状）：两块盘，吞吐 / IOPS / 延迟 / 队列深度 / 利用率均有值。
- * 刻意按 sda、nvme0n1 的发送顺序排列，用于验证前端按 device 升序排序而不是依赖发送端顺序。
- */
 /** #76 后端在 disk_io 能力可用时发送的口径提示（契约 sysmon §2.5） */
 const DEFAULT_DISK_IO_HINT =
   'latency is the average time per completed request, queue wait included; queue depth is the '
   + 'instantaneous in-flight request count at the measurement tick, not an interval average'
 
+/**
+ * 默认磁盘 I/O（#76 后端形状）：两块盘，吞吐 / IOPS / 延迟 / 队列深度 / 利用率均有值。
+ * 刻意按 sda、nvme0n1 的发送顺序排列，用于验证前端按 device 升序排序而不是依赖发送端顺序。
+ */
 const DEFAULT_DISK_IO: SysmonDiskIoInfo[] = [
   {
     device: 'sda',
@@ -283,8 +283,10 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
     availability: {
       platform_description: 'Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)',
       metrics,
+      // 后端只在 disk_io 能力可用时携带该口径提示（契约 sysmon §2.5），夹具保持一致。
       semantic_hints: {
-        ...(options.semanticHints ?? { disk_io: DEFAULT_DISK_IO_HINT }),
+        ...(options.semanticHints
+          ?? (metrics.disk_io?.available === true ? { disk_io: DEFAULT_DISK_IO_HINT } : {})),
       },
     },
   }

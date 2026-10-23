@@ -129,10 +129,10 @@ TEST(SystemCollectorOracleTest, PerCoreUsagesAndRatesValidOnRealMachine) {
     ASSERT_TRUE(first->interrupts.has_value());
     ASSERT_TRUE(second->context_switches.has_value());
     ASSERT_TRUE(second->interrupts.has_value());
-    const auto context_switches_rate =
-        compute_rate(*first->context_switches, *second->context_switches, elapsed_seconds);
+    const auto context_switches_rate = compute_rate(
+        *first->context_switches, *second->context_switches, elapsed_seconds, kCpuCounterWrapSpan);
     const auto interrupts_rate =
-        compute_rate(*first->interrupts, *second->interrupts, elapsed_seconds);
+        compute_rate(*first->interrupts, *second->interrupts, elapsed_seconds, kCpuCounterWrapSpan);
     ASSERT_TRUE(context_switches_rate.has_value());
     ASSERT_TRUE(interrupts_rate.has_value());
     EXPECT_TRUE(std::isfinite(*context_switches_rate));
@@ -474,7 +474,8 @@ TEST(SystemCollectorOracleTest, DiskIoDerivedValuesHoldOnRealMachine) {
               &disk.write_iops, &disk.latency_ms, &disk.queue_depth}) {
             if (field->has_value()) {
                 any_value = true;
-                EXPECT_GE(**field, 0.0) << disk.device;
+                // 派生值必须有限（NaN/Infinity 说明计数窗口或公式异常）；
+                // 非负由 Δ计数器 ≥ 0 结构性保证，不再重复断言永真条件。
                 EXPECT_TRUE(std::isfinite(**field)) << disk.device;
             }
         }

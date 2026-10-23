@@ -28,6 +28,8 @@ const updatedAt = computed(() => {
 
 // ---- 格式化（不可用一律显示「不可用」，不得用 0 冒充数据）----
 const UNAVAILABLE = '不可用'
+/** 配置关闭的统一文案（卷 / 指标可用性映射共用，避免两处字面量漂移） */
+const DISABLED_BY_CONFIG_TEXT = '已在配置中关闭'
 
 function formatPercent(ratio: number | null | undefined, digits = 1): string {
   if (typeof ratio !== 'number' || !Number.isFinite(ratio)) return UNAVAILABLE
@@ -48,7 +50,7 @@ function formatRate(bytesPerSec: number | null | undefined): string {
   return `${formatBytes(bytesPerSec)}/s`
 }
 
-/** 系统负载 / 处理器队列长度：保留 2 位小数；null 一律显示不可用（不得用 0 冒充） */
+/** 2 位小数格式化（系统负载 / 处理器队列长度 / 磁盘队列深度）；null 显示不可用（不得用 0 冒充） */
 function formatLoadValue(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return UNAVAILABLE
   return value.toFixed(2)
@@ -98,7 +100,7 @@ function volumeReasonDesc(reason: string | undefined): string {
   if (reason === 'no_permission') return '无访问权限'
   if (reason === 'path_not_found') return '路径不存在或无法解析'
   if (reason === 'collect_failed') return '采集失败'
-  if (reason === 'disabled_by_config') return '已在配置中关闭'
+  if (reason === 'disabled_by_config') return DISABLED_BY_CONFIG_TEXT
   return reason
 }
 
@@ -129,10 +131,11 @@ function isAvailable(metric: string): boolean {
 function unavailableDesc(metric: string): string {
   const reason = sysmon.availabilityOf(metric)?.reason
   if (!reason) return '当前快照未提供该指标'
-  // reason 为契约约定的自由文案（建议取值 not_implemented/unsupported/no_permission/no_sensor/collect_failed）
+  // reason 为契约约定的自由文案（建议取值 not_implemented/unsupported/no_permission/no_sensor/
+  // collect_failed/disabled_by_config）
   if (reason === 'not_implemented') return '该指标将在后续版本接入'
   if (reason === 'collect_failed') return '采集失败，暂不可用'
-  if (reason === 'disabled_by_config') return '已在配置中关闭'
+  if (reason === 'disabled_by_config') return DISABLED_BY_CONFIG_TEXT
   return reason
 }
 

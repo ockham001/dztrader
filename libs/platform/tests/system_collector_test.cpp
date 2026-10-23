@@ -774,13 +774,16 @@ TEST(DiskstatsParserTest, SkipsMalformedAndLegacyShapedLines) {
     const std::string content =
         "\n"
         "garbage line without numbers\n"
-        "   8       0 sda 1 2 3\n"                             // 老内核分区行（7 字段）
-        "   8       0 sdb x 2 3 4 5 6 7 8 9 10 11 12\n"        // 非数字统计项
+        "   8       0 sda 1 2 3\n"                                         // 老内核分区行（7 字段）
+        "   8       0 sdb x 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18\n"  // 非数字统计项
+        "   8       0 sdc 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18\n"  // 合法 20 字段
         "   3       0       8 hda 8 8 8 8 8 8 8 8 8 8 8\n"     // 2.4 格式（15 字段，name 在索引 3）
         "   8      16 sdb 11 12 13 14 15 16 17 18 0 19 20\n";  // 合法 14 字段行
     const auto entries = parse_diskstats(content);
-    ASSERT_EQ(entries.size(), 1U);
-    EXPECT_EQ(entries[0].device, "sdb");
+    ASSERT_EQ(entries.size(), 2U);
+    // 非数字统计项被跳过；合法行按文件顺序保留（覆盖解析失败分支，而不是只靠字段数分支）。
+    EXPECT_EQ(entries[0].device, "sdc");
+    EXPECT_EQ(entries[1].device, "sdb");
 }
 
 TEST(DiskstatsParserTest, PhysicalDiskNameFilterExcludesVirtualAndOpticalDevices) {

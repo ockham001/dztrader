@@ -185,7 +185,7 @@ TEST(DiskIoTest, ThirtyTwoBitTimeCounterWrapIsHandledWhenSamplingDeclaresSpan) {
 
     platform::RawDiskIoInfo cur = make_disk("sda");
     cur.read_count = 13;
-    cur.read_time_us = 2000;     // 回绕：Δ = 1000 + 2000 = 3000us
+    cur.read_time_us = 2000;     // 回绕：Δ = 2000 + 2000 = 4000us
     cur.busy_time_us = 500'000;  // 回绕：Δ = 1s
     cur.in_flight = 0;
     cur.time_wrap_span = platform::DISK_IO_TIME_WRAP_SPAN_US;

@@ -921,9 +921,9 @@ std::optional<DISK_PERFORMANCE> query_disk_performance(int index) {
 
 /// 采集每物理盘 I/O 累计计数器（契约 sysmon §2.4、§2.7）。
 ///
-/// 一个盘都读不到 ⇒ std::nullopt（Windows 计数器需特权/未使能，上层按可用性标记不可用）；
-/// 至少一个成功 ⇒ 按盘号升序返回非空数组。单个盘读到 0 是"读到了 0"，与"读不到"分开：
-/// 只有成功返回的盘才进入数组。
+/// 一个盘都读不到 ⇒ `unavailable_reason = no_permission`（Windows 计数器需特权/未使能，
+/// 上层直接映射为可用性原因）；至少一个成功 ⇒ 按盘号升序返回非空数组、原因为空串。
+/// 单个盘读到 0 是"读到了 0"，与"读不到"分开：只有成功返回的盘才进入数组。
 RawDiskIoSnapshot query_disk_io() {
     RawDiskIoSnapshot snapshot;
     for (int index = 0; index <= kPhysicalDriveMaxIndex; ++index) {

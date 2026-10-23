@@ -165,8 +165,8 @@ struct DiskstatsEntry {
 /// 判断 `/sys/block` 下的块设备名是否属于"物理盘"（契约 sysmon §2.4）。
 ///
 /// 排除：内存/回环设备（loop/ram/zram）、设备映射与软件 RAID 聚合（dm-/md/bcache）、
-/// 网络块设备（nbd/rbd/drbd/ceph）、光学/软驱/包写入设备（sr/sg/fd/pktcdvd）以及
-/// 其它虚拟块设备（ublk/vduse）。物理盘 I/O 计在底层设备上，聚合设备计入会造成重复计数。
+/// 网络块设备（nbd/rbd/drbd）、光学/软驱/包写入设备（sr/sg/fd/pktcdvd）以及其它
+/// 虚拟块设备（ublk/vduse/zd）。物理盘 I/O 计在底层设备上，聚合设备计入会造成重复计数。
 [[nodiscard]] bool is_physical_disk_name(std::string_view name);
 
 /// 按 `/sys/block` 候选设备名过滤解析结果（契约 sysmon §2.4）。

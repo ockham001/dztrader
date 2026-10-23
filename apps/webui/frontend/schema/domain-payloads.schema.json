@@ -312,12 +312,12 @@
       "required": ["device", "read_bytes_per_sec", "write_bytes_per_sec", "read_iops", "write_iops", "latency_ms", "queue_depth", "utilization"],
       "properties": {
         "device": { "type": "string", "description": "物理盘标识（Linux 为 sda/nvme0n1 等内核设备名；Windows 为 PhysicalDrive0 等物理盘号）" },
-        "read_bytes_per_sec": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "读吞吐（字节/秒）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充）" },
-        "write_bytes_per_sec": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "写吞吐（字节/秒）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充）" },
-        "read_iops": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "读 IOPS（每秒读请求数）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充）" },
-        "write_iops": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "写 IOPS（每秒写请求数）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充）" },
-        "latency_ms": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "平均每请求延迟（毫秒）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充）" },
-        "queue_depth": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "采样时刻在途请求数（瞬时 gauge，不是累计计数器）；计数器不可用时为 null（不得用 0 冒充）" },
+        "read_bytes_per_sec": { "anyOf": [{ "type": "number" }, { "type": "null" }], "minimum": 0, "description": "读吞吐（字节/秒）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充）" },
+        "write_bytes_per_sec": { "anyOf": [{ "type": "number" }, { "type": "null" }], "minimum": 0, "description": "写吞吐（字节/秒）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充）" },
+        "read_iops": { "anyOf": [{ "type": "number" }, { "type": "null" }], "minimum": 0, "description": "读 IOPS（每秒读请求数）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充）" },
+        "write_iops": { "anyOf": [{ "type": "number" }, { "type": "null" }], "minimum": 0, "description": "写 IOPS（每秒写请求数）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充）" },
+        "latency_ms": { "anyOf": [{ "type": "number" }, { "type": "null" }], "minimum": 0, "description": "平均每请求延迟（毫秒）；首次采样/计数器重置/本帧未读到时为 null（不得用 0 冒充）" },
+        "queue_depth": { "anyOf": [{ "type": "number" }, { "type": "null" }], "minimum": 0, "description": "采样时刻在途请求数（瞬时 gauge，不是累计计数器）；计数器不可用时为 null（不得用 0 冒充）" },
         "utilization": { "anyOf": [{ "type": "number" }, { "type": "null" }], "minimum": 0, "maximum": 1, "description": "设备利用率（[0,1] 比率）；计数器不可用时为 null（不得用 0 冒充）" }
       }
     },

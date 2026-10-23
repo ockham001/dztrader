@@ -69,18 +69,20 @@ inline constexpr uint64_t kCpuCounterWrapSpan = 1ULL << 32;
  * @brief 由两次原始累计计数器计算每秒速率（契约 sysmon §2.7）。
  *
  * 速率 = Δcount / 实际经过秒数；回绕/重置规则见 counter_delta。
+ * 本函数与 `counter_delta` 是**跨指标域共享的计数器算术**（CPU 与磁盘 I/O 共用，
+ * 磁盘 I/O 按采样携带的原生位宽传入 `wrap_span`），因此 `wrap_span` 无默认值：
+ * 调用方必须显式给出该计数器的位宽跨度（CPU 计数器用 `kCpuCounterWrapSpan`）。
  *
  * @param prev            上次累计计数
  * @param cur             本次累计计数
  * @param elapsed_seconds 两次采样之间实际经过的秒数（单调时钟）
- * @param wrap_span       该计数器的 32 位回绕跨度；默认 CPU 口径（2^32），
- *                        0 = 64 位计数器（下降一律视为重置）
+ * @param wrap_span       该计数器的 32 位回绕跨度；0 = 64 位计数器（下降一律视为重置）
  * @return 每秒速率；计数器重置或 elapsed_seconds ≤ 0 时返回 std::nullopt
  */
 [[nodiscard]] std::optional<double> compute_rate(uint64_t prev,
                                                  uint64_t cur,
                                                  double elapsed_seconds,
-                                                 uint64_t wrap_span = kCpuCounterWrapSpan) noexcept;
+                                                 uint64_t wrap_span) noexcept;
 
 }  // namespace dztrader::sysmon
 

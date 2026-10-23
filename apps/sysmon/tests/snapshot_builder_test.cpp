@@ -801,7 +801,7 @@ TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {
     EXPECT_DOUBLE_EQ(*core_usages[1], 0.25);
 
     const auto switches_rate =
-        compute_rate(*first->context_switches, *second->context_switches, 2.0);
+        compute_rate(*first->context_switches, *second->context_switches, 2.0, kCpuCounterWrapSpan);
     ASSERT_TRUE(switches_rate.has_value());
     EXPECT_DOUBLE_EQ(*switches_rate, 300.0);
 
@@ -813,7 +813,8 @@ TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {
     }
     metrics.rates_collected = true;
     metrics.context_switches_per_sec = switches_rate;
-    metrics.interrupts_per_sec = compute_rate(*first->interrupts, *second->interrupts, 2.0);
+    metrics.interrupts_per_sec =
+        compute_rate(*first->interrupts, *second->interrupts, 2.0, kCpuCounterWrapSpan);
     fake.load = platform::RawLoadAverage{0.4, 0.5, 0.6, "load_average"};
     const auto load = fake.collect_load_average();
     ASSERT_TRUE(load.has_value());
