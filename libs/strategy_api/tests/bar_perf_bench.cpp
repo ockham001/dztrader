@@ -558,9 +558,9 @@ int64_t check_segment(IntradayBarBuilder<NullBarSink>& builder,
  */
 class CountingSink {
 public:
-    void on_bar_open(const Bar&) { ++opens; }
-    void on_bar_update(const Bar&) { ++updates; }
-    void on_bar_close(const Bar&) { ++closes; }
+    void on_bar_open(const Bar&, bool) { ++opens; }
+    void on_bar_update(const Bar&, bool) { ++updates; }
+    void on_bar_close(const Bar&, bool) { ++closes; }
 
     int64_t opens = 0;    ///< on_bar_open 次数
     int64_t updates = 0;  ///< on_bar_update 次数

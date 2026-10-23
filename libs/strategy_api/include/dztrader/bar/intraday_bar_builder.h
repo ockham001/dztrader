@@ -45,8 +45,15 @@ namespace dztrader::bar {
  * （is_final=false），最后 update 新 bar；小节内同桶 tick 只 update。无成交的桶不生成
  * bar（相邻 bar 的 begin_sec 可跳跃）。
  *
+ * 回调参数：三个 bar 回调的签名均为 `(const Bar&, bool is_auction)`（见 types.h 的
+ * Sink 契约）。`is_auction` 表示**触发本次回调的 tick 是否处于 Open 竞价窗口**，是回调
+ * 时刻的环境相位、不是被交出 bar 的属性；仅 Open 窗口标记，Close 窗口按普通 tick 处理、
+ * 不标记，历史回放恒为 false。当前实现下 Open 窗口内的 tick 不触发回调，故每个回调都由
+ * 窗口外 tick 触发、`is_auction` 恒为 false。
+ *
  * @tparam Sink bar 事件接收者：可选实现 on_bar_open / on_bar_update / on_bar_close，
- *              未实现视为空操作；回调不得抛异常
+ *              签名均为 `void(const Bar&, bool is_auction)`，未实现视为空操作；
+ *              回调不得抛异常
  *
  * @note 交易日变化按「换根」处理：交易日变大的第一笔有效 tick 到来时，先以 `is_final=true`
  *       关闭当日最后一根 bar，再开新交易日首根（即便落在同一桶起点也换根），累计基准重置
@@ -184,7 +191,7 @@ public:
             update_bar(tick, tsec);
             restored_auction_phase_ = false;  // 已含场内 tick：后续竞价 tick 归静默并入
         }
-        notify_update(bar_);
+        notify_update(bar_, false);
     }
 
     /// @brief 是否已有形成中 bar（首笔 tick 之前为 false）
@@ -547,10 +554,10 @@ private:
         for (int32_t i = 0; i < pending_count_; ++i) {
             Bar& pending_bar = pending_bars_[i].bar;
             if (pending_bars_[i].needs_open) {
-                notify_open(pending_bar);
+                notify_open(pending_bar, false);  // bar 建于窗口内，事件由窗口外 tick 触发
             }
             pending_bar.is_final = true;
-            notify_close(pending_bar);
+            notify_close(pending_bar, false);
         }
         pending_count_ = 0;
     }
@@ -561,7 +568,7 @@ private:
             return;
         }
         bar_open_notified_ = true;
-        notify_open(bar_);
+        notify_open(bar_, false);
     }
 
     /// @brief 以 is_final=true 关闭当前 bar 并通知 sink（下一笔 tick 会开新 bar）
@@ -571,7 +578,7 @@ private:
     void finalize_bar() {
         expose_bar();
         bar_.is_final = true;
-        notify_close(bar_);
+        notify_close(bar_, false);
     }
 
     /**
@@ -607,7 +614,7 @@ private:
         bar_.low = tick.last_price;
         update_bar(tick, tsec);
         bar_open_notified_ = true;
-        notify_open(bar_);
+        notify_open(bar_, false);
     }
 
     /// @brief 用本笔 tick 更新形成中 bar 的 H/L/C、量额差、持仓量与最后 tick 时间
@@ -642,27 +649,29 @@ private:
     }
 
     /// @brief 若 Sink 实现 on_bar_open 则通知新 bar 已打开（缺失视为空操作）
-    void notify_open(const Bar& bar) {
-        if constexpr (requires(Sink& sink, const Bar& event_bar) { sink.on_bar_open(event_bar); }) {
-            sink_.on_bar_open(bar);
+    void notify_open(const Bar& bar, bool is_auction) {
+        if constexpr (requires(Sink& sink, const Bar& event_bar, bool event_is_auction) {
+                          sink.on_bar_open(event_bar, event_is_auction);
+                      }) {
+            sink_.on_bar_open(bar, is_auction);
         }
     }
 
     /// @brief 若 Sink 实现 on_bar_update 则通知当前 bar 已更新（缺失视为空操作）
-    void notify_update(const Bar& bar) {
-        if constexpr (requires(Sink& sink, const Bar& event_bar) {
-                          sink.on_bar_update(event_bar);
+    void notify_update(const Bar& bar, bool is_auction) {
+        if constexpr (requires(Sink& sink, const Bar& event_bar, bool event_is_auction) {
+                          sink.on_bar_update(event_bar, event_is_auction);
                       }) {
-            sink_.on_bar_update(bar);
+            sink_.on_bar_update(bar, is_auction);
         }
     }
 
     /// @brief 若 Sink 实现 on_bar_close 则通知当前 bar 已收（缺失视为空操作）
-    void notify_close(const Bar& bar) {
-        if constexpr (requires(Sink& sink, const Bar& event_bar) {
-                          sink.on_bar_close(event_bar);
+    void notify_close(const Bar& bar, bool is_auction) {
+        if constexpr (requires(Sink& sink, const Bar& event_bar, bool event_is_auction) {
+                          sink.on_bar_close(event_bar, event_is_auction);
                       }) {
-            sink_.on_bar_close(bar);
+            sink_.on_bar_close(bar, is_auction);
         }
     }
 

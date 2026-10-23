@@ -209,14 +209,26 @@ struct BarBuilderStats {
 };
 
 /**
- * @brief 空 sink：三个 bar 回调均为空实现
+ * @brief Sink 契约（三个可选 bar 回调）与空实现
  *
- * builder 的 Sink 模板参数默认使用本类型，表示不关心 bar 事件。
+ * builder 的 Sink 模板参数要求下列回调，签名统一为 `(const Bar&, bool is_auction)`；
+ * 每个回调都是可选的，未实现视为空操作：
+ * - `void on_bar_open(const Bar&, bool is_auction)`
+ * - `void on_bar_update(const Bar&, bool is_auction)`
+ * - `void on_bar_close(const Bar&, bool is_auction)`
+ *
+ * 签名必须与上述完全一致（含 `bool` 参数）：签名不匹配的实现视为未实现、静默忽略。
+ *
+ * `is_auction` 语义：**触发本次回调的 tick 是否处于 Open 竞价窗口**，是回调时刻的环境
+ * 相位，不是被交出 bar 的属性（同一根 bar 可在窗口内开始、在连续交易中继续更新）。
+ * 仅 Open 窗口标记；Close 窗口按普通 tick 处理、不标记；历史回放与日线回调恒为 false。
+ *
+ * 本类型三个回调均为空实现，是 builder 的默认 Sink，表示不关心 bar 事件。
  */
 struct NullBarSink {
-    void on_bar_open(const Bar&) {}
-    void on_bar_update(const Bar&) {}
-    void on_bar_close(const Bar&) {}
+    void on_bar_open(const Bar&, bool) {}
+    void on_bar_update(const Bar&, bool) {}
+    void on_bar_close(const Bar&, bool) {}
 };
 
 }  // namespace dztrader::bar

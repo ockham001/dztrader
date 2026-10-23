@@ -48,8 +48,12 @@ namespace dztrader::bar {
  * 事件顺序：同日每笔已接受 tick 恰好一次 update（首笔先 open）；交易日变化先 close 旧日线
  * （is_final=true），再 open 新日线（is_final=false），最后 update 新日线。
  *
+ * 回调参数：三个 bar 回调的签名均为 `(const Bar&, bool is_auction)`（见 types.h 的
+ * Sink 契约）。日线不涉及交易小节与竞价窗口，`is_auction` 恒为 false。
+ *
  * @tparam Sink bar 事件接收者：可选实现 on_bar_open / on_bar_update / on_bar_close，
- *              未实现视为空操作；回调不得抛异常
+ *              签名均为 `void(const Bar&, bool is_auction)`，未实现视为空操作；
+ *              回调不得抛异常
  *
  * @note 续接与重置：restore() 只允许在构造/reset() 之后、尚未调用 on_tick() 时调用（同一
  *       reset 周期内只能调用一次，违反抛 std::invalid_argument）；period_sec 必须为 0、
@@ -121,7 +125,7 @@ public:
         } else {
             update_bar(tick, tsec);
         }
-        notify_update(bar_);
+        notify_update(bar_, false);
     }
 
     /// @brief 是否已有形成中 bar（首笔 tick 之前为 false）
@@ -276,7 +280,7 @@ private:
         has_bar_ = true;
         restored_final_ = false;  // 恢复的已收日线状态已进入新交易日，可清除
         update_bar(tick, tsec);
-        notify_open(bar_);
+        notify_open(bar_, false);
     }
 
     /// @brief 用本笔 tick 的当日累计字段更新形成中/新开日线的全部行情字段
@@ -299,31 +303,33 @@ private:
     /// @brief 以 is_final=true 关闭当前日线并通知 sink（下一笔更晚交易日的 tick 会开新日线）
     void finalize_bar() {
         bar_.is_final = true;
-        notify_close(bar_);
+        notify_close(bar_, false);
     }
 
     /// @brief 若 Sink 实现 on_bar_open 则通知新 bar 已打开（缺失视为空操作）
-    void notify_open(const Bar& bar) {
-        if constexpr (requires(Sink& sink, const Bar& event_bar) { sink.on_bar_open(event_bar); }) {
-            sink_.on_bar_open(bar);
+    void notify_open(const Bar& bar, bool is_auction) {
+        if constexpr (requires(Sink& sink, const Bar& event_bar, bool event_is_auction) {
+                          sink.on_bar_open(event_bar, event_is_auction);
+                      }) {
+            sink_.on_bar_open(bar, is_auction);
         }
     }
 
     /// @brief 若 Sink 实现 on_bar_update 则通知当前 bar 已更新（缺失视为空操作）
-    void notify_update(const Bar& bar) {
-        if constexpr (requires(Sink& sink, const Bar& event_bar) {
-                          sink.on_bar_update(event_bar);
+    void notify_update(const Bar& bar, bool is_auction) {
+        if constexpr (requires(Sink& sink, const Bar& event_bar, bool event_is_auction) {
+                          sink.on_bar_update(event_bar, event_is_auction);
                       }) {
-            sink_.on_bar_update(bar);
+            sink_.on_bar_update(bar, is_auction);
         }
     }
 
     /// @brief 若 Sink 实现 on_bar_close 则通知当前 bar 已收（缺失视为空操作）
-    void notify_close(const Bar& bar) {
-        if constexpr (requires(Sink& sink, const Bar& event_bar) {
-                          sink.on_bar_close(event_bar);
+    void notify_close(const Bar& bar, bool is_auction) {
+        if constexpr (requires(Sink& sink, const Bar& event_bar, bool event_is_auction) {
+                          sink.on_bar_close(event_bar, event_is_auction);
                       }) {
-            sink_.on_bar_close(bar);
+            sink_.on_bar_close(bar, is_auction);
         }
     }
 
