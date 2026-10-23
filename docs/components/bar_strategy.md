@@ -433,6 +433,7 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 
 - `on_bar_open` 触发时新 bar 的 `open/high/low/close` 已等于本笔 tick 价（与 TB 的 OnBarOpen 一致），读 open 不需要等下一次 update。
 - 每笔 tick 恰好一次 `on_bar_update`（含新 bar 的首笔）。
+- **首根 bar 没有 close**：品种实例的第一笔有效 tick 只触发 `on_bar_open → on_bar_update`（两者携带同一份快照，没有上一根可关闭）；此后每根新 bar 才是 `on_bar_close(上一根) → on_bar_open(新根) → on_bar_update`。回调门禁（§5.2）下 B 的**第一次**回调序列是 `on_bar_close(静默填窗最后一根) → on_bar_open → on_bar_update`，这根 close 属于历史填充。
 - **Open 竞价窗口内同构**（[ADR 0032](../adr/0032-auction-window-strategy-events.md)）：窗口首笔 tick 即完成 `on_bar_close(上一根) → on_bar_open(新首根) → on_bar_update`，其后每笔竞价 tick 只 `on_bar_update`；开盘后第一笔连续交易 tick 只 `on_bar_update`（同一根 bar 继续），此时 `ctx.is_auction()` 由 true 变 false。窗口内没有 tick 就没有回调（纯 tick 驱动，不加定时器）。
 
 ### 5.2 回调门禁：窗口填满前不回调

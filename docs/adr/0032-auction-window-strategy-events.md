@@ -69,6 +69,11 @@ Proposed（2026-10-23 设计评审收敛；待确认后改 Accepted）
   当前无生产消费方（仅测试），是改动成本最低的时机。
 - 事件时序提前：上一根 bar 的 close 与首根的 open 由"离开窗口后第一笔连续 tick 补发"改为"窗口首笔
   tick 当场触发"；"tick 流在窗口内结束则 bar 永不补发"的规则随之消失。
+- 事件语义边界：品种实例的**首根 bar 没有 close**（第一笔有效 tick 只触发 `on_bar_open → on_bar_update`，
+  两者携带同一份快照；竞价窗口内启动则两者 `is_auction` 为 true）；此后每根新 bar 才是
+  `on_bar_close(上一根) → on_bar_open(新根) → on_bar_update`。又因回调门禁（ADR 0027 决策 7），
+  B 的**第一次**回调序列是 `on_bar_close(静默填窗最后一根) → on_bar_open → on_bar_update`，
+  第一次收到的 close 属于历史填充而非首根 live bar。
 - 测试与基准：`intraday_bar_auction_test.cpp` 的"窗口内零回调/补发"断言改为事件序断言；
   `bar_perf_bench` 的 auction 路径自检更新，基线记录追加新行（历史记录不修改）；连续交易
   `update` 路径数值不应变化。
