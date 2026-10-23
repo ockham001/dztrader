@@ -31,9 +31,11 @@ case "$SKIP_CONFIGURE" in
 esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+mkdir -p "$REPO_ROOT/.cache"
 
 # DSH workspace-write 沙箱下 ~/.conan2 可能只读：回退到仓库内 CONAN_HOME（.cache/ 已 gitignore），
-# 避免 worktree setup 卡在权限申请上。
+# 避免 worktree setup 卡在权限申请上。回退时先从可读的 ~/.conan2 播种一次（1.8G 本地拷贝几十秒），
+# 否则每个新 worktree 都要重新下载全部依赖（本波 #88 实测 ~50 分钟）。
 if [ -z "${CONAN_HOME:-}" ]; then
     conan_cache_ok=0
     if mkdir -p "$HOME/.conan2" 2>/dev/null && touch "$HOME/.conan2/.dz_setup_probe" 2>/dev/null; then
@@ -43,7 +45,11 @@ if [ -z "${CONAN_HOME:-}" ]; then
     if [ "$conan_cache_ok" -eq 0 ]; then
         export CONAN_HOME="$REPO_ROOT/.cache/conan2"
         mkdir -p "$CONAN_HOME"
-        echo "warning: ~/.conan2 is not writable; using CONAN_HOME=$CONAN_HOME (first install will be slow)" >&2
+        if [ ! -d "$CONAN_HOME/p" ] && [ -d "$HOME/.conan2/p" ]; then
+            echo "seeding conan cache from ~/.conan2 → $CONAN_HOME (one-time copy) ..." >&2
+            cp -a "$HOME/.conan2/." "$CONAN_HOME"/ 2>/dev/null || true
+        fi
+        echo "warning: ~/.conan2 is not writable; using CONAN_HOME=$CONAN_HOME" >&2
     fi
 fi
 
@@ -78,8 +84,16 @@ if [ "$SKIP_CONFIGURE" -eq 0 ]; then
     echo ""
     echo "[2/2] cmake configure"
     PRESET="linux-$CONFIG"
+    # 本机有 ccache 时接入编译器缓存（worktree 首建/合并后重建显著加速；Windows 走 setup.ps1 不涉及）
+    CMAKE_EXTRA_ARGS=()
+    if command -v ccache >/dev/null 2>&1; then
+        export CCACHE_DIR="${CCACHE_DIR:-$REPO_ROOT/.cache/ccache}"
+        mkdir -p "$CCACHE_DIR"
+        CMAKE_EXTRA_ARGS+=("-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
+        echo "ccache: enabled (CCACHE_DIR=$CCACHE_DIR)"
+    fi
     echo "cmake --preset $PRESET"
-    cmake --preset "$PRESET"
+    cmake --preset "$PRESET" "${CMAKE_EXTRA_ARGS[@]}"
 
     # 拷贝 compile_commands.json 到项目根（clangd 用）
     CC="$REPO_ROOT/$OUTPUT_FOLDER/compile_commands.json"

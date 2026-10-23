@@ -11,7 +11,8 @@ CMake + Conan 2.x + Ninja + GTest。本文档记录**项目特有规则与非主
 agent 会话可能跑在 workspace-write 沙箱里：只有仓库目录可写，`~` 下的共享缓存可能只读。
 
 - **`/tmp` 每次 bash 调用隔离**：跨调用要用的日志/快照写 `.cache/`（仓库已 gitignore），不要写 `/tmp`
-- **Conan 缓存**：默认 `~/.conan2`；不可写时 `scripts/setup.sh` 自动回退 `CONAN_HOME=<repo>/.cache/conan2`（首次会冷装依赖）
+- **Conan 缓存**：默认 `~/.conan2`；不可写时 `scripts/setup.sh` 自动回退 `CONAN_HOME=<repo>/.cache/conan2`，并从可读的 `~/.conan2` **播种一次**（1.8G 本地拷贝，避免每个新 worktree 重新下载依赖；本波 #88 冷装实测约 50 分钟）
+- **ccache**：本机装了 `ccache` 时 `scripts/setup.sh` 自动给 Linux CMake 配置 `CMAKE_CXX_COMPILER_LAUNCHER=ccache`、`CCACHE_DIR=<repo>/.cache/ccache`（worktree 首建/合并后重建显著加速；CI 尚未接入）
 - **npm 缓存**：默认 `~/.npm`；不可写时 `scripts/build.sh` / `scripts/preflight.sh` 自动设 `npm_config_cache=<repo>/.cache/npm`
 - **gh 缓存**：`~/.cache/gh` 不可写时 `scripts/wait-ci.sh` / `scripts/ci-log.sh` 自动设 `XDG_CACHE_HOME=<repo>/.cache`，避免 `gh run view --log-failed` 失败
 - 需要写共享缓存的 worktree 首建若仍被拒，再向用户申请一次 full access；不要反复重试同一命令
