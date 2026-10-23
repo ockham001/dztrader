@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed（2026-10-21，BarStrategy 设计评审类型审计；用户确认采用方案 A，待随本批文档评审后改 Accepted）
+Accepted（2026-10-21 评审通过；类型与 API 变更已随 `3f6383e` 提交，见决策与 Consequences）
 
 ## Context
 
@@ -19,7 +19,7 @@ Proposed（2026-10-21，BarStrategy 设计评审类型审计；用户确认采�
    - `using Volume = DzVolume;` —— 下单/成交/盘口量（int32）；
    - `using LargeVolume = DzLargeVolume;` —— 持仓/聚合量（int64）。
    C 层保持 `Dz*` 类型名（ADR 0020 要求 C 层可纯 C 编译），别名只服务 C++ 层。
-4. **BarStrategy 按语义使用别名**：下单手数用 `Volume`；逻辑持仓与持仓类查询（`current_contracts()` / `max_contracts()` / `StrategyPosition.contracts`）用 `LargeVolume`；计数与序号（`current_entries` / `bars_since_*`）保持 `std::int32_t`。**不把 `Volume` 用于持仓**。
+4. **BarStrategy 按语义使用别名**：下单手数用 `Volume`；逻辑持仓与持仓类查询（`current_contracts()` / `max_contracts()` / `PositionState.net_volume`）用 `LargeVolume`；计数与序号（`current_entries` / `bars_since_*`）保持 `std::int32_t`。**不把 `Volume` 用于持仓**。
 
 ## Alternatives
 
@@ -33,7 +33,7 @@ Proposed（2026-10-21，BarStrategy 设计评审类型审计；用户确认采�
 - **必须同版本、必须重编**：`dz_set_logical_position` 是 C ABI 导出函数，参数宽度变化后旧策略二进制不得调用新 SDK；`DzLogicalPosition` payload 宽度变化后策略进程与平台/dzweb 必须同版本（`Writer::open_frame` 不零化 payload，旧版 writer 的 4 字节 reserved 不是 0，新读者读 int64 会得到脏高位）。SDK 版本/SONAME 策略由 #7 落地时统一处理。
 - **帧契约文字无需改**：`docs/frame_contracts/strategy.md` 的 Payload 段以 `core_struct.h` 为类型真相源、不重复字段表；本次按 `general.md` §11.3 在提交说明中记录「payload 字段宽度变化」。
 - **无消费端改动**：dzweb 当前不消费 `SET_LOGICAL_POSITION`、无持久化镜像；仓内使用方只有 `api.cpp` 与测试。
-- **BarStrategy 文档同步**：`InstrumentContext` 的 `current_contracts()` / `max_contracts()` 返回 `LargeVolume`；`StrategyPosition.contracts` 为 `LargeVolume`；组件文档 §3 的公开面已按别名更新。
+- **BarStrategy 文档同步**：`InstrumentContext` 的 `current_contracts()` / `max_contracts()` 返回 `LargeVolume`；`PositionState.net_volume` 为 `LargeVolume`；组件文档 §3 的公开面已按别名更新。
 - **回归测试**：新增 `TradeApiTest.SetLogicalPositionLargeVolumeRoundTrip`（超过 int32 上限的净手数原样往返）；既有通配/负值/零值测试保持通过。
 
 ## References
