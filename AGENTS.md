@@ -160,8 +160,8 @@
 3. **拆票** —— `to-tickets`：tracer-bullet 子 issue + 原生阻塞边。
 4. **实现** —— `implement` 单票（默认）或 `implement-spec` 大特性（worktree 内先跑 `setup`）。
 5. **审查** —— `code-review`：从固定点起，双轴（仓库规范 / spec 一致性）。
-6. **收尾** —— 动契约或有决策：契约、docs 地图、ADR 随同提交（`general.md` §11.3 checklist）；等 CI 绿；波末 `retro`。每票的冻结审查→门禁→push→关 issue 见 [docs/agents/ticket-closeout.md](docs/agents/ticket-closeout.md)。
-7. **交接** —— `handoff` 写临时目录。
+6. **收尾** —— 动契约或有决策：契约、docs 地图、ADR 随同提交（`general.md` §11.3 checklist）；等 CI 绿；波末 `retro`。每票的冻结审查→门禁→push→**PR→合并→关 issue** 见 [docs/agents/ticket-closeout.md](docs/agents/ticket-closeout.md)。
+7. **交接** —— `handoff` 文档写 `.cache/handoff/`（本沙箱 `/tmp` 每次 bash 调用隔离、不可跨会话，见 DSH 小节）。
 
 上下文纪律：步骤 1–3 保持同一未打断窗口；每张票 `implement` 换新上下文；`retro` 在被复盘会话内、clear 之前跑。
 
@@ -178,8 +178,10 @@
 ### Worktree 与 Git 禁令
 
 - worktree 放 `.worktrees/`，`git worktree add .worktrees/<branch> -b <branch> main`
-- worktree 内**需重新跑 `setup`**（conan 缓存用户级共享；沙箱下 `~/.conan2` 只读时 `setup.sh` 自动回退 `CONAN_HOME=<repo>/.cache/conan2`，见 [build-appendix](docs/agents/build-appendix.md)）
+- worktree 内**需重新跑 `setup`**（conan 缓存用户级共享；沙箱下 `~/.conan2` 只读时 `setup.sh` 自动回退 `CONAN_HOME=<repo>/.cache/conan2` 并从 `~/.conan2` 播种一次，见 [build-appendix](docs/agents/build-appendix.md)）
 - **并行波（同一时间多个 ticket）必须一票一 worktree**；禁止在共享工作区同时改两条线
+- **共享工作区只允许当前票的 WIP**：收尾最后一步 `git switch main && git pull --ff-only`，并让 `git status` 除**已登记的并行线**外干净；把工作区留在 feature 分支就结束会话 = 直接阻塞下一条线（本波 #91→#92）
+- **跨会话（>1 个会话）不提交的文档批次**：开 `docs/*` 分支提交/推送，或移出共享工作区；不要让未提交 docs 长期占着 `git status`（本波 ADR 0026–0030 从 10-22 挂到 10-23）
 - push 前跑 `./scripts/check-push-scope.sh <issue>`，确认 `@{u}..HEAD` 只含本票 commit
 - 多终端可在不同 worktree 并行；**禁止同一 worktree 同时操作**
 - 合并前确认共同祖先：`git merge-base main HEAD`，无则 cherry-pick
@@ -188,8 +190,10 @@
 ### 本机沙箱（DSH）
 
 - **每次 bash 调用的 `/tmp` 相互隔离**：跨调用要用的日志/快照写 `.cache/`（已 gitignore），不要写 `/tmp`
+- **等后台作业用 `job_output(wait=true)`，等 CI 用 `./scripts/wait-ci.sh`（前台阻塞）**；不要 `sleep` 轮询
+- **交接文档写 `.cache/handoff/`**：全局 `handoff` 技能默认写 OS 临时目录（`/tmp`），本沙箱下不可跨会话，必须改写到仓库 `.cache/`
 - `~/.conan2`、`~/.cache/gh`、`~/.npm` 在 workspace-write 下可能只读：`setup.sh` / `build.sh` / `wait-ci.sh` / `ci-log.sh` 已回退到仓库 `.cache/`；仍被拒时再申请一次更高权限，不要反复重试
-- 提交前门禁统一 `./scripts/preflight.sh`；CI 等待/失败日志统一 `./scripts/wait-ci.sh` / `./scripts/ci-log.sh`
+- 提交前门禁统一 `./scripts/preflight.sh`；CI 等待/失败日志统一 `./scripts/wait-ci.sh` / `./scripts/ci-log.sh`；push 前统一 `./scripts/check-push-scope.sh <issue>`（含 CI 进行中拒推检查）
 
 ---
 
@@ -217,7 +221,7 @@
 | [docs/ui-trading.md](docs/ui-trading.md) | UI 系统与交易接口规划（蓝图级） |
 | [docs/adr/](docs/adr/) | 架构决策记录，按编号追溯 |
 | [GLOSSARY.md](GLOSSARY.md) | 领域术语表（`domain-modeling` 随改随更） |
-| [docs/agents/](docs/agents/) | 技能配置（issue 载体 / 域文档规则 / 分诊标签）与构建外围细节（build-appendix） |
+| [docs/agents/](docs/agents/) | 技能配置（issue 载体 / 域文档规则 / 分诊标签）、构建外围细节（build-appendix）、每票收尾（ticket-closeout）、复盘取证（retro-evidence） |
 
 `docs/specs/`、`docs/plans/`、`docs/superpowers/` 是**本地归档**（不在版本控制内）且**已冻结** —— 新设计与计划走 GitHub Issues；与现状冲突时以帧契约与代码为准，**不修改**。
 

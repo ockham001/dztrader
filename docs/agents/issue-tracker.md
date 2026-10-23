@@ -35,6 +35,7 @@
 - **地图**：单个 issue，标签 `wayfinder:map`，正文承载 Notes / Decisions-so-far / Fog。`gh issue create --label wayfinder:map`
 - **子票**：作为地图的 GitHub sub-issue 关联；标签 `wayfinder:<type>`（`research`/`prototype`/`grilling`/`task`）；被认领后指派给执行者
 - **阻塞**：GitHub **原生 issue dependencies**（UI 可见的标准表示）。加边：`gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`，其中 `<blocker-db-id>` 是阻塞者的数字**数据库 id**（`gh api repos/<owner>/<repo>/issues/<n> --jq .id`，不是 `#number` 或 `node_id`）；`issue_dependencies_summary.blocked_by`（仅未关闭的阻塞者）是实时门槛；不可用时回退为子票正文顶部的 `Blocked by: #<n>, #<n>` 行
+- **关掉阻塞者不是删除依赖边**：边保留；`blocked_by` 只统计**未关闭**的阻塞者，所以阻塞票一关，子票就自动从 0 → 可开工（别理解成有人手工解除了阻塞）。查询时注意 `gh issue view <n> --json blockedBy` 返回对象 `{nodes:[],totalCount}`（jq 用 `.blockedBy.nodes[].number`），要数组用 `gh api repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by`
 - **前沿查询**：列出地图未关闭的子票，剔除有未关闭阻塞者或已有指派者的，按地图顺序取第一个
 - **认领**：`gh issue edit <n> --add-assignee @me`
 - **了结**：`gh issue comment <n> --body "<答案>"` → `gh issue close <n>` → 把上下文指针追加到地图的 Decisions-so-far
