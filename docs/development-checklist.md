@@ -39,7 +39,7 @@
 - [ ] `git status` 干净，改动为小步提交（信息中文，`fix:/feat:/refactor:/docs:/test:/chore:/perf:/style:/build:/ci:` 前缀）
 - [ ] 契约/生成物有改动时 CI 的 Freshness 步骤绿
 
-> push 后等 CI：`./scripts/wait-ci.sh --sha "$(git rev-parse HEAD)"`（或 `--run <id>` / PR 号），只输出状态变化和失败摘要；失败用 `./scripts/ci-log.sh <run-id>` 只取错误行。不要 `gh run watch` 全量输出，也不要反复 tail 后台日志或 `sleep` 轮询。
+> 收尾按 [agents/ticket-closeout.md](agents/ticket-closeout.md)：push 后建 PR → `./scripts/wait-ci.sh --pr <n>` **静默等 PR checks** → **合并 PR 后**再关 issue。等待只输出状态变化和失败摘要；失败用 `./scripts/ci-log.sh <run-id>` 只取错误行。不要 `gh run watch` 全量输出，不要 `sleep` 轮询，也不要在同一分支有 CI 在跑时重复 push（会排队/取消，每次 ≈35–40 分钟）。
 
 > 若某项门禁**当前未在你的改动上跑**（例如只改了一个 `.vue` 但改了全局样式），
 > 请人工确认它确无跨层影响——机器门禁覆盖不到的正是这类"看似局部其实全局"的改动。
