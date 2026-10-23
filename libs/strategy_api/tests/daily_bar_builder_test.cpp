@@ -7,8 +7,6 @@
 
 #include <dztrader/bar.h>
 
-#include <cstddef>
-
 #include <gtest/gtest.h>
 
 using namespace dztrader::bar;

@@ -24,7 +24,8 @@ namespace dztrader::bar {
  * 与 IntradayBarBuilder 的差别（ADR 0031 决策 7）：
  * - 不依赖交易小节与竞价表，只按 tick 的交易日与当日累计字段合成；
  * - open/high/low/close 直接取 tick 的当日累计字段（open_price/highest_price/lowest_price/
- *   last_price），不做 last_price 的极值统计、不做 tick 累计高低补采；
+ *   last_price），不做 last_price 的极值统计、不做 tick 累计高低补采（原始字段的合法性由行情源
+ *   保证，守卫只按 spec 校验 last_price）；
  * - 成交量/成交额直接用 tick 的当日累计字段：日线起点基准恒为 0，故 volume == cum_volume、
  *   turnover == cum_turnover；
  * - 日线标识固定 begin_sec = 0（18:00 标记）、period_sec = 0，调用方以 trading_day 判断日线结束。
@@ -96,7 +97,7 @@ public:
                 ++stats_.out_of_order;
                 return;
             }
-        } else if (restored_final_ && tick.date < restored_final_bar_.trading_day) {
+        } else if (restored_final_ && tick.date < restored_final_day_) {
             ++stats_.out_of_order;
             return;
         }
@@ -157,7 +158,7 @@ public:
         validate_restore_bar(bar);
         if (bar.is_final) {
             restored_final_ = true;
-            restored_final_bar_ = bar;
+            restored_final_day_ = bar.trading_day;
             return;
         }
         bar_ = bar;
@@ -172,7 +173,7 @@ public:
         bar_ = Bar{};
         has_bar_ = false;
         restored_final_ = false;
-        restored_final_bar_ = Bar{};
+        restored_final_day_ = 0;
         stats_ = BarBuilderStats{};
         tick_received_ = false;
     }
@@ -180,7 +181,7 @@ public:
 private:
     /// @brief 一日内的最大墙钟秒数（23:59:59）；time 越界计入 out_of_session，restore 的
     ///        last_tick_sec 用同一时间域校验
-    static constexpr int32_t MAX_CLOCK_SEC = 86399;
+    static constexpr DzTime MAX_CLOCK_SEC = 86399;
 
     /**
      * @brief restore final 后的续接顺序守卫：只接受更晚交易日的 tick
@@ -192,43 +193,25 @@ private:
      * @return true = 可以开新日线；false = 应丢弃并计 out_of_order
      */
     [[nodiscard]] bool restored_final_accepts(const DzTick& tick) const noexcept {
-        return !restored_final_ || tick.date > restored_final_bar_.trading_day;
+        return !restored_final_ || tick.date > restored_final_day_;
     }
 
     /**
      * @brief 累计量额差分基准守卫：同一交易日内累计量/额不得倒退（成交额不得为 NaN/Inf）
      *
-     * 基准取自最近一笔已接受 tick 的累计量额（当前 bar 或 restore final 恢复的基准）；交易日
-     * 变化必定换根，故跨交易日基准为 0，不视为坏数据。
+     * 基准取自当前日线的累计量额（同一交易日）；交易日变化必定换根、restore final 之后的新
+     * 交易日都从 0 起算，故跨交易日基准为 0，不视为坏数据。
      *
      * @param tick 行情快照（时间/日期/价格守卫已通过）
      * @return true = 累计量额没有倒退，可接受
      */
     [[nodiscard]] bool cumulative_basis_ok(const DzTick& tick) const noexcept {
-        const bool same_day_basis = has_day_basis() && tick.date == day_basis_trading_day();
-        const int64_t basis_volume = same_day_basis ? day_basis_cum_volume() : 0;
-        const double basis_turnover = same_day_basis ? day_basis_cum_turnover() : 0.0;
+        const bool same_day_basis = has_bar_ && tick.date == bar_.trading_day;
+        const int64_t basis_volume = same_day_basis ? bar_.cum_volume : 0;
+        const double basis_turnover = same_day_basis ? bar_.cum_turnover : 0.0;
         // NaN/Inf 成交额不参与比较，用 isfinite 显式拒掉（否则 Inf 会永久毒化后续差分）。
         return static_cast<int64_t>(tick.volume) >= basis_volume && std::isfinite(tick.turnover) &&
                tick.turnover >= basis_turnover;
-    }
-
-    /// @brief 是否存在最近一笔已接受 tick 的累计量额基准（当前 bar 或 restore final）
-    [[nodiscard]] bool has_day_basis() const noexcept { return has_bar_ || restored_final_; }
-
-    /// @brief 累计量额基准所属交易日（以 has_day_basis() 为 true 为前提）
-    [[nodiscard]] DzDate day_basis_trading_day() const noexcept {
-        return has_bar_ ? bar_.trading_day : restored_final_bar_.trading_day;
-    }
-
-    /// @brief 累计成交量基准（以 has_day_basis() 为 true 为前提）
-    [[nodiscard]] int64_t day_basis_cum_volume() const noexcept {
-        return has_bar_ ? bar_.cum_volume : restored_final_bar_.cum_volume;
-    }
-
-    /// @brief 累计成交额基准（以 has_day_basis() 为 true 为前提）
-    [[nodiscard]] double day_basis_cum_turnover() const noexcept {
-        return has_bar_ ? bar_.cum_turnover : restored_final_bar_.cum_turnover;
     }
 
     /// @brief restore 前置状态：构造/reset 之后、任何 on_tick 之前，且尚未 restore 过
@@ -259,17 +242,13 @@ private:
             throw std::invalid_argument("restore invalid last_tick_sec | last_tick_sec=" +
                                         std::to_string(bar.last_tick_sec));
         }
-        if (!bar.is_final && !cumulative_fields_ok(bar)) {
-            throw std::invalid_argument(
-                "restore forming bar inconsistent | volume=" + std::to_string(bar.volume) +
-                " cum_volume=" + std::to_string(bar.cum_volume) + " turnover=" +
-                std::to_string(bar.turnover) + " cum_turnover=" + std::to_string(bar.cum_turnover));
-        }
-        if (bar.is_final && !cumulative_fields_ok(bar)) {
-            throw std::invalid_argument(
-                "restore final bar inconsistent | volume=" + std::to_string(bar.volume) +
-                " cum_volume=" + std::to_string(bar.cum_volume) + " turnover=" +
-                std::to_string(bar.turnover) + " cum_turnover=" + std::to_string(bar.cum_turnover));
+        if (!cumulative_fields_ok(bar)) {
+            throw std::invalid_argument("restore " +
+                                        std::string(bar.is_final ? "final" : "forming") +
+                                        " bar inconsistent | volume=" + std::to_string(bar.volume) +
+                                        " cum_volume=" + std::to_string(bar.cum_volume) +
+                                        " turnover=" + std::to_string(bar.turnover) +
+                                        " cum_turnover=" + std::to_string(bar.cum_turnover));
         }
     }
 
@@ -348,13 +327,13 @@ private:
         }
     }
 
-    Sink& sink_;                   ///< bar 事件接收者（生命周期事件回调）
-    Bar bar_{};                    ///< 当前形成中日线
-    BarBuilderStats stats_{};      ///< 丢弃计数（构造后从 0 累计）
-    bool has_bar_ = false;         ///< 是否已有形成中 bar
-    bool tick_received_ = false;   ///< on_tick 是否已调用过（restore 前置状态）
-    bool restored_final_ = false;  ///< 已 restore final，等待更晚交易日 tick 开新日线
-    Bar restored_final_bar_{};     ///< restore final 的 bar（交易日/累计基准）
+    Sink& sink_;                     ///< bar 事件接收者（生命周期事件回调）
+    Bar bar_{};                      ///< 当前形成中日线
+    BarBuilderStats stats_{};        ///< 丢弃计数（构造后从 0 累计）
+    bool has_bar_ = false;           ///< 是否已有形成中 bar
+    bool tick_received_ = false;     ///< on_tick 是否已调用过（restore 前置状态）
+    bool restored_final_ = false;    ///< 已 restore final，等待更晚交易日 tick 开新日线
+    DzDate restored_final_day_ = 0;  ///< restore final 的交易日（唯一需要保留的恢复状态）
 };
 
 }  // namespace dztrader::bar

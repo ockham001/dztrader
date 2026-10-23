@@ -63,9 +63,9 @@ struct Bar {
     int32_t begin_sec;            ///< 标准开始时间（交易日内秒，18:00 锚点整数网格桶起点）
     int32_t last_tick_sec;        ///< 最后接收 tick 的交易日内秒（竞价首根可能早于 begin_sec）
     int32_t period_sec;           ///< 周期秒数；日线为 0
-    double open;                  ///< 开盘价（bar 首笔 last_price）
-    double high;                  ///< 最高价（bar 内 last_price 最大值）
-    double low;                   ///< 最低价（bar 内 last_price 最小值）
+    double open;                  ///< 开盘价（日内容为 bar 首笔 last_price；日线为当日累计开盘价）
+    double high;                  ///< 最高价（日内容为 last_price 最大值；日线为当日累计最高价）
+    double low;                   ///< 最低价（日内容为 last_price 最小值；日线为当日累计最低价）
     double close;                 ///< 收盘价（bar 最新 last_price）
     int64_t volume;               ///< 成交量（bar 起始累计基准之后的差分）
     double turnover;              ///< 成交额（bar 起始累计基准之后的差分）

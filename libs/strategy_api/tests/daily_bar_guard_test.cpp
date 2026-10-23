@@ -11,6 +11,7 @@
 
 #include <dztrader/bar.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 

@@ -249,6 +249,18 @@ TEST_F(DailyBarRestoreTest, RestoreFormingEarlierTickIsDropped) {
     EXPECT_EQ(builder_.current_bar().cum_volume, 1500);
 }
 
+/// @brief restore forming 后沿用恢复 bar 的累计量额作同日差分的倒退守卫
+TEST_F(DailyBarRestoreTest, RestoreFormingSameDayCumulativeRegressionIsDropped) {
+    builder_.restore(restored_forming_daily_bar());  // 当日累计量 1500、累计额 156000
+    builder_.on_tick(
+        make_daily_tick(10 * 3600 + 10 * 60, 100.0, 106.0, 97.5, 105.0, 1400, 145600.0, 10));
+
+    EXPECT_TRUE(sink_.events.empty());
+    EXPECT_EQ(builder_.stats().bad_volume, 1U);
+    EXPECT_EQ(builder_.current_bar().cum_volume, 1500);
+    EXPECT_EQ(builder_.current_bar().last_tick_sec, TSEC_10_00);
+}
+
 TEST_F(DailyBarRestoreTest, RestoreFormingNextTradingDayClosesThenOpens) {
     builder_.restore(restored_forming_daily_bar());
     builder_.on_tick(
