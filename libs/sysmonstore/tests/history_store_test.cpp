@@ -649,6 +649,148 @@ TEST_F(HistoryStoreTest, MaintenanceBatchLimitsWorkPerTransaction) {
     EXPECT_TRUE(reader.second->query_scalars(kLevelRaw, 0, kNow, 1000).size() < 25U);
 }
 
+// 维度「无有效样本」不写行：行的存在即表示该桶该指标有数据（`n` 为 NOT NULL）。
+TEST_F(HistoryStoreTest, EmptyDimensionAggregateIsNotWritten) {
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        DimensionRecord record;
+        record.bucket_ts = 1'790'000'000;
+        record.level = kLevelRaw;
+        record.domain = std::string(kNetworkDomain);
+        record.dimension = "eno1";
+        record.metric = "rx_bytes_total";
+        // aggregate 保持空（count=0）：语义是「本桶内该指标无有效样本」。
+        batch.dimensions.push_back(record);
+        EXPECT_NO_THROW(store.write_batch(batch)) << "empty aggregate must not violate NOT NULL";
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    EXPECT_TRUE(reader.second
+                    ->query_dimensions(kNetworkDomain, "eno1", "rx_bytes_total", kLevelRaw,
+                                       1'790'000'000, 1'790'000'001, 10)
+                    .empty())
+        << "empty aggregate must not produce a row (row existence means data)";
+}
+
+// 压缩只删「本批真正压过的行」：维度行远多于标量行时，落在批次边界外的维度行
+// 必须留在原始层级等下一批压缩，不能被整桶删除（那会静默丢历史）。
+TEST_F(HistoryStoreTest, CompactionDoesNotDropDimensionRowsBeyondBatchLimit) {
+    constexpr int64_t kNow = 2'000'000'000;
+    constexpr int64_t kMinuteBase = 1'999'900'000 / 60 * 60;
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        // 同一分钟内一条标量 + 多块网卡的维度行（两者各自 LIMIT，分批边界不同）。
+        ScalarRecord scalar;
+        scalar.bucket_ts = kMinuteBase;
+        scalar.interval_sec = 5;
+        scalar.metrics[0].observe(1.0);
+        batch.scalars.push_back(scalar);
+        for (int i = 0; i < 5; ++i) {
+            DimensionRecord record;
+            record.bucket_ts = kMinuteBase;
+            record.domain = std::string(kNetworkDomain);
+            record.dimension = "eno" + std::to_string(i);
+            record.metric = "rx_bytes_total";
+            record.aggregate.observe(static_cast<double>(i));
+            batch.dimensions.push_back(record);
+        }
+        store.write_batch(batch);
+
+        RetentionPolicy policy;
+        policy.now_ts = kNow;
+        policy.raw_retention_sec = 24 * 3600;
+        policy.max_retention_sec = 30 * 86400;
+        policy.record_interval_sec = 5;
+        policy.maintenance_batch = 2;  // 很小的批次 ⇒ 标量与维度被切成多批
+        store.apply_retention(policy);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    // 五块网卡的维度历史必须全部以分钟聚合形式留存，一条都不能丢。
+    const auto minutes = reader.second->query_dimensions(kNetworkDomain, "", "rx_bytes_total",
+                                                         kLevelMinute, 0, kNow, 100);
+    EXPECT_EQ(minutes.size(), 5U) << "all dimension rows must survive compaction across batches";
+    EXPECT_TRUE(
+        reader.second->query_dimensions(kNetworkDomain, "", "", kLevelRaw, 0, kNow, 100).empty())
+        << "no raw dimension rows may remain after compaction";
+}
+
+// 分钟桶计数按整轮维护去重：同一分钟被分成多批压缩时只算一个桶。
+TEST_F(HistoryStoreTest, CompactionCountsBucketsAcrossBatches) {
+    constexpr int64_t kNow = 2'000'000'000;
+    constexpr int64_t kMinuteBase = 1'999'900'000 / 60 * 60;
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        // 同一分钟内的 4 条原始记录；批次 1 ⇒ 分 4 批压缩同一个分钟桶。
+        for (int i = 0; i < 4; ++i) {
+            ScalarRecord record;
+            record.bucket_ts = kMinuteBase + i;
+            record.interval_sec = 1;
+            record.metrics[0].observe(static_cast<double>(i));
+            batch.scalars.push_back(record);
+        }
+        store.write_batch(batch);
+
+        RetentionPolicy policy;
+        policy.now_ts = kNow;
+        policy.record_interval_sec = 1;
+        policy.maintenance_batch = 1;
+        const auto result = store.apply_retention(policy);
+        EXPECT_EQ(result.compacted_buckets, 1) << "one minute bucket, not one per batch";
+    }
+}
+
+// 总量上限：删除顺序按全库最旧的桶，保留最新数据（不是按层级固定顺序）。
+TEST_F(HistoryStoreTest, SizeLimitDeletesGloballyOldestFirst) {
+    constexpr int64_t kNow = 2'000'000'000;
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        // 很旧的分钟聚合 + 较新的原始记录：淘汰必须从最旧的（分钟聚合）开始。
+        for (int i = 0; i < 600; ++i) {
+            batch.scalars.push_back(
+                make_scalar_record(kNow - 400 * 86400 + i * 60, 1.0, kLevelMinute));
+        }
+        // 较新的原始记录：全部落在 kNow 之前的最近 10 小时内（不能越过 kNow，
+        // 那会造出「未来时间戳」的历史，也让区间查询读不到）。
+        for (int i = 0; i < 600; ++i) {
+            batch.scalars.push_back(make_scalar_record(kNow - 10 * 3600 + i * 60, 2.0, kLevelRaw));
+        }
+        store.write_batch(batch);
+
+        RetentionPolicy policy;
+        policy.now_ts = kNow;
+        policy.record_interval_sec = 60;
+        // 时间水位放很宽，只让总量上限生效。
+        policy.raw_retention_sec = 1000 * 86400;
+        policy.max_retention_sec = 1000 * 86400;
+        // 上限自校准：先量出「一桶都不删」时的库大小，再取其一半作为上限。
+        // 写死一个绝对字节数会随 SQLite 页大小/索引实现浮动，容易变成「连空库都超限」
+        // （那样会删光全部数据，测不出「保留最新」这个语义）。
+        policy.max_bytes = 0;  // 0 = 不限制 → 只量大小
+        const auto baseline = store.apply_retention(policy);
+        ASSERT_GT(baseline.bytes_after, 0);
+        policy.max_bytes = baseline.bytes_after / 2;
+        const auto result = store.apply_retention(policy);
+        EXPECT_GT(result.deleted_by_size_rows, 0);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto minutes = reader.second->query_scalars(kLevelMinute, 0, kNow, 2000);
+    const auto raw = reader.second->query_scalars(kLevelRaw, 0, kNow, 2000);
+    // 淘汰按最旧优先：600 个很旧的分钟聚合与 400 个较旧的原始记录先走，
+    // 最新的一批原始记录必须留下（「总量上限兜底不等于清空」）。
+    EXPECT_TRUE(minutes.empty()) << "oldest minute aggregates must be evicted first";
+    EXPECT_FALSE(raw.empty()) << "newest raw records must be preserved";
+    if (!raw.empty()) {
+        // 留下的是最新那批：其时间戳应远晚于被删的分钟聚合。
+        EXPECT_GT(raw.back().bucket_ts, kNow - 10 * 3600 + 400 * 60);
+    }
+}
+
 // ===== 落盘线程 =====
 
 class HistoryWriterTest : public ::testing::Test {

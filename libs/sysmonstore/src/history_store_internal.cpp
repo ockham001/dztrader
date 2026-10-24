@@ -128,6 +128,12 @@ void write_dimension_row(SQLite::Statement& upsert, const DimensionRecord& recor
                     record.domain, record.metric);
         return;
     }
+    if (record.aggregate.empty()) {
+        // 没有有效样本就不写行：维度行的存在表示「该桶该指标有数据」，写一行全 NULL
+        // 只会让读取方多一种需要处理的模糊状态（且与 `n NOT NULL` 冲突）。
+        // 静默跳过是对的——调用方本就不该产出空聚合的维度记录。
+        return;
+    }
     auto& stmt = upsert;
     stmt.reset();
     int index = 1;
@@ -136,19 +142,15 @@ void write_dimension_row(SQLite::Statement& upsert, const DimensionRecord& recor
     stmt.bind(index++, record.domain);
     stmt.bind(index++, record.dimension);
     stmt.bind(index++, record.metric);
-    if (record.aggregate.empty()) {
-        bind_null_aggregate(stmt, index);
-    } else {
-        // 长表统一 REAL 存储：维度指标既有比率（usage_ratio）也有字节数（rx_bytes_total），
-        // 用 REAL 一种表示让 min/max/avg 的合并逻辑只有一份；字节数上限远小于 2^53，
-        // double 表示无损（契约 sysmon 的计数器均为 64 位整数，实际不可能达到 2^53 以上）。
-        const auto& a = record.aggregate;
-        stmt.bind(index++, a.min);
-        stmt.bind(index++, a.max);
-        stmt.bind(index++, a.avg);
-        stmt.bind(index++, a.last);
-        stmt.bind(index++, static_cast<int64_t>(a.count));
-    }
+    // 长表统一 REAL 存储：维度指标既有比率（usage_ratio）也有字节数（rx_bytes_total），
+    // 用 REAL 一种表示让 min/max/avg 的合并逻辑只有一份；字节数上限远小于 2^53，
+    // double 表示无损（契约 sysmon 的计数器均为 64 位整数，实际不可能达到 2^53 以上）。
+    const auto& a = record.aggregate;
+    stmt.bind(index++, a.min);
+    stmt.bind(index++, a.max);
+    stmt.bind(index++, a.avg);
+    stmt.bind(index++, a.last);
+    stmt.bind(index++, static_cast<int64_t>(a.count));
     stmt.exec();
 }
 

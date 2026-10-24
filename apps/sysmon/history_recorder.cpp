@@ -149,19 +149,21 @@ sysmonstore::HistoryBatch HistoryRecorder::flush(int64_t now_ts) {
         sysmonstore::HistoryBatch marks_only;
         marks_only.marks = std::move(pending_marks_);
         pending_marks_.clear();
-        (void)now_ts;
+        // 窗口累加状态一并清零：不清会让 missed tick / 样本数泄漏到下一个窗口。
+        missed_ticks_in_window_ = 0;
         bucket_ts_ = std::nullopt;
         samples_in_window_ = 0;
+        (void)now_ts;
         return marks_only;
     }
     const int64_t previous = *bucket_ts_;
     const int64_t samples = samples_in_window_;
     const uint64_t missed = missed_ticks_in_window_;
     auto batch = take_batch(previous);
-    mark_if_incomplete(batch, previous, samples, missed);
-    missed_ticks_in_window_ = 0;
-    // 待落盘标记（采集中断/重启/时钟跳变）也随这一批走：标记与数据同事务提交。
-    (void)now_ts;
+    // 退出结算的标记时间戳用「发现不完整的时刻」（now_ts）而不是窗口起点：
+    // 窗口起点已由 `bucket_ts` 表达，标记要说明的是「在退出时才发现它没满」。
+    // 运行期正常结算走 `observe()`，那里标记时间戳就是窗口起点（发现点 == 起点附近）。
+    mark_if_incomplete(batch, now_ts, samples, missed);
     bucket_ts_ = std::nullopt;
     return batch;
 }
@@ -373,9 +375,11 @@ sysmonstore::HistoryBatch HistoryRecorder::take_batch(int64_t bucket_ts) {
     pending_marks_.clear();
 
     // 重置累加状态：新窗口从零开始，绝不沿用上一窗口的数据。
+    // `missed_ticks_in_window_` 也在这里清（窗口已结算，跳过量归零）。
     scalars_ = {};
     dimensions_.clear();
     samples_in_window_ = 0;
+    missed_ticks_in_window_ = 0;
     return batch;
 }
 

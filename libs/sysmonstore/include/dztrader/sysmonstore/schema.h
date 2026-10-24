@@ -127,12 +127,12 @@ inline constexpr std::array<DimensionDomainSpec, 5> kDimensionDomains = {{
 
 // ===== 标记（采集中断 / 重启 / 时钟跳变）=====
 
-/// 记录窗口内有计量 tick 被跳过（缺口）；`detail` 为丢失的 tick 数。
+/// 窗口样本不足或计量 tick 被跳过（缺口）；`detail` 为 `<实际样本数>/<跳过的 tick 数>`。
 inline constexpr std::string_view kMarkSampleGap = "sample_gap";
-/// 进程重启（含自动重启）：重启窗口内的数据缺失，绝不伪造连续数据；`detail` 为缺口秒数
-/// （无历史数据时为空）。
+/// 进程重启（含自动重启）：重启窗口内的数据缺失，绝不伪造连续数据。
+/// `detail` 为 `<recover|manual>[/<缺口秒数>]`（缺口算不出时省略）。
 inline constexpr std::string_view kMarkRestart = "restart";
-/// 检测到墙钟跳变（NTP 步进/手工改时间）；`detail` 为跳变毫秒数（带符号）。
+/// 检测到墙钟跳变（NTP 步进/手工改时间）；`detail` 为带符号的跳变毫秒数。
 inline constexpr std::string_view kMarkClockJump = "clock_jump";
 
 inline constexpr std::array<std::string_view, 3> kMarkKinds = {kMarkSampleGap, kMarkRestart,

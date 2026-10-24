@@ -151,6 +151,7 @@ std::vector<DimensionRecord> HistoryReader::query_dimensions(std::string_view do
             record.domain = stmt.getColumn(2).getString();
             record.dimension = stmt.getColumn(3).getString();
             record.metric = stmt.getColumn(4).getString();
+            // `n` 非空（见 schema 的长表 DDL）；仍按空值容错，防止手工改库拖垮查询。
             if (!stmt.getColumn(9).isNull()) {
                 record.aggregate.min = stmt.getColumn(5).getDouble();
                 record.aggregate.max = stmt.getColumn(6).getDouble();

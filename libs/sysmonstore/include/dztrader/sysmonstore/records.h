@@ -106,12 +106,12 @@ struct RetentionPolicy {
 
 /// 保留策略执行结果（观测与测试用）。
 struct RetentionResult {
-    int64_t compacted_rows = 0;        ///< 被压缩掉的原始行数
-    int64_t compacted_buckets = 0;     ///< 生成的分钟桶数
-    int64_t deleted_raw_rows = 0;      ///< 超期删除的原始行数
-    int64_t deleted_minute_rows = 0;   ///< 超期删除的分钟行数
-    int64_t deleted_marks = 0;         ///< 超期删除的标记数
-    int64_t deleted_by_size_rows = 0;  ///< 因总量上限被删除的行数
+    int64_t compacted_rows = 0;        ///< 被压缩掉的原始行数（标量 + 维度）
+    int64_t compacted_buckets = 0;     ///< 整轮维护涉及的分钟桶数（去重）
+    int64_t deleted_raw_rows = 0;      ///< 超期删除的原始**桶**数
+    int64_t deleted_minute_rows = 0;   ///< 超期删除的分钟**桶**数
+    int64_t deleted_marks = 0;         ///< 超期删除的标记条数
+    int64_t deleted_by_size_rows = 0;  ///< 因总量上限被删除的**桶**数
     int64_t bytes_before = 0;          ///< 执行前库文件大小（字节）
     int64_t bytes_after = 0;           ///< 执行后库文件大小（字节）
 };

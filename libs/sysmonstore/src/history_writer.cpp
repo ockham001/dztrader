@@ -110,7 +110,8 @@ struct HistoryWriter::Impl {
             written_records += batch.record_count();
         } catch (const std::exception& e) {
             // 落盘失败不杀进程：历史是观测辅助，采集与实时推送必须继续。
-            // 记录错误并计为丢弃，让上层能从 dropped_records 看出端倪。
+            // 计入 failed_records（不是 dropped_records）：队列满丢弃与写盘失败
+            // 是两回事，混在一起会让运维看不出根因。
             SPDLOG_ERROR("sysmon history batch write failed | records={} error=\"{}\"",
                          batch.record_count(), e.what());
             failed_records += batch.record_count();

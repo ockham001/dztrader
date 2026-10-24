@@ -105,9 +105,10 @@ std::string build_schema_ddl() {
         "    max REAL,"
         "    avg REAL,"
         "    last REAL,"
-        // `n` 可空：`n IS NULL` 表示该桶内该维度指标无有效样本（读取方输出「不可用」
-        // 而不是 0）。写 NOT NULL 会让「无有效样本」的写入路径直接违反约束失败。
-        "    n INTEGER,"
+        // `n` 非空：维度行的存在本身就表示「这个桶里该指标有样本」。没有样本的聚合
+        // 不写行（见 history_store_internal.cpp 的 write_dimension_row），因此不需要
+        // 用 NULL 表达「无有效样本」——那会让「行存在但无值」这种模糊状态进库。
+        "    n INTEGER NOT NULL,"
         "    PRIMARY KEY (level, bucket_ts, domain, dimension, metric)"
         ") WITHOUT ROWID;\n"
         // 按域 + 维度查时间序列（#79 的「按指标/时间范围/粒度查询」走这条索引）。

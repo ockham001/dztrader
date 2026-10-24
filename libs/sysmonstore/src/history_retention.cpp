@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -150,7 +151,19 @@ std::optional<DimensionRecord> select_minute_dimension(SQLite::Database& db,
 
 // ===== 删除 =====
 
-/// 删除某个层级的整桶（标量 + 该桶全部维度行）。
+/// 删除某个层级的标量桶（**不动**同桶维度行）。
+///
+/// 压缩路径必须用它而不是 `delete_bucket`：压缩的标量与维度输入各自 LIMIT，
+/// 一个桶的维度行可能不在本批内——整桶删会把未压缩的维度行一起抹掉。
+void delete_scalar_bucket(SQLite::Database& db, int32_t level, int64_t bucket_ts) {
+    SQLite::Statement scalar(db, "DELETE FROM sysmon_scalar WHERE level=?1 AND bucket_ts=?2");
+    scalar.bind(1, static_cast<int32_t>(level));
+    scalar.bind(2, static_cast<int64_t>(bucket_ts));
+    scalar.exec();
+}
+
+/// 删除某个层级的整桶（标量 + 该桶全部维度行）。用于**保留期删除**与总量上限：
+/// 那里的语义是「这段历史整体过期」，两表必须一起删，否则会留下孤儿维度行。
 void delete_bucket(SQLite::Database& db, int32_t level, int64_t bucket_ts) {
     SQLite::Statement scalar(db, "DELETE FROM sysmon_scalar WHERE level=?1 AND bucket_ts=?2");
     scalar.bind(1, static_cast<int32_t>(level));
@@ -180,8 +193,8 @@ void delete_dimension_row(SQLite::Database& db, const DimensionRecord& record) {
 
 /// 压缩计数。
 struct CompactionCounts {
-    int64_t raw_rows = 0;  ///< 被压缩掉的原始行数（标量 + 维度）
-    int64_t buckets = 0;   ///< 生成的分钟桶数（按分钟去重）
+    int64_t raw_rows = 0;          ///< 被压缩掉的原始行数（标量 + 维度）
+    std::vector<int64_t> minutes;  ///< 本批涉及的分钟桶（跨批次由调用方去重）
 };
 
 /// 把一批超期原始桶压进一分钟聚合桶，然后删除这批原始桶。
@@ -273,8 +286,12 @@ CompactionCounts compact_batch(SQLite::Database& db,
             record.aggregate = aggregate;
             history_store_internal::write_dimension_row(dimension_upsert, record);
         }
+        // 只删**本批真正压过**的行，不能按桶整删：
+        // 标量与维度的输入是各自 LIMIT 的（维度行数远多于标量行数），一个桶的维度行
+        // 可能落在本批边界之外——按桶整删会把它们从原始层级抹掉却从未压缩（静默丢历史）。
+        // 剩余维度行留在原始层级，由下一批压缩（合并进同一个分钟桶，不会重复计数）。
         for (const auto& record : raw_scalars) {
-            delete_bucket(db, kLevelRaw, record.bucket_ts);
+            delete_scalar_bucket(db, kLevelRaw, record.bucket_ts);
         }
         for (const auto& record : raw_dimensions) {
             delete_dimension_row(db, record);
@@ -286,18 +303,15 @@ CompactionCounts compact_batch(SQLite::Database& db,
     }
 
     counts.raw_rows = static_cast<int64_t>(raw_scalars.size() + raw_dimensions.size());
-    // 桶数按「出现过的分钟」去重：标量与维度可能命中同一分钟，不能各算一次。
-    std::vector<int64_t> minutes;
-    minutes.reserve(scalar_buckets.size() + dimension_buckets.size());
+    // 本批涉及的分钟桶（标量与维度各自累加，可能重复）交给调用方统一去重：
+    // 一个分钟桶可能因维护批次太小而被分批压缩多次，只有全局去重才是真正的桶数。
+    counts.minutes.reserve(scalar_buckets.size() + dimension_buckets.size());
     for (const auto& [minute_ts, entry] : scalar_buckets) {
-        minutes.push_back(minute_ts);
+        counts.minutes.push_back(minute_ts);
     }
     for (const auto& [key, aggregate] : dimension_buckets) {
-        minutes.push_back(key.minute_ts);
+        counts.minutes.push_back(key.minute_ts);
     }
-    std::sort(minutes.begin(), minutes.end());
-    minutes.erase(std::unique(minutes.begin(), minutes.end()), minutes.end());
-    counts.buckets = static_cast<int64_t>(minutes.size());
     return counts;
 }
 
@@ -369,22 +383,33 @@ int64_t delete_expired_marks(SQLite::Database& db, int64_t cutoff_ts, int64_t ba
     return deleted;
 }
 
+/// 数据库的**逻辑占用**字节数（= 已用页 × 页大小，不含空闲页）。
+///
+/// 为什么不用文件大小判断：SQLite 的 `DELETE` 不缩文件，释放的页进 freelist，
+/// 文件大小原地不动。按文件大小循环删除会导致「删光所有数据文件仍超限」——
+/// 本票首版正是如此，测试里 1200 个桶被全部删掉才停。按逻辑占用判断才是
+/// 「删到数据量回落到上限内」，最后再用一次 VACUUM 把文件真正缩下来。
+int64_t logical_db_bytes(SQLite::Database& db) {
+    const int64_t page_count = db.execAndGet("PRAGMA page_count").getInt64();
+    const int64_t free_pages = db.execAndGet("PRAGMA freelist_count").getInt64();
+    const int64_t page_size = db.execAndGet("PRAGMA page_size").getInt64();
+    return (page_count - free_pages) * page_size;
+}
+
 /// 总量上限兜底：**从全库最旧的桶开始**删，直到库文件回落到 `max_bytes` 内。
 ///
 /// 「最旧优先」按 `bucket_ts` 全局排序（不按层级分组）：同一时刻的原始记录与分钟聚合
 /// 代表同一段历史，先删哪一个都不改变「保留最新数据」的语义；按层级固定先后删是错的
 /// ——分钟聚合恰恰是更粗、更该长期保留的那一份。
-int64_t enforce_size_limit(SQLite::Database& db,
-                           const std::filesystem::path& path,
-                           int64_t max_bytes,
-                           int64_t batch) {
+int64_t enforce_size_limit(SQLite::Database& db, int64_t max_bytes, int64_t batch) {
     try {
         db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     } catch (const std::exception& e) {
         SPDLOG_WARN("history size checkpoint failed | error=\"{}\"", e.what());
     }
     int64_t deleted = 0;
-    while (history_store_internal::history_file_bytes(path) > max_bytes) {
+    // 按逻辑占用循环（DELETE 不缩文件，见 logical_db_bytes 的注释）。
+    while (logical_db_bytes(db) > max_bytes) {
         // 取全库最旧的一批桶（跨层级混合排序，按 (level, bucket_ts) 配对删除）。
         std::vector<std::pair<int32_t, int64_t>> pairs;
         {
@@ -397,14 +422,12 @@ int64_t enforce_size_limit(SQLite::Database& db,
             }
         }
         if (pairs.empty()) {
-            // 数据已删空仍超限：占用在元数据/空闲页上，VACUUM 收尾后停止
-            // （不 VACUUM 会在「已删空但文件没缩」上无限循环）。
-            try {
-                db.exec("VACUUM");
-                db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-            } catch (const std::exception& e) {
-                SPDLOG_WARN("history size vacuum failed | error=\"{}\"", e.what());
-            }
+            // 标量表已空，但长表可能仍有孤儿行（写入方异常时可短暂出现）：
+            // 一并清掉，否则「只剩维度行」时逻辑占用永远降不下来。
+            SQLite::Statement orphan(db, "DELETE FROM sysmon_dimension");
+            orphan.exec();
+            // 仍超限说明下限就是库结构本身（空库大小 > max_bytes）：停止，
+            // 由下面的 VACUUM 收尾；继续循环没有可删的东西了。
             break;
         }
         try {
@@ -418,13 +441,16 @@ int64_t enforce_size_limit(SQLite::Database& db,
                                      std::string(e.what()) + "\"");
         }
         deleted += static_cast<int64_t>(pairs.size());
-        try {
-            db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-        } catch (const std::exception& e) {
-            SPDLOG_WARN("history size checkpoint failed | error=\"{}\"", e.what());
-        }
     }
     if (deleted > 0) {
+        // 删够之后 VACUUM 一次：把 freelist 真正还给操作系统，否则「逻辑占用已达标、
+        // 文件仍占满磁盘」——而总量上限的初衷正是控制磁盘占用。
+        try {
+            db.exec("VACUUM");
+            db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+        } catch (const std::exception& e) {
+            SPDLOG_WARN("history size vacuum failed | error=\"{}\"", e.what());
+        }
         SPDLOG_INFO("history size limit enforced | deleted_buckets={} max_bytes={}", deleted,
                     max_bytes);
     }
@@ -445,6 +471,9 @@ RetentionResult HistoryStore::apply_retention(const RetentionPolicy& policy) {
     //    记录间隔已 ≥ 1 分钟时不压缩——原始记录本就是分钟级或更粗，压不出更细的粒度，
     //    且此时原始记录的保留水位是 max_retention_sec（30 天）而不是 24 小时。
     if (horizon.compact) {
+        // 分钟桶按**整轮维护**去重：同一分钟的数据可能因批次上限被分批压缩多次
+        // （每批都会 merge 进同一个分钟桶），逐批累加会把桶数重复计。
+        std::set<int64_t> compacted_minutes;
         while (true) {
             const auto counts = compact_batch(db, *impl_->scalar_upsert, *impl_->dimension_upsert,
                                               horizon.raw_cutoff, batch);
@@ -452,8 +481,9 @@ RetentionResult HistoryStore::apply_retention(const RetentionPolicy& policy) {
                 break;
             }
             result.compacted_rows += counts.raw_rows;
-            result.compacted_buckets += counts.buckets;
+            compacted_minutes.insert(counts.minutes.begin(), counts.minutes.end());
         }
+        result.compacted_buckets = static_cast<int64_t>(compacted_minutes.size());
     }
 
     // 2. 删除超期：原始按 horizon.raw_cutoff（可压缩模式下 24 小时，否则 30 天）、
@@ -470,7 +500,7 @@ RetentionResult HistoryStore::apply_retention(const RetentionPolicy& policy) {
     // 3. 总量上限兜底：从全库最旧的桶开始删，直到回落到上限内。
     if (policy.max_bytes > 0) {
         result.deleted_by_size_rows =
-            enforce_size_limit(db, impl_->path, static_cast<int64_t>(policy.max_bytes), batch);
+            enforce_size_limit(db, static_cast<int64_t>(policy.max_bytes), batch);
     }
 
     result.bytes_after = history_store_internal::history_file_bytes(impl_->path);
