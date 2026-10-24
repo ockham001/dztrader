@@ -620,6 +620,62 @@ TEST(SysmonConfigTest, AcceptsConfigBoundaryValues) {
     }
 }
 
+// #81 配置边界：端点值必须**按原值**进入生效配置——只放行但钳制/丢弃也算失败
+// （上一个用例只证明"不抛"，会放过一个静默钳制的实现）。
+TEST(SysmonConfigTest, BoundaryValuesRoundTripThroughTypedConfig) {
+    const auto current = nlohmann::json(SysmonConfig::default_config());
+    // 每个字段取一个端点（上下界交替，覆盖两个方向）。
+    const auto patch = nlohmann::json{
+        {"sampling",
+         {{"measure_interval_ms", 60000},
+          {"record_interval_sec", 1},
+          {"phase_offset_sec", 86400},
+          {"groups", {{"cpu", false}, {"temperature", false}}}}},
+        {"disk",
+         {{"watch_paths", nlohmann::json::array({"/srv/shm", "/srv/db"})},
+          {"devices", nlohmann::json::array({"sda"})}}},
+        {"network", {{"hide_virtual", false}}},
+        {"history",
+         {{"enabled", false},
+          {"raw_retention_hours", 1},
+          {"max_retention_days", 3650},
+          {"max_bytes", 0}}},
+        {"realtime", {{"push_interval_sec", 3600}}},
+        {"alerts",
+         {{"cpu_sustain_used_pct", 0.0},
+          {"cpu_sustain_samples", 3600},
+          {"memory_used_pct", 100.0},
+          {"swap_used_pct", 0.0},
+          {"volume_free_pct", 100.0},
+          {"volume_free_bytes", 0},
+          {"cooldown_sec", 86400}}},
+    };
+    const SysmonConfig typed = SysmonConfig::apply_patch(current, patch).get<SysmonConfig>();
+
+    EXPECT_EQ(typed.sampling.measure_interval_ms, 60000);
+    EXPECT_EQ(typed.sampling.record_interval_sec, 1);
+    EXPECT_EQ(typed.sampling.phase_offset_sec, 86400);
+    EXPECT_EQ(typed.sampling.groups.at("cpu"), false);
+    EXPECT_EQ(typed.sampling.groups.at("temperature"), false);
+    ASSERT_EQ(typed.disk.watch_paths.size(), 2U);
+    EXPECT_EQ(typed.disk.watch_paths[1], "/srv/db");
+    ASSERT_EQ(typed.disk.devices.size(), 1U);
+    EXPECT_EQ(typed.disk.devices[0], "sda");
+    EXPECT_FALSE(typed.network.hide_virtual);
+    EXPECT_FALSE(typed.history.enabled);
+    EXPECT_EQ(typed.history.raw_retention_hours, 1);
+    EXPECT_EQ(typed.history.max_retention_days, 3650);
+    EXPECT_EQ(typed.history.max_bytes, 0U);
+    EXPECT_EQ(typed.realtime.push_interval_sec, 3600);
+    EXPECT_DOUBLE_EQ(typed.alerts.cpu_sustain_used_pct, 0.0);
+    EXPECT_EQ(typed.alerts.cpu_sustain_samples, 3600);
+    EXPECT_DOUBLE_EQ(typed.alerts.memory_used_pct, 100.0);
+    EXPECT_DOUBLE_EQ(typed.alerts.swap_used_pct, 0.0);
+    EXPECT_DOUBLE_EQ(typed.alerts.volume_free_pct, 100.0);
+    EXPECT_EQ(typed.alerts.volume_free_bytes, 0U);
+    EXPECT_EQ(typed.alerts.cooldown_sec, 86400);
+}
+
 // 契约 sysmon §2.5：Windows 平台描述必须含 build 号（区分 Win10/Win11）。
 TEST(SysmonSnapshotValidateTest, WindowsDescriptionMustIncludeBuild) {
     auto snap = make_snapshot();

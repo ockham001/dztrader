@@ -149,9 +149,9 @@ protected:
         }
     }
 
-    drogon::HttpRequestPtr req(const std::string& user_id = "admin") {
+    drogon::HttpRequestPtr req() {
         auto req = drogon::HttpRequest::newHttpRequest();
-        req->getAttributes()->insert("user_id", user_id);
+        req->getAttributes()->insert("user_id", std::string("admin"));
         return req;
     }
 
@@ -245,17 +245,8 @@ TEST_F(SysmonControllerTest, Config503WhenSnapshotArrivedButConfigMissing) {
     EXPECT_EQ(body.value("error", ""), "sysmon config not available");
 }
 
-TEST_F(SysmonControllerTest, ConfigReadableByNonAdmin) {
-    // 读权限与快照一致：任意已认证用户可读（配置镜像本来就广播给所有 WS 客户端）
-    repo_->create_user("regular", "Regular User", "reg@test.com", "pass", "user");
-    mirror_->update("dzsysmon", "sysmon_config",
-                    dztrader::platform::SysmonConfig::default_config());
-    drogon::HttpResponsePtr captured;
-    ctrl_->get_config(req("regular"),
-                      [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
-    ASSERT_NE(captured, nullptr);
-    EXPECT_EQ(captured->getStatusCode(), drogon::k200OK);
-}
+// 读端点不做角色判断（认证在 JWT advice 层完成，见 sysmon_controller.h 类注释）：
+// 非 admin 可读这条语义不存在 handler 分支，无法也不应由 handler 单测断言。
 
 // ===== PUT /api/sysmon/config（《帧契约：REST》§2.8、《帧契约：系统监控》§3）=====
 

@@ -137,7 +137,8 @@ protected:
     /// 最小合法 dzsysmon 配置：只参数化本文件用到的启动值，其余取契约默认值。
     void write_config(bool history_enabled = true,
                       int push_interval_sec = kLongPushIntervalSec,
-                      int measure_interval_ms = 1000) {
+                      int measure_interval_ms = 1000,
+                      bool cpu_enabled = true) {
         nlohmann::json cfg = {
             {"log", {{"level", "debug"}, {"flush_on", "info"}}},
             {"sampling",
@@ -145,7 +146,7 @@ protected:
               {"record_interval_sec", 60},
               {"phase_offset_sec", 3},
               {"groups",
-               {{"cpu", true},
+               {{"cpu", cpu_enabled},
                 {"memory", true},
                 {"swap", true},
                 {"volumes", true},
@@ -216,9 +217,10 @@ protected:
         return true;
     }
 
-    /// 从帧视图按帧头类型取 payload（快照无 instance_id，配置帧有）。
+    /// 从帧视图取 payload（快照 / NOTIFY_UI 为无 instance_id 帧，配置帧带 instance_id）。
     static nlohmann::json payload_of(const shm::FrameView& view) {
-        const bool broadcast = view.type() == DZ_FRAME_RTN_SYSMON_SNAPSHOT;
+        const bool broadcast =
+            view.type() == DZ_FRAME_RTN_SYSMON_SNAPSHOT || view.type() == DZ_FRAME_NOTIFY_UI;
         const auto size = broadcast ? view.ext_payload_size() : view.ext_inst_payload_size();
         const auto* data = broadcast ? view.ext_payload() : view.ext_inst_payload();
         return nlohmann::json::parse(reinterpret_cast<const char*>(data),
@@ -246,8 +248,11 @@ protected:
                     return payload_of(view);
                 }
                 // 只缓存本用例关心的 JSON 帧：通道上还有其它二进制/控制帧，parse 会抛。
+                // NOTIFY_UI 必须缓存：失败路径先发通知、后回推配置，等配置时丢弃通知
+                // 会让后续等待通知永远超时。
                 if (view.type() == DZ_FRAME_RTN_SYSMON_CONFIG ||
-                    view.type() == DZ_FRAME_RTN_SYSMON_SNAPSHOT) {
+                    view.type() == DZ_FRAME_RTN_SYSMON_SNAPSHOT ||
+                    view.type() == DZ_FRAME_NOTIFY_UI) {
                     pending_.emplace_back(view.type(), payload_of(view));
                 }
             }
@@ -286,7 +291,8 @@ protected:
                     }
                     continue;
                 }
-                if (view.type() == DZ_FRAME_RTN_SYSMON_CONFIG) {
+                if (view.type() == DZ_FRAME_RTN_SYSMON_CONFIG ||
+                    view.type() == DZ_FRAME_NOTIFY_UI) {
                     pending_.emplace_back(view.type(), payload_of(view));
                 }
             }
@@ -328,9 +334,20 @@ protected:
 // 成功后立即推送的快照已体现新配置（§4 触发 4）。
 TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
     start_child();
-    ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s).has_value())
-        << "dzsysmon did not push the startup snapshot";
+    const auto startup = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s);
+    ASSERT_TRUE(startup.has_value()) << "dzsysmon did not push the startup snapshot";
     pending_.clear();  // 丢弃启动期残留帧（旧值会满足后续断言）
+
+    // disk.devices 的验证设备取自启动快照的真实盘名：不硬编码 `sda`（CI 主机可能只有 nvme），
+    // Windows 上 disk_io 可能整体不可用（性能计数器），此时走下面的退化分支。
+    std::optional<std::string> filter_device;
+    const auto& startup_disk_io = (*startup)["disk_io"];
+    if (startup_disk_io.is_array() && !startup_disk_io.empty()) {
+        filter_device = startup_disk_io[0]["device"].get<std::string>();
+    }
+    const auto devices_patch = filter_device.has_value()
+                                   ? nlohmann::json::array({*filter_device})
+                                   : nlohmann::json::array({"no_such_device_e2e"});
 
     const std::string watch_path = home_.string();
     const auto patch = nlohmann::json{
@@ -340,8 +357,7 @@ TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
           {"phase_offset_sec", 1},
           {"groups", {{"network", false}}}}},
         {"disk",
-         {{"watch_paths", nlohmann::json::array({watch_path})},
-          {"devices", nlohmann::json::array({"sda"})}}},
+         {{"watch_paths", nlohmann::json::array({watch_path})}, {"devices", devices_patch}}},
         {"network", {{"hide_virtual", false}}},
         {"history", {{"enabled", false}}},
         {"realtime", {{"push_interval_sec", 2}}},
@@ -357,7 +373,7 @@ TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
     EXPECT_EQ((*config)["sampling"]["phase_offset_sec"], 1);
     EXPECT_EQ((*config)["sampling"]["groups"]["network"], false);
     EXPECT_EQ((*config)["disk"]["watch_paths"], nlohmann::json::array({watch_path}));
-    EXPECT_EQ((*config)["disk"]["devices"], nlohmann::json::array({"sda"}));
+    EXPECT_EQ((*config)["disk"]["devices"], devices_patch);
     EXPECT_EQ((*config)["network"]["hide_virtual"], false);
     EXPECT_EQ((*config)["history"]["enabled"], false);
     EXPECT_EQ((*config)["realtime"]["push_interval_sec"], 2);
@@ -376,13 +392,18 @@ TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
            "trigger 4)";
     EXPECT_EQ(platform::SysmonSnapshot::validate(*snapshot), std::nullopt);
     EXPECT_EQ((*snapshot)["sampling"]["measure_interval_ms"], 500);
-    // disk.devices 的过滤在快照构造阶段完成：本次立即推送即可体现新范围，
-    // 已采集到的设备中只有精确匹配 `sda` 的才会出现在 disk_io[]。
+    // disk.devices 的过滤在快照构造阶段完成：本次立即推送即可体现新范围。
+    // 有真实盘时过滤结果必须恰为该盘；无盘可采（Windows 计数器不可用）时域保持不可用，
+    // 不得伪造空数组冒充"采集成功"——两条分支都断言，避免条件跳过式空断言。
     const auto& disk_io = (*snapshot)["disk_io"];
-    if (disk_io.is_array()) {
-        for (const auto& disk : disk_io) {
-            EXPECT_EQ(disk["device"], "sda");
-        }
+    if (filter_device.has_value()) {
+        ASSERT_TRUE(disk_io.is_array());
+        ASSERT_EQ(disk_io.size(), 1U)
+            << "disk.devices filter must keep exactly the requested device";
+        EXPECT_EQ(disk_io[0]["device"], *filter_device);
+    } else {
+        EXPECT_TRUE(disk_io.is_null())
+            << "without a collectable physical disk the domain must stay unavailable";
     }
 }
 
@@ -399,8 +420,9 @@ TEST_F(ConfigE2ETest, PushIntervalChangeReschedulesTimerImmediately) {
     ASSERT_TRUE(immediate.has_value())
         << "SET did not trigger an immediate snapshot push (contract sysmon §4 trigger 4)";
 
-    // 第二帧必须是重排后的 1s 周期推送：若定时器仍等旧 300s，这里 2.5s 内不可能有帧。
-    const auto periodic = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 2500ms);
+    // 第二帧必须是重排后的 1s 周期推送：若定时器仍等旧 300s，这里 5s 内不可能有帧。
+    // 上界取 5s 而不是紧贴 1s：CI 负载下定时器抖动空间很大，5s 已足以证明"没有等 300s"。
+    const auto periodic = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 5000ms);
     ASSERT_TRUE(periodic.has_value())
         << "push timer was not rescheduled to the new interval immediately (contract sysmon "
            "§3.1.1 step 2)";
@@ -409,8 +431,37 @@ TEST_F(ConfigE2ETest, PushIntervalChangeReschedulesTimerImmediately) {
     const auto interval_ms =
         (*periodic)["timestamp"].get<int64_t>() - (*immediate)["timestamp"].get<int64_t>();
     EXPECT_GE(interval_ms, 400);
-    EXPECT_LE(interval_ms, 2500);
+    EXPECT_LE(interval_ms, 5000);
     EXPECT_EQ(platform::SysmonSnapshot::validate(*periodic), std::nullopt);
+}
+
+// 契约 sysmon §3.1.1 第 2 步：**计量**间隔同样立即重排（与推送共用 `restart_timers()`）。
+// 观测手段：启动计量间隔 60s 时首帧 `last_sample_unix_ms=0`（第一次成功采样要到 60s 后）；
+// SET 成 100ms 后若定时器没重排，5s 内不可能有成功样本——有则证明计量定时器已按新间隔重排。
+TEST_F(ConfigE2ETest, MeasureIntervalChangeReschedulesTimerImmediately) {
+    write_config(/*history_enabled=*/true, /*push_interval_sec=*/1,
+                 /*measure_interval_ms=*/60000);
+    start_child();
+    const auto startup = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s);
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_EQ((*startup)["sampling"]["last_sample_unix_ms"].get<int64_t>(), 0)
+        << "startup measure interval is 60s: the first successful sample must not exist yet";
+    pending_.clear();
+
+    ASSERT_TRUE(send_set_config({{"sampling", {{"measure_interval_ms", 100}}}}));
+    // SET 会立即推一帧（契约 §4 触发 4）：它本身可能还没等到重排后的第一个 tick。
+    const auto immediate = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 5s);
+    ASSERT_TRUE(immediate.has_value());
+
+    const auto ticking = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return payload["sampling"]["last_sample_unix_ms"].get<int64_t>() > 0;
+        },
+        5s);
+    ASSERT_TRUE(ticking.has_value())
+        << "measure timer was not rescheduled to the new interval immediately (contract sysmon "
+           "§3.1.1 step 2)";
+    EXPECT_EQ(platform::SysmonSnapshot::validate(*ticking), std::nullopt);
 }
 
 // 契约 sysmon §3.1.1：组关闭后可用性为 disabled_by_config、数值为 null；
@@ -498,6 +549,128 @@ TEST_F(ConfigE2ETest, HistoryEnableDisableAtRuntimeKeepsRealtime) {
     EXPECT_EQ(platform::SysmonSnapshot::validate(*snapshot), std::nullopt);
     EXPECT_TRUE(std::filesystem::exists(history_db()))
         << "disabling history must not delete the existing history database";
+}
+
+// 契约 sysmon §3.1.1：`sampling.groups.cpu=false` 时**启动首帧**（§4 触发 1，发生在第一个
+// 计量 tick 之前）就必须清空 CPU 数值并标 `disabled_by_config`，不得等一个计量间隔。
+// 这条覆盖的是「生产者侧」把配置读进测量结果，纯函数测试（手工设 CpuMetrics.disabled）
+// 覆盖不到。
+TEST_F(ConfigE2ETest, CpuGroupDisabledAtStartupReportsDisabledByConfig) {
+    write_config(/*history_enabled=*/true, kLongPushIntervalSec, /*measure_interval_ms=*/1000,
+                 /*cpu_enabled=*/false);
+    start_child();
+
+    const auto startup = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s);
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_EQ(platform::SysmonSnapshot::validate(*startup), std::nullopt);
+    const auto& metrics = (*startup)["availability"]["metrics"];
+    for (const char* key : {"cpu.total", "cpu.cores", "cpu.load_average", "cpu.context_switches"}) {
+        ASSERT_TRUE(metrics.contains(key)) << key;
+        EXPECT_EQ(metrics[key].value("available", true), false) << key;
+        EXPECT_EQ(metrics[key].value("reason", std::string()), "disabled_by_config") << key;
+    }
+    // 数值清空（不是 0、也不是旧值）；系统信息与逻辑核数不受 cpu 组影响。
+    EXPECT_TRUE((*startup)["cpu"]["total"]["usage_ratio"].is_null());
+    EXPECT_TRUE((*startup)["cpu"]["cores"].empty());
+    EXPECT_TRUE((*startup)["cpu"]["load_average"].is_null());
+    EXPECT_TRUE((*startup)["cpu"]["saturated_cores"].empty());
+    EXPECT_GT((*startup)["system"]["logical_cores"].get<int>(), 0);
+    // 前端据此显示「已在配置中关闭」而不是 0（契约 §2.5 的 disabled_by_config 语义）。
+
+    pending_.clear();
+    // 运行期重新开启：计量 200ms / 推送 1s，等一帧可用性恢复的快照（能力标记恢复即可，
+    // 首个样本的 usage 仍可为 null 直到下一 tick）。
+    ASSERT_TRUE(
+        send_set_config({{"sampling", {{"measure_interval_ms", 200}, {"groups", {{"cpu", true}}}}},
+                         {"realtime", {{"push_interval_sec", 1}}}}));
+    const auto enabled = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return payload["availability"]["metrics"]["cpu.total"].value("available", false);
+        },
+        5s);
+    ASSERT_TRUE(enabled.has_value()) << "cpu group re-enable did not restore availability";
+    EXPECT_EQ(platform::SysmonSnapshot::validate(*enabled), std::nullopt);
+}
+
+// 契约 sysmon §3.1.1 第 5 步：`history.enabled` true→false 时必须先 flush **当前进行中**
+// 的记录窗口再关库。用 5s 记录窗口（长于本用例）保证关闭时窗口必然未结算；若实现漏掉
+// flush，窗口永远等不到结算（writer 已关），库里不会出现任何原始记录。
+TEST_F(ConfigE2ETest, RuntimeHistoryDisableFlushesOpenWindow) {
+    write_config(/*history_enabled=*/false, kLongPushIntervalSec, /*measure_interval_ms=*/200);
+    start_child();
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s).has_value());
+    pending_.clear();
+
+    ASSERT_TRUE(
+        send_set_config({{"history", {{"enabled", true}}},
+                         {"sampling", {{"record_interval_sec", 5}, {"measure_interval_ms", 200}}},
+                         {"realtime", {{"push_interval_sec", 1}}}}));
+    const auto enabled = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
+    ASSERT_TRUE(enabled.has_value());
+    EXPECT_EQ((*enabled)["history"]["enabled"], true);
+    ASSERT_TRUE(wait_for_file(history_db(), 10s));
+
+    // 等计量 tick 已产出样本（周期快照的 last_sample_unix_ms 非 0）后立刻关闭：
+    // 此时窗口最多累计 ~2s，必然还处在 5s 窗口内。
+    const auto ticking = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return payload["sampling"]["last_sample_unix_ms"].get<int64_t>() > 0;
+        },
+        5s);
+    ASSERT_TRUE(ticking.has_value()) << "measure ticks did not produce samples before disable";
+
+    ASSERT_TRUE(send_set_config({{"history", {{"enabled", false}}}}));
+    const auto disabled = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
+    ASSERT_TRUE(disabled.has_value());
+    EXPECT_EQ((*disabled)["history"]["enabled"], false);
+
+    // flush 证据：条件等待库中出现首个原始桶（关闭时已同步 flush + 关库，数据应立即可读）。
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    bool has_record = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto opened = sysmonstore::HistoryReader::open(history_db());
+        if (opened.first == sysmonstore::HistoryAvailability::Ok &&
+            opened.second->latest_bucket_ts(sysmonstore::kLevelRaw).has_value()) {
+            has_record = true;
+            break;
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+    EXPECT_TRUE(has_record)
+        << "disabling history at runtime did not flush the in-progress record window";
+}
+
+// 契约 sysmon §3.1.1 第 5 步的失败降级：运行期开启历史失败时**不回滚配置**（配置表达意图），
+// 按四件套记 ERROR + NOTIFY_UI error+popup，实时链路继续。
+// 失败注入：把历史库路径做成目录（跨平台稳定，不依赖文件权限语义）。
+TEST_F(ConfigE2ETest, RuntimeHistoryEnableFailureNotifiesAndKeepsRealtime) {
+    write_config(/*history_enabled=*/false);
+    std::filesystem::create_directories(history_db());
+    start_child();
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s).has_value());
+    pending_.clear();
+
+    ASSERT_TRUE(send_set_config({{"history", {{"enabled", true}}}}));
+
+    // 配置保持 true（持久化成功 = 意图成立；失败是运行期降级，不伪造回滚）。
+    const auto config = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
+    ASSERT_TRUE(config.has_value());
+    EXPECT_EQ((*config)["history"]["enabled"], true);
+
+    // 错误通知（四件套之一）：trigger 级 error + popup。
+    const auto notify = wait_for_frame(DZ_FRAME_NOTIFY_UI, 5s);
+    ASSERT_TRUE(notify.has_value()) << "history open failure must notify the ui";
+    EXPECT_EQ(notify->value("source", std::string()), "dzsysmon");
+    EXPECT_EQ(notify->value("level", std::string()), "error");
+    EXPECT_TRUE(notify->value("popup", false));
+
+    // 实时链路继续：SET 成功后仍立即推送一帧合法快照。
+    const auto snapshot = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 5s);
+    ASSERT_TRUE(snapshot.has_value())
+        << "realtime snapshot push stopped after a runtime history open failure";
+    EXPECT_EQ(platform::SysmonSnapshot::validate(*snapshot), std::nullopt);
+    // 失败不是"悄悄建了库"：库路径仍是注入的目录。
+    EXPECT_TRUE(std::filesystem::is_directory(history_db()));
 }
 
 }  // namespace

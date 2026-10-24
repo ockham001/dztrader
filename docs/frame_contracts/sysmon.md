@@ -119,7 +119,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 `disk_io[]`：每物理盘 I/O 派生值。字段为 `{device:string, read_bytes_per_sec, write_bytes_per_sec, read_iops, write_iops, latency_ms, queue_depth, utilization}`；除 `device` 外均为 `number | null`——**计数器不可用时为 `null` 而非 0**（契约 §2.7）。
 
 - `device` 为设备稳定标识：Linux 为内核块设备名（`sda` / `nvme0n1` 等**整盘**名，不含分区）；Windows 为 `PhysicalDrive<N>`（物理盘编号）。帧内唯一，可在帧间变化（热插拔/盘号增减）。
-- 采集范围只含**整块物理盘**：Linux 以 `/sys/block` 的整盘条目为准（分区天然不在其中），并排除 loop/ram/zram 内存与回环设备、`dm-*`/`md*`/bcache 聚合设备（其 I/O 已计入底层物理盘，单列会重复计数）与 `nbd`/`rbd`/`drbd` 网络块设备、`sr`/`sg`/`fd`/`pktcdvd` 光学/软驱/包写入等非存储设备；Windows 遍历 `PhysicalDrive0..PhysicalDrive32`，不存在的盘号与不支持计数器的盘（含无权限）跳过。**盘符/卷 × 物理盘的映射不在本版本范围**（Windows `device` 只有物理盘编号，见 §8）。
+- 采集范围只含**整块物理盘**：Linux 以 `/sys/block` 的整盘条目为准（分区天然不在其中），并排除 loop/ram/zram 内存与回环设备、`dm-*`/`md*`/bcache 聚合设备（其 I/O 已计入底层物理盘，单列会重复计数）与 `nbd`/`rbd`/`drbd` 网络块设备、`sr`/`sg`/`fd`/`pktcdvd` 光学/软驱/包写入等非存储设备；Windows 遍历 `PhysicalDrive0..PhysicalDrive32`，不存在的盘号与不支持计数器的盘（含无权限）跳过。**盘符/卷 × 物理盘的映射不在本版本范围**（Windows `device` 只有物理盘编号，见 §8）。配置 `disk.devices` 非空时只输出匹配的设备（§3.1；过滤在快照构造阶段，不改变采集与速率基线）。
 - `read_bytes_per_sec` / `write_bytes_per_sec`：吞吐（字节/秒）；`read_iops` / `write_iops`：每秒完成的读/写请求数。四者 = Δ累计计数器 / Δ实际经过秒数（§2.7）。
 - `latency_ms`：**平均每完成请求的驻留时间（含排队）**，单位毫秒 = Δ(读服务时间 + 写服务时间) / Δ(读完成数 + 写完成数)。窗口内没有完成的请求时为 `null`（无定义，不是 0）。
 - `queue_depth`：**采样时刻的在途请求数**（瞬时 gauge，如 Linux `ios_in_progress` / Windows `QueueDepth`），**不是区间平均队列深度**；平台不提供该读数时为 `null`。
@@ -373,10 +373,10 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 `disk`：`{watch_paths:string[], devices:string[]}`（元素非空）。
 
-- `watch_paths` 为空表示使用默认关注路径——共享内存目录与数据库目录；非空时逐条解析并作为 `watch_paths[]` 输出，同时决定 `volumes[].watched`。运行期修改经 `SET_SYSMON_CONFIG` 即时生效（该字段只影响快照构造，不触发重新采样，走 §4 触发 4 的立即快照）。
-- `devices` 为**磁盘 I/O 设备范围**：空数组 = 全部整物理盘；非空时只输出 `device` 与列表**精确匹配**的 `disk_io[]` 条目（标识与快照 `disk_io[].device` 同源：Linux 整盘名如 `sda` / `nvme0n1`，Windows `PhysicalDrive<N>`）。列表中的名字匹配不到任何设备只是不输出，**不导致校验失败**。过滤发生在**快照构造**阶段（与 `network.hide_virtual` 同款）：运行期修改不触发重新采集、不重置速率基线，改后立即推送的一帧即体现新范围；过滤后为空数组仍 `available=true`（"范围内没有盘"与"采集失败"是不同事实）。
+- `watch_paths` 为空表示使用默认关注路径——共享内存目录与数据库目录；非空时逐条解析并作为 `watch_paths[]` 输出，同时决定 `volumes[].watched`。运行期修改无需重启进程：落卷解析在**下一次计量 tick** 按新配置刷新（默认 1s 内），随后推送的快照体现新的 `watch_paths[]` 与 `volumes[].watched`；SET 成功后立即推送的那一帧可能仍是上一 tick 的解析结果（该字段在采集阶段解析，不是快照构造阶段的纯过滤）。
+- `devices` 为**磁盘 I/O 设备范围**：空数组 = 全部整物理盘；非空时只输出 `device` 与列表**精确匹配**的 `disk_io[]` 条目（标识与快照 `disk_io[].device` 同源：Linux 整盘名如 `sda` / `nvme0n1`，Windows `PhysicalDrive<N>`）。列表中的名字匹配不到任何设备只是不输出，**不导致校验失败**。过滤发生在**快照构造**阶段（与 `network.hide_virtual` 同款）：运行期修改不触发重新采集、不重置速率基线，改后立即推送的一帧即体现新范围；历史记录的维度数据由同一快照构造路径观测，与实时快照同口径。过滤后为空数组仍 `available=true`（"范围内没有盘"与"采集失败"是不同事实）。
 
-`network`：`{hide_virtual:bool}`，默认 `true`（隐藏虚拟网卡：回环、桥接、veth、容器网桥、隧道与 VLAN 逻辑接口等——判定依据是「不由硬件设备支撑」，见 §2.4）。该开关在**快照构造**阶段过滤，`SET_SYSMON_CONFIG` 成功后立即推送一帧使改动即时可见（§4 触发 4）。
+`network`：`{hide_virtual:bool}`，默认 `true`（隐藏虚拟网卡：回环、桥接、veth、容器网桥、隧道与 VLAN 逻辑接口等——判定依据是「不由硬件设备支撑」，见 §2.4）。该开关在**快照构造**阶段过滤，`SET_SYSMON_CONFIG` 成功后立即推送一帧使改动即时可见（§4 触发 4）；历史记录的维度数据由同一快照构造路径观测，与实时快照同口径。
 
 `history`：`{enabled:bool, raw_retention_hours:int, max_retention_days:int, max_bytes:int}`，默认 `true/24/30/2147483648`；`raw_retention_hours ∈ [1,720]`、`max_retention_days ∈ [1,3650]`、`max_bytes ≥ 0`（0 = 不限制）。由 #78 消费：`enabled=false` 时不写历史（仅实时数据，不建库文件、不起落盘线程）；保留与压缩规则见 #41 spec「历史存储」。历史库 schema 与行编解码的唯一真相源是 `libs/sysmonstore`，**不在本契约范围内**（历史查询不走帧，dzweb 以只读方式直接打开历史库）。`enabled` **支持运行期切换**（§3.1.1）：true→false 时先 flush 当前记录窗口再关库；false→true 时建库并从空窗口开始（**不**写 `restart` 标记——进程没有重启）；建库失败只记日志并 `NOTIFY_UI` 报错、实时链路继续，生效配置保持 `true`（配置是意图，失败是运行期降级，不伪造回滚）。`raw_retention_hours` / `max_retention_days` / `max_bytes` 运行期修改在**下一维护周期**生效。
 
@@ -393,7 +393,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 3. **记录窗口重配**：`record_interval_sec` / `phase_offset_sec` 从**下一窗口**起生效；进行中的窗口按它开始时的宽度落库（不切碎历史，避免同一桶宽度在同一窗口内变化）。
 4. **保留策略参数发布**：`history` 的保留/上限参数交给落盘线程，下一维护周期生效。
 5. **`history.enabled` 切换**：true→false 先 flush 当前窗口再关库/停线程；false→true 建库并起线程（不回写 `restart` 标记）。切换失败不阻止其它副作用，按本节 `history` 段的降级语义处理。
-6. 回推全量 `RTN_SYSMON_CONFIG`（成功与失败都回推，见 §3.2/§3.3），成功时再按 §4 触发 4 立即推送一帧快照——因此**只影响快照构造**的配置（`network.hide_virtual`、`disk.watch_paths`、`disk.devices`）无需等到下一个推送周期。
+6. 回推全量 `RTN_SYSMON_CONFIG`（成功与失败都回推，见 §3.2/§3.3），成功时再按 §4 触发 4 立即推送一帧快照——因此**只影响快照构造**的配置（`network.hide_virtual`、`disk.devices`）无需等到下一个推送周期；`disk.watch_paths` 的落卷解析在下一次计量 tick 刷新（最多一个计量间隔后可见），`measure_interval_ms` 越小越早。
 
 **`sampling.groups` 各键语义**（关闭后重新开启一律从**新基线**开始，不得跨关闭期计算使用率/速率；关闭期间**不累加** `sampling.missed_ticks`——配置关闭不是采集缺口）：
 

@@ -57,8 +57,8 @@ const FIELDS = {
   cpuSustainSamples: { key: 'cpu_sustain_samples', label: 'CPU 持续采样数', unit: '次', integer: true },
   memoryUsedPct: { key: 'memory_used_pct', label: '内存使用率阈值', unit: '%', integer: false },
   swapUsedPct: { key: 'swap_used_pct', label: '交换使用率阈值', unit: '%', integer: false },
-  volumeFreePct: { key: 'volume_free_pct', label: '关注卷剩余空间阈值', unit: '%', integer: false },
-  volumeFreeBytes: { key: 'volume_free_bytes', label: '关注卷剩余空间阈值', unit: '字节', integer: true },
+  volumeFreePct: { key: 'volume_free_pct', label: '关注卷剩余空间阈值（百分比）', unit: '%', integer: false },
+  volumeFreeBytes: { key: 'volume_free_bytes', label: '关注卷剩余空间阈值（绝对容量）', unit: '字节', integer: true },
   cooldown: { key: 'cooldown_sec', label: '告警冷却时间', unit: '秒', integer: true },
 } as const satisfies Record<string, NumberFieldSpec>
 
@@ -484,7 +484,6 @@ async function onSave(): Promise<void> {
               v-for="row in section.rows"
               :key="row.field"
               class="sysmon-config__row"
-              :data-field="row.field"
             >
               <dt class="sysmon-config__label">{{ row.label }}</dt>
               <dd class="sysmon-config__value" :data-test="`sysmon-config-value-${row.field}`">

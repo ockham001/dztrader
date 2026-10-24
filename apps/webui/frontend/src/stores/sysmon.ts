@@ -569,34 +569,25 @@ export const useSysmonStore = defineStore('sysmon', () => {
 
   /** 生效配置镜像（契约 sysmon §3 RTN_SYSMON_CONFIG 全量回推）；未收到时为 null */
   const config = ref<SysmonConfigPayload | null>(null)
-  /** 配置镜像已通过 REST 或 WS 任一路径到达；false = 配置 tab 显示「配置尚未到达」 */
-  const configLoaded = ref(false)
-  /** 配置补拉失败原因（仅供排障 / 测试；页面不弹错、不展示技术细节） */
-  const configError = ref<string | null>(null)
   /** 配置补拉进行中（防 Topbar / 监控页并发 init 重复请求） */
   const configLoading = ref(false)
 
   /**
    * 补拉生效配置镜像（契约 rest §2.8 `GET /api/sysmon/config`）。
    *
-   * 503（dzweb 镜像尚未就绪）与网络失败都**不抛错、不弹错**：保持 config=null 并记录原因，
+   * 503（dzweb 镜像尚未就绪）与网络失败都**不抛错、不弹错**：保持 config=null，
    * 页面显示「配置尚未到达」；WS `sysmon_config`（快照域，契约 webui-ws §2.1）到达即补上。
-   * 返回值仅为编排便利（loadConfig 不 reject）。
+   * 失败原因不对外暴露：页面只需要「有没有生效值」这一事实。
    */
   async function loadConfig(): Promise<void> {
     if (configLoading.value || config.value !== null) return
     configLoading.value = true
     try {
       const payload = await sysmonApi.getConfig()
-      if (!isFullConfigPayload(payload)) {
-        configError.value = 'config payload invalid'
-        return
-      }
+      if (!isFullConfigPayload(payload)) return  // 半截配置不入镜像，等 WS 全量回推
       config.value = payload
-      configLoaded.value = true
-      configError.value = null
-    } catch (e) {
-      configError.value = e instanceof Error ? e.message : String(e)
+    } catch {
+      // 503 / 网络失败：保持空镜像，等待 WS 补上（不弹错、不伪造默认值）
     } finally {
       configLoading.value = false
     }
@@ -612,8 +603,6 @@ export const useSysmonStore = defineStore('sysmon', () => {
     const p = payload as Partial<SysmonConfigPayload> | null | undefined
     if (!isFullConfigPayload(p)) return
     config.value = p as SysmonConfigPayload
-    configLoaded.value = true
-    configError.value = null
     sysmonPending.resolve(SYSMON_CONFIG_KEY)
     sysmonPending.resolve(SYSMON_NETWORK_CONFIG_KEY)
   }
@@ -701,8 +690,6 @@ export const useSysmonStore = defineStore('sysmon', () => {
     networkFilteredAll,
     activeAlerts,
     config,
-    configLoaded,
-    configError,
     hideVirtual,
     hideVirtualPending,
     configPending,

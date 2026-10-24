@@ -8,16 +8,23 @@
 
 namespace dztrader::webui {
 
+void SysmonCtrl::reply_mirror_domain(
+    const char* domain,
+    const char* error_message,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+    const nlohmann::json instance = mirror_->instance(std::string(SysmonDomainService::kInstance));
+    if (!instance.is_object() || !instance.contains(domain)) {
+        callback(error_response(drogon::k503ServiceUnavailable, error_message));
+        return;
+    }
+    callback(json_response(drogon::k200OK, instance[domain]));
+}
+
 void SysmonCtrl::get_snapshot(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
-    (void)req;  // 认证由 JWT advice 处理，本端点所有已认证用户可读（《帧契约：REST》§2.8）
-    const nlohmann::json instance = mirror_->instance(std::string(SysmonDomainService::kInstance));
-    if (!instance.is_object() || !instance.contains("sysmon_snapshot")) {
-        callback(error_response(drogon::k503ServiceUnavailable, "sysmon snapshot not available"));
-        return;
-    }
-    callback(json_response(drogon::k200OK, instance["sysmon_snapshot"]));
+    (void)req;  // 认证由 JWT advice 处理，读端点不做角色判断（《帧契约：REST》§2.8）
+    reply_mirror_domain("sysmon_snapshot", "sysmon snapshot not available", std::move(callback));
 }
 
 void SysmonCtrl::get_history(
@@ -50,14 +57,9 @@ void SysmonCtrl::get_history(
 void SysmonCtrl::get_config(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
-    (void)req;  // 认证由 JWT advice 处理，本端点所有已认证用户可读（《帧契约：REST》§2.8）
+    (void)req;  // 认证由 JWT advice 处理，读端点不做角色判断（《帧契约：REST》§2.8）
     // 只读镜像、不产生帧往返（《帧契约：系统监控》§6）：生效值即 RTN_SYSMON_CONFIG 的回推结果。
-    const nlohmann::json instance = mirror_->instance(std::string(SysmonDomainService::kInstance));
-    if (!instance.is_object() || !instance.contains("sysmon_config")) {
-        callback(error_response(drogon::k503ServiceUnavailable, "sysmon config not available"));
-        return;
-    }
-    callback(json_response(drogon::k200OK, instance["sysmon_config"]));
+    reply_mirror_domain("sysmon_config", "sysmon config not available", std::move(callback));
 }
 
 void SysmonCtrl::set_config(

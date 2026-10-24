@@ -1252,19 +1252,16 @@ describe('useSysmonStore 完整配置镜像与保存（#81）', () => {
     vi.clearAllMocks()
   })
 
-  it('loadConfig 成功：写生效配置镜像并标记已加载（不等 WS 推送）', async () => {
+  it('loadConfig 成功：写生效配置镜像（不等 WS 推送）', async () => {
     vi.mocked(sysmonApi.getConfig).mockResolvedValue(
       makeSysmonConfig({ sampling: { measure_interval_ms: 500 } }),
     )
     const store = useSysmonStore()
     expect(store.config).toBeNull()
-    expect(store.configLoaded).toBe(false)
 
     await store.loadConfig()
 
     expect(sysmonApi.getConfig).toHaveBeenCalledTimes(1)
-    expect(store.configLoaded).toBe(true)
-    expect(store.configError).toBeNull()
     // 配置镜像按契约全量形状写入（各段都能被配置 tab 消费）
     expect(store.config?.sampling.measure_interval_ms).toBe(500)
     expect(store.config?.sampling.record_interval_sec).toBe(60)
@@ -1279,8 +1276,6 @@ describe('useSysmonStore 完整配置镜像与保存（#81）', () => {
     await expect(store.loadConfig()).resolves.toBeUndefined()
 
     expect(store.config).toBeNull()
-    expect(store.configLoaded).toBe(false)
-    expect(store.configError).toContain('503')
     // 镜像未就绪是正常启动态，不是错误弹窗场景（错误提示由页面空态承担）
     expect(toastSpy).not.toHaveBeenCalled()
   })
@@ -1292,8 +1287,6 @@ describe('useSysmonStore 完整配置镜像与保存（#81）', () => {
     await store.loadConfig()
 
     expect(store.config).toBeNull()
-    expect(store.configLoaded).toBe(false)
-    expect(store.configError).toBeTruthy()
   })
 
   it('init 在配置镜像缺失时经 REST 补拉一次；已有镜像后不再补拉', async () => {
@@ -1382,6 +1375,5 @@ describe('useSysmonStore 完整配置镜像与保存（#81）', () => {
     expect(sysmonPending.pending[SYSMON_CONFIG_KEY]).toBe(false)
     expect(sysmonPending.pending[SYSMON_NETWORK_CONFIG_KEY]).toBe(false)
     expect(store.config?.network.hide_virtual).toBe(false)
-    expect(store.configLoaded).toBe(true)
   })
 })

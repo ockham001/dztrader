@@ -210,12 +210,19 @@ private:
 
         collector_ = platform::make_system_collector();
         system_info_ = collector_->collect_system_info();
-        if (const auto baseline = collector_->collect_cpu_times()) {
-            apply_baseline(*baseline);
+        // 契约 sysmon §3.1.1：`sampling.groups.cpu=false` 时启动首帧同样不得发布 CPU 数值
+        // 与「能力可用」——首帧在第一个计量 tick 之前就会推送，不能等一个计量间隔才生效。
+        if (group_enabled(platform::SYSMON_GROUP_CPU)) {
+            if (const auto baseline = collector_->collect_cpu_times()) {
+                apply_baseline(*baseline);
+            } else {
+                SPDLOG_WARN("initial cpu sample unavailable | reason=collect_failed");
+            }
+            refresh_load_average();
         } else {
-            SPDLOG_WARN("initial cpu sample unavailable | reason=collect_failed");
+            metrics_.disabled = true;
+            SPDLOG_INFO("cpu group disabled by config | action=skip_cpu_sampling");
         }
-        refresh_load_average();
         refresh_sensor_metrics();
         refresh_memory_metrics();
         refresh_disk_metrics();
@@ -749,8 +756,8 @@ private:
     /// 评估一次阈值告警（契约 sysmon §2.8；#80）。
     ///
     /// 输入只取判定所需的事实：内存/交换使用率、关注卷剩余空间与关注路径落卷；
-    /// 阈值与冷却取当前生效配置（#80 只消费配置；运行期修改是既有 SET_SYSMON_CONFIG 通道，
-    /// 前端编辑入口随 #81）。
+    /// 阈值与冷却取当前生效配置（运行期修改经 `SET_SYSMON_CONFIG` 即时生效，监控页
+    /// 「配置」区提供 admin 编辑入口）。
     /// 通知发送（error+popup 触发 / info 恢复）与快照 `alerts[]` 的活动集在此统一产出，
     /// 是告警状态的唯一写入点——采集/判定/发送都在 io_context 线程上串行。
     void evaluate_alerts() {
@@ -824,9 +831,8 @@ private:
         prev_steady_ms_ = steady_ms;
 
         try {
-            // 与推送路径同款：过滤类配置在构造快照时读取当前值，历史记录与实时快照
-            // 对"输出哪些条目"的口径必须一致（契约 sysmon §3.1）。
-            disk_metrics_.devices = config_.disk.devices;
+            // 实时快照与历史记录共用同一份「输出过滤」配置，口径不得漂移（契约 sysmon §3.1）。
+            apply_snapshot_output_config();
             const auto snapshot = build_snapshot(
                 name_, system_info_, metrics_, temperature_metrics_, memory_metrics_, disk_metrics_,
                 network_metrics_, active_alerts_, config_.sampling.measure_interval_ms,
@@ -919,7 +925,7 @@ private:
             }
             metrics_.cores_collected = true;
 
-            // 饱和判定：阈值与连续次数取当前配置（默认 90% / 10 次；运行期修改随配置票）。
+            // 饱和判定：阈值与连续次数取当前配置（默认 90% / 10 次；运行期修改即时生效）。
             const double threshold_ratio =
                 std::clamp(config_.alerts.cpu_sustain_used_pct / 100.0, 0.0, 1.0);
             const auto required_samples = static_cast<uint32_t>(config_.alerts.cpu_sustain_samples);
@@ -1001,14 +1007,24 @@ private:
         }
     }
 
+    /// 把「只影响快照输出条目」的配置写入测量结果（实时快照与历史记录共用，契约 sysmon
+    /// §2.7/§3.1）：
+    /// - `network.hide_virtual`：虚拟网卡过滤
+    /// - `disk.devices`：磁盘 I/O 设备范围过滤
+    ///
+    /// 两处快照构造（`push_snapshot` / `record_history_tick`）都从这里取配置：历史维度数据与
+    /// 实时快照对"输出哪些条目"的口径必须一致，避免改一处漏一处（Shotgun Surgery）。
+    void apply_snapshot_output_config() {
+        network_metrics_.hide_virtual = config_.network.hide_virtual;
+        disk_metrics_.devices = config_.disk.devices;
+    }
+
     /// 推送实时快照（RTN_SYSMON_SNAPSHOT，无 instance_id，含系统信息/CPU/温度/内存/磁盘/网络）。
     void push_snapshot() noexcept {
         try {
             // hide_virtual / devices 只影响输出条目（采集层始终返回全部网卡与物理盘），
-            // 构造快照时读当前配置，因此 SET_SYSMON_CONFIG 后的这次推送即体现新开关
-            // （契约 sysmon §2.7、§3.1）。
-            network_metrics_.hide_virtual = config_.network.hide_virtual;
-            disk_metrics_.devices = config_.disk.devices;
+            // SET_SYSMON_CONFIG 后的这次推送即体现新开关（契约 sysmon §2.7、§3.1）。
+            apply_snapshot_output_config();
             const auto snapshot = build_snapshot(
                 name_, system_info_, metrics_, temperature_metrics_, memory_metrics_, disk_metrics_,
                 network_metrics_, active_alerts_, config_.sampling.measure_interval_ms,

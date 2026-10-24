@@ -85,14 +85,14 @@
   - `sampling.groups.cpu`（#81）：关闭时跳过 CPU 计时/负载/速率采集与饱和判定，`cpu.total` / `cpu.cores` / `cpu.load_average` / `cpu.context_switches` 标 `disabled_by_config`，重新开启从新基线开始；`cpu.frequency` 由 `sampling.groups.cpu_frequency` 独立控制（#73，Linux 默认开、Windows 默认关）。
   - `sampling.groups.memory` / `sampling.groups.swap`（#74）、`volumes`（#75）、`disk_io`（#76）、`network`（#77）：关闭时跳过对应采集并标 `disabled_by_config`，重新开启从新基线开始，关闭期不冒充速率窗口。
   - `sampling.measure_interval_ms` 与 `realtime.push_interval_sec`：SET 成功后取消 pending wait 并按新间隔重排（即时生效）；`sampling.record_interval_sec` / `sampling.phase_offset_sec`：记录窗口重配，从**下一窗口**生效（进行中窗口按旧宽度落库，避免切碎历史）。
-  - `disk.watch_paths`：关注路径解析与 `volumes[].watched`，只影响快照构造，SET 后立即推送的一帧即体现。
-  - `disk.devices`（#81）：磁盘 I/O 设备范围——空 = 全部整物理盘；非空按 `disk_io[].device` 精确匹配（Linux 整盘名 / Windows `PhysicalDrive<N>`），匹配不到只是不输出、不是校验错误。过滤在快照构造阶段（不重新采集、不重置速率基线），SET 后立即推送的一帧即体现。
-  - `network.hide_virtual`（#77）：快照构造阶段过滤虚拟网卡，SET 后立即推送一帧。
+  - `disk.watch_paths`：关注路径解析与 `volumes[].watched`；在**下一次计量 tick** 按新配置重新解析落卷（无需重启，默认 ≤1s 后推送的快照体现）。
+  - `disk.devices`（#81）：磁盘 I/O 设备范围——空 = 全部整物理盘；非空按 `disk_io[].device` 精确匹配（Linux 整盘名 / Windows `PhysicalDrive<N>`），匹配不到只是不输出、不是校验错误。过滤在快照构造阶段（不重新采集、不重置速率基线），SET 后立即推送的一帧即体现；历史维度数据与实时快照同口径。
+  - `network.hide_virtual`（#77）：快照构造阶段过滤虚拟网卡，SET 后立即推送一帧；历史维度数据与实时快照同口径。
   - `history.enabled`（#81 起支持运行期切换）：true→false 先 flush 当前记录窗口再关库/停落盘线程；false→true 建库并起线程，从空窗口开始且**不写 `restart` 标记**（进程没重启）；建库失败记 ERROR + `NOTIFY_UI`，实时链路继续，生效配置保持 `true`（配置表达意图，失败是运行期降级，不伪造回滚）。
   - `history.raw_retention_hours` / `max_retention_days` / `max_bytes`：保留策略参数发布给落盘线程，**下一维护周期**生效。
   - `alerts.*`（#80）：饱和阈值、内存/交换/卷阈值与冷却，每个计量 tick 读取当前值。
 - 运行期修改：`SET_SYSMON_CONFIG` 为 RFC 7386 merge patch（任意位置 `null` 非法；空对象无操作但仍回 RTN），成功回推全量 `RTN_SYSMON_CONFIG`；失败按四件套处理——回滚旧值 → 日志 → `NOTIFY_UI` error（`popup=true`）→ 回推旧值（契约 sysmon §3.3、通用规则 §8）。
-- 生效顺序（契约 sysmon §3.1.1，顺序是语义的一部分）：校验 → 原子持久化（保留 `log`/未知 section）→ 内存镜像替换 → 重排双定时器 → 记录窗口重配 → 保留策略发布 → 历史开关切换 → 回推 RTN → 成功时立即推送一帧快照。因此只影响快照构造的配置（`hide_virtual` / `watch_paths` / `devices`）在下一个推送周期之前就可见（不必等 5 秒基线）。
+- 生效顺序（契约 sysmon §3.1.1，顺序是语义的一部分）：校验 → 原子持久化（保留 `log`/未知 section）→ 内存镜像替换 → 重排双定时器 → 记录窗口重配 → 保留策略发布 → 历史开关切换 → 回推 RTN → 成功时立即推送一帧快照。因此只影响快照构造的配置（`hide_virtual` / `devices`）在下一个推送周期之前就可见（不必等 5 秒基线）；`watch_paths` 在下一次计量 tick 重新解析落卷，随后推送的快照体现。
 - 配置展示与编辑入口（#81）：监控页「配置」tab 展示当前生效配置（所有已认证用户可读），admin 经表单下发**差异 patch** 并保持 pending 直到 WS `sysmon_config` 回推（REST 200 只表示已写事件通道）；非 admin 只读。读取镜像配置也可用 REST `GET /api/sysmon/config`（未就绪 503）。
 - 触发场景：初始化完成主动 RTN 一次；每次 SET 后回推；`QUERY_FULL_SNAPSHOT` 响应时回推（契约 sysmon §3.2）。
 
