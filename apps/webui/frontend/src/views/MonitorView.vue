@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import SyncSwitch from '@/components/shared/SyncSwitch.vue'
+import SysmonConfigTab from '@/components/sysmon/SysmonConfigTab.vue'
 import SysmonHistoryTab from '@/components/sysmon/SysmonHistoryTab.vue'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { useAuthStore } from '@/stores/auth'
@@ -29,11 +30,13 @@ import { useToastStore } from '@/stores/toast'
 // 触发/恢复的事件通知走既有 notify_ui 链路（触发 error+popup、恢复 info），本页不重复弹 toast。
 // 历史视图（#79）为独立视图：切换只影响渲染来源，不卸载/不重建实时 store，
 // 因此 WS 连接与实时快照推送完全不受影响（契约 sysmon §8：历史视图不订阅 WS）。
+// 配置视图（#81）：展示生效配置镜像（WS sysmon_config，首次挂载经 GET /api/sysmon/config 补拉）；
+// admin 可编辑并只下发与原镜像的差异，非 admin 只读（编辑仅 admin，与系统设置页一致）。
 // 刷新基线由发送方 realtime.push_interval_sec（默认 5s）决定，本页不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
 
-/** 视图模式：实时（默认） / 历史 */
-const viewMode = ref<'realtime' | 'history'>('realtime')
+/** 视图模式：实时（默认） / 历史 / 配置（#81 展示生效配置 + admin 编辑） */
+const viewMode = ref<'realtime' | 'history' | 'config'>('realtime')
 
 onMounted(() => { void sysmon.init() })
 
@@ -338,6 +341,15 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           data-test="monitor-tab-history"
           @click="viewMode = 'history'"
         >历史</button>
+        <button
+          class="ds-btn ds-btn--sm"
+          :class="viewMode === 'config' ? 'ds-btn--primary' : 'ds-btn--secondary'"
+          type="button"
+          role="tab"
+          :aria-selected="viewMode === 'config'"
+          data-test="monitor-tab-config"
+          @click="viewMode = 'config'"
+        >配置</button>
       </div>
       <span v-if="viewMode === 'realtime' && snapshot" class="ds-tag">实时快照</span>
       <span v-else-if="viewMode === 'realtime'" class="ds-tag ds-tag--warning">等待快照</span>
@@ -376,6 +388,9 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 
     <!-- 历史视图（#79）：独立渲染，不卸载实时 store（WS 连接与实时数据不受影响） -->
     <SysmonHistoryTab v-if="viewMode === 'history'" />
+
+    <!-- 配置视图（#81）：展示生效配置（所有认证用户）+ 编辑入口（仅 admin） -->
+    <SysmonConfigTab v-if="viewMode === 'config'" />
 
     <!-- 实时视图（默认）：快照尚未到达时整页空态（不得显示 0 或假数字） -->
     <div

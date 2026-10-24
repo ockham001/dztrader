@@ -9,7 +9,7 @@ import { useToastStore } from '@/stores/toast'
 import { makeSysmonConfig, makeSysmonCpuCores, makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 
 vi.mock('@/api/sysmon', () => ({
-  sysmonApi: { getSnapshot: vi.fn(), setConfig: vi.fn() },
+  sysmonApi: { getSnapshot: vi.fn(), setConfig: vi.fn(), getConfig: vi.fn() },
 }))
 
 const stubs = {
@@ -1268,5 +1268,87 @@ describe('MonitorView 告警横幅跨视图常驻（#80）', () => {
     await wrapper.find('[data-test="monitor-tab-history"]').trigger('click')
     expect(wrapper.find('[data-test="monitor-alerts"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="monitor-alerts"]').text()).toContain('资源告警（1）')
+  })
+})
+
+describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sysmonPending.__resetForTests()
+    vi.clearAllMocks()
+    localStorage.setItem('jwt_token', 'test-token')
+  })
+
+  it('顶部新增第三个 tab「配置」：默认实时，切到配置后仅渲染配置视图', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+
+    const tab = wrapper.find('[data-test="monitor-tab-config"]')
+    expect(tab.exists()).toBe(true)
+    expect(tab.text()).toBe('配置')
+    expect(tab.attributes('aria-selected')).toBe('false')
+
+    await tab.trigger('click')
+    expect(tab.attributes('aria-selected')).toBe('true')
+    expect(wrapper.find('[data-test="sysmon-config-tab"]').exists()).toBe(true)
+    // 切换只换渲染来源：实时网格不再渲染（store 未卸载，镜像与 WS 连接保持）
+    expect(wrapper.find('[data-test="monitor-system"]').exists()).toBe(false)
+
+    // 切回实时恢复正常渲染
+    await wrapper.find('[data-test="monitor-tab-realtime"]').trigger('click')
+    expect(wrapper.find('[data-test="sysmon-config-tab"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-system"]').exists()).toBe(true)
+  })
+
+  it('init 经 GET /api/sysmon/config 补拉配置镜像：配置 tab 直接展示生效值', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig({ realtime: { push_interval_sec: 10 } }))
+    const wrapper = await mountView()
+
+    expect(sysmonApi.getConfig).toHaveBeenCalledTimes(1)
+    await wrapper.find('[data-test="monitor-tab-config"]').trigger('click')
+    expect(wrapper.find('[data-test="sysmon-config-value-realtime.push_interval_sec"]').text()).toBe('10 秒')
+  })
+
+  it('配置镜像未到达：配置 tab 显示「配置尚未到达」空态（不显示假默认值，也不弹错）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    vi.mocked(sysmonApi.getConfig).mockRejectedValue(new Error('HTTP 503'))
+    const errorSpy = vi.spyOn(useToastStore(), 'error')
+    const wrapper = await mountView()
+
+    expect(sysmonApi.getConfig).toHaveBeenCalledTimes(1)
+    await wrapper.find('[data-test="monitor-tab-config"]').trigger('click')
+    expect(wrapper.find('[data-test="sysmon-config-unavailable"]').text()).toContain('配置尚未到达')
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
+
+  it('admin 可见编辑入口（保存按钮）；WS sysmon_config 到达后展示值更新', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+    setRole('admin')
+    const store = useSysmonStore()
+    store.applyConfig(makeSysmonConfig())
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-test="monitor-tab-config"]').trigger('click')
+
+    expect(wrapper.find('[data-test="sysmon-config-save"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="sysmon-config-value-realtime.push_interval_sec"]').text()).toBe('5 秒')
+
+    // WS 全量回推（重连快照域 / SET 成功后的 RTN）：展示跟随镜像更新
+    store.applyConfig(makeSysmonConfig({ realtime: { push_interval_sec: 30 } }))
+    await flushPromises()
+    expect(wrapper.find('[data-test="sysmon-config-value-realtime.push_interval_sec"]').text()).toBe('30 秒')
+  })
+
+  it('非 admin：配置 tab 只读（无保存按钮，显示仅管理员可修改）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+    setRole('user')
+    useSysmonStore().applyConfig(makeSysmonConfig())
+    await flushPromises()
+    await wrapper.find('[data-test="monitor-tab-config"]').trigger('click')
+
+    expect(wrapper.find('[data-test="sysmon-config-readonly"]').text()).toContain('仅管理员可修改')
+    expect(wrapper.find('[data-test="sysmon-config-save"]').exists()).toBe(false)
   })
 })

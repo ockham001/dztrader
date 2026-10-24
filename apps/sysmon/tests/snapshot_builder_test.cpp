@@ -317,6 +317,49 @@ TEST(SnapshotBuilderTest, RatesUnavailableIsNullWithReason) {
     EXPECT_EQ(entry.reason.value(), "collect_failed");
 }
 
+// #81：`sampling.groups.cpu=false`（契约 sysmon §3.1.1）——CPU 数值清空、四个可用性键
+// disabled_by_config；system.logical_cores 保持系统信息原值（不得因每核清空而变 0）。
+TEST(SnapshotBuilderTest, CpuGroupDisabledClearsValuesAndMarksAvailability) {
+    CpuMetrics metrics = make_full_metrics();
+    metrics.disabled = true;
+    const auto snapshot = build_with(make_linux_info(), metrics);
+
+    // 关闭后不得沿用关闭前的数值（不是 0，也不是旧值）：null / 空数组。
+    EXPECT_EQ(snapshot.cpu.total.usage_ratio, std::nullopt);
+    EXPECT_TRUE(snapshot.cpu.cores.empty());
+    EXPECT_TRUE(snapshot.cpu.saturated_cores.empty());
+    EXPECT_EQ(snapshot.cpu.load_average, std::nullopt);
+    EXPECT_EQ(snapshot.cpu.context_switches_per_sec, std::nullopt);
+    EXPECT_EQ(snapshot.cpu.interrupts_per_sec, std::nullopt);
+
+    for (const char* key :
+         {platform::SYSMON_METRIC_CPU_TOTAL, platform::SYSMON_METRIC_CPU_CORES,
+          platform::SYSMON_METRIC_CPU_LOAD_AVERAGE, platform::SYSMON_METRIC_CPU_CONTEXT_SWITCHES}) {
+        const auto& entry = snapshot.availability.metrics.at(key);
+        EXPECT_FALSE(entry.available) << key;
+        ASSERT_TRUE(entry.reason.has_value()) << key;
+        EXPECT_EQ(entry.reason.value(), "disabled_by_config") << key;
+    }
+    // system 不受 cpu 组影响；逻辑核数取系统信息原值。
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_SYSTEM).available);
+    EXPECT_EQ(snapshot.system.logical_cores, 32U);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+// #81：`cpu.frequency` 由独立组 `cpu_frequency` 控制，不随 `cpu` 组关闭（契约 sysmon §3.1.1）。
+TEST(SnapshotBuilderTest, CpuGroupDisabledDoesNotAffectFrequencyGroup) {
+    CpuMetrics metrics = make_metrics_with_frequencies();
+    metrics.disabled = true;
+    const auto snapshot = build_with(make_linux_info(), metrics);
+
+    ASSERT_TRUE(snapshot.cpu.core_frequencies.has_value());
+    EXPECT_EQ(snapshot.cpu.core_frequencies->size(), 3U);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_CPU_FREQUENCY);
+    EXPECT_TRUE(entry.available);
+    EXPECT_EQ(entry.reason, std::nullopt);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
 TEST(SnapshotBuilderTest, UncollectedDomainsAreNull) {
     const auto snapshot = build_with(make_linux_info(), make_full_metrics());
     // #74 未传入内存/交换测量结果（等效能力从未确认）→ 域为 null + collect_failed。
@@ -1167,6 +1210,49 @@ TEST(SnapshotBuilderTest, DiskIoDisabledByConfigWinsOverCollected) {
     EXPECT_FALSE(entry.available);
     ASSERT_TRUE(entry.reason.has_value());
     EXPECT_EQ(entry.reason.value(), "disabled_by_config");
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+// ===== #81：`disk.devices` 设备范围过滤（契约 sysmon §3.1） =====
+// 过滤发生在快照构造阶段（与 network.hide_virtual 同款）；过滤后为空数组仍 available=true。
+
+TEST(SnapshotBuilderTest, DiskDevicesEmptyKeepsAllDisks) {
+    // 空数组 = 全部整物理盘（不是"不过滤任何东西"之外的语义）。
+    auto disk = make_disk_io_metrics();
+    ASSERT_TRUE(disk.devices.empty());
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
+
+    ASSERT_TRUE(snapshot.disk_io.has_value());
+    EXPECT_EQ(snapshot.disk_io->size(), 2U);
+    EXPECT_EQ((*snapshot.disk_io)[0].device, "sda");
+    EXPECT_EQ((*snapshot.disk_io)[1].device, "nvme0n1");
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO).available);
+}
+
+TEST(SnapshotBuilderTest, DiskDevicesFiltersToExactMatch) {
+    // 非空 = 只输出 `device` 与列表**精确匹配**的条目：`sd` 不匹配 `sda`，未知名字只是不输出。
+    DiskMetrics disk = make_disk_io_metrics();
+    disk.devices = {"sda", "sd"};
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
+
+    ASSERT_TRUE(snapshot.disk_io.has_value());
+    ASSERT_EQ(snapshot.disk_io->size(), 1U);
+    EXPECT_EQ((*snapshot.disk_io)[0].device, "sda");
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO).available);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, DiskDevicesNoMatchIsEmptyArrayAndAvailable) {
+    // 名字全部匹配不到：空数组 + available=true（"范围内没有盘"与"采集失败"是不同事实）。
+    DiskMetrics disk = make_disk_io_metrics();
+    disk.devices = {"sdz", "PhysicalDrive99"};
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
+
+    ASSERT_TRUE(snapshot.disk_io.has_value());
+    EXPECT_TRUE(snapshot.disk_io->empty());
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO);
+    EXPECT_TRUE(entry.available);
+    EXPECT_EQ(entry.reason, std::nullopt);
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 

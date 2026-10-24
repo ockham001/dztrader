@@ -516,6 +516,166 @@ TEST(SysmonConfigTest, ApplyPatchMergesAndValidates) {
                  std::runtime_error);
 }
 
+// #81 配置边界（契约 sysmon §3.1）：每个取值范围两端的**拒绝表**。
+// 与已有用例（push_interval_sec=0、任意 null、非 object patch）互补，不重复。
+TEST(SysmonConfigTest, RejectsEveryOutOfRangeConfigField) {
+    const auto current = nlohmann::json(SysmonConfig::default_config());
+    const struct {
+        const char* label;
+        nlohmann::json patch;
+    } rejected[] = {
+        {"measure_interval_ms below", nlohmann::json{{"sampling", {{"measure_interval_ms", 99}}}}},
+        {"measure_interval_ms above",
+         nlohmann::json{{"sampling", {{"measure_interval_ms", 60001}}}}},
+        {"record_interval_sec below", nlohmann::json{{"sampling", {{"record_interval_sec", 0}}}}},
+        {"record_interval_sec above",
+         nlohmann::json{{"sampling", {{"record_interval_sec", 86401}}}}},
+        {"phase_offset_sec below", nlohmann::json{{"sampling", {{"phase_offset_sec", -1}}}}},
+        {"phase_offset_sec above", nlohmann::json{{"sampling", {{"phase_offset_sec", 86401}}}}},
+        {"push_interval_sec above", nlohmann::json{{"realtime", {{"push_interval_sec", 3601}}}}},
+        // 百分比阈值：四个字段各自的两端越界（闭区间 [0,100]）。
+        {"cpu_sustain_used_pct below",
+         nlohmann::json{{"alerts", {{"cpu_sustain_used_pct", -0.1}}}}},
+        {"cpu_sustain_used_pct above",
+         nlohmann::json{{"alerts", {{"cpu_sustain_used_pct", 100.1}}}}},
+        {"memory_used_pct below", nlohmann::json{{"alerts", {{"memory_used_pct", -0.1}}}}},
+        {"memory_used_pct above", nlohmann::json{{"alerts", {{"memory_used_pct", 100.1}}}}},
+        {"swap_used_pct below", nlohmann::json{{"alerts", {{"swap_used_pct", -0.1}}}}},
+        {"swap_used_pct above", nlohmann::json{{"alerts", {{"swap_used_pct", 100.1}}}}},
+        {"volume_free_pct below", nlohmann::json{{"alerts", {{"volume_free_pct", -0.1}}}}},
+        {"volume_free_pct above", nlohmann::json{{"alerts", {{"volume_free_pct", 100.1}}}}},
+        {"cpu_sustain_samples below", nlohmann::json{{"alerts", {{"cpu_sustain_samples", 0}}}}},
+        {"cpu_sustain_samples above", nlohmann::json{{"alerts", {{"cpu_sustain_samples", 3601}}}}},
+        {"volume_free_bytes negative", nlohmann::json{{"alerts", {{"volume_free_bytes", -1}}}}},
+        {"cooldown_sec below", nlohmann::json{{"alerts", {{"cooldown_sec", -1}}}}},
+        {"cooldown_sec above", nlohmann::json{{"alerts", {{"cooldown_sec", 86401}}}}},
+        {"raw_retention_hours below", nlohmann::json{{"history", {{"raw_retention_hours", 0}}}}},
+        {"raw_retention_hours above", nlohmann::json{{"history", {{"raw_retention_hours", 721}}}}},
+        {"max_retention_days below", nlohmann::json{{"history", {{"max_retention_days", 0}}}}},
+        {"max_retention_days above", nlohmann::json{{"history", {{"max_retention_days", 3651}}}}},
+        {"max_bytes negative", nlohmann::json{{"history", {{"max_bytes", -1}}}}},
+        {"groups value not bool", nlohmann::json{{"sampling", {{"groups", {{"cpu", 1}}}}}}},
+        {"groups value string",
+         nlohmann::json{{"sampling", {{"groups", {{"temperature", "on"}}}}}}},
+        {"devices element empty", nlohmann::json{{"disk", {{"devices", {""}}}}}},
+        {"watch_paths element empty", nlohmann::json{{"disk", {{"watch_paths", {""}}}}}},
+        // 任意位置 null 非法（general §8）：根、段、嵌套键、数组元素。
+        {"patch root null", nlohmann::json(nullptr)},
+        {"section null", nlohmann::json{{"disk", nullptr}}},
+        {"nested config key null", nlohmann::json{{"sampling", {{"groups", {{"cpu", nullptr}}}}}}},
+        {"nested array element null", nlohmann::json{{"disk", {{"devices", {nullptr}}}}}},
+    };
+    for (const auto& item : rejected) {
+        EXPECT_THROW((void)SysmonConfig::apply_patch(current, item.patch), std::runtime_error)
+            << item.label;
+    }
+}
+
+// #81 配置边界：闭区间端点必须**接受**（只拒绝越界值，不得把合法边界当非法）。
+TEST(SysmonConfigTest, AcceptsConfigBoundaryValues) {
+    const auto current = nlohmann::json(SysmonConfig::default_config());
+    const struct {
+        const char* label;
+        nlohmann::json patch;
+    } accepted[] = {
+        {"measure_interval_ms lower", nlohmann::json{{"sampling", {{"measure_interval_ms", 100}}}}},
+        {"measure_interval_ms upper",
+         nlohmann::json{{"sampling", {{"measure_interval_ms", 60000}}}}},
+        {"record_interval_sec lower", nlohmann::json{{"sampling", {{"record_interval_sec", 1}}}}},
+        {"record_interval_sec upper",
+         nlohmann::json{{"sampling", {{"record_interval_sec", 86400}}}}},
+        {"phase_offset_sec lower", nlohmann::json{{"sampling", {{"phase_offset_sec", 0}}}}},
+        {"phase_offset_sec upper", nlohmann::json{{"sampling", {{"phase_offset_sec", 86400}}}}},
+        {"push_interval_sec lower", nlohmann::json{{"realtime", {{"push_interval_sec", 1}}}}},
+        {"push_interval_sec upper", nlohmann::json{{"realtime", {{"push_interval_sec", 3600}}}}},
+        {"thresholds lower", nlohmann::json{{"alerts",
+                                             {{"cpu_sustain_used_pct", 0.0},
+                                              {"memory_used_pct", 0.0},
+                                              {"swap_used_pct", 0.0},
+                                              {"volume_free_pct", 0.0}}}}},
+        {"thresholds upper", nlohmann::json{{"alerts",
+                                             {{"cpu_sustain_used_pct", 100.0},
+                                              {"memory_used_pct", 100.0},
+                                              {"swap_used_pct", 100.0},
+                                              {"volume_free_pct", 100.0}}}}},
+        {"cpu_sustain_samples lower", nlohmann::json{{"alerts", {{"cpu_sustain_samples", 1}}}}},
+        {"cpu_sustain_samples upper", nlohmann::json{{"alerts", {{"cpu_sustain_samples", 3600}}}}},
+        {"volume_free_bytes zero", nlohmann::json{{"alerts", {{"volume_free_bytes", 0}}}}},
+        {"cooldown_sec lower", nlohmann::json{{"alerts", {{"cooldown_sec", 0}}}}},
+        {"cooldown_sec upper", nlohmann::json{{"alerts", {{"cooldown_sec", 86400}}}}},
+        {"raw_retention_hours lower", nlohmann::json{{"history", {{"raw_retention_hours", 1}}}}},
+        {"raw_retention_hours upper", nlohmann::json{{"history", {{"raw_retention_hours", 720}}}}},
+        {"max_retention_days lower", nlohmann::json{{"history", {{"max_retention_days", 1}}}}},
+        {"max_retention_days upper", nlohmann::json{{"history", {{"max_retention_days", 3650}}}}},
+        {"max_bytes zero", nlohmann::json{{"history", {{"max_bytes", 0}}}}},
+        {"groups bool false", nlohmann::json{{"sampling", {{"groups", {{"cpu", false}}}}}}},
+        {"empty arrays", nlohmann::json{{"disk",
+                                         {{"devices", nlohmann::json::array()},
+                                          {"watch_paths", nlohmann::json::array()}}}}},
+        {"unknown field ignored", nlohmann::json{{"unknown_section", {{"x", 1}}}}},
+        {"empty patch", nlohmann::json::object()},
+    };
+    for (const auto& item : accepted) {
+        EXPECT_NO_THROW((void)SysmonConfig::apply_patch(current, item.patch)) << item.label;
+    }
+}
+
+// #81 配置边界：端点值必须**按原值**进入生效配置——只放行但钳制/丢弃也算失败
+// （上一个用例只证明"不抛"，会放过一个静默钳制的实现）。
+TEST(SysmonConfigTest, BoundaryValuesRoundTripThroughTypedConfig) {
+    const auto current = nlohmann::json(SysmonConfig::default_config());
+    // 每个字段取一个端点（上下界交替，覆盖两个方向）。
+    const auto patch = nlohmann::json{
+        {"sampling",
+         {{"measure_interval_ms", 60000},
+          {"record_interval_sec", 1},
+          {"phase_offset_sec", 86400},
+          {"groups", {{"cpu", false}, {"temperature", false}}}}},
+        {"disk",
+         {{"watch_paths", nlohmann::json::array({"/srv/shm", "/srv/db"})},
+          {"devices", nlohmann::json::array({"sda"})}}},
+        {"network", {{"hide_virtual", false}}},
+        {"history",
+         {{"enabled", false},
+          {"raw_retention_hours", 1},
+          {"max_retention_days", 3650},
+          {"max_bytes", 0}}},
+        {"realtime", {{"push_interval_sec", 3600}}},
+        {"alerts",
+         {{"cpu_sustain_used_pct", 0.0},
+          {"cpu_sustain_samples", 3600},
+          {"memory_used_pct", 100.0},
+          {"swap_used_pct", 0.0},
+          {"volume_free_pct", 100.0},
+          {"volume_free_bytes", 0},
+          {"cooldown_sec", 86400}}},
+    };
+    const SysmonConfig typed = SysmonConfig::apply_patch(current, patch).get<SysmonConfig>();
+
+    EXPECT_EQ(typed.sampling.measure_interval_ms, 60000);
+    EXPECT_EQ(typed.sampling.record_interval_sec, 1);
+    EXPECT_EQ(typed.sampling.phase_offset_sec, 86400);
+    EXPECT_EQ(typed.sampling.groups.at("cpu"), false);
+    EXPECT_EQ(typed.sampling.groups.at("temperature"), false);
+    ASSERT_EQ(typed.disk.watch_paths.size(), 2U);
+    EXPECT_EQ(typed.disk.watch_paths[1], "/srv/db");
+    ASSERT_EQ(typed.disk.devices.size(), 1U);
+    EXPECT_EQ(typed.disk.devices[0], "sda");
+    EXPECT_FALSE(typed.network.hide_virtual);
+    EXPECT_FALSE(typed.history.enabled);
+    EXPECT_EQ(typed.history.raw_retention_hours, 1);
+    EXPECT_EQ(typed.history.max_retention_days, 3650);
+    EXPECT_EQ(typed.history.max_bytes, 0U);
+    EXPECT_EQ(typed.realtime.push_interval_sec, 3600);
+    EXPECT_DOUBLE_EQ(typed.alerts.cpu_sustain_used_pct, 0.0);
+    EXPECT_EQ(typed.alerts.cpu_sustain_samples, 3600);
+    EXPECT_DOUBLE_EQ(typed.alerts.memory_used_pct, 100.0);
+    EXPECT_DOUBLE_EQ(typed.alerts.swap_used_pct, 0.0);
+    EXPECT_DOUBLE_EQ(typed.alerts.volume_free_pct, 100.0);
+    EXPECT_EQ(typed.alerts.volume_free_bytes, 0U);
+    EXPECT_EQ(typed.alerts.cooldown_sec, 86400);
+}
+
 // 契约 sysmon §2.5：Windows 平台描述必须含 build 号（区分 Win10/Win11）。
 TEST(SysmonSnapshotValidateTest, WindowsDescriptionMustIncludeBuild) {
     auto snap = make_snapshot();

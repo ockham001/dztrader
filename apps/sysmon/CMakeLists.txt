@@ -68,11 +68,12 @@ foreach(testfile ${DZSYSMON_TESTS})
         # （unreachable code），Release /WX 升级为错误；仅豁免测试目标。
         target_compile_options(dzsysmon_${testname} PRIVATE /wd4702)
     endif()
-    # 进程级 E2E（#77/#80）：起真实 dzsysmon 观察帧序（SET_SYSMON_CONFIG 后立即推送快照；
-    # 阈值告警的 NOTIFY_UI 与快照 alerts[]）。事件通道命名信号量是机器全局命名空间，
-    # 与 dev 栈/其它测试实例互扰，必须串行；且需先构建 dzsysmon（测试从 <build>/tests 的上一级定位该可执行文件）。
+    # 进程级 E2E（#77/#80/#81）：起真实 dzsysmon 观察帧序（SET_SYSMON_CONFIG 后立即推送快照；
+    # 阈值告警的 NOTIFY_UI 与快照 alerts[]；#81 运行期配置的全段生效/定时器重排/history 开关）。
+    # 事件通道命名信号量是机器全局命名空间，与 dev 栈/其它测试实例互扰，必须串行；
+    # 且需先构建 dzsysmon（测试从 <build>/tests 的上一级定位该可执行文件）。
     if(testname STREQUAL "network_config_e2e_test" OR testname STREQUAL "history_e2e_test" OR
-       testname STREQUAL "alert_e2e_test")
+       testname STREQUAL "alert_e2e_test" OR testname STREQUAL "config_e2e_test")
         add_dependencies(dzsysmon_${testname} dzsysmon)
         gtest_discover_tests(dzsysmon_${testname} PROPERTIES
             LABELS fast

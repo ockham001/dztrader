@@ -210,12 +210,19 @@ private:
 
         collector_ = platform::make_system_collector();
         system_info_ = collector_->collect_system_info();
-        if (const auto baseline = collector_->collect_cpu_times()) {
-            apply_baseline(*baseline);
+        // 契约 sysmon §3.1.1：`sampling.groups.cpu=false` 时启动首帧同样不得发布 CPU 数值
+        // 与「能力可用」——首帧在第一个计量 tick 之前就会推送，不能等一个计量间隔才生效。
+        if (group_enabled(platform::SYSMON_GROUP_CPU)) {
+            if (const auto baseline = collector_->collect_cpu_times()) {
+                apply_baseline(*baseline);
+            } else {
+                SPDLOG_WARN("initial cpu sample unavailable | reason=collect_failed");
+            }
+            refresh_load_average();
         } else {
-            SPDLOG_WARN("initial cpu sample unavailable | reason=collect_failed");
+            metrics_.disabled = true;
+            SPDLOG_INFO("cpu group disabled by config | action=skip_cpu_sampling");
         }
-        refresh_load_average();
         refresh_sensor_metrics();
         refresh_memory_metrics();
         refresh_disk_metrics();
@@ -247,16 +254,24 @@ private:
         return window;
     }
 
-    /// 打开历史库并启动落盘线程（`history.enabled = false` 时完全不碰库）。
-    ///
-    /// 失败**不**阻止进程启动：历史是观测辅助，实时采集与推送必须照常
-    /// （7x24 进程不应因为磁盘满或库版本不符而起不来）。失败记 ERROR 并降级为
-    /// 「不写历史」，`history_writer_` 保持空指针，后续所有写入路径都短路。
+    /// 启动路径的历史初始化：配置关闭时完全不碰库；开启时打开库并写重启标记。
     void init_history() {
         if (!config_.history.enabled) {
             SPDLOG_INFO("history disabled by config | action=realtime_only");
             return;
         }
+        start_history(/*write_restart_mark=*/true);
+    }
+
+    /// 打开历史库并启动落盘线程（启动路径与运行期 false→true 共用）。
+    ///
+    /// 失败**不**阻止进程启动/继续运行：历史是观测辅助，实时采集与推送必须照常
+    /// （7x24 进程不应因为磁盘满或库版本不符而起不来；运行期切换也不应拖垮实时链路）。
+    /// 失败记 ERROR 并降级为「不写历史」，`history_writer_` 保持空指针，后续写入路径全部短路。
+    ///
+    /// @param write_restart_mark 启动路径为 `true`——「进程曾经不在」必须立即落盘；
+    ///        运行期开启为 `false`——进程没有重启，此时写 restart 标记会把开历史伪造成采集中断
+    void start_history(bool write_restart_mark) {
         const auto db_path = dztrader::paths::db() / std::string(sysmonstore::kHistoryFileName);
         try {
             sysmonstore::HistoryWriterOptions options;
@@ -270,19 +285,45 @@ private:
             auto retention = [this]() { return retention_config_snapshot(); };
             history_writer_ = std::make_unique<sysmonstore::HistoryWriter>(db_path, options,
                                                                            std::move(retention));
+            // 新 writer 的计数从 0 开始：不能沿用上一段的丢弃/失败计数，否则下一次入队会
+            // 拿旧值与新 writer 的 0 比较，刷出「dropped_total=0」这类假告警。
+            last_reported_dropped_ = 0;
+            last_reported_failed_ = 0;
             SPDLOG_INFO("history writer started | path={} queue_capacity={}", db_path.string(),
                         options.queue_capacity);
-            // 恢复参数语义：历史连续性优先——不重置数据文件、不丢已有聚合。
-            // 重启窗口标记为「采集中断」，让读取方知道这段没有可信数据（绝不伪造连续）。
-            // 与采集期的标记不同：这条必须**立即落盘**，不能等第一个记录窗口结算
-            // （默认 60 秒；若进程在窗口结算前再崩一次，重启事实就永久丢了）。
-            mark_restart();
-            flush_pending_marks();
+            if (write_restart_mark) {
+                // 恢复参数语义：历史连续性优先——不重置数据文件、不丢已有聚合。
+                // 重启窗口标记为「采集中断」，让读取方知道这段没有可信数据（绝不伪造连续）。
+                // 与采集期的标记不同：这条必须**立即落盘**，不能等第一个记录窗口结算
+                // （默认 60 秒；若进程在窗口结算前再崩一次，重启事实就永久丢了）。
+                mark_restart();
+                flush_pending_marks();
+            }
         } catch (const std::exception& e) {
             SPDLOG_ERROR("history unavailable, continue realtime only | path={} error=\"{}\"",
                          db_path.string(), e.what());
             notify_ui_->error(std::format("sysmon history unavailable | error=\"{}\"", e.what()));
         }
+    }
+
+    /// 运行期开启历史（`history.enabled` false→true，契约 sysmon §3.1.1 第 5 步）。
+    ///
+    /// 配置已持久化（表示意图），失败是运行期降级：不回滚配置、不改实时链路，
+    /// 由 `start_history` 记 ERROR + NOTIFY_UI 后继续。记录窗口从空状态开始
+    /// （开启前的 tick 从未观测，`history_recorder_` 本身是空的）。
+    void enable_history_at_runtime() { start_history(/*write_restart_mark=*/false); }
+
+    /// 运行期关闭历史（`history.enabled` true→false，契约 sysmon §3.1.1 第 5 步）。
+    ///
+    /// `shutdown_history()` 即优雅退出同一路径：先 flush 当前记录窗口并入队，再冲空队列、
+    /// checkpoint、关库并 join 落盘线程（在 io 线程上 join，与进程退出一致，可接受）。
+    void disable_history_at_runtime() {
+        shutdown_history();
+        // 重新开启后首个 tick 必须从新基线做时钟跳变检测：否则会拿关闭前的墙钟/单调时钟
+        // 基线做差，把整段关闭时长误报成 clock_jump（契约 sysmon §3.1.1 第 5 步）。
+        prev_wall_ms_ = 0;
+        prev_steady_ms_ = 0;
+        SPDLOG_INFO("history disabled at runtime | action=realtime_only");
     }
 
     /// 立即把待落盘标记写成独立批次（不等待记录窗口结算）。
@@ -715,8 +756,8 @@ private:
     /// 评估一次阈值告警（契约 sysmon §2.8；#80）。
     ///
     /// 输入只取判定所需的事实：内存/交换使用率、关注卷剩余空间与关注路径落卷；
-    /// 阈值与冷却取当前生效配置（#80 只消费配置；运行期修改是既有 SET_SYSMON_CONFIG 通道，
-    /// 前端编辑入口随 #81）。
+    /// 阈值与冷却取当前生效配置（运行期修改经 `SET_SYSMON_CONFIG` 即时生效，监控页
+    /// 「配置」区提供 admin 编辑入口）。
     /// 通知发送（error+popup 触发 / info 恢复）与快照 `alerts[]` 的活动集在此统一产出，
     /// 是告警状态的唯一写入点——采集/判定/发送都在 io_context 线程上串行。
     void evaluate_alerts() {
@@ -790,6 +831,8 @@ private:
         prev_steady_ms_ = steady_ms;
 
         try {
+            // 实时快照与历史记录共用同一份「输出过滤」配置，口径不得漂移（契约 sysmon §3.1）。
+            apply_snapshot_output_config();
             const auto snapshot = build_snapshot(
                 name_, system_info_, metrics_, temperature_metrics_, memory_metrics_, disk_metrics_,
                 network_metrics_, active_alerts_, config_.sampling.measure_interval_ms,
@@ -839,6 +882,23 @@ private:
         refresh_network();         // 网卡累计计数器同为独立事实，与 CPU 采集成败无关
         // 告警判定与历史记录同频（每个计量 tick）：不跟随推送频率，CPU 采集失败也不跳过。
         evaluate_alerts();
+        // sampling.groups.cpu=false（契约 sysmon §3.1.1）：跳过 CPU 采样与负载读取，
+        // 清空数值并重置基线（重新开启时从新基线开始，不得跨关闭期计算使用率）。
+        // 配置关闭不是采集缺口，**不累加** missed_ticks；其它域与告警判定照常。
+        if (!group_enabled(platform::SYSMON_GROUP_CPU)) {
+            metrics_.disabled = true;
+            // clear_cpu_values 只把数值置空、保留已知核 index（契约 §2.7）：关闭期间快照构造
+            // 会清空输出；重新开启后若首个 tick 采集失败，仍能保持「保留 index、usage=null」
+            // 的形态，而不是让「能力可用 + 空数组」违反 §2.3 的核数不变量。
+            clear_cpu_values();
+            metrics_.load_average = std::nullopt;
+            prev_cpu_times_ = std::nullopt;
+            prev_sample_time_ = {};
+            saturation_tracker_.reset();
+            SPDLOG_DEBUG("cpu measure skipped | reason=disabled_by_config");
+            return;
+        }
+        metrics_.disabled = false;
         auto current = collector_->collect_cpu_times();
         if (!current.has_value()) {
             ++missed_ticks_;     // 采集失败：跳过本次计量并记缺口（契约 sysmon §2.7）
@@ -867,7 +927,7 @@ private:
             }
             metrics_.cores_collected = true;
 
-            // 饱和判定：阈值与连续次数取当前配置（默认 90% / 10 次；运行期修改随配置票）。
+            // 饱和判定：阈值与连续次数取当前配置（默认 90% / 10 次；运行期修改即时生效）。
             const double threshold_ratio =
                 std::clamp(config_.alerts.cpu_sustain_used_pct / 100.0, 0.0, 1.0);
             const auto required_samples = static_cast<uint32_t>(config_.alerts.cpu_sustain_samples);
@@ -949,12 +1009,24 @@ private:
         }
     }
 
+    /// 把「只影响快照输出条目」的配置写入测量结果（实时快照与历史记录共用，契约 sysmon
+    /// §2.7/§3.1）：
+    /// - `network.hide_virtual`：虚拟网卡过滤
+    /// - `disk.devices`：磁盘 I/O 设备范围过滤
+    ///
+    /// 两处快照构造（`push_snapshot` / `record_history_tick`）都从这里取配置：历史维度数据与
+    /// 实时快照对"输出哪些条目"的口径必须一致，避免改一处漏一处（Shotgun Surgery）。
+    void apply_snapshot_output_config() {
+        network_metrics_.hide_virtual = config_.network.hide_virtual;
+        disk_metrics_.devices = config_.disk.devices;
+    }
+
     /// 推送实时快照（RTN_SYSMON_SNAPSHOT，无 instance_id，含系统信息/CPU/温度/内存/磁盘/网络）。
     void push_snapshot() noexcept {
         try {
-            // hide_virtual 只影响输出条目（采集层始终返回全部网卡），构造快照时读当前配置，
-            // 因此 SET_SYSMON_CONFIG 后的这次推送即体现新开关（契约 sysmon §2.7）。
-            network_metrics_.hide_virtual = config_.network.hide_virtual;
+            // hide_virtual / devices 只影响输出条目（采集层始终返回全部网卡与物理盘），
+            // SET_SYSMON_CONFIG 后的这次推送即体现新开关（契约 sysmon §2.7、§3.1）。
+            apply_snapshot_output_config();
             const auto snapshot = build_snapshot(
                 name_, system_info_, metrics_, temperature_metrics_, memory_metrics_, disk_metrics_,
                 network_metrics_, active_alerts_, config_.sampling.measure_interval_ms,
@@ -1058,10 +1130,12 @@ private:
 
     /// SET_SYSMON_CONFIG：应用 patch（校验/持久化失败回滚旧值），成功失败均回推全量配置。
     ///
-    /// 成功后立即推送一次快照：`network.hide_virtual` 的过滤发生在快照构造阶段，
-    /// 立即推送使开关生效体现在下一帧（契约 sysmon §2.7），不必等下一个推送定时器。
+    /// 成功后立即推送一次快照：`network.hide_virtual` / `disk.devices` 的过滤发生在快照
+    /// 构造阶段，立即推送使开关生效体现在下一帧（契约 sysmon §2.7、§3.1），不必等下一个
+    /// 推送定时器。`history.enabled` 的运行期切换同样在这里应用（§3.1.1 第 5 步）。
     void apply_sysmon_config(const shm::FrameView& view) {
         bool applied = false;
+        const bool history_enabled_before = config_.history.enabled;
         try {
             config_store_.set_patch(shm::decode_ext_inst_json<nlohmann::json>(view));
             config_ = config_store_.current().get<platform::SysmonConfig>();
@@ -1070,6 +1144,21 @@ private:
             // 不重新下发的话，运行期改记录间隔会静默不生效（配置声称生效、历史却按旧粒度写）。
             history_recorder_.reconfigure(make_record_window_config(config_));
             publish_retention_config();  // 保留策略参数同样即时生效（下一维护周期）
+            // history.enabled 运行期切换（契约 sysmon §3.1.1 第 5 步）：放在保留策略发布
+            // 之后，新建的落盘线程读到的就是新参数。切换失败不回滚配置（配置已持久化 =
+            // 意图），由 start_history 记 ERROR + NOTIFY_UI 后降级为实时模式。
+            if (config_.history.enabled != history_enabled_before) {
+                if (config_.history.enabled) {
+                    enable_history_at_runtime();
+                } else {
+                    disable_history_at_runtime();
+                }
+            } else if (config_.history.enabled && history_writer_ == nullptr) {
+                // 失败重试（契约 sysmon §3.1.1 第 5 步）：运行期开启失败后配置保持 `true`，
+                // 重复 SET `enabled=true` 不构成状态切换；此处仍尝试建库，使用户无需先关再开
+                // （或重启进程）即可恢复历史记录。
+                enable_history_at_runtime();
+            }
             applied = true;
             SPDLOG_INFO("sysmon config updated | measure_interval_ms={} push_interval_sec={}",
                         config_.sampling.measure_interval_ms, config_.realtime.push_interval_sec);
@@ -1081,7 +1170,7 @@ private:
         }
         push_sysmon_config();
         if (applied) {
-            push_snapshot();  // hide_virtual 等快照侧配置即时生效（契约 sysmon §2.7）
+            push_snapshot();  // hide_virtual / devices 等快照侧配置即时生效（契约 sysmon §2.7）
         }
     }
 

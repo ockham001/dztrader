@@ -9,7 +9,7 @@ import { makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 import type { SysmonHistoryAvailable, SysmonHistoryResponse } from '@/types/api'
 
 vi.mock('@/api/sysmon', () => ({
-  sysmonApi: { getSnapshot: vi.fn(), setConfig: vi.fn(), getHistory: vi.fn() },
+  sysmonApi: { getSnapshot: vi.fn(), setConfig: vi.fn(), getConfig: vi.fn(), getHistory: vi.fn() },
 }))
 
 // 图表组件在 jsdom 里无 canvas：用桩替换，测试聚焦「三态渲染」与「控件/摘要」，

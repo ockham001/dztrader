@@ -7,7 +7,7 @@ import { useSysmonStore } from '@/stores/sysmon'
 import { makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 
 vi.mock('@/api/sysmon', () => ({
-  sysmonApi: { getSnapshot: vi.fn() },
+  sysmonApi: { getSnapshot: vi.fn(), getConfig: vi.fn() },
 }))
 
 vi.mock('@/composables/wsClient', () => ({

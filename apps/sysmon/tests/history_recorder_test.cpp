@@ -480,7 +480,7 @@ TEST(HistoryRecorderConfigTest, OneSecondRecordWindowIsSupported) {
 }
 
 TEST_F(HistoryRecorderTest, ReconfigureAffectsSubsequentlySettledWindows) {
-    // 验收标准（配置票语义）：运行期改记录间隔必须生效。外部可观察承诺是
+    // 运行期配置语义（契约 sysmon §3.1.1）：运行期改记录间隔必须生效。外部可观察承诺是
     // 「此后落库的窗口带新宽度」，且**已累计的样本不丢**（不因改配置而清空窗口）。
     auto snapshot = make_snapshot(0.5);
     (void)recorder_.observe(snapshot, kBase + 3);  // 旧配置（60s）窗口内的样本
