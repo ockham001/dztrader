@@ -59,6 +59,7 @@
 #include <filesystem>
 #include <format>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -252,30 +253,64 @@ private:
             sysmonstore::HistoryWriterOptions options;
             options.queue_capacity = 256;
             options.maintenance_interval_sec = 300;
-            // 保留策略从当前配置读取（运行期改配置后，下一个维护周期即按新值执行）。
-            auto retention = [this]() {
-                sysmonstore::RetentionPolicy policy;
-                policy.now_ts = wall_clock_unix_ms() / 1000;
-                policy.raw_retention_sec =
-                    static_cast<int64_t>(config_.history.raw_retention_hours) * 3600;
-                policy.max_retention_sec =
-                    static_cast<int64_t>(config_.history.max_retention_days) * 86400;
-                policy.record_interval_sec = config_.sampling.record_interval_sec;
-                policy.max_bytes = static_cast<int64_t>(config_.history.max_bytes);
-                return policy;
-            };
+            // 保留策略从**发布出来的快照**读取，而不是直接读 `config_`：
+            // 这个 lambda 跑在落盘线程上，而 `config_` 会在 io_context 线程上被
+            // `SET_SYSMON_CONFIG` 整体重写（含 std::map 成员）——直接读是数据竞争
+            // （UB，配置更新瞬间可能崩）。发布快照在 io 线程写、落盘线程读，用互斥量同步。
+            publish_retention_config();
+            auto retention = [this]() { return retention_config_snapshot(); };
             history_writer_ = std::make_unique<sysmonstore::HistoryWriter>(db_path, options,
                                                                            std::move(retention));
             SPDLOG_INFO("history writer started | path={} queue_capacity={}", db_path.string(),
                         options.queue_capacity);
             // 恢复参数语义：历史连续性优先——不重置数据文件、不丢已有聚合。
             // 重启窗口标记为「采集中断」，让读取方知道这段没有可信数据（绝不伪造连续）。
+            // 与采集期的标记不同：这条必须**立即落盘**，不能等第一个记录窗口结算
+            // （默认 60 秒；若进程在窗口结算前再崩一次，重启事实就永久丢了）。
             mark_restart();
+            flush_pending_marks();
         } catch (const std::exception& e) {
             SPDLOG_ERROR("history unavailable, continue realtime only | path={} error=\"{}\"",
                          db_path.string(), e.what());
             notify_ui_->error(std::format("sysmon history unavailable | error=\"{}\"", e.what()));
         }
+    }
+
+    /// 立即把待落盘标记写成独立批次（不等待记录窗口结算）。
+    ///
+    /// 用于「启动时的重启标记」这类**必须马上持久化**的事实：如果只塞进
+    /// `pending_marks_` 等第一个窗口结算，进程在窗口结束前崩溃就会丢掉这条记录，
+    /// 而它恰恰是排查反复重启的关键。
+    void flush_pending_marks() {
+        if (history_writer_ == nullptr) {
+            return;
+        }
+        auto batch = history_recorder_.drain_marks();
+        if (!batch.empty()) {
+            history_writer_->enqueue(std::move(batch));
+        }
+    }
+
+    /// 把当前配置里与保留策略相关的最小数集发布给落盘线程（io_context 线程调用）。
+    ///
+    /// 只发布 `RetentionPolicy` 需要的字段，而不是共享整个 `config_`：跨线程传递的
+    /// 数据面越小，越不容易在将来加字段时重新引入竞争。
+    void publish_retention_config() {
+        sysmonstore::RetentionPolicy policy;
+        policy.raw_retention_sec = static_cast<int64_t>(config_.history.raw_retention_hours) * 3600;
+        policy.max_retention_sec = static_cast<int64_t>(config_.history.max_retention_days) * 86400;
+        policy.record_interval_sec = config_.sampling.record_interval_sec;
+        policy.max_bytes = static_cast<int64_t>(config_.history.max_bytes);
+        std::lock_guard lock(retention_config_mutex_);
+        retention_config_ = policy;
+    }
+
+    /// 落盘线程读取已发布的保留配置；`now_ts` 由采集侧时钟给出（每次维护刷新）。
+    sysmonstore::RetentionPolicy retention_config_snapshot() const {
+        std::lock_guard lock(retention_config_mutex_);
+        auto policy = retention_config_;
+        policy.now_ts = wall_clock_unix_ms() / 1000;
+        return policy;
     }
 
     /// 写入「进程重启」标记：恢复参数语义的核心（重启窗口标记为采集中断）。
@@ -985,6 +1020,7 @@ private:
             // 记录窗口也要跟随：record_interval_sec / phase_offset_sec 影响历史落库粒度。
             // 不重新下发的话，运行期改记录间隔会静默不生效（配置声称生效、历史却按旧粒度写）。
             history_recorder_.reconfigure(make_record_window_config(config_));
+            publish_retention_config();  // 保留策略参数同样即时生效（下一维护周期）
             applied = true;
             SPDLOG_INFO("sysmon config updated | measure_interval_ms={} push_interval_sec={}",
                         config_.sampling.measure_interval_ms, config_.realtime.push_interval_sec);
@@ -1075,6 +1111,9 @@ private:
     uint64_t last_reported_dropped_ = 0;
     /// 上次已上报的落盘失败计数。
     uint64_t last_reported_failed_ = 0;
+    /// 跨线程发布给落盘线程的保留策略参数（io 线程写、落盘线程读）。
+    mutable std::mutex retention_config_mutex_;
+    sysmonstore::RetentionPolicy retention_config_;
     std::shared_ptr<shm::ChannelMeta> event_meta_;
     std::unique_ptr<shm::MultiWriter> event_writer_;
     std::unique_ptr<shm::Reader> event_reader_;

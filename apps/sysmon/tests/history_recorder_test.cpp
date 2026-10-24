@@ -247,6 +247,27 @@ TEST_F(HistoryRecorderTest, MissedTicksCounterResetsPerWindow) {
     }
 }
 
+TEST_F(HistoryRecorderTest, DrainMarksReturnsOnlyMarksAndClearsThem) {
+    // 启动时的重启标记必须能单独、立即取出落盘（不等窗口结算）；
+    // 且取出后不能重复出现在后续批次里。
+    sysmonstore::HistoryMark restart;
+    restart.ts = kBase;
+    restart.kind = std::string(sysmonstore::kMarkRestart);
+    restart.detail = "manual";
+    recorder_.add_mark(restart);
+    (void)recorder_.observe(make_snapshot(0.5), kBase + 3);
+
+    auto drained = recorder_.drain_marks();
+    EXPECT_EQ(count_marks(drained, sysmonstore::kMarkRestart), 1);
+    EXPECT_TRUE(drained.scalars.empty()) << "drain must not touch the in-progress window";
+    EXPECT_TRUE(drained.dimensions.empty());
+    // 窗口仍在累计：随后结算的批次应带窗口数据、且不再带那条重启标记。
+    const auto settled = recorder_.observe(make_snapshot(0.5), kBase + 63);
+    ASSERT_FALSE(settled.empty());
+    EXPECT_EQ(count_marks(settled, sysmonstore::kMarkRestart), 0);
+    EXPECT_EQ(scalar_of(settled, "cpu.usage_ratio").count, 1);
+}
+
 // ===== 时钟跳变标记 =====
 
 TEST_F(HistoryRecorderTest, InjectedClockJumpMarkTravelsWithNextBatch) {

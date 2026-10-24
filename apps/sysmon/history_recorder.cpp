@@ -172,6 +172,13 @@ void HistoryRecorder::note_missed_ticks(uint64_t missed) noexcept {
     missed_ticks_in_window_ += missed;
 }
 
+sysmonstore::HistoryBatch HistoryRecorder::drain_marks() {
+    sysmonstore::HistoryBatch batch;
+    batch.marks = std::move(pending_marks_);
+    pending_marks_.clear();
+    return batch;
+}
+
 void HistoryRecorder::add_mark(sysmonstore::HistoryMark mark) {
     pending_marks_.push_back(std::move(mark));
 }

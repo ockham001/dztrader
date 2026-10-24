@@ -816,6 +816,31 @@ TEST_F(HistoryStoreTest, SizeLimitDeletesGloballyOldestFirst) {
     }
 }
 
+// 原始保留期比总保留期更宽松时（两者各自合法），总上限必须仍然生效。
+TEST_F(HistoryStoreTest, RawRetentionCannotExceedMaxRetention) {
+    constexpr int64_t kNow = 2'000'000'000;
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        // 20 天前的原始记录：raw_retention_hours=720（30 天）会放过它，
+        // 但 max_retention_days=1（1 天）要求删除 —— 取更严的那个。
+        batch.scalars.push_back(make_scalar_record(kNow - 20 * 86400, 1.0));
+        store.write_batch(batch);
+
+        RetentionPolicy policy;
+        policy.now_ts = kNow;
+        policy.record_interval_sec = 60;        // 不压缩
+        policy.raw_retention_sec = 720 * 3600;  // 30 天（比总上限宽松）
+        policy.max_retention_sec = 1 * 86400;   // 1 天
+        const auto result = store.apply_retention(policy);
+        EXPECT_EQ(result.deleted_raw_rows, 1)
+            << "raw retention must never outlive the overall max retention";
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    EXPECT_TRUE(reader.second->query_scalars(kLevelRaw, 0, kNow, 100).empty());
+}
+
 // ===== 落盘线程 =====
 
 class HistoryWriterTest : public ::testing::Test {

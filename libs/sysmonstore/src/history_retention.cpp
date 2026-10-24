@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdint>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -45,6 +46,10 @@ struct RetentionHorizon {
         horizon.compact = policy.record_interval_sec > 0 && policy.record_interval_sec < kMinuteSec;
         horizon.raw_cutoff =
             horizon.compact ? policy.now_ts - policy.raw_retention_sec : horizon.max_cutoff;
+        // 原始水位不得比总水位更宽松：`raw_retention_hours=720` + `max_retention_days=1`
+        // 各自都合法，但组合起来会让原始记录活到 30 天、突破「总保留 30 天」的上限。
+        // 取两者中更严的那个，保证总上限永远是总上限。
+        horizon.raw_cutoff = std::max(horizon.raw_cutoff, horizon.max_cutoff);
         return horizon;
     }
 };
@@ -423,9 +428,21 @@ int64_t enforce_size_limit(SQLite::Database& db, int64_t max_bytes, int64_t batc
         }
         if (pairs.empty()) {
             // 标量表已空，但长表可能仍有孤儿行（写入方异常时可短暂出现）：
-            // 一并清掉，否则「只剩维度行」时逻辑占用永远降不下来。
-            SQLite::Statement orphan(db, "DELETE FROM sysmon_dimension");
+            // 按最旧优先分批删，而不是一次 `DELETE FROM sysmon_dimension` ——
+            // 后者会把**全部**维度历史一次抹掉，与「最旧优先、保留最新」的语义冲突。
+            // 每轮仍按 batch 限行，删完继续循环（下一轮逻辑占用下降即可退出）。
+            SQLite::Statement orphan(
+                db,
+                "DELETE FROM sysmon_dimension WHERE bucket_ts IN ("
+                "SELECT bucket_ts FROM sysmon_dimension ORDER BY bucket_ts LIMIT ?1)");
+            orphan.bind(1, static_cast<int64_t>(batch));
             orphan.exec();
+            const int removed = db.getChanges();
+            if (removed > 0) {
+                // 还有可删的孤儿行：本轮的 logical_db_bytes 判断已不成立（页面尚未复用），
+                // 继续下一轮删除；用 removed 而非重新查大小，避免「删了但占用没降」的死循环。
+                continue;
+            }
             // 仍超限说明下限就是库结构本身（空库大小 > max_bytes）：停止，
             // 由下面的 VACUUM 收尾；继续循环没有可删的东西了。
             break;

@@ -112,6 +112,12 @@ public:
     /// 避免「标记已落库、对应窗口还没落」的中间状态。
     void add_mark(sysmonstore::HistoryMark mark);
 
+    /// 取走当前待落盘标记（立即持久化用，不影响正在累计的窗口数据）。
+    ///
+    /// 返回的批次**只含标记**、不含窗口数据：调用方用它把「必须马上落库」的事实
+    /// （如启动时的重启标记）单独提交，而不必等窗口结算。
+    [[nodiscard]] sysmonstore::HistoryBatch drain_marks();
+
     /// 当前窗口的桶起始时刻；尚未观测到样本时为 `std::nullopt`。
     [[nodiscard]] std::optional<int64_t> current_bucket_ts() const noexcept { return bucket_ts_; }
 
