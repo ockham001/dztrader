@@ -262,10 +262,19 @@ void AlertEvaluator::transition(const AlertKey& key,
         return;
     }
 
-    // 未越限：活动期结束。**每次活动期结束都发恢复通知**——活动状态经快照 `alerts[]`
-    // 对用户可见（即使触发弹窗被冷却抑制），恢复时不得静默消失（契约 sysmon §2.8）。
+    // 未越限：活动期结束。**因指标回到阈值以下而结束的活动期必须给出恢复语义**——
+    // 即使触发弹窗被冷却抑制（活动状态经快照 `alerts[]` 对用户可见），也不得静默消失
+    // （契约 sysmon §2.8）。恢复通知按告警对象单独限流：首次恢复不受限，阈值抖动导致的
+    // 连续恢复在 `cooldown_sec` 内只发一条（防止恢复文案刷屏）。
     if (state.active) {
-        out.notifications.push_back(AlertNotification{key, true, recovery_message});
+        const bool recovery_cooling =
+            state.ever_recovered &&
+            inputs.now_monotonic_ms - state.last_recovery_monotonic_ms < cooldown_ms;
+        if (!recovery_cooling) {
+            out.notifications.push_back(AlertNotification{key, true, recovery_message});
+            state.ever_recovered = true;
+            state.last_recovery_monotonic_ms = inputs.now_monotonic_ms;
+        }
     }
     state.active = false;
     state.notified_this_episode = false;

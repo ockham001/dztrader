@@ -334,9 +334,10 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 **通知（`DZ_FRAME_NOTIFY_UI`）**：payload 按契约 notify-ui，`source` 固定 `dzsysmon`。
 
 - 触发通知：`level="error"`、`popup=true`——阈值告警是"资源即将耗尽、进程可能崩溃"的前置信号，必须打断用户（契约 notify-ui：只有 error+popup 会弹窗，warning 仅 toast）。
-- 恢复通知：`level="info"`、`popup=false`，正文明确写出"已回到阈值以下"，不得静默消失。**每次活动期结束都发**——即使该活动期的触发通知因冷却被抑制（用户仍可从快照 `alerts[]` 看到活动状态），恢复时也必须给出恢复语义。
+- 恢复通知：`level="info"`、`popup=false`，正文明确写出"已回到阈值以下"，不得静默消失。**因指标回到阈值以下而结束的活动期必须给出恢复语义**——即使该活动期的触发通知因冷却被抑制（用户仍可从快照 `alerts[]` 看到活动状态）。恢复通知按告警对象、以 `cooldown_sec` 单独限流（与触发冷却基准分开）：首次恢复不受限；阈值抖动导致同一对象连续越限/恢复时，冷却期内的恢复只发一条（防"恢复"文案刷屏）。
 - **冷却防抖**：按告警对象（`(kind, subject)`）计。一次"恢复→再次触发"的间隔小于 `cooldown_sec` 时**不弹**触发通知（冷却期内同类告警只弹一次）；阈值持续满足期间只在首次越限时弹一次，**不按冷却周期重弹**（持续满足不刷屏）。
-- **被抑制的触发通知不补发**：冷却期内被抑制的那次活动期，即使冷却结束后仍未恢复也不再补弹；但其活动状态仍进 `alerts[]`，恢复时仍发恢复通知（恢复通知不是"弹窗"，不受触发冷却约束）。
+- **被抑制的触发通知不补发**：冷却期内被抑制的那次活动期，即使冷却结束后仍未恢复也不再补弹；但其活动状态仍进 `alerts[]`，恢复时仍按上条给出恢复语义（受恢复限流约束，不受触发冷却约束）。
+- **"不再被关注 / 被配置关闭"不是恢复**：`disk.watch_paths` 变更导致某卷不再受关注、或对应指标类别被配置关闭时，相关告警**静默清除**（不发恢复通知，因为清除原因不是"指标回到阈值以下"）；快照 `alerts[]` 随之移除。
 - 冷却计时用**单调时钟**（不受系统时间调整影响）；`since` 用墙钟（与历史/交易事件可对照）。
 - 采集失败/暂时不可用（内存/交换/卷能力仍在，含关注路径个别解析失败）**保留**活动状态、不发恢复通知——"读不到"不是"已恢复"；能力被配置关闭（`disabled_by_config`）时静默清除（配置关闭不是"指标回到阈值以下"，不发恢复通知）。
 - 通知正文是用户可读文案（可中文，不属于日志格式门禁）；正文不构成协议语义，消费方不得解析。
@@ -378,7 +379,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 `realtime`：`{push_interval_sec:int}`，默认 `5`，`[1, 3600]`；与计量频率解耦（事件通道每次写入会唤醒全部注册进程）。
 
-`alerts`：`{cpu_sustain_used_pct:number, cpu_sustain_samples:int, memory_used_pct:number, swap_used_pct:number, volume_free_pct:number, volume_free_bytes:int, cooldown_sec:int}`，默认 `90/10/90/50/10/1073741824/600`；百分比字段 `[0,100]`、`cpu_sustain_samples ∈ [1,3600]`、`cooldown_sec ∈ [0,86400]`。`cpu_sustain_used_pct` / `cpu_sustain_samples` 由发送方用于饱和核判定（§2.7）；其余字段由发送方消费于阈值告警（§2.8）——`memory_used_pct` / `swap_used_pct` 为使用率阈值，`volume_free_pct` / `volume_free_bytes` 为关注卷剩余空间的两种形态（任一越限即告警），`cooldown_sec` 为同类告警冷却时间。阈值与冷却来自当前生效配置，默认值即零配置可用；运行期修改经 `SET_SYSMON_CONFIG` 生效（完整配置编辑入口随 #81）。
+`alerts`：`{cpu_sustain_used_pct:number, cpu_sustain_samples:int, memory_used_pct:number, swap_used_pct:number, volume_free_pct:number, volume_free_bytes:int, cooldown_sec:int}`，默认 `90/10/90/50/10/1073741824/600`；百分比字段 `[0,100]`、`cpu_sustain_samples ∈ [1,3600]`、`cooldown_sec ∈ [0,86400]`。`cpu_sustain_used_pct` / `cpu_sustain_samples` 由发送方用于饱和核判定（§2.7）；其余字段由发送方消费于阈值告警（§2.8）——`memory_used_pct` / `swap_used_pct` 为使用率阈值，`volume_free_pct` / `volume_free_bytes` 为关注卷剩余空间的两种形态（任一越限即告警），`cooldown_sec` 为同类告警冷却时间（触发与恢复各自按告警对象计时：冷却期内再次越限不弹触发通知、连续恢复只发一条恢复通知）。阈值与冷却来自当前生效配置，默认值即零配置可用；运行期修改经 `SET_SYSMON_CONFIG` 生效（完整配置编辑入口随 #81）。
 
 ### 3.2 触发场景（RTN_SYSMON_CONFIG）
 

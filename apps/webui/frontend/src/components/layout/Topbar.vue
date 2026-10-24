@@ -3,7 +3,7 @@ import { computed, onMounted } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import ThemeDropdown from './ThemeDropdown.vue'
 import { useWebSocket } from '@/composables/wsClient'
-import { useSysmonStore } from '@/stores/sysmon'
+import { sysmonAlertLabel, useSysmonStore } from '@/stores/sysmon'
 
 const emit = defineEmits<{ toggleMobile: [] }>()
 
@@ -97,24 +97,20 @@ const memBadge = computed<ResourceBadge>(() => {
 })
 
 /**
- * 各盘徽章（#75）：卷集合与顺序全部由快照驱动，不硬编码盘符或数量。
- * 关注卷（watched=true）在 store 里已排前，此处额外高亮（topbar__resource--watched）。
- * 单个卷 available=false 显示「不可用」，标题带原因 —— 不得用 0 冒充（契约 sysmon §2.4）。
- */
-/**
  * 阈值告警（#80）：活动告警的全局常驻徽章。数据源是快照 `alerts[]` 的持续状态（不是通知历史），
  * 冷却期内通知被抑制时仍在；详情在资源监控页，这里只给数量与类型摘要（顶栏窄条）。
  */
 const alertCount = computed<number>(() => sysmon.activeAlerts.length)
 const alertsTitle = computed<string>(() => {
-  const labels = sysmon.activeAlerts.map((alert) => {
-    if (alert.kind === 'memory_used') return '内存'
-    if (alert.kind === 'swap_used') return '交换'
-    return `关注卷 ${alert.subject}`
-  })
+  const labels = sysmon.activeAlerts.map(alert => sysmonAlertLabel(alert))
   return `资源告警 ${alertCount.value} 项：${labels.join('、')}（详见资源监控页）`
 })
 
+/**
+ * 各盘徽章（#75）：卷集合与顺序全部由快照驱动，不硬编码盘符或数量。
+ * 关注卷（watched=true）在 store 里已排前，此处额外高亮（topbar__resource--watched）。
+ * 单个卷 available=false 显示「不可用」，标题带原因 —— 不得用 0 冒充（契约 sysmon §2.4）。
+ */
 interface DiskBadge {
   mount: string
   label: string

@@ -15,9 +15,11 @@
  * - 每个告警对象 `(kind, subject)` 维护一个活动期：首次越限进入活动期（记 `since`），
  *   恢复时离开活动期；
  * - 触发通知只在进入活动期时发一次，阈值持续满足**不重弹**；
- * - 冷却期内（距上次已发出的触发通知不足 `cooldown_sec`）再次进入活动期**不弹**；
- *   被抑制的活动期不补发、恢复时也不发恢复通知（用户从未收到触发通知）；
- * - 本帧读不到数值（能力仍在）时**保留**活动状态、不产生恢复；能力被配置关闭时静默清除。
+ * - 冷却期内（距上次已发出的触发通知不足 `cooldown_sec`）再次进入活动期**不弹**触发通知，
+ *   被抑制的触发通知不补发（活动状态照常记录）；恢复通知仍必须给出，但同样按告警对象
+ *   做恢复冷却（防止阈值抖动时"恢复"文案刷屏）；
+ * - 本帧读不到数值（能力仍在）时**保留**活动状态、不产生恢复；能力被配置关闭或某卷
+ *   不再被关注时静默清除（清除原因不是"指标回到阈值以下"）。
  */
 
 #include <compare>
@@ -145,9 +147,11 @@ private:
         bool notified_this_episode = false;  ///< 本次活动期是否已发出触发通知
         /// 本次活动期是否因冷却被抑制：触发通知不补发，但恢复时仍要给出恢复语义（见 transition）。
         bool suppressed_this_episode = false;
-        bool ever_notified = false;            ///< 是否曾发出过触发通知（冷却基准是否有效）
-        int64_t since_unix_sec = 0;            ///< 本次活动期起点（墙钟，Unix 秒）
-        int64_t last_notify_monotonic_ms = 0;  ///< 上次发出触发通知的单调时钟
+        bool ever_notified = false;              ///< 是否曾发出过触发通知（触发冷却基准是否有效）
+        int64_t since_unix_sec = 0;              ///< 本次活动期起点（墙钟，Unix 秒）
+        int64_t last_notify_monotonic_ms = 0;    ///< 上次发出触发通知的单调时钟
+        bool ever_recovered = false;             ///< 是否发出过恢复通知（恢复冷却基准是否有效）
+        int64_t last_recovery_monotonic_ms = 0;  ///< 上次发出恢复通知的单调时钟
     };
 
     /// 推进一个"使用率"类告警（内存 / 交换同构：达到阈值触发、回到阈值以下恢复）。
@@ -166,6 +170,9 @@ private:
                               Result& out);
 
     /// 推进一个告警对象的状态机；需要通知时追加到 `out`。
+    ///
+    /// 触发与恢复各自维护冷却基准：触发只在"恢复后再次越限"时受 `cooldown_sec` 限制；
+    /// 恢复对同一对象的连续恢复做限流（防阈值抖动刷屏），首次恢复不受限。
     void transition(const AlertKey& key,
                     bool breached,
                     const std::string& trigger_message,

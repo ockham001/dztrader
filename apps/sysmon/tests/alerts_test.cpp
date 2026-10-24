@@ -172,20 +172,48 @@ TEST(AlertEvaluatorTest, CooldownSuppressesRetriggerAndSuppressedEpisodeIsNotRet
 TEST(AlertEvaluatorTest, SuppressedEpisodeStillSignalsRecovery) {
     AlertEvaluator evaluator;
     auto config = make_config();
-    // 先正常触发一次并恢复，制造冷却基准。
+    // 先正常触发一次并恢复，制造触发/恢复冷却基准。
     ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 0, kWallSec), config).notifications.size(), 1U);
     ASSERT_EQ(
         evaluator.evaluate(memory_input(0.40, 1'000, kWallSec + 1), config).notifications.size(),
         1U);
-    // 冷却期内再次越限：触发通知被抑制，但活动状态出现。
-    const auto suppressed = evaluator.evaluate(memory_input(0.97, 2'000, kWallSec + 2), config);
+    // 触发冷却期内再次越限（距上次触发 500s < 600s）：触发通知被抑制，但活动状态出现。
+    const auto suppressed = evaluator.evaluate(memory_input(0.97, 500'000, kWallSec + 2), config);
     EXPECT_TRUE(suppressed.notifications.empty());
     ASSERT_EQ(suppressed.active.size(), 1U);
-    // 恢复：必须给出恢复通知（且不是触发通知）。
-    const auto recovered = evaluator.evaluate(memory_input(0.30, 3'000, kWallSec + 3), config);
+    // 该活动期在恢复冷却之后结束：必须给出恢复通知（且不是触发通知）。
+    const auto recovered = evaluator.evaluate(memory_input(0.30, 700'000, kWallSec + 3), config);
     ASSERT_EQ(recovered.notifications.size(), 1U);
     EXPECT_TRUE(recovered.notifications[0].recovery);
     ASSERT_EQ(recovered.notifications[0].key.kind, platform::SYSMON_ALERT_MEMORY_USED);
+}
+
+// 恢复通知同样按告警对象限流（防阈值抖动刷屏）：连续活动期结束时，冷却期内只发一条恢复；
+// 首次恢复不受限。触发通知的冷却与恢复通知的冷却基准互相独立。
+TEST(AlertEvaluatorTest, RepeatedRecoveryIsRateLimitedPerSubject) {
+    AlertEvaluator evaluator;
+    auto config = make_config();
+    ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 0, kWallSec), config).notifications.size(), 1U);
+    // 第一次恢复：必须可见。
+    ASSERT_EQ(
+        evaluator.evaluate(memory_input(0.40, 1'000, kWallSec + 1), config).notifications.size(),
+        1U);
+    // 冷却期内抖动：越限触发被抑制 + 恢复被恢复冷却抑制；再抖一轮同样静默。
+    EXPECT_TRUE(
+        evaluator.evaluate(memory_input(0.97, 2'000, kWallSec + 2), config).notifications.empty());
+    EXPECT_TRUE(
+        evaluator.evaluate(memory_input(0.40, 3'000, kWallSec + 3), config).notifications.empty());
+    EXPECT_TRUE(
+        evaluator.evaluate(memory_input(0.97, 4'000, kWallSec + 4), config).notifications.empty());
+    EXPECT_TRUE(
+        evaluator.evaluate(memory_input(0.40, 5'000, kWallSec + 5), config).notifications.empty());
+    // 恢复冷却结束后再次结束活动期：恢复通知重新可见（不永久静音）。
+    EXPECT_TRUE(
+        evaluator.evaluate(memory_input(0.97, 6'000, kWallSec + 6), config).notifications.empty());
+    const auto recovered =
+        evaluator.evaluate(memory_input(0.40, kCooldown600s + 10'000, kWallSec + 700), config);
+    ASSERT_EQ(recovered.notifications.size(), 1U);
+    EXPECT_TRUE(recovered.notifications[0].recovery);
 }
 
 TEST(AlertEvaluatorTest, RetriggerAfterCooldownNotifiesAgain) {

@@ -31,10 +31,7 @@
 #include <dztrader/shm/writer.h>
 
 #include <boost/asio/io_context.hpp>
-#include <boost/filesystem/path.hpp>
-#include <boost/process/v2/default_launcher.hpp>
 #include <boost/process/v2/process.hpp>
-#include <boost/process/v2/stdio.hpp>
 #include <boost/system/error_code.hpp>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -64,11 +61,11 @@
 namespace dztrader::sysmon {
 namespace {
 
-using e2e_support::e2e_strict;
-using e2e_support::event_semaphore_busy;
-using e2e_support::remove_semaphore;
-using e2e_support::sysmon_executable;
-using e2e_support::unique_suffix;
+using test::e2e_strict;
+using test::event_semaphore_busy;
+using test::remove_semaphore;
+using test::sysmon_executable;
+using test::unique_suffix;
 
 namespace process_v2 = boost::process::v2;
 using namespace std::chrono_literals;
@@ -180,25 +177,12 @@ protected:
     }
 
     void start_child() {
-        io_.restart();
-        process_v2::default_process_launcher launcher;
         boost::system::error_code ec;
-        const auto exe = boost::filesystem::path(sysmon_executable().native());
-        child_ = std::make_unique<process_v2::process>(
-            launcher(io_.get_executor(), ec, exe, std::vector<std::string>{},
-                     process_v2::process_stdio{nullptr, nullptr, nullptr}));
+        child_ = test::spawn_dzsysmon(io_, ec);
         ASSERT_FALSE(ec) << "spawn dzsysmon failed: " << ec.message();
     }
 
-    void stop_child() {
-        if (!child_) {
-            return;
-        }
-        boost::system::error_code ec;
-        child_->terminate(ec);
-        child_->wait(ec);
-        child_.reset();
-    }
+    void stop_child() { test::stop_dzsysmon(child_); }
 
     /// 写一帧 SET_SYSMON_CONFIG（定向 dzsysmon）并唤醒订阅者。
     bool send_set_config(const nlohmann::json& patch) {

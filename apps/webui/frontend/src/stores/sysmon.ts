@@ -45,6 +45,16 @@ export interface SysmonActiveAlert {
 
 const SYSMON_ALERT_KINDS: readonly SysmonAlertKind[] = ['memory_used', 'swap_used', 'volume_free']
 
+/**
+ * 告警对象的短标签（顶栏摘要 / 监控页横幅共用）：kind → 中文名，卷告警带挂载点。
+ * 集中一处，避免"kind → 文案"映射在多个组件里各写一份而漂移。
+ */
+export function sysmonAlertLabel(alert: Pick<SysmonActiveAlert, 'kind' | 'subject'>): string {
+  if (alert.kind === 'memory_used') return '内存'
+  if (alert.kind === 'swap_used') return '交换'
+  return `关注卷 ${alert.subject}`
+}
+
 /** 有限数字校验：null / undefined / NaN / Infinity 一律视为不可用（不得用 0 冒充） */
 function toFiniteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null

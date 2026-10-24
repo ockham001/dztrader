@@ -5,7 +5,11 @@ import SyncSwitch from '@/components/shared/SyncSwitch.vue'
 import SysmonHistoryTab from '@/components/sysmon/SysmonHistoryTab.vue'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { useAuthStore } from '@/stores/auth'
-import { useSysmonStore, type SysmonActiveAlert } from '@/stores/sysmon'
+import {
+  sysmonAlertLabel,
+  useSysmonStore,
+  type SysmonActiveAlert,
+} from '@/stores/sysmon'
 import { useToastStore } from '@/stores/toast'
 
 // 资源监控页：系统信息与 CPU 区块（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率）、
@@ -256,23 +260,24 @@ const networkHiddenAll = computed(() => sysmon.networkFilteredAll && hideVirtual
 // 冷却期内通知被抑制时它仍在，恢复后随下一个快照自动消失（契约 sysmon §2.8）。
 const activeAlerts = computed<SysmonActiveAlert[]>(() => sysmon.activeAlerts)
 
-/** 告警条目文案：kind + 当前快照数值（阈值细节在触发通知正文里，不重复展示） */
+/** 告警条目文案：共用短标签 + 当前快照数值（阈值细节在触发通知正文里，不重复展示） */
 function alertText(alert: SysmonActiveAlert): string {
+  const label = sysmonAlertLabel(alert)
   if (alert.kind === 'memory_used') {
     const ratio = memory.value?.used_ratio
-    return ratio == null ? '内存使用率达到告警阈值' : `内存使用率 ${formatPercent(ratio)} 超过告警阈值`
+    return ratio == null ? `${label}使用率达到告警阈值` : `${label}使用率 ${formatPercent(ratio)} 超过告警阈值`
   }
   if (alert.kind === 'swap_used') {
     const ratio = swapInfo.value?.used_ratio
-    return ratio == null ? '交换使用率达到告警阈值' : `交换使用率 ${formatPercent(ratio)} 超过告警阈值`
+    return ratio == null ? `${label}使用率达到告警阈值` : `${label}使用率 ${formatPercent(ratio)} 超过告警阈值`
   }
   // volume_free：subject 为挂载点（契约 sysmon §2.8），剩余空间取同帧卷数据；读不到就不猜数值
   const volume = volumes.value.find(entry => entry.mount === alert.subject)
   if (volume && volume.available && volume.total_bytes != null && volume.used_bytes != null) {
     const free = volume.total_bytes - volume.used_bytes
-    return `关注卷 ${alert.subject} 剩余空间不足（剩余 ${formatBytes(free)}）`
+    return `${label} 剩余空间不足（剩余 ${formatBytes(free)}）`
   }
-  return `关注卷 ${alert.subject} 剩余空间低于告警阈值`
+  return `${label} 剩余空间低于告警阈值`
 }
 // 开关语义是「显示全部网卡」(= hide_virtual 取反)，直接下发取反后的 hide_virtual 值。
 // 结果契约（对齐 settings/mdConfig 的配置类操作）：true = 已下发（等 WS sysmon_config 生效）、
