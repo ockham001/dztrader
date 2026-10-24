@@ -171,11 +171,11 @@ TEST(HistoryQueryTest, PointLimitDegenerateInputsKeepEverything) {
 }
 
 TEST(HistoryQueryTest, PointLimitDeclarationMatchesContractRange) {
-    // 契约 §6.1 的 max_points 合法区间与默认值必须与头文件一致（防文档/代码漂移）
+    // 《帧契约：系统监控》§6.1 的 max_points 合法区间与默认值必须与头文件一致（防文档/代码漂移）
     EXPECT_EQ(kMinMaxPoints, 10);
     EXPECT_EQ(kMaxMaxPoints, 20000);
     EXPECT_EQ(kDefaultMaxPoints, 1500);
-    // auto 层级的范围阈值：契约 §6.1.1 写「1 小时」
+    // auto 层级的范围阈值：《帧契约：系统监控》§6.1.1 写「1 小时」
     EXPECT_EQ(kAutoRawMaxRangeSec, 3600);
 }
 

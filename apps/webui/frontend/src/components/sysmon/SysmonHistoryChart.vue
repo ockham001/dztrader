@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -72,23 +72,48 @@ function resolveToken(token: string): string {
   return value || 'transparent'
 }
 
-/** 当前主题下的图表配色（onMounted 时解析一次；主题切换由 useTheme 重载页面级 class） */
-const palette = ref({
-  max: 'transparent',
-  avg: 'transparent',
-  min: 'transparent',
-  gap: 'transparent',
-  mark: 'transparent',
-})
-
-onMounted(() => {
-  palette.value = {
+/**
+ * 当前主题下的图表配色。
+ *
+ * 必须在主题切换时重新解析：`useTheme` 只是给 `documentElement` 换 class（light/dark），
+ * 不重载页面，因此只解析一次的话，挂载期间切主题会让曲线保留旧主题的颜色。
+ * 用 MutationObserver 监听 `class` 变化即可覆盖两件事：手工切换与「跟随系统」下的
+ * `prefers-color-scheme` 变化（后者由 CSS 媒体查询生效，不改 class——那种情况由
+ * media query 监听补齐）。
+ */
+function currentPalette(): Record<'max' | 'avg' | 'min' | 'gap' | 'mark', string> {
+  return {
     max: resolveToken('--status-error-default'),
     avg: resolveToken('--status-primary-default'),
     min: resolveToken('--status-success-default'),
     gap: resolveToken('--status-warning-surface-l1'),
     mark: resolveToken('--status-alert-default'),
   }
+}
+
+const palette = ref(currentPalette())
+
+let classObserver: MutationObserver | undefined
+let mediaQuery: MediaQueryList | undefined
+
+function refreshPalette(): void {
+  palette.value = currentPalette()
+}
+
+onMounted(() => {
+  refreshPalette()
+  if (typeof MutationObserver !== 'function') return
+  classObserver = new MutationObserver(refreshPalette)
+  classObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+  if (typeof window.matchMedia === 'function') {
+    mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+    mediaQuery.addEventListener('change', refreshPalette)
+  }
+})
+
+onUnmounted(() => {
+  classObserver?.disconnect()
+  mediaQuery?.removeEventListener('change', refreshPalette)
 })
 
 /** 标记 kind 的中文文案（图例 / tooltip） */

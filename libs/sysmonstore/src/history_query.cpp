@@ -1,6 +1,5 @@
 #include <dztrader/sysmonstore/history_query.h>
 
-#include <algorithm>
 #include <cstddef>
 #include <utility>
 

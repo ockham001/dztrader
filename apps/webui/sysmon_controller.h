@@ -14,7 +14,7 @@
 
 namespace dztrader::webui {
 
-/// 系统监控 REST（《帧契约：REST》§2.8，契约 sysmon）。
+/// 系统监控 REST（《帧契约：REST》§2.8，《帧契约：系统监控》）。
 /// - GET /api/sysmon/snapshot：读取镜像当前快照；镜像尚未就绪回 503。
 /// - GET /api/sysmon/history：只读查询历史库（《帧契约：系统监控》§6.1）；降级回 200 +
 /// available=false。

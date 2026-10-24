@@ -337,7 +337,7 @@ TEST_F(SysmonControllerTest, HistoryReturns400OnInvalidParameters) {
 }
 
 TEST_F(SysmonControllerTest, HistoryDegradesTo200WhenDatabaseMissing) {
-    // 历史库缺失 ⇒ 200 + available=false（契约 §6.1.3：不崩溃、不 5xx、不伪造）
+    // 历史库缺失 ⇒ 200 + available=false（《帧契约：系统监控》§6.1.3：不崩溃、不 5xx、不伪造）
     auto ctrl = std::make_shared<SysmonCtrl>(
         repo_, mirror_, nullptr, std::filesystem::temp_directory_path() / "dz_missing_sysmon.db");
     const auto resp = invoke_history(ctrl, {{"metric", "cpu.usage_ratio"}});

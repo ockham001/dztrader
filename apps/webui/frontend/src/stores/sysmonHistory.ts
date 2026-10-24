@@ -18,7 +18,7 @@ import type {
  * 因此不进下拉——需要时先显式请求 `dimension`。
  *
  * `key` 必须与 `libs/sysmonstore` 的 `kScalarMetrics[].key` 一致，否则后端回 400
- * （契约 §6.1「参数非法」），这是前后端契约的一致性要求。
+ * （《帧契约：系统监控》§6.1「参数非法」），这是前后端契约的一致性要求。
  */
 export interface SysmonHistoryMetricOption {
   key: string
@@ -162,7 +162,7 @@ export const useSysmonHistoryStore = defineStore('sysmonHistory', () => {
   })
 
   /**
-   * 生效范围的实际秒数（契约 §6.1.2：`truncated=true` 时前端必须把范围控件同步到生效值）。
+   * 生效范围的实际秒数（《帧契约：系统监控》§6.1.2：`truncated=true` 时前端必须把范围控件同步到生效值）。
    * 截断后实际只有 `to − from` 秒，视图据它把「最近 N」的显示改成真实覆盖时长，
    * 避免用户以为看的是完整 N 而实际只看到最近一小段。
    */

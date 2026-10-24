@@ -24,8 +24,15 @@ using dztrader::sysmonstore::QueryLevel;
 constexpr int64_t kDefaultRangeSec = 6 * 3600;  ///< `from` 缺省：最近 6 小时
 
 /// 单次查询返回的标记上限。标记不是记录点：每次重启/跳变/缺口才写一条，量级极小；
-/// 给它一个远高于 `max_points` 的独立上限，避免缺口原因被点数上限连带截断。
-constexpr int64_t kMaxMarksPerQuery = 10000;
+/// 给它一个远高于 `max_points` 合法上界（20000）的独立上限，避免缺口原因被点数上限连带截断。
+/// 取值必须是 `kMaxMaxPoints` 的若干倍——若低于该上界，用户把 `max_points` 调到上限附近时
+/// 标记仍会被静默截断（此时缺口又被错报成 unmarked，与独立上限的初衷相反）。
+constexpr int64_t kMaxMarksPerQuery = 100000;
+
+// 编译期守卫：标记上限必须显著高于 `max_points` 的合法上界（契约 §6.1.4 的要求），
+// 否则用户在合法范围内把 max_points 调大就能触发标记静默截断（缺口错报 unmarked）。
+static_assert(kMaxMarksPerQuery >= 5 * dztrader::sysmonstore::kMaxMaxPoints,
+              "marks cap must stay well above the max_points upper bound");
 
 /**
  * @brief 从相邻桶时刻反推名义桶宽（仅供**没有** `interval_sec` 列的长表使用）。
@@ -82,7 +89,8 @@ nlohmann::json unavailable_body(HistoryAvailability availability) {
         {"reason", std::string(dztrader::sysmonstore::history_availability_reason(availability))}};
 }
 
-/// 一个聚合量的 JSON 表示：空聚合输出四个 null + n=null（不得用 0 冒充，契约 §6.1）。
+/// 一个聚合量的 JSON 表示：空聚合输出四个 null + n=null（不得用 0
+/// 冒充，《帧契约：系统监控》§6.1）。
 nlohmann::json aggregate_to_json(const dztrader::sysmonstore::MetricAggregate& aggregate) {
     if (aggregate.empty()) {
         return {{"ts", nullptr},  {"min", nullptr},  {"max", nullptr},
@@ -115,7 +123,7 @@ SysmonHistoryParseResult SysmonHistoryService::parse(
     const std::function<std::string(std::string_view)>& param) const {
     SysmonHistoryParseResult result;
 
-    // ---- metric（契约 §6.1：必须是已注册指标键）----
+    // ---- metric（《帧契约：系统监控》§6.1：必须是已注册指标键）----
     std::string metric = param("metric");
     if (metric.empty()) {
         metric = "cpu.usage_ratio";  // 契约默认值
@@ -308,11 +316,11 @@ nlohmann::json SysmonHistoryService::query(const SysmonHistoryQuery& query) cons
         return unavailable_body(HistoryAvailability::OpenFailed);
     }
 
-    // 生效起点：被截断时为首个返回点的桶时刻（契约 §6.1.2 的精确口径）
+    // 生效起点：被截断时为首个返回点的桶时刻（《帧契约：系统监控》§6.1.2 的精确口径）
     if (truncated && !bucket_ts.empty()) {
         effective_from = bucket_ts.front();
     }
-    // 桶宽（契约 §6.1 的 interval_sec 口径）：
+    // 桶宽（《帧契约：系统监控》§6.1 的 interval_sec 口径）：
     // - 分钟聚合恒为 60；
     // - 原始层的宽表从行内 `interval_sec` 取；
     // - 原始层的长表**没有** `interval_sec` 列（维度行的存在本身表示有样本，桶宽是全表属性），

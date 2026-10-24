@@ -63,7 +63,7 @@ public:
      * @brief 解析并校验 HTTP query 参数（《帧契约：系统监控》§6.1）。
      *
      * @param params 原始 query 参数（drogon 的 `getParameters()`）
-     * @return 成功时 `query` 有值；失败时 `error` 非空（调用方回 400 `bad request`）
+     * @return 成功时 `query` 有值；失败时 `query` 无值（调用方回 400 `bad request`）
      */
     [[nodiscard]] SysmonHistoryParseResult parse(
         const std::function<std::string(std::string_view)>& param) const;

@@ -278,14 +278,14 @@ TEST_F(SysmonHistoryServiceTest, ReturnsEmptySeriesForRangeWithoutBuckets) {
                                                {"level", "raw"},
                                            }))
                                      .query);
-    // 「范围内没有数据」与「历史不可用」是不同事实（契约 §6.1「空结果」）
+    // 「范围内没有数据」与「历史不可用」是不同事实（《帧契约：系统监控》§6.1「空结果」）
     EXPECT_TRUE(body.value("available", false));
     EXPECT_EQ(body.value("level", ""), "raw");
     ASSERT_EQ(body["series"].size(), 1U);
     EXPECT_TRUE(body["series"][0]["points"].empty());
     EXPECT_TRUE(body["gaps"].empty());
     EXPECT_TRUE(body["marks"].empty());
-    // 无桶即无桶宽：不得猜一个值（契约 §6.1 的 interval_sec 口径）
+    // 无桶即无桶宽：不得猜一个值（《帧契约：系统监控》§6.1 的 interval_sec 口径）
     EXPECT_TRUE(body["interval_sec"].is_null());
     EXPECT_FALSE(body.value("truncated", true));
 }
@@ -348,7 +348,7 @@ TEST_F(SysmonHistoryServiceTest, SelectsRequestedScalarColumn) {
 }
 
 TEST_F(SysmonHistoryServiceTest, ReturnsEmptyMetricPointsAsNull) {
-    // 该桶内该指标无有效样本 ⇒ 四值与 n 全为 null，不得用 0 冒充（契约 §6.1）
+    // 该桶内该指标无有效样本 ⇒ 四值与 n 全为 null，不得用 0 冒充（《帧契约：系统监控》§6.1）
     seed([](HistoryStore&, HistoryBatch& batch) {
         ScalarRecord record = make_scalar(kBaseTs, 0.0);
         for (auto& metric : record.metrics) {
@@ -424,7 +424,7 @@ TEST_F(SysmonHistoryServiceTest, TrimsToNewestPointsAndReportsTruncation) {
     // 最新的一段：桶 10..19
     EXPECT_EQ(points.front()["ts"].get<int64_t>(), kBaseTs + 10 * 60);
     EXPECT_EQ(points.back()["ts"].get<int64_t>(), kBaseTs + 19 * 60);
-    // 生效 from == 首个返回点的桶时刻（契约 §6.1.2 的精确口径）
+    // 生效 from == 首个返回点的桶时刻（《帧契约：系统监控》§6.1.2 的精确口径）
     EXPECT_EQ(body["from"].get<int64_t>(), kBaseTs + 10 * 60);
     // 升序输出（前端直接画图）
     for (size_t i = 1; i < points.size(); ++i) {
