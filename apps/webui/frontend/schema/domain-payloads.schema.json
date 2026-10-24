@@ -354,6 +354,16 @@
         "oldest_file_age_sec": { "anyOf": [{ "type": "integer" }, { "type": "null" }] }
       }
     },
+    "SysmonAlertInfo": {
+      "type": "object",
+      "description": "当前活动阈值告警（契约 sysmon §2.8）：持续状态，不是通知历史。冷却期内被抑制的通知不影响本数组。",
+      "required": ["kind", "subject", "since"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["memory_used", "swap_used", "volume_free"], "description": "告警对象类别（契约 sysmon §2.8）" },
+        "subject": { "type": "string", "description": "volume_free 的挂载点（与 volumes[].mount 可直接相等比较）；其余 kind 为空串" },
+        "since": { "type": "integer", "minimum": 0, "description": "该次告警首次满足阈值的墙钟时刻（Unix 秒）" }
+      }
+    },
     "SysmonTemperatureInfo": {
       "type": "object",
       "required": ["sensor", "celsius"],
@@ -381,7 +391,7 @@
     },
     "SysmonSnapshotPayload": {
       "type": "object",
-      "required": ["source", "timestamp", "sampling", "platform", "system", "cpu", "temperature", "memory", "swap", "volumes", "watch_paths", "disk_io", "network", "shm_dir", "availability"],
+      "required": ["source", "timestamp", "sampling", "platform", "system", "cpu", "temperature", "memory", "swap", "volumes", "watch_paths", "disk_io", "network", "shm_dir", "alerts", "availability"],
       "properties": {
         "source": { "type": "string", "description": "发送方进程名（固定 dzsysmon；无 instance_id 帧来源显式携带，general §5）" },
         "timestamp": { "type": "integer", "description": "快照生成时刻（Unix 毫秒）" },
@@ -403,6 +413,7 @@
         "disk_io": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/SysmonDiskIoInfo" } }, { "type": "null" }] },
         "network": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/SysmonNetworkInfo" } }, { "type": "null" }] },
         "shm_dir": { "anyOf": [{ "$ref": "#/$defs/SysmonShmDirInfo" }, { "type": "null" }] },
+        "alerts": { "type": "array", "items": { "$ref": "#/$defs/SysmonAlertInfo" }, "description": "当前活动阈值告警（契约 sysmon §2.8）；空数组 = 无活动告警（不是未采集）" },
         "availability": { "$ref": "#/$defs/SysmonAvailability" }
       }
     },

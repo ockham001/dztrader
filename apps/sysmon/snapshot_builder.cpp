@@ -112,6 +112,7 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
                                         const MemorySwapMetrics& memory_metrics,
                                         const DiskMetrics& disk_metrics,
                                         const NetworkMetrics& network_metrics,
+                                        const std::vector<platform::SysmonAlertInfo>& active_alerts,
                                         int32_t measure_interval_ms,
                                         int64_t last_sample_unix_ms,
                                         uint64_t missed_ticks,
@@ -253,6 +254,10 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         shm_dir.oldest_file_age_sec = disk_metrics.shm_dir->oldest_file_age_sec;
         snapshot.shm_dir = shm_dir;
     }
+
+    // 阈值告警活动集（#80）：状态机的结果原样投影（空数组合法 = 无活动告警）。
+    // 告警判定与冷却在 `AlertEvaluator` 中完成；快照构造只做投影，不重新判断阈值。
+    snapshot.alerts = active_alerts;
 
     // 每物理盘 I/O（#76）：配置关闭优先；能力可用但本帧未采到时为 null（能力标记粘性）。
     // 条目内的派生字段可为 null（首次采样/计数器重置），不得用 0 冒充。

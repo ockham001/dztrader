@@ -5,7 +5,7 @@ import SyncSwitch from '@/components/shared/SyncSwitch.vue'
 import SysmonHistoryTab from '@/components/sysmon/SysmonHistoryTab.vue'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { useAuthStore } from '@/stores/auth'
-import { useSysmonStore } from '@/stores/sysmon'
+import { useSysmonStore, type SysmonActiveAlert } from '@/stores/sysmon'
 import { useToastStore } from '@/stores/toast'
 
 // 资源监控页：系统信息与 CPU 区块（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率）、
@@ -21,6 +21,8 @@ import { useToastStore } from '@/stores/toast'
 // 网络（#77）：可用但数组为空 = 发送方按 hide_virtual 滤掉了全部虚拟网卡（契约 §2.5 明文，
 // **不是**不可用），显示「已隐藏全部虚拟网卡」+ 切换提示；开关走 REST 下发、以 WS sysmon_config
 // 回推为生效信号。
+// 阈值告警（#80）：快照 alerts[] 是持续状态，页内以常驻横幅展示（冷却期内通知被抑制时仍在）；
+// 触发/恢复的事件通知走既有 notify_ui 链路（触发 error+popup、恢复 info），本页不重复弹 toast。
 // 历史视图（#79）为独立视图：切换只影响渲染来源，不卸载/不重建实时 store，
 // 因此 WS 连接与实时快照推送完全不受影响（契约 sysmon §8：历史视图不订阅 WS）。
 // 刷新基线由发送方 realtime.push_interval_sec（默认 5s）决定，本页不轮询、不改 WS 契约。
@@ -248,6 +250,30 @@ const hideVirtualPending = computed(() => sysmon.hideVirtualPending)
 // 仅当 hideVirtual 为真时才能这么解释；hide_virtual=false 却为空数组 = 本机确实无网卡
 //（罕见，容器内可能），走「暂无数据」而不是「已隐藏」。
 const networkHiddenAll = computed(() => sysmon.networkFilteredAll && hideVirtual.value)
+
+// ---- 阈值告警（#80）：快照 alerts[] 的持续状态 ----
+// 通知（触发 error+popup / 恢复 info）走既有 notify_ui 链路；本区块只做**常驻**提示：
+// 冷却期内通知被抑制时它仍在，恢复后随下一个快照自动消失（契约 sysmon §2.8）。
+const activeAlerts = computed<SysmonActiveAlert[]>(() => sysmon.activeAlerts)
+
+/** 告警条目文案：kind + 当前快照数值（阈值细节在触发通知正文里，不重复展示） */
+function alertText(alert: SysmonActiveAlert): string {
+  if (alert.kind === 'memory_used') {
+    const ratio = memory.value?.used_ratio
+    return ratio == null ? '内存使用率达到告警阈值' : `内存使用率 ${formatPercent(ratio)} 超过告警阈值`
+  }
+  if (alert.kind === 'swap_used') {
+    const ratio = swapInfo.value?.used_ratio
+    return ratio == null ? '交换使用率达到告警阈值' : `交换使用率 ${formatPercent(ratio)} 超过告警阈值`
+  }
+  // volume_free：subject 为挂载点（契约 sysmon §2.8），剩余空间取同帧卷数据；读不到就不猜数值
+  const volume = volumes.value.find(entry => entry.mount === alert.subject)
+  if (volume && volume.available && volume.total_bytes != null && volume.used_bytes != null) {
+    const free = volume.total_bytes - volume.used_bytes
+    return `关注卷 ${alert.subject} 剩余空间不足（剩余 ${formatBytes(free)}）`
+  }
+  return `关注卷 ${alert.subject} 剩余空间低于告警阈值`
+}
 // 开关语义是「显示全部网卡」(= hide_virtual 取反)，直接下发取反后的 hide_virtual 值。
 // 结果契约（对齐 settings/mdConfig 的配置类操作）：true = 已下发（等 WS sysmon_config 生效）、
 // false = 防重入或 HTTP 失败、PENDING_TIMEOUT = 超时（usePending 已 toast，此处不重复弹）。
@@ -327,6 +353,37 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
     </div>
 
     <div v-else-if="viewMode === 'realtime'" class="monitor-view__grid">
+      <!-- 阈值告警（#80）：持续状态——冷却期内通知被抑制时仍在，恢复后自动消失；
+           触发/恢复的事件通知走既有 notify_ui 链路（error+popup / info），这里不重复弹 toast -->
+      <section
+        v-if="activeAlerts.length > 0"
+        class="ds-alert ds-alert--danger monitor-view__alerts"
+        data-test="monitor-alerts"
+        role="alert"
+      >
+        <span class="ds-alert__icon"><Icon name="warning_line" :size="16" /></span>
+        <div class="monitor-view__alerts-body">
+          <div class="ds-alert__title" data-test="monitor-alerts-title">
+            资源告警（{{ activeAlerts.length }}）
+          </div>
+          <ul class="monitor-view__alerts-list">
+            <li
+              v-for="alert in activeAlerts"
+              :key="`${alert.kind}|${alert.subject}`"
+              class="monitor-view__alert-item"
+              data-test="monitor-alert"
+              :data-kind="alert.kind"
+              :data-subject="alert.subject"
+            >
+              <span>{{ alertText(alert) }}</span>
+              <span v-if="alert.since > 0" class="monitor-view__alert-since" data-test="monitor-alert-since">
+                始于 {{ formatDateTime(alert.since * 1000) }}
+              </span>
+            </li>
+          </ul>
+        </div>
+      </section>
+
       <!-- 系统信息 -->
       <section class="ds-card monitor-view__card monitor-view__card--wide" data-test="monitor-system">
         <h2 class="ds-card__title monitor-view__card-title">
@@ -875,6 +932,42 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--spacer-16);
+}
+
+/* 阈值告警横幅（#80）：跨整行常驻提示；颜色沿用 ds-alert--danger，排版全部走设计 token */
+.monitor-view__alerts {
+  grid-column: 1 / -1;
+}
+
+.monitor-view__alerts-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.monitor-view__alerts-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-4);
+}
+
+.monitor-view__alert-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--spacer-8);
+  color: var(--text-secondary);
+  font-size: var(--body-md-font-size);
+  line-height: var(--body-md-line-height);
+  overflow-wrap: anywhere;
+}
+
+.monitor-view__alert-since {
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
 }
 
 .monitor-view__card--wide {

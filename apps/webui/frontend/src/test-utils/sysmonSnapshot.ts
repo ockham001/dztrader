@@ -11,6 +11,7 @@
 // virtualNetwork=true 是 3 块虚拟网卡 + eth0 的混合集合（验证前端不自行过滤、只做展示）。
 // semantic_hints 默认携带 #76 后端在 disk_io 能力可用时发送的口径提示；用例可按需覆盖。
 import type {
+  SysmonAlertInfo,
   SysmonAvailabilityEntry,
   SysmonConfigPayload,
   SysmonCoreFrequency,
@@ -92,6 +93,8 @@ export interface SysmonSnapshotOptions {
   interruptsPerSec?: number | null
   /** 跨平台语义提示（availability.semantic_hints）；默认携带 disk_io 口径提示 */
   semanticHints?: Record<string, string>
+  /** 当前活动阈值告警（契约 sysmon §2.8）；默认空数组 = 无活动告警 */
+  alerts?: SysmonAlertInfo[]
 }
 
 const GIB = 1024 ** 3
@@ -415,6 +418,7 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
           ? [...VIRTUAL_NETWORK, ...DEFAULT_NETWORK].map(entry => ({ ...entry }))
           : (resourceAvailable ? DEFAULT_NETWORK.map(entry => ({ ...entry })) : null)),
     shm_dir: options.shmDir !== undefined ? options.shmDir : { ...DEFAULT_SHM_DIR },
+    alerts: options.alerts !== undefined ? options.alerts.map(alert => ({ ...alert })) : [],
     availability: {
       platform_description: 'Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)',
       metrics,

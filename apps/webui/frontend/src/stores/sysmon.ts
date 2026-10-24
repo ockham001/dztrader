@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { sysmonApi } from '@/api/sysmon'
 import { PENDING_TIMEOUT, usePending } from '@/composables/usePending'
 import type {
+  SysmonAlertInfo,
   SysmonAvailabilityEntry,
   SysmonConfigPayload,
   SysmonCoreFrequency,
@@ -29,6 +30,20 @@ export const SYSMON_CONFIG_TIMEOUT_MS = 10_000
  * 模块级单例导出供 store 与 spec 共享同一实例（可重置 / 可断言）。
  */
 export const sysmonPending = usePending()
+
+/** 阈值告警 kind（契约 sysmon §2.8）：快照 `alerts[].kind` 的稳定取值。 */
+export type SysmonAlertKind = 'memory_used' | 'swap_used' | 'volume_free'
+
+/** 净化后的活动告警条目（快照 `alerts[]`）。 */
+export interface SysmonActiveAlert {
+  kind: SysmonAlertKind
+  /** `volume_free` 的挂载点；其余 kind 为空串 */
+  subject: string
+  /** 该次告警首次满足阈值的墙钟时刻（Unix 秒）；0 = 缺失/非法（前端不展示"始于"） */
+  since: number
+}
+
+const SYSMON_ALERT_KINDS: readonly SysmonAlertKind[] = ['memory_used', 'swap_used', 'volume_free']
 
 /** 有限数字校验：null / undefined / NaN / Infinity 一律视为不可用（不得用 0 冒充） */
 function toFiniteNumber(value: unknown): number | null {
@@ -480,6 +495,40 @@ export const useSysmonStore = defineStore('sysmon', () => {
     return Array.isArray(s.network) && s.network.length === 0
   })
 
+  /**
+   * 当前活动阈值告警（契约 sysmon §2.8）：快照 `alerts[]` 的净化结果。
+   *
+   * 这是**持续状态**（冷却期内被抑制的通知不影响它），供监控页常驻提示使用；
+   * 与 `notify_ui` 通知链路互补——通知是事件，本数组是状态。
+   *
+   * 净化规则：未知 kind / volume_free 空挂载点剔除；非 volume_free 的 subject 强制空串；
+   * `since` 非法（NaN/负数/非整数）置 0（不展示"始于"，不得用假时间冒充）；
+   * `(kind, subject)` 去重；按 kind 升序、卷按挂载点升序稳定排序，不依赖发送端顺序。
+   */
+  const activeAlerts = computed<SysmonActiveAlert[]>(() => {
+    const entries = Array.isArray(snapshot.value?.alerts) ? snapshot.value.alerts : []
+    const result: SysmonActiveAlert[] = []
+    const seen = new Set<string>()
+    for (const entry of entries as SysmonAlertInfo[]) {
+      const kind = SYSMON_ALERT_KINDS.find(candidate => candidate === entry?.kind)
+      if (!kind) continue
+      const subject = kind === 'volume_free'
+        ? (typeof entry.subject === 'string' ? entry.subject.trim() : '')
+        : ''
+      if (kind === 'volume_free' && !subject) continue
+      const key = `${kind}|${subject}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      const since = toNonNegativeInteger(entry.since) ?? 0
+      result.push({ kind, subject, since })
+    }
+    const kindOrder = (kind: SysmonAlertKind): number => SYSMON_ALERT_KINDS.indexOf(kind)
+    return result.sort((a, b) => {
+      const byKind = kindOrder(a.kind) - kindOrder(b.kind)
+      return byKind !== 0 ? byKind : a.subject.localeCompare(b.subject)
+    })
+  })
+
   /** 生效配置镜像（契约 sysmon §3 RTN_SYSMON_CONFIG 全量回推）；未收到时为 null */
   const config = ref<SysmonConfigPayload | null>(null)
 
@@ -560,6 +609,7 @@ export const useSysmonStore = defineStore('sysmon', () => {
     diskIo,
     network,
     networkFilteredAll,
+    activeAlerts,
     config,
     hideVirtual,
     hideVirtualPending,
