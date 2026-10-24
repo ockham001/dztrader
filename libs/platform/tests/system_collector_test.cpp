@@ -1193,8 +1193,16 @@ TEST(SystemCollectorTest, DiskIoCountersFollowContractInvariants) {
         EXPECT_GE(current.write_bytes, it->write_bytes) << current.device;
         EXPECT_GE(current.read_time_us, it->read_time_us) << current.device;
         EXPECT_GE(current.write_time_us, it->write_time_us) << current.device;
+        // `busy_time_us` 是**派生值**（Windows `QueryTime - IdleTime`、Linux `io_ticks`），
+        // 不是原始累计计数器：Windows 上 QueryTime 与 IdleTime 由驱动分别记账、非原子读取，
+        // 二者之差会有亚毫秒级抖动（实测 42µs / 191µs 的回落），不是计数器重置。
+        // 因此这里只要求「不显著回落」。容差 10ms 的依据：真实计数器重置会让该字段变成
+        // null（`QueryTime < IdleTime` 分支）从而跳过本断言，系统时钟回拨则会让它大幅回落，
+        // 两者都远大于 10ms；而 10ms 只占 1s 采样窗口的 1%，不会掩盖真实回归。
         if (it->busy_time_us.has_value() && current.busy_time_us.has_value()) {
-            EXPECT_GE(*current.busy_time_us, *it->busy_time_us) << current.device;
+            constexpr uint64_t kDerivedBusyJitterToleranceUs = 10'000;
+            EXPECT_GE(*current.busy_time_us + kDerivedBusyJitterToleranceUs, *it->busy_time_us)
+                << current.device;
         }
     }
 }
