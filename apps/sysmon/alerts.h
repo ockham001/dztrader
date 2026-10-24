@@ -145,7 +145,8 @@ private:
     struct SubjectState {
         bool active = false;                 ///< 当前是否处于活动期
         bool notified_this_episode = false;  ///< 本次活动期是否已发出触发通知
-        /// 本次活动期是否因冷却被抑制：触发通知不补发，但恢复时仍要给出恢复语义（见 transition）。
+        /// 本次活动期是否因冷却被抑制：触发通知不补发，但恢复时仍要表达恢复语义
+        /// （受恢复限流约束，见 transition）。
         bool suppressed_this_episode = false;
         bool ever_notified = false;              ///< 是否曾发出过触发通知（触发冷却基准是否有效）
         int64_t since_unix_sec = 0;              ///< 本次活动期起点（墙钟，Unix 秒）

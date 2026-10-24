@@ -546,7 +546,7 @@ struct SysmonRealtimeConfig {
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonRealtimeConfig, push_interval_sec)
 };
 
-/// 告警配置（告警触发由后续票实现；本票仅配置形状定稿）。
+/// 告警配置（阈值告警由 #80 消费：内存/交换使用率与关注卷剩余空间阈值 + 冷却，契约 sysmon §2.8）。
 struct SysmonAlertsConfig {
     double cpu_sustain_used_pct = 90.0;  ///< 单核持续饱和阈值（百分比）
     int32_t cpu_sustain_samples = 10;    ///< 持续采样次数阈值
