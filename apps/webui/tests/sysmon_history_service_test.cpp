@@ -1,6 +1,6 @@
 /**
  * @file sysmon_history_service_test.cpp
- * @brief 历史查询（契约 sysmon §6.1）：参数校验、临时库上的真实查询、三种降级路径。
+ * @brief 历史查询（《帧契约：系统监控》§6.1）：参数校验、临时库上的真实查询、三种降级路径。
  *
  * 测试准则（docs/unit-test-standard.md）：断言外部可观察行为——HTTP 语义上的 400 / 200，
  * 响应 JSON 的 available/reason/series/marks/gaps，以及「不可用时绝不返回伪造数据」。
@@ -12,7 +12,6 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -120,12 +119,12 @@ protected:
     std::filesystem::path dir_;
 };
 
-// ===== 参数解析（契约 sysmon §6.1「参数非法」）=====
+// ===== 参数解析（《帧契约：系统监控》§6.1「参数非法」）=====
 
 TEST_F(SysmonHistoryServiceTest, ParsesDefaultsWhenNoParametersGiven) {
     const auto svc = service();
     const auto parsed = svc.parse(params({}));
-    ASSERT_TRUE(parsed.query.has_value()) << parsed.error;
+    ASSERT_TRUE(parsed.query.has_value());
     const auto& q = *parsed.query;
     EXPECT_EQ(q.metric, "cpu.usage_ratio");
     EXPECT_TRUE(q.dimension.empty());
@@ -147,7 +146,7 @@ TEST_F(SysmonHistoryServiceTest, ParsesExplicitParameters) {
         {"level", "raw"},
         {"max_points", "120"},
     }));
-    ASSERT_TRUE(parsed.query.has_value()) << parsed.error;
+    ASSERT_TRUE(parsed.query.has_value());
     const auto& q = *parsed.query;
     EXPECT_EQ(q.metric, "network.rx_bytes_per_sec");
     EXPECT_EQ(q.dimension, "eth0");
@@ -205,7 +204,7 @@ TEST_F(SysmonHistoryServiceTest, RejectsInvalidTimeRange) {
     EXPECT_FALSE(svc.parse(params({{"from", "-5"}, {"to", "100"}})).query.has_value());
 }
 
-// ===== 降级路径（契约 sysmon §6.1.3）=====
+// ===== 降级路径（《帧契约：系统监控》§6.1.3）=====
 
 TEST_F(SysmonHistoryServiceTest, DegradesWhenDatabaseMissing) {
     // 库不存在（dzsysmon 未启用历史）：200 + available=false + reason=not_found，不抛
@@ -402,24 +401,6 @@ TEST_F(SysmonHistoryServiceTest, AutoLevelSelectsRawForShortRangeAndMinuteForLon
     EXPECT_EQ(long_range["interval_sec"].get<int64_t>(), 60);
 }
 
-TEST_F(SysmonHistoryServiceTest, ExplicitLevelIsHonouredEvenWithoutRows) {
-    // auto 只选层级、不回退：显式 raw 时范围内只有分钟聚合 ⇒ 空序列而不是偷偷换成 minute
-    seed([](HistoryStore&, HistoryBatch& batch) {
-        batch.scalars.push_back(
-            make_scalar(1'780'000'000, 2.0, dztrader::sysmonstore::kLevelMinute, 60));
-    });
-    const auto svc = service();
-    const auto body = svc.query(*svc.parse(params({
-                                               {"from", std::to_string(1'780'000'000)},
-                                               {"to", std::to_string(1'780'000'000 + 3600)},
-                                               {"level", "raw"},
-                                           }))
-                                     .query);
-    EXPECT_TRUE(body.value("available", false));
-    EXPECT_EQ(body.value("level", ""), "raw");
-    EXPECT_TRUE(body["series"][0]["points"].empty());
-}
-
 TEST_F(SysmonHistoryServiceTest, TrimsToNewestPointsAndReportsTruncation) {
     // 20 个桶、上限 10 ⇒ 保留最新 10 个并回显 truncated=true + 生效 from
     seed([](HistoryStore&, HistoryBatch& batch) {
@@ -518,7 +499,7 @@ TEST_F(SysmonHistoryServiceTest, ReturnsDimensionSeriesForRequestedDimension) {
     }
 }
 
-// ===== 标记与缺口（契约 sysmon §6.1.4）=====
+// ===== 标记与缺口（《帧契约：系统监控》§6.1.4）=====
 
 TEST_F(SysmonHistoryServiceTest, ReportsMarksAndDerivesGaps) {
     seed([](HistoryStore&, HistoryBatch& batch) {
@@ -568,6 +549,198 @@ TEST_F(SysmonHistoryServiceTest, ReportsUnmarkedGapWhenDataMissingWithoutMark) {
     ASSERT_EQ(body["gaps"].size(), 1U);
     EXPECT_EQ(body["gaps"][0]["kind"].get<std::string>(), "unmarked");
     EXPECT_TRUE(body["marks"].empty());
+}
+
+// ===== 回归（自审 4 条：interval 口径 / 维度缺口 / 标记不被点数上限截断）=====
+
+TEST_F(SysmonHistoryServiceTest, MarksAreNotTruncatedByPointLimit) {
+    // 标记解释缺口原因；若标记查询拿 max_points 当上限，标记数超过点数上限时会被截断，
+    // 缺口于是被错报成 unmarked（把「有解释的停机」误报成「无人解释的异常」）。
+    // 这里造 15 条标记 > max_points(10)，旧实现会只剩 10 条。
+    seed([](HistoryStore&, HistoryBatch& batch) {
+        for (int i = 0; i < 30; ++i) {
+            batch.scalars.push_back(make_scalar(kBaseTs + i * 60, 1.0));
+        }
+        // 标记必须落在**生效窗口内**（截断后 from = base+20*60），否则它们本就在请求范围之外。
+        // 15 条 > max_points(10)：旧实现（用 max_points 当标记上限）会只剩 10 条。
+        for (int i = 0; i < 15; ++i) {
+            HistoryMark restart;
+            restart.ts = kBaseTs + 20 * 60 + i * 10;
+            restart.kind = std::string(dztrader::sysmonstore::kMarkRestart);
+            restart.detail = "recover";
+            batch.marks.push_back(restart);
+        }
+    });
+    const auto svc = service();
+    const auto body = svc.query(*svc.parse(params({
+                                               {"from", std::to_string(kBaseTs)},
+                                               {"to", std::to_string(kBaseTs + 40 * 60)},
+                                               {"level", "raw"},
+                                               {"max_points", "10"},
+                                           }))
+                                     .query);
+    ASSERT_TRUE(body.value("available", false));
+    EXPECT_TRUE(body.value("truncated", false));
+    // 记录点被裁到 10 个，但标记一条都不能丢
+    EXPECT_EQ(body["series"][0]["points"].size(), 10U);
+    EXPECT_EQ(body["marks"].size(), 15U);
+}
+
+TEST_F(SysmonHistoryServiceTest, RawIntervalUsesNewestRowWhenRecordIntervalChanged) {
+    // 记录间隔可在运行期调整：跨调整点的一批行桶宽不同，interval_sec 必须取最新一行
+    // （当前生效桶宽），而不是最早一行（旧配置）。
+    seed([](HistoryStore&, HistoryBatch& batch) {
+        batch.scalars.push_back(
+            make_scalar(kBaseTs, 1.0, dztrader::sysmonstore::kLevelRaw, /*interval=*/300));
+        batch.scalars.push_back(
+            make_scalar(kBaseTs + 300, 1.0, dztrader::sysmonstore::kLevelRaw, /*interval=*/60));
+    });
+    const auto svc = service();
+    const auto body = svc.query(*svc.parse(params({
+                                               {"metric", "cpu.usage_ratio"},
+                                               {"from", std::to_string(kBaseTs)},
+                                               {"to", std::to_string(kBaseTs + 600)},
+                                               {"level", "raw"},
+                                           }))
+                                     .query);
+    ASSERT_TRUE(body.value("available", false));
+    ASSERT_EQ(body["series"][0]["points"].size(), 2U);
+    // 最新一行是 60 秒
+    EXPECT_EQ(body["interval_sec"].get<int64_t>(), 60);
+}
+
+TEST_F(SysmonHistoryServiceTest, DimensionRawQueryDerivesIntervalAndDetectsGaps) {
+    // 长表没有 interval_sec 列：原始维度查询必须从相邻桶时刻反推桶宽，
+    // 否则 interval_sec 恒为 null 且缺口检测被整体跳过（缺口静默消失）。
+    seed([](HistoryStore&, HistoryBatch& batch) {
+        for (const int64_t offset : {int64_t{0}, int64_t{60}, int64_t{600}}) {
+            dztrader::sysmonstore::DimensionRecord record;
+            record.level = dztrader::sysmonstore::kLevelRaw;
+            record.bucket_ts = kBaseTs + offset;
+            record.domain = std::string(dztrader::sysmonstore::kNetworkDomain);
+            record.dimension = "eth0";
+            record.metric = "rx_bytes_per_sec";
+            record.aggregate.observe(1.0);
+            batch.dimensions.push_back(record);
+        }
+    });
+    const auto svc = service();
+    const auto body = svc.query(*svc.parse(params({
+                                               {"metric", "network.rx_bytes_per_sec"},
+                                               {"dimension", "eth0"},
+                                               {"from", std::to_string(kBaseTs)},
+                                               {"to", std::to_string(kBaseTs + 1200)},
+                                               {"level", "raw"},
+                                           }))
+                                     .query);
+    ASSERT_TRUE(body.value("available", false));
+    ASSERT_EQ(body["series"][0]["points"].size(), 3U);
+    // 相邻最小间隔 = 60 ⇒ 名义桶宽 60（不是 null）
+    EXPECT_EQ(body["interval_sec"].get<int64_t>(), 60);
+    // 缺口 [base+120, base+600) 必须被检出（不是静默消失）
+    ASSERT_EQ(body["gaps"].size(), 1U);
+    EXPECT_EQ(body["gaps"][0]["from"].get<int64_t>(), kBaseTs + 120);
+    EXPECT_EQ(body["gaps"][0]["to"].get<int64_t>(), kBaseTs + 600);
+}
+
+TEST_F(SysmonHistoryServiceTest, MinuteLevelIntervalIsNullWhenNoBuckets) {
+    // 无桶即无桶宽：分钟层不得在空结果时硬报 60（那会让前端以为有数据可画）
+    create_empty_db();
+    const auto svc = service();
+    const auto body = svc.query(*svc.parse(params({
+                                               {"from", std::to_string(kBaseTs)},
+                                               {"to", std::to_string(kBaseTs + 7200)},
+                                               {"level", "minute"},
+                                           }))
+                                     .query);
+    ASSERT_TRUE(body.value("available", false));
+    EXPECT_TRUE(body["series"][0]["points"].empty());
+    EXPECT_TRUE(body["interval_sec"].is_null());
+}
+
+TEST_F(SysmonHistoryServiceTest, SingleDimensionPointHasNullInterval) {
+    // 单点无从反推桶宽：输出 null 而不是猜一个值
+    seed([](HistoryStore&, HistoryBatch& batch) {
+        dztrader::sysmonstore::DimensionRecord record;
+        record.level = dztrader::sysmonstore::kLevelRaw;
+        record.bucket_ts = kBaseTs;
+        record.domain = std::string(dztrader::sysmonstore::kNetworkDomain);
+        record.dimension = "eth0";
+        record.metric = "rx_bytes_per_sec";
+        record.aggregate.observe(1.0);
+        batch.dimensions.push_back(record);
+    });
+    const auto svc = service();
+    const auto body = svc.query(*svc.parse(params({
+                                               {"metric", "network.rx_bytes_per_sec"},
+                                               {"dimension", "eth0"},
+                                               {"from", std::to_string(kBaseTs)},
+                                               {"to", std::to_string(kBaseTs + 600)},
+                                               {"level", "raw"},
+                                           }))
+                                     .query);
+    ASSERT_TRUE(body.value("available", false));
+    ASSERT_EQ(body["series"][0]["points"].size(), 1U);
+    EXPECT_TRUE(body["interval_sec"].is_null());
+    EXPECT_TRUE(body["gaps"].empty());
+}
+
+TEST_F(SysmonHistoryServiceTest, AutoFallsBackWhenPreferredLevelHasNoRows) {
+    // **默认部署的关键路径**：压缩只在 record_interval_sec < 60 时发生，默认是 60 ⇒
+    // 一分钟聚合层从不产出。若 auto 死守「>1 小时选 minute」而不回退，默认配置下所有
+    // >1 小时的范围（含默认 6 小时视图）都会返回空序列——功能整体失效。
+    // 这里只写原始记录、请求 2 小时范围（>1h ⇒ auto 首选 minute），必须回退到 raw。
+    seed([](HistoryStore&, HistoryBatch& batch) {
+        for (int i = 0; i < 20; ++i) {
+            batch.scalars.push_back(make_scalar(kBaseTs + i * 300, 1.0));
+        }
+    });
+    const auto svc = service();
+    const auto body = svc.query(*svc.parse(params({
+                                               {"from", std::to_string(kBaseTs)},
+                                               {"to", std::to_string(kBaseTs + 7200)},
+                                           }))
+                                     .query);
+    ASSERT_TRUE(body.value("available", false));
+    // 回退发生了：实际层级回显为 raw（不静默假装 minute 有数据）
+    EXPECT_EQ(body.value("level", ""), "raw");
+    ASSERT_EQ(body["series"][0]["points"].size(), 20U);
+    EXPECT_FALSE(body.value("truncated", true));
+}
+
+TEST_F(SysmonHistoryServiceTest, AutoPrefersMinuteWhenItHasRows) {
+    // 反向保证：当一分钟聚合层确有数据时，auto 仍优先用它（不因回退逻辑破坏原语义）
+    seed([](HistoryStore&, HistoryBatch& batch) {
+        batch.scalars.push_back(make_scalar(kBaseTs, 1.0));
+        batch.scalars.push_back(make_scalar(kBaseTs, 2.0, dztrader::sysmonstore::kLevelMinute, 60));
+    });
+    const auto svc = service();
+    const auto body = svc.query(*svc.parse(params({
+                                               {"from", std::to_string(kBaseTs)},
+                                               {"to", std::to_string(kBaseTs + 7200)},
+                                           }))
+                                     .query);
+    ASSERT_TRUE(body.value("available", false));
+    EXPECT_EQ(body.value("level", ""), "minute");
+    ASSERT_EQ(body["series"][0]["points"].size(), 1U);
+    EXPECT_DOUBLE_EQ(body["series"][0]["points"][0]["max"].get<double>(), 2.0);
+}
+
+TEST_F(SysmonHistoryServiceTest, ExplicitLevelDoesNotFallBack) {
+    // 显式给 level 时不回退：用户要的就是该层级，空就如实空（回退只属于 auto）
+    seed([](HistoryStore&, HistoryBatch& batch) {
+        batch.scalars.push_back(make_scalar(kBaseTs, 1.0));  // 只有原始记录
+    });
+    const auto svc = service();
+    const auto body = svc.query(*svc.parse(params({
+                                               {"from", std::to_string(kBaseTs)},
+                                               {"to", std::to_string(kBaseTs + 7200)},
+                                               {"level", "minute"},
+                                           }))
+                                     .query);
+    ASSERT_TRUE(body.value("available", false));
+    EXPECT_EQ(body.value("level", ""), "minute");
+    EXPECT_TRUE(body["series"][0]["points"].empty());
 }
 
 }  // namespace

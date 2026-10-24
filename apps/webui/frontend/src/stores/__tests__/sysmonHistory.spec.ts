@@ -199,15 +199,39 @@ describe('useSysmonHistoryStore', () => {
     expect(store.gaps[0].kind).toBe('restart')
   })
 
-  it('历史 store 不订阅 WS：切换查询不影响实时快照（结构保证）', async () => {
-    // 历史 store 只经 REST 取数；它没有任何 WS handler 注册（结构断言：
-    // 该 store 的 API 面只有 load/set* 与只读视图，没有 apply* 之类的 WS 入口）。
-    vi.mocked(sysmonApi.getHistory).mockResolvedValue(makeAvailable())
+  it('历史查询失败后可重试成功（状态从 idle 恢复到 ready）', async () => {
+    // 可观察行为：失败不是终态，重试能把视图恢复正常（而不是卡在错误态）
+    vi.mocked(sysmonApi.getHistory).mockRejectedValueOnce(new Error('HTTP 500'))
     const store = useSysmonHistoryStore()
-    const wsEntryPoints = Object.keys(store).filter(key =>
-      key.startsWith('apply') || key.startsWith('on') || key.includes('snapshot'))
-    expect(wsEntryPoints).toEqual([])
+    await store.load()
+    expect(store.state).toBe('idle')
+    expect(store.error).toBe('HTTP 500')
+
+    vi.mocked(sysmonApi.getHistory).mockResolvedValueOnce(makeAvailable())
+    await store.load()
+    expect(store.state).toBe('ready')
+    expect(store.error).toBeNull()
+    expect(store.points).toHaveLength(2)
   })
+
+  it('有效范围秒数反映截断后的实际覆盖（供视图提示用户）', async () => {
+    const fullRange = { from: 1_790_000_000, to: 1_790_021_600 }  // 6 小时
+    vi.mocked(sysmonApi.getHistory).mockResolvedValue(
+      makeAvailable({ from: fullRange.from, to: fullRange.to }),
+    )
+    const store = useSysmonHistoryStore()
+    await store.load()
+    expect(store.effectiveRangeSeconds).toBe(21_600)
+
+    // 截断后 from 前移：实际覆盖变短，视图据此显示「实际覆盖最近 X」
+    vi.mocked(sysmonApi.getHistory).mockResolvedValue(
+      makeAvailable({ from: fullRange.to - 900, to: fullRange.to, truncated: true }),
+    )
+    await store.load()
+    expect(store.effectiveRangeSeconds).toBe(900)
+    expect(store.truncated).toBe(true)
+  })
+
 })
 
 describe('历史视图的选项常量', () => {

@@ -23,6 +23,30 @@ using dztrader::sysmonstore::QueryLevel;
 
 constexpr int64_t kDefaultRangeSec = 6 * 3600;  ///< `from` 缺省：最近 6 小时
 
+/// 单次查询返回的标记上限。标记不是记录点：每次重启/跳变/缺口才写一条，量级极小；
+/// 给它一个远高于 `max_points` 的独立上限，避免缺口原因被点数上限连带截断。
+constexpr int64_t kMaxMarksPerQuery = 10000;
+
+/**
+ * @brief 从相邻桶时刻反推名义桶宽（仅供**没有** `interval_sec` 列的长表使用）。
+ *
+ * 取相邻间隔的最小正值：桶网格是等距的，缺口只会让某个间隔变大，因此最小间隔就是
+ * 名义桶宽。单点或全部相同时刻（脏数据）无从反推，返回 0（调用方序列化成 null）。
+ */
+int64_t derive_interval_from_buckets(const std::vector<int64_t>& bucket_ts) {
+    if (bucket_ts.size() < 2) {
+        return 0;
+    }
+    int64_t smallest = 0;
+    for (size_t i = 1; i < bucket_ts.size(); ++i) {
+        const int64_t delta = bucket_ts[i] - bucket_ts[i - 1];
+        if (delta > 0 && (smallest == 0 || delta < smallest)) {
+            smallest = delta;
+        }
+    }
+    return smallest;
+}
+
 /// 解析整数参数：缺失用默认值；非数字/溢出/越界返回 `std::nullopt`（调用方回 400）。
 /// `std::stoll` 会抛 invalid_argument/out_of_range，必须隔离（宁肯 400 不崩溃）。
 std::optional<int64_t> parse_int_param(const std::function<std::string(std::string_view)>& param,
@@ -51,7 +75,7 @@ bool has_param(const std::function<std::string(std::string_view)>& param, std::s
 /// 当前墙钟秒（Unix 秒）。
 int64_t current_unix_sec() { return static_cast<int64_t>(std::time(nullptr)); }
 
-/// 降级响应（契约 sysmon §6.1.3）：只有 available 与 reason，不带任何数据字段。
+/// 降级响应（《帧契约：系统监控》§6.1.3）：只有 available 与 reason，不带任何数据字段。
 nlohmann::json unavailable_body(HistoryAvailability availability) {
     return {
         {"available", false},
@@ -98,7 +122,6 @@ SysmonHistoryParseResult SysmonHistoryService::parse(
     }
     const MetricRef ref = dztrader::sysmonstore::resolve_metric(metric);
     if (!ref.valid()) {
-        result.error = "unknown metric";
         return result;
     }
 
@@ -106,11 +129,9 @@ SysmonHistoryParseResult SysmonHistoryService::parse(
     std::string dimension = param("dimension");
     if (ref.is_dimension) {
         if (dimension.empty()) {
-            result.error = "dimension required";
             return result;
         }
     } else if (!dimension.empty()) {
-        result.error = "dimension not allowed";
         return result;
     }
 
@@ -120,7 +141,6 @@ SysmonHistoryParseResult SysmonHistoryService::parse(
         level_text = "auto";
     }
     if (!dztrader::sysmonstore::parse_query_level(level_text).has_value()) {
-        result.error = "invalid level";
         return result;
     }
 
@@ -130,7 +150,6 @@ SysmonHistoryParseResult SysmonHistoryService::parse(
         const auto parsed = parse_int_param(param, "max_points");
         if (!parsed.has_value() || *parsed < dztrader::sysmonstore::kMinMaxPoints ||
             *parsed > dztrader::sysmonstore::kMaxMaxPoints) {
-            result.error = "invalid max_points";
             return result;
         }
         max_points = *parsed;
@@ -141,7 +160,6 @@ SysmonHistoryParseResult SysmonHistoryService::parse(
     if (has_param(param, "to")) {
         const auto parsed = parse_int_param(param, "to");
         if (!parsed.has_value()) {
-            result.error = "invalid to";
             return result;
         }
         to_ts = *parsed;
@@ -150,7 +168,6 @@ SysmonHistoryParseResult SysmonHistoryService::parse(
     if (has_param(param, "from")) {
         const auto parsed = parse_int_param(param, "from");
         if (!parsed.has_value()) {
-            result.error = "invalid from";
             return result;
         }
         from_ts = *parsed;
@@ -158,7 +175,6 @@ SysmonHistoryParseResult SysmonHistoryService::parse(
     // 契约：0 < from < to。`from <= 0` 无意义（Unix 秒纪元前的历史不存在），
     // `from >= to` 是空/倒置范围 —— 一律 400，不静默改成默认范围。
     if (from_ts <= 0 || to_ts <= from_ts) {
-        result.error = "invalid time range";
         return result;
     }
 
@@ -191,58 +207,100 @@ nlohmann::json SysmonHistoryService::query(const SysmonHistoryQuery& query) cons
     // ---- 层级：auto 按范围宽度选择（§6.1.1）----
     const QueryLevel requested =
         dztrader::sysmonstore::parse_query_level(query.level).value_or(QueryLevel::Auto);
-    const QueryLevel level =
-        requested == QueryLevel::Auto
-            ? dztrader::sysmonstore::select_auto_level(query.from_ts, query.to_ts)
-            : requested;
-    const auto storage_level = dztrader::sysmonstore::query_level_to_storage(level);
-    if (!storage_level.has_value()) {
-        return unavailable_body(HistoryAvailability::OpenFailed);
-    }
-
+    QueryLevel level = requested == QueryLevel::Auto
+                           ? dztrader::sysmonstore::select_auto_level(query.from_ts, query.to_ts)
+                           : requested;
     // ---- 点数上限：多取一行精确判定是否截断（§6.1.2）----
     const int64_t fetch_rows = query.max_points + 1;
 
     nlohmann::json series_points = nlohmann::json::array();
     std::vector<int64_t> bucket_ts;
+    std::vector<int64_t> row_interval_sec;  // 仅宽表有；长表原始行没有该列
     int64_t interval_sec = 0;
     bool truncated = false;
     int64_t effective_from = query.from_ts;
 
     try {
-        if (ref.is_dimension) {
-            auto rows = reader.query_dimensions_desc(ref.domain, query.dimension, ref.metric,
-                                                     *storage_level, query.from_ts, query.to_ts,
-                                                     fetch_rows);
-            const auto trim =
-                dztrader::sysmonstore::trim_to_point_limit(rows.size(), query.max_points);
-            truncated = trim.truncated;
-            // 查询是降序的：保留前 `keep` 行（最新的 keep 行），再反转成升序输出。
-            rows.resize(trim.keep);
-            std::reverse(rows.begin(), rows.end());
-            bucket_ts.reserve(rows.size());
-            for (const auto& row : rows) {
-                bucket_ts.push_back(row.bucket_ts);
-                series_points.push_back(point_to_json(row.bucket_ts, row.aggregate));
-            }
-        } else {
+        // 取行并裁剪：降序取 max_points+1 行 → 精确裁剪 → 反转成升序。
+        // 两个层级/两种指标的差异都收敛在这里的三个小 lambda 之后，主流程只有一条。
+        auto fetch_scalars = [&](QueryLevel for_level) {
             auto rows =
-                reader.query_scalars_desc(*storage_level, query.from_ts, query.to_ts, fetch_rows);
+                reader.query_scalars_desc(*dztrader::sysmonstore::query_level_to_storage(for_level),
+                                          query.from_ts, query.to_ts, fetch_rows);
             const auto trim =
                 dztrader::sysmonstore::trim_to_point_limit(rows.size(), query.max_points);
-            truncated = trim.truncated;
             rows.resize(trim.keep);
             std::reverse(rows.begin(), rows.end());
-            bucket_ts.reserve(rows.size());
-            for (const auto& row : rows) {
+            return std::make_pair(std::move(rows), trim.truncated);
+        };
+        auto fetch_dimensions = [&](QueryLevel for_level) {
+            auto rows = reader.query_dimensions_desc(
+                ref.domain, query.dimension, ref.metric,
+                *dztrader::sysmonstore::query_level_to_storage(for_level), query.from_ts,
+                query.to_ts, fetch_rows);
+            const auto trim =
+                dztrader::sysmonstore::trim_to_point_limit(rows.size(), query.max_points);
+            rows.resize(trim.keep);
+            std::reverse(rows.begin(), rows.end());
+            return std::make_pair(std::move(rows), trim.truncated);
+        };
+
+        // `auto` 选中的层级可能在本机根本不产出数据：压缩只在 `record_interval_sec < 60`
+        // 时发生（默认配置是 60 ⇒ 从不压缩 ⇒ 一分钟聚合层永远为空）。此时若死守「auto 选的
+        // 层级」不回退，默认部署下所有 >1 小时的范围都会返回空序列 —— 功能整体失效。
+        // 因此拿到空结果时回退到另一层级，并把**实际使用的层级**回显在 `level` 字段里，
+        // 回退本身对使用方可见（前端摘要显示「粒度 …」），不构成静默掩盖。
+        std::vector<dztrader::sysmonstore::MetricAggregate> aggregates;
+
+        auto load_level = [&](QueryLevel for_level) {
+            if (ref.is_dimension) {
+                auto [rows, was_truncated] = fetch_dimensions(for_level);
+                truncated = was_truncated;
+                aggregates.clear();
+                aggregates.reserve(rows.size());
+                bucket_ts.clear();
+                bucket_ts.reserve(rows.size());
+                for (const auto& row : rows) {
+                    bucket_ts.push_back(row.bucket_ts);
+                    aggregates.push_back(row.aggregate);
+                }
+            } else {
+                auto [rows, was_truncated] = fetch_scalars(for_level);
+                truncated = was_truncated;
+                aggregates.clear();
+                aggregates.reserve(rows.size());
+                bucket_ts.clear();
+                bucket_ts.reserve(rows.size());
+                row_interval_sec.clear();
+                row_interval_sec.reserve(rows.size());
                 const size_t index =
                     static_cast<size_t>(ref.scalar - dztrader::sysmonstore::kScalarMetrics.data());
-                bucket_ts.push_back(row.bucket_ts);
-                series_points.push_back(point_to_json(row.bucket_ts, row.metrics[index]));
-                if (interval_sec == 0) {
-                    interval_sec = row.interval_sec;
+                for (const auto& row : rows) {
+                    bucket_ts.push_back(row.bucket_ts);
+                    aggregates.push_back(row.metrics[index]);
+                    row_interval_sec.push_back(row.interval_sec);
+                }
+                // 桶宽取**最新一行**的 `interval_sec`：记录间隔可在运行期调整，跨调整点的一批
+                // 行会有不同桶宽；最新的那一行代表当前生效的桶宽，也是画图最该用的刻度。
+                if (!row_interval_sec.empty()) {
+                    interval_sec = row_interval_sec.back();
                 }
             }
+            return !bucket_ts.empty();
+        };
+
+        bool found = load_level(level);
+        if (!found && requested == QueryLevel::Auto) {
+            // 回退到另一层级（auto 的偏好在本机没有数据时才这么做）
+            const QueryLevel other =
+                level == QueryLevel::Raw ? QueryLevel::Minute : QueryLevel::Raw;
+            found = load_level(other);
+            if (found) {
+                level = other;
+            }
+        }
+        for (size_t i = 0; i < bucket_ts.size(); ++i) {
+            series_points.push_back(point_to_json(bucket_ts[i], aggregates[i]));
         }
     } catch (const std::exception& e) {
         // 查询期间的 SQL 失败同样降级（§6.1.3），不把半截数据当结果返回。
@@ -254,17 +312,28 @@ nlohmann::json SysmonHistoryService::query(const SysmonHistoryQuery& query) cons
     if (truncated && !bucket_ts.empty()) {
         effective_from = bucket_ts.front();
     }
-    if (level == QueryLevel::Minute) {
-        // 分钟聚合层级桶宽恒为 60（契约 §6.1 的 interval_sec 口径）；
-        // 无桶时保持 0，序列化时输出 null。
-        interval_sec = dztrader::sysmonstore::kMinuteResolutionSec;
+    // 桶宽（契约 §6.1 的 interval_sec 口径）：
+    // - 分钟聚合恒为 60；
+    // - 原始层的宽表从行内 `interval_sec` 取；
+    // - 原始层的长表**没有** `interval_sec` 列（维度行的存在本身表示有样本，桶宽是全表属性），
+    //   因此从相邻桶时刻反推：相邻最小间隔就是名义桶宽（缺口只会拉大间隔，不会缩小）。
+    // 范围内没有任何桶时保持 0，序列化时输出 null —— 无桶即无桶宽，不得猜一个值。
+    if (!bucket_ts.empty()) {
+        if (level == QueryLevel::Minute) {
+            interval_sec = dztrader::sysmonstore::kMinuteResolutionSec;
+        } else if (interval_sec <= 0) {
+            interval_sec = derive_interval_from_buckets(bucket_ts);
+        }
     }
 
     // ---- 标记与缺口（§6.1.4）----
     nlohmann::json marks_json = nlohmann::json::array();
     std::vector<dztrader::sysmonstore::HistoryMark> marks;
     try {
-        marks = reader.query_marks(effective_from, query.to_ts, query.max_points);
+        // 标记**不**受 max_points 约束：标记解释缺口原因，若随点数上限一起截断，
+        // 缺口会被错报成 unmarked（把「有解释的停机」误报成「无人解释的异常」）。
+        // 标记数量由写入侧决定（每次重启/跳变/缺口一条），量级远小于记录点。
+        marks = reader.query_marks(effective_from, query.to_ts, kMaxMarksPerQuery);
     } catch (const std::exception& e) {
         SPDLOG_WARN("sysmon history marks query failed | error=\"{}\"", e.what());
         return unavailable_body(HistoryAvailability::OpenFailed);

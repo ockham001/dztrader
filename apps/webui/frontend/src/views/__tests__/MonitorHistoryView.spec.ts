@@ -224,18 +224,22 @@ describe('MonitorView 实时 / 历史视图切换（不影响 WS 与实时数据
     expect(wrapper.find('[data-test="monitor-tab-history"]').attributes('aria-selected')).toBe('true')
   })
 
-  it('历史 store 与实时 store 互不影响', async () => {
+  it('历史 store 与实时 store 互不影响（实时推送不改变历史结果，反之亦然）', async () => {
     const wrapper = await mountView()
     await openHistory(wrapper)
     const sysmon = useSysmonStore()
     const history = useSysmonHistoryStore()
+    const historyPointsBefore = history.points.map(p => p.max)
 
-    // 历史 store 没有 WS 入口（结构断言）：实时推送到不了它，历史结果保持不变
-    expect('applySnapshot' in history).toBe(false)
-    expect('applyConfig' in history).toBe(false)
+    // 实时推送到达：历史查询结果必须原样不变（两者数据源独立）
     sysmon.applySnapshot(makeSysmonSnapshot({ cpuUsageRatio: 0.7 }))
     await flushPromises()
-    expect(history.points).toHaveLength(2)
+    expect(history.points.map(p => p.max)).toEqual(historyPointsBefore)
+    expect(sysmon.cpuUsageRatio).toBe(0.7)
+
+    // 反向：重新查历史不改变实时快照
+    await history.load()
+    await flushPromises()
     expect(sysmon.cpuUsageRatio).toBe(0.7)
   })
 })

@@ -14,9 +14,10 @@
 
 namespace dztrader::webui {
 
-/// 系统监控 REST（契约 rest §2.8，契约 sysmon）。
+/// 系统监控 REST（《帧契约：REST》§2.8，契约 sysmon）。
 /// - GET /api/sysmon/snapshot：读取镜像当前快照；镜像尚未就绪回 503。
-/// - GET /api/sysmon/history：只读查询历史库（契约 sysmon §6.1）；降级回 200 + available=false。
+/// - GET /api/sysmon/history：只读查询历史库（《帧契约：系统监控》§6.1）；降级回 200 +
+/// available=false。
 /// - PUT /api/sysmon/config：运行期配置 merge patch（admin），直发 SET_SYSMON_CONFIG。
 class SysmonCtrl : public drogon::HttpController<SysmonCtrl, false>, public ControllerBase {
 public:
@@ -38,7 +39,7 @@ public:
     void get_snapshot(const drogon::HttpRequestPtr& req,
                       std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
-    /// GET /api/sysmon/history：历史曲线查询（契约 sysmon §6.1）。
+    /// GET /api/sysmon/history：历史曲线查询（《帧契约：系统监控》§6.1）。
     /// 参数非法回 400；历史库不可用回 200 + `{"available":false,"reason":...}`（不 5xx、不伪造）。
     void get_history(const drogon::HttpRequestPtr& req,
                      std::function<void(const drogon::HttpResponsePtr&)>&& callback);

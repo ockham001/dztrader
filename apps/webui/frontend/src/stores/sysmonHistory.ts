@@ -11,7 +11,7 @@ import type {
 } from '@/types/api'
 
 /**
- * 历史视图的指标选项（契约 sysmon §6.1 的 metric 参数）。
+ * 历史视图的指标选项（《帧契约：系统监控》§6.1 的 metric 参数）。
  *
  * 只列宽表逻辑键：它们无需维度即可查询，是历史视图的下拉内容。维度指标（每核 / 每卷 /
  * 每盘 / 每网卡 / 每传感器）需要先选定维度，本版本不提供维度选择器（每次查询单序列），
@@ -56,7 +56,7 @@ export const SYSMON_HISTORY_RANGES: SysmonHistoryRangePreset[] = [
   { label: '最近 7 天', seconds: 7 * 86400 },
 ]
 
-/** 粒度选项（契约 sysmon §6.1 的 level 参数；auto 由服务端按范围宽度选择） */
+/** 粒度选项（《帧契约：系统监控》§6.1 的 level 参数；auto 由服务端按范围宽度选择） */
 export interface SysmonHistoryLevelOption {
   value: SysmonHistoryLevel
   label: string
@@ -74,7 +74,7 @@ export const SYSMON_HISTORY_LEVELS: SysmonHistoryLevelOption[] = [
  */
 export type SysmonHistoryState = 'idle' | 'loading' | 'ready' | 'empty' | 'unavailable'
 
-/** 不可用原因的文案（契约 sysmon §6.1.3 的前端文案列）。 */
+/** 不可用原因的文案（《帧契约：系统监控》§6.1.3 的前端文案列）。 */
 export function historyUnavailableText(reason: SysmonHistoryUnavailableReason): string {
   if (reason === 'not_found') return '历史记录未启用或尚无数据'
   if (reason === 'schema_mismatch') return '历史库版本与当前程序不符'
@@ -82,7 +82,7 @@ export function historyUnavailableText(reason: SysmonHistoryUnavailableReason): 
 }
 
 /**
- * 系统监控历史 store（契约 sysmon §6.1、契约 rest §2.8）。
+ * 系统监控历史 store（《帧契约：系统监控》§6.1、《帧契约：REST》§2.8）。
  *
  * **与实时 store 完全独立**（验收标准：实时/历史切换不影响 WS 连接与实时数据）：
  * 本 store 只发 REST 查询、不订阅任何 WS 消息、不写实时镜像。监控页切换视图时只是换
@@ -162,6 +162,16 @@ export const useSysmonHistoryStore = defineStore('sysmonHistory', () => {
   })
 
   /**
+   * 生效范围的实际秒数（契约 §6.1.2：`truncated=true` 时前端必须把范围控件同步到生效值）。
+   * 截断后实际只有 `to − from` 秒，视图据它把「最近 N」的显示改成真实覆盖时长，
+   * 避免用户以为看的是完整 N 而实际只看到最近一小段。
+   */
+  const effectiveRangeSeconds = computed<number | null>(() => {
+    const range = effectiveRange.value
+    return range ? range.to - range.from : null
+  })
+
+  /**
    * 查询历史。`to` 取当前时刻、`from = to - rangeSeconds`（前端不持有绝对时间选择器：
    * 历史视图给的是「最近 N」，与验收标准的「时间范围选择」一致，且避免时区/绝对时间的歧义）。
    *
@@ -236,6 +246,7 @@ export const useSysmonHistoryStore = defineStore('sysmonHistory', () => {
     intervalSec,
     truncated,
     effectiveRange,
+    effectiveRangeSeconds,
     load,
     setMetric,
     setRange,

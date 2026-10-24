@@ -3,7 +3,7 @@
 
 /**
  * @file sysmon_history_service.h
- * @brief 系统监控历史查询（契约 sysmon §6.1）：HTTP 参数 → 只读历史库查询 → REST JSON。
+ * @brief 系统监控历史查询（《帧契约：系统监控》§6.1）：HTTP 参数 → 只读历史库查询 → REST JSON。
  *
  * 分层（与仓库既有做法一致）：
  * - **查询语义**（指标键解析、层级选择、点数上限、缺口归并）在 `libs/sysmonstore` 的
@@ -34,17 +34,19 @@ struct SysmonHistoryQuery {
     int64_t from_ts = 0;     ///< 起始时刻（Unix 秒，含）
     int64_t to_ts = 0;       ///< 结束时刻（Unix 秒，不含）
     std::string level;       ///< `auto` / `raw` / `minute`（已校验）
-    int64_t max_points = 0;  ///< 每序列点数上限（已钳制在合法区间内）
+    int64_t max_points = 0;  ///< 每序列点数上限（已校验在合法区间内；越界回 400，不钳制）
 };
 
-/// 参数解析结果：`error` 非空表示应回 400（契约 sysmon §6.1「参数非法」）。
+/// 参数解析结果：`query` 无值表示应回 400（《帧契约：系统监控》§6.1「参数非法」）。
+///
+/// 不携带具体错误文案：端点对外的 400 响应体是固定的 `{"error":"bad request"}`
+/// （契约只定义这一种形状），区分「哪个参数错了」只对日志有意义，而本类不写日志。
 struct SysmonHistoryParseResult {
     std::optional<SysmonHistoryQuery> query;
-    std::string error;  ///< 为空表示成功
 };
 
 /**
- * @brief 历史查询与降级降级的唯一实现（契约 sysmon §6.1）。
+ * @brief 历史查询与降级处理的唯一实现（《帧契约：系统监控》§6.1）。
  */
 class SysmonHistoryService {
 public:
@@ -58,7 +60,7 @@ public:
                          int64_t now_ts = 0);
 
     /**
-     * @brief 解析并校验 HTTP query 参数（契约 sysmon §6.1）。
+     * @brief 解析并校验 HTTP query 参数（《帧契约：系统监控》§6.1）。
      *
      * @param params 原始 query 参数（drogon 的 `getParameters()`）
      * @return 成功时 `query` 有值；失败时 `error` 非空（调用方回 400 `bad request`）
@@ -67,7 +69,7 @@ public:
         const std::function<std::string(std::string_view)>& param) const;
 
     /**
-     * @brief 执行查询并序列化成 REST 响应 JSON（契约 sysmon §6.1）。
+     * @brief 执行查询并序列化成 REST 响应 JSON（《帧契约：系统监控》§6.1）。
      *
      * @param query 已校验的参数
      * @return 响应体；降级时为 `{"available":false,"reason":...}`，绝不抛异常

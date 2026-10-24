@@ -204,7 +204,7 @@ TEST_F(SysmonControllerTest, Returns503BeforeFirstReport) {
     EXPECT_EQ(body.value("error", ""), "sysmon snapshot not available");
 }
 
-// ===== PUT /api/sysmon/config（契约 rest §2.8、契约 sysmon §3）=====
+// ===== PUT /api/sysmon/config（《帧契约：REST》§2.8、《帧契约：系统监控》§3）=====
 
 /// 构造带 user_id 属性与 body 的 PUT 请求（JWT advice 在真实链路里注入 user_id）。
 drogon::HttpRequestPtr put_request(const std::string& user_id, const std::string& body) {
@@ -278,7 +278,7 @@ TEST_F(SysmonControllerTest, SetConfigDispatchesMergePatchToSysmon) {
 }
 
 TEST_F(SysmonControllerTest, SetConfigEmptyPatchStillDispatched) {
-    // 契约 sysmon §3：空对象 {} 为无操作但仍回 RTN —— REST 侧同样原样下发
+    // 《帧契约：系统监控》§3：空对象 {} 为无操作但仍回 RTN —— REST 侧同样原样下发
     repo_->create_user("admin", "Administrator", "admin@test.com", "pass", "admin");
     enable_shm();
     drogon::HttpResponsePtr captured;
@@ -292,7 +292,7 @@ TEST_F(SysmonControllerTest, SetConfigEmptyPatchStillDispatched) {
     EXPECT_TRUE(frame->empty());
 }
 
-// ===== GET /api/sysmon/history（契约 sysmon §6.1、契约 rest §2.8）=====
+// ===== GET /api/sysmon/history（《帧契约：系统监控》§6.1、《帧契约：REST》§2.8）=====
 
 /// 构造带 query 参数的 GET 请求（drogon 的 getParameter 从 query 解析）。
 drogon::HttpRequestPtr get_request(const std::map<std::string, std::string>& query = {}) {
@@ -315,7 +315,7 @@ drogon::HttpResponsePtr invoke_history(const std::shared_ptr<SysmonCtrl>& ctrl,
 }
 
 TEST_F(SysmonControllerTest, HistoryReturns400OnInvalidParameters) {
-    // 参数非法一律 400（契约 sysmon §6.1），不静默钳制
+    // 参数非法一律 400（《帧契约：系统监控》§6.1），不静默钳制
     auto ctrl = std::make_shared<SysmonCtrl>(repo_, mirror_, nullptr,
                                              std::filesystem::temp_directory_path() / "nope.db");
     const std::map<std::string, std::map<std::string, std::string>> bad_cases = {

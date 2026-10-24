@@ -32,7 +32,7 @@ export const sysmonApi = {
   setConfig: (patch: SysmonConfigPatch) =>
     api.put<{ ok: boolean; message?: string }>('/api/sysmon/config', patch),
   /**
-   * 契约 sysmon §6.1 / 契约 rest §2.8：历史曲线查询。
+   * 《帧契约：系统监控》§6.1 / 《帧契约：REST》§2.8：历史曲线查询。
    *
    * 历史库不可用时**不**回 5xx —— 而是 200 + `{available:false, reason}`（库缺失 / 版本不符 /
    * 文件损坏三种降级由后端判定）。因此调用方必须判断 `available`，不能只看 HTTP 是否成功。

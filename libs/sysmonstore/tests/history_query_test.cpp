@@ -1,6 +1,6 @@
 /**
  * @file history_query_test.cpp
- * @brief 历史查询语义（契约 sysmon §6.1）的纯函数测试：指标键解析、层级选择、
+ * @brief 历史查询语义（《帧契约：系统监控》§6.1）的纯函数测试：指标键解析、层级选择、
  *        点数上限窗口裁剪、缺口归并。
  *
  * 测试准则（docs/unit-test-standard.md）：只断言外部可观察行为——给定输入字符串/时刻
@@ -9,7 +9,6 @@
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -28,7 +27,7 @@ HistoryMark make_mark(int64_t ts, std::string_view kind) {
     return mark;
 }
 
-// ===== 指标键解析（契约 sysmon §6.1 的 metric 参数）=====
+// ===== 指标键解析（《帧契约：系统监控》§6.1 的 metric 参数）=====
 
 TEST(HistoryQueryTest, ResolvesScalarMetricKeys) {
     const auto cpu = resolve_metric("cpu.usage_ratio");
@@ -76,26 +75,31 @@ TEST(HistoryQueryTest, RejectsUnknownMetricKeys) {
     EXPECT_FALSE(resolve_metric("network.").valid());
 }
 
-TEST(HistoryQueryTest, ListsEveryRegisteredMetricKey) {
-    const auto keys = list_metric_keys();
-    // 全部宽表指标 + 全部维度指标都在清单里，且单调（已排序）、无重复
-    EXPECT_EQ(
-        keys.size(), kScalarMetrics.size() + [&] {
-            size_t count = 0;
-            for (const auto& domain : kDimensionDomains) {
-                count += domain.metrics.size();
-            }
-            return count;
-        }());
-    EXPECT_TRUE(std::is_sorted(keys.begin(), keys.end()));
-    EXPECT_EQ(std::adjacent_find(keys.begin(), keys.end()), keys.end());
-    // 每个清单项都必须能解析回来（清单与解析器不得漂移）
-    for (const auto& key : keys) {
-        EXPECT_TRUE(resolve_metric(key).valid()) << key;
+TEST(HistoryQueryTest, EveryRegisteredScalarKeyResolves) {
+    // 宽表注册表是唯一真相源：表里每个逻辑键都必须能被解析（否则 REST 会 400，
+    // 而写入侧却认为它是合法指标）。
+    for (const auto& spec : kScalarMetrics) {
+        const auto ref = resolve_metric(spec.key);
+        ASSERT_TRUE(ref.valid()) << spec.key;
+        EXPECT_FALSE(ref.is_dimension) << spec.key;
     }
 }
 
-// ===== 层级参数解析与自动选择（契约 sysmon §6.1.1）=====
+TEST(HistoryQueryTest, EveryRegisteredDimensionMetricResolves) {
+    // 长表同理：每个域的每个指标名都必须能按 `<domain>.<metric>` 解析。
+    for (const auto& domain : kDimensionDomains) {
+        for (const auto metric : domain.metrics) {
+            const std::string key = std::string(domain.domain) + "." + std::string(metric);
+            const auto ref = resolve_metric(key);
+            ASSERT_TRUE(ref.valid()) << key;
+            EXPECT_TRUE(ref.is_dimension) << key;
+            EXPECT_EQ(ref.domain, domain.domain) << key;
+            EXPECT_EQ(ref.metric, metric) << key;
+        }
+    }
+}
+
+// ===== 层级参数解析与自动选择（《帧契约：系统监控》§6.1.1）=====
 
 TEST(HistoryQueryTest, ParsesLevelParameter) {
     EXPECT_EQ(parse_query_level("auto"), QueryLevel::Auto);
@@ -131,7 +135,7 @@ TEST(HistoryQueryTest, AutoSelectsRawWithinOneHourAndMinuteBeyond) {
     EXPECT_EQ(select_auto_level(kStart, kStart - 100), QueryLevel::Raw);
 }
 
-// ===== 点数上限裁剪（契约 sysmon §6.1.2）=====
+// ===== 点数上限裁剪（《帧契约：系统监控》§6.1.2）=====
 
 TEST(HistoryQueryTest, PointLimitKeepsEverythingWhenUnderLimit) {
     // 取回行数 <= 上限：全留、不标截断（哪怕范围宽度远大于「上限 x 桶宽」——
@@ -175,7 +179,7 @@ TEST(HistoryQueryTest, PointLimitDeclarationMatchesContractRange) {
     EXPECT_EQ(kAutoRawMaxRangeSec, 3600);
 }
 
-// ===== 缺口归并（契约 sysmon §6.1.4）=====
+// ===== 缺口归并（《帧契约：系统监控》§6.1.4）=====
 
 TEST(HistoryQueryTest, NoGapsForContiguousBuckets) {
     const std::vector<int64_t> buckets{100, 160, 220, 280};

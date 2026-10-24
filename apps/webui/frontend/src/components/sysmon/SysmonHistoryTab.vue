@@ -12,7 +12,7 @@ import {
   useSysmonHistoryStore,
 } from '@/stores/sysmonHistory'
 
-// 资源监控历史视图（契约 sysmon §6.1）：时间范围与粒度选择、min/max 包络、缺口与时钟
+// 资源监控历史视图（《帧契约：系统监控》§6.1）：时间范围与粒度选择、min/max 包络、缺口与时钟
 // 跳变标记、悬停显示精确值与时间。
 //
 // 三态由 store 的 state 承载（验收标准）：有数据 / 无数据 / 历史不可用；另有「加载中」。
@@ -52,7 +52,7 @@ const unavailableDesc = computed(
   () => (history.unavailableReason ? historyUnavailableText(history.unavailableReason) : ''),
 )
 
-/** 生效粒度与范围说明（auto 被服务端解析成具体层级后如实回显，不让用户猜） */
+/** 生效粒度与范围说明（auto 的选择/回退与截断后的实际覆盖时长都如实回显，不让用户猜） */
 const summaryText = computed(() => {
   if (!isReady.value) return ''
   const level = history.effectiveLevel === 'raw' ? '原始记录' : '一分钟聚合'
@@ -61,6 +61,23 @@ const summaryText = computed(() => {
   if (interval !== null) parts.push(`桶宽 ${interval} 秒`)
   parts.push(`${history.points.length} 个点`)
   return parts.join(' · ')
+})
+
+/**
+ * 截断后的实际覆盖时长（契约 §6.1.2：前端必须把范围控件同步到生效值）。
+ * 换算是纯展示：把秒数说成「实际覆盖 X」，与「最近 N」的预设并列显示，
+ * 用户就能看出自己看到的不是完整的 N。
+ */
+function formatDuration(seconds: number): string {
+  if (seconds >= 86400) return `${(seconds / 86400).toFixed(1)} 天`
+  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)} 小时`
+  if (seconds >= 60) return `${Math.round(seconds / 60)} 分钟`
+  return `${seconds} 秒`
+}
+
+const effectiveCoverageText = computed(() => {
+  if (!history.truncated || history.effectiveRangeSeconds === null) return ''
+  return `实际覆盖最近 ${formatDuration(history.effectiveRangeSeconds)}`
 })
 
 /** 缺口与标记的数量摘要（无标记时不渲染该行） */
@@ -156,7 +173,7 @@ async function onLevelChange(value: string | number): Promise<void> {
         <span class="ds-tag" data-test="sysmon-history-summary">{{ summaryText }}</span>
         <!-- 因点数上限只显示了最近一段：明确告知，不假装完整 -->
         <span v-if="history.truncated" class="ds-tag ds-tag--warning" data-test="sysmon-history-truncated">
-          点数超限，仅显示最近一段
+          点数超限，仅显示最近一段<template v-if="effectiveCoverageText">（{{ effectiveCoverageText }}）</template>
         </span>
         <span v-if="anomalySummary" class="ds-tag ds-tag--warning" data-test="sysmon-history-anomaly">
           {{ anomalySummary }}

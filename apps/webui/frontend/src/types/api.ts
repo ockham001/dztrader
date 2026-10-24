@@ -193,7 +193,7 @@ export interface WebuiSettingsUpdateBody {
   notify_cache_size?: number
 }
 
-// ===== 系统监控历史查询（契约 sysmon §6.1、契约 rest §2.8）=====
+// ===== 系统监控历史查询（《帧契约：系统监控》§6.1、《帧契约：REST》§2.8）=====
 // 历史查询走 REST（dzweb 只读打开历史库），不是 WS 领域消息，故类型定义在此而非
 // schema/domain-payloads.schema.json（后者只承载 WS 领域载荷）。
 
@@ -203,7 +203,7 @@ export type SysmonHistoryLevel = 'auto' | 'raw' | 'minute'
 /** 历史查询的不可用原因码（与 libs/sysmonstore 的 HistoryAvailability 一一对应） */
 export type SysmonHistoryUnavailableReason = 'not_found' | 'schema_mismatch' | 'open_failed'
 
-/** 历史查询的标记 kind（契约 sysmon §6.1.4） */
+/** 历史查询的标记 kind（《帧契约：系统监控》§6.1.4） */
 export type SysmonHistoryMarkKind = 'sample_gap' | 'restart' | 'clock_jump' | 'unmarked'
 
 /** 一个历史桶的聚合量；该指标在该桶内无有效样本时四值与 n 全为 null（不得用 0 冒充） */
@@ -260,7 +260,7 @@ export interface SysmonHistoryUnavailable {
 
 export type SysmonHistoryResponse = SysmonHistoryAvailable | SysmonHistoryUnavailable
 
-/** 历史查询参数（契约 sysmon §6.1；除 metric 外均可选） */
+/** 历史查询参数（《帧契约：系统监控》§6.1；除 metric 外均可选） */
 export interface SysmonHistoryQueryParams {
   metric?: string
   /** 维度指标必填、标量指标必须省略 */

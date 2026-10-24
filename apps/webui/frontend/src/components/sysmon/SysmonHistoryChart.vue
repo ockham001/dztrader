@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -7,7 +7,7 @@ import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent, MarkAreaComponent, MarkLineComponent } from 'echarts/components'
 import type { SysmonHistoryGap, SysmonHistoryMark, SysmonHistoryPoint } from '@/types/api'
 
-// 资源监控历史曲线（契约 sysmon §6.1）：最小 / 最大包络 + 均值 + 缺口底纹 + 标记线。
+// 资源监控历史曲线（《帧契约：系统监控》§6.1）：最小 / 最大包络 + 均值 + 缺口底纹 + 标记线。
 // 沿用既有图表做法（LogAnalysisTab）：按需注册组件（不整包引入 echarts），
 // 只用 CanvasRenderer + LineChart + 必要组件，保持打包体积。
 use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, LegendComponent, MarkAreaComponent, MarkLineComponent])
@@ -22,7 +22,7 @@ const props = defineProps<{
   title: string
 }>()
 
-/** 数值格式化：null 一律显示「不可用」（不得用 0 冒充，契约 sysmon §6.1） */
+/** 数值格式化：null 一律显示「不可用」（不得用 0 冒充，《帧契约：系统监控》§6.1） */
 function formatValue(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return '不可用'
   if (props.format === 'ratio') return `${(value * 100).toFixed(1)}%`
@@ -53,6 +53,44 @@ function formatFullTime(unixSec: number): string {
     + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
+/**
+ * 设计 token → 实际颜色值。
+ *
+ * ECharts 用 Canvas 渲染，**不能**解析 `var(--token)` 字符串（zrender 的样式解析器
+ * 只认具体颜色值，遇到 `var(...)` 会得到 undefined 并静默回退默认色）。而 design-tokens
+ * 的红线要求颜色必须走 token、不得硬编码。两者同时满足的唯一做法：从 CSS 自定义属性
+ * 读出当前主题下的实际值再交给 ECharts——token 仍是唯一来源，主题切换也跟着生效。
+ *
+ * 为什么不直接写 hex（`LogAnalysisTab` 的既有做法）：那会把 token 的值复制进 TS，
+ * 主题/令牌调整时这里就漂移了。
+ */
+function resolveToken(token: string): string {
+  // 主题类挂在 documentElement 上（useTheme），因此从根元素读；SSR/jsdom 下取不到时
+  // 给一个中性的回退（transparent 让图形"隐去"而不是画出错误的颜色）。
+  if (typeof window === 'undefined' || typeof getComputedStyle !== 'function') return 'transparent'
+  const value = getComputedStyle(document.documentElement).getPropertyValue(token).trim()
+  return value || 'transparent'
+}
+
+/** 当前主题下的图表配色（onMounted 时解析一次；主题切换由 useTheme 重载页面级 class） */
+const palette = ref({
+  max: 'transparent',
+  avg: 'transparent',
+  min: 'transparent',
+  gap: 'transparent',
+  mark: 'transparent',
+})
+
+onMounted(() => {
+  palette.value = {
+    max: resolveToken('--status-error-default'),
+    avg: resolveToken('--status-primary-default'),
+    min: resolveToken('--status-success-default'),
+    gap: resolveToken('--status-warning-surface-l1'),
+    mark: resolveToken('--status-alert-default'),
+  }
+})
+
 /** 标记 kind 的中文文案（图例 / tooltip） */
 function markKindText(kind: string): string {
   if (kind === 'restart') return '进程重启'
@@ -72,7 +110,7 @@ const gapAreas = computed(() =>
   props.gaps.map(gap => [
     {
       xAxis: gap.from * 1000,
-      itemStyle: { color: 'var(--status-warning-surface-l1)' },
+      itemStyle: { color: palette.value.gap },
       label: { show: false, formatter: markKindText(gap.kind) },
     },
     { xAxis: gap.to * 1000 },
@@ -88,7 +126,7 @@ const markLines = computed(() => {
   return [...kinds.entries()].map(([kind, ts]) => ({
     xAxis: ts * 1000,
     label: { show: true, formatter: markKindText(kind), fontSize: 10 },
-    lineStyle: { color: 'var(--status-alert-default)', type: 'dashed' as const },
+    lineStyle: { color: palette.value.mark, type: 'dashed' as const },
   }))
 })
 
@@ -141,7 +179,7 @@ const chartOption = computed(() => {
         data: props.points.map((_, i) => [times[i], props.points[i].max]),
         showSymbol: false,
         lineStyle: { width: 1 },
-        itemStyle: { color: 'var(--status-error-default)' },
+        itemStyle: { color: palette.value.max },
         markArea: { silent: true, data: gapAreas.value },
         markLine: { silent: true, symbol: 'none', data: markLines.value },
       },
@@ -151,7 +189,7 @@ const chartOption = computed(() => {
         data: props.points.map((_, i) => [times[i], props.points[i].avg]),
         showSymbol: false,
         lineStyle: { width: 1.5 },
-        itemStyle: { color: 'var(--status-primary-default)' },
+        itemStyle: { color: palette.value.avg },
       },
       {
         name: '最小',
@@ -159,7 +197,7 @@ const chartOption = computed(() => {
         data: props.points.map((_, i) => [times[i], props.points[i].min]),
         showSymbol: false,
         lineStyle: { width: 1 },
-        itemStyle: { color: 'var(--status-success-default)' },
+        itemStyle: { color: palette.value.min },
       },
     ],
   }

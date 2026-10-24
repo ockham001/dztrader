@@ -3,7 +3,8 @@
 
 /**
  * @file history_query.h
- * @brief 历史查询的**语义层**：指标键解析、层级选择、点数上限与缺口归并（契约 sysmon §6.1）。
+ * @brief
+ * 历史查询的**语义层**：指标键解析、层级选择、点数上限与缺口归并（《帧契约：系统监控》§6.1）。
  *
  * 为什么查询语义放在共享模块而不是 dzweb：这些规则全部由 schema 的形状决定（哪些逻辑键
  * 存在、宽表与长表怎么区分、桶宽从哪来），放进 dzweb 会让 schema 的知识出现第二份。
@@ -41,7 +42,7 @@ struct MetricRef {
 };
 
 /**
- * @brief 解析查询用的指标键（契约 sysmon §6.1 的 `metric` 参数）。
+ * @brief 解析查询用的指标键（《帧契约：系统监控》§6.1 的 `metric` 参数）。
  *
  * 接受两种形式：
  * - 宽表逻辑键：直接等于 `kScalarMetrics[].key`（如 `cpu.usage_ratio`）；
@@ -54,16 +55,9 @@ struct MetricRef {
  */
 [[nodiscard]] MetricRef resolve_metric(std::string_view key) noexcept;
 
-/**
- * @brief 列出全部可查询的指标键（宽表逻辑键 + 长表 `<domain>.<metric>`），按字典序。
- *
- * 供测试与诊断使用；REST 不暴露该列表（契约不定义指标清单端点）。
- */
-[[nodiscard]] std::vector<std::string> list_metric_keys();
-
 // ===== 层级选择 =====
 
-/// 查询粒度（契约 sysmon §6.1 的 `level` 参数）。
+/// 查询粒度（《帧契约：系统监控》§6.1 的 `level` 参数）。
 enum class QueryLevel { Auto, Raw, Minute };
 
 /// 解析 `level` 参数；未知取值返回 `std::nullopt`（调用方回 400）。
@@ -76,18 +70,24 @@ enum class QueryLevel { Auto, Raw, Minute };
 [[nodiscard]] std::optional<int32_t> query_level_to_storage(QueryLevel level) noexcept;
 
 /**
- * @brief `level=auto` 的层级选择（契约 sysmon §6.1.1）：范围宽度 ≤ 1 小时选原始层，否则分钟层。
+ * @brief `level=auto` 的层级**偏好**（《帧契约：系统监控》§6.1.1）：范围宽度 ≤ 1 小时选原始层，
+ *        否则分钟层。
+ *
+ * 这里只给偏好、不做「该层级有没有数据」的判断：本函数是纯函数，拿不到库。
+ * 调用方拿到偏好后查询，若该层级无行则回退到另一层级并把实际层级回显（契约 §6.1.1 的回退规则）
+ * ——默认配置 `record_interval_sec = 60` 时从不压缩，分钟层永远为空，不回退会让所有
+ * 超过 1 小时的范围返回空序列。
  *
  * @param from_ts 起始时刻（Unix 秒）
  * @param to_ts   结束时刻（Unix 秒，排他）
- * @return 具体层级（恒为 `Raw` 或 `Minute`，不会是 `Auto`）
+ * @return 偏好层级（恒为 `Raw` 或 `Minute`，不会是 `Auto`）
  */
 [[nodiscard]] QueryLevel select_auto_level(int64_t from_ts, int64_t to_ts) noexcept;
 
 /// `auto` 层级切换的范围阈值（秒）：范围不超过该值时用原始记录。
 inline constexpr int64_t kAutoRawMaxRangeSec = 3600;
 
-/// 每序列点数上限的合法区间（契约 sysmon §6.1 的 `max_points` 参数）。
+/// 每序列点数上限的合法区间（《帧契约：系统监控》§6.1 的 `max_points` 参数）。
 inline constexpr int64_t kMinMaxPoints = 10;
 inline constexpr int64_t kMaxMaxPoints = 20000;
 
@@ -97,7 +97,7 @@ inline constexpr int64_t kDefaultMaxPoints = 1500;
 // ===== 点数上限 =====
 
 /**
- * @brief 按点数上限裁剪的判定（契约 sysmon §6.1.2）。
+ * @brief 按点数上限裁剪的判定（《帧契约：系统监控》§6.1.2）。
  *
  * 读取方**按时间降序**取 `max_points + 1` 行：多取一行才能**精确**判定「范围内是否还有
  * 更旧的桶」——只按范围宽度除以桶宽去估算会把「起点不在桶边界上」「这一段时间本就没有
@@ -120,7 +120,7 @@ struct PointLimitTrim {
 
 // ===== 缺口归并 =====
 
-/// 序列内不连续区间（契约 sysmon §6.1.4 的 `gaps[]` 元素）。
+/// 序列内不连续区间（《帧契约：系统监控》§6.1.4 的 `gaps[]` 元素）。
 struct Gap {
     int64_t from_ts = 0;  ///< 缺口起点（上一桶的结束时刻）
     int64_t to_ts = 0;    ///< 缺口终点（下一桶的起始时刻）
@@ -131,7 +131,7 @@ struct Gap {
 inline constexpr std::string_view kGapUnmarked = "unmarked";
 
 /**
- * @brief 从桶时刻序列与标记归并出缺口（契约 sysmon §6.1.4）。
+ * @brief 从桶时刻序列与标记归并出缺口（《帧契约：系统监控》§6.1.4）。
  *
  * 判定只看**相邻桶时刻的连续性**（`cur - (prev + interval_sec) > 0`），这是外部可观察事实；
  * 标记只用来解释缺口原因：落在 `[from, to)` 内的标记中 `restart` 优先于 `sample_gap`，

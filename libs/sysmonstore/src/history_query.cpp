@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <map>
 #include <utility>
 
 namespace dztrader::sysmonstore {
@@ -53,21 +52,6 @@ MetricRef resolve_metric(std::string_view key) noexcept {
     ref.metric = metric;
     ref.is_dimension = true;
     return ref;
-}
-
-std::vector<std::string> list_metric_keys() {
-    std::vector<std::string> keys;
-    keys.reserve(kScalarMetrics.size() + 64);
-    for (const auto& spec : kScalarMetrics) {
-        keys.emplace_back(spec.key);
-    }
-    for (const auto& domain : kDimensionDomains) {
-        for (const auto metric : domain.metrics) {
-            keys.emplace_back(std::string(domain.domain) + "." + std::string(metric));
-        }
-    }
-    std::sort(keys.begin(), keys.end());
-    return keys;
 }
 
 std::optional<QueryLevel> parse_query_level(std::string_view text) noexcept {
