@@ -312,6 +312,31 @@ TEST_F(HistoryStoreTest, QueryRespectsMaxRows) {
     EXPECT_EQ(rows.size(), 3U);
 }
 
+TEST_F(HistoryStoreTest, LatestBucketTsReturnsNewestAcrossLevels) {
+    constexpr int64_t kNow = 2'000'000'000;
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        batch.scalars.push_back(make_scalar_record(kNow - 600, 1.0));
+        batch.scalars.push_back(make_scalar_record(kNow - 60, 1.0));
+        batch.scalars.push_back(make_scalar_record(kNow - 300, 1.0, kLevelMinute));
+        store.write_batch(batch);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    // 各层级各取最新（重启缺口按原始层级算）。
+    EXPECT_EQ(reader.second->latest_bucket_ts(kLevelRaw), kNow - 60);
+    EXPECT_EQ(reader.second->latest_bucket_ts(kLevelMinute), kNow - 300);
+}
+
+TEST_F(HistoryStoreTest, LatestBucketTsIsNulloptWhenEmpty) {
+    auto store = HistoryStore::open(db_path());
+    (void)store;
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    EXPECT_FALSE(reader.second->latest_bucket_ts(kLevelRaw).has_value());
+}
+
 TEST_F(HistoryStoreTest, QueryEmptyRangeReturnsNothing) {
     auto store = HistoryStore::open(db_path());
     (void)store;

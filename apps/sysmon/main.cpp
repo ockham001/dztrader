@@ -303,6 +303,9 @@ private:
     ///
     /// 用只读连接查：写入连接归落盘线程独占，不能在 io_context 线程上碰。
     /// 查询失败只是「算不出缺口」，不影响重启标记本身。
+    ///
+    /// 只在进程初始化阶段（`init_history`）调用一次，因此这里的同步查询不会阻塞
+    /// 事件循环；走 `MAX(bucket_ts)` 索引而不读整段历史。
     std::optional<int64_t> history_gap_seconds(int64_t now_ts) const {
         try {
             const auto db_path = dztrader::paths::db() / std::string(sysmonstore::kHistoryFileName);
@@ -310,14 +313,12 @@ private:
             if (opened.first != sysmonstore::HistoryAvailability::Ok) {
                 return std::nullopt;
             }
-            // 往前看一个足够长的窗口取最后一条（保留期上限内必有记录）；
-            // 取 30 天：超过它就没有可用历史，缺口数字也不再有意义。
-            const auto rows = opened.second->query_scalars(sysmonstore::kLevelRaw,
-                                                           now_ts - 30 * 86400, now_ts + 1, 100000);
-            if (rows.empty()) {
+            const auto latest = opened.second->latest_bucket_ts(sysmonstore::kLevelRaw);
+            if (!latest.has_value()) {
                 return std::nullopt;
             }
-            return now_ts - rows.back().bucket_ts;
+            // 负值（时钟被回拨）也照实返回：它本身就是要上报的事实，不钳成 0。
+            return now_ts - *latest;
         } catch (const std::exception& e) {
             SPDLOG_DEBUG("history gap query failed | error=\"{}\"", e.what());
             return std::nullopt;

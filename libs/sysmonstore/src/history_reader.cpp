@@ -168,6 +168,21 @@ std::vector<DimensionRecord> HistoryReader::query_dimensions(std::string_view do
     return rows;
 }
 
+std::optional<int64_t> HistoryReader::latest_bucket_ts(int32_t level) const {
+    try {
+        SQLite::Statement stmt(*impl_->db,
+                               "SELECT MAX(bucket_ts) FROM sysmon_scalar WHERE level=?1");
+        stmt.bind(1, static_cast<int32_t>(level));
+        if (!stmt.executeStep() || stmt.getColumn(0).isNull()) {
+            return std::nullopt;
+        }
+        return stmt.getColumn(0).getInt64();
+    } catch (const std::exception& e) {
+        SPDLOG_WARN("sysmon history latest bucket query failed | error=\"{}\"", e.what());
+        return std::nullopt;
+    }
+}
+
 std::vector<HistoryMark> HistoryReader::query_marks(int64_t since_ts,
                                                     int64_t until_ts,
                                                     int64_t max_rows) const {

@@ -185,6 +185,17 @@ public:
                                                                 int64_t until_ts,
                                                                 int64_t max_rows) const;
 
+    /**
+     * @brief 取已落库的最新一个桶的时刻（任意层级）。
+     *
+     * 用于「重启缺口秒数」这类只关心**最后一条记录**的场景：等价于
+     * `query_scalars(...).back()` 但走 `MAX(bucket_ts)` 索引，不把整段历史读进内存。
+     *
+     * @param level 桶层级（`kLevelRaw` / `kLevelMinute`）
+     * @return 最新桶的 `bucket_ts`；表内无该层级记录时为 `std::nullopt`
+     */
+    [[nodiscard]] std::optional<int64_t> latest_bucket_ts(int32_t level) const;
+
     /// 查询标记（采集中断/重启/时钟跳变），按 ts 升序。
     [[nodiscard]] std::vector<HistoryMark> query_marks(int64_t since_ts,
                                                        int64_t until_ts,
