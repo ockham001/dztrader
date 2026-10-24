@@ -71,10 +71,13 @@ protected:
 
 TEST_F(HistoryRecorderTest, FirstObservationOnlyOpensWindow) {
     // 首个观测只建立当前窗口，不产生批次（此时还没有「已结束的窗口」）。
-    const auto batch = recorder_.observe(make_snapshot(0.5), kBase + 3);
-    EXPECT_TRUE(batch.empty());
-    ASSERT_TRUE(recorder_.current_bucket_ts().has_value());
-    EXPECT_EQ(recorder_.sample_count(), 1);
+    // 外部可观察承诺：第一次 observe 返回空批次，且该样本会被计入随后结算的窗口。
+    const auto first = recorder_.observe(make_snapshot(0.5), kBase + 3);
+    EXPECT_TRUE(first.empty()) << "first observation must not emit a batch";
+    const auto settled = recorder_.observe(make_snapshot(0.5), kBase + 63);
+    ASSERT_FALSE(settled.empty());
+    EXPECT_EQ(scalar_of(settled, "cpu.usage_ratio").count, 1)
+        << "the first observation must be part of the first settled window";
 }
 
 TEST_F(HistoryRecorderTest, WindowBoundaryStartsAtPhaseOffset) {
@@ -175,7 +178,8 @@ TEST_F(HistoryRecorderTest, IncompleteWindowIsMarkedAsGap) {
     // detail 记录实际样本数，读取方据此判断窗口可信度。
     for (const auto& mark : batch.marks) {
         if (mark.kind == sysmonstore::kMarkSampleGap) {
-            EXPECT_EQ(mark.detail, "2");
+            // detail 形式 `<实际样本数>/<明确跳过的 tick 数>`。
+            EXPECT_EQ(mark.detail, "2/0");
             EXPECT_EQ(mark.ts, kBase + 3);
         }
     }
@@ -202,6 +206,45 @@ TEST_F(HistoryRecorderTest, MissingTicksInWindowAreMarked) {
     (void)recorder_.observe(snapshot, kBase + 3);  // 只有 1 个样本
     const auto batch = recorder_.observe(snapshot, kBase + 63);
     EXPECT_EQ(count_marks(batch, sysmonstore::kMarkSampleGap), 1);
+}
+
+TEST_F(HistoryRecorderTest, MissedTicksAloneProduceGapMark) {
+    // 验收标准：「采集中断标记（…错过 tick）」——计量定时器明确报告跳过 tick 时，
+    // 即便窗口样本数看起来够，也必须记缺口。这是与「样本数不足」独立的证据来源。
+    auto snapshot = make_snapshot(0.5);
+    (void)recorder_.observe(snapshot, kBase + 3);
+    for (int i = 1; i < 60; ++i) {
+        (void)recorder_.observe(snapshot, kBase + 3 + i);
+    }
+    EXPECT_TRUE(recorder_.window_is_full(recorder_.sample_count()));
+    // 定时器报告跳过了 2 个 tick（进程停顿后被 advance_deadline 检出）。
+    recorder_.note_missed_ticks(2);
+    const auto batch = recorder_.observe(snapshot, kBase + 63);
+    ASSERT_FALSE(batch.empty());
+    EXPECT_EQ(count_marks(batch, sysmonstore::kMarkSampleGap), 1)
+        << "explicitly reported missed ticks must be marked even if samples look sufficient";
+    for (const auto& mark : batch.marks) {
+        if (mark.kind == sysmonstore::kMarkSampleGap) {
+            EXPECT_EQ(mark.detail, "60/2")
+                << "detail must carry both sample count and missed ticks";
+        }
+    }
+}
+
+TEST_F(HistoryRecorderTest, MissedTicksCounterResetsPerWindow) {
+    // 缺口计数按窗口结算后清零，否则一次停顿会让之后每个窗口都被误标。
+    auto snapshot = make_snapshot(0.5);
+    (void)recorder_.observe(snapshot, kBase + 3);
+    recorder_.note_missed_ticks(3);
+    const auto first = recorder_.observe(snapshot, kBase + 63);
+    EXPECT_EQ(count_marks(first, sysmonstore::kMarkSampleGap), 1);
+    // 下一个窗口：没有新的 missed tick，且样本数不足仍会标（两个来源独立）。
+    const auto second = recorder_.observe(snapshot, kBase + 123);
+    for (const auto& mark : second.marks) {
+        if (mark.kind == sysmonstore::kMarkSampleGap) {
+            EXPECT_EQ(mark.detail, "1/0") << "missed counter must reset after settling a window";
+        }
+    }
 }
 
 // ===== 时钟跳变标记 =====
@@ -252,9 +295,25 @@ TEST_F(HistoryRecorderTest, FlushEmitsCurrentWindowWithSamples) {
     EXPECT_EQ(count_marks(batch, sysmonstore::kMarkSampleGap), 1);
 }
 
-TEST_F(HistoryRecorderTest, FlushWithNoObservationsIsEmpty) {
+TEST_F(HistoryRecorderTest, FlushWithNoObservationsEmitsNoWindowData) {
     // 从未观测到样本：不产出空窗口冒充「有数据」。
-    EXPECT_TRUE(recorder_.flush(kBase).empty());
+    const auto batch = recorder_.flush(kBase);
+    EXPECT_TRUE(batch.scalars.empty());
+    EXPECT_TRUE(batch.dimensions.empty());
+}
+
+TEST_F(HistoryRecorderTest, RestartMarkSurvivesFlushWithoutSamples) {
+    // 重启标记在「还没采到任何样本就退出」时也必须落库——「重启了」是事实，
+    // 不能因为没有窗口数据就被丢掉（否则重启窗口这条记录静默消失）。
+    sysmonstore::HistoryMark restart;
+    restart.ts = kBase;
+    restart.kind = std::string(sysmonstore::kMarkRestart);
+    restart.detail = "recover/120";
+    recorder_.add_mark(restart);
+    const auto batch = recorder_.flush(kBase + 1);
+    EXPECT_EQ(count_marks(batch, sysmonstore::kMarkRestart), 1)
+        << "restart mark must not be dropped just because no samples were collected";
+    EXPECT_TRUE(batch.scalars.empty()) << "still must not fabricate a window";
 }
 
 TEST_F(HistoryRecorderTest, FlushTwiceDoesNotDuplicate) {
@@ -399,12 +458,48 @@ TEST(HistoryRecorderConfigTest, OneSecondRecordWindowIsSupported) {
     EXPECT_EQ(count_marks(batch, sysmonstore::kMarkSampleGap), 0);
 }
 
-TEST(HistoryRecorderConfigTest, InvalidIntervalFallsBackToDefault) {
+TEST_F(HistoryRecorderTest, ReconfigureAffectsSubsequentlySettledWindows) {
+    // 验收标准（配置票语义）：运行期改记录间隔必须生效。外部可观察承诺是
+    // 「此后落库的窗口带新宽度」，且**已累计的样本不丢**（不因改配置而清空窗口）。
+    auto snapshot = make_snapshot(0.5);
+    (void)recorder_.observe(snapshot, kBase + 3);  // 旧配置（60s）窗口内的样本
+    recorder_.reconfigure(
+        RecordWindowConfig{.interval_sec = 120, .phase_sec = 3, .measure_interval_ms = 1000});
+    // 推进足够远，让新旧网格必然分叉并结算出至少一个窗口。
+    std::optional<sysmonstore::HistoryBatch> settled;
+    for (int64_t offset = 63; offset <= 63 + 240; offset += 60) {
+        auto batch = recorder_.observe(snapshot, kBase + offset);
+        if (!batch.empty()) {
+            settled = std::move(batch);
+            break;
+        }
+    }
+    ASSERT_TRUE(settled.has_value()) << "a window must settle after reconfiguring";
+    // 首个结算的窗口是旧配置的窗口（60 秒），它没有被改配置丢掉。
+    EXPECT_EQ(settled->scalars[0].interval_sec, 60)
+        << "the in-progress window must settle with its original width, not be discarded";
+    // 之后的窗口用新宽度（120 秒）。
+    bool saw_new_width = false;
+    for (int64_t offset = 63 + 60; offset <= 63 + 600; offset += 60) {
+        auto batch = recorder_.observe(snapshot, kBase + offset);
+        if (!batch.empty() && batch.scalars[0].interval_sec == 120) {
+            saw_new_width = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(saw_new_width) << "new windows must use the reconfigured interval";
+}
+
+TEST(HistoryRecorderConfigTest, InvalidIntervalFallsBackToDefaultSixtySeconds) {
     // 防御：非法间隔（配置校验已拦，但纯逻辑不能因此除零/死循环）。
+    // 断言回退值本身（60 秒），而不只是「有个桶」——回退成 0 也会让
+    // `current_bucket_ts().has_value()` 为真，那样测不出缺陷。
     HistoryRecorder recorder(
         RecordWindowConfig{.interval_sec = 0, .phase_sec = 0, .measure_interval_ms = 1000});
+    EXPECT_EQ(recorder.expected_samples_per_window(), 60) << "fallback interval must be 60s";
     (void)recorder.observe(make_snapshot(0.5), kBase);
     ASSERT_TRUE(recorder.current_bucket_ts().has_value());
+    EXPECT_EQ(*recorder.current_bucket_ts() % 60, 0);
 }
 
 }  // namespace

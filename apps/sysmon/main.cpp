@@ -186,11 +186,12 @@ public:
         } catch (const std::exception& e) {
             SPDLOG_ERROR("history final window flush failed | error=\"{}\"", e.what());
         }
-        const uint64_t written = history_writer_->written_records();
-        history_writer_->flush();  // 冲空队列 → checkpoint → 关库
-        const uint64_t dropped = history_writer_->dropped_records();
-        SPDLOG_INFO("history writer stopped | written_records={} dropped_records={}", written,
-                    dropped);
+        // 先 flush 再读计数：flush 会冲掉队列里剩余的批次，之前读会少算（日志说谎）。
+        const size_t failed = history_writer_->flush();  // 冲空队列 → checkpoint → 关库
+        SPDLOG_INFO(
+            "history writer stopped | written_records={} dropped_records={} "
+            "failed_records={}",
+            history_writer_->written_records(), history_writer_->dropped_records(), failed);
         history_writer_.reset();
     }
 
@@ -282,11 +283,45 @@ private:
     /// 自动重启（`--recover`）与人工重启都记：两者的共同事实是「进程曾经不在」，
     /// 期间的采集数据缺失。带上 `recover` 让读取方能区分是否异常重启。
     void mark_restart() {
+        const int64_t now_ts = wall_clock_unix_ms() / 1000;
         sysmonstore::HistoryMark mark;
-        mark.ts = wall_clock_unix_ms() / 1000;
+        mark.ts = now_ts;
         mark.kind = std::string(sysmonstore::kMarkRestart);
-        mark.detail = recover_ ? "recover" : "manual";
+        // detail 记录**缺口秒数**（`<restart_kind>/<gap_sec>`），没有历史数据时 gap 为空：
+        // 「重启了」这句话本身信息量有限，读取方真正要知道的是「这段有多久没有数据」。
+        // 缺口 = 现在 − 库中最后一条记录的时刻；查不到（首次启动/库刚建）就不写数字，
+        // 绝不猜一个 0 冒充「没有缺口」。
+        std::string detail = recover_ ? "recover" : "manual";
+        if (const auto gap = history_gap_seconds(now_ts); gap.has_value()) {
+            detail += "/" + std::to_string(*gap);
+        }
+        mark.detail = std::move(detail);
         history_recorder_.add_mark(std::move(mark));
+    }
+
+    /// 查历史库中最后一条记录距 `now_ts` 的秒数（无记录/库不可读时 `nullopt`）。
+    ///
+    /// 用只读连接查：写入连接归落盘线程独占，不能在 io_context 线程上碰。
+    /// 查询失败只是「算不出缺口」，不影响重启标记本身。
+    std::optional<int64_t> history_gap_seconds(int64_t now_ts) const {
+        try {
+            const auto db_path = dztrader::paths::db() / std::string(sysmonstore::kHistoryFileName);
+            auto opened = sysmonstore::HistoryReader::open(db_path);
+            if (opened.first != sysmonstore::HistoryAvailability::Ok) {
+                return std::nullopt;
+            }
+            // 往前看一个足够长的窗口取最后一条（保留期上限内必有记录）；
+            // 取 30 天：超过它就没有可用历史，缺口数字也不再有意义。
+            const auto rows = opened.second->query_scalars(sysmonstore::kLevelRaw,
+                                                           now_ts - 30 * 86400, now_ts + 1, 100000);
+            if (rows.empty()) {
+                return std::nullopt;
+            }
+            return now_ts - rows.back().bucket_ts;
+        } catch (const std::exception& e) {
+            SPDLOG_DEBUG("history gap query failed | error=\"{}\"", e.what());
+            return std::nullopt;
+        }
     }
 
     // ===== 定时器 =====
@@ -329,12 +364,14 @@ private:
         } catch (const std::exception& e) {
             SPDLOG_ERROR("cpu measure failed | error=\"{}\"", e.what());
         }
-        // 历史记录：每个计量 tick 观测一次（记录窗口的 min/max 需要全部样本，
-        // 只观测推送时刻会系统性漏掉尖峰）。与推送解耦，见 record_history_tick。
-        record_history_tick();
         // 按"上个计划 deadline + 间隔"推进：处理耗时与进程停顿时长不累积为频率漂移。
         const auto tick = advance_deadline(measure_deadline_, current_measure_interval(),
                                            std::chrono::steady_clock::now());
+        // 历史记录：每个计量 tick 观测一次（记录窗口的 min/max 需要全部样本，
+        // 只观测推送时刻会系统性漏掉尖峰）。与推送解耦，见 record_history_tick。
+        // 跳过的 tick 数也交给记录器：它是「错过 tick」这一事实的直接证据。
+        history_recorder_.note_missed_ticks(tick.missed);
+        record_history_tick();
         measure_deadline_ = tick.next;
         if (tick.missed > 0) {
             missed_ticks_ += tick.missed;
@@ -696,6 +733,11 @@ private:
                         dropped);
             last_reported_dropped_ = dropped;
         }
+        const uint64_t failed = history_writer_->failed_records();
+        if (failed != last_reported_failed_) {
+            SPDLOG_ERROR("history write failures | failed_total={}", failed);
+            last_reported_failed_ = failed;
+        }
     }
 
     /// 单调时钟毫秒（时钟跳变检测的参照；与墙钟同一次 tick 读取）。
@@ -939,6 +981,9 @@ private:
             config_store_.set_patch(shm::decode_ext_inst_json<nlohmann::json>(view));
             config_ = config_store_.current().get<platform::SysmonConfig>();
             restart_timers();  // 新间隔立即生效
+            // 记录窗口也要跟随：record_interval_sec / phase_offset_sec 影响历史落库粒度。
+            // 不重新下发的话，运行期改记录间隔会静默不生效（配置声称生效、历史却按旧粒度写）。
+            history_recorder_.reconfigure(make_record_window_config(config_));
             applied = true;
             SPDLOG_INFO("sysmon config updated | measure_interval_ms={} push_interval_sec={}",
                         config_.sampling.measure_interval_ms, config_.realtime.push_interval_sec);
@@ -1027,6 +1072,8 @@ private:
     int64_t prev_steady_ms_ = 0;
     /// 上次已上报的丢弃计数（避免队列溢出时每 tick 刷一条日志）。
     uint64_t last_reported_dropped_ = 0;
+    /// 上次已上报的落盘失败计数。
+    uint64_t last_reported_failed_ = 0;
     std::shared_ptr<shm::ChannelMeta> event_meta_;
     std::unique_ptr<shm::MultiWriter> event_writer_;
     std::unique_ptr<shm::Reader> event_reader_;

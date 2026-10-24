@@ -83,10 +83,28 @@ public:
      * 「进程退出前发生了什么」永久缺失。不完整的窗口带 `sample_gap` 标记，
      * 读取方据此知道该窗口的均值只基于部分样本。
      *
-     * @param now_ts 当前墙钟时刻（用于标记时间戳）
-     * @return 当前窗口的批次；从未观测到样本时空批次
+     * @param now_ts 当前墙钟时刻；不完整窗口的缺口标记以它为时间戳（窗口起始时刻在
+     *               历史里已经由 `bucket_ts` 表达，标记记「结束时发现不完整」的时刻）
+     * @return 当前窗口的批次（含退出时尚未落库的待写标记）；从未观测到样本时仍返回
+     *         仅含标记的批次——重启/时钟跳变标记必须落库，不能因为没有样本就丢掉
      */
     [[nodiscard]] sysmonstore::HistoryBatch flush(int64_t now_ts);
+
+    /**
+     * @brief 运行期更新记录窗口配置（`SET_SYSMON_CONFIG` 之后调用）。
+     *
+     * 只改窗口宽度与相位，**不丢弃**当前已累计的窗口：已观测的样本属于它开始时那个
+     * 窗口，按旧宽度落库才不会把历史切碎。新配置从下一个窗口起生效。
+     *
+     * @param config 新配置（非法间隔退回默认，与构造时同一防御）
+     */
+    void reconfigure(RecordWindowConfig config);
+
+    /// 上报本窗口内计量定时器跳过的 tick 数（#70 的 `sampling.missed_ticks` 增量）。
+    ///
+    /// 与「样本数不足」是两个独立证据：定时器明确报告跳过时才算「错过 tick」，
+    /// 因此这里注入的值会在窗口结算时与样本数一起决定缺口标记。
+    void note_missed_ticks(uint64_t missed) noexcept;
 
     /// 给下一次产出的批次追加一条标记（采集中断 / 重启 / 时钟跳变由调用方判定后注入）。
     ///
@@ -102,6 +120,9 @@ public:
 
     /// 一个满窗应有的样本数（`interval_sec * 1000 / measure_interval_ms`，至少 1）。
     [[nodiscard]] int64_t expected_samples_per_window() const noexcept;
+
+    /// 窗口内样本数是否达到满窗（允许 ±1 的调度抖动）。
+    [[nodiscard]] bool window_is_full(int64_t samples) const noexcept;
 
     /// 一个窗口的维度聚合槽位（域 + 维度 + 指标 → 聚合量）。公开是为了让
     /// `observe_values` 的实现类（`WindowAccumulator`）能构造它——它只是数据结构，
@@ -120,31 +141,31 @@ private:
     /// 把当前窗口转成批次（含待落盘标记）并重置累加状态。
     [[nodiscard]] sysmonstore::HistoryBatch take_batch(int64_t bucket_ts);
 
-    /// 观测一个标量指标值（键取自 schema 注册表，未知键忽略）。
-    void observe_scalar(std::string_view key, double value);
-
-    /// 观测一个可空标量指标值；`nullopt` 表示本 tick 不可用 → **不观测**
-    /// （不可用样本不参与 min/max/avg，也不推进 count——用 0 填充会把均值拉偏）。
-    void observe_scalar(std::string_view key, const std::optional<double>& value);
-
-    /// 观测一个维度指标值。
-    void observe_dimension(std::string_view domain,
-                           std::string_view dimension,
-                           std::string_view metric,
-                           double value);
-
-    /// 按窗口实际样本数追加缺口标记（样本齐全时不追加）。
+    /// 按窗口实际样本数与期间检测到的错过 tick 数追加缺口标记（都正常时不追加）。
+    ///
+    /// 两个来源合起来才是「采集中断」的完整事实：
+    /// - `samples` 少于满窗 ⇒ 窗口内确实少了样本（进程停顿/被强杀）；
+    /// - `missed_ticks` > 0 ⇒ 计量定时器明确报告跳过了 tick（#70 的缺口计数）。
+    /// 后者比「样本数不足」更精确：窗口恰好卡在边界时样本数可能差一个但并没有丢失 tick。
+    ///
     /// `samples` 由调用方在累加状态重置前取好——重置后读到的是 0。
     void mark_if_incomplete(sysmonstore::HistoryBatch& batch,
                             int64_t bucket_ts,
-                            int64_t samples) const;
+                            int64_t samples,
+                            uint64_t missed_ticks) const;
 
     RecordWindowConfig config_;
     std::optional<int64_t> bucket_ts_;  ///< 当前窗口起始时刻
+    /// 当前窗口**开启时**的记录间隔。运行期改配置不改变已打开窗口的宽度：
+    /// 该窗口的样本是按这个间隔采的，落库的 `interval_sec` 必须与它一致，
+    /// 否则历史里的「窗口宽度」与「实际采样粒度」对不上。
+    int64_t window_interval_sec_ = 60;
     int64_t samples_in_window_ = 0;
     std::array<sysmonstore::MetricAggregate, sysmonstore::kScalarMetrics.size()> scalars_{};
     std::vector<DimensionSlot> dimensions_;
     std::vector<sysmonstore::HistoryMark> pending_marks_;
+    /// 本窗口内计量定时器明确报告跳过的 tick 数（由调用方经 `note_missed_ticks` 注入）。
+    uint64_t missed_ticks_in_window_ = 0;
 };
 
 /**

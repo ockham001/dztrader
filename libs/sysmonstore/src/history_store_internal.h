@@ -1,8 +1,8 @@
-#ifndef DZTRADER_SYSMONSTORE_SRC_HISTORY_INTERNAL_H_
-#define DZTRADER_SYSMONSTORE_SRC_HISTORY_INTERNAL_H_
+#ifndef DZTRADER_SYSMONSTORE_SRC_HISTORY_STORE_INTERNAL_H_
+#define DZTRADER_SYSMONSTORE_SRC_HISTORY_STORE_INTERNAL_H_
 
 /**
- * @file history_internal.h
+ * @file history_store_internal.h
  * @brief 历史库实现内部共享件（pimpl 定义、SQL 片段、聚合绑定、文件大小、版本读取）。
  *
  * 不安装、不对外暴露：schema 与行编解码的公开面在 `schema.h` / `records.h`，
@@ -28,8 +28,12 @@
 
 namespace dztrader::sysmonstore {
 
-/// 写入方实现：一条连接 + 预编译语句（落盘线程独占）。
-struct HistoryStoreImpl {
+// pimpl 的实际定义：公开头里只前置声明了 `struct Impl`，这里给出字段。
+// 注：`Impl` 在公开类里是 private 的，因此这里只能由 `HistoryStore` 自己的成员函数
+// 触达；跨 TU 的自由函数改用「传入需要的成员」而不是整个 `Impl`（见下方 helpers）。
+// 直接定义成 `HistoryStore::Impl` 而不是「一个自由 struct + 空的派生 struct」：
+// 后者只是把同一批字段换个名字再包一层，没有任何不变量可维护。
+struct HistoryStore::Impl {
     std::filesystem::path path;
     std::unique_ptr<SQLite::Database> db;
     std::unique_ptr<SQLite::Statement> scalar_upsert;
@@ -37,17 +41,12 @@ struct HistoryStoreImpl {
     std::unique_ptr<SQLite::Statement> mark_insert;
 };
 
-/// 读取方实现：只读连接（查询线程独占）。
-struct HistoryReaderImpl {
+struct HistoryReader::Impl {
     std::filesystem::path path;
     std::unique_ptr<SQLite::Database> db;
 };
 
-// pimpl 的实际定义：公开头里只前置声明了 `struct Impl`。
-struct HistoryStore::Impl final : HistoryStoreImpl {};
-struct HistoryReader::Impl final : HistoryReaderImpl {};
-
-namespace internal {
+namespace history_store_internal {
 
 /// 宽表 5 个聚合列后缀（顺序固定，与 schema.cpp 建表列序一致）。
 inline constexpr std::string_view kAggregateSuffixes[] = {"min", "max", "avg", "last", "n"};
@@ -86,12 +85,13 @@ void bind_aggregate(SQLite::Statement& stmt,
 /// 绑定 NULL 到 5 个聚合参数位（该桶内指标无有效样本）。
 void bind_null_aggregate(SQLite::Statement& stmt, int& index);
 
-/// 写入一条宽表行（使用 `impl.scalar_upsert`；调用方负责事务）。
-void write_scalar_row(HistoryStoreImpl& impl, const ScalarRecord& record);
+/// 写入一条宽表行（复用调用方传入的预编译语句；调用方负责事务）。
+/// 传语句而不是整个 impl：这些函数只需要一条语句，传大对象会让人以为它们还做了别的。
+void write_scalar_row(SQLite::Statement& upsert, const ScalarRecord& record);
 
-/// 写入一条长表行（使用 `impl.dimension_upsert`；调用方负责事务）。
+/// 写入一条长表行（复用调用方传入的预编译语句；调用方负责事务）。
 /// 未在 schema 注册的域/指标名跳过并告警（schema 是唯一真相源）。
-void write_dimension_row(HistoryStoreImpl& impl, const DimensionRecord& record);
+void write_dimension_row(SQLite::Statement& upsert, const DimensionRecord& record);
 
 /// 插入一条标记（调用方负责事务）。
 void insert_mark(const SQLite::Database& db, const HistoryMark& mark);
@@ -109,7 +109,7 @@ void insert_mark(const SQLite::Database& db, const HistoryMark& mark);
 /// @throws std::runtime_error 创建失败
 void ensure_parent_dir(const std::filesystem::path& path);
 
-}  // namespace internal
+}  // namespace history_store_internal
 }  // namespace dztrader::sysmonstore
 
-#endif  // DZTRADER_SYSMONSTORE_SRC_HISTORY_INTERNAL_H_
+#endif  // DZTRADER_SYSMONSTORE_SRC_HISTORY_STORE_INTERNAL_H_

@@ -110,11 +110,6 @@ public:
      */
     RetentionResult apply_retention(const RetentionPolicy& policy);
 
-    /// 记录一条标记（采集中断/重启/时钟跳变）。由 `write_batch` 覆盖批量路径；
-    /// 单独入口供「启动时补记重启标记」这类单条路径使用。
-    /// @throws std::runtime_error 写入失败
-    void write_mark(const HistoryMark& mark);
-
     /// 显式关库（落盘线程退出前调用；析构也会关，但显式关便于报告错误）。
     void close();
 
@@ -257,12 +252,17 @@ public:
      *
      * 幂等：重复调用与析构均安全。
      *
-     * @return 冲盘失败的记录数（0 = 全部落盘成功）；失败不抛（退出路径不能抛）
+     * @return 冲盘失败的记录数（0 = 全部落盘成功，取自 `failed_records()`）；
+     *         失败不抛（退出路径不能抛）
      */
     size_t flush() noexcept;
 
-    /// 因队列满被丢弃的记录数（单调累加）。
+    /// 因队列满被丢弃的记录数（单调累加）。与 `failed_records()` 分开：
+    /// 前者说明消费跟不上，后者说明写库失败（磁盘/库问题），处置方式不同。
     [[nodiscard]] uint64_t dropped_records() const noexcept;
+
+    /// 落盘失败的记录数（单调累加）。
+    [[nodiscard]] uint64_t failed_records() const noexcept;
 
     /// 已成功落盘的记录数（单调累加）。
     [[nodiscard]] uint64_t written_records() const noexcept;

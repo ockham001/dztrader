@@ -36,7 +36,11 @@ struct HistoryWriter::Impl {
     bool stop = false;         ///< 停止接收新批次
     bool thread_done = false;  ///< 落盘线程已退出
 
+    /// 队列满被丢弃的记录数（容量淘汰）。
     std::atomic<uint64_t> dropped_records{0};
+    /// 落盘失败的记录数（写库异常）。与队列淘汰分开计数：两者的处置完全不同
+    /// （前者说明消费跟不上、后者说明磁盘/库有问题），混在一起会让运维看不出根因。
+    std::atomic<uint64_t> failed_records{0};
     std::atomic<uint64_t> written_records{0};
     std::thread worker;
 
@@ -109,7 +113,7 @@ struct HistoryWriter::Impl {
             // 记录错误并计为丢弃，让上层能从 dropped_records 看出端倪。
             SPDLOG_ERROR("sysmon history batch write failed | records={} error=\"{}\"",
                          batch.record_count(), e.what());
-            dropped_records += batch.record_count();
+            failed_records += batch.record_count();
         }
     }
 
@@ -202,11 +206,14 @@ void HistoryWriter::enqueue(HistoryBatch&& batch) noexcept {
             impl_->dropped_records += incoming;
             return;
         }
-        if (impl_->queue.size() >= impl_->options.queue_capacity && !impl_->queue.empty()) {
-            // 队列满：丢**最旧**的批次（新数据还能解释刚刚发生了什么；缺口会由
-            // 维护周期记成标记）。计数供上层观测。
-            const auto dropped = impl_->queue.front().record_count();
-            impl_->dropped_records += dropped;
+        // 队列满：丢**最旧**的批次（新数据还能解释刚刚发生了什么；缺口会由维护周期
+        // 记成标记）。容量 0 视为「不排队」——直接丢本批，而不是让队列无限增长。
+        if (impl_->options.queue_capacity == 0) {
+            impl_->dropped_records += incoming;
+            return;
+        }
+        while (impl_->queue.size() >= impl_->options.queue_capacity && !impl_->queue.empty()) {
+            impl_->dropped_records += impl_->queue.front().record_count();
             impl_->queue.pop_front();
         }
         impl_->queue.push_back(std::move(batch));
@@ -223,7 +230,7 @@ size_t HistoryWriter::flush() noexcept {
             if (impl_->worker.joinable()) {
                 impl_->worker.join();
             }
-            return 0;
+            return static_cast<size_t>(impl_->failed_records.load());
         }
         impl_->stop = true;
     }
@@ -235,10 +242,13 @@ size_t HistoryWriter::flush() noexcept {
     if (impl_->store) {
         impl_->store->close();
     }
-    return 0;
+    // 返回落盘失败的记录数（0 = 全部落盘成功），与头文件承诺一致。
+    return static_cast<size_t>(impl_->failed_records.load());
 }
 
 uint64_t HistoryWriter::dropped_records() const noexcept { return impl_->dropped_records.load(); }
+
+uint64_t HistoryWriter::failed_records() const noexcept { return impl_->failed_records.load(); }
 
 uint64_t HistoryWriter::written_records() const noexcept { return impl_->written_records.load(); }
 

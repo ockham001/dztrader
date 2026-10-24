@@ -1,4 +1,4 @@
-#include "history_internal.h"
+#include "history_store_internal.h"
 
 #include <SQLiteCpp/Transaction.h>
 
@@ -50,7 +50,7 @@ HistoryStore& HistoryStore::operator=(HistoryStore&&) noexcept = default;
 HistoryStore::~HistoryStore() = default;
 
 HistoryStore HistoryStore::open(const std::filesystem::path& path, int busy_timeout_ms) {
-    internal::ensure_parent_dir(path);
+    history_store_internal::ensure_parent_dir(path);
 
     auto impl = std::make_unique<Impl>();
     impl->path = path;
@@ -75,7 +75,7 @@ HistoryStore HistoryStore::open(const std::filesystem::path& path, int busy_time
 
     // 版本处理：比当前新 ⇒ 拒绝打开（旧写入方不得覆盖新结构）；
     // 旧或缺失 ⇒ 写成当前版本（版本 1 尚无历史包袱，建表 DDL 幂等）。
-    const int existing = internal::read_schema_version(db);
+    const int existing = history_store_internal::read_schema_version(db);
     if (existing > kSchemaVersion) {
         throw std::runtime_error(
             std::format("history schema too new | path={} found={} expected={}", path.string(),
@@ -97,10 +97,11 @@ HistoryStore HistoryStore::open(const std::filesystem::path& path, int busy_time
 
     try {
         impl->scalar_upsert =
-            std::make_unique<SQLite::Statement>(db, internal::scalar_upsert_sql());
+            std::make_unique<SQLite::Statement>(db, history_store_internal::scalar_upsert_sql());
         impl->dimension_upsert =
-            std::make_unique<SQLite::Statement>(db, internal::dimension_upsert_sql());
-        impl->mark_insert = std::make_unique<SQLite::Statement>(db, internal::mark_insert_sql());
+            std::make_unique<SQLite::Statement>(db, history_store_internal::dimension_upsert_sql());
+        impl->mark_insert =
+            std::make_unique<SQLite::Statement>(db, history_store_internal::mark_insert_sql());
     } catch (const std::exception& e) {
         throw std::runtime_error("history prepare failed | path=" + path.string() + " error=\"" +
                                  e.what() + "\"");
@@ -108,7 +109,9 @@ HistoryStore HistoryStore::open(const std::filesystem::path& path, int busy_time
     return HistoryStore(std::move(impl));
 }
 
-int HistoryStore::schema_version() const { return internal::read_schema_version(*impl_->db); }
+int HistoryStore::schema_version() const {
+    return history_store_internal::read_schema_version(*impl_->db);
+}
 
 const std::filesystem::path& HistoryStore::path() const noexcept { return impl_->path; }
 
@@ -120,28 +123,17 @@ void HistoryStore::write_batch(const HistoryBatch& batch) {
     try {
         SQLite::Transaction txn(db);
         for (const auto& record : batch.scalars) {
-            internal::write_scalar_row(*impl_, record);
+            history_store_internal::write_scalar_row(*impl_->scalar_upsert, record);
         }
         for (const auto& record : batch.dimensions) {
-            internal::write_dimension_row(*impl_, record);
+            history_store_internal::write_dimension_row(*impl_->dimension_upsert, record);
         }
         for (const auto& mark : batch.marks) {
-            internal::insert_mark(db, mark);
+            history_store_internal::insert_mark(db, mark);
         }
         txn.commit();
     } catch (const std::exception& e) {
         throw std::runtime_error("history write failed | error=\"" + std::string(e.what()) + "\"");
-    }
-}
-
-void HistoryStore::write_mark(const HistoryMark& mark) {
-    try {
-        SQLite::Transaction txn(*impl_->db);
-        internal::insert_mark(*impl_->db, mark);
-        txn.commit();
-    } catch (const std::exception& e) {
-        throw std::runtime_error("history mark write failed | error=\"" + std::string(e.what()) +
-                                 "\"");
     }
 }
 

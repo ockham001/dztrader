@@ -1,5 +1,7 @@
 #include <dztrader/sysmonstore/schema.h>
 
+#include "history_store_internal.h"
+
 #include <algorithm>
 #include <format>
 #include <string>
@@ -8,9 +10,6 @@
 namespace dztrader::sysmonstore {
 
 namespace {
-
-/// 宽表指标的 5 个聚合列后缀（顺序固定；`avg` 恒为 REAL，其余按指标类型）。
-constexpr std::string_view kAggregateSuffixes[] = {"min", "max", "avg", "last", "n"};
 
 std::string_view column_type(ScalarType type, std::string_view suffix) {
     // `avg` 恒为 REAL：整型指标（字节数、计数）的窗口均值几乎必为小数，用 INTEGER
@@ -83,7 +82,7 @@ std::string build_schema_ddl() {
         "    bucket_ts INTEGER NOT NULL,"
         "    interval_sec INTEGER NOT NULL";
     for (const auto& metric : kScalarMetrics) {
-        for (const auto suffix : kAggregateSuffixes) {
+        for (const auto suffix : history_store_internal::kAggregateSuffixes) {
             ddl +=
                 std::format(", {}_{} {}", metric.column, suffix, column_type(metric.type, suffix));
         }
@@ -106,7 +105,9 @@ std::string build_schema_ddl() {
         "    max REAL,"
         "    avg REAL,"
         "    last REAL,"
-        "    n INTEGER NOT NULL,"
+        // `n` 可空：`n IS NULL` 表示该桶内该维度指标无有效样本（读取方输出「不可用」
+        // 而不是 0）。写 NOT NULL 会让「无有效样本」的写入路径直接违反约束失败。
+        "    n INTEGER,"
         "    PRIMARY KEY (level, bucket_ts, domain, dimension, metric)"
         ") WITHOUT ROWID;\n"
         // 按域 + 维度查时间序列（#79 的「按指标/时间范围/粒度查询」走这条索引）。

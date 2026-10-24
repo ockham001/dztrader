@@ -98,6 +98,21 @@ int64_t HistoryRecorder::expected_samples_per_window() const noexcept {
     return std::max<int64_t>(1, config_.interval_sec * 1000 / config_.measure_interval_ms);
 }
 
+bool HistoryRecorder::window_is_full(int64_t samples) const noexcept {
+    // 允许 ±1 的调度抖动：定时器按「上一 deadline + 间隔」推进，落在窗口边界的样本
+    // 归属可能相差一个 tick，严格相等会造成大量假缺口标记。
+    return samples + 1 >= expected_samples_per_window();
+}
+
+void HistoryRecorder::reconfigure(RecordWindowConfig config) {
+    if (config.interval_sec <= 0) {
+        config.interval_sec = 60;  // 与构造同一防御（配置校验已保证 [1, 86400]）
+    }
+    // 只换配置、不动累加状态：已观测的样本属于它开始时那个窗口，按旧宽度落库才不会
+    // 把历史切碎。新配置从下一个窗口边界起生效（bucket_ts_ 保持当前窗口起点）。
+    config_ = config;
+}
+
 sysmonstore::HistoryBatch HistoryRecorder::observe(const platform::SysmonSnapshot& snapshot,
                                                    int64_t now_ts) {
     const int64_t bucket =
@@ -106,15 +121,19 @@ sysmonstore::HistoryBatch HistoryRecorder::observe(const platform::SysmonSnapsho
     sysmonstore::HistoryBatch batch;
     if (!bucket_ts_.has_value()) {
         bucket_ts_ = bucket;
+        window_interval_sec_ = config_.interval_sec;
     } else if (*bucket_ts_ != bucket) {
         // 窗口切换：先产出上一窗口的批次。
         // 缺口判定必须在 `take_batch` 重置累加状态**之前**取样本数——重置后读到的是 0。
         const int64_t previous = *bucket_ts_;
         const int64_t samples = samples_in_window_;
+        const uint64_t missed = missed_ticks_in_window_;
         batch = take_batch(previous);
-        // 上一窗口样本不齐（停顿/被强杀/时钟跳变）⇒ 记缺口，绝不补成连续数据。
-        mark_if_incomplete(batch, previous, samples);
+        // 上一窗口样本不齐或计量定时器报告跳过 tick ⇒ 记缺口，绝不补成连续数据。
+        mark_if_incomplete(batch, previous, samples, missed);
+        missed_ticks_in_window_ = 0;
         bucket_ts_ = bucket;
+        window_interval_sec_ = config_.interval_sec;  // 新窗口用当前配置
     }
 
     observe_values(snapshot);
@@ -124,19 +143,31 @@ sysmonstore::HistoryBatch HistoryRecorder::observe(const platform::SysmonSnapsho
 
 sysmonstore::HistoryBatch HistoryRecorder::flush(int64_t now_ts) {
     if (!bucket_ts_.has_value() || samples_in_window_ <= 0) {
-        // 从未观测到任何样本：无数据可落盘（不产出空窗口冒充「有数据」）。
+        // 从未观测到任何样本：没有窗口数据可落盘（不产出空窗口冒充「有数据」），
+        // 但**待落盘标记必须保留**——重启/时钟跳变标记描述的是事实，不能因为没有
+        // 样本就丢掉（否则「重启窗口」这条记录会静默消失）。
+        sysmonstore::HistoryBatch marks_only;
+        marks_only.marks = std::move(pending_marks_);
         pending_marks_.clear();
-        return {};
+        (void)now_ts;
+        bucket_ts_ = std::nullopt;
+        samples_in_window_ = 0;
+        return marks_only;
     }
     const int64_t previous = *bucket_ts_;
     const int64_t samples = samples_in_window_;
+    const uint64_t missed = missed_ticks_in_window_;
     auto batch = take_batch(previous);
-    mark_if_incomplete(batch, previous, samples);
+    mark_if_incomplete(batch, previous, samples, missed);
+    missed_ticks_in_window_ = 0;
     // 待落盘标记（采集中断/重启/时钟跳变）也随这一批走：标记与数据同事务提交。
-    pending_marks_.clear();
     (void)now_ts;
     bucket_ts_ = std::nullopt;
     return batch;
+}
+
+void HistoryRecorder::note_missed_ticks(uint64_t missed) noexcept {
+    missed_ticks_in_window_ += missed;
 }
 
 void HistoryRecorder::add_mark(sysmonstore::HistoryMark mark) {
@@ -145,17 +176,19 @@ void HistoryRecorder::add_mark(sysmonstore::HistoryMark mark) {
 
 void HistoryRecorder::mark_if_incomplete(sysmonstore::HistoryBatch& batch,
                                          int64_t bucket_ts,
-                                         int64_t samples) const {
-    const int64_t expected = expected_samples_per_window();
-    // 允许 ±1 的调度抖动：定时器按「上一 deadline + 间隔」推进，落在窗口边界的样本
-    // 归属可能相差一个 tick，严格相等会造成大量假缺口告警。
-    if (samples + 1 >= expected) {
+                                         int64_t samples,
+                                         uint64_t missed_ticks) const {
+    // 两个来源合起来才是完整事实：样本数不足（窗口内少了样本）或计量定时器明确
+    // 报告跳过了 tick。两者都正常时不记标记——正常窗口不该被标记污染。
+    if (window_is_full(samples) && missed_ticks == 0) {
         return;
     }
     sysmonstore::HistoryMark gap;
     gap.ts = bucket_ts;
     gap.kind = std::string(sysmonstore::kMarkSampleGap);
-    gap.detail = std::to_string(samples);
+    // detail 同时给出两个数：实际样本数与明确跳过的 tick 数。读取方据此区分
+    // 「进程停顿导致样本少」与「定时器报告跳过」，也便于事后核对缺口大小。
+    gap.detail = std::to_string(samples) + "/" + std::to_string(missed_ticks);
     batch.marks.push_back(std::move(gap));
 }
 
@@ -321,7 +354,7 @@ sysmonstore::HistoryBatch HistoryRecorder::take_batch(int64_t bucket_ts) {
     sysmonstore::ScalarRecord record;
     record.level = sysmonstore::kLevelRaw;
     record.bucket_ts = bucket_ts;
-    record.interval_sec = config_.interval_sec;
+    record.interval_sec = window_interval_sec_;
     record.metrics = scalars_;
     batch.scalars.push_back(std::move(record));
 

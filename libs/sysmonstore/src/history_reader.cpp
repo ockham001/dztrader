@@ -1,4 +1,4 @@
-#include "history_internal.h"
+#include "history_store_internal.h"
 
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
@@ -65,7 +65,7 @@ std::pair<HistoryAvailability, std::unique_ptr<HistoryReader>> HistoryReader::op
     // （否则读出的列错位，比「历史不可用」危险得多）。
     int version = 0;
     try {
-        version = internal::read_schema_version(db);
+        version = history_store_internal::read_schema_version(db);
     } catch (const std::exception& e) {
         SPDLOG_WARN("sysmon history schema read failed | error=\"{}\"", e.what());
         return {HistoryAvailability::OpenFailed, nullptr};
@@ -83,7 +83,9 @@ std::pair<HistoryAvailability, std::unique_ptr<HistoryReader>> HistoryReader::op
             std::unique_ptr<HistoryReader>(new HistoryReader(std::move(impl)))};
 }
 
-int HistoryReader::schema_version() const { return internal::read_schema_version(*impl_->db); }
+int HistoryReader::schema_version() const {
+    return history_store_internal::read_schema_version(*impl_->db);
+}
 
 const std::filesystem::path& HistoryReader::path() const noexcept { return impl_->path; }
 
@@ -97,7 +99,7 @@ std::vector<ScalarRecord> HistoryReader::query_scalars(int32_t level,
     }
     try {
         SQLite::Statement stmt(*impl_->db,
-                               "SELECT " + internal::scalar_select_columns() +
+                               "SELECT " + history_store_internal::scalar_select_columns() +
                                    " FROM sysmon_scalar WHERE level=?1 AND bucket_ts>=?2 "
                                    "AND bucket_ts<?3 ORDER BY bucket_ts ASC LIMIT ?4");
         stmt.bind(1, static_cast<int32_t>(level));
@@ -105,7 +107,7 @@ std::vector<ScalarRecord> HistoryReader::query_scalars(int32_t level,
         stmt.bind(3, static_cast<int64_t>(until_ts));
         stmt.bind(4, static_cast<int64_t>(max_rows));
         while (stmt.executeStep()) {
-            rows.push_back(internal::read_scalar_row(stmt));
+            rows.push_back(history_store_internal::read_scalar_row(stmt));
         }
     } catch (const std::exception& e) {
         // 查询失败不抛给 REST 路径：历史不可用是降级条件，不是崩溃条件。

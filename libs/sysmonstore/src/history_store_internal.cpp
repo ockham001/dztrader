@@ -1,4 +1,4 @@
-#include "history_internal.h"
+#include "history_store_internal.h"
 
 #include <spdlog/spdlog.h>
 
@@ -7,7 +7,7 @@
 #include <string>
 #include <utility>
 
-namespace dztrader::sysmonstore::internal {
+namespace dztrader::sysmonstore::history_store_internal {
 
 std::string quote_identifier(std::string_view identifier) {
     std::string out;
@@ -23,7 +23,9 @@ std::string quote_identifier(std::string_view identifier) {
     return out;
 }
 
-std::string scalar_insert_columns() {
+std::string scalar_select_columns() {
+    // 这一份同时也是 INSERT 的列清单：两者必须逐字相同（否则 UPSERT 的列序与 SELECT
+    // 的读取序会错位，症状是读出来的指标串行）。共用一份实现而不是各写一遍。
     std::string columns = "level,bucket_ts,interval_sec";
     for (const auto& metric : kScalarMetrics) {
         for (const auto suffix : kAggregateSuffixes) {
@@ -43,7 +45,7 @@ std::string scalar_upsert_sql() {
         }
         placeholders += std::format("?{}", i);
     }
-    std::string sql = "INSERT INTO sysmon_scalar (" + scalar_insert_columns() + ") VALUES (" +
+    std::string sql = "INSERT INTO sysmon_scalar (" + scalar_select_columns() + ") VALUES (" +
                       placeholders + ") ON CONFLICT(level,bucket_ts) DO UPDATE SET ";
     bool first = true;
     for (const auto& metric : kScalarMetrics) {
@@ -58,16 +60,6 @@ std::string scalar_upsert_sql() {
         }
     }
     return sql;
-}
-
-std::string scalar_select_columns() {
-    std::string columns = "level,bucket_ts,interval_sec";
-    for (const auto& metric : kScalarMetrics) {
-        for (const auto suffix : kAggregateSuffixes) {
-            columns += std::format(",{}_{}", metric.column, suffix);
-        }
-    }
-    return columns;
 }
 
 std::string dimension_upsert_sql() {
@@ -109,8 +101,8 @@ void bind_null_aggregate(SQLite::Statement& stmt, int& index) {
     }
 }
 
-void write_scalar_row(HistoryStoreImpl& impl, const ScalarRecord& record) {
-    auto& stmt = *impl.scalar_upsert;
+void write_scalar_row(SQLite::Statement& upsert, const ScalarRecord& record) {
+    auto& stmt = upsert;
     stmt.reset();
     int index = 1;
     stmt.bind(index++, static_cast<int32_t>(record.level));
@@ -129,14 +121,14 @@ void write_scalar_row(HistoryStoreImpl& impl, const ScalarRecord& record) {
     stmt.exec();
 }
 
-void write_dimension_row(HistoryStoreImpl& impl, const DimensionRecord& record) {
+void write_dimension_row(SQLite::Statement& upsert, const DimensionRecord& record) {
     if (!dimension_domain_has_metric(record.domain, record.metric)) {
         // 未注册的域/指标名不落库：schema 是唯一真相源，出现它说明写入方有 bug。
         SPDLOG_WARN("history dimension skipped | domain={} metric={} reason=not_registered",
                     record.domain, record.metric);
         return;
     }
-    auto& stmt = *impl.dimension_upsert;
+    auto& stmt = upsert;
     stmt.reset();
     int index = 1;
     stmt.bind(index++, static_cast<int32_t>(record.level));
@@ -230,4 +222,4 @@ void ensure_parent_dir(const std::filesystem::path& path) {
     }
 }
 
-}  // namespace dztrader::sysmonstore::internal
+}  // namespace dztrader::sysmonstore::history_store_internal

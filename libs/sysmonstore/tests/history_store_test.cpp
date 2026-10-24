@@ -250,23 +250,6 @@ TEST_F(HistoryStoreTest, MarksRoundTrip) {
     EXPECT_EQ(marks[1].kind, kMarkClockJump);
 }
 
-TEST_F(HistoryStoreTest, WriteMarkStandalone) {
-    // 单条标记入口（启动时补记重启标记走这条路径）。
-    {
-        auto store = HistoryStore::open(db_path());
-        HistoryMark mark;
-        mark.ts = 1'790'000'000;
-        mark.kind = std::string(kMarkRestart);
-        mark.detail = "manual";
-        store.write_mark(mark);
-    }
-    auto reader = HistoryReader::open(db_path());
-    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
-    const auto marks = reader.second->query_marks(1'790'000'000, 1'790'000'001, 10);
-    ASSERT_EQ(marks.size(), 1U);
-    EXPECT_EQ(marks[0].kind, kMarkRestart);
-}
-
 TEST_F(HistoryStoreTest, SameBucketRewritesInsteadOfDuplicating) {
     // UPSERT 语义：同桶重复提交后写优先（重试不产生重复行）。
     {
@@ -378,11 +361,13 @@ TEST_F(HistoryStoreTest, ReaderReportsOpenFailedForNonSqliteFile) {
 // ===== 保留与压缩 =====
 
 TEST_F(HistoryStoreTest, RetentionDeletesExpiredRawRecords) {
+    // 原始记录 24 小时水位（记录间隔 < 1 分钟的分支）：超期原始记录被压缩后删除，
+    // 保留期内的记录原样留下。
     constexpr int64_t kNow = 2'000'000'000;
     {
         auto store = HistoryStore::open(db_path());
         HistoryBatch batch;
-        // 两条超期（> 24h 前）+ 两条在保留期内。
+        // 两条超期（> 24h 前，分属不同分钟）+ 两条在保留期内（也分属不同分钟）。
         batch.scalars.push_back(make_scalar_record(kNow - 25 * 3600, 1.0));
         batch.scalars.push_back(make_scalar_record(kNow - 26 * 3600, 1.0));
         batch.scalars.push_back(make_scalar_record(kNow - 1 * 3600, 1.0));
@@ -393,19 +378,24 @@ TEST_F(HistoryStoreTest, RetentionDeletesExpiredRawRecords) {
         policy.now_ts = kNow;
         policy.raw_retention_sec = 24 * 3600;
         policy.max_retention_sec = 30 * 86400;
-        policy.record_interval_sec = 60;  // >= 60 ⇒ 不压缩
+        policy.record_interval_sec = 5;  // < 60 ⇒ 压缩分支
         const auto result = store.apply_retention(policy);
-        EXPECT_EQ(result.deleted_raw_rows, 2);
-        EXPECT_EQ(result.compacted_rows, 0) << "no compaction when record interval >= 60s";
+        // 超期的两条进了分钟聚合（原始行被删）；保留期内的两条原样留着。
+        EXPECT_EQ(result.compacted_rows, 2);
+        EXPECT_EQ(result.deleted_raw_rows, 0) << "expired rows were compacted, not raw-deleted";
     }
     auto reader = HistoryReader::open(db_path());
     ASSERT_EQ(reader.first, HistoryAvailability::Ok);
-    const auto rows = reader.second->query_scalars(kLevelRaw, 0, kNow, 100);
-    EXPECT_EQ(rows.size(), 2U) << "only in-retention raw records survive";
+    const auto raw = reader.second->query_scalars(kLevelRaw, 0, kNow, 100);
+    ASSERT_EQ(raw.size(), 2U) << "only in-retention raw records survive as raw";
+    // 超期数据没有丢：以分钟聚合的形式仍然可查。
+    const auto minutes = reader.second->query_scalars(kLevelMinute, 0, kNow, 100);
+    EXPECT_EQ(minutes.size(), 2U) << "expired raw data must survive as minute aggregates";
 }
 
-TEST_F(HistoryStoreTest, RetentionDeletesExpiredDimensionRowsWithTheirBuckets) {
-    // 宽表与长表同桶数据必须一起删除，否则按域查询会读到孤儿行。
+TEST_F(HistoryStoreTest, ExpiredDimensionRowsDoNotOutliveTheirBuckets) {
+    // 超期维度行必须与所属桶一起离开原始层级：要么被压缩成分钟聚合，要么被删除，
+    // 但绝不能作为「原始行」永久滞留（否则按域查询会读到早已过期的数据）。
     constexpr int64_t kNow = 2'000'000'000;
     {
         auto store = HistoryStore::open(db_path());
@@ -417,14 +407,18 @@ TEST_F(HistoryStoreTest, RetentionDeletesExpiredDimensionRowsWithTheirBuckets) {
 
         RetentionPolicy policy;
         policy.now_ts = kNow;
-        policy.record_interval_sec = 60;
+        policy.record_interval_sec = 5;  // < 60 ⇒ 压缩分支
         store.apply_retention(policy);
     }
     auto reader = HistoryReader::open(db_path());
     ASSERT_EQ(reader.first, HistoryAvailability::Ok);
     EXPECT_TRUE(
         reader.second->query_dimensions(kNetworkDomain, "", "", kLevelRaw, 0, kNow, 100).empty())
-        << "dimension rows must be deleted together with their bucket";
+        << "no expired dimension row may remain at the raw level";
+    // 数据没有丢：维度序列以分钟聚合形式继续可查（30 天保留的前提）。
+    const auto minutes = reader.second->query_dimensions(kNetworkDomain, "eno1", "rx_bytes_total",
+                                                         kLevelMinute, 0, kNow, 100);
+    EXPECT_EQ(minutes.size(), 1U);
 }
 
 TEST_F(HistoryStoreTest, CompactionAggregatesExpiredRawIntoMinuteBuckets) {
@@ -497,26 +491,34 @@ TEST_F(HistoryStoreTest, CompactionPreservesPeakInMax) {
     EXPECT_LT(minutes[0].metrics[0].avg, 0.1);
 }
 
-TEST_F(HistoryStoreTest, NoCompactionWhenRecordIntervalAtLeastOneMinute) {
-    // 记录间隔已 >= 60 秒 ⇒ 不做压缩，原始记录直接保留到 30 天。
+TEST_F(HistoryStoreTest, NoCompactionKeepsRawForFullMaxRetention) {
+    // 验收标准：「记录间隔已不小于 1 分钟时直接保留 30 天」——
+    // 此时不做压缩，且原始记录**不在 24 小时被删**（保留水位是 max_retention_days）。
     constexpr int64_t kNow = 2'000'000'000;
     {
         auto store = HistoryStore::open(db_path());
         HistoryBatch batch;
-        // 30 小时前的数据：超过 24h 原始保留期，但不该被压缩（记录间隔 60）。
+        // 30 小时前（超 24h）与 10 天前（在 30 天内）：记录间隔 60 秒，两者都必须保留。
         batch.scalars.push_back(make_scalar_record(kNow - 30 * 3600, 1.0));
+        batch.scalars.push_back(make_scalar_record(kNow - 10 * 86400, 2.0));
+        // 40 天前：超 30 天，必须删除。
+        batch.scalars.push_back(make_scalar_record(kNow - 40 * 86400, 3.0));
         store.write_batch(batch);
 
         RetentionPolicy policy;
         policy.now_ts = kNow;
+        policy.raw_retention_sec = 24 * 3600;  // 该值在 >=60s 分支下**不得**生效
+        policy.max_retention_sec = 30 * 86400;
         policy.record_interval_sec = 60;
         const auto result = store.apply_retention(policy);
-        EXPECT_EQ(result.compacted_rows, 0);
+        EXPECT_EQ(result.compacted_rows, 0) << "no compaction when record interval >= 60s";
         EXPECT_EQ(result.compacted_buckets, 0);
-        EXPECT_EQ(result.deleted_raw_rows, 1) << "raw retention still applies";
+        EXPECT_EQ(result.deleted_raw_rows, 1) << "only the 40-day-old row exceeds max retention";
     }
     auto reader = HistoryReader::open(db_path());
     ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto raw = reader.second->query_scalars(kLevelRaw, 0, kNow, 100);
+    ASSERT_EQ(raw.size(), 2U) << "24h-raw-retention must not apply when interval >= 60s";
     EXPECT_TRUE(reader.second->query_scalars(kLevelMinute, 0, kNow, 100).empty());
 }
 
@@ -549,14 +551,16 @@ TEST_F(HistoryStoreTest, RetentionDeletesExpiredMarks) {
     constexpr int64_t kNow = 2'000'000'000;
     {
         auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
         HistoryMark old_mark;
         old_mark.ts = kNow - 40 * 86400;
         old_mark.kind = std::string(kMarkRestart);
-        store.write_mark(old_mark);
+        batch.marks.push_back(old_mark);
         HistoryMark recent;
         recent.ts = kNow - 1 * 86400;
         recent.kind = std::string(kMarkSampleGap);
-        store.write_mark(recent);
+        batch.marks.push_back(recent);
+        store.write_batch(batch);
 
         RetentionPolicy policy;
         policy.now_ts = kNow;
@@ -620,11 +624,14 @@ TEST_F(HistoryStoreTest, ZeroMaxBytesMeansUnlimited) {
 }
 
 TEST_F(HistoryStoreTest, MaintenanceBatchLimitsWorkPerTransaction) {
-    // 分段执行：大批数据不会一次长事务（对只读连接的影响可控）。
+    // 分段执行：大批数据分多个事务处理，而不是一个长事务（对只读连接的影响可控）。
+    // 断言的是「全部处理完」这一外部承诺；分段本身由 maintenance_batch 驱动，
+    // 内部事务数不可观察，故不按事务数断言。
     constexpr int64_t kNow = 2'000'000'000;
     {
         auto store = HistoryStore::open(db_path());
         HistoryBatch batch;
+        // 25 条超期原始记录，每条属不同分钟 ⇒ 压成 25 个分钟桶。
         for (int i = 0; i < 25; ++i) {
             batch.scalars.push_back(make_scalar_record(kNow - 30 * 3600 - i * 60, 1.0));
         }
@@ -632,11 +639,14 @@ TEST_F(HistoryStoreTest, MaintenanceBatchLimitsWorkPerTransaction) {
 
         RetentionPolicy policy;
         policy.now_ts = kNow;
-        policy.record_interval_sec = 60;
-        policy.maintenance_batch = 10;  // 每批 10 行 → 需要 3 批
+        policy.record_interval_sec = 5;  // < 60 ⇒ 压缩分支
+        policy.maintenance_batch = 10;   // 每批 10 行 → 需要 3 批
         const auto result = store.apply_retention(policy);
-        EXPECT_EQ(result.deleted_raw_rows, 25);
+        EXPECT_EQ(result.compacted_rows, 25) << "all expired rows must be processed across batches";
     }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    EXPECT_TRUE(reader.second->query_scalars(kLevelRaw, 0, kNow, 1000).size() < 25U);
 }
 
 // ===== 落盘线程 =====
@@ -733,42 +743,50 @@ TEST_F(HistoryWriterTest, WriterStartsThreadAndReportsRunning) {
     EXPECT_FALSE(writer.running());
 }
 
-TEST_F(HistoryWriterTest, MaintenanceRunsRetentionPeriodically) {
-    // 维护周期：以 0 间隔强制每轮都跑，验证保留策略确实被落盘线程应用。
+TEST_F(HistoryWriterTest, MaintenanceAppliesRetentionOnWriterThread) {
+    // 维护周期确实在**落盘线程**上执行保留策略（而不是只在测试里手工调 apply_retention）。
+    //
+    // 等待条件必须是「保留策略的产物出现」——这里取「超期原始行已不在原始层级」，
+    // 它只可能由维护周期造成（本用例的写入方只写不删）。之前那版把「探针行尚未落盘」
+    // 当成成功条件，因此保留策略一次都没跑也能通过。
     constexpr int64_t kNow = 2'000'000'000;
-    {
-        HistoryWriterOptions options;
-        options.maintenance_interval_sec = 1;
-        HistoryWriter writer(db_path(), options, [kNow]() {
-            RetentionPolicy policy;
-            policy.now_ts = kNow;
-            policy.record_interval_sec = 60;
-            return policy;
-        });
-        HistoryBatch batch;
-        batch.scalars.push_back(make_scalar_record(kNow - 30 * 3600, 1.0));
-        writer.enqueue(std::move(batch));
-        // 等待一轮维护（条件等待，不用 sleep 当同步手段：轮询直到数据被删）。
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        bool deleted = false;
-        while (std::chrono::steady_clock::now() < deadline) {
-            HistoryBatch probe;
-            probe.scalars.push_back(make_scalar_record(kNow, 1.0));
-            writer.enqueue(std::move(probe));
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            auto reader = HistoryReader::open(db_path());
-            if (reader.first == HistoryAvailability::Ok) {
-                const auto rows = reader.second->query_scalars(kLevelRaw, 0, kNow, 100);
-                // 超期那条已删、探针那条还在（或还没落盘）时即视为维护生效。
-                if (rows.size() <= 1) {
-                    deleted = true;
-                    break;
-                }
+    constexpr int64_t kExpiredTs = kNow - 30 * 3600;
+    HistoryWriterOptions options;
+    options.maintenance_interval_sec = 1;  // 1 秒跑一轮维护
+    HistoryWriter writer(db_path(), options, [kNow]() {
+        RetentionPolicy policy;
+        policy.now_ts = kNow;
+        policy.record_interval_sec = 5;   // < 60 ⇒ 压缩分支
+        policy.raw_retention_sec = 3600;  // 超 1 小时即超期
+        policy.max_retention_sec = 30 * 86400;
+        return policy;
+    });
+    HistoryBatch batch;
+    batch.scalars.push_back(make_scalar_record(kExpiredTs, 1.0));
+    writer.enqueue(std::move(batch));
+
+    // 有界条件等待：等到超期行离开原始层级（维护周期的唯一可能产物）。
+    bool expired_left_raw = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto reader = HistoryReader::open(db_path());
+        if (reader.first == HistoryAvailability::Ok) {
+            const auto raw = reader.second->query_scalars(kLevelRaw, 0, kNow, 100);
+            const bool still_there =
+                std::any_of(raw.begin(), raw.end(), [kExpiredTs](const ScalarRecord& record) {
+                    return record.bucket_ts == kExpiredTs;
+                });
+            // 只有「它曾经落库、现在不在原始层级」才算维护跑过；还没落库时继续等。
+            const bool ever_written = writer.written_records() > 0;
+            if (ever_written && !still_there) {
+                expired_left_raw = true;
+                break;
             }
         }
-        writer.flush();
-        EXPECT_TRUE(deleted) << "retention maintenance must run on the writer thread";
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+    EXPECT_TRUE(expired_left_raw) << "writer thread must apply retention to expired raw buckets";
+    writer.flush();
 }
 
 }  // namespace
