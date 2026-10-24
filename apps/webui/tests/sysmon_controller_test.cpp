@@ -1,22 +1,52 @@
 #include <gtest/gtest.h>
 
+#include "test_util.h"  // dzshm_test_support：cleanup_channel（内核命名对象回收）
+
 #include <drogon/HttpRequest.h>
 #include <drogon/HttpResponse.h>
 #include <nlohmann/json.hpp>
 
 #include "mirror_store.h"
 #include "repository.h"
+#include "shm_writer.h"
 #include "sysmon_controller.h"
 
+#include <dztrader/core/this_process.h>
+#include <dztrader/shm/channel_meta.h>
+#include <dztrader/shm/frame_view.h>
+#include <dztrader/shm/reader.h>
+#include <dztrader/shm/writer.h>
+
+#include <filesystem>
 #include <memory>
+#include <optional>
+#include <random>
+#include <string>
 
 // 注意：不引入全局 Json 别名——drogon 依赖 jsoncpp，其 namespace Json 在全局作用域，
 // 全局 using Json = nlohmann::json 会与之冲突（MSVC C2365）
 using dztrader::webui::MirrorStore;
 using dztrader::webui::Repository;
+using dztrader::webui::ShmWriter;
 using dztrader::webui::SysmonCtrl;
 
 namespace {
+
+using dztrader::shm::ChannelConfig;
+using dztrader::shm::ChannelMeta;
+using dztrader::shm::FrameView;
+using dztrader::shm::MultiWriter;
+using dztrader::shm::Reader;
+
+constexpr uint64_t kMB = 1024 * 1024;
+
+/// 进程唯一通道名（PID + 随机后缀）：ctest -j 下同一二进制各用例是独立进程，
+/// 固定名会互相 remove_all shm 目录（与 shm_writer_test 同做法）。
+std::string unique_channel_name(const std::string& base) {
+    std::random_device rd;
+    return base + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
+           std::to_string(rd());
+}
 
 nlohmann::json minimal_snapshot() {
     return {
@@ -75,7 +105,43 @@ protected:
     void SetUp() override {
         repo_ = std::make_shared<Repository>(":memory:");
         mirror_ = std::make_shared<MirrorStore>();
-        ctrl_ = std::make_shared<SysmonCtrl>(repo_, mirror_);
+        ctrl_ = std::make_shared<SysmonCtrl>(repo_, mirror_, nullptr);
+    }
+
+    /// 建一套真实事件通道 + reader，使 ShmWriter::is_ready() 为 true，
+    /// 从而能观察 PUT /api/sysmon/config 写出的 SET_SYSMON_CONFIG 帧。
+    void enable_shm() {
+        channel_name_ = unique_channel_name("dz_test_sysmon_ctrl");
+        reader_name_ = channel_name_ + "_reader";
+        shm_dir_ = std::filesystem::temp_directory_path() / channel_name_;
+        std::filesystem::remove_all(shm_dir_);
+        ChannelConfig cfg{
+            .channel_name = channel_name_,
+            .shm_dir = shm_dir_,
+            .meta_file_size = 4 * kMB,
+            .page_size = 1 * kMB,
+            .lock_memory = false,
+            .prefetch_memory = false,
+        };
+        meta_ = std::make_shared<ChannelMeta>(ChannelMeta::open_or_create(cfg));
+        // 先注册 reader 再建 writer：MultiWriter::create 构造时同步订阅列表
+        ASSERT_TRUE(meta_->add_reader(reader_name_, 0));
+        reader_ = Reader::create(meta_, reader_name_);
+        shm_writer_ = std::make_shared<ShmWriter>(
+            std::make_shared<MultiWriter>(MultiWriter::create(meta_, channel_name_ + "_writer")));
+        ctrl_ = std::make_shared<SysmonCtrl>(repo_, mirror_, shm_writer_);
+    }
+
+    void TearDown() override {
+        // 先释放映射再删目录：Windows 上已映射文件 remove_all 会失败
+        ctrl_.reset();
+        shm_writer_.reset();
+        reader_.reset();
+        meta_.reset();
+        if (!channel_name_.empty()) {
+            EXPECT_TRUE(
+                dztrader::shm::test::cleanup_channel(channel_name_, shm_dir_, {reader_name_}));
+        }
     }
 
     drogon::HttpRequestPtr req() {
@@ -90,9 +156,29 @@ protected:
         return captured;
     }
 
+    /// 排空 reader，返回第一个匹配 type（+ instance_id）的定向帧 payload
+    std::optional<nlohmann::json> capture_inst_frame(DzFrameType type,
+                                                     const std::string& instance) {
+        if (!reader_) return std::nullopt;
+        while (const auto* raw = reader_->next_frame()) {
+            const FrameView view(raw);
+            if (view.type() != type) continue;
+            if (std::string(view.ext_inst_id()) != instance) continue;
+            const auto* data = reinterpret_cast<const char*>(view.ext_inst_payload());
+            return nlohmann::json::parse(data, data + view.ext_inst_payload_size());
+        }
+        return std::nullopt;
+    }
+
     std::shared_ptr<Repository> repo_;
     std::shared_ptr<MirrorStore> mirror_;
     std::shared_ptr<SysmonCtrl> ctrl_;
+    std::string channel_name_;
+    std::string reader_name_;
+    std::filesystem::path shm_dir_;
+    std::shared_ptr<ChannelMeta> meta_;
+    std::optional<Reader> reader_;
+    std::shared_ptr<ShmWriter> shm_writer_;
 };
 
 TEST_F(SysmonControllerTest, ReturnsCurrentSnapshot) {
@@ -113,6 +199,94 @@ TEST_F(SysmonControllerTest, Returns503BeforeFirstReport) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
     const auto body = nlohmann::json::parse(resp->getBody());
     EXPECT_EQ(body.value("error", ""), "sysmon snapshot not available");
+}
+
+// ===== PUT /api/sysmon/config（契约 rest §2.8、契约 sysmon §3）=====
+
+/// 构造带 user_id 属性与 body 的 PUT 请求（JWT advice 在真实链路里注入 user_id）。
+drogon::HttpRequestPtr put_request(const std::string& user_id, const std::string& body) {
+    auto req = drogon::HttpRequest::newHttpRequest();
+    req->setMethod(drogon::Put);
+    req->getAttributes()->insert("user_id", user_id);
+    req->setBody(body);
+    return req;
+}
+
+TEST_F(SysmonControllerTest, SetConfig403ForNonAdmin) {
+    repo_->create_user("regular", "Regular User", "reg@test.com", "pass", "user");
+    drogon::HttpResponsePtr captured;
+    ctrl_->set_config(put_request("regular", R"({"network":{"hide_virtual":false}})"),
+                      [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
+    ASSERT_NE(captured, nullptr);
+    EXPECT_EQ(captured->getStatusCode(), drogon::k403Forbidden);
+    EXPECT_EQ(nlohmann::json::parse(captured->getBody()).value("error", ""), "admin required");
+}
+
+TEST_F(SysmonControllerTest, SetConfig503WhenShmNotReady) {
+    repo_->create_user("admin", "Administrator", "admin@test.com", "pass", "admin");
+    // 无 ShmWriter 的控制器（API-only 模式，契约 rest §1 的 shm 未就绪降级）
+    auto ctrl = std::make_shared<SysmonCtrl>(repo_, mirror_, nullptr);
+    drogon::HttpResponsePtr captured;
+    ctrl->set_config(put_request("admin", R"({"network":{"hide_virtual":false}})"),
+                     [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
+    ASSERT_NE(captured, nullptr);
+    EXPECT_EQ(captured->getStatusCode(), drogon::k503ServiceUnavailable);
+    EXPECT_EQ(nlohmann::json::parse(captured->getBody()).value("error", ""), "shm not available");
+}
+
+TEST_F(SysmonControllerTest, SetConfig400OnInvalidJsonBody) {
+    repo_->create_user("admin", "Administrator", "admin@test.com", "pass", "admin");
+    enable_shm();
+    drogon::HttpResponsePtr captured;
+    ctrl_->set_config(put_request("admin", "{not json"),
+                      [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
+    ASSERT_NE(captured, nullptr);
+    EXPECT_EQ(captured->getStatusCode(), drogon::k400BadRequest);
+    EXPECT_EQ(nlohmann::json::parse(captured->getBody()).value("error", ""), "bad request");
+}
+
+TEST_F(SysmonControllerTest, SetConfig400OnNonObjectBody) {
+    repo_->create_user("admin", "Administrator", "admin@test.com", "pass", "admin");
+    enable_shm();
+    drogon::HttpResponsePtr captured;
+    ctrl_->set_config(put_request("admin", "[1,2,3]"),
+                      [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
+    ASSERT_NE(captured, nullptr);
+    EXPECT_EQ(captured->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(SysmonControllerTest, SetConfigDispatchesMergePatchToSysmon) {
+    repo_->create_user("admin", "Administrator", "admin@test.com", "pass", "admin");
+    enable_shm();
+    const nlohmann::json patch = {{"network", {{"hide_virtual", false}}}};
+    drogon::HttpResponsePtr captured;
+    ctrl_->set_config(put_request("admin", patch.dump()),
+                      [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
+    ASSERT_NE(captured, nullptr);
+    // 契约 rest §1：200 只表示"已写事件通道"，生效信号是 WS sysmon_config
+    EXPECT_EQ(captured->getStatusCode(), drogon::k200OK);
+    const auto body = nlohmann::json::parse(captured->getBody());
+    EXPECT_TRUE(body.value("ok", false));
+    EXPECT_EQ(body.value("message", ""), "dispatched");
+    // 帧侧：SET_SYSMON_CONFIG 定向到固定实例 dzsysmon，payload 原样透传 merge patch
+    const auto frame = capture_inst_frame(DZ_FRAME_SET_SYSMON_CONFIG, "dzsysmon");
+    ASSERT_TRUE(frame.has_value());
+    EXPECT_TRUE(*frame == patch);
+}
+
+TEST_F(SysmonControllerTest, SetConfigEmptyPatchStillDispatched) {
+    // 契约 sysmon §3：空对象 {} 为无操作但仍回 RTN —— REST 侧同样原样下发
+    repo_->create_user("admin", "Administrator", "admin@test.com", "pass", "admin");
+    enable_shm();
+    drogon::HttpResponsePtr captured;
+    ctrl_->set_config(put_request("admin", "{}"),
+                      [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
+    ASSERT_NE(captured, nullptr);
+    EXPECT_EQ(captured->getStatusCode(), drogon::k200OK);
+    const auto frame = capture_inst_frame(DZ_FRAME_SET_SYSMON_CONFIG, "dzsysmon");
+    ASSERT_TRUE(frame.has_value());
+    EXPECT_TRUE(frame->is_object());
+    EXPECT_TRUE(frame->empty());
 }
 
 }  // namespace

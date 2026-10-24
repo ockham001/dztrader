@@ -1,13 +1,16 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { sysmonApi } from '@/api/sysmon'
+import { PENDING_TIMEOUT, usePending } from '@/composables/usePending'
 import type {
   SysmonAvailabilityEntry,
+  SysmonConfigPayload,
   SysmonCoreFrequency,
   SysmonCpuCore,
   SysmonDiskIoInfo,
   SysmonLoadAverage,
   SysmonMemoryInfo,
+  SysmonNetworkInfo,
   SysmonShmDirInfo,
   SysmonSnapshotPayload,
   SysmonSwapInfo,
@@ -15,6 +18,17 @@ import type {
   SysmonVolumeInfo,
   SysmonWatchPathInfo,
 } from '@/types/generated'
+
+/** 网络配置（network.hide_virtual）切换的 pending key；WS `sysmon_config` 到达时清除 */
+export const SYSMON_NETWORK_CONFIG_KEY = 'sysmon:network_config'
+/** 配置类操作超时（对齐 settings / mdConfig 的 CONFIG_OP_TIMEOUT_MS） */
+export const SYSMON_CONFIG_TIMEOUT_MS = 10_000
+
+/**
+ * 系统监控领域独立 pending 实例（P3 范式：本领域无跨 store 交互，独立空间）。
+ * 模块级单例导出供 store 与 spec 共享同一实例（可重置 / 可断言）。
+ */
+export const sysmonPending = usePending()
 
 /** 有限数字校验：null / undefined / NaN / Infinity 一律视为不可用（不得用 0 冒充） */
 function toFiniteNumber(value: unknown): number | null {
@@ -397,6 +411,135 @@ export const useSysmonStore = defineStore('sysmon', () => {
     return typeof hint === 'string' ? hint.trim() : ''
   }
 
+  // ===== network（#77）：每网卡累计收发与速率 + 显示全部网卡开关 =====
+
+  /**
+   * 每网卡收发（契约 sysmon §2.4 `network[]`）。仅当可用性映射标记 `network` 可用且快照携带
+   * 数组时返回净化后的数组，否则空数组 —— 视图据此区分「指标不可用」与「可用但本帧无网卡」。
+   *
+   * 关键语义（契约 §2.5）：`hide_virtual=true` 时发送方已过滤虚拟网卡；若**全部**网卡都被
+   * 滤掉，payload 是**空数组**而非 null、且 `available=true`（"全部被过滤"与"采集失败"是不同
+   * 事实）。因此空数组必须原样返回空数组，**不得**降级成「不可用」。
+   *
+   * 净化规则：interface 空串剔除；八个 `*_total` 用 `toNonNegativeInteger`（累计计数器没有
+   * 不可用语义，非法值即剔除该条——不产出残缺行）；六个 `*_per_sec` 用 `toNonNegativeNumber`
+   * （0 是合法真实值，负数/NaN/Infinity → null 表示不可用，不得用 0 冒充）；`is_virtual` 严格
+   * 取 `=== true`。按 interface `localeCompare` 升序排序，不依赖发送端顺序。
+   */
+  const network = computed<SysmonNetworkInfo[]>(() => {
+    const s = snapshot.value
+    if (!s || s.availability.metrics['network']?.available !== true) return []
+    const entries = Array.isArray(s.network) ? s.network : []
+    const result: SysmonNetworkInfo[] = []
+    for (const entry of entries) {
+      const name = typeof entry?.interface === 'string' ? entry.interface.trim() : ''
+      if (!name) continue
+      const rxBytes = toNonNegativeInteger(entry?.rx_bytes_total)
+      const txBytes = toNonNegativeInteger(entry?.tx_bytes_total)
+      const rxPackets = toNonNegativeInteger(entry?.rx_packets_total)
+      const txPackets = toNonNegativeInteger(entry?.tx_packets_total)
+      const rxErrors = toNonNegativeInteger(entry?.rx_errors_total)
+      const txErrors = toNonNegativeInteger(entry?.tx_errors_total)
+      const rxDrops = toNonNegativeInteger(entry?.rx_drops_total)
+      const txDrops = toNonNegativeInteger(entry?.tx_drops_total)
+      // 八个累计计数器是必备字段（无"不可用"语义）：任一非法说明该条不可信，整条剔除
+      if (rxBytes === null || txBytes === null || rxPackets === null || txPackets === null
+        || rxErrors === null || txErrors === null || rxDrops === null || txDrops === null) continue
+      result.push({
+        interface: name,
+        rx_bytes_total: rxBytes,
+        tx_bytes_total: txBytes,
+        rx_packets_total: rxPackets,
+        tx_packets_total: txPackets,
+        rx_errors_total: rxErrors,
+        tx_errors_total: txErrors,
+        rx_drops_total: rxDrops,
+        tx_drops_total: txDrops,
+        rx_bytes_per_sec: toNonNegativeNumber(entry?.rx_bytes_per_sec),
+        tx_bytes_per_sec: toNonNegativeNumber(entry?.tx_bytes_per_sec),
+        rx_errors_per_sec: toNonNegativeNumber(entry?.rx_errors_per_sec),
+        tx_errors_per_sec: toNonNegativeNumber(entry?.tx_errors_per_sec),
+        rx_drops_per_sec: toNonNegativeNumber(entry?.rx_drops_per_sec),
+        tx_drops_per_sec: toNonNegativeNumber(entry?.tx_drops_per_sec),
+        is_virtual: entry?.is_virtual === true,
+      })
+    }
+    return result.sort((a, b) => a.interface.localeCompare(b.interface))
+  })
+
+  /**
+   * 采集到但数组为空（契约 §2.5：hide_virtual 过滤后可能为空数组，且 `available` 仍为 true）。
+   * 看的是**发送端数组**而非净化结果：净化剔掉的非法条目不算「被隐藏」，
+   * 视图据此只在 hide_virtual=true 时显示「已隐藏全部虚拟网卡」，否则显示「暂无数据」。
+   * `network` 为 null / 缺失（能力可用但本帧未采集）时返回 false —— 那是「暂无数据」，
+   * 不是「全部被隐藏」，两者是不同事实。
+   */
+  const networkFilteredAll = computed<boolean>(() => {
+    const s = snapshot.value
+    if (!s || s.availability.metrics['network']?.available !== true) return false
+    return Array.isArray(s.network) && s.network.length === 0
+  })
+
+  /** 生效配置镜像（契约 sysmon §3 RTN_SYSMON_CONFIG 全量回推）；未收到时为 null */
+  const config = ref<SysmonConfigPayload | null>(null)
+
+  /**
+   * WS `sysmon_config` / `snapshot` 快照域共用（幂等全量覆盖，契约 sysmon §3.2）。
+   * 非法 payload 忽略、不写不清 pending（对齐 settings.applyEventShmConfig）：
+   * 只有形状可用的全量配置才刷新镜像并清 network 配置 pending（REST 成功只表示"已下发"，
+   * 真正生效信号是本消息）。
+   */
+  function applyConfig(payload: unknown): void {
+    const p = payload as Partial<SysmonConfigPayload> | null | undefined
+    if (!p || typeof p !== 'object') return
+    const networkConfig = p.network
+    if (!networkConfig || typeof networkConfig !== 'object') return
+    if (typeof networkConfig.hide_virtual !== 'boolean') return
+    // 其余段是 #81 完整配置编辑的输入；当前只做形状兜底（缺段则忽略该 payload，
+    // 避免把半截配置写进镜像让后续消费方读到假值）
+    if (!p.sampling || typeof p.sampling !== 'object') return
+    if (!p.disk || typeof p.disk !== 'object') return
+    if (!p.history || typeof p.history !== 'object') return
+    if (!p.realtime || typeof p.realtime !== 'object') return
+    if (!p.alerts || typeof p.alerts !== 'object') return
+    config.value = p as SysmonConfigPayload
+    sysmonPending.resolve(SYSMON_NETWORK_CONFIG_KEY)
+  }
+
+  /**
+   * 「隐藏虚拟网卡」开关的当前值（契约 sysmon §3.1 `network.hide_virtual`，默认 true）。
+   * 从生效配置镜像读；镜像未到达时按契约默认值 true 处理（不是「未知」占位）——
+   * 这样开关初值不会因为配置帧晚到而闪成 false。
+   */
+  const hideVirtual = computed<boolean>(() => config.value?.network.hide_virtual !== false)
+
+  /** 配置切换挂起中（REST 已发出、等 WS `sysmon_config`）：开关 disabled 防重复提交 */
+  const hideVirtualPending = computed(() => sysmonPending.pending[SYSMON_NETWORK_CONFIG_KEY] ?? false)
+
+  /**
+   * 提交 `network.hide_virtual`（契约 rest §2.8 → SET_SYSMON_CONFIG）。
+   *
+   * pending 语义：成功保持挂起直到 WS `sysmon_config` 到达（applyConfig 清）；HTTP 失败立即清。
+   * 返回值对齐 settings 的配置操作：true = 已下发；false = 防重入 / HTTP 失败；
+   * PENDING_TIMEOUT = 超时（usePending 已 toast，调用方据此去重双 toast）。
+   * 实际生效值以 `hideVirtual`（配置镜像）为准，视图不做乐观更新 —— 否则下发的值被 dzsysmon
+   * 校验拒绝时 UI 会显示一个并未生效的状态。
+   */
+  async function setHideVirtual(hide: boolean): Promise<boolean | typeof PENDING_TIMEOUT> {
+    if (hideVirtualPending.value) return false
+    const ok = await sysmonPending.run(
+      SYSMON_NETWORK_CONFIG_KEY,
+      () => sysmonApi.setConfig({ network: { hide_virtual: hide } }),
+      {
+        opLabel: '显示全部网卡切换',
+        timeout: SYSMON_CONFIG_TIMEOUT_MS,
+        distinguishTimeout: true,
+      },
+    )
+    if (ok === PENDING_TIMEOUT) return PENDING_TIMEOUT
+    return ok !== undefined
+  }
+
   return {
     snapshot,
     loaded,
@@ -415,9 +558,16 @@ export const useSysmonStore = defineStore('sysmon', () => {
     watchPaths,
     shmDirInfo,
     diskIo,
+    network,
+    networkFilteredAll,
+    config,
+    hideVirtual,
+    hideVirtualPending,
     semanticHint,
     init,
     applySnapshot,
+    applyConfig,
+    setHideVirtual,
     availabilityOf,
   }
 })

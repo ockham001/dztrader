@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
+import SyncSwitch from '@/components/shared/SyncSwitch.vue'
+import { useAuthStore } from '@/stores/auth'
 import { useSysmonStore } from '@/stores/sysmon'
 
 // 资源监控页：系统信息与 CPU 区块（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率）、
 // 温度、内存与交换、磁盘（卷容量 / 关注路径 / 共享内存目录）接契约 sysmon 实时快照；
-// 网络区块按可用性映射渲染，未接入时显示明确空态（不得显示 0 冒充数据）。
+// 网络区块（#77）接每网卡收发速率与累计量，并提供「显示全部网卡」开关。
 // 内存 / 交换（#74）按可用性映射渲染：不可用显示「不可用」+ 原因，可用但本帧无数据
 // 显示「暂无数据」；交换在可用且总容量为 0 时显示「无交换分区」。
 // 温度 / 每核频率（B 组）按可用性映射渲染：不可用时整块不渲染（不是显示 0 / 不可用占位）。
@@ -13,6 +15,9 @@ import { useSysmonStore } from '@/stores/sysmon'
 // 显示「不可用」+ 原因而不是 0；shm_dir 展示共享内存目录占用（页清理是否生效的可观测项）。
 // 磁盘 I/O（#76）按可用性映射渲染：每物理盘的吞吐 / IOPS / 延迟 / 队列深度 / 利用率，
 // 数值 null（首次采样/计数器重置）逐项显示「不可用」，能力不可用时整块显示原因。
+// 网络（#77）：可用但数组为空 = 发送方按 hide_virtual 滤掉了全部虚拟网卡（契约 §2.5 明文，
+// **不是**不可用），显示「已隐藏全部虚拟网卡」+ 切换提示；开关走 REST 下发、以 WS sysmon_config
+// 回推为生效信号。
 // 刷新基线由发送方 realtime.push_interval_sec（默认 5s）决定，本页不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
 
@@ -216,8 +221,47 @@ const diskIoUnavailableDesc = computed(() => {
   }
   return unavailableDesc('disk_io')
 })
+// ---- 网络（#77）：每网卡收发速率 / 累计量 / 错误 / 丢弃，并按可用性映射渲染 ----
+// 与磁盘 I/O 同构：只在 availability.metrics 上分支，不按 platform.family 分支；
+// 六个速率字段 null（首次采样/本帧新出现/计数器重置）逐项显示「不可用」，绝不显示 0。
+// hide_virtual=true 时发送方已滤掉虚拟网卡；全部被滤掉时 payload 是空数组且 available=true，
+// 此时显示「已隐藏全部虚拟网卡」而不是「不可用」（契约 sysmon §2.5 明文要求区分）。
 const networkAvailable = computed(() => isAvailable('network'))
-const network = computed(() => snapshot.value?.network ?? null)
+const network = computed(() => sysmon.network)
+// 「显示全部网卡」开关：admin 才可操作（复用 auth store 的 isAdmin）；实际值取生效配置镜像
+// （契约 sysmon §3.1 network.hide_virtual），切换后等 WS sysmon_config 回推才变更。
+const auth = useAuthStore()
+const canToggleNetwork = computed(() => auth.isAdmin)
+const hideVirtual = computed(() => sysmon.hideVirtual)
+const showAllNics = computed(() => !hideVirtual.value)
+const hideVirtualPending = computed(() => sysmon.hideVirtualPending)
+// 可用但空数组 = 发送方按 hide_virtual 滤掉了全部虚拟网卡（契约 §2.5）。
+// 仅当 hideVirtual 为真时才能这么解释；hide_virtual=false 却为空数组 = 本机确实无网卡
+//（罕见，容器内可能），走「暂无数据」而不是「已隐藏」。
+const networkHiddenAll = computed(() => sysmon.networkFilteredAll && hideVirtual.value)
+// 开关语义是「显示全部网卡」(= hide_virtual 取反)，直接下发取反后的 hide_virtual 值
+function onToggleShowAll(next: boolean): void {
+  void sysmon.setHideVirtual(!next)
+}
+
+// ---- 网卡累计量 / 速率格式化 ----
+/** 累计计数器（包 / 错误 / 丢弃）：千分位整数；累计量没有"不可用"语义 */
+function formatTotalCount(value: number): string {
+  return value.toLocaleString('en-US')
+}
+/** 错误 / 丢弃速率（个每秒）：保留 1 位小数（可为 0 = 本窗口确实没有增量）；null 显示不可用 */
+function formatEventRate(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return UNAVAILABLE
+  return `${value.toFixed(1)}/s`
+}
+/**
+ * 错误 / 丢弃单元格：速率 + 累计量并列（速率反映当前窗口，累计量反映是否曾经发生过）。
+ * 速率 null（首次采样/计数器重置）显示「不可用」而不是 0；累计量始终有效（累计计数器没有
+ * 不可用语义），因此即便速率不可用仍能看到历史累计。
+ */
+function formatEventRateWithTotal(rate: number | null | undefined, total: number): string {
+  return `${formatEventRate(rate)}（累计 ${formatTotalCount(total)}）`
+}
 </script>
 
 <template>
@@ -645,21 +689,97 @@ const network = computed(() => snapshot.value?.network ?? null)
         </div>
       </section>
 
-      <!-- 网络 -->
+      <!-- 网络（#77）：每网卡收发速率 / 累计字节与包 / 错误 / 丢弃。
+           空数组 + 可用 = 发送方按 hide_virtual 滤掉全部虚拟网卡（契约 §2.5，不是不可用）；
+           开关走 REST 下发，以 WS sysmon_config 回推为生效信号（REST 只表示已下发）。 -->
       <section class="ds-card monitor-view__card" data-test="monitor-network">
-        <h2 class="ds-card__title monitor-view__card-title">
-          <span class="monitor-view__card-icon"><Icon name="network" :size="14" /></span>网络
-        </h2>
-        <ul v-if="networkAvailable && network && network.length > 0" class="monitor-view__list">
-          <li v-for="nic in network" :key="nic.interface" class="monitor-view__list-row">
-            <span class="monitor-view__list-label">{{ nic.interface }}</span>
-            <span class="monitor-view__list-value">收 {{ formatRate(nic.rx_bytes_per_sec) }}</span>
-            <span class="monitor-view__list-meta">发 {{ formatRate(nic.tx_bytes_per_sec) }}</span>
-          </li>
-        </ul>
+        <div class="monitor-view__card-head">
+          <h2 class="ds-card__title monitor-view__card-title">
+            <span class="monitor-view__card-icon"><Icon name="network" :size="14" /></span>网络
+          </h2>
+          <!-- admin 才可操作；非 admin 渲染为 disabled（可见但不可点，避免隐藏造成"功能不存在"误解） -->
+          <div v-if="networkAvailable" class="monitor-view__net-toggle" data-test="monitor-network-show-all">
+            <SyncSwitch
+              :model-value="showAllNics"
+              :pending="hideVirtualPending"
+              :disabled="!canToggleNetwork"
+              @change="onToggleShowAll"
+            />
+            <span class="monitor-view__net-toggle-label">显示全部网卡</span>
+          </div>
+        </div>
+
+        <template v-if="networkAvailable">
+          <ul v-if="network.length > 0" class="monitor-view__io-list">
+            <li
+              v-for="nic in network"
+              :key="nic.interface"
+              class="monitor-view__io-row"
+              data-test="monitor-network-row"
+              :data-interface="nic.interface"
+            >
+              <div class="monitor-view__io-device">
+                {{ nic.interface }}
+                <span v-if="nic.is_virtual" class="ds-tag" data-test="monitor-network-virtual">虚拟</span>
+              </div>
+              <dl class="monitor-view__io-metrics">
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">收速率</dt>
+                  <dd class="monitor-view__io-value" data-test="monitor-network-rx-rate">{{ formatRate(nic.rx_bytes_per_sec) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">发速率</dt>
+                  <dd class="monitor-view__io-value" data-test="monitor-network-tx-rate">{{ formatRate(nic.tx_bytes_per_sec) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">收字节</dt>
+                  <dd class="monitor-view__io-value" data-test="monitor-network-rx-bytes">{{ formatBytes(nic.rx_bytes_total) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">发字节</dt>
+                  <dd class="monitor-view__io-value" data-test="monitor-network-tx-bytes">{{ formatBytes(nic.tx_bytes_total) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">收包</dt>
+                  <dd class="monitor-view__io-value" data-test="monitor-network-rx-packets">{{ formatTotalCount(nic.rx_packets_total) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">发包</dt>
+                  <dd class="monitor-view__io-value" data-test="monitor-network-tx-packets">{{ formatTotalCount(nic.tx_packets_total) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">收错误</dt>
+                  <dd class="monitor-view__io-value" data-test="monitor-network-rx-errors">{{ formatEventRateWithTotal(nic.rx_errors_per_sec, nic.rx_errors_total) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">发错误</dt>
+                  <dd class="monitor-view__io-value" data-test="monitor-network-tx-errors">{{ formatEventRateWithTotal(nic.tx_errors_per_sec, nic.tx_errors_total) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">收丢弃</dt>
+                  <dd class="monitor-view__io-value" data-test="monitor-network-rx-drops">{{ formatEventRateWithTotal(nic.rx_drops_per_sec, nic.rx_drops_total) }}</dd>
+                </div>
+                <div class="monitor-view__io-metric">
+                  <dt class="monitor-view__io-label">发丢弃</dt>
+                  <dd class="monitor-view__io-value" data-test="monitor-network-tx-drops">{{ formatEventRateWithTotal(nic.tx_drops_per_sec, nic.tx_drops_total) }}</dd>
+                </div>
+              </dl>
+            </li>
+          </ul>
+          <!-- 可用但空数组：发送方按 hide_virtual 滤掉了全部虚拟网卡（契约 §2.5），
+               与"采集失败/不可用"是不同事实，不得显示「不可用」 -->
+          <div v-else-if="networkHiddenAll" class="ds-empty monitor-view__empty" data-test="monitor-network-hidden-all">
+            <div class="ds-empty__title">已隐藏全部虚拟网卡</div>
+            <div class="ds-empty__desc">本机只有虚拟/回环网卡；打开「显示全部网卡」查看</div>
+          </div>
+          <div v-else class="ds-empty monitor-view__empty" data-test="monitor-network-empty">
+            <div class="ds-empty__title">暂无数据</div>
+            <div class="ds-empty__desc">当前快照未提供网卡数据</div>
+          </div>
+        </template>
         <div v-else class="ds-empty monitor-view__empty" data-test="monitor-network-unavailable">
           <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
-          <div class="ds-empty__desc">{{ networkAvailable ? '当前快照未提供网卡数据' : unavailableDesc('network') }}</div>
+          <div class="ds-empty__desc">{{ unavailableDesc('network') }}</div>
         </div>
       </section>
     </div>
@@ -723,6 +843,33 @@ const network = computed(() => snapshot.value?.network ?? null)
   display: inline-flex;
   align-items: center;
   color: var(--icon-secondary);
+}
+
+/* 卡片头（标题 + 右侧操作，如网络区块的「显示全部网卡」开关） */
+.monitor-view__card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacer-12);
+  flex-wrap: wrap;
+  margin-bottom: var(--spacer-8);
+}
+
+.monitor-view__card-head .ds-card__title {
+  margin-bottom: 0;
+}
+
+.monitor-view__net-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacer-8);
+}
+
+.monitor-view__net-toggle-label {
+  color: var(--text-secondary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  white-space: nowrap;
 }
 
 .monitor-view__info {
@@ -813,6 +960,12 @@ const network = computed(() => snapshot.value?.network ?? null)
   line-height: var(--body-sm-line-height);
   font-weight: var(--body-sm-strong-font-weight);
   overflow-wrap: anywhere;
+}
+
+/* 网络行（#77）：虚拟网卡标记与网卡名同行，间距走 token（不硬编码） */
+.monitor-view__io-device .ds-tag {
+  margin-left: var(--spacer-6);
+  vertical-align: middle;
 }
 
 .monitor-view__io-metrics {

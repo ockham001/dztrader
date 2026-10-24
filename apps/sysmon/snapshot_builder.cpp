@@ -111,6 +111,7 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
                                         const TemperatureMetrics& temperature_metrics,
                                         const MemorySwapMetrics& memory_metrics,
                                         const DiskMetrics& disk_metrics,
+                                        const NetworkMetrics& network_metrics,
                                         int32_t measure_interval_ms,
                                         int64_t last_sample_unix_ms,
                                         uint64_t missed_ticks,
@@ -261,8 +262,26 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         snapshot.disk_io = disk_metrics.disk_io;
     }
 
-    // 网络：本版本未采集（契约 §2 定稿形状为 null）。
+    // 每网卡累计量与速率（#77）：配置关闭优先；能力可用但本帧未采到时为 null（能力标记粘性）。
+    // hide_virtual 的过滤发生在这里而不是采集/纯函数：改开关不需要重新采集、也不影响速率
+    // 基线（契约 sysmon §2.7）。全部条目被滤掉时输出**空数组**（不是 null），
+    // 因为"全部被过滤"与"采集失败"是不同事实（§2.5 明文）。
     snapshot.network = std::nullopt;
+    if (!network_metrics.network_disabled && network_metrics.network_collected &&
+        network_metrics.network.has_value()) {
+        if (network_metrics.hide_virtual) {
+            std::vector<platform::SysmonNetworkInfo> visible;
+            visible.reserve(network_metrics.network->size());
+            for (const auto& info : *network_metrics.network) {
+                if (!info.is_virtual) {
+                    visible.push_back(info);
+                }
+            }
+            snapshot.network = std::move(visible);
+        } else {
+            snapshot.network = network_metrics.network;
+        }
+    }
 
     // availability：每帧必须覆盖全部 13 个固定键。
     snapshot.availability.platform_description = make_platform_description(system_info);
@@ -358,6 +377,22 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
                     disk_metrics.disk_io_unavailable_reason.has_value() &&
                             !disk_metrics.disk_io_unavailable_reason->empty()
                         ? *disk_metrics.disk_io_unavailable_reason
+                        : std::string(kReasonCollectFailed);
+                mark_unavailable(snapshot.availability, key, reason.c_str());
+            }
+        } else if (metric == platform::SYSMON_METRIC_NETWORK) {
+            // 配置关闭优先；能力粘性可用时**始终** available——即使本帧域为 null
+            // （单帧采集失败）或过滤后为空数组（hide_virtual 隐藏了全部网卡）。
+            // 不可用原因取采集层建议值（缺省 collect_failed），不按平台名猜（契约 sysmon §2.5）。
+            if (network_metrics.network_disabled) {
+                mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
+            } else if (network_metrics.network_collected) {
+                mark_available(snapshot.availability, key);
+            } else {
+                const std::string& reason =
+                    network_metrics.network_unavailable_reason.has_value() &&
+                            !network_metrics.network_unavailable_reason->empty()
+                        ? *network_metrics.network_unavailable_reason
                         : std::string(kReasonCollectFailed);
                 mark_unavailable(snapshot.availability, key, reason.c_str());
             }

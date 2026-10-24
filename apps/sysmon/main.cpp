@@ -15,6 +15,7 @@
 #include "cpu_saturation.h"
 #include "cpu_usage.h"
 #include "disk_io.h"
+#include "network.h"
 #include "snapshot_builder.h"
 #include "timer.h"
 
@@ -164,6 +165,7 @@ private:
         refresh_sensor_metrics();
         refresh_memory_metrics();
         refresh_disk_metrics();
+        refresh_network();
 
         // 事件通道由 master 创建（open_only）；reader/writer 名 = 进程名，
         // 与 master 的 register_subscriber(entry.name) / make_subscriber_name 一致。
@@ -444,6 +446,43 @@ private:
         disk_io_baseline_.valid = true;
     }
 
+    /// 采样一次每网卡累计计数器（#77）：原始计数器 + 单调时钟实际经过时间驱动纯函数。
+    ///
+    /// 配置关闭优先；本帧采集失败只清数值、能力标记保持粘性；本帧新出现的网卡无基线，
+    /// 六个速率字段为 null（契约 sysmon §2.7：不得沿用上一帧、不得用 0 冒充）。
+    /// 采集层始终返回**全部**网卡（含 `is_virtual`），`hide_virtual` 的过滤在快照构造阶段
+    /// 完成——因此改开关不需要重新采集，也不影响这里的速率基线（契约 sysmon §2.4、§2.7）。
+    void refresh_network() {
+        if (!group_enabled("network")) {
+            network_metrics_.network_disabled = true;
+            network_metrics_.network = std::nullopt;
+            // 重新开启时从新基线开始：关闭期间的间隔不能被当成当前速率的计量窗口。
+            network_baseline_ = {};
+            return;
+        }
+        network_metrics_.network_disabled = false;
+        const auto now = std::chrono::steady_clock::now();
+        const auto raw = collector_->collect_network();
+        if (!raw.unavailable_reason.empty()) {
+            network_metrics_.network = std::nullopt;  // 本帧无值；能力标记保持粘性
+            network_metrics_.network_unavailable_reason = raw.unavailable_reason;
+            return;
+        }
+        network_metrics_.network_collected = true;
+        // 速率窗口 = 两次成功采样之间实际经过的秒数（含采集失败时段，口径见契约 §2.7）。
+        double elapsed_seconds = 0.0;
+        if (network_baseline_.valid) {
+            elapsed_seconds = std::chrono::duration<double>(now - network_baseline_.time).count();
+        }
+        const std::vector<platform::RawNetworkInfo> no_baseline;
+        network_metrics_.network = compute_network_rates(
+            network_baseline_.valid ? network_baseline_.interfaces : no_baseline, raw.interfaces,
+            elapsed_seconds);
+        network_baseline_.interfaces = raw.interfaces;
+        network_baseline_.time = now;
+        network_baseline_.valid = true;
+    }
+
     /// 把落卷结果与同帧卷列表对齐（契约 sysmon §7：available=true 的 watch_path 必须指向
     /// 同帧 volumes 里存在的挂载点）。
     ///
@@ -492,6 +531,7 @@ private:
         refresh_sensor_metrics();  // 温度/频率是独立 gauge，CPU 采集失败也照样刷新
         refresh_memory_metrics();  // 内存/交换同为独立 gauge，与 CPU 采集成败无关
         refresh_disk_metrics();    // 卷/落卷/共享内存目录同为独立事实，与 CPU 采集成败无关
+        refresh_network();         // 网卡累计计数器同为独立事实，与 CPU 采集成败无关
         auto current = collector_->collect_cpu_times();
         if (!current.has_value()) {
             ++missed_ticks_;     // 采集失败：跳过本次计量并记缺口（契约 sysmon §2.7）
@@ -602,13 +642,16 @@ private:
         }
     }
 
-    /// 推送实时快照（RTN_SYSMON_SNAPSHOT，无 instance_id，含系统信息/CPU/温度/内存/磁盘）。
+    /// 推送实时快照（RTN_SYSMON_SNAPSHOT，无 instance_id，含系统信息/CPU/温度/内存/磁盘/网络）。
     void push_snapshot() noexcept {
         try {
-            const auto snapshot =
-                build_snapshot(name_, system_info_, metrics_, temperature_metrics_, memory_metrics_,
-                               disk_metrics_, config_.sampling.measure_interval_ms,
-                               last_sample_unix_ms_, missed_ticks_, wall_clock_unix_ms());
+            // hide_virtual 只影响输出条目（采集层始终返回全部网卡），构造快照时读当前配置，
+            // 因此 SET_SYSMON_CONFIG 后的这次推送即体现新开关（契约 sysmon §2.7）。
+            network_metrics_.hide_virtual = config_.network.hide_virtual;
+            const auto snapshot = build_snapshot(
+                name_, system_info_, metrics_, temperature_metrics_, memory_metrics_, disk_metrics_,
+                network_metrics_, config_.sampling.measure_interval_ms, last_sample_unix_ms_,
+                missed_ticks_, wall_clock_unix_ms());
             (void)platform::write_ext_json(*event_writer_, DZ_FRAME_RTN_SYSMON_SNAPSHOT, snapshot);
         } catch (const std::exception& e) {
             SPDLOG_ERROR("push snapshot failed | error=\"{}\"", e.what());
@@ -707,11 +750,16 @@ private:
     }
 
     /// SET_SYSMON_CONFIG：应用 patch（校验/持久化失败回滚旧值），成功失败均回推全量配置。
+    ///
+    /// 成功后立即推送一次快照：`network.hide_virtual` 的过滤发生在快照构造阶段，
+    /// 立即推送使开关生效体现在下一帧（契约 sysmon §2.7），不必等下一个推送定时器。
     void apply_sysmon_config(const shm::FrameView& view) {
+        bool applied = false;
         try {
             config_store_.set_patch(shm::decode_ext_inst_json<nlohmann::json>(view));
             config_ = config_store_.current().get<platform::SysmonConfig>();
             restart_timers();  // 新间隔立即生效
+            applied = true;
             SPDLOG_INFO("sysmon config updated | measure_interval_ms={} push_interval_sec={}",
                         config_.sampling.measure_interval_ms, config_.realtime.push_interval_sec);
         } catch (const std::exception& e) {
@@ -721,6 +769,9 @@ private:
             notify_ui_->error(std::format("sysmon config update failed | error=\"{}\"", e.what()));
         }
         push_sysmon_config();
+        if (applied) {
+            push_snapshot();  // hide_virtual 等快照侧配置即时生效（契约 sysmon §2.7）
+        }
     }
 
     /// SET_LOG_CONFIG：应用日志 patch（失败回滚），成功失败均回推 RTN_LOG_CONFIG。
@@ -786,6 +837,14 @@ private:
         bool valid = false;                            ///< 是否已有基线
     };
     DiskIoBaseline disk_io_baseline_;
+    NetworkMetrics network_metrics_;
+    /// 每网卡的采样基线（上一次成功采样与其单调时钟时刻）。
+    struct NetworkBaseline {
+        std::vector<platform::RawNetworkInfo> interfaces;  ///< 上次成功采样的原始计数器
+        std::chrono::steady_clock::time_point time{};      ///< 上次成功采样的单调时钟时刻
+        bool valid = false;                                ///< 是否已有基线
+    };
+    NetworkBaseline network_baseline_;
     CoreSaturationTracker saturation_tracker_;
     int64_t last_sample_unix_ms_ = 0;
     uint64_t missed_ticks_ = 0;

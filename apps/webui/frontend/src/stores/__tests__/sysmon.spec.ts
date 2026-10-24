@@ -1,11 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
-import { useSysmonStore } from '../sysmon'
+import {
+  SYSMON_CONFIG_TIMEOUT_MS,
+  SYSMON_NETWORK_CONFIG_KEY,
+  sysmonPending,
+  useSysmonStore,
+} from '../sysmon'
+import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { sysmonApi } from '@/api/sysmon'
-import { makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
+import { makeSysmonConfig, makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 
 vi.mock('@/api/sysmon', () => ({
-  sysmonApi: { getSnapshot: vi.fn() },
+  sysmonApi: { getSnapshot: vi.fn(), setConfig: vi.fn() },
 }))
 
 describe('useSysmonStore', () => {
@@ -842,5 +848,332 @@ describe('useSysmonStore 磁盘 I/O computed（#76，可用性驱动）', () => 
     ])
     // null 保持 null（视图显示「不可用」），不得变成 0
     expect(store.diskIo[4].read_bytes_per_sec).toBeNull()
+  })
+})
+
+describe('useSysmonStore network computed（#77，可用性驱动）', () => {
+  const GIB = 1024 ** 3
+  const MIB = 1024 ** 2
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('无快照时 network 为空数组（不得伪造 0）', () => {
+    const store = useSysmonStore()
+
+    expect(store.network).toEqual([])
+    expect(store.networkFilteredAll).toBe(false)
+  })
+
+  it('默认快照（network 不可用）为空数组；resourceData 快照返回净化后的网卡数组', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot())
+    // 夹具默认 network 不可用（#77 之前的历史形状）：store 只认 available，不推断 reason
+    expect(store.availabilityOf('network')?.available).toBe(false)
+    expect(store.network).toEqual([])
+
+    store.applySnapshot(makeSysmonSnapshot({ resourceData: true }))
+    expect(store.availabilityOf('network')).toEqual({ available: true })
+    expect(store.network).toEqual([{
+      interface: 'eth0',
+      rx_bytes_total: 8 * GIB,
+      tx_bytes_total: 4 * GIB,
+      rx_packets_total: 12_000_000,
+      tx_packets_total: 9_000_000,
+      rx_errors_total: 3,
+      tx_errors_total: 1,
+      rx_drops_total: 7,
+      tx_drops_total: 2,
+      rx_bytes_per_sec: 1 * MIB,
+      tx_bytes_per_sec: 2 * MIB,
+      rx_errors_per_sec: 0,
+      tx_errors_per_sec: 0,
+      rx_drops_per_sec: 0,
+      tx_drops_per_sec: 0,
+      is_virtual: false,
+    }])
+  })
+
+  it('network 不可用时为空数组（不渲染陈旧数据）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      metrics: { network: { available: false, reason: 'disabled_by_config' } },
+    }))
+
+    expect(store.network).toEqual([])
+    expect(store.networkFilteredAll).toBe(false)
+  })
+
+  it('按 interface 升序排序，不依赖发送端顺序（前端不做 hide_virtual 过滤）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({ virtualNetwork: true }))
+
+    expect(store.network.map(nic => nic.interface)).toEqual(['docker0', 'eth0', 'lo', 'veth1234'])
+    // 虚拟网卡原样保留：隐藏是发送方义务（契约 §2.4），前端只展示
+    expect(store.network.filter(nic => nic.is_virtual).map(nic => nic.interface))
+      .toEqual(['docker0', 'lo', 'veth1234'])
+  })
+
+  it('空数组 + available=true：networkFilteredAll=true（"全部被滤掉"不是"采集失败"，契约 §2.5）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({ network: [] }))
+
+    expect(store.availabilityOf('network')).toEqual({ available: true })
+    expect(store.network).toEqual([])
+    expect(store.networkFilteredAll).toBe(true)
+  })
+
+  it('nullable：network=null 时 collected=false、filteredAll=false（"本帧未采集"区别于"空数组"）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({ network: null }))
+
+    expect(store.availabilityOf('network')).toEqual({ available: true })
+    expect(store.network).toEqual([])
+    expect(store.networkFilteredAll).toBe(false)
+  })
+
+  it('净化：interface 空白剔除；六个速率 0 合法保留、负数/NaN/Infinity → null', () => {
+    const store = useSysmonStore()
+    const base = {
+      rx_bytes_total: 1,
+      tx_bytes_total: 2,
+      rx_packets_total: 3,
+      tx_packets_total: 4,
+      rx_errors_total: 5,
+      tx_errors_total: 6,
+      rx_drops_total: 7,
+      tx_drops_total: 8,
+      is_virtual: false,
+    }
+    store.applySnapshot(makeSysmonSnapshot({
+      network: [
+        { ...base, interface: '', rx_bytes_per_sec: 1, tx_bytes_per_sec: 1, rx_errors_per_sec: 1, tx_errors_per_sec: 1, rx_drops_per_sec: 1, tx_drops_per_sec: 1 },
+        { ...base, interface: '   ', rx_bytes_per_sec: 1, tx_bytes_per_sec: 1, rx_errors_per_sec: 1, tx_errors_per_sec: 1, rx_drops_per_sec: 1, tx_drops_per_sec: 1 },
+        {
+          ...base,
+          interface: 'bad',
+          rx_bytes_per_sec: -1,
+          tx_bytes_per_sec: Number.NaN,
+          rx_errors_per_sec: Number.POSITIVE_INFINITY,
+          tx_errors_per_sec: Number.NEGATIVE_INFINITY,
+          rx_drops_per_sec: -0.5,
+          tx_drops_per_sec: null,
+        },
+        {
+          ...base,
+          interface: 'zero',
+          rx_bytes_per_sec: 0,
+          tx_bytes_per_sec: 0,
+          rx_errors_per_sec: 0,
+          tx_errors_per_sec: 0,
+          rx_drops_per_sec: 0,
+          tx_drops_per_sec: 0,
+        },
+      ],
+    }))
+
+    expect(store.network.map(nic => nic.interface)).toEqual(['bad', 'zero'])
+    expect(store.network[0]).toMatchObject({
+      rx_bytes_per_sec: null,
+      tx_bytes_per_sec: null,
+      rx_errors_per_sec: null,
+      tx_errors_per_sec: null,
+      rx_drops_per_sec: null,
+      tx_drops_per_sec: null,
+    })
+    // 0 是合法真实值（本窗口确实没有增量），不得被净化成 null
+    expect(store.network[1]).toMatchObject({
+      rx_bytes_per_sec: 0,
+      tx_bytes_per_sec: 0,
+      rx_errors_per_sec: 0,
+      tx_errors_per_sec: 0,
+      rx_drops_per_sec: 0,
+      tx_drops_per_sec: 0,
+    })
+  })
+
+  it('八个累计计数器非法（负/小数/NaN/Infinity/缺失）：整条剔除（累计量没有"不可用"语义）', () => {
+    const store = useSysmonStore()
+    const ok = {
+      interface: 'ok',
+      rx_bytes_total: 1,
+      tx_bytes_total: 1,
+      rx_packets_total: 1,
+      tx_packets_total: 1,
+      rx_errors_total: 1,
+      tx_errors_total: 1,
+      rx_drops_total: 1,
+      tx_drops_total: 1,
+      rx_bytes_per_sec: null,
+      tx_bytes_per_sec: null,
+      rx_errors_per_sec: null,
+      tx_errors_per_sec: null,
+      rx_drops_per_sec: null,
+      tx_drops_per_sec: null,
+      is_virtual: false,
+    }
+    const badTotals: Array<Record<string, unknown>> = [
+      { rx_bytes_total: -1 },
+      { tx_bytes_total: 1.5 },
+      { rx_packets_total: Number.NaN },
+      { tx_packets_total: Number.POSITIVE_INFINITY },
+      { rx_errors_total: null },
+      { tx_drops_total: -0.5 },
+      { rx_drops_total: undefined },
+    ]
+    store.applySnapshot(makeSysmonSnapshot({
+      network: [
+        ok,
+        ...badTotals.map(bad => ({ ...ok, ...bad, interface: `bad-${String(Object.keys(bad)[0])}` })),
+      ] as never,
+    }))
+
+    expect(store.network.map(nic => nic.interface)).toEqual(['ok'])
+  })
+
+  it('is_virtual 严格取 === true：非布尔值按 false 处理', () => {
+    const store = useSysmonStore()
+    const base = {
+      interface: 'nic',
+      rx_bytes_total: 0,
+      tx_bytes_total: 0,
+      rx_packets_total: 0,
+      tx_packets_total: 0,
+      rx_errors_total: 0,
+      tx_errors_total: 0,
+      rx_drops_total: 0,
+      tx_drops_total: 0,
+      rx_bytes_per_sec: null,
+      tx_bytes_per_sec: null,
+      rx_errors_per_sec: null,
+      tx_errors_per_sec: null,
+      rx_drops_per_sec: null,
+      tx_drops_per_sec: null,
+    }
+    store.applySnapshot(makeSysmonSnapshot({
+      network: [
+        { ...base, interface: 'a', is_virtual: true },
+        { ...base, interface: 'b', is_virtual: 'yes' },
+        { ...base, interface: 'c', is_virtual: 1 },
+        { ...base, interface: 'd' },
+      ] as never,
+    }))
+
+    expect(store.network.map(nic => [nic.interface, nic.is_virtual])).toEqual([
+      ['a', true],
+      ['b', false],
+      ['c', false],
+      ['d', false],
+    ])
+  })
+})
+
+describe('useSysmonStore sysmon_config 镜像与「显示全部网卡」pending（#77）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sysmonPending.__resetForTests()
+    vi.clearAllMocks()
+  })
+
+  it('applyConfig 写生效配置镜像并读 hide_virtual（默认 true）', () => {
+    const store = useSysmonStore()
+    // 未收到配置帧：按契约默认值 true（不是 false/未知）
+    expect(store.config).toBeNull()
+    expect(store.hideVirtual).toBe(true)
+
+    store.applyConfig(makeSysmonConfig({ network: { hide_virtual: false } }))
+    expect(store.config?.network.hide_virtual).toBe(false)
+    expect(store.hideVirtual).toBe(false)
+
+    store.applyConfig(makeSysmonConfig({ network: { hide_virtual: true } }))
+    expect(store.hideVirtual).toBe(true)
+  })
+
+  it('applyConfig 忽略非法 payload（不写镜像、不清 pending）', () => {
+    const store = useSysmonStore()
+    store.applyConfig(makeSysmonConfig({ network: { hide_virtual: false } }))
+    sysmonPending.pending[SYSMON_NETWORK_CONFIG_KEY] = true
+
+    const invalid: unknown[] = [
+      null,
+      undefined,
+      'bad',
+      {},
+      // network 段缺失 / hide_virtual 非布尔
+      { ...makeSysmonConfig(), network: undefined },
+      { ...makeSysmonConfig(), network: { hide_virtual: 'yes' } },
+      { ...makeSysmonConfig(), network: {} },
+      // 其余段缺失（半截配置不写镜像，避免后续消费方读到假值）
+      { ...makeSysmonConfig(), sampling: undefined },
+      { ...makeSysmonConfig(), disk: undefined },
+      { ...makeSysmonConfig(), history: undefined },
+      { ...makeSysmonConfig(), realtime: undefined },
+      { ...makeSysmonConfig(), alerts: undefined },
+    ]
+    for (const payload of invalid) store.applyConfig(payload)
+
+    expect(store.config?.network.hide_virtual).toBe(false)
+    expect(sysmonPending.pending[SYSMON_NETWORK_CONFIG_KEY]).toBe(true)
+  })
+
+  it('setHideVirtual 下发 merge patch，成功保持 pending 直到 WS sysmon_config 到达', async () => {
+    vi.mocked(sysmonApi.setConfig).mockResolvedValue({ ok: true, message: 'dispatched' })
+    const store = useSysmonStore()
+    store.applyConfig(makeSysmonConfig({ network: { hide_virtual: true } }))
+
+    const result = await store.setHideVirtual(false)
+
+    expect(result).toBe(true)
+    // 只发 network 段：RFC 7386 merge patch（契约 rest §2.8）
+    expect(sysmonApi.setConfig).toHaveBeenCalledWith({ network: { hide_virtual: false } })
+    // REST 成功只表示"已下发"：pending 仍挂起、镜像值未变（生效信号是 WS sysmon_config）
+    expect(store.hideVirtualPending).toBe(true)
+    expect(store.hideVirtual).toBe(true)
+
+    store.applyConfig(makeSysmonConfig({ network: { hide_virtual: false } }))
+    expect(store.hideVirtualPending).toBe(false)
+    expect(store.hideVirtual).toBe(false)
+  })
+
+  it('setHideVirtual 防重入：pending 中再次调用直接 false 且不重复 HTTP', async () => {
+    vi.mocked(sysmonApi.setConfig).mockResolvedValue({ ok: true })
+    const store = useSysmonStore()
+
+    const first = store.setHideVirtual(false)
+    const second = await store.setHideVirtual(true)
+
+    expect(second).toBe(false)
+    await expect(first).resolves.toBe(true)
+    expect(sysmonApi.setConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('setHideVirtual HTTP 失败：返回 false 且立即清 pending（不等 WS）', async () => {
+    vi.mocked(sysmonApi.setConfig).mockRejectedValue(new Error('HTTP 403'))
+    const store = useSysmonStore()
+
+    const result = await store.setHideVirtual(true)
+
+    expect(result).toBe(false)
+    expect(store.hideVirtualPending).toBe(false)
+  })
+
+  it('setHideVirtual 超时：返回 PENDING_TIMEOUT，超时路径已清 pending', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(sysmonApi.setConfig).mockImplementation(() => new Promise(() => {}))
+      const store = useSysmonStore()
+
+      const pendingResult = store.setHideVirtual(false)
+      expect(store.hideVirtualPending).toBe(true)
+      await vi.advanceTimersByTimeAsync(SYSMON_CONFIG_TIMEOUT_MS + 1)
+      const result = await pendingResult
+
+      expect(result).toBe(PENDING_TIMEOUT)
+      expect(store.hideVirtualPending).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

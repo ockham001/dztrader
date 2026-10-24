@@ -3,11 +3,14 @@
 
 /**
  * @file system_collector_linux_internal.h
- * @brief Linux `/proc/meminfo` 解析与归一（系统监控采集层内部接缝）。
+ * @brief Linux `/proc`、sysfs 解析与归一（系统监控采集层内部接缝）。
  *
  * 仅 Linux 实现与平台单测使用，不属于安装头文件。抽成内部接缝是为了让
  * `MemAvailable` 异常值（缺失 / 为 0 / 大于总量）的防御性回退能被单测确定性覆盖
  * （契约 sysmon §2.7）；平台实现按本接缝归一后再交给 `SystemCollector` 消费方。
+ *
+ * `/proc/net/dev` 与虚拟网卡判定同样在此：判定依据是 sysfs 结构（`<if>/device` 是否存在），
+ * 与网卡名无关，注入假 sysfs 根即可用临时目录确定性覆盖（契约 sysmon §2.4）。
  */
 
 #include <cstdint>
@@ -175,6 +178,53 @@ struct DiskstatsEntry {
 /// 输出顺序与候选顺序一致（候选应已排序，保证帧内顺序确定）；没有统计行的候选跳过。
 [[nodiscard]] std::vector<DiskstatsEntry> select_physical_disks(
     std::vector<DiskstatsEntry> entries, const std::vector<std::string>& candidates);
+
+// ===== /proc/net/dev 每网卡累计计数器与虚拟网卡判定（契约 sysmon §2.4；Linux 实现内部接缝）=====
+
+/// `/proc/net/dev` 中一条接口记录的原始累计计数器（契约 sysmon §2.4）。
+///
+/// 字段口径与 `RawNetworkInfo` 一致：收/发 × 字节/包/错误/丢弃；两平台均为 64 位
+/// 计数器（跨度 0 = 不回绕，下降即重置，契约 sysmon §2.7）。
+struct NetDevEntry {
+    std::string interface_name;  ///< 内核接口名（`/proc/net/dev` 行首冒号前的内容）
+    uint64_t rx_bytes = 0;       ///< 累计接收字节数
+    uint64_t rx_packets = 0;     ///< 累计接收包数（内核口径含单播与组播/广播）
+    uint64_t rx_errors = 0;      ///< 累计接收错误数
+    uint64_t rx_drops = 0;       ///< 累计接收丢弃数
+    uint64_t tx_bytes = 0;       ///< 累计发送字节数
+    uint64_t tx_packets = 0;     ///< 累计发送包数
+    uint64_t tx_errors = 0;      ///< 累计发送错误数
+    uint64_t tx_drops = 0;       ///< 累计发送丢弃数
+};
+
+/// 解析 `/proc/net/dev` 文本（契约 sysmon §2.4）。
+///
+/// 每行格式为 `<接口名>: <16 个累计计数器>`（收 8 项：bytes packets errs drop fifo frame
+/// compressed multicast；发 8 项：bytes packets errs drop fifo colls carrier compressed）。
+/// 只取与契约字段同源的 8 个计数器，其余内核附加项忽略。
+///
+/// 两行表头（`Inter-|` 与 `face |`）与任何非法/截断行**跳过**（不是整体失败）：表头没有
+/// 冒号后的 16 个数字，天然被过滤。接口名按**最后一个冒号**切分——内核接口名允许含冒号
+/// （老式 `eth0:1` 别名），统计字段全是十进制数字，因此最后一个冒号一定是分隔符。
+/// 同一接口名只保留首次出现的行（与 `parse_diskstats` 同口径）。
+[[nodiscard]] std::vector<NetDevEntry> parse_net_dev(std::string_view content);
+
+/// 判定网卡是否**虚拟**（不由硬件设备支撑；契约 sysmon §2.4）。
+///
+/// 结构性判据：sysfs 中 `<sysfs_net_root>/<接口名>/device` 是否存在——有 device 链接表示
+/// 该接口背后有真实硬件设备；回环、桥接、veth、docker0、VLAN、隧道等逻辑接口都没有它。
+/// **不看名字前缀**（契约明文禁止）。
+///
+/// `/sys/class/net/<接口名>` 本身是符号链接、其下的 `device` 也是符号链接，
+/// 因此必须用跟随符号链接的 `exists()`（`symlink_status()` 不跟随，会把两者都误判成
+/// "没有 device"）。判定失败（如 sysfs 不可读）按虚拟处理：宁可多隐藏一个未知接口，
+/// 也不把虚拟网卡当作硬件设备输出。
+///
+/// @param interface_name 内核接口名
+/// @param sysfs_net_root sysfs 网络类根目录，默认 `/sys/class/net`；测试可注入假根
+///        （契约 sysmon §2.4 的判定因此不依赖真实网卡名）
+[[nodiscard]] bool is_virtual_interface(std::string_view interface_name,
+                                        std::string_view sysfs_net_root = "/sys/class/net");
 
 }  // namespace dztrader::platform::system_collector_linux_internal
 

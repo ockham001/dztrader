@@ -558,9 +558,9 @@ std::optional<std::string> validate_snapshot_network(const json& network) {
             return err(path + ".interface", "must be unique within the frame");
         }
         // 累计计数器没有"不可用"语义：八个 *_total 必须存在且为非负整数（契约 sysmon §7）。
-        for (const char* key : {"rx_bytes_total", "tx_bytes_total", "rx_packets_total",
-                                "tx_packets_total", "rx_errors_total", "tx_errors_total",
-                                "rx_drops_total", "tx_drops_total"}) {
+        for (const char* key :
+             {"rx_bytes_total", "tx_bytes_total", "rx_packets_total", "tx_packets_total",
+              "rx_errors_total", "tx_errors_total", "rx_drops_total", "tx_drops_total"}) {
             if (auto e = require_uint(item, path, key)) {
                 return e;
             }

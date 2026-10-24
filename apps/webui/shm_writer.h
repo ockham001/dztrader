@@ -71,6 +71,11 @@ public:
     /// 最终状态由 WS event_shm_config 推送 (RTN_EVENT_SHM_CONFIG) 决定
     void write_set_event_shm_config(const nlohmann::json& payload);
 
+    /// 写 SET_SYSMON_CONFIG 帧 (契约 sysmon §3: 系统监控运行期配置, 定向到 dzsysmon;
+    /// payload 为 RFC 7386 合并 patch, 任意位置 null 由 dzsysmon 判为非法)
+    /// 最终状态由 WS sysmon_config 推送 (RTN_SYSMON_CONFIG 全量回推) 决定
+    void write_set_sysmon_config(const nlohmann::json& payload);
+
     bool is_ready() const { return event_writer_ != nullptr; }
 
 private:

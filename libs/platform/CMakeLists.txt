@@ -32,8 +32,9 @@ target_link_libraries(dzplatform_headers PUBLIC
 )
 if(WIN32)
     # sysmon 的 Windows 负载代理走 PDH（\System\Processor Queue Length，契约 sysmon §2.7）；
-    # 内存与页文件口径走 GetPerformanceInfo（psapi，契约 sysmon §2.4）。
-    target_link_libraries(dzplatform_headers PUBLIC pdh psapi)
+    # 内存与页文件口径走 GetPerformanceInfo（psapi，契约 sysmon §2.4）；
+    # 每网卡累计计数器走 GetIfTable2 / FreeMibTable（iphlpapi，契约 sysmon §2.4）。
+    target_link_libraries(dzplatform_headers PUBLIC pdh psapi iphlpapi)
 endif()
 
 # ============================================================

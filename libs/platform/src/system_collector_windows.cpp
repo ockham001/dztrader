@@ -31,12 +31,20 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+// winsock2.h 必须先于 windows.h（IP Helper API 的 iphlpapi.h 依赖其套接字类型；
+// 与 libs/core/src/env.cpp 的既有做法一致）。WIN32_LEAN_AND_MEAN 已排除 winsock.h，
+// 因此不会出现两套套接字头冲突。
+#include <winsock2.h>
 #include <windows.h>
 #include <pdh.h>
 #include <pdhmsg.h>    // PDH_CSTATUS_VALID_DATA / PDH_CSTATUS_NEW_DATA（部分 SDK 的 pdh.h 不引入）
 #include <psapi.h>     // GetPerformanceInfo：内存与页文件口径（契约 sysmon §2.4）
 #include <winioctl.h>  // DISK_PERFORMANCE / IOCTL_DISK_PERFORMANCE：每物理盘 I/O（契约 sysmon §2.4）
 #include <winreg.h>
+// IP Helper API：GetIfTable2 / FreeMibTable（每网卡累计计数器，契约 sysmon §2.4）。
+// 必须在 windows.h 之后引入。只引 iphlpapi.h：MSDN 明确 netioapi.h 由它自动包含、
+// 且不应被直接引入（两者均有 include guard）；链接库 iphlpapi 在 CMakeLists 声明。
+#include <iphlpapi.h>
 
 #include "system_collector_internal.h"
 
@@ -963,6 +971,68 @@ RawDiskIoSnapshot query_disk_io() {
     return snapshot;
 }
 
+// ===== 每网卡累计计数器：GetIfTable2 / FreeMibTable（契约 sysmon §2.4、§2.7）=====
+//
+// 数据源是 IP Helper API 的 `GetIfTable2`（输出 `MIB_IF_TABLE2`，逐行 `MIB_IF_ROW2`）。
+// 相比老接口 `GetIfTable`/`GetIfEntry`，它按接口 LUID 枚举、计数为 `ULONG64`，并带
+// `InterfaceAndOperStatusFlags.HardwareInterface`——正是契约要求的**结构性**虚拟网卡判据
+// （不看名字前缀）。`MIB_IF_ROW2.Alias` 是用户可见适配器名（`WCHAR[IF_MAX_STRING_SIZE+1]`），
+// 契约规定用它作 `interface`。
+
+/// 采集**全部**网络接口的原始累计计数器（契约 sysmon §2.4、§2.7）。
+///
+/// 包含虚拟网卡与回环（`is_virtual` 标明）：过滤发生在快照构造阶段，改
+/// `network.hide_virtual` 不需要重新采集、也不影响速率基线。
+///
+/// `GetIfTable2` 失败 ⇒ 失败（`unavailable_reason=collect_failed`）；成功但没有接口
+/// ⇒ 成功 + 空数组（本机无网络接口不是失败）。0 流量的接口照常进入数组
+/// （“存在但为 0”与“不存在”是不同事实）。找不到别名的接口跳过（不伪造空名条目）。
+RawNetworkSnapshot query_network() {
+    RawNetworkSnapshot snapshot;
+    PMIB_IF_TABLE2 table = nullptr;
+    const DWORD status = GetIfTable2(&table);
+    if (status != NO_ERROR || table == nullptr) {
+        snapshot.unavailable_reason = "collect_failed";
+        return snapshot;
+    }
+    snapshot.interfaces.reserve(table->NumEntries);
+    for (ULONG i = 0; i < table->NumEntries; ++i) {
+        const MIB_IF_ROW2& row = table->Table[i];
+        RawNetworkInfo info;
+        // Alias 是 `WCHAR[IF_MAX_STRING_SIZE + 1]`；按缓冲上界封顶扫描取长度，
+        // 防御异常驱动不写 NUL 终止符（不读越界）。用 sizeof 推导上界而不直接用
+        // IF_MAX_STRING_SIZE 宏，避免无符号/有符号比较告警（MSVC /W4 /WX）。
+        constexpr std::size_t kAliasCapacity = sizeof(row.Alias) / sizeof(row.Alias[0]);
+        std::size_t alias_length = 0;
+        while (alias_length < kAliasCapacity && row.Alias[alias_length] != L'\0') {
+            ++alias_length;
+        }
+        info.interface_name = wide_to_utf8(std::wstring_view(row.Alias, alias_length));
+        if (info.interface_name.empty()) {
+            continue;  // 无别名的接口无法作为帧内唯一键，跳过（不伪造空名条目）
+        }
+        // 八个累计计数器两平台均为 64 位（契约 sysmon §2.7）：MIB_IF_ROW2 的字段是 ULONG64，
+        // 显式 static_cast 消除 /W4 下的收窄告警（MSVC /WX）。
+        info.rx_bytes = static_cast<uint64_t>(row.InOctets);
+        info.tx_bytes = static_cast<uint64_t>(row.OutOctets);
+        // 契约要求包数含单播与组播/广播：Windows 把它们分成 Ucast 与 NUcast 两个计数器。
+        info.rx_packets =
+            static_cast<uint64_t>(row.InUcastPkts) + static_cast<uint64_t>(row.InNUcastPkts);
+        info.tx_packets =
+            static_cast<uint64_t>(row.OutUcastPkts) + static_cast<uint64_t>(row.OutNUcastPkts);
+        info.rx_errors = static_cast<uint64_t>(row.InErrors);
+        info.tx_errors = static_cast<uint64_t>(row.OutErrors);
+        info.rx_drops = static_cast<uint64_t>(row.InDiscards);
+        info.tx_drops = static_cast<uint64_t>(row.OutDiscards);
+        // 结构性判定：没有硬件设备支撑的接口（虚拟网卡/回环/隧道）HardwareInterface 为 false。
+        info.is_virtual = row.InterfaceAndOperStatusFlags.HardwareInterface == 0;
+        snapshot.interfaces.push_back(std::move(info));
+    }
+    // 表由 API 分配，必须用 FreeMibTable 释放（早退路径均在释放之后）。
+    FreeMibTable(table);
+    return snapshot;
+}
+
 /// Windows 采集器：系统信息每次现取；负载代理持有 PDH 查询与加权状态。
 class WindowsSystemCollector final : public SystemCollector {
 public:
@@ -1054,6 +1124,8 @@ public:
     }
 
     RawDiskIoSnapshot collect_disk_io() override { return query_disk_io(); }
+
+    RawNetworkSnapshot collect_network() override { return query_network(); }
 
 private:
     WindowsLoadAverageSampler load_sampler_;

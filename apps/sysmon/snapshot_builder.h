@@ -5,10 +5,9 @@
  * @file snapshot_builder.h
  * @brief RTN_SYSMON_SNAPSHOT payload 构造（契约 sysmon §2）。
  *
- * 本票（#76）填系统信息、CPU 总量/每核/饱和标记/负载/上下文切换与中断速率、每核频率、
- * 温度、内存与交换、卷容量与关注路径落卷、共享内存目录占用、每物理盘 I/O；网络仍输出
- * `null` 并在 `availability.metrics` 标记 `available=false + reason="not_implemented"`。
- * 已列出的指标域后续只填值、不改形状。
+ * 本票（#76、#77）填系统信息、CPU 总量/每核/饱和标记/负载/上下文切换与中断速率、每核频率、
+ * 温度、内存与交换、卷容量与关注路径落卷、共享内存目录占用、每物理盘 I/O、每网卡累计量与速率
+ * （`hide_virtual` 过滤在快照构造阶段完成）。已列出的指标域后续只填值、不改形状。
  *
  * 纯函数：不读时钟、不读配置全局状态，输入即快照的全部事实来源，便于用假数据测试。
  */
@@ -102,6 +101,28 @@ struct DiskMetrics {
 };
 
 /**
+ * 每网卡的测量结果与能力标记（#77）。
+ *
+ * `network_collected` 为**能力粘性**标记（契约 sysmon §2.5）：一次成功枚举到网卡后保持
+ * true，此后单帧读取失败只把域置 null。`hide_virtual` 过滤发生在**快照构造**阶段
+ * （不在采集/纯函数里），因此改开关不需要重新采集、也不影响速率基线（§2.7）。
+ * 全部网卡都被 `hide_virtual` 滤掉时输出**空数组**且 `available=true`——"全部被过滤"
+ * 与"采集失败"是不同事实（§2.5 明文）。
+ */
+struct NetworkMetrics {
+    /// 配置关闭 sampling.groups.network（优先级最高：域为 null + disabled_by_config）。
+    bool network_disabled = false;
+    bool network_collected = false;  ///< 网卡枚举能力是否可用（粘性）
+    /// 本帧每网卡累计量与速率（`compute_network_rates` 的结果，含虚拟网卡）；nullopt =
+    /// 本帧未采到（能力可用但失败，或不可用；空数组 = 可用且本机无网络接口）。
+    std::optional<std::vector<platform::SysmonNetworkInfo>> network;
+    /// 本帧采集失败原因（采集层给出；能力从未确认时用于可用性映射，不按平台名猜）。
+    std::optional<std::string> network_unavailable_reason;
+    /// 配置 `network.hide_virtual`：true 时过滤掉 `is_virtual = true` 的条目（默认 true）。
+    bool hide_virtual = true;
+};
+
+/**
  * @brief 构造一帧实时快照。
  *
  * @param source               发送方进程名（无 instance_id 帧的来源显式携带，general §5）
@@ -111,6 +132,7 @@ struct DiskMetrics {
  * @param memory_metrics       内存/交换的测量结果与能力标记
  * @param disk_metrics         卷/关注路径/共享内存目录/每物理盘 I/O 的测量结果与能力标记
  *                             （#75、#76）
+ * @param network_metrics      每网卡累计量与速率、能力标记与 hide_virtual（#77）
  * @param measure_interval_ms  当前计量间隔（毫秒）
  * @param last_sample_unix_ms  最近一次计量成功的墙钟时间（Unix 毫秒，0 = 尚无成功样本）
  * @param missed_ticks         累计错过的计量 tick 数
@@ -123,6 +145,7 @@ struct DiskMetrics {
                                                       const TemperatureMetrics& temperature_metrics,
                                                       const MemorySwapMetrics& memory_metrics,
                                                       const DiskMetrics& disk_metrics,
+                                                      const NetworkMetrics& network_metrics,
                                                       int32_t measure_interval_ms,
                                                       int64_t last_sample_unix_ms,
                                                       uint64_t missed_ticks,

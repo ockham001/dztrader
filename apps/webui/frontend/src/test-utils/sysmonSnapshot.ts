@@ -1,20 +1,24 @@
 // 测试夹具：契约 sysmon 快照（SysmonSnapshot）。
-// 默认形状 = #76 落地后的后端：system / cpu.total / cpu.cores / cpu.load_average /
+// 默认形状 = #77 落地后的后端：system / cpu.total / cpu.cores / cpu.load_average /
 // cpu.context_switches / memory / swap / volumes / disk_io / shm_dir 可用（每核 16 个、Linux 真实负载、
 // 速率有值、内存 32 GiB + 缓存/缓冲、交换 8 GiB、三个卷其中 /data 为关注卷、
 // 磁盘 I/O 两块盘、共享内存目录占用有值），其余指标不可用（温度按 Linux 无传感器理由 no_sensor、
-// 每核频率按无 cpufreq 理由 unsupported，network 仍 not_implemented）；
+// 每核频率按无 cpufreq 理由 unsupported，network 默认不可用 —— 网卡由 network 选项显式给）。
 // watch_paths 默认给共享内存目录与数据库目录两条（落卷 /data）；
 // resourceData=true 时额外填充网卡数据并标记 network 可用（volumes / disk_io / shm_dir 默认已可用），
 // 用于「全部可用」渲染用例；sensorData=true 时额外填充温度 / 每核频率并标记可用。
+// network 选项可显式给网卡数组（含虚拟网卡 / 空数组 = 全部被 hide_virtual 滤掉 / null = 本帧未采集）；
+// virtualNetwork=true 是 3 块虚拟网卡 + eth0 的混合集合（验证前端不自行过滤、只做展示）。
 // semantic_hints 默认携带 #76 后端在 disk_io 能力可用时发送的口径提示；用例可按需覆盖。
 import type {
   SysmonAvailabilityEntry,
+  SysmonConfigPayload,
   SysmonCoreFrequency,
   SysmonCpuCore,
   SysmonDiskIoInfo,
   SysmonLoadAverage,
   SysmonMemoryInfo,
+  SysmonNetworkInfo,
   SysmonShmDirInfo,
   SysmonSnapshotPayload,
   SysmonSwapInfo,
@@ -58,6 +62,18 @@ export interface SysmonSnapshotOptions {
   shmDir?: SysmonShmDirInfo | null
   /** 磁盘 I/O；默认两块盘（#76 后端形状），null = 本帧未采集（能力粘性） */
   diskIo?: SysmonDiskIoInfo[] | null
+  /**
+   * 网卡数组（契约 sysmon §2.4 network[]）；默认 null（network 不可用）。
+   * 显式给值同时把 `network` 标记为可用，便于覆盖：含虚拟网卡的混合集合、
+   * 空数组（= hide_virtual 滤掉全部虚拟网卡，契约 §2.5：available 仍为 true）、
+   * null（能力可用但本帧未采集）。
+   */
+  network?: SysmonNetworkInfo[] | null
+  /**
+   * 额外给一份「物理 + 虚拟」混合网卡集合并把 network 标记为可用（eth0 + docker0 + veth1234 + lo）。
+   * 与 `network` 同时给时以 `network` 为准。
+   */
+  virtualNetwork?: boolean
   /** 填充温度 / 每核频率数据，并把 temperature / cpu.frequency 标记为可用（模拟 #73 落地后的快照） */
   sensorData?: boolean
   /** 温度传感器读数；默认 null；sensorData=true 时默认两个 Linux hwmon 读数 */
@@ -172,9 +188,135 @@ export function makeSysmonCpuCores(count = 16): SysmonCpuCore[] {
   }))
 }
 
+/**
+ * 默认网卡（#77 契约 sysmon §2.4 network[]）：单块物理网卡 eth0，八个累计计数器与六个速率
+ * 均有真实值（速率非 null；错误/丢弃速率 0 = 本窗口确实没有增量，是合法真实值）。
+ */
+const DEFAULT_NETWORK: SysmonNetworkInfo[] = [
+  {
+    interface: 'eth0',
+    rx_bytes_total: 8 * GIB,
+    tx_bytes_total: 4 * GIB,
+    rx_packets_total: 12_000_000,
+    tx_packets_total: 9_000_000,
+    rx_errors_total: 3,
+    tx_errors_total: 1,
+    rx_drops_total: 7,
+    tx_drops_total: 2,
+    rx_bytes_per_sec: 1 * MIB,
+    tx_bytes_per_sec: 2 * MIB,
+    rx_errors_per_sec: 0,
+    tx_errors_per_sec: 0,
+    rx_drops_per_sec: 0,
+    tx_drops_per_sec: 0,
+    is_virtual: false,
+  },
+]
+
+/**
+ * 虚拟网卡（is_virtual=true）：docker0 桥接 + veth 容器对端 + lo 回环（契约 §2.4 明文把回环、
+ * 桥接、隧道、聚合与 VLAN 逻辑接口都算虚拟）。刻意放在 eth0 之前，用于验证前端按 interface
+ * 升序排序而不是依赖发送端顺序。
+ */
+const VIRTUAL_NETWORK: SysmonNetworkInfo[] = [
+  {
+    interface: 'veth1234',
+    rx_bytes_total: 512 * MIB,
+    tx_bytes_total: 256 * MIB,
+    rx_packets_total: 400_000,
+    tx_packets_total: 300_000,
+    rx_errors_total: 0,
+    tx_errors_total: 0,
+    rx_drops_total: 5,
+    tx_drops_total: 1,
+    rx_bytes_per_sec: 64 * 1024,
+    tx_bytes_per_sec: 32 * 1024,
+    rx_errors_per_sec: 0,
+    tx_errors_per_sec: 0,
+    rx_drops_per_sec: 0,
+    tx_drops_per_sec: 0,
+    is_virtual: true,
+  },
+  {
+    interface: 'docker0',
+    rx_bytes_total: 1024 * MIB,
+    tx_bytes_total: 2048 * MIB,
+    rx_packets_total: 800_000,
+    tx_packets_total: 900_000,
+    rx_errors_total: 0,
+    tx_errors_total: 0,
+    rx_drops_total: 0,
+    tx_drops_total: 0,
+    rx_bytes_per_sec: 128 * 1024,
+    tx_bytes_per_sec: 256 * 1024,
+    rx_errors_per_sec: 0,
+    tx_errors_per_sec: 0,
+    rx_drops_per_sec: 0,
+    tx_drops_per_sec: 0,
+    is_virtual: true,
+  },
+  {
+    interface: 'lo',
+    rx_bytes_total: 64 * MIB,
+    tx_bytes_total: 64 * MIB,
+    rx_packets_total: 120_000,
+    tx_packets_total: 120_000,
+    rx_errors_total: 0,
+    tx_errors_total: 0,
+    rx_drops_total: 0,
+    tx_drops_total: 0,
+    rx_bytes_per_sec: 0,
+    tx_bytes_per_sec: 0,
+    rx_errors_per_sec: 0,
+    tx_errors_per_sec: 0,
+    rx_drops_per_sec: 0,
+    tx_drops_per_sec: 0,
+    is_virtual: true,
+  },
+]
+
+/** 默认系统监控配置（契约 sysmon §3.1 全量生效配置；network.hide_virtual 默认 true） */
+export function makeSysmonConfig(overrides: Partial<SysmonConfigPayload> = {}): SysmonConfigPayload {
+  return {
+    sampling: {
+      measure_interval_ms: 1000,
+      record_interval_sec: 60,
+      phase_offset_sec: 3,
+      groups: {
+        cpu: true,
+        memory: true,
+        swap: true,
+        volumes: true,
+        disk_io: true,
+        network: true,
+        temperature: true,
+        cpu_frequency: true,
+      },
+    },
+    disk: { watch_paths: [], devices: [] },
+    network: { hide_virtual: true },
+    history: { enabled: true, raw_retention_hours: 24, max_retention_days: 30, max_bytes: 2_147_483_648 },
+    realtime: { push_interval_sec: 5 },
+    alerts: {
+      cpu_sustain_used_pct: 90,
+      cpu_sustain_samples: 10,
+      memory_used_pct: 90,
+      swap_used_pct: 50,
+      volume_free_pct: 10,
+      volume_free_bytes: 1_073_741_824,
+      cooldown_sec: 600,
+    },
+    ...overrides,
+  }
+}
+
 export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonSnapshotPayload {
   const resourceAvailable = options.resourceData === true
   const sensorAvailable = options.sensorData === true
+  // network 能力可用 = 任一网卡选项显式给值（含空数组 / null：能力可用但本帧未采集 / 全被滤掉）
+  const networkAvailable = resourceAvailable
+    || options.network !== undefined
+    || options.virtualNetwork === true
   const metrics: Record<string, SysmonAvailabilityEntry> = {}
   for (const key of SYSMON_METRIC_KEYS) {
     const available = key === 'system'
@@ -187,11 +329,13 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
       || key === 'volumes'
       || key === 'disk_io'
       || key === 'shm_dir'
-      || (resourceAvailable && key === 'network')
+      || (networkAvailable && key === 'network')
       || (sensorAvailable && (key === 'temperature' || key === 'cpu.frequency'))
+    // network 已由 #77 实现：默认不可用的现实原因是配置组关闭（disabled_by_config），
+    // 不再是 not_implemented；温度/频率按各自的 B 组语义给 reason。
     const reason = key === 'temperature'
       ? 'no_sensor'
-      : (key === 'cpu.frequency' ? 'unsupported' : 'not_implemented')
+      : (key === 'cpu.frequency' ? 'unsupported' : (key === 'network' ? 'disabled_by_config' : 'not_implemented'))
     metrics[key] = available
       ? { available: true }
       : { available: false, reason }
@@ -265,20 +409,11 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
     disk_io: options.diskIo !== undefined
       ? options.diskIo
       : DEFAULT_DISK_IO.map(entry => ({ ...entry })),
-    network: resourceAvailable
-      ? [{
-          interface: 'eth0',
-          rx_bytes_total: 8 * GIB,
-          tx_bytes_total: 4 * GIB,
-          rx_bytes_per_sec: 1 * MIB,
-          tx_bytes_per_sec: 2 * MIB,
-          rx_errors_per_sec: 0,
-          tx_errors_per_sec: 0,
-          rx_drops_per_sec: 0,
-          tx_drops_per_sec: 0,
-          is_virtual: false,
-        }]
-      : null,
+    network: options.network !== undefined
+      ? options.network
+      : (options.virtualNetwork === true
+          ? [...VIRTUAL_NETWORK, ...DEFAULT_NETWORK].map(entry => ({ ...entry }))
+          : (resourceAvailable ? DEFAULT_NETWORK.map(entry => ({ ...entry })) : null)),
     shm_dir: options.shmDir !== undefined ? options.shmDir : { ...DEFAULT_SHM_DIR },
     availability: {
       platform_description: 'Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)',

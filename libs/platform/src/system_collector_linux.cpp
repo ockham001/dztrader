@@ -788,6 +788,48 @@ RawDiskIoSnapshot read_disk_io() {
     return snapshot;
 }
 
+// ===== 每网卡累计计数器（契约 sysmon §2.4、§2.7）=====
+
+/// `/proc/net/dev` 与 `/sys/class/net`：每网卡累计计数器与虚拟网卡判定的数据源。
+constexpr const char* kProcNetDevPath = "/proc/net/dev";
+constexpr const char* kSysClassNetRoot = "/sys/class/net";
+
+/// 采集全部网络接口的原始累计计数器（契约 sysmon §2.4、§2.7）。
+///
+/// 包含虚拟网卡与回环（`is_virtual` 标明）：过滤发生在快照构造阶段，改
+/// `network.hide_virtual` 不需要重新采集、也不影响速率基线。
+///
+/// `/proc/net/dev` 不可读 ⇒ 失败（`unavailable_reason=collect_failed`）；可读但没有接口
+/// ⇒ 成功 + 空数组（本机无网络接口不是失败）。“存在但为 0 流量”与“不存在”是不同事实，
+/// 0 流量的网卡照常进入数组（契约 sysmon §2.4）。
+RawNetworkSnapshot read_network() {
+    RawNetworkSnapshot snapshot;
+    const std::string content = read_file_contents(kProcNetDevPath);
+    if (content.empty()) {
+        snapshot.unavailable_reason = "collect_failed";
+        return snapshot;
+    }
+    const auto entries = system_collector_linux_internal::parse_net_dev(content);
+    snapshot.interfaces.reserve(entries.size());
+    for (const auto& entry : entries) {
+        RawNetworkInfo info;
+        info.interface_name = entry.interface_name;
+        info.rx_bytes = entry.rx_bytes;
+        info.tx_bytes = entry.tx_bytes;
+        info.rx_packets = entry.rx_packets;
+        info.tx_packets = entry.tx_packets;
+        info.rx_errors = entry.rx_errors;
+        info.tx_errors = entry.tx_errors;
+        info.rx_drops = entry.rx_drops;
+        info.tx_drops = entry.tx_drops;
+        // 结构性判定（sysfs 的 `<if>/device` 是否存在），不看名字前缀（契约 sysmon §2.4）。
+        info.is_virtual = system_collector_linux_internal::is_virtual_interface(
+            entry.interface_name, kSysClassNetRoot);
+        snapshot.interfaces.push_back(std::move(info));
+    }
+    return snapshot;
+}
+
 /// 采集一次系统信息（失败字段留空串/0，不抛异常）。
 RawSystemInfo collect_system_info_linux() {
     RawSystemInfo info;
@@ -888,6 +930,8 @@ public:
     }
 
     RawDiskIoSnapshot collect_disk_io() override { return read_disk_io(); }
+
+    RawNetworkSnapshot collect_network() override { return read_network(); }
 
 private:
     LinuxMemorySwapReader memory_reader_;
@@ -1400,6 +1444,105 @@ std::vector<DiskstatsEntry> select_physical_disks(std::vector<DiskstatsEntry> en
         }
     }
     return selected;
+}
+
+// ===== /proc/net/dev 每网卡累计计数器与虚拟网卡判定（契约 sysmon §2.4）=====
+
+std::vector<NetDevEntry> parse_net_dev(std::string_view content) {
+    // 内核行格式：`<接口名>: <16 个十进制计数器>`（收 8 项 + 发 8 项）。
+    // 契约只用到其中 8 个（bytes/packets/errs/drop × 收/发），其余内核附加项忽略。
+    constexpr std::size_t kCounterCount = 16;
+    constexpr std::size_t kRxBytes = 0;
+    constexpr std::size_t kRxPackets = 1;
+    constexpr std::size_t kRxErrors = 2;
+    constexpr std::size_t kRxDrops = 3;
+    constexpr std::size_t kTxBytes = 8;
+    constexpr std::size_t kTxPackets = 9;
+    constexpr std::size_t kTxErrors = 10;
+    constexpr std::size_t kTxDrops = 11;
+
+    std::vector<NetDevEntry> entries;
+    std::set<std::string> seen;
+    std::size_t position = 0;
+    while (position < content.size()) {
+        const std::size_t line_end = content.find('\n', position);
+        const std::size_t line_length =
+            line_end == std::string_view::npos ? content.size() - position : line_end - position;
+        const std::string_view line = trim(content.substr(position, line_length));
+        position = line_end == std::string_view::npos ? content.size() : line_end + 1;
+        if (line.empty()) {
+            continue;
+        }
+        // 接口名与计数器以冒号分隔。接口名允许含冒号（老式 `eth0:1` 别名），而 16 个统计
+        // 字段全是十进制数字，所以**最后一个**冒号必定是分隔符（契约 sysmon §2.4）。
+        const auto colon = line.rfind(':');
+        if (colon == std::string_view::npos) {
+            continue;  // 两行表头与任何非记录行
+        }
+        const auto name = trim(line.substr(0, colon));
+        if (name.empty()) {
+            continue;
+        }
+        std::array<uint64_t, kCounterCount> counters{};
+        std::size_t count = 0;
+        std::string_view rest = line.substr(colon + 1);
+        bool valid = true;
+        while (count < counters.size()) {
+            const auto token_begin = rest.find_first_not_of(" \t");
+            if (token_begin == std::string_view::npos) {
+                break;
+            }
+            rest.remove_prefix(token_begin);
+            const auto token_end = rest.find_first_of(" \t");
+            const auto value = parse_u64(rest.substr(0, token_end));
+            if (!value) {
+                valid = false;  // 计数器非法：整行跳过（不是整体失败）
+                break;
+            }
+            counters[count] = *value;
+            ++count;
+            if (token_end == std::string_view::npos) {
+                break;
+            }
+            rest.remove_prefix(token_end);
+        }
+        if (!valid || count < counters.size()) {
+            continue;
+        }
+        if (!seen.insert(std::string(name)).second) {
+            continue;  // 同一接口名只保留首次出现的行
+        }
+        NetDevEntry entry;
+        entry.interface_name = std::string(name);
+        entry.rx_bytes = counters[kRxBytes];
+        entry.rx_packets = counters[kRxPackets];
+        entry.rx_errors = counters[kRxErrors];
+        entry.rx_drops = counters[kRxDrops];
+        entry.tx_bytes = counters[kTxBytes];
+        entry.tx_packets = counters[kTxPackets];
+        entry.tx_errors = counters[kTxErrors];
+        entry.tx_drops = counters[kTxDrops];
+        entries.push_back(std::move(entry));
+    }
+    return entries;
+}
+
+bool is_virtual_interface(std::string_view interface_name, std::string_view sysfs_net_root) {
+    if (interface_name.empty()) {
+        return true;  // 无名接口无法判定，按虚拟处理（不冒充硬件设备）
+    }
+    std::error_code ec;
+    // `/sys/class/net/<if>` 本身是符号链接、其下 `device` 也是符号链接：必须用**跟随**
+    // 符号链接的 exists()（symlink_status() 不跟随，会把两者都误判成"没有 device"）。
+    const std::filesystem::path device_link =
+        std::filesystem::path(std::string(sysfs_net_root)) / std::string(interface_name) / "device";
+    const bool has_device = std::filesystem::exists(device_link, ec);
+    if (ec) {
+        // sysfs 不可读/接口已消失：按虚拟处理——宁可多隐藏一个未知接口，
+        // 也不把虚拟网卡当作硬件设备输出（契约 sysmon §2.4）。
+        return true;
+    }
+    return !has_device;
 }
 
 }  // namespace system_collector_linux_internal
