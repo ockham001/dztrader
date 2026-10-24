@@ -31,16 +31,15 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-// IP Helper 的包含顺序（MSDN「Including Header Files for IP Helper」与 SDK 实践）：
-// winsock2.h → ws2tcpip.h → windows.h → netioapi.h/iphlpapi.h。
+// IP Helper 的用户态包含顺序：winsock2.h → ws2tcpip.h → windows.h → iphlpapi.h。
 // - winsock2.h 必须先于 windows.h（否则引入旧的 winsock.h，两套套接字头冲突）；
 //   WIN32_LEAN_AND_MEAN 已排除 winsock.h，与 libs/core/src/env.cpp 既有做法一致。
-// - ws2tcpip.h 负责引入 ws2ipdef.h：`MIB_IF_ROW2` 的字段类型（NET_LUID / NET_IFINDEX /
-//   IF_MAX_* / IF_OPER_STATUS）来自它。本 TU 原先只引 winsock2.h，Netioapi.h 被间接
-//   引入时 ws2ipdef.h 从未进入包含树，于是 netioapi.h 的接口结构段整体未生效 ——
-//   CI Windows job 因此报 `'PMIB_IF_TABLE2': undeclared identifier` 与
-//   `'GetIfTable2': identifier not found`（同一失败 TU 的 showIncludes 里确实没有
-//   ws2ipdef.h，而通过编译的其它 TU 有）。
+// - ws2tcpip.h 负责引入 ws2ipdef.h：MIB_IF_ROW2 / MIB_IF_TABLE2 / GetIfTable2 的声明
+//   依赖它提供的网络接口类型（NET_LUID / NET_IFINDEX / IF_MAX_* / IF_OPER_STATUS）。
+//   本 TU 原先只引 winsock2.h，于是 iphlpapi.h 间接拉入 netioapi.h 时 ws2ipdef.h 从未
+//   进入包含树，netioapi.h 的接口结构段整体未生效 —— CI Windows job 报
+//   `'PMIB_IF_TABLE2': undeclared identifier` / `'GetIfTable2': identifier not found`
+//   （失败 TU 的 showIncludes 里确实没有 ws2ipdef.h，同 job 通过编译的其它 TU 有）。
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -50,10 +49,10 @@
 #include <winioctl.h>  // DISK_PERFORMANCE / IOCTL_DISK_PERFORMANCE：每物理盘 I/O（契约 sysmon §2.4）
 #include <winreg.h>
 // 每网卡累计计数器（契约 sysmon §2.4）：GetIfTable2 / FreeMibTable 与 MIB_IF_TABLE2 /
-// MIB_IF_ROW2。MSDN 把这两个结构体与 GetIfTable2 都标注在 netioapi.h，故显式引入
-// netioapi.h 而不依赖 iphlpapi.h 的间接引入（前置条件见上方 ws2tcpip.h 的说明）。
-// 链接库 iphlpapi 在 CMakeLists 声明。
-#include <netioapi.h>
+// MIB_IF_ROW2。**不要直接 include netioapi.h**：用户态下它期望已被 iphlpapi.h 拉起的
+// 上下文（NTSTATUS 等来自 winnt.h 的类型），单独引入会在 netioapi.h 内部刷出大量
+// `missing ';' before '__cdecl'` / `'NTSTATUS': redefinition`。用户态正确入口只有
+// iphlpapi.h（它按需再引 netioapi.h）。链接库 iphlpapi 在 CMakeLists 声明。
 #include <iphlpapi.h>
 
 #include "system_collector_internal.h"
