@@ -725,14 +725,14 @@ private:
         const auto result = alert_evaluator_.evaluate(inputs, config_.alerts);
         for (const auto& notification : result.notifications) {
             if (notification.recovery) {
-                SPDLOG_INFO("threshold alert cleared | kind={} subject={}", notification.kind,
-                            notification.subject);
+                SPDLOG_INFO("threshold alert cleared | kind={} subject={}", notification.key.kind,
+                            notification.key.subject);
                 notify_ui_->info(notification.message);
             } else {
                 // 触发必须是 error + popup：契约 notify-ui 只有 error+popup 会打断用户，
                 // 阈值告警是"资源即将耗尽、进程可能崩溃"的前置信号（契约 sysmon §2.8）。
-                SPDLOG_WARN("threshold alert triggered | kind={} subject={}", notification.kind,
-                            notification.subject);
+                SPDLOG_WARN("threshold alert triggered | kind={} subject={}", notification.key.kind,
+                            notification.key.subject);
                 notify_ui_->error(notification.message);
             }
         }
@@ -740,8 +740,8 @@ private:
         active_alerts_.reserve(result.active.size());
         for (const auto& alert : result.active) {
             platform::SysmonAlertInfo info;
-            info.kind = alert.kind;
-            info.subject = alert.subject;
+            info.kind = alert.key.kind;
+            info.subject = alert.key.subject;
             info.since = alert.since_unix_sec;
             active_alerts_.push_back(std::move(info));
         }

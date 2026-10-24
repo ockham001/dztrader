@@ -325,7 +325,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 |------|----------|------------------------|----------|
 | `memory_used` | 快照 `memory.used_ratio` | `used_ratio ≥ memory_used_pct / 100` | `used_ratio < memory_used_pct / 100` |
 | `swap_used` | 快照 `swap.used_ratio` | `used_ratio ≥ swap_used_pct / 100` | `used_ratio < swap_used_pct / 100` |
-| `volume_free` | 关注卷剩余空间（同帧 `volumes[]` 中 `watched=true` 的卷） | `free_pct < volume_free_pct` **或** `free_bytes < volume_free_bytes` | `free_pct ≥ volume_free_pct` **且** `free_bytes ≥ volume_free_bytes` |
+| `volume_free` | 关注卷剩余空间（`watch_paths[]` 解析出的挂载点所在的卷，即同帧 `volumes[]` 中 `watched=true` 的卷） | `free_pct < volume_free_pct` **或** `free_bytes < volume_free_bytes` | `free_pct ≥ volume_free_pct` **且** `free_bytes ≥ volume_free_bytes` |
 
 - **关注卷剩余空间的两种形态是「或」**：任一形态越限即告警——百分比形态保护大卷的比例份额，绝对容量形态保护小卷的最小可用量。把某形态阈值设为 0 即关闭该形态（`free_pct < 0` / `free_bytes < 0` 永不成立）。`total_bytes = 0` 的卷无法计算百分比，只按绝对容量形态判定。
 - **路径感知**：`volume_free` 只对**关注卷**告警——即 `watch_paths[]` 成功解析出的挂载点（默认共享内存目录与数据库目录，配置 `disk.watch_paths` 非空时以其为准）。多个关注路径落在同一卷时按 `mount` 去重、只产生一条。非关注卷容量再低也不告警。
@@ -334,16 +334,16 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 **通知（`DZ_FRAME_NOTIFY_UI`）**：payload 按契约 notify-ui，`source` 固定 `dzsysmon`。
 
 - 触发通知：`level="error"`、`popup=true`——阈值告警是"资源即将耗尽、进程可能崩溃"的前置信号，必须打断用户（契约 notify-ui：只有 error+popup 会弹窗，warning 仅 toast）。
-- 恢复通知：`level="info"`、`popup=false`，正文明确写出"已回到阈值以下"，不得静默消失。
+- 恢复通知：`level="info"`、`popup=false`，正文明确写出"已回到阈值以下"，不得静默消失。**每次活动期结束都发**——即使该活动期的触发通知因冷却被抑制（用户仍可从快照 `alerts[]` 看到活动状态），恢复时也必须给出恢复语义。
 - **冷却防抖**：按告警对象（`(kind, subject)`）计。一次"恢复→再次触发"的间隔小于 `cooldown_sec` 时**不弹**触发通知（冷却期内同类告警只弹一次）；阈值持续满足期间只在首次越限时弹一次，**不按冷却周期重弹**（持续满足不刷屏）。
-- **被抑制的告警不补发**：冷却期内被抑制的那次活动期，即使冷却结束后仍未恢复也不再补弹；该次活动期恢复时也不发恢复通知（用户从未收到触发通知）。活动状态仍进 `alerts[]`。
+- **被抑制的触发通知不补发**：冷却期内被抑制的那次活动期，即使冷却结束后仍未恢复也不再补弹；但其活动状态仍进 `alerts[]`，恢复时仍发恢复通知（恢复通知不是"弹窗"，不受触发冷却约束）。
 - 冷却计时用**单调时钟**（不受系统时间调整影响）；`since` 用墙钟（与历史/交易事件可对照）。
-- 采集失败/暂时不可用（内存/交换/卷能力仍在）**保留**活动状态、不发恢复通知——"读不到"不是"已恢复"；能力被配置关闭（`disabled_by_config`）时静默清除。
+- 采集失败/暂时不可用（内存/交换/卷能力仍在，含关注路径个别解析失败）**保留**活动状态、不发恢复通知——"读不到"不是"已恢复"；能力被配置关闭（`disabled_by_config`）时静默清除（配置关闭不是"指标回到阈值以下"，不发恢复通知）。
 - 通知正文是用户可读文案（可中文，不属于日志格式门禁）；正文不构成协议语义，消费方不得解析。
 
 **边界**：
 
-- 百分比阈值 `[0,100]`、`volume_free_bytes ≥ 0`、`cooldown_sec ∈ [0,86400]`（§3.1）；阈值相等按上表的 `≥` / `<` 处理，即"恰好等于阈值"算触发、不算恢复（避免阈值边界抖动被当成恢复）。
+- 百分比阈值 `[0,100]`、`volume_free_bytes ≥ 0`、`cooldown_sec ∈ [0,86400]`（§3.1）；相等按上表的比较符处理：内存/交换"恰好等于阈值"算触发（`≥`），关注卷"恰好等于阈值"不算触发（`<`）、且满足恢复（`≥`）——语义按表执行，不在边界做额外容差。
 - 阈值告警只覆盖 `memory_used` / `swap_used` / `volume_free` 三类；CPU 饱和核是快照可视化标记（§2.3），不产生通知。
 - 告警**不写入历史库**（历史只记录指标事实，告警可由历史事实重新推导）；`alerts[]` 不进 `availability.metrics` 键集合（它不是指标能力）。
 

@@ -338,6 +338,37 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
       <span v-else-if="viewMode === 'realtime'" class="ds-tag ds-tag--warning">等待快照</span>
     </header>
 
+    <!-- 阈值告警（#80）：持续状态——实时/历史视图都常驻显示，冷却期内通知被抑制时仍在，
+         恢复后随下一个快照自动消失；触发/恢复的事件通知走既有 notify_ui 链路，这里不重复弹 toast -->
+    <section
+      v-if="activeAlerts.length > 0"
+      class="ds-alert ds-alert--danger monitor-view__alerts"
+      data-test="monitor-alerts"
+      role="alert"
+    >
+      <span class="ds-alert__icon"><Icon name="warning_line" :size="16" /></span>
+      <div class="monitor-view__alerts-body">
+        <div class="ds-alert__title" data-test="monitor-alerts-title">
+          资源告警（{{ activeAlerts.length }}）
+        </div>
+        <ul class="monitor-view__alerts-list">
+          <li
+            v-for="alert in activeAlerts"
+            :key="`${alert.kind}|${alert.subject}`"
+            class="monitor-view__alert-item"
+            data-test="monitor-alert"
+            :data-kind="alert.kind"
+            :data-subject="alert.subject"
+          >
+            <span>{{ alertText(alert) }}</span>
+            <span v-if="alert.since > 0" class="monitor-view__alert-since" data-test="monitor-alert-since">
+              始于 {{ formatDateTime(alert.since * 1000) }}
+            </span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
     <!-- 历史视图（#79）：独立渲染，不卸载实时 store（WS 连接与实时数据不受影响） -->
     <SysmonHistoryTab v-if="viewMode === 'history'" />
 
@@ -353,37 +384,6 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
     </div>
 
     <div v-else-if="viewMode === 'realtime'" class="monitor-view__grid">
-      <!-- 阈值告警（#80）：持续状态——冷却期内通知被抑制时仍在，恢复后自动消失；
-           触发/恢复的事件通知走既有 notify_ui 链路（error+popup / info），这里不重复弹 toast -->
-      <section
-        v-if="activeAlerts.length > 0"
-        class="ds-alert ds-alert--danger monitor-view__alerts"
-        data-test="monitor-alerts"
-        role="alert"
-      >
-        <span class="ds-alert__icon"><Icon name="warning_line" :size="16" /></span>
-        <div class="monitor-view__alerts-body">
-          <div class="ds-alert__title" data-test="monitor-alerts-title">
-            资源告警（{{ activeAlerts.length }}）
-          </div>
-          <ul class="monitor-view__alerts-list">
-            <li
-              v-for="alert in activeAlerts"
-              :key="`${alert.kind}|${alert.subject}`"
-              class="monitor-view__alert-item"
-              data-test="monitor-alert"
-              :data-kind="alert.kind"
-              :data-subject="alert.subject"
-            >
-              <span>{{ alertText(alert) }}</span>
-              <span v-if="alert.since > 0" class="monitor-view__alert-since" data-test="monitor-alert-since">
-                始于 {{ formatDateTime(alert.since * 1000) }}
-              </span>
-            </li>
-          </ul>
-        </div>
-      </section>
-
       <!-- 系统信息 -->
       <section class="ds-card monitor-view__card monitor-view__card--wide" data-test="monitor-system">
         <h2 class="ds-card__title monitor-view__card-title">
@@ -934,9 +934,10 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   gap: var(--spacer-16);
 }
 
-/* 阈值告警横幅（#80）：跨整行常驻提示；颜色沿用 ds-alert--danger，排版全部走设计 token */
+/* 阈值告警横幅（#80）：监控页级常驻提示（实时/历史视图都在）；颜色沿用 ds-alert--danger，
+   排版全部走设计 token */
 .monitor-view__alerts {
-  grid-column: 1 / -1;
+  margin-bottom: var(--spacer-16);
 }
 
 .monitor-view__alerts-body {

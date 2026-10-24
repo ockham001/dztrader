@@ -16,10 +16,11 @@
  * 默认 GTEST_SKIP，`DZ_SYSMON_E2E_STRICT=1` 时 FAIL（与 network_config_e2e_test 同约定）。
  */
 
+#include "sysmon_e2e_support.h"
+
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/env.h>
 #include <dztrader/core/path.h>
-#include <dztrader/core/this_process.h>
 #include <dztrader/platform/frame_codec.h>
 #include <dztrader/platform/sysmon.h>
 #include <dztrader/shm/channel_meta.h>
@@ -50,7 +51,6 @@
 #include <limits>
 #include <memory>
 #include <optional>
-#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -68,6 +68,12 @@
 namespace dztrader::sysmon {
 namespace {
 
+using e2e_support::e2e_strict;
+using e2e_support::event_semaphore_busy;
+using e2e_support::remove_semaphore;
+using e2e_support::sysmon_executable;
+using e2e_support::unique_suffix;
+
 namespace process_v2 = boost::process::v2;
 using namespace std::chrono_literals;
 
@@ -77,47 +83,6 @@ constexpr int kPushIntervalSec = 300;
 /// 记录间隔取最小值（1 秒）：让第一个完整记录窗口在数秒内结束并落盘，
 /// 而不是等默认的 60 秒（那会让用例跑一分钟以上）。
 constexpr int kRecordIntervalSec = 1;
-
-bool e2e_strict() { return dztrader::env::get("DZ_SYSMON_E2E_STRICT") == "1"; }
-
-/// 事件通道信号量是否已被占用（机器全局命名空间）。
-bool event_semaphore_busy() {
-#ifdef _WIN32
-    HANDLE handle = OpenSemaphoreA(SEMAPHORE_ALL_ACCESS, FALSE, "dz.sem.dzevent");
-    if (handle != nullptr) {
-        CloseHandle(handle);
-        return true;
-    }
-    return false;
-#else
-    std::error_code ec;
-    return std::filesystem::exists("/dev/shm/sem.dz.sem.dzevent", ec);
-#endif
-}
-
-void remove_semaphore(const std::string& name) {
-    std::error_code ec;
-#ifdef _WIN32
-    shm::NamedSemaphore::remove(name);
-#else
-    std::filesystem::remove("/dev/shm/sem.dz.sem." + name, ec);
-#endif
-}
-
-std::string unique_suffix() {
-    std::random_device rd;
-    return std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
-           std::to_string(rd());
-}
-
-/// dzsysmon 可执行文件：与测试二进制同目录的上一级（DZ_OUTPUT_DIR）。
-std::filesystem::path sysmon_executable() {
-    auto exe = dztrader::this_process::exe_dir().parent_path() / "dzsysmon";
-#ifdef _WIN32
-    exe += ".exe";
-#endif
-    return exe;
-}
 
 class HistoryE2ETest : public ::testing::Test {
 protected:

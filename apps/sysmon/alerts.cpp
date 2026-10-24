@@ -107,16 +107,13 @@ AlertInputs make_alert_inputs(const MemorySwapMetrics& memory_metrics,
     // 关注卷剩余空间（路径感知）：只把落卷成功且容量可读的关注卷交给判定；
     // 非关注卷容量再低也进不了 watched_volumes（契约 sysmon §2.8）。
     inputs.volumes_applicable = !disk_metrics.volumes_disabled;
-    inputs.watch_paths_collected = disk_metrics.watch_paths.has_value();
-    if (!disk_metrics.watch_paths.has_value()) {
-        return inputs;
-    }
-    std::set<std::string> watched_mounts;
-    for (const auto& info : *disk_metrics.watch_paths) {
-        if (info.mount.has_value()) {
-            watched_mounts.insert(*info.mount);
-        }
-    }
+    // 只有**全部**关注路径都解析成功时，才能可靠判断"某卷不再被关注"；单条路径暂时解析不到
+    // 不等于该卷不再被关注（必须保留活动状态，不得伪造恢复，契约 sysmon §2.8）。
+    inputs.watch_paths_collected =
+        disk_metrics.watch_paths.has_value() &&
+        std::all_of(disk_metrics.watch_paths->begin(), disk_metrics.watch_paths->end(),
+                    [](const platform::RawWatchPathInfo& info) { return info.mount.has_value(); });
+    const auto watched_mounts = watched_mounts_of(disk_metrics.watch_paths);
     inputs.watched_mounts.assign(watched_mounts.begin(), watched_mounts.end());
     if (!disk_metrics.volumes.has_value()) {
         return inputs;
@@ -149,29 +146,12 @@ AlertEvaluator::Result AlertEvaluator::evaluate(const AlertInputs& inputs,
     // 冷却时间来自配置（秒 → 毫秒）；配置校验保证 >= 0，不在此重复钳制。
     const int64_t cooldown_ms = static_cast<int64_t>(config.cooldown_sec) * 1000;
 
-    // 内存：配置关闭 → 静默清除；能力仍在但本帧未采到 → 保留活动状态（不伪造恢复）。
-    if (!inputs.memory_applicable) {
-        erase_kind(platform::SYSMON_ALERT_MEMORY_USED);
-    } else if (is_valid_ratio(inputs.memory_used_ratio)) {
-        const double used_ratio = *inputs.memory_used_ratio;
-        const bool breached = used_ratio >= config.memory_used_pct / 100.0;
-        transition(platform::SYSMON_ALERT_MEMORY_USED, "", breached,
-                   usage_trigger_message("内存", used_ratio, config.memory_used_pct),
-                   usage_recovery_message("内存", used_ratio, config.memory_used_pct), cooldown_ms,
-                   inputs, result);
-    }
-
-    // 交换：与内存同构（无交换/页面文件被移除时 swap_applicable = false → 静默清除）。
-    if (!inputs.swap_applicable) {
-        erase_kind(platform::SYSMON_ALERT_SWAP_USED);
-    } else if (is_valid_ratio(inputs.swap_used_ratio)) {
-        const double used_ratio = *inputs.swap_used_ratio;
-        const bool breached = used_ratio >= config.swap_used_pct / 100.0;
-        transition(platform::SYSMON_ALERT_SWAP_USED, "", breached,
-                   usage_trigger_message("交换", used_ratio, config.swap_used_pct),
-                   usage_recovery_message("交换", used_ratio, config.swap_used_pct), cooldown_ms,
-                   inputs, result);
-    }
+    // 内存 / 交换：能力关闭 → 静默清除；能力仍在但本帧未采到 → 保留活动状态（不伪造恢复）。
+    evaluate_usage_alert(platform::SYSMON_ALERT_MEMORY_USED, "内存", inputs.memory_applicable,
+                         inputs.memory_used_ratio, config.memory_used_pct, cooldown_ms, inputs,
+                         result);
+    evaluate_usage_alert(platform::SYSMON_ALERT_SWAP_USED, "交换", inputs.swap_applicable,
+                         inputs.swap_used_ratio, config.swap_used_pct, cooldown_ms, inputs, result);
 
     // 关注卷剩余空间（路径感知）：只判定关注卷，非关注卷容量再低也不告警。
     if (!inputs.volumes_applicable) {
@@ -184,8 +164,8 @@ AlertEvaluator::Result AlertEvaluator::evaluate(const AlertInputs& inputs,
             const std::set<std::string> watched(inputs.watched_mounts.begin(),
                                                 inputs.watched_mounts.end());
             std::erase_if(states_, [&watched](const auto& entry) {
-                return entry.first.first == platform::SYSMON_ALERT_VOLUME_FREE &&
-                       !watched.contains(entry.first.second);
+                return entry.first.kind == platform::SYSMON_ALERT_VOLUME_FREE &&
+                       !watched.contains(entry.first.subject);
             });
         }
         for (const auto& usage : inputs.watched_volumes) {
@@ -200,7 +180,7 @@ AlertEvaluator::Result AlertEvaluator::evaluate(const AlertInputs& inputs,
                     static_cast<double>(usage.free_bytes) / static_cast<double>(usage.total_bytes);
                 breached = free_ratio < config.volume_free_pct / 100.0;
             }
-            transition(platform::SYSMON_ALERT_VOLUME_FREE, usage.mount, breached,
+            transition({platform::SYSMON_ALERT_VOLUME_FREE, usage.mount}, breached,
                        volume_trigger_message(usage, config), volume_recovery_message(usage),
                        cooldown_ms, inputs, result);
         }
@@ -213,22 +193,39 @@ AlertEvaluator::Result AlertEvaluator::evaluate(const AlertInputs& inputs,
         if (!state.active) {
             continue;
         }
-        result.active.push_back(ActiveAlert{key.first, key.second, state.since_unix_sec});
+        result.active.push_back(ActiveAlert{key, state.since_unix_sec});
     }
     return result;
 }
 
-void AlertEvaluator::reset() { states_.clear(); }
+void AlertEvaluator::evaluate_usage_alert(const char* kind,
+                                          const char* label,
+                                          bool applicable,
+                                          const std::optional<double>& used_ratio,
+                                          double threshold_pct,
+                                          int64_t cooldown_ms,
+                                          const AlertInputs& inputs,
+                                          Result& out) {
+    if (!applicable) {
+        erase_kind(kind);
+        return;
+    }
+    if (!is_valid_ratio(used_ratio)) {
+        return;  // 本帧未采到：保留活动状态，不伪造恢复
+    }
+    const double ratio = *used_ratio;
+    const bool breached = ratio >= threshold_pct / 100.0;
+    transition({kind, ""}, breached, usage_trigger_message(label, ratio, threshold_pct),
+               usage_recovery_message(label, ratio, threshold_pct), cooldown_ms, inputs, out);
+}
 
-void AlertEvaluator::transition(const std::string& kind,
-                                const std::string& subject,
+void AlertEvaluator::transition(const AlertKey& key,
                                 bool breached,
                                 const std::string& trigger_message,
                                 const std::string& recovery_message,
                                 int64_t cooldown_ms,
                                 const AlertInputs& inputs,
                                 Result& out) {
-    const std::pair<std::string, std::string> key{kind, subject};
     auto it = states_.find(key);
     if (it == states_.end()) {
         if (!breached) {
@@ -243,41 +240,41 @@ void AlertEvaluator::transition(const std::string& kind,
             // 进入新的活动期：记录 since（墙钟，供 UI 展示"始于何时"）。
             state.active = true;
             state.since_unix_sec = inputs.now_unix_sec;
-            state.notified = false;
-            state.suppressed = false;
+            state.notified_this_episode = false;
+            state.suppressed_this_episode = false;
         }
         // 本次活动期已弹过（notified）或因冷却被抑制（suppressed）：阈值持续满足不重弹、
         // 被抑制的活动期也不在冷却结束后补发。
-        if (state.notified || state.suppressed) {
+        if (state.notified_this_episode || state.suppressed_this_episode) {
             return;
         }
-        // 冷却防抖：距上次已发出的触发通知不足 cooldown 时抑制本次整个活动期。
-        const bool cooling = state.has_notified &&
+        // 冷却防抖：距上次已发出的触发通知不足 cooldown 时抑制本次触发通知（活动状态照常记录）。
+        const bool cooling = state.ever_notified &&
                              inputs.now_monotonic_ms - state.last_notify_monotonic_ms < cooldown_ms;
         if (cooling) {
-            state.suppressed = true;
+            state.suppressed_this_episode = true;
             return;
         }
-        state.notified = true;
-        state.has_notified = true;
+        state.notified_this_episode = true;
+        state.ever_notified = true;
         state.last_notify_monotonic_ms = inputs.now_monotonic_ms;
-        out.notifications.push_back(AlertNotification{kind, subject, false, trigger_message});
+        out.notifications.push_back(AlertNotification{key, false, trigger_message});
         return;
     }
 
-    // 未越限：活动期结束。只有本次活动期真的弹过触发通知才发恢复通知——
-    // 被冷却抑制的活动期用户从未收到触发通知，恢复也就无从谈起（不得静默"恢复"一个没通知过的告警）。
-    if (state.active && state.notified) {
-        out.notifications.push_back(AlertNotification{kind, subject, true, recovery_message});
+    // 未越限：活动期结束。**每次活动期结束都发恢复通知**——活动状态经快照 `alerts[]`
+    // 对用户可见（即使触发弹窗被冷却抑制），恢复时不得静默消失（契约 sysmon §2.8）。
+    if (state.active) {
+        out.notifications.push_back(AlertNotification{key, true, recovery_message});
     }
     state.active = false;
-    state.notified = false;
-    state.suppressed = false;
+    state.notified_this_episode = false;
+    state.suppressed_this_episode = false;
     state.since_unix_sec = 0;
 }
 
 void AlertEvaluator::erase_kind(const std::string& kind) {
-    std::erase_if(states_, [&kind](const auto& entry) { return entry.first.first == kind; });
+    std::erase_if(states_, [&kind](const auto& entry) { return entry.first.kind == kind; });
 }
 
 }  // namespace dztrader::sysmon

@@ -17,10 +17,11 @@
  * 该用例 RUN_SERIAL（见 CMakeLists）。
  */
 
+#include "sysmon_e2e_support.h"
+
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/env.h>
 #include <dztrader/core/path.h>
-#include <dztrader/core/this_process.h>
 #include <dztrader/platform/frame_codec.h>
 #include <dztrader/platform/sysmon.h>
 #include <dztrader/shm/channel_meta.h>
@@ -49,7 +50,6 @@
 #include <fstream>
 #include <memory>
 #include <optional>
-#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -67,6 +67,12 @@
 namespace dztrader::sysmon {
 namespace {
 
+using e2e_support::e2e_strict;
+using e2e_support::event_semaphore_busy;
+using e2e_support::remove_semaphore;
+using e2e_support::sysmon_executable;
+using e2e_support::unique_suffix;
+
 namespace process_v2 = boost::process::v2;
 using namespace std::chrono_literals;
 
@@ -74,53 +80,6 @@ constexpr uint64_t kMB = 1024 * 1024;
 /// 周期推送间隔设得远大于本用例等待窗口：若立即推送缺失，等待窗口内不会收到周期帧，
 /// 「SET 后有快照到达」因此唯一归因于触发 4（而不是被周期推送蒙混）。
 constexpr int kPushIntervalSec = 300;
-
-bool e2e_strict() { return dztrader::env::get("DZ_SYSMON_E2E_STRICT") == "1"; }
-
-/// 事件通道信号量是否已被占用（机器全局命名空间）。
-bool event_semaphore_busy() {
-#ifdef _WIN32
-    HANDLE handle = OpenSemaphoreA(SEMAPHORE_ALL_ACCESS, FALSE, "dz.sem.dzevent");
-    if (handle != nullptr) {
-        CloseHandle(handle);
-        return true;
-    }
-    return false;
-#else
-    // POSIX 命名信号量落在 /dev/shm，glibc 的文件名为 `sem.<name>`，而本仓 name 已带
-    // `dz.sem.` 前缀（named_semaphore.cpp：sem_open("/dz.sem." + name)）→
-    // 最终是 `/dev/shm/sem.dz.sem.<name>`。之前按 `/dev/shm/dz.sem.dzevent` 判定是错的
-    // （恒 false，也就永远检测不到残留）。
-    std::error_code ec;
-    return std::filesystem::exists("/dev/shm/sem.dz.sem.dzevent", ec);
-#endif
-}
-
-/// 清理本用例创建的命名信号量（POSIX 需显式 sem_unlink；Windows 句柄关闭即回收）。
-void remove_semaphore(const std::string& name) {
-    std::error_code ec;
-#ifdef _WIN32
-    shm::NamedSemaphore::remove(name);
-#else
-    std::filesystem::remove("/dev/shm/sem.dz.sem." + name, ec);
-#endif
-}
-
-std::string unique_suffix() {
-    std::random_device rd;
-    return std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
-           std::to_string(rd());
-}
-
-/// 真实 dzsysmon 可执行文件路径：与测试二进制同目录的**上一级**（DZ_OUTPUT_DIR）。
-/// 测试二进制在 DZ_TESTS_DIR（= <build>/tests），dzsysmon 在 <build>/。
-std::filesystem::path sysmon_executable() {
-    auto exe = dztrader::this_process::exe_dir().parent_path() / "dzsysmon";
-#ifdef _WIN32
-    exe += ".exe";
-#endif
-    return exe;
-}
 
 class NetworkConfigE2ETest : public ::testing::Test {
 protected:

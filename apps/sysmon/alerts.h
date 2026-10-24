@@ -20,6 +20,7 @@
  * - 本帧读不到数值（能力仍在）时**保留**活动状态、不产生恢复；能力被配置关闭时静默清除。
  */
 
+#include <compare>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -51,7 +52,8 @@ struct AlertInputs {
     bool swap_applicable = false;             ///< 交换能力是否仍在（无交换/已移除时 false）
     std::optional<double> swap_used_ratio;    ///< 交换使用率 `[0,1]`；nullopt = 本帧未采到
     bool volumes_applicable = false;          ///< 卷容量采集能力是否仍在
-    /// 本帧关注路径落卷解析是否成功采集：false 时无法判断"某卷不再被关注"，不清理卷告警。
+    /// 本帧关注路径落卷解析是否**全部成功**：false 时无法判断"某卷不再被关注"，
+    /// 不清理卷告警（单条路径暂时解析不到不等于该卷不再被关注）。
     bool watch_paths_collected = false;
     /// 当前关注卷挂载点（解析成功的 `watch_paths`，按 `mount` 去重；用于识别不再被关注的卷）。
     std::vector<std::string> watched_mounts;
@@ -62,10 +64,11 @@ struct AlertInputs {
 };
 
 /**
- * @brief 由一次计量的指标事实构造告警判定输入（**路径感知的唯一实现点**）。
+ * @brief 由一次计量的指标事实构造告警判定输入（关注卷筛选在此完成）。
  *
  * 只把「落卷解析成功且容量可读」的**关注卷**交给判定：非关注卷容量再低也不进入
- * `watched_volumes`，因此不会产生告警（契约 sysmon §2.8）。
+ * `watched_volumes`，因此不会产生告警（契约 sysmon §2.8）。关注卷集合的唯一实现点是
+ * `watched_mounts_of`（`snapshot_builder.h`），与快照的 `volumes[].watched` 共用。
  * 转换口径与快照一致：`used = total − available/free`；能力被配置关闭或本机无交换时
  * `*_applicable = false`（告警被静默清除）。
  *
@@ -80,20 +83,28 @@ struct AlertInputs {
                                             int64_t now_unix_sec,
                                             int64_t now_monotonic_ms);
 
+/// 告警对象标识：kind + subject（`volume_free` 时 subject 为挂载点，其余为空串）。
+///
+/// `(kind, subject)` 在帧内唯一（契约 sysmon §2.8），本类型是状态表键与通知/活动条目的
+/// 单一标识类型——避免把"两个字符串"当裸 pair 在接口间传递。
+struct AlertKey {
+    std::string kind;
+    std::string subject;
+    [[nodiscard]] auto operator<=>(const AlertKey& other) const = default;
+};
+
 /// 需要发送的一条 UI 通知（`DZ_FRAME_NOTIFY_UI`，契约 notify-ui）。
 ///
 /// 级别/弹窗由调用方按下表发送（契约 sysmon §2.8）：触发 = error + popup；恢复 = info + 不弹。
 struct AlertNotification {
-    std::string kind;       ///< 告警 kind（契约 sysmon §2.8）
-    std::string subject;    ///< volume_free 的挂载点；其余 kind 为空串
+    AlertKey key;           ///< 告警对象标识
     bool recovery = false;  ///< false = 触发通知；true = 恢复通知
     std::string message;    ///< 用户可读正文（不构成协议语义）
 };
 
 /// 当前活动告警（快照 `alerts[]` 的条目，按 `(kind, subject)` 升序）。
 struct ActiveAlert {
-    std::string kind;
-    std::string subject;
+    AlertKey key;
     int64_t since_unix_sec = 0;
 };
 
@@ -127,24 +138,35 @@ public:
     [[nodiscard]] Result evaluate(const AlertInputs& inputs,
                                   const platform::SysmonAlertsConfig& config);
 
-    /// 清空全部告警状态（不产生通知）。进程内状态随进程生命周期归零，正常路径无需调用；
-    /// 供测试与将来的配置重置路径使用。
-    void reset();
-
 private:
-    /// 单个告警对象 `(kind, subject)` 的活动期状态。
+    /// 单个告警对象的**活动期**状态（每次"进入越限 → 回到阈值以下"是一次活动期）。
     struct SubjectState {
-        bool active = false;         ///< 当前是否处于活动期
-        bool notified = false;       ///< 本次活动期是否已发出触发通知
-        bool suppressed = false;     ///< 本次活动期是否因冷却被抑制（不补发、恢复时也不通知）
-        bool has_notified = false;   ///< 是否曾发出过触发通知（冷却基准是否有效）
-        int64_t since_unix_sec = 0;  ///< 本次活动期起点（墙钟，Unix 秒）
+        bool active = false;                 ///< 当前是否处于活动期
+        bool notified_this_episode = false;  ///< 本次活动期是否已发出触发通知
+        /// 本次活动期是否因冷却被抑制：触发通知不补发，但恢复时仍要给出恢复语义（见 transition）。
+        bool suppressed_this_episode = false;
+        bool ever_notified = false;            ///< 是否曾发出过触发通知（冷却基准是否有效）
+        int64_t since_unix_sec = 0;            ///< 本次活动期起点（墙钟，Unix 秒）
         int64_t last_notify_monotonic_ms = 0;  ///< 上次发出触发通知的单调时钟
     };
 
+    /// 推进一个"使用率"类告警（内存 / 交换同构：达到阈值触发、回到阈值以下恢复）。
+    /// @param kind          告警 kind（契约 sysmon §2.8）
+    /// @param label         通知正文里的中文指标名（内存 / 交换）
+    /// @param applicable    采集能力是否仍在；false = 静默清除该 kind 的全部状态
+    /// @param used_ratio    本帧使用率；nullopt = 本帧未采到（保留活动状态）
+    /// @param threshold_pct 使用率阈值（百分比，[0,100]）
+    void evaluate_usage_alert(const char* kind,
+                              const char* label,
+                              bool applicable,
+                              const std::optional<double>& used_ratio,
+                              double threshold_pct,
+                              int64_t cooldown_ms,
+                              const AlertInputs& inputs,
+                              Result& out);
+
     /// 推进一个告警对象的状态机；需要通知时追加到 `out`。
-    void transition(const std::string& kind,
-                    const std::string& subject,
+    void transition(const AlertKey& key,
                     bool breached,
                     const std::string& trigger_message,
                     const std::string& recovery_message,
@@ -152,10 +174,10 @@ private:
                     const AlertInputs& inputs,
                     Result& out);
 
-    /// 静默清除某一 kind 的全部状态（配置关闭 / 能力消失）。
+    /// 静默清除某一 kind 的全部状态（配置关闭 / 能力消失；配置关闭不是"指标恢复"）。
     void erase_kind(const std::string& kind);
 
-    std::map<std::pair<std::string, std::string>, SubjectState> states_;
+    std::map<AlertKey, SubjectState> states_;
 };
 
 }  // namespace dztrader::sysmon

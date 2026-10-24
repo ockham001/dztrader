@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -121,6 +122,19 @@ struct NetworkMetrics {
     /// 配置 `network.hide_virtual`：true 时过滤掉 `is_virtual = true` 的条目（默认 true）。
     bool hide_virtual = true;
 };
+
+/**
+ * @brief 关注卷挂载点集合：`watch_paths` 中成功解析出的挂载点（去重、升序）。
+ *
+ * **路径感知口径的唯一实现点**（契约 sysmon §2.4/§2.8）：快照构造据此设置
+ * `volumes[].watched`，告警判定据此只把关注卷交给阈值判定——两处共用同一实现，
+ * 不得各写一份（否则同帧的"关注"语义会漂移）。
+ *
+ * @param watch_paths 原始落卷解析结果；`nullopt`（本帧未采集）返回空集合
+ * @return 挂载点集合（升序）；解析失败的路径（`mount = nullopt`）不计入
+ */
+[[nodiscard]] std::set<std::string> watched_mounts_of(
+    const std::optional<std::vector<platform::RawWatchPathInfo>>& watch_paths);
 
 /**
  * @brief 构造一帧实时快照。

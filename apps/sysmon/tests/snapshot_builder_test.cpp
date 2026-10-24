@@ -1332,6 +1332,27 @@ TEST(SnapshotBuilderTest, NetworkDoesNotAddAvailabilityKeys) {
     EXPECT_TRUE(snapshot.availability.metrics.contains(platform::SYSMON_METRIC_NETWORK));
 }
 
+// 路径感知口径的唯一实现点（#80）：快照构造与告警判定共用 watched_mounts_of。
+TEST(SnapshotBuilderTest, WatchedMountsOfDedupesAndSkipsUnresolvedPaths) {
+    std::vector<platform::RawWatchPathInfo> paths;
+    platform::RawWatchPathInfo shm;
+    shm.path = "/srv/dztrader/shm";
+    shm.mount = "/data";
+    platform::RawWatchPathInfo db;
+    db.path = "/srv/dztrader/db";
+    db.mount = "/data";  // 同一卷的第二个关注路径：按 mount 去重
+    platform::RawWatchPathInfo missing;
+    missing.path = "/srv/dztrader/missing";
+    missing.reason = "path_not_found";  // 解析失败：不得猜卷
+    paths = {shm, db, missing};
+
+    const auto mounts = watched_mounts_of(paths);
+    ASSERT_EQ(mounts.size(), 1U);
+    EXPECT_TRUE(mounts.contains("/data"));
+    // 本帧未采集：空集合（不猜任何卷）。
+    EXPECT_TRUE(watched_mounts_of(std::nullopt).empty());
+}
+
 // 阈值告警活动集（#80）：状态机结果原样投影；空数组合法；JSON 形状符合契约 sysmon §2.8。
 TEST(SnapshotBuilderTest, AlertStateProjectedIntoSnapshot) {
     const auto default_snapshot = build_with(make_linux_info(), make_full_metrics());

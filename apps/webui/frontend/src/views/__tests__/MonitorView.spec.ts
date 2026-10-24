@@ -1251,3 +1251,22 @@ describe('MonitorView 阈值告警横幅（#80）', () => {
     expect(wrapper.find('[data-test="monitor-alerts"]').exists()).toBe(false)
   })
 })
+
+describe('MonitorView 告警横幅跨视图常驻（#80）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('切到历史视图后告警横幅仍在（监控页级常驻，不随实时/历史切换消失）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      alerts: [{ kind: 'memory_used', subject: '', since: 1 }],
+    }))
+    const wrapper = await mountView()
+    expect(wrapper.find('[data-test="monitor-alerts"]').exists()).toBe(true)
+
+    await wrapper.find('[data-test="monitor-tab-history"]').trigger('click')
+    expect(wrapper.find('[data-test="monitor-alerts"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-alerts"]').text()).toContain('资源告警（1）')
+  })
+})

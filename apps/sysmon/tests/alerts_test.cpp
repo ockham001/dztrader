@@ -82,8 +82,8 @@ TEST(AlertEvaluatorTest, MemoryReachingThresholdTriggersOnce) {
 
     ASSERT_EQ(result.notifications.size(), 1U);
     EXPECT_FALSE(result.notifications[0].recovery);
-    EXPECT_EQ(result.notifications[0].kind, platform::SYSMON_ALERT_MEMORY_USED);
-    EXPECT_TRUE(result.notifications[0].subject.empty());
+    EXPECT_EQ(result.notifications[0].key.kind, platform::SYSMON_ALERT_MEMORY_USED);
+    EXPECT_TRUE(result.notifications[0].key.subject.empty());
     EXPECT_NE(result.notifications[0].message.find("90.0%"), std::string::npos);
     ASSERT_EQ(result.active.size(), 1U);
     EXPECT_EQ(result.active[0].since_unix_sec, kWallSec);
@@ -120,7 +120,7 @@ TEST(AlertEvaluatorTest, RecoveryNotifiesAndClearsActive) {
     const auto recovered = evaluator.evaluate(memory_input(0.40, 2000, kWallSec + 10), config);
     ASSERT_EQ(recovered.notifications.size(), 1U);
     EXPECT_TRUE(recovered.notifications[0].recovery);
-    EXPECT_EQ(recovered.notifications[0].kind, platform::SYSMON_ALERT_MEMORY_USED);
+    EXPECT_EQ(recovered.notifications[0].key.kind, platform::SYSMON_ALERT_MEMORY_USED);
     EXPECT_NE(recovered.notifications[0].message.find("已回到"), std::string::npos);
     EXPECT_TRUE(recovered.active.empty());
 }
@@ -158,11 +158,34 @@ TEST(AlertEvaluatorTest, CooldownSuppressesRetriggerAndSuppressedEpisodeIsNotRet
     ASSERT_EQ(after_cooldown.active.size(), 1U);
     EXPECT_EQ(after_cooldown.active[0].since_unix_sec, kWallSec + 2);
 
-    // 被抑制的活动期恢复：不发恢复通知（用户从未收到触发通知）。
-    const auto silent_recovery =
+    // 被抑制的活动期恢复：**仍要发恢复通知**（活动状态经快照 alerts[] 对用户可见，
+    // 恢复不得静默消失——契约 sysmon §2.8）。
+    const auto signalled_recovery =
         evaluator.evaluate(memory_input(0.10, kCooldown600s + 20'000, kWallSec + 800), config);
-    EXPECT_TRUE(silent_recovery.notifications.empty());
-    EXPECT_TRUE(silent_recovery.active.empty());
+    ASSERT_EQ(signalled_recovery.notifications.size(), 1U);
+    EXPECT_TRUE(signalled_recovery.notifications[0].recovery);
+    EXPECT_TRUE(signalled_recovery.active.empty());
+}
+
+// 票面 AC「恢复信号：指标回到阈值以下时给出恢复语义，不静默消失」：即使触发通知因冷却被
+// 抑制（用户只从快照 alerts[] 看得到活动状态），恢复也必须发 info 通知。
+TEST(AlertEvaluatorTest, SuppressedEpisodeStillSignalsRecovery) {
+    AlertEvaluator evaluator;
+    auto config = make_config();
+    // 先正常触发一次并恢复，制造冷却基准。
+    ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 0, kWallSec), config).notifications.size(), 1U);
+    ASSERT_EQ(
+        evaluator.evaluate(memory_input(0.40, 1'000, kWallSec + 1), config).notifications.size(),
+        1U);
+    // 冷却期内再次越限：触发通知被抑制，但活动状态出现。
+    const auto suppressed = evaluator.evaluate(memory_input(0.97, 2'000, kWallSec + 2), config);
+    EXPECT_TRUE(suppressed.notifications.empty());
+    ASSERT_EQ(suppressed.active.size(), 1U);
+    // 恢复：必须给出恢复通知（且不是触发通知）。
+    const auto recovered = evaluator.evaluate(memory_input(0.30, 3'000, kWallSec + 3), config);
+    ASSERT_EQ(recovered.notifications.size(), 1U);
+    EXPECT_TRUE(recovered.notifications[0].recovery);
+    ASSERT_EQ(recovered.notifications[0].key.kind, platform::SYSMON_ALERT_MEMORY_USED);
 }
 
 TEST(AlertEvaluatorTest, RetriggerAfterCooldownNotifiesAgain) {
@@ -235,7 +258,7 @@ TEST(AlertEvaluatorTest, SwapTriggersAndClearsWhenSwapRemoved) {
     const auto config = make_config();
     const auto triggered = evaluator.evaluate(swap_input(0.50, 1'000, kWallSec), config);
     ASSERT_EQ(triggered.notifications.size(), 1U);
-    EXPECT_EQ(triggered.notifications[0].kind, platform::SYSMON_ALERT_SWAP_USED);
+    EXPECT_EQ(triggered.notifications[0].key.kind, platform::SYSMON_ALERT_SWAP_USED);
 
     AlertInputs no_swap = swap_input(std::nullopt, 2'000, kWallSec + 1);
     no_swap.swap_applicable = false;  // 交换被移除 / 配置关闭
@@ -254,11 +277,11 @@ TEST(AlertEvaluatorTest, VolumeFreePercentFormTriggers) {
     const auto result = evaluator.evaluate(
         volume_input({volume_usage("/data", 100 * kGiB, 5 * kGiB)}, 1'000, kWallSec), config);
     ASSERT_EQ(result.notifications.size(), 1U);
-    EXPECT_EQ(result.notifications[0].kind, platform::SYSMON_ALERT_VOLUME_FREE);
-    EXPECT_EQ(result.notifications[0].subject, "/data");
+    EXPECT_EQ(result.notifications[0].key.kind, platform::SYSMON_ALERT_VOLUME_FREE);
+    EXPECT_EQ(result.notifications[0].key.subject, "/data");
     EXPECT_NE(result.notifications[0].message.find("/data"), std::string::npos);
     ASSERT_EQ(result.active.size(), 1U);
-    EXPECT_EQ(result.active[0].subject, "/data");
+    EXPECT_EQ(result.active[0].key.subject, "/data");
 }
 
 TEST(AlertEvaluatorTest, VolumeFreeAbsoluteFormTriggersEvenWhenPercentPasses) {
@@ -269,7 +292,7 @@ TEST(AlertEvaluatorTest, VolumeFreeAbsoluteFormTriggersEvenWhenPercentPasses) {
         volume_input({volume_usage("/small", 5 * kGiB, 921 * 1024 * 1024)}, 1'000, kWallSec),
         config);
     ASSERT_EQ(result.notifications.size(), 1U);
-    EXPECT_EQ(result.notifications[0].subject, "/small");
+    EXPECT_EQ(result.notifications[0].key.subject, "/small");
 }
 
 TEST(AlertEvaluatorTest, VolumeRecoversOnlyWhenBothFormsSatisfied) {
@@ -287,7 +310,7 @@ TEST(AlertEvaluatorTest, VolumeRecoversOnlyWhenBothFormsSatisfied) {
         volume_input({volume_usage("/data", 100 * kGiB, 20 * kGiB)}, 2'000, kWallSec + 10), config);
     ASSERT_EQ(recovered.notifications.size(), 1U);
     EXPECT_TRUE(recovered.notifications[0].recovery);
-    EXPECT_EQ(recovered.notifications[0].subject, "/data");
+    EXPECT_EQ(recovered.notifications[0].key.subject, "/data");
     EXPECT_TRUE(recovered.active.empty());
 
     // 只满足一种形态不算恢复：50 GiB 剩余但阈值绝对容量调到 100 GiB 时仍越限。
@@ -348,7 +371,7 @@ TEST(AlertEvaluatorTest, VolumeAlertsArePerMountAndCooldownIsPerSubject) {
                                              kCooldown600s + 10'000, kWallSec + 700),
                            config);
     ASSERT_EQ(notified.notifications.size(), 1U);
-    EXPECT_EQ(notified.notifications[0].subject, "/b");
+    EXPECT_EQ(notified.notifications[0].key.subject, "/b");
 }
 
 TEST(AlertEvaluatorTest, VolumeNoLongerWatchedIsClearedSilently) {
@@ -390,7 +413,7 @@ TEST(AlertEvaluatorTest, VolumeUnreadableKeepsActive) {
     const auto result = evaluator.evaluate(unreadable, config);
     EXPECT_TRUE(result.notifications.empty());
     ASSERT_EQ(result.active.size(), 1U);
-    EXPECT_EQ(result.active[0].subject, "/data");
+    EXPECT_EQ(result.active[0].key.subject, "/data");
 }
 
 // ===== make_alert_inputs：路径感知与口径 =====
@@ -443,9 +466,9 @@ TEST(MakeAlertInputsTest, OnlyWatchedVolumesEnterThresholdEvaluation) {
     AlertEvaluator evaluator;
     const auto result = evaluator.evaluate(inputs, config);
     ASSERT_EQ(result.notifications.size(), 1U);
-    EXPECT_EQ(result.notifications[0].subject, "/data");
+    EXPECT_EQ(result.notifications[0].key.subject, "/data");
     ASSERT_EQ(result.active.size(), 1U);
-    EXPECT_EQ(result.active[0].subject, "/data");
+    EXPECT_EQ(result.active[0].key.subject, "/data");
 }
 
 TEST(MakeAlertInputsTest, UnresolvedWatchPathProducesNoWatchedMount) {
@@ -460,6 +483,8 @@ TEST(MakeAlertInputsTest, UnresolvedWatchPathProducesNoWatchedMount) {
     const auto inputs = make_alert_inputs(memory, disk, kWallSec, 1'000);
     EXPECT_TRUE(inputs.watched_mounts.empty());
     EXPECT_TRUE(inputs.watched_volumes.empty());
+    // 单条路径解析失败 ≠ 全部解析成功：不得据此清理"不再被关注"的卷状态。
+    EXPECT_FALSE(inputs.watch_paths_collected);
 }
 
 TEST(MakeAlertInputsTest, UnreadableWatchedVolumeKeepsMountButHasNoUsage) {
@@ -529,6 +554,35 @@ TEST(MakeAlertInputsTest, DisabledGroupsAndMissingSwapAreNotApplicable) {
     EXPECT_FALSE(inputs.memory_used_ratio.has_value());
     EXPECT_FALSE(inputs.swap_applicable);
     EXPECT_FALSE(inputs.swap_used_ratio.has_value());
+}
+
+TEST(MakeAlertInputsTest, PartiallyResolvedWatchPathsDoNotClearStaleVolumeAlerts) {
+    MemorySwapMetrics memory;
+    DiskMetrics disk;
+    disk.volumes_collected = true;
+    disk.volumes = std::vector<platform::RawVolumeInfo>{raw_volume("/data", 10 * kGiB, 0)};
+    disk.watch_paths = std::vector<platform::RawWatchPathInfo>{
+        raw_watch_path("/srv/dztrader/shm", "/data"),
+        raw_watch_path("/srv/dztrader/db", std::nullopt),  // 单条路径暂时解析不到
+    };
+
+    const auto inputs = make_alert_inputs(memory, disk, kWallSec, 1'000);
+    EXPECT_FALSE(inputs.watch_paths_collected);  // 不能据此判断"某卷不再被关注"
+    ASSERT_EQ(inputs.watched_mounts.size(), 1U);
+    EXPECT_EQ(inputs.watched_mounts[0], "/data");
+
+    // 已触发的 /data 告警在部分解析失败时保留活动状态（不伪造恢复）。
+    AlertEvaluator evaluator;
+    auto config = make_config();
+    ASSERT_EQ(
+        evaluator
+            .evaluate(volume_input({volume_usage("/data", 10 * kGiB, 0)}, 1'000, kWallSec), config)
+            .notifications.size(),
+        1U);
+    const auto kept = evaluator.evaluate(inputs, config);
+    EXPECT_TRUE(kept.notifications.empty());
+    ASSERT_EQ(kept.active.size(), 1U);
+    EXPECT_EQ(kept.active[0].key.subject, "/data");
 }
 
 TEST(MakeAlertInputsTest, AvailableBytesAboveTotalAreClamped) {

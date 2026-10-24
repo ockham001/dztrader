@@ -105,6 +105,20 @@ std::string make_platform_description(const platform::RawSystemInfo& info) {
 
 }  // namespace
 
+std::set<std::string> watched_mounts_of(
+    const std::optional<std::vector<platform::RawWatchPathInfo>>& watch_paths) {
+    std::set<std::string> mounts;
+    if (!watch_paths.has_value()) {
+        return mounts;
+    }
+    for (const auto& info : *watch_paths) {
+        if (info.mount.has_value()) {
+            mounts.insert(*info.mount);
+        }
+    }
+    return mounts;
+}
+
 platform::SysmonSnapshot build_snapshot(std::string_view source,
                                         const platform::RawSystemInfo& system_info,
                                         const CpuMetrics& cpu_metrics,
@@ -225,14 +239,8 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         }
         snapshot.watch_paths = std::move(watch_paths);
     }
-    std::set<std::string> watched_mounts;
-    if (snapshot.watch_paths.has_value()) {
-        for (const auto& info : *snapshot.watch_paths) {
-            if (info.mount.has_value()) {
-                watched_mounts.insert(*info.mount);
-            }
-        }
-    }
+    // 关注卷集合与告警判定共用同一实现（`watched_mounts_of`），避免"关注"语义两处漂移。
+    const std::set<std::string> watched_mounts = watched_mounts_of(disk_metrics.watch_paths);
     snapshot.volumes = std::nullopt;
     if (!disk_metrics.volumes_disabled && disk_metrics.volumes_collected &&
         disk_metrics.volumes.has_value()) {
