@@ -7,7 +7,8 @@
 - **内部进程**（ADR 0025）：既非策略、亦非行情/交易网关，由主进程 `dztraderd` 按配置拉起、监护与关闭；7×24 采集本机资源指标并推送实时快照。
 - 已实现（#70/#72/#73/#74/#75/#76/#77）：系统信息、CPU 总使用率、每核使用率与饱和核标记、系统负载、上下文切换/中断速率、温度（Linux hwmon）与每核频率（Linux cpufreq）、内存与交换（含缓存/缓冲）、卷容量与关注路径落卷、共享内存目录占用、每物理盘 I/O（吞吐/IOPS/延迟/队列深度/利用率）、每网卡收发速率与累计量（默认隐藏虚拟网卡）。快照形状一次定稿：已列出的指标域后续只填值、不改 payload 形状；新增指标类别按 additive 扩展并同步契约/类型/前端 schema（契约 sysmon §2）。
 - 前端（#71/#72/#73/#74/#75/#76/#77）：WebUI「资源监控」页展示系统信息与完整 CPU 区块（总使用率、每核含饱和标记、系统负载、上下文切换/中断、每核频率），温度在可用时以独立卡片展示；内存卡片接实时快照（使用率、已用/总量、可用、缓存、缓冲）并含交换子区块（无交换分区显示明确文案）；磁盘区块展示各卷容量与使用率（关注卷高亮、读不到的卷显示「不可用」+ 原因）与共享内存目录占用（大小、页文件数、最旧页文件年龄）；磁盘 I/O 区块按盘展示读/写吞吐、读/写 IOPS、平均延迟、队列深度与利用率，首次采样/计数器重置的字段显示「不可用」而不是 0，指标不可用时整块显示「不可用」+ 原因（Windows 计数器未开启/无权限时给出对应文案），并展示发送方 `semantic_hints["disk_io"]` 的口径提示；网络区块按网卡展示收/发速率与累计字节、错误、丢弃，逐项 `null`（首次采样/新网卡/计数器重置）显示「不可用」而不是 0，并提供 admin 可用的「显示全部网卡」开关（下发 `SET_SYSMON_CONFIG` 的 `network.hide_virtual`，即时生效），全部虚拟网卡被隐藏时显示「已隐藏全部虚拟网卡」而不是「不可用」。温度与每核频率区块**仅在可用时出现，不可用时整块不渲染**（与内存等区块的「不可用」空态不同）。顶栏 CPU / 内存 / 各盘卷徽章接实时快照，写死的 CPU / 内存 / 磁盘假数字与 NTP 徽章已删除。刷新基线由发送方 `realtime.push_interval_sec`（默认 5s）决定，前端不轮询、不改 WS 契约。
-- 后续票：历史写入 #78、历史查询 #79、阈值告警 #80、运行期配置 #81。
+- 已实现历史写入（#78）：独立 SQLite（WAL）历史库、min/max/avg/last 聚合、保留与压缩、缺口/跳变/重启标记、落盘线程。
+- 后续票：历史查询 #79、阈值告警 #80、运行期配置 #81。
 - 本进程不采集：进程级指标、GPU、SMART、风扇、电池、登录用户列表、NTP 时间偏移；不支持容器内采集（见「部署限制」）。
 
 ## 进程与编排
@@ -15,8 +16,8 @@
 - 主进程在 `dztraderd.json` 的 `internal` 段登记并拉起本进程（段形制同 `md`/`td`；段缺失 = 无内部进程）。可执行文件名精确匹配 `dzsysmon`（不做 `dz*` 通配，ADR 0025），`instance_id` 即进程名（可执行文件名，通用规则 §5）。
 - 属非策略子进程：第二趟启动、不等待行情源就绪；关闭批次在交易网关、行情网关之后、`dzweb` 之前——监控要活到能记录其它进程的退出过程，但无需活过 UI（ADR 0025，编排细节见 [dztraderd.md](dztraderd.md)）。
 - 重启策略沿用网关默认：启用、最多 5 次、退避 5s（主进程退避为线性；spawn 失败不重启、退出码 0 不重启）。
-- 自动重启时主进程统一追加 `--recover`。本进程接受并记录该参数；历史连续性语义（不重置数据文件、重启窗口标记为「采集中断」、绝不伪造连续数据）随历史票 #78 落地，当前不改变采集行为。
-- 优雅退出：收到定向 `DZ_FRAME_SHUTDOWN`（契约 process）后停止定时器并退出；历史落盘接入后（#78）还须 flush 队列并干净关库。
+- 自动重启时主进程统一追加 `--recover`。本进程接受该参数并把它写进历史的 `restart` 标记（`detail` 为 `recover` / `manual`），供读取方区分异常重启与人工重启。**历史连续性优先**：重启不重置数据文件、不丢已有聚合，重启窗口标记为「采集中断」（绝不伪造连续数据）。
+- 优雅退出：收到定向 `DZ_FRAME_SHUTDOWN`（契约 process）后停止定时器并退出；退出前先 flush 当前未结束窗口 → 冲空队列 → WAL checkpoint → 关库（`shutdown_history`）。
 - 平台基线检查失败 ⇒ 记录错误、以非 0 退出，不静默降级；主进程按重启策略重试后停在 `Crashed`（ADR 0025，预期行为）。
 
 ## 并发与调度
@@ -24,8 +25,8 @@
 ### 线程模型
 
 - **io_context 单线程**：采集、帧读写、实时推送与配置加载全部在这一条 io_context 线程上串行，无业务锁。
-- **信号量监听线程**（唯一额外线程）：阻塞在事件通道命名信号量上；唤醒后只投递「排空通道」任务给 io_context，不读取、不解析数据（与 [dztraderd.md](dztraderd.md) 同构）。
-- 历史落盘线程：后续票 #78 引入（有界队列 + 批量提交，采集线程只入队、永不阻塞）；当前无此线程。
+- **信号量监听线程**（#70）：阻塞在事件通道命名信号量上；唤醒后只投递「排空通道」任务给 io_context，不读取、不解析数据（与 [dztraderd.md](dztraderd.md) 同构）。
+- **历史落盘线程**（#78）：有界队列 + 批量提交，采集线程只入队、永不阻塞。数据库提交与 fsync 在磁盘繁忙时可阻塞数十至数百毫秒，放 io_context 上会同时拖住采集与帧处理（详见「历史写入与保留」）。
 
 ### 双定时器
 
@@ -33,6 +34,8 @@
 |---|---|---|
 | 计量 | 1000ms（`sampling.measure_interval_ms`） | 读取原始累计计数器、更新速率基线 |
 | 推送 | `realtime.push_interval_sec`，默认 5s | 编码快照帧并广播；计量时刻不推送 |
+
+历史记录不占独立定时器：每个**计量** tick 顺带观测一次快照（记录窗口的 min/max 需要全部样本），窗口边界由墙钟桶对齐决定（`sampling.record_interval_sec` + 相位偏移）。
 
 - **计量与推送解耦**：事件通道是广播介质，任何写入都会唤醒全部已注册进程（含策略），推送不得跟随 1s 计量（契约 sysmon §4、ADR 0023）。
 - **时钟纪律**：asio `steady_timer`（单调时钟，免疫 NTP 跳变）；deadline 按「上次 deadline + interval」推进做漂移校正；错过 tick 跳过并累加 `sampling.missed_ticks`（区分机器空闲与监控停顿），不补采；handler 内不做阻塞 I/O。
@@ -74,7 +77,7 @@
 ## 配置
 
 - 配置文件：`$DZTRADER_HOME/configs/dzsysmon.json`。进程启动时缺失则**自动生成完整默认值**，零配置可运行；仓库不提交模板文件（AGENTS 门禁 6）。
-- 内容：`log`（日志，走《帧契约：日志》的 `SET/RTN_LOG_CONFIG`，不在 sysmon 配置帧 payload 内）与 `sampling` / `disk` / `network` / `history` / `realtime` / `alerts`（字段、默认值与约束见契约 sysmon §3.1）。`alerts.cpu_sustain_used_pct` / `cpu_sustain_samples` 已由 #72 的饱和核判定消费；`sampling.groups.temperature` / `sampling.groups.cpu_frequency` 由 #73 消费（Linux 默认开、Windows 默认关，关闭时不采集并把可用性标为 `disabled_by_config`）；`sampling.groups.memory` / `sampling.groups.swap` 由 #74 消费；`sampling.groups.volumes` 由 #75 消费；`sampling.groups.disk_io` 由 #76 消费（关闭时跳过采集并标 `disabled_by_config`，重新开启后从新基线开始，关闭期不冒充速率窗口）；`sampling.groups.network` 与 `network.hide_virtual` 由 #77 消费（关闭组时跳过采集并标 `disabled_by_config`，重新开启后从新基线开始；`hide_virtual` 在快照构造阶段过滤虚拟网卡，改开关即时生效并推送一帧）；历史、阈值告警等配置项的消费方随对应后续票落地（#78–#81）——`PUT /api/sysmon/config` 端点已随 #77 落地（前端当前只用于切换 `hide_virtual`，完整配置编辑入口随 #81）。
+- 内容：`log`（日志，走《帧契约：日志》的 `SET/RTN_LOG_CONFIG`，不在 sysmon 配置帧 payload 内）与 `sampling` / `disk` / `network` / `history` / `realtime` / `alerts`（字段、默认值与约束见契约 sysmon §3.1）。`alerts.cpu_sustain_used_pct` / `cpu_sustain_samples` 已由 #72 的饱和核判定消费；`sampling.groups.temperature` / `sampling.groups.cpu_frequency` 由 #73 消费（Linux 默认开、Windows 默认关，关闭时不采集并把可用性标为 `disabled_by_config`）；`sampling.groups.memory` / `sampling.groups.swap` 由 #74 消费；`sampling.groups.volumes` 由 #75 消费；`sampling.groups.disk_io` 由 #76 消费（关闭时跳过采集并标 `disabled_by_config`，重新开启后从新基线开始，关闭期不冒充速率窗口）；`sampling.groups.network` 与 `network.hide_virtual` 由 #77 消费（关闭组时跳过采集并标 `disabled_by_config`，重新开启后从新基线开始；`hide_virtual` 在快照构造阶段过滤虚拟网卡，改开关即时生效并推送一帧）；`sampling.record_interval_sec` / `sampling.phase_offset_sec` 与整个 `history` 段（`enabled` / `raw_retention_hours` / `max_retention_days` / `max_bytes`）由 #78 消费（记录窗口、保留与压缩）；阈值告警等配置项的消费方随 #80/#81 落地——`PUT /api/sysmon/config` 端点已随 #77 落地（前端当前只用于切换 `hide_virtual`，完整配置编辑入口随 #81）。
 - 运行期修改：`SET_SYSMON_CONFIG` 为 RFC 7386 merge patch（任意位置 `null` 非法；空对象无操作但仍回 RTN），成功回推全量 `RTN_SYSMON_CONFIG`；失败按四件套处理——回滚旧值 → 日志 → `NOTIFY_UI` error（`popup=true`）→ 回推旧值（契约 sysmon §3.3、通用规则 §8）。
 - 触发场景：初始化完成主动 RTN 一次；每次 SET 后回推；`QUERY_FULL_SNAPSHOT` 响应时回推（契约 sysmon §3.2）。
 - 进程内已落地（#70/#77）：`SET_SYSMON_CONFIG` 接收 → 校验 → 整文件原子持久化（保留 `log`/未知 section）→ 内存镜像更新 → 定时器即时重排 → 全量 RTN。**#77 追加：SET 成功后立即推送一帧快照**，使 `network.hide_virtual` 这类只影响快照构造的配置在下一个推送周期之前就生效（不必等 5 秒基线）。配置展示与完整 UI 编辑入口随 #81 前端落地；#77 只提供 `PUT /api/sysmon/config` 端点与「显示全部网卡」开关。
@@ -89,11 +92,61 @@
 - 编译期用 `#error`（非目标平台 / 32 位 / Linux 工具链与 glibc 下限）拒绝构建；启动期 `check_platform_baseline()` 复核运行期基线（Windows NT 版本、Linux 内核/glibc/架构），失败记录错误并以非 0 退出。Windows 的 NT 版本无法在编译期可靠断言（构建侧 `WINVER`/`_WIN32_WINNT` 是 API 可用性声明，不是运行期判据），由启动期检查承担。禁止静默回退（AGENTS 跨平台门禁）。
 - 真相源：[`platform_requirements.h`](../../libs/platform/include/dztrader/platform/platform_requirements.h)。
 
-## 历史（后续票）
+## 历史写入与保留（#78）
 
-- #78 历史写入：独立 SQLite（WAL）历史库，位于 `$DZTRADER_HOME/db/`，与交易库、WebUI 库分离；**dzsysmon 唯一写者、dzweb 只读**。schema 与行编解码放在共享模块（唯一一份定义），宽表存固定标量、长表存按核 / 盘 / 网卡展开的维度；每条记录保留窗口 min/max/avg/last（尖峰由 max 保留）；原始记录默认保留 24 小时，超期数据在记录间隔小于 1 分钟时压成一分钟聚合、否则原样保留，最长保留 30 天，另有总量上限兜底；采集中断与时钟跳变写入标记，绝不伪造连续数据；落盘在独立线程（有界队列 + 批量提交，队列满丢最旧并计数）。
-- #79 历史查询：dzweb 只读打开历史库并经 REST 提供；库缺失、schema 版本不符或文件损坏时优雅降级为「历史不可用」，不崩溃、不返回伪造数据。
-- 当前状态：不写历史、无历史查询端点（规划）。
+### 存储层
+
+- **共享模块** [`libs/sysmonstore`](../../libs/sysmonstore/)：历史库 schema 的**唯一**定义 + 行编解码 + 写入方/只读读取方门面。dzsysmon 与 dzweb 共用它——schema 只此一份，不存在第二份建表语句。
+- 库文件 `$DZTRADER_HOME/db/sysmon.db`，与交易库（`td.db`）、WebUI 库（`webui.db`）分离。WAL + `synchronous=FULL`（历史写入是低频批量，不在交易路径上，抗断电优先）；**dzsysmon 是唯一写者**，dzweb 走只读连接。
+- 表结构分两类（快照形状一次定稿，见[契约 §2](../frame_contracts/sysmon.md)）：
+  - **宽表** `sysmon_scalar`：固定标量指标，一行一个时间桶，每指标 5 列（`_min` / `_max` / `_avg` / `_last` / `_n`）。复合主键 `(level, bucket_ts)` + `WITHOUT ROWID`：原始记录与分钟聚合同表共存、互不覆盖，按主键范围扫描即时间范围查询。
+  - **长表** `sysmon_dimension`：按维度展开（CPU 核 / 卷 / 物理盘 / 网卡 / 温度传感器），一行一个 `(桶, 域, 维度, 指标)`。维度元数可变（核数、盘数、网卡数随机器与热插拔变化），固定列会把表结构钉死在某一台机器上；CPU 核序号不保证连续，因此维度标识是**不透明文本**。
+  - **标记表** `sysmon_mark`：采集中断 / 重启 / 时钟跳变，与数据分表存放（避免「有标记的桶」被误当正常数据）。
+- `_n` 是该指标在桶内的**有效样本数**：压缩时 `avg` 按 `n` 加权合并，否则「部分样本不可用」的桶会把均值算偏。`avg` 列恒为 `REAL`（整型指标的窗口均值几乎必为小数，`INTEGER` 亲和性会截断）。
+
+### 聚合（`HistoryRecorder`）
+
+- 记录窗口 = `sampling.record_interval_sec`（默认 60s）+ `sampling.phase_offset_sec`（默认 3s）。桶边界按**墙钟**对齐（使历史能与交易事件对照），相位偏移让 tick 避开整点附近的其它任务（K 线切分、页清理、预加载）——默认配置下桶起点是每分钟第 3 秒，**不落在整数分钟边界**。
+- **每个计量 tick 都观测一次**（不是只观测推送时刻）：记录间隔与推送间隔无关，只观测推送时刻会让窗口内 11/12 的样本丢失，尖峰被系统性漏掉。聚合为纯逻辑类，不碰 I/O、不读时钟，便于确定性测试。
+- `null` 值**不观测**：`cpu.total.usage_ratio = null`（首次采样）或整个域为 `null`（本帧未采集）时跳过，因此该指标在桶内可能 `count = 0`（落库 NULL，读取方显示「不可用」而不是 0）。用 0 填充会把均值拉偏，且 0 是「看起来正常」的假数据。
+
+### 缺口与跳变标记（绝不伪造连续数据）
+
+- **窗口内样本不足**：满窗应有 `interval_sec * 1000 / measure_interval_ms` 个样本（默认 60）；实际不足（进程停顿、被强杀）时该窗口带 `sample_gap` 标记，`detail` 为实际样本数。允许 ±1 的调度抖动（定时器按「上一 deadline + 间隔」推进，边界样本归属可能相差一个 tick）。
+- **时钟跳变**：采样定时器走单调时钟，墙钟与单调时钟的推进差异超过 `kClockJumpThresholdMs`（5s）即判定 NTP 步进/回拨/虚拟机恢复，写 `clock_jump` 标记（`detail` 为带符号毫秒数）。不标记会让读取方把 NTP 步进误读成负载突变。
+- **进程重启**：`init_history` 成功后立即写 `restart` 标记（`detail` 为 `recover` / `manual`）。恢复参数语义是**历史连续性优先**——不重置数据文件、不丢已有聚合，重启窗口标记为采集中断。
+- 标记与它所描述的数据**同批次提交**（同一事务），不存在「标记已落库、对应窗口还没落」的中间状态。
+
+### 保留与压缩
+
+| 阶段 | 规则 |
+|---|---|
+| 压缩 | `record_interval_sec < 60` 时，超过 `raw_retention_hours` 的原始桶按墙钟整分钟聚合成 `level=1` 分钟桶；记录间隔已 ≥ 60 时**不压缩**（原始记录本就是分钟级或更粗，压不出更细的粒度） |
+| 删除 | 原始按 `raw_retention_hours`（默认 24h）、分钟聚合与标记按 `max_retention_days`（默认 30 天） |
+| 总量上限 | 库文件（含 `-wal` / `-shm`）超过 `max_bytes` 时从**最旧**数据开始删，优先牺牲分钟聚合再删原始记录；删空仍超限则 `VACUUM` 收尾（否则会在「已删空但文件没缩」上死循环） |
+
+- 压缩跨维护周期分批进行时，新聚合必须与**已有分钟桶合并**（`MetricAggregate::merge` 按 `n` 加权），直接覆盖会丢掉前一批的 `min`/`max`/`n`。
+- 维护按 `maintenance_batch` 分段、每段一个事务：避免一次长事务把只读连接（dzweb 查询）挡住整个维护周期。
+- 删除宽表与长表**同桶**数据必须一起做，否则按域查询会读到孤儿行。
+- 维护周期由落盘线程执行（`maintenance_interval_sec`，默认 300s），配置项在运行期修改后**下一个周期即按新值执行**。
+
+### 落盘线程（`HistoryWriter`）
+
+- 采集线程（io_context）只调 `enqueue()`：**不阻塞、不抛异常**。数据库提交与 fsync 在磁盘繁忙时可阻塞数十至数百毫秒，放在 io_context 上会同时拖住采集（历史出现缺口）与帧处理（优雅退出请求无法及时响应 ⇒ 被主进程强杀 ⇒ 重启循环）。
+- 有界队列 + 批量提交：落盘线程一次取走整批、合并成**一个事务**写入（单事务上限 `max_batch_records`，超出留给下一轮，避免长事务占写锁）。队列满时丢**最旧**批次并计数（丢旧优于丢新：新数据还能解释刚刚发生了什么，缺口会由维护周期记成标记）。
+- 落盘失败**不杀进程**：历史是观测辅助，采集与实时推送必须继续；错误记 ERROR 并计入 `dropped_records`。
+- 优雅退出顺序（`shutdown_history`）：先把当前未结束窗口的样本交给落盘线程（不丢「退出前发生了什么」），再 `flush()` 冲空队列 → WAL checkpoint → 关库。
+
+### 配置与降级
+
+- `history.enabled = false`：完全不碰库（不建文件、不起线程），仅实时数据。
+- 库打开失败（磁盘满、权限、版本不符）**不阻止进程启动**：记 ERROR + `NOTIFY_UI`，降级为「不写历史」。7×24 进程不应因观测辅助链路起不来。
+- schema 版本比当前新时写入方拒绝打开（旧写入方不得覆盖新结构）；读取方在库缺失 / 版本不符 / 文件损坏时降级为「历史不可用」（见 #79）。
+
+## 历史查询（后续票）
+
+- #79 历史查询：dzweb 只读打开历史库并经 REST 提供；库缺失、schema 版本不符或文件损坏时优雅降级为「历史不可用」，不崩溃、不返回伪造数据。读取方门面（`HistoryReader`：只读连接、库缺失容忍、版本校验、按域/维度/时间范围查询）已随 #78 落地，REST 端点与历史视图随 #79。
+- 当前状态：历史**写入已落地**（#78），无历史查询端点（规划）。
 
 ## 告警（后续票）
 

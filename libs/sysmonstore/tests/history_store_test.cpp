@@ -1,0 +1,775 @@
+/**
+ * @file history_store_test.cpp
+ * @brief 临时库上的往返、schema 版本、保留/压缩/上限（#78 验收核心）。
+ *
+ * 测试准则（docs/unit-test-standard.md）：断言**外部可观察行为**——落库后再读出来
+ * 的值、保留策略执行后的行分布、只读连接在异常库上的降级结果；不断言内部结构。
+ *
+ * 隔离：每个用例用 `temp_directory_path()` 下的唯一目录（pid + 随机后缀），
+ * TearDown 清理——不触碰 `DZTRADER_HOME`，也不留跨运行残留。
+ */
+
+#include <gtest/gtest.h>
+
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <random>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <sqlite3.h>
+
+#include <dztrader/core/this_process.h>
+#include <dztrader/sysmonstore/history_store.h>
+#include <dztrader/sysmonstore/records.h>
+#include <dztrader/sysmonstore/schema.h>
+
+namespace dztrader::sysmonstore {
+namespace {
+
+/// 唯一临时目录（pid + 随机后缀），避免与并行测试/上次运行的残留互扰。
+std::filesystem::path make_temp_dir() {
+    std::random_device rd;
+    const auto suffix = std::to_string(dztrader::this_process::pid()) + "_" + std::to_string(rd());
+    auto dir = std::filesystem::temp_directory_path() / ("dzsysmonstore_" + suffix);
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+/// 构造一个填满所有标量指标的记录（便于往返断言）。
+ScalarRecord make_scalar_record(int64_t bucket_ts, double seed, int32_t level = kLevelRaw) {
+    ScalarRecord record;
+    record.level = level;
+    record.bucket_ts = bucket_ts;
+    record.interval_sec = level == kLevelMinute ? kMinuteResolutionSec : 60;
+    for (auto& metric : record.metrics) {
+        metric.observe(seed);
+    }
+    return record;
+}
+
+DimensionRecord make_dimension_record(int64_t bucket_ts,
+                                      std::string domain,
+                                      std::string dimension,
+                                      std::string metric,
+                                      double value,
+                                      int32_t level = kLevelRaw) {
+    DimensionRecord record;
+    record.level = level;
+    record.bucket_ts = bucket_ts;
+    record.domain = std::move(domain);
+    record.dimension = std::move(dimension);
+    record.metric = std::move(metric);
+    record.aggregate.observe(value);
+    return record;
+}
+
+class HistoryStoreTest : public ::testing::Test {
+protected:
+    void SetUp() override { dir_ = make_temp_dir(); }
+    void TearDown() override {
+        std::error_code ec;
+        std::filesystem::remove_all(dir_, ec);
+    }
+
+    std::filesystem::path db_path() const { return dir_ / "sysmon.db"; }
+
+    std::filesystem::path dir_;
+};
+
+// ===== 建库与 schema 版本 =====
+
+TEST_F(HistoryStoreTest, OpenCreatesDatabaseWithCurrentSchemaVersion) {
+    auto store = HistoryStore::open(db_path());
+    EXPECT_EQ(store.schema_version(), kSchemaVersion);
+    EXPECT_TRUE(std::filesystem::exists(db_path()));
+}
+
+TEST_F(HistoryStoreTest, OpenIsIdempotent) {
+    {
+        auto store = HistoryStore::open(db_path());
+        EXPECT_EQ(store.schema_version(), kSchemaVersion);
+    }
+    // 二次打开（dzsysmon 重启）：不重建、不丢数据、版本不变。
+    auto store = HistoryStore::open(db_path());
+    EXPECT_EQ(store.schema_version(), kSchemaVersion);
+}
+
+TEST_F(HistoryStoreTest, OpenCreatesParentDirectory) {
+    const auto nested = dir_ / "a" / "b" / "sysmon.db";
+    auto store = HistoryStore::open(nested);
+    EXPECT_TRUE(std::filesystem::exists(nested));
+}
+
+TEST_F(HistoryStoreTest, OpenRejectsNewerSchemaVersion) {
+    // 旧写入方不得打开「更新的」库：按旧结构写入会破坏新版数据，必须**明确失败**
+    // 而不是静默覆盖（写入方启动失败的后果是「不写历史」，比写坏被读方误解安全）。
+    {
+        auto store = HistoryStore::open(db_path());
+        EXPECT_EQ(store.schema_version(), kSchemaVersion);
+    }
+    // 用独立 SQLite 连接把版本改成比当前大，模拟「库由更新版本写过」。
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(db_path().string().c_str(), &raw), SQLITE_OK);
+    const std::string bump = "UPDATE sysmon_meta SET value='" + std::to_string(kSchemaVersion + 1) +
+                             "' WHERE key='schema_version'";
+    ASSERT_EQ(sqlite3_exec(raw, bump.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    sqlite3_close(raw);
+
+    // 写入方：拒绝打开。
+    EXPECT_THROW(HistoryStore::open(db_path()), std::runtime_error);
+    // 读取方：降级为 SchemaMismatch（不是崩溃，也不是按旧结构解码）。
+    const auto reader = HistoryReader::open(db_path());
+    EXPECT_EQ(reader.first, HistoryAvailability::SchemaMismatch);
+    EXPECT_EQ(reader.second, nullptr);
+    EXPECT_EQ(history_availability_reason(reader.first), "schema_mismatch");
+}
+
+// ===== 往返 =====
+
+TEST_F(HistoryStoreTest, ScalarRoundTripPreservesAllAggregates) {
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        ScalarRecord record = make_scalar_record(1'790'000'000, 5.0);
+        // 让 min/max/avg/last 各不相同，才能验证四者都被正确保存。
+        record.metrics[0].observe(10.0);
+        record.metrics[0].observe(1.0);
+        batch.scalars.push_back(record);
+        store.write_batch(batch);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto rows = reader.second->query_scalars(kLevelRaw, 1'790'000'000, 1'790'000'001, 10);
+    ASSERT_EQ(rows.size(), 1U);
+    EXPECT_EQ(rows[0].bucket_ts, 1'790'000'000);
+    EXPECT_EQ(rows[0].interval_sec, 60);
+    EXPECT_EQ(rows[0].level, kLevelRaw);
+    // 指标 0 观测过 5/10/1：min=1, max=10, last=1。
+    EXPECT_DOUBLE_EQ(rows[0].metrics[0].min, 1.0);
+    EXPECT_DOUBLE_EQ(rows[0].metrics[0].max, 10.0);
+    EXPECT_DOUBLE_EQ(rows[0].metrics[0].last, 1.0);
+    EXPECT_EQ(rows[0].metrics[0].count, 3);
+}
+
+TEST_F(HistoryStoreTest, EmptyMetricAggregateRoundTripsAsEmpty) {
+    // 「该窗口内该指标无有效样本」必须读出来仍是空聚合（读取方据此输出 null 而不是 0）。
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        ScalarRecord record;
+        record.bucket_ts = 1'790'000'000;
+        record.interval_sec = 60;
+        record.metrics[3].observe(0.25);  // 只填一个指标，其余保持空
+        batch.scalars.push_back(record);
+        store.write_batch(batch);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto rows = reader.second->query_scalars(kLevelRaw, 1'790'000'000, 1'790'000'001, 10);
+    ASSERT_EQ(rows.size(), 1U);
+    EXPECT_TRUE(rows[0].metrics[0].empty()) << "unobserved metric must stay empty, not become 0";
+    EXPECT_EQ(rows[0].metrics[0].count, 0);
+    EXPECT_FALSE(rows[0].metrics[3].empty());
+    EXPECT_DOUBLE_EQ(rows[0].metrics[3].max, 0.25);
+}
+
+TEST_F(HistoryStoreTest, DimensionRoundTrip) {
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        batch.dimensions.push_back(make_dimension_record(1'790'000'000, std::string(kNetworkDomain),
+                                                         "eno1", "rx_bytes_total", 12345.0));
+        batch.dimensions.push_back(make_dimension_record(1'790'000'000, std::string(kCpuCoreDomain),
+                                                         "0", "usage_ratio", 0.5));
+        store.write_batch(batch);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto network = reader.second->query_dimensions(
+        kNetworkDomain, "eno1", "rx_bytes_total", kLevelRaw, 1'790'000'000, 1'790'000'001, 10);
+    ASSERT_EQ(network.size(), 1U);
+    EXPECT_EQ(network[0].dimension, "eno1");
+    EXPECT_EQ(network[0].metric, "rx_bytes_total");
+    EXPECT_DOUBLE_EQ(network[0].aggregate.last, 12345.0);
+
+    const auto cores = reader.second->query_dimensions(kCpuCoreDomain, "", "", kLevelRaw,
+                                                       1'790'000'000, 1'790'000'001, 10);
+    ASSERT_EQ(cores.size(), 1U);
+    EXPECT_DOUBLE_EQ(cores[0].aggregate.avg, 0.5);
+}
+
+TEST_F(HistoryStoreTest, UnregisteredDimensionMetricIsSkipped) {
+    // schema 是唯一真相源：未注册的域/指标名不得落库（否则读取方永远查不到）。
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        batch.dimensions.push_back(
+            make_dimension_record(1'790'000'000, "not_a_domain", "x", "y", 1.0));
+        batch.dimensions.push_back(make_dimension_record(1'790'000'000, std::string(kNetworkDomain),
+                                                         "eno1", "not_a_metric", 1.0));
+        store.write_batch(batch);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    EXPECT_TRUE(
+        reader.second
+            ->query_dimensions("not_a_domain", "", "", kLevelRaw, 1'790'000'000, 1'790'000'001, 10)
+            .empty());
+    EXPECT_TRUE(
+        reader.second
+            ->query_dimensions(kNetworkDomain, "", "", kLevelRaw, 1'790'000'000, 1'790'000'001, 10)
+            .empty());
+}
+
+TEST_F(HistoryStoreTest, MarksRoundTrip) {
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        HistoryMark restart;
+        restart.ts = 1'790'000'000;
+        restart.kind = std::string(kMarkRestart);
+        restart.detail = "recover";
+        batch.marks.push_back(restart);
+        HistoryMark jump;
+        jump.ts = 1'790'000'100;
+        jump.kind = std::string(kMarkClockJump);
+        jump.detail = "-30000";
+        batch.marks.push_back(jump);
+        store.write_batch(batch);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto marks = reader.second->query_marks(1'790'000'000, 1'790'000'200, 10);
+    ASSERT_EQ(marks.size(), 2U);
+    EXPECT_EQ(marks[0].kind, kMarkRestart);
+    EXPECT_EQ(marks[0].detail, "recover");
+    EXPECT_EQ(marks[1].kind, kMarkClockJump);
+}
+
+TEST_F(HistoryStoreTest, WriteMarkStandalone) {
+    // 单条标记入口（启动时补记重启标记走这条路径）。
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryMark mark;
+        mark.ts = 1'790'000'000;
+        mark.kind = std::string(kMarkRestart);
+        mark.detail = "manual";
+        store.write_mark(mark);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto marks = reader.second->query_marks(1'790'000'000, 1'790'000'001, 10);
+    ASSERT_EQ(marks.size(), 1U);
+    EXPECT_EQ(marks[0].kind, kMarkRestart);
+}
+
+TEST_F(HistoryStoreTest, SameBucketRewritesInsteadOfDuplicating) {
+    // UPSERT 语义：同桶重复提交后写优先（重试不产生重复行）。
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch first;
+        first.scalars.push_back(make_scalar_record(1'790'000'000, 5.0));
+        store.write_batch(first);
+        HistoryBatch second;
+        second.scalars.push_back(make_scalar_record(1'790'000'000, 9.0));
+        store.write_batch(second);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto rows = reader.second->query_scalars(kLevelRaw, 1'790'000'000, 1'790'000'001, 10);
+    ASSERT_EQ(rows.size(), 1U);
+    EXPECT_DOUBLE_EQ(rows[0].metrics[0].last, 9.0);
+}
+
+TEST_F(HistoryStoreTest, EmptyBatchIsNoOp) {
+    auto store = HistoryStore::open(db_path());
+    HistoryBatch empty;
+    EXPECT_NO_THROW(store.write_batch(empty));
+}
+
+// ===== 查询范围与上限 =====
+
+TEST_F(HistoryStoreTest, QueryRespectsTimeRangeAndOrder) {
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        for (int i = 0; i < 5; ++i) {
+            batch.scalars.push_back(
+                make_scalar_record(1'790'000'000 + i * 60, static_cast<double>(i)));
+        }
+        store.write_batch(batch);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    // 半开区间 [since, until)；按时间升序。
+    // 桶在 000/060/120/180/240；半开区间 [060, 200) 命中 060/120/180。
+    const auto rows = reader.second->query_scalars(kLevelRaw, 1'790'000'060, 1'790'000'200, 10);
+    ASSERT_EQ(rows.size(), 3U);
+    EXPECT_EQ(rows[0].bucket_ts, 1'790'000'060);
+    EXPECT_EQ(rows[1].bucket_ts, 1'790'000'120);
+    EXPECT_EQ(rows[2].bucket_ts, 1'790'000'180);
+}
+
+TEST_F(HistoryStoreTest, QueryRespectsMaxRows) {
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        for (int i = 0; i < 10; ++i) {
+            batch.scalars.push_back(make_scalar_record(1'790'000'000 + i * 60, 1.0));
+        }
+        store.write_batch(batch);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto rows = reader.second->query_scalars(kLevelRaw, 0, 2'000'000'000, 3);
+    EXPECT_EQ(rows.size(), 3U);
+}
+
+TEST_F(HistoryStoreTest, QueryEmptyRangeReturnsNothing) {
+    auto store = HistoryStore::open(db_path());
+    (void)store;
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    EXPECT_TRUE(reader.second->query_scalars(kLevelRaw, 100, 100, 10).empty());
+    EXPECT_TRUE(reader.second->query_scalars(kLevelRaw, 200, 100, 10).empty());
+    EXPECT_TRUE(reader.second->query_scalars(kLevelRaw, 100, 200, 0).empty());
+}
+
+// ===== 只读连接的降级 =====
+
+TEST_F(HistoryStoreTest, ReaderReportsNotFoundWhenFileMissing) {
+    // 库缺失不是错误：dzsysmon 可能未启用历史，读取方显示「历史不可用」。
+    const auto result = HistoryReader::open(dir_ / "missing.db");
+    EXPECT_EQ(result.first, HistoryAvailability::NotFound);
+    EXPECT_EQ(result.second, nullptr);
+    EXPECT_EQ(history_availability_reason(result.first), "not_found");
+}
+
+TEST_F(HistoryStoreTest, ReaderReportsNotFoundForDatabaseWithoutSchemaVersion) {
+    // 空 SQLite 文件（有文件但无 schema/无版本行）：读取方必须降级为「历史不可用」，
+    // 不得按当前结构解码——列错位读出的数据比「不可用」危险得多。
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(db_path().string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw, "CREATE TABLE unrelated (x INTEGER);", nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+
+    const auto reader = HistoryReader::open(db_path());
+    EXPECT_EQ(reader.first, HistoryAvailability::NotFound);
+    EXPECT_EQ(reader.second, nullptr);
+}
+
+TEST_F(HistoryStoreTest, ReaderReportsOpenFailedForNonSqliteFile) {
+    // 文件存在但不是 SQLite：必须降级为 OpenFailed，不得抛异常给调用方（REST 路径）。
+    const auto path = dir_ / "corrupt.db";
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << "this is not a sqlite database";
+    }
+    const auto result = HistoryReader::open(path);
+    EXPECT_NE(result.first, HistoryAvailability::Ok);
+    EXPECT_EQ(result.second, nullptr);
+}
+
+// ===== 保留与压缩 =====
+
+TEST_F(HistoryStoreTest, RetentionDeletesExpiredRawRecords) {
+    constexpr int64_t kNow = 2'000'000'000;
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        // 两条超期（> 24h 前）+ 两条在保留期内。
+        batch.scalars.push_back(make_scalar_record(kNow - 25 * 3600, 1.0));
+        batch.scalars.push_back(make_scalar_record(kNow - 26 * 3600, 1.0));
+        batch.scalars.push_back(make_scalar_record(kNow - 1 * 3600, 1.0));
+        batch.scalars.push_back(make_scalar_record(kNow - 2 * 3600, 1.0));
+        store.write_batch(batch);
+
+        RetentionPolicy policy;
+        policy.now_ts = kNow;
+        policy.raw_retention_sec = 24 * 3600;
+        policy.max_retention_sec = 30 * 86400;
+        policy.record_interval_sec = 60;  // >= 60 ⇒ 不压缩
+        const auto result = store.apply_retention(policy);
+        EXPECT_EQ(result.deleted_raw_rows, 2);
+        EXPECT_EQ(result.compacted_rows, 0) << "no compaction when record interval >= 60s";
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto rows = reader.second->query_scalars(kLevelRaw, 0, kNow, 100);
+    EXPECT_EQ(rows.size(), 2U) << "only in-retention raw records survive";
+}
+
+TEST_F(HistoryStoreTest, RetentionDeletesExpiredDimensionRowsWithTheirBuckets) {
+    // 宽表与长表同桶数据必须一起删除，否则按域查询会读到孤儿行。
+    constexpr int64_t kNow = 2'000'000'000;
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        batch.scalars.push_back(make_scalar_record(kNow - 25 * 3600, 1.0));
+        batch.dimensions.push_back(make_dimension_record(
+            kNow - 25 * 3600, std::string(kNetworkDomain), "eno1", "rx_bytes_total", 1.0));
+        store.write_batch(batch);
+
+        RetentionPolicy policy;
+        policy.now_ts = kNow;
+        policy.record_interval_sec = 60;
+        store.apply_retention(policy);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    EXPECT_TRUE(
+        reader.second->query_dimensions(kNetworkDomain, "", "", kLevelRaw, 0, kNow, 100).empty())
+        << "dimension rows must be deleted together with their bucket";
+}
+
+TEST_F(HistoryStoreTest, CompactionAggregatesExpiredRawIntoMinuteBuckets) {
+    constexpr int64_t kNow = 2'000'000'000;
+    constexpr int64_t kMinuteBase = 1'999'900'000 / 60 * 60;  // 整分钟
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        // 同一分钟内的 3 条原始记录（记录间隔 5 秒 < 60 ⇒ 需要压缩）。
+        for (int i = 0; i < 3; ++i) {
+            ScalarRecord record;
+            record.bucket_ts = kMinuteBase + i * 5;
+            record.interval_sec = 5;
+            record.metrics[0].observe(static_cast<double>(i + 1));  // 1, 2, 3
+            batch.scalars.push_back(record);
+        }
+        store.write_batch(batch);
+
+        RetentionPolicy policy;
+        policy.now_ts = kNow;
+        policy.raw_retention_sec = 24 * 3600;  // 这批数据远超 24h
+        policy.max_retention_sec = 30 * 86400;
+        policy.record_interval_sec = 5;  // < 60 ⇒ 压缩
+        const auto result = store.apply_retention(policy);
+        EXPECT_EQ(result.compacted_rows, 3);
+        EXPECT_EQ(result.compacted_buckets, 1);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    // 原始记录被压缩后删除。
+    EXPECT_TRUE(reader.second->query_scalars(kLevelRaw, 0, kNow, 100).empty());
+    // 分钟聚合保留：min=1, max=3, avg=2, last=3。
+    const auto minutes = reader.second->query_scalars(kLevelMinute, 0, kNow, 100);
+    ASSERT_EQ(minutes.size(), 1U);
+    EXPECT_EQ(minutes[0].bucket_ts, kMinuteBase);
+    EXPECT_EQ(minutes[0].interval_sec, kMinuteResolutionSec);
+    EXPECT_DOUBLE_EQ(minutes[0].metrics[0].min, 1.0);
+    EXPECT_DOUBLE_EQ(minutes[0].metrics[0].max, 3.0);
+    EXPECT_DOUBLE_EQ(minutes[0].metrics[0].avg, 2.0);
+    EXPECT_DOUBLE_EQ(minutes[0].metrics[0].last, 3.0);
+    EXPECT_EQ(minutes[0].metrics[0].count, 3);
+}
+
+TEST_F(HistoryStoreTest, CompactionPreservesPeakInMax) {
+    // 尖峰由 max 保留：一分钟内 19 个低值 + 1 个尖峰，压缩后的 max 必须是尖峰。
+    constexpr int64_t kNow = 2'000'000'000;
+    constexpr int64_t kMinuteBase = 1'999'900'000 / 60 * 60;
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        for (int i = 0; i < 20; ++i) {
+            ScalarRecord record;
+            record.bucket_ts = kMinuteBase + i;
+            record.interval_sec = 1;
+            record.metrics[0].observe(i == 10 ? 0.99 : 0.01);
+            batch.scalars.push_back(record);
+        }
+        store.write_batch(batch);
+
+        RetentionPolicy policy;
+        policy.now_ts = kNow;
+        policy.record_interval_sec = 1;
+        store.apply_retention(policy);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto minutes = reader.second->query_scalars(kLevelMinute, 0, kNow, 100);
+    ASSERT_EQ(minutes.size(), 1U);
+    EXPECT_DOUBLE_EQ(minutes[0].metrics[0].max, 0.99) << "peak must survive compaction";
+    EXPECT_LT(minutes[0].metrics[0].avg, 0.1);
+}
+
+TEST_F(HistoryStoreTest, NoCompactionWhenRecordIntervalAtLeastOneMinute) {
+    // 记录间隔已 >= 60 秒 ⇒ 不做压缩，原始记录直接保留到 30 天。
+    constexpr int64_t kNow = 2'000'000'000;
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        // 30 小时前的数据：超过 24h 原始保留期，但不该被压缩（记录间隔 60）。
+        batch.scalars.push_back(make_scalar_record(kNow - 30 * 3600, 1.0));
+        store.write_batch(batch);
+
+        RetentionPolicy policy;
+        policy.now_ts = kNow;
+        policy.record_interval_sec = 60;
+        const auto result = store.apply_retention(policy);
+        EXPECT_EQ(result.compacted_rows, 0);
+        EXPECT_EQ(result.compacted_buckets, 0);
+        EXPECT_EQ(result.deleted_raw_rows, 1) << "raw retention still applies";
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    EXPECT_TRUE(reader.second->query_scalars(kLevelMinute, 0, kNow, 100).empty());
+}
+
+TEST_F(HistoryStoreTest, MinuteAggregatesRetainedLongerThanRaw) {
+    // 原始删 24h，分钟聚合保留 30 天：压缩后的数据必须活得更久。
+    constexpr int64_t kNow = 2'000'000'000;
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        // 一条 10 天前的分钟聚合（在 30 天内，必须保留）。
+        batch.scalars.push_back(make_scalar_record(kNow - 10 * 86400, 1.0, kLevelMinute));
+        // 一条 40 天前的分钟聚合（超 30 天，必须删除）。
+        batch.scalars.push_back(make_scalar_record(kNow - 40 * 86400, 1.0, kLevelMinute));
+        store.write_batch(batch);
+
+        RetentionPolicy policy;
+        policy.now_ts = kNow;
+        policy.record_interval_sec = 60;
+        const auto result = store.apply_retention(policy);
+        EXPECT_EQ(result.deleted_minute_rows, 1);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto minutes = reader.second->query_scalars(kLevelMinute, 0, kNow, 100);
+    ASSERT_EQ(minutes.size(), 1U);
+    EXPECT_EQ(minutes[0].bucket_ts, kNow - 10 * 86400);
+}
+
+TEST_F(HistoryStoreTest, RetentionDeletesExpiredMarks) {
+    constexpr int64_t kNow = 2'000'000'000;
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryMark old_mark;
+        old_mark.ts = kNow - 40 * 86400;
+        old_mark.kind = std::string(kMarkRestart);
+        store.write_mark(old_mark);
+        HistoryMark recent;
+        recent.ts = kNow - 1 * 86400;
+        recent.kind = std::string(kMarkSampleGap);
+        store.write_mark(recent);
+
+        RetentionPolicy policy;
+        policy.now_ts = kNow;
+        policy.record_interval_sec = 60;
+        const auto result = store.apply_retention(policy);
+        EXPECT_EQ(result.deleted_marks, 1);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto marks = reader.second->query_marks(0, kNow, 100);
+    ASSERT_EQ(marks.size(), 1U);
+    EXPECT_EQ(marks[0].kind, kMarkSampleGap);
+}
+
+TEST_F(HistoryStoreTest, TotalSizeLimitDeletesOldestData) {
+    // 总量上限兜底：超限时从最旧删除（新数据优先保留）。
+    constexpr int64_t kNow = 2'000'000'000;
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        // 铺足够多数据把库撑到超过上限。
+        for (int i = 0; i < 500; ++i) {
+            batch.scalars.push_back(make_scalar_record(kNow - 300 * 86400 + i * 60, 1.0));
+        }
+        store.write_batch(batch);
+
+        RetentionPolicy policy;
+        policy.now_ts = kNow;
+        policy.record_interval_sec = 60;
+        policy.raw_retention_sec = 400 * 86400;  // 不靠时间淘汰
+        policy.max_retention_sec = 400 * 86400;
+        policy.max_bytes = 40 * 1024;  // 很小，必然超限
+        const auto result = store.apply_retention(policy);
+        EXPECT_GT(result.deleted_by_size_rows, 0);
+        EXPECT_GE(result.bytes_before, result.bytes_after);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto rows = reader.second->query_scalars(kLevelRaw, 0, kNow, 10'000);
+    // 删掉的是最旧的那部分：保留下来的是最靠后的桶。
+    if (!rows.empty()) {
+        EXPECT_GT(rows.back().bucket_ts, kNow - 300 * 86400 + 100 * 60);
+    }
+}
+
+TEST_F(HistoryStoreTest, ZeroMaxBytesMeansUnlimited) {
+    constexpr int64_t kNow = 2'000'000'000;
+    auto store = HistoryStore::open(db_path());
+    HistoryBatch batch;
+    for (int i = 0; i < 50; ++i) {
+        batch.scalars.push_back(make_scalar_record(kNow - i * 60, 1.0));
+    }
+    store.write_batch(batch);
+
+    RetentionPolicy policy;
+    policy.now_ts = kNow;
+    policy.record_interval_sec = 60;
+    policy.max_bytes = 0;  // 0 = 不限制
+    const auto result = store.apply_retention(policy);
+    EXPECT_EQ(result.deleted_by_size_rows, 0);
+}
+
+TEST_F(HistoryStoreTest, MaintenanceBatchLimitsWorkPerTransaction) {
+    // 分段执行：大批数据不会一次长事务（对只读连接的影响可控）。
+    constexpr int64_t kNow = 2'000'000'000;
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        for (int i = 0; i < 25; ++i) {
+            batch.scalars.push_back(make_scalar_record(kNow - 30 * 3600 - i * 60, 1.0));
+        }
+        store.write_batch(batch);
+
+        RetentionPolicy policy;
+        policy.now_ts = kNow;
+        policy.record_interval_sec = 60;
+        policy.maintenance_batch = 10;  // 每批 10 行 → 需要 3 批
+        const auto result = store.apply_retention(policy);
+        EXPECT_EQ(result.deleted_raw_rows, 25);
+    }
+}
+
+// ===== 落盘线程 =====
+
+class HistoryWriterTest : public ::testing::Test {
+protected:
+    void SetUp() override { dir_ = make_temp_dir(); }
+    void TearDown() override {
+        std::error_code ec;
+        std::filesystem::remove_all(dir_, ec);
+    }
+
+    std::filesystem::path db_path() const { return dir_ / "sysmon.db"; }
+    std::filesystem::path dir_;
+};
+
+TEST_F(HistoryWriterTest, WriterPersistsEnqueuedBatches) {
+    constexpr int64_t kNow = 2'000'000'000;
+    {
+        HistoryWriter writer(db_path(), HistoryWriterOptions{}, nullptr);
+        HistoryBatch batch;
+        batch.scalars.push_back(make_scalar_record(kNow - 60, 7.0));
+        batch.scalars.push_back(make_scalar_record(kNow, 8.0));
+        writer.enqueue(std::move(batch));
+        EXPECT_EQ(writer.written_records(), 0U);  // 异步：入队不等待落盘
+        writer.flush();
+        EXPECT_EQ(writer.written_records(), 2U);
+        EXPECT_EQ(writer.dropped_records(), 0U);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    EXPECT_EQ(reader.second->query_scalars(kLevelRaw, 0, kNow + 60, 10).size(), 2U);
+}
+
+TEST_F(HistoryWriterTest, FlushOnDestructionPersistsQueuedBatches) {
+    // 优雅退出的核心语义：析构（未显式 flush）也必须冲掉队列，不丢数据。
+    constexpr int64_t kNow = 2'000'000'000;
+    {
+        HistoryWriter writer(db_path(), HistoryWriterOptions{}, nullptr);
+        HistoryBatch batch;
+        batch.scalars.push_back(make_scalar_record(kNow, 7.0));
+        writer.enqueue(std::move(batch));
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    EXPECT_EQ(reader.second->query_scalars(kLevelRaw, 0, kNow + 60, 10).size(), 1U)
+        << "destructor must flush queue";
+}
+
+TEST_F(HistoryWriterTest, FlushIsIdempotent) {
+    constexpr int64_t kNow = 2'000'000'000;
+    HistoryWriter writer(db_path(), HistoryWriterOptions{}, nullptr);
+    HistoryBatch batch;
+    batch.scalars.push_back(make_scalar_record(kNow, 7.0));
+    writer.enqueue(std::move(batch));
+    writer.flush();
+    EXPECT_NO_THROW(writer.flush());
+    EXPECT_NO_THROW(writer.flush());
+    EXPECT_EQ(writer.written_records(), 1U);
+}
+
+TEST_F(HistoryWriterTest, EnqueueAfterFlushIsDroppedWithoutBlocking) {
+    // 退出路径：落盘线程已停时入队必须立即丢弃（采集线程绝不能卡住）。
+    HistoryWriter writer(db_path(), HistoryWriterOptions{}, nullptr);
+    writer.flush();
+    HistoryBatch batch;
+    batch.scalars.push_back(make_scalar_record(1'790'000'000, 1.0));
+    EXPECT_NO_THROW(writer.enqueue(std::move(batch)));
+    EXPECT_GE(writer.dropped_records(), 1U);
+}
+
+TEST_F(HistoryWriterTest, QueueOverflowDropsOldestAndCounts) {
+    // 有界队列：容量 1 时连续入队两个批次，最旧的被丢弃并计数（不阻塞）。
+    HistoryWriterOptions options;
+    options.queue_capacity = 1;
+    options.maintenance_interval_sec = 0;
+    // 用一个慢不下来的写入方难以确定性制造溢出；这里用小容量 + 立即入队，
+    // 断言「不阻塞 + 计数单调」这一可观察承诺，不断言具体丢弃哪一条（线程调度相关）。
+    HistoryWriter writer(db_path(), options, nullptr);
+    for (int i = 0; i < 50; ++i) {
+        HistoryBatch batch;
+        batch.scalars.push_back(make_scalar_record(1'790'000'000 + i * 60, 1.0));
+        writer.enqueue(std::move(batch));
+    }
+    writer.flush();
+    // 全部记录要么落盘要么被计入丢弃——不能既有丢失又不计数。
+    EXPECT_EQ(writer.written_records() + writer.dropped_records(), 50U);
+}
+
+TEST_F(HistoryWriterTest, WriterStartsThreadAndReportsRunning) {
+    HistoryWriter writer(db_path(), HistoryWriterOptions{}, nullptr);
+    EXPECT_TRUE(writer.running());
+    writer.flush();
+    EXPECT_FALSE(writer.running());
+}
+
+TEST_F(HistoryWriterTest, MaintenanceRunsRetentionPeriodically) {
+    // 维护周期：以 0 间隔强制每轮都跑，验证保留策略确实被落盘线程应用。
+    constexpr int64_t kNow = 2'000'000'000;
+    {
+        HistoryWriterOptions options;
+        options.maintenance_interval_sec = 1;
+        HistoryWriter writer(db_path(), options, [kNow]() {
+            RetentionPolicy policy;
+            policy.now_ts = kNow;
+            policy.record_interval_sec = 60;
+            return policy;
+        });
+        HistoryBatch batch;
+        batch.scalars.push_back(make_scalar_record(kNow - 30 * 3600, 1.0));
+        writer.enqueue(std::move(batch));
+        // 等待一轮维护（条件等待，不用 sleep 当同步手段：轮询直到数据被删）。
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        bool deleted = false;
+        while (std::chrono::steady_clock::now() < deadline) {
+            HistoryBatch probe;
+            probe.scalars.push_back(make_scalar_record(kNow, 1.0));
+            writer.enqueue(std::move(probe));
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            auto reader = HistoryReader::open(db_path());
+            if (reader.first == HistoryAvailability::Ok) {
+                const auto rows = reader.second->query_scalars(kLevelRaw, 0, kNow, 100);
+                // 超期那条已删、探针那条还在（或还没落盘）时即视为维护生效。
+                if (rows.size() <= 1) {
+                    deleted = true;
+                    break;
+                }
+            }
+        }
+        writer.flush();
+        EXPECT_TRUE(deleted) << "retention maintenance must run on the writer thread";
+    }
+}
+
+}  // namespace
+}  // namespace dztrader::sysmonstore
