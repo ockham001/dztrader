@@ -10,14 +10,17 @@
 #include "repository.h"
 #include "shm_writer.h"
 #include "sysmon_controller.h"
+#include "sysmon_history_service.h"
 
 #include <dztrader/core/this_process.h>
+#include <dztrader/sysmonstore/history_store.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
 
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
 #include <random>
@@ -287,6 +290,102 @@ TEST_F(SysmonControllerTest, SetConfigEmptyPatchStillDispatched) {
     ASSERT_TRUE(frame.has_value());
     EXPECT_TRUE(frame->is_object());
     EXPECT_TRUE(frame->empty());
+}
+
+// ===== GET /api/sysmon/history（契约 sysmon §6.1、契约 rest §2.8）=====
+
+/// 构造带 query 参数的 GET 请求（drogon 的 getParameter 从 query 解析）。
+drogon::HttpRequestPtr get_request(const std::map<std::string, std::string>& query = {}) {
+    auto req = drogon::HttpRequest::newHttpRequest();
+    req->setMethod(drogon::Get);
+    req->setPath("/api/sysmon/history");
+    for (const auto& [key, value] : query) {
+        req->setParameter(key, value);
+    }
+    req->getAttributes()->insert("user_id", std::string("admin"));
+    return req;
+}
+
+drogon::HttpResponsePtr invoke_history(const std::shared_ptr<SysmonCtrl>& ctrl,
+                                       const std::map<std::string, std::string>& query = {}) {
+    drogon::HttpResponsePtr captured;
+    ctrl->get_history(get_request(query),
+                      [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
+    return captured;
+}
+
+TEST_F(SysmonControllerTest, HistoryReturns400OnInvalidParameters) {
+    // 参数非法一律 400（契约 sysmon §6.1），不静默钳制
+    auto ctrl = std::make_shared<SysmonCtrl>(repo_, mirror_, nullptr,
+                                             std::filesystem::temp_directory_path() / "nope.db");
+    const std::map<std::string, std::map<std::string, std::string>> bad_cases = {
+        {"unknown metric", {{"metric", "not_a_metric"}}},
+        {"dimension metric without dimension", {{"metric", "network.rx_bytes_total"}}},
+        {"scalar metric with dimension", {{"metric", "cpu.usage_ratio"}, {"dimension", "0"}}},
+        {"bad level", {{"level", "hour"}}},
+        {"bad max_points", {{"max_points", "5"}}},
+        {"inverted range", {{"from", "200"}, {"to", "100"}}},
+        {"non numeric from", {{"from", "abc"}}},
+    };
+    for (const auto& [label, query] : bad_cases) {
+        const auto resp = invoke_history(ctrl, query);
+        ASSERT_NE(resp, nullptr) << label;
+        EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest) << label;
+        EXPECT_EQ(nlohmann::json::parse(resp->getBody()).value("error", ""), "bad request")
+            << label;
+    }
+}
+
+TEST_F(SysmonControllerTest, HistoryDegradesTo200WhenDatabaseMissing) {
+    // 历史库缺失 ⇒ 200 + available=false（契约 §6.1.3：不崩溃、不 5xx、不伪造）
+    auto ctrl = std::make_shared<SysmonCtrl>(
+        repo_, mirror_, nullptr, std::filesystem::temp_directory_path() / "dz_missing_sysmon.db");
+    const auto resp = invoke_history(ctrl, {{"metric", "cpu.usage_ratio"}});
+    ASSERT_NE(resp, nullptr);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    const auto body = nlohmann::json::parse(resp->getBody());
+    EXPECT_FALSE(body.value("available", true));
+    EXPECT_EQ(body.value("reason", ""), "not_found");
+    EXPECT_FALSE(body.contains("series"));
+}
+
+TEST_F(SysmonControllerTest, HistoryDegradesWhenNoDatabasePathConfigured) {
+    // 未注入历史库路径（测试/API-only 模式）：按「历史不可用」降级，不去猜一个路径读错文件
+    auto ctrl = std::make_shared<SysmonCtrl>(repo_, mirror_, nullptr);
+    const auto resp = invoke_history(ctrl, {{"metric", "cpu.usage_ratio"}});
+    ASSERT_NE(resp, nullptr);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    const auto body = nlohmann::json::parse(resp->getBody());
+    EXPECT_FALSE(body.value("available", true));
+    EXPECT_EQ(body.value("reason", ""), "not_found");
+}
+
+TEST_F(SysmonControllerTest, HistoryReturnsEmptySeriesFromRealTemporaryDatabase) {
+    // 真实临时库（写入方建库）+ 真实 REST 调用：可用、空序列、level 回显、无截断
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("dz_sysmon_ctrl_hist_" + std::to_string(dztrader::this_process::pid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto db_path = dir / "sysmon.db";
+    {
+        auto store = dztrader::sysmonstore::HistoryStore::open(db_path);
+        (void)store;
+    }
+    auto ctrl = std::make_shared<SysmonCtrl>(repo_, mirror_, nullptr, db_path);
+    const auto resp = invoke_history(ctrl, {{"metric", "cpu.usage_ratio"}, {"level", "raw"}});
+    ASSERT_NE(resp, nullptr);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    const auto body = nlohmann::json::parse(resp->getBody());
+    EXPECT_TRUE(body.value("available", false));
+    EXPECT_EQ(body.value("level", ""), "raw");
+    EXPECT_EQ(body.value("metric", ""), "cpu.usage_ratio");
+    EXPECT_FALSE(body.value("truncated", true));
+    ASSERT_EQ(body["series"].size(), 1U);
+    EXPECT_TRUE(body["series"][0]["points"].empty());
+    EXPECT_TRUE(body["marks"].empty());
+    EXPECT_TRUE(body["gaps"].empty());
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }
 
 }  // namespace

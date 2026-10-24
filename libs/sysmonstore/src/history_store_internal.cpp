@@ -2,7 +2,10 @@
 
 #include <spdlog/spdlog.h>
 
+#include <array>
 #include <format>
+#include <fstream>
+#include <ios>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -207,8 +210,49 @@ int read_schema_version(SQLite::Database& db) {
         }
         return stmt.getColumn(0).getInt();
     } catch (const std::exception&) {
-        return 0;  // 表不存在 = 未初始化
+        return 0;  // 表不存在 = 未初始化（库是否可读由 database_is_readable 单独判定）
     }
+}
+
+bool database_is_readable(SQLite::Database& db) {
+    // 只碰 schema 页的最轻查询：能成功说明库结构可读（不是损坏/截断/非 SQLite）。
+    // 用它把「有效库但没有我们的表」（not_found = 历史未启用）与「库读不了」
+    // （open_failed = 损坏）区分开——两者在后续「查 sysmon_meta」时都会抛异常，
+    // 单看那个异常无法分辨。
+    try {
+        SQLite::Statement stmt(db, "SELECT count(*) FROM sqlite_master");
+        return stmt.executeStep();
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool has_valid_sqlite_header(const std::filesystem::path& path) {
+    // 16 字节 "SQLite format 3\0"：SQLite 官方文件头（见 sqlite3 file format 文档）。
+    static constexpr std::string_view kMagic = "SQLite format 3";
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    if (ec) {
+        return false;
+    }
+    if (size == 0) {
+        // 0 字节文件是合法的空库（SQLite 会在首次写入时建头）；交给版本检查报 not_found。
+        return true;
+    }
+    if (size < kMagic.size() + 1) {
+        return false;  // 短于文件头：不可能是 SQLite 库
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in.good()) {
+        return false;
+    }
+    std::array<char, kMagic.size() + 1> header{};
+    in.read(header.data(), static_cast<std::streamsize>(header.size()));
+    if (in.gcount() != static_cast<std::streamsize>(header.size())) {
+        return false;
+    }
+    return std::string_view(header.data(), kMagic.size()) == kMagic &&
+           header[kMagic.size()] == '\0';
 }
 
 void ensure_parent_dir(const std::filesystem::path& path) {

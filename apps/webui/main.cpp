@@ -43,6 +43,8 @@
 #include "sysmon_domain_service.h"
 #include "sysmon_controller.h"
 
+#include <dztrader/sysmonstore/records.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -233,10 +235,12 @@ int main(int argc, char* argv[]) {
         repo, shm_writer, process_mirror, *ws_ctrl));
     drogon::app().registerController(
         std::make_shared<dztrader::webui::ProcessCtrl>(repo, process_mirror));
-    // 系统监控 REST（契约 rest §2.8）：快照查询（读共享镜像）+ 运行期配置 patch
+    // 系统监控 REST（契约 rest §2.8，契约 sysmon §6.1）：快照查询（读共享镜像）+ 历史查询
+    // （只读打开历史库 $DZTRADER_HOME/db/sysmon.db，不走帧）+ 运行期配置 patch
     // （admin，直发 SET_SYSMON_CONFIG，生效信号是 WS sysmon_config）
-    drogon::app().registerController(
-        std::make_shared<dztrader::webui::SysmonCtrl>(repo, mirror_store, shm_writer));
+    drogon::app().registerController(std::make_shared<dztrader::webui::SysmonCtrl>(
+        repo, mirror_store, shm_writer,
+        dztrader::paths::db() / std::string(dztrader::sysmonstore::kHistoryFileName)));
 
     // 系统设置控制器: 只读展示 dztraderd.json (master 路径固定) + 事件通道(SET_EVENT_SHM_CONFIG)
     // + webui.json (共享 webui_cfg_holder 与 LoginCtrl, token_ttl_sec 热生效)

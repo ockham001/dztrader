@@ -48,12 +48,21 @@ std::pair<HistoryAvailability, std::unique_ptr<HistoryReader>> HistoryReader::op
         return {HistoryAvailability::NotFound, nullptr};
     }
 
+    // 先验文件头再交给 SQLite：`sqlite3_open` 是惰性的——对「非 SQLite 文件」它照样成功，
+    // 失败只在第一次真正读页时出现。若不在此区分，`read_schema_version` 的失败会被当成
+    // 「表不存在 ⇒ 未初始化」而错报 `not_found`，让「库损坏」看起来像「历史未启用」。
+    // SQLite 文件头固定 16 字节 "SQLite format 3\0"；0 字节文件是合法的空库（交给下面判 version）。
+    if (!history_store_internal::has_valid_sqlite_header(path)) {
+        SPDLOG_WARN("sysmon history file is not a sqlite database | path={}", path.string());
+        return {HistoryAvailability::OpenFailed, nullptr};
+    }
+
     auto impl = std::make_unique<Impl>();
     impl->path = path;
     try {
         impl->db = std::make_unique<SQLite::Database>(path.string(), SQLite::OPEN_READONLY);
     } catch (const std::exception& e) {
-        // 文件存在但打不开：权限、损坏、非 SQLite 文件——同样降级，不抛给调用方。
+        // 文件存在但打不开：权限、损坏——同样降级，不抛给调用方。
         SPDLOG_WARN("sysmon history read open failed | path={} error=\"{}\"", path.string(),
                     e.what());
         return {HistoryAvailability::OpenFailed, nullptr};
@@ -63,15 +72,16 @@ std::pair<HistoryAvailability, std::unique_ptr<HistoryReader>> HistoryReader::op
 
     // 版本校验：与写入方口径一致——版本不符时**必须**降级，不得按旧结构解码
     // （否则读出的列错位，比「历史不可用」危险得多）。
-    int version = 0;
-    try {
-        version = history_store_internal::read_schema_version(db);
-    } catch (const std::exception& e) {
-        SPDLOG_WARN("sysmon history schema read failed | error=\"{}\"", e.what());
+    if (!history_store_internal::database_is_readable(db)) {
+        // 库结构都读不了（页损坏、库被截断）：这是「读不了」而不是「未初始化」，
+        // 必须报 open_failed —— 把它报成 not_found 会让「库损坏」看起来像「历史未启用」。
+        SPDLOG_WARN("sysmon history database is not readable | path={}", path.string());
         return {HistoryAvailability::OpenFailed, nullptr};
     }
+    const int version = history_store_internal::read_schema_version(db);
     if (version == 0) {
-        // 空库/未迁移：表结构可能不存在，按「历史不可用」处理（不是版本不符）。
+        // 有效库但没有 sysmon_meta / 版本行：历史未启用或未迁移，按「历史不可用」处理
+        // （不是版本不符）。
         return {HistoryAvailability::NotFound, nullptr};
     }
     if (version != kSchemaVersion) {
@@ -89,19 +99,24 @@ int HistoryReader::schema_version() const {
 
 const std::filesystem::path& HistoryReader::path() const noexcept { return impl_->path; }
 
-std::vector<ScalarRecord> HistoryReader::query_scalars(int32_t level,
-                                                       int64_t since_ts,
-                                                       int64_t until_ts,
-                                                       int64_t max_rows) const {
+namespace {
+
+/// 宽表时间序列查询的共享实现（`ascending` 决定 ORDER BY 方向）。
+std::vector<ScalarRecord> query_scalars_impl(SQLite::Database& db,
+                                             int32_t level,
+                                             int64_t since_ts,
+                                             int64_t until_ts,
+                                             int64_t max_rows,
+                                             bool ascending) {
     std::vector<ScalarRecord> rows;
     if (max_rows <= 0 || until_ts <= since_ts) {
         return rows;
     }
     try {
-        SQLite::Statement stmt(*impl_->db,
-                               "SELECT " + history_store_internal::scalar_select_columns() +
-                                   " FROM sysmon_scalar WHERE level=?1 AND bucket_ts>=?2 "
-                                   "AND bucket_ts<?3 ORDER BY bucket_ts ASC LIMIT ?4");
+        SQLite::Statement stmt(db, "SELECT " + history_store_internal::scalar_select_columns() +
+                                       " FROM sysmon_scalar WHERE level=?1 AND bucket_ts>=?2 "
+                                       "AND bucket_ts<?3 ORDER BY bucket_ts " +
+                                       (ascending ? "ASC" : "DESC") + " LIMIT ?4");
         stmt.bind(1, static_cast<int32_t>(level));
         stmt.bind(2, static_cast<int64_t>(since_ts));
         stmt.bind(3, static_cast<int64_t>(until_ts));
@@ -117,13 +132,34 @@ std::vector<ScalarRecord> HistoryReader::query_scalars(int32_t level,
     return rows;
 }
 
-std::vector<DimensionRecord> HistoryReader::query_dimensions(std::string_view domain,
-                                                             std::string_view dimension,
-                                                             std::string_view metric,
-                                                             int32_t level,
-                                                             int64_t since_ts,
-                                                             int64_t until_ts,
-                                                             int64_t max_rows) const {
+}  // namespace
+
+std::vector<ScalarRecord> HistoryReader::query_scalars(int32_t level,
+                                                       int64_t since_ts,
+                                                       int64_t until_ts,
+                                                       int64_t max_rows) const {
+    return query_scalars_impl(*impl_->db, level, since_ts, until_ts, max_rows, true);
+}
+
+std::vector<ScalarRecord> HistoryReader::query_scalars_desc(int32_t level,
+                                                            int64_t since_ts,
+                                                            int64_t until_ts,
+                                                            int64_t max_rows) const {
+    return query_scalars_impl(*impl_->db, level, since_ts, until_ts, max_rows, false);
+}
+
+namespace {
+
+/// 长表维度序列查询的共享实现（`ascending` 决定 ORDER BY 方向）。
+std::vector<DimensionRecord> query_dimensions_impl(SQLite::Database& db,
+                                                   std::string_view domain,
+                                                   std::string_view dimension,
+                                                   std::string_view metric,
+                                                   int32_t level,
+                                                   int64_t since_ts,
+                                                   int64_t until_ts,
+                                                   int64_t max_rows,
+                                                   bool ascending) {
     std::vector<DimensionRecord> rows;
     if (max_rows <= 0 || until_ts <= since_ts || domain.empty()) {
         return rows;
@@ -131,12 +167,14 @@ std::vector<DimensionRecord> HistoryReader::query_dimensions(std::string_view do
     // 维度与指标为空表示不限（按域查全部维度 / 全部指标），因此用 `(?='' OR col=?)`
     // 而不是拼 SQL——参数化保持唯一写法，不引入字符串拼装。
     try {
-        SQLite::Statement stmt(*impl_->db,
+        SQLite::Statement stmt(db,
                                "SELECT level,bucket_ts,domain,dimension,metric,min,max,avg,last,n "
                                "FROM sysmon_dimension WHERE level=?1 AND bucket_ts>=?2 "
                                "AND bucket_ts<?3 AND domain=?4 "
                                "AND (?5='' OR dimension=?5) AND (?6='' OR metric=?6) "
-                               "ORDER BY bucket_ts ASC, dimension ASC, metric ASC LIMIT ?7");
+                               "ORDER BY bucket_ts " +
+                                   std::string(ascending ? "ASC" : "DESC") +
+                                   ", dimension ASC, metric ASC LIMIT ?7");
         stmt.bind(1, static_cast<int32_t>(level));
         stmt.bind(2, static_cast<int64_t>(since_ts));
         stmt.bind(3, static_cast<int64_t>(until_ts));
@@ -166,6 +204,30 @@ std::vector<DimensionRecord> HistoryReader::query_dimensions(std::string_view do
         rows.clear();
     }
     return rows;
+}
+
+}  // namespace
+
+std::vector<DimensionRecord> HistoryReader::query_dimensions(std::string_view domain,
+                                                             std::string_view dimension,
+                                                             std::string_view metric,
+                                                             int32_t level,
+                                                             int64_t since_ts,
+                                                             int64_t until_ts,
+                                                             int64_t max_rows) const {
+    return query_dimensions_impl(*impl_->db, domain, dimension, metric, level, since_ts, until_ts,
+                                 max_rows, true);
+}
+
+std::vector<DimensionRecord> HistoryReader::query_dimensions_desc(std::string_view domain,
+                                                                  std::string_view dimension,
+                                                                  std::string_view metric,
+                                                                  int32_t level,
+                                                                  int64_t since_ts,
+                                                                  int64_t until_ts,
+                                                                  int64_t max_rows) const {
+    return query_dimensions_impl(*impl_->db, domain, dimension, metric, level, since_ts, until_ts,
+                                 max_rows, false);
 }
 
 std::optional<int64_t> HistoryReader::latest_bucket_ts(int32_t level) const {

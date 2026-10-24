@@ -1,6 +1,8 @@
 #include "sysmon_controller.h"
 
 #include <exception>
+#include <string>
+#include <string_view>
 
 namespace dztrader::webui {
 
@@ -14,6 +16,27 @@ void SysmonCtrl::get_snapshot(
         return;
     }
     callback(json_response(drogon::k200OK, instance["sysmon_snapshot"]));
+}
+
+void SysmonCtrl::get_history(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+    // 认证由 JWT advice 处理，本端点所有已认证用户可读（契约 rest §2.8）。
+    // 历史库路径在构造时注入（生产为 $DZTRADER_HOME/db/sysmon.db）；未注入时按「历史不可用」
+    // 降级，而不是去猜一个路径读错文件。
+    if (history_db_path_.empty()) {
+        callback(json_response(drogon::k200OK, {{"available", false}, {"reason", "not_found"}}));
+        return;
+    }
+    SysmonHistoryService service(history_db_path_);
+    const auto parsed =
+        service.parse([&req](std::string_view key) { return req->getParameter(std::string(key)); });
+    if (!parsed.query.has_value()) {
+        // 契约 sysmon §6.1：参数非法一律 400，不做静默钳制。
+        callback(error_response(drogon::k400BadRequest, "bad request"));
+        return;
+    }
+    callback(json_response(drogon::k200OK, service.query(*parsed.query)));
 }
 
 void SysmonCtrl::set_config(

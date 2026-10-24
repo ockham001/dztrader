@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import SyncSwitch from '@/components/shared/SyncSwitch.vue'
+import SysmonHistoryTab from '@/components/sysmon/SysmonHistoryTab.vue'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { useAuthStore } from '@/stores/auth'
 import { useSysmonStore } from '@/stores/sysmon'
@@ -20,8 +21,13 @@ import { useToastStore } from '@/stores/toast'
 // 网络（#77）：可用但数组为空 = 发送方按 hide_virtual 滤掉了全部虚拟网卡（契约 §2.5 明文，
 // **不是**不可用），显示「已隐藏全部虚拟网卡」+ 切换提示；开关走 REST 下发、以 WS sysmon_config
 // 回推为生效信号。
+// 历史视图（#79）为独立视图：切换只影响渲染来源，不卸载/不重建实时 store，
+// 因此 WS 连接与实时快照推送完全不受影响（契约 sysmon §8：历史视图不订阅 WS）。
 // 刷新基线由发送方 realtime.push_interval_sec（默认 5s）决定，本页不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
+
+/** 视图模式：实时（默认） / 历史 */
+const viewMode = ref<'realtime' | 'history'>('realtime')
 
 onMounted(() => { void sysmon.init() })
 
@@ -282,18 +288,45 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           <template v-else>系统监控数据尚未到达</template>
         </p>
       </div>
-      <span v-if="snapshot" class="ds-tag">实时快照</span>
-      <span v-else class="ds-tag ds-tag--warning">等待快照</span>
+      <div class="monitor-view__view-switch" role="tablist" data-test="monitor-view-switch">
+        <button
+          class="ds-btn ds-btn--sm"
+          :class="viewMode === 'realtime' ? 'ds-btn--primary' : 'ds-btn--secondary'"
+          type="button"
+          role="tab"
+          :aria-selected="viewMode === 'realtime'"
+          data-test="monitor-tab-realtime"
+          @click="viewMode = 'realtime'"
+        >实时</button>
+        <button
+          class="ds-btn ds-btn--sm"
+          :class="viewMode === 'history' ? 'ds-btn--primary' : 'ds-btn--secondary'"
+          type="button"
+          role="tab"
+          :aria-selected="viewMode === 'history'"
+          data-test="monitor-tab-history"
+          @click="viewMode = 'history'"
+        >历史</button>
+      </div>
+      <span v-if="viewMode === 'realtime' && snapshot" class="ds-tag">实时快照</span>
+      <span v-else-if="viewMode === 'realtime'" class="ds-tag ds-tag--warning">等待快照</span>
     </header>
 
-    <!-- 快照尚未到达：整页空态（不得显示 0 或假数字） -->
-    <div v-if="!snapshot" class="ds-empty monitor-view__waiting" data-test="monitor-waiting">
+    <!-- 历史视图（#79）：独立渲染，不卸载实时 store（WS 连接与实时数据不受影响） -->
+    <SysmonHistoryTab v-if="viewMode === 'history'" />
+
+    <!-- 实时视图（默认）：快照尚未到达时整页空态（不得显示 0 或假数字） -->
+    <div
+      v-if="viewMode === 'realtime' && !snapshot"
+      class="ds-empty monitor-view__waiting"
+      data-test="monitor-waiting"
+    >
       <div class="ds-empty__icon"><Icon name="monitor" :size="20" /></div>
       <div class="ds-empty__title">等待系统监控数据</div>
       <div class="ds-empty__desc">dzsysmon 尚未上报快照，数据到达后本页自动更新</div>
     </div>
 
-    <div v-else class="monitor-view__grid">
+    <div v-else-if="viewMode === 'realtime'" class="monitor-view__grid">
       <!-- 系统信息 -->
       <section class="ds-card monitor-view__card monitor-view__card--wide" data-test="monitor-system">
         <h2 class="ds-card__title monitor-view__card-title">
@@ -829,6 +862,13 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 .monitor-view__waiting {
   max-width: 720px;
   margin: 0 auto;
+}
+
+/* 实时 / 历史视图切换（#79）：分段按钮，与顶栏徽章同排 */
+.monitor-view__view-switch {
+  display: inline-flex;
+  gap: var(--spacer-4);
+  margin-left: auto;
 }
 
 .monitor-view__grid {

@@ -312,6 +312,78 @@ TEST_F(HistoryStoreTest, QueryRespectsMaxRows) {
     EXPECT_EQ(rows.size(), 3U);
 }
 
+TEST_F(HistoryStoreTest, QueryScalarsDescReturnsNewestRowsFirst) {
+    // 降序查询是点数上限精确截断的基础：拿到的必须是最新的 N 行（升序 + LIMIT 拿到的是最旧 N 行）
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        for (int i = 0; i < 10; ++i) {
+            batch.scalars.push_back(make_scalar_record(1'790'000'000 + i * 60, i));
+        }
+        store.write_batch(batch);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto rows = reader.second->query_scalars_desc(kLevelRaw, 0, 2'000'000'000, 3);
+    ASSERT_EQ(rows.size(), 3U);
+    // 最新三个桶：+540、+480、+420，降序
+    EXPECT_EQ(rows[0].bucket_ts, 1'790'000'540);
+    EXPECT_EQ(rows[1].bucket_ts, 1'790'000'480);
+    EXPECT_EQ(rows[2].bucket_ts, 1'790'000'420);
+    // 数值也跟着桶走（不是只把时间戳反过来）
+    EXPECT_DOUBLE_EQ(rows[0].metrics[0].last, 9.0);
+    EXPECT_DOUBLE_EQ(rows[2].metrics[0].last, 7.0);
+}
+
+TEST_F(HistoryStoreTest, QueryScalarsDescHonoursRangeAndMaxRows) {
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        for (int i = 0; i < 5; ++i) {
+            batch.scalars.push_back(make_scalar_record(1'790'000'000 + i * 60, 1.0));
+        }
+        store.write_batch(batch);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    // 范围 [base+120, base+240) 内两行（+120、+180），降序 = +180、+120
+    const auto rows =
+        reader.second->query_scalars_desc(kLevelRaw, 1'790'000'120, 1'790'000'240, 10);
+    ASSERT_EQ(rows.size(), 2U);
+    EXPECT_EQ(rows[0].bucket_ts, 1'790'000'180);
+    EXPECT_EQ(rows[1].bucket_ts, 1'790'000'120);
+    // 退化参数返回空（与升序同一口径）
+    EXPECT_TRUE(reader.second->query_scalars_desc(kLevelRaw, 100, 100, 10).empty());
+    EXPECT_TRUE(reader.second->query_scalars_desc(kLevelRaw, 200, 100, 10).empty());
+    EXPECT_TRUE(reader.second->query_scalars_desc(kLevelRaw, 100, 200, 0).empty());
+}
+
+TEST_F(HistoryStoreTest, QueryDimensionsDescReturnsNewestRowsFirst) {
+    {
+        auto store = HistoryStore::open(db_path());
+        HistoryBatch batch;
+        for (int i = 0; i < 6; ++i) {
+            batch.dimensions.push_back(
+                make_dimension_record(1'790'000'000 + i * 60, std::string(kNetworkDomain), "eth0",
+                                      "rx_bytes_per_sec", static_cast<double>(i)));
+        }
+        store.write_batch(batch);
+    }
+    auto reader = HistoryReader::open(db_path());
+    ASSERT_EQ(reader.first, HistoryAvailability::Ok);
+    const auto rows = reader.second->query_dimensions_desc(
+        kNetworkDomain, "eth0", "rx_bytes_per_sec", kLevelRaw, 0, 2'000'000'000, 2);
+    ASSERT_EQ(rows.size(), 2U);
+    EXPECT_EQ(rows[0].bucket_ts, 1'790'000'300);
+    EXPECT_EQ(rows[1].bucket_ts, 1'790'000'240);
+    EXPECT_DOUBLE_EQ(rows[0].aggregate.last, 5.0);
+    // 维度过滤仍然生效（别的维度不算进来）
+    EXPECT_TRUE(reader.second
+                    ->query_dimensions_desc(kNetworkDomain, "eth1", "rx_bytes_per_sec", kLevelRaw,
+                                            0, 2'000'000'000, 2)
+                    .empty());
+}
+
 TEST_F(HistoryStoreTest, LatestBucketTsReturnsNewestAcrossLevels) {
     constexpr int64_t kNow = 2'000'000'000;
     {
