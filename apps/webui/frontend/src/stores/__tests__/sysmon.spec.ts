@@ -1289,6 +1289,25 @@ describe('useSysmonStore 完整配置镜像与保存（#81）', () => {
     expect(store.config).toBeNull()
   })
 
+  it('loadConfig 与 WS 并发：WS 先到，较旧的 REST 响应不得覆盖生效镜像', async () => {
+    // 生效信号是 WS `sysmon_config`；REST 只是首次补拉。若 GET 在等待期间 WS 已到达，
+    // 迟到的 REST 响应（更旧）必须丢弃，否则配置展示会短暂回退到旧生效值。
+    let resolveGet: (value: ReturnType<typeof makeSysmonConfig>) => void = () => {}
+    vi.mocked(sysmonApi.getConfig).mockReturnValue(
+      new Promise(resolve => {
+        resolveGet = resolve
+      }),
+    )
+    const store = useSysmonStore()
+    const loading = store.loadConfig()
+
+    store.applyConfig(makeSysmonConfig({ realtime: { push_interval_sec: 30 } }))
+    resolveGet(makeSysmonConfig({ realtime: { push_interval_sec: 5 } }))
+    await loading
+
+    expect(store.config?.realtime.push_interval_sec).toBe(30)
+  })
+
   it('init 在配置镜像缺失时经 REST 补拉一次；已有镜像后不再补拉', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig())

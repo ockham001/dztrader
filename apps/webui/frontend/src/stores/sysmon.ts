@@ -584,6 +584,9 @@ export const useSysmonStore = defineStore('sysmon', () => {
     configLoading.value = true
     try {
       const payload = await sysmonApi.getConfig()
+      // 等待期间 WS `sysmon_config` 可能已经到达（它才是生效信号）：REST 响应更旧，
+      // 不得覆盖已生效镜像，否则配置展示会短暂回退到旧值。
+      if (config.value !== null) return
       if (!isFullConfigPayload(payload)) return  // 半截配置不入镜像，等 WS 全量回推
       config.value = payload
     } catch {

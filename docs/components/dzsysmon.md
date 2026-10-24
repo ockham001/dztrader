@@ -85,7 +85,7 @@
   - `sampling.groups.cpu`（#81）：关闭时跳过 CPU 计时/负载/速率采集与饱和判定，`cpu.total` / `cpu.cores` / `cpu.load_average` / `cpu.context_switches` 标 `disabled_by_config`，重新开启从新基线开始；`cpu.frequency` 由 `sampling.groups.cpu_frequency` 独立控制（#73，Linux 默认开、Windows 默认关）。
   - `sampling.groups.memory` / `sampling.groups.swap`（#74）、`volumes`（#75）、`disk_io`（#76）、`network`（#77）：关闭时跳过对应采集并标 `disabled_by_config`，重新开启从新基线开始，关闭期不冒充速率窗口。
   - `sampling.measure_interval_ms` 与 `realtime.push_interval_sec`：SET 成功后取消 pending wait 并按新间隔重排（即时生效）；`sampling.record_interval_sec` / `sampling.phase_offset_sec`：记录窗口重配，从**下一窗口**生效（进行中窗口按旧宽度落库，避免切碎历史）。
-  - `disk.watch_paths`：关注路径解析与 `volumes[].watched`；在**下一次计量 tick** 按新配置重新解析落卷（无需重启，默认 ≤1s 后推送的快照体现）。
+  - `disk.watch_paths`：关注路径解析与 `volumes[].watched`；在**下一次计量 tick** 按新配置重新解析落卷（无需重启；默认 1s 计量周期内重新解析，随后推送的快照——默认 5s 周期——体现）。
   - `disk.devices`（#81）：磁盘 I/O 设备范围——空 = 全部整物理盘；非空按 `disk_io[].device` 精确匹配（Linux 整盘名 / Windows `PhysicalDrive<N>`），匹配不到只是不输出、不是校验错误。过滤在快照构造阶段（不重新采集、不重置速率基线），SET 后立即推送的一帧即体现；历史维度数据与实时快照同口径。
   - `network.hide_virtual`（#77）：快照构造阶段过滤虚拟网卡，SET 后立即推送一帧；历史维度数据与实时快照同口径。
   - `history.enabled`（#81 起支持运行期切换）：true→false 先 flush 当前记录窗口再关库/停落盘线程；false→true 建库并起线程，从空窗口开始且**不写 `restart` 标记**（进程没重启）；建库失败记 ERROR + `NOTIFY_UI`，实时链路继续，生效配置保持 `true`（配置表达意图，失败是运行期降级，不伪造回滚）；后续任意 SET 会重试建库（无需先关再开或重启）。

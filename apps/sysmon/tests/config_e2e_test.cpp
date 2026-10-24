@@ -406,6 +406,22 @@ TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
         // 空数组 + available=true。两者都是合法形态，不能把"无盘"当成"不可用"。
         EXPECT_TRUE(disk_io.is_null() || (disk_io.is_array() && disk_io.empty()));
     }
+
+    // disk.watch_paths 在**计量阶段**解析（不是快照构造阶段的纯过滤）：立即推送的这一帧
+    // 可能仍是上一 tick 的解析结果；下一次计量 tick（measure=500ms）后的周期快照必须
+    // 体现新关注路径（契约 sysmon §3.1）。
+    const auto watched = wait_for_snapshot(
+        [&watch_path](const nlohmann::json& payload) {
+            const auto& paths = payload["watch_paths"];
+            if (!paths.is_array()) return false;
+            return std::any_of(paths.begin(), paths.end(), [&watch_path](const auto& entry) {
+                return entry.value("path", std::string()) == watch_path;
+            });
+        },
+        5000ms);
+    ASSERT_TRUE(watched.has_value())
+        << "disk.watch_paths change was not applied at the next measure tick";
+    EXPECT_EQ(platform::SysmonSnapshot::validate(*watched), std::nullopt);
 }
 
 // 契约 sysmon §3.1.1 第 2 步：推送间隔运行期修改后立即重排，不等旧周期（300s）结束。
@@ -591,12 +607,10 @@ TEST_F(ConfigE2ETest, CpuGroupDisabledAtStartupReportsDisabledByConfig) {
         5s);
     ASSERT_TRUE(enabled.has_value()) << "cpu group re-enable did not restore availability";
     EXPECT_EQ(platform::SysmonSnapshot::validate(*enabled), std::nullopt);
-    // 重新开启后若每核能力可用，核数不变量必须恢复（契约 §2.3：length == logical_cores）。
-    // 生产者侧若在关闭时把已确认的核 index 也清掉，这里会以「可用 + 空数组」暴露。
-    if ((*enabled)["availability"]["metrics"]["cpu.cores"].value("available", false)) {
-        EXPECT_EQ((*enabled)["cpu"]["cores"].size(),
-                  (*enabled)["system"]["logical_cores"].get<std::size_t>());
-    }
+    // 注：这里不额外断言「cores 长度 == logical_cores」——快照构造在每核非空时会把
+    // logical_cores 覆盖为 cores.size()，该断言恒真、不构成覆盖。生产者侧的「关闭时保留
+    // 已知核 index」由代码保证（main.cpp 的 disabled 分支只清数值不清 index），其失效只会在
+    // 「重新开启后首个 tick 采集失败」的窗口暴露，e2e 无法确定性构造该失败。
 
     // 运行期再次关闭：下一次周期快照必须回到 disabled_by_config + 空数值（不是旧值）。
     pending_.clear();

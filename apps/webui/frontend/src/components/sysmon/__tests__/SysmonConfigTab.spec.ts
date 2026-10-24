@@ -93,6 +93,12 @@ describe('SysmonConfigTab 生效配置展示（#81）', () => {
     const paths = wrapper.findAll('[data-test="sysmon-config-value-disk.watch_paths"] .sysmon-config__list-item')
     expect(paths.map(item => item.text())).toEqual(['/data', '/var/lib'])
     expect(wrapper.find('[data-test="sysmon-config-value-disk.devices"]').text()).toBe('sda')
+    // 关注卷剩余空间的两种阈值形态必须有可区分的标签（百分比 / 绝对容量），
+    // 否则只读区会出现两行同名、用户无法判断哪行控制哪个形态。
+    expect(valueText(wrapper, 'alerts.volume_free_pct')).toBe('10%')
+    expect(valueText(wrapper, 'alerts.volume_free_bytes')).toBe('1.0 GiB')
+    expect(wrapper.text()).toContain('关注卷剩余空间阈值（百分比）')
+    expect(wrapper.text()).toContain('关注卷剩余空间阈值（绝对容量）')
   })
 
   it('空数组字段按契约语义展示（watch_paths 默认路径 / devices 全部物理盘），不留空值', async () => {

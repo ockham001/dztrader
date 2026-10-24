@@ -368,7 +368,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 |------|------|------|------|------|
 | `measure_interval_ms` | int | 1000 | `[100, 60000]` | 计量间隔；速率型指标的采样窗口 |
 | `record_interval_sec` | int | 60 | `[1, 86400]` | 记录间隔（历史写入窗口宽度，由 #78 消费；记录窗口同时受 `phase_offset_sec` 影响，见「历史存储」注） |
-| `phase_offset_sec` | int | 3 | `[0, 86400]` | 记录 tick 相位偏移，避开整点附近其它任务（#78 消费；钳制到 `[0, record_interval_sec)`，默认配置下窗口起点为每分钟第 3 秒，**不落在整数分钟边界**） |
+| `phase_offset_sec` | int | 3 | `[0, 86400]` | 记录 tick 相位偏移，避开整点附近其它任务（#78 消费；桶计算时按 `phase_offset_sec % record_interval_sec` 取模对齐——**存储、RTN 与 UI 保留配置原值，不在配置层钳制**；默认配置下窗口起点为每分钟第 3 秒，**不落在整数分钟边界**） |
 | `groups` | object\<string,bool\> | Linux：全部 true；Windows：`temperature`/`cpu_frequency` 为 false | 值必须 bool | 启用的指标大类：`cpu`/`memory`/`swap`/`volumes`/`disk_io`/`network`/`temperature`/`cpu_frequency`。`temperature` 与 `cpu_frequency` 属 B 组：Linux 默认开（有 hwmon / cpufreq 时）；Windows 默认关（平台上不可靠或不存在，需显式开启；本版本 Windows 采集器仍报告 `unsupported`）。缺少的键按 true 处理。各键语义见 §3.1.1 |
 
 `disk`：`{watch_paths:string[], devices:string[]}`（元素非空）。
