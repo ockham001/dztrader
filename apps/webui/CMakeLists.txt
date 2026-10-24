@@ -38,12 +38,14 @@ add_library(dzweb_obj OBJECT
     settings_controller.cpp
     td_data_service.cpp
     sysmon_controller.cpp
+    sysmon_history_service.cpp
 )
 target_link_libraries(dzweb_obj PUBLIC
     Drogon::Drogon
     msgpack-cxx
     dzshm
     dzprocess
+    dzsysmonstore
     dztrading
     strategy_api_headers
     dzcore

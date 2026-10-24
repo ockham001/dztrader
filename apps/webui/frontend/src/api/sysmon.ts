@@ -1,5 +1,6 @@
 import { api } from './client'
 import type { SysmonNetworkConfigPayload, SysmonSnapshotPayload } from '@/types/generated'
+import type { SysmonHistoryQueryParams, SysmonHistoryResponse } from '@/types/api'
 
 /**
  * 系统监控配置 merge patch（契约 sysmon §3 / 契约 rest §2.8）。
@@ -8,6 +9,17 @@ import type { SysmonNetworkConfigPayload, SysmonSnapshotPayload } from '@/types/
  */
 export interface SysmonConfigPatch {
   network?: Partial<SysmonNetworkConfigPayload>
+}
+
+/** 把历史查询参数拼成 query string（省略 undefined/空串，后端按「未给」处理）。 */
+function toHistoryQueryString(params: SysmonHistoryQueryParams): string {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue
+    search.set(key, String(value))
+  }
+  const text = search.toString()
+  return text ? `?${text}` : ''
 }
 
 // REST 响应仅表示「已写事件通道」，**不是**生效信号（契约 rest §2.8）；
@@ -19,4 +31,13 @@ export const sysmonApi = {
   // 契约 rest §2.8：运行期修改系统监控配置（admin）；shm 未就绪时 503。
   setConfig: (patch: SysmonConfigPatch) =>
     api.put<{ ok: boolean; message?: string }>('/api/sysmon/config', patch),
+  /**
+   * 《帧契约：系统监控》§6.1 / 《帧契约：REST》§2.8：历史曲线查询。
+   *
+   * 历史库不可用时**不**回 5xx —— 而是 200 + `{available:false, reason}`（库缺失 / 版本不符 /
+   * 文件损坏三种降级由后端判定）。因此调用方必须判断 `available`，不能只看 HTTP 是否成功。
+   * 参数非法才是 400（后端不静默钳制）。
+   */
+  getHistory: (params: SysmonHistoryQueryParams = {}) =>
+    api.get<SysmonHistoryResponse>(`/api/sysmon/history${toHistoryQueryString(params)}`),
 }

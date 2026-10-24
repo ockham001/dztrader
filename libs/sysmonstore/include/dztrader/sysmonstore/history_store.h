@@ -167,6 +167,24 @@ public:
                                                           int64_t max_rows) const;
 
     /**
+     * @brief 按**时间降序**查询宽表时间序列（配合点数上限的精确截断判定）。
+     *
+     * 为什么需要降序：点数上限要求「保留最新 N 个桶」，而「是否还有更旧的桶」只能靠多取
+     * 一行来确定；升序 + `LIMIT N+1` 拿到的是最旧的 N+1 行，判不出尾部是否还有数据。
+     * 降序取的 `max_rows` 行就是最新的 `max_rows` 行，超出即说明丢了更旧的数据。
+     *
+     * @param level 桶层级
+     * @param since_ts 起始时刻（含）
+     * @param until_ts 结束时刻（不含；`<= since_ts` 返回空）
+     * @param max_rows 行数上限（> 0）
+     * @return 按 `bucket_ts` **降序**的行
+     */
+    [[nodiscard]] std::vector<ScalarRecord> query_scalars_desc(int32_t level,
+                                                               int64_t since_ts,
+                                                               int64_t until_ts,
+                                                               int64_t max_rows) const;
+
+    /**
      * @brief 查询长表中某个维度序列（如某网卡的收速率）。
      *
      * @param domain     域标识（见 `schema.h` 的 `k*Domain`）
@@ -184,6 +202,26 @@ public:
                                                                 int64_t since_ts,
                                                                 int64_t until_ts,
                                                                 int64_t max_rows) const;
+
+    /**
+     * @brief 按**时间降序**查询长表中某个维度序列（配合点数上限的精确截断判定）。
+     *
+     * @param domain     域标识
+     * @param dimension  维度标识（**必须**非空：本版本每次只查一条序列）
+     * @param metric     指标名（必须非空）
+     * @param level      桶层级
+     * @param since_ts   起始时刻（含）
+     * @param until_ts   结束时刻（不含）
+     * @param max_rows   行数上限（> 0）
+     * @return 按 `bucket_ts` **降序**的行
+     */
+    [[nodiscard]] std::vector<DimensionRecord> query_dimensions_desc(std::string_view domain,
+                                                                     std::string_view dimension,
+                                                                     std::string_view metric,
+                                                                     int32_t level,
+                                                                     int64_t since_ts,
+                                                                     int64_t until_ts,
+                                                                     int64_t max_rows) const;
 
     /**
      * @brief 取已落库的最新一个桶的时刻（任意层级）。

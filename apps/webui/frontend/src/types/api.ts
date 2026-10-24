@@ -192,3 +192,81 @@ export interface WebuiSettingsUpdateBody {
   token_ttl_sec?: number
   notify_cache_size?: number
 }
+
+// ===== 系统监控历史查询（《帧契约：系统监控》§6.1、《帧契约：REST》§2.8）=====
+// 历史查询走 REST（dzweb 只读打开历史库），不是 WS 领域消息，故类型定义在此而非
+// schema/domain-payloads.schema.json（后者只承载 WS 领域载荷）。
+
+/** 历史查询的桶层级（`auto` 由服务端按范围宽度选择，回显实际层级） */
+export type SysmonHistoryLevel = 'auto' | 'raw' | 'minute'
+
+/** 历史查询的不可用原因码（与 libs/sysmonstore 的 HistoryAvailability 一一对应） */
+export type SysmonHistoryUnavailableReason = 'not_found' | 'schema_mismatch' | 'open_failed'
+
+/** 历史查询的标记 kind（《帧契约：系统监控》§6.1.4） */
+export type SysmonHistoryMarkKind = 'sample_gap' | 'restart' | 'clock_jump' | 'unmarked'
+
+/** 一个历史桶的聚合量；该指标在该桶内无有效样本时四值与 n 全为 null（不得用 0 冒充） */
+export interface SysmonHistoryPoint {
+  ts: number
+  min: number | null
+  max: number | null
+  avg: number | null
+  last: number | null
+  n: number | null
+}
+
+/** 一条历史序列（本版本恒 1 条；数组形状保留以便将来多维度叠加是 additive 扩展） */
+export interface SysmonHistorySeries {
+  dimension: string
+  points: SysmonHistoryPoint[]
+}
+
+/** 一条历史标记（事实清单，供图上标记与 tooltip 文案） */
+export interface SysmonHistoryMark {
+  ts: number
+  kind: SysmonHistoryMarkKind
+  detail: string
+}
+
+/** 序列内一段不连续区间（缺口底纹）；kind 解释原因，unmarked = 缺了但没标记 */
+export interface SysmonHistoryGap {
+  from: number
+  to: number
+  kind: SysmonHistoryMarkKind
+}
+
+/** 历史库可用时的响应（available=true） */
+export interface SysmonHistoryAvailable {
+  available: true
+  level: Exclude<SysmonHistoryLevel, 'auto'>
+  metric: string
+  from: number
+  to: number
+  /** 桶宽（秒）；范围内无任何桶时为 null（无桶即无桶宽，不得猜一个值） */
+  interval_sec: number | null
+  /** true = 因 max_points 上限窗口前移，from 是实际返回首点的桶时刻 */
+  truncated: boolean
+  series: SysmonHistorySeries[]
+  marks: SysmonHistoryMark[]
+  gaps: SysmonHistoryGap[]
+}
+
+/** 历史库不可用时的降级响应（available=false；不含任何数据字段） */
+export interface SysmonHistoryUnavailable {
+  available: false
+  reason: SysmonHistoryUnavailableReason
+}
+
+export type SysmonHistoryResponse = SysmonHistoryAvailable | SysmonHistoryUnavailable
+
+/** 历史查询参数（《帧契约：系统监控》§6.1；除 metric 外均可选） */
+export interface SysmonHistoryQueryParams {
+  metric?: string
+  /** 维度指标必填、标量指标必须省略 */
+  dimension?: string
+  from?: number
+  to?: number
+  level?: SysmonHistoryLevel
+  max_points?: number
+}
