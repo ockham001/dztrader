@@ -887,8 +887,10 @@ private:
         // 配置关闭不是采集缺口，**不累加** missed_ticks；其它域与告警判定照常。
         if (!group_enabled(platform::SYSMON_GROUP_CPU)) {
             metrics_.disabled = true;
+            // clear_cpu_values 只把数值置空、保留已知核 index（契约 §2.7）：关闭期间快照构造
+            // 会清空输出；重新开启后若首个 tick 采集失败，仍能保持「保留 index、usage=null」
+            // 的形态，而不是让「能力可用 + 空数组」违反 §2.3 的核数不变量。
             clear_cpu_values();
-            metrics_.cores.clear();  // 关闭期间不发布任何核条目（快照构造同样清空）
             metrics_.load_average = std::nullopt;
             prev_cpu_times_ = std::nullopt;
             prev_sample_time_ = {};
@@ -1151,6 +1153,11 @@ private:
                 } else {
                     disable_history_at_runtime();
                 }
+            } else if (config_.history.enabled && history_writer_ == nullptr) {
+                // 失败重试（契约 sysmon §3.1.1 第 5 步）：运行期开启失败后配置保持 `true`，
+                // 重复 SET `enabled=true` 不构成状态切换；此处仍尝试建库，使用户无需先关再开
+                // （或重启进程）即可恢复历史记录。
+                enable_history_at_runtime();
             }
             applied = true;
             SPDLOG_INFO("sysmon config updated | measure_interval_ms={} push_interval_sec={}",

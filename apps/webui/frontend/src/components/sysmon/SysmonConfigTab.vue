@@ -177,8 +177,8 @@ const displaySections = computed<DisplaySection[]>(() => {
         { field: 'alerts.cpu_sustain_samples', label: 'CPU 持续采样数', value: `${cfg.alerts.cpu_sustain_samples} 次` },
         { field: 'alerts.memory_used_pct', label: '内存使用率阈值', value: `${cfg.alerts.memory_used_pct}%` },
         { field: 'alerts.swap_used_pct', label: '交换使用率阈值', value: `${cfg.alerts.swap_used_pct}%` },
-        { field: 'alerts.volume_free_pct', label: '关注卷剩余空间阈值', value: `${cfg.alerts.volume_free_pct}%` },
-        { field: 'alerts.volume_free_bytes', label: '关注卷剩余空间阈值', value: formatBytes(cfg.alerts.volume_free_bytes) },
+        { field: 'alerts.volume_free_pct', label: '关注卷剩余空间阈值（百分比）', value: `${cfg.alerts.volume_free_pct}%` },
+        { field: 'alerts.volume_free_bytes', label: '关注卷剩余空间阈值（绝对容量）', value: formatBytes(cfg.alerts.volume_free_bytes) },
         { field: 'alerts.cooldown_sec', label: '告警冷却时间', value: `${cfg.alerts.cooldown_sec} 秒` },
       ],
     },
@@ -643,7 +643,7 @@ async function onSave(): Promise<void> {
                 :key="field.key"
                 class="sysmon-config__field"
               >
-                <span class="sysmon-config__field-label">{{ field.label }}<template v-if="field.unit">（{{ field.unit }}）</template></span>
+                <span class="sysmon-config__field-label">{{ field.label }}（{{ field.unit }}）</span>
                 <span class="ds-input">
                   <input
                     v-model="form.alertNumbers[field.key]"

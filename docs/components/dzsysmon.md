@@ -88,7 +88,7 @@
   - `disk.watch_paths`：关注路径解析与 `volumes[].watched`；在**下一次计量 tick** 按新配置重新解析落卷（无需重启，默认 ≤1s 后推送的快照体现）。
   - `disk.devices`（#81）：磁盘 I/O 设备范围——空 = 全部整物理盘；非空按 `disk_io[].device` 精确匹配（Linux 整盘名 / Windows `PhysicalDrive<N>`），匹配不到只是不输出、不是校验错误。过滤在快照构造阶段（不重新采集、不重置速率基线），SET 后立即推送的一帧即体现；历史维度数据与实时快照同口径。
   - `network.hide_virtual`（#77）：快照构造阶段过滤虚拟网卡，SET 后立即推送一帧；历史维度数据与实时快照同口径。
-  - `history.enabled`（#81 起支持运行期切换）：true→false 先 flush 当前记录窗口再关库/停落盘线程；false→true 建库并起线程，从空窗口开始且**不写 `restart` 标记**（进程没重启）；建库失败记 ERROR + `NOTIFY_UI`，实时链路继续，生效配置保持 `true`（配置表达意图，失败是运行期降级，不伪造回滚）。
+  - `history.enabled`（#81 起支持运行期切换）：true→false 先 flush 当前记录窗口再关库/停落盘线程；false→true 建库并起线程，从空窗口开始且**不写 `restart` 标记**（进程没重启）；建库失败记 ERROR + `NOTIFY_UI`，实时链路继续，生效配置保持 `true`（配置表达意图，失败是运行期降级，不伪造回滚）；后续任意 SET 会重试建库（无需先关再开或重启）。
   - `history.raw_retention_hours` / `max_retention_days` / `max_bytes`：保留策略参数发布给落盘线程，**下一维护周期**生效。
   - `alerts.*`（#80）：饱和阈值、内存/交换/卷阈值与冷却，每个计量 tick 读取当前值。
 - 运行期修改：`SET_SYSMON_CONFIG` 为 RFC 7386 merge patch（任意位置 `null` 非法；空对象无操作但仍回 RTN），成功回推全量 `RTN_SYSMON_CONFIG`；失败按四件套处理——回滚旧值 → 日志 → `NOTIFY_UI` error（`popup=true`）→ 回推旧值（契约 sysmon §3.3、通用规则 §8）。
@@ -154,7 +154,7 @@
 ### 配置与降级
 
 - `history.enabled = false`：完全不碰库（不建文件、不起线程），仅实时数据。
-- **`history.enabled` 支持运行期切换**（#81）：true→false 先 flush 当前记录窗口、再冲空队列并关库/停落盘线程（与优雅退出同一条 `shutdown_history` 路径，io 线程会短暂等待落盘线程 join——配置切换是低频人工操作，可接受）；false→true 重新建库并起线程，保留策略参数同时发布。运行期开启**不写 `restart` 标记**（进程没有重启）；关闭后重新开启从空窗口开始（关闭期间没有数据，不伪造连续）。建库失败只记 ERROR + `NOTIFY_UI`，实时链路继续，生效配置保持 `true`。其余 `history.*` 参数（保留时长、上限）**运行期即时生效**（下一维护周期）。
+- **`history.enabled` 支持运行期切换**（#81）：true→false 先 flush 当前记录窗口、再冲空队列并关库/停落盘线程（与优雅退出同一条 `shutdown_history` 路径，io 线程会短暂等待落盘线程 join——配置切换是低频人工操作，可接受）；false→true 重新建库并起线程，保留策略参数同时发布。运行期开启**不写 `restart` 标记**（进程没有重启）；关闭后重新开启从空窗口开始（关闭期间没有数据，不伪造连续）。建库失败只记 ERROR + `NOTIFY_UI`，实时链路继续，生效配置保持 `true`；后续任意 SET 会重试建库（无需先关再开或重启）。关闭时同时重置时钟跳变检测基线，避免把关闭时长误报成 `clock_jump`。其余 `history.*` 参数（保留时长、上限）**运行期即时生效**（下一维护周期）。
 - 库打开失败（磁盘满、权限、版本不符）**不阻止进程启动**：记 ERROR + `NOTIFY_UI`，降级为「不写历史」。7×24 进程不应因观测辅助链路起不来。
 - schema 版本比当前新时写入方拒绝打开（旧写入方不得覆盖新结构）；读取方在库缺失 / 版本不符 / 文件损坏时降级为「历史不可用」（见 #79）。
 

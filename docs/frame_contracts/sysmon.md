@@ -392,7 +392,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 2. **定时器即时重排**：取消当前 pending 的计量与推送等待，从**当前时刻**按新间隔重新排定，不等待当前周期结束。`measure_interval_ms` 与 `push_interval_sec` 因此立即生效；下一个 tick 的时刻由重排时刻决定（不是"旧 deadline + 新间隔"）。
 3. **记录窗口重配**：`record_interval_sec` / `phase_offset_sec` 从**下一窗口**起生效；进行中的窗口按它开始时的宽度落库（不切碎历史，避免同一桶宽度在同一窗口内变化）。
 4. **保留策略参数发布**：`history` 的保留/上限参数交给落盘线程，下一维护周期生效。
-5. **`history.enabled` 切换**：true→false 先 flush 当前窗口再关库/停线程；false→true 建库并起线程（不回写 `restart` 标记）。切换失败不阻止其它副作用，按本节 `history` 段的降级语义处理。
+5. **`history.enabled` 切换**：true→false 先 flush 当前窗口再关库/停线程，并重置时钟跳变检测基线（重开后的首个 tick 不得把关闭时长误报成 `clock_jump`）；false→true 建库并起线程（不回写 `restart` 标记）。切换失败不阻止其它副作用，按本节 `history` 段的降级语义处理；**开启失败后配置保持 `true`，后续任意 SET 会重试建库**（无需先关再开或重启进程）。
 6. 回推全量 `RTN_SYSMON_CONFIG`（成功与失败都回推，见 §3.2/§3.3），成功时再按 §4 触发 4 立即推送一帧快照——因此**只影响快照构造**的配置（`network.hide_virtual`、`disk.devices`）无需等到下一个推送周期；`disk.watch_paths` 的落卷解析在下一次计量 tick 刷新（最多一个计量间隔后可见），`measure_interval_ms` 越小越早。
 
 **`sampling.groups` 各键语义**（关闭后重新开启一律从**新基线**开始，不得跨关闭期计算使用率/速率；关闭期间**不累加** `sampling.missed_ticks`——配置关闭不是采集缺口）：

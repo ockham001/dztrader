@@ -218,18 +218,25 @@ describe('SysmonConfigTab 编辑与保存（#81，仅 admin）', () => {
   })
 
   it('校验失败回推旧值：表单跟随镜像重置，不保留未生效的草稿', async () => {
-    // dzsysmon 校验失败会经 WS 回推旧值（契约 sysmon §3.3 四件套）——镜像到达即重置表单，
-    // 否则用户会以为自己改的值已经生效。
-    vi.mocked(sysmonApi.setConfig).mockRejectedValue(new Error('HTTP 500'))
+    // SET 已被 dzweb 受理（HTTP 200 = 已写事件通道），但 dzsysmon 校验失败，按四件套
+    // 回推**旧值**（契约 sysmon §3.3）——这条路径与上面的 HTTP 失败不同：pending 要等
+    // WS `sysmon_config`（旧值）到达才清，表单必须跟随镜像回退而不是保留草稿。
+    vi.mocked(sysmonApi.setConfig).mockResolvedValue({ ok: true, message: 'dispatched' })
     const { wrapper, store } = await mountTab({ config: makeSysmonConfig() })
 
     await wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]').setValue('500')
     await wrapper.find('[data-test="sysmon-config-save"]').trigger('click')
     await flushPromises()
 
+    // REST 只表示"已下发"：pending 保持，镜像（生效值）未变。
+    expect(store.configPending).toBe(true)
+    expect(valueText(wrapper, 'sampling.measure_interval_ms')).toBe('1000 ms')
+
+    // 校验失败 → RTN 回推旧值：镜像仍是 1000，pending 清除、表单重置为生效值。
     store.applyConfig(makeSysmonConfig())
     await flushPromises()
 
+    expect(store.configPending).toBe(false)
     expect((wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]').element as HTMLInputElement).value)
       .toBe('1000')
     expect(valueText(wrapper, 'sampling.measure_interval_ms')).toBe('1000 ms')

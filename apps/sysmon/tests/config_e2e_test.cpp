@@ -402,8 +402,9 @@ TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
             << "disk.devices filter must keep exactly the requested device";
         EXPECT_EQ(disk_io[0]["device"], *filter_device);
     } else {
-        EXPECT_TRUE(disk_io.is_null())
-            << "without a collectable physical disk the domain must stay unavailable";
+        // 无真实盘可采：Windows 计数器不可用 ⇒ null；Linux 采集成功但本机无物理盘 ⇒
+        // 空数组 + available=true。两者都是合法形态，不能把"无盘"当成"不可用"。
+        EXPECT_TRUE(disk_io.is_null() || (disk_io.is_array() && disk_io.empty()));
     }
 }
 
@@ -590,28 +591,49 @@ TEST_F(ConfigE2ETest, CpuGroupDisabledAtStartupReportsDisabledByConfig) {
         5s);
     ASSERT_TRUE(enabled.has_value()) << "cpu group re-enable did not restore availability";
     EXPECT_EQ(platform::SysmonSnapshot::validate(*enabled), std::nullopt);
+    // 重新开启后若每核能力可用，核数不变量必须恢复（契约 §2.3：length == logical_cores）。
+    // 生产者侧若在关闭时把已确认的核 index 也清掉，这里会以「可用 + 空数组」暴露。
+    if ((*enabled)["availability"]["metrics"]["cpu.cores"].value("available", false)) {
+        EXPECT_EQ((*enabled)["cpu"]["cores"].size(),
+                  (*enabled)["system"]["logical_cores"].get<std::size_t>());
+    }
+
+    // 运行期再次关闭：下一次周期快照必须回到 disabled_by_config + 空数值（不是旧值）。
+    pending_.clear();
+    ASSERT_TRUE(send_set_config({{"sampling", {{"groups", {{"cpu", false}}}}}}));
+    const auto reverted = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return payload["availability"]["metrics"]["cpu.total"].value("available", true) ==
+                   false;
+        },
+        5s);
+    ASSERT_TRUE(reverted.has_value()) << "runtime cpu group disable did not take effect";
+    EXPECT_EQ((*reverted)["availability"]["metrics"]["cpu.total"].value("reason", std::string()),
+              "disabled_by_config");
+    EXPECT_TRUE((*reverted)["cpu"]["total"]["usage_ratio"].is_null());
+    EXPECT_TRUE((*reverted)["cpu"]["cores"].empty());
+    EXPECT_EQ(platform::SysmonSnapshot::validate(*reverted), std::nullopt);
 }
 
 // 契约 sysmon §3.1.1 第 5 步：`history.enabled` true→false 时必须先 flush **当前进行中**
-// 的记录窗口再关库。用 5s 记录窗口（长于本用例）保证关闭时窗口必然未结算；若实现漏掉
-// flush，窗口永远等不到结算（writer 已关），库里不会出现任何原始记录。
+// 的记录窗口再关库。记录窗口取 3600s（远长于本用例）：关闭时窗口必然未结算，若实现漏掉
+// flush，库里就不会出现任何原始记录（自然结算要等一小时，测试窗口内不可能发生）。
 TEST_F(ConfigE2ETest, RuntimeHistoryDisableFlushesOpenWindow) {
     write_config(/*history_enabled=*/false, kLongPushIntervalSec, /*measure_interval_ms=*/200);
     start_child();
     ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s).has_value());
     pending_.clear();
 
-    ASSERT_TRUE(
-        send_set_config({{"history", {{"enabled", true}}},
-                         {"sampling", {{"record_interval_sec", 5}, {"measure_interval_ms", 200}}},
-                         {"realtime", {{"push_interval_sec", 1}}}}));
+    ASSERT_TRUE(send_set_config(
+        {{"history", {{"enabled", true}}},
+         {"sampling", {{"record_interval_sec", 3600}, {"measure_interval_ms", 200}}},
+         {"realtime", {{"push_interval_sec", 1}}}}));
     const auto enabled = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
     ASSERT_TRUE(enabled.has_value());
     EXPECT_EQ((*enabled)["history"]["enabled"], true);
     ASSERT_TRUE(wait_for_file(history_db(), 10s));
 
-    // 等计量 tick 已产出样本（周期快照的 last_sample_unix_ms 非 0）后立刻关闭：
-    // 此时窗口最多累计 ~2s，必然还处在 5s 窗口内。
+    // 等计量 tick 已产出样本（周期快照的 last_sample_unix_ms 非 0）后立刻关闭。
     const auto ticking = wait_for_snapshot(
         [](const nlohmann::json& payload) {
             return payload["sampling"]["last_sample_unix_ms"].get<int64_t>() > 0;
@@ -669,8 +691,19 @@ TEST_F(ConfigE2ETest, RuntimeHistoryEnableFailureNotifiesAndKeepsRealtime) {
     ASSERT_TRUE(snapshot.has_value())
         << "realtime snapshot push stopped after a runtime history open failure";
     EXPECT_EQ(platform::SysmonSnapshot::validate(*snapshot), std::nullopt);
-    // 失败不是"悄悄建了库"：库路径仍是注入的目录。
-    EXPECT_TRUE(std::filesystem::is_directory(history_db()));
+
+    // 失败可重试（契约 sysmon §3.1.1 第 5 步）：去掉注入的阻塞后，下一次 SET（即使
+    // `enabled` 没有状态切换）应再次尝试建库并成功，无需先关再开或重启进程。
+    std::error_code remove_ec;
+    std::filesystem::remove_all(history_db(), remove_ec);
+    ASSERT_FALSE(remove_ec) << "failed to remove injected blocking directory";
+    pending_.clear();
+    ASSERT_TRUE(send_set_config({{"alerts", {{"memory_used_pct", 91.0}}}}));
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s).has_value());
+    ASSERT_TRUE(wait_for_file(history_db(), 5s))
+        << "a later SET did not retry opening the history database";
+    EXPECT_TRUE(std::filesystem::is_regular_file(history_db()))
+        << "retry must create the database file, not leave the blocking directory";
 }
 
 }  // namespace
