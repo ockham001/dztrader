@@ -31,19 +31,29 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-// winsock2.h 必须先于 windows.h（IP Helper API 的 iphlpapi.h 依赖其套接字类型；
-// 与 libs/core/src/env.cpp 的既有做法一致）。WIN32_LEAN_AND_MEAN 已排除 winsock.h，
-// 因此不会出现两套套接字头冲突。
+// IP Helper 的包含顺序（MSDN「Including Header Files for IP Helper」与 SDK 实践）：
+// winsock2.h → ws2tcpip.h → windows.h → netioapi.h/iphlpapi.h。
+// - winsock2.h 必须先于 windows.h（否则引入旧的 winsock.h，两套套接字头冲突）；
+//   WIN32_LEAN_AND_MEAN 已排除 winsock.h，与 libs/core/src/env.cpp 既有做法一致。
+// - ws2tcpip.h 负责引入 ws2ipdef.h：`MIB_IF_ROW2` 的字段类型（NET_LUID / NET_IFINDEX /
+//   IF_MAX_* / IF_OPER_STATUS）来自它。本 TU 原先只引 winsock2.h，Netioapi.h 被间接
+//   引入时 ws2ipdef.h 从未进入包含树，于是 netioapi.h 的接口结构段整体未生效 ——
+//   CI Windows job 因此报 `'PMIB_IF_TABLE2': undeclared identifier` 与
+//   `'GetIfTable2': identifier not found`（同一失败 TU 的 showIncludes 里确实没有
+//   ws2ipdef.h，而通过编译的其它 TU 有）。
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <pdh.h>
 #include <pdhmsg.h>    // PDH_CSTATUS_VALID_DATA / PDH_CSTATUS_NEW_DATA（部分 SDK 的 pdh.h 不引入）
 #include <psapi.h>     // GetPerformanceInfo：内存与页文件口径（契约 sysmon §2.4）
 #include <winioctl.h>  // DISK_PERFORMANCE / IOCTL_DISK_PERFORMANCE：每物理盘 I/O（契约 sysmon §2.4）
 #include <winreg.h>
-// IP Helper API：GetIfTable2 / FreeMibTable（每网卡累计计数器，契约 sysmon §2.4）。
-// 必须在 windows.h 之后引入。只引 iphlpapi.h：MSDN 明确 netioapi.h 由它自动包含、
-// 且不应被直接引入（两者均有 include guard）；链接库 iphlpapi 在 CMakeLists 声明。
+// 每网卡累计计数器（契约 sysmon §2.4）：GetIfTable2 / FreeMibTable 与 MIB_IF_TABLE2 /
+// MIB_IF_ROW2。MSDN 把这两个结构体与 GetIfTable2 都标注在 netioapi.h，故显式引入
+// netioapi.h 而不依赖 iphlpapi.h 的间接引入（前置条件见上方 ws2tcpip.h 的说明）。
+// 链接库 iphlpapi 在 CMakeLists 声明。
+#include <netioapi.h>
 #include <iphlpapi.h>
 
 #include "system_collector_internal.h"
@@ -971,6 +981,14 @@ RawDiskIoSnapshot query_disk_io() {
     }
     return snapshot;
 }
+
+// 编译期断言：IP Helper 的接口结构体确实可见。若头文件包含顺序回归（例如有人删掉
+// ws2tcpip.h），编译器会先在这里给出可读的失败原因，而不是在 query_network 里刷出
+// 二十多条级联的 undeclared identifier。
+static_assert(sizeof(MIB_IF_ROW2) > 0,
+              "MIB_IF_ROW2 must be visible: include winsock2.h, "
+              "ws2tcpip.h, windows.h, netioapi.h in that order");
+static_assert(sizeof(MIB_IF_TABLE2) > 0, "MIB_IF_TABLE2 must be visible: see iphlpapi/netioapi");
 
 // ===== 每网卡累计计数器：GetIfTable2 / FreeMibTable（契约 sysmon §2.4、§2.7）=====
 //
