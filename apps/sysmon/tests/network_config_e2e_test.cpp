@@ -24,6 +24,8 @@
 #include <dztrader/platform/frame_codec.h>
 #include <dztrader/platform/sysmon.h>
 #include <dztrader/shm/channel_meta.h>
+#include <dztrader/shm/named_semaphore.h>
+#include <dztrader/shm/process_mutex.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
@@ -85,14 +87,22 @@ bool event_semaphore_busy() {
     }
     return false;
 #else
-    // POSIX 下命名信号量以文件形式存在于 /dev/shm 或 /tmp；本仓 Linux 侧命名为 dz.sem.<name>。
+    // POSIX 命名信号量落在 /dev/shm，glibc 的文件名为 `sem.<name>`，而本仓 name 已带
+    // `dz.sem.` 前缀（named_semaphore.cpp：sem_open("/dz.sem." + name)）→
+    // 最终是 `/dev/shm/sem.dz.sem.<name>`。之前按 `/dev/shm/dz.sem.dzevent` 判定是错的
+    // （恒 false，也就永远检测不到残留）。
     std::error_code ec;
-    for (const auto& dir : {std::filesystem::path("/dev/shm"), std::filesystem::path("/tmp")}) {
-        if (std::filesystem::exists(dir / "dz.sem.dzevent", ec)) {
-            return true;
-        }
-    }
-    return false;
+    return std::filesystem::exists("/dev/shm/sem.dz.sem.dzevent", ec);
+#endif
+}
+
+/// 清理本用例创建的命名信号量（POSIX 需显式 sem_unlink；Windows 句柄关闭即回收）。
+void remove_semaphore(const std::string& name) {
+    std::error_code ec;
+#ifdef _WIN32
+    shm::NamedSemaphore::remove(name);
+#else
+    std::filesystem::remove("/dev/shm/sem.dz.sem." + name, ec);
 #endif
 }
 
@@ -146,6 +156,12 @@ protected:
         reader_.reset();
         meta_.reset();
         writer_.reset();
+        // 命名信号量是机器全局资源：不 unlink 会在 /dev/shm 里随每次运行累积
+        // （reader 名含随机后缀，无法靠固定名回收）。dzsysmon 的信号量同样清理。
+        remove_semaphore(reader_name_);
+        remove_semaphore(platform::SYSMON_INSTANCE_NAME);
+        dztrader::shm::ProcessMutex::remove(shm::channel_name("dzevent") + ".meta");
+        dztrader::shm::ProcessMutex::remove(shm::channel_name("dzevent") + ".write");
         if (orig_home_.has_value()) {
             dztrader::env::set("DZTRADER_HOME", *orig_home_);
         } else {
@@ -299,12 +315,6 @@ protected:
         return std::nullopt;
     }
 
-    /// 窗口内是否出现过指定类型（不消耗 pending_）。
-    bool saw_frame(DzFrameType type) const {
-        return std::any_of(pending_.begin(), pending_.end(),
-                           [type](const auto& entry) { return entry.first == type; });
-    }
-
     std::filesystem::path home_;
     std::optional<std::string> orig_home_;
     std::string reader_name_ = "dzmon_e2e_reader_" + unique_suffix();
@@ -348,14 +358,33 @@ TEST_F(NetworkConfigE2ETest, SetConfigPushesSnapshotImmediately) {
     ASSERT_TRUE(config.has_value()) << "SET must roll the effective config back to the client";
     EXPECT_EQ((*config)["network"]["hide_virtual"], false);
 
-    // 该帧的快照若携带网卡数据，hide_virtual=false 时虚拟网卡必须出现（未被过滤）。
-    const auto& network = (*after_set)["network"];
-    if (network.is_array()) {
-        for (const auto& nic : network) {
-            ASSERT_TRUE(nic.contains("is_virtual"));
-            // 显示全部时不做过滤：不是断言"一定有虚拟网卡"（宿主机可能没有），
-            // 而是断言"不会被过滤掉"——条目数与采集到的网卡数一致由下方 validate 保证。
-        }
+    // ---- 开关的效果：hide_virtual=false 后虚拟网卡必须**出现**（未被过滤） ----
+    // 启动首帧是 hide_virtual=true 的快照：先确认它确实过滤掉了虚拟网卡，再看切换后是否
+    // 出现——两次对比才是"开关真的生效"的证据，只断言键存在是无效的（恒真）。
+    const auto& startup_network = first->operator[]("network");
+    ASSERT_TRUE(startup_network.is_array()) << "snapshot must carry the network array";
+    const bool startup_has_virtual =
+        std::any_of(startup_network.begin(), startup_network.end(),
+                    [](const nlohmann::json& nic) { return nic.value("is_virtual", false); });
+    EXPECT_FALSE(startup_has_virtual)
+        << "hide_virtual=true must not emit virtual interfaces (contract sysmon §7)";
+
+    const auto& shown_network = after_set->operator[]("network");
+    ASSERT_TRUE(shown_network.is_array());
+    ASSERT_FALSE(shown_network.empty()) << "host must have at least one interface";
+    for (const auto& nic : shown_network) {
+        ASSERT_TRUE(nic.contains("is_virtual"));
+        ASSERT_TRUE(nic.contains("interface"));
+    }
+    // 本机（含 lo；多数宿主机还有 docker0/bridge/veth）至少有一个虚拟接口。
+    // 若宿主机确实只有物理网卡，hide_virtual=false 与 true 的快照会相同——此时
+    // 「显示全部未被过滤」无法从数据上区分，只能退化为上面"快照合法且立即到达"的断言。
+    const bool shown_has_virtual =
+        std::any_of(shown_network.begin(), shown_network.end(),
+                    [](const nlohmann::json& nic) { return nic.value("is_virtual", false); });
+    if (shown_has_virtual) {
+        EXPECT_GE(shown_network.size(), startup_network.size())
+            << "showing all interfaces cannot yield fewer entries";
     }
 }
 
@@ -363,6 +392,9 @@ TEST_F(NetworkConfigE2ETest, SetConfigPushesSnapshotImmediately) {
 TEST_F(NetworkConfigE2ETest, RejectedPatchRollsBackAndDoesNotPushSnapshot) {
     start_child();
     ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s).has_value());
+    // 丢弃启动期残留帧：否则下面的 RTN_SYSMON_CONFIG 会命中启动推送的旧配置帧
+    // （其 hide_virtual=true 恰好等于回滚期望值），断言被旧帧满足 = 证据无效。
+    pending_.clear();
 
     // hide_virtual 必须是 bool：给字符串 → SysmonConfig::validate 拒绝。
     ASSERT_TRUE(send_set_config({{"network", {{"hide_virtual", "yes"}}}}));
@@ -374,7 +406,6 @@ TEST_F(NetworkConfigE2ETest, RejectedPatchRollsBackAndDoesNotPushSnapshot) {
     // 失败路径不推快照（契约 §4 触发 4 明确「成功后」）。
     EXPECT_FALSE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 2s).has_value())
         << "a rejected SET must not trigger an immediate snapshot push";
-    EXPECT_TRUE(saw_frame(DZ_FRAME_RTN_SYSMON_CONFIG));
 }
 
 }  // namespace

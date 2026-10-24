@@ -309,7 +309,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 **语义**：运行期修改系统监控配置（RFC 7386 merge patch），并回推**全量**生效配置。配置持久化为 `$DZTRADER_HOME/configs/dzsysmon.json`（进程缺失时自动生成默认值；仓库不提交模板文件）。日志配置走《帧契约：日志》的 `SET/RTN_LOG_CONFIG`，**不在本帧 payload 内**。
 
-**数据流**：形态 1——dzweb → `dzsysmon`（`instance_id=dzsysmon`）→ 校验/应用/持久化 → `RTN_SYSMON_CONFIG` 全量回推 → dzweb 镜像 `sysmon_config` 域 → WS 消息 `sysmon_config`。前端入口（REST `PUT /api/sysmon/config`）随运行期配置实现登记到契约 rest；本契约落帧语义与接收方处理（校验/持久化/定时器即时重排）。
+**数据流**：形态 1——dzweb → `dzsysmon`（`instance_id=dzsysmon`）→ 校验/应用/持久化 → `RTN_SYSMON_CONFIG` 全量回推 → dzweb 镜像 `sysmon_config` 域 → WS 消息 `sysmon_config`。前端入口为 REST `PUT /api/sysmon/config`（已随 #77 落地，端点细节见契约 rest §2.8；前端当前只用它切换 `network.hide_virtual`，完整配置编辑界面随 #81）。本契约落帧语义与接收方处理（校验/持久化/定时器即时重排）。
 
 **SET payload**：JSON object（merge patch；object 内嵌套对象按键合并、数组整体替换）。任意位置出现 `null` 为校验失败；空对象 `{}` 为无操作但**仍回 RTN**。未知字段忽略（总则 §8）。
 
@@ -326,9 +326,9 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 | `phase_offset_sec` | int | 3 | `[0, 86400]` | 记录 tick 相位偏移，避开整点附近其它任务 |
 | `groups` | object\<string,bool\> | Linux：全部 true；Windows：`temperature`/`cpu_frequency` 为 false | 值必须 bool | 启用的指标大类：`cpu`/`memory`/`swap`/`volumes`/`disk_io`/`network`/`temperature`/`cpu_frequency`。`temperature` 与 `cpu_frequency` 属 B 组：Linux 默认开（有 hwmon / cpufreq 时）；Windows 默认关（平台上不可靠或不存在，需显式开启；本版本 Windows 采集器仍报告 `unsupported`）。缺少的键按 true 处理 |
 
-`disk`：`{watch_paths:string[], devices:string[]}`（元素非空；`watch_paths` 为空表示使用默认关注路径——共享内存目录与数据库目录；非空时逐条解析并作为 `watch_paths[]` 输出，同时决定 `volumes[].watched`）。`watch_paths` 影响快照 `watch_paths` / `volumes[].watched`，运行期修改随 #81 生效。
+`disk`：`{watch_paths:string[], devices:string[]}`（元素非空；`watch_paths` 为空表示使用默认关注路径——共享内存目录与数据库目录；非空时逐条解析并作为 `watch_paths[]` 输出，同时决定 `volumes[].watched`）。`watch_paths` 影响快照 `watch_paths` / `volumes[].watched`；运行期修改经 `SET_SYSMON_CONFIG` 即时生效（该字段只影响快照构造，不触发重新采样）。
 
-`network`：`{hide_virtual:bool}`，默认 `true`（隐藏 Hyper-V/WSL/Docker 虚拟网卡）。
+`network`：`{hide_virtual:bool}`，默认 `true`（隐藏虚拟网卡：回环、桥接、veth、容器网桥、隧道与 VLAN 逻辑接口等——判定依据是「不由硬件设备支撑」，见 §2.4）。该开关在**快照构造**阶段过滤，`SET_SYSMON_CONFIG` 成功后立即推送一帧使改动即时可见（§4 触发 4）。
 
 `history`：`{enabled:bool, raw_retention_hours:int, max_retention_days:int, max_bytes:int}`，默认 `true/24/30/2147483648`；`raw_retention_hours ∈ [1,720]`、`max_retention_days ∈ [1,3650]`、`max_bytes ≥ 0`（0 = 不限制）。
 
