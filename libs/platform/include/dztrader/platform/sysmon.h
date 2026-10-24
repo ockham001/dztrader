@@ -79,6 +79,12 @@ inline constexpr const char* SYSMON_GROUP_SWAP = "swap";
 inline constexpr const char* SYSMON_GROUP_TEMPERATURE = "temperature";
 inline constexpr const char* SYSMON_GROUP_CPU_FREQUENCY = "cpu_frequency";
 
+// ===== 阈值告警 kind（契约 sysmon §2.8）=====
+// 快照 `alerts[].kind` 的稳定取值；发送方（dzsysmon）与消费方（dzweb/前端）共用本集合。
+inline constexpr const char* SYSMON_ALERT_MEMORY_USED = "memory_used";
+inline constexpr const char* SYSMON_ALERT_SWAP_USED = "swap_used";
+inline constexpr const char* SYSMON_ALERT_VOLUME_FREE = "volume_free";
+
 // ===== 快照 payload（契约 sysmon §快照）=====
 
 /// 采样元信息。
@@ -389,6 +395,18 @@ struct SysmonShmDirInfo {
         SysmonShmDirInfo, path, total_bytes, page_files, oldest_file_age_sec)
 };
 
+/// 当前活动阈值告警（契约 sysmon §2.8）。
+///
+/// `alerts[]` 是**持续状态**（不是通知历史）：冷却期内被抑制的通知不影响本数组。
+/// `subject` 对 `volume_free` 为挂载点（可与同帧 `volumes[].mount` 直接相等比较），
+/// 其余 kind 为空串；`since` 为该次告警首次满足阈值的墙钟时刻（Unix 秒）。
+struct SysmonAlertInfo {
+    std::string kind;     ///< memory_used / swap_used / volume_free
+    std::string subject;  ///< volume_free 的挂载点；其余 kind 为空串
+    int64_t since = 0;    ///< 该次告警首次满足阈值的时刻（Unix 秒）
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonAlertInfo, kind, subject, since)
+};
+
 /// 单个温度传感器读数（契约 sysmon §2.4；温度为瞬时 gauge，不是累计计数器）。
 struct SysmonTemperatureInfo {
     std::string sensor;    ///< 传感器稳定标识（Linux hwmon：`<name>#<hwmonN>:<label>`）
@@ -455,6 +473,8 @@ struct SysmonSnapshot {
     std::optional<std::vector<SysmonDiskIoInfo>> disk_io;
     std::optional<std::vector<SysmonNetworkInfo>> network;
     std::optional<SysmonShmDirInfo> shm_dir;
+    /// 当前活动阈值告警（契约 sysmon §2.8）；空数组 = 无活动告警（不是"未采集"）。
+    std::vector<SysmonAlertInfo> alerts;
     SysmonAvailability availability;
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonSnapshot,
                                                 source,
@@ -471,6 +491,7 @@ struct SysmonSnapshot {
                                                 disk_io,
                                                 network,
                                                 shm_dir,
+                                                alerts,
                                                 availability)
 
     /// 校验快照 payload（契约 sysmon §校验；general §8）。
@@ -525,7 +546,7 @@ struct SysmonRealtimeConfig {
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonRealtimeConfig, push_interval_sec)
 };
 
-/// 告警配置（告警触发由后续票实现；本票仅配置形状定稿）。
+/// 告警配置（阈值告警由 #80 消费：内存/交换使用率与关注卷剩余空间阈值 + 冷却，契约 sysmon §2.8）。
 struct SysmonAlertsConfig {
     double cpu_sustain_used_pct = 90.0;  ///< 单核持续饱和阈值（百分比）
     int32_t cpu_sustain_samples = 10;    ///< 持续采样次数阈值

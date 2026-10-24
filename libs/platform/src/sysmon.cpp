@@ -603,6 +603,46 @@ std::optional<std::string> validate_snapshot_shm_dir(const json& shm_dir) {
     return std::nullopt;
 }
 
+std::optional<std::string> validate_snapshot_alerts(const json& alerts) {
+    if (!alerts.is_array()) {
+        return err("alerts", "must be an array");
+    }
+    std::set<std::string> keys;
+    for (std::size_t i = 0; i < alerts.size(); ++i) {
+        const auto& item = alerts[i];
+        const std::string path = "alerts[" + std::to_string(i) + "]";
+        if (!item.is_object()) {
+            return err(path, "must be an object");
+        }
+        if (auto e = require_non_empty_string(item, path, "kind")) {
+            return e;
+        }
+        const auto kind = item["kind"].get<std::string>();
+        const bool is_volume = kind == SYSMON_ALERT_VOLUME_FREE;
+        if (kind != SYSMON_ALERT_MEMORY_USED && kind != SYSMON_ALERT_SWAP_USED && !is_volume) {
+            return err(path + ".kind", "must be memory_used, swap_used or volume_free");
+        }
+        if (!item.contains("subject") || !item["subject"].is_string()) {
+            return err(path + ".subject", "must be a string");
+        }
+        const auto subject = item["subject"].get<std::string>();
+        if (is_volume && subject.empty()) {
+            return err(path + ".subject", "must be a non-empty mount for volume_free");
+        }
+        if (!is_volume && !subject.empty()) {
+            return err(path + ".subject", "must be empty for non-volume alerts");
+        }
+        if (auto e = require_uint(item, path, "since")) {
+            return e;
+        }
+        // `(kind, subject)` 帧内唯一（契约 sysmon §2.8）：消费方可直接按二者做 key。
+        if (!keys.insert(kind + '\n' + subject).second) {
+            return err(path, "must be unique by kind and subject");
+        }
+    }
+    return std::nullopt;
+}
+
 // ===== 配置校验辅助 =====
 
 std::optional<std::string> validate_config_sampling(const json& sampling) {
@@ -817,6 +857,13 @@ std::optional<std::string> SysmonSnapshot::validate(const nlohmann::json& payloa
         return e;
     }
     if (auto e = validate_snapshot_shm_dir(payload["shm_dir"])) {
+        return e;
+    }
+    // 契约 sysmon §2.8：alerts 必须存在且为数组（空数组合法）。
+    if (!payload.contains("alerts")) {
+        return err("snapshot.alerts", "is required");
+    }
+    if (auto e = validate_snapshot_alerts(payload["alerts"])) {
         return e;
     }
     if (!payload.contains("availability")) {

@@ -231,9 +231,74 @@ TEST(SysmonSnapshotJsonTest, DefaultSnapshotShape) {
     EXPECT_TRUE(j["cpu"]["load_average"].is_null());
     EXPECT_TRUE(j["cpu"]["core_frequencies"].is_null());
     EXPECT_TRUE(j["cpu"]["cores"].is_array());
+    // 契约 sysmon §2.8：alerts 恒为数组，空数组 = 无活动告警（不是 null/缺键）。
+    ASSERT_TRUE(j["alerts"].is_array());
+    EXPECT_TRUE(j["alerts"].empty());
     EXPECT_FALSE(j["availability"]["metrics"]["system"].contains("reason"));
     EXPECT_EQ(j["availability"]["metrics"]["memory"]["reason"], "not_implemented");
     EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
+}
+
+// 契约 sysmon §2.8：快照 alerts[] 的形状、subject 规则与帧内唯一性。
+TEST(SysmonSnapshotValidateTest, AcceptsAlertEntriesAndRejectsInvalidOnes) {
+    auto snap = make_snapshot();
+    snap.alerts = {
+        SysmonAlertInfo{.kind = SYSMON_ALERT_MEMORY_USED, .subject = "", .since = 1},
+        SysmonAlertInfo{.kind = SYSMON_ALERT_SWAP_USED, .subject = "", .since = 2},
+        SysmonAlertInfo{.kind = SYSMON_ALERT_VOLUME_FREE, .subject = "/data", .since = 3},
+    };
+    const auto valid = nlohmann::json(snap);
+    EXPECT_EQ(SysmonSnapshot::validate(valid), std::nullopt);
+    EXPECT_EQ(valid["alerts"][0]["kind"], "memory_used");
+
+    {  // 缺 alerts 键（必填，与"空"不等价）
+        auto j = valid;
+        j.erase("alerts");
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
+    {  // alerts 非数组
+        auto j = valid;
+        j["alerts"] = nlohmann::json::object();
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
+    {  // 未知 kind
+        auto j = valid;
+        j["alerts"][0]["kind"] = "disk_io_hot";
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
+    {  // volume_free 缺 subject
+        auto j = valid;
+        j["alerts"][2]["subject"] = "";
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
+    {  // 非 volume_free 带 subject
+        auto j = valid;
+        j["alerts"][0]["subject"] = "/data";
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
+    {  // since 缺失 / 为负
+        auto j = valid;
+        j["alerts"][0].erase("since");
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+        j = valid;
+        j["alerts"][0]["since"] = -1;
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
+    {  // (kind, subject) 帧内重复
+        auto j = valid;
+        j["alerts"].push_back({{"kind", "memory_used"}, {"subject", ""}, {"since", 4}});
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
+    {  // 同 kind 不同 subject（不同卷）合法
+        auto j = valid;
+        j["alerts"].push_back({{"kind", "volume_free"}, {"subject", "/home"}, {"since", 4}});
+        EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
+    }
+    {  // 条目不是对象
+        auto j = valid;
+        j["alerts"].push_back(3);
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
 }
 
 // 契约 sysmon §2.4（#74）：内存 cached_bytes / buffers_bytes 允许 null（本平台不提供/

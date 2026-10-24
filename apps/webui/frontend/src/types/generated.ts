@@ -351,6 +351,16 @@ export interface SysmonShmDirInfo {
     oldest_file_age_sec: number | null
 }
 
+// 当前活动阈值告警（契约 sysmon §2.8）：持续状态，不是通知历史。冷却期内被抑制的通知不影响本数组。
+export interface SysmonAlertInfo {
+    /** 告警对象类别（契约 sysmon §2.8） */
+    kind: string
+    /** volume_free 的挂载点（与 volumes[].mount 可直接相等比较）；其余 kind 为空串 */
+    subject: string
+    /** 该次告警首次满足阈值的墙钟时刻（Unix 秒） */
+    since: number
+}
+
 export interface SysmonTemperatureInfo {
     /** 传感器稳定标识（Linux hwmon：<name>#<hwmonN>:<label>，无 label 时用 tempN） */
     sensor: string
@@ -392,6 +402,8 @@ export interface SysmonSnapshotPayload {
     disk_io: SysmonDiskIoInfo[] | null
     network: SysmonNetworkInfo[] | null
     shm_dir: SysmonShmDirInfo | null
+    /** 当前活动阈值告警（契约 sysmon §2.8）；空数组 = 无活动告警（不是未采集） */
+    alerts: SysmonAlertInfo[]
     availability: SysmonAvailability
 }
 

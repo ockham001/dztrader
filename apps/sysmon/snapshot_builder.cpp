@@ -105,6 +105,20 @@ std::string make_platform_description(const platform::RawSystemInfo& info) {
 
 }  // namespace
 
+std::set<std::string> watched_mounts_of(
+    const std::optional<std::vector<platform::RawWatchPathInfo>>& watch_paths) {
+    std::set<std::string> mounts;
+    if (!watch_paths.has_value()) {
+        return mounts;
+    }
+    for (const auto& info : *watch_paths) {
+        if (info.mount.has_value()) {
+            mounts.insert(*info.mount);
+        }
+    }
+    return mounts;
+}
+
 platform::SysmonSnapshot build_snapshot(std::string_view source,
                                         const platform::RawSystemInfo& system_info,
                                         const CpuMetrics& cpu_metrics,
@@ -112,6 +126,7 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
                                         const MemorySwapMetrics& memory_metrics,
                                         const DiskMetrics& disk_metrics,
                                         const NetworkMetrics& network_metrics,
+                                        const std::vector<platform::SysmonAlertInfo>& active_alerts,
                                         int32_t measure_interval_ms,
                                         int64_t last_sample_unix_ms,
                                         uint64_t missed_ticks,
@@ -224,14 +239,8 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         }
         snapshot.watch_paths = std::move(watch_paths);
     }
-    std::set<std::string> watched_mounts;
-    if (snapshot.watch_paths.has_value()) {
-        for (const auto& info : *snapshot.watch_paths) {
-            if (info.mount.has_value()) {
-                watched_mounts.insert(*info.mount);
-            }
-        }
-    }
+    // 关注卷集合与告警判定共用同一实现（`watched_mounts_of`），避免"关注"语义两处漂移。
+    const std::set<std::string> watched_mounts = watched_mounts_of(disk_metrics.watch_paths);
     snapshot.volumes = std::nullopt;
     if (!disk_metrics.volumes_disabled && disk_metrics.volumes_collected &&
         disk_metrics.volumes.has_value()) {
@@ -253,6 +262,10 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         shm_dir.oldest_file_age_sec = disk_metrics.shm_dir->oldest_file_age_sec;
         snapshot.shm_dir = shm_dir;
     }
+
+    // 阈值告警活动集（#80）：状态机的结果原样投影（空数组合法 = 无活动告警）。
+    // 告警判定与冷却在 `AlertEvaluator` 中完成；快照构造只做投影，不重新判断阈值。
+    snapshot.alerts = active_alerts;
 
     // 每物理盘 I/O（#76）：配置关闭优先；能力可用但本帧未采到时为 null（能力标记粘性）。
     // 条目内的派生字段可为 null（首次采样/计数器重置），不得用 0 冒充。

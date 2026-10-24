@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -123,6 +124,19 @@ struct NetworkMetrics {
 };
 
 /**
+ * @brief 关注卷挂载点集合：`watch_paths` 中成功解析出的挂载点（去重、升序）。
+ *
+ * **路径感知口径的唯一实现点**（契约 sysmon §2.4/§2.8）：快照构造据此设置
+ * `volumes[].watched`，告警判定据此只把关注卷交给阈值判定——两处共用同一实现，
+ * 不得各写一份（否则同帧的"关注"语义会漂移）。
+ *
+ * @param watch_paths 原始落卷解析结果；`nullopt`（本帧未采集）返回空集合
+ * @return 挂载点集合（升序）；解析失败的路径（`mount = nullopt`）不计入
+ */
+[[nodiscard]] std::set<std::string> watched_mounts_of(
+    const std::optional<std::vector<platform::RawWatchPathInfo>>& watch_paths);
+
+/**
  * @brief 构造一帧实时快照。
  *
  * @param source               发送方进程名（无 instance_id 帧的来源显式携带，general §5）
@@ -133,23 +147,26 @@ struct NetworkMetrics {
  * @param disk_metrics         卷/关注路径/共享内存目录/每物理盘 I/O 的测量结果与能力标记
  *                             （#75、#76）
  * @param network_metrics      每网卡累计量与速率、能力标记与 hide_virtual（#77）
+ * @param active_alerts        当前活动阈值告警（#80；告警状态机的结果，按 `(kind, subject)` 升序）
  * @param measure_interval_ms  当前计量间隔（毫秒）
  * @param last_sample_unix_ms  最近一次计量成功的墙钟时间（Unix 毫秒，0 = 尚无成功样本）
  * @param missed_ticks         累计错过的计量 tick 数
  * @param now_unix_ms          快照生成时刻（Unix 毫秒）
  * @return 可直接序列化的快照
  */
-[[nodiscard]] platform::SysmonSnapshot build_snapshot(std::string_view source,
-                                                      const platform::RawSystemInfo& system_info,
-                                                      const CpuMetrics& cpu_metrics,
-                                                      const TemperatureMetrics& temperature_metrics,
-                                                      const MemorySwapMetrics& memory_metrics,
-                                                      const DiskMetrics& disk_metrics,
-                                                      const NetworkMetrics& network_metrics,
-                                                      int32_t measure_interval_ms,
-                                                      int64_t last_sample_unix_ms,
-                                                      uint64_t missed_ticks,
-                                                      int64_t now_unix_ms);
+[[nodiscard]] platform::SysmonSnapshot build_snapshot(
+    std::string_view source,
+    const platform::RawSystemInfo& system_info,
+    const CpuMetrics& cpu_metrics,
+    const TemperatureMetrics& temperature_metrics,
+    const MemorySwapMetrics& memory_metrics,
+    const DiskMetrics& disk_metrics,
+    const NetworkMetrics& network_metrics,
+    const std::vector<platform::SysmonAlertInfo>& active_alerts,
+    int32_t measure_interval_ms,
+    int64_t last_sample_unix_ms,
+    uint64_t missed_ticks,
+    int64_t now_unix_ms);
 
 }  // namespace dztrader::sysmon
 

@@ -44,8 +44,8 @@ platform::RawSystemInfo make_linux_info() {
 /// 只驱动网络域的极小快照构造入口（其余域留空，不参与本文件断言）。
 platform::SysmonSnapshot build_with_network(const NetworkMetrics& network_metrics) {
     return build_snapshot("dzsysmon", make_linux_info(), CpuMetrics{}, TemperatureMetrics{},
-                          MemorySwapMetrics{}, DiskMetrics{}, network_metrics, 1000, 0, 0,
-                          1'800'000'000'000);
+                          MemorySwapMetrics{}, DiskMetrics{}, network_metrics,
+                          std::vector<platform::SysmonAlertInfo>{}, 1000, 0, 0, 1'800'000'000'000);
 }
 
 platform::SysmonNetworkInfo make_snapshot_entry(std::string name, bool is_virtual) {

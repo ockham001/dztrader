@@ -11,6 +11,7 @@
  * 首帧上报（配置 + 日志配置 + 快照）→ 计量/推送双定时器 → SHUTDOWN/信号优雅退出。
  */
 
+#include "alerts.h"
 #include "config.h"
 #include "cpu_saturation.h"
 #include "cpu_usage.h"
@@ -233,6 +234,8 @@ private:
         SPDLOG_INFO("event channel ready | channel={} reader={}", CHANNEL_NAME_EVENT, name_);
 
         init_history();
+        // 首帧就可携带活动告警（启动时资源可能已经越限）：在事件通道与通知器就绪后评估一次。
+        evaluate_alerts();
     }
 
     /// 记录窗口配置（来自 sampling 段；两个字段都在配置校验里钳制过范围）。
@@ -709,6 +712,42 @@ private:
         return watch_paths;
     }
 
+    /// 评估一次阈值告警（契约 sysmon §2.8；#80）。
+    ///
+    /// 输入只取判定所需的事实：内存/交换使用率、关注卷剩余空间与关注路径落卷；
+    /// 阈值与冷却取当前生效配置（#80 只消费配置；运行期修改是既有 SET_SYSMON_CONFIG 通道，
+    /// 前端编辑入口随 #81）。
+    /// 通知发送（error+popup 触发 / info 恢复）与快照 `alerts[]` 的活动集在此统一产出，
+    /// 是告警状态的唯一写入点——采集/判定/发送都在 io_context 线程上串行。
+    void evaluate_alerts() {
+        // 判定输入（路径感知只把关注卷交给判定）与状态机推进都走纯逻辑模块，便于确定性测试。
+        const auto inputs = make_alert_inputs(memory_metrics_, disk_metrics_,
+                                              wall_clock_unix_ms() / 1000, steady_clock_ms());
+        const auto result = alert_evaluator_.evaluate(inputs, config_.alerts);
+        for (const auto& notification : result.notifications) {
+            if (notification.recovery) {
+                SPDLOG_INFO("threshold alert cleared | kind={} subject={}", notification.key.kind,
+                            notification.key.subject);
+                notify_ui_->info(notification.message);
+            } else {
+                // 触发必须是 error + popup：契约 notify-ui 只有 error+popup 会打断用户，
+                // 阈值告警是"资源即将耗尽、进程可能崩溃"的前置信号（契约 sysmon §2.8）。
+                SPDLOG_WARN("threshold alert triggered | kind={} subject={}", notification.key.kind,
+                            notification.key.subject);
+                notify_ui_->error(notification.message);
+            }
+        }
+        active_alerts_.clear();
+        active_alerts_.reserve(result.active.size());
+        for (const auto& alert : result.active) {
+            platform::SysmonAlertInfo info;
+            info.kind = alert.key.kind;
+            info.subject = alert.key.subject;
+            info.since = alert.since_unix_sec;
+            active_alerts_.push_back(std::move(info));
+        }
+    }
+
     /// 关注路径列表：配置 `disk.watch_paths` 非空时以其为准，否则用默认的
     /// 共享内存目录与数据库目录（契约 sysmon §3.1）。
     std::vector<std::string> resolve_watch_paths() const {
@@ -753,8 +792,8 @@ private:
         try {
             const auto snapshot = build_snapshot(
                 name_, system_info_, metrics_, temperature_metrics_, memory_metrics_, disk_metrics_,
-                network_metrics_, config_.sampling.measure_interval_ms, last_sample_unix_ms_,
-                missed_ticks_, wall_ms);
+                network_metrics_, active_alerts_, config_.sampling.measure_interval_ms,
+                last_sample_unix_ms_, missed_ticks_, wall_ms);
             auto batch = history_recorder_.observe(snapshot, wall_ms / 1000);
             if (!batch.empty()) {
                 enqueue_history(std::move(batch));
@@ -798,6 +837,8 @@ private:
         refresh_memory_metrics();  // 内存/交换同为独立 gauge，与 CPU 采集成败无关
         refresh_disk_metrics();    // 卷/落卷/共享内存目录同为独立事实，与 CPU 采集成败无关
         refresh_network();         // 网卡累计计数器同为独立事实，与 CPU 采集成败无关
+        // 告警判定与历史记录同频（每个计量 tick）：不跟随推送频率，CPU 采集失败也不跳过。
+        evaluate_alerts();
         auto current = collector_->collect_cpu_times();
         if (!current.has_value()) {
             ++missed_ticks_;     // 采集失败：跳过本次计量并记缺口（契约 sysmon §2.7）
@@ -916,8 +957,8 @@ private:
             network_metrics_.hide_virtual = config_.network.hide_virtual;
             const auto snapshot = build_snapshot(
                 name_, system_info_, metrics_, temperature_metrics_, memory_metrics_, disk_metrics_,
-                network_metrics_, config_.sampling.measure_interval_ms, last_sample_unix_ms_,
-                missed_ticks_, wall_clock_unix_ms());
+                network_metrics_, active_alerts_, config_.sampling.measure_interval_ms,
+                last_sample_unix_ms_, missed_ticks_, wall_clock_unix_ms());
             (void)platform::write_ext_json(*event_writer_, DZ_FRAME_RTN_SYSMON_SNAPSHOT, snapshot);
         } catch (const std::exception& e) {
             SPDLOG_ERROR("push snapshot failed | error=\"{}\"", e.what());
@@ -1105,6 +1146,10 @@ private:
     NetworkMetrics network_metrics_;
     /// 每网卡的采样基线（上一次成功采样与其单调时钟时刻）。
     RateBaseline<platform::RawNetworkInfo> network_baseline_;
+    /// 阈值告警状态机（#80）：触发/冷却/恢复状态，只在 io_context 线程访问。
+    AlertEvaluator alert_evaluator_;
+    /// 当前活动告警（快照 `alerts[]` 的投影；由 `evaluate_alerts` 刷新）。
+    std::vector<platform::SysmonAlertInfo> active_alerts_;
     CoreSaturationTracker saturation_tracker_;
     int64_t last_sample_unix_ms_ = 0;
     uint64_t missed_ticks_ = 0;

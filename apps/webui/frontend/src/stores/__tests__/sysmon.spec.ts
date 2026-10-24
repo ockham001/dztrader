@@ -1177,3 +1177,68 @@ describe('useSysmonStore sysmon_config 镜像与「显示全部网卡」pending�
     }
   })
 })
+
+describe('useSysmonStore activeAlerts（#80，快照 alerts[] 持续状态）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('无快照 / 快照 alerts 为空：活动告警为空数组（不是"未采集"，也不伪造）', () => {
+    const store = useSysmonStore()
+    expect(store.activeAlerts).toEqual([])
+    store.applySnapshot(makeSysmonSnapshot())
+    expect(store.activeAlerts).toEqual([])
+  })
+
+  it('按 kind、卷挂载点稳定排序并保留 since（不依赖发送端顺序）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      alerts: [
+        { kind: 'volume_free', subject: '/home', since: 1_790_000_003 },
+        { kind: 'swap_used', subject: '', since: 1_790_000_002 },
+        { kind: 'volume_free', subject: '/data', since: 1_790_000_004 },
+        { kind: 'memory_used', subject: '', since: 1_790_000_001 },
+      ],
+    }))
+
+    expect(store.activeAlerts.map(alert => `${alert.kind}|${alert.subject}`)).toEqual([
+      'memory_used|',
+      'swap_used|',
+      'volume_free|/data',
+      'volume_free|/home',
+    ])
+    expect(store.activeAlerts[0].since).toBe(1_790_000_001)
+  })
+
+  it('净化：未知 kind / volume_free 空挂载点 / 重复项剔除；非 volume_free 的 subject 强制空串；since 非法置 0', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      alerts: [
+        { kind: 'memory_used', subject: '/ignored', since: 1 },
+        { kind: 'volume_free', subject: '  ', since: 2 },
+        { kind: 'volume_free', subject: '/data', since: -1 },
+        { kind: 'volume_free', subject: '/data', since: 9 },
+        { kind: 'disk_io_hot', subject: '', since: 3 },
+        { kind: 'swap_used', subject: '', since: Number.NaN },
+      ] as never,
+    }))
+
+    expect(store.activeAlerts).toEqual([
+      { kind: 'memory_used', subject: '', since: 1 },
+      { kind: 'swap_used', subject: '', since: 0 },
+      { kind: 'volume_free', subject: '/data', since: 0 },
+    ])
+  })
+
+  it('后续快照覆盖：恢复后活动告警清空（持续状态随快照更新）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      alerts: [{ kind: 'memory_used', subject: '', since: 100 }],
+    }))
+    expect(store.activeAlerts).toHaveLength(1)
+
+    store.applySnapshot(makeSysmonSnapshot())
+    expect(store.activeAlerts).toEqual([])
+  })
+})
