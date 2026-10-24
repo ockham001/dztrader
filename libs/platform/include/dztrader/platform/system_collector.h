@@ -206,6 +206,43 @@ struct RawDiskIoSnapshot {
     std::string unavailable_reason;
 };
 
+/// 单个网卡的原始累计计数器与虚拟网卡标记（契约 sysmon §2.4 `network[]`）。
+///
+/// 只含原始累计值（收/发 × 字节/包/错误/丢弃）与结构性虚拟网卡判定，
+/// **不含速率**（由纯函数 `compute_network_rates` 从两次采样差值计算）。
+/// 八个计数器两平台均为 64 位（跨度 0 = 不回绕，下降即重置）。
+struct RawNetworkInfo {
+    /// 网卡名（Linux 内核接口名；Windows 适配器别名 `Alias`）。单帧内唯一。
+    std::string interface_name;
+    uint64_t rx_bytes = 0;    ///< 累计接收字节数
+    uint64_t tx_bytes = 0;    ///< 累计发送字节数
+    uint64_t rx_packets = 0;  ///< 累计接收包数（含单播与组播/广播）
+    uint64_t tx_packets = 0;  ///< 累计发送包数
+    uint64_t rx_errors = 0;   ///< 累计接收错误数
+    uint64_t tx_errors = 0;   ///< 累计发送错误数
+    uint64_t rx_drops = 0;    ///< 累计接收丢弃数
+    uint64_t tx_drops = 0;    ///< 累计发送丢弃数
+    /// 是否虚拟网卡（不由硬件设备支撑）。判定必须用结构性依据而不是名字前缀：
+    /// Linux 以 `/sys/class/net/<if>/device` 是否存在为准（回环、桥接、隧道、
+    /// veth、docker0、VLAN 等逻辑接口都没有该链接）；Windows 用
+    /// `MIB_IF_ROW2.InterfaceAndOperStatusFlags.HardwareInterface`。
+    bool is_virtual = false;
+};
+
+/// 每网卡的原始快照（契约 sysmon §2.4、§2.7）。
+///
+/// 成功与失败用 `unavailable_reason` 区分（空串 = 采集成功）：
+/// - 成功：`interfaces` 为本帧全部网络接口（含虚拟网卡——隐藏发生在快照构造，
+///   使 `network.hide_virtual` 的开关不需要重新采集）；**可能为空** = 本机无网络接口；
+/// - 失败：`interfaces` 为空，`unavailable_reason` 为可用性原因建议值（`collect_failed`）。
+///
+/// 单个网卡读不到时只是不出现在 `interfaces` 里；失败原因随结果返回，
+/// 使快照构造不需要按平台名猜原因。
+struct RawNetworkSnapshot {
+    std::vector<RawNetworkInfo> interfaces;
+    std::string unavailable_reason;
+};
+
 /// 系统指标采集接缝。
 ///
 /// 唯一实现入口：`make_system_collector()`（按编译平台返回对应实现）。
@@ -277,6 +314,19 @@ public:
     /// 失败原因随结果返回（`RawDiskIoSnapshot::unavailable_reason`），由快照构造直接映射到
     /// 可用性描述；消费方不按平台名猜原因。单个设备读不到时只是不出现在 `disks` 里。
     virtual RawDiskIoSnapshot collect_disk_io() = 0;
+
+    /// 采集**全部**网络接口的原始累计计数器（契约 sysmon §2.4、§2.7）。
+    ///
+    /// 包含虚拟网卡与回环（`is_virtual` 标明）：`network.hide_virtual` 的过滤发生在
+    /// 快照构造阶段，所以改开关不需要重新采集、也不影响速率基线。
+    ///
+    /// 采集范围：Linux 解析 `/proc/net/dev` 全部行（内核接口名），并以
+    /// `/sys/class/net/<if>/device` 的存在与否判定 `is_virtual`；Windows 用
+    /// `GetIfTable2` 取 `MIB_IF_ROW2`（`Alias` 作网卡名、`HardwareInterface` 判虚拟）。
+    ///
+    /// 失败原因随结果返回（`RawNetworkSnapshot::unavailable_reason`），由快照构造直接映射；
+    /// 单个网卡读不到时只是不出现在 `interfaces` 里。
+    virtual RawNetworkSnapshot collect_network() = 0;
 
 protected:
     SystemCollector() = default;

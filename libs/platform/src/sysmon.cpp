@@ -544,6 +544,7 @@ std::optional<std::string> validate_snapshot_network(const json& network) {
     if (!network.is_array()) {
         return err("network", "must be an array or null");
     }
+    std::set<std::string> interfaces;
     for (std::size_t i = 0; i < network.size(); ++i) {
         const auto& item = network[i];
         const std::string path = "network[" + std::to_string(i) + "]";
@@ -553,7 +554,13 @@ std::optional<std::string> validate_snapshot_network(const json& network) {
         if (auto e = require_non_empty_string(item, path, "interface")) {
             return e;
         }
-        for (const char* key : {"rx_bytes_total", "tx_bytes_total"}) {
+        if (!interfaces.insert(item["interface"].get<std::string>()).second) {
+            return err(path + ".interface", "must be unique within the frame");
+        }
+        // 累计计数器没有"不可用"语义：八个 *_total 必须存在且为非负整数（契约 sysmon §7）。
+        for (const char* key :
+             {"rx_bytes_total", "tx_bytes_total", "rx_packets_total", "tx_packets_total",
+              "rx_errors_total", "tx_errors_total", "rx_drops_total", "tx_drops_total"}) {
             if (auto e = require_uint(item, path, key)) {
                 return e;
             }
@@ -564,7 +571,7 @@ std::optional<std::string> validate_snapshot_network(const json& network) {
                 return e;
             }
         }
-        if (item.contains("is_virtual") && !item["is_virtual"].is_boolean()) {
+        if (!item.contains("is_virtual") || !item["is_virtual"].is_boolean()) {
             return err(path + ".is_virtual", "must be a boolean");
         }
     }
@@ -719,7 +726,7 @@ std::optional<std::string> SysmonSnapshot::validate(const nlohmann::json& payloa
         return err("snapshot", "must be an object");
     }
     if (!payload.contains("source") || !payload["source"].is_string() ||
-        payload["source"].get<std::string>() != "dzsysmon") {
+        payload["source"].get<std::string>() != SYSMON_INSTANCE_NAME) {
         return err("snapshot.source", "must be the fixed sender dzsysmon");
     }
     if (!payload.contains("timestamp") || !payload["timestamp"].is_number_integer() ||

@@ -24,7 +24,7 @@
 
 ## 2. 快照（RTN_SYSMON_SNAPSHOT）
 
-**语义**：推送当前实时快照。当前版本（#76）填系统信息与 CPU 区块（总量、每核与饱和标记、系统负载、上下文切换/中断速率、每核频率）、温度、内存与交换、卷容量与关注路径落卷、共享内存目录占用、每物理盘 I/O；网络域按本文档定稿的形状输出 `null` 并在可用性映射中标记不可用。已列出的指标域后续只填值、**不改形状**（新增指标类别属 additive 扩展，按总则 §11.3 同步契约、类型与前端 schema；消费方忽略未知字段）。
+**语义**：推送当前实时快照。当前版本（#77）填系统信息与 CPU 区块（总量、每核与饱和标记、系统负载、上下文切换/中断速率、每核频率）、温度、内存与交换、卷容量与关注路径落卷、共享内存目录占用、每物理盘 I/O、每网卡收发速率与累计量（默认隐藏虚拟网卡，见 §2.4）。已列出的指标域后续只填值、**不改形状**（新增指标类别属 additive 扩展，按总则 §11.3 同步契约、类型与前端 schema；消费方忽略未知字段）。
 
 **来源识别**：帧头无 `instance_id`（形态 4、发送方固定 `dzsysmon`），按总则 §5 在 payload 中显式携带 `source`。
 
@@ -126,7 +126,16 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - 首帧（无基线）**全部派生字段为 `null`**（含瞬时 gauge `queue_depth`：首次采样整块不可用，不得用 0 冒充）。本帧新出现的设备同样在没有基线时除 `device` 外全部 `null`；消失的设备不再输出。
 - 采集失败与不可用：Linux `/proc/diskstats` 或 `/sys/block` 不可读 ⇒ 整域 `null` + `collect_failed`；Windows 一个盘的性能计数器都读不到（无管理员权限、性能计数器未开启或盘不支持）⇒ 整域 `null` + `no_permission`（`no_permission` 的既有语义即"计数器需特权/未开启"，**Windows 上不可用是常态而非异常**）。单个盘读不到只是不进入数组，不改写整体可用性；空数组 = 采集成功但本机无物理盘（仅 Linux 会出现；Windows 上 `CreateFile` 对"盘不存在"与"无权限"都返回同一个失败，无法区分，故恒以 `null` + `no_permission` 表示不可用）。
 
-`network[]`：`{interface:string, rx_bytes_total:int, tx_bytes_total:int, rx_bytes_per_sec, tx_bytes_per_sec, rx_errors_per_sec, tx_errors_per_sec, rx_drops_per_sec, tx_drops_per_sec (均 number|null), is_virtual:bool}`。
+`network[]`：每网卡累计收发与速率。字段为
+`{interface:string, rx_bytes_total:int, tx_bytes_total:int, rx_packets_total:int, tx_packets_total:int, rx_errors_total:int, tx_errors_total:int, rx_drops_total:int, tx_drops_total:int, rx_bytes_per_sec:number|null, tx_bytes_per_sec:number|null, rx_errors_per_sec:number|null, tx_errors_per_sec:number|null, rx_drops_per_sec:number|null, tx_drops_per_sec:number|null, is_virtual:bool}`。
+
+- `interface` 为网卡名（Linux 内核接口名；Windows 适配器别名 `Alias`），单帧内唯一，可在帧间变化（热插拔 / 重命名 / 驱动重载）。
+- 八个 `*_total` 为**累计计数器**（收/发 × 字节/包/错误/丢弃），非负整数；包计数含单播与组播/广播。
+- 六个 `*_per_sec` 为**速率**（= Δ累计计数器 / Δ实际经过秒数，见 §2.7）；首次采样、本帧新出现的网卡或计数器重置时为 `null`，不得用 0 冒充。`0` 表示该窗口内确实没有增量。
+- `is_virtual` 表示该网卡**不由硬件设备支撑**（虚拟网卡、回环、桥接、隧道、聚合与 VLAN 逻辑接口）。判定必须用结构性依据而非名字前缀：Linux 以 `/sys/class/net/<if>` 是否由硬件设备支撑（存在 `device` 符号链接）为准；Windows 以 `MIB_IF_ROW2.InterfaceAndOperStatusFlags.HardwareInterface` 为准。
+- **默认隐藏虚拟网卡**：`network.hide_virtual = true`（默认值）时发送方**不输出** `is_virtual = true` 的条目；为 `false` 时全部输出。隐藏发生在**快照构造**而非采集：采集层始终返回全部网卡（含 `is_virtual`），因此改开关不需要重新采集、也不需要重启进程（§2.7）。
+- 采集范围：全部已存在的网络接口，**含当前无流量的网卡与已断开的适配器**（"存在但为 0"与"不存在"是不同事实）。单个网卡读取失败只跳过该网卡，不使整域失败。
+- 采集失败：Linux `/proc/net/dev` 不可读 ⇒ 整域 `null` + `collect_failed`；Windows `GetIfTable2` 失败 ⇒ 整域 `null` + `collect_failed`。空数组 = 采集成功但本机无网络接口（罕见，容器内可能）。
 
 `temperature[]`：`{sensor:string, celsius:number}`。`sensor` 为稳定标识且在单帧内唯一（Linux hwmon：`<name>#<hwmonN>:<label>`，无 label 时为 `<name>#<hwmonN>:tempN`；`<hwmonN>` 为 sysfs hwmon 目录名，保证同一启动周期内稳定、不同设备不冲突；病态驱动同一芯片重复 label 时追加 `-<n>` 兜底），`celsius` 为摄氏温度。温度为瞬时 gauge，不是累计计数器；传感器集合可在帧间变化。**不可用不是 0**：传感器缺失/读取失败/该指标未采集时输出 `null`（能力可用但本帧未读到，见 §2.7），不得输出 0。Windows 恒为 `null`（不提供温度）。Linux 读取**全部 hwmon 温度传感器**，不按设备类型过滤（厂商芯片经 hwmon 暴露的 GPU/网卡温度也会出现，但仅温度读数，不扩张 C 组指标范围）。
 
@@ -159,7 +168,9 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - `collect_failed` —— 本次采集失败（能力存在但读不到；下一次采样可能恢复）
 - `disabled_by_config` —— 该指标类别已被配置关闭（`sampling.groups` 中对应开关为 false）
 
-> 当前版本（#76）实现 `system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`memory`、`swap`、`volumes`、`shm_dir`、`disk_io`；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon）——无 cpufreq 时 `cpu.frequency` 为 `unsupported`，无 hwmon 传感器时为 `temperature` = `no_sensor`；Windows 上两者不提供（默认配置关闭对应 B 组开关，故为 `disabled_by_config`；用户显式开启后采集器恒报 `unsupported`），也不提供整体频率。无交换分区/无页面文件的机器上 `swap` 为 `unsupported`。`network` 固定为 `available=false` + `reason="not_implemented"`，对应域输出 `null`。
+> 当前版本（#77）实现 `system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`memory`、`swap`、`volumes`、`shm_dir`、`disk_io`、`network`；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon）——无 cpufreq 时 `cpu.frequency` 为 `unsupported`，无 hwmon 传感器时为 `temperature` = `no_sensor`；Windows 上两者不提供（默认配置关闭对应 B 组开关，故为 `disabled_by_config`；用户显式开启后采集器恒报 `unsupported`），也不提供整体频率。无交换分区/无页面文件的机器上 `swap` 为 `unsupported`。
+>
+> `network` 的可用性同为**能力粘性**：一次成功枚举到网卡后 `available` 保持 `true`，此后单帧读取失败只把域置 `null`（窗口不推进，恢复后首帧速率跨缺口平均，见 §2.7）。**单个网卡读不到不改写整体可用性**（该网卡不进数组）。配置关闭 `sampling.groups.network` 时优先输出 `available=false` + `reason="disabled_by_config"`、`network` 为 `null`。`hide_virtual` 只影响输出条目、不影响可用性：开关生效时若所有网卡均为虚拟网卡，`network` 为**空数组**且 `available=true`（"全部被过滤"与"采集失败"是不同事实，消费方据此显示「已隐藏全部虚拟网卡」而不是「不可用」）。
 >
 > `disk_io` 的可用性同为**能力粘性**：一次成功枚举到物理盘后 `available` 保持 `true`，此后单帧读取失败只把域置 `null`；**单个盘读不到不改写整体可用性**（读不到的盘不进数组）。一个盘都读不到时：Linux 为 `collect_failed`，Windows 为 `no_permission`（计数器需特权/未开启，契约 §2.4）。配置关闭 `sampling.groups.disk_io` 时优先输出 `available=false` + `reason="disabled_by_config"`、`disk_io` 为 `null`。
 >
@@ -230,7 +241,15 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
      "read_iops": 0.0, "write_iops": 0.0, "latency_ms": null, "queue_depth": 0,
      "utilization": 0.0}
   ],
-  "network": null,
+  "network": [
+    {"interface": "eno1", "rx_bytes_total": 55647207322, "tx_bytes_total": 32143786457,
+     "rx_packets_total": 60705115, "tx_packets_total": 48562128,
+     "rx_errors_total": 0, "tx_errors_total": 0,
+     "rx_drops_total": 47594, "tx_drops_total": 4,
+     "rx_bytes_per_sec": 1048576.0, "tx_bytes_per_sec": 2097152.0,
+     "rx_errors_per_sec": 0.0, "tx_errors_per_sec": 0.0,
+     "rx_drops_per_sec": 0.0, "tx_drops_per_sec": 0.0, "is_virtual": false}
+  ],
   "shm_dir": {"path": "/srv/dztrader/shm", "total_bytes": 754974720, "page_files": 12, "oldest_file_age_sec": 480},
   "availability": {
     "platform_description": "Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)",
@@ -245,7 +264,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
       "swap": {"available": true},
       "volumes": {"available": true},
       "disk_io": {"available": true},
-      "network": {"available": false, "reason": "not_implemented"},
+      "network": {"available": true},
       "shm_dir": {"available": true},
       "temperature": {"available": true}
     },
@@ -277,7 +296,12 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
   - `utilization` 结果钳制到 `[0,1]`；若 Δ忙时间超过窗口的 1.5 倍，视为计数器口径异常（如 Windows `QueryTime` 受系统时间跳变影响），本帧输出 `null`，不得钳成 100%。窗口内完成请求数为 0 时 `latency_ms` 为 `null`（无定义）。
 - **温度 / 每核频率采集语义**：两者都是瞬时 gauge，不做差值或聚合（温度单位为摄氏度，频率四舍五入到整数 MHz）；传感器集合与核集合可在帧间变化，按本次读数输出，不沿用上一帧。读取失败的单个传感器/核不进入数组；能力可用但本帧一个都没读到时输出 `null`。配置 `sampling.groups.temperature=false` / `sampling.groups.cpu_frequency=false` 时跳过采集，可用性为 `disabled_by_config`、数值 `null`。Windows 不提供温度与每核频率（恒 `null`），也不提供整体频率。
 - **内存 / 交换采集语义**：两者都是瞬时 gauge，每次计量刷新，不做差值或聚合，不沿用上一帧。Linux 读 `/proc/meminfo`（`MemTotal`/`MemAvailable`/`Buffers`/`Cached`/`SReclaimable`/`SwapTotal`/`SwapFree`）；`MemAvailable` 缺失、为 0 或大于总量时按 `MemFree + Buffers + Cached + SReclaimable` 回退并钳制到 `[0, total]`，异常与回退均记日志；回退也无法计算时本次内存采集失败（该域 `null`，可用性按能力粘性）。Windows 读 `GetPerformanceInfo`（`PhysicalTotal`/`PhysicalAvailable`/`SystemCache`/`CommitLimit`/`CommitTotal`）。
-- **计量 tick 级**采集失败（如 `/proc/stat` 读取失败）跳过本次计量并累加 `sampling.missed_ticks`；单个指标域（如磁盘 I/O）采集失败只把该域置 `null`，不累加（该标记表示 tick 整体被跳过）。
+- **每网卡的计算语义**（契约 §2.4 `network[]`）：
+  - 采集层只给原始累计计数器（`RawNetworkInfo`：收/发字节、包、错误、丢弃 + `is_virtual`），速率由纯函数从两次采样差值计算。
+  - 六个速率字段 = Δ计数器 / Δ实际经过秒数（单调时钟测量）。**基线按 `interface` 匹配**：本帧新出现的网卡等同首次采样、速率全部 `null`；消失的网卡不再输出（热插拔/虚拟网卡增删因此天然不错位，不依赖数组下标）。
+  - 计数器回绕按**原生位宽跨度**处理（数据驱动）：Linux `/proc/net/dev` 的计数为 64 位（跨度 0 = 不回绕，下降即重置）；Windows `MIB_IF_ROW2` 的计数为 64 位 `ULONG64`（跨度 0）。仅当上次与本次值均落在跨度内且本次更小时按跨度回绕；其余下降视为计数器重置，本帧该字段 `null` 并在下一采样周期重建基线。
+  - **采样窗口**：分母是两次**成功采样**之间实际经过的时间；采集失败期间基线不推进，恢复后的首帧速率是跨越该缺口的窗口平均（口径明确，非伪造瞬时值）。网络采集失败只把该域置 `null`，**不累加** `sampling.missed_ticks`。
+  - `hide_virtual` 在**快照构造**阶段按 `is_virtual` 过滤（不重新采集）：改动即时体现在下一帧快照（`SET_SYSMON_CONFIG` 后立即推送一次）。
 
 ---
 
@@ -285,7 +309,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 **语义**：运行期修改系统监控配置（RFC 7386 merge patch），并回推**全量**生效配置。配置持久化为 `$DZTRADER_HOME/configs/dzsysmon.json`（进程缺失时自动生成默认值；仓库不提交模板文件）。日志配置走《帧契约：日志》的 `SET/RTN_LOG_CONFIG`，**不在本帧 payload 内**。
 
-**数据流**：形态 1——dzweb → `dzsysmon`（`instance_id=dzsysmon`）→ 校验/应用/持久化 → `RTN_SYSMON_CONFIG` 全量回推 → dzweb 镜像 `sysmon_config` 域 → WS 消息 `sysmon_config`。前端入口（REST `PUT /api/sysmon/config`）随运行期配置实现登记到契约 rest；本契约落帧语义与接收方处理（校验/持久化/定时器即时重排）。
+**数据流**：形态 1——dzweb → `dzsysmon`（`instance_id=dzsysmon`）→ 校验/应用/持久化 → `RTN_SYSMON_CONFIG` 全量回推 → dzweb 镜像 `sysmon_config` 域 → WS 消息 `sysmon_config`。前端入口为 REST `PUT /api/sysmon/config`（已随 #77 落地，端点细节见契约 rest §2.8；前端当前只用它切换 `network.hide_virtual`，完整配置编辑界面随 #81）。本契约落帧语义与接收方处理（校验/持久化/定时器即时重排）。
 
 **SET payload**：JSON object（merge patch；object 内嵌套对象按键合并、数组整体替换）。任意位置出现 `null` 为校验失败；空对象 `{}` 为无操作但**仍回 RTN**。未知字段忽略（总则 §8）。
 
@@ -302,9 +326,9 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 | `phase_offset_sec` | int | 3 | `[0, 86400]` | 记录 tick 相位偏移，避开整点附近其它任务 |
 | `groups` | object\<string,bool\> | Linux：全部 true；Windows：`temperature`/`cpu_frequency` 为 false | 值必须 bool | 启用的指标大类：`cpu`/`memory`/`swap`/`volumes`/`disk_io`/`network`/`temperature`/`cpu_frequency`。`temperature` 与 `cpu_frequency` 属 B 组：Linux 默认开（有 hwmon / cpufreq 时）；Windows 默认关（平台上不可靠或不存在，需显式开启；本版本 Windows 采集器仍报告 `unsupported`）。缺少的键按 true 处理 |
 
-`disk`：`{watch_paths:string[], devices:string[]}`（元素非空；`watch_paths` 为空表示使用默认关注路径——共享内存目录与数据库目录；非空时逐条解析并作为 `watch_paths[]` 输出，同时决定 `volumes[].watched`）。`watch_paths` 影响快照 `watch_paths` / `volumes[].watched`，运行期修改随 #81 生效。
+`disk`：`{watch_paths:string[], devices:string[]}`（元素非空；`watch_paths` 为空表示使用默认关注路径——共享内存目录与数据库目录；非空时逐条解析并作为 `watch_paths[]` 输出，同时决定 `volumes[].watched`）。`watch_paths` 影响快照 `watch_paths` / `volumes[].watched`；运行期修改经 `SET_SYSMON_CONFIG` 即时生效（该字段只影响快照构造，不触发重新采样）。
 
-`network`：`{hide_virtual:bool}`，默认 `true`（隐藏 Hyper-V/WSL/Docker 虚拟网卡）。
+`network`：`{hide_virtual:bool}`，默认 `true`（隐藏虚拟网卡：回环、桥接、veth、容器网桥、隧道与 VLAN 逻辑接口等——判定依据是「不由硬件设备支撑」，见 §2.4）。该开关在**快照构造**阶段过滤，`SET_SYSMON_CONFIG` 成功后立即推送一帧使改动即时可见（§4 触发 4）。
 
 `history`：`{enabled:bool, raw_retention_hours:int, max_retention_days:int, max_bytes:int}`，默认 `true/24/30/2147483648`；`raw_retention_hours ∈ [1,720]`、`max_retention_days ∈ [1,3650]`、`max_bytes ≥ 0`（0 = 不限制）。
 
@@ -329,6 +353,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 1. **进程启动初始化完成后立即推送一次**（首帧 `cpu.total.usage_ratio` 可为 `null`）
 2. **周期推送**：间隔 = `realtime.push_interval_sec`（默认 5 秒）；与计量频率解耦，计量时刻不推送
 3. **`QUERY_FULL_SNAPSHOT` 响应**：收到总则 §7 的广播查询帧后立即推送一次（该帧无 `instance_id`）
+4. **`SET_SYSMON_CONFIG` 成功后立即推送一次**（失败不推）：只影响快照构造的配置（如 `network.hide_virtual`）必须在下一次周期推送之前生效，否则一次开关操作最长要等一个推送周期（默认 5 秒）才可见。定时器重排只影响计量与推送节奏，不代表快照内容已刷新。
 
 推送失败（事件通道写满等）只记日志，不重试；下一刻度继续推送。
 
@@ -350,7 +375,11 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 ## 6. REST
 
-`GET /api/sysmon/snapshot`：读取 dzweb 镜像中的当前快照（任意已认证用户）。镜像尚未就绪（dzsysmon 未上报）→ `503 {"error":"sysmon snapshot not available"}`。端点细节见契约 rest。
+`GET /api/sysmon/snapshot`：读取 dzweb 镜像中的当前快照（任意已认证用户）。镜像尚未就绪（dzsysmon 未上报）→ `503 {"error":"sysmon snapshot not available"}`。
+
+`PUT /api/sysmon/config`：运行期配置 merge patch（admin）。请求 body 原样透传为 `SET_SYSMON_CONFIG` 的 payload，响应 `200 {"ok":true,"message":"dispatched"}` 只表示"已写事件通道"——校验结果与生效值以 WS `sysmon_config`（`RTN_SYSMON_CONFIG` 全量回推，失败回推旧值）为准。`shm` 未就绪 → `503 {"error":"shm not available"}`；body 非 object/非法 JSON → `400 {"error":"bad request"}`；非 admin → `403 {"error":"admin required"}`。
+
+端点细节见契约 rest。
 
 ---
 
@@ -361,6 +390,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - `volumes[]`：`mount` 非空且帧内唯一；`available=true` 时 `total_bytes`/`used_bytes` 必须为非负整数且 `used_bytes ≤ total_bytes`、`used_ratio` 为 `[0,1]` 或 `null`，且**不得**出现 `reason`；`available=false` 时 `reason` 必须非空、`total_bytes`/`used_bytes`/`used_ratio` **必须**为 `null`（禁止用 0 冒充）。
 - `watch_paths[]`：`path` 非空且帧内唯一；`available=true` 时 `mount` 必须非空且不得出现 `reason`，且**当同帧 `volumes` 非 `null` 时** `mount` 必须为 `volumes[].mount` 之一（`volumes` 为 `null` 时不交叉校验——配置关闭卷采集后落卷信息仍要能给告警用）；`available=false` 时 `mount` 必须为 `null` 且 `reason` 必须非空。
 - `disk_io[]`：`device` 非空且帧内唯一；除 `device` 外的七个字段为 `null` 或数字——吞吐/IOPS/延迟/队列深度为 `>= 0`，`utilization` 为 `[0,1]` 内的比率或 `null`（首帧全 null 的条目合法）。
+- `network[]`：`interface` 非空且帧内唯一；八个 `*_total` 必须为非负整数且**必须存在**（累计计数器没有"不可用"语义）；六个 `*_per_sec` 为 `null` 或 `>= 0` 的数字；`is_virtual` 必须为 bool。`hide_virtual = true` 时若出现 `is_virtual = true` 的条目为校验失败（发送方义务：过滤在发送端完成）；`hide_virtual` 的值不在快照内，故该条校验由发送方自查、消费方只做形状校验。
 - 比率为 `[0,1]`；字节/计数为非负整数；`boot_time_unix_sec`/`uptime_sec` 非负。
 - `availability.metrics` 中 `available=false` 时 `reason` 必须存在且非空；`available=true` 时不得出现 `reason`。
 - 未知字段忽略（前向兼容）。
@@ -373,4 +403,6 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - **Windows 不提供温度与每核频率**（也不提供整体频率）：Windows 上温度需 WMI/厂商驱动、每核频率无可靠 API，两者恒为不可用；本版本不实现「整体频率 + 口径标注」形态。
 - **磁盘 I/O 为整盘粒度**：不提供分区级 I/O。本版本的 `device` 只有物理盘标识（Windows `PhysicalDrive<N>`）；**卷/盘符 ↔ 物理盘映射**由后续票 #103 提供（ADR 0024 Consequences 的映射要求，本票不交付）。Windows 依赖性能计数器（diskperf）与访问权限，读不到时按 §2.4 报告不可用，不做提权或反复重试。
 - **磁盘 I/O 无历史/告警消费**：本契约只定义实时快照域；历史写入（#78）与阈值告警（#80）的消费范围随各自票定义。
+- **网络为整网卡粒度**：不提供每进程/每连接/每协议流量；不做虚拟网卡的自动隐藏策略推断（`is_virtual` 只用结构性依据，不看名字前缀），也不提供 Linux 网卡流量分类（`tc` 队列）与 Windows 适配器绑定细节。
+- **网络无历史/告警消费**：本契约只定义实时快照域；历史写入（#78）与阈值告警（#80）的消费范围随各自票定义。`hide_virtual` 的运行期修改入口已随 #77 落地（REST `PUT /api/sysmon/config` → `SET_SYSMON_CONFIG`，前端只用它切换该开关）；完整配置编辑界面随 #81。
 - 历史查询不走帧（dzweb 只读历史库）；告警复用 `NOTIFY_UI`；进程级指标、GPU、SMART、风扇、电池、登录用户列表不在本契约范围。

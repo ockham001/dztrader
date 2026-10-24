@@ -123,22 +123,73 @@ TEST(SysmonSnapshotJsonTest, NetworkInfoSerializationKeepsContractKeys) {
     EXPECT_TRUE(decoded.is_virtual);
 }
 
+// 契约 sysmon §7：八个 `*_total` 是累计计数器，没有"不可用"语义——缺失即校验失败
+// （不得像速率那样允许 null/缺省）。
+namespace {
+
+/// 一份形状合法的 network[] 条目（八个累计计数器 + 六个可空速率 + is_virtual）。
+nlohmann::json valid_network_entry() {
+    return {{"interface", "eth0"},          {"rx_bytes_total", 1},
+            {"tx_bytes_total", 2},          {"rx_packets_total", 3},
+            {"tx_packets_total", 4},        {"rx_errors_total", 0},
+            {"tx_errors_total", 0},         {"rx_drops_total", 5},
+            {"tx_drops_total", 6},          {"rx_bytes_per_sec", 0.5},
+            {"tx_bytes_per_sec", nullptr},  {"rx_errors_per_sec", nullptr},
+            {"tx_errors_per_sec", nullptr}, {"rx_drops_per_sec", nullptr},
+            {"tx_drops_per_sec", nullptr},  {"is_virtual", false}};
+}
+
+}  // namespace
+
 // 含网卡条目的快照应通过契约校验（network[] 的 `interface` 键与 per-entry 规则）。
 TEST(SysmonSnapshotValidateTest, AcceptsNetworkEntries) {
     auto snap = make_snapshot();
     auto j = nlohmann::json(snap);
-    j["network"] = nlohmann::json::array({{{"interface", "eth0"},
-                                           {"rx_bytes_total", 1},
-                                           {"tx_bytes_total", 2},
-                                           {"rx_bytes_per_sec", 0.5},
-                                           {"tx_bytes_per_sec", nullptr},
-                                           {"rx_errors_per_sec", nullptr},
-                                           {"tx_errors_per_sec", nullptr},
-                                           {"rx_drops_per_sec", nullptr},
-                                           {"tx_drops_per_sec", nullptr},
-                                           {"is_virtual", false}}});
+    j["network"] = nlohmann::json::array({valid_network_entry()});
     j["availability"]["metrics"]["network"] = {{"available", true}};
     EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
+}
+
+TEST(SysmonSnapshotValidateTest, RejectsNetworkEntryMissingCumulativeCounter) {
+    auto snap = make_snapshot();
+    auto j = nlohmann::json(snap);
+    j["availability"]["metrics"]["network"] = {{"available", true}};
+    for (const char* key :
+         {"rx_bytes_total", "tx_bytes_total", "rx_packets_total", "tx_packets_total",
+          "rx_errors_total", "tx_errors_total", "rx_drops_total", "tx_drops_total"}) {
+        auto missing = valid_network_entry();
+        missing.erase(key);
+        j["network"] = nlohmann::json::array({missing});
+        EXPECT_NE(SysmonSnapshot::validate(j), std::nullopt) << "missing " << key;
+    }
+    // 累计计数器也不接受显式 null（与速率字段的 null 语义不同）。
+    auto nulled = valid_network_entry();
+    nulled["rx_bytes_total"] = nullptr;
+    j["network"] = nlohmann::json::array({nulled});
+    EXPECT_NE(SysmonSnapshot::validate(j), std::nullopt);
+}
+
+TEST(SysmonSnapshotValidateTest, RejectsDuplicateInterfaceAndMissingVirtualFlag) {
+    auto snap = make_snapshot();
+    auto j = nlohmann::json(snap);
+    j["availability"]["metrics"]["network"] = {{"available", true}};
+
+    // interface 帧内唯一（契约 sysmon §7）
+    const auto entry = valid_network_entry();
+    j["network"] = nlohmann::json::array({entry, entry});
+    EXPECT_NE(SysmonSnapshot::validate(j), std::nullopt);
+
+    // is_virtual 必填 bool（不是可选默认值）
+    auto no_flag = valid_network_entry();
+    no_flag.erase("is_virtual");
+    j["network"] = nlohmann::json::array({no_flag});
+    EXPECT_NE(SysmonSnapshot::validate(j), std::nullopt);
+
+    // interface 非空
+    auto empty_name = valid_network_entry();
+    empty_name["interface"] = "";
+    j["network"] = nlohmann::json::array({empty_name});
+    EXPECT_NE(SysmonSnapshot::validate(j), std::nullopt);
 }
 
 // 契约 sysmon §2.3/§2.4：temperature[] 与 cpu.core_frequencies[] 的合法条目通过校验，

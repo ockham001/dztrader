@@ -100,6 +100,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 | 方法/路径 | 语义 | 帧/镜像联动 |
 |---|---|---|
 | GET `/api/sysmon/snapshot` | 当前系统监控快照（任意已认证用户）；镜像尚未就绪（dzsysmon 未上报）时回 `503 {"error":"sysmon snapshot not available"}` | 读取镜像 `sysmon_snapshot` 域（固定实例 `dzsysmon`，契约 sysmon §5）；由 `RTN_SYSMON_SNAPSHOT` 更新 |
+| PUT `/api/sysmon/config` | 运行期修改系统监控配置（admin）：body 为 RFC 7386 merge patch（任意位置 `null` 由 dzsysmon 判为非法）。响应仅表示"已写事件通道"（`{"ok":true,"message":"dispatched"}`）；`shm` 未就绪时 `503 {"error":"shm not available"}` | → `SET_SYSMON_CONFIG`（`instance_id=dzsysmon`，契约 sysmon §3）；生效信号：WS `sysmon_config`（`RTN_SYSMON_CONFIG` 全量回推，含失败时回推旧值）。当前前端只用它切换 `network.hide_virtual`，完整配置编辑随 #81 |
 
 ---
 

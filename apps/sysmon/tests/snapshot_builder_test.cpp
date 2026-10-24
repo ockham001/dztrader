@@ -1,4 +1,5 @@
 #include "cpu_usage.h"
+#include "network.h"
 #include "snapshot_builder.h"
 
 #include <dztrader/platform/sysmon.h>
@@ -72,9 +73,10 @@ platform::SysmonSnapshot build_with(const platform::RawSystemInfo& info,
                                     const CpuMetrics& metrics,
                                     const TemperatureMetrics& temperature = {},
                                     const MemorySwapMetrics& memory = {},
-                                    const DiskMetrics& disk = {}) {
-    return build_snapshot(kSourceName, info, metrics, temperature, memory, disk, kMeasureIntervalMs,
-                          kLastSampleMs, kMissedTicks, kNowMs);
+                                    const DiskMetrics& disk = {},
+                                    const NetworkMetrics& network = {}) {
+    return build_snapshot(kSourceName, info, metrics, temperature, memory, disk, network,
+                          kMeasureIntervalMs, kLastSampleMs, kMissedTicks, kNowMs);
 }
 
 /// 本票（#73）落地后的典型温度读数。
@@ -372,12 +374,12 @@ TEST(SnapshotBuilderTest, AvailabilityCoversAllThirteenKeys) {
         ASSERT_TRUE(entry.reason.has_value()) << key;
         EXPECT_EQ(entry.reason.value(), "collect_failed") << key;
     }
-    // 网络仍未实现：available=false + reason="not_implemented"
+    // #77 起网络已实现：本用例未传网络测量结果（能力从未确认）→ collect_failed。
     {
         const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_NETWORK);
         EXPECT_FALSE(entry.available);
         ASSERT_TRUE(entry.reason.has_value());
-        EXPECT_EQ(entry.reason.value(), "not_implemented");
+        EXPECT_EQ(entry.reason.value(), "collect_failed");
     }
 }
 
@@ -737,6 +739,7 @@ public:
     std::vector<platform::RawWatchPathInfo> watch_paths;
     std::optional<platform::RawShmDirInfo> shm_dir;
     platform::RawDiskIoSnapshot disk_io;
+    platform::RawNetworkSnapshot network;
 
     platform::RawSystemInfo collect_system_info() override { return info; }
     std::optional<platform::RawCpuTimes> collect_cpu_times() override { return times; }
@@ -763,8 +766,12 @@ public:
         return shm_dir;
     }
     platform::RawDiskIoSnapshot collect_disk_io() override { return disk_io; }
+    platform::RawNetworkSnapshot collect_network() override { return network; }
 };
 
+// 契约 sysmon「测试接缝」：速率计算全部经 SystemCollector 接缝用假采集器确定性驱动。
+// 本用例覆盖 CPU 与网络两个域——网络侧的基线匹配、速率计算与 hide_virtual 过滤都从
+// FakeCollector 返回的原始计数器出发，不接触真实网卡。
 TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {
     FakeCollector fake;
     fake.info = make_linux_info();
@@ -825,12 +832,48 @@ TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {
     average.semantic = load->semantic;
     metrics.load_average = average;
 
-    const auto snapshot = build_with(fake.collect_system_info(), metrics);
+    // ---- 网络域同样经接缝驱动：两次 fake.collect_network() → compute_network_rates ----
+    fake.network.interfaces = {
+        platform::RawNetworkInfo{.interface_name = "nic0", .rx_bytes = 1000, .tx_bytes = 2000},
+        platform::RawNetworkInfo{
+            .interface_name = "vnic0", .rx_bytes = 500, .tx_bytes = 600, .is_virtual = true},
+    };
+    const auto first_network = fake.collect_network();
+    ASSERT_TRUE(first_network.unavailable_reason.empty());
+    ASSERT_EQ(first_network.interfaces.size(), 2U);
+
+    fake.network.interfaces[0].rx_bytes += 4'000'000;  // 4 MB / 2s = 2 MB/s
+    fake.network.interfaces[0].tx_bytes += 2'000'000;  // 2 MB / 2s = 1 MB/s
+    fake.network.interfaces[1].rx_bytes += 1'000'000;  // 虚拟网卡也有速率
+    const auto second_network = fake.collect_network();
+    const auto network_values =
+        compute_network_rates(first_network.interfaces, second_network.interfaces, 2.0);
+    ASSERT_EQ(network_values.size(), 2U);
+
+    NetworkMetrics network_metrics;
+    network_metrics.network_collected = true;
+    network_metrics.network = network_values;
+    network_metrics.hide_virtual = true;  // 默认：隐藏虚拟网卡
+
+    const auto snapshot =
+        build_with(fake.collect_system_info(), metrics, {}, {}, {}, network_metrics);
     EXPECT_EQ(snapshot.platform.family, "linux");
     EXPECT_EQ(snapshot.cpu.cores.size(), 2U);
     ASSERT_TRUE(snapshot.cpu.total.usage_ratio.has_value());
     EXPECT_DOUBLE_EQ(*snapshot.cpu.total.usage_ratio, 0.25);
     EXPECT_EQ(snapshot.availability.metrics.at("cpu.cores").available, true);
+
+    // 接缝驱动的网络结果：过滤掉虚拟网卡、速率按 Δ/Δt 计算、八个累计计数器照填。
+    ASSERT_TRUE(snapshot.network.has_value());
+    ASSERT_EQ(snapshot.network->size(), 1U);
+    const auto& nic = (*snapshot.network)[0];
+    EXPECT_EQ(nic.interface_name, "nic0");
+    ASSERT_TRUE(nic.rx_bytes_per_sec.has_value());
+    EXPECT_DOUBLE_EQ(*nic.rx_bytes_per_sec, 2'000'000.0);
+    ASSERT_TRUE(nic.tx_bytes_per_sec.has_value());
+    EXPECT_DOUBLE_EQ(*nic.tx_bytes_per_sec, 1'000'000.0);
+    EXPECT_EQ(nic.rx_bytes_total, 1000U + 4'000'000U);
+    EXPECT_TRUE(snapshot.availability.metrics.at("network").available);
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 
@@ -1124,6 +1167,168 @@ TEST(SnapshotBuilderTest, DiskIoDisabledByConfigWinsOverCollected) {
     ASSERT_TRUE(entry.reason.has_value());
     EXPECT_EQ(entry.reason.value(), "disabled_by_config");
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+// ===== #77：每网卡累计量与速率、hide_virtual 过滤 =====
+
+platform::SysmonNetworkInfo make_network_entry(std::string interface_name,
+                                               bool is_virtual = false) {
+    platform::SysmonNetworkInfo info;
+    info.interface_name = std::move(interface_name);
+    info.is_virtual = is_virtual;
+    return info;
+}
+
+/// #77 落地后的典型网络数据：一块物理网卡 + 一块虚拟网卡，速率均有值。
+NetworkMetrics make_network_metrics() {
+    NetworkMetrics network;
+    network.network_collected = true;
+    network.network = std::vector<platform::SysmonNetworkInfo>{
+        platform::SysmonNetworkInfo{.interface_name = "enp5s0",
+                                    .rx_bytes_total = 1'000'000,
+                                    .tx_bytes_total = 2'000'000,
+                                    .rx_packets_total = 1'000,
+                                    .tx_packets_total = 2'000,
+                                    .rx_errors_total = 0,
+                                    .tx_errors_total = 1,
+                                    .rx_drops_total = 2,
+                                    .tx_drops_total = 3,
+                                    .rx_bytes_per_sec = 1'000'000.0,
+                                    .tx_bytes_per_sec = 2'000'000.0,
+                                    .rx_errors_per_sec = 0.0,
+                                    .tx_errors_per_sec = 0.5,
+                                    .rx_drops_per_sec = 1.0,
+                                    .tx_drops_per_sec = 1.5,
+                                    .is_virtual = false},
+        platform::SysmonNetworkInfo{.interface_name = "docker0",
+                                    .rx_bytes_total = 5'000,
+                                    .tx_bytes_total = 6'000,
+                                    .rx_packets_total = 50,
+                                    .tx_packets_total = 60,
+                                    .rx_errors_total = 0,
+                                    .tx_errors_total = 0,
+                                    .rx_drops_total = 0,
+                                    .tx_drops_total = 0,
+                                    .rx_bytes_per_sec = 0.0,
+                                    .tx_bytes_per_sec = 0.0,
+                                    .rx_errors_per_sec = 0.0,
+                                    .tx_errors_per_sec = 0.0,
+                                    .rx_drops_per_sec = 0.0,
+                                    .tx_drops_per_sec = 0.0,
+                                    .is_virtual = true},
+    };
+    return network;
+}
+
+TEST(SnapshotBuilderTest, NetworkEncodedWhenCollectedAndFiltersVirtualByDefault) {
+    // 默认 hide_virtual=true：物理网卡输出、虚拟网卡不输出（契约 sysmon §2.4）。
+    const auto network = make_network_metrics();
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, network);
+
+    ASSERT_TRUE(snapshot.network.has_value());
+    ASSERT_EQ(snapshot.network->size(), 1U);
+    EXPECT_EQ((*snapshot.network)[0].interface_name, "enp5s0");
+    EXPECT_DOUBLE_EQ((*snapshot.network)[0].rx_bytes_per_sec.value(), 1'000'000.0);
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_NETWORK).available);
+    // JSON 键是 `interface`（Windows 的 `interface` 宏冲突，手写序列化）。
+    const auto payload = nlohmann::json(snapshot);
+    EXPECT_EQ(payload["network"][0]["interface"].get<std::string>(), "enp5s0");
+    EXPECT_EQ(platform::SysmonSnapshot::validate(payload), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, NetworkShowAllKeepsVirtualInterfaces) {
+    NetworkMetrics network = make_network_metrics();
+    network.hide_virtual = false;
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, network);
+
+    ASSERT_TRUE(snapshot.network.has_value());
+    ASSERT_EQ(snapshot.network->size(), 2U);
+    EXPECT_TRUE((*snapshot.network)[1].is_virtual);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, NetworkAllFilteredIsEmptyArrayNotUnavailable) {
+    // 全部网卡都是虚拟网卡且 hide_virtual=true：空数组 + available=true（契约 §2.5 明文）。
+    NetworkMetrics network;
+    network.network_collected = true;
+    network.network = std::vector<platform::SysmonNetworkInfo>{
+        make_network_entry("docker0", true), make_network_entry("veth12ab", true)};
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, network);
+
+    ASSERT_TRUE(snapshot.network.has_value());
+    EXPECT_TRUE(snapshot.network->empty());
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_NETWORK);
+    EXPECT_TRUE(entry.available);
+    EXPECT_EQ(entry.reason, std::nullopt);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, NetworkEmptyArrayWhenHostHasNoInterface) {
+    // 采集成功但本机无网络接口：空数组（不是 null，也不是不可用）。
+    NetworkMetrics network;
+    network.network_collected = true;
+    network.network = std::vector<platform::SysmonNetworkInfo>{};
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, network);
+
+    ASSERT_TRUE(snapshot.network.has_value());
+    EXPECT_TRUE(snapshot.network->empty());
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_NETWORK).available);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, NetworkCollectedButNoReadingKeepsAvailable) {
+    // 能力已确认（粘性）但本帧没采到：域为 null，可用性仍 available（契约 §2.5）。
+    NetworkMetrics network;
+    network.network_collected = true;
+    network.network = std::nullopt;
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, network);
+
+    EXPECT_EQ(snapshot.network, std::nullopt);
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_NETWORK).available);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, NetworkUnavailableReasonComesFromCollector) {
+    // 不可用原因取采集层建议值；能力从未确认且采集层未给原因时兜底 collect_failed。
+    const auto default_snapshot = build_with(make_linux_info(), make_full_metrics());
+    {
+        const auto& entry =
+            default_snapshot.availability.metrics.at(platform::SYSMON_METRIC_NETWORK);
+        EXPECT_FALSE(entry.available);
+        ASSERT_TRUE(entry.reason.has_value());
+        EXPECT_EQ(entry.reason.value(), "collect_failed");
+        EXPECT_EQ(default_snapshot.network, std::nullopt);
+    }
+
+    NetworkMetrics network;
+    network.network_unavailable_reason = "collect_failed";
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, network);
+    EXPECT_EQ(snapshot.network, std::nullopt);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_NETWORK);
+    EXPECT_FALSE(entry.available);
+    ASSERT_TRUE(entry.reason.has_value());
+    EXPECT_EQ(entry.reason.value(), "collect_failed");
+}
+
+TEST(SnapshotBuilderTest, NetworkDisabledByConfigWinsOverCollected) {
+    NetworkMetrics network = make_network_metrics();
+    network.network_disabled = true;
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, network);
+
+    EXPECT_EQ(snapshot.network, std::nullopt);
+    const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_NETWORK);
+    EXPECT_FALSE(entry.available);
+    ASSERT_TRUE(entry.reason.has_value());
+    EXPECT_EQ(entry.reason.value(), "disabled_by_config");
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, NetworkDoesNotAddAvailabilityKeys) {
+    // 可网络接入不改变 availability 的键集合（仍是 13 个固定键，契约 sysmon §2.5）。
+    const auto snapshot =
+        build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, make_network_metrics());
+    EXPECT_EQ(snapshot.availability.metrics.size(), platform::SYSMON_METRIC_KEYS.size());
+    EXPECT_TRUE(snapshot.availability.metrics.contains(platform::SYSMON_METRIC_NETWORK));
 }
 
 }  // namespace

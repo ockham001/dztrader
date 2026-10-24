@@ -1,5 +1,7 @@
 #include "sysmon_controller.h"
 
+#include <exception>
+
 namespace dztrader::webui {
 
 void SysmonCtrl::get_snapshot(
@@ -12,6 +14,36 @@ void SysmonCtrl::get_snapshot(
         return;
     }
     callback(json_response(drogon::k200OK, instance["sysmon_snapshot"]));
+}
+
+void SysmonCtrl::set_config(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+    // 契约 rest §2.8：写类端点需 admin（服务端校验，不是前端隐藏）。
+    if (!is_admin(req)) {
+        callback(error_response(drogon::k403Forbidden, "admin required"));
+        return;
+    }
+    if (!shm_writer_ || !shm_writer_->is_ready()) {
+        callback(error_response(drogon::k503ServiceUnavailable, "shm not available"));
+        return;
+    }
+    nlohmann::json body;
+    try {
+        body = nlohmann::json::parse(req->getBody());
+    } catch (const std::exception&) {
+        callback(error_response(drogon::k400BadRequest, "bad request"));
+        return;
+    }
+    if (!body.is_object()) {
+        callback(error_response(drogon::k400BadRequest, "bad request"));
+        return;
+    }
+    // 整体透传 merge patch：字段校验（范围/类型/任意位置 null）由 dzsysmon 的
+    // SysmonConfig::apply_patch 负责，失败按契约 sysmon §3.3 的四件套表达
+    // （回滚旧值 + 日志 + NOTIFY_UI + 回推旧值）；此处的 200 只表示已写事件通道。
+    shm_writer_->write_set_sysmon_config(body);
+    callback(json_response(drogon::k200OK, {{"ok", true}, {"message", "dispatched"}}));
 }
 
 }  // namespace dztrader::webui

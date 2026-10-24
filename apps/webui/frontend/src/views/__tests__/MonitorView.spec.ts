@@ -3,11 +3,13 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import MonitorView from '../MonitorView.vue'
 import { sysmonApi } from '@/api/sysmon'
-import { useSysmonStore } from '@/stores/sysmon'
-import { makeSysmonCpuCores, makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
+import { useAuthStore } from '@/stores/auth'
+import { sysmonPending, useSysmonStore } from '@/stores/sysmon'
+import { useToastStore } from '@/stores/toast'
+import { makeSysmonConfig, makeSysmonCpuCores, makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 
 vi.mock('@/api/sysmon', () => ({
-  sysmonApi: { getSnapshot: vi.fn() },
+  sysmonApi: { getSnapshot: vi.fn(), setConfig: vi.fn() },
 }))
 
 const stubs = {
@@ -18,6 +20,19 @@ async function mountView() {
   const wrapper = mount(MonitorView, { global: { stubs } })
   await flushPromises()
   return wrapper
+}
+
+/** 「显示全部网卡」开关的 admin 判定走 auth store 的 isAdmin（role === 'admin'） */
+function setRole(role: 'admin' | 'user'): void {
+  useAuthStore().user = {
+    id: 1,
+    username: role,
+    display_name: role,
+    email: `${role}@x.com`,
+    role,
+    status: 'online',
+    created_at: '2026-08-01',
+  }
 }
 
 describe('MonitorView 资源监控页（三种快照状态）', () => {
@@ -48,7 +63,8 @@ describe('MonitorView 资源监控页（三种快照状态）', () => {
     expect(wrapper.find('[data-test="monitor-disk"]').text()).toContain('/data')
     expect(wrapper.find('[data-test="monitor-disk"]').text()).toContain('25.0%')
     expect(wrapper.find('[data-test="monitor-network"]').text()).toContain('eth0')
-    expect(wrapper.find('[data-test="monitor-network"]').text()).toContain('收 1.0 MiB/s')
+    expect(wrapper.find('[data-test="monitor-network-row"] [data-test="monitor-network-rx-rate"]').text()).toBe('1.0 MiB/s')
+    expect(wrapper.find('[data-test="monitor-network-row"] [data-test="monitor-network-tx-rate"]').text()).toBe('2.0 MiB/s')
     expect(wrapper.text()).not.toContain('不可用')
   })
 
@@ -898,5 +914,278 @@ describe('MonitorView 磁盘 I/O（#76，可用性驱动）', () => {
     useSysmonStore().applySnapshot(makeSysmonSnapshot())
     await wrapper.vm.$nextTick()
     expect(wrapper.find('[data-test="monitor-disk-io-hint"]').exists()).toBe(true)
+  })
+})
+
+describe('MonitorView 网络区块（#77 网络与虚拟网卡过滤）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    localStorage.setItem('jwt_token', 'test-token')
+  })
+
+  it('默认快照（单块物理网卡）：每网卡渲染收发速率 / 累计字节包 / 错误丢弃，且不显示虚拟标记', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    const wrapper = await mountView()
+
+    const rows = wrapper.findAll('[data-test="monitor-network-row"]')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].attributes('data-interface')).toBe('eth0')
+    expect(rows[0].find('[data-test="monitor-network-rx-rate"]').text()).toBe('1.0 MiB/s')
+    expect(rows[0].find('[data-test="monitor-network-tx-rate"]').text()).toBe('2.0 MiB/s')
+    expect(rows[0].find('[data-test="monitor-network-rx-bytes"]').text()).toBe('8.0 GiB')
+    expect(rows[0].find('[data-test="monitor-network-tx-bytes"]').text()).toBe('4.0 GiB')
+    expect(rows[0].find('[data-test="monitor-network-rx-packets"]').text()).toBe('12,000,000')
+    expect(rows[0].find('[data-test="monitor-network-tx-packets"]').text()).toBe('9,000,000')
+    // 速率 0 是合法真实值（本窗口确实没有增量），显示 0.0/s 而不是「不可用」；
+    // 错误/丢弃单元格并列累计量（累计计数器没有"不可用"语义）
+    expect(rows[0].find('[data-test="monitor-network-rx-errors"]').text()).toBe('0.0/s（累计 3）')
+    expect(rows[0].find('[data-test="monitor-network-tx-drops"]').text()).toBe('0.0/s（累计 2）')
+    // 物理网卡不带「虚拟」标记
+    expect(rows[0].find('[data-test="monitor-network-virtual"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-network-unavailable"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-network-hidden-all"]').exists()).toBe(false)
+  })
+
+  it('全部可用时按 interface 升序排序，不依赖发送端顺序', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ virtualNetwork: true }))
+    const wrapper = await mountView()
+
+    // 夹具发送顺序为 veth1234、docker0、lo、eth0；前端按 interface localeCompare 重排
+    expect(wrapper.findAll('[data-test="monitor-network-row"]').map(row => row.attributes('data-interface')))
+      .toEqual(['docker0', 'eth0', 'lo', 'veth1234'])
+  })
+
+  it('虚拟网卡显式标注「虚拟」；前端不自行过滤（过滤是发送方义务，契约 §2.4）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ virtualNetwork: true }))
+    const wrapper = await mountView()
+
+    const tags = wrapper.findAll('[data-test="monitor-network-virtual"]')
+    expect(tags).toHaveLength(3)
+    expect(tags.every(tag => tag.text() === '虚拟')).toBe(true)
+    const rowsWithTag = wrapper.findAll('[data-test="monitor-network-row"]')
+      .filter(row => row.find('[data-test="monitor-network-virtual"]').exists())
+      .map(row => row.attributes('data-interface'))
+    expect(rowsWithTag).toEqual(['docker0', 'lo', 'veth1234'])
+  })
+
+  it('速率 null（首次采样/计数器重置）逐项显示「不可用」，不得用 0 冒充', async () => {
+    const eth0 = makeSysmonSnapshot({ resourceData: true }).network![0]!
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      network: [{
+        ...eth0,
+        rx_bytes_per_sec: null,
+        tx_bytes_per_sec: null,
+        rx_errors_per_sec: null,
+        tx_errors_per_sec: null,
+        rx_drops_per_sec: null,
+        tx_drops_per_sec: null,
+      }],
+    }))
+    const wrapper = await mountView()
+
+    const row = wrapper.find('[data-test="monitor-network-row"]')
+    // 吞吐速率没有累计量可并列：null 就是「不可用」
+    for (const field of ['rx-rate', 'tx-rate']) {
+      expect(row.find(`[data-test="monitor-network-${field}"]`).text()).toBe('不可用')
+    }
+    // 错误/丢弃速率 null 显示「不可用」，但不隐瞒累计量（累计计数器没有"不可用"语义）
+    for (const field of ['rx-errors', 'tx-errors', 'rx-drops', 'tx-drops']) {
+      expect(row.find(`[data-test="monitor-network-${field}"]`).text()).toContain('不可用')
+      expect(row.find(`[data-test="monitor-network-${field}"]`).text()).toContain('累计')
+    }
+    // 速率不可用时累计量仍照常显示（累计计数器没有"不可用"语义）
+    expect(row.find('[data-test="monitor-network-rx-bytes"]').text()).toBe('8.0 GiB')
+    expect(row.text()).not.toContain('0 B/s')
+    expect(row.text()).not.toContain('0.0/s')
+  })
+
+  it('全被 hide_virtual 滤掉（空数组 + available=true）：显示「已隐藏全部虚拟网卡」而不是「不可用」', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ network: [] }))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-network-hidden-all"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-network-hidden-all"]').text()).toContain('已隐藏全部虚拟网卡')
+    // 契约 §2.5 明文：全部被过滤 ≠ 不可用，也不是「暂无数据」的空态
+    expect(wrapper.find('[data-test="monitor-network-unavailable"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-network-empty"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-test="monitor-network-row"]')).toHaveLength(0)
+  })
+
+  it('hide_virtual=false 时空数组 = 本机确实无网卡：显示「暂无数据」而不是「已隐藏」', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ network: [] }))
+    const wrapper = await mountView()
+    // 生效配置显示全部网卡（hide_virtual=false）：空数组不能再解释成"被过滤"
+    useSysmonStore().applyConfig(makeSysmonConfig({ network: { hide_virtual: false } }))
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-test="monitor-network-empty"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-network-hidden-all"]').exists()).toBe(false)
+  })
+
+  it('能力可用但本帧未采集（network=null）：同样走「暂无数据」，不改成「不可用」', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ network: null }))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-network-empty"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-network-unavailable"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-test="monitor-network-row"]')).toHaveLength(0)
+  })
+
+  it('能力不可用（disabled_by_config / collect_failed）：整块「不可用」+ 原因，不渲染网卡行与开关', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      metrics: { network: { available: false, reason: 'disabled_by_config' } },
+    }))
+    const wrapper = await mountView()
+
+    const unavailable = wrapper.find('[data-test="monitor-network-unavailable"]')
+    expect(unavailable.exists()).toBe(true)
+    expect(unavailable.text()).toContain('不可用')
+    expect(unavailable.text()).toContain('已在配置中关闭')
+    expect(wrapper.findAll('[data-test="monitor-network-row"]')).toHaveLength(0)
+    // 能力不可用时开关无意义，不渲染
+    expect(wrapper.find('[data-test="monitor-network-show-all"]').exists()).toBe(false)
+
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({
+      metrics: { network: { available: false, reason: 'collect_failed' } },
+    }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="monitor-network-unavailable"]').text()).toContain('采集失败，暂不可用')
+  })
+})
+
+describe('MonitorView「显示全部网卡」开关（#77 走配置即时生效）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sysmonPending.__resetForTests()
+    vi.clearAllMocks()
+    localStorage.setItem('jwt_token', 'test-token')
+  })
+
+  it('开关初值来自生效配置镜像：hide_virtual=true → 「显示全部网卡」关闭', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    const wrapper = await mountView()
+
+    useSysmonStore().applyConfig(makeSysmonConfig({ network: { hide_virtual: true } }))
+    await wrapper.vm.$nextTick()
+    const input = wrapper.find('[data-test="monitor-network-show-all"] input[type="checkbox"]')
+    expect((input.element as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('hide_virtual=false → 开关打开（显示全部网卡）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    const wrapper = await mountView()
+
+    useSysmonStore().applyConfig(makeSysmonConfig({ network: { hide_virtual: false } }))
+    await wrapper.vm.$nextTick()
+    const input = wrapper.find('[data-test="monitor-network-show-all"] input[type="checkbox"]')
+    expect((input.element as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('admin 打开开关：下发 PUT network.hide_virtual=false，pending 保持到 WS sysmon_config 到达', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    vi.mocked(sysmonApi.setConfig).mockResolvedValue({ ok: true, message: 'dispatched' })
+    const wrapper = await mountView()
+    setRole('admin')
+    const store = useSysmonStore()
+    store.applyConfig(makeSysmonConfig({ network: { hide_virtual: true } }))
+    await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-test="monitor-network-show-all"] input[type="checkbox"]').setValue(true)
+    await flushPromises()
+
+    expect(sysmonApi.setConfig).toHaveBeenCalledWith({ network: { hide_virtual: false } })
+    // REST 只表示已下发：开关保持 pending，值仍是配置镜像里的旧值（无乐观更新）
+    expect(store.hideVirtualPending).toBe(true)
+    expect(store.hideVirtual).toBe(true)
+    expect(wrapper.find('[data-test="monitor-network-show-all"] input').element)
+      .toHaveProperty('disabled', true)
+
+    // WS sysmon_config 到达才是生效信号：镜像更新 + pending 清除
+    store.applyConfig(makeSysmonConfig({ network: { hide_virtual: false } }))
+    await flushPromises()
+    expect(store.hideVirtual).toBe(false)
+    expect(store.hideVirtualPending).toBe(false)
+    expect((wrapper.find('[data-test="monitor-network-show-all"] input').element as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('非 admin：开关渲染但 disabled，点击不下发', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    const wrapper = await mountView()
+    setRole('user')
+    useSysmonStore().applyConfig(makeSysmonConfig({ network: { hide_virtual: true } }))
+    await wrapper.vm.$nextTick()
+
+    const input = wrapper.find('[data-test="monitor-network-show-all"] input')
+    expect(input.element).toHaveProperty('disabled', true)
+    await input.trigger('change')
+    expect(sysmonApi.setConfig).not.toHaveBeenCalled()
+  })
+
+  it('HTTP 失败：pending 立即清除，开关回弹到配置镜像的真实值', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    vi.mocked(sysmonApi.setConfig).mockRejectedValue(new Error('HTTP 403'))
+    const wrapper = await mountView()
+    setRole('admin')
+    const store = useSysmonStore()
+    store.applyConfig(makeSysmonConfig({ network: { hide_virtual: true } }))
+    await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-test="monitor-network-show-all"] input[type="checkbox"]').setValue(true)
+    await flushPromises()
+
+    expect(store.hideVirtualPending).toBe(false)
+    expect(store.hideVirtual).toBe(true)
+    expect((wrapper.find('[data-test="monitor-network-show-all"] input').element as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('HTTP 失败：给出可见的失败提示，不静默失败', async () => {
+    // 开关点击后界面无变化且无提示 = 用户无法判断是否生效（静默失败）。
+    // 结果契约：false = HTTP 失败/防重入 → view 弹 error toast。
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    vi.mocked(sysmonApi.setConfig).mockRejectedValue(new Error('HTTP 503'))
+    const wrapper = await mountView()
+    setRole('admin')
+    const store = useSysmonStore()
+    store.applyConfig(makeSysmonConfig({ network: { hide_virtual: true } }))
+    await wrapper.vm.$nextTick()
+    const toastSpy = vi.spyOn(useToastStore(), 'error')
+
+    await wrapper.find('[data-test="monitor-network-show-all"] input[type="checkbox"]').setValue(true)
+    await flushPromises()
+
+    expect(toastSpy).toHaveBeenCalledTimes(1)
+    expect(toastSpy.mock.calls[0][0]).toContain('失败')
+    expect(store.hideVirtualPending).toBe(false)
+  })
+
+  it('防重入：pending 中的重复点击不再下发，也不误报失败', async () => {
+    // setHideVirtual 在 pending 中直接返回 false（不重复 HTTP）；此时不应弹失败提示，
+    // 否则用户连续点击会看到虚假错误。用永挂起的 Promise 制造 pending 窗口。
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    let release: (() => void) | undefined
+    vi.mocked(sysmonApi.setConfig).mockImplementation(
+      () => new Promise<void>((resolve) => { release = resolve }) as never,
+    )
+    const wrapper = await mountView()
+    setRole('admin')
+    const store = useSysmonStore()
+    store.applyConfig(makeSysmonConfig({ network: { hide_virtual: true } }))
+    await wrapper.vm.$nextTick()
+    const toastSpy = vi.spyOn(useToastStore(), 'error')
+
+    const input = wrapper.find('[data-test="monitor-network-show-all"] input[type="checkbox"]')
+    await input.setValue(true)
+    await wrapper.vm.$nextTick()
+    expect(store.hideVirtualPending).toBe(true)
+
+    // pending 期间 SyncSwitch 自身 disabled；直接调 setHideVirtual 验证 store 层防重入
+    const second = await store.setHideVirtual(false)
+    expect(second).toBe(false)
+    expect(sysmonApi.setConfig).toHaveBeenCalledTimes(1)
+    expect(toastSpy).not.toHaveBeenCalled()
+
+    release?.()
+    await flushPromises()
   })
 })

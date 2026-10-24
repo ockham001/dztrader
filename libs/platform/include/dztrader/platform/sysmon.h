@@ -29,6 +29,13 @@
 
 namespace dztrader::platform {
 
+/// 系统监控进程的固定实例名（契约 sysmon §5：快照/配置帧的固定发送方与镜像挂载实例）。
+///
+/// 单一真相源：发送方（`dzsysmon` 的可执行文件名即 instance_id）、dzweb 的镜像挂载、
+/// SET 帧的路由键、校验里 source 字段的期望值都引用此处，避免同一个字面量散落多处
+/// （`core_data_type.h` 的帧名是另一维度：帧类型不是实例标识）。
+inline constexpr const char* SYSMON_INSTANCE_NAME = "dzsysmon";
+
 // ===== 可用性映射键（契约 sysmon §可用性描述）=====
 // 该集合是发送方与消费方的稳定契约：每帧快照的 availability.metrics 必须覆盖全部键。
 inline constexpr const char* SYSMON_METRIC_SYSTEM = "system";
@@ -291,19 +298,33 @@ struct SysmonDiskIoInfo {
                                                 utilization)
 };
 
-/// 每网卡速率与累计量。
+/// 每网卡累计量与速率（契约 sysmon §2.4 `network[]`）。
+///
+/// 八个 `*_total` 是原始累计计数器（收/发 × 字节/包/错误/丢弃）；六个 `*_per_sec`
+/// 由纯函数从两次采样差值计算，首次采样 / 新出现的网卡 / 计数器重置时为 null
+/// （不得用 0 冒充）。`is_virtual` 只用结构性依据判定（Linux 网卡是否有 `device`
+/// 支撑；Windows `HardwareInterface`），不看名字前缀。
 struct SysmonNetworkInfo {
     /// 网卡名。C++ 字段不叫 `interface`：Windows SDK 的 COM 头（objbase.h）把它
     /// 定义成 `struct` 宏，包含顺序变化即编译失败；JSON 键仍是契约规定的 `interface`。
     std::string interface_name;
+    /// 累计收发（字节 / 包 / 错误 / 丢弃）。
     uint64_t rx_bytes_total = 0;
     uint64_t tx_bytes_total = 0;
+    uint64_t rx_packets_total = 0;
+    uint64_t tx_packets_total = 0;
+    uint64_t rx_errors_total = 0;
+    uint64_t tx_errors_total = 0;
+    uint64_t rx_drops_total = 0;
+    uint64_t tx_drops_total = 0;
+    /// 每秒速率；null = 首次采样 / 计数器重置（不得用 0 冒充）。
     std::optional<double> rx_bytes_per_sec;
     std::optional<double> tx_bytes_per_sec;
     std::optional<double> rx_errors_per_sec;
     std::optional<double> tx_errors_per_sec;
     std::optional<double> rx_drops_per_sec;
     std::optional<double> tx_drops_per_sec;
+    /// 是否虚拟网卡（不由硬件设备支撑）；`hide_virtual = true` 时发送方不输出 true 的条目。
     bool is_virtual = false;
 };
 
@@ -312,6 +333,12 @@ inline void to_json(nlohmann::json& j, const SysmonNetworkInfo& n) {
     j = nlohmann::json{{"interface", n.interface_name},
                        {"rx_bytes_total", n.rx_bytes_total},
                        {"tx_bytes_total", n.tx_bytes_total},
+                       {"rx_packets_total", n.rx_packets_total},
+                       {"tx_packets_total", n.tx_packets_total},
+                       {"rx_errors_total", n.rx_errors_total},
+                       {"tx_errors_total", n.tx_errors_total},
+                       {"rx_drops_total", n.rx_drops_total},
+                       {"tx_drops_total", n.tx_drops_total},
                        {"rx_bytes_per_sec", n.rx_bytes_per_sec},
                        {"tx_bytes_per_sec", n.tx_bytes_per_sec},
                        {"rx_errors_per_sec", n.rx_errors_per_sec},
@@ -323,8 +350,16 @@ inline void to_json(nlohmann::json& j, const SysmonNetworkInfo& n) {
 
 inline void from_json(const nlohmann::json& j, SysmonNetworkInfo& n) {
     n.interface_name = j.at("interface").get<std::string>();
-    n.rx_bytes_total = j.value("rx_bytes_total", uint64_t{0});
-    n.tx_bytes_total = j.value("tx_bytes_total", uint64_t{0});
+    // 八个累计计数器必须存在（契约 sysmon §7：累计值没有"不可用"语义）——用 at() 而非
+    // value() 兜底默认值，使解码路径与 validate 的必填规则一致：缺字段即抛，不静默补 0。
+    n.rx_bytes_total = j.at("rx_bytes_total").get<uint64_t>();
+    n.tx_bytes_total = j.at("tx_bytes_total").get<uint64_t>();
+    n.rx_packets_total = j.at("rx_packets_total").get<uint64_t>();
+    n.tx_packets_total = j.at("tx_packets_total").get<uint64_t>();
+    n.rx_errors_total = j.at("rx_errors_total").get<uint64_t>();
+    n.tx_errors_total = j.at("tx_errors_total").get<uint64_t>();
+    n.rx_drops_total = j.at("rx_drops_total").get<uint64_t>();
+    n.tx_drops_total = j.at("tx_drops_total").get<uint64_t>();
     const auto optional_number = [&j](const char* key) -> std::optional<double> {
         if (!j.contains(key) || j[key].is_null()) {
             return std::nullopt;
@@ -337,7 +372,8 @@ inline void from_json(const nlohmann::json& j, SysmonNetworkInfo& n) {
     n.tx_errors_per_sec = optional_number("tx_errors_per_sec");
     n.rx_drops_per_sec = optional_number("rx_drops_per_sec");
     n.tx_drops_per_sec = optional_number("tx_drops_per_sec");
-    n.is_virtual = j.value("is_virtual", false);
+    // is_virtual 同样必填（契约 sysmon §7）：缺 key 即抛，不默认成 false。
+    n.is_virtual = j.at("is_virtual").get<bool>();
 }
 
 /// 共享内存目录占用（契约 sysmon §2.4）：用于确认页清理机制没有失效。

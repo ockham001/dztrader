@@ -55,7 +55,8 @@ registerHandler('snapshot', (payload) => {
   // log_config：日志进程列表经 applySnapshot 整体重建（随快照增删，保持列表一致），
   // 并兜底清 set_level pending（契约 webui-ws §6）；md_shm_config 已消费（契约 shm SHM 配置镜像，
   // 分发复用增量帧 apply）；event_shm_config 已消费（契约 shm 事件通道配置镜像，分发复用增量帧 apply）；
-  // auto_login 已消费（契约 auto-login 排程镜像）。
+  // auto_login 已消费（契约 auto-login 排程镜像）；sysmon_snapshot / sysmon_config 已消费
+  //（契约 sysmon 快照域与运行期配置，分发复用增量帧 apply）。
   const mirror = (payload ?? {}) as Record<string, Record<string, unknown>>
   const logs = useLogsStore()
   logs.applySnapshot(mirror as Record<string, { log_config?: { level?: string } }>)
@@ -96,6 +97,11 @@ registerHandler('snapshot', (payload) => {
         case 'sysmon_snapshot':
           // 契约 sysmon: 快照域固定挂 dzsysmon；重连后恢复顶栏/监控页实时镜像
           useSysmonStore().applySnapshot(value)
+          break
+        case 'sysmon_config':
+          // 契约 sysmon §3: 配置域固定挂 dzsysmon；快照分发复用增量帧 apply
+          //（重连后恢复 hide_virtual 开关状态并清悬挂的配置 pending）
+          useSysmonStore().applyConfig(value)
           break
         // log_config 已由上方 applySnapshot 整体重建并兜底清 set_level pending
       }
@@ -215,4 +221,11 @@ registerHandler('sysmon_snapshot', (payload) => {
   // 契约 sysmon: RTN_SYSMON_SNAPSHOT → WS sysmon_snapshot（固定实例 dzsysmon）
   // 顶栏 CPU 徽章与资源监控页消费同一镜像，刷新基线由发送方推送间隔（默认 5s）决定
   useSysmonStore().applySnapshot(payload)
+})
+
+registerHandler('sysmon_config', (payload) => {
+  // 契约 sysmon §3: RTN_SYSMON_CONFIG → WS sysmon_config（固定实例 dzsysmon，全量生效配置）
+  // 到达即清「显示全部网卡」配置 pending —— REST 只表示已下发，本消息才是生效信号
+  //（校验失败时发送方回推旧值，开关因此回弹到真实生效值）
+  useSysmonStore().applyConfig(payload)
 })

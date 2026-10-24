@@ -11,6 +11,7 @@ add_library(dzsysmon_obj OBJECT
     cpu_saturation.cpp
     cpu_usage.cpp
     disk_io.cpp
+    network.cpp
     snapshot_builder.cpp
 )
 target_include_directories(dzsysmon_obj PUBLIC
@@ -65,6 +66,17 @@ foreach(testfile ${DZSYSMON_TESTS})
         # （unreachable code），Release /WX 升级为错误；仅豁免测试目标。
         target_compile_options(dzsysmon_${testname} PRIVATE /wd4702)
     endif()
-    gtest_discover_tests(dzsysmon_${testname} PROPERTIES LABELS fast)
+    # 进程级 E2E（#77）：起真实 dzsysmon 观察帧序（SET_SYSMON_CONFIG 后立即推送快照）。
+    # 事件通道命名信号量是机器全局命名空间，与 dev 栈/其它测试实例互扰，必须串行；
+    # 且需先构建 dzsysmon（测试从 <build>/tests 的上一级定位该可执行文件）。
+    if(testname STREQUAL "network_config_e2e_test")
+        add_dependencies(dzsysmon_${testname} dzsysmon)
+        gtest_discover_tests(dzsysmon_${testname} PROPERTIES
+            LABELS fast
+            RUN_SERIAL TRUE
+        )
+    else()
+        gtest_discover_tests(dzsysmon_${testname} PROPERTIES LABELS fast)
+    endif()
     install(TARGETS dzsysmon_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()

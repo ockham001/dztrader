@@ -308,18 +308,39 @@ export interface SysmonDiskIoInfo {
     utilization: number | null
 }
 
+// 每网卡累计收发与速率（契约 sysmon §2.4 network[]）。八个 *_total 为累计计数器、必填非负整数（累计量没有不可用语义）；六个 *_per_sec 为速率，首次采样/本帧新出现/计数器重置时为 null（不得用 0 冒充）。hide_virtual=true 时发送方已过滤 is_virtual 条目。
 export interface SysmonNetworkInfo {
-    /** 网卡名 */
+    /** 网卡名（Linux 内核接口名；Windows 适配器别名 Alias）；单帧内唯一 */
     interface: string
+    /** 累计接收字节数 */
     rx_bytes_total: number
+    /** 累计发送字节数 */
     tx_bytes_total: number
+    /** 累计接收包数（含单播与组播/广播） */
+    rx_packets_total: number
+    /** 累计发送包数（含单播与组播/广播） */
+    tx_packets_total: number
+    /** 累计接收错误数 */
+    rx_errors_total: number
+    /** 累计发送错误数 */
+    tx_errors_total: number
+    /** 累计接收丢弃数 */
+    rx_drops_total: number
+    /** 累计发送丢弃数 */
+    tx_drops_total: number
+    /** 接收吞吐（字节/秒）；首次采样/本帧新出现/计数器重置时为 null（不得用 0 冒充） */
     rx_bytes_per_sec: number | null
+    /** 发送吞吐（字节/秒）；首次采样/本帧新出现/计数器重置时为 null（不得用 0 冒充） */
     tx_bytes_per_sec: number | null
+    /** 接收错误速率（个/秒）；不可用时为 null（不得用 0 冒充） */
     rx_errors_per_sec: number | null
+    /** 发送错误速率（个/秒）；不可用时为 null（不得用 0 冒充） */
     tx_errors_per_sec: number | null
+    /** 接收丢弃速率（个/秒）；不可用时为 null（不得用 0 冒充） */
     rx_drops_per_sec: number | null
+    /** 发送丢弃速率（个/秒）；不可用时为 null（不得用 0 冒充） */
     tx_drops_per_sec: number | null
-    /** 是否虚拟网卡 */
+    /** 是否虚拟网卡（不由硬件设备支撑）；hide_virtual=true 时发送方不输出 true 的条目 */
     is_virtual: boolean
 }
 

@@ -31,12 +31,29 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+// IP Helper 的用户态包含顺序：winsock2.h → ws2tcpip.h → windows.h → iphlpapi.h。
+// - winsock2.h 必须先于 windows.h（否则引入旧的 winsock.h，两套套接字头冲突）；
+//   WIN32_LEAN_AND_MEAN 已排除 winsock.h，与 libs/core/src/env.cpp 既有做法一致。
+// - ws2tcpip.h 负责引入 ws2ipdef.h：MIB_IF_ROW2 / MIB_IF_TABLE2 / GetIfTable2 的声明
+//   依赖它提供的网络接口类型（NET_LUID / NET_IFINDEX / IF_MAX_* / IF_OPER_STATUS）。
+//   本 TU 原先只引 winsock2.h，于是 iphlpapi.h 间接拉入 netioapi.h 时 ws2ipdef.h 从未
+//   进入包含树，netioapi.h 的接口结构段整体未生效 —— CI Windows job 报
+//   `'PMIB_IF_TABLE2': undeclared identifier` / `'GetIfTable2': identifier not found`
+//   （失败 TU 的 showIncludes 里确实没有 ws2ipdef.h，同 job 通过编译的其它 TU 有）。
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <pdh.h>
 #include <pdhmsg.h>    // PDH_CSTATUS_VALID_DATA / PDH_CSTATUS_NEW_DATA（部分 SDK 的 pdh.h 不引入）
 #include <psapi.h>     // GetPerformanceInfo：内存与页文件口径（契约 sysmon §2.4）
 #include <winioctl.h>  // DISK_PERFORMANCE / IOCTL_DISK_PERFORMANCE：每物理盘 I/O（契约 sysmon §2.4）
 #include <winreg.h>
+// 每网卡累计计数器（契约 sysmon §2.4）：GetIfTable2 / FreeMibTable 与 MIB_IF_TABLE2 /
+// MIB_IF_ROW2。**不要直接 include netioapi.h**：用户态下它期望已被 iphlpapi.h 拉起的
+// 上下文（NTSTATUS 等来自 winnt.h 的类型），单独引入会在 netioapi.h 内部刷出大量
+// `missing ';' before '__cdecl'` / `'NTSTATUS': redefinition`。用户态正确入口只有
+// iphlpapi.h（它按需再引 netioapi.h）。链接库 iphlpapi 在 CMakeLists 声明。
+#include <iphlpapi.h>
 
 #include "system_collector_internal.h"
 
@@ -53,6 +70,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -963,6 +981,83 @@ RawDiskIoSnapshot query_disk_io() {
     return snapshot;
 }
 
+// 编译期断言：IP Helper 的接口结构体确实可见。若头文件包含顺序回归（例如有人删掉
+// ws2tcpip.h），编译器会先在这里给出可读的失败原因，而不是在 query_network 里刷出
+// 二十多条级联的 undeclared identifier。
+static_assert(sizeof(MIB_IF_ROW2) > 0,
+              "MIB_IF_ROW2 must be visible: include winsock2.h, "
+              "ws2tcpip.h, windows.h, netioapi.h in that order");
+static_assert(sizeof(MIB_IF_TABLE2) > 0, "MIB_IF_TABLE2 must be visible: see iphlpapi/netioapi");
+
+// ===== 每网卡累计计数器：GetIfTable2 / FreeMibTable（契约 sysmon §2.4、§2.7）=====
+//
+// 数据源是 IP Helper API 的 `GetIfTable2`（输出 `MIB_IF_TABLE2`，逐行 `MIB_IF_ROW2`）。
+// 相比老接口 `GetIfTable`/`GetIfEntry`，它按接口 LUID 枚举、计数为 `ULONG64`，并带
+// `InterfaceAndOperStatusFlags.HardwareInterface`——正是契约要求的**结构性**虚拟网卡判据
+// （不看名字前缀）。`MIB_IF_ROW2.Alias` 是用户可见适配器名（`WCHAR[IF_MAX_STRING_SIZE+1]`），
+// 契约规定用它作 `interface`。
+
+/// 采集**全部**网络接口的原始累计计数器（契约 sysmon §2.4、§2.7）。
+///
+/// 包含虚拟网卡与回环（`is_virtual` 标明）：过滤发生在快照构造阶段，改
+/// `network.hide_virtual` 不需要重新采集、也不影响速率基线。
+///
+/// `GetIfTable2` 失败 ⇒ 失败（`unavailable_reason=collect_failed`）；成功但没有接口
+/// ⇒ 成功 + 空数组（本机无网络接口不是失败）。0 流量的接口照常进入数组
+/// （“存在但为 0”与“不存在”是不同事实）。找不到别名的接口跳过（不伪造空名条目）。
+RawNetworkSnapshot query_network() {
+    RawNetworkSnapshot snapshot;
+    PMIB_IF_TABLE2 table = nullptr;
+    const DWORD status = GetIfTable2(&table);
+    if (status != NO_ERROR || table == nullptr) {
+        snapshot.unavailable_reason = "collect_failed";
+        return snapshot;
+    }
+    snapshot.interfaces.reserve(table->NumEntries);
+    // 帧内 interface 必须唯一（契约 sysmon §7）：`Alias` 由用户命名，理论上可以重名
+    // （同一显示名绑到多个适配器），重名时**保留首次出现的条目**——与 Linux 侧
+    // `parse_net_dev` 对同名接口行的处理同口径。不这么做会产出自家 validate 判非法的帧。
+    std::set<std::string> seen_aliases;
+    for (ULONG i = 0; i < table->NumEntries; ++i) {
+        const MIB_IF_ROW2& row = table->Table[i];
+        RawNetworkInfo info;
+        // Alias 是 `WCHAR[IF_MAX_STRING_SIZE + 1]`；按缓冲上界封顶扫描取长度，
+        // 防御异常驱动不写 NUL 终止符（不读越界）。用 sizeof 推导上界而不直接用
+        // IF_MAX_STRING_SIZE 宏，避免无符号/有符号比较告警（MSVC /W4 /WX）。
+        constexpr std::size_t kAliasCapacity = sizeof(row.Alias) / sizeof(row.Alias[0]);
+        std::size_t alias_length = 0;
+        while (alias_length < kAliasCapacity && row.Alias[alias_length] != L'\0') {
+            ++alias_length;
+        }
+        info.interface_name = wide_to_utf8(std::wstring_view(row.Alias, alias_length));
+        if (info.interface_name.empty()) {
+            continue;  // 无别名的接口无法作为帧内唯一键，跳过（不伪造空名条目）
+        }
+        if (!seen_aliases.insert(info.interface_name).second) {
+            continue;  // 别名重名：保留首次出现的适配器（帧内 interface 必须唯一）
+        }
+        // 八个累计计数器两平台均为 64 位（契约 sysmon §2.7）：MIB_IF_ROW2 的字段是 ULONG64，
+        // 显式 static_cast 消除 /W4 下的收窄告警（MSVC /WX）。
+        info.rx_bytes = static_cast<uint64_t>(row.InOctets);
+        info.tx_bytes = static_cast<uint64_t>(row.OutOctets);
+        // 契约要求包数含单播与组播/广播：Windows 把它们分成 Ucast 与 NUcast 两个计数器。
+        info.rx_packets =
+            static_cast<uint64_t>(row.InUcastPkts) + static_cast<uint64_t>(row.InNUcastPkts);
+        info.tx_packets =
+            static_cast<uint64_t>(row.OutUcastPkts) + static_cast<uint64_t>(row.OutNUcastPkts);
+        info.rx_errors = static_cast<uint64_t>(row.InErrors);
+        info.tx_errors = static_cast<uint64_t>(row.OutErrors);
+        info.rx_drops = static_cast<uint64_t>(row.InDiscards);
+        info.tx_drops = static_cast<uint64_t>(row.OutDiscards);
+        // 结构性判定：没有硬件设备支撑的接口（虚拟网卡/回环/隧道）HardwareInterface 为 false。
+        info.is_virtual = row.InterfaceAndOperStatusFlags.HardwareInterface == 0;
+        snapshot.interfaces.push_back(std::move(info));
+    }
+    // 表由 API 分配，必须用 FreeMibTable 释放（早退路径均在释放之后）。
+    FreeMibTable(table);
+    return snapshot;
+}
+
 /// Windows 采集器：系统信息每次现取；负载代理持有 PDH 查询与加权状态。
 class WindowsSystemCollector final : public SystemCollector {
 public:
@@ -1054,6 +1149,8 @@ public:
     }
 
     RawDiskIoSnapshot collect_disk_io() override { return query_disk_io(); }
+
+    RawNetworkSnapshot collect_network() override { return query_network(); }
 
 private:
     WindowsLoadAverageSampler load_sampler_;

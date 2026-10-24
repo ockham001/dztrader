@@ -1199,4 +1199,286 @@ TEST(SystemCollectorTest, DiskIoCountersFollowContractInvariants) {
     }
 }
 
+// ===== #77 真机 oracle：每网卡累计计数器与虚拟网卡标记（契约 sysmon §2.4、§2.7）=====
+TEST(SystemCollectorTest, NetworkCountersFollowContractInvariants) {
+    const auto collector = make_system_collector();
+    ASSERT_NE(collector, nullptr);
+
+    const auto first = collector->collect_network();
+    // 两平台的数据源（Linux `/proc/net/dev`；Windows `GetIfTable2`）都不需要特权，
+    // 在受支持的宿主上不可用即为实现缺陷（契约 sysmon §2.4 的 collect_failed 只应
+    // 出现在数据源真的读不到时）。
+    ASSERT_TRUE(first.unavailable_reason.empty())
+        << "collect_network must work on a supported host, reason=" << first.unavailable_reason;
+
+    // 接口名非空且帧内唯一（契约 sysmon §7）；八个累计计数器是 uint64 类型本身非负。
+    std::vector<std::string> names;
+    for (const auto& interface : first.interfaces) {
+        EXPECT_FALSE(interface.interface_name.empty());
+        names.push_back(interface.interface_name);
+#if defined(__linux__)
+        // 回环没有硬件设备支撑（`/sys/class/net/lo/device` 不存在）⇒ 必须判为虚拟
+        // （契约 sysmon §2.4：结构性判定，不看名字前缀）。
+        if (interface.interface_name == "lo") {
+            EXPECT_TRUE(interface.is_virtual) << "loopback must be flagged virtual";
+        }
+#endif
+    }
+    std::sort(names.begin(), names.end());
+    EXPECT_EQ(std::adjacent_find(names.begin(), names.end()), names.end())
+        << "interface names must be unique within one frame";
+
+    // 单独断言"存在但为 0 流量"的接口不被丢弃：本机至少有一个接口（含 lo），
+    // 且 0 计数器是合法读数而不是"读不到"（契约 sysmon §2.4）。
+    EXPECT_FALSE(first.interfaces.empty()) << "a supported host must expose at least one interface";
+
+    // 条件轮询直到任一累计计数器推进（最多约 2s）；不以固定 sleep 作为同步手段
+    // （docs/unit-test-standard.md §1.5）。空转机器上可能不推进，此时仍做单调性检查。
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    RawNetworkSnapshot second;
+    auto counters_advanced = [&first](const std::vector<RawNetworkInfo>& current) {
+        for (const auto& interface : current) {
+            for (const auto& previous : first.interfaces) {
+                if (previous.interface_name == interface.interface_name &&
+                    interface.rx_bytes + interface.tx_bytes >
+                        previous.rx_bytes + previous.tx_bytes) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto sample = collector->collect_network();
+        if (sample.unavailable_reason.empty()) {
+            second = sample;
+            if (counters_advanced(sample.interfaces)) {
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_FALSE(second.interfaces.empty())
+        << "collect_network must keep working within one sampling";
+    // 累计计数器单调不减（两平台均为 64 位，2s 内不会回绕；契约 sysmon §2.7）。
+    for (const auto& current : second.interfaces) {
+        const auto it = std::find_if(first.interfaces.begin(), first.interfaces.end(),
+                                     [&current](const auto& previous) {
+                                         return previous.interface_name == current.interface_name;
+                                     });
+        if (it == first.interfaces.end()) {
+            continue;  // 接口集合可在帧间变化（热插拔/虚拟网卡增删）
+        }
+        EXPECT_GE(current.rx_bytes, it->rx_bytes) << current.interface_name;
+        EXPECT_GE(current.tx_bytes, it->tx_bytes) << current.interface_name;
+        EXPECT_GE(current.rx_packets, it->rx_packets) << current.interface_name;
+        EXPECT_GE(current.tx_packets, it->tx_packets) << current.interface_name;
+        EXPECT_GE(current.rx_errors, it->rx_errors) << current.interface_name;
+        EXPECT_GE(current.tx_errors, it->tx_errors) << current.interface_name;
+        EXPECT_GE(current.rx_drops, it->rx_drops) << current.interface_name;
+        EXPECT_GE(current.tx_drops, it->tx_drops) << current.interface_name;
+    }
+}
+
+#if defined(__linux__)
+// ===== #77 Linux 内部解析接缝：/proc/net/dev 与虚拟网卡判定（契约 sysmon §2.4）=====
+
+namespace netdev_test {
+
+using dztrader::platform::system_collector_linux_internal::is_virtual_interface;
+using dztrader::platform::system_collector_linux_internal::NetDevEntry;
+using dztrader::platform::system_collector_linux_internal::parse_net_dev;
+
+/// 典型 `/proc/net/dev` 内容：两行表头 + 回环 + 物理网卡 + docker0 + 全 0 流量网卡。
+constexpr std::string_view kNetDev =
+    "Inter-|   Receive                                                |  Transmit\n"
+    " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop "
+    "fifo colls carrier compressed\n"
+    "    lo: 335789071 1811550    0    0    0     0          0         0 335789071 1811550    0    "
+    "0    0     0       0          0\n"
+    "  eth0: 55800260082 60986183    3 47594    0     0          0   3255659 32359188879 48915567"
+    "    7    4    0     0       0          0\n"
+    "docker0: 2728364   47425    0    0    0     0          0         0 84885587   52319    0  809"
+    "    0     0       0          0\n"
+    "  wls3:       0       0    0    0    0     0          0         0        0       0    0    4"
+    "    0     0       0          0\n";
+
+TEST(NetdevParserTest, ParsesAllCounterColumnsAndSkipsHeaders) {
+    const auto entries = parse_net_dev(kNetDev);
+    // 两行表头没有冒号后的 16 个数字，必须被跳过（契约 sysmon §2.4）。
+    ASSERT_EQ(entries.size(), 4U);
+
+    const auto& lo = entries[0];
+    EXPECT_EQ(lo.interface_name, "lo");
+    EXPECT_EQ(lo.rx_bytes, 335789071U);
+    EXPECT_EQ(lo.rx_packets, 1811550U);
+    EXPECT_EQ(lo.rx_errors, 0U);
+    EXPECT_EQ(lo.rx_drops, 0U);
+    EXPECT_EQ(lo.tx_bytes, 335789071U);
+    EXPECT_EQ(lo.tx_packets, 1811550U);
+    EXPECT_EQ(lo.tx_errors, 0U);
+    EXPECT_EQ(lo.tx_drops, 0U);
+
+    // 收发是两段独立列：rx 段 8 项之后才是 tx 段（错位会在这里暴露）。
+    const auto& eth0 = entries[1];
+    EXPECT_EQ(eth0.interface_name, "eth0");
+    EXPECT_EQ(eth0.rx_bytes, 55800260082U);
+    EXPECT_EQ(eth0.rx_packets, 60986183U);
+    EXPECT_EQ(eth0.rx_errors, 3U);
+    EXPECT_EQ(eth0.rx_drops, 47594U);
+    EXPECT_EQ(eth0.tx_bytes, 32359188879U);
+    EXPECT_EQ(eth0.tx_packets, 48915567U);
+    EXPECT_EQ(eth0.tx_errors, 7U);
+    EXPECT_EQ(eth0.tx_drops, 4U);
+
+    EXPECT_EQ(entries[2].interface_name, "docker0");
+    EXPECT_EQ(entries[2].rx_bytes, 2728364U);
+    EXPECT_EQ(entries[2].tx_bytes, 84885587U);
+    EXPECT_EQ(entries[2].tx_drops, 809U);
+
+    // 全 0 流量网卡：0 是真实读数，不是"读不到"（契约 sysmon §2.4 的采集范围）。
+    const auto& wls3 = entries[3];
+    EXPECT_EQ(wls3.interface_name, "wls3");
+    EXPECT_EQ(wls3.rx_bytes, 0U);
+    EXPECT_EQ(wls3.tx_bytes, 0U);
+    EXPECT_EQ(wls3.tx_drops, 4U);
+}
+
+TEST(NetdevParserTest, HeadersOnlyAndMalformedLinesYieldNoEntries) {
+    EXPECT_TRUE(parse_net_dev("").empty());
+    // 只有表头：不是整体失败，只是没有接口（空数组 = 本机无接口）。
+    EXPECT_TRUE(
+        parse_net_dev("Inter-|   Receive |  Transmit\n"
+                      " face |bytes packets errs drop fifo frame compressed multicast|bytes "
+                      "packets errs drop fifo colls carrier compressed\n")
+            .empty());
+    // 字段不足/非法数字/缺接口名的行逐行跳过，不影响同一文本里的合法行。
+    constexpr std::string_view kMixed =
+        "    lo: 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16\n"
+        "  bad: 1 2 3\n"
+        "  bad2: 1 2 3 4 5 6 7 8 9 10 11 x 13 14 15 16\n"
+        ": 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16\n"
+        "  eth0: 10 20 30 40 50 60 70 80 90 100 110 120 130 140 150 160\n";
+    const auto entries = parse_net_dev(kMixed);
+    ASSERT_EQ(entries.size(), 2U);
+    EXPECT_EQ(entries[0].interface_name, "lo");
+    EXPECT_EQ(entries[0].rx_bytes, 1U);
+    EXPECT_EQ(entries[0].tx_bytes, 9U);
+    EXPECT_EQ(entries[1].interface_name, "eth0");
+    EXPECT_EQ(entries[1].rx_bytes, 10U);
+    EXPECT_EQ(entries[1].tx_drops, 120U);
+}
+
+TEST(NetdevParserTest, InterfaceNameWithColonUsesLastColonAsSeparator) {
+    // 老式别名接口名可含冒号：16 个统计字段全是数字，最后一个冒号必是分隔符。
+    constexpr std::string_view kAlias = "  eth0:1: 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22\n";
+    const auto entries = parse_net_dev(kAlias);
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_EQ(entries[0].interface_name, "eth0:1");
+    EXPECT_EQ(entries[0].rx_bytes, 7U);
+    EXPECT_EQ(entries[0].tx_drops, 18U);
+}
+
+TEST(NetdevParserTest, DuplicateInterfaceLinesKeepFirst) {
+    constexpr std::string_view kDuplicate =
+        "  eth0: 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16\n"
+        "  eth0: 100 200 300 400 500 600 700 800 900 1000 1100 1200 1300 1400 1500 1600\n";
+    const auto entries = parse_net_dev(kDuplicate);
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_EQ(entries[0].rx_bytes, 1U);
+}
+
+/// 假 sysfs 根 fixture：用真实目录 + 符号链接伪造 `/sys/class/net` 的两级链接结构，
+/// 使虚拟网卡判定不依赖真实网卡名（AGENTS 硬门禁 2 自管临时目录的豁免情形）。
+class FakeSysfsTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        std::error_code ec;
+        base_ = std::filesystem::temp_directory_path(ec) /
+                ("dzsysmon_net_" + std::to_string(current_process_id()) + "_" +
+                 std::to_string(counter_++));
+        std::filesystem::remove_all(base_, ec);
+        ASSERT_TRUE(std::filesystem::create_directories(base_, ec)) << ec.message();
+        // 真实 sysfs 布局：`/sys/class/net/<if>` 是符号链接，指向
+        // `/sys/devices/<bus path>/net/<if>`，该目录下的 `device` 也是符号链接。
+        net_root_ = base_ / "sys" / "class" / "net";
+        ASSERT_TRUE(std::filesystem::create_directories(net_root_, ec)) << ec.message();
+    }
+
+    void TearDown() override {
+        std::error_code ec;
+        std::filesystem::remove_all(base_, ec);
+    }
+
+    /// 造一个"有硬件设备支撑"的接口：`<if>` 链接指向 devpath，devpath/device 链接存在。
+    void add_physical_interface(const std::string& name) {
+        std::error_code ec;
+        const auto devpath =
+            base_ / "sys" / "devices" / "pci0000:00" / "0000:00:1f.6" / "net" / name;
+        ASSERT_TRUE(std::filesystem::create_directories(devpath, ec)) << ec.message();
+        // device 链接指向父级 PCI 设备目录（真实 sysfs 里就指向设备本身）。
+        std::filesystem::create_directory_symlink(
+            base_ / "sys" / "devices" / "pci0000:00" / "0000:00:1f.6", devpath / "device", ec);
+        ASSERT_FALSE(ec) << ec.message();
+        std::filesystem::create_symlink(std::filesystem::path("..") / ".." / "devices" /
+                                            "pci0000:00" / "0000:00:1f.6" / "net" / name,
+                                        net_root_ / name, ec);
+        ASSERT_FALSE(ec) << ec.message();
+    }
+
+    /// 造一个"无硬件设备支撑"的接口：`<if>` 链接指向 devices/virtual/net/<if>，无 device。
+    void add_virtual_interface(const std::string& name) {
+        std::error_code ec;
+        const auto devpath = base_ / "sys" / "devices" / "virtual" / "net" / name;
+        ASSERT_TRUE(std::filesystem::create_directories(devpath, ec)) << ec.message();
+        std::filesystem::create_symlink(
+            std::filesystem::path("..") / ".." / "devices" / "virtual" / "net" / name,
+            net_root_ / name, ec);
+        ASSERT_FALSE(ec) << ec.message();
+    }
+
+    std::filesystem::path base_;
+    std::filesystem::path net_root_;
+    static int counter_;
+};
+
+int FakeSysfsTest::counter_ = 0;
+
+TEST_F(FakeSysfsTest, DeviceBackedInterfaceIsPhysicalAndOthersAreVirtual) {
+    // 名字刻意选成与真实网卡名无关（判定必须是结构性的，契约 sysmon §2.4 禁止名字前缀）。
+    add_physical_interface("hwport0");
+    add_virtual_interface("logicalport0");
+    add_virtual_interface("lo");
+
+    // 跟随两级符号链接后能在 <if>/device 处 stat 到实体 ⇒ 物理。
+    EXPECT_FALSE(is_virtual_interface("hwport0", net_root_.string()));
+    // 链接链存在但没有 device ⇒ 虚拟（回环/桥接/veth/隧道都属此类）。
+    EXPECT_TRUE(is_virtual_interface("logicalport0", net_root_.string()));
+    EXPECT_TRUE(is_virtual_interface("lo", net_root_.string()));
+    // 接口已消失（热插拔）⇒ 按虚拟处理，不冒充硬件设备。
+    EXPECT_TRUE(is_virtual_interface("gone0", net_root_.string()));
+    // 无名接口无法判定 ⇒ 按虚拟处理。
+    EXPECT_TRUE(is_virtual_interface("", net_root_.string()));
+}
+
+TEST_F(FakeSysfsTest, InterfaceEntryItselfMayBeAVirtualSymlink) {
+    // 接口目录**不是**符号链接（例如测试里直接建同名目录）时同样按 device 是否存在判定：
+    // 判据只取 `<if>/device` 的可达性，不依赖 `<if>` 本身的链接形态。
+    std::error_code ec;
+    const auto dir = net_root_ / "plaindir0";
+    ASSERT_TRUE(std::filesystem::create_directories(dir, ec)) << ec.message();
+    EXPECT_TRUE(is_virtual_interface("plaindir0", net_root_.string()));
+    ASSERT_TRUE(std::filesystem::create_directories(dir / "device", ec)) << ec.message();
+    EXPECT_FALSE(is_virtual_interface("plaindir0", net_root_.string()));
+}
+
+TEST_F(FakeSysfsTest, MissingSysfsRootTreatsEveryInterfaceAsVirtual) {
+    // sysfs 根不存在（或接口不在其中）：找不到 `<if>/device` ⇒ 判虚拟。
+    // 宁可多隐藏一个未知接口，也不把虚拟网卡当硬件设备输出（契约 sysmon §2.4）。
+    EXPECT_TRUE(is_virtual_interface("hwport0", (base_ / "no_such_root").string()));
+}
+
+}  // namespace netdev_test
+#endif  // defined(__linux__)
+
 }  // namespace dztrader::test

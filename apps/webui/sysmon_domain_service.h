@@ -23,7 +23,7 @@ namespace dztrader::webui {
 class SysmonDomainService {
 public:
     /// 快照/配置的固定实例名（契约 sysmon §5）。
-    static constexpr std::string_view kInstance = "dzsysmon";
+    static constexpr std::string_view kInstance = platform::SYSMON_INSTANCE_NAME;
 
     SysmonDomainService(MirrorStore& mirror, WsBroadcaster& ws)
         : mirror_(mirror),

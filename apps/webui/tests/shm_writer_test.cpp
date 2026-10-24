@@ -205,6 +205,22 @@ TEST_F(WebuiShmWriterTest, WriteSetMdShmConfig) {
     EXPECT_EQ(parse_inst_payload(*view), payload);
 }
 
+TEST_F(WebuiShmWriterTest, WriteSetSysmonConfig) {
+    // 契约 sysmon §3：SET_SYSMON_CONFIG 定向到固定实例 dzsysmon，payload 为 merge patch 透传
+    const nlohmann::json payload = {{"network", {{"hide_virtual", false}}}};
+    shm_writer_->write_set_sysmon_config(payload);
+    auto view = next_frame_view(DZ_FRAME_SET_SYSMON_CONFIG);
+    ASSERT_TRUE(view.has_value());
+    EXPECT_STREQ(view->ext_inst_id(), "dzsysmon");
+    EXPECT_EQ(parse_inst_payload(*view), payload);
+}
+
+TEST_F(WebuiShmWriterTest, WriteSetSysmonConfigNullWriterWritesNothing) {
+    ShmWriter writer{std::shared_ptr<shm::MultiWriter>()};
+    writer.write_set_sysmon_config(nlohmann::json{{"network", {{"hide_virtual", true}}}});
+    EXPECT_EQ(reader_->next_frame(), nullptr);
+}
+
 TEST_F(WebuiShmWriterTest, WriteNotifiesRegisteredReaders) {
     // 通用规则 §4.1：写帧后必须唤醒等待进程；无 notify 时 wait_for 会超时
     dztrader::shm::NamedSemaphore sem(reader_name_);

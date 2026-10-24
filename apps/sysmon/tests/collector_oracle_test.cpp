@@ -6,6 +6,7 @@
 
 #include "cpu_usage.h"
 #include "disk_io.h"
+#include "network.h"
 #include "snapshot_builder.h"
 
 #include <dztrader/core/path.h>
@@ -170,8 +171,9 @@ TEST(SystemCollectorOracleTest, SensorAvailabilityReflectsRealHostAndValidates) 
         cpu_metrics.core_frequencies = std::move(items);
     }
 
-    const auto snapshot = build_snapshot("dzsysmon", info, cpu_metrics, temperature_metrics, {},
-                                         DiskMetrics{}, 1000, 0, 0, 1'800'000'000'000);
+    const auto snapshot =
+        build_snapshot("dzsysmon", info, cpu_metrics, temperature_metrics, {}, DiskMetrics{},
+                       NetworkMetrics{}, 1000, 0, 0, 1'800'000'000'000);
     // 可用性（能力标记）必须与采集层事实一致；无设备不是失败，只是不可用。
     EXPECT_EQ(snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE).available,
               temperature_metrics.collected);
@@ -242,8 +244,8 @@ TEST(SystemCollectorOracleTest, MemoryAndSwapInvariantsHoldOnRealMachine) {
     memory_metrics.swap_supported = swap->total_bytes > 0;
     memory_metrics.swap = swap;
     const auto snapshot = build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
-                                         TemperatureMetrics{}, memory_metrics, DiskMetrics{}, 1000,
-                                         0, 0, 1'800'000'000'000);
+                                         TemperatureMetrics{}, memory_metrics, DiskMetrics{},
+                                         NetworkMetrics{}, 1000, 0, 0, 1'800'000'000'000);
     EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_MEMORY).available);
     ASSERT_TRUE(snapshot.memory.has_value());
     // 唯一口径：已用 = 总量 − 可用，且各分量非负、可用 ≤ 总量。
@@ -295,8 +297,8 @@ TEST(SystemCollectorOracleTest, DiskDomainsHoldOnRealMachine) {
     disk.shm_dir_collected = disk.shm_dir.has_value();
 
     const auto snapshot = build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
-                                         TemperatureMetrics{}, MemorySwapMetrics{}, disk, 1000, 0,
-                                         0, 1'800'000'000'000);
+                                         TemperatureMetrics{}, MemorySwapMetrics{}, disk,
+                                         NetworkMetrics{}, 1000, 0, 0, 1'800'000'000'000);
 
     // 卷：可读卷的使用率必须与字节一致（自洽 oracle）；不可读卷不得有容量数值。
     ASSERT_TRUE(snapshot.volumes.has_value());
@@ -385,9 +387,9 @@ TEST(SystemCollectorOracleTest, DiskIoFirstSampleIsUnavailableNotZero) {
         // 采集能力不可用：失败原因由采集层给出，快照构造直接映射（不按平台名猜）。
         DiskMetrics disk_metrics;
         disk_metrics.disk_io_unavailable_reason = first.unavailable_reason;
-        const auto snapshot =
-            build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{},
-                           MemorySwapMetrics{}, disk_metrics, 1000, 0, 0, 1'800'000'000'000);
+        const auto snapshot = build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{},
+                                             MemorySwapMetrics{}, disk_metrics, NetworkMetrics{},
+                                             1000, 0, 0, 1'800'000'000'000);
         EXPECT_EQ(snapshot.disk_io, std::nullopt);
         const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO);
         EXPECT_FALSE(entry.available);
@@ -417,7 +419,7 @@ TEST(SystemCollectorOracleTest, DiskIoFirstSampleIsUnavailableNotZero) {
     disk_metrics.disk_io = derived;
     const auto snapshot =
         build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{}, MemorySwapMetrics{},
-                       disk_metrics, 1000, 0, 0, 1'800'000'000'000);
+                       disk_metrics, NetworkMetrics{}, 1000, 0, 0, 1'800'000'000'000);
     ASSERT_TRUE(snapshot.disk_io.has_value());
     EXPECT_EQ(snapshot.disk_io->size(), first.disks.size());
     EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO).available);
@@ -492,9 +494,136 @@ TEST(SystemCollectorOracleTest, DiskIoDerivedValuesHoldOnRealMachine) {
     disk_metrics.disk_io = derived;
     const auto snapshot = build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
                                          TemperatureMetrics{}, MemorySwapMetrics{}, disk_metrics,
-                                         1000, 0, 0, 1'800'000'000'000);
+                                         NetworkMetrics{}, 1000, 0, 0, 1'800'000'000'000);
     ASSERT_TRUE(snapshot.disk_io.has_value());
     EXPECT_EQ(snapshot.disk_io->size(), second.disks.size());
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+// #77 真机 oracle：首次采样速率返回不可用而非 0（契约 sysmon §2.7）；采集不成功时
+// 快照必须报告「不可用」+ 采集层给出的 reason，且整帧仍通过契约校验。
+TEST(SystemCollectorOracleTest, NetworkFirstSampleIsUnavailableNotZero) {
+    const auto collector = platform::make_system_collector();
+    ASSERT_NE(collector, nullptr);
+    const auto first = collector->collect_network();
+    const auto info = collector->collect_system_info();
+
+    if (!first.unavailable_reason.empty()) {
+        // 采集能力不可用：失败原因由采集层给出，快照构造直接映射（不按平台名猜）。
+        NetworkMetrics network_metrics;
+        network_metrics.network_unavailable_reason = first.unavailable_reason;
+        const auto snapshot = build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{},
+                                             MemorySwapMetrics{}, DiskMetrics{}, network_metrics,
+                                             1000, 0, 0, 1'800'000'000'000);
+        EXPECT_EQ(snapshot.network, std::nullopt);
+        const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_NETWORK);
+        EXPECT_FALSE(entry.available);
+        ASSERT_TRUE(entry.reason.has_value());
+        EXPECT_EQ(entry.reason.value(), first.unavailable_reason);
+        EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+        return;
+    }
+
+    // 首次采样（无基线）：条目存在但六个速率 null——不得用 0 冒充。
+    const auto derived = compute_network_rates({}, first.interfaces, 1.0);
+    ASSERT_EQ(derived.size(), first.interfaces.size());
+    for (const auto& interface : derived) {
+        EXPECT_FALSE(interface.interface_name.empty());
+        EXPECT_FALSE(interface.rx_bytes_per_sec.has_value()) << interface.interface_name;
+        EXPECT_FALSE(interface.tx_bytes_per_sec.has_value()) << interface.interface_name;
+        EXPECT_FALSE(interface.rx_errors_per_sec.has_value()) << interface.interface_name;
+        EXPECT_FALSE(interface.tx_errors_per_sec.has_value()) << interface.interface_name;
+        EXPECT_FALSE(interface.rx_drops_per_sec.has_value()) << interface.interface_name;
+        EXPECT_FALSE(interface.tx_drops_per_sec.has_value()) << interface.interface_name;
+    }
+
+    // 快照层同样必须是"条目存在 + 速率 null + 能力可用"，且默认 hide_virtual 下
+    // 不出现 is_virtual=true 的条目（发送方义务，契约 sysmon §7）。
+    NetworkMetrics network_metrics;
+    network_metrics.network_collected = true;
+    network_metrics.network = derived;
+    network_metrics.hide_virtual = true;
+    const auto snapshot =
+        build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{}, MemorySwapMetrics{},
+                       DiskMetrics{}, network_metrics, 1000, 0, 0, 1'800'000'000'000);
+    ASSERT_TRUE(snapshot.network.has_value());
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_NETWORK).available);
+    for (const auto& interface : *snapshot.network) {
+        EXPECT_FALSE(interface.is_virtual) << interface.interface_name;
+    }
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+// #77 真机 oracle：条件轮询到第二次采样（计数器推进后）后，六个速率非负且有限，
+// 且整帧通过契约校验（契约 sysmon §2.4、§2.7）。不写文件、不用固定 sleep 作同步。
+TEST(SystemCollectorOracleTest, NetworkRatesHoldOnRealMachine) {
+    const auto collector = platform::make_system_collector();
+    ASSERT_NE(collector, nullptr);
+    const auto first = collector->collect_network();
+    if (!first.unavailable_reason.empty()) {
+        GTEST_SKIP() << "network counters unavailable on this host";
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    const auto deadline = start + std::chrono::seconds(2);
+    platform::RawNetworkSnapshot second;
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto sample = collector->collect_network();
+        if (!sample.unavailable_reason.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+        second = sample;
+        // 任一 interface 的任一计数器推进即可结束轮询（速率才有可断言的非平凡值）。
+        bool advanced = false;
+        for (const auto& current : second.interfaces) {
+            for (const auto& previous : first.interfaces) {
+                if (current.interface_name == previous.interface_name &&
+                    (current.rx_bytes > previous.rx_bytes || current.tx_bytes > previous.tx_bytes ||
+                     current.rx_packets > previous.rx_packets ||
+                     current.tx_packets > previous.tx_packets)) {
+                    advanced = true;
+                }
+            }
+        }
+        if (advanced) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const double elapsed_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    ASSERT_FALSE(second.interfaces.empty())
+        << "collect_network must keep working within one sampling";
+
+    const auto derived =
+        compute_network_rates(first.interfaces, second.interfaces, elapsed_seconds);
+    ASSERT_EQ(derived.size(), second.interfaces.size());
+    // 有基线且窗口为正（real elapsed > 0）时，两侧都存在的网卡的速率必然可计算。
+    bool any_rate = false;
+    for (const auto& interface : derived) {
+        for (const auto* field : {&interface.rx_bytes_per_sec, &interface.tx_bytes_per_sec,
+                                  &interface.rx_errors_per_sec, &interface.tx_errors_per_sec,
+                                  &interface.rx_drops_per_sec, &interface.tx_drops_per_sec}) {
+            if (field->has_value()) {
+                any_rate = true;
+                // 速率必须有限（NaN/Infinity 说明计数窗口或公式异常）；
+                // 非负由 Δ计数器 ≥ 0 结构性保证，不再重复断言永真条件（与 disk_io 用例同口径）。
+                EXPECT_TRUE(std::isfinite(**field)) << interface.interface_name;
+            }
+        }
+    }
+    EXPECT_TRUE(any_rate) << "network rates must not be all null after a valid window";
+
+    NetworkMetrics network_metrics;
+    network_metrics.network_collected = true;
+    network_metrics.network = derived;
+    network_metrics.hide_virtual = false;
+    const auto snapshot = build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
+                                         TemperatureMetrics{}, MemorySwapMetrics{}, DiskMetrics{},
+                                         network_metrics, 1000, 0, 0, 1'800'000'000'000);
+    ASSERT_TRUE(snapshot.network.has_value());
+    EXPECT_EQ(snapshot.network->size(), derived.size());
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 
