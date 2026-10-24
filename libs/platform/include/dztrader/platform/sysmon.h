@@ -73,7 +73,11 @@ inline constexpr std::array<const char*, 13> SYSMON_METRIC_KEYS = {
 inline constexpr std::array<const char*, 6> SYSMON_CONFIG_SECTIONS = {
     "sampling", "disk", "network", "history", "realtime", "alerts"};
 
-/// 配置 `sampling.groups` 的指标键（契约 sysmon §3.1）：A 组内存/交换 + B 组温度与每核频率。
+/// 配置 `sampling.groups` 的指标键（契约 sysmon §3.1.1）：A 组 CPU/内存/交换 + B 组温度与每核频率。
+///
+/// `cpu` 覆盖 `cpu.total` / `cpu.cores` / `cpu.load_average` / `cpu.context_switches`
+/// 与饱和核判定， 但**不含** `cpu.frequency`（由独立键 `cpu_frequency` 控制）。
+inline constexpr const char* SYSMON_GROUP_CPU = "cpu";
 inline constexpr const char* SYSMON_GROUP_MEMORY = "memory";
 inline constexpr const char* SYSMON_GROUP_SWAP = "swap";
 inline constexpr const char* SYSMON_GROUP_TEMPERATURE = "temperature";

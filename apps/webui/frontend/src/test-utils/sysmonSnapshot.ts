@@ -278,8 +278,15 @@ const VIRTUAL_NETWORK: SysmonNetworkInfo[] = [
   },
 ]
 
-/** 默认系统监控配置（契约 sysmon §3.1 全量生效配置；network.hide_virtual 默认 true） */
-export function makeSysmonConfig(overrides: Partial<SysmonConfigPayload> = {}): SysmonConfigPayload {
+/**
+ * 默认系统监控配置（契约 sysmon §3.1 全量生效配置；network.hide_virtual 默认 true）。
+ * overrides 按段浅合并：只覆盖给定字段，其余保持契约默认值。
+ */
+export type SysmonConfigOverrides = {
+  [K in keyof SysmonConfigPayload]?: Partial<SysmonConfigPayload[K]>
+}
+
+export function makeSysmonConfig(overrides: SysmonConfigOverrides = {}): SysmonConfigPayload {
   return {
     sampling: {
       measure_interval_ms: 1000,
@@ -295,11 +302,18 @@ export function makeSysmonConfig(overrides: Partial<SysmonConfigPayload> = {}): 
         temperature: true,
         cpu_frequency: true,
       },
+      ...overrides.sampling,
     },
-    disk: { watch_paths: [], devices: [] },
-    network: { hide_virtual: true },
-    history: { enabled: true, raw_retention_hours: 24, max_retention_days: 30, max_bytes: 2_147_483_648 },
-    realtime: { push_interval_sec: 5 },
+    disk: { watch_paths: [], devices: [], ...overrides.disk },
+    network: { hide_virtual: true, ...overrides.network },
+    history: {
+      enabled: true,
+      raw_retention_hours: 24,
+      max_retention_days: 30,
+      max_bytes: 2_147_483_648,
+      ...overrides.history,
+    },
+    realtime: { push_interval_sec: 5, ...overrides.realtime },
     alerts: {
       cpu_sustain_used_pct: 90,
       cpu_sustain_samples: 10,
@@ -308,8 +322,8 @@ export function makeSysmonConfig(overrides: Partial<SysmonConfigPayload> = {}): 
       volume_free_pct: 10,
       volume_free_bytes: 1_073_741_824,
       cooldown_sec: 600,
+      ...overrides.alerts,
     },
-    ...overrides,
   }
 }
 

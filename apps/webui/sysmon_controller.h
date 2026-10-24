@@ -14,10 +14,12 @@
 
 namespace dztrader::webui {
 
-/// 系统监控 REST（《帧契约：REST》§2.8，《帧契约：系统监控》）。
+/// 系统监控 REST（《帧契约：REST》§2.8，《帧契约：系统监控》§6）。
 /// - GET /api/sysmon/snapshot：读取镜像当前快照；镜像尚未就绪回 503。
 /// - GET /api/sysmon/history：只读查询历史库（《帧契约：系统监控》§6.1）；降级回 200 +
 /// available=false。
+/// - GET /api/sysmon/config：读取镜像中的当前生效配置（任意已认证用户）；镜像尚未就绪回
+/// 503。
 /// - PUT /api/sysmon/config：运行期配置 merge patch（admin），直发 SET_SYSMON_CONFIG。
 class SysmonCtrl : public drogon::HttpController<SysmonCtrl, false>, public ControllerBase {
 public:
@@ -33,6 +35,7 @@ public:
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(SysmonCtrl::get_snapshot, "/api/sysmon/snapshot", drogon::Get);
     ADD_METHOD_TO(SysmonCtrl::get_history, "/api/sysmon/history", drogon::Get);
+    ADD_METHOD_TO(SysmonCtrl::get_config, "/api/sysmon/config", drogon::Get);
     ADD_METHOD_TO(SysmonCtrl::set_config, "/api/sysmon/config", drogon::Put);
     METHOD_LIST_END
 
@@ -43,6 +46,11 @@ public:
     /// 参数非法回 400；历史库不可用回 200 + `{"available":false,"reason":...}`（不 5xx、不伪造）。
     void get_history(const drogon::HttpRequestPtr& req,
                      std::function<void(const drogon::HttpResponsePtr&)>&& callback);
+
+    /// GET /api/sysmon/config：读取镜像中的当前生效配置（《帧契约：系统监控》§6）。
+    /// 任意已认证用户可读；镜像未就绪（dzsysmon 尚未回推配置）回 503。
+    void get_config(const drogon::HttpRequestPtr& req,
+                    std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
     /// PUT /api/sysmon/config：body 为 RFC 7386 merge patch（admin）。
     /// 响应只表示"已写事件通道"；生效信号 = WS `sysmon_config`（契约 rest §1、契约 sysmon §3）。

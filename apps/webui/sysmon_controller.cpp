@@ -47,6 +47,19 @@ void SysmonCtrl::get_history(
     callback(json_response(drogon::k200OK, service.query(*parsed.query)));
 }
 
+void SysmonCtrl::get_config(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+    (void)req;  // 认证由 JWT advice 处理，本端点所有已认证用户可读（《帧契约：REST》§2.8）
+    // 只读镜像、不产生帧往返（《帧契约：系统监控》§6）：生效值即 RTN_SYSMON_CONFIG 的回推结果。
+    const nlohmann::json instance = mirror_->instance(std::string(SysmonDomainService::kInstance));
+    if (!instance.is_object() || !instance.contains("sysmon_config")) {
+        callback(error_response(drogon::k503ServiceUnavailable, "sysmon config not available"));
+        return;
+    }
+    callback(json_response(drogon::k200OK, instance["sysmon_config"]));
+}
+
 void SysmonCtrl::set_config(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT

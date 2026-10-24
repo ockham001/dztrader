@@ -13,6 +13,7 @@
 #include "sysmon_history_service.h"
 
 #include <dztrader/core/this_process.h>
+#include <dztrader/platform/sysmon.h>
 #include <dztrader/sysmonstore/history_store.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/frame_view.h>
@@ -148,15 +149,21 @@ protected:
         }
     }
 
-    drogon::HttpRequestPtr req() {
+    drogon::HttpRequestPtr req(const std::string& user_id = "admin") {
         auto req = drogon::HttpRequest::newHttpRequest();
-        req->getAttributes()->insert("user_id", std::string("admin"));
+        req->getAttributes()->insert("user_id", user_id);
         return req;
     }
 
     drogon::HttpResponsePtr invoke() {
         drogon::HttpResponsePtr captured;
         ctrl_->get_snapshot(req(), [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
+        return captured;
+    }
+
+    drogon::HttpResponsePtr invoke_config() {
+        drogon::HttpResponsePtr captured;
+        ctrl_->get_config(req(), [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
         return captured;
     }
 
@@ -203,6 +210,51 @@ TEST_F(SysmonControllerTest, Returns503BeforeFirstReport) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
     const auto body = nlohmann::json::parse(resp->getBody());
     EXPECT_EQ(body.value("error", ""), "sysmon snapshot not available");
+}
+
+// ===== GET /api/sysmon/config（《帧契约：系统监控》§6、《帧契约：REST》§2.8）=====
+
+TEST_F(SysmonControllerTest, ConfigReturnsMirroredRuntimeConfig) {
+    // 生效值 = RTN_SYSMON_CONFIG 回推写入镜像的 payload；GET 原样透传，不裁剪不归一化
+    const nlohmann::json config = dztrader::platform::SysmonConfig::default_config();
+    mirror_->update("dzsysmon", "sysmon_config", config);
+
+    const auto resp = invoke_config();
+    ASSERT_NE(resp, nullptr);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    // 用 operator== 布尔比较而非 EXPECT_EQ：避免 gtest 实例化 nlohmann::json 的 printer
+    // （MSVC /O2 下会因此触发 C4702，Release /WX 转错误）。
+    EXPECT_TRUE(nlohmann::json::parse(resp->getBody()) == config);
+}
+
+TEST_F(SysmonControllerTest, Config503BeforeFirstReport) {
+    const auto resp = invoke_config();
+    ASSERT_NE(resp, nullptr);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+    const auto body = nlohmann::json::parse(resp->getBody());
+    EXPECT_EQ(body.value("error", ""), "sysmon config not available");
+}
+
+TEST_F(SysmonControllerTest, Config503WhenSnapshotArrivedButConfigMissing) {
+    // 实例已存在（快照先到）但 sysmon_config 域尚未写入：按未就绪回 503，不拿快照顶替
+    mirror_->update("dzsysmon", "sysmon_snapshot", minimal_snapshot());
+    const auto resp = invoke_config();
+    ASSERT_NE(resp, nullptr);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+    const auto body = nlohmann::json::parse(resp->getBody());
+    EXPECT_EQ(body.value("error", ""), "sysmon config not available");
+}
+
+TEST_F(SysmonControllerTest, ConfigReadableByNonAdmin) {
+    // 读权限与快照一致：任意已认证用户可读（配置镜像本来就广播给所有 WS 客户端）
+    repo_->create_user("regular", "Regular User", "reg@test.com", "pass", "user");
+    mirror_->update("dzsysmon", "sysmon_config",
+                    dztrader::platform::SysmonConfig::default_config());
+    drogon::HttpResponsePtr captured;
+    ctrl_->get_config(req("regular"),
+                      [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
+    ASSERT_NE(captured, nullptr);
+    EXPECT_EQ(captured->getStatusCode(), drogon::k200OK);
 }
 
 // ===== PUT /api/sysmon/config（《帧契约：REST》§2.8、《帧契约：系统监控》§3）=====

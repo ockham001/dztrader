@@ -2,16 +2,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import {
   SYSMON_CONFIG_TIMEOUT_MS,
+  SYSMON_CONFIG_KEY,
   SYSMON_NETWORK_CONFIG_KEY,
   sysmonPending,
   useSysmonStore,
 } from '../sysmon'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { sysmonApi } from '@/api/sysmon'
+import { useToastStore } from '@/stores/toast'
 import { makeSysmonConfig, makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 
 vi.mock('@/api/sysmon', () => ({
-  sysmonApi: { getSnapshot: vi.fn(), setConfig: vi.fn() },
+  sysmonApi: { getSnapshot: vi.fn(), setConfig: vi.fn(), getConfig: vi.fn() },
 }))
 
 describe('useSysmonStore', () => {
@@ -1240,5 +1242,146 @@ describe('useSysmonStore activeAlerts（#80，快照 alerts[] 持续状态）', 
 
     store.applySnapshot(makeSysmonSnapshot())
     expect(store.activeAlerts).toEqual([])
+  })
+})
+
+describe('useSysmonStore 完整配置镜像与保存（#81）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sysmonPending.__resetForTests()
+    vi.clearAllMocks()
+  })
+
+  it('loadConfig 成功：写生效配置镜像并标记已加载（不等 WS 推送）', async () => {
+    vi.mocked(sysmonApi.getConfig).mockResolvedValue(
+      makeSysmonConfig({ sampling: { measure_interval_ms: 500 } }),
+    )
+    const store = useSysmonStore()
+    expect(store.config).toBeNull()
+    expect(store.configLoaded).toBe(false)
+
+    await store.loadConfig()
+
+    expect(sysmonApi.getConfig).toHaveBeenCalledTimes(1)
+    expect(store.configLoaded).toBe(true)
+    expect(store.configError).toBeNull()
+    // 配置镜像按契约全量形状写入（各段都能被配置 tab 消费）
+    expect(store.config?.sampling.measure_interval_ms).toBe(500)
+    expect(store.config?.sampling.record_interval_sec).toBe(60)
+    expect(store.config?.alerts.cooldown_sec).toBe(600)
+  })
+
+  it('loadConfig 503：保持空镜像、不抛错、不弹错（页面显示「配置尚未到达」）', async () => {
+    vi.mocked(sysmonApi.getConfig).mockRejectedValue(new Error('HTTP 503'))
+    const toastSpy = vi.spyOn(useToastStore(), 'error')
+    const store = useSysmonStore()
+
+    await expect(store.loadConfig()).resolves.toBeUndefined()
+
+    expect(store.config).toBeNull()
+    expect(store.configLoaded).toBe(false)
+    expect(store.configError).toContain('503')
+    // 镜像未就绪是正常启动态，不是错误弹窗场景（错误提示由页面空态承担）
+    expect(toastSpy).not.toHaveBeenCalled()
+  })
+
+  it('loadConfig 忽略形状非法的响应（半截配置不得写进镜像）', async () => {
+    vi.mocked(sysmonApi.getConfig).mockResolvedValue({ network: { hide_virtual: true } } as never)
+    const store = useSysmonStore()
+
+    await store.loadConfig()
+
+    expect(store.config).toBeNull()
+    expect(store.configLoaded).toBe(false)
+    expect(store.configError).toBeTruthy()
+  })
+
+  it('init 在配置镜像缺失时经 REST 补拉一次；已有镜像后不再补拉', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig())
+    const store = useSysmonStore()
+
+    await store.init()
+    expect(sysmonApi.getConfig).toHaveBeenCalledTimes(1)
+    expect(store.config?.realtime.push_interval_sec).toBe(5)
+
+    // 镜像已在：再次挂载（顶栏 / 监控页都会 init）不重复请求
+    await store.init()
+    expect(sysmonApi.getConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('setConfig 下发 merge patch，成功保持 pending 直到 WS sysmon_config 到达', async () => {
+    vi.mocked(sysmonApi.setConfig).mockResolvedValue({ ok: true, message: 'dispatched' })
+    const store = useSysmonStore()
+    store.applyConfig(makeSysmonConfig())
+    const patch = { sampling: { measure_interval_ms: 500 }, history: { enabled: false } }
+
+    const result = await store.setConfig(patch)
+
+    expect(result).toBe(true)
+    // body 原样透传为 SET_SYSMON_CONFIG payload（契约 rest §2.8），前端不做额外包装
+    expect(sysmonApi.setConfig).toHaveBeenCalledWith(patch)
+    // REST 成功只表示"已下发"：pending 保持、镜像值未变（生效信号是 WS sysmon_config）
+    expect(store.configPending).toBe(true)
+    expect(store.config?.sampling.measure_interval_ms).toBe(1000)
+
+    // WS 全量回推：镜像更新 + pending 清除
+    store.applyConfig(makeSysmonConfig({ sampling: { measure_interval_ms: 500 }, history: { enabled: false } }))
+    expect(store.configPending).toBe(false)
+    expect(store.config?.sampling.measure_interval_ms).toBe(500)
+    expect(store.config?.history.enabled).toBe(false)
+  })
+
+  it('setConfig HTTP 失败：返回 false 且立即清 pending（不等 WS）', async () => {
+    vi.mocked(sysmonApi.setConfig).mockRejectedValue(new Error('HTTP 403'))
+    const store = useSysmonStore()
+
+    const result = await store.setConfig({ realtime: { push_interval_sec: 10 } })
+
+    expect(result).toBe(false)
+    expect(store.configPending).toBe(false)
+  })
+
+  it('setConfig 防重入：pending 中再次调用直接 false 且不重复 HTTP', async () => {
+    vi.mocked(sysmonApi.setConfig).mockResolvedValue({ ok: true })
+    const store = useSysmonStore()
+
+    const first = store.setConfig({ realtime: { push_interval_sec: 10 } })
+    const second = await store.setConfig({ realtime: { push_interval_sec: 20 } })
+
+    expect(second).toBe(false)
+    await expect(first).resolves.toBe(true)
+    expect(sysmonApi.setConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('setConfig 超时：返回 PENDING_TIMEOUT，超时路径已清 pending', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(sysmonApi.setConfig).mockImplementation(() => new Promise(() => {}))
+      const store = useSysmonStore()
+
+      const pendingResult = store.setConfig({ alerts: { cooldown_sec: 60 } })
+      expect(store.configPending).toBe(true)
+      await vi.advanceTimersByTimeAsync(SYSMON_CONFIG_TIMEOUT_MS + 1)
+      const result = await pendingResult
+
+      expect(result).toBe(PENDING_TIMEOUT)
+      expect(store.configPending).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('applyConfig 同时清「完整配置保存」与「显示全部网卡」两个 pending', () => {
+    const store = useSysmonStore()
+    sysmonPending.pending[SYSMON_CONFIG_KEY] = true
+    sysmonPending.pending[SYSMON_NETWORK_CONFIG_KEY] = true
+
+    store.applyConfig(makeSysmonConfig({ network: { hide_virtual: false } }))
+
+    expect(sysmonPending.pending[SYSMON_CONFIG_KEY]).toBe(false)
+    expect(sysmonPending.pending[SYSMON_NETWORK_CONFIG_KEY]).toBe(false)
+    expect(store.config?.network.hide_virtual).toBe(false)
+    expect(store.configLoaded).toBe(true)
   })
 })

@@ -157,25 +157,37 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         now_sec > system_info.boot_time_unix_sec ? now_sec - system_info.boot_time_unix_sec : 0;
 
     // cpu：总量/每核/饱和标记/负载/速率/每核频率。不可用一律 null 或空数组，不得用 0 冒充。
-    snapshot.cpu.total.usage_ratio = cpu_metrics.total_usage_ratio;
-    if (cpu_metrics.cores_collected) {
-        snapshot.cpu.cores = cpu_metrics.cores;
-        snapshot.cpu.saturated_cores = cpu_metrics.saturated_cores;
-        // 契约 sysmon §2.3：每核序列可用时长度恒等于逻辑核数（热插拔后以本次序列为准）。
-        if (!snapshot.cpu.cores.empty()) {
-            snapshot.system.logical_cores = static_cast<uint32_t>(snapshot.cpu.cores.size());
-        }
-    } else {
+    // 配置关闭 sampling.groups.cpu（契约 sysmon §3.1.1）：上述数值全部清空、可用性
+    // disabled_by_config；system.logical_cores 保持系统信息原值（不因每核清空而变 0），
+    // cpu.frequency 由独立组控制、不受影响（见下方独立映射）。
+    if (cpu_metrics.disabled) {
+        snapshot.cpu.total.usage_ratio = std::nullopt;
         snapshot.cpu.cores.clear();
         snapshot.cpu.saturated_cores.clear();
-    }
-    snapshot.cpu.load_average = cpu_metrics.load_average;
-    if (cpu_metrics.rates_collected) {
-        snapshot.cpu.context_switches_per_sec = cpu_metrics.context_switches_per_sec;
-        snapshot.cpu.interrupts_per_sec = cpu_metrics.interrupts_per_sec;
-    } else {
+        snapshot.cpu.load_average = std::nullopt;
         snapshot.cpu.context_switches_per_sec = std::nullopt;
         snapshot.cpu.interrupts_per_sec = std::nullopt;
+    } else {
+        snapshot.cpu.total.usage_ratio = cpu_metrics.total_usage_ratio;
+        if (cpu_metrics.cores_collected) {
+            snapshot.cpu.cores = cpu_metrics.cores;
+            snapshot.cpu.saturated_cores = cpu_metrics.saturated_cores;
+            // 契约 sysmon §2.3：每核序列可用时长度恒等于逻辑核数（热插拔后以本次序列为准）。
+            if (!snapshot.cpu.cores.empty()) {
+                snapshot.system.logical_cores = static_cast<uint32_t>(snapshot.cpu.cores.size());
+            }
+        } else {
+            snapshot.cpu.cores.clear();
+            snapshot.cpu.saturated_cores.clear();
+        }
+        snapshot.cpu.load_average = cpu_metrics.load_average;
+        if (cpu_metrics.rates_collected) {
+            snapshot.cpu.context_switches_per_sec = cpu_metrics.context_switches_per_sec;
+            snapshot.cpu.interrupts_per_sec = cpu_metrics.interrupts_per_sec;
+        } else {
+            snapshot.cpu.context_switches_per_sec = std::nullopt;
+            snapshot.cpu.interrupts_per_sec = std::nullopt;
+        }
     }
     // 每核频率（#73）：配置关闭优先；能力可用时输出本帧读数（未读到为 null），
     // 不沿用上一帧、也不用 0 冒充（契约 sysmon §2.3、§2.7）。
@@ -269,10 +281,26 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
 
     // 每物理盘 I/O（#76）：配置关闭优先；能力可用但本帧未采到时为 null（能力标记粘性）。
     // 条目内的派生字段可为 null（首次采样/计数器重置），不得用 0 冒充。
+    // `disk.devices` 的过滤发生在这里而不是采集/纯函数（与 hide_virtual 同款）：
+    // 改配置不需要重新采集、也不影响速率基线（契约 sysmon §3.1）；
+    // 过滤后为空数组仍 available=true（"范围内没有盘"与"采集失败"是不同事实）。
     snapshot.disk_io = std::nullopt;
     if (!disk_metrics.disk_io_disabled && disk_metrics.disk_io_collected &&
         disk_metrics.disk_io.has_value()) {
-        snapshot.disk_io = disk_metrics.disk_io;
+        if (disk_metrics.devices.empty()) {
+            snapshot.disk_io = disk_metrics.disk_io;
+        } else {
+            const std::set<std::string> wanted(disk_metrics.devices.begin(),
+                                               disk_metrics.devices.end());
+            std::vector<platform::SysmonDiskIoInfo> selected;
+            selected.reserve(disk_metrics.disk_io->size());
+            for (const auto& info : *disk_metrics.disk_io) {
+                if (wanted.contains(info.device)) {
+                    selected.push_back(info);
+                }
+            }
+            snapshot.disk_io = std::move(selected);
+        }
     }
 
     // 每网卡累计量与速率（#77）：配置关闭优先；能力可用但本帧未采到时为 null（能力标记粘性）。
@@ -300,23 +328,36 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
     snapshot.availability.platform_description = make_platform_description(system_info);
     for (const char* key : platform::SYSMON_METRIC_KEYS) {
         const std::string_view metric(key);
-        if (metric == platform::SYSMON_METRIC_SYSTEM ||
-            metric == platform::SYSMON_METRIC_CPU_TOTAL) {
+        if (metric == platform::SYSMON_METRIC_SYSTEM) {
             mark_available(snapshot.availability, key);
+        } else if (metric == platform::SYSMON_METRIC_CPU_TOTAL) {
+            // 配置关闭 sampling.groups.cpu 优先（契约 sysmon §3.1.1）；否则 CPU 总量
+            // 是本版本始终实现的能力（与单帧采集成败无关）。
+            if (cpu_metrics.disabled) {
+                mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
+            } else {
+                mark_available(snapshot.availability, key);
+            }
         } else if (metric == platform::SYSMON_METRIC_CPU_CORES) {
-            if (cpu_metrics.cores_collected) {
+            if (cpu_metrics.disabled) {
+                mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
+            } else if (cpu_metrics.cores_collected) {
                 mark_available(snapshot.availability, key);
             } else {
                 mark_unavailable(snapshot.availability, key, kReasonCollectFailed);
             }
         } else if (metric == platform::SYSMON_METRIC_CPU_LOAD_AVERAGE) {
-            if (cpu_metrics.load_collected) {
+            if (cpu_metrics.disabled) {
+                mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
+            } else if (cpu_metrics.load_collected) {
                 mark_available(snapshot.availability, key);
             } else {
                 mark_unavailable(snapshot.availability, key, kReasonCollectFailed);
             }
         } else if (metric == platform::SYSMON_METRIC_CPU_CONTEXT_SWITCHES) {
-            if (cpu_metrics.rates_collected) {
+            if (cpu_metrics.disabled) {
+                mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
+            } else if (cpu_metrics.rates_collected) {
                 mark_available(snapshot.availability, key);
             } else {
                 mark_unavailable(snapshot.availability, key, kReasonCollectFailed);

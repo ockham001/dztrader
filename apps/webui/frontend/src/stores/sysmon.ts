@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { sysmonApi } from '@/api/sysmon'
+import { sysmonApi, type SysmonConfigPatch } from '@/api/sysmon'
 import { PENDING_TIMEOUT, usePending } from '@/composables/usePending'
 import type {
   SysmonAlertInfo,
@@ -22,6 +22,8 @@ import type {
 
 /** 网络配置（network.hide_virtual）切换的 pending key；WS `sysmon_config` 到达时清除 */
 export const SYSMON_NETWORK_CONFIG_KEY = 'sysmon:network_config'
+/** 完整配置保存（admin 合并 patch）的 pending key；WS `sysmon_config` 到达时清除 */
+export const SYSMON_CONFIG_KEY = 'sysmon:config'
 /** 配置类操作超时（对齐 settings / mdConfig 的 CONFIG_OP_TIMEOUT_MS） */
 export const SYSMON_CONFIG_TIMEOUT_MS = 10_000
 
@@ -71,6 +73,24 @@ function toNonNegativeNumber(value: unknown): number | null {
 }
 
 /**
+ * 全量配置载荷形状校验（契约 sysmon §3.1）：六个段必须齐全且为对象，`network.hide_virtual`
+ * 必须是布尔。dzweb 已按 `SysmonConfig::validate` 校验后才会写镜像/广播，前端仍做浅层防御——
+ * 半截/畸形配置不得写进镜像，否则配置 tab 会把不存在或残缺的「生效值」展示给用户，
+ * 编辑表单也会拿假值做差异比较。
+ */
+function isFullConfigPayload(payload: Partial<SysmonConfigPayload> | null | undefined): boolean {
+  if (!payload || typeof payload !== 'object') return false
+  if (!payload.sampling || typeof payload.sampling !== 'object') return false
+  if (!payload.disk || typeof payload.disk !== 'object') return false
+  if (!payload.network || typeof payload.network !== 'object') return false
+  if (typeof payload.network.hide_virtual !== 'boolean') return false
+  if (!payload.history || typeof payload.history !== 'object') return false
+  if (!payload.realtime || typeof payload.realtime !== 'object') return false
+  if (!payload.alerts || typeof payload.alerts !== 'object') return false
+  return true
+}
+
+/**
  * 系统监控 store：契约 sysmon 快照域（固定实例 dzsysmon）的前端唯一写入点。
  *
  * 数据流：dzsysmon → 事件通道 → dzweb 镜像 → WS `sysmon_snapshot`（增量 / snapshot 快照域）。
@@ -83,18 +103,26 @@ export const useSysmonStore = defineStore('sysmon', () => {
   const loaded = ref(false)
   const error = ref<string | null>(null)
 
-  /** 首次挂载补拉镜像；已加载过则跳过（WS 推送负责后续更新） */
+  /**
+   * 首次挂载补拉镜像：快照（GET /api/sysmon/snapshot）与配置（GET /api/sysmon/config）并发。
+   * 已加载过的部分跳过（WS 推送负责后续更新）；配置补拉失败不抛错——配置 tab 显示
+   * 「配置尚未到达」，后续 WS `sysmon_config`（快照域）到达会自然补上。
+   */
   async function init(): Promise<void> {
-    if (loaded.value) return
-    try {
-      snapshot.value = await sysmonApi.getSnapshot()
-      error.value = null
-    } catch (e) {
-      // 503（未上报）/网络失败：保持无快照态，页面显示等待空态，后续 WS 推送会补上
-      error.value = e instanceof Error ? e.message : String(e)
-    } finally {
-      loaded.value = true
+    // 两路独立补拉并发发出：配置请求不阻塞页面主内容（快照）的首次渲染
+    const configTask = config.value === null ? loadConfig() : null
+    if (!loaded.value) {
+      try {
+        snapshot.value = await sysmonApi.getSnapshot()
+        error.value = null
+      } catch (e) {
+        // 503（未上报）/网络失败：保持无快照态，页面显示等待空态，后续 WS 推送会补上
+        error.value = e instanceof Error ? e.message : String(e)
+      } finally {
+        loaded.value = true
+      }
     }
+    if (configTask) await configTask
   }
 
   /**
@@ -541,27 +569,52 @@ export const useSysmonStore = defineStore('sysmon', () => {
 
   /** 生效配置镜像（契约 sysmon §3 RTN_SYSMON_CONFIG 全量回推）；未收到时为 null */
   const config = ref<SysmonConfigPayload | null>(null)
+  /** 配置镜像已通过 REST 或 WS 任一路径到达；false = 配置 tab 显示「配置尚未到达」 */
+  const configLoaded = ref(false)
+  /** 配置补拉失败原因（仅供排障 / 测试；页面不弹错、不展示技术细节） */
+  const configError = ref<string | null>(null)
+  /** 配置补拉进行中（防 Topbar / 监控页并发 init 重复请求） */
+  const configLoading = ref(false)
+
+  /**
+   * 补拉生效配置镜像（契约 rest §2.8 `GET /api/sysmon/config`）。
+   *
+   * 503（dzweb 镜像尚未就绪）与网络失败都**不抛错、不弹错**：保持 config=null 并记录原因，
+   * 页面显示「配置尚未到达」；WS `sysmon_config`（快照域，契约 webui-ws §2.1）到达即补上。
+   * 返回值仅为编排便利（loadConfig 不 reject）。
+   */
+  async function loadConfig(): Promise<void> {
+    if (configLoading.value || config.value !== null) return
+    configLoading.value = true
+    try {
+      const payload = await sysmonApi.getConfig()
+      if (!isFullConfigPayload(payload)) {
+        configError.value = 'config payload invalid'
+        return
+      }
+      config.value = payload
+      configLoaded.value = true
+      configError.value = null
+    } catch (e) {
+      configError.value = e instanceof Error ? e.message : String(e)
+    } finally {
+      configLoading.value = false
+    }
+  }
 
   /**
    * WS `sysmon_config` / `snapshot` 快照域共用（幂等全量覆盖，契约 sysmon §3.2）。
    * 非法 payload 忽略、不写不清 pending（对齐 settings.applyEventShmConfig）：
-   * 只有形状可用的全量配置才刷新镜像并清 network 配置 pending（REST 成功只表示"已下发"，
-   * 真正生效信号是本消息）。
+   * 只有形状可用的全量配置才刷新镜像，并同时清「完整配置保存」与「显示全部网卡」两个 pending
+   * （REST 成功只表示"已下发"，真正生效信号是本消息；校验失败时发送方回推旧值，pending 同样清）。
    */
   function applyConfig(payload: unknown): void {
     const p = payload as Partial<SysmonConfigPayload> | null | undefined
-    if (!p || typeof p !== 'object') return
-    const networkConfig = p.network
-    if (!networkConfig || typeof networkConfig !== 'object') return
-    if (typeof networkConfig.hide_virtual !== 'boolean') return
-    // 其余段是 #81 完整配置编辑的输入；当前只做形状兜底（缺段则忽略该 payload，
-    // 避免把半截配置写进镜像让后续消费方读到假值）
-    if (!p.sampling || typeof p.sampling !== 'object') return
-    if (!p.disk || typeof p.disk !== 'object') return
-    if (!p.history || typeof p.history !== 'object') return
-    if (!p.realtime || typeof p.realtime !== 'object') return
-    if (!p.alerts || typeof p.alerts !== 'object') return
+    if (!isFullConfigPayload(p)) return
     config.value = p as SysmonConfigPayload
+    configLoaded.value = true
+    configError.value = null
+    sysmonPending.resolve(SYSMON_CONFIG_KEY)
     sysmonPending.resolve(SYSMON_NETWORK_CONFIG_KEY)
   }
 
@@ -599,6 +652,33 @@ export const useSysmonStore = defineStore('sysmon', () => {
     return ok !== undefined
   }
 
+  /** 完整配置保存挂起中（REST 已发出、等 WS `sysmon_config`）：表单 / 保存按钮 disabled 防重复提交 */
+  const configPending = computed(() => sysmonPending.pending[SYSMON_CONFIG_KEY] ?? false)
+
+  /**
+   * 提交完整配置 merge patch（契约 rest §2.8 → SET_SYSMON_CONFIG，admin）。
+   *
+   * pending 语义与 setHideVirtual 一致：成功保持挂起直到 WS `sysmon_config` 到达（applyConfig 清）；
+   * HTTP 失败立即清。返回值：true = 已下发；false = 防重入 / HTTP 失败；
+   * PENDING_TIMEOUT = 超时（usePending 已 toast，调用方据此去重双 toast）。
+   * 实际生效值以 `config`（配置镜像）为准，视图不做乐观更新——校验失败时 dzsysmon 回推旧值，
+   * 表单必须跟着镜像回退，不能显示一个并未生效的值。
+   */
+  async function setConfig(patch: SysmonConfigPatch): Promise<boolean | typeof PENDING_TIMEOUT> {
+    if (configPending.value) return false
+    const ok = await sysmonPending.run(
+      SYSMON_CONFIG_KEY,
+      () => sysmonApi.setConfig(patch),
+      {
+        opLabel: '系统监控配置保存',
+        timeout: SYSMON_CONFIG_TIMEOUT_MS,
+        distinguishTimeout: true,
+      },
+    )
+    if (ok === PENDING_TIMEOUT) return PENDING_TIMEOUT
+    return ok !== undefined
+  }
+
   return {
     snapshot,
     loaded,
@@ -621,12 +701,17 @@ export const useSysmonStore = defineStore('sysmon', () => {
     networkFilteredAll,
     activeAlerts,
     config,
+    configLoaded,
+    configError,
     hideVirtual,
     hideVirtualPending,
+    configPending,
     semanticHint,
     init,
+    loadConfig,
     applySnapshot,
     applyConfig,
+    setConfig,
     setHideVirtual,
     availabilityOf,
   }

@@ -29,6 +29,10 @@ namespace dztrader::sysmon {
 /// `*_collected` 表示采集层能力是否可用（不是本帧数值是否已就绪）：首次采样时
 /// `total_usage_ratio` / 每核 `usage_ratio` / 速率为 null，但对应可用性仍为 available。
 struct CpuMetrics {
+    /// 配置关闭 `sampling.groups.cpu`（优先级最高：CPU 数值清空 + 四个可用性键
+    /// disabled_by_config）。 不含 `cpu.frequency`——它由独立组 `cpu_frequency` 控制（契约 sysmon
+    /// §3.1.1）。
+    bool disabled = false;
     std::optional<double> total_usage_ratio;     ///< CPU 总使用率；nullopt = 首次采样/不可用
     bool cores_collected = false;                ///< 每核序列能力是否可用（粘性）
     std::vector<platform::SysmonCpuCore> cores;  ///< 每核使用率与饱和标记
@@ -99,6 +103,12 @@ struct DiskMetrics {
     std::optional<std::vector<platform::SysmonDiskIoInfo>> disk_io;
     /// 本帧采集失败原因（采集层给出；能力从未确认时用于可用性映射，不按平台名猜）。
     std::optional<std::string> disk_io_unavailable_reason;
+
+    /// 配置 `disk.devices` 设备范围：空数组 = 全部整物理盘；非空时只输出 `device`
+    /// 与列表**精确匹配**的 `disk_io[]` 条目（契约 sysmon §3.1）。过滤发生在**快照构造**
+    /// 阶段（与 `network.hide_virtual` 同款）：不改采集、不重置速率基线；
+    /// 过滤后为空数组仍 `available=true`（"范围内没有盘"与"采集失败"是不同事实）。
+    std::vector<std::string> devices;
 };
 
 /**
