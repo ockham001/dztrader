@@ -29,6 +29,13 @@
 
 namespace dztrader::platform {
 
+/// 系统监控进程的固定实例名（契约 sysmon §5：快照/配置帧的固定发送方与镜像挂载实例）。
+///
+/// 单一真相源：发送方（`dzsysmon` 的可执行文件名即 instance_id）、dzweb 的镜像挂载、
+/// SET 帧的路由键、校验里 source 字段的期望值都引用此处，避免同一个字面量散落多处
+/// （`core_data_type.h` 的帧名是另一维度：帧类型不是实例标识）。
+inline constexpr const char* SYSMON_INSTANCE_NAME = "dzsysmon";
+
 // ===== 可用性映射键（契约 sysmon §可用性描述）=====
 // 该集合是发送方与消费方的稳定契约：每帧快照的 availability.metrics 必须覆盖全部键。
 inline constexpr const char* SYSMON_METRIC_SYSTEM = "system";
@@ -343,14 +350,16 @@ inline void to_json(nlohmann::json& j, const SysmonNetworkInfo& n) {
 
 inline void from_json(const nlohmann::json& j, SysmonNetworkInfo& n) {
     n.interface_name = j.at("interface").get<std::string>();
-    n.rx_bytes_total = j.value("rx_bytes_total", uint64_t{0});
-    n.tx_bytes_total = j.value("tx_bytes_total", uint64_t{0});
-    n.rx_packets_total = j.value("rx_packets_total", uint64_t{0});
-    n.tx_packets_total = j.value("tx_packets_total", uint64_t{0});
-    n.rx_errors_total = j.value("rx_errors_total", uint64_t{0});
-    n.tx_errors_total = j.value("tx_errors_total", uint64_t{0});
-    n.rx_drops_total = j.value("rx_drops_total", uint64_t{0});
-    n.tx_drops_total = j.value("tx_drops_total", uint64_t{0});
+    // 八个累计计数器必须存在（契约 sysmon §7：累计值没有"不可用"语义）——用 at() 而非
+    // value() 兜底默认值，使解码路径与 validate 的必填规则一致：缺字段即抛，不静默补 0。
+    n.rx_bytes_total = j.at("rx_bytes_total").get<uint64_t>();
+    n.tx_bytes_total = j.at("tx_bytes_total").get<uint64_t>();
+    n.rx_packets_total = j.at("rx_packets_total").get<uint64_t>();
+    n.tx_packets_total = j.at("tx_packets_total").get<uint64_t>();
+    n.rx_errors_total = j.at("rx_errors_total").get<uint64_t>();
+    n.tx_errors_total = j.at("tx_errors_total").get<uint64_t>();
+    n.rx_drops_total = j.at("rx_drops_total").get<uint64_t>();
+    n.tx_drops_total = j.at("tx_drops_total").get<uint64_t>();
     const auto optional_number = [&j](const char* key) -> std::optional<double> {
         if (!j.contains(key) || j[key].is_null()) {
             return std::nullopt;
@@ -363,7 +372,8 @@ inline void from_json(const nlohmann::json& j, SysmonNetworkInfo& n) {
     n.tx_errors_per_sec = optional_number("tx_errors_per_sec");
     n.rx_drops_per_sec = optional_number("rx_drops_per_sec");
     n.tx_drops_per_sec = optional_number("tx_drops_per_sec");
-    n.is_virtual = j.value("is_virtual", false);
+    // is_virtual 同样必填（契约 sysmon §7）：缺 key 即抛，不默认成 false。
+    n.is_virtual = j.at("is_virtual").get<bool>();
 }
 
 /// 共享内存目录占用（契约 sysmon §2.4）：用于确认页清理机制没有失效。

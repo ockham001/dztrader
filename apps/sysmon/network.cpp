@@ -3,7 +3,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -26,11 +25,6 @@ const platform::RawNetworkInfo* find_interface(const std::vector<platform::RawNe
         }
     }
     return nullptr;
-}
-
-/// 由一个累计计数器算速率；无基线时返回 std::nullopt（不得用 0 冒充）。
-std::optional<double> rate_of(uint64_t prev, uint64_t cur, double elapsed_seconds) noexcept {
-    return compute_rate(prev, cur, elapsed_seconds, kNetworkWrapSpan);
 }
 
 }  // namespace
@@ -61,14 +55,19 @@ std::vector<platform::SysmonNetworkInfo> compute_network_rates(
         const platform::RawNetworkInfo* baseline =
             window_valid ? find_interface(prev, current.interface_name) : nullptr;
         if (baseline != nullptr) {
-            info.rx_bytes_per_sec = rate_of(baseline->rx_bytes, current.rx_bytes, elapsed_seconds);
-            info.tx_bytes_per_sec = rate_of(baseline->tx_bytes, current.tx_bytes, elapsed_seconds);
-            info.rx_errors_per_sec =
-                rate_of(baseline->rx_errors, current.rx_errors, elapsed_seconds);
-            info.tx_errors_per_sec =
-                rate_of(baseline->tx_errors, current.tx_errors, elapsed_seconds);
-            info.rx_drops_per_sec = rate_of(baseline->rx_drops, current.rx_drops, elapsed_seconds);
-            info.tx_drops_per_sec = rate_of(baseline->tx_drops, current.tx_drops, elapsed_seconds);
+            // 六个速率同口径：Δ累计 / 实际经过秒数，跨度 0（64 位，下降即重置）。
+            info.rx_bytes_per_sec = compute_rate(baseline->rx_bytes, current.rx_bytes,
+                                                 elapsed_seconds, kNetworkWrapSpan);
+            info.tx_bytes_per_sec = compute_rate(baseline->tx_bytes, current.tx_bytes,
+                                                 elapsed_seconds, kNetworkWrapSpan);
+            info.rx_errors_per_sec = compute_rate(baseline->rx_errors, current.rx_errors,
+                                                  elapsed_seconds, kNetworkWrapSpan);
+            info.tx_errors_per_sec = compute_rate(baseline->tx_errors, current.tx_errors,
+                                                  elapsed_seconds, kNetworkWrapSpan);
+            info.rx_drops_per_sec = compute_rate(baseline->rx_drops, current.rx_drops,
+                                                 elapsed_seconds, kNetworkWrapSpan);
+            info.tx_drops_per_sec = compute_rate(baseline->tx_drops, current.tx_drops,
+                                                 elapsed_seconds, kNetworkWrapSpan);
         }
         results.push_back(std::move(info));
     }

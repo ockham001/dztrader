@@ -1,7 +1,5 @@
 #include "sysmon_controller.h"
 
-#include <spdlog/spdlog.h>
-
 #include <exception>
 
 namespace dztrader::webui {

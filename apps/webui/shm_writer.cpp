@@ -2,17 +2,11 @@
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/writer.h>
 #include <dztrader/platform/frame_codec.h>
-#include <dztrader/platform/sysmon.h>
+#include <dztrader/platform/sysmon.h>  // SYSMON_INSTANCE_NAME（契约 sysmon §5 的固定实例名）
 #include <magic_enum/magic_enum.hpp>
 #include <spdlog/spdlog.h>
 
 namespace dztrader::webui {
-
-namespace {
-/// SET_SYSMON_CONFIG 的路由键：固定内部进程名，契约 sysmon §5 的固定实例（与
-/// SysmonDomainService::kInstance 同一事实的两处表达——此处是写端、不引入 webui 领域层依赖）。
-constexpr std::string_view kSysmonInstance = "dzsysmon";
-}  // namespace
 
 ShmWriter::ShmWriter(const std::filesystem::path& shm_dir) {
     try {
@@ -169,7 +163,7 @@ void ShmWriter::write_set_sysmon_config(const nlohmann::json& payload) {
     // SET_SYSMON_CONFIG 定向到内部进程 dzsysmon (契约 sysmon §3; instance_id 即进程名)。
     // 成功只表示已写入事件通道, 生效由 RTN_SYSMON_CONFIG 全量回推并经 WS sysmon_config 表达。
     const bool ok = platform::write_ext_inst_json_obj(*event_writer_, DZ_FRAME_SET_SYSMON_CONFIG,
-                                                      kSysmonInstance, payload);
+                                                      platform::SYSMON_INSTANCE_NAME, payload);
     if (ok) {
         spdlog::info("set sysmon config written");
     } else {

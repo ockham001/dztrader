@@ -726,7 +726,7 @@ std::optional<std::string> SysmonSnapshot::validate(const nlohmann::json& payloa
         return err("snapshot", "must be an object");
     }
     if (!payload.contains("source") || !payload["source"].is_string() ||
-        payload["source"].get<std::string>() != "dzsysmon") {
+        payload["source"].get<std::string>() != SYSMON_INSTANCE_NAME) {
         return err("snapshot.source", "must be the fixed sender dzsysmon");
     }
     if (!payload.contains("timestamp") || !payload["timestamp"].is_number_integer() ||

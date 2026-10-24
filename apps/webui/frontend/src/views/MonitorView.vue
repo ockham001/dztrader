@@ -2,8 +2,10 @@
 import { computed, onMounted } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import SyncSwitch from '@/components/shared/SyncSwitch.vue'
+import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { useAuthStore } from '@/stores/auth'
 import { useSysmonStore } from '@/stores/sysmon'
+import { useToastStore } from '@/stores/toast'
 
 // 资源监控页：系统信息与 CPU 区块（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率）、
 // 温度、内存与交换、磁盘（卷容量 / 关注路径 / 共享内存目录）接契约 sysmon 实时快照；
@@ -231,6 +233,7 @@ const network = computed(() => sysmon.network)
 // 「显示全部网卡」开关：admin 才可操作（复用 auth store 的 isAdmin）；实际值取生效配置镜像
 // （契约 sysmon §3.1 network.hide_virtual），切换后等 WS sysmon_config 回推才变更。
 const auth = useAuthStore()
+const toast = useToastStore()
 const canToggleNetwork = computed(() => auth.isAdmin)
 const hideVirtual = computed(() => sysmon.hideVirtual)
 const showAllNics = computed(() => !hideVirtual.value)
@@ -239,9 +242,14 @@ const hideVirtualPending = computed(() => sysmon.hideVirtualPending)
 // 仅当 hideVirtual 为真时才能这么解释；hide_virtual=false 却为空数组 = 本机确实无网卡
 //（罕见，容器内可能），走「暂无数据」而不是「已隐藏」。
 const networkHiddenAll = computed(() => sysmon.networkFilteredAll && hideVirtual.value)
-// 开关语义是「显示全部网卡」(= hide_virtual 取反)，直接下发取反后的 hide_virtual 值
-function onToggleShowAll(next: boolean): void {
-  void sysmon.setHideVirtual(!next)
+// 开关语义是「显示全部网卡」(= hide_virtual 取反)，直接下发取反后的 hide_virtual 值。
+// 结果契约（对齐 settings/mdConfig 的配置类操作）：true = 已下发（等 WS sysmon_config 生效）、
+// false = 防重入或 HTTP 失败、PENDING_TIMEOUT = 超时（usePending 已 toast，此处不重复弹）。
+// 失败必须有可见反馈：否则用户点了开关、界面无变化也无提示（静默失败）。
+async function onToggleShowAll(next: boolean): Promise<void> {
+  const result = await sysmon.setHideVirtual(!next)
+  if (result === PENDING_TIMEOUT) return
+  if (result === false) toast.error('显示全部网卡切换下发失败')
 }
 
 // ---- 网卡累计量 / 速率格式化 ----

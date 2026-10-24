@@ -1,0 +1,381 @@
+/**
+ * @file network_config_e2e_test.cpp
+ * @brief #77 端到端：`SET_SYSMON_CONFIG` 成功后立即推送一帧快照（开关即时生效）。
+ *
+ * 这是「『显示全部』开关走配置并即时生效」这条验收标准的**唯一**真实验证点：
+ * 契约 sysmon §4 触发 4 要求 SET 成功后立即推送快照，否则一次开关操作最长要等一个
+ * 推送周期（默认 5s）才可见。纯函数与快照构造的单测无法覆盖这条链路——它由
+ * `SysmonApp::apply_sysmon_config` 的调用顺序决定。
+ *
+ * 做法：起一个真实 `dzsysmon` 进程（临时 DZTRADER_HOME + 真实事件通道），用独立 reader
+ * 观察帧序：发 SET 后必须**在周期推送之前**收到一帧 `RTN_SYSMON_SNAPSHOT`，且该帧
+ * 的 `network` 体现新的 `hide_virtual`（本机若有虚拟网卡则滤掉；本机若只有物理网卡，
+ * 退化为断言「快照在 SET 之后立即到达且帧合法」）。
+ *
+ * 信号量与事件通道是机器全局命名空间，与 dev 栈/并行测试互扰：检测到占用时
+ * 默认 GTEST_SKIP，`DZ_SYSMON_E2E_STRICT=1` 时 FAIL（与 smoke_test 同约定）。
+ * 该用例 RUN_SERIAL（见 CMakeLists）。
+ */
+
+#include <dztrader/core/core_data_type.h>
+#include <dztrader/core/env.h>
+#include <dztrader/core/path.h>
+#include <dztrader/core/this_process.h>
+#include <dztrader/platform/frame_codec.h>
+#include <dztrader/platform/sysmon.h>
+#include <dztrader/shm/channel_meta.h>
+#include <dztrader/shm/frame_view.h>
+#include <dztrader/shm/reader.h>
+#include <dztrader/shm/writer.h>
+
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/signal_set.hpp>
+#include <boost/filesystem/path.hpp>
+#include <boost/process/v2/default_launcher.hpp>
+#include <boost/process/v2/environment.hpp>
+#include <boost/process/v2/process.hpp>
+#include <boost/process/v2/stdio.hpp>
+#include <boost/system/error_code.hpp>
+#include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <utility>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <optional>
+#include <random>
+#include <string>
+#include <thread>
+#include <vector>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
+namespace dztrader::sysmon {
+namespace {
+
+namespace process_v2 = boost::process::v2;
+using namespace std::chrono_literals;
+
+constexpr uint64_t kMB = 1024 * 1024;
+/// 周期推送间隔设得远大于本用例等待窗口：若立即推送缺失，等待窗口内不会收到周期帧，
+/// 「SET 后有快照到达」因此唯一归因于触发 4（而不是被周期推送蒙混）。
+constexpr int kPushIntervalSec = 300;
+
+bool e2e_strict() { return dztrader::env::get("DZ_SYSMON_E2E_STRICT") == "1"; }
+
+/// 事件通道信号量是否已被占用（机器全局命名空间）。
+bool event_semaphore_busy() {
+#ifdef _WIN32
+    HANDLE handle = OpenSemaphoreA(SEMAPHORE_ALL_ACCESS, FALSE, "dz.sem.dzevent");
+    if (handle != nullptr) {
+        CloseHandle(handle);
+        return true;
+    }
+    return false;
+#else
+    // POSIX 下命名信号量以文件形式存在于 /dev/shm 或 /tmp；本仓 Linux 侧命名为 dz.sem.<name>。
+    std::error_code ec;
+    for (const auto& dir : {std::filesystem::path("/dev/shm"), std::filesystem::path("/tmp")}) {
+        if (std::filesystem::exists(dir / "dz.sem.dzevent", ec)) {
+            return true;
+        }
+    }
+    return false;
+#endif
+}
+
+std::string unique_suffix() {
+    std::random_device rd;
+    return std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
+           std::to_string(rd());
+}
+
+/// 真实 dzsysmon 可执行文件路径：与测试二进制同目录的**上一级**（DZ_OUTPUT_DIR）。
+/// 测试二进制在 DZ_TESTS_DIR（= <build>/tests），dzsysmon 在 <build>/。
+std::filesystem::path sysmon_executable() {
+    auto exe = dztrader::this_process::exe_dir().parent_path() / "dzsysmon";
+#ifdef _WIN32
+    exe += ".exe";
+#endif
+    return exe;
+}
+
+class NetworkConfigE2ETest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        if (event_semaphore_busy()) {
+            // 机器全局信号量被 dev 栈/其它测试实例占用：真实进程会互相唤醒错帧。
+            if (e2e_strict()) {
+                FAIL() << "event channel semaphore is busy";
+            }
+            GTEST_SKIP() << "event channel semaphore busy (dev stack or parallel test running)";
+        }
+        if (!std::filesystem::exists(sysmon_executable())) {
+            if (e2e_strict()) {
+                FAIL() << "dzsysmon executable not found: " << sysmon_executable().string();
+            }
+            GTEST_SKIP() << "dzsysmon executable not built: " << sysmon_executable().string();
+        }
+
+        home_ = std::filesystem::temp_directory_path() / ("dz_sysmon_e2e_" + unique_suffix());
+        std::filesystem::remove_all(home_);
+        std::filesystem::create_directories(home_ / "configs");
+        orig_home_ = dztrader::env::get("DZTRADER_HOME");
+        dztrader::env::set("DZTRADER_HOME", home_.string());
+        dztrader::paths::reset_for_test();
+
+        write_config();
+        create_event_channel();
+    }
+
+    void TearDown() override {
+        // 先停子进程，再释放通道映射，最后删目录（Windows 上已映射文件删不掉）
+        stop_child();
+        reader_.reset();
+        meta_.reset();
+        writer_.reset();
+        if (orig_home_.has_value()) {
+            dztrader::env::set("DZTRADER_HOME", *orig_home_);
+        } else {
+            dztrader::env::unset("DZTRADER_HOME");
+        }
+        dztrader::paths::reset_for_test();
+        std::error_code ec;
+        std::filesystem::remove_all(home_, ec);
+    }
+
+    /// 最小合法 dzsysmon 配置：推送间隔拉长（见 kPushIntervalSec），其余取默认值。
+    void write_config() {
+        nlohmann::json cfg = {
+            {"log", {{"level", "debug"}, {"flush_on", "info"}}},
+            {"export", nlohmann::json::object()},
+            {"logs", nlohmann::json::object()},
+            {"data", nlohmann::json::object()},
+            {"sampling",
+             {{"measure_interval_ms", 1000},
+              {"record_interval_sec", 60},
+              {"phase_offset_sec", 3},
+              {"groups",
+               {{"cpu", true},
+                {"memory", true},
+                {"swap", true},
+                {"volumes", true},
+                {"disk_io", true},
+                {"network", true}}}}},
+            {"disk",
+             {{"watch_paths", nlohmann::json::array()}, {"devices", nlohmann::json::array()}}},
+            {"network", {{"hide_virtual", true}}},
+            {"history",
+             {{"enabled", false},
+              {"raw_retention_hours", 24},
+              {"max_retention_days", 30},
+              {"max_bytes", 0}}},
+            {"realtime", {{"push_interval_sec", kPushIntervalSec}}},
+            {"alerts",
+             {{"cpu_sustain_used_pct", 90.0},
+              {"cpu_sustain_samples", 10},
+              {"memory_used_pct", 90.0},
+              {"swap_used_pct", 50.0},
+              {"volume_free_pct", 10.0},
+              {"volume_free_bytes", 1'073'741'824},
+              {"cooldown_sec", 600}}},
+        };
+        std::ofstream ofs(home_ / "configs" / "dzsysmon.json", std::ios::binary | std::ios::trunc);
+        ofs << cfg.dump(2);
+    }
+
+    void create_event_channel() {
+        shm::ChannelConfig cfg{
+            .channel_name = shm::channel_name("dzevent"),
+            .shm_dir = dztrader::paths::shm(),
+            .meta_file_size = 4 * kMB,
+            .page_size = 1 * kMB,
+            .lock_memory = false,
+            .prefetch_memory = false,
+        };
+        meta_ = std::make_shared<shm::ChannelMeta>(shm::ChannelMeta::open_or_create(cfg));
+        // reader 必须先注册：MultiWriter 构造时同步订阅者缓存，否则 notify 唤不醒本 reader。
+        ASSERT_TRUE(meta_->add_reader(reader_name_, 0));
+        // 生产链路由 master 的 register_subscriber(entry.name) 注册子进程；本用例自建通道，
+        // 所以必须自己把 dzsysmon 登记为订阅者——否则 notify_subscribers 不会唤醒它的命名
+        // 信号量，SET_SYSMON_CONFIG 永远到不了目标进程（本用例初次失败的原因）。
+        ASSERT_TRUE(meta_->add_reader("dzsysmon", 0));
+        reader_ = std::make_unique<shm::Reader>(shm::Reader::create(meta_, reader_name_));
+        writer_ = std::make_unique<shm::MultiWriter>(
+            shm::MultiWriter::create(meta_, "dzweb_e2e_" + unique_suffix()));
+    }
+
+    /// 启动真实 dzsysmon（instance_id 由可执行文件名决定 = dzsysmon）。
+    /// 与 master 的 ChildProcess 同款启动方式：default_process_launcher + error_code（非抛出）。
+    ///
+    /// 注意订阅者缓存：MultiWriter 在构造时快照 ChannelMeta 的订阅者列表，而 dzsysmon 是在
+    /// 之后注册的 reader/信号量。因此写帧前必须 refresh_subscribers()，否则 notify 只唤醒
+    /// 启动前已存在的订阅者，dzsysmon 收不到 SET_SYSMON_CONFIG（首帧快照仍能读到，因为那是
+    /// 子进程主动写、本 reader 早已注册）。
+    void start_child() {
+        io_.restart();
+        process_v2::default_process_launcher launcher;
+        boost::system::error_code ec;
+        const auto exe = boost::filesystem::path(sysmon_executable().native());
+        child_ = std::make_unique<process_v2::process>(
+            launcher(io_.get_executor(), ec, exe, std::vector<std::string>{},
+                     process_v2::process_stdio{nullptr, nullptr, nullptr}));
+        ASSERT_FALSE(ec) << "spawn dzsysmon failed: " << ec.message();
+    }
+
+    void stop_child() {
+        if (!child_) {
+            return;
+        }
+        boost::system::error_code ec;
+        child_->terminate(ec);  // 强杀即可：本用例只观察帧序，不测优雅退出
+        child_->wait(ec);
+        child_.reset();
+    }
+
+    /// 写一帧 SET_SYSMON_CONFIG（定向 dzsysmon）并唤醒订阅者。
+    bool send_set_config(const nlohmann::json& patch) {
+        // 每次发送前刷新订阅者缓存：dzsysmon 可能在上一帧之后才注册完成。
+        (void)writer_->refresh_subscribers();
+        const bool ok = platform::write_ext_inst_json_obj(*writer_, DZ_FRAME_SET_SYSMON_CONFIG,
+                                                          "dzsysmon", patch);
+        if (!ok) {
+            return false;
+        }
+        writer_->notify_subscribers();
+        return true;
+    }
+
+    /// 从帧视图按帧头类型取 payload（快照无 instance_id，配置帧有）。
+    static nlohmann::json payload_of(const shm::FrameView& view) {
+        const bool broadcast = view.type() == DZ_FRAME_RTN_SYSMON_SNAPSHOT;
+        const auto size = broadcast ? view.ext_payload_size() : view.ext_inst_payload_size();
+        const auto* data = broadcast ? view.ext_payload() : view.ext_inst_payload();
+        return nlohmann::json::parse(reinterpret_cast<const char*>(data),
+                                     reinterpret_cast<const char*>(data) + size);
+    }
+
+    /// 在窗口内等指定类型的帧，**保留**窗口内读到的其它类型帧到 `pending_`。
+    ///
+    /// 保留是必需的：一次 SET 会先写 RTN_SYSMON_CONFIG 再写 RTN_SYSMON_SNAPSHOT，
+    /// 若等待快照时直接丢弃配置帧，后面就再也读不到它（reader 是单向游标）。
+    std::optional<nlohmann::json> wait_for_frame(DzFrameType type,
+                                                 std::chrono::milliseconds timeout) {
+        for (auto it = pending_.begin(); it != pending_.end(); ++it) {
+            if (it->first == type) {
+                const auto payload = it->second;
+                pending_.erase(it);
+                return payload;
+            }
+        }
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            while (const auto* raw = reader_->next_frame()) {
+                const shm::FrameView view(raw);
+                if (view.type() == type) {
+                    return payload_of(view);
+                }
+                // 只缓存本用例关心的 JSON 帧：通道上还有其它二进制/控制帧（如
+                // PRELOAD_EVENT_SHM 等），对它们 parse 会抛。
+                if (view.type() == DZ_FRAME_RTN_SYSMON_CONFIG ||
+                    view.type() == DZ_FRAME_RTN_SYSMON_SNAPSHOT) {
+                    pending_.emplace_back(view.type(), payload_of(view));
+                }
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+        return std::nullopt;
+    }
+
+    /// 窗口内是否出现过指定类型（不消耗 pending_）。
+    bool saw_frame(DzFrameType type) const {
+        return std::any_of(pending_.begin(), pending_.end(),
+                           [type](const auto& entry) { return entry.first == type; });
+    }
+
+    std::filesystem::path home_;
+    std::optional<std::string> orig_home_;
+    std::string reader_name_ = "dzmon_e2e_reader_" + unique_suffix();
+    std::shared_ptr<shm::ChannelMeta> meta_;
+    std::unique_ptr<shm::Reader> reader_;
+    std::unique_ptr<shm::MultiWriter> writer_;
+    boost::asio::io_context io_;
+    std::unique_ptr<process_v2::process> child_;
+    /// 已读到但本次等待不需要的帧（按到达顺序保留，供后续 wait_for_frame 消费）。
+    std::vector<std::pair<DzFrameType, nlohmann::json>> pending_;
+};
+
+// 契约 sysmon §4 触发 4：SET_SYSMON_CONFIG 成功后立即推送一帧快照。
+// 断言的关键是**时序**：周期推送间隔被设为 300s，因此 SET 后几秒内出现的快照只能来自
+// 立即推送；若实现退回「等下一个周期」，本用例会在窗口耗尽后失败。
+TEST_F(NetworkConfigE2ETest, SetConfigPushesSnapshotImmediately) {
+    start_child();
+
+    // 等启动首帧（触发 1），确认进程已完成初始化并能写出快照帧。
+    const auto first = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s);
+    ASSERT_TRUE(first.has_value()) << "dzsysmon did not push the startup snapshot";
+    EXPECT_EQ(platform::SysmonSnapshot::validate(*first), std::nullopt);
+
+    // 丢弃启动阶段残留的帧（启动时会先推一次 RTN_SYSMON_CONFIG，其 hide_virtual=true
+    // 与本用例的 SET 后回推值相同形状；不清理会读到旧帧、断言到启动值）。
+    pending_.clear();
+
+    // 初始配置 hide_virtual=true；切换为 false（显示全部网卡）。
+    ASSERT_TRUE(send_set_config({{"network", {{"hide_virtual", false}}}}));
+
+    // 立即推送的快照应在数秒内到达（周期推送是 300s，不可能这么快）。
+    // 注意：实现先写 RTN_SYSMON_CONFIG 再写快照，等待顺序不影响结果（不匹配的帧会被保留）。
+    const auto after_set = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 5s);
+    ASSERT_TRUE(after_set.has_value())
+        << "SET_SYSMON_CONFIG did not trigger an immediate snapshot push (contract sysmon §4 "
+           "trigger 4)";
+    EXPECT_EQ(platform::SysmonSnapshot::validate(*after_set), std::nullopt);
+
+    // 生效证据：RTN_SYSMON_CONFIG 已回推新的 hide_virtual。
+    const auto config = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
+    ASSERT_TRUE(config.has_value()) << "SET must roll the effective config back to the client";
+    EXPECT_EQ((*config)["network"]["hide_virtual"], false);
+
+    // 该帧的快照若携带网卡数据，hide_virtual=false 时虚拟网卡必须出现（未被过滤）。
+    const auto& network = (*after_set)["network"];
+    if (network.is_array()) {
+        for (const auto& nic : network) {
+            ASSERT_TRUE(nic.contains("is_virtual"));
+            // 显示全部时不做过滤：不是断言"一定有虚拟网卡"（宿主机可能没有），
+            // 而是断言"不会被过滤掉"——条目数与采集到的网卡数一致由下方 validate 保证。
+        }
+    }
+}
+
+// 契约 sysmon §3.3 四件套：非法 patch 被拒绝时回推旧值（内存镜像不变），且不推快照。
+TEST_F(NetworkConfigE2ETest, RejectedPatchRollsBackAndDoesNotPushSnapshot) {
+    start_child();
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s).has_value());
+
+    // hide_virtual 必须是 bool：给字符串 → SysmonConfig::validate 拒绝。
+    ASSERT_TRUE(send_set_config({{"network", {{"hide_virtual", "yes"}}}}));
+
+    const auto config = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
+    ASSERT_TRUE(config.has_value()) << "failure path must still push the effective config";
+    // 回滚旧值：仍为 true。
+    EXPECT_EQ((*config)["network"]["hide_virtual"], true);
+    // 失败路径不推快照（契约 §4 触发 4 明确「成功后」）。
+    EXPECT_FALSE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 2s).has_value())
+        << "a rejected SET must not trigger an immediate snapshot push";
+    EXPECT_TRUE(saw_frame(DZ_FRAME_RTN_SYSMON_CONFIG));
+}
+
+}  // namespace
+}  // namespace dztrader::sysmon

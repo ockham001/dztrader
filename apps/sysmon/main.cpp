@@ -88,6 +88,18 @@ std::vector<platform::SysmonCpuCore> make_core_entries(
     return entries;
 }
 
+/// 某一类速率型指标的采样基线：上一次**成功**采样的原始计数器 + 其单调时钟时刻。
+///
+/// 磁盘 I/O 与网络两个域同形（都按设备/网卡标识匹配基线、都用单调时钟量窗口），
+/// 因此共用一份模板而不是各写一个同构 struct（避免 Data Clumps / Duplicated Code）。
+/// `valid = false` 表示尚无基线（首次采样或该域刚被重新开启），此时本帧速率全部不可用。
+template <typename RawSample>
+struct RateBaseline {
+    std::vector<RawSample> samples;                ///< 上次成功采样的原始计数器
+    std::chrono::steady_clock::time_point time{};  ///< 上次成功采样的单调时钟时刻
+    bool valid = false;                            ///< 是否已有基线
+};
+
 /// dzsysmon 主对象：持有全部运行期状态。非线程安全，只在 io_context 线程访问。
 class SysmonApp {
 public:
@@ -439,9 +451,9 @@ private:
         }
         const std::vector<platform::RawDiskIoInfo> no_baseline;
         disk_metrics_.disk_io =
-            compute_disk_io(disk_io_baseline_.valid ? disk_io_baseline_.disks : no_baseline,
+            compute_disk_io(disk_io_baseline_.valid ? disk_io_baseline_.samples : no_baseline,
                             raw.disks, elapsed_seconds);
-        disk_io_baseline_.disks = raw.disks;
+        disk_io_baseline_.samples = raw.disks;
         disk_io_baseline_.time = now;
         disk_io_baseline_.valid = true;
     }
@@ -475,10 +487,10 @@ private:
             elapsed_seconds = std::chrono::duration<double>(now - network_baseline_.time).count();
         }
         const std::vector<platform::RawNetworkInfo> no_baseline;
-        network_metrics_.network = compute_network_rates(
-            network_baseline_.valid ? network_baseline_.interfaces : no_baseline, raw.interfaces,
-            elapsed_seconds);
-        network_baseline_.interfaces = raw.interfaces;
+        network_metrics_.network =
+            compute_network_rates(network_baseline_.valid ? network_baseline_.samples : no_baseline,
+                                  raw.interfaces, elapsed_seconds);
+        network_baseline_.samples = raw.interfaces;
         network_baseline_.time = now;
         network_baseline_.valid = true;
     }
@@ -831,20 +843,10 @@ private:
     MemorySwapMetrics memory_metrics_;
     DiskMetrics disk_metrics_;
     /// 每物理盘 I/O 的采样基线（上一次成功采样与其单调时钟时刻）。
-    struct DiskIoBaseline {
-        std::vector<platform::RawDiskIoInfo> disks;    ///< 上次成功采样的原始计数器
-        std::chrono::steady_clock::time_point time{};  ///< 上次成功采样的单调时钟时刻
-        bool valid = false;                            ///< 是否已有基线
-    };
-    DiskIoBaseline disk_io_baseline_;
+    RateBaseline<platform::RawDiskIoInfo> disk_io_baseline_;
     NetworkMetrics network_metrics_;
     /// 每网卡的采样基线（上一次成功采样与其单调时钟时刻）。
-    struct NetworkBaseline {
-        std::vector<platform::RawNetworkInfo> interfaces;  ///< 上次成功采样的原始计数器
-        std::chrono::steady_clock::time_point time{};      ///< 上次成功采样的单调时钟时刻
-        bool valid = false;                                ///< 是否已有基线
-    };
-    NetworkBaseline network_baseline_;
+    RateBaseline<platform::RawNetworkInfo> network_baseline_;
     CoreSaturationTracker saturation_tracker_;
     int64_t last_sample_unix_ms_ = 0;
     uint64_t missed_ticks_ = 0;

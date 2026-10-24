@@ -1,4 +1,5 @@
 #include "cpu_usage.h"
+#include "network.h"
 #include "snapshot_builder.h"
 
 #include <dztrader/platform/sysmon.h>
@@ -768,6 +769,9 @@ public:
     platform::RawNetworkSnapshot collect_network() override { return network; }
 };
 
+// 契约 sysmon「测试接缝」：速率计算全部经 SystemCollector 接缝用假采集器确定性驱动。
+// 本用例覆盖 CPU 与网络两个域——网络侧的基线匹配、速率计算与 hide_virtual 过滤都从
+// FakeCollector 返回的原始计数器出发，不接触真实网卡。
 TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {
     FakeCollector fake;
     fake.info = make_linux_info();
@@ -828,12 +832,48 @@ TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {
     average.semantic = load->semantic;
     metrics.load_average = average;
 
-    const auto snapshot = build_with(fake.collect_system_info(), metrics);
+    // ---- 网络域同样经接缝驱动：两次 fake.collect_network() → compute_network_rates ----
+    fake.network.interfaces = {
+        platform::RawNetworkInfo{.interface_name = "nic0", .rx_bytes = 1000, .tx_bytes = 2000},
+        platform::RawNetworkInfo{
+            .interface_name = "vnic0", .rx_bytes = 500, .tx_bytes = 600, .is_virtual = true},
+    };
+    const auto first_network = fake.collect_network();
+    ASSERT_TRUE(first_network.unavailable_reason.empty());
+    ASSERT_EQ(first_network.interfaces.size(), 2U);
+
+    fake.network.interfaces[0].rx_bytes += 4'000'000;  // 4 MB / 2s = 2 MB/s
+    fake.network.interfaces[0].tx_bytes += 2'000'000;  // 2 MB / 2s = 1 MB/s
+    fake.network.interfaces[1].rx_bytes += 1'000'000;  // 虚拟网卡也有速率
+    const auto second_network = fake.collect_network();
+    const auto network_values =
+        compute_network_rates(first_network.interfaces, second_network.interfaces, 2.0);
+    ASSERT_EQ(network_values.size(), 2U);
+
+    NetworkMetrics network_metrics;
+    network_metrics.network_collected = true;
+    network_metrics.network = network_values;
+    network_metrics.hide_virtual = true;  // 默认：隐藏虚拟网卡
+
+    const auto snapshot =
+        build_with(fake.collect_system_info(), metrics, {}, {}, {}, network_metrics);
     EXPECT_EQ(snapshot.platform.family, "linux");
     EXPECT_EQ(snapshot.cpu.cores.size(), 2U);
     ASSERT_TRUE(snapshot.cpu.total.usage_ratio.has_value());
     EXPECT_DOUBLE_EQ(*snapshot.cpu.total.usage_ratio, 0.25);
     EXPECT_EQ(snapshot.availability.metrics.at("cpu.cores").available, true);
+
+    // 接缝驱动的网络结果：过滤掉虚拟网卡、速率按 Δ/Δt 计算、八个累计计数器照填。
+    ASSERT_TRUE(snapshot.network.has_value());
+    ASSERT_EQ(snapshot.network->size(), 1U);
+    const auto& nic = (*snapshot.network)[0];
+    EXPECT_EQ(nic.interface_name, "nic0");
+    ASSERT_TRUE(nic.rx_bytes_per_sec.has_value());
+    EXPECT_DOUBLE_EQ(*nic.rx_bytes_per_sec, 2'000'000.0);
+    ASSERT_TRUE(nic.tx_bytes_per_sec.has_value());
+    EXPECT_DOUBLE_EQ(*nic.tx_bytes_per_sec, 1'000'000.0);
+    EXPECT_EQ(nic.rx_bytes_total, 1000U + 4'000'000U);
+    EXPECT_TRUE(snapshot.availability.metrics.at("network").available);
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 

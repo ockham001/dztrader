@@ -5,6 +5,7 @@ import MonitorView from '../MonitorView.vue'
 import { sysmonApi } from '@/api/sysmon'
 import { useAuthStore } from '@/stores/auth'
 import { sysmonPending, useSysmonStore } from '@/stores/sysmon'
+import { useToastStore } from '@/stores/toast'
 import { makeSysmonConfig, makeSysmonCpuCores, makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 
 vi.mock('@/api/sysmon', () => ({
@@ -1136,5 +1137,55 @@ describe('MonitorView「显示全部网卡」开关（#77 走配置即时生效�
     expect(store.hideVirtualPending).toBe(false)
     expect(store.hideVirtual).toBe(true)
     expect((wrapper.find('[data-test="monitor-network-show-all"] input').element as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('HTTP 失败：给出可见的失败提示，不静默失败', async () => {
+    // 开关点击后界面无变化且无提示 = 用户无法判断是否生效（静默失败）。
+    // 结果契约：false = HTTP 失败/防重入 → view 弹 error toast。
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    vi.mocked(sysmonApi.setConfig).mockRejectedValue(new Error('HTTP 503'))
+    const wrapper = await mountView()
+    setRole('admin')
+    const store = useSysmonStore()
+    store.applyConfig(makeSysmonConfig({ network: { hide_virtual: true } }))
+    await wrapper.vm.$nextTick()
+    const toastSpy = vi.spyOn(useToastStore(), 'error')
+
+    await wrapper.find('[data-test="monitor-network-show-all"] input[type="checkbox"]').setValue(true)
+    await flushPromises()
+
+    expect(toastSpy).toHaveBeenCalledTimes(1)
+    expect(toastSpy.mock.calls[0][0]).toContain('失败')
+    expect(store.hideVirtualPending).toBe(false)
+  })
+
+  it('防重入：pending 中的重复点击不再下发，也不误报失败', async () => {
+    // setHideVirtual 在 pending 中直接返回 false（不重复 HTTP）；此时不应弹失败提示，
+    // 否则用户连续点击会看到虚假错误。用永挂起的 Promise 制造 pending 窗口。
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    let release: (() => void) | undefined
+    vi.mocked(sysmonApi.setConfig).mockImplementation(
+      () => new Promise<void>((resolve) => { release = resolve }) as never,
+    )
+    const wrapper = await mountView()
+    setRole('admin')
+    const store = useSysmonStore()
+    store.applyConfig(makeSysmonConfig({ network: { hide_virtual: true } }))
+    await wrapper.vm.$nextTick()
+    const toastSpy = vi.spyOn(useToastStore(), 'error')
+
+    const input = wrapper.find('[data-test="monitor-network-show-all"] input[type="checkbox"]')
+    await input.setValue(true)
+    await wrapper.vm.$nextTick()
+    expect(store.hideVirtualPending).toBe(true)
+
+    // pending 期间 SyncSwitch 自身 disabled；直接调 setHideVirtual 验证 store 层防重入
+    const second = await store.setHideVirtual(false)
+    expect(second).toBe(false)
+    expect(sysmonApi.setConfig).toHaveBeenCalledTimes(1)
+    expect(toastSpy).not.toHaveBeenCalled()
+
+    release?.()
+    await flushPromises()
   })
 })

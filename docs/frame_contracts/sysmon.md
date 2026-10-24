@@ -353,6 +353,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 1. **进程启动初始化完成后立即推送一次**（首帧 `cpu.total.usage_ratio` 可为 `null`）
 2. **周期推送**：间隔 = `realtime.push_interval_sec`（默认 5 秒）；与计量频率解耦，计量时刻不推送
 3. **`QUERY_FULL_SNAPSHOT` 响应**：收到总则 §7 的广播查询帧后立即推送一次（该帧无 `instance_id`）
+4. **`SET_SYSMON_CONFIG` 成功后立即推送一次**（失败不推）：只影响快照构造的配置（如 `network.hide_virtual`）必须在下一次周期推送之前生效，否则一次开关操作最长要等一个推送周期（默认 5 秒）才可见。定时器重排只影响计量与推送节奏，不代表快照内容已刷新。
 
 推送失败（事件通道写满等）只记日志，不重试；下一刻度继续推送。
 
@@ -374,7 +375,11 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 ## 6. REST
 
-`GET /api/sysmon/snapshot`：读取 dzweb 镜像中的当前快照（任意已认证用户）。镜像尚未就绪（dzsysmon 未上报）→ `503 {"error":"sysmon snapshot not available"}`。端点细节见契约 rest。
+`GET /api/sysmon/snapshot`：读取 dzweb 镜像中的当前快照（任意已认证用户）。镜像尚未就绪（dzsysmon 未上报）→ `503 {"error":"sysmon snapshot not available"}`。
+
+`PUT /api/sysmon/config`：运行期配置 merge patch（admin）。请求 body 原样透传为 `SET_SYSMON_CONFIG` 的 payload，响应 `200 {"ok":true,"message":"dispatched"}` 只表示"已写事件通道"——校验结果与生效值以 WS `sysmon_config`（`RTN_SYSMON_CONFIG` 全量回推，失败回推旧值）为准。`shm` 未就绪 → `503 {"error":"shm not available"}`；body 非 object/非法 JSON → `400 {"error":"bad request"}`；非 admin → `403 {"error":"admin required"}`。
+
+端点细节见契约 rest。
 
 ---
 
@@ -399,5 +404,5 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - **磁盘 I/O 为整盘粒度**：不提供分区级 I/O。本版本的 `device` 只有物理盘标识（Windows `PhysicalDrive<N>`）；**卷/盘符 ↔ 物理盘映射**由后续票 #103 提供（ADR 0024 Consequences 的映射要求，本票不交付）。Windows 依赖性能计数器（diskperf）与访问权限，读不到时按 §2.4 报告不可用，不做提权或反复重试。
 - **磁盘 I/O 无历史/告警消费**：本契约只定义实时快照域；历史写入（#78）与阈值告警（#80）的消费范围随各自票定义。
 - **网络为整网卡粒度**：不提供每进程/每连接/每协议流量；不做虚拟网卡的自动隐藏策略推断（`is_virtual` 只用结构性依据，不看名字前缀），也不提供 Linux 网卡流量分类（`tc` 队列）与 Windows 适配器绑定细节。
-- **网络无历史/告警消费**：本契约只定义实时快照域；历史写入（#78）与阈值告警（#80）的消费范围随各自票定义。`hide_virtual` 的运行期修改入口随 #81（`PUT /api/sysmon/config`）。
+- **网络无历史/告警消费**：本契约只定义实时快照域；历史写入（#78）与阈值告警（#80）的消费范围随各自票定义。`hide_virtual` 的运行期修改入口已随 #77 落地（REST `PUT /api/sysmon/config` → `SET_SYSMON_CONFIG`，前端只用它切换该开关）；完整配置编辑界面随 #81。
 - 历史查询不走帧（dzweb 只读历史库）；告警复用 `NOTIFY_UI`；进程级指标、GPU、SMART、风扇、电池、登录用户列表不在本契约范围。

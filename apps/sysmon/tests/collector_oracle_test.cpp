@@ -607,9 +607,9 @@ TEST(SystemCollectorOracleTest, NetworkRatesHoldOnRealMachine) {
                                   &interface.rx_drops_per_sec, &interface.tx_drops_per_sec}) {
             if (field->has_value()) {
                 any_rate = true;
-                // 速率必须有限且非负（NaN/Infinity 说明计数窗口或公式异常）。
+                // 速率必须有限（NaN/Infinity 说明计数窗口或公式异常）；
+                // 非负由 Δ计数器 ≥ 0 结构性保证，不再重复断言永真条件（与 disk_io 用例同口径）。
                 EXPECT_TRUE(std::isfinite(**field)) << interface.interface_name;
-                EXPECT_GE(**field, 0.0) << interface.interface_name;
             }
         }
     }

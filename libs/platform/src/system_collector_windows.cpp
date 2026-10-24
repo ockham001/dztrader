@@ -61,6 +61,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -996,6 +997,10 @@ RawNetworkSnapshot query_network() {
         return snapshot;
     }
     snapshot.interfaces.reserve(table->NumEntries);
+    // 帧内 interface 必须唯一（契约 sysmon §7）：`Alias` 由用户命名，理论上可以重名
+    // （同一显示名绑到多个适配器），重名时**保留首次出现的条目**——与 Linux 侧
+    // `parse_net_dev` 对同名接口行的处理同口径。不这么做会产出自家 validate 判非法的帧。
+    std::set<std::string> seen_aliases;
     for (ULONG i = 0; i < table->NumEntries; ++i) {
         const MIB_IF_ROW2& row = table->Table[i];
         RawNetworkInfo info;
@@ -1010,6 +1015,9 @@ RawNetworkSnapshot query_network() {
         info.interface_name = wide_to_utf8(std::wstring_view(row.Alias, alias_length));
         if (info.interface_name.empty()) {
             continue;  // 无别名的接口无法作为帧内唯一键，跳过（不伪造空名条目）
+        }
+        if (!seen_aliases.insert(info.interface_name).second) {
+            continue;  // 别名重名：保留首次出现的适配器（帧内 interface 必须唯一）
         }
         // 八个累计计数器两平台均为 64 位（契约 sysmon §2.7）：MIB_IF_ROW2 的字段是 ULONG64，
         // 显式 static_cast 消除 /W4 下的收窄告警（MSVC /WX）。
