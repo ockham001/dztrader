@@ -11,6 +11,7 @@ add_library(dzsysmon_obj OBJECT
     cpu_saturation.cpp
     cpu_usage.cpp
     disk_io.cpp
+    history_recorder.cpp
     network.cpp
     snapshot_builder.cpp
 )
@@ -18,7 +19,7 @@ target_include_directories(dzsysmon_obj PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_link_libraries(dzsysmon_obj
-    PUBLIC dzplatform_headers dzcore dzlog dzshm Boost::boost
+    PUBLIC dzplatform_headers dzcore dzlog dzshm dzsysmonstore Boost::boost
 )
 if(WIN32)
     # std::getenv / _CRT 安全函数告警在 MSVC Release（/WX）下升级为错误
@@ -69,7 +70,7 @@ foreach(testfile ${DZSYSMON_TESTS})
     # 进程级 E2E（#77）：起真实 dzsysmon 观察帧序（SET_SYSMON_CONFIG 后立即推送快照）。
     # 事件通道命名信号量是机器全局命名空间，与 dev 栈/其它测试实例互扰，必须串行；
     # 且需先构建 dzsysmon（测试从 <build>/tests 的上一级定位该可执行文件）。
-    if(testname STREQUAL "network_config_e2e_test")
+    if(testname STREQUAL "network_config_e2e_test" OR testname STREQUAL "history_e2e_test")
         add_dependencies(dzsysmon_${testname} dzsysmon)
         gtest_discover_tests(dzsysmon_${testname} PROPERTIES
             LABELS fast

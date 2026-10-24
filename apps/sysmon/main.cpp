@@ -15,9 +15,14 @@
 #include "cpu_saturation.h"
 #include "cpu_usage.h"
 #include "disk_io.h"
+#include "history_recorder.h"
 #include "network.h"
 #include "snapshot_builder.h"
 #include "timer.h"
+
+#include <dztrader/sysmonstore/history_store.h>
+#include <dztrader/sysmonstore/records.h>
+#include <dztrader/sysmonstore/schema.h>
 
 #include <dztrader/core/json_section.h>
 #include <dztrader/core/path.h>
@@ -54,9 +59,11 @@
 #include <filesystem>
 #include <format>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
+#include <functional>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -114,7 +121,8 @@ public:
           measure_timer_(ioc_),
           push_timer_(ioc_),
           config_store_(cfg_path_, std::move(loaded_config)),
-          config_(config_store_.current().get<platform::SysmonConfig>()) {
+          config_(config_store_.current().get<platform::SysmonConfig>()),
+          history_recorder_(make_record_window_config(config_)) {
         log_config_ = std::make_unique<platform::LogConfig>(name_, cfg_path_,
                                                             nlohmann::json::json_pointer("/log"));
     }
@@ -124,7 +132,13 @@ public:
     SysmonApp(SysmonApp&&) = delete;
     SysmonApp& operator=(SysmonApp&&) = delete;
 
-    ~SysmonApp() { stop_listener(); }
+    /// 析构兜底：无论 `run()` 是否走完正常退出路径，都停掉监听线程并 flush 历史。
+    /// `run()` 正常结束时会先调 `shutdown_history()`；这里对「run() 中途抛异常」
+    /// 的路径补一次（`shutdown_history` 自身幂等：writer 已被 reset 时直接返回）。
+    ~SysmonApp() {
+        stop_listener();
+        shutdown_history();
+    }
 
     /// 进程主循环：初始化 → 首帧上报 → 事件循环 → 优雅清理。异常仅可能来自初始化。
     int run() {
@@ -157,8 +171,35 @@ public:
             }
         }
         stop_listener();
+        shutdown_history();
         SPDLOG_INFO("stop");
         return 0;
+    }
+
+    /// 优雅退出：把当前未结束的记录窗口落盘，再 flush 队列并关库。
+    ///
+    /// 顺序是语义的一部分：先产出一批（把最后一个不完整窗口的样本交给落盘线程），
+    /// 再让落盘线程冲空队列并关库。不这么做会丢掉「退出前最后不到一个周期的数据」，
+    /// 而这段数据恰恰是排查崩溃/退出原因最需要的部分。
+    void shutdown_history() noexcept {
+        if (history_writer_ == nullptr) {
+            return;
+        }
+        try {
+            auto batch = history_recorder_.flush(wall_clock_unix_ms() / 1000);
+            if (!batch.empty()) {
+                history_writer_->enqueue(std::move(batch));
+            }
+        } catch (const std::exception& e) {
+            SPDLOG_ERROR("history final window flush failed | error=\"{}\"", e.what());
+        }
+        // 先 flush 再读计数：flush 会冲掉队列里剩余的批次，之前读会少算（日志说谎）。
+        const size_t failed = history_writer_->flush();  // 冲空队列 → checkpoint → 关库
+        SPDLOG_INFO(
+            "history writer stopped | written_records={} dropped_records={} "
+            "failed_records={}",
+            history_writer_->written_records(), history_writer_->dropped_records(), failed);
+        history_writer_.reset();
     }
 
 private:
@@ -190,6 +231,141 @@ private:
         event_sem_ = std::make_unique<shm::NamedSemaphore>(name_);
         notify_ui_ = std::make_unique<platform::NotifyUi>(name_, *event_writer_);
         SPDLOG_INFO("event channel ready | channel={} reader={}", CHANNEL_NAME_EVENT, name_);
+
+        init_history();
+    }
+
+    /// 记录窗口配置（来自 sampling 段；两个字段都在配置校验里钳制过范围）。
+    static RecordWindowConfig make_record_window_config(const platform::SysmonConfig& config) {
+        RecordWindowConfig window;
+        window.interval_sec = config.sampling.record_interval_sec;
+        window.phase_sec = config.sampling.phase_offset_sec;
+        window.measure_interval_ms = config.sampling.measure_interval_ms;
+        return window;
+    }
+
+    /// 打开历史库并启动落盘线程（`history.enabled = false` 时完全不碰库）。
+    ///
+    /// 失败**不**阻止进程启动：历史是观测辅助，实时采集与推送必须照常
+    /// （7x24 进程不应因为磁盘满或库版本不符而起不来）。失败记 ERROR 并降级为
+    /// 「不写历史」，`history_writer_` 保持空指针，后续所有写入路径都短路。
+    void init_history() {
+        if (!config_.history.enabled) {
+            SPDLOG_INFO("history disabled by config | action=realtime_only");
+            return;
+        }
+        const auto db_path = dztrader::paths::db() / std::string(sysmonstore::kHistoryFileName);
+        try {
+            sysmonstore::HistoryWriterOptions options;
+            options.queue_capacity = 256;
+            options.maintenance_interval_sec = 300;
+            // 保留策略从**发布出来的快照**读取，而不是直接读 `config_`：
+            // 这个 lambda 跑在落盘线程上，而 `config_` 会在 io_context 线程上被
+            // `SET_SYSMON_CONFIG` 整体重写（含 std::map 成员）——直接读是数据竞争
+            // （UB，配置更新瞬间可能崩）。发布快照在 io 线程写、落盘线程读，用互斥量同步。
+            publish_retention_config();
+            auto retention = [this]() { return retention_config_snapshot(); };
+            history_writer_ = std::make_unique<sysmonstore::HistoryWriter>(db_path, options,
+                                                                           std::move(retention));
+            SPDLOG_INFO("history writer started | path={} queue_capacity={}", db_path.string(),
+                        options.queue_capacity);
+            // 恢复参数语义：历史连续性优先——不重置数据文件、不丢已有聚合。
+            // 重启窗口标记为「采集中断」，让读取方知道这段没有可信数据（绝不伪造连续）。
+            // 与采集期的标记不同：这条必须**立即落盘**，不能等第一个记录窗口结算
+            // （默认 60 秒；若进程在窗口结算前再崩一次，重启事实就永久丢了）。
+            mark_restart();
+            flush_pending_marks();
+        } catch (const std::exception& e) {
+            SPDLOG_ERROR("history unavailable, continue realtime only | path={} error=\"{}\"",
+                         db_path.string(), e.what());
+            notify_ui_->error(std::format("sysmon history unavailable | error=\"{}\"", e.what()));
+        }
+    }
+
+    /// 立即把待落盘标记写成独立批次（不等待记录窗口结算）。
+    ///
+    /// 用于「启动时的重启标记」这类**必须马上持久化**的事实：如果只塞进
+    /// `pending_marks_` 等第一个窗口结算，进程在窗口结束前崩溃就会丢掉这条记录，
+    /// 而它恰恰是排查反复重启的关键。
+    void flush_pending_marks() {
+        if (history_writer_ == nullptr) {
+            return;
+        }
+        auto batch = history_recorder_.drain_marks();
+        if (!batch.empty()) {
+            history_writer_->enqueue(std::move(batch));
+        }
+    }
+
+    /// 把当前配置里与保留策略相关的最小数集发布给落盘线程（io_context 线程调用）。
+    ///
+    /// 只发布 `RetentionPolicy` 需要的字段，而不是共享整个 `config_`：跨线程传递的
+    /// 数据面越小，越不容易在将来加字段时重新引入竞争。
+    void publish_retention_config() {
+        sysmonstore::RetentionPolicy policy;
+        policy.raw_retention_sec = static_cast<int64_t>(config_.history.raw_retention_hours) * 3600;
+        policy.max_retention_sec = static_cast<int64_t>(config_.history.max_retention_days) * 86400;
+        policy.record_interval_sec = config_.sampling.record_interval_sec;
+        policy.max_bytes = static_cast<int64_t>(config_.history.max_bytes);
+        std::lock_guard lock(retention_config_mutex_);
+        retention_config_ = policy;
+    }
+
+    /// 落盘线程读取已发布的保留配置；`now_ts` 由采集侧时钟给出（每次维护刷新）。
+    sysmonstore::RetentionPolicy retention_config_snapshot() const {
+        std::lock_guard lock(retention_config_mutex_);
+        auto policy = retention_config_;
+        policy.now_ts = wall_clock_unix_ms() / 1000;
+        return policy;
+    }
+
+    /// 写入「进程重启」标记：恢复参数语义的核心（重启窗口标记为采集中断）。
+    ///
+    /// 自动重启（`--recover`）与人工重启都记：两者的共同事实是「进程曾经不在」，
+    /// 期间的采集数据缺失。带上 `recover` 让读取方能区分是否异常重启。
+    void mark_restart() {
+        const int64_t now_ts = wall_clock_unix_ms() / 1000;
+        sysmonstore::HistoryMark mark;
+        mark.ts = now_ts;
+        mark.kind = std::string(sysmonstore::kMarkRestart);
+        // detail 记录**缺口秒数**（`<restart_kind>/<gap_sec>`），没有历史数据时 gap 为空：
+        // 「重启了」这句话本身信息量有限，读取方真正要知道的是「这段有多久没有数据」。
+        // 缺口 = 现在 − 库中最后一条记录的时刻；查不到（首次启动/库刚建）就不写数字，
+        // 绝不猜一个 0 冒充「没有缺口」。
+        std::string detail = recover_ ? "recover" : "manual";
+        if (const auto gap = history_gap_seconds(now_ts); gap.has_value()) {
+            detail += "/" + std::to_string(*gap);
+        }
+        mark.detail = std::move(detail);
+        history_recorder_.add_mark(std::move(mark));
+    }
+
+    /// 查历史库中最后一条记录距 `now_ts` 的秒数（无记录/库不可读时 `nullopt`）。
+    ///
+    /// 用只读连接查：写入连接归落盘线程独占，不能在 io_context 线程上碰。
+    /// 查询失败只是「算不出缺口」，不影响重启标记本身。
+    ///
+    /// 只在进程初始化阶段（`init_history`）调用一次，因此这里的同步查询不会阻塞
+    /// 事件循环；走 `MAX(bucket_ts)` 索引而不读整段历史。
+    std::optional<int64_t> history_gap_seconds(int64_t now_ts) const {
+        try {
+            const auto db_path = dztrader::paths::db() / std::string(sysmonstore::kHistoryFileName);
+            auto opened = sysmonstore::HistoryReader::open(db_path);
+            if (opened.first != sysmonstore::HistoryAvailability::Ok) {
+                return std::nullopt;
+            }
+            const auto latest = opened.second->latest_bucket_ts(sysmonstore::kLevelRaw);
+            if (!latest.has_value()) {
+                return std::nullopt;
+            }
+            // 负值（时钟被回拨）也照实返回：它本身就是要上报的事实，不钳成 0。
+            return now_ts - *latest;
+        } catch (const std::exception& e) {
+            // 用 WARN 而不是 DEBUG：DEBUG 在 Release 下被编译掉，`e` 就成了未引用变量
+            // （MSVC C4101 在 /WX 下直接失败），而且「算不出重启缺口」确实是值得留痕的异常。
+            SPDLOG_WARN("history gap query failed | error=\"{}\"", e.what());
+            return std::nullopt;
+        }
     }
 
     // ===== 定时器 =====
@@ -235,6 +411,11 @@ private:
         // 按"上个计划 deadline + 间隔"推进：处理耗时与进程停顿时长不累积为频率漂移。
         const auto tick = advance_deadline(measure_deadline_, current_measure_interval(),
                                            std::chrono::steady_clock::now());
+        // 历史记录：每个计量 tick 观测一次（记录窗口的 min/max 需要全部样本，
+        // 只观测推送时刻会系统性漏掉尖峰）。与推送解耦，见 record_history_tick。
+        // 跳过的 tick 数也交给记录器：它是「错过 tick」这一事实的直接证据。
+        history_recorder_.note_missed_ticks(tick.missed);
+        record_history_tick();
         measure_deadline_ = tick.next;
         if (tick.missed > 0) {
             missed_ticks_ += tick.missed;
@@ -537,6 +718,79 @@ private:
         return {dztrader::paths::shm().string(), dztrader::paths::db().string()};
     }
 
+    /// 把当前快照事实聚合进历史记录窗口（#78）。每次计量 tick 调用一次。
+    ///
+    /// 与推送解耦：记录间隔（默认 60s）与推送间隔（默认 5s）无关，且**每个计量 tick
+    /// 都观测一次**（记录窗口的 min/max 才有意义——只观测推送时刻会让窗口内 11/12 的
+    /// 样本丢失，尖峰被系统性漏掉）。
+    ///
+    /// 时钟跳变检测：采样定时器走单调时钟，墙钟与单调时钟的推进差异超阈值即判定跳变。
+    /// 跳变会让墙钟桶边界错乱，必须打标记——否则读取方会把 NTP 步进误读成负载突变
+    /// （#41 用户故事 16）。
+    void record_history_tick() {
+        if (history_writer_ == nullptr) {
+            return;  // 历史关闭或打开失败：实时路径完全不受影响
+        }
+        const int64_t wall_ms = wall_clock_unix_ms();
+        const int64_t steady_ms = steady_clock_ms();
+
+        // 检测并标记时钟跳变（首次 tick 没有基线，跳过检测）。
+        if (prev_wall_ms_ != 0) {
+            if (const auto drift = sysmonstore::detect_clock_jump(
+                    prev_wall_ms_, prev_steady_ms_, wall_ms, steady_ms, kClockJumpThresholdMs);
+                drift.has_value()) {
+                sysmonstore::HistoryMark mark;
+                mark.ts = wall_ms / 1000;
+                mark.kind = std::string(sysmonstore::kMarkClockJump);
+                mark.detail = std::to_string(*drift);
+                history_recorder_.add_mark(std::move(mark));
+                SPDLOG_WARN("wall clock jump detected | drift_ms={}", *drift);
+            }
+        }
+        prev_wall_ms_ = wall_ms;
+        prev_steady_ms_ = steady_ms;
+
+        try {
+            const auto snapshot = build_snapshot(
+                name_, system_info_, metrics_, temperature_metrics_, memory_metrics_, disk_metrics_,
+                network_metrics_, config_.sampling.measure_interval_ms, last_sample_unix_ms_,
+                missed_ticks_, wall_ms);
+            auto batch = history_recorder_.observe(snapshot, wall_ms / 1000);
+            if (!batch.empty()) {
+                enqueue_history(std::move(batch));
+            }
+        } catch (const std::exception& e) {
+            // 历史记录失败不影响采集与推送（7x24 进程不能因观测辅助链路拖垮主职责）。
+            SPDLOG_ERROR("history record tick failed | error=\"{}\"", e.what());
+        }
+    }
+
+    /// 把批次交给落盘线程（入队不阻塞、不抛；队列满丢最旧并计数）。
+    void enqueue_history(sysmonstore::HistoryBatch batch) {
+        if (history_writer_ == nullptr) {
+            return;
+        }
+        history_writer_->enqueue(std::move(batch));
+        const uint64_t dropped = history_writer_->dropped_records();
+        if (dropped != last_reported_dropped_) {
+            SPDLOG_WARN("history queue overflow, oldest records dropped | dropped_total={}",
+                        dropped);
+            last_reported_dropped_ = dropped;
+        }
+        const uint64_t failed = history_writer_->failed_records();
+        if (failed != last_reported_failed_) {
+            SPDLOG_ERROR("history write failures | failed_total={}", failed);
+            last_reported_failed_ = failed;
+        }
+    }
+
+    /// 单调时钟毫秒（时钟跳变检测的参照；与墙钟同一次 tick 读取）。
+    static int64_t steady_clock_ms() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    }
+
     /// 采样一次 CPU 计数器并更新使用率/每核/饱和标记/速率/缺口标记。
     void measure_once() {
         const auto now = std::chrono::steady_clock::now();
@@ -771,6 +1025,10 @@ private:
             config_store_.set_patch(shm::decode_ext_inst_json<nlohmann::json>(view));
             config_ = config_store_.current().get<platform::SysmonConfig>();
             restart_timers();  // 新间隔立即生效
+            // 记录窗口也要跟随：record_interval_sec / phase_offset_sec 影响历史落库粒度。
+            // 不重新下发的话，运行期改记录间隔会静默不生效（配置声称生效、历史却按旧粒度写）。
+            history_recorder_.reconfigure(make_record_window_config(config_));
+            publish_retention_config();  // 保留策略参数同样即时生效（下一维护周期）
             applied = true;
             SPDLOG_INFO("sysmon config updated | measure_interval_ms={} push_interval_sec={}",
                         config_.sampling.measure_interval_ms, config_.realtime.push_interval_sec);
@@ -850,6 +1108,24 @@ private:
     CoreSaturationTracker saturation_tracker_;
     int64_t last_sample_unix_ms_ = 0;
     uint64_t missed_ticks_ = 0;
+    /// 历史记录窗口累加器（#78）：只做聚合，不碰 I/O。
+    HistoryRecorder history_recorder_;
+    // ---- 保留策略的跨线程发布面（**必须声明在 history_writer_ 之前**）----
+    // 成员按声明逆序析构：落盘线程在 ~HistoryWriter 里被 join，而它退出前可能仍在
+    // 调用保留策略 lambda（→ 读 retention_config_）。若这两个成员声明在 writer 之后，
+    // 它们会先被销毁，join 中的工作线程就会读到已析构的互斥量（UB）。
+    /// 跨线程发布给落盘线程的保留策略参数（io 线程写、落盘线程读）。
+    mutable std::mutex retention_config_mutex_;
+    sysmonstore::RetentionPolicy retention_config_;
+    /// 历史落盘线程（#78）：有界队列 + 批量提交；nullptr = 历史关闭或打开失败。
+    std::unique_ptr<sysmonstore::HistoryWriter> history_writer_;
+    /// 历史 tick 的时钟基线（墙钟与单调时钟各一份，用于时钟跳变检测）。
+    int64_t prev_wall_ms_ = 0;
+    int64_t prev_steady_ms_ = 0;
+    /// 上次已上报的丢弃计数（避免队列溢出时每 tick 刷一条日志）。
+    uint64_t last_reported_dropped_ = 0;
+    /// 上次已上报的落盘失败计数。
+    uint64_t last_reported_failed_ = 0;
     std::shared_ptr<shm::ChannelMeta> event_meta_;
     std::unique_ptr<shm::MultiWriter> event_writer_;
     std::unique_ptr<shm::Reader> event_reader_;

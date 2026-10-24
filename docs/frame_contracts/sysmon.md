@@ -322,15 +322,15 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 | 字段 | 类型 | 默认 | 约束 | 说明 |
 |------|------|------|------|------|
 | `measure_interval_ms` | int | 1000 | `[100, 60000]` | 计量间隔；速率型指标的采样窗口 |
-| `record_interval_sec` | int | 60 | `[1, 86400]` | 记录间隔（历史写入用；当前版本未消费） |
-| `phase_offset_sec` | int | 3 | `[0, 86400]` | 记录 tick 相位偏移，避开整点附近其它任务 |
+| `record_interval_sec` | int | 60 | `[1, 86400]` | 记录间隔（历史写入窗口宽度，由 #78 消费；记录窗口同时受 `phase_offset_sec` 影响，见「历史存储」注） |
+| `phase_offset_sec` | int | 3 | `[0, 86400]` | 记录 tick 相位偏移，避开整点附近其它任务（#78 消费；钳制到 `[0, record_interval_sec)`，默认配置下窗口起点为每分钟第 3 秒，**不落在整数分钟边界**） |
 | `groups` | object\<string,bool\> | Linux：全部 true；Windows：`temperature`/`cpu_frequency` 为 false | 值必须 bool | 启用的指标大类：`cpu`/`memory`/`swap`/`volumes`/`disk_io`/`network`/`temperature`/`cpu_frequency`。`temperature` 与 `cpu_frequency` 属 B 组：Linux 默认开（有 hwmon / cpufreq 时）；Windows 默认关（平台上不可靠或不存在，需显式开启；本版本 Windows 采集器仍报告 `unsupported`）。缺少的键按 true 处理 |
 
 `disk`：`{watch_paths:string[], devices:string[]}`（元素非空；`watch_paths` 为空表示使用默认关注路径——共享内存目录与数据库目录；非空时逐条解析并作为 `watch_paths[]` 输出，同时决定 `volumes[].watched`）。`watch_paths` 影响快照 `watch_paths` / `volumes[].watched`；运行期修改经 `SET_SYSMON_CONFIG` 即时生效（该字段只影响快照构造，不触发重新采样）。
 
 `network`：`{hide_virtual:bool}`，默认 `true`（隐藏虚拟网卡：回环、桥接、veth、容器网桥、隧道与 VLAN 逻辑接口等——判定依据是「不由硬件设备支撑」，见 §2.4）。该开关在**快照构造**阶段过滤，`SET_SYSMON_CONFIG` 成功后立即推送一帧使改动即时可见（§4 触发 4）。
 
-`history`：`{enabled:bool, raw_retention_hours:int, max_retention_days:int, max_bytes:int}`，默认 `true/24/30/2147483648`；`raw_retention_hours ∈ [1,720]`、`max_retention_days ∈ [1,3650]`、`max_bytes ≥ 0`（0 = 不限制）。
+`history`：`{enabled:bool, raw_retention_hours:int, max_retention_days:int, max_bytes:int}`，默认 `true/24/30/2147483648`；`raw_retention_hours ∈ [1,720]`、`max_retention_days ∈ [1,3650]`、`max_bytes ≥ 0`（0 = 不限制）。由 #78 消费：`enabled=false` 时不写历史（仅实时数据，不建库文件、不起落盘线程）；保留与压缩规则见 #41 spec「历史存储」。历史库 schema 与行编解码的唯一真相源是 `libs/sysmonstore`，**不在本契约范围内**（历史查询不走帧，dzweb 以只读方式直接打开历史库）。
 
 `realtime`：`{push_interval_sec:int}`，默认 `5`，`[1, 3600]`；与计量频率解耦（事件通道每次写入会唤醒全部注册进程）。
 
