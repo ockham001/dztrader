@@ -361,7 +361,9 @@ private:
             // 负值（时钟被回拨）也照实返回：它本身就是要上报的事实，不钳成 0。
             return now_ts - *latest;
         } catch (const std::exception& e) {
-            SPDLOG_DEBUG("history gap query failed | error=\"{}\"", e.what());
+            // 用 WARN 而不是 DEBUG：DEBUG 在 Release 下被编译掉，`e` 就成了未引用变量
+            // （MSVC C4101 在 /WX 下直接失败），而且「算不出重启缺口」确实是值得留痕的异常。
+            SPDLOG_WARN("history gap query failed | error=\"{}\"", e.what());
             return std::nullopt;
         }
     }
