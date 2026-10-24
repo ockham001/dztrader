@@ -58,3 +58,19 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
 - 替换合并语义由 core::TimerQueue 的 schedule_after_replace 保证（libs/core 单测覆盖）
 - 与 md/td 的实现差异：错误包容为两段独立 try——reader 半边抛异常不阻断 writer 半边维护
   （md/td 是单一 try 包两半，reader 抛则 writer 跳过）；此差异系双线程拆分的自然结果，属有意为之
+
+## 系统监控历史查询（#79）
+
+历史查询**不走帧、不读镜像**：`dzweb` 以只读连接直接打开 `$DZTRADER_HOME/db/sysmon.db`，经 REST
+`GET /api/sysmon/history` 提供（契约 sysmon §6.1、契约 rest §2.8）。`dzsysmon` 是唯一写者，`dzweb`
+只读——两侧共用 `libs/sysmonstore`（schema 与行编解码的唯一真相源，ADR 0033）。
+
+- **线程**：REST 回调在 ② 网络 IO 线程（单线程串行），每次请求新建只读连接、请求结束即关闭。
+  `HistoryReader` 非线程安全，因此不缓存跨请求连接。
+- **降级**：库缺失 / schema 版本不符 / 文件损坏一律 `200 + {"available":false,"reason":...}`，
+  不抛、不 5xx、不返回伪造数据（三种 reason 与 `HistoryAvailability` 一一对应）。
+- **不动实时链路**：历史端点不写 `MirrorStore`、不广播 WS、不发帧；前端历史视图也不订阅 WS，
+  因此切换视图不影响 WS 连接与实时快照镜像。
+- 实现分层（查询语义在共享模块、HTTP 装配在 `sysmon_history_service`）见
+  [dzsysmon.md](dzsysmon.md) 的「历史查询」节——查询语义由 schema 形状决定，属共享模块，
+  不是 dzweb 的私有逻辑。

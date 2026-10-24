@@ -105,6 +105,25 @@ void insert_mark(const SQLite::Database& db, const HistoryMark& mark);
 /// 读取 `sysmon_meta` 中的 schema 版本；表/行不存在返回 0。
 [[nodiscard]] int read_schema_version(SQLite::Database& db);
 
+/**
+ * @brief 库结构是否可读（`sqlite_master` 能否查询）。
+ *
+ * 用来区分「有效库但没有 `sysmon_meta` 表」（= 历史未启用 ⇒ `not_found`）与
+ * 「库损坏/被截断/非 SQLite」（= `open_failed`）：两者在「查 sysmon_meta」时
+ * 都会抛异常，单看那个异常无法分辨。
+ */
+[[nodiscard]] bool database_is_readable(SQLite::Database& db);
+
+/**
+ * @brief 文件头是否为合法 SQLite 数据库（16 字节 "SQLite format 3\0"）。
+ *
+ * `sqlite3_open` 是惰性的：对非 SQLite 文件照样返回成功，失败要等到第一次真正读页。
+ * 读取方在打开前用本函数区分「不是我们的库」与「是空库/未初始化」，避免开库成功后才
+ * 在版本检查处误判。0 字节文件返回 `true`（合法的空库，交给版本检查处理）；
+ * 文件读不到（权限/IO）返回 `false`。
+ */
+[[nodiscard]] bool has_valid_sqlite_header(const std::filesystem::path& path);
+
 /// 建目录（父目录为空时无操作）。
 /// @throws std::runtime_error 创建失败
 void ensure_parent_dir(const std::filesystem::path& path);
