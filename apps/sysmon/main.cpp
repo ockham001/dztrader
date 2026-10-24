@@ -132,7 +132,13 @@ public:
     SysmonApp(SysmonApp&&) = delete;
     SysmonApp& operator=(SysmonApp&&) = delete;
 
-    ~SysmonApp() { stop_listener(); }
+    /// 析构兜底：无论 `run()` 是否走完正常退出路径，都停掉监听线程并 flush 历史。
+    /// `run()` 正常结束时会先调 `shutdown_history()`；这里对「run() 中途抛异常」
+    /// 的路径补一次（`shutdown_history` 自身幂等：writer 已被 reset 时直接返回）。
+    ~SysmonApp() {
+        stop_listener();
+        shutdown_history();
+    }
 
     /// 进程主循环：初始化 → 首帧上报 → 事件循环 → 优雅清理。异常仅可能来自初始化。
     int run() {
@@ -1102,6 +1108,13 @@ private:
     uint64_t missed_ticks_ = 0;
     /// 历史记录窗口累加器（#78）：只做聚合，不碰 I/O。
     HistoryRecorder history_recorder_;
+    // ---- 保留策略的跨线程发布面（**必须声明在 history_writer_ 之前**）----
+    // 成员按声明逆序析构：落盘线程在 ~HistoryWriter 里被 join，而它退出前可能仍在
+    // 调用保留策略 lambda（→ 读 retention_config_）。若这两个成员声明在 writer 之后，
+    // 它们会先被销毁，join 中的工作线程就会读到已析构的互斥量（UB）。
+    /// 跨线程发布给落盘线程的保留策略参数（io 线程写、落盘线程读）。
+    mutable std::mutex retention_config_mutex_;
+    sysmonstore::RetentionPolicy retention_config_;
     /// 历史落盘线程（#78）：有界队列 + 批量提交；nullptr = 历史关闭或打开失败。
     std::unique_ptr<sysmonstore::HistoryWriter> history_writer_;
     /// 历史 tick 的时钟基线（墙钟与单调时钟各一份，用于时钟跳变检测）。
@@ -1111,9 +1124,6 @@ private:
     uint64_t last_reported_dropped_ = 0;
     /// 上次已上报的落盘失败计数。
     uint64_t last_reported_failed_ = 0;
-    /// 跨线程发布给落盘线程的保留策略参数（io 线程写、落盘线程读）。
-    mutable std::mutex retention_config_mutex_;
-    sysmonstore::RetentionPolicy retention_config_;
     std::shared_ptr<shm::ChannelMeta> event_meta_;
     std::unique_ptr<shm::MultiWriter> event_writer_;
     std::unique_ptr<shm::Reader> event_reader_;

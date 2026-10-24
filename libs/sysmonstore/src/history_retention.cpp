@@ -431,16 +431,24 @@ int64_t enforce_size_limit(SQLite::Database& db, int64_t max_bytes, int64_t batc
             // 按最旧优先分批删，而不是一次 `DELETE FROM sysmon_dimension` ——
             // 后者会把**全部**维度历史一次抹掉，与「最旧优先、保留最新」的语义冲突。
             // 每轮仍按 batch 限行，删完继续循环（下一轮逻辑占用下降即可退出）。
-            SQLite::Statement orphan(
-                db,
-                "DELETE FROM sysmon_dimension WHERE bucket_ts IN ("
-                "SELECT bucket_ts FROM sysmon_dimension ORDER BY bucket_ts LIMIT ?1)");
-            orphan.bind(1, static_cast<int64_t>(batch));
-            orphan.exec();
-            const int removed = db.getChanges();
+            int removed = 0;
+            {
+                // 与其它删除段一致：每段一个事务（文档承诺），避免逐条隐式提交。
+                SQLite::Transaction txn(db);
+                SQLite::Statement orphan(
+                    db,
+                    "DELETE FROM sysmon_dimension WHERE bucket_ts IN ("
+                    "SELECT bucket_ts FROM sysmon_dimension ORDER BY bucket_ts LIMIT ?1)");
+                orphan.bind(1, static_cast<int64_t>(batch));
+                orphan.exec();
+                removed = db.getChanges();
+                txn.commit();
+            }
             if (removed > 0) {
-                // 还有可删的孤儿行：本轮的 logical_db_bytes 判断已不成立（页面尚未复用），
-                // 继续下一轮删除；用 removed 而非重新查大小，避免「删了但占用没降」的死循环。
+                // 孤儿行也是被删的历史：计入 deleted，使收尾的 VACUUM 与日志如实反映。
+                deleted += removed;
+                // 还有可删的孤儿行：本轮 logical_db_bytes 的判断已不成立（页面尚未复用），
+                // 继续下一轮；用 removed 而非重新查大小，避免「删了但占用没降」的死循环。
                 continue;
             }
             // 仍超限说明下限就是库结构本身（空库大小 > max_bytes）：停止，
