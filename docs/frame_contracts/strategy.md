@@ -115,7 +115,7 @@ SDK 在 `dz_next_event` 派发 DZ_FRAME_ORDER_REPORT–DZ_FRAME_TRADING_ACCOUNT 
 - **成交去重**：按 `(account_id, trading_day, trade_id)` 二次防线去重（td 过滤器为第一道），交易日切换清理
 - **seq 倒退重置**：发现 `seq` 低于该账户已应用水位（数据被重置，非新的一天）时，清空该账户 ingest 状态、重查 TD 库设新水位后继续
 
-**对策略透明**：W 快照、断档回补、成交去重、seq 倒退重置全部在 SDK ingest 层完成，策略回调语义在正常路径不受影响——`on_trade_report` 语义 = **每笔成交恰好一次**。**例外**：断档回补重试耗尽或回补缓冲溢出时按契约 td-data-sync §5.2 的"崩溃丢失"语义放行触发帧，缺失区间不再补齐。
+**对策略透明**：W 快照、断档回补、成交去重、seq 倒退重置全部在 SDK ingest 层完成，策略回调语义在正常路径不受影响——`on_trade_report` 语义 = **每笔成交恰好一次**。**例外**：断档回补重试耗尽或回补缓冲溢出时按《帧契约：TD 数据同步》§5（消费端衔接）的"崩溃丢失"语义放行触发帧，缺失区间不再补齐。
 
 **回调语义承诺**：`ORDER_REPORT`/`TRADE_REPORT`/`POSITION_INFO`/`TRADING_ACCOUNT` 回调（`on_order_report`/`on_trade_report`/`on_position_info`/`on_trading_account`）在 ingest 过滤、且正常路径（库可用、回补覆盖成功）下保证：
 
@@ -123,7 +123,7 @@ SDK 在 `dz_next_event` 派发 DZ_FRAME_ORDER_REPORT–DZ_FRAME_TRADING_ACCOUNT 
 - **无断档**：启动竞态窗口的缺失区间由回补补齐
 - **成交不重复**：`on_trade_report` 每笔成交恰好一次
 
-**防饿死上限**：每次 `dz_next_event` 调用最多连续消费 32 条内部帧，超过则本次让位（优先返回已到期定时器帧，否则 NULL，下次调用继续处理）；用户帧随时立即返回。**例外**：断档触发帧在回补行之后返回（首查覆盖路径）；重试期间到达的 TD 帧按"宁缺勿乱"暂存，回补覆盖/耗尽后按 seq 序派发（见 td-data-sync §5.2，不丢但会延迟）。
+**防饿死上限**：每次 `dz_next_event` 调用最多连续消费 32 条内部帧，超过则本次让位（优先返回已到期定时器帧，否则 NULL，下次调用继续处理）；用户帧随时立即返回。**例外**：断档触发帧在回补行之后返回（首查覆盖路径）；重试期间到达的 TD 帧按"宁缺勿乱"暂存，回补覆盖/耗尽后按 seq 序派发（见《帧契约：TD 数据同步》§5，不丢但会延迟）。
 
 ---
 
