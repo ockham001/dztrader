@@ -12,13 +12,21 @@ export class ApiError extends Error {
   }
 }
 
+/** 当前是否在登录页（参数化 currentPath 便于测试） */
+export function isOnLoginPage(currentPath: string = window.location.pathname): boolean {
+  return currentPath === '/login'
+}
+
 /**
- * 401 后是否跳转登录页。
- * - 登录接口的 401 是凭据错误（不是会话失效）：交给表单展示，不清会话
- * - 已在登录页时不再跳转：否则「请求 401 → 跳 /login → 重载 → 再 401」会形成整页刷新循环
+ * 会话失效后硬跳转登录页；已在登录页时 no-op。
+ * 这是**唯一**的登录页跳转点：不 no-op 就会形成「请求 401 → 跳 /login → 重载 → 再 401」
+ * 的整页刷新循环（issue #118）。
  */
-export function shouldRedirectOn401(path: string, currentPath: string): boolean {
-  return path !== '/api/login' && currentPath !== '/login'
+export function redirectToLogin(
+  currentPath: string = window.location.pathname,
+  navigate: (url: string) => void = url => window.location.replace(url),
+): void {
+  if (!isOnLoginPage(currentPath)) navigate('/login')
 }
 
 async function request<T>(
@@ -37,16 +45,17 @@ async function request<T>(
   const resp = await fetch(`${BASE_URL}${path}`, { ...options, headers })
 
   if (resp.status === 401) {
-    // 登录接口的 401 是凭据错误而非会话失效：不清会话（否则输错密码会把登录态清掉）
+    // 401 的响应体可能是凭据错误（invalid_credentials / account_locked + locked_until），
+    // 必须原样交给调用方展示，否则登录表单只能看到笼统的 unauthorized
+    let body: ApiErrorBody | null = null
+    try { body = await resp.json() as ApiErrorBody } catch { /* ignore parse error */ }
+    // 登录接口的 401 是凭据错误而非会话失效：不清会话、不跳转
     if (path !== '/api/login') {
       localStorage.removeItem('jwt_token')
       localStorage.removeItem('user_info')
+      redirectToLogin()  // 已在登录页时 no-op（断掉整页刷新循环）
     }
-    // 跳转决策见 shouldRedirectOn401（登录页内不重复跳转，避免整页刷新循环）
-    if (shouldRedirectOn401(path, window.location.pathname)) {
-      window.location.replace('/login')
-    }
-    throw new ApiError(401, { error: 'unauthorized' })
+    throw new ApiError(401, body ?? { error: 'unauthorized' })
   }
 
   if (!resp.ok) {
