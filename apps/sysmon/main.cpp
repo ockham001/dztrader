@@ -776,7 +776,9 @@ private:
         for (const auto& record : result.records) {
             // 级别由状态机随记录给出（进入 warn、重记/恢复 info），这里原样落日志——
             // 不在调用方再按状态分一次支，避免"两处各写一套映射"后漂移。
-            spdlog::log(record.level, "{}", record.message);
+            // 显式传 `source_loc`：日志格式带 `func=` / `file=:%#`，不带源位置这两项会是空的。
+            spdlog::log(spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION}, record.level, "{}",
+                        record.message);
         }
     }
 

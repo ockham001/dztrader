@@ -24,6 +24,7 @@
  * 防刷屏完全由「进入/恢复各一条 + 按间隔重记」保证（ADR 0034）。
  */
 
+#include <compare>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -114,9 +115,10 @@ enum class ThresholdState {
 
 /// 需要写的一条日志记录（不构成协议语义；调用方负责落日志）。
 ///
-/// 字段覆盖契约 §2.8 的内容义务：判定对象、状态、当前值、阈值、活动期已持续秒数。
-/// `message` 是组装好的英文 `prose | k=v` 单行文本，直接交给 spdlog 即可
-/// （避免调用方再按 state 分支拼一遍，两处口径不得漂移）。
+/// 字段集合是票面验收标准规定的（级别 / 判定对象 / 状态 / 当前值 / 阈值 / 活动期持续秒数），
+/// 因此**不是** `message` 的冗余副本：结构化字段是判定模块对外承诺的产出（测试断言它们），
+/// `message` 是同一份事实的渲染结果（调用方直接交给 spdlog，不必再按 state 分支拼一遍——
+/// 那会变成"两处各写一套文本口径"）。两者由 `make_record` 在同一处生成，不存在漂移。
 struct ThresholdLogRecord {
     ThresholdKey key;                                       ///< 判定对象标识
     ThresholdState state = ThresholdState::Entered;         ///< 进入 / 重记 / 恢复

@@ -92,6 +92,9 @@ inline constexpr const char* SYSMON_GROUP_CPU_FREQUENCY = "cpu_frequency";
 
 // ===== 快照 `alerts[]` 的 kind（契约 sysmon §2.8 旧形态；随 #125 删除该字段一并移除）=====
 // 发送方（dzsysmon）与消费方（dzweb/前端）共用本集合。
+// 与下方 `SYSMON_THRESHOLD_*` 字面量相同但**刻意不合并**：前者是**协议**取值（快照字段的
+// 线上形状，dzweb 据它校验），后者是**日志**里的判定对象标识（不进协议）。合并会让"改日志
+// 用词"连带改掉协议校验。本集合只在 #123 到 #125 这一个提交周期内存在，随字段一起删除。
 inline constexpr const char* SYSMON_ALERT_MEMORY_USED = "memory_used";
 inline constexpr const char* SYSMON_ALERT_SWAP_USED = "swap_used";
 inline constexpr const char* SYSMON_ALERT_VOLUME_FREE = "volume_free";

@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <format>
 #include <optional>
 #include <string>
 #include <utility>
@@ -103,6 +104,9 @@ TEST(ThresholdEvaluatorTest, MemoryReachingThresholdLogsEnteredOnce) {
     EXPECT_EQ(record.key.kind, platform::SYSMON_THRESHOLD_MEMORY_USED);
     EXPECT_TRUE(record.key.subject.empty());
     EXPECT_EQ(record.active_sec, 0);
+    // 进入记录带墙钟起点：UI 不再呈现"高水位始于何时"（ADR 0034），日志是唯一来源。
+    EXPECT_EQ(record.since_unix_sec, kWallSec);
+    EXPECT_NE(record.message.find(std::format("since={}", kWallSec)), std::string::npos);
     EXPECT_DOUBLE_EQ(record.current_value, 0.90);
     ASSERT_TRUE(record.threshold_value.has_value());
     EXPECT_DOUBLE_EQ(*record.threshold_value, 0.90);
