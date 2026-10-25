@@ -1006,8 +1006,8 @@ bool is_pseudo_filesystem(std::string_view fs_type) {
     //
     // 裸 `fuse` 与 `fuse.*` 并列列入：/proc/mounts 里 GNOME remote desktop 的
     // cliprdr 之类临时挂载 fstype 字面量就是 `fuse`（无实现后缀），statvfs 返回 0 块，
-    // df 默认也不列它（#122）。**`fuseblk` 不在此列**——那是 ntfs-3g 挂载的真实 NTFS 卷，
-    // 过滤掉会隐藏真实存储。
+    // df 默认也不列它（#122）。**`fuseblk` 不在此列**——它由内核 fuse 模块承载块设备上的
+    // 真实文件系统（典型是 ntfs-3g 挂载的 NTFS 卷），过滤掉会隐藏真实存储。
     static constexpr std::array<std::string_view, 27> kPseudo = {
         "proc",        "sysfs",      "devtmpfs", "devpts",     "tmpfs",    "ramfs",     "cgroup",
         "cgroup2",     "debugfs",    "tracefs",  "configfs",   "mqueue",   "hugetlbfs", "autofs",

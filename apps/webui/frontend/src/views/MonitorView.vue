@@ -19,8 +19,9 @@ import { useToastStore } from '@/stores/toast'
 // 内存 / 交换（#74）按可用性映射渲染：不可用显示「不可用」+ 原因，可用但本帧无数据
 // 显示「暂无数据」；交换在可用且总容量为 0 时显示「无交换分区」。
 // 温度 / 每核频率（B 组）按可用性映射渲染：不可用时整块不渲染（不是显示 0 / 不可用占位）。
-// 磁盘（#75）按可用性映射渲染：卷按 watched 优先排序并高亮关注卷；单个卷 available=false
-// 显示「不可用」+ 原因而不是 0；shm_dir 展示共享内存目录占用（页清理是否生效的可观测项）。
+// 磁盘（#75）按可用性映射渲染：卷按使用率降序排列（#122）并高亮关注卷；正文只列容量可读且
+// 总量 > 0 的卷，其余折叠进「无容量挂载（N）」，绝不显示 0；shm_dir 展示共享内存目录占用
+//（页清理是否生效的可观测项）。
 // 磁盘 I/O（#76）按可用性映射渲染：每物理盘的吞吐 / IOPS / 延迟 / 队列深度 / 利用率，
 // 数值 null（首次采样/计数器重置）逐项显示「不可用」，能力不可用时整块显示原因。
 // 网络（#77）：可用但数组为空 = 发送方按 hide_virtual 滤掉了全部虚拟网卡（契约 §2.5 明文，
@@ -219,7 +220,7 @@ const swapUnavailableDesc = computed(() => {
 })
 const volumesAvailable = computed(() => isAvailable('volumes'))
 const volumes = computed(() => sysmon.volumes)
-// 卷列表分两池（#122）：正文只留容量可读且总量 > 0 的卷，零容量挂载折叠成组。
+// 卷列表分两池（#122）：正文只留容量可读且总量 > 0 的卷，无容量挂载折叠成组。
 // 折叠状态不持久化（刷新回到默认收起），与既有手风琴一致。
 const readableVolumes = computed(() => sysmon.readableVolumes)
 const zeroCapacityVolumes = computed(() => sysmon.zeroCapacityVolumes)

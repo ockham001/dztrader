@@ -125,7 +125,8 @@ const DEFAULT_SWAP: SysmonSwapInfo = {
 
 /**
  * 默认卷（#75 后端形状）：/ 40% 非关注、/data 25% 关注（承载 shm 与 db 目录）、/home 62% 非关注。
- * 关注卷刻意不放数组首位，用于验证前端按 watched 优先排序而不是依赖发送端顺序。
+ * 顺序刻意与使用率不同（payload 顺序 /、/data、/home），用于验证前端按使用率降序重排
+ * 而不是依赖发送端顺序（#122）。
  */
 const DEFAULT_VOLUMES: SysmonVolumeInfo[] = [
   { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },

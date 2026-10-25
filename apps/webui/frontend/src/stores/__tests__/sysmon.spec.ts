@@ -534,6 +534,9 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
     }))
 
     expect(store.volumes).toEqual([])
+    // #122 两个分池同样为空：不可用时不得把陈旧卷落到任一侧
+    expect(store.readableVolumes).toEqual([])
+    expect(store.zeroCapacityVolumes).toEqual([])
     // 契约 sysmon §2.5：配置关闭 volumes 后 watch_paths 仍输出（告警需要它）
     expect(store.watchPaths).toHaveLength(2)
   })
@@ -645,11 +648,11 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
       ],
     }))
 
-    // 关注标记不再参与排序（#122 取消关注路径）：纯按使用率与挂载点
+    // 排序只看使用率与挂载点：关注标记不参与（取消关注路径的契约由 #121 定稿，字段本身由 #124 删除）
     expect(store.volumes.map(volume => volume.mount)).toEqual(['/high', '/a-tie', '/b-tie', '/low'])
   })
 
-  it('#122 零容量折叠：容量不可读与 total=0 的卷单列，正文列表只剩可读容量的卷', () => {
+  it('#122 无容量挂载分池：容量不可读与 total=0 的卷单列，正文列表只剩可读容量的卷', () => {
     const store = useSysmonStore()
     store.applySnapshot(makeSysmonSnapshot({
       volumes: [

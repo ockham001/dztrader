@@ -108,8 +108,11 @@ const alertsTitle = computed<string>(() => {
 
 /**
  * 各盘徽章（#75）：卷集合与顺序全部由快照驱动，不硬编码盘符或数量。
- * 关注卷（watched=true）在 store 里已排前，此处额外高亮（topbar__resource--watched）。
+ * 顺序与监控页同源（store 按使用率降序，`#122`），关注卷（watched=true）额外高亮
+ * （topbar__resource--watched）。
  * 单个卷 available=false 显示「不可用」，标题带原因 —— 不得用 0 冒充（契约 sysmon §2.4）。
+ * 无容量挂载的折叠是监控页正文列表的显示行为（`#122`），顶栏仍逐个给徽章——顶栏是全局
+ * 常驻条，这里不能省略「存在但读不到」这一事实。
  */
 interface DiskBadge {
   mount: string

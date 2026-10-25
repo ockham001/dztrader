@@ -605,7 +605,8 @@ TEST(MountParserTest, PseudoFilterCanBeDisabledForDiagnosis) {
 
 TEST(MountParserTest, BareFuseIsFilteredButFuseblkIsARealVolume) {
     // #122：裸 `fuse` 的临时挂载被过滤（GNOME remote desktop 的 cliprdr），
-    // `fuseblk`（ntfs-3g 承载的真实 NTFS 卷）必须留下来。
+    // `fuseblk`（内核 fuse 模块承载块设备上的真实文件系统，典型是 ntfs-3g 的 NTFS 卷）
+    // 必须留下来。
     const std::string content =
         "fuse /run/user/1000/cliprdr-abc fuse rw,nosuid,nodev 0 0\n"
         "fuse.sshfs /srv/remote fuse.sshfs rw 0 0\n"
@@ -633,7 +634,8 @@ TEST(MountParserTest, PseudoFilesystemClassification) {
         EXPECT_TRUE(is_pseudo_filesystem(fs)) << fs;
     }
     for (const char* fs : {"ext4", "xfs", "btrfs", "zfs", "nfs", "nfs4", "cifs",
-                           // #122：`fuseblk` 是 ntfs-3g 的真实 NTFS 卷，过滤掉会隐藏真实存储。
+                           // #122：`fuseblk` 承载块设备上的真实文件系统（典型是 ntfs-3g 的
+                           // NTFS 卷），过滤掉会隐藏真实存储。
                            "fuseblk"}) {
         EXPECT_FALSE(is_pseudo_filesystem(fs)) << fs;
     }
