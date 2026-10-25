@@ -11,7 +11,6 @@
  * 首帧上报（配置 + 日志配置 + 快照）→ 计量/推送双定时器 → SHUTDOWN/信号优雅退出。
  */
 
-#include "alerts.h"
 #include "config.h"
 #include "cpu_saturation.h"
 #include "cpu_usage.h"
@@ -19,6 +18,7 @@
 #include "history_recorder.h"
 #include "network.h"
 #include "snapshot_builder.h"
+#include "thresholds.h"
 #include "timer.h"
 
 #include <dztrader/sysmonstore/history_store.h>
@@ -72,6 +72,11 @@
 
 namespace dztrader::sysmon {
 namespace {
+
+/// 快照 `alerts[]` 的填充值：资源越限自 #123 起只写日志、不再产生活动告警集合
+/// （ADR 0034），因此恒为空数组。该字段本身随 #125 从快照删除；在此之前保留空数组是因为
+/// 消费方（dzweb）对快照做校验、字段缺失即拒掉整帧——删字段必须与消费者同批上线。
+const std::vector<platform::SysmonAlertInfo> kNoActiveAlerts{};
 
 /// 墙钟 Unix 毫秒（仅上报口径；定时调度一律用 steady_clock，不受系统时间调整影响）。
 int64_t wall_clock_unix_ms() {
@@ -241,8 +246,9 @@ private:
         SPDLOG_INFO("event channel ready | channel={} reader={}", CHANNEL_NAME_EVENT, name_);
 
         init_history();
-        // 首帧就可携带活动告警（启动时资源可能已经越限）：在事件通道与通知器就绪后评估一次。
-        evaluate_alerts();
+        // 首个计量 tick 之前先评估一次：启动时资源可能已经越限，进入越限的日志不该等到
+        // 一个计量间隔之后才出现（契约 sysmon §2.8：判定与记录同频，启动路径也走同一入口）。
+        evaluate_thresholds();
     }
 
     /// 记录窗口配置（来自 sampling 段；两个字段都在配置校验里钳制过范围）。
@@ -619,7 +625,8 @@ private:
     /// 卷/目录能力标记粘性：一次成功后 available 保持 true，本帧失败只把域置 null
     /// （契约 sysmon §2.5）。单个卷不可读不改写整体可用性——采集层把该卷以
     /// "容量字段为 null + reason" 放进数组（契约 sysmon §2.4）。
-    /// `watch_paths` 不受 `sampling.groups.volumes` 影响（路径感知告警需要它，见 #80）。
+    /// `watch_paths` 不受 `sampling.groups.volumes` 影响：它只服务快照字段，
+    /// 阈值越限自 #123 起按全部卷判定、不再依赖落卷结果。
     void refresh_disk_metrics() {
         if (!group_enabled("volumes")) {
             disk_metrics_.volumes_disabled = true;
@@ -753,39 +760,25 @@ private:
         return watch_paths;
     }
 
-    /// 评估一次阈值告警（契约 sysmon §2.8；#80）。
+    /// 评估一次阈值越限（契约 sysmon §2.8；#123 由通知改为日志）。
     ///
-    /// 输入只取判定所需的事实：内存/交换使用率、关注卷剩余空间与关注路径落卷；
-    /// 阈值与冷却取当前生效配置（运行期修改经 `SET_SYSMON_CONFIG` 即时生效，监控页
-    /// 「配置」区提供 admin 编辑入口）。
-    /// 通知发送（error+popup 触发 / info 恢复）与快照 `alerts[]` 的活动集在此统一产出，
-    /// 是告警状态的唯一写入点——采集/判定/发送都在 io_context 线程上串行。
-    void evaluate_alerts() {
-        // 判定输入（路径感知只把关注卷交给判定）与状态机推进都走纯逻辑模块，便于确定性测试。
-        const auto inputs = make_alert_inputs(memory_metrics_, disk_metrics_,
-                                              wall_clock_unix_ms() / 1000, steady_clock_ms());
-        const auto result = alert_evaluator_.evaluate(inputs, config_.alerts);
-        for (const auto& notification : result.notifications) {
-            if (notification.recovery) {
-                SPDLOG_INFO("threshold alert cleared | kind={} subject={}", notification.key.kind,
-                            notification.key.subject);
-                notify_ui_->info(notification.message);
-            } else {
-                // 触发必须是 error + popup：契约 notify-ui 只有 error+popup 会打断用户，
-                // 阈值告警是"资源即将耗尽、进程可能崩溃"的前置信号（契约 sysmon §2.8）。
-                SPDLOG_WARN("threshold alert triggered | kind={} subject={}", notification.key.kind,
-                            notification.key.subject);
-                notify_ui_->error(notification.message);
-            }
-        }
-        active_alerts_.clear();
-        active_alerts_.reserve(result.active.size());
-        for (const auto& alert : result.active) {
-            platform::SysmonAlertInfo info;
-            info.kind = alert.key.kind;
-            info.subject = alert.key.subject;
-            info.since = alert.since_unix_sec;
-            active_alerts_.push_back(std::move(info));
+    /// 输入只取判定所需的事实：内存/交换使用率、全部卷的剩余空间与 CPU 饱和；
+    /// 阈值与重记间隔取当前生效配置 `thresholds`（运行期修改经 `SET_SYSMON_CONFIG` 即时
+    /// 生效，监控页「配置」区提供 admin 编辑入口）。
+    ///
+    /// **资源类不产生任何 `NOTIFY_UI`**（ADR 0034）：判定结果只写日志。若这里再发通知，
+    /// 弹窗通道就会被资源占用重新稀释——那正是本票要消除的问题。
+    /// 日志是唯一出口，`dzsysmon` 的 `NOTIFY_UI` 只剩历史库不可用与配置下发失败两类真故障。
+    void evaluate_thresholds() {
+        const auto inputs = make_threshold_inputs(metrics_, memory_metrics_, disk_metrics_,
+                                                  wall_clock_unix_ms() / 1000, steady_clock_ms());
+        const auto result = threshold_evaluator_.evaluate(inputs, config_.thresholds);
+        for (const auto& record : result.records) {
+            // 级别由状态机随记录给出（进入 warn、重记/恢复 info），这里原样落日志——
+            // 不在调用方再按状态分一次支，避免"两处各写一套映射"后漂移。
+            // 显式传 `source_loc`：日志格式带 `func=` / `file=:%#`，不带源位置这两项会是空的。
+            spdlog::log(spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION}, record.level, "{}",
+                        record.message);
         }
     }
 
@@ -835,7 +828,7 @@ private:
             apply_snapshot_output_config();
             const auto snapshot = build_snapshot(
                 name_, system_info_, metrics_, temperature_metrics_, memory_metrics_, disk_metrics_,
-                network_metrics_, active_alerts_, config_.sampling.measure_interval_ms,
+                network_metrics_, kNoActiveAlerts, config_.sampling.measure_interval_ms,
                 last_sample_unix_ms_, missed_ticks_, wall_ms);
             auto batch = history_recorder_.observe(snapshot, wall_ms / 1000);
             if (!batch.empty()) {
@@ -880,11 +873,11 @@ private:
         refresh_memory_metrics();  // 内存/交换同为独立 gauge，与 CPU 采集成败无关
         refresh_disk_metrics();    // 卷/落卷/共享内存目录同为独立事实，与 CPU 采集成败无关
         refresh_network();         // 网卡累计计数器同为独立事实，与 CPU 采集成败无关
-        // 告警判定与历史记录同频（每个计量 tick）：不跟随推送频率，CPU 采集失败也不跳过。
-        evaluate_alerts();
+        // 越限判定与历史记录同频（每个计量 tick）：不跟随推送频率，CPU 采集失败也不跳过。
+        evaluate_thresholds();
         // sampling.groups.cpu=false（契约 sysmon §3.1.1）：跳过 CPU 采样与负载读取，
         // 清空数值并重置基线（重新开启时从新基线开始，不得跨关闭期计算使用率）。
-        // 配置关闭不是采集缺口，**不累加** missed_ticks；其它域与告警判定照常。
+        // 配置关闭不是采集缺口，**不累加** missed_ticks；其它域与越限判定照常。
         if (!group_enabled(platform::SYSMON_GROUP_CPU)) {
             metrics_.disabled = true;
             // clear_cpu_values 只把数值置空、保留已知核 index（契约 §2.7）：关闭期间快照构造
@@ -929,8 +922,9 @@ private:
 
             // 饱和判定：阈值与连续次数取当前配置（默认 90% / 10 次；运行期修改即时生效）。
             const double threshold_ratio =
-                std::clamp(config_.alerts.cpu_sustain_used_pct / 100.0, 0.0, 1.0);
-            const auto required_samples = static_cast<uint32_t>(config_.alerts.cpu_sustain_samples);
+                std::clamp(config_.thresholds.cpu_sustain_used_pct / 100.0, 0.0, 1.0);
+            const auto required_samples =
+                static_cast<uint32_t>(config_.thresholds.cpu_sustain_samples);
             saturation_tracker_.update(metrics_.cores, threshold_ratio, required_samples);
             metrics_.saturated_cores = saturation_tracker_.saturated_cores();
         } else {
@@ -1029,7 +1023,7 @@ private:
             apply_snapshot_output_config();
             const auto snapshot = build_snapshot(
                 name_, system_info_, metrics_, temperature_metrics_, memory_metrics_, disk_metrics_,
-                network_metrics_, active_alerts_, config_.sampling.measure_interval_ms,
+                network_metrics_, kNoActiveAlerts, config_.sampling.measure_interval_ms,
                 last_sample_unix_ms_, missed_ticks_, wall_clock_unix_ms());
             (void)platform::write_ext_json(*event_writer_, DZ_FRAME_RTN_SYSMON_SNAPSHOT, snapshot);
         } catch (const std::exception& e) {
@@ -1235,10 +1229,8 @@ private:
     NetworkMetrics network_metrics_;
     /// 每网卡的采样基线（上一次成功采样与其单调时钟时刻）。
     RateBaseline<platform::RawNetworkInfo> network_baseline_;
-    /// 阈值告警状态机（#80）：触发/冷却/恢复状态，只在 io_context 线程访问。
-    AlertEvaluator alert_evaluator_;
-    /// 当前活动告警（快照 `alerts[]` 的投影；由 `evaluate_alerts` 刷新）。
-    std::vector<platform::SysmonAlertInfo> active_alerts_;
+    /// 阈值越限状态机（#123）：进入/周期重记/恢复状态，只在 io_context 线程访问。
+    ThresholdEvaluator threshold_evaluator_;
     CoreSaturationTracker saturation_tracker_;
     int64_t last_sample_unix_ms_ = 0;
     uint64_t missed_ticks_ = 0;

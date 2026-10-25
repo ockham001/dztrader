@@ -459,29 +459,28 @@
         "push_interval_sec": { "type": "integer", "description": "推送间隔 [1,3600]" }
       }
     },
-    "SysmonAlertsConfigPayload": {
+    "SysmonThresholdsConfigPayload": {
       "type": "object",
-      "required": ["cpu_sustain_used_pct", "cpu_sustain_samples", "memory_used_pct", "swap_used_pct", "volume_free_pct", "volume_free_bytes", "cooldown_sec"],
+      "required": ["cpu_sustain_used_pct", "cpu_sustain_samples", "memory_used_pct", "swap_used_pct", "volume_free_pct", "log_repeat_sec"],
       "properties": {
         "cpu_sustain_used_pct": { "type": "number" },
         "cpu_sustain_samples": { "type": "integer" },
         "memory_used_pct": { "type": "number" },
         "swap_used_pct": { "type": "number" },
         "volume_free_pct": { "type": "number" },
-        "volume_free_bytes": { "type": "integer" },
-        "cooldown_sec": { "type": "integer" }
+        "log_repeat_sec": { "type": "integer" }
       }
     },
     "SysmonConfigPayload": {
       "type": "object",
-      "required": ["sampling", "disk", "network", "history", "realtime", "alerts"],
+      "required": ["sampling", "disk", "network", "history", "realtime", "thresholds"],
       "properties": {
         "sampling": { "$ref": "#/$defs/SysmonSamplingConfigPayload" },
         "disk": { "$ref": "#/$defs/SysmonDiskConfigPayload" },
         "network": { "$ref": "#/$defs/SysmonNetworkConfigPayload" },
         "history": { "$ref": "#/$defs/SysmonHistoryConfigPayload" },
         "realtime": { "$ref": "#/$defs/SysmonRealtimeConfigPayload" },
-        "alerts": { "$ref": "#/$defs/SysmonAlertsConfigPayload" }
+        "thresholds": { "$ref": "#/$defs/SysmonThresholdsConfigPayload" }
       }
     }
   }

@@ -163,14 +163,13 @@ protected:
               {"max_retention_days", 30},
               {"max_bytes", 0}}},
             {"realtime", {{"push_interval_sec", push_interval_sec}}},
-            {"alerts",
+            {"thresholds",
              {{"cpu_sustain_used_pct", 90.0},
               {"cpu_sustain_samples", 10},
               {"memory_used_pct", 90.0},
               {"swap_used_pct", 50.0},
               {"volume_free_pct", 10.0},
-              {"volume_free_bytes", 1'073'741'824},
-              {"cooldown_sec", 600}}},
+              {"log_repeat_sec", 600}}},
         };
         std::ofstream ofs(home_ / "configs" / "dzsysmon.json", std::ios::binary | std::ios::trunc);
         ofs << cfg.dump(2);
@@ -361,7 +360,7 @@ TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
         {"network", {{"hide_virtual", false}}},
         {"history", {{"enabled", false}}},
         {"realtime", {{"push_interval_sec", 2}}},
-        {"alerts", {{"memory_used_pct", 42.0}}},
+        {"thresholds", {{"memory_used_pct", 42.0}}},
     };
     ASSERT_TRUE(send_set_config(patch));
 
@@ -377,12 +376,12 @@ TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
     EXPECT_EQ((*config)["network"]["hide_virtual"], false);
     EXPECT_EQ((*config)["history"]["enabled"], false);
     EXPECT_EQ((*config)["realtime"]["push_interval_sec"], 2);
-    EXPECT_DOUBLE_EQ((*config)["alerts"]["memory_used_pct"].get<double>(), 42.0);
+    EXPECT_DOUBLE_EQ((*config)["thresholds"]["memory_used_pct"].get<double>(), 42.0);
     // 未提及字段保持默认（patch 是 merge，不是整体替换）。
     EXPECT_EQ((*config)["sampling"]["groups"]["cpu"], true);
-    EXPECT_EQ((*config)["alerts"]["cpu_sustain_samples"], 10);
+    EXPECT_EQ((*config)["thresholds"]["cpu_sustain_samples"], 10);
     EXPECT_EQ((*config)["history"]["raw_retention_hours"], 24);
-    EXPECT_EQ((*config)["alerts"]["volume_free_bytes"].get<uint64_t>(), 1'073'741'824ULL);
+    EXPECT_EQ((*config)["thresholds"]["log_repeat_sec"], 600);
 
     // SET 成功后立即推送的快照必须已体现新配置。推送间隔为 2s（刚从 300s 重排），
     // 因此 1.5s 内到达的快照只能是 §4 触发 4 的立即推送，不是周期推送。
@@ -712,7 +711,7 @@ TEST_F(ConfigE2ETest, RuntimeHistoryEnableFailureNotifiesAndKeepsRealtime) {
     std::filesystem::remove_all(history_db(), remove_ec);
     ASSERT_FALSE(remove_ec) << "failed to remove injected blocking directory";
     pending_.clear();
-    ASSERT_TRUE(send_set_config({{"alerts", {{"memory_used_pct", 91.0}}}}));
+    ASSERT_TRUE(send_set_config({{"thresholds", {{"memory_used_pct", 91.0}}}}));
     ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s).has_value());
     ASSERT_TRUE(wait_for_file(history_db(), 5s))
         << "a later SET did not retry opening the history database";

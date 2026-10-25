@@ -155,14 +155,13 @@ protected:
               {"max_retention_days", 30},
               {"max_bytes", 0}}},
             {"realtime", {{"push_interval_sec", kPushIntervalSec}}},
-            {"alerts",
+            {"thresholds",
              {{"cpu_sustain_used_pct", 90.0},
               {"cpu_sustain_samples", 10},
               {"memory_used_pct", 90.0},
               {"swap_used_pct", 50.0},
               {"volume_free_pct", 10.0},
-              {"volume_free_bytes", 1'073'741'824},
-              {"cooldown_sec", 600}}},
+              {"log_repeat_sec", 600}}},
         };
         std::ofstream ofs(home_ / "configs" / "dzsysmon.json", std::ios::binary | std::ios::trunc);
         ofs << cfg.dump(2);

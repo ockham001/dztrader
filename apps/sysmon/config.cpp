@@ -2,10 +2,14 @@
 
 #include <dztrader/platform/sysmon.h>
 
+#include <spdlog/spdlog.h>
+
+#include <array>
 #include <fstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace dztrader::sysmon {
 namespace {
@@ -87,7 +91,74 @@ json read_json_object(const std::filesystem::path& path) {
     return value;
 }
 
+/// `thresholds` 段里可从旧 `alerts` 段映射过来的键（契约 sysmon §3.1）。
+/// 顺序即输出顺序，也即日志里 `mapped_keys` 的展示顺序。
+constexpr std::array<const char*, 5> kMigratableThresholdKeys = {
+    "cpu_sustain_used_pct", "cpu_sustain_samples", "memory_used_pct", "swap_used_pct",
+    "volume_free_pct"};
+
+/// 旧 `alerts` 段里因能力删除而丢弃的键（`volume_free_bytes` 绝对容量形态、
+/// `cooldown_sec` 通知冷却），日志里如实报告丢弃，便于用户核对。
+constexpr std::array<const char*, 2> kDroppedLegacyKeys = {"volume_free_bytes", "cooldown_sec"};
+
+/// 把字符串列表拼成日志里的一段（逗号分隔；空列表返回 `-`，避免 `key=` 后空值难辨）。
+std::string join_keys(const std::vector<std::string>& keys) {
+    if (keys.empty()) {
+        return "-";
+    }
+    std::string out;
+    for (const auto& key : keys) {
+        if (!out.empty()) {
+            out += ',';
+        }
+        out += key;
+    }
+    return out;
+}
+
 }  // namespace
+
+ConfigMigration migrate_legacy_alerts(json& full) {
+    ConfigMigration migration;
+    const auto legacy_it = full.find(std::string(platform::SYSMON_LEGACY_ALERTS_SECTION));
+    if (legacy_it == full.end()) {
+        return migration;
+    }
+    migration.migrated = true;
+    // 旧段不是对象（被手工改坏）：丢弃它并让后续校验按"缺 thresholds 段"处理——
+    // 迁移不是校验，不在这里判断合法性。
+    if (!legacy_it->is_object()) {
+        full.erase(legacy_it);
+        return migration;
+    }
+    json migrated = json::object();
+    for (const char* key : kMigratableThresholdKeys) {
+        if (legacy_it->contains(key)) {
+            migrated[key] = (*legacy_it)[key];
+            migration.mapped_keys.emplace_back(key);
+        }
+    }
+    for (const char* key : kDroppedLegacyKeys) {
+        if (legacy_it->contains(key)) {
+            migration.dropped_keys.emplace_back(key);
+        }
+    }
+    // 已存在的新段优先：用户可能已经手工写好新形状，不能被旧值覆盖。
+    if (full.contains(platform::SYSMON_THRESHOLDS_SECTION)) {
+        const auto& existing = full.at(platform::SYSMON_THRESHOLDS_SECTION);
+        if (existing.is_object()) {
+            json merged = migrated;
+            for (const auto& [key, value] : existing.items()) {
+                merged[key] = value;
+            }
+            migrated = std::move(merged);
+        }
+    }
+    full[platform::SYSMON_THRESHOLDS_SECTION] = std::move(migrated);
+    // 旧段必须删除：留着会让下次启动重复迁移，也会让「文件里有两份阈值」长期存在。
+    full.erase(legacy_it);
+    return migration;
+}
 
 json default_config_json() {
     json cfg = platform::SysmonConfig::default_config();
@@ -108,6 +179,23 @@ json load_config(const std::filesystem::path& path) {
         generate_default_config(path);  // 缺失自愈：先生成默认文件再按正常路径加载
     }
     json user = read_json_object(path);
+
+    // 旧配置迁移（契约 sysmon §3.1）：先就地迁移再合并，命中时写回文件并记一条日志。
+    // 迁移失败不影响启动（写回失败只记日志）：内存里已完成迁移，进程照常运行，
+    // 下次启动会再试一次——比"因为写不了文件就起不来"更符合 7x24 进程的要求。
+    if (const auto migration = migrate_legacy_alerts(user); migration.migrated) {
+        SPDLOG_INFO(
+            "legacy config section migrated | from={} to={} mapped_keys={} "
+            "dropped_keys={}",
+            platform::SYSMON_LEGACY_ALERTS_SECTION, platform::SYSMON_THRESHOLDS_SECTION,
+            join_keys(migration.mapped_keys), join_keys(migration.dropped_keys));
+        try {
+            write_json_atomic(path, user);
+        } catch (const std::exception& e) {
+            SPDLOG_WARN("legacy config write-back failed | path={} error=\"{}\"", path.string(),
+                        e.what());
+        }
+    }
 
     // 以默认配置为基底 merge patch：用户文件只需写差异项即可。
     json merged = default_config_json();

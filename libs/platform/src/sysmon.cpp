@@ -732,27 +732,26 @@ std::optional<std::string> validate_config_realtime(const json& realtime) {
     return std::nullopt;
 }
 
-std::optional<std::string> validate_config_alerts(const json& alerts) {
-    if (!alerts.is_object()) {
-        return err("alerts", "must be an object");
+/// 阈值段校验（契约 sysmon §3.1）。键集合已随 ADR 0034 收敛：没有 `volume_free_bytes`
+/// （绝对容量形态），也没有 `cooldown_sec`（改由 `log_repeat_sec` 承担重记节奏）。
+std::optional<std::string> validate_config_thresholds(const json& thresholds) {
+    if (!thresholds.is_object()) {
+        return err("thresholds", "must be an object");
     }
     for (const char* key :
          {"cpu_sustain_used_pct", "memory_used_pct", "swap_used_pct", "volume_free_pct"}) {
-        if (!alerts.contains(key) || !alerts[key].is_number() ||
-            !in_range(alerts[key].get<double>(), 0.0, 100.0)) {
-            return err(std::string("alerts.") + key, "must be a number within [0, 100]");
+        if (!thresholds.contains(key) || !thresholds[key].is_number() ||
+            !in_range(thresholds[key].get<double>(), 0.0, 100.0)) {
+            return err(std::string("thresholds.") + key, "must be a number within [0, 100]");
         }
     }
-    if (!alerts.contains("cpu_sustain_samples") ||
-        !int_in_range(alerts["cpu_sustain_samples"], 1, 3600)) {
-        return err("alerts.cpu_sustain_samples", "must be an integer within [1, 3600]");
+    if (!thresholds.contains("cpu_sustain_samples") ||
+        !int_in_range(thresholds["cpu_sustain_samples"], 1, 3600)) {
+        return err("thresholds.cpu_sustain_samples", "must be an integer within [1, 3600]");
     }
-    if (!alerts.contains("volume_free_bytes") ||
-        !is_non_negative_integer(alerts["volume_free_bytes"])) {
-        return err("alerts.volume_free_bytes", "must be a non-negative integer");
-    }
-    if (!alerts.contains("cooldown_sec") || !int_in_range(alerts["cooldown_sec"], 0, 86400)) {
-        return err("alerts.cooldown_sec", "must be an integer within [0, 86400]");
+    if (!thresholds.contains("log_repeat_sec") ||
+        !int_in_range(thresholds["log_repeat_sec"], 0, 86400)) {
+        return err("thresholds.log_repeat_sec", "must be an integer within [0, 86400]");
     }
     return std::nullopt;
 }
@@ -944,7 +943,7 @@ std::optional<std::string> SysmonConfig::validate(const nlohmann::json& cfg) {
     if (auto e = validate_config_realtime(cfg["realtime"])) {
         return e;
     }
-    return validate_config_alerts(cfg["alerts"]);
+    return validate_config_thresholds(cfg["thresholds"]);
 }
 
 nlohmann::json SysmonConfig::apply_patch(const nlohmann::json& current,
