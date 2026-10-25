@@ -5,11 +5,11 @@
 ## 职责与范围
 
 - **内部进程**（ADR 0025）：既非策略、亦非行情/交易网关，由主进程 `dztraderd` 按配置拉起、监护与关闭；7×24 采集本机资源指标并推送实时快照。
-- 已实现（#70/#72/#73/#74/#75/#76/#77）：系统信息、CPU 总使用率、每核使用率与饱和核标记、系统负载、上下文切换/中断速率、温度（Linux hwmon）与每核频率（Linux cpufreq）、内存与交换（含缓存/缓冲）、卷容量与关注路径落卷、共享内存目录占用、每物理盘 I/O（吞吐/IOPS/延迟/队列深度/利用率）、每网卡收发速率与累计量（默认隐藏虚拟网卡）。快照形状一次定稿：已列出的指标域后续只填值、不改 payload 形状；新增指标类别按 additive 扩展并同步契约/类型/前端 schema（契约 sysmon §2）。
-- 前端（#71/#72/#73/#74/#75/#76/#77）：WebUI「资源监控」页展示系统信息与完整 CPU 区块（总使用率、每核含饱和标记、系统负载、上下文切换/中断、每核频率），温度在可用时以独立卡片展示；内存卡片接实时快照（使用率、已用/总量、可用、缓存、缓冲）并含交换子区块（无交换分区显示明确文案）；磁盘区块展示各卷容量与使用率（关注卷高亮、读不到的卷显示「不可用」+ 原因）与共享内存目录占用（大小、页文件数、最旧页文件年龄）；磁盘 I/O 区块按盘展示读/写吞吐、读/写 IOPS、平均延迟、队列深度与利用率，首次采样/计数器重置的字段显示「不可用」而不是 0，指标不可用时整块显示「不可用」+ 原因（Windows 计数器未开启/无权限时给出对应文案），并展示发送方 `semantic_hints["disk_io"]` 的口径提示；网络区块按网卡展示收/发速率与累计字节、错误、丢弃，逐项 `null`（首次采样/新网卡/计数器重置）显示「不可用」而不是 0，并提供 admin 可用的「显示全部网卡」开关（下发 `SET_SYSMON_CONFIG` 的 `network.hide_virtual`，即时生效），全部虚拟网卡被隐藏时显示「已隐藏全部虚拟网卡」而不是「不可用」。温度与每核频率区块**仅在可用时出现，不可用时整块不渲染**（与内存等区块的「不可用」空态不同）。顶栏 CPU / 内存 / 各盘卷徽章接实时快照，写死的 CPU / 内存 / 磁盘假数字与 NTP 徽章已删除；阈值告警经既有 `notify_ui` 链路弹出/提示；顶栏另有活动告警计数徽章（全局可见），监控页另有常驻告警横幅（实时/历史视图都显示；数据源为快照 `alerts[]`，冷却期内被抑制的通知不影响它，恢复后随下一帧消失）。监控页另有「配置」tab（#81）：展示当前生效配置（所有已认证用户可读），admin 可编辑全部可改项并以 WS `sysmon_config` 回推为生效信号。刷新基线由发送方 `realtime.push_interval_sec`（默认 5s）决定，前端不轮询、不改 WS 契约。
+- 已实现（#70/#72/#73/#74/#75/#76/#77）：系统信息、CPU 总使用率、每核使用率与饱和核标记、系统负载、上下文切换/中断速率、温度（Linux hwmon）与每核频率（Linux cpufreq）、内存与交换（含缓存/缓冲）、卷容量（本机全部卷）、共享内存目录占用、每物理盘 I/O（吞吐/IOPS/延迟/队列深度/利用率）、每网卡收发速率与累计量（默认隐藏虚拟网卡）。快照形状一次定稿：已列出的指标域后续只填值、不改 payload 形状；新增指标类别按 additive 扩展并同步契约/类型/前端 schema（契约 sysmon §2）。
+- 前端（#71/#72/#73/#74/#75/#76/#77）：WebUI「资源监控」页展示系统信息与完整 CPU 区块（总使用率、每核含饱和标记、系统负载、上下文切换/中断、每核频率），温度在可用时以独立卡片展示；内存卡片接实时快照（使用率、已用/总量、可用、缓存、缓冲）并含交换子区块（无交换分区显示明确文案）；磁盘区块展示各卷容量与使用率（读不到的卷显示「不可用」+ 原因；「≥70% 黄 / ≥90% 红」着色与零容量挂载折叠由 #122/#125 落地）与共享内存目录占用（大小、页文件数、最旧页文件年龄）；磁盘 I/O 区块按盘展示读/写吞吐、读/写 IOPS、平均延迟、队列深度与利用率，首次采样/计数器重置的字段显示「不可用」而不是 0，指标不可用时整块显示「不可用」+ 原因（Windows 计数器未开启/无权限时给出对应文案），并展示发送方 `semantic_hints["disk_io"]` 的口径提示；网络区块按网卡展示收/发速率与累计字节、错误、丢弃，逐项 `null`（首次采样/新网卡/计数器重置）显示「不可用」而不是 0，并提供 admin 可用的「显示全部网卡」开关（下发 `SET_SYSMON_CONFIG` 的 `network.hide_virtual`，即时生效），全部虚拟网卡被隐藏时显示「已隐藏全部虚拟网卡」而不是「不可用」。温度与每核频率区块**仅在可用时出现，不可用时整块不渲染**（与内存等区块的「不可用」空态不同）。顶栏 CPU / 内存 / 各盘卷徽章接实时快照，写死的 CPU / 内存 / 磁盘假数字与 NTP 徽章已删除。资源越限的日志 + 色标形态由 #123/#125 落地（ADR 0034 已定稿契约，本票仅改文档）；当前实现仍是 `NOTIFY_UI` 通知 + 快照 `alerts[]` 投影。监控页另有「配置」tab（#81）：展示当前生效配置（所有已认证用户可读），admin 可编辑全部可改项并以 WS `sysmon_config` 回推为生效信号。刷新基线由发送方 `realtime.push_interval_sec`（默认 5s）决定，前端不轮询、不改 WS 契约。
 - 已实现历史写入（#78）：独立 SQLite（WAL）历史库、min/max/avg/last 聚合、保留与压缩、缺口/跳变/重启标记、落盘线程。
 - 已实现历史查询（#79）：`dzweb` 只读打开历史库并经 REST `GET /api/sysmon/history` 提供（契约 sysmon §6.1），监控页提供「实时 / 历史」视图切换；历史查询不走帧、历史视图不订阅 WS。
-- 已实现阈值告警（#80）：内存/交换使用率与关注卷剩余空间越限时经既有 `NOTIFY_UI` 通知（触发 `error`+`popup=true`、恢复 `info`），按告警对象冷却防抖；活动告警同时投影进快照 `alerts[]` 供监控页常驻提示（契约 sysmon §2.8）。
+- **阈值越限（#80 实现；按 ADR 0034 改为「日志 + 色标」的契约已由 #121 定稿，代码改造在 #123）**：判定对象为内存使用率、交换使用率、全部卷剩余空间与 CPU 饱和；目标形态是进入越限写 `warning`、恢复写 `info`、持续期每 `thresholds.log_repeat_sec`（默认 600s）重记一条 `info`，UI 上以使用率色标表达、快照不携带越限集合（契约 sysmon §2.8）。**当前代码仍是 `NOTIFY_UI` + 快照 `alerts[]`**，两者在 #123/#125 落地前不一致属预期。
 - 已实现运行期配置与配置展示（#81）：配置帧 SET/RTN 全量生效、运行期切换历史记录、监控页「配置」区展示当前生效配置并提供 admin 编辑入口（契约 sysmon §3）。
 - 本进程不采集：进程级指标、GPU、SMART、风扇、电池、登录用户列表、NTP 时间偏移；不支持容器内采集（见「部署限制」）。
 
@@ -38,7 +38,7 @@
 | 推送 | `realtime.push_interval_sec`，默认 5s | 编码快照帧并广播；计量时刻不推送 |
 
 历史记录不占独立定时器：每个**计量** tick 顺带观测一次快照（记录窗口的 min/max 需要全部样本），窗口边界由墙钟桶对齐决定（`sampling.record_interval_sec` + 相位偏移）。
-阈值告警同样不占独立定时器：每个计量 tick 用「内存/交换/关注卷」的当前事实推进一次状态机（1s 判定、5s 推送，通知延迟不超过一个计量间隔）。
+阈值越限判定同样不占独立定时器：每个计量 tick 用「内存/交换/全部卷/CPU 饱和」的当前事实推进一次状态机并写日志（1s 判定、5s 推送，越限被发现的时间不超过一个计量间隔）。
 
 - **计量与推送解耦**：事件通道是广播介质，任何写入都会唤醒全部已注册进程（含策略），推送不得跟随 1s 计量（契约 sysmon §4、ADR 0023）。
 - **时钟纪律**：asio `steady_timer`（单调时钟，免疫 NTP 跳变）；deadline 按「上次 deadline + interval」推进做漂移校正；错过 tick 跳过并累加 `sampling.missed_ticks`（区分机器空闲与监控停顿），不补采；handler 内不做阻塞 I/O。
@@ -62,7 +62,7 @@
 - Windows >64 逻辑核时 NT 每核查询只覆盖调用线程所在处理器组：序列数与逻辑核数不一致时每核标记不可用（`collect_failed`）、中断累计计数输出 `null`；上下文切换来自系统级查询仍可用。不得用组内数据冒充全系统每核序列。
 - 内存与交换来源（#74；实现细节；契约只规定 payload 语义）：Linux 读 `/proc/meminfo`——`MemTotal` / `MemAvailable` / `Buffers` / `Cached` / `SReclaimable` / `SwapTotal` / `SwapFree`；`MemAvailable` 缺失、为 0 或大于总量时回退 `MemFree + Buffers + Cached + SReclaimable` 并钳制到 `[0, total]`，异常与回退记 WARN 日志，回退也无法计算时本次内存采集失败（该域 `null`，可用性粘性）；`cached_bytes = Cached + SReclaimable`，`buffers_bytes = Buffers`，两者均钳制到总量。Windows 读 `GetPerformanceInfo`（`psapi`）：`total = PhysicalTotal × PageSize`、`available = PhysicalAvailable × PageSize`（Windows 上"空闲"与"可用"同义，不单列 `free`）、`cached = SystemCache × PageSize`、`buffers` 不提供；交换为页面文件口径——`total = CommitLimit − PhysicalTotal`、`used = CommitTotal − PhysicalTotal` 并钳制（无页面文件时 `total = 0` → 可用性 `unsupported`）。
 - 内存唯一口径：`used_bytes = total_bytes − available_bytes`（Linux 取 `MemAvailable`；Windows 取 `PhysicalAvailable`），不得使用「总量 − 空闲」（ADR 0024）；交换同理 `used = total − free`。
-- 卷、关注路径与共享内存目录来源（#75；实现细节；契约只规定 payload 语义）：Linux 解析 `/proc/mounts`（还原八进制转义的挂载点、过滤伪文件系统与内存文件系统、同挂载点去重），`statvfs` 逐卷取容量；容量读不到（`EACCES`/`EPERM` → `no_permission`，其它 → `collect_failed`）的卷仍进数组、`total_bytes`/`free_bytes` 留 `nullopt`。Windows 用 `GetLogicalDrives` + `GetDriveTypeW` 只取 `DRIVE_FIXED` 固定盘，`GetDiskFreeSpaceExW` 取容量；`ERROR_ACCESS_DENIED` → `no_permission`。关注路径落卷：Linux 先 `weakly_canonical` 规范化（跟随符号链接、保留不存在的尾部），再**按设备身份**归位——① 路径前缀命中某个卷挂载点则采信（路径分量边界匹配，`/home` 不匹配 `/home2`），② 否则按 `st_dev` 找同设备在卷列表里的代表挂载点（覆盖 bind mount：`/data` 卷被 bind 到 `/srv/app` 时仍归 `/data`），③ 都不命中即 `unsupported`。这样既不会把 tmpfs/overlay 上的路径（容器内 shm 目录常在此）谎报成根卷，也不会漏掉非根 bind mount。Windows 用 `GetFullPathNameW` 规范化（统一分隔符、解析 `.`/`..`）后由 `GetVolumePathNameW` 给出挂载点，并把盘符统一为大写以便与 `volumes[].mount` 直接比较；**只有挂载点就是卷根时才计入采集范围**——NTFS 的目录挂载点（`C:\mnt\vol2`）与 UNC / 卷 GUID 路径不在 `volumes[]` 里，报 `unsupported`。路径不存在 ⇒ `path_not_found`；无权限 ⇒ `no_permission`；解析不到卷 ⇒ 不得猜卷、不得回退到 `/`（契约 sysmon §2.4）。共享内存目录占用递归统计字节数（含 `meta.dat`）、页文件数（`<数字>.dat`，与 `libs/shm` 的页文件判定同口径）与最旧**页文件**年龄（`meta.dat` 不参与年龄计算——它不会随页清理消失，参与会把"页清理失效"掩盖成"有个旧文件"）；目录不可读返回 `nullopt` 而不是全 0 的对象（0 是"目录为空"这一真实事实）。
+- 卷与共享内存目录来源（#75；实现细节；契约只规定 payload 语义）：Linux 解析 `/proc/mounts`（还原八进制转义的挂载点、过滤伪文件系统与内存文件系统、同挂载点去重），`statvfs` 逐卷取容量；容量读不到（`EACCES`/`EPERM` → `no_permission`，其它 → `collect_failed`）的卷仍进数组、`total_bytes`/`free_bytes` 留 `nullopt`。Windows 用 `GetLogicalDrives` + `GetDriveTypeW` 只取 `DRIVE_FIXED` 固定盘，`GetDiskFreeSpaceExW` 取容量；`ERROR_ACCESS_DENIED` → `no_permission`。卷的监控范围恒为**本机全部卷**（契约 sysmon §2.4），不存在「关注哪一卷」这一层。共享内存目录占用递归统计字节数（含 `meta.dat`）、页文件数（`<数字>.dat`，与 `libs/shm` 的页文件判定同口径）与最旧**页文件**年龄（`meta.dat` 不参与年龄计算——它不会随页清理消失，参与会把"页清理失效"掩盖成"有个旧文件"）；目录不可读返回 `nullopt` 而不是全 0 的对象（0 是"目录为空"这一真实事实）。
 - 每物理盘 I/O 来源（#76；实现细节；契约只规定 payload 语义）：Linux 读 `/proc/diskstats`（内核 2.6+ 整盘行格式；4.18+ 的额外 discard/flush 字段不影响前 11 项语义），候选集取 `/sys/block` 的整盘条目（分区天然不在其中），并排除 `loop`/`ram`/`zram`/`dm-`/`md`/`bcache`/`nbd`/`rbd`/`drbd`/`sr`/`sg`/`fd`/`pktcdvd`/`ublk`/`vduse`/`zd` 等虚拟、聚合与光学设备（聚合设备的 I/O 已计在底层物理盘，单列会重复计数）；扇区按内核 ABI 固定 ×512 换算字节，`ms_reading`/`ms_writing`/`io_ticks` 毫秒 ×1000 换算微秒，`ios_in_progress` 作为瞬时在途数。Windows 遍历 `\\.\PhysicalDrive0..32`，对每个盘 `CreateFileW`（0 访问权限、共享读写）+ `IOCTL_DISK_PERFORMANCE` 读 `DISK_PERFORMANCE`：不存在的盘号、`ERROR_INVALID_FUNCTION`/`ERROR_NOT_SUPPORTED`（盘不支持计数器）、`ERROR_ACCESS_DENIED`（无权限）与其它读取失败的盘一律跳过；缓冲区不足时按驱动实际结构扩大重试（上限 1 MiB）。`ReadTime`/`WriteTime`/`IdleTime` 的 100ns 累计值 ÷10 换算微秒；`QueryTime − IdleTime` 的差值作为累计忙时间（`QueryTime` 是查询时刻的系统时间锚点，消费方只用差值）；`QueueDepth` 作为瞬时在途数。`QueryTime` 为 0 说明计数器未填充（diskperf 关闭/驱动不支持），此时其余字段的全 0 不是"读到了 0"，该盘按不可用跳过。采集失败时该盘不进数组；一个盘都读不到时采集结果携带 `no_permission`（Windows 上不可用是常态）。
 
 - 每网卡来源（#77；实现细节；契约只规定 payload 语义）：Linux 解析 `/proc/net/dev` 全部接口行（跳过两行表头；每行 `if: rx_bytes rx_packets rx_errs rx_drop ... tx_bytes tx_packets tx_errs tx_drop ...`），`is_virtual` 由 `/sys/class/net/<if>/device` 是否存在判定——该链接只由硬件设备驱动创建，因此 bond/bridge/vlan/tun/veth/docker0/loopback 等逻辑接口一律判为虚拟，**不用名字前缀白名单**（名字随发行版与容器运行时变化，前缀表必然漏）。Windows 用 `GetIfTable2`（IP Helper）遍历所有接口：`Alias` 作网卡名（转 UTF-8）、`InOctets`/`OutOctets`、包数取 `InUcastPkts + InNUcastPkts` 与 `OutUcastPkts + OutNUcastPkts`（合并单播与组播/广播即契约的"包数"）、`InErrors`/`OutErrors`、`InDiscards`/`OutDiscards`，`is_virtual = !InterfaceAndOperStatusFlags.HardwareInterface`（结构性标志，不是别名推断）。采集结果包含虚拟网卡与回环，**隐藏发生在快照构造阶段**——这样 `hide_virtual` 开关改动不需要重新采集、也不影响速率基线，改开关后立即推送一帧即生效。速率由 `compute_network_rates` 纯函数按 `interface` 匹配基线计算：新出现的网卡速率全 `null`（等同首次采样）、消失的网卡不再输出，因此网卡热插拔/删除**不会让序列错位串行**（不依赖数组下标）；计数器两平台均为 64 位，下降一律视为重置（该帧速率 `null`，下一采样重建基线）。网络采集失败只把该域置 `null`、不累加 `missed_ticks`。
@@ -71,28 +71,27 @@
 
 - `DZ_FRAME_RTN_SYSMON_SNAPSHOT`：形态 4 纯上行推送，无 `instance_id`，发送方固定 `dzsysmon`（payload `source` 显式携带来源，通用规则 §5）；dzweb 消费后更新镜像并 WS 广播 `sysmon_snapshot`，REST `GET /api/sysmon/snapshot` 读取镜像（契约 sysmon §5/§6、契约 rest、契约 webui-ws）。两个 sysmon 域均进快照域，WS 建连立即拿到当前值，供顶栏全局使用。
 - 类型层真相源：[`sysmon.h`](../../libs/platform/include/dztrader/platform/sysmon.h)（`SysmonSnapshot` 及 `validate`）。`null` **仅允许**出现在契约 §2 标注可空的位置，其余位置出现 `null` 为校验失败；dzweb 侧校验失败记日志并忽略（不更新镜像、不广播）。
-- 快照 `alerts[]`（#80）是**持续状态**而非通知历史：冷却期内通知被抑制时活动告警仍在，恢复后由下一个快照清除（契约 sysmon §2.8）。它与 `notify_ui` 事件流互补——前端横幅读状态，弹出/恢复读通知。
 - **可用性描述**（关键设计）：每个快照必须携带 `availability`——`platform_description`（Windows 必含 build 号）、`metrics`（固定键集合，每帧全覆盖；`available=false` 时 `reason` 必填）、`semantic_hints`。前端按可用性渲染，**不按 OS 名硬编码分支**；不可用一律显示「不可用」，不显示 0。
 - 当前可用性（#77）：`system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`memory`、`swap`、`volumes`、`shm_dir`、`disk_io`、`network` 可用；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon），Windows 上两者不提供（默认配置关闭对应 B 组开关 → `disabled_by_config`；显式开启后采集器恒报 `unsupported`）；无交换分区/无页面文件时 `swap` 为 `unsupported`。`disk_io` 为能力粘性：单个盘读不到只是不进数组，一个盘都读不到时 Linux 报 `collect_failed`、Windows 报 `no_permission`（性能计数器需特权/未开启，不可用是常态而非异常）。`network` 同样能力粘性：单个网卡读不到只是不进数组，整域读取失败报 `collect_failed`；`hide_virtual` 只影响输出条目、不影响可用性——全部网卡都是虚拟网卡且被隐藏时为**空数组 + `available=true`**（「全部被过滤」与「采集失败」是不同事实）。采集能力不可用时用 `reason="collect_failed"`（温度无传感器用 `no_sensor`、无 cpufreq/无交换用 `unsupported`）；能力可用但本帧数值未就绪时为 `available=true`、数值 `null`；配置关闭对应指标组时为 `available=false` + `reason="disabled_by_config"`。**数值不沿用上一帧**：本帧未采到即输出 `null`/空数组（能力标记粘性），避免把旧数据当当前值展示。
 - 渲染语义分两档：内存/交换/磁盘/网络等区块按可用性显示明确空态——不可用时显示「不可用」+ 原因（`swap` 的 `unsupported` 说明为「本机无交换分区/页面文件」、`disk_io` 的 `no_permission` 说明为「磁盘性能计数器不可用（需管理员权限或性能计数器未开启）」），能力可用但本帧无数据时显示「暂无数据」；磁盘 I/O 与网络的派生字段为 `null`（首次采样/新网卡/计数器重置）时逐项显示「不可用」而不是 0；网络区块在「可用但数组为空」时显示「已隐藏全部虚拟网卡」并提供切换入口（与「暂无数据」区分）。温度与每核频率区块**仅在可用时渲染，不可用时整块不出现**（不在前端按平台名分支，只看 `availability.metrics`）。后者避免在 Windows 等平台长期占据版面显示无意义空态。内存的 `used_bytes` / `used_ratio` 由前端按唯一口径重算，保证字节与百分比一致。
-- 饱和核判定（契约 sysmon §2.7）：单核使用率连续 `alerts.cpu_sustain_samples` 次采样 ≥ `alerts.cpu_sustain_used_pct / 100` 标记饱和，任一采样严格低于阈值即解除；不可用样本不改变计数；核序列变化（热插拔）重置计数。阈值/次数取当前配置，运行期修改经 `SET_SYSMON_CONFIG` 即时生效；`sampling.groups.cpu=false` 时判定暂停（监控页「配置」区可编辑）。
+- 饱和核判定（契约 sysmon §2.7）：单核使用率连续 `thresholds.cpu_sustain_samples` 次采样 ≥ `thresholds.cpu_sustain_used_pct / 100` 标记饱和，任一采样严格低于阈值即解除；不可用样本不改变计数；核序列变化（热插拔）重置计数。阈值/次数取当前配置，运行期修改经 `SET_SYSMON_CONFIG` 即时生效；`sampling.groups.cpu=false` 时判定暂停（监控页「配置」区可编辑）。
 - 跨平台语义差异：Windows 无原生 load average，以处理器队列长度做指数加权移动平均作为代理量（`semantic="processor_queue"`），与 Linux load average 不是同一个量；口径说明由 `availability.semantic_hints["cpu.load_average"]` 承载，前端只按该字段展示、不得同轴比较（不按 OS 名分支）。磁盘 I/O 的 `availability.semantic_hints["disk_io"]` 说明「延迟是每完成请求的平均驻留时间（含排队）、队列深度是采样时刻的在途请求数（不是区间平均）」，两平台同一口径；该提示只在 `disk_io` 能力可用时携带，前端随块展示。
 
 ## 配置
 
 - 配置文件：`$DZTRADER_HOME/configs/dzsysmon.json`。进程启动时缺失则**自动生成完整默认值**，零配置可运行；仓库不提交模板文件（AGENTS 门禁 6）。
-- 内容：`log`（日志，走《帧契约：日志》的 `SET/RTN_LOG_CONFIG`，不在 sysmon 配置帧 payload 内）与 `sampling` / `disk` / `network` / `history` / `realtime` / `alerts`（字段、默认值与约束见契约 sysmon §3.1）。消费关系（#81 收口后全部可运行期修改）：
+- 内容：`log`（日志，走《帧契约：日志》的 `SET/RTN_LOG_CONFIG`，不在 sysmon 配置帧 payload 内）与 `sampling` / `disk` / `network` / `history` / `realtime` / `thresholds`（字段、默认值与约束见契约 sysmon §3.1）。消费关系（#81 收口后全部可运行期修改）：
   - `sampling.groups.cpu`（#81）：关闭时跳过 CPU 计时/负载/速率采集与饱和判定，`cpu.total` / `cpu.cores` / `cpu.load_average` / `cpu.context_switches` 标 `disabled_by_config`，重新开启从新基线开始；`cpu.frequency` 由 `sampling.groups.cpu_frequency` 独立控制（#73，Linux 默认开、Windows 默认关）。
   - `sampling.groups.memory` / `sampling.groups.swap`（#74）、`volumes`（#75）、`disk_io`（#76）、`network`（#77）：关闭时跳过对应采集并标 `disabled_by_config`，重新开启从新基线开始，关闭期不冒充速率窗口。
   - `sampling.measure_interval_ms` 与 `realtime.push_interval_sec`：SET 成功后取消 pending wait 并按新间隔重排（即时生效）；`sampling.record_interval_sec` / `sampling.phase_offset_sec`：记录窗口重配，从**下一窗口**生效（进行中窗口按旧宽度落库，避免切碎历史）。
-  - `disk.watch_paths`：关注路径解析与 `volumes[].watched`；在**下一次计量 tick** 按新配置重新解析落卷（无需重启；默认 1s 计量周期内重新解析，随后推送的快照——默认 5s 周期——体现）。
-  - `disk.devices`（#81）：磁盘 I/O 设备范围——空 = 全部整物理盘；非空按 `disk_io[].device` 精确匹配（Linux 整盘名 / Windows `PhysicalDrive<N>`），匹配不到只是不输出、不是校验错误。过滤在快照构造阶段（不重新采集、不重置速率基线），SET 后立即推送的一帧即体现；历史维度数据与实时快照同口径。
+  - `disk.devices`（#81，`disk` 段只含此项）：磁盘 I/O 设备范围——空 = 全部整物理盘；非空按 `disk_io[].device` 精确匹配（Linux 整盘名 / Windows `PhysicalDrive<N>`），匹配不到只是不输出、不是校验错误。过滤在快照构造阶段（不重新采集、不重置速率基线），SET 后立即推送的一帧即体现；历史维度数据与实时快照同口径。
   - `network.hide_virtual`（#77）：快照构造阶段过滤虚拟网卡，SET 后立即推送一帧；历史维度数据与实时快照同口径。
   - `history.enabled`（#81 起支持运行期切换）：true→false 先 flush 当前记录窗口再关库/停落盘线程；false→true 建库并起线程，从空窗口开始且**不写 `restart` 标记**（进程没重启）；建库失败记 ERROR + `NOTIFY_UI`，实时链路继续，生效配置保持 `true`（配置表达意图，失败是运行期降级，不伪造回滚）；后续任意 SET 会重试建库（无需先关再开或重启）。
   - `history.raw_retention_hours` / `max_retention_days` / `max_bytes`：保留策略参数发布给落盘线程，**下一维护周期**生效。
-  - `alerts.*`（#80）：饱和阈值、内存/交换/卷阈值与冷却，每个计量 tick 读取当前值。
+  - `thresholds.*`（#80 原 `alerts` 段，#123 改名）：饱和阈值、内存/交换/卷阈值与 `log_repeat_sec` 重记间隔，每个计量 tick 读取当前值。卷越限只按空闲百分比判定，没有绝对容量形态的阈值。
+  - 旧配置迁移：读到旧 `alerts` 段时把可映射的键值搬到 `thresholds`（不可映射的键丢弃）、写回配置文件、记一条日志，**不报错、不阻塞启动**；默认配置生成器直接产出 `thresholds` 形状（契约 sysmon §3.1）。
 - 运行期修改：`SET_SYSMON_CONFIG` 为 RFC 7386 merge patch（任意位置 `null` 非法；空对象无操作但仍回 RTN），成功回推全量 `RTN_SYSMON_CONFIG`；失败按四件套处理——回滚旧值 → 日志 → `NOTIFY_UI` error（`popup=true`）→ 回推旧值（契约 sysmon §3.3、通用规则 §8）。
-- 生效顺序（契约 sysmon §3.1.1，顺序是语义的一部分）：校验 → 原子持久化（保留 `log`/未知 section）→ 内存镜像替换 → 重排双定时器 → 记录窗口重配 → 保留策略发布 → 历史开关切换 → 回推 RTN → 成功时立即推送一帧快照。因此只影响快照构造的配置（`hide_virtual` / `devices`）在下一个推送周期之前就可见（不必等 5 秒基线）；`watch_paths` 在下一次计量 tick 重新解析落卷，随后推送的快照体现。
+- 生效顺序（契约 sysmon §3.1.1，顺序是语义的一部分）：校验 → 原子持久化（保留 `log`/未知 section）→ 内存镜像替换 → 重排双定时器 → 记录窗口重配 → 保留策略发布 → 历史开关切换 → 回推 RTN → 成功时立即推送一帧快照。因此只影响快照构造的配置（`hide_virtual` / `devices`）在下一个推送周期之前就可见（不必等 5 秒基线）；`thresholds` 的改动在下一次计量 tick 起作用（越限判定与历史记录同频）。
 - 配置展示与编辑入口（#81）：监控页「配置」tab 展示当前生效配置（所有已认证用户可读），admin 经表单下发**差异 patch** 并保持 pending 直到 WS `sysmon_config` 回推（REST 200 只表示已写事件通道）；非 admin 只读。读取镜像配置也可用 REST `GET /api/sysmon/config`（未就绪 503）。
 - 触发场景：初始化完成主动 RTN 一次；每次 SET 后回推；`QUERY_FULL_SNAPSHOT` 响应时回推（契约 sysmon §3.2）。
 
@@ -204,42 +203,41 @@
 - 每次查询返回**单条**序列：维度指标需显式给 `dimension`，不提供「全部维度叠加」。
 - 不做跨桶重采样：点数超限时前移窗口并回 `truncated=true`（契约 §6.1.2），不在服务端合并桶或插值。
 
-## 阈值告警（#80）
+## 阈值越限与日志
 
-帧语义与触发/恢复条件见[契约 sysmon §2.8](../frame_contracts/sysmon.md)；本节只写实现结构与该契约不规定但写错代价高的部分。
+帧语义与越限/恢复条件见[契约 sysmon §2.8](../frame_contracts/sysmon.md)；本节只写实现结构与该契约不规定但写错代价高的部分。资源越限不产生 `NOTIFY_UI`，改为日志 + UI 色标（#80 实现、#123 改造，ADR 0034）。
 
 ### 分层
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| 判定状态机 | `apps/sysmon/alerts.{h,cpp}`（`AlertEvaluator`） | 触发 / 冷却 / 恢复；纯逻辑，不读时钟、不写帧 |
-| 输入构造 | 同文件 `make_alert_inputs` | 把一次计量的内存/交换/关注卷事实转成判定输入（路径感知：只把关注卷交给判定） |
-| 通知与投影 | `main.cpp` `evaluate_alerts()` | 发 `NOTIFY_UI`（触发 `error`+`popup`、恢复 `info`）并刷新快照 `alerts[]` |
+| 判定状态机 | `apps/sysmon/alerts.{h,cpp}`（`AlertEvaluator`） | 进入 / 周期重记 / 恢复；纯逻辑，注入墙钟与单调时钟，不读全局配置、不写帧 |
+| 输入构造 | 同文件 `make_alert_inputs` | 把一次计量的内存/交换/全部卷事实转成判定输入 |
+| 日志记录 | `main.cpp` `evaluate_alerts()` | 把纯函数产出的「待写日志记录」（级别、判定对象、状态、当前值、阈值、活动期持续秒数）写成日志 |
 
-**为什么先构造输入再做判定**：路径感知（只对关注卷告警）与「`used = total − available`」口径都属于输入转换；把它做成纯函数后，`alerts_test` 可以用假采集结果确定性验证「非关注卷再满也不告警」，而不必起真实进程或真实磁盘。关注卷集合的唯一实现点是 `watched_mounts_of`（`snapshot_builder.h`）——快照构造据此设置 `volumes[].watched`，告警判定据此筛选卷，两处共用同一实现。
+**为什么先构造输入再做判定**：「`used = total − available`」口径与「全部卷逐卷一条判定对象」都属于输入转换；把它做成纯函数后，`alerts_test` 可以用假采集结果确定性验证边界语义（等于阈值算越限、`total_bytes = 0` 的卷不参与判定、读不到不等于恢复），而不必起真实进程或真实磁盘。
 
 ### 状态机语义（容易写错的点）
 
-- 每个告警对象 `(kind, subject)` 维护**活动期**：进入时记 `since`（墙钟），恢复时结束；快照 `alerts[]` 只投影"当前活动"。
-- 触发通知只在进入活动期时发一次；**阈值持续满足不重弹**。冷却只在"恢复后再次越限"时生效：距上次已发出的触发通知不足 `cooldown_sec` 时，该次活动期的**触发通知**被抑制（活动状态仍记录）。
-- **被抑制的触发通知不补发**：即使冷却结束后仍未恢复也不再弹；但活动状态仍进 `alerts[]`，该活动期恢复时**仍要表达恢复语义**（恢复不是弹窗，不受触发冷却约束，且"活动状态可见"已经构成用户预期）——受下面恢复限流约束：若冷却窗口内已发过恢复，则并入那条。
-- **恢复通知单独限流**：首次恢复必发；同一对象在冷却窗口内结束的多次活动期只发一条恢复——阈值抖动（越限/恢复短促反复）不能变成恢复文案刷屏。触发冷却与恢复冷却的计时基准互相独立；限流只合并恢复通知，不会让首次恢复静默消失。
-- **"不再被关注 / 被配置关闭"不是恢复**：`disk.watch_paths` 变更、指标类别被配置关闭或交换被移除时，相关告警静默清除、不发恢复通知（清除原因不是"指标回到阈值以下"）。
-- 冷却用**单调时钟**计时（NTP 步进不影响冷却），`since` 用墙钟（可与历史/交易事件对照）。
-- 本帧读不到数值（能力仍在，含关注路径个别解析失败）→ **保留**活动状态、不发恢复；能力被配置关闭（`disabled_by_config`）或无交换分区 → 静默清除（配置关闭不是恢复）。
-- 关注路径集合变化（配置改动 / 路径不再存在）时，静默清除不再被关注的卷；落卷解析本帧失败（`watch_paths_collected=false`）时不做该判断（不能区分"不再关注"与"暂时解析不到"）。
-- 通知正文是中文用户文案（UI 通知不属于日志格式门禁），正文不构成协议语义；级别/弹窗选择固定为触发 `error`+`popup=true`、恢复 `info`+`popup=false`——契约 notify-ui 只有 `error`+`popup` 会打断用户，而阈值告警的目的就是"资源将出问题时主动弹窗"。
+- 每个判定对象维护**活动期**：进入时记 `since`（墙钟），恢复时结束；`volume_free` 逐卷一条（按挂载点区分），其余每类一个。
+- **进入与恢复各记一条**（级别与内容义务见契约 sysmon §2.8）——一次活动期有明确起点与终点，事后可从日志判断它何时开始、何时结束。
+- **持续期按 `thresholds.log_repeat_sec` 重记**（含活动期已持续秒数；`0` 表示不重记）。重记计时用**单调时钟**（NTP 步进不影响节奏），基准是该活动期的进入时刻；`since` 用墙钟（可与历史/交易事件对照）。
+- **"能力被配置关闭 / 判定对象消失"不是恢复**：对应指标类别被配置关闭（`disabled_by_config`）、交换分区被移除、某卷从 `volumes[]` 消失时，静默清除活动状态、**不写恢复日志**（清除原因不是"指标回到阈值以下"）。
+- 本帧读不到数值（能力仍在，`used_ratio = null` 或整个指标域为 `null`）→ **保留**活动状态、不写恢复日志——"读不到"不是"已恢复"。跨越采集缺口后真正恢复时，恢复日志的持续秒数按活动期起点计算，如实反映总时长。
+- **卷的判定范围恒为本机全部卷**：逐卷一条判定对象，不存在「关注哪一卷」这一层；`total_bytes = 0` 的卷无法计算百分比，不参与判定。
+- 日志文本是英文、小写开头、无句号、`prose | k=v`（AGENTS 日志门禁），不构成协议语义，消费方不得解析。
 
-### 冷却与"同类告警"的边界
+### 与 `NOTIFY_UI` 的边界
 
-- `cooldown_sec` 按**告警对象**计，不是按 kind 的全局闸门：两个卷同时越限各自通知一次，互不影响对方的冷却。
-- 默认阈值（内存 90%、交换 50%、关注卷剩余 < 10% 或 < 1 GiB）足以零配置工作；阈值与冷却均取自当前生效配置，运行期修改经 `SET_SYSMON_CONFIG` 即时生效（监控页「配置」tab 提供 admin 编辑入口）。
-- 告警不写历史库：历史只记录指标事实，告警可由历史事实重新推导；不需要也不提供告警表。
+- 四类资源判定（内存使用率、交换使用率、卷剩余空间、CPU 饱和）**不产生任何 `NOTIFY_UI`**。`dzsysmon` 的 `NOTIFY_UI` 此后只剩真故障：历史库不可用与配置下发失败——两者都是一次性、需人处理的故障，级别与弹窗语义按契约 notify-ui。
+- **不按判定对象额外限流**：防刷屏完全由「进入/恢复各一条 + 按 `log_repeat_sec` 重记」保证——同一活动期内不会重复记进入，也不会连记多条恢复。
+- 不写历史库、不进快照：历史只记录指标事实，越限可由历史事实重新推导；活动状态不跨帧可见，只有日志与 UI 色标。
+- 默认阈值（内存 90%、交换 50%、卷空闲空间低于 10%、CPU 单核连续 10 次采样 ≥ 90%）足以零配置工作；全部阈值与 `log_repeat_sec` 取自当前生效配置 `thresholds`，运行期修改经 `SET_SYSMON_CONFIG` 即时生效（监控页「配置」tab 提供 admin 编辑入口）。
 
 ### 已知限制
 
-- 运行期修改 `disk.watch_paths` 使某卷不再受关注时，该卷已触发的告警会在**下一次重定关注路径集合的评估**中静默清除（`evaluate_alerts` 每次都用当前配置重新解析关注路径），无需重启进程。
-- 通知是 fire-and-forget（契约 notify-ui）：事件通道写满时该条通知丢失，但活动状态仍会进快照 `alerts[]`，不会出现"状态说有告警、UI 横幅不显示"的静默缺口。
+- 资源高水位没有「始于何时」的 UI 呈现：需要时查日志（`logs/dzsysmon_<date>.log`），持续时长由间隔重记的条目以及恢复日志的持续秒数推断。这是有意取舍（ADR 0034）。
+- 日志是唯一的状态载体：日志被清空或超出保留期后，无法再还原某段活动期的起止时刻（快照不携带活动状态，前端也没有可恢复的副本）。
 
 ## 第三方归属
 

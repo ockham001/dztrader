@@ -4,7 +4,7 @@
 
 Accepted（2026-10-25）
 
-Supersedes：`#41` spec 的用户故事 4/5/6/7/9，以及契约《帧契约：系统监控》§2.8 的「路径感知」段落与 §2.2 `alerts[]` 字段。
+Supersedes：`#41` spec 的用户故事 4/5/6/7/9，以及契约《帧契约：系统监控》§2.8 的「路径感知」段落与 `alerts[]` 字段。
 
 ## Context
 
@@ -43,7 +43,7 @@ Supersedes：`#41` spec 的用户故事 4/5/6/7/9，以及契约《帧契约：�
 ## Consequences
 
 - **`dzsysmon` 不再需要「哪个卷承载关键数据」的知识**：`main.cpp` 的 `resolve_watch_paths`、`alerts.cpp` 的 `watched_mounts_of` 路径、`snapshot_builder` 的卷过滤参数全部消失。
-- **契约改动 4 处**：§2.1 快照表删除 `watch_paths`/`alerts` 行、`volumes` 行去掉 `watched`；§2.4 删除 `watch_paths[]` 段落、`volumes[]` 字段表去掉 `watched`；§2.8 整节由「阈值告警」改写为「阈值越限与日志」；§3.1 配置段 `alerts` → `thresholds` 并删 `volume_free_bytes`。§8 的「阈值告警范围」段落同步改写。
+- **契约改动**：§2 快照字段表删除 `watch_paths`/`alerts` 行、`volumes` 行去掉 `watched`；§2.4 删除 `watch_paths[]` 段落、`volumes[]` 字段表去掉 `watched`；§2.8 整节由「阈值告警」改写为「阈值越限与日志」；§3.1 配置段 `alerts` → `thresholds` 并删 `volume_free_bytes`。§8 的「阈值告警范围」段落同步改写。
 - **历史库**：`volume` 域的 `watched` 维度不再写入。已落库的该维度行**不做主动清理**（`kSchemaVersion` 是表结构版本，删注册表条目不是结构变更），随保留期自然淘汰；`resolve_metric("volume.watched")` 此后返回 invalid（前端从不查询该指标，无功能影响）。
 - **可观测性缺口**：资源高水位不再有「始于何时」的 UI 呈现。需要时查日志（`logs/dzsysmon_<date>.log`，保留 30 天），持续时长由间隔重记的条目推断。**这是有意取舍**：本系统的定位是量化交易系统，不是资源监控系统。
 - **弹窗通道此后语义纯净**：仅交易/行情断线、认证失败、下单拒绝、进程强杀超时、配置/历史故障会弹窗。用户可重新信赖「弹窗 = 需要我立刻做点什么」。
