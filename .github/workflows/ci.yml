@@ -16,6 +16,8 @@ on:
   # 夜间预热 Windows 编译缓存（#133）：GitHub Actions 缓存按 ref 作用域，PR run 写入的
   # 缓存不能被其它 PR 复用；只有在默认分支上构建，PR 才能 restore 到。故 PR 侧只读缓存，
   # 由本定时任务 + workflow_dispatch 在 main 上写入（public 仓库 runner 不额外计费）。
+  # 注意：合并 #133 后首个 PR 仍是冷缓存（需先手动触发一次 warm job）；"PR 墙钟 ≤15min"
+  # 是预热生效后的稳态目标，不是首跑承诺。
   schedule:
     - cron: "17 16 * * *"  # UTC 16:17 = Asia/Shanghai 00:17
   workflow_dispatch:
@@ -52,16 +54,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 版本钉死：sccache 版本进缓存 key，warm/PR 不一致会导致全部 miss。
       - name: Setup sccache (MSVC compiler cache)
         uses: mozilla-actions/sccache-action@v0.0.11
-
-      # sccache 的 GHA 后端需要 Actions 运行时 token（见 sccache docs/GHA.md）。
-      - name: Configure sccache GHA cache
-        uses: actions/github-script@v7
         with:
-          script: |
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+          version: "v0.19.0"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -124,13 +121,6 @@ jobs:
         working-directory: apps/webui/frontend
         run: npm test
 
-      # 缓存命中率是"接线是否生效"的验收证据（见 #133）；stats 失败不阻断构建。
-      - name: Sccache stats
-        if: always()
-        continue-on-error: true
-        shell: pwsh
-        run: sccache --show-stats
-
       - name: Upload test log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -141,6 +131,8 @@ jobs:
 
   linux:
     name: Linux (GCC Release)
+    # 夜间 run 只为预热 Windows 缓存；Linux 已由每次 main push 覆盖，不重复跑。
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -148,6 +140,10 @@ jobs:
       DZ_SMOKE_STRICT: "1"
       # ctest 并行（套件内的 RUN_SERIAL 仍串行）
       CTEST_PARALLEL_LEVEL: "4"
+      # 必须与 ccache-action 的缓存目录一致（action 读 CCACHE_DIR，未设时用
+      # ${GITHUB_WORKSPACE}/.ccache）；否则 restore/save 的目录 ≠ 编译实际写入目录，
+      # 表现为"ccache: enabled 但永不命中"。
+      CCACHE_DIR: ${{ github.workspace }}/.cache/ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -159,19 +155,21 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ccache
-        run: sudo apt-get install -y ccache
-
       # CI 编译缓存（#133）：只缓存编译器输出，绝不缓存 build/ 目录（陈旧 obj/依赖追踪是
       # C++ CI 的公认坑）。setup.sh 会自动检测 ccache 并接 CMAKE_CXX_COMPILER_LAUNCHER，
-      # 这里只需把缓存目录持久化；是否生效以 setup 日志的 "ccache: enabled" 行为准。
+      # 这里负责把 CCACHE_DIR 持久化；是否生效看 setup 日志 "ccache: enabled" 与下方统计。
+      # restore-keys 不要带尾 `-`：action 会自行拼 `ccache-` 前缀与 `-` 后缀（append-timestamp
+      # 默认 true），写成 `ccache-linux-` 会变成 `ccache-ccache-linux--` 永不命中。
+      # PR 不写缓存（写了也只对本次 PR 可见，白占配额），缓存由 main push 写入。
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
+        continue-on-error: true
         with:
           key: ccache-linux-${{ github.ref }}
           restore-keys: |
-            ccache-linux-
-          max-size: 1500M
+            ccache-linux
+          max-size: 1000M
+          save: ${{ github.event_name != 'pull_request' }}
 
       - name: Install clang-format 21 (apt.llvm.org, official LLVM)
         run: |
@@ -226,6 +224,13 @@ jobs:
       - name: Build (C++ + frontend dist)
         run: ./scripts/build.sh --config release
 
+      # 命中率证据（#133）：ubuntu-24.04 的 ccache 4.9 不支持 action 的 JSON job summary，
+      # 这里显式打印统计；失败不阻断构建。
+      - name: ccache stats
+        if: always()
+        continue-on-error: true
+        run: ccache --show-stats
+
       - name: C++ Tests (incl. integration smoke)
         run: ./scripts/test.sh --config release
 
@@ -277,13 +282,8 @@ jobs:
 
       - name: Setup sccache (MSVC compiler cache)
         uses: mozilla-actions/sccache-action@v0.0.11
-
-      - name: Configure sccache GHA cache
-        uses: actions/github-script@v7
         with:
-          script: |
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+          version: "v0.19.0"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -317,9 +317,3 @@ jobs:
       - name: Build (C++ + frontend dist)
         shell: pwsh
         run: .\scripts\build.ps1
-
-      - name: Sccache stats
-        if: always()
-        continue-on-error: true
-        shell: pwsh
-        run: sccache --show-stats
