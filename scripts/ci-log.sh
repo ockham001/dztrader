@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
-# ci-log.sh — 拉取 GitHub Actions 失败日志，只打印错误行（不把整份日志刷进上下文）
+# ci-log.sh — 拉取 GitHub Actions 失败日志/测试 artifact，只打印错误行（不把整份日志刷进上下文）
 #
 # 用法:
-#   ./scripts/ci-log.sh <run-id|run-url>        # 自动找失败的 job
-#   ./scripts/ci-log.sh --job <job-id>          # 直接指定 job
-#   ./scripts/ci-log.sh <target> --print-full   # 额外打印完整日志
+#   ./scripts/ci-log.sh <run-id|run-url>          # 自动找失败 job
+#   ./scripts/ci-log.sh --job <job-id>            # 直接指定 job
+#   ./scripts/ci-log.sh <run-id> --print-full     # 额外打印完整日志
+#   ./scripts/ci-log.sh <run-id> --context 12     # 错误行前后各 12 行（默认 8）
+#   ./scripts/ci-log.sh <run-id> --refresh        # 忽略 .cache/ci 中已下载的日志，重新拉
+#   ./scripts/ci-log.sh <run-id> --no-artifact    # 不优先使用 last-test-log artifact
+#   ./scripts/ci-log.sh <run-id> --force          # run 未完成时也尝试（默认直接报错退出）
 #
-# 日志落在 .cache/ci/（已 gitignore）。gh 缓存回退到仓库 .cache/，
-# 避免 DSH 沙箱下 ~/.cache/gh 只读导致 gh run view --log-failed 失败。
+# 优先顺序（复盘实测：从「红」到「定位用例」的耗时差 32min → <1min）：
+#   1) 失败 run 先取 ci.yml 上传的 `last-test-log` artifact（约 200KB，秒级给出 gtest 用例名）；
+#   2) artifact 不存在才拉失败 job 的完整日志（Windows job 可达数十 MB）；
+#   3) 同一个 run/job 的日志已落 `.cache/ci/` 时默认复用，不重复下载。
 #
-# 退出码: 0=已保存日志, 1=没有失败 job, 2=环境/参数错误
+# 环境变量:
+#   CI_LOG_ARTIFACT     artifact 名（默认 last-test-log）
+#   CI_LOG_MAX_BYTES    日志下载前提示阈值字节数（默认 20971520 = 20MB）
+#
+# 日志落 .cache/ci/（已 gitignore）。
+# 退出码: 0=已保存/已分析日志, 1=没有失败 job, 2=环境/参数错误或 run 未完成
 
 set -uo pipefail
 
@@ -18,6 +29,12 @@ OUTDIR="$ROOT/.cache/ci"
 TARGET=""
 JOB_ID=""
 PRINT_FULL=0
+CONTEXT=8
+REFRESH=0
+USE_ARTIFACT=1
+FORCE=0
+ARTIFACT="${CI_LOG_ARTIFACT:-last-test-log}"
+MAX_BYTES="${CI_LOG_MAX_BYTES:-20971520}"
 
 usage() {
     sed -n '2,/^$/p' "$0"
@@ -28,6 +45,10 @@ while [ $# -gt 0 ]; do
         -h|--help) usage; exit 0 ;;
         --job) JOB_ID="${2:?--job 需要参数}"; shift 2 ;;
         --print-full) PRINT_FULL=1; shift ;;
+        --context) CONTEXT="${2:?--context 需要参数}"; shift 2 ;;
+        --refresh) REFRESH=1; shift ;;
+        --no-artifact) USE_ARTIFACT=0; shift ;;
+        --force) FORCE=1; shift ;;
         -*) echo "error: unknown option: $1" >&2; usage >&2; exit 2 ;;
         *)
             if [ -z "$TARGET" ]; then TARGET="$1"; shift
@@ -40,6 +61,9 @@ if [ -z "$TARGET" ] && [ -z "$JOB_ID" ]; then
     usage >&2
     exit 2
 fi
+case "$CONTEXT" in
+    ''|*[!0-9]*) echo "error: --context must be an integer" >&2; exit 2 ;;
+esac
 
 GH_BIN="${GH:-gh}"
 if ! command -v "$GH_BIN" >/dev/null 2>&1; then
@@ -72,31 +96,74 @@ strip_ansi() {
     sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g'
 }
 
+ERROR_PATTERN='\[  FAILED  \]|The following tests FAILED|FAILED TEST|error C[0-9]{4}|error LNK[0-9]+|fatal error|FAILED:|ninja: build stopped|error MSB[0-9]+|Test Failed|ERROR:'
+
+# 从一份已落盘日志里打印错误行 + 上下文；没有命中时打末尾 60 行。
+report_log() {
+    local file="$1"
+    local label="$2"
+    if [ "$PRINT_FULL" -eq 1 ]; then
+        cat "$file"
+        return 0
+    fi
+    local matches
+    matches=$(grep -n -B"$CONTEXT" -A"$CONTEXT" -E "$ERROR_PATTERN" "$file" | head -n 120 || true)
+    if [ -n "$matches" ]; then
+        printf -- '--- %s matches (context +/-%s) ---\n' "$label" "$CONTEXT"
+        printf '%s\n' "$matches"
+    else
+        printf -- '--- %s: no known error pattern; last 60 lines ---\n' "$label"
+        tail -n 60 "$file"
+    fi
+}
+
 fetch_job() {
     local job_id="$1"
     local name="${2:-}"
     local out="$OUTDIR/job-${job_id}.log"
     local err="$OUTDIR/job-${job_id}.err"
+    if [ "$REFRESH" -eq 0 ] && [ -s "$out" ]; then
+        echo "reuse: $out ($(wc -c <"$out") bytes) job=${name:-$job_id}"
+        report_log "$out" "job $job_id ${name:+($name)}"
+        return 0
+    fi
     if ! "$GH_BIN" api "repos/${REPO}/actions/jobs/${job_id}/logs" \
         --allow-escape-sequences >"$out" 2>"$err"; then
         echo "error: fetch job $job_id failed: $(head -n 1 "$err" 2>/dev/null)" >&2
         return 1
     fi
     strip_ansi <"$out" >"${out}.tmp" && mv "${out}.tmp" "$out"
-    echo "saved: $out ($(wc -c <"$out") bytes) job=${name:-$job_id}"
+    local size
+    size=$(wc -c <"$out")
+    echo "saved: $out ($size bytes) job=${name:-$job_id}"
+    if [ "$size" -ge "$MAX_BYTES" ]; then
+        echo "note: log is large (${size} bytes); artifact '$ARTIFACT' is usually ~200KB when present" >&2
+    fi
+    report_log "$out" "job $job_id ${name:+($name)}"
+}
 
-    if [ "$PRINT_FULL" -eq 1 ]; then
-        cat "$out"
-        return 0
-    fi
-    local matches
-    matches=$(grep -nE 'error C[0-9]{4}|error LNK[0-9]+|fatal error|FAILED:|ninja: build stopped|error MSB[0-9]+|Test Failed|FAILED TEST|ERROR:' "$out" | head -n 80 || true)
-    if [ -n "$matches" ]; then
-        printf '%s\n' "$matches"
+# 尝试用失败 run 的测试 artifact 定位；成功返回 0（已打印），无 artifact 返回 1。
+fetch_artifact() {
+    local run_id="$1"
+    local dir="$OUTDIR/run-${run_id}-artifact"
+    if [ "$REFRESH" -eq 0 ] && [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
+        echo "reuse artifact: $dir"
     else
-        echo "--- no known error pattern; last 80 lines ---"
-        tail -n 80 "$out"
+        rm -rf "$dir"
+        mkdir -p "$dir"
+        if ! "$GH_BIN" run download "$run_id" --name "$ARTIFACT" --dir "$dir" >/dev/null 2>&1; then
+            return 1
+        fi
+        echo "artifact: '$ARTIFACT' -> $dir"
     fi
+    local found=0
+    local f
+    while IFS= read -r f; do
+        found=1
+        report_log "$f" "artifact $(basename "$f")"
+    done < <(find "$dir" -type f | sort)
+    [ "$found" -eq 1 ] && return 0
+    return 1
 }
 
 if [ -n "$JOB_ID" ]; then
@@ -112,6 +179,22 @@ case "$RUN_ID" in
         exit 2
         ;;
 esac
+
+STATUS="$("$GH_BIN" run view "$RUN_ID" --json status --jq .status 2>/dev/null || true)"
+if [ -n "$STATUS" ] && [ "$STATUS" != "completed" ]; then
+    echo "ci-log: run $RUN_ID is still $STATUS; failed-job logs may be incomplete" >&2
+fi
+
+if [ "$USE_ARTIFACT" -eq 1 ] && fetch_artifact "$RUN_ID"; then
+    exit 0
+fi
+
+if [ -n "$STATUS" ] && [ "$STATUS" != "completed" ] && [ "$FORCE" -eq 0 ]; then
+    echo "error: run $RUN_ID is still $STATUS and no '$ARTIFACT' artifact is available" >&2
+    echo "hint: wait for it to finish (./scripts/wait-ci.sh --run $RUN_ID), then rerun with --refresh" >&2
+    echo "hint: or pass --force to try downloading partial failed-job logs now" >&2
+    exit 2
+fi
 
 mapfile -t FAILED < <(
     "$GH_BIN" run view "$RUN_ID" --json jobs \
