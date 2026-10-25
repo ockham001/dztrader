@@ -17,10 +17,10 @@
 
 ### 2. `DZTRADER_HOME` 必须指向项目内
 
-测试/调试期间**所有** `DZTRADER_HOME` 必须指向 `<项目根>/.dztrader_dev`：
+测试/调试期间**所有** `DZTRADER_HOME` 必须指向项目内目录，禁止落到真实 home：
 
-- `ctest` 经 `CMakePresets.json` 的 `test-base` 强制注入，无需手动设置
-- 手动运行任何 `dz*` 可执行文件（`dztraderd` / `dzweb` / `dzmd_*` / `dztd_*` / `stg_*`）前**必须显式设置** `DZTRADER_HOME=<项目根>/.dztrader_dev`
+- **测试**：`<项目根>/.cache/test_home`，由 `CMakePresets.json` 的 `test-base` 强制注入，无需手动设置；`test.sh` / `test.ps1` 每次运行前清空重建（避免上一轮残留 shm/DB 让无关测试失败）
+- **手动运行任何 `dz*` 可执行文件**（`dztraderd` / `dzweb` / `dzmd_*` / `dztd_*` / `stg_*`）前**必须显式设置** `DZTRADER_HOME=<项目根>/.dztrader_dev`
 - **禁止依赖系统级环境变量**。漏设会在真实 home 目录里创建 `shm/`、`db/`、`configs/`、`flow/`、`cache/`（`.gitignore` 专门锚了这五条路径，正是因为它们一定会出现），且难以清理
 
 唯一豁免：在 `SetUp` 内自管临时目录的测试自行覆盖该变量，不受此限。
@@ -48,7 +48,7 @@
 
 ### 5. 禁止直接 `npm run build`
 
-改前端后必须走 `build` 脚本（底层 cmake target `dzweb_frontend`，自动 `npm ci` → `vite build` → 复制到 `${DZ_OUTPUT_DIR}/web`）。
+改前端后必须走 `build` 脚本（底层 cmake target `dzweb_frontend`：`package-lock.json` 变化时才安装依赖（门控脚本 `scripts/npm-ci-if-needed.cmake`），随后 `vite build` → 复制到 `${DZ_OUTPUT_DIR}/web`）。
 
 直接 `npm run build`（已由权限 deny）的产物只落在 `frontend/dist/`，而 `dzweb` 加载的是 `build/.../web/` —— **UI 不会更新**，且没有报错。
 
@@ -63,6 +63,8 @@
 `docs/frame_contracts/` 是帧协议与 frontend↔dzweb 协议的**唯一语义真相源**。**先读 [general.md](docs/frame_contracts/general.md)（总则）**，再按需读各主题契约（目录地图见 [frame_contracts/README.md](docs/frame_contracts/README.md)，文件无编号）。
 
 跨契约引用格式为《帧契约：\<主题\>》§N。**禁止以行号引用契约。**
+
+> **权限机器化的生效范围**：`.opencode/opencode.json` 里的 permissions / deny（`apps/ctp/md/` 改前确认、直调 cmake / `npm run build` deny 等）只在 **opencode** 会话生效；DSH 等其它 agent 宿主没有这层机器约束，依赖宿主 approval policy + 本文件自律。**规则强度不变**——"没被权限系统拦住"不等于可以破例。
 
 ---
 
@@ -192,7 +194,7 @@
 
 - **每次 bash 调用的 `/tmp` 相互隔离**：跨调用要用的日志/快照写 `.cache/`（已 gitignore），不要写 `/tmp`
 - **等待规则**：后台作业用 `job_output(wait=true)`；CI 用 `./scripts/wait-ci.sh`（前台阻塞；`--pr`/`--sha`/`--branch`/`--run`，feature 分支没开 PR 时 `--sha` 约 180s 就报错而不是空等）。**异步子代理完成会自动以 `subagent-settled` 通知**，等待期做只读工作（读 diff/拟关闭评论），不要 bash `sleep` 轮询；`wait_agent` 只对 Team 成员有效
-- **门禁命令用 `./scripts/gate.sh build|test|preflight`**：同一 build tree 用 flock 串行、自动导出 ccache 环境、日志落 `.cache/gate/`、返回**真实退出码**。禁止 `cmd 2>&1 | tail`——退出码会被 tail 吞掉，造成假绿（本波 #75/#81 实测）
+- **门禁命令用 `./scripts/gate.sh build|test|preflight`**：同一 build tree 用 flock 串行、自动导出 ccache 环境、日志落 `.cache/gate/`、返回**真实退出码**。要短输出用 `./scripts/gate.sh … --tail N`（成功留 N 行、失败留 max(N,30) 行）；**不要**给门禁命令接 `| tail` / `| head`——管道会吞掉退出码，造成假绿（本波 #75/#81 实测）
 - **交接文档写 `.cache/handoff/`**：全局 `handoff` 技能默认写 OS 临时目录（`/tmp`），本沙箱下不可跨会话，必须改写到仓库 `.cache/`
 - `~/.conan2`、`~/.cache/gh`、`~/.npm` 在 workspace-write 下可能只读：`setup.sh` / `build.sh` / `wait-ci.sh` / `ci-log.sh` 已回退到仓库 `.cache/`；仍被拒时再申请一次更高权限，不要反复重试
 - 提交前门禁统一 `./scripts/preflight.sh`（agent 侧 `./scripts/gate.sh preflight`）；CI 等待/失败日志统一 `./scripts/wait-ci.sh` / `./scripts/ci-log.sh`（失败先用 200KB 的 `last-test-log` artifact 定位，别拉几十 MB job 日志）；push 前统一 `./scripts/check-push-scope.sh <issue>`（含 CI 进行中拒推检查）
@@ -223,7 +225,7 @@
 | [docs/ui-trading.md](docs/ui-trading.md) | UI 系统与交易接口规划（蓝图级） |
 | [docs/adr/](docs/adr/) | 架构决策记录，按编号追溯 |
 | [GLOSSARY.md](GLOSSARY.md) | 领域术语表（`domain-modeling` 随改随更） |
-| [docs/agents/](docs/agents/) | 技能配置（issue 载体 / 域文档规则 / 分诊标签）、构建外围细节（build-appendix）、每票收尾（ticket-closeout）、复盘取证（retro-evidence） |
+| [docs/agents/](docs/agents/) | 技能配置（issue 载体 / 域文档规则 / 分诊标签）、构建外围细节（build-appendix）、每票收尾（ticket-closeout）、审查清单（review-checklist）、复盘取证（retro-evidence） |
 
 `docs/specs/`、`docs/plans/`、`docs/superpowers/` 是**本地归档**（不在版本控制内）且**已冻结** —— 新设计与计划走 GitHub Issues；与现状冲突时以帧契约与代码为准，**不修改**。
 
