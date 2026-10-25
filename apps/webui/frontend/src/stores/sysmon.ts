@@ -17,7 +17,6 @@ import type {
   SysmonSwapInfo,
   SysmonTemperatureInfo,
   SysmonVolumeInfo,
-  SysmonWatchPathInfo,
 } from '@/types/generated'
 
 /** 网络配置（network.hide_virtual）切换的 pending key；WS `sysmon_config` 到达时清除 */
@@ -54,7 +53,7 @@ const SYSMON_ALERT_KINDS: readonly SysmonAlertKind[] = ['memory_used', 'swap_use
 export function sysmonAlertLabel(alert: Pick<SysmonActiveAlert, 'kind' | 'subject'>): string {
   if (alert.kind === 'memory_used') return '内存'
   if (alert.kind === 'swap_used') return '交换'
-  return `关注卷 ${alert.subject}`
+  return `卷 ${alert.subject}`
 }
 
 /** 有限数字校验：null / undefined / NaN / Infinity 一律视为不可用（不得用 0 冒充） */
@@ -342,7 +341,6 @@ export const useSysmonStore = defineStore('sysmon', () => {
       if (entry?.available !== true) {
         result.push({
           mount,
-          watched: entry?.watched === true,
           available: false,
           total_bytes: null,
           used_bytes: null,
@@ -357,7 +355,6 @@ export const useSysmonStore = defineStore('sysmon', () => {
       if (total === null || used === null) {
         result.push({
           mount,
-          watched: entry.watched === true,
           available: false,
           total_bytes: null,
           used_bytes: null,
@@ -369,7 +366,6 @@ export const useSysmonStore = defineStore('sysmon', () => {
       const clampedUsed = Math.min(used, total)
       result.push({
         mount,
-        watched: entry.watched === true,
         available: true,
         total_bytes: total,
         used_bytes: clampedUsed,
@@ -405,35 +401,6 @@ export const useSysmonStore = defineStore('sysmon', () => {
    */
   const zeroCapacityVolumes = computed<SysmonVolumeInfo[]>(() =>
     volumes.value.filter(volume => !hasReadableCapacity(volume)))
-
-  /**
-   * 关注路径的落卷解析（契约 sysmon §2.4，#75）。仅当快照携带数组时返回过滤后的数组
-   * （`watch_paths` 没有独立可用性键，落卷解析不受 `volumes` 采集开关影响，见 §2.5）。
-   * path 为空串的条目剔除；`available=false` 的条目保留（`mount` 强制 null + reason），
-   * 视图据此显示「未解析」而不是猜一个卷。mount 由发送端与 `volumes[].mount` 相等比较，
-   * 前端不再二次匹配（契约保证同一帧内可直接相等比较）。
-   */
-  const watchPaths = computed<SysmonWatchPathInfo[]>(() => {
-    const s = snapshot.value
-    if (!s) return []
-    const entries = Array.isArray(s.watch_paths) ? s.watch_paths : []
-    const result: SysmonWatchPathInfo[] = []
-    for (const entry of entries) {
-      const path = typeof entry?.path === 'string' ? entry.path.trim() : ''
-      if (!path) continue
-      const mount = typeof entry?.mount === 'string' && entry.mount.trim() ? entry.mount.trim() : null
-      const available = entry?.available === true && mount !== null
-      result.push({
-        path,
-        mount: available ? mount : null,
-        available,
-        reason: available
-          ? undefined
-          : (typeof entry?.reason === 'string' && entry.reason.trim() ? entry.reason.trim() : 'collect_failed'),
-      })
-    }
-    return result
-  })
 
   /**
    * 共享内存目录占用（契约 sysmon §2.4，#75）：页清理是否生效的可观测项。
@@ -723,7 +690,6 @@ export const useSysmonStore = defineStore('sysmon', () => {
     volumes,
     readableVolumes,
     zeroCapacityVolumes,
-    watchPaths,
     shmDirInfo,
     diskIo,
     network,

@@ -16,7 +16,7 @@ import type { SysmonHistoryQueryParams, SysmonHistoryResponse } from '@/types/ap
  * RFC 7386：嵌套对象按键合并、数组整体替换；任意位置出现 null 由 dzsysmon 判为非法。
  *
  * 各段是「全量配置中该段」的深度 partial：只带要改的键，未出现的键保留生效值。
- * 数组字段（disk.watch_paths / disk.devices）只要出现即整体替换，不接受按元素拼接。
+ * 数组字段（disk.devices）只要出现即整体替换，不接受按元素拼接。
  * `sampling.groups` 按键合并（缺省键按 true 处理，契约 sysmon §3.1）。
  */
 export interface SysmonConfigPatch {

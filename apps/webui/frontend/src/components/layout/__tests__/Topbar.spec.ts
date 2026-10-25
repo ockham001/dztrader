@@ -189,28 +189,25 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
 
     const badges = diskBadges(wrapper)
     expect(badges).toHaveLength(3)
-    // #122：按使用率降序（62% > 40% > 25%），关注标记不再影响顺序
+    // #122：按使用率降序（62% > 40% > 25%）
     expect(badges[0].attributes('data-mount')).toBe('/home')
     expect(badges[0].find('.res-value').text()).toBe('62%')
-    expect(badges[0].classes()).not.toContain('topbar__resource--watched')
 
     expect(badges[1].attributes('data-mount')).toBe('/')
     expect(badges[1].find('.res-value').text()).toBe('40%')
 
-    // watched 高亮与标题的「关注卷」标注保留（字段本身由 #124 删除）
     expect(badges[2].attributes('data-mount')).toBe('/data')
-    expect(badges[2].classes()).toContain('topbar__resource--watched')
     // 标签取挂载点末段（顶栏窄条 overflow:hidden），完整路径在 data-mount / title 里
     expect(badges[2].find('.res-label').text()).toBe('data')
     expect(badges[2].find('.res-value').text()).toBe('25%')
-    expect(badges[2].attributes('title')).toBe('/data 使用率 25%（关注卷）')
+    expect(badges[2].attributes('title')).toBe('/data 使用率 25%')
   })
 
   it('不硬编码盘符或数量：卷集合随快照变化（Windows 盘符同样按数据渲染）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
-        { mount: 'C:', watched: false, available: true, total_bytes: 500 * GIB, used_bytes: 250 * GIB, used_ratio: 0.5 },
-        { mount: 'D:', watched: true, available: true, total_bytes: 1000 * GIB, used_bytes: 800 * GIB, used_ratio: 0.8 },
+        { mount: 'C:', available: true, total_bytes: 500 * GIB, used_bytes: 250 * GIB, used_ratio: 0.5 },
+        { mount: 'D:', available: true, total_bytes: 1000 * GIB, used_bytes: 800 * GIB, used_ratio: 0.8 },
       ],
     }))
     const wrapper = await mountTopbar()
@@ -218,7 +215,6 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
     const badges = diskBadges(wrapper)
     expect(badges).toHaveLength(2)
     expect(badges.map(badge => badge.attributes('data-mount'))).toEqual(['D:', 'C:'])
-    expect(badges[0].classes()).toContain('topbar__resource--watched')
     expect(badges[0].find('.res-value').text()).toBe('80%')
     expect(badges[0].classes()).toContain('topbar__resource--warn')
     expect(badges[1].find('.res-value').text()).toBe('50%')
@@ -228,8 +224,8 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
   it('单卷不可用：徽章显示「不可用」+ 原因，不得用 0 冒充', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
-        { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
-        { mount: '/backup', watched: false, available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+        { mount: '/', available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
+        { mount: '/backup', available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
       ],
     }))
     const wrapper = await mountTopbar()
@@ -261,7 +257,7 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
 
     useSysmonStore().applySnapshot(makeSysmonSnapshot({
       volumes: [
-        { mount: '/only', watched: true, available: true, total_bytes: 10 * GIB, used_bytes: 9 * GIB, used_ratio: 0.9 },
+        { mount: '/only', available: true, total_bytes: 10 * GIB, used_bytes: 9 * GIB, used_ratio: 0.9 },
       ],
     }))
     await wrapper.vm.$nextTick()

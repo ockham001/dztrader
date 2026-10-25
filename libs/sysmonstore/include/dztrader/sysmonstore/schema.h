@@ -104,8 +104,7 @@ inline constexpr std::string_view kNetworkDomain = "network";
 inline constexpr std::string_view kTemperatureDomain = "temperature";
 
 inline constexpr std::string_view kCpuCoreMetrics[] = {"usage_ratio", "mhz", "saturated"};
-inline constexpr std::string_view kVolumeMetrics[] = {"total_bytes", "used_bytes", "used_ratio",
-                                                      "watched"};
+inline constexpr std::string_view kVolumeMetrics[] = {"total_bytes", "used_bytes", "used_ratio"};
 inline constexpr std::string_view kDiskIoMetrics[] = {
     "read_bytes_per_sec", "write_bytes_per_sec", "read_iops",  "write_iops",
     "latency_ms",         "queue_depth",         "utilization"};

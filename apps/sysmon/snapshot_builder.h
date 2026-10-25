@@ -6,7 +6,7 @@
  * @brief RTN_SYSMON_SNAPSHOT payload 构造（契约 sysmon §2）。
  *
  * 本票（#76、#77）填系统信息、CPU 总量/每核/饱和标记/负载/上下文切换与中断速率、每核频率、
- * 温度、内存与交换、卷容量与关注路径落卷、共享内存目录占用、每物理盘 I/O、每网卡累计量与速率
+ * 温度、内存与交换、卷容量、共享内存目录占用、每物理盘 I/O、每网卡累计量与速率
  * （`hide_virtual` 过滤在快照构造阶段完成）。已列出的指标域后续只填值、不改形状。
  *
  * 纯函数：不读时钟、不读配置全局状态，输入即快照的全部事实来源，便于用假数据测试。
@@ -14,7 +14,6 @@
 
 #include <cstdint>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -74,7 +73,7 @@ struct MemorySwapMetrics {
     std::optional<platform::RawSwapInfo> swap;
 };
 
-/// 磁盘卷、关注路径与共享内存目录的测量结果与能力标记（#75）。
+/// 磁盘卷与共享内存目录的测量结果与能力标记（#75）。
 ///
 /// `volumes_collected` / `shm_dir_collected` 为**能力粘性**标记（契约 sysmon §2.5）：
 /// 一次成功读到后保持 true，此后单帧失败只把对应域置 null。
@@ -86,10 +85,6 @@ struct DiskMetrics {
     bool volumes_collected = false;  ///< 卷采集能力是否可用（粘性）
     /// 本帧原始卷读数；nullopt = 本帧未采集到（能力可用但失败，或不可用）。
     std::optional<std::vector<platform::RawVolumeInfo>> volumes;
-
-    /// 本帧关注路径落卷解析结果；nullopt = 本帧未采集到。
-    /// **不受** `volumes_disabled` 影响：它只服务快照字段（阈值越限自 #123 起不消费它）。
-    std::optional<std::vector<platform::RawWatchPathInfo>> watch_paths;
 
     bool shm_dir_collected = false;  ///< 共享内存目录采集能力是否可用（粘性）
     /// 本帧共享内存目录占用；nullopt = 本帧未读到（能力可用但失败，或不可用）。
@@ -134,18 +129,6 @@ struct NetworkMetrics {
 };
 
 /**
- * @brief 关注卷挂载点集合：`watch_paths` 中成功解析出的挂载点（去重、升序）。
- *
- * **路径感知口径的唯一实现点**（契约 sysmon §2.4）：快照构造据此设置
- * `volumes[].watched`。阈值越限自 #123 起按全部卷判定、不再消费本集合（ADR 0034）。
- *
- * @param watch_paths 原始落卷解析结果；`nullopt`（本帧未采集）返回空集合
- * @return 挂载点集合（升序）；解析失败的路径（`mount = nullopt`）不计入
- */
-[[nodiscard]] std::set<std::string> watched_mounts_of(
-    const std::optional<std::vector<platform::RawWatchPathInfo>>& watch_paths);
-
-/**
  * @brief 构造一帧实时快照。
  *
  * @param source               发送方进程名（无 instance_id 帧的来源显式携带，general §5）
@@ -153,7 +136,7 @@ struct NetworkMetrics {
  * @param cpu_metrics          CPU 区块的测量结果与能力标记
  * @param temperature_metrics  温度传感器的测量结果与能力标记
  * @param memory_metrics       内存/交换的测量结果与能力标记
- * @param disk_metrics         卷/关注路径/共享内存目录/每物理盘 I/O 的测量结果与能力标记
+ * @param disk_metrics         卷/共享内存目录/每物理盘 I/O 的测量结果与能力标记
  *                             （#75、#76）
  * @param network_metrics      每网卡累计量与速率、能力标记与 hide_virtual（#77）
  * @param active_alerts        快照 `alerts[]` 的投影（#80 遗留字段；#123 起调用方恒传空数组，

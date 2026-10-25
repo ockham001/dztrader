@@ -366,7 +366,6 @@ TEST(SnapshotBuilderTest, UncollectedDomainsAreNull) {
     EXPECT_EQ(snapshot.memory, std::nullopt);
     EXPECT_EQ(snapshot.swap, std::nullopt);
     EXPECT_EQ(snapshot.volumes, std::nullopt);
-    EXPECT_EQ(snapshot.watch_paths, std::nullopt);
     EXPECT_EQ(snapshot.disk_io, std::nullopt);
     EXPECT_EQ(snapshot.network, std::nullopt);
     EXPECT_EQ(snapshot.shm_dir, std::nullopt);
@@ -780,7 +779,6 @@ public:
     std::optional<platform::RawMemoryInfo> memory;
     std::optional<platform::RawSwapInfo> swap;
     std::optional<std::vector<platform::RawVolumeInfo>> volumes;
-    std::vector<platform::RawWatchPathInfo> watch_paths;
     std::optional<platform::RawShmDirInfo> shm_dir;
     platform::RawDiskIoSnapshot disk_io;
     platform::RawNetworkSnapshot network;
@@ -798,11 +796,6 @@ public:
     std::optional<platform::RawSwapInfo> collect_swap() override { return swap; }
     std::optional<std::vector<platform::RawVolumeInfo>> collect_volumes() override {
         return volumes;
-    }
-    std::vector<platform::RawWatchPathInfo> collect_watch_paths(
-        const std::vector<std::string>& paths) override {
-        (void)paths;
-        return watch_paths;
     }
     std::optional<platform::RawShmDirInfo> collect_shm_dir(
         const std::string& shm_dir_path) override {
@@ -921,9 +914,9 @@ TEST(SnapshotBuilderTest, FakeCollectorDrivesRateCalculationAndEncoding) {
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 
-// ===== #75：卷、关注路径与共享内存目录 =====
+// ===== #75：卷与共享内存目录 =====
 
-/// #75 落地后的典型盘测数据：两个可读卷（其一被关注）+ 一个读不到容量的卷。
+/// #75 落地后的典型盘测数据：两个可读卷 + 一个读不到容量的卷。
 DiskMetrics make_disk_metrics() {
     DiskMetrics disk;
     disk.volumes_collected = true;
@@ -940,10 +933,6 @@ DiskMetrics make_disk_metrics() {
          .total_bytes = std::nullopt,
          .free_bytes = std::nullopt,
          .reason = "no_permission"},
-    };
-    disk.watch_paths = std::vector<platform::RawWatchPathInfo>{
-        {.path = "/srv/dztrader/shm", .mount = "/data", .reason = ""},
-        {.path = "/srv/dztrader/db", .mount = "/data", .reason = ""},
     };
     disk.shm_dir_collected = true;
     disk.shm_dir = platform::RawShmDirInfo{.path = "/srv/dztrader/shm",
@@ -962,16 +951,12 @@ TEST(SnapshotBuilderTest, DiskDomainsAreEncodedWhenCollected) {
     // used = total - free，比率由之计算（契约 sysmon §2.4）。
     const auto& root = (*snapshot.volumes)[0];
     EXPECT_EQ(root.mount, "/");
-    EXPECT_FALSE(root.watched);
     EXPECT_TRUE(root.available);
     ASSERT_TRUE(root.total_bytes.has_value());
     ASSERT_TRUE(root.used_bytes.has_value());
     EXPECT_EQ(*root.used_bytes, 60ULL * 1024 * 1024 * 1024);
     ASSERT_TRUE(root.used_ratio.has_value());
     EXPECT_DOUBLE_EQ(*root.used_ratio, 0.6);
-
-    // 关注路径落在的卷被标记 watched（契约 sysmon §2.4）。
-    EXPECT_TRUE((*snapshot.volumes)[1].watched);
 
     // 读不到容量的卷：available=false + reason，容量字段保持 null（不得用 0 冒充）。
     const auto& backup = (*snapshot.volumes)[2];
@@ -982,12 +967,6 @@ TEST(SnapshotBuilderTest, DiskDomainsAreEncodedWhenCollected) {
     EXPECT_FALSE(backup.used_ratio.has_value());
     ASSERT_TRUE(backup.reason.has_value());
     EXPECT_EQ(*backup.reason, "no_permission");
-
-    ASSERT_TRUE(snapshot.watch_paths.has_value());
-    ASSERT_EQ(snapshot.watch_paths->size(), 2U);
-    ASSERT_TRUE((*snapshot.watch_paths)[0].mount.has_value());
-    EXPECT_EQ(*(*snapshot.watch_paths)[0].mount, "/data");
-    EXPECT_TRUE((*snapshot.watch_paths)[0].available);
 
     ASSERT_TRUE(snapshot.shm_dir.has_value());
     EXPECT_EQ(snapshot.shm_dir->path, "/srv/dztrader/shm");
@@ -1009,28 +988,6 @@ TEST(SnapshotBuilderTest, UnreadableVolumeStaysInArray) {
     EXPECT_TRUE(snapshot.availability.metrics.at("volumes").available);
     ASSERT_TRUE(snapshot.volumes.has_value());
     EXPECT_EQ(snapshot.volumes->size(), 3U);
-}
-
-TEST(SnapshotBuilderTest, FailedWatchPathResolutionIsReportedNotGuessed) {
-    DiskMetrics disk = make_disk_metrics();
-    disk.watch_paths = std::vector<platform::RawWatchPathInfo>{
-        {.path = "/srv/dztrader/missing", .mount = std::nullopt, .reason = "path_not_found"},
-    };
-    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
-
-    ASSERT_TRUE(snapshot.watch_paths.has_value());
-    ASSERT_EQ(snapshot.watch_paths->size(), 1U);
-    const auto& info = (*snapshot.watch_paths)[0];
-    EXPECT_FALSE(info.available);
-    EXPECT_FALSE(info.mount.has_value());  // 不得猜卷、不得回退到 "/"
-    ASSERT_TRUE(info.reason.has_value());
-    EXPECT_EQ(*info.reason, "path_not_found");
-    // 落卷全失败时没有任何卷被标记 watched。
-    ASSERT_TRUE(snapshot.volumes.has_value());
-    for (const auto& volume : *snapshot.volumes) {
-        EXPECT_FALSE(volume.watched) << volume.mount;
-    }
-    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 
 TEST(SnapshotBuilderTest, ZeroTotalVolumeStaysAvailableWithNullRatio) {
@@ -1059,23 +1016,6 @@ TEST(SnapshotBuilderTest, ZeroTotalVolumeStaysAvailableWithNullRatio) {
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 
-TEST(SnapshotBuilderTest, WatchPathsAreNotGatedByVolumesGroup) {
-    // 告警需要落卷信息（#80）：关闭 volumes 组后 volumes 为 null，但 watch_paths 仍输出
-    // （契约 sysmon §2.5）。
-    DiskMetrics disk = make_disk_metrics();
-    disk.volumes_disabled = true;
-    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
-
-    EXPECT_EQ(snapshot.volumes, std::nullopt);
-    ASSERT_TRUE(snapshot.watch_paths.has_value());
-    EXPECT_EQ(snapshot.watch_paths->size(), 2U);
-    const auto& entry = snapshot.availability.metrics.at("volumes");
-    EXPECT_FALSE(entry.available);
-    ASSERT_TRUE(entry.reason.has_value());
-    EXPECT_EQ(*entry.reason, "disabled_by_config");
-    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
-}
-
 TEST(SnapshotBuilderTest, ShmDirUnavailableIsNullNotZeroObject) {
     DiskMetrics disk = make_disk_metrics();
     disk.shm_dir = std::nullopt;  // 本帧读不到（能力仍标记为已确认，粘性）
@@ -1091,7 +1031,6 @@ TEST(SnapshotBuilderTest, DiskDomainsUnavailableBeforeFirstCollection) {
     // 能力从未确认（本测试不传 disk 指标）：域为 null + collect_failed。
     const auto snapshot = build_with(make_linux_info(), make_full_metrics());
     EXPECT_EQ(snapshot.volumes, std::nullopt);
-    EXPECT_EQ(snapshot.watch_paths, std::nullopt);
     EXPECT_EQ(snapshot.shm_dir, std::nullopt);
     for (const char* key : {"volumes", "shm_dir"}) {
         const auto& entry = snapshot.availability.metrics.at(key);
@@ -1442,27 +1381,6 @@ TEST(SnapshotBuilderTest, NetworkDoesNotAddAvailabilityKeys) {
         build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, make_network_metrics());
     EXPECT_EQ(snapshot.availability.metrics.size(), platform::SYSMON_METRIC_KEYS.size());
     EXPECT_TRUE(snapshot.availability.metrics.contains(platform::SYSMON_METRIC_NETWORK));
-}
-
-// 路径感知口径的唯一实现点（#80）：快照构造与告警判定共用 watched_mounts_of。
-TEST(SnapshotBuilderTest, WatchedMountsOfDedupesAndSkipsUnresolvedPaths) {
-    std::vector<platform::RawWatchPathInfo> paths;
-    platform::RawWatchPathInfo shm;
-    shm.path = "/srv/dztrader/shm";
-    shm.mount = "/data";
-    platform::RawWatchPathInfo db;
-    db.path = "/srv/dztrader/db";
-    db.mount = "/data";  // 同一卷的第二个关注路径：按 mount 去重
-    platform::RawWatchPathInfo missing;
-    missing.path = "/srv/dztrader/missing";
-    missing.reason = "path_not_found";  // 解析失败：不得猜卷
-    paths = {shm, db, missing};
-
-    const auto mounts = watched_mounts_of(paths);
-    ASSERT_EQ(mounts.size(), 1U);
-    EXPECT_TRUE(mounts.contains("/data"));
-    // 本帧未采集：空集合（不猜任何卷）。
-    EXPECT_TRUE(watched_mounts_of(std::nullopt).empty());
 }
 
 // 阈值告警活动集（#80）：状态机结果原样投影；空数组合法；JSON 形状符合契约 sysmon §2.8。

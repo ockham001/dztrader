@@ -44,7 +44,6 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
-#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -154,8 +153,7 @@ protected:
                 {"network", true},
                 {"temperature", true},
                 {"cpu_frequency", true}}}}},
-            {"disk",
-             {{"watch_paths", nlohmann::json::array()}, {"devices", nlohmann::json::array()}}},
+            {"disk", {{"devices", nlohmann::json::array()}}},
             {"network", {{"hide_virtual", true}}},
             {"history",
              {{"enabled", history_enabled},
@@ -348,15 +346,13 @@ TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
                                    ? nlohmann::json::array({*filter_device})
                                    : nlohmann::json::array({"no_such_device_e2e"});
 
-    const std::string watch_path = home_.string();
     const auto patch = nlohmann::json{
         {"sampling",
          {{"measure_interval_ms", 500},
           {"record_interval_sec", 2},
           {"phase_offset_sec", 1},
           {"groups", {{"network", false}}}}},
-        {"disk",
-         {{"watch_paths", nlohmann::json::array({watch_path})}, {"devices", devices_patch}}},
+        {"disk", {{"devices", devices_patch}}},
         {"network", {{"hide_virtual", false}}},
         {"history", {{"enabled", false}}},
         {"realtime", {{"push_interval_sec", 2}}},
@@ -371,7 +367,6 @@ TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
     EXPECT_EQ((*config)["sampling"]["record_interval_sec"], 2);
     EXPECT_EQ((*config)["sampling"]["phase_offset_sec"], 1);
     EXPECT_EQ((*config)["sampling"]["groups"]["network"], false);
-    EXPECT_EQ((*config)["disk"]["watch_paths"], nlohmann::json::array({watch_path}));
     EXPECT_EQ((*config)["disk"]["devices"], devices_patch);
     EXPECT_EQ((*config)["network"]["hide_virtual"], false);
     EXPECT_EQ((*config)["history"]["enabled"], false);
@@ -405,22 +400,6 @@ TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
         // 空数组 + available=true。两者都是合法形态，不能把"无盘"当成"不可用"。
         EXPECT_TRUE(disk_io.is_null() || (disk_io.is_array() && disk_io.empty()));
     }
-
-    // disk.watch_paths 在**计量阶段**解析（不是快照构造阶段的纯过滤）：立即推送的这一帧
-    // 可能仍是上一 tick 的解析结果；下一次计量 tick（measure=500ms）后的周期快照必须
-    // 体现新关注路径（契约 sysmon §3.1）。
-    const auto watched = wait_for_snapshot(
-        [&watch_path](const nlohmann::json& payload) {
-            const auto& paths = payload["watch_paths"];
-            if (!paths.is_array()) return false;
-            return std::any_of(paths.begin(), paths.end(), [&watch_path](const auto& entry) {
-                return entry.value("path", std::string()) == watch_path;
-            });
-        },
-        5000ms);
-    ASSERT_TRUE(watched.has_value())
-        << "disk.watch_paths change was not applied at the next measure tick";
-    EXPECT_EQ(platform::SysmonSnapshot::validate(*watched), std::nullopt);
 }
 
 // 契约 sysmon §3.1.1 第 2 步：推送间隔运行期修改后立即重排，不等旧周期（300s）结束。

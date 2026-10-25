@@ -47,7 +47,6 @@ SysmonSnapshot make_snapshot() {
     snap.memory = std::nullopt;
     snap.swap = std::nullopt;
     snap.volumes = std::nullopt;
-    snap.watch_paths = std::nullopt;
     snap.disk_io = std::nullopt;
     snap.network = std::nullopt;
     snap.shm_dir = std::nullopt;
@@ -558,7 +557,6 @@ TEST(SysmonConfigTest, RejectsEveryOutOfRangeConfigField) {
         {"groups value string",
          nlohmann::json{{"sampling", {{"groups", {{"temperature", "on"}}}}}}},
         {"devices element empty", nlohmann::json{{"disk", {{"devices", {""}}}}}},
-        {"watch_paths element empty", nlohmann::json{{"disk", {{"watch_paths", {""}}}}}},
         // 任意位置 null 非法（general §8）：根、段、嵌套键、数组元素。
         {"patch root null", nlohmann::json(nullptr)},
         {"section null", nlohmann::json{{"disk", nullptr}}},
@@ -609,9 +607,7 @@ TEST(SysmonConfigTest, AcceptsConfigBoundaryValues) {
         {"max_retention_days upper", nlohmann::json{{"history", {{"max_retention_days", 3650}}}}},
         {"max_bytes zero", nlohmann::json{{"history", {{"max_bytes", 0}}}}},
         {"groups bool false", nlohmann::json{{"sampling", {{"groups", {{"cpu", false}}}}}}},
-        {"empty arrays", nlohmann::json{{"disk",
-                                         {{"devices", nlohmann::json::array()},
-                                          {"watch_paths", nlohmann::json::array()}}}}},
+        {"empty arrays", nlohmann::json{{"disk", {{"devices", nlohmann::json::array()}}}}},
         {"unknown field ignored", nlohmann::json{{"unknown_section", {{"x", 1}}}}},
         {"empty patch", nlohmann::json::object()},
     };
@@ -631,9 +627,7 @@ TEST(SysmonConfigTest, BoundaryValuesRoundTripThroughTypedConfig) {
           {"record_interval_sec", 1},
           {"phase_offset_sec", 86400},
           {"groups", {{"cpu", false}, {"temperature", false}}}}},
-        {"disk",
-         {{"watch_paths", nlohmann::json::array({"/srv/shm", "/srv/db"})},
-          {"devices", nlohmann::json::array({"sda"})}}},
+        {"disk", {{"devices", nlohmann::json::array({"sda"})}}},
         {"network", {{"hide_virtual", false}}},
         {"history",
          {{"enabled", false},
@@ -656,8 +650,6 @@ TEST(SysmonConfigTest, BoundaryValuesRoundTripThroughTypedConfig) {
     EXPECT_EQ(typed.sampling.phase_offset_sec, 86400);
     EXPECT_EQ(typed.sampling.groups.at("cpu"), false);
     EXPECT_EQ(typed.sampling.groups.at("temperature"), false);
-    ASSERT_EQ(typed.disk.watch_paths.size(), 2U);
-    EXPECT_EQ(typed.disk.watch_paths[1], "/srv/db");
     ASSERT_EQ(typed.disk.devices.size(), 1U);
     EXPECT_EQ(typed.disk.devices[0], "sda");
     EXPECT_FALSE(typed.network.hide_virtual);
@@ -719,23 +711,18 @@ TEST(SysmonSnapshotValidateTest, WindowsDescriptionMustIncludeBuild) {
     EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
 }
 
-// ===== #75：卷、关注路径与共享内存目录 =====
+// ===== #75：卷与共享内存目录 =====
 
 /// 契约 sysmon §2.4：读不到的卷必须输出 available=false + reason，且三个容量字段为 null。
 TEST(SysmonSnapshotValidateTest, AcceptsVolumeUnavailableWithNullCapacities) {
     auto snap = make_snapshot();
     auto j = nlohmann::json(snap);
     j["volumes"] = nlohmann::json::array({{{"mount", "/data"},
-                                           {"watched", true},
                                            {"available", false},
                                            {"total_bytes", nullptr},
                                            {"used_bytes", nullptr},
                                            {"used_ratio", nullptr},
                                            {"reason", "no_permission"}}});
-    j["watch_paths"] = nlohmann::json::array({{{"path", "/srv/shm"},
-                                               {"mount", nullptr},
-                                               {"available", false},
-                                               {"reason", "path_not_found"}}});
     j["availability"]["metrics"]["volumes"] = {{"available", true}};
     EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
 }
@@ -745,7 +732,6 @@ TEST(SysmonSnapshotValidateTest, RejectsUnavailableVolumeWithZeroCapacities) {
     auto snap = make_snapshot();
     auto j = nlohmann::json(snap);
     j["volumes"] = nlohmann::json::array({{{"mount", "/data"},
-                                           {"watched", false},
                                            {"available", false},
                                            {"total_bytes", 0},
                                            {"used_bytes", 0},
@@ -760,7 +746,6 @@ TEST(SysmonSnapshotValidateTest, RejectsUnavailableVolumeWithoutReason) {
     auto snap = make_snapshot();
     auto j = nlohmann::json(snap);
     j["volumes"] = nlohmann::json::array({{{"mount", "/data"},
-                                           {"watched", false},
                                            {"available", false},
                                            {"total_bytes", nullptr},
                                            {"used_bytes", nullptr},
@@ -775,7 +760,6 @@ TEST(SysmonSnapshotValidateTest, RejectsInconsistentReadableVolumes) {
         auto snap = make_snapshot();
         auto j = nlohmann::json(snap);
         j["volumes"] = nlohmann::json::array({{{"mount", "/data"},
-                                               {"watched", false},
                                                {"available", true},
                                                {"total_bytes", 100},
                                                {"used_bytes", 150},
@@ -786,7 +770,6 @@ TEST(SysmonSnapshotValidateTest, RejectsInconsistentReadableVolumes) {
         auto snap = make_snapshot();
         auto j = nlohmann::json(snap);
         j["volumes"] = nlohmann::json::array({{{"mount", "/data"},
-                                               {"watched", false},
                                                {"available", true},
                                                {"total_bytes", 100},
                                                {"used_bytes", 50},
@@ -797,7 +780,6 @@ TEST(SysmonSnapshotValidateTest, RejectsInconsistentReadableVolumes) {
         auto snap = make_snapshot();
         auto j = nlohmann::json(snap);
         j["volumes"] = nlohmann::json::array({{{"mount", "/data"},
-                                               {"watched", false},
                                                {"available", true},
                                                {"total_bytes", 100},
                                                {"used_bytes", 50},
@@ -808,28 +790,14 @@ TEST(SysmonSnapshotValidateTest, RejectsInconsistentReadableVolumes) {
     {  // 挂载点重复
         auto snap = make_snapshot();
         auto j = nlohmann::json(snap);
-        const nlohmann::json volume = {{"mount", "/data"},  {"watched", false},
-                                       {"available", true}, {"total_bytes", 100},
-                                       {"used_bytes", 50},  {"used_ratio", 0.5}};
+        const nlohmann::json volume = {{"mount", "/data"},
+                                       {"available", true},
+                                       {"total_bytes", 100},
+                                       {"used_bytes", 50},
+                                       {"used_ratio", 0.5}};
         j["volumes"] = nlohmann::json::array({volume, volume});
         EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
     }
-}
-
-/// 契约 sysmon §7：落卷解析成功时 mount 必须指向同帧 volumes 里真实存在的卷。
-TEST(SysmonSnapshotValidateTest, RejectsWatchPathPointingToUnknownMount) {
-    auto snap = make_snapshot();
-    auto j = nlohmann::json(snap);
-    j["volumes"] = nlohmann::json::array({{{"mount", "/data"},
-                                           {"watched", false},
-                                           {"available", true},
-                                           {"total_bytes", 100},
-                                           {"used_bytes", 50},
-                                           {"used_ratio", 0.5}}});
-    j["watch_paths"] = nlohmann::json::array(
-        {{{"path", "/srv/shm"}, {"mount", "/elsewhere"}, {"available", true}}});
-    j["availability"]["metrics"]["volumes"] = {{"available", true}};
-    EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
 }
 
 /// 契约 sysmon §2.4：shm_dir 目录不可读时整个对象为 null，不得输出全 0 的对象。
@@ -856,16 +824,14 @@ TEST(SysmonSnapshotValidateTest, RejectsNegativeShmDirAge) {
     EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
 }
 
-/// 序列化往返：卷/落卷/shm 目录的手写 to_json/from_json 不得丢字段或改键名。
+/// 序列化往返：卷/shm 目录的手写 to_json/from_json 不得丢字段或改键名。
 TEST(SysmonSnapshotJsonTest, DiskDomainsRoundTrip) {
     SysmonVolumeInfo volume;
     volume.mount = "C:\\";
-    volume.watched = true;
     volume.available = false;
     volume.reason = "no_permission";
     const auto volume_json = nlohmann::json(volume);
     EXPECT_EQ(volume_json["mount"], "C:\\");
-    EXPECT_TRUE(volume_json["watched"].get<bool>());
     EXPECT_FALSE(volume_json["available"].get<bool>());
     EXPECT_TRUE(volume_json["total_bytes"].is_null());
     EXPECT_TRUE(volume_json["used_bytes"].is_null());
@@ -877,19 +843,6 @@ TEST(SysmonSnapshotJsonTest, DiskDomainsRoundTrip) {
     EXPECT_FALSE(volume_back.total_bytes.has_value());
     ASSERT_TRUE(volume_back.reason.has_value());
     EXPECT_EQ(*volume_back.reason, "no_permission");
-
-    SysmonWatchPathInfo watch;
-    watch.path = "/srv/shm";
-    watch.mount = "/data";
-    const auto watch_json = nlohmann::json(watch);
-    EXPECT_EQ(watch_json["path"], "/srv/shm");
-    EXPECT_EQ(watch_json["mount"], "/data");
-    EXPECT_TRUE(watch_json["available"].get<bool>());
-    EXPECT_FALSE(watch_json.contains("reason"));  // available=true 时省略 reason
-    const auto watch_back = watch_json.get<SysmonWatchPathInfo>();
-    EXPECT_EQ(watch_back.path, "/srv/shm");
-    ASSERT_TRUE(watch_back.mount.has_value());
-    EXPECT_EQ(*watch_back.mount, "/data");
 }
 
 // ===== #76：每物理盘 I/O（契约 sysmon §2.4、§7）=====

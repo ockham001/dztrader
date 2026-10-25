@@ -56,10 +56,9 @@ void mark_not_implemented(platform::SysmonAvailability& availability, const char
 /// 把原始卷读数转换为快照条目（契约 sysmon §2.4）：
 /// 容量读不到（total/free 任一为 nullopt）→ `available=false` + reason，三个容量字段为 null。
 /// `used_bytes = total − free` 并钳制到 `[0, total]`，`used_ratio` 由之计算（total=0 时为 null）。
-platform::SysmonVolumeInfo make_volume(const platform::RawVolumeInfo& raw, bool watched) {
+platform::SysmonVolumeInfo make_volume(const platform::RawVolumeInfo& raw) {
     platform::SysmonVolumeInfo volume;
     volume.mount = raw.mount;
-    volume.watched = watched;
     const bool readable = raw.total_bytes.has_value() && raw.free_bytes.has_value();
     volume.available = readable;
     if (!readable) {
@@ -78,19 +77,6 @@ platform::SysmonVolumeInfo make_volume(const platform::RawVolumeInfo& raw, bool 
     return volume;
 }
 
-/// 把原始落卷解析结果转换为快照条目（契约 sysmon §2.4）：
-/// `mount` 为 nullopt ⇒ `available=false` + reason（不得猜卷）。
-platform::SysmonWatchPathInfo make_watch_path(const platform::RawWatchPathInfo& raw) {
-    platform::SysmonWatchPathInfo info;
-    info.path = raw.path;
-    info.mount = raw.mount;
-    info.available = raw.mount.has_value();
-    if (!info.available) {
-        info.reason = raw.reason.empty() ? std::string(kReasonCollectFailed) : raw.reason;
-    }
-    return info;
-}
-
 /// 人类可读平台描述：Windows 必须含 build 号（区分 Win10/Win11），Linux 带内核 release。
 std::string make_platform_description(const platform::RawSystemInfo& info) {
     if (info.os_family == "windows") {
@@ -104,20 +90,6 @@ std::string make_platform_description(const platform::RawSystemInfo& info) {
 }
 
 }  // namespace
-
-std::set<std::string> watched_mounts_of(
-    const std::optional<std::vector<platform::RawWatchPathInfo>>& watch_paths) {
-    std::set<std::string> mounts;
-    if (!watch_paths.has_value()) {
-        return mounts;
-    }
-    for (const auto& info : *watch_paths) {
-        if (info.mount.has_value()) {
-            mounts.insert(*info.mount);
-        }
-    }
-    return mounts;
-}
 
 platform::SysmonSnapshot build_snapshot(std::string_view source,
                                         const platform::RawSystemInfo& system_info,
@@ -240,26 +212,14 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         snapshot.swap = swap;
     }
 
-    // 卷与关注路径（#75）：落卷解析先算出来，volumes[].watched 由它决定。
-    // watch_paths 不受 volumes 组开关影响（它只服务快照字段，契约 sysmon §2.5）。
-    snapshot.watch_paths = std::nullopt;
-    if (disk_metrics.watch_paths.has_value()) {
-        std::vector<platform::SysmonWatchPathInfo> watch_paths;
-        watch_paths.reserve(disk_metrics.watch_paths->size());
-        for (const auto& raw : *disk_metrics.watch_paths) {
-            watch_paths.push_back(make_watch_path(raw));
-        }
-        snapshot.watch_paths = std::move(watch_paths);
-    }
-    // 关注卷集合的唯一实现点（`watched_mounts_of`）；阈值越限自 #123 起不再消费它。
-    const std::set<std::string> watched_mounts = watched_mounts_of(disk_metrics.watch_paths);
+    // 卷（#75）：配置关闭优先；能力可用但本帧未采到时为 null（能力标记粘性）。
     snapshot.volumes = std::nullopt;
     if (!disk_metrics.volumes_disabled && disk_metrics.volumes_collected &&
         disk_metrics.volumes.has_value()) {
         std::vector<platform::SysmonVolumeInfo> volumes;
         volumes.reserve(disk_metrics.volumes->size());
         for (const auto& raw : *disk_metrics.volumes) {
-            volumes.push_back(make_volume(raw, watched_mounts.contains(raw.mount)));
+            volumes.push_back(make_volume(raw));
         }
         snapshot.volumes = std::move(volumes);
     }

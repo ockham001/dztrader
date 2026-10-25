@@ -268,7 +268,7 @@ TEST(SystemCollectorOracleTest, MemoryAndSwapInvariantsHoldOnRealMachine) {
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 
-// #75 真机 oracle：卷使用率自洽（已用 ≤ 总量、比率与字节一致）、落卷解析对得上同帧卷、
+// #75 真机 oracle：卷使用率自洽（已用 ≤ 总量、比率与字节一致）、
 // 共享内存目录占用可读时数值自洽。两平台同一组不变量（契约 sysmon §2.4、§7）。
 TEST(SystemCollectorOracleTest, DiskDomainsHoldOnRealMachine) {
     const auto collector = platform::make_system_collector();
@@ -278,19 +278,9 @@ TEST(SystemCollectorOracleTest, DiskDomainsHoldOnRealMachine) {
     ASSERT_TRUE(volumes.has_value()) << "collect_volumes must work on a supported host";
     ASSERT_FALSE(volumes->empty());
 
-    // 关注路径取当前工作目录（本机一定存在），落卷必须能在同帧卷列表里找到。
-    std::error_code ec;
-    const auto working_dir = std::filesystem::current_path(ec);
-    ASSERT_FALSE(ec) << ec.message();
-    const std::vector<std::string> watch_paths = {working_dir.string()};
-    const auto resolved = collector->collect_watch_paths(watch_paths);
-    ASSERT_EQ(resolved.size(), 1U);
-    ASSERT_TRUE(resolved[0].mount.has_value()) << "working directory must resolve to a volume";
-
     DiskMetrics disk;
     disk.volumes_collected = true;
     disk.volumes = volumes;
-    disk.watch_paths = resolved;
     // 共享内存目录用真实 $DZTRADER_HOME/shm（ctest 经 test-base preset 注入）：
     // 这份数据同时驱动快照与下面的 oracle 比对，口径必须一致。
     const auto shm_dir_path = dztrader::paths::shm();
@@ -304,7 +294,6 @@ TEST(SystemCollectorOracleTest, DiskDomainsHoldOnRealMachine) {
 
     // 卷：可读卷的使用率必须与字节一致（自洽 oracle）；不可读卷不得有容量数值。
     ASSERT_TRUE(snapshot.volumes.has_value());
-    bool watched_seen = false;
     for (const auto& volume : *snapshot.volumes) {
         if (volume.available) {
             ASSERT_TRUE(volume.total_bytes.has_value()) << volume.mount;
@@ -324,15 +313,7 @@ TEST(SystemCollectorOracleTest, DiskDomainsHoldOnRealMachine) {
             EXPECT_FALSE(volume.used_ratio.has_value()) << volume.mount;
             EXPECT_TRUE(volume.reason.has_value()) << volume.mount;
         }
-        watched_seen = watched_seen || volume.watched;
     }
-    // 落卷成功，必须有一个卷被标记为关注卷（路径感知告警的前提，#80）。
-    EXPECT_TRUE(watched_seen);
-
-    ASSERT_TRUE(snapshot.watch_paths.has_value());
-    ASSERT_EQ(snapshot.watch_paths->size(), 1U);
-    EXPECT_TRUE((*snapshot.watch_paths)[0].available);
-    ASSERT_TRUE((*snapshot.watch_paths)[0].mount.has_value());
 
     // 共享内存目录占用：断言可失败的不变量（不能断言 uint64 >= 0 这类永真条件）：
     //   - 页文件数与最旧年龄是同一批文件的两种视图：有页文件 ⟺ 年龄非空；
@@ -373,7 +354,7 @@ TEST(SystemCollectorOracleTest, DiskDomainsHoldOnRealMachine) {
             << "page_files and oldest_file_age_sec are two views of the same page-file set";
     }
 
-    // 整帧必须通过契约校验（含 volumes/watch_paths 的交叉校验）。
+    // 整帧必须通过契约校验（含 volumes 的交叉校验）。
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 

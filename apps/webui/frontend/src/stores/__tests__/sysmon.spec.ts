@@ -481,7 +481,7 @@ describe('useSysmonStore 内存与交换 computed（#74，可用性驱动）', (
   })
 })
 
-describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75，可用性驱动）', () => {
+describe('useSysmonStore 卷 / 共享内存目录 computed（#75，可用性驱动）', () => {
   const GIB = 1024 ** 3
   const MIB = 1024 ** 2
 
@@ -490,15 +490,14 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
     vi.clearAllMocks()
   })
 
-  it('无快照时 volumes / watchPaths / shmDirInfo 为空（不得伪造 0）', () => {
+  it('无快照时 volumes / shmDirInfo 为空（不得伪造 0）', () => {
     const store = useSysmonStore()
 
     expect(store.volumes).toEqual([])
-    expect(store.watchPaths).toEqual([])
     expect(store.shmDirInfo).toBeNull()
   })
 
-  it('默认快照（#75 形状）返回净化后的卷 / 关注路径 / 共享内存目录', () => {
+  it('默认快照（#75 形状）返回净化后的卷 / 共享内存目录', () => {
     const store = useSysmonStore()
     store.applySnapshot(makeSysmonSnapshot())
 
@@ -506,7 +505,6 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
     expect(store.volumes.map(volume => volume.mount)).toEqual(['/home', '/', '/data'])
     expect(store.volumes[0]).toEqual({
       mount: '/home',
-      watched: false,
       available: true,
       total_bytes: 50 * GIB,
       used_bytes: 31 * GIB,
@@ -515,10 +513,6 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
     expect(store.volumes[1].used_ratio).toBe(0.4)
     expect(store.volumes[2].used_ratio).toBe(0.25)
 
-    expect(store.watchPaths).toEqual([
-      { path: '/srv/dztrader/shm', mount: '/data', available: true },
-      { path: '/srv/dztrader/db', mount: '/data', available: true },
-    ])
     expect(store.shmDirInfo).toEqual({
       path: '/srv/dztrader/shm',
       total_bytes: 720 * MIB,
@@ -527,7 +521,7 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
     })
   })
 
-  it('volumes 不可用时为空数组（不渲染陈旧数据），watchPaths 不受 volumes 开关影响', () => {
+  it('volumes 不可用时为空数组（不渲染陈旧数据）', () => {
     const store = useSysmonStore()
     store.applySnapshot(makeSysmonSnapshot({
       metrics: { volumes: { available: false, reason: 'disabled_by_config' } },
@@ -537,8 +531,6 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
     // #122 两个分池同样为空：不可用时不得把陈旧卷落到任一侧
     expect(store.readableVolumes).toEqual([])
     expect(store.zeroCapacityVolumes).toEqual([])
-    // 契约 sysmon §2.5：配置关闭 volumes 后 watch_paths 仍输出（告警需要它）
-    expect(store.watchPaths).toHaveLength(2)
   })
 
   it('shm_dir 不可用 / 可用但本帧对象缺失：返回 null（视图区分不可用与暂无数据）', () => {
@@ -557,8 +549,8 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
     const store = useSysmonStore()
     store.applySnapshot(makeSysmonSnapshot({
       volumes: [
-        { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
-        { mount: '/backup', watched: false, available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+        { mount: '/', available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
+        { mount: '/backup', available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
       ],
     }))
 
@@ -566,7 +558,6 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
     const backup = store.volumes.find(volume => volume.mount === '/backup')
     expect(backup).toEqual({
       mount: '/backup',
-      watched: false,
       available: false,
       total_bytes: null,
       used_bytes: null,
@@ -579,10 +570,10 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
     const store = useSysmonStore()
     store.applySnapshot(makeSysmonSnapshot({
       volumes: [
-        { mount: '', watched: false, available: true, total_bytes: 1 * GIB, used_bytes: 0, used_ratio: 0 },
-        { mount: '   ', watched: false, available: true, total_bytes: 1 * GIB, used_bytes: 0, used_ratio: 0 },
-        { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 400 * GIB, used_ratio: 2 },
-        { mount: '/data', watched: true, available: true, total_bytes: 100 * GIB, used_bytes: 10 * GIB, used_ratio: 0.9 },
+        { mount: '', available: true, total_bytes: 1 * GIB, used_bytes: 0, used_ratio: 0 },
+        { mount: '   ', available: true, total_bytes: 1 * GIB, used_bytes: 0, used_ratio: 0 },
+        { mount: '/', available: true, total_bytes: 100 * GIB, used_bytes: 400 * GIB, used_ratio: 2 },
+        { mount: '/data', available: true, total_bytes: 100 * GIB, used_bytes: 10 * GIB, used_ratio: 0.9 },
       ],
     }))
 
@@ -600,10 +591,10 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
     const store = useSysmonStore()
     store.applySnapshot(makeSysmonSnapshot({
       volumes: [
-        { mount: '/a', watched: false, available: true, total_bytes: Number.NaN, used_bytes: 0, used_ratio: 0 },
-        { mount: '/b', watched: false, available: true, total_bytes: Number.POSITIVE_INFINITY, used_bytes: 0, used_ratio: 0 },
-        { mount: '/c', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: -1, used_ratio: 0 },
-        { mount: '/d', watched: false, available: true, total_bytes: 1.5, used_bytes: 0, used_ratio: 0 },
+        { mount: '/a', available: true, total_bytes: Number.NaN, used_bytes: 0, used_ratio: 0 },
+        { mount: '/b', available: true, total_bytes: Number.POSITIVE_INFINITY, used_bytes: 0, used_ratio: 0 },
+        { mount: '/c', available: true, total_bytes: 100 * GIB, used_bytes: -1, used_ratio: 0 },
+        { mount: '/d', available: true, total_bytes: 1.5, used_bytes: 0, used_ratio: 0 },
       ],
     }))
 
@@ -621,14 +612,13 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
     const store = useSysmonStore()
     store.applySnapshot(makeSysmonSnapshot({
       volumes: [
-        { mount: '/special', watched: false, available: true, total_bytes: 0, used_bytes: 0, used_ratio: 0 },
+        { mount: '/special', available: true, total_bytes: 0, used_bytes: 0, used_ratio: 0 },
       ],
     }))
 
     expect(store.volumes).toEqual([
       {
         mount: '/special',
-        watched: false,
         available: true,
         total_bytes: 0,
         used_bytes: 0,
@@ -641,14 +631,14 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
     const store = useSysmonStore()
     store.applySnapshot(makeSysmonSnapshot({
       volumes: [
-        { mount: '/b-tie', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 50 * GIB, used_ratio: 0.5 },
-        { mount: '/low', watched: true, available: true, total_bytes: 100 * GIB, used_bytes: 10 * GIB, used_ratio: 0.1 },
-        { mount: '/a-tie', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 50 * GIB, used_ratio: 0.5 },
-        { mount: '/high', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 90 * GIB, used_ratio: 0.9 },
+        { mount: '/b-tie', available: true, total_bytes: 100 * GIB, used_bytes: 50 * GIB, used_ratio: 0.5 },
+        { mount: '/low', available: true, total_bytes: 100 * GIB, used_bytes: 10 * GIB, used_ratio: 0.1 },
+        { mount: '/a-tie', available: true, total_bytes: 100 * GIB, used_bytes: 50 * GIB, used_ratio: 0.5 },
+        { mount: '/high', available: true, total_bytes: 100 * GIB, used_bytes: 90 * GIB, used_ratio: 0.9 },
       ],
     }))
 
-    // 排序只看使用率与挂载点：关注标记不参与（取消关注路径的契约由 #121 定稿，字段本身由 #124 删除）
+    // 排序只看使用率与挂载点
     expect(store.volumes.map(volume => volume.mount)).toEqual(['/high', '/a-tie', '/b-tie', '/low'])
   })
 
@@ -656,9 +646,9 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
     const store = useSysmonStore()
     store.applySnapshot(makeSysmonSnapshot({
       volumes: [
-        { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
-        { mount: '/run/user/1000/gnome-remote-desktop/cliprdr-abc', watched: false, available: true, total_bytes: 0, used_bytes: 0, used_ratio: null },
-        { mount: '/backup', watched: false, available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+        { mount: '/', available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
+        { mount: '/run/user/1000/gnome-remote-desktop/cliprdr-abc', available: true, total_bytes: 0, used_bytes: 0, used_ratio: null },
+        { mount: '/backup', available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
       ],
     }))
 
@@ -669,32 +659,6 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
       '/backup',
       '/run/user/1000/gnome-remote-desktop/cliprdr-abc',
     ])
-  })
-
-  it('watchPaths 防御：空 path 剔除，available=false 强制 mount=null 且补 reason', () => {
-    const store = useSysmonStore()
-    store.applySnapshot(makeSysmonSnapshot({
-      watchPaths: [
-        { path: '', mount: '/', available: true },
-        { path: '  ', mount: '/', available: true },
-        { path: '/srv/shm', mount: '/data', available: true },
-        // 解析失败：发送端不得猜卷，前端再兜一层（mount 置 null）
-        { path: '/srv/missing', mount: '/', available: false, reason: 'path_not_found' },
-        { path: '/srv/opaque', mount: null, available: true },
-      ],
-    }))
-
-    expect(store.watchPaths).toEqual([
-      { path: '/srv/shm', mount: '/data', available: true },
-      { path: '/srv/missing', mount: null, available: false, reason: 'path_not_found' },
-      { path: '/srv/opaque', mount: null, available: false, reason: 'collect_failed' },
-    ])
-  })
-
-  it('watchPaths 可用但本帧数组缺失：空数组（视图不渲染该子区块）', () => {
-    const store = useSysmonStore()
-    store.applySnapshot(makeSysmonSnapshot({ watchPaths: null }))
-    expect(store.watchPaths).toEqual([])
   })
 
   it('shmDirInfo 净化：path 非法 / 计数字段非法整块 null；最旧页文件年龄非法 → null', () => {

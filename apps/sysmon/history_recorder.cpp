@@ -271,8 +271,6 @@ void HistoryRecorder::observe_values(const platform::SysmonSnapshot& snapshot) {
             acc.dimension(sysmonstore::kVolumeDomain, volume.mount, "used_ratio",
                           *volume.used_ratio);
         }
-        acc.dimension(sysmonstore::kVolumeDomain, volume.mount, "watched",
-                      volume.watched ? 1.0 : 0.0);
     }
 
     for (const auto& disk : snapshot.disk_io.value_or(std::vector<platform::SysmonDiskIoInfo>{})) {

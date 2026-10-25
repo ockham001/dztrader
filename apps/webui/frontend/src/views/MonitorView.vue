@@ -14,12 +14,12 @@ import {
 import { useToastStore } from '@/stores/toast'
 
 // 资源监控页：系统信息与 CPU 区块（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率）、
-// 温度、内存与交换、磁盘（卷容量 / 关注路径 / 共享内存目录）接契约 sysmon 实时快照；
+// 温度、内存与交换、磁盘（卷容量 / 共享内存目录）接契约 sysmon 实时快照；
 // 网络区块（#77）接每网卡收发速率与累计量，并提供「显示全部网卡」开关。
 // 内存 / 交换（#74）按可用性映射渲染：不可用显示「不可用」+ 原因，可用但本帧无数据
 // 显示「暂无数据」；交换在可用且总容量为 0 时显示「无交换分区」。
 // 温度 / 每核频率（B 组）按可用性映射渲染：不可用时整块不渲染（不是显示 0 / 不可用占位）。
-// 磁盘（#75）按可用性映射渲染：卷按使用率降序排列（#122）并高亮关注卷；正文只列容量可读且
+// 磁盘（#75）按可用性映射渲染：卷按使用率降序排列（#122）；正文只列容量可读且
 // 总量 > 0 的卷，其余折叠进「无容量挂载（N）」，绝不显示 0；shm_dir 展示共享内存目录占用
 //（页清理是否生效的可观测项）。
 // 磁盘 I/O（#76）按可用性映射渲染：每物理盘的吞吐 / IOPS / 延迟 / 队列深度 / 利用率，
@@ -117,7 +117,7 @@ function formatAge(seconds: number): string {
   return `${Math.floor(total / 86_400)} 天`
 }
 
-/** 卷 / 关注路径的不可用原因（契约 sysmon §2.4 建议取值）：文案化，裸 reason 兜底 */
+/** 卷的不可用原因（契约 sysmon §2.4 建议取值）：文案化，裸 reason 兜底 */
 function volumeReasonDesc(reason: string | undefined): string {
   if (!reason) return '容量读取失败'
   if (reason === 'no_permission') return '无访问权限'
@@ -204,7 +204,7 @@ const temperatures = computed(() => sysmon.temperatures)
 const frequencyAvailable = computed(() => isAvailable('cpu.frequency'))
 const coreFrequencies = computed(() => sysmon.coreFrequencies)
 
-// ---- 内存 / 交换（#74）/ 磁盘（#75：卷容量 / 关注路径 / 共享内存目录）/ 网络 ----
+// ---- 内存 / 交换（#74）/ 磁盘（#75：卷容量 / 共享内存目录）/ 网络 ----
 // 内存 / 交换 / 磁盘一律走 store 的净化 computed（可用性 + 数值防御），组件不直接读 payload 字段。
 const memoryAvailable = computed(() => isAvailable('memory'))
 const memory = computed(() => sysmon.memoryInfo)
@@ -225,7 +225,6 @@ const volumes = computed(() => sysmon.volumes)
 const readableVolumes = computed(() => sysmon.readableVolumes)
 const zeroCapacityVolumes = computed(() => sysmon.zeroCapacityVolumes)
 const zeroVolumesOpen = ref(false)
-const watchPaths = computed(() => sysmon.watchPaths)
 const shmAvailable = computed(() => isAvailable('shm_dir'))
 const shmDir = computed(() => sysmon.shmDirInfo)
 // ---- 磁盘 I/O（#76）：每物理盘吞吐 / IOPS / 延迟 / 队列深度 / 利用率，按可用性映射渲染 ----
@@ -658,7 +657,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
         </div>
       </section>
 
-      <!-- 磁盘（#75：卷容量 / 关注路径 / 共享内存目录），全部按 availability.metrics 渲染 -->
+      <!-- 磁盘（#75：卷容量 / 共享内存目录），全部按 availability.metrics 渲染 -->
       <section class="ds-card monitor-view__card" data-test="monitor-disk">
         <h2 class="ds-card__title monitor-view__card-title">
           <span class="monitor-view__card-icon"><Icon name="Disk" :size="14" /></span>磁盘
@@ -673,12 +672,10 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               v-for="volume in readableVolumes"
               :key="volume.mount"
               class="monitor-view__list-row monitor-view__disk-row"
-              :class="{ 'monitor-view__disk-row--watched': volume.watched }"
               data-test="monitor-disk-volume"
               :data-mount="volume.mount"
             >
               <span class="monitor-view__list-label">{{ volume.mount }}</span>
-              <span v-if="volume.watched" class="ds-tag ds-tag--warning" data-test="monitor-disk-volume-watched">关注</span>
               <span class="monitor-view__list-value">{{ formatPercent(volume.used_ratio) }}</span>
               <span class="monitor-view__list-meta">{{ formatBytes(volume.used_bytes) }} / {{ formatBytes(volume.total_bytes) }}</span>
             </li>
@@ -715,26 +712,6 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               </li>
             </ul>
           </div>
-
-          <!-- 关注路径：落卷解析失败时显示「未解析」+ 原因（不猜卷、不回退到 /） -->
-          <ul
-            v-if="watchPaths.length > 0"
-            class="monitor-view__list monitor-view__subsection"
-            data-test="monitor-watch-paths"
-          >
-            <li
-              v-for="watchPath in watchPaths"
-              :key="watchPath.path"
-              class="monitor-view__list-row"
-              data-test="monitor-watch-path"
-            >
-              <span class="monitor-view__list-label">{{ watchPath.path }}</span>
-              <span v-if="watchPath.available" class="monitor-view__list-meta">落卷 {{ watchPath.mount }}</span>
-              <span v-else class="monitor-view__list-meta" data-test="monitor-watch-path-unavailable">
-                未解析 · {{ volumeReasonDesc(watchPath.reason) }}
-              </span>
-            </li>
-          </ul>
         </div>
 
         <!-- 共享内存目录占用（页清理是否生效的可观测项）：不可用 / 可用但本帧未采集分别空态 -->
@@ -1112,16 +1089,10 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   margin-top: var(--spacer-12);
 }
 
-/* 卷行（#75）：关注卷用左侧警示色描边 + 淡背景高亮（token 取状态色，不硬编码颜色） */
+/* 卷行（#75）：行内边距与圆角 */
 .monitor-view__disk-row {
   padding: var(--spacer-2) var(--spacer-6);
-  border-left: 2px solid transparent;
   border-radius: var(--radius-4);
-}
-
-.monitor-view__disk-row--watched {
-  border-left-color: var(--status-warning-default);
-  background: var(--status-warning-surface-l1);
 }
 
 /* 无容量挂载折叠组（#122）：正文之后、与列表之间留白（折叠按钮自带尺寸，不另设边框） */

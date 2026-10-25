@@ -66,7 +66,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <cwctype>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -676,13 +675,11 @@ std::optional<RawSwapInfo> query_swap_info() {
     return swap;
 }
 
-// ===== 卷、关注路径与共享内存目录（契约 sysmon §2.4）=====
+// ===== 卷与共享内存目录（契约 sysmon §2.4）=====
 //
 // 卷枚举走 GetLogicalDrives + GetDriveTypeW（只要 DRIVE_FIXED 固定盘，契约 §2.4）；
 // 容量走 GetDiskFreeSpaceExW。容量读不到（无权限/卷不可访问）的卷仍进数组，
 // total/free 留 nullopt 并给 reason——"存在但读不到"不得用 0 冒充。
-// 关注路径的落卷解析用 GetVolumePathNameW（OS 自己给出的挂载点，天然处理
-// 驱动器挂载、目录挂载点与卷 GUID，不让本进程重实现一遍匹配规则）。
 
 /// UTF-8 转宽字符；转换失败返回空串。
 std::wstring utf8_to_wide(std::string_view text) {
@@ -778,75 +775,6 @@ std::optional<RawShmDirInfo> query_shm_dir(const std::string& shm_dir) {
     return info;
 }
 
-/// 规范化路径为绝对路径（`GetFullPathNameW`：解析 `.`/`..`、统一分隔符为 `\`）。
-/// @return 规范化后的 UTF-8 路径；失败返回 std::nullopt。
-std::optional<std::string> absolute_path(const std::string& path) {
-    const auto wide_path = utf8_to_wide(path);
-    if (wide_path.empty()) {
-        return std::nullopt;
-    }
-    const DWORD needed = GetFullPathNameW(wide_path.c_str(), 0, nullptr, nullptr);
-    if (needed == 0) {
-        return std::nullopt;
-    }
-    std::wstring absolute(static_cast<std::size_t>(needed), L'\0');
-    const DWORD written = GetFullPathNameW(wide_path.c_str(), needed, absolute.data(), nullptr);
-    if (written == 0 || written >= needed) {
-        return std::nullopt;
-    }
-    absolute.resize(written);
-    return wide_to_utf8(absolute);
-}
-
-/// 取挂载点所属的盘符根（`C:\mnt\vol2` → `C:\`；`C:` → `C:\`）。
-/// UNC（`\\server\share`）与卷 GUID 路径没有盘符根，返回空串（调用方判为不在范围）。
-std::string drive_root_of(const std::string& mount) {
-    if (mount.size() < 2 || mount[1] != ':') {
-        return {};
-    }
-    return mount.substr(0, 2) + "\\";
-}
-
-/// 用 GetVolumePathNameW 把路径解析到所在卷的挂载点（契约 sysmon §2.4）。
-/// @return 挂载点（带尾部分隔符的盘符根或目录挂载点）；失败返回 std::nullopt。
-std::optional<std::string> resolve_volume_mount(const std::string& path) {
-    // GetVolumePathNameW 要求绝对路径（调用方已用 absolute_path() 规范化）。
-    const auto absolute_path_string = absolute_path(path);
-    if (!absolute_path_string.has_value()) {
-        return std::nullopt;
-    }
-    const std::wstring absolute = utf8_to_wide(*absolute_path_string);
-    if (absolute.empty()) {
-        return std::nullopt;
-    }
-
-    // 挂载点缓冲区按 MAX_PATH 起步，长度不足时按 API 约定扩展。
-    std::wstring volume_path(MAX_PATH, L'\0');
-    while (true) {
-        if (GetVolumePathNameW(absolute.c_str(), volume_path.data(),
-                               static_cast<DWORD>(volume_path.size())) != 0) {
-            break;
-        }
-        if (GetLastError() != ERROR_FILENAME_EXCED_RANGE) {
-            return std::nullopt;
-        }
-        volume_path.resize(volume_path.size() * 2);
-        if (volume_path.size() > 32 * 1024) {
-            return std::nullopt;  // 病态长路径：放弃解析（调用方报 collect_failed）
-        }
-    }
-    std::wstring resolved = std::wstring(volume_path.c_str());
-    // 盘符统一成大写：query_volumes() 的挂载点由 'A'+index 生成（恒大写），而
-    // GetVolumePathNameW 会把调用方输入的大小写原样回显（`c:\` 得 `c:\`）。
-    // 契约 sysmon §2.4 要求 Windows 匹配大小写不敏感，消费方（快照构造的 watched
-    // 判定、dzweb 的 §7 交叉校验）用字符串相等比较，所以这里必须归一化，
-    // 否则小写盘符的关注路径永远对不上卷、整帧还会被交叉校验拒掉。
-    if (resolved.size() >= 2 && resolved[1] == L':') {
-        resolved[0] = static_cast<wchar_t>(std::towupper(resolved[0]));
-    }
-    return wide_to_utf8(resolved);
-}
-
 /// 采集卷列表与容量（契约 sysmon §2.4）；一个固定盘都没有时返回 std::nullopt。
 std::optional<std::vector<RawVolumeInfo>> query_volumes() {
     const auto drives = list_fixed_drives();
@@ -857,7 +785,7 @@ std::optional<std::vector<RawVolumeInfo>> query_volumes() {
     volumes.reserve(drives.size());
     for (const auto& drive : drives) {
         RawVolumeInfo volume;
-        // 挂载点统一为带尾部分隔符的盘符根（`C:\\`），与 GetVolumePathNameW 返回口径一致。
+        // 挂载点统一为带尾部分隔符的盘符根（`C:\\`），与固定盘枚举口径一致。
         volume.mount = drive + "\\";
         const std::wstring wide_root = utf8_to_wide(volume.mount);
         ULARGE_INTEGER free_to_caller{};
@@ -1085,64 +1013,6 @@ public:
     std::optional<RawSwapInfo> collect_swap() override { return query_swap_info(); }
 
     std::optional<std::vector<RawVolumeInfo>> collect_volumes() override { return query_volumes(); }
-
-    std::vector<RawWatchPathInfo> collect_watch_paths(
-        const std::vector<std::string>& paths) override {
-        std::vector<RawWatchPathInfo> results;
-        results.reserve(paths.size());
-        for (const auto& path : paths) {
-            RawWatchPathInfo info;
-            info.path = path;
-            // 路径不存在 ⇒ 如实报 path_not_found（GetVolumePathNameW 对不存在的尾部
-            // 仍可能返回父卷，不能据此报成功，契约 sysmon §2.4）。
-            const auto absolute = absolute_path(path);
-            if (!absolute.has_value()) {
-                info.reason = "path_not_found";
-                results.push_back(std::move(info));
-                continue;
-            }
-            // 契约 sysmon §2.4：path 是"解析用的路径（绝对路径）"，上报规范化结果而不是
-            // 调用方原始输入（分隔符已统一为 `\`、`.`/`..` 已解析）。
-            info.path = *absolute;
-            std::error_code exists_ec;
-            const bool exists =
-                std::filesystem::exists(std::filesystem::path(utf8_to_wide(*absolute)), exists_ec);
-            if (!exists || exists_ec) {
-                info.reason = "path_not_found";
-                results.push_back(std::move(info));
-                continue;
-            }
-            const auto mount = resolve_volume_mount(*absolute);
-            if (!mount.has_value()) {
-                // 路径存在但解析不到挂载点（极端长路径/卷服务异常）：不猜卷（契约 sysmon §2.4）。
-                info.reason = "collect_failed";
-                results.push_back(std::move(info));
-                continue;
-            }
-            // 卷容量只覆盖固定盘根（契约 sysmon §2.4）：落卷落在网络盘/可移动盘/UNC 上时
-            // 该挂载点不会出现在 volumes[] 里，照实报 mount 会让整帧交叉校验失败。
-            // 契约要求此类报 unsupported（"卷不在采集范围"），mount 留 null。
-            //
-            // 注意**不能**用"是否是固定盘"作为唯一判据：NTFS 支持把一个卷挂载成目录
-            // （`C:\mnt\vol2`）。这类路径的挂载点在 C: 上、GetDriveType 也是 FIXED，
-            // 但 `C:\mnt\vol2` 不等于 volumes[] 里的 `C:\`，同样会打红交叉校验。
-            // 判据统一为：挂载点的盘符根 == 该盘根的规范化形式（即挂载点就是卷根）。
-            const auto mount_root = drive_root_of(*mount);
-            const std::wstring wide_mount_root = utf8_to_wide(mount_root);
-            const bool in_scope =
-                wide_mount_root.size() >= 3 &&
-                GetDriveTypeW(wide_mount_root.substr(0, 3).c_str()) == DRIVE_FIXED &&
-                *mount == mount_root;
-            if (!in_scope) {
-                info.reason = "unsupported";
-                results.push_back(std::move(info));
-                continue;
-            }
-            info.mount = *mount;
-            results.push_back(std::move(info));
-        }
-        return results;
-    }
 
     std::optional<RawShmDirInfo> collect_shm_dir(const std::string& shm_dir) override {
         return query_shm_dir(shm_dir);

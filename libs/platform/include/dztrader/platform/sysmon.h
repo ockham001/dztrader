@@ -228,7 +228,6 @@ struct SysmonSwapInfo {
 /// 该卷仍进数组（"存在但读不到"与"没有这个卷"是不同事实，消费方都要能显示）。
 struct SysmonVolumeInfo {
     std::string mount;      ///< 规范化挂载点（Linux 挂载目录；Windows 盘符根，如 `C:\\`）
-    bool watched = false;   ///< 承载了任一关注路径（快照 `watch_paths` 的落卷）
     bool available = true;  ///< 容量是否可读
     std::optional<uint64_t> total_bytes;  ///< available=false 时为 null
     std::optional<uint64_t> used_bytes;   ///< available=false 时为 null
@@ -240,7 +239,6 @@ struct SysmonVolumeInfo {
 // 且 available=false 时三个容量字段必须输出 null（不得省略、不得用 0）。
 inline void to_json(nlohmann::json& j, const SysmonVolumeInfo& v) {
     j = nlohmann::json{{"mount", v.mount},
-                       {"watched", v.watched},
                        {"available", v.available},
                        {"total_bytes", v.total_bytes.has_value() ? nlohmann::json(*v.total_bytes)
                                                                  : nlohmann::json(nullptr)},
@@ -255,7 +253,6 @@ inline void to_json(nlohmann::json& j, const SysmonVolumeInfo& v) {
 
 inline void from_json(const nlohmann::json& j, SysmonVolumeInfo& v) {
     v.mount = j.at("mount").get<std::string>();
-    v.watched = j.value("watched", false);
     v.available = j.value("available", true);
     v.total_bytes = j.value("total_bytes", nlohmann::json(nullptr)).is_null()
                         ? std::nullopt
@@ -267,40 +264,6 @@ inline void from_json(const nlohmann::json& j, SysmonVolumeInfo& v) {
                        ? std::nullopt
                        : std::optional<double>(j["used_ratio"].get<double>());
     v.reason = (!j.contains("reason") || j["reason"].is_null())
-                   ? std::nullopt
-                   : std::optional<std::string>(j["reason"].get<std::string>());
-}
-
-/// 关注路径的落卷解析结果（契约 sysmon §2.4）。
-///
-/// 默认关注路径为共享内存目录与数据库目录（配置 `disk.watch_paths` 非空时以其为准）。
-/// 解析失败（路径不存在/无权限/解析不到卷）时 `mount` 为 null 且 `reason` 必填；
-/// 不得猜一个卷或回退到 `/`。
-struct SysmonWatchPathInfo {
-    std::string path;                   ///< 解析用路径（绝对路径，符号链接已跟随）
-    std::optional<std::string> mount;   ///< 所在卷挂载点，可与 volumes[].mount 相等比较
-    bool available = true;              ///< 落卷解析是否成功
-    std::optional<std::string> reason;  ///< available=false 时的原因
-};
-
-// 手写序列化：`reason` 在 available=true 时省略（契约 sysmon §7）。
-inline void to_json(nlohmann::json& j, const SysmonWatchPathInfo& w) {
-    j = nlohmann::json{
-        {"path", w.path},
-        {"mount", w.mount.has_value() ? nlohmann::json(*w.mount) : nlohmann::json(nullptr)},
-        {"available", w.available}};
-    if (w.reason.has_value() && !w.reason->empty()) {
-        j["reason"] = *w.reason;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, SysmonWatchPathInfo& w) {
-    w.path = j.at("path").get<std::string>();
-    w.mount = (!j.contains("mount") || j["mount"].is_null())
-                  ? std::nullopt
-                  : std::optional<std::string>(j["mount"].get<std::string>());
-    w.available = j.value("available", true);
-    w.reason = (!j.contains("reason") || j["reason"].is_null())
                    ? std::nullopt
                    : std::optional<std::string>(j["reason"].get<std::string>());
 }
@@ -489,9 +452,6 @@ struct SysmonSnapshot {
     std::optional<SysmonMemoryInfo> memory;  ///< null = 本版本未采集/不可用
     std::optional<SysmonSwapInfo> swap;
     std::optional<std::vector<SysmonVolumeInfo>> volumes;
-    /// 关注路径（共享内存目录 / 数据库目录）的落卷解析（契约 sysmon §2.4）；
-    /// null = 本帧未采集/不可用。
-    std::optional<std::vector<SysmonWatchPathInfo>> watch_paths;
     std::optional<std::vector<SysmonDiskIoInfo>> disk_io;
     std::optional<std::vector<SysmonNetworkInfo>> network;
     std::optional<SysmonShmDirInfo> shm_dir;
@@ -509,7 +469,6 @@ struct SysmonSnapshot {
                                                 memory,
                                                 swap,
                                                 volumes,
-                                                watch_paths,
                                                 disk_io,
                                                 network,
                                                 shm_dir,
@@ -539,11 +498,10 @@ struct SysmonSamplingConfig {
     static std::map<std::string, bool> default_groups();
 };
 
-/// 磁盘配置。
+/// 磁盘配置（本段只含设备范围）。
 struct SysmonDiskConfig {
-    std::vector<std::string> watch_paths;  ///< 关注路径（共享内存目录/数据库目录所在卷）
-    std::vector<std::string> devices;      ///< 设备范围（空 = 全部物理盘）
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonDiskConfig, watch_paths, devices)
+    std::vector<std::string> devices;  ///< 设备范围（空 = 全部物理盘）
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonDiskConfig, devices)
 };
 
 /// 网络配置。

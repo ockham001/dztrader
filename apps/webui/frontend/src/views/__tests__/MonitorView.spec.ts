@@ -555,7 +555,7 @@ describe('MonitorView 内存与交换（#74，可用性驱动）', () => {
   })
 })
 
-describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目录，可用性驱动）', () => {
+describe('MonitorView 磁盘（#75：卷容量 / 共享内存目录，可用性驱动）', () => {
   const GIB = 1024 ** 3
   const MIB = 1024 ** 2
 
@@ -564,22 +564,19 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
     vi.clearAllMocks()
   })
 
-  it('默认快照：3 个卷按使用率降序排序，关注卷高亮并带「关注」标签', async () => {
+  it('默认快照：3 个卷按使用率降序排序', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     const wrapper = await mountView()
 
     const rows = wrapper.findAll('[data-test="monitor-disk-volume"]')
     expect(rows).toHaveLength(3)
-    // #122：按使用率降序（62% > 40% > 25%），关注标记不再影响顺序
+    // #122：按使用率降序（62% > 40% > 25%）
     expect(rows[0].attributes('data-mount')).toBe('/home')
     expect(rows[0].text()).toContain('62.0%')
     expect(rows[1].attributes('data-mount')).toBe('/')
     expect(rows[1].text()).toContain('40.0%')
 
-    // watched 高亮与「关注」标签保留（字段本身由 #124 删除）
     expect(rows[2].attributes('data-mount')).toBe('/data')
-    expect(rows[2].classes()).toContain('monitor-view__disk-row--watched')
-    expect(rows[2].find('[data-test="monitor-disk-volume-watched"]').exists()).toBe(true)
     expect(rows[2].text()).toContain('25.0%')
     expect(rows[2].text()).toContain('256.0 GiB / 1024.0 GiB')
 
@@ -591,9 +588,9 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
   it('#122 无容量挂载：正文列表只留可读容量的卷，其余折叠进「无容量挂载（N）」', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
-        { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
-        { mount: '/run/user/1000/cliprdr-abc', watched: false, available: true, total_bytes: 0, used_bytes: 0, used_ratio: null },
-        { mount: '/backup', watched: false, available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+        { mount: '/', available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
+        { mount: '/run/user/1000/cliprdr-abc', available: true, total_bytes: 0, used_bytes: 0, used_ratio: null },
+        { mount: '/backup', available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
       ],
     }))
     const wrapper = await mountView()
@@ -614,9 +611,9 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
   it('#122 无容量挂载展开：逐条显示挂载点、占位与不可用原因', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
-        { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
-        { mount: '/run/user/1000/cliprdr-abc', watched: false, available: true, total_bytes: 0, used_bytes: 0, used_ratio: null },
-        { mount: '/backup', watched: false, available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+        { mount: '/', available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
+        { mount: '/run/user/1000/cliprdr-abc', available: true, total_bytes: 0, used_bytes: 0, used_ratio: null },
+        { mount: '/backup', available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
       ],
     }))
     const wrapper = await mountView()
@@ -644,7 +641,7 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
   it('卷可读性脏数据（NaN/负数）：折叠进无容量分组并显示「采集失败」，不显示 0', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
-        { mount: '/dirty', watched: false, available: true, total_bytes: Number.NaN, used_bytes: -1, used_ratio: 0 },
+        { mount: '/dirty', available: true, total_bytes: Number.NaN, used_bytes: -1, used_ratio: 0 },
       ],
     }))
     const wrapper = await mountView()
@@ -670,31 +667,6 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
     // 空态沿用既有 unavailableDesc：disabled_by_config 映射为「已在配置中关闭」
     expect(empty.text()).toContain('已在配置中关闭')
     expect(wrapper.findAll('[data-test="monitor-disk-volume"]')).toHaveLength(0)
-  })
-
-  it('关注路径：渲染 path + 落卷；解析失败显示「未解析」+ 原因，不猜卷', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      watchPaths: [
-        { path: '/srv/dztrader/shm', mount: '/data', available: true },
-        { path: '/srv/dztrader/missing', mount: null, available: false, reason: 'path_not_found' },
-      ],
-    }))
-    const wrapper = await mountView()
-
-    const rows = wrapper.findAll('[data-test="monitor-watch-path"]')
-    expect(rows).toHaveLength(2)
-    expect(rows[0].text()).toContain('/srv/dztrader/shm')
-    expect(rows[0].text()).toContain('落卷 /data')
-    expect(rows[1].text()).toContain('/srv/dztrader/missing')
-    expect(rows[1].find('[data-test="monitor-watch-path-unavailable"]').text()).toContain('未解析')
-    expect(rows[1].find('[data-test="monitor-watch-path-unavailable"]').text()).toContain('路径不存在或无法解析')
-  })
-
-  it('关注路径为空（本帧未采集）：不渲染该子区块', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ watchPaths: null }))
-    const wrapper = await mountView()
-
-    expect(wrapper.find('[data-test="monitor-watch-paths"]').exists()).toBe(false)
   })
 
   it('共享内存目录：渲染路径 / 占用 / 页文件数 / 最旧页文件年龄', async () => {
@@ -743,7 +715,7 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
   it('可用但 total_bytes=0 的特殊卷：折叠进无容量分组并显示「—」，不占正文也不报不可用', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
-        { mount: '/special', watched: false, available: true, total_bytes: 0, used_bytes: 0, used_ratio: null },
+        { mount: '/special', available: true, total_bytes: 0, used_bytes: 0, used_ratio: null },
       ],
     }))
     const wrapper = await mountView()
@@ -766,10 +738,9 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
   it('不按 platform.family 分支：Windows 形状卷（C: / D:）照常按数据渲染', async () => {
     const snapshot = makeSysmonSnapshot({
       volumes: [
-        { mount: 'C:', watched: true, available: true, total_bytes: 500 * GIB, used_bytes: 250 * GIB, used_ratio: 0.5 },
-        { mount: 'D:', watched: false, available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+        { mount: 'C:', available: true, total_bytes: 500 * GIB, used_bytes: 250 * GIB, used_ratio: 0.5 },
+        { mount: 'D:', available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
       ],
-      watchPaths: [{ path: 'C:\\dztrader\\shm', mount: 'C:', available: true }],
       shmDir: { path: 'C:\\dztrader\\shm', total_bytes: 128 * MIB, page_files: 4, oldest_file_age_sec: 30 },
     })
     snapshot.platform = {
@@ -786,7 +757,6 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
     const rows = wrapper.findAll('[data-test="monitor-disk-volume"]')
     expect(rows).toHaveLength(1)
     expect(rows[0].attributes('data-mount')).toBe('C:')
-    expect(rows[0].classes()).toContain('monitor-view__disk-row--watched')
     expect(rows[0].text()).toContain('50.0%')
     // 不可读的 D: 折叠进无容量分组（#122），正文只剩 C:
     const group = wrapper.find('[data-test="monitor-disk-zero-volumes"]')
@@ -798,14 +768,14 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
     expect(wrapper.find('[data-test="monitor-shm-oldest-age"]').text()).toBe('30 秒')
   })
 
-  it('WS 推送更新：卷数量与关注标记随快照刷新（不重新 REST 拉取）', async () => {
+  it('WS 推送更新：卷数量随快照刷新（不重新 REST 拉取）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     const wrapper = await mountView()
     expect(wrapper.findAll('[data-test="monitor-disk-volume"]')).toHaveLength(3)
 
     useSysmonStore().applySnapshot(makeSysmonSnapshot({
       volumes: [
-        { mount: '/only', watched: true, available: true, total_bytes: 10 * GIB, used_bytes: 9 * GIB, used_ratio: 0.9 },
+        { mount: '/only', available: true, total_bytes: 10 * GIB, used_bytes: 9 * GIB, used_ratio: 0.9 },
       ],
     }))
     await wrapper.vm.$nextTick()
@@ -1278,10 +1248,10 @@ describe('MonitorView 阈值告警横幅（#80）', () => {
     expect(items[0].attributes('data-kind')).toBe('memory_used')
     expect(items[0].text()).toContain('内存使用率 95.0% 超过告警阈值')
     expect(items[0].text()).toContain('始于')
-    // 关注卷：剩余空间由同帧卷数据计算，不靠猜
+    // 卷告警：剩余空间由同帧卷数据计算，不靠猜
     expect(items[1].attributes('data-kind')).toBe('volume_free')
     expect(items[1].attributes('data-subject')).toBe('/data')
-    expect(items[1].text()).toContain('关注卷 /data 剩余空间不足')
+    expect(items[1].text()).toContain('卷 /data 剩余空间不足')
     expect(items[1].text()).toContain('768.0 GiB')  // 1024 GiB 卷 − 256 GiB 已用
     // since=0 不展示"始于"（缺失/非法时间不得冒充）
     expect(items[1].find('[data-test="monitor-alert-since"]').exists()).toBe(false)
