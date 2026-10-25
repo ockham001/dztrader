@@ -625,7 +625,8 @@ private:
     /// 卷/目录能力标记粘性：一次成功后 available 保持 true，本帧失败只把域置 null
     /// （契约 sysmon §2.5）。单个卷不可读不改写整体可用性——采集层把该卷以
     /// "容量字段为 null + reason" 放进数组（契约 sysmon §2.4）。
-    /// `watch_paths` 不受 `sampling.groups.volumes` 影响（路径感知告警需要它，见 #80）。
+    /// `watch_paths` 不受 `sampling.groups.volumes` 影响：它只服务快照字段，
+    /// 阈值越限自 #123 起按全部卷判定、不再依赖落卷结果。
     void refresh_disk_metrics() {
         if (!group_enabled("volumes")) {
             disk_metrics_.volumes_disabled = true;
@@ -773,14 +774,9 @@ private:
                                                   wall_clock_unix_ms() / 1000, steady_clock_ms());
         const auto result = threshold_evaluator_.evaluate(inputs, config_.thresholds);
         for (const auto& record : result.records) {
-            switch (record.level) {
-                case spdlog::level::warn:
-                    SPDLOG_WARN("{}", record.message);
-                    break;
-                default:
-                    SPDLOG_INFO("{}", record.message);
-                    break;
-            }
+            // 级别由状态机随记录给出（进入 warn、重记/恢复 info），这里原样落日志——
+            // 不在调用方再按状态分一次支，避免"两处各写一套映射"后漂移。
+            spdlog::log(record.level, "{}", record.message);
         }
     }
 
@@ -879,7 +875,7 @@ private:
         evaluate_thresholds();
         // sampling.groups.cpu=false（契约 sysmon §3.1.1）：跳过 CPU 采样与负载读取，
         // 清空数值并重置基线（重新开启时从新基线开始，不得跨关闭期计算使用率）。
-        // 配置关闭不是采集缺口，**不累加** missed_ticks；其它域与告警判定照常。
+        // 配置关闭不是采集缺口，**不累加** missed_ticks；其它域与越限判定照常。
         if (!group_enabled(platform::SYSMON_GROUP_CPU)) {
             metrics_.disabled = true;
             // clear_cpu_values 只把数值置空、保留已知核 index（契约 §2.7）：关闭期间快照构造

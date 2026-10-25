@@ -47,11 +47,14 @@ std::string saturated_fields(const std::vector<uint32_t>& saturated_cores) {
 std::string record_message(const ThresholdKey& key,
                            ThresholdState state,
                            std::string_view value_fields,
+                           int64_t since_unix_sec,
                            int64_t active_sec) {
     switch (state) {
         case ThresholdState::Entered:
-            return std::format("threshold exceeded | subject={} state=entered {}",
-                               subject_field(key), value_fields);
+            // 带上墙钟起点：UI 此后不再呈现"高水位始于何时"（ADR 0034），
+            // 这条日志是唯一能回答该问题的地方。
+            return std::format("threshold exceeded | subject={} state=entered {} since={}",
+                               subject_field(key), value_fields, since_unix_sec);
         case ThresholdState::Ongoing:
             return std::format(
                 "threshold still exceeded | subject={} state=ongoing {} active_sec={}",
@@ -131,13 +134,26 @@ ThresholdInputs make_threshold_inputs(const CpuMetrics& cpu_metrics,
     return inputs;
 }
 
-bool ThresholdEvaluator::repeat_due(const SubjectState& state,
+bool ThresholdEvaluator::repeat_due(SubjectState& state,
                                     int64_t now_monotonic_ms,
                                     int64_t repeat_ms) {
     if (repeat_ms <= 0) {
         return false;  // 0 = 不重记（契约 §2.8）
     }
-    return now_monotonic_ms >= state.next_repeat_monotonic_ms;
+    const int64_t since = state.since_monotonic_ms;
+    const int64_t milestone = (now_monotonic_ms - since) / repeat_ms;
+    // 间隔运行期改变：按新间隔重排已记录的里程碑序号（当前 tick 不触发）。
+    // 这样重排后的下一个到期点仍落在 `since + N × 新间隔` 上，而不是沿用旧间隔的相位。
+    if (repeat_ms != state.scheduled_repeat_ms) {
+        state.scheduled_repeat_ms = repeat_ms;
+        state.recorded_milestone = milestone;
+        return false;
+    }
+    if (milestone <= state.recorded_milestone) {
+        return false;  // 本里程碑已记过（或尚未到达）
+    }
+    state.recorded_milestone = milestone;  // 跳过的里程碑不补发
+    return true;
 }
 
 ThresholdEvaluator::Result ThresholdEvaluator::evaluate(
@@ -167,7 +183,7 @@ ThresholdEvaluator::Result ThresholdEvaluator::evaluate(
             result.records.push_back(make_record(
                 key, outcome, static_cast<double>(inputs.saturated_cores.size()), std::nullopt,
                 record_message(key, outcome.state, saturated_fields(inputs.saturated_cores),
-                               outcome.active_sec)));
+                               outcome.since_unix_sec, outcome.active_sec)));
         }
     }
 
@@ -201,7 +217,7 @@ ThresholdEvaluator::Result ThresholdEvaluator::evaluate(
                 result.records.push_back(make_record(
                     key, outcome, free_ratio, threshold_ratio,
                     record_message(key, outcome.state, ratio_fields(free_ratio, threshold_ratio),
-                                   outcome.active_sec)));
+                                   outcome.since_unix_sec, outcome.active_sec)));
             }
         }
     }
@@ -238,7 +254,7 @@ void ThresholdEvaluator::evaluate_usage(const char* kind,
         out.records.push_back(
             make_record(key, outcome, ratio, threshold_ratio,
                         record_message(key, outcome.state, ratio_fields(ratio, threshold_ratio),
-                                       outcome.active_sec)));
+                                       outcome.since_unix_sec, outcome.active_sec)));
     }
 }
 
@@ -260,11 +276,13 @@ ThresholdEvaluator::TransitionOutcome ThresholdEvaluator::transition(
             state.active = true;
             state.since_unix_sec = inputs.now_unix_sec;
             state.since_monotonic_ms = inputs.now_monotonic_ms;
-            // 第一条重记出现在"进入时刻 + 一个间隔"；之后每个间隔一条。
-            state.next_repeat_monotonic_ms = inputs.now_monotonic_ms + repeat_ms;
+            // 第一条重记出现在"进入时刻 + 一个间隔"（里程碑 1）；之后每个间隔一条。
+            state.recorded_milestone = 0;
+            state.scheduled_repeat_ms = repeat_ms;
             outcome.state = ThresholdState::Entered;
             outcome.produced = true;
             outcome.active_sec = 0;
+            outcome.since_unix_sec = state.since_unix_sec;
             return outcome;
         }
         // 活动期内：阈值持续满足不重记，但每满间隔记一条「仍越限」。
@@ -274,13 +292,7 @@ ThresholdEvaluator::TransitionOutcome ThresholdEvaluator::transition(
             outcome.state = ThresholdState::Ongoing;
             outcome.produced = true;
             outcome.active_sec = (inputs.now_monotonic_ms - state.since_monotonic_ms) / 1000;
-            // 记下已到达的最新里程碑：下一条的判据是「距 since 又满一个间隔」。
-            state.next_repeat_monotonic_ms += repeat_ms;
-            // 时钟跳变等导致一次性落后多个间隔时，不补发历史记录（一条"仍越限"已足够
-            // 表达"它还在持续"），直接把里程碑推进到当前时刻之后的第一个间隔。
-            while (state.next_repeat_monotonic_ms <= inputs.now_monotonic_ms) {
-                state.next_repeat_monotonic_ms += repeat_ms;
-            }
+            outcome.since_unix_sec = state.since_unix_sec;
         }
         return outcome;
     }
@@ -290,6 +302,7 @@ ThresholdEvaluator::TransitionOutcome ThresholdEvaluator::transition(
         outcome.state = ThresholdState::Recovered;
         outcome.produced = true;
         outcome.active_sec = (inputs.now_monotonic_ms - state.since_monotonic_ms) / 1000;
+        outcome.since_unix_sec = state.since_unix_sec;
     }
     states_.erase(it);
     return outcome;
@@ -310,6 +323,7 @@ ThresholdLogRecord ThresholdEvaluator::make_record(const ThresholdKey& key,
     record.current_value = current_value;
     record.threshold_value = threshold_value;
     record.active_sec = outcome.active_sec;
+    record.since_unix_sec = outcome.since_unix_sec;
     record.message = std::move(message);
     return record;
 }

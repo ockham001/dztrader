@@ -231,23 +231,46 @@ TEST(ThresholdEvaluatorTest, RepeatUsesMonotonicClockNotWallClock) {
     EXPECT_EQ(repeated.records[0].active_sec, 600);
 }
 
-// 运行期改 `log_repeat_sec`：里程碑按活动期起点对齐（契约 §2.8），改大后不会在旧网格点
-// 上误触发，改小后从下一个里程碑起按新节奏续算；不补发、不立刻触发。
-TEST(ThresholdEvaluatorTest, RepeatIntervalChangeAppliesFromNextMilestone) {
+// 运行期改 `log_repeat_sec`：里程碑仍锚定**活动期起点**（契约 §2.8），按新间隔重排；
+// 不补发已错过的里程碑、也不在改动的当帧立刻触发一条。
+TEST(ThresholdEvaluatorTest, RepeatIntervalChangeReanchorsMilestonesToEpisodeStart) {
     ThresholdEvaluator evaluator;
     auto config = make_config();
     config.log_repeat_sec = 100;
     ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 0, kWallSec), config).records.size(), 1U);
-    // 第一个里程碑 100s：记一条，下一里程碑 200s。
+    // 里程碑 100s / 200s 各一条。
     ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 100'000, kWallSec), config).records.size(), 1U);
-
-    // 调大到 600s：下一个里程碑已按旧间隔排到 200s，此时（200s）仍会照旧触发一条，
-    // 之后按 600s 的间隔从该里程碑续算。
-    config.log_repeat_sec = 600;
     ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 200'000, kWallSec), config).records.size(), 1U);
-    // 200s + 600s = 800s 之前不再重记。
-    EXPECT_TRUE(evaluator.evaluate(memory_input(0.95, 799'999, kWallSec), config).records.empty());
-    ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 800'000, kWallSec), config).records.size(), 1U);
+
+    // 调大到 600s：重排后到期点是 since + 600s，而不是"上次记录 + 600s"（那会是 800s）。
+    config.log_repeat_sec = 600;
+    EXPECT_TRUE(evaluator.evaluate(memory_input(0.95, 300'000, kWallSec), config).records.empty());
+    EXPECT_TRUE(evaluator.evaluate(memory_input(0.95, 599'999, kWallSec), config).records.empty());
+    const auto at600 = evaluator.evaluate(memory_input(0.95, 600'000, kWallSec), config);
+    ASSERT_EQ(at600.records.size(), 1U);
+    EXPECT_EQ(at600.records[0].state, ThresholdState::Ongoing);
+    EXPECT_EQ(at600.records[0].active_sec, 600);
+    // 下一个到期点是 since + 1200s。
+    EXPECT_TRUE(
+        evaluator.evaluate(memory_input(0.95, 1'199'999, kWallSec), config).records.empty());
+    ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 1'200'000, kWallSec), config).records.size(),
+              1U);
+}
+
+// 间隔改小：已错过的里程碑不补发，从下一个对齐点继续。
+TEST(ThresholdEvaluatorTest, ShrinkingRepeatIntervalDoesNotBackfillMilestones) {
+    ThresholdEvaluator evaluator;
+    auto config = make_config();
+    config.log_repeat_sec = 600;
+    ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 0, kWallSec), config).records.size(), 1U);
+
+    // 200s 时改成 100s：since + 200s 的里程碑已过，当帧不补发。
+    config.log_repeat_sec = 100;
+    EXPECT_TRUE(evaluator.evaluate(memory_input(0.95, 200'000, kWallSec), config).records.empty());
+    // 下一个未记录的里程碑是 since + 300s。
+    const auto at300 = evaluator.evaluate(memory_input(0.95, 300'000, kWallSec), config);
+    ASSERT_EQ(at300.records.size(), 1U);
+    EXPECT_EQ(at300.records[0].active_sec, 300);
 }
 
 // 契约 §2.8：重记里程碑按**活动期起点**对齐——持续很久也不会把节奏漂到周期别处。
@@ -432,6 +455,29 @@ TEST(ThresholdEvaluatorTest, UnreadableVolumeDomainKeepsActive) {
     EXPECT_TRUE(still.records.empty());
 }
 
+// 契约 §3.1.1 groups 表格：关闭 `sampling.groups.volumes` 时对应卷判定对象**静默清除**
+// （配置关闭不是恢复）。重新开启后是全新活动期，重新记进入。
+TEST(ThresholdEvaluatorTest, VolumeGroupDisabledClearsSilently) {
+    ThresholdEvaluator evaluator;
+    const auto config = make_config();
+    ASSERT_EQ(
+        evaluator.evaluate(volume_input({volume_usage("/data", 10 * kGiB, 0)}, 0, kWallSec), config)
+            .records.size(),
+        1U);
+
+    // 关闭卷采集：静默清除，不写恢复记录。
+    ThresholdInputs disabled = volume_input({}, 1'000, kWallSec + 1);
+    disabled.volumes_applicable = false;
+    disabled.known_mounts = std::nullopt;
+    EXPECT_TRUE(evaluator.evaluate(disabled, config).records.empty());
+
+    // 重新开启后仍越限：全新活动期 → 重新记一条进入（不是"接着上次"）。
+    const auto reenabled = evaluator.evaluate(
+        volume_input({volume_usage("/data", 10 * kGiB, 0)}, 2'000, kWallSec + 2), config);
+    ASSERT_EQ(reenabled.records.size(), 1U);
+    EXPECT_EQ(reenabled.records[0].state, ThresholdState::Entered);
+}
+
 // ===== CPU 饱和：整机一个判定对象 =====
 
 TEST(ThresholdEvaluatorTest, CpuSaturationEntersAndRecovers) {
@@ -451,7 +497,7 @@ TEST(ThresholdEvaluatorTest, CpuSaturationEntersAndRecovers) {
 
 // CPU 饱和没有"百分比阈值"语义（饱和判定在采集阶段完成）：记录如实报饱和核数，
 // 不编一个 current_pct/threshold_pct（那会让日志读起来像"CPU 用了多少"）。
-TEST(ThresholdEvaluatorTest, CpuSaturationRecordReportsSaturatedCoreCount) {
+TEST(ThresholdEvaluatorTest, CpuSaturationRecordReportsSaturatedCoreIndices) {
     ThresholdEvaluator evaluator;
     const auto result = evaluator.evaluate(cpu_input(true, {0, 2, 5}, 0, kWallSec), make_config());
     ASSERT_EQ(result.records.size(), 1U);

@@ -241,7 +241,7 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
     }
 
     // 卷与关注路径（#75）：落卷解析先算出来，volumes[].watched 由它决定。
-    // watch_paths 不受 volumes 组开关影响（告警需要落卷信息，契约 sysmon §2.5）。
+    // watch_paths 不受 volumes 组开关影响（它只服务快照字段，契约 sysmon §2.5）。
     snapshot.watch_paths = std::nullopt;
     if (disk_metrics.watch_paths.has_value()) {
         std::vector<platform::SysmonWatchPathInfo> watch_paths;
@@ -251,7 +251,7 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         }
         snapshot.watch_paths = std::move(watch_paths);
     }
-    // 关注卷集合与告警判定共用同一实现（`watched_mounts_of`），避免"关注"语义两处漂移。
+    // 关注卷集合的唯一实现点（`watched_mounts_of`）；阈值越限自 #123 起不再消费它。
     const std::set<std::string> watched_mounts = watched_mounts_of(disk_metrics.watch_paths);
     snapshot.volumes = std::nullopt;
     if (!disk_metrics.volumes_disabled && disk_metrics.volumes_collected &&
@@ -275,8 +275,9 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         snapshot.shm_dir = shm_dir;
     }
 
-    // 阈值告警活动集（#80）：状态机的结果原样投影（空数组合法 = 无活动告警）。
-    // 告警判定与冷却在 `AlertEvaluator` 中完成；快照构造只做投影，不重新判断阈值。
+    // 快照 `alerts[]` 投影（#80 遗留字段）。
+    // 资源越限自 #123 起只写日志、不再产生活动告警集合（ADR 0034），调用方恒传空数组；
+    // 字段本身随 #125 从快照删除（删除须与消费方 dzweb 的校验同批，否则整帧被拒）。
     snapshot.alerts = active_alerts;
 
     // 每物理盘 I/O（#76）：配置关闭优先；能力可用但本帧未采到时为 null（能力标记粘性）。

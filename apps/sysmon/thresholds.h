@@ -126,8 +126,9 @@ struct ThresholdLogRecord {
     /// 阈值：与 `current_value` 同口径的比率。`cpu_saturated` 没有阈值语义（饱和判定由
     /// `thresholds.cpu_sustain_*` 在采集阶段完成，越限层只看"有没有饱和核"）时为 nullopt。
     std::optional<double> threshold_value;
-    int64_t active_sec = 0;  ///< 活动期已持续秒数（进入时为 0）
-    std::string message;     ///< 组装好的英文单行日志文本（`prose | k=v`）
+    int64_t active_sec = 0;      ///< 活动期已持续秒数（进入时为 0）
+    int64_t since_unix_sec = 0;  ///< 本次活动期起点（墙钟 Unix 秒；进入记录里带上它）
+    std::string message;         ///< 组装好的英文单行日志文本（`prose | k=v`）
 };
 
 /**
@@ -165,8 +166,12 @@ private:
         bool active = false;             ///< 当前是否处于活动期
         int64_t since_unix_sec = 0;      ///< 本次活动的起点（墙钟，Unix 秒）
         int64_t since_monotonic_ms = 0;  ///< 本次活动期起点（单调时钟，重记基准）
-        /// 下一条「仍越限」的里程碑（单调时钟；按活动期起点对齐，见 transition 注释）
-        int64_t next_repeat_monotonic_ms = 0;
+        /// 已记录到第几个里程碑：里程碑 = `since_monotonic_ms + N × 间隔`（N 从 1 起）。
+        /// 契约 §2.8 规定重记基准是**活动期起点**，因此用相对起点的序号，而不是
+        /// "上次记录时刻 + 间隔"——后者会把重记节奏漂到周期的别处。
+        int64_t recorded_milestone = 0;
+        /// `recorded_milestone` 所依据的重记间隔（毫秒）；运行期改变间隔时按新间隔重排。
+        int64_t scheduled_repeat_ms = 0;
     };
 
     /// 推进一个"使用率"类判定对象（内存 / 交换同构：达到阈值进入、低于阈值恢复）。
@@ -189,8 +194,9 @@ private:
     /// （比率 vs 饱和核数），混在一个签名里必然要为某个对象编造无意义的数值。
     struct TransitionOutcome {
         ThresholdState state = ThresholdState::Entered;  ///< 本次产生的记录类型
-        bool produced = false;   ///< 本帧是否产生了记录（否则动作为静默清空/无变化）
-        int64_t active_sec = 0;  ///< 活动期已持续秒数（进入时为 0）
+        bool produced = false;       ///< 本帧是否产生了记录（否则动作为静默清空/无变化）
+        int64_t active_sec = 0;      ///< 活动期已持续秒数（进入时为 0）
+        int64_t since_unix_sec = 0;  ///< 本次活动期起点（墙钟 Unix 秒，进入记录带上它）
     };
 
     /// 推进一个判定对象的状态机，返回"本帧产生了哪类记录"。
@@ -213,11 +219,13 @@ private:
     /// 静默清除某一 kind 的全部状态（配置关闭 / 能力消失；配置关闭不是"指标恢复"）。
     void erase_kind(const std::string& kind);
 
-    /// 周期重记判定：到达按活动期起点对齐的下一个里程碑时返回 true（契约 §2.8）。
+    /// 周期重记判定：跨过一个尚未记录的里程碑时返回 true（契约 §2.8）。
     ///
-    /// 里程碑由 `transition` 在进入与每次重记时推进；`log_repeat_sec = 0` 恒为 false。
-    /// 运行期改动间隔后，下一次重记按"新间隔"从当前里程碑续算（不补发、不立刻触发）。
-    static bool repeat_due(const SubjectState& state, int64_t now_monotonic_ms, int64_t repeat_ms);
+    /// 里程碑 = `since + N × 间隔`，基准是**活动期起点**。中间漏掉的里程碑不补发
+    /// （一条「仍越限」已足够表达"它还在持续"）；`log_repeat_sec = 0` 恒为 false。
+    /// 间隔运行期改变时按新间隔重排已记录的序号（当前 tick 不触发），使后续里程碑
+    /// 仍然落在 `since + N × 新间隔` 上。
+    static bool repeat_due(SubjectState& state, int64_t now_monotonic_ms, int64_t repeat_ms);
 
     std::map<ThresholdKey, SubjectState> states_;
 };

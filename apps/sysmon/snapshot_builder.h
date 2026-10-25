@@ -88,7 +88,7 @@ struct DiskMetrics {
     std::optional<std::vector<platform::RawVolumeInfo>> volumes;
 
     /// 本帧关注路径落卷解析结果；nullopt = 本帧未采集到。
-    /// **不受** `volumes_disabled` 影响（告警需要落卷信息，见 #80）。
+    /// **不受** `volumes_disabled` 影响：它只服务快照字段（阈值越限自 #123 起不消费它）。
     std::optional<std::vector<platform::RawWatchPathInfo>> watch_paths;
 
     bool shm_dir_collected = false;  ///< 共享内存目录采集能力是否可用（粘性）
@@ -136,9 +136,8 @@ struct NetworkMetrics {
 /**
  * @brief 关注卷挂载点集合：`watch_paths` 中成功解析出的挂载点（去重、升序）。
  *
- * **路径感知口径的唯一实现点**（契约 sysmon §2.4/§2.8）：快照构造据此设置
- * `volumes[].watched`，告警判定据此只把关注卷交给阈值判定——两处共用同一实现，
- * 不得各写一份（否则同帧的"关注"语义会漂移）。
+ * **路径感知口径的唯一实现点**（契约 sysmon §2.4）：快照构造据此设置
+ * `volumes[].watched`。阈值越限自 #123 起按全部卷判定、不再消费本集合（ADR 0034）。
  *
  * @param watch_paths 原始落卷解析结果；`nullopt`（本帧未采集）返回空集合
  * @return 挂载点集合（升序）；解析失败的路径（`mount = nullopt`）不计入
@@ -157,7 +156,8 @@ struct NetworkMetrics {
  * @param disk_metrics         卷/关注路径/共享内存目录/每物理盘 I/O 的测量结果与能力标记
  *                             （#75、#76）
  * @param network_metrics      每网卡累计量与速率、能力标记与 hide_virtual（#77）
- * @param active_alerts        当前活动阈值告警（#80；告警状态机的结果，按 `(kind, subject)` 升序）
+ * @param active_alerts        快照 `alerts[]` 的投影（#80 遗留字段；#123 起调用方恒传空数组，
+ *                             字段本身随 #125 删除）
  * @param measure_interval_ms  当前计量间隔（毫秒）
  * @param last_sample_unix_ms  最近一次计量成功的墙钟时间（Unix 毫秒，0 = 尚无成功样本）
  * @param missed_ticks         累计错过的计量 tick 数
