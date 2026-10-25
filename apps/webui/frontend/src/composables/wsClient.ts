@@ -1,5 +1,6 @@
 import { ref, readonly } from 'vue'
 import type { Ref } from 'vue'
+import { redirectToLogin } from '@/api/client'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useAuthStore } from '@/stores/auth'
 import type { WsDataByType, WsServerMessageType, WsServerMessage } from '@/types/ws'
@@ -118,18 +119,15 @@ function handleTextMessage(text: string): void {
     if (msg.type === 'error') {                          // 连接协议错误
       const message = msg.payload && typeof msg.payload === 'object' && 'message' in msg.payload
         ? String((msg.payload as { message: unknown }).message)
-        : ''
-      if (message) lastError.value = message
-      // 鉴权失败 = token 已失效：清掉本地会话并回登录页。否则会陷在
-      // 「连接被拒 → 退避重连 → 再被拒」的循环里，且 /login 被路由守卫弹回面板。
-      if (message.includes('auth failed')) {
-        localStorage.removeItem('jwt_token')
-        localStorage.removeItem('user_info')
-        manualClose = true
-        stopHeartbeat()
-        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
-        if (recoveryTimer) { clearTimeout(recoveryTimer); recoveryTimer = null }
-        if (window.location.pathname !== '/login') window.location.replace('/login')
+        : null
+      if (message !== null) lastError.value = message
+      // 鉴权失败 = token 已失效：清会话（唯一实现 = auth store 的 logout）并断开连接，
+      // 然后回登录页。否则会陷在「连接被拒 → 退避重连 → 再被拒」的循环里，
+      // 且 /login 被路由守卫弹回面板（issue #118）。
+      if (message?.includes('auth failed')) {
+        useAuthStore().logout()
+        disconnect()
+        redirectToLogin()
       }
       return
     }
