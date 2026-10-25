@@ -73,6 +73,16 @@ function toNonNegativeNumber(value: unknown): number | null {
 }
 
 /**
+ * 卷是否「容量可读且总量 > 0」（#122）：唯一分类口径，正文卷列表与无容量挂载组、
+ * 以及 `volumes` 的排序都经由它判断，避免三处各自重推 `used_ratio === null`
+ * 而在改动时漂移。`used_ratio = null` 恰好覆盖两种事实：`available=false`（读不到）
+ * 与 `total_bytes = 0`（总量为 0 的合法事实）。
+ */
+function hasReadableCapacity(volume: SysmonVolumeInfo): boolean {
+  return volume.used_ratio !== null
+}
+
+/**
  * 全量配置载荷形状校验（契约 sysmon §3.1）：六个段必须齐全且为对象，`network.hide_virtual`
  * 必须是布尔。dzweb 已按 `SysmonConfig::validate` 校验后才会写镜像/广播，前端仍做浅层防御——
  * 半截/畸形配置不得写进镜像，否则配置 tab 会把不存在或残缺的「生效值」展示给用户，
@@ -316,8 +326,9 @@ export const useSysmonStore = defineStore('sysmon', () => {
    * 消费方要能显示「不可用」+ 原因），但容量字段一律净化成 null，不得用 0 冒充。
    * 净化规则：mount 为空串剔除；`used_bytes` 钳制到 `[0, total]`；`used_ratio` 按
    * `used_bytes / total_bytes` 重算（不信任 payload 派生值，保证字节与百分比一致），
-   * `total_bytes = 0`（异常/特殊卷）时为 null。按 watched 优先、其次 mount 升序排序，
-   * 顶栏徽章因此天然把关注卷排在前面（不依赖发送端顺序）。
+   * `total_bytes = 0`（异常/特殊卷）时为 null。
+   * 排序（#122）：按 `used_ratio` 降序、同值按挂载点升序，不依赖发送端顺序；比率为 null
+   * （容量读不到 / total=0）的一律排在末尾并按挂载点升序。顶栏徽章因此与页内同序。
    */
   const volumes = computed<SysmonVolumeInfo[]>(() => {
     const s = snapshot.value
@@ -366,10 +377,34 @@ export const useSysmonStore = defineStore('sysmon', () => {
       })
     }
     return result.sort((a, b) => {
-      if (a.watched !== b.watched) return a.watched ? -1 : 1
+      const aReadable = hasReadableCapacity(a)
+      const bReadable = hasReadableCapacity(b)
+      // 容量不可读 / 总量为 0 的一律排在末尾，与正文卷列表的折叠口径一致
+      if (aReadable !== bReadable) return aReadable ? -1 : 1
+      // 同组内：可读的按使用率降序，不可读的（同组）按挂载点升序
+      const aRatio = a.used_ratio
+      const bRatio = b.used_ratio
+      if (aRatio !== null && bRatio !== null && aRatio !== bRatio) return bRatio - aRatio
       return a.mount.localeCompare(b.mount)
     })
   })
+
+  /**
+   * 正文卷列表（#122）：`hasReadableCapacity` 为真的卷，按 `volumes` 的稳定顺序。
+   * 其余（`available=false` 读不到，或 `total_bytes = 0`）由 `zeroCapacityVolumes` 承载。
+   */
+  const readableVolumes = computed<SysmonVolumeInfo[]>(() =>
+    volumes.value.filter(hasReadableCapacity))
+
+  /**
+   * 无容量挂载（#122）：`hasReadableCapacity` 为假的卷 —— 涵盖「容量读不到」与
+   * 「容量可读但总量为 0」两种事实（`used_ratio` 都为 null）。视图按契约的分组名
+   * 「无容量挂载（N）」折叠展示，组内原因列区分两者。
+   * 这是**显示层分类**，不改变采集语义 —— `available=true` + `total_bytes=0` 仍是合法事实，
+   * 仍完整保留在 `volumes` 里（顶栏徽章与其它消费方照常看到它们）。
+   */
+  const zeroCapacityVolumes = computed<SysmonVolumeInfo[]>(() =>
+    volumes.value.filter(volume => !hasReadableCapacity(volume)))
 
   /**
    * 关注路径的落卷解析（契约 sysmon §2.4，#75）。仅当快照携带数组时返回过滤后的数组
@@ -686,6 +721,8 @@ export const useSysmonStore = defineStore('sysmon', () => {
     memoryInfo,
     swapInfo,
     volumes,
+    readableVolumes,
+    zeroCapacityVolumes,
     watchPaths,
     shmDirInfo,
     diskIo,

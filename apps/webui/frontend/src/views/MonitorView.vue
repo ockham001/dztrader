@@ -19,8 +19,9 @@ import { useToastStore } from '@/stores/toast'
 // 内存 / 交换（#74）按可用性映射渲染：不可用显示「不可用」+ 原因，可用但本帧无数据
 // 显示「暂无数据」；交换在可用且总容量为 0 时显示「无交换分区」。
 // 温度 / 每核频率（B 组）按可用性映射渲染：不可用时整块不渲染（不是显示 0 / 不可用占位）。
-// 磁盘（#75）按可用性映射渲染：卷按 watched 优先排序并高亮关注卷；单个卷 available=false
-// 显示「不可用」+ 原因而不是 0；shm_dir 展示共享内存目录占用（页清理是否生效的可观测项）。
+// 磁盘（#75）按可用性映射渲染：卷按使用率降序排列（#122）并高亮关注卷；正文只列容量可读且
+// 总量 > 0 的卷，其余折叠进「无容量挂载（N）」，绝不显示 0；shm_dir 展示共享内存目录占用
+//（页清理是否生效的可观测项）。
 // 磁盘 I/O（#76）按可用性映射渲染：每物理盘的吞吐 / IOPS / 延迟 / 队列深度 / 利用率，
 // 数值 null（首次采样/计数器重置）逐项显示「不可用」，能力不可用时整块显示原因。
 // 网络（#77）：可用但数组为空 = 发送方按 hide_virtual 滤掉了全部虚拟网卡（契约 §2.5 明文，
@@ -219,6 +220,11 @@ const swapUnavailableDesc = computed(() => {
 })
 const volumesAvailable = computed(() => isAvailable('volumes'))
 const volumes = computed(() => sysmon.volumes)
+// 卷列表分两池（#122）：正文只留容量可读且总量 > 0 的卷，无容量挂载折叠成组。
+// 折叠状态不持久化（刷新回到默认收起），与既有手风琴一致。
+const readableVolumes = computed(() => sysmon.readableVolumes)
+const zeroCapacityVolumes = computed(() => sysmon.zeroCapacityVolumes)
+const zeroVolumesOpen = ref(false)
 const watchPaths = computed(() => sysmon.watchPaths)
 const shmAvailable = computed(() => isAvailable('shm_dir'))
 const shmDir = computed(() => sysmon.shmDirInfo)
@@ -658,13 +664,13 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           <span class="monitor-view__card-icon"><Icon name="Disk" :size="14" /></span>磁盘
         </h2>
 
-        <!-- 卷：watched=true 高亮并排在前（store 已按 watched 优先排序）；
-             available=false 的卷显示「不可用」+ 原因，绝不显示 0 -->
+        <!-- 卷：正文只留容量可读且总量 > 0 的卷（#122），按使用率降序（store 已排好）；
+             available=false 与 total_bytes=0 的挂载折叠进「无容量挂载（N）」，绝不显示 0 -->
         <div class="monitor-view__subsection" data-test="monitor-disk-volumes">
           <h3 class="monitor-view__panel-title">卷容量</h3>
-          <ul v-if="volumesAvailable && volumes.length > 0" class="monitor-view__list">
+          <ul v-if="readableVolumes.length > 0" class="monitor-view__list">
             <li
-              v-for="volume in volumes"
+              v-for="volume in readableVolumes"
               :key="volume.mount"
               class="monitor-view__list-row monitor-view__disk-row"
               :class="{ 'monitor-view__disk-row--watched': volume.watched }"
@@ -673,20 +679,41 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
             >
               <span class="monitor-view__list-label">{{ volume.mount }}</span>
               <span v-if="volume.watched" class="ds-tag ds-tag--warning" data-test="monitor-disk-volume-watched">关注</span>
-              <template v-if="volume.available">
-                <!-- 可用但比率为 null（total_bytes=0 的异常/特殊卷）：显示「—」而不是 0% -->
-                <span class="monitor-view__list-value">{{ volume.used_ratio === null ? '—' : formatPercent(volume.used_ratio) }}</span>
-                <span class="monitor-view__list-meta">{{ formatBytes(volume.used_bytes) }} / {{ formatBytes(volume.total_bytes) }}</span>
-              </template>
-              <template v-else>
-                <span class="monitor-view__list-value">{{ UNAVAILABLE }}</span>
-                <span class="monitor-view__list-meta" data-test="monitor-disk-volume-reason">{{ volumeReasonDesc(volume.reason) }}</span>
-              </template>
+              <span class="monitor-view__list-value">{{ formatPercent(volume.used_ratio) }}</span>
+              <span class="monitor-view__list-meta">{{ formatBytes(volume.used_bytes) }} / {{ formatBytes(volume.total_bytes) }}</span>
             </li>
           </ul>
-          <div v-else class="ds-empty monitor-view__empty" data-test="monitor-disk-unavailable">
+          <div v-else-if="volumes.length === 0" class="ds-empty monitor-view__empty" data-test="monitor-disk-unavailable">
             <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
             <div class="ds-empty__desc">{{ volumesAvailable ? '当前快照未提供卷数据' : unavailableDesc('volumes') }}</div>
+          </div>
+
+          <!-- 无容量挂载（#122）：容量读不到 / 总量为 0 的挂载折叠在此，默认收起。
+               折叠是纯显示行为，不改变采集语义；展开后逐条给出挂载点与原因。 -->
+          <div v-if="zeroCapacityVolumes.length > 0" class="monitor-view__zero-volumes" data-test="monitor-disk-zero-volumes">
+            <button
+              class="ds-btn ds-btn--tertiary ds-btn--sm"
+              type="button"
+              :aria-expanded="zeroVolumesOpen"
+              data-test="monitor-disk-zero-toggle"
+              @click="zeroVolumesOpen = !zeroVolumesOpen"
+            >无容量挂载（{{ zeroCapacityVolumes.length }}）· {{ zeroVolumesOpen ? '收起' : '展开' }}</button>
+            <ul v-if="zeroVolumesOpen" class="monitor-view__list">
+              <li
+                v-for="volume in zeroCapacityVolumes"
+                :key="volume.mount"
+                class="monitor-view__list-row"
+                data-test="monitor-disk-zero-volume"
+                :data-mount="volume.mount"
+              >
+                <span class="monitor-view__list-label">{{ volume.mount }}</span>
+                <!-- 读不到容量与「总量确实为 0」是两件事，原因列分别说明，都不用 0 冒充 -->
+                <span class="monitor-view__list-value">{{ volume.available ? '—' : UNAVAILABLE }}</span>
+                <span class="monitor-view__list-meta" data-test="monitor-disk-zero-reason">
+                  {{ volume.available ? '总容量为 0' : volumeReasonDesc(volume.reason) }}
+                </span>
+              </li>
+            </ul>
           </div>
 
           <!-- 关注路径：落卷解析失败时显示「未解析」+ 原因（不猜卷、不回退到 /） -->
@@ -1095,6 +1122,11 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 .monitor-view__disk-row--watched {
   border-left-color: var(--status-warning-default);
   background: var(--status-warning-surface-l1);
+}
+
+/* 无容量挂载折叠组（#122）：正文之后、与列表之间留白（折叠按钮自带尺寸，不另设边框） */
+.monitor-view__zero-volumes {
+  margin-top: var(--spacer-8);
 }
 
 /* ---- 磁盘 I/O（#76）：每个物理盘一块，指标网格窄屏自动换行（auto-fit），全部走设计 token ---- */

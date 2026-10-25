@@ -1033,6 +1033,32 @@ TEST(SnapshotBuilderTest, FailedWatchPathResolutionIsReportedNotGuessed) {
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 
+TEST(SnapshotBuilderTest, ZeroTotalVolumeStaysAvailableWithNullRatio) {
+    // #122：`total_bytes = 0` 是「容量可读但总量为 0」的合法事实（典型是 FUSE 临时挂载
+    // 未过滤干净时残留的 0 块挂载），不得在采集/快照层抹掉或改写成 available=false——
+    // 折叠成「无容量挂载」是界面显示行为，不是发送方语义。
+    DiskMetrics disk;
+    disk.volumes_collected = true;
+    disk.volumes = std::vector<platform::RawVolumeInfo>{
+        {.mount = "/run/user/1000/cliprdr-abc", .total_bytes = 0, .free_bytes = 0, .reason = ""},
+    };
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, disk);
+
+    ASSERT_TRUE(snapshot.volumes.has_value());
+    ASSERT_EQ(snapshot.volumes->size(), 1U);
+    const auto& volume = (*snapshot.volumes)[0];
+    EXPECT_EQ(volume.mount, "/run/user/1000/cliprdr-abc");
+    EXPECT_TRUE(volume.available);  // 读到了容量，只是总量为 0
+    ASSERT_TRUE(volume.total_bytes.has_value());
+    EXPECT_EQ(*volume.total_bytes, 0U);
+    ASSERT_TRUE(volume.used_bytes.has_value());
+    EXPECT_EQ(*volume.used_bytes, 0U);
+    // 比率为 null（除零无定义），不得用 0 冒充。
+    EXPECT_FALSE(volume.used_ratio.has_value());
+    EXPECT_FALSE(volume.reason.has_value());  // available=true 时省略 reason
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
 TEST(SnapshotBuilderTest, WatchPathsAreNotGatedByVolumesGroup) {
     // 告警需要落卷信息（#80）：关闭 volumes 组后 volumes 为 null，但 watch_paths 仍输出
     // （契约 sysmon §2.5）。
