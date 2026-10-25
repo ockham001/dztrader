@@ -231,18 +231,40 @@ TEST(ThresholdEvaluatorTest, RepeatUsesMonotonicClockNotWallClock) {
     EXPECT_EQ(repeated.records[0].active_sec, 600);
 }
 
-// 运行期改 `log_repeat_sec`：下一次重记从**新间隔**起算（基准是上次记录时刻，不是固定网格）。
-TEST(ThresholdEvaluatorTest, RepeatIntervalChangeTakesEffectNextRecord) {
+// 运行期改 `log_repeat_sec`：里程碑按活动期起点对齐（契约 §2.8），改大后不会在旧网格点
+// 上误触发，改小后从下一个里程碑起按新节奏续算；不补发、不立刻触发。
+TEST(ThresholdEvaluatorTest, RepeatIntervalChangeAppliesFromNextMilestone) {
     ThresholdEvaluator evaluator;
     auto config = make_config();
     config.log_repeat_sec = 100;
     ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 0, kWallSec), config).records.size(), 1U);
+    // 第一个里程碑 100s：记一条，下一里程碑 200s。
     ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 100'000, kWallSec), config).records.size(), 1U);
 
-    // 调大到 600s：距上次记录 100s 时不该重记（新间隔从上次记录起算）。
+    // 调大到 600s：下一个里程碑已按旧间隔排到 200s，此时（200s）仍会照旧触发一条，
+    // 之后按 600s 的间隔从该里程碑续算。
     config.log_repeat_sec = 600;
-    EXPECT_TRUE(evaluator.evaluate(memory_input(0.95, 200'000, kWallSec), config).records.empty());
-    ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 700'000, kWallSec), config).records.size(), 1U);
+    ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 200'000, kWallSec), config).records.size(), 1U);
+    // 200s + 600s = 800s 之前不再重记。
+    EXPECT_TRUE(evaluator.evaluate(memory_input(0.95, 799'999, kWallSec), config).records.empty());
+    ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 800'000, kWallSec), config).records.size(), 1U);
+}
+
+// 契约 §2.8：重记里程碑按**活动期起点**对齐——持续很久也不会把节奏漂到周期别处。
+TEST(ThresholdEvaluatorTest, RepeatMilestonesStayAlignedToEpisodeStart) {
+    ThresholdEvaluator evaluator;
+    auto config = make_config();
+    config.log_repeat_sec = 100;
+    ASSERT_EQ(evaluator.evaluate(memory_input(0.95, 0, kWallSec), config).records.size(), 1U);
+    // 依次在第 100/200/300s 各记一条；中间帧不记。
+    for (int64_t n = 1; n <= 3; ++n) {
+        EXPECT_TRUE(evaluator.evaluate(memory_input(0.95, n * 100'000 - 1, kWallSec), config)
+                        .records.empty())
+            << "n=" << n;
+        const auto record = evaluator.evaluate(memory_input(0.95, n * 100'000, kWallSec), config);
+        ASSERT_EQ(record.records.size(), 1U) << "n=" << n;
+        EXPECT_EQ(record.records[0].active_sec, n * 100);
+    }
 }
 
 // ===== 读不到 / 能力关闭 =====
@@ -436,7 +458,8 @@ TEST(ThresholdEvaluatorTest, CpuSaturationRecordReportsSaturatedCoreCount) {
     const auto& record = result.records[0];
     EXPECT_DOUBLE_EQ(record.current_value, 3.0);  // 3 个饱和核
     EXPECT_FALSE(record.threshold_value.has_value());
-    EXPECT_NE(record.message.find("saturated_cores=3"), std::string::npos);
+    // 契约 §2.8：日志要能看出"当时涉及哪些核"——列 index，不是只报数量。
+    EXPECT_NE(record.message.find("saturated_cores=0,2,5"), std::string::npos);
     EXPECT_EQ(record.message.find("current_pct"), std::string::npos);
 }
 

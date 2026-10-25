@@ -24,35 +24,41 @@ std::string subject_field(const ThresholdKey& key) {
     return key.subject.empty() ? key.kind : key.subject;
 }
 
-/// 当前值/阈值片段。`cpu_saturated` 没有阈值语义（饱和判定在采集阶段由
-/// `thresholds.cpu_sustain_*` 完成，越限层只看"有没有饱和核"），如实只报饱和核数，
-/// 不编一个阈值百分比。
-std::string value_fields(double current_value, const std::optional<double>& threshold_value) {
-    if (!threshold_value.has_value()) {
-        return std::format("saturated_cores={}", static_cast<int64_t>(current_value));
-    }
-    return std::format("current_pct={} threshold_pct={}", format_pct(current_value),
-                       format_pct(*threshold_value));
+/// 比率型判定对象的 `k=v` 片段（使用率 / 卷空闲百分比）。
+std::string ratio_fields(double current_ratio, double threshold_ratio) {
+    return std::format("current_pct={} threshold_pct={}", format_pct(current_ratio),
+                       format_pct(threshold_ratio));
 }
 
-/// 组装一条记录文本（状态名进 `state=`，级别由调用方按状态给出）。
+/// `cpu_saturated` 的 `k=v` 片段：契约 §2.8 要求日志能看出"当时涉及哪些核"，
+/// 因此列出饱和核的 index 而不是只报一个数量（数量可由列表长度读出，反过来不行）。
+std::string saturated_fields(const std::vector<uint32_t>& saturated_cores) {
+    std::string list;
+    for (const auto core : saturated_cores) {
+        if (!list.empty()) {
+            list += ',';
+        }
+        list += std::to_string(core);
+    }
+    return std::format("saturated_cores={}", list.empty() ? "-" : list);
+}
+
+/// 组装一条记录文本（状态名进 `state=`；级别由调用方按状态给出）。
 std::string record_message(const ThresholdKey& key,
                            ThresholdState state,
-                           double current_value,
-                           const std::optional<double>& threshold_value,
+                           std::string_view value_fields,
                            int64_t active_sec) {
     switch (state) {
         case ThresholdState::Entered:
             return std::format("threshold exceeded | subject={} state=entered {}",
-                               subject_field(key), value_fields(current_value, threshold_value));
+                               subject_field(key), value_fields);
         case ThresholdState::Ongoing:
             return std::format(
                 "threshold still exceeded | subject={} state=ongoing {} active_sec={}",
-                subject_field(key), value_fields(current_value, threshold_value), active_sec);
+                subject_field(key), value_fields, active_sec);
         case ThresholdState::Recovered:
             return std::format("threshold recovered | subject={} state=recovered {} active_sec={}",
-                               subject_field(key), value_fields(current_value, threshold_value),
-                               active_sec);
+                               subject_field(key), value_fields, active_sec);
     }
     return {};  // 穷举所有状态；不可达
 }
@@ -131,7 +137,7 @@ bool ThresholdEvaluator::repeat_due(const SubjectState& state,
     if (repeat_ms <= 0) {
         return false;  // 0 = 不重记（契约 §2.8）
     }
-    return now_monotonic_ms - state.last_repeat_monotonic_ms >= repeat_ms;
+    return now_monotonic_ms >= state.next_repeat_monotonic_ms;
 }
 
 ThresholdEvaluator::Result ThresholdEvaluator::evaluate(
@@ -146,21 +152,22 @@ ThresholdEvaluator::Result ThresholdEvaluator::evaluate(
     evaluate_usage(platform::SYSMON_THRESHOLD_SWAP_USED, inputs.swap_applicable,
                    inputs.swap_used_ratio, config.swap_used_pct, repeat_ms, inputs, result);
 
-    // CPU 饱和：整机一个判定对象，当前值是饱和核集合的大小。
+    // CPU 饱和：整机一个判定对象，日志列出本帧饱和核的 index（契约 §2.8：要能看出涉及哪些核）。
     // §2.8：不得按"空集"判恢复——每核序列整体未采到时 saturated 全部为 false，
     // 那只是"本帧无信息"；只有本帧每核使用率确实可读时，空集才等于恢复。
     if (!inputs.cpu_applicable) {
         erase_kind(platform::SYSMON_THRESHOLD_CPU_SATURATED);
     } else if (inputs.cpu_cores_readable) {
-        const double saturated_count = static_cast<double>(inputs.saturated_cores.size());
+        const ThresholdKey key{platform::SYSMON_THRESHOLD_CPU_SATURATED, ""};
         const TransitionOutcome outcome =
-            transition({platform::SYSMON_THRESHOLD_CPU_SATURATED, ""},
-                       !inputs.saturated_cores.empty(), repeat_ms, inputs);
+            transition(key, !inputs.saturated_cores.empty(), repeat_ms, inputs);
         if (outcome.produced) {
-            const ThresholdKey key{platform::SYSMON_THRESHOLD_CPU_SATURATED, ""};
-            result.records.push_back(make_record(key, outcome, saturated_count, std::nullopt,
-                                                 record_message(key, outcome.state, saturated_count,
-                                                                std::nullopt, outcome.active_sec)));
+            // 当前值记录饱和核数（无量纲）；阈值留空——饱和判定在采集阶段由
+            // thresholds.cpu_sustain_* 完成，越限层只看"有没有饱和核"。
+            result.records.push_back(make_record(
+                key, outcome, static_cast<double>(inputs.saturated_cores.size()), std::nullopt,
+                record_message(key, outcome.state, saturated_fields(inputs.saturated_cores),
+                               outcome.active_sec)));
         }
     }
 
@@ -191,10 +198,10 @@ ThresholdEvaluator::Result ThresholdEvaluator::evaluate(
             const TransitionOutcome outcome =
                 transition(key, free_ratio < threshold_ratio, repeat_ms, inputs);
             if (outcome.produced) {
-                result.records.push_back(
-                    make_record(key, outcome, free_ratio, threshold_ratio,
-                                record_message(key, outcome.state, free_ratio, threshold_ratio,
-                                               outcome.active_sec)));
+                result.records.push_back(make_record(
+                    key, outcome, free_ratio, threshold_ratio,
+                    record_message(key, outcome.state, ratio_fields(free_ratio, threshold_ratio),
+                                   outcome.active_sec)));
             }
         }
     }
@@ -228,9 +235,10 @@ void ThresholdEvaluator::evaluate_usage(const char* kind,
     const bool breached = ratio >= threshold_ratio;  // 恰好等于阈值算进入越限
     const TransitionOutcome outcome = transition(key, breached, repeat_ms, inputs);
     if (outcome.produced) {
-        out.records.push_back(make_record(
-            key, outcome, ratio, threshold_ratio,
-            record_message(key, outcome.state, ratio, threshold_ratio, outcome.active_sec)));
+        out.records.push_back(
+            make_record(key, outcome, ratio, threshold_ratio,
+                        record_message(key, outcome.state, ratio_fields(ratio, threshold_ratio),
+                                       outcome.active_sec)));
     }
 }
 
@@ -252,18 +260,27 @@ ThresholdEvaluator::TransitionOutcome ThresholdEvaluator::transition(
             state.active = true;
             state.since_unix_sec = inputs.now_unix_sec;
             state.since_monotonic_ms = inputs.now_monotonic_ms;
-            state.last_repeat_monotonic_ms = inputs.now_monotonic_ms;
+            // 第一条重记出现在"进入时刻 + 一个间隔"；之后每个间隔一条。
+            state.next_repeat_monotonic_ms = inputs.now_monotonic_ms + repeat_ms;
             outcome.state = ThresholdState::Entered;
             outcome.produced = true;
             outcome.active_sec = 0;
             return outcome;
         }
         // 活动期内：阈值持续满足不重记，但每满间隔记一条「仍越限」。
+        // 里程碑按**活动期起点**对齐（契约 §2.8）：第 N 条在 since + N×间隔，
+        // 因此长时间运行也不会把重记时刻漂到周期的别处。
         if (repeat_due(state, inputs.now_monotonic_ms, repeat_ms)) {
-            state.last_repeat_monotonic_ms = inputs.now_monotonic_ms;
             outcome.state = ThresholdState::Ongoing;
             outcome.produced = true;
             outcome.active_sec = (inputs.now_monotonic_ms - state.since_monotonic_ms) / 1000;
+            // 记下已到达的最新里程碑：下一条的判据是「距 since 又满一个间隔」。
+            state.next_repeat_monotonic_ms += repeat_ms;
+            // 时钟跳变等导致一次性落后多个间隔时，不补发历史记录（一条"仍越限"已足够
+            // 表达"它还在持续"），直接把里程碑推进到当前时刻之后的第一个间隔。
+            while (state.next_repeat_monotonic_ms <= inputs.now_monotonic_ms) {
+                state.next_repeat_monotonic_ms += repeat_ms;
+            }
         }
         return outcome;
     }
