@@ -111,6 +111,24 @@ describe('wsClient 连接生命周期与消息协议', () => {
     expect(useWebSocket().lastError.value).toBe('WebSocket error')
   })
 
+  it('收到 auth failed 清掉本地会话并停止重连（避免被拒→重连→再被拒循环）', async () => {
+    // 停在登录页：避免触发 jsdom 未实现的页面跳转（跳转决策由 client 用例覆盖）
+    window.history.replaceState({}, '', '/login')
+    localStorage.setItem('user_info', '{"username":"admin"}')
+    const { connect } = await loadClient()
+    connect()
+    const ws = FakeWebSocket.instances[0]!
+    ws.simulateOpen()
+    textMessage(ws, { type: 'error', payload: { message: 'auth failed' } })
+
+    expect(localStorage.getItem('jwt_token')).toBeNull()
+    expect(localStorage.getItem('user_info')).toBeNull()
+
+    // 退避定时器已清：60s 内不再产生新连接
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
   it('断线按 3s×2ⁿ 退避重连（3s → 6s）', async () => {
     const { connect, useWebSocket } = await loadClient()
     connect()

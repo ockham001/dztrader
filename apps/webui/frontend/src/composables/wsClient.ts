@@ -116,8 +116,20 @@ function handleTextMessage(text: string): void {
       return
     }
     if (msg.type === 'error') {                          // 连接协议错误
-      if (msg.payload && typeof msg.payload === 'object' && 'message' in msg.payload) {
-        lastError.value = String((msg.payload as { message: unknown }).message)
+      const message = msg.payload && typeof msg.payload === 'object' && 'message' in msg.payload
+        ? String((msg.payload as { message: unknown }).message)
+        : ''
+      if (message) lastError.value = message
+      // 鉴权失败 = token 已失效：清掉本地会话并回登录页。否则会陷在
+      // 「连接被拒 → 退避重连 → 再被拒」的循环里，且 /login 被路由守卫弹回面板。
+      if (message.includes('auth failed')) {
+        localStorage.removeItem('jwt_token')
+        localStorage.removeItem('user_info')
+        manualClose = true
+        stopHeartbeat()
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+        if (recoveryTimer) { clearTimeout(recoveryTimer); recoveryTimer = null }
+        if (window.location.pathname !== '/login') window.location.replace('/login')
       }
       return
     }

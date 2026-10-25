@@ -12,6 +12,15 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 401 后是否跳转登录页。
+ * - 登录接口的 401 是凭据错误（不是会话失效）：交给表单展示，不清会话
+ * - 已在登录页时不再跳转：否则「请求 401 → 跳 /login → 重载 → 再 401」会形成整页刷新循环
+ */
+export function shouldRedirectOn401(path: string, currentPath: string): boolean {
+  return path !== '/api/login' && currentPath !== '/login'
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {}
@@ -28,9 +37,15 @@ async function request<T>(
   const resp = await fetch(`${BASE_URL}${path}`, { ...options, headers })
 
   if (resp.status === 401) {
-    localStorage.removeItem('jwt_token')
-    localStorage.removeItem('user_info')
-    window.location.href = '/login'
+    // 登录接口的 401 是凭据错误而非会话失效：不清会话（否则输错密码会把登录态清掉）
+    if (path !== '/api/login') {
+      localStorage.removeItem('jwt_token')
+      localStorage.removeItem('user_info')
+    }
+    // 跳转决策见 shouldRedirectOn401（登录页内不重复跳转，避免整页刷新循环）
+    if (shouldRedirectOn401(path, window.location.pathname)) {
+      window.location.replace('/login')
+    }
     throw new ApiError(401, { error: 'unauthorized' })
   }
 
