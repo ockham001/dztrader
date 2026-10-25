@@ -20,8 +20,9 @@ export interface ReadyRouter {
 export async function mountWhenRouterReady(app: MountableApp, router: ReadyRouter): Promise<void> {
   try {
     await router.isReady()
-  } catch {
-    // 初次导航失败不阻断挂载（降级：至少渲染界面，而不是白屏）
+  } catch (error) {
+    // 初次导航失败不阻断挂载（降级：至少渲染界面，而不是白屏 + 未处理 rejection）
+    console.warn('initial navigation failed, mounting anyway', error)
   }
   app.mount('#app')
 }

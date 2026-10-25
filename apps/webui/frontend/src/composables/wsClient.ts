@@ -124,7 +124,9 @@ function handleTextMessage(text: string): void {
       // 鉴权失败 = token 已失效：清会话（唯一实现 = auth store 的 logout）并断开连接，
       // 然后回登录页。否则会陷在「连接被拒 → 退避重连 → 再被拒」的循环里，
       // 且 /login 被路由守卫弹回面板（issue #118）。
-      if (message?.includes('auth failed')) {
+      // 精确匹配：契约 webui-ws §1 该错误只有这一个固定字面量（无 code 字段），
+      // 后面其它 error（bad json 等）文案里可能提到同样的词，不能误判。
+      if (message === 'auth failed') {
         useAuthStore().logout()
         disconnect()
         redirectToLogin()

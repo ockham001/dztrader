@@ -12,9 +12,11 @@ export class ApiError extends Error {
   }
 }
 
+const LOGIN_PATH = '/api/login'
+
 /** 当前是否在登录页（参数化 currentPath 便于测试） */
 export function isOnLoginPage(currentPath: string = window.location.pathname): boolean {
-  return currentPath === '/login'
+  return currentPath === '/login' || currentPath === '/login/'
 }
 
 /**
@@ -27,6 +29,15 @@ export function redirectToLogin(
   navigate: (url: string) => void = url => window.location.replace(url),
 ): void {
   if (!isOnLoginPage(currentPath)) navigate('/login')
+}
+
+/** 解析错误响应体；非 JSON 时返回 null（由调用方回退到默认文案） */
+async function parse_error_body(resp: Response): Promise<ApiErrorBody | null> {
+  try {
+    return await resp.json() as ApiErrorBody
+  } catch {
+    return null
+  }
 }
 
 async function request<T>(
@@ -45,12 +56,11 @@ async function request<T>(
   const resp = await fetch(`${BASE_URL}${path}`, { ...options, headers })
 
   if (resp.status === 401) {
-    // 401 的响应体可能是凭据错误（invalid_credentials / account_locked + locked_until），
-    // 必须原样交给调用方展示，否则登录表单只能看到笼统的 unauthorized
-    let body: ApiErrorBody | null = null
-    try { body = await resp.json() as ApiErrorBody } catch { /* ignore parse error */ }
+    // 401 的响应体是凭据错误（invalid_credentials / account_disabled 等），必须原样
+    // 交给调用方展示，否则登录表单只能看到笼统的 unauthorized
+    const body = await parse_error_body(resp)
     // 登录接口的 401 是凭据错误而非会话失效：不清会话、不跳转
-    if (path !== '/api/login') {
+    if (path !== LOGIN_PATH) {
       localStorage.removeItem('jwt_token')
       localStorage.removeItem('user_info')
       redirectToLogin()  // 已在登录页时 no-op（断掉整页刷新循环）
@@ -59,9 +69,7 @@ async function request<T>(
   }
 
   if (!resp.ok) {
-    let body: ApiErrorBody | null = null
-    try { body = await resp.json() as ApiErrorBody } catch { /* ignore parse error */ }
-    throw new ApiError(resp.status, body)
+    throw new ApiError(resp.status, await parse_error_body(resp))
   }
 
   // 204 No Content
