@@ -98,7 +98,6 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
                                         const MemorySwapMetrics& memory_metrics,
                                         const DiskMetrics& disk_metrics,
                                         const NetworkMetrics& network_metrics,
-                                        const std::vector<platform::SysmonAlertInfo>& active_alerts,
                                         int32_t measure_interval_ms,
                                         int64_t last_sample_unix_ms,
                                         uint64_t missed_ticks,
@@ -234,11 +233,6 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         shm_dir.oldest_file_age_sec = disk_metrics.shm_dir->oldest_file_age_sec;
         snapshot.shm_dir = shm_dir;
     }
-
-    // 快照 `alerts[]` 投影（#80 遗留字段）。
-    // 资源越限自 #123 起只写日志、不再产生活动告警集合（ADR 0034），调用方恒传空数组；
-    // 字段本身随 #125 从快照删除（删除须与消费方 dzweb 的校验同批，否则整帧被拒）。
-    snapshot.alerts = active_alerts;
 
     // 每物理盘 I/O（#76）：配置关闭优先；能力可用但本帧未采到时为 null（能力标记粘性）。
     // 条目内的派生字段可为 null（首次采样/计数器重置），不得用 0 冒充。

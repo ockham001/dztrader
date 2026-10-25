@@ -74,9 +74,8 @@ platform::SysmonSnapshot build_with(const platform::RawSystemInfo& info,
                                     const TemperatureMetrics& temperature = {},
                                     const MemorySwapMetrics& memory = {},
                                     const DiskMetrics& disk = {},
-                                    const NetworkMetrics& network = {},
-                                    const std::vector<platform::SysmonAlertInfo>& alerts = {}) {
-    return build_snapshot(kSourceName, info, metrics, temperature, memory, disk, network, alerts,
+                                    const NetworkMetrics& network = {}) {
+    return build_snapshot(kSourceName, info, metrics, temperature, memory, disk, network,
                           kMeasureIntervalMs, kLastSampleMs, kMissedTicks, kNowMs);
 }
 
@@ -1383,30 +1382,12 @@ TEST(SnapshotBuilderTest, NetworkDoesNotAddAvailabilityKeys) {
     EXPECT_TRUE(snapshot.availability.metrics.contains(platform::SYSMON_METRIC_NETWORK));
 }
 
-// 阈值告警活动集（#80）：状态机结果原样投影；空数组合法；JSON 形状符合契约 sysmon §2.8。
-TEST(SnapshotBuilderTest, AlertStateProjectedIntoSnapshot) {
-    const auto default_snapshot = build_with(make_linux_info(), make_full_metrics());
-    EXPECT_TRUE(default_snapshot.alerts.empty());
-    const auto default_json = nlohmann::json(default_snapshot);
-    ASSERT_TRUE(default_json.contains("alerts"));
-    EXPECT_TRUE(default_json["alerts"].is_array());
-    EXPECT_EQ(platform::SysmonSnapshot::validate(default_json), std::nullopt);
-
-    std::vector<platform::SysmonAlertInfo> alerts;
-    alerts.push_back(platform::SysmonAlertInfo{
-        .kind = platform::SYSMON_ALERT_MEMORY_USED, .subject = "", .since = 1789999000});
-    alerts.push_back(platform::SysmonAlertInfo{
-        .kind = platform::SYSMON_ALERT_VOLUME_FREE, .subject = "/data", .since = 1789999100});
-    const auto snapshot =
-        build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, {}, alerts);
-    ASSERT_EQ(snapshot.alerts.size(), 2U);
-    EXPECT_EQ(snapshot.alerts[0].kind, platform::SYSMON_ALERT_MEMORY_USED);
-    EXPECT_EQ(snapshot.alerts[1].subject, "/data");
+// 契约 sysmon §7：发送方**不得**输出 `alerts` 字段（#125 删除）；快照序列化与校验随之收敛。
+TEST(SnapshotBuilderTest, SnapshotOmitsRemovedAlertsField) {
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics());
     const auto json = nlohmann::json(snapshot);
+    EXPECT_FALSE(json.contains("alerts"));
     EXPECT_EQ(platform::SysmonSnapshot::validate(json), std::nullopt);
-    EXPECT_EQ(json["alerts"][1]["kind"], "volume_free");
-    EXPECT_EQ(json["alerts"][1]["subject"], "/data");
-    EXPECT_EQ(json["alerts"][1]["since"], 1789999100);
 }
 
 }  // namespace

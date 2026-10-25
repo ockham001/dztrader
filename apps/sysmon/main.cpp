@@ -72,11 +72,6 @@
 namespace dztrader::sysmon {
 namespace {
 
-/// 快照 `alerts[]` 的填充值：资源越限自 #123 起只写日志、不再产生活动告警集合
-/// （ADR 0034），因此恒为空数组。该字段本身随 #125 从快照删除；在此之前保留空数组是因为
-/// 消费方（dzweb）对快照做校验、字段缺失即拒掉整帧——删字段必须与消费者同批上线。
-const std::vector<platform::SysmonAlertInfo> kNoActiveAlerts{};
-
 /// 墙钟 Unix 毫秒（仅上报口径；定时调度一律用 steady_clock，不受系统时间调整影响）。
 int64_t wall_clock_unix_ms() {
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -779,8 +774,8 @@ private:
             apply_snapshot_output_config();
             const auto snapshot = build_snapshot(
                 name_, system_info_, metrics_, temperature_metrics_, memory_metrics_, disk_metrics_,
-                network_metrics_, kNoActiveAlerts, config_.sampling.measure_interval_ms,
-                last_sample_unix_ms_, missed_ticks_, wall_ms);
+                network_metrics_, config_.sampling.measure_interval_ms, last_sample_unix_ms_,
+                missed_ticks_, wall_ms);
             auto batch = history_recorder_.observe(snapshot, wall_ms / 1000);
             if (!batch.empty()) {
                 enqueue_history(std::move(batch));
@@ -974,8 +969,8 @@ private:
             apply_snapshot_output_config();
             const auto snapshot = build_snapshot(
                 name_, system_info_, metrics_, temperature_metrics_, memory_metrics_, disk_metrics_,
-                network_metrics_, kNoActiveAlerts, config_.sampling.measure_interval_ms,
-                last_sample_unix_ms_, missed_ticks_, wall_clock_unix_ms());
+                network_metrics_, config_.sampling.measure_interval_ms, last_sample_unix_ms_,
+                missed_ticks_, wall_clock_unix_ms());
             (void)platform::write_ext_json(*event_writer_, DZ_FRAME_RTN_SYSMON_SNAPSHOT, snapshot);
         } catch (const std::exception& e) {
             SPDLOG_ERROR("push snapshot failed | error=\"{}\"", e.what());

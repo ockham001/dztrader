@@ -85,7 +85,6 @@ nlohmann::json minimal_snapshot() {
         {"disk_io", nullptr},
         {"network", nullptr},
         {"shm_dir", nullptr},
-        {"alerts", nlohmann::json::array()},
         {"availability",
          {{"platform_description", "Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)"},
           {"metrics",

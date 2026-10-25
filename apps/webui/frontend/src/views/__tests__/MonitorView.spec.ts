@@ -580,9 +580,33 @@ describe('MonitorView 磁盘（#75：卷容量 / 共享内存目录，可用性�
     expect(rows[2].text()).toContain('25.0%')
     expect(rows[2].text()).toContain('256.0 GiB / 1024.0 GiB')
 
+    // 使用率均 < 70%：色标 normal（与顶栏卷徽章同源）
+    expect(rows.map(row => row.attributes('data-level'))).toEqual(['normal', 'normal', 'normal'])
+
     // 卷集合与数量完全由快照驱动，无硬编码盘符
     expect(wrapper.find('[data-test="monitor-disk-unavailable"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-disk-zero-volumes"]').exists()).toBe(false)
+  })
+
+  it('卷使用率色标：0.69 → normal、0.70 → warn、0.90 → danger（边界含，百分比文本照常）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/low', available: true, total_bytes: 100 * GIB, used_bytes: 69 * GIB, used_ratio: 0.69 },
+        { mount: '/warn', available: true, total_bytes: 100 * GIB, used_bytes: 70 * GIB, used_ratio: 0.7 },
+        { mount: '/danger', available: true, total_bytes: 100 * GIB, used_bytes: 90 * GIB, used_ratio: 0.9 },
+      ],
+    }))
+    const wrapper = await mountView()
+
+    // 使用率降序：danger(90%) > warn(70%) > low(69%)
+    const rows = wrapper.findAll('[data-test="monitor-disk-volume"]')
+    expect(rows.map(row => row.attributes('data-mount'))).toEqual(['/danger', '/warn', '/low'])
+    expect(rows.map(row => row.attributes('data-level'))).toEqual(['danger', 'warn', 'normal'])
+    // 着色不改变数值展示：百分比 / 已用与总量照常渲染
+    expect(rows[0].find('.monitor-view__list-value').text()).toBe('90.0%')
+    expect(rows[1].find('.monitor-view__list-value').text()).toBe('70.0%')
+    expect(rows[2].find('.monitor-view__list-value').text()).toBe('69.0%')
+    expect(rows[0].find('.monitor-view__list-meta').text()).toBe('90.0 GiB / 100.0 GiB')
   })
 
   it('#122 无容量挂载：正文列表只留可读容量的卷，其余折叠进「无容量挂载（N）」', async () => {
@@ -1205,87 +1229,6 @@ describe('MonitorView「显示全部网卡」开关（#77 走配置即时生效�
 
     release?.()
     await flushPromises()
-  })
-})
-
-describe('MonitorView 阈值告警横幅（#80）', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    vi.clearAllMocks()
-  })
-
-  it('无活动告警：不渲染告警横幅（空数组 = 无告警，不是"暂无数据"）', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
-    const wrapper = await mountView()
-
-    expect(wrapper.find('[data-test="monitor-alerts"]').exists()).toBe(false)
-  })
-
-  it('活动告警：渲染常驻横幅，逐条展示 kind 文案与起始时间', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      cpuUsageRatio: 0.187,
-      memory: {
-        total_bytes: 100 * 1024 ** 3,
-        available_bytes: 5 * 1024 ** 3,
-        used_bytes: 95 * 1024 ** 3,
-        used_ratio: 0.95,
-        cached_bytes: null,
-        buffers_bytes: null,
-      },
-      alerts: [
-        { kind: 'memory_used', subject: '', since: Date.UTC(2026, 9, 21, 14, 0, 0) / 1000 },
-        { kind: 'volume_free', subject: '/data', since: 0 },
-      ],
-    }))
-    const wrapper = await mountView()
-
-    const banner = wrapper.find('[data-test="monitor-alerts"]')
-    expect(banner.exists()).toBe(true)
-    expect(banner.text()).toContain('资源告警（2）')
-    const items = wrapper.findAll('[data-test="monitor-alert"]')
-    expect(items).toHaveLength(2)
-    // 内存：取同帧使用率展示；起始时间由 since 渲染
-    expect(items[0].attributes('data-kind')).toBe('memory_used')
-    expect(items[0].text()).toContain('内存使用率 95.0% 超过告警阈值')
-    expect(items[0].text()).toContain('始于')
-    // 卷告警：剩余空间由同帧卷数据计算，不靠猜
-    expect(items[1].attributes('data-kind')).toBe('volume_free')
-    expect(items[1].attributes('data-subject')).toBe('/data')
-    expect(items[1].text()).toContain('卷 /data 剩余空间不足')
-    expect(items[1].text()).toContain('768.0 GiB')  // 1024 GiB 卷 − 256 GiB 已用
-    // since=0 不展示"始于"（缺失/非法时间不得冒充）
-    expect(items[1].find('[data-test="monitor-alert-since"]').exists()).toBe(false)
-  })
-
-  it('恢复后（后续快照 alerts 为空）横幅消失', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      alerts: [{ kind: 'swap_used', subject: '', since: 1 }],
-    }))
-    const wrapper = await mountView()
-    expect(wrapper.find('[data-test="monitor-alerts"]').exists()).toBe(true)
-
-    useSysmonStore().applySnapshot(makeSysmonSnapshot())
-    await wrapper.vm.$nextTick()
-    expect(wrapper.find('[data-test="monitor-alerts"]').exists()).toBe(false)
-  })
-})
-
-describe('MonitorView 告警横幅跨视图常驻（#80）', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    vi.clearAllMocks()
-  })
-
-  it('切到历史视图后告警横幅仍在（监控页级常驻，不随实时/历史切换消失）', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      alerts: [{ kind: 'memory_used', subject: '', since: 1 }],
-    }))
-    const wrapper = await mountView()
-    expect(wrapper.find('[data-test="monitor-alerts"]').exists()).toBe(true)
-
-    await wrapper.find('[data-test="monitor-tab-history"]').trigger('click')
-    expect(wrapper.find('[data-test="monitor-alerts"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="monitor-alerts"]').text()).toContain('资源告警（1）')
   })
 })
 

@@ -192,15 +192,37 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
     // #122：按使用率降序（62% > 40% > 25%）
     expect(badges[0].attributes('data-mount')).toBe('/home')
     expect(badges[0].find('.res-value').text()).toBe('62%')
+    // 色标 data-level 与监控页卷列表同源（<70% → normal）
+    expect(badges[0].attributes('data-level')).toBe('normal')
 
     expect(badges[1].attributes('data-mount')).toBe('/')
     expect(badges[1].find('.res-value').text()).toBe('40%')
+    expect(badges[1].attributes('data-level')).toBe('normal')
 
     expect(badges[2].attributes('data-mount')).toBe('/data')
     // 标签取挂载点末段（顶栏窄条 overflow:hidden），完整路径在 data-mount / title 里
     expect(badges[2].find('.res-label').text()).toBe('data')
     expect(badges[2].find('.res-value').text()).toBe('25%')
+    expect(badges[2].attributes('data-level')).toBe('normal')
     expect(badges[2].attributes('title')).toBe('/data 使用率 25%')
+  })
+
+  it('卷徽章阈值边界：恰好 70% → warn、恰好 90% → danger（与监控页共用资源等级）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/warn', available: true, total_bytes: 1000 * GIB, used_bytes: 700 * GIB, used_ratio: 0.7 },
+        { mount: '/danger', available: true, total_bytes: 1000 * GIB, used_bytes: 900 * GIB, used_ratio: 0.9 },
+      ],
+    }))
+    const wrapper = await mountTopbar()
+
+    const badges = diskBadges(wrapper)
+    // 使用率降序：danger(90%) 在前
+    expect(badges.map(badge => badge.attributes('data-mount'))).toEqual(['/danger', '/warn'])
+    expect(badges[0].attributes('data-level')).toBe('danger')
+    expect(badges[0].classes()).toContain('topbar__resource--danger')
+    expect(badges[1].attributes('data-level')).toBe('warn')
+    expect(badges[1].classes()).toContain('topbar__resource--warn')
   })
 
   it('不硬编码盘符或数量：卷集合随快照变化（Windows 盘符同样按数据渲染）', async () => {
@@ -217,8 +239,10 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
     expect(badges.map(badge => badge.attributes('data-mount'))).toEqual(['D:', 'C:'])
     expect(badges[0].find('.res-value').text()).toBe('80%')
     expect(badges[0].classes()).toContain('topbar__resource--warn')
+    expect(badges[0].attributes('data-level')).toBe('warn')
     expect(badges[1].find('.res-value').text()).toBe('50%')
     expect(badges[1].classes()).toContain('topbar__resource--normal')
+    expect(badges[1].attributes('data-level')).toBe('normal')
   })
 
   it('单卷不可用：徽章显示「不可用」+ 原因，不得用 0 冒充', async () => {
@@ -234,6 +258,8 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
     expect(badges).toHaveLength(2)
     expect(badges[1].find('.res-value').text()).toBe('不可用')
     expect(badges[1].classes()).toContain('topbar__resource--unavailable')
+    // 不可用卷不套状态色标：没有 data-level，不得用 0/normal 冒充
+    expect(badges[1].attributes('data-level')).toBeUndefined()
     expect(badges[1].attributes('title')).toBe('/backup 卷不可用: no_permission')
     expect(badges[1].text()).not.toContain('0%')
   })
@@ -267,51 +293,7 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
     expect(badges[0].attributes('data-mount')).toBe('/only')
     expect(badges[0].find('.res-value').text()).toBe('90%')
     expect(badges[0].classes()).toContain('topbar__resource--danger')
+    expect(badges[0].attributes('data-level')).toBe('danger')
     expect(sysmonApi.getSnapshot).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe('Topbar 阈值告警徽章（#80）', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    vi.clearAllMocks()
-  })
-
-  it('无活动告警：不渲染告警徽章', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
-    const wrapper = await mountTopbar()
-
-    expect(wrapper.find('#resAlerts').exists()).toBe(false)
-  })
-
-  it('有活动告警：渲染全局常驻计数徽章，title 汇总类型', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      alerts: [
-        { kind: 'memory_used', subject: '', since: 1 },
-        { kind: 'volume_free', subject: '/data', since: 2 },
-      ],
-    }))
-    const wrapper = await mountTopbar()
-
-    const badge = wrapper.find('#resAlerts')
-    expect(badge.exists()).toBe(true)
-    expect(badge.text()).toContain('ALERT')
-    expect(badge.text()).toContain('2')
-    expect(badge.classes()).toContain('topbar__resource--danger')
-    expect(badge.attributes('title')).toContain('资源告警 2 项')
-    expect(badge.attributes('title')).toContain('内存')
-    expect(badge.attributes('title')).toContain('/data')
-  })
-
-  it('恢复后（后续快照 alerts 为空）徽章消失', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      alerts: [{ kind: 'swap_used', subject: '', since: 1 }],
-    }))
-    const wrapper = await mountTopbar()
-    expect(wrapper.find('#resAlerts').exists()).toBe(true)
-
-    useSysmonStore().applySnapshot(makeSysmonSnapshot())
-    await wrapper.vm.$nextTick()
-    expect(wrapper.find('#resAlerts').exists()).toBe(false)
   })
 })

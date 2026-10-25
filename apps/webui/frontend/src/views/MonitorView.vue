@@ -5,13 +5,11 @@ import SyncSwitch from '@/components/shared/SyncSwitch.vue'
 import SysmonConfigTab from '@/components/sysmon/SysmonConfigTab.vue'
 import SysmonHistoryTab from '@/components/sysmon/SysmonHistoryTab.vue'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
+import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
 import { useAuthStore } from '@/stores/auth'
-import {
-  sysmonAlertLabel,
-  useSysmonStore,
-  type SysmonActiveAlert,
-} from '@/stores/sysmon'
+import { useSysmonStore } from '@/stores/sysmon'
 import { useToastStore } from '@/stores/toast'
+import type { SysmonVolumeInfo } from '@/types/generated'
 
 // 资源监控页：系统信息与 CPU 区块（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率）、
 // 温度、内存与交换、磁盘（卷容量 / 共享内存目录）接契约 sysmon 实时快照；
@@ -27,8 +25,6 @@ import { useToastStore } from '@/stores/toast'
 // 网络（#77）：可用但数组为空 = 发送方按 hide_virtual 滤掉了全部虚拟网卡（契约 §2.5 明文，
 // **不是**不可用），显示「已隐藏全部虚拟网卡」+ 切换提示；开关走 REST 下发、以 WS sysmon_config
 // 回推为生效信号。
-// 阈值告警（#80）：快照 alerts[] 是持续状态，页内以常驻横幅展示（冷却期内通知被抑制时仍在）；
-// 触发/恢复的事件通知走既有 notify_ui 链路（触发 error+popup、恢复 info），本页不重复弹 toast。
 // 历史视图（#79）为独立视图：切换只影响渲染来源，不卸载/不重建实时 store，
 // 因此 WS 连接与实时快照推送完全不受影响（契约 sysmon §8：历史视图不订阅 WS）。
 // 配置视图（#81）：展示生效配置镜像（WS sysmon_config，首次挂载经 GET /api/sysmon/config 补拉）；
@@ -225,6 +221,16 @@ const volumes = computed(() => sysmon.volumes)
 const readableVolumes = computed(() => sysmon.readableVolumes)
 const zeroCapacityVolumes = computed(() => sysmon.zeroCapacityVolumes)
 const zeroVolumesOpen = ref(false)
+
+/**
+ * 卷行的使用率展示等级（与顶栏卷徽章共用 `resourceLevel`，阈值与色标说明见 useResourceLevel）。
+ * 正文卷列表由 store 的 `readableVolumes` 口径保证 `used_ratio` 非 null；这里仍显式处理 null
+ * （不伪造 0 再套「正常」色）—— 真出现时不套任何状态色，该行本不该出现在正文。
+ */
+function volumeLevel(volume: SysmonVolumeInfo): ResourceLevel | null {
+  return volume.used_ratio === null ? null : resourceLevel(volume.used_ratio)
+}
+
 const shmAvailable = computed(() => isAvailable('shm_dir'))
 const shmDir = computed(() => sysmon.shmDirInfo)
 // ---- 磁盘 I/O（#76）：每物理盘吞吐 / IOPS / 延迟 / 队列深度 / 利用率，按可用性映射渲染 ----
@@ -263,30 +269,6 @@ const hideVirtualPending = computed(() => sysmon.hideVirtualPending)
 //（罕见，容器内可能），走「暂无数据」而不是「已隐藏」。
 const networkHiddenAll = computed(() => sysmon.networkFilteredAll && hideVirtual.value)
 
-// ---- 阈值告警（#80）：快照 alerts[] 的持续状态 ----
-// 通知（触发 error+popup / 恢复 info）走既有 notify_ui 链路；本区块只做**常驻**提示：
-// 冷却期内通知被抑制时它仍在，恢复后随下一个快照自动消失（契约 sysmon §2.8）。
-const activeAlerts = computed<SysmonActiveAlert[]>(() => sysmon.activeAlerts)
-
-/** 告警条目文案：共用短标签 + 当前快照数值（阈值细节在触发通知正文里，不重复展示） */
-function alertText(alert: SysmonActiveAlert): string {
-  const label = sysmonAlertLabel(alert)
-  if (alert.kind === 'memory_used') {
-    const ratio = memory.value?.used_ratio
-    return ratio == null ? `${label}使用率达到告警阈值` : `${label}使用率 ${formatPercent(ratio)} 超过告警阈值`
-  }
-  if (alert.kind === 'swap_used') {
-    const ratio = swapInfo.value?.used_ratio
-    return ratio == null ? `${label}使用率达到告警阈值` : `${label}使用率 ${formatPercent(ratio)} 超过告警阈值`
-  }
-  // volume_free：subject 为挂载点（契约 sysmon §2.8），剩余空间取同帧卷数据；读不到就不猜数值
-  const volume = volumes.value.find(entry => entry.mount === alert.subject)
-  if (volume && volume.available && volume.total_bytes != null && volume.used_bytes != null) {
-    const free = volume.total_bytes - volume.used_bytes
-    return `${label} 剩余空间不足（剩余 ${formatBytes(free)}）`
-  }
-  return `${label} 剩余空间低于告警阈值`
-}
 // 开关语义是「显示全部网卡」(= hide_virtual 取反)，直接下发取反后的 hide_virtual 值。
 // 结果契约（对齐 settings/mdConfig 的配置类操作）：true = 已下发（等 WS sysmon_config 生效）、
 // false = 防重入或 HTTP 失败、PENDING_TIMEOUT = 超时（usePending 已 toast，此处不重复弹）。
@@ -359,37 +341,6 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
       <span v-if="viewMode === 'realtime' && snapshot" class="ds-tag">实时快照</span>
       <span v-else-if="viewMode === 'realtime'" class="ds-tag ds-tag--warning">等待快照</span>
     </header>
-
-    <!-- 阈值告警（#80）：持续状态——实时/历史视图都常驻显示，冷却期内通知被抑制时仍在，
-         恢复后随下一个快照自动消失；触发/恢复的事件通知走既有 notify_ui 链路，这里不重复弹 toast -->
-    <section
-      v-if="activeAlerts.length > 0"
-      class="ds-alert ds-alert--danger monitor-view__alerts"
-      data-test="monitor-alerts"
-      role="alert"
-    >
-      <span class="ds-alert__icon"><Icon name="warning_line" :size="16" /></span>
-      <div class="monitor-view__alerts-body">
-        <div class="ds-alert__title" data-test="monitor-alerts-title">
-          资源告警（{{ activeAlerts.length }}）
-        </div>
-        <ul class="monitor-view__alerts-list">
-          <li
-            v-for="alert in activeAlerts"
-            :key="`${alert.kind}|${alert.subject}`"
-            class="monitor-view__alert-item"
-            data-test="monitor-alert"
-            :data-kind="alert.kind"
-            :data-subject="alert.subject"
-          >
-            <span>{{ alertText(alert) }}</span>
-            <span v-if="alert.since > 0" class="monitor-view__alert-since" data-test="monitor-alert-since">
-              始于 {{ formatDateTime(alert.since * 1000) }}
-            </span>
-          </li>
-        </ul>
-      </div>
-    </section>
 
     <!-- 历史视图（#79）：独立渲染，不卸载实时 store（WS 连接与实时数据不受影响） -->
     <SysmonHistoryTab v-if="viewMode === 'history'" />
@@ -664,7 +615,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
         </h2>
 
         <!-- 卷：正文只留容量可读且总量 > 0 的卷（#122），按使用率降序（store 已排好）；
-             available=false 与 total_bytes=0 的挂载折叠进「无容量挂载（N）」，绝不显示 0 -->
+             available=false 与 total_bytes=0 的挂载折叠进「无容量挂载（N）」，绝不显示 0。
+             data-level 为使用率色标（与顶栏卷徽章共用 resourceLevel；色标是展示规则，不是越限判定） -->
         <div class="monitor-view__subsection" data-test="monitor-disk-volumes">
           <h3 class="monitor-view__panel-title">卷容量</h3>
           <ul v-if="readableVolumes.length > 0" class="monitor-view__list">
@@ -674,6 +626,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               class="monitor-view__list-row monitor-view__disk-row"
               data-test="monitor-disk-volume"
               :data-mount="volume.mount"
+              :data-level="volumeLevel(volume)"
             >
               <span class="monitor-view__list-label">{{ volume.mount }}</span>
               <span class="monitor-view__list-value">{{ formatPercent(volume.used_ratio) }}</span>
@@ -958,41 +911,18 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   gap: var(--spacer-16);
 }
 
-/* 阈值告警横幅（#80）：监控页级常驻提示（实时/历史视图都在）；颜色沿用 ds-alert--danger，
-   排版全部走设计 token */
-.monitor-view__alerts {
-  margin-bottom: var(--spacer-16);
+/* 卷使用率色标：与顶栏卷徽章共用 useResourceLevel 的同一组常量与设计 token
+   （≥70% 黄、≥90% 红）；色标是独立展示规则，不是越限判定。 */
+.monitor-view__disk-row[data-level='normal'] .monitor-view__list-value {
+  color: var(--status-success-default);
 }
 
-.monitor-view__alerts-body {
-  flex: 1;
-  min-width: 0;
+.monitor-view__disk-row[data-level='warn'] .monitor-view__list-value {
+  color: var(--status-alert-default);
 }
 
-.monitor-view__alerts-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacer-4);
-}
-
-.monitor-view__alert-item {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--spacer-8);
-  color: var(--text-secondary);
-  font-size: var(--body-md-font-size);
-  line-height: var(--body-md-line-height);
-  overflow-wrap: anywhere;
-}
-
-.monitor-view__alert-since {
-  color: var(--text-tertiary);
-  font-size: var(--body-xs-font-size);
-  line-height: var(--body-xs-line-height);
+.monitor-view__disk-row[data-level='danger'] .monitor-view__list-value {
+  color: var(--status-error-default);
 }
 
 .monitor-view__card--wide {
