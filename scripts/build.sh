@@ -14,6 +14,14 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# ccache 环境：launcher 已写进 CMakeCache（setup.sh），但 CCACHE_DIR 不持久，
+# 必须在每个 build shell 重新导出，否则退回只读的 ~/.cache/ccache 直接构建失败。
+# shellcheck source=scripts/ccache-env.sh
+if command -v ccache >/dev/null 2>&1; then
+    . "$REPO_ROOT/scripts/ccache-env.sh"
+    dz_export_ccache_env "$REPO_ROOT"
+fi
+
 # DSH workspace-write 沙箱下 ~/.npm 可能只读：回退到仓库内 npm cache（.cache/ 已 gitignore）
 if [ -z "${npm_config_cache:-}" ]; then
     npm_cache_ok=0

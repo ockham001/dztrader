@@ -33,6 +33,10 @@ esac
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p "$REPO_ROOT/.cache"
 
+# ccache 的 CCACHE_DIR 需要每个调用 ccache 的 shell 自己导出（见 scripts/ccache-env.sh）
+# shellcheck source=scripts/ccache-env.sh
+. "$REPO_ROOT/scripts/ccache-env.sh"
+
 # DSH workspace-write 沙箱下 ~/.conan2 可能只读：回退到仓库内 CONAN_HOME（.cache/ 已 gitignore），
 # 避免 worktree setup 卡在权限申请上。回退时先从可读的 ~/.conan2 播种一次（1.8G 本地拷贝几十秒），
 # 否则每个新 worktree 都要重新下载全部依赖（本波 #88 实测 ~50 分钟）。
@@ -87,10 +91,14 @@ if [ "$SKIP_CONFIGURE" -eq 0 ]; then
     # 本机有 ccache 时接入编译器缓存（worktree 首建/合并后重建显著加速；Windows 走 setup.ps1 不涉及）
     CMAKE_EXTRA_ARGS=()
     if command -v ccache >/dev/null 2>&1; then
-        export CCACHE_DIR="${CCACHE_DIR:-$REPO_ROOT/.cache/ccache}"
-        mkdir -p "$CCACHE_DIR"
-        CMAKE_EXTRA_ARGS+=("-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
-        echo "ccache: enabled (CCACHE_DIR=$CCACHE_DIR)"
+        dz_export_ccache_env "$REPO_ROOT"
+        if [ -w "$CCACHE_DIR" ]; then
+            CMAKE_EXTRA_ARGS+=("-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
+            echo "ccache: enabled (CCACHE_DIR=$CCACHE_DIR)"
+        else
+            # 目录不可写时不要写 launcher：否则后续 build 每次调用 ccache 都会失败
+            echo "warning: ccache cache dir is not writable ($CCACHE_DIR); ccache launcher disabled" >&2
+        fi
     fi
     echo "cmake --preset $PRESET"
     cmake --preset "$PRESET" "${CMAKE_EXTRA_ARGS[@]}"
