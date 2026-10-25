@@ -67,6 +67,7 @@ describe('wsClient 连接生命周期与消息协议', () => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
     localStorage.clear()
+    window.history.replaceState({}, '', '/')
   })
 
   async function loadClient() {
@@ -109,6 +110,35 @@ describe('wsClient 连接生命周期与消息协议', () => {
     connect()
     FakeWebSocket.instances[0]!.simulateError()
     expect(useWebSocket().lastError.value).toBe('WebSocket error')
+  })
+
+  it('收到 auth failed 经 auth store 清会话、断开且不再重连', async () => {
+    // 停在登录页：避免触发 jsdom 未实现的页面跳转（跳转决策由 client 用例覆盖）
+    window.history.replaceState({}, '', '/login')
+    localStorage.setItem('jwt_token', 'test-token')
+    localStorage.setItem('user_info', '{"username":"admin"}')
+    // 先把 refs 填起来，才能证明 logout 真的清了它们（否则 toBeNull 恒真）
+    useAuthStore().restoreUser()
+    expect(useAuthStore().token).toBe('test-token')
+    expect(useAuthStore().user).not.toBeNull()
+
+    const { connect, useWebSocket } = await loadClient()
+    connect()
+    const ws = FakeWebSocket.instances[0]!
+    ws.simulateOpen()
+    textMessage(ws, { type: 'error', payload: { message: 'auth failed' } })
+
+    // 会话清理由 auth store 的 logout 统一完成（不是第二份 removeItem）
+    expect(useAuthStore().token).toBeNull()
+    expect(useAuthStore().user).toBeNull()
+    expect(localStorage.getItem('jwt_token')).toBeNull()
+    expect(localStorage.getItem('user_info')).toBeNull()
+    expect(useWebSocket().connectionState.value).toBe('disconnected')
+    expect(useWebSocket().lastError.value).toBe('auth failed')
+
+    // 连接已主动断开：60s 内不再产生新连接
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(FakeWebSocket.instances).toHaveLength(1)
   })
 
   it('断线按 3s×2ⁿ 退避重连（3s → 6s）', async () => {
@@ -236,6 +266,9 @@ describe('wsClient 连接生命周期与消息协议', () => {
   })
 
   it('error 消息只写 lastError，不进入业务 handler；未知 type 静默忽略', async () => {
+    // 停在登录页 + 中性文案：避免触发 auth failed 的会话清理与跳转副作用，
+    // 本用例只验证「error 不进业务 handler、未知 type 忽略」
+    window.history.replaceState({}, '', '/login')
     const { connect, registerHandler, useWebSocket } = await loadClient()
     const errorHandler = vi.fn()
     const unknownHandler = vi.fn()
@@ -244,8 +277,8 @@ describe('wsClient 连接生命周期与消息协议', () => {
     connect()
     const ws = FakeWebSocket.instances[0]!
 
-    textMessage(ws, { type: 'error', payload: { message: 'auth failed' } })
-    expect(useWebSocket().lastError.value).toBe('auth failed')
+    textMessage(ws, { type: 'error', payload: { message: 'bad json' } })
+    expect(useWebSocket().lastError.value).toBe('bad json')
     expect(errorHandler).not.toHaveBeenCalled()
 
     textMessage(ws, { type: 'not_a_real_type', data: { x: 1 } })
