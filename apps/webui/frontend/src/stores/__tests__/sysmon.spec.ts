@@ -502,18 +502,18 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
     const store = useSysmonStore()
     store.applySnapshot(makeSysmonSnapshot())
 
-    // watched 优先排序，其次按 mount 升序：/data 虽是数组第二项，仍排到首位
-    expect(store.volumes.map(volume => volume.mount)).toEqual(['/data', '/', '/home'])
+    // #122：按使用率降序、同值按挂载点升序，不依赖发送端顺序（payload 顺序为 /、/data、/home）
+    expect(store.volumes.map(volume => volume.mount)).toEqual(['/home', '/', '/data'])
     expect(store.volumes[0]).toEqual({
-      mount: '/data',
-      watched: true,
+      mount: '/home',
+      watched: false,
       available: true,
-      total_bytes: 1024 * GIB,
-      used_bytes: 256 * GIB,
-      used_ratio: 0.25,
+      total_bytes: 50 * GIB,
+      used_bytes: 31 * GIB,
+      used_ratio: 0.62,
     })
     expect(store.volumes[1].used_ratio).toBe(0.4)
-    expect(store.volumes[2].used_ratio).toBe(0.62)
+    expect(store.volumes[2].used_ratio).toBe(0.25)
 
     expect(store.watchPaths).toEqual([
       { path: '/srv/dztrader/shm', mount: '/data', available: true },
@@ -583,11 +583,12 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
       ],
     }))
 
-    expect(store.volumes.map(volume => volume.mount)).toEqual(['/data', '/'])
-    const root = store.volumes[1]
+    // #122：按使用率降序 —— / 钳制后为 100%，排在 10% 的 /data 之前
+    expect(store.volumes.map(volume => volume.mount)).toEqual(['/', '/data'])
+    const root = store.volumes[0]
     expect(root.used_bytes).toBe(100 * GIB)
     expect(root.used_ratio).toBe(1)
-    const data = store.volumes[0]
+    const data = store.volumes[1]
     expect(data.used_bytes).toBe(10 * GIB)
     expect(data.used_ratio).toBe(0.1)
   })
@@ -630,6 +631,40 @@ describe('useSysmonStore 卷 / 关注路径 / 共享内存目录 computed（#75�
         used_bytes: 0,
         used_ratio: null,
       },
+    ])
+  })
+
+  it('#122 排序：按使用率降序、同值按挂载点升序，不依赖发送端顺序', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/b-tie', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 50 * GIB, used_ratio: 0.5 },
+        { mount: '/low', watched: true, available: true, total_bytes: 100 * GIB, used_bytes: 10 * GIB, used_ratio: 0.1 },
+        { mount: '/a-tie', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 50 * GIB, used_ratio: 0.5 },
+        { mount: '/high', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 90 * GIB, used_ratio: 0.9 },
+      ],
+    }))
+
+    // 关注标记不再参与排序（#122 取消关注路径）：纯按使用率与挂载点
+    expect(store.volumes.map(volume => volume.mount)).toEqual(['/high', '/a-tie', '/b-tie', '/low'])
+  })
+
+  it('#122 零容量折叠：容量不可读与 total=0 的卷单列，正文列表只剩可读容量的卷', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
+        { mount: '/run/user/1000/gnome-remote-desktop/cliprdr-abc', watched: false, available: true, total_bytes: 0, used_bytes: 0, used_ratio: null },
+        { mount: '/backup', watched: false, available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+      ],
+    }))
+
+    // 采集语义不变：三条都在 volumes 里（available=true + total=0 是合法事实）
+    expect(store.volumes).toHaveLength(3)
+    expect(store.readableVolumes.map(volume => volume.mount)).toEqual(['/'])
+    expect(store.zeroCapacityVolumes.map(volume => volume.mount)).toEqual([
+      '/backup',
+      '/run/user/1000/gnome-remote-desktop/cliprdr-abc',
     ])
   })
 

@@ -105,8 +105,11 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - `mount` 为规范化挂载点：Linux 取挂载目录（`/`、`/home`），Windows 取盘符根（`C:\`）。同一帧内唯一。
 - `available=false`（`reason` 必填）表示**卷存在但容量读不到**（无权限、卷不可访问）。此时 `total_bytes`/`used_bytes`/`used_ratio` **必须为 `null`**，不得用 0 冒充；卷仍然进数组，因为"卷存在但读不到"与"根本没有这个卷"是不同事实，消费方都要能显示。
 - `available=true` 时 `total_bytes`/`used_bytes` 为非负整数且 `used_bytes ≤ total_bytes`；`used_ratio = used_bytes / total_bytes`，`total_bytes = 0`（异常/特殊卷）时为 `null`。
-- 采集范围恒为**本机全部卷**，不存在"关注哪一卷"的概念（#121 取消关注路径）：Linux 过滤伪文件系统（`proc`/`sysfs`/`devtmpfs`/`devpts`/`tmpfs`/`cgroup*`/`debugfs`/`tracefs`/`configfs`/`mqueue`/`hugetlbfs`/`autofs`/`binfmt_misc`/`nsfs`/`pstore`/`securityfs`/`fusectl`/`bpf` 等；伪文件系统清单的调整见 #122），同一挂载点只保留一条；Windows 覆盖固定盘（`GetDriveType` = `DRIVE_FIXED`）。
+- 采集范围恒为**本机全部卷**，不存在"关注哪一卷"的概念（#121 取消关注路径）：Linux 过滤伪文件系统（`proc`/`sysfs`/`devtmpfs`/`devpts`/`tmpfs`/`cgroup*`/`debugfs`/`tracefs`/`configfs`/`mqueue`/`hugetlbfs`/`autofs`/`binfmt_misc`/`nsfs`/`pstore`/`securityfs`/`fusectl`/`bpf`/裸 `fuse` 等；`fuse.*` 家族按前缀过滤），同一挂载点只保留一条；Windows 覆盖固定盘（`GetDriveType` = `DRIVE_FIXED`）。
+- **伪文件系统清单口径（#122）**：裸 `fuse`（`/proc/mounts` 中 `fstype` 字面量即 `fuse`，不带实现后缀，如 GNOME remote desktop 的 `cliprdr-*` 临时挂载）与 `fuse.*` 前缀匹配并列过滤——它们 `statvfs` 返回 0 块，`df` 默认也不列。**`fuseblk` 不在此列**：那是 ntfs-3g 挂载的真实 NTFS 卷，过滤掉会隐藏真实存储。
 - 卷容量不参与 `NOTIFY_UI`：使用率只用于 UI 色标与日志（§2.8）。
+- **零容量折叠是纯显示行为（#122）**：`available=false` 或 `total_bytes = 0` 的挂载**照常进 `volumes[]`**（`available=true` + `total_bytes=0` 是合法事实，不得在采集层抹掉），界面把它们折叠进「无容量挂载（N）」分组、组内逐条显示挂载点与不可用原因，不并入正文卷列表。
+- **卷列表排序（#122）**：按 `used_ratio` 降序、同值按 `mount` 升序；`used_ratio = null` 的排在末尾并按 `mount` 升序。排序不依赖发送端顺序。
 
 `disk_io[]`：每物理盘 I/O 派生值。字段为 `{device:string, read_bytes_per_sec, write_bytes_per_sec, read_iops, write_iops, latency_ms, queue_depth, utilization}`；除 `device` 外均为 `number | null`——**计数器不可用时为 `null` 而非 0**（契约 §2.7）。
 

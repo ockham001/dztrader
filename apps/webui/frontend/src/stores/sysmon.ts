@@ -316,8 +316,9 @@ export const useSysmonStore = defineStore('sysmon', () => {
    * 消费方要能显示「不可用」+ 原因），但容量字段一律净化成 null，不得用 0 冒充。
    * 净化规则：mount 为空串剔除；`used_bytes` 钳制到 `[0, total]`；`used_ratio` 按
    * `used_bytes / total_bytes` 重算（不信任 payload 派生值，保证字节与百分比一致），
-   * `total_bytes = 0`（异常/特殊卷）时为 null。按 watched 优先、其次 mount 升序排序，
-   * 顶栏徽章因此天然把关注卷排在前面（不依赖发送端顺序）。
+   * `total_bytes = 0`（异常/特殊卷）时为 null。
+   * 排序（#122）：按 `used_ratio` 降序、同值按挂载点升序，不依赖发送端顺序；比率为 null
+   * （容量读不到 / total=0）的一律排在末尾并按挂载点升序。顶栏徽章因此与页内同序。
    */
   const volumes = computed<SysmonVolumeInfo[]>(() => {
     const s = snapshot.value
@@ -366,10 +367,30 @@ export const useSysmonStore = defineStore('sysmon', () => {
       })
     }
     return result.sort((a, b) => {
-      if (a.watched !== b.watched) return a.watched ? -1 : 1
+      // 比率为 null（读不到 / total=0）排在末尾，与正文卷列表的折叠口径一致
+      if (a.used_ratio === null || b.used_ratio === null) {
+        if (a.used_ratio !== b.used_ratio) return a.used_ratio === null ? 1 : -1
+        return a.mount.localeCompare(b.mount)
+      }
+      if (a.used_ratio !== b.used_ratio) return b.used_ratio - a.used_ratio
       return a.mount.localeCompare(b.mount)
     })
   })
+
+  /**
+   * 正文卷列表（#122）：容量可读且总量 > 0 的卷，按 `volumes` 的稳定顺序。
+   * 零容量挂载（`available=false` 或 `total_bytes = 0`）不在这里，由 `zeroCapacityVolumes` 承载。
+   */
+  const readableVolumes = computed<SysmonVolumeInfo[]>(() =>
+    volumes.value.filter(volume => volume.used_ratio !== null))
+
+  /**
+   * 零容量挂载（#122）：容量读不到或总容量为 0 的挂载，视图折叠进「无容量挂载（N）」分组。
+   * 这是**显示层分类**，不改变采集语义 —— `available=true` + `total_bytes=0` 仍是合法事实，
+   * 仍完整保留在 `volumes` 里（顶栏徽章与其它消费方照常看到它们）。
+   */
+  const zeroCapacityVolumes = computed<SysmonVolumeInfo[]>(() =>
+    volumes.value.filter(volume => volume.used_ratio === null))
 
   /**
    * 关注路径的落卷解析（契约 sysmon §2.4，#75）。仅当快照携带数组时返回过滤后的数组
@@ -686,6 +707,8 @@ export const useSysmonStore = defineStore('sysmon', () => {
     memoryInfo,
     swapInfo,
     volumes,
+    readableVolumes,
+    zeroCapacityVolumes,
     watchPaths,
     shmDirInfo,
     diskIo,

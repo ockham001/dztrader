@@ -564,31 +564,81 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
     vi.clearAllMocks()
   })
 
-  it('默认快照：3 个卷按 watched 优先排序，关注卷高亮并带「关注」标签', async () => {
+  it('默认快照：3 个卷按使用率降序排序，关注卷高亮并带「关注」标签', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     const wrapper = await mountView()
 
     const rows = wrapper.findAll('[data-test="monitor-disk-volume"]')
     expect(rows).toHaveLength(3)
-    // 关注卷 /data 虽在 payload 中排第二，前端按 watched 优先排到首位
-    expect(rows[0].attributes('data-mount')).toBe('/data')
-    expect(rows[0].classes()).toContain('monitor-view__disk-row--watched')
-    expect(rows[0].find('[data-test="monitor-disk-volume-watched"]').exists()).toBe(true)
-    expect(rows[0].text()).toContain('25.0%')
-    expect(rows[0].text()).toContain('256.0 GiB / 1024.0 GiB')
-
+    // #122：按使用率降序（62% > 40% > 25%），关注标记不再影响顺序
+    expect(rows[0].attributes('data-mount')).toBe('/home')
+    expect(rows[0].text()).toContain('62.0%')
     expect(rows[1].attributes('data-mount')).toBe('/')
-    expect(rows[1].classes()).not.toContain('monitor-view__disk-row--watched')
-    expect(rows[1].find('[data-test="monitor-disk-volume-watched"]').exists()).toBe(false)
     expect(rows[1].text()).toContain('40.0%')
-    expect(rows[2].attributes('data-mount')).toBe('/home')
-    expect(rows[2].text()).toContain('62.0%')
+
+    // watched 高亮与「关注」标签保留（字段本身由 #124 删除）
+    expect(rows[2].attributes('data-mount')).toBe('/data')
+    expect(rows[2].classes()).toContain('monitor-view__disk-row--watched')
+    expect(rows[2].find('[data-test="monitor-disk-volume-watched"]').exists()).toBe(true)
+    expect(rows[2].text()).toContain('25.0%')
+    expect(rows[2].text()).toContain('256.0 GiB / 1024.0 GiB')
 
     // 卷集合与数量完全由快照驱动，无硬编码盘符
     expect(wrapper.find('[data-test="monitor-disk-unavailable"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-disk-zero-volumes"]').exists()).toBe(false)
   })
 
-  it('卷 available=false：显示「不可用」+ 原因文案，绝不显示 0% / 0 B', async () => {
+  it('#122 零容量挂载：正文列表只留可读容量的卷，其余折叠进「无容量挂载（N）」', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
+        { mount: '/run/user/1000/cliprdr-abc', watched: false, available: true, total_bytes: 0, used_bytes: 0, used_ratio: null },
+        { mount: '/backup', watched: false, available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+      ],
+    }))
+    const wrapper = await mountView()
+
+    // 正文只有容量可读且总量 > 0 的卷
+    const rows = wrapper.findAll('[data-test="monitor-disk-volume"]')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].attributes('data-mount')).toBe('/')
+
+    // 折叠组给出数量，默认收起（展开与否是纯显示状态）
+    const group = wrapper.find('[data-test="monitor-disk-zero-volumes"]')
+    expect(group.exists()).toBe(true)
+    expect(group.find('[data-test="monitor-disk-zero-toggle"]').text()).toContain('无容量挂载（2）')
+    expect(group.find('[data-test="monitor-disk-zero-toggle"]').attributes('aria-expanded')).toBe('false')
+    expect(wrapper.findAll('[data-test="monitor-disk-zero-volume"]')).toHaveLength(0)
+  })
+
+  it('#122 零容量挂载展开：逐条显示挂载点与不可用原因，不显示 0 B / 0%', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
+        { mount: '/run/user/1000/cliprdr-abc', watched: false, available: true, total_bytes: 0, used_bytes: 0, used_ratio: null },
+        { mount: '/backup', watched: false, available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+      ],
+    }))
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="monitor-disk-zero-toggle"]').trigger('click')
+    await wrapper.vm.$nextTick()
+
+    const items = wrapper.findAll('[data-test="monitor-disk-zero-volume"]')
+    expect(items).toHaveLength(2)
+    expect(items.map(item => item.attributes('data-mount'))).toEqual(['/backup', '/run/user/1000/cliprdr-abc'])
+    // 不可读 → 原因文案；可读但总量为 0 → 说明总量为 0（不是「不可用」）
+    expect(items[0].find('[data-test="monitor-disk-zero-reason"]').text()).toBe('无访问权限')
+    expect(items[1].find('[data-test="monitor-disk-zero-reason"]').text()).toBe('总容量为 0')
+
+    const group = wrapper.find('[data-test="monitor-disk-zero-volumes"]')
+    expect(group.text()).not.toContain('0 B')
+    expect(group.text()).not.toContain('0.0%')
+    // 展开后按钮语义同步
+    expect(group.find('[data-test="monitor-disk-zero-toggle"]').attributes('aria-expanded')).toBe('true')
+  })
+
+  it('卷 available=false：折叠进零容量分组，正文列表不出现该挂载（不得用 0 冒充）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
         { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
@@ -598,18 +648,20 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
     const wrapper = await mountView()
 
     const rows = wrapper.findAll('[data-test="monitor-disk-volume"]')
-    expect(rows).toHaveLength(2)
-    const backup = rows[1]
-    expect(backup.attributes('data-mount')).toBe('/backup')
-    expect(backup.text()).toContain('不可用')
-    expect(backup.find('[data-test="monitor-disk-volume-reason"]').text()).toBe('无访问权限')
-    // 不得用 0 冒充：不可用卷不出现百分比 / 字节数
-    expect(backup.text()).not.toContain('0%')
-    expect(backup.text()).not.toContain('0 B')
-    expect(backup.text()).not.toContain('GiB')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].attributes('data-mount')).toBe('/')
+
+    await wrapper.find('[data-test="monitor-disk-zero-toggle"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    const folded = wrapper.find('[data-test="monitor-disk-zero-volume"]')
+    expect(folded.attributes('data-mount')).toBe('/backup')
+    expect(folded.text()).toContain('不可用')
+    expect(folded.text()).not.toContain('0%')
+    expect(folded.text()).not.toContain('0 B')
+    expect(folded.text()).not.toContain('GiB')
   })
 
-  it('卷可读性脏数据（NaN/负数）：按不可用渲染，不显示 0', async () => {
+  it('卷可读性脏数据（NaN/负数）：折叠进零容量分组并显示「采集失败」，不显示 0', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
         { mount: '/dirty', watched: false, available: true, total_bytes: Number.NaN, used_bytes: -1, used_ratio: 0 },
@@ -617,9 +669,13 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
     }))
     const wrapper = await mountView()
 
-    const row = wrapper.find('[data-test="monitor-disk-volume"]')
+    expect(wrapper.findAll('[data-test="monitor-disk-volume"]')).toHaveLength(0)
+    await wrapper.find('[data-test="monitor-disk-zero-toggle"]').trigger('click')
+    await wrapper.vm.$nextTick()
+
+    const row = wrapper.find('[data-test="monitor-disk-zero-volume"]')
     expect(row.text()).toContain('不可用')
-    expect(row.find('[data-test="monitor-disk-volume-reason"]').text()).toBe('采集失败')
+    expect(row.find('[data-test="monitor-disk-zero-reason"]').text()).toBe('采集失败')
     expect(row.text()).not.toContain('0%')
   })
 
@@ -705,7 +761,7 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
     expect(wrapper.find('[data-test="monitor-shm-unavailable"]').exists()).toBe(false)
   })
 
-  it('可用但 total_bytes=0 的特殊卷：使用率显示「—」而不是 0%，字节照常渲染', async () => {
+  it('可用但 total_bytes=0 的特殊卷：折叠进零容量分组，不显示「—」也不需要空列表', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
         { mount: '/special', watched: false, available: true, total_bytes: 0, used_bytes: 0, used_ratio: null },
@@ -713,10 +769,18 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
     }))
     const wrapper = await mountView()
 
-    const row = wrapper.find('[data-test="monitor-disk-volume"]')
-    expect(row.find('.monitor-view__list-value').text()).toBe('—')
+    // 正文没有可读容量的卷：不显示「不可用」空态（volumes 指标本身可用），只剩折叠分组
+    expect(wrapper.findAll('[data-test="monitor-disk-volume"]')).toHaveLength(0)
+    expect(wrapper.find('[data-test="monitor-disk-unavailable"]').exists()).toBe(false)
+    const group = wrapper.find('[data-test="monitor-disk-zero-volumes"]')
+    expect(group.exists()).toBe(true)
+
+    await group.find('[data-test="monitor-disk-zero-toggle"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    const row = wrapper.find('[data-test="monitor-disk-zero-volume"]')
+    expect(row.attributes('data-mount')).toBe('/special')
     expect(row.text()).not.toContain('0.0%')
-    expect(row.text()).not.toContain('不可用')
+    expect(row.find('[data-test="monitor-disk-zero-reason"]').text()).toBe('总容量为 0')
   })
 
   it('不按 platform.family 分支：Windows 形状卷（C: / D:）照常按数据渲染', async () => {
@@ -740,12 +804,16 @@ describe('MonitorView 磁盘（#75：卷容量 / 关注路径 / 共享内存目�
     const wrapper = await mountView()
 
     const rows = wrapper.findAll('[data-test="monitor-disk-volume"]')
-    expect(rows).toHaveLength(2)
+    expect(rows).toHaveLength(1)
     expect(rows[0].attributes('data-mount')).toBe('C:')
     expect(rows[0].classes()).toContain('monitor-view__disk-row--watched')
     expect(rows[0].text()).toContain('50.0%')
-    expect(rows[1].attributes('data-mount')).toBe('D:')
-    expect(rows[1].text()).toContain('不可用')
+    // 不可读的 D: 折叠进零容量分组（#122），正文只剩 C:
+    const group = wrapper.find('[data-test="monitor-disk-zero-volumes"]')
+    expect(group.find('[data-test="monitor-disk-zero-toggle"]').text()).toContain('无容量挂载（1）')
+    await group.find('[data-test="monitor-disk-zero-toggle"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="monitor-disk-zero-volume"]').attributes('data-mount')).toBe('D:')
     expect(wrapper.find('[data-test="monitor-shm-path"]').text()).toBe('C:\\dztrader\\shm')
     expect(wrapper.find('[data-test="monitor-shm-oldest-age"]').text()).toBe('30 秒')
   })

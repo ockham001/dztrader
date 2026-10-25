@@ -1001,19 +1001,24 @@ bool is_mount_prefix(std::string_view path, std::string_view mount_point) {
 
 bool is_pseudo_filesystem(std::string_view fs_type) {
     // 契约 sysmon §2.4：过滤内核伪文件系统、内存文件系统与无独立容量语义的挂载。
-    // 清单按**精确类型名**匹配（cgroup 与 cgroup2 各列一条）；只有 `fuse.*` 家族用前缀，
+    // 清单按**精确类型名**匹配（cgroup 与 cgroup2 各列一条）；`fuse.*` 家族另按前缀匹配，
     // 因为其类型名带实现后缀（如 `fuse.sshfs`）。
-    static constexpr std::array<std::string_view, 26> kPseudo = {
-        "proc",        "sysfs",      "devtmpfs", "devpts",     "tmpfs",   "ramfs",     "cgroup",
-        "cgroup2",     "debugfs",    "tracefs",  "configfs",   "mqueue",  "hugetlbfs", "autofs",
-        "binfmt_misc", "nsfs",       "pstore",   "securityfs", "fusectl", "bpf",       "efivarfs",
-        "selinuxfs",   "rpc_pipefs", "nfsd",     "overlay",    "squashfs"};
+    //
+    // 裸 `fuse` 与 `fuse.*` 并列列入：/proc/mounts 里 GNOME remote desktop 的
+    // cliprdr 之类临时挂载 fstype 字面量就是 `fuse`（无实现后缀），statvfs 返回 0 块，
+    // df 默认也不列它（#122）。**`fuseblk` 不在此列**——那是 ntfs-3g 挂载的真实 NTFS 卷，
+    // 过滤掉会隐藏真实存储。
+    static constexpr std::array<std::string_view, 27> kPseudo = {
+        "proc",        "sysfs",      "devtmpfs", "devpts",     "tmpfs",    "ramfs",     "cgroup",
+        "cgroup2",     "debugfs",    "tracefs",  "configfs",   "mqueue",   "hugetlbfs", "autofs",
+        "binfmt_misc", "nsfs",       "pstore",   "securityfs", "fusectl",  "bpf",       "efivarfs",
+        "selinuxfs",   "rpc_pipefs", "nfsd",     "overlay",    "squashfs", "fuse"};
     for (const auto candidate : kPseudo) {
         if (fs_type == candidate) {
             return true;
         }
     }
-    // `fuse.*` / `fuse.` 家族：用户态文件系统容量语义由实现决定，不作为卷基线。
+    // `fuse.*` 家族：用户态文件系统容量语义由实现决定，不作为卷基线。
     return fs_type.starts_with("fuse.");
 }
 

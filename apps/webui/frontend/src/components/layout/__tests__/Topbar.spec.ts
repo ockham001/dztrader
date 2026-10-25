@@ -182,26 +182,28 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
     return wrapper.findAll('.topbar__resource--disk')
   }
 
-  it('默认快照：按卷集合渲染徽章，关注卷排首位并带 --watched 高亮', async () => {
+  it('默认快照：按卷集合渲染徽章，顺序为使用率降序（#122，不依赖发送端顺序）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+
     const wrapper = await mountTopbar()
 
     const badges = diskBadges(wrapper)
     expect(badges).toHaveLength(3)
-    // 关注卷 /data 在 payload 中排第二，徽章仍排首位（不依赖发送端顺序）
-    expect(badges[0].attributes('data-mount')).toBe('/data')
-    expect(badges[0].classes()).toContain('topbar__resource--watched')
-    // 标签取挂载点末段（顶栏窄条 overflow:hidden），完整路径在 data-mount / title 里
-    expect(badges[0].find('.res-label').text()).toBe('data')
-    expect(badges[0].attributes('data-mount')).toBe('/data')
-    expect(badges[0].find('.res-value').text()).toBe('25%')
-    expect(badges[0].attributes('title')).toBe('/data 使用率 25%（关注卷）')
+    // #122：按使用率降序（62% > 40% > 25%），关注标记不再影响顺序
+    expect(badges[0].attributes('data-mount')).toBe('/home')
+    expect(badges[0].find('.res-value').text()).toBe('62%')
+    expect(badges[0].classes()).not.toContain('topbar__resource--watched')
 
     expect(badges[1].attributes('data-mount')).toBe('/')
-    expect(badges[1].classes()).not.toContain('topbar__resource--watched')
     expect(badges[1].find('.res-value').text()).toBe('40%')
-    expect(badges[2].attributes('data-mount')).toBe('/home')
-    expect(badges[2].find('.res-value').text()).toBe('62%')
+
+    // watched 高亮与标题的「关注卷」标注保留（字段本身由 #124 删除）
+    expect(badges[2].attributes('data-mount')).toBe('/data')
+    expect(badges[2].classes()).toContain('topbar__resource--watched')
+    // 标签取挂载点末段（顶栏窄条 overflow:hidden），完整路径在 data-mount / title 里
+    expect(badges[2].find('.res-label').text()).toBe('data')
+    expect(badges[2].find('.res-value').text()).toBe('25%')
+    expect(badges[2].attributes('title')).toBe('/data 使用率 25%（关注卷）')
   })
 
   it('不硬编码盘符或数量：卷集合随快照变化（Windows 盘符同样按数据渲染）', async () => {

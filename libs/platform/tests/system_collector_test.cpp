@@ -603,13 +603,38 @@ TEST(MountParserTest, PseudoFilterCanBeDisabledForDiagnosis) {
     EXPECT_EQ(all.size(), 2U);
 }
 
+TEST(MountParserTest, BareFuseIsFilteredButFuseblkIsARealVolume) {
+    // #122：裸 `fuse` 的临时挂载被过滤（GNOME remote desktop 的 cliprdr），
+    // `fuseblk`（ntfs-3g 承载的真实 NTFS 卷）必须留下来。
+    const std::string content =
+        "fuse /run/user/1000/cliprdr-abc fuse rw,nosuid,nodev 0 0\n"
+        "fuse.sshfs /srv/remote fuse.sshfs rw 0 0\n"
+        "/dev/sda2 / ext4 rw,relatime 0 0\n"
+        "/dev/sdb1 /mnt/ntfs fuseblk rw,nosuid 0 0\n";
+    const auto entries = parse_mounts(content);
+    std::vector<std::string> mounts;
+    for (const auto& entry : entries) {
+        mounts.push_back(entry.mount_point);
+    }
+    EXPECT_EQ(mounts.size(), 2U);
+    EXPECT_NE(std::find(mounts.begin(), mounts.end(), "/"), mounts.end());
+    EXPECT_NE(std::find(mounts.begin(), mounts.end(), "/mnt/ntfs"), mounts.end());
+    EXPECT_EQ(std::find(mounts.begin(), mounts.end(), "/run/user/1000/cliprdr-abc"), mounts.end());
+    EXPECT_EQ(std::find(mounts.begin(), mounts.end(), "/srv/remote"), mounts.end());
+}
+
 TEST(MountParserTest, PseudoFilesystemClassification) {
     for (const char* fs :
          {"proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2", "debugfs", "tracefs",
-          "configfs", "mqueue", "hugetlbfs", "autofs", "overlay", "squashfs", "fuse.sshfs"}) {
+          "configfs", "mqueue", "hugetlbfs", "autofs", "overlay", "squashfs", "fuse.sshfs",
+          // #122：裸 `fuse` 不带实现后缀（如 GNOME remote desktop 的 cliprdr 临时挂载），
+          // 其 statvfs 返回 0 块，df 默认也不列它。
+          "fuse"}) {
         EXPECT_TRUE(is_pseudo_filesystem(fs)) << fs;
     }
-    for (const char* fs : {"ext4", "xfs", "btrfs", "zfs", "nfs", "nfs4", "cifs"}) {
+    for (const char* fs : {"ext4", "xfs", "btrfs", "zfs", "nfs", "nfs4", "cifs",
+                           // #122：`fuseblk` 是 ntfs-3g 的真实 NTFS 卷，过滤掉会隐藏真实存储。
+                           "fuseblk"}) {
         EXPECT_FALSE(is_pseudo_filesystem(fs)) << fs;
     }
 }
