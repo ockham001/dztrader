@@ -2,7 +2,7 @@
 
 本文件覆盖 `DZ_FRAME_RTN_SYSMON_SNAPSHOT`、`DZ_FRAME_SET_SYSMON_CONFIG`、`DZ_FRAME_RTN_SYSMON_CONFIG` 三个帧。总则见《帧契约：通用规则》。
 
-发送方固定为内部进程 `dzsysmon`（进程名即 `instance_id`，见总则 §5）。阈值告警复用既有 `DZ_FRAME_NOTIFY_UI`（契约 notify-ui），**不新增通知帧**；快照的 `alerts[]` 携带当前活动告警集合（§2.8），供 UI 呈现持续的可疑状态。历史查询**不走帧**（dzweb 以只读方式直接打开历史库，schema 由历史模块承载）。
+发送方固定为内部进程 `dzsysmon`（进程名即 `instance_id`，见总则 §5）。**资源越限（内存使用率 / 交换使用率 / 卷剩余空间 / CPU 饱和）只写日志与 UI 色标，不产生 UI 通知**（§2.8）；`dzsysmon` 的 `NOTIFY_UI` 只保留真故障（历史库不可用、配置下发失败），不新增通知帧。历史查询**不走帧**（dzweb 以只读方式直接打开历史库，schema 由历史模块承载）。
 
 类型层真相源：`libs/platform/include/dztrader/platform/sysmon.h`（`SysmonSnapshot`/`SysmonConfig` 及校验）；采集侧 `SystemCollector` 接缝见 `libs/platform/include/dztrader/platform/system_collector.h`。
 
@@ -24,7 +24,7 @@
 
 ## 2. 快照（RTN_SYSMON_SNAPSHOT）
 
-**语义**：推送当前实时快照。当前版本（#80）填系统信息与 CPU 区块（总量、每核与饱和标记、系统负载、上下文切换/中断速率、每核频率）、温度、内存与交换、卷容量与关注路径落卷、共享内存目录占用、每物理盘 I/O、每网卡收发速率与累计量（默认隐藏虚拟网卡，见 §2.4）与阈值告警活动集（§2.8）。已列出的指标域后续只填值、**不改形状**（新增指标类别属 additive 扩展，按总则 §11.3 同步契约、类型与前端 schema；消费方忽略未知字段）。
+**语义**：推送当前实时快照。当前版本（#80）填系统信息与 CPU 区块（总量、每核与饱和标记、系统负载、上下文切换/中断速率、每核频率）、温度、内存与交换、卷容量（本机全部卷）、共享内存目录占用、每物理盘 I/O、每网卡收发速率与累计量（默认隐藏虚拟网卡，见 §2.4）。资源越限**不改变快照形状**——它只写日志与 UI 色标，不携带越限集合（§2.8）。已列出的指标域后续只填值、**不改形状**（新增指标类别属 additive 扩展，按总则 §11.3 同步契约、类型与前端 schema；消费方忽略未知字段）。
 
 **来源识别**：帧头无 `instance_id`（形态 4、发送方固定 `dzsysmon`），按总则 §5 在 payload 中显式携带 `source`。
 
@@ -43,12 +43,10 @@
 | `temperature` | array \| null | 温度传感器读数；`null` = 本平台不提供/无传感器/不可用（见 §2.4、可用性映射） |
 | `memory` | object \| null | 内存（见 §2.4）；`null` = 本帧未采集/不可用（见可用性映射） |
 | `swap` | object \| null | 交换分区/页文件（见 §2.4）；无交换时为 `total_bytes = 0` 的对象，读取失败可为 `null` |
-| `volumes` | array \| null | 卷容量与可用性（见 §2.4） |
-| `watch_paths` | array \| null | 关注路径（共享内存目录 / 数据库目录）的落卷解析（见 §2.4） |
+| `volumes` | array \| null | 卷容量与可用性，范围恒为本机全部卷（见 §2.4） |
 | `disk_io` | array \| null | 每物理盘 I/O |
 | `network` | array \| null | 每网卡收发 |
 | `shm_dir` | object \| null | 共享内存目录占用（见 §2.4） |
-| `alerts` | array | 阈值告警活动集（见 §2.8）；空数组 = 当前无活动告警 |
 | `availability` | object | 可用性描述（见下），**每个快照必须携带** |
 
 ### 2.1 sampling
@@ -102,19 +100,13 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 `swap`：`{total_bytes:int, used_bytes:int, used_ratio:number|null}`。无交换分区/无页面文件时 `total_bytes = 0`、`used_bytes = 0`、`used_ratio = null`，可用性映射标记不可用；读取失败时该对象也可以为 `null`（见可用性映射的 `collect_failed`）。**Windows 口径**：总量 = 由页面文件支撑的提交上限（`CommitLimit − PhysicalTotal`），已用 = 物理内存之外已提交的量（`CommitTotal − PhysicalTotal`，钳制到 `[0, total]`）；语义是"页面文件支撑的虚拟内存"，不是原始页面文件大小。
 
-`volumes[]`：`{mount:string, watched:bool, available:bool, total_bytes:int|null, used_bytes:int|null, used_ratio:number|null, reason?:string}`。
+`volumes[]`：`{mount:string, available:bool, total_bytes:int|null, used_bytes:int|null, used_ratio:number|null, reason?:string}`。
 
 - `mount` 为规范化挂载点：Linux 取挂载目录（`/`、`/home`），Windows 取盘符根（`C:\`）。同一帧内唯一。
-- `watched` 表示该卷承载了任一关注路径（§2.4 `watch_paths`），消费方据此高亮。
 - `available=false`（`reason` 必填）表示**卷存在但容量读不到**（无权限、卷不可访问）。此时 `total_bytes`/`used_bytes`/`used_ratio` **必须为 `null`**，不得用 0 冒充；卷仍然进数组，因为"卷存在但读不到"与"根本没有这个卷"是不同事实，消费方都要能显示。
 - `available=true` 时 `total_bytes`/`used_bytes` 为非负整数且 `used_bytes ≤ total_bytes`；`used_ratio = used_bytes / total_bytes`，`total_bytes = 0`（异常/特殊卷）时为 `null`。
-- 采集范围：Linux 过滤伪文件系统（`proc`/`sysfs`/`devtmpfs`/`devpts`/`tmpfs`/`cgroup*`/`debugfs`/`tracefs`/`configfs`/`mqueue`/`hugetlbfs`/`autofs`/`binfmt_misc`/`nsfs`/`pstore`/`securityfs`/`fusectl`/`bpf` 等），同一挂载点只保留一条；Windows 覆盖固定盘（`GetDriveType` = `DRIVE_FIXED`）。
-
-`watch_paths[]`：`{path:string, mount:string|null, available:bool, reason?:string}`。关注路径为默认的共享内存目录与数据库目录（配置 `disk.watch_paths` 非空时以其为准，见 §3.1）。
-
-- `path` 为解析用的路径（绝对路径，符号链接已跟随）；`mount` 为其所在卷的挂载点，与同帧 `volumes[].mount` 可直接相等比较；`available=false` 时 `mount = null` 且 `reason` 必填。
-- 解析义务：先规范化路径（`weakly_canonical`：解析 `.`/`..` 与符号链接，保留不存在的尾部用于诊断），再对卷挂载点做最长前缀匹配；Windows 匹配大小写不敏感、分隔符统一（`/` 与 `\` 等价），Linux 大小写敏感。
-- 路径不存在或解析不到任何卷 ⇒ `available=false` + `reason`（`path_not_found`）；权限不足 ⇒ `no_permission`；路径所在卷不在采集范围（网络盘、可移动盘、光驱等非固定盘）⇒ `unsupported`；其它解析失败 ⇒ `collect_failed`。**不得**在解析失败时猜一个卷或回退到 `/`。
+- 采集范围恒为**本机全部卷**，不存在"关注哪一卷"的概念（#121 取消关注路径）：Linux 过滤伪文件系统（`proc`/`sysfs`/`devtmpfs`/`devpts`/`tmpfs`/`cgroup*`/`debugfs`/`tracefs`/`configfs`/`mqueue`/`hugetlbfs`/`autofs`/`binfmt_misc`/`nsfs`/`pstore`/`securityfs`/`fusectl`/`bpf` 等；伪文件系统清单的调整见 #122），同一挂载点只保留一条；Windows 覆盖固定盘（`GetDriveType` = `DRIVE_FIXED`）。
+- 卷容量不参与 `NOTIFY_UI`：使用率只用于 UI 色标与日志（§2.8）。
 
 `disk_io[]`：每物理盘 I/O 派生值。字段为 `{device:string, read_bytes_per_sec, write_bytes_per_sec, read_iops, write_iops, latency_ms, queue_depth, utilization}`；除 `device` 外均为 `number | null`——**计数器不可用时为 `null` 而非 0**（契约 §2.7）。
 
@@ -147,13 +139,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - `oldest_file_age_sec` 为**最旧页文件**的文件年龄（秒，`0` 表示刚写入）；没有页文件时为 `null`。口径明确取页文件而非目录内任意文件（#75）：`meta.dat` 不随页清理消失，若把它算进来，"页清理失效"会被长期存在的元数据文件掩盖成正常。页文件年龄是页清理是否生效的直接信号。
 - 目录不存在/不可读/无权限 ⇒ `shm_dir = null` + 可用性 `collect_failed`（能力粘性），**不得**输出全 0 的对象（0 是"目录为空"这一真实事实，不是读取失败）。
 
-`alerts[]`：当前活动阈值告警（§2.8）。字段为 `{kind:string, subject:string, since:int}`，**空数组合法**（= 无活动告警，不是"未采集"；本域没有可用性键——告警状态由内存/交换/卷的可用性派生）。
-
-- `kind` 取 `memory_used`（内存使用率达到阈值）/ `swap_used`（交换使用率达到阈值）/ `volume_free`（关注卷剩余空间低于阈值）。
-- `subject` 为告警对象标识：`volume_free` 时为该卷的挂载点（与同帧 `volumes[].mount` 可直接相等比较）；其余 kind 为空串。
-- `since` 为该次告警**首次**满足阈值的墙钟时刻（Unix 秒）；同一告警持续期间不变，恢复后重新触发才更新。
-- `(kind, subject)` 帧内唯一。**冷却期内被抑制的通知不影响本数组**：告警仍处于"活动"就必须列出——本数组是持续状态，不是通知历史。
-- 本域无 `null` 形态：内存/交换/卷采集能力整体关闭（`disabled_by_config`）时对应告警被静默清除（配置关闭不是恢复）；单帧采集失败（能力仍在）**保留**上次活动状态，不伪造恢复。
+本域**没有**越限集合字段：阈值越限只写日志与 UI 色标，不进快照（§2.8）。
 
 ### 2.5 availability（关键设计）
 
@@ -187,7 +173,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 >
 > `cpu.cores` / `cpu.load_average` / `cpu.context_switches` 的可用性表示**能力**（不是本帧数值是否就绪）：能力一旦确认，可用性为粘性 `true`，此后的采样失败只把数值置 `null`，不改写可用性。能力从未确认或平台不支持时可为 `available=false` + `reason="collect_failed"`（平台不支持也可用 `unsupported`；当前版本无法区分能力缺失与暂时失败，统一用 `collect_failed`；`reason` 为自由文案，本版本新增建议取值 `collect_failed`）。
 >
-> `volumes` / `shm_dir` 的可用性同为**能力粘性**：一次成功枚举到卷 / 读到目录后可用性保持 `true`，此后单帧失败只把对应域置 `null`，不改写可用性。配置关闭 `sampling.groups.volumes` 时优先 `available=false` + `reason="disabled_by_config"`、`volumes` 为 `null`；配置关闭后 `watch_paths` 仍输出（落卷解析不受卷容量采集开关影响，路径感知告警需要它，见 §2.8）。`shm_dir` 没有独立配置组（页清理有效性是基础可观测项），始终采集。**单个卷不可读**不改写 `volumes` 的整体可用性——该卷以 `available=false` 进数组（§2.4），整体仍为 `available=true`；只有当一次卷都枚举不到时才整体标记 `collect_failed`。
+> `volumes` / `shm_dir` 的可用性同为**能力粘性**：一次成功枚举到卷 / 读到目录后可用性保持 `true`，此后单帧失败只把对应域置 `null`，不改写可用性。配置关闭 `sampling.groups.volumes` 时优先 `available=false` + `reason="disabled_by_config"`、`volumes` 为 `null`。`shm_dir` 没有独立配置组（页清理有效性是基础可观测项），始终采集。**单个卷不可读**不改写 `volumes` 的整体可用性——该卷以 `available=false` 进数组（§2.4），整体仍为 `available=true`；只有当一次卷都枚举不到时才整体标记 `collect_failed`。
 >
 > `cpu.frequency` / `temperature` 的可用性同为**能力粘性**：一次成功读到后可用性保持 `true`，此后单帧读取失败只把数值置 `null`（温度允许空数组/`null`、频率允许 `null`），消费方据此保留区块并显示「暂无数据」而不是「不可用」。配置关闭对应组时优先输出 `available=false` + `reason="disabled_by_config"`，数值为 `null`。温度/频率不可用时前端**整块不渲染**（不是显示 0，也不是显示「不可用」占位）。
 
@@ -233,14 +219,9 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
   },
   "swap": {"total_bytes": 8589934592, "used_bytes": 2147483648, "used_ratio": 0.25},
   "volumes": [
-    {"mount": "/", "watched": false, "available": true, "total_bytes": 107374182400, "used_bytes": 42949672960, "used_ratio": 0.4},
-    {"mount": "/data", "watched": true, "available": true, "total_bytes": 1099511627776, "used_bytes": 274877906944, "used_ratio": 0.25},
-    {"mount": "/backup", "watched": false, "available": false, "total_bytes": null, "used_bytes": null, "used_ratio": null, "reason": "no_permission"}
-  ],
-  "watch_paths": [
-    {"path": "/srv/dztrader/shm", "mount": "/data", "available": true},
-    {"path": "/srv/dztrader/db", "mount": "/data", "available": true},
-    {"path": "/srv/dztrader/missing", "mount": null, "available": false, "reason": "path_not_found"}
+    {"mount": "/", "available": true, "total_bytes": 107374182400, "used_bytes": 42949672960, "used_ratio": 0.4},
+    {"mount": "/data", "available": true, "total_bytes": 1099511627776, "used_bytes": 274877906944, "used_ratio": 0.25},
+    {"mount": "/backup", "available": false, "total_bytes": null, "used_bytes": null, "used_ratio": null, "reason": "no_permission"}
   ],
   "disk_io": [
     {"device": "sda", "read_bytes_per_sec": 1048576.0, "write_bytes_per_sec": 524288.0,
@@ -260,9 +241,6 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
      "rx_drops_per_sec": 0.0, "tx_drops_per_sec": 0.0, "is_virtual": false}
   ],
   "shm_dir": {"path": "/srv/dztrader/shm", "total_bytes": 754974720, "page_files": 12, "oldest_file_age_sec": 480},
-  "alerts": [
-    {"kind": "volume_free", "subject": "/data", "since": 1789999000}
-  ],
   "availability": {
     "platform_description": "Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)",
     "metrics": {
@@ -296,7 +274,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - 两次采样间隔内 CPU 使用率 = `1 − Δidle/Δtotal`，结果钳制到 `[0,1]`。
 - 每核使用率：与总量同公式；核序列长度或 index 序列变化（热插拔 / 处理器组变化）视为基线失效，本次每核使用率全部 `null` 并重建基线。
 - 速率型指标（上下文切换 / 中断）：`Δcount / 实际经过秒数`（采样间隔用单调时钟测量），首次采样 `null`；`Δ时间 ≤ 0` 本次不可用。
-- **饱和核判定**：单核使用率连续 `alerts.cpu_sustain_samples` 次采样 **≥** `alerts.cpu_sustain_used_pct / 100` 即标记 `saturated=true`；任一采样严格低于阈值即清零解除；不可用样本（`usage_ratio=null`）不改变连续计数；核序列变化重置全部计数。阈值与连续次数取自当前配置，运行期修改经 `SET_SYSMON_CONFIG` 即时生效（§3.1.1）；`sampling.groups.cpu=false` 时饱和判定暂停并从空状态开始。
+- **饱和核判定**：单核使用率连续 `thresholds.cpu_sustain_samples` 次采样 **≥** `thresholds.cpu_sustain_used_pct / 100` 即标记 `saturated=true`；任一采样严格低于阈值即清零解除；不可用样本（`usage_ratio=null`）不改变连续计数；核序列变化重置全部计数。阈值与连续次数取自当前配置，运行期修改经 `SET_SYSMON_CONFIG` 即时生效（§3.1.1）；`sampling.groups.cpu=false` 时饱和判定暂停并从空状态开始。
 - Windows >64 逻辑核的机器上每核序列可能不可用（处理器组限制）：此时 `cpu.cores` 标记不可用、中断累计计数输出 `null`；不得用组内数据冒充全系统每核序列。
 - **本帧数值不得沿用上一帧**：某项能力可用但本帧数值未就绪或采集失败时，对应字段输出 `null`——每核序列整体未采到时 `cpu.cores` 保留已知核 index 条目、`usage_ratio` 全部 `null`、`saturated` 全部 `false`（从未获得过序列时 `cpu.cores` / `saturated_cores` 为空数组）；`availability` 的能力标记保持粘性，消费方据此显示"不可用"而不是旧数据。单个核的计数器不可用时该核 `usage_ratio=null`，不改变饱和判定的连续计数。
 - **每物理盘 I/O 的计算语义**（契约 §2.4 `disk_io[]`）：
@@ -315,38 +293,52 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
   - **采样窗口**：分母是两次**成功采样**之间实际经过的时间；采集失败期间基线不推进，恢复后的首帧速率是跨越该缺口的窗口平均（口径明确，非伪造瞬时值）。网络采集失败只把该域置 `null`，**不累加** `sampling.missed_ticks`。
   - `hide_virtual` 在**快照构造**阶段按 `is_virtual` 过滤（不重新采集）：改动即时体现在下一帧快照（`SET_SYSMON_CONFIG` 后立即推送一次）。
 
-### 2.8 阈值告警（alerts）
+### 2.8 阈值越限与日志
 
-**语义**：资源将出问题时主动通知，而不是等使用者盯数字。告警的**触发与恢复均复用 `DZ_FRAME_NOTIFY_UI`**（契约 notify-ui，不新增通知帧）；快照 `alerts[]` 是当前活动集合（持续状态），通知是事件流——两者互补：冷却被抑制期间通知不再弹，但活动告警仍必须出现在 `alerts[]`。
+**语义**：资源读数与生效配置的阈值比较，得出一个**持续的越限状态**；该状态只通过**日志**与**UI 色标**表达，**不产生 `DZ_FRAME_NOTIFY_UI`**。理由（ADR 0034）：资源占用高在本机不专属本项目时是常态而非故障（swap 长期高位、其他服务占 CPU 均在预期内），而弹窗通道要留给需要立刻决策的故障——资源占用混入后使用者会对弹窗脱敏。
 
-**告警对象与阈值**（阈值取当前生效配置 `alerts` 段，§3.1；默认值即可零配置工作）：
+**判定对象与阈值**（阈值取当前生效配置 `thresholds` 段，§3.1；默认值即可零配置工作）：
 
-| kind | 指标来源 | 触发条件（满足即告警） | 恢复条件 |
-|------|----------|------------------------|----------|
+| 判定对象 | 指标来源 | 进入越限 | 恢复 |
+|---------|----------|---------|------|
 | `memory_used` | 快照 `memory.used_ratio` | `used_ratio ≥ memory_used_pct / 100` | `used_ratio < memory_used_pct / 100` |
 | `swap_used` | 快照 `swap.used_ratio` | `used_ratio ≥ swap_used_pct / 100` | `used_ratio < swap_used_pct / 100` |
-| `volume_free` | 关注卷剩余空间（`watch_paths[]` 解析出的挂载点所在的卷，即同帧 `volumes[]` 中 `watched=true` 的卷） | `free_pct < volume_free_pct` **或** `free_bytes < volume_free_bytes` | `free_pct ≥ volume_free_pct` **且** `free_bytes ≥ volume_free_bytes` |
+| `volume_free` | 快照 `volumes[].used_ratio`（**全部卷**，逐卷一条） | `free_pct < volume_free_pct` | `free_pct ≥ volume_free_pct` |
+| `cpu_saturated` | 快照 `cpu.saturated_cores` | 非空（存在至少一个饱和核，判定见 §2.7） | 空**且**本帧每核使用率可读（见下条，读不到不算恢复） |
 
-- **关注卷剩余空间的两种形态是「或」**：任一形态越限即告警——百分比形态保护大卷的比例份额，绝对容量形态保护小卷的最小可用量。把某形态阈值设为 0 即关闭该形态（`free_pct < 0` / `free_bytes < 0` 永不成立）。`total_bytes = 0` 的卷无法计算百分比，只按绝对容量形态判定。
-- **路径感知**：`volume_free` 只对**关注卷**告警——即 `watch_paths[]` 成功解析出的挂载点（默认共享内存目录与数据库目录，配置 `disk.watch_paths` 非空时以其为准）。多个关注路径落在同一卷时按 `mount` 去重、只产生一条。非关注卷容量再低也不告警。
-- 告警判定在每个**计量 tick** 进行（与历史记录同频），不跟随推送频率：默认 1s 判定、5s 推送，通知延迟不超过一个计量间隔。
+- **卷的判定范围恒为本机全部容量可读的卷**，不存在「关注卷 / 关注路径」这一层：所有卷使用率一视同仁，非固定盘不入数组（§2.4）即不参与判定。`volume_free` 按 `mount` **逐卷**是一个独立判定对象，日志用挂载点标识（与 `volumes[].mount` 同口径）；`memory_used` / `swap_used` / `cpu_saturated` 每类各一个判定对象，日志不需要对象标识。`total_bytes = 0` 的卷无法计算百分比，不参与 `volume_free` 判定（它是**容量可读但总量为 0** 的合法事实，由快照 `available=true` + `total_bytes=0` 如实表达，与 `available=false` 的「读不到」是两件事）。
+- `volume_free_pct` 是**空闲**百分比阈值：`free_pct = 100 − used_ratio × 100`。默认 10 表示「剩余低于 10% 即越限」，即使用率**严格高于** 90%（ADR 0034：主流实现均以百分比为主判据，绝对容量只作抑制项，故不设 `volume_free_bytes`）。**UI 色标是独立的展示规则，不是本判定的派生**：卷使用率 ≥70% 黄、≥90% 红，与顶栏徽章共用同一组常量（由前端共享模块导出，两处不得各自定义）；因此「恰好 90% 已用」会显示红色但不构成越限——色标用于扫读，越限用于日志，两者的边界不必逐点重合。
+- `cpu_saturated` 是**整机一个**判定对象（不是每核一个），当前值取饱和核的 index 集合——每核的 `saturated` 标记本身仍在快照里（§2.3），日志只需能看出"何时开始/结束整机饱和"以及当时涉及哪些核。
+- 判定在每个**计量 tick** 进行（与历史记录同频），不跟随推送频率：默认 1s 判定、5s 推送，越限被发现的时间不超过一个计量间隔。
+- **相等按表处理**：内存/交换"恰好等于阈值"算进入越限（`≥`）；卷"恰好等于阈值"不算越限（`free_pct < volume_free_pct`），且满足恢复（`≥`）——不在边界做额外容差。
 
-**通知（`DZ_FRAME_NOTIFY_UI`）**：payload 按契约 notify-ui，`source` 固定 `dzsysmon`。
+**日志（走《帧契约：日志》）**：payload 与格式按契约 log，本条只规定级别与内容义务。级别用 spdlog 规范全称（`warn` 只是输入别名，日志输出为 `warning`）。
 
-- 触发通知：`level="error"`、`popup=true`——阈值告警是"资源即将耗尽、进程可能崩溃"的前置信号，必须打断用户（契约 notify-ui：只有 error+popup 会弹窗，warning 仅 toast）。
-- 恢复通知：`level="info"`、`popup=false`，正文明确写出"已回到阈值以下"。**因指标回到阈值以下而结束的活动期必须表达恢复语义**——即使该活动期的触发通知因冷却被抑制（用户仍可从快照 `alerts[]` 看到活动状态）。恢复通知按告警对象、以 `cooldown_sec` 单独限流（与触发冷却基准分开）：**首次恢复必发**；同一对象在冷却窗口内结束的多次活动期只发一条恢复（把重复的"已恢复"合并表达，防阈值抖动刷屏）——限流只合并恢复通知，不会让首次恢复静默消失。
-- **冷却防抖**：按告警对象（`(kind, subject)`）计。投入新的活动期时，若距上次**已发出的触发通知**不足 `cooldown_sec` 则**不弹**触发通知（冷却期内同类告警只弹一次）；阈值持续满足期间只在首次越限时弹一次，**不按冷却周期重弹**（持续满足不刷屏）。
-- **被抑制的触发通知不补发**：冷却期内被抑制的那次活动期，即使冷却结束后仍未恢复也不再补弹；但其活动状态仍进 `alerts[]`，恢复时仍按上条给出恢复语义（受恢复限流约束，不受触发冷却约束）。
-- **"不再被关注 / 被配置关闭"不是恢复**：`disk.watch_paths` 变更导致某卷不再受关注、或对应指标类别被配置关闭时，相关告警**静默清除**（不发恢复通知，因为清除原因不是"指标回到阈值以下"）；快照 `alerts[]` 随之移除。
-- 冷却计时用**单调时钟**（不受系统时间调整影响）；`since` 用墙钟（与历史/交易事件可对照）。
-- 采集失败/暂时不可用（内存/交换/卷能力仍在，含关注路径个别解析失败）**保留**活动状态、不发恢复通知——"读不到"不是"已恢复"；能力被配置关闭（`disabled_by_config`）时静默清除（配置关闭不是"指标回到阈值以下"，不发恢复通知）。
-- 通知正文是用户可读文案（可中文，不属于日志格式门禁）；正文不构成协议语义，消费方不得解析。
+| 状态 | 级别 | 内容义务 |
+|------|------|---------|
+| 进入越限 | `warning` | 判定对象、当前值、阈值 |
+| 仍越限（周期重记） | `info` | 判定对象、当前值、阈值、活动期已持续秒数 |
+| 恢复 | `info` | 判定对象、当前值、阈值、活动期持续秒数 |
 
-**边界**：
+- **进入与恢复各记一条**：一次活动期（进入 → 恢复）有明确的起点与终点，事后可从日志判断它何时开始、何时结束。
+- **持续期按 `thresholds.log_repeat_sec`（默认 600s）重记**：同一次活动期内每满该间隔写一条「仍越限」记录，用于看出高水位持续了多久，而不是只有一条孤立的进入记录。重记计时用**单调时钟**（不受系统时间调整影响），基准是该活动期的进入时刻；`log_repeat_sec = 0` 表示不重记（只有进入与恢复两条）。
+- 日志文本是英文、小写开头、无句号、`prose | k=v`（AGENTS 日志门禁），不是协议语义；消费方不得解析。
 
-- 百分比阈值 `[0,100]`、`volume_free_bytes ≥ 0`、`cooldown_sec ∈ [0,86400]`（§3.1）；相等按上表的比较符处理：内存/交换"恰好等于阈值"算触发（`≥`），关注卷"恰好等于阈值"不算触发（`<`）、且满足恢复（`≥`）——语义按表执行，不在边界做额外容差。
-- 阈值告警只覆盖 `memory_used` / `swap_used` / `volume_free` 三类；CPU 饱和核是快照可视化标记（§2.3），不产生通知。
-- 告警**不写入历史库**（历史只记录指标事实，告警可由历史事实重新推导）；`alerts[]` 不进 `availability.metrics` 键集合（它不是指标能力）。
+**静默清除（不是恢复）**：以下情况移除活动状态但**不写恢复日志**——清除原因不是"指标回到阈值以下"：
+
+- 对应指标类别被配置关闭（`disabled_by_config`），如 `sampling.groups.volumes=false` 时的全部卷判定对象、`sampling.groups.swap=false` 时的 `swap_used`、`sampling.groups.cpu=false` 时的 `cpu_saturated`。
+- 判定对象本身不再存在：某卷从 `volumes[]` 中消失（卸载/热拔），或本机交换分区被移除。
+- **本帧读不到不伪造恢复**：能力仍在但本帧数值不可用（`memory`/`swap`/`volumes` 为 `null`，或 `used_ratio = null`）时**保留**活动状态、不写恢复日志——"读不到"不是"已恢复"；恢复只在真正读到低于阈值时发生。恢复日志的持续秒数按活动期起点计算，因此跨越采集缺口的恢复记录仍如实反映总持续时长。
+- **`cpu_saturated` 不得按「`saturated_cores` 为空」判恢复**：§2.7 规定每核序列整体未采到时 `saturated` 全部 `false`，若直接按「空即恢复」处理，CPU 采集失败会被误记成恢复。判据必须是**本帧每核使用率确实可读**（至少一个核 `usage_ratio != null`）：读不到时保留活动状态，`saturated_cores` 为空只作为"本帧无信息"而非"已恢复"。`sampling.groups.cpu=false` 仍按静默清除处理（配置关闭不是恢复）。
+
+**没有的东西（明确不做）**：
+
+- 不产生 `DZ_FRAME_NOTIFY_UI`，不弹窗、不发 toast（ADR 0034 否决了 toast：它仍是主动推送，盯盘时同样干扰专注）。
+- 不进快照：没有 `alerts[]` 之类的活动集合字段（§2.4），活动状态不跨帧可见，只有日志与 UI 色标。
+- 不写历史库：历史只记录指标事实，越限可由历史事实重新推导；`thresholds` 也不进 `availability.metrics` 键集合（它不是指标能力）。
+- 没有冷却与恢复限流：不再有通知可限流，防刷屏由「只在进入/恢复各一条 + 按间隔重记」保证。
+
+**`dzsysmon` 的 `NOTIFY_UI` 保留范围**：只有**真故障**——历史库不可用（§3.1 `history` 段降级语义）与配置下发失败（§3.3 四件套）。两者都是一次性、需人处理的故障，级别与弹窗语义按契约 notify-ui。
 
 ---
 
@@ -371,10 +363,10 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 | `phase_offset_sec` | int | 3 | `[0, 86400]` | 记录 tick 相位偏移，避开整点附近其它任务（#78 消费；桶计算时按 `phase_offset_sec % record_interval_sec` 取模对齐——**存储、RTN 与 UI 保留配置原值，不在配置层钳制**；默认配置下窗口起点为每分钟第 3 秒，**不落在整数分钟边界**） |
 | `groups` | object\<string,bool\> | Linux：全部 true；Windows：`temperature`/`cpu_frequency` 为 false | 值必须 bool | 启用的指标大类：`cpu`/`memory`/`swap`/`volumes`/`disk_io`/`network`/`temperature`/`cpu_frequency`。`temperature` 与 `cpu_frequency` 属 B 组：Linux 默认开（有 hwmon / cpufreq 时）；Windows 默认关（平台上不可靠或不存在，需显式开启；本版本 Windows 采集器仍报告 `unsupported`）。缺少的键按 true 处理。各键语义见 §3.1.1 |
 
-`disk`：`{watch_paths:string[], devices:string[]}`（元素非空）。
+`disk`：`{devices:string[]}`（元素非空）。
 
-- `watch_paths` 为空表示使用默认关注路径——共享内存目录与数据库目录；非空时逐条解析并作为 `watch_paths[]` 输出，同时决定 `volumes[].watched`。运行期修改无需重启进程：落卷解析在**下一次计量 tick** 按新配置刷新（默认 1s 内），随后推送的快照体现新的 `watch_paths[]` 与 `volumes[].watched`；SET 成功后立即推送的那一帧可能仍是上一 tick 的解析结果（该字段在采集阶段解析，不是快照构造阶段的纯过滤）。
 - `devices` 为**磁盘 I/O 设备范围**：空数组 = 全部整物理盘；非空时只输出 `device` 与列表**精确匹配**的 `disk_io[]` 条目（标识与快照 `disk_io[].device` 同源：Linux 整盘名如 `sda` / `nvme0n1`，Windows `PhysicalDrive<N>`）。列表中的名字匹配不到任何设备只是不输出，**不导致校验失败**。过滤发生在**快照构造**阶段（与 `network.hide_virtual` 同款）：运行期修改不触发重新采集、不重置速率基线，改后立即推送的一帧即体现新范围；历史记录的维度数据由同一快照构造路径观测，与实时快照同口径。过滤后为空数组仍 `available=true`（"范围内没有盘"与"采集失败"是不同事实）。
+- `disk` 段**不含** `watch_paths`：卷容量的监控范围恒为本机全部卷，不存在「关注哪一卷」的配置层（§2.4、ADR 0034）。
 
 `network`：`{hide_virtual:bool}`，默认 `true`（隐藏虚拟网卡：回环、桥接、veth、容器网桥、隧道与 VLAN 逻辑接口等——判定依据是「不由硬件设备支撑」，见 §2.4）。该开关在**快照构造**阶段过滤，`SET_SYSMON_CONFIG` 成功后立即推送一帧使改动即时可见（§4 触发 4）；历史记录的维度数据由同一快照构造路径观测，与实时快照同口径。
 
@@ -382,7 +374,22 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 `realtime`：`{push_interval_sec:int}`，默认 `5`，`[1, 3600]`；与计量频率解耦（事件通道每次写入会唤醒全部注册进程）。
 
-`alerts`：`{cpu_sustain_used_pct:number, cpu_sustain_samples:int, memory_used_pct:number, swap_used_pct:number, volume_free_pct:number, volume_free_bytes:int, cooldown_sec:int}`，默认 `90/10/90/50/10/1073741824/600`；百分比字段 `[0,100]`、`cpu_sustain_samples ∈ [1,3600]`、`cooldown_sec ∈ [0,86400]`。`cpu_sustain_used_pct` / `cpu_sustain_samples` 由发送方用于饱和核判定（§2.7）；其余字段由发送方消费于阈值告警（§2.8）——`memory_used_pct` / `swap_used_pct` 为使用率阈值，`volume_free_pct` / `volume_free_bytes` 为关注卷剩余空间的两种形态（任一越限即告警），`cooldown_sec` 为同类告警冷却时间（触发与恢复各自按告警对象计时：冷却期内再次越限不弹触发通知、连续恢复只发一条恢复通知）。阈值与冷却来自当前生效配置，默认值即零配置可用；运行期修改经 `SET_SYSMON_CONFIG` 即时生效。
+`thresholds`（**越限判定阈值，只产生日志与 UI 色标，不产生 UI 通知**，§2.8；本段原名 `alerts`，旧配置文件自动迁移见下）：
+
+| 字段 | 类型 | 默认 | 约束 | 说明 |
+|------|------|------|------|------|
+| `cpu_sustain_used_pct` | number | 90 | `[0,100]` | 单核持续饱和阈值（§2.7） |
+| `cpu_sustain_samples` | int | 10 | `[1,3600]` | 持续饱和的连续采样次数（§2.7） |
+| `memory_used_pct` | number | 90 | `[0,100]` | 内存使用率越限阈值 |
+| `swap_used_pct` | number | 50 | `[0,100]` | 交换使用率越限阈值 |
+| `volume_free_pct` | number | 10 | `[0,100]` | 卷**空闲**百分比阈值；低于该值即越限 |
+| `log_repeat_sec` | int | 600 | `[0,86400]` | 持续越限期的日志重记间隔；0 = 不重记 |
+
+- 全部阈值键都住在**同一段**，使用者一次就能看全所有阈值，不必分辨"哪些会打扰我"（§2.8：它们都不打扰）。
+- `cpu_sustain_used_pct` / `cpu_sustain_samples` 用于饱和核判定（§2.7）；其余键用于越限判定与日志节奏（§2.8）。所有键**运行期修改即时生效**（`SET_SYSMON_CONFIG`，§3.1.1），默认值即零配置可用。
+- **没有 `volume_free_bytes`**：绝对容量阈值已删除（ADR 0034）。主流实现均以百分比为主判据，绝对容量只作抑制项；`OR` 语义下的 1 GiB 阈值会让总容量小于 1 GiB 的卷（ESP、`/boot`）在空闲时也永久越限。
+- **没有 `cooldown_sec`**：不再有通知可限流，防刷屏由「进入/恢复各一条 + 按 `log_repeat_sec` 重记」保证（§2.8）。
+- **旧配置迁移**：读到旧 `alerts` 段时把可映射的键值搬到 `thresholds`、丢弃不可映射的 `volume_free_bytes`、写回配置文件、记一条日志，**不报错、不阻塞启动**。默认配置生成器直接产出 `thresholds` 形状（仓库不提交模板）。
 
 ### 3.1.1 运行期生效语义
 
@@ -393,16 +400,16 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 3. **记录窗口重配**：`record_interval_sec` / `phase_offset_sec` 从**下一窗口**起生效；进行中的窗口按它开始时的宽度落库（不切碎历史，避免同一桶宽度在同一窗口内变化）。
 4. **保留策略参数发布**：`history` 的保留/上限参数交给落盘线程，下一维护周期生效。
 5. **`history.enabled` 切换**：true→false 先 flush 当前窗口再关库/停线程，并重置时钟跳变检测基线（重开后的首个 tick 不得把关闭时长误报成 `clock_jump`）；false→true 建库并起线程（不回写 `restart` 标记）。切换失败不阻止其它副作用，按本节 `history` 段的降级语义处理；**开启失败后配置保持 `true`，后续任意 SET 会重试建库**（无需先关再开或重启进程）。
-6. 回推全量 `RTN_SYSMON_CONFIG`（成功与失败都回推，见 §3.2/§3.3），成功时再按 §4 触发 4 立即推送一帧快照——因此**只影响快照构造**的配置（`network.hide_virtual`、`disk.devices`）无需等到下一个推送周期；`disk.watch_paths` 的落卷解析在下一次计量 tick 刷新（最多一个计量间隔后可见），`measure_interval_ms` 越小越早。
+6. 回推全量 `RTN_SYSMON_CONFIG`（成功与失败都回推，见 §3.2/§3.3），成功时再按 §4 触发 4 立即推送一帧快照——因此**只影响快照构造**的配置（`network.hide_virtual`、`disk.devices`）无需等到下一个推送周期。`thresholds` 的改动在下一次计量 tick 起作用（越限判定与历史记录同频），最多一个计量间隔后可见新的日志行为。
 
 **`sampling.groups` 各键语义**（关闭后重新开启一律从**新基线**开始，不得跨关闭期计算使用率/速率；关闭期间**不累加** `sampling.missed_ticks`——配置关闭不是采集缺口）：
 
 | 键 | 覆盖的指标 | 关闭后 |
 |---|---|---|
-| `cpu` | `cpu.total` / `cpu.cores` / `cpu.load_average` / `cpu.context_switches`（含 `interrupts_per_sec`）与饱和核判定 | 跳过 CPU 采样与负载读取；上述可用性 `disabled_by_config`，`cpu` 区块数值为 `null`/空数组，`saturated_cores` 为空；`system.logical_cores` 保持系统信息原值。`cpu.frequency` 由独立键控制，不受影响 |
-| `memory` | `memory` | 跳过采集；可用性 `disabled_by_config`、`memory` 为 `null` |
-| `swap` | `swap` | 跳过采集；可用性 `disabled_by_config`、`swap` 为 `null` |
-| `volumes` | `volumes`（**不含** `watch_paths`——路径感知告警需要落卷信息） | 跳过卷容量采集；可用性 `disabled_by_config`、`volumes` 为 `null`；`watch_paths` 照常输出 |
+| `cpu` | `cpu.total` / `cpu.cores` / `cpu.load_average` / `cpu.context_switches`（含 `interrupts_per_sec`）与饱和核判定 | 跳过 CPU 采样与负载读取；上述可用性 `disabled_by_config`，`cpu` 区块数值为 `null`/空数组，`saturated_cores` 为空；`system.logical_cores` 保持系统信息原值。`cpu.frequency` 由独立键控制，不受影响。`cpu_saturated` 越限状态静默清除（§2.8） |
+| `memory` | `memory` | 跳过采集；可用性 `disabled_by_config`、`memory` 为 `null`；`memory_used` 越限状态静默清除（§2.8） |
+| `swap` | `swap` | 跳过采集；可用性 `disabled_by_config`、`swap` 为 `null`；`swap_used` 越限状态静默清除（§2.8） |
+| `volumes` | `volumes` | 跳过卷容量采集；可用性 `disabled_by_config`、`volumes` 为 `null`；对应卷越限判定静默清除（§2.8） |
 | `disk_io` | `disk_io` | 跳过采集；可用性 `disabled_by_config`、`disk_io` 为 `null` |
 | `network` | `network` | 跳过采集；可用性 `disabled_by_config`、`network` 为 `null`（`hide_virtual` 只影响输出条目，见 §2.5） |
 | `temperature` | `temperature` | 跳过采集；可用性 `disabled_by_config`、数值 `null`（前端整块不渲染） |
@@ -558,8 +565,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - 快照中 `null` **仅允许**出现在本文档 §2 明确标注 `| null` 的位置；其余位置出现 `null` 为校验失败。
 - `used_bytes` 必须等于 `total_bytes − available_bytes`（`memory`）；`used_bytes ≤ total_bytes`（`memory`/`swap`/`volumes`）；`memory.cached_bytes` / `memory.buffers_bytes` 缺失或 `null` 合法，出现时须为非负整数且不大于 `total_bytes`。
 - `volumes[]`：`mount` 非空且帧内唯一；`available=true` 时 `total_bytes`/`used_bytes` 必须为非负整数且 `used_bytes ≤ total_bytes`、`used_ratio` 为 `[0,1]` 或 `null`，且**不得**出现 `reason`；`available=false` 时 `reason` 必须非空、`total_bytes`/`used_bytes`/`used_ratio` **必须**为 `null`（禁止用 0 冒充）。
-- `watch_paths[]`：`path` 非空且帧内唯一；`available=true` 时 `mount` 必须非空且不得出现 `reason`，且**当同帧 `volumes` 非 `null` 时** `mount` 必须为 `volumes[].mount` 之一（`volumes` 为 `null` 时不交叉校验——配置关闭卷采集后落卷信息仍要能给告警用）；`available=false` 时 `mount` 必须为 `null` 且 `reason` 必须非空。
-- `alerts[]` 必须存在且为数组（空数组合法）；每个元素为对象：`kind` ∈ `memory_used` / `swap_used` / `volume_free`，`subject` 为字符串——`volume_free` 时非空（挂载点），其余 kind 时为空串；`since` 为非负整数；`(kind, subject)` 帧内唯一。
+- 发送方**不得**输出 `alerts` 或 `watch_paths` 字段（ADR 0034 已删除两者）。消费方无需校验其缺席：旧版本发送方仍携带时按未知字段忽略（见本节「未知字段忽略」条），新旧版本短暂并存不报错。
 - `disk_io[]`：`device` 非空且帧内唯一；除 `device` 外的七个字段为 `null` 或数字——吞吐/IOPS/延迟/队列深度为 `>= 0`，`utilization` 为 `[0,1]` 内的比率或 `null`（首帧全 null 的条目合法）。
 - `network[]`：`interface` 非空且帧内唯一；八个 `*_total` 必须为非负整数且**必须存在**（累计计数器没有"不可用"语义）；六个 `*_per_sec` 为 `null` 或 `>= 0` 的数字；`is_virtual` 必须为 bool。`hide_virtual = true` 时若出现 `is_virtual = true` 的条目为校验失败（发送方义务：过滤在发送端完成）；`hide_virtual` 的值不在快照内，故该条校验由发送方自查、消费方只做形状校验。
 - 比率为 `[0,1]`；字节/计数为非负整数；`boot_time_unix_sec`/`uptime_sec` 非负。
@@ -573,11 +579,11 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - **不支持容器内采集**：容器内 `/proc` 报宿主容量，会给出错误的容量基线；部署文档写明（`docs/components/dzsysmon.md`），不做 cgroup v1/v2 感知。
 - **Windows 不提供温度与每核频率**（也不提供整体频率）：Windows 上温度需 WMI/厂商驱动、每核频率无可靠 API，两者恒为不可用；本版本不实现「整体频率 + 口径标注」形态。
 - **磁盘 I/O 为整盘粒度**：不提供分区级 I/O。本版本的 `device` 只有物理盘标识（Windows `PhysicalDrive<N>`）；**卷/盘符 ↔ 物理盘映射**由后续票 #103 提供（ADR 0024 Consequences 的映射要求，本票不交付）。Windows 依赖性能计数器（diskperf）与访问权限，读不到时按 §2.4 报告不可用，不做提权或反复重试。
-- **磁盘 I/O 无历史/告警消费**：本契约只定义实时快照域；历史写入（#78）与阈值告警（§2.8，只覆盖内存/交换/关注卷剩余空间）不消费磁盘 I/O。磁盘 I/O 的维度指标（每盘吞吐/IOPS/延迟等）**可经 §6.1 历史查询**（`metric=disk_io.<metric>`），但阈值告警不在本版本。
+- **磁盘 I/O 无阈值越限消费**：本契约只定义实时快照域；历史写入（#78）与阈值越限（§2.8，只覆盖内存/交换/全部卷剩余空间/CPU 饱和）不消费磁盘 I/O。磁盘 I/O 的维度指标（每盘吞吐/IOPS/延迟等）**可经 §6.1 历史查询**（`metric=disk_io.<metric>`），但阈值越限不在本版本。
 - **网络为整网卡粒度**：不提供每进程/每连接/每协议流量；不做虚拟网卡的自动隐藏策略推断（`is_virtual` 只用结构性依据，不看名字前缀），也不提供 Linux 网卡流量分类（`tc` 队列）与 Windows 适配器绑定细节。
-- **网络无告警消费**：本契约只定义实时快照域；阈值告警范围随 #80 定义。`hide_virtual` 与完整配置编辑入口见 §3（REST `PUT /api/sysmon/config` → `SET_SYSMON_CONFIG`；监控页「配置」区下发差异 patch）。网络的维度指标可经 §6.1 历史查询（`metric=network.<metric>`）。
-- **阈值告警范围**（#80）：只做内存使用率、交换使用率、关注卷剩余空间三类（§2.8），复用 `NOTIFY_UI` 与快照 `alerts[]`；**不做**告警历史/告警管理界面、告警确认与静默、外部通道（邮件/webhook）、进程级指标告警，也不为磁盘 I/O 与网络出告警。历史库只记录指标事实，不含告警表。
-- 历史查询不走帧（dzweb 只读历史库，§6.1）；告警复用 `NOTIFY_UI`；进程级指标、GPU、SMART、风扇、电池、登录用户列表不在本契约范围。
+- **网络无阈值越限消费**：本契约只定义实时快照域。`hide_virtual` 与完整配置编辑入口见 §3（REST `PUT /api/sysmon/config` → `SET_SYSMON_CONFIG`；监控页「配置」区下发差异 patch）。网络的维度指标可经 §6.1 历史查询（`metric=network.<metric>`）。
+- **阈值越限范围**：只判定内存使用率、交换使用率、全部卷剩余空间以及 CPU 饱和四类（§2.8），且**只写日志 + UI 色标**，不产生 `NOTIFY_UI`、不进快照、不写历史库；**不做**越限历史/越限管理界面、确认与静默、外部通道（邮件/webhook）、进程级指标越限，也不为磁盘 I/O 与网络出越限。历史库只记录指标事实。
+- 历史查询不走帧（dzweb 只读历史库，§6.1）；进程级指标、GPU、SMART、风扇、电池、登录用户列表不在本契约范围。
 - **历史查询不做跨桶重采样**：服务端只按真实桶返回，点数超限时前移窗口（§6.1.2），不在服务端合并桶或插值。历史视图的时间范围/粒度选择、包络与标记渲染在前端，视觉细节不在本契约。
 - **历史视图为独立视图**：监控页在「实时」与「历史」之间切换，切换只影响 REST 查询与渲染，**不影响 WS 连接与实时快照镜像**（实时 store 继续接收 `sysmon_snapshot`）——历史视图不订阅任何新 WS 消息。
 - **维度历史的 UI 选择器不在本版本**：§6.1 的 REST 端点支持全部指标（含 `<domain>.<metric>` 维度指标，需显式 `dimension`），但监控页的指标下拉只列标量指标（无需维度即可查询）。维度指标（每核 / 每卷 / 每盘 / 每网卡 / 每传感器）已可经 REST 查询，UI 的维度选择器随后续票；选择器不出现**不得**被理解为「维度历史未实现」。
