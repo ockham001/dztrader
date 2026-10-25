@@ -141,7 +141,7 @@
 - 压缩跨维护周期分批进行时，新聚合必须与**已有分钟桶合并**（`MetricAggregate::merge` 按 `n` 加权），直接覆盖会丢掉前一批的 `min`/`max`/`n`。
 - 维护按 `maintenance_batch` 分段、每段一个事务：避免一次长事务把只读连接（dzweb 查询）挡住整个维护周期。压缩只删**本批真正压过的行**（标量与维度的输入各自 LIMIT，按桶整删会连带删掉本批未压缩的维度行 = 静默丢历史）；`compacted_buckets` 按整轮维护的分钟桶去重计数。
 - 删除宽表与长表**同桶**数据必须一起做，否则按域查询会读到孤儿行。
-- **已删除的维度指标遗留行**（#124 删除 `volume` 域的关注路径维度指标）：已落库的旧行**不做主动清理**——删注册表条目不是表结构变更，故不提升 `kSchemaVersion`（提升会让现有历史库整体降级为不可读）；未注册指标在查询侧解析为 invalid，前端从不查询，无功能影响。去向随记录间隔而异：记录间隔 ≥ 60 秒（默认，不压缩）时随 `max_retention_days`（30 天）总保留期按 `bucket_ts` 删除；记录间隔 < 60 秒（压缩分支）时压缩先聚合、再删原始行，而 `write_dimension_row` 对未注册指标记一条 `reason=not_registered` warning 并跳过——旧行不会被压成分钟聚合，在 `raw_retention_hours`（24 小时）原始水位即删除。两条路径都不留永久孤儿行。
+- **已删除的维度指标遗留行**（#124；决策与「不提升 `kSchemaVersion` / 不做主动清理」的理由见 [ADR 0034](../adr/0034-sysmon-resource-thresholds-log-only.md)）：已落库的旧行去向随记录间隔而异——记录间隔 ≥ 60 秒（默认，不压缩）时随 `max_retention_days`（30 天）总保留期按 `bucket_ts` 删除；< 60 秒（压缩分支）时压缩先聚合、再删原始行，而 `write_dimension_row` 对未注册指标记一条 `reason=not_registered` warning 并跳过，旧行不会被压成分钟聚合，在 `raw_retention_hours`（24 小时）原始水位即删除。两条路径都不留永久孤儿行（`resolve_metric` 对未注册指标返回 invalid，前端从不查询）。
 - 维护周期由落盘线程执行（`maintenance_interval_sec`，默认 300s），配置项在运行期修改后**下一个周期即按新值执行**。保留参数通过互斥保护的小快照从 io_context 线程发布给落盘线程，落盘线程**不直接读**主配置对象（那是跨线程数据竞争）。
 
 ### 落盘线程（`HistoryWriter`）

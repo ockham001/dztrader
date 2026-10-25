@@ -96,6 +96,10 @@ struct MountEntry {
 ///
 /// 卷的语义是"一块底层存储"（契约 sysmon §2.4），bind mount 只是同一块存储的另一个
 /// 视图；重复列出会让 UI 出现多个容量完全相同的卷。`device = 0` 的记录无法判重，全部保留。
+///
+/// 输出顺序是确定性的（挂载点长度升序、同长度按字典序），但**不是**契约语义：
+/// 契约 sysmon §2.4 不要求 `volumes[]` 顺序，消费方按使用率等自行排序。不要为
+/// "恢复某种顺序"而加排序——它只是去重挑选代表的副产物。
 [[nodiscard]] std::vector<MountEntry> deduplicate_by_device(std::vector<MountEntry> entries);
 
 /// 把 `/proc/meminfo` 原始值归一为交换读数（契约 sysmon §2.4）。
