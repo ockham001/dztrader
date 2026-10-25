@@ -1,5 +1,4 @@
 // 06-sysmon 采集层真机 oracle 测试：断言两平台实现从真实 OS 系统调用拿到的原始数据满足契约不变量。
-#include <dztrader/core/path.h>
 #include <dztrader/platform/system_collector.h>
 
 #if defined(_WIN32)
@@ -27,7 +26,6 @@
 #include <chrono>
 #include <cstdio>
 #include <cmath>
-#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -544,14 +542,12 @@ TEST(MeminfoParserTest, SwapFreeAboveTotalIsClamped) {
 }
 
 }  // namespace
-// ===== #75 内部接缝：/proc/mounts 解析与落卷匹配（契约 sysmon §2.4）=====
+// ===== #75 内部接缝：/proc/mounts 解析与按设备去重（契约 sysmon §2.4）=====
 namespace mount_test {
 using system_collector_linux_internal::deduplicate_by_device;
 using system_collector_linux_internal::is_pseudo_filesystem;
-using system_collector_linux_internal::match_mount_point;
 using system_collector_linux_internal::MountEntry;
 using system_collector_linux_internal::parse_mounts;
-using system_collector_linux_internal::resolve_volume_mount_point;
 }  // namespace mount_test
 using namespace mount_test;  // NOLINT(google-build-using-namespace)：仅测试翻译单元
 
@@ -587,20 +583,6 @@ TEST(MountParserTest, FiltersPseudoFilesystemsAndDeduplicates) {
         EXPECT_EQ(std::find(mounts.begin(), mounts.end(), pseudo), mounts.end()) << pseudo;
     }
     EXPECT_EQ(std::count(mounts.begin(), mounts.end(), "/data"), 1);
-
-    // 结果按挂载点长度降序：最长前缀匹配可直接使用。
-    EXPECT_TRUE(std::is_sorted(entries.begin(), entries.end(),
-                               [](const MountEntry& lhs, const MountEntry& rhs) {
-                                   return lhs.mount_point.size() > rhs.mount_point.size();
-                               }));
-}
-
-TEST(MountParserTest, PseudoFilterCanBeDisabledForDiagnosis) {
-    // 落卷诊断需要看被过滤的文件系统（区分"路径不存在"与"卷不在采集范围"）。
-    const std::string content = "proc /proc proc rw 0 0\ntmpfs /run tmpfs rw 0 0\n";
-    EXPECT_TRUE(parse_mounts(content).empty());
-    const auto all = parse_mounts(content, /*include_pseudo=*/true);
-    EXPECT_EQ(all.size(), 2U);
 }
 
 TEST(MountParserTest, BareFuseIsFilteredButFuseblkIsARealVolume) {
@@ -639,24 +621,6 @@ TEST(MountParserTest, PseudoFilesystemClassification) {
                            "fuseblk"}) {
         EXPECT_FALSE(is_pseudo_filesystem(fs)) << fs;
     }
-}
-
-TEST(MountParserTest, LongestPrefixMatchRespectsPathComponentBoundary) {
-    // 挂载点名用 /srv 系构造，避免测试源码里出现硬编码家目录路径
-    // （scripts/check_test_portability.py 禁止 POSIX 家目录字面量）。
-    const std::vector<std::string> mounts = {"/srv/vol/data", "/srv/vol", "/"};
-    // 最长前缀优先。
-    EXPECT_EQ(match_mount_point("/srv/vol/data/file", mounts), "/srv/vol/data");
-    EXPECT_EQ(match_mount_point("/srv/vol/other", mounts), "/srv/vol");
-    EXPECT_EQ(match_mount_point("/srv/vol", mounts), "/srv/vol");
-    // 路径分量边界：/srv/vol 不得匹配 /srv/vol2（否则落卷会把 vol2 报成 vol）。
-    EXPECT_EQ(match_mount_point("/srv/vol2/file", mounts), "/");
-    // 根挂载点兜底。
-    EXPECT_EQ(match_mount_point("/opt/other", mounts), "/");
-    // 没有根挂载点时匹配不到就是 nullopt（不得猜卷）。
-    const std::vector<std::string> no_root = {"/data"};
-    EXPECT_EQ(match_mount_point("/opt/other", no_root), std::nullopt);
-    EXPECT_EQ(match_mount_point("/data", no_root), "/data");
 }
 
 TEST(MountParserTest, MalformedMountLinesAreIgnored) {
@@ -707,47 +671,6 @@ TEST(MountParserTest, DeduplicateKeepsUnknownDevices) {
     second.device = 0;
     const auto deduplicated = deduplicate_by_device({first, second});
     EXPECT_EQ(deduplicated.size(), 2U);
-}
-
-// 契约 sysmon §2.4：落卷按**设备身份**归位。bind mount 让同一块存储有多个挂载点视图，
-// 路径前缀只能命中其中一个；卷列表里的代表挂载点必须仍然能被归到。
-TEST(MountParserTest, VolumeResolutionFallsBackToDeviceIdentity) {
-    // 构造一个"卷列表代表是 /data、但路径落在 bind 视图 /srv/app 下"的场景：
-    // /data 与 /srv/app 同设备（这里用同一路径伪造两个挂载记录并共用 st_dev）。
-    std::error_code ec;
-    const auto base = dztrader::paths::home().parent_path() /
-                      ("dzsysmon_bind_" + std::to_string(current_process_id()));
-    std::filesystem::remove_all(base, ec);
-    ASSERT_TRUE(std::filesystem::create_directories(base / "app" / "sub", ec)) << ec.message();
-
-    struct stat info{};
-    ASSERT_EQ(::stat((base / "app").c_str(), &info), 0);
-
-    MountEntry representative;
-    representative.mount_point = (base / "app").string();  // 卷列表里的代表挂载点
-    representative.fs_type = "ext4";
-    representative.device = static_cast<uint64_t>(info.st_dev);
-
-    // 路径落在代表挂载点下：应该直接命中（前缀路径）。
-    const auto direct =
-        resolve_volume_mount_point((base / "app" / "sub").string(), {representative});
-    ASSERT_TRUE(direct.has_value());
-    EXPECT_EQ(*direct, representative.mount_point);
-
-    // 路径与该卷同设备、但不在代表挂载点前缀下（模拟 bind 视图）：
-    // 用设备身份归位，而不是回退到 "/"。
-    MountEntry other_device;
-    other_device.mount_point = "/";  // 根挂载点条目
-    other_device.fs_type = "ext4";
-    other_device.device = static_cast<uint64_t>(info.st_dev) + 1;  // 不同设备
-
-    const auto via_device =
-        resolve_volume_mount_point((base / "app" / "sub").string(), {other_device, representative});
-    ASSERT_TRUE(via_device.has_value());
-    EXPECT_EQ(*via_device, representative.mount_point)
-        << "must resolve by device identity, not fall back to /";
-
-    std::filesystem::remove_all(base, ec);
 }
 
 #endif  // defined(__linux__)
@@ -845,7 +768,7 @@ TEST(DiskstatsParserTest, SelectPhysicalDisksKeepsCandidateOrderAndDropsPartitio
 }
 #endif  // defined(__linux__)
 
-// ===== #75：卷、关注路径与共享内存目录 =====
+// ===== #75：卷与共享内存目录 =====
 
 /// 目录占用统计的临时目录 fixture：每个用例自管临时目录（AGENTS 硬门禁 2 的豁免情形）。
 class ShmDirUsageTest : public ::testing::Test {
@@ -984,84 +907,6 @@ TEST(SystemCollectorTest, VolumesFollowContractInvariants) {
 #endif
 }
 
-// 契约 sysmon §2.4：落卷解析把路径对到真实存在的卷；路径不存在时如实报告失败。
-TEST(SystemCollectorTest, WatchPathsResolveToVolumes) {
-    const auto collector = make_system_collector();
-    ASSERT_NE(collector, nullptr);
-
-    const auto volumes = collector->collect_volumes();
-    ASSERT_TRUE(volumes.has_value());
-    std::vector<std::string> mount_points;
-    for (const auto& volume : *volumes) {
-        mount_points.push_back(volume.mount);
-    }
-
-    // 用当前工作目录与其下不存在的名字驱动：前者必须解析成功，后者必须失败。
-    std::error_code ec;
-    const auto working_dir = std::filesystem::current_path(ec);
-    ASSERT_FALSE(ec) << ec.message();
-    const auto missing = (working_dir / "dzsysmon_missing_path_for_test").string();
-    const std::vector<std::string> paths = {working_dir.string(), missing};
-
-    const auto resolved = collector->collect_watch_paths(paths);
-    ASSERT_EQ(resolved.size(), paths.size());
-
-    // 已存在的绝对路径必须落到某个真实卷上，且该卷在同帧 volumes 里（契约 sysmon §7）。
-    EXPECT_EQ(resolved[0].path, working_dir.string());
-    ASSERT_TRUE(resolved[0].mount.has_value()) << "existing directory must resolve to a volume";
-    EXPECT_NE(std::find(mount_points.begin(), mount_points.end(), *resolved[0].mount),
-              mount_points.end())
-        << "resolved mount must be listed in volumes: " << *resolved[0].mount;
-
-    // 不存在的路径：不得猜卷、不得回退到 "/"，必须给出 reason（契约 sysmon §2.4）。
-    EXPECT_FALSE(resolved[1].mount.has_value());
-    EXPECT_FALSE(resolved[1].reason.empty());
-}
-
-// 真机 oracle：落卷解析必须跟随符号链接——报告的必须是**目标**所在卷，而不是链接名
-// 所在卷（两者刻意放在同一次断言里比较，否则测试会"通过但证明不了跟随")。
-TEST(SystemCollectorTest, WatchPathsFollowSymlinksToTargetVolume) {
-#if defined(_WIN32)
-    GTEST_SKIP() << "symlink creation requires developer mode/admin on windows";
-#else
-    const auto collector = make_system_collector();
-    ASSERT_NE(collector, nullptr);
-
-    std::error_code ec;
-    const auto base = std::filesystem::temp_directory_path(ec) /
-                      ("dzsysmon_symlink_" + std::to_string(current_process_id()));
-    std::filesystem::remove_all(base, ec);
-    ASSERT_TRUE(std::filesystem::create_directories(base, ec)) << ec.message();
-
-    // 目标目录与链接名放在**不同**的卷上（目标在 $DZTRADER_HOME/shm 所在卷，
-    // 链接名放在临时目录卷 —— 两者在很多机器上恰好不同卷，相同也没关系：
-    // 下面用"目标路径自身的落卷"作为 oracle 比较，结论对两种情况都成立）。
-    const auto target = dztrader::paths::shm();
-    const auto link = base / "link_to_shm";
-    if (::symlink(target.c_str(), link.c_str()) != 0) {
-        std::filesystem::remove_all(base, ec);
-        GTEST_SKIP() << "cannot create symlink on this filesystem: " << std::strerror(errno);
-    }
-
-    const auto resolved = collector->collect_watch_paths({link.string()});
-    // 目标路径本身的落卷 = 期望值（oracle）。
-    const auto target_resolved = collector->collect_watch_paths({target.string()});
-    std::filesystem::remove_all(base, ec);
-
-    ASSERT_EQ(resolved.size(), 1U);
-    ASSERT_EQ(target_resolved.size(), 1U);
-    ASSERT_TRUE(target_resolved[0].mount.has_value()) << "shm dir must resolve to a volume";
-
-    // 关键断言：链接被跟随，落卷等于目标落卷（而不是链接名所在目录的卷）。
-    EXPECT_EQ(resolved[0].mount, target_resolved[0].mount)
-        << "symlink must resolve to the target volume: link=" << link.string()
-        << " target=" << target.string();
-    // 规范化后路径不再包含链接名（weakly_canonical 解析了链接）。
-    EXPECT_EQ(resolved[0].path.find("link_to_shm"), std::string::npos)
-        << "path must be canonicalized: " << resolved[0].path;
-#endif
-}
-
 // 契约 sysmon §2.4 的 AC：权限不足时报告不可用，不得产出 0。
 // mode 0000 的目录仍能通过 is_directory()，若不做可读性探针就会谎报成"空目录"。
 TEST_F(ShmDirUsageTest, UnreadableDirectoryIsUnavailableNotZero) {
@@ -1085,54 +930,6 @@ TEST_F(ShmDirUsageTest, UnreadableDirectoryIsUnavailableNotZero) {
     EXPECT_EQ(usage, std::nullopt)
         << "unreadable shm dir must be unavailable, got total_bytes="
         << (usage ? std::to_string(usage->total_bytes) : std::string("<null>"));
-#endif
-}
-
-// 契约 sysmon §2.4：落卷匹配的大小写语义跨平台不同——Linux 大小写敏感，
-// Windows 大小写不敏感（盘符归一化后与 volumes[].mount 可直接相等比较）。
-TEST(SystemCollectorTest, WatchPathMatchingRespectsPlatformCaseSemantics) {
-    const auto collector = make_system_collector();
-    ASSERT_NE(collector, nullptr);
-
-    // 基准目录必须落在**采集范围内的真实卷**上：临时目录常是 tmpfs（被 §2.4 过滤），
-    // 现在的落卷解析会如实把它判为 unsupported（不得回退到 "/"），
-    // 那样就测不到大小写语义了。用 DZTRADER_HOME 所在目录（ctest 注入，在项目卷上）。
-    std::error_code ec;
-    const auto base = dztrader::paths::home().parent_path() /
-                      ("dzsysmon_case_" + std::to_string(current_process_id()));
-    std::filesystem::remove_all(base, ec);
-    ASSERT_TRUE(std::filesystem::create_directories(base / "Data", ec)) << ec.message();
-
-    // 同一个真实目录，用不同大小写拼写。
-    const auto exact = (base / "Data").string();
-    const auto different_case = (base / "data").string();
-    const auto resolved = collector->collect_watch_paths({exact, different_case});
-    std::filesystem::remove_all(base, ec);
-    ASSERT_EQ(resolved.size(), 2U);
-
-    // 精确拼写必须解析成功（两平台）。
-    EXPECT_TRUE(resolved[0].mount.has_value()) << "exact-case path must resolve";
-
-#if defined(_WIN32)
-    // Windows：大小写不敏感——另一种拼写同样解析成功，且落卷相等。
-    // 这条断言同时覆盖盘符归一化（否则 mount 大小写与 volumes 不一致）。
-    EXPECT_TRUE(resolved[1].mount.has_value()) << "windows matching must be case-insensitive";
-    if (resolved[0].mount.has_value() && resolved[1].mount.has_value()) {
-        EXPECT_EQ(*resolved[0].mount, *resolved[1].mount);
-        // 盘符必须统一为大写，才能与 volumes[].mount 直接字符串比较（契约 §2.4/§7）。
-        const auto& mount = *resolved[0].mount;
-        if (mount.size() >= 1 && std::isalpha(static_cast<unsigned char>(mount[0])) != 0) {
-            EXPECT_EQ(mount[0],
-                      static_cast<char>(std::toupper(static_cast<unsigned char>(mount[0]))))
-                << "drive letter must be normalized to uppercase: " << mount;
-        }
-    }
-#else
-    // Linux：大小写敏感——拼错的路径不存在，必须如实报 path_not_found（不猜卷）。
-    EXPECT_FALSE(resolved[1].mount.has_value())
-        << "linux matching must be case-sensitive, got mount="
-        << resolved[1].mount.value_or("<none>");
-    EXPECT_EQ(resolved[1].reason, "path_not_found");
 #endif
 }
 

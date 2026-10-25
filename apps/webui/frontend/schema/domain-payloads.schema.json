@@ -286,25 +286,14 @@
     },
     "SysmonVolumeInfo": {
       "type": "object",
-      "required": ["mount", "watched", "available", "total_bytes", "used_bytes", "used_ratio"],
+      "required": ["mount", "available", "total_bytes", "used_bytes", "used_ratio"],
       "properties": {
         "mount": { "type": "string", "description": "规范化挂载点（Linux 挂载目录；Windows 盘符根）" },
-        "watched": { "type": "boolean", "description": "承载了任一关注路径（快照 watch_paths 的落卷），用于高亮" },
         "available": { "type": "boolean", "description": "容量是否可读；false 时三个容量字段必须为 null（不得用 0 冒充）" },
         "total_bytes": { "anyOf": [{ "type": "integer" }, { "type": "null" }], "description": "available=false 时为 null" },
         "used_bytes": { "anyOf": [{ "type": "integer" }, { "type": "null" }], "description": "available=false 时为 null" },
         "used_ratio": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "available=false 或 total=0 时为 null" },
         "reason": { "type": "string", "description": "不可用原因；available=true 时省略" }
-      }
-    },
-    "SysmonWatchPathInfo": {
-      "type": "object",
-      "required": ["path", "mount", "available"],
-      "properties": {
-        "path": { "type": "string", "description": "关注路径（绝对路径，符号链接已跟随）" },
-        "mount": { "anyOf": [{ "type": "string" }, { "type": "null" }], "description": "所在卷挂载点，可与 volumes[].mount 相等比较；解析失败时为 null" },
-        "available": { "type": "boolean", "description": "落卷解析是否成功" },
-        "reason": { "type": "string", "description": "解析失败原因；available=true 时省略" }
       }
     },
     "SysmonDiskIoInfo": {
@@ -391,7 +380,7 @@
     },
     "SysmonSnapshotPayload": {
       "type": "object",
-      "required": ["source", "timestamp", "sampling", "platform", "system", "cpu", "temperature", "memory", "swap", "volumes", "watch_paths", "disk_io", "network", "shm_dir", "alerts", "availability"],
+      "required": ["source", "timestamp", "sampling", "platform", "system", "cpu", "temperature", "memory", "swap", "volumes", "disk_io", "network", "shm_dir", "alerts", "availability"],
       "properties": {
         "source": { "type": "string", "description": "发送方进程名（固定 dzsysmon；无 instance_id 帧来源显式携带，general §5）" },
         "timestamp": { "type": "integer", "description": "快照生成时刻（Unix 毫秒）" },
@@ -409,7 +398,6 @@
         "memory": { "anyOf": [{ "$ref": "#/$defs/SysmonMemoryInfo" }, { "type": "null" }] },
         "swap": { "anyOf": [{ "$ref": "#/$defs/SysmonSwapInfo" }, { "type": "null" }] },
         "volumes": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/SysmonVolumeInfo" } }, { "type": "null" }] },
-        "watch_paths": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/SysmonWatchPathInfo" } }, { "type": "null" }], "description": "关注路径的落卷解析；null=本帧未采集/不可用" },
         "disk_io": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/SysmonDiskIoInfo" } }, { "type": "null" }] },
         "network": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/SysmonNetworkInfo" } }, { "type": "null" }] },
         "shm_dir": { "anyOf": [{ "$ref": "#/$defs/SysmonShmDirInfo" }, { "type": "null" }] },
@@ -429,9 +417,8 @@
     },
     "SysmonDiskConfigPayload": {
       "type": "object",
-      "required": ["watch_paths", "devices"],
+      "required": ["devices"],
       "properties": {
-        "watch_paths": { "type": "array", "items": { "type": "string" }, "description": "关注路径" },
         "devices": { "type": "array", "items": { "type": "string" }, "description": "设备范围（空=全部物理盘）" }
       }
     },

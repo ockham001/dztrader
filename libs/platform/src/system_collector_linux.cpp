@@ -596,7 +596,7 @@ std::optional<std::vector<RawCoreFrequency>> read_core_frequencies() {
     return frequencies;
 }
 
-// ===== 卷、关注路径与共享内存目录（契约 sysmon §2.4）=====
+// ===== 卷与共享内存目录（契约 sysmon §2.4）=====
 
 /// `/proc/mounts` 路径（卷枚举的数据源；容器内为宿主视图，§8 明确不支持容器语义）。
 constexpr const char* kProcMountsPath = "/proc/mounts";
@@ -880,51 +880,6 @@ public:
 
     std::optional<std::vector<RawVolumeInfo>> collect_volumes() override { return read_volumes(); }
 
-    std::vector<RawWatchPathInfo> collect_watch_paths(
-        const std::vector<std::string>& paths) override {
-        const auto mounts = read_mounts();
-        std::vector<RawWatchPathInfo> results;
-        results.reserve(paths.size());
-        for (const auto& path : paths) {
-            RawWatchPathInfo info;
-            info.path = path;
-            std::string reason;
-            const auto normalized = system_collector_linux_internal::normalize_path(path);
-            if (!normalized.has_value()) {
-                // 规范化失败：区分"不存在"与"权限不足"，不猜卷（契约 sysmon §2.4）。
-                std::error_code ec;
-                const bool exists = std::filesystem::exists(path, ec);
-                info.reason = (!ec && !exists) ? "path_not_found" : "collect_failed";
-                results.push_back(std::move(info));
-                continue;
-            }
-            info.path = *normalized;
-            // 规范化成功不等于路径可访问（weakly_canonical 保留不存在的尾部用于诊断）：
-            // 不存在 ⇒ path_not_found；无权限 ⇒ no_permission（`exists()` 两者都返回
-            // false，必须用带错误码的 status 区分，契约 sysmon §2.4 的 reason 取值）。
-            struct stat path_info{};
-            if (::stat(normalized->c_str(), &path_info) != 0) {
-                info.reason =
-                    (errno == EACCES || errno == EPERM) ? "no_permission" : "path_not_found";
-                results.push_back(std::move(info));
-                continue;
-            }
-            // 落卷：只有确实落在采集范围内的卷上才算解析成功。落在被过滤的文件系统
-            // （tmpfs/overlay/fuse 等，按设备号判定）报 unsupported，不得回退到 "/"
-            // （契约 sysmon §2.4；容器内 shm 目录常正好在 tmpfs 上）。
-            const auto mount = system_collector_linux_internal::resolve_volume_mount_point(
-                *normalized, mounts, /*root_mount_point=*/"/", /*out_reason=*/&reason);
-            if (!mount.has_value()) {
-                info.reason = reason.empty() ? std::string("collect_failed") : reason;
-                results.push_back(std::move(info));
-                continue;
-            }
-            info.mount = *mount;
-            results.push_back(std::move(info));
-        }
-        return results;
-    }
-
     std::optional<RawShmDirInfo> collect_shm_dir(const std::string& shm_dir) override {
         return read_shm_dir(shm_dir);
     }
@@ -942,7 +897,7 @@ private:
 // ===== /proc/meminfo 解析与归一（内部接缝，供平台单测确定性覆盖）=====
 
 namespace system_collector_linux_internal {
-// ===== /proc/mounts 卷枚举与落卷解析（契约 sysmon §2.4）=====
+// ===== /proc/mounts 卷枚举（契约 sysmon §2.4）=====
 
 namespace {
 
@@ -970,31 +925,12 @@ std::string unescape_mount_field(std::string_view field) {
     return result;
 }
 
-/// 判断路径是否以某个挂载点为前缀且落在路径分量边界上（`/home` 不匹配 `/home2`）。
-/// 挂载点排序：长度**降序**（最长前缀优先），同长度按字典序保证确定性。
-bool mount_point_longest_first(const MountEntry& lhs, const MountEntry& rhs) {
-    if (lhs.mount_point.size() != rhs.mount_point.size()) {
-        return lhs.mount_point.size() > rhs.mount_point.size();
-    }
-    return lhs.mount_point < rhs.mount_point;
-}
-
 /// 挂载点排序：长度**升序**（最短挂载点优先 = 该设备的代表视图）。
 bool mount_point_shortest_first(const MountEntry& lhs, const MountEntry& rhs) {
     if (lhs.mount_point.size() != rhs.mount_point.size()) {
         return lhs.mount_point.size() < rhs.mount_point.size();
     }
     return lhs.mount_point < rhs.mount_point;
-}
-
-bool is_mount_prefix(std::string_view path, std::string_view mount_point) {
-    if (mount_point == "/") {
-        return true;
-    }
-    if (!path.starts_with(mount_point)) {
-        return false;
-    }
-    return path.size() == mount_point.size() || path[mount_point.size()] == '/';
 }
 
 }  // namespace
@@ -1022,7 +958,7 @@ bool is_pseudo_filesystem(std::string_view fs_type) {
     return fs_type.starts_with("fuse.");
 }
 
-std::vector<MountEntry> parse_mounts(std::string_view content, bool include_pseudo) {
+std::vector<MountEntry> parse_mounts(std::string_view content) {
     std::vector<MountEntry> entries;
     std::set<std::string> seen_mounts;
     std::string_view rest = content;
@@ -1062,7 +998,7 @@ std::vector<MountEntry> parse_mounts(std::string_view content, bool include_pseu
         if (entry.mount_point.empty() || !entry.mount_point.starts_with('/')) {
             continue;
         }
-        if (!include_pseudo && is_pseudo_filesystem(entry.fs_type)) {
+        if (is_pseudo_filesystem(entry.fs_type)) {
             continue;
         }
         if (!seen_mounts.insert(entry.mount_point).second) {
@@ -1070,8 +1006,6 @@ std::vector<MountEntry> parse_mounts(std::string_view content, bool include_pseu
         }
         entries.push_back(std::move(entry));
     }
-    // 最长前缀匹配直接可用：按挂载点长度降序。
-    std::sort(entries.begin(), entries.end(), mount_point_longest_first);
     return entries;
 }
 
@@ -1097,91 +1031,7 @@ std::vector<MountEntry> deduplicate_by_device(std::vector<MountEntry> entries) {
         }
         result.push_back(std::move(entry));
     }
-    // 输出顺序回到"挂载点长度降序"（供最长前缀匹配直接使用）。
-    std::sort(result.begin(), result.end(), mount_point_longest_first);
     return result;
-}
-
-std::optional<std::string> match_mount_point(std::string_view normalized_path,
-                                             const std::vector<std::string>& mount_points) {
-    std::optional<std::string> best;
-    for (const auto& mount_point : mount_points) {
-        if (mount_point == "/") {
-            continue;  // 根挂载点最后兜底，避免抢先匹配
-        }
-        if (is_mount_prefix(normalized_path, mount_point)) {
-            if (!best.has_value() || mount_point.size() > best->size()) {
-                best = mount_point;
-            }
-        }
-    }
-    if (best.has_value()) {
-        return best;
-    }
-    if (std::ranges::find(mount_points, "/") != mount_points.end()) {
-        return std::string("/");
-    }
-    return std::nullopt;
-}
-
-std::optional<std::string> resolve_volume_mount_point(const std::string& normalized_path,
-                                                      const std::vector<MountEntry>& volumes,
-                                                      const std::string& root_mount_point,
-                                                      std::string* out_reason) {
-    // 判据是**底层设备**而不是路径前缀：卷的语义是一块存储（契约 sysmon §2.4），
-    // 而一个卷可以有多个挂载点（bind mount），路径前缀只能看到其中一个视图。
-    // 1) 路径落在某个采集范围内挂载点的前缀上 → 直接采信（最常见、最省事）；
-    // 2) 否则用 st_dev 找同一设备在**卷列表里的代表挂载点**——这既覆盖非根的 bind mount
-    //    （/data 卷被 bind 到 /srv/app），也避免把 tmpfs/overlay 上的路径谎报成根卷。
-    struct stat path_info{};
-    if (::stat(normalized_path.c_str(), &path_info) != 0) {
-        if (out_reason != nullptr) {
-            *out_reason = (errno == EACCES || errno == EPERM) ? "no_permission" : "collect_failed";
-        }
-        return std::nullopt;
-    }
-
-    // 1) 前缀命中：最精确的挂载点视图。
-    std::optional<std::string> prefix_best;
-    for (const auto& entry : volumes) {
-        if (entry.mount_point == "/") {
-            continue;
-        }
-        if (is_mount_prefix(normalized_path, entry.mount_point)) {
-            if (!prefix_best.has_value() || entry.mount_point.size() > prefix_best->size()) {
-                prefix_best = entry.mount_point;
-            }
-        }
-    }
-    if (prefix_best.has_value()) {
-        return prefix_best;
-    }
-
-    // 2) 设备命中：找同设备在卷列表里的代表（`/data` 之于 bind 到 /srv/app 的 sdb1）。
-    for (const auto& entry : volumes) {
-        if (entry.device != 0 && entry.device == static_cast<uint64_t>(path_info.st_dev)) {
-            return entry.mount_point;
-        }
-    }
-
-    // 3) 都没命中：路径确实在设备上，但该设备不在卷采集范围（tmpfs/overlay/fuse 等）。
-    //    根挂载点仍要再确认一次：`/` 自己可能就是被过滤的文件系统（容器里常见），
-    //    此时输出 "/" 会与 volumes[] 对不上、打红 §7 交叉校验。
-    if (out_reason != nullptr) {
-        *out_reason = "unsupported";
-    }
-    (void)root_mount_point;  // 语义由 device 判定覆盖；参数保留供调用方表达契约口径
-    return std::nullopt;
-}
-
-std::optional<std::string> normalize_path(const std::string& path) {
-    std::error_code ec;
-    const std::filesystem::path input(path);
-    const auto canonical = std::filesystem::weakly_canonical(input, ec);
-    if (ec) {
-        return std::nullopt;
-    }
-    return canonical.string();
 }
 
 namespace {

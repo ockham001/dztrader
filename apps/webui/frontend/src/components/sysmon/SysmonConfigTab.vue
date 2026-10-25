@@ -91,7 +91,7 @@ function enabledText(enabled: boolean): string {
   return enabled ? '已启用' : '已关闭'
 }
 
-/** 展示行：一个字段一行；list 用于逐条展示的数组字段（watch_paths / devices） */
+/** 展示行：一个字段一行；list 用于逐条展示的数组字段（devices） */
 interface DisplayRow {
   field: string
   label: string
@@ -131,9 +131,6 @@ const displaySections = computed<DisplaySection[]>(() => {
       key: 'disk',
       title: '磁盘',
       rows: [
-        cfg.disk.watch_paths.length > 0
-          ? { field: 'disk.watch_paths', label: '关注路径', list: cfg.disk.watch_paths }
-          : { field: 'disk.watch_paths', label: '关注路径', value: '默认关注路径（共享内存目录与数据库目录）' },
         cfg.disk.devices.length > 0
           ? { field: 'disk.devices', label: '设备范围', list: cfg.disk.devices }
           : { field: 'disk.devices', label: '设备范围', value: '全部物理盘' },
@@ -190,7 +187,7 @@ interface ConfigForm {
   // 用户编辑后可能是 number —— 解析函数两种都接受，绝不假设只有一种类型。
   samplingNumbers: Record<string, string | number>
   groups: Record<string, boolean>
-  disk: { watch_paths: string; devices: string }
+  disk: { devices: string }
   hideVirtual: boolean
   historyNumbers: Record<string, string | number>
   historyEnabled: boolean
@@ -207,7 +204,6 @@ function formFromConfig(cfg: SysmonConfigPayload): ConfigForm {
     },
     groups: Object.fromEntries(METRIC_GROUPS.map(group => [group.key, cfg.sampling.groups[group.key] !== false])),
     disk: {
-      watch_paths: cfg.disk.watch_paths.join('\n'),
       devices: cfg.disk.devices.join('\n'),
     },
     hideVirtual: cfg.network.hide_virtual,
@@ -227,7 +223,7 @@ function formFromConfig(cfg: SysmonConfigPayload): ConfigForm {
 const form = reactive<ConfigForm>({
   samplingNumbers: {},
   groups: {},
-  disk: { watch_paths: '', devices: '' },
+  disk: { devices: '' },
   hideVirtual: true,
   historyNumbers: {},
   historyEnabled: true,
@@ -299,7 +295,6 @@ function parseForm(): ParsedForm {
       groups: { ...form.groups },
     },
     disk: {
-      watch_paths: splitLines(form.disk.watch_paths),
       devices: splitLines(form.disk.devices),
     },
     network: { hide_virtual: form.hideVirtual },
@@ -329,7 +324,7 @@ function sameStringArray(a: string[], b: string[]): boolean {
 /**
  * 深度差异：只产出与原生效镜像不同的项（RFC 7386 merge patch，契约 sysmon §3）。
  * - sampling.groups：只带改动的键（缺省键按 true 处理，不能因为镜像里没有该键就误判成改动）；
- * - disk.watch_paths / devices：数组整体替换，逐项比较决定是否下发；
+ * - disk.devices：数组整体替换，逐项比较决定是否下发；
  * - 各数字字段按数值比较（表单文本与镜像文本不同但数值相同不算改动）。
  */
 function diffConfig(next: SysmonConfigPayload, current: SysmonConfigPayload): SysmonConfigPatch {
@@ -355,9 +350,6 @@ function diffConfig(next: SysmonConfigPayload, current: SysmonConfigPayload): Sy
   if (Object.keys(sampling).length > 0) patch.sampling = sampling
 
   const disk: Partial<SysmonDiskConfigPayload> = {}
-  if (!sameStringArray(next.disk.watch_paths, current.disk.watch_paths)) {
-    disk.watch_paths = next.disk.watch_paths
-  }
   if (!sameStringArray(next.disk.devices, current.disk.devices)) {
     disk.devices = next.disk.devices
   }
@@ -537,16 +529,6 @@ async function onSave(): Promise<void> {
           <section class="sysmon-config__form-section" data-test="sysmon-config-editor-disk">
             <h3 class="sysmon-config__form-title">磁盘</h3>
             <div class="sysmon-config__fields">
-              <label class="sysmon-config__field">
-                <span class="sysmon-config__field-label">关注路径（一行一个；留空 = 使用默认关注路径）</span>
-                <textarea
-                  v-model="form.disk.watch_paths"
-                  class="ds-textarea"
-                  rows="3"
-                  :disabled="savePending"
-                  data-test="sysmon-config-input-disk.watch_paths"
-                ></textarea>
-              </label>
               <label class="sysmon-config__field">
                 <span class="sysmon-config__field-label">设备范围（一行一个设备标识；留空 = 全部物理盘）</span>
                 <textarea

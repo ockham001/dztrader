@@ -264,8 +264,6 @@ export interface SysmonSwapInfo {
 export interface SysmonVolumeInfo {
     /** 规范化挂载点（Linux 挂载目录；Windows 盘符根） */
     mount: string
-    /** 承载了任一关注路径（快照 watch_paths 的落卷），用于高亮 */
-    watched: boolean
     /** 容量是否可读；false 时三个容量字段必须为 null（不得用 0 冒充） */
     available: boolean
     /** available=false 时为 null */
@@ -275,17 +273,6 @@ export interface SysmonVolumeInfo {
     /** available=false 或 total=0 时为 null */
     used_ratio: number | null
     /** 不可用原因；available=true 时省略 */
-    reason?: string
-}
-
-export interface SysmonWatchPathInfo {
-    /** 关注路径（绝对路径，符号链接已跟随） */
-    path: string
-    /** 所在卷挂载点，可与 volumes[].mount 相等比较；解析失败时为 null */
-    mount: string | null
-    /** 落卷解析是否成功 */
-    available: boolean
-    /** 解析失败原因；available=true 时省略 */
     reason?: string
 }
 
@@ -397,8 +384,6 @@ export interface SysmonSnapshotPayload {
     memory: SysmonMemoryInfo | null
     swap: SysmonSwapInfo | null
     volumes: SysmonVolumeInfo[] | null
-    /** 关注路径的落卷解析；null=本帧未采集/不可用 */
-    watch_paths: SysmonWatchPathInfo[] | null
     disk_io: SysmonDiskIoInfo[] | null
     network: SysmonNetworkInfo[] | null
     shm_dir: SysmonShmDirInfo | null
@@ -419,8 +404,6 @@ export interface SysmonSamplingConfigPayload {
 }
 
 export interface SysmonDiskConfigPayload {
-    /** 关注路径 */
-    watch_paths: string[]
     /** 设备范围（空=全部物理盘） */
     devices: string[]
 }

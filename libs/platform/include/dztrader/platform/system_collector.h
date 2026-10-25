@@ -124,18 +124,6 @@ struct RawVolumeInfo {
     std::string reason;
 };
 
-/// 关注路径的落卷解析结果（契约 sysmon §2.4）。
-///
-/// 采集层负责路径规范化（跟随符号链接）与卷挂载点匹配（Linux 最长前缀、大小写敏感；
-/// Windows 大小写不敏感、分隔符统一）；解析失败时 `mount` 为 std::nullopt 且
-/// `reason` 必填——**不得**猜一个卷或回退到 `/`。
-struct RawWatchPathInfo {
-    std::string path;                  ///< 解析用路径（绝对路径，符号链接已跟随）
-    std::optional<std::string> mount;  ///< 所在卷挂载点；std::nullopt = 解析失败
-    /// 解析失败原因（英文、小写开头、无句号）；成功时为空串。
-    std::string reason;
-};
-
 /// 原始共享内存目录占用（契约 sysmon §2.4）。
 struct RawShmDirInfo {
     std::string path;          ///< 共享内存根目录绝对路径
@@ -290,14 +278,6 @@ public:
     /// 为 std::nullopt；只有**一个卷都枚举不到**时才返回 std::nullopt（整体采集失败）。
     /// 同一挂载点只保留一条。
     virtual std::optional<std::vector<RawVolumeInfo>> collect_volumes() = 0;
-
-    /// 把关注路径解析到所在卷（契约 sysmon §2.4；默认共享内存目录与数据库目录）。
-    ///
-    /// 每条路径都必须有结果条目：解析失败时 `mount` 为 std::nullopt 且 `reason` 非空
-    /// （`path_not_found` / `no_permission` / `collect_failed`）。返回空数组表示调用方
-    /// 没有关注路径（不是失败）。
-    virtual std::vector<RawWatchPathInfo> collect_watch_paths(
-        const std::vector<std::string>& paths) = 0;
 
     /// 采集共享内存目录占用（契约 sysmon §2.4；页清理是否生效的可观测项）。
     /// @param shm_dir 共享内存根目录（由调用方按 `paths::shm()` 传入，便于测试用临时目录驱动）

@@ -62,7 +62,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <set>
 #include <string>
 #include <functional>
 #include <string_view>
@@ -620,13 +619,11 @@ private:
         }
     }
 
-    /// 采样一次卷容量、关注路径落卷与共享内存目录占用（#75）。
+    /// 采样一次卷容量与共享内存目录占用（#75）。
     ///
     /// 卷/目录能力标记粘性：一次成功后 available 保持 true，本帧失败只把域置 null
     /// （契约 sysmon §2.5）。单个卷不可读不改写整体可用性——采集层把该卷以
     /// "容量字段为 null + reason" 放进数组（契约 sysmon §2.4）。
-    /// `watch_paths` 不受 `sampling.groups.volumes` 影响：它只服务快照字段，
-    /// 阈值越限自 #123 起按全部卷判定、不再依赖落卷结果。
     void refresh_disk_metrics() {
         if (!group_enabled("volumes")) {
             disk_metrics_.volumes_disabled = true;
@@ -639,10 +636,6 @@ private:
                 disk_metrics_.volumes_collected = true;
             }
         }
-        // 关注路径：配置非空以其为准，否则用默认的共享内存目录与数据库目录
-        // （契约 sysmon §2.4、§3.1）。
-        disk_metrics_.watch_paths = reconcile_watch_paths(
-            collector_->collect_watch_paths(resolve_watch_paths()), disk_metrics_.volumes);
 
         const auto shm_dir = collector_->collect_shm_dir(dztrader::paths::shm().string());
         disk_metrics_.shm_dir = shm_dir;
@@ -727,39 +720,6 @@ private:
         network_baseline_.valid = true;
     }
 
-    /// 把落卷结果与同帧卷列表对齐（契约 sysmon §7：available=true 的 watch_path 必须指向
-    /// 同帧 volumes 里存在的挂载点）。
-    ///
-    /// 卷枚举与落卷解析是两次独立的 /proc 挂载表快照（契约把两者放在不同采集中），
-    /// 两者之间发生挂载表变化时落卷可能指向一个本帧未列出的挂载点。若照实上报，
-    /// dzweb 的契约校验会拒掉**整帧快照**（连 CPU/内存一起丢），对 7x24 监控代价太大；
-    /// 因此这里把对不上的条目降级为"本帧未解析成功"（不伪造卷，也不拖垮整帧）。
-    std::optional<std::vector<platform::RawWatchPathInfo>> reconcile_watch_paths(
-        std::optional<std::vector<platform::RawWatchPathInfo>> watch_paths,
-        const std::optional<std::vector<platform::RawVolumeInfo>>& volumes) {
-        // volumes 为 null（组关闭或本帧未采集）时契约不做交叉校验，原样上报。
-        if (!watch_paths.has_value() || !volumes.has_value()) {
-            return watch_paths;
-        }
-        std::set<std::string> mounts;
-        for (const auto& volume : *volumes) {
-            mounts.insert(volume.mount);
-        }
-        bool reconciled = false;
-        for (auto& info : *watch_paths) {
-            if (info.mount.has_value() && !mounts.contains(*info.mount)) {
-                info.mount = std::nullopt;
-                info.reason = "collect_failed";
-                reconciled = true;
-            }
-        }
-        if (reconciled) {
-            // 挂载表在两次读取之间变化：罕见但真实（umount/mount 竞态），记日志便于诊断。
-            SPDLOG_WARN("watch path mount missing from volume list | action=downgraded");
-        }
-        return watch_paths;
-    }
-
     /// 评估一次阈值越限（契约 sysmon §2.8；#123 由通知改为日志）。
     ///
     /// 输入只取判定所需的事实：内存/交换使用率、全部卷的剩余空间与 CPU 饱和；
@@ -780,15 +740,6 @@ private:
             spdlog::log(spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION}, record.level, "{}",
                         record.message);
         }
-    }
-
-    /// 关注路径列表：配置 `disk.watch_paths` 非空时以其为准，否则用默认的
-    /// 共享内存目录与数据库目录（契约 sysmon §3.1）。
-    std::vector<std::string> resolve_watch_paths() const {
-        if (!config_.disk.watch_paths.empty()) {
-            return config_.disk.watch_paths;
-        }
-        return {dztrader::paths::shm().string(), dztrader::paths::db().string()};
     }
 
     /// 把当前快照事实聚合进历史记录窗口（#78）。每次计量 tick 调用一次。
@@ -871,7 +822,7 @@ private:
         const auto now = std::chrono::steady_clock::now();
         refresh_sensor_metrics();  // 温度/频率是独立 gauge，CPU 采集失败也照样刷新
         refresh_memory_metrics();  // 内存/交换同为独立 gauge，与 CPU 采集成败无关
-        refresh_disk_metrics();    // 卷/落卷/共享内存目录同为独立事实，与 CPU 采集成败无关
+        refresh_disk_metrics();    // 卷/共享内存目录同为独立事实，与 CPU 采集成败无关
         refresh_network();         // 网卡累计计数器同为独立事实，与 CPU 采集成败无关
         // 越限判定与历史记录同频（每个计量 tick）：不跟随推送频率，CPU 采集失败也不跳过。
         evaluate_thresholds();

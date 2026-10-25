@@ -62,7 +62,7 @@ describe('SysmonConfigTab 生效配置展示（#81）', () => {
   it('镜像到达：按六个段展示生效值（数值带单位、布尔语义化、数组逐条）', async () => {
     const { wrapper } = await mountTab({
       config: makeSysmonConfig({
-        disk: { watch_paths: ['/data', '/var/lib'], devices: ['sda'] },
+        disk: { devices: ['sda'] },
       }),
     })
 
@@ -92,19 +92,16 @@ describe('SysmonConfigTab 生效配置展示（#81）', () => {
       expect(wrapper.find(`[data-test="sysmon-config-value-sampling.groups.${key}"]`).exists()).toBe(true)
     }
     expect(valueText(wrapper, 'sampling.groups.cpu')).toBe('已启用')
-    // watch_paths / devices 逐条
-    const paths = wrapper.findAll('[data-test="sysmon-config-value-disk.watch_paths"] .sysmon-config__list-item')
-    expect(paths.map(item => item.text())).toEqual(['/data', '/var/lib'])
+    // devices 逐条
     expect(wrapper.find('[data-test="sysmon-config-value-disk.devices"]').text()).toBe('sda')
     // 卷空间阈值只有一个形态（空闲百分比），标签必须点明「空闲百分比」，避免与使用率口径混淆。
     expect(valueText(wrapper, 'thresholds.volume_free_pct')).toBe('10%')
     expect(wrapper.text()).toContain('卷剩余空间阈值（空闲百分比）')
   })
 
-  it('空数组字段按契约语义展示（watch_paths 默认路径 / devices 全部物理盘），不留空值', async () => {
+  it('空数组字段按契约语义展示（devices 全部物理盘），不留空值', async () => {
     const { wrapper, store } = await mountTab({ config: makeSysmonConfig() })
 
-    expect(valueText(wrapper, 'disk.watch_paths')).toContain('默认关注路径')
     expect(valueText(wrapper, 'disk.devices')).toBe('全部物理盘')
     // max_bytes=0 表示不限制（不是 0 B）
     store.applyConfig(makeSysmonConfig({ history: { max_bytes: 0 } }))
@@ -183,16 +180,16 @@ describe('SysmonConfigTab 编辑与保存（#81，仅 admin）', () => {
 
   it('多行文本 → 数组整体替换（去空白/空行）；布尔字段单独下发', async () => {
     vi.mocked(sysmonApi.setConfig).mockResolvedValue({ ok: true })
-    const { wrapper } = await mountTab({ config: makeSysmonConfig({ disk: { watch_paths: ['/data'] } }) })
+    const { wrapper } = await mountTab({ config: makeSysmonConfig() })
 
-    await wrapper.find('[data-test="sysmon-config-input-disk.watch_paths"]')
-      .setValue('/data\n /var/lib \n\n/logs')
+    await wrapper.find('[data-test="sysmon-config-input-disk.devices"]')
+      .setValue('sda\n sdb \n\nnvme0n1')
     await wrapper.find('[data-test="sysmon-config-input-network.hide_virtual"]').setValue(false)
     await wrapper.find('[data-test="sysmon-config-save"]').trigger('click')
     await flushPromises()
 
     expect(sysmonApi.setConfig).toHaveBeenCalledWith({
-      disk: { watch_paths: ['/data', '/var/lib', '/logs'] },
+      disk: { devices: ['sda', 'sdb', 'nvme0n1'] },
       network: { hide_virtual: false },
     })
   })

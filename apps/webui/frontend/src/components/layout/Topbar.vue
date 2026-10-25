@@ -108,8 +108,7 @@ const alertsTitle = computed<string>(() => {
 
 /**
  * 各盘徽章（#75）：卷集合与顺序全部由快照驱动，不硬编码盘符或数量。
- * 顺序与监控页同源（store 按使用率降序，`#122`），关注卷（watched=true）额外高亮
- * （topbar__resource--watched）。
+ * 顺序与监控页同源（store 按使用率降序，`#122`）。
  * 单个卷 available=false 显示「不可用」，标题带原因 —— 不得用 0 冒充（契约 sysmon §2.4）。
  * 无容量挂载的折叠是监控页正文列表的显示行为（`#122`），顶栏仍逐个给徽章——顶栏是全局
  * 常驻条，这里不能省略「存在但读不到」这一事实。
@@ -119,7 +118,6 @@ interface DiskBadge {
   label: string
   text: string
   stateClass: string
-  watched: boolean
   title: string
 }
 
@@ -146,7 +144,6 @@ const diskBadges = computed<DiskBadge[]>(() => {
         label: shortMountLabel(volume.mount),
         text: '不可用',
         stateClass: 'topbar__resource--unavailable',
-        watched: volume.watched,
         title: volume.reason
           ? `${volume.mount} 卷不可用: ${volume.reason}`
           : `${volume.mount} 卷不可用`,
@@ -160,7 +157,6 @@ const diskBadges = computed<DiskBadge[]>(() => {
         label: shortMountLabel(volume.mount),
         text: '不可用',
         stateClass: 'topbar__resource--unavailable',
-        watched: volume.watched,
         title: `${volume.mount} 卷使用率不可用`,
       }
     }
@@ -175,8 +171,7 @@ const diskBadges = computed<DiskBadge[]>(() => {
       label: shortMountLabel(volume.mount),
       text: `${percent}%`,
       stateClass,
-      watched: volume.watched,
-      title: `${volume.mount} 使用率 ${percent}%${volume.watched ? '（关注卷）' : ''}`,
+      title: `${volume.mount} 使用率 ${percent}%`,
     }
   })
 })
@@ -245,13 +240,12 @@ const diskBadges = computed<DiskBadge[]>(() => {
           <span class="res-label">ALERT</span>
           <span class="res-value">{{ alertCount }}</span>
         </span>
-        <!-- 各盘徽章：卷集合 / 顺序完全由快照驱动，不硬编码盘符或数量；
-             关注卷额外加 --watched 高亮 -->
+        <!-- 各盘徽章：卷集合 / 顺序完全由快照驱动，不硬编码盘符或数量 -->
         <span
           v-for="badge in diskBadges"
           :key="badge.mount"
           class="topbar__resource topbar__resource--disk"
-          :class="[badge.stateClass, { 'topbar__resource--watched': badge.watched }]"
+          :class="badge.stateClass"
           :data-mount="badge.mount"
           :title="badge.title"
         >
@@ -294,10 +288,5 @@ const diskBadges = computed<DiskBadge[]>(() => {
 /* 指标不可用 / 快照未到达：中性色，不得用状态色或 0 冒充数据 */
 .topbar__resource--unavailable .res-value {
   color: var(--text-tertiary);
-}
-
-/* 关注卷徽章（#75）：标签用警示色 token 高亮，与数值状态色区分（不硬编码颜色） */
-.topbar__resource--watched .res-label {
-  color: var(--status-warning-default);
 }
 </style>

@@ -343,40 +343,5 @@ TEST_F(ConfigTest, RuntimePatchOnLegacySectionNameIsIgnored) {
     EXPECT_DOUBLE_EQ(store.current()["thresholds"]["memory_used_pct"].get<double>(), 42.0);
 }
 
-// #75：`disk.watch_paths` 是关注路径的配置来源（契约 sysmon §3.1）。
-// 这两个用例锁定「配置非空则以其为准、为空则回退默认路径」的契约分支；
-// 默认值（空数组）也必须能从默认配置生成出来，否则运行期永远走不到配置分支。
-TEST_F(ConfigTest, DiskWatchPathsDefaultToEmptyMeaningRealDefaults) {
-    generate_default_config(cfg_path_);
-    const auto cfg = load_config(cfg_path_);
-    const auto typed = cfg.get<dztrader::platform::SysmonConfig>();
-
-    // 默认值为空数组：表示"使用默认关注路径（共享内存目录与数据库目录）"，
-    // 语义见契约 sysmon §3.1 —— 不是"不监控任何路径"。
-    EXPECT_TRUE(typed.disk.watch_paths.empty());
-    EXPECT_TRUE(typed.disk.devices.empty());
-}
-
-TEST_F(ConfigTest, DiskWatchPathsRoundTripThroughSetPatch) {
-    generate_default_config(cfg_path_);
-    SysmonConfigStore store(cfg_path_, load_config(cfg_path_));
-
-    // 运行期配置非空关注路径：必须持久化并在内存镜像里生效（#81 的前置能力）。
-    store.set_patch(
-        nlohmann::json{{"disk", {{"watch_paths", nlohmann::json::array({"/srv/a", "/srv/b"})}}}});
-    EXPECT_EQ(store.current()["disk"]["watch_paths"], nlohmann::json::array({"/srv/a", "/srv/b"}));
-
-    // 重新加载（模拟进程重启）后仍在：配置是真源，不依赖进程内存。
-    const auto reloaded = load_config(cfg_path_);
-    const auto typed = reloaded.get<dztrader::platform::SysmonConfig>();
-    ASSERT_EQ(typed.disk.watch_paths.size(), 2U);
-    EXPECT_EQ(typed.disk.watch_paths[0], "/srv/a");
-    EXPECT_EQ(typed.disk.watch_paths[1], "/srv/b");
-
-    // 空元素非法（契约 sysmon §3.1：元素非空）。
-    EXPECT_THROW(store.set_patch(nlohmann::json{{"disk", {{"watch_paths", {""}}}}}),
-                 std::runtime_error);
-}
-
 }  // namespace
 }  // namespace dztrader::sysmon

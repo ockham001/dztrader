@@ -1,10 +1,9 @@
 // 测试夹具：契约 sysmon 快照（SysmonSnapshot）。
 // 默认形状 = #77 落地后的后端：system / cpu.total / cpu.cores / cpu.load_average /
 // cpu.context_switches / memory / swap / volumes / disk_io / shm_dir 可用（每核 16 个、Linux 真实负载、
-// 速率有值、内存 32 GiB + 缓存/缓冲、交换 8 GiB、三个卷其中 /data 为关注卷、
+// 速率有值、内存 32 GiB + 缓存/缓冲、交换 8 GiB、三个卷、
 // 磁盘 I/O 两块盘、共享内存目录占用有值），其余指标不可用（温度按 Linux 无传感器理由 no_sensor、
 // 每核频率按无 cpufreq 理由 unsupported，network 默认不可用 —— 网卡由 network 选项显式给）。
-// watch_paths 默认给共享内存目录与数据库目录两条（落卷 /data）；
 // resourceData=true 时额外填充网卡数据并标记 network 可用（volumes / disk_io / shm_dir 默认已可用），
 // 用于「全部可用」渲染用例；sensorData=true 时额外填充温度 / 每核频率并标记可用。
 // network 选项可显式给网卡数组（含虚拟网卡 / 空数组 = 全部被 hide_virtual 滤掉 / null = 本帧未采集）；
@@ -25,7 +24,6 @@ import type {
   SysmonSwapInfo,
   SysmonTemperatureInfo,
   SysmonVolumeInfo,
-  SysmonWatchPathInfo,
 } from '@/types/generated'
 
 export const SYSMON_METRIC_KEYS = [
@@ -55,10 +53,8 @@ export interface SysmonSnapshotOptions {
   memory?: SysmonMemoryInfo | null
   /** 交换对象；默认 {total: 8 GiB, used: 2 GiB, ratio: 0.25}，null = 本帧未采集，total_bytes=0 = 无交换分区 */
   swap?: SysmonSwapInfo | null
-  /** 卷数组；默认 3 个卷（`/` 40% / `/data` 关注卷 25% / `/home` 62%），null = 本帧未采集（能力粘性） */
+  /** 卷数组；默认 3 个卷（`/` 40% / `/data` 25% / `/home` 62%），null = 本帧未采集（能力粘性） */
   volumes?: SysmonVolumeInfo[] | null
-  /** 关注路径落卷解析；默认共享内存目录与数据库目录两条（均落 /data），null = 本帧未采集 */
-  watchPaths?: SysmonWatchPathInfo[] | null
   /** 共享内存目录占用；默认 {path: /srv/dztrader/shm, 720 MiB, 12 页文件, 最旧 480s}，null = 本帧未采集 */
   shmDir?: SysmonShmDirInfo | null
   /** 磁盘 I/O；默认两块盘（#76 后端形状），null = 本帧未采集（能力粘性） */
@@ -124,20 +120,14 @@ const DEFAULT_SWAP: SysmonSwapInfo = {
 }
 
 /**
- * 默认卷（#75 后端形状）：/ 40% 非关注、/data 25% 关注（承载 shm 与 db 目录）、/home 62% 非关注。
+ * 默认卷（#75 后端形状）：/ 40%、/data 25%（承载 shm 与 db 目录）、/home 62%。
  * 顺序刻意与使用率不同（payload 顺序 /、/data、/home），用于验证前端按使用率降序重排
  * 而不是依赖发送端顺序（#122）。
  */
 const DEFAULT_VOLUMES: SysmonVolumeInfo[] = [
-  { mount: '/', watched: false, available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
-  { mount: '/data', watched: true, available: true, total_bytes: 1024 * GIB, used_bytes: 256 * GIB, used_ratio: 0.25 },
-  { mount: '/home', watched: false, available: true, total_bytes: 50 * GIB, used_bytes: 31 * GIB, used_ratio: 0.62 },
-]
-
-/** 默认关注路径（#75）：共享内存目录与数据库目录，均落 /data（契约 sysmon §2.4） */
-const DEFAULT_WATCH_PATHS: SysmonWatchPathInfo[] = [
-  { path: '/srv/dztrader/shm', mount: '/data', available: true },
-  { path: '/srv/dztrader/db', mount: '/data', available: true },
+  { mount: '/', available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
+  { mount: '/data', available: true, total_bytes: 1024 * GIB, used_bytes: 256 * GIB, used_ratio: 0.25 },
+  { mount: '/home', available: true, total_bytes: 50 * GIB, used_bytes: 31 * GIB, used_ratio: 0.62 },
 ]
 
 /** 默认共享内存目录占用（#75）：720 MiB / 12 个页文件 / 最旧页文件 480s */
@@ -305,7 +295,7 @@ export function makeSysmonConfig(overrides: SysmonConfigOverrides = {}): SysmonC
       },
       ...overrides.sampling,
     },
-    disk: { watch_paths: [], devices: [], ...overrides.disk },
+    disk: { devices: [], ...overrides.disk },
     network: { hide_virtual: true, ...overrides.network },
     history: {
       enabled: true,
@@ -420,9 +410,6 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
     volumes: options.volumes !== undefined
       ? options.volumes
       : DEFAULT_VOLUMES.map(volume => ({ ...volume })),
-    watch_paths: options.watchPaths !== undefined
-      ? options.watchPaths
-      : DEFAULT_WATCH_PATHS.map(watchPath => ({ ...watchPath })),
     disk_io: options.diskIo !== undefined
       ? options.diskIo
       : DEFAULT_DISK_IO.map(entry => ({ ...entry })),
