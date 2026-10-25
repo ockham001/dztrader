@@ -2,28 +2,36 @@
 # wait-ci.sh — 静默等待 GitHub CI，只在状态变化时输出
 #
 # 避免 gh run watch 每次刷新把整棵 job 树刷进上下文；失败时只打印失败项和链接。
-# 本仓库推 main 时没有 PR，用 --sha / --run；有 PR 时仍可直接传 PR 号。
+# **本仓 CI 的触发条件**：ci.yml 只在 `pull_request` 与 push 到 `main` 时运行；
+# feature 分支只 push 不开 PR 时**永远不会有 run**——`--sha` 会在 180s 内报错退出，
+# 而不是像以前那样空等到 60 分钟总超时。
 #
 # 用法:
-#   ./scripts/wait-ci.sh <pr-number>          # 等 PR checks
-#   ./scripts/wait-ci.sh --sha <commit-sha>   # 等该 commit 的最新 run
+#   ./scripts/wait-ci.sh <pr-number>          # 等 PR checks（推荐；closeout §4）
+#   ./scripts/wait-ci.sh --sha <commit-sha>   # 等该 commit 的最新 run（无 run 时 ~180s 失败）
 #   ./scripts/wait-ci.sh --run <run-id|url>   # 等指定 run
-#   以上均可加 --interval <seconds>（默认 60）
+#   ./scripts/wait-ci.sh --branch <branch>    # 等该分支的最新 run（main 合并后用）
+#   以上均可加 --interval <seconds>（默认 60）、--fail-on-cancel（把 cancelled 当失败）
 #
 # 环境变量:
-#   GH                  gh 可执行路径（默认 gh，缺失时回退 ~/.local/bin/gh）
-#   WAIT_CI_TIMEOUT     总超时秒数（默认 3600）
-#   WAIT_CI_INTERVAL    轮询间隔秒数（默认 60；--interval 覆盖）
+#   GH                        gh 可执行路径（默认 gh，缺失时回退 ~/.local/bin/gh）
+#   WAIT_CI_TIMEOUT           总超时秒数（默认 3600）
+#   WAIT_CI_INTERVAL          轮询间隔秒数（默认 60；--interval 覆盖）
+#   WAIT_CI_APPEAR_TIMEOUT    等 run 出现的超时秒数（默认 180；用于 --sha/--branch）
+#   WAIT_CI_HEARTBEAT         心跳输出间隔秒数（默认 300；长时间等待时提示仍在等）
 #
-# 退出码: 0=全部通过, 1=有失败/取消, 2=超时或 gh 不可用
+# 退出码: 0=全部通过, 1=有失败（--fail-on-cancel 时取消也算）, 2=超时/无 run/参数或环境错误
 
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODE=""      # pr | run | sha
+MODE=""      # pr | run | sha | branch
 TARGET=""
 INTERVAL="${WAIT_CI_INTERVAL:-60}"
 TIMEOUT="${WAIT_CI_TIMEOUT:-3600}"
+APPEAR_TIMEOUT="${WAIT_CI_APPEAR_TIMEOUT:-180}"
+HEARTBEAT="${WAIT_CI_HEARTBEAT:-300}"
+FAIL_ON_CANCEL=0
 
 usage() {
     sed -n '2,/^$/p' "$0"
@@ -36,6 +44,8 @@ while [ $# -gt 0 ]; do
         --run) MODE=run; TARGET="${2:?--run needs a run id}"; shift 2 ;;
         --sha|--commit) MODE=sha; TARGET="${2:?$1 needs a commit sha}"; shift 2 ;;
         --pr) MODE=pr; TARGET="${2:?--pr needs a number}"; shift 2 ;;
+        --branch) MODE=branch; TARGET="${2:?--branch needs a branch name}"; shift 2 ;;
+        --fail-on-cancel) FAIL_ON_CANCEL=1; shift ;;
         -*) echo "error: unknown option: $1" >&2; usage >&2; exit 2 ;;
         *)
             if [ -z "$MODE" ]; then
@@ -56,16 +66,16 @@ if [ -z "$MODE" ]; then
     exit 2
 fi
 
-case "$INTERVAL" in
-    ''|*[!0-9]*) echo "error: interval must be an integer" >&2; exit 2 ;;
-esac
-if [ "$INTERVAL" -lt 1 ]; then
-    echo "error: interval must be >= 1" >&2
+for name in INTERVAL TIMEOUT APPEAR_TIMEOUT HEARTBEAT; do
+    value="${!name}"
+    case "$value" in
+        ''|*[!0-9]*) echo "error: $name must be an integer (got: $value)" >&2; exit 2 ;;
+    esac
+done
+if [ "$INTERVAL" -lt 1 ] || [ "$HEARTBEAT" -lt 1 ]; then
+    echo "error: interval/heartbeat must be >= 1" >&2
     exit 2
 fi
-case "$TIMEOUT" in
-    ''|*[!0-9]*) echo "error: WAIT_CI_TIMEOUT must be an integer" >&2; exit 2 ;;
-esac
 
 GH_BIN="${GH:-gh}"
 if ! command -v "$GH_BIN" >/dev/null 2>&1; then
@@ -90,6 +100,7 @@ if [ "$gh_cache_ok" -eq 0 ] && [ -z "${XDG_CACHE_HOME:-}" ]; then
 fi
 
 START=$(date +%s)
+NEXT_HEARTBEAT=$((START + HEARTBEAT))
 LAST=""
 EMPTY_COUNT=0
 
@@ -99,6 +110,17 @@ check_timeout() {
     if [ $((now - START)) -ge "$TIMEOUT" ]; then
         echo "wait-ci: timeout after ${TIMEOUT}s; last status: ${LAST:-unknown}" >&2
         exit 2
+    fi
+}
+
+# 长时间无状态变化时打一行心跳，避免 agent 误以为卡死。
+maybe_heartbeat() {
+    local now
+    now=$(date +%s)
+    if [ "$now" -ge "$NEXT_HEARTBEAT" ]; then
+        printf 'wait-ci: still waiting (%sm elapsed, last: %s)\n' \
+            "$(((now - START) / 60))" "${LAST:-unknown}"
+        NEXT_HEARTBEAT=$((now + HEARTBEAT))
     fi
 }
 
@@ -126,17 +148,30 @@ wait_pr() {
             fi
         else
             EMPTY_COUNT=0
-            local summary
+            local summary summary_changed=0
             summary="$(printf '%s\n' "$out" | awk -F '\t' '{printf "%s=%s ", $1, $2}')"
             if [ "$summary" != "$LAST" ]; then
                 printf '[%s] %s\n' "$(date +%H:%M:%S)" "$summary"
                 LAST="$summary"
+                summary_changed=1
             fi
 
-            local failed
-            failed="$(printf '%s\n' "$out" | awk -F '\t' '$2 == "fail" || $2 == "cancel" {print}')"
+            # cancelled 的 check 通常是「同一分支新 push 取代了旧 run」，不是失败：
+            # 默认继续等新 check；--fail-on-cancel 才当失败（#77/#78 实测）。
+            local failed superseded=""
+            if [ "$FAIL_ON_CANCEL" -eq 1 ]; then
+                failed="$(printf '%s\n' "$out" | awk -F '\t' '$2 == "fail" || $2 == "cancel" {print}')"
+            else
+                failed="$(printf '%s\n' "$out" | awk -F '\t' '$2 == "fail" {print}')"
+                superseded="$(printf '%s\n' "$out" | awk -F '\t' '$2 == "cancel" {print}')"
+                if [ -n "$superseded" ] && [ "$summary_changed" -eq 1 ]; then
+                    printf '%s\n' "$superseded" | while IFS=$'\t' read -r name _bucket link; do
+                        printf 'SUPERSEDED: %s | %s\n' "$name" "$link"
+                    done
+                fi
+            fi
             if [ -n "$failed" ]; then
-                printf '%s\n' "$failed" | while IFS=$'\t' read -r name bucket link; do
+                printf '%s\n' "$failed" | while IFS=$'\t' read -r name _bucket link; do
                     printf 'FAILED: %s | %s\n' "$name" "$link"
                 done
                 exit 1
@@ -145,13 +180,20 @@ wait_pr() {
             local pending
             pending="$(printf '%s\n' "$out" | awk -F '\t' '$2 == "pending" {c++} END {print c+0}')"
             if [ "$pending" -eq 0 ]; then
-                echo "CI green: PR #$pr"
-                exit 0
+                if [ -n "$superseded" ]; then
+                    # 只有被取代的旧 check、没有 pending：等新 run 的 check 出现后再判绿。
+                    [ "$summary_changed" -eq 1 ] &&
+                        echo "wait-ci: only superseded checks remain; waiting for the newer run's checks..." >&2
+                else
+                    echo "CI green: PR #$pr"
+                    exit 0
+                fi
             fi
         fi
 
         check_timeout
         sleep "$INTERVAL"
+        maybe_heartbeat
     done
 }
 
@@ -190,6 +232,17 @@ wait_run() {
                         echo "CI green: run $run_id"
                         exit 0
                         ;;
+                    cancelled)
+                        if [ "$FAIL_ON_CANCEL" -eq 1 ]; then
+                            print_failed_jobs "$run_id"
+                            echo "CI failed: run $run_id conclusion=cancelled (--fail-on-cancel)" >&2
+                            exit 1
+                        fi
+                        # 显式指定的 run 被取消，一般是被同分支更新的 run 取代；
+                        # 提示改用 --branch/--pr 去等取代它的新 run，避免对着旧 run 空等。
+                        echo "wait-ci: run $run_id was cancelled (superseded); use --branch/--pr to wait for the newer run, or --fail-on-cancel to treat it as failure" >&2
+                        exit 2
+                        ;;
                     *)
                         print_failed_jobs "$run_id"
                         echo "CI failed: run $run_id conclusion=$conclusion" >&2
@@ -201,7 +254,20 @@ wait_run() {
 
         check_timeout
         sleep "$INTERVAL"
+        maybe_heartbeat
     done
+}
+
+# 最多等 APPEAR_TIMEOUT 秒让 run 出现；等不到说明触发条件不满足（典型：feature 分支没开 PR）。
+await_appear_or_die() {
+    local waited="$1"
+    local what="$2"
+    if [ "$waited" -ge "$APPEAR_TIMEOUT" ]; then
+        echo "error: no CI run for $what after ${APPEAR_TIMEOUT}s" >&2
+        echo "hint: ci.yml runs only on pull_request and push-to-main; a feature branch push without a PR never starts CI" >&2
+        echo "hint: open the PR first (docs/agents/ticket-closeout.md §4), then rerun wait-ci" >&2
+        exit 2
+    fi
 }
 
 wait_sha() {
@@ -213,7 +279,7 @@ wait_sha() {
         exit 2
     fi
 
-    local announced=0
+    local announced=0 waited=0
     while :; do
         local rid=""
         rid="$("$GH_BIN" run list --commit "$full_sha" --limit 10 \
@@ -224,11 +290,40 @@ wait_sha() {
             return
         fi
         if [ "$announced" -eq 0 ]; then
-            echo "wait-ci: no run for $full_sha yet; waiting..."
+            echo "wait-ci: no run for $full_sha yet; waiting up to ${APPEAR_TIMEOUT}s for one to appear..." >&2
             announced=1
         fi
+        await_appear_or_die "$waited" "commit $full_sha"
         check_timeout
         sleep "$INTERVAL"
+        waited=$((waited + INTERVAL))
+        maybe_heartbeat
+    done
+}
+
+wait_branch() {
+    local branch="$1"
+    local announced=0 waited=0
+    while :; do
+        local rid=""
+        # 优先取仍在跑的 run（被取代的旧 run 用 cancelled 表示），没有则取最新一个。
+        rid="$("$GH_BIN" run list --branch "$branch" --limit 20 \
+            --json databaseId,status \
+            --jq '([.[] | select(.status != "completed")][0].databaseId) // (.[0].databaseId) // empty' 2>/dev/null || true)"
+        if [ -n "$rid" ]; then
+            echo "wait-ci: found run $rid for branch $branch"
+            wait_run "$rid"
+            return
+        fi
+        if [ "$announced" -eq 0 ]; then
+            echo "wait-ci: no run for branch $branch yet; waiting up to ${APPEAR_TIMEOUT}s for one to appear..." >&2
+            announced=1
+        fi
+        await_appear_or_die "$waited" "branch $branch"
+        check_timeout
+        sleep "$INTERVAL"
+        waited=$((waited + INTERVAL))
+        maybe_heartbeat
     done
 }
 
@@ -241,4 +336,5 @@ case "$MODE" in
         wait_run "${TARGET##*/}"
         ;;
     sha) wait_sha "$TARGET" ;;
+    branch) wait_branch "$TARGET" ;;
 esac
