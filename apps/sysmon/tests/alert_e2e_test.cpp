@@ -4,7 +4,7 @@
  *
  * 纯函数单测（`thresholds_test`）已经覆盖进入/重记/恢复的完整语义与日志记录内容；
  * 本用例补的是**进程接线与外部承诺**：真实 `dzsysmon` 在内存持续越限的情况下，事件通道上
- * 一条资源类 `NOTIFY_UI` 都不出现，快照也不携带活动告警集合。
+ * 一条资源类 `NOTIFY_UI` 都不出现，快照也不携带已删除的 `alerts` 字段。
  *
  * **不断言日志文件内容**：日志 sink 的 flush 策略与按日滚动使文件读取脆弱，日志内容由单测
  * 覆盖；这里只验证「不弹窗」这个用户可感知的承诺（ADR 0034）。
@@ -14,7 +14,7 @@
  *    必须收到快照，但**收不到** `NOTIFY_UI`；
  * 2. 发 `SET_SYSMON_CONFIG` 改阈值（触发一个真实的状态跃迁）→ 仍然收不到 `NOTIFY_UI`，
  *    且回推的配置里 `thresholds.memory_used_pct` 已生效；
- * 3. `QUERY_FULL_SNAPSHOT` 重推快照 → `alerts[]` 恒为空（不再有活动状态投影）。
+ * 3. `QUERY_FULL_SNAPSHOT` 重推快照 → 快照不含 `alerts` 字段（#125 已删除；发送方义务）。
  *
  * 信号量与事件通道是机器全局命名空间，与 dev 栈/并行测试互扰：检测到占用时默认
  * GTEST_SKIP，`DZ_SYSMON_E2E_STRICT=1` 时 FAIL（与既有 sysmon e2e 同约定）。该用例 RUN_SERIAL。
@@ -267,10 +267,8 @@ TEST_F(AlertE2ETest, ResourceThresholdBreachNeverProducesNotifyUi) {
     const auto first = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s);
     ASSERT_TRUE(first.has_value()) << "dzsysmon did not push the startup snapshot";
     EXPECT_EQ(platform::SysmonSnapshot::validate(*first), std::nullopt);
-    // 启动即越限（阈值 0），但快照不再携带活动告警集合（#123 起状态只在日志里）。
-    ASSERT_TRUE((*first)["alerts"].is_array());
-    EXPECT_TRUE((*first)["alerts"].empty())
-        << "resource thresholds must not project an active alert set into the snapshot";
+    // 启动即越限（阈值 0），但快照不含已删除的 alerts 字段（#125；状态只在日志里）。
+    EXPECT_FALSE((*first).contains("alerts")) << "snapshot must not carry the removed alerts field";
 
     // 2) 内存持续越限跨过多个计量 tick：期间不得出现任何 NOTIFY_UI。
     //    等待窗口显著长于 measure_interval_ms，确保旧实现的"启动即弹"必然被捕获。
@@ -290,14 +288,13 @@ TEST_F(AlertE2ETest, ResourceThresholdBreachNeverProducesNotifyUi) {
     EXPECT_FALSE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 3s).has_value())
         << "threshold recovery produced a NOTIFY_UI frame (must be log-only)";
 
-    // 4) 全量快照查询：仍不携带活动告警。
+    // 4) 全量快照查询：仍不含已删除的 alerts 字段。
     pending_.clear();
     ASSERT_TRUE(query_full_snapshot());
     const auto after = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 10s);
     ASSERT_TRUE(after.has_value()) << "QUERY_FULL_SNAPSHOT must re-push the snapshot";
     EXPECT_EQ(platform::SysmonSnapshot::validate(*after), std::nullopt);
-    ASSERT_TRUE((*after)["alerts"].is_array());
-    EXPECT_TRUE((*after)["alerts"].empty());
+    EXPECT_FALSE((*after).contains("alerts"));
 }
 
 // 旧格式配置（`alerts` 段）必须能启动并迁移为新形状：现网配置文件直接报错会让进程起不来。

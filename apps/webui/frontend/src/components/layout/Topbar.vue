@@ -2,8 +2,9 @@
 import { computed, onMounted } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import ThemeDropdown from './ThemeDropdown.vue'
+import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
 import { useWebSocket } from '@/composables/wsClient'
-import { sysmonAlertLabel, useSysmonStore } from '@/stores/sysmon'
+import { useSysmonStore } from '@/stores/sysmon'
 
 const emit = defineEmits<{ toggleMobile: [] }>()
 
@@ -32,9 +33,6 @@ const connStatus = computed<{ text: string; dotClass: string }>(() => {
 const sysmon = useSysmonStore()
 onMounted(() => { void sysmon.init() })
 
-const RESOURCE_WARN_RATIO = 0.7
-const RESOURCE_DANGER_RATIO = 0.9
-
 interface ResourceBadge {
   text: string
   stateClass: string
@@ -60,11 +58,8 @@ const cpuBadge = computed<ResourceBadge>(() => {
     }
   }
   const percent = Math.round(sysmon.cpuUsageRatio * 100)
-  const stateClass = sysmon.cpuUsageRatio >= RESOURCE_DANGER_RATIO
-    ? 'topbar__resource--danger'
-    : sysmon.cpuUsageRatio >= RESOURCE_WARN_RATIO
-      ? 'topbar__resource--warn'
-      : 'topbar__resource--normal'
+  // 状态色与监控页卷列表共用 resourceLevel（含边界），不在此处各自比较阈值
+  const stateClass = `topbar__resource--${resourceLevel(sysmon.cpuUsageRatio)}`
   return { text: `${percent}%`, stateClass, title: `CPU 使用率 ${percent}%` }
 })
 
@@ -88,22 +83,8 @@ const memBadge = computed<ResourceBadge>(() => {
     }
   }
   const percent = Math.round(ratio * 100)
-  const stateClass = ratio >= RESOURCE_DANGER_RATIO
-    ? 'topbar__resource--danger'
-    : ratio >= RESOURCE_WARN_RATIO
-      ? 'topbar__resource--warn'
-      : 'topbar__resource--normal'
+  const stateClass = `topbar__resource--${resourceLevel(ratio)}`
   return { text: `${percent}%`, stateClass, title: `内存使用率 ${percent}%` }
-})
-
-/**
- * 阈值告警（#80）：活动告警的全局常驻徽章。数据源是快照 `alerts[]` 的持续状态（不是通知历史），
- * 冷却期内通知被抑制时仍在；详情在资源监控页，这里只给数量与类型摘要（顶栏窄条）。
- */
-const alertCount = computed<number>(() => sysmon.activeAlerts.length)
-const alertsTitle = computed<string>(() => {
-  const labels = sysmon.activeAlerts.map(alert => sysmonAlertLabel(alert))
-  return `资源告警 ${alertCount.value} 项：${labels.join('、')}（详见资源监控页）`
 })
 
 /**
@@ -118,6 +99,8 @@ interface DiskBadge {
   label: string
   text: string
   stateClass: string
+  /** 使用率展示等级（与监控页卷列表共用 resourceLevel 的同一结论）；不可用卷为 null，不套色标 */
+  level: ResourceLevel | null
   title: string
 }
 
@@ -144,6 +127,7 @@ const diskBadges = computed<DiskBadge[]>(() => {
         label: shortMountLabel(volume.mount),
         text: '不可用',
         stateClass: 'topbar__resource--unavailable',
+        level: null,
         title: volume.reason
           ? `${volume.mount} 卷不可用: ${volume.reason}`
           : `${volume.mount} 卷不可用`,
@@ -157,20 +141,18 @@ const diskBadges = computed<DiskBadge[]>(() => {
         label: shortMountLabel(volume.mount),
         text: '不可用',
         stateClass: 'topbar__resource--unavailable',
+        level: null,
         title: `${volume.mount} 卷使用率不可用`,
       }
     }
     const percent = Math.round(ratio * 100)
-    const stateClass = ratio >= RESOURCE_DANGER_RATIO
-      ? 'topbar__resource--danger'
-      : ratio >= RESOURCE_WARN_RATIO
-        ? 'topbar__resource--warn'
-        : 'topbar__resource--normal'
+    const level = resourceLevel(ratio)
     return {
       mount: volume.mount,
       label: shortMountLabel(volume.mount),
       text: `${percent}%`,
-      stateClass,
+      stateClass: `topbar__resource--${level}`,
+      level,
       title: `${volume.mount} 使用率 ${percent}%`,
     }
   })
@@ -230,23 +212,15 @@ const diskBadges = computed<DiskBadge[]>(() => {
           <span class="res-label">MEM</span>
           <span class="res-value">{{ memBadge.text }}</span>
         </span>
-        <!-- 阈值告警（#80）：有活动告警时全局常驻，避免用户错过唯一一次弹窗后失去线索 -->
-        <span
-          v-if="alertCount > 0"
-          class="topbar__resource topbar__resource--alerts topbar__resource--danger"
-          id="resAlerts"
-          :title="alertsTitle"
-        >
-          <span class="res-label">ALERT</span>
-          <span class="res-value">{{ alertCount }}</span>
-        </span>
-        <!-- 各盘徽章：卷集合 / 顺序完全由快照驱动，不硬编码盘符或数量 -->
+        <!-- 各盘徽章：卷集合 / 顺序完全由快照驱动，不硬编码盘符或数量；
+             data-level 与监控页卷列表同源（共享 resourceLevel），供跨组件同一结论断言 -->
         <span
           v-for="badge in diskBadges"
           :key="badge.mount"
           class="topbar__resource topbar__resource--disk"
           :class="badge.stateClass"
           :data-mount="badge.mount"
+          :data-level="badge.level ?? undefined"
           :title="badge.title"
         >
           <span class="res-label">{{ badge.label }}</span>

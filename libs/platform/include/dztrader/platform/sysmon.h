@@ -90,18 +90,9 @@ inline constexpr const char* SYSMON_GROUP_SWAP = "swap";
 inline constexpr const char* SYSMON_GROUP_TEMPERATURE = "temperature";
 inline constexpr const char* SYSMON_GROUP_CPU_FREQUENCY = "cpu_frequency";
 
-// ===== 快照 `alerts[]` 的 kind（契约 sysmon §2.8 旧形态；随 #125 删除该字段一并移除）=====
-// 发送方（dzsysmon）与消费方（dzweb/前端）共用本集合。
-// 与下方 `SYSMON_THRESHOLD_*` 字面量相同但**刻意不合并**：前者是**协议**取值（快照字段的
-// 线上形状，dzweb 据它校验），后者是**日志**里的判定对象标识（不进协议）。合并会让"改日志
-// 用词"连带改掉协议校验。本集合只在 #123 到 #125 这一个提交周期内存在，随字段一起删除。
-inline constexpr const char* SYSMON_ALERT_MEMORY_USED = "memory_used";
-inline constexpr const char* SYSMON_ALERT_SWAP_USED = "swap_used";
-inline constexpr const char* SYSMON_ALERT_VOLUME_FREE = "volume_free";
-
 // ===== 阈值越限判定对象 kind（契约 sysmon §2.8；#123）=====
-// 日志记录里的稳定取值，**不进快照、不构成协议语义**（ADR 0034）。比快照 alerts[] 多
-// `cpu_saturated`：CPU 饱和从来只在 UI 标红、不发通知，改日志后它成为一等判定对象。
+// 日志记录里的稳定取值，**不进快照、不构成协议语义**（ADR 0034）。`cpu_saturated` 只出现
+// 在日志与 UI 色标里：CPU 饱和从来不发通知，改日志后它也成了一等判定对象。
 inline constexpr const char* SYSMON_THRESHOLD_MEMORY_USED = "memory_used";
 inline constexpr const char* SYSMON_THRESHOLD_SWAP_USED = "swap_used";
 inline constexpr const char* SYSMON_THRESHOLD_VOLUME_FREE = "volume_free";
@@ -380,18 +371,6 @@ struct SysmonShmDirInfo {
         SysmonShmDirInfo, path, total_bytes, page_files, oldest_file_age_sec)
 };
 
-/// 当前活动阈值告警（契约 sysmon §2.8）。
-///
-/// `alerts[]` 是**持续状态**（不是通知历史）：冷却期内被抑制的通知不影响本数组。
-/// `subject` 对 `volume_free` 为挂载点（可与同帧 `volumes[].mount` 直接相等比较），
-/// 其余 kind 为空串；`since` 为该次告警首次满足阈值的墙钟时刻（Unix 秒）。
-struct SysmonAlertInfo {
-    std::string kind;     ///< memory_used / swap_used / volume_free
-    std::string subject;  ///< volume_free 的挂载点；其余 kind 为空串
-    int64_t since = 0;    ///< 该次告警首次满足阈值的时刻（Unix 秒）
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonAlertInfo, kind, subject, since)
-};
-
 /// 单个温度传感器读数（契约 sysmon §2.4；温度为瞬时 gauge，不是累计计数器）。
 struct SysmonTemperatureInfo {
     std::string sensor;    ///< 传感器稳定标识（Linux hwmon：`<name>#<hwmonN>:<label>`）
@@ -455,8 +434,6 @@ struct SysmonSnapshot {
     std::optional<std::vector<SysmonDiskIoInfo>> disk_io;
     std::optional<std::vector<SysmonNetworkInfo>> network;
     std::optional<SysmonShmDirInfo> shm_dir;
-    /// 当前活动阈值告警（契约 sysmon §2.8）；空数组 = 无活动告警（不是"未采集"）。
-    std::vector<SysmonAlertInfo> alerts;
     SysmonAvailability availability;
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonSnapshot,
                                                 source,
@@ -472,7 +449,6 @@ struct SysmonSnapshot {
                                                 disk_io,
                                                 network,
                                                 shm_dir,
-                                                alerts,
                                                 availability)
 
     /// 校验快照 payload（契约 sysmon §校验；general §8）。
