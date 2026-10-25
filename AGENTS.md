@@ -31,6 +31,7 @@
 - **`-Werror` 仅在 Release 生效** —— Debug 下告警可见但不致命，Release 自动升为硬门禁
 - `-Wconversion` 是有意开启的收窄转换检查。`std::chrono duration → int32_t` 等已知噪音面按各文件既有惯例用 `static_cast` 显式收窄，**不要**为了消告警关掉这个选项
 - 单文件编译检查必须用 `/Fo` 输出到临时目录，或直接用 `clangd --check`。**禁止在项目根裸调 `cl`**（会产生 `.obj` / `vc140.pdb` 污染根目录）
+- **MSVC-only 失败 Linux 编译器拦不到**（Windows 头顺序、`SPDLOG_DEBUG` 编译掉致 C4101 等）：`scripts/check_msvc_hazards.py` 已接入 preflight；改 Windows 分支前先读 [build-appendix](docs/agents/build-appendix.md) 的「Windows 编译陷阱」
 
 ### 4. 只能通过 4 个封装脚本驱动构建
 
@@ -190,10 +191,11 @@
 ### 本机沙箱（DSH）
 
 - **每次 bash 调用的 `/tmp` 相互隔离**：跨调用要用的日志/快照写 `.cache/`（已 gitignore），不要写 `/tmp`
-- **等后台作业用 `job_output(wait=true)`，等 CI 用 `./scripts/wait-ci.sh`（前台阻塞）**；不要 `sleep` 轮询
+- **等待规则**：后台作业用 `job_output(wait=true)`；CI 用 `./scripts/wait-ci.sh`（前台阻塞；`--pr`/`--sha`/`--branch`/`--run`，feature 分支没开 PR 时 `--sha` 约 180s 就报错而不是空等）。**异步子代理完成会自动以 `subagent-settled` 通知**，等待期做只读工作（读 diff/拟关闭评论），不要 bash `sleep` 轮询；`wait_agent` 只对 Team 成员有效
+- **门禁命令用 `./scripts/gate.sh build|test|preflight`**：同一 build tree 用 flock 串行、自动导出 ccache 环境、日志落 `.cache/gate/`、返回**真实退出码**。禁止 `cmd 2>&1 | tail`——退出码会被 tail 吞掉，造成假绿（本波 #75/#81 实测）
 - **交接文档写 `.cache/handoff/`**：全局 `handoff` 技能默认写 OS 临时目录（`/tmp`），本沙箱下不可跨会话，必须改写到仓库 `.cache/`
 - `~/.conan2`、`~/.cache/gh`、`~/.npm` 在 workspace-write 下可能只读：`setup.sh` / `build.sh` / `wait-ci.sh` / `ci-log.sh` 已回退到仓库 `.cache/`；仍被拒时再申请一次更高权限，不要反复重试
-- 提交前门禁统一 `./scripts/preflight.sh`；CI 等待/失败日志统一 `./scripts/wait-ci.sh` / `./scripts/ci-log.sh`；push 前统一 `./scripts/check-push-scope.sh <issue>`（含 CI 进行中拒推检查）
+- 提交前门禁统一 `./scripts/preflight.sh`（agent 侧 `./scripts/gate.sh preflight`）；CI 等待/失败日志统一 `./scripts/wait-ci.sh` / `./scripts/ci-log.sh`（失败先用 200KB 的 `last-test-log` artifact 定位，别拉几十 MB job 日志）；push 前统一 `./scripts/check-push-scope.sh <issue>`（含 CI 进行中拒推检查）
 
 ---
 

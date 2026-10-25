@@ -33,13 +33,13 @@
 
 ## C. 提交前（每次 push）
 
-- [ ] `./scripts/preflight.sh` 全绿（日志格式 / clang-format 21.x / 文档链接 / 测试可移植性 / 前端 `type-check` + `lint` + `lint:css` + `vitest` + `gen:types` 新鲜度，一条命令一个结论）——CI linux job 复用同脚本的 C 段（`--c-only`）；首次需先 `./scripts/build.sh` 生成 `node_modules`
-- [ ] `./scripts/build.sh --config release` 通过
-- [ ] `./scripts/test.sh` 全绿（后台 fast 门禁；含冒烟 smoke）；穷举/基准按需 `--label slow` / `--label perf`（Windows `-Label`）
+- [ ] `./scripts/preflight.sh` 全绿（日志格式 / clang-format 21.x / 文档链接（含契约 §N 引用）/ 测试可移植性 / **MSVC hazard lint** / 前端 `type-check` + `lint` + `lint:css` + `vitest` + `gen:types` 新鲜度，一条命令一个结论）——CI linux job 复用同脚本的 C 段（`--c-only`）；首次需先 `./scripts/build.sh` 生成 `node_modules`
+- [ ] `./scripts/build.sh --config release` 通过（agent 侧用 `./scripts/gate.sh build --config release`：同 build tree 串行 + ccache 环境 + 真实退出码；**禁止接 `| tail`**，会把失败吞成 0）
+- [ ] `./scripts/test.sh` 全绿（后台 fast 门禁；含冒烟 smoke）；穷举/基准按需 `--label slow` / `--label perf`（Windows `-Label`）；agent 侧 `./scripts/gate.sh test`
 - [ ] `git status` 干净，改动为小步提交（信息中文，`fix:/feat:/refactor:/docs:/test:/chore:/perf:/style:/build:/ci:` 前缀）
 - [ ] 契约/生成物有改动时 CI 的 Freshness 步骤绿
 
-> 收尾按 [agents/ticket-closeout.md](agents/ticket-closeout.md)：push 后建 PR → `./scripts/wait-ci.sh --pr <n>` **静默等 PR checks** → **合并 PR 后**再关 issue。等待只输出状态变化和失败摘要；失败用 `./scripts/ci-log.sh <run-id>` 只取错误行。不要 `gh run watch` 全量输出，不要 `sleep` 轮询，也不要在同一分支有 CI 在跑时重复 push（会排队/取消，每次 ≈35–40 分钟）。
+> 收尾按 [agents/ticket-closeout.md](agents/ticket-closeout.md)：push 后建 PR → `./scripts/wait-ci.sh --pr <n>` **静默等 PR checks** → **合并 PR 后**再关 issue。等待只输出状态变化和失败摘要；失败用 `./scripts/ci-log.sh <run-id>` 只取错误行（优先取 200KB 的 `last-test-log` artifact）。不要 `gh run watch` 全量输出，不要 `sleep` 轮询，也不要在同一分支有 CI 在跑时重复 push（会排队/取消，每次 ≈35–40 分钟）。
 
 > 若某项门禁**当前未在你的改动上跑**（例如只改了一个 `.vue` 但改了全局样式），
 > 请人工确认它确无跨层影响——机器门禁覆盖不到的正是这类"看似局部其实全局"的改动。

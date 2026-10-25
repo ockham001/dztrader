@@ -12,7 +12,7 @@ agent 会话可能跑在 workspace-write 沙箱里：只有仓库目录可写，
 
 - **`/tmp` 每次 bash 调用隔离**：跨调用要用的日志/快照写 `.cache/`（仓库已 gitignore），不要写 `/tmp`
 - **Conan 缓存**：默认 `~/.conan2`；不可写时 `scripts/setup.sh` 自动回退 `CONAN_HOME=<repo>/.cache/conan2`，并从可读的 `~/.conan2` **播种一次**（1.8G 本地拷贝，避免每个新 worktree 重新下载依赖；本波 #88 冷装实测约 50 分钟）
-- **ccache**：本机装了 `ccache` 时 `scripts/setup.sh` 自动给 Linux CMake 配置 `CMAKE_CXX_COMPILER_LAUNCHER=ccache`、`CCACHE_DIR=<repo>/.cache/ccache`（worktree 首建/合并后重建显著加速；CI 尚未接入）
+- **ccache**：本机装了 `ccache` 时 `scripts/setup.sh` 自动给 Linux CMake 配置 `CMAKE_CXX_COMPILER_LAUNCHER=ccache`；缓存目录固定为**主仓** `.cache/ccache`（`scripts/ccache-env.sh` 从 git common dir 解析，所有 worktree 共享同一份缓存）。`CCACHE_DIR` 是环境变量、不随 CMakeCache 持久，所以 `build.sh` 每次自行导出；漏掉会让新 worktree 构建直接报 `ccache: error: Read-only file system`（#81 实测，修法见该文件）。CI 尚未接入 ccache
 - **npm 缓存**：默认 `~/.npm`；不可写时 `scripts/build.sh` / `scripts/preflight.sh` 自动设 `npm_config_cache=<repo>/.cache/npm`
 - **gh 缓存**：`~/.cache/gh` 不可写时 `scripts/wait-ci.sh` / `scripts/ci-log.sh` 自动设 `XDG_CACHE_HOME=<repo>/.cache`，避免 `gh run view --log-failed` 失败
 - 需要写共享缓存的 worktree 首建若仍被拒，再向用户申请一次 full access；不要反复重试同一命令
@@ -47,6 +47,15 @@ Ninja 不像 VS 生成器那样自动激活 MSVC，需设 `INCLUDE` / `LIB` / `P
 - **VSCode**：`CMakePresets.json` 的 `win-base` 设 `architecture` / `toolset`（`strategy=external` —— CMake 忽略，但 IDE 会读）+ `.vscode/settings.json` 设 `cmake.useVsDeveloperEnvironment=always`（默认 `auto` 在 Preset 模式下不可靠，见 CMake issue #4117）
 
 ---
+
+## Windows 编译陷阱（MSVC-only，Linux 门禁拦不到）
+
+Linux 的 GCC/clang 门禁（含 Release `-Werror`）**复现不了**下列 MSVC-only 失败，它们实际红过 CI（#77×2、#78×1）。改 Windows 分支前先对照；`scripts/preflight.sh` 的 `msvc hazard lint`（`scripts/check_msvc_hazards.py`）会机械检查 R1–R3：
+
+- **IP Helper 头顺序（R1）**：`winsock2.h → ws2tcpip.h → windows.h → iphlpapi.h`。`ws2tcpip.h` 负责引入 `ws2ipdef.h`（`MIB_IF_ROW2` 依赖的接口类型），缺它会报 `'PMIB_IF_TABLE2': undeclared identifier` 等 31 条级联。**禁止直接 `#include <netioapi.h>`**：用户态它依赖 `iphlpapi.h` 提供的 winnt/NDIS 上下文，单引会报 `missing ';' before '__cdecl'` / `NTSTATUS` 重定义。
+- **PDH 状态常量（R2）**：`PDH_CSTATUS_*` 不保证由 `<pdh.h>` 引入，需显式 `#include <pdhmsg.h>`。
+- **`SPDLOG_DEBUG/SPDLOG_TRACE` 在 Release 被编译掉（R3）**：若 catch 参数只在该宏里被引用，Release 下成为未引用局部变量 → MSVC `C4101` → `/WX` 升 `C2220`。异常路径改用 `SPDLOG_WARN`，或显式引用参数。
+- 排查办法：对比失败 TU 与同 job 通过 TU 的 **`showIncludes` 包含树**（CI 日志搜 `Note: including file:`），差异通常就是根因（#77 靠它定位）。
 
 ## clangd / compile_commands.json
 
