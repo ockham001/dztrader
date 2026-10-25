@@ -98,10 +98,14 @@ interface DiskBadge {
   mount: string
   label: string
   text: string
-  stateClass: string
   /** 使用率展示等级（与监控页卷列表共用 resourceLevel 的同一结论）；不可用卷为 null，不套色标 */
   level: ResourceLevel | null
   title: string
+}
+
+/** 卷徽章状态色 class 由 level 派生（不可用卷走中性色）：单一表示，避免 class 与 level 两份状态漂移 */
+function diskBadgeClass(level: ResourceLevel | null): string {
+  return level === null ? 'topbar__resource--unavailable' : `topbar__resource--${level}`
 }
 
 /**
@@ -126,7 +130,6 @@ const diskBadges = computed<DiskBadge[]>(() => {
         mount: volume.mount,
         label: shortMountLabel(volume.mount),
         text: '不可用',
-        stateClass: 'topbar__resource--unavailable',
         level: null,
         title: volume.reason
           ? `${volume.mount} 卷不可用: ${volume.reason}`
@@ -140,7 +143,6 @@ const diskBadges = computed<DiskBadge[]>(() => {
         mount: volume.mount,
         label: shortMountLabel(volume.mount),
         text: '不可用',
-        stateClass: 'topbar__resource--unavailable',
         level: null,
         title: `${volume.mount} 卷使用率不可用`,
       }
@@ -151,7 +153,6 @@ const diskBadges = computed<DiskBadge[]>(() => {
       mount: volume.mount,
       label: shortMountLabel(volume.mount),
       text: `${percent}%`,
-      stateClass: `topbar__resource--${level}`,
       level,
       title: `${volume.mount} 使用率 ${percent}%`,
     }
@@ -218,9 +219,9 @@ const diskBadges = computed<DiskBadge[]>(() => {
           v-for="badge in diskBadges"
           :key="badge.mount"
           class="topbar__resource topbar__resource--disk"
-          :class="badge.stateClass"
+          :class="diskBadgeClass(badge.level)"
           :data-mount="badge.mount"
-          :data-level="badge.level ?? undefined"
+          :data-level="badge.level"
           :title="badge.title"
         >
           <span class="res-label">{{ badge.label }}</span>

@@ -125,7 +125,7 @@ protected:
         std::filesystem::remove_all(home_, ec);
     }
 
-    /// 最小合法 dzsysmon 配置：内存阈值设 0（必然告警），其余告警阈值调到不触发，
+    /// 最小合法 dzsysmon 配置：内存阈值设 0（必然越限），其余阈值调到不触发，
     /// 避免依赖本机交换/卷剩余空间的真实状态；历史关闭、推送间隔拉长。
     void write_config() {
         nlohmann::json cfg = {

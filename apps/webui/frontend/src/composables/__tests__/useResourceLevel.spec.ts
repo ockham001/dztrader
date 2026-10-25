@@ -22,9 +22,4 @@ describe('resourceLevel 阈值边界（含边界）', () => {
   it.each(cases)('ratio=%s → %s', (ratio, expected) => {
     expect(resourceLevel(ratio)).toBe(expected)
   })
-
-  it('恰好 0.7 判 warn、恰好 0.9 判 danger（边界含，不是严格大于）', () => {
-    expect(resourceLevel(RESOURCE_WARN_RATIO)).toBe('warn')
-    expect(resourceLevel(RESOURCE_DANGER_RATIO)).toBe('danger')
-  })
 })

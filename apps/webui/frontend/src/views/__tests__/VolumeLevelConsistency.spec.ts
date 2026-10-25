@@ -61,7 +61,8 @@ describe('顶栏卷徽章 / 监控页卷列表色标一致性（共用 useResour
     expect([...topbarLevels.keys()].sort()).toEqual(['/danger', '/low', '/warn'])
     expect([...monitorLevels.keys()].sort()).toEqual(['/danger', '/low', '/warn'])
 
-    // 核心断言：同一卷两侧 data-level 相等 —— 常量若在两处各自定义，这里会分叉
+    // 核心断言：同一卷两侧 data-level 相等 —— 行为层验证两处结论一致（若将来一侧
+    // 单独改阈值或映射，这里会失败；两侧同源由共享模块 useResourceLevel 保证）
     for (const mountPoint of ['/low', '/warn', '/danger']) {
       expect(topbarLevels.get(mountPoint)).toBe(monitorLevels.get(mountPoint))
     }

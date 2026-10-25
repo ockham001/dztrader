@@ -626,7 +626,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               class="monitor-view__list-row monitor-view__disk-row"
               data-test="monitor-disk-volume"
               :data-mount="volume.mount"
-              :data-level="volumeLevel(volume) ?? undefined"
+              :data-level="volumeLevel(volume)"
             >
               <span class="monitor-view__list-label">{{ volume.mount }}</span>
               <span class="monitor-view__list-value">{{ formatPercent(volume.used_ratio) }}</span>
