@@ -67,7 +67,7 @@ describe('SysmonConfigTab 生效配置展示（#81）', () => {
     })
 
     // 六个段都在
-    for (const section of ['sampling', 'disk', 'network', 'history', 'realtime', 'alerts']) {
+    for (const section of ['sampling', 'disk', 'network', 'history', 'realtime', 'thresholds']) {
       expect(wrapper.find(`[data-test="sysmon-config-section-${section}"]`).exists()).toBe(true)
     }
     // 数字 + 单位
@@ -77,9 +77,12 @@ describe('SysmonConfigTab 生效配置展示（#81）', () => {
     expect(valueText(wrapper, 'history.max_retention_days')).toBe('30 天')
     expect(valueText(wrapper, 'history.max_bytes')).toBe('2.0 GiB')
     expect(valueText(wrapper, 'realtime.push_interval_sec')).toBe('5 秒')
-    expect(valueText(wrapper, 'alerts.cpu_sustain_used_pct')).toBe('90%')
-    expect(valueText(wrapper, 'alerts.cpu_sustain_samples')).toBe('10 次')
-    expect(valueText(wrapper, 'alerts.cooldown_sec')).toBe('600 秒')
+    expect(valueText(wrapper, 'thresholds.cpu_sustain_used_pct')).toBe('90%')
+    expect(valueText(wrapper, 'thresholds.cpu_sustain_samples')).toBe('10 次')
+    expect(valueText(wrapper, 'thresholds.memory_used_pct')).toBe('90%')
+    expect(valueText(wrapper, 'thresholds.swap_used_pct')).toBe('50%')
+    expect(valueText(wrapper, 'thresholds.volume_free_pct')).toBe('10%')
+    expect(valueText(wrapper, 'thresholds.log_repeat_sec')).toBe('600 秒')
     // 布尔语义化
     expect(valueText(wrapper, 'network.hide_virtual')).toBe('已启用')
     expect(valueText(wrapper, 'history.enabled')).toBe('已启用')
@@ -93,12 +96,9 @@ describe('SysmonConfigTab 生效配置展示（#81）', () => {
     const paths = wrapper.findAll('[data-test="sysmon-config-value-disk.watch_paths"] .sysmon-config__list-item')
     expect(paths.map(item => item.text())).toEqual(['/data', '/var/lib'])
     expect(wrapper.find('[data-test="sysmon-config-value-disk.devices"]').text()).toBe('sda')
-    // 关注卷剩余空间的两种阈值形态必须有可区分的标签（百分比 / 绝对容量），
-    // 否则只读区会出现两行同名、用户无法判断哪行控制哪个形态。
-    expect(valueText(wrapper, 'alerts.volume_free_pct')).toBe('10%')
-    expect(valueText(wrapper, 'alerts.volume_free_bytes')).toBe('1.0 GiB')
-    expect(wrapper.text()).toContain('关注卷剩余空间阈值（百分比）')
-    expect(wrapper.text()).toContain('关注卷剩余空间阈值（绝对容量）')
+    // 卷空间阈值只有一个形态（空闲百分比），标签必须点明「空闲百分比」，避免与使用率口径混淆。
+    expect(valueText(wrapper, 'thresholds.volume_free_pct')).toBe('10%')
+    expect(wrapper.text()).toContain('卷剩余空间阈值（空闲百分比）')
   })
 
   it('空数组字段按契约语义展示（watch_paths 默认路径 / devices 全部物理盘），不留空值', async () => {

@@ -7,11 +7,11 @@ import { useAuthStore } from '@/stores/auth'
 import { useSysmonStore } from '@/stores/sysmon'
 import { useToastStore } from '@/stores/toast'
 import type {
-  SysmonAlertsConfigPayload,
   SysmonConfigPayload,
   SysmonDiskConfigPayload,
   SysmonHistoryConfigPayload,
   SysmonSamplingConfigPayload,
+  SysmonThresholdsConfigPayload,
 } from '@/types/generated'
 
 // 资源监控「配置」tab（《帧契约：系统监控》§3）：展示当前**生效**配置，并给 admin 提供编辑入口。
@@ -57,22 +57,20 @@ const FIELDS = {
   cpuSustainSamples: { key: 'cpu_sustain_samples', label: 'CPU 持续采样数', unit: '次', integer: true },
   memoryUsedPct: { key: 'memory_used_pct', label: '内存使用率阈值', unit: '%', integer: false },
   swapUsedPct: { key: 'swap_used_pct', label: '交换使用率阈值', unit: '%', integer: false },
-  volumeFreePct: { key: 'volume_free_pct', label: '关注卷剩余空间阈值（百分比）', unit: '%', integer: false },
-  volumeFreeBytes: { key: 'volume_free_bytes', label: '关注卷剩余空间阈值（绝对容量）', unit: '字节', integer: true },
-  cooldown: { key: 'cooldown_sec', label: '告警冷却时间', unit: '秒', integer: true },
+  volumeFreePct: { key: 'volume_free_pct', label: '卷剩余空间阈值（空闲百分比）', unit: '%', integer: false },
+  logRepeat: { key: 'log_repeat_sec', label: '越限日志重记间隔', unit: '秒', integer: true },
 } as const satisfies Record<string, NumberFieldSpec>
 
 const SAMPLING_FIELDS: readonly NumberFieldSpec[] = [FIELDS.measureInterval, FIELDS.recordInterval, FIELDS.phaseOffset]
 const HISTORY_FIELDS: readonly NumberFieldSpec[] = [FIELDS.rawRetention, FIELDS.maxRetention, FIELDS.maxBytes]
 const REALTIME_FIELDS: readonly NumberFieldSpec[] = [FIELDS.pushInterval]
-const ALERTS_FIELDS: readonly NumberFieldSpec[] = [
+const THRESHOLDS_FIELDS: readonly NumberFieldSpec[] = [
   FIELDS.cpuSustainPct,
   FIELDS.cpuSustainSamples,
   FIELDS.memoryUsedPct,
   FIELDS.swapUsedPct,
   FIELDS.volumeFreePct,
-  FIELDS.volumeFreeBytes,
-  FIELDS.cooldown,
+  FIELDS.logRepeat,
 ]
 
 const canEdit = computed(() => auth.isAdmin)
@@ -170,16 +168,15 @@ const displaySections = computed<DisplaySection[]>(() => {
       ],
     },
     {
-      key: 'alerts',
-      title: '阈值告警',
+      key: 'thresholds',
+      title: '阈值越限',
       rows: [
-        { field: 'alerts.cpu_sustain_used_pct', label: 'CPU 持续使用率阈值', value: `${cfg.alerts.cpu_sustain_used_pct}%` },
-        { field: 'alerts.cpu_sustain_samples', label: 'CPU 持续采样数', value: `${cfg.alerts.cpu_sustain_samples} 次` },
-        { field: 'alerts.memory_used_pct', label: '内存使用率阈值', value: `${cfg.alerts.memory_used_pct}%` },
-        { field: 'alerts.swap_used_pct', label: '交换使用率阈值', value: `${cfg.alerts.swap_used_pct}%` },
-        { field: 'alerts.volume_free_pct', label: '关注卷剩余空间阈值（百分比）', value: `${cfg.alerts.volume_free_pct}%` },
-        { field: 'alerts.volume_free_bytes', label: '关注卷剩余空间阈值（绝对容量）', value: formatBytes(cfg.alerts.volume_free_bytes) },
-        { field: 'alerts.cooldown_sec', label: '告警冷却时间', value: `${cfg.alerts.cooldown_sec} 秒` },
+        { field: 'thresholds.cpu_sustain_used_pct', label: 'CPU 持续使用率阈值', value: `${cfg.thresholds.cpu_sustain_used_pct}%` },
+        { field: 'thresholds.cpu_sustain_samples', label: 'CPU 持续采样数', value: `${cfg.thresholds.cpu_sustain_samples} 次` },
+        { field: 'thresholds.memory_used_pct', label: '内存使用率阈值', value: `${cfg.thresholds.memory_used_pct}%` },
+        { field: 'thresholds.swap_used_pct', label: '交换使用率阈值', value: `${cfg.thresholds.swap_used_pct}%` },
+        { field: 'thresholds.volume_free_pct', label: '卷剩余空间阈值（空闲百分比）', value: `${cfg.thresholds.volume_free_pct}%` },
+        { field: 'thresholds.log_repeat_sec', label: '越限日志重记间隔', value: `${cfg.thresholds.log_repeat_sec} 秒` },
       ],
     },
   ]
@@ -198,7 +195,7 @@ interface ConfigForm {
   historyNumbers: Record<string, string | number>
   historyEnabled: boolean
   realtimeNumbers: Record<string, string | number>
-  alertNumbers: Record<string, string | number>
+  thresholdNumbers: Record<string, string | number>
 }
 
 function formFromConfig(cfg: SysmonConfigPayload): ConfigForm {
@@ -223,7 +220,7 @@ function formFromConfig(cfg: SysmonConfigPayload): ConfigForm {
     realtimeNumbers: {
       [FIELDS.pushInterval.key]: String(cfg.realtime.push_interval_sec),
     },
-    alertNumbers: Object.fromEntries(ALERTS_FIELDS.map(spec => [spec.key, String(cfg.alerts[spec.key as keyof SysmonAlertsConfigPayload])])),
+    thresholdNumbers: Object.fromEntries(THRESHOLDS_FIELDS.map(spec => [spec.key, String(cfg.thresholds[spec.key as keyof SysmonThresholdsConfigPayload])])),
   }
 }
 
@@ -235,7 +232,7 @@ const form = reactive<ConfigForm>({
   historyNumbers: {},
   historyEnabled: true,
   realtimeNumbers: {},
-  alertNumbers: {},
+  thresholdNumbers: {},
 })
 
 /** 表单草稿跟随配置镜像（WS 回推 / REST 补拉 / 校验失败回推旧值都走这里） */
@@ -249,7 +246,7 @@ function resetForm(cfg: SysmonConfigPayload | null): void {
   form.historyNumbers = next.historyNumbers
   form.historyEnabled = next.historyEnabled
   form.realtimeNumbers = next.realtimeNumbers
-  form.alertNumbers = next.alertNumbers
+  form.thresholdNumbers = next.thresholdNumbers
 }
 
 watch(config, (cfg) => { resetForm(cfg) }, { immediate: true })
@@ -313,14 +310,13 @@ function parseForm(): ParsedForm {
       max_bytes: number(form.historyNumbers[FIELDS.maxBytes.key], FIELDS.maxBytes),
     },
     realtime: { push_interval_sec: number(form.realtimeNumbers[FIELDS.pushInterval.key], FIELDS.pushInterval) },
-    alerts: {
-      cpu_sustain_used_pct: number(form.alertNumbers[FIELDS.cpuSustainPct.key], FIELDS.cpuSustainPct),
-      cpu_sustain_samples: number(form.alertNumbers[FIELDS.cpuSustainSamples.key], FIELDS.cpuSustainSamples),
-      memory_used_pct: number(form.alertNumbers[FIELDS.memoryUsedPct.key], FIELDS.memoryUsedPct),
-      swap_used_pct: number(form.alertNumbers[FIELDS.swapUsedPct.key], FIELDS.swapUsedPct),
-      volume_free_pct: number(form.alertNumbers[FIELDS.volumeFreePct.key], FIELDS.volumeFreePct),
-      volume_free_bytes: number(form.alertNumbers[FIELDS.volumeFreeBytes.key], FIELDS.volumeFreeBytes),
-      cooldown_sec: number(form.alertNumbers[FIELDS.cooldown.key], FIELDS.cooldown),
+    thresholds: {
+      cpu_sustain_used_pct: number(form.thresholdNumbers[FIELDS.cpuSustainPct.key], FIELDS.cpuSustainPct),
+      cpu_sustain_samples: number(form.thresholdNumbers[FIELDS.cpuSustainSamples.key], FIELDS.cpuSustainSamples),
+      memory_used_pct: number(form.thresholdNumbers[FIELDS.memoryUsedPct.key], FIELDS.memoryUsedPct),
+      swap_used_pct: number(form.thresholdNumbers[FIELDS.swapUsedPct.key], FIELDS.swapUsedPct),
+      volume_free_pct: number(form.thresholdNumbers[FIELDS.volumeFreePct.key], FIELDS.volumeFreePct),
+      log_repeat_sec: number(form.thresholdNumbers[FIELDS.logRepeat.key], FIELDS.logRepeat),
     },
   }
   return { config: invalidLabel === null ? parsed : null, invalidLabel }
@@ -386,29 +382,26 @@ function diffConfig(next: SysmonConfigPayload, current: SysmonConfigPayload): Sy
     patch.realtime = { push_interval_sec: next.realtime.push_interval_sec }
   }
 
-  const alerts: Partial<SysmonAlertsConfigPayload> = {}
-  if (next.alerts.cpu_sustain_used_pct !== current.alerts.cpu_sustain_used_pct) {
-    alerts.cpu_sustain_used_pct = next.alerts.cpu_sustain_used_pct
+  const thresholds: Partial<SysmonThresholdsConfigPayload> = {}
+  if (next.thresholds.cpu_sustain_used_pct !== current.thresholds.cpu_sustain_used_pct) {
+    thresholds.cpu_sustain_used_pct = next.thresholds.cpu_sustain_used_pct
   }
-  if (next.alerts.cpu_sustain_samples !== current.alerts.cpu_sustain_samples) {
-    alerts.cpu_sustain_samples = next.alerts.cpu_sustain_samples
+  if (next.thresholds.cpu_sustain_samples !== current.thresholds.cpu_sustain_samples) {
+    thresholds.cpu_sustain_samples = next.thresholds.cpu_sustain_samples
   }
-  if (next.alerts.memory_used_pct !== current.alerts.memory_used_pct) {
-    alerts.memory_used_pct = next.alerts.memory_used_pct
+  if (next.thresholds.memory_used_pct !== current.thresholds.memory_used_pct) {
+    thresholds.memory_used_pct = next.thresholds.memory_used_pct
   }
-  if (next.alerts.swap_used_pct !== current.alerts.swap_used_pct) {
-    alerts.swap_used_pct = next.alerts.swap_used_pct
+  if (next.thresholds.swap_used_pct !== current.thresholds.swap_used_pct) {
+    thresholds.swap_used_pct = next.thresholds.swap_used_pct
   }
-  if (next.alerts.volume_free_pct !== current.alerts.volume_free_pct) {
-    alerts.volume_free_pct = next.alerts.volume_free_pct
+  if (next.thresholds.volume_free_pct !== current.thresholds.volume_free_pct) {
+    thresholds.volume_free_pct = next.thresholds.volume_free_pct
   }
-  if (next.alerts.volume_free_bytes !== current.alerts.volume_free_bytes) {
-    alerts.volume_free_bytes = next.alerts.volume_free_bytes
+  if (next.thresholds.log_repeat_sec !== current.thresholds.log_repeat_sec) {
+    thresholds.log_repeat_sec = next.thresholds.log_repeat_sec
   }
-  if (next.alerts.cooldown_sec !== current.alerts.cooldown_sec) {
-    alerts.cooldown_sec = next.alerts.cooldown_sec
-  }
-  if (Object.keys(alerts).length > 0) patch.alerts = alerts
+  if (Object.keys(thresholds).length > 0) patch.thresholds = thresholds
 
   return patch
 }
@@ -635,18 +628,18 @@ async function onSave(): Promise<void> {
             </div>
           </section>
 
-          <section class="sysmon-config__form-section" data-test="sysmon-config-editor-alerts">
-            <h3 class="sysmon-config__form-title">阈值告警</h3>
+          <section class="sysmon-config__form-section" data-test="sysmon-config-editor-thresholds">
+            <h3 class="sysmon-config__form-title">阈值越限</h3>
             <div class="sysmon-config__fields">
               <label
-                v-for="field in ALERTS_FIELDS"
+                v-for="field in THRESHOLDS_FIELDS"
                 :key="field.key"
                 class="sysmon-config__field"
               >
                 <span class="sysmon-config__field-label">{{ field.label }}（{{ field.unit }}）</span>
                 <span class="ds-input">
                   <input
-                    v-model="form.alertNumbers[field.key]"
+                    v-model="form.thresholdNumbers[field.key]"
                     type="number"
                     :disabled="savePending"
                     :data-test="`sysmon-config-input-${field.key}`"

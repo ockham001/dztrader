@@ -64,7 +64,8 @@ TEST_F(ConfigTest, GenerateDefaultWritesCompleteConfig) {
     EXPECT_EQ(full["log"]["flush_on"], "warning");
 
     // SysmonConfig 六个业务段全量落盘
-    for (const char* section : {"sampling", "disk", "network", "history", "realtime", "alerts"}) {
+    for (const char* section :
+         {"sampling", "disk", "network", "history", "realtime", "thresholds"}) {
         EXPECT_TRUE(full.contains(section)) << section;
     }
     EXPECT_EQ(full["sampling"]["measure_interval_ms"], 1000);
@@ -187,6 +188,159 @@ TEST_F(ConfigTest, StorePersistFailureKeepsMemory) {
     EXPECT_THROW(store.set_patch(nlohmann::json{{"realtime", {{"push_interval_sec", 8}}}}),
                  std::runtime_error);
     EXPECT_EQ(store.current()["realtime"]["push_interval_sec"], 5);
+}
+
+// ===== #123：旧 `alerts` 段迁移（契约 sysmon §3.1）=====
+
+// 最完整的旧形状 → 新形状：可映射的键全部搬过去，已删除的键丢弃，旧段消失。
+TEST_F(ConfigTest, LegacyAlertsSectionMigratesToThresholds) {
+    write_json(cfg_path_, nlohmann::json{
+                              {"log", {{"level", "debug"}}},
+                              {"alerts",
+                               {{"cpu_sustain_used_pct", 91.5},
+                                {"cpu_sustain_samples", 7},
+                                {"memory_used_pct", 80.0},
+                                {"swap_used_pct", 40.0},
+                                {"volume_free_pct", 5.0},
+                                {"volume_free_bytes", 1'073'741'824},
+                                {"cooldown_sec", 300}}},
+                          });
+
+    const auto cfg = load_config(cfg_path_);
+
+    // 返回值是**新形状**且已通过校验（迁移不报错、不阻塞启动）。
+    EXPECT_EQ(platform::SysmonConfig::validate(cfg), std::nullopt);
+    ASSERT_TRUE(cfg.contains("thresholds"));
+    EXPECT_DOUBLE_EQ(cfg["thresholds"]["cpu_sustain_used_pct"].get<double>(), 91.5);
+    EXPECT_EQ(cfg["thresholds"]["cpu_sustain_samples"], 7);
+    EXPECT_DOUBLE_EQ(cfg["thresholds"]["memory_used_pct"].get<double>(), 80.0);
+    EXPECT_DOUBLE_EQ(cfg["thresholds"]["swap_used_pct"].get<double>(), 40.0);
+    EXPECT_DOUBLE_EQ(cfg["thresholds"]["volume_free_pct"].get<double>(), 5.0);
+    // 不可映射的键丢弃；缺失的新键（log_repeat_sec）补默认值。
+    EXPECT_FALSE(cfg["thresholds"].contains("volume_free_bytes"));
+    EXPECT_FALSE(cfg["thresholds"].contains("cooldown_sec"));
+    EXPECT_EQ(cfg["thresholds"]["log_repeat_sec"], 600);
+    EXPECT_FALSE(cfg.contains("alerts"));
+
+    // 文件也改写为新形状（下次启动不再重复迁移），且 log 等其它 section 原样保留。
+    const auto persisted = read_json(cfg_path_);
+    EXPECT_FALSE(persisted.contains("alerts"));
+    ASSERT_TRUE(persisted.contains("thresholds"));
+    EXPECT_DOUBLE_EQ(persisted["thresholds"]["cpu_sustain_used_pct"].get<double>(), 91.5);
+    EXPECT_FALSE(persisted["thresholds"].contains("volume_free_bytes"));
+    EXPECT_EQ(persisted["log"]["level"], "debug");
+}
+
+// 只含部分键的旧形状：搬能搬的，其余补默认值（不得因为旧段不完整而校验失败）。
+TEST_F(ConfigTest, LegacyPartialAlertsSectionMigratesWithDefaults) {
+    write_json(cfg_path_, nlohmann::json{{"alerts", {{"memory_used_pct", 75.0}}}});
+
+    const auto cfg = load_config(cfg_path_);
+    EXPECT_EQ(platform::SysmonConfig::validate(cfg), std::nullopt);
+    EXPECT_DOUBLE_EQ(cfg["thresholds"]["memory_used_pct"].get<double>(), 75.0);
+    // 其余键都是默认值（旧段没有 → 默认基底补上）。
+    EXPECT_DOUBLE_EQ(cfg["thresholds"]["swap_used_pct"].get<double>(), 50.0);
+    EXPECT_EQ(cfg["thresholds"]["log_repeat_sec"], 600);
+    EXPECT_FALSE(read_json(cfg_path_).contains("alerts"));
+}
+
+// 旧段含未知键：未知键丢弃、不阻塞（总则 §8：未知字段忽略），已知键照常迁移。
+TEST_F(ConfigTest, LegacyAlertsSectionWithUnknownKeysDropsThem) {
+    write_json(cfg_path_, nlohmann::json{
+                              {"alerts",
+                               {{"memory_used_pct", 70.0},
+                                {"unknown_future_key", 42},
+                                {"another_legacy_thing", "x"}}},
+                          });
+
+    const auto cfg = load_config(cfg_path_);
+    EXPECT_EQ(platform::SysmonConfig::validate(cfg), std::nullopt);
+    EXPECT_DOUBLE_EQ(cfg["thresholds"]["memory_used_pct"].get<double>(), 70.0);
+    EXPECT_FALSE(cfg["thresholds"].contains("unknown_future_key"));
+    EXPECT_FALSE(cfg["thresholds"].contains("another_legacy_thing"));
+    EXPECT_FALSE(cfg.contains("alerts"));
+}
+
+// 新旧段同时存在时**新段优先**（用户可能已经手工写好新形状，不能被旧值覆盖）。
+TEST_F(ConfigTest, ExistingThresholdsSectionWinsOverLegacyAlerts) {
+    write_json(cfg_path_, nlohmann::json{
+                              {"alerts", {{"memory_used_pct", 11.0}, {"swap_used_pct", 22.0}}},
+                              {"thresholds", {{"memory_used_pct", 88.0}}},
+                          });
+
+    const auto cfg = load_config(cfg_path_);
+    EXPECT_DOUBLE_EQ(cfg["thresholds"]["memory_used_pct"].get<double>(), 88.0);  // 新段优先
+    EXPECT_DOUBLE_EQ(cfg["thresholds"]["swap_used_pct"].get<double>(), 22.0);    // 新段没写的才搬
+    EXPECT_FALSE(cfg.contains("alerts"));
+}
+
+// 没有旧段时迁移是**纯无操作**：不 sanitize、不重写文件（避免每次启动都改用户的文件）。
+TEST_F(ConfigTest, NoLegacySectionLeavesFileUntouched) {
+    generate_default_config(cfg_path_);
+    const auto before = read_json(cfg_path_);
+    auto marker = before;
+    marker["realtime"]["push_interval_sec"] = 9;
+    marker["custom"]["keep"] = 1;
+    write_json(cfg_path_, marker);
+
+    (void)load_config(cfg_path_);
+    const auto after = read_json(cfg_path_);
+    EXPECT_EQ(after["realtime"]["push_interval_sec"], 9);
+    EXPECT_EQ(after["custom"]["keep"], 1);
+    EXPECT_TRUE(after.contains("thresholds"));
+    EXPECT_FALSE(after.contains("alerts"));
+}
+
+// 迁移单元（不经文件）：直接作用于整文件 JSON，报告映射与丢弃了哪些键。
+TEST_F(ConfigTest, MigrateLegacyAlertsReportsMappedAndDroppedKeys) {
+    nlohmann::json full = {
+        {"alerts",
+         {{"cpu_sustain_used_pct", 91.0},
+          {"memory_used_pct", 80.0},
+          {"volume_free_bytes", 1'073'741'824},
+          {"cooldown_sec", 300},
+          {"unknown_key", 1}}},
+        {"log", {{"level", "info"}}},
+    };
+
+    const auto migration = migrate_legacy_alerts(full);
+    EXPECT_TRUE(migration.migrated);
+    EXPECT_EQ(migration.mapped_keys,
+              (std::vector<std::string>{"cpu_sustain_used_pct", "memory_used_pct"}));
+    EXPECT_EQ(migration.dropped_keys,
+              (std::vector<std::string>{"volume_free_bytes", "cooldown_sec"}));
+    EXPECT_FALSE(full.contains("alerts"));
+    EXPECT_DOUBLE_EQ(full["thresholds"]["cpu_sustain_used_pct"].get<double>(), 91.0);
+    EXPECT_EQ(full["log"]["level"], "info");  // 其它 section 不受影响
+
+    // 幂等：再跑一次不产生任何变化、也不报告迁移（下次启动不会重复迁移）。
+    const auto again = migrate_legacy_alerts(full);
+    EXPECT_FALSE(again.migrated);
+    EXPECT_TRUE(again.mapped_keys.empty());
+    EXPECT_TRUE(again.dropped_keys.empty());
+}
+
+// 默认配置生成器直接产出新形状（仓库不提交模板；新装机器不应写出旧段）。
+TEST_F(ConfigTest, DefaultConfigProducesThresholdsNotAlerts) {
+    generate_default_config(cfg_path_);
+    const auto full = read_json(cfg_path_);
+    EXPECT_FALSE(full.contains("alerts"));
+    ASSERT_TRUE(full.contains("thresholds"));
+    EXPECT_EQ(full["thresholds"]["log_repeat_sec"], 600);
+    EXPECT_DOUBLE_EQ(full["thresholds"]["volume_free_pct"].get<double>(), 10.0);
+    EXPECT_FALSE(full["thresholds"].contains("volume_free_bytes"));
+    EXPECT_FALSE(full["thresholds"].contains("cooldown_sec"));
+}
+
+// 运行期 patch 只接受新段：旧段名不再被识别（会被当成未知字段忽略），因此阈值改不动。
+TEST_F(ConfigTest, RuntimePatchOnLegacySectionNameIsIgnored) {
+    generate_default_config(cfg_path_);
+    SysmonConfigStore store(cfg_path_, load_config(cfg_path_));
+    store.set_patch(nlohmann::json{{"alerts", {{"memory_used_pct", 42.0}}}});
+    EXPECT_DOUBLE_EQ(store.current()["thresholds"]["memory_used_pct"].get<double>(), 90.0);
+
+    store.set_patch(nlohmann::json{{"thresholds", {{"memory_used_pct", 42.0}}}});
+    EXPECT_DOUBLE_EQ(store.current()["thresholds"]["memory_used_pct"].get<double>(), 42.0);
 }
 
 // #75：`disk.watch_paths` 是关注路径的配置来源（契约 sysmon §3.1）。

@@ -535,20 +535,20 @@ TEST(SysmonConfigTest, RejectsEveryOutOfRangeConfigField) {
         {"push_interval_sec above", nlohmann::json{{"realtime", {{"push_interval_sec", 3601}}}}},
         // 百分比阈值：四个字段各自的两端越界（闭区间 [0,100]）。
         {"cpu_sustain_used_pct below",
-         nlohmann::json{{"alerts", {{"cpu_sustain_used_pct", -0.1}}}}},
+         nlohmann::json{{"thresholds", {{"cpu_sustain_used_pct", -0.1}}}}},
         {"cpu_sustain_used_pct above",
-         nlohmann::json{{"alerts", {{"cpu_sustain_used_pct", 100.1}}}}},
-        {"memory_used_pct below", nlohmann::json{{"alerts", {{"memory_used_pct", -0.1}}}}},
-        {"memory_used_pct above", nlohmann::json{{"alerts", {{"memory_used_pct", 100.1}}}}},
-        {"swap_used_pct below", nlohmann::json{{"alerts", {{"swap_used_pct", -0.1}}}}},
-        {"swap_used_pct above", nlohmann::json{{"alerts", {{"swap_used_pct", 100.1}}}}},
-        {"volume_free_pct below", nlohmann::json{{"alerts", {{"volume_free_pct", -0.1}}}}},
-        {"volume_free_pct above", nlohmann::json{{"alerts", {{"volume_free_pct", 100.1}}}}},
-        {"cpu_sustain_samples below", nlohmann::json{{"alerts", {{"cpu_sustain_samples", 0}}}}},
-        {"cpu_sustain_samples above", nlohmann::json{{"alerts", {{"cpu_sustain_samples", 3601}}}}},
-        {"volume_free_bytes negative", nlohmann::json{{"alerts", {{"volume_free_bytes", -1}}}}},
-        {"cooldown_sec below", nlohmann::json{{"alerts", {{"cooldown_sec", -1}}}}},
-        {"cooldown_sec above", nlohmann::json{{"alerts", {{"cooldown_sec", 86401}}}}},
+         nlohmann::json{{"thresholds", {{"cpu_sustain_used_pct", 100.1}}}}},
+        {"memory_used_pct below", nlohmann::json{{"thresholds", {{"memory_used_pct", -0.1}}}}},
+        {"memory_used_pct above", nlohmann::json{{"thresholds", {{"memory_used_pct", 100.1}}}}},
+        {"swap_used_pct below", nlohmann::json{{"thresholds", {{"swap_used_pct", -0.1}}}}},
+        {"swap_used_pct above", nlohmann::json{{"thresholds", {{"swap_used_pct", 100.1}}}}},
+        {"volume_free_pct below", nlohmann::json{{"thresholds", {{"volume_free_pct", -0.1}}}}},
+        {"volume_free_pct above", nlohmann::json{{"thresholds", {{"volume_free_pct", 100.1}}}}},
+        {"cpu_sustain_samples below", nlohmann::json{{"thresholds", {{"cpu_sustain_samples", 0}}}}},
+        {"cpu_sustain_samples above",
+         nlohmann::json{{"thresholds", {{"cpu_sustain_samples", 3601}}}}},
+        {"log_repeat_sec below", nlohmann::json{{"thresholds", {{"log_repeat_sec", -1}}}}},
+        {"log_repeat_sec above", nlohmann::json{{"thresholds", {{"log_repeat_sec", 86401}}}}},
         {"raw_retention_hours below", nlohmann::json{{"history", {{"raw_retention_hours", 0}}}}},
         {"raw_retention_hours above", nlohmann::json{{"history", {{"raw_retention_hours", 721}}}}},
         {"max_retention_days below", nlohmann::json{{"history", {{"max_retention_days", 0}}}}},
@@ -588,21 +588,21 @@ TEST(SysmonConfigTest, AcceptsConfigBoundaryValues) {
         {"phase_offset_sec upper", nlohmann::json{{"sampling", {{"phase_offset_sec", 86400}}}}},
         {"push_interval_sec lower", nlohmann::json{{"realtime", {{"push_interval_sec", 1}}}}},
         {"push_interval_sec upper", nlohmann::json{{"realtime", {{"push_interval_sec", 3600}}}}},
-        {"thresholds lower", nlohmann::json{{"alerts",
+        {"thresholds lower", nlohmann::json{{"thresholds",
                                              {{"cpu_sustain_used_pct", 0.0},
                                               {"memory_used_pct", 0.0},
                                               {"swap_used_pct", 0.0},
                                               {"volume_free_pct", 0.0}}}}},
-        {"thresholds upper", nlohmann::json{{"alerts",
+        {"thresholds upper", nlohmann::json{{"thresholds",
                                              {{"cpu_sustain_used_pct", 100.0},
                                               {"memory_used_pct", 100.0},
                                               {"swap_used_pct", 100.0},
                                               {"volume_free_pct", 100.0}}}}},
-        {"cpu_sustain_samples lower", nlohmann::json{{"alerts", {{"cpu_sustain_samples", 1}}}}},
-        {"cpu_sustain_samples upper", nlohmann::json{{"alerts", {{"cpu_sustain_samples", 3600}}}}},
-        {"volume_free_bytes zero", nlohmann::json{{"alerts", {{"volume_free_bytes", 0}}}}},
-        {"cooldown_sec lower", nlohmann::json{{"alerts", {{"cooldown_sec", 0}}}}},
-        {"cooldown_sec upper", nlohmann::json{{"alerts", {{"cooldown_sec", 86400}}}}},
+        {"cpu_sustain_samples lower", nlohmann::json{{"thresholds", {{"cpu_sustain_samples", 1}}}}},
+        {"cpu_sustain_samples upper",
+         nlohmann::json{{"thresholds", {{"cpu_sustain_samples", 3600}}}}},
+        {"log_repeat_sec lower", nlohmann::json{{"thresholds", {{"log_repeat_sec", 0}}}}},
+        {"log_repeat_sec upper", nlohmann::json{{"thresholds", {{"log_repeat_sec", 86400}}}}},
         {"raw_retention_hours lower", nlohmann::json{{"history", {{"raw_retention_hours", 1}}}}},
         {"raw_retention_hours upper", nlohmann::json{{"history", {{"raw_retention_hours", 720}}}}},
         {"max_retention_days lower", nlohmann::json{{"history", {{"max_retention_days", 1}}}}},
@@ -641,14 +641,13 @@ TEST(SysmonConfigTest, BoundaryValuesRoundTripThroughTypedConfig) {
           {"max_retention_days", 3650},
           {"max_bytes", 0}}},
         {"realtime", {{"push_interval_sec", 3600}}},
-        {"alerts",
+        {"thresholds",
          {{"cpu_sustain_used_pct", 0.0},
           {"cpu_sustain_samples", 3600},
           {"memory_used_pct", 100.0},
           {"swap_used_pct", 0.0},
           {"volume_free_pct", 100.0},
-          {"volume_free_bytes", 0},
-          {"cooldown_sec", 86400}}},
+          {"log_repeat_sec", 86400}}},
     };
     const SysmonConfig typed = SysmonConfig::apply_patch(current, patch).get<SysmonConfig>();
 
@@ -667,13 +666,42 @@ TEST(SysmonConfigTest, BoundaryValuesRoundTripThroughTypedConfig) {
     EXPECT_EQ(typed.history.max_retention_days, 3650);
     EXPECT_EQ(typed.history.max_bytes, 0U);
     EXPECT_EQ(typed.realtime.push_interval_sec, 3600);
-    EXPECT_DOUBLE_EQ(typed.alerts.cpu_sustain_used_pct, 0.0);
-    EXPECT_EQ(typed.alerts.cpu_sustain_samples, 3600);
-    EXPECT_DOUBLE_EQ(typed.alerts.memory_used_pct, 100.0);
-    EXPECT_DOUBLE_EQ(typed.alerts.swap_used_pct, 0.0);
-    EXPECT_DOUBLE_EQ(typed.alerts.volume_free_pct, 100.0);
-    EXPECT_EQ(typed.alerts.volume_free_bytes, 0U);
-    EXPECT_EQ(typed.alerts.cooldown_sec, 86400);
+    EXPECT_DOUBLE_EQ(typed.thresholds.cpu_sustain_used_pct, 0.0);
+    EXPECT_EQ(typed.thresholds.cpu_sustain_samples, 3600);
+    EXPECT_DOUBLE_EQ(typed.thresholds.memory_used_pct, 100.0);
+    EXPECT_DOUBLE_EQ(typed.thresholds.swap_used_pct, 0.0);
+    EXPECT_DOUBLE_EQ(typed.thresholds.volume_free_pct, 100.0);
+    EXPECT_EQ(typed.thresholds.log_repeat_sec, 86400);
+}
+
+// #123 契约 sysmon §3.1：阈值段的键集合已收敛——`log_repeat_sec` 必填，
+// 旧段名 `alerts` 与已删除的 `volume_free_bytes` / `cooldown_sec` 不再是阈值来源。
+TEST(SysmonConfigTest, ThresholdsSectionRequiresNewKeysAndIgnoresRemovedOnes) {
+    const auto current = nlohmann::json(SysmonConfig::default_config());
+
+    // 默认配置本身就是新形状（没有 alerts 段，也没有已删除的键）。
+    EXPECT_TRUE(current.contains("thresholds"));
+    EXPECT_FALSE(current.contains("alerts"));
+    EXPECT_FALSE(current["thresholds"].contains("volume_free_bytes"));
+    EXPECT_FALSE(current["thresholds"].contains("cooldown_sec"));
+    EXPECT_EQ(current["thresholds"]["log_repeat_sec"], 600);
+    EXPECT_DOUBLE_EQ(current["thresholds"]["volume_free_pct"].get<double>(), 10.0);
+
+    // 缺 `log_repeat_sec` 的全量配置非法（必填键）：拿旧形状冒充新段会被拒绝。
+    auto legacy_shaped = current;
+    legacy_shaped["thresholds"].erase("log_repeat_sec");
+    legacy_shaped["thresholds"]["volume_free_bytes"] = 1'073'741'824;
+    legacy_shaped["thresholds"]["cooldown_sec"] = 600;
+    const auto error = SysmonConfig::validate(legacy_shaped);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_NE(error->find("log_repeat_sec"), std::string::npos);
+
+    // 已删除的键若作为未知字段出现则被忽略（总则 §8），不改变生效值。
+    const auto merged = SysmonConfig::apply_patch(
+        current, {{"thresholds", {{"volume_free_bytes", 0}, {"cooldown_sec", 0}}}});
+    const SysmonConfig typed = merged.get<SysmonConfig>();
+    EXPECT_EQ(typed.thresholds.log_repeat_sec, 600);
+    EXPECT_FALSE(nlohmann::json(typed)["thresholds"].contains("volume_free_bytes"));
 }
 
 // 契约 sysmon §2.5：Windows 平台描述必须含 build 号（区分 Win10/Win11）。

@@ -71,7 +71,14 @@ inline constexpr std::array<const char*, 13> SYSMON_METRIC_KEYS = {
 
 /// 配置 payload / 配置文件的业务段全集（契约 sysmon §3.1；顺序固定）。
 inline constexpr std::array<const char*, 6> SYSMON_CONFIG_SECTIONS = {
-    "sampling", "disk", "network", "history", "realtime", "alerts"};
+    "sampling", "disk", "network", "history", "realtime", "thresholds"};
+
+/// 阈值越限配置段名（契约 sysmon §3.1；本段原名 `alerts`，#123 随 ADR 0034 改名）。
+inline constexpr const char* SYSMON_THRESHOLDS_SECTION = "thresholds";
+
+/// 旧版配置段名（契约 sysmon §3.1「旧配置迁移」）：读到本段时把可映射的键搬到
+/// `thresholds`、写回文件并记一条日志，**不报错、不阻塞启动**（ADR 0034）。
+inline constexpr const char* SYSMON_LEGACY_ALERTS_SECTION = "alerts";
 
 /// 配置 `sampling.groups` 的指标键（契约 sysmon §3.1.1）：A 组 CPU/内存/交换 + B 组温度与每核频率。
 ///
@@ -83,11 +90,19 @@ inline constexpr const char* SYSMON_GROUP_SWAP = "swap";
 inline constexpr const char* SYSMON_GROUP_TEMPERATURE = "temperature";
 inline constexpr const char* SYSMON_GROUP_CPU_FREQUENCY = "cpu_frequency";
 
-// ===== 阈值告警 kind（契约 sysmon §2.8）=====
-// 快照 `alerts[].kind` 的稳定取值；发送方（dzsysmon）与消费方（dzweb/前端）共用本集合。
+// ===== 快照 `alerts[]` 的 kind（契约 sysmon §2.8 旧形态；随 #125 删除该字段一并移除）=====
+// 发送方（dzsysmon）与消费方（dzweb/前端）共用本集合。
 inline constexpr const char* SYSMON_ALERT_MEMORY_USED = "memory_used";
 inline constexpr const char* SYSMON_ALERT_SWAP_USED = "swap_used";
 inline constexpr const char* SYSMON_ALERT_VOLUME_FREE = "volume_free";
+
+// ===== 阈值越限判定对象 kind（契约 sysmon §2.8；#123）=====
+// 日志记录里的稳定取值，**不进快照、不构成协议语义**（ADR 0034）。比快照 alerts[] 多
+// `cpu_saturated`：CPU 饱和从来只在 UI 标红、不发通知，改日志后它成为一等判定对象。
+inline constexpr const char* SYSMON_THRESHOLD_MEMORY_USED = "memory_used";
+inline constexpr const char* SYSMON_THRESHOLD_SWAP_USED = "swap_used";
+inline constexpr const char* SYSMON_THRESHOLD_VOLUME_FREE = "volume_free";
+inline constexpr const char* SYSMON_THRESHOLD_CPU_SATURATED = "cpu_saturated";
 
 // ===== 快照 payload（契约 sysmon §快照）=====
 
@@ -550,23 +565,25 @@ struct SysmonRealtimeConfig {
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonRealtimeConfig, push_interval_sec)
 };
 
-/// 告警配置（阈值告警由 #80 消费：内存/交换使用率与关注卷剩余空间阈值 + 冷却，契约 sysmon §2.8）。
-struct SysmonAlertsConfig {
-    double cpu_sustain_used_pct = 90.0;  ///< 单核持续饱和阈值（百分比）
-    int32_t cpu_sustain_samples = 10;    ///< 持续采样次数阈值
-    double memory_used_pct = 90.0;
-    double swap_used_pct = 50.0;
-    double volume_free_pct = 10.0;               ///< 关注卷剩余空间低于该百分比告警
-    uint64_t volume_free_bytes = 1'073'741'824;  ///< 同时低于该绝对容量告警
-    int32_t cooldown_sec = 600;                  ///< 同类告警冷却
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonAlertsConfig,
+/// 阈值越限配置（本段原名 `alerts`，#123 随 ADR 0034 改名，契约 sysmon §3.1）。
+///
+/// 全部阈值住同一段：它们**都不打扰使用者**（只写日志 + UI 色标），因此不需要再分
+/// "哪些会打扰我"。没有 `volume_free_bytes`（绝对容量阈值已删除），也没有 `cooldown_sec`
+/// （不再有通知可限流，防刷屏由「进入/恢复各一条 + 按 `log_repeat_sec` 重记」保证）。
+struct SysmonThresholdsConfig {
+    double cpu_sustain_used_pct = 90.0;  ///< 单核持续饱和阈值（百分比，[0,100]）
+    int32_t cpu_sustain_samples = 10;    ///< 持续采样次数阈值，[1,3600]
+    double memory_used_pct = 90.0;       ///< 内存使用率越限阈值，[0,100]
+    double swap_used_pct = 50.0;         ///< 交换使用率越限阈值，[0,100]
+    double volume_free_pct = 10.0;       ///< 卷**空闲**百分比阈值，[0,100]；低于即越限
+    int32_t log_repeat_sec = 600;        ///< 持续越限的日志重记间隔，[0,86400]；0 = 不重记
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonThresholdsConfig,
                                                 cpu_sustain_used_pct,
                                                 cpu_sustain_samples,
                                                 memory_used_pct,
                                                 swap_used_pct,
                                                 volume_free_pct,
-                                                volume_free_bytes,
-                                                cooldown_sec)
+                                                log_repeat_sec)
 };
 
 /// RTN_SYSMON_CONFIG payload / SET_SYSMON_CONFIG 合并后的完整配置（契约 sysmon §配置）。
@@ -576,9 +593,9 @@ struct SysmonConfig {
     SysmonNetworkConfig network;
     SysmonHistoryConfig history;
     SysmonRealtimeConfig realtime;
-    SysmonAlertsConfig alerts;
+    SysmonThresholdsConfig thresholds;
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
-        SysmonConfig, sampling, disk, network, history, realtime, alerts)
+        SysmonConfig, sampling, disk, network, history, realtime, thresholds)
 
     /// 默认配置（缺配置/损坏时自愈用；仓库不提交模板文件）。
     [[nodiscard]] static SysmonConfig default_config();

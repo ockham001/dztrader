@@ -1,6 +1,5 @@
 import { api } from './client'
 import type {
-  SysmonAlertsConfigPayload,
   SysmonConfigPayload,
   SysmonDiskConfigPayload,
   SysmonHistoryConfigPayload,
@@ -8,6 +7,7 @@ import type {
   SysmonRealtimeConfigPayload,
   SysmonSamplingConfigPayload,
   SysmonSnapshotPayload,
+  SysmonThresholdsConfigPayload,
 } from '@/types/generated'
 import type { SysmonHistoryQueryParams, SysmonHistoryResponse } from '@/types/api'
 
@@ -25,7 +25,7 @@ export interface SysmonConfigPatch {
   network?: Partial<SysmonNetworkConfigPayload>
   history?: Partial<SysmonHistoryConfigPayload>
   realtime?: Partial<SysmonRealtimeConfigPayload>
-  alerts?: Partial<SysmonAlertsConfigPayload>
+  thresholds?: Partial<SysmonThresholdsConfigPayload>
 }
 
 /** 把历史查询参数拼成 query string（省略 undefined/空串，后端按「未给」处理）。 */

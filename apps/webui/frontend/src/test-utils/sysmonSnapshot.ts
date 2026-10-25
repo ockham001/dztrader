@@ -315,15 +315,14 @@ export function makeSysmonConfig(overrides: SysmonConfigOverrides = {}): SysmonC
       ...overrides.history,
     },
     realtime: { push_interval_sec: 5, ...overrides.realtime },
-    alerts: {
+    thresholds: {
       cpu_sustain_used_pct: 90,
       cpu_sustain_samples: 10,
       memory_used_pct: 90,
       swap_used_pct: 50,
       volume_free_pct: 10,
-      volume_free_bytes: 1_073_741_824,
-      cooldown_sec: 600,
-      ...overrides.alerts,
+      log_repeat_sec: 600,
+      ...overrides.thresholds,
     },
   }
 }

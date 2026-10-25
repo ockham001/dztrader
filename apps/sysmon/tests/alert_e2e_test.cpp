@@ -1,16 +1,20 @@
 /**
  * @file alert_e2e_test.cpp
- * @brief #80 端到端：阈值告警的触发 / 恢复经 `NOTIFY_UI` 与快照 `alerts[]` 对外可见。
+ * @brief #123 端到端：资源越限降级为日志后，**不再产生任何 `NOTIFY_UI`**。
  *
- * 纯函数单测（alerts_test）已经覆盖判定、冷却与恢复的语义；本用例补的是**进程接线**：
- * `dzsysmon` 真的把状态机结果发成 `DZ_FRAME_NOTIFY_UI`（触发 error+popup、恢复 info+不弹），
- * 并把活动告警投影进快照 `alerts[]`（启动即越限 / 配置改阈值后恢复）。
+ * 纯函数单测（`thresholds_test`）已经覆盖进入/重记/恢复的完整语义与日志记录内容；
+ * 本用例补的是**进程接线与外部承诺**：真实 `dzsysmon` 在内存持续越限的情况下，事件通道上
+ * 一条资源类 `NOTIFY_UI` 都不出现，快照也不携带活动告警集合。
+ *
+ * **不断言日志文件内容**：日志 sink 的 flush 策略与按日滚动使文件读取脆弱，日志内容由单测
+ * 覆盖；这里只验证「不弹窗」这个用户可感知的承诺（ADR 0034）。
  *
  * 做法：起一个真实 `dzsysmon` 进程（临时 DZTRADER_HOME + 真实事件通道）：
- * 1. 配置 `alerts.memory_used_pct = 0`（必然越限）→ 启动首帧快照应携带 memory_used 活动告警，
- *    并收到一条 error+popup 的 NOTIFY_UI；
- * 2. 发 `SET_SYSMON_CONFIG` 把阈值改成 100% → 下一个计量 tick 恢复，收到 info 通知；
- * 3. `QUERY_FULL_SNAPSHOT` 触发重推快照 → `alerts[]` 应为空（活动状态已清除）。
+ * 1. 配置 `thresholds.memory_used_pct = 0`（必然越限）→ 启动后观察一段时间的事件通道：
+ *    必须收到快照，但**收不到** `NOTIFY_UI`；
+ * 2. 发 `SET_SYSMON_CONFIG` 改阈值（触发一个真实的状态跃迁）→ 仍然收不到 `NOTIFY_UI`，
+ *    且回推的配置里 `thresholds.memory_used_pct` 已生效；
+ * 3. `QUERY_FULL_SNAPSHOT` 重推快照 → `alerts[]` 恒为空（不再有活动状态投影）。
  *
  * 信号量与事件通道是机器全局命名空间，与 dev 栈/并行测试互扰：检测到占用时默认
  * GTEST_SKIP，`DZ_SYSMON_E2E_STRICT=1` 时 FAIL（与既有 sysmon e2e 同约定）。该用例 RUN_SERIAL。
@@ -146,14 +150,13 @@ protected:
               {"max_retention_days", 30},
               {"max_bytes", 0}}},
             {"realtime", {{"push_interval_sec", kPushIntervalSec}}},
-            {"alerts",
+            {"thresholds",
              {{"cpu_sustain_used_pct", 90.0},
               {"cpu_sustain_samples", 10},
               {"memory_used_pct", 0.0},
               {"swap_used_pct", 100.0},
               {"volume_free_pct", 0.0},
-              {"volume_free_bytes", 0},
-              {"cooldown_sec", 600}}},
+              {"log_repeat_sec", 600}}},
         };
         std::ofstream ofs(home_ / "configs" / "dzsysmon.json", std::ios::binary | std::ios::trunc);
         ofs << cfg.dump(2);
@@ -254,57 +257,100 @@ protected:
     std::vector<std::pair<DzFrameType, nlohmann::json>> pending_;
 };
 
-// 契约 sysmon §2.8：启动即越限 → 首帧快照携带活动告警 + 一条 error+popup 通知；
-// 改阈值恢复 → info 通知 + 重推快照的活动告警清空。
-TEST_F(AlertE2ETest, ThresholdAlertTriggersNotificationAndClearsAfterRecovery) {
+// 契约 sysmon §2.8 / ADR 0034：资源越限只写日志，**不产生任何 NOTIFY_UI**。
+//
+// 这是本票最重要的外部承诺：弹窗通道必须只剩真故障。内存阈值配成 0（必然越限）仍然
+// 一条通知都不该出现——旧实现会在这里发 error+popup 并弹模态框打断盯盘。
+TEST_F(AlertE2ETest, ResourceThresholdBreachNeverProducesNotifyUi) {
     start_child();
 
-    // 1) 启动首帧（触发 1）：活动告警已进 alerts[]（init 阶段评估过一次）。
+    // 1) 启动首帧（契约 sysmon §4 触发 1）：快照必须到达且合法——"不发通知"不等于"没在跑"。
     const auto first = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s);
     ASSERT_TRUE(first.has_value()) << "dzsysmon did not push the startup snapshot";
     EXPECT_EQ(platform::SysmonSnapshot::validate(*first), std::nullopt);
-    const auto& startup_alerts = (*first)["alerts"];
-    ASSERT_TRUE(startup_alerts.is_array());
-    const bool startup_has_memory_alert =
-        std::any_of(startup_alerts.begin(), startup_alerts.end(), [](const nlohmann::json& alert) {
-            return alert.value("kind", "") == platform::SYSMON_ALERT_MEMORY_USED;
-        });
-    EXPECT_TRUE(startup_has_memory_alert)
-        << "startup snapshot must expose the active memory alert (contract sysmon §2.8)";
+    // 启动即越限（阈值 0），但快照不再携带活动告警集合（#123 起状态只在日志里）。
+    ASSERT_TRUE((*first)["alerts"].is_array());
+    EXPECT_TRUE((*first)["alerts"].empty())
+        << "resource thresholds must not project an active alert set into the snapshot";
 
-    // 2) 触发通知：error + popup=true（只有 error+popup 会打断用户，契约 notify-ui）。
-    const auto trigger = wait_for_frame(DZ_FRAME_NOTIFY_UI, 10s);
-    ASSERT_TRUE(trigger.has_value()) << "no NOTIFY_UI frame for the threshold alert";
-    EXPECT_EQ((*trigger)["source"], platform::SYSMON_INSTANCE_NAME);
-    EXPECT_EQ((*trigger)["level"], "error");
-    EXPECT_EQ((*trigger)["popup"], true);
-    const std::string trigger_message = (*trigger)["message"].get<std::string>();
-    EXPECT_NE(trigger_message.find("内存"), std::string::npos);
+    // 2) 内存持续越限跨过多个计量 tick：期间不得出现任何 NOTIFY_UI。
+    //    等待窗口显著长于 measure_interval_ms，确保旧实现的"启动即弹"必然被捕获。
+    EXPECT_FALSE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 3s).has_value())
+        << "resource threshold breach produced a NOTIFY_UI frame (must be log-only)";
 
-    // 3) 把内存阈值提到 100%（只有内存全满才越限）→ 下一计量 tick 恢复。
-    //    丢弃启动阶段残留的 RTN_SYSMON_CONFIG（启动推送的旧值 0 会被下面的等待命中）。
+    // 3) 触发一次真实的状态跃迁：把内存阈值提到 100%（只有内存全满才越限）。
+    //    旧实现在这里会发一条 info 的"恢复"通知；新实现必须安静。
     pending_.clear();
-    ASSERT_TRUE(send_set_config({{"alerts", {{"memory_used_pct", 100.0}}}}));
+    ASSERT_TRUE(send_set_config({{"thresholds", {{"memory_used_pct", 100.0}}}}));
     const auto config = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
     ASSERT_TRUE(config.has_value()) << "SET must roll the effective config back to the client";
-    EXPECT_DOUBLE_EQ((*config)["alerts"]["memory_used_pct"].get<double>(), 100.0);
+    EXPECT_DOUBLE_EQ((*config)["thresholds"]["memory_used_pct"].get<double>(), 100.0);
+    // 未提及的键保持默认（merge 不是整体替换）。
+    EXPECT_EQ((*config)["thresholds"]["log_repeat_sec"], 600);
 
-    const auto recovery = wait_for_frame(DZ_FRAME_NOTIFY_UI, 10s);
-    ASSERT_TRUE(recovery.has_value()) << "no recovery NOTIFY_UI after the threshold was raised";
-    EXPECT_EQ((*recovery)["level"], "info");
-    EXPECT_EQ((*recovery)["popup"], false);
-    const std::string recovery_message = (*recovery)["message"].get<std::string>();
-    EXPECT_NE(recovery_message.find("内存"), std::string::npos);
+    EXPECT_FALSE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 3s).has_value())
+        << "threshold recovery produced a NOTIFY_UI frame (must be log-only)";
 
-    // 4) 全量快照查询：活动告警已清除（恢复不是只发通知、状态却不清）。
-    //    丢弃 SET 成功后立即推送的旧快照（它早于恢复 tick，仍带活动告警）。
+    // 4) 全量快照查询：仍不携带活动告警。
     pending_.clear();
     ASSERT_TRUE(query_full_snapshot());
-    const auto after_recovery = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 10s);
-    ASSERT_TRUE(after_recovery.has_value()) << "QUERY_FULL_SNAPSHOT must re-push the snapshot";
-    EXPECT_EQ(platform::SysmonSnapshot::validate(*after_recovery), std::nullopt);
-    EXPECT_TRUE((*after_recovery)["alerts"].empty())
-        << "recovered alert must leave the active alert set (contract sysmon §2.8)";
+    const auto after = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 10s);
+    ASSERT_TRUE(after.has_value()) << "QUERY_FULL_SNAPSHOT must re-push the snapshot";
+    EXPECT_EQ(platform::SysmonSnapshot::validate(*after), std::nullopt);
+    ASSERT_TRUE((*after)["alerts"].is_array());
+    EXPECT_TRUE((*after)["alerts"].empty());
+}
+
+// 旧格式配置（`alerts` 段）必须能启动并迁移为新形状：现网配置文件直接报错会让进程起不来。
+// 这里验证的是**进程级**接线（迁移在 load_config 内、写回文件后进程照常运行）；
+// 迁移的键级语义（哪些映射、哪些丢弃、部分键、未知键）由 config_test 覆盖。
+TEST_F(AlertE2ETest, LegacyAlertsSectionIsMigratedAndProcessStarts) {
+    // 用旧形状覆盖启动前写的配置（超集：旧段 + 已删除的 volume_free_bytes/cooldown_sec）。
+    nlohmann::json legacy;
+    {
+        std::ifstream ifs(home_ / "configs" / "dzsysmon.json", std::ios::binary);
+        ifs >> legacy;
+    }
+    ASSERT_TRUE(legacy.contains("thresholds"));
+    legacy["alerts"] = {{"cpu_sustain_used_pct", 91.0}, {"cpu_sustain_samples", 7},
+                        {"memory_used_pct", 0.0},       {"swap_used_pct", 100.0},
+                        {"volume_free_pct", 0.0},       {"volume_free_bytes", 1'073'741'824},
+                        {"cooldown_sec", 600}};
+    legacy.erase("thresholds");
+    {
+        std::ofstream ofs(home_ / "configs" / "dzsysmon.json", std::ios::binary | std::ios::trunc);
+        ofs << legacy.dump(2);
+    }
+
+    start_child();
+
+    // 进程正常启动（迁移不报错、不阻塞）：回推的生效配置是**新形状**且值已搬过来。
+    const auto config = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 15s);
+    ASSERT_TRUE(config.has_value()) << "dzsysmon did not come up with a legacy config file";
+    EXPECT_FALSE((*config).contains("alerts")) << "legacy section must not survive in RTN payload";
+    ASSERT_TRUE((*config).contains("thresholds"));
+    EXPECT_DOUBLE_EQ((*config)["thresholds"]["cpu_sustain_used_pct"].get<double>(), 91.0);
+    EXPECT_EQ((*config)["thresholds"]["cpu_sustain_samples"], 7);
+    // 已删除的键不会出现在新段里。
+    EXPECT_FALSE((*config)["thresholds"].contains("volume_free_bytes"));
+    EXPECT_FALSE((*config)["thresholds"].contains("cooldown_sec"));
+
+    // 文件也被改写为新形状：旧段消失、新段落盘（下次启动不再重复迁移）。
+    nlohmann::json persisted;
+    {
+        std::ifstream ifs(home_ / "configs" / "dzsysmon.json", std::ios::binary);
+        ifs >> persisted;
+    }
+    EXPECT_FALSE(persisted.contains("alerts")) << "migration must write the new shape back";
+    ASSERT_TRUE(persisted.contains("thresholds"));
+    EXPECT_DOUBLE_EQ(persisted["thresholds"]["cpu_sustain_used_pct"].get<double>(), 91.0);
+    // log section 与其它段必须原样保留（迁移不是重写整份文件）。
+    EXPECT_TRUE(persisted.contains("log"));
+    EXPECT_TRUE(persisted.contains("sampling"));
+
+    // 迁移后照常推送快照（进程健康），且仍然不发资源类通知。
+    EXPECT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 10s).has_value());
+    EXPECT_FALSE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 2s).has_value());
 }
 
 }  // namespace

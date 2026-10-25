@@ -1150,7 +1150,7 @@ describe('useSysmonStore sysmon_config 镜像与「显示全部网卡」pending�
       { ...makeSysmonConfig(), disk: undefined },
       { ...makeSysmonConfig(), history: undefined },
       { ...makeSysmonConfig(), realtime: undefined },
-      { ...makeSysmonConfig(), alerts: undefined },
+      { ...makeSysmonConfig(), thresholds: undefined },
     ]
     for (const payload of invalid) store.applyConfig(payload)
 
@@ -1303,7 +1303,7 @@ describe('useSysmonStore 完整配置镜像与保存（#81）', () => {
     // 配置镜像按契约全量形状写入（各段都能被配置 tab 消费）
     expect(store.config?.sampling.measure_interval_ms).toBe(500)
     expect(store.config?.sampling.record_interval_sec).toBe(60)
-    expect(store.config?.alerts.cooldown_sec).toBe(600)
+    expect(store.config?.thresholds.log_repeat_sec).toBe(600)
   })
 
   it('loadConfig 503：保持空镜像、不抛错、不弹错（页面显示「配置尚未到达」）', async () => {
@@ -1410,7 +1410,7 @@ describe('useSysmonStore 完整配置镜像与保存（#81）', () => {
       vi.mocked(sysmonApi.setConfig).mockImplementation(() => new Promise(() => {}))
       const store = useSysmonStore()
 
-      const pendingResult = store.setConfig({ alerts: { cooldown_sec: 60 } })
+      const pendingResult = store.setConfig({ thresholds: { log_repeat_sec: 60 } })
       expect(store.configPending).toBe(true)
       await vi.advanceTimersByTimeAsync(SYSMON_CONFIG_TIMEOUT_MS + 1)
       const result = await pendingResult

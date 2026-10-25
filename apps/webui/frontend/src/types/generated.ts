@@ -443,14 +443,13 @@ export interface SysmonRealtimeConfigPayload {
     push_interval_sec: number
 }
 
-export interface SysmonAlertsConfigPayload {
+export interface SysmonThresholdsConfigPayload {
     cpu_sustain_used_pct: number
     cpu_sustain_samples: number
     memory_used_pct: number
     swap_used_pct: number
     volume_free_pct: number
-    volume_free_bytes: number
-    cooldown_sec: number
+    log_repeat_sec: number
 }
 
 export interface SysmonConfigPayload {
@@ -459,5 +458,5 @@ export interface SysmonConfigPayload {
     network: SysmonNetworkConfigPayload
     history: SysmonHistoryConfigPayload
     realtime: SysmonRealtimeConfigPayload
-    alerts: SysmonAlertsConfigPayload
+    thresholds: SysmonThresholdsConfigPayload
 }

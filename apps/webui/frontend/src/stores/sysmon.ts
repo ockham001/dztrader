@@ -96,7 +96,7 @@ function isFullConfigPayload(payload: Partial<SysmonConfigPayload> | null | unde
   if (typeof payload.network.hide_virtual !== 'boolean') return false
   if (!payload.history || typeof payload.history !== 'object') return false
   if (!payload.realtime || typeof payload.realtime !== 'object') return false
-  if (!payload.alerts || typeof payload.alerts !== 'object') return false
+  if (!payload.thresholds || typeof payload.thresholds !== 'object') return false
   return true
 }
 

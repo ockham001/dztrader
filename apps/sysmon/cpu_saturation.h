@@ -5,8 +5,8 @@
  * @file cpu_saturation.h
  * @brief 饱和核判定（契约 sysmon §2.7）。
  *
- * 规则：单核使用率连续 `alerts.cpu_sustain_samples` 次采样 **≥** 阈值
- * （`alerts.cpu_sustain_used_pct / 100`）即标记为 `saturated=true`；任一采样严格
+ * 规则：单核使用率连续 `thresholds.cpu_sustain_samples` 次采样 **≥** 阈值
+ * （`thresholds.cpu_sustain_used_pct / 100`）即标记为 `saturated=true`；任一采样严格
  * 低于阈值即清零并解除；不可用样本（null）不改变连续计数；核序列变化（热插拔）
  * 重置全部计数。阈值与连续次数每采样从当前配置读取，运行期修改即时生效。
  *
@@ -32,8 +32,8 @@ public:
      * @brief 推进一次采样并回写每个核的 `saturated` 标记。
      *
      * @param cores            本次每核使用率（index + usage_ratio）；`saturated` 由本函数写入
-     * @param threshold_ratio  饱和阈值（比率，[0,1]；来自 alerts.cpu_sustain_used_pct / 100）
-     * @param required_samples 连续采样次数阈值（来自 alerts.cpu_sustain_samples）
+     * @param threshold_ratio  饱和阈值（比率，[0,1]；来自 thresholds.cpu_sustain_used_pct / 100）
+     * @param required_samples 连续采样次数阈值（来自 thresholds.cpu_sustain_samples）
      */
     void update(std::vector<platform::SysmonCpuCore>& cores,
                 double threshold_ratio,
