@@ -83,10 +83,18 @@ if (-not $SkipConfigure) {
     Write-Host ""
     Write-Host "[2/2] cmake configure" -ForegroundColor Yellow
     $preset = "win-$($Config.ToLower())"
-    Write-Host "cmake --preset $preset"
+    $configureArgs = @('--preset', $preset)
+    # CI 编译缓存（#133）：只在 CI 显式打开（DZ_SCCACHE=1）时接 sccache。
+    # 本地增量构建保持不接：编译器缓存插在 cl.exe 前，必须正确透传 /showIncludes 行，
+    # 而本仓 CMakeLists 为中文 MSVC 硬编码了依赖前缀；启用缓存仅在 CI 冷构建下风险可控。
+    if ($env:DZ_SCCACHE -eq '1') {
+        $configureArgs += '-DCMAKE_CXX_COMPILER_LAUNCHER=sccache'
+        Write-Host "sccache: enabled (CI only, CMAKE_CXX_COMPILER_LAUNCHER=sccache)" -ForegroundColor DarkGray
+    }
+    Write-Host "cmake $($configureArgs -join ' ')"
     Push-Location $repoRoot
     try {
-        & cmake --preset $preset
+        & cmake @configureArgs
         if ($LASTEXITCODE -ne 0) { throw "cmake configure failed with exit code $LASTEXITCODE" }
     }
     finally { Pop-Location }
