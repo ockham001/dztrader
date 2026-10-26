@@ -111,9 +111,9 @@
         {
             "name": "test-base",
             "hidden": true,
-            "description": "测试运行环境：强制 DZTRADER_HOME 指向项目内 .dztrader_dev，屏蔽系统级同名环境变量（自管临时目录的测试在 SetUp 内自行覆盖，不受影响）",
+            "description": "测试运行环境：强制 DZTRADER_HOME 指向项目内 .cache/test_home（与开发进程的 .dztrader_dev 隔离，test.sh / test.ps1 每次运行前清空），屏蔽系统级同名环境变量（自管临时目录的测试在 SetUp 内自行覆盖，不受影响）",
             "environment": {
-                "DZTRADER_HOME": "${sourceDir}/.dztrader_dev"
+                "DZTRADER_HOME": "${sourceDir}/.cache/test_home"
             },
             "execution": {
                 "noTestsAction": "error",

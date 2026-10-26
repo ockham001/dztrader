@@ -109,7 +109,7 @@ test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈�
   - `fast`：默认单测门禁，秒级用例；所有普通 `gtest_discover_tests` 注册必须带 `PROPERTIES LABELS fast`
   - `slow`：显式穷举/慢速档。`libs/strategy_api` 的 `SDK_SLOW_TESTS`（`date_exhaustive_test` / `date_time_exhaustive_test` / `bar_diff_exhaustive_test`）单独成 target 并打 `slow`；对应抽样版留在 `date_test.cpp` / `date_time_test.cpp` / `bar_diff_test.cpp` 的 `fast` 门禁。`bar_diff_exhaustive_test` 是 tick→bar 差分验收（ADR 0031 决策 10）的全量档：用例逻辑在 `bar_diff_cases.h` 只写一份，fast 档每条路径各跑一次、slow 档用多 seed/多日/高密度覆盖
   - `perf`：无阈值基准项（`PerfBench`（SHM 往返）、`BarPerfBench`（tick→bar 四路径）），不进默认门禁；数值与记录方式见下节「性能基准」
-  - 运行：`./scripts/test.sh`（fast）/ `-L slow` / `-L perf`（Windows 用 `-Label`）；等价直调 `ctest --preset linux-release[-slow|-perf]`
+  - 运行：`./scripts/test.sh`（fast）/ `-L slow` / `-L perf`（Windows 用 `-Label`）；等价直调 `ctest --preset linux-release[-slow|-perf]`。测试 `DZTRADER_HOME` 由 `test-base` 注入 `.cache/test_home`，**运行请走 `test.sh` / `gate.sh test`**（每次清空重建，避免上一轮残留 shm/DB 污染无关测试）；绕过脚本直调 `ctest --preset` 不复位该目录
   - `slow` / `perf` 不在 CI 默认门禁内（CI 只跑 fast），按需本地手动运行；`fast` 过滤依赖构建期发现，必须先 build 再 test（未构建 target 的 `_NOT_BUILT` 回退不带标签）
 
 ---
@@ -266,7 +266,7 @@ CTP 是闭源库，无法用 conan 统一管理：
 改前端后必须走 `build` 脚本（AGENTS.md 硬门禁 5）。底层机制（`apps/webui/CMakeLists.txt`）：
 
 1. `find_program(NPM_EXECUTABLE)` 定位 npm
-2. `add_custom_command` 执行 `npm ci` + `npm run build`（底层是 `vue-tsc --noEmit && vite build`）
+2. `add_custom_command` 先经门控脚本按需安装依赖（`scripts/npm-ci-if-needed.cmake`：`node_modules` 不完整 / 戳文件缺失 / `package-lock.json` hash 或 mtime 变化时才 `npm ci`），再 `npm run build`（底层是 `vue-tsc --noEmit && vite build`）
 3. `add_custom_target(dzweb_frontend ALL ...)` + `add_dependencies(dzweb dzweb_frontend)`
 4. `POST_BUILD` 用 `copy_directory` 把 `frontend/dist` 复制到 `${DZ_OUTPUT_DIR}/web`
 5. `install(DIRECTORY .../dist/ DESTINATION .../web)`

@@ -79,7 +79,7 @@ protected:
 
     void TearDown() override {
         clear_env();
-        // 恢复调用方传入的 DZTRADER_HOME (ctest 注入 .dztrader_dev), 并清掉临时 home
+        // 恢复调用方传入的 DZTRADER_HOME (ctest 注入 .cache/test_home), 并清掉临时 home
         if (original_home_.has_value()) {
             dztrader::env::set("DZTRADER_HOME", *original_home_);
         } else {

@@ -12,7 +12,7 @@ std::filesystem::path g_test_root;
 /// 临时根目录（约定见 build-appendix「单元测试约定」）：
 /// - daily sink 按 <logger>_YYYY-MM-DD.log 落盘，固定目录名会在重复运行间残留、并行 ctest
 /// 时互相干扰；
-/// - 这些用例不依赖 DZTRADER_HOME，放系统临时目录，避免测试产物污染项目内 .dztrader_dev；
+/// - 这些用例不依赖 DZTRADER_HOME，放系统临时目录，避免测试产物污染项目内 .cache/test_home；
 /// - 目录名用 boost::filesystem::unique_path（std::filesystem 无等价 API），每个进程唯一。
 void ensure_test_root() {
     if (!g_test_root.empty()) {

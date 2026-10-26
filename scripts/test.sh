@@ -59,5 +59,12 @@ if [ -n "$TEST_NAME" ]; then
     CTEST_ARGS+=(-R "$TEST_NAME")
 fi
 
+# 测试 DZTRADER_HOME（.cache/test_home，由 CMakePresets.json 的 test-base 注入）
+# 每次运行前清空重建：上一轮残留的 shm meta 会让无关测试一起失败（#134）；
+# 在 SetUp 内自管临时 home 的测试不受影响。
+TEST_HOME="$(cd "$(dirname "$0")/.." && pwd)/.cache/test_home"
+rm -rf "$TEST_HOME"
+mkdir -p "$TEST_HOME"
+
 echo "ctest ${CTEST_ARGS[*]}"
 ctest "${CTEST_ARGS[@]}"

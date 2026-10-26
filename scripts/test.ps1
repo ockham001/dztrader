@@ -50,6 +50,13 @@ $preset = switch ($Label) {
     default { "win-$($Config.ToLower())" }
 }
 
+# 测试 DZTRADER_HOME（.cache/test_home，由 CMakePresets.json 的 test-base 注入）
+# 每次运行前清空重建：上一轮残留的 shm meta 会让无关测试一起失败（#134）；
+# 在 SetUp 内自管临时 home 的测试不受影响。
+$testHome = "$PSScriptRoot\..\.cache\test_home"
+if (Test-Path $testHome) { Remove-Item -Recurse -Force $testHome }
+New-Item -ItemType Directory -Path $testHome -Force | Out-Null
+
 $ctestArgs = @('--preset', $preset)
 if ($TestName) { $ctestArgs += @('-R', $TestName) }
 & ctest @ctestArgs

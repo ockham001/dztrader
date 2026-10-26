@@ -123,11 +123,16 @@ if(NPM_EXECUTABLE)
 
     add_custom_command(
         OUTPUT ${FRONTEND_DIST}/index.html
-        COMMAND ${CMAKE_COMMAND} -E env CI=true ${NPM_EXECUTABLE} ci
+        # 依赖安装门控：lockfile hash + node_modules 存在时跳过 npm ci（#134，脚本跨平台）
+        COMMAND ${CMAKE_COMMAND}
+            "-DNPM_EXECUTABLE=${NPM_EXECUTABLE}"
+            "-DFRONTEND_DIR=${FRONTEND_DIR}"
+            "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+            -P "${CMAKE_SOURCE_DIR}/scripts/npm-ci-if-needed.cmake"
         COMMAND ${NPM_EXECUTABLE} run build
         WORKING_DIRECTORY ${FRONTEND_DIR}
         DEPENDS ${FRONTEND_DIR}/package.json ${FRONTEND_DIR}/package-lock.json ${FRONTEND_SOURCES}
-        COMMENT "Building Vue frontend (npm ci + vite build)"
+        COMMENT "Building Vue frontend (npm ci if needed + vite build)"
         VERBATIM
     )
     add_custom_target(dzweb_frontend ALL DEPENDS ${FRONTEND_DIST}/index.html)
