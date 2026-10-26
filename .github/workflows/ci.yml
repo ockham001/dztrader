@@ -13,6 +13,14 @@ on:
       - "THIRD_PARTY_NOTICES.md"
   pull_request:
     paths-ignore: *docs_only_paths
+  # 夜间预热 Windows 编译缓存（#133）：GitHub Actions 缓存按 ref 作用域，PR run 写入的
+  # 缓存不能被其它 PR 复用；只有在默认分支上构建，PR 才能 restore 到。故 PR 侧只读缓存，
+  # 由本定时任务 + workflow_dispatch 在 main 上写入（public 仓库 runner 不额外计费）。
+  # 注意：合并 #133 后首个 PR 仍是冷缓存（需先手动触发一次 warm job）；"PR 墙钟 ≤15min"
+  # 是预热生效后的稳态目标，不是首跑承诺。
+  schedule:
+    - cron: "17 16 * * *"  # UTC 16:17 = Asia/Shanghai 00:17
+  workflow_dispatch:
 
 # 同一分支的新 push 取消上一次仍在跑的 PR run，避免 #93 那种「3 个 run 排队后被取代」的浪费。
 # main 的 push run 不取消（保持每个 merge commit 的验证结果）。
@@ -31,9 +39,24 @@ jobs:
     env:
       # 冒烟测试冲突(dev 栈/孤儿进程)时直接失败, 防止被静默跳过造成假绿
       DZ_SMOKE_STRICT: "1"
+      # CI 编译缓存（#133）：sccache 直接用 Actions cache；缓存服务异常时降级为直编，不让构建红。
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+      # PR run 只读缓存：写缓存由 main 上的夜间热身 job 负责（GHA 缓存按 ref 作用域，
+      # 在 PR ref 下写的缓存无法被其它 PR 复用）。未命中就当普通编译，不影响正确性。
+      SCCACHE_GHA_RW_MODE: "READ_ONLY"
+      # setup.ps1 只在 CI 显式打开 sccache launcher：本地增量构建保持不接，避免与
+      # CMakeLists 硬编码的 MSVC /showIncludes 前缀（依赖追踪）互相影响。
+      DZ_SCCACHE: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # 版本钉死：sccache 版本进缓存 key，warm/PR 不一致会导致全部 miss。
+      - name: Setup sccache (MSVC compiler cache)
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.19.0"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -51,6 +74,16 @@ jobs:
           key: conan2-${{ runner.os }}-${{ hashFiles('conanfile.py', 'profiles/win-msvc-static') }}
           restore-keys: |
             conan2-${{ runner.os }}-
+
+      # 前端 npm ci 是冷安装：缓存 npm 下载目录，避免每次 run 重复拉包。只缓存 ~/.npm，
+      # 不缓存 node_modules（lock 变更时 node_modules 会过期，且本构建对 dist 有完整性要求）。
+      - name: Cache npm packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/webui/frontend/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
 
       - name: Setup (conan install + cmake configure)
         shell: pwsh
@@ -96,11 +129,17 @@ jobs:
 
   linux:
     name: Linux (GCC Release)
+    # 夜间 run 只为预热 Windows 缓存；Linux 已由每次 main push 覆盖，不重复跑。
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       # 冒烟测试冲突时直接失败, 防止被静默跳过造成假绿 (Linux 上冲突检测暂为空实现, 恒跑)
       DZ_SMOKE_STRICT: "1"
+      # 必须与 ccache-action 的缓存目录一致（action 读 CCACHE_DIR，未设时用
+      # ${GITHUB_WORKSPACE}/.ccache）；否则 restore/save 的目录 ≠ 编译实际写入目录，
+      # 表现为"ccache: enabled 但永不命中"。
+      CCACHE_DIR: ${{ github.workspace }}/.cache/ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -111,6 +150,22 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # CI 编译缓存（#133）：只缓存编译器输出，绝不缓存 build/ 目录（陈旧 obj/依赖追踪是
+      # C++ CI 的公认坑）。setup.sh 会自动检测 ccache 并接 CMAKE_CXX_COMPILER_LAUNCHER，
+      # 这里负责把 CCACHE_DIR 持久化；是否生效看 setup 日志 "ccache: enabled" 与下方统计。
+      # restore-keys 不要带尾 `-`：action 会自行拼 `ccache-` 前缀与 `-` 后缀（append-timestamp
+      # 默认 true），写成 `ccache-linux-` 会变成 `ccache-ccache-linux--` 永不命中。
+      # PR 不写缓存（写了也只对本次 PR 可见，白占配额），缓存由 main push 写入。
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        continue-on-error: true
+        with:
+          key: ccache-linux-${{ github.ref }}
+          restore-keys: |
+            ccache-linux
+          max-size: 1000M
+          save: ${{ github.event_name != 'pull_request' }}
 
       - name: Install clang-format 21 (apt.llvm.org, official LLVM)
         run: |
@@ -149,11 +204,28 @@ jobs:
           restore-keys: |
             conan2-${{ runner.os }}-
 
+      # 前端 npm ci 是冷安装：缓存 npm 下载目录，避免每次 run 重复拉包。只缓存 ~/.npm，
+      # 不缓存 node_modules（lock 变更时 node_modules 会过期）。
+      - name: Cache npm packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/webui/frontend/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
       - name: Setup (conan install + cmake configure)
         run: ./scripts/setup.sh release
 
       - name: Build (C++ + frontend dist)
         run: ./scripts/build.sh --config release
+
+      # 命中率证据（#133）：ubuntu-24.04 的 ccache 4.9 不支持 action 的 JSON job summary，
+      # 这里显式打印统计；失败不阻断构建。
+      - name: ccache stats
+        if: always()
+        continue-on-error: true
+        run: ccache --show-stats
 
       - name: C++ Tests (incl. integration smoke)
         run: ./scripts/test.sh --config release
@@ -183,3 +255,61 @@ jobs:
           name: last-test-log-linux
           path: build/linux/x86_64/Release/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
+
+  # ============================================================
+  # Windows 编译缓存预热（#133）
+  # sccache 的 GitHub Actions 缓存按 ref 作用域：PR run 写入的缓存其它 PR 读不到，
+  # 只有默认分支（main）写的缓存能被任意 PR restore。因此本 job 在 main 上只做
+  # “configure + build” 把编译结果写进 sccache，不做测试（测试仍由 PR 的 windows job 负责）；
+  # 定时 + 手动触发，不占用任何 PR 的等待时间。
+  # ============================================================
+  windows-cache-warm:
+    name: Windows cache warm (main)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+      DZ_SCCACHE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup sccache (MSVC compiler cache)
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.19.0"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Conan
+        run: pip install "conan==2.32.0"
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.conan2
+          key: conan2-${{ runner.os }}-${{ hashFiles('conanfile.py', 'profiles/win-msvc-static') }}
+          restore-keys: |
+            conan2-${{ runner.os }}-
+
+      - name: Cache npm packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/webui/frontend/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
+      - name: Setup (conan install + cmake configure)
+        shell: pwsh
+        run: .\scripts\setup.ps1
+
+      - name: Build (C++ + frontend dist)
+        shell: pwsh
+        run: .\scripts\build.ps1

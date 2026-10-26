@@ -56,8 +56,17 @@ if(MSVC)
     # C4100: 未引用参数（接口/回调常见噪音）
     add_compile_options(/wd4100)
     add_compile_options($<$<CONFIG:Release>:/WX>)
-    # 启用 PDB 生成（Release 模式下保留符号，便于 crash dump 分析；不影响运行时性能）
-    add_compile_options(/Zi)
+    # 调试信息形态：默认 /Zi（独立 PDB，Release 保留符号便于 crash dump 分析，不影响运行时性能）。
+    # CI 编译缓存（#133）：sccache 作为编译器 launcher 时必须用 /Z7（调试信息嵌入 .obj）——
+    # /Zi 会让并行 cl.exe 争用同一 PDB（C1041），且 sccache 无法缓存带 PDB 的编译输出。
+    # 该开关只在 CI setup.ps1 启用 sccache 时打开，本地/普通构建行为不变。
+    option(DZ_MSVC_EMBED_DEBUG_INFO
+        "MSVC: embed debug info (/Z7) instead of separate PDB (/Zi); required for sccache in CI" OFF)
+    if(DZ_MSVC_EMBED_DEBUG_INFO)
+        add_compile_options(/Z7)
+    else()
+        add_compile_options(/Zi)
+    endif()
     add_link_options(/DEBUG)
 else()
     # -Wconversion: 收窄转换检查。MSVC 侧 /W4 的 C4244 已覆盖, GCC 需显式开启才能

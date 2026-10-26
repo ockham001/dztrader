@@ -83,10 +83,21 @@ if (-not $SkipConfigure) {
     Write-Host ""
     Write-Host "[2/2] cmake configure" -ForegroundColor Yellow
     $preset = "win-$($Config.ToLower())"
-    Write-Host "cmake --preset $preset"
+    $configureArgs = @('--preset', $preset)
+    # CI 编译缓存（#133）：只在 CI 显式打开（DZ_SCCACHE=1）时接 sccache。
+    # sccache 会自动探测本地化 /showIncludes 前缀；CI 是冷构建、不依赖增量依赖追踪，
+    # 本地默认不接以保持开发构建行为不变、也不把缓存服务引入本地失败面。
+    if ($env:DZ_SCCACHE -eq '1') {
+        $configureArgs += '-DCMAKE_CXX_COMPILER_LAUNCHER=sccache'
+        # sccache + /Zi 会因并行 cl.exe 争用 PDB 失败（C1041）且无法缓存；CI 改用 /Z7
+        # （调试信息嵌入 obj）。本地/普通构建仍走 CMakeLists 默认的 /Zi。
+        $configureArgs += '-DDZ_MSVC_EMBED_DEBUG_INFO=ON'
+        Write-Host "sccache: enabled (CI only, CMAKE_CXX_COMPILER_LAUNCHER=sccache, /Z7)" -ForegroundColor DarkGray
+    }
+    Write-Host "cmake $($configureArgs -join ' ')"
     Push-Location $repoRoot
     try {
-        & cmake --preset $preset
+        & cmake @configureArgs
         if ($LASTEXITCODE -ne 0) { throw "cmake configure failed with exit code $LASTEXITCODE" }
     }
     finally { Pop-Location }
