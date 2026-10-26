@@ -254,7 +254,7 @@
 
 ## 已知限制
 
-- 磁盘 I/O 为**整盘粒度**：不提供分区级 I/O；Windows 的 `device` 只有 `PhysicalDrive<N>`。**卷/盘符 ↔ 物理盘映射**（ADR 0024 Consequences 要求，Windows 走 `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS`）由后续票 [#103](https://github.com/ockham001/dztrader/issues/103) 提供，不在本票范围。
+- 磁盘 I/O 为**整盘粒度**：不提供分区级 I/O；Windows 的 `device` 只有 `PhysicalDrive<N>`。**不做卷/盘符 ↔ 物理盘映射**（ADR 0035）：卷容量与磁盘 I/O 是两个独立维度，不提供「卷承载在哪块物理盘」的关联展示；原跟进票 #103 关闭为 not planned。
 - Windows 磁盘性能计数器依赖 diskperf 已开启与访问权限，读不到时整域报不可用（`no_permission`）而不是 0；不做提权或反复重试。
 - Windows 物理盘编号按 `0..32` 枚举（沿用参考实现口径），超过 33 块盘的机器会被截断。
 - 网络为**整网卡粒度**：不提供每进程/每连接/每协议流量。`is_virtual` 只用结构性依据（Linux `device` 链接、Windows `HardwareInterface`），因此硬件网卡上的 VLAN 子接口、网卡绑定（bond/team）逻辑接口会被判为虚拟并在默认配置下隐藏；排查这类拓扑时用「显示全部网卡」开关。

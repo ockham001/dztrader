@@ -114,7 +114,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 `disk_io[]`：每物理盘 I/O 派生值。字段为 `{device:string, read_bytes_per_sec, write_bytes_per_sec, read_iops, write_iops, latency_ms, queue_depth, utilization}`；除 `device` 外均为 `number | null`——**计数器不可用时为 `null` 而非 0**（契约 §2.7）。
 
 - `device` 为设备稳定标识：Linux 为内核块设备名（`sda` / `nvme0n1` 等**整盘**名，不含分区）；Windows 为 `PhysicalDrive<N>`（物理盘编号）。帧内唯一，可在帧间变化（热插拔/盘号增减）。
-- 采集范围只含**整块物理盘**：Linux 以 `/sys/block` 的整盘条目为准（分区天然不在其中），并排除 loop/ram/zram 内存与回环设备、`dm-*`/`md*`/bcache 聚合设备（其 I/O 已计入底层物理盘，单列会重复计数）与 `nbd`/`rbd`/`drbd` 网络块设备、`sr`/`sg`/`fd`/`pktcdvd` 光学/软驱/包写入等非存储设备；Windows 遍历 `PhysicalDrive0..PhysicalDrive32`，不存在的盘号与不支持计数器的盘（含无权限）跳过。**盘符/卷 × 物理盘的映射不在本版本范围**（Windows `device` 只有物理盘编号，见 §8）。配置 `disk.devices` 非空时只输出匹配的设备（§3.1；过滤在快照构造阶段，不改变采集与速率基线）。
+- 采集范围只含**整块物理盘**：Linux 以 `/sys/block` 的整盘条目为准（分区天然不在其中），并排除 loop/ram/zram 内存与回环设备、`dm-*`/`md*`/bcache 聚合设备（其 I/O 已计入底层物理盘，单列会重复计数）与 `nbd`/`rbd`/`drbd` 网络块设备、`sr`/`sg`/`fd`/`pktcdvd` 光学/软驱/包写入等非存储设备；Windows 遍历 `PhysicalDrive0..PhysicalDrive32`，不存在的盘号与不支持计数器的盘（含无权限）跳过。**盘符/卷 × 物理盘的映射不做**（ADR 0035；Windows `device` 只有物理盘编号，见 §8）。配置 `disk.devices` 非空时只输出匹配的设备（§3.1；过滤在快照构造阶段，不改变采集与速率基线）。
 - `read_bytes_per_sec` / `write_bytes_per_sec`：吞吐（字节/秒）；`read_iops` / `write_iops`：每秒完成的读/写请求数。四者 = Δ累计计数器 / Δ实际经过秒数（§2.7）。
 - `latency_ms`：**平均每完成请求的驻留时间（含排队）**，单位毫秒 = Δ(读服务时间 + 写服务时间) / Δ(读完成数 + 写完成数)。窗口内没有完成的请求时为 `null`（无定义，不是 0）。
 - `queue_depth`：**采样时刻的在途请求数**（瞬时 gauge，如 Linux `ios_in_progress` / Windows `QueueDepth`），**不是区间平均队列深度**；平台不提供该读数时为 `null`。
@@ -589,7 +589,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 - **不支持容器内采集**：容器内 `/proc` 报宿主容量，会给出错误的容量基线；部署文档写明（`docs/components/dzsysmon.md`），不做 cgroup v1/v2 感知。
 - **Windows 不提供温度与每核频率**（也不提供整体频率）：Windows 上温度需 WMI/厂商驱动、每核频率无可靠 API，两者恒为不可用；本版本不实现「整体频率 + 口径标注」形态。
-- **磁盘 I/O 为整盘粒度**：不提供分区级 I/O。本版本的 `device` 只有物理盘标识（Windows `PhysicalDrive<N>`）；**卷/盘符 ↔ 物理盘映射**由后续票 #103 提供（ADR 0024 Consequences 的映射要求，本票不交付）。Windows 依赖性能计数器（diskperf）与访问权限，读不到时按 §2.4 报告不可用，不做提权或反复重试。
+- **磁盘 I/O 为整盘粒度**：不提供分区级 I/O。本版本的 `device` 只有物理盘标识（Windows `PhysicalDrive<N>`）；**不做卷/盘符 ↔ 物理盘映射**（ADR 0035：无消费方，且两平台身份解析成本高；卷容量与磁盘 I/O 分别展示、不做关联，#103 关闭为 not planned）。Windows 依赖性能计数器（diskperf）与访问权限，读不到时按 §2.4 报告不可用，不做提权或反复重试。
 - **磁盘 I/O 无阈值越限消费**：本契约只定义实时快照域；历史写入（#78）与阈值越限（§2.8，只覆盖内存/交换/全部卷剩余空间/CPU 饱和）不消费磁盘 I/O。磁盘 I/O 的维度指标（每盘吞吐/IOPS/延迟等）**可经 §6.1 历史查询**（`metric=disk_io.<metric>`），但阈值越限不在本版本。
 - **网络为整网卡粒度**：不提供每进程/每连接/每协议流量；不做虚拟网卡的自动隐藏策略推断（`is_virtual` 只用结构性依据，不看名字前缀），也不提供 Linux 网卡流量分类（`tc` 队列）与 Windows 适配器绑定细节。
 - **网络无阈值越限消费**：本契约只定义实时快照域。`hide_virtual` 与完整配置编辑入口见 §3（REST `PUT /api/sysmon/config` → `SET_SYSMON_CONFIG`；监控页「配置」区下发差异 patch）。网络的维度指标可经 §6.1 历史查询（`metric=network.<metric>`）。
