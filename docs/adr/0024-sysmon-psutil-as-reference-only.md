@@ -4,6 +4,8 @@
 
 Accepted（2026-10-19）
 
+> 卷/盘符 ↔ 物理盘映射的要求由 [ADR 0035](0035-sysmon-no-volume-disk-mapping.md) 取代（2026-10-26）；其余决策继续有效。
+
 ## Context
 
 `dzsysmon` 需要跨平台（Windows 10/Server 2016 及以上、Linux）采集 CPU、内存、磁盘、网络四类指标。可选的现成实现：

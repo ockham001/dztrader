@@ -103,6 +103,17 @@ Refs: <contract/component/docs 路径>
 
 关闭后检查下游依赖是否解除：`gh issue view <child> --json blockedBy`（返回 `{nodes:[],totalCount}`，用 `.blockedBy.nodes[]`；或 `gh api repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by` 拿数组），或在票的报告里写清"#X 的 blocked_by 从 N → 0"。
 
+### spec 母票收口（子票全部关闭后）
+
+实现票逐张关闭不等于 spec 收口。`[spec]` 母票必须在子票全部关闭后单独处置：
+
+1. **清点差异**：逐条核对 spec 的用户故事 / 实现决策，分成三类——已交付（给出票号）、已被后续决策推翻或收窄（引用 ADR / spec / PR，并在母票留评论）、不跟踪（写明理由，遵守 §0「不跟踪的写明不跟踪理由」）。
+2. **写收口评论**：沿用 §6 模板（交付 / 已知限制 / 提交 / CI / PR / 验证 / 审查），另加「spec 逐条符合性」与差异清单；参考 #120 的关闭评论。
+3. **关闭母票**：`gh issue close <spec> --comment "<收口评论>"`。母票不作为长期真相源留在 backlog——真相源是契约 / ADR / 文档；遗留的 `ready-for-agent` 等标签会让后续 agent 把已完成的 spec 当成待实现任务。
+4. **先有票再关**：仍想做的事必须先有票（或明确的 out-of-scope 记录），否则不允许关闭母票。
+
+> 动机：#41（dzsysmon spec）的 13 张子票于 2026-10-24 全部关闭，母票却一直开放到 2026-10-26 才被发现——本流程原先只覆盖「单票 → 关本票」（mattpocock 原版 `implement-spec` 靠 integration branch 的 PR 关闭 spec，本仓改成一票一 PR 后该机制丢失）。
+
 ## 7. 清理、交还与报告
 
 - `git worktree remove .worktrees/<branch>` + `git branch -d <branch>`；确认 `.worktrees/` 为空（含 `.cache/` 残留）。
