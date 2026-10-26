@@ -208,8 +208,9 @@ export const useSysmonStore = defineStore('sysmon', () => {
    * （不可用不是 0，也不是「不可用」占位）。过滤空 sensor / 非有限 celsius。
    *
    * `chip` / `label` 是 additive 字段（#126）：原样透传（缺失时保持缺失，由展示层的
-   * `sysmonTemperature` 模块从 `sensor` 回退解析）。**store 不解析 sensor**——单帧标识的
-   * 拼接规则只在采集层一处，前端再解析一份必然漂移。
+   * `sysmonTemperature` 模块从 `sensor` 回退解析）。**store 不解析 `sensor`**——标识的拼接
+   * 规则归采集层，前端只在旧版本发送方缺这两个字段时按契约 §2.4 做兼容回退（该回退实现在
+   * 展示层，且只在缺失时生效），不在 store 里再维护一份解析。
    */
   const temperatures = computed<SysmonTemperatureInfo[]>(() => {
     const s = snapshot.value

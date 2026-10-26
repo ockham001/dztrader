@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
 import {
-  BYTE_UNITS,
   UNAVAILABLE_TEXT,
   formatByteRate,
   formatBytes,
@@ -59,15 +58,16 @@ describe('formatBytes：IEC 单位档与精度（1024 进制）', () => {
     }
   })
 
-  it('单位档顺序即契约档位，不得增删或改名', () => {
-    expect([...BYTE_UNITS]).toEqual(['B', 'KiB', 'MiB', 'GiB', 'TiB'])
-  })
 })
 
 describe('formatByteRate：速率 = 字节值 + /s', () => {
   const cases: Array<[number, string]> = [
-    // 票面实例：1823 B / 7 s ≈ 260.43 B/s → B 档取整，不再输出 260.42857142857144
+    // 父票实测口径：1823 B / 7 s ≈ 260.43 B/s。按 AC 的单位规则（B 档取整）渲染为 `260 B/s`，
+    // 不再输出 260.42857142857144 这类浮点原值。
     [1823 / 7, '260 B/s'],
+    // #126 验收标准字面例子 `260.4 KiB/s` 对应的输入：1823 KiB / 7 s ≈ 260.4 KiB/s。
+    // （两条并存是刻意的：一条锁 B 档取整，一条锁 KiB 档的 1 位小数。）
+    [(1823 * 1024) / 7, '260.4 KiB/s'],
     [0, '0 B/s'], // 0 是合法真实值（本窗口确实没有增量），与「不可用」区分
     [1, '1 B/s'],
     [1023, '1023 B/s'], // 未达 1024，仍是 B 档

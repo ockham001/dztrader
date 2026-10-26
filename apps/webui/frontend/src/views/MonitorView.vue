@@ -64,14 +64,14 @@ const updatedAt = computed(() => {
 })
 
 // ---- 格式化（#126：唯一实现收敛到 @/composables/format，本文件不得再写 toFixed）----
-// 「不可用」占位由共享模块统一给出（所有页面同一文案）；单位档与精度见该模块文档。
-const UNAVAILABLE = UNAVAILABLE_TEXT
+// 「不可用」占位直接用共享模块导出的 UNAVAILABLE_TEXT（不在本文件另起别名，
+// 否则同一事实出现两个名字——Topbar 等其它文件都直接用导出名）。
 /** 配置关闭的统一文案（卷 / 指标可用性映射共用，避免两处字面量漂移） */
 const DISABLED_BY_CONFIG_TEXT = '已在配置中关闭'
 
 /** 文件年龄（秒 → 可读时长）：页文件年龄是页清理是否生效的直接信号（契约 sysmon §2.4） */
 function formatAge(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return UNAVAILABLE
+  if (!Number.isFinite(seconds) || seconds < 0) return UNAVAILABLE_TEXT
   const total = Math.floor(seconds)
   if (total < 60) return `${total} 秒`
   if (total < 3_600) return `${Math.floor(total / 60)} 分钟`
@@ -91,14 +91,14 @@ function volumeReasonDesc(reason: string | undefined): string {
 
 function formatDateTime(unixMs: number): string {
   const date = new Date(unixMs)
-  if (Number.isNaN(date.getTime())) return UNAVAILABLE
+  if (Number.isNaN(date.getTime())) return UNAVAILABLE_TEXT
   const pad = (n: number): string => String(n).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
     + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
 function formatUptime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return UNAVAILABLE
+  if (!Number.isFinite(seconds) || seconds < 0) return UNAVAILABLE_TEXT
   const total = Math.floor(seconds)
   const days = Math.floor(total / 86_400)
   const hours = Math.floor((total % 86_400) / 3_600)
@@ -380,7 +380,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               <div class="monitor-view__meta">{{ system?.logical_cores ?? '—' }} 逻辑核</div>
             </template>
             <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cpu-unavailable">
-              <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+              <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
               <div class="ds-empty__desc">{{ cpuEmptyDesc }}</div>
             </div>
           </div>
@@ -412,7 +412,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               <p v-if="loadHint" class="monitor-view__hint" data-test="monitor-load-hint">语义提示：{{ loadHint }}</p>
             </template>
             <div v-else class="ds-empty monitor-view__empty" data-test="monitor-load-unavailable">
-              <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+              <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
               <div class="ds-empty__desc">{{ loadEmptyDesc }}</div>
             </div>
           </div>
@@ -455,7 +455,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               </li>
             </ul>
             <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
-              <div class="ds-empty__title">{{ cpuCoresAvailable ? '暂无每核数据' : UNAVAILABLE }}</div>
+              <div class="ds-empty__title">{{ cpuCoresAvailable ? '暂无每核数据' : UNAVAILABLE_TEXT }}</div>
               <div class="ds-empty__desc">{{ coresEmptyDesc }}</div>
             </div>
           </div>
@@ -556,7 +556,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           <div class="ds-empty__desc">当前快照未提供内存数据</div>
         </div>
         <div v-else class="ds-empty monitor-view__empty" data-test="monitor-memory-unavailable">
-          <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+          <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
           <div class="ds-empty__desc">{{ unavailableDesc('memory') }}</div>
         </div>
 
@@ -584,7 +584,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
             <div class="ds-empty__desc">当前快照未提供交换数据</div>
           </div>
           <div v-else class="ds-empty monitor-view__empty" data-test="monitor-memory-swap-unavailable">
-            <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+            <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
             <div class="ds-empty__desc">{{ swapUnavailableDesc }}</div>
           </div>
         </div>
@@ -616,7 +616,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
             </li>
           </ul>
           <div v-else-if="volumes.length === 0" class="ds-empty monitor-view__empty" data-test="monitor-disk-unavailable">
-            <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+            <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
             <div class="ds-empty__desc">{{ volumesAvailable ? '当前快照未提供卷数据' : unavailableDesc('volumes') }}</div>
           </div>
 
@@ -640,7 +640,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               >
                 <span class="monitor-view__list-label">{{ volume.mount }}</span>
                 <!-- 读不到容量与「总量确实为 0」是两件事，原因列分别说明，都不用 0 冒充 -->
-                <span class="monitor-view__list-value">{{ volume.available ? '—' : UNAVAILABLE }}</span>
+                <span class="monitor-view__list-value">{{ volume.available ? '—' : UNAVAILABLE_TEXT }}</span>
                 <span class="monitor-view__list-meta" data-test="monitor-disk-zero-reason">
                   {{ volume.available ? '总容量为 0' : volumeReasonDesc(volume.reason) }}
                 </span>
@@ -664,7 +664,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               </div>
               <div class="monitor-view__list-row">
                 <dt class="monitor-view__list-label">页文件</dt>
-                <dd class="monitor-view__list-value" data-test="monitor-shm-page-files">{{ shmDir.page_files }}</dd>
+                <dd class="monitor-view__list-value" data-test="monitor-shm-page-files">{{ formatCount(shmDir.page_files) }}</dd>
               </div>
               <!-- 无页文件时 oldest_file_age_sec 为 null：不渲染该行（不是 0 秒） -->
               <div v-if="shmDir.oldest_file_age_sec != null" class="monitor-view__list-row">
@@ -678,7 +678,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
             <div class="ds-empty__desc">当前快照未提供共享内存目录占用</div>
           </div>
           <div v-else class="ds-empty monitor-view__empty" data-test="monitor-shm-unavailable">
-            <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+            <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
             <div class="ds-empty__desc">{{ unavailableDesc('shm_dir') }}</div>
           </div>
         </div>
@@ -741,7 +741,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           <p v-if="diskIoHint" class="monitor-view__hint" data-test="monitor-disk-io-hint">语义提示：{{ diskIoHint }}</p>
         </template>
         <div v-else class="ds-empty monitor-view__empty" data-test="monitor-disk-io-unavailable">
-          <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+          <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
           <div class="ds-empty__desc">{{ diskIoUnavailableDesc }}</div>
         </div>
       </section>
@@ -835,7 +835,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           </div>
         </template>
         <div v-else class="ds-empty monitor-view__empty" data-test="monitor-network-unavailable">
-          <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+          <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
           <div class="ds-empty__desc">{{ unavailableDesc('network') }}</div>
         </div>
       </section>

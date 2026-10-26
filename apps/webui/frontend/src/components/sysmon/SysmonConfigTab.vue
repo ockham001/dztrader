@@ -78,7 +78,6 @@ const canEdit = computed(() => auth.isAdmin)
 const config = computed(() => sysmon.config)
 const savePending = computed(() => sysmon.configPending)
 
-
 function enabledText(enabled: boolean): string {
   return enabled ? '已启用' : '已关闭'
 }

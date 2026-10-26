@@ -318,10 +318,13 @@ TEST(SystemCollectorTest, TemperatureReadingsFollowContract) {
         EXPECT_EQ(reading.sensor.substr(0, reading.sensor.find('#')), reading.chip)
             << reading.sensor;
         // sensor 冒号之后的部分 = label（非空时）或 tempN 通道名（label 为空时）。
+        // 病态驱动同一 hwmon 下重复 label 时，采集层给 sensor 追加 `-<n>` 兜底
+        // （契约 §2.4），此时通道名是 `<label>-<n>`；因此这里比对**前缀**而不是全等。
         const auto colon = reading.sensor.find(':');
         const std::string channel = reading.sensor.substr(colon + 1);
         if (!reading.label.empty()) {
-            EXPECT_EQ(channel, reading.label) << reading.sensor;
+            EXPECT_EQ(channel.compare(0, reading.label.size(), reading.label), 0)
+                << "channel=" << channel << " label=" << reading.label;
         } else {
             EXPECT_EQ(channel.rfind("temp", 0), 0u) << reading.sensor;
         }

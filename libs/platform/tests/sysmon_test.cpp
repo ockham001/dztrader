@@ -456,6 +456,16 @@ TEST(SysmonSnapshotValidateTest, RejectsInvalidPayloads) {
         EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
         j["temperature"][0]["label"] = 5;
         EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+
+        // sensor 是历史库维度键，帧内必须唯一（契约 sysmon §2.4/§7）；与 volumes/disk_io/
+        // network 的标识唯一性校验同一口径。两条不同温度但同一 sensor 为非法。
+        j["temperature"] =
+            nlohmann::json::array({{{"sensor", "coretemp#hwmon3:Core 0"}, {"celsius", 44.0}},
+                                   {{"sensor", "coretemp#hwmon3:Core 0"}, {"celsius", 45.0}}});
+        const auto duplicate_error = SysmonSnapshot::validate(j);
+        ASSERT_TRUE(duplicate_error.has_value());
+        // err() 的统一形态是 `path | message`（日志/错误文案约定），不是空格分隔。
+        EXPECT_EQ(*duplicate_error, "temperature[1].sensor | must be unique within the frame");
     }
 }
 

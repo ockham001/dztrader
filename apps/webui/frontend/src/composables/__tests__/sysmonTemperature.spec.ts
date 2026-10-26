@@ -61,8 +61,11 @@ describe('chipRank：CPU/GPU 在前、ACPI 在后', () => {
     expect(chipRank('nct6775')).toBeLessThan(chipRank('acpitz'))
   })
 
-  it('未命中映射表的芯片取中间档（不与 CPU/GPU 或 ACPI 混档）', () => {
-    expect(chipRank('nct6775')).toBe(2)
+  it('未命中分类表的芯片与无线网卡同档（都排在 CPU/GPU 之后、ACPI 之前）', () => {
+    // 中间档不是「未知」专属：无线网卡也在该档（显示名表中认得、排序上居中）。
+    expect(chipRank('nct6775')).toBe(chipRank('iwlwifi_1_2'))
+    expect(chipRank('nct6775')).toBeGreaterThan(chipRank('amdgpu'))
+    expect(chipRank('nct6775')).toBeLessThan(chipRank('acpitz'))
   })
 })
 

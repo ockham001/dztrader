@@ -184,7 +184,19 @@ TEST(SystemCollectorOracleTest, SensorAvailabilityReflectsRealHostAndValidates) 
               cpu_metrics.frequency_collected);
     if (temperatures.has_value()) {
         ASSERT_TRUE(snapshot.temperature.has_value());
-        EXPECT_EQ(snapshot.temperature->size(), temperatures->size());
+        ASSERT_EQ(snapshot.temperature->size(), temperatures->size());
+        // chip / label（#126）必须原样穿过「采集 → 快照构造」这一层：只断言数组长度会让
+        // 透传字段被静默丢弃而测试仍绿（review-checklist §2.2「只断言输入未断言最终状态」）。
+        for (std::size_t i = 0; i < temperatures->size(); ++i) {
+            const auto& raw = temperatures->at(i);
+            const auto& out = snapshot.temperature->at(i);
+            EXPECT_EQ(out.sensor, raw.sensor);
+            EXPECT_EQ(out.chip, raw.chip);
+            EXPECT_EQ(out.label, raw.label);
+            // chip 即 sensor 中 `#` 之前的部分，且非空（契约 sysmon §2.4）。
+            EXPECT_FALSE(out.chip.empty()) << out.sensor;
+            EXPECT_EQ(out.sensor.substr(0, out.sensor.find('#')), out.chip) << out.sensor;
+        }
     } else {
         EXPECT_EQ(snapshot.temperature, std::nullopt);
         const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE);

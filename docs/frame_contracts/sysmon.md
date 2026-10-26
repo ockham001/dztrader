@@ -133,11 +133,11 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - 采集范围：全部已存在的网络接口，**含当前无流量的网卡与已断开的适配器**（"存在但为 0"与"不存在"是不同事实）。单个网卡读取失败只跳过该网卡，不使整域失败。
 - 采集失败：Linux `/proc/net/dev` 不可读 ⇒ 整域 `null` + `collect_failed`；Windows `GetIfTable2` 失败 ⇒ 整域 `null` + `collect_failed`。空数组 = 采集成功但本机无网络接口（罕见，容器内可能）。
 
-`temperature[]`：`{sensor:string, chip:string, label:string, celsius:number}`。`sensor` 为稳定标识且在单帧内唯一（Linux hwmon：`<name>#<hwmonN>:<label>`，无 label 时为 `<name>#<hwmonN>:tempN`；`<hwmonN>` 为 sysfs hwmon 目录名，保证同一启动周期内稳定、不同设备不冲突；病态驱动同一芯片重复 label 时追加 `-<n>` 兜底），`celsius` 为摄氏温度。温度为瞬时 gauge，不是累计计数器；传感器集合可在帧间变化。**不可用不是 0**：传感器缺失/读取失败/该指标未采集时输出 `null`（能力可用但本帧未读到，见 §2.7），不得输出 0。Windows 恒为 `null`（不提供温度）。Linux 读取**全部 hwmon 温度传感器**，不按设备类型过滤（厂商芯片经 hwmon 暴露的 GPU/网卡温度也会出现，但仅温度读数，不扩张 C 组指标范围）。
+`temperature[]`：`{sensor:string, chip?:string, label?:string, celsius:number}`。`sensor` 为稳定标识且在单帧内唯一（Linux hwmon：`<name>#<hwmonN>:<label>`，无 label 时为 `<name>#<hwmonN>:tempN`；`<hwmonN>` 为 sysfs hwmon 目录名，保证同一启动周期内稳定、不同设备不冲突；病态驱动同一芯片重复 label 时追加 `-<n>` 兜底），`celsius` 为摄氏温度。温度为瞬时 gauge，不是累计计数器；传感器集合可在帧间变化。**不可用不是 0**：传感器缺失/读取失败/该指标未采集时输出 `null`（能力可用但本帧未读到，见 §2.7），不得输出 0。Windows 恒为 `null`（不提供温度）。Linux 读取**全部 hwmon 温度传感器**，不按设备类型过滤（厂商芯片经 hwmon 暴露的 GPU/网卡温度也会出现，但仅温度读数，不扩张 C 组指标范围）。
 
 - `chip` 为**芯片名**（hwmon 的 `name`，即 `sensor` 中 `#` 之前的部分，如 `coretemp` / `amdgpu` / `iwlwifi_1` / `acpitz`），能力可用时非空。`label` 为**通道标签**（`tempN_label` 的内容），缺失时为空串——空串是「该通道没有标签」这一合法事实，不是不可用（#126）。
 - 两者是 **additive 扩展**（#126）：`sensor` 的**值保持不变**——它是历史库 `temperature` 域的维度键，改格式会让已落库历史全部失配。消费方用二者做展示分组与友好命名，`sensor` 只用于标识与原始标识 tooltip。
-- `chip` / `label` 缺失（旧版本发送方）时消费方从 `sensor` 回退解析（`#` 前为芯片名、`:` 后为标签或通道名），新旧版本短暂并存不会渲染失败；`label` 为空串时展示层回退注入通道名（`sensor` 冒号后的 `tempN`），不退化为空。
+- **发送方义务与消费方容忍是两件事，不矛盾**：本版本发送方**每次都必须给出两者**（`chip` 非空、`label` 可为空串）；而消费方**必须容忍它们缺失**（旧版本发送方的载荷不带这两个键）——缺失时从 `sensor` 回退解析（`#` 前为芯片名、`:` 后为标签或通道名），新旧版本短暂并存不会渲染失败。`label` 为空串时展示层回退注入通道名（`sensor` 冒号后的 `tempN`），不退化为空。
 
 `shm_dir`：`{path:string, total_bytes:int, page_files:int, oldest_file_age_sec:int|null}`。共享内存目录占用，用于确认页清理机制没有失效。
 

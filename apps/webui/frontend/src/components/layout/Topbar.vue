@@ -58,6 +58,9 @@ const cpuBadge = computed<ResourceBadge>(() => {
       title: entry?.reason ? `CPU 使用率不可用: ${entry.reason}` : 'CPU 使用率不可用',
     }
   }
+  // 顶栏徽章是横向窄条，刻意用整数百分比（监控页用共享模块的 1 位小数）：同一数值在两处
+  // 精度不同是**有意的取舍**，不是格式化漂移——顶栏要在常驻条里塞下 CPU / 内存 / 多个卷徽章，
+  // 小数位会挤掉后面的徽章。状态色仍与监控页共用 resourceLevel，结论不会不一致（#126）。
   const percent = Math.round(sysmon.cpuUsageRatio * 100)
   // 状态色与监控页卷列表共用 resourceLevel（含边界），不在此处各自比较阈值
   const stateClass = `topbar__resource--${resourceLevel(sysmon.cpuUsageRatio)}`
@@ -83,6 +86,7 @@ const memBadge = computed<ResourceBadge>(() => {
       title: entry?.reason ? `内存使用率不可用: ${entry.reason}` : '内存使用率不可用',
     }
   }
+  // 整数百分比：与 CPU 徽章同一取舍（窄条优先，见上）
   const percent = Math.round(ratio * 100)
   const stateClass = `topbar__resource--${resourceLevel(ratio)}`
   return { text: `${percent}%`, stateClass, title: `内存使用率 ${percent}%` }
@@ -148,6 +152,7 @@ const diskBadges = computed<DiskBadge[]>(() => {
         title: `${volume.mount} 卷使用率不可用`,
       }
     }
+    // 整数百分比：与 CPU / 内存徽章同一取舍（窄条优先，见 CPU 徽章注释）
     const percent = Math.round(ratio * 100)
     const level = resourceLevel(ratio)
     return {

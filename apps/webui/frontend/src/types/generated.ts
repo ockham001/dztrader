@@ -343,7 +343,7 @@ export interface SysmonTemperatureInfo {
     sensor: string
     /** 芯片名（hwmon name，如 coretemp / amdgpu / acpitz）；additive 字段，旧版本发送方缺失时消费方从 sensor 回退解析 */
     chip?: string
-    /** 通道标签（tempN_label）；additive 字段，缺失时为空串（该通道没有标签，不是不可用） */
+    /** 通道标签（tempN_label）；additive 字段。缺失合法（旧版本发送方）；空串表示该通道没有标签（合法事实，不是不可用） */
     label?: string
     /** 摄氏温度（瞬时 gauge，不是累计计数器） */
     celsius: number

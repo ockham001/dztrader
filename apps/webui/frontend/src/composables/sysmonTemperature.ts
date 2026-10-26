@@ -15,7 +15,7 @@
 
 /** 展示用的温度读数（比快照多出补全后的 chip / label，仍保留原始 sensor） */
 export interface TemperatureReading {
-  /** 原始稳定标识，仅用于 tooltip 与 React key，不参与展示排序 */
+  /** 原始稳定标识，仅用于 tooltip 与 v-for 的 `:key`，不参与展示排序 */
   sensor: string
   /** 芯片名（快照 `chip`；旧版本发送方缺失时从 `sensor` 回退解析） */
   chip: string
@@ -36,52 +36,55 @@ export interface TemperatureGroup {
 }
 
 /**
- * 芯片名 → 友好显示名。
+ * 芯片分类表：显示名 + 排序权重。
  *
  * 只覆盖「用户认得出、且确实常见」的四类（AC 明列）：CPU 温度芯片（`coretemp` / `k10temp`
  * / `zenpower` / `cpu_thermal`）、GPU（`amdgpu` / `nouveau` / `radeon` / `i915`）、
- * 无线网卡（`iwlwifi*`，内核会加 `_N` 后缀）、主板 ACPI（`acpitz*` / `acpi`）。
- * 未命中的芯片回退显示原芯片名——**不猜**，显示原名比显示错误名好。
+ * 无线网卡（`iwlwifi*`，内核会加 `_N` 后缀）、主板 ACPI（`acpitz*`）。未命中的芯片回退显示
+ * 原芯片名——**不猜**，显示原名比显示错误名好。
+ *
+ * 显示名与排序权重放**同一张表**：两者是同一分类事实的两个投影，分两张表会出现「显示名认得
+ * 的芯片却没有排序权重」这类漂移（无线网卡就曾掉进「未命中」中间档）。
+ *
+ * 排序意图（AC）：CPU 与 GPU 在前（值班时最常看），主板 ACPI 类排最后（通常只报机箱/环境的
+ * 粗粒度读数，不该抢在 CPU 前面），其余芯片居中。**排序不是过滤**：没命中的芯片照样展示。
  */
-const CHIP_DISPLAY_NAMES: Array<{ pattern: RegExp; displayName: string }> = [
+interface ChipCategory {
+  /** 芯片名匹配式 */
+  pattern: RegExp
+  /** 友好显示名 */
+  displayName: string
+  /** 分组排序权重（小的在前） */
+  rank: number
+}
+
+const CHIP_CATEGORIES: ChipCategory[] = [
   // CPU（Linux 上 Intel/AMD 各自常见的 hwmon 芯片名）
-  { pattern: /^(coretemp|k10temp|zenpower|cpu_thermal|cpu-thermal)$/, displayName: 'CPU' },
+  { pattern: /^(coretemp|k10temp|zenpower|cpu_thermal|cpu-thermal)$/, displayName: 'CPU', rank: 0 },
   // GPU（AMD / NVIDIA 开源驱动 / Intel 集显）
-  { pattern: /^(amdgpu|nouveau|radeon|i915)$/, displayName: 'GPU' },
-  // 无线网卡：内核为避免重名会追加 `_N`（如 `iwlwifi_1_2`），故按前缀匹配
-  { pattern: /^iwlwifi(_\d+)*$/, displayName: '无线网卡' },
+  { pattern: /^(amdgpu|nouveau|radeon|i915)$/, displayName: 'GPU', rank: 1 },
+  // 无线网卡：内核为避免重名会追加 `_N`（如 `iwlwifi_1_2`），故按前缀形态匹配
+  { pattern: /^iwlwifi(_\d+)*$/, displayName: '无线网卡', rank: 2 },
   // 主板 ACPI 热区：`acpitz` / `acpitz_N`
-  { pattern: /^acpitz(_\d+)*$/, displayName: '主板 ACPI' },
+  { pattern: /^acpitz(_\d+)*$/, displayName: '主板 ACPI', rank: 3 },
 ]
 
-/**
- * 分组排序权重：数值小的排前面。
- *
- * CPU 与 GPU 在前（这两颗芯片的温度是值班时最常看的），主板 ACPI 类排最后（它通常只报
- * 机箱/环境的粗粒度读数，不该抢在 CPU 前面）。**权重相同不是"丢数据"**，其余芯片落在中间档。
- */
-const CHIP_ORDER: Array<{ pattern: RegExp; rank: number }> = [
-  { pattern: /^(coretemp|k10temp|zenpower|cpu_thermal|cpu-thermal)$/, rank: 0 },
-  { pattern: /^(amdgpu|nouveau|radeon|i915)$/, rank: 1 },
-  { pattern: /^acpitz(_\d+)*$/, rank: 3 },
-]
-/** 未命中映射表的芯片：排在 CPU/GPU 之后、ACPI 之前 */
+/** 未命中分类表的芯片：排在无线网卡之后、主板 ACPI 之前 */
 const DEFAULT_CHIP_RANK = 2
 
-/** 芯片名 → 排序权重（未命中映射表取中间档） */
+/** 芯片名 → 分类（未命中返回 undefined） */
+function chipCategory(chip: string): ChipCategory | undefined {
+  return CHIP_CATEGORIES.find(entry => entry.pattern.test(chip))
+}
+
+/** 芯片名 → 排序权重（未命中分类表取中间档） */
 export function chipRank(chip: string): number {
-  for (const entry of CHIP_ORDER) {
-    if (entry.pattern.test(chip)) return entry.rank
-  }
-  return DEFAULT_CHIP_RANK
+  return chipCategory(chip)?.rank ?? DEFAULT_CHIP_RANK
 }
 
 /** 芯片名 → 友好显示名（未命中回退原芯片名，不猜） */
 export function chipDisplayName(chip: string): string {
-  for (const entry of CHIP_DISPLAY_NAMES) {
-    if (entry.pattern.test(chip)) return entry.displayName
-  }
-  return chip
+  return chipCategory(chip)?.displayName ?? chip
 }
 
 /**

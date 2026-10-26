@@ -25,7 +25,6 @@ const loggerFilterItems = computed<DropdownItem[]>(() => [
   ...store.loggerOptions.map(log => ({ value: log, label: log })),
 ])
 
-
 async function handleSelectFile(path: string, logger: string): Promise<void> {
   if (store.tailEnabled) {
     ws.unsubscribeLog()

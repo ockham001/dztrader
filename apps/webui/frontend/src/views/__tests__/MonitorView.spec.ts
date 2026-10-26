@@ -279,7 +279,10 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     expect(temperatureCard.text()).toContain('41.5 °C')
     const sensors = wrapper.findAll('[data-test="monitor-temperature-sensor"]')
     expect(sensors).toHaveLength(2)
-    // 组的友好名取代了原始标识；原始 sensor 标识降级到 title（tooltip），仍可查到
+    // 行内展示的是 label（组内按 label 字典序），组的友好名取代了原始标识；
+    // 原始 sensor 标识降级到 title（tooltip），仍可查到。
+    const rows = sensors.map(sensor => sensor.text())
+    expect(rows).toEqual(['Core 041.5 °C', 'Package id 045.5 °C'])
     expect(temperatureCard.text()).not.toContain('coretemp#hwmon3')
     expect(sensors[0].attributes('title')).toBe('coretemp#hwmon3:Core 0')
     expect(sensors[1].attributes('title')).toBe('coretemp#hwmon3:Package id 0')
