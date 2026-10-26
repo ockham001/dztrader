@@ -1,4 +1,5 @@
 import type { SysmonHistoryPoint } from '@/types/api'
+import { formatDuration } from '@/composables/format'
 
 /**
  * 内联趋势（sparkline）的数据整形（#127）。
@@ -60,6 +61,21 @@ export function historySparklinePoints(points: SysmonHistoryPoint[]): SparklineP
 }
 
 /**
+ * 按末点时间窗与点数上限收敛序列——实时追加与历史补拉合并共用的唯一收敛口径。
+ * 纯函数：返回新数组；空序列返回空数组。
+ */
+function trimSparklinePoints(
+  series: readonly SparklinePoint[],
+  windowSec: number = SPARKLINE_WINDOW_SEC,
+  maxPoints: number = SPARKLINE_MAX_POINTS,
+): SparklinePoint[] {
+  if (series.length === 0) return []
+  const last = series[series.length - 1]
+  const inWindow = series.filter(point => point.ts >= last.ts - windowSec)
+  return inWindow.length > maxPoints ? inWindow.slice(inWindow.length - maxPoints) : inWindow
+}
+
+/**
  * 追加一个实时点（WS 增量推进）：同一时刻替换末点、更旧的点忽略、时间窗外的旧点丢弃、
  * 超过点数上限时丢最旧的。纯函数——返回新数组，不修改入参，便于视图层直接替换引用触发重渲染。
  */
@@ -77,8 +93,7 @@ export function appendSparklinePoint(
     // 同一秒内的多次推送：替换末点，不堆积（推送间隔远小于 1 秒的场景）
     if (point.ts === last.ts) return [...series.slice(0, -1), point]
   }
-  const next = [...series, point].filter(entry => entry.ts >= point.ts - windowSec)
-  return next.length > maxPoints ? next.slice(next.length - maxPoints) : next
+  return trimSparklinePoints([...series, point], windowSec, maxPoints)
 }
 
 /**
@@ -102,6 +117,142 @@ export function upsertLiveSparklinePoint(
   if (point.ts > last.ts) return appendSparklinePoint(series, point, windowSec, maxPoints)
   // 实时桶不晚于末点（含同一刻）：只更新值，末点位置不变
   return [...series.slice(0, -1), { ts: last.ts, value: point.value }]
+}
+
+/**
+ * 历史补拉响应里与时间窗口径相关的元信息（#142）。
+ *
+ * `intervalSec = null` = 范围内没有任何桶（契约 sysmon §6.1）：此时 `from`/`to` 只是请求范围，
+ * 不能拿来声称窗口已覆盖——窗口只能按实时点跨度计。
+ */
+export interface SparklineHistoryWindow {
+  from: number
+  to: number
+  truncated: boolean
+  intervalSec: number | null
+  /** 首个历史桶时刻；`null` = 没有可用历史点（此时窗口只能按实时点跨度计） */
+  firstBucketTs: number | null
+}
+
+/**
+ * sparkline 时间窗的如实口径（#142）。
+ *
+ * #127 的实现无论实际数据多少都把标题写成「最近 15 分钟」，三种边界下会骗人：历史可用但
+ * 范围内无桶（实际只有几十秒）、`record_interval_sec < 15` 时 `max_points=60` 被截断（实际
+ * 只有 `60 × interval` 秒）、单指标补拉降级（序列沿用上一轮）。视图据本口径如实标注。
+ */
+export interface SparklineWindow {
+  /** 实际覆盖秒数；无点（不渲染）时为 null */
+  coveredSec: number | null
+  /** true = 服务端因 `max_points` 截断了窗口（契约 sysmon §6.1.2），呈现与历史视图同口径 */
+  truncated: boolean
+  /** true = 本轮历史补拉失败/降级，序列沿用上一轮（#142） */
+  stale: boolean
+}
+
+/**
+ * 是否已覆盖满整个时间窗（只有此时才可称「最近 15 分钟」）。
+ * 由 `coveredSec` 现算而不是作为字段随对象传入——它若作为输入字段，调用方就能构造
+ * 与 `coveredSec` 矛盾的组合（#142 审查）。
+ */
+export function sparklineWindowComplete(window: SparklineWindow): boolean {
+  return window.coveredSec !== null && window.coveredSec >= SPARKLINE_WINDOW_SEC
+}
+
+/**
+ * 计算时间窗的实际覆盖口径（#142）。
+ *
+ * - 历史有桶时以**生效窗口**为准（契约 §6.1.2：截断时 `from` 已前移为首个返回桶）：
+ *   起点取生效 `from`；但历史刚启用时首个桶可能晚于 `from` 一个桶宽以上，此时按首个桶
+ *   起点计（数据不足 15 分钟不得冒充完整）。末端取 `to` 与末点中较大者——页面停留期间
+ *   实时点会推进到查询时刻之后。
+ * - 首点是历史覆盖段之前保留的**实时点**时，按该点精确时刻计（实时点没有桶对齐问题，
+ *   不套下面的桶宽容差；否则「实时尾巴 + 迟到首桶」会把实际 840 秒说成完整 15 分钟）。
+ * - 历史范围内无桶（`intervalSec = null`）或没有可用历史点时，只能按**实时点跨度**
+ *   标注：这正是「新装机器 / 刚启用历史」的实际可见范围。
+ *
+ * 判定容忍一个桶宽：桶按墙钟对齐，正常连续历史的第一个桶可以晚于 `from` 但不超过一个
+ * 桶宽，这属于桶粒度而非窗口缺失。
+ */
+export function sparklineWindow(
+  points: readonly SparklinePoint[],
+  history: SparklineHistoryWindow | null,
+  stale = false,
+): SparklineWindow {
+  const first = points[0]
+  const last = points[points.length - 1]
+  if (!first || !last) {
+    return { coveredSec: null, truncated: history?.truncated === true, stale }
+  }
+  let coveredSec: number
+  const firstBucketTs = history?.firstBucketTs ?? null
+  if (history && history.intervalSec !== null && firstBucketTs !== null) {
+    const dataStart = first.ts < firstBucketTs
+      // 历史覆盖段之前保留的实时点：时刻精确，不套桶宽容差
+      ? first.ts
+      : (first.ts - history.from > history.intervalSec ? first.ts : history.from)
+    coveredSec = Math.max(history.to, last.ts) - dataStart
+  } else {
+    coveredSec = last.ts - first.ts
+  }
+  return {
+    coveredSec: Math.max(0, coveredSec),
+    truncated: history?.truncated === true,
+    stale,
+  }
+}
+
+/**
+ * 历史补拉序列与上一轮序列合并（#142）。
+ *
+ * 补拉替换的是历史覆盖的时段，**历史覆盖段之外**的实时点必须保留：
+ * - 末桶之后：已推进的实时点（否则每次进入页面都会丢掉最近一个桶的实时趋势）；
+ * - 首桶之前：历史刚启用时此前攒下的实时尾巴（否则一次成功补拉会把 15 分钟曲线突缩成
+ *   历史仅有的几分钟，与「补拉不清空上一轮趋势」自相矛盾）；
+ * - 历史范围内：以历史桶为准（同一时段不混两份数据）。
+ * 历史范围内无桶时整段保留上一轮序列。收敛口径与实时推进一致。
+ */
+export function mergeSparklinePoints(
+  history: readonly SparklinePoint[],
+  previous: readonly SparklinePoint[],
+): SparklinePoint[] {
+  if (history.length === 0) return [...previous]
+  const firstHistoryTs = history[0].ts
+  const lastHistoryTs = history[history.length - 1].ts
+  const older = previous.filter(point => point.ts < firstHistoryTs)
+  const newer = previous.filter(point => point.ts > lastHistoryTs)
+  return trimSparklinePoints([...older, ...history, ...newer])
+}
+
+/**
+ * 时间窗文案：只有覆盖满整个窗口才称「最近 15 分钟」，否则用实际覆盖时长（#142）。
+ * 无点（组件不渲染）时返回占位而不是编一个时长。
+ */
+export function sparklineWindowText(window: SparklineWindow): string {
+  if (window.coveredSec === null) return '时间窗未知'
+  if (sparklineWindowComplete(window)) return `最近 ${formatDuration(SPARKLINE_WINDOW_SEC)}`
+  return `最近 ${formatDuration(window.coveredSec)}`
+}
+
+/** 窗口口径的限定说明（截断 / 历史未刷新）；无修饰时为空数组 */
+function sparklineWindowNotes(window: SparklineWindow): string[] {
+  const notes: string[] = []
+  if (window.truncated) notes.push('点数超限，仅显示最近一段')
+  if (window.stale) notes.push('历史未刷新')
+  return notes
+}
+
+/** 组件 title：指标名 · 时间窗（限定说明；点击查看历史） */
+export function sparklineTitle(label: string, window: SparklineWindow): string {
+  const notes = [...sparklineWindowNotes(window), '点击查看历史']
+  return `${label} · ${sparklineWindowText(window)}（${notes.join('；')}）`
+}
+
+/** 组件 aria-label：指标名 + 时间窗 + 限定说明 + 查看历史（无障碍文案不重复视觉细节） */
+export function sparklineAriaLabel(label: string, window: SparklineWindow): string {
+  const notes = sparklineWindowNotes(window)
+  const suffix = notes.length > 0 ? `（${notes.join('；')}）` : ''
+  return `${label} ${sparklineWindowText(window)}趋势${suffix}，查看历史`
 }
 
 /** SVG 折线几何：`points` 可直接给 `<polyline points="...">`，`lastValue` 供末点数值断言 */

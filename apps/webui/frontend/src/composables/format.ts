@@ -8,9 +8,12 @@
  * `toFixed`。
  *
  * 明确的例外（不是遗漏）：
- * - **时长**展示（`SysmonHistoryTab.vue` 的「天 / 小时」）不属于上述单位族，仍由该组件自行
- *   格式化；需要统一时再迁入本模块。
  * - Topbar 徽章的整数百分比是刻意的窄条紧凑显示（见该组件注释），不走 `formatPercent`。
+ *
+ * 时长（秒 → 可读时长）于 #142 迁入本模块：sparkline 的「实际覆盖时长」与历史视图的
+ * 「实际覆盖最近 X」是同一个换算，两处各写一份必然在改口径时漂移。
+ * 例外：`MonitorView.formatAge` 的「文件年龄」是向下取整的整档口径（多久以前），与覆盖时长的
+ * 展示精度不同，不共用本函数。
  *
  * 单位与精度（写在契约外的展示约定，改这里就是改全部页面）：
  * - 字节：IEC 1024 进制 `B` / `KiB` / `MiB` / `GiB` / `TiB`；`B` 档取整、其余档固定 1 位小数。
@@ -144,6 +147,22 @@ export function formatCountPerSec(value: number | null | undefined): string {
 export function formatCount(value: number | null | undefined): string {
   if (!isFiniteNumber(value)) return UNAVAILABLE_TEXT
   return Math.round(value).toLocaleString('en-US')
+}
+
+/**
+ * 时长格式化（秒 → 可读时长）：天 / 小时保留 1 位小数、分钟**向下取整**、不足 1 分钟按秒。
+ *
+ * 同一换算用于历史视图的「实际覆盖最近 X」与内联趋势的时间窗口径（#142 迁入本模块）。
+ * 分钟向下取整是口径要求，不是精度取舍：四舍五入会把 14 分 59 秒（899 秒）说成
+ * 「15 分钟」，恰好违反「不足 15 分钟不得标注最近 15 分钟」；宁少不多。
+ * 非有限值 / 负值返回不可用占位（负时长没有意义，不用负号冒充）。
+ */
+export function formatDuration(seconds: number | null | undefined): string {
+  if (!isFiniteNumber(seconds) || seconds < 0) return UNAVAILABLE_TEXT
+  if (seconds >= 86_400) return `${(seconds / 86_400).toFixed(1)} 天`
+  if (seconds >= 3_600) return `${(seconds / 3_600).toFixed(1)} 小时`
+  if (seconds >= 60) return `${Math.floor(seconds / 60)} 分钟`
+  return `${seconds} 秒`
 }
 
 /**

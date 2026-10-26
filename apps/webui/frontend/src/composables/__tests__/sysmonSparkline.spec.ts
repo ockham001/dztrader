@@ -4,9 +4,17 @@ import {
   SPARKLINE_WINDOW_SEC,
   appendSparklinePoint,
   historySparklinePoints,
+  mergeSparklinePoints,
+  sparklineAriaLabel,
   sparklineGeometry,
+  sparklineTitle,
+  sparklineWindow,
+  sparklineWindowComplete,
+  sparklineWindowText,
   upsertLiveSparklinePoint,
+  type SparklineHistoryWindow,
   type SparklinePoint,
+  type SparklineWindow,
 } from '../sysmonSparkline'
 import type { SysmonHistoryPoint } from '@/types/api'
 
@@ -205,5 +213,243 @@ describe('sparklineGeometry（纯几何：SVG viewBox 0 0 100 24）', () => {
     ])
 
     expect(geometry).toBeNull()
+  })
+})
+
+describe('sparklineWindow（#142：时间窗口径如实）', () => {
+  const TO = 1_790_000_000
+
+  /** 60 秒桶的历史窗口元信息（完整 15 分钟，首桶在 TO-840） */
+  function fullHistory(): SparklineHistoryWindow {
+    return {
+      from: TO - SPARKLINE_WINDOW_SEC,
+      to: TO,
+      truncated: false,
+      intervalSec: 60,
+      firstBucketTs: TO - 840,
+    }
+  }
+
+  it('生效 from/to 足满窗口：称完整覆盖（15 分钟）', () => {
+    const window = sparklineWindow(
+      [{ ts: TO - 840, value: 0.1 }, { ts: TO - 60, value: 0.2 }],
+      fullHistory(),
+    )
+
+    expect(window).toEqual({ coveredSec: SPARKLINE_WINDOW_SEC, truncated: false, stale: false })
+    expect(sparklineWindowComplete(window)).toBe(true)
+  })
+
+  it('历史范围内无桶（interval_sec=null）：按实时点跨度标注，不冒充 15 分钟', () => {
+    const window = sparklineWindow(
+      [{ ts: TO - 30, value: 0.1 }, { ts: TO - 15, value: 0.2 }],
+      { ...fullHistory(), intervalSec: null },
+    )
+
+    expect(window.coveredSec).toBe(15)
+    expect(sparklineWindowComplete(window)).toBe(false)
+    expect(window.truncated).toBe(false)
+  })
+
+  it('max_points 截断：按生效 from/to（from 已前移为首个返回桶）标注实际覆盖', () => {
+    const window = sparklineWindow(
+      [{ ts: TO - 295, value: 0.1 }, { ts: TO - 5, value: 0.2 }],
+      { from: TO - 295, to: TO, truncated: true, intervalSec: 5, firstBucketTs: TO - 295 },
+    )
+
+    expect(window.coveredSec).toBe(295)
+    expect(sparklineWindowComplete(window)).toBe(false)
+    expect(window.truncated).toBe(true)
+  })
+
+  it('历史刚启用（窗口内只有后半段桶）：按首个桶起点标注实际覆盖', () => {
+    const window = sparklineWindow(
+      [{ ts: TO - 300, value: 0.1 }, { ts: TO - 60, value: 0.2 }],
+      { ...fullHistory(), firstBucketTs: TO - 300 },
+    )
+
+    expect(window.coveredSec).toBe(300)
+    expect(sparklineWindowComplete(window)).toBe(false)
+  })
+
+  it('实时点已推进到历史终点之后：覆盖按实际数据末端计（不出现「最近 0 秒」）', () => {
+    const window = sparklineWindow(
+      [
+        { ts: TO - 840, value: 0.1 },
+        { ts: TO - 60, value: 0.2 },
+        { ts: TO + 120, value: 0.3 },
+      ],
+      fullHistory(),
+    )
+
+    expect(window.coveredSec).toBe(SPARKLINE_WINDOW_SEC + 120)
+    expect(sparklineWindowComplete(window)).toBe(true)
+  })
+
+  it('只有实时点时，跨度攒满 15 分钟同样算完整覆盖', () => {
+    const window = sparklineWindow(
+      [{ ts: TO - SPARKLINE_WINDOW_SEC, value: 0.1 }, { ts: TO, value: 0.2 }],
+      { ...fullHistory(), intervalSec: null },
+    )
+
+    expect(window.coveredSec).toBe(SPARKLINE_WINDOW_SEC)
+    expect(sparklineWindowComplete(window)).toBe(true)
+  })
+
+  it('实时尾巴 + 迟到首桶：首点按精确时刻计，不套桶宽容差（840 秒不得说成 15 分钟）', () => {
+    // 历史刚启用：首桶在 TO-300；首点 TO-840 是从上一轮序列保留的实时尾巴（距 from 仅 60 秒，
+    // 若套桶宽容差会被当成 from，实际只覆盖 840 秒）
+    const window = sparklineWindow(
+      [
+        { ts: TO - 840, value: 0.1 },
+        { ts: TO - 300, value: 0.2 },
+        { ts: TO - 60, value: 0.3 },
+      ],
+      { ...fullHistory(), firstBucketTs: TO - 300 },
+    )
+
+    expect(window.coveredSec).toBe(SPARKLINE_WINDOW_SEC - 60)
+    expect(sparklineWindowComplete(window)).toBe(false)
+  })
+
+  it('stale 原样透传：保留上一轮序列时标题可提示未刷新', () => {
+    const window = sparklineWindow([{ ts: TO - 60, value: 0.1 }, { ts: TO, value: 0.2 }], fullHistory(), true)
+
+    expect(window.stale).toBe(true)
+    expect(window.truncated).toBe(false)
+  })
+
+  it('无点（组件不渲染）：coveredSec 为 null、不算完整覆盖', () => {
+    expect(sparklineWindow([], null)).toEqual({ coveredSec: null, truncated: false, stale: false })
+    expect(sparklineWindowComplete(sparklineWindow([], null))).toBe(false)
+  })
+})
+
+describe('sparklineTitle / sparklineAriaLabel（#142：窗口文案如实）', () => {
+  const COMPLETE: SparklineWindow = { coveredSec: SPARKLINE_WINDOW_SEC, truncated: false, stale: false }
+  const TRUNCATED: SparklineWindow = { coveredSec: 300, truncated: true, stale: false }
+  const SHORT: SparklineWindow = { coveredSec: 45, truncated: false, stale: false }
+
+  it('完整覆盖：沿用「最近 15 分钟」文案（与 #127 一致）', () => {
+    expect(sparklineTitle('CPU 使用率', COMPLETE)).toBe('CPU 使用率 · 最近 15 分钟（点击查看历史）')
+  })
+
+  it('实际覆盖不足 15 分钟：标注实际时长，不出现「最近 15 分钟」', () => {
+    const title = sparklineTitle('CPU 使用率', SHORT)
+
+    expect(title).toContain('最近 45 秒')
+    expect(title).not.toContain('最近 15 分钟')
+    expect(title).toContain('点击查看历史')
+  })
+
+  it('覆盖 14 分 59 秒仍不得说成 15 分钟（分钟向下取整，899 秒 → 14 分钟）', () => {
+    for (const coveredSec of [870, 899]) {
+      const title = sparklineTitle('CPU 使用率', { coveredSec, truncated: true, stale: false })
+
+      expect(title).toContain('最近 14 分钟')
+      expect(title).not.toContain('最近 15 分钟')
+    }
+  })
+
+  it('无点（组件不渲染）时文案是占位而不是编一个时长', () => {
+    const empty = sparklineWindow([], null)
+
+    expect(sparklineWindowText(empty)).toBe('时间窗未知')
+    expect(sparklineTitle('CPU 使用率', empty)).toContain('时间窗未知')
+  })
+
+  it('点数上限截断：与历史视图同口径（实际覆盖 + 仅显示最近一段）', () => {
+    const title = sparklineTitle('CPU 使用率', TRUNCATED)
+
+    expect(title).toContain('最近 5 分钟')
+    expect(title).toContain('点数超限，仅显示最近一段')
+    expect(title).not.toContain('最近 15 分钟')
+  })
+
+  it('历史未刷新：title 与 aria-label 都带限定说明', () => {
+    const stale: SparklineWindow = { ...COMPLETE, stale: true }
+
+    expect(sparklineTitle('内存使用率', stale)).toContain('历史未刷新')
+    expect(sparklineAriaLabel('内存使用率', stale)).toContain('历史未刷新')
+  })
+
+  it('aria-label 保留指标名与趋势语义（无障碍文案不含视觉细节）', () => {
+    expect(sparklineAriaLabel('内存使用率', COMPLETE)).toBe('内存使用率 最近 15 分钟趋势，查看历史')
+  })
+})
+
+describe('mergeSparklinePoints（#142：补拉与上一轮实时序列合并）', () => {
+  it('历史范围内无桶：保留上一轮实时序列（历史刚启用时不清空已攒下的趋势）', () => {
+    const previous = [
+      { ts: 1_790_000_000, value: 0.1 },
+      { ts: 1_790_000_015, value: 0.2 },
+    ]
+
+    expect(mergeSparklinePoints([], previous)).toEqual(previous)
+  })
+
+  it('历史覆盖的时段以历史为准：只保留历史末桶之后的实时点', () => {
+    const history = [
+      { ts: 1_790_000_000, value: 0.5 },
+      { ts: 1_790_000_060, value: 0.6 },
+    ]
+    const previous = [
+      { ts: 1_790_000_030, value: 0.99 },
+      { ts: 1_790_000_075, value: 0.7 },
+    ]
+
+    expect(mergeSparklinePoints(history, previous)).toEqual([
+      { ts: 1_790_000_000, value: 0.5 },
+      { ts: 1_790_000_060, value: 0.6 },
+      { ts: 1_790_000_075, value: 0.7 },
+    ])
+  })
+
+  it('历史只覆盖窗口后半段：前段实时尾巴与后段实时点都保留（补拉不缩短曲线）', () => {
+    const history = [
+      { ts: 1_790_000_600, value: 0.5 },
+      { ts: 1_790_000_660, value: 0.6 },
+    ]
+    const previous = [
+      { ts: 1_790_000_000, value: 0.1 },  // 早于历史首桶：实时尾巴，保留
+      { ts: 1_790_000_300, value: 0.2 },  // 早于历史首桶：实时尾巴，保留
+      { ts: 1_790_000_630, value: 0.99 }, // 落在历史覆盖段内：以历史为准，丢弃
+      { ts: 1_790_000_720, value: 0.7 },  // 晚于历史末桶：实时点，保留
+    ]
+
+    expect(mergeSparklinePoints(history, previous)).toEqual([
+      { ts: 1_790_000_000, value: 0.1 },
+      { ts: 1_790_000_300, value: 0.2 },
+      { ts: 1_790_000_600, value: 0.5 },
+      { ts: 1_790_000_660, value: 0.6 },
+      { ts: 1_790_000_720, value: 0.7 },
+    ])
+  })
+
+  it('点数超过上限时丢最旧的点（与实时推进同一收敛口径）', () => {
+    const history: SparklinePoint[] = Array.from({ length: 60 }, (_, index) => ({
+      ts: 1_790_000_000 + index * 10,
+      value: index,
+    }))
+    const live: SparklinePoint[] = Array.from({ length: 20 }, (_, index) => ({
+      ts: 1_790_000_600 + index * 10,
+      value: 100 + index,
+    }))
+
+    const merged = mergeSparklinePoints(history, live)
+
+    expect(merged).toHaveLength(SPARKLINE_MAX_POINTS)
+    // 丢掉的是最旧的 20 个历史点（ts 1_790_000_000–1_790_000_190），首点为原第 20 个历史点
+    expect(merged[0]).toEqual(history[20])
+    expect(merged[merged.length - 1]).toEqual(live[live.length - 1])
+  })
+
+  it('纯函数：不修改入参', () => {
+    const history = [{ ts: 1_790_000_000, value: 0.5 }]
+    const previous = [{ ts: 1_790_000_060, value: 0.6 }]
+    mergeSparklinePoints(history, previous)
+
+    expect(history).toEqual([{ ts: 1_790_000_000, value: 0.5 }])
+    expect(previous).toEqual([{ ts: 1_790_000_060, value: 0.6 }])
   })
 })
