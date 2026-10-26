@@ -4,6 +4,8 @@
 
 Accepted（2026-10-16）
 
+> 决策 4 的「`git push` ask」口径由 [ADR 0036](0036-push-authorization-tiered-with-guardrails.md) 取代（2026-10-27）；其余决策继续有效。
+
 ## Context
 
 项目历经 claude / trae / workbuddy / zcode / superpowers 多套 AI 协作工具，制品与配置散落；2026-09-30 完成 AGENTS.md 开放约定迁移后，流程层仍是空白：无 issue 载体、无标准开发循环、硬门禁靠口头约定、日志与格式检查未入 CI。2026-10-16 经两轮 grilling + 一轮「项目初期、不考虑兼容、按最佳实践」复审逐项确认后定型。

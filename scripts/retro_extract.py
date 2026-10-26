@@ -4,7 +4,7 @@
 DSH 会话日志：`~/.dsh/sessions/--<cwd 转义>--/<session>/session.v4.jsonl.zstd`
 （zstd 压缩 JSONL；详见 docs/agents/retro-evidence.md）。
 
-产出 `.cache/retro/<label>-digest.md`，含：轮次墙钟、人工消息、审批、工具失败、
+产出 `.cache/retro/<session-id>-digest.md`，含：轮次墙钟、人工消息、审批、工具失败、
 >=60s 长作业、子代理调用、工具计数、LLM 重试——按复盘候选归类前的原始证据。
 
 用法:
@@ -13,8 +13,9 @@ DSH 会话日志：`~/.dsh/sessions/--<cwd 转义>--/<session>/session.v4.jsonl.
   python3 scripts/retro_extract.py --all --recent 5        # 最近 5 个主会话逐个出 digest
   python3 scripts/retro_extract.py --latest --out .cache/retro
 
+依赖：Python 3.10+ 标准库 + `zstd` CLI（不引入 Python 第三方依赖）。
 注意：当前会话在 turn 结束才落盘后续事件；复盘“已结束的会话”最完整。
-退出码: 0=成功, 2=找不到会话 / zstd / 解析失败。
+退出码: 0=成功, 2=找不到会话/zstd/解析失败。
 """
 
 from __future__ import annotations
@@ -22,17 +23,51 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 LONG_JOB_SEC = 60
 SUBAGENT_TOOLS = ("subagent", "subagent_fork", "spawn_teammate", "workflow")
+_SAFE_CHAR_RE = re.compile(r"^[A-Za-z0-9._-]$")
+
+
+def die(msg: str) -> None:
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def _encode_project_key(cwd: str) -> str:
+    """照抄 DSH projectKey：分隔符合并为一个 `-`，不安全码位转 `~XXXX`，去前导 `-`、截断 251。"""
+    if not cwd:
+        raise ValueError("cannot encode an empty project path")
+    out: list[str] = []
+    separator_run = False
+    for ch in cwd:
+        if ch in "/\\:":
+            if not separator_run:
+                out.append("-")
+            separator_run = True
+        elif ch != "~" and _SAFE_CHAR_RE.match(ch):
+            out.append(ch)
+            separator_run = False
+        else:
+            out.append(f"~{ord(ch):04X}")
+            separator_run = False
+    readable = "".join(out).lstrip("-") or "root"
+    return f"--{readable[:251]}--"
 
 
 def _session_root_for(base: Path) -> Path:
-    escaped = str(base.resolve()).lstrip("/").replace("/", "-")
-    return Path.home() / ".dsh" / "sessions" / f"--{escaped}--"
+    return Path.home() / ".dsh" / "sessions" / _encode_project_key(str(base.resolve()))
+
+
+def main_sessions(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    paths = [p for p in root.glob("session-*/session.v4.jsonl.zstd") if p.is_file()]
+    return sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
 def sessions_root() -> Path:
@@ -55,25 +90,21 @@ def sessions_root() -> Path:
         if root in seen:
             continue
         seen.add(root)
-        if root.is_dir():
+        if main_sessions(root):
             return root
     return _session_root_for(candidates[0])
 
 
-def main_sessions(root: Path) -> list[Path]:
-    if not root.is_dir():
-        return []
-    paths = [p for p in root.glob("session-*/session.v4.jsonl.zstd") if p.is_file()]
-    return sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True)
-
-
 def load_events(path: Path) -> list[dict]:
     if not path.is_file():
-        sys.exit(f"error: session file not found: {path}")
-    result = subprocess.run(["zstd", "-dc", str(path)], capture_output=True)
+        die(f"session file not found: {path}")
+    try:
+        result = subprocess.run(["zstd", "-dc", str(path)], capture_output=True)
+    except FileNotFoundError:
+        die("zstd CLI not found; install zstd to extract DSH session logs")
     if result.returncode != 0:
-        sys.exit(f"error: zstd -dc failed: {result.stderr.decode('utf-8', 'replace').strip()}")
-    events = []
+        die(f"zstd -dc failed: {result.stderr.decode('utf-8', 'replace').strip()}")
+    events: list[dict] = []
     for line in result.stdout.decode("utf-8", "replace").splitlines():
         line = line.strip()
         if not line:
@@ -82,6 +113,8 @@ def load_events(path: Path) -> list[dict]:
             events.append(json.loads(line))
         except json.JSONDecodeError:
             continue
+    if not events or events[0].get("type") != "session":
+        die(f"cannot parse session log (expected session header): {path}")
     return events
 
 
@@ -231,7 +264,7 @@ def main() -> int:
 
     paths = main_sessions(sessions_root())
     if not paths:
-        sys.exit(f"error: no DSH sessions under {sessions_root()}")
+        die(f"no DSH sessions under {sessions_root()}")
     for path in paths[: (1 if args.latest else args.recent)]:
         write_digest(path, args.out)
     return 0

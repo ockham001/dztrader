@@ -185,15 +185,15 @@
 - **并行波（同一时间多个 ticket）必须一票一 worktree**；禁止在共享工作区同时改两条线
 - **共享工作区只允许当前票的 WIP**：收尾最后一步 `git switch main && git pull --ff-only`，并让 `git status` 除**已登记的并行线**外干净；把工作区留在 feature 分支就结束会话 = 直接阻塞下一条线（本波 #91→#92）
 - **跨会话（>1 个会话）不提交的文档批次**：开 `docs/*` 分支提交/推送，或移出共享工作区；不要让未提交 docs 长期占着 `git status`（本波 ADR 0026–0030 从 10-22 挂到 10-23）
-- 分支名 `^(feat|fix|docs|test|chore|ci|refactor|perf|style|build)/issue-<n>-<slug>`：`pre-push` hook 从这里取票号跑 scope 检查
+- 分支名 `^(feat|fix|docs|test|chore|ci|refactor|perf|style|build)/issue-<n>-<slug>`：pre-push 强制前缀白名单，并从中取票号跑 scope 检查（无票号时提示改名并跳过）
 - push 前跑 `./scripts/check-push-scope.sh <issue>`，确认 `@{u}..HEAD` 只含本票 commit
 - 多终端可在不同 worktree 并行；**禁止同一 worktree 同时操作**
 - 合并前确认共同祖先：`git merge-base main HEAD`，无则 cherry-pick
-- **本地 git hooks 由 `setup` 自动安装**（`core.hooksPath=.githooks`）：pre-commit 只对 staged 子集跑 clang-format / 日志格式 / docs links，pre-push 拦直推 main 并按分支名票号跑 `check-push-scope`。hooks 是快速护栏，**不能替代** `preflight` 与 CI。
-- **push 分级授权**（三层守卫：本地 pre-push hook、push 白名单、GitHub main ruleset）：
-  - **免逐次确认**：把本票 commit push 到白名单 feature 分支（上面的命名规则）、`-u` 建上游、创建/更新 PR、重跑 CI、合并后删除**本票**远端分支。前置：本票门禁绿（代码票 `gate build/test`；纯文档票 docs links / `preflight --c-only`）、`check-push-scope` 通过、一轮 review 的修复合并为一次 push。
-  - **仍需确认**：合并 PR 到 main（最后一道；可按票或按波一次授权）、删除非本票分支、打 tag。
-  - **禁止**：直推 main（pre-push hook + GitHub ruleset 双重拦截）、force push（`.opencode` deny；ruleset 拒非快进）。应急逃生口 `DZ_ALLOW_MAIN_PUSH=1` / `DZ_SKIP_HOOKS=1` 只在真故障时用，用完在报告里写明。
+- **本地 git hooks 由 `setup` 自动安装**（`core.hooksPath=.githooks`；安装前 `setup` 会确认 `.githooks` 存在）：pre-commit 由 staged 文件触发——clang-format 校验 index 内容，日志格式 / docs links 为工作区全仓扫描；pre-push 拦直推 main、非快进、非白名单分支名与 tag，并按分支票号跑 `check-push-scope`。hooks 是快速护栏，**不能替代** `preflight` 与 CI。
+- **push 分级授权**（见 [ADR 0036](docs/adr/0036-push-authorization-tiered-with-guardrails.md)；机器守卫 = pre-push hook + GitHub main ruleset + `.opencode` 权限）：
+  - **免逐次确认**：把本票 commit push 到符合命名约定的 feature 分支、`-u` 建上游、创建/更新 PR、重跑 CI、合并后删除**本票**远端分支。前置：本票门禁绿（代码票 `gate build/test`；纯文档票 docs links / `preflight --c-only`）、`check-push-scope` 通过、一轮 review 的修复合并为一次 push。
+  - **仍需确认**：合并 PR 到 main（最后一道；可按票或按波一次授权）、删除非本票分支、打 tag（opencode 会话里 `gh pr merge` / tag 为 ask；DSH 等宿主靠本规则人工确认）。
+  - **禁止**：直推 main（pre-push + ruleset 双重拦截）、force push（pre-push 非快进拦截 + `.opencode` deny；ruleset 拒非快进）。应急逃生口 `DZ_ALLOW_MAIN_PUSH=1` / `DZ_ALLOW_FORCE_PUSH=1` / `DZ_SKIP_HOOKS=1` 只在真故障时用，用完在报告里写明；其中直推 main 的逃生口还需临时禁用 ruleset（`bypass_actors=[]`，admins 也无绕过）。
 
 ### 本机沙箱（DSH）
 

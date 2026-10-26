@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # pre-commit — 提交前的快速机械检查（由 setup 安装：git config core.hooksPath .githooks）。
 #
-# 只检查 staged 文件对应的子集，目标 <5 秒：
-#   - C/C++：clang-format 21.x --dry-run --Werror（用 staged 内容校验，不看工作区）
-#   - apps/ 或 libs/：scripts/check_log_format.py（全仓扫描，脚本本身很快）
-#   - docs/ 与根文档：scripts/check_docs_links.py
+# 按 staged 文件触发（目标 <5 秒）：
+#   - C/C++：clang-format 21.x --dry-run --Werror（校验 index 内容，不看工作区）
+#   - apps/ 或 libs/：scripts/check_log_format.py（工作区全仓扫描，未暂存的改动也会被看到）
+#   - docs/ 与根文档：scripts/check_docs_links.py（工作区全仓扫描）
 #
 # 权威门禁仍是 ./scripts/preflight.sh 与 CI（见 docs/development-checklist.md C 段）：
 # hook 是快速护栏，不是 preflight 的替代品。
@@ -33,10 +33,12 @@ need_log=0
 need_docs=0
 for f in "${staged[@]}"; do
     case "$f" in
-        *.h|*.hpp|*.c|*.cc|*.cpp) cpp+=("$f") ;;
-    esac
-    case "$f" in
-        apps/*|libs/*) need_log=1 ;;
+        apps/*|libs/*)
+            need_log=1
+            case "$f" in
+                *.h|*.hpp|*.c|*.cc|*.cpp) cpp+=("$f") ;;
+            esac
+            ;;
     esac
     case "$f" in
         docs/*|AGENTS.md|README.md|GLOSSARY.md|CONTRIBUTING.md|THIRD_PARTY_NOTICES.md) need_docs=1 ;;
@@ -56,8 +58,13 @@ if [ "${#cpp[@]}" -gt 0 ]; then
     if [ -z "$CF" ]; then
         detail "warning: clang-format not found; skipping format check (CI still enforces)"
     else
+        cf_version="$("$CF" --version 2>&1 | head -1)"
+        case "$cf_version" in
+            *" 21."*) ;;
+            *) detail "warning: expected clang-format 21.x, found: $cf_version (CI enforces the pinned version)" ;;
+        esac
         for f in "${cpp[@]}"; do
-            [ -f "$f" ] || continue
+            git cat-file -e ":$f" 2>/dev/null || continue
             if ! git show ":$f" | "$CF" --assume-filename="$f" --dry-run --Werror >/dev/null 2>&1; then
                 detail "clang-format violation: $f"
                 fail=1
@@ -75,7 +82,7 @@ fi
 
 if [ "$need_log" = 1 ]; then
     if [ -n "$PY" ] && [ -f scripts/check_log_format.py ]; then
-        "$PY" scripts/check_log_format.py apps/ libs/ >/dev/null ||
+        "$PY" scripts/check_log_format.py apps/ libs/ >/dev/null 2>&1 ||
             {
                 detail "log format violation (run: python3 scripts/check_log_format.py apps/ libs/)"
                 fail=1
@@ -87,7 +94,7 @@ fi
 
 if [ "$need_docs" = 1 ]; then
     if [ -n "$PY" ] && [ -f scripts/check_docs_links.py ]; then
-        "$PY" scripts/check_docs_links.py >/dev/null ||
+        "$PY" scripts/check_docs_links.py >/dev/null 2>&1 ||
             {
                 detail "broken docs links (run: python3 scripts/check_docs_links.py)"
                 fail=1

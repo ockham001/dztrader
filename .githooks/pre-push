@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # pre-push — 推送前守卫（本地第一道；远端还有 GitHub main ruleset 兜底）。
 #
-#   - 拒绝直接推送 refs/heads/main：必须走 PR（应急逃生：DZ_ALLOW_MAIN_PUSH=1）
-#   - 白名单 feature 分支：从分支名提取 issue 号，跑 scripts/check-push-scope.sh <n> --base origin/main
-#     （只拦「推错票分支」与「CI 进行中重复 push」；无 issue 号或脚本不可用时警告放行）
+#   - 拒绝直推 refs/heads/main：必须走 PR（应急逃生：DZ_ALLOW_MAIN_PUSH=1，且需临时禁用 ruleset）
+#   - 拒绝 tag 推送（应急逃生：DZ_ALLOW_TAGS=1）
+#   - 拒绝非快进推送（force push；远端 tip 在本地不可验证时放行，避免浅克隆误拦；
+#     应急逃生：DZ_ALLOW_FORCE_PUSH=1）
+#   - 拒绝白名单前缀之外的分支名（feat/fix/docs/test/chore/ci/refactor/perf/style/build；
+#     应急逃生：DZ_ALLOW_NONSTANDARD_BRANCH=1）
+#   - 白名单分支：从分支名提取 issue 号，以被推的 local_sha / 远端分支名调用
+#     scripts/check-push-scope.sh <n> --base origin/main --head <sha> --branch <name>
 #   - 删除远端分支（local ref 为 (delete)）放行
 #
-# 逃生口：DZ_SKIP_HOOKS=1 git push ...   （或 git push --no-verify）
+# 逃生口：DZ_SKIP_HOOKS=1 git push ...（或 git push --no-verify）
 
 set -uo pipefail
 
@@ -15,30 +20,70 @@ cd "$ROOT" || exit 0
 
 [ "${DZ_SKIP_HOOKS:-0}" = "1" ] && exit 0
 
-blocked=0
+ZERO="0000000000000000000000000000000000000000"
+BRANCH_RE='^(feat|fix|docs|test|chore|ci|refactor|perf|style|build)/'
+BLOCKED=0
+
 warn() { printf 'pre-push: %s\n' "$*" >&2; }
 
-while read -r local_ref local_sha remote_ref remote_sha; do
+remote_ref=""
+while read -r local_ref local_sha remote_ref remote_sha || [ -n "${remote_ref:-}" ]; do
     [ -z "${remote_ref:-}" ] && continue
 
     if [ "$remote_ref" = "refs/heads/main" ]; then
         if [ "${DZ_ALLOW_MAIN_PUSH:-0}" = "1" ]; then
-            warn "WARNING: direct push to main allowed by DZ_ALLOW_MAIN_PUSH=1 (emergency only)"
+            warn "WARNING: direct push to main allowed by DZ_ALLOW_MAIN_PUSH=1; GitHub main ruleset may still reject it"
             continue
         fi
         warn "direct push to refs/heads/main is blocked: open a PR instead (docs/agents/ticket-closeout.md)"
-        blocked=1
+        BLOCKED=1
         continue
     fi
 
-    if [ "$local_ref" = "(delete)" ] || [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+    case "$remote_ref" in
+        refs/tags/*)
+            if [ "${DZ_ALLOW_TAGS:-0}" = "1" ]; then
+                warn "WARNING: tag push allowed by DZ_ALLOW_TAGS=1 (emergency only)"
+                continue
+            fi
+            warn "tag push is blocked: tags need explicit human sign-off (AGENTS「push 分级授权」)"
+            BLOCKED=1
+            continue
+            ;;
+    esac
+
+    if [ "$local_ref" = "(delete)" ] || [ "$local_sha" = "$ZERO" ]; then
         continue
     fi
 
     branch="${remote_ref#refs/heads/}"
+    if ! printf '%s' "$branch" | grep -Eq "$BRANCH_RE"; then
+        if [ "${DZ_ALLOW_NONSTANDARD_BRANCH:-0}" = "1" ]; then
+            warn "WARNING: non-standard branch '$branch' allowed by DZ_ALLOW_NONSTANDARD_BRANCH=1"
+        else
+            warn "branch '$branch' is outside the branch prefix whitelist (feat/fix/docs/test/chore/ci/refactor/perf/style/build)"
+            BLOCKED=1
+            continue
+        fi
+    fi
+
+    if [ "$remote_sha" != "$ZERO" ] && [ "$remote_sha" != "$local_sha" ]; then
+        if ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+            warn "cannot verify fast-forward for '$branch' (remote tip unavailable locally); proceeding"
+        elif ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+            if [ "${DZ_ALLOW_FORCE_PUSH:-0}" = "1" ]; then
+                warn "WARNING: non-fast-forward push allowed by DZ_ALLOW_FORCE_PUSH=1 (emergency only)"
+            else
+                warn "non-fast-forward push (force push) is blocked on '$branch'"
+                BLOCKED=1
+                continue
+            fi
+        fi
+    fi
+
     issue="$(printf '%s' "$branch" | sed -n 's#.*issue-\([0-9][0-9]*\).*#\1#p' | head -1)"
     if [ -z "$issue" ]; then
-        warn "branch '$branch' has no issue-<n> in its name; skipping push-scope check (remote ruleset still applies)"
+        warn "branch '$branch' has no issue-<n> in its name; rename per AGENTS branch convention to enable push-scope check"
         continue
     fi
     if [ ! -f scripts/check-push-scope.sh ]; then
@@ -46,17 +91,17 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         continue
     fi
 
-    bash scripts/check-push-scope.sh "$issue" --base origin/main >/dev/null 2>&1
+    bash scripts/check-push-scope.sh "$issue" --base origin/main --head "$local_sha" --branch "$branch" </dev/null >/dev/null 2>&1
     rc=$?
     case "$rc" in
         0) ;;
         1)
-            warn "push scope violation for #$issue (run: ./scripts/check-push-scope.sh $issue --base origin/main)"
-            blocked=1
+            warn "push scope violation for #$issue (run: ./scripts/check-push-scope.sh $issue --base origin/main --head $local_sha)"
+            BLOCKED=1
             ;;
         3)
-            warn "CI is already running for this branch; batch review fixes into one push (or PUSH_SCOPE_ALLOW_CI_BUSY=1)"
-            blocked=1
+            warn "CI is already running for branch '$branch'; batch review fixes into one push (or PUSH_SCOPE_ALLOW_CI_BUSY=1)"
+            BLOCKED=1
             ;;
         *)
             warn "warning: check-push-scope.sh could not run (exit $rc); proceeding"
@@ -64,4 +109,4 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     esac
 done
 
-exit "$blocked"
+exit "$BLOCKED"

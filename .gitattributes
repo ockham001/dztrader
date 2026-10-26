@@ -23,6 +23,9 @@ CMakeLists.txt text eol=lf
 *.sh text eol=lf
 *.bash text eol=lf
 
+# Git hooks 无扩展名：Windows 上必须 LF，否则 shebang/行尾带 CR 直接失效
+.githooks/* text eol=lf
+
 # 配置文件强制 LF
 *.toml text eol=lf
 *.json text eol=lf

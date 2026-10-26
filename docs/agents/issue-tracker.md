@@ -42,11 +42,12 @@
 
 ## 台账检查与 spec 进度
 
-- **spec 母票进度**（子票完成度一眼看，避免母票空挂）：
+- **spec 母票进度**（子票完成度一眼看，避免母票空挂；不硬编码 owner/repo）：
   ```bash
-  gh api graphql -f query='{repository(owner:"ockham001",name:"dztrader"){issue(number:41){state subIssuesSummary{total completed}}}}'
+  repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+  gh api graphql -f query="{repository(owner:\"${repo%/*}\",name:\"${repo#*/}\"){issue(number:41){state subIssuesSummary{total completed}}}}"
   ```
-- **波末 / 收口前台账体检**：`python3 scripts/check_ledger.py --strict` —— 只读报告三类问题：① open `[spec]` 且子票全关（应走 spec 收口）；② 当前真相源文档里「后续票 / 待实现 … #N」指向已关闭 issue（悬空承诺）；③ `needs-triage` 超期（默认 >3 天，warning）。输出可直接贴进 retro / 收口报告。
+- **波末 / 收口前台账体检**：`python3 scripts/check_ledger.py --strict` —— 只读报告三类问题：① open `[spec]` 且子票全关（应走 spec 收口）；② 活跃文档里「后续票 / 待实现 / 由 #N 提供 / 待 #N 落地」类承诺指向已关闭 issue（悬空承诺；脚本 `--selftest` 有正则自测）；③ `needs-triage` 创建超过 3 天未处置（warning）。输出可直接贴进 retro / 收口报告。
 - **读长 spec body**：`gh issue view <n> --json body --jq .body | sed -n '1,160p'`，再按关键词 `grep -n`；不要整段灌进上下文。
 
 ## 版本要求
