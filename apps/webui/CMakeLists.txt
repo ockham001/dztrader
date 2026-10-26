@@ -74,6 +74,16 @@ install(TARGETS dzweb RUNTIME DESTINATION ${DZ_INSTALL_DIR})
 # ============================================================
 # 单元测试
 # ============================================================
+# 共用 test-base 注入的 DZTRADER_HOME/shm 中**固定名** dzevent 通道的用例。
+# paths::shm() 对所有用例是同一目录，dzevent 是真实通道名（不是每用例唯一），
+# 因此两个测试二进制并发时会写同一份 meta/页文件，并各自断言「下一次读到的
+# 就是自己刚写的那一帧」——必须串行（#136，AC5）。
+# 判据：读的是自己的帧且用共享通道名；用唯一 channel 名的测试不在此列。
+# ============================================================
+set(WEBUI_SHARED_CHANNEL_TESTS
+    frame_router_test
+    ws_log_report_test
+)
 file(GLOB WEBUI_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${WEBUI_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
@@ -94,7 +104,13 @@ foreach(testfile ${WEBUI_TESTS})
         # 偶发 C4702（unreachable code），Release /WX 会升级为错误；仅豁免测试目标。
         target_compile_options(dzweb_${testname} PRIVATE /wd4702)
     endif()
-    gtest_discover_tests(dzweb_${testname} PROPERTIES LABELS fast)
+    if(testname IN_LIST WEBUI_SHARED_CHANNEL_TESTS)
+        # 见上方 WEBUI_SHARED_CHANNEL_TESTS 注释：共享 dzevent 通道且断言自己刚写的帧
+        gtest_discover_tests(dzweb_${testname}
+            PROPERTIES LABELS fast RUN_SERIAL TRUE TIMEOUT 60)
+    else()
+        gtest_discover_tests(dzweb_${testname} PROPERTIES LABELS fast)
+    endif()
 endforeach()
 
 # ============================================================
