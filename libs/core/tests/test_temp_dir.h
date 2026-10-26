@@ -2,14 +2,22 @@
 #define DZTRADER_CORE_TESTS_TEST_TEMP_DIR_H_
 
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <random>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <dztrader/core/this_process.h>
 
 namespace dztrader::test {
+
+/// 本进程登记过的唯一临时目录（atexit 统一清理，见 unique_temp_dir_tracked）。
+inline std::vector<std::filesystem::path>& tracked_dirs() {
+    static std::vector<std::filesystem::path> dirs;
+    return dirs;
+}
 
 /// 测试临时资源唯一化（[单元测试判据](../../../docs/unit-test-standard.md) §3.5）。
 ///
@@ -35,6 +43,28 @@ inline const std::string& unique_suffix() {
                std::to_string(rd());
     }();
     return suffix;
+}
+
+/// 登记一个「进程唯一目录」以便进程退出时统一清理。
+///
+/// 唯一化把「一个复用目录」变成「每个测试进程一个新目录」，若调用方不删就会在系统临时
+/// 目录里无界堆积（#136 复审实测：`dz_test_logs_*` / `dz_shm_test_*` 从未被删）。
+/// 用 atexit 统一回收：与调用方是否写了 TearDown 无关，也不会掩盖断言失败。
+inline std::filesystem::path unique_temp_dir_tracked(std::string_view name) {
+    const auto dir =
+        std::filesystem::temp_directory_path() / (std::string(name) + "_" + unique_suffix());
+    static const bool registered = [] {
+        std::atexit([] {
+            for (const auto& path : tracked_dirs()) {
+                std::error_code ec;
+                std::filesystem::remove_all(path, ec);
+            }
+        });
+        return true;
+    }();
+    (void)registered;
+    tracked_dirs().push_back(dir);
+    return dir;
 }
 
 /// 进程唯一临时目录：`<temp>/<name>_<pid>_<random>`

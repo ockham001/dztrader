@@ -7,7 +7,6 @@
 #include "test_temp_dir.h"
 
 #include <dztrader/core/env.h>
-#include <dztrader/core/this_process.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>

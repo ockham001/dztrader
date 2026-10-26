@@ -46,12 +46,9 @@ protected:
         };
         (void)ChannelMeta::open_or_create(cfg);
         ChannelConfig mdcfg{
-            .channel_name = "test_md",
-            .shm_dir = home_ + "/shm",
-            .meta_file_size = 1 * kMB,
-            .page_size = 1 * kMB,
-            .lock_memory = false,
-            .prefetch_memory = false,
+            // NOLINT(temp-dir-unique): test_md 是 SDK 约定的行情通道名，其 shm_dir 每用例唯一
+            .channel_name = "test_md", .shm_dir = home_ + "/shm", .meta_file_size = 1 * kMB,
+            .page_size = 1 * kMB,      .lock_memory = false,      .prefetch_memory = false,
         };
         (void)ChannelMeta::open_or_create(mdcfg);
 

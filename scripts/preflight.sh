@@ -102,6 +102,9 @@ check_docs_links() {
 }
 
 check_test_portability() {
+    # 先跑检查器自测：保证已知绕过形态（多级路径 / (ec) 重载 / 折行 / 固定通道名）
+    # 仍被拦住，再扫真实测试文件（#136）。
+    "$PYTHON" scripts/check_test_portability.py --selftest
     "$PYTHON" scripts/check_test_portability.py
 }
 

@@ -1,12 +1,10 @@
 #include <gtest/gtest.h>
 
-#include <dztrader/core/this_process.h>
-
 #include "conformance_main.h"
+#include "test_temp_dir.h"
 
 #if defined(DZ_WITH_MYSQL) && DZ_WITH_MYSQL
 #include "mysql_test_env.h"
-#include "test_temp_dir.h"
 #endif
 
 #include <filesystem>

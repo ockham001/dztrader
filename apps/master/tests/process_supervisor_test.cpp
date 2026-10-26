@@ -34,7 +34,7 @@ protected:
     static void SetUpTestSuite() {
         dztrader::log::LoggerSetup log_cfg;
         log_cfg.logger_name = "process_supervisor_test";
-        log_cfg.log_dir = dztrader::test::unique_temp_dir("dz_test_logs");
+        log_cfg.log_dir = dztrader::test::unique_temp_dir_tracked("dz_test_logs");
         log_cfg.enable_console = true;
         log_cfg.level = spdlog::level::debug;
         dztrader::log::set_default_logger(log_cfg);

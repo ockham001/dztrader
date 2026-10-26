@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <dztrader/core/this_process.h>
 #include <dztrader/db/database.h>
 
 #include <filesystem>

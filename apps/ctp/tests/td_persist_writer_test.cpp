@@ -11,7 +11,6 @@
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
-#include <dztrader/core/this_process.h>
 #include <dztrader/tdstore/records.h>
 
 #include "td/td_persist_records.h"

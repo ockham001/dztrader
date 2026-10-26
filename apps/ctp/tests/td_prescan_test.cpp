@@ -12,7 +12,6 @@
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
-#include <dztrader/core/this_process.h>
 #include <dztrader/db/database.h>
 #include <dztrader/tdstore/schema_catalog.h>
 

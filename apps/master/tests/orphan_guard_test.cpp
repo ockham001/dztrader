@@ -55,7 +55,7 @@ std::filesystem::path worker_exe() {
         ;
 }
 
-std::filesystem::path log_dir() { return dztrader::test::unique_temp_dir("dz_test_logs"); }
+std::filesystem::path log_dir() { return dztrader::test::unique_temp_dir_tracked("dz_test_logs"); }
 
 /// 读取本测试 logger 写出的全部日志文本。
 /// DailyFileSinkMt 在扩展名前插入日期，故按前缀匹配。

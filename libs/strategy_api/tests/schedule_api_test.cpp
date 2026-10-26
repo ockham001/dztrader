@@ -48,12 +48,9 @@ void create_event_channel(const std::filesystem::path& shm_dir) {
 
 void create_md_channel(const std::filesystem::path& shm_dir) {
     ChannelConfig cfg{
-        .channel_name = "test_md",
-        .shm_dir = shm_dir,
-        .meta_file_size = 1 * kMB,
-        .page_size = 1 * kMB,
-        .lock_memory = false,
-        .prefetch_memory = false,
+        // NOLINT(temp-dir-unique): test_md 是 SDK 约定的行情通道名，其 shm_dir 每用例唯一
+        .channel_name = "test_md", .shm_dir = shm_dir,   .meta_file_size = 1 * kMB,
+        .page_size = 1 * kMB,      .lock_memory = false, .prefetch_memory = false,
     };
     (void)ChannelMeta::open_or_create(cfg);
 }

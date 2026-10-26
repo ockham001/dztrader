@@ -4,7 +4,6 @@
 #include <SQLiteCpp/Statement.h>
 
 #include <dztrader/core/exception.h>
-#include <dztrader/core/this_process.h>
 #include <dztrader/db/database.h>
 #include <dztrader/error.h>
 

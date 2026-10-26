@@ -1,3 +1,4 @@
+#include "test_temp_dir.h"
 #include "test_util.h"
 
 #include <gtest/gtest.h>
@@ -35,7 +36,7 @@ protected:
     static constexpr uint64_t MB = 1024 * 1024;
 
     void SetUp() override {
-        channel_name_ = "dz_test_platform_fw";
+        channel_name_ = "dz_test_platform_fw_" + dztrader::test::unique_suffix();
         shm_dir_ = std::filesystem::temp_directory_path() / channel_name_;
         std::filesystem::remove_all(shm_dir_);
 

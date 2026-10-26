@@ -2,7 +2,6 @@
 #include "frame_router.h"
 #include "test_temp_dir.h"
 
-#include <dztrader/core/this_process.h>
 #include <dztrader/date_time/date.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/struct.h>

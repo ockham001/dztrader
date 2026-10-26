@@ -14,6 +14,8 @@
  * 头文件不含 gtest：`GTEST_SKIP` / `FAIL` 的语义由调用方决定。
  */
 
+#include "test_temp_dir.h"
+
 #include <dztrader/core/env.h>
 #include <dztrader/core/this_process.h>
 #include <dztrader/shm/named_semaphore.h>
@@ -74,12 +76,9 @@ inline void remove_semaphore(const std::string& name) {
 #endif
 }
 
-/// 临时目录/reader 名的随机后缀：同机并行运行不撞名（pid + random）。
-inline std::string unique_suffix() {
-    std::random_device rd;
-    return std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
-           std::to_string(rd());
-}
+/// 临时目录/reader 名的随机后缀：统一用 libs/core/tests/test_temp_dir.h 的实现
+/// （同一能力只有一份，见 AGENTS.md 方案收敛规则 1）。
+using dztrader::test::unique_suffix;
 
 /// 真实 dzsysmon 可执行文件：与测试二进制同目录的**上一级**（DZ_OUTPUT_DIR）。
 /// 测试二进制在 DZ_TESTS_DIR（= <build>/tests），dzsysmon 在 <build>/。

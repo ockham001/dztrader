@@ -19,8 +19,6 @@
 namespace paths = dztrader::paths;
 namespace env = dztrader::env;
 
-namespace {}  // namespace
-
 /// 每个用例独占一个 DZTRADER_HOME；TearDown 恢复 test-base 注入的原值并清缓存。
 ///
 /// paths::* 的缓存在 path.cpp 内由 g_cache 持有（不再使用 magic static），

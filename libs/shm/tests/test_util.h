@@ -43,7 +43,8 @@ inline std::filesystem::path test_shm_dir(const std::string& channel_name) {
     // <temp>/dz_shm_test_<pid>_<rand>， 不再共享一个固定父目录。channel_name
     // 本身已唯一，这里再加一层是为了满足 「全仓无固定 temp_directory_path()/dz_*
     // 目录」并让清理边界与进程一一对应。
-    static const std::filesystem::path root = dztrader::test::unique_temp_dir("dz_shm_test");
+    static const std::filesystem::path root =
+        dztrader::test::unique_temp_dir_tracked("dz_shm_test");
     return root / channel_name;
 }
 
