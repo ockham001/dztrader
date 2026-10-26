@@ -69,7 +69,10 @@ const CHIP_CATEGORIES: ChipCategory[] = [
   { pattern: /^acpitz(_\d+)*$/, displayName: '主板 ACPI', rank: 3 },
 ]
 
-/** 未命中分类表的芯片：排在无线网卡之后、主板 ACPI 之前 */
+/**
+ * 未命中分类表的芯片：与无线网卡**同档**（排在 CPU/GPU 之后、主板 ACPI 之前），
+ * 同档内按芯片名字典序定序（`groupTemperatures` 的第二排序键）。
+ */
 const DEFAULT_CHIP_RANK = 2
 
 /** 芯片名 → 分类（未命中返回 undefined） */

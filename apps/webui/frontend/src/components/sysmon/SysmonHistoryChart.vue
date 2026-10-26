@@ -5,7 +5,8 @@ import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent, MarkAreaComponent, MarkLineComponent } from 'echarts/components'
-import { formatBytes, formatNumberAuto, formatPercent } from '@/composables/format'
+import { formatBytes, formatCount, formatNumberAuto, formatPercent } from '@/composables/format'
+import type { SysmonHistoryMetricFormat } from '@/stores/sysmonHistory'
 import type { SysmonHistoryGap, SysmonHistoryMark, SysmonHistoryPoint } from '@/types/api'
 
 // 资源监控历史曲线（《帧契约：系统监控》§6.1）：最小 / 最大包络 + 均值 + 缺口底纹 + 标记线。
@@ -17,8 +18,8 @@ const props = defineProps<{
   points: SysmonHistoryPoint[]
   marks: SysmonHistoryMark[]
   gaps: SysmonHistoryGap[]
-  /** 值的展示形态：比率按百分比、字节按容量、其余按数值（与 store 的 metric 定义一致） */
-  format: 'ratio' | 'bytes' | 'number'
+  /** 值的展示形态：比率按百分比、字节按容量、计数取整带千分位、其余按数值（与 store 的 metric 定义一致） */
+  format: SysmonHistoryMetricFormat
   /** 值轴标题（指标名） */
   title: string
 }>()
@@ -31,6 +32,8 @@ const props = defineProps<{
 function formatValue(value: number | null): string {
   if (props.format === 'ratio') return formatPercent(value)
   if (props.format === 'bytes') return formatBytes(value)
+  // 计数（页文件数等）取整 + 千分位；负载/速率仍走通用档（整数原样、非整数 2 位）。
+  if (props.format === 'count') return formatCount(value)
   return formatNumberAuto(value)
 }
 

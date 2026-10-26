@@ -54,8 +54,12 @@ export function formatBytes(bytes: number | null | undefined): string {
   if (!isFiniteNumber(bytes) || bytes < 0) return UNAVAILABLE_TEXT
   let value = bytes
   let unitIndex = 0
+  // 进位判据是「按本档精度四舍五入后的显示值」，不是原始值：1023.6 B 在 B 档会显示成 1024，
+  // 那等于跨过了档位边界，应先升档——否则出现 `1024 B` 这种看起来像 bug 的读数。
   // 循环到最后一档为止：TiB 是展示上限，更大的值仍以 TiB 呈现（不再进 PiB）。
-  while (value >= 1024 && unitIndex < BYTE_UNITS.length - 1) {
+  while (unitIndex < BYTE_UNITS.length - 1) {
+    const digits = unitIndex === 0 ? 0 : 1
+    if (Number(value.toFixed(digits)) < 1024) break
     value /= 1024
     unitIndex += 1
   }
