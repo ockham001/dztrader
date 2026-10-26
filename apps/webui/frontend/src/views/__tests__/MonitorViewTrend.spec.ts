@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import MonitorView from '../MonitorView.vue'
 import { sysmonApi } from '@/api/sysmon'
 import { useSysmonHistoryStore } from '@/stores/sysmonHistory'
+import { useSysmonStore } from '@/stores/sysmon'
 import { SYSMON_TREND_METRICS } from '@/stores/sysmonTrend'
 import { makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 import type { SysmonHistoryAvailable } from '@/types/api'
@@ -111,6 +112,18 @@ describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', ()
     expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
   })
 
+  it('同一次快照推送后，sparkline 末点与旁边数字在同一 tick 内同步更新', async () => {
+    const wrapper = await mountView()
+    expect(wrapper.find('[data-test="monitor-sparkline-cpu"]').attributes('data-last-value')).toBe('0.187')
+
+    // WS 推送到达：末点与数字必须同时变到新值（不是等下一次推送/两次采样）
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({ cpuUsageRatio: 0.93, resourceData: true, sensorData: true }))
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-test="monitor-cpu-value"]').text()).toBe('93.0%')
+    expect(wrapper.find('[data-test="monitor-sparkline-cpu"]').attributes('data-last-value')).toBe('0.93')
+  })
+
   it('历史库不可用 / 历史被关闭时 sparkline 静默不渲染，数值照常显示（不是错误提示）', async () => {
     vi.mocked(sysmonApi.getHistory).mockResolvedValue({ available: false, reason: 'not_found' })
     const wrapper = await mountView()
@@ -121,7 +134,6 @@ describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', ()
     expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
     // 不是错误提示：页面没有「历史不可用」之类的降级文案
     expect(wrapper.text()).not.toContain('历史不可用')
-    expect(wrapper.text()).not.toContain('sparkline')
   })
 
   it('历史查询失败同样静默降级（HTTP 失败不弹错、不渲染）', async () => {
@@ -202,7 +214,8 @@ describe('MonitorView 卡片折叠（#127：维度明细默认收起）', () => 
     expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(0)
     const summary = wrapper.find('[data-test="monitor-cpu-detail-summary"]')
     expect(summary.exists()).toBe(true)
-    expect(summary.text()).toContain('16 核')
+    // 夹具每核使用率 0.05 + index*0.031，最大在 15 号核：0.515
+    expect(summary.text()).toBe('16 核 · 最高 51.5%')
     expect(wrapper.find('[data-test="monitor-cpu-detail-toggle"]').attributes('aria-expanded')).toBe('false')
 
     await toggle(wrapper, 'monitor-cpu-detail-toggle')
@@ -227,8 +240,9 @@ describe('MonitorView 卡片折叠（#127：维度明细默认收起）', () => 
     expect(wrapper.findAll('[data-test="monitor-temperature-sensor"]')).toHaveLength(0)
     // 主数值 = 最高温度；关键数字 = 传感器 / 芯片数量（不伪造 0 °C）
     expect(wrapper.find('[data-test="monitor-temperature-max"]').text()).toBe('45.5 °C')
-    expect(wrapper.find('[data-test="monitor-temperature-summary"]').text()).toContain('3 个传感器')
-    expect(wrapper.find('[data-test="monitor-temperature-summary"]').text()).toContain('2 个芯片')
+    // 主数值带归属（哪颗芯片 / 哪个通道），不丢可读命名口径
+    expect(wrapper.find('[data-test="monitor-temperature-summary"]').text())
+      .toContain('CPU · Package id 0 · 3 个传感器 · 2 个芯片')
 
     await toggle(wrapper, 'monitor-temperature-detail-toggle')
     expect(wrapper.findAll('[data-test="monitor-temperature-sensor"]')).toHaveLength(3)
@@ -240,8 +254,8 @@ describe('MonitorView 卡片折叠（#127：维度明细默认收起）', () => 
 
     expect(wrapper.findAll('[data-test="monitor-disk-io-row"]')).toHaveLength(0)
     const summary = wrapper.find('[data-test="monitor-disk-io-summary"]')
-    expect(summary.text()).toContain('2 块盘')
-    expect(summary.text()).toContain('最高利用率')
+    // 夹具两块盘利用率 0.35 / 0.72：摘要给出盘数与最高值
+    expect(summary.text()).toBe('2 块盘 · 最高利用率 72.0%')
 
     await toggle(wrapper, 'monitor-disk-io-detail-toggle')
     expect(wrapper.findAll('[data-test="monitor-disk-io-row"]')).toHaveLength(2)
@@ -310,9 +324,19 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     return source.slice(open, close)
   }
 
+  /** 取第一条 `.monitor-view__grid` 规则的内容（基础规则在样式中先出现，即 md–xl 档） */
+  function baseGridRule(): string {
+    const start = source.indexOf('.monitor-view__grid')
+    expect(start, '缺少 .monitor-view__grid 基础规则').toBeGreaterThanOrEqual(0)
+    const open = source.indexOf('{', start)
+    const close = source.indexOf('}', open)
+    expect(close).toBeGreaterThan(open)
+    return source.slice(open, close)
+  }
+
   it('监控页列数：<md 单列、md–xl 双列、≥xl 三列', () => {
-    // 基础规则（md–xl）：双列
-    expect(source).toMatch(/\.monitor-view__grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/)
+    // 基础规则（md–xl）：双列（只认基础块本身，避免别处残留的 2 列让断言假绿）
+    expect(baseGridRule()).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
     // ≥xl（1280）：三列
     expect(mediaBlock('@media (min-width: 1280px)'))
       .toMatch(/\.monitor-view__grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/)

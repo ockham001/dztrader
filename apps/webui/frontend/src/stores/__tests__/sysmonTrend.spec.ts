@@ -100,10 +100,20 @@ describe('useSysmonTrendStore：历史补齐（最近 15 分钟 / max_points=60�
     expect(trend.seriesOf('cpu.usage_ratio').map(point => point.value)).toEqual([0.2, 0.3])
   })
 
-  it('重复 init 不重复请求（只补拉一次）', async () => {
+  it('再次 init 重新补拉（历史库可能在运行期才建立，一次失败不应让整个会话失去 sparkline）', async () => {
     mockAllAvailable()
     const trend = await initTrend()
     await trend.init()
+
+    expect(sysmonApi.getHistory).toHaveBeenCalledTimes(SYSMON_TREND_METRICS.length * 2)
+  })
+
+  it('并发 init 复用同一请求（防止重复补拉）', async () => {
+    mockAllAvailable()
+    const trend = useSysmonTrendStore()
+    const first = trend.init()
+    const second = trend.init()
+    await Promise.all([first, second])
 
     expect(sysmonApi.getHistory).toHaveBeenCalledTimes(SYSMON_TREND_METRICS.length)
   })
@@ -217,6 +227,40 @@ describe('useSysmonTrendStore：WS 增量推进（末点 = 当前实时值）', 
     expect(points[points.length - 1].ts - points[0].ts).toBe(SPARKLINE_WINDOW_SEC - SPARKLINE_BUCKET_SEC)
     // 末点仍等于当前实时值（同桶内只更新值，不改变「末点 == 当前值」）
     expect(points[points.length - 1].value).toBe(1)
+  })
+
+  it('历史末桶比实时桶更靠右（桶边界 / 快照时间戳滞后）：末点仍等于当前值', async () => {
+    // 历史桶起点 = FIXTURE_SEC + 60，比快照时间戳（FIXTURE_SEC）晚 1 分钟：
+    // 若按「更旧的点忽略」，末点会落在历史值 0.3 上、与旁边的当前数字不一致（本票 AC 要求同源）
+    vi.mocked(sysmonApi.getHistory).mockImplementation((params = {}) => {
+      const metric = params.metric ?? 'cpu.usage_ratio'
+      return Promise.resolve({
+        available: true,
+        level: 'raw',
+        metric,
+        from: FIXTURE_SEC,
+        to: FIXTURE_SEC + 120,
+        interval_sec: 60,
+        truncated: false,
+        series: [{
+          dimension: '',
+          points: [
+            { ts: FIXTURE_SEC, min: 0.2, max: 0.2, avg: 0.2, last: 0.2, n: 1 },
+            { ts: FIXTURE_SEC + 60, min: 0.3, max: 0.3, avg: 0.3, last: 0.3, n: 1 },
+          ],
+        }],
+        marks: [],
+        gaps: [],
+      })
+    })
+    const sysmon = useSysmonStore()
+    sysmon.applySnapshot(makeSysmonSnapshot({ cpuUsageRatio: 0.42 }))
+
+    const trend = await initTrend()
+
+    const points = trend.seriesOf('cpu.usage_ratio')
+    expect(points[points.length - 1].value).toBe(0.42)
+    expect(points[points.length - 1].value).toBe(sysmon.cpuUsageRatio)
   })
 
   it('历史补齐完成时立即把当前快照值接到末点（不等下一次推送）', async () => {

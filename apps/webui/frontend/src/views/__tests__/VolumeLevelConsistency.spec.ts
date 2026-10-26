@@ -56,10 +56,7 @@ async function mountBoth() {
 
 /** 挂载点 → 色标等级（data-level）映射，两侧用同一把尺子比较 */
 function levelMap(wrapper: VueWrapper, selector: string): Map<string | undefined, string | undefined> {
-  // 「其余 N 个」徽章也带 .topbar__resource--disk 类但不代表具体卷（无 data-mount），过滤掉防污染映射表
-  return new Map(wrapper.findAll(selector)
-    .filter(el => el.attributes('data-mount') !== undefined)
-    .map(el => [el.attributes('data-mount'), el.attributes('data-level')]))
+  return new Map(wrapper.findAll(selector).map(el => [el.attributes('data-mount'), el.attributes('data-level')]))
 }
 
 describe('顶栏卷徽章 / 监控页卷列表色标一致性（共用 useResourceLevel）', () => {

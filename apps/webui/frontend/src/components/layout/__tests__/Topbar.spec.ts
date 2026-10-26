@@ -480,4 +480,20 @@ describe('Topbar 顶栏密度（#127：≥lg 卷徽章收敛 / <lg 单状态图�
     expect(resourceGauge(wrapper).exists()).toBe(false)
     expect(diskBadges(wrapper)).toHaveLength(2)
   })
+
+  it('展开态跨断点复位：宽屏展开全部 → 窄屏 → 回宽屏，恢复「前 2 + 其余 N 个」默认密度', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountTopbar()
+    await restBadge(wrapper).trigger('click')
+    expect(diskBadges(wrapper)).toHaveLength(3)
+
+    setWidth(800)  // → 窄屏
+    await wrapper.vm.$nextTick()
+    setWidth(1200)  // → 宽屏
+    await wrapper.vm.$nextTick()
+
+    // 展开态不跨断点保留：回到宽屏是默认密度（AC「不持久化」）
+    expect(diskBadges(wrapper)).toHaveLength(2)
+    expect(restBadge(wrapper).text()).toBe('其余 1 个')
+  })
 })

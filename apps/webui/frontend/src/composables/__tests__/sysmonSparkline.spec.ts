@@ -5,6 +5,7 @@ import {
   appendSparklinePoint,
   historySparklinePoints,
   sparklineGeometry,
+  upsertLiveSparklinePoint,
   type SparklinePoint,
 } from '../sysmonSparkline'
 import type { SysmonHistoryPoint } from '@/types/api'
@@ -120,6 +121,40 @@ describe('appendSparklinePoint（WS 增量推进）', () => {
   })
 })
 
+describe('upsertLiveSparklinePoint（实时推进：末点恒等于当前值）', () => {
+  it('实时桶更晚：追加新点（同 append 语义）', () => {
+    const next = upsertLiveSparklinePoint(series(0.1, 0.2), { ts: 1_790_000_120, value: 0.7 })
+
+    expect(next).toHaveLength(3)
+    expect(next[next.length - 1]).toEqual({ ts: 1_790_000_120, value: 0.7 })
+  })
+
+  it('同一桶：替换末点值，不堆积', () => {
+    const next = upsertLiveSparklinePoint(series(0.1, 0.2), { ts: 1_790_000_060, value: 0.9 })
+
+    expect(next).toEqual([...series(0.1), { ts: 1_790_000_060, value: 0.9 }])
+  })
+
+  it('历史末桶比实时桶更靠右（桶边界 / 快照滞后）：仍以当前值作为末点，横轴单调', () => {
+    const current = series(0.1, 0.2)
+    const next = upsertLiveSparklinePoint(current, { ts: 1_790_000_000, value: 0.9 })
+
+    expect(next).toHaveLength(2)
+    expect(next[next.length - 1]).toEqual({ ts: 1_790_000_060, value: 0.9 })
+  })
+
+  it('空序列：实时点成为首个点（不足以画线时由调用方按点数判定不渲染）', () => {
+    expect(upsertLiveSparklinePoint([], { ts: 1_790_000_000, value: 0.3 }))
+      .toEqual([{ ts: 1_790_000_000, value: 0.3 }])
+  })
+
+  it('非法值不写入', () => {
+    const current = series(0.1, 0.2)
+    expect(upsertLiveSparklinePoint(current, { ts: Number.NaN, value: 0.3 })).toBe(current)
+    expect(upsertLiveSparklinePoint(current, { ts: 1_790_000_120, value: Number.NaN })).toBe(current)
+  })
+})
+
 describe('sparklineGeometry（纯几何：SVG viewBox 0 0 100 24）', () => {
   it('少于两个点时返回 null（只有一个点画不出趋势，不渲染）', () => {
     expect(sparklineGeometry([])).toBeNull()
@@ -140,6 +175,26 @@ describe('sparklineGeometry（纯几何：SVG viewBox 0 0 100 24）', () => {
     // 值域 10→20 映射到 22（底部）→ 2（顶部）
     expect(geometry?.points).toBe('0,22 100,2')
     expect(geometry?.lastValue).toBe(20)
+  })
+
+  it('x 按时间比例而不是序号等距：混合桶距（历史 60s + 实时 15s）不被拉伸', () => {
+    const geometry = sparklineGeometry([
+      { ts: 0, value: 1 },
+      { ts: 100, value: 2 },
+      { ts: 900, value: 3 },
+    ])
+
+    // 100/900 → 11.11（若按序号会是 50）
+    expect(geometry?.points).toBe('0,22 11.11,12 100,2')
+  })
+
+  it('时间跨度为零（重复时刻）：退回序号等距，不除零', () => {
+    const geometry = sparklineGeometry([
+      { ts: 5, value: 10 },
+      { ts: 5, value: 20 },
+    ])
+
+    expect(geometry?.points).toBe('0,22 100,2')
   })
 
   it('过滤非有限值后不足两点同样返回 null', () => {

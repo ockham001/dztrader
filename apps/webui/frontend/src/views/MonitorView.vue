@@ -311,8 +311,26 @@ const cpuDetailSummary = computed(() => {
 
 /** 温度读数摊平：分组只用于展开后的展示，摘要取全局最高温与数量 */
 const temperatureReadings = computed(() => temperatureGroups.value.flatMap(group => group.readings))
-/** 最高温度（主数值）；无读数时为 null（不伪造 0 °C） */
-const temperaturePeak = computed<number | null>(() => peakOf(temperatureReadings.value.map(reading => reading.celsius)))
+
+/** 最高温度的读数与其归属（芯片分组名 + 通道标签，不丢可读命名口径，见 #120 故事 37/38） */
+interface TemperaturePeak {
+  celsius: number
+  groupName: string
+  label: string
+}
+
+/** 最高温度（主数值）及其归属；无读数时为 null（不伪造 0 °C） */
+const temperaturePeak = computed<TemperaturePeak | null>(() => {
+  let peak: TemperaturePeak | null = null
+  for (const group of temperatureGroups.value) {
+    for (const reading of group.readings) {
+      if (peak === null || reading.celsius > peak.celsius) {
+        peak = { celsius: reading.celsius, groupName: group.displayName, label: reading.label }
+      }
+    }
+  }
+  return peak
+})
 const temperatureDetailSummary = computed(
   () => `${temperatureReadings.value.length} 个传感器 · ${temperatureGroups.value.length} 个芯片`,
 )
@@ -632,7 +650,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           <!-- #127：默认只显示主数值（最高温）+ 关键数字（传感器 / 芯片数），逐传感器明细收起 -->
           <div class="monitor-view__metric-row">
             <div class="monitor-view__metric" data-test="monitor-temperature-max">
-              {{ formatTemperature(temperaturePeak) }}
+              {{ formatTemperature(temperaturePeak?.celsius ?? null) }}
             </div>
             <button
               class="ds-btn ds-btn--tertiary ds-btn--sm"
@@ -642,8 +660,9 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               @click="temperatureDetailOpen = !temperatureDetailOpen"
             >{{ temperatureDetailOpen ? '收起' : '展开明细' }}</button>
           </div>
+          <!-- 归属（芯片友好名 + 通道标签）跟着主数值走：只说「最高 45.5 °C」不知道是哪颗芯片 -->
           <p class="monitor-view__meta" data-test="monitor-temperature-summary">
-            最高温度 · {{ temperatureDetailSummary }}
+            {{ temperaturePeak?.groupName }} · {{ temperaturePeak?.label }} · {{ temperatureDetailSummary }}
           </p>
           <div v-if="temperatureDetailOpen" class="monitor-view__temp-groups">
             <div

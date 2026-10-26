@@ -81,6 +81,29 @@ export function appendSparklinePoint(
   return next.length > maxPoints ? next.slice(next.length - maxPoints) : next
 }
 
+/**
+ * 实时推进（WS 增量）：保证**末点恒为当前实时值**，再按时间窗与点数上限收敛。
+ *
+ * 与 `appendSparklinePoint` 的区别只在「实时桶的时刻不晚于末点」这一情形：契约 §6.1 的历史桶
+ * 是 `[since, until)` 的桶起点，可能比 5 秒前的快照时间戳更靠右（桶边界对齐、快照时间戳滞后、
+ * 时钟抖动）；此时若按「更旧的点忽略」处理，末点会落在历史桶值上、与旁边的当前数字不一致，
+ * 直到下一个实时桶（最长 15 秒）。本函数改为**替换末点的值**（保留末点时刻，横轴单调），
+ * 让「末点 == 当前值」在任何时序下都成立（#127 AC）。
+ */
+export function upsertLiveSparklinePoint(
+  series: SparklinePoint[],
+  point: SparklinePoint,
+  windowSec: number = SPARKLINE_WINDOW_SEC,
+  maxPoints: number = SPARKLINE_MAX_POINTS,
+): SparklinePoint[] {
+  if (!isFiniteNumber(point?.ts) || !isFiniteNumber(point?.value)) return series
+  const last = series[series.length - 1]
+  if (!last) return [point]
+  if (point.ts > last.ts) return appendSparklinePoint(series, point, windowSec, maxPoints)
+  // 实时桶不晚于末点（含同一刻）：只更新值，末点位置不变
+  return [...series.slice(0, -1), { ts: last.ts, value: point.value }]
+}
+
 /** SVG 折线几何：`points` 可直接给 `<polyline points="...">`，`lastValue` 供末点数值断言 */
 export interface SparklineGeometry {
   points: string
@@ -88,11 +111,14 @@ export interface SparklineGeometry {
 }
 
 /**
- * 数据点 → SVG 折线（viewBox `0 0 100 24`，按序号等距）。
+ * 数据点 → SVG 折线（viewBox `0 0 100 24`）。
  *
- * 按序号而非时间戳取 x：sparkline 用来看形状，缺口不该在迷你图上变成一段空白宽度；
- * 缺口/中断的解释由历史视图（包络 + 缺口底纹）承担。值域压到 [2, 22]，等值序列画中线
- * （不除零）。有效点少于 2 个时返回 null —— 一个点画不出趋势，调用方据此不渲染。
+ * x 按**时间比例**：序列是「历史 60 秒桶 + 实时 15 秒桶」的混合桶距，按序号等距会把最近几分钟
+ * 拉伸、让「最近 15 分钟」在前 15 分钟失真（#127 审查发现）。按时间取 x 后，桶距不均与采集缺口
+ * 都如实反映为横向疏密。时间跨度为零（重复时刻，理论上不应出现）时退回序号等距，避免除零。
+ *
+ * 值域压到 [2, 22]，等值序列画中线。有效点少于 2 个时返回 null —— 一个点画不出趋势，
+ * 调用方据此不渲染。
  */
 export function sparklineGeometry(series: SparklinePoint[]): SparklineGeometry | null {
   const valid = series.filter(point => isFiniteNumber(point?.ts) && isFiniteNumber(point?.value))
@@ -103,10 +129,14 @@ export function sparklineGeometry(series: SparklinePoint[]): SparklineGeometry |
   const max = Math.max(...values)
   const span = max - min
   const round2 = (value: number): number => Math.round(value * 100) / 100
-  const width = valid.length - 1
+  const firstTs = valid[0].ts
+  const timeSpan = valid[valid.length - 1].ts - firstTs
+  const indexWidth = valid.length - 1
 
   const coordinates = valid.map((point, index) => {
-    const x = (index / width) * SVG_WIDTH
+    const x = timeSpan > 0
+      ? ((point.ts - firstTs) / timeSpan) * SVG_WIDTH
+      : (index / indexWidth) * SVG_WIDTH
     const ratio = span === 0 ? 0.5 : (point.value - min) / span
     const y = PLOT_PAD + PLOT_HEIGHT * (1 - ratio)
     return `${round2(x)},${round2(y)}`

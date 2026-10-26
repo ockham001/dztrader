@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import ThemeDropdown from './ThemeDropdown.vue'
 import { UNAVAILABLE_TEXT } from '@/composables/format'
@@ -36,8 +36,9 @@ const sysmon = useSysmonStore()
 onMounted(() => { void sysmon.init() })
 
 // 顶栏密度（#127）：断点只做行为分支 —— ≥lg 保持完整徽章组并把卷徽章收敛为「前 2 + 其余 N 个」，
-// <lg 复用 layout.css 既有的折叠模式类把整组徽章收成单个状态图标。断点数值与 CSS @media 的
-// 双源对齐由 useBreakpoint / layout.css 各自维护；本组件不新增 @media，也不用容器查询。
+// <lg 复用 layout.css 既有的折叠模式类把整组徽章收成单个状态图标。档位唯一来源是 useBreakpoint
+// （与 CSS 断点白名单同源）；layout.css 的 gauge 折叠规则本身不含宽度 @media，因此窄屏判定
+// 只能走 JS 行为分支——本组件不新增 @media，也不用容器查询。
 const { tier } = useBreakpoint()
 const isWide = computed(() => tier.value === 'lg' || tier.value === 'xl')
 
@@ -45,7 +46,6 @@ interface ResourceBadge {
   text: string
   /** 使用率展示等级（与监控页共用 resourceLevel 的同一结论）；等待 / 不可用为 null，不套色标 */
   level: ResourceLevel | null
-  stateClass: string
   title: string
 }
 
@@ -61,7 +61,6 @@ const cpuBadge = computed<ResourceBadge>(() => {
     return {
       text: '—',
       level: null,
-      stateClass: resourceStateClass(null),
       title: 'CPU 使用率（等待 dzsysmon 快照）',
     }
   }
@@ -71,7 +70,6 @@ const cpuBadge = computed<ResourceBadge>(() => {
     return {
       text: UNAVAILABLE_TEXT,
       level: null,
-      stateClass: resourceStateClass(null),
       title: entry?.reason ? `CPU 使用率不可用: ${entry.reason}` : 'CPU 使用率不可用',
     }
   }
@@ -81,7 +79,7 @@ const cpuBadge = computed<ResourceBadge>(() => {
   const percent = Math.round(ratio * 100)
   // 状态色与监控页卷列表共用 resourceLevel（含边界），不在此处各自比较阈值
   const level = resourceLevel(ratio)
-  return { text: `${percent}%`, level, stateClass: resourceStateClass(level), title: `CPU 使用率 ${percent}%` }
+  return { text: `${percent}%`, level, title: `CPU 使用率 ${percent}%` }
 })
 
 // 内存徽章与 CPU 徽章同构：等待 / 不可用 / 百分比 + 阈值状态色；比率取自 store 净化后的
@@ -92,7 +90,6 @@ const memBadge = computed<ResourceBadge>(() => {
     return {
       text: '—',
       level: null,
-      stateClass: resourceStateClass(null),
       title: '内存使用率（等待 dzsysmon 快照）',
     }
   }
@@ -101,14 +98,13 @@ const memBadge = computed<ResourceBadge>(() => {
     return {
       text: UNAVAILABLE_TEXT,
       level: null,
-      stateClass: resourceStateClass(null),
       title: entry?.reason ? `内存使用率不可用: ${entry.reason}` : '内存使用率不可用',
     }
   }
   // 整数百分比：与 CPU 徽章同一取舍（窄条优先，见上）
   const percent = Math.round(ratio * 100)
   const level = resourceLevel(ratio)
-  return { text: `${percent}%`, level, stateClass: resourceStateClass(level), title: `内存使用率 ${percent}%` }
+  return { text: `${percent}%`, level, title: `内存使用率 ${percent}%` }
 })
 
 /**
@@ -147,8 +143,7 @@ const diskBadges = computed<DiskBadge[]>(() => {
         label: shortMountLabel(volume.mount),
         text: UNAVAILABLE_TEXT,
         level: null,
-        stateClass: resourceStateClass(null),
-        title: volume.reason
+          title: volume.reason
           ? `${volume.mount} 卷不可用: ${volume.reason}`
           : `${volume.mount} 卷不可用`,
       }
@@ -161,8 +156,7 @@ const diskBadges = computed<DiskBadge[]>(() => {
         label: shortMountLabel(volume.mount),
         text: UNAVAILABLE_TEXT,
         level: null,
-        stateClass: resourceStateClass(null),
-        title: `${volume.mount} 卷使用率不可用`,
+          title: `${volume.mount} 卷使用率不可用`,
       }
     }
     // 整数百分比：与 CPU / 内存徽章同一取舍（窄条优先，见 CPU 徽章注释）
@@ -173,7 +167,6 @@ const diskBadges = computed<DiskBadge[]>(() => {
       label: shortMountLabel(volume.mount),
       text: `${percent}%`,
       level,
-      stateClass: resourceStateClass(level),
       title: `${volume.mount} 使用率 ${percent}%`,
     }
   })
@@ -211,6 +204,9 @@ const diskRestTitle = computed(() => {
 function toggleDiskExpanded(): void {
   diskExpanded.value = !diskExpanded.value
 }
+
+// 展开态只属于当次宽屏布局：跨断点（含回到宽屏）回到「前 2 + 其余 N 个」的默认密度（#127 AC「不持久化」）
+watch(isWide, () => { diskExpanded.value = false })
 
 /** 资源等级排序：窄屏状态图标取「最差等级」（danger > warn > normal） */
 const RESOURCE_LEVEL_RANK: Record<ResourceLevel, number> = { normal: 0, warn: 1, danger: 2 }
@@ -303,7 +299,7 @@ const resourceGauge = computed<ResourceGauge>(() => {
              NTP 与写死的磁盘假数字已删除 -->
         <span
           class="topbar__resource topbar__resource--cpu"
-          :class="cpuBadge.stateClass"
+          :class="resourceStateClass(cpuBadge.level)"
           id="resCpu"
           :title="cpuBadge.title"
         >
@@ -312,7 +308,7 @@ const resourceGauge = computed<ResourceGauge>(() => {
         </span>
         <span
           class="topbar__resource topbar__resource--mem"
-          :class="memBadge.stateClass"
+          :class="resourceStateClass(memBadge.level)"
           id="resMem"
           :title="memBadge.title"
         >
@@ -326,7 +322,7 @@ const resourceGauge = computed<ResourceGauge>(() => {
           v-for="badge in visibleDiskBadges"
           :key="badge.mount"
           class="topbar__resource topbar__resource--disk"
-          :class="badge.stateClass"
+          :class="resourceStateClass(badge.level)"
           :data-mount="badge.mount"
           :data-level="badge.level"
           data-test="topbar-disk-badge"
@@ -336,23 +332,21 @@ const resourceGauge = computed<ResourceGauge>(() => {
           <span class="res-value">{{ badge.text }}</span>
         </span>
         <!-- 「其余 N 个」：宽屏且卷超过上限时出现，点击展开全部卷、再点收起；
-             展开态仅为组件内临时状态（不持久化，#127）。它代表整组卷而非某一卷，因此只带
-             --disk 类（窄屏折叠模式一并隐藏）与 data-test，不写 data-mount / data-level。
-             用既有 .ds-link-btn 提供文字按钮的 reset / cursor / hover，避免为此新增 CSS -->
-        <span
+             展开态仅为组件内临时状态（不持久化，#127）。它代表整组卷而非某一卷，因此不写
+             data-mount / data-level，也不带 --disk 类（该组卷徽章只在窄屏被 CSS 隐藏，
+             这里 v-if 已保证窄屏不渲染）。用原生 button + 既有 .ds-link-btn 做文字按钮
+             reset / cursor / hover，避免为此新增 CSS；键盘 Enter/Space 由 button 原生处理 -->
+        <button
           v-if="isWide && foldedDiskBadges.length > 0"
-          class="topbar__resource topbar__resource--disk ds-link-btn"
+          type="button"
+          class="topbar__resource ds-link-btn"
           data-test="topbar-disk-rest"
-          role="button"
-          tabindex="0"
           :aria-expanded="diskExpanded"
           :title="diskRestTitle"
           @click="toggleDiskExpanded"
-          @keydown.enter.prevent="toggleDiskExpanded"
-          @keydown.space.prevent="toggleDiskExpanded"
         >
           <span class="res-value">{{ diskExpanded ? '收起' : `其余 ${foldedDiskBadges.length} 个` }}</span>
-        </span>
+        </button>
       </div>
     </div>
 
