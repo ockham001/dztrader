@@ -31,6 +31,26 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 # 激活 MSVC 环境（Ninja 生成器必需）
 . "$PSScriptRoot\Activate-MSVC.ps1"
 
+# 本地 git hooks（.githooks）：pre-commit 跑 staged 子集机械检查，pre-push 拦直推 main。
+# 权威门禁仍是 preflight 与 CI；hooks 只是快速护栏（见 docs/development-checklist.md C 段）。
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Host "warning: git not found; skip installing git hooks" -ForegroundColor Yellow
+} elseif (-not (Test-Path (Join-Path $repoRoot ".githooks"))) {
+    Write-Host "warning: .githooks not found; skip installing git hooks" -ForegroundColor Yellow
+} else {
+    git -C $repoRoot rev-parse --is-inside-work-tree 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "warning: not a git worktree; skip installing git hooks" -ForegroundColor Yellow
+    } else {
+        git -C $repoRoot config --local core.hooksPath .githooks
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "git hooks: core.hooksPath=.githooks"
+        } else {
+            Write-Host "warning: failed to install git hooks; continuing without hooks" -ForegroundColor Yellow
+        }
+    }
+}
+
 $profile = 'profiles/win-msvc-static'
 $outputFolder = "build/windows/x86_64/$Config"
 

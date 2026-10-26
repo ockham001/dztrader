@@ -60,11 +60,33 @@ done
 
 ## 4. 提取成时间线/摘要
 
-上一轮 retro（#69–#74、#83–#93）用过的提取脚本是 `.cache/retro/extract.py` + `digest.py`（**gitignored、可删**；丢了按上面的事件表重写也不难）。做法：
+提取器已沉淀为 [scripts/retro_extract.py](../../scripts/retro_extract.py)（只读、无 Python 第三方依赖，依赖 `zstd` CLI；2026-10-26 从临时脚本转正）：
 
-1. `zstd -dc` 解压到内存/临时文件；
-2. 按事件类型过滤出：human 消息、无 `#<票号>` 的 bash 失败（`[exit code: N]`）、`subagent` 结果、`job/settled` 里 ≥60s 的长作业、`llm/retry`；
-3. 汇总到 `.cache/retro/<label>-timeline.md` / `-digest.md`，再按复盘候选归类。
+```bash
+# 先按 §1 定义 BASE（本仓库）：
+BASE="$HOME/.dsh/sessions/--$(pwd -P | sed 's#^/##; s#/#-#g')--"
+
+# 本 cwd 最新主会话
+python3 scripts/retro_extract.py --latest
+# 指定会话（复盘当前会话时传路径；当前会话的尾部事件在 turn 结束才落盘）
+python3 scripts/retro_extract.py --session "$BASE/<session-id>/session.v4.jsonl.zstd"
+# 最近 5 个主会话批量出 digest
+python3 scripts/retro_extract.py --all --recent 5
+```
+
+输出 `.cache/retro/<session-id>-digest.md`，已按复盘需要汇总：轮次墙钟、人工消息、审批（`approval/asked`）、工具失败（`isError`）、≥60s 长作业（`job/settled`）、子代理调用、工具计数、`llm/retry`。再按复盘候选（导航 / 自动检查 / 规范 / AGENTS / 工具经济 / 信息获取）归类。
+
+找「今天有哪些主会话」时按 mtime 看 `session-*/` 并抽查首条 human 消息（Linux `find -printf`；路径含空格也安全）：
+
+```bash
+while IFS= read -r f; do
+  first=$(zstd -dc "$f" 2>/dev/null \
+    | jq -r 'select(.type=="user/message" and .data.source.kind=="user") | ([.data.content[]? | select(.type=="text") | .text] | join(" "))' \
+    | head -1)
+  echo "$(basename "$(dirname "$f")") :: ${first:0:90}"
+done < <(find "$BASE" -maxdepth 2 -path '*/session-*/session.v4.jsonl.zstd' -printf '%T@ %p\n' \
+  | sort -rn | head -10 | cut -d' ' -f2-)
+```
 
 **注意**：`.cache/` 不在版本控制内，跨会话保留但可随时被 `rm -rf`；需要长期保留的结论写进 issue/ADR，不写进 `.cache/`。
 

@@ -8,10 +8,11 @@
 # 正在跑的 PR run（每次 ≈35–40 分钟），review 修复应攒成一个 commit 再推。
 #
 # 用法:
-#   ./scripts/check-push-scope.sh <issue-number> [--base <ref>]
+#   ./scripts/check-push-scope.sh <issue-number> [--base <ref>] [--head <sha>] [--branch <name>]
 #
-# base 默认 @{u}（无上游时回退 origin/main）。逐个检查 `base..HEAD` 的
-# 非 merge commit，subject 必须含 `#<issue>`（全角/半角括号均可）。
+# base 默认 @{u}（无上游时回退 origin/main）；head 默认 HEAD（pre-push hook 传被推的 local_sha）。
+# `--branch` 只影响 CI-busy 检查（默认当前分支；pre-push hook 传被推的远端分支名）。
+# 逐个检查 `base..head` 的非 merge commit，subject 必须含 `#<issue>`（全角/半角括号均可）。
 # CI 进行中时可用 PUSH_SCOPE_ALLOW_CI_BUSY=1 跳过第二个检查。
 #
 # 退出码: 0=区间为空或全部匹配, 1=发现不属于本票的 commit, 2=参数/引用错误, 3=分支 CI 进行中
@@ -23,6 +24,8 @@ cd "$ROOT"
 
 ISSUE=""
 BASE=""
+HEAD_SHA=""
+BRANCH_OVERRIDE=""
 
 usage() {
     sed -n '2,/^$/p' "$0"
@@ -32,6 +35,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
         --base) BASE="${2:?--base 需要参数}"; shift 2 ;;
+        --head) HEAD_SHA="${2:?--head 需要参数}"; shift 2 ;;
+        --branch) BRANCH_OVERRIDE="${2:?--branch 需要参数}"; shift 2 ;;
         -*) echo "error: unknown option: $1" >&2; usage >&2; exit 2 ;;
         *)
             if [ -z "$ISSUE" ]; then ISSUE="$1"; shift
@@ -59,15 +64,23 @@ if ! git rev-parse --verify --quiet "$BASE" >/dev/null; then
     exit 2
 fi
 
-COMMITS="$(git log --no-merges --format='%h %s' "${BASE}..HEAD")"
+if [ -z "$HEAD_SHA" ]; then
+    HEAD_SHA="$(git rev-parse HEAD)"
+fi
+if ! git rev-parse --verify --quiet "${HEAD_SHA}^{commit}" >/dev/null; then
+    echo "error: head ref not found: $HEAD_SHA" >&2
+    exit 2
+fi
+
+COMMITS="$(git log --no-merges --format='%h %s' "${BASE}..${HEAD_SHA}")"
 if [ -z "$COMMITS" ]; then
-    echo "ok: ${BASE}..HEAD is empty (nothing to push)"
+    echo "ok: ${BASE}..${HEAD_SHA} is empty (nothing to push)"
     exit 0
 fi
 
 check_ci_busy() {
     local gh_bin="$1" branch active
-    branch="$(git branch --show-current 2>/dev/null || true)"
+    branch="${BRANCH_OVERRIDE:-$(git branch --show-current 2>/dev/null || true)}"
     [ -n "$branch" ] || return 0
     command -v "$gh_bin" >/dev/null 2>&1 || return 0
     active="$("$gh_bin" run list --branch "$branch" --limit 10 \
@@ -97,7 +110,7 @@ if [ "${PUSH_SCOPE_ALLOW_CI_BUSY:-0}" != "1" ]; then
     check_ci_busy "$GH_BIN" || exit $?
 fi
 
-echo "push scope: ${BASE}..HEAD"
+echo "push scope: ${BASE}..${HEAD_SHA}"
 bad=0
 while IFS= read -r line; do
     printf '  %s\n' "$line"
