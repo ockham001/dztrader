@@ -10,6 +10,8 @@
  * 不触碰 `DZTRADER_HOME`，也不留跨运行残留。
  */
 
+#include "test_temp_dir.h"
+
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -42,9 +44,7 @@ using dztrader::sysmonstore::ScalarRecord;
 constexpr int64_t kBaseTs = 1'790'000'000;
 
 std::filesystem::path make_temp_dir() {
-    std::random_device rd;
-    const auto suffix = std::to_string(dztrader::this_process::pid()) + "_" + std::to_string(rd());
-    auto dir = std::filesystem::temp_directory_path() / ("dzsysmon_history_svc_" + suffix);
+    auto dir = dztrader::test::unique_temp_dir_tracked("dzsysmon_history_svc");
     std::filesystem::create_directories(dir);
     return dir;
 }

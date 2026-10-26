@@ -38,7 +38,7 @@ file(GLOB SYSMONSTORE_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests
 foreach(testfile ${SYSMONSTORE_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
     add_executable(dzsysmonstore_${testname} ${testfile} tests/test_main.cpp)
-    target_link_libraries(dzsysmonstore_${testname} PRIVATE dzsysmonstore GTest::gtest)
+    target_link_libraries(dzsysmonstore_${testname} PRIVATE dzsysmonstore dztest_support GTest::gtest)
     # 测试直接用 sqlite3 造「版本不符/无 schema」的库来验证读取方降级路径
     # （写入方 API 故意不提供改版本的能力）。
     target_include_directories(dzsysmonstore_${testname} PRIVATE

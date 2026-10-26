@@ -9,6 +9,8 @@
  * TearDown 清理——不触碰 `DZTRADER_HOME`，也不留跨运行残留。
  */
 
+#include "test_temp_dir.h"
+
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -30,11 +32,9 @@
 namespace dztrader::sysmonstore {
 namespace {
 
-/// 唯一临时目录（pid + 随机后缀），避免与并行测试/上次运行的残留互扰。
+/// 唯一临时目录（统一走 test_temp_dir.h），避免与并行测试/上次运行的残留互扰。
 std::filesystem::path make_temp_dir() {
-    std::random_device rd;
-    const auto suffix = std::to_string(dztrader::this_process::pid()) + "_" + std::to_string(rd());
-    auto dir = std::filesystem::temp_directory_path() / ("dzsysmonstore_" + suffix);
+    auto dir = dztrader::test::unique_temp_dir_tracked("dzsysmonstore");
     std::filesystem::create_directories(dir);
     return dir;
 }
