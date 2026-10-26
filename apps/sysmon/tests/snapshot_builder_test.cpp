@@ -1397,11 +1397,13 @@ TEST(SnapshotBuilderTest, NetworkDoesNotAddAvailabilityKeys) {
     EXPECT_TRUE(snapshot.availability.metrics.contains(platform::SYSMON_METRIC_NETWORK));
 }
 
-// 契约 sysmon §7：发送方**不得**输出 `alerts` 字段（#125 删除）；快照序列化与校验随之收敛。
-TEST(SnapshotBuilderTest, SnapshotOmitsRemovedAlertsField) {
+// 契约 sysmon §7：发送方**不得**输出 `alerts` / `watch_paths` 字段（#125 / #124 删除）；
+// 快照序列化与校验随之收敛。
+TEST(SnapshotBuilderTest, SnapshotOmitsRemovedAlertAndWatchPathFields) {
     const auto snapshot = build_with(make_linux_info(), make_full_metrics());
     const auto json = nlohmann::json(snapshot);
     EXPECT_FALSE(json.contains("alerts"));
+    EXPECT_FALSE(json.contains("watch_paths"));
     EXPECT_EQ(platform::SysmonSnapshot::validate(json), std::nullopt);
 }
 
