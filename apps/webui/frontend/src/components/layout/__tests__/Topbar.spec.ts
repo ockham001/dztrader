@@ -360,6 +360,9 @@ describe('Topbar 顶栏密度（#127：≥lg 卷徽章收敛 / <lg 单状态图�
 
     expect(diskBadges(wrapper)).toHaveLength(2)
     expect(restBadge(wrapper).text()).toBe('其余 1 个')
+    // 折叠控件用原生 button（可访问性：键盘 Enter/Space 原生支持，不靠 span role=button + 手写键盘处理）
+    expect(restBadge(wrapper).element.tagName).toBe('BUTTON')
+    expect(restBadge(wrapper).attributes('type')).toBe('button')
     expect(restBadge(wrapper).attributes('aria-expanded')).toBe('false')
 
     await restBadge(wrapper).trigger('click')

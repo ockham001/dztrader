@@ -8,7 +8,7 @@ import MonitorView from '../MonitorView.vue'
 import { sysmonApi } from '@/api/sysmon'
 import { useSysmonHistoryStore } from '@/stores/sysmonHistory'
 import { useSysmonStore } from '@/stores/sysmon'
-import { SYSMON_TREND_METRICS } from '@/stores/sysmonTrend'
+import { SYSMON_TREND_METRIC_KEYS } from '@/stores/sysmonTrend'
 import { makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 import type { SysmonHistoryAvailable } from '@/types/api'
 
@@ -89,8 +89,8 @@ describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', ()
     const wrapper = await mountView()
 
     expect(wrapper.findAll('.sysmon-sparkline')).toHaveLength(5)
-    for (const metric of SYSMON_TREND_METRICS) {
-      expect(vi.mocked(sysmonApi.getHistory).mock.calls.some(([params]) => params?.metric === metric.key)).toBe(true)
+    for (const metric of SYSMON_TREND_METRIC_KEYS) {
+      expect(vi.mocked(sysmonApi.getHistory).mock.calls.some(([params]) => params?.metric === metric)).toBe(true)
     }
     // 维度指标第一版不做 sparkline：温度卡片 / 磁盘 I/O / 网络卡片内都没有
     expect(wrapper.find('[data-test="monitor-temperature"] .sysmon-sparkline').exists()).toBe(false)
@@ -242,7 +242,7 @@ describe('MonitorView 卡片折叠（#127：维度明细默认收起）', () => 
     expect(wrapper.find('[data-test="monitor-temperature-max"]').text()).toBe('45.5 °C')
     // 主数值带归属（哪颗芯片 / 哪个通道），不丢可读命名口径
     expect(wrapper.find('[data-test="monitor-temperature-summary"]').text())
-      .toContain('CPU · Package id 0 · 3 个传感器 · 2 个芯片')
+      .toBe('最高温度 · CPU · Package id 0 · 3 个传感器 · 2 个芯片')
 
     await toggle(wrapper, 'monitor-temperature-detail-toggle')
     expect(wrapper.findAll('[data-test="monitor-temperature-sensor"]')).toHaveLength(3)

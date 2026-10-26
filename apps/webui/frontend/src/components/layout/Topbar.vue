@@ -143,7 +143,7 @@ const diskBadges = computed<DiskBadge[]>(() => {
         label: shortMountLabel(volume.mount),
         text: UNAVAILABLE_TEXT,
         level: null,
-          title: volume.reason
+        title: volume.reason
           ? `${volume.mount} 卷不可用: ${volume.reason}`
           : `${volume.mount} 卷不可用`,
       }
@@ -156,7 +156,7 @@ const diskBadges = computed<DiskBadge[]>(() => {
         label: shortMountLabel(volume.mount),
         text: UNAVAILABLE_TEXT,
         level: null,
-          title: `${volume.mount} 卷使用率不可用`,
+        title: `${volume.mount} 卷使用率不可用`,
       }
     }
     // 整数百分比：与 CPU / 内存徽章同一取舍（窄条优先，见 CPU 徽章注释）
@@ -335,7 +335,8 @@ const resourceGauge = computed<ResourceGauge>(() => {
              展开态仅为组件内临时状态（不持久化，#127）。它代表整组卷而非某一卷，因此不写
              data-mount / data-level，也不带 --disk 类（该组卷徽章只在窄屏被 CSS 隐藏，
              这里 v-if 已保证窄屏不渲染）。用原生 button + 既有 .ds-link-btn 做文字按钮
-             reset / cursor / hover，避免为此新增 CSS；键盘 Enter/Space 由 button 原生处理 -->
+             reset / cursor / hover；只有一个 scoped 样式补回按钮的字体继承（浏览器 UA 不为
+             button 继承页面字体），不新增布局/密度样式。键盘 Enter/Space 由 button 原生处理 -->
         <button
           v-if="isWide && foldedDiskBadges.length > 0"
           type="button"
@@ -383,5 +384,11 @@ const resourceGauge = computed<ResourceGauge>(() => {
 /* 指标不可用 / 快照未到达：中性色，不得用状态色或 0 冒充数据 */
 .topbar__resource--unavailable .res-value {
   color: var(--text-tertiary);
+}
+
+/* 「其余 N 个」是原生 button：浏览器 UA 不把页面字体继承给 button（.ds-link-btn 只重置
+   background/border/color/font-size），不补这一行会与相邻 span 徽章字体不一致 */
+.topbar__resource.ds-link-btn {
+  font-family: inherit;
 }
 </style>

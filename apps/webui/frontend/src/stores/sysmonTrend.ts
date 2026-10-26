@@ -29,13 +29,6 @@ export const SYSMON_TREND_METRIC_KEYS = [
 
 export type SysmonTrendMetricKey = typeof SYSMON_TREND_METRIC_KEYS[number]
 
-export interface SysmonTrendMetric {
-  /** 历史库指标键（与 `libs/sysmonstore` 的 `kScalarMetrics[].key` 一致，否则后端回 400） */
-  key: SysmonTrendMetricKey
-  /** 展示名（sparkline 的 title / aria-label）；取自历史视图的指标选项，不另写一份 */
-  label: string
-}
-
 /**
  * 指标的展示名取自 `SYSMON_HISTORY_METRICS`（历史视图下拉是这批指标键的唯一 UI 真相源），
  * 不在本模块复制一份 label——两处各写一份必然在改名时漂移（review-checklist §2.4）。
@@ -44,11 +37,6 @@ export interface SysmonTrendMetric {
 export function trendMetricLabel(key: string): string {
   return SYSMON_HISTORY_METRICS.find(metric => metric.key === key)?.label ?? key
 }
-
-export const SYSMON_TREND_METRICS: SysmonTrendMetric[] = SYSMON_TREND_METRIC_KEYS.map(key => ({
-  key,
-  label: trendMetricLabel(key),
-}))
 
 /**
  * 系统监控内联趋势 store（#127）。
@@ -85,17 +73,12 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
   const series = ref<Record<string, SparklinePoint[]>>({})
   /** 历史库对各指标是否可用（false = 静默不渲染；实时推进也据此跳过） */
   const available = ref<Record<string, boolean>>({})
-  /** 历史补拉进行中（防并发重复请求；完成后置 false，下次进入页面可重新补拉） */
-  const loading = ref(false)
+  /** 历史补拉的 in-flight promise：并发调用共享同一次请求（完成后置空，下次进入页面重新补拉） */
+  let inFlight: Promise<void> | null = null
 
   /** 某指标的序列（历史不可用 / 未加载时为空数组） */
   function seriesOf(key: string): SparklinePoint[] {
     return series.value[key] ?? []
-  }
-
-  /** 指标展示名（sparkline 的 title / aria-label） */
-  function labelOf(key: string): string {
-    return trendMetricLabel(key)
   }
 
   /**
@@ -119,12 +102,12 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
     const bucketTs = Math.floor(ts / SPARKLINE_BUCKET_SEC) * SPARKLINE_BUCKET_SEC
 
     let next: Record<string, SparklinePoint[]> | null = null
-    for (const metric of SYSMON_TREND_METRICS) {
-      if (available.value[metric.key] !== true) continue
-      const value = readers[metric.key]()
+    for (const key of SYSMON_TREND_METRIC_KEYS) {
+      if (available.value[key] !== true) continue
+      const value = readers[key]()
       if (value === null || !Number.isFinite(value)) continue
       next ??= { ...series.value }
-      next[metric.key] = upsertLiveSparklinePoint(next[metric.key] ?? [], { ts: bucketTs, value })
+      next[key] = upsertLiveSparklinePoint(next[key] ?? [], { ts: bucketTs, value })
     }
     if (next) series.value = next
   }
@@ -135,18 +118,23 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
   /**
    * 进入监控页时补拉历史（每个标量指标一次）。请求失败/历史不可用都**静默**降级：
    * 不抛错、不 toast、不保存错误状态，视图只是不渲染 sparkline。
-   * 并发调用复用同一次请求（`loading` 守卫）；完成后可再次调用（离开页面再回来会重试，
-   * 历史库可能在运行期才建立）。
+   * 并发调用共享同一次 in-flight 请求（第二个调用者等待它完成）；完成后可再次调用
+   *（离开页面再回来会重试，历史库可能在运行期才建立）。
    */
   async function init(): Promise<void> {
-    if (loading.value) return
-    loading.value = true
+    if (inFlight) return inFlight
+    inFlight = loadHistory().finally(() => { inFlight = null })
+    return inFlight
+  }
+
+  /** 补拉一次历史（`init` 的实体；失败静默降级，见上） */
+  async function loadHistory(): Promise<void> {
     const to = Math.floor(Date.now() / 1000)
     const from = to - SPARKLINE_WINDOW_SEC
     try {
       const responses = await Promise.allSettled(
-        SYSMON_TREND_METRICS.map(metric => sysmonApi.getHistory({
-          metric: metric.key,
+        SYSMON_TREND_METRIC_KEYS.map(metric => sysmonApi.getHistory({
+          metric,
           from,
           to,
           max_points: SPARKLINE_MAX_POINTS,
@@ -155,7 +143,7 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
       const nextSeries: Record<string, SparklinePoint[]> = {}
       const nextAvailable: Record<string, boolean> = {}
       responses.forEach((response, index) => {
-        const key = SYSMON_TREND_METRICS[index].key
+        const key = SYSMON_TREND_METRIC_KEYS[index]
         // 只有 200 + available=true 才算历史可用；HTTP 失败与降级响应同样静默
         if (response.status !== 'fulfilled' || response.value.available !== true) {
           nextSeries[key] = []
@@ -171,14 +159,11 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
       appendLive()
     } catch {
       // 任何意外异常都静默降级：sparkline 是辅助信息，不得让监控页因它失败
-    } finally {
-      loading.value = false
     }
   }
 
   return {
     seriesOf,
-    labelOf,
     init,
   }
 })

@@ -1,14 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import {
-  SYSMON_TREND_METRICS,
+  SYSMON_TREND_METRIC_KEYS,
+  trendMetricLabel,
   useSysmonTrendStore,
 } from '../sysmonTrend'
+import { SYSMON_HISTORY_METRICS } from '../sysmonHistory'
 import { useSysmonStore } from '../sysmon'
 import { sysmonApi } from '@/api/sysmon'
 import { SPARKLINE_BUCKET_SEC, SPARKLINE_MAX_POINTS, SPARKLINE_WINDOW_SEC } from '@/composables/sysmonSparkline'
 import { makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
-import type { SysmonHistoryAvailable } from '@/types/api'
+import type { SysmonHistoryAvailable, SysmonHistoryResponse } from '@/types/api'
 
 vi.mock('@/api/sysmon', () => ({
   sysmonApi: { getSnapshot: vi.fn(), getConfig: vi.fn(), getHistory: vi.fn() },
@@ -66,8 +68,15 @@ describe('useSysmonTrendStore：历史补齐（最近 15 分钟 / max_points=60�
     vi.spyOn(Date, 'now').mockReturnValue(NOW_SEC * 1000)
   })
 
+  it('趋势指标键都是历史视图已注册的标量键（子集守卫：打错键会在契约一致性上暴露）', () => {
+    const registered = new Set(SYSMON_HISTORY_METRICS.map(metric => metric.key))
+    for (const key of SYSMON_TREND_METRIC_KEYS) {
+      expect(registered.has(key), `趋势指标键未在历史视图注册: ${key}`).toBe(true)
+    }
+  })
+
   it('sparkline 只覆盖 5 个标量指标（维度指标第一版不做）', () => {
-    expect(SYSMON_TREND_METRICS.map(metric => metric.key)).toEqual([
+    expect([...SYSMON_TREND_METRIC_KEYS]).toEqual([
       'cpu.usage_ratio',
       'cpu.load_average.one',
       'memory.used_ratio',
@@ -80,11 +89,11 @@ describe('useSysmonTrendStore：历史补齐（最近 15 分钟 / max_points=60�
     mockAllAvailable()
     await initTrend()
 
-    expect(sysmonApi.getHistory).toHaveBeenCalledTimes(SYSMON_TREND_METRICS.length)
-    for (const metric of SYSMON_TREND_METRICS) {
+    expect(sysmonApi.getHistory).toHaveBeenCalledTimes(SYSMON_TREND_METRIC_KEYS.length)
+    for (const key of SYSMON_TREND_METRIC_KEYS) {
       const params = vi.mocked(sysmonApi.getHistory).mock.calls
         .map(([arg]) => arg)
-        .find(arg => arg?.metric === metric.key)
+        .find(arg => arg?.metric === key)
       expect(params).toBeDefined()
       // 时间窗：最近 15 分钟（to 为当前墙钟秒）
       expect((params?.to ?? 0) - (params?.from ?? 0)).toBe(SPARKLINE_WINDOW_SEC)
@@ -105,17 +114,35 @@ describe('useSysmonTrendStore：历史补齐（最近 15 分钟 / max_points=60�
     const trend = await initTrend()
     await trend.init()
 
-    expect(sysmonApi.getHistory).toHaveBeenCalledTimes(SYSMON_TREND_METRICS.length * 2)
+    expect(sysmonApi.getHistory).toHaveBeenCalledTimes(SYSMON_TREND_METRIC_KEYS.length * 2)
   })
 
-  it('并发 init 复用同一请求（防止重复补拉）', async () => {
-    mockAllAvailable()
+  it('并发 init 共享同一 in-flight 请求：第二个调用真正等待而不是提前 resolve', async () => {
+    // 5 条历史请求都挂起，验证两个调用拿到同一个 promise，且它在请求完成前不会 resolve
+    let resolveHistory: ((value: SysmonHistoryResponse) => void) | undefined
+    vi.mocked(sysmonApi.getHistory).mockReturnValue(
+      new Promise<SysmonHistoryResponse>((resolve) => { resolveHistory = resolve }),
+    )
     const trend = useSysmonTrendStore()
     const first = trend.init()
     const second = trend.init()
-    await Promise.all([first, second])
+    let secondSettled = false
+    void second.then(() => { secondSettled = true })
 
-    expect(sysmonApi.getHistory).toHaveBeenCalledTimes(SYSMON_TREND_METRICS.length)
+    expect(sysmonApi.getHistory).toHaveBeenCalledTimes(SYSMON_TREND_METRIC_KEYS.length)
+    // 请求尚未返回：第二个调用不得提前 resolve（复用的是同一次请求，不是空 promise）
+    await Promise.resolve()
+    expect(secondSettled).toBe(false)
+
+    resolveHistory?.(makeAvailable('cpu.usage_ratio'))
+    await Promise.all([first, second])
+    expect(secondSettled).toBe(true)
+    expect(trend.seriesOf('cpu.usage_ratio')).toHaveLength(2)
+  })
+
+  it('未注册的指标键回退显示键本身（不静默空标题）', () => {
+    expect(trendMetricLabel('memory.used_ratio')).toBe('内存使用率')
+    expect(trendMetricLabel('not.registered.metric')).toBe('not.registered.metric')
   })
 })
 

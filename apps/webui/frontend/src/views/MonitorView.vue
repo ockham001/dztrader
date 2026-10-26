@@ -28,7 +28,7 @@ import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLeve
 import { useAuthStore } from '@/stores/auth'
 import { useSysmonHistoryStore } from '@/stores/sysmonHistory'
 import { useSysmonStore } from '@/stores/sysmon'
-import { useSysmonTrendStore } from '@/stores/sysmonTrend'
+import { trendMetricLabel, useSysmonTrendStore } from '@/stores/sysmonTrend'
 import { useToastStore } from '@/stores/toast'
 import type { SysmonVolumeInfo } from '@/types/generated'
 
@@ -472,7 +472,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 >{{ cpuPercent }}</button>
                 <SysmonSparkline
                   :points="trend.seriesOf('cpu.usage_ratio')"
-                  :label="trend.labelOf('cpu.usage_ratio')"
+                  :label="trendMetricLabel('cpu.usage_ratio')"
                   class="monitor-view__sparkline"
                   data-test="monitor-sparkline-cpu"
                   @open="openHistory('cpu.usage_ratio')"
@@ -538,7 +538,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               <SysmonSparkline
                 v-if="loadAverage.one !== null"
                 :points="trend.seriesOf('cpu.load_average.one')"
-                :label="trend.labelOf('cpu.load_average.one')"
+                :label="trendMetricLabel('cpu.load_average.one')"
                 class="monitor-view__sparkline monitor-view__sparkline--block"
                 data-test="monitor-sparkline-load"
                 @open="openHistory('cpu.load_average.one')"
@@ -662,7 +662,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           </div>
           <!-- 归属（芯片友好名 + 通道标签）跟着主数值走：只说「最高 45.5 °C」不知道是哪颗芯片 -->
           <p class="monitor-view__meta" data-test="monitor-temperature-summary">
-            {{ temperaturePeak?.groupName }} · {{ temperaturePeak?.label }} · {{ temperatureDetailSummary }}
+            最高温度 · {{ temperaturePeak?.groupName }} · {{ temperaturePeak?.label }} · {{ temperatureDetailSummary }}
           </p>
           <div v-if="temperatureDetailOpen" class="monitor-view__temp-groups">
             <div
@@ -712,7 +712,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
             >{{ formatPercent(memory.used_ratio) }}</button>
             <SysmonSparkline
               :points="trend.seriesOf('memory.used_ratio')"
-              :label="trend.labelOf('memory.used_ratio')"
+              :label="trendMetricLabel('memory.used_ratio')"
               class="monitor-view__sparkline"
               data-test="monitor-sparkline-memory"
               @open="openHistory('memory.used_ratio')"
@@ -761,7 +761,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               </span>
               <SysmonSparkline
                 :points="trend.seriesOf('swap.used_ratio')"
-                :label="trend.labelOf('swap.used_ratio')"
+                :label="trendMetricLabel('swap.used_ratio')"
                 class="monitor-view__sparkline monitor-view__sparkline--inline"
                 data-test="monitor-sparkline-swap"
                 @open="openHistory('swap.used_ratio')"
@@ -867,7 +867,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 </dd>
                 <SysmonSparkline
                   :points="trend.seriesOf('shm_dir.total_bytes')"
-                  :label="trend.labelOf('shm_dir.total_bytes')"
+                  :label="trendMetricLabel('shm_dir.total_bytes')"
                   class="monitor-view__sparkline monitor-view__sparkline--inline"
                   data-test="monitor-sparkline-shm"
                   @open="openHistory('shm_dir.total_bytes')"

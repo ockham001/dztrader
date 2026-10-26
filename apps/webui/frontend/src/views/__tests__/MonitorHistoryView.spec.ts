@@ -5,7 +5,7 @@ import MonitorView from '../MonitorView.vue'
 import { sysmonApi } from '@/api/sysmon'
 import { useSysmonStore } from '@/stores/sysmon'
 import { useSysmonHistoryStore } from '@/stores/sysmonHistory'
-import { SYSMON_TREND_METRICS } from '@/stores/sysmonTrend'
+import { SYSMON_TREND_METRIC_KEYS } from '@/stores/sysmonTrend'
 import { makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 import type { SysmonHistoryAvailable, SysmonHistoryResponse } from '@/types/api'
 
@@ -212,12 +212,12 @@ describe('MonitorView 实时 / 历史视图切换（不影响 WS 与实时数据
   it('切到历史只发一条历史查询（趋势补拉之外），不额外发实时请求', async () => {
     const wrapper = await mountView()
     // 进入实时视图时内联趋势（#127）已为 5 个标量指标各补拉一次历史；它与历史视图无关
-    expect(sysmonApi.getHistory).toHaveBeenCalledTimes(SYSMON_TREND_METRICS.length)
+    expect(sysmonApi.getHistory).toHaveBeenCalledTimes(SYSMON_TREND_METRIC_KEYS.length)
     expect(sysmonApi.getSnapshot).toHaveBeenCalledTimes(1)
 
     await openHistory(wrapper)
     // 历史视图挂载时只多查一次（当前预选指标），不重复拉实时快照
-    expect(sysmonApi.getHistory).toHaveBeenCalledTimes(SYSMON_TREND_METRICS.length + 1)
+    expect(sysmonApi.getHistory).toHaveBeenCalledTimes(SYSMON_TREND_METRIC_KEYS.length + 1)
     expect(sysmonApi.getSnapshot).toHaveBeenCalledTimes(1)
   })
 
