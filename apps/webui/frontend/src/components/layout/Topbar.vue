@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import ThemeDropdown from './ThemeDropdown.vue'
 import { UNAVAILABLE_TEXT } from '@/composables/format'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
 import { useWebSocket } from '@/composables/wsClient'
 import { useSysmonStore } from '@/stores/sysmon'
@@ -34,10 +35,23 @@ const connStatus = computed<{ text: string; dotClass: string }>(() => {
 const sysmon = useSysmonStore()
 onMounted(() => { void sysmon.init() })
 
+// 顶栏密度（#127）：断点只做行为分支 —— ≥lg 保持完整徽章组并把卷徽章收敛为「前 2 + 其余 N 个」，
+// <lg 复用 layout.css 既有的折叠模式类把整组徽章收成单个状态图标。档位唯一来源是 useBreakpoint
+// （与 CSS 断点白名单同源）；layout.css 的 gauge 折叠规则本身不含宽度 @media，因此窄屏判定
+// 只能走 JS 行为分支——本组件不新增 @media，也不用容器查询。
+const { tier } = useBreakpoint()
+const isWide = computed(() => tier.value === 'lg' || tier.value === 'xl')
+
 interface ResourceBadge {
   text: string
-  stateClass: string
+  /** 使用率展示等级（与监控页共用 resourceLevel 的同一结论）；等待 / 不可用为 null，不套色标 */
+  level: ResourceLevel | null
   title: string
+}
+
+/** 徽章状态色 class 由 level 派生（等待 / 不可用走中性色）：单一表示，避免 class 与 level 两份状态漂移（#125） */
+function resourceStateClass(level: ResourceLevel | null): string {
+  return level === null ? 'topbar__resource--unavailable' : `topbar__resource--${level}`
 }
 
 const cpuBadge = computed<ResourceBadge>(() => {
@@ -46,25 +60,26 @@ const cpuBadge = computed<ResourceBadge>(() => {
     // 快照尚未到达：显示等待态，不得用假数字占位
     return {
       text: '—',
-      stateClass: 'topbar__resource--unavailable',
+      level: null,
       title: 'CPU 使用率（等待 dzsysmon 快照）',
     }
   }
-  if (!entry || !entry.available || sysmon.cpuUsageRatio === null) {
+  const ratio = sysmon.cpuUsageRatio
+  if (!entry || !entry.available || ratio === null) {
     // 不可用/首次采样：按契约显示不可用，不得用 0 冒充（契约 sysmon §2.7）
     return {
       text: UNAVAILABLE_TEXT,
-      stateClass: 'topbar__resource--unavailable',
+      level: null,
       title: entry?.reason ? `CPU 使用率不可用: ${entry.reason}` : 'CPU 使用率不可用',
     }
   }
   // 顶栏徽章是横向窄条，刻意用整数百分比（监控页用共享模块的 1 位小数）：同一数值在两处
   // 精度不同是**有意的取舍**，不是格式化漂移——顶栏要在常驻条里塞下 CPU / 内存 / 多个卷徽章，
   // 小数位会挤掉后面的徽章。状态色仍与监控页共用 resourceLevel，结论不会不一致（#126）。
-  const percent = Math.round(sysmon.cpuUsageRatio * 100)
+  const percent = Math.round(ratio * 100)
   // 状态色与监控页卷列表共用 resourceLevel（含边界），不在此处各自比较阈值
-  const stateClass = `topbar__resource--${resourceLevel(sysmon.cpuUsageRatio)}`
-  return { text: `${percent}%`, stateClass, title: `CPU 使用率 ${percent}%` }
+  const level = resourceLevel(ratio)
+  return { text: `${percent}%`, level, title: `CPU 使用率 ${percent}%` }
 })
 
 // 内存徽章与 CPU 徽章同构：等待 / 不可用 / 百分比 + 阈值状态色；比率取自 store 净化后的
@@ -74,7 +89,7 @@ const memBadge = computed<ResourceBadge>(() => {
   if (!sysmon.snapshot) {
     return {
       text: '—',
-      stateClass: 'topbar__resource--unavailable',
+      level: null,
       title: '内存使用率（等待 dzsysmon 快照）',
     }
   }
@@ -82,35 +97,27 @@ const memBadge = computed<ResourceBadge>(() => {
   if (!entry || !entry.available || ratio === null) {
     return {
       text: UNAVAILABLE_TEXT,
-      stateClass: 'topbar__resource--unavailable',
+      level: null,
       title: entry?.reason ? `内存使用率不可用: ${entry.reason}` : '内存使用率不可用',
     }
   }
   // 整数百分比：与 CPU 徽章同一取舍（窄条优先，见上）
   const percent = Math.round(ratio * 100)
-  const stateClass = `topbar__resource--${resourceLevel(ratio)}`
-  return { text: `${percent}%`, stateClass, title: `内存使用率 ${percent}%` }
+  const level = resourceLevel(ratio)
+  return { text: `${percent}%`, level, title: `内存使用率 ${percent}%` }
 })
 
 /**
  * 各盘徽章（#75）：卷集合与顺序全部由快照驱动，不硬编码盘符或数量。
  * 顺序与监控页同源（store 按使用率降序，`#122`）。
  * 单个卷 available=false 显示「不可用」，标题带原因 —— 不得用 0 冒充（契约 sysmon §2.4）。
- * 无容量挂载的折叠是监控页正文列表的显示行为（`#122`），顶栏仍逐个给徽章——顶栏是全局
- * 常驻条，这里不能省略「存在但读不到」这一事实。
+ * 无容量挂载的折叠是监控页正文列表的显示行为（`#122`）；顶栏这里不省略「存在但读不到」的
+ * 事实，但宽屏只直接展示前 2 个（`#127`），其余卷的信息仍完整保留在「其余 N 个」徽章的
+ * title 里（不可用卷排在末尾，通常落进「其余」并如实带原因）。
  */
-interface DiskBadge {
+interface DiskBadge extends ResourceBadge {
   mount: string
   label: string
-  text: string
-  /** 使用率展示等级（与监控页卷列表共用 resourceLevel 的同一结论）；不可用卷为 null，不套色标 */
-  level: ResourceLevel | null
-  title: string
-}
-
-/** 卷徽章状态色 class 由 level 派生（不可用卷走中性色）：单一表示，避免 class 与 level 两份状态漂移 */
-function diskBadgeClass(level: ResourceLevel | null): string {
-  return level === null ? 'topbar__resource--unavailable' : `topbar__resource--${level}`
 }
 
 /**
@@ -164,6 +171,78 @@ const diskBadges = computed<DiskBadge[]>(() => {
     }
   })
 })
+
+/**
+ * 宽屏卷徽章上限（#127 顶栏密度 AC：≥lg 只显示一部分卷 + 「其余 N 个」）。
+ * 本票取前 2 个：常驻窄条里 CPU / 内存已占去宽度，2 个卷徽章 + 「其余」是可读上限。
+ *
+ * 口径说明：AC 原文「显示承载关键数据的卷」是 #124 删除「关注路径」概念之前的遗留措辞
+ * （ADR 0034 Decision 3：卷容量监控范围改为本机全部卷，「哪个卷承载关键数据」这一信息已不存在）。
+ * #124 之后可用的等价口径是「最需要关注」= store 已按使用率降序排好的前 2 个卷
+ * （排序见 #122；不可用 / 总量为 0 的卷排在末尾，通常落入「其余」）。
+ */
+const WIDE_DISK_BADGE_LIMIT = 2
+
+// 展开状态只是组件内临时状态：刷新回默认、不持久化（#127 AC）
+const diskExpanded = ref(false)
+
+const visibleDiskBadges = computed<DiskBadge[]>(() => {
+  // 窄屏整组卷徽章由 layout.css 的 topbar__resources--gauge 规则隐藏，此处不必再切分
+  if (!isWide.value || diskExpanded.value) return diskBadges.value
+  return diskBadges.value.slice(0, WIDE_DISK_BADGE_LIMIT)
+})
+
+/** 被折叠进「其余 N 个」的卷（沿用 store 顺序，不重新排序） */
+const foldedDiskBadges = computed<DiskBadge[]>(() => diskBadges.value.slice(WIDE_DISK_BADGE_LIMIT))
+
+/** 「其余 N 个」徽章 title：列出被折叠卷的挂载点 + 使用率 / 不可用原因 */
+const diskRestTitle = computed(() => {
+  if (diskExpanded.value) return '收起其余卷'
+  return `其余 ${foldedDiskBadges.value.length} 个卷: ${foldedDiskBadges.value.map(badge => badge.title).join('；')}`
+})
+
+function toggleDiskExpanded(): void {
+  diskExpanded.value = !diskExpanded.value
+}
+
+// 展开态只属于当次宽屏布局：跨断点（含回到宽屏）回到「前 2 + 其余 N 个」的默认密度（#127 AC「不持久化」）
+watch(isWide, () => { diskExpanded.value = false })
+
+/** 资源等级排序：窄屏状态图标取「最差等级」（danger > warn > normal） */
+const RESOURCE_LEVEL_RANK: Record<ResourceLevel, number> = { normal: 0, warn: 1, danger: 2 }
+
+interface ResourceGauge {
+  stateClass: string
+  title: string
+}
+
+/**
+ * 窄屏（<lg）单状态图标（#127）：复用 layout.css 已存在但此前从未被引用的折叠模式类
+ * `topbar__gauge` / `topbar__resources--gauge`，不新增 CSS 样式、不新增 @media 或容器查询。
+ * 状态色取 CPU / 内存 / 全部卷中的最差等级（阈值仍只由 useResourceLevel 定义）；
+ * 快照未到达时为中性等待态，不得用 normal 冒充「一切正常」。
+ */
+const resourceGauge = computed<ResourceGauge>(() => {
+  if (!sysmon.snapshot) {
+    return {
+      stateClass: resourceStateClass(null),
+      title: '系统资源（等待 dzsysmon 快照）',
+    }
+  }
+  const readings: Pick<ResourceBadge, 'level' | 'title'>[] = [cpuBadge.value, memBadge.value, ...diskBadges.value]
+  let worst: ResourceLevel | null = null
+  for (const reading of readings) {
+    if (reading.level === null) continue
+    if (worst === null || RESOURCE_LEVEL_RANK[reading.level] > RESOURCE_LEVEL_RANK[worst]) {
+      worst = reading.level
+    }
+  }
+  // title 汇总各资源读数：沿用各徽章自身的 title 文案，避免在窄屏另造一套格式化口径
+  return {
+    stateClass: resourceStateClass(worst),
+    title: readings.map(reading => reading.title).join(' · '),
+  }
+})
 </script>
 
 <template>
@@ -177,8 +256,12 @@ const diskBadges = computed<DiskBadge[]>(() => {
         <Icon name="menu" :size="20" />
       </button>
 
-      <!-- Resources -->
-      <div class="topbar__resources" id="topbarResources">
+      <!-- Resources：<lg 时追加既有折叠模式类，由 layout.css 隐藏整组徽章（#127） -->
+      <div
+        class="topbar__resources"
+        id="topbarResources"
+        :class="{ 'topbar__resources--gauge': !isWide }"
+      >
         <!-- Service status: MD / TD / STG -->
         <span class="topbar__resource topbar__resource--svc topbar__resource--normal" id="resMd" title="行情服务">
           <span class="res-label">MD</span>
@@ -199,11 +282,24 @@ const diskBadges = computed<DiskBadge[]>(() => {
           </span>
         </span>
         <span class="topbar__resource-divider"></span>
+        <!-- 窄屏折叠模式（<lg）：整组 CPU / 内存 / 卷徽章由 layout.css 隐藏，只留一个状态图标。
+             既有 CSS 没有 `.topbar__gauge` 的基础 display:none 规则，所以必须 v-if 只在窄屏渲染，
+             否则宽屏会多出一个图标（#127；不新增 CSS）。内联 svg 而非 Icon 组件：状态色与闪烁
+             规则按 `.topbar__gauge ... svg` 选择器书写，Icon 的 mask 图标不命中这些规则 -->
+        <span
+          v-if="!isWide"
+          class="topbar__gauge"
+          :class="resourceGauge.stateClass"
+          data-test="topbar-resource-gauge"
+          :title="resourceGauge.title"
+        >
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2.75" width="12" height="8.5" rx="1"/><path d="M5.5 14h5M8 11.25V14"/></svg>
+        </span>
         <!-- 资源徽章：CPU（#71）/ 内存（#74）/ 各卷（#75）均已接入实时快照；
              NTP 与写死的磁盘假数字已删除 -->
         <span
           class="topbar__resource topbar__resource--cpu"
-          :class="cpuBadge.stateClass"
+          :class="resourceStateClass(cpuBadge.level)"
           id="resCpu"
           :title="cpuBadge.title"
         >
@@ -212,7 +308,7 @@ const diskBadges = computed<DiskBadge[]>(() => {
         </span>
         <span
           class="topbar__resource topbar__resource--mem"
-          :class="memBadge.stateClass"
+          :class="resourceStateClass(memBadge.level)"
           id="resMem"
           :title="memBadge.title"
         >
@@ -220,19 +316,38 @@ const diskBadges = computed<DiskBadge[]>(() => {
           <span class="res-value">{{ memBadge.text }}</span>
         </span>
         <!-- 各盘徽章：卷集合 / 顺序完全由快照驱动，不硬编码盘符或数量；
-             data-level 与监控页卷列表同源（共享 resourceLevel），供跨组件同一结论断言 -->
+             data-level 与监控页卷列表同源（共享 resourceLevel），供跨组件同一结论断言。
+             宽屏最多直接显示前 2 个，其余折叠进下方「其余 N 个」（#127） -->
         <span
-          v-for="badge in diskBadges"
+          v-for="badge in visibleDiskBadges"
           :key="badge.mount"
           class="topbar__resource topbar__resource--disk"
-          :class="diskBadgeClass(badge.level)"
+          :class="resourceStateClass(badge.level)"
           :data-mount="badge.mount"
           :data-level="badge.level"
+          data-test="topbar-disk-badge"
           :title="badge.title"
         >
           <span class="res-label">{{ badge.label }}</span>
           <span class="res-value">{{ badge.text }}</span>
         </span>
+        <!-- 「其余 N 个」：宽屏且卷超过上限时出现，点击展开全部卷、再点收起；
+             展开态仅为组件内临时状态（不持久化，#127）。它代表整组卷而非某一卷，因此不写
+             data-mount / data-level，也不带 --disk 类（该组卷徽章只在窄屏被 CSS 隐藏，
+             这里 v-if 已保证窄屏不渲染）。用原生 button + 既有 .ds-link-btn 做文字按钮
+             reset / cursor / hover；只有一个 scoped 样式补回按钮的字体继承（浏览器 UA 不为
+             button 继承页面字体），不新增布局/密度样式。键盘 Enter/Space 由 button 原生处理 -->
+        <button
+          v-if="isWide && foldedDiskBadges.length > 0"
+          type="button"
+          class="topbar__resource ds-link-btn"
+          data-test="topbar-disk-rest"
+          :aria-expanded="diskExpanded"
+          :title="diskRestTitle"
+          @click="toggleDiskExpanded"
+        >
+          <span class="res-value">{{ diskExpanded ? '收起' : `其余 ${foldedDiskBadges.length} 个` }}</span>
+        </button>
       </div>
     </div>
 
@@ -269,5 +384,11 @@ const diskBadges = computed<DiskBadge[]>(() => {
 /* 指标不可用 / 快照未到达：中性色，不得用状态色或 0 冒充数据 */
 .topbar__resource--unavailable .res-value {
   color: var(--text-tertiary);
+}
+
+/* 「其余 N 个」是原生 button：浏览器 UA 不把页面字体继承给 button（.ds-link-btn 只重置
+   background/border/color/font-size），不补这一行会与相邻 span 徽章字体不一致 */
+.topbar__resource.ds-link-btn {
+  font-family: inherit;
 }
 </style>

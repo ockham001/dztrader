@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import Topbar from '@/components/layout/Topbar.vue'
@@ -7,12 +7,30 @@ import { sysmonApi } from '@/api/sysmon'
 import { makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 
 vi.mock('@/api/sysmon', () => ({
-  sysmonApi: { getSnapshot: vi.fn(), setConfig: vi.fn(), getConfig: vi.fn() },
+  sysmonApi: { getSnapshot: vi.fn(), getHistory: vi.fn(), setConfig: vi.fn(), getConfig: vi.fn() },
 }))
 
 vi.mock('@/composables/wsClient', () => ({
   useWebSocket: () => ({ connectionState: { value: 'connected' } }),
 }))
+
+// #127：Topbar 经 useBreakpoint 读视口档位做行为分支（≥lg 显示卷徽章组）。
+// jsdom 无 matchMedia，用固定宽屏（1600 = xl）stub，让顶栏按宽屏形态渲染。
+beforeEach(() => {
+  vi.stubGlobal('matchMedia', (q: string) => {
+    const m = q.match(/\(min-width:\s*([\d.]+)px\)/)
+    return {
+      media: q,
+      matches: m ? 1600 >= Number.parseFloat(m[1]) : false,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }
+  })
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 const stubs = {
   Icon: { template: '<span class="icon" />' },
@@ -28,6 +46,9 @@ const GIB = 1024 ** 3
 async function mountBoth() {
   const topbar = mount(Topbar, { global: { stubs } })
   await flushPromises()
+  // #127：宽屏默认只直接渲染前 2 个卷徽章；有「其余 N 个」时先展开，才能与监控页全量卷列表比较
+  const rest = topbar.find('[data-test="topbar-disk-rest"]')
+  if (rest.exists()) await rest.trigger('click')
   const monitor = mount(MonitorView, { global: { stubs } })
   await flushPromises()
   return { topbar, monitor }

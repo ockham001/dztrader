@@ -4,6 +4,7 @@ import Icon from '@/components/shared/Icon.vue'
 import SyncSwitch from '@/components/shared/SyncSwitch.vue'
 import SysmonConfigTab from '@/components/sysmon/SysmonConfigTab.vue'
 import SysmonHistoryTab from '@/components/sysmon/SysmonHistoryTab.vue'
+import SysmonSparkline from '@/components/sysmon/SysmonSparkline.vue'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import {
   UNAVAILABLE_TEXT,
@@ -25,7 +26,9 @@ import {
 } from '@/composables/sysmonTemperature'
 import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
 import { useAuthStore } from '@/stores/auth'
+import { useSysmonHistoryStore } from '@/stores/sysmonHistory'
 import { useSysmonStore } from '@/stores/sysmon'
+import { trendMetricLabel, useSysmonTrendStore } from '@/stores/sysmonTrend'
 import { useToastStore } from '@/stores/toast'
 import type { SysmonVolumeInfo } from '@/types/generated'
 
@@ -47,13 +50,36 @@ import type { SysmonVolumeInfo } from '@/types/generated'
 // 因此 WS 连接与实时快照推送完全不受影响（契约 sysmon §8：历史视图不订阅 WS）。
 // 配置视图（#81）：展示生效配置镜像（WS sysmon_config，首次挂载经 GET /api/sysmon/config 补拉）；
 // admin 可编辑并只下发与原镜像的差异，非 admin 只读（编辑仅 admin，与系统设置页一致）。
+// 内联趋势（#127）：标量指标（CPU 使用率 / 负载 / 内存 / 交换 / 共享内存目录）旁有最近 15 分钟
+// sparkline（历史 REST 补齐 + WS 增量推进，末点即旁边的当前值）；历史不可用时静默不渲染。
+// 点击 sparkline 或数值切到历史视图并预选该指标（契约 sysmon §6.1，不新增接口）。
+// 卡片折叠（#127）：每核明细 / 每传感器明细 / 每盘七项指标 / 每网卡十项指标默认收起、展开显示全部；
+// 折叠状态不持久化；可用性空态不进折叠。列数 <md 单列、md–xl 双列、≥xl 三列（沿用既有断点，
+// 不使用容器查询），图表用容器自适应重排。
 // 刷新基线由发送方 realtime.push_interval_sec（默认 5s）决定，本页不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
+/** 历史视图 store（#79）：与实时 store 完全独立，切换视图不影响 WS 与实时快照 */
+const history = useSysmonHistoryStore()
+/** 内联趋势 store（#127）：历史 REST 补齐 + WS 增量推进，历史不可用时静默不渲染 */
+const trend = useSysmonTrendStore()
 
 /** 视图模式：实时（默认） / 历史 / 配置（#81 展示生效配置 + admin 编辑） */
 const viewMode = ref<'realtime' | 'history' | 'config'>('realtime')
 
-onMounted(() => { void sysmon.init() })
+onMounted(() => {
+  void sysmon.init()
+  // 内联趋势（#127）：进入页面时补拉最近 15 分钟历史；历史库不可用/被关闭时静默降级
+  void trend.init()
+})
+
+/**
+ * 点击 sparkline 或数值：切到历史视图并预选该指标（验收标准「跳转到历史视图并预选对应指标」）。
+ * 只预选、不查询 —— 查询由历史视图挂载时统一发起，避免同一指标查两次。
+ */
+function openHistory(metricKey: string): void {
+  history.preselect(metricKey)
+  viewMode.value = 'history'
+}
 
 const snapshot = computed(() => sysmon.snapshot)
 const system = computed(() => snapshot.value?.system ?? null)
@@ -251,6 +277,75 @@ async function onToggleShowAll(next: boolean): Promise<void> {
   if (result === false) toast.error('显示全部网卡切换下发失败')
 }
 
+// ---- 卡片折叠（#127）：维度明细默认收起，展开后显示全部 ----
+// 折叠状态只存组件本地 ref：**不持久化**，刷新（组件重新挂载）回到产品认为重要的默认视图
+//（验收标准）。不可用 / 空数据的空态不进折叠——可用性事实不藏在展开按钮后面。
+const cpuDetailOpen = ref(false)
+const temperatureDetailOpen = ref(false)
+const diskIoDetailOpen = ref(false)
+const networkDetailOpen = ref(false)
+
+/** 一组可能缺失的数值中的最大值；全缺失时 null（缺失不是 0，不参与比较） */
+function peakOf(values: (number | null)[]): number | null {
+  let peak: number | null = null
+  for (const value of values) {
+    if (value === null) continue
+    if (peak === null || value > peak) peak = value
+  }
+  return peak
+}
+
+/** 每核明细是否有内容可展开（使用率或频率任一有数据；频率可用但使用率读不到时仍能查看频率） */
+const cpuHasDetail = computed(() => cpuCores.value.length > 0
+  || (frequencyAvailable.value && coreFrequencies.value.length > 0))
+
+/** 每核明细摘要（收起时显示）：核数 + 最高使用率；没有数据就是没有，不伪造 0 */
+const cpuDetailSummary = computed(() => {
+  const parts: string[] = []
+  if (cpuCores.value.length > 0) parts.push(`${cpuCores.value.length} 核`)
+  const peak = peakOf(cpuCores.value.map(core => core.usage_ratio))
+  if (peak !== null) parts.push(`最高 ${formatPercent(peak)}`)
+  else if (coreFrequencies.value.length > 0) parts.push(`${coreFrequencies.value.length} 核频率`)
+  return parts.join(' · ')
+})
+
+/** 温度读数摊平：分组只用于展开后的展示，摘要取全局最高温与数量 */
+const temperatureReadings = computed(() => temperatureGroups.value.flatMap(group => group.readings))
+
+/** 最高温度的读数与其归属（芯片分组名 + 通道标签，不丢可读命名口径，见 #120 故事 37/38） */
+interface TemperaturePeak {
+  celsius: number
+  groupName: string
+  label: string
+}
+
+/** 最高温度（主数值）及其归属；无读数时为 null（不伪造 0 °C） */
+const temperaturePeak = computed<TemperaturePeak | null>(() => {
+  let peak: TemperaturePeak | null = null
+  for (const group of temperatureGroups.value) {
+    for (const reading of group.readings) {
+      if (peak === null || reading.celsius > peak.celsius) {
+        peak = { celsius: reading.celsius, groupName: group.displayName, label: reading.label }
+      }
+    }
+  }
+  return peak
+})
+const temperatureDetailSummary = computed(
+  () => `${temperatureReadings.value.length} 个传感器 · ${temperatureGroups.value.length} 个芯片`,
+)
+
+/** 磁盘 I/O 摘要（收起时显示）：盘数 + 最高利用率；全为 null 时只说盘数，不伪造 0 */
+const diskIoDetailSummary = computed(() => {
+  const parts = [`${diskIo.value.length} 块盘`]
+  const peak = peakOf(diskIo.value.map(device => device.utilization))
+  if (peak !== null) parts.push(`最高利用率 ${formatPercent(peak)}`)
+  return parts.join(' · ')
+})
+
+/** 网络摘要（收起时显示）：网卡数（虚拟网卡是否隐藏由发送方决定，这里只统计收到的条目） */
+const networkDetailSummary = computed(() => `${network.value.length} 块网卡`)
+
 // ---- 网卡累计量 / 速率格式化（#126：单位档与精度全部走共享模块）----
 /**
  * 错误 / 丢弃单元格：速率 + 累计量并列（速率反映当前窗口，累计量反映是否曾经发生过）。
@@ -367,7 +462,22 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           <div class="monitor-view__cpu-panel">
             <h3 class="monitor-view__panel-title">总使用率</h3>
             <template v-if="cpuRatio !== null">
-              <div class="monitor-view__metric" data-test="monitor-cpu-value">{{ cpuPercent }}</div>
+              <!-- 数值与 sparkline 都可点：跳转历史视图并预选该指标（#127）；sparkline 末点即本数值 -->
+              <div class="monitor-view__metric-row">
+                <button
+                  type="button"
+                  class="monitor-view__metric monitor-view__value-btn"
+                  data-test="monitor-cpu-value"
+                  @click="openHistory('cpu.usage_ratio')"
+                >{{ cpuPercent }}</button>
+                <SysmonSparkline
+                  :points="trend.seriesOf('cpu.usage_ratio')"
+                  :label="trendMetricLabel('cpu.usage_ratio')"
+                  class="monitor-view__sparkline"
+                  data-test="monitor-sparkline-cpu"
+                  @open="openHistory('cpu.usage_ratio')"
+                />
+              </div>
               <div
                 class="monitor-view__bar"
                 role="progressbar"
@@ -392,12 +502,26 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               <dl class="monitor-view__load">
                 <div v-if="loadIsProcessorQueue" class="monitor-view__load-item">
                   <dt class="monitor-view__load-label">处理器队列长度</dt>
-                  <dd class="monitor-view__load-value" data-test="monitor-load-queue">{{ formatDecimal(loadAverage.one) }}</dd>
+                  <dd class="monitor-view__load-value">
+                    <button
+                      type="button"
+                      class="monitor-view__value-btn"
+                      data-test="monitor-load-queue"
+                      @click="openHistory('cpu.load_average.one')"
+                    >{{ formatDecimal(loadAverage.one) }}</button>
+                  </dd>
                 </div>
                 <template v-else>
                   <div class="monitor-view__load-item">
                     <dt class="monitor-view__load-label">1 分钟</dt>
-                    <dd class="monitor-view__load-value" data-test="monitor-load-one">{{ formatDecimal(loadAverage.one) }}</dd>
+                    <dd class="monitor-view__load-value">
+                      <button
+                        type="button"
+                        class="monitor-view__value-btn"
+                        data-test="monitor-load-one"
+                        @click="openHistory('cpu.load_average.one')"
+                      >{{ formatDecimal(loadAverage.one) }}</button>
+                    </dd>
                   </div>
                   <div class="monitor-view__load-item">
                     <dt class="monitor-view__load-label">5 分钟</dt>
@@ -409,6 +533,16 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                   </div>
                 </template>
               </dl>
+              <!-- 系统负载趋势（#127）：取历史库的 1 分钟列（Windows 上同一列是处理器队列代理量，
+                   语义提示仍由 available.semantic_hints 承载，sparkline 不另做口径判断） -->
+              <SysmonSparkline
+                v-if="loadAverage.one !== null"
+                :points="trend.seriesOf('cpu.load_average.one')"
+                :label="trendMetricLabel('cpu.load_average.one')"
+                class="monitor-view__sparkline monitor-view__sparkline--block"
+                data-test="monitor-sparkline-load"
+                @open="openHistory('cpu.load_average.one')"
+              />
               <p v-if="loadHint" class="monitor-view__hint" data-test="monitor-load-hint">语义提示：{{ loadHint }}</p>
             </template>
             <div v-else class="ds-empty monitor-view__empty" data-test="monitor-load-unavailable">
@@ -433,10 +567,26 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
             <p v-if="!ratesAvailable" class="monitor-view__hint">{{ unavailableDesc('cpu.context_switches') }}</p>
           </div>
 
-          <!-- 每核使用率（核数随快照变化；不可用 / 空数组分别显示明确空态） -->
+          <!-- 每核明细（#127）：每核使用率 + 每核频率同属维度明细，默认收起、展开后显示全部；
+               不可用 / 空数据的空态不折叠（可用性事实不藏起来）。核数随快照变化。 -->
           <div class="monitor-view__cpu-panel monitor-view__cpu-panel--wide" data-test="monitor-cpu-cores">
-            <h3 class="monitor-view__panel-title">每核使用率</h3>
-            <ul v-if="cpuCores.length > 0" class="monitor-view__cores">
+            <div class="monitor-view__panel-head">
+              <h3 class="monitor-view__panel-title">每核使用率</h3>
+              <button
+                v-if="cpuHasDetail"
+                class="ds-btn ds-btn--tertiary ds-btn--sm"
+                type="button"
+                :aria-expanded="cpuDetailOpen"
+                data-test="monitor-cpu-detail-toggle"
+                @click="cpuDetailOpen = !cpuDetailOpen"
+              >{{ cpuDetailOpen ? '收起' : '展开' }}</button>
+            </div>
+            <p
+              v-if="cpuHasDetail && !cpuDetailOpen"
+              class="monitor-view__meta"
+              data-test="monitor-cpu-detail-summary"
+            >{{ cpuDetailSummary }}</p>
+            <ul v-if="cpuCores.length > 0 && cpuDetailOpen" class="monitor-view__cores">
               <li
                 v-for="core in cpuCores"
                 :key="core.index"
@@ -454,34 +604,35 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 >饱和</span>
               </li>
             </ul>
-            <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
+            <div v-else-if="cpuCores.length === 0" class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
               <div class="ds-empty__title">{{ cpuCoresAvailable ? '暂无每核数据' : UNAVAILABLE_TEXT }}</div>
               <div class="ds-empty__desc">{{ coresEmptyDesc }}</div>
             </div>
-          </div>
 
-          <!-- 每核频率（#73）：仅在 cpu.frequency 可用时渲染整块面板；不可用时整块不渲染 -->
-          <div
-            v-if="frequencyAvailable"
-            class="monitor-view__cpu-panel monitor-view__cpu-panel--wide"
-            data-test="monitor-frequency"
-          >
-            <h3 class="monitor-view__panel-title">每核频率</h3>
-            <ul v-if="coreFrequencies.length > 0" class="monitor-view__cores">
-              <li
-                v-for="frequency in coreFrequencies"
-                :key="frequency.index"
-                class="monitor-view__core"
-                data-test="monitor-frequency-core"
-                :data-core-index="frequency.index"
-              >
-                <span class="monitor-view__core-index">核 {{ frequency.index }}</span>
-                <span class="monitor-view__core-value">{{ formatFrequency(frequency.mhz) }}</span>
-              </li>
-            </ul>
-            <div v-else class="ds-empty monitor-view__empty" data-test="monitor-frequency-empty">
-              <div class="ds-empty__title">暂无数据</div>
-              <div class="ds-empty__desc">当前快照未提供每核频率</div>
+            <!-- 每核频率（#73）：仅在 cpu.frequency 可用时渲染；与每核使用率同属每核明细，一起收起 -->
+            <div v-if="frequencyAvailable" class="monitor-view__subsection" data-test="monitor-frequency">
+              <h3 class="monitor-view__panel-title">每核频率</h3>
+              <ul v-if="coreFrequencies.length > 0 && cpuDetailOpen" class="monitor-view__cores">
+                <li
+                  v-for="frequency in coreFrequencies"
+                  :key="frequency.index"
+                  class="monitor-view__core"
+                  data-test="monitor-frequency-core"
+                  :data-core-index="frequency.index"
+                >
+                  <span class="monitor-view__core-index">核 {{ frequency.index }}</span>
+                  <span class="monitor-view__core-value">{{ formatFrequency(frequency.mhz) }}</span>
+                </li>
+              </ul>
+              <p
+                v-else-if="coreFrequencies.length > 0"
+                class="monitor-view__meta"
+                data-test="monitor-frequency-collapsed"
+              >{{ coreFrequencies.length }} 核频率 · 展开每核明细查看</p>
+              <div v-else class="ds-empty monitor-view__empty" data-test="monitor-frequency-empty">
+                <div class="ds-empty__title">暂无数据</div>
+                <div class="ds-empty__desc">当前快照未提供每核频率</div>
+              </div>
             </div>
           </div>
         </div>
@@ -495,32 +646,51 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
         <h2 class="ds-card__title monitor-view__card-title">
           <span class="monitor-view__card-icon"><Icon name="system" :size="14" /></span>温度
         </h2>
-        <div v-if="temperatureGroups.length > 0" class="monitor-view__temp-groups">
-          <div
-            v-for="group in temperatureGroups"
-            :key="group.chip"
-            class="monitor-view__temp-group"
-            data-test="monitor-temperature-group"
-            :data-chip="group.chip"
-          >
-            <h3 class="monitor-view__panel-title" data-test="monitor-temperature-group-name">
-              {{ group.displayName }}
-            </h3>
-            <ul class="monitor-view__list">
-              <li
-                v-for="reading in group.readings"
-                :key="reading.sensor"
-                class="monitor-view__list-row"
-                data-test="monitor-temperature-sensor"
-                :data-sensor="reading.sensor"
-                :title="reading.sensor"
-              >
-                <span class="monitor-view__list-label">{{ reading.label }}</span>
-                <span class="monitor-view__list-value">{{ formatTemperature(reading.celsius) }}</span>
-              </li>
-            </ul>
+        <template v-if="temperatureGroups.length > 0">
+          <!-- #127：默认只显示主数值（最高温）+ 关键数字（传感器 / 芯片数），逐传感器明细收起 -->
+          <div class="monitor-view__metric-row">
+            <div class="monitor-view__metric" data-test="monitor-temperature-max">
+              {{ formatTemperature(temperaturePeak?.celsius ?? null) }}
+            </div>
+            <button
+              class="ds-btn ds-btn--tertiary ds-btn--sm"
+              type="button"
+              :aria-expanded="temperatureDetailOpen"
+              data-test="monitor-temperature-detail-toggle"
+              @click="temperatureDetailOpen = !temperatureDetailOpen"
+            >{{ temperatureDetailOpen ? '收起' : '展开明细' }}</button>
           </div>
-        </div>
+          <!-- 归属（芯片友好名 + 通道标签）跟着主数值走：只说「最高 45.5 °C」不知道是哪颗芯片 -->
+          <p class="monitor-view__meta" data-test="monitor-temperature-summary">
+            最高温度 · {{ temperaturePeak?.groupName }} · {{ temperaturePeak?.label }} · {{ temperatureDetailSummary }}
+          </p>
+          <div v-if="temperatureDetailOpen" class="monitor-view__temp-groups">
+            <div
+              v-for="group in temperatureGroups"
+              :key="group.chip"
+              class="monitor-view__temp-group"
+              data-test="monitor-temperature-group"
+              :data-chip="group.chip"
+            >
+              <h3 class="monitor-view__panel-title" data-test="monitor-temperature-group-name">
+                {{ group.displayName }}
+              </h3>
+              <ul class="monitor-view__list">
+                <li
+                  v-for="reading in group.readings"
+                  :key="reading.sensor"
+                  class="monitor-view__list-row"
+                  data-test="monitor-temperature-sensor"
+                  :data-sensor="reading.sensor"
+                  :title="reading.sensor"
+                >
+                  <span class="monitor-view__list-label">{{ reading.label }}</span>
+                  <span class="monitor-view__list-value">{{ formatTemperature(reading.celsius) }}</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </template>
         <div v-else class="ds-empty monitor-view__empty" data-test="monitor-temperature-empty">
           <div class="ds-empty__title">暂无数据</div>
           <div class="ds-empty__desc">当前快照未提供温度读数</div>
@@ -533,7 +703,21 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           <span class="monitor-view__card-icon"><Icon name="MEM" :size="14" /></span>内存
         </h2>
         <template v-if="memory">
-          <div class="monitor-view__metric" data-test="monitor-memory-value">{{ formatPercent(memory.used_ratio) }}</div>
+          <div class="monitor-view__metric-row">
+            <button
+              type="button"
+              class="monitor-view__metric monitor-view__value-btn"
+              data-test="monitor-memory-value"
+              @click="openHistory('memory.used_ratio')"
+            >{{ formatPercent(memory.used_ratio) }}</button>
+            <SysmonSparkline
+              :points="trend.seriesOf('memory.used_ratio')"
+              :label="trendMetricLabel('memory.used_ratio')"
+              class="monitor-view__sparkline"
+              data-test="monitor-sparkline-memory"
+              @open="openHistory('memory.used_ratio')"
+            />
+          </div>
           <div class="monitor-view__meta" data-test="monitor-memory-meta">{{ formatBytes(memory.used_bytes) }} / {{ formatBytes(memory.total_bytes) }}</div>
           <ul class="monitor-view__list monitor-view__subsection">
             <li class="monitor-view__list-row">
@@ -567,7 +751,21 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           <ul v-if="swapInfo && swapInfo.total_bytes > 0" class="monitor-view__list" data-test="monitor-memory-swap">
             <li class="monitor-view__list-row">
               <span class="monitor-view__list-label">使用率</span>
-              <span class="monitor-view__list-value">{{ formatPercent(swapInfo.used_ratio) }}</span>
+              <span class="monitor-view__list-value">
+                <button
+                  type="button"
+                  class="monitor-view__value-btn"
+                  data-test="monitor-memory-swap-usage"
+                  @click="openHistory('swap.used_ratio')"
+                >{{ formatPercent(swapInfo.used_ratio) }}</button>
+              </span>
+              <SysmonSparkline
+                :points="trend.seriesOf('swap.used_ratio')"
+                :label="trendMetricLabel('swap.used_ratio')"
+                class="monitor-view__sparkline monitor-view__sparkline--inline"
+                data-test="monitor-sparkline-swap"
+                @open="openHistory('swap.used_ratio')"
+              />
             </li>
             <li class="monitor-view__list-row">
               <span class="monitor-view__list-label">已用 / 总量</span>
@@ -660,7 +858,20 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               </div>
               <div class="monitor-view__list-row">
                 <dt class="monitor-view__list-label">占用</dt>
-                <dd class="monitor-view__list-value" data-test="monitor-shm-total">{{ formatBytes(shmDir.total_bytes) }}</dd>
+                <dd class="monitor-view__list-value" data-test="monitor-shm-total">
+                  <button
+                    type="button"
+                    class="monitor-view__value-btn"
+                    @click="openHistory('shm_dir.total_bytes')"
+                  >{{ formatBytes(shmDir.total_bytes) }}</button>
+                </dd>
+                <SysmonSparkline
+                  :points="trend.seriesOf('shm_dir.total_bytes')"
+                  :label="trendMetricLabel('shm_dir.total_bytes')"
+                  class="monitor-view__sparkline monitor-view__sparkline--inline"
+                  data-test="monitor-sparkline-shm"
+                  @open="openHistory('shm_dir.total_bytes')"
+                />
               </div>
               <div class="monitor-view__list-row">
                 <dt class="monitor-view__list-label">页文件</dt>
@@ -692,7 +903,18 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
         </h2>
 
         <template v-if="diskIoAvailable">
-          <ul v-if="diskIo.length > 0" class="monitor-view__io-list">
+          <!-- #127：每盘七项指标属维度明细，默认收起；空数据 / 不可用空态不折叠 -->
+          <div v-if="diskIo.length > 0" class="monitor-view__detail-bar">
+            <span class="monitor-view__meta" data-test="monitor-disk-io-summary">{{ diskIoDetailSummary }}</span>
+            <button
+              class="ds-btn ds-btn--tertiary ds-btn--sm"
+              type="button"
+              :aria-expanded="diskIoDetailOpen"
+              data-test="monitor-disk-io-detail-toggle"
+              @click="diskIoDetailOpen = !diskIoDetailOpen"
+            >{{ diskIoDetailOpen ? '收起' : '展开明细' }}</button>
+          </div>
+          <ul v-if="diskIo.length > 0 && diskIoDetailOpen" class="monitor-view__io-list">
             <li
               v-for="device in diskIo"
               :key="device.device"
@@ -733,7 +955,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               </dl>
             </li>
           </ul>
-          <div v-else class="ds-empty monitor-view__empty" data-test="monitor-disk-io-empty">
+          <div v-else-if="diskIo.length === 0" class="ds-empty monitor-view__empty" data-test="monitor-disk-io-empty">
             <div class="ds-empty__title">暂无数据</div>
             <div class="ds-empty__desc">当前快照未提供磁盘 I/O 数据</div>
           </div>
@@ -767,7 +989,18 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
         </div>
 
         <template v-if="networkAvailable">
-          <ul v-if="network.length > 0" class="monitor-view__io-list">
+          <!-- #127：每网卡十项指标属维度明细，默认收起；隐藏全部 / 空数据空态不折叠 -->
+          <div v-if="network.length > 0" class="monitor-view__detail-bar">
+            <span class="monitor-view__meta" data-test="monitor-network-summary">{{ networkDetailSummary }}</span>
+            <button
+              class="ds-btn ds-btn--tertiary ds-btn--sm"
+              type="button"
+              :aria-expanded="networkDetailOpen"
+              data-test="monitor-network-detail-toggle"
+              @click="networkDetailOpen = !networkDetailOpen"
+            >{{ networkDetailOpen ? '收起' : '展开明细' }}</button>
+          </div>
+          <ul v-if="network.length > 0 && networkDetailOpen" class="monitor-view__io-list">
             <li
               v-for="nic in network"
               :key="nic.interface"
@@ -825,11 +1058,19 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           </ul>
           <!-- 可用但空数组：发送方按 hide_virtual 滤掉了全部虚拟网卡（契约 §2.5），
                与"采集失败/不可用"是不同事实，不得显示「不可用」 -->
-          <div v-else-if="networkHiddenAll" class="ds-empty monitor-view__empty" data-test="monitor-network-hidden-all">
+          <div
+            v-else-if="network.length === 0 && networkHiddenAll"
+            class="ds-empty monitor-view__empty"
+            data-test="monitor-network-hidden-all"
+          >
             <div class="ds-empty__title">已隐藏全部虚拟网卡</div>
             <div class="ds-empty__desc">本机只有虚拟/回环网卡；打开「显示全部网卡」查看</div>
           </div>
-          <div v-else class="ds-empty monitor-view__empty" data-test="monitor-network-empty">
+          <div
+            v-else-if="network.length === 0"
+            class="ds-empty monitor-view__empty"
+            data-test="monitor-network-empty"
+          >
             <div class="ds-empty__title">暂无数据</div>
             <div class="ds-empty__desc">当前快照未提供网卡数据</div>
           </div>
@@ -891,6 +1132,14 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--spacer-16);
+}
+
+/* #127 列数断点：<md 单列（下方 max-width 块）、md–xl 双列（上方基础规则）、≥xl 三列。
+   沿用既有断点体系（xl=1280，#127 明确不使用容器查询），图表用容器自适应重排。 */
+@media (min-width: 1280px) {
+  .monitor-view__grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 /* 卷使用率色标：与顶栏卷徽章共用 useResourceLevel 的同一组常量与设计 token
@@ -981,6 +1230,24 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   overflow-wrap: anywhere;
 }
 
+/* 可点击数值（#127：点击跳转历史视图并预选指标）：只重置按钮外观，字号/颜色沿用所在行的样式，
+   因此必须定义在 .monitor-view__metric 之前（后者的字号规则要能覆盖 font: inherit） */
+.monitor-view__value-btn {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.monitor-view__value-btn:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .monitor-view__metric {
   font-family: var(--font-family-metric);
   font-size: var(--heading-xl-font-size);
@@ -994,6 +1261,32 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
   color: var(--text-tertiary);
+}
+
+/* 数值 + sparkline 同排（#127）：sparkline 是辅助信息，固定高度、宽度跟随卡片列宽（容器自适应，
+   不靠 JS 计算断点），不抢数字的主体地位 */
+.monitor-view__metric-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-12);
+  min-width: 0;
+}
+
+.monitor-view__sparkline {
+  flex: 1;
+  min-width: 48px;
+  max-width: 160px;
+}
+
+/* 负载 / 交换 / 共享内存目录的 sparkline 跟在数值块之后，独占一行时也不撑满整卡 */
+.monitor-view__sparkline--block {
+  margin-top: var(--spacer-4);
+}
+
+.monitor-view__sparkline--inline {
+  flex: 0 1 96px;
+  align-self: center;
+  margin-left: auto;
 }
 
 /* 内存卡片内的交换子区块（#74）：与内存数值之间留白，复用面板标题 / 列表样式 */
@@ -1115,6 +1408,27 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 
 .monitor-view__cpu-panel--wide {
   grid-column: 1 / -1;
+}
+
+/* 面板头（#127）：标题与折叠按钮同排；标题不再需要下边距 */
+.monitor-view__panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacer-8);
+}
+
+.monitor-view__panel-head .monitor-view__panel-title {
+  margin-bottom: 0;
+}
+
+/* 维度明细的折叠条（#127）：左侧摘要、右侧展开/收起按钮，复用既有 tertiary 按钮，不新增折叠组件 */
+.monitor-view__detail-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacer-8);
+  margin-bottom: var(--spacer-8);
 }
 
 .monitor-view__panel-title {

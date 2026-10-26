@@ -9,16 +9,31 @@ import { useToastStore } from '@/stores/toast'
 import { makeSysmonConfig, makeSysmonCpuCores, makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 
 vi.mock('@/api/sysmon', () => ({
-  sysmonApi: { getSnapshot: vi.fn(), setConfig: vi.fn(), getConfig: vi.fn() },
+  sysmonApi: { getSnapshot: vi.fn(), setConfig: vi.fn(), getConfig: vi.fn(), getHistory: vi.fn() },
 }))
 
 const stubs = {
   Icon: { template: '<span class="icon" />' },
 }
 
+/** 维度明细的折叠按钮（#127 默认收起；本文件聚焦数据渲染，挂载后统一展开） */
+const DETAIL_TOGGLES = [
+  'monitor-cpu-detail-toggle',
+  'monitor-temperature-detail-toggle',
+  'monitor-disk-io-detail-toggle',
+  'monitor-network-detail-toggle',
+]
+
 async function mountView() {
   const wrapper = mount(MonitorView, { global: { stubs } })
   await flushPromises()
+  // #127 起每核 / 每传感器 / 每盘七项指标 / 每网卡十项指标默认收起；本文件验证的是「有数据时
+  // 渲染什么」，故挂载后展开明细。折叠默认态、切换与摘要由 MonitorViewTrend.spec.ts 覆盖。
+  for (const toggleTest of DETAIL_TOGGLES) {
+    const toggle = wrapper.find(`[data-test="${toggleTest}"]`)
+    if (toggle.exists()) await toggle.trigger('click')
+  }
+  await wrapper.vm.$nextTick()
   return wrapper
 }
 
