@@ -14,7 +14,6 @@ function points(...values: number[]): SparklinePoint[] {
 function windowOf(overrides: Partial<SparklineWindow> = {}): SparklineWindow {
   return {
     coveredSec: SPARKLINE_WINDOW_SEC,
-    complete: true,
     truncated: false,
     stale: false,
     ...overrides,
@@ -23,10 +22,10 @@ function windowOf(overrides: Partial<SparklineWindow> = {}): SparklineWindow {
 
 function mountSparkline(
   values: number[],
-  coverage: SparklineWindow = windowOf(),
+  window: SparklineWindow = windowOf(),
   label = 'CPU 使用率',
 ) {
-  return mount(SysmonSparkline, { props: { points: points(...values), label, coverage } })
+  return mount(SysmonSparkline, { props: { points: points(...values), label, window } })
 }
 
 describe('SysmonSparkline 内联趋势（#127）', () => {
@@ -71,7 +70,7 @@ describe('SysmonSparkline 时间窗口径（#142：标题如实标注实际覆�
   })
 
   it('历史范围内无桶（实际只有几十秒）：标题标注实际覆盖，不冒充 15 分钟', () => {
-    const root = mountSparkline([1, 2], windowOf({ coveredSec: 45, complete: false }))
+    const root = mountSparkline([1, 2], windowOf({ coveredSec: 45 }))
       .find('.sysmon-sparkline')
 
     expect(root.attributes('title')).toContain('最近 45 秒')
@@ -81,7 +80,7 @@ describe('SysmonSparkline 时间窗口径（#142：标题如实标注实际覆�
   })
 
   it('max_points 截断：标题与历史视图同口径（实际覆盖 + 仅显示最近一段）', () => {
-    const root = mountSparkline([1, 2], windowOf({ coveredSec: 300, complete: false, truncated: true }))
+    const root = mountSparkline([1, 2], windowOf({ coveredSec: 300, truncated: true }))
       .find('.sysmon-sparkline')
 
     expect(root.attributes('title')).toContain('最近 5 分钟')

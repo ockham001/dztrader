@@ -77,10 +77,11 @@ const EMPTY_STATE: TrendSeriesState = {
  * （`cpuUsageRatio` / `memoryInfo.used_ratio` / …），不是另一次采样；且 `upsertLiveSparklinePoint`
  * 在「历史末桶比实时桶更靠右」时仍把末点值更新为当前值，任何时序下都成立。
  *
- * **静默降级**：历史库从未可用（`available=false`，含历史被关闭的 `not_found`）或 HTTP 失败时
- * 该指标不产生任何序列、也不推进实时点 —— 视图不渲染 sparkline，数值照常显示。降级不是错误：
- * 本 store 不保存错误状态、不 toast。**每次进入页面都会重试补拉**：历史库可能在进程运行期间
- * 才建立（首次进入时 `not_found` 是常见状态），一次失败不应让整个 SPA 会话失去 sparkline。
+ * **静默降级**：历史库从未可用（`available=false`，含历史被关闭的 `not_found`）或**首次**补拉
+ * HTTP 失败时，该指标不产生任何序列、也不推进实时点 —— 视图不渲染 sparkline，数值照常显示。
+ * 降级不是错误：本 store 不保存错误状态、不 toast。**每次进入页面都会重试补拉**：历史库可能在
+ * 进程运行期间才建立（首次进入时 `not_found` 是常见状态），一次失败不应让整个 SPA 会话失去
+ * sparkline。
  *
  * **降级保留（#142）**：若该指标上一轮已有可用序列，本次补拉失败/降级**不清空它**——保留曲线
  * 并标记 `stale`，实时推进继续（否则一次瞬时失败会让 sparkline 闪一下消失、再等下一次进入
@@ -165,7 +166,8 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
 
   /**
    * 进入监控页时补拉历史（每个标量指标一次）。请求失败/历史不可用都**静默**降级：
-   * 不抛错、不 toast、不保存错误状态，视图只是不渲染 sparkline。
+   * 不抛错、不 toast、不保存错误状态；**首次进入即失败**时视图只是不渲染 sparkline，
+   * 已有可用序列时保留并标记未刷新（见上「降级保留」）。
    * 并发调用共享同一次 in-flight 请求（第二个调用者等待它完成）；完成后可再次调用
    *（离开页面再回来会重试，历史库可能在运行期才建立）。
    */

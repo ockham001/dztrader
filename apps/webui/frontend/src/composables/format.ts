@@ -150,16 +150,18 @@ export function formatCount(value: number | null | undefined): string {
 }
 
 /**
- * 时长格式化（秒 → 可读时长）：天 / 小时保留 1 位小数、分钟取整、不足 1 分钟按秒。
+ * 时长格式化（秒 → 可读时长）：天 / 小时保留 1 位小数、分钟**向下取整**、不足 1 分钟按秒。
  *
  * 同一换算用于历史视图的「实际覆盖最近 X」与内联趋势的时间窗口径（#142 迁入本模块）。
+ * 分钟向下取整是口径要求，不是精度取舍：四舍五入会把 14 分 59 秒（899 秒）说成
+ * 「15 分钟」，恰好违反「不足 15 分钟不得标注最近 15 分钟」；宁少不多。
  * 非有限值 / 负值返回不可用占位（负时长没有意义，不用负号冒充）。
  */
 export function formatDuration(seconds: number | null | undefined): string {
   if (!isFiniteNumber(seconds) || seconds < 0) return UNAVAILABLE_TEXT
   if (seconds >= 86_400) return `${(seconds / 86_400).toFixed(1)} 天`
   if (seconds >= 3_600) return `${(seconds / 3_600).toFixed(1)} 小时`
-  if (seconds >= 60) return `${Math.round(seconds / 60)} 分钟`
+  if (seconds >= 60) return `${Math.floor(seconds / 60)} 分钟`
   return `${seconds} 秒`
 }
 

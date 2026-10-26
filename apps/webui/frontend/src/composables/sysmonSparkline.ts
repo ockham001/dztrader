@@ -61,6 +61,21 @@ export function historySparklinePoints(points: SysmonHistoryPoint[]): SparklineP
 }
 
 /**
+ * 按末点时间窗与点数上限收敛序列——实时追加与历史补拉合并共用的唯一收敛口径。
+ * 纯函数：返回新数组；空序列返回空数组。
+ */
+function trimSparklinePoints(
+  series: readonly SparklinePoint[],
+  windowSec: number = SPARKLINE_WINDOW_SEC,
+  maxPoints: number = SPARKLINE_MAX_POINTS,
+): SparklinePoint[] {
+  if (series.length === 0) return []
+  const last = series[series.length - 1]
+  const inWindow = series.filter(point => point.ts >= last.ts - windowSec)
+  return inWindow.length > maxPoints ? inWindow.slice(inWindow.length - maxPoints) : inWindow
+}
+
+/**
  * 追加一个实时点（WS 增量推进）：同一时刻替换末点、更旧的点忽略、时间窗外的旧点丢弃、
  * 超过点数上限时丢最旧的。纯函数——返回新数组，不修改入参，便于视图层直接替换引用触发重渲染。
  */
@@ -78,8 +93,7 @@ export function appendSparklinePoint(
     // 同一秒内的多次推送：替换末点，不堆积（推送间隔远小于 1 秒的场景）
     if (point.ts === last.ts) return [...series.slice(0, -1), point]
   }
-  const next = [...series, point].filter(entry => entry.ts >= point.ts - windowSec)
-  return next.length > maxPoints ? next.slice(next.length - maxPoints) : next
+  return trimSparklinePoints([...series, point], windowSec, maxPoints)
 }
 
 /**
@@ -128,12 +142,19 @@ export interface SparklineHistoryWindow {
 export interface SparklineWindow {
   /** 实际覆盖秒数；无点（不渲染）时为 null */
   coveredSec: number | null
-  /** true = 已覆盖完整时间窗（title 可称「最近 15 分钟」） */
-  complete: boolean
   /** true = 服务端因 `max_points` 截断了窗口（契约 sysmon §6.1.2），呈现与历史视图同口径 */
   truncated: boolean
   /** true = 本轮历史补拉失败/降级，序列沿用上一轮（#142） */
   stale: boolean
+}
+
+/**
+ * 是否已覆盖满整个时间窗（只有此时才可称「最近 15 分钟」）。
+ * 由 `coveredSec` 现算而不是作为字段随对象传入——它若作为输入字段，调用方就能构造
+ * 与 `coveredSec` 矛盾的组合（#142 审查）。
+ */
+export function sparklineWindowComplete(window: SparklineWindow): boolean {
+  return window.coveredSec !== null && window.coveredSec >= SPARKLINE_WINDOW_SEC
 }
 
 /**
@@ -157,7 +178,7 @@ export function sparklineWindow(
   const first = points[0]
   const last = points[points.length - 1]
   if (!first || !last) {
-    return { coveredSec: null, complete: false, truncated: history?.truncated === true, stale }
+    return { coveredSec: null, truncated: history?.truncated === true, stale }
   }
   let coveredSec: number
   if (history && history.intervalSec !== null) {
@@ -166,10 +187,8 @@ export function sparklineWindow(
   } else {
     coveredSec = last.ts - first.ts
   }
-  coveredSec = Math.round(Math.max(0, coveredSec))
   return {
-    coveredSec,
-    complete: coveredSec >= SPARKLINE_WINDOW_SEC,
+    coveredSec: Math.max(0, coveredSec),
     truncated: history?.truncated === true,
     stale,
   }
@@ -178,28 +197,32 @@ export function sparklineWindow(
 /**
  * 历史补拉序列与上一轮序列合并（#142）。
  *
- * 补拉替换的是历史覆盖的时段，历史末桶之后已推进的实时点必须保留（否则每次进入页面都会
- * 丢掉最近一个桶的实时趋势）。**历史范围内无桶时保留上一轮序列**：历史刚启用时不能把已经
- * 攒下的实时趋势清空（本轮补拉只是确认历史还没有数据）。收敛口径与实时推进一致。
+ * 补拉替换的是历史覆盖的时段，**历史覆盖段之外**的实时点必须保留：
+ * - 末桶之后：已推进的实时点（否则每次进入页面都会丢掉最近一个桶的实时趋势）；
+ * - 首桶之前：历史刚启用时此前攒下的实时尾巴（否则一次成功补拉会把 15 分钟曲线突缩成
+ *   历史仅有的几分钟，与「补拉不清空上一轮趋势」自相矛盾）；
+ * - 历史范围内：以历史桶为准（同一时段不混两份数据）。
+ * 历史范围内无桶时整段保留上一轮序列。收敛口径与实时推进一致。
  */
 export function mergeSparklinePoints(
   history: readonly SparklinePoint[],
   previous: readonly SparklinePoint[],
 ): SparklinePoint[] {
   if (history.length === 0) return [...previous]
+  const firstHistoryTs = history[0].ts
   const lastHistoryTs = history[history.length - 1].ts
-  const merged = [...history, ...previous.filter(point => point.ts > lastHistoryTs)]
-  const last = merged[merged.length - 1]
-  const inWindow = merged.filter(point => point.ts >= last.ts - SPARKLINE_WINDOW_SEC)
-  return inWindow.length > SPARKLINE_MAX_POINTS
-    ? inWindow.slice(inWindow.length - SPARKLINE_MAX_POINTS)
-    : inWindow
+  const older = previous.filter(point => point.ts < firstHistoryTs)
+  const newer = previous.filter(point => point.ts > lastHistoryTs)
+  return trimSparklinePoints([...older, ...history, ...newer])
 }
 
-/** 时间窗文案：只有覆盖满整个窗口才称「最近 15 分钟」，否则用实际覆盖时长（#142） */
+/**
+ * 时间窗文案：只有覆盖满整个窗口才称「最近 15 分钟」，否则用实际覆盖时长（#142）。
+ * 无点（组件不渲染）时返回占位而不是编一个时长。
+ */
 export function sparklineWindowText(window: SparklineWindow): string {
   if (window.coveredSec === null) return '时间窗未知'
-  if (window.complete) return `最近 ${formatDuration(SPARKLINE_WINDOW_SEC)}`
+  if (sparklineWindowComplete(window)) return `最近 ${formatDuration(SPARKLINE_WINDOW_SEC)}`
   return `最近 ${formatDuration(window.coveredSec)}`
 }
 

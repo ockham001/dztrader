@@ -192,8 +192,11 @@ describe('formatDuration：时长（秒 → 可读时长；#142 从历史视图�
     expect(formatDuration(59)).toBe('59 秒')
   })
 
-  it('分钟取整；小时 / 天保留 1 位小数', () => {
+  it('分钟向下取整（不足整窗不得四舍五入成 15 分钟）；小时 / 天保留 1 位小数', () => {
     expect(formatDuration(60)).toBe('1 分钟')
+    expect(formatDuration(90)).toBe('1 分钟')  // 1 分 30 秒按分钟向下取整
+    expect(formatDuration(870)).toBe('14 分钟')  // 14 分 30 秒 → 14 分钟（不冒充 15）
+    expect(formatDuration(899)).toBe('14 分钟')  // 14 分 59 秒 → 14 分钟（不冒充 15）
     expect(formatDuration(15 * 60)).toBe('15 分钟')
     expect(formatDuration(3600)).toBe('1.0 小时')
     expect(formatDuration(6 * 3600)).toBe('6.0 小时')

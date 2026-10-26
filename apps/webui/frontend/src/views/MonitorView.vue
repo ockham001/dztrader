@@ -486,7 +486,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 <SysmonSparkline
                   :points="trend.seriesOf('cpu.usage_ratio')"
                   :label="trendMetricLabel('cpu.usage_ratio')"
-                  :coverage="trend.windowOf('cpu.usage_ratio')"
+                  :window="trend.windowOf('cpu.usage_ratio')"
                   class="monitor-view__sparkline"
                   data-test="monitor-sparkline-cpu"
                   @open="openHistory('cpu.usage_ratio')"
@@ -553,7 +553,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 v-if="loadAverage.one !== null"
                 :points="trend.seriesOf('cpu.load_average.one')"
                 :label="trendMetricLabel('cpu.load_average.one')"
-                :coverage="trend.windowOf('cpu.load_average.one')"
+                :window="trend.windowOf('cpu.load_average.one')"
                 class="monitor-view__sparkline monitor-view__sparkline--block"
                 data-test="monitor-sparkline-load"
                 @open="openHistory('cpu.load_average.one')"
@@ -728,7 +728,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
             <SysmonSparkline
               :points="trend.seriesOf('memory.used_ratio')"
               :label="trendMetricLabel('memory.used_ratio')"
-              :coverage="trend.windowOf('memory.used_ratio')"
+              :window="trend.windowOf('memory.used_ratio')"
               class="monitor-view__sparkline"
               data-test="monitor-sparkline-memory"
               @open="openHistory('memory.used_ratio')"
@@ -778,7 +778,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               <SysmonSparkline
                 :points="trend.seriesOf('swap.used_ratio')"
                 :label="trendMetricLabel('swap.used_ratio')"
-                :coverage="trend.windowOf('swap.used_ratio')"
+                :window="trend.windowOf('swap.used_ratio')"
                 class="monitor-view__sparkline monitor-view__sparkline--inline"
                 data-test="monitor-sparkline-swap"
                 @open="openHistory('swap.used_ratio')"
@@ -885,7 +885,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 <SysmonSparkline
                   :points="trend.seriesOf('shm_dir.total_bytes')"
                   :label="trendMetricLabel('shm_dir.total_bytes')"
-                  :coverage="trend.windowOf('shm_dir.total_bytes')"
+                  :window="trend.windowOf('shm_dir.total_bytes')"
                   class="monitor-view__sparkline monitor-view__sparkline--inline"
                   data-test="monitor-sparkline-shm"
                   @open="openHistory('shm_dir.total_bytes')"

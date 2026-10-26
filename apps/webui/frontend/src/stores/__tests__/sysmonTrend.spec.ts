@@ -8,7 +8,12 @@ import {
 import { SYSMON_HISTORY_METRICS } from '../sysmonHistory'
 import { useSysmonStore } from '../sysmon'
 import { sysmonApi } from '@/api/sysmon'
-import { SPARKLINE_BUCKET_SEC, SPARKLINE_MAX_POINTS, SPARKLINE_WINDOW_SEC } from '@/composables/sysmonSparkline'
+import {
+  SPARKLINE_BUCKET_SEC,
+  SPARKLINE_MAX_POINTS,
+  SPARKLINE_WINDOW_SEC,
+  sparklineWindowComplete,
+} from '@/composables/sysmonSparkline'
 import { makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 import type { SysmonHistoryAvailable, SysmonHistoryResponse } from '@/types/api'
 
@@ -352,12 +357,9 @@ describe('useSysmonTrendStore：时间窗口径如实（#142）', () => {
     mockFullWindow()
     const trend = await initTrend()
 
-    expect(trend.windowOf('cpu.usage_ratio')).toEqual({
-      coveredSec: SPARKLINE_WINDOW_SEC,
-      complete: true,
-      truncated: false,
-      stale: false,
-    })
+    const window = trend.windowOf('cpu.usage_ratio')
+    expect(window).toEqual({ coveredSec: SPARKLINE_WINDOW_SEC, truncated: false, stale: false })
+    expect(sparklineWindowComplete(window)).toBe(true)
   })
 
   it('历史可用但范围内无桶：按实时点跨度标注，不冒充 15 分钟', async () => {
@@ -372,13 +374,13 @@ describe('useSysmonTrendStore：时间窗口径如实（#142）', () => {
 
     // 范围内无桶：还没有可画的跨度（coveredSec 无值）
     expect(trend.windowOf('cpu.usage_ratio').coveredSec).toBeNull()
-    expect(trend.windowOf('cpu.usage_ratio').complete).toBe(false)
+    expect(sparklineWindowComplete(trend.windowOf('cpu.usage_ratio'))).toBe(false)
 
     sysmon.applySnapshot(makeSysmonSnapshot({ cpuUsageRatio: 0.3 }))
     sysmon.applySnapshot({ ...makeSysmonSnapshot({ cpuUsageRatio: 0.4 }), timestamp: (FIXTURE_SEC + 15) * 1000 })
     const window = trend.windowOf('cpu.usage_ratio')
     expect(window.coveredSec).toBe(SPARKLINE_BUCKET_SEC)
-    expect(window.complete).toBe(false)
+    expect(sparklineWindowComplete(window)).toBe(false)
     expect(trend.seriesOf('cpu.usage_ratio')).toHaveLength(2)
   })
 
@@ -393,7 +395,6 @@ describe('useSysmonTrendStore：时间窗口径如实（#142）', () => {
 
     expect(trend.windowOf('cpu.usage_ratio')).toEqual({
       coveredSec: 300,
-      complete: false,
       truncated: true,
       stale: false,
     })
@@ -411,7 +412,7 @@ describe('useSysmonTrendStore：时间窗口径如实（#142）', () => {
     const trend = await initTrend()
 
     expect(trend.windowOf('cpu.usage_ratio').coveredSec).toBe(300)
-    expect(trend.windowOf('cpu.usage_ratio').complete).toBe(false)
+    expect(sparklineWindowComplete(trend.windowOf('cpu.usage_ratio'))).toBe(false)
   })
 
   it('只有实时点且跨度攒满 15 分钟：如实恢复为完整覆盖', async () => {
@@ -429,12 +430,9 @@ describe('useSysmonTrendStore：时间窗口径如实（#142）', () => {
       timestamp: (FIXTURE_SEC + SPARKLINE_WINDOW_SEC) * 1000,
     })
 
-    expect(trend.windowOf('cpu.usage_ratio')).toEqual({
-      coveredSec: SPARKLINE_WINDOW_SEC,
-      complete: true,
-      truncated: false,
-      stale: false,
-    })
+    const window = trend.windowOf('cpu.usage_ratio')
+    expect(window).toEqual({ coveredSec: SPARKLINE_WINDOW_SEC, truncated: false, stale: false })
+    expect(sparklineWindowComplete(window)).toBe(true)
   })
 })
 
@@ -527,7 +525,13 @@ describe('useSysmonTrendStore：单指标补拉降级保留上一轮序列（#14
     })
     await trend.init()
 
-    expect(trend.seriesOf('cpu.usage_ratio')).toHaveLength(3)
+    // 保留的是同一批点（不是被清空后重新攒的一点）：历史点 + 已推进的实时末点
+    const base = NOW_SEC - 120
+    expect(trend.seriesOf('cpu.usage_ratio')).toEqual([
+      { ts: base, value: 0.2 },
+      { ts: base + 60, value: 0.3 },
+      { ts: FIXTURE_SEC, value: 0.42 },
+    ])
     expect(trend.windowOf('cpu.usage_ratio').stale).toBe(false)
   })
 })
