@@ -15,7 +15,8 @@
 #   ./scripts/gate.sh wait-ci [wait-ci.sh 参数...]   # 透传，前台阻塞，退出码真实
 #
 # 行为:
-#   - build/test：flock 串行（`.cache/gate-build.lock`），避免并发 ninja；
+#   - build/test/preflight：flock 串行（`.cache/gate-build.lock`），避免并发 ninja；
+#     preflight 也共用该锁，避免其前端 type-check 撞上构建里的 npm 安装窗口（#134）；
 #   - 输出落 `.cache/gate/<cmd>-<时间戳>.log`（gitignored）；
 #   - 成功打末尾 8 行（`--tail N` 改为 N 行）；失败打错误行 + 末尾 max(N,30) 行，
 #     并**原样返回被包装命令的退出码**；
@@ -109,18 +110,15 @@ run_and_report() {
 }
 
 case "$CMD" in
-    build|test)
+    build|test|preflight)
         if ! command -v flock >/dev/null 2>&1; then
-            echo "error: flock not found (util-linux); cannot serialize build/test" >&2
+            echo "error: flock not found (util-linux); cannot serialize build/test/preflight" >&2
             exit 2
         fi
         dz_export_ccache_env "$ROOT"
         exec 9>"$ROOT/.cache/gate-build.lock"
         flock 9
         run_and_report "$CMD" "$ROOT/scripts/$CMD.sh" "${ARGS[@]}"
-        ;;
-    preflight)
-        run_and_report "$CMD" "$ROOT/scripts/preflight.sh" "${ARGS[@]}"
         ;;
     *)
         echo "error: unknown gate command: $CMD (build|test|preflight|wait-ci)" >&2

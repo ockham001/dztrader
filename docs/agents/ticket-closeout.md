@@ -60,7 +60,7 @@ gh pr create --base main --head <branch> --title "<type>: <摘要>（#<issue>）
 
 - 本仓用 PR 落地（`ci.yml` 只在 PR / main 触发；main 不受保护也保持一致）。创建 PR 前可用 `pr` 技能整理 body。
 - **波次开头一次性授权**：波次开始时向用户确认一次推送/合并授权（含本波各票范围），此后逐票不再逐次询问 push / PR / merge；越权操作（force push、推送他人分支、跨线合并）仍逐次确认。
-- **PR 开完不阻塞等 CI**：`gh pr create` 成功后即可转下一票（读契约 / 定 spec）或本票收尾准备（拟关闭评论、清理 worktree 计划），CI 结果在自然断点或波末统一用 `./scripts/wait-ci.sh --pr <n>` 收；不要把 CI 等待写成同步步骤（本波 `wait-ci` 阻塞约 3.4h）。
+- **PR 开完不阻塞等 CI**：`gh pr create` 成功后即可转下一票（读契约 / 定 spec）或本票收尾准备（拟关闭评论、清理 worktree 计划），CI 结果在自然断点或波末统一用 `./scripts/wait-ci.sh --pr <n>` 收；不要把 CI 等待写成同步步骤（本波 `wait-ci` 阻塞约 3.4h）。**边界**：不阻塞只适用于同波内的下一步准备；本票**合并前必须 CI 绿**，开新波前必须已完成合并（见 §5）。
 - **`wait-ci.sh` 的退出码就是 CI 结论**：不要接 `| tail` / `| head`（会吞掉退出码）；它本来就是静默输出，只打状态变化与失败链接。feature 分支没开 PR 时 `--sha` 约 180s 就报错并提示先建 PR，不会空等到 60 分钟总超时。
 - **推送前先看 `gh run list --branch <branch> --json status`**：同一分支已有 in-progress run 时不要推——会排队/取消，每次 ≈35–40 分钟。把剩余修复攒成 **1 个 commit** 再推；review 修复不要在 CI 跑的时候逐条推（本波 #93 因此取消 3 个 run）。
 - 等待期间不要 `gh run watch` 全量输出、不要 `sleep` 轮询、不要反复 tail 后台日志。CI 红先用 `./scripts/ci-log.sh <run-id>` 定位：它**优先取 `last-test-log` artifact（约 200KB，秒级给出失败用例名）**，再退回失败 job 日志（Windows 可达数十 MB）；同一 run/job 已下载过会复用（`--refresh` 强制重拉，`--context N` 调上下文行数）。

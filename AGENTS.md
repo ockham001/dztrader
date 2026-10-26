@@ -150,7 +150,7 @@
 
 1. **开工前必读**：本文 → [docs/README.md](docs/README.md)（文档地图与冲突裁决规则）→ 相关帧契约（先读 `general.md`）
 2. **小步提交**：一个提交只做一件事，每步可验证（构建 + 相关测试）。提交信息**中文**，前缀 `fix:` / `feat:` / `refactor:` / `docs:` / `test:` / `chore:` / `perf:` / `style:` / `build:` / `ci:`
-3. **push 前自检**：见 [docs/development-checklist.md](docs/development-checklist.md) 的 C 段（**那是权威且更全的清单** —— 含 `type-check` / `lint` / `lint:css` / 契约 Freshness 门禁）。push 后等 CI 绿再开下一波；**CI 红先修红，不叠加新改动**
+3. **push 前自检**：见 [docs/development-checklist.md](docs/development-checklist.md) 的 C 段（**那是权威且更全的清单** —— 含 `type-check` / `lint` / `lint:css` / 契约 Freshness 门禁）。同一波内 PR 开完即可继续下一票的只读准备（读契约 / 定 spec），CI 结果在自然断点或波末统一收；**本票合并前、开新波前 CI 必须绿**；**CI 红先修红，不叠加新改动**
 4. **大改动先写文档**：spec 设计 + plan 实施计划（checkbox 制），我确认后再实现
 5. **收尾**：工作区保持干净（运行产物已 gitignore；临时诊断脚本要么通用化提交、要么删除）。每波改动结束 `git status` 干净 + `git log` 可读 + CI 绿
 
