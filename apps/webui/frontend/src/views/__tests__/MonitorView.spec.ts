@@ -514,6 +514,35 @@ describe('MonitorView 内存与交换（#74，可用性驱动）', () => {
     expect(swap.text()).toContain('2.0 GiB / 8.0 GiB')
     expect(wrapper.find('[data-test="monitor-memory-swap-none"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-memory-swap-unavailable"]').exists()).toBe(false)
+
+    // #120 收口：内存 / 交换使用率色标与卷行、顶栏共享同一组常量（默认 50% / 25% → normal）
+    expect(wrapper.find('[data-test="monitor-memory"] .monitor-view__metric-row').attributes('data-level'))
+      .toBe('normal')
+    expect(swap.find('.monitor-view__list-row').attributes('data-level')).toBe('normal')
+  })
+
+  it('内存 / 交换使用率色标：0.70 → warn、0.90 → danger（边界含，数值照常渲染）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      memory: {
+        total_bytes: 100 * GIB,
+        available_bytes: 10 * GIB,
+        used_bytes: 90 * GIB,
+        used_ratio: 0.9,
+        cached_bytes: null,
+        buffers_bytes: null,
+      },
+      swap: { total_bytes: 100 * GIB, used_bytes: 70 * GIB, used_ratio: 0.7 },
+    }))
+    const wrapper = await mountView()
+
+    const memoryRow = wrapper.find('[data-test="monitor-memory"] .monitor-view__metric-row')
+    expect(memoryRow.attributes('data-level')).toBe('danger')
+    // 色标只影响颜色，不改变数值展示
+    expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('90.0%')
+
+    const swapRow = wrapper.find('[data-test="monitor-memory-swap"] .monitor-view__list-row')
+    expect(swapRow.attributes('data-level')).toBe('warn')
+    expect(wrapper.find('[data-test="monitor-memory-swap-usage"]').text()).toBe('70.0%')
   })
 
   it('Windows 式内存（buffers_bytes=null）：不渲染缓冲行，缓存与可用行保留', async () => {

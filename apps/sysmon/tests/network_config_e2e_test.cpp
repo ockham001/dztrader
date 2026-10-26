@@ -215,9 +215,10 @@ protected:
         return true;
     }
 
-    /// 从帧视图按帧头类型取 payload（快照无 instance_id，配置帧有）。
+    /// 从帧视图按帧头类型取 payload（快照 / NOTIFY_UI 无 instance_id，配置帧有）。
     static nlohmann::json payload_of(const shm::FrameView& view) {
-        const bool broadcast = view.type() == DZ_FRAME_RTN_SYSMON_SNAPSHOT;
+        const bool broadcast =
+            view.type() == DZ_FRAME_RTN_SYSMON_SNAPSHOT || view.type() == DZ_FRAME_NOTIFY_UI;
         const auto size = broadcast ? view.ext_payload_size() : view.ext_inst_payload_size();
         const auto* data = broadcast ? view.ext_payload() : view.ext_inst_payload();
         return nlohmann::json::parse(reinterpret_cast<const char*>(data),
@@ -228,6 +229,7 @@ protected:
     ///
     /// 保留是必需的：一次 SET 会先写 RTN_SYSMON_CONFIG 再写 RTN_SYSMON_SNAPSHOT，
     /// 若等待快照时直接丢弃配置帧，后面就再也读不到它（reader 是单向游标）。
+    /// NOTIFY_UI 同理：失败路径先发通知、后回推配置，等配置时丢弃通知会让后续等待永远超时。
     std::optional<nlohmann::json> wait_for_frame(DzFrameType type,
                                                  std::chrono::milliseconds timeout) {
         for (auto it = pending_.begin(); it != pending_.end(); ++it) {
@@ -247,7 +249,8 @@ protected:
                 // 只缓存本用例关心的 JSON 帧：通道上还有其它二进制/控制帧（如
                 // PRELOAD_EVENT_SHM 等），对它们 parse 会抛。
                 if (view.type() == DZ_FRAME_RTN_SYSMON_CONFIG ||
-                    view.type() == DZ_FRAME_RTN_SYSMON_SNAPSHOT) {
+                    view.type() == DZ_FRAME_RTN_SYSMON_SNAPSHOT ||
+                    view.type() == DZ_FRAME_NOTIFY_UI) {
                     pending_.emplace_back(view.type(), payload_of(view));
                 }
             }
@@ -329,8 +332,9 @@ TEST_F(NetworkConfigE2ETest, SetConfigPushesSnapshotImmediately) {
     }
 }
 
-// 契约 sysmon §3.3 四件套：非法 patch 被拒绝时回推旧值（内存镜像不变），且不推快照。
-TEST_F(NetworkConfigE2ETest, RejectedPatchRollsBackAndDoesNotPushSnapshot) {
+// 契约 sysmon §3.3 四件套：非法 patch 被拒绝时旧值不变（内存镜像回滚）、记日志、
+// `NOTIFY_UI` error+popup、回推全量旧值，且失败**不**触发 §4 触发 4 的立即快照。
+TEST_F(NetworkConfigE2ETest, RejectedPatchNotifiesRollsBackAndDoesNotPushSnapshot) {
     start_child();
     ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s).has_value());
     // 丢弃启动期残留帧：否则下面的 RTN_SYSMON_CONFIG 会命中启动推送的旧配置帧
@@ -339,6 +343,17 @@ TEST_F(NetworkConfigE2ETest, RejectedPatchRollsBackAndDoesNotPushSnapshot) {
 
     // hide_virtual 必须是 bool：给字符串 → SysmonConfig::validate 拒绝。
     ASSERT_TRUE(send_set_config({{"network", {{"hide_virtual", "yes"}}}}));
+
+    // 四件套之一：error 级通知 + popup=true。配置失败是需要人处理的真故障，与资源越限的
+    // 「只写日志、不弹窗」（ADR 0034）正好相反。
+    const auto notify = wait_for_frame(DZ_FRAME_NOTIFY_UI, 5s);
+    ASSERT_TRUE(notify.has_value()) << "a rejected SET must notify the ui";
+    EXPECT_EQ(notify->value("source", std::string()), "dzsysmon");
+    EXPECT_EQ(notify->value("level", std::string()), "error");
+    EXPECT_TRUE(notify->value("popup", false));
+    // 通知必须能归因到本次配置失败，而不是任意一条 dzsysmon error（否则断言对别的故障也成立）。
+    EXPECT_NE(notify->value("message", std::string()).find("sysmon config update failed"),
+              std::string::npos);
 
     const auto config = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
     ASSERT_TRUE(config.has_value()) << "failure path must still push the effective config";

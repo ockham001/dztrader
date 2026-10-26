@@ -1397,11 +1397,20 @@ TEST(SnapshotBuilderTest, NetworkDoesNotAddAvailabilityKeys) {
     EXPECT_TRUE(snapshot.availability.metrics.contains(platform::SYSMON_METRIC_NETWORK));
 }
 
-// 契约 sysmon §7：发送方**不得**输出 `alerts` 字段（#125 删除）；快照序列化与校验随之收敛。
-TEST(SnapshotBuilderTest, SnapshotOmitsRemovedAlertsField) {
-    const auto snapshot = build_with(make_linux_info(), make_full_metrics());
+// 契约 sysmon §7：发送方**不得**输出 `alerts` / `watch_paths` 字段（#125 / #124 删除）；
+// `volumes[]` 的 `watched` 同属 #124 删除面。快照序列化与校验随之收敛。
+TEST(SnapshotBuilderTest, SnapshotOmitsRemovedAlertAndWatchPathFields) {
+    const auto snapshot =
+        build_with(make_linux_info(), make_full_metrics(), {}, {}, make_disk_metrics());
     const auto json = nlohmann::json(snapshot);
     EXPECT_FALSE(json.contains("alerts"));
+    EXPECT_FALSE(json.contains("watch_paths"));
+    // 维度字段也要守：只守顶层会漏掉以后有人把 `watched` 塞回卷条目。
+    ASSERT_TRUE(json["volumes"].is_array());
+    ASSERT_EQ(json["volumes"].size(), 3U);
+    for (const auto& volume : json["volumes"]) {
+        EXPECT_FALSE(volume.contains("watched"));
+    }
     EXPECT_EQ(platform::SysmonSnapshot::validate(json), std::nullopt);
 }
 
