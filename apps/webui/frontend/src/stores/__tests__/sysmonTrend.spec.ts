@@ -434,6 +434,40 @@ describe('useSysmonTrendStore：时间窗口径如实（#142）', () => {
     expect(window).toEqual({ coveredSec: SPARKLINE_WINDOW_SEC, truncated: false, stale: false })
     expect(sparklineWindowComplete(window)).toBe(true)
   })
+
+  it('实时尾巴早于迟到首桶：窗口起点按实时点精确时刻计（不套桶宽容差）', async () => {
+    // 先进入页面时历史范围内无桶：只攒实时点，首点在约 880 秒前
+    vi.mocked(sysmonApi.getHistory).mockImplementation((params = {}) => {
+      const from = params.from ?? NOW_SEC - SPARKLINE_WINDOW_SEC
+      const to = params.to ?? NOW_SEC
+      return Promise.resolve(makeWindowed(params.metric ?? 'cpu.usage_ratio',
+        { from, to, intervalSec: null }, []))
+    })
+    const trend = await initTrend()
+    const sysmon = useSysmonStore()
+    sysmon.applySnapshot({
+      ...makeSysmonSnapshot({ cpuUsageRatio: 0.3 }),
+      timestamp: (NOW_SEC - 880) * 1000,
+    })
+    sysmon.applySnapshot(makeSysmonSnapshot({ cpuUsageRatio: 0.42 }))
+    const firstLiveTs = Math.floor((NOW_SEC - 880) / SPARKLINE_BUCKET_SEC) * SPARKLINE_BUCKET_SEC
+
+    // 再次进入：历史刚启用，首桶在 300 秒前（距请求 from 超过一个桶宽）
+    vi.mocked(sysmonApi.getHistory).mockImplementation((params = {}) => {
+      const from = params.from ?? NOW_SEC - SPARKLINE_WINDOW_SEC
+      const to = params.to ?? NOW_SEC
+      return Promise.resolve(makeWindowed(params.metric ?? 'cpu.usage_ratio', { from, to }, [
+        { ts: to - 300, avg: 0.5 },
+        { ts: to - 60, avg: 0.6 },
+      ]))
+    })
+    await trend.init()
+
+    // 首点是保留的实时尾巴（早于首桶）：起点用精确时刻，实际覆盖不足 15 分钟
+    const window = trend.windowOf('cpu.usage_ratio')
+    expect(window.coveredSec).toBe(NOW_SEC - firstLiveTs)
+    expect(sparklineWindowComplete(window)).toBe(false)
+  })
 })
 
 describe('useSysmonTrendStore：单指标补拉降级保留上一轮序列（#142）', () => {

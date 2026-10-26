@@ -201,17 +201,17 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
           return
         }
         const value = response.value
+        const historyPoints = historySparklinePoints(value.series[0]?.points ?? [])
         next[key] = {
           // 已经推进的实时点不能因补拉丢失；历史范围内无桶时上一轮序列整体保留
-          points: mergeSparklinePoints(
-            historySparklinePoints(value.series[0]?.points ?? []),
-            previous.points,
-          ),
+          points: mergeSparklinePoints(historyPoints, previous.points),
           history: {
             from: value.from,
             to: value.to,
             truncated: value.truncated,
             intervalSec: value.interval_sec,
+            // 首桶时刻决定窗口起点口径（历史刚启用时首点可能是保留的实时尾巴）
+            firstBucketTs: historyPoints[0]?.ts ?? null,
           },
           hasSeries: true,
           stale: false,

@@ -219,9 +219,15 @@ describe('sparklineGeometry（纯几何：SVG viewBox 0 0 100 24）', () => {
 describe('sparklineWindow（#142：时间窗口径如实）', () => {
   const TO = 1_790_000_000
 
-  /** 60 秒桶的历史窗口元信息（完整 15 分钟） */
+  /** 60 秒桶的历史窗口元信息（完整 15 分钟，首桶在 TO-840） */
   function fullHistory(): SparklineHistoryWindow {
-    return { from: TO - SPARKLINE_WINDOW_SEC, to: TO, truncated: false, intervalSec: 60 }
+    return {
+      from: TO - SPARKLINE_WINDOW_SEC,
+      to: TO,
+      truncated: false,
+      intervalSec: 60,
+      firstBucketTs: TO - 840,
+    }
   }
 
   it('生效 from/to 足满窗口：称完整覆盖（15 分钟）', () => {
@@ -248,7 +254,7 @@ describe('sparklineWindow（#142：时间窗口径如实）', () => {
   it('max_points 截断：按生效 from/to（from 已前移为首个返回桶）标注实际覆盖', () => {
     const window = sparklineWindow(
       [{ ts: TO - 295, value: 0.1 }, { ts: TO - 5, value: 0.2 }],
-      { from: TO - 295, to: TO, truncated: true, intervalSec: 5 },
+      { from: TO - 295, to: TO, truncated: true, intervalSec: 5, firstBucketTs: TO - 295 },
     )
 
     expect(window.coveredSec).toBe(295)
@@ -259,7 +265,7 @@ describe('sparklineWindow（#142：时间窗口径如实）', () => {
   it('历史刚启用（窗口内只有后半段桶）：按首个桶起点标注实际覆盖', () => {
     const window = sparklineWindow(
       [{ ts: TO - 300, value: 0.1 }, { ts: TO - 60, value: 0.2 }],
-      fullHistory(),
+      { ...fullHistory(), firstBucketTs: TO - 300 },
     )
 
     expect(window.coveredSec).toBe(300)
@@ -288,6 +294,22 @@ describe('sparklineWindow（#142：时间窗口径如实）', () => {
 
     expect(window.coveredSec).toBe(SPARKLINE_WINDOW_SEC)
     expect(sparklineWindowComplete(window)).toBe(true)
+  })
+
+  it('实时尾巴 + 迟到首桶：首点按精确时刻计，不套桶宽容差（840 秒不得说成 15 分钟）', () => {
+    // 历史刚启用：首桶在 TO-300；首点 TO-840 是从上一轮序列保留的实时尾巴（距 from 仅 60 秒，
+    // 若套桶宽容差会被当成 from，实际只覆盖 840 秒）
+    const window = sparklineWindow(
+      [
+        { ts: TO - 840, value: 0.1 },
+        { ts: TO - 300, value: 0.2 },
+        { ts: TO - 60, value: 0.3 },
+      ],
+      { ...fullHistory(), firstBucketTs: TO - 300 },
+    )
+
+    expect(window.coveredSec).toBe(SPARKLINE_WINDOW_SEC - 60)
+    expect(sparklineWindowComplete(window)).toBe(false)
   })
 
   it('stale 原样透传：保留上一轮序列时标题可提示未刷新', () => {
@@ -417,7 +439,7 @@ describe('mergeSparklinePoints（#142：补拉与上一轮实时序列合并）'
     const merged = mergeSparklinePoints(history, live)
 
     expect(merged).toHaveLength(SPARKLINE_MAX_POINTS)
-    // 丢掉的是最旧的 20 个历史点（1800 → 1820 部分），首点为原第 20 个历史点
+    // 丢掉的是最旧的 20 个历史点（ts 1_790_000_000–1_790_000_190），首点为原第 20 个历史点
     expect(merged[0]).toEqual(history[20])
     expect(merged[merged.length - 1]).toEqual(live[live.length - 1])
   })

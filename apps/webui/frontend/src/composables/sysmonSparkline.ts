@@ -130,6 +130,8 @@ export interface SparklineHistoryWindow {
   to: number
   truncated: boolean
   intervalSec: number | null
+  /** 首个历史桶时刻；`null` = 没有可用历史点（此时窗口只能按实时点跨度计） */
+  firstBucketTs: number | null
 }
 
 /**
@@ -164,7 +166,9 @@ export function sparklineWindowComplete(window: SparklineWindow): boolean {
  *   起点取生效 `from`；但历史刚启用时首个桶可能晚于 `from` 一个桶宽以上，此时按首个桶
  *   起点计（数据不足 15 分钟不得冒充完整）。末端取 `to` 与末点中较大者——页面停留期间
  *   实时点会推进到查询时刻之后。
- * - 历史范围内无桶（`intervalSec = null`）或从未拿到历史窗口时，只能按**实时点跨度**
+ * - 首点是历史覆盖段之前保留的**实时点**时，按该点精确时刻计（实时点没有桶对齐问题，
+ *   不套下面的桶宽容差；否则「实时尾巴 + 迟到首桶」会把实际 840 秒说成完整 15 分钟）。
+ * - 历史范围内无桶（`intervalSec = null`）或没有可用历史点时，只能按**实时点跨度**
  *   标注：这正是「新装机器 / 刚启用历史」的实际可见范围。
  *
  * 判定容忍一个桶宽：桶按墙钟对齐，正常连续历史的第一个桶可以晚于 `from` 但不超过一个
@@ -181,8 +185,12 @@ export function sparklineWindow(
     return { coveredSec: null, truncated: history?.truncated === true, stale }
   }
   let coveredSec: number
-  if (history && history.intervalSec !== null) {
-    const dataStart = first.ts - history.from > history.intervalSec ? first.ts : history.from
+  const firstBucketTs = history?.firstBucketTs ?? null
+  if (history && history.intervalSec !== null && firstBucketTs !== null) {
+    const dataStart = first.ts < firstBucketTs
+      // 历史覆盖段之前保留的实时点：时刻精确，不套桶宽容差
+      ? first.ts
+      : (first.ts - history.from > history.intervalSec ? first.ts : history.from)
     coveredSec = Math.max(history.to, last.ts) - dataStart
   } else {
     coveredSec = last.ts - first.ts
