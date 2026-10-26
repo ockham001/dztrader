@@ -94,6 +94,9 @@ TEST_F(LogControllerTest, GetFilesReturnsList) {
     ofs.close();
 
     auto req = admin_req();
+    // 显式大 limit：paths::logs() 是全仓测试共享目录，list_files 默认 limit=30 且按
+    // mtime 降序分页 —— 并发进程留下的更新日志会把刚写的文件挤出第一页（#136）。
+    req->setParameter("limit", "1000");
     auto resp = invoke(&LogCtrl::get_files, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
     auto body = parse_resp(resp);
