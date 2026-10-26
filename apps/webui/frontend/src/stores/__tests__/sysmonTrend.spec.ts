@@ -105,6 +105,19 @@ async function initTrend(): Promise<ReturnType<typeof useSysmonTrendStore>> {
   return trend
 }
 
+/**
+ * 首次进入（历史范围内无桶）时只靠两个实时快照攒出跨度：首点在 `firstTsSec`、末点在夹具时刻。
+ * 用于「再次进入页面时窗口起点口径」类用例。
+ */
+function seedLiveSpan(firstTsSec: number): void {
+  const sysmon = useSysmonStore()
+  sysmon.applySnapshot({
+    ...makeSysmonSnapshot({ cpuUsageRatio: 0.3 }),
+    timestamp: firstTsSec * 1000,
+  })
+  sysmon.applySnapshot(makeSysmonSnapshot({ cpuUsageRatio: 0.42 }))
+}
+
 describe('useSysmonTrendStore：历史补齐（最近 15 分钟 / max_points=60）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -444,12 +457,7 @@ describe('useSysmonTrendStore：时间窗口径如实（#142）', () => {
         { from, to, intervalSec: null }, []))
     })
     const trend = await initTrend()
-    const sysmon = useSysmonStore()
-    sysmon.applySnapshot({
-      ...makeSysmonSnapshot({ cpuUsageRatio: 0.3 }),
-      timestamp: (NOW_SEC - 880) * 1000,
-    })
-    sysmon.applySnapshot(makeSysmonSnapshot({ cpuUsageRatio: 0.42 }))
+    seedLiveSpan(NOW_SEC - 880)
     const firstLiveTs = Math.floor((NOW_SEC - 880) / SPARKLINE_BUCKET_SEC) * SPARKLINE_BUCKET_SEC
 
     // 再次进入：历史刚启用，首桶在 300 秒前（距请求 from 超过一个桶宽）
@@ -467,6 +475,34 @@ describe('useSysmonTrendStore：时间窗口径如实（#142）', () => {
     const window = trend.windowOf('cpu.usage_ratio')
     expect(window.coveredSec).toBe(NOW_SEC - firstLiveTs)
     expect(sparklineWindowComplete(window)).toBe(false)
+  })
+
+  it('截断 + 补拉保留的更早点拉满覆盖：窗口算完整、不叠截断注（#145 跨页面进入组合）', async () => {
+    // 首次进入：历史范围内无桶，只靠实时点攒出跨度（最近 15 分钟前沿）
+    vi.mocked(sysmonApi.getHistory).mockImplementation((params = {}) => {
+      const from = params.from ?? NOW_SEC - SPARKLINE_WINDOW_SEC
+      const to = params.to ?? NOW_SEC
+      return Promise.resolve(makeWindowed(params.metric ?? 'cpu.usage_ratio',
+        { from, to, intervalSec: null }, []))
+    })
+    const trend = await initTrend()
+    seedLiveSpan(NOW_SEC - SPARKLINE_WINDOW_SEC)
+
+    // 再次进入页面：record_interval=5s 使历史段被 max_points 截断（truncated=true），
+    // 但上一轮的更早实时点在合并时保留，可见跨度仍是完整 15 分钟
+    vi.mocked(sysmonApi.getHistory).mockImplementation((params = {}) =>
+      Promise.resolve(makeWindowed(params.metric ?? 'cpu.usage_ratio',
+        { from: NOW_SEC - 300, to: NOW_SEC, truncated: true, intervalSec: 5 }, [
+          { ts: NOW_SEC - 295, avg: 0.5 },
+          { ts: NOW_SEC - 5, avg: 0.6 },
+        ])))
+    await trend.init()
+
+    const window = trend.windowOf('cpu.usage_ratio')
+    expect(window.truncated).toBe(true)
+    // 覆盖 = 生效 to 与保留首点（15 分钟前）之差；+3 秒是夹具墙钟 `to` 与实时桶时刻的偏差
+    expect(window.coveredSec).toBe(NOW_SEC - (FIXTURE_SEC - SPARKLINE_WINDOW_SEC))
+    expect(sparklineWindowComplete(window)).toBe(true)
   })
 })
 
