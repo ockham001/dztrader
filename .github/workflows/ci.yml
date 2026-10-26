@@ -129,8 +129,9 @@ jobs:
 
   linux:
     name: Linux (GCC Release)
-    # 夜间 run 只为预热 Windows 缓存；Linux 已由每次 main push 覆盖，不重复跑。
-    if: github.event_name != 'schedule'
+    # schedule / dispatch 只为预热 Windows 缓存（见 windows-cache-warm）；Linux 已由每次
+    # main push 与每个 PR 覆盖，不在这两种触发下重复跑。
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
