@@ -57,6 +57,12 @@ $testHome = "$PSScriptRoot\..\.cache\test_home"
 if (Test-Path $testHome) { Remove-Item -Recurse -Force $testHome }
 New-Item -ItemType Directory -Path $testHome -Force | Out-Null
 
+# ctest 并行度（#136）：gtest_discover_tests 把每个用例注册为独立进程，-j 才能并行；
+# 用例级并发安全由「临时资源唯一化」保证（固定名目录会互踩，已全仓整改 + preflight lint 兜底）。
+# 显式设置该变量的调用方优先，否则默认 4。
+if (-not $env:CTEST_PARALLEL_LEVEL) { $env:CTEST_PARALLEL_LEVEL = '4' }
+
 $ctestArgs = @('--preset', $preset)
 if ($TestName) { $ctestArgs += @('-R', $TestName) }
+Write-Host "ctest $($ctestArgs -join ' ') (CTEST_PARALLEL_LEVEL=$env:CTEST_PARALLEL_LEVEL)"
 & ctest @ctestArgs

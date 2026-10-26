@@ -4,6 +4,7 @@
  */
 
 #include "child_process.h"
+#include "test_temp_dir.h"
 
 #include <dztrader/core/this_process.h>
 #include <dztrader/log/log.h>
@@ -20,7 +21,7 @@ namespace dztrader::master {
 namespace {
 
 /// 测试日志目录（与 SetUpTestSuite 的 LoggerSetup 一致）。
-std::filesystem::path log_dir() { return std::filesystem::temp_directory_path() / "dz_test_logs"; }
+std::filesystem::path log_dir() { return dztrader::test::unique_temp_dir("dz_test_logs"); }
 
 /// 读取本测试 logger 写出的全部日志文本。
 /// DailyFileSinkMt 在扩展名前插入日期，故按前缀匹配。

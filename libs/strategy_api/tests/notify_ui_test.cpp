@@ -18,6 +18,8 @@
 #include <optional>
 #include <string>
 
+#include "test_temp_dir.h"
+
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::MultiWriter;
@@ -66,7 +68,7 @@ protected:
     std::optional<Reader> probe_;
 
     void SetUp() override {
-        home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_notify").string();
+        home_ = dztrader::test::unique_temp_dir("dz_test_strategy_notify").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         shm_dir_ = home_ + "/shm";

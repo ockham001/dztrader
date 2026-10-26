@@ -17,7 +17,7 @@
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
-#include "unique_temp.h"
+#include "test_temp_dir.h"
 
 namespace dztrader::webui {
 namespace {

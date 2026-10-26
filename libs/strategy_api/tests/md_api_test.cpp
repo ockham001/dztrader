@@ -16,6 +16,8 @@
 #include <string>
 #include <string_view>
 
+#include "test_temp_dir.h"
+
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::FrameView;
@@ -64,7 +66,7 @@ protected:
     std::optional<Reader> probe_;
 
     void SetUp() override {
-        home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_md").string();
+        home_ = dztrader::test::unique_temp_dir("dz_test_strategy_md").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         shm_dir_ = home_ + "/shm";
@@ -152,7 +154,7 @@ protected:
 class MdApiInitEnvTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_md").string();
+        home_ = dztrader::test::unique_temp_dir("dz_test_strategy_md").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         dztrader::env::set("DZTRADER_HOME", home_);

@@ -22,6 +22,8 @@
 #include <thread>
 #include <vector>
 
+#include "test_temp_dir.h"
+
 namespace {
 
 using dztrader::shm::ChannelConfig;
@@ -71,7 +73,7 @@ protected:
     std::atomic<bool> done_{false};
 
     void SetUp() override {
-        home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_engine").string();
+        home_ = dztrader::test::unique_temp_dir("dz_test_strategy_engine").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         dztrader::env::set("DZTRADER_HOME", home_);

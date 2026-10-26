@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <random>
 
+#include "test_temp_dir.h"
+
 using namespace dztrader::db;
 
 namespace {
@@ -18,15 +20,6 @@ DzErrorCode code_of(Call&& call) {
         return e.code();
     }
     return DZ_EC_OK;
-}
-
-std::filesystem::path unique_db_path(const std::string& name) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-            "_" + std::to_string(dist(gen)) + ".db");
 }
 
 // 集合名避开 td 旧迁移表 orders（其 v1..v5 建表含 order_ref/exchange_id 等额外 NOT NULL 列）
@@ -54,7 +47,7 @@ Row make_order(std::string account, int64_t order_id, std::string instrument, in
 class SqliteTxnTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        path_ = unique_db_path("dz_sqlite_txn");
+        path_ = dztrader::test::unique_temp_path("dz_sqlite_txn", "db");
         database_ = Database::open(
             Config{.backend = "sqlite", .options = {{"path", path_.string()}}}, orders_schema());
         database_->migrate();

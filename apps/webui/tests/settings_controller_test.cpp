@@ -20,7 +20,7 @@
 #include "settings_controller.h"
 #include "repository.h"
 #include "shm_writer.h"
-#include "unique_temp.h"
+#include "test_temp_dir.h"
 
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
@@ -45,13 +45,13 @@ protected:
 
     static constexpr uint64_t MB = 1024 * 1024;
 
-    /// 每用例唯一后缀（unique_temp.h: PID + 随机数）：ctest -j 并行时同二进制各用例
+    /// 每用例唯一后缀（test_temp_dir.h: PID + 随机数）：ctest -j 并行时同二进制各用例
     /// 作为独立进程运行，固定目录/文件名会互相删改冲突，故 shm 目录、channel 名、
     /// JSON 文件均基于此唯一化。
     std::string uid_;
 
     void SetUp() override {
-        uid_ = dztrader::webui::test::unique_suffix();
+        uid_ = dztrader::test::unique_suffix();
 
         repo_ = std::make_shared<Repository>(":memory:");
         // 种子 admin/普通用户: is_admin 按 user_id attribute 查库判 role

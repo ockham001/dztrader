@@ -37,7 +37,7 @@ file(GLOB DB_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.c
 foreach(testfile ${DB_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
     add_executable(dzdb_${testname} ${testfile} tests/test_main.cpp)
-    target_link_libraries(dzdb_${testname} PRIVATE dzdb GTest::gtest)
+    target_link_libraries(dzdb_${testname} PRIVATE dzdb dztest_support GTest::gtest)
     target_include_directories(dzdb_${testname} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/conformance)
     set_target_properties(dzdb_${testname} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR})
     gtest_discover_tests(dzdb_${testname} PROPERTIES LABELS fast)

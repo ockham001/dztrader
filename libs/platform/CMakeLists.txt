@@ -45,7 +45,7 @@ foreach(testfile ${PLATFORM_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
     add_executable(dzplatform_${testname} ${testfile} tests/test_main.cpp)
     target_link_libraries(dzplatform_${testname} PRIVATE
-        dzplatform_headers dzshm dzlog dzcore dzshm_test_support GTest::gtest
+        dzplatform_headers dzshm dzlog dzcore dzshm_test_support dztest_support GTest::gtest
         spdlog::spdlog nlohmann_json::nlohmann_json)
     # 平台单测直接覆盖 src/ 下的内部接缝（Linux /proc/meminfo 解析的异常值防御，
     # 契约 sysmon §2.7）；内部头文件不安装、不进入其它目标，仅该系统采集测试可见。

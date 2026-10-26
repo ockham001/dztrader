@@ -54,7 +54,7 @@
 | 3.2 | **fixture 正确性**：共享 setup/teardown 用 `TEST_F`；fixture 不携带用例间可变状态 | fixture 里留残留状态；用例靠前一个用例的副作用 |
 | 3.3 | **替身策略**：不引入 GMock（本仓零使用）；替身走注入回调或手写 fake，且 fake 必须可校验（记录调用与参数） | 只求「不炸就行」的空壳 stub；断言 fake 被调用次数而不看效果 |
 | 3.4 | **`DZTRADER_HOME` 纪律**：遵循 AGENTS.md 硬门禁 2；自管临时目录的用例在 `SetUp` 设置、`TearDown` 恢复并清理；注意进程级缓存（`paths::configs()`）与单例的陷阱 | 依赖系统级环境变量；改环境变量后不恢复，污染同二进制其他用例 |
-| 3.5 | **临时资源唯一化**：优先 `pid`/`uid`/随机后缀，避免固定名；用完清理；不写 `DZTRADER_HOME` 与系统临时目录以外的路径 | 固定名目录跨运行残留（`.dztrader_dev/` 下可见残留证据） |
+| 3.5 | **临时资源唯一化**：优先 `pid`/`uid`/随机后缀，避免固定名；用完清理；不写 `DZTRADER_HOME` 与系统临时目录以外的路径。直接用 `libs/core/tests/test_temp_dir.h` 的 `dztrader::test::unique_temp_dir()` / `unique_temp_path()`（进程唯一，进程内恒等——`paths::home()` 等按进程缓存，需同一用例内多次取到同一路径）。`gtest_discover_tests` 下每个用例是独立进程，`ctest -j` 并发时固定名目录会互踩（#136 实测 `DbConfigTest` 偶发失败）；新增固定名会被 preflight 的 `check_test_portability.py` 拦下 | 固定名目录（`temp_directory_path()/dz_xxx`）跨运行残留或在 `ctest -j` 下互删；手写唯一化重复基建而不复用共享头 |
 | 3.6 | **日志断言合规**：断言日志文本时与 `scripts/check_log_format.py` 的规则一致（小写开头、无句号、`prose \| k=v`） | 断言了不合规的日志文本，等于把错误格式钉死 |
 | 3.7 | **前端专段**：`vi.mock` 不得掩盖真实交互（mock 的是边界而非被测对象）；store 断言看状态迁移与副作用；不测真实布局（jsdom 局限），不依赖时间/随机 | mock 掉被测对象本身，测试变成同义反复 |
 | 3.8 | **跨平台测试**：绝对路径用 `std::filesystem::temp_directory_path()` / `std::filesystem::absolute()` 构造，不写死 `/home/`、`/Users/`、`/root/`；定时器/调度测试的收集器必须过滤自身 guard timer id；时间断言用下界/条件等待，不依赖 Windows 计时粒度 | Linux 绿但 Windows 红；guard 帧被当作被测帧；绝对路径被解析到当前盘符 |

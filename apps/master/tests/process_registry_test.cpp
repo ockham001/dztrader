@@ -4,6 +4,7 @@
  */
 
 #include "process_registry.h"
+#include "test_temp_dir.h"
 
 #include <dztrader/core/env.h>
 #include <dztrader/core/exception.h>
@@ -18,7 +19,7 @@ namespace {
 class ProcessRegistryTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        tmp_dir_ = std::filesystem::temp_directory_path() / "master_registry_test";
+        tmp_dir_ = dztrader::test::unique_temp_dir("master_registry_test");
         std::filesystem::remove_all(tmp_dir_);
         std::filesystem::create_directories(tmp_dir_);
         // Save original DZTRADER_HOME

@@ -1,4 +1,5 @@
 #include "test_ipc_util.h"
+#include "test_temp_dir.h"
 
 #include <atomic>
 #include <chrono>
@@ -21,7 +22,7 @@ template <typename Stop>
 void expect_abandoned_recovery(const std::string& mutex_name, Stop stop) {
     ProcessMutex::remove(mutex_name);
 
-    auto signal_file = std::filesystem::temp_directory_path() / ("dz_test_lock_" + mutex_name);
+    auto signal_file = dztrader::test::unique_temp_path("dz_test_lock_" + mutex_name);
 
     boost::asio::io_context ctx;
     auto proc =
@@ -112,7 +113,7 @@ TEST_F(ProcessMutexTest, CrossProcessMutualExclusion) {
     ProcessMutex mtx(mutex_name_);
     std::atomic<int64_t> counter{0};
 
-    auto signal_file = std::filesystem::temp_directory_path() / ("dz_test_lock_" + mutex_name_);
+    auto signal_file = dztrader::test::unique_temp_path("dz_test_lock_" + mutex_name_);
     boost::asio::io_context ctx;
     auto proc =
         spawn_helper(ctx, {"mutex_lock_and_hold", mutex_name_, "2000", signal_file.string()});

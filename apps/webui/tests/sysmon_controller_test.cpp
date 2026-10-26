@@ -11,6 +11,7 @@
 #include "shm_writer.h"
 #include "sysmon_controller.h"
 #include "sysmon_history_service.h"
+#include "test_temp_dir.h"
 
 #include <dztrader/core/this_process.h>
 #include <dztrader/platform/sysmon.h>
@@ -359,7 +360,7 @@ drogon::HttpResponsePtr invoke_history(const std::shared_ptr<SysmonCtrl>& ctrl,
 TEST_F(SysmonControllerTest, HistoryReturns400OnInvalidParameters) {
     // 参数非法一律 400（《帧契约：系统监控》§6.1），不静默钳制
     auto ctrl = std::make_shared<SysmonCtrl>(repo_, mirror_, nullptr,
-                                             std::filesystem::temp_directory_path() / "nope.db");
+                                             dztrader::test::unique_temp_path("nope", "db"));
     const std::map<std::string, std::map<std::string, std::string>> bad_cases = {
         {"unknown metric", {{"metric", "not_a_metric"}}},
         {"dimension metric without dimension", {{"metric", "network.rx_bytes_total"}}},
@@ -381,7 +382,7 @@ TEST_F(SysmonControllerTest, HistoryReturns400OnInvalidParameters) {
 TEST_F(SysmonControllerTest, HistoryDegradesTo200WhenDatabaseMissing) {
     // 历史库缺失 ⇒ 200 + available=false（《帧契约：系统监控》§6.1.3：不崩溃、不 5xx、不伪造）
     auto ctrl = std::make_shared<SysmonCtrl>(
-        repo_, mirror_, nullptr, std::filesystem::temp_directory_path() / "dz_missing_sysmon.db");
+        repo_, mirror_, nullptr, dztrader::test::unique_temp_path("dz_missing_sysmon", "db"));
     const auto resp = invoke_history(ctrl, {{"metric", "cpu.usage_ratio"}});
     ASSERT_NE(resp, nullptr);
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);

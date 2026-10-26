@@ -4,6 +4,7 @@
  */
 
 #include "config.h"
+#include "test_temp_dir.h"
 
 #include <dztrader/core/env.h>
 #include <dztrader/core/this_process.h>
@@ -19,17 +20,6 @@
 
 namespace dztrader::master {
 namespace {
-
-/// 进程唯一临时目录名（PID + 随机数）：ctest -j 并行时避免多个测试 exe
-/// 共用固定目录名（如 master_config_test）导致冲突。
-std::filesystem::path unique_temp_dir(const std::string& name) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-            "_" + std::to_string(dist(gen)));
-}
 
 /// 测试内临时覆盖环境变量, 析构时恢复原值 (未设置则 unset)。
 class ScopedEnvOverride {
@@ -62,7 +52,7 @@ private:
 class ConfigTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        tmp_dir_ = unique_temp_dir("master_config_test");
+        tmp_dir_ = dztrader::test::unique_temp_dir("master_config_test");
         std::filesystem::create_directories(tmp_dir_);
     }
 
@@ -560,8 +550,7 @@ TEST_F(ConfigTest, ParseGatewayEntries) {
 
 TEST_F(ConfigTest, ParseStrategyEntries) {
     // 绝对路径必须用平台原生形式（Windows 的 /home/... 会被解析成当前盘符）。
-    const auto absolute_exe =
-        std::filesystem::temp_directory_path() / "dz_config_abs" / "my_strategy";
+    const auto absolute_exe = dztrader::test::unique_temp_dir("dz_config_abs") / "my_strategy";
     const nlohmann::json config = {
         {"master", nlohmann::json::object()},
         {"strategy", nlohmann::json::array({{{"name", "my_strategy"},

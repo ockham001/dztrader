@@ -4,10 +4,10 @@
 #include <fstream>
 #include <filesystem>
 #include "log_service.h"
-#include "unique_temp.h"
+#include "test_temp_dir.h"
 
+using dztrader::test::unique_temp_dir;
 using dztrader::webui::LogService;
-using dztrader::webui::test::unique_temp_dir;
 
 namespace fs = std::filesystem;
 
@@ -639,7 +639,7 @@ TEST_F(LogServiceTest, ReadContentFromEndLargeFileSeekOptimized) {
 // ---------------------------------------------------------------------------
 
 TEST(LogServiceTailCursor, IncrementalReadAdvancesCursor) {
-    const fs::path tmp = fs::temp_directory_path() / "dz_tail_cursor_inc";
+    const fs::path tmp = unique_temp_dir("dz_tail_cursor_inc");
     fs::remove_all(tmp);
     fs::create_directories(tmp);
     LogService svc(tmp);
@@ -681,7 +681,7 @@ TEST(LogServiceTailCursor, IncrementalReadAdvancesCursor) {
 }
 
 TEST(LogServiceTailCursor, PartialLineWithoutNewlineNotConsumed) {
-    const fs::path tmp = fs::temp_directory_path() / "dz_tail_cursor_partial";
+    const fs::path tmp = unique_temp_dir("dz_tail_cursor_partial");
     fs::remove_all(tmp);
     fs::create_directories(tmp);
     LogService svc(tmp);
@@ -719,7 +719,7 @@ TEST(LogServiceTailCursor, PartialLineWithoutNewlineNotConsumed) {
 }
 
 TEST(LogServiceTailCursor, TruncatedFileResetsCursor) {
-    const fs::path tmp = fs::temp_directory_path() / "dz_tail_cursor_trunc";
+    const fs::path tmp = unique_temp_dir("dz_tail_cursor_trunc");
     fs::remove_all(tmp);
     fs::create_directories(tmp);
     LogService svc(tmp);
@@ -751,7 +751,7 @@ TEST(LogServiceTailCursor, TruncatedFileResetsCursor) {
 }
 
 TEST(LogServiceTailCursor, BaselineSkipsExistingContent) {
-    const fs::path tmp = fs::temp_directory_path() / "dz_tail_cursor_base";
+    const fs::path tmp = unique_temp_dir("dz_tail_cursor_base");
     fs::remove_all(tmp);
     fs::create_directories(tmp);
     LogService svc(tmp);
@@ -819,7 +819,7 @@ TEST_F(LogServiceTest, ReadContentFromOffsetSkipsLines) {
 }
 
 TEST(LogServiceTailCursor, CrLfLineParsedTrue) {
-    const fs::path tmp = fs::temp_directory_path() / "dz_tail_cursor_crlf";
+    const fs::path tmp = unique_temp_dir("dz_tail_cursor_crlf");
     fs::remove_all(tmp);
     fs::create_directories(tmp);
     LogService svc(tmp);

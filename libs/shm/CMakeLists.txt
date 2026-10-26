@@ -23,10 +23,12 @@ if(WIN32)
     )
 endif()
 
-# 测试共用的 shm 清理辅助头（tests/test_util.h），供 platform / master / webui 测试复用
+# 测试共用的 shm 清理辅助头（tests/test_util.h），供 platform / master / webui 测试复用。
+# test_util.h 引 test_temp_dir.h（唯一化临时目录，#136），故传递 dztest_support 的 include 路径。
 add_library(dzshm_test_support INTERFACE)
 target_include_directories(dzshm_test_support INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+target_link_libraries(dzshm_test_support INTERFACE dztest_support)
 
 # ============================================================
 # 单元测试：每个 *_test.cpp 独立编译运行
@@ -35,7 +37,7 @@ file(GLOB SHM_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.
 foreach(testfile ${SHM_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
     add_executable(dzshm_${testname} ${testfile} tests/test_main.cpp)
-    target_link_libraries(dzshm_${testname} PRIVATE dzshm GTest::gtest)
+    target_link_libraries(dzshm_${testname} PRIVATE dzshm dztest_support GTest::gtest)
     set_target_properties(dzshm_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
@@ -49,7 +51,7 @@ endforeach()
 # 非测试断言, 仅输出 median/p99/max (README 30μs 目标的同进程下限参考)
 # ============================================================
 add_executable(dz_shm_perf_bench tests/perf_bench.cpp)
-target_link_libraries(dz_shm_perf_bench PRIVATE dzshm)
+target_link_libraries(dz_shm_perf_bench PRIVATE dzshm dztest_support)
 set_target_properties(dz_shm_perf_bench PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
 )

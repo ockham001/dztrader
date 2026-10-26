@@ -81,6 +81,7 @@ foreach(testfile ${WEBUI_TESTS})
     target_link_libraries(dzweb_${testname} PRIVATE
         dzweb_obj
         dzshm_test_support
+        dztest_support
         GTest::gtest
     )
     target_include_directories(dzweb_${testname} PRIVATE

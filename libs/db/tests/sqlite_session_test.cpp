@@ -12,6 +12,8 @@
 #include <random>
 #include <string>
 
+#include "test_temp_dir.h"
+
 using namespace dztrader::db;
 
 namespace {
@@ -24,15 +26,6 @@ DzErrorCode code_of(Call&& call) {
         return e.code();
     }
     return DZ_EC_OK;
-}
-
-std::filesystem::path unique_db_path(const std::string& name) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-            "_" + std::to_string(dist(gen)) + ".db");
 }
 
 std::string raw_string(const std::filesystem::path& path, const std::string& sql) {
@@ -66,7 +59,7 @@ Row make_order(std::string account, int64_t order_id, std::string instrument, in
 class SqliteSessionTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        path_ = unique_db_path("dz_sqlite_session");
+        path_ = dztrader::test::unique_temp_path("dz_sqlite_session", "db");
         database_ = Database::open(
             Config{.backend = "sqlite", .options = {{"path", path_.string()}}}, orders_schema());
         database_->migrate();
@@ -197,7 +190,7 @@ TEST_F(SqliteSessionTest, RealDeclaredColumnStoresIntegerAsReal) {
 // read_column 的 SQLITE_INTEGER 分支必须按 double 解码. 真实库中该形态无法由
 // 正常 upsert 产生 (REAL affinity 必然转 REAL), 故用 raw SQLite 预建表制造存储类型.
 TEST(SqliteSessionStorageTypeTest, ReadsIntegerStorageInRealDeclaredColumn) {
-    const auto path = unique_db_path("dz_sqlite_session_int_storage");
+    const auto path = dztrader::test::unique_temp_path("dz_sqlite_session_int_storage", "db");
     {
         SQLite::Database db(path.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         db.exec(

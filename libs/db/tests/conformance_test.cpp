@@ -6,6 +6,7 @@
 
 #if defined(DZ_WITH_MYSQL) && DZ_WITH_MYSQL
 #include "mysql_test_env.h"
+#include "test_temp_dir.h"
 #endif
 
 #include <filesystem>
@@ -17,16 +18,6 @@ namespace db_test {
 namespace db = dztrader::db;
 
 namespace {
-
-std::filesystem::path unique_db_path(std::string_view name) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           (std::string(name) + "_" +
-            std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
-            std::to_string(dist(gen)) + ".db");
-}
 
 // 集合名避开 td 旧迁移表 orders（其 v1..v5 建表含 order_ref/exchange_id 等额外 NOT NULL 列）
 constexpr std::string_view kCollection = "conformance_orders";
@@ -101,7 +92,7 @@ protected:
             GTEST_SKIP() << "mysql test server not configured | env=DZ_TEST_MYSQL_HOST";
         }
 #endif
-        path_ = unique_db_path("dz_conformance");
+        path_ = dztrader::test::unique_temp_path("dz_conformance", "db");
         database_ = driver.make(path_, conformance_schemas());
         ASSERT_NE(database_, nullptr);
         database_->migrate();

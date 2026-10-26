@@ -105,6 +105,10 @@ test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈�
 - 需要 `DZTRADER_HOME` 的测试在 `SetUp` 里创建临时目录并设置该变量、`TearDown` 恢复。它们是 `test-base` 强制注入规则的**唯一豁免**（见 AGENTS.md 硬门禁 2）
 - `libs/log` 的测试文件共用 `tests/test_main.cpp`；其中三个通过 `extern test_root()` 使用进程级唯一临时根目录，`atexit` 清理并在失败时记录 `error_code`。这是[单元测试判据 §5.2](../unit-test-standard.md)「重复基建需有据」的有意先例：daily sink 的文件名含日期，固定目录会跨运行残留、并行 ctest 互相干扰；根目录放系统临时目录，不写 `DZTRADER_HOME`。**死亡测试注意**：Windows 上死亡用例会重新执行 `main()` 并得到另一个临时根目录，日志目录须由父进程经环境变量传给子进程（见 `terminate_handler_test.cpp`），父进程再从自己的根目录读日志断言
 - **ctest 测试名不等于可执行文件名**：`gtest_discover_tests` 不设 `TEST_PREFIX`，所以按可执行名过滤（例如 `-R dz_smoke`）会匹配不到任何测试。用 `-R` 时按 `Suite.Test` 形式过滤
+- **并行 ctest（#136）**：`gtest_discover_tests` 把每个 `TEST`/`TEST_F` 注册成**独立 ctest 进程**，`test.sh` / `test.ps1` 默认 `CTEST_PARALLEL_LEVEL=4`（显式设置优先；fast 档实测 150.7s → ~110s）。并发安全的前提是**用例级资源唯一化**：
+  - 临时目录/文件统一用 `libs/core/tests/test_temp_dir.h` 的 `dztrader::test::unique_temp_dir()` / `unique_temp_path()`（进程唯一 `pid_随机`；进程内恒等——`paths::home()` 等按进程缓存，同一进程内必须多次取到同一路径）。该头经 CMake `INTERFACE` 目标 `dztest_support` 暴露，`dzshm_test_support` 传递链接它
+  - 新增固定名 `temp_directory_path()/dz_xxx` 会被 preflight 的 `scripts/check_test_portability.py` 拦下（白名单只含唯一化实现本身）
+  - **进程级/机器全局资源必须 `RUN_SERIAL`**：真实进程 E2E（`apps/sysmon` 的 `*_e2e_test`、`apps/master` 的 `dz_smoke_test`）、机器全局 `NamedSemaphore` 通道名（`SDK_API_TESTS`、`stg_demo_test`）。判据是「该用例能否与同机另一个测试进程同时安全运行」，不是「跑得慢不慢」
 - **分层标签**（与 `RUN_SERIAL` / `TIMEOUT` 正交）：
   - `fast`：默认单测门禁，秒级用例；所有普通 `gtest_discover_tests` 注册必须带 `PROPERTIES LABELS fast`
   - `slow`：显式穷举/慢速档。`libs/strategy_api` 的 `SDK_SLOW_TESTS`（`date_exhaustive_test` / `date_time_exhaustive_test` / `bar_diff_exhaustive_test`）单独成 target 并打 `slow`；对应抽样版留在 `date_test.cpp` / `date_time_test.cpp` / `bar_diff_test.cpp` 的 `fast` 门禁。`bar_diff_exhaustive_test` 是 tick→bar 差分验收（ADR 0031 决策 10）的全量档：用例逻辑在 `bar_diff_cases.h` 只写一份，fast 档每条路径各跑一次、slow 档用多 seed/多日/高密度覆盖

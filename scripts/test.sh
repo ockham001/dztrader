@@ -66,5 +66,11 @@ TEST_HOME="$(cd "$(dirname "$0")/.." && pwd)/.cache/test_home"
 rm -rf "$TEST_HOME"
 mkdir -p "$TEST_HOME"
 
-echo "ctest ${CTEST_ARGS[*]}"
+# ctest 并行度（#136）：gtest_discover_tests 把每个用例注册为独立进程，-j 才能并行；
+# 用例级并发安全由「临时资源唯一化」保证（固定名目录会互踩，已全仓整改 + preflight lint 兜底）。
+# 显式设置该变量的调用方优先，否则默认 4。fast 档实测 150.7s -> ~110s。
+: "${CTEST_PARALLEL_LEVEL:=4}"
+export CTEST_PARALLEL_LEVEL
+
+echo "ctest ${CTEST_ARGS[*]} (CTEST_PARALLEL_LEVEL=$CTEST_PARALLEL_LEVEL)"
 ctest "${CTEST_ARGS[@]}"

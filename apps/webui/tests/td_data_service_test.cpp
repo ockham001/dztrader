@@ -1,5 +1,6 @@
 #include "td_data_service.h"
 #include "frame_router.h"
+#include "test_temp_dir.h"
 
 #include <dztrader/core/this_process.h>
 #include <dztrader/date_time/date.h>
@@ -24,18 +25,6 @@ namespace {
 
 using dztrader::TdIngestGate;
 
-/// 进程唯一临时目录名（PID + 随机数）：ctest -j 下每个用例是独立进程却可能与
-/// 同二进制其他用例/其他测试 exe 并发，固定目录名（如 dz_webui_td_data_service_test）
-/// 会被并发用例互相删库（unable to open database file）。
-std::filesystem::path unique_temp_dir(const std::string& name) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-            "_" + std::to_string(dist(gen)));
-}
-
 // sqlite3 便利封装（测试用具，仅测试用）
 namespace {
 
@@ -58,7 +47,7 @@ protected:
     std::string db_path_;
 
     void SetUp() override {
-        dir_ = unique_temp_dir("dz_webui_td_data_service_test");
+        dir_ = dztrader::test::unique_temp_dir("dz_webui_td_data_service_test");
         std::filesystem::remove_all(dir_);
         std::filesystem::create_directories(dir_);
         db_path_ = (dir_ / "td.db").string();

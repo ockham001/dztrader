@@ -12,6 +12,7 @@
 #include <dztrader/shm/writer.h>
 
 #include "output_limit.h"
+#include "test_temp_dir.h"
 
 #include <atomic>
 #include <chrono>
@@ -67,7 +68,7 @@ protected:
     std::optional<Reader> probe_;
 
     void SetUp() override {
-        home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_trade").string();
+        home_ = dztrader::test::unique_temp_dir("dz_test_strategy_trade").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         dztrader::env::set("DZTRADER_HOME", home_);

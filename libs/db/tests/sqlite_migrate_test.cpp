@@ -11,18 +11,11 @@
 #include <random>
 #include <string>
 
+#include "test_temp_dir.h"
+
 using namespace dztrader::db;
 
 namespace {
-
-std::filesystem::path unique_db_path(const std::string& name) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-            "_" + std::to_string(dist(gen)) + ".db");
-}
 
 int64_t raw_scalar(const std::filesystem::path& path, const std::string& sql) {
     SQLite::Database db(path.string(), SQLite::OPEN_READONLY);
@@ -64,7 +57,7 @@ const std::vector<ResourceSchema>& test_schemas() {
 }  // namespace
 
 TEST(SqliteMigrateTest, TdMigrationsCreateV5Schema) {
-    const auto path = unique_db_path("dz_sqlite_migrate");
+    const auto path = dztrader::test::unique_temp_path("dz_sqlite_migrate", "db");
     auto database = Database::open(
         Config{.backend = "sqlite", .options = {{"path", path.string()}}}, test_schemas());
     database->migrate();
@@ -85,7 +78,7 @@ TEST(SqliteMigrateTest, TdMigrationsCreateV5Schema) {
 }
 
 TEST(SqliteMigrateTest, MigrateIsIdempotent) {
-    const auto path = unique_db_path("dz_sqlite_migrate_idem");
+    const auto path = dztrader::test::unique_temp_path("dz_sqlite_migrate_idem", "db");
     auto database = Database::open(
         Config{.backend = "sqlite", .options = {{"path", path.string()}}}, test_schemas());
     database->migrate();
@@ -96,7 +89,7 @@ TEST(SqliteMigrateTest, MigrateIsIdempotent) {
 }
 
 TEST(SqliteMigrateTest, AutoCreatesCollectionFromSchema) {
-    const auto path = unique_db_path("dz_sqlite_autocreate");
+    const auto path = dztrader::test::unique_temp_path("dz_sqlite_autocreate", "db");
     const std::vector<ResourceSchema> extra = {
         ResourceSchema{.name = "demo_ticks",
                        .fields = {{"id", ValueType::Int64, false, true, true},
@@ -131,7 +124,7 @@ TEST(SqliteMigrateTest, AutoCreatesCollectionFromSchema) {
 
 // 库版本超前于代码: 必须显式拒绝而非静默 no-op（与 mysql 侧一致）
 TEST(SqliteMigrateTest, SchemaVersionNewerThanCodeIsRejected) {
-    const auto path = unique_db_path("dz_sqlite_migrate_newer");
+    const auto path = dztrader::test::unique_temp_path("dz_sqlite_migrate_newer", "db");
     {
         SQLite::Database db(path.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         db.exec(

@@ -16,23 +16,15 @@
 #include <variant>
 #include <vector>
 
+#include "test_temp_dir.h"
+
 namespace dztrader::tdstore {
 namespace {
-
-std::filesystem::path unique_db_path() {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           ("dz_td_records_" +
-            std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
-            std::to_string(dist(gen)) + ".db");
-}
 
 class RecordsStoreTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        path_ = unique_db_path();
+        path_ = dztrader::test::unique_temp_path("dz_td_store", "db");
         database_ = dztrader::db::Database::open(
             dztrader::db::Config{.backend = "sqlite", .options = {{"path", path_.string()}}},
             dztrader::tdstore::schemas());

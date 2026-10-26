@@ -6,7 +6,7 @@
 #include "repository.h"
 #include "config.h"
 #include "mirror_store.h"
-#include "unique_temp.h"
+#include "test_temp_dir.h"
 #include "ws_broadcaster.h"
 #include <dztrader/core/path.h>
 #include <dztrader/platform/log_config.h>
@@ -25,7 +25,7 @@ public:
 
 /// 唯一化日志文件名（§3.5）：ctest -j 下用例为独立进程，固定名会与并发用例冲突
 std::string unique_log(const std::string& base) {
-    return base + "_" + dztrader::webui::test::unique_suffix() + ".log";
+    return base + "_" + dztrader::test::unique_suffix() + ".log";
 }
 }  // namespace
 

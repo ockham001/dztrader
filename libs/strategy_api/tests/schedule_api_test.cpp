@@ -23,6 +23,8 @@
 #include <thread>
 #include <vector>
 
+#include "test_temp_dir.h"
+
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::FrameView;
@@ -64,7 +66,7 @@ protected:
     DzContext* ctx_ = nullptr;
 
     void SetUp() override {
-        home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_schedule").string();
+        home_ = dztrader::test::unique_temp_dir("dz_test_strategy_schedule").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         dztrader::env::set("DZTRADER_HOME", home_);

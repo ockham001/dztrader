@@ -26,13 +26,21 @@ target_link_libraries(dzcore
 set_target_properties(dzcore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ============================================================
+# 测试共用的临时资源唯一化头（tests/test_temp_dir.h），全仓测试目标复用。
+# 放 dzcore 而非各业务模块：唯一性只需 pid + 随机数，不含模块依赖（#136）。
+# ============================================================
+add_library(dztest_support INTERFACE)
+target_include_directories(dztest_support INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+# ============================================================
 # 单元测试：每个 *_test.cpp 独立编译运行
 # ============================================================
 file(GLOB CORE_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${CORE_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
     add_executable(dzcore_${testname} ${testfile} tests/test_main.cpp)
-    target_link_libraries(dzcore_${testname} PRIVATE dzcore GTest::gtest)
+    target_link_libraries(dzcore_${testname} PRIVATE dzcore dztest_support GTest::gtest)
     set_target_properties(dzcore_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
