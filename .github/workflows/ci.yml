@@ -24,8 +24,11 @@ on:
 
 # 同一分支的新 push 取消上一次仍在跑的 PR run，避免 #93 那种「3 个 run 排队后被取代」的浪费。
 # main 的 push run 不取消（保持每个 merge commit 的验证结果）。
+# 分组按职责拆分（#133）：schedule / workflow_dispatch 只跑缓存预热 job，与 push/PR 的验证
+# run 不同组——否则预热 run 会把同时进行的 main 验证 run 挤成 pending 再 cancelled
+# （实测 run 40256065312 被 dispatch 挤掉）。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 'verify' || 'warm' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
