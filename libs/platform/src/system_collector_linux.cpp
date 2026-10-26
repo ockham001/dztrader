@@ -502,6 +502,8 @@ std::filesystem::path temperature_label_path(const std::filesystem::path& input_
 /// `<name>#<hwmonN>:<label>`，无 label 时为 `<name>#<hwmonN>:tempN`。hwmon 目录名唯一，
 /// 因此标识在同一启动周期内稳定，且不随其它同名芯片出现/消失变化。单个传感器读取
 /// 失败只跳过该条；没有任何可读传感器时返回 std::nullopt（失败降级，不抛异常）。
+/// 读数同时携带 `chip`（hwmon `name`）与 `label`（`tempN_label` 原值，缺失为空串），
+/// 供展示层分组与友好命名（#126）——标识的拼接规则仍只在本函数一处。
 std::optional<std::vector<RawTemperature>> read_temperatures() {
     std::vector<RawTemperature> readings;
     std::set<std::string> used_sensors;
@@ -546,6 +548,11 @@ std::optional<std::vector<RawTemperature>> read_temperatures() {
             }
             RawTemperature reading;
             reading.sensor = std::move(sensor);
+            // chip / label 是 additive 字段（#126，契约 sysmon §2.4）：chip 即 hwmon 的 name
+            // （缺失时回退目录名），label 为 tempN_label 原值（空串 = 该通道没有标签）。
+            // 两者只供展示分组与友好命名；`sensor` 的拼接规则与取值不变（历史库维度键）。
+            reading.chip = base_name;
+            reading.label = label;
             reading.celsius = static_cast<double>(*millidegrees) / 1000.0;
             readings.push_back(std::move(reading));
         }

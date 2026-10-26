@@ -155,7 +155,10 @@ TEST(SystemCollectorOracleTest, SensorAvailabilityReflectsRealHostAndValidates) 
         std::vector<platform::SysmonTemperatureInfo> sensors;
         sensors.reserve(temperatures->size());
         for (const auto& reading : *temperatures) {
-            sensors.push_back({reading.sensor, reading.celsius});
+            sensors.push_back(platform::SysmonTemperatureInfo{.sensor = reading.sensor,
+                                                              .chip = reading.chip,
+                                                              .label = reading.label,
+                                                              .celsius = reading.celsius});
         }
         temperature_metrics.collected = true;
         temperature_metrics.sensors = std::move(sensors);

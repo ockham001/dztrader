@@ -206,6 +206,10 @@ export const useSysmonStore = defineStore('sysmon', () => {
    * 温度传感器读数（契约 sysmon §2.4，B 组可用性样板 #73）。仅当可用性映射标记
    * `temperature` 可用时返回过滤后的数组，否则空数组 —— 视图据此整块不渲染
    * （不可用不是 0，也不是「不可用」占位）。过滤空 sensor / 非有限 celsius。
+   *
+   * `chip` / `label` 是 additive 字段（#126）：原样透传（缺失时保持缺失，由展示层的
+   * `sysmonTemperature` 模块从 `sensor` 回退解析）。**store 不解析 sensor**——单帧标识的
+   * 拼接规则只在采集层一处，前端再解析一份必然漂移。
    */
   const temperatures = computed<SysmonTemperatureInfo[]>(() => {
     const s = snapshot.value
@@ -216,7 +220,11 @@ export const useSysmonStore = defineStore('sysmon', () => {
       const sensor = typeof reading?.sensor === 'string' ? reading.sensor.trim() : ''
       const celsius = toFiniteNumber(reading?.celsius)
       if (!sensor || celsius === null) continue
-      result.push({ sensor, celsius })
+      const entry: SysmonTemperatureInfo = { sensor, celsius }
+      // 只透传合法字符串；非字符串/缺失交给展示层回退（不在这里臆造值）
+      if (typeof reading.chip === 'string') entry.chip = reading.chip
+      if (typeof reading.label === 'string') entry.label = reading.label
+      result.push(entry)
     }
     return result
   })

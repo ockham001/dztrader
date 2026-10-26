@@ -4,6 +4,7 @@ import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
 import TimePicker from '@/components/shared/TimePicker.vue'
 import type { EventShmConfigPatch } from '@/api/settings'
+import { formatBytes } from '@/composables/format'
 import { useSettingsStore } from '@/stores/settings'
 import { useToastStore } from '@/stores/toast'
 
@@ -244,7 +245,7 @@ async function saveWebui(): Promise<void> {
         </div>
         <div class="cfg-row">
           <span class="cfg-label">元数据文件大小</span>
-          <span>{{ (store.master.meta_file_size / 1024 / 1024).toFixed(1) }} MB</span>
+          <span>{{ formatBytes(store.master.meta_file_size) }}</span>
         </div>
         <p style="margin:0;color:var(--text-tertiary);font-size:var(--body-sm-font-size)">
           以上项当前仅支持人工修改 dztraderd.json 后重启 dztraderd 生效；UI 可编辑能力规划中。

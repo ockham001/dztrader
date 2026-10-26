@@ -312,6 +312,19 @@ TEST(SystemCollectorTest, TemperatureReadingsFollowContract) {
         // 锁定标识格式：含 hwmon 目录名与 label/tempN 分隔符（防回退成不含 #hwmonN 的旧格式）。
         EXPECT_NE(reading.sensor.find('#'), std::string::npos) << reading.sensor;
         EXPECT_NE(reading.sensor.find(':'), std::string::npos) << reading.sensor;
+        // chip / label 是 additive 字段（#126，契约 sysmon §2.4）：chip 非空且必须等于
+        // sensor 中 `#` 之前的部分（hwmon 的 name）；label 允许空串（该通道没有标签）。
+        EXPECT_FALSE(reading.chip.empty()) << reading.sensor;
+        EXPECT_EQ(reading.sensor.substr(0, reading.sensor.find('#')), reading.chip)
+            << reading.sensor;
+        // sensor 冒号之后的部分 = label（非空时）或 tempN 通道名（label 为空时）。
+        const auto colon = reading.sensor.find(':');
+        const std::string channel = reading.sensor.substr(colon + 1);
+        if (!reading.label.empty()) {
+            EXPECT_EQ(channel, reading.label) << reading.sensor;
+        } else {
+            EXPECT_EQ(channel.rfind("temp", 0), 0u) << reading.sensor;
+        }
         sensors.push_back(reading.sensor);
         // 真机温度必须是有限摄氏度，且落在物理上可能的工业/环境范围内。
         EXPECT_TRUE(std::isfinite(reading.celsius)) << reading.sensor;

@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useLogsStore } from '@/stores/logs'
 import { useSystemStore } from '@/stores/system'
+import { formatBytes } from '@/composables/format'
 import { useWebSocket } from '@/composables/wsClient'
 import Dropdown from '@/components/shared/Dropdown.vue'
 import type { DropdownItem } from '@/components/shared/Dropdown.vue'
@@ -24,11 +25,6 @@ const loggerFilterItems = computed<DropdownItem[]>(() => [
   ...store.loggerOptions.map(log => ({ value: log, label: log })),
 ])
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
-}
 
 async function handleSelectFile(path: string, logger: string): Promise<void> {
   if (store.tailEnabled) {
@@ -184,7 +180,7 @@ onUnmounted(() => {
                   <span v-if="system.isSelf(f.logger)" class="log-browser__dzweb-badge">WebUI</span>
                 </div>
                 <div class="log-browser__file-meta">
-                  <span>{{ formatSize(f.size) }}</span>
+                  <span>{{ formatBytes(f.size) }}</span>
                   <span>{{ f.mtime.substring(0, 10) }}</span>
                 </div>
               </div>

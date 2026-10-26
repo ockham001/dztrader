@@ -240,9 +240,10 @@ describe('useSysmonStore 温度与每核频率 computed（#73，可用性驱动�
     expect(store.temperatures).toEqual([])
 
     store.applySnapshot(makeSysmonSnapshot({ sensorData: true }))
+    // chip / label 是 additive 字段（#126），store 原样透传（解析与分组在展示层）
     expect(store.temperatures).toEqual([
-      { sensor: 'coretemp#hwmon3:Package id 0', celsius: 45.5 },
-      { sensor: 'coretemp#hwmon3:Core 0', celsius: 41.5 },
+      { sensor: 'coretemp#hwmon3:Package id 0', chip: 'coretemp', label: 'Package id 0', celsius: 45.5 },
+      { sensor: 'coretemp#hwmon3:Core 0', chip: 'coretemp', label: 'Core 0', celsius: 41.5 },
     ])
 
     // 数据仍在但可用性标记不可用：不得用陈旧数据冒充
@@ -263,7 +264,18 @@ describe('useSysmonStore 温度与每核频率 computed（#73，可用性驱动�
         { sensor: ' coretemp:Core 2 ', celsius: 45.5 },
       ],
     }))
+    // 旧版本发送方（无 chip/label）：不臆造字段，保持缺失交给展示层回退解析
     expect(store.temperatures).toEqual([{ sensor: 'coretemp:Core 2', celsius: 45.5 }])
+
+    // 非字符串的 chip/label 不透传（防御畸形载荷）
+    store.applySnapshot(makeSysmonSnapshot({
+      metrics: { temperature: { available: true } },
+      temperatures: [
+        // 夹带非法类型：只有字符串才透传
+        { sensor: 'coretemp#hwmon3:Core 0', chip: 42, label: null, celsius: 45.5 } as never,
+      ],
+    }))
+    expect(store.temperatures).toEqual([{ sensor: 'coretemp#hwmon3:Core 0', celsius: 45.5 }])
 
     // 可用但快照为 null：空数组（视图显示「暂无数据」）
     store.applySnapshot(makeSysmonSnapshot({ sensorData: true, temperatures: null }))

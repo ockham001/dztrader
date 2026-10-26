@@ -303,6 +303,16 @@ std::optional<std::string> validate_snapshot_temperature(const json& temperature
         if (auto e = require_non_empty_string(item, path, "sensor")) {
             return e;
         }
+        // chip / label 是 additive 可选字段（#126）：存在时 chip 非空、label 允许空串；
+        // 缺失合法（旧版本发送方不带这两个字段）。
+        if (item.contains("chip")) {
+            if (auto e = require_non_empty_string(item, path, "chip")) {
+                return e;
+            }
+        }
+        if (item.contains("label") && !item["label"].is_string()) {
+            return err(path + ".label", "must be a string");
+        }
         if (!item.contains("celsius") || !is_number(item["celsius"])) {
             return err(path + ".celsius", "must be a number");
         }

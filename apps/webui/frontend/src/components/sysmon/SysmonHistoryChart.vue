@@ -5,6 +5,7 @@ import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent, MarkAreaComponent, MarkLineComponent } from 'echarts/components'
+import { formatBytes, formatNumberAuto, formatPercent } from '@/composables/format'
 import type { SysmonHistoryGap, SysmonHistoryMark, SysmonHistoryPoint } from '@/types/api'
 
 // 资源监控历史曲线（《帧契约：系统监控》§6.1）：最小 / 最大包络 + 均值 + 缺口底纹 + 标记线。
@@ -22,18 +23,15 @@ const props = defineProps<{
   title: string
 }>()
 
-/** 数值格式化：null 一律显示「不可用」（不得用 0 冒充，《帧契约：系统监控》§6.1） */
+/**
+ * 数值格式化：null 一律显示「不可用」（不得用 0 冒充，《帧契约：系统监控》§6.1）。
+ * #126 起单位档与精度统一由共享模块给出（与监控页 / 配置页 / 日志页同一份实现）；
+ * 图表这条轴会同时出现计数与小数负载，故通用档用 `formatNumberAuto`（整数原样、非整数 2 位）。
+ */
 function formatValue(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return '不可用'
-  if (props.format === 'ratio') return `${(value * 100).toFixed(1)}%`
-  if (props.format === 'bytes') {
-    const gib = 1024 ** 3
-    const mib = 1024 ** 2
-    if (Math.abs(value) >= gib) return `${(value / gib).toFixed(1)} GiB`
-    if (Math.abs(value) >= mib) return `${(value / mib).toFixed(1)} MiB`
-    return `${value} B`
-  }
-  return Number.isInteger(value) ? String(value) : value.toFixed(2)
+  if (props.format === 'ratio') return formatPercent(value)
+  if (props.format === 'bytes') return formatBytes(value)
+  return formatNumberAuto(value)
 }
 
 /** 时间轴标签：MM-DD HH:mm（跨天范围也能区分） */

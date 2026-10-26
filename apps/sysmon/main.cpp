@@ -545,6 +545,10 @@ private:
         for (const auto& reading : *readings) {
             platform::SysmonTemperatureInfo sensor;
             sensor.sensor = reading.sensor;
+            // chip / label 是 additive 字段（#126）：由采集层给出，这里原样透传——
+            // 不在发送方二次解析 sensor，标识拼接规则保持在采集层一处。
+            sensor.chip = reading.chip;
+            sensor.label = reading.label;
             sensor.celsius = reading.celsius;
             sensors.push_back(std::move(sensor));
         }
