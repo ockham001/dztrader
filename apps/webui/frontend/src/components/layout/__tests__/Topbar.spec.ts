@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import Topbar from '../Topbar.vue'
@@ -14,6 +14,34 @@ vi.mock('@/composables/wsClient', () => ({
   useWebSocket: () => ({ connectionState: { value: 'connected' } }),
 }))
 
+// #127：Topbar 经 useBreakpoint 读视口档位做行为分支（≥lg 宽屏 / <lg 窄屏）。
+// jsdom 无 matchMedia，用 AppShell.spec 同款可编程 stub；默认 1600（xl）让既有宽屏断言保持。
+let mockWidth = 1600
+const listeners = new Set<() => void>()
+
+beforeEach(() => {
+  mockWidth = 1600
+  listeners.clear()
+  vi.stubGlobal('matchMedia', (q: string) => ({
+    media: q,
+    get matches(): boolean {
+      const m = q.match(/\(min-width:\s*([\d.]+)px\)/)
+      return m ? mockWidth >= Number.parseFloat(m[1]) : false
+    },
+    addEventListener: (_t: string, cb: () => void) => listeners.add(cb),
+    removeEventListener: (_t: string, cb: () => void) => listeners.delete(cb),
+  }))
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+function setWidth(w: number): void {
+  mockWidth = w
+  for (const cb of listeners) cb()
+}
+
 const stubs = {
   Icon: { template: '<span class="icon" />' },
   ThemeDropdown: { template: '<div class="theme-dropdown-stub" />' },
@@ -25,12 +53,26 @@ async function mountTopbar() {
   return wrapper
 }
 
-function cpuBadgeText(wrapper: Awaited<ReturnType<typeof mountTopbar>>): string {
+type TopbarWrapper = Awaited<ReturnType<typeof mountTopbar>>
+
+function cpuBadgeText(wrapper: TopbarWrapper): string {
   return wrapper.find('#resCpu .res-value').text()
 }
 
-function memBadgeText(wrapper: Awaited<ReturnType<typeof mountTopbar>>): string {
+function memBadgeText(wrapper: TopbarWrapper): string {
   return wrapper.find('#resMem .res-value').text()
+}
+
+function diskBadges(wrapper: TopbarWrapper) {
+  return wrapper.findAll('[data-test="topbar-disk-badge"]')
+}
+
+function restBadge(wrapper: TopbarWrapper) {
+  return wrapper.find('[data-test="topbar-disk-rest"]')
+}
+
+function resourceGauge(wrapper: TopbarWrapper) {
+  return wrapper.find('[data-test="topbar-resource-gauge"]')
 }
 
 describe('Topbar 资源徽章（契约 sysmon 实时快照）', () => {
@@ -178,14 +220,15 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
     vi.clearAllMocks()
   })
 
-  function diskBadges(wrapper: Awaited<ReturnType<typeof mountTopbar>>) {
-    return wrapper.findAll('.topbar__resource--disk')
-  }
-
   it('默认快照：按卷集合渲染徽章，顺序为使用率降序（#122，不依赖发送端顺序）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
 
     const wrapper = await mountTopbar()
+
+    // #127：宽屏默认只直接显示前 2 个卷，第 3 个折叠进「其余 1 个」；展开后校验完整顺序
+    expect(diskBadges(wrapper)).toHaveLength(2)
+    expect(restBadge(wrapper).text()).toContain('其余 1 个')
+    await restBadge(wrapper).trigger('click')
 
     const badges = diskBadges(wrapper)
     expect(badges).toHaveLength(3)
@@ -217,6 +260,8 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
     const wrapper = await mountTopbar()
 
     const badges = diskBadges(wrapper)
+    // 上限内（2 卷）不折叠
+    expect(restBadge(wrapper).exists()).toBe(false)
     // 使用率降序：danger(90%) 在前
     expect(badges.map(badge => badge.attributes('data-mount'))).toEqual(['/danger', '/warn'])
     expect(badges[0].attributes('data-level')).toBe('danger')
@@ -279,7 +324,9 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
   it('WS 推送刷新盘徽章（不重新 REST 拉取）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     const wrapper = await mountTopbar()
-    expect(diskBadges(wrapper)).toHaveLength(3)
+    // 默认 3 卷 → 宽屏收敛为 2 个 + 「其余 1 个」（#127）
+    expect(diskBadges(wrapper)).toHaveLength(2)
+    expect(restBadge(wrapper).exists()).toBe(true)
 
     useSysmonStore().applySnapshot(makeSysmonSnapshot({
       volumes: [
@@ -290,10 +337,147 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
 
     const badges = diskBadges(wrapper)
     expect(badges).toHaveLength(1)
+    expect(restBadge(wrapper).exists()).toBe(false)
     expect(badges[0].attributes('data-mount')).toBe('/only')
     expect(badges[0].find('.res-value').text()).toBe('90%')
     expect(badges[0].classes()).toContain('topbar__resource--danger')
     expect(badges[0].attributes('data-level')).toBe('danger')
     expect(sysmonApi.getSnapshot).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Topbar 顶栏密度（#127：≥lg 卷徽章收敛 / <lg 单状态图标）', () => {
+  const GIB = 1024 ** 3
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('3 卷 → 2 个卷徽章 + 「其余 1 个」；点击展开 3 个，再点收起', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountTopbar()
+
+    expect(diskBadges(wrapper)).toHaveLength(2)
+    expect(restBadge(wrapper).text()).toBe('其余 1 个')
+    expect(restBadge(wrapper).attributes('aria-expanded')).toBe('false')
+
+    await restBadge(wrapper).trigger('click')
+    expect(diskBadges(wrapper)).toHaveLength(3)
+    expect(restBadge(wrapper).attributes('aria-expanded')).toBe('true')
+    expect(restBadge(wrapper).text()).toBe('收起')
+    // 展开后仍按使用率降序（前 2 个不变，/data 补在末尾）
+    expect(diskBadges(wrapper).map(badge => badge.attributes('data-mount'))).toEqual(['/home', '/', '/data'])
+
+    await restBadge(wrapper).trigger('click')
+    expect(diskBadges(wrapper)).toHaveLength(2)
+    expect(restBadge(wrapper).text()).toBe('其余 1 个')
+  })
+
+  it('「其余 N 个」title 列出被折叠卷的挂载点与使用率 / 不可用原因', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/home', available: true, total_bytes: 100 * GIB, used_bytes: 62 * GIB, used_ratio: 0.62 },
+        { mount: '/', available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
+        { mount: '/data', available: true, total_bytes: 100 * GIB, used_bytes: 25 * GIB, used_ratio: 0.25 },
+        { mount: '/backup', available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+      ],
+    }))
+    const wrapper = await mountTopbar()
+
+    expect(diskBadges(wrapper)).toHaveLength(2)
+    expect(restBadge(wrapper).text()).toBe('其余 2 个')
+    // 「其余 N 个」代表整组卷而非某一卷：不得带 data-mount / data-level 污染按卷比较的映射表
+    expect(restBadge(wrapper).attributes('data-mount')).toBeUndefined()
+    expect(restBadge(wrapper).attributes('data-level')).toBeUndefined()
+    const title = restBadge(wrapper).attributes('title') ?? ''
+    expect(title).toContain('/data 使用率 25%')
+    // 不可用卷排末尾落进「其余」，title 如实写不可用原因（不得用 0 冒充）
+    expect(title).toContain('/backup 卷不可用: no_permission')
+  })
+
+  it('宽屏（≥lg）：不渲染状态图标，也不加折叠模式类', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountTopbar()
+
+    expect(resourceGauge(wrapper).exists()).toBe(false)
+    expect(wrapper.find('#topbarResources').classes()).not.toContain('topbar__resources--gauge')
+    // 宽屏徽章组保持：CPU / 内存仍在，卷按上限收敛
+    expect(wrapper.find('#resCpu').exists()).toBe(true)
+    expect(wrapper.find('#resMem').exists()).toBe(true)
+    expect(diskBadges(wrapper)).toHaveLength(2)
+  })
+
+  it('窄屏（<lg）：容器加 --gauge 类并渲染单个状态图标，状态色取最差等级', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ cpuUsageRatio: 0.95 }))
+    setWidth(800)
+    const wrapper = await mountTopbar()
+
+    expect(wrapper.find('#topbarResources').classes()).toContain('topbar__resources--gauge')
+    const gauge = resourceGauge(wrapper)
+    expect(gauge.exists()).toBe(true)
+    // 既有 CSS 的状态色 / 闪烁按 `.topbar__gauge ... svg` 选择器书写，因此必须是内联 svg
+    expect(gauge.find('svg').exists()).toBe(true)
+    // CPU 95% 为 CPU / 内存 / 卷中的最差等级
+    expect(gauge.classes()).toContain('topbar__resource--danger')
+    // title 汇总各资源读数
+    const title = gauge.attributes('title') ?? ''
+    expect(title).toContain('CPU 使用率 95%')
+    expect(title).toContain('内存使用率 50%')
+    expect(title).toContain('/home 使用率 62%')
+    // 窄屏不渲染「其余 N 个」点击控件（它只属于宽屏的折叠/展开）
+    expect(restBadge(wrapper).exists()).toBe(false)
+  })
+
+  it('窄屏状态图标：任一卷达到 warn 阈值即为 warn（与监控页共用 resourceLevel）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      cpuUsageRatio: 0.2,
+      volumes: [
+        { mount: '/', available: true, total_bytes: 100 * GIB, used_bytes: 20 * GIB, used_ratio: 0.2 },
+        { mount: '/data', available: true, total_bytes: 100 * GIB, used_bytes: 75 * GIB, used_ratio: 0.75 },
+      ],
+    }))
+    setWidth(800)
+    const wrapper = await mountTopbar()
+
+    expect(resourceGauge(wrapper).classes()).toContain('topbar__resource--warn')
+  })
+
+  it('窄屏状态图标：全部资源正常时为 normal', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ cpuUsageRatio: 0.2 }))
+    setWidth(800)
+    const wrapper = await mountTopbar()
+
+    expect(resourceGauge(wrapper).classes()).toContain('topbar__resource--normal')
+  })
+
+  it('窄屏状态图标：快照未到达时中性等待态（不得用 normal 冒充「一切正常」）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockRejectedValue(new Error('HTTP 503'))
+    setWidth(800)
+    const wrapper = await mountTopbar()
+
+    const gauge = resourceGauge(wrapper)
+    expect(gauge.exists()).toBe(true)
+    expect(gauge.classes()).toContain('topbar__resource--unavailable')
+    expect(gauge.classes()).not.toContain('topbar__resource--normal')
+    expect(gauge.attributes('title')).toContain('等待')
+  })
+
+  it('跨断点切换：宽屏 ↔ 窄屏时状态图标与 --gauge 类响应式出现 / 消失', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountTopbar()
+    expect(resourceGauge(wrapper).exists()).toBe(false)
+    expect(diskBadges(wrapper)).toHaveLength(2)
+
+    setWidth(800)  // xl → md（窄屏）
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('#topbarResources').classes()).toContain('topbar__resources--gauge')
+    expect(resourceGauge(wrapper).exists()).toBe(true)
+
+    setWidth(1200)  // → lg（宽屏）
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('#topbarResources').classes()).not.toContain('topbar__resources--gauge')
+    expect(resourceGauge(wrapper).exists()).toBe(false)
+    expect(diskBadges(wrapper)).toHaveLength(2)
   })
 })

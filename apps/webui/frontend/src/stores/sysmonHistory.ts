@@ -223,6 +223,16 @@ export const useSysmonHistoryStore = defineStore('sysmonHistory', () => {
     await load()
   }
 
+  /**
+   * 预选指标（#127）：实时视图点击 sparkline / 数值跳转历史时用。
+   * **不触发查询** —— 查询由历史视图挂载时统一发起，避免「设置指标 + 挂载再查」两次请求；
+   * 未注册的指标键忽略（下拉之外的键会让后端回 400，契约 sysmon §6.1）。
+   */
+  function preselect(key: string): void {
+    if (!SYSMON_HISTORY_METRICS.some(metric => metric.key === key)) return
+    metricKey.value = key
+  }
+
   /** 切换时间范围后重新查询 */
   async function setRange(seconds: number): Promise<void> {
     if (rangeSeconds.value === seconds) return
@@ -259,5 +269,6 @@ export const useSysmonHistoryStore = defineStore('sysmonHistory', () => {
     setMetric,
     setRange,
     setLevel,
+    preselect,
   }
 })
