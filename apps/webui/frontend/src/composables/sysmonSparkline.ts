@@ -144,7 +144,11 @@ export interface SparklineHistoryWindow {
 export interface SparklineWindow {
   /** 实际覆盖秒数；无点（不渲染）时为 null */
   coveredSec: number | null
-  /** true = 服务端因 `max_points` 截断了窗口（契约 sysmon §6.1.2），呈现与历史视图同口径 */
+  /**
+   * true = 服务端因 `max_points` 截断了窗口（契约 sysmon §6.1.2）。
+   * 仅在**实际覆盖未满整窗**时作为限定说明呈现在 title/aria；实际覆盖拉满 15 分钟时
+   * 满窗陈述优先，不再叠「仅显示最近一段」（#145）。字段本身保留服务端事实。
+   */
   truncated: boolean
   /** true = 本轮历史补拉失败/降级，序列沿用上一轮（#142） */
   stale: boolean
@@ -166,8 +170,9 @@ export function sparklineWindowComplete(window: SparklineWindow): boolean {
  *   起点取生效 `from`；但历史刚启用时首个桶可能晚于 `from` 一个桶宽以上，此时按首个桶
  *   起点计（数据不足 15 分钟不得冒充完整）。末端取 `to` 与末点中较大者——页面停留期间
  *   实时点会推进到查询时刻之后。
- * - 首点是历史覆盖段之前保留的**实时点**时，按该点精确时刻计（实时点没有桶对齐问题，
- *   不套下面的桶宽容差；否则「实时尾巴 + 迟到首桶」会把实际 840 秒说成完整 15 分钟）。
+ * - 首点是历史覆盖段之前**保留的点**（实时尾巴，或记录间隔变更后残留的上一轮旧桶）时，
+ *   按该点精确时刻计：两类点都是真实数据点，起点无需再套下面的桶宽容差（否则「实时尾巴 +
+ *   迟到首桶」会把实际 840 秒说成完整 15 分钟）。两者无需区分——口径只看可见跨度。
  * - 历史范围内无桶（`intervalSec = null`）或没有可用历史点时，只能按**实时点跨度**
  *   标注：这正是「新装机器 / 刚启用历史」的实际可见范围。
  *
@@ -188,7 +193,7 @@ export function sparklineWindow(
   const firstBucketTs = history?.firstBucketTs ?? null
   if (history && history.intervalSec !== null && firstBucketTs !== null) {
     const dataStart = first.ts < firstBucketTs
-      // 历史覆盖段之前保留的实时点：时刻精确，不套桶宽容差
+      // 历史覆盖段之前保留的点（实时尾巴或上一轮旧桶）：时刻精确，不套桶宽容差
       ? first.ts
       : (first.ts - history.from > history.intervalSec ? first.ts : history.from)
     coveredSec = Math.max(history.to, last.ts) - dataStart
@@ -207,8 +212,9 @@ export function sparklineWindow(
  *
  * 补拉替换的是历史覆盖的时段，**历史覆盖段之外**的实时点必须保留：
  * - 末桶之后：已推进的实时点（否则每次进入页面都会丢掉最近一个桶的实时趋势）；
- * - 首桶之前：历史刚启用时此前攒下的实时尾巴（否则一次成功补拉会把 15 分钟曲线突缩成
- *   历史仅有的几分钟，与「补拉不清空上一轮趋势」自相矛盾）；
+ * - 首桶之前：历史刚启用时此前攒下的实时尾巴（记录间隔变更后也可能是上一轮旧桶；#145：
+ *   两者都是真实数据点，窗口起点口径不区分）——否则一次成功补拉会把 15 分钟曲线突缩成
+ *   历史仅有的几分钟，与「补拉不清空上一轮趋势」自相矛盾；
  * - 历史范围内：以历史桶为准（同一时段不混两份数据）。
  * 历史范围内无桶时整段保留上一轮序列。收敛口径与实时推进一致。
  */
@@ -234,10 +240,17 @@ export function sparklineWindowText(window: SparklineWindow): string {
   return `最近 ${formatDuration(window.coveredSec)}`
 }
 
-/** 窗口口径的限定说明（截断 / 历史未刷新）；无修饰时为空数组 */
+/**
+ * 窗口口径的限定说明（截断 / 历史未刷新）；无修饰时为空数组。
+ *
+ * **优先级（#145）**：实际覆盖已满整窗时「最近 15 分钟」是更强的事实——补拉合并保留的
+ * 更早点可能把可见跨度拉满，此时曲线确实覆盖整窗，「仅显示最近一段」与满窗陈述并存既
+ * 自相矛盾、又低报了可见跨度，故抑制截断注；未满窗时保留截断注（与历史视图同口径）。
+ * `stale` 是刷新状态、与窗口是否完整无关，始终保留。
+ */
 function sparklineWindowNotes(window: SparklineWindow): string[] {
   const notes: string[] = []
-  if (window.truncated) notes.push('点数超限，仅显示最近一段')
+  if (window.truncated && !sparklineWindowComplete(window)) notes.push('点数超限，仅显示最近一段')
   if (window.stale) notes.push('历史未刷新')
   return notes
 }

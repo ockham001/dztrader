@@ -210,7 +210,7 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
             to: value.to,
             truncated: value.truncated,
             intervalSec: value.interval_sec,
-            // 首桶时刻决定窗口起点口径（历史刚启用时首点可能是保留的实时尾巴）
+            // 首桶时刻决定窗口起点口径（历史刚启用 / 记录间隔变更时首点可能是保留的实时点或上一轮旧桶）
             firstBucketTs: historyPoints[0]?.ts ?? null,
           },
           hasSeries: true,

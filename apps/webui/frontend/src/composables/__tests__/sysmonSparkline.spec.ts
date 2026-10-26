@@ -312,6 +312,18 @@ describe('sparklineWindow（#142：时间窗口径如实）', () => {
     expect(sparklineWindowComplete(window)).toBe(false)
   })
 
+  it('截断 + 补拉保留的更早点把覆盖拉满：窗口算完整（#145：截断注不得与满窗标注意义重叠）', () => {
+    // 上一轮序列在历史覆盖段之前保留了更早的点（实时尾巴或记录间隔变更后残留的旧桶），
+    // 合并后跨度正好 15 分钟。截断只说明历史段被 max_points 前移，不代表可见曲线不满窗。
+    const window = sparklineWindow(
+      [{ ts: TO - SPARKLINE_WINDOW_SEC, value: 0.1 }, { ts: TO - 5, value: 0.2 }],
+      { from: TO - 295, to: TO, truncated: true, intervalSec: 5, firstBucketTs: TO - 295 },
+    )
+
+    expect(window).toEqual({ coveredSec: SPARKLINE_WINDOW_SEC, truncated: true, stale: false })
+    expect(sparklineWindowComplete(window)).toBe(true)
+  })
+
   it('stale 原样透传：保留上一轮序列时标题可提示未刷新', () => {
     const window = sparklineWindow([{ ts: TO - 60, value: 0.1 }, { ts: TO, value: 0.2 }], fullHistory(), true)
 
@@ -364,6 +376,43 @@ describe('sparklineTitle / sparklineAriaLabel（#142：窗口文案如实）', (
     expect(title).toContain('最近 5 分钟')
     expect(title).toContain('点数超限，仅显示最近一段')
     expect(title).not.toContain('最近 15 分钟')
+  })
+
+  it('满窗时抑制截断注（#145：满窗陈述优先，不同时出现两个窗口定性）', () => {
+    // 补拉合并保留的更早点把实际覆盖拉满：曲线确实覆盖整窗，「仅显示最近一段」不再成立，
+    // 与「最近 15 分钟」并存会自相矛盾
+    const truncatedComplete: SparklineWindow = {
+      coveredSec: SPARKLINE_WINDOW_SEC,
+      truncated: true,
+      stale: false,
+    }
+
+    expect(sparklineTitle('CPU 使用率', truncatedComplete)).toBe('CPU 使用率 · 最近 15 分钟（点击查看历史）')
+    expect(sparklineAriaLabel('CPU 使用率', truncatedComplete))
+      .toBe('CPU 使用率 最近 15 分钟趋势，查看历史')
+  })
+
+  it('截断注只在未满窗时出现；未刷新与满窗无关，始终保留（#145 组合口径）', () => {
+    const titleComplete = sparklineTitle('CPU 使用率', {
+      coveredSec: SPARKLINE_WINDOW_SEC,
+      truncated: true,
+      stale: false,
+    })
+    const titleShort = sparklineTitle('CPU 使用率', {
+      coveredSec: SPARKLINE_WINDOW_SEC - 1,
+      truncated: true,
+      stale: false,
+    })
+    const titleCompleteStale = sparklineTitle('CPU 使用率', {
+      coveredSec: SPARKLINE_WINDOW_SEC,
+      truncated: true,
+      stale: true,
+    })
+
+    expect(titleComplete).not.toContain('点数超限')
+    expect(titleShort).toContain('点数超限，仅显示最近一段')
+    expect(titleCompleteStale).toContain('历史未刷新')
+    expect(titleCompleteStale).not.toContain('点数超限')
   })
 
   it('历史未刷新：title 与 aria-label 都带限定说明', () => {

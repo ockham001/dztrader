@@ -88,6 +88,16 @@ describe('SysmonSparkline 时间窗口径（#142：标题如实标注实际覆�
     expect(root.attributes('data-window-truncated')).toBe('true')
   })
 
+  it('满窗 + 截断（补拉保留点拉满覆盖）：标题/aria 不出现截断注，truncated 仍如实暴露（#145）', () => {
+    const root = mountSparkline([1, 2], windowOf({ coveredSec: SPARKLINE_WINDOW_SEC, truncated: true }))
+      .find('.sysmon-sparkline')
+
+    expect(root.attributes('title')).toBe('CPU 使用率 · 最近 15 分钟（点击查看历史）')
+    expect(root.attributes('aria-label')).toBe('CPU 使用率 最近 15 分钟趋势，查看历史')
+    // 呈现层抑制截断注，但服务端的 truncated 事实仍如实暴露（测试 / 诊断可观测）
+    expect(root.attributes('data-window-truncated')).toBe('true')
+  })
+
   it('历史未刷新（单指标补拉降级）：保留曲线并标记 stale（title + 虚线类）', () => {
     const root = mountSparkline([1, 2], windowOf({ stale: true })).find('.sysmon-sparkline')
 
