@@ -2,6 +2,7 @@
 import { computed, onMounted } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import ThemeDropdown from './ThemeDropdown.vue'
+import { UNAVAILABLE_TEXT } from '@/composables/format'
 import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
 import { useWebSocket } from '@/composables/wsClient'
 import { useSysmonStore } from '@/stores/sysmon'
@@ -52,11 +53,14 @@ const cpuBadge = computed<ResourceBadge>(() => {
   if (!entry || !entry.available || sysmon.cpuUsageRatio === null) {
     // 不可用/首次采样：按契约显示不可用，不得用 0 冒充（契约 sysmon §2.7）
     return {
-      text: '不可用',
+      text: UNAVAILABLE_TEXT,
       stateClass: 'topbar__resource--unavailable',
       title: entry?.reason ? `CPU 使用率不可用: ${entry.reason}` : 'CPU 使用率不可用',
     }
   }
+  // 顶栏徽章是横向窄条，刻意用整数百分比（监控页用共享模块的 1 位小数）：同一数值在两处
+  // 精度不同是**有意的取舍**，不是格式化漂移——顶栏要在常驻条里塞下 CPU / 内存 / 多个卷徽章，
+  // 小数位会挤掉后面的徽章。状态色仍与监控页共用 resourceLevel，结论不会不一致（#126）。
   const percent = Math.round(sysmon.cpuUsageRatio * 100)
   // 状态色与监控页卷列表共用 resourceLevel（含边界），不在此处各自比较阈值
   const stateClass = `topbar__resource--${resourceLevel(sysmon.cpuUsageRatio)}`
@@ -77,11 +81,12 @@ const memBadge = computed<ResourceBadge>(() => {
   const ratio = sysmon.memoryInfo?.used_ratio ?? null
   if (!entry || !entry.available || ratio === null) {
     return {
-      text: '不可用',
+      text: UNAVAILABLE_TEXT,
       stateClass: 'topbar__resource--unavailable',
       title: entry?.reason ? `内存使用率不可用: ${entry.reason}` : '内存使用率不可用',
     }
   }
+  // 整数百分比：与 CPU 徽章同一取舍（窄条优先，见上）
   const percent = Math.round(ratio * 100)
   const stateClass = `topbar__resource--${resourceLevel(ratio)}`
   return { text: `${percent}%`, stateClass, title: `内存使用率 ${percent}%` }
@@ -129,7 +134,7 @@ const diskBadges = computed<DiskBadge[]>(() => {
       return {
         mount: volume.mount,
         label: shortMountLabel(volume.mount),
-        text: '不可用',
+        text: UNAVAILABLE_TEXT,
         level: null,
         title: volume.reason
           ? `${volume.mount} 卷不可用: ${volume.reason}`
@@ -142,11 +147,12 @@ const diskBadges = computed<DiskBadge[]>(() => {
       return {
         mount: volume.mount,
         label: shortMountLabel(volume.mount),
-        text: '不可用',
+        text: UNAVAILABLE_TEXT,
         level: null,
         title: `${volume.mount} 卷使用率不可用`,
       }
     }
+    // 整数百分比：与 CPU / 内存徽章同一取舍（窄条优先，见 CPU 徽章注释）
     const percent = Math.round(ratio * 100)
     const level = resourceLevel(ratio)
     return {

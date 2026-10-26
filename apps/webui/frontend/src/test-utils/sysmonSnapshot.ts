@@ -93,10 +93,13 @@ export interface SysmonSnapshotOptions {
 const GIB = 1024 ** 3
 const MIB = 1024 ** 2
 
-/** 默认温度读数（模拟 Linux hwmon：<name>#<hwmonN>:<label>）；sensorData=true 时使用 */
+/**
+ * 默认温度读数（模拟 Linux hwmon：<name>#<hwmonN>:<label>）；sensorData=true 时使用。
+ * #126 起后端除 `sensor` 外还发 `chip` 与 `label`（additive 字段），夹具按真实形状给出。
+ */
 const DEFAULT_TEMPERATURES: SysmonTemperatureInfo[] = [
-  { sensor: 'coretemp#hwmon3:Package id 0', celsius: 45.5 },
-  { sensor: 'coretemp#hwmon3:Core 0', celsius: 41.5 },
+  { sensor: 'coretemp#hwmon3:Package id 0', chip: 'coretemp', label: 'Package id 0', celsius: 45.5 },
+  { sensor: 'coretemp#hwmon3:Core 0', chip: 'coretemp', label: 'Core 0', celsius: 41.5 },
 ]
 
 /** 默认内存（#74 后端形状）：32 GiB 总量 / 16 GiB 可用（used 按唯一口径 = total − available）/ 8 GiB 缓存 / 256 MiB 缓冲 */

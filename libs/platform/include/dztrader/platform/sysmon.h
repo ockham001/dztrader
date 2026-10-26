@@ -372,10 +372,21 @@ struct SysmonShmDirInfo {
 };
 
 /// 单个温度传感器读数（契约 sysmon §2.4；温度为瞬时 gauge，不是累计计数器）。
+///
+/// `chip` / `label` 是 #126 的 additive 扩展：**本版本发送方每次都要给出两者**（`chip` 非空），
+/// 但消费方必须容忍它们缺失（旧版本发送方不带）——缺失时由展示层从 `sensor` 回退解析。
+/// 因此两个字段在 C++ 侧是普通 `std::string`（序列化恒有值），兼容性落在消费方的校验与展示层。
 struct SysmonTemperatureInfo {
-    std::string sensor;    ///< 传感器稳定标识（Linux hwmon：`<name>#<hwmonN>:<label>`）
+    /// 传感器稳定标识（Linux hwmon：`<name>#<hwmonN>:<label>`）。**值不因新增 chip/label 而改变**：
+    /// 它是历史库 `temperature` 域的维度键（契约 §2.4）。
+    std::string sensor;
+    /// 芯片名（hwmon 的 `name`，如 `coretemp` / `amdgpu` /
+    /// `acpitz`）；发送方必须给出且非空（#126）。
+    std::string chip;
+    /// 通道标签（`tempN_label`）；#126。空串 = 该通道没有标签（合法事实，不是不可用）。
+    std::string label;
     double celsius = 0.0;  ///< 摄氏温度
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonTemperatureInfo, sensor, celsius)
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonTemperatureInfo, sensor, chip, label, celsius)
 };
 
 /// 单个指标的可用性。

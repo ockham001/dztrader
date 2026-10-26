@@ -339,8 +339,12 @@ export interface SysmonShmDirInfo {
 }
 
 export interface SysmonTemperatureInfo {
-    /** 传感器稳定标识（Linux hwmon：<name>#<hwmonN>:<label>，无 label 时用 tempN） */
+    /** 传感器稳定标识（Linux hwmon：<name>#<hwmonN>:<label>，无 label 时用 tempN）；也是历史库维度键，值不因新增 chip/label 而改变 */
     sensor: string
+    /** 芯片名（hwmon name，如 coretemp / amdgpu / acpitz）；additive 字段，旧版本发送方缺失时消费方从 sensor 回退解析 */
+    chip?: string
+    /** 通道标签（tempN_label）；additive 字段。缺失合法（旧版本发送方）；空串表示该通道没有标签（合法事实，不是不可用） */
+    label?: string
     /** 摄氏温度（瞬时 gauge，不是累计计数器） */
     celsius: number
 }

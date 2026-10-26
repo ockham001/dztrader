@@ -200,7 +200,12 @@ TEST(SysmonSnapshotValidateTest, AcceptsTemperatureAndCoreFrequencies) {
         SysmonCoreFrequency{.index = 2, .mhz = 3800},
     };
     snap.temperature = std::vector<SysmonTemperatureInfo>{
-        SysmonTemperatureInfo{.sensor = "coretemp:Package id 0", .celsius = 45.5},
+        SysmonTemperatureInfo{
+            .sensor = "coretemp#hwmon3:Package id 0",
+            .chip = "coretemp",
+            .label = "Package id 0",
+            .celsius = 45.5,
+        },
     };
     snap.availability.metrics["cpu.frequency"] = {.available = true, .reason = std::nullopt};
     snap.availability.metrics["temperature"] = {.available = true, .reason = std::nullopt};
@@ -210,7 +215,10 @@ TEST(SysmonSnapshotValidateTest, AcceptsTemperatureAndCoreFrequencies) {
     EXPECT_EQ(j["cpu"]["core_frequencies"][0]["index"], 0);
     EXPECT_EQ(j["cpu"]["core_frequencies"][0]["mhz"], 3600);
     ASSERT_TRUE(j["temperature"].is_array());
-    EXPECT_EQ(j["temperature"][0]["sensor"], "coretemp:Package id 0");
+    EXPECT_EQ(j["temperature"][0]["sensor"], "coretemp#hwmon3:Package id 0");
+    // additive 字段（#126）：序列化出 chip 与 label，sensor 取值不变（历史库维度键）。
+    EXPECT_EQ(j["temperature"][0]["chip"], "coretemp");
+    EXPECT_EQ(j["temperature"][0]["label"], "Package id 0");
     EXPECT_DOUBLE_EQ(j["temperature"][0]["celsius"].get<double>(), 45.5);
     EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
 
@@ -423,6 +431,41 @@ TEST(SysmonSnapshotValidateTest, RejectsInvalidPayloads) {
         EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
         j["temperature"] = nlohmann::json::array({{{"sensor", "x"}}});
         EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+    }
+    {  // chip / label 为 additive 可选字段（#126）：缺失合法；存在时 chip 须非空、label 须为字符串
+        auto snap = make_snapshot();
+        // 旧版本发送方形状（无 chip / label）仍通过校验：新旧版本短暂并存不报错
+        auto j = nlohmann::json(snap);
+        j["temperature"] =
+            nlohmann::json::array({{{"sensor", "coretemp#hwmon3:Core 0"}, {"celsius", 44.0}}});
+        EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
+
+        // chip 为空串是非法（芯片名缺失时采集层回退目录名，绝不产出空串）
+        j["temperature"] = nlohmann::json::array(
+            {{{"sensor", "x"}, {"chip", ""}, {"label", "Core 0"}, {"celsius", 44.0}}});
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+
+        // chip 非字符串非法
+        j["temperature"] =
+            nlohmann::json::array({{{"sensor", "x"}, {"chip", 1}, {"celsius", 44.0}}});
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+
+        // label 允空串（该通道没有标签是合法事实），但非字符串非法
+        j["temperature"] = nlohmann::json::array(
+            {{{"sensor", "x"}, {"chip", "acpitz"}, {"label", ""}, {"celsius", 27.8}}});
+        EXPECT_EQ(SysmonSnapshot::validate(j), std::nullopt);
+        j["temperature"][0]["label"] = 5;
+        EXPECT_TRUE(SysmonSnapshot::validate(j).has_value());
+
+        // sensor 是历史库维度键，帧内必须唯一（契约 sysmon §2.4/§7）；与 volumes/disk_io/
+        // network 的标识唯一性校验同一口径。两条不同温度但同一 sensor 为非法。
+        j["temperature"] =
+            nlohmann::json::array({{{"sensor", "coretemp#hwmon3:Core 0"}, {"celsius", 44.0}},
+                                   {{"sensor", "coretemp#hwmon3:Core 0"}, {"celsius", 45.0}}});
+        const auto duplicate_error = SysmonSnapshot::validate(j);
+        ASSERT_TRUE(duplicate_error.has_value());
+        // err() 的统一形态是 `path | message`（日志/错误文案约定），不是空格分隔。
+        EXPECT_EQ(*duplicate_error, "temperature[1].sensor | must be unique within the frame");
     }
 }
 

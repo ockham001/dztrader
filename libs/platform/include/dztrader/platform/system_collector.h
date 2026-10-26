@@ -81,6 +81,10 @@ struct RawTemperature {
     /// 传感器稳定标识：Linux 为 `<hwmon name>#<hwmonN>:<label>`（无 label 时为
     /// `<hwmon name>#<hwmonN>:tempN`；含 hwmon 目录名，保证帧内唯一且同启动周期稳定）。
     std::string sensor;
+    /// 芯片名（hwmon 的 `name`；`sensor` 中 `#` 之前的部分）；additive 字段（#126）。
+    std::string chip;
+    /// 通道标签（`tempN_label`）；additive 字段（#126）。空串 = 该通道没有标签。
+    std::string label;
     /// 摄氏温度。
     double celsius = 0.0;
 };

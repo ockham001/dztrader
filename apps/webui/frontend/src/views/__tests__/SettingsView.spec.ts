@@ -27,6 +27,22 @@ describe('SettingsView', () => {
     expect(w.text()).toContain('主进程')
   })
 
+  it('主进程配置的元数据文件大小走共享格式化模块（IEC 单位档）', async () => {
+    const store = useSettingsStore()
+    store.master = {
+      single_stop_timeout_sec: 5,
+      cleanup_max_page_count: 100,
+      cleanup_max_page_age_hours: 12,
+      meta_file_size: 2 * 1024 * 1024,
+    }
+    const w = mount(SettingsView, { global: { stubs: sharedStubs } })
+    const masterTab = w.findAll('button').find(b => b.text().trim() === '主进程')
+    await masterTab!.trigger('click')
+    // #126：与监控页 / 配置页 / 日志页同一实现——IEC 档位（旧实现是十进制 `MB` 标签）
+    expect(w.text()).toContain('2.0 MiB')
+    expect(w.text()).not.toContain(' MB')
+  })
+
   it('check 字段失焦且值改变时提交 setEventShmConfig', async () => {
     const store = useSettingsStore()
     // 预置镜像，使 check_interval_min 旧值已知

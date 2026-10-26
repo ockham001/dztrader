@@ -45,6 +45,26 @@ describe('LogsView', () => {
     expect(w.text()).toContain('级别面板')
   })
 
+  it('日志文件大小走共享格式化模块（IEC 单位档，不再用 KB/MB）', async () => {
+    const store = useLogsStore()
+    store.files = [
+      { name: 'a.log', logger: 'dzweb', size: 2 * 1024 * 1024, mtime: '2026-10-26 15:00:00', path: '/logs/a.log' },
+      { name: 'b.log', logger: 'dzweb', size: 1536, mtime: '2026-10-26 15:00:00', path: '/logs/b.log' },
+      { name: 'c.log', logger: 'dzweb', size: 512, mtime: '2026-10-26 15:00:00', path: '/logs/c.log' },
+    ]
+    const w = mount(LogsView, { global: { stubs: sharedStubs } })
+    await flushPromises()
+    const meta = w.findAll('.log-browser__file-meta')
+    expect(meta).toHaveLength(3)
+    // #126：与监控页 / 配置页同一实现——IEC 档位，`B` 档取整、≥KiB 固定 1 位小数
+    expect(meta[0].text()).toContain('2.0 MiB')
+    expect(meta[1].text()).toContain('1.5 KiB')
+    expect(meta[2].text()).toContain('512 B')
+    // 旧实现的十进制标签 KB/MB 不再出现
+    expect(w.text()).not.toContain('KB')
+    expect(w.text()).not.toContain('MB')
+  })
+
   it('点击页签切换 browserTab', async () => {
     const store = useLogsStore()
     const w = mount(LogsView, { global: { stubs: sharedStubs } })

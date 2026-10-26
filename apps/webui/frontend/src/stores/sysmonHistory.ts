@@ -23,9 +23,17 @@ import type {
 export interface SysmonHistoryMetricOption {
   key: string
   label: string
-  /** 值的展示形态：比率按百分比、字节按容量、其余按数值 */
-  format: 'ratio' | 'bytes' | 'number'
+  /** 值的展示形态：比率按百分比、字节按容量、计数取整带千分位、其余按数值 */
+  format: SysmonHistoryMetricFormat
 }
+
+/**
+ * 历史指标的展示形态（#126）。
+ *
+ * `count` 与 `number` 分开是必要的：AC3 要求「计数取整且带千分位」，而负载/速率要固定小数位，
+ * 同一个 `number` 档无法同时满足两者（页文件数与系统负载会落到同一条格式化路径上）。
+ */
+export type SysmonHistoryMetricFormat = 'ratio' | 'bytes' | 'count' | 'number'
 
 export const SYSMON_HISTORY_METRICS: SysmonHistoryMetricOption[] = [
   { key: 'cpu.usage_ratio', label: 'CPU 使用率', format: 'ratio' },
@@ -39,7 +47,7 @@ export const SYSMON_HISTORY_METRICS: SysmonHistoryMetricOption[] = [
   { key: 'memory.available_bytes', label: '内存可用', format: 'bytes' },
   { key: 'swap.used_ratio', label: '交换使用率', format: 'ratio' },
   { key: 'shm_dir.total_bytes', label: '共享内存目录占用', format: 'bytes' },
-  { key: 'shm_dir.page_files', label: '共享内存页文件数', format: 'number' },
+  { key: 'shm_dir.page_files', label: '共享内存页文件数', format: 'count' },
 ]
 
 /** 时间范围预设（秒）：历史视图的快捷选项 */

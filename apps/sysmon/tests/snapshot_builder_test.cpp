@@ -83,8 +83,15 @@ platform::SysmonSnapshot build_with(const platform::RawSystemInfo& info,
 TemperatureMetrics make_temperature_metrics() {
     TemperatureMetrics temperature;
     temperature.collected = true;
-    temperature.sensors = std::vector<platform::SysmonTemperatureInfo>{
-        {"coretemp:Package id 0", 45.5}, {"coretemp:Core 0", 44.0}};
+    temperature.sensors =
+        std::vector<platform::SysmonTemperatureInfo>{{.sensor = "coretemp#hwmon3:Package id 0",
+                                                      .chip = "coretemp",
+                                                      .label = "Package id 0",
+                                                      .celsius = 45.5},
+                                                     {.sensor = "coretemp#hwmon3:Core 0",
+                                                      .chip = "coretemp",
+                                                      .label = "Core 0",
+                                                      .celsius = 44.0}};
     return temperature;
 }
 
@@ -492,10 +499,15 @@ TEST(SnapshotBuilderTest, TemperatureMappedWhenCollected) {
         build_with(make_linux_info(), make_full_metrics(), make_temperature_metrics());
     ASSERT_TRUE(snapshot.temperature.has_value());
     ASSERT_EQ(snapshot.temperature->size(), 2U);
-    EXPECT_EQ(snapshot.temperature->at(0).sensor, "coretemp:Package id 0");
+    EXPECT_EQ(snapshot.temperature->at(0).sensor, "coretemp#hwmon3:Package id 0");
     EXPECT_DOUBLE_EQ(snapshot.temperature->at(0).celsius, 45.5);
-    EXPECT_EQ(snapshot.temperature->at(1).sensor, "coretemp:Core 0");
+    // chip / label 原样透传（#126）：快照构造不解析 sensor、不改写两字段
+    EXPECT_EQ(snapshot.temperature->at(0).chip, "coretemp");
+    EXPECT_EQ(snapshot.temperature->at(0).label, "Package id 0");
+    EXPECT_EQ(snapshot.temperature->at(1).sensor, "coretemp#hwmon3:Core 0");
     EXPECT_DOUBLE_EQ(snapshot.temperature->at(1).celsius, 44.0);
+    EXPECT_EQ(snapshot.temperature->at(1).chip, "coretemp");
+    EXPECT_EQ(snapshot.temperature->at(1).label, "Core 0");
 
     const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE);
     EXPECT_TRUE(entry.available);
@@ -614,7 +626,10 @@ TEST(SnapshotBuilderTest, SerializedSensorDataPassesPlatformValidation) {
     EXPECT_EQ(payload["cpu"]["core_frequencies"][0]["index"].get<uint32_t>(), 0U);
     EXPECT_EQ(payload["cpu"]["core_frequencies"][0]["mhz"].get<uint32_t>(), 4200U);
     ASSERT_EQ(payload["temperature"].size(), 2U);
-    EXPECT_EQ(payload["temperature"][0]["sensor"].get<std::string>(), "coretemp:Package id 0");
+    EXPECT_EQ(payload["temperature"][0]["sensor"].get<std::string>(),
+              "coretemp#hwmon3:Package id 0");
+    EXPECT_EQ(payload["temperature"][0]["chip"].get<std::string>(), "coretemp");
+    EXPECT_EQ(payload["temperature"][0]["label"].get<std::string>(), "Package id 0");
     EXPECT_DOUBLE_EQ(payload["temperature"][0]["celsius"].get<double>(), 45.5);
 }
 

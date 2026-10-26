@@ -2,6 +2,7 @@
 import { computed, reactive, watch } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import type { SysmonConfigPatch } from '@/api/sysmon'
+import { formatBytes } from '@/composables/format'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { useAuthStore } from '@/stores/auth'
 import { useSysmonStore } from '@/stores/sysmon'
@@ -76,16 +77,6 @@ const THRESHOLDS_FIELDS: readonly NumberFieldSpec[] = [
 const canEdit = computed(() => auth.isAdmin)
 const config = computed(() => sysmon.config)
 const savePending = computed(() => sysmon.configPending)
-
-/** 展示值格式化：字节 → 人类可读（历史库总量上限用；0 = 不限制由调用方单独处理） */
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return '—'
-  const gib = 1024 ** 3
-  const mib = 1024 ** 2
-  if (bytes >= gib) return `${(bytes / gib).toFixed(1)} GiB`
-  if (bytes >= mib) return `${(bytes / mib).toFixed(1)} MiB`
-  return `${bytes} B`
-}
 
 function enabledText(enabled: boolean): string {
   return enabled ? '已启用' : '已关闭'

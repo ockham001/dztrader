@@ -294,6 +294,7 @@ std::optional<std::string> validate_snapshot_temperature(const json& temperature
     if (!temperature.is_array()) {
         return err("temperature", "must be an array or null");
     }
+    std::set<std::string> sensors;
     for (std::size_t i = 0; i < temperature.size(); ++i) {
         const auto& item = temperature[i];
         const std::string path = "temperature[" + std::to_string(i) + "]";
@@ -302,6 +303,21 @@ std::optional<std::string> validate_snapshot_temperature(const json& temperature
         }
         if (auto e = require_non_empty_string(item, path, "sensor")) {
             return e;
+        }
+        // 契约 sysmon §2.4/§7：sensor 是历史库维度键，帧内必须唯一（与 volumes/disk_io/network
+        // 的标识唯一性校验同一口径）；病态驱动的重复 label 由采集层追加 `-<n>` 兜底。
+        if (!sensors.insert(item["sensor"].get<std::string>()).second) {
+            return err(path + ".sensor", "must be unique within the frame");
+        }
+        // chip / label 是 additive 可选字段（#126）：存在时 chip 非空、label 允许空串；
+        // 缺失合法（旧版本发送方不带这两个字段）。发送方义务见契约 §2.4。
+        if (item.contains("chip")) {
+            if (auto e = require_non_empty_string(item, path, "chip")) {
+                return e;
+            }
+        }
+        if (item.contains("label") && !item["label"].is_string()) {
+            return err(path + ".label", "must be a string");
         }
         if (!item.contains("celsius") || !is_number(item["celsius"])) {
             return err(path + ".celsius", "must be a number");

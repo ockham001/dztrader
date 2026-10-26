@@ -5,6 +5,24 @@ import SyncSwitch from '@/components/shared/SyncSwitch.vue'
 import SysmonConfigTab from '@/components/sysmon/SysmonConfigTab.vue'
 import SysmonHistoryTab from '@/components/sysmon/SysmonHistoryTab.vue'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
+import {
+  UNAVAILABLE_TEXT,
+  formatByteRate,
+  formatBytes,
+  formatCount,
+  formatCountPerSec,
+  formatDecimal,
+  formatFrequency,
+  formatIops,
+  formatLatency,
+  formatPerSec,
+  formatPercent,
+  formatTemperature,
+} from '@/composables/format'
+import {
+  groupTemperatures,
+  normalizeTemperatureReadings,
+} from '@/composables/sysmonTemperature'
 import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
 import { useAuthStore } from '@/stores/auth'
 import { useSysmonStore } from '@/stores/sysmon'
@@ -45,67 +63,15 @@ const updatedAt = computed(() => {
   return typeof timestamp === 'number' ? formatDateTime(timestamp) : ''
 })
 
-// ---- 格式化（不可用一律显示「不可用」，不得用 0 冒充数据）----
-const UNAVAILABLE = '不可用'
+// ---- 格式化（#126：唯一实现收敛到 @/composables/format，本文件不得再写 toFixed）----
+// 「不可用」占位直接用共享模块导出的 UNAVAILABLE_TEXT（不在本文件另起别名，
+// 否则同一事实出现两个名字——Topbar 等其它文件都直接用导出名）。
 /** 配置关闭的统一文案（卷 / 指标可用性映射共用，避免两处字面量漂移） */
 const DISABLED_BY_CONFIG_TEXT = '已在配置中关闭'
 
-function formatPercent(ratio: number | null | undefined, digits = 1): string {
-  if (typeof ratio !== 'number' || !Number.isFinite(ratio)) return UNAVAILABLE
-  return `${(ratio * 100).toFixed(digits)}%`
-}
-
-function formatBytes(bytes: number | null | undefined): string {
-  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) return UNAVAILABLE
-  const gib = 1024 ** 3
-  const mib = 1024 ** 2
-  if (bytes >= gib) return `${(bytes / gib).toFixed(1)} GiB`
-  if (bytes >= mib) return `${(bytes / mib).toFixed(1)} MiB`
-  return `${bytes} B`
-}
-
-function formatRate(bytesPerSec: number | null | undefined): string {
-  if (typeof bytesPerSec !== 'number' || !Number.isFinite(bytesPerSec)) return UNAVAILABLE
-  return `${formatBytes(bytesPerSec)}/s`
-}
-
-/** 2 位小数格式化（系统负载 / 处理器队列长度 / 磁盘队列深度）；null 显示不可用（不得用 0 冒充） */
-function formatLoadValue(value: number | null | undefined): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return UNAVAILABLE
-  return value.toFixed(2)
-}
-
-/** 每秒 I/O 操作数（IOPS）：整数 + 单位；null 一律显示不可用（不得用 0 冒充） */
-function formatIops(value: number | null | undefined): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return UNAVAILABLE
-  return `${Math.round(value)} IOPS`
-}
-
-/** 平均每请求延迟（毫秒）：保留 2 位小数 + 单位；null 一律显示不可用 */
-function formatLatency(ms: number | null | undefined): string {
-  if (typeof ms !== 'number' || !Number.isFinite(ms)) return UNAVAILABLE
-  return `${ms.toFixed(2)} ms`
-}
-
-/** 速率型计数（每秒上下文切换 / 中断）：整数值 + /s；null 显示不可用 */
-function formatCountPerSec(value: number | null | undefined): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return UNAVAILABLE
-  return `${Math.round(value)}/s`
-}
-
-/** 温度（摄氏度）：保留 1 位小数 + 单位；调用方只在指标可用时传入有效值 */
-function formatTemperature(celsius: number): string {
-  return `${celsius.toFixed(1)} °C`
-}
-
-/** 每核频率（MHz）：整数 + 单位；调用方只在指标可用时传入有效值 */
-function formatFrequency(mhz: number): string {
-  return `${mhz} MHz`
-}
-
 /** 文件年龄（秒 → 可读时长）：页文件年龄是页清理是否生效的直接信号（契约 sysmon §2.4） */
 function formatAge(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return UNAVAILABLE
+  if (!Number.isFinite(seconds) || seconds < 0) return UNAVAILABLE_TEXT
   const total = Math.floor(seconds)
   if (total < 60) return `${total} 秒`
   if (total < 3_600) return `${Math.floor(total / 60)} 分钟`
@@ -125,14 +91,14 @@ function volumeReasonDesc(reason: string | undefined): string {
 
 function formatDateTime(unixMs: number): string {
   const date = new Date(unixMs)
-  if (Number.isNaN(date.getTime())) return UNAVAILABLE
+  if (Number.isNaN(date.getTime())) return UNAVAILABLE_TEXT
   const pad = (n: number): string => String(n).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
     + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
 function formatUptime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return UNAVAILABLE
+  if (!Number.isFinite(seconds) || seconds < 0) return UNAVAILABLE_TEXT
   const total = Math.floor(seconds)
   const days = Math.floor(total / 86_400)
   const hours = Math.floor((total % 86_400) / 3_600)
@@ -165,7 +131,9 @@ const cpuPercent = computed(() => formatPercent(cpuRatio.value))
 const cpuBarWidth = computed(() => {
   const ratio = cpuRatio.value
   if (ratio === null) return '0%'
-  return `${Math.min(100, Math.max(0, ratio * 100)).toFixed(1)}%`
+  // 进度条宽度是 CSS 值，仍需钳制到 [0,1]（异常比率不得把条画出容器）；
+  // 输出形态与文字百分比同源（formatPercent），避免条宽与旁边数字精度不一致。
+  return formatPercent(Math.min(1, Math.max(0, ratio)))
 })
 const cpuEmptyDesc = computed(() => cpuAvailable.value
   ? '暂无可用采样（首次采样未完成或计数器重置）'
@@ -196,7 +164,11 @@ const interrupts = computed(() => sysmon.cpuInterruptsPerSec)
 // 与内存 / 磁盘等「不可用显示空态」的区块不同：对应指标不可用时整块不渲染，
 // 不是显示 0、也不是显示「不可用」占位。只按 availability.metrics 与数据渲染，不按 platform.family 分支。
 const temperatureAvailable = computed(() => isAvailable('temperature'))
-const temperatures = computed(() => sysmon.temperatures)
+// 温度按芯片分组展示（#126）：分组/友好名/排序全部在共享模块内（纯函数，可单测）；
+// 本视图只负责渲染。**不过滤任何传感器**——ACPI 类只是排在组列表末尾。
+const temperatureGroups = computed(() =>
+  groupTemperatures(normalizeTemperatureReadings(sysmon.temperatures)),
+)
 const frequencyAvailable = computed(() => isAvailable('cpu.frequency'))
 const coreFrequencies = computed(() => sysmon.coreFrequencies)
 
@@ -279,23 +251,15 @@ async function onToggleShowAll(next: boolean): Promise<void> {
   if (result === false) toast.error('显示全部网卡切换下发失败')
 }
 
-// ---- 网卡累计量 / 速率格式化 ----
-/** 累计计数器（包 / 错误 / 丢弃）：千分位整数；累计量没有"不可用"语义 */
-function formatTotalCount(value: number): string {
-  return value.toLocaleString('en-US')
-}
-/** 错误 / 丢弃速率（个每秒）：保留 1 位小数（可为 0 = 本窗口确实没有增量）；null 显示不可用 */
-function formatEventRate(value: number | null | undefined): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return UNAVAILABLE
-  return `${value.toFixed(1)}/s`
-}
+// ---- 网卡累计量 / 速率格式化（#126：单位档与精度全部走共享模块）----
 /**
  * 错误 / 丢弃单元格：速率 + 累计量并列（速率反映当前窗口，累计量反映是否曾经发生过）。
  * 速率 null（首次采样/计数器重置）显示「不可用」而不是 0；累计量始终有效（累计计数器没有
  * 不可用语义），因此即便速率不可用仍能看到历史累计。
+ * 错误/丢弃速率保留 1 位小数（可为 0 = 本窗口确实没有增量）。
  */
 function formatEventRateWithTotal(rate: number | null | undefined, total: number): string {
-  return `${formatEventRate(rate)}（累计 ${formatTotalCount(total)}）`
+  return `${formatPerSec(rate, 1)}（累计 ${formatCount(total)}）`
 }
 </script>
 
@@ -416,7 +380,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               <div class="monitor-view__meta">{{ system?.logical_cores ?? '—' }} 逻辑核</div>
             </template>
             <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cpu-unavailable">
-              <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+              <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
               <div class="ds-empty__desc">{{ cpuEmptyDesc }}</div>
             </div>
           </div>
@@ -428,27 +392,27 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               <dl class="monitor-view__load">
                 <div v-if="loadIsProcessorQueue" class="monitor-view__load-item">
                   <dt class="monitor-view__load-label">处理器队列长度</dt>
-                  <dd class="monitor-view__load-value" data-test="monitor-load-queue">{{ formatLoadValue(loadAverage.one) }}</dd>
+                  <dd class="monitor-view__load-value" data-test="monitor-load-queue">{{ formatDecimal(loadAverage.one) }}</dd>
                 </div>
                 <template v-else>
                   <div class="monitor-view__load-item">
                     <dt class="monitor-view__load-label">1 分钟</dt>
-                    <dd class="monitor-view__load-value" data-test="monitor-load-one">{{ formatLoadValue(loadAverage.one) }}</dd>
+                    <dd class="monitor-view__load-value" data-test="monitor-load-one">{{ formatDecimal(loadAverage.one) }}</dd>
                   </div>
                   <div class="monitor-view__load-item">
                     <dt class="monitor-view__load-label">5 分钟</dt>
-                    <dd class="monitor-view__load-value" data-test="monitor-load-five">{{ formatLoadValue(loadAverage.five) }}</dd>
+                    <dd class="monitor-view__load-value" data-test="monitor-load-five">{{ formatDecimal(loadAverage.five) }}</dd>
                   </div>
                   <div class="monitor-view__load-item">
                     <dt class="monitor-view__load-label">15 分钟</dt>
-                    <dd class="monitor-view__load-value" data-test="monitor-load-fifteen">{{ formatLoadValue(loadAverage.fifteen) }}</dd>
+                    <dd class="monitor-view__load-value" data-test="monitor-load-fifteen">{{ formatDecimal(loadAverage.fifteen) }}</dd>
                   </div>
                 </template>
               </dl>
               <p v-if="loadHint" class="monitor-view__hint" data-test="monitor-load-hint">语义提示：{{ loadHint }}</p>
             </template>
             <div v-else class="ds-empty monitor-view__empty" data-test="monitor-load-unavailable">
-              <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+              <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
               <div class="ds-empty__desc">{{ loadEmptyDesc }}</div>
             </div>
           </div>
@@ -491,7 +455,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               </li>
             </ul>
             <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
-              <div class="ds-empty__title">{{ cpuCoresAvailable ? '暂无每核数据' : UNAVAILABLE }}</div>
+              <div class="ds-empty__title">{{ cpuCoresAvailable ? '暂无每核数据' : UNAVAILABLE_TEXT }}</div>
               <div class="ds-empty__desc">{{ coresEmptyDesc }}</div>
             </div>
           </div>
@@ -523,22 +487,40 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
         </div>
       </section>
 
-      <!-- 温度（#73）：仅在 temperature 可用时渲染整块卡片；不可用整块不渲染（不是显示 0） -->
+      <!-- 温度（#73）：仅在 temperature 可用时渲染整块卡片；不可用整块不渲染（不是显示 0）。
+           #126：按芯片分组（CPU / GPU / 无线网卡 / 主板 ACPI 等友好名），组内逐通道显示；
+           原始 sensor 标识降级到 title（tooltip）——需要与系统工具输出对照时仍可查到。
+           不过滤任何传感器：主板 ACPI 类只是排在组列表末尾。 -->
       <section v-if="temperatureAvailable" class="ds-card monitor-view__card" data-test="monitor-temperature">
         <h2 class="ds-card__title monitor-view__card-title">
           <span class="monitor-view__card-icon"><Icon name="system" :size="14" /></span>温度
         </h2>
-        <ul v-if="temperatures.length > 0" class="monitor-view__list">
-          <li
-            v-for="reading in temperatures"
-            :key="reading.sensor"
-            class="monitor-view__list-row"
-            data-test="monitor-temperature-sensor"
+        <div v-if="temperatureGroups.length > 0" class="monitor-view__temp-groups">
+          <div
+            v-for="group in temperatureGroups"
+            :key="group.chip"
+            class="monitor-view__temp-group"
+            data-test="monitor-temperature-group"
+            :data-chip="group.chip"
           >
-            <span class="monitor-view__list-label">{{ reading.sensor }}</span>
-            <span class="monitor-view__list-value">{{ formatTemperature(reading.celsius) }}</span>
-          </li>
-        </ul>
+            <h3 class="monitor-view__panel-title" data-test="monitor-temperature-group-name">
+              {{ group.displayName }}
+            </h3>
+            <ul class="monitor-view__list">
+              <li
+                v-for="reading in group.readings"
+                :key="reading.sensor"
+                class="monitor-view__list-row"
+                data-test="monitor-temperature-sensor"
+                :data-sensor="reading.sensor"
+                :title="reading.sensor"
+              >
+                <span class="monitor-view__list-label">{{ reading.label }}</span>
+                <span class="monitor-view__list-value">{{ formatTemperature(reading.celsius) }}</span>
+              </li>
+            </ul>
+          </div>
+        </div>
         <div v-else class="ds-empty monitor-view__empty" data-test="monitor-temperature-empty">
           <div class="ds-empty__title">暂无数据</div>
           <div class="ds-empty__desc">当前快照未提供温度读数</div>
@@ -574,7 +556,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           <div class="ds-empty__desc">当前快照未提供内存数据</div>
         </div>
         <div v-else class="ds-empty monitor-view__empty" data-test="monitor-memory-unavailable">
-          <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+          <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
           <div class="ds-empty__desc">{{ unavailableDesc('memory') }}</div>
         </div>
 
@@ -602,7 +584,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
             <div class="ds-empty__desc">当前快照未提供交换数据</div>
           </div>
           <div v-else class="ds-empty monitor-view__empty" data-test="monitor-memory-swap-unavailable">
-            <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+            <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
             <div class="ds-empty__desc">{{ swapUnavailableDesc }}</div>
           </div>
         </div>
@@ -634,7 +616,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
             </li>
           </ul>
           <div v-else-if="volumes.length === 0" class="ds-empty monitor-view__empty" data-test="monitor-disk-unavailable">
-            <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+            <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
             <div class="ds-empty__desc">{{ volumesAvailable ? '当前快照未提供卷数据' : unavailableDesc('volumes') }}</div>
           </div>
 
@@ -658,7 +640,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               >
                 <span class="monitor-view__list-label">{{ volume.mount }}</span>
                 <!-- 读不到容量与「总量确实为 0」是两件事，原因列分别说明，都不用 0 冒充 -->
-                <span class="monitor-view__list-value">{{ volume.available ? '—' : UNAVAILABLE }}</span>
+                <span class="monitor-view__list-value">{{ volume.available ? '—' : UNAVAILABLE_TEXT }}</span>
                 <span class="monitor-view__list-meta" data-test="monitor-disk-zero-reason">
                   {{ volume.available ? '总容量为 0' : volumeReasonDesc(volume.reason) }}
                 </span>
@@ -682,7 +664,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               </div>
               <div class="monitor-view__list-row">
                 <dt class="monitor-view__list-label">页文件</dt>
-                <dd class="monitor-view__list-value" data-test="monitor-shm-page-files">{{ shmDir.page_files }}</dd>
+                <dd class="monitor-view__list-value" data-test="monitor-shm-page-files">{{ formatCount(shmDir.page_files) }}</dd>
               </div>
               <!-- 无页文件时 oldest_file_age_sec 为 null：不渲染该行（不是 0 秒） -->
               <div v-if="shmDir.oldest_file_age_sec != null" class="monitor-view__list-row">
@@ -696,7 +678,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
             <div class="ds-empty__desc">当前快照未提供共享内存目录占用</div>
           </div>
           <div v-else class="ds-empty monitor-view__empty" data-test="monitor-shm-unavailable">
-            <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+            <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
             <div class="ds-empty__desc">{{ unavailableDesc('shm_dir') }}</div>
           </div>
         </div>
@@ -722,11 +704,11 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               <dl class="monitor-view__io-metrics">
                 <div class="monitor-view__io-metric">
                   <dt class="monitor-view__io-label">读吞吐</dt>
-                  <dd class="monitor-view__io-value">{{ formatRate(device.read_bytes_per_sec) }}</dd>
+                  <dd class="monitor-view__io-value">{{ formatByteRate(device.read_bytes_per_sec) }}</dd>
                 </div>
                 <div class="monitor-view__io-metric">
                   <dt class="monitor-view__io-label">写吞吐</dt>
-                  <dd class="monitor-view__io-value">{{ formatRate(device.write_bytes_per_sec) }}</dd>
+                  <dd class="monitor-view__io-value">{{ formatByteRate(device.write_bytes_per_sec) }}</dd>
                 </div>
                 <div class="monitor-view__io-metric">
                   <dt class="monitor-view__io-label">读 IOPS</dt>
@@ -742,7 +724,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 </div>
                 <div class="monitor-view__io-metric">
                   <dt class="monitor-view__io-label">队列深度</dt>
-                  <dd class="monitor-view__io-value">{{ formatLoadValue(device.queue_depth) }}</dd>
+                  <dd class="monitor-view__io-value">{{ formatDecimal(device.queue_depth) }}</dd>
                 </div>
                 <div class="monitor-view__io-metric">
                   <dt class="monitor-view__io-label">利用率</dt>
@@ -759,7 +741,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           <p v-if="diskIoHint" class="monitor-view__hint" data-test="monitor-disk-io-hint">语义提示：{{ diskIoHint }}</p>
         </template>
         <div v-else class="ds-empty monitor-view__empty" data-test="monitor-disk-io-unavailable">
-          <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+          <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
           <div class="ds-empty__desc">{{ diskIoUnavailableDesc }}</div>
         </div>
       </section>
@@ -800,11 +782,11 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               <dl class="monitor-view__io-metrics">
                 <div class="monitor-view__io-metric">
                   <dt class="monitor-view__io-label">收速率</dt>
-                  <dd class="monitor-view__io-value" data-test="monitor-network-rx-rate">{{ formatRate(nic.rx_bytes_per_sec) }}</dd>
+                  <dd class="monitor-view__io-value" data-test="monitor-network-rx-rate">{{ formatByteRate(nic.rx_bytes_per_sec) }}</dd>
                 </div>
                 <div class="monitor-view__io-metric">
                   <dt class="monitor-view__io-label">发速率</dt>
-                  <dd class="monitor-view__io-value" data-test="monitor-network-tx-rate">{{ formatRate(nic.tx_bytes_per_sec) }}</dd>
+                  <dd class="monitor-view__io-value" data-test="monitor-network-tx-rate">{{ formatByteRate(nic.tx_bytes_per_sec) }}</dd>
                 </div>
                 <div class="monitor-view__io-metric">
                   <dt class="monitor-view__io-label">收字节</dt>
@@ -816,11 +798,11 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 </div>
                 <div class="monitor-view__io-metric">
                   <dt class="monitor-view__io-label">收包</dt>
-                  <dd class="monitor-view__io-value" data-test="monitor-network-rx-packets">{{ formatTotalCount(nic.rx_packets_total) }}</dd>
+                  <dd class="monitor-view__io-value" data-test="monitor-network-rx-packets">{{ formatCount(nic.rx_packets_total) }}</dd>
                 </div>
                 <div class="monitor-view__io-metric">
                   <dt class="monitor-view__io-label">发包</dt>
-                  <dd class="monitor-view__io-value" data-test="monitor-network-tx-packets">{{ formatTotalCount(nic.tx_packets_total) }}</dd>
+                  <dd class="monitor-view__io-value" data-test="monitor-network-tx-packets">{{ formatCount(nic.tx_packets_total) }}</dd>
                 </div>
                 <div class="monitor-view__io-metric">
                   <dt class="monitor-view__io-label">收错误</dt>
@@ -853,7 +835,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           </div>
         </template>
         <div v-else class="ds-empty monitor-view__empty" data-test="monitor-network-unavailable">
-          <div class="ds-empty__title">{{ UNAVAILABLE }}</div>
+          <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
           <div class="ds-empty__desc">{{ unavailableDesc('network') }}</div>
         </div>
       </section>
@@ -1028,6 +1010,13 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 /* 无容量挂载折叠组（#122）：正文之后、与列表之间留白（折叠按钮自带尺寸，不另设边框） */
 .monitor-view__zero-volumes {
   margin-top: var(--spacer-8);
+}
+
+/* 温度分组（#126）：每个芯片一组，组间留白；复用面板标题与列表样式，不新增视觉范式 */
+.monitor-view__temp-groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-12);
 }
 
 /* ---- 磁盘 I/O（#76）：每个物理盘一块，指标网格窄屏自动换行（auto-fit），全部走设计 token ---- */

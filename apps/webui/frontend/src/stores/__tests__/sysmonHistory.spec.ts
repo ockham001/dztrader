@@ -251,11 +251,14 @@ describe('历史视图的选项常量', () => {
       'shm_dir.total_bytes',
       'shm_dir.page_files',
     ])
-    // 每个指标都必须声明展示形态（视图据 format 决定百分比/容量/数值）
+    // 每个指标都必须声明展示形态（视图据 format 决定百分比/容量/计数/数值）
     for (const metric of SYSMON_HISTORY_METRICS) {
-      expect(['ratio', 'bytes', 'number']).toContain(metric.format)
+      expect(['ratio', 'bytes', 'count', 'number']).toContain(metric.format)
       expect(metric.label.length).toBeGreaterThan(0)
     }
+    // 计数类指标必须用 count 档（AC3：计数取整带千分位，不能与负载共用 number 档）
+    const pageFiles = SYSMON_HISTORY_METRICS.find(metric => metric.key === 'shm_dir.page_files')
+    expect(pageFiles?.format).toBe('count')
   })
 
   it('时间范围与粒度选项非空且粒度含 auto/raw/minute', () => {
