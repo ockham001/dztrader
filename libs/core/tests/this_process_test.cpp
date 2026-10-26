@@ -9,29 +9,23 @@
 
 #include <filesystem>
 #include <fstream>
-#include <random>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "test_temp_dir.h"
+
 namespace this_process = dztrader::this_process;
 
 namespace {
-
-/// 每个探针唯一临时目录（随机后缀：同进程重复运行、并行测试 exe 均不冲突）
-std::filesystem::path unique_temp_dir(std::string_view name) {
-    std::random_device rd;
-    return std::filesystem::temp_directory_path() /
-           (std::string(name) + "_" + std::to_string(rd()));
-}
 
 /// 临时目录 RAII：断言失败提前返回时也能清理。
 class ScopedTempDir {
 public:
     explicit ScopedTempDir(std::string_view name)
-        : path_(unique_temp_dir(name)) {
+        : path_(dztrader::test::unique_temp_dir(name)) {
         std::filesystem::create_directories(path_);
     }
 

@@ -10,6 +10,8 @@
 #include <filesystem>
 #include <string>
 
+#include "test_temp_dir.h"
+
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::FrameView;
@@ -28,7 +30,7 @@ protected:
     DzContext* ctx_ = nullptr;
 
     void SetUp() override {
-        home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_ingest_nodb").string();
+        home_ = dztrader::test::unique_temp_dir("dz_test_strategy_ingest_nodb").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         dztrader::env::set("DZTRADER_HOME", home_);
@@ -44,12 +46,9 @@ protected:
         };
         (void)ChannelMeta::open_or_create(cfg);
         ChannelConfig mdcfg{
-            .channel_name = "test_md",
-            .shm_dir = home_ + "/shm",
-            .meta_file_size = 1 * kMB,
-            .page_size = 1 * kMB,
-            .lock_memory = false,
-            .prefetch_memory = false,
+            // NOLINT(temp-dir-unique): test_md 是 SDK 约定的行情通道名，其 shm_dir 每用例唯一
+            .channel_name = "test_md", .shm_dir = home_ + "/shm", .meta_file_size = 1 * kMB,
+            .page_size = 1 * kMB,      .lock_memory = false,      .prefetch_memory = false,
         };
         (void)ChannelMeta::open_or_create(mdcfg);
 

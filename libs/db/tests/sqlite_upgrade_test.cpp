@@ -3,28 +3,19 @@
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
-#include <dztrader/core/this_process.h>
 #include <dztrader/db/database.h>
 
 #include <cstdint>
 #include <filesystem>
 #include <iterator>
 #include <map>
-#include <random>
 #include <string>
+
+#include "test_temp_dir.h"
 
 using namespace dztrader::db;
 
 namespace {
-
-std::filesystem::path unique_db_path(const std::string& name) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-            "_" + std::to_string(dist(gen)) + ".db");
-}
 
 /// 删除 db 及附属文件 (Windows 下须先释放全部连接句柄再调用)
 void remove_db_files(const std::filesystem::path& path) {
@@ -192,7 +183,7 @@ void create_v1_schema(SQLite::Database& db) {
 // (改名+新列) 在下面逐列断言, 故不再单独构造 v4 库 — 重复 DDL 收益低且易与驱动漂移.
 // ============================================================================
 TEST(SqliteUpgradeTest, V1WithDataUpgradesToV5PreservingRows) {
-    const auto path = unique_db_path("dz_sqlite_upgrade_v1");
+    const auto path = dztrader::test::unique_temp_path("dz_sqlite_upgrade_v1", "db");
     {
         SQLite::Database db(path.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         create_v1_schema(db);
@@ -342,7 +333,7 @@ TEST(SqliteUpgradeTest, V1WithDataUpgradesToV5PreservingRows) {
 
 // v4 产出列断言 (全新库 v5): 改名后列在、旧列名消失、声明类型正确.
 TEST(SqliteUpgradeTest, V5SchemaHasV4InstrumentColumns) {
-    const auto path = unique_db_path("dz_sqlite_upgrade_v4cols");
+    const auto path = dztrader::test::unique_temp_path("dz_sqlite_upgrade_v4cols", "db");
     open_and_migrate(path);
 
     const auto columns = raw_columns(path, "instruments");
@@ -373,7 +364,7 @@ TEST(SqliteUpgradeTest, V5SchemaHasV4InstrumentColumns) {
 // ============================================================================
 
 TEST(SqliteUpgradeTest, OrdersUniqueConstraintRejectsDuplicate) {
-    const auto path = unique_db_path("dz_sqlite_upgrade_uniq_orders");
+    const auto path = dztrader::test::unique_temp_path("dz_sqlite_upgrade_uniq_orders", "db");
     open_and_migrate(path);
     {
         SQLite::Database db(path.string(), SQLite::OPEN_READWRITE);
@@ -394,7 +385,7 @@ TEST(SqliteUpgradeTest, OrdersUniqueConstraintRejectsDuplicate) {
 }
 
 TEST(SqliteUpgradeTest, TradesUniqueKeyAllowsSameTradeIdAcrossDays) {
-    const auto path = unique_db_path("dz_sqlite_upgrade_uniq_trades");
+    const auto path = dztrader::test::unique_temp_path("dz_sqlite_upgrade_uniq_trades", "db");
     open_and_migrate(path);
     {
         SQLite::Database db(path.string(), SQLite::OPEN_READWRITE);
@@ -415,7 +406,7 @@ TEST(SqliteUpgradeTest, TradesUniqueKeyAllowsSameTradeIdAcrossDays) {
 }
 
 TEST(SqliteUpgradeTest, InstrumentsPrimaryKeyRejectsDuplicate) {
-    const auto path = unique_db_path("dz_sqlite_upgrade_pk_instr");
+    const auto path = dztrader::test::unique_temp_path("dz_sqlite_upgrade_pk_instr", "db");
     open_and_migrate(path);
     {
         SQLite::Database db(path.string(), SQLite::OPEN_READWRITE);
@@ -439,7 +430,7 @@ TEST(SqliteUpgradeTest, InstrumentsPrimaryKeyRejectsDuplicate) {
 // 变更随事务整体回滚.
 // ============================================================================
 TEST(SqliteUpgradeTest, V2FailureRollsBackWholeMigration) {
-    const auto path = unique_db_path("dz_sqlite_upgrade_v2_fail");
+    const auto path = dztrader::test::unique_temp_path("dz_sqlite_upgrade_v2_fail", "db");
     {
         SQLite::Database db(path.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         create_v1_schema(db);
@@ -507,7 +498,7 @@ TEST(SqliteUpgradeTest, V3ProductClassMapsEveryCaseBranch) {
         {"1", 1},  {"2", 2},  {"3", 3},   {"4", 4},   {"5", 5},   {"6", 6},   {"7", 7},
         {"8", 8},  {"9", 9},  {"10", 10}, {"11", 11}, {"12", 12}, {"13", 13}, {"14", 14},
     };
-    const auto path = unique_db_path("dz_sqlite_upgrade_v3_case");
+    const auto path = dztrader::test::unique_temp_path("dz_sqlite_upgrade_v3_case", "db");
     {
         SQLite::Database db(path.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         create_v1_schema(db);

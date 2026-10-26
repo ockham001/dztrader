@@ -23,7 +23,6 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
-#include <random>
 
 namespace dztrader::webui {
 namespace {
@@ -121,20 +120,9 @@ struct ShmFixture {
 // ===== LogDomainService::handle_log_control（迁移自 log_control_test.cpp，
 // dispatch_log_control 归并后行为等价：self 直调/其他 SHM/失败 NOTIFY_UI/未知类型）=====
 
-/// 进程唯一配置文件路径（PID + 随机后缀）：新写用例按 §3.5 唯一化，避免并发
-/// ctest 运行共用同名 config。
-std::filesystem::path unique_cfg_path(const std::string& name) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-            "_" + std::to_string(dist(gen)) + ".json");
-}
-
 // 自身 target：直调 LogConfig，不写 SHM，publish 推当前生效值（镜像 + 广播）
 TEST(LogDomainServiceTest, SelfTargetDirectCallsLogConfig) {
-    auto cfg_path = std::filesystem::temp_directory_path() / "dzweb_dispatch_self.json";
+    auto cfg_path = dztrader::test::unique_temp_path("dzweb_dispatch_self", "json");
     std::filesystem::remove(cfg_path);
     dztrader::platform::LogConfig self_log("dzweb", cfg_path);
     self_log.load();
@@ -157,7 +145,7 @@ TEST(LogDomainServiceTest, SelfTargetDirectCallsLogConfig) {
 
 // 自身 target 非法 level：set_log_config 抛，publish 回推旧值，self_log 未变
 TEST(LogDomainServiceTest, SelfTargetInvalidLevelPublishesOld) {
-    auto cfg_path = std::filesystem::temp_directory_path() / "dzweb_dispatch_invalid.json";
+    auto cfg_path = dztrader::test::unique_temp_path("dzweb_dispatch_invalid", "json");
     std::filesystem::remove(cfg_path);
     dztrader::platform::LogConfig self_log("dzweb", cfg_path);
     self_log.load();  // 默认 debug
@@ -205,7 +193,7 @@ TEST(LogDomainServiceTest, SelfTargetSetFailureNotifiesUi) {
 // 其他进程 target：写 SHM SET_LOG_CONFIG 帧，不改自身
 TEST(LogDomainServiceTest, OtherTargetWritesShmFrame) {
     ShmFixture fx;
-    auto cfg_path = std::filesystem::temp_directory_path() / "dzweb_dispatch_other.json";
+    auto cfg_path = dztrader::test::unique_temp_path("dzweb_dispatch_other", "json");
     std::filesystem::remove(cfg_path);
     dztrader::platform::LogConfig self_log("dzweb", cfg_path);
     self_log.load();  // 默认 debug
@@ -229,7 +217,7 @@ TEST(LogDomainServiceTest, OtherTargetWritesShmFrame) {
 
 // 其他进程 target 且 writer 缺失: WriteFailed, 不产生任何帧
 TEST(LogDomainServiceTest, OtherTargetNoWriterFails) {
-    auto cfg_path = std::filesystem::temp_directory_path() / "dzweb_dispatch_nowriter.json";
+    auto cfg_path = dztrader::test::unique_temp_path("dzweb_dispatch_nowriter", "json");
     std::filesystem::remove(cfg_path);
     dztrader::platform::LogConfig self_log("dzweb", cfg_path);
     self_log.load();
@@ -246,7 +234,7 @@ TEST(LogDomainServiceTest, OtherTargetNoWriterFails) {
 // FLUSH 其他进程: 帧写入成功 -> Ok + instance_id=目标 + 空 payload
 TEST(LogDomainServiceTest, FlushOtherTargetWritesFrame) {
     ShmFixture fx;
-    auto cfg_path = std::filesystem::temp_directory_path() / "dzweb_dispatch_flush.json";
+    auto cfg_path = dztrader::test::unique_temp_path("dzweb_dispatch_flush", "json");
     std::filesystem::remove(cfg_path);
     dztrader::platform::LogConfig self_log("dzweb", cfg_path);
     self_log.load();
@@ -266,7 +254,7 @@ TEST(LogDomainServiceTest, FlushOtherTargetWritesFrame) {
 // FLUSH 自身 target: 短路径直接 flush — Ok, 无帧, 无回推 (契约 log: 形态 2 短路)
 TEST(LogDomainServiceTest, FlushSelfTargetShortPathNoFrame) {
     ShmFixture fx;
-    auto cfg_path = unique_cfg_path("dzweb_dispatch_flush_self");
+    auto cfg_path = dztrader::test::unique_temp_path("dzweb_dispatch_flush_self", "json");
     std::filesystem::remove(cfg_path);
     dztrader::platform::LogConfig self_log("dzweb", cfg_path);
     self_log.load();
@@ -284,7 +272,7 @@ TEST(LogDomainServiceTest, FlushSelfTargetShortPathNoFrame) {
 
 // FLUSH 自身 target 且 writer 缺失 (API-only): 短路径不依赖事件通道, 仍 Ok
 TEST(LogDomainServiceTest, FlushSelfTargetWithoutWriterStillOk) {
-    auto cfg_path = unique_cfg_path("dzweb_dispatch_flush_self_nowriter");
+    auto cfg_path = dztrader::test::unique_temp_path("dzweb_dispatch_flush_self_nowriter", "json");
     std::filesystem::remove(cfg_path);
     dztrader::platform::LogConfig self_log("dzweb", cfg_path);
     self_log.load();
@@ -301,7 +289,7 @@ TEST(LogDomainServiceTest, FlushSelfTargetWithoutWriterStillOk) {
 
 // FLUSH 其他进程 target 且 writer 缺失: WriteFailed, 不产生任何帧
 TEST(LogDomainServiceTest, FlushOtherTargetNoWriterFails) {
-    auto cfg_path = unique_cfg_path("dzweb_dispatch_flush_nowriter");
+    auto cfg_path = dztrader::test::unique_temp_path("dzweb_dispatch_flush_nowriter", "json");
     std::filesystem::remove(cfg_path);
     dztrader::platform::LogConfig self_log("dzweb", cfg_path);
     self_log.load();
@@ -317,7 +305,7 @@ TEST(LogDomainServiceTest, FlushOtherTargetNoWriterFails) {
 
 // 未知帧类型：返回 NotHandled
 TEST(LogDomainServiceTest, NonLogControlFrameReturnsNotHandled) {
-    auto cfg_path = std::filesystem::temp_directory_path() / "dzweb_dispatch_unknown.json";
+    auto cfg_path = dztrader::test::unique_temp_path("dzweb_dispatch_unknown", "json");
     std::filesystem::remove(cfg_path);
     dztrader::platform::LogConfig self_log("dzweb", cfg_path);
 

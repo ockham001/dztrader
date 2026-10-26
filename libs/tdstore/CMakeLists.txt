@@ -22,7 +22,7 @@ file(GLOB TDSTORE_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_t
 foreach(testfile ${TDSTORE_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
     add_executable(dztdstore_${testname} ${testfile} tests/test_main.cpp)
-    target_link_libraries(dztdstore_${testname} PRIVATE dztdstore GTest::gtest)
+    target_link_libraries(dztdstore_${testname} PRIVATE dztdstore dztest_support GTest::gtest)
     set_target_properties(dztdstore_${testname} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR})
     gtest_discover_tests(dztdstore_${testname} PROPERTIES LABELS fast)
     install(TARGETS dztdstore_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)

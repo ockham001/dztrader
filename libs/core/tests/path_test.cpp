@@ -9,25 +9,15 @@
 
 #include <filesystem>
 #include <optional>
-#include <random>
 #include <string>
 #include <string_view>
 
 #include <gtest/gtest.h>
 
+#include "test_temp_dir.h"
+
 namespace paths = dztrader::paths;
 namespace env = dztrader::env;
-
-namespace {
-
-/// 每个用例唯一临时目录（随机后缀：同一进程内连续用例、并行测试 exe 均不冲突）
-std::filesystem::path unique_temp_dir(std::string_view name) {
-    std::random_device rd;
-    return std::filesystem::temp_directory_path() /
-           (std::string(name) + "_" + std::to_string(rd()));
-}
-
-}  // namespace
 
 /// 每个用例独占一个 DZTRADER_HOME；TearDown 恢复 test-base 注入的原值并清缓存。
 ///
@@ -45,7 +35,7 @@ protected:
 #endif
         os_home_ = env::get(os_home_key_);
 
-        test_home_ = unique_temp_dir("dztrader_test_home");
+        test_home_ = dztrader::test::unique_temp_dir("dztrader_test_home");
         env::set("DZTRADER_HOME", test_home_.string());
         paths::reset_for_test();
     }
@@ -87,7 +77,7 @@ TEST_F(PathsTest, HomeFromEnvVar) {
 
 TEST_F(PathsTest, RelativeHomeIsNormalized) {
     const auto relative =
-        std::filesystem::path(unique_temp_dir("dztrader_test_rel_home").filename());
+        std::filesystem::path(dztrader::test::unique_temp_dir("dztrader_test_rel_home").filename());
     const auto expected = std::filesystem::absolute(relative);
 
     env::set("DZTRADER_HOME", relative.string());
@@ -105,7 +95,7 @@ TEST_F(PathsTest, RelativeHomeIsNormalized) {
 // ---------------------------------------------------------------------------
 
 TEST_F(PathsTest, FallsBackToOsHomeWhenEnvUnset) {
-    const auto fake_os_home = unique_temp_dir("dztrader_test_os_home");
+    const auto fake_os_home = dztrader::test::unique_temp_dir("dztrader_test_os_home");
     env::unset("DZTRADER_HOME");
     env::set(os_home_key_, fake_os_home.string());
     paths::reset_for_test();
@@ -119,7 +109,7 @@ TEST_F(PathsTest, FallsBackToOsHomeWhenEnvUnset) {
 
 // reset_for_test(): 换环境变量后清缓存, 下一次调用按新 home 重新解析。
 TEST_F(PathsTest, ResetForTestReResolvesHome) {
-    const auto home_b = unique_temp_dir("dztrader_test_home_b");
+    const auto home_b = dztrader::test::unique_temp_dir("dztrader_test_home_b");
     EXPECT_EQ(paths::home(), test_home_);
 
     env::set("DZTRADER_HOME", home_b.string());

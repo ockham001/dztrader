@@ -8,6 +8,7 @@
 #include "fake_data_change_notifier.h"
 
 #include <nlohmann/json.hpp>
+#include <atomic>
 #include <filesystem>
 #include <memory>
 #include <dztrader/data_type.h>
@@ -17,7 +18,7 @@
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
-#include "unique_temp.h"
+#include "test_temp_dir.h"
 
 namespace dztrader::webui {
 namespace {
@@ -33,7 +34,11 @@ struct ReadyShmFixture {
     static constexpr uint64_t MB = 1024ull * 1024;
 
     ReadyShmFixture() {
-        channel_name = "dz_test_msctrl_" + test::unique_suffix();
+        // 实例序号 + 进程唯一后缀：unique_suffix() 在进程内恒等（见 test_temp_dir.h），
+        // 光靠它同一进程里的两个 fixture 会撞名、一个的析构会删掉另一个的 shm 目录。
+        static std::atomic<uint64_t> instance_seq{0};
+        channel_name = "dz_test_msctrl_" + test::unique_suffix() + "_" +
+                       std::to_string(instance_seq.fetch_add(1, std::memory_order_relaxed));
         shm_dir = std::filesystem::temp_directory_path() / channel_name;
         std::filesystem::remove_all(shm_dir);
         std::filesystem::create_directories(shm_dir);

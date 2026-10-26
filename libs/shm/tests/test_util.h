@@ -1,6 +1,8 @@
 #ifndef DZTRADER_SHM_TEST_UTIL_H_
 #define DZTRADER_SHM_TEST_UTIL_H_
 
+#include "test_temp_dir.h"
+
 #include <chrono>
 #include <dztrader/shm/named_semaphore.h>
 #include <dztrader/shm/process_mutex.h>
@@ -37,7 +39,13 @@ inline std::string unique_channel_name(const std::string& prefix) {
 }
 
 inline std::filesystem::path test_shm_dir(const std::string& channel_name) {
-    return std::filesystem::temp_directory_path() / "dz_shm_test" / channel_name;
+    // 父目录也按进程唯一（#136）：同机并行跑多个测试二进制时，各自独占
+    // <temp>/dz_shm_test_<pid>_<rand>， 不再共享一个固定父目录。channel_name
+    // 本身已唯一，这里再加一层是为了满足 「全仓无固定 temp_directory_path()/dz_*
+    // 目录」并让清理边界与进程一一对应。
+    static const std::filesystem::path root =
+        dztrader::test::unique_temp_dir_tracked("dz_shm_test");
+    return root / channel_name;
 }
 
 inline void create_page_file(const std::filesystem::path& dir, uint64_t page_id, uint64_t size) {

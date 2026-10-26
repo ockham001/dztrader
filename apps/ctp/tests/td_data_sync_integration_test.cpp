@@ -3,40 +3,29 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
-#include <random>
 #include <string>
 #include <vector>
 
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
-#include <dztrader/core/this_process.h>
 #include <dztrader/trading/td_ingest.h>
 
 #include "td/td_persist_records.h"
 #include "td/td_persist_writer.h"
 #include "td/td_prescan.h"
 #include "td/td_report_filter.h"
+#include "test_temp_dir.h"
 
 namespace dztrader::ctp {
 namespace {
-
-/// 进程唯一临时目录名 (ctest -j 并行时避免多个测试 exe 共用固定目录名冲突).
-std::filesystem::path unique_temp_dir(const std::string& name) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-            "_" + std::to_string(dist(gen)));
-}
 
 /// 进程内组装 td 侧组件: 临时库 + PersistWriter 真线程 + ReportFilter + TdIngestGate.
 /// 测试按场景手工编排生产者/消费者时序, 模拟 spec §6 场景矩阵.
 class TdDataSyncIntegrationTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        tmp_dir_ = unique_temp_dir("dz_td_data_sync_it");
+        tmp_dir_ = dztrader::test::unique_temp_dir("dz_td_data_sync_it");
         std::filesystem::create_directories(tmp_dir_);
         db_path_ = (tmp_dir_ / "test.db").string();
         std::filesystem::remove(db_path_);
@@ -243,7 +232,7 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
     // ===================== 变体 B: 首帧 106 → gap(DZ_FRAME_NOTIFY_UI,105) → 回补
     // ===================== 独立临时库: 先提交 1..100 (W=100 快照), 帧 DZ_FRAME_NOTIFY_UI-105 在
     // reader 开启前完成写入, DB 提交在后 (在途窗口).
-    std::filesystem::path tmp2 = unique_temp_dir("dz_td_data_sync_it_b");
+    std::filesystem::path tmp2 = dztrader::test::unique_temp_dir("dz_td_data_sync_it_b");
     std::filesystem::create_directories(tmp2);
     extra_dirs_.push_back(tmp2);  // 断言提前返回时也由 TearDown 清理
     const std::string db2 = (tmp2 / "b.db").string();

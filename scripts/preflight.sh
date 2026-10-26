@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # preflight.sh — 提交前本地门禁的唯一入口（Linux）
 #
-# 覆盖：日志格式 / clang-format 21.x / 文档链接 / 测试可移植性 / MSVC hazard lint /
+# 覆盖：日志格式 / clang-format 21.x / 文档链接 / 测试可移植性+临时目录隔离 / MSVC hazard lint /
 #       前端五件套。MSVC 侧失败（Windows 头顺序、C4101 等）Linux 编译器拦不到，
 #       由 scripts/check_msvc_hazards.py 做源码级 lint。
 # CI 的 linux job 复用同一脚本的 C 段（--c-only），避免门禁命令在
@@ -102,6 +102,9 @@ check_docs_links() {
 }
 
 check_test_portability() {
+    # 先跑检查器自测：保证已知绕过形态（多级路径 / (ec) 重载 / 折行 / 固定通道名）
+    # 仍被拦住，再扫真实测试文件（#136）。
+    "$PYTHON" scripts/check_test_portability.py --selftest
     "$PYTHON" scripts/check_test_portability.py
 }
 
@@ -159,7 +162,7 @@ echo "preflight: python=$PYTHON clang-format=$CF ($CF_VERSION)"
 run_step "log format (apps/ libs/)" check_log_format
 run_step "clang-format 21.x dry-run (libs apps)" check_clang_format
 run_step "docs links" check_docs_links
-run_step "test portability" check_test_portability
+run_step "test portability + temp-dir isolation" check_test_portability
 run_step "msvc hazard lint" check_msvc_hazards
 if [ "$C_ONLY" -eq 0 ]; then
     run_step "frontend (type-check/lint/lint:css/test/gen:types)" check_frontend

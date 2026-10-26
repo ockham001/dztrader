@@ -8,15 +8,15 @@
 #include <string>
 #include <vector>
 
-#include "unique_temp.h"
+#include "test_temp_dir.h"
 #include "ws_log_tail.h"
 
 namespace fs = std::filesystem;
 
 namespace {
 
+using dztrader::test::unique_temp_dir;
 using dztrader::webui::LogTailManager;
-using dztrader::webui::test::unique_temp_dir;
 
 class WsLogTailManagerTest : public ::testing::Test {
 protected:

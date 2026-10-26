@@ -3,29 +3,20 @@
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
-#include <dztrader/core/this_process.h>
 #include <dztrader/db/database.h>
 #include <dztrader/tdstore/schema_catalog.h>
 
 #include <algorithm>
 #include <filesystem>
 #include <iterator>
-#include <random>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
-namespace {
+#include "test_temp_dir.h"
 
-std::filesystem::path unique_db_path() {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           ("dz_td_schema_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-            "_" + std::to_string(dist(gen)) + ".db");
-}
+namespace {
 
 std::vector<std::string> table_columns(const std::filesystem::path& path,
                                        const std::string& table) {
@@ -74,7 +65,7 @@ std::vector<std::string> primary_key_fields(const dztrader::db::ResourceSchema& 
 class SchemaCatalogTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        path_ = unique_db_path();
+        path_ = dztrader::test::unique_temp_path("dz_td_store", "db");
         auto database = dztrader::db::Database::open(
             dztrader::db::Config{.backend = "sqlite", .options = {{"path", path_.string()}}},
             dztrader::tdstore::schemas());

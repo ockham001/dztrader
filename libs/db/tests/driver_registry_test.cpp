@@ -10,7 +10,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <random>
 #include <span>
 #include <string>
 #include <string_view>
@@ -20,21 +19,12 @@
 #include <dztrader/db/database.h>
 
 #include "../src/driver_registry.h"
+#include "test_temp_dir.h"
 
 namespace {
 
 namespace db = dztrader::db;
 namespace internal = dztrader::db::internal;
-
-std::filesystem::path unique_db_path(std::string_view name) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           (std::string(name) + "_" +
-            std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
-            std::to_string(dist(gen)) + ".db");
-}
 
 /// 注册表是进程级 static: backend 名带 pid + 进程内序号, 使 --gtest_repeat 不撞名
 /// (等价于 §1.5 的 pid/随机后缀要求; 不引入仅测试可见的生产清理 API)
@@ -169,7 +159,7 @@ TEST(DriverRegistryTest, DatabaseOpenUnknownBackendKeepsCodeAndMessage) {
 
 class SqliteRegistryTest : public ::testing::Test {
 protected:
-    void SetUp() override { path_ = unique_db_path("dz_registry"); }
+    void SetUp() override { path_ = dztrader::test::unique_temp_path("dz_registry", "db"); }
 
     void TearDown() override {
         session_.reset();

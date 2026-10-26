@@ -5,6 +5,10 @@
  * 本套件在 SetUp 内自管临时 DZTRADER_HOME（AGENTS.md 硬门禁 2 的测试豁免）；
  * 同一二进制内所有用例共用同一 home 路径（paths::home() 按进程缓存），
  * 每个用例重新创建目录并清理相关环境变量。
+ *
+ * home 目录名带 PID + 随机后缀：`gtest_discover_tests` 把每个用例注册成独立 ctest
+ * 进程，`ctest -j` 下固定名目录会被并发用例互相 `remove_all`（#136 实测
+ * `StructuralViolationsThrowAndKeepFile` 因此偶发失败）。
  */
 #include <gtest/gtest.h>
 
@@ -14,6 +18,8 @@
 #include <dztrader/error.h>
 
 #include <nlohmann/json.hpp>
+
+#include "test_temp_dir.h"
 
 #include <filesystem>
 #include <fstream>
@@ -68,7 +74,7 @@ protected:
 
     void SetUp() override {
         original_home_ = dztrader::env::get("DZTRADER_HOME");
-        home_ = fs::temp_directory_path() / "dz_test_db_config";
+        home_ = dztrader::test::unique_temp_dir("dz_test_db_config");
         fs::remove_all(home_);
         fs::create_directories(home_ / "configs");
         fs::create_directories(home_ / "db");

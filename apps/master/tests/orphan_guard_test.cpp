@@ -4,6 +4,7 @@
  */
 
 #include "orphan_guard.h"
+#include "test_temp_dir.h"
 
 #include <dztrader/core/env.h>
 #include <dztrader/core/path.h>
@@ -34,19 +35,10 @@ namespace {
 
 namespace process_v2 = boost::process::v2;
 
-/// 进程唯一临时目录名（PID + 随机数）：ctest -j 并行时 gtest_discover_tests 把
+/// 进程唯一临时目录名，见 test_temp_dir.h。ctest -j 并行时 gtest_discover_tests 把
 /// 每个用例注册为独立 ctest 测试并行运行, 固定目录会让并行用例共用同一把
 /// master.pid 文件锁互相踩踏 (FileLockPreventsDoubleInstance 的 try_lock 断言
-/// 被其他用例持锁打穿)。与其他 master 测试的 unique_temp_dir 同款惯例。
-std::filesystem::path unique_temp_dir() {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           ("master_orphan_test_" +
-            std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) + "_" +
-            std::to_string(dist(gen)));
-}
+/// 被其他用例持锁打穿)。
 
 /// 日志行唯一后缀（避免当日日志文件中历史运行的残留行干扰断言）。
 std::string unique_tag() {
@@ -63,7 +55,7 @@ std::filesystem::path worker_exe() {
         ;
 }
 
-std::filesystem::path log_dir() { return std::filesystem::temp_directory_path() / "dz_test_logs"; }
+std::filesystem::path log_dir() { return dztrader::test::unique_temp_dir_tracked("dz_test_logs"); }
 
 /// 读取本测试 logger 写出的全部日志文本。
 /// DailyFileSinkMt 在扩展名前插入日期，故按前缀匹配。
@@ -167,7 +159,7 @@ protected:
     }
 
     void SetUp() override {
-        tmp_dir_ = unique_temp_dir();
+        tmp_dir_ = dztrader::test::unique_temp_dir("master_orphan_test");
         std::filesystem::remove_all(tmp_dir_);
         std::filesystem::create_directories(tmp_dir_);
 

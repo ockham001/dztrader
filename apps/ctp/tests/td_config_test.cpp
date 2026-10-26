@@ -1,4 +1,5 @@
 #include "td/td_config.h"
+#include "test_temp_dir.h"
 
 #include <gtest/gtest.h>
 #include <filesystem>
@@ -11,7 +12,7 @@ namespace {
 class TdConfigTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        tmp_dir_ = std::filesystem::temp_directory_path() / "dz_td_config_test";
+        tmp_dir_ = dztrader::test::unique_temp_dir("dz_td_config_test");
         std::filesystem::create_directories(tmp_dir_);
     }
     void TearDown() override { std::filesystem::remove_all(tmp_dir_); }

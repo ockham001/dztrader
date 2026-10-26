@@ -16,6 +16,8 @@
 #include <string>
 #include <string_view>
 
+#include "test_temp_dir.h"
+
 using dztrader::shm::ChannelConfig;
 using dztrader::shm::ChannelMeta;
 using dztrader::shm::FrameView;
@@ -40,12 +42,9 @@ void create_event_channel(const std::filesystem::path& shm_dir) {
 
 void create_md_channel(const std::filesystem::path& shm_dir) {
     ChannelConfig cfg{
-        .channel_name = "test_md",
-        .shm_dir = shm_dir,
-        .meta_file_size = 1 * kMB,
-        .page_size = 1 * kMB,
-        .lock_memory = false,
-        .prefetch_memory = false,
+        // NOLINT(temp-dir-unique): test_md 是 SDK 约定的行情通道名，其 shm_dir 每用例唯一
+        .channel_name = "test_md", .shm_dir = shm_dir,   .meta_file_size = 1 * kMB,
+        .page_size = 1 * kMB,      .lock_memory = false, .prefetch_memory = false,
     };
     (void)ChannelMeta::open_or_create(cfg);
 }
@@ -64,7 +63,7 @@ protected:
     std::optional<Reader> probe_;
 
     void SetUp() override {
-        home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_md").string();
+        home_ = dztrader::test::unique_temp_dir("dz_test_strategy_md").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         shm_dir_ = home_ + "/shm";
@@ -152,7 +151,7 @@ protected:
 class MdApiInitEnvTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        home_ = (std::filesystem::temp_directory_path() / "dz_test_strategy_md").string();
+        home_ = dztrader::test::unique_temp_dir("dz_test_strategy_md").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         dztrader::env::set("DZTRADER_HOME", home_);

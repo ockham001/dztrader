@@ -21,6 +21,7 @@
 #include "orphan_guard.h"
 #include "process_registry.h"
 #include "process_supervisor.h"
+#include "test_temp_dir.h"
 
 #include <gtest/gtest.h>
 #include <boost/asio/io_context.hpp>
@@ -41,21 +42,10 @@ namespace {
 // 测试用默认配置
 ShmGlobalConfig make_default_shm_global() { return {.meta_file_size = 1 * 1024 * 1024}; }
 
-/// 进程唯一临时目录名（PID + 随机数）：ctest -j 并行时避免多个测试 exe
-/// 共用固定目录名（如 dz_shm_mgr_test / dz_pc_frame_test）导致 SHM 文件互相占用冲突。
-std::filesystem::path unique_temp_dir(const std::string& name) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-            "_" + std::to_string(dist(gen)));
-}
-
 class ShmManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        tmp_dir_ = unique_temp_dir("dz_shm_mgr_test");
+        tmp_dir_ = dztrader::test::unique_temp_dir("dz_shm_mgr_test");
         std::filesystem::remove_all(tmp_dir_);
         std::filesystem::create_directories(tmp_dir_);
         orig_home_ = dztrader::env::get("DZTRADER_HOME");
@@ -596,7 +586,7 @@ protected:
     std::string gw_name_;
 
     void SetUp() override {
-        tmp_dir_ = unique_temp_dir("dz_pc_frame_test");
+        tmp_dir_ = dztrader::test::unique_temp_dir("dz_pc_frame_test");
         std::filesystem::remove_all(tmp_dir_);
         std::filesystem::create_directories(tmp_dir_);
         std::random_device rd;

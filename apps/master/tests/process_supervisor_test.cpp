@@ -4,6 +4,7 @@
  */
 
 #include "process_supervisor.h"
+#include "test_temp_dir.h"
 
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/env.h>
@@ -22,37 +23,25 @@
 #include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
-#include <random>
 #include <thread>
 #include <vector>
 
 namespace dztrader::master {
 namespace {
 
-/// 构建进程唯一临时目录名（PID + 随机数）：ctest -j 并行时避免多个测试 exe
-/// 共用固定目录名（如 dz_supervisor_test）导致 SHM 文件互相占用的冲突。
-std::filesystem::path unique_temp_dir(const std::string& name) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-            "_" + std::to_string(dist(gen)));
-}
-
 class ProcessSupervisorTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite() {
         dztrader::log::LoggerSetup log_cfg;
         log_cfg.logger_name = "process_supervisor_test";
-        log_cfg.log_dir = std::filesystem::temp_directory_path() / "dz_test_logs";
+        log_cfg.log_dir = dztrader::test::unique_temp_dir_tracked("dz_test_logs");
         log_cfg.enable_console = true;
         log_cfg.level = spdlog::level::debug;
         dztrader::log::set_default_logger(log_cfg);
     }
 
     void SetUp() override {
-        tmp_dir_ = unique_temp_dir("dz_supervisor_test");
+        tmp_dir_ = dztrader::test::unique_temp_dir("dz_supervisor_test");
         std::filesystem::remove_all(tmp_dir_);
         std::filesystem::create_directories(tmp_dir_);
         orig_home_ = dztrader::env::get("DZTRADER_HOME");

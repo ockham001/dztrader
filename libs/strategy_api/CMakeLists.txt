@@ -102,7 +102,7 @@ foreach(testfile ${SDK_TESTS})
         ${SDK_TEST_SOURCES})
     target_include_directories(dzstrategy_sdk_${testname} PRIVATE ${SDK_INTERNAL_INCLUDES})
     target_link_libraries(dzstrategy_sdk_${testname} PRIVATE
-        dztrading strategy_api_headers dzcore dzshm GTest::gtest
+        dztrading strategy_api_headers dzcore dzshm dztest_support GTest::gtest
         Boost::boost nlohmann_json::nlohmann_json)
     if(testname IN_LIST SDK_API_TESTS)
         target_sources(dzstrategy_sdk_${testname} PRIVATE src/api.cpp src/db_database.cpp)

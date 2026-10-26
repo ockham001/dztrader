@@ -6,7 +6,7 @@
 #include "repository.h"
 #include "config.h"
 #include "mirror_store.h"
-#include "unique_temp.h"
+#include "test_temp_dir.h"
 #include "ws_broadcaster.h"
 #include <dztrader/core/path.h>
 #include <dztrader/platform/log_config.h>
@@ -25,7 +25,7 @@ public:
 
 /// 唯一化日志文件名（§3.5）：ctest -j 下用例为独立进程，固定名会与并发用例冲突
 std::string unique_log(const std::string& base) {
-    return base + "_" + dztrader::webui::test::unique_suffix() + ".log";
+    return base + "_" + dztrader::test::unique_suffix() + ".log";
 }
 }  // namespace
 
@@ -94,6 +94,9 @@ TEST_F(LogControllerTest, GetFilesReturnsList) {
     ofs.close();
 
     auto req = admin_req();
+    // 显式大 limit：paths::logs() 是全仓测试共享目录，list_files 默认 limit=30 且按
+    // mtime 降序分页 —— 并发进程留下的更新日志会把刚写的文件挤出第一页（#136）。
+    req->setParameter("limit", "1000");
     auto resp = invoke(&LogCtrl::get_files, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
     auto body = parse_resp(resp);

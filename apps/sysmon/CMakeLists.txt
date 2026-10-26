@@ -79,6 +79,17 @@ foreach(testfile ${DZSYSMON_TESTS})
             LABELS fast
             RUN_SERIAL TRUE
         )
+    elseif(testname STREQUAL "collector_oracle_test")
+        # 真机 oracle（#136 AC5）：读 ctest 注入的 DZTRADER_HOME/shm（全仓测试共享同一目录），
+        # DiskDomainsHoldOnRealMachine 先 collect_shm_dir 再用 recursive_directory_iterator
+        # 独立走第二遍同一目录，断言 page_files 与 oldest_file_age_sec「同源」（⟺）以及
+        # 页文件字节 ≤ 目录总字节。两次读取之间若有并发进程增删页文件，两个视图取自不同
+        # 时刻会让 ⟺ 与 ≤ 翻转 —— 必须与往该目录写 shm 的用例互斥。
+        gtest_discover_tests(dzsysmon_${testname} PROPERTIES
+            LABELS fast
+            RUN_SERIAL TRUE
+            TIMEOUT 60
+        )
     else()
         gtest_discover_tests(dzsysmon_${testname} PROPERTIES LABELS fast)
     endif()

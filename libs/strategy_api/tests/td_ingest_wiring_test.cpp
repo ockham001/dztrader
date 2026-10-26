@@ -17,6 +17,7 @@
 
 #include "db_database.h"
 #include "strategy_context.h"
+#include "test_temp_dir.h"
 
 #include <array>
 #include <filesystem>
@@ -45,12 +46,9 @@ void create_event_channel(const std::filesystem::path& shm_dir) {
 
 void create_md_channel(const std::filesystem::path& shm_dir) {
     ChannelConfig cfg{
-        .channel_name = "test_md",
-        .shm_dir = shm_dir,
-        .meta_file_size = 1 * kMB,
-        .page_size = 1 * kMB,
-        .lock_memory = false,
-        .prefetch_memory = false,
+        // NOLINT(temp-dir-unique): test_md 是 SDK 约定的行情通道名，其 shm_dir 每用例唯一
+        .channel_name = "test_md", .shm_dir = shm_dir,   .meta_file_size = 1 * kMB,
+        .page_size = 1 * kMB,      .lock_memory = false, .prefetch_memory = false,
     };
     (void)ChannelMeta::open_or_create(cfg);
 }
@@ -68,8 +66,7 @@ protected:
         // 释放上一用例缓存的 ingest 只读句柄; Windows 上未关闭的句柄会让下面的 remove_all
         // 撞文件占用。
         dztrader::strategy_api_internal::reset_ingest_cache_for_test();
-        home_ =
-            (std::filesystem::temp_directory_path() / "dz_test_strategy_ingest_wiring").string();
+        home_ = dztrader::test::unique_temp_dir("dz_test_strategy_ingest_wiring").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         std::filesystem::create_directories(home_ + "/db");

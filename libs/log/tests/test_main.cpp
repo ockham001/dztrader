@@ -19,6 +19,7 @@ void ensure_test_root() {
         return;
     }
     auto model = boost::filesystem::path(
+        // NOLINT(temp-dir-unique): %%%% 是 boost::unique_path 的模板，下一行即展开为唯一路径
         (std::filesystem::temp_directory_path() / "dz-test-%%%%-%%%%").string());
     auto unique = boost::filesystem::unique_path(model);
     std::filesystem::create_directories(unique.string());

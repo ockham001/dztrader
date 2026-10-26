@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include "test_temp_dir.h"
+
 namespace {
 
 /// instruments 查询 SDK 接口 (dz_db_query_instruments) 测试。
@@ -22,7 +24,7 @@ protected:
     DzDatabase* db_ = nullptr;
 
     void SetUp() override {
-        const auto dir = std::filesystem::temp_directory_path() / "dz_test_strategy_db_instruments";
+        const auto dir = dztrader::test::unique_temp_dir("dz_test_strategy_db_instruments");
         std::filesystem::remove_all(dir);
         std::filesystem::create_directories(dir);
         db_path_ = (dir / "td.db").string();

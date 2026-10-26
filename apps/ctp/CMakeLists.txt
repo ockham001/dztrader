@@ -177,7 +177,7 @@ foreach(testfile ${MD_CTP_TESTS})
     )
     target_include_directories(dzmd_ctp_${testname} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(dzmd_ctp_${testname} PRIVATE
-        dzcore dzplatform_headers GTest::gtest
+        dzcore dzplatform_headers dztest_support GTest::gtest
         spdlog::spdlog magic_enum::magic_enum nlohmann_json::nlohmann_json
     )
     # 测试用指定初始化器只填部分字段，豁免 -Wmissing-field-initializers
@@ -213,7 +213,7 @@ foreach(testfile ${TD_CTP_TESTS})
     )
     target_include_directories(dztd_ctp_${testname} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(dztd_ctp_${testname} PRIVATE
-        dzcore GTest::gtest
+        dzcore dztest_support GTest::gtest
         spdlog::spdlog magic_enum::magic_enum nlohmann_json::nlohmann_json
         # td_config.h include <dztrader/platform/ctp_md_config.h> (复用 BrokerEntry 等类型)
         dzplatform_headers

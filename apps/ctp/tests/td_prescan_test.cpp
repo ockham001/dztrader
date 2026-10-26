@@ -5,7 +5,6 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
-#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -13,30 +12,20 @@
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
-#include <dztrader/core/this_process.h>
 #include <dztrader/db/database.h>
 #include <dztrader/tdstore/schema_catalog.h>
 
 #include "td/td_persist_records.h"
 #include "td/td_prescan.h"
+#include "test_temp_dir.h"
 
 namespace dztrader::ctp {
 namespace {
 
-/// 进程唯一临时目录名 (ctest -j 并行时避免测试 exe 共用固定目录名冲突)
-std::filesystem::path unique_temp_dir(const std::string& name) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
-    return std::filesystem::temp_directory_path() /
-           (name + "_" + std::to_string(static_cast<uint32_t>(dztrader::this_process::pid())) +
-            "_" + std::to_string(dist(gen)));
-}
-
 class TdPrescanTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        tmp_dir_ = unique_temp_dir("dz_td_prescan_test");
+        tmp_dir_ = dztrader::test::unique_temp_dir("dz_td_prescan_test");
         std::filesystem::create_directories(tmp_dir_);
         db_path_ = (tmp_dir_ / "test.db").string();
         std::filesystem::remove(db_path_);

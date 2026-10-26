@@ -24,6 +24,7 @@
 #include <thread>
 
 #include "db_database.h"
+#include "test_temp_dir.h"
 
 namespace {
 
@@ -34,7 +35,7 @@ protected:
     DzDatabase* db_ = nullptr;
 
     void SetUp() override {
-        const auto dir = std::filesystem::temp_directory_path() / "dz_test_strategy_db";
+        const auto dir = dztrader::test::unique_temp_dir("dz_test_strategy_db");
         std::filesystem::remove_all(dir);
         std::filesystem::create_directories(dir);
         db_path_ = (dir / "td.db").string();
@@ -345,7 +346,7 @@ protected:
     std::optional<std::string> orig_home_;
 
     void SetUp() override {
-        home_ = (std::filesystem::temp_directory_path() / "dz_test_db_open_default").string();
+        home_ = dztrader::test::unique_temp_dir("dz_test_db_open_default").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/db");
         std::filesystem::create_directories(home_ + "/configs");
@@ -483,7 +484,7 @@ protected:
     std::filesystem::path dir_;
 
     void SetUp() override {
-        dir_ = std::filesystem::temp_directory_path() / "dz_test_ingest_db_cache";
+        dir_ = dztrader::test::unique_temp_dir("dz_test_ingest_db_cache");
         std::filesystem::remove_all(dir_);
         std::filesystem::create_directories(dir_);
         dztrader::strategy_api_internal::reset_ingest_cache_for_test();
@@ -650,7 +651,7 @@ protected:
     std::optional<std::string> orig_md_source_;
 
     void SetUp() override {
-        home_ = (std::filesystem::temp_directory_path() / "dz_test_ingest_config_error").string();
+        home_ = dztrader::test::unique_temp_dir("dz_test_ingest_config_error").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
         std::filesystem::create_directories(home_ + "/configs");
@@ -675,6 +676,7 @@ protected:
             .prefetch_memory = false,
         });
         (void)ChannelMeta::open_or_create(ChannelConfig{
+            // NOLINT(temp-dir-unique): test_md 是 SDK 约定的行情通道名，其 shm_dir 每用例唯一
             .channel_name = "test_md",
             .shm_dir = home_ + "/shm",
             .meta_file_size = 1 * kChannelMB,
