@@ -89,7 +89,10 @@ if (-not $SkipConfigure) {
     # 本地默认不接以保持开发构建行为不变、也不把缓存服务引入本地失败面。
     if ($env:DZ_SCCACHE -eq '1') {
         $configureArgs += '-DCMAKE_CXX_COMPILER_LAUNCHER=sccache'
-        Write-Host "sccache: enabled (CI only, CMAKE_CXX_COMPILER_LAUNCHER=sccache)" -ForegroundColor DarkGray
+        # sccache + /Zi 会因并行 cl.exe 争用 PDB 失败（C1041）且无法缓存；CI 改用 /Z7
+        # （调试信息嵌入 obj）。本地/普通构建仍走 CMakeLists 默认的 /Zi。
+        $configureArgs += '-DDZ_MSVC_EMBED_DEBUG_INFO=ON'
+        Write-Host "sccache: enabled (CI only, CMAKE_CXX_COMPILER_LAUNCHER=sccache, /Z7)" -ForegroundColor DarkGray
     }
     Write-Host "cmake $($configureArgs -join ' ')"
     Push-Location $repoRoot

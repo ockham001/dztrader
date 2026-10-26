@@ -48,8 +48,6 @@ jobs:
       # setup.ps1 只在 CI 显式打开 sccache launcher：本地增量构建保持不接，避免与
       # CMakeLists 硬编码的 MSVC /showIncludes 前缀（依赖追踪）互相影响。
       DZ_SCCACHE: "1"
-      # ctest 并行（套件内的 RUN_SERIAL 仍串行）
-      CTEST_PARALLEL_LEVEL: "4"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -138,8 +136,6 @@ jobs:
     env:
       # 冒烟测试冲突时直接失败, 防止被静默跳过造成假绿 (Linux 上冲突检测暂为空实现, 恒跑)
       DZ_SMOKE_STRICT: "1"
-      # ctest 并行（套件内的 RUN_SERIAL 仍串行）
-      CTEST_PARALLEL_LEVEL: "4"
       # 必须与 ccache-action 的缓存目录一致（action 读 CCACHE_DIR，未设时用
       # ${GITHUB_WORKSPACE}/.ccache）；否则 restore/save 的目录 ≠ 编译实际写入目录，
       # 表现为"ccache: enabled 但永不命中"。
