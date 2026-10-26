@@ -2,6 +2,7 @@
 import { computed, onMounted } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import ThemeDropdown from './ThemeDropdown.vue'
+import { UNAVAILABLE_TEXT } from '@/composables/format'
 import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
 import { useWebSocket } from '@/composables/wsClient'
 import { useSysmonStore } from '@/stores/sysmon'
@@ -52,7 +53,7 @@ const cpuBadge = computed<ResourceBadge>(() => {
   if (!entry || !entry.available || sysmon.cpuUsageRatio === null) {
     // 不可用/首次采样：按契约显示不可用，不得用 0 冒充（契约 sysmon §2.7）
     return {
-      text: '不可用',
+      text: UNAVAILABLE_TEXT,
       stateClass: 'topbar__resource--unavailable',
       title: entry?.reason ? `CPU 使用率不可用: ${entry.reason}` : 'CPU 使用率不可用',
     }
@@ -77,7 +78,7 @@ const memBadge = computed<ResourceBadge>(() => {
   const ratio = sysmon.memoryInfo?.used_ratio ?? null
   if (!entry || !entry.available || ratio === null) {
     return {
-      text: '不可用',
+      text: UNAVAILABLE_TEXT,
       stateClass: 'topbar__resource--unavailable',
       title: entry?.reason ? `内存使用率不可用: ${entry.reason}` : '内存使用率不可用',
     }
@@ -129,7 +130,7 @@ const diskBadges = computed<DiskBadge[]>(() => {
       return {
         mount: volume.mount,
         label: shortMountLabel(volume.mount),
-        text: '不可用',
+        text: UNAVAILABLE_TEXT,
         level: null,
         title: volume.reason
           ? `${volume.mount} 卷不可用: ${volume.reason}`
@@ -142,7 +143,7 @@ const diskBadges = computed<DiskBadge[]>(() => {
       return {
         mount: volume.mount,
         label: shortMountLabel(volume.mount),
-        text: '不可用',
+        text: UNAVAILABLE_TEXT,
         level: null,
         title: `${volume.mount} 卷使用率不可用`,
       }
