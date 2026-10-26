@@ -4,7 +4,6 @@
 #include <dztrader/db/database.h>
 
 #include <filesystem>
-#include <random>
 
 #include "test_temp_dir.h"
 

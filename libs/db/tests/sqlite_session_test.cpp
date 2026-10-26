@@ -9,7 +9,6 @@
 #include <dztrader/error.h>
 
 #include <filesystem>
-#include <random>
 #include <string>
 
 #include "test_temp_dir.h"

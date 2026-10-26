@@ -23,7 +23,6 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
-#include <random>
 
 namespace dztrader::webui {
 namespace {
