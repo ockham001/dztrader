@@ -229,6 +229,15 @@ function volumeLevel(volume: SysmonVolumeInfo): ResourceLevel | null {
   return volume.used_ratio === null ? null : resourceLevel(volume.used_ratio)
 }
 
+/**
+ * 使用率色标等级（内存 / 交换；#120 收口）：与卷行、顶栏共用 `resourceLevel` 的同一组常量
+ * （≥70% 黄、≥90% 红）。`null`（不可用 / 本帧无值）不套任何状态色——不可用不是 0%，
+ * 不得用 normal 冒充「一切正常」。
+ */
+function usageLevel(ratio: number | null): ResourceLevel | null {
+  return ratio === null ? null : resourceLevel(ratio)
+}
+
 const shmAvailable = computed(() => isAvailable('shm_dir'))
 const shmDir = computed(() => sysmon.shmDirInfo)
 // ---- 磁盘 I/O（#76）：每物理盘吞吐 / IOPS / 延迟 / 队列深度 / 利用率，按可用性映射渲染 ----
@@ -703,7 +712,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           <span class="monitor-view__card-icon"><Icon name="MEM" :size="14" /></span>内存
         </h2>
         <template v-if="memory">
-          <div class="monitor-view__metric-row">
+          <div class="monitor-view__metric-row" :data-level="usageLevel(memory.used_ratio)">
             <button
               type="button"
               class="monitor-view__metric monitor-view__value-btn"
@@ -749,7 +758,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
         <div class="monitor-view__subsection" data-test="monitor-swap">
           <h3 class="monitor-view__panel-title">交换</h3>
           <ul v-if="swapInfo && swapInfo.total_bytes > 0" class="monitor-view__list" data-test="monitor-memory-swap">
-            <li class="monitor-view__list-row">
+            <li class="monitor-view__list-row" :data-level="usageLevel(swapInfo.used_ratio)">
               <span class="monitor-view__list-label">使用率</span>
               <span class="monitor-view__list-value">
                 <button
@@ -1153,6 +1162,23 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 }
 
 .monitor-view__disk-row[data-level='danger'] .monitor-view__list-value {
+  color: var(--status-error-default);
+}
+
+/* 内存 / 交换使用率色标（#120 收口）：与卷行、顶栏共用 useResourceLevel 的同一组常量与
+   设计 token（≥70% 黄、≥90% 红）；色标是独立展示规则，不是越限判定。 */
+.monitor-view__metric-row[data-level='normal'] .monitor-view__metric,
+.monitor-view__list-row[data-level='normal'] .monitor-view__value-btn {
+  color: var(--status-success-default);
+}
+
+.monitor-view__metric-row[data-level='warn'] .monitor-view__metric,
+.monitor-view__list-row[data-level='warn'] .monitor-view__value-btn {
+  color: var(--status-alert-default);
+}
+
+.monitor-view__metric-row[data-level='danger'] .monitor-view__metric,
+.monitor-view__list-row[data-level='danger'] .monitor-view__value-btn {
   color: var(--status-error-default);
 }
 
