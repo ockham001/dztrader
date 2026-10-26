@@ -6,8 +6,12 @@ import {
   SPARKLINE_MAX_POINTS,
   SPARKLINE_WINDOW_SEC,
   historySparklinePoints,
+  mergeSparklinePoints,
+  sparklineWindow,
   upsertLiveSparklinePoint,
+  type SparklineHistoryWindow,
   type SparklinePoint,
+  type SparklineWindow,
 } from '@/composables/sysmonSparkline'
 import { SYSMON_HISTORY_METRICS } from '@/stores/sysmonHistory'
 import { useSysmonStore } from '@/stores/sysmon'
@@ -39,6 +43,30 @@ export function trendMetricLabel(key: string): string {
 }
 
 /**
+ * 单指标的内联趋势状态（#142）。
+ *
+ * `history` 只记录**最近一次成功**响应的窗口元信息；补拉失败/降级时不清空它，窗口口径
+ * 因此保持如常，另以 `stale` 标记「本轮未刷新」。
+ */
+interface TrendSeriesState {
+  /** sparkline 序列（Unix 秒 + 指标原始值）；不可用且无可保留序列时为空数组 */
+  points: SparklinePoint[]
+  /** 最近一次成功历史响应的窗口元信息；`null` = 从未成功补拉 */
+  history: SparklineHistoryWindow | null
+  /** 是否有可用序列（历史可用或保留了上一轮）；false = 静默不渲染、实时推进也跳过 */
+  hasSeries: boolean
+  /** 最近一次补拉失败/降级但保留了上一轮序列（#142：不清空，标记未刷新） */
+  stale: boolean
+}
+
+const EMPTY_STATE: TrendSeriesState = {
+  points: [],
+  history: null,
+  hasSeries: false,
+  stale: false,
+}
+
+/**
  * 系统监控内联趋势 store（#127）。
  *
  * 数据源（验收标准「不新增后端接口」）：**每次进入监控页**按 `max_points=60` 拉取最近 15 分钟的
@@ -49,10 +77,14 @@ export function trendMetricLabel(key: string): string {
  * （`cpuUsageRatio` / `memoryInfo.used_ratio` / …），不是另一次采样；且 `upsertLiveSparklinePoint`
  * 在「历史末桶比实时桶更靠右」时仍把末点值更新为当前值，任何时序下都成立。
  *
- * **静默降级**：历史库不可用（`available=false`，含历史被关闭的 `not_found`）或 HTTP 失败时
+ * **静默降级**：历史库从未可用（`available=false`，含历史被关闭的 `not_found`）或 HTTP 失败时
  * 该指标不产生任何序列、也不推进实时点 —— 视图不渲染 sparkline，数值照常显示。降级不是错误：
  * 本 store 不保存错误状态、不 toast。**每次进入页面都会重试补拉**：历史库可能在进程运行期间
  * 才建立（首次进入时 `not_found` 是常见状态），一次失败不应让整个 SPA 会话失去 sparkline。
+ *
+ * **降级保留（#142）**：若该指标上一轮已有可用序列，本次补拉失败/降级**不清空它**——保留曲线
+ * 并标记 `stale`，实时推进继续（否则一次瞬时失败会让 sparkline 闪一下消失、再等下一次进入
+ * 页面才回来）。首次进入即不可用时没有可保留的数据，仍按「静默不渲染」处理。
  */
 export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
   const sysmon = useSysmonStore()
@@ -69,16 +101,27 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
     'shm_dir.total_bytes': () => sysmon.shmDirInfo?.total_bytes ?? null,
   }
 
-  /** 各指标的 sparkline 序列（Unix 秒 + 指标原始值）；历史不可用的指标为空数组 */
-  const series = ref<Record<string, SparklinePoint[]>>({})
-  /** 历史库对各指标是否可用（false = 静默不渲染；实时推进也据此跳过） */
-  const available = ref<Record<string, boolean>>({})
+  /** 各指标的序列状态（#142：序列 + 窗口元信息 + 降级保留标记） */
+  const states = ref<Record<string, TrendSeriesState>>({})
   /** 历史补拉的 in-flight promise：并发调用共享同一次请求（完成后置空，下次进入页面重新补拉） */
   let inFlight: Promise<void> | null = null
 
-  /** 某指标的序列（历史不可用 / 未加载时为空数组） */
+  function stateOf(key: string): TrendSeriesState {
+    return states.value[key] ?? EMPTY_STATE
+  }
+
+  /** 某指标的序列（历史从未可用 / 未加载时为空数组） */
   function seriesOf(key: string): SparklinePoint[] {
-    return series.value[key] ?? []
+    return stateOf(key).points
+  }
+
+  /**
+   * 某指标时间窗的如实口径（#142）：完整覆盖 / 实际覆盖时长 / 是否被 `max_points` 截断 /
+   * 是否本轮未刷新。组件据它决定标题文案（不再无条件写「最近 15 分钟」）。
+   */
+  function windowOf(key: string): SparklineWindow {
+    const state = stateOf(key)
+    return sparklineWindow(state.points, state.history, state.stale)
   }
 
   /**
@@ -88,8 +131,9 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
    * 60 点上限会把 15 分钟窗口压缩成 5 分钟。同桶内只更新末点值（`upsertLiveSparklinePoint`
    * 保证末点 == 当前值），跨桶才追加。
    *
-   * 历史不可用的指标跳过：sparkline 的语义是「历史库补齐 + 实时推进」，没有历史时只靠实时点
-   * 堆出的曲线会让用户以为看到了 15 分钟趋势（验收标准要求此时静默不渲染）。
+   * 无可用序列的指标跳过：sparkline 的语义是「历史库补齐 + 实时推进」，没有历史时只靠实时点
+   * 堆出的曲线会让用户以为看到了 15 分钟趋势（验收标准要求此时静默不渲染）。降级保留的序列
+   * 仍继续推进（#142：上一轮可用即算有序列）。
    *
    * watcher 常驻（应用级 store）：离开监控页后仍持续推进，下次进入页面时已有最近趋势；
    * 每次进入页面还会重新补拉历史（见 `init`），因此离开再回来不会看到过期窗口。
@@ -101,15 +145,19 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
     if (!Number.isFinite(ts) || ts <= 0) return
     const bucketTs = Math.floor(ts / SPARKLINE_BUCKET_SEC) * SPARKLINE_BUCKET_SEC
 
-    let next: Record<string, SparklinePoint[]> | null = null
+    let next: Record<string, TrendSeriesState> | null = null
     for (const key of SYSMON_TREND_METRIC_KEYS) {
-      if (available.value[key] !== true) continue
+      const state = stateOf(key)
+      if (!state.hasSeries) continue
       const value = readers[key]()
       if (value === null || !Number.isFinite(value)) continue
-      next ??= { ...series.value }
-      next[key] = upsertLiveSparklinePoint(next[key] ?? [], { ts: bucketTs, value })
+      next ??= { ...states.value }
+      next[key] = {
+        ...state,
+        points: upsertLiveSparklinePoint(state.points, { ts: bucketTs, value }),
+      }
     }
-    if (next) series.value = next
+    if (next) states.value = next
   }
 
   // 同步 flush：快照写入与序列推进发生在同一个 tick，组件重渲染时两者已经是同一份事实
@@ -140,21 +188,34 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
           max_points: SPARKLINE_MAX_POINTS,
         })),
       )
-      const nextSeries: Record<string, SparklinePoint[]> = {}
-      const nextAvailable: Record<string, boolean> = {}
+      const next: Record<string, TrendSeriesState> = { ...states.value }
       responses.forEach((response, index) => {
         const key = SYSMON_TREND_METRIC_KEYS[index]
-        // 只有 200 + available=true 才算历史可用；HTTP 失败与降级响应同样静默
+        const previous = next[key] ?? EMPTY_STATE
+        // 失败 / 降级：**不清空**上一轮可用序列（#142），保留并标记未刷新。
+        // 首次进入即失败时没有可保留的数据，保持空序列（静默降级，不渲染）。
         if (response.status !== 'fulfilled' || response.value.available !== true) {
-          nextSeries[key] = []
-          nextAvailable[key] = false
+          next[key] = { ...previous, stale: previous.hasSeries }
           return
         }
-        nextSeries[key] = historySparklinePoints(response.value.series[0]?.points ?? [])
-        nextAvailable[key] = true
+        const value = response.value
+        next[key] = {
+          // 已经推进的实时点不能因补拉丢失；历史范围内无桶时上一轮序列整体保留
+          points: mergeSparklinePoints(
+            historySparklinePoints(value.series[0]?.points ?? []),
+            previous.points,
+          ),
+          history: {
+            from: value.from,
+            to: value.to,
+            truncated: value.truncated,
+            intervalSec: value.interval_sec,
+          },
+          hasSeries: true,
+          stale: false,
+        }
       })
-      series.value = nextSeries
-      available.value = nextAvailable
+      states.value = next
       // 历史返回时快照可能已经到达：立刻接上当前值，末点不落后于旁边的数字
       appendLive()
     } catch {
@@ -164,6 +225,7 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
 
   return {
     seriesOf,
+    windowOf,
     init,
   }
 })

@@ -52,6 +52,8 @@ import type { SysmonVolumeInfo } from '@/types/generated'
 // admin 可编辑并只下发与原镜像的差异，非 admin 只读（编辑仅 admin，与系统设置页一致）。
 // 内联趋势（#127）：标量指标（CPU 使用率 / 负载 / 内存 / 交换 / 共享内存目录）旁有最近 15 分钟
 // sparkline（历史 REST 补齐 + WS 增量推进，末点即旁边的当前值）；历史不可用时静默不渲染。
+// 时间窗按实际覆盖标注（#142）：只有覆盖满 15 分钟才写「最近 15 分钟」，历史范围内无桶 /
+// 被 max_points 截断时标注真实覆盖时长，截断与历史视图同口径；补拉降级保留上一轮曲线并标未刷新。
 // 点击 sparkline 或数值切到历史视图并预选该指标（契约 sysmon §6.1，不新增接口）。
 // 卡片折叠（#127）：每核明细 / 每传感器明细 / 每盘七项指标 / 每网卡十项指标默认收起、展开显示全部；
 // 折叠状态不持久化；可用性空态不进折叠。列数 <md 单列、md–xl 双列、≥xl 三列（沿用既有断点，
@@ -60,7 +62,8 @@ import type { SysmonVolumeInfo } from '@/types/generated'
 const sysmon = useSysmonStore()
 /** 历史视图 store（#79）：与实时 store 完全独立，切换视图不影响 WS 与实时快照 */
 const history = useSysmonHistoryStore()
-/** 内联趋势 store（#127）：历史 REST 补齐 + WS 增量推进，历史不可用时静默不渲染 */
+/** 内联趋势 store（#127）：历史 REST 补齐 + WS 增量推进，历史不可用时静默不渲染；
+ *  补拉降级保留上一轮序列并标记未刷新（#142） */
 const trend = useSysmonTrendStore()
 
 /** 视图模式：实时（默认） / 历史 / 配置（#81 展示生效配置 + admin 编辑） */
@@ -68,7 +71,8 @@ const viewMode = ref<'realtime' | 'history' | 'config'>('realtime')
 
 onMounted(() => {
   void sysmon.init()
-  // 内联趋势（#127）：进入页面时补拉最近 15 分钟历史；历史库不可用/被关闭时静默降级
+  // 内联趋势（#127）：进入页面时补拉最近 15 分钟历史；历史库不可用/被关闭时静默降级，
+  // 已保留的上一轮曲线在补拉降级时继续显示并标记未刷新（#142）
   void trend.init()
 })
 
@@ -482,6 +486,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 <SysmonSparkline
                   :points="trend.seriesOf('cpu.usage_ratio')"
                   :label="trendMetricLabel('cpu.usage_ratio')"
+                  :coverage="trend.windowOf('cpu.usage_ratio')"
                   class="monitor-view__sparkline"
                   data-test="monitor-sparkline-cpu"
                   @open="openHistory('cpu.usage_ratio')"
@@ -548,6 +553,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 v-if="loadAverage.one !== null"
                 :points="trend.seriesOf('cpu.load_average.one')"
                 :label="trendMetricLabel('cpu.load_average.one')"
+                :coverage="trend.windowOf('cpu.load_average.one')"
                 class="monitor-view__sparkline monitor-view__sparkline--block"
                 data-test="monitor-sparkline-load"
                 @open="openHistory('cpu.load_average.one')"
@@ -722,6 +728,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
             <SysmonSparkline
               :points="trend.seriesOf('memory.used_ratio')"
               :label="trendMetricLabel('memory.used_ratio')"
+              :coverage="trend.windowOf('memory.used_ratio')"
               class="monitor-view__sparkline"
               data-test="monitor-sparkline-memory"
               @open="openHistory('memory.used_ratio')"
@@ -771,6 +778,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               <SysmonSparkline
                 :points="trend.seriesOf('swap.used_ratio')"
                 :label="trendMetricLabel('swap.used_ratio')"
+                :coverage="trend.windowOf('swap.used_ratio')"
                 class="monitor-view__sparkline monitor-view__sparkline--inline"
                 data-test="monitor-sparkline-swap"
                 @open="openHistory('swap.used_ratio')"
@@ -877,6 +885,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 <SysmonSparkline
                   :points="trend.seriesOf('shm_dir.total_bytes')"
                   :label="trendMetricLabel('shm_dir.total_bytes')"
+                  :coverage="trend.windowOf('shm_dir.total_bytes')"
                   class="monitor-view__sparkline monitor-view__sparkline--inline"
                   data-test="monitor-sparkline-shm"
                   @open="openHistory('shm_dir.total_bytes')"

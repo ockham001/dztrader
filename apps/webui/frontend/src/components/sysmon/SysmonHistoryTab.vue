@@ -4,6 +4,7 @@ import Dropdown from '@/components/shared/Dropdown.vue'
 import type { DropdownItem } from '@/components/shared/Dropdown.vue'
 import Icon from '@/components/shared/Icon.vue'
 import SysmonHistoryChart from '@/components/sysmon/SysmonHistoryChart.vue'
+import { formatDuration } from '@/composables/format'
 import {
   historyUnavailableText,
   SYSMON_HISTORY_LEVELS,
@@ -66,15 +67,8 @@ const summaryText = computed(() => {
 /**
  * 截断后的实际覆盖时长（《帧契约：系统监控》§6.1.2：前端必须把范围控件同步到生效值）。
  * 换算是纯展示：把秒数说成「实际覆盖 X」，与「最近 N」的预设并列显示，
- * 用户就能看出自己看到的不是完整的 N。
+ * 用户就能看出自己看到的不是完整的 N。换算实现与内联趋势共用 `formatDuration`（#142）。
  */
-function formatDuration(seconds: number): string {
-  if (seconds >= 86400) return `${(seconds / 86400).toFixed(1)} 天`
-  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)} 小时`
-  if (seconds >= 60) return `${Math.round(seconds / 60)} 分钟`
-  return `${seconds} 秒`
-}
-
 const effectiveCoverageText = computed(() => {
   if (!history.truncated || history.effectiveRangeSeconds === null) return ''
   return `实际覆盖最近 ${formatDuration(history.effectiveRangeSeconds)}`

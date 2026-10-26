@@ -6,6 +6,7 @@ import {
   formatCount,
   formatCountPerSec,
   formatDecimal,
+  formatDuration,
   formatFrequency,
   formatIops,
   formatLatency,
@@ -181,5 +182,27 @@ describe('formatNumberAuto：图表通用档（整数原样、非整数 2 位）
     expect(formatNumberAuto(0)).toBe('0')
     expect(formatNumberAuto(1234.5678)).toBe('1234.57')
     expect(formatNumberAuto(null)).toBe(UNAVAILABLE_TEXT)
+  })
+})
+
+describe('formatDuration：时长（秒 → 可读时长；#142 从历史视图迁入）', () => {
+  it('不足 1 分钟按秒显示（sparkline 实际覆盖几十秒时不冒充整分钟）', () => {
+    expect(formatDuration(0)).toBe('0 秒')
+    expect(formatDuration(45)).toBe('45 秒')
+    expect(formatDuration(59)).toBe('59 秒')
+  })
+
+  it('分钟取整；小时 / 天保留 1 位小数', () => {
+    expect(formatDuration(60)).toBe('1 分钟')
+    expect(formatDuration(15 * 60)).toBe('15 分钟')
+    expect(formatDuration(3600)).toBe('1.0 小时')
+    expect(formatDuration(6 * 3600)).toBe('6.0 小时')
+    expect(formatDuration(86400)).toBe('1.0 天')
+  })
+
+  it('非法值（null / 非有限 / 负数）返回不可用占位，不显示负时长', () => {
+    expect(formatDuration(null)).toBe(UNAVAILABLE_TEXT)
+    expect(formatDuration(Number.NaN)).toBe(UNAVAILABLE_TEXT)
+    expect(formatDuration(-1)).toBe(UNAVAILABLE_TEXT)
   })
 })

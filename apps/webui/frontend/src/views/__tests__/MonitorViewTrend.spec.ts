@@ -155,6 +155,93 @@ describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', ()
   })
 })
 
+describe('MonitorView 内联趋势窗口口径（#142：按实际覆盖标注，不冒充 15 分钟）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    vi.spyOn(Date, 'now').mockReturnValue(NOW_MS)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('历史响应截断（record_interval < 15s）：标题标注生效覆盖 + 仅显示最近一段', async () => {
+    vi.mocked(sysmonApi.getHistory).mockImplementation((params = {}) => {
+      const to = Math.floor(NOW_MS / 1000)
+      return Promise.resolve({
+        available: true,
+        level: 'raw',
+        metric: params.metric ?? 'cpu.usage_ratio',
+        from: to - 300,
+        to,
+        interval_sec: 5,
+        truncated: true,
+        series: [{
+          dimension: '',
+          points: [
+            { ts: to - 295, min: 0.2, max: 0.2, avg: 0.2, last: 0.2, n: 1 },
+            { ts: to - 5, min: 0.3, max: 0.3, avg: 0.3, last: 0.3, n: 1 },
+          ],
+        }],
+        marks: [],
+        gaps: [],
+      } satisfies SysmonHistoryAvailable)
+    })
+    const wrapper = await mountView()
+
+    const root = wrapper.find('[data-test="monitor-sparkline-cpu"]')
+    expect(root.attributes('title')).toContain('最近 5 分钟')
+    expect(root.attributes('title')).toContain('点数超限，仅显示最近一段')
+    expect(root.attributes('title')).not.toContain('最近 15 分钟')
+    expect(root.attributes('data-window-truncated')).toBe('true')
+  })
+
+  it('历史可用但范围内无桶：两条实时快照后按实际跨度标注', async () => {
+    vi.mocked(sysmonApi.getHistory).mockImplementation((params = {}) => {
+      const from = Math.floor(NOW_MS / 1000) - 15 * 60
+      return Promise.resolve({
+        available: true,
+        level: 'raw',
+        metric: params.metric ?? 'cpu.usage_ratio',
+        from,
+        to: Math.floor(NOW_MS / 1000),
+        interval_sec: null,
+        truncated: false,
+        series: [{ dimension: '', points: [] }],
+        marks: [],
+        gaps: [],
+      } satisfies SysmonHistoryAvailable)
+    })
+    const wrapper = await mountView()
+
+    useSysmonStore().applySnapshot({
+      ...makeSysmonSnapshot({ cpuUsageRatio: 0.42, resourceData: true, sensorData: true }),
+      timestamp: (FIXTURE_SEC + 15) * 1000,
+    })
+    await wrapper.vm.$nextTick()
+
+    const title = wrapper.find('[data-test="monitor-sparkline-cpu"]').attributes('title')
+    expect(title).toContain('最近 15 秒')
+    expect(title).not.toContain('最近 15 分钟')
+  })
+
+  it('单指标补拉降级：重新进入页面时保留上一轮曲线并标记历史未刷新', async () => {
+    mockHistoryAvailable()
+    const first = await mountView()
+    expect(first.find('[data-test="monitor-sparkline-cpu"]').exists()).toBe(true)
+    first.unmount()
+
+    vi.mocked(sysmonApi.getHistory).mockRejectedValue(new Error('HTTP 500'))
+    const second = await mountView()
+
+    const root = second.find('[data-test="monitor-sparkline-cpu"]')
+    expect(root.exists()).toBe(true)
+    expect(root.attributes('title')).toContain('历史未刷新')
+    expect(root.attributes('data-window-stale')).toBe('true')
+  })
+})
+
 describe('MonitorView 跳转历史（#127：点击 sparkline / 数值预选指标）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())

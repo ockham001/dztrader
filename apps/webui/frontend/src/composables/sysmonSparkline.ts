@@ -1,4 +1,5 @@
 import type { SysmonHistoryPoint } from '@/types/api'
+import { formatDuration } from '@/composables/format'
 
 /**
  * 内联趋势（sparkline）的数据整形（#127）。
@@ -102,6 +103,125 @@ export function upsertLiveSparklinePoint(
   if (point.ts > last.ts) return appendSparklinePoint(series, point, windowSec, maxPoints)
   // 实时桶不晚于末点（含同一刻）：只更新值，末点位置不变
   return [...series.slice(0, -1), { ts: last.ts, value: point.value }]
+}
+
+/**
+ * 历史补拉响应里与时间窗口径相关的元信息（#142）。
+ *
+ * `intervalSec = null` = 范围内没有任何桶（契约 sysmon §6.1）：此时 `from`/`to` 只是请求范围，
+ * 不能拿来声称窗口已覆盖——窗口只能按实时点跨度计。
+ */
+export interface SparklineHistoryWindow {
+  from: number
+  to: number
+  truncated: boolean
+  intervalSec: number | null
+}
+
+/**
+ * sparkline 时间窗的如实口径（#142）。
+ *
+ * #127 的实现无论实际数据多少都把标题写成「最近 15 分钟」，三种边界下会骗人：历史可用但
+ * 范围内无桶（实际只有几十秒）、`record_interval_sec < 15` 时 `max_points=60` 被截断（实际
+ * 只有 `60 × interval` 秒）、单指标补拉降级（序列沿用上一轮）。视图据本口径如实标注。
+ */
+export interface SparklineWindow {
+  /** 实际覆盖秒数；无点（不渲染）时为 null */
+  coveredSec: number | null
+  /** true = 已覆盖完整时间窗（title 可称「最近 15 分钟」） */
+  complete: boolean
+  /** true = 服务端因 `max_points` 截断了窗口（契约 sysmon §6.1.2），呈现与历史视图同口径 */
+  truncated: boolean
+  /** true = 本轮历史补拉失败/降级，序列沿用上一轮（#142） */
+  stale: boolean
+}
+
+/**
+ * 计算时间窗的实际覆盖口径（#142）。
+ *
+ * - 历史有桶时以**生效窗口**为准（契约 §6.1.2：截断时 `from` 已前移为首个返回桶）：
+ *   起点取生效 `from`；但历史刚启用时首个桶可能晚于 `from` 一个桶宽以上，此时按首个桶
+ *   起点计（数据不足 15 分钟不得冒充完整）。末端取 `to` 与末点中较大者——页面停留期间
+ *   实时点会推进到查询时刻之后。
+ * - 历史范围内无桶（`intervalSec = null`）或从未拿到历史窗口时，只能按**实时点跨度**
+ *   标注：这正是「新装机器 / 刚启用历史」的实际可见范围。
+ *
+ * 判定容忍一个桶宽：桶按墙钟对齐，正常连续历史的第一个桶可以晚于 `from` 但不超过一个
+ * 桶宽，这属于桶粒度而非窗口缺失。
+ */
+export function sparklineWindow(
+  points: readonly SparklinePoint[],
+  history: SparklineHistoryWindow | null,
+  stale = false,
+): SparklineWindow {
+  const first = points[0]
+  const last = points[points.length - 1]
+  if (!first || !last) {
+    return { coveredSec: null, complete: false, truncated: history?.truncated === true, stale }
+  }
+  let coveredSec: number
+  if (history && history.intervalSec !== null) {
+    const dataStart = first.ts - history.from > history.intervalSec ? first.ts : history.from
+    coveredSec = Math.max(history.to, last.ts) - dataStart
+  } else {
+    coveredSec = last.ts - first.ts
+  }
+  coveredSec = Math.round(Math.max(0, coveredSec))
+  return {
+    coveredSec,
+    complete: coveredSec >= SPARKLINE_WINDOW_SEC,
+    truncated: history?.truncated === true,
+    stale,
+  }
+}
+
+/**
+ * 历史补拉序列与上一轮序列合并（#142）。
+ *
+ * 补拉替换的是历史覆盖的时段，历史末桶之后已推进的实时点必须保留（否则每次进入页面都会
+ * 丢掉最近一个桶的实时趋势）。**历史范围内无桶时保留上一轮序列**：历史刚启用时不能把已经
+ * 攒下的实时趋势清空（本轮补拉只是确认历史还没有数据）。收敛口径与实时推进一致。
+ */
+export function mergeSparklinePoints(
+  history: readonly SparklinePoint[],
+  previous: readonly SparklinePoint[],
+): SparklinePoint[] {
+  if (history.length === 0) return [...previous]
+  const lastHistoryTs = history[history.length - 1].ts
+  const merged = [...history, ...previous.filter(point => point.ts > lastHistoryTs)]
+  const last = merged[merged.length - 1]
+  const inWindow = merged.filter(point => point.ts >= last.ts - SPARKLINE_WINDOW_SEC)
+  return inWindow.length > SPARKLINE_MAX_POINTS
+    ? inWindow.slice(inWindow.length - SPARKLINE_MAX_POINTS)
+    : inWindow
+}
+
+/** 时间窗文案：只有覆盖满整个窗口才称「最近 15 分钟」，否则用实际覆盖时长（#142） */
+export function sparklineWindowText(window: SparklineWindow): string {
+  if (window.coveredSec === null) return '时间窗未知'
+  if (window.complete) return `最近 ${formatDuration(SPARKLINE_WINDOW_SEC)}`
+  return `最近 ${formatDuration(window.coveredSec)}`
+}
+
+/** 窗口口径的限定说明（截断 / 历史未刷新）；无修饰时为空数组 */
+function sparklineWindowNotes(window: SparklineWindow): string[] {
+  const notes: string[] = []
+  if (window.truncated) notes.push('点数超限，仅显示最近一段')
+  if (window.stale) notes.push('历史未刷新')
+  return notes
+}
+
+/** 组件 title：指标名 · 时间窗（限定说明；点击查看历史） */
+export function sparklineTitle(label: string, window: SparklineWindow): string {
+  const notes = [...sparklineWindowNotes(window), '点击查看历史']
+  return `${label} · ${sparklineWindowText(window)}（${notes.join('；')}）`
+}
+
+/** 组件 aria-label：指标名 + 时间窗 + 限定说明 + 查看历史（无障碍文案不重复视觉细节） */
+export function sparklineAriaLabel(label: string, window: SparklineWindow): string {
+  const notes = sparklineWindowNotes(window)
+  const suffix = notes.length > 0 ? `（${notes.join('；')}）` : ''
+  return `${label} ${sparklineWindowText(window)}趋势${suffix}，查看历史`
 }
 
 /** SVG 折线几何：`points` 可直接给 `<polyline points="...">`，`lastValue` 供末点数值断言 */
