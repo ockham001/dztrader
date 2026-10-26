@@ -185,15 +185,21 @@
 - **并行波（同一时间多个 ticket）必须一票一 worktree**；禁止在共享工作区同时改两条线
 - **共享工作区只允许当前票的 WIP**：收尾最后一步 `git switch main && git pull --ff-only`，并让 `git status` 除**已登记的并行线**外干净；把工作区留在 feature 分支就结束会话 = 直接阻塞下一条线（本波 #91→#92）
 - **跨会话（>1 个会话）不提交的文档批次**：开 `docs/*` 分支提交/推送，或移出共享工作区；不要让未提交 docs 长期占着 `git status`（本波 ADR 0026–0030 从 10-22 挂到 10-23）
+- 分支名 `^(feat|fix|docs|test|chore|ci|refactor|perf|style|build)/issue-<n>-<slug>`：`pre-push` hook 从这里取票号跑 scope 检查
 - push 前跑 `./scripts/check-push-scope.sh <issue>`，确认 `@{u}..HEAD` 只含本票 commit
 - 多终端可在不同 worktree 并行；**禁止同一 worktree 同时操作**
 - 合并前确认共同祖先：`git merge-base main HEAD`，无则 cherry-pick
-- **禁止**：`--orphan`、`push --force` 到 main、未确认的 `reset --hard` / `clean -fd`、未经我同意推送远程（`git push` 为权限 ask，force 两式为 deny）
+- **本地 git hooks 由 `setup` 自动安装**（`core.hooksPath=.githooks`）：pre-commit 只对 staged 子集跑 clang-format / 日志格式 / docs links，pre-push 拦直推 main 并按分支名票号跑 `check-push-scope`。hooks 是快速护栏，**不能替代** `preflight` 与 CI。
+- **push 分级授权**（三层守卫：本地 pre-push hook、push 白名单、GitHub main ruleset）：
+  - **免逐次确认**：把本票 commit push 到白名单 feature 分支（上面的命名规则）、`-u` 建上游、创建/更新 PR、重跑 CI、合并后删除**本票**远端分支。前置：本票门禁绿（代码票 `gate build/test`；纯文档票 docs links / `preflight --c-only`）、`check-push-scope` 通过、一轮 review 的修复合并为一次 push。
+  - **仍需确认**：合并 PR 到 main（最后一道；可按票或按波一次授权）、删除非本票分支、打 tag。
+  - **禁止**：直推 main（pre-push hook + GitHub ruleset 双重拦截）、force push（`.opencode` deny；ruleset 拒非快进）。应急逃生口 `DZ_ALLOW_MAIN_PUSH=1` / `DZ_SKIP_HOOKS=1` 只在真故障时用，用完在报告里写明。
 
 ### 本机沙箱（DSH）
 
 - **每次 bash 调用的 `/tmp` 相互隔离**：跨调用要用的日志/快照写 `.cache/`（已 gitignore），不要写 `/tmp`
-- **等待规则**：后台作业用 `job_output(wait=true)`；CI 用 `./scripts/wait-ci.sh`（前台阻塞；`--pr`/`--sha`/`--branch`/`--run`，feature 分支没开 PR 时 `--sha` 约 180s 就报错而不是空等）。**异步子代理完成会自动以 `subagent-settled` 通知**，等待期做只读工作（读 diff/拟关闭评论），不要 bash `sleep` 轮询；`wait_agent` 只对 Team 成员有效
+- **等待规则**：CI / 门禁等长命令用**后台作业**启动（`run_in_background`），需要结果时 `job_output(wait=true)`；等待期做只读准备（拟关闭评论 / 读下一票契约 / 清理 worktree），不要在前台空等（2026-10-26 #146/#147 各阻塞 21–22 分钟）。CI 等待统一 `./scripts/wait-ci.sh --pr <n>`（`--sha` 对无 PR 分支约 180s 报错而不是空等）。**异步子代理完成会自动以 `subagent-settled` 通知**，不要 bash `sleep` 轮询；`wait_agent` 只对 Team 成员有效
+- **权限 preset**：会话被切到 `read-only` 做研究后，转入执行（写文件 / commit / push）前先请用户切回 `workspace-write`（一次），不要逐操作申请 escalation
 - **门禁命令用 `./scripts/gate.sh build|test|preflight`**：同一 build tree 用 flock 串行、自动导出 ccache 环境、日志落 `.cache/gate/`、返回**真实退出码**。要短输出用 `./scripts/gate.sh … --tail N`（成功留 N 行、失败留 max(N,30) 行）；**不要**给门禁命令接 `| tail` / `| head`——管道会吞掉退出码，造成假绿（本波 #75/#81 实测）
 - **交接文档写 `.cache/handoff/`**：全局 `handoff` 技能默认写 OS 临时目录（`/tmp`），本沙箱下不可跨会话，必须改写到仓库 `.cache/`
 - `~/.conan2`、`~/.cache/gh`、`~/.npm` 在 workspace-write 下可能只读：`setup.sh` / `build.sh` / `wait-ci.sh` / `ci-log.sh` 已回退到仓库 `.cache/`；仍被拒时再申请一次更高权限，不要反复重试

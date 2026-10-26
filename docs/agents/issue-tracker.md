@@ -40,6 +40,15 @@
 - **认领**：`gh issue edit <n> --add-assignee @me`
 - **了结**：`gh issue comment <n> --body "<答案>"` → `gh issue close <n>` → 把上下文指针追加到地图的 Decisions-so-far
 
+## 台账检查与 spec 进度
+
+- **spec 母票进度**（子票完成度一眼看，避免母票空挂）：
+  ```bash
+  gh api graphql -f query='{repository(owner:"ockham001",name:"dztrader"){issue(number:41){state subIssuesSummary{total completed}}}}'
+  ```
+- **波末 / 收口前台账体检**：`python3 scripts/check_ledger.py --strict` —— 只读报告三类问题：① open `[spec]` 且子票全关（应走 spec 收口）；② 当前真相源文档里「后续票 / 待实现 … #N」指向已关闭 issue（悬空承诺）；③ `needs-triage` 超期（默认 >3 天，warning）。输出可直接贴进 retro / 收口报告。
+- **读长 spec body**：`gh issue view <n> --json body --jq .body | sed -n '1,160p'`，再按关键词 `grep -n`；不要整段灌进上下文。
+
 ## 版本要求
 
 `gh` ≥ 2.94 才有原生 sub-issue 命令（本机为 2.102，满足）；阻塞边与依赖查询始终走 `gh api`，不受版本限制。

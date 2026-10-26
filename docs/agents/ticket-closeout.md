@@ -53,17 +53,18 @@
 
 ```bash
 ./scripts/check-push-scope.sh <issue>     # @{u}..HEAD 只允许本票 commit；分支有 CI 在跑会被拒绝
-git push -u origin <branch>               # 推送需用户同意（AGENTS 硬门禁）
+git push -u origin <branch>               # 按 AGENTS「push 分级授权」：feature 分支免逐次确认
 gh pr create --base main --head <branch> --title "<type>: <摘要>（#<issue>）" --body-file <body 文件>
-./scripts/wait-ci.sh --pr <n>             # 静默等 PR checks（Windows 约 35–37 分钟）
+./scripts/wait-ci.sh --pr <n>             # 静默等 PR checks（后台作业启动，见下）
 ```
 
-- 本仓用 PR 落地（`ci.yml` 只在 PR / main 触发；main 不受保护也保持一致）。创建 PR 前可用 `pr` 技能整理 body。
-- **波次开头一次性授权**：波次开始时向用户确认一次推送/合并授权（含本波各票范围），此后逐票不再逐次询问 push / PR / merge；越权操作（force push、推送他人分支、跨线合并）仍逐次确认。
+- 本仓用 PR 落地（`ci.yml` 只在 PR / main 触发）；main 有 GitHub ruleset：require PR、禁 force push/删除，直推会被远端拒绝。
+- **push 分级**（AGENTS 硬门禁的细化）：feature 分支 push / PR 创建更新免逐次确认，前置是本票门禁绿 + `check-push-scope` 通过 + 一轮修复一次 push；**合并 PR 到 main 仍需确认**（可按票或按波一次授权）；越权操作（force push、推送他人分支、跨线合并）逐次确认。本地 `.githooks/pre-push` 与 main ruleset 是机器兜底。
 - **PR 开完不阻塞等 CI**：`gh pr create` 成功后即可转下一票（读契约 / 定 spec）或本票收尾准备（拟关闭评论、清理 worktree 计划），CI 结果在自然断点或波末统一用 `./scripts/wait-ci.sh --pr <n>` 收；不要把 CI 等待写成同步步骤（本波 `wait-ci` 阻塞约 3.4h）。**边界**：不阻塞只适用于同波内的下一步准备；本票**合并前必须 CI 绿**，开新波前必须已完成合并（见 §5）。
 - **`wait-ci.sh` 的退出码就是 CI 结论**：不要接 `| tail` / `| head`（会吞掉退出码）；它本来就是静默输出，只打状态变化与失败链接。feature 分支没开 PR 时 `--sha` 约 180s 就报错并提示先建 PR，不会空等到 60 分钟总超时。
 - **推送前先看 `gh run list --branch <branch> --json status`**：同一分支已有 in-progress run 时不要推——会排队/取消，每次 ≈35–40 分钟。把剩余修复攒成 **1 个 commit** 再推；review 修复不要在 CI 跑的时候逐条推（本波 #93 因此取消 3 个 run）。
 - 等待期间不要 `gh run watch` 全量输出、不要 `sleep` 轮询、不要反复 tail 后台日志。CI 红先用 `./scripts/ci-log.sh <run-id>` 定位：它**优先取 `last-test-log` artifact（约 200KB，秒级给出失败用例名）**，再退回失败 job 日志（Windows 可达数十 MB）；同一 run/job 已下载过会复用（`--refresh` 强制重拉，`--context N` 调上下文行数）。
+- **等 CI 用后台作业**：`wait-ci.sh --pr <n>` 以 `run_in_background` 启动，等待期做只读准备（拟关闭评论 / 清理 worktree 计划 / 读下一票契约）；需要结果时 `job_output(wait=true)`，不要前台空等（2026-10-26 #146 / #147 各阻塞 21–22 分钟）。
 - 修红单独提交，不叠加新改动。
 
 ## 5. 合并 PR（硬顺序：先合并，后关 issue）
@@ -107,6 +108,7 @@ Refs: <contract/component/docs 路径>
 
 实现票逐张关闭不等于 spec 收口。`[spec]` 母票必须在子票全部关闭后单独处置：
 
+0. **先跑台账体检**：`python3 scripts/check_ledger.py --strict`，按报告清掉悬空承诺（docs 里指向已关闭票的「后续票」）与过期的 `needs-triage`，再开始收口。
 1. **清点差异**：逐条核对 spec 的用户故事 / 实现决策，分成三类——已交付（给出票号）、已被后续决策推翻或收窄（引用 ADR / spec / PR，并在母票留评论）、不跟踪（写明理由，遵守 §0「不跟踪的写明不跟踪理由」）。
 2. **写收口评论**：沿用 §6 模板（交付 / 已知限制 / 提交 / CI / PR / 验证 / 审查），另加「spec 逐条符合性」与差异清单；参考 #120 的关闭评论。
 3. **关闭母票**：`gh issue close <spec> --comment "<收口评论>"`。母票不作为长期真相源留在 backlog——真相源是契约 / ADR / 文档；遗留的 `ready-for-agent` 等标签会让后续 agent 把已完成的 spec 当成待实现任务。

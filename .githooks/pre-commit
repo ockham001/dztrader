@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# pre-commit — 提交前的快速机械检查（由 setup 安装：git config core.hooksPath .githooks）。
+#
+# 只检查 staged 文件对应的子集，目标 <5 秒：
+#   - C/C++：clang-format 21.x --dry-run --Werror（用 staged 内容校验，不看工作区）
+#   - apps/ 或 libs/：scripts/check_log_format.py（全仓扫描，脚本本身很快）
+#   - docs/ 与根文档：scripts/check_docs_links.py
+#
+# 权威门禁仍是 ./scripts/preflight.sh 与 CI（见 docs/development-checklist.md C 段）：
+# hook 是快速护栏，不是 preflight 的替代品。
+#
+# 逃生口：DZ_SKIP_HOOKS=1 git commit ...   （或 git commit --no-verify）
+
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$ROOT" || exit 0
+
+[ "${DZ_SKIP_HOOKS:-0}" = "1" ] && exit 0
+
+staged=()
+while IFS= read -r -d '' f; do
+    staged+=("$f")
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+[ "${#staged[@]}" -eq 0 ] && exit 0
+
+fail=0
+detail() { printf 'pre-commit: %s\n' "$*" >&2; }
+
+cpp=()
+need_log=0
+need_docs=0
+for f in "${staged[@]}"; do
+    case "$f" in
+        *.h|*.hpp|*.c|*.cc|*.cpp) cpp+=("$f") ;;
+    esac
+    case "$f" in
+        apps/*|libs/*) need_log=1 ;;
+    esac
+    case "$f" in
+        docs/*|AGENTS.md|README.md|GLOSSARY.md|CONTRIBUTING.md|THIRD_PARTY_NOTICES.md) need_docs=1 ;;
+    esac
+done
+
+if [ "${#cpp[@]}" -gt 0 ]; then
+    CF="${CLANG_FORMAT:-}"
+    if [ -z "$CF" ]; then
+        for cand in clang-format-21 clang-format; do
+            if command -v "$cand" >/dev/null 2>&1; then
+                CF="$(command -v "$cand")"
+                break
+            fi
+        done
+    fi
+    if [ -z "$CF" ]; then
+        detail "warning: clang-format not found; skipping format check (CI still enforces)"
+    else
+        for f in "${cpp[@]}"; do
+            [ -f "$f" ] || continue
+            if ! git show ":$f" | "$CF" --assume-filename="$f" --dry-run --Werror >/dev/null 2>&1; then
+                detail "clang-format violation: $f"
+                fail=1
+            fi
+        done
+    fi
+fi
+
+PY=""
+if command -v python3 >/dev/null 2>&1; then
+    PY=python3
+elif command -v python >/dev/null 2>&1; then
+    PY=python
+fi
+
+if [ "$need_log" = 1 ]; then
+    if [ -n "$PY" ] && [ -f scripts/check_log_format.py ]; then
+        "$PY" scripts/check_log_format.py apps/ libs/ >/dev/null ||
+            {
+                detail "log format violation (run: python3 scripts/check_log_format.py apps/ libs/)"
+                fail=1
+            }
+    else
+        detail "warning: python or scripts/check_log_format.py missing; skipping log-format check"
+    fi
+fi
+
+if [ "$need_docs" = 1 ]; then
+    if [ -n "$PY" ] && [ -f scripts/check_docs_links.py ]; then
+        "$PY" scripts/check_docs_links.py >/dev/null ||
+            {
+                detail "broken docs links (run: python3 scripts/check_docs_links.py)"
+                fail=1
+            }
+    else
+        detail "warning: python or scripts/check_docs_links.py missing; skipping docs-links check"
+    fi
+fi
+
+if [ "$fail" -ne 0 ]; then
+    detail "blocked; fix the items above, or bypass with: DZ_SKIP_HOOKS=1 git commit ..."
+    exit 1
+fi
+exit 0

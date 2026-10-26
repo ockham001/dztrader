@@ -33,6 +33,13 @@ esac
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p "$REPO_ROOT/.cache"
 
+# 本地 git hooks（.githooks）：pre-commit 跑 staged 子集机械检查，pre-push 拦直推 main。
+# 权威门禁仍是 preflight 与 CI；hooks 只是快速护栏（见 docs/development-checklist.md C 段）。
+if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$REPO_ROOT" config --local core.hooksPath .githooks
+    echo "git hooks: core.hooksPath=.githooks"
+fi
+
 # ccache 的 CCACHE_DIR 需要每个调用 ccache 的 shell 自己导出（见 scripts/ccache-env.sh）
 # shellcheck source=scripts/ccache-env.sh
 . "$REPO_ROOT/scripts/ccache-env.sh"
