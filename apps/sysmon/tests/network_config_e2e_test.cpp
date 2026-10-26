@@ -351,6 +351,9 @@ TEST_F(NetworkConfigE2ETest, RejectedPatchNotifiesRollsBackAndDoesNotPushSnapsho
     EXPECT_EQ(notify->value("source", std::string()), "dzsysmon");
     EXPECT_EQ(notify->value("level", std::string()), "error");
     EXPECT_TRUE(notify->value("popup", false));
+    // 通知必须能归因到本次配置失败，而不是任意一条 dzsysmon error（否则断言对别的故障也成立）。
+    EXPECT_NE(notify->value("message", std::string()).find("sysmon config update failed"),
+              std::string::npos);
 
     const auto config = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
     ASSERT_TRUE(config.has_value()) << "failure path must still push the effective config";

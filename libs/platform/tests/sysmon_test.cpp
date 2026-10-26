@@ -481,6 +481,10 @@ TEST(SysmonConfigTest, DefaultConfigValid) {
     for (const char* group : {"cpu", "memory", "swap", "volumes", "disk_io", "network"}) {
         EXPECT_TRUE(j["sampling"]["groups"][group].get<bool>()) << group;
     }
+    // 契约 sysmon §3.1 / #124：`disk` 段只剩 `devices`，没有已删除的 `watch_paths`。
+    EXPECT_EQ(j["disk"].size(), 1u);
+    EXPECT_TRUE(j["disk"].contains("devices"));
+    EXPECT_FALSE(j["disk"].contains("watch_paths"));
 #if defined(_WIN32)
     // 契约 sysmon §3.1：Windows 上温度/每核频率不可靠，默认关闭。
     EXPECT_FALSE(j["sampling"]["groups"]["temperature"].get<bool>());

@@ -215,7 +215,7 @@
 |---|---|---|
 | 判定状态机 | `apps/sysmon/thresholds.{h,cpp}`（`ThresholdEvaluator`） | 进入 / 周期重记 / 恢复；纯逻辑，注入墙钟与单调时钟，不读全局配置、不写帧、不写日志 |
 | 输入构造 | 同文件 `make_threshold_inputs` | 把一次计量的 CPU 饱和/内存/交换/全部卷事实转成判定输入 |
-| 日志记录 | `main.cpp` `evaluate_thresholds()` | 把纯函数产出的「待写日志记录」（级别、判定对象、状态、当前值、阈值、活动期持续秒数）落成日志；`cpu_saturated` 无单值阈值——当前值为饱和核 index 集合，`threshold_value` 为 `nullopt`（契约 sysmon §2.8） |
+| 日志记录 | `main.cpp` `evaluate_thresholds()` | 把纯函数产出的「待写日志记录」（级别、判定对象、状态、当前值、阈值、活动期持续秒数）落成日志；`cpu_saturated` 无单值阈值——`current_value` 为饱和核数、`threshold_value` 为 `nullopt`，index 集合只出现在日志文本 `saturated_cores=`（契约 sysmon §2.8） |
 
 **为什么先构造输入再做判定**：「`used = total − available`」口径与「全部卷逐卷一条判定对象」都属于输入转换；把它做成纯函数后，`thresholds_test` 可以用假采集结果确定性验证边界语义（等于阈值算越限、`total_bytes = 0` 的卷不参与判定、读不到不等于恢复），而不必起真实进程或真实磁盘。
 
