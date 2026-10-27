@@ -194,6 +194,11 @@ cmake --install build/windows/x86_64/Release
 Linux 下 `install-artifacts.sh` 额外把调试符号抽到
 `install/<plat>/<arch>/Release-debug-symbols/`（不进部署包）。
 
+> **部署物含第三方 CTP 动态库**：`thostmduserapi_se` / `thosttraderapi_se`（Windows 的 `.dll`、
+> Linux 的 `.so`）随 `dzmd_ctp` / `dztd_ctp` 安装在同一目录；`.lib` 仅编译期链接用，不入部署物。
+> 它们由上海期货信息技术有限公司提供、不属于本项目；归属、许可与再分发条件见
+> [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 的 CTP 一节。
+
 ### 部署到其他电脑（Windows）
 
 复制 `install/windows/x86_64/Release/` 整个目录到目标 Windows x64 机即可运行。
