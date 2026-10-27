@@ -4,7 +4,7 @@ from conan.tools.cmake import CMakeDeps, CMakeToolchain
 
 class DztraderConan(ConanFile):
     name = "dztrader"
-    version = "0.0.1"
+    version = "0.1.0"
     package_type = "application"
 
     settings = "os", "arch", "compiler", "build_type"

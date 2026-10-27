@@ -5,7 +5,7 @@
 cmake_minimum_required(VERSION 3.28)
 
 project(dztrader
-    VERSION 0.0.1
+    VERSION 0.1.0
     DESCRIPTION "高性能量化交易系统"
     LANGUAGES CXX)
 
