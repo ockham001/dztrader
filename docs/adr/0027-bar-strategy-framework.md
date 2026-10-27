@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed（2026-10-20 初稿；2026-10-21 设计评审多轮修订：品种数据与策略上下文合并为一个对象（决策 4）、ctx 自包含执行（决策 3/4）、账户模型改为「单逻辑账户 + N 挂靠账户」（[ADR 0028](0028-strategy-process-logical-account.md) 重写）、挂靠缩放/同步/回放虚拟成交口径（[ADR 0030](0030-attached-account-scaling.md)）、委托 effect 统一走 AUTO；本文为框架总纲 ADR，执行细节以组件文档为准，后续增量变更拆新 ADR；待评审，通过后改 Accepted）
+Accepted（2026-10-27 评审通过；2026-10-20 初稿；2026-10-21 设计评审多轮修订：品种数据与策略上下文合并为一个对象（决策 4）、ctx 自包含执行（决策 3/4）、账户模型改为「单逻辑账户 + N 挂靠账户」（[ADR 0028](0028-strategy-process-logical-account.md) 重写）、挂靠缩放/同步/回放虚拟成交口径（[ADR 0030](0030-attached-account-scaling.md)）、委托 effect 统一走 AUTO；本文为框架总纲 ADR，执行细节以组件文档为准，后续增量变更拆新 ADR）
 
 ## Context
 

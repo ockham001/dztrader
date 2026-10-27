@@ -13,13 +13,13 @@
 
 **v1 不做**：账户的登录/凭据/交易接口管理（属于平台 td 配置）、框架内一键同步/账户级头寸监控（平台/WebUI 后续能力）、跨账户策略组/统一启停/参数同步、归档域历史数据实现（回放续仓依赖它）、Tier 2 交易统计、`Portfolio_*`、信号索引函数、`long*/short*` 分向系列、回测引擎、Python 绑定、1 小时/1 日周期（依赖交易小节）、多周期、跨品种数据（Data0..N）、B 侧定时器回调（`on_schedule`）、撤单/委托管理/算法下单、参数寻优、品种加载次线程化、交易小节/竞价窗口表的数据源（platform.db 落地，[ADR 0018](../adr/0018-strategy-side-kline-and-trading-sessions.md) 决策 2/3）。
 
-**竞价窗口内事件**：B 契约已包含竞价相位（[ADR 0032](../adr/0032-auction-window-strategy-events.md)）——Open 竞价窗口内正常触发三事件、`ctx.is_auction()` 标识相位；框架侧在交易小节表数据源落地后启用，此前按退化小节表运行、窗口内不产生回调。
+**竞价窗口内事件**：B 契约已包含竞价相位（[ADR 0032](../adr/0032-auction-window-strategy-events.md)）——Open 竞价窗口内正常触发三事件、`ctx.is_auction()` 标识相位；框架侧在交易小节表数据源落地后启用；此前 v1 用内置退化小节表（单 24h 小节、无竞价窗口，§5.5），竞价 tick 按普通 tick 处理、`ctx.is_auction()` 恒 false。
 
 ## 2. 角色与进程模型
 
 - 一个策略 = 一个可执行文件 `stg_<id>` = 一个进程 = 一个逻辑账户；实体账户 0..N 个挂在进程内（既有「一个策略一个进程」不变量不变）。
 - 一个进程只有一种用户策略类型 `Strategy`（B）；框架管理器 `BarStrategyManager<Strategy>`（A）对引擎而言是唯一的策略对象，入口 `run_bar_strategy<Strategy>(config)` 内部以 A 调用既有 `run_strategy`。
-- A 实现引擎侧回调（`on_start` / `on_tick` / `on_schedule` / `on_ui_input` / `on_stop` 等）：`on_start` 里取得 `DzContext*`、读取并校验配置（含挂靠账户表）、注册 A 内部的每日 18:00 回卷定时器（§10）；`on_tick` 里做 bar 聚合与实例分发；`on_ui_input` 里解析 `instrument *` / `account *` / `param *` / `status` / `quit` 命令；`on_schedule` 里只处理自己的定时器 ID，不转发给 B。**成交/委托/持仓/资金回报 v1 全部忽略**（不建成交台账、不跟踪委托；逻辑账只由 B 的交易意图推进）。
+- A 实现引擎侧回调（`on_start` / `on_tick` / `on_schedule` / `on_ui_input` / `on_stop` 等）：`on_start` 里取得 `DzContext*`、读取并校验配置（含挂靠账户表）、注册 A 内部的每日 18:00 回卷定时器（§10）；`on_tick` 里把 tick 转交该品种的 builder（bar 边界由 ADR 0031 组件负责，§5.4）并分发实例；`on_ui_input` 里解析 `instrument *` / `account *` / `param *` / `status` / `quit` 命令；`on_schedule` 里只处理自己的定时器 ID，不转发给 B。**成交/委托/持仓/资金回报 v1 全部忽略**（不建成交台账、不跟踪委托；逻辑账只由 B 的交易意图推进）。
 - A 为配置里的每个品种创建一个 B 实例（`instruments` 列表）；品种可按 `instrument add/del` 动态增删；进程故障域独立。
 - 账户表由 A 持有（账户标识 + 挂靠比率），运行期可增删改（§8）；策略逻辑不可见账户身份，也不提供 `ctx.account_id()`。0 个账户时策略照常运行（只记逻辑台账、不发实盘单）。
 - A 在 `on_start` 开始即对配置里的全部品种调 `dz_subscribe`（订阅先于历史查询，保证切换窗口的 tick 不丢）；运行期 `instrument add/del` 同步增/减订阅。回放与 live 的续接规则见 §5.3。
@@ -235,8 +235,8 @@ private:
     //   publish_positions(const AttachedAccount&) / publish_all_positions()：上报逻辑持仓
     //   sync_account(const AttachedAccount&, LargeVolume old_l, LargeVolume new_l, SyncMode, PriceMode) → SyncOutcome
     //   submit_order(const AttachedAccount&, LargeVolume qty, PriceMode)：唯一的 dz_place_order 出口
-    // A 内部方法：update_from_tick / advance_bar / relocate / 静默填充与回放推进 / set_live / set_failed
-    // 其它运行期状态（形成中 bar 聚合值在 price_、回放游标为 A 的局部变量）由 A 维护
+    // A 内部方法：advance_bar / relocate / set_live / set_failed；形成中 bar 与边界判定由每品种的
+    // builder 持有（§5.4），ctx 不保存形成中 bar 聚合值；回放游标为 A 的局部变量
 public:
     InstrumentContext(const InstrumentContext&) = delete;             // 视图/序列自持指针，
     InstrumentContext& operator=(const InstrumentContext&) = delete;  // 搬移即失效
@@ -245,10 +245,21 @@ public:
 };
 
 template <class Strategy>
-struct InstrumentNode {                    // unordered_map 节点内就地构造；ctx 与 B 一起，地址稳定
-    template <class... Args>
-    explicit InstrumentNode(Args&&... args) : ctx(std::forward<Args>(args)...) {}
+struct BarEventSink {                      // A 内部：builder 事件 → 窗口推进 + B 回调（§5.4）
+    InstrumentContext* ctx = nullptr;      // 本节点的 ctx
+    BarStrategyManager<Strategy>* manager = nullptr;  // A：推进窗口 / 门禁 / 失败实例判断
+    void on_bar_open(const bar::Bar& bar, bool is_auction);
+    void on_bar_update(const bar::Bar& bar, bool is_auction);
+    void on_bar_close(const bar::Bar& bar, bool is_auction);
+};
+
+template <class Strategy>
+struct InstrumentNode {                    // unordered_map 节点内就地构造；ctx/builder/B 一起，地址稳定
+    InstrumentNode(BarStrategyManager<Strategy>& manager, const InstrumentInit& init,
+                   const bar::TradingSessionTable& table, std::int32_t period_sec);
     InstrumentContext ctx;                 // 品种数据 + B 的 API 面
+    BarEventSink<Strategy> sink;           // A 内部：builder 事件 → 窗口推进 + B 回调（§5.4）
+    bar::IntradayBarBuilder<BarEventSink<Strategy>> builder;  // tick→bar 唯一实现（ADR 0031）
     Strategy instance;                     // B：默认构造，节点内不再搬移
 };
 
@@ -271,7 +282,7 @@ private:
 }  // namespace dztrader
 ```
 
-**为什么价格窗口与用户窗口合并成一个**：一个策略进程里每个品种只有一个 B 实例，价格序列与用户序列在每根 bar 上永远同步推进（同一个 `advance_bar`），不存在「实例时间线 vs 品种时间线」的相位差；合并成一个 `WindowState` 后，价格视图、用户序列、`bar_index` 三者天然一致，也不需要任何回放期的窗口重绑/临时价格视图。窗口在物理数组内滑动、用尽时整窗搬回头部（§4.4）。
+**为什么价格窗口与用户窗口合并成一个**：一个策略进程里每个品种只有一个 B 实例，价格序列与用户序列在每根 bar 上永远同步推进（同一个推进步骤，§4.1），不存在「实例时间线 vs 品种时间线」的相位差；合并成一个 `WindowState` 后，价格视图、用户序列、`bar_index` 三者天然一致，也不需要任何回放期的窗口重绑/临时价格视图。窗口在物理数组内滑动、用尽时整窗搬回头部（§4.4）。
 
 **为什么品种数据与策略上下文合成一个对象**：初稿的 `InstrumentData` / `InstrumentContext` 拆分与 `data_` 指针是为「多账户共享同一份品种数据」而设；采用「单逻辑账户 + 挂靠账户」后每品种恰好一个 B 实例，数据只有一个读者、生命周期与上下文完全重合，指针已不承担任何隔离/共享职责，只剩「指向哪里、何时失效」的不变式。合并后价格数组、用户序列、`bar_index`、合约属性、逻辑持仓都在同一个对象里：B 只见 public 的只读视图/查询/交易意图，A 通过 friend 直接读写内部；地址稳定照旧由 `unordered_map` 节点提供（`try_emplace` 就地构造，对象显式不可拷贝/移动）。**热路径与拆分版等价**——视图本来就自持 `base_`/`window_` 指针，`ctx.close[0]` 不经过 ctx 之外的任何中转，合并只删代码与生命周期面，不增加间接。
 
@@ -283,7 +294,7 @@ private:
 
 | 对象 | 存放 | 被谁指向 | 搬移是否安全 |
 |---|---|---|---|
-| `InstrumentNode`（ctx + B） | `unordered_map` 节点（`try_emplace` 就地构造） | ctx 内的视图指向自身 `window_`/`price_`；B 持有的 `Series` 同样指向 ctx 内数组 | 安全：节点稳定；ctx 显式不可拷贝/移动，B 在节点内默认构造后不再搬移 |
+| `InstrumentNode`（ctx + builder + B） | `unordered_map` 节点（`try_emplace` 就地构造） | ctx 内的视图指向自身 `window_`/`price_`；B 持有的 `Series` 同样指向 ctx 内数组；builder 持节点内 sink 引用 | 安全：节点稳定；ctx 显式不可拷贝/移动，B 在节点内默认构造后不再搬移 |
 | 价格数组 / 用户序列数组 | `unique_ptr<T[]>`，堆 | 视图的 `base_`、B 的 `Series` | 安全（回卷只搬内容、不换地址） |
 | `ParamStore` | `BarStrategyManager` 成员 | ctx 的 `params_` | 安全（manager 生命周期内不搬迁；`param set` 原地更新内容） |
 | `AccountTable` | `BarStrategyManager` 成员（`std::vector`） | ctx 的 `accounts_` | 表对象地址稳定；**元素地址随增删改变化**——ctx/A 都不缓存元素指针，每次按表遍历 |
@@ -293,7 +304,7 @@ private:
 `DzContext*` 由引擎在 `on_start` 交给 A、进程内不变，各 ctx 复制该指针；ctx 不持有指向 `BarStrategyManager` 的任何引用；挂靠账户表由 A 持有，ctx 只持只读指针（表的增删改只发生在两次回调之间，事件循环单线程，无并发问题）。类型按生命周期二分：**值语义**（`InstrumentSpec` / `ScalingConfig` / `PositionState` / `TickSnapshot`，随 ctx 持有或按值拷贝）与**指针语义**（`DzContext*` / `ParamStore*` / `AccountTable*`，生命周期由 A 保证且 A 在 ctx 之后析构）。
 
 约束：
-- `InstrumentNode` 由 A 在 `unordered_map` 节点内就地构造（`try_emplace` 传 `InstrumentInit`）：ctx 的 `dz_` / `accounts_` / `params_` / `scaling_` / `spec_` / 窗口几何在构造时注入，公开价格视图绑定自身 `window_` 与 `price_`。
+- `InstrumentNode` 由 A 在 `unordered_map` 节点内就地构造（`try_emplace` 就地装配 ctx、sink、builder 与 B）：ctx 的 `dz_` / `accounts_` / `params_` / `scaling_` / `spec_` / 窗口几何在构造时注入，公开价格视图绑定自身 `window_` 与 `price_`；sink 持本节点 ctx 与 A 指针，builder 持 sink 引用（构造顺序 ctx → sink → builder，节点地址稳定）。
 - **两类状态分清**：值语义状态（`ScalingConfig` / `PositionState` / `TickSnapshot` / `InstrumentSpec`）随 ctx 持有或按值拷贝，没有生命周期指针问题；指针语义状态（`ParamStore` / `AccountTable` / `DzContext`）由 A 持有，A 在 `instruments_` 之前声明（析构顺序保证节点先销毁）。
 - **执行门禁只有两个开关**：`live_`（回放/静默填窗期 false——`place` 只做虚拟成交，不发单、不上报）与 `failed_`（实例失败——不再回调、拒单）；两者都在 ctx 内，避免 A 与 ctx 对执行阶段的判断漂移。
 - `InstrumentContext` 不可拷贝、不可移动（视图与 `Series` 自持指针，搬移即失效）；`Strategy` 只要求可默认构造（节点内构造），不再有 move 约束。
@@ -313,14 +324,12 @@ private:
 
 ```cpp
 auto& node = instruments_.find(tick.instrument_id)->second;  // 一次异构查找（string_view）
-node.ctx.update_from_tick(tick);                             // A 内部接口：更新形成中的 bar（未到边界）
-node.instance.on_bar_update(node.ctx);                       // 单个实例，无账户级循环
+node.builder.on_tick(tick);                                  // 唯一 tick→bar 路径：边界/丢弃/事件序由组件负责（§5.4）
 
-// 新 bar 首笔 tick（A 内部，写入顺序即回调顺序）
-node.instance.on_bar_close(node.ctx);                        // 上一根
-node.ctx.advance_bar(period_sec);                            // 回卷兜底 + 推进窗口 + 播种新 bar
-node.instance.on_bar_open(node.ctx);
-node.instance.on_bar_update(node.ctx);
+// 节点内事件适配器按组件给出的顺序执行（A 内部，与 §5.1 一致）：
+//   on_bar_close(prev) → B.on_bar_close(ctx)              // 窗口尚未推进，[0] 仍是上一根
+//   on_bar_open(new)   → 回卷兜底 + 推进窗口 + carry     → B.on_bar_open(ctx)
+//   on_bar_update      → Bar 字段写入 [0]                → B.on_bar_update(ctx)
 ```
 
 ## 4. Series 层语义
@@ -333,7 +342,7 @@ node.instance.on_bar_update(node.ctx);
 | 序号 | `ctx.bar_index()`：**当前回调对应 bar** 在品种 bar 流中的绝对序号（0 起、单调，回卷不重置；classic TB `CurrentBar` 同口径，MC 从 1 起需 −1）。`on_init` 恒为 −1；`on_bar_close` 时指向被关闭的上一根，`on_bar_open` / `on_bar_update` 时指向当前 bar。可读根数以 `ctx.close.size()` 为准 |
 | 读 | `n ∈ [0, size)` 返回真实值；**其余一律抛 `std::out_of_range`**（负 n、`n ≥ size` 都抛；无钳位、无 NaN、无初值兜底）。`span()` 是零检查快路径。异常消息含 `n` / `size` / `max_lookback`，A 在派发点补充品种、回调名（§4.6） |
 | 写 | 仅 `series[0] = v`；历史位不可写（与 TB/MC 一致，写历史无 API、编译期不可达） |
-| 推进 | 每根新 bar：① 若 `end == buffer_bars`，先回卷（§4.4；正常由 18:00 定时器提前搬，这里是兜底）；② 新 bar 落在 `base_[end]`，价格由本笔 tick 完成首笔播种（O=H=L=C、量/额/持仓量=该笔；回放首笔为合成 tick 的 O），用户序列写 carry（首根用 `init`，其后复制上一根 `[0]`）；③ `++end`、`size = min(size+1, max_lookback)`。`on_bar_close` 在 ① 之前触发，故 close 回调内 `[0]` 仍是上一根 |
+| 推进 | 每根新 bar（由 builder 的 open 事件驱动，§5.4）：① 若 `end == buffer_bars`，先回卷（§4.4；正常由 18:00 定时器提前搬，这里是兜底）；② 新 bar 落在 `base_[end]`，7 条价格字段与量/额/持仓量从 builder 的 `Bar` 写入，用户序列写 carry（首根用 `init`，其后复制上一根 `[0]`）；③ `++end`、`size = min(size+1, max_lookback)`。`on_bar_close` 在 ① 之前触发，故 close 回调内 `[0]` 仍是上一根 |
 | 视图 | `span()` 为时间正序（最旧→最新）连续窗口，长度 = `size`，可直接 range-for 或喂 STL 算法；**仅在本次回调内有效**（A 下一根推进/回卷后内容与长度可能变化） |
 | 创建 | `ctx.make_series<double>(init)` / `ctx.make_series<std::int64_t>(init)`，仅 `on_init` 可调用 |
 | 价格序列 | 只读 `SeriesView<double>`（`ctx.close[0]`），由 A 按 tick/合成 tick 更新 |
@@ -435,10 +444,11 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 - 每笔 tick 恰好一次 `on_bar_update`（含新 bar 的首笔）。
 - **首根 bar 没有 close**：品种实例的第一笔有效 tick 只触发 `on_bar_open → on_bar_update`（两者携带同一份快照，没有上一根可关闭）；此后每根新 bar 才是 `on_bar_close(上一根) → on_bar_open(新根) → on_bar_update`。回调门禁（§5.2）下 B 的**第一次**回调序列是 `on_bar_close(静默填窗最后一根) → on_bar_open → on_bar_update`，这根 close 属于历史填充。
 - **Open 竞价窗口内同构**（[ADR 0032](../adr/0032-auction-window-strategy-events.md)）：窗口首笔 tick 即完成 `on_bar_close(上一根) → on_bar_open(新首根) → on_bar_update`，其后每笔竞价 tick 只 `on_bar_update`；开盘后第一笔连续交易 tick 只 `on_bar_update`（同一根 bar 继续），此时 `ctx.is_auction()` 由 true 变 false。窗口内没有 tick 就没有回调（纯 tick 驱动，不加定时器）。
+- **`ctx.is_auction()` 标识触发相位，不是被交出 bar 的属性**（[ADR 0032](../adr/0032-auction-window-strategy-events.md) 决策 3）：竞价窗口首笔 tick 触发的那次 `on_bar_close(上一根)` 同样为 true——被关闭的是上一根普通 bar。因此不能拿它当「跳过整个回调」的开关：**只在 `on_bar_open` / `on_bar_update` 里用它拦交易意图，`on_bar_close` 应照常处理**（否则平仓记账与指标收尾会漏）。静默填窗、历史回放、`on_init`、`on_params_update` 期间恒为 false。
 
 ### 5.2 回调门禁：窗口填满前不回调
 
-- **B 的回调从价格窗口填满（`size == max_lookback`）后的下一根 bar 开始**；此前的 `max_lookback` 根 bar 是**静默填充**：A 照常聚合 bar、推进窗口（用户序列写 `init`），但**不调用任何 B 回调**。
+- **B 的回调从价格窗口填满（`size == max_lookback`）后的下一根 bar 开始**；此前的 `max_lookback` 根 bar 是**静默填充**：A 照常把 tick 喂给 builder、推进窗口（用户序列写 `init`），但**不调用任何 B 回调**。
 - 第一个回调发生在 `bar_index == max_lookback` 的那根 bar（此前 `max_lookback` 根，索引 `0 … max_lookback-1`，为静默填充），序列为 `on_bar_close(bar 索引 max_lookback-1) → on_bar_open(bar 索引 max_lookback) → on_bar_update`；此后回调期恒有 `size == max_lookback`。
 - 为什么门禁：回溯不足语义是**抛异常**（§4.2），不允许钳位/NaN 参与计算，所以不能像 TB 那样从 bar 0 起就回调；等窗口填满再开始，回调里所有 `[n]` 都是真实历史值，策略不需要自己判预热长度。
 - 冷启动（归档域无数据，v1 现状）：从第一根 live bar 起静默填充，到 `bar_index == max_lookback` 时开始回调。v1 默认 `max_lookback` 是 24 小时 bar 数（1 分钟周期 1440 根），按真实交易时间约 **2.4 个交易日**；归档域落地后缩短为预热回放（§5.3），默认回放 10,000 根。
@@ -466,7 +476,7 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 
 ```
 加载 K 根历史 bar（K = warmup 深度，K ≥ max_lookback；最后一根允许未走完）
-  → 先静默填充前 max_lookback 根（直接写最终 OHLC，无回调）
+  → 先静默填充前 max_lookback 根（合成 tick 喂同一个 builder，门禁抑制 B 回调）
   → 对剩余 K - max_lookback 根逐根回放（每根 4 个合成 tick，每 tick 一次 on_bar_update）
        B 照常运行；下单只做虚拟成交（更新逻辑持仓/Tier 1/各账户逻辑持仓），不落地、不逐笔上报
   → 缓冲 tick 续接（规则见上）→ 全部品种完成后一次性上报各账户逻辑持仓
@@ -475,6 +485,7 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 
 - 合成 tick 顺序：上涨 `O→L→H→C`，下跌 `O→H→L→C`，平盘 `O→L→H→C`；量/额/持仓量按 `k/4` 线性累计（合成近似，测试锁定）。
 - 每根回放 bar 的事件序列与实盘同构：`on_bar_close(上一根) → 推进 → on_bar_open → on_bar_update ×4`；回放期间窗口同样保持 `size == max_lookback`（静默填充已把窗口填满）。
+- **单一 tick→bar 路径**：静默填窗、回放、live 都走同一个 `IntradayBarBuilder`（§5.4）——回放/静默填窗把归档 bar 拆成合成 tick 逐笔喂入，没有「直接写最终 OHLC」的旁路，否则会出现两套 bar 语义；合成 tick 的 OHLC/量额/持仓构造必须让 builder 产出的 `Bar` 与归档 bar 一致（单元测试锁定）。
 - **每个品种的锚点** = 该品种窗口开始接收 bar 的第一根（进程启动时加载历史的最早一根，或 `instrument add` 时加载历史的最早一根）；回放从锚点开始，按品种顺序推进，各品种锚点独立，不需要跨实例拼接或视图重绑。
 - **数据源不可用/出错**：`dz_db_query_bar` 返回 NULL 且错误码为 `DZ_EC_NOT_IMPLEMENTED`（v1 现状）→ 按「无历史数据」处理，不是错误；其它查询错误 → 记 WARN、按无历史降级（历史是增强项，不阻断启动）。`warmup` 在无历史时被忽略并打 INFO/WARN。
 - **可用历史不足 `max_lookback` 根**（`warmup.from` 太近或归档起始较晚）：先静默填入可用部分，余下从 live bar 继续静默填充到窗口满再回调（INFO 记录实际根数），不视为错误；历史 bar 数据源的缺口/拼接契约归归档域（#4）。
@@ -483,13 +494,33 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 - **v1 无归档数据时是冷启动**：不回放、逻辑持仓从 0 开始；重启后实盘与逻辑的偏差（进程关闭期间的信号）由操作员一键同步处理，框架不做启动校验。
 - 回放成本 ∝ 实例数 × `K`（每实例独立回调）：每根回放 bar 有 6 次 B 回调（`on_bar_close` + `on_bar_open` + 4×`on_bar_update`），估算 0.2–0.4µs/回调 → K=10,000、`max_lookback`=1440 时约 5.1 万次回调、约 10–20ms/实例，50 品种约 0.5–1s；10 年 1 分钟（K≈145 万根）约 1.7–3.5s/实例（50 品种约 85–175s）。启动前打印估算，预计 > 60s 打 WARN，> 300s 再打一条更醒目的 WARN（不阻断启动；可调小 `warmup`）。
 
-### 5.4 bar 边界
+### 5.4 bar 边界与 builder 接线
 
-由 tick→bar 通用组件（[ADR 0031](../adr/0031-tick-bar-synthesis-component.md)）在 A 内实现；本文只锁定事件顺序，口径见 ADR 0031：`DzTick.date` 为真实交易日；`begin_sec` = 18:00 锚点整数网格桶起点；内部边界 tick 归新 bar、小节末端 tick 归前一根；开盘竞价窗口的 tick 归后一小节首桶、窗口内正常回调（相位由 `ctx.is_auction()` 标识，[ADR 0032](../adr/0032-auction-window-strategy-events.md)）；无成交的桶不生成 bar；乱序/非交易时段 tick 丢弃并计数；日线用 tick 当日累计字段。
+bar 边界由 tick→bar 通用组件（[ADR 0031](../adr/0031-tick-bar-synthesis-component.md)）实现：A 内**每品种一个 `bar::IntradayBarBuilder`**（连同事件适配器作为 `InstrumentNode` 的成员，§3），A 不自行判断边界、不维护形成中 bar 聚合值，`ctx` 只在事件里被动接收结果。口径见 ADR 0031：`DzTick.date` 为真实交易日；`begin_sec` = 18:00 锚点整数网格桶起点；内部边界 tick 归新 bar、小节末端 tick 归前一根；开盘竞价窗口的 tick 归后一小节首桶、窗口内正常回调（相位由 `ctx.is_auction()` 标识，[ADR 0032](../adr/0032-auction-window-strategy-events.md)）；无成交的桶不生成 bar；乱序/非交易时段 tick 丢弃并计数；日线用 tick 当日累计字段。
 
+- **事件适配器（A 内部，B 不可见）**：把 builder 的三个 sink 回调翻成框架动作，动作顺序即回调顺序——
+  - `on_bar_close(prev, is_auction)`：把 `is_auction` 写进 ctx → `B.on_bar_close(ctx)`（窗口尚未推进，`[0]` 仍是被关闭的上一根）；
+  - `on_bar_open(new, is_auction)`：回卷兜底（§4.4）→ 推进窗口（`Bar` 字段落进 `[0]`、用户序列写 carry、`++bar_index`）→ 写 `is_auction` → `B.on_bar_open(ctx)`；
+  - `on_bar_update(bar, is_auction)`：把 `Bar` 的 OHLC/量额/OI/`last_tick_sec` 写进 `[0]` → 写 `is_auction` → `B.on_bar_update(ctx)`。
+
+  每个事件入口先用本笔 tick 刷新 `TickSnapshot`（价格夹取/同步单对手价）；**只有被 builder 接受的 tick 才产生事件**——乱序/非交易时段/量额倒退的 tick 被丢弃并计入 `BarBuilderStats`，不刷新快照；回调门禁（§5.2）、静默填窗/回放（§5.3）、失败实例（§4.6）都在适配器里短路。
+- **单一实现**：live、静默填窗、历史回放都喂同一个 builder 的 `on_tick`（回放/静默填窗用合成 tick，§5.3）；不存在第二条 bar 边界实现，`ctx` 也不向 B 暴露边界/聚合类的半成品入口。
 - 事件顺序不变：`on_bar_close(上一根) → 推进 → on_bar_open → on_bar_update`；**不使用定时器定义 bar 边界**（回卷定时器只做布局，不参与 bar 生命周期）。
 - bar 标识（用于历史对齐）= `(trading_day, begin_sec)`；归档域 schema 与时间标注随归档 spec（#4）对齐该标识。
 - 小节末尾不会有独立收盘事件：最后一根 bar 在下一笔更晚 tick 到达时收盘（纯 tick 驱动，无 flush）。
+
+### 5.5 v1 退化交易小节表（已知限制）
+
+交易小节/竞价窗口表的唯一真相源是 platform.db（[ADR 0018](../adr/0018-strategy-side-kline-and-trading-sessions.md) 决策 2/3），v1 不落地该数据源。A 在表数据源缺失时构造内置**退化小节表**喂给 builder：
+
+- 单小节 `[begin_sec = 0, end_sec = 86399]`（18:00:00 → 17:59:59，`TradingSessionTable::valid()` 合法、覆盖全部交易日内秒），`auction_count = 0`（无竞价窗口）。
+- 这不是新数据源、也不是配置项（[ADR 0032](../adr/0032-auction-window-strategy-events.md) 决策 8 不引入占位配置）；只是数据源落地前框架内置的临时表，代码里只有一处构造，落地后删除。
+
+由此产生三条与生产口径不同的**已知限制**（迁移与策略必须知晓，platform.db 落地后消失）：
+
+1. **竞价 tick 按普通 tick 处理**：新交易日首根 bar 落在竞价 tick 所在的整数桶（1 分钟周期是 20:59、15 分钟周期是 20:45），随后 21:00 再开一根；ADR 0032 的生产语义是竞价 tick 折入会话首根（`begin_sec` = 21:00）、`ctx.is_auction()` 为 true。退化表下 `ctx.is_auction()` **恒为 false**。
+2. **小节末端整点 tick 会开新 bar**：15:00:00、10:15:00、23:00:00 等小节边界整秒的 tick 落进下一桶，生成一根 1-tick bar；真实小节表下该 tick 归前一根（ADR 0031 决策 5）。
+3. **无交易时段过滤**：非交易时段的异常 tick 不会按 `out_of_session` 丢弃（非法时间、乱序、量额倒退仍会丢弃并计数）。
 
 ## 6. 交易与执行
 
@@ -783,6 +814,7 @@ status | quit
   - 回卷等价性：随机序列操作前后快照全部 `[n]` 与 `span()` 逐位一致；回卷可发生在静默填窗、回放、live 任意位置；强制 `reserve_bars` 极小时的兜底路径。
   - 容量：各周期自动值、显式覆盖、越界报错、`buffer_bars ≤ 24576`、`buffer_bars == max_lookback + reserve_bars`。
   - 指标函数；合成 tick（涨/跌/平、量分配）；bar 桶计算（`(trading_day, 桶)` 边界）。
+  - 竞价相位：`ctx.is_auction()` 在 close/open/update 的写入口径（= 触发 tick 相位，§5.1）；用含 Open 竞价窗口的测试小节表验证窗口内事件序；退化表下恒 false（§5.5）。
   - 配置解析/默认生成/原子写回/`warmup` 互斥与范围校验/有效日志；`accounts`/`max_scale`/取整策略校验（`scale ∈ (0, max_scale]`、账户 id 不重复）；`instruments` 必填、`accounts` 可空。
   - 虚拟台账：四函数开平意图全表（`buy`/`sell_short` 反手目标化为 `P=±n`、`sell`/`buy_to_cover` 只减不增与 `n>|P|` 钳制、`volume=0` 的只平不建/全平与两组等价对）；下单意图即时更新 `P`/Tier 1（含跨越 0 的开平归属）；`L_i = f(scale×|P|)` 的三种取整与 `scale_min_one`；每账户手数 = `L_i` 差量；价格对齐与涨跌停夹取；失败实例拒单。
   - 交易意图诊断：`n>0` 方向无效/超仓钳制记 WARN；`volume=0` 且无可平仓不诊断；`volume=0` 实际触发平仓记 INFO；负手数拒单。
@@ -836,7 +868,7 @@ status | quit
 | 回溯不足（classic TB：`CurrentBar=0` 时 `Close[1]` 取当前 Close 代替） | **抛 `std::out_of_range`**（响亮失败，调大 `max_lookback`）；不钳位、不产生 NaN、不返回初值。用户序列历史位在静默填窗期为 `init` |
 | 预热期下单 | 只做虚拟成交（重建逻辑持仓），不落地（TB 图表虚拟账户口径） |
 | `BarStatus` | 无（三回调替代） |
-| TB 的集合竞价判断（旧版实盘为 `bar.isCallAuction`） | `ctx.is_auction()`：Open 竞价窗口内触发的回调为 true（[ADR 0032](../adr/0032-auction-window-strategy-events.md)）；框架**不拦截**窗口内下单，策略自行过滤（旧版口径）。窗口内事件序见 §5.1 |
+| TB 的集合竞价判断（旧版实盘为 `bar.isCallAuction`） | `ctx.is_auction()`：Open 竞价窗口内触发的回调为 true（[ADR 0032](../adr/0032-auction-window-strategy-events.md)）；框架**不拦截**窗口内下单，策略自行过滤（旧版口径）。窗口内事件序见 §5.1；注意它是**触发回调的 tick 相位**——窗口首笔 tick 触发的 `on_bar_close(上一根)` 也为 true（被关的是普通 bar），不要用它跳过 close；v1 无小节数据源时恒为 false（§5.5） |
 | `Data0..49` / `DataN` | 后置 |
 | 历史：每 bar 一次最终 OHLC | 静默填窗最长 `max_lookback` 根（无回调），其余按合成 tick 回放（`warmup` 深度） |
 | 涨跌停拒单 | 挂涨跌停价 |
@@ -865,7 +897,7 @@ status | quit
 1. 账户级头寸监控与一键同步（平台/WebUI）：比较账户实际净头寸与各策略上报的逻辑持仓、发单调向系统口径；需要「手工仓」与跨策略归属设计（[ADR 0028](../adr/0028-strategy-process-logical-account.md)），v1 不做。
 2. 策略组编排：跨进程统一启停、参数同步、UI 分组与汇总；v1 靠部署模板/脚本。
 3. 归档域历史数据（#4）：结果集 schema/时间标注对齐 `(trading_day, begin_sec)` 与 ADR 0031 的 Bar 字段、`dz_db_query_bar` 的生产实现；**bar 数据源须提供 `is_final`**（[ADR 0031](../adr/0031-tick-bar-synthesis-component.md)），并支持大 `warmup.bars`（最高 1,000 万根）的分页/LIMIT（随归档 spec）。
-4. 交易小节表（ADR 0018 决策 2/3）：落地后 `max_lookback` / `reserve_bars` 自动值改用真实 session bar 数（内存降到约四成、冷启动从约 2.4 个交易日缩短到 1 个交易日）；session 收盘与空 bar 口径已在 ADR 0031 定稿。
+4. 交易小节表（ADR 0018 决策 2/3）：落地后 `max_lookback` / `reserve_bars` 自动值改用真实 session bar 数（内存降到约四成、冷启动从约 2.4 个交易日缩短到 1 个交易日）；session 收盘与空 bar 口径已在 ADR 0031 定稿。数据源落地前 v1 用内置退化表，三条已知差异见 §5.5。
 5. 回卷触发：v1 用 SDK `dz_schedule_daily(18:00)` 定时器（《帧契约：策略》§DZ_FRAME_SCHEDULE）；当前帧体系没有“交易日切换”系统帧，若将来新增则改接该帧（不自行造帧）。
 6. 秒级以下周期 / 单实例多周期：改用镜像环形（§10 B 方案），接口与语义不变；触发条件见 §10。
 7. 对齐与分配优化：`bench_relocate` 实测后若 partial-line 影响显著再考虑（当前结论是不做）；若改为 arena/矩阵布局，行步长禁止取 4096 的整数倍。
@@ -883,7 +915,7 @@ status | quit
 19. 回放续仓：依赖归档域（#4）。回放深度不足以覆盖持仓周期、或 v1 冷启动时恢复不完整；需要明确操作员流程（先一键同步/清仓再启动）。
 20. 锁仓模式的净额失真：AUTO 在锁仓账户上可能把「平仓」解析为反向开仓，净额正确但多空明细不干净；删除/同步后可能残留净额为 0 的锁仓腿，需人工处理（ADR 0028 接受该失真）。
 21. 多策略共享同一账户：一键同步是账户级、按账户总仓对账，无法区分策略归属；需要「手工仓/策略仓归属」设计（平台侧，与 #6/#9 联动）。
-22. **bar 合成已定稿**（[ADR 0031](../adr/0031-tick-bar-synthesis-component.md)，issue #3）：tick→bar 口径、交易小节/竞价数据口径、forming 续接（`is_final`）不再开放；**竞价窗口内事件与 `ctx.is_auction()` 已由 [ADR 0032](../adr/0032-auction-window-strategy-events.md) 定稿**（取代 0031 决策 5 的"窗口内不回调"），框架侧在交易小节表数据源落地后启用。仍后置：B 的 `Date`/`Time`/`Q_BidPrice`/`Q_AskPrice` 查询 API（随策略 API 定稿）与归档域历史 bar 数据源（#4）。
+22. **bar 合成已定稿**（[ADR 0031](../adr/0031-tick-bar-synthesis-component.md)，issue #3）：tick→bar 口径、交易小节/竞价数据口径、forming 续接（`is_final`）不再开放；**竞价窗口内事件与 `ctx.is_auction()` 已由 [ADR 0032](../adr/0032-auction-window-strategy-events.md) 定稿**（取代 0031 决策 5 的"窗口内不回调"），框架侧在交易小节表数据源落地后启用（v1 退化表下 `ctx.is_auction()` 恒 false，§5.5）。仍后置：B 的 `Date`/`Time`/`Q_BidPrice`/`Q_AskPrice` 查询 API（随策略 API 定稿）与归档域历史 bar 数据源（#4）。
 23. 同步单的假设：命令执行前账户实际仓位 ≈ 旧 `L_i`；实际已偏时 sync 后仍需账户级一键同步。框架不建成交台账，无法自行判断偏差。
 24. 委托/拒单可见性：v1 不跟踪 `ORDER_REPORT`、不撤单；td 拒单只能从 td 日志排查。后续算法/委托管理层（§13 架构级后置）再接管。
 25. 账户存在性/在线校验：`account add` 目前只校验字符串与 `scale`；ACCOUNT_STATUS 广播可用于提示“账户未配置/离线”，但属后置增强，避免拼错账户静默丢单。

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed（2026-10-21 BarStrategy 设计评审；评审通过后改 Accepted）
+Accepted（2026-10-27 评审通过；2026-10-21 BarStrategy 设计评审）
 
 ## Context
 
