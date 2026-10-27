@@ -1,0 +1,256 @@
+name: Release
+
+# 打 tag 时产出可部署产物（#168 C7）。
+#
+# 为什么单独一个 workflow 而不是并进 ci.yml：
+#   - 触发条件不同（tag vs push/PR），并进去会让 concurrency group 与 paths-ignore 互相干扰
+#   - 产物与验证是两件事：CI 绿不绿看不出来「这次发的是哪一版」
+#
+# 产物形态（对应 ADR 0037）：
+#   - Linux:  install/linux/x86_64/Release/ 打成 tar.gz（已 strip，约 66MB），
+#             调试符号 Release-debug-symbols/ 单独作为 artifact（不进发布包）
+#   - Windows: install/windows/x86_64/Release/ 打成 zip，*.pdb 单独作为 artifact
+#   - 两者都附 SHA256SUMS
+#
+# 打 tag 前的门禁：tag 必须指向 main 上已通过 CI 的 commit。本 workflow 不重复跑测试
+# （CI 已在合并时验证过），只做「构建 → install → 打包 → 发布」。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要构建的 tag（workflow_dispatch 用，例如 v0.1.0）"
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Linux Release artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.cache/ccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        continue-on-error: true
+        with:
+          key: release-linux-${{ inputs.tag || github.ref_name }}
+          restore-keys: |
+            ccache-linux
+          max-size: 1000M
+          save: true
+
+      - name: Install Conan
+        run: pip install "conan==2.32.0"
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2
+          key: conan2-${{ runner.os }}-${{ hashFiles('conanfile.py', 'profiles/linux-gcc') }}
+          restore-keys: |
+            conan2-${{ runner.os }}-
+
+      - name: Cache npm packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/webui/frontend/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
+      - name: Setup / Build / Install artifacts
+        run: |
+          ./scripts/setup.sh
+          ./scripts/build.sh
+          ./scripts/install-artifacts.sh
+
+      - name: Verify install tree
+        run: |
+          set -euo pipefail
+          root=install/linux/x86_64/Release
+          test -x "$root/dztraderd" || { echo "missing dztraderd"; exit 1; }
+          test -d "$root/web" || { echo "missing web/"; exit 1; }
+          # 测试产物不应出现在部署包里（#168 C5）
+          if find "$root" -path "*/tests/*" | grep -q .; then
+            echo "test binaries leaked into install tree"
+            find "$root" -path "*/tests/*" | head
+            exit 1
+          fi
+          echo "install tree OK: $(du -sh "$root" | cut -f1)"
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          ver="${{ inputs.tag || github.ref_name }}"
+          mkdir -p dist
+          tar -C install/linux/x86_64 -czf "dist/dztrader-${ver}-linux-x86_64.tar.gz" Release
+          tar -C install/linux/x86_64 -czf "dist/dztrader-${ver}-linux-x86_64-debug-symbols.tar.gz" \
+            Release-debug-symbols
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS-linux.txt)
+          ls -lh dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: dist/*
+          retention-days: 90
+
+  build-windows:
+    name: Windows Release artifacts
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+      DZ_SCCACHE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Setup sccache (MSVC compiler cache)
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.19.0"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Conan
+        run: pip install "conan==2.32.0"
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2
+          key: conan2-${{ runner.os }}-${{ hashFiles('conanfile.py', 'profiles/win-msvc-static') }}
+          restore-keys: |
+            conan2-${{ runner.os }}-
+
+      - name: Cache npm packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/webui/frontend/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
+      - name: Setup / Build
+        shell: pwsh
+        run: |
+          .\scripts\setup.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\scripts\build.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install
+        shell: pwsh
+        run: |
+          cmake --install build/windows/x86_64/Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify install tree
+        shell: pwsh
+        run: |
+          $root = "install/windows/x86_64/Release"
+          if (-not (Test-Path "$root/dztraderd.exe")) { Write-Error "missing dztraderd.exe"; exit 1 }
+          if (-not (Test-Path "$root/web")) { Write-Error "missing web/"; exit 1 }
+          # 测试产物不应出现在部署包里（#168 C5）
+          $leaked = Get-ChildItem -Path $root -Recurse -File | Where-Object { $_.FullName -match '\\tests\\' }
+          if ($leaked) {
+            Write-Error "test binaries leaked into install tree"
+            $leaked | Select-Object -First 5 | ForEach-Object { Write-Error $_.FullName }
+            exit 1
+          }
+          Write-Host "install tree OK"
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ver = "${{ inputs.tag || github.ref_name }}"
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Compress-Archive -Path "install/windows/x86_64/Release/*" `
+            -DestinationPath "dist/dztrader-$ver-windows-x86_64.zip" -Force
+          # PDB 单独归档（ADR 0037 / Q25=B）：不进发布包，体积大且暴露符号
+          $pdbs = Get-ChildItem -Path "build/windows/x86_64/Release" -Filter *.pdb -Recurse -File
+          if ($pdbs) {
+            $symbolDir = "dist/symbols"
+            New-Item -ItemType Directory -Path $symbolDir -Force | Out-Null
+            $pdbs | ForEach-Object { Copy-Item $_.FullName -Destination $symbolDir -Force }
+            Compress-Archive -Path "$symbolDir/*" `
+              -DestinationPath "dist/dztrader-$ver-windows-x86_64-debug-symbols.zip" -Force
+            Write-Host "archived $($pdbs.Count) pdb files"
+          } else {
+            Write-Host "warning: no PDB files found"
+          }
+          Get-ChildItem dist | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)"
+          } | Set-Content "dist/SHA256SUMS-windows.txt"
+          Get-ChildItem dist | Select-Object Name, Length
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/*
+          retention-days: 90
+
+  publish:
+    name: Publish GitHub Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          # 幂等：tag 已存在 release 时追加/覆盖资产，而不是失败
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" ./* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" ./* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --generate-notes
+          fi
