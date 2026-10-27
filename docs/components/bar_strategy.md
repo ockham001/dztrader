@@ -48,6 +48,7 @@ struct WindowState {                        // 每品种一个：价格序列与
     std::int32_t size = 0;                  // 已填充 bar 数（含当前）
     std::int32_t max_lookback = 0;          // 可读历史上限（= 配置 max_lookback）
     std::int32_t buffer_bars = 0;           // 物理缓冲元素数（= max_lookback + reserve_bars）
+    std::int32_t advance_seq = 0;           // 单调推进序号（回卷不变）；判「代理是否过期」用
 };
 
 template <class T>
@@ -57,16 +58,18 @@ struct SeriesStorage {                      // 用户序列的所有权记录：
 };
 
 template <class T>
-class SeriesView {                          // 只读视图：全部读接口的唯一实现
+class SeriesView {                          // 只读视图：全部读接口的唯一实现（dztrader/series.h）
 public:
     T operator[](std::ptrdiff_t n) const;   // TB 口径：n=0 当前，n 往回数；越界抛 std::out_of_range
-    std::int32_t size() const noexcept;     // 已填充 bar 数（含当前）
+    std::int32_t size() const noexcept;     // 已填充 bar 数（含当前）；未绑定视图为 0
     std::int32_t max_lookback() const noexcept; // 可回读的历史根数上限（= 配置 max_lookback）
     std::span<const T> span() const noexcept;   // STL 口径：时间正序（最旧→最新）连续窗口，长度 = size，零检查
 protected:
+    friend struct series_internal::Access;  // 绑定缝：A（ctx）与测试经此构造，B 侧不可凭空绑定数组
     friend class InstrumentContext;         // ctx 的公开价格视图在构造时绑定自身 window_/price_
     SeriesView() = default;
     SeriesView(T* base, const WindowState* window) : base_(base), window_(window) {}
+    void check_index(std::ptrdiff_t n) const;  // 越界：Debug 断言（DZTRADER_SERIES_ASSERT）→ 抛 out_of_range
     T* base_ = nullptr;
     const WindowState* window_ = nullptr;
 };
@@ -75,13 +78,19 @@ template <class T>
 class SeriesRef {                           // X[0] 的写入代理：只允许给当前 bar 赋值
 public:
     SeriesRef() = default;
-    SeriesRef& operator=(T value);          // n != 0 时抛 std::out_of_range
-    operator T() const;                     // 读取当前 bar
+    SeriesRef& operator=(T value);          // n != 0 或代理已过期时抛 std::out_of_range
+    SeriesRef& operator=(const SeriesRef&); // 值语义 carry（不许逐成员拷贝代理）
+    operator T() const;                     // 读取当前 bar（过期代理同样抛，读写同口径）
 private:
     template <class U> friend class Series;
-    SeriesRef(T* slot, std::ptrdiff_t n) : slot_(slot), n_(n) {}
-    T* slot_ = nullptr;
-    std::ptrdiff_t n_ = 0;
+    SeriesRef(T* slot, std::ptrdiff_t n, const WindowState* window, std::int32_t seq_snapshot);
+    void validate_bound() const;            // 已由 Series::operator[] 绑定
+    void validate_writable() const;         // 绑定 + n==0 + 未过期
+    void validate_current() const;          // advance_seq 未变（过期即抛 stale）
+    T* slot_ = nullptr;                     // 当前 bar 的物理槽位
+    std::ptrdiff_t n_ = 0;                  // 索引（仅 0 可写）
+    const WindowState* window_ = nullptr;   // 创建时的窗口几何（判过期）
+    std::int32_t seq_snapshot_ = 0;         // 创建时的 window.advance_seq
 };
 
 template <class T>
@@ -91,6 +100,7 @@ public:
     using SeriesView<T>::operator[];
     SeriesRef<T> operator[](std::ptrdiff_t n);  // 非 const 对象返回写入代理（仅 n == 0 可赋值）
 private:
+    friend struct series_internal::Access;  // 绑定缝（同上）
     friend class InstrumentContext;         // make_series 构造视图
     Series(T* base, const WindowState* window) : SeriesView<T>(base, window) {}
 };
@@ -296,6 +306,7 @@ private:
 |---|---|---|---|
 | `InstrumentNode`（ctx + builder + B） | `unordered_map` 节点（`try_emplace` 就地构造） | ctx 内的视图指向自身 `window_`/`price_`；B 持有的 `Series` 同样指向 ctx 内数组；builder 持节点内 sink 引用 | 安全：节点稳定；ctx 显式不可拷贝/移动，B 在节点内默认构造后不再搬移 |
 | 价格数组 / 用户序列数组 | `unique_ptr<T[]>`，堆 | 视图的 `base_`、B 的 `Series` | 安全（回卷只搬内容、不换地址） |
+| `SeriesRef`（写入代理） | 栈上临时对象 | 无 | **保存后不可用**：代理记录创建时的 `advance_seq`，跨推进后读/写都抛 `series ref is stale`（`Series` / `SeriesView` 副本可安全保存，代理不行——它是「写这一根」的一次性句柄）。用单调序号而不是 `end` 比较：回卷会把 `end` 置回 `size`，之后推进能让它重新等于旧快照值（ABA），序号不会 |
 | `ParamStore` | `BarStrategyManager` 成员 | ctx 的 `params_` | 安全（manager 生命周期内不搬迁；`param set` 原地更新内容） |
 | `AccountTable` | `BarStrategyManager` 成员（`std::vector`） | ctx 的 `accounts_` | 表对象地址稳定；**元素地址随增删改变化**——ctx/A 都不缓存元素指针，每次按表遍历 |
 | `ScalingConfig` | A 成员 + ctx 按值拷贝 | 无指针 | 天然安全（启动后不可变） |
@@ -315,7 +326,7 @@ private:
 - **零开销约束**：`SeriesView` / `Series` 单继承、**禁止虚函数与虚析构**、`Series` 不新增数据成员。静态断言锁定：`sizeof(Series<double>) == sizeof(SeriesView<double>)`、`std::is_trivially_copyable_v<Series<double>>`、`std::is_standard_layout_v<Series<double>>`、`!std::has_virtual_destructor_v<Series<double>>`。
 - 指标函数统一签名 `double average(const SeriesView<double>&, int)` 等，`Series<double>` 隐式转基类引用，**不需要模板化算法**。
 - 只读保证：`SeriesView` 不能转换为 `Series`（`Series<double> x = ctx.close;` 编译失败），价格数组无法经视图获得写能力。
-- **索引类型分工**：对外 `operator[]` 取 `std::ptrdiff_t`；`WindowState` 的四个几何量取 `std::int32_t`（有界：`size ≤ end ≤ buffer_bars`、`size ≤ max_lookback ≤ buffer_bars`、`buffer_bars = max_lookback + reserve_bars`；窗口 16 字节）。转换只发生在 `operator[]` 内部一次宽化 `base_[end - 1 - n]`。debug 断言 `max_lookback` / `buffer_bars ≤ INT32_MAX / 2`。
+- **索引类型分工**：对外 `operator[]` 取 `std::ptrdiff_t`；`WindowState` 的几何量取 `std::int32_t`（4 个几何量 + `advance_seq`，有界：`size ≤ end ≤ buffer_bars`、`size ≤ max_lookback ≤ buffer_bars`、`buffer_bars = max_lookback + reserve_bars`；窗口 20 字节 = 5×int32）。转换只发生在 `operator[]` 内部一次宽化 `base_[end - 1 - n]`。`max_lookback ∈ [32, 16384]` 与 `buffer_bars ≤ 24576` 的区间校验已结构性保证二者远小于 `INT32_MAX / 2`，无需额外断言。
 - **无 vector 写接口、无扩容**：不提供 `push_back` / `erase` / `resize` / `reserve`（bar 生命周期与窗口推进由 A 管，B 只能写 `[0]`）；容量 = 配置值，在实例创建时一次性分配、之后永不 realloc——B 持有的视图/指针全程有效，热路径上没有分配器；不够用是配置错误（读越界抛异常，§4.2）。用户序列也不做「单条更深回溯」：它们共享品种窗口（见 §14 后置项）。
 - **分配不做特化**：每序列一次普通堆分配（`operator new` 的自然对齐，x86-64 至少 16B，足以满足 `double` 与非对齐加载），物理长度就是 `buffer_bars`，不做 2 的幂取整、不做 cache-line padding。理由：热路径只有 8B 自然对齐的标量读写（永不跨 cache line），回卷一天只发生一次（§10），对齐收益在测量噪声内；2 的幂反而有 4KB 同余导致的 L1 cache set 冲突风险。若将来改为 arena/矩阵布局，行步长禁止取 4096 的整数倍（§14 记录）。
 - **唯一出口**：所有 `dz_place_order` 调用都走 `ctx.submit_order()`（正常单、同步单、删除平仓共用），所有 `dz_set_logical_position` 调用都走 `ctx.publish_positions()/publish_all_positions()`；A 不直接拼这两种帧，避免两条路径的上报/价格处理漂移。
@@ -334,6 +345,14 @@ node.builder.on_tick(tick);                                  // 唯一 tick→ba
 
 ## 4. Series 层语义
 
+> **实现状态（#155）**：Series 层与窗口几何已实现，落在两个头文件里——
+> `libs/strategy_api/include/dztrader/series.h`（公开面：`WindowState` / `SeriesView` /
+> `SeriesRef` / `Series` + 静态断言）与 `dztrader/series_internal.h`（内部面：容量推导
+> `resolve_capacity`、窗口驱动 `prepare_advance` / `commit_advance` / `relocate_window`、
+> 绑定缝 `series_internal::Access`）。单元测试 `series_test.cpp`（读/写语义与公开面不变量）
+> 与 `series_window_test.cpp`（容量、回卷等价性、随机推进 fuzz）。`InstrumentContext`
+> 的接入（`make_series` / 价格视图绑定）随 #157 落地——本票交付不依赖引擎的纯组件。
+
 ### 4.1 读写与推进
 
 | 项 | 语义 |
@@ -341,7 +360,7 @@ node.builder.on_tick(tick);                                  // 唯一 tick→ba
 | 索引 | `[0]` = 当前 bar，`[n]` = 往回 n 根；物理地址 = `base_[end - 1 - n]`，逻辑窗口 = `[end - size, end)` |
 | 序号 | `ctx.bar_index()`：**当前回调对应 bar** 在品种 bar 流中的绝对序号（0 起、单调，回卷不重置；classic TB `CurrentBar` 同口径，MC 从 1 起需 −1）。`on_init` 恒为 −1；`on_bar_close` 时指向被关闭的上一根，`on_bar_open` / `on_bar_update` 时指向当前 bar。可读根数以 `ctx.close.size()` 为准 |
 | 读 | `n ∈ [0, size)` 返回真实值；**其余一律抛 `std::out_of_range`**（负 n、`n ≥ size` 都抛；无钳位、无 NaN、无初值兜底）。`span()` 是零检查快路径。异常消息含 `n` / `size` / `max_lookback`，A 在派发点补充品种、回调名（§4.6） |
-| 写 | 仅 `series[0] = v`；历史位不可写（与 TB/MC 一致，写历史无 API、编译期不可达） |
+| 写 | 仅 `series[0] = v`；历史位不可写（与 TB/MC 一致）。**口径精确化（#155 实现期）**：「无 API」指没有任何返回 `T&` 的访问入口——`Series::operator[]` 返回写入代理 `SeriesRef`，不存在能拿到历史位可写引用的形状。两条运行期防线：① `X[n>0] = v` 仍能通过编译（迁移代码要在循环里写 `X[n]`），由 `check_index` 在到达代理**之前**抛 `std::out_of_range`；② 代理记住创建时的 `window.advance_seq`（单调序号，回卷不变），**跨 bar 保存后再写会抛** `series ref is stale`——否则被保存的 `X[0]` 代理在下一次推进后会指向历史 `[1]`，静默改写历史。`const Series` / `SeriesView` 上的赋值则是编译期错误。 |
 | 推进 | 每根新 bar（由 builder 的 open 事件驱动，§5.4）：① 若 `end == buffer_bars`，先回卷（§4.4；正常由 18:00 定时器提前搬，这里是兜底）；② 新 bar 落在 `base_[end]`，7 条价格字段与量/额/持仓量从 builder 的 `Bar` 写入，用户序列写 carry（首根用 `init`，其后复制上一根 `[0]`）；③ `++end`、`size = min(size+1, max_lookback)`。`on_bar_close` 在 ① 之前触发，故 close 回调内 `[0]` 仍是上一根 |
 | 视图 | `span()` 为时间正序（最旧→最新）连续窗口，长度 = `size`，可直接 range-for 或喂 STL 算法；**仅在本次回调内有效**（A 下一根推进/回卷后内容与长度可能变化） |
 | 创建 | `ctx.make_series<double>(init)` / `ctx.make_series<std::int64_t>(init)`，仅 `on_init` 可调用 |
@@ -350,6 +369,7 @@ node.builder.on_tick(tick);                                  // 唯一 tick→ba
 
 ### 4.2 读语义：一个检查版本，越界必响
 
+- **写历史位的「不可达」是三层**（#155 实现期确认）：① **没有**任何返回 `T&` 的访问入口，拿不到历史位的可写引用——这是结构性不变式；② `X[1] = v` 仍可编译（迁移代码要在循环里写 `X[n]`），由 `check_index` 在到达代理前抛 `std::out_of_range`；③ 写入代理绑定创建时的 `window.advance_seq`（回卷不改序号，故不能比 `end`），**跨 bar 保存的代理再次读写都会抛** `series ref is stale`——B 可以保存 `Series` 副本（§3），但一次推进后那个代理的槽位已是历史，只检查 `n == 0` 会让写历史静默成功。若要求连编译都拒绝，需把下标做成编译期常量（`operator[]` 只接受 `std::integral_constant<0>`），会牺牲 `for (int n = 0; ...) X[n]` 这类迁移写法——与「迁移用户少改写」的目标冲突，故 v1 选择运行期响亮失败。
 - **只提供一个检查过的 `operator[]`**：索引不合法就抛 `std::out_of_range`。不提供 `at()` 与 `[]` 双版本——两个入口会让策略作者猜哪个是快路径，且 TB/MC 迁移代码里 `[]` 无处不在，把正确性交给调用者选择没有收益。
 - 零检查场景用 `span()`：指标循环、`std::accumulate`、`std::inner_product` 等直接吃连续区间，既没有逐元素分支，也天然对编译器向量化友好。`span()` 不做越界检查（长度就是 `size`），这是**唯一的快路径**。
 - 为什么不像 TB 那样钳位/返回 NaN/返回初值：那三种做法都会让「配置错/策略读太深」变成**静默的错误状态**并可能直接产生成交。本框架走相反路线——**不合法就响亮失败**，错误信息直接指出需要调大的配置项。
@@ -402,6 +422,11 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 | 900s | 96 | 96 | 106 | 192 | 288 | 2,304 |
 
 公式：`max_lookback = clamp(86400 / period_sec, 32, 2048)`；`R_min = max(2, ceil(1.1 × 86400 / period_sec))`；`reserve_bars = max(2 × 86400 / period_sec, R_min)`。校验区间：`max_lookback ∈ [32, 16384]`、`reserve_bars ∈ [R_min, 8192]`、`buffer_bars ≤ 24576`。
+
+实现期确认的两条边界（#155）：
+
+- **`buffer_bars ≤ 24576` 是防御性校验**：两个字段各自合法时其和必然不超过上限（`16384 + 8192 = 24576`），因此这条派生校验当前不可达，为将来放宽单字段区间保留。测试以静态断言锁定「上限 = 两字段上限之和」，避免它退化成无人验证的死分支。
+- **周期下界有两个，含义不同**（#155 实现期）：`min_feasible_period()`（= 12）是「存在合法配置」的下界——低于它时 `[R_min, 8192]` 是空区间，报 `period_sec` 非法（不能报一个倒置区间）；`min_auto_reserve_period()`（= 22）是「省略 `reserve_bars` 也合法」的下界——两者之间的周期（如 12–21 秒）必须显式配置 `reserve_bars`，否则按「不静默修正」报错（消息给出 `field=reserve_bars` 的实际值与合法区间，用户据此补上显式值）。错误信息里的合法区间必须真的合法（回归用例解析消息区间并逐点验证，曾把下界写错一根）。v1 的四个周期（60/180/300/900）都远在两个下界之上。
 
 交易小节表落地后（ADR 0018），「每日 bar 数」改用真实 session 总分钟数（1 分钟周期 = 600 根/交易日），默认内存降到约四成（`buffer_bars` 4320 → 1800）：
 

@@ -117,6 +117,28 @@ set(SDK_SLOW_TESTS
     # 对应 fast 抽样版是 bar_diff_test.cpp（每条路径各跑一次，进默认门禁）
     bar_diff_exhaustive_test
 )
+# Series 层的 Debug 断言（DZTRADER_SERIES_ASSERT，组件文档 §4.2「Debug 抛前有 assert」）
+# 先于异常触发。系列测试要断言的是「抛 std::out_of_range」这一行为，若断言生效会先 abort，
+# 用例永远到不了 EXPECT_THROW —— 因此为 series 测试关闭断言。Release（NDEBUG）本就编译掉，
+# 默认门禁因此不受影响；这里只影响 Debug/ASan 档。
+set(SDK_SERIES_TESTS
+    series_test
+    series_window_test
+)
+# series_debug_assert_test 相反：**不**关闭断言，用 EXPECT_DEATH 验证「抛前有 assert」（AC2）。
+# 下方构建时显式校验两个集合不相交——否则把 series_debug_assert_test 误加进
+# SDK_SERIES_TESTS 会让断言被关掉、death 测试静默退化成 EXPECT_THROW（AC2 失去覆盖）。
+set(SDK_SERIES_ASSERT_TESTS
+    series_debug_assert_test
+)
+foreach(assert_test ${SDK_SERIES_ASSERT_TESTS})
+    if(assert_test IN_LIST SDK_SERIES_TESTS)
+        message(FATAL_ERROR
+            "${assert_test} must not be in SDK_SERIES_TESTS: that set disables the "
+            "DZTRADER_SERIES_ASSERT debug assertions this test exists to verify")
+    endif()
+endforeach()
+
 file(GLOB SDK_TESTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${SDK_TESTS})
@@ -129,6 +151,11 @@ foreach(testfile ${SDK_TESTS})
     target_link_libraries(dztrader_sdk_${testname} PRIVATE
         dztrading strategy_api_headers dzcore dzshm dztest_support GTest::gtest
         Boost::boost nlohmann_json::nlohmann_json)
+    if(testname IN_LIST SDK_SERIES_TESTS)
+        # Debug 断言会 abort，遮蔽 EXPECT_THROW（见上方 SDK_SERIES_TESTS 注释）
+        target_compile_definitions(dztrader_sdk_${testname} PRIVATE
+            DZTRADER_SERIES_NO_DEBUG_ASSERT)
+    endif()
     if(testname IN_LIST SDK_API_TESTS)
         target_sources(dztrader_sdk_${testname} PRIVATE src/api.cpp src/db_database.cpp)
         # api.cpp 直接编入测试可执行文件（自包含, 不经 DLL 导出）,
