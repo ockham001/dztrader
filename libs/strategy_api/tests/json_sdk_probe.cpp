@@ -14,10 +14,15 @@
  * 取到的是**能真正工作的** nlohmann（解析、类型化取值、序列化、异常），而不是只过了
  * 预处理的空壳。
  *
+ * 同一次编译顺带覆盖 BarStrategy 配置层（#156，header-only）：「仅凭 SDK include 目录」
+ * 必须能编译并运行配置解析/默认值/有效配置日志，证明配置层没有偷偷依赖 Conan 或内部库
+ * （它只经 `dztrader/json.h` 取 JSON，并包含 SDK 自有的 date_time / series 头）。
+ *
  * 模式断言不是形式主义：`DZTRADER_JSON_EXTERNAL` 拼错或没传到编译命令时，外部探针会
  * 静默回退内置模式，双模检查就退化成「同一个头编译两遍」的恒真测试（审查清单 §2.2）。
  * `DZ_JSON_PROBE_EXPECT_EXTERNAL` 由 CMake 按 target 注入，属于测试专用宏，不进公开面。
  */
+#include <dztrader/bar_strategy/config.h>
 #include <dztrader/json.h>
 
 #include <cstdio>
@@ -87,6 +92,24 @@ int main() {
     }
     if (!threw) {
         return fail("malformed_json_not_rejected");
+    }
+
+    // BarStrategy 配置层（#156）：默认配置 → 解析 → 自动值推导 → 有效配置日志。
+    // 显式注入 today，探针不依赖墙钟。
+    auto config_root = dztrader::make_minimal_default_config();
+    config_root["instruments"] = nlohmann::json::array({"rb2601"});
+    const auto effective =
+        dztrader::parse_and_resolve_config(config_root, dztrader::Date{2026, 10, 28});
+    const std::string effective_line = dztrader::format_effective_config(effective);
+    if (effective.max_lookback != 1440 ||
+        effective.warmup_source != dztrader::ConfigValueSource::Default) {
+        return fail("bar_strategy_config_defaults");
+    }
+    if (effective_line.find("max_lookback_source=auto") == std::string::npos) {
+        return fail("bar_strategy_config_log");
+    }
+    if (dztrader::format_effective_accounts({}) != "accounts effective | -") {
+        return fail("bar_strategy_config_accounts_line");
     }
 
     std::printf("json sdk probe ok | mode=%s version=%d.%d.%d\n", kMode,

@@ -147,9 +147,8 @@ struct AttachedAccount {                    // 挂靠账户（A 持有；运行�
 using AccountTable = std::vector<AttachedAccount>;  // 只读遍历；命令按账户 id 查找
 
 struct ScalingConfig {                      // 进程级缩放配置（启动加载后不可变；ctx 按值拷贝）
-    enum class Rounding : std::uint8_t { Nearest, Floor, Ceil };
     double max_scale = 1.0;                 // 挂靠比率上限（> 0）
-    Rounding rounding = Rounding::Nearest;  // 默认四舍五入
+    ScaleRounding rounding = ScaleRounding::Nearest;  // 取整方向（enum 定义在配置层，#156）
     bool min_one = false;                   // 目标非零时至少 1 手
 };
 
@@ -657,20 +656,29 @@ scale_min_one：目标非零时至少 1 手（默认关）
 
 ## 7. 配置
 
-**路径与命名**：
+> **实现状态（#156）**：配置层已实现，落在 `libs/strategy_api/include/dztrader/bar_strategy/config.h`
+> （JSON 解析 / 语义校验 / 自动值推导 / 有效配置日志，纯组件、不碰文件系统）与
+> `dztrader/bar_strategy/config_file.h`（原子写、读文件、缺失生成、`ConfigStore` 写盘后改内存）。
+> 单元测试 `libs/strategy_api/tests/bar_strategy_config_test.cpp` 与
+> `bar_strategy_config_file_test.cpp`。`dz_strategy_home()` / `dz_strategy_id()` 取路径、
+> 缺失配置打印提示并以非 0 退出、启动打印两行有效配置，由 #157 的 `run_bar_strategy` 接线
+> （本票交付不依赖引擎与 `DzContext`）。实现期确认的口径见本节末「实现期确认」。
+>
+> **路径与命名**：
 
 - 文件：`$dz_strategy_home()/<strategy_id>.json`；`dz_strategy_home()` 为策略可执行文件目录（SDK 既有接口），`strategy_id` = exe stem。
 - 为什么带 `strategy_id` 前缀：部署时同一目录可能放多个策略可执行文件，前缀保证配置不冲突。
 - **调试/Release 不区分文件**：配置是数据不是构建产物；Debug/Release 的 exe 目录天然不同，已自动隔离。
 - **回测预留**：`<strategy_id>.backtest.json`（可选，覆盖合并到基础配置）；v1 不实现，不建模式子目录。
-- 写回：同目录临时文件 + `fsync` + 原子替换（POSIX `rename` / Windows `MoveFileEx`）；WebUI 严禁直接读写。
-- 缺失：自动生成**最小默认配置**（`period_sec=60`、空品种、空挂靠账户、空参数；不含 `max_lookback` / `reserve_bars` / `warmup`），输出错误提示后以非 0 退出，等用户编辑后重启。
-- `schema_version` 字段用于后续迁移（当前 1）。
+- 写回：同目录临时文件 + `fsync`（Windows `_commit`）+ 原子替换（POSIX `rename` / Windows `MoveFileEx`）；文件 `fsync` 失败必须报错，POSIX 父目录 `fsync` 为尽力而为（部分文件系统不支持）；任何一步失败都清理临时文件、旧配置保持不变。WebUI 严禁直接读写。
+- 缺失：自动生成**最小默认配置**（`schema_version=1`、`period_sec=60`、空品种、空挂靠账户、空参数；不含任何可选字段），输出错误提示后以非 0 退出，等用户编辑后重启。生成的配置**故意不是可运行配置**（`instruments` 为空，重启仍会报错退出），避免框架拿一份空配置静默启动。
+- `schema_version` 字段用于后续迁移（当前只接受 1；缺失或非 1 一律报错）。
 
 **字段与校验**：
 
 | 字段 | 必填 | 省略时 | 显式提供时 |
 |---|---|---|---|
+| `schema_version` | ✅ | — | 必须为整数 `1`（其它值/类型报错） |
 | `accounts` | ❌ | `[]`（0 个挂靠账户：只记逻辑台账、不发实盘单） | 数组 `{"account_id": 非空字符串, "scale": 有限正数}`；`scale ∈ (0, max_scale]`；账户标识不得重复；账户的登录/凭据属于平台 td 配置 |
 | `max_scale` | ❌ | `1.0` | 有限正数；挂靠比率上限，启动加载一次、盘中不可变（运行期编辑无效，重启生效） |
 | `scale_rounding` | ❌ | `"nearest"` | `"nearest"` / `"floor"` / `"ceil"`：逻辑持仓 `L_i = f(scale_i × |P|)` 的取整方向（§6.2） |
@@ -679,7 +687,7 @@ scale_min_one：目标非零时至少 1 手（默认关）
 | `max_lookback` | ❌ | `clamp(86400/period_sec, 32, 2048)`（§4.5） | 整数 ∈ [32, 16384]；调大以支持更深回溯 |
 | `reserve_bars` | ❌ | `max(2×86400/period_sec, R_min)`；`R_min = max(2, ceil(1.1×86400/period_sec))` | 整数 ∈ [`R_min`, 8192]；允许小于默认值（把回卷兜底拉进盘中，性能自负） |
 | `warmup` | ❌ | `{"bars": 10000}`，并自动提升到 ≥ `max_lookback` | `bars` 与 `from` 二选一（互斥）；`bars` 整数 ∈ [`max_lookback`, 10,000,000]；`from` 为 `YYYY-MM-DD` 本地日期且不晚于今天（可用历史不足 `max_lookback` 根时按可用部分静默填充、余下 live 补足，INFO 记录） |
-| `instruments` | ✅ | — | 非空字符串数组（纯合约代码，无品种参数） |
+| `instruments` | ✅ | — | 非空字符串数组（纯合约代码，无品种参数）；元素非空且不得重复 |
 | `params` | ❌ | `{}` | 全局参数（每品种相同；策略手数等普通参数由策略自定义，框架不做换算；挂靠比率不属于参数，见上） |
 
 - 派生校验：`buffer_bars = max_lookback + reserve_bars ≤ 24576`；超出 → 报错（提示调小任一值）。
@@ -689,24 +697,65 @@ scale_min_one：目标非零时至少 1 手（默认关）
 - **不合法一律报错退出，不静默修正**（与现有配置纪律一致）；错误信息给出字段名、当前值、合法区间。
 - 配置可写性：部署目录只读时的覆盖方式待部署需求确认（§14）。
 
+**实现期确认（#156）**：
+
+- **分层校验**：`parse_config` 只做 JSON 结构/类型/枚举取值/必填存在性；全部语义校验（取值集合、非空/唯一、数值区间、跨字段关系）在 `resolve_effective_config`。数值区间错误消息沿用 `series_internal::resolve_capacity` 的「字段名 / 当前值 / 合法区间」形态，不另写一套。
+- **未知字段**：顶层未知字段忽略（前向兼容，《帧契约：general》§8）；`accounts` 元素与 `warmup` 对象是**闭集内联对象**，未知键视为拼写错误报错（`field=accounts[0].scales ... reason=unknown_field`）——否则写回重建这两个对象时会静默丢失未知键。已知字段出现 JSON `null` 一律非法。
+- **写回后可重新加载**：命令层（#162）写回前必须经 `resolve_effective_config` 全量校验，写回的文件一定还能通过启动加载校验（例：删掉最后一个品种导致 `instruments` 为空 → 该命令失败、内存与文件都不变）。
+- **写回复原省略态与未知字段**：`ConfigStore::commit` 以当前文件为基底，只覆盖已知顶层字段；用户省略的可选字段写回后仍省略，文件中未知的顶层字段原样保留。
+- **运行期不可变字段**：`ConfigStore::commit` 拒绝改变 `period_sec` 与生效的 `max_scale`（ADR 0027 决策 11：启动加载一次、盘中不可变；重启生效），报错且内存与文件都不变。
+- **加载结果形状**：`load_config_file` 返回 `{status, optional<EffectiveConfig>, document, message}`——缺失生成默认配置时 `effective` 为空（默认配置故意不合法），`document` 是生成的默认配置；`Loaded` 时 `document` 可直接交给 `ConfigStore(path, document, effective)`，避免重读文件与二次解析。
+- **派生值不标来源**：`buffer_bars` 是纯派生值（= `max_lookback` + `reserve_bars`），日志不单列来源；`max_scale` / `scale_rounding` / `scale_min_one` 省略即默认、非推导值，日志同样不带 source（以上示例为准）。
+- **有效配置日志**：`warmup` 用 `from` 模式时把 `warmup_bars=` 换成 `warmup_from=YYYY-MM-DD`；0 个挂靠账户时账户行输出 `accounts effective | -`。框架启动时经 stderr 打印一行有效配置 + 一行账户表（header-only 公开代码不引入 spdlog，ADR 0020/0021）。
+- **原子写与既有实现的关系**：SDK 公开头不能依赖 `libs/core` 的 `json_section.h`（分层约束），故文件层自带一份原子写；相对先例额外满足本票 AC 的 `fsync`（文件 `fsync` 硬要求、POSIX 父目录尽力而为），JSON 字节格式沿用 `dump(2)`、**不追加结尾换行**。
+
 **C++ 侧配置类型（A 内部）**：
 
 ```cpp
+enum class ScaleRounding { Nearest, Floor, Ceil };   // 配置写作 "nearest"/"floor"/"ceil"
+
+struct AttachedAccount {
+    std::string account_id;                  // 非空、配置内唯一
+    double scale = 0.0;                      // (0, max_scale]
+};
+
+struct ScalingConfig {                       // 生效值（§3；由落盘 optional 字段解析/取默认得到）
+    double max_scale = 1.0;
+    ScaleRounding rounding = ScaleRounding::Nearest;
+    bool min_one = false;
+};
+
 struct WarmupSpec {                          // 二选一（对应 JSON 的 warmup）
     std::optional<std::int32_t> bars;
     std::optional<std::string> from;         // YYYY-MM-DD（本地日期）
 };
 
-struct BarStrategyConfig {
-    std::int32_t schema_version = 1;
+struct BarStrategyConfig {                   // 只描述落盘字段
+    std::int32_t schema_version = 1;         // 只接受 1
     std::int32_t period_sec = 60;
     std::vector<std::string> instruments;
     std::vector<AttachedAccount> accounts;   // 可为空（0 个挂靠账户）
-    ScalingConfig scaling;                   // max_scale / rounding / min_one
+    std::optional<double> max_scale;         // 省略 = 1.0（保留省略态供写回）
+    std::optional<ScaleRounding> scale_rounding;  // 省略 = Nearest
+    std::optional<bool> scale_min_one;       // 省略 = false
     std::optional<std::int32_t> max_lookback;  // 省略 = 自动
     std::optional<std::int32_t> reserve_bars;  // 省略 = 自动
     WarmupSpec warmup;                       // 省略 = {bars: 10000}
-    ParamStore params;
+    nlohmann::json params = nlohmann::json::object();  // 落盘形态（A 的 ParamStore 包装在 #157/#162）
+};
+
+struct EffectiveConfig {                     // 校验 + 推导后的有效值（有效配置日志的数据源）
+    BarStrategyConfig config;
+    ScalingConfig scaling;                   // 生效的 max_scale / rounding / min_one
+    std::int32_t max_lookback;               // 显式或按周期自动推导
+    std::int32_t reserve_bars;
+    std::int32_t buffer_bars;                // = max_lookback + reserve_bars
+    ConfigValueSource max_lookback_source;   // explicit / auto
+    ConfigValueSource reserve_bars_source;   // explicit / auto
+    std::optional<std::int32_t> warmup_bars; // 与 warmup_from 恰有一个有值
+    std::optional<std::string> warmup_from;
+    ConfigValueSource warmup_source;         // explicit / default（默认值的自动提升也归 default）
+    std::int64_t mem_per_series_bytes;       // = buffer_bars × 8B
 };
 ```
 
@@ -753,10 +802,12 @@ struct BarStrategyConfig {
 
 **启动有效配置日志**（字段值 + 来源，便于确认框架替用户选了什么）：
 
-```
-config effective | period_sec=60 accounts=2 max_scale=1.0 scale_rounding=nearest scale_min_one=0 max_lookback=1440 max_lookback_source=auto reserve_bars=2880 reserve_bars_source=auto buffer_bars=4320 warmup_bars=10000 warmup_source=default mem_per_series=34560
+```text
+config effective | schema_version=1 period_sec=60 accounts=2 max_scale=1.0 scale_rounding=nearest scale_min_one=0 max_lookback=1440 max_lookback_source=auto reserve_bars=2880 reserve_bars_source=auto buffer_bars=4320 warmup_bars=10000 warmup_source=default mem_per_series=34560
 accounts effective | CTP001=1.0 CTP002=0.5
 ```
+
+`warmup` 用 `from` 模式时第一个 `warmup_bars=…` 换成 `warmup_from=YYYY-MM-DD`（来源同为 `explicit`）；0 个挂靠账户时账户行是 `accounts effective | -`。来源枚举为 `explicit` / `auto` / `default`，浮点按最短往返表示并给整数值补 `.0`（`1.0` / `0.5` / `0.333`）。
 
 **UI_INPUT 宿主命令（v1，wire 细节并入 issue #9）**：
 
@@ -842,7 +893,7 @@ status | quit
   - 容量：各周期自动值、显式覆盖、越界报错、`buffer_bars ≤ 24576`、`buffer_bars == max_lookback + reserve_bars`。
   - 指标函数；合成 tick（涨/跌/平、量分配）；bar 桶计算（`(trading_day, 桶)` 边界）。
   - 竞价相位：`ctx.is_auction()` 在 close/open/update 的写入口径（= 触发 tick 相位，§5.1）；用含 Open 竞价窗口的测试小节表验证窗口内事件序；退化表下恒 false（§5.5）。
-  - 配置解析/默认生成/原子写回/`warmup` 互斥与范围校验/有效日志；`accounts`/`max_scale`/取整策略校验（`scale ∈ (0, max_scale]`、账户 id 不重复）；`instruments` 必填、`accounts` 可空。
+  - 配置解析/默认生成/原子写回/`warmup` 互斥与范围校验/有效日志；`schema_version` 必填且只接受 1；`accounts`/`max_scale`/取整策略校验（`scale ∈ (0, max_scale]`、账户 id 不重复）；`instruments` 必填、非空、不重复，`accounts` 可空；顶层未知字段忽略、`accounts` 元素与 `warmup` 对象未知键报错；配置路径按 exe stem 推导（带/不带尾分隔符一致）；`ConfigStore` 写盘失败/非法配置/不可变字段（`period_sec`、`max_scale`）时内存与文件都不变、写回保留未知顶层字段与可选字段省略态。
   - 虚拟台账：四函数开平意图全表（`buy`/`sell_short` 反手目标化为 `P=±n`、`sell`/`buy_to_cover` 只减不增与 `n>|P|` 钳制、`volume=0` 的只平不建/全平与两组等价对）；下单意图即时更新 `P`/Tier 1（含跨越 0 的开平归属）；`L_i = f(scale×|P|)` 的三种取整与 `scale_min_one`；每账户手数 = `L_i` 差量；价格对齐与涨跌停夹取；失败实例拒单。
   - 交易意图诊断：`n>0` 方向无效/超仓钳制记 WARN；`volume=0` 且无可平仓不诊断；`volume=0` 实际触发平仓记 INFO；负手数拒单。
   - 交易意图 fanout：N 账户时每单的方向/手数/`effect=AUTO`/价格正确（反手/全平仍是一张差量单）；0 账户时不下单；`L_i` 未变化时跳过发单与上报。
