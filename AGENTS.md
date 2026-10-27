@@ -128,7 +128,7 @@
 - **禁止单引号包裹占位符**：错 `"user '{}' fail"`，对 `"user fail | user={}"`
 - **禁止多行 `===` banner**，必须合并为单行 `prose | k=v`。**禁止中文**（含函数名、变量名）
 - 非性能路径用异常，日志作为最终输出。`Exception ──catch──→ LastError::set()`（C 接口边界，**无日志**）/ `──→ spdlog`（平台代码，无 LastError）
-- 提交前跑 `./scripts/preflight.sh`（日志格式/格式/文档链接/可移植性/前端，与 CI 同源）；日志违规用 `// NOLINT(log-format)` 豁免
+- 提交前跑 `./scripts/preflight.sh`（日志格式/格式/文档链接/可移植性/MSVC hazard/内置 JSON 版本一致性/前端，与 CI 同源）；日志违规用 `// NOLINT(log-format)` 豁免
 
 ### 跨平台
 

@@ -153,11 +153,13 @@ install(TARGETS dzstrategy_sdk_bar_perf_bench RUNTIME DESTINATION ${DZ_INSTALL_D
 # ============================================================
 # 「仅凭 SDK include 路径可编译」双模检查 (#154, ADR 0026 决策 6)
 #
-# 只链 strategy_api_headers 的 TU 能编译 + 运行, 即证明外部策略作者把 SDK 的
+# builtin 探针只链 strategy_api_headers 也能编译 + 运行, 即证明外部策略作者把 SDK 的
 # include 目录加进头文件路径就能解析 JSON, 不需要 Conan 或额外安装:
-#   builtin  : 默认模式, 用 SDK 内置单头 (dztrader/json.h 的内置分支)
-#   external : 定义 DZTRADER_JSON_EXTERNAL, 用外部 <nlohmann/json.hpp>;
-#              这是唯一额外链 nlohmann_json 的 target, 模拟策略作者自带版本
+#   builtin  : 默认模式, 用 SDK 内置单头 (dztrader/json.h 的内置分支); 只链
+#              strategy_api_headers (编译命令里没有第三方 include 路径)
+#   external : 定义 DZTRADER_JSON_EXTERNAL, 用外部 <nlohmann/json.hpp>; 两个探针之间
+#              只有它额外链 nlohmann_json::nlohmann_json 提供外部头路径,
+#              模拟策略作者自带版本 (本文件其它 target 也链它, 是内部库用途)
 # 两者都跑起来(不只编译)以证明取到的是能工作的 nlohmann, 不是只有预处理通过的空壳。
 # 均为百分之一秒级用例, 进默认 fast 门禁; 不用 gtest (无断言框架需求, 减少依赖面)。
 # ============================================================

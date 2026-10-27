@@ -30,9 +30,12 @@
    ```
 
 4. 同步更新本文件的「版本 / 发布物 / SHA-256 / 取用日期」四行；版本号不在其它源硬编码
-   （`dztrader/json.h` 的注释只写纪律，不写版本号，避免第三处需要同步）。
+   （`dztrader/json.h` 的注释只写纪律，不写版本号；`scripts/check_json_vendor_version.py`
+   的自测锚点也**从当前文件内容推导**，不需要随版本手工改——它不硬编码任何版本号）。
 5. 同一次提交跑门禁：`./scripts/gate.sh build` + `./scripts/gate.sh test`——双模探针
    `libs/strategy_api/tests/json_sdk_probe.cpp` 会把内置与外部两种模式各编译运行一次。
+6. 许可文案：本文件只记录版本与哈希，MIT 全文随 `json.hpp` 的 SPDX 头入库；随 SDK 分发包
+   的许可声明归 issue #7。仓内 vendored 源码清单见根 `THIRD_PARTY_NOTICES.md`「范围说明」。
 
 ## 为什么禁改格式
 

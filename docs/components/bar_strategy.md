@@ -753,7 +753,7 @@ status | quit
 - 命令成功后 A 写回配置（原子）；失败则内存不变、返回错误行。`param set` 成功后通过 `on_params_update` 通知策略重读。
 - 命令与配置中的账户标识只是平台账户 id 字符串；账户的登录/凭据/交易接口归属属于平台（td 配置），框架不管理。
 
-**JSON 取用（issue #154 已落地）**：框架的配置读写与 `ParamStore` 都只经 `dztrader/json.h` 取得 nlohmann，**不直接包含任何第三方路径**。两种模式：默认用 SDK 头文件目录内置的单头（策略作者不需要 Conan 或额外安装）；定义 `DZTRADER_JSON_EXTERNAL` 时用外部 `<nlohmann/json.hpp>`（策略作者自带版本）。内置单头版本与 `conanfile.py` 的 `nlohmann_json` 固定版本一致（当前 3.12.0），升级**同一次提交**改两边，由 `scripts/check_json_vendor_version.py` 机器校验；双模与「聚合头不引入 JSON」由 `ctest -R "json_probe"` + `aggregate_header_probe` 守住。版本记录与整文件替换步骤见 `libs/strategy_api/include/dztrader/third_party/nlohmann/VENDORED.md`。**`DZTRADER_JSON_EXTERNAL` 是编译期开关，同一进程内所有 TU 必须取值一致**（混用会让 `nlohmann::json` 在不同 TU 成为不同类型 → ODR 违规）。
+**JSON 取用（依赖层由 issue #154 落地，消费方随框架票实现）**：框架的配置读写与 `ParamStore` **只经 `dztrader/json.h`** 取得 nlohmann，**不直接包含任何第三方路径**。两种模式：默认用 SDK 头文件目录内置的单头（策略作者不需要 Conan 或额外安装）；定义 `DZTRADER_JSON_EXTERNAL` 时用外部 `<nlohmann/json.hpp>`（策略作者自带版本）。内置单头版本与 `conanfile.py` 的 `nlohmann_json` 固定版本一致，升级**同一次提交**改两边，由 `scripts/check_json_vendor_version.py` 机器校验（版本号与 SHA-256 的唯一记录点是 `libs/strategy_api/include/dztrader/third_party/nlohmann/VENDORED.md`，本文件不重复写版本号）；双模与「聚合头不引入 JSON」由 `ctest -R "json_probe|aggregate_header"` 守住。**`DZTRADER_JSON_EXTERNAL` 是编译期开关，同一进程内所有 TU 必须取值一致**（混用会让 `nlohmann::json` 在不同 TU 成为不同类型 → ODR 违规）。
 
 ## 8. 动态管理
 

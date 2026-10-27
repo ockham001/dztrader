@@ -2,12 +2,13 @@
  * @file json_sdk_probe.cpp
  * @brief 「仅凭 SDK include 目录可编译」双模探针（issue #154 验收项，ADR 0026 决策 6）
  *
- * 本文件被编译两次，两次都**只链接 `strategy_api_headers`**（即只有 SDK 的 include
- * 目录，不带任何 Conan / 系统第三方 include）：
- *   - json_sdk_probe_builtin：默认模式，用 SDK 内置单头；
+ * 本文件被编译两次：
+ *   - json_sdk_probe_builtin：默认模式，用 SDK 内置单头；该 target **只链接
+ *     `strategy_api_headers`**，即编译命令里只有 SDK 的 include 目录、不带任何
+ *     Conan / 系统第三方 include——这正是「外部策略作者不装任何第三方也能编译」的口径。
  *   - json_sdk_probe_external：定义 DZTRADER_JSON_EXTERNAL，用外部
- *     `<nlohmann/json.hpp>`（该 target 额外链接 nlohmann_json::nlohmann_json，
- *     模拟策略作者自带版本/来源）。
+ *     `<nlohmann/json.hpp>`；该 target 额外链接 nlohmann_json::nlohmann_json
+ *     提供外部头路径，模拟策略作者自带版本/来源。
  *
  * 编译成功即证明「把 SDK include 目录加进头文件路径就能解析 JSON」；运行本程序再证明
  * 取到的是**能真正工作的** nlohmann（解析、类型化取值、序列化、异常），而不是只过了

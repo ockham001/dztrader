@@ -30,8 +30,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -142,22 +144,75 @@ def check(root: Path) -> list[Violation]:
 
 # ---- 自测 ----------------------------------------------------------------
 
-# 已知违例形态：每个用例只破坏一条规则，确认校验器不是恒真（审查清单 §2.2）。
-# 用字符串替换而不是造整套假仓库，保证自测廉价、且锁定的是真实文件形状。
-SELFTEST_CASES: tuple[tuple[str, str, Path, str], ...] = (
-    # (用例名, 期望命中的规则, 目标文件, 查找串 -> 替换串)
-    ("conan_version_drift", "R2", Path(VENDORED_JSON_REL),
-     "#define NLOHMANN_JSON_VERSION_MINOR 12", "#define NLOHMANN_JSON_VERSION_MINOR 11"),
-    ("banner_version_drift", "R3", Path(VENDORED_JSON_REL),
-     "version 3.12.0", "version 3.11.3"),
-    ("doc_version_drift", "R4", Path(VENDORED_DOC_REL), "| 版本 | **3.12.0** |",
-     "| 版本 | **3.11.3** |"),
-    ("doc_sha_drift", "R5", Path(VENDORED_DOC_REL), "`aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63`",
-     "`" + "0" * 64 + "`"),
-)
+# 已知违例形态的注入字面量**从工作区当前内容推导**（build_selftest_cases），不硬编码
+# 版本号：硬编码会让"正确升级"本身变红——把 conanfile + 单头 + VENDORED.md 三方一致
+# 升到新版本后 check() 干净，但硬编码的旧版本字面量会全部 "anchor not found"，preflight
+# 在升级路径上失败且报错信息看起来像文件被改坏了（实测 3.12.0→3.13.0 复现）。
+# 推导后升级不需要再改本脚本，"版本号不在其它源硬编码"才真正成立。
+
+
+def _bumped_patch(version: str) -> str:
+    """patch 位 +1 的版本串，仅用于构造自测的"已知错误"字面量。"""
+    major, minor, patch = (int(part) for part in version.split("."))
+    return f"{major}.{minor}.{patch + 1}"
+
+
+def _touches_header(rel: Path) -> bool:
+    """注入点是否落在内置单头里（落在单头里时 R5 随之变红是正确行为）。"""
+    return rel == Path(VENDORED_JSON_REL)
+
+
+def build_selftest_cases(root: Path) -> list[tuple[str, str, Path, str, str]]:
+    """推导（用例名, 期望命中的规则, 目标文件, 查找串, 替换串）列表。
+
+    每个用例只破坏一条规则；R2/R3 改的是单头内容，会连带触发 R5（哈希随字节变化），
+    这是预期行为——R5 的职责就是盯住"单头字节变了但记录没更新"。
+    """
+    version, _ = conan_version(root)
+    if version is None:
+        return []
+    try:
+        conan_text = (root / CONANFILE_REL).read_text(encoding="utf-8", errors="replace")
+        header_text = (root / VENDORED_JSON_REL).read_text(encoding="utf-8", errors="replace")
+        doc_text = (root / VENDORED_DOC_REL).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    bumped = _bumped_patch(version)
+    require_match = CONAN_REQUIRE_RE.search(conan_text)
+    patch_match = MACRO_RES["PATCH"].search(header_text)
+    banner_match = HEADER_VERSION_RE.search(header_text)
+    doc_version_match = DOC_VERSION_RE.search(doc_text)
+    doc_sha_match = DOC_SHA_RE.search(doc_text)
+    if not all((require_match, patch_match, banner_match, doc_version_match, doc_sha_match)):
+        return []
+
+    patch_value = int(patch_match.group(1))
+    return [
+        ("conan_requirement_missing", "R1", Path(CONANFILE_REL),
+         require_match.group(0), 'requires("boost/1.90.0"'),
+        ("header_patch_macro_drift", "R2", Path(VENDORED_JSON_REL),
+         patch_match.group(0),
+         f"#define NLOHMANN_JSON_VERSION_PATCH {patch_value + 1}"),
+        ("header_banner_drift", "R3", Path(VENDORED_JSON_REL),
+         f"version {version}", f"version {bumped}"),
+        ("doc_version_drift", "R4", Path(VENDORED_DOC_REL),
+         doc_version_match.group(0), f"| 版本 | **{bumped}** |"),
+        ("doc_sha_drift", "R5", Path(VENDORED_DOC_REL),
+         doc_sha_match.group(0), "`" + "0" * 64 + "`"),
+    ]
 
 
 def run_selftest(root: Path) -> int:
+    """在**临时副本**上注入已知违例形态，确认校验器不是恒真。
+
+    #136 的教训：没有自测，正则被"简化"回去也没人发现。但自测绝不能改工作区的
+    受版本控制文件——本脚本最初直接在仓库里改文件再还原，一旦运行被 Ctrl-C /
+    SIGKILL / CI 取消打断（preflight 正是 agent 常被杀的地方），就会把内置单头或
+    VENDORED.md 留在改坏的状态：`json.hpp` 半改会让后续构建报错，`VENDORED.md`
+    被截断会静默丢记录。改为把校验所需的最小文件集复制进临时目录后在副本上折腾，
+    原工作区只读。
+    """
     baseline = check(root)
     if baseline:
         print("selftest: baseline repo already violates the check, cannot self-test",
@@ -166,30 +221,56 @@ def run_selftest(root: Path) -> int:
             print("  " + v.render(), file=sys.stderr)
         return 1
 
+    cases = build_selftest_cases(root)
+    if not cases:
+        print("selftest: cannot derive anchors from the current files", file=sys.stderr)
+        return 1
+
     failures = 0
-    for name, expected_rule, rel, old, new in SELFTEST_CASES:
-        path = root / rel
-        original = path.read_text(encoding="utf-8", errors="replace")
-        if old not in original:
-            print(f"selftest FAIL {name}: anchor not found in {rel}: {old!r}", file=sys.stderr)
-            failures += 1
-            continue
-        try:
-            path.write_text(original.replace(old, new, 1), encoding="utf-8")
-            rules = {v.rule for v in check(root)}
-        finally:
-            path.write_text(original, encoding="utf-8")
-        if expected_rule not in rules:
-            print(f"selftest FAIL {name}: expected {expected_rule}, got {sorted(rules) or 'none'}",
-                  file=sys.stderr)
-            failures += 1
-        else:
-            print(f"selftest ok {name} -> {expected_rule}")
+    with tempfile.TemporaryDirectory(prefix="dz_json_vendor_selftest_") as tmp:
+        fake_root = Path(tmp)
+        for rel in (CONANFILE_REL, VENDORED_JSON_REL, VENDORED_DOC_REL):
+            dst = fake_root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(root / rel, dst)
+        # 副本必须本身就通过，否则后面的"破坏一条规则"断言没有意义
+        if check(fake_root):
+            print("selftest: copied baseline already violates the check", file=sys.stderr)
+            return 1
+
+        for name, expected_rule, rel, old, new in cases:
+            path = fake_root / rel
+            original = path.read_text(encoding="utf-8", errors="replace")
+            if old not in original:
+                print(f"selftest FAIL {name}: anchor not found in {rel}: {old!r}",
+                      file=sys.stderr)
+                failures += 1
+                continue
+            try:
+                path.write_text(original.replace(old, new, 1), encoding="utf-8", newline="\n")
+                rules = {v.rule for v in check(fake_root)}
+            finally:
+                path.write_text(original, encoding="utf-8", newline="\n")
+            # 期望规则必须命中；同时断言"注入点之外没有别的规则被牵连"——否则校验器
+            # 退化成"永远报 R5"也能让自测变绿（审查清单 §2.2 恒真断言）。
+            if expected_rule not in rules:
+                print(f"selftest FAIL {name}: expected {expected_rule}, "
+                      f"got {sorted(rules) or 'none'}", file=sys.stderr)
+                failures += 1
+            elif expected_rule != "R5" and "R5" in rules and not _touches_header(rel):
+                # 改的是 VENDORED.md / conanfile.py，不该影响单头字节 -> R5 必须不响
+                print(f"selftest FAIL {name}: unrelated rule R5 also fired "
+                      f"(rules={sorted(rules)})", file=sys.stderr)
+                failures += 1
+            else:
+                print(f"selftest ok {name} -> {expected_rule}"
+                      + ("" if expected_rule == "R5" else ""))
 
     if failures:
         print(f"selftest FAILED: {failures} case(s)", file=sys.stderr)
         return 1
-    print(f"selftest: {len(SELFTEST_CASES)} known-bad forms all detected")
+    print(f"selftest: {len(cases)} known-bad forms all detected "
+          "(on a temp copy; the worktree is never modified)")
     return 0
 
 
@@ -199,8 +280,19 @@ def main(argv: list[str]) -> int:
                         help="inject known-bad forms and confirm the checker detects them")
     args = parser.parse_args(argv)
 
-    root = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                               capture_output=True, text=True, check=True).stdout.strip())
+    # 定位仓库根：优先 git（在 worktree / 子目录调用都正确），退化到脚本自身位置
+    # （git 不可用或不在工作树内时不要抛 traceback——兄弟检查脚本也是干净退出）。
+    root: Path | None = None
+    try:
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, check=True)
+        candidate = Path(top.stdout.strip())
+        if candidate.is_dir():
+            root = candidate
+    except (OSError, subprocess.CalledProcessError):
+        root = None
+    if root is None:
+        root = Path(__file__).resolve().parents[1]
 
     if args.selftest:
         return run_selftest(root)

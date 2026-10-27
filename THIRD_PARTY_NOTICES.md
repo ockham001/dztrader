@@ -71,5 +71,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## 范围说明
 
-- 本文件当前只记录 psutil（`dzsysmon` 的参考实现）的归属与许可。
-- 其他第三方依赖（Boost、Drogon、spdlog、SQLite、nlohmann/json、msgpack-cxx 等）的许可与归属由各自上游 / 依赖包提供，不在本文件重复；本项目自身代码以 MIT 许可发布。
+- 本文件记录 psutil（`dzsysmon` 的参考实现）的归属与许可，以及**随源码入库**的第三方源码。
+- 仓内 vendored 的第三方源码只有一处：nlohmann/json 官方单头
+  （`libs/strategy_api/include/dztrader/third_party/nlohmann/json.hpp`，MIT，版本 / SHA-256 /
+  升级纪律见同目录 `VENDORED.md`）。其 SPDX 许可头随文件本身入库；**随 SDK 分发包**的许可
+  声明与打包归 issue #7（[ADR 0026](docs/adr/0026-strategy-sdk-nlohmann-json.md) 决策 5）。
+- 其他第三方依赖（Boost、Drogon、spdlog、SQLite、msgpack-cxx 等）以依赖包形式引入、不随源码
+  入库，其许可与归属由各自上游 / 依赖包提供，不在本文件重复；本项目自身代码以 MIT 许可发布。

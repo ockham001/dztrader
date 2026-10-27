@@ -116,7 +116,10 @@ check_msvc_hazards() {
 check_json_vendor_version() {
     # 先跑自测（改了 conanfile 忘改内置单头 / 改了单头忘改记录等形态仍被拦住），
     # 再校验真实三方一致性（ADR 0026 决策 6 的机器化，#154）。
-    "$PYTHON" scripts/check_json_vendor_version.py --selftest
+    # 两条命令必须显式串联：run_step 的形态是「调用一个函数、取它的 $?」，而
+    # `set -u -o pipefail` 没有 `-e` —— 少写 `|| return` 时自测的失败会被后一条
+    # 命令的 0 覆盖，门禁变恒真（实测：selftest rc=1 → step rc=0 → 仍然打印 ok）。
+    "$PYTHON" scripts/check_json_vendor_version.py --selftest || return $?
     "$PYTHON" scripts/check_json_vendor_version.py
 }
 
