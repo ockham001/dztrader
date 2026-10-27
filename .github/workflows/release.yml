@@ -87,6 +87,32 @@ jobs:
           ./scripts/build.sh
           ./scripts/install-artifacts.sh
 
+      # tag 与 project(VERSION) 的一致性守卫（#170）：产物里的 dz_version_string()
+      # 来自 CMakeLists 的 project(VERSION)，若它与 tag 漂移，发布包会自称旧版本号。
+      # 接受的形式：v0.1.0 / v0.1.0-rc1 / v0.1.0-rc.1 —— 去掉 v 前缀与预发布后缀后
+      # 必须等于 PROJECT_VERSION。
+      - name: Verify tag matches project version
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          # v1.2.3 或 v1.2.3-<任意预发布后缀>
+          if ! printf '%s' "$tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "error: tag is not semver-with-v | tag=$tag"
+            exit 1
+          fi
+          tag_version=$(printf '%s' "$tag" | sed -E 's/^v//; s/-.*$//')
+          proj_version=$(sed -nE 's/^[[:space:]]*VERSION[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' CMakeLists.txt | head -1)
+          if [ -z "$proj_version" ]; then
+            echo "error: cannot read project(VERSION) from CMakeLists.txt"
+            exit 1
+          fi
+          if [ "$tag_version" != "$proj_version" ]; then
+            echo "error: tag/version mismatch | tag=$tag tag_version=$tag_version project_version=$proj_version"
+            echo "       bump project(VERSION) in CMakeLists.txt (and conanfile.py) before tagging"
+            exit 1
+          fi
+          echo "tag/version OK | tag=$tag version=$proj_version"
+
       - name: Verify install tree
         run: |
           set -euo pipefail
@@ -176,6 +202,26 @@ jobs:
         run: |
           cmake --install build/windows/x86_64/Release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # 与 Linux job 同一守卫（#170）：tag 必须与 project(VERSION) 一致。
+      - name: Verify tag matches project version
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.tag || github.ref_name }}"
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?$') {
+            Write-Error "tag is not semver-with-v | tag=$tag"; exit 1
+          }
+          $tagVersion = $Matches[1]
+          $line = Select-String -Path CMakeLists.txt -Pattern '^\s*VERSION\s+(\d+\.\d+\.\d+)\s*$' |
+            Select-Object -First 1
+          if (-not $line) { Write-Error "cannot read project(VERSION) from CMakeLists.txt"; exit 1 }
+          $projVersion = $line.Matches[0].Groups[1].Value
+          if ($tagVersion -ne $projVersion) {
+            Write-Error "tag/version mismatch | tag=$tag tag_version=$tagVersion project_version=$projVersion"
+            Write-Error "bump project(VERSION) in CMakeLists.txt (and conanfile.py) before tagging"
+            exit 1
+          }
+          Write-Host "tag/version OK | tag=$tag version=$projVersion"
 
       - name: Verify install tree
         shell: pwsh
