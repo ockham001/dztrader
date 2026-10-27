@@ -42,34 +42,21 @@ namespace series_internal {
 
 struct Access;  // 内部构造缝（A 与测试），定义见 dztrader/series_internal.h
 
-/// @brief 断言钩子的函数指针类型（不用 `noexcept` 类型：它会改变函数指针类型并破坏赋值）
-using DebugAssertHook = void (*)();
-
-/**
- * @brief 越界前的 Debug 断言钩子（测试可替换；仅在失败路径被调用，不影响热路径）
- *
- * 组件文档 §4.2 要求「Debug 构建在抛出前加 assert，便于直接停在出错点」。断言先于
- * 异常意味着 Debug 下抛异常的用例会因为 abort 永远走不到 `EXPECT_THROW`，因此把
- * 断言做成钩子：默认 Debug 下 `assert`（Release 无动作），测试装一个记录钩子即可
- * 在**不 abort** 的前提下断言「抛前确实走了断言」。
- *
- * 钩子是 inline 函数内的局部 static，程序内唯一（多 TU 共享同一实例）。
- */
-inline DebugAssertHook& debug_assert_hook() noexcept {
-    static DebugAssertHook hook = nullptr;
-    return hook;
-}
-
-/// @brief 越界断言点：先走钩子（若装载），否则 Debug 下 abort
-inline void debug_assert_failed() {
-    if (const auto hook = debug_assert_hook(); hook != nullptr) {
-        hook();
-        return;
-    }
-#ifndef NDEBUG
-    assert(false && "series index out of range");
+/// @brief 越界前的 Debug 断言（Release 与测试构建编译掉）
+///
+/// 组件文档 §4.2 要求「Debug 构建在抛出前加 assert，便于直接停在出错点」。断言只在
+/// 失败路径执行，不影响热路径。测试目标定义 `DZTRADER_SERIES_NO_DEBUG_ASSERT` 关闭它：
+/// 断言先于异常，否则 Debug 下 `EXPECT_THROW` 用例会先 abort、永远到不了异常断言
+/// （Release 由 `NDEBUG` 自然关闭，故默认门禁不受影响）。
+#ifndef DZTRADER_SERIES_ASSERT
+#ifdef NDEBUG
+#define DZTRADER_SERIES_ASSERT(condition) ((void)0)
+#elif defined(DZTRADER_SERIES_NO_DEBUG_ASSERT)
+#define DZTRADER_SERIES_ASSERT(condition) ((void)0)
+#else
+#define DZTRADER_SERIES_ASSERT(condition) assert(condition)
 #endif
-}
+#endif
 
 }  // namespace series_internal
 
@@ -161,7 +148,7 @@ protected:
         if (base_ != nullptr && n >= 0 && n < current_size) {
             return;
         }
-        series_internal::debug_assert_failed();
+        DZTRADER_SERIES_ASSERT(false);
         throw std::out_of_range(
             std::format("series index out of range | n={} size={} max_lookback={}", n, current_size,
                         this->max_lookback()));
@@ -201,7 +188,7 @@ public:
     /// @throw std::out_of_range 代理未绑定（默认构造后未由 `Series::operator[]` 产生）
     operator T() const {  // NOLINT(google-explicit-constructor)
         if (slot_ == nullptr) {
-            series_internal::debug_assert_failed();
+            DZTRADER_SERIES_ASSERT(false);
             throw std::out_of_range("series ref is unbound");
         }
         return *slot_;
@@ -211,19 +198,35 @@ private:
     template <class U>
     friend class Series;
 
-    SeriesRef(T* slot, std::ptrdiff_t n)
+    SeriesRef(T* slot, std::ptrdiff_t n, const WindowState* window, std::int32_t end_snapshot)
         : slot_(slot),
-          n_(n) {}
+          n_(n),
+          window_(window),
+          end_snapshot_(end_snapshot) {}
 
     void validate_writable() const {
-        if (slot_ == nullptr || n_ != 0) {
-            series_internal::debug_assert_failed();
+        if (slot_ == nullptr) {
+            DZTRADER_SERIES_ASSERT(false);
+            throw std::out_of_range("series ref is unbound");
+        }
+        if (n_ != 0) {
+            DZTRADER_SERIES_ASSERT(false);
             throw std::out_of_range(std::format("series history is not writable | n={}", n_));
+        }
+        // 代理可能被保存到下一根 bar（组件文档 §3 允许 B 保存 Series/视图副本）。
+        // 那时它绑定的槽位已经变成历史 [1]，n_ 仍是 0；只检查 n_ 会让写历史**静默**成功。
+        // 因此代理记住创建时的窗口右边界，写入时要求窗口没有推进过。
+        if (window_ != nullptr && window_->end != end_snapshot_) {
+            DZTRADER_SERIES_ASSERT(false);
+            throw std::out_of_range(std::format("series ref is stale | n={} bar_advanced={}", n_,
+                                                window_->end - end_snapshot_));
         }
     }
 
-    T* slot_ = nullptr;     ///< 当前 bar 的物理槽位
-    std::ptrdiff_t n_ = 0;  ///< 索引（仅 0 可写）
+    T* slot_ = nullptr;                    ///< 当前 bar 的物理槽位
+    std::ptrdiff_t n_ = 0;                 ///< 索引（仅 0 可写）
+    const WindowState* window_ = nullptr;  ///< 创建代理时的窗口几何（判过期用）
+    std::int32_t end_snapshot_ = 0;        ///< 创建代理时的 window.end
 };
 
 /**
@@ -249,7 +252,7 @@ public:
     [[nodiscard]] SeriesRef<T> operator[](std::ptrdiff_t n) {
         this->check_index(n);
         return SeriesRef<T>(this->base_ + static_cast<std::ptrdiff_t>(this->window_->end) - 1 - n,
-                            n);
+                            n, this->window_, this->window_->end);
     }
 
 private:

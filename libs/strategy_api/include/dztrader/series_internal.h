@@ -102,11 +102,49 @@ inline constexpr std::int32_t SECS_PER_DAY = 86400;
     return ceil_110pct > 2 ? ceil_110pct : 2;
 }
 
+/**
+ * @brief 周期本身可行的最小周期：`R_min(period) <= RESERVE_BARS_MAX`
+ *
+ * 低于它时 `reserve_bars` 的合法区间 `[R_min, 8192]` 是**空区间**——该周期不存在任何
+ * 合法配置（显式给值也救不了，因为 R_min 是「两次回卷之间至少攒一天 bar」的物理下限）。
+ *
+ * 注意与 {@link min_auto_reserve_period} 区分：本函数只保证「存在合法的显式 reserve」，
+ * 不保证省略 reserve 时自动值合法。
+ *
+ * 由 {@link min_reserve_bars} 反推，**不手写闭式表达式**——公式含 1.1 的向上取整，手写
+ * 下界极易少一根，把非法周期写进错误信息的「合法区间」。R_min 随周期单调递减，线性搜索
+ * 即可；只在配置解析路径调用一次，不在热路径。
+ */
+[[nodiscard]] inline std::int32_t min_feasible_period() noexcept {
+    for (std::int32_t period = 1; period < SECS_PER_DAY; ++period) {
+        if (min_reserve_bars(period) <= RESERVE_BARS_MAX) {
+            return period;
+        }
+    }
+    return SECS_PER_DAY;
+}
+
 /// @brief 自动回卷余量：`max(2 × 每日 bar 数, R_min)`
 [[nodiscard]] inline std::int32_t auto_reserve_bars(std::int32_t period_sec) noexcept {
     const std::int32_t twice = 2 * daily_bars(period_sec);
     const std::int32_t floor_reserve = min_reserve_bars(period_sec);
     return twice > floor_reserve ? twice : floor_reserve;
+}
+
+/**
+ * @brief 省略 `reserve_bars`（走自动值）时可行的最小周期：`R_auto(period) <= RESERVE_BARS_MAX`
+ *
+ * 介于两个下界之间的周期（v1 之外的秒级周期）要求显式配置 `reserve_bars`：自动值会
+ * 越界，按「不静默修正」纪律报错并提示显式配置（组件文档 §7）。v1 的四个周期都远在
+ * 该下界之上，不受影响。
+ */
+[[nodiscard]] inline std::int32_t min_auto_reserve_period() noexcept {
+    for (std::int32_t period = 1; period < SECS_PER_DAY; ++period) {
+        if (auto_reserve_bars(period) <= RESERVE_BARS_MAX) {
+            return period;
+        }
+    }
+    return SECS_PER_DAY;
 }
 
 /**
@@ -127,7 +165,7 @@ struct Capacity {
     std::int32_t buffer_bars = 0;   ///< 物理元素数（= max_lookback + reserve_bars）
 };
 
-namespace capacity_internal {
+namespace series_internal_detail {
 
 /// @brief 非法容量的统一异常形态：字段名 / 当前值 / 合法区间（组件文档 §7）
 [[noreturn]] inline void throw_invalid(const char* field,
@@ -138,7 +176,7 @@ namespace capacity_internal {
                                             field, value, lower, upper));
 }
 
-}  // namespace capacity_internal
+}  // namespace series_internal_detail
 
 /**
  * @brief 解析容量：自动值按周期推导，显式值按区间校验，派生值 `buffer_bars` 上限校验
@@ -152,38 +190,38 @@ namespace capacity_internal {
  * @throw std::invalid_argument 任一校验失败（不静默修正）
  */
 [[nodiscard]] inline Capacity resolve_capacity(const CapacityInput& input) {
-    if (input.period_sec <= 0) {
-        capacity_internal::throw_invalid("period_sec", input.period_sec, 1, SECS_PER_DAY);
+    // 周期的合法区间由「回卷余量下限必须仍可满足」反推：R_min(period) <= 8192。
+    // R_min = max(2, ceil(1.1 × 86400 / period))，故最小合法周期是使该式 ≤ 8192 的最小
+    // 整数（1.1 因子必须计入；只按 86400/8192 算会少一根，把非法值写进合法区间）。
+    // 上界是一天（一个 bar 不超过一个交易日）。
+    const std::int32_t period_floor = min_feasible_period();
+    if (input.period_sec < period_floor || input.period_sec > SECS_PER_DAY) {
+        series_internal_detail::throw_invalid("period_sec", input.period_sec, period_floor,
+                                              SECS_PER_DAY);
     }
-
-    // 周期过短会让回卷余量的下限本身越过上限（[R_min, 8192] 成为空区间）：此时该周期
-    // 不存在任何合法配置，报周期而不是报一个倒置的区间。
     const std::int32_t reserve_floor = min_reserve_bars(input.period_sec);
-    if (reserve_floor > RESERVE_BARS_MAX) {
-        capacity_internal::throw_invalid("period_sec", input.period_sec,
-                                         (SECS_PER_DAY / RESERVE_BARS_MAX) + 1, SECS_PER_DAY);
-    }
 
     Capacity capacity{};
     capacity.max_lookback =
         input.max_lookback.has_value() ? *input.max_lookback : auto_max_lookback(input.period_sec);
     if (capacity.max_lookback < MAX_LOOKBACK_MIN || capacity.max_lookback > MAX_LOOKBACK_MAX) {
-        capacity_internal::throw_invalid("max_lookback", capacity.max_lookback, MAX_LOOKBACK_MIN,
-                                         MAX_LOOKBACK_MAX);
+        series_internal_detail::throw_invalid("max_lookback", capacity.max_lookback,
+                                              MAX_LOOKBACK_MIN, MAX_LOOKBACK_MAX);
     }
 
     capacity.reserve_bars =
         input.reserve_bars.has_value() ? *input.reserve_bars : auto_reserve_bars(input.period_sec);
     if (capacity.reserve_bars < reserve_floor || capacity.reserve_bars > RESERVE_BARS_MAX) {
-        capacity_internal::throw_invalid("reserve_bars", capacity.reserve_bars, reserve_floor,
-                                         RESERVE_BARS_MAX);
+        series_internal_detail::throw_invalid("reserve_bars", capacity.reserve_bars, reserve_floor,
+                                              RESERVE_BARS_MAX);
     }
 
     // 派生上限：两个字段各自合法时其和必然 ≤ 上限（16384 + 8192 = 24576），因此这里是
     // 防御性校验——为将来放宽单字段区间保留，不是当前可达分支（测试断言了这一等价）。
     capacity.buffer_bars = capacity.max_lookback + capacity.reserve_bars;
     if (capacity.buffer_bars > BUFFER_BARS_MAX) {
-        capacity_internal::throw_invalid("buffer_bars", capacity.buffer_bars, 1, BUFFER_BARS_MAX);
+        series_internal_detail::throw_invalid("buffer_bars", capacity.buffer_bars, 1,
+                                              BUFFER_BARS_MAX);
     }
     return capacity;
 }
@@ -192,7 +230,7 @@ namespace capacity_internal {
 // 窗口几何驱动（组件文档 §4.1 推进 / §4.4 回卷）
 // ============================================================
 
-namespace window_internal {
+namespace series_internal_detail {
 
 /// @brief 单个数组的回卷搬移：窗口 `[end - size, end)` → `[0, size)`
 template <class T>
@@ -211,7 +249,7 @@ inline void relocate_all(const WindowState& window, Arrays... arrays) noexcept {
     (relocate_array_one(window, arrays), ...);
 }
 
-}  // namespace window_internal
+}  // namespace series_internal_detail
 
 /**
  * @brief 主动回卷（18:00 定时器主路径，也是推进前的兜底）
@@ -224,7 +262,7 @@ inline void relocate_all(const WindowState& window, Arrays... arrays) noexcept {
  */
 template <class... Arrays>
 inline void relocate_window(WindowState& window, Arrays... arrays) noexcept {
-    window_internal::relocate_all(window, arrays...);
+    series_internal_detail::relocate_all(window, arrays...);
     window.end = window.size;
 }
 
@@ -235,6 +273,10 @@ inline void relocate_window(WindowState& window, Arrays... arrays) noexcept {
  * 因此本函数**只**完成 ① 并返回槽位；调用方把价格/量额/用户序列写进该槽位后，
  * 必须调用 {@link commit_advance} 完成 ③。两步成对使用，否则窗口几何与已写数据错位。
  *
+ * @pre `buffer_bars > max_lookback`（即 `reserve_bars >= 1`）。回卷把 `end` 置为 `size`，
+ *      只有余量非空才能保证下一次写入落在缓冲内；`resolve_capacity` 保证 `reserve_bars >= 2`，
+ *      因此经由它的实例永远满足。默认构造的 `WindowState`（`buffer_bars == 0`）不满足，
+ *      调用方在建立实例时必须先注入容量。
  * @return 新 bar 在所有数组中的物理下标（尚未计入 `size`）
  */
 template <class... Arrays>
@@ -267,35 +309,6 @@ inline void commit_advance(WindowState& window) noexcept {
     if (window.size < window.max_lookback) {
         ++window.size;
     }
-}
-
-/**
- * @brief 校验窗口是否已具备推进条件（`buffer_bars > 0` 且几何自洽）
- *
- * `prepare_advance` 返回的是「可以写入的下标」；调用方在解引用数组前必须确认它不是
- * 越界下标。容量由 `resolve_capacity` 保证 `buffer_bars >= max_lookback + R_min >= 33`，
- * 所以真实实例永远满足；但**默认构造的 `WindowState`**（`buffer_bars == 0`）在 A 完成
- * 注入之前也会走到推进路径，那时 `prepare_advance` 会返回 0 —— 写进零长数组就是越界写。
- * 本函数把这个前提显式化，A 在推进前断言它（内部用法）或按失败处理。
- */
-[[nodiscard]] inline bool window_ready_to_advance(const WindowState& window) noexcept {
-    return window.buffer_bars > 0 && window_consistent(window);
-}
-
-/**
- * @brief 推进一根 bar：写槽位 → commit（调用方已校验 `window_ready_to_advance`）
- *
- * 便利包装：把 `prepare_advance` + 写入 + `commit_advance` 三步收敛到一处，避免调用方
- * 忘记 commit 导致几何与数据错位。`writer` 收到物理下标，负责把本根 bar 的值写进
- * **每个**数组。
- *
- * @param writer 回调：`void(std::int32_t slot)`
- */
-template <class Writer, class... Arrays>
-inline void advance_bar(WindowState& window, Writer&& writer, Arrays... arrays) noexcept {
-    const std::int32_t slot = prepare_advance(window, arrays...);
-    writer(slot);
-    commit_advance(window);
 }
 
 }  // namespace dztrader::series_internal

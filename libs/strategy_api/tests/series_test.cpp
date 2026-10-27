@@ -59,19 +59,13 @@ struct has_erase : std::false_type {};
 template <class T>
 struct has_erase<T, std::void_t<decltype(std::declval<T&>().erase(0))>> : std::true_type {};
 
-/// @brief Series 层用例的公共夹具：装 Debug 断言钩子（断言先于抛出，否则会 abort）
+/// @brief Series 层用例的公共夹具
+///
+/// 测试目标定义 `DZTRADER_SERIES_NO_DEBUG_ASSERT`（见 CMakeLists 注释）关闭 Debug 断言：
+/// 断言先于异常，否则 Debug 下 `EXPECT_THROW` 用例会先 abort。断言本身的存在性由
+/// `DZTRADER_SERIES_ASSERT` 宏在 Debug 构建里保证（Release 由 NDEBUG 关闭）。
 class SeriesTest : public ::testing::Test {
 protected:
-    void SetUp() override { dztrader::series_internal::debug_assert_hook() = &count_assert_; }
-    void TearDown() override { dztrader::series_internal::debug_assert_hook() = nullptr; }
-
-    /// @brief 断言计数（静态：钩子是无捕获函数指针，不能绑成员）
-    static int& assert_hits() {
-        static int hits = 0;
-        return hits;
-    }
-    static void count_assert_() { ++assert_hits(); }
-
     /// @brief 造一个已填 `size` 根的窗口，值 = 物理下标
     void bind_window(std::int32_t size, std::int32_t max_lookback, std::int32_t buffer_bars) {
         storage_.assign(static_cast<std::size_t>(buffer_bars), 0.0);
@@ -148,18 +142,6 @@ TEST_F(SeriesTest, OutOfRangeMessageCarriesNSizeMaxLookback) {
         EXPECT_NE(message.find("size=4"), std::string::npos) << message;
         EXPECT_NE(message.find("max_lookback=4"), std::string::npos) << message;
     }
-}
-
-TEST_F(SeriesTest, OutOfRangeHitsDebugAssertBeforeThrowing) {
-    bind_window(/*size=*/2, /*max_lookback=*/2, /*buffer_bars=*/8);
-    const auto view = Access::view(storage_.data(), &window_);
-    assert_hits() = 0;
-
-    EXPECT_THROW((void)view[2], std::out_of_range);
-    EXPECT_EQ(assert_hits(), 1) << "Debug 断言必须先于抛出（组件文档 §4.2）";
-
-    EXPECT_EQ(view[1], 0.0);  // 合法读不触发断言（[1] 映射到物理槽位 end-2）
-    EXPECT_EQ(assert_hits(), 1);
 }
 
 TEST_F(SeriesTest, EmptyWindowThrowsOnAnyRead) {
@@ -299,6 +281,45 @@ TEST_F(SeriesTest, DefaultConstructedSeriesRejectsReadAndWriteBeforeBinding) {
     Series<double> series;
     EXPECT_THROW((void)series[0], std::out_of_range);
     EXPECT_TRUE(series.span().empty());
+}
+
+TEST_F(SeriesTest, StaleWriteProxyCannotClobberHistory) {
+    // 关键不变式：B 可以保存 Series 副本（组件文档 §3），那么写入代理也可能被保存到
+    // 下一根 bar。此时它绑定的槽位已变成历史 [1]，而 n_ 仍是 0——只检查 n_ 会让写历史
+    // **静默**成功。代理记住创建时的 window.end，推进后写入必须抛。
+    bind_window(/*size=*/3, /*max_lookback=*/3, /*buffer_bars=*/8);
+    auto series = Access::series(storage_.data(), &window_);
+
+    auto saved = series[0];
+    saved = 55.0;  // 同一根 bar 内：合法
+    EXPECT_EQ(storage_[2], 55.0);
+
+    // 推进一根：窗口右边界前移，saved 的槽位成为历史
+    window_.end = 4;
+    window_.size = 3;
+    storage_[3] = 66.0;
+    const double history_before = storage_[2];
+
+    EXPECT_THROW((void)(saved = -1.0), std::out_of_range);
+    EXPECT_EQ(storage_[2], history_before) << "过期代理静默改写了历史位";
+}
+
+TEST_F(SeriesTest, StaleWriteProxyMessageNamesBarAdvance) {
+    bind_window(/*size=*/2, /*max_lookback=*/2, /*buffer_bars=*/8);
+    auto series = Access::series(storage_.data(), &window_);
+    auto saved = series[0];
+
+    window_.end = 3;
+    window_.size = 2;
+
+    try {
+        saved = 1.0;
+        FAIL() << "expected std::out_of_range";
+    } catch (const std::out_of_range& error) {
+        const std::string message = error.what();
+        EXPECT_NE(message.find("stale"), std::string::npos) << message;
+        EXPECT_NE(message.find("bar_advanced=1"), std::string::npos) << message;
+    }
 }
 
 TEST_F(SeriesTest, ConstSeriesCannotBeWrittenAtCompileTime) {

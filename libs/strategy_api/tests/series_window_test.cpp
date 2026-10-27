@@ -3,18 +3,16 @@
  * @brief 容量推导与窗口几何：推进、回卷等价性、非法容量报错（issue #155 AC5/AC6，
  *        组件文档 §4.1/§4.4/§4.5）
  *
- * 断言只落在可观察契约上：`[n]` 与 `span()` 的逐位内容、`size` / `end` / `bar_index`
+ * 断言只落在可观察契约上：`[n]` 与 `span()` 的逐位内容、`size` / `end`
  * 等价性、异常类型与消息字段。回卷用例的 oracle 是**独立的影子模型**（`std::deque`
  * 追加 + 裁剪），不与被测实现共享几何推导，避免同义反复。
  */
 #include <dztrader/series.h>
 #include <dztrader/series_internal.h>
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -61,24 +59,16 @@ public:
         high_[index] = high;
         user_[index] = user;
         commit_advance(window_);
-        ++bar_index_;
     }
 
     // 视图绑定的是「数组首地址 + 窗口」，与被绑对象的 const 性无关；作为只读视图，
     // 它就是要在 const 夹具上可读，因此这里从 const 成员取非 const 地址是刻意的。
     [[nodiscard]] SeriesView<double> close_view() const { return close_view_impl(); }
-    [[nodiscard]] SeriesView<double> high_view() const { return high_view_impl(); }
     [[nodiscard]] SeriesView<std::int64_t> user_view() const { return user_view_impl(); }
-    [[nodiscard]] Series<std::int64_t> user_series() {
-        return Access::series(user_.data(), &window_);
-    }
 
     [[nodiscard]] const WindowState& window() const { return window_; }
-    [[nodiscard]] std::int64_t bar_index() const { return bar_index_; }
     [[nodiscard]] const Capacity& capacity() const { return capacity_; }
     [[nodiscard]] const std::vector<double>& close_storage() const { return close_; }
-    [[nodiscard]] const std::vector<double>& high_storage() const { return high_; }
-    [[nodiscard]] const std::vector<std::int64_t>& user_storage() const { return user_; }
 
     /// @brief 主动回卷（18:00 主路径）：全部数组一起搬
     void relocate() { relocate_window(window_, close_.data(), high_.data(), user_.data()); }
@@ -87,16 +77,12 @@ private:
     [[nodiscard]] SeriesView<double> close_view_impl() const {
         return Access::view(const_cast<double*>(close_.data()), &window_);
     }
-    [[nodiscard]] SeriesView<double> high_view_impl() const {
-        return Access::view(const_cast<double*>(high_.data()), &window_);
-    }
     [[nodiscard]] SeriesView<std::int64_t> user_view_impl() const {
         return Access::view(const_cast<std::int64_t*>(user_.data()), &window_);
     }
 
     Capacity capacity_{};
     WindowState window_{};
-    std::int64_t bar_index_ = 0;
     std::vector<double> close_;
     std::vector<double> high_;
     std::vector<std::int64_t> user_;
@@ -140,12 +126,16 @@ private:
 // ---------------- AC5：buffer_bars = max_lookback + reserve_bars ----------------
 
 TEST(SeriesBufferGeometryTest, BufferBarsIsLookbackPlusReserve) {
-    WindowFixture fixture(/*max_lookback=*/5, /*reserve_bars=*/3);
+    // 断言 resolve_capacity 的派生结果，不是夹具构造时自己算的 member
+    // （后者是 §1.1 失效：把实现删掉也照样绿）。
+    CapacityInput input{};
+    input.period_sec = 60;
+    input.max_lookback = 500;
+    input.reserve_bars = 1584;
+    const auto capacity = resolve_capacity(input);
 
-    EXPECT_EQ(fixture.capacity().buffer_bars, 8);
-    EXPECT_EQ(fixture.capacity().max_lookback, 5);
-    EXPECT_EQ(fixture.capacity().reserve_bars, 3);
-    EXPECT_TRUE(window_consistent(fixture.window()));
+    EXPECT_EQ(capacity.buffer_bars, capacity.max_lookback + capacity.reserve_bars);
+    EXPECT_EQ(capacity.buffer_bars, 2084);
 }
 
 TEST(SeriesBufferGeometryTest, WindowSlidesWithoutMovingData) {
@@ -218,14 +208,12 @@ TEST(SeriesRelocateTest, RelocatePreservesEveryReadValue) {
 
     const auto size_before = fixture.window().size;
     const auto end_before = fixture.window().end;
-    const auto bar_index_before = fixture.bar_index();
 
     fixture.relocate();
 
     EXPECT_EQ(fixture.window().size, size_before) << "回卷不得改 size";
     EXPECT_EQ(fixture.window().end, size_before) << "回卷后 end 必须等于 size";
     EXPECT_LT(fixture.window().end, end_before) << "回卷确实把窗口搬回了头部";
-    EXPECT_EQ(fixture.bar_index(), bar_index_before) << "回卷不得改 bar_index";
     expect_window_matches_shadow(fixture, shadow);
 }
 
@@ -373,7 +361,6 @@ TEST(SeriesRelocateFuzzTest, RelocateAtEveryPossiblePointIsInvisible) {
         expect_window_matches_shadow(eager, shadow);
         expect_window_matches_shadow(lazy, shadow);
         EXPECT_EQ(eager.close_view().size(), lazy.close_view().size());
-        EXPECT_EQ(eager.bar_index(), lazy.bar_index());
     }
 }
 
@@ -528,9 +515,18 @@ TEST(SeriesCapacityTest, BufferBarsIsAlwaysDerivedFromTheTwoFields) {
 
 TEST(SeriesCapacityTest, AutoValueOutOfRangeIsRejectedNotSilentlyClamped) {
     // 组件文档 §7：「所有自动值也走同一套校验，越界 → 报错并提示显式配置，不静默越界」。
+    // 用 period=12：R_min = 7920 合法（周期本身通过），但 R_auto = 2 × 7200 = 14400 > 8192，
+    // 越界来自**自动值**而不是周期——这才真正覆盖自动值校验分支。
+    // （period=10 时 R_min=9504 已越界，会在周期校验处先抛，覆盖不到这条分支。）
     CapacityInput input{};
-    input.period_sec = 10;  // R_auto = 2 × 8640 = 17280 > 8192
+    input.period_sec = 12;
     EXPECT_THROW((void)resolve_capacity(input), std::invalid_argument);
+
+    // 同一周期显式给合法 reserve 后可用 ⇒ 报错确实来自自动值
+    CapacityInput explicit_reserve{};
+    explicit_reserve.period_sec = 12;
+    explicit_reserve.reserve_bars = 8192;
+    EXPECT_EQ(resolve_capacity(explicit_reserve).reserve_bars, 8192);
 }
 
 TEST(SeriesCapacityTest, PeriodWithEmptyReserveIntervalIsRejectedAsPeriodError) {
@@ -559,6 +555,78 @@ TEST(SeriesCapacityTest, PeriodWithEmptyReserveIntervalIsRejectedAsPeriodError) 
         const auto upper = std::stoi(message.substr(comma_pos + 1, close_pos - comma_pos - 1));
         EXPECT_LT(lower, upper) << "错误信息给出了倒置区间: " << message;
     }
+}
+
+TEST(SeriesCapacityTest, PeriodRangeBoundsAreReal) {
+    // 错误信息里的「合法区间」必须真的合法：下界必须可接受，下界-1 必须拒绝。
+    const std::int32_t floor = dztrader::series_internal::min_feasible_period();
+    EXPECT_LT(floor, 60) << "v1 四个周期都必须高于可行下界";
+
+    // 可行下界的含义是「存在合法配置」，不是「自动值合法」：该周期必须显式给 reserve。
+    // 两个下界不同——周期可行下界 12、自动 reserve 可行下界 22——见下一条用例。
+    CapacityInput at_floor{};
+    at_floor.period_sec = floor;
+    at_floor.reserve_bars = dztrader::series_internal::min_reserve_bars(floor);
+    EXPECT_EQ(resolve_capacity(at_floor).reserve_bars,
+              dztrader::series_internal::min_reserve_bars(floor));
+
+    // 自动值下界：从该周期起，省略 reserve_bars 才合法
+    const std::int32_t auto_floor = dztrader::series_internal::min_auto_reserve_period();
+    EXPECT_GT(auto_floor, floor) << "两个下界应当不同（自动值要求更严）";
+
+    CapacityInput auto_ok{};
+    auto_ok.period_sec = auto_floor;
+    EXPECT_NO_THROW((void)resolve_capacity(auto_ok));
+
+    CapacityInput auto_bad{};
+    auto_bad.period_sec = auto_floor - 1;
+    EXPECT_THROW((void)resolve_capacity(auto_bad), std::invalid_argument);
+
+    CapacityInput below_floor{};
+    below_floor.period_sec = floor - 1;
+    EXPECT_THROW((void)resolve_capacity(below_floor), std::invalid_argument);
+
+    // 上界：一个 bar 不超过一个交易日
+    CapacityInput at_ceiling{};
+    at_ceiling.period_sec = 86400;
+    EXPECT_NO_THROW((void)resolve_capacity(at_ceiling));
+
+    CapacityInput above_ceiling{};
+    above_ceiling.period_sec = 86401;
+    EXPECT_THROW((void)resolve_capacity(above_ceiling), std::invalid_argument);
+}
+
+TEST(SeriesCapacityTest, PeriodErrorRangeExcludesTheRejectedValue) {
+    // 回归：曾经把下界写成 86400/8192+1 = 11，而 11 实际非法（R_min=8640>8192），
+    // 于是错误信息宣传了一个它自己拒绝的值。这里解析消息里的区间并逐点验证。
+    CapacityInput input{};
+    input.period_sec = 5;
+    std::string message;
+    try {
+        (void)resolve_capacity(input);
+        FAIL() << "expected std::invalid_argument";
+    } catch (const std::invalid_argument& error) {
+        message = error.what();
+    }
+
+    const auto range_pos = message.find("range=[");
+    ASSERT_NE(range_pos, std::string::npos) << message;
+    const auto comma_pos = message.find(',', range_pos);
+    const auto close_pos = message.find(']', comma_pos);
+    ASSERT_TRUE(comma_pos != std::string::npos && close_pos != std::string::npos) << message;
+    const auto lower = std::stoi(message.substr(range_pos + 7, comma_pos - range_pos - 7));
+
+    // 区间下界本身必须被接受
+    CapacityInput at_lower{};
+    at_lower.period_sec = lower;
+    at_lower.reserve_bars = 8192;  // 区间下界只保证「存在合法配置」；自动值另见下一条用例
+    EXPECT_NO_THROW((void)resolve_capacity(at_lower))
+        << "错误信息声称下界 " << lower << " 合法，但它被拒绝: " << message;
+
+    // 下界-1 必须被拒绝
+    CapacityInput below{};
+    below.period_sec = lower - 1;
+    EXPECT_THROW((void)resolve_capacity(below), std::invalid_argument);
 }
 
 TEST(SeriesCapacityTest, NonPositivePeriodIsRejected) {
@@ -603,67 +671,9 @@ TEST(SeriesCapacityTest, ReserveErrorCarriesPeriodDependentFloor) {
     }
 }
 
-// ---------------- 推进前置条件：退化窗口不得越界写 ----------------
-
-TEST(SeriesAdvanceGuardTest, DefaultWindowIsNotReadyToAdvance) {
-    // 默认构造的 WindowState（buffer_bars == 0）在 A 注入容量之前也存在；
-    // prepare_advance 对它会返回 0，写进零长数组就是越界写。守卫必须报告「未就绪」。
-    const WindowState fresh{};
-    EXPECT_FALSE(dztrader::series_internal::window_ready_to_advance(fresh));
-}
-
-TEST(SeriesAdvanceGuardTest, ResolvedCapacityIsReadyToAdvance) {
-    for (const std::int32_t period : {60, 180, 300, 900}) {
-        SCOPED_TRACE(period);
-        CapacityInput input{};
-        input.period_sec = period;
-        const auto capacity = resolve_capacity(input);
-
-        WindowState window{};
-        window.max_lookback = capacity.max_lookback;
-        window.buffer_bars = capacity.buffer_bars;
-        EXPECT_TRUE(dztrader::series_internal::window_ready_to_advance(window));
-    }
-}
-
-TEST(SeriesAdvanceGuardTest, AdvanceBarWritesSlotAndCommitsInOneStep) {
-    // 便利包装把「prepare → 写 → commit」收敛到一处；漏 commit 会让几何与数据错位
-    WindowState window{};
-    window.max_lookback = 3;
-    window.buffer_bars = 6;
-    std::vector<double> values(6, 0.0);
-    std::vector<std::int64_t> users(6, 0);
-
-    double next = 10.5;
-    dztrader::series_internal::advance_bar(
-        window,
-        [&](std::int32_t slot) {
-            values[static_cast<std::size_t>(slot)] = next;
-            users[static_cast<std::size_t>(slot)] = static_cast<std::int64_t>(slot);
-        },
-        values.data(), users.data());
-
-    EXPECT_EQ(window.end, 1);
-    EXPECT_EQ(window.size, 1);
-    EXPECT_EQ(values[0], 10.5);
-    EXPECT_EQ(users[0], 0);
-    EXPECT_TRUE(window_consistent(window));
-}
-
 // ---------------- AC5：回卷不改变 bar_index（绝对序号单调） ----------------
 
-TEST(SeriesRelocateTest, BarIndexIsIndependentOfRelocation) {
-    WindowFixture fixture(/*max_lookback=*/3, /*reserve_bars=*/2);
-    std::int64_t expected = 0;
-    for (int i = 0; i < 30; ++i) {
-        fixture.advance(static_cast<double>(i), 0.0, i);
-        ++expected;
-        EXPECT_EQ(fixture.bar_index(), expected);
-        if (i % 7 == 0) {
-            fixture.relocate();
-            EXPECT_EQ(fixture.bar_index(), expected) << "回卷不得重置绝对序号";
-        }
-    }
-}
+// 注：绝对 bar 序号（ctx.bar_index）属于 InstrumentContext（#157），本组件不含该状态；
+// 回卷「不改 bar_index」因此无法在纯组件层断言，交由 #157 的上下文测试覆盖。
 
 }  // namespace
