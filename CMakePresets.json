@@ -57,13 +57,27 @@
         },
         {
             "name": "win-debug",
-            "displayName": "Windows Debug",
-            "description": "Windows MSVC Debug（静态 CRT，Ninja 单配置）",
+            "displayName": "Windows Debug（仅本地）",
+            "description": "仅本地临时用途，不进门禁、不部署。ConanCenter 上本项目依赖只有 Release 二进制，切到该档会把 14 个依赖从头源码编译；日常请用 win-release（已带 /Zi + /DEBUG，崩溃可符号化）",
             "inherits": "win-base",
             "binaryDir": "${sourceDir}/build/windows/x86_64/Debug",
             "toolchainFile": "${sourceDir}/build/windows/x86_64/Debug/conan_toolchain.cmake",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "win-asan",
+            "displayName": "Windows ASan（仅本地）",
+            "description": "MSVC /fsanitize=address，基于 Release + 调试信息。只从 build 树运行，永不 install。需要先用 win-release 的 conan 输出（依赖走 Release 二进制）",
+            "inherits": "win-base",
+            "binaryDir": "${sourceDir}/build/windows/x86_64/Asan",
+            "toolchainFile": "${sourceDir}/build/windows/x86_64/Release/conan_toolchain.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS": "/fsanitize=address",
+                "CMAKE_EXE_LINKER_FLAGS": "/fsanitize=address",
+                "CMAKE_SHARED_LINKER_FLAGS": "/fsanitize=address"
             }
         },
         {
@@ -79,13 +93,27 @@
         },
         {
             "name": "linux-debug",
-            "displayName": "Linux Debug",
-            "description": "Linux GCC Debug（Ninja 单配置）",
+            "displayName": "Linux Debug（仅本地）",
+            "description": "仅本地临时用途，不进门禁、不部署。ConanCenter 上本项目依赖只有 Release 二进制，切到该档会把 14 个依赖从头源码编译；日常请用 linux-release（已带 -g，崩溃可符号化）",
             "inherits": "linux-base",
             "binaryDir": "${sourceDir}/build/linux/x86_64/Debug",
             "toolchainFile": "${sourceDir}/build/linux/x86_64/Debug/conan_toolchain.cmake",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "linux-asan",
+            "displayName": "Linux ASan+UBSan（仅本地）",
+            "description": "ASan + UBSan，基于 Release + 调试信息（ASan 文档要求 -O1 以上才有可用速度）。只从 build 树运行，永不 install。依赖复用 Release 的 conan 输出",
+            "inherits": "linux-base",
+            "binaryDir": "${sourceDir}/build/linux/x86_64/Asan",
+            "toolchainFile": "${sourceDir}/build/linux/x86_64/Release/conan_toolchain.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+                "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined"
             }
         }
     ],
