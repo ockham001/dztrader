@@ -52,11 +52,17 @@ if [ "$STOP" -eq 1 ]; then
         echo "停止 master 并清理孤儿进程..."
         "$exe" --cleanup-orphans 2>/dev/null || true
     fi
-    pkill -f 'dztraderd' 2>/dev/null || true
-    pkill -f 'dzweb' 2>/dev/null || true
-    pkill -f 'dzmd_' 2>/dev/null || true
-    pkill -f 'dztd_' 2>/dev/null || true
-    pkill -f 'stg_' 2>/dev/null || true
+    # 用 pkill -x（精确匹配进程名）而不是 pkill -f（匹配整个命令行）：
+    # -f 会命中「命令行里提到 dztraderd 的其他进程」——包括本脚本自身
+    # （因此曾出现 --stop 把自己杀掉、后续步骤全部丢失的问题）。
+    for name in dztraderd dzweb dzmd_ctp dztd_ctp dzsysmon stg_demo; do
+        pkill -x "$name" 2>/dev/null || true
+    done
+    # 网关/策略可能有带后缀的其他实现（dzmd_xxx / dztd_xxx / stg_xxx），
+    # 用 -f 但限定「路径以 /<前缀> 开头」，避免误伤命令行文本。
+    pkill -f '/dzmd_[a-z0-9_]*$' 2>/dev/null || true
+    pkill -f '/dztd_[a-z0-9_]*$' 2>/dev/null || true
+    pkill -f '/stg_[a-z0-9_]*$' 2>/dev/null || true
     echo "已停止"
     exit 0
 fi
@@ -65,15 +71,16 @@ if [ "$BUILD" -eq 1 ]; then
     # 构建必须停在 install 之前：install 会替换 install/ 下的文件，
     # 而正在运行的进程栈还占着这些文件（尤其 web/ 目录是逐文件写入的）。
     # 先停栈 → 再 install → 再启动，避免读到半更新状态。
-    if pgrep -f 'dztraderd' >/dev/null 2>&1; then
+    # 用 pgrep -x 精确匹配进程名（-f 会命中脚本自身命令行里的 "dztraderd" 字样）。
+    if pgrep -x 'dztraderd' >/dev/null 2>&1; then
         echo "检测到 master 正在运行，先停止再重建（避免 install 覆盖运行中的文件）"
         "$0" --stop
     fi
 
     "$(dirname "$0")/build.sh"
 
-    echo "install → $install_dir"
-    cmake --install "$project_root/build/linux/x86_64/Release" >/dev/null
+    # install + 分离调试符号（部署包 ~65M，符号单独归档）
+    "$(dirname "$0")/install-artifacts.sh"
 fi
 
 if [ ! -f "$exe" ]; then
