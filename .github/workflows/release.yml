@@ -241,27 +241,44 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $ver = "${{ inputs.tag || github.ref_name }}"
           New-Item -ItemType Directory -Path dist -Force | Out-Null
+
+          Write-Host "zipping install tree ..."
           Compress-Archive -Path "install/windows/x86_64/Release/*" `
             -DestinationPath "dist/dztrader-$ver-windows-x86_64.zip" -Force
-          # PDB 单独归档（ADR 0037 / Q25=B）：不进发布包，体积大且暴露符号
-          $pdbs = Get-ChildItem -Path "build/windows/x86_64/Release" -Filter *.pdb -Recurse -File
-          if ($pdbs) {
-            $symbolDir = "dist/symbols"
+
+          # PDB 单独归档（ADR 0037 / Q25=B）：不进发布包，体积大且暴露符号。
+          # 用 7z 而不是 Compress-Archive：实测 177 个 PDB 走 Compress-Archive
+          # 耗时 8 分 17 秒（它逐条目调用 ZipArchive 且不支持并行），7z 快一个数量级，
+          # 且 runner 预装。缺失 7z 时回退 Compress-Archive。
+          $pdbs = @(Get-ChildItem -Path "build/windows/x86_64/Release" -Filter *.pdb -Recurse -File)
+          if ($pdbs.Count -gt 0) {
+            $symbolDir = "pdb-staging"   # 不放 dist/ 下：避免 hash 步骤把目录当文件
             New-Item -ItemType Directory -Path $symbolDir -Force | Out-Null
             $pdbs | ForEach-Object { Copy-Item $_.FullName -Destination $symbolDir -Force }
-            Compress-Archive -Path "$symbolDir/*" `
-              -DestinationPath "dist/dztrader-$ver-windows-x86_64-debug-symbols.zip" -Force
+            $symZip = "dist/dztrader-$ver-windows-x86_64-debug-symbols.zip"
+            $sevenZip = Get-Command 7z -ErrorAction SilentlyContinue
+            if ($sevenZip) {
+              & $sevenZip.Source a -tzip -mx=1 $symZip "$symbolDir/*" | Out-Null
+              if ($LASTEXITCODE -ne 0) { Write-Error "7z failed | exit=$LASTEXITCODE"; exit 1 }
+            } else {
+              Write-Host "7z not found; falling back to Compress-Archive (slow)"
+              Compress-Archive -Path "$symbolDir/*" -DestinationPath $symZip -Force
+            }
             Write-Host "archived $($pdbs.Count) pdb files"
           } else {
             Write-Host "warning: no PDB files found"
           }
-          Get-ChildItem dist | ForEach-Object {
+
+          # 只对**文件**做 hash（此前漏了 -File，把 dist/symbols 目录也传给了
+          # Get-FileHash，导致 "Access to the path ... is denied" 失败）。
+          Get-ChildItem -Path dist -File | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
             "$hash  $($_.Name)"
           } | Set-Content "dist/SHA256SUMS-windows.txt"
-          Get-ChildItem dist | Select-Object Name, Length
+          Get-ChildItem -Path dist -File | Select-Object Name, Length
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
