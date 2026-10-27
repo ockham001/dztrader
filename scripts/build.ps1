@@ -37,8 +37,19 @@ if (-not $Config) {
 # 激活 MSVC 环境（Ninja 生成器必需）
 . "$PSScriptRoot\Activate-MSVC.ps1"
 
-$preset = "win-$($Config.ToLower())"
+# 构建锁：ninja 不锁构建树，两个并发 ninja 会交错写 .ninja_deps / .ninja_log。
+# 锁只在叶子脚本取；gate.sh 不持锁（否则父子互等死锁，见 scripts/gate.sh 注释）。
+. "$PSScriptRoot\build-lock.ps1"
+$buildLock = Get-DzBuildLock -RepoRoot (Resolve-Path "$PSScriptRoot\..") -Label 'build'
 
-$cmakeArgs = @('--build', '--preset', $preset)
-if ($Target) { $cmakeArgs += @('--target', $Target) }
-& cmake @cmakeArgs
+try {
+    $preset = "win-$($Config.ToLower())"
+
+    $cmakeArgs = @('--build', '--preset', $preset)
+    if ($Target) { $cmakeArgs += @('--target', $Target) }
+    & cmake @cmakeArgs
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+finally {
+    $buildLock.Dispose()
+}

@@ -22,6 +22,13 @@ if command -v ccache >/dev/null 2>&1; then
     dz_export_ccache_env "$REPO_ROOT"
 fi
 
+# 构建锁：ninja 不锁构建树，两个并发 ninja 会交错写 .ninja_deps / .ninja_log，
+# 产出陈旧或交错的 .o 与不可信的耗时记录。锁只在叶子脚本加（见 build-lock.sh 注释：
+# gate.sh 持锁后再调本脚本会父子互等死锁，故 gate.sh 不再持锁）。
+# shellcheck source=scripts/build-lock.sh
+. "$REPO_ROOT/scripts/build-lock.sh"
+dz_acquire_build_lock "$REPO_ROOT" "build" || exit 2
+
 # DSH workspace-write 沙箱下 ~/.npm 可能只读：回退到仓库内 npm cache（.cache/ 已 gitignore）
 if [ -z "${npm_config_cache:-}" ]; then
     npm_cache_ok=0

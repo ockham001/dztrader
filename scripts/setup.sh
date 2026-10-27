@@ -102,10 +102,12 @@ if [ "$SKIP_CONFIGURE" -eq 0 ]; then
     PRESET="linux-$CONFIG"
     # 本机有 ccache 时接入编译器缓存（worktree 首建/合并后重建显著加速；Windows 走 setup.ps1 不涉及）
     CMAKE_EXTRA_ARGS=()
+    EXPECT_CCACHE_LAUNCHER=0
     if command -v ccache >/dev/null 2>&1; then
         dz_export_ccache_env "$REPO_ROOT"
         if [ -w "$CCACHE_DIR" ]; then
             CMAKE_EXTRA_ARGS+=("-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
+            EXPECT_CCACHE_LAUNCHER=1
             echo "ccache: enabled (CCACHE_DIR=$CCACHE_DIR)"
         else
             # 目录不可写时不要写 launcher：否则后续 build 每次调用 ccache 都会失败
@@ -114,6 +116,23 @@ if [ "$SKIP_CONFIGURE" -eq 0 ]; then
     fi
     echo "cmake --preset $PRESET"
     cmake --preset "$PRESET" "${CMAKE_EXTRA_ARGS[@]}"
+
+    # ccache launcher 校验：曾出现过「configure 时传了 -DCMAKE_CXX_COMPILER_LAUNCHER=ccache，
+    # 但那棵 build 树的 CMakeCache 里根本没有该变量」的配置漂移 —— 于是后续所有增量构建
+    # 都在裸编，ccache 命中率归零且无人察觉（#168）。这里改成「写进去并复核」：
+    # 仅在本次确实传了 launcher 时才要求能读回来（目录不可写的降级路径不算漂移）。
+    if [ "$EXPECT_CCACHE_LAUNCHER" -eq 1 ]; then
+        CACHE_FILE="$REPO_ROOT/$OUTPUT_FOLDER/CMakeCache.txt"
+        CACHED_LAUNCHER=$(grep -E '^CMAKE_CXX_COMPILER_LAUNCHER:' "$CACHE_FILE" 2>/dev/null | cut -d= -f2- || true)
+        if [ -n "$CACHED_LAUNCHER" ]; then
+            echo "ccache: verified launcher=$CACHED_LAUNCHER (in CMakeCache)"
+        else
+            echo "error: launcher was passed but is missing from CMakeCache" >&2
+            echo "       expected CMAKE_CXX_COMPILER_LAUNCHER in $CACHE_FILE" >&2
+            echo "       rebuilds would silently bypass ccache" >&2
+            exit 1
+        fi
+    fi
 
     # 拷贝 compile_commands.json 到项目根（clangd 用）
     CC="$REPO_ROOT/$OUTPUT_FOLDER/compile_commands.json"
