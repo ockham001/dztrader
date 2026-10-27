@@ -13,7 +13,7 @@ target_link_libraries(dzshm
     PUBLIC strategy_api_headers dzcore
     PUBLIC Boost::boost nlohmann_json::nlohmann_json
 )
-# 可被链入 dzstrategy_sdk 动态库，静态库对象需 PIC（与 dzcore/dzdb/dztdstore/dztrading 同）
+# 可被链入 dztrader_sdk 动态库，静态库对象需 PIC（与 dzcore/dzdb/dztdstore/dztrading 同）
 set_target_properties(dzshm PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # Windows 平台定义
 if(WIN32)

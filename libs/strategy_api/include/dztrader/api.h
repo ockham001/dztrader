@@ -652,10 +652,13 @@ DZ_API int32_t dz_version_major(void);
 DZ_API int32_t dz_version_minor(void);
 /** @brief 获取补丁版本号 */
 DZ_API int32_t dz_version_patch(void);
-/** @brief 获取版本字符串，如 "0.0.1" */
+/**
+ * @brief 获取完整版本串（SemVer 2.0.0，含 pre-release）
+ *
+ * 返回静态字符串，无需释放。例："0.1.0"（正式版）、"0.1.0-rc1"（预发布）。
+ * 需要数值比较时用 dz_version_major/minor/patch，不要解析本字符串。
+ */
 DZ_API const char* dz_version_string(void);
-/** @brief 获取版本十六进制，格式 major<<16 | minor<<8 | patch */
-DZ_API int32_t dz_version_hex(void);
 
 DZ_END_C_DECLS
 

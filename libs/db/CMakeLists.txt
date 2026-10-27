@@ -27,7 +27,7 @@ endif()
 if(WIN32)
     target_compile_definitions(dzdb PUBLIC _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=0x0602)
 endif()
-# 可被链入 dzstrategy_sdk 动态库，静态库对象需 PIC。
+# 可被链入 dztrader_sdk 动态库，静态库对象需 PIC。
 set_target_properties(dzdb PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ============================================================

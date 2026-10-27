@@ -9,5 +9,5 @@ add_library(dztrading STATIC
 target_include_directories(dztrading PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-# 可被链入 dzstrategy_sdk 动态库，静态库对象需 PIC。
+# 可被链入 dztrader_sdk 动态库，静态库对象需 PIC。
 set_target_properties(dztrading PROPERTIES POSITION_INDEPENDENT_CODE ON)

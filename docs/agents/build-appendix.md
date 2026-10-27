@@ -78,6 +78,8 @@ Ninja 单配置，每个 config 独立 binaryDir：`build/<plat>/x86_64/<Release
 
 **只有 `release` 是日常档**（#168 / [ADR 0037](../adr/0037-release-only-build-and-install-as-sole-artifact.md)）。`debug` 与 `asan` 是显式指定的本地档：不进门禁、不进 CI、禁止部署。
 
+**版本与 SDK 命名**（ADR 0038）：版本遵循 SemVer 2.0.0，单一真相源是 `CMakeLists.txt` 的 `project(VERSION)`（`conanfile.py` 用 `set_version()` 读取）。预发布标识经 `DZ_PRERELEASE` 注入（`DZ_PRERELEASE=rc1 ./scripts/setup.sh` → `dz_version_string()` 返回 `"0.1.0-rc1"`）。策略 SDK 的 target 是 `dztrader_sdk`、产物是 `libdztrader.so`/`dztrader.dll`（`OUTPUT_NAME` 分离），带 `SOVERSION` 版本化，导出符号由 `libs/strategy_api/exported_symbols.map` 白名单收敛为仅 `dz_*`（49 个）。
+
 **`debug` preset 可能随时间腐烂**：仓内有 7 处 `#ifndef NDEBUG` / `#if !defined(NDEBUG)` 分支（`log.h` 的调试日志默认值、`string_util.h` 的 0xFE 毒化填充），Release-only 下永不参与编译，改坏了没人发现。需要运行时检查时优先用 `asan` 档，而不是 `debug`。其中 `asan` 的 `CMAKE_BUILD_TYPE` 也是 Release（ASan 文档要求 `-O1` 以上可用速度），只从 build 树运行、永不 install。
 
 test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈值基准），例如 `linux-release-slow`。默认预设在测试侧只跑 `fast` 标签，见下方「单元测试约定」。
@@ -129,14 +131,14 @@ test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈�
 | 基准 | 源码 | ctest 名 | 测什么 |
 |---|---|---|---|
 | `dz_shm_perf_bench` | `libs/shm/tests/perf_bench.cpp` | `PerfBench` | SHM 写帧→唤醒→读出往返延迟（README 30μs 目标的同进程下限） |
-| `dzstrategy_sdk_bar_perf_bench` | `libs/strategy_api/tests/bar_perf_bench.cpp` | `BarPerfBench` | tick→bar 四条热路径（update / 新 bar / 跨日 / 竞价）的 ns/tick 与 p99 |
+| `dztrader_sdk_bar_perf_bench` | `libs/strategy_api/tests/bar_perf_bench.cpp` | `BarPerfBench` | tick→bar 四条热路径（update / 新 bar / 跨日 / 竞价）的 ns/tick 与 p99 |
 
 ### 运行命令
 
 ```bash
 ./scripts/build.sh                                    # 先构建（基准不进默认 target 即可，build 全量包含）
 ./scripts/test.sh --label perf                         # 跑全部 perf 基准（Release）
-./build/linux/x86_64/Release/tests/dzstrategy_sdk_bar_perf_bench   # 直接跑：完整输出最方便
+./build/linux/x86_64/Release/tests/dztrader_sdk_bar_perf_bench   # 直接跑：完整输出最方便
 ctest --preset linux-release-perf -V                                  # 或经 ctest 并回显输出
 ```
 

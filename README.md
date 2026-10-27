@@ -174,7 +174,7 @@ Debug 的定位是「仅本地、按需」：不进门禁、不进 CI、可能�
 {"name": "stg_demo", "exe": "<绝对路径>/stg_demo", "md_source": "dzmd_ctp"}
 ```
 
-示例策略本体（`stg_demo.cpp` + `stg_demo_strategy.*`）只 include 策略 SDK 公开头文件、链接**自包含动态库** `dzstrategy_sdk`（Linux `libdzstrategy_sdk.so` / Windows `dzstrategy_sdk.dll` + 导入库），不定义静态链接宏 `DZ_API_COMPILE_STATIC`、不接触任何第三方库，也不依赖网关/WebUI 内部库；运行时动态库与策略可执行位于同一目录（Linux `$ORIGIN` rpath，Windows 加载器搜索 exe 所在目录）。UI 输入/输出的端到端验证见 `strategies/demo/tests/stg_demo_test.cpp`（帧边界进程内测试，测试侧额外链接内部库作探针）与冒烟测试。
+示例策略本体（`stg_demo.cpp` + `stg_demo_strategy.*`）只 include 策略 SDK 公开头文件、链接**自包含动态库** `dztrader`（Linux `libdztrader.so` / Windows `dztrader.dll`；带 SONAME 版本化，见 ADR 0038），不定义静态链接宏 `DZ_API_COMPILE_STATIC`、不接触任何第三方库，也不依赖网关/WebUI 内部库；运行时动态库与策略可执行位于同一目录（Linux `$ORIGIN` rpath，Windows 加载器搜索 exe 所在目录）。UI 输入/输出的端到端验证见 `strategies/demo/tests/stg_demo_test.cpp`（帧边界进程内测试，测试侧额外链接内部库作探针）与冒烟测试。
 
 策略初始化失败（`dz_init` 失败）时还没有 UI 会话，`on_error` 无法写 `OUTPUT_UI`；该分支的诊断写 stderr（`std::cerr`，由 master 捕获转发进日志），进程以非零码退出。
 
@@ -213,6 +213,18 @@ glibc 版本需 ≥ 构建机（或同等）。
 
 **符号文件不进部署包**：崩溃时用 `Release-debug-symbols/` 里的同名 `.debug`
 解析（`addr2line -e <symbols>/dztraderd.debug -f -C 0x<addr>`）。
+
+### 版本号
+
+版本遵循 [SemVer 2.0.0](https://semver.org/)：`MAJOR.MINOR.PATCH`，预发布加后缀（`0.1.0-rc1`）。
+
+- **`0.x` 阶段不承诺 ABI 稳定性**（含策略 SDK 的 C ABI）；兼容承诺从 `1.0.0` 起
+- 单一真相源：根 `CMakeLists.txt` 的 `project(VERSION)`；`conanfile.py` 从中读取
+- 预发布标识由发布流水线从 tag 注入（`DZ_PRERELEASE`），本地构建恒为正式串
+- 策略 SDK 的 SONAME 为 `libdztrader.so.<MAJOR>`，ABI 破坏时文件名变化、加载器可拦截
+- 运行时查询：`dz_version_string()` 返回完整 SemVer；数值比较用 `dz_version_major/minor/patch`
+
+决策记录见 [ADR 0038](docs/adr/0038-version-strategy-and-sdk-artifact-naming.md)。
 
 **注意**：td 网关（dztd_ctp 等）与策略 SDK 必须同版本**整包**升级并重启 master——混布旧/新版本时 `payload_size_matches` 防御会静默丢弃 TD 数据帧（见 `docs/frame_contracts/td-data-sync.md`）。
 

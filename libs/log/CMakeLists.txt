@@ -1,7 +1,7 @@
 # ============================================================
 # dzlog: 日志库（STATIC 库）
 # 日志初始化 + 崩溃处理，依赖 spdlog + boost::stacktrace
-# 仅平台进程使用，不编译进 dzstrategy_sdk.dll
+# 仅平台进程使用，不编译进 dztrader_sdk.dll
 # ============================================================
 add_library(dzlog STATIC)
 target_sources(dzlog PRIVATE src/log.cpp)

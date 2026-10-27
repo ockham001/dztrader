@@ -178,6 +178,20 @@ set(VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
 set(VERSION_MINOR ${PROJECT_VERSION_MINOR})
 set(VERSION_ALTER ${PROJECT_VERSION_PATCH})  # 兼容 version.h.in 模板变量名
 set(VERSION ${PROJECT_VERSION})
+
+# 预发布标识（ADR 0038）：SemVer 的 pre-release 部分，不带前导连字符。
+# 由发布流水线从 tag 注入（`-DDZ_PRERELEASE=rc1` 构建出 "0.1.0-rc1"）；
+# 本地日常构建恒为空串 —— 本地产物不带 rc 信息是预期行为。
+set(DZ_PRERELEASE "" CACHE STRING
+    "SemVer pre-release identifier without leading hyphen (e.g. rc1); empty for final builds")
+# 完整版本串（含 pre-release），供 version.h 与 dz_version_string() 使用
+if(DZ_PRERELEASE)
+    set(VERSION_FULL "${PROJECT_VERSION}-${DZ_PRERELEASE}")
+else()
+    set(VERSION_FULL "${PROJECT_VERSION}")
+endif()
+message(STATUS "dztrader version: ${VERSION_FULL}")
+
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/strategy_api/include/dztrader/version.h.in
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/strategy_api/include/dztrader/version.h)
