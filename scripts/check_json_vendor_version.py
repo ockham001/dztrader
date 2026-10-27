@@ -157,16 +157,15 @@ def _bumped_patch(version: str) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
-def _touches_header(rel: Path) -> bool:
-    """注入点是否落在内置单头里（落在单头里时 R5 随之变红是正确行为）。"""
-    return rel == Path(VENDORED_JSON_REL)
+def build_selftest_cases(root: Path) -> list[tuple[str, frozenset[str], Path, str, str]]:
+    """推导（用例名, **期望命中的规则集合**, 目标文件, 查找串, 替换串）列表。
 
+    期望值是**精确集合**而不是"包含某条"：用 `in` 断言时，一个塌缩成"永远报 R5"的退化
+    校验器仍能自测变绿（审查清单 §2.2 恒真断言）。精确集合把"注入点之外不得有别的规则
+    被牵连"也纳入断言，任何多余的规则命中都会让自测变红。
 
-def build_selftest_cases(root: Path) -> list[tuple[str, str, Path, str, str]]:
-    """推导（用例名, 期望命中的规则, 目标文件, 查找串, 替换串）列表。
-
-    每个用例只破坏一条规则；R2/R3 改的是单头内容，会连带触发 R5（哈希随字节变化），
-    这是预期行为——R5 的职责就是盯住"单头字节变了但记录没更新"。
+    R2/R3 改的是单头内容，字节变化必然连带 R5——这是**预期**的规则集合，不是噪音：
+    R5 的职责就是盯住"单头字节变了但记录没更新"。
     """
     version, _ = conan_version(root)
     if version is None:
@@ -188,17 +187,19 @@ def build_selftest_cases(root: Path) -> list[tuple[str, str, Path, str, str]]:
         return []
 
     patch_value = int(patch_match.group(1))
+    # 改单头字节 -> R5 必随（字节变了记录没更新）；改 conanfile / VENDORED.md 不影响
+    # 单头字节 -> 只应有那一条。R2 只读版本宏、R3 只读 banner，故两者各自 + R5。
     return [
-        ("conan_requirement_missing", "R1", Path(CONANFILE_REL),
+        ("conan_requirement_missing", frozenset({"R1"}), Path(CONANFILE_REL),
          require_match.group(0), 'requires("boost/1.90.0"'),
-        ("header_patch_macro_drift", "R2", Path(VENDORED_JSON_REL),
+        ("header_patch_macro_drift", frozenset({"R2", "R5"}), Path(VENDORED_JSON_REL),
          patch_match.group(0),
          f"#define NLOHMANN_JSON_VERSION_PATCH {patch_value + 1}"),
-        ("header_banner_drift", "R3", Path(VENDORED_JSON_REL),
+        ("header_banner_drift", frozenset({"R3", "R5"}), Path(VENDORED_JSON_REL),
          f"version {version}", f"version {bumped}"),
-        ("doc_version_drift", "R4", Path(VENDORED_DOC_REL),
+        ("doc_version_drift", frozenset({"R4"}), Path(VENDORED_DOC_REL),
          doc_version_match.group(0), f"| 版本 | **{bumped}** |"),
-        ("doc_sha_drift", "R5", Path(VENDORED_DOC_REL),
+        ("doc_sha_drift", frozenset({"R5"}), Path(VENDORED_DOC_REL),
          doc_sha_match.group(0), "`" + "0" * 64 + "`"),
     ]
 
@@ -238,7 +239,7 @@ def run_selftest(root: Path) -> int:
             print("selftest: copied baseline already violates the check", file=sys.stderr)
             return 1
 
-        for name, expected_rule, rel, old, new in cases:
+        for name, expected_rules, rel, old, new in cases:
             path = fake_root / rel
             original = path.read_text(encoding="utf-8", errors="replace")
             if old not in original:
@@ -251,20 +252,14 @@ def run_selftest(root: Path) -> int:
                 rules = {v.rule for v in check(fake_root)}
             finally:
                 path.write_text(original, encoding="utf-8", newline="\n")
-            # 期望规则必须命中；同时断言"注入点之外没有别的规则被牵连"——否则校验器
-            # 退化成"永远报 R5"也能让自测变绿（审查清单 §2.2 恒真断言）。
-            if expected_rule not in rules:
-                print(f"selftest FAIL {name}: expected {expected_rule}, "
+            # 精确集合相等：既要求期望规则全部命中，也要求没有多余规则被牵连。
+            # 用 `in` 只能挡住"漏报"，挡不住"塌缩成永远报同一条"的退化校验器。
+            if rules != expected_rules:
+                print(f"selftest FAIL {name}: expected {sorted(expected_rules)}, "
                       f"got {sorted(rules) or 'none'}", file=sys.stderr)
                 failures += 1
-            elif expected_rule != "R5" and "R5" in rules and not _touches_header(rel):
-                # 改的是 VENDORED.md / conanfile.py，不该影响单头字节 -> R5 必须不响
-                print(f"selftest FAIL {name}: unrelated rule R5 also fired "
-                      f"(rules={sorted(rules)})", file=sys.stderr)
-                failures += 1
             else:
-                print(f"selftest ok {name} -> {expected_rule}"
-                      + ("" if expected_rule == "R5" else ""))
+                print(f"selftest ok {name} -> {sorted(expected_rules)}")
 
     if failures:
         print(f"selftest FAILED: {failures} case(s)", file=sys.stderr)
