@@ -2,11 +2,11 @@
 .SYNOPSIS
     dztrader 测试脚本（Windows，Ninja 单配置）
 
-    config 来源优先级: -Config 参数 > .dztrader_dev/.config 粘性文件 > Release
+    config: 无参数即 Release（preset 名本身已编码 config，无需粘性文件）
     分层档: 默认 fast（秒级单测）；slow = 穷举/慢速；perf = 无阈值基准
 
 .PARAMETER Config
-    测试配置：Release 或 Debug（默认读粘性 config，无则 Release）
+    测试配置：Release 或 Debug（默认 Release）
 
 .PARAMETER Label
     测试分层：fast（默认）/ slow / perf
@@ -15,8 +15,8 @@
     只运行匹配的测试（正则，可选）
 
 .EXAMPLE
-    .\scripts\test.ps1                      # 跟随粘性 config；默认 fast 档
-    .\scripts\test.ps1 -Config Debug        # 临时测试 Debug
+    .\scripts\test.ps1                      # Release；默认 fast 档
+    .\scripts\test.ps1 -Config Debug        # Debug（仅本地）
     .\scripts\test.ps1 -Label slow          # 只跑 slow 穷举档
     .\scripts\test.ps1 -TestName TimeTest   # 只跑 TimeTest
 #>
@@ -32,14 +32,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# 读粘性 config，-Config 优先覆盖
-if (-not $Config) {
-    $stickyFile = "$PSScriptRoot\..\.dztrader_dev\.config"
-    if (Test-Path $stickyFile) {
-        $Config = (Get-Content $stickyFile -Raw).Trim()
-    }
-    if (-not $Config) { $Config = 'Release' }
-}
+if (-not $Config) { $Config = 'Release' }
 
 # 激活 MSVC 环境（Ninja 生成器必需）
 . "$PSScriptRoot\Activate-MSVC.ps1"

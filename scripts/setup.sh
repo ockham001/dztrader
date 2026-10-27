@@ -145,21 +145,19 @@ fi
 echo ""
 echo "=== Setup done ==="
 
-# 写粘性 config 文件（build/run-dev/clean 读这个决定默认 config）
-STICKY_DIR="$REPO_ROOT/.dztrader_dev"
-mkdir -p "$STICKY_DIR"
-echo -n "$CONFIG_CAP" > "$STICKY_DIR/.config"
-echo "已写入粘性 config: $STICKY_DIR/.config = $CONFIG_CAP"
-
 if [ "$CONFIG" = "debug" ]; then
     echo ""
-    echo "=== 已切到 Debug，后续 build/run-dev 默认 Debug ==="
-    echo "=== DEBUG 仅用于本地调试，禁止部署生产 ==="
+    echo "已配置 Debug（仅本地用途，不进门禁、禁止部署）"
+    echo "注意: 切到 Debug 会触发 14 个依赖源码编译（ConanCenter 只有 Release 二进制）"
 fi
 
 echo ""
 echo "Next steps:"
-echo "  Build:  ./scripts/build.sh                    # 自动跟随 config"
-echo "  Run:    ./scripts/run-dev.sh                  # build + 启动"
-echo "  Stop:   pkill dztraderd; pkill dzweb; pkill dzmd_ctp"
+echo "  Build:  ./scripts/build.sh                    # 默认 Release"
+echo "  Run:    ./scripts/run-dev.sh                  # build + install + 启动"
+echo "  Stop:   ./scripts/run-dev.sh --stop"
 echo "  Clean:  ./scripts/clean.sh"
+echo ""
+echo "Config 选择: 无参数即 Release。其他档显式给 preset:"
+echo "  ./scripts/setup.sh debug                      # Debug（仅本地）"
+echo "  cmake --preset linux-asan                     # ASan+UBSan（只从 build 树跑）"
