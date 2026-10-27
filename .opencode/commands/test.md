@@ -8,7 +8,7 @@ agent: build
 **Windows（PowerShell）**
 
 ```powershell
-.\scripts\test.ps1                       # fast 门禁（跟随粘性 config）
+.\scripts\test.ps1                       # fast 门禁（Release）
 .\scripts\test.ps1 -Config Debug
 .\scripts\test.ps1 -Label slow           # 穷举/慢速档
 .\scripts\test.ps1 -Label perf           # 性能基准（PerfBench + BarPerfBench）

@@ -33,18 +33,21 @@
 - 单文件编译检查必须用 `/Fo` 输出到临时目录，或直接用 `clangd --check`。**禁止在项目根裸调 `cl`**（会产生 `.obj` / `vc140.pdb` 污染根目录）
 - **MSVC-only 失败 Linux 编译器拦不到**（Windows 头顺序、`SPDLOG_DEBUG` 编译掉致 C4101 等）：`scripts/check_msvc_hazards.py` 已接入 preflight；改 Windows 分支前先读 [build-appendix](docs/agents/build-appendix.md) 的「Windows 编译陷阱」
 
-### 4. 只能通过 4 个封装脚本驱动构建
+### 4. 只能通过封装脚本驱动构建
 
-日常迭代只用 `setup` / `build` / `run-dev` / `clean` 四个脚本，**命令与参数以 [README.md 的"快速开始"与"命令详解"](README.md) 为准**。
+日常迭代只用 `setup` / `build` / `run-dev` / `clean` 四个脚本（另有 `install-artifacts.sh` 供发版用），**命令与参数以 [README.md 的"快速开始"与"命令详解"](README.md) 为准**。
 
-绕开脚本直接 `cmake --build --preset ...` 会**静默丢失 config 粘性**：`.dztrader_dev/.config` 由 `setup` 写入，`build` / `run-dev` 自动跟随（优先级：`--config` 参数 > 粘性文件 > `release`）。直接调 cmake 等于每次都退回 `release`——该直调路径已由权限 deny（脚本内调用不受影响）。
+**只有一个日常构建档：Release。** 无参数即 Release；`Debug` / `asan` 是显式指定的本地档，不进门禁、禁止部署（见 [ADR 0037](docs/adr/0037-release-only-build-and-install-as-sole-artifact.md)）。**不存在「config 粘性」概念**——不要去找 `.dztrader_dev/.config`，它已被删除。
 
-两条容易漏的附带事实：
+绕开脚本直接 `cmake --build --preset ...` 仍被权限 deny：脚本负责构建锁、ccache 环境与 install，直调会绕过锁（两个 ninja 写同一棵树产出不可信结果）。
 
-- **`clean` 会删掉 `.dztrader_dev/`（含粘性 config 文件）**，下次需重新 `setup` 建立
-- `run-dev.sh` **没有** `--stop` 子命令（`run-dev.ps1` 才有 `-Stop`）；Linux 手动停止用 README 给的 `pkill` 形式
+三条容易漏的附带事实：
 
-**Debug 产物永不部署。** `run-dev` 在 Debug 下会打印 `=== DEBUG BUILD - 仅本地调试，禁止部署生产 ===`；部署永远从 `build/<plat>/<arch>/Release/` 取。
+- **`clean` 会删掉 `build/` 与 `install/` 以及 `.dztrader_dev/`**，下次需重新 `setup`
+- `run-dev.sh` 与 `run-dev.ps1` **都有** stop 能力（`--stop` / `-Stop`）
+- 同一 worktree 的 build/test 共用一把锁；看到 `waiting for build lock` 是正常的串行等待
+
+**`build/` 是中间产物，禁止直接运行。** 运行、部署、打包一律从 `install/<plat>/<arch>/Release/` 取（唯一产物源）。Debug 产物永不部署，`run-dev` 在 Debug 下会打印 `=== DEBUG BUILD - 仅本地调试，禁止部署生产 ===`。
 
 ### 5. 禁止直接 `npm run build`
 

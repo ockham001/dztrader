@@ -19,7 +19,7 @@ dztrader 是一个由一位作者维护的开源量化交易系统。Issue 与 P
 ## 1. 环境与构建
 
 - 依赖与版本要求见 [README.md](README.md) 前置表。Linux 侧必须存在 `/usr/bin/gcc-13`（原因见 `profiles/linux-gcc` 注释）；Windows 用 MSVC 2022，`scripts/` 下的封装脚本会处理环境激活
-- 日常迭代只用 `setup` / `build` / `run-dev` / `clean` 四个封装脚本；命令、参数与 config 粘性机制见 [README.md 的"快速开始"与"命令详解"](README.md)
+- 日常迭代只用 `setup` / `build` / `run-dev` / `clean` 四个封装脚本；命令与参数见 [README.md 的"快速开始"与"命令详解"](README.md)
 - 改前端必须走 `build` 脚本 —— 直接 `npm run build` 的产物不会被 `dzweb` 加载（原因见 AGENTS.md 硬门禁第 5 条）
 
 ## 2. 提交前的门禁
