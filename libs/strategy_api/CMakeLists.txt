@@ -1,8 +1,8 @@
 # ============================================================
 # 策略接口 SDK: 同一源码,两种链接方式
-#   dzstrategy_sdk        -> 对外交付形态: 自包含动态库 dzstrategy_sdk.dll/.so
+#   dztrader_sdk        -> 对外交付形态: 自包含动态库 dztrader_sdk.dll/.so
 #                            (DZ_API_EXPORTS; 第三方依赖全部静态吸收, 默认构建)
-#   dzstrategy_sdk_static -> 仓内/平台内部使用 (DZ_API_COMPILE_STATIC), 非交付物
+#   dztrader_sdk_static -> 仓内/平台内部使用 (DZ_API_COMPILE_STATIC), 非交付物
 # 示例策略 stg_demo 是动态库的第一个消费者 (strategies/demo, ADR 0020)
 # 测试直接测试内部类（result_set 等），不链接 api.cpp
 # ============================================================
@@ -19,40 +19,65 @@ set(SDK_SOURCES
 set(SDK_INTERNAL_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # ============================================================
-# dzstrategy_sdk_static: 静态库，仓内/平台内部使用 (ADR 0020 保留)
+# dztrader_sdk_static: 静态库，仓内/平台内部使用 (ADR 0020 保留)
 # 交付形态切到动态库后仓内暂无消费者; 不作为对外交付物, 不承诺 CMake 暴露面。
 # ============================================================
-add_library(dzstrategy_sdk_static STATIC ${SDK_SOURCES})
-target_include_directories(dzstrategy_sdk_static PRIVATE ${SDK_INTERNAL_INCLUDES})
-target_compile_definitions(dzstrategy_sdk_static PUBLIC DZ_API_COMPILE_STATIC)
-target_link_libraries(dzstrategy_sdk_static
+add_library(dztrader_sdk_static STATIC ${SDK_SOURCES})
+target_include_directories(dztrader_sdk_static PRIVATE ${SDK_INTERNAL_INCLUDES})
+target_compile_definitions(dztrader_sdk_static PUBLIC DZ_API_COMPILE_STATIC)
+target_link_libraries(dztrader_sdk_static
     PRIVATE dztrading
     PUBLIC strategy_api_headers dzcore dzshm dzdb dztdstore
     PUBLIC Boost::boost nlohmann_json::nlohmann_json SQLiteCpp
 )
 
 # ============================================================
-# dzstrategy_sdk: 自包含动态库 dzstrategy_sdk.dll/.so (对外交付形态, ADR 0020)
+# dztrader_sdk: 自包含动态库 dztrader_sdk.dll/.so (对外交付形态, ADR 0020)
 # 只有 strategy_api_headers 是公开接口: 内部库与第三方一律 PRIVATE, 消费者
 # 只 include 公开头文件 + 链接本库, 不继承任何第三方 include/link 依赖。
 # 输出到构建根:Windows DLL 用 RUNTIME_OUTPUT_DIRECTORY,Linux .so 用 LIBRARY_OUTPUT_DIRECTORY
 # ============================================================
-add_library(dzstrategy_sdk SHARED ${SDK_SOURCES})
-target_include_directories(dzstrategy_sdk PRIVATE ${SDK_INTERNAL_INCLUDES})
-target_compile_definitions(dzstrategy_sdk PRIVATE DZ_API_EXPORTS)
-set_target_properties(dzstrategy_sdk PROPERTIES
+add_library(dztrader_sdk SHARED ${SDK_SOURCES})
+target_include_directories(dztrader_sdk PRIVATE ${SDK_INTERNAL_INCLUDES})
+target_compile_definitions(dztrader_sdk PRIVATE DZ_API_EXPORTS)
+
+# SONAME 版本化（ADR 0038）：Linux 产出 libdztrader.so -> .so.${SOVERSION} -> .so.${VERSION}
+# SOVERSION 取 MAJOR：C ABI 破坏时 SO 名变化，加载器据此拒绝旧策略二进制。
+# 0.x 阶段不承诺 ABI（ADR 0038 决策 1），故 SOVERSION 恒为 0。
+# 产物名与 target 名分离（ADR 0038 决策 5）：
+#   target  = dztrader_sdk   （CMake 侧唯一标识，仓内链接用）
+#   产物    = dztrader       → libdztrader.so / dztrader.dll
+# 交付物名与命名空间、聚合头 <dztrader.h>、规划中的 Python 包保持一致。
+set_target_properties(dztrader_sdk PROPERTIES
+    OUTPUT_NAME dztrader
     RUNTIME_OUTPUT_DIRECTORY ${DZ_OUTPUT_DIR}
     LIBRARY_OUTPUT_DIRECTORY ${DZ_OUTPUT_DIR}
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
 )
-target_link_libraries(dzstrategy_sdk
+
+# 符号收敛（ADR 0038 决策 7）：只导出 dz_* C ABI，内部 C++ 与第三方符号全部本地化。
+# 手段是链接器白名单而非 -fvisibility=hidden —— 后者要改公共头的 DZ_API 宏，
+# 且对 header-only 模板入口（dztrader::run_strategy）有副作用。
+# 实测：13038 -> 50 个导出符号。
+if(UNIX AND NOT APPLE)
+    target_link_options(dztrader_sdk PRIVATE
+        -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols.map
+        -Wl,--exclude-libs,ALL
+    )
+    set_target_properties(dztrader_sdk PROPERTIES
+        LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols.map)
+endif()
+
+target_link_libraries(dztrader_sdk
     PUBLIC strategy_api_headers
     PRIVATE dztrading dzcore dzshm dzdb dztdstore
     PRIVATE Boost::boost nlohmann_json::nlohmann_json SQLiteCpp
 )
 # 安装: 动态库与示例可执行同目录 (Linux $ORIGIN rpath / Windows DLL 同目录)。
-# 本票只安装动态库本身以保证「示例随装可运行」; 符号收敛/SONAME/头文件/
-# 导入库/许可声明等完整分发包属 #7 —— 在此之前该安装不是对外分发包。
-install(TARGETS dzstrategy_sdk
+# 带 SONAME 后 Linux 会装三个文件（.so 符号链接 / .so.N / .so.N.M.P），供链接与运行。
+# 头文件、导入库、许可声明等完整分发包仍属 #7。
+install(TARGETS dztrader_sdk
     RUNTIME DESTINATION ${DZ_INSTALL_DIR}
     LIBRARY DESTINATION ${DZ_INSTALL_DIR}
 )
@@ -96,26 +121,26 @@ file(GLOB SDK_TESTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${SDK_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
-    add_executable(dzstrategy_sdk_${testname}
+    add_executable(dztrader_sdk_${testname}
         ${testfile}
         tests/test_main.cpp
         ${SDK_TEST_SOURCES})
-    target_include_directories(dzstrategy_sdk_${testname} PRIVATE ${SDK_INTERNAL_INCLUDES})
-    target_link_libraries(dzstrategy_sdk_${testname} PRIVATE
+    target_include_directories(dztrader_sdk_${testname} PRIVATE ${SDK_INTERNAL_INCLUDES})
+    target_link_libraries(dztrader_sdk_${testname} PRIVATE
         dztrading strategy_api_headers dzcore dzshm dztest_support GTest::gtest
         Boost::boost nlohmann_json::nlohmann_json)
     if(testname IN_LIST SDK_API_TESTS)
-        target_sources(dzstrategy_sdk_${testname} PRIVATE src/api.cpp src/db_database.cpp)
+        target_sources(dztrader_sdk_${testname} PRIVATE src/api.cpp src/db_database.cpp)
         # api.cpp 直接编入测试可执行文件（自包含, 不经 DLL 导出）,
-        # 语义同 dzstrategy_sdk_static: DZ_API 展开为空。
+        # 语义同 dztrader_sdk_static: DZ_API 展开为空。
         # 缺此定义时 MSVC 落到 dllimport 分支, 库内定义函数体报 C2491。
-        target_compile_definitions(dzstrategy_sdk_${testname} PRIVATE DZ_API_COMPILE_STATIC)
+        target_compile_definitions(dztrader_sdk_${testname} PRIVATE DZ_API_COMPILE_STATIC)
         # api.cpp 引用 dzdb 的 db_database.cpp 需链 dzdb (PUBLIC 传递 SQLiteCpp);
         # db_test 直接用 SQLiteCpp 建临时库, 经 dzdb PUBLIC 依赖满足
         # api.cpp 调 tdstore::query_instruments -> 链 dztdstore
-        target_link_libraries(dzstrategy_sdk_${testname} PRIVATE dzdb dztdstore)
+        target_link_libraries(dztrader_sdk_${testname} PRIVATE dzdb dztdstore)
     endif()
-    set_target_properties(dzstrategy_sdk_${testname} PROPERTIES
+    set_target_properties(dztrader_sdk_${testname} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
     # SDK API 测试 (md/notify/trade/engine) 使用固定 DZTRADER_HOME + 机器全局 SHM 通道名,
@@ -124,27 +149,27 @@ foreach(testfile ${SDK_TESTS})
     # 均为秒级用例, TIMEOUT 60 防挂死兜底失效时拖死 CI
     # 测试分层标签: fast = 默认门禁; slow = 显式穷举/慢速档, 与 RUN_SERIAL/TIMEOUT 正交
     if(testname IN_LIST SDK_SLOW_TESTS)
-        gtest_discover_tests(dzstrategy_sdk_${testname} PROPERTIES LABELS slow)
+        gtest_discover_tests(dztrader_sdk_${testname} PROPERTIES LABELS slow)
     elseif(testname IN_LIST SDK_API_TESTS)
-        gtest_discover_tests(dzstrategy_sdk_${testname}
+        gtest_discover_tests(dztrader_sdk_${testname}
             PROPERTIES LABELS fast RUN_SERIAL TRUE TIMEOUT 60)
     else()
-        gtest_discover_tests(dzstrategy_sdk_${testname} PROPERTIES LABELS fast)
+        gtest_discover_tests(dztrader_sdk_${testname} PROPERTIES LABELS fast)
     endif()
 endforeach()
 
 # ============================================================
-# dzstrategy_sdk_bar_perf_bench: tick→bar 热路径基准 (#93, ADR 0031 决策 10)
+# dztrader_sdk_bar_perf_bench: tick→bar 热路径基准 (#93, ADR 0031 决策 10)
 # 分别报告 update / 新 bar / 跨日 / 竞价四条路径的 ns/tick 与 p99,
 # 只输出数值不做阈值断言 (report-only, 阈值待数值稳定后升级为 CI 门禁)。
 # 被测组件是 header-only, 直接编译进基准, 不链接任何内部库或第三方依赖。
 # ============================================================
-add_executable(dzstrategy_sdk_bar_perf_bench tests/bar_perf_bench.cpp)
-target_link_libraries(dzstrategy_sdk_bar_perf_bench PRIVATE strategy_api_headers)
-set_target_properties(dzstrategy_sdk_bar_perf_bench PROPERTIES
+add_executable(dztrader_sdk_bar_perf_bench tests/bar_perf_bench.cpp)
+target_link_libraries(dztrader_sdk_bar_perf_bench PRIVATE strategy_api_headers)
+set_target_properties(dztrader_sdk_bar_perf_bench PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
 )
-add_test(NAME BarPerfBench COMMAND dzstrategy_sdk_bar_perf_bench)
+add_test(NAME BarPerfBench COMMAND dztrader_sdk_bar_perf_bench)
 # perf = 无阈值基准项, 不进默认 fast 门禁; ctest --preset <plat>-<config>-perf
 set_tests_properties(BarPerfBench PROPERTIES LABELS perf)
 
@@ -161,24 +186,24 @@ set_tests_properties(BarPerfBench PROPERTIES LABELS perf)
 # 两者都跑起来(不只编译)以证明取到的是能工作的 nlohmann, 不是只有预处理通过的空壳。
 # 均为百分之一秒级用例, 进默认 fast 门禁; 不用 gtest (无断言框架需求, 减少依赖面)。
 # ============================================================
-add_executable(dzstrategy_sdk_json_probe_builtin tests/json_sdk_probe.cpp)
-target_link_libraries(dzstrategy_sdk_json_probe_builtin PRIVATE strategy_api_headers)
+add_executable(dztrader_sdk_json_probe_builtin tests/json_sdk_probe.cpp)
+target_link_libraries(dztrader_sdk_json_probe_builtin PRIVATE strategy_api_headers)
 
-add_executable(dzstrategy_sdk_json_probe_external tests/json_sdk_probe.cpp)
-target_link_libraries(dzstrategy_sdk_json_probe_external PRIVATE
+add_executable(dztrader_sdk_json_probe_external tests/json_sdk_probe.cpp)
+target_link_libraries(dztrader_sdk_json_probe_external PRIVATE
     strategy_api_headers nlohmann_json::nlohmann_json)
 # 测试专用宏: 让探针能断言「外部宏真的生效了」而不是静默回退内置模式
-target_compile_definitions(dzstrategy_sdk_json_probe_external PRIVATE
+target_compile_definitions(dztrader_sdk_json_probe_external PRIVATE
     DZTRADER_JSON_EXTERNAL DZ_JSON_PROBE_EXPECT_EXTERNAL)
 
 # 聚合头隔离检查: <dztrader.h> 不得引入内置 JSON 单头 (#154 验收项)
-add_executable(dzstrategy_sdk_aggregate_header_probe tests/aggregate_header_probe.cpp)
-target_link_libraries(dzstrategy_sdk_aggregate_header_probe PRIVATE strategy_api_headers)
+add_executable(dztrader_sdk_aggregate_header_probe tests/aggregate_header_probe.cpp)
+target_link_libraries(dztrader_sdk_aggregate_header_probe PRIVATE strategy_api_headers)
 
 foreach(probe
-    dzstrategy_sdk_json_probe_builtin
-    dzstrategy_sdk_json_probe_external
-    dzstrategy_sdk_aggregate_header_probe)
+    dztrader_sdk_json_probe_builtin
+    dztrader_sdk_json_probe_external
+    dztrader_sdk_aggregate_header_probe)
     set_target_properties(${probe} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR})
     add_test(NAME ${probe} COMMAND ${probe})
     set_tests_properties(${probe} PROPERTIES LABELS fast)

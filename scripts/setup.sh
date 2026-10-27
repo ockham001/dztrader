@@ -114,6 +114,16 @@ if [ "$SKIP_CONFIGURE" -eq 0 ]; then
             echo "warning: ccache cache dir is not writable ($CCACHE_DIR); ccache launcher disabled" >&2
         fi
     fi
+    # 预发布标识透传（ADR 0038）：发布流水线设置 DZ_PRERELEASE=rc1，
+    # 产物据此得到完整 SemVer "0.1.0-rc1"。本地不设 → 空串 → 正式版串。
+    #
+    # 必须**无条件**传参（即使为空）：DZ_PRERELEASE 是 CMake cache 变量，
+    # 只在非空时传参会让上一次发布构建的 rc1 永久残留在 cache 里，
+    # 导致后续所有本地构建都自称 "0.1.0-rc1"。
+    CMAKE_EXTRA_ARGS+=("-DDZ_PRERELEASE=${DZ_PRERELEASE:-}")
+    if [ -n "${DZ_PRERELEASE:-}" ]; then
+        echo "prerelease: ${DZ_PRERELEASE}"
+    fi
     echo "cmake --preset $PRESET"
     cmake --preset "$PRESET" "${CMAKE_EXTRA_ARGS[@]}"
 

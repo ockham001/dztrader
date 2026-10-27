@@ -23,7 +23,7 @@
 | 类别 | 链接方式 | 原因 |
 |------|---------|------|
 | 项目内部库 | 静态 | 稳定优先 |
-| 策略接口库 | 对外交付=自包含动态库(`dzstrategy_sdk`，第三方静态吸收)；静态(`dzstrategy_sdk_static`)仅仓内/平台内部使用 | 外部策略作者只需头文件+动态库，构建/运行不接触第三方；ABI 稳定边界（ADR 0020） |
+| 策略接口库 | 对外交付=自包含动态库(`dztrader`，第三方静态吸收)；静态(`dztrader_sdk_static`)仅仓内/平台内部使用 | 外部策略作者只需头文件+动态库，构建/运行不接触第三方；ABI 边界由 SONAME 承载（ADR 0020 / ADR 0038） |
 | Qt | 动态 | LGPL |
 | 闭源SDK | 动态 | 无选择 |
 | CRT(MSVC) | 静态(/MT) | 避免vcredist |
@@ -97,7 +97,7 @@ md(N-1个,单进程写,自旋锁仅订阅者列表)：写帧→原子更新next_
 
 ## 依赖禁止
 
-- `dzstrategy_sdk` 面向策略分发，为自包含动态库：第三方依赖静态吸收、运行时只依赖系统基础库（ADR 0020）；导出符号收敛为仅 `dz_*`（#7）；实现依赖 dztrading/dzcore/dzshm/dzdb/dztdstore（内部库静态链入：`LastError`、shm writer/reader、DB 记录与 td 数据同步），依赖方向为内部库，非 ABI 暴露面
+- `dztrader`（target `dztrader_sdk`）面向策略分发，为自包含动态库：第三方依赖静态吸收、运行时只依赖系统基础库（ADR 0020）；导出符号已收敛为仅 `dz_*`（49 个，`--version-script` 白名单，ADR 0038）；SONAME 为 `libdztrader.so.<MAJOR>`；实现依赖 dztrading/dzcore/dzshm/dzdb/dztdstore（内部库静态链入：`LastError`、shm writer/reader、DB 记录与 td 数据同步），依赖方向为内部库，非 ABI 暴露面
 - dzlog独立库,仅平台进程使用
 
 ## Reference Projects

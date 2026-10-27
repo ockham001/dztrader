@@ -1866,4 +1866,3 @@ DZ_API int32_t dz_version_major(void) { return DZ_VERSION_MAJOR; }
 DZ_API int32_t dz_version_minor(void) { return DZ_VERSION_MINOR; }
 DZ_API int32_t dz_version_patch(void) { return DZ_VERSION_PATCH; }
 DZ_API const char* dz_version_string(void) { return DZ_VERSION_STRING; }
-DZ_API int32_t dz_version_hex(void) { return DZ_VERSION_HEX; }

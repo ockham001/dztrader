@@ -81,37 +81,61 @@ jobs:
           restore-keys: |
             npm-${{ runner.os }}-
 
-      - name: Setup / Build / Install artifacts
-        run: |
-          ./scripts/setup.sh
-          ./scripts/build.sh
-          ./scripts/install-artifacts.sh
-
-      # tag 与 project(VERSION) 的一致性守卫（#170）：产物里的 dz_version_string()
-      # 来自 CMakeLists 的 project(VERSION)，若它与 tag 漂移，发布包会自称旧版本号。
-      # 接受的形式：v0.1.0 / v0.1.0-rc1 / v0.1.0-rc.1 —— 去掉 v 前缀与预发布后缀后
-      # 必须等于 PROJECT_VERSION。
-      - name: Verify tag matches project version
+      # 从 tag 解析版本与 pre-release，并校验与 project(VERSION) 一致（#170 / ADR 0038）。
+      # 必须在 setup 之前：DZ_PRERELEASE 要在 configure 时注入，否则产物丢掉 rc 标识。
+      - name: Resolve version from tag
+        id: ver
         run: |
           set -euo pipefail
           tag="${{ inputs.tag || github.ref_name }}"
-          # v1.2.3 或 v1.2.3-<任意预发布后缀>
           if ! printf '%s' "$tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
             echo "error: tag is not semver-with-v | tag=$tag"
             exit 1
           fi
-          tag_version=$(printf '%s' "$tag" | sed -E 's/^v//; s/-.*$//')
-          proj_version=$(sed -nE 's/^[[:space:]]*VERSION[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' CMakeLists.txt | head -1)
-          if [ -z "$proj_version" ]; then
+          base=$(printf '%s' "$tag" | sed -E 's/^v//; s/-.*$//')
+          pre=$(printf '%s' "$tag" | sed -nE 's/^v[0-9]+\.[0-9]+\.[0-9]+-(.+)$/\1/p')
+          proj=$(sed -nE 's/^[[:space:]]*VERSION[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' CMakeLists.txt | head -1)
+          if [ -z "$proj" ]; then
             echo "error: cannot read project(VERSION) from CMakeLists.txt"
             exit 1
           fi
-          if [ "$tag_version" != "$proj_version" ]; then
-            echo "error: tag/version mismatch | tag=$tag tag_version=$tag_version project_version=$proj_version"
-            echo "       bump project(VERSION) in CMakeLists.txt (and conanfile.py) before tagging"
+          if [ "$base" != "$proj" ]; then
+            echo "error: tag/version mismatch | tag=$tag tag_version=$base project_version=$proj"
+            echo "       bump project(VERSION) in CMakeLists.txt before tagging"
             exit 1
           fi
-          echo "tag/version OK | tag=$tag version=$proj_version"
+          echo "tag/version OK | tag=$tag base=$base prerelease=${pre:-<none>}"
+          echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+
+      - name: Setup / Build / Install artifacts
+        env:
+          DZ_PRERELEASE: ${{ steps.ver.outputs.prerelease }}
+        run: |
+          # DZ_PRERELEASE 经 CMakePresets 的 cacheVariables 注入（见 setup.sh 的 -D 传参）
+          ./scripts/setup.sh
+          ./scripts/build.sh
+          ./scripts/install-artifacts.sh
+
+      - name: Verify built version string
+        run: |
+          set -euo pipefail
+          # 产物必须自称 tag 的完整版本（含 pre-release）
+          want="${{ inputs.tag || github.ref_name }}"
+          want="${want#v}"
+          cat > /tmp/vercheck.c <<'EOF'
+          #include <stdio.h>
+          extern const char* dz_version_string(void);
+          int main(void) { printf("%s", dz_version_string()); return 0; }
+          EOF
+          gcc /tmp/vercheck.c -o /tmp/vercheck \
+            -Linstall/linux/x86_64/Release -ldztrader \
+            -Wl,-rpath,"$PWD/install/linux/x86_64/Release"
+          got=$(/tmp/vercheck)
+          if [ "$got" != "$want" ]; then
+            echo "error: built version mismatch | want=$want got=$got"
+            exit 1
+          fi
+          echo "built version OK | version=$got"
 
       - name: Verify install tree
         run: |
@@ -189,8 +213,34 @@ jobs:
           restore-keys: |
             npm-${{ runner.os }}-
 
+      # 与 Linux job 同一守卫（#170 / ADR 0038）：tag 必须与 project(VERSION) 一致，
+      # 且必须在 build 之前解析（DZ_PRERELEASE 要在 configure 时注入）。
+      - name: Resolve version from tag
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.tag || github.ref_name }}"
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+)(?:-(.+))?$') {
+            Write-Error "tag is not semver-with-v | tag=$tag"; exit 1
+          }
+          $base = $Matches[1]
+          $pre = if ($Matches.Count -gt 2 -and $Matches[2]) { $Matches[2] } else { "" }
+          $line = Select-String -Path CMakeLists.txt -Pattern '^\s*VERSION\s+(\d+\.\d+\.\d+)\s*$' |
+            Select-Object -First 1
+          if (-not $line) { Write-Error "cannot read project(VERSION) from CMakeLists.txt"; exit 1 }
+          $proj = $line.Matches[0].Groups[1].Value
+          if ($base -ne $proj) {
+            Write-Error "tag/version mismatch | tag=$tag tag_version=$base project_version=$proj"
+            Write-Error "bump project(VERSION) in CMakeLists.txt before tagging"
+            exit 1
+          }
+          Write-Host "tag/version OK | tag=$tag base=$base prerelease=$pre"
+          "prerelease=$pre" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       - name: Setup / Build
         shell: pwsh
+        env:
+          DZ_PRERELEASE: ${{ steps.ver.outputs.prerelease }}
         run: |
           .\scripts\setup.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -203,25 +253,36 @@ jobs:
           cmake --install build/windows/x86_64/Release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # 与 Linux job 同一守卫（#170）：tag 必须与 project(VERSION) 一致。
-      - name: Verify tag matches project version
+      # Windows 侧符号收敛守卫（ADR 0038 决策 7）：MSVC 的 __declspec(dllexport)
+      # 天然只导出标记过的函数，但「忘了标 DZ_API」会让新 API 静默不可见。
+      # Linux 侧由 version-script 白名单保证，Windows 侧靠这条断言。
+      - name: Verify SDK exports
         shell: pwsh
         run: |
-          $tag = "${{ inputs.tag || github.ref_name }}"
-          if ($tag -notmatch '^v(\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?$') {
-            Write-Error "tag is not semver-with-v | tag=$tag"; exit 1
-          }
-          $tagVersion = $Matches[1]
-          $line = Select-String -Path CMakeLists.txt -Pattern '^\s*VERSION\s+(\d+\.\d+\.\d+)\s*$' |
-            Select-Object -First 1
-          if (-not $line) { Write-Error "cannot read project(VERSION) from CMakeLists.txt"; exit 1 }
-          $projVersion = $line.Matches[0].Groups[1].Value
-          if ($tagVersion -ne $projVersion) {
-            Write-Error "tag/version mismatch | tag=$tag tag_version=$tagVersion project_version=$projVersion"
-            Write-Error "bump project(VERSION) in CMakeLists.txt (and conanfile.py) before tagging"
+          $dll = "install/windows/x86_64/Release/dztrader.dll"
+          if (-not (Test-Path $dll)) { Write-Error "missing $dll"; exit 1 }
+          $dumpbin = (Get-Command dumpbin -ErrorAction SilentlyContinue)
+          if (-not $dumpbin) {
+            # 通过 Developer Command Prompt 环境查找
+            $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+              -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -property installationPath
+            $dumpbinPath = Get-ChildItem -Path $vs -Filter dumpbin.exe -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if (-not $dumpbinPath) { Write-Error "dumpbin not found"; exit 1 }
+            $dumpbin = $dumpbinPath.FullName
+          } else { $dumpbin = $dumpbin.Source }
+          $out = & $dumpbin /nologo /exports $dll
+          $exports = @($out | Select-String -Pattern '^\s+\d+\s+[0-9A-F]+\s+[0-9A-F]+\s+(\S+)' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value })
+          Write-Host "exported symbols: $($exports.Count)"
+          $nonDz = @($exports | Where-Object { $_ -notmatch '^\??dz_' })
+          if ($nonDz.Count -gt 0) {
+            Write-Error "SDK exports non-dz_ symbols (symbol leak):"
+            $nonDz | Select-Object -First 10 | ForEach-Object { Write-Error "  $_" }
             exit 1
           }
-          Write-Host "tag/version OK | tag=$tag version=$projVersion"
+          Write-Host "SDK exports OK | count=$($exports.Count) all dz_*"
 
       - name: Verify install tree
         shell: pwsh

@@ -1,11 +1,32 @@
 from conan import ConanFile
+from conan.errors import ConanException
 from conan.tools.cmake import CMakeDeps, CMakeToolchain
 
 
 class DztraderConan(ConanFile):
     name = "dztrader"
-    version = "0.1.0"
     package_type = "application"
+
+    def set_version(self):
+        """
+        版本号从根 CMakeLists.txt 的 project(VERSION) 读取（ADR 0038）。
+
+        单一真相源在 CMake：version.h 从它生成、dz_version_* 全由它来，
+        这里再硬编码一份就会漂移（曾出现两处手工同步、无校验）。
+        """
+        import re
+        import pathlib
+
+        cmake_lists = pathlib.Path(self.recipe_folder) / "CMakeLists.txt"
+        text = cmake_lists.read_text(encoding="utf-8")
+        match = re.search(
+            r"^\s*VERSION\s+(\d+\.\d+\.\d+)\s*$", text, re.MULTILINE
+        )
+        if not match:
+            raise ConanException(
+                f"cannot read project(VERSION) from {cmake_lists}"
+            )
+        self.version = match.group(1)
 
     settings = "os", "arch", "compiler", "build_type"
 

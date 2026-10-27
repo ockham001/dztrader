@@ -25,7 +25,7 @@ Accepted（2026-10-18）
    - 动态库导出符号仅 `dz_*`（C ABI），第三方与内部 C++ 符号不可见。
    - 运行时依赖闭包零第三方。
 3. **头文件分层与 C 目标**：C 层（`api.h`/`data_type.h`/`error.h`/`struct.h`/版本头）真支持纯 C，覆盖全部底层能力；C++ 层（`strategy_base.h`/`strategy_engine.h`/`date_time/*`）是可选高级封装。聚合入口 `<dztrader.h>` 双入口：C 编译时只含 C 层，C++ 编译时含全量。
-4. **安装/分发包**：headers + 动态库 + 导入库 + 版本/ABI 说明 + 第三方许可声明；动态库带 SONAME/SOVERSION。具体打包、符号收敛（visibility/`--exclude-libs`）、dependents 审计与 C 编译器检查由 #7 实施。
+4. **安装/分发包**：headers + 动态库 + 导入库 + 版本/ABI 说明 + 第三方许可声明；动态库带 SONAME/SOVERSION。具体打包、dependents 审计与 C 编译器检查由 #7 实施。**SONAME/SOVERSION 与符号收敛的时序已由 [ADR 0038](0038-version-strategy-and-sdk-artifact-naming.md) 提前（2026-10-27 已实施）**，其余部分仍属 #7。
 5. **仓内示例 `stg_demo` 切换为动态 SDK 链接**，作为该交付形态的第一个消费者与端到端验收载体（示例本身仍只 include SDK 公开头文件）。
 6. **命令协议约束**：UI_INPUT 内容可定义文本或 JSON wire format，但公共头不得引入第三方解析库（含 nlohmann）；解析实现由策略自选。
 

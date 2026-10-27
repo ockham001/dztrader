@@ -15,7 +15,7 @@
 #
 # 设计约束：
 #   - log 与 shm 同层不可互相依赖，本层负责组合二者
-#   - 编译进 dzstrategy_sdk.dll 的代码禁止依赖 dzplatform
+#   - 编译进 dztrader_sdk.dll 的代码禁止依赖 dzplatform
 #   - 本层只服务平台进程，不进入策略进程
 # ============================================================
 add_library(dzplatform_headers STATIC)

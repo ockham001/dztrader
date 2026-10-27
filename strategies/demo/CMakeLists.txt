@@ -3,7 +3,7 @@
 #
 # 关键约束: exe 名即策略ID (strategy_id = exe_stem), master 配置中
 # strategy[].name 必须为 "stg_demo", 事件通道订阅者身份为 stg.stg_demo。
-# 链接自包含动态 SDK (dzstrategy_sdk, ADR 0020): 示例即外部策略作者的构建
+# 链接自包含动态 SDK (dztrader_sdk, ADR 0020): 示例即外部策略作者的构建
 # 参照 —— 只 include 公开头文件 + 链接动态库 + 同目录放置动态库即可运行,
 # 不接触任何第三方、不依赖任何网关/web 内部库。
 # 行为核心在 stg_demo_core (静态库), 供进程入口与进程内集成测试共用。
@@ -12,7 +12,7 @@ add_library(stg_demo_core STATIC
     stg_demo_strategy.cpp
 )
 target_include_directories(stg_demo_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(stg_demo_core PUBLIC dzstrategy_sdk)
+target_link_libraries(stg_demo_core PUBLIC dztrader_sdk)
 # MSVC /W4 /WX: 示例读取 master 注入的 DZTRADER_MD_SOURCE 用于身份展示,
 # std::getenv 在 MSVC 触发 C4996 (建议 _dupenv_s); 与仓内其他 getenv 目标一致关闭该弃用告警。
 if(WIN32)
@@ -64,8 +64,8 @@ if(UNIX)
 else()
     add_custom_command(TARGET stg_demo_test POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:dzstrategy_sdk> $<TARGET_FILE_DIR:stg_demo_test>
-        COMMENT "Copy dzstrategy_sdk next to stg_demo_test"
+            $<TARGET_FILE:dztrader_sdk> $<TARGET_FILE_DIR:stg_demo_test>
+        COMMENT "Copy dztrader_sdk next to stg_demo_test"
     )
 endif()
 gtest_discover_tests(stg_demo_test PROPERTIES LABELS fast RUN_SERIAL TRUE TIMEOUT 120)
