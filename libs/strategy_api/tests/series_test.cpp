@@ -304,6 +304,20 @@ TEST_F(SeriesTest, StaleWriteProxyCannotClobberHistory) {
     EXPECT_EQ(storage_[2], history_before) << "过期代理静默改写了历史位";
 }
 
+TEST_F(SeriesTest, StaleProxyReadAlsoThrowsInsteadOfReturningHistory) {
+    // 读写必须同口径：只挡写会让「读」静默返回历史值（同一类静默不一致）。
+    bind_window(/*size=*/3, /*max_lookback=*/3, /*buffer_bars=*/8);
+    auto series = Access::series(storage_.data(), &window_);
+
+    const auto saved = series[0];
+    EXPECT_EQ(static_cast<double>(saved), 2.0);  // 同一根 bar 内可读
+
+    window_.end = 4;  // 推进后代理已过期
+    window_.size = 3;
+
+    EXPECT_THROW((void)static_cast<double>(saved), std::out_of_range);
+}
+
 TEST_F(SeriesTest, StaleWriteProxyMessageNamesBarAdvance) {
     bind_window(/*size=*/2, /*max_lookback=*/2, /*buffer_bars=*/8);
     auto series = Access::series(storage_.data(), &window_);

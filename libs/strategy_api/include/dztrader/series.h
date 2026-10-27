@@ -185,12 +185,10 @@ public:
     SeriesRef& operator=(const SeriesRef& other) { return *this = static_cast<T>(other); }
 
     /// @brief 读当前 bar 的值（`X[0] = X[1]` 的右侧经此转换）
-    /// @throw std::out_of_range 代理未绑定（默认构造后未由 `Series::operator[]` 产生）
+    /// @throw std::out_of_range 代理未绑定，或已过期（见 validate_current）
     operator T() const {  // NOLINT(google-explicit-constructor)
-        if (slot_ == nullptr) {
-            DZTRADER_SERIES_ASSERT(false);
-            throw std::out_of_range("series ref is unbound");
-        }
+        validate_bound();
+        validate_current();
         return *slot_;
     }
 
@@ -204,23 +202,37 @@ private:
           window_(window),
           end_snapshot_(end_snapshot) {}
 
-    void validate_writable() const {
+    /// @brief 代理必须已由 `Series::operator[]` 绑定
+    void validate_bound() const {
         if (slot_ == nullptr) {
             DZTRADER_SERIES_ASSERT(false);
             throw std::out_of_range("series ref is unbound");
         }
-        if (n_ != 0) {
-            DZTRADER_SERIES_ASSERT(false);
-            throw std::out_of_range(std::format("series history is not writable | n={}", n_));
-        }
-        // 代理可能被保存到下一根 bar（组件文档 §3 允许 B 保存 Series/视图副本）。
-        // 那时它绑定的槽位已经变成历史 [1]，n_ 仍是 0；只检查 n_ 会让写历史**静默**成功。
-        // 因此代理记住创建时的窗口右边界，写入时要求窗口没有推进过。
+    }
+
+    /**
+     * @brief 代理必须仍指向「当前 bar」——创建后窗口不得推进过
+     *
+     * B 可以保存 `Series` / 视图副本（组件文档 §3），写入代理也可能被存到下一根 bar。
+     * 那时它绑定的槽位已经变成历史 `[1]`，而 `n_` 仍是 0；只检查 `n_` 会让读写**静默**
+     * 落到历史位。代理因此记住创建时的 `window.end`，读写都要求窗口没有推进过
+     * （读也检查：否则读静默返回历史值、写却抛，是同一类静默不一致）。
+     */
+    void validate_current() const {
         if (window_ != nullptr && window_->end != end_snapshot_) {
             DZTRADER_SERIES_ASSERT(false);
             throw std::out_of_range(std::format("series ref is stale | n={} bar_advanced={}", n_,
                                                 window_->end - end_snapshot_));
         }
+    }
+
+    void validate_writable() const {
+        validate_bound();
+        if (n_ != 0) {
+            DZTRADER_SERIES_ASSERT(false);
+            throw std::out_of_range(std::format("series history is not writable | n={}", n_));
+        }
+        validate_current();
     }
 
     T* slot_ = nullptr;                    ///< 当前 bar 的物理槽位
@@ -287,6 +299,17 @@ static_assert(!std::is_constructible_v<Series<double>, const SeriesView<double>&
               "a read-only view must not be upgraded to a writable series");
 static_assert(!std::is_convertible_v<SeriesView<double>, Series<double>>,
               "a read-only view must not be upgraded to a writable series");
+// SeriesRef 是**临时**代理（每次 `X[0] = v` 在栈上构造一次，不进任何持久状态），
+// 为判过期而多存 (window, end) 两个字段：4 个机器字、无堆分配、平凡析构。
+// 注意它**不是** trivially copyable：`operator=` 被自定义成「写入当前 bar」的语义
+// （正是为了阻止逐成员拷贝把赋值变成改写代理对象），有用户提供的拷贝赋值即不满足该 trait。
+// 这里锁定真正重要的性质：尺寸、无堆、平凡析构、平凡拷贝**构造**。
+static_assert(sizeof(SeriesRef<double>) == 4 * sizeof(void*),
+              "SeriesRef is a stack temporary: 4 words, no heap");
+static_assert(std::is_trivially_destructible_v<SeriesRef<double>>,
+              "SeriesRef must stay trivially destructible");
+static_assert(std::is_trivially_copy_constructible_v<SeriesRef<double>>,
+              "SeriesRef must stay trivially copy constructible");
 
 }  // namespace dztrader
 

@@ -67,7 +67,6 @@ public:
     [[nodiscard]] SeriesView<std::int64_t> user_view() const { return user_view_impl(); }
 
     [[nodiscard]] const WindowState& window() const { return window_; }
-    [[nodiscard]] const Capacity& capacity() const { return capacity_; }
     [[nodiscard]] const std::vector<double>& close_storage() const { return close_; }
 
     /// @brief 主动回卷（18:00 主路径）：全部数组一起搬
@@ -559,7 +558,10 @@ TEST(SeriesCapacityTest, PeriodWithEmptyReserveIntervalIsRejectedAsPeriodError) 
 
 TEST(SeriesCapacityTest, PeriodRangeBoundsAreReal) {
     // 错误信息里的「合法区间」必须真的合法：下界必须可接受，下界-1 必须拒绝。
+    // 12 = 使 ceil(1.1×86400/p) ≤ 8192 的最小 p（文档侧推导，独立于实现）
+    constexpr std::int32_t kFeasibleFloor = 12;
     const std::int32_t floor = dztrader::series_internal::min_feasible_period();
+    EXPECT_EQ(floor, kFeasibleFloor);
     EXPECT_LT(floor, 60) << "v1 四个周期都必须高于可行下界";
 
     // 可行下界的含义是「存在合法配置」，不是「自动值合法」：该周期必须显式给 reserve。
@@ -570,16 +572,17 @@ TEST(SeriesCapacityTest, PeriodRangeBoundsAreReal) {
     EXPECT_EQ(resolve_capacity(at_floor).reserve_bars,
               dztrader::series_internal::min_reserve_bars(floor));
 
-    // 自动值下界：从该周期起，省略 reserve_bars 才合法
-    const std::int32_t auto_floor = dztrader::series_internal::min_auto_reserve_period();
-    EXPECT_GT(auto_floor, floor) << "两个下界应当不同（自动值要求更严）";
+    // 自动值下界：用**文档侧推导的绝对值**锚定（22 = 使 2×86400/p ≤ 8192 的最小 p），
+    // 而不是拿实现自己的 helper 跟自己比（那是 §1.1 自证）。
+    constexpr std::int32_t kAutoReserveFloor = 22;
+    EXPECT_EQ(dztrader::series_internal::min_auto_reserve_period(), kAutoReserveFloor);
 
     CapacityInput auto_ok{};
-    auto_ok.period_sec = auto_floor;
+    auto_ok.period_sec = kAutoReserveFloor;
     EXPECT_NO_THROW((void)resolve_capacity(auto_ok));
 
     CapacityInput auto_bad{};
-    auto_bad.period_sec = auto_floor - 1;
+    auto_bad.period_sec = kAutoReserveFloor - 1;
     EXPECT_THROW((void)resolve_capacity(auto_bad), std::invalid_argument);
 
     CapacityInput below_floor{};

@@ -68,7 +68,7 @@ protected:
     friend class InstrumentContext;         // ctx 的公开价格视图在构造时绑定自身 window_/price_
     SeriesView() = default;
     SeriesView(T* base, const WindowState* window) : base_(base), window_(window) {}
-    void check_index(std::ptrdiff_t n) const;  // 越界：Debug 断言（可替换钩子）→ 抛 out_of_range
+    void check_index(std::ptrdiff_t n) const;  // 越界：Debug 断言（DZTRADER_SERIES_ASSERT）→ 抛 out_of_range
     T* base_ = nullptr;
     const WindowState* window_ = nullptr;
 };
@@ -77,14 +77,18 @@ template <class T>
 class SeriesRef {                           // X[0] 的写入代理：只允许给当前 bar 赋值
 public:
     SeriesRef() = default;
-    SeriesRef& operator=(T value);          // n != 0 时抛 std::out_of_range
+    SeriesRef& operator=(T value);          // n != 0 或代理已过期时抛 std::out_of_range
     SeriesRef& operator=(const SeriesRef&); // 值语义 carry（不许逐成员拷贝代理）
-    operator T() const;                     // 读取当前 bar
+    operator T() const;                     // 读取当前 bar（过期代理同样抛，读写同口径）
 private:
     template <class U> friend class Series;
-    SeriesRef(T* slot, std::ptrdiff_t n) : slot_(slot), n_(n) {}
-    T* slot_ = nullptr;
-    std::ptrdiff_t n_ = 0;
+    SeriesRef(T* slot, std::ptrdiff_t n, const WindowState* window, std::int32_t end_snapshot);
+    void validate_writable() const;         // 绑定 + n==0 + 未过期
+    void validate_current() const;          // 窗口未推进过（过期即抛 stale）
+    T* slot_ = nullptr;                     // 当前 bar 的物理槽位
+    std::ptrdiff_t n_ = 0;                  // 索引（仅 0 可写）
+    const WindowState* window_ = nullptr;   // 创建时的窗口几何（判过期）
+    std::int32_t end_snapshot_ = 0;         // 创建时的 window.end
 };
 
 template <class T>
@@ -300,6 +304,7 @@ private:
 |---|---|---|---|
 | `InstrumentNode`（ctx + builder + B） | `unordered_map` 节点（`try_emplace` 就地构造） | ctx 内的视图指向自身 `window_`/`price_`；B 持有的 `Series` 同样指向 ctx 内数组；builder 持节点内 sink 引用 | 安全：节点稳定；ctx 显式不可拷贝/移动，B 在节点内默认构造后不再搬移 |
 | 价格数组 / 用户序列数组 | `unique_ptr<T[]>`，堆 | 视图的 `base_`、B 的 `Series` | 安全（回卷只搬内容、不换地址） |
+| `SeriesRef`（写入代理） | 栈上临时对象 | 无 | **保存后不可用**：代理绑定创建时的 bar，跨推进后读/写都抛 `series ref is stale`（`Series` / `SeriesView` 副本可安全保存，代理不行——它是「写这一根」的一次性句柄） |
 | `ParamStore` | `BarStrategyManager` 成员 | ctx 的 `params_` | 安全（manager 生命周期内不搬迁；`param set` 原地更新内容） |
 | `AccountTable` | `BarStrategyManager` 成员（`std::vector`） | ctx 的 `accounts_` | 表对象地址稳定；**元素地址随增删改变化**——ctx/A 都不缓存元素指针，每次按表遍历 |
 | `ScalingConfig` | A 成员 + ctx 按值拷贝 | 无指针 | 天然安全（启动后不可变） |
