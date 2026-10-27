@@ -250,10 +250,24 @@ jobs:
             -DestinationPath "dist/dztrader-$ver-windows-x86_64.zip" -Force
 
           # PDB 单独归档（ADR 0037 / Q25=B）：不进发布包，体积大且暴露符号。
-          # 用 7z 而不是 Compress-Archive：实测 177 个 PDB 走 Compress-Archive
-          # 耗时 8 分 17 秒（它逐条目调用 ZipArchive 且不支持并行），7z 快一个数量级，
-          # 且 runner 预装。缺失 7z 时回退 Compress-Archive。
-          $pdbs = @(Get-ChildItem -Path "build/windows/x86_64/Release" -Filter *.pdb -Recurse -File)
+          #
+          # 只归档**部署产物**对应的 PDB（#173）：build 树下有 177 个 PDB，其中 168 个
+          # 来自测试可执行文件 —— 测试既不 install 也不部署，它们的 PDB 属于构建中间产物。
+          # 首次实测把全部 177 个打包，产出 1.8GB 的符号包（产品实际只有 7 个二进制）。
+          # 现在改为「以 install 树里的二进制为准，反查同名 PDB」，符号包应回到百 MB 量级。
+          #
+          # 用 7z 而不是 Compress-Archive：实测 177 个 PDB 走 Compress-Archive 耗时
+          # 8 分 17 秒（逐条目调用 ZipArchive，不支持并行）。缺失 7z 时回退。
+          $installedStems = @{}
+          Get-ChildItem -Path "install/windows/x86_64/Release" -File |
+            Where-Object { $_.Extension -in '.exe', '.dll' } |
+            ForEach-Object { $installedStems[$_.BaseName] = $true }
+          Write-Host "installed binaries: $($installedStems.Count)"
+
+          $allPdbs = @(Get-ChildItem -Path "build/windows/x86_64/Release" -Filter *.pdb -Recurse -File)
+          $pdbs = @($allPdbs | Where-Object { $installedStems.ContainsKey($_.BaseName) })
+          Write-Host "pdb total=$($allPdbs.Count) matching-deployable=$($pdbs.Count)"
+
           if ($pdbs.Count -gt 0) {
             $symbolDir = "pdb-staging"   # 不放 dist/ 下：避免 hash 步骤把目录当文件
             New-Item -ItemType Directory -Path $symbolDir -Force | Out-Null
@@ -269,7 +283,7 @@ jobs:
             }
             Write-Host "archived $($pdbs.Count) pdb files"
           } else {
-            Write-Host "warning: no PDB files found"
+            Write-Host "warning: no PDB files matching deployed binaries"
           }
 
           # 只对**文件**做 hash（此前漏了 -File，把 dist/symbols 目录也传给了
