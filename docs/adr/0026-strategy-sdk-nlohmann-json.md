@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed（2026-10-20，待评审；评审通过后改 Accepted）
+Accepted（2026-10-27 评审通过；2026-10-20 初稿）
 
 Supersedes [ADR 0020](0020-strategy-sdk-dynamic-delivery-and-public-surface.md) 的两条表述：
 
