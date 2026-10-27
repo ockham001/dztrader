@@ -61,7 +61,7 @@ struct Access;  // 内部构造缝（A 与测试），定义见 dztrader/series_
 }  // namespace series_internal
 
 /**
- * @brief 每品种一个的窗口几何（纯 POD，16 字节）
+ * @brief 每品种一个的窗口几何（纯 POD，20 字节 = 5 × int32）
  *
  * 窗口 = `[end - size, end)`：`size` 是已填充 bar 数（含当前 bar），`end` 是窗口
  * 右开边界兼下一次写入位置。`max_lookback` 是可读历史上限（= 配置值），
@@ -223,8 +223,9 @@ private:
      *
      * B 可以保存 `Series` / 视图副本（组件文档 §3），写入代理也可能被存到下一根 bar。
      * 那时它绑定的槽位已经变成历史 `[1]`，而 `n_` 仍是 0；只检查 `n_` 会让读写**静默**
-     * 落到历史位。代理因此记住创建时的 `window.end`，读写都要求窗口没有推进过
+     * 落到历史位。代理因此记住创建时的 `window.advance_seq`，读写都要求它没变过
      * （读也检查：否则读静默返回历史值、写却抛，是同一类静默不一致）。
+     * 不能比 `end`：回卷会把 `end` 置回 `size`，之后再推进就能重新等于旧快照值（ABA）。
      */
     void validate_current() const {
         if (window_ != nullptr && window_->advance_seq != seq_snapshot_) {

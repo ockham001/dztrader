@@ -289,7 +289,7 @@ TEST_F(SeriesTest, DefaultConstructedSeriesRejectsReadAndWriteBeforeBinding) {
 TEST_F(SeriesTest, StaleWriteProxyCannotClobberHistory) {
     // 关键不变式：B 可以保存 Series 副本（组件文档 §3），那么写入代理也可能被保存到
     // 下一根 bar。此时它绑定的槽位已变成历史 [1]，而 n_ 仍是 0——只检查 n_ 会让写历史
-    // **静默**成功。代理记住创建时的 window.end，推进后写入必须抛。
+    // **静默**成功。代理记住创建时的 advance_seq，推进后写入必须抛。
     bind_window(/*size=*/3, /*max_lookback=*/3, /*buffer_bars=*/8);
     auto series = Access::series(storage_.data(), &window_);
 
