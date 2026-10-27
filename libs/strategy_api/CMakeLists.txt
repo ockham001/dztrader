@@ -125,10 +125,19 @@ set(SDK_SERIES_TESTS
     series_test
     series_window_test
 )
-# series_debug_assert_test 相反：**不**关闭断言，用 EXPECT_DEATH 验证「抛前有 assert」（AC2）
+# series_debug_assert_test 相反：**不**关闭断言，用 EXPECT_DEATH 验证「抛前有 assert」（AC2）。
+# 下方构建时显式校验两个集合不相交——否则把 series_debug_assert_test 误加进
+# SDK_SERIES_TESTS 会让断言被关掉、death 测试静默退化成 EXPECT_THROW（AC2 失去覆盖）。
 set(SDK_SERIES_ASSERT_TESTS
     series_debug_assert_test
 )
+foreach(assert_test ${SDK_SERIES_ASSERT_TESTS})
+    if(assert_test IN_LIST SDK_SERIES_TESTS)
+        message(FATAL_ERROR
+            "${assert_test} must not be in SDK_SERIES_TESTS: that set disables the "
+            "DZTRADER_SERIES_ASSERT debug assertions this test exists to verify")
+    endif()
+endforeach()
 
 file(GLOB SDK_TESTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")

@@ -48,6 +48,7 @@ struct WindowState {                        // 每品种一个：价格序列与
     std::int32_t size = 0;                  // 已填充 bar 数（含当前）
     std::int32_t max_lookback = 0;          // 可读历史上限（= 配置 max_lookback）
     std::int32_t buffer_bars = 0;           // 物理缓冲元素数（= max_lookback + reserve_bars）
+    std::int32_t advance_seq = 0;           // 单调推进序号（回卷不变）；判「代理是否过期」用
 };
 
 template <class T>
@@ -83,12 +84,13 @@ public:
 private:
     template <class U> friend class Series;
     SeriesRef(T* slot, std::ptrdiff_t n, const WindowState* window, std::int32_t end_snapshot);
+    void validate_bound() const;            // 已由 Series::operator[] 绑定
     void validate_writable() const;         // 绑定 + n==0 + 未过期
-    void validate_current() const;          // 窗口未推进过（过期即抛 stale）
+    void validate_current() const;          // advance_seq 未变（过期即抛 stale）
     T* slot_ = nullptr;                     // 当前 bar 的物理槽位
     std::ptrdiff_t n_ = 0;                  // 索引（仅 0 可写）
     const WindowState* window_ = nullptr;   // 创建时的窗口几何（判过期）
-    std::int32_t end_snapshot_ = 0;         // 创建时的 window.end
+    std::int32_t seq_snapshot_ = 0;         // 创建时的 window.advance_seq
 };
 
 template <class T>
@@ -304,7 +306,7 @@ private:
 |---|---|---|---|
 | `InstrumentNode`（ctx + builder + B） | `unordered_map` 节点（`try_emplace` 就地构造） | ctx 内的视图指向自身 `window_`/`price_`；B 持有的 `Series` 同样指向 ctx 内数组；builder 持节点内 sink 引用 | 安全：节点稳定；ctx 显式不可拷贝/移动，B 在节点内默认构造后不再搬移 |
 | 价格数组 / 用户序列数组 | `unique_ptr<T[]>`，堆 | 视图的 `base_`、B 的 `Series` | 安全（回卷只搬内容、不换地址） |
-| `SeriesRef`（写入代理） | 栈上临时对象 | 无 | **保存后不可用**：代理绑定创建时的 bar，跨推进后读/写都抛 `series ref is stale`（`Series` / `SeriesView` 副本可安全保存，代理不行——它是「写这一根」的一次性句柄） |
+| `SeriesRef`（写入代理） | 栈上临时对象 | 无 | **保存后不可用**：代理记录创建时的 `advance_seq`，跨推进后读/写都抛 `series ref is stale`（`Series` / `SeriesView` 副本可安全保存，代理不行——它是「写这一根」的一次性句柄）。用单调序号而不是 `end` 比较：回卷会把 `end` 置回 `size`，之后推进能让它重新等于旧快照值（ABA），序号不会 |
 | `ParamStore` | `BarStrategyManager` 成员 | ctx 的 `params_` | 安全（manager 生命周期内不搬迁；`param set` 原地更新内容） |
 | `AccountTable` | `BarStrategyManager` 成员（`std::vector`） | ctx 的 `accounts_` | 表对象地址稳定；**元素地址随增删改变化**——ctx/A 都不缓存元素指针，每次按表遍历 |
 | `ScalingConfig` | A 成员 + ctx 按值拷贝 | 无指针 | 天然安全（启动后不可变） |
@@ -324,7 +326,7 @@ private:
 - **零开销约束**：`SeriesView` / `Series` 单继承、**禁止虚函数与虚析构**、`Series` 不新增数据成员。静态断言锁定：`sizeof(Series<double>) == sizeof(SeriesView<double>)`、`std::is_trivially_copyable_v<Series<double>>`、`std::is_standard_layout_v<Series<double>>`、`!std::has_virtual_destructor_v<Series<double>>`。
 - 指标函数统一签名 `double average(const SeriesView<double>&, int)` 等，`Series<double>` 隐式转基类引用，**不需要模板化算法**。
 - 只读保证：`SeriesView` 不能转换为 `Series`（`Series<double> x = ctx.close;` 编译失败），价格数组无法经视图获得写能力。
-- **索引类型分工**：对外 `operator[]` 取 `std::ptrdiff_t`；`WindowState` 的四个几何量取 `std::int32_t`（有界：`size ≤ end ≤ buffer_bars`、`size ≤ max_lookback ≤ buffer_bars`、`buffer_bars = max_lookback + reserve_bars`；窗口 16 字节）。转换只发生在 `operator[]` 内部一次宽化 `base_[end - 1 - n]`。debug 断言 `max_lookback` / `buffer_bars ≤ INT32_MAX / 2`。
+- **索引类型分工**：对外 `operator[]` 取 `std::ptrdiff_t`；`WindowState` 的几何量取 `std::int32_t`（4 个几何量 + `advance_seq`，有界：`size ≤ end ≤ buffer_bars`、`size ≤ max_lookback ≤ buffer_bars`、`buffer_bars = max_lookback + reserve_bars`；窗口 20 字节 = 5×int32）。转换只发生在 `operator[]` 内部一次宽化 `base_[end - 1 - n]`。`max_lookback ∈ [32, 16384]` 与 `buffer_bars ≤ 24576` 的区间校验已结构性保证二者远小于 `INT32_MAX / 2`，无需额外断言。
 - **无 vector 写接口、无扩容**：不提供 `push_back` / `erase` / `resize` / `reserve`（bar 生命周期与窗口推进由 A 管，B 只能写 `[0]`）；容量 = 配置值，在实例创建时一次性分配、之后永不 realloc——B 持有的视图/指针全程有效，热路径上没有分配器；不够用是配置错误（读越界抛异常，§4.2）。用户序列也不做「单条更深回溯」：它们共享品种窗口（见 §14 后置项）。
 - **分配不做特化**：每序列一次普通堆分配（`operator new` 的自然对齐，x86-64 至少 16B，足以满足 `double` 与非对齐加载），物理长度就是 `buffer_bars`，不做 2 的幂取整、不做 cache-line padding。理由：热路径只有 8B 自然对齐的标量读写（永不跨 cache line），回卷一天只发生一次（§10），对齐收益在测量噪声内；2 的幂反而有 4KB 同余导致的 L1 cache set 冲突风险。若将来改为 arena/矩阵布局，行步长禁止取 4096 的整数倍（§14 记录）。
 - **唯一出口**：所有 `dz_place_order` 调用都走 `ctx.submit_order()`（正常单、同步单、删除平仓共用），所有 `dz_set_logical_position` 调用都走 `ctx.publish_positions()/publish_all_positions()`；A 不直接拼这两种帧，避免两条路径的上报/价格处理漂移。
@@ -424,7 +426,7 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 实现期确认的两条边界（#155）：
 
 - **`buffer_bars ≤ 24576` 是防御性校验**：两个字段各自合法时其和必然不超过上限（`16384 + 8192 = 24576`），因此这条派生校验当前不可达，为将来放宽单字段区间保留。测试以静态断言锁定「上限 = 两字段上限之和」，避免它退化成无人验证的死分支。
-- **周期下界有两个，含义不同**（#155 实现期）：`min_feasible_period()`（= 12）是「存在合法配置」的下界——低于它时 `[R_min, 8192]` 是空区间，报 `period_sec` 非法（不能报一个倒置区间）；`min_auto_reserve_period()`（= 22）是「省略 `reserve_bars` 也合法」的下界——两者之间的周期（如 12–21 秒）必须显式配置 `reserve_bars`，否则按「不静默修正」报错提示显式配置。错误信息里的合法区间必须真的合法（回归用例解析消息区间并逐点验证，曾把下界写错一根）。v1 的四个周期（60/180/300/900）都远在两个下界之上。
+- **周期下界有两个，含义不同**（#155 实现期）：`min_feasible_period()`（= 12）是「存在合法配置」的下界——低于它时 `[R_min, 8192]` 是空区间，报 `period_sec` 非法（不能报一个倒置区间）；`min_auto_reserve_period()`（= 22）是「省略 `reserve_bars` 也合法」的下界——两者之间的周期（如 12–21 秒）必须显式配置 `reserve_bars`，否则按「不静默修正」报错（消息给出 `field=reserve_bars` 的实际值与合法区间，用户据此补上显式值）。错误信息里的合法区间必须真的合法（回归用例解析消息区间并逐点验证，曾把下界写错一根）。v1 的四个周期（60/180/300/900）都远在两个下界之上。
 
 交易小节表落地后（ADR 0018），「每日 bar 数」改用真实 session 总分钟数（1 分钟周期 = 600 根/交易日），默认内存降到约四成（`buffer_bars` 4320 → 1800）：
 

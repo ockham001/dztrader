@@ -306,6 +306,7 @@ template <class... Arrays>
  */
 inline void commit_advance(WindowState& window) noexcept {
     ++window.end;
+    ++window.advance_seq;  // 单调推进序号：回卷不动它，是「是否推进过」的唯一可靠判据
     if (window.size < window.max_lookback) {
         ++window.size;
     }

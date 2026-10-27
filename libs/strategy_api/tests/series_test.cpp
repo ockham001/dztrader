@@ -72,8 +72,11 @@ protected:
         for (std::int32_t i = 0; i < buffer_bars; ++i) {
             storage_[static_cast<std::size_t>(i)] = static_cast<double>(i);
         }
-        window_ = WindowState{
-            .end = size, .size = size, .max_lookback = max_lookback, .buffer_bars = buffer_bars};
+        window_ = WindowState{.end = size,
+                              .size = size,
+                              .max_lookback = max_lookback,
+                              .buffer_bars = buffer_bars,
+                              .advance_seq = 0};
     }
 
     std::vector<double> storage_;
@@ -297,6 +300,7 @@ TEST_F(SeriesTest, StaleWriteProxyCannotClobberHistory) {
     // 推进一根：窗口右边界前移，saved 的槽位成为历史
     window_.end = 4;
     window_.size = 3;
+    ++window_.advance_seq;  // 模拟一次真实推进
     storage_[3] = 66.0;
     const double history_before = storage_[2];
 
@@ -314,7 +318,28 @@ TEST_F(SeriesTest, StaleProxyReadAlsoThrowsInsteadOfReturningHistory) {
 
     window_.end = 4;  // 推进后代理已过期
     window_.size = 3;
+    ++window_.advance_seq;
 
+    EXPECT_THROW((void)static_cast<double>(saved), std::out_of_range);
+}
+
+TEST_F(SeriesTest, StaleProxySurvivesEndGoingBackwardsAfterRelocate) {
+    // ABA 回归：回卷把 end 置回 size（变小），之后再推进会让 end 重新等于创建代理时的值。
+    // 若只比较 end，守卫会被骗过；advance_seq 单调，才是可靠判据。
+    bind_window(/*size=*/3, /*max_lookback=*/3, /*buffer_bars=*/8);
+    auto series = Access::series(storage_.data(), &window_);
+    auto saved = series[0];
+    const std::int32_t end_at_creation = window_.end;
+
+    // 推进 → 回卷（end 回到 size）→ 再推进（end 重新到达 creation 值）
+    window_.end = 4;
+    ++window_.advance_seq;
+    window_.end = window_.size;  // 回卷：end 回退，advance_seq 不动
+    ++window_.advance_seq;       // 再推进一根
+
+    ASSERT_EQ(window_.end, end_at_creation) << "前提：end 已回到创建代理时的值（ABA 场景）";
+    EXPECT_THROW((void)(saved = 1.0), std::out_of_range)
+        << "end 回到旧值不代表代理仍指向同一根 bar";
     EXPECT_THROW((void)static_cast<double>(saved), std::out_of_range);
 }
 
@@ -325,6 +350,7 @@ TEST_F(SeriesTest, StaleWriteProxyMessageNamesBarAdvance) {
 
     window_.end = 3;
     window_.size = 2;
+    ++window_.advance_seq;
 
     try {
         saved = 1.0;
@@ -372,7 +398,8 @@ TEST(SeriesLayoutTest, SeriesAddsNoDataMembersOverView) {
     EXPECT_EQ(sizeof(Series<double>), sizeof(SeriesView<double>));
     EXPECT_EQ(sizeof(Series<std::int64_t>), sizeof(SeriesView<std::int64_t>));
     EXPECT_EQ(sizeof(SeriesView<double>), 2u * sizeof(void*));
-    EXPECT_EQ(sizeof(WindowState), 4u * sizeof(std::int32_t));
+    // 4 个几何量 + 单调推进序号（advance_seq，防回卷后 end 的 ABA）
+    EXPECT_EQ(sizeof(WindowState), 5u * sizeof(std::int32_t));
 }
 
 TEST(SeriesLayoutTest, SeriesIsTrivialStandardLayoutWithoutVirtuals) {

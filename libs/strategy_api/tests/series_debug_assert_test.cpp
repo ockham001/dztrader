@@ -7,7 +7,8 @@
  * 无法验证。本 target **不定义**该宏：Debug 下断言生效，用 `EXPECT_DEATH` 断言进程确实
  * 在越界时中止；Release（`NDEBUG`）下断言编译掉，只验证「仍然抛异常」。
  *
- * 每个断言都是一条独立路径（读越界、写历史、过期代理），不靠同一个入口复述。
+ * 覆盖四个断言点（`check_index` 的越界与负索引共用同一处断言、`validate_writable` 的写历史、
+ * `validate_current` 的过期代理、`validate_bound` 的未绑定代理），不靠同一个入口复述。
  */
 #include <dztrader/series.h>
 #include <dztrader/series_internal.h>
@@ -32,7 +33,8 @@ struct BoundWindow {
         for (std::int32_t i = 0; i < 8; ++i) {
             storage[static_cast<std::size_t>(i)] = static_cast<double>(i);
         }
-        state = WindowState{.end = size, .size = size, .max_lookback = 4, .buffer_bars = 8};
+        state = WindowState{
+            .end = size, .size = size, .max_lookback = 4, .buffer_bars = 8, .advance_seq = 0};
     }
     [[nodiscard]] SeriesView<double> view() { return Access::view(storage.data(), &state); }
     [[nodiscard]] Series<double> series() { return Access::series(storage.data(), &state); }
@@ -54,7 +56,7 @@ TEST(SeriesDebugAssertTest, ReadOutOfRangePath) {
     BoundWindow fixture;
     auto view = fixture.view();
     if (kAssertArmed) {
-        EXPECT_DEATH((void)view[9], "");
+        EXPECT_DEATH((void)view[9], "Assertion|assert|false");
     } else {
         EXPECT_THROW((void)view[9], std::out_of_range);
     }
@@ -64,7 +66,7 @@ TEST(SeriesDebugAssertTest, NegativeIndexPath) {
     BoundWindow fixture;
     auto view = fixture.view();
     if (kAssertArmed) {
-        EXPECT_DEATH((void)view[-1], "");
+        EXPECT_DEATH((void)view[-1], "Assertion|assert|false");
     } else {
         EXPECT_THROW((void)view[-1], std::out_of_range);
     }
@@ -75,7 +77,7 @@ TEST(SeriesDebugAssertTest, WriteHistoryPath) {
     BoundWindow fixture;
     auto series = fixture.series();
     if (kAssertArmed) {
-        EXPECT_DEATH((void)(series[1] = 1.0), "");
+        EXPECT_DEATH((void)(series[1] = 1.0), "Assertion|assert|false");
     } else {
         EXPECT_THROW((void)(series[1] = 1.0), std::out_of_range);
     }
@@ -87,19 +89,18 @@ TEST(SeriesDebugAssertTest, StaleProxyPath) {
     auto series = fixture.series();
     auto saved = series[0];
     fixture.state.end = 3;  // 推进后代理过期
+    ++fixture.state.advance_seq;
     if (kAssertArmed) {
-        EXPECT_DEATH((void)(saved = 1.0), "");
+        EXPECT_DEATH((void)(saved = 1.0), "Assertion|assert|false");
     } else {
         EXPECT_THROW((void)(saved = 1.0), std::out_of_range);
     }
 }
 
 TEST(SeriesDebugAssertTest, UnboundProxyPath) {
-    BoundWindow fixture;
-    (void)fixture;
     dztrader::SeriesRef<double> unbound;
     if (kAssertArmed) {
-        EXPECT_DEATH((void)static_cast<double>(unbound), "");
+        EXPECT_DEATH((void)static_cast<double>(unbound), "Assertion|assert|false");
     } else {
         EXPECT_THROW((void)static_cast<double>(unbound), std::out_of_range);
     }

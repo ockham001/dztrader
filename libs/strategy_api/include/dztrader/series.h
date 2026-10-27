@@ -76,9 +76,17 @@ struct WindowState {
     std::int32_t size = 0;          ///< 已填充 bar 数（含当前）
     std::int32_t max_lookback = 0;  ///< 可读历史上限（= 配置 max_lookback）
     std::int32_t buffer_bars = 0;   ///< 物理缓冲元素数（= max_lookback + reserve_bars）
+    /**
+     * @brief 单调推进序号：每推进一根 bar +1，**回卷不改变它**
+     *
+     * `end` 不能用来判断「窗口是否推进过」：回卷把 `end` 置回 `size`，之后推进会让它
+     * 重新到达旧值（ABA），于是拿 `end` 做快照的检查会被骗过。序号只增不减，是唯一
+     * 可靠的「这根 bar 之后又推进过没有」的判据（`SeriesRef` 靠它拒绝过期写入）。
+     */
+    std::int32_t advance_seq = 0;
 };
 
-static_assert(sizeof(WindowState) == 4 * sizeof(std::int32_t), "WindowState must stay 4 x int32");
+static_assert(sizeof(WindowState) == 5 * sizeof(std::int32_t), "WindowState must stay 5 x int32");
 static_assert(std::is_trivially_copyable_v<WindowState>, "WindowState must be trivially copyable");
 static_assert(std::is_standard_layout_v<WindowState>, "WindowState must be standard layout");
 
@@ -196,11 +204,11 @@ private:
     template <class U>
     friend class Series;
 
-    SeriesRef(T* slot, std::ptrdiff_t n, const WindowState* window, std::int32_t end_snapshot)
+    SeriesRef(T* slot, std::ptrdiff_t n, const WindowState* window, std::int32_t seq_snapshot)
         : slot_(slot),
           n_(n),
           window_(window),
-          end_snapshot_(end_snapshot) {}
+          seq_snapshot_(seq_snapshot) {}
 
     /// @brief 代理必须已由 `Series::operator[]` 绑定
     void validate_bound() const {
@@ -219,10 +227,10 @@ private:
      * （读也检查：否则读静默返回历史值、写却抛，是同一类静默不一致）。
      */
     void validate_current() const {
-        if (window_ != nullptr && window_->end != end_snapshot_) {
+        if (window_ != nullptr && window_->advance_seq != seq_snapshot_) {
             DZTRADER_SERIES_ASSERT(false);
             throw std::out_of_range(std::format("series ref is stale | n={} bar_advanced={}", n_,
-                                                window_->end - end_snapshot_));
+                                                window_->advance_seq - seq_snapshot_));
         }
     }
 
@@ -238,7 +246,7 @@ private:
     T* slot_ = nullptr;                    ///< 当前 bar 的物理槽位
     std::ptrdiff_t n_ = 0;                 ///< 索引（仅 0 可写）
     const WindowState* window_ = nullptr;  ///< 创建代理时的窗口几何（判过期用）
-    std::int32_t end_snapshot_ = 0;        ///< 创建代理时的 window.end
+    std::int32_t seq_snapshot_ = 0;        ///< 创建代理时的 window.advance_seq
 };
 
 /**
@@ -264,7 +272,7 @@ public:
     [[nodiscard]] SeriesRef<T> operator[](std::ptrdiff_t n) {
         this->check_index(n);
         return SeriesRef<T>(this->base_ + static_cast<std::ptrdiff_t>(this->window_->end) - 1 - n,
-                            n, this->window_, this->window_->end);
+                            n, this->window_, this->window_->advance_seq);
     }
 
 private:
