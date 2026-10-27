@@ -149,3 +149,41 @@ add_test(NAME BarPerfBench COMMAND dzstrategy_sdk_bar_perf_bench)
 # perf = 无阈值基准项, 不进默认 fast 门禁; ctest --preset <plat>-<config>-perf
 set_tests_properties(BarPerfBench PROPERTIES LABELS perf)
 install(TARGETS dzstrategy_sdk_bar_perf_bench RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
+
+# ============================================================
+# 「仅凭 SDK include 路径可编译」双模检查 (#154, ADR 0026 决策 6)
+#
+# builtin 探针只链 strategy_api_headers 也能编译 + 运行, 即证明外部策略作者把 SDK 的
+# include 目录加进头文件路径就能解析 JSON, 不需要 Conan 或额外安装:
+#   builtin  : 默认模式, 用 SDK 内置单头 (dztrader/json.h 的内置分支); 只链
+#              strategy_api_headers (编译命令里没有第三方 include 路径)
+#   external : 定义 DZTRADER_JSON_EXTERNAL, 用外部 <nlohmann/json.hpp>; 两个探针之间
+#              只有它额外链 nlohmann_json::nlohmann_json 提供外部头路径,
+#              模拟策略作者自带版本 (本文件其它 target 也链它, 是内部库用途)
+# 两者都跑起来(不只编译)以证明取到的是能工作的 nlohmann, 不是只有预处理通过的空壳。
+# 均为百分之一秒级用例, 进默认 fast 门禁; 不用 gtest (无断言框架需求, 减少依赖面)。
+# ============================================================
+add_executable(dzstrategy_sdk_json_probe_builtin tests/json_sdk_probe.cpp)
+target_link_libraries(dzstrategy_sdk_json_probe_builtin PRIVATE strategy_api_headers)
+
+add_executable(dzstrategy_sdk_json_probe_external tests/json_sdk_probe.cpp)
+target_link_libraries(dzstrategy_sdk_json_probe_external PRIVATE
+    strategy_api_headers nlohmann_json::nlohmann_json)
+# 测试专用宏: 让探针能断言「外部宏真的生效了」而不是静默回退内置模式
+target_compile_definitions(dzstrategy_sdk_json_probe_external PRIVATE
+    DZTRADER_JSON_EXTERNAL DZ_JSON_PROBE_EXPECT_EXTERNAL)
+
+# 聚合头隔离检查: <dztrader.h> 不得引入内置 JSON 单头 (#154 验收项)
+add_executable(dzstrategy_sdk_aggregate_header_probe tests/aggregate_header_probe.cpp)
+target_link_libraries(dzstrategy_sdk_aggregate_header_probe PRIVATE strategy_api_headers)
+
+foreach(probe
+    dzstrategy_sdk_json_probe_builtin
+    dzstrategy_sdk_json_probe_external
+    dzstrategy_sdk_aggregate_header_probe)
+    set_target_properties(${probe} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR})
+    add_test(NAME ${probe} COMMAND ${probe})
+    set_tests_properties(${probe} PROPERTIES LABELS fast)
+endforeach()
+install(TARGETS dzstrategy_sdk_json_probe_builtin dzstrategy_sdk_json_probe_external
+    dzstrategy_sdk_aggregate_header_probe RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)

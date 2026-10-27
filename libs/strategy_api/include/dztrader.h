@@ -18,8 +18,8 @@
  * C++ 引擎使用示例（见 dztrader/strategy_engine.h）：
  * @code
  *   struct MyStrategy : dztrader::StrategyBase {
- *       void on_start(DzContext* ctx) override { /* ... * }
- *       void on_tick(const DzTick& tick) override { /* ... * }
+ *       void on_start(DzContext* ctx) override {}
+ *       void on_tick(const DzTick& tick) override {}
  *   };
  *   int main() {
  *       MyStrategy s;

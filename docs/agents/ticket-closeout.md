@@ -41,7 +41,9 @@
 
 `gate.sh` 是 agent 侧的统一入口：同一 build tree 用 `flock` 串行（并行子代理不会互相踩 ninja）、自动导出 ccache 环境、输出落 `.cache/gate/`、返回**真实退出码**。人工可直接跑 `build.sh` / `test.sh` / `preflight.sh` 等价命令。**要短输出用 `./scripts/gate.sh build|test|preflight --tail N`**（成功留 N 行、失败留 max(N,30) 行）；**不要**给门禁命令接 `| tail` / `| head`——管道会把失败吞成 exit 0（#75 的 wait-ci 超时、#81 的 ninja 失败都因此被记成假绿）。
 
-`./scripts/preflight.sh` 覆盖：日志格式、clang-format 21.x、文档链接（含契约 §N 引用）、测试可移植性、**MSVC hazard lint**（Windows 头顺序 / C4101 等 Linux 编译器拦不到的失败）、前端 `type-check` / `lint` / `lint:css` / `vitest` / `gen:types` 新鲜度。任一项红就停，**先修红，不叠加新改动**。CI linux job 复用同一脚本（`--c-only`）。
+`./scripts/preflight.sh` 覆盖：日志格式、clang-format 21.x、文档链接（含契约 §N 引用）、测试可移植性、**MSVC hazard lint**（Windows 头顺序 / C4101 等 Linux 编译器拦不到的失败）、**内置 JSON 版本一致性**（conanfile / 单头 / `VENDORED.md` 三方，含自测）、前端 `type-check` / `lint` / `lint:css` / `vitest` / `gen:types` 新鲜度。任一项红就停，**先修红，不叠加新改动**。CI linux job 复用同一脚本（`--c-only`）。
+
+> preflight 是**只读**门禁：它不得改动工作区任何受版本控制的文件。新增检查若需要"注入已知错误形态"来自测，必须在临时副本上做（参照 `scripts/check_json_vendor_version.py`），否则一次 Ctrl-C / SIGKILL 就会把工作区留在改坏的状态——而审查冻结窗口恰好禁止这种改动。
 
 ## 3. 提交（按路径）
 

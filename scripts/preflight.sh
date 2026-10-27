@@ -2,8 +2,9 @@
 # preflight.sh — 提交前本地门禁的唯一入口（Linux）
 #
 # 覆盖：日志格式 / clang-format 21.x / 文档链接 / 测试可移植性+临时目录隔离 / MSVC hazard lint /
-#       前端五件套。MSVC 侧失败（Windows 头顺序、C4101 等）Linux 编译器拦不到，
-#       由 scripts/check_msvc_hazards.py 做源码级 lint。
+#       内置 nlohmann/json 版本一致性 / 前端五件套。MSVC 侧失败（Windows 头顺序、C4101 等）
+#       Linux 编译器拦不到，由 scripts/check_msvc_hazards.py 做源码级 lint；
+#       conanfile.py 与内置 JSON 单头的版本漂移由 scripts/check_json_vendor_version.py 拦住。
 # CI 的 linux job 复用同一脚本的 C 段（--c-only），避免门禁命令在
 # 人工 prompt、development-checklist 与 ci.yml 三处漂移。
 #
@@ -112,6 +113,16 @@ check_msvc_hazards() {
     "$PYTHON" scripts/check_msvc_hazards.py
 }
 
+check_json_vendor_version() {
+    # 先跑自测（改了 conanfile 忘改内置单头 / 改了单头忘改记录等形态仍被拦住），
+    # 再校验真实三方一致性（ADR 0026 决策 6 的机器化，#154）。
+    # 两条命令必须显式串联：run_step 的形态是「调用一个函数、取它的 $?」，而
+    # `set -u -o pipefail` 没有 `-e` —— 少写 `|| return` 时自测的失败会被后一条
+    # 命令的 0 覆盖，门禁变恒真（实测：selftest rc=1 → step rc=0 → 仍然打印 ok）。
+    "$PYTHON" scripts/check_json_vendor_version.py --selftest || return $?
+    "$PYTHON" scripts/check_json_vendor_version.py
+}
+
 # ---- 前端 ----------------------------------------------------------------
 
 check_frontend() {
@@ -164,6 +175,7 @@ run_step "clang-format 21.x dry-run (libs apps)" check_clang_format
 run_step "docs links" check_docs_links
 run_step "test portability + temp-dir isolation" check_test_portability
 run_step "msvc hazard lint" check_msvc_hazards
+run_step "vendored JSON version consistency" check_json_vendor_version
 if [ "$C_ONLY" -eq 0 ]; then
     run_step "frontend (type-check/lint/lint:css/test/gen:types)" check_frontend
 fi

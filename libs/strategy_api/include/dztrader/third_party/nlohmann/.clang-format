@@ -1,0 +1,3 @@
+# 内置第三方单头（nlohmann/json）：保持上游原文格式，禁止 clang-format 重排。
+# 升级时整文件替换（见同目录 VENDORED.md），不要局部改写。
+DisableFormat: true

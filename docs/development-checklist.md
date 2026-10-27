@@ -34,7 +34,7 @@
 ## C. 提交前（每次 push）
 
 - [ ] 本地 git hooks 已装：`git config --get core.hooksPath` 输出 `.githooks`（`setup` 自动安装）。pre-commit 由 staged 文件触发——clang-format 校验 index 内容，日志格式 / docs links 为工作区全仓扫描；**不能替代** `preflight`。pre-push 拦直推 main / 非快进 / 非白名单分支名。
-- [ ] `./scripts/preflight.sh` 全绿（日志格式 / clang-format 21.x / 文档链接（含契约 §N 引用）/ 测试可移植性+临时目录唯一化 / **MSVC hazard lint** / 前端 `type-check` + `lint` + `lint:css` + `vitest` + `gen:types` 新鲜度，一条命令一个结论）——CI linux job 复用同脚本的 C 段（`--c-only`）；首次需先 `./scripts/build.sh` 生成 `node_modules`
+- [ ] `./scripts/preflight.sh` 全绿（日志格式 / clang-format 21.x / 文档链接（含契约 §N 引用）/ 测试可移植性+临时目录唯一化 / **MSVC hazard lint** / **内置 JSON 版本一致性** / 前端 `type-check` + `lint` + `lint:css` + `vitest` + `gen:types` 新鲜度，一条命令一个结论）——CI linux job 复用同脚本的 C 段（`--c-only`）；首次需先 `./scripts/build.sh` 生成 `node_modules`
 - [ ] `./scripts/build.sh --config release` 通过（agent 侧用 `./scripts/gate.sh build --config release`：同 build tree 串行 + ccache 环境 + 真实退出码；**禁止接 `| tail`**，会把失败吞成 0）
 - [ ] `./scripts/test.sh` 全绿（后台 fast 门禁；含冒烟 smoke）；穷举/基准按需 `--label slow` / `--label perf`（Windows `-Label`）；agent 侧 `./scripts/gate.sh test`
 - [ ] `git status` 干净，改动为小步提交（信息中文，`fix:/feat:/refactor:/docs:/test:/chore:/perf:/style:/build:/ci:` 前缀）
@@ -55,4 +55,6 @@
 | D2 | 改 `dz_next_event` 白名单/拦截、引擎回调或生命周期 | **先改 `docs/frame_contracts/strategy.md`**（白名单/拦截清单/引擎注释同步），再改代码与测试；`general.md` §11.3 checklist |
 | D3 | 新增/修改 `DZ_API` 函数或错误码 | 头文件 doxygen + `dz_errstr` 映射 + 至少一条测试（错误路径也要覆盖） |
 | D4 | 改 C++ 引擎（`strategy_engine.h`/`strategy_base.h`） | 引擎测试套件（`StrategyEngineTest`）全绿；启动自检行/回调探测变更需同步注释与测试 |
-| D5 | 策略 SDK 变更（无前端/契约联动时） | 仍须跑 C 段的本地预检：log-format / clang-format / test-portability / docs-links |
+| D5 | 策略 SDK 变更（无前端/契约联动时） | 仍须跑 C 段的本地预检：log-format / clang-format / test-portability / docs-links / JSON vendor version |
+| D6 | 改内置第三方头（`dztrader/third_party/`，当前只有 nlohmann/json 单头） | **整文件替换**，不做局部补丁；`conanfile.py` 与单头版本**同一次提交**升级（ADR 0026 决策 6）；`scripts/check_json_vendor_version.py --selftest` + 无参校验三方一致（conanfile / 版本宏 / `VENDORED.md` 的版本与 SHA-256），已接入 preflight |
+| D7 | 改 `dztrader/json.h`（JSON 取用入口）或增删内置头 | 双模编译检查 `ctest -R "json_probe"`（`json_sdk_probe_builtin` / `_external` 各编译并运行一次，**只链 SDK include 路径**）+ `aggregate_header_probe`（`<dztrader.h>` 不得引入内置单头）；两种模式都必须绿 |
