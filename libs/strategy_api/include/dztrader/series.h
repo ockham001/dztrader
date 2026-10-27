@@ -198,7 +198,12 @@ public:
     SeriesRef& operator=(const SeriesRef& other) { return *this = static_cast<T>(other); }
 
     /// @brief 读当前 bar 的值（`X[0] = X[1]` 的右侧经此转换）
+    /// @throw std::out_of_range 代理未绑定（默认构造后未由 `Series::operator[]` 产生）
     operator T() const {  // NOLINT(google-explicit-constructor)
+        if (slot_ == nullptr) {
+            series_internal::debug_assert_failed();
+            throw std::out_of_range("series ref is unbound");
+        }
         return *slot_;
     }
 

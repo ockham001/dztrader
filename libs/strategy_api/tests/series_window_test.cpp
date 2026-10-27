@@ -603,6 +603,53 @@ TEST(SeriesCapacityTest, ReserveErrorCarriesPeriodDependentFloor) {
     }
 }
 
+// ---------------- 推进前置条件：退化窗口不得越界写 ----------------
+
+TEST(SeriesAdvanceGuardTest, DefaultWindowIsNotReadyToAdvance) {
+    // 默认构造的 WindowState（buffer_bars == 0）在 A 注入容量之前也存在；
+    // prepare_advance 对它会返回 0，写进零长数组就是越界写。守卫必须报告「未就绪」。
+    const WindowState fresh{};
+    EXPECT_FALSE(dztrader::series_internal::window_ready_to_advance(fresh));
+}
+
+TEST(SeriesAdvanceGuardTest, ResolvedCapacityIsReadyToAdvance) {
+    for (const std::int32_t period : {60, 180, 300, 900}) {
+        SCOPED_TRACE(period);
+        CapacityInput input{};
+        input.period_sec = period;
+        const auto capacity = resolve_capacity(input);
+
+        WindowState window{};
+        window.max_lookback = capacity.max_lookback;
+        window.buffer_bars = capacity.buffer_bars;
+        EXPECT_TRUE(dztrader::series_internal::window_ready_to_advance(window));
+    }
+}
+
+TEST(SeriesAdvanceGuardTest, AdvanceBarWritesSlotAndCommitsInOneStep) {
+    // 便利包装把「prepare → 写 → commit」收敛到一处；漏 commit 会让几何与数据错位
+    WindowState window{};
+    window.max_lookback = 3;
+    window.buffer_bars = 6;
+    std::vector<double> values(6, 0.0);
+    std::vector<std::int64_t> users(6, 0);
+
+    double next = 10.5;
+    dztrader::series_internal::advance_bar(
+        window,
+        [&](std::int32_t slot) {
+            values[static_cast<std::size_t>(slot)] = next;
+            users[static_cast<std::size_t>(slot)] = static_cast<std::int64_t>(slot);
+        },
+        values.data(), users.data());
+
+    EXPECT_EQ(window.end, 1);
+    EXPECT_EQ(window.size, 1);
+    EXPECT_EQ(values[0], 10.5);
+    EXPECT_EQ(users[0], 0);
+    EXPECT_TRUE(window_consistent(window));
+}
+
 // ---------------- AC5：回卷不改变 bar_index（绝对序号单调） ----------------
 
 TEST(SeriesRelocateTest, BarIndexIsIndependentOfRelocation) {

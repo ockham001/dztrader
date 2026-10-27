@@ -255,6 +255,20 @@ TEST_F(SeriesTest, WriteToHistorySlotStartsAtWriteProxyTarget) {
     EXPECT_EQ(static_cast<double>(series[1]), 1.0);  // [0] 的写入不影响 [1]
 }
 
+TEST_F(SeriesTest, WriteToHistoryIsCompilableButThrowsAtRuntime) {
+    // 组件文档 §4.2 口径：写历史没有 API（拿不到 T&），但 `X[1] = v` 这种写法仍可编译，
+    // 代价是运行期抛。这条用例把「可编译 + 必抛」两件事同时钉住，防止有人为了
+    // 「编译期拒绝」而改坏迁移代码的可用性（如 for 循环里 X[n]）。
+    bind_window(/*size=*/3, /*max_lookback=*/3, /*buffer_bars=*/8);
+    auto series = Access::series(storage_.data(), &window_);
+
+    static_assert(std::is_assignable_v<decltype(series[1]), double>,
+                  "X[n]=v must stay compilable (migration code writes X[n] in loops)");
+    EXPECT_THROW((void)(series[1] = 9.0), std::out_of_range);
+    EXPECT_THROW((void)(series[2] = 9.0), std::out_of_range);
+    EXPECT_THROW((void)(series[3] = 9.0), std::out_of_range);  // n == size 也抛
+}
+
 TEST_F(SeriesTest, WriteToHistoryIndexThrowsOutOfRange) {
     bind_window(/*size=*/3, /*max_lookback=*/3, /*buffer_bars=*/8);
     auto series = Access::series(storage_.data(), &window_);
@@ -268,6 +282,36 @@ TEST_F(SeriesTest, UnboundSeriesRefRejectsAssignment) {
     // 写入代理的防御性兜底：未绑定的代理不能写
     SeriesRef<double> ref;
     EXPECT_THROW((void)(ref = 1.0), std::out_of_range);
+}
+
+TEST_F(SeriesTest, UnboundSeriesRefRejectsReadInsteadOfDereferencingNull) {
+    // 未绑定代理的读取同样必须响亮失败。缺这条检查时 `*slot_` 是 nullptr 解引用
+    // （UB，ASan 下 SEGV）：默认构造的代理看似无害，读一下就崩进程。
+    SeriesRef<double> ref;
+    EXPECT_THROW((void)static_cast<double>(ref), std::out_of_range);
+
+    SeriesRef<std::int64_t> int_ref;
+    EXPECT_THROW((void)static_cast<std::int64_t>(int_ref), std::out_of_range);
+}
+
+TEST_F(SeriesTest, DefaultConstructedSeriesRejectsReadAndWriteBeforeBinding) {
+    // A 完成注入前（#157 的 make_series 尚未调用）的默认构造形态：读/写都抛，不解引用空指针
+    Series<double> series;
+    EXPECT_THROW((void)series[0], std::out_of_range);
+    EXPECT_TRUE(series.span().empty());
+}
+
+TEST_F(SeriesTest, ConstSeriesCannotBeWrittenAtCompileTime) {
+    // 「拿不到可写引用」是真正的不变式：不可写序列一旦 const 化，赋值就是编译期错误。
+    // 运行期可达的 `X[n] = v` 走 SeriesRef 的索引校验（见 WriteToHistoryIndexThrowsOutOfRange）。
+    bind_window(/*size=*/3, /*max_lookback=*/3, /*buffer_bars=*/8);
+    const auto series = Access::series(storage_.data(), &window_);
+
+    // 只有经 const 路径读出的值可赋给变量，写不回数组
+    const double value = series[0];
+    EXPECT_EQ(value, 2.0);
+    static_assert(!std::is_assignable_v<decltype(series[0]), double>,
+                  "const Series must not expose a writable element");
 }
 
 TEST_F(SeriesTest, Int64SeriesHasSameSemantics) {

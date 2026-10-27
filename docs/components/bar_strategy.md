@@ -353,7 +353,7 @@ node.builder.on_tick(tick);                                  // 唯一 tick→ba
 | 索引 | `[0]` = 当前 bar，`[n]` = 往回 n 根；物理地址 = `base_[end - 1 - n]`，逻辑窗口 = `[end - size, end)` |
 | 序号 | `ctx.bar_index()`：**当前回调对应 bar** 在品种 bar 流中的绝对序号（0 起、单调，回卷不重置；classic TB `CurrentBar` 同口径，MC 从 1 起需 −1）。`on_init` 恒为 −1；`on_bar_close` 时指向被关闭的上一根，`on_bar_open` / `on_bar_update` 时指向当前 bar。可读根数以 `ctx.close.size()` 为准 |
 | 读 | `n ∈ [0, size)` 返回真实值；**其余一律抛 `std::out_of_range`**（负 n、`n ≥ size` 都抛；无钳位、无 NaN、无初值兜底）。`span()` 是零检查快路径。异常消息含 `n` / `size` / `max_lookback`，A 在派发点补充品种、回调名（§4.6） |
-| 写 | 仅 `series[0] = v`；历史位不可写（与 TB/MC 一致，写历史无 API、编译期不可达） |
+| 写 | 仅 `series[0] = v`；历史位不可写（与 TB/MC 一致）。**口径精确化（#155 实现期）**：「无 API」指没有任何返回 `T&` 的访问入口——`Series::operator[]` 返回写入代理 `SeriesRef`，不存在能拿到历史位可写引用的形状；`X[n>0] = v` 仍能通过编译，但由索引校验**运行期抛** `std::out_of_range`（与读越界同一套检查，到达代理之前就失败）。`const Series` / `SeriesView` 上的任何赋值则是编译期错误。 |
 | 推进 | 每根新 bar（由 builder 的 open 事件驱动，§5.4）：① 若 `end == buffer_bars`，先回卷（§4.4；正常由 18:00 定时器提前搬，这里是兜底）；② 新 bar 落在 `base_[end]`，7 条价格字段与量/额/持仓量从 builder 的 `Bar` 写入，用户序列写 carry（首根用 `init`，其后复制上一根 `[0]`）；③ `++end`、`size = min(size+1, max_lookback)`。`on_bar_close` 在 ① 之前触发，故 close 回调内 `[0]` 仍是上一根 |
 | 视图 | `span()` 为时间正序（最旧→最新）连续窗口，长度 = `size`，可直接 range-for 或喂 STL 算法；**仅在本次回调内有效**（A 下一根推进/回卷后内容与长度可能变化） |
 | 创建 | `ctx.make_series<double>(init)` / `ctx.make_series<std::int64_t>(init)`，仅 `on_init` 可调用 |
@@ -362,6 +362,7 @@ node.builder.on_tick(tick);                                  // 唯一 tick→ba
 
 ### 4.2 读语义：一个检查版本，越界必响
 
+- **写历史位的「不可达」是两层**（#155 实现期确认）：**没有**任何返回 `T&` 的访问入口，因此拿不到历史位的可写引用（这是真正的不变式，`SeriesRef` 代理保证）；`X[1] = v` 这类写法仍可编译，由 `check_index` 在到达代理前抛 `std::out_of_range`。若要求连编译都拒绝，需要把下标做成编译期常量参数（`operator[]` 只接受 `std::integral_constant<0>`），会牺牲 `for (int n = 0; ...) X[n]` 这类迁移代码的写法——与本框架「迁移用户代码少改写」的目标冲突，故 v1 选择运行期响亮失败。
 - **只提供一个检查过的 `operator[]`**：索引不合法就抛 `std::out_of_range`。不提供 `at()` 与 `[]` 双版本——两个入口会让策略作者猜哪个是快路径，且 TB/MC 迁移代码里 `[]` 无处不在，把正确性交给调用者选择没有收益。
 - 零检查场景用 `span()`：指标循环、`std::accumulate`、`std::inner_product` 等直接吃连续区间，既没有逐元素分支，也天然对编译器向量化友好。`span()` 不做越界检查（长度就是 `size`），这是**唯一的快路径**。
 - 为什么不像 TB 那样钳位/返回 NaN/返回初值：那三种做法都会让「配置错/策略读太深」变成**静默的错误状态**并可能直接产生成交。本框架走相反路线——**不合法就响亮失败**，错误信息直接指出需要调大的配置项。

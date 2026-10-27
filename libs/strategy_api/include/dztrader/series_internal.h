@@ -246,6 +246,17 @@ template <class... Arrays>
 }
 
 /**
+ * @brief 校验窗口几何是否自洽（内部断言/测试用）
+ *
+ * 不变式：`0 <= size <= max_lookback <= buffer_bars` 且 `size <= end <= buffer_bars`。
+ */
+[[nodiscard]] inline bool window_consistent(const WindowState& window) noexcept {
+    return window.size >= 0 && window.size <= window.max_lookback &&
+           window.max_lookback <= window.buffer_bars && window.end >= window.size &&
+           window.end <= window.buffer_bars;
+}
+
+/**
  * @brief 推进一根 bar 的第三步：`++end`，`size` 递增并封顶于 `max_lookback`
  *
  * 封顶后窗口开始淘汰最旧的一根——淘汰只是 `size` 不再增长（零拷贝），窗口左边界随
@@ -259,14 +270,32 @@ inline void commit_advance(WindowState& window) noexcept {
 }
 
 /**
- * @brief 校验窗口几何是否自洽（内部断言/测试用）
+ * @brief 校验窗口是否已具备推进条件（`buffer_bars > 0` 且几何自洽）
  *
- * 不变式：`0 <= size <= max_lookback <= buffer_bars` 且 `size <= end <= buffer_bars`。
+ * `prepare_advance` 返回的是「可以写入的下标」；调用方在解引用数组前必须确认它不是
+ * 越界下标。容量由 `resolve_capacity` 保证 `buffer_bars >= max_lookback + R_min >= 33`，
+ * 所以真实实例永远满足；但**默认构造的 `WindowState`**（`buffer_bars == 0`）在 A 完成
+ * 注入之前也会走到推进路径，那时 `prepare_advance` 会返回 0 —— 写进零长数组就是越界写。
+ * 本函数把这个前提显式化，A 在推进前断言它（内部用法）或按失败处理。
  */
-[[nodiscard]] inline bool window_consistent(const WindowState& window) noexcept {
-    return window.size >= 0 && window.size <= window.max_lookback &&
-           window.max_lookback <= window.buffer_bars && window.end >= window.size &&
-           window.end <= window.buffer_bars;
+[[nodiscard]] inline bool window_ready_to_advance(const WindowState& window) noexcept {
+    return window.buffer_bars > 0 && window_consistent(window);
+}
+
+/**
+ * @brief 推进一根 bar：写槽位 → commit（调用方已校验 `window_ready_to_advance`）
+ *
+ * 便利包装：把 `prepare_advance` + 写入 + `commit_advance` 三步收敛到一处，避免调用方
+ * 忘记 commit 导致几何与数据错位。`writer` 收到物理下标，负责把本根 bar 的值写进
+ * **每个**数组。
+ *
+ * @param writer 回调：`void(std::int32_t slot)`
+ */
+template <class Writer, class... Arrays>
+inline void advance_bar(WindowState& window, Writer&& writer, Arrays... arrays) noexcept {
+    const std::int32_t slot = prepare_advance(window, arrays...);
+    writer(slot);
+    commit_advance(window);
 }
 
 }  // namespace dztrader::series_internal
