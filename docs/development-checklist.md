@@ -55,4 +55,6 @@
 | D2 | 改 `dz_next_event` 白名单/拦截、引擎回调或生命周期 | **先改 `docs/frame_contracts/strategy.md`**（白名单/拦截清单/引擎注释同步），再改代码与测试；`general.md` §11.3 checklist |
 | D3 | 新增/修改 `DZ_API` 函数或错误码 | 头文件 doxygen + `dz_errstr` 映射 + 至少一条测试（错误路径也要覆盖） |
 | D4 | 改 C++ 引擎（`strategy_engine.h`/`strategy_base.h`） | 引擎测试套件（`StrategyEngineTest`）全绿；启动自检行/回调探测变更需同步注释与测试 |
-| D5 | 策略 SDK 变更（无前端/契约联动时） | 仍须跑 C 段的本地预检：log-format / clang-format / test-portability / docs-links |
+| D5 | 策略 SDK 变更（无前端/契约联动时） | 仍须跑 C 段的本地预检：log-format / clang-format / test-portability / docs-links / JSON vendor version |
+| D6 | 改内置第三方头（`dztrader/third_party/`，当前只有 nlohmann/json 单头） | **整文件替换**，不做局部补丁；`conanfile.py` 与单头版本**同一次提交**升级（ADR 0026 决策 6）；`scripts/check_json_vendor_version.py --selftest` + 无参校验三方一致（conanfile / 版本宏 / `VENDORED.md` 的版本与 SHA-256），已接入 preflight |
+| D7 | 改 `dztrader/json.h`（JSON 取用入口）或增删内置头 | 双模编译检查 `ctest -R "json_probe"`（`json_sdk_probe_builtin` / `_external` 各编译并运行一次，**只链 SDK include 路径**）+ `aggregate_header_probe`（`<dztrader.h>` 不得引入内置单头）；两种模式都必须绿 |

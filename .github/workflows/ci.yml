@@ -179,7 +179,7 @@ jobs:
           sudo apt-get install -y clang-format-21
           clang-format-21 --version
 
-      - name: Repo preflight (log format / C++ format / docs links / test portability / MSVC hazards)
+      - name: Repo preflight (log format / C++ format / docs links / test portability / MSVC hazards / JSON vendor version)
         run: ./scripts/preflight.sh --c-only
 
       - name: Commit Message Check (prefix)

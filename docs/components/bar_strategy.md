@@ -753,6 +753,8 @@ status | quit
 - 命令成功后 A 写回配置（原子）；失败则内存不变、返回错误行。`param set` 成功后通过 `on_params_update` 通知策略重读。
 - 命令与配置中的账户标识只是平台账户 id 字符串；账户的登录/凭据/交易接口归属属于平台（td 配置），框架不管理。
 
+**JSON 取用（issue #154 已落地）**：框架的配置读写与 `ParamStore` 都只经 `dztrader/json.h` 取得 nlohmann，**不直接包含任何第三方路径**。两种模式：默认用 SDK 头文件目录内置的单头（策略作者不需要 Conan 或额外安装）；定义 `DZTRADER_JSON_EXTERNAL` 时用外部 `<nlohmann/json.hpp>`（策略作者自带版本）。内置单头版本与 `conanfile.py` 的 `nlohmann_json` 固定版本一致（当前 3.12.0），升级**同一次提交**改两边，由 `scripts/check_json_vendor_version.py` 机器校验；双模与「聚合头不引入 JSON」由 `ctest -R "json_probe"` + `aggregate_header_probe` 守住。版本记录与整文件替换步骤见 `libs/strategy_api/include/dztrader/third_party/nlohmann/VENDORED.md`。**`DZTRADER_JSON_EXTERNAL` 是编译期开关，同一进程内所有 TU 必须取值一致**（混用会让 `nlohmann::json` 在不同 TU 成为不同类型 → ODR 违规）。
+
 ## 8. 动态管理
 
 - **启动**：读配置并校验（`period_sec`/`instruments`/`accounts`/`max_scale`/取整策略）→ 立即 `dz_subscribe` 全部品种（§5.3 步骤 1）→ 查合约元数据（每品种一次）→ 对每个品种建 `InstrumentNode`（ctx 注入 `DzContext*`/账户表只读指针/`ParamStore*`，价格数组按 `buffer_bars` 一次分配、B 于 `on_init` 创建用户序列，此时 `bar_index == -1`、窗口为空）→ 逐品种加载历史（`dz_db_query_bar`）并静默填窗 + 回放（§5.3；回放期虚拟成交）→ 排空缓冲 tick 续接 live → 全部完成后一次性上报各账户逻辑持仓 → 进入 live。历史不可用（归档域未实现）时按冷启动：静默填窗从 live 开始，逻辑持仓为 0。
@@ -767,7 +769,7 @@ status | quit
 
 ## 9. 参数
 
-**类型**：`class ParamStore`（A 持有唯一实例）——`unordered_map<string, nlohmann::json>` + typed `get<T>(name, default)` / `set(name, json)`；`ctx.param<T>` 委托给它（JSON 后端见 ADR 0026）。
+**类型**：`class ParamStore`（A 持有唯一实例）——`unordered_map<string, nlohmann::json>` + typed `get<T>(name, default)` / `set(name, json)`；`ctx.param<T>` 委托给它。**JSON 取用唯一入口是 `dztrader/json.h`**（issue #154）：默认用 SDK 内置单头，定义 `DZTRADER_JSON_EXTERNAL` 时改用外部 `<nlohmann/json.hpp>`；框架代码不得直接包含任何第三方路径（ADR 0026）。
 
 - `ctx.param<double>("fast", 10)` / `param<int64_t>` / `param<bool>` / `param<std::string>`；A 只做运输。
 - v1 参数全局统一（`params`，每个品种相同）；品种级参数覆盖后置（硬编码 / 将来扩展 `params` 段）。
