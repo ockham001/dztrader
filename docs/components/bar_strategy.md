@@ -57,16 +57,18 @@ struct SeriesStorage {                      // 用户序列的所有权记录：
 };
 
 template <class T>
-class SeriesView {                          // 只读视图：全部读接口的唯一实现
+class SeriesView {                          // 只读视图：全部读接口的唯一实现（dztrader/series.h）
 public:
     T operator[](std::ptrdiff_t n) const;   // TB 口径：n=0 当前，n 往回数；越界抛 std::out_of_range
-    std::int32_t size() const noexcept;     // 已填充 bar 数（含当前）
+    std::int32_t size() const noexcept;     // 已填充 bar 数（含当前）；未绑定视图为 0
     std::int32_t max_lookback() const noexcept; // 可回读的历史根数上限（= 配置 max_lookback）
     std::span<const T> span() const noexcept;   // STL 口径：时间正序（最旧→最新）连续窗口，长度 = size，零检查
 protected:
+    friend struct series_internal::Access;  // 绑定缝：A（ctx）与测试经此构造，B 侧不可凭空绑定数组
     friend class InstrumentContext;         // ctx 的公开价格视图在构造时绑定自身 window_/price_
     SeriesView() = default;
     SeriesView(T* base, const WindowState* window) : base_(base), window_(window) {}
+    void check_index(std::ptrdiff_t n) const;  // 越界：Debug 断言（可替换钩子）→ 抛 out_of_range
     T* base_ = nullptr;
     const WindowState* window_ = nullptr;
 };
@@ -76,6 +78,7 @@ class SeriesRef {                           // X[0] 的写入代理：只允许�
 public:
     SeriesRef() = default;
     SeriesRef& operator=(T value);          // n != 0 时抛 std::out_of_range
+    SeriesRef& operator=(const SeriesRef&); // 值语义 carry（不许逐成员拷贝代理）
     operator T() const;                     // 读取当前 bar
 private:
     template <class U> friend class Series;
@@ -91,6 +94,7 @@ public:
     using SeriesView<T>::operator[];
     SeriesRef<T> operator[](std::ptrdiff_t n);  // 非 const 对象返回写入代理（仅 n == 0 可赋值）
 private:
+    friend struct series_internal::Access;  // 绑定缝（同上）
     friend class InstrumentContext;         // make_series 构造视图
     Series(T* base, const WindowState* window) : SeriesView<T>(base, window) {}
 };
@@ -334,6 +338,14 @@ node.builder.on_tick(tick);                                  // 唯一 tick→ba
 
 ## 4. Series 层语义
 
+> **实现状态（#155）**：Series 层与窗口几何已实现，落在两个头文件里——
+> `libs/strategy_api/include/dztrader/series.h`（公开面：`WindowState` / `SeriesView` /
+> `SeriesRef` / `Series` + 静态断言）与 `dztrader/series_internal.h`（内部面：容量推导
+> `resolve_capacity`、窗口驱动 `prepare_advance` / `commit_advance` / `relocate_window`、
+> 绑定缝 `series_internal::Access`）。单元测试 `series_test.cpp`（读/写语义与公开面不变量）
+> 与 `series_window_test.cpp`（容量、回卷等价性、随机推进 fuzz）。`InstrumentContext`
+> 的接入（`make_series` / 价格视图绑定）随 #157 落地——本票交付不依赖引擎的纯组件。
+
 ### 4.1 读写与推进
 
 | 项 | 语义 |
@@ -402,6 +414,11 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 | 900s | 96 | 96 | 106 | 192 | 288 | 2,304 |
 
 公式：`max_lookback = clamp(86400 / period_sec, 32, 2048)`；`R_min = max(2, ceil(1.1 × 86400 / period_sec))`；`reserve_bars = max(2 × 86400 / period_sec, R_min)`。校验区间：`max_lookback ∈ [32, 16384]`、`reserve_bars ∈ [R_min, 8192]`、`buffer_bars ≤ 24576`。
+
+实现期确认的两条边界（#155）：
+
+- **`buffer_bars ≤ 24576` 是防御性校验**：两个字段各自合法时其和必然不超过上限（`16384 + 8192 = 24576`），因此这条派生校验当前不可达，为将来放宽单字段区间保留。测试以静态断言锁定「上限 = 两字段上限之和」，避免它退化成无人验证的死分支。
+- **周期短到 `R_min > 8192` 时该周期无任何合法配置**（`[R_min, 8192]` 是空区间）：此时报 `period_sec` 非法而不是报一个倒置的 `reserve_bars` 区间——错误信息必须指向调用方真正能改的字段。v1 的四个周期（60/180/300/900）都远在该边界之内。
 
 交易小节表落地后（ADR 0018），「每日 bar 数」改用真实 session 总分钟数（1 分钟周期 = 600 根/交易日），默认内存降到约四成（`buffer_bars` 4320 → 1800）：
 
