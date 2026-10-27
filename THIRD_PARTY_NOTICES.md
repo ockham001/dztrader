@@ -76,7 +76,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 | 项目 | 上期技术综合交易平台（CTP）行情 API `thostmduserapi_se`、交易 API `thosttraderapi_se` |
 | 厂商 | 上海期货信息技术有限公司（SFIT，上海期货交易所全资子公司） |
 | 上游 | SimNow 平台（厂商官方仿真 / API 下载入口）https://www.simnow.com.cn/ ；接口文档 http://www.sfit.com.cn/5_2_DocumentDown.htm |
-| 版本 | 6.7.13（发布包 `v6.7.13_20260225`，Windows 64 位 + Linux x64） |
+| 版本 | 见 [third_party/ctp/VENDORED.md](third_party/ctp/VENDORED.md)「上游与版本」（不在此重复，避免升级时漂移） |
 | 许可 | **厂商未提供许可条款文本**：发布包内不含许可或使用协议；官方站点（SimNow）的下载与协议页面在本次核实中未能直接读取，未取得可引用的再分发授权（见「核实记录」）。CTP API 为闭源专有软件，其使用与分发受厂商及期货公司 / SimNow 各自协议约束 |
 | 在本项目中的角色 | **运行时依赖**（非参考实现）：`apps/ctp` 以 IMPORTED 目标链接，二进制随 `install/` 部署物安装 |
 | 本项目的分发方式 | **原样随附**：随本项目部署物一起分发，详见「再分发条件」 |
@@ -108,16 +108,14 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ### 来源可复核
 
-全部文件来自发布包 `ctp-6.7.13.zip`（`v6.7.13_20260225`，SHA-256
-`9bd5be783fcaf69c0563f9a20a528d7b9eb4d4f96ca9d359183c9b61f19dfd03`；该包不随仓库入库）：
+全部文件来自厂商发布包（发布包文件 / 内部版本 / SHA-256 与逐文件哈希见
+[third_party/ctp/VENDORED.md](third_party/ctp/VENDORED.md)；发布包不随仓库入库）：
 
-- 二进制与发布包**逐字节相同**（Windows 取 `20260225_*64_se_windows`，Linux 取
-  `v6.7.13_20260225_api_*_linux64`）；
-- 文本文件只做编码与行尾归一，便于编译器与 diff 工具处理：头文件以 Linux 包为基准仅做
-  `GBK → UTF-8` 转码，`windows/*.h` 与 `linux/*.h` 内容相同（相对 Windows 包因此还包含
-  CRLF → LF 归一）；`error.xml` / `error.dtd` 另做 CRLF → LF；处理后均与发布包一致；
-- 复核方式：`iconv -f GB18030 -t UTF-8 <发布包文件> | tr -d '\r'` 后与 `third_party/ctp/`
-  对应文件比较（Linux 包头文件无需 `tr`），二进制直接 `cmp`；
+- 6 个二进制与发布包**逐字节相同**（取 `*64_se_windows` / `*_linux64` 目录）；
+- 文本文件只做编码与行尾归一：`GB18030 → UTF-8`、`CRLF → LF`；`error.xml` 的 XML 声明随之
+  改为 `utf-8`（唯一内容偏离，避免解析器按 GB2312 解释 UTF-8 字节时中文乱码）；
+- 机械步骤、逐文件 SHA-256、校验规则与升级纪律见上述 `VENDORED.md`（由
+  `scripts/vendor_ctp.py` 生成 / 校验，`--check` 即「仓库文件 = 记录」）；
 - 发布包内只有《隐私政策》《合规使用说明》两份看穿式终端采集库文档（见「随包文档（附注）」），
   没有 API 许可 / 再分发条款。
 
@@ -160,9 +158,10 @@ API 许可文本，只有采集库合规文档。
 
 | 日期 | 内容 |
 |---|---|
-| 2026-10-27 | 比对 `third_party/ctp/` 全部 18 个文件与发布包 `ctp-6.7.13.zip`（SHA-256 见上）：二进制逐字节一致，文本转码与行尾归一后逐字节一致；包内无许可文件 |
+| 2026-10-27 | 比对 `third_party/ctp/` 全部 18 个文件与厂商发布包（SHA-256 见 `VENDORED.md`）：二进制逐字节一致，文本转码与行尾归一后一致（`error.xml` 声明属已知偏离）；包内无许可文件 |
 | 2026-10-27 | 官方许可条文未取得：SimNow 站点有反爬验证（HTTP 202 挑战页），上期技术站点在核实环境不可达，未取得官方许可原文 |
 | 2026-10-27 | 社区先例核实：`vnpy_ctp` 6.7.11.4 的 sdist / win_amd64 wheel 下载后核对文件列表，均含 CTP 二进制 |
+| 2026-10-27 | 规范化流程固化（#178）：`scripts/vendor_ctp.py` + `third_party/ctp/VENDORED.md`（逐文件 SHA-256 / 升级纪律）；`error.xml` 声明改为 `utf-8`，`--check` / `--selftest` 通过 |
 
 > 本口径的决策与证据记录同时见 issue #166（2026-10-27 评论）。
 
