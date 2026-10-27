@@ -41,43 +41,74 @@
 
 ## 快速开始（4 命令工作流）
 
-**唯一入口**，覆盖编译、调试、停止、清理。日常迭代只需要 4 个命令。
+**唯一入口**，覆盖编译、调试、停止、清理。日常迭代只需要这几个命令。
+**只有一个构建档：Release**（构建/运行/部署同一份二进制）。
 
 ```bash
 # Windows (PowerShell)
-.\scripts\setup.ps1                    # 1. 装依赖 + configure（首次/改依赖时跑，写粘性 config）
+.\scripts\setup.ps1                    # 1. 装依赖 + configure（首次/改依赖时跑）
 .\scripts\build.ps1                    # 2. 构建（C++ + 前端 + dist 复制，一次搞定）
-.\scripts\run-dev.ps1                  # 3. build + 设置 DZTRADER_HOME + 启动 master + 子进程
+.\scripts\run-dev.ps1                  # 3. build + install + 启动 master + 子进程
 .\scripts\run-dev.ps1 -Stop            # 4. 停止（强杀 master + 清理僵尸子进程）
-.\scripts\clean.ps1                    # （可选）清理所有 build 产物，保留 conan cache
+.\scripts\clean.ps1                    # （可选）清理 build/ + install/，保留 conan cache
 
 # Linux (Bash)
-./scripts/setup.sh release             # 1. 装依赖 + configure
+./scripts/setup.sh                     # 1. 装依赖 + configure
 ./scripts/build.sh                     # 2. 构建
-./scripts/run-dev.sh                   # 3. build + 启动 master + 子进程
-                                       # 4. 停止: pkill dztraderd; pkill dzweb; pkill dzmd_ctp
+./scripts/run-dev.sh                   # 3. build + install + 启动 master + 子进程
+./scripts/run-dev.sh --stop            # 4. 停止
 ./scripts/clean.sh                     # （可选）清理
 # 浏览器访问 http://localhost:8080
 ```
 
-### config 粘性
+### build / install / run 三层
 
-`setup` 决定 config，后续 `build`/`run-dev` 自动跟随：
-- `.\scripts\setup.ps1` → 写 `.dztrader_dev/.config=Release`，后续默认 Release
-- `.\scripts\setup.ps1 -Config Debug` → 写 `.dztrader_dev/.config=Debug`，后续默认 Debug
-- 临时切 config：`.\scripts\build.ps1 -Config Debug`（不修改粘性文件）
-- `clean` 会删 `.dztrader_dev/`（含粘性文件），下次 setup 后重新建立
+| 目录 | 角色 |
+|---|---|
+| `build/<plat>/<arch>/Release/` | 中间产物。**不要直接运行**，会被下次构建重链 |
+| `install/<plat>/<arch>/Release/` | **唯一产物源**。运行、部署、打包都从这里取（约 66MB） |
+| `install/<plat>/<arch>/Release-debug-symbols/` | 调试符号（约 345MB），不进部署包，崩溃分析用 |
+
+`run-dev` 会自动 `build` → `install` → 从 `install/` 启动。
+
+### 切换构建档
+
+无参数即 Release。其他档**显式指定**（不存在「记住上次选择」的粘性文件）：
+
+- `.\scripts\setup.ps1 -Config Debug` / `./scripts/setup.sh debug` — Debug，**仅本地**，不进门禁、禁止部署。
+  注意：切到 Debug 会触发 14 个依赖源码编译（ConanCenter 只有 Release 二进制）。
+- `cmake --preset linux-asan` — ASan + UBSan，只从 build 树运行，永不 install。
+
+### 并发安全
+
+`build` / `test` 脚本自带构建锁（同一 worktree 串行），人类与 AI 同时操作不会交错写同一棵
+Ninja 树。`test` 与 `build` 共用同一把锁。并行跑多个服务栈时用 `DZTRADER_HOME` 隔离：
+
+```bash
+DZTRADER_HOME=.cache/home-b ./scripts/run-dev.sh
+```
+
+### 调试符号
+
+Release 带 `-g`（不改变代码生成、不影响性能基线）。部署包经过 strip 分离符号，
+崩溃时用符号归档解析：
+
+```bash
+addr2line -e install/linux/x86_64/Release-debug-symbols/dztraderd.debug -f -C 0x<addr>
+```
+
+Windows 侧的 `.pdb` 不进部署包，由 tag 流水线单独归档。
 
 ### 命令详解
 
 **setup** — `.\scripts\setup.ps1 [-Config Release|Debug] [-SkipConfigure]`
 - 跑 conan install（装/编译依赖）+ cmake configure（生成 build.ninja）
 - 首次/改 conanfile.py/改 CMakeLists.txt 配置层时跑
-- 写 `.dztrader_dev/.config` 粘性文件
+- 会校验 ccache launcher 确实写进了 CMakeCache（否则报错，避免静默裸编）
 - Debug 时打印黄色警告
 
 **build** — `.\scripts\build.ps1 [-Config Release|Debug] [-Target <name>]`
-- config 来源：`-Config` 参数 > `.dztrader_dev/.config` > Release
+- config 默认 Release；要其他档显式 `-Config`
 - 构建 C++ + 前端（vite build）+ 复制 dist 到 `build/.../web/`
 - 改任何代码（前端或后端）后跑这个，**禁止** `npm run build`
 - `-Target dzmd_ctp` 只构建指定 target
@@ -87,36 +118,42 @@
 - 自动设置 `DZTRADER_HOME=.dztrader_dev`（避免污染生产配置）
 - 启动 master（读 `$DZTRADER_HOME/configs/dztraderd.json`，缺失时自动生成默认配置；按其中 md/td/internal 段自动拉起 dzweb + 网关 + 内部进程等子进程）
 - `-Stop`：强杀 master + `dztraderd --cleanup-orphans` 清理僵尸子进程
-- `-NoBuild`：跳过 build 直接启动（快，但可能跑旧代码）
+- `-NoBuild`：跳过 build/install 直接启动（快，但可能跑旧代码）
+- 启动前若检测到 master 在跑会先停栈（install 不能在运行中替换文件）
 - Debug 时打印 `=== DEBUG BUILD - 仅本地调试，禁止部署生产 ===`
 
 **clean** — `.\scripts\clean.ps1 [-IncludeNodeModules]`
-- 删 `build/` + `apps/webui/frontend/dist/` + `.dztrader_dev/` + `compile_commands.json`
+- 删 `build/` + `install/` + `apps/webui/frontend/dist/` + `.dztrader_dev/` + `compile_commands.json`
 - 保留 `~/.conan2/`（conan cache，下次 setup 不重编依赖，省 20 分钟）
 - `-IncludeNodeModules`：连 `frontend/node_modules/` 一起删
 
 ### 调试 Debug 流程
 
 ```bash
-.\scripts\setup.ps1 -Config Debug      # 切到 Debug（一次性）
-.\scripts\run-dev.ps1                  # build Debug + 启动（后续都自动 Debug）
+.\scripts\setup.ps1 -Config Debug      # 配置 Debug（会触发 14 个依赖源码编译）
+.\scripts\run-dev.ps1 -Config Debug    # build + install + 启动 Debug
 # 改代码...
-.\scripts\run-dev.ps1                  # 再跑一次，自动 build + 启动
-.\scripts\run-dev.ps1 -Stop            # 停止
+.\scripts\run-dev.ps1 -Config Debug    # 再跑一次
+.\scripts\run-dev.ps1 -Stop -Config Debug   # 停止
 
-# 切回 Release
-.\scripts\setup.ps1                    # 切到 Release
-.\scripts\run-dev.ps1                  # 后续都自动 Release
+# 切回 Release（无参数即 Release）
+.\scripts\setup.ps1
+.\scripts\run-dev.ps1
 ```
+
+Debug 的定位是「仅本地、按需」：不进门禁、不进 CI、可能随时间腐烂
+（7 处 `#ifndef NDEBUG` 分支在 Release-only 下不参与编译）。
+需要运行时检查时优先用 `linux-asan` / `win-asan` preset。
 
 ### 防止 Debug 部署到生产
 
-三层防护：
-1. **路径分离**（结构性）：Debug 产物在 `build/.../Debug/`，Release 在 `build/.../Release/`，部署脚本从 Release 路径取
-2. **Debug 警告**（视觉）：`run-dev` 启动 Debug 时打印黄色 `=== DEBUG BUILD - 仅本地调试，禁止部署生产 ===`
-3. **install 只从 Release 安装**（流程约定）：`cmake --install build/.../Release`；不从 Debug 目录安装
+结构上已经很难发生：
 
-**部署到生产**：永远从 `build/<plat>/<arch>/Release/` 复制，**绝不**从 Debug 复制。
+1. **只有一个日常档**：无参数即 Release，不存在「忘了切回来」的状态
+2. **路径分离**：Debug 产物在 `install/.../Debug/`，Release 在 `install/.../Release/`
+3. **Debug 警告**：`run-dev` 启动 Debug 时打印黄色 `=== DEBUG BUILD ===`
+
+**部署到生产**：永远从 `install/<plat>/<arch>/Release/` 取（该目录是唯一产物源）。
 
 ## 策略示例（stg_demo）
 
@@ -149,15 +186,17 @@
 # Windows
 cmake --install build/windows/x86_64/Release
 
-# Linux
-cmake --install build/linux/x86_64/Release
+# Linux（推荐：自动分离调试符号，部署包 ~66MB 而非 ~400MB）
+./scripts/install-artifacts.sh
 ```
 
-安装到 `install/<plat>/<arch>/<config>/`，与 build 同结构但无中间产物。
+安装到 `install/<plat>/<arch>/Release/`，与 build 同结构但无中间产物、不含测试。
+Linux 下 `install-artifacts.sh` 额外把调试符号抽到
+`install/<plat>/<arch>/Release-debug-symbols/`（不进部署包）。
 
 ### 部署到其他电脑（Windows）
 
-复制 `build/windows/x86_64/Release/` 整个目录到目标 Windows x64 机即可运行。
+复制 `install/windows/x86_64/Release/` 整个目录到目标 Windows x64 机即可运行。
 **不需要 npm/Node.js**，不需要 vcredist，不需要 nginx/apache：
 - 静态 CRT（MT）→ 无运行时依赖
 - boost/drogon/spdlog/sqlite 等静态链接进 exe
@@ -169,8 +208,11 @@ cmake --install build/linux/x86_64/Release
 
 ### 部署到其他电脑（Linux）
 
-复制 `build/linux/x86_64/Release/` 整个目录到目标 Linux x64 机。
+复制 `install/linux/x86_64/Release/` 整个目录到目标 Linux x64 机。
 glibc 版本需 ≥ 构建机（或同等）。
+
+**符号文件不进部署包**：崩溃时用 `Release-debug-symbols/` 里的同名 `.debug`
+解析（`addr2line -e <symbols>/dztraderd.debug -f -C 0x<addr>`）。
 
 **注意**：td 网关（dztd_ctp 等）与策略 SDK 必须同版本**整包**升级并重启 master——混布旧/新版本时 `payload_size_matches` 防御会静默丢弃 TD 数据帧（见 `docs/frame_contracts/td-data-sync.md`）。
 
@@ -198,20 +240,22 @@ glibc 版本需 ≥ 构建机（或同等）。
 ### 改了前端但浏览器看不到变化
 
 确认用的是 `build.ps1`（或 `build.sh`），**不是** `npm run build`。
-直接 `npm run build` 的产物只在 `frontend/dist/`，dzweb 加载的是 `build/.../web/`。
+直接 `npm run build` 的产物只在 `frontend/dist/`，dzweb 加载的是 `build/.../web/`
+（再经 `install` 到 `install/.../web/`）。
 
-### build/run-dev 跑了错的 config
+### 构建时报 "waiting for build lock"
 
-检查 `.dztrader_dev/.config` 文件内容（`cat .dztrader_dev/.config`）。
-- 想永久切：`.\scripts\setup.ps1 -Config Debug`（重写粘性文件）
-- 想临时切：`.\scripts\build.ps1 -Config Debug`（不修改粘性文件，仅本次）
-- 想重置：`.\scripts\clean.ps1` 删掉 `.dztrader_dev/`，下次 setup 重新建立
+同一 worktree 里已有 build/test 在跑（可能是 AI 的会话）。等它结束即可 ——
+这是特性不是故障：两个 ninja 写同一棵构建树会产出不可信的结果。
+不同 worktree 各有各的锁，互不影响。
 
 ### DZTRADER_HOME 是什么
 
 数据目录（配置、共享内存、日志）。
-- `run-dev` 脚本自动指向项目内 `.dztrader_dev`（调试用，避免污染生产）
-- 未设置时默认 `~/.dztrader/`
+- `run-dev` 脚本默认指向项目内 `.dztrader_dev`（调试用，避免污染生产）
+- **已设置则尊重调用方**：`DZTRADER_HOME=.cache/home-b ./scripts/run-dev.sh`
+  可并行跑第二个栈
+- 未设置且不经过脚本时默认 `~/.dztrader/`
 - 部署到其他电脑时，目标机需要设置此环境变量或用默认路径
 
 ## 贡献

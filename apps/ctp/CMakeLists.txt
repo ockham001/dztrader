@@ -193,7 +193,6 @@ foreach(testfile ${MD_CTP_TESTS})
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
     gtest_discover_tests(dzmd_ctp_${testname} PROPERTIES LABELS fast)
-    install(TARGETS dzmd_ctp_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()
 
 # td 测试 (dztd_ctp_<testname>): 编译 td 源文件, 不依赖 CTP 库
@@ -289,5 +288,4 @@ foreach(testfile ${TD_CTP_TESTS})
         target_link_libraries(dztd_ctp_${testname} PRIVATE dztdstore dztrading)
     endif()
     gtest_discover_tests(dztd_ctp_${testname} PROPERTIES LABELS fast)
-    install(TARGETS dztd_ctp_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()

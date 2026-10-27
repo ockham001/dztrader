@@ -133,22 +133,18 @@ if (-not $SkipConfigure) {
 Write-Host ""
 Write-Host "=== Setup done ===" -ForegroundColor Green
 
-# 写粘性 config 文件（build/run-dev/clean 读这个决定默认 config）
-$stickyDir = "$repoRoot\.dztrader_dev"
-if (-not (Test-Path $stickyDir)) { New-Item -ItemType Directory -Path $stickyDir -Force | Out-Null }
-$stickyFile = "$stickyDir\.config"
-$Config | Out-File -FilePath $stickyFile -Encoding ascii -NoNewline
-Write-Host "已写入粘性 config: $stickyFile = $Config" -ForegroundColor DarkGray
-
 if ($Config -eq 'Debug') {
     Write-Host ""
-    Write-Host "=== 已切到 Debug，后续 build/run-dev 默认 Debug ===" -ForegroundColor Yellow
-    Write-Host "=== DEBUG 仅用于本地调试，禁止部署生产 ===" -ForegroundColor Yellow
+    Write-Host "已配置 Debug（仅本地用途，不进门禁、禁止部署）" -ForegroundColor Yellow
+    Write-Host "注意: 切到 Debug 会触发 14 个依赖源码编译（ConanCenter 只有 Release 二进制）" -ForegroundColor Yellow
 }
 
 Write-Host ""
 Write-Host "Next steps:"
-Write-Host "  Build:  .\scripts\build.ps1                    # 自动跟随 config"
-Write-Host "  Run:    .\scripts\run-dev.ps1                  # build + 启动"
+Write-Host "  Build:  .\scripts\build.ps1                    # 默认 Release"
+Write-Host "  Run:    .\scripts\run-dev.ps1                  # build + install + 启动"
 Write-Host "  Stop:   .\scripts\run-dev.ps1 -Stop"
 Write-Host "  Clean:  .\scripts\clean.ps1"
+Write-Host ""
+Write-Host "Config 选择: 无参数即 Release。其他档显式指定:"
+Write-Host "  .\scripts\setup.ps1 -Config Debug              # Debug（仅本地）"

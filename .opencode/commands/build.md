@@ -5,20 +5,20 @@ agent: build
 
 构建 dztrader 项目。**改任何代码（前端或后端）后都必须走这个命令。**
 
-config 优先级：`--config` 参数 > `.dztrader_dev/.config` 粘性文件 > `release`。
+config 默认 `release`；其他档显式传 `--config`。**不存在粘性 config 文件**。
 
 **Windows（PowerShell）**
 
 ```powershell
-.\scripts\build.ps1                    # 跟随粘性 config
-.\scripts\build.ps1 -Config Debug      # 临时切 Debug（不改粘性文件）
+.\scripts\build.ps1                    # Release
+.\scripts\build.ps1 -Config Debug      # Debug（仅本地）
 .\scripts\build.ps1 -Target dzmd_ctp   # 只构建单个 target
 ```
 
 **Linux（Bash）**
 
 ```bash
-./scripts/build.sh                     # 跟随粘性 config
+./scripts/build.sh                     # Release
 ./scripts/build.sh --config debug      # 临时切 Debug
 ./scripts/build.sh --config release --target dzcore   # 单 target
 ```

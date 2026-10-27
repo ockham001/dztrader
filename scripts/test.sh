@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # dztrader 测试脚本（Linux）
 #
-# config 来源优先级: --config 参数 > .dztrader_dev/.config 粘性文件 > release
+# config: 无参数即 Release（preset 名本身已编码 config，无需粘性文件）
 # 分层档: 默认 fast（秒级单测）；slow = 穷举/慢速；perf = 无阈值基准
 #
 # 用法:
-#   ./scripts/test.sh                           # 跟随粘性 config；默认 fast 档
-#   ./scripts/test.sh --config debug            # 临时测试 Debug
+#   ./scripts/test.sh                           # Release，fast 档
+#   ./scripts/test.sh --config debug            # Debug（仅本地）
 #   ./scripts/test.sh --label slow              # 只跑 slow 穷举档
 #   ./scripts/test.sh --label perf              # 只跑性能基准（PerfBench + BarPerfBench）
 #   ./scripts/test.sh --test-name TimeTest      # 只跑匹配 TimeTest 的测试
@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
         -t|--test-name) TEST_NAME="${2:?--test-name 需要参数}"; shift 2 ;;
         -h|--help)
             echo "Usage: $0 [--config release|debug] [--label fast|slow|perf] [--test-name <regex>]"
-            echo "  无 --config 时读 .dztrader_dev/.config，无则 release"
+            echo "  无 --config 时默认 release"
             echo "  无 --label 时跑 fast 档；slow/perf 为显式可选档"
             exit 0
             ;;
@@ -32,13 +32,8 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# 读粘性 config，--config 优先覆盖
 if [ -z "$CONFIG" ]; then
-    STICKY_FILE="$(cd "$(dirname "$0")/.." && pwd)/.dztrader_dev/.config"
-    if [ -f "$STICKY_FILE" ]; then
-        CONFIG=$(cat "$STICKY_FILE" | tr '[:upper:]' '[:lower:]')
-    fi
-    [ -z "$CONFIG" ] && CONFIG="release"
+    CONFIG="release"
 fi
 
 CONFIG=$(echo "$CONFIG" | tr '[:upper:]' '[:lower:]')
@@ -58,6 +53,12 @@ CTEST_ARGS=(--preset "$PRESET")
 if [ -n "$TEST_NAME" ]; then
     CTEST_ARGS+=(-R "$TEST_NAME")
 fi
+
+# 测试锁：与 build 共用同一把锁（.cache/build.lock），避免「测试跑到一半被并发构建
+# 换掉二进制」，也避免两个 test 同时 rm -rf 同一个 test_home 而互相踩。
+# shellcheck source=scripts/build-lock.sh
+. "$(cd "$(dirname "$0")/.." && pwd)/scripts/build-lock.sh"
+dz_acquire_build_lock "$(cd "$(dirname "$0")/.." && pwd)" "test" || exit 2
 
 # 测试 DZTRADER_HOME（.cache/test_home，由 CMakePresets.json 的 test-base 注入）
 # 每次运行前清空重建：上一轮残留的 shm meta 会让无关测试一起失败（#134）；

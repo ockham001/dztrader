@@ -131,7 +131,6 @@ foreach(testfile ${SDK_TESTS})
     else()
         gtest_discover_tests(dzstrategy_sdk_${testname} PROPERTIES LABELS fast)
     endif()
-    install(TARGETS dzstrategy_sdk_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()
 
 # ============================================================
@@ -148,7 +147,6 @@ set_target_properties(dzstrategy_sdk_bar_perf_bench PROPERTIES
 add_test(NAME BarPerfBench COMMAND dzstrategy_sdk_bar_perf_bench)
 # perf = 无阈值基准项, 不进默认 fast 门禁; ctest --preset <plat>-<config>-perf
 set_tests_properties(BarPerfBench PROPERTIES LABELS perf)
-install(TARGETS dzstrategy_sdk_bar_perf_bench RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 
 # ============================================================
 # 「仅凭 SDK include 路径可编译」双模检查 (#154, ADR 0026 决策 6)
@@ -185,5 +183,3 @@ foreach(probe
     add_test(NAME ${probe} COMMAND ${probe})
     set_tests_properties(${probe} PROPERTIES LABELS fast)
 endforeach()
-install(TARGETS dzstrategy_sdk_json_probe_builtin dzstrategy_sdk_json_probe_external
-    dzstrategy_sdk_aggregate_header_probe RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)

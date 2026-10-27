@@ -4,9 +4,12 @@
 # 为什么需要它（本仓复盘实测）：
 # 1) `./scripts/build.sh ... 2>&1 | tail -20` 的退出码取自 tail：构建/测试失败被记成 0
 #    （#75 的 wait-ci 超时、#81 的 ninja 失败都出现过这种假绿）；
-# 2) 同一 build tree 并发 ninja 会互相破坏，此前只有 gitignored 的 .cache/build-lock.sh 可用
-#    （#77 现造、#78 重新发现、#81 复制进 worktree）；
+# 2) 输出落盘 + 失败打关键行：agent 不需要读几 MB 日志；
 # 3) ccache 需要 CCACHE_DIR（见 scripts/ccache-env.sh），否则新 worktree 构建直接失败。
+#
+# 并发串行**不在这里**：build.sh / test.sh 自己取 `.cache/build.lock`（见 scripts/build-lock.sh）。
+# 早期版本 gate.sh 持锁后再调叶子脚本，父子进程各持一个 open file description 会互相等待
+# —— 死锁（#168 审查发现）。所以「谁真正操作构建树，谁加锁」，gate.sh 只做日志与退出码。
 #
 # 用法:
 #   ./scripts/gate.sh build [--tail N] [build.sh 参数...]
@@ -15,13 +18,13 @@
 #   ./scripts/gate.sh wait-ci [wait-ci.sh 参数...]   # 透传，前台阻塞，退出码真实
 #
 # 行为:
-#   - build/test/preflight：flock 串行（`.cache/gate-build.lock`），避免并发 ninja；
-#     preflight 也共用该锁，避免其前端 type-check 撞上构建里的 npm 安装窗口（#134）；
 #   - 输出落 `.cache/gate/<cmd>-<时间戳>.log`（gitignored）；
 #   - 成功打末尾 8 行（`--tail N` 改为 N 行）；失败打错误行 + 末尾 max(N,30) 行，
 #     并**原样返回被包装命令的退出码**；
 #   - `--tail N` 由 gate.sh 自己解析，不传给被包装命令；要短输出就用它，
 #     不要给门禁命令接 `| tail` / `| head`（管道会吞掉退出码，见 #75/#81 假绿）。
+#   - preflight 不取构建锁（只读检查 + 前端 lint），其前端阶段与构建里的 npm 安装
+#     可能重叠 —— 由 preflight.sh 自身的 npm 门控脚本处理。
 #
 # 退出码: 0=通过；非 0=被包装命令的真实退出码（wait-ci 额外有 1=失败/取消、2=超时）。
 
@@ -111,13 +114,11 @@ run_and_report() {
 
 case "$CMD" in
     build|test|preflight)
-        if ! command -v flock >/dev/null 2>&1; then
-            echo "error: flock not found (util-linux); cannot serialize build/test/preflight" >&2
-            exit 2
-        fi
+        # 不在此处持锁：build.sh / test.sh 自己会取 .cache/build.lock。
+        # 若这里先 flock 再调它们，子进程打开同一文件是另一个 open file description，
+        # flock 仍然互斥 —— 父子互等，必然死锁（#168 审查发现）。
+        # preflight.sh 不加锁：它只做只读检查 + 前端 lint，不与 ninja 争构建树。
         dz_export_ccache_env "$ROOT"
-        exec 9>"$ROOT/.cache/gate-build.lock"
-        flock 9
         run_and_report "$CMD" "$ROOT/scripts/$CMD.sh" "${ARGS[@]}"
         ;;
     *)

@@ -41,7 +41,6 @@ endif()
 set_target_properties(test_worker PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
 )
-install(TARGETS test_worker RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 
 # ============================================================
 # dztraderd: 主进程可执行文件
@@ -71,7 +70,6 @@ foreach(testfile ${MAIN_ENGINE_TESTS})
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
     gtest_discover_tests(dztraderd_${testname} PROPERTIES LABELS fast)
-    install(TARGETS dztraderd_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()
 
 # ============================================================
@@ -85,4 +83,3 @@ set_target_properties(dz_smoke_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
 )
 gtest_discover_tests(dz_smoke_test PROPERTIES LABELS fast RUN_SERIAL TRUE)
-install(TARGETS dz_smoke_test RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)

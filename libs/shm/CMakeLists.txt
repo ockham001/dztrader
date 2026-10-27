@@ -43,7 +43,6 @@ foreach(testfile ${SHM_TESTS})
     )
     # 锁序/跨进程用例挂死时由 ctest 兜底；正常单例为秒级
     gtest_discover_tests(dzshm_${testname} PROPERTIES LABELS fast TIMEOUT 120)
-    install(TARGETS dzshm_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()
 
 # ============================================================
@@ -58,4 +57,3 @@ set_target_properties(dz_shm_perf_bench PROPERTIES
 add_test(NAME PerfBench COMMAND dz_shm_perf_bench)
 # perf = 无阈值基准项, 不进默认 fast 门禁; ctest --preset <plat>-<config>-perf
 set_tests_properties(PerfBench PROPERTIES LABELS perf)
-install(TARGETS dz_shm_perf_bench RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)

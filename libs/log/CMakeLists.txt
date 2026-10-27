@@ -27,7 +27,6 @@ target_link_libraries(dzlog_terminate_helper PRIVATE dzlog)
 set_target_properties(dzlog_terminate_helper PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
 )
-install(TARGETS dzlog_terminate_helper RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 
 # ============================================================
 # 单元测试：每个 *_test.cpp 独立编译
@@ -42,5 +41,4 @@ foreach(testfile ${LOG_TESTS})
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
     gtest_discover_tests(dzlog_${testname} PROPERTIES LABELS fast)
-    install(TARGETS dzlog_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()

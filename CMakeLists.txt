@@ -74,6 +74,10 @@ else()
     # 已知噪音面: std::chrono duration -> int32_t/int64_t, 已按各文件既有惯例显式收窄。
     add_compile_options(-Wall -Wextra -Wpedantic -Wconversion)
     add_compile_options($<$<CONFIG:Release>:-Werror>)
+    # Release 带调试信息：CMake 默认的 CMAKE_CXX_FLAGS_RELEASE 只有 -O3 -DNDEBUG（无 -g），
+    # 而 MSVC 侧已经 /Zi + /DEBUG 有 PDB。7x24 系统崩溃时 boost::stacktrace 需要行号，
+    # 否则只能给出函数名。-g 不改变代码生成、不影响性能基线（历史基线本就是 Release 测得）。
+    add_compile_options($<$<CONFIG:Release>:-g>)
 endif()
 
 # compile_commands.json（clangd 用）
@@ -123,7 +127,11 @@ else()
     set(DZ_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 # 相对于 CMAKE_INSTALL_PREFIX 的路径（install 命令 DESTINATION 用相对路径）
-set(DZ_INSTALL_DIR ${DZ_PLATFORM}/${DZ_ARCH}/$<CONFIG>)
+# 用构建目录的叶子名而不是 $<CONFIG>：asan 档的 CMAKE_BUILD_TYPE 也是 Release，
+# 若用 $<CONFIG> 它会和真正的 Release 目录撞车、覆盖部署产物。目录名天然区分
+# （build/linux/x86_64/Release vs .../Asan）。
+get_filename_component(DZ_BUILD_CONFIG_DIR "${CMAKE_BINARY_DIR}" NAME)
+set(DZ_INSTALL_DIR ${DZ_PLATFORM}/${DZ_ARCH}/${DZ_BUILD_CONFIG_DIR})
 # 默认安装前缀：项目根/install（用户未显式指定时）
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
     set(CMAKE_INSTALL_PREFIX "${CMAKE_SOURCE_DIR}/install" CACHE PATH "Install prefix" FORCE)

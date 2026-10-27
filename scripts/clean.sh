@@ -3,9 +3,10 @@
 #
 # 清理范围:
 #   - build/                            # 所有 build 产物（含 dist 复制的 web/）
+#   - install/                          # 运行/部署产物（唯一产物源，必须一并清）
 #   - apps/webui/frontend/dist/         # 前端 build 产物
 #   - apps/webui/frontend/node_modules/ # 前端依赖（--include-node-modules 时）
-#   - .dztrader_dev/                    # 调试 home（含 .config 粘性文件）
+#   - .dztrader_dev/                    # 调试 home
 #   - compile_commands.json             # 项目根 clangd 索引
 #
 # 保留:
@@ -40,6 +41,7 @@ echo "=== dztrader clean ==="
 
 TARGETS=(
     "build"
+    "install"
     "apps/webui/frontend/dist"
     ".dztrader_dev"
     "compile_commands.json"

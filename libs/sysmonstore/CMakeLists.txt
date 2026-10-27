@@ -49,5 +49,4 @@ foreach(testfile ${SYSMONSTORE_TESTS})
         RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
     )
     gtest_discover_tests(dzsysmonstore_${testname} PROPERTIES LABELS fast)
-    install(TARGETS dzsysmonstore_${testname} RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endforeach()

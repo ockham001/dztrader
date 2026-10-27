@@ -62,19 +62,23 @@ Linux 的 GCC/clang 门禁（含 Release `-Werror`）**复现不了**下列 MSVC
 - `CMAKE_EXPORT_COMPILE_COMMANDS=ON`，Ninja 在 binaryDir 生成
 - `setup` 脚本把它拷到**项目根**
 - `.clangd` 显式 `CompilationDatabase: .`，避免误命中 `build/<plat>/x86_64/<config>/` 下的原始文件
-- **根目录的 `compile_commands.json` 属于"最后跑 setup 的那个 config"** —— 切 Release/Debug 都会覆盖它。建议最后 configure Debug（调试信息全）
+- **根目录的 `compile_commands.json` 属于"最后跑 configure 的那个 config"** —— 切档都会覆盖它。日常只有 Release 一个档
 - `.vscode/settings.json` 设 `clangd.arguments: []`，覆盖全局可能存在的过时 `--compile-commands-dir`
 
 ---
 
 ## 预设（CMakePresets.json）
 
-Ninja 单配置，每个 config 独立 binaryDir：`build/<plat>/x86_64/<Release|Debug>/`。
+Ninja 单配置，每个 config 独立 binaryDir：`build/<plat>/x86_64/<Release|Debug|Asan>/`。
 
 - conan install 只装单个 config，toolchain 锁定 `build_type`。**一次 setup 装一个 config**，需要另一个就再跑一次
 - conan profile 禁用 `CMakeUserPresets.json` 生成（`tools.cmake.cmaketoolchain:user_presets=`），conan 只生成 toolchain
 
-预设名：`win-release` / `win-debug` / `linux-release` / `linux-debug`（build 与 test 共用）。
+预设名：`win-release` / `win-debug` / `win-asan` / `linux-release` / `linux-debug` / `linux-asan`（build 与 test 共用）。
+
+**只有 `release` 是日常档**（#168 / [ADR 0037](../adr/0037-release-only-build-and-install-as-sole-artifact.md)）。`debug` 与 `asan` 是显式指定的本地档：不进门禁、不进 CI、禁止部署。
+
+**`debug` preset 可能随时间腐烂**：仓内有 7 处 `#ifndef NDEBUG` / `#if !defined(NDEBUG)` 分支（`log.h` 的调试日志默认值、`string_util.h` 的 0xFE 毒化填充），Release-only 下永不参与编译，改坏了没人发现。需要运行时检查时优先用 `asan` 档，而不是 `debug`。其中 `asan` 的 `CMAKE_BUILD_TYPE` 也是 Release（ASan 文档要求 `-O1` 以上可用速度），只从 build 树运行、永不 install。
 
 test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈值基准），例如 `linux-release-slow`。默认预设在测试侧只跑 `fast` 标签，见下方「单元测试约定」。
 
@@ -267,13 +271,19 @@ Linux 默认 `DZ_WITH_MYSQL=ON`（根 `CMakeLists.txt`）；关掉它时 mysql �
 
 `.vscode/tasks.json` 提供 **8** 个任务：`setup`、`setup (Debug)`、`build`、`run-dev`、`run-dev (no build)`、`stop`、`clean`、`test`。
 
-它们是 **config 粘性模型**（不是 Release/Debug 配对）：切 config 用 `setup` / `setup (Debug)`，后续任务自动跟随。任务逻辑全部复用 `scripts/` 下的现有脚本，命令行行为不受影响。
+**无 config 粘性模型**（该机制已在 #168 删除，见 [ADR 0037](../adr/0037-release-only-build-and-install-as-sole-artifact.md)）：任务默认 Release，Debug / asan 需显式指定。任务逻辑全部复用 `scripts/` 下的现有脚本，命令行行为不受影响。
 
 ---
 
 ## install
 
-`cmake --install` 拷到 `install/<plat>/<arch>/<config>/`，与 build 同结构但无中间产物。Ninja 单配置，**不需要 `--config`**。`CMAKE_INSTALL_PREFIX` 在 preset 中设为 `${sourceDir}/install`。
+`cmake --install` 拷到 `install/<plat>/<arch>/<构建目录名>/`，与 build 同结构但无中间产物、**不含测试**（#168 起测试不再 install）。Ninja 单配置，**不需要 `--config`**。`CMAKE_INSTALL_PREFIX` 在 preset 中设为 `${sourceDir}/install`。
+
+路径用**构建目录的叶子名**而非 `$<CONFIG>`：`asan` preset 的 `CMAKE_BUILD_TYPE` 也是 Release，用 `$<CONFIG>` 会与真正的 Release 目录撞车。
+
+**`install/` 是唯一产物源**（#168）：运行、部署、打包都从这里取，`build/` 降为中间产物目录、禁止直接运行。
+
+**调试符号分离**：Release 带 `-g`，`scripts/install-artifacts.sh` 用 `objcopy --only-keep-debug` + `--strip-debug` + `--add-gnu-debuglink` 把符号抽到 `install/<plat>/<arch>/<cfg>-debug-symbols/`（约 345MB，不进部署包）。部署包因此从 401MB 降到约 66MB。崩溃分析用 `addr2line -e <symbols>/<name>.debug`。Windows 的 `.pdb` 同样不进包，由 tag 流水线单独归档。
 
 ---
 
@@ -281,13 +291,17 @@ Linux 默认 `DZ_WITH_MYSQL=ON`（根 `CMakeLists.txt`）；关掉它时 mysql �
 
 `conanfile.py` 的选项变更（如增删 spdlog）需要 `--build=<pkg>` 重新编译对应依赖，否则会复用旧包。
 
+**ConanCenter 上本项目依赖只有 Release 二进制**（zlib / openssl / boost / spdlog / drogon / gtest / sqlitecpp / trantor / jsoncpp / c-ares 逐个核实）。切到 Debug 或 RelWithDebInfo 会让 14 个依赖从头源码编译（Release 基线只要 5 个）。这是「只保留一个日常档」的关键原因。
+
 ---
 
 ## 项目特有约定（非主流）
 
-### 构建输出 = 最终布局
+### 输出布局直接对齐运行布局
 
-一般项目的 build 与 install 布局不同（GNU FHS 风格的 bin/lib/share 分离）。本项目要求**"调试布局 = 生产布局"**（子进程、第三方 DLL 相对主进程的位置是固定的），因此用 `RUNTIME_OUTPUT_DIRECTORY` 直接输出到最终位置，省掉每次构建后的 install 步骤。
+一般项目的 build 与 install 布局不同（GNU FHS 风格的 bin/lib/share 分离）。本项目要求**"运行布局 = 生产布局"**（子进程、第三方 DLL 相对主进程的位置是固定的），因此用 `RUNTIME_OUTPUT_DIRECTORY` 让 build 树内已是最终相对布局。
+
+**但 build 树不是运行来源**（#168）：运行/部署一律从 `install/` 取。`build/` 只负责编译，`install/` 由 `cmake --install`（+ `install-artifacts.sh` 分离符号）产出。
 
 ### CTP DLL 有两份
 
@@ -316,7 +330,7 @@ CTP 是闭源库，无法用 conan 统一管理：
 
 ## 部署产物分析
 
-`build/<plat>/<arch>/<config>/` 目录**自包含**，可直接复制到目标机运行：
+`install/<plat>/<arch>/Release/` 目录**自包含**，可直接复制到目标机运行：
 
 | 条件 | 结论 |
 |---|---|
@@ -327,7 +341,9 @@ CTP 是闭源库，无法用 conan 统一管理：
 
 **唯一例外**：开发时修改 `.vue` 文件需要 npm / Node.js，且仅在构建期。
 
-**部署永远从 `build/<plat>/<arch>/Release/` 取，绝不从 Debug 取。** 三层防护见 README 的"防止 Debug 部署到生产"。
+**部署永远从 `install/<plat>/<arch>/Release/` 取**（唯一产物源，见 [ADR 0037](../adr/0037-release-only-build-and-install-as-sole-artifact.md)）。`build/` 是中间产物目录，禁止直接运行。Debug 产物永不部署。
+
+Linux 部署包约 66MB（已 strip，符号在 `Release-debug-symbols/`）；Windows 的 `.pdb` 不进包，由 tag 流水线单独归档。
 
 ---
 

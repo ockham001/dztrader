@@ -71,9 +71,7 @@ endif()
 gtest_discover_tests(stg_demo_test PROPERTIES LABELS fast RUN_SERIAL TRUE TIMEOUT 120)
 
 install(TARGETS stg_demo RUNTIME DESTINATION ${DZ_INSTALL_DIR})
-install(TARGETS stg_demo_test RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 # Windows 安装树与构建树同布局: 加载器只搜索 exe 所在目录, 测试可执行同目录
 # 需再装一份 DLL (Linux 由测试 exe 的 $ORIGIN/.. rpath 覆盖, 无需重复安装)
 if(WIN32)
-    install(TARGETS dzstrategy_sdk RUNTIME DESTINATION ${DZ_INSTALL_DIR}/tests)
 endif()
