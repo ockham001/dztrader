@@ -43,17 +43,19 @@ function Get-DzBuildLock {
     # Global\ 前缀：跨会话可见（同一用户的多个终端 / agent 会话）
     $mutex = [System.Threading.Mutex]::new($false, "Global\dztrader-build-$key")
 
-    if (-not $mutex.WaitOne(0)) {
-        Write-Host "waiting for build lock | label=$Label holder=`"another build/test in this worktree`"" -ForegroundColor Yellow
-        try {
+    # 注意：WaitOne 在发现「上一个持有者异常退出、互斥体被放弃」时会抛
+    # AbandonedMutexException —— 而**锁此时已归本进程所有**。快速路径
+    # （WaitOne(0)）同样可能抛，所以两处都要 catch，否则崩溃恢复后每次构建都失败。
+    try {
+        if (-not $mutex.WaitOne(0)) {
+            Write-Host "waiting for build lock | label=$Label holder=`"another build/test in this worktree`"" -ForegroundColor Yellow
             $mutex.WaitOne() | Out-Null
+            Write-Host "build lock acquired | label=$Label" -ForegroundColor Green
         }
-        catch [System.Threading.AbandonedMutexException] {
-            # 上一个持有者异常退出（崩溃/强杀），互斥体被内核标记为放弃。
-            # 此时锁已归本进程所有，继续即可。
-            Write-Host "build lock was abandoned by a previous holder; continuing | label=$Label" -ForegroundColor Yellow
-        }
-        Write-Host "build lock acquired | label=$Label" -ForegroundColor Green
+    }
+    catch [System.Threading.AbandonedMutexException] {
+        # 锁已归本进程，继续即可（不需要再 WaitOne）
+        Write-Host "build lock was abandoned by a previous holder; continuing | label=$Label" -ForegroundColor Yellow
     }
 
     return $mutex
