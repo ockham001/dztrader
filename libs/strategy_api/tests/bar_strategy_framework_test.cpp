@@ -18,11 +18,14 @@
 #include <dztrader/api.h>
 #include <dztrader/bar_strategy.h>
 #include <dztrader/core/core_data_type.h>
+#include <dztrader/core/core_struct.h>
 #include <dztrader/core/env.h>
 #include <dztrader/core/path.h>
 #include <dztrader/core/this_process.h>
 #include <dztrader/shm/channel_meta.h>
+#include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/named_semaphore.h>
+#include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
 
 #include <chrono>
@@ -518,6 +521,9 @@ struct FakeStrategy {
         recorder().save_user_series(ctx.instrument_id(), ctx.make_series<double>(kUserSeriesInitD),
                                     ctx.make_series<std::int64_t>(kUserSeriesInitI));
         record(EventKind::Init, ctx);
+        // #160：`on_init` 期的意图是合法用法（先建立初始逻辑持仓），但此时实例还没进入 live，
+        // 因此只做虚拟成交、不发单不上报。脚本在 record 之后执行，与其它回调同序。
+        run_scripts(ctx, EventKind::Init);
         if (recorder().should_throw(ctx.instrument_id(), "init")) {
             throw std::runtime_error("injected on_init failure");
         }
@@ -722,14 +728,18 @@ protected:
 
     // ---- 配置 ----
 
-    /// @brief 写一份合法配置（给定品种、0 个挂靠账户）
+    /// @brief 写一份合法配置（默认 0 个挂靠账户）
     /// @param max_lookback 可选显式可读深度（门禁用例用它把静默填窗压到几秒内完成）
     /// @param reserve_bars 可选显式回卷余量（兜底路径用例用它把两次回卷压得很近）
     /// @param period_sec   bar 周期秒数（默认 60；回卷等价性用例用 900 换取更小的 buffer_bars）
+    /// @param accounts_json `accounts` 数组字面量（#160 的挂靠用例传 1–2 个账户）
+    /// @param scaling_json  缩放字段片段（`"scale_rounding": ...` 等，含行尾逗号）
     void write_config(const std::vector<std::string>& instruments,
                       std::optional<std::int32_t> max_lookback = std::nullopt,
                       std::optional<std::int32_t> reserve_bars = std::nullopt,
-                      std::int32_t period_sec = 60) {
+                      std::int32_t period_sec = 60,
+                      const std::string& accounts_json = "[]",
+                      const std::string& scaling_json = "") {
         std::string list;
         for (const std::string& instrument : instruments) {
             if (!list.empty()) {
@@ -739,13 +749,14 @@ protected:
         }
         std::string text =
             "{\n  \"schema_version\": 1,\n  \"period_sec\": " + std::to_string(period_sec) +
-            ",\n  \"instruments\": [" + list + "],\n  \"accounts\": [],\n";
+            ",\n  \"instruments\": [" + list + "],\n  \"accounts\": " + accounts_json + ",\n";
         if (max_lookback.has_value()) {
             text += "  \"max_lookback\": " + std::to_string(*max_lookback) + ",\n";
         }
         if (reserve_bars.has_value()) {
             text += "  \"reserve_bars\": " + std::to_string(*reserve_bars) + ",\n";
         }
+        text += scaling_json;
         text += "  \"params\": {}\n}\n";
         std::ofstream stream(config_path_);
         ASSERT_TRUE(stream.good()) << "write config failed: " << config_path_.string();
@@ -978,6 +989,73 @@ protected:
         return events;
     }
 
+    // ---- 订单帧 / 上报帧 probe（#160：SDK 写出的帧在通道里，用独立 reader 观察）----
+
+    /// @brief 本用例观测到的订单帧（`DZ_FRAME_TD_ORDER_REQ` 的 payload）
+    struct ObservedOrder {
+        std::string account_id;                             ///< 挂靠账户
+        std::string instrument_id;                          ///< 合约代码
+        DzDirection direction = DZ_DIRECTION_NET;           ///< 方向
+        DzPriceType price_type = DZ_PRICE_LIMIT;            ///< 价格类型
+        DzPositionEffect effect = DZ_POSITION_EFFECT_AUTO;  ///< 开平
+        double price = 0;                                   ///< 委托价
+        dztrader::Volume volume = 0;                        ///< 委托手数
+    };
+
+    /// @brief 本用例观测到的上报帧（`DZ_FRAME_SET_LOGICAL_POSITION` 的 payload）
+    struct ObservedPositionReport {
+        std::string account_id;                ///< 挂靠账户
+        std::string instrument_id;             ///< 合约代码
+        dztrader::LargeVolume net_volume = 0;  ///< 上报的逻辑持仓
+    };
+
+    /**
+     * @brief 排空事件通道里由策略写出的订单帧与上报帧（须在策略停止后调用）
+     *
+     * 用**独立 probe reader** 而不是 `dz_next_event`：平台内部帧（TD_ORDER_REQ /
+     * SET_LOGICAL_POSITION）在 SDK 侧被拦截，不会交给策略回调（见 `trade_api_test` 的同款
+     * 做法）。probe 从创建时刻起顺序读通道，因此必须在启动策略**之前**创建它，否则会漏掉
+     * 启动阶段的帧——本文件只在停止后读一次，创建点放在 `start_strategy()` 之前。
+     *
+     * 只保留本策略写的两类帧：同一个 shm 目录里的 md/event 通道可能也有测试自身写入的帧。
+     */
+    void collect_order_and_report_frames() {
+        orders_.clear();
+        reports_.clear();
+        if (!probe_.has_value()) {
+            return;
+        }
+        while (const std::byte* frame = probe_->next_frame()) {
+            const dztrader::shm::FrameView view(frame);
+            if (view.type() == DZ_FRAME_TD_ORDER_REQ) {
+                const auto& req = view.payload<DzOrderReq>();
+                ObservedOrder order;
+                order.account_id = req.account_id;
+                order.instrument_id = req.instrument_id;
+                order.direction = req.direction;
+                order.price_type = req.price_type;
+                order.effect = req.position_effect;
+                order.price = req.price;
+                order.volume = req.volume;
+                orders_.push_back(std::move(order));
+            } else if (view.type() == DZ_FRAME_SET_LOGICAL_POSITION) {
+                const auto& pos = view.payload<DzLogicalPosition>();
+                ObservedPositionReport report;
+                report.account_id = pos.account_id;
+                report.instrument_id = pos.instrument_id;
+                report.net_volume = pos.net_volume;
+                reports_.push_back(std::move(report));
+            }
+        }
+    }
+
+    /// @brief 打开 probe reader（须在 `start_strategy()` 之前调用，否则漏启动帧）
+    void open_probe() {
+        probe_.emplace(
+            dztrader::shm::Reader::create(dztrader::shm::channel_name(dztrader::CHANNEL_NAME_EVENT),
+                                          home_ + "/shm", "bar_framework_test_probe"));
+    }
+
     std::string home_;
     std::filesystem::path config_path_;
     std::string strategy_id_;
@@ -985,6 +1063,9 @@ protected:
     std::optional<std::string> orig_md_source_;
     std::thread strategy_thread_;
     std::int32_t exit_code_ = -1;
+    std::optional<dztrader::shm::Reader> probe_;
+    std::vector<ObservedOrder> orders_;
+    std::vector<ObservedPositionReport> reports_;
 };
 
 // ============================================================
@@ -2070,6 +2151,314 @@ TEST_F(BarStrategyFrameworkTest, FailedInstanceStopsAcceptingIntents) {
     EXPECT_EQ(events_a[4].kind, EventKind::Destroy);
     // 框架不自动平仓：失败实例的逻辑持仓保留（组件文档 §4.6）
     EXPECT_EQ(events_a[4].current_contracts, 2) << "a failed instance keeps its position";
+}
+
+// ============================================================
+// 挂靠缩放 / 差量单 / 逻辑持仓上报（#160 Seam A）
+// ============================================================
+
+/**
+ * **两个挂靠账户按比率镜像，反手只发一张差量单**（#160 的核心 AC）。
+ *
+ * 配置 scale 1.0（CTP001）与 0.5（CTP002），策略买 3 手：`L` 分别是 3 与 2（0.5 × 3 = 1.5 →
+ * nearest 2），因此两张买单 3 手 / 2 手，上报 3 / 2。
+ *
+ * 随后反手卖 3 手（`sell_short(3)`，P 从 +3 直接到 -3）：
+ *   - `qty₁ = -3 - 3 = -6`、`qty₂ = -2 - 2 = -4`——每个账户**只有一张**卖单（框架不拆平/开）；
+ *   - effect 恒 `AUTO`、价格就是策略传入的限价；
+ *   - 上报跟着变到 -3 / -2。
+ *
+ * 这也同时锁住「反手是一张差量单」与「上报只在 `L` 变化时」两条：若框架按「先平后开」拆单，
+ * 账户会看到 4 张单而不是 2 张。
+ */
+TEST_F(BarStrategyFrameworkTest, AttachedAccountsMirrorAndReverseWithSingleDeltaOrder) {
+    write_config(
+        {std::string(kInstrumentA)}, kTestMaxLookback,
+        /*reserve_bars=*/std::nullopt, /*period_sec=*/60,
+        /*accounts_json=*/
+        R"([{"account_id": "CTP001", "scale": 1.0}, {"account_id": "CTP002", "scale": 0.5}])");
+    const auto fill_bar = static_cast<std::int64_t>(kTestMaxLookback - 1);
+    const auto bar0 = static_cast<std::int64_t>(kTestMaxLookback);
+    const double fill_price = 5000.0;
+    const double reverse_price = 5010.0;
+
+    // 静默填窗最后一根的 close 里买 3 手；bar0 的 update 里反手卖 3 手。
+    // 两笔都用显式限价（不是 tick 价），这样订单帧的价格断言能区分「策略传入价」与「行情价」。
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = fill_bar,
+        .when = EventKind::BarClose,
+        .apply = [fill_price](dztrader::InstrumentContext& ctx) { ctx.buy(3, fill_price); },
+    });
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = bar0,
+        .when = EventKind::BarUpdate,
+        .apply =
+            [reverse_price](dztrader::InstrumentContext& ctx) {
+                EXPECT_EQ(ctx.market_position(), 1) << "still long before the reversal";
+                ctx.sell_short(3, reverse_price);
+                EXPECT_EQ(ctx.market_position(), -1)
+                    << "the reversal is immediate in the logical ledger";
+            },
+    });
+
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+
+    // 回调期第一根 bar：close(fill) → open(bar0) → update(bar0，反手)
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    // ── 订单帧：2 张买单 + 2 张卖单（每账户每笔意图恰好一张）──
+    ASSERT_EQ(orders_.size(), 4U) << "one delta order per account per intent; got "
+                                  << orders_.size();
+    const ObservedOrder& buy1 = orders_[0];
+    const ObservedOrder& buy2 = orders_[1];
+    const ObservedOrder& sell1 = orders_[2];
+    const ObservedOrder& sell2 = orders_[3];
+
+    // 建多：账户手数 = L_i(P=+3)，scale 1.0 → 3、scale 0.5 → 2（1.5 四舍五入）
+    EXPECT_EQ(buy1.account_id, "CTP001");
+    EXPECT_EQ(buy1.instrument_id, kInstrumentA);
+    EXPECT_EQ(buy1.direction, DZ_DIRECTION_LONG);
+    EXPECT_EQ(buy1.volume, 3);
+    EXPECT_DOUBLE_EQ(buy1.price, fill_price);
+    EXPECT_EQ(buy1.effect, DZ_POSITION_EFFECT_AUTO) << "effect is always AUTO";
+
+    EXPECT_EQ(buy2.account_id, "CTP002");
+    EXPECT_EQ(buy2.direction, DZ_DIRECTION_LONG);
+    EXPECT_EQ(buy2.volume, 2) << "L = 0.5 * 3 = 1.5 rounds to 2";
+    EXPECT_DOUBLE_EQ(buy2.price, fill_price);
+
+    // 反手：每账户**一张**卖单，手数 = L(-3) - L(+3) 的幅值（6 与 4），不是「先平 3 再开 3」
+    EXPECT_EQ(sell1.account_id, "CTP001");
+    EXPECT_EQ(sell1.direction, DZ_DIRECTION_SHORT);
+    EXPECT_EQ(sell1.volume, 6) << "a reversal is a single delta order (-3 - 3 = -6)";
+    EXPECT_DOUBLE_EQ(sell1.price, reverse_price);
+    EXPECT_EQ(sell1.effect, DZ_POSITION_EFFECT_AUTO);
+
+    EXPECT_EQ(sell2.account_id, "CTP002");
+    EXPECT_EQ(sell2.direction, DZ_DIRECTION_SHORT);
+    EXPECT_EQ(sell2.volume, 4) << "L(-3) - L(+3) = -2 - 2 = -4";
+    EXPECT_DOUBLE_EQ(sell2.price, reverse_price);
+
+    // ── 上报帧：4 条，账户与净手数按 L 一一对应 ──
+    ASSERT_EQ(reports_.size(), 4U) << "one report per changed L_i per intent";
+    EXPECT_EQ(reports_[0].account_id, "CTP001");
+    EXPECT_EQ(reports_[0].instrument_id, kInstrumentA);
+    EXPECT_EQ(reports_[0].net_volume, 3);
+    EXPECT_EQ(reports_[1].account_id, "CTP002");
+    EXPECT_EQ(reports_[1].net_volume, 2);
+    EXPECT_EQ(reports_[2].account_id, "CTP001");
+    EXPECT_EQ(reports_[2].net_volume, -3);
+    EXPECT_EQ(reports_[3].account_id, "CTP002");
+    EXPECT_EQ(reports_[3].net_volume, -2);
+}
+
+/**
+ * **`qty_i == 0` 的账户既不収单也不上报**（AC「`qty_i == 0` 时跳过发单与上报」）。
+ *
+ * scale 0.1 + nearest：策略 3 手 → `L = 0.3 → 0`；4 手 → `0.4 → 0`；5 手 → `0.5 → 1`。
+ * 因此前两笔意图对该账户的 `L` 都是 0（差量 0）→ 零帧；第三笔才出现一张 1 手单。
+ *
+ * 这条正是「取整落在目标持仓上」的可观测后果：若框架按单量取整，每笔 3/4/5 手都会算出 0
+ * 手单（最终持仓 0，与 `L(5) = 1` 不符）。
+ */
+TEST_F(BarStrategyFrameworkTest, AccountsWithUnchangedLogicalPositionAreSkipped) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback,
+                 /*reserve_bars=*/std::nullopt, /*period_sec=*/60,
+                 /*accounts_json=*/R"([{"account_id": "TINY", "scale": 0.1}])");
+    const auto fill_bar = static_cast<std::int64_t>(kTestMaxLookback - 1);
+    const auto bar0 = static_cast<std::int64_t>(kTestMaxLookback);
+    const auto bar1 = bar0 + 1;
+
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = fill_bar,
+        .when = EventKind::BarClose,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(3, 4000.0); },  // L = 0
+    });
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = bar0,
+        .when = EventKind::BarUpdate,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(1, 4001.0); },  // +1 → 4 手, L = 0
+    });
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = bar1,
+        .when = EventKind::BarUpdate,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(1, 4002.0); },  // 5 手, L = 1
+    });
+
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    for (std::int32_t i = 0; i <= 1; ++i) {
+        ASSERT_TRUE(
+            write_tick(make_tick(kInstrumentA, warmed_up_clock(i), warmed_up_price(i),
+                                 warmed_up_volume(i), warmed_up_price(i) * warmed_up_volume(i))));
+    }
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 2));
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    // 只有第三笔（P 到 5，L 到 1）产生帧
+    ASSERT_EQ(orders_.size(), 1U) << "unchanged L_i must not produce an order";
+    EXPECT_EQ(orders_[0].account_id, "TINY");
+    EXPECT_EQ(orders_[0].volume, 1) << "L(5) = 1 while L(4) = L(3) = 0, so the delta is 1 lot";
+    ASSERT_EQ(reports_.size(), 1U) << "unchanged L_i must not produce a report";
+    EXPECT_EQ(reports_[0].net_volume, 1);
+}
+
+/**
+ * **0 个挂靠账户：只记账、不发单、不上报**（AC「0 个挂靠账户路径仍正确」）。
+ *
+ * 这条路径在本票之前就存在（ctx 内没有账户表），现在账户表由 A 注入，因此「空表」必须仍然
+ * 完全不产生帧——一个 `accounts_.empty()` 判断写漏就会变成「遍历 0 次」的正确行为，但
+ * 「指针非空、表空」与「指针为空」是两条不同的分支，值得正面锁一次。
+ */
+TEST_F(BarStrategyFrameworkTest, ZeroAttachedAccountsProduceNoFrames) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback);  // accounts: []
+    const auto fill_bar = static_cast<std::int64_t>(kTestMaxLookback - 1);
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = fill_bar,
+        .when = EventKind::BarClose,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(5, 3000.0); },
+    });
+
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    EXPECT_TRUE(orders_.empty()) << "a strategy with no attached accounts must not trade";
+    EXPECT_TRUE(reports_.empty()) << "nothing to report without attached accounts";
+
+    // 逻辑台账照常推进（「先纸上跑通策略」的口径）
+    const auto events = recorder().for_instrument(kInstrumentA);
+    const ObservedEvent* open_event = nullptr;
+    for (const ObservedEvent& event : events) {
+        if (event.kind == EventKind::BarOpen && event.bar_index == kTestMaxLookback) {
+            open_event = &event;
+        }
+    }
+    ASSERT_NE(open_event, nullptr);
+    EXPECT_EQ(open_event->current_contracts, 5) << "the virtual ledger still advances";
+}
+
+/**
+ * **`on_init` 期的意图只做虚拟成交、不发单不上报**（AC「下单只有单一出口」的 live 门禁面）。
+ *
+ * `on_init` 里下单是合法用法（先按参数建立初始逻辑持仓），但那时实例还没进入 live：不能发单，
+ * 否则启动阶段就会向账户送出策略尚未准备完的单子。这里在 `on_init` 买 2 手，断言零帧；随后
+ * 回调期的意图才产出帧——两条合起来才是「门禁真的在按阶段切换」的正面证据（只断言零帧的话，
+ * 「门禁恒关」也满足）。
+ */
+TEST_F(BarStrategyFrameworkTest, OnInitIntentIsVirtualOnlyUntilLive) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback,
+                 /*reserve_bars=*/std::nullopt, /*period_sec=*/60,
+                 /*accounts_json=*/R"([{"account_id": "CTP001", "scale": 1.0}])");
+
+    // on_init 里建多 2 手：bar_index == -1 是 on_init 的唯一判据
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = -1,
+        .when = EventKind::Init,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(2, 2000.0); },
+    });
+
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+
+    // 静默填窗：B 零回调，因此没有任何新的意图 → 帧里只可能有 on_init 那笔（且它必须没发）
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    EXPECT_TRUE(orders_.empty()) << "an on_init intent must not reach the accounts";
+    // 上报则**必须**发生：进入 live 时对台账当前值做一次批量上报（先上报再放开）。`on_init`
+    // 已建 2 手，因此这里报的是 2——硬编码「启动时逻辑持仓为 0」会让这种策略在 UI 上显示空仓。
+    ASSERT_EQ(reports_.size(), 1U) << "the live entry must publish the current ledger position";
+    EXPECT_EQ(reports_[0].account_id, "CTP001");
+    EXPECT_EQ(reports_[0].instrument_id, kInstrumentA);
+    EXPECT_EQ(reports_[0].net_volume, 2) << "the 2 lots built in on_init must be reported";
+    // 逻辑台账照样推进（「先纸上跑通策略」）
+    EXPECT_EQ(recorder().count(kInstrumentA, EventKind::BarUpdate), 0U)
+        << "no callbacks yet: the window is not full";
+}
+
+/**
+ * **价格被调整时记诊断**（AC「价格处理：tick 对齐 / 涨跌停夹取，调整记诊断」）。
+ *
+ * v1 没有元数据来源（`price_tick == 0`），因此 tick 对齐被跳过；但涨跌停来自 tick 本身，
+ * 是真实可用的输入。这里喂一笔带涨跌停的行情，在策略里以高于涨停的限价买入，断言：
+ *   - 订单帧的价被夹到涨停价（**挂单而不是拒单**）；
+ *   - stderr 出现 `order price adjusted` 与 `reason=limit_up`。
+ */
+TEST_F(BarStrategyFrameworkTest, OrderPriceIsClampedToLimitAndDiagnosed) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback,
+                 /*reserve_bars=*/std::nullopt, /*period_sec=*/60,
+                 /*accounts_json=*/R"([{"account_id": "CTP001", "scale": 1.0}])");
+    const auto fill_bar = static_cast<std::int64_t>(kTestMaxLookback - 1);
+    constexpr double kUpperLimit = 110.0;
+
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = fill_bar,
+        .when = EventKind::BarClose,
+        // 远高于涨停的限价：必须被夹到 110，而不是拒单
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(1, 500.0); },
+    });
+
+    open_probe();
+    testing::internal::CaptureStderr();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+
+    // 回调期第一笔 tick 带涨跌停：price 落在涨停价以下的正常价位，涨跌停分别是 110/90
+    DzTick tick = make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                            warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0));
+    tick.upper_limit_price = kUpperLimit;
+    tick.lower_limit_price = 90.0;
+    ASSERT_TRUE(write_tick(tick));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    ASSERT_EQ(orders_.size(), 1U);
+    EXPECT_DOUBLE_EQ(orders_[0].price, kUpperLimit)
+        << "a limit-up order must be placed at the limit price, not rejected";
+    EXPECT_EQ(orders_[0].volume, 1);
+
+    EXPECT_NE(stderr_text.find("order price adjusted |"), std::string::npos)
+        << "the clamp must be diagnosed: " << stderr_text;
+    EXPECT_NE(stderr_text.find("reason=limit_up"), std::string::npos) << stderr_text;
+    // 决策性断言：这条路径**不是**拒单
+    EXPECT_EQ(stderr_text.find("order rejected |"), std::string::npos) << stderr_text;
 }
 
 // ============================================================

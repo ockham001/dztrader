@@ -19,10 +19,17 @@
  * 热路径上没有虚函数。
  *
  * **交易意图与台账（#159）**：四个意图函数在 ctx 内完成「开平规则 → 虚拟成交 → Tier 1」的
- * 单一漏斗（ADR 0030 决策 1），不等待成交回报、不持有账户表（挂靠缩放与下单归 #160）。
- * 0 个挂靠账户时同样只记逻辑账——这正是「先纸上跑通策略」的口径。台账语义在
- * `dztrader/bar_strategy/position.h`（纯状态与纯转移，可独立单测），本头只负责把 B 的调用
- * 翻成一次记账 + 分级诊断。
+ * 单一漏斗（ADR 0030 决策 1），不等待成交回报、不持有账户表。
+ *
+ * **执行与上报（#160）**：同一漏斗在台账推进之后接上「挂靠缩放 → 每账户差量单 → 逻辑持仓
+ * 上报」：账户 `i` 的 `qty_i = L_i(P_new) − L_i(P_old)`，`L_i = sign(P) × f(scale_i × |P|)`
+ * （`scaling.h` 的唯一实现），价格按 tick 对齐 + 涨跌停夹取（`execution.h` 的唯一实现）。
+ * 0 个挂靠账户时同样只记逻辑账——这正是「先纸上跑通策略」的口径。
+ *
+ * 台账语义在 `dztrader/bar_strategy/position.h`（纯状态与纯转移，可独立单测），缩放与价格
+ * 在 `scaling.h` / `execution.h`（同样是纯函数），本头只负责把 B 的调用翻成一次记账 + 一次
+ * fanout + 分级诊断。**下单与上报各只有一个出口**（`submit_order` / `publish_position`）：
+ * 正常单、删除平仓、回放后的批量上报全部走它们，框架不出现第二条拼帧路径。
  *
  * 本头是 SDK 公开头（header-only 框架的一部分）：只依赖标准库与 SDK 公开头，不依赖
  * 任何内部库或日志库（ADR 0020/0021）。
@@ -32,7 +39,9 @@
 
 #include <dztrader/api.h>
 #include <dztrader/bar/types.h>
+#include <dztrader/bar_strategy/execution.h>
 #include <dztrader/bar_strategy/position.h>
+#include <dztrader/bar_strategy/scaling.h>
 #include <dztrader/series.h>
 #include <dztrader/series_internal.h>
 
@@ -83,16 +92,21 @@ struct PriceArrays {
 /**
  * @brief `InstrumentContext` 构造参数聚合（按依赖分组，避免位置参数传错）
  *
- * #157 只注入骨架所需的三项；#159 加合约属性（`InstrumentSpec`：Tier 1 盈亏换算需要合约
- * 乘数）。挂靠账户表、`ParamStore`、缩放配置、引擎会话句柄随后续票（#160/#161/#162）加进
- * 本结构，构造点集中在节点内一处——到那时才加，现在留空字段等于把「以后可能要」写成接口
- * 承诺。
+ * 生命周期二分（组件文档 §3）：值语义项（`spec` / `scaling`）按值拷贝进 ctx；指针语义项
+ * （`dz` / `accounts`）指向 A 持有的对象，A 保证其在 ctx 之后析构（`instruments_` 是 A 的
+ * 最后一个成员）。
+ *
+ * `dz == nullptr` 表示「脱离引擎的虚拟台账模式」：`on_init` 期与单元测试用，此时不发单、
+ * 不上报（没有会话句柄可写）。这也是 `context_internal::ContextAccess` 这条测试缝的形状。
  */
 struct InstrumentInit {
-    std::string instrument_id;      ///< 合约代码（平台唯一键）
-    std::int32_t max_lookback = 0;  ///< 可读历史根数上限（= 配置 max_lookback）
-    std::int32_t buffer_bars = 0;   ///< 物理数组长度（= max_lookback + reserve_bars）
-    InstrumentSpec spec;            ///< 合约属性（#159：`volume_multiple` 供 Tier 1 换算）
+    std::string instrument_id;               ///< 合约代码（平台唯一键）
+    std::int32_t max_lookback = 0;           ///< 可读历史根数上限（= 配置 max_lookback）
+    std::int32_t buffer_bars = 0;            ///< 物理数组长度（= max_lookback + reserve_bars）
+    InstrumentSpec spec;                     ///< 合约属性（乘数供 Tier 1、`price_tick` 供价格对齐）
+    DzContext* dz = nullptr;                 ///< 引擎会话句柄（nullptr = 虚拟台账，不发单不上报）
+    const AccountTable* accounts = nullptr;  ///< A 的挂靠账户表（只读；nullptr = 0 个账户）
+    ScalingConfig scaling;                   ///< 缩放配置副本（启动后不可变，按值持有）
 };
 
 /**
@@ -364,7 +378,10 @@ private:
           turnover(series_internal::Access::view(price_.turnover.get(), &window_)),
           open_interest(series_internal::Access::view(price_.open_interest.get(), &window_)),
           instrument_id_(init.instrument_id),
-          spec_(init.spec) {}
+          spec_(init.spec),
+          dz_(init.dz),
+          accounts_(init.accounts),
+          scaling_(init.scaling) {}
 
     /// @brief 分配一条价格数组（`buffer_bars` 个元素；首次写入前不读，无需零初始化）
     [[nodiscard]] static std::unique_ptr<double[]> make_array(std::int32_t buffer_bars) {
@@ -374,18 +391,18 @@ private:
     // ==== 交易意图与 Tier 1 的内部面（#159；只有 ctx 自己与 A 用）====
 
     /**
-     * @brief 一笔交易意图的单一漏斗：拒单门禁 → 虚拟成交记账 → 分级诊断（组件文档 §6）
+     * @brief 一笔交易意图的单一漏斗：拒单门禁 → 虚拟成交记账 → 挂靠 fanout → 分级诊断
      *
      * B 的四个意图方法都走到这里，因此「哪条路径都不许绕过门禁」是结构性保证，而不是
      * 四个方法各写一遍的纪律。
      *
      * 门禁只有一条：**失败实例不再受理下单意图**（§4.6）。执行门禁 `live_`（回放/静默填窗
-     * 只做虚拟成交）与挂靠账户 fanout 归 #160/#161——v1 的台账路径本来就不发单，没有需要
-     * 判 `live_` 的分支，提前留一个恒真的开关只会误导。
+     * 只做虚拟成交）不拦意图——虚拟台账口径下每笔意图都照常推进 P 与 Tier 1，`live_` 决定的是
+     * 「要不要落地成实盘单与上报」，判断在 {@link fanout_positions} 里。
      *
      * @param intent          意图种类
      * @param strategy_volume 策略手数（负数会被拒）
-     * @param price           传入限价（虚拟成交价）
+     * @param price           传入限价（虚拟成交价；实盘单的对齐/夹取在 fanout 里做）
      */
     void execute_intent(position_internal::Intent intent, Volume strategy_volume, double price) {
         if (failed_) [[unlikely]] {
@@ -396,6 +413,7 @@ private:
             }
             return;
         }
+        const LargeVolume net_before = position_.net_volume;
         const position_internal::LedgerOutcome outcome =
             position_internal::apply_intent(position_, intent, strategy_volume, price, bar_stamp());
         if (outcome.negative_volume) [[unlikely]] {
@@ -406,8 +424,163 @@ private:
             report_intent_rejected(intent, "invalid_price");
             return;
         }
+        if (outcome.applied()) {
+            fanout_positions(net_before, price);
+        }
         report_intent_outcome(intent, strategy_volume, outcome);
     }
+
+    /**
+     * @brief 逻辑持仓变化后对每个挂靠账户发差量单并上报（组件文档 §6「执行」/「上报」）
+     *
+     * 这是**唯一**的 per-account 出口：正常策略单、反手、全平都走到这里，因此「反手只发一张
+     * 差量单」「`qty_i == 0` 跳过发单与上报」「effect 恒 AUTO」「上报只在 `L_i` 变化时」这四条
+     * 是一处实现，不是四条路径各自的纪律。
+     *
+     * 差量而不是比例：`qty_i = L_i(P_new) − L_i(P_old)`，取整落在**目标持仓**上，因此取整
+     * 误差不随逐单累积（ADR 0030 决策 8）。方向取差量符号，effect 恒 `AUTO`（开平/锁仓由 td
+     * 按账户解析，issue #82）：框架不推导 effect、不拆平开、不基于实际持仓吸附。
+     *
+     * **执行门禁**：`live_ == false`（回放/静默填窗期）或 `dz_ == nullptr`（虚拟台账模式）时
+     * 只记逻辑账——不发单、不上报。回放结束后的批量上报由 A 经
+     * {@link publish_all_positions} 触发（§5.3）。
+     *
+     * @param net_before 本次意图记账前的逻辑持仓 P_old
+     * @param price      策略传入的限价（发单价格的原始值，对齐/夹取在这里做）
+     */
+    void fanout_positions(LargeVolume net_before, double price) {
+        const LargeVolume net_after = position_.net_volume;
+        if (net_after == net_before) {
+            return;  // 逻辑持仓没变：既不发单也不上报
+        }
+        if (!live_ || dz_ == nullptr) {
+            return;  // 虚拟台账模式：只记账
+        }
+        if (accounts_ == nullptr) {
+            return;  // 0 个挂靠账户：只记逻辑账（「先纸上跑通策略」口径）
+        }
+        for (const AttachedAccount& account : *accounts_) {
+            const LargeVolume old_l =
+                scaling_internal::logical_position(net_before, account.scale, scaling_);
+            const LargeVolume new_l =
+                scaling_internal::logical_position(net_after, account.scale, scaling_);
+            const LargeVolume delta = saturating_delta(new_l, old_l);
+            if (delta == 0) {
+                continue;  // 该账户的 L_i 未变：不发单、不上报
+            }
+            submit_order(account, delta, price);
+            publish_position(account, new_l);
+        }
+    }
+
+    /**
+     * @brief **唯一的** `dz_place_order` 出口（组件文档 §3「唯一出口」）
+     *
+     * 正常策略单、删除平仓、同步单（#162）共用本函数：价格处理、effect 固定值、失败诊断都
+     * 只写一遍。A 不参与下单，因此不存在第二条拼单路径。
+     *
+     * 拒单有两种，都不影响逻辑账（逻辑持仓已按意图/命令推进）：
+     *   - 价格非法（NaN/Inf/≤ 0）：打 `order rejected`；
+     *   - 数量超出 `DzVolume` 范围：打 `order rejected`（静默截断会发一张手数完全不同的单）。
+     * 写帧失败（`dz_place_order < 0`）也记诊断——它是「单没出去」的唯一证据。
+     *
+     * @param account 目标挂靠账户
+     * @param delta   该账户的差量手数（正 = 买、负 = 卖；调用方保证非 0）
+     * @param price   策略传入的限价（对齐/夹取在本函数内完成）
+     */
+    void submit_order(const AttachedAccount& account, LargeVolume delta, double price) {
+        const Volume order_qty = order_volume(delta).value_or(0);
+        const DzDirection direction = direction_of(delta);
+        if (order_qty == 0) [[unlikely]] {
+            // 只有「差量幅值超出 DzVolume」能走到这里（0 已在 fanout 跳过）
+            report_order_rejected(account, delta, "volume_out_of_range");
+            return;
+        }
+        const PricePlan plan = resolve_order_price(price, spec_.price_tick, direction, tick_);
+        if (!plan.valid) [[unlikely]] {
+            report_order_rejected(account, delta, "invalid_price");
+            return;
+        }
+        if (plan.adjustment != PriceAdjustment::None) {
+            report_price_adjusted(account, price, plan);
+        }
+        const DzOrderId order_id =
+            dz_place_order(dz_, account.account_id.c_str(), instrument_id_.c_str(), direction,
+                           DZ_PRICE_LIMIT, plan.price, order_qty, DZ_POSITION_EFFECT_AUTO);
+        if (order_id < 0) [[unlikely]] {
+            report_order_failed(account, plan.price, order_qty, direction);
+        }
+    }
+
+    /**
+     * @brief **唯一的** `dz_set_logical_position` 出口（组件文档 §3「唯一出口」）
+     *
+     * 上报的 `net_volume` 是账户逻辑持仓 `L_i`（不是策略级 P：策略逻辑持仓按账户各报一条，
+     * ADR 0027 决策 15）。写帧失败记诊断——上报丢失会让 UI 侧的逻辑/实际偏差对比失真。
+     *
+     * @param account 目标挂靠账户
+     * @param net_l   该账户的逻辑持仓（= 目标净额）
+     */
+    void publish_position(const AttachedAccount& account, LargeVolume net_l) {
+        if (dz_ == nullptr) {
+            return;  // 虚拟台账模式：无会话句柄
+        }
+        if (!dz_set_logical_position(dz_, account.account_id.c_str(), instrument_id_.c_str(),
+                                     net_l)) {
+            report_publish_failed(account, net_l);
+        }
+    }
+
+    /**
+     * @brief 对全部账户重报当前逻辑持仓（A 在回放结束 / `instrument add` / 账户命令后调用）
+     *
+     * 与 {@link fanout_positions} 的区别是**不发单**：它只把当前 `P` 映射成各账户的 `L_i` 报
+     * 一次。回放期 B 照常下单但只做虚拟成交（不逐笔上报），结束后由这里一次性补齐（§5.3）。
+     *
+     * 同时用于「账户表刚变过」的场景：新加入的账户需要立刻看到当前目标值，删除的账户由
+     * A 打「账户 + 空品种」通配清零（本函数不处理删除，那是命令层的语义）。
+     *
+     * @param include_zero true = 连 `L_i == 0` 的账户也上报（删除/清零后需要显式落地 0）
+     */
+    void publish_all_positions(bool include_zero = false) {
+        if (dz_ == nullptr || accounts_ == nullptr) {
+            return;
+        }
+        for (const AttachedAccount& account : *accounts_) {
+            const LargeVolume net_l =
+                scaling_internal::logical_position(position_.net_volume, account.scale, scaling_);
+            if (net_l == 0 && !include_zero) {
+                continue;
+            }
+            publish_position(account, net_l);
+        }
+    }
+
+    /**
+     * @brief 用本笔 tick 刷新快照（A 在事件入口调用；只对**已被 builder 接受**的 tick）
+     *
+     * 价格夹取与后续的同步单对手价都读它。被 builder 丢弃的 tick（乱序/非交易时段/量额倒退）
+     * 不刷新：否则一次乱序 tick 就能把涨跌停换成过期值，后续单子会夹到错误价格。
+     *
+     * @param tick 本笔已接受的行情快照
+     */
+    void update_tick(const DzTick& tick) noexcept { tick_ = snapshot_from_tick(tick); }
+
+    /**
+     * @brief 设置执行门禁（A 在回放/静默填窗结束、进入 live 时调用；组件文档 §3）
+     *
+     * `live_ == false` 时交易意图只做虚拟成交、不发单、不上报。这是两个执行开关里唯一会被
+     * A 拨动的一个（另一个是 `failed_`，由异常边界设置）。
+     *
+     * @param live true = 进入实盘（发单 + 上报）
+     */
+    void set_live(bool live) noexcept { live_ = live; }
+
+    /// @brief 当前是否处于实盘阶段（诊断与测试用；`false` = 虚拟台账模式）
+    [[nodiscard]] bool is_live() const noexcept { return live_; }
+
+    /// @brief 最近一笔已接受 tick 的快照（只读；A 与测试用）
+    [[nodiscard]] const TickSnapshot& tick_snapshot() const noexcept { return tick_; }
 
     /// @brief `volume == 0` 且本方向没有可平仓（= 无操作，按 §6 不诊断）
     [[nodiscard]] bool is_zero_volume_noop(position_internal::Intent intent,
@@ -513,6 +686,24 @@ private:
     void report_intent_outcome(position_internal::Intent intent,
                                Volume strategy_volume,
                                const position_internal::LedgerOutcome& outcome);
+
+    // ==== 执行诊断（#160；全部写 stderr，prose 区分等级，见 .cpp 段注释）====
+
+    /// @brief 挂靠账户差量单被拒（价格非法 / 数量超出 `DzVolume`）
+    void report_order_rejected(const AttachedAccount& account,
+                               LargeVolume delta,
+                               std::string_view reason);
+    /// @brief 下单价格被调整（tick 对齐 / 涨跌停夹取）：记原始价、最终价与原因
+    void report_price_adjusted(const AttachedAccount& account,
+                               double requested,
+                               const PricePlan& plan);
+    /// @brief 写帧失败（`dz_place_order < 0`）：单子没出去的唯一证据
+    void report_order_failed(const AttachedAccount& account,
+                             double price,
+                             Volume order_qty,
+                             DzDirection direction);
+    /// @brief 逻辑持仓上报写帧失败
+    void report_publish_failed(const AttachedAccount& account, LargeVolume net_l);
 
     /**
      * @brief 推进一根 bar：回卷兜底 → 把 `bar` 写进新槽位 → 用户序列写初值/carry → 收尾
@@ -688,12 +879,18 @@ private:
     /// 用户序列（只放 B 经 `make_series` 注册的序列；框架内部状态不进这里，组件文档 §3）
     std::vector<SeriesStorage<double>> series_d_;
     std::vector<SeriesStorage<std::int64_t>> series_i_;
-    InstrumentSpec spec_;     ///< 合约属性（#159：`volume_multiple` 供 Tier 1 盈亏换算）
+    InstrumentSpec spec_;     ///< 合约属性（乘数供 Tier 1、`price_tick` 供价格对齐）
     PositionState position_;  ///< 策略虚拟持仓 + Tier 1（只在 `execute_intent` 漏斗里更新）
+    /// 最近一笔**已接受** tick 的快照（价格夹取 / 同步单对手价；组件文档 §3）
+    TickSnapshot tick_;
+    DzContext* dz_ = nullptr;                 ///< 引擎会话句柄（nullptr = 虚拟台账模式）
+    const AccountTable* accounts_ = nullptr;  ///< A 的挂靠账户表只读指针（nullptr = 0 个账户）
+    ScalingConfig scaling_;                   ///< 缩放配置副本（启动后不可变）
     /// 当前 bar 的记账时间戳（A 在推进窗口时从 `bar::Bar` 写入；Tier 1 进出场时间来源）
     DzDate current_date_ = DZ_DATE_NA;
     DzTime current_time_ = 0;
     bool in_on_init_ = false;  ///< 是否正处在 `on_init` 内（限制 `make_series` 的调用时机）
+    bool live_ = false;        ///< false = 回放/静默填窗：只做虚拟成交、不发单、不上报
     bool failed_ = false;      ///< 实例失败：此后不再接收任何 B 回调、不再受理下单意图
 };
 
@@ -749,6 +946,66 @@ inline void InstrumentContext::report_intent_outcome(
                          instrument_id_, name, outcome.net_before, outcome.net_after)
                   << '\n';
     }
+}
+
+/**
+ * @brief 执行诊断（#160；同样写 stderr、无级别，prose 区分四类事件）
+ *
+ * 两条硬约束决定了这里的形状：
+ *
+ *   - **热路径不打日志**（组件文档 §10）：`submit_order` / `publish_position` 只在拒单、
+ *     价格被调整、写帧失败时输出——正常发单与上报是静默的。否则每笔交易意图会刷 2N 行，
+ *     而 1us 的性能预算根本容不下 `std::format`；
+ *   - **prose 就是级别**：master 把子进程 stderr 一律按 WARN 转发，级别分流要等 SDK 给策略
+ *     一条日志通道（ADR 0021），所以四类事件各用一段不同的 prose：
+ *       - `order rejected`：价格或数量非法，单没发出去（逻辑账已推进）；
+ *       - `order price adjusted`：单发出去了，但价格被对齐/夹取（可追溯「为什么成交价不同」）；
+ *       - `order submit failed`：`dz_place_order` 返回 < 0（写帧失败）；
+ *       - `logical position publish failed`：上报写帧失败。
+ *
+ * `order price adjusted` 是 INFO 级事件却和拒单一样落在 stderr：它不改变任何逻辑状态，但
+ * 是「策略传入价与交易所实际挂单价不一致」的唯一解释来源，静默会让迁移用户以为框架偷价。
+ */
+inline void InstrumentContext::report_order_rejected(const AttachedAccount& account,
+                                                     LargeVolume delta,
+                                                     std::string_view reason) {
+    std::cerr << std::format("order rejected | instrument={} account={} qty={} reason={}",
+                             instrument_id_, account.account_id, delta, reason)
+              << '\n';
+}
+
+inline void InstrumentContext::report_price_adjusted(const AttachedAccount& account,
+                                                     double requested,
+                                                     const PricePlan& plan) {
+    // 浮点用 {:.10g}：tick 对齐的调整量常常在末位，默认 6 位有效数字会把「100 → 100.1」这类
+    // 正好看得出的差异也抹掉。
+    std::cerr << std::format(
+                     "order price adjusted | instrument={} account={} requested={:.10g} "
+                     "final={:.10g} reason={}",
+                     instrument_id_, account.account_id, requested, plan.price,
+                     price_adjustment_name(plan.adjustment))
+              << '\n';
+}
+
+inline void InstrumentContext::report_order_failed(const AttachedAccount& account,
+                                                   double price,
+                                                   Volume order_qty,
+                                                   DzDirection direction) {
+    std::cerr << std::format(
+                     "order submit failed | instrument={} account={} direction={} qty={} "
+                     "price={:.10g} error=\"{}\"",
+                     instrument_id_, account.account_id, direction_name(direction), order_qty,
+                     price, dz_errmsg())
+              << '\n';
+}
+
+inline void InstrumentContext::report_publish_failed(const AttachedAccount& account,
+                                                     LargeVolume net_l) {
+    std::cerr << std::format(
+                     "logical position publish failed | instrument={} account={} net_volume={} "
+                     "error=\"{}\"",
+                     instrument_id_, account.account_id, net_l, dz_errmsg())
+              << '\n';
 }
 
 static_assert(!std::is_copy_constructible_v<InstrumentContext>,

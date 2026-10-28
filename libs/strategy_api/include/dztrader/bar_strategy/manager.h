@@ -263,6 +263,9 @@ public:
         if (!load_startup_config()) {
             return;
         }
+        // 账户表来自配置（启动快照）。放在最前：启动诊断要打印它，实例构造要取得它的地址。
+        // 运行期增删改归 #162，那时这里是「加载一次」而不是「唯一的写入点」。
+        accounts_ = effective_.config.accounts;
         print_startup_diagnostics();
         if (!subscribe_configured_instruments()) {
             request_startup_exit();
@@ -270,12 +273,20 @@ public:
         }
         create_instances();
         schedule_daily_rollback();
+        enter_live();
     }
 
     /**
      * @brief 每笔行情 tick → 该品种的 tick→bar 组件（bar 边界由组件负责，A 不自行判断）
      *
      * 未知品种（未订阅/已删除）与失败实例的 tick 直接丢弃：A 不做任何 bar 边界计算。
+     *
+     * **最近 tick 快照只在「本笔 tick 真的产生了事件」时刷新**（组件文档 §5.1）：这里把
+     * tick 挂到 `current_tick_` 上，由事件适配器在分发 `open`/`update`/`close` 时拷进 ctx，
+     * 调用返回后立刻清空。被 builder 丢弃的 tick（乱序/非交易时段/量额倒退/非法价格）不产生
+     * 事件，因此不会刷新快照——否则一次乱序 tick 的涨跌停就会盖掉当前值，后续单子会夹到
+     * 过期价格上。用「有没有事件」而不是「stats 计数有没有涨」判定：非法价格那条丢弃路径
+     * 按 builder 契约不计入任何 stats 计数，看计数会把它误判为已接受。
      *
      * @param tick 行情快照（属于本进程订阅的某个合约）
      */
@@ -290,9 +301,10 @@ public:
         if (node->second.ctx.is_failed()) {
             return;  // 失败实例：不再接收任何回调（组件文档 §4.6）
         }
+        current_tick_ = &tick;
         node->second.builder.on_tick(tick);
+        current_tick_ = nullptr;
     }
-
     /**
      * @brief 定时器帧：识别本框架自己的回卷定时器并执行回卷（组件文档 §4.4）
      *
@@ -402,6 +414,7 @@ private:
         if (node.ctx.is_failed()) {
             return;
         }
+        refresh_tick_snapshot(node);
         node.ctx.advance_bar(bar);
         if (!bar_callback_enabled(node.ctx)) {
             return;  // 静默填窗：B 零回调
@@ -418,6 +431,7 @@ private:
         if (node.ctx.is_failed()) {
             return;
         }
+        refresh_tick_snapshot(node);
         node.ctx.update_current_bar(bar);
         if (!bar_callback_enabled(node.ctx)) {
             return;  // 静默填窗：B 零回调
@@ -445,6 +459,7 @@ private:
         if (node.ctx.is_failed()) {
             return;
         }
+        refresh_tick_snapshot(node);
         // 极值在「bar 收盘前」更新（组件文档 §6.1）：B 在 `on_bar_close` 里读到的
         // `max_position_profit/loss` 已包含刚收这根 bar 的收盘价。放在门禁之前——门禁只
         // 决定「要不要调 B」，不决定台账口径；静默填窗期无持仓，调用是无操作。
@@ -480,6 +495,54 @@ private:
     /// @brief `close` 的门禁：窗口已填满（此时被关闭的那根是静默填窗最后一根或更晚）
     [[nodiscard]] static bool close_callback_enabled(const InstrumentContext& ctx) noexcept {
         return ctx.window_.size == ctx.window_.max_lookback;
+    }
+
+    /**
+     * @brief 把本笔 tick 拷进 ctx 的最近快照（组件文档 §5.1「只有被接受的 tick 才产生事件」）
+     *
+     * 三个事件入口各调一次。`current_tick_` 只在 `on_tick` 的执行期内非空，因此这里的判空
+     * 同时覆盖了「事件从别处进来」这种（当前不存在的）路径：宁可不刷新，也不用一个不在本次
+     * tick 生命周期内的快照。
+     */
+    void refresh_tick_snapshot(InstrumentNode<Strategy>& node) noexcept {
+        if (current_tick_ == nullptr) [[unlikely]] {
+            return;
+        }
+        node.ctx.update_tick(*current_tick_);
+    }
+
+    /**
+     * @brief 进入实盘阶段：对每个存活实例开执行门禁并批量上报逻辑持仓（组件文档 §3/§5.3）
+     *
+     * `on_start` 的最后一步，顺序是**先上报、再放开**：反过来会让首个 tick 的意图先发一笔单、
+     * 再补报一个与它不一致的旧持仓。
+     *
+     * 分类讨论当下的状态：
+     *
+     *   - **冷启动（v1 现状，#161 的历史回放未落地）**：回放期没有历史可放，进入 live 时逻辑
+     *     台账里只有 `on_init` 阶段建立的持仓（ADR 0030 决策 1：`on_init` 期的意图同样即时
+     *     记账）。因此这里必须**照常批量上报**——它可能是 0（无 `on_init` 意图），也可能不是；
+     *     硬编码「启动时逻辑持仓为 0」会让 `on_init` 建仓的策略在 UI 上显示空仓；
+     *   - **有归档历史时**（#161）：回放期 B 照常下单但只做虚拟成交，结束后同样在这里
+     *     `set_live(true)` + `publish_all_positions()` 一次性上报各账户逻辑持仓。
+     *
+     * #161 只需把 `on_start` 里的调用点挪到回放之后，本函数内容不变。
+     */
+    void enter_live() {
+        for (auto& [instrument_id, node] : instruments_) {
+            if (node.ctx.is_failed()) {
+                continue;
+            }
+            node.ctx.set_live(true);
+            node.ctx.publish_all_positions();
+        }
+        if (!accounts_.empty()) {
+            std::cerr << std::format(
+                             "account fanout enabled | account_count={} instrument_count={} "
+                             "source=ledger_without_warmup_replay ticket=161",
+                             accounts_.size(), instruments_.size())
+                      << '\n';
+        }
     }
 
     /// @brief 一次 B 回调的调用体（异常边界：捕获后标记该实例失败）
@@ -578,17 +641,28 @@ private:
                          effective_.config.instruments.size(), effective_.config.period_sec,
                          effective_.max_lookback, effective_.buffer_bars)
                   << '\n';
-        // Tier 1 的浮动盈亏要乘合约乘数，而合约元数据源属 #161 的内部依赖缝：在它落地前
-        // `InstrumentSpec::volume_multiple` 恒为 0，于是 `position_profit()` /
-        // `contract_profit()` / 极值全线返回 0。**这是已知限制，必须在这里说出来**——
-        // 静默返回 0 会让策略作者以为「浮盈真的是 0」，把止损逻辑写成永不触发。
+        // 挂靠账户表（`accounts` 可空：0 账户 = 只记逻辑账、不发单、不上报）
+        std::cerr << std::format(
+                         "account fanout | account_count={} max_scale={} scale_rounding={} "
+                         "scale_min_one={}",
+                         accounts_.size(),
+                         config_internal::format_ratio(effective_.scaling.max_scale),
+                         scale_rounding_name(effective_.scaling.rounding),
+                         effective_.scaling.min_one ? 1 : 0)
+                  << '\n';
+        // Tier 1 的浮动盈亏要乘合约乘数、下单价格要按最小变动价位对齐，而合约元数据源属
+        // #161 的内部依赖缝：在它落地前 `InstrumentSpec` 的两项都是 0，于是
+        //   - `position_profit()` / `contract_profit()` / 极值全线返回 0；
+        //   - 下单价格**不做 tick 对齐**（`price_tick == 0` 时跳过对齐，见 execution.h）。
+        // **两条都是已知限制，必须在这里说出来**——静默返回 0 会让策略作者以为「浮盈真的是
+        // 0」把止损写成永不触发；静默不对齐会让人以为框架按 tick 处理过价格。
         //
         // 无条件打印而不是用「有没有拿到元数据」的标志位：v1 根本没有元数据来源，标志位恒为
         // false，那就是一段只有一个取值的分支。等 #161 接上数据源时，这行自然改成
         // `if (!metadata_loaded) {…}`（那时才有第二个取值）。
         std::cerr << std::format(
                          "instrument metadata unavailable | effect=tier1_profit_zero "
-                         "source=absent ticket=161")
+                         "price_alignment_skipped=1 source=absent ticket=161")
                   << '\n';
     }
 
@@ -620,6 +694,9 @@ private:
      *
      * `on_init` 抛异常 = 该品种创建失败：打印诊断、丢弃节点（不调 `on_destroy`），继续创建
      * 其它品种。成功时 ctx 的 `bar_index() == -1`、窗口为空。
+     *
+     * 账户表与缩放配置在这里随 `InstrumentInit` 注入：ctx 只持账户表的**只读指针**（表由 A
+     * 持有、地址稳定，增删改只发生在两次回调之间），缩放配置按值拷一份（启动后不可变）。
      */
     void create_instances() {
         const auto period_sec = effective_.config.period_sec;
@@ -628,9 +705,13 @@ private:
                 .instrument_id = instrument_id,
                 .max_lookback = effective_.max_lookback,
                 .buffer_bars = effective_.buffer_bars,
-                // 合约属性：v1 没有元数据来源（#161 接缝），因此 `volume_multiple == 0`——
-                // 启动诊断会显式声明 Tier 1 盈亏恒为 0 这条已知限制。
+                // 合约属性：v1 没有元数据来源（#161 接缝），因此 `volume_multiple` 与
+                // `price_tick` 都是 0——启动诊断会显式声明这两条已知限制（盈亏恒为 0、价格
+                // 不做 tick 对齐）。
                 .spec = InstrumentSpec{},
+                .dz = dz_,
+                .accounts = &accounts_,
+                .scaling = effective_.scaling,
             };
             auto [slot, inserted] =
                 instruments_.try_emplace(instrument_id, *this, init, session_table_, period_sec);
@@ -682,6 +763,11 @@ private:
     bar::TradingSessionTable session_table_;  ///< 交易小节表（v1 = 退化表）
     bool degraded_ = true;                    ///< 由 session_table_ 判定（诊断口径，§5.5）
     std::int32_t rollback_clock_ms_ = DEFAULT_ROLLBACK_CLOCK_MS;
+    /// 挂靠账户表（启动读配置；#162 起由命令增删改）。**必须在 instruments_ 之前声明**：
+    /// 节点里的 ctx 持它的地址，析构顺序保证表比节点活得久。
+    AccountTable accounts_;
+    /// 本次 `on_tick` 正在分发的 tick（只在分发期内非空；事件入口据此刷新 ctx 快照）
+    const DzTick* current_tick_ = nullptr;
     bool startup_failed_ = false;         ///< 启动失败：请求引擎立即退出
     std::int32_t startup_exit_code_ = 0;  ///< 启动失败时的进程退出码
     // 最后声明 → 最先析构：节点不会看到已销毁的配置/会话

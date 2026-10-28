@@ -109,6 +109,10 @@ set(SDK_API_TESTS
     result_set_test
     # BarStrategy 框架端到端 (Seam A): 真实帧通道 + run_bar_strategy + 临时 DZTRADER_HOME
     bar_strategy_framework_test
+    # 台账单元测试构造真实 InstrumentContext：ctx 的执行出口直接调 dz_place_order /
+    # dz_set_logical_position（#160 的单一出口），即使用例走的是虚拟台账路径（dz_ == nullptr）
+    # 也要在链接期解析这些符号。与 framework_test 同因。
+    bar_strategy_position_test
 )
 
 # 穷举/慢速用例单独成 target, 打 slow 标签; 默认 fast 门禁只跑对应抽样版。
