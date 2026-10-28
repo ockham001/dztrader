@@ -63,18 +63,28 @@ concept BarStrategy = std::default_initializable<T> &&
 namespace bar_strategy_internal {
 
 /**
- * @brief 用注入的交易小节表跑策略（#161 接缝；生产入口恒用内置退化表）
+ * @brief 用注入的内部依赖跑策略（内部接缝；生产入口恒用内置退化表 + 18:00）
  *
- * 公开入口不自带这张表：按 #161 的约定，三个外部依赖（历史 bar 源 / 交易小节表 / 合约
- * 元数据）都是**内部接缝**，数据源落地时只改框架内部，不改公开头面。
+ * 公开入口 `run_bar_strategy()` 不带这两项：按 #161 的约定，外部依赖（历史 bar 源 / 交易
+ * 小节表 / 合约元数据）都是**内部接缝**，数据源落地时只改框架内部，不改公开头面。
+ *
+ * 两个参数都是「让测试能确定性地构造场景」的注入点，合在一个入口里而不是各开一个函数——
+ * 它们服务同一类需求（替换框架内的固定取值），分开会让接缝面按参数个数膨胀：
+ *
+ * - **`session_table`**（#161 接缝）：交易小节与竞价窗口表，数据源落地后由配置注入；
+ * - **`rollback_clock_ms`**（测试接缝）：18:00 回卷定时器按 wall clock 触发，真实用例无法
+ *   等一天，因此把回卷时刻换成「当前时刻之后若干秒」，让 Seam A 集成测试能在秒级内确定性地
+ *   走通定时器路径，并与推进前兜底路径对比 B 观察到的值。
  *
  * @tparam Strategy 用户策略类型
- * @param session_table 交易小节与竞价窗口表
+ * @param session_table     交易小节与竞价窗口表
+ * @param rollback_clock_ms 每日回卷时刻（距午夜毫秒）；默认 18:00
  * @return 进程退出码
  */
 template <BarStrategy Strategy>
-std::int32_t run_bar_strategy_with(const bar::TradingSessionTable& session_table) {
-    BarStrategyManager<Strategy> manager(session_table);
+std::int32_t run_bar_strategy_with(const bar::TradingSessionTable& session_table,
+                                   std::int32_t rollback_clock_ms = DEFAULT_ROLLBACK_CLOCK_MS) {
+    BarStrategyManager<Strategy> manager(session_table, rollback_clock_ms);
     return run_strategy(manager);
 }
 

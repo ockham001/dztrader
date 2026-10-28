@@ -19,7 +19,7 @@
 
 - 一个策略 = 一个可执行文件 `stg_<id>` = 一个进程 = 一个逻辑账户；实体账户 0..N 个挂在进程内（既有「一个策略一个进程」不变量不变）。
 - 一个进程只有一种用户策略类型 `Strategy`（B）；框架管理器 `BarStrategyManager<Strategy>`（A）对引擎而言是唯一的策略对象，入口 `run_bar_strategy<Strategy>(config)` 内部以 A 调用既有 `run_strategy`。
-- **实现状态（#157）**：公开入口 `dztrader/bar_strategy.h`（`run_bar_strategy<Strategy>()` + `BarStrategy` concept），管理器 `dztrader/bar_strategy/manager.h`（A 的引擎回调、tick 分发、事件适配器、`BarEventSink` / `InstrumentNode`、退化小节表），品种上下文 `dztrader/bar_strategy/context.h`（`InstrumentContext` / `InstrumentInit` / `PriceArrays`）。本票只实现骨架：配置加载与启动诊断、订阅、tick→bar 分发、`close → open → update` 分发、异常隔离、退化小节表；`on_schedule`（18:00 回卷）归 #158、`on_ui_input` 与参数归 #162、交易意图与 Tier 1 归 #159/#160、预热回放归 #161、`is_auction()` 归 #163。骨架期 A 未实现 `on_trade_report` / `on_order_report` / `on_position_info` / `on_trading_account`（引擎按编译期探测跳过），`on_schedule` / `on_ui_input` 同样尚未实现。集成测试 `libs/strategy_api/tests/bar_strategy_framework_test.cpp`（Seam A：真实帧通道）。
+- **实现状态（#157）**：公开入口 `dztrader/bar_strategy.h`（`run_bar_strategy<Strategy>()` + `BarStrategy` concept），管理器 `dztrader/bar_strategy/manager.h`（A 的引擎回调、tick 分发、事件适配器、`BarEventSink` / `InstrumentNode`、退化小节表），品种上下文 `dztrader/bar_strategy/context.h`（`InstrumentContext` / `InstrumentInit` / `PriceArrays`）。#157 实现骨架（配置加载与启动诊断、订阅、tick→bar 分发、`close → open → update` 分发、异常隔离、退化小节表），#158 补齐回调门禁 / 静默填窗 / 用户序列 / 18:00 回卷（`on_schedule` 已实现）；`on_ui_input` 与参数归 #162、交易意图与 Tier 1 归 #159/#160、预热回放归 #161、`is_auction()` 归 #163。骨架期 A 未实现 `on_trade_report` / `on_order_report` / `on_position_info` / `on_trading_account`（引擎按编译期探测跳过），`on_ui_input` 同样尚未实现。集成测试 `libs/strategy_api/tests/bar_strategy_framework_test.cpp`（Seam A：真实帧通道）。
 - A 实现引擎侧回调（`on_start` / `on_tick` / `on_schedule` / `on_ui_input` / `on_stop` 等）：`on_start` 里取得 `DzContext*`、读取并校验配置（含挂靠账户表）、注册 A 内部的每日 18:00 回卷定时器（§10）；`on_tick` 里把 tick 转交该品种的 builder（bar 边界由 ADR 0031 组件负责，§5.4）并分发实例；`on_ui_input` 里解析 `instrument *` / `account *` / `param *` / `status` / `quit` 命令；`on_schedule` 里只处理自己的定时器 ID，不转发给 B。**成交/委托/持仓/资金回报 v1 全部忽略**（不建成交台账、不跟踪委托；逻辑账只由 B 的交易意图推进）。
 - A 为配置里的每个品种创建一个 B 实例（`instruments` 列表）；品种可按 `instrument add/del` 动态增删；进程故障域独立。
 - 账户表由 A 持有（账户标识 + 挂靠比率），运行期可增删改（§8）；策略逻辑不可见账户身份，也不提供 `ctx.account_id()`。0 个账户时策略照常运行（只记逻辑台账、不发实盘单）。
@@ -347,13 +347,15 @@ node.builder.on_tick(tick);                                  // 唯一 tick→ba
 
 ## 4. Series 层语义
 
-> **实现状态（#155）**：Series 层与窗口几何已实现，落在两个头文件里——
+> **实现状态（#155 / #157 / #158）**：Series 层与窗口几何落在两个头文件里——
 > `libs/strategy_api/include/dztrader/series.h`（公开面：`WindowState` / `SeriesView` /
-> `SeriesRef` / `Series` + 静态断言）与 `dztrader/series_internal.h`（内部面：容量推导
-> `resolve_capacity`、窗口驱动 `prepare_advance` / `commit_advance` / `relocate_window`、
-> 绑定缝 `series_internal::Access`）。单元测试 `series_test.cpp`（读/写语义与公开面不变量）
-> 与 `series_window_test.cpp`（容量、回卷等价性、随机推进 fuzz）。`InstrumentContext`
-> 的接入（`make_series` / 价格视图绑定）随 #157 落地——本票交付不依赖引擎的纯组件。
+> `SeriesRef` / `Series` + 静态断言；`SeriesStorage` 在 `bar_strategy/context.h`，属 ctx
+> 内部面）与 `dztrader/series_internal.h`（内部面：
+> 容量推导 `resolve_capacity`、窗口驱动 `commit_advance` / `prepare_advance`、回卷
+> `relocate_window` / `relocate_array` / `finish_relocate`、绑定缝 `series_internal::Access`）。
+> 单元测试 `series_test.cpp`（读/写语义与公开面不变量）与 `series_window_test.cpp`（容量、
+> 回卷等价性、随机推进 fuzz）。`InstrumentContext` 的接入（`make_series` / 用户序列 carry /
+> 价格视图绑定）由 #157 落地骨架、#158 补齐用户序列与静默填窗初值（§4.1「创建」「推进」）。
 
 ### 4.1 读写与推进
 
@@ -405,6 +407,27 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 - **兜底：推进前内联回卷**。若定时器因事件积压被延迟/错过，导致某根新 bar 需要写 `base_[buffer_bars]`，推进函数先回卷再写。兜底只影响性能（把搬移拉进盘中路径），不会丢数据、不会改变语义。
 - **不做逐小时/每 max_lookback 根定时回卷**：多 24 倍搬移量且没有正确性收益。回卷触发失败（定时器没来）不是错误，只是退化为兜底路径。
 - 回卷成本：1 分钟周期（`max_lookback=1440`）每品种搬 7 条价格 + 用户序列（示例 4 条）= 11 条 × 11,520B = 126,720B；50 品种 ≈ 6.3MB，一次性约 60–130µs；15 分钟周期（`max_lookback=96`）每条 768B，50 品种 11 条 ≈ 0.4MB，约 5–10µs。每天一次。对比旧的「每 max_lookback 根收盘时搬」：总搬移量约为其 2.4 倍（每次搬满窗，但每天只攒 600 根新 bar），换来的是**搬移时机确定、永远在静默窗、且不会落在任何 bar/tick 回调路径的 p99 上**。
+
+> **实现状态（#158）**：两条路径都已落地，共用同一个 `InstrumentContext::relocate()`——
+> ① 定时器：`on_start` 末尾 `dz_schedule_daily(18:00)` 注册，`on_schedule(const
+> DzScheduleEvent&)` 只在 `ev.timer_id == rollback_timer_` 时对全部存活实例回卷（B 自己的
+> 定时器帧原样忽略，A 不代 B 处理）；`on_stop` 先 `dz_schedule_cancel` 收回所有权。
+> ② 兜底：`advance_bar` 在 `end >= buffer_bars` 时就地搬。
+>
+> 回卷时刻经管理器构造参数注入（默认 18:00），内部接缝
+> `bar_strategy_internal::run_bar_strategy_with(session_table, rollback_clock_ms)` 供 Seam A
+> 集成测试在秒级内走通定时器路径；生产入口 `run_bar_strategy()` 恒用 18:00。定时器注册失败不
+> 阻断启动（退回兜底路径），打一行 `daily rollback timer unavailable | ...
+> fallback=inline_before_advance`；正常触发打一行 `daily rollback | instrument_count=…
+> clock_ms=…`（回卷对 B 不可见，这行是运维侧唯一证据）。
+>
+> 等价性由两层测试锁定：① `bar_strategy_framework_test.cpp` 的
+> `RelocationPathsAreInvisibleToStrategy`——同一份 tick 脚本跑两轮（兜底轮 `buffer_bars=138`
+> 必然撞上内联回卷；定时器轮 `buffer_bars=224` 使兜底不可能的，只可能来自定时器），比较
+> **全部 7 条价格序列 + 两条用户序列**的每根历史、回调序列、`bar_index`、窗口长度；
+> ② `series_window_test.cpp` 的 `RelocatePreservesEveryWindowValue`——在**同一个**夹具上做
+> 回卷前/后逐位快照比较（跨路径比较抓不到"两条路径同时漏搬"的情形，直接前后比较可以），
+> `relocate_window` 与 `relocate_array`+`finish_relocate` 两种形态各验一遍。
 
 ### 4.5 容量配比与内存
 
@@ -475,12 +498,18 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 
 ### 5.2 回调门禁：窗口填满前不回调
 
-> **实现状态（#157 / #158）**：#157 的骨架**不含**回调门禁——tick 一到就回调，B 的第一条事件即 `on_bar_open → on_bar_update`（`bar_index == 0`），`max_lookback` 尚未填满时读 `[n]` 会按 §4.2 抛 `std::out_of_range`。门禁与静默填窗归 **#158**（本票 AC 不含「窗口填满前零回调」，故不属漂移）；#158 落地后本节为准。
+> **实现状态（#158）**：本节已落地。门禁判据收敛在 `BarStrategyManager` 的两个静态谓词上——
+> `bar_callback_enabled`（`open` / `update`，推进**之后**判 `bar_index >= max_lookback`）与
+> `close_callback_enabled`（`close`，推进**之前**判 `size == max_lookback`）。两者的差别正是
+> 「填满窗口的那一根」：它的 open/update 属静默期，但它的 close 是新根的前导、必须交付。
+> 静默填窗期内 `advance_bar` 照常推进窗口并给用户序列写声明初值。Seam A 集成测试见
+> `bar_strategy_framework_test.cpp` 的 `CallbackGateSuppressesEverythingUntilWindowIsFull` /
+> `FirstCallbackSequenceAndFullWindowReads`。
 
-- **B 的回调从价格窗口填满（`size == max_lookback`）后的下一根 bar 开始**；此前的 `max_lookback` 根 bar 是**静默填充**：A 照常把 tick 喂给 builder、推进窗口（用户序列写 `init`），但**不调用任何 B 回调**。
-- 第一个回调发生在 `bar_index == max_lookback` 的那根 bar（此前 `max_lookback` 根，索引 `0 … max_lookback-1`，为静默填充），序列为 `on_bar_close(bar 索引 max_lookback-1) → on_bar_open(bar 索引 max_lookback) → on_bar_update`；此后回调期恒有 `size == max_lookback`。
+- **B 的回调从价格窗口填满（`size == max_lookback`）后的下一根 bar 开始**；此前的 `max_lookback` 根 bar 是**静默填窗**：A 照常把 tick 喂给 builder、推进窗口（用户序列写 `init`），但**不调用任何 B 回调**。
+- 第一个回调发生在 `bar_index == max_lookback` 的那根 bar（此前 `max_lookback` 根，索引 `0 … max_lookback-1`，为静默填窗），序列为 `on_bar_close(bar 索引 max_lookback-1) → on_bar_open(bar 索引 max_lookback) → on_bar_update`；此后回调期恒有 `size == max_lookback`。
 - 为什么门禁：回溯不足语义是**抛异常**（§4.2），不允许钳位/NaN 参与计算，所以不能像 TB 那样从 bar 0 起就回调；等窗口填满再开始，回调里所有 `[n]` 都是真实历史值，策略不需要自己判预热长度。
-- 冷启动（归档域无数据，v1 现状）：从第一根 live bar 起静默填充，到 `bar_index == max_lookback` 时开始回调。v1 默认 `max_lookback` 是 24 小时 bar 数（1 分钟周期 1440 根），按真实交易时间约 **2.4 个交易日**；归档域落地后缩短为预热回放（§5.3），默认回放 10,000 根。
+- 冷启动（归档域无数据，v1 现状）：从第一根 live bar 起静默填窗，到 `bar_index == max_lookback` 时开始回调。v1 默认 `max_lookback` 是 24 小时 bar 数（1 分钟周期 1440 根），按真实交易时间约 **2.4 个交易日**；归档域落地后缩短为预热回放（§5.3），默认回放 10,000 根。
 - `on_init` 在实例创建时调用（早于任何 bar，`bar_index == -1`）；`on_destroy` 在实例销毁时调用；`on_params_update` 只投递给已进入回调阶段的实例（此前挂起并在首根回调后合并投递），避免在 `size == 0` 时读序列。
 
 ### 5.3 历史回放（有归档数据时）
@@ -505,7 +534,7 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 
 ```
 加载 K 根历史 bar（K = warmup 深度，K ≥ max_lookback；最后一根允许未走完）
-  → 先静默填充前 max_lookback 根（合成 tick 喂同一个 builder，门禁抑制 B 回调）
+  → 先静默填窗前 max_lookback 根（合成 tick 喂同一个 builder，门禁抑制 B 回调）
   → 对剩余 K - max_lookback 根逐根回放（每根 4 个合成 tick，每 tick 一次 on_bar_update）
        B 照常运行；下单只做虚拟成交（更新逻辑持仓/Tier 1/各账户逻辑持仓），不落地、不逐笔上报
   → 缓冲 tick 续接（规则见上）→ 全部品种完成后一次性上报各账户逻辑持仓
@@ -513,11 +542,11 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 ```
 
 - 合成 tick 顺序：上涨 `O→L→H→C`，下跌 `O→H→L→C`，平盘 `O→L→H→C`；量/额/持仓量按 `k/4` 线性累计（合成近似，测试锁定）。
-- 每根回放 bar 的事件序列与实盘同构：`on_bar_close(上一根) → 推进 → on_bar_open → on_bar_update ×4`；回放期间窗口同样保持 `size == max_lookback`（静默填充已把窗口填满）。
+- 每根回放 bar 的事件序列与实盘同构：`on_bar_close(上一根) → 推进 → on_bar_open → on_bar_update ×4`；回放期间窗口同样保持 `size == max_lookback`（静默填窗已把窗口填满）。
 - **单一 tick→bar 路径**：静默填窗、回放、live 都走同一个 `IntradayBarBuilder`（§5.4）——回放/静默填窗把归档 bar 拆成合成 tick 逐笔喂入，没有「直接写最终 OHLC」的旁路，否则会出现两套 bar 语义；合成 tick 的 OHLC/量额/持仓构造必须让 builder 产出的 `Bar` 与归档 bar 一致（单元测试锁定）。
 - **每个品种的锚点** = 该品种窗口开始接收 bar 的第一根（进程启动时加载历史的最早一根，或 `instrument add` 时加载历史的最早一根）；回放从锚点开始，按品种顺序推进，各品种锚点独立，不需要跨实例拼接或视图重绑。
 - **数据源不可用/出错**：`dz_db_query_bar` 返回 NULL 且错误码为 `DZ_EC_NOT_IMPLEMENTED`（v1 现状）→ 按「无历史数据」处理，不是错误；其它查询错误 → 记 WARN、按无历史降级（历史是增强项，不阻断启动）。`warmup` 在无历史时被忽略并打 INFO/WARN。
-- **可用历史不足 `max_lookback` 根**（`warmup.from` 太近或归档起始较晚）：先静默填入可用部分，余下从 live bar 继续静默填充到窗口满再回调（INFO 记录实际根数），不视为错误；历史 bar 数据源的缺口/拼接契约归归档域（#4）。
+- **可用历史不足 `max_lookback` 根**（`warmup.from` 太近或归档起始较晚）：先静默填入可用部分，余下从 live bar 继续静默填窗到窗口满再回调（INFO 记录实际根数），不视为错误；历史 bar 数据源的缺口/拼接契约归归档域（#4）。
 - **启动回放阻塞事件派发**：回放发生在 `on_start` 内，期间不派发 SHUTDOWN/UI_INPUT/定时器帧；master Stop 超时默认 3s 强杀。启动成本上限与 WARN 见本节末尾；需要停止时接受“直接重来”（无遗留状态）。
 - **回放期成交是虚拟的**（ADR 0030）：订单不落地、不逐笔上报；回放结束一次性上报各账户逻辑持仓后进入 live。停机期间的真实成交在启动时不可见（SDK ingest 水位过滤），逻辑与实际的差异由操作员一键同步处理。**回放深度就是恢复范围**——持仓周期超出 `warmup` 窗口时恢复不完整（TB 图表同款限制）。
 - **v1 无归档数据时是冷启动**：不回放、逻辑持仓从 0 开始；重启后实盘与逻辑的偏差（进程关闭期间的信号）由操作员一键同步处理，框架不做启动校验。
@@ -712,7 +741,7 @@ scale_min_one：目标非零时至少 1 手（默认关）
 | `period_sec` | ✅ | — | ∈ {60, 180, 300, 900}（v1） |
 | `max_lookback` | ❌ | `clamp(86400/period_sec, 32, 2048)`（§4.5） | 整数 ∈ [32, 16384]；调大以支持更深回溯 |
 | `reserve_bars` | ❌ | `max(2×86400/period_sec, R_min)`；`R_min = max(2, ceil(1.1×86400/period_sec))` | 整数 ∈ [`R_min`, 8192]；允许小于默认值（把回卷兜底拉进盘中，性能自负） |
-| `warmup` | ❌ | `{"bars": 10000}`，并自动提升到 ≥ `max_lookback` | `bars` 与 `from` 二选一（互斥）；`bars` 整数 ∈ [`max_lookback`, 10,000,000]；`from` 为 `YYYY-MM-DD` 本地日期且不晚于今天（可用历史不足 `max_lookback` 根时按可用部分静默填充、余下 live 补足，INFO 记录） |
+| `warmup` | ❌ | `{"bars": 10000}`，并自动提升到 ≥ `max_lookback` | `bars` 与 `from` 二选一（互斥）；`bars` 整数 ∈ [`max_lookback`, 10,000,000]；`from` 为 `YYYY-MM-DD` 本地日期且不晚于今天（可用历史不足 `max_lookback` 根时按可用部分静默填窗、余下 live 补足，INFO 记录） |
 | `instruments` | ✅ | — | 非空字符串数组（纯合约代码，无品种参数）；元素非空且不得重复 |
 | `params` | ❌ | `{}` | 全局参数（每品种相同；策略手数等普通参数由策略自定义，框架不做换算；挂靠比率不属于参数，见上） |
 
@@ -914,7 +943,7 @@ status | quit
 
 ## 11. 测试与验收
 
-> **已交付的测试（#157）**：`libs/strategy_api/tests/bar_strategy_framework_test.cpp`（Seam A：临时
+> **已交付的测试（#157 / #158）**：`libs/strategy_api/tests/bar_strategy_framework_test.cpp`（Seam A：临时
 > `DZTRADER_HOME` + 真实事件/行情通道，测试线程内跑 `run_bar_strategy<FakeStrategy>()`，独立
 > writer 注入 TICK/SHUTDOWN 帧）覆盖：回调序列 `close → open → update`、每笔 tick 恰好一次
 > update、`bar_index` 0 起单调且 bar 内不变、`on_bar_open` 时 OHLC 等于本笔 tick 价、`on_init`
@@ -922,8 +951,17 @@ status | quit
 > 证据）、`on_destroy` 每实例一次、异常隔离**五条**路径（`on_init` / `on_bar_open` /
 > `on_bar_update` / `on_bar_close` / `on_destroy` 抛异常，均只影响本实例且进程退出码 0）、
 > 退化小节表合法、覆盖全
-> 交易日内秒并被 `is_degraded_session_table()` 识别、缺失/非法配置的非 0 退出。下列清单是随
-> 各票逐步补齐的完整目标。
+> 交易日内秒并被 `is_degraded_session_table()` 识别、缺失/非法配置的非 0 退出。
+>
+> **#158 新增（同一文件）**：回调门禁（静默填窗 `max_lookback` 根零回调）、首个回调序列
+> `close(静默填窗最后一根) → open → update`、回调期恒有 `size == max_lookback` 且 `[n]`
+> 全部可读、首根 bar 从未被报告为收盘（`FirstBarIsNeverReportedAsClosed`）、最后一根 bar 不主动收（无 flush）、用户序列静默期写声明初值
+> （两条：`double` + `int64_t`）、`make_series` 在 `on_bar_update` 调用响亮失败并经异常边界
+> 标记实例失败、回卷两种路径（18:00 定时器 / 推进前兜底）对 B 完全等价（同一 tick 脚本两轮
+> 逐字段比较回调序列、`bar_index`、窗口长度、价格历史与用户序列历史）。
+> `series_window_test.cpp` 新增逐步回卷（`relocate_array` + `finish_relocate`）与一次性回卷
+> （`relocate_window`）的等价性、`finish_relocate` 幂等性、以及**回卷前后窗口逐位不变**的
+> 直接不变式（AC6 的正面断言，跨路径比较无法替代）。下列清单是随各票逐步补齐的完整目标。
 
 - 单元：
   - Series：`[n]` 读值/负索引/`n ≥ size` 抛 `std::out_of_range`、消息含 `n/size/max_lookback`；`span()` 长度与顺序；`size/max_lookback` 语义；write-only-`[0]` 的编译期约束（无 `push_back/resize`）；Debug assert。
@@ -979,7 +1017,7 @@ status | quit
 | `MaxBarsBack` / `SetBackBarMaxCount` | `max_lookback`（可读深度，实例创建时定死、不扩容；默认按周期，可显式配置） |
 | 图表历史起始日 / MC “Load additional bars: From date” | `warmup.from`（起始日期；同时是回放续仓的恢复范围） |
 | MC “Load additional bars: N bars” / TB 回放深度 | `warmup.bars`（默认 10,000，与 `max_lookback` 独立） |
-| `CurrentBar` | `ctx.bar_index()`（0 起、单调，classic TB 同口径；MC 从 1 起需 −1）。**首个回调的 `bar_index == max_lookback`（此前 `max_lookback` 根静默填充）**；TB 从 bar 0 起用钳位值回调，我们不这么做（见下一行） |
+| `CurrentBar` | `ctx.bar_index()`（0 起、单调，classic TB 同口径；MC 从 1 起需 −1）。**首个回调的 `bar_index == max_lookback`（此前 `max_lookback` 根静默填窗）**；TB 从 bar 0 起用钳位值回调，我们不这么做（见下一行） |
 | `BarCount` | `ctx.bar_index() + 1`；判断“历史够不够”用 `ctx.close.size()`（回调期恒等于 `max_lookback`） |
 | 回溯不足（classic TB：`CurrentBar=0` 时 `Close[1]` 取当前 Close 代替） | **抛 `std::out_of_range`**（响亮失败，调大 `max_lookback`）；不钳位、不产生 NaN、不返回初值。用户序列历史位在静默填窗期为 `init` |
 | 预热期下单 | 只做虚拟成交（重建逻辑持仓），不落地（TB 图表虚拟账户口径） |

@@ -9,9 +9,11 @@
  *   - 容量：`resolve_capacity()` 按周期推导 `max_lookback` / `reserve_bars` /
  *     `buffer_bars`，显式覆盖按区间校验；不合法一律抛 `std::invalid_argument`
  *     （消息含字段名 / 当前值 / 合法区间），不静默修正（组件文档 §4.5、§7）。
- *   - 窗口：`prepare_advance()` / `commit_advance()` 成对推进一根 bar，
- *     `relocate_window()` 做纯布局回卷。三者都接收**全部数组**（7 条价格 + 本实例的
- *     用户序列）作为变参指针包，保证一个 `WindowState` 下的所有数组几何永远一致——
+ *   - 窗口：推进分两步——先「必要时回卷、拿到写入槽位」（`prepare_advance()`，变参便捷形；
+ *     `InstrumentContext` 因为用户序列条数在运行期才知道，自己逐条调 `relocate_array()` 后
+ *     直接读 `window.end`），再 `commit_advance()`（`++end` / `size` 递增）。回卷同样有两种
+ *     调用形态：`relocate_window()`（变参）与 `relocate_array()` + `finish_relocate()`
+ *     （逐条）。都共享同一份搬移实现，保证一个 `WindowState` 下的所有数组几何永远一致——
  *     这正是「价格序列与用户序列共用一个 WindowState」的实现方式。
  *
  * 回卷是纯布局变换：不改任何元素值、不改 `size`、不改 `bar_index`；任何两次操作之间
@@ -243,13 +245,30 @@ inline void relocate_array_one(const WindowState& window, T* base) noexcept {
     std::memmove(base, base + offset, count * sizeof(T));
 }
 
-/// @brief 对全部数组逐个回卷（空指针跳过：未注册的用户序列槽位）
-template <class... Arrays>
-inline void relocate_all(const WindowState& window, Arrays... arrays) noexcept {
-    (relocate_array_one(window, arrays), ...);
+}  // namespace series_internal_detail
+
+/**
+ * @brief 主动回卷一（固定数组集合）：先把每一条数组搬回头部
+ *
+ * 与 {@link finish_relocate} 成对使用。**拆成两步是因为数组数量在运行期才知道**：
+ * 价格数组固定 7 条（可用 {@link relocate_window} 一次搬完），用户序列由 B 在 `on_init`
+ * 里注册、条数随策略而定，`InstrumentContext` 只能逐条调用本函数、最后统一收尾。
+ * 两步之间窗口几何仍自洽（`window_consistent()` 成立），只是还没搬回头部。
+ *
+ * @param window 本品种共享的窗口几何
+ * @param base   一条数组的物理首地址（nullptr 槽位跳过）
+ */
+template <class T>
+inline void relocate_array(WindowState& window, T* base) noexcept {
+    series_internal_detail::relocate_array_one(window, base);
 }
 
-}  // namespace series_internal_detail
+/**
+ * @brief 主动回卷二（收尾）：全部数组搬完后把 `end` 置为 `size`
+ *
+ * 幂等：`end == size` 时是空操作，重复调用不破坏几何。
+ */
+inline void finish_relocate(WindowState& window) noexcept { window.end = window.size; }
 
 /**
  * @brief 主动回卷（18:00 定时器主路径，也是推进前的兜底）
@@ -257,13 +276,16 @@ inline void relocate_all(const WindowState& window, Arrays... arrays) noexcept {
  * 把窗口 `[end - size, end)` 搬回 `[0, size)` 并把 `end` 置为 `size`；所有数组一起搬，
  * 几何保持一致。纯布局变换：元素值、`size`、`bar_index` 全部不变。
  *
+ * 数组集合在编译期已知时用本函数；集合条数在运行期才知道（用户序列）时用
+ * {@link relocate_array} + {@link finish_relocate}——两者共用同一份搬移实现。
+ *
  * @param window 本品种共享的窗口几何
  * @param arrays 本品种的全部数组（7 条价格 + 全部用户序列；允许 nullptr 槽位）
  */
 template <class... Arrays>
 inline void relocate_window(WindowState& window, Arrays... arrays) noexcept {
-    series_internal_detail::relocate_all(window, arrays...);
-    window.end = window.size;
+    (relocate_array(window, arrays), ...);
+    finish_relocate(window);
 }
 
 /**
@@ -272,6 +294,10 @@ inline void relocate_window(WindowState& window, Arrays... arrays) noexcept {
  * 组件文档 §4.1 的顺序是「① 回卷 → ② 写 `base_[end]` → ③ `++end` / `size` 递增」，
  * 因此本函数**只**完成 ① 并返回槽位；调用方把价格/量额/用户序列写进该槽位后，
  * 必须调用 {@link commit_advance} 完成 ③。两步成对使用，否则窗口几何与已写数据错位。
+ *
+ * 数组集合在编译期已知时用本函数（7 条价格 + 固定条数的用户序列，如单元测试的夹具）；
+ * 用户序列条数在运行期才知道时（`InstrumentContext` 的真实形态）改用
+ * {@link relocate_array} + {@link finish_relocate} 做同样的 ①，再直接写 `window.end`。
  *
  * @pre `buffer_bars > max_lookback`（即 `reserve_bars >= 1`）。回卷把 `end` 置为 `size`，
  *      只有余量非空才能保证下一次写入落在缓冲内；`resolve_capacity` 保证 `reserve_bars >= 2`，

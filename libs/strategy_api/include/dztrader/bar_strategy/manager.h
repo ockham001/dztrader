@@ -16,10 +16,10 @@
  * 边界；捕获后把**该实例**标记失败（不再回调、后续 tick 直接丢弃），进程与其它品种继续。
  * `on_init` 抛异常 = 该品种创建失败（不加入 map），继续创建其它品种。
  *
- * v1 骨架范围（#157）：配置加载与启动诊断、订阅、tick→bar、回调分发、异常隔离、退化交易
- * 小节表。回调门禁/静默填窗与 18:00 回卷（#158）、交易意图与逻辑台账（#159）、挂靠缩放
- * 与上报（#160）、历史预热回放（#161）、动态管理与参数（#162）、竞价相位（#163）后续接入，
- * 接缝见各成员注释。
+ * 已落地（#157 + #158）：配置加载与启动诊断、订阅、tick→bar、回调分发、异常隔离、退化交易
+ * 小节表，以及**回调门禁 + 静默填窗 + 用户序列 + 18:00 回卷**（§4.4/§5.2）。交易意图与逻辑
+ * 台账（#159）、挂靠缩放与上报（#160）、历史预热回放（#161）、动态管理与参数（#162）、竞价
+ * 相位（#163）后续接入，接缝见各成员注释。
  */
 #ifndef DZTRADER_BAR_STRATEGY_MANAGER_H_
 #define DZTRADER_BAR_STRATEGY_MANAGER_H_
@@ -104,6 +104,18 @@ concept HasOnBarClose =
 }
 
 }  // namespace manager_internal
+
+/**
+ * @brief 每日回卷的默认墙钟时刻（18:00，距午夜毫秒；组件文档 §4.4）
+ *
+ * 18:00 位于日盘收盘之后、夜盘开盘之前，是天然静默窗。生产入口恒用本值；测试经
+ * `bar_strategy_internal::run_bar_strategy_with` 注入一个近未来的时刻以便确定性触发
+ * （与 #161 的交易小节表注入同风格：都是内部接缝，不进公开承诺面）。
+ *
+ * 放在 `dztrader` 命名空间而不是 `manager_internal`：后者只装 B 回调的编译期探测，
+ * 塞一个回卷时刻常量会让这个命名空间的含义变糊。
+ */
+inline constexpr std::int32_t DEFAULT_ROLLBACK_CLOCK_MS = 18 * 60 * 60 * 1000;
 
 /**
  * @brief v1 内置退化交易小节表（组件文档 §5.5）
@@ -225,9 +237,11 @@ public:
      * 「是否退化」由表自身判定（`is_degraded_session_table`），不另设标志位：两个独立状态
      * 会互相矛盾（注入真实表却仍打印 degraded 诊断），而这条诊断正是 §5.5 要保证的口径。
      */
-    explicit BarStrategyManager(const bar::TradingSessionTable& session_table)
+    explicit BarStrategyManager(const bar::TradingSessionTable& session_table,
+                                std::int32_t rollback_clock_ms = DEFAULT_ROLLBACK_CLOCK_MS)
         : session_table_(session_table),
-          degraded_(is_degraded_session_table(session_table)) {}
+          degraded_(is_degraded_session_table(session_table)),
+          rollback_clock_ms_(rollback_clock_ms) {}
 
     BarStrategyManager(const BarStrategyManager&) = delete;
     BarStrategyManager& operator=(const BarStrategyManager&) = delete;
@@ -237,7 +251,7 @@ public:
     // ==== 引擎回调（`run_strategy` 鸭子类型接入）====
 
     /**
-     * @brief 启动：读配置 → 打印有效配置 → 订阅 → 逐品种装配实例并调 `on_init`
+     * @brief 启动：读配置 → 打印有效配置 → 订阅 → 装配实例并调 `on_init` → 排 18:00 回卷
      *
      * 失败（配置缺失/非法、订阅失败）时打印诊断、置非 0 退出码并返回，不进入事件循环；
      * 单个品种的 `on_init` 抛异常只丢弃该品种（组件文档 §4.6）。
@@ -255,6 +269,7 @@ public:
             return;
         }
         create_instances();
+        schedule_daily_rollback();
     }
 
     /**
@@ -278,8 +293,30 @@ public:
         node->second.builder.on_tick(tick);
     }
 
-    /// @brief 停止：逐品种调 `on_destroy` 后销毁节点（进程内最后一个 B 回调）
+    /**
+     * @brief 定时器帧：识别本框架自己的回卷定时器并执行回卷（组件文档 §4.4）
+     *
+     * **只处理自己的 `timer_id`**：引擎把本策略收到的定时器帧都投给 `on_schedule`，
+     * `timer_id` 是唯一判据。v1 的 B 拿不到 `DzContext`、`InstrumentContext` 也不暴露
+     * `dz_schedule_*`，因此这份帧在 v1 里不可能属于别人；按 id 过滤仍是要的——将来若给 B
+     * 开放定时器 API，或 A 增加第二个定时器（如 #161 的回放进度），不按 id 过滤就会把别人的
+     * 触发当成回卷。未知 id 直接忽略，不当作错误。
+     *
+     * 回卷对每品种执行 7 条价格数组 + 全部用户序列的搬移，B 完全不可见（纯布局）。
+     *
+     * @param ev 定时器触发事件（`timer_id` 与注册返回值一致）
+     */
+    void on_schedule(const DzScheduleEvent& ev) {
+        if (startup_failed_ || rollback_timer_ == DZ_TIMER_INVALID ||
+            ev.timer_id != rollback_timer_) {
+            return;
+        }
+        relocate_live_instruments();
+    }
+
+    /// @brief 停止：注销回卷定时器 → 逐品种调 `on_destroy` → 销毁节点
     void on_stop() {
+        cancel_daily_rollback();
         for (auto& [instrument_id, node] : instruments_) {
             dispatch_on_destroy(node);
         }
@@ -296,6 +333,60 @@ private:
     template <class>
     friend struct BarEventSink;  // 事件适配器经 dispatch_* 反向调用 A
 
+    /// @brief 注销 18:00 回卷定时器（引擎随后 `dz_release` 也会清，这里显式收回所有权）
+    void cancel_daily_rollback() noexcept {
+        if (dz_ == nullptr || rollback_timer_ == DZ_TIMER_INVALID) {
+            return;
+        }
+        (void)dz_schedule_cancel(dz_, rollback_timer_);
+        rollback_timer_ = DZ_TIMER_INVALID;
+    }
+
+    /**
+     * @brief 每日 18:00 回卷定时器（组件文档 §4.4「v1 主路径」）
+     *
+     * 18:00 在日盘收盘之后、夜盘开盘之前，是天然静默窗：没有 tick 正在处理，回卷只造成一次
+     * 微秒级停顿。定时器只做布局（{@link InstrumentContext::relocate}），**不定义 bar 边界、
+     * 不关闭任何形成中的 bar**（§5.4：bar 生命周期纯 tick 驱动）。
+     *
+     * 注册失败不阻断启动：回卷还有推进前内联兜底（`advance_bar` 里 `end` 用尽时搬），
+     * 定时器只是把搬移挪到静默窗、避开盘中路径的性能优化。打一行诊断说明退化了。
+     */
+    void schedule_daily_rollback() {
+        if (dz_ == nullptr) {
+            return;
+        }
+        rollback_timer_ = dz_schedule_daily(dz_, rollback_clock_ms_);
+        if (rollback_timer_ == DZ_TIMER_INVALID) {
+            std::cerr << std::format(
+                             "daily rollback timer unavailable | clock_ms={} reason=\"{}\" "
+                             "fallback=inline_before_advance",
+                             rollback_clock_ms_, dz_errmsg())
+                      << '\n';
+        }
+    }
+
+    /**
+     * @brief 对全部存活实例执行回卷（18:00 定时器路径）
+     *
+     * 失败实例跳过：它不再接收回调，搬移没有收益（且不值得为一个已死的实例做 memmove）。
+     * 打一行诊断（每天一次）：回卷是纯布局操作、B 不可见，运维侧唯一的证据就是这行日志——
+     * 没有它，「定时器是否真的触发」只能靠猜。
+     */
+    void relocate_live_instruments() {
+        std::size_t relocated = 0;
+        for (auto& [instrument_id, node] : instruments_) {
+            if (node.ctx.is_failed()) {
+                continue;
+            }
+            node.ctx.relocate();
+            ++relocated;
+        }
+        std::cerr << std::format("daily rollback | instrument_count={} clock_ms={}", relocated,
+                                 rollback_clock_ms_)
+                  << '\n';
+    }
+
     // ==== 事件适配器回调（`BarEventSink` 调用；A 内部，B 不可见）====
 
     /**
@@ -303,6 +394,8 @@ private:
      *
      * 推进后 `[0]` 已是新根，且 OHLC 由 builder 用本笔 tick 播种完毕——B 在 `on_bar_open`
      * 里读 `ctx.close[0]` 即本笔 tick 价（组件文档 §5.1）。
+     *
+     * **回调门禁（§5.2）**：推进与静默填窗照常进行，但窗口填满前不调 B。
      */
     void dispatch_bar_open(InstrumentNode<Strategy>& node, const bar::Bar& bar, bool is_auction) {
         (void)is_auction;  // ctx.is_auction() 随 #163 接入
@@ -310,6 +403,9 @@ private:
             return;
         }
         node.ctx.advance_bar(bar);
+        if (!bar_callback_enabled(node.ctx)) {
+            return;  // 静默填窗：B 零回调
+        }
         if constexpr (manager_internal::HasOnBarOpen<Strategy>) {
             invoke_b(node, "on_bar_open",
                      [](Strategy& instance, InstrumentContext& ctx) { instance.on_bar_open(ctx); });
@@ -323,6 +419,9 @@ private:
             return;
         }
         node.ctx.update_current_bar(bar);
+        if (!bar_callback_enabled(node.ctx)) {
+            return;  // 静默填窗：B 零回调
+        }
         if constexpr (manager_internal::HasOnBarUpdate<Strategy>) {
             invoke_b(node, "on_bar_update", [](Strategy& instance, InstrumentContext& ctx) {
                 instance.on_bar_update(ctx);
@@ -334,6 +433,12 @@ private:
      * @brief `on_bar_close` 事件：窗口尚未推进，`[0]` 仍是被关闭的上一根 → 调 B
      *
      * `bar` 不入窗口：被关闭的这根在它自己的 `open` / `update` 事件里已经写进 `[0]`。
+     *
+     * **回调门禁（§5.2）**：这里判的是「被关闭的那根是否已进入回调期」。上一根是静默填窗的
+     * 最后一根（`bar_index == max_lookback - 1`）时，它自己就发生在静默期——但那根 close 不
+     * 是「它的」事件而是「新根」的前导，按 AC 必须交付给 B：B 的第一次回调序列是
+     * `close(静默填窗最后一根) → open → update`。因此判据是**即将打开的新根**是否已过门禁，
+     * 等价于「当前窗口已满」（`size == max_lookback`）。
      */
     void dispatch_bar_close(InstrumentNode<Strategy>& node, const bar::Bar& bar, bool is_auction) {
         (void)bar;         // 已写入 [0]，close 不重复写
@@ -341,11 +446,37 @@ private:
         if (node.ctx.is_failed()) {
             return;
         }
+        if (!close_callback_enabled(node.ctx)) {
+            return;  // 静默填窗：B 零回调
+        }
         if constexpr (manager_internal::HasOnBarClose<Strategy>) {
             invoke_b(node, "on_bar_close", [](Strategy& instance, InstrumentContext& ctx) {
                 instance.on_bar_close(ctx);
             });
         }
+    }
+
+    /**
+     * @brief 回调门禁（组件文档 §5.2）：静默填窗期不调 B
+     *
+     * 两层判据对应两类事件，差别正是「填满窗口的那一根」：
+     *
+     * - {@link bar_callback_enabled}（`open` / `update`，推进之后判）：要求
+     *   `bar_index >= max_lookback`。索引 `0 … max_lookback-1` 是静默填窗的 `max_lookback`
+     *   根，即使最后一根推进后 `size` 已到 `max_lookback`，它自己的 open/update 仍属静默期。
+     * - {@link close_callback_enabled}（`close`，推进之前判）：要求 `size == max_lookback`。
+     *   被关闭的这根索引是 `max_lookback-1`（静默填窗最后一根），但这次 close 是**新根的前导**，
+     *   按 AC 必须交付——B 的第一个回调序列是 `close → open → update`。
+     *
+     * 回调期恒有 `size == max_lookback`：`bar_index >= max_lookback` 时 `size` 早已封顶。
+     */
+    [[nodiscard]] static bool bar_callback_enabled(const InstrumentContext& ctx) noexcept {
+        return ctx.bar_index_ >= ctx.window_.max_lookback;
+    }
+
+    /// @brief `close` 的门禁：窗口已填满（此时被关闭的那根是静默填窗最后一根或更晚）
+    [[nodiscard]] static bool close_callback_enabled(const InstrumentContext& ctx) noexcept {
+        return ctx.window_.size == ctx.window_.max_lookback;
     }
 
     /// @brief 一次 B 回调的调用体（异常边界：捕获后标记该实例失败）
@@ -489,6 +620,8 @@ private:
                 continue;  // 配置层已保证 instruments 不重复
             }
             if constexpr (manager_internal::HasOnInit<Strategy>) {
+                // make_series 只在 on_init 内合法；守卫析构自动复位，异常路径无需重复复位
+                const InstrumentContext::OnInitScope on_init_scope(slot->second.ctx);
                 try {
                     slot->second.instance.on_init(slot->second.ctx);
                 } catch (const std::exception& e) {
@@ -523,14 +656,16 @@ private:
         startup_exit_code_ = code;
     }
 
-    DzContext* dz_ = nullptr;  ///< 引擎会话句柄（on_start 注入）
+    DzContext* dz_ = nullptr;                      ///< 引擎会话句柄（on_start 注入）
+    DzTimerId rollback_timer_ = DZ_TIMER_INVALID;  ///< 18:00 回卷定时器 id（无效 = 注册失败）
     /// 启动加载的配置仓（document + effective；`param set` / `account *` 的写回接缝 #162）
     std::unique_ptr<ConfigStore> store_;
     EffectiveConfig effective_;               ///< 启动快照（构建实例用，进程内不变）
     bar::TradingSessionTable session_table_;  ///< 交易小节表（v1 = 退化表）
     bool degraded_ = true;                    ///< 由 session_table_ 判定（诊断口径，§5.5）
-    bool startup_failed_ = false;             ///< 启动失败：请求引擎立即退出
-    std::int32_t startup_exit_code_ = 0;      ///< 启动失败时的进程退出码
+    std::int32_t rollback_clock_ms_ = DEFAULT_ROLLBACK_CLOCK_MS;
+    bool startup_failed_ = false;         ///< 启动失败：请求引擎立即退出
+    std::int32_t startup_exit_code_ = 0;  ///< 启动失败时的进程退出码
     // 最后声明 → 最先析构：节点不会看到已销毁的配置/会话
     std::map<std::string, InstrumentNode<Strategy>, std::less<>> instruments_;  ///< 地址稳定
 };
