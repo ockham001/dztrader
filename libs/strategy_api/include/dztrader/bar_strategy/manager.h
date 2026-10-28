@@ -441,11 +441,14 @@ private:
      * 等价于「当前窗口已满」（`size == max_lookback`）。
      */
     void dispatch_bar_close(InstrumentNode<Strategy>& node, const bar::Bar& bar, bool is_auction) {
-        (void)bar;         // 已写入 [0]，close 不重复写
         (void)is_auction;  // ctx.is_auction() 随 #163 接入
         if (node.ctx.is_failed()) {
             return;
         }
+        // 极值在「bar 收盘前」更新（组件文档 §6.1）：B 在 `on_bar_close` 里读到的
+        // `max_position_profit/loss` 已包含刚收这根 bar 的收盘价。放在门禁之前——门禁只
+        // 决定「要不要调 B」，不决定台账口径；静默填窗期无持仓，调用是无操作。
+        node.ctx.update_profit_extremes(bar.close);
         if (!close_callback_enabled(node.ctx)) {
             return;  // 静默填窗：B 零回调
         }
@@ -575,6 +578,16 @@ private:
                          effective_.config.instruments.size(), effective_.config.period_sec,
                          effective_.max_lookback, effective_.buffer_bars)
                   << '\n';
+        // Tier 1 的浮动盈亏要乘合约乘数，而合约元数据源属 #161 的内部依赖缝：在它落地前
+        // `InstrumentSpec::volume_multiple` 恒为 0，于是 `position_profit()` /
+        // `contract_profit()` / 极值全线返回 0。**这是已知限制，必须在这里说出来**——
+        // 静默返回 0 会让策略作者以为「浮盈真的是 0」，把止损逻辑写成永不触发。
+        if (!has_instrument_metadata_) {
+            std::cerr << std::format(
+                             "instrument metadata unavailable | effect=tier1_profit_zero "
+                             "source=absent_ticket=161")
+                      << '\n';
+        }
     }
 
     /**
@@ -613,6 +626,7 @@ private:
                 .instrument_id = instrument_id,
                 .max_lookback = effective_.max_lookback,
                 .buffer_bars = effective_.buffer_bars,
+                .spec = InstrumentSpec{},
             };
             auto [slot, inserted] =
                 instruments_.try_emplace(instrument_id, *this, init, session_table_, period_sec);
@@ -664,6 +678,8 @@ private:
     bar::TradingSessionTable session_table_;  ///< 交易小节表（v1 = 退化表）
     bool degraded_ = true;                    ///< 由 session_table_ 判定（诊断口径，§5.5）
     std::int32_t rollback_clock_ms_ = DEFAULT_ROLLBACK_CLOCK_MS;
+    /// 是否拿到了合约元数据（#161 的内部缝；缺失时 Tier 1 盈亏恒为 0，见启动诊断）
+    bool has_instrument_metadata_ = false;
     bool startup_failed_ = false;         ///< 启动失败：请求引擎立即退出
     std::int32_t startup_exit_code_ = 0;  ///< 启动失败时的进程退出码
     // 最后声明 → 最先析构：节点不会看到已销毁的配置/会话
