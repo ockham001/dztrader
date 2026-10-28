@@ -79,15 +79,28 @@ enum class ScaleRounding {
     Ceil,     ///< 向多取整
 };
 
+namespace config_internal {
+
+/// @brief 取整策略与 wire 名的唯一映射表（enum→string / string→enum 都查它，避免两处定义）
+struct ScaleRoundingName {
+    ScaleRounding rounding;  ///< 枚举值
+    std::string_view name;   ///< 配置字符串
+};
+
+inline constexpr std::array<ScaleRoundingName, 3> SCALE_ROUNDING_NAMES{{
+    {ScaleRounding::Nearest, "nearest"},
+    {ScaleRounding::Floor, "floor"},
+    {ScaleRounding::Ceil, "ceil"},
+}};
+
+}  // namespace config_internal
+
 /// @brief 取整策略的配置字符串（`nearest` / `floor` / `ceil`），用于写回与日志
 [[nodiscard]] inline std::string_view scale_rounding_name(ScaleRounding rounding) noexcept {
-    switch (rounding) {
-        case ScaleRounding::Nearest:
-            return "nearest";
-        case ScaleRounding::Floor:
-            return "floor";
-        case ScaleRounding::Ceil:
-            return "ceil";
+    for (const config_internal::ScaleRoundingName& entry : config_internal::SCALE_ROUNDING_NAMES) {
+        if (entry.rounding == rounding) {
+            return entry.name;
+        }
     }
     return "nearest";
 }
@@ -116,8 +129,9 @@ struct ScalingConfig {
  * 用默认值 `{bars: 10000}`，并自动提升到 ≥ `max_lookback`（组件文档 §7）。
  */
 struct WarmupSpec {
-    std::optional<std::int32_t> bars;  ///< 预热根数（`[max_lookback, 10000000]`）
-    std::optional<std::string> from;   ///< 起始本地日期 `YYYY-MM-DD`（不晚于今天）
+    std::optional<std::int64_t>
+        bars;  ///< 预热根数（按 JSON 整数 int64 解析；`[max_lookback, 10000000]`）
+    std::optional<std::string> from;  ///< 起始本地日期 `YYYY-MM-DD`（不晚于今天）
 };
 
 /**
@@ -197,6 +211,19 @@ inline constexpr std::string_view VALUE_MISSING = "<missing>";
     return value.dump();
 }
 
+/// @brief k=v 里的值 token：含空格/等号/双引号时加双引号（AGENTS「日志与异常」格式）
+[[nodiscard]] inline std::string quote_value_token(std::string_view value) {
+    if (value.find_first_of(" =\"") == std::string_view::npos) {
+        return std::string(value);
+    }
+    std::string quoted;
+    quoted.reserve(value.size() + 2);
+    quoted += '"';
+    quoted += value;
+    quoted += '"';
+    return quoted;
+}
+
 /// @brief 字符串值的 `value=` 表示（带双引号并按 JSON 规则转义，空串写作 `""`）
 [[nodiscard]] inline std::string describe_string(std::string_view value) {
     return nlohmann::json(std::string(value)).dump();
@@ -215,8 +242,8 @@ template <class T>
 [[noreturn]] inline void throw_range(std::string_view field,
                                      const std::string& value,
                                      std::string_view range) {
-    throw std::invalid_argument(
-        std::format("invalid config | field={} value={} range={}", field, value, range));
+    throw std::invalid_argument(std::format("invalid config | field={} value={} range={}", field,
+                                            value, quote_value_token(range)));
 }
 
 /**
@@ -226,8 +253,8 @@ template <class T>
 [[noreturn]] inline void throw_expected(std::string_view field,
                                         const std::string& value,
                                         std::string_view expected) {
-    throw std::invalid_argument(
-        std::format("invalid config | field={} value={} expected={}", field, value, expected));
+    throw std::invalid_argument(std::format("invalid config | field={} value={} expected={}", field,
+                                            value, quote_value_token(expected)));
 }
 
 /**
@@ -237,8 +264,8 @@ template <class T>
 [[noreturn]] inline void throw_reason(std::string_view field,
                                       const std::string& value,
                                       std::string_view reason) {
-    throw std::invalid_argument(
-        std::format("invalid config | field={} value={} reason={}", field, value, reason));
+    throw std::invalid_argument(std::format("invalid config | field={} value={} reason={}", field,
+                                            value, quote_value_token(reason)));
 }
 
 /// @brief 取对象成员；不存在返回 nullptr
@@ -281,14 +308,21 @@ template <class T>
     return value.get<std::int64_t>();
 }
 
-/// @brief 取 JSON 整数并检查落在 int32 值域（范围校验由调用方按字段语义做）
+/// @brief 取 JSON 整数并检查落在 int32 值域
+///
+/// `range_hint` 非空时，超出 int32 值域按「字段合法区间」报错（而不是只说类型），
+/// 让 AC「错误信息含字段名/当前值/合法区间」对超大值也成立。
 [[nodiscard]] inline std::int32_t require_int32(const nlohmann::json& object,
                                                 const char* field,
-                                                std::string_view label = {}) {
+                                                std::string_view label = {},
+                                                std::string_view range_hint = {}) {
     const std::int64_t raw = require_integer(object, field, label);
     if (raw < INT32_MIN || raw > INT32_MAX) {
-        throw_expected(label.empty() ? std::string_view(field) : label, describe_scalar(raw),
-                       "int32 integer");
+        const std::string_view field_name = label.empty() ? std::string_view(field) : label;
+        if (!range_hint.empty()) {
+            throw_range(field_name, describe_scalar(raw), range_hint);
+        }
+        throw_expected(field_name, describe_scalar(raw), "int32 integer");
     }
     return static_cast<std::int32_t>(raw);
 }
@@ -340,14 +374,10 @@ template <class T>
 [[nodiscard]] inline ScaleRounding parse_scale_rounding_value(const nlohmann::json& object,
                                                               const char* field) {
     const std::string text = require_string(object, field);
-    if (text == "nearest") {
-        return ScaleRounding::Nearest;
-    }
-    if (text == "floor") {
-        return ScaleRounding::Floor;
-    }
-    if (text == "ceil") {
-        return ScaleRounding::Ceil;
+    for (const ScaleRoundingName& entry : SCALE_ROUNDING_NAMES) {
+        if (text == entry.name) {
+            return entry.rounding;
+        }
     }
     throw_range(field, describe_string(text), "[nearest,floor,ceil]");
 }
@@ -511,7 +541,7 @@ inline void validate_warmup_from(const std::string& text, Date today) {
 
     BarStrategyConfig config;
     config.schema_version = require_int32(root, "schema_version");
-    config.period_sec = require_int32(root, "period_sec");
+    config.period_sec = require_int32(root, "period_sec", {}, "[60,180,300,900]");
 
     const auto& instruments = require_array(root, "instruments");
     config.instruments.reserve(instruments.size());
@@ -553,10 +583,19 @@ inline void validate_warmup_from(const std::string& text, Date today) {
     }
 
     if (find_member(root, "max_lookback") != nullptr) {
-        config.max_lookback = require_int32(root, "max_lookback");
+        config.max_lookback =
+            require_int32(root, "max_lookback", {},
+                          std::format("[{},{}]", series_internal::MAX_LOOKBACK_MIN,
+                                      series_internal::MAX_LOOKBACK_MAX));
     }
     if (find_member(root, "reserve_bars") != nullptr) {
-        config.reserve_bars = require_int32(root, "reserve_bars");
+        // 区间下界随周期变化（R_min）；周期短到区间倒置时不给提示，交给 resolve 的周期校验
+        const std::int32_t reserve_floor = series_internal::min_reserve_bars(config.period_sec);
+        const std::string reserve_range =
+            reserve_floor <= series_internal::RESERVE_BARS_MAX
+                ? std::format("[{},{}]", reserve_floor, series_internal::RESERVE_BARS_MAX)
+                : std::string{};
+        config.reserve_bars = require_int32(root, "reserve_bars", {}, reserve_range);
     }
 
     if (const auto* warmup = find_member(root, "warmup"); warmup != nullptr) {
@@ -573,7 +612,7 @@ inline void validate_warmup_from(const std::string& text, Date today) {
             throw_expected("warmup", describe_value(*warmup), "bars or from");
         }
         if (has_bars) {
-            config.warmup.bars = require_int32(*warmup, "bars", "warmup.bars");
+            config.warmup.bars = require_integer(*warmup, "bars", "warmup.bars");
         } else {
             config.warmup.from = require_string(*warmup, "from", "warmup.from");
         }
@@ -695,12 +734,12 @@ inline void validate_warmup_from(const std::string& text, Date today) {
                      "mutually_exclusive");
     }
     if (config.warmup.bars.has_value()) {
-        const std::int64_t bars = static_cast<std::int64_t>(*config.warmup.bars);
+        const std::int64_t bars = *config.warmup.bars;
         if (bars < static_cast<std::int64_t>(effective.max_lookback) || bars > WARMUP_BARS_MAX) {
             throw_range("warmup.bars", describe_scalar(bars),
                         std::format("[{},{}]", effective.max_lookback, WARMUP_BARS_MAX));
         }
-        effective.warmup_bars = *config.warmup.bars;
+        effective.warmup_bars = static_cast<std::int32_t>(bars);
         effective.warmup_source = ConfigValueSource::Explicit;
     } else if (config.warmup.from.has_value()) {
         validate_warmup_from(*config.warmup.from, today);

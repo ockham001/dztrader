@@ -7,7 +7,8 @@
  * `format_effective_accounts` 的返回值、异常类型与消息内容（字段名 / 当前值 / 合法区间）。
  * 文件读写与原子写回在 bar_strategy_config_file_test.cpp。
  *
- * 确定性：所有涉及 `warmup.from` 的用例显式注入 `today`（2026-10-28），不依赖墙钟。
+ * 确定性：除 `WallClockOverloadAcceptsPastWarmupFrom` 显式验证「单参重载读本机今天」外，
+ * 其余涉及 `warmup.from` 的用例都注入 `today`（2026-10-28），不依赖墙钟。
  */
 #include <dztrader/bar_strategy/config.h>
 
@@ -112,20 +113,20 @@ TEST(ConfigPathTest, KeepsDotsInExecutableStem) {
 
 TEST(ConfigPathTest, RejectsEmptyHome) {
     expect_invalid([] { (void)dztrader::config_path(std::filesystem::path{}, "stg_ma"); },
-                   {"field=strategy_home", "value=\"\"", "non-empty directory"});
+                   {"field=strategy_home", "value=\"\"", R"(expected="non-empty directory")"});
 }
 
 TEST(ConfigPathTest, RejectsEmptyStrategyId) {
     expect_invalid([] { (void)dztrader::config_path(std::filesystem::path{"dz"}, ""); },
-                   {"field=strategy_id", "value=\"\"", "non-empty executable stem"});
+                   {"field=strategy_id", "value=\"\"", R"(expected="non-empty executable stem")"});
 }
 
 TEST(ConfigPathTest, RejectsPathSeparatorInStrategyId) {
     // exe stem 不可能含分隔符；显式拒绝，防止越出策略目录读写任意路径
     expect_invalid([] { (void)dztrader::config_path(std::filesystem::path{"dz"}, "a/b"); },
-                   {"field=strategy_id", "value=\"a/b\"", "no path separator"});
+                   {"field=strategy_id", "value=\"a/b\"", R"(expected="no path separator")"});
     expect_invalid([] { (void)dztrader::config_path(std::filesystem::path{"dz"}, "a\\b"); },
-                   {"field=strategy_id", "value=\"a\\\\b\"", "no path separator"});
+                   {"field=strategy_id", "value=\"a\\\\b\"", R"(expected="no path separator")"});
 }
 
 // ============================================================
@@ -152,7 +153,7 @@ TEST(MinimalDefaultConfigTest, OmitsEveryOptionalField) {
 TEST(MinimalDefaultConfigTest, IsIntentionallyNotRunnable) {
     // 生成的默认配置必须仍过不了加载校验（空品种 → 报错退出），否则框架会拿它静默启动
     expect_invalid_json(dztrader::make_minimal_default_config(),
-                        {"field=instruments", "value=[]", "non-empty array"});
+                        {"field=instruments", "value=[]", R"(expected="non-empty array")"});
 }
 
 // ============================================================
@@ -164,8 +165,8 @@ TEST(ParseConfigTest, RejectsNonObjectRoot) {
 }
 
 TEST(ParseConfigTest, RequiresSchemaVersionPeriodAndInstruments) {
-    expect_invalid_json(nlohmann::json::parse("{}"),
-                        {"field=schema_version", "value=<missing>", "expected=required field"});
+    expect_invalid_json(nlohmann::json::parse("{}"), {"field=schema_version", "value=<missing>",
+                                                      R"(expected="required field")"});
 
     nlohmann::json missing_period = minimal_run_config();
     missing_period.erase("period_sec");
@@ -253,14 +254,23 @@ TEST(ParseConfigTest, RejectsInvalidScaleRoundingValue) {
                         {"field=scale_rounding", "value=\"half\"", "range=[nearest,floor,ceil]"});
 }
 
-TEST(ParseConfigTest, RejectsOutOfInt32CapacityValues) {
+TEST(ParseConfigTest, ReportsLegalRangeForOutOfInt32NumericFields) {
+    // AC：错误信息含字段名 / 当前值 / 合法区间——超大整数也按区间报，不只说类型
     nlohmann::json root = minimal_run_config();
-    root["max_lookback"] = std::numeric_limits<std::int64_t>::max();
-    expect_invalid_json(root, {"field=max_lookback", "expected=int32 integer"});
+    root["max_lookback"] = 9'999'999'999LL;
+    expect_invalid_json(root, {"field=max_lookback", "value=9999999999", "range=[32,16384]"});
 
     root = minimal_run_config();
     root["reserve_bars"] = 9'999'999'999LL;
-    expect_invalid_json(root, {"field=reserve_bars", "expected=int32 integer"});
+    expect_invalid_json(root, {"field=reserve_bars", "value=9999999999", "range=[1584,8192]"});
+
+    root = minimal_run_config();
+    root["warmup"] = {{"bars", 9'999'999'999LL}};
+    expect_invalid_json(root, {"field=warmup.bars", "value=9999999999", "range=[1440,10000000]"});
+
+    root = minimal_run_config();
+    root["period_sec"] = 9'999'999'999LL;
+    expect_invalid_json(root, {"field=period_sec", "value=9999999999"});
 }
 
 TEST(ParseConfigTest, ValidatesWarmupStructure) {
@@ -274,7 +284,7 @@ TEST(ParseConfigTest, ValidatesWarmupStructure) {
 
     root = minimal_run_config();
     root["warmup"] = nlohmann::json::object();
-    expect_invalid_json(root, {"field=warmup", "value={}", "expected=bars or from"});
+    expect_invalid_json(root, {"field=warmup", "value={}", R"(expected="bars or from")"});
 
     root = minimal_run_config();
     root["warmup"] = {{"bars", 5.0}};
@@ -328,9 +338,6 @@ TEST(ParseConfigTest, ParsesScaleRoundingVariants) {
         EXPECT_EQ(effective.scaling.rounding, expected) << text;
         EXPECT_EQ(dztrader::scale_rounding_name(expected), text);
     }
-    EXPECT_EQ(dztrader::scale_rounding_name(ScaleRounding::Nearest), "nearest");
-    EXPECT_EQ(dztrader::scale_rounding_name(ScaleRounding::Floor), "floor");
-    EXPECT_EQ(dztrader::scale_rounding_name(ScaleRounding::Ceil), "ceil");
 }
 
 // ============================================================
@@ -358,11 +365,12 @@ TEST(ResolveConfigTest, RejectsPeriodOutsideV1Set) {
 TEST(ResolveConfigTest, RejectsEmptyOrDuplicateInstruments) {
     nlohmann::json root = minimal_run_config();
     root["instruments"] = nlohmann::json::array();
-    expect_invalid_json(root, {"field=instruments", "value=[]", "non-empty array"});
+    expect_invalid_json(root, {"field=instruments", "value=[]", R"(expected="non-empty array")"});
 
     root = minimal_run_config();
     root["instruments"] = nlohmann::json::array({"rb2601", ""});
-    expect_invalid_json(root, {"field=instruments[1]", "value=\"\"", "non-empty string"});
+    expect_invalid_json(root,
+                        {"field=instruments[1]", "value=\"\"", R"(expected="non-empty string")"});
 
     root = minimal_run_config();
     root["instruments"] = nlohmann::json::array({"rb2601", "rb2601"});
@@ -373,14 +381,14 @@ TEST(ResolveConfigTest, RejectsInvalidMaxScale) {
     for (const double max_scale : {0.0, -0.5}) {
         nlohmann::json root = minimal_run_config();
         root["max_scale"] = max_scale;
-        expect_invalid_json(root, {"field=max_scale", "positive finite number"});
+        expect_invalid_json(root, {"field=max_scale", R"(expected="positive finite number")"});
     }
 }
 
 TEST(ResolveConfigTest, RejectsInvalidAccounts) {
     nlohmann::json root = minimal_run_config();
     root["accounts"] = nlohmann::json::array({{{"account_id", ""}, {"scale", 1.0}}});
-    expect_invalid_json(root, {"field=accounts[0].account_id", "non-empty string"});
+    expect_invalid_json(root, {"field=accounts[0].account_id", R"(expected="non-empty string")"});
 
     root = minimal_run_config();
     root["accounts"] = nlohmann::json::array(
@@ -390,7 +398,8 @@ TEST(ResolveConfigTest, RejectsInvalidAccounts) {
     for (const double scale : {0.0, -1.0}) {
         root = minimal_run_config();
         root["accounts"] = nlohmann::json::array({{{"account_id", "CTP001"}, {"scale", scale}}});
-        expect_invalid_json(root, {"field=accounts[0].scale", "positive finite number"});
+        expect_invalid_json(root,
+                            {"field=accounts[0].scale", R"(expected="positive finite number")"});
     }
 }
 
@@ -471,12 +480,13 @@ TEST(ResolveConfigTest, DefensivelyRejectsHandBuiltInvalidConfig) {
     config.instruments = {"rb2601"};
 
     config.max_scale = std::numeric_limits<double>::quiet_NaN();
-    expect_invalid_config(config, {"field=max_scale", "positive finite number"});
+    expect_invalid_config(config, {"field=max_scale", R"(expected="positive finite number")"});
 
     config.max_scale.reset();
     config.accounts.push_back(
         dztrader::AttachedAccount{"CTP001", std::numeric_limits<double>::quiet_NaN()});
-    expect_invalid_config(config, {"field=accounts[0].scale", "positive finite number"});
+    expect_invalid_config(config,
+                          {"field=accounts[0].scale", R"(expected="positive finite number")"});
 
     config.accounts.clear();
     config.warmup.bars = 50'000;
@@ -485,7 +495,8 @@ TEST(ResolveConfigTest, DefensivelyRejectsHandBuiltInvalidConfig) {
 
     config.warmup.from.reset();
     config.instruments.clear();
-    expect_invalid_config(config, {"field=instruments", "value=[]", "non-empty array"});
+    expect_invalid_config(config,
+                          {"field=instruments", "value=[]", R"(expected="non-empty array")"});
 }
 
 // ============================================================
@@ -631,7 +642,7 @@ TEST(ResolveConfigTest, ParsesFullComponentDocExample) {
     EXPECT_EQ(effective.buffer_bars, 4320);
 }
 
-TEST(ResolveConfigTest, ParamsDefaultToEmptyObjectAndPreserveOrderIndependentValues) {
+TEST(ResolveConfigTest, ParamsDefaultToEmptyObjectAndPreserveValues) {
     const EffectiveConfig without_params =
         dztrader::parse_and_resolve_config(minimal_run_config(), kToday);
     EXPECT_TRUE(without_params.config.params.is_object());

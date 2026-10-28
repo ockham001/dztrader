@@ -238,6 +238,21 @@ TEST_F(BarStrategyConfigFileTest, WriteAtomicFailureWhenParentDirectoryMissing) 
     EXPECT_FALSE(fs::exists(root_ / "missing"));
 }
 
+// 失败：rename 失败（目标路径是目录）→ 抛错、临时文件清理、原目录不变。
+TEST_F(BarStrategyConfigFileTest, WriteAtomicFailureWhenTargetPathIsDirectory) {
+    const fs::path path = path_in_root("strategy.json");
+    ASSERT_TRUE(fs::create_directory(path));
+
+    const std::string message = capture_exception<std::runtime_error>(
+        [&] { dztrader::write_json_file_atomic(path, valid_document()); });
+
+    EXPECT_TRUE(contains(message, "config rename failed")) << message;
+    EXPECT_TRUE(contains(message, temp_path_of(path).string())) << message;
+    EXPECT_TRUE(fs::is_directory(path));
+    EXPECT_FALSE(fs::exists(temp_path_of(path)));
+    EXPECT_TRUE(regular_files(root_).empty());
+}
+
 // ============================================================
 // 读取
 // ============================================================
@@ -400,6 +415,36 @@ TEST_F(BarStrategyConfigFileTest, LoadInvalidFileThrowsAndKeepsFileUnchanged) {
     EXPECT_TRUE(contains(message, "field=instruments")) << message;
     EXPECT_EQ(read_text(path), text);
     EXPECT_EQ(regular_files(root_).size(), std::size_t{1});
+}
+
+// 缺失：父路径是普通文件（不是目录）→ 建目录失败，抛 runtime_error、不产生任何文件。
+TEST_F(BarStrategyConfigFileTest, LoadMissingFileFailsWhenParentPathIsRegularFile) {
+    const fs::path parent_as_file = root_ / "blocked";
+    write_text(parent_as_file, "not a directory");
+    const fs::path path = parent_as_file / "strategy.json";
+
+    const std::string message =
+        capture_exception<std::runtime_error>([&] { (void)dztrader::load_config_file(path); });
+
+    EXPECT_TRUE(contains(message, "config dir create failed")) << message;
+    EXPECT_FALSE(fs::exists(path));
+    EXPECT_EQ(read_text(parent_as_file), "not a directory");
+}
+
+// 非法：warmup.from 晚于今天（本机墙钟路径）→ 确定性拒绝（9999-12-31 在任何现实运行时刻都是未来）。
+TEST_F(BarStrategyConfigFileTest, LoadRejectsFutureWarmupFrom) {
+    const fs::path path = path_in_root("future_warmup.json");
+    nlohmann::json document = valid_document();
+    document["warmup"] = {{"from", "9999-12-31"}};
+    const std::string text = document.dump(2);
+    write_text(path, text);
+
+    const std::string message =
+        capture_exception<std::invalid_argument>([&] { (void)dztrader::load_config_file(path); });
+
+    EXPECT_TRUE(contains(message, "field=warmup.from")) << message;
+    EXPECT_TRUE(contains(message, "date not later than")) << message;
+    EXPECT_EQ(read_text(path), text);
 }
 
 // 目录 / 文件名含空格（Windows 宽路径 _wfopen 覆盖；Linux 同样走通）。

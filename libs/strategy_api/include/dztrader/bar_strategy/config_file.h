@@ -21,7 +21,7 @@
  *     再原子写盘、写盘成功后才改内存**；失败抛异常且内存与文件都不变（组件文档 §8
  *     「写盘顺序」）。
  *
- * 写回语义（组件文档 §7 + 设计稿）：
+ * 写回语义（组件文档 §7 / §8）：
  *   - 以**当前 document 为基底**覆盖已知顶层字段 → 未知顶层字段原样保留（前向兼容）。
  *   - 可选字段的**省略态**保留：`max_scale` / `scale_rounding` / `scale_min_one` /
  *     `max_lookback` / `reserve_bars` / `warmup` 在 `BarStrategyConfig` 里是 `nullopt`
@@ -31,6 +31,8 @@
  *
  * 文件字节格式：`value.dump(2)`（2 空格缩进、**不追加**结尾换行），与
  * `libs/core/include/dztrader/core/json_section.h` / `apps/sysmon/config.cpp` 先例一致。
+ * 与平台 `json_section.h` 的原子写**有意不共用**（SDK 公开头不能依赖内部库，且本票要求
+ * 文件 `fsync`），取舍见 ADR 0039。
  *
  * 跨平台：仅 Windows x86_64 / MSVC 与 Linux x86_64 / GCC；其它组合 `#error`
  * （AGENTS 跨平台硬规则，禁止静默回退）。Windows 落盘用 `_wfopen` 走宽路径，不包含
@@ -58,13 +60,25 @@
 #include <utility>
 #include <vector>
 
-#if defined(_WIN32)
+// 跨平台守卫（docs/agents/build-appendix.md「跨平台编译期检查模板」）：
+// 只有 Windows x86_64 / MSVC 与 Linux x86_64 / GCC 两种组合，其它一律 #error，禁止静默回退。
+#if defined(_M_IX86) || defined(__i386__) || defined(_M_ARM) || defined(__arm__) || \
+    defined(_M_ARM64) || defined(__aarch64__)
+#error "unsupported: config_file.h requires 64-bit x86 (Windows MSVC or Linux GCC)"
+#endif
+#if defined(_WIN32) && defined(_M_X64)
+#define DZTRADER_CONFIG_FILE_PLATFORM_WINDOWS 1
+#elif defined(__linux__) && defined(__x86_64__)
+#define DZTRADER_CONFIG_FILE_PLATFORM_LINUX 1
+#else
+#error "unsupported: config_file.h requires Windows x86_64 (MSVC) or Linux x86_64 (GCC)"
+#endif
+
+#ifdef DZTRADER_CONFIG_FILE_PLATFORM_WINDOWS
 #include <io.h>
-#elif defined(__linux__)
+#else
 #include <fcntl.h>
 #include <unistd.h>
-#else
-#error "config_file.h supports only Windows x86_64 / MSVC and Linux x86_64 / GCC"
 #endif
 
 namespace dztrader {
@@ -217,12 +231,10 @@ inline void apply_config(nlohmann::json& document, const BarStrategyConfig& conf
 
 /// @brief 打开同目录临时文件做二进制写（Windows 宽路径：非 ASCII 目录名不丢）
 [[nodiscard]] inline std::FILE* open_write_stream(const std::filesystem::path& path) {
-#if defined(_WIN32)
+#ifdef DZTRADER_CONFIG_FILE_PLATFORM_WINDOWS
     return ::_wfopen(path.wstring().c_str(), L"wb");
-#elif defined(__linux__)
-    return std::fopen(path.string().c_str(), "wb");
 #else
-#error "config_file.h supports only Windows x86_64 / MSVC and Linux x86_64 / GCC"
+    return std::fopen(path.string().c_str(), "wb");
 #endif
 }
 
@@ -234,7 +246,7 @@ inline void flush_and_sync(std::FILE* stream, const std::filesystem::path& tmp_p
     if (std::fflush(stream) != 0) {
         throw std::runtime_error("config write failed |" + path_clause + errno_clause(errno));
     }
-#if defined(_WIN32)
+#ifdef DZTRADER_CONFIG_FILE_PLATFORM_WINDOWS
     const int file_descriptor = ::_fileno(stream);
     if (file_descriptor < 0) {
         throw std::runtime_error("config sync failed |" + path_clause);
@@ -242,23 +254,21 @@ inline void flush_and_sync(std::FILE* stream, const std::filesystem::path& tmp_p
     if (::_commit(file_descriptor) != 0) {
         throw std::runtime_error("config sync failed |" + path_clause + errno_clause(errno));
     }
-#elif defined(__linux__)
+#else
     if (::fsync(::fileno(stream)) != 0) {
         throw std::runtime_error("config sync failed |" + path_clause + errno_clause(errno));
     }
-#else
-#error "config_file.h supports only Windows x86_64 / MSVC and Linux x86_64 / GCC"
 #endif
 }
 
 /// @brief rename 成功后 best-effort 刷父目录（POSIX 持久化目录项）；失败不抛
 ///
-/// 此时文件已成功原子替换，把目录 fsync 失败判成写失败会误导调用方（设计稿决策）；
-/// Windows 没有目录 fsync，由文件系统负责 rename 的元数据持久化。
+/// 此时文件已成功原子替换，把目录 fsync 失败判成写失败会误导调用方（本票 AC 只要求文件
+/// 落盘失败必须报错）；Windows 没有目录 fsync，由文件系统负责 rename 的元数据持久化。
 inline void sync_parent_directory_best_effort(const std::filesystem::path& path) noexcept {
-#if defined(_WIN32)
-    (void)path;
-#elif defined(__linux__)
+#ifdef DZTRADER_CONFIG_FILE_PLATFORM_WINDOWS
+    (void)path;  // Windows 无目录 fsync
+#else
     std::filesystem::path parent = path.parent_path();
     if (parent.empty()) {
         parent = ".";
@@ -269,8 +279,6 @@ inline void sync_parent_directory_best_effort(const std::filesystem::path& path)
     }
     (void)::fsync(directory_fd);
     (void)::close(directory_fd);
-#else
-#error "config_file.h supports only Windows x86_64 / MSVC and Linux x86_64 / GCC"
 #endif
 }
 
@@ -388,6 +396,10 @@ inline void write_json_file_atomic(const std::filesystem::path& path,
  *
  * 存在分支：读 + JSON 解析 + 结构/语义校验；非法抛异常且**不改文件**（配置文件是用户
  * 手写的，框架不静默修正）。
+ *
+ * @note `warmup.from` 的「不晚于今天」上界取本机本地日期（与 #157 的启动时机一致）；
+ *       需要完全确定性时可注入 `resolve_effective_config(config, today)` 的 today 重载，
+ *       文件层测试用远期常量日期（如 9999-12-31）锁定拒绝路径。
  *
  * @param path 配置文件路径
  * @return 加载结果（`Loaded` 时含已校验 document 与有效配置；`GeneratedDefault` 时含
