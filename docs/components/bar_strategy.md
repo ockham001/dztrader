@@ -919,8 +919,9 @@ status | quit
 > writer 注入 TICK/SHUTDOWN 帧）覆盖：回调序列 `close → open → update`、每笔 tick 恰好一次
 > update、`bar_index` 0 起单调且 bar 内不变、`on_bar_open` 时 OHLC 等于本笔 tick 价、`on_init`
 > 时 `bar_index == -1` 且窗口为空、B 保存的视图副本跨 bar 推进仍有效（节点地址稳定性的可观测
-> 证据）、`on_destroy` 每实例一次、异常隔离四条路径（`on_bar_update` / `on_bar_close` /
-> `on_init` / `on_destroy` 抛异常，均只影响本实例且进程退出码 0）、退化小节表合法、覆盖全
+> 证据）、`on_destroy` 每实例一次、异常隔离**五条**路径（`on_init` / `on_bar_open` /
+> `on_bar_update` / `on_bar_close` / `on_destroy` 抛异常，均只影响本实例且进程退出码 0）、
+> 退化小节表合法、覆盖全
 > 交易日内秒并被 `is_degraded_session_table()` 识别、缺失/非法配置的非 0 退出。下列清单是随
 > 各票逐步补齐的完整目标。
 

@@ -809,6 +809,52 @@ TEST_F(BarStrategyFrameworkTest, CallbackExceptionFailsOnlyThatInstance) {
 // ============================================================
 
 /**
+ * `on_bar_open` 抛异常同样只失败该实例。
+ *
+ * 这一路径要单独覆盖：`on_bar_open` 是**窗口已经推进之后**的回调，失败时该实例的
+ * `bar_index` 已经前进，且本笔 tick 的 `on_bar_update` 不该再到达 B——与 `on_bar_update`
+ * 失败（窗口已写、后续 tick 不通）和 `on_bar_close` 失败（窗口未推进）都不同。
+ */
+TEST_F(BarStrategyFrameworkTest, BarOpenExceptionFailsOnlyThatInstance) {
+    write_config({std::string(kInstrumentA), std::string(kInstrumentB)});
+    recorder().set_fault(FaultPlan{.throw_in_init = {},
+                                   .throw_in_bar_open = std::string(kInstrumentA),
+                                   .throw_in_update = {},
+                                   .throw_in_bar_close = {},
+                                   .throw_in_destroy = {}});
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(2));
+
+    // A 首笔 tick 触发 open(0) → 抛异常；本笔 tick 的 update 不应到达 B
+    ASSERT_TRUE(write_tick(make_tick(kInstrumentA, 64830, 100.0, 10, 1000.0)));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarOpen, 1));
+
+    // B 健康：首笔 open + update
+    ASSERT_TRUE(write_tick(make_tick(kInstrumentB, 64831, 200.0, 5, 1000.0)));
+    ASSERT_TRUE(wait_for_count(kInstrumentB, EventKind::BarUpdate, 1));
+
+    // 失败实例的后续 tick 不再回调
+    ASSERT_TRUE(write_tick(make_tick(kInstrumentA, 64890, 101.0, 20, 2010.0)));
+    ASSERT_TRUE(write_tick(make_tick(kInstrumentB, 64892, 200.5, 8, 1600.0)));
+    ASSERT_TRUE(wait_for_count(kInstrumentB, EventKind::BarUpdate, 2));
+    stop_strategy();
+
+    EXPECT_EQ(exit_code_, 0);
+
+    const auto events_a = recorder().for_instrument(kInstrumentA);
+    // init → open(0)[抛异常] → destroy：失败的 open 本身不算「已完成回调」，其后无 update
+    ASSERT_EQ(events_a.size(), 3U) << "callbacks: " << describe_events(events_a);
+    EXPECT_EQ(events_a[0].kind, EventKind::Init);
+    EXPECT_EQ(events_a[1].kind, EventKind::BarOpen);
+    EXPECT_EQ(events_a[2].kind, EventKind::Destroy);
+    EXPECT_EQ(recorder().count(kInstrumentA, EventKind::BarUpdate), 0U)
+        << "no update after a failed on_bar_open";
+
+    // 健康实例不受影响
+    EXPECT_EQ(recorder().count(kInstrumentB, EventKind::BarUpdate), 2U);
+}
+
+/**
  * `on_bar_close` 抛异常同样只失败该实例：被关闭的那根 bar 已经走完 open/update，close 只是
  * 收尾通知；失败后该品种不再回调，其它品种照常。
  */
