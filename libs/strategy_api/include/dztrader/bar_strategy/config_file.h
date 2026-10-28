@@ -117,11 +117,27 @@ struct ConfigLoadResult {
     return status == ConfigLoadStatus::Loaded ? 0 : 1;
 }
 
+/**
+ * @brief 文件层加载/写回的可选注入（测试确定性）
+ *
+ * `warmup.from` 的「不晚于今天」需要当前本地日期。生产路径省略本结构即用本机今天；
+ * 测试可显式注入得到完全确定的行为（含 #162 之后写回路径的一致性——`ConfigStore`
+ * 记住构造时的注入值，`commit()` 重算校验用同一个 today，不用墙钟）。
+ */
+struct ConfigLoadOptions {
+    std::optional<Date> today;  ///< 省略 = 本机本地日期（`DateTime::local_now().date()`）
+};
+
 // ============================================================
 // 内部辅助（dztrader::config_file_internal）
 // ============================================================
 
 namespace config_file_internal {
+
+/// @brief 注入的「今天」；省略取本机本地日期
+[[nodiscard]] inline Date resolve_today(const ConfigLoadOptions& options) {
+    return options.today.has_value() ? *options.today : DateTime::local_now().date();
+}
 
 /// @brief 原子写的同目录临时文件后缀（`<path>.tmp`）
 inline constexpr std::string_view TMP_SUFFIX = ".tmp";
@@ -397,17 +413,18 @@ inline void write_json_file_atomic(const std::filesystem::path& path,
  * 存在分支：读 + JSON 解析 + 结构/语义校验；非法抛异常且**不改文件**（配置文件是用户
  * 手写的，框架不静默修正）。
  *
- * @note `warmup.from` 的「不晚于今天」上界取本机本地日期（与 #157 的启动时机一致）；
- *       需要完全确定性时可注入 `resolve_effective_config(config, today)` 的 today 重载，
- *       文件层测试用远期常量日期（如 9999-12-31）锁定拒绝路径。
+ * @note `warmup.from` 的「不晚于今天」上界默认取本机本地日期（与 #157 的启动时机一致）；
+ *       需要完全确定性的调用方（测试 / 回放）可经 {@link ConfigLoadOptions.today} 注入。
  *
- * @param path 配置文件路径
+ * @param path    配置文件路径
+ * @param options 可选注入（当前只有 `today`；省略 = 本机今天）
  * @return 加载结果（`Loaded` 时含已校验 document 与有效配置；`GeneratedDefault` 时含
  *         生成的默认配置与提示消息）
  * @throw std::runtime_error 读/解析/建目录/默认配置写盘失败
  * @throw std::invalid_argument 配置结构或语义非法
  */
-[[nodiscard]] inline ConfigLoadResult load_config_file(const std::filesystem::path& path) {
+[[nodiscard]] inline ConfigLoadResult load_config_file(const std::filesystem::path& path,
+                                                       const ConfigLoadOptions& options = {}) {
     using namespace config_file_internal;
 
     std::error_code exists_error;
@@ -439,7 +456,7 @@ inline void write_json_file_atomic(const std::filesystem::path& path,
 
     nlohmann::json document = read_json_file(path);
     result.status = ConfigLoadStatus::Loaded;
-    result.effective = parse_and_resolve_config(document);
+    result.effective = parse_and_resolve_config(document, resolve_today(options));
     result.document = std::move(document);
     return result;
 }
@@ -471,10 +488,14 @@ public:
      * @param document 已校验文件 document
      * @param current  已解析的有效配置
      */
-    ConfigStore(std::filesystem::path path, nlohmann::json document, EffectiveConfig current)
+    ConfigStore(std::filesystem::path path,
+                nlohmann::json document,
+                EffectiveConfig current,
+                ConfigLoadOptions options = {})
         : path_(std::move(path)),
           document_(std::move(document)),
-          current_(std::move(current)) {}
+          current_(std::move(current)),
+          options_(std::move(options)) {}
 
     /**
      * @brief 从配置文件构造（读文件 + 解析 + 全量校验；文件必须存在且合法）
@@ -482,10 +503,12 @@ public:
      * @throw std::runtime_error 读/解析失败
      * @throw std::invalid_argument 配置结构或语义非法
      */
-    explicit ConfigStore(const std::filesystem::path& path) {
+    explicit ConfigStore(const std::filesystem::path& path, ConfigLoadOptions options = {}) {
         document_ = read_json_file(path);
-        current_ = parse_and_resolve_config(document_);
+        current_ =
+            parse_and_resolve_config(document_, config_file_internal::resolve_today(options));
         path_ = path;
+        options_ = std::move(options);
     }
 
     /// @brief 当前生效配置（上次成功加载/写回的结果）
@@ -503,12 +526,15 @@ public:
      * @throw std::runtime_error 写盘失败（内存不变，旧文件保持原样）
      */
     EffectiveConfig commit(const BarStrategyConfig& next) {
-        // 1. 先全量校验：写回后的文件必须仍能通过加载校验（不把配置写坏）
-        EffectiveConfig effective = resolve_effective_config(next);
+        // 1. 先全量校验：写回后的文件必须仍能通过加载校验（不把配置写坏）；
+        //    today 与构造时一致（注入值优先，否则本机今天），避免写回路径与加载路径口径漂移。
+        EffectiveConfig effective =
+            resolve_effective_config(next, config_file_internal::resolve_today(options_));
 
-        // 2. 运行期不可变字段守卫（ADR 0027 决策 11：period/max_scale 启动加载一次，
-        //    盘中不可变；命令层收到错误后提示用户重启生效）。浮点直接比较：值来自
-        //    同一 JSON 解析路径，精确相等可接受。
+        // 2. 运行期不可变字段守卫（命令层收到错误后提示用户重启生效）：
+        //    - max_scale：ADR 0027 决策 11「启动加载一次、盘中不可变」；
+        //    - period_sec：启动期架构参数（窗口容量/回放深度/全部实例都按它构建，换周期 = 重启）。
+        //    浮点直接比较：值来自同一 JSON 解析路径，精确相等可接受。
         if (effective.config.period_sec != current_.config.period_sec) {
             throw std::invalid_argument(
                 std::format("invalid config | field=period_sec value={} expected={}",
@@ -538,6 +564,7 @@ private:
     std::filesystem::path path_;  ///< 配置文件路径
     nlohmann::json document_;     ///< 文件 document 镜像（含未知顶层字段）
     EffectiveConfig current_;     ///< 生效配置镜像
+    ConfigLoadOptions options_;   ///< 注入项（today；commit 重算校验沿用）
 };
 
 }  // namespace dztrader

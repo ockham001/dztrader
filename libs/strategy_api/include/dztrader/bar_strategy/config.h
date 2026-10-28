@@ -77,6 +77,7 @@ enum class ScaleRounding {
     Nearest,  ///< 四舍五入（默认）
     Floor,    ///< 向少取整
     Ceil,     ///< 向多取整
+    // 新增取值时必须同步 config_internal::SCALE_ROUNDING_NAMES（唯一映射表与日志/解析共用）
 };
 
 namespace config_internal {
@@ -203,6 +204,19 @@ inline constexpr std::int64_t WARMUP_BARS_DEFAULT = 10'000;
 inline constexpr std::int64_t WARMUP_BARS_MAX = 10'000'000;
 /// @brief v1 允许的周期（秒）
 inline constexpr std::array<std::int32_t, 4> PERIOD_SEC_ALLOWED{60, 180, 300, 900};
+
+/// @brief 周期合法区间的错误消息文案（唯一来源；parse 的越界提示与 resolve 共用）
+[[nodiscard]] inline std::string period_sec_range_text() {
+    std::string text = "[";
+    for (std::size_t i = 0; i < PERIOD_SEC_ALLOWED.size(); ++i) {
+        if (i != 0) {
+            text += ',';
+        }
+        text += std::format("{}", PERIOD_SEC_ALLOWED[i]);
+    }
+    text += ']';
+    return text;
+}
 /// @brief 缺失字段在错误消息里的值表示
 inline constexpr std::string_view VALUE_MISSING = "<missing>";
 
@@ -303,7 +317,7 @@ template <class T>
     }
     if (value.is_number_unsigned() &&
         value.get<std::uint64_t>() > static_cast<std::uint64_t>(INT64_MAX)) {
-        throw_expected(field_name, describe_value(value), "integer");
+        throw_expected(field_name, describe_value(value), "int64 integer");
     }
     return value.get<std::int64_t>();
 }
@@ -540,8 +554,12 @@ inline void validate_warmup_from(const std::string& text, Date today) {
     }
 
     BarStrategyConfig config;
-    config.schema_version = require_int32(root, "schema_version");
-    config.period_sec = require_int32(root, "period_sec", {}, "[60,180,300,900]");
+    const std::int64_t schema_version = require_integer(root, "schema_version");
+    if (schema_version != SCHEMA_VERSION_CURRENT) {
+        throw_expected("schema_version", describe_scalar(schema_version), "1");
+    }
+    config.schema_version = static_cast<std::int32_t>(schema_version);
+    config.period_sec = require_int32(root, "period_sec", {}, period_sec_range_text());
 
     const auto& instruments = require_array(root, "instruments");
     config.instruments.reserve(instruments.size());
@@ -663,7 +681,7 @@ inline void validate_warmup_from(const std::string& text, Date today) {
     }
     if (std::find(PERIOD_SEC_ALLOWED.begin(), PERIOD_SEC_ALLOWED.end(), config.period_sec) ==
         PERIOD_SEC_ALLOWED.end()) {
-        throw_range("period_sec", describe_scalar(config.period_sec), "[60,180,300,900]");
+        throw_range("period_sec", describe_scalar(config.period_sec), period_sec_range_text());
     }
 
     if (config.instruments.empty()) {

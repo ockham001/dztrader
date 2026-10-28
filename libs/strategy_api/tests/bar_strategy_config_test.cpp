@@ -270,7 +270,18 @@ TEST(ParseConfigTest, ReportsLegalRangeForOutOfInt32NumericFields) {
 
     root = minimal_run_config();
     root["period_sec"] = 9'999'999'999LL;
-    expect_invalid_json(root, {"field=period_sec", "value=9999999999"});
+    expect_invalid_json(root, {"field=period_sec", "value=9999999999", "range=[60,180,300,900]"});
+
+    // schema_version 合法值只有 1：超大值也报「合法值」而不是 int32 表示错误
+    root = minimal_run_config();
+    root["schema_version"] = 9'999'999'999LL;
+    expect_invalid_json(root, {"field=schema_version", "value=9999999999", "expected=1"});
+
+    // 超出 int64 的无符号整数：说清表示上限（不是笼统的 integer）
+    root = minimal_run_config();
+    root["schema_version"] = std::numeric_limits<std::uint64_t>::max();
+    expect_invalid_json(root, {"field=schema_version", "value=18446744073709551615",
+                               R"(expected="int64 integer")"});
 }
 
 TEST(ParseConfigTest, ValidatesWarmupStructure) {

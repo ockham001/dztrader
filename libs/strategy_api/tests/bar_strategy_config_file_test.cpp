@@ -5,11 +5,12 @@
  *
  * 断言只落在可观察契约上：磁盘文件内容（重新读回）、返回状态 / message / 异常类型与
  * 消息字段、`ConfigStore::current()`（内存镜像）。IO 失败用例不依赖权限（root 下
- * chmod 无效），统一用「tmp 位置被目录占住」「父目录不存在」制造失败。
+ * chmod 无效），统一用「tmp 位置被目录占住 / rename 目标为目录 / 父路径是普通文件 /
+ * 父目录不存在」制造失败。
  *
  * 确定性：临时目录用 `dztrader::test::unique_temp_dir_tracked()`（进程唯一，ctest -j 下
- * 每个用例是独立进程）；不依赖墙钟——`warmup.from` 用 2020-01-02 这类过去日期，配置层
- * 默认的「今天」必然晚于它。
+ * 每个用例是独立进程）；时间相关用例显式注入 `ConfigLoadOptions.today`（不读墙钟），
+ * 墙钟路径只用 9999-12-31（任何现实运行时刻都是未来）锁定拒绝。
  */
 #include <gtest/gtest.h>
 
@@ -445,6 +446,54 @@ TEST_F(BarStrategyConfigFileTest, LoadRejectsFutureWarmupFrom) {
     EXPECT_TRUE(contains(message, "field=warmup.from")) << message;
     EXPECT_TRUE(contains(message, "date not later than")) << message;
     EXPECT_EQ(read_text(path), text);
+}
+
+// 注入 today：文件路径的 warmup.from 边界可确定性验证（未来拒绝 / 更晚的今天接受）。
+TEST_F(BarStrategyConfigFileTest, InjectsTodayForWarmupFromValidation) {
+    const fs::path path = path_in_root("warmup_today.json");
+    nlohmann::json document = valid_document();
+    document["warmup"] = {{"from", "2026-10-29"}};
+    write_text(path, document.dump(2));
+
+    dztrader::ConfigLoadOptions earlier_today;
+    earlier_today.today = dztrader::Date{2026, 10, 28};
+    const std::string message = capture_exception<std::invalid_argument>(
+        [&] { (void)dztrader::load_config_file(path, earlier_today); });
+    EXPECT_TRUE(contains(message, "field=warmup.from")) << message;
+    EXPECT_TRUE(contains(message, "date not later than 2026-10-28")) << message;
+
+    dztrader::ConfigLoadOptions later_today;
+    later_today.today = dztrader::Date{2026, 10, 30};
+    const ConfigLoadResult loaded = dztrader::load_config_file(path, later_today);
+    ASSERT_EQ(loaded.status, ConfigLoadStatus::Loaded);
+    ASSERT_TRUE(loaded.effective.has_value());
+    EXPECT_EQ(loaded.effective->warmup_from, std::optional<std::string>{"2026-10-29"});
+}
+
+// ConfigStore 构造/commit 沿用注入的 today：写回重算不会因墙钟口径差异拒绝配置
+// （from=2026-10-29 相对注入的 today=2026-10-30 合法、相对本机墙钟是未来）。
+TEST_F(BarStrategyConfigFileTest, ConfigStoreCommitUsesInjectedToday) {
+    const fs::path path = path_in_root("store_today.json");
+    nlohmann::json document = valid_document();
+    document["warmup"] = {{"from", "2026-10-29"}};
+    write_text(path, document.dump(2));
+
+    dztrader::ConfigLoadOptions options;
+    options.today = dztrader::Date{2026, 10, 30};
+    const ConfigLoadResult loaded = dztrader::load_config_file(path, options);
+    ASSERT_EQ(loaded.status, ConfigLoadStatus::Loaded);
+    ASSERT_TRUE(loaded.effective.has_value());
+
+    ConfigStore store(path, loaded.document, *loaded.effective, options);
+    BarStrategyConfig next = store.current().config;
+    next.instruments = {"ag2601"};
+    const EffectiveConfig committed = store.commit(next);
+    EXPECT_EQ(committed.config.instruments, std::vector<std::string>{"ag2601"});
+    EXPECT_EQ(store.current().warmup_from, std::optional<std::string>{"2026-10-29"});
+
+    const ConfigStore reloaded(path, options);
+    EXPECT_EQ(reloaded.current().warmup_from, std::optional<std::string>{"2026-10-29"});
+    EXPECT_EQ(read_text(path), store.document().dump(2));
 }
 
 // 目录 / 文件名含空格（Windows 宽路径 _wfopen 覆盖；Linux 同样走通）。

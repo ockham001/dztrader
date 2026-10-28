@@ -707,6 +707,7 @@ scale_min_one：目标非零时至少 1 手（默认关）
 - **写回复原省略态与未知字段**：`ConfigStore::commit` 以当前文件为基底，只覆盖已知顶层字段；用户省略的可选字段写回后仍省略，文件中未知的顶层字段原样保留。
 - **运行期不可变字段**：`ConfigStore::commit` 拒绝改变 `max_scale`（ADR 0027 决策 11：启动加载一次、盘中不可变）与 `period_sec`（启动期架构参数：换周期需重启重建实例），报错且内存与文件都不变。
 - **加载结果形状**：`load_config_file` 返回 `{status, optional<EffectiveConfig>, document, message}`——缺失生成默认配置时 `effective` 为空（默认配置故意不合法），`document` 是生成的默认配置；`Loaded` 时 `document` 可直接交给 `ConfigStore(path, document, effective)`，避免重读文件与二次解析。
+- **时间注入**：文件层 `load_config_file(path, ConfigLoadOptions{today})` 与 `ConfigStore(..., ConfigLoadOptions)` 可注入「今天」（文件层测试确定性）；`ConfigStore::commit` 重算校验沿用构造时的注入值，不读墙钟；省略 = 本机本地日期（与 #157 启动时机一致）。
 - **派生值不标来源**：`buffer_bars` 是纯派生值（= `max_lookback` + `reserve_bars`），日志不单列来源；`max_scale` / `scale_rounding` / `scale_min_one` 省略即默认、非推导值，日志同样不带 source（以上示例为准）。
 - **有效配置日志**：`warmup` 用 `from` 模式时把 `warmup_bars=` 换成 `warmup_from=YYYY-MM-DD`；0 个挂靠账户时账户行输出 `accounts effective | -`。框架启动时经 stderr 打印一行有效配置 + 一行账户表（header-only 公开代码不引入 spdlog，ADR 0020/0021）。
 - **原子写与既有实现的关系**：SDK 公开头不能依赖 `libs/core` 的 `json_section.h`（分层约束），故文件层自带一份原子写；相对先例额外满足本票 AC 的 `fsync`（文件 `fsync` 硬要求、POSIX 父目录尽力而为），JSON 字节格式沿用 `dump(2)`、**不追加结尾换行**。两份实现并存的取舍见 [ADR 0039](../adr/0039-sdk-config-file-atomic-write.md)。
@@ -895,7 +896,7 @@ status | quit
   - 容量：各周期自动值、显式覆盖、越界报错、`buffer_bars ≤ 24576`、`buffer_bars == max_lookback + reserve_bars`。
   - 指标函数；合成 tick（涨/跌/平、量分配）；bar 桶计算（`(trading_day, 桶)` 边界）。
   - 竞价相位：`ctx.is_auction()` 在 close/open/update 的写入口径（= 触发 tick 相位，§5.1）；用含 Open 竞价窗口的测试小节表验证窗口内事件序；退化表下恒 false（§5.5）。
-  - 配置解析/默认生成/原子写回（含 tmp 占位、rename 目标为目录、父路径不可建目录等失败分支）/`warmup` 互斥与范围校验/有效日志；`schema_version` 必填且只接受 1；`accounts`/`max_scale`/取整策略校验（`scale ∈ (0, max_scale]`、账户 id 不重复）；`instruments` 必填、非空、不重复，`accounts` 可空；顶层未知字段忽略、`accounts` 元素与 `warmup` 对象未知键报错；配置路径按 exe stem 推导（带/不带尾分隔符一致）；`ConfigStore` 写盘失败/非法配置/不可变字段（`period_sec`、`max_scale`）时内存与文件都不变、写回保留未知顶层字段与可选字段省略态。
+  - 配置解析/默认生成/原子写回（含 tmp 占位、rename 目标为目录、父路径不可建目录等失败分支；`warmup.from` 边界含 today 注入）/`warmup` 互斥与范围校验/有效日志；`schema_version` 必填且只接受 1；`accounts`/`max_scale`/取整策略校验（`scale ∈ (0, max_scale]`、账户 id 不重复）；`instruments` 必填、非空、不重复，`accounts` 可空；顶层未知字段忽略、`accounts` 元素与 `warmup` 对象未知键报错；配置路径按 exe stem 推导（带/不带尾分隔符一致）；`ConfigStore` 写盘失败/非法配置/不可变字段（`period_sec`、`max_scale`）时内存与文件都不变、写回保留未知顶层字段与可选字段省略态。
   - 虚拟台账：四函数开平意图全表（`buy`/`sell_short` 反手目标化为 `P=±n`、`sell`/`buy_to_cover` 只减不增与 `n>|P|` 钳制、`volume=0` 的只平不建/全平与两组等价对）；下单意图即时更新 `P`/Tier 1（含跨越 0 的开平归属）；`L_i = f(scale×|P|)` 的三种取整与 `scale_min_one`；每账户手数 = `L_i` 差量；价格对齐与涨跌停夹取；失败实例拒单。
   - 交易意图诊断：`n>0` 方向无效/超仓钳制记 WARN；`volume=0` 且无可平仓不诊断；`volume=0` 实际触发平仓记 INFO；负手数拒单。
   - 交易意图 fanout：N 账户时每单的方向/手数/`effect=AUTO`/价格正确（反手/全平仍是一张差量单）；0 账户时不下单；`L_i` 未变化时跳过发单与上报。
