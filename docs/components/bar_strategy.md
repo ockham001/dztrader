@@ -701,7 +701,7 @@ scale_min_one：目标非零时至少 1 手（默认关）
 
 **实现期确认（#156）**：
 
-- **分层校验**：`parse_config` 只做 JSON 结构/类型/枚举取值/必填存在性；全部语义校验（取值集合、非空/唯一、数值区间、跨字段关系）在 `resolve_effective_config`。数值区间错误消息沿用 `series_internal::resolve_capacity` 的「字段名 / 当前值 / 合法区间」形态，不另写一套。
+- **分层校验**：`parse_config` 做 JSON 结构/类型/枚举取值/必填存在性 + schema 版本值与数值表示层（超出 int32 的周期/容量值按字段合法区间报错）；字段取值集合、非空/唯一、数值区间、跨字段关系等语义校验在 `resolve_effective_config`。数值区间错误消息沿用 `series_internal::resolve_capacity` 的「字段名 / 当前值 / 合法区间」形态，不另写一套。
 - **未知字段**：顶层未知字段忽略（前向兼容，《帧契约：general》§8）；`accounts` 元素与 `warmup` 对象是**闭集内联对象**，未知键视为拼写错误报错（`field=accounts[0].scales ... reason=unknown_field`）——否则写回重建这两个对象时会静默丢失未知键。已知字段出现 JSON `null` 一律非法。
 - **写回后可重新加载**：命令层（#162）写回前必须经 `resolve_effective_config` 全量校验，写回的文件一定还能通过启动加载校验（例：删掉最后一个品种导致 `instruments` 为空 → 该命令失败、内存与文件都不变）。
 - **写回复原省略态与未知字段**：`ConfigStore::commit` 以当前文件为基底，只覆盖已知顶层字段；用户省略的可选字段写回后仍省略，文件中未知的顶层字段原样保留。

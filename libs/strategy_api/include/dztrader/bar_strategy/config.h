@@ -9,9 +9,11 @@
  *
  * 职责边界（本头不碰文件系统，文件面见 `dztrader/bar_strategy/config_file.h`）：
  *
- *   - `parse_config`：JSON 结构 / 类型 / 枚举取值 / 必填存在性。未知字段忽略（前向兼容），
- *     已知字段出现 JSON `null` 一律非法。**不做语义校验**（取值集合、非空/唯一、数值区间、
- *     跨字段关系都在 `resolve_effective_config`）。
+ *   - `parse_config`：JSON 结构 / 类型 / 枚举取值 / 必填存在性 + schema 版本值与数值表示层
+ *     （超出 int32 的周期/容量值按字段合法区间报错——那是「不合法」，只是消息要给出完整区间）。
+ *     未知字段忽略（前向兼容），已知字段出现 JSON `null` 一律非法。**不做字段取值集合与
+ *     跨字段语义校验**（period 取值集合、非空/唯一、数值区间、warmup 与容量的关系都在
+ *     `resolve_effective_config`）。
  *   - `resolve_effective_config`：全部语义校验 + 自动值推导（容量、预热、每序列内存），
  *     产出 {@link EffectiveConfig}（含每个推导值的来源）。不合法一律抛
  *     `std::invalid_argument`，消息含字段名 / 当前值 / 合法区间，不静默修正。
@@ -198,6 +200,11 @@ namespace config_internal {
 
 /// @brief 当前配置 schema 版本（ADR 0027 决策 11：字段用于后续迁移，当前 1）
 inline constexpr std::int32_t SCHEMA_VERSION_CURRENT = 1;
+
+/// @brief schema 版本合法值的错误消息文案（唯一来源；parse 与 resolve 共用）
+[[nodiscard]] inline std::string schema_version_text() {
+    return std::format("{}", SCHEMA_VERSION_CURRENT);
+}
 /// @brief 默认预热根数（组件文档 §7）
 inline constexpr std::int64_t WARMUP_BARS_DEFAULT = 10'000;
 /// @brief 预热根数上限
@@ -535,10 +542,11 @@ inline void validate_warmup_from(const std::string& text, Date today) {
 /**
  * @brief 把配置文件 JSON 解析为落盘字段结构（不做语义校验）
  *
- * 校验范围：根必须是 object；已知字段的类型、必填存在性、枚举取值；`warmup` 的结构
+ * 校验范围：根必须是 object；已知字段的类型、必填存在性、枚举取值；`schema_version`
+ * 必须为当前版本值；超出 int32 的周期/容量值按字段合法区间报错；`warmup` 的结构
  * （object + `bars`/`from` 二选一的**结构**前提：都有或都没有都是错误）；`params` 必须是
- * object。数值区间、非空/唯一、跨字段关系（`scale <= max_scale`、`warmup.bars >= max_lookback`）
- * 在 {@link resolve_effective_config} 里校验。
+ * object。字段取值集合、数值区间、非空/唯一、跨字段关系（`scale <= max_scale`、
+ * `warmup.bars >= max_lookback`）在 {@link resolve_effective_config} 里校验。
  *
  * 未知字段一律忽略（前向兼容，参照《帧契约：general》§8）；已知字段出现 `null` 视为类型错误。
  *
@@ -556,7 +564,7 @@ inline void validate_warmup_from(const std::string& text, Date today) {
     BarStrategyConfig config;
     const std::int64_t schema_version = require_integer(root, "schema_version");
     if (schema_version != SCHEMA_VERSION_CURRENT) {
-        throw_expected("schema_version", describe_scalar(schema_version), "1");
+        throw_expected("schema_version", describe_scalar(schema_version), schema_version_text());
     }
     config.schema_version = static_cast<std::int32_t>(schema_version);
     config.period_sec = require_int32(root, "period_sec", {}, period_sec_range_text());
@@ -677,7 +685,8 @@ inline void validate_warmup_from(const std::string& text, Date today) {
     effective.config = config;
 
     if (config.schema_version != SCHEMA_VERSION_CURRENT) {
-        throw_expected("schema_version", describe_scalar(config.schema_version), "1");
+        throw_expected("schema_version", describe_scalar(config.schema_version),
+                       schema_version_text());
     }
     if (std::find(PERIOD_SEC_ALLOWED.begin(), PERIOD_SEC_ALLOWED.end(), config.period_sec) ==
         PERIOD_SEC_ALLOWED.end()) {

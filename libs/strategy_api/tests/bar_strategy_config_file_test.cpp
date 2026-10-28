@@ -9,8 +9,9 @@
  * 父目录不存在」制造失败。
  *
  * 确定性：临时目录用 `dztrader::test::unique_temp_dir_tracked()`（进程唯一，ctest -j 下
- * 每个用例是独立进程）；时间相关用例显式注入 `ConfigLoadOptions.today`（不读墙钟），
- * 墙钟路径只用 9999-12-31（任何现实运行时刻都是未来）锁定拒绝。
+ * 每个用例是独立进程）；时间相关用例可用 `ConfigLoadOptions.today` 显式注入（不读墙钟）；
+ * 必须走墙钟的用例只用两类恒定事实——9999-12-31 永远是未来（拒绝路径）、2020-01-02
+ * 永远是过去（接受路径）。
  */
 #include <gtest/gtest.h>
 
@@ -470,16 +471,16 @@ TEST_F(BarStrategyConfigFileTest, InjectsTodayForWarmupFromValidation) {
     EXPECT_EQ(loaded.effective->warmup_from, std::optional<std::string>{"2026-10-29"});
 }
 
-// ConfigStore 构造/commit 沿用注入的 today：写回重算不会因墙钟口径差异拒绝配置
-// （from=2026-10-29 相对注入的 today=2026-10-30 合法、相对本机墙钟是未来）。
+// ConfigStore 构造/commit 沿用注入的 today：写回重算不会因墙钟口径差异拒绝配置。
+// 用 9998-12-31 / today=9999-01-01 保证区分力永不过期：若 commit 读墙钟（2026）会必然拒绝。
 TEST_F(BarStrategyConfigFileTest, ConfigStoreCommitUsesInjectedToday) {
     const fs::path path = path_in_root("store_today.json");
     nlohmann::json document = valid_document();
-    document["warmup"] = {{"from", "2026-10-29"}};
+    document["warmup"] = {{"from", "9998-12-31"}};
     write_text(path, document.dump(2));
 
     dztrader::ConfigLoadOptions options;
-    options.today = dztrader::Date{2026, 10, 30};
+    options.today = dztrader::Date{9999, 1, 1};
     const ConfigLoadResult loaded = dztrader::load_config_file(path, options);
     ASSERT_EQ(loaded.status, ConfigLoadStatus::Loaded);
     ASSERT_TRUE(loaded.effective.has_value());
@@ -489,10 +490,10 @@ TEST_F(BarStrategyConfigFileTest, ConfigStoreCommitUsesInjectedToday) {
     next.instruments = {"ag2601"};
     const EffectiveConfig committed = store.commit(next);
     EXPECT_EQ(committed.config.instruments, std::vector<std::string>{"ag2601"});
-    EXPECT_EQ(store.current().warmup_from, std::optional<std::string>{"2026-10-29"});
+    EXPECT_EQ(store.current().warmup_from, std::optional<std::string>{"9998-12-31"});
 
     const ConfigStore reloaded(path, options);
-    EXPECT_EQ(reloaded.current().warmup_from, std::optional<std::string>{"2026-10-29"});
+    EXPECT_EQ(reloaded.current().warmup_from, std::optional<std::string>{"9998-12-31"});
     EXPECT_EQ(read_text(path), store.document().dump(2));
 }
 

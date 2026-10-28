@@ -26,8 +26,9 @@
  *   - 可选字段的**省略态**保留：`max_scale` / `scale_rounding` / `scale_min_one` /
  *     `max_lookback` / `reserve_bars` / `warmup` 在 `BarStrategyConfig` 里是 `nullopt`
  *     时从 document 中 erase，不写成显式默认值（省略 = 用默认值，与显式默认值有别）。
- *   - **运行期不可变字段**（`period_sec`、`max_scale`，ADR 0027 决策 11）：`commit`
- *     在写盘前拒绝修改，消息给出当前值（重启生效，命令层据此返回错误行）。
+ *   - **运行期不可变字段**：`max_scale`（ADR 0027 决策 11：启动加载一次、盘中不可变）与
+ *     `period_sec`（启动期架构参数，换周期需重启重建实例）。`commit` 在写盘前拒绝修改，
+ *     消息给出当前值（命令层据此返回错误行）。
  *
  * 文件字节格式：`value.dump(2)`（2 空格缩进、**不追加**结尾换行），与
  * `libs/core/include/dztrader/core/json_section.h` / `apps/sysmon/config.cpp` 先例一致。
@@ -468,10 +469,11 @@ inline void write_json_file_atomic(const std::filesystem::path& path,
 /**
  * @brief 配置文件的进程内镜像：加载一次，命令写回时**先写盘成功再改内存**
  *
- * 两种构造：
- *   - `ConfigStore(path, document, current)`：直接用 `load_config_file` 的
+ * 两种构造（都可带 `ConfigLoadOptions` 注入「今天」；省略 = 本机本地日期，`commit()` 重算
+ * 校验沿用同一值）：
+ *   - `ConfigStore(path, document, current, options)`：直接用 `load_config_file` 的
  *     `document` + `*effective` 构造（避免框架双读文件 / TOCTOU）；
- *   - `ConfigStore(path)`：便捷构造，读文件 + 解析 + 全量校验（测试与独立工具用）。
+ *   - `ConfigStore(path, options)`：便捷构造，读文件 + 解析 + 全量校验（测试与独立工具用）。
  *
  * `commit()` 的顺序是：`resolve_effective_config` 全量校验（非法抛
  * `std::invalid_argument`，不写盘）→ 运行期不可变字段守卫（`period_sec` / `max_scale`
@@ -487,6 +489,7 @@ public:
      * @param path     配置文件路径
      * @param document 已校验文件 document
      * @param current  已解析的有效配置
+     * @param options  可选注入（`today`；省略 = 本机本地日期）
      */
     ConfigStore(std::filesystem::path path,
                 nlohmann::json document,
@@ -499,7 +502,8 @@ public:
 
     /**
      * @brief 从配置文件构造（读文件 + 解析 + 全量校验；文件必须存在且合法）
-     * @param path 配置文件路径
+     * @param path    配置文件路径
+     * @param options 可选注入（`today`；省略 = 本机本地日期）
      * @throw std::runtime_error 读/解析失败
      * @throw std::invalid_argument 配置结构或语义非法
      */

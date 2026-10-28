@@ -490,6 +490,11 @@ TEST(ResolveConfigTest, DefensivelyRejectsHandBuiltInvalidConfig) {
     BarStrategyConfig config;
     config.instruments = {"rb2601"};
 
+    // parse 层现在先拒绝非 1 的 schema_version；hand-built 配置（命令层）仍须由 resolve 兜住
+    config.schema_version = 2;
+    expect_invalid_config(config, {"field=schema_version", "value=2", "expected=1"});
+    config.schema_version = 1;
+
     config.max_scale = std::numeric_limits<double>::quiet_NaN();
     expect_invalid_config(config, {"field=max_scale", R"(expected="positive finite number")"});
 
