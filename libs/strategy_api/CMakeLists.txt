@@ -107,6 +107,8 @@ set(SDK_API_TESTS
     td_ingest_watermark_test
     # CloseIsSafe 经公开 API dz_resultset_close 断言 -> 需链接 api.cpp
     result_set_test
+    # BarStrategy 框架端到端 (Seam A): 真实帧通道 + run_bar_strategy + 临时 DZTRADER_HOME
+    bar_strategy_framework_test
 )
 
 # 穷举/慢速用例单独成 target, 打 slow 标签; 默认 fast 门禁只跑对应抽样版。

@@ -22,6 +22,7 @@
  * 静默回退内置模式，双模检查就退化成「同一个头编译两遍」的恒真测试（审查清单 §2.2）。
  * `DZ_JSON_PROBE_EXPECT_EXTERNAL` 由 CMake 按 target 注入，属于测试专用宏，不进公开面。
  */
+#include <dztrader/bar_strategy.h>
 #include <dztrader/bar_strategy/config.h>
 #include <dztrader/json.h>
 
@@ -35,6 +36,12 @@ int fail(const char* case_name) {
     std::fprintf(stderr, "json sdk probe fail | case=%s\n", case_name);
     return 1;
 }
+
+/// @brief 探针用的最小 B 策略（只验证公开入口的编译期约束）
+struct ProbeBarStrategy {
+    void on_init(dztrader::InstrumentContext& ctx) { (void)ctx; }
+    void on_bar_update(dztrader::InstrumentContext& ctx) { (void)ctx.close[0]; }
+};
 
 }  // namespace
 
@@ -110,6 +117,22 @@ int main() {
     }
     if (dztrader::format_effective_accounts({}) != "accounts effective | -") {
         return fail("bar_strategy_config_accounts_line");
+    }
+
+    // BarStrategy 公开入口（#157）：仅凭 SDK include 目录必须能实例化框架管理器与入口
+    // 模板（含配置层/引擎头/Series 层的传递包含）。只做编译期与轻量运行期断言——真跑
+    // run_bar_strategy 需要帧通道与 DZTRADER_HOME，属 bar_strategy_framework_test 的覆盖面。
+    static_assert(dztrader::BarStrategy<ProbeBarStrategy>);
+    {
+        dztrader::BarStrategyManager<ProbeBarStrategy> manager(
+            dztrader::degraded_trading_session_table());
+        if (manager.should_exit()) {
+            return fail("bar_strategy_manager_unexpected_exit");
+        }
+        const auto table = dztrader::BarStrategyRunOptions{}.session_table;
+        if (!table.valid() || table.session_count != 1 || table.auction_count != 0) {
+            return fail("bar_strategy_default_session_table");
+        }
     }
 
     std::printf("json sdk probe ok | mode=%s version=%d.%d.%d\n", kMode,

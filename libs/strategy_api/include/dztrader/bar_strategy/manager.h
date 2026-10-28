@@ -1,0 +1,516 @@
+/**
+ * @file manager.h
+ * @brief 框架管理器 A：配置、订阅、tick 分发、bar 聚合与 B 回调（ADR 0027，组件文档 §2/§5/§8）
+ *
+ * `BarStrategyManager<Strategy>` 是引擎侧**唯一**的策略对象：它实现引擎要求的
+ * `on_start(DzContext*)` / `on_tick(const DzTick&)` / `on_stop()` 与自主退出探测
+ * （`should_exit()` / `exit_code()`），内部把每笔 tick 交给该品种的
+ * `bar::IntradayBarBuilder`，再把 builder 的三类事件翻译成「推进窗口 + 调 B 回调」。
+ * B 不接触引擎回调，也不持有 A 指针。
+ *
+ * 实例 = 配置里的每个品种：`instruments_` 是 `std::map`（有序、节点地址稳定），每个节点
+ * 就地装配 `InstrumentContext` + 事件适配器 + builder + B 实例，构造后不再搬移——其它品种
+ * 增删不影响本节点的地址，B 持有的价格视图因此始终有效。
+ *
+ * 异常隔离（组件文档 §4.6）：每次 B 回调外围都有 `try/catch`，异常绝不穿越引擎/C API
+ * 边界；捕获后把**该实例**标记失败（不再回调、后续 tick 直接丢弃），进程与其它品种继续。
+ * `on_init` 抛异常 = 该品种创建失败（不加入 map），继续创建其它品种。
+ *
+ * v1 骨架范围（#157）：配置加载与启动诊断、订阅、tick→bar、回调分发、异常隔离、退化交易
+ * 小节表。回调门禁/静默填窗与 18:00 回卷（#158）、交易意图与逻辑台账（#159）、挂靠缩放
+ * 与上报（#160）、历史预热回放（#161）、动态管理与参数（#162）、竞价相位（#163）后续接入，
+ * 接缝见各成员注释。
+ */
+#ifndef DZTRADER_BAR_STRATEGY_MANAGER_H_
+#define DZTRADER_BAR_STRATEGY_MANAGER_H_
+
+#include <dztrader/api.h>
+#include <dztrader/bar/intraday_bar_builder.h>
+#include <dztrader/bar/types.h>
+#include <dztrader/bar_strategy/config.h>
+#include <dztrader/bar_strategy/config_file.h>
+#include <dztrader/bar_strategy/context.h>
+#include <dztrader/struct.h>
+
+#include <concepts>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <filesystem>
+#include <format>
+#include <iostream>
+#include <map>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace dztrader {
+
+template <class Strategy>
+class BarStrategyManager;  // 前向：事件适配器反向调用 A
+
+template <class Strategy>
+struct BarEventSink;  // 前向：builder 事件适配器（friend）
+
+template <class Strategy>
+struct InstrumentNode;  // 前向：节点就地构造 ctx（friend）
+
+// ============================================================
+// B 回调的编译期探测（鸭子类型，与 run_strategy 同风格）
+// ============================================================
+
+namespace manager_internal {
+
+/// @brief B 是否实现 `on_init(InstrumentContext&)`
+template <typename T>
+concept HasOnInit = requires(T instance, InstrumentContext& ctx) { instance.on_init(ctx); };
+
+/// @brief B 是否实现 `on_destroy(InstrumentContext&)`
+template <typename T>
+concept HasOnDestroy = requires(T instance, InstrumentContext& ctx) { instance.on_destroy(ctx); };
+
+/// @brief B 是否实现 `on_bar_open(InstrumentContext&)`
+template <typename T>
+concept HasOnBarOpen = requires(T instance, InstrumentContext& ctx) { instance.on_bar_open(ctx); };
+
+/// @brief B 是否实现 `on_bar_update(InstrumentContext&)`
+template <typename T>
+concept HasOnBarUpdate =
+    requires(T instance, InstrumentContext& ctx) { instance.on_bar_update(ctx); };
+
+/// @brief B 是否实现 `on_bar_close(InstrumentContext&)`
+template <typename T>
+concept HasOnBarClose =
+    requires(T instance, InstrumentContext& ctx) { instance.on_bar_close(ctx); };
+
+/**
+ * @brief 从 tick 的定长 `instrument_id` 取出合约代码视图（不分配、不复制）
+ *
+ * 热路径上唯一的「字符串」操作：长度上限是 `sizeof(DzInstrumentId)`，未以 NUL 结尾时按
+ * 字段宽度截断（SDK 分发层已保证写入端 NUL 结尾，这里只做防御）。
+ *
+ * @param tick 行情快照
+ * @return 合约代码视图（指向 tick 自身存储，仅在本次回调内有效）
+ */
+[[nodiscard]] inline std::string_view instrument_id_of(const DzTick& tick) noexcept {
+    std::size_t length = 0;
+    while (length < sizeof(tick.instrument_id) && tick.instrument_id[length] != '\0') {
+        ++length;
+    }
+    return std::string_view(tick.instrument_id, length);
+}
+
+}  // namespace manager_internal
+
+/**
+ * @brief v1 内置退化交易小节表（组件文档 §5.5）
+ *
+ * platform.db 的交易小节/竞价窗口数据源尚未落地（ADR 0018 决策 2/3），v1 用内置退化表：
+ * 单小节 `[0, 86399]`（覆盖全部交易日内秒）、无竞价窗口。**这不是新数据源、也不是配置
+ * 项**（ADR 0032 决策 8 不引入占位配置），只是数据源落地前框架内置的临时表，代码里只有
+ * 一处构造，落地后删除。
+ *
+ * 三条已知限制（策略与迁移必须知晓）：竞价 tick 按普通 tick 处理（`ctx.is_auction()` 恒
+ * false）、小节末端整点 tick 会开新 bar、无交易时段过滤。
+ *
+ * @return 合法的退化表（`TradingSessionTable::valid()` 为 true）
+ */
+[[nodiscard]] inline bar::TradingSessionTable degraded_trading_session_table() noexcept {
+    bar::TradingSessionTable table{};
+    table.session_count = 1;
+    table.sessions[0] = bar::TradingSession{.begin_sec = 0, .end_sec = 86399};
+    table.auction_count = 0;
+    return table;
+}
+
+/**
+ * @brief A 内部：builder 事件 → 窗口推进 + B 回调的适配器（组件文档 §5.4）
+ *
+ * 三个事件入口的动作顺序即回调顺序：`on_bar_close(上一根)`（窗口尚未推进，`[0]` 仍是
+ * 被关闭的上一根）→ `on_bar_open(新根)`（回卷兜底 + 推进窗口 + 写 `[0]`）→
+ * `on_bar_update`（把 `Bar` 字段写进 `[0]`）。
+ *
+ * builder 要求 sink 回调不得抛异常：实际动作全在 A 的 `noexcept` 分发函数里完成，B 的异常
+ * 在 A 内被捕获并转为实例失败。
+ */
+template <class Strategy>
+struct BarEventSink {
+    InstrumentNode<Strategy>* node = nullptr;         ///< 本事件所属节点（地址稳定）
+    BarStrategyManager<Strategy>* manager = nullptr;  ///< 驱动的 A
+
+    /// @brief 新 bar 已打开：推进窗口后回调 B（`on_bar_open` 时 OHLC 已等于本笔 tick 价）
+    void on_bar_open(const bar::Bar& bar, bool is_auction) {
+        manager->dispatch_bar_open(*node, bar, is_auction);
+    }
+
+    /// @brief 形成中 bar 已更新：把字段写进 `[0]` 后回调 B（每笔已接受 tick 恰好一次）
+    void on_bar_update(const bar::Bar& bar, bool is_auction) {
+        manager->dispatch_bar_update(*node, bar, is_auction);
+    }
+
+    /// @brief 上一根 bar 已收：窗口尚未推进，`[0]` 仍是被关闭的上一根
+    void on_bar_close(const bar::Bar& bar, bool is_auction) {
+        manager->dispatch_bar_close(*node, bar, is_auction);
+    }
+};
+
+/**
+ * @brief 每品种一个的节点：ctx + 事件适配器 + builder + B 实例（就地构造、不再搬移）
+ *
+ * 构造顺序即声明顺序（ctx → sink → builder → instance）：ctx 先绑定自身窗口与价格数组，
+ * sink 再取节点与 A 的稳定地址，builder 取 sink 引用，最后默认构造 B。节点存放在
+ * `std::map` 里（`try_emplace` 就地构造），地址在实例生命周期内不变。
+ */
+template <class Strategy>
+struct InstrumentNode {
+    /**
+     * @brief 就地装配一个品种实例
+     * @param manager    A（sink 反向调用）
+     * @param init       ctx 构造参数
+     * @param table      交易小节表（#157 = 内置退化表；#161 换成 platform.db 数据源）
+     * @param period_sec bar 周期秒数（来自配置）
+     */
+    InstrumentNode(BarStrategyManager<Strategy>& manager,
+                   const InstrumentInit& init,
+                   const bar::TradingSessionTable& table,
+                   std::int32_t period_sec)
+        : ctx(init),
+          sink{this, &manager},
+          builder(table, period_sec, sink),
+          instance() {}
+
+    InstrumentContext ctx;                                    ///< 品种数据 + B 的 API 面
+    BarEventSink<Strategy> sink;                              ///< builder 事件适配器
+    bar::IntradayBarBuilder<BarEventSink<Strategy>> builder;  ///< tick→bar 唯一实现（ADR 0031）
+    Strategy instance;                                        ///< B：默认构造，节点内不再搬移
+};
+
+/**
+ * @brief A：引擎侧唯一策略对象（组件文档 §2）
+ *
+ * 生命周期：`on_start` 加载配置并把每个品种装配成 `InstrumentNode` → 事件循环驱动
+ * `on_tick` → `on_stop` 逐个调 `on_destroy` 后销毁节点。
+ *
+ * 启动失败（配置缺失/非法、订阅失败）通过自主退出通道上报：置 `should_exit()` 为 true 并
+ * 由 `exit_code()` 给出非 0 码，引擎在 `on_start` 后立即探测到并优雅退出（主循环不启动，
+ * 组件文档 §7）。
+ *
+ * `Strategy` 只要求可默认构造；六个回调全部可选（编译期探测）。
+ */
+template <class Strategy>
+class BarStrategyManager {
+public:
+    /**
+     * @brief 构造 A
+     * @param session_table 交易小节表（v1 = `degraded_trading_session_table()`）
+     * @param degraded      true = 使用内置退化表（启动诊断按退化口径提示，§5.5）
+     */
+    explicit BarStrategyManager(const bar::TradingSessionTable& session_table, bool degraded = true)
+        : session_table_(session_table),
+          degraded_(degraded) {}
+
+    BarStrategyManager(const BarStrategyManager&) = delete;
+    BarStrategyManager& operator=(const BarStrategyManager&) = delete;
+    BarStrategyManager(BarStrategyManager&&) = delete;
+    BarStrategyManager& operator=(BarStrategyManager&&) = delete;
+
+    // ==== 引擎回调（`run_strategy` 鸭子类型接入）====
+
+    /**
+     * @brief 启动：读配置 → 打印有效配置 → 订阅 → 逐品种装配实例并调 `on_init`
+     *
+     * 失败（配置缺失/非法、订阅失败）时打印诊断、置非 0 退出码并返回，不进入事件循环；
+     * 单个品种的 `on_init` 抛异常只丢弃该品种（组件文档 §4.6）。
+     *
+     * @param ctx 引擎会话句柄（进程内不变，注入各 ctx）
+     */
+    void on_start(DzContext* ctx) {
+        dz_ = ctx;
+        if (!load_startup_config()) {
+            return;
+        }
+        print_startup_diagnostics();
+        if (!subscribe_configured_instruments()) {
+            request_startup_exit();
+            return;
+        }
+        create_instances();
+    }
+
+    /**
+     * @brief 每笔行情 tick → 该品种的 tick→bar 组件（bar 边界由组件负责，A 不自行判断）
+     *
+     * 未知品种（未订阅/已删除）与失败实例的 tick 直接丢弃：A 不做任何 bar 边界计算。
+     *
+     * @param tick 行情快照（属于本进程订阅的某个合约）
+     */
+    void on_tick(const DzTick& tick) {
+        if (startup_failed_) {
+            return;
+        }
+        const auto node = instruments_.find(manager_internal::instrument_id_of(tick));
+        if (node == instruments_.end()) {
+            return;
+        }
+        if (node->second.ctx.is_failed()) {
+            return;  // 失败实例：不再接收任何回调（组件文档 §4.6）
+        }
+        node->second.builder.on_tick(tick);
+    }
+
+    /// @brief 停止：逐品种调 `on_destroy` 后销毁节点（进程内最后一个 B 回调）
+    void on_stop() {
+        for (auto& [instrument_id, node] : instruments_) {
+            dispatch_on_destroy(node);
+        }
+        instruments_.clear();
+    }
+
+    /// @brief 自主退出探测：启动失败时请求引擎立即优雅退出（组件文档 §7）
+    [[nodiscard]] bool should_exit() const noexcept { return startup_failed_; }
+
+    /// @brief 自主退出码（仅 `should_exit()` 为 true 时有意义）
+    [[nodiscard]] std::int32_t exit_code() const noexcept { return startup_exit_code_; }
+
+private:
+    template <class>
+    friend struct BarEventSink;  // 事件适配器经 dispatch_* 反向调用 A
+
+    // ==== 事件适配器回调（`BarEventSink` 调用；A 内部，B 不可见）====
+
+    /**
+     * @brief `on_bar_open` 事件：回卷兜底 → 推进窗口 → 调 B
+     *
+     * 推进后 `[0]` 已是新根，且 OHLC 由 builder 用本笔 tick 播种完毕——B 在 `on_bar_open`
+     * 里读 `ctx.close[0]` 即本笔 tick 价（组件文档 §5.1）。
+     */
+    void dispatch_bar_open(InstrumentNode<Strategy>& node, const bar::Bar& bar, bool is_auction) {
+        (void)is_auction;  // ctx.is_auction() 随 #163 接入
+        if (node.ctx.is_failed()) {
+            return;
+        }
+        node.ctx.advance_bar(bar);
+        if constexpr (manager_internal::HasOnBarOpen<Strategy>) {
+            invoke_b(node, "on_bar_open",
+                     [](Strategy& instance, InstrumentContext& ctx) { instance.on_bar_open(ctx); });
+        }
+    }
+
+    /// @brief `on_bar_update` 事件：把 `Bar` 字段写进 `[0]` → 调 B（每笔已接受 tick 一次）
+    void dispatch_bar_update(InstrumentNode<Strategy>& node, const bar::Bar& bar, bool is_auction) {
+        (void)is_auction;  // ctx.is_auction() 随 #163 接入
+        if (node.ctx.is_failed()) {
+            return;
+        }
+        node.ctx.update_current_bar(bar);
+        if constexpr (manager_internal::HasOnBarUpdate<Strategy>) {
+            invoke_b(node, "on_bar_update", [](Strategy& instance, InstrumentContext& ctx) {
+                instance.on_bar_update(ctx);
+            });
+        }
+    }
+
+    /**
+     * @brief `on_bar_close` 事件：窗口尚未推进，`[0]` 仍是被关闭的上一根 → 调 B
+     *
+     * `bar` 不入窗口：被关闭的这根在它自己的 `open` / `update` 事件里已经写进 `[0]`。
+     */
+    void dispatch_bar_close(InstrumentNode<Strategy>& node, const bar::Bar& bar, bool is_auction) {
+        (void)bar;         // 已写入 [0]，close 不重复写
+        (void)is_auction;  // ctx.is_auction() 随 #163 接入
+        if (node.ctx.is_failed()) {
+            return;
+        }
+        if constexpr (manager_internal::HasOnBarClose<Strategy>) {
+            invoke_b(node, "on_bar_close", [](Strategy& instance, InstrumentContext& ctx) {
+                instance.on_bar_close(ctx);
+            });
+        }
+    }
+
+    /// @brief 一次 B 回调的调用体（异常边界：捕获后标记该实例失败）
+    template <class Callback>
+    void invoke_b(InstrumentNode<Strategy>& node,
+                  const char* callback,
+                  Callback&& callback_body) noexcept {
+        try {
+            callback_body(node.instance, node.ctx);
+        } catch (const std::exception& e) {
+            fail_instance(node.ctx, callback, e.what());
+        } catch (...) {
+            fail_instance(node.ctx, callback, "unknown exception");
+        }
+    }
+
+    /// @brief 标记实例失败并打印一行诊断（此后该实例不再接收任何回调）
+    static void fail_instance(InstrumentContext& ctx, const char* callback, const char* error) {
+        ctx.mark_failed();
+        std::cerr << std::format("instance failed | instrument={} callback={} error=\"{}\"",
+                                 ctx.instrument_id(), callback, error)
+                  << '\n';
+    }
+
+    /// @brief 调 `on_destroy`（失败实例同样调用；异常只记诊断，不阻止其它实例销毁）
+    void dispatch_on_destroy(InstrumentNode<Strategy>& node) {
+        if constexpr (manager_internal::HasOnDestroy<Strategy>) {
+            try {
+                node.instance.on_destroy(node.ctx);
+            } catch (const std::exception& e) {
+                report_destroy_error(node.ctx, e.what());
+            } catch (...) {
+                report_destroy_error(node.ctx, "unknown exception");
+            }
+        }
+    }
+
+    /// @brief `on_destroy` 异常诊断（销毁期不再标记失败：实例马上要销毁）
+    static void report_destroy_error(const InstrumentContext& ctx, const char* error) {
+        std::cerr << std::format("on_destroy threw | instrument={} error=\"{}\"",
+                                 ctx.instrument_id(), error)
+                  << '\n';
+    }
+
+    /**
+     * @brief 取配置路径并加载配置文件（组件文档 §7）
+     *
+     * 三种结局：`Loaded` → 保存有效配置继续启动；`GeneratedDefault` → 打印
+     * `result.message` 并以 `config_startup_exit_code()` 非 0 退出（等作者编辑后重启）；
+     * 异常（读/解析 `std::runtime_error`、配置非法 `std::invalid_argument`）→ 打印错误并以
+     * 非 0 退出。任何一种都不静默继续。
+     *
+     * @return true = 已得到可用有效配置，可继续启动
+     */
+    bool load_startup_config() {
+        std::filesystem::path path;
+        try {
+            path = config_path(dz_strategy_home(dz_), dz_strategy_id(dz_));
+        } catch (const std::exception& e) {
+            report_startup_failure("config_path", e.what());
+            return false;
+        }
+        try {
+            ConfigLoadResult result = load_config_file(path);
+            if (result.status != ConfigLoadStatus::Loaded) {
+                std::cerr << result.message << '\n';
+                request_startup_exit(config_startup_exit_code(result.status));
+                return false;
+            }
+            effective_ = std::move(*result.effective);
+        } catch (const std::exception& e) {
+            report_startup_failure("config_load", e.what());
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief 启动诊断：有效配置两行 + 退化小节表口径 + 实例装配清单（组件文档 §5.5/§7）
+    void print_startup_diagnostics() const {
+        std::cerr << format_effective_config(effective_) << '\n';
+        std::cerr << format_effective_accounts(effective_.config.accounts) << '\n';
+        if (degraded_) {
+            std::cerr << std::format(
+                             "trading session table degraded | mode=builtin sessions={} "
+                             "auction_windows={} reason=platform_db_absent",
+                             session_table_.session_count, session_table_.auction_count)
+                      << '\n';
+        }
+        std::cerr << std::format(
+                         "bar strategy start | instrument_count={} period_sec={} max_lookback={} "
+                         "buffer_bars={}",
+                         effective_.config.instruments.size(), effective_.config.period_sec,
+                         effective_.max_lookback, effective_.buffer_bars)
+                  << '\n';
+    }
+
+    /**
+     * @brief 一次性订阅配置里的全部品种（组件文档 §8 启动第 2 步）
+     *
+     * 订阅先于实例创建：保证切换窗口的 tick 不丢（§5.3 步骤 1）。
+     *
+     * @return true = 订阅请求已写入事件通道；false = 失败（调用方请求非 0 退出）
+     */
+    bool subscribe_configured_instruments() {
+        std::vector<const char*> instruments;
+        instruments.reserve(effective_.config.instruments.size());
+        for (const std::string& instrument_id : effective_.config.instruments) {
+            instruments.push_back(instrument_id.c_str());
+        }
+        const auto count = static_cast<std::uint32_t>(instruments.size());
+        if (!dz_subscribe(dz_, instruments.data(), count, true)) {
+            std::cerr << std::format("market data subscribe failed | instrument_count={}",
+                                     instruments.size())
+                      << '\n';
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * @brief 逐品种装配 `InstrumentNode` 并调 `on_init`（组件文档 §8 启动第 3 步）
+     *
+     * `on_init` 抛异常 = 该品种创建失败：打印诊断、丢弃节点（不调 `on_destroy`），继续创建
+     * 其它品种。成功时 ctx 的 `bar_index() == -1`、窗口为空。
+     */
+    void create_instances() {
+        const auto period_sec = effective_.config.period_sec;
+        for (const std::string& instrument_id : effective_.config.instruments) {
+            InstrumentInit init{
+                .dz = dz_,
+                .instrument_id = instrument_id,
+                .max_lookback = effective_.max_lookback,
+                .buffer_bars = effective_.buffer_bars,
+            };
+            auto [slot, inserted] =
+                instruments_.try_emplace(instrument_id, *this, init, session_table_, period_sec);
+            if (!inserted) {
+                continue;  // 配置层已保证 instruments 不重复
+            }
+            if constexpr (manager_internal::HasOnInit<Strategy>) {
+                try {
+                    slot->second.instance.on_init(slot->second.ctx);
+                } catch (const std::exception& e) {
+                    report_init_failure(slot->second.ctx, e.what());
+                    instruments_.erase(slot);
+                } catch (...) {
+                    report_init_failure(slot->second.ctx, "unknown exception");
+                    instruments_.erase(slot);
+                }
+            }
+        }
+    }
+
+    /// @brief `on_init` 异常诊断（该品种不加入 map，其它品种继续）
+    static void report_init_failure(const InstrumentContext& ctx, const char* error) {
+        std::cerr << std::format(
+                         "instance init failed | instrument={} callback=on_init error=\"{}\"",
+                         ctx.instrument_id(), error)
+                  << '\n';
+    }
+
+    /// @brief 启动失败诊断（配置路径/读取/校验失败，进程随后以非 0 码退出）
+    void report_startup_failure(std::string_view stage, const char* error) {
+        std::cerr << std::format("strategy startup failed | stage={} error=\"{}\"", stage, error)
+                  << '\n';
+        request_startup_exit();
+    }
+
+    /// @brief 请求引擎优雅退出并给出进程退出码（默认 1：配置/订阅类启动失败）
+    void request_startup_exit(std::int32_t code = 1) noexcept {
+        startup_failed_ = true;
+        startup_exit_code_ = code;
+    }
+
+    DzContext* dz_ = nullptr;                 ///< 引擎会话句柄（on_start 注入）
+    EffectiveConfig effective_;               ///< 启动加载的有效配置（进程内不变）
+    bar::TradingSessionTable session_table_;  ///< 交易小节表（v1 = 退化表）
+    bool degraded_ = true;                    ///< 是否使用内置退化表（诊断口径）
+    bool startup_failed_ = false;             ///< 启动失败：请求引擎立即退出
+    std::int32_t startup_exit_code_ = 0;      ///< 启动失败时的进程退出码
+    // 最后声明 → 最先析构：节点不会看到已销毁的配置/会话
+    std::map<std::string, InstrumentNode<Strategy>, std::less<>> instruments_;  ///< 地址稳定
+};
+
+}  // namespace dztrader
+
+#endif  // DZTRADER_BAR_STRATEGY_MANAGER_H_
