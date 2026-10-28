@@ -87,13 +87,36 @@
 
 ## 升级纪律
 
-1. 拿到新发布包 → 只手工更新上方「发布包 SHA-256」（这是 `--sync` 的**校验门槛**；版本 /
-   内部版本 / 文件名字段由 `--sync` 回写，不需要手改）；
-2. `python3 scripts/vendor_ctp.py --sync --zip <新包路径>`：校验包 SHA-256 → 重写 18 个文件 →
-   回写本文件的版本字段与清单，并打印清单；
-3. `python3 scripts/vendor_ctp.py --check` 必须绿；
-4. **版本、文件、本记录同一次提交**（与 nlohmann/json 的 vendored 纪律一致，见
-   [nlohmann VENDORED.md](../../libs/strategy_api/include/dztrader/third_party/nlohmann/VENDORED.md)）。
+**触发条件**：维护者提供新的 CTP 发布包（zip）时执行。AI 会话同样适用——不需要额外口头说明，
+读本节与 [AGENTS.md](../../AGENTS.md) §七的入口即可操作。
+
+维护者 / AI 操作序列（在仓库根执行）：
+
+```bash
+# 1) 直接同步；--sync 先用包 SHA-256 与记录比对，防止拿错包
+python3 scripts/vendor_ctp.py --sync --zip <新发布包路径>
+
+# 若报 `vendor package sha256 mismatch: recorded=… actual=…`：
+#   说明换了发布版本。把错误里的 actual 值写进本文件「上游与版本」表的
+#   「发布包 SHA-256」行，再重跑上一条命令。
+#   版本 / 内部版本 / 文件名由 --sync 回写，不要手改。
+
+# 2) 校验（必须绿）
+python3 scripts/vendor_ctp.py --check
+```
+
+期望输出：
+
+- `--sync`：首行 `sync: release package <文件名> -> vX.Y.Z_YYYYMMDD (sha256 …)`，
+  随后以 Markdown 表格行打印 18 个文件的相对路径与 SHA-256；
+- `--check`：`OK: 18 vendor files match third_party/ctp/VENDORED.md`，退出码 0。
+
+硬约束：
+
+1. 清单与版本字段**不许手工维护**（`--check` 的 R2 / R5 会拦）；
+2. **版本、文件、本记录同一次提交**（与 nlohmann/json 的 vendored 纪律一致，见
+   [nlohmann VENDORED.md](../../libs/strategy_api/include/dztrader/third_party/nlohmann/VENDORED.md)）；
+3. 升级后跑 `./scripts/gate.sh preflight --c-only`（纯 vendored 升级不改代码，但文档链接与格式检查要绿）。
 
 ## 校验
 

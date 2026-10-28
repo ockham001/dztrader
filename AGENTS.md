@@ -235,6 +235,7 @@
 | [docs/adr/](docs/adr/) | 架构决策记录，按编号追溯 |
 | [GLOSSARY.md](GLOSSARY.md) | 领域术语表（`domain-modeling` 随改随更） |
 | [docs/agents/](docs/agents/) | 技能配置（issue 载体 / 域文档规则 / 分诊标签）、构建外围细节（build-appendix）、每票收尾（ticket-closeout）、审查清单（review-checklist）、复盘取证（retro-evidence） |
+| [third_party/ctp/VENDORED.md](third_party/ctp/VENDORED.md) | CTP 发布包 vendored 与升级流程（`scripts/vendor_ctp.py --sync/--check`）。**收到新的 CTP 发布包压缩包时，先读此文件并按「升级纪律」执行** |
 
 `docs/specs/`、`docs/plans/`、`docs/superpowers/` 是**本地归档**（不在版本控制内）且**已冻结** —— 新设计与计划走 GitHub Issues；与现状冲突时以帧契约与代码为准，**不修改**。
 
