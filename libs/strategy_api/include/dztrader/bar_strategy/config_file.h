@@ -36,7 +36,8 @@
  * 文件 `fsync`），取舍见 ADR 0039。
  *
  * 跨平台：仅 Windows x86_64 / MSVC 与 Linux x86_64 / GCC；其它组合 `#error`
- * （AGENTS 跨平台硬规则，禁止静默回退）。Windows 落盘用 `_wfopen` 走宽路径，不包含
+ * （AGENTS 跨平台硬规则，禁止静默回退）。Windows 落盘用 `_wfopen_s` 走宽路径（不用
+ * 弃用的 `_wfopen`，避免依赖使用方是否定义 `_CRT_SECURE_NO_WARNINGS`），不包含
  * `<windows.h>`。
  */
 #ifndef DZTRADER_BAR_STRATEGY_CONFIG_FILE_H_
@@ -243,13 +244,26 @@ inline void apply_config(nlohmann::json& document, const BarStrategyConfig& conf
 }
 
 // ============================================================
-// 平台相关的落盘原语（Windows：_wfopen / _commit；Linux：fopen / fsync）
+// 平台相关的落盘原语（Windows：_wfopen_s / _commit；Linux：fopen / fsync）
 // ============================================================
 
-/// @brief 打开同目录临时文件做二进制写（Windows 宽路径：非 ASCII 目录名不丢）
+/**
+ * @brief 打开同目录临时文件做二进制写（Windows 宽路径：非 ASCII 目录名不丢）
+ *
+ * Windows 侧用 `_wfopen_s` 而非 `_wfopen`：后者在 MSVC 上是 C4996 弃用项，而本头是
+ * **header-only 公开 SDK**——不能指望使用方定义 `_CRT_SECURE_NO_WARNINGS`（本仓内部 target
+ * 定义了，外部策略工程不会，`/WX` 下会直接编译失败）。
+ *
+ * @param path 目标文件路径
+ * @return 打开失败返回 nullptr（调用方按 errno 报错）
+ */
 [[nodiscard]] inline std::FILE* open_write_stream(const std::filesystem::path& path) {
 #ifdef DZTRADER_CONFIG_FILE_PLATFORM_WINDOWS
-    return ::_wfopen(path.wstring().c_str(), L"wb");
+    std::FILE* stream = nullptr;
+    if (::_wfopen_s(&stream, path.wstring().c_str(), L"wb") != 0) {
+        return nullptr;
+    }
+    return stream;
 #else
     return std::fopen(path.string().c_str(), "wb");
 #endif
