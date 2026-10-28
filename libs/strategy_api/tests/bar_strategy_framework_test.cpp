@@ -2264,6 +2264,116 @@ TEST_F(BarStrategyFrameworkTest, AttachedAccountsMirrorAndReverseWithSingleDelta
 }
 
 /**
+ * **配置里的取整策略与 `scale_min_one` 真的到达执行路径**（AC「三种取整策略正确，
+ * `scale_min_one` 生效」的接线面）。
+ *
+ * 单元测试断言的是 `logical_position()` 的三种策略本身；但它们可能正确、而框架仍然用默认
+ * `nearest` 跑（配置解析 → `EffectiveConfig::scaling` → `InstrumentInit::scaling` → ctx 这条
+ * 链上有四个可以断开的地方，每一处断开都不会编译失败）。这里用 `floor` + `scale_min_one`
+ * 走完整链路：`P = 3`、scale 0.5 时
+ *   - `nearest` → `L = 2`（四舍五入，也是默认值——用默认值断不出接线错误）；
+ *   - `floor`   → `L = 1`（向少）；
+ *   - `floor + scale_min_one` 且 `0.5 × 1 = 0.5 → floor 0` → 抬到 **1**。
+ *
+ * 三者里只有 `floor` 会给出 1，所以「订单手数是 1」同时证明取整策略不是默认的 `nearest`；
+ * 再用一笔 `P = 1`（`0.5 → floor 0 → 抬 1`）证明 `scale_min_one` 也接上了——若 `min_one`
+ * 没传下去，该笔的 `L` 会是 0、完全不发单。
+ */
+TEST_F(BarStrategyFrameworkTest, ConfiguredRoundingAndMinOneReachExecution) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback,
+                 /*reserve_bars=*/std::nullopt, /*period_sec=*/60,
+                 /*accounts_json=*/R"([{"account_id": "CTP001", "scale": 0.5}])",
+                 /*scaling_json=*/
+                 "  \"scale_rounding\": \"floor\",\n  \"scale_min_one\": true,\n");
+    const auto fill_bar = static_cast<std::int64_t>(kTestMaxLookback - 1);
+    const auto bar0 = static_cast<std::int64_t>(kTestMaxLookback);
+
+    // P: 0 → 3（floor(0.5 × 3) = 1，nearest 会给 2）
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = fill_bar,
+        .when = EventKind::BarClose,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(3, 4500.0); },
+    });
+    // P: 3 → 4（floor(0.5 × 4) = 2，所以差量 1 手）
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = bar0,
+        .when = EventKind::BarUpdate,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(1, 4501.0); },
+    });
+
+    open_probe();
+    testing::internal::CaptureStderr();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    // 启动诊断必须把生效的取整策略与 min_one 说出来（运维唯一的证据来源）
+    EXPECT_NE(stderr_text.find("account fanout |"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("scale_rounding=floor"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("scale_min_one=1"), std::string::npos) << stderr_text;
+
+    // 两笔意图各一张单：3 手 → L=1、4 手 → L=2（差量 1）
+    ASSERT_EQ(orders_.size(), 2U) << "floor(0.5 * 3) = 1 and floor(0.5 * 4) = 2";
+    EXPECT_EQ(orders_[0].volume, 1) << "nearest would have sent 2 lots (0.5 * 3 = 1.5)";
+    EXPECT_EQ(orders_[1].volume, 1) << "the delta from L=1 to L=2 is one lot";
+
+    ASSERT_EQ(reports_.size(), 2U);
+    EXPECT_EQ(reports_[0].net_volume, 1);
+    EXPECT_EQ(reports_[1].net_volume, 2);
+}
+
+/**
+ * **`scale_min_one` 单独生效**：`floor` + `min_one`、`P = 1`、scale **0.1** 时
+ * `floor(0.1) = 0` → 抬到 1。若 `min_one` 没传下去，该账户的 `L` 恒为 0、**一帧都不发**。
+ *
+ * scale 取 0.1 而不是 0.5：`nearest(0.5) = 1` 恰好与 min_one 的抬升结果相同，那样的输入
+ * 在「min_one 没接线」的变异下仍然通过，断不出接线错误（本用例首版即踩了这一格）。
+ */
+TEST_F(BarStrategyFrameworkTest, ScaleMinOneIsWiredThroughConfig) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback,
+                 /*reserve_bars=*/std::nullopt, /*period_sec=*/60,
+                 /*accounts_json=*/R"([{"account_id": "CTP001", "scale": 0.1}])",
+                 /*scaling_json=*/
+                 "  \"scale_rounding\": \"floor\",\n  \"scale_min_one\": true,\n");
+    const auto fill_bar = static_cast<std::int64_t>(kTestMaxLookback - 1);
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = fill_bar,
+        .when = EventKind::BarClose,
+        // 1 手：floor(0.1 × 1) = 0，只有 min_one 能把它抬到 1
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(1, 4500.0); },
+    });
+
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    ASSERT_EQ(orders_.size(), 1U)
+        << "without min_one this account would stay at 0 and send nothing";
+    EXPECT_EQ(orders_[0].volume, 1);
+    ASSERT_EQ(reports_.size(), 1U);
+    EXPECT_EQ(reports_[0].net_volume, 1);
+}
+
+/**
  * **`qty_i == 0` 的账户既不収单也不上报**（AC「`qty_i == 0` 时跳过发单与上报」）。
  *
  * scale 0.1 + nearest：策略 3 手 → `L = 0.3 → 0`；4 手 → `0.4 → 0`；5 手 → `0.5 → 1`。
