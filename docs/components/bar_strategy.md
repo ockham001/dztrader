@@ -235,7 +235,7 @@ private:
     std::vector<SeriesStorage<std::int64_t>> series_i_;
     InstrumentSpec spec_;                   // 合约属性（见上）
     PositionState position_;                // 策略虚拟持仓 + Tier 1（下单意图即时记账）
-    TickSnapshot tick_;                     // 最近一笔 tick（价格夹取 / 同步单对手价）
+    TickSnapshot tick_;                     // 最近一笔已接受 tick（价格夹取；对手价字段随 #162 加）
     ScalingConfig scaling_;                 // 缩放配置副本（启动后不可变；按值持有，避免再一层解引用）
     const ParamStore* params_ = nullptr;    // 指向 manager 的参数存储（地址稳定）
     DzContext* dz_ = nullptr;               // 引擎会话句柄（on_start 注入，进程内不变）
@@ -249,7 +249,8 @@ private:
     //   fanout_positions(net_before, price)：P_old → P_new 后逐账户算 L_i 差量 → 发单 + 上报
     //   submit_delta_order(account, delta, price)：差量 → 方向 + 手数（差量 0/超范围在这里分流）
     //   submit_order(account, direction, volume, price)：唯一的 dz_place_order 出口
-    //   publish_position(const AttachedAccount&, LargeVolume net_l)：唯一的 dz_set_logical_position 出口
+    //   publish_position(account, const char* instrument_id, net_l)：唯一的 dz_set_logical_position 出口
+    //     （instrument_id == nullptr = 空品种通配清零，归 #162 的删除命令）
     //   publish_all_positions()：进入 live / 账户表变更后的全量对账上报（不发单）
     //   sync_account(...) → SyncOutcome：生命周期命令的同步单，归 #162
     // A 内部方法：advance_bar / relocate / set_live / set_failed；形成中 bar 与边界判定由每品种的

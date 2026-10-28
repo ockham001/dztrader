@@ -149,9 +149,6 @@ concept UserSeriesElement = std::same_as<T, double> || std::same_as<T, std::int6
  */
 class InstrumentContext {
 private:
-    /// @brief 通配清零用的空合约代码（`dz_set_logical_position` 的 `""` 语义）
-    static constexpr const char* kEmptyInstrument = "";
-
     WindowState window_;  ///< 价格序列与用户序列共用的窗口几何
     PriceArrays price_;   ///< 7 条价格数组（物理 `buffer_bars` 个元素）
 
@@ -473,7 +470,7 @@ private:
                 continue;  // 该账户的 L_i 未变：不发单、不上报
             }
             submit_delta_order(account, delta, price);
-            publish_position(account, instrument_id_, new_l);
+            publish_position(account, instrument_id_.c_str(), new_l);
         }
     }
 
@@ -553,22 +550,24 @@ private:
      * 在函数里硬编码，是为了让那条通配路径真的可达——否则注释承诺的通配口径永远走不到。
      *
      * @param account       目标挂靠账户
-     * @param instrument_id 合约代码（空串 = 该账户该策略全部品种通配清零）
+     * @param instrument_id 合约代码；`nullptr` = 空品种通配（该账户该策略全部品种清零）
      * @param net_l         该账户的逻辑持仓（= 目标净额；通配时 SDK 忽略并固定为 0）
      */
     void publish_position(const AttachedAccount& account,
-                          std::string_view instrument_id,
+                          const char* instrument_id,
                           LargeVolume net_l) {
         if (dz_ == nullptr) {
             return;  // 虚拟台账模式：无会话句柄
         }
-        // `dz_set_logical_position` 要 NUL 结尾的 const char*。**常见路径零分配**：调用方传的
-        // 就是本品种代码（指向 ctx 自己的成员，永久有效）时直接用指针；只有通配清零（空串，
-        // 归 #162）才需要一个静态空串常量。若在这里无条件构造 `std::string`，每笔意图 × 每个
-        // 账户都会多一次堆分配——上报在交易意图的冷路径上，但 §10 的 1us 预算不容它。
-        const bool same_instrument = instrument_id == instrument_id_;
-        const char* instrument_ptr = same_instrument ? instrument_id_.c_str() : kEmptyInstrument;
-        if (!dz_set_logical_position(dz_, account.account_id.c_str(), instrument_ptr, net_l)) {
+        // 用 `const char*` + `nullptr` 而不是 `std::string_view` 表示通配，有两个理由：
+        //   1. **零分配**——`dz_set_logical_position` 本来就要 NUL 结尾的指针，传
+        //      `instrument_id_.c_str()` 直接用；`string_view` 版本必须造一个 `std::string`
+        //      才能拿到指针，等于每笔意图 × 每个账户多一次堆分配（§10 的 1us 预算不容它）；
+        //   2. **没有歧义**——`string_view` 版本里「传别的合约代码」既不是通配也不是本品种，
+        //      实现只能二选一（原来会静默变成通配清零）。`nullptr` 只有「通配」一个含义，
+        //      传本品种代码就是本品种，语义由类型而非约定保证。
+        const char* target = instrument_id == nullptr ? "" : instrument_id;
+        if (!dz_set_logical_position(dz_, account.account_id.c_str(), target, net_l)) {
             report_publish_failed(account.account_id, net_l);
         }
     }
@@ -591,7 +590,7 @@ private:
         for (const AttachedAccount& account : *accounts_) {
             const LargeVolume net_l =
                 scaling_internal::logical_position(position_.net_volume, account.scale, scaling_);
-            publish_position(account, instrument_id_, net_l);
+            publish_position(account, instrument_id_.c_str(), net_l);
         }
     }
 
