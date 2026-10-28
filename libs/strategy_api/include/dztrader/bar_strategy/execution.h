@@ -5,8 +5,8 @@
  * 三件事都是**纯函数 + 纯值类型**，因此可以在不碰引擎、不搭帧通道的前提下逐格单测
  * （issue #153 的「接缝 C（纯单元）」）：
  *
- *   1. `TickSnapshot` + `snapshot_from_tick()`：最近一笔**已被 builder 接受**的 tick 的价格
- *      与涨跌停，供价格夹取（以及后续 #162 同步单的对手价）使用；
+ *   1. `TickSnapshot` + `snapshot_from_tick()`：最近一笔**已被 builder 接受**的 tick 的涨跌停，
+ *      供价格夹取使用；
  *   2. `resolve_order_price()`：限价 → tick 对齐（买向下、卖向上，不向不利方向偷价）→
  *      涨跌停夹取（挂涨跌停价而不是拒单），并给出「调整过、原因是什么」以便 ctx 打诊断；
  *   3. `order_volume()`：账户逻辑持仓差量 → 委托手数（`DzVolume`）的范围校验。
@@ -43,14 +43,12 @@ namespace dztrader {
  * 范围内 `valid` 一旦被置 true 就不再变。
  */
 struct TickSnapshot {
-    double last = 0;           ///< 最新价
-    double bid1 = 0;           ///< 买一价（同步单卖方向的对手价，#162）
-    double ask1 = 0;           ///< 卖一价（同步单买方向的对手价，#162）
-    double upper_limit = 0;    ///< 涨停价（0/非有限 = 不可用，不夹取）
-    double lower_limit = 0;    ///< 跌停价（同上）
-    DzDate date = DZ_DATE_NA;  ///< 交易日
-    DzTime time = 0;           ///< 墙钟秒
-    bool valid = false;        ///< 是否有过可用的 tick
+    double upper_limit = 0;  ///< 涨停价（0/非有限 = 不可用，不夹取）
+    double lower_limit = 0;  ///< 跌停价（同上）
+    bool valid = false;      ///< 是否有过可用的 tick（false = 价格夹取跳过）
+    // 只放**当前有消费者**的字段。同步单的对手价（bid1/ask1）与回放期的 valid 清零随
+    // 命令层（#162）与回放（#161）加进来——不提前留字段，避免把「以后可能要」写成接口承诺
+    // （#157/#159 的同类判断）。
 };
 
 /**
@@ -60,13 +58,8 @@ struct TickSnapshot {
  */
 [[nodiscard]] inline TickSnapshot snapshot_from_tick(const DzTick& tick) noexcept {
     return TickSnapshot{
-        .last = tick.last_price,
-        .bid1 = tick.bid_price[0],
-        .ask1 = tick.ask_price[0],
         .upper_limit = tick.upper_limit_price,
         .lower_limit = tick.lower_limit_price,
-        .date = tick.date,
-        .time = tick.time,
         .valid = true,
     };
 }
@@ -252,15 +245,9 @@ namespace execution_internal {
     return delta > 0 ? DZ_DIRECTION_LONG : DZ_DIRECTION_SHORT;
 }
 
-/// @brief 方向名（诊断用：`long` / `short`，与 `DZ_DIRECTION_*` 的 wire 口径一致）
+/// @brief 方向名（诊断用：`long` / `short`；本框架只会下这两个方向）
 [[nodiscard]] inline const char* direction_name(DzDirection direction) noexcept {
-    if (direction == DZ_DIRECTION_LONG) {
-        return "long";
-    }
-    if (direction == DZ_DIRECTION_SHORT) {
-        return "short";
-    }
-    return "net";
+    return direction == DZ_DIRECTION_LONG ? "long" : "short";
 }
 
 }  // namespace dztrader

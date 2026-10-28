@@ -109,9 +109,15 @@ set(SDK_API_TESTS
     result_set_test
     # BarStrategy 框架端到端 (Seam A): 真实帧通道 + run_bar_strategy + 临时 DZTRADER_HOME
     bar_strategy_framework_test
+)
+
+# 只需要在**链接期**解析 API 符号、但不碰真实通道/临时 home 的测试。
+# 与 SDK_API_TESTS 的区别只在测试属性：这一组是纯单元，不共用机器全局 SHM 通道，
+# 因此不需要 RUN_SERIAL，也不该继承 60s 的超时兜底。
+set(SDK_HEADER_LINK_API_TESTS
     # 台账单元测试构造真实 InstrumentContext：ctx 的执行出口直接调 dz_place_order /
     # dz_set_logical_position（#160 的单一出口），即使用例走的是虚拟台账路径（dz_ == nullptr）
-    # 也要在链接期解析这些符号。与 framework_test 同因。
+    # 也要在链接期解析这些符号。与 framework_test 的差别是它不需要串行化。
     bar_strategy_position_test
 )
 
@@ -162,7 +168,7 @@ foreach(testfile ${SDK_TESTS})
         target_compile_definitions(dztrader_sdk_${testname} PRIVATE
             DZTRADER_SERIES_NO_DEBUG_ASSERT)
     endif()
-    if(testname IN_LIST SDK_API_TESTS)
+    if(testname IN_LIST SDK_API_TESTS OR testname IN_LIST SDK_HEADER_LINK_API_TESTS)
         target_sources(dztrader_sdk_${testname} PRIVATE src/api.cpp src/db_database.cpp)
         # api.cpp 直接编入测试可执行文件（自包含, 不经 DLL 导出）,
         # 语义同 dztrader_sdk_static: DZ_API 展开为空。

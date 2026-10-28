@@ -46,14 +46,9 @@ ScalingConfig make_scaling(ScaleRounding rounding = ScaleRounding::Nearest, bool
     return scaling;
 }
 
-/// 造一个带涨跌停的快照（`valid = true`）
-TickSnapshot make_tick(double last, double upper, double lower) {
-    TickSnapshot tick;
-    tick.last = last;
-    tick.upper_limit = upper;
-    tick.lower_limit = lower;
-    tick.valid = true;
-    return tick;
+/// 造一个带涨跌停的快照（`valid = true`）；涨跌停传 0 表示「不可用、不夹取」
+TickSnapshot make_tick(double upper, double lower) {
+    return TickSnapshot{.upper_limit = upper, .lower_limit = lower, .valid = true};
 }
 
 // ============================================================
@@ -152,11 +147,13 @@ TEST(AttachedScalingTest, InvalidScaleYieldsNoPosition) {
 /**
  * **取整误差不随逐单累积**（AC「取整误差不随逐单累积」）。
  *
- * 这是 ADR 0030 决策 8 的核心性质，也是「逐单独立缩放」被否决的理由。断言方式：走一串
- * 持仓序列（含加仓、部分平仓、反手、全平），每一步的 `L_i` 只由**当前 P** 决定——把它与
- * 「从零直接到当前 P」的结果逐格比较。逐单累积的实现会在这里分叉（它的 L 依赖历史路径）。
+ * 这是 ADR 0030 决策 8 的核心性质，也是「逐单独立缩放」被否决的理由。它的**可判定形式**是
+ * 一条关于差量之和的等式：沿任意持仓路径每步发 `qty_i = L(P_new) − L(P_old)`，那么累计成交
+ * 手数恒等于 `L(P_末) − L(P_初)`——账户最终持仓只由终态决定，与路径无关。
  *
- * 同一序列还顺带覆盖「反手」：从 +7 一步到 -4，`L` 直接从正翻到负，不经过 0。
+ * 与之对照的「逐单独立缩放」模型（每笔手数 = `f(scale × 本单量)`）在**同一条路径**上会漂到
+ * 别处。测试把两个模型都跑一遍，断言前者精确等于终态差、后者不等——只断言前者等于一个手算
+ * 常数是不够的：那只能证明某几个点对，证明不了「不累积」这条性质。
  */
 TEST(AttachedScalingTest, RoundingErrorDoesNotAccumulateAcrossIntents) {
     const ScalingConfig scaling = make_scaling(ScaleRounding::Nearest);
@@ -164,22 +161,36 @@ TEST(AttachedScalingTest, RoundingErrorDoesNotAccumulateAcrossIntents) {
 
     // 一条真实会出现的路径：开仓 → 加仓 → 部分平 → 反手 → 再加 → 全平
     const std::vector<LargeVolume> path = {3, 7, 4, -4, -9, -2, 5, 0};
-    for (const LargeVolume position : path) {
-        const LargeVolume via_path = logical_position(position, kScale, scaling);
-        const LargeVolume from_flat = logical_position(position, kScale, scaling);
-        EXPECT_EQ(via_path, from_flat)
-            << "L must be a pure function of the current position, position=" << position;
+
+    // ① 差量模型（本实现）：累计成交 = L(终态) − L(初态)，与路径无关
+    LargeVolume delta_sum = 0;
+    for (std::size_t i = 1; i < path.size(); ++i) {
+        delta_sum += dztrader::saturating_delta(logical_position(path[i], kScale, scaling),
+                                                logical_position(path[i - 1], kScale, scaling));
     }
+    const LargeVolume target_delta =
+        dztrader::saturating_delta(logical_position(path.back(), kScale, scaling),
+                                   logical_position(path.front(), kScale, scaling));
+    EXPECT_EQ(delta_sum, target_delta)
+        << "cumulative lots must equal L(final) - L(initial), independent of the path";
 
-    // 具体的「无累积」证据：10 次 ±1 的往返（每次都取整）后回到同一个 P，L 也回到同一个值
-    EXPECT_EQ(logical_position(1, kScale, scaling), logical_position(1, kScale, scaling));
-    EXPECT_EQ(logical_position(3, kScale, scaling), 1) << "0.35 * 3 = 1.05 → 1";
-    EXPECT_EQ(logical_position(7, kScale, scaling), 2) << "0.35 * 7 = 2.45 → 2";
-    EXPECT_EQ(logical_position(9, kScale, scaling), 3) << "0.35 * 9 = 3.15 → 3";
+    // ② 逐单独立缩放模型（ADR 0030 明确否决）：每笔手数 = f(scale × 本单量)
+    LargeVolume per_order_sum = 0;
+    for (std::size_t i = 1; i < path.size(); ++i) {
+        const LargeVolume step = dztrader::saturating_delta(path[i], path[i - 1]);
+        const LargeVolume step_l = step < 0 ? -logical_position(-step, kScale, scaling)
+                                            : logical_position(step, kScale, scaling);
+        per_order_sum += step_l;
+    }
+    EXPECT_NE(per_order_sum, target_delta)
+        << "the rejected per-order model must drift; otherwise this test proves nothing";
 
-    // 逐单累积的实现会漂到别处：10 笔 +1（每笔取整 0）累积成 0，而不是 f(0.35 × 10) = 4
-    const LargeVolume after_ten_intents = logical_position(10, kScale, scaling);
-    EXPECT_EQ(after_ten_intents, 4) << "0.35 * 10 = 3.5 → 4 (rounded on the target, not per lot)";
+    // ③ 反向压力的具体数字：10 笔 +1 逐单取整（每笔 f(0.35) = 0）累积成 0，
+    //    而按目标持仓取整应得 f(0.35 × 10) = f(3.5) = 4
+    const LargeVolume per_order_ten = 10 * logical_position(1, kScale, scaling);
+    EXPECT_EQ(per_order_ten, 0) << "the per-order model gives up every lot to rounding";
+    EXPECT_EQ(logical_position(10, kScale, scaling), 4)
+        << "0.35 * 10 = 3.5 → 4 (rounded on the target, not per lot)";
 }
 
 /// **反手是一步**：`L` 直接从正翻到负，中间没有 0 的过渡态（AC「反手只发一张差量单」的台账面）
@@ -221,7 +232,7 @@ TEST(AttachedScalingTest, HugeMagnitudeSaturatesInsteadOfOverflowing) {
  * 意义的「价格被调整」诊断。
  */
 TEST(OrderPriceTest, TickAlignmentNeverMovesAgainstTheAccount) {
-    const TickSnapshot tick = make_tick(100.0, 0.0, 0.0);  // 无涨跌停（0 = 不可用）
+    const TickSnapshot tick = make_tick(0.0, 0.0);  // 无涨跌停（0 = 不可用）
     constexpr double kTick = 0.1;
 
     // 买：向下取整（100.15 → 100.1；不是 100.2）
@@ -246,7 +257,7 @@ TEST(OrderPriceTest, TickAlignmentNeverMovesAgainstTheAccount) {
 
 /// **`price_tick` 不可用（= 0，元数据缺失）时跳过对齐**而不拒单
 TEST(OrderPriceTest, MissingPriceTickSkipsAlignmentWithoutRejecting) {
-    const TickSnapshot tick = make_tick(100.0, 0.0, 0.0);
+    const TickSnapshot tick = make_tick(0.0, 0.0);
     const PricePlan plan = dztrader::resolve_order_price(100.15, 0.0, DZ_DIRECTION_LONG, tick);
     ASSERT_TRUE(plan.valid) << "missing metadata must not reject every order";
     EXPECT_DOUBLE_EQ(plan.price, 100.15);
@@ -268,7 +279,7 @@ TEST(OrderPriceTest, MissingPriceTickSkipsAlignmentWithoutRejecting) {
  * 卖单高于涨停也不夹。
  */
 TEST(OrderPriceTest, LimitPricesClampInsteadOfRejecting) {
-    const TickSnapshot tick = make_tick(100.0, 110.0, 90.0);
+    const TickSnapshot tick = make_tick(110.0, 90.0);
     constexpr double kTick = 0.5;
 
     // 买价高于涨停 → 挂涨停价
@@ -315,7 +326,7 @@ TEST(OrderPriceTest, LimitPricesClampInsteadOfRejecting) {
  * 这些值传进 `dz_place_order` 会在 td 侧变成一张价格无意义的单，比拒单危险得多。
  */
 TEST(OrderPriceTest, NonPositiveOrNonFinitePricesAreRejected) {
-    const TickSnapshot tick = make_tick(100.0, 110.0, 90.0);
+    const TickSnapshot tick = make_tick(110.0, 90.0);
     const double bad_prices[] = {0.0,
                                  -1.0,
                                  -100.0,
@@ -337,7 +348,7 @@ TEST(OrderPriceTest, NonPositiveOrNonFinitePricesAreRejected) {
  * 顺序反过来的话，对齐会把已经夹到涨停价的单子再往上/往下挪一格，挂到交易所不接受的价位。
  */
 TEST(OrderPriceTest, LimitClampWinsOverTickAlignment) {
-    const TickSnapshot tick = make_tick(100.0, 110.0, 90.0);
+    const TickSnapshot tick = make_tick(110.0, 90.0);
     // 买价 119.7，tick 0.5：先向下对齐到 119.5，再夹到 110
     const PricePlan plan = dztrader::resolve_order_price(119.7, 0.5, DZ_DIRECTION_LONG, tick);
     ASSERT_TRUE(plan.valid);

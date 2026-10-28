@@ -1049,6 +1049,22 @@ protected:
         }
     }
 
+    /**
+     * @brief 只取「意图引起的」上报帧，跳过进入 live 时的基线批量上报
+     *
+     * `enter_live()` 在 `on_start` 末尾对**全部**挂靠账户报一次当前逻辑持仓（§5.3 的一次性
+     * 上报；`L_i == 0` 也报，用于清掉上次运行留下的 UI 镜像）。因此有 N 个账户时，`reports_`
+     * 的前 N 条是基线，之后才是策略意图产生的。断言「某笔意图是否上报」必须排除基线，
+     * 否则基线会把计数抬高、让 `L_i == 0` 该跳过的断言失效。
+     */
+    [[nodiscard]] std::vector<ObservedPositionReport> intent_reports(
+        std::size_t account_count) const {
+        if (reports_.size() <= account_count) {
+            return {};
+        }
+        return {reports_.begin() + static_cast<std::ptrdiff_t>(account_count), reports_.end()};
+    }
+
     /// @brief 打开 probe reader（须在 `start_strategy()` 之前调用，否则漏启动帧）
     void open_probe() {
         probe_.emplace(
@@ -2251,16 +2267,19 @@ TEST_F(BarStrategyFrameworkTest, AttachedAccountsMirrorAndReverseWithSingleDelta
     EXPECT_DOUBLE_EQ(sell2.price, reverse_price);
 
     // ── 上报帧：4 条，账户与净手数按 L 一一对应 ──
-    ASSERT_EQ(reports_.size(), 4U) << "one report per changed L_i per intent";
-    EXPECT_EQ(reports_[0].account_id, "CTP001");
-    EXPECT_EQ(reports_[0].instrument_id, kInstrumentA);
-    EXPECT_EQ(reports_[0].net_volume, 3);
-    EXPECT_EQ(reports_[1].account_id, "CTP002");
-    EXPECT_EQ(reports_[1].net_volume, 2);
-    EXPECT_EQ(reports_[2].account_id, "CTP001");
-    EXPECT_EQ(reports_[2].net_volume, -3);
-    EXPECT_EQ(reports_[3].account_id, "CTP002");
-    EXPECT_EQ(reports_[3].net_volume, -2);
+    // 基线 2 条（两个账户在进入 live 时各报一次 L=0）+ 两笔意图各 2 条 = 6
+    ASSERT_EQ(reports_.size(), 6U) << "2 accounts x (1 baseline + 1 long + 1 reversal) reports";
+    const auto mirror_reports = intent_reports(2);
+    ASSERT_EQ(mirror_reports.size(), 4U) << "one report per changed L_i per intent";
+    EXPECT_EQ(mirror_reports[0].account_id, "CTP001");
+    EXPECT_EQ(mirror_reports[0].instrument_id, kInstrumentA);
+    EXPECT_EQ(mirror_reports[0].net_volume, 3);
+    EXPECT_EQ(mirror_reports[1].account_id, "CTP002");
+    EXPECT_EQ(mirror_reports[1].net_volume, 2);
+    EXPECT_EQ(mirror_reports[2].account_id, "CTP001");
+    EXPECT_EQ(mirror_reports[2].net_volume, -3);
+    EXPECT_EQ(mirror_reports[3].account_id, "CTP002");
+    EXPECT_EQ(mirror_reports[3].net_volume, -2);
 }
 
 /**
@@ -2327,9 +2346,14 @@ TEST_F(BarStrategyFrameworkTest, ConfiguredRoundingAndMinOneReachExecution) {
     EXPECT_EQ(orders_[0].volume, 1) << "nearest would have sent 2 lots (0.5 * 3 = 1.5)";
     EXPECT_EQ(orders_[1].volume, 1) << "the delta from L=1 to L=2 is one lot";
 
-    ASSERT_EQ(reports_.size(), 2U);
-    EXPECT_EQ(reports_[0].net_volume, 1);
-    EXPECT_EQ(reports_[1].net_volume, 2);
+    // 基线批量上报（进入 live 时 L=0）之后，两笔意图各报一条
+    const auto scaling_reports = intent_reports(1);
+    ASSERT_EQ(scaling_reports.size(), 2U) << "one report per intent that changed L";
+    EXPECT_EQ(scaling_reports[0].net_volume, 1);
+    EXPECT_EQ(scaling_reports[1].net_volume, 2);
+    // 基线本身报的是冷启动值 0（全量对账口径，见 publish_all_positions）
+    ASSERT_FALSE(reports_.empty());
+    EXPECT_EQ(reports_[0].net_volume, 0) << "the live-entry baseline must publish the cold value";
 }
 
 /**
@@ -2369,8 +2393,9 @@ TEST_F(BarStrategyFrameworkTest, ScaleMinOneIsWiredThroughConfig) {
     ASSERT_EQ(orders_.size(), 1U)
         << "without min_one this account would stay at 0 and send nothing";
     EXPECT_EQ(orders_[0].volume, 1);
-    ASSERT_EQ(reports_.size(), 1U);
-    EXPECT_EQ(reports_[0].net_volume, 1);
+    const auto min_one_reports = intent_reports(1);
+    ASSERT_EQ(min_one_reports.size(), 1U);
+    EXPECT_EQ(min_one_reports[0].net_volume, 1);
 }
 
 /**
@@ -2427,8 +2452,10 @@ TEST_F(BarStrategyFrameworkTest, AccountsWithUnchangedLogicalPositionAreSkipped)
     ASSERT_EQ(orders_.size(), 1U) << "unchanged L_i must not produce an order";
     EXPECT_EQ(orders_[0].account_id, "TINY");
     EXPECT_EQ(orders_[0].volume, 1) << "L(5) = 1 while L(4) = L(3) = 0, so the delta is 1 lot";
-    ASSERT_EQ(reports_.size(), 1U) << "unchanged L_i must not produce a report";
-    EXPECT_EQ(reports_[0].net_volume, 1);
+    // 基线 1 条（进入 live 时 L=0）+ 只有第三笔的 1 条 = 2；前两笔的 L 未变得不到上报
+    const auto tiny_reports = intent_reports(1);
+    ASSERT_EQ(tiny_reports.size(), 1U) << "unchanged L_i must not produce a report";
+    EXPECT_EQ(tiny_reports[0].net_volume, 1);
 }
 
 /**

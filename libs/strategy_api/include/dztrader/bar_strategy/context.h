@@ -468,7 +468,7 @@ private:
             if (delta == 0) {
                 continue;  // 该账户的 L_i 未变：不发单、不上报
             }
-            submit_order(account, delta, price);
+            submit_delta_order(account, delta, price);
             publish_position(account, new_l);
         }
     }
@@ -479,26 +479,26 @@ private:
      * 正常策略单、删除平仓、同步单（#162）共用本函数：价格处理、effect 固定值、失败诊断都
      * 只写一遍。A 不参与下单，因此不存在第二条拼单路径。
      *
+     * `order_qty` 是**已解析好**的正手数与方向（由 {@link submit_delta_order} 从差量翻出）：
+     * 本函数不接收带符号的差量，因此「差量 0」与「差量溢出」这两种不发单的情形不会走到这里、
+     * 也不需要在本函数里再猜一次 `0` 的含义。
+     *
      * 拒单有两种，都不影响逻辑账（逻辑持仓已按意图/命令推进）：
      *   - 价格非法（NaN/Inf/≤ 0）：打 `order rejected`；
-     *   - 数量超出 `DzVolume` 范围：打 `order rejected`（静默截断会发一张手数完全不同的单）。
-     * 写帧失败（`dz_place_order < 0`）也记诊断——它是「单没出去」的唯一证据。
+     *   - 写帧失败（`dz_place_order < 0`）：打 `order submit failed`。
      *
-     * @param account 目标挂靠账户
-     * @param delta   该账户的差量手数（正 = 买、负 = 卖；调用方保证非 0）
-     * @param price   策略传入的限价（对齐/夹取在本函数内完成）
+     * @param account   目标挂靠账户
+     * @param direction 委托方向（`DZ_DIRECTION_LONG` / `DZ_DIRECTION_SHORT`）
+     * @param order_qty 委托手数（> 0）
+     * @param price     策略传入的限价（对齐/夹取在本函数内完成）
      */
-    void submit_order(const AttachedAccount& account, LargeVolume delta, double price) {
-        const Volume order_qty = order_volume(delta).value_or(0);
-        const DzDirection direction = direction_of(delta);
-        if (order_qty == 0) [[unlikely]] {
-            // 只有「差量幅值超出 DzVolume」能走到这里（0 已在 fanout 跳过）
-            report_order_rejected(account, delta, "volume_out_of_range");
-            return;
-        }
+    void submit_order(const AttachedAccount& account,
+                      DzDirection direction,
+                      Volume order_qty,
+                      double price) {
         const PricePlan plan = resolve_order_price(price, spec_.price_tick, direction, tick_);
         if (!plan.valid) [[unlikely]] {
-            report_order_rejected(account, delta, "invalid_price");
+            report_order_rejected(account, direction, order_qty, "invalid_price");
             return;
         }
         if (plan.adjustment != PriceAdjustment::None) {
@@ -513,10 +513,37 @@ private:
     }
 
     /**
+     * @brief 账户逻辑持仓差量 → 一张委托（`qty_i != 0` 才走到这里）
+     *
+     * 把「差量 → 方向 + 手数」这一次翻译收在一处，再交给唯一的 {@link submit_order} 出口。
+     * 拆成两层是为了让「差量非法/为零」与「价格非法」各自在**语义对应**的位置判定：前者是
+     * 差量的性质（`order_volume()` 的返回），后者是价格的性质（`resolve_order_price()`）。
+     * 合成一层时两者都得用一个 `0` 手数代表，`volume_out_of_range` 与「差量恰好为 0」就会
+     * 共用一条分支——那正是本函数存在的原因。
+     *
+     * @param account 目标挂靠账户
+     * @param delta   该账户的差量手数（正 = 买、负 = 卖；调用方保证非 0）
+     * @param price   策略传入的限价
+     */
+    void submit_delta_order(const AttachedAccount& account, LargeVolume delta, double price) {
+        const DzDirection direction = direction_of(delta);
+        const std::optional<Volume> order_qty = order_volume(delta);
+        if (!order_qty.has_value()) [[unlikely]] {
+            // 只在 `|delta| > DzVolume` 时发生（delta == 0 由调用方跳过）
+            report_order_rejected(account, direction, 0, "volume_out_of_range");
+            return;
+        }
+        submit_order(account, direction, *order_qty, price);
+    }
+
+    /**
      * @brief **唯一的** `dz_set_logical_position` 出口（组件文档 §3「唯一出口」）
      *
      * 上报的 `net_volume` 是账户逻辑持仓 `L_i`（不是策略级 P：策略逻辑持仓按账户各报一条，
      * ADR 0027 决策 15）。写帧失败记诊断——上报丢失会让 UI 侧的逻辑/实际偏差对比失真。
+     *
+     * 删除挂靠账户时用的「账户 + 空品种」通配清零同样走这一个出口：命令层（#162）届时传空
+     * 合约代码即可，本函数不为此另开拼帧路径。本票（#160）只有逐品种上报，没有删除命令。
      *
      * @param account 目标挂靠账户
      * @param net_l   该账户的逻辑持仓（= 目标净额）
@@ -527,31 +554,28 @@ private:
         }
         if (!dz_set_logical_position(dz_, account.account_id.c_str(), instrument_id_.c_str(),
                                      net_l)) {
-            report_publish_failed(account, net_l);
+            report_publish_failed(account.account_id, net_l);
         }
     }
 
     /**
-     * @brief 对全部账户重报当前逻辑持仓（A 在回放结束 / `instrument add` / 账户命令后调用）
+     * @brief 对全部挂靠账户重报当前逻辑持仓（A 在进入 live / `instrument add` / 账户命令后调用）
      *
      * 与 {@link fanout_positions} 的区别是**不发单**：它只把当前 `P` 映射成各账户的 `L_i` 报
      * 一次。回放期 B 照常下单但只做虚拟成交（不逐笔上报），结束后由这里一次性补齐（§5.3）。
      *
-     * 同时用于「账户表刚变过」的场景：新加入的账户需要立刻看到当前目标值，删除的账户由
-     * A 打「账户 + 空品种」通配清零（本函数不处理删除，那是命令层的语义）。
-     *
-     * @param include_zero true = 连 `L_i == 0` 的账户也上报（删除/清零后需要显式落地 0）
+     * **`L_i == 0` 的账户也上报**，不做「0 就跳过」的优化：这是进程启动/账户表变更后的**全量
+     * 对账**，目的就是让 UI 侧镜像与台账一致。若跳过 0，一个上次运行留下了非零镜像的账户在
+     * 冷启动（P == 0）后会永远显示旧持仓——「0 跳过」只适用于逐笔上报（那里表示「没变化」），
+     * 全量对账里它表示「该清成 0」。
      */
-    void publish_all_positions(bool include_zero = false) {
+    void publish_all_positions() {
         if (dz_ == nullptr || accounts_ == nullptr) {
             return;
         }
         for (const AttachedAccount& account : *accounts_) {
             const LargeVolume net_l =
                 scaling_internal::logical_position(position_.net_volume, account.scale, scaling_);
-            if (net_l == 0 && !include_zero) {
-                continue;
-            }
             publish_position(account, net_l);
         }
     }
@@ -575,9 +599,6 @@ private:
      * @param live true = 进入实盘（发单 + 上报）
      */
     void set_live(bool live) noexcept { live_ = live; }
-
-    /// @brief 当前是否处于实盘阶段（诊断与测试用；`false` = 虚拟台账模式）
-    [[nodiscard]] bool is_live() const noexcept { return live_; }
 
     /// @brief 最近一笔已接受 tick 的快照（只读；A 与测试用）
     [[nodiscard]] const TickSnapshot& tick_snapshot() const noexcept { return tick_; }
@@ -689,9 +710,10 @@ private:
 
     // ==== 执行诊断（#160；全部写 stderr，prose 区分等级，见 .cpp 段注释）====
 
-    /// @brief 挂靠账户差量单被拒（价格非法 / 数量超出 `DzVolume`）
+    /// @brief 挂靠账户单被拒（价格非法 / 数量超出 `DzVolume`）
     void report_order_rejected(const AttachedAccount& account,
-                               LargeVolume delta,
+                               DzDirection direction,
+                               Volume order_qty,
                                std::string_view reason);
     /// @brief 下单价格被调整（tick 对齐 / 涨跌停夹取）：记原始价、最终价与原因
     void report_price_adjusted(const AttachedAccount& account,
@@ -703,7 +725,7 @@ private:
                              Volume order_qty,
                              DzDirection direction);
     /// @brief 逻辑持仓上报写帧失败
-    void report_publish_failed(const AttachedAccount& account, LargeVolume net_l);
+    void report_publish_failed(const std::string& account_id, LargeVolume net_l);
 
     /**
      * @brief 推进一根 bar：回卷兜底 → 把 `bar` 写进新槽位 → 用户序列写初值/carry → 收尾
@@ -967,10 +989,13 @@ inline void InstrumentContext::report_intent_outcome(
  * 是「策略传入价与交易所实际挂单价不一致」的唯一解释来源，静默会让迁移用户以为框架偷价。
  */
 inline void InstrumentContext::report_order_rejected(const AttachedAccount& account,
-                                                     LargeVolume delta,
+                                                     DzDirection direction,
+                                                     Volume order_qty,
                                                      std::string_view reason) {
-    std::cerr << std::format("order rejected | instrument={} account={} qty={} reason={}",
-                             instrument_id_, account.account_id, delta, reason)
+    std::cerr << std::format(
+                     "order rejected | instrument={} account={} direction={} qty={} reason={}",
+                     instrument_id_, account.account_id, direction_name(direction), order_qty,
+                     reason)
               << '\n';
 }
 
@@ -999,12 +1024,12 @@ inline void InstrumentContext::report_order_failed(const AttachedAccount& accoun
               << '\n';
 }
 
-inline void InstrumentContext::report_publish_failed(const AttachedAccount& account,
+inline void InstrumentContext::report_publish_failed(const std::string& account_id,
                                                      LargeVolume net_l) {
     std::cerr << std::format(
                      "logical position publish failed | instrument={} account={} net_volume={} "
                      "error=\"{}\"",
-                     instrument_id_, account.account_id, net_l, dz_errmsg())
+                     instrument_id_, account_id, net_l, dz_errmsg())
               << '\n';
 }
 
