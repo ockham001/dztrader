@@ -300,10 +300,17 @@ public:
     }
 
     /// @brief 每手浮动盈亏（钱）：`(最新价 − 均价) × sign(P) × volume_multiple`；无仓 0
+    ///
+    /// 按 §6.1 的公式**直接乘**，不由 `position_profit()` 除以手数得出：除法会引入一次多余的
+    /// 浮点舍入（均价是加权平均值，通常不是二进制可表示的数），使每手盈亏与文档公式在末位
+    /// 上不一致——而用户拿它做止损阈值比较时，末位正是容易被踩到的地方。
     [[nodiscard]] double contract_profit() const noexcept {
-        const double per_contract = position_profit_at(current_price());
-        const auto size = bar_strategy_internal::abs_volume(position_.net_volume);
-        return size == 0 ? 0 : per_contract / static_cast<double>(size);
+        const double price = current_price();
+        if (position_.net_volume == 0 || price <= 0.0) {
+            return 0;
+        }
+        const double direction = position_.net_volume > 0 ? 1.0 : -1.0;
+        return (price - position_.avg_entry_price) * direction * spec_.volume_multiple;
     }
 
     /// @brief 当前持仓期间浮盈极值（≥ 0；bar 收盘前更新，开仓重置、平仓归零）

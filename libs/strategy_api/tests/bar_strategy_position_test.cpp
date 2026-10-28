@@ -559,6 +559,10 @@ TEST(Tier1Test, ProfitReadsTheWindowCloseAndMultipliesContractMultiplier) {
     ContextAccess::update_current(*ctx, bar);
     EXPECT_DOUBLE_EQ(ctx->position_profit(), -150.0) << "(95-100) × 3 × 10";
 
+    // 每手盈亏按 §6.1 公式直接乘，等于总盈亏 / 手数（手数整除时两者逐位相同）
+    EXPECT_DOUBLE_EQ(ctx->contract_profit() * static_cast<double>(ctx->current_contracts()),
+                     ctx->position_profit());
+
     ctx->sell_short(4, 95.0);  // 反手到 -4，均价 95
     EXPECT_DOUBLE_EQ(ctx->position_profit(), 0.0) << "reversed at the current price";
     bar.close = 90.0;
