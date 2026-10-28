@@ -138,7 +138,6 @@ struct PriceArrays {                        // 7 条价格序列的物理数组�
 };
 
 struct TickSnapshot {                       // 最近一笔已被 builder 接受的 tick（价格夹取用）
-    double last = 0;
     double upper_limit = 0, lower_limit = 0;
     bool valid = false;                     // false = 还没有任何行情，价格夹取跳过
     // 实现状态（#160）：只落地价格夹取需要的最小集合。同步单对手价用的 bid1/ask1 与
@@ -154,7 +153,7 @@ using AccountTable = std::vector<AttachedAccount>;  // 只读遍历；命令按�
 
 struct ScalingConfig {                      // 进程级缩放配置（启动加载后不可变；ctx 按值拷贝）
     double max_scale = 1.0;                 // 挂靠比率上限（> 0）
-    ScaleRounding rounding = ScaleRounding::Nearest;  // 取整方向（enum 定义在配置层，#156）
+    ScaleRounding rounding = ScaleRounding::Nearest;  // 取整方向（enum 与 ScalingConfig 同在 scaling.h）
     bool min_one = false;                   // 目标非零时至少 1 手
 };
 
@@ -1032,7 +1031,7 @@ status | quit
 > 翻转、幅值饱和（含 `INT64_MIN` 不能直接取负）、tick 对齐不偷价（含 `0.3/0.1` 的浮点边界
 > 与「已在网格上不报调整」）、`price_tick` 缺失时跳过对齐、涨跌停夹取（只夹方向对应一侧、
 > 快照无效不夹、恰好等界不夹）、对齐与夹取的顺序、非法价格拒单、差量为 0/超范围的手数换算。
-> `bar_strategy_framework_test.cpp` 新增七条 Seam A（独立 probe reader 断言订单帧与上报帧）：
+> `bar_strategy_framework_test.cpp` 新增八条 Seam A（独立 probe reader 断言订单帧与上报帧）：
 > `AttachedAccountsMirrorAndReverseWithSingleDeltaOrder`（scale 1.0/0.5 的镜像手数、反手
 > 每账户**一张**差量单、effect=AUTO、上报净手数）、`AccountsWithUnchangedLogicalPositionAreSkipped`
 > （`L_i` 未变 → 零帧，同时是「取整在目标持仓上」的可观测后果）、
@@ -1040,7 +1039,8 @@ status | quit
 > `ScaleMinOneIsWiredThroughConfig`（配置层到执行路径的接线：默认值断不出接线错误，故用
 > `floor` + `scale_min_one` 与足以区分的 scale）、`OnInitIntentIsVirtualOnlyUntilLive`
 > （live 门禁 + 进入 live 时的全量批量上报）、`OrderPriceIsClampedToLimitAndDiagnosed`
-> （挂涨停价而非拒单 + `reason=limit_up` 诊断）。下列清单是随各票逐步补齐的完整目标。
+> （挂涨停价而非拒单 + `reason=limit_up` 诊断）、`BatchReportCarriesTheInstrumentId`
+> （逐品种上报绝不带空合约代码——空串是通配清零的形状）。下列清单是随各票逐步补齐的完整目标。
 
 - 单元：
   - Series：`[n]` 读值/负索引/`n ≥ size` 抛 `std::out_of_range`、消息含 `n/size/max_lookback`；`span()` 长度与顺序；`size/max_lookback` 语义；write-only-`[0]` 的编译期约束（无 `push_back/resize`）；Debug assert。

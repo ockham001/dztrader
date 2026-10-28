@@ -50,6 +50,7 @@
 #include <format>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -148,6 +149,9 @@ concept UserSeriesElement = std::same_as<T, double> || std::same_as<T, std::int6
  */
 class InstrumentContext {
 private:
+    /// @brief 通配清零用的空合约代码（`dz_set_logical_position` 的 `""` 语义）
+    static constexpr const char* kEmptyInstrument = "";
+
     WindowState window_;  ///< 价格序列与用户序列共用的窗口几何
     PriceArrays price_;   ///< 7 条价格数组（物理 `buffer_bars` 个元素）
 
@@ -558,10 +562,13 @@ private:
         if (dz_ == nullptr) {
             return;  // 虚拟台账模式：无会话句柄
         }
-        // `dz_set_logical_position` 要 NUL 结尾的 const char*：本品种走 ctx 自己的成员
-        // （永久有效），通配/外部传入需要有主的缓冲。
-        const std::string instrument{instrument_id};
-        if (!dz_set_logical_position(dz_, account.account_id.c_str(), instrument.c_str(), net_l)) {
+        // `dz_set_logical_position` 要 NUL 结尾的 const char*。**常见路径零分配**：调用方传的
+        // 就是本品种代码（指向 ctx 自己的成员，永久有效）时直接用指针；只有通配清零（空串，
+        // 归 #162）才需要一个静态空串常量。若在这里无条件构造 `std::string`，每笔意图 × 每个
+        // 账户都会多一次堆分配——上报在交易意图的冷路径上，但 §10 的 1us 预算不容它。
+        const bool same_instrument = instrument_id == instrument_id_;
+        const char* instrument_ptr = same_instrument ? instrument_id_.c_str() : kEmptyInstrument;
+        if (!dz_set_logical_position(dz_, account.account_id.c_str(), instrument_ptr, net_l)) {
             report_publish_failed(account.account_id, net_l);
         }
     }
@@ -607,9 +614,6 @@ private:
      * @param live true = 进入实盘（发单 + 上报）
      */
     void set_live(bool live) noexcept { live_ = live; }
-
-    /// @brief 最近一笔已接受 tick 的快照（只读；A 与测试用）
-    [[nodiscard]] const TickSnapshot& tick_snapshot() const noexcept { return tick_; }
 
     /// @brief `volume == 0` 且本方向没有可平仓（= 无操作，按 §6 不诊断）
     [[nodiscard]] bool is_zero_volume_noop(position_internal::Intent intent,

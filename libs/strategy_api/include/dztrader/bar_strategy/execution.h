@@ -221,9 +221,9 @@ namespace execution_internal {
  * 为 0（不发单，§6 明文要求跳过）、或幅值超出 `DzVolume` 上限（拒单并诊断——把 `int64`
  * 静默截成 `int32` 会发一张手数完全不同的单，比拒单危险得多）。
  *
- * 幅值比较在 `int64` 上直接做（`±std::numeric_limits<Volume>::max()`），不做取负：`INT64_MIN`
- * 取负是 UB，而逻辑持仓的幅值已经被缩放层饱和在 `Volume` 上限以内（见 `scaling.h`），因此
- * 这里的比较既安全又完整。
+ * **先做范围检查、再取负**，顺序不能交换：`INT64_MIN` 取负是 UB，而范围检查用的
+ * `-kMaxVolume` 是编译期常量、不涉及运算数。检查通过即保证 `|delta| <= INT32_MAX`，
+ * 随后的取负与窄化因此都是安全的。
  *
  * @param delta 账户逻辑持仓差量（`L_i(new) − L_i(old)`，正 = 买、负 = 卖）
  * @return 委托手数（≥ 1）或 `std::nullopt`（不发单）
