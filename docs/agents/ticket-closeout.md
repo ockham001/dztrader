@@ -68,6 +68,7 @@ gh pr create --base main --head <branch> --title "<type>: <摘要>（#<issue>）
 - 等待期间不要 `gh run watch` 全量输出、不要 `sleep` 轮询、不要反复 tail 后台日志。CI 红先用 `./scripts/ci-log.sh <run-id>` 定位：它**优先取 `last-test-log` artifact（约 200KB，秒级给出失败用例名）**，再退回失败 job 日志（Windows 可达数十 MB）；同一 run/job 已下载过会复用（`--refresh` 强制重拉，`--context N` 调上下文行数）。
 - **等 CI 用后台作业**：`wait-ci.sh --pr <n>` 以 `run_in_background` 启动，等待期做只读准备（拟关闭评论 / 清理 worktree 计划 / 读下一票契约）；需要结果时 `job_output(wait=true)`，不要前台空等（2026-10-26 #146 / #147 各阻塞 21–22 分钟）。
 - 修红单独提交，不叠加新改动。
+- **CI 红过的失败类别，修完必须补一条静态规则**：修完只把当次修绿，下一票会以同样形态再红一次。把该类加进对应 linter 并附上该 run/票号（Windows 独有的编译失败 → `scripts/check_msvc_hazards.py` 的 R 编号；Linux 侧 → 对应 check 脚本）。理由：`check_msvc_hazards.py` 的每一项都对应一次真实的 Windows CI 红，它是**类别登记表**而不是一次性修复；被它拦下的失败（#157 的 `_wfopen` C4996）只花 5 行就永久关闭同一类盲区。修完顺手补规则，比下一票重跑一轮 35–45 分钟的 CI 便宜一个量级。
 
 ## 5. 合并 PR（硬顺序：先合并，后关 issue）
 

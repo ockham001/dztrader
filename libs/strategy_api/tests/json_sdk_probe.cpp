@@ -21,10 +21,38 @@
  * 模式断言不是形式主义：`DZTRADER_JSON_EXTERNAL` 拼错或没传到编译命令时，外部探针会
  * 静默回退内置模式，双模检查就退化成「同一个头编译两遍」的恒真测试（审查清单 §2.2）。
  * `DZ_JSON_PROBE_EXPECT_EXTERNAL` 由 CMake 按 target 注入，属于测试专用宏，不进公开面。
+ *
+ * **公开头全覆盖**：本 TU 只链 `strategy_api_headers`，所以它等价于「下游策略作者自己的
+ * 工程」——没有内部 target 传播的任何宏（典型如 `_CRT_SECURE_NO_WARNINGS`）。下面逐一
+ * 直接包含 `libs/strategy_api/include/` 下的**每个**公开头，保证它们都按下游方式编译过。
+ * `public_header_coverage_test.cpp` 会断言这份清单与目录内容一致：新增公开头却忘了加进
+ * 这里，测试直接失败（#157 的 `_wfopen` C4996 正是这种「没人覆盖到」的盲区）。
  */
+#include <dztrader/api.h>
+#include <dztrader/bar.h>
+#include <dztrader/bar/daily_bar_builder.h>
+#include <dztrader/bar/intraday_bar_builder.h>
+#include <dztrader/bar/types.h>
 #include <dztrader/bar_strategy.h>
 #include <dztrader/bar_strategy/config.h>
+#include <dztrader/bar_strategy/config_file.h>
+#include <dztrader/bar_strategy/context.h>
+#include <dztrader/bar_strategy/manager.h>
+#include <dztrader/data_type.h>
+#include <dztrader/date_time/date.h>
+#include <dztrader/date_time/date_time.h>
+#include <dztrader/date_time/dt_common.h>
+#include <dztrader/date_time/dt_formatter.h>
+#include <dztrader/date_time/dt_parser.h>
+#include <dztrader/date_time/time.h>
+#include <dztrader/error.h>
 #include <dztrader/json.h>
+#include <dztrader/series.h>
+#include <dztrader/series_internal.h>
+#include <dztrader/strategy_base.h>
+#include <dztrader/strategy_engine.h>
+#include <dztrader/struct.h>
+#include <dztrader/version.h>
 
 #include <cstdio>
 #include <string>

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # preflight.sh — 提交前本地门禁的唯一入口（Linux）
 #
-# 覆盖：日志格式 / clang-format 21.x / 文档链接 / 测试可移植性+临时目录隔离 / MSVC hazard lint /
-#       内置 nlohmann/json 版本一致性 / 前端五件套。MSVC 侧失败（Windows 头顺序、C4101 等）
+# 覆盖：日志格式 / clang-format 21.x / 文档链接（含活跃文档里反引号路径的存在性）/
+#       测试可移植性+临时目录隔离 / MSVC hazard lint / 内置 nlohmann/json 版本一致性 /
+#       前端五件套。MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
 #       Linux 编译器拦不到，由 scripts/check_msvc_hazards.py 做源码级 lint；
 #       conanfile.py 与内置 JSON 单头的版本漂移由 scripts/check_json_vendor_version.py 拦住。
 # CI 的 linux job 复用同一脚本的 C 段（--c-only），避免门禁命令在
