@@ -45,7 +45,6 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
-#include <utility>
 #include <vector>
 
 namespace dztrader {
@@ -385,7 +384,11 @@ private:
      */
     void execute_intent(position_internal::Intent intent, Volume volume, double price) {
         if (failed_) [[unlikely]] {
-            report_intent_rejected(intent, "instance_failed");
+            // 失败实例拒绝一切意图；但 `volume == 0` 且无可平仓是「无操作」，与 §6 同一条
+            // 理由（平仓语句逐 bar 无条件调用）——不用为它刷一行拒单诊断。
+            if (!is_zero_volume_noop(intent, volume)) {
+                report_intent_rejected(intent, "instance_failed");
+            }
             return;
         }
         const position_internal::LedgerOutcome outcome =
@@ -399,6 +402,17 @@ private:
             return;
         }
         report_intent_outcome(intent, volume, outcome);
+    }
+
+    /// @brief `volume == 0` 且本方向没有可平仓（= 无操作，按 §6 不诊断）
+    [[nodiscard]] bool is_zero_volume_noop(position_internal::Intent intent,
+                                           Volume volume) const noexcept {
+        if (volume != 0) {
+            return false;
+        }
+        const bool buying_side = intent == position_internal::Intent::Buy ||
+                                 intent == position_internal::Intent::BuyToCover;
+        return buying_side ? position_.net_volume >= 0 : position_.net_volume <= 0;
     }
 
     /// @brief 当前 bar 的记账时间戳（Tier 1 的进出场日期/时间/bar 序号来源）
@@ -682,11 +696,15 @@ private:
  * @brief 意图诊断（stderr；header-only 公开代码不引入 spdlog，ADR 0020/0021）
  *
  * 文案口径与 `strategy_engine.h` 一致：小写开头、无句号、`prose | k=v k=v`、全英文。分级照
- * 组件文档 §6：
- *   - 拒单（负手数 / 非法价格 / 失败实例）= `intent rejected | ...` ERROR 级；
- *   - `n > 0` 方向无效、`n > |P|` 钳制 = `intent ignored` / `intent clamped` WARN 级；
- *   - `volume == 0` 实际触发平仓 = `intent flat_by_zero` INFO 级（便于追溯非预期清仓）；
+ * 组件文档 §6，用四段不同的 prose 表达：
+ *   - 拒单（负手数 / 非法价格 / 失败实例）= `intent rejected | ...`；
+ *   - `n > 0` 方向无效、`n > |P|` 钳制 = `intent ignored` / `intent clamped`；
+ *   - `volume == 0` 实际触发平仓 = `intent flat_by_zero`（便于追溯非预期清仓）；
  *   - 无变化且无诊断依据（`volume == 0` 且无可平仓）**不诊断**，避免平仓语句逐 bar 刷屏。
+ *
+ * **这里没有「级别」**：框架是 header-only、只能写 stderr，而 master 把子进程 stderr 一律按
+ * WARN 转发——三条路径在 master 日志里级别相同，靠 prose 区分。所以注释与文档都不写
+ * 「ERROR 级 / WARN 级」，避免让人以为有级别分流。
  *
  * 三个分级用不同的 prose 而不是同一个 prose 加 `level=` 字段：master 把子进程 stderr 一律
  * 按 WARN 转发，日志级别只看得到 prose；prose 相同就等于三个级别在日志里无法区分。

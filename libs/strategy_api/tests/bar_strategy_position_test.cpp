@@ -448,9 +448,9 @@ TEST(Tier1Test, EntrySegmentsCountOpensAndAddsAndPeakIsHistorical) {
  * @brief 进出场价格与时间取**对应 bar 的标准结束时间**（经真实 `advance_bar` 接线）
  *
  * 这里不手写时间戳、而是调真实的 `advance_bar`：`current_date_` / `current_time_` 由它从
- * `bar::Bar` 推导（`period_sec > 0` 时取 `standard_end_sec()`），`bar_index_` 自增，价格写进
- * 窗口。若接线写错（例如取了 tick 时间或开始时间），本用例的断言会失败——纯台账层的测试
- * 覆盖不到这一层，而它正是「进出场时间」口径的落地点。
+ * `bar::Bar` 推导（取 `standard_end_sec()`），`bar_index_` 自增，价格写进窗口。若接线写错
+ * （例如取了 tick 时间或开始时间），本用例的断言会失败——纯台账层的测试覆盖不到这一层，
+ * 而它正是「进出场时间」口径的落地点。
  */
 TEST(Tier1Test, EntryAndExitStampsUseTheBarStandardEndTime) {
     const auto ctx = make_ctx();
@@ -682,6 +682,33 @@ TEST(IntentRejectionTest, NegativeVolumeAndInvalidPriceLeaveTheLedgerUntouched) 
             << "invalid price must be rejected | price=" << bad;
         EXPECT_DOUBLE_EQ(ctx->avg_entry_price(), avg);
     }
+}
+
+/**
+ * @brief 失败实例上，`volume == 0` 且无可平仓同样**不诊断**（§6 与 §4.6 的交点）
+ *
+ * 失败实例要拒绝一切意图（§4.6），但「零值 + 无可平仓」按 §6 是**无操作**、不该诊断——
+ * 策略里的平仓语句逐 bar 无条件调用，实例失败后若每根都刷一行拒单诊断，日志会被淹没。
+ * 有可平仓的意图仍然必须拒单并诊断。
+ */
+TEST(IntentDiagnosticsTest, FailedInstanceStaysSilentOnZeroVolumeNoOp) {
+    const auto ctx = make_ctx();
+    ContextAccess::mark_failed(*ctx);
+
+    testing::internal::CaptureStderr();
+    ctx->sell(0, 100.0);          // 空仓：无可平多 → 无操作，静默
+    ctx->buy_to_cover(0, 100.0);  // 空仓：无可平空 → 无操作，静默
+    const std::string quiet = testing::internal::GetCapturedStderr();
+    EXPECT_TRUE(quiet.empty()) << "zero-volume no-op on a failed instance must not diagnose: "
+                               << quiet;
+
+    // 对照：有可平仓的意图必须拒单并诊断（实例已失败）
+    ctx->buy(2, 100.0);  // 失败实例：拒单 → 持仓仍为 0
+    EXPECT_EQ(ctx->current_contracts(), 0);
+    testing::internal::CaptureStderr();
+    ctx->sell(1, 100.0);
+    const std::string rejected = testing::internal::GetCapturedStderr();
+    EXPECT_NE(rejected.find("reason=instance_failed"), std::string::npos) << rejected;
 }
 
 /// @brief 失败实例不再受理下单意图（组件文档 §4.6 / AC「失败实例不再受理下单意图」）
