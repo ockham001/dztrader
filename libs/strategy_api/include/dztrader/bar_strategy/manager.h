@@ -40,6 +40,8 @@
 #include <format>
 #include <iostream>
 #include <map>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -125,14 +127,29 @@ concept HasOnBarClose =
 }
 
 /**
+ * @brief 判定一张小节表是否为内置退化表（组件文档 §5.5）
+ *
+ * 退化表 = 恰好一个小节 `[0, 86399]` 且无竞价窗口。启动诊断据此声明口径，而不是靠调用方
+ * 额外传一个布尔标志——标志与实际表可能不一致，那样打印出的诊断就是假的。
+ *
+ * @param table 待判定的表
+ * @return true = 内置退化口径
+ */
+[[nodiscard]] inline bool is_degraded_session_table(
+    const bar::TradingSessionTable& table) noexcept {
+    return table.session_count == 1 && table.auction_count == 0 &&
+           table.sessions[0].begin_sec == 0 && table.sessions[0].end_sec == 86399;
+}
+
+/**
  * @brief A 内部：builder 事件 → 窗口推进 + B 回调的适配器（组件文档 §5.4）
  *
  * 三个事件入口的动作顺序即回调顺序：`on_bar_close(上一根)`（窗口尚未推进，`[0]` 仍是
  * 被关闭的上一根）→ `on_bar_open(新根)`（回卷兜底 + 推进窗口 + 写 `[0]`）→
  * `on_bar_update`（把 `Bar` 字段写进 `[0]`）。
  *
- * builder 要求 sink 回调不得抛异常：实际动作全在 A 的 `noexcept` 分发函数里完成，B 的异常
- * 在 A 内被捕获并转为实例失败。
+ * builder 要求 sink 回调不得抛异常，这个契约由 A 保证：三个 `dispatch_*` 把 B 的调用包进
+ * `invoke_b`（`noexcept`），异常在那里被捕获并转为实例失败，因此不会有异常穿过 builder。
  */
 template <class Strategy>
 struct BarEventSink {
@@ -204,11 +221,13 @@ public:
     /**
      * @brief 构造 A
      * @param session_table 交易小节表（v1 = `degraded_trading_session_table()`）
-     * @param degraded      true = 使用内置退化表（启动诊断按退化口径提示，§5.5）
+     *
+     * 「是否退化」由表自身判定（`is_degraded_session_table`），不另设标志位：两个独立状态
+     * 会互相矛盾（注入真实表却仍打印 degraded 诊断），而这条诊断正是 §5.5 要保证的口径。
      */
-    explicit BarStrategyManager(const bar::TradingSessionTable& session_table, bool degraded = true)
+    explicit BarStrategyManager(const bar::TradingSessionTable& session_table)
         : session_table_(session_table),
-          degraded_(degraded) {}
+          degraded_(is_degraded_session_table(session_table)) {}
 
     BarStrategyManager(const BarStrategyManager&) = delete;
     BarStrategyManager& operator=(const BarStrategyManager&) = delete;
@@ -372,10 +391,12 @@ private:
     }
 
     /**
-     * @brief 取配置路径并加载配置文件（组件文档 §7）
+     * @brief 取配置路径、加载文件，并把结果装进 `ConfigStore`（组件文档 §7）
      *
-     * 三种结局：`Loaded` → 保存有效配置继续启动；`GeneratedDefault` → 打印
-     * `result.message` 并以 `config_startup_exit_code()` 非 0 退出（等作者编辑后重启）；
+     * 三种结局：`Loaded` → 用 `load_config_file` 已读到的 document + effective 直接构造
+     * `ConfigStore`（**不重读文件**，避免双读与 TOCTOU：文件在两次读之间被改动会让内存镜像
+     * 与磁盘不一致），保留给后续票的 `param set` / `account *` 写回用；`GeneratedDefault` →
+     * 打印 `result.message` 并以 `config_startup_exit_code()` 非 0 退出（等作者编辑后重启）；
      * 异常（读/解析 `std::runtime_error`、配置非法 `std::invalid_argument`）→ 打印错误并以
      * 非 0 退出。任何一种都不静默继续。
      *
@@ -396,7 +417,9 @@ private:
                 request_startup_exit(config_startup_exit_code(result.status));
                 return false;
             }
-            effective_ = std::move(*result.effective);
+            store_ = std::make_unique<ConfigStore>(path, std::move(result.document),
+                                                   std::move(*result.effective));
+            effective_ = store_->current();
         } catch (const std::exception& e) {
             report_startup_failure("config_load", e.what());
             return false;
@@ -404,7 +427,7 @@ private:
         return true;
     }
 
-    /// @brief 启动诊断：有效配置两行 + 退化小节表口径 + 实例装配清单（组件文档 §5.5/§7）
+    /// @brief 启动诊断：有效配置两行 + 退化小节表口径 + 启动摘要（组件文档 §5.5/§7）
     void print_startup_diagnostics() const {
         std::cerr << format_effective_config(effective_) << '\n';
         std::cerr << format_effective_accounts(effective_.config.accounts) << '\n';
@@ -456,7 +479,6 @@ private:
         const auto period_sec = effective_.config.period_sec;
         for (const std::string& instrument_id : effective_.config.instruments) {
             InstrumentInit init{
-                .dz = dz_,
                 .instrument_id = instrument_id,
                 .max_lookback = effective_.max_lookback,
                 .buffer_bars = effective_.buffer_bars,
@@ -501,10 +523,12 @@ private:
         startup_exit_code_ = code;
     }
 
-    DzContext* dz_ = nullptr;                 ///< 引擎会话句柄（on_start 注入）
-    EffectiveConfig effective_;               ///< 启动加载的有效配置（进程内不变）
+    DzContext* dz_ = nullptr;  ///< 引擎会话句柄（on_start 注入）
+    /// 启动加载的配置仓（document + effective；`param set` / `account *` 的写回接缝 #162）
+    std::unique_ptr<ConfigStore> store_;
+    EffectiveConfig effective_;               ///< 启动快照（构建实例用，进程内不变）
     bar::TradingSessionTable session_table_;  ///< 交易小节表（v1 = 退化表）
-    bool degraded_ = true;                    ///< 是否使用内置退化表（诊断口径）
+    bool degraded_ = true;                    ///< 由 session_table_ 判定（诊断口径，§5.5）
     bool startup_failed_ = false;             ///< 启动失败：请求引擎立即退出
     std::int32_t startup_exit_code_ = 0;      ///< 启动失败时的进程退出码
     // 最后声明 → 最先析构：节点不会看到已销毁的配置/会话

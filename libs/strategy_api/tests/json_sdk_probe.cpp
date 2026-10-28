@@ -43,6 +43,11 @@ struct ProbeBarStrategy {
     void on_bar_update(dztrader::InstrumentContext& ctx) { (void)ctx.close[0]; }
 };
 
+/// @brief 一个回调都不实现的类型：`BarStrategy` 必须拒绝它（笔误防护）
+struct ProbeNoCallbackStrategy {
+    void not_a_callback() {}
+};
+
 }  // namespace
 
 int main() {
@@ -123,15 +128,31 @@ int main() {
     // 模板（含配置层/引擎头/Series 层的传递包含）。只做编译期与轻量运行期断言——真跑
     // run_bar_strategy 需要帧通道与 DZTRADER_HOME，属 bar_strategy_framework_test 的覆盖面。
     static_assert(dztrader::BarStrategy<ProbeBarStrategy>);
+    // 概念必须挡住「没有任何回调」的类型：写错策略类型应在编译期失败，而不是启动一个
+    // 什么都不做的进程（负向断言，`-Wunused` 由 static_assert 的常量表达式吸收）。
+    static_assert(!dztrader::BarStrategy<int>);
+    static_assert(!dztrader::BarStrategy<ProbeNoCallbackStrategy>);
     {
         dztrader::BarStrategyManager<ProbeBarStrategy> manager(
             dztrader::degraded_trading_session_table());
         if (manager.should_exit()) {
             return fail("bar_strategy_manager_unexpected_exit");
         }
-        const auto table = dztrader::BarStrategyRunOptions{}.session_table;
+        const auto table = dztrader::degraded_trading_session_table();
         if (!table.valid() || table.session_count != 1 || table.auction_count != 0) {
             return fail("bar_strategy_default_session_table");
+        }
+        // 「是否退化」必须由表自身判定，不靠独立标志位（否则诊断会与事实相反）
+        if (!dztrader::is_degraded_session_table(table)) {
+            return fail("degraded_table_not_recognized");
+        }
+        dztrader::bar::TradingSessionTable real{};
+        real.session_count = 2;
+        real.sessions[0] = dztrader::bar::TradingSession{.begin_sec = 64800, .end_sec = 71999};
+        real.sessions[1] = dztrader::bar::TradingSession{.begin_sec = 72000, .end_sec = 86399};
+        real.auction_count = 0;
+        if (dztrader::is_degraded_session_table(real)) {
+            return fail("real_table_misread_as_degraded");
         }
     }
 

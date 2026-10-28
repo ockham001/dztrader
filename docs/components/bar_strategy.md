@@ -19,7 +19,7 @@
 
 - 一个策略 = 一个可执行文件 `stg_<id>` = 一个进程 = 一个逻辑账户；实体账户 0..N 个挂在进程内（既有「一个策略一个进程」不变量不变）。
 - 一个进程只有一种用户策略类型 `Strategy`（B）；框架管理器 `BarStrategyManager<Strategy>`（A）对引擎而言是唯一的策略对象，入口 `run_bar_strategy<Strategy>(config)` 内部以 A 调用既有 `run_strategy`。
-- **实现状态（#157）**：公开入口 `dztrader/bar_strategy.h`（`run_bar_strategy<Strategy>(options)` + `BarStrategyRunOptions` + `BarStrategy` concept），管理器 `dztrader/bar_strategy/manager.h`（A 的引擎回调、tick 分发、事件适配器、`BarEventSink` / `InstrumentNode`、退化小节表），品种上下文 `dztrader/bar_strategy/context.h`（`InstrumentContext` / `InstrumentInit` / `PriceArrays`）。本票只实现骨架：配置加载与启动诊断、订阅、tick→bar 分发、`close → open → update` 分发、异常隔离、退化小节表；`on_schedule`（18:00 回卷）归 #158、`on_ui_input` 与参数归 #162、交易意图与 Tier 1 归 #159/#160、预热回放归 #161、`is_auction()` 归 #163。骨架期 A 未实现 `on_trade_report` / `on_order_report` / `on_position_info` / `on_trading_account`（引擎按编译期探测跳过），`on_schedule` / `on_ui_input` 同样尚未实现。集成测试 `libs/strategy_api/tests/bar_strategy_framework_test.cpp`（Seam A：真实帧通道）。
+- **实现状态（#157）**：公开入口 `dztrader/bar_strategy.h`（`run_bar_strategy<Strategy>()` + `BarStrategy` concept），管理器 `dztrader/bar_strategy/manager.h`（A 的引擎回调、tick 分发、事件适配器、`BarEventSink` / `InstrumentNode`、退化小节表），品种上下文 `dztrader/bar_strategy/context.h`（`InstrumentContext` / `InstrumentInit` / `PriceArrays`）。本票只实现骨架：配置加载与启动诊断、订阅、tick→bar 分发、`close → open → update` 分发、异常隔离、退化小节表；`on_schedule`（18:00 回卷）归 #158、`on_ui_input` 与参数归 #162、交易意图与 Tier 1 归 #159/#160、预热回放归 #161、`is_auction()` 归 #163。骨架期 A 未实现 `on_trade_report` / `on_order_report` / `on_position_info` / `on_trading_account`（引擎按编译期探测跳过），`on_schedule` / `on_ui_input` 同样尚未实现。集成测试 `libs/strategy_api/tests/bar_strategy_framework_test.cpp`（Seam A：真实帧通道）。
 - A 实现引擎侧回调（`on_start` / `on_tick` / `on_schedule` / `on_ui_input` / `on_stop` 等）：`on_start` 里取得 `DzContext*`、读取并校验配置（含挂靠账户表）、注册 A 内部的每日 18:00 回卷定时器（§10）；`on_tick` 里把 tick 转交该品种的 builder（bar 边界由 ADR 0031 组件负责，§5.4）并分发实例；`on_ui_input` 里解析 `instrument *` / `account *` / `param *` / `status` / `quit` 命令；`on_schedule` 里只处理自己的定时器 ID，不转发给 B。**成交/委托/持仓/资金回报 v1 全部忽略**（不建成交台账、不跟踪委托；逻辑账只由 B 的交易意图推进）。
 - A 为配置里的每个品种创建一个 B 实例（`instruments` 列表）；品种可按 `instrument add/del` 动态增删；进程故障域独立。
 - 账户表由 A 持有（账户标识 + 挂靠比率），运行期可增删改（§8）；策略逻辑不可见账户身份，也不提供 `ctx.account_id()`。0 个账户时策略照常运行（只记逻辑台账、不发实盘单）。
@@ -543,8 +543,13 @@ bar 边界由 tick→bar 通用组件（[ADR 0031](../adr/0031-tick-bar-synthesi
 > **实现状态（#157）**：`dztrader::degraded_trading_session_table()`（`bar_strategy/manager.h`）
 > 是代码里的唯一构造点，`run_bar_strategy` 默认用它；启动诊断打印
 > `trading session table degraded | mode=builtin sessions=1 auction_windows=0 reason=platform_db_absent`
-> 声明处于退化口径。`BarStrategyRunOptions` 已留出注入真实表的接缝（#161 的数据源落地点），
-> 显式传入表时把 `degraded_session_table` 置 false 即切换到生产口径诊断。
+> 声明处于退化口径。
+>
+> 真实表的注入点是**内部接缝** `bar_strategy_internal::run_bar_strategy_with<Strategy>(table)`
+> ——按 #161 的约定，三个外部依赖（历史 bar 源 / 交易小节表 / 合约元数据）都不进公开承诺面，
+> 数据源落地时只改框架内部、不改公开头面。是否退化由表自身判定
+> （`is_degraded_session_table()`），不另设标志位——两个独立状态会互相矛盾，那样打印出的诊断
+> 就是假的。
 
 交易小节/竞价窗口表的唯一真相源是 platform.db（[ADR 0018](../adr/0018-strategy-side-kline-and-trading-sessions.md) 决策 2/3），v1 不落地该数据源。A 在表数据源缺失时构造内置**退化小节表**喂给 builder：
 
@@ -676,7 +681,9 @@ scale_min_one：目标非零时至少 1 手（默认关）
 > **接入状态（#157）**：`run_bar_strategy` 已接上四项——`config_path(dz_strategy_home(ctx),
 > dz_strategy_id(ctx))` 取路径；`GeneratedDefault` 时打印 `result.message` 并以
 > `config_startup_exit_code(status)`（=1）退出；`Loaded` 时用
-> `ConfigStore(path, std::move(result.document), std::move(*result.effective))` 构造（避免双读）；
+> `ConfigStore(path, std::move(result.document), std::move(*result.effective))` 构造（**不重读
+> 文件**：文件在两次读之间被改动会让内存镜像与磁盘不一致，且这是 `load_config_file` 已读到的
+> 那份 document，留给后续票的 `param set` / `account *` 写回用）；
 > 读/解析异常（`std::runtime_error`）与配置非法（`std::invalid_argument`）统一转成「打印错误 +
 > 非 0 退出」；启动向 stderr 打印一行有效配置 + 一行账户表。接线点在
 > `libs/strategy_api/include/dztrader/bar_strategy/manager.h`（`load_startup_config` /
@@ -911,9 +918,11 @@ status | quit
 > `DZTRADER_HOME` + 真实事件/行情通道，测试线程内跑 `run_bar_strategy<FakeStrategy>()`，独立
 > writer 注入 TICK/SHUTDOWN 帧）覆盖：回调序列 `close → open → update`、每笔 tick 恰好一次
 > update、`bar_index` 0 起单调且 bar 内不变、`on_bar_open` 时 OHLC 等于本笔 tick 价、`on_init`
-> 时 `bar_index == -1` 且窗口为空、`on_destroy` 每实例一次、两品种节点地址恒定、异常隔离
-> （回调抛异常只失败该实例、`on_init` 抛异常只跳过该品种且进程退出码 0）、退化小节表合法且
-> 覆盖全交易日内秒、缺失/非法配置的非 0 退出。下列清单是随各票逐步补齐的完整目标。
+> 时 `bar_index == -1` 且窗口为空、B 保存的视图副本跨 bar 推进仍有效（节点地址稳定性的可观测
+> 证据）、`on_destroy` 每实例一次、异常隔离四条路径（`on_bar_update` / `on_bar_close` /
+> `on_init` / `on_destroy` 抛异常，均只影响本实例且进程退出码 0）、退化小节表合法、覆盖全
+> 交易日内秒并被 `is_degraded_session_table()` 识别、缺失/非法配置的非 0 退出。下列清单是随
+> 各票逐步补齐的完整目标。
 
 - 单元：
   - Series：`[n]` 读值/负索引/`n ≥ size` 抛 `std::out_of_range`、消息含 `n/size/max_lookback`；`span()` 长度与顺序；`size/max_lookback` 语义；write-only-`[0]` 的编译期约束（无 `push_back/resize`）；Debug assert。

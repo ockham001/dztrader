@@ -101,9 +101,11 @@ struct ObservedEvent {
 
 /// @brief 故障注入计划：让 fake B 在指定品种的指定回调里抛异常（异常隔离用例）
 struct FaultPlan {
-    std::string throw_in_init;      ///< 该品种的 `on_init` 抛异常
-    std::string throw_in_bar_open;  ///< 该品种的 `on_bar_open` 抛异常
-    std::string throw_in_update;    ///< 该品种的 `on_bar_update` 抛异常
+    std::string throw_in_init;       ///< 该品种的 `on_init` 抛异常
+    std::string throw_in_bar_open;   ///< 该品种的 `on_bar_open` 抛异常
+    std::string throw_in_update;     ///< 该品种的 `on_bar_update` 抛异常
+    std::string throw_in_bar_close;  ///< 该品种的 `on_bar_close` 抛异常
+    std::string throw_in_destroy;    ///< 该品种的 `on_destroy` 抛异常
 };
 
 /// @brief 进程内事件记录器 + 故障注入点（策略线程写、测试线程读）
@@ -150,6 +152,12 @@ public:
         }
         if (callback == "bar_open") {
             return fault_.throw_in_bar_open == id;
+        }
+        if (callback == "bar_close") {
+            return fault_.throw_in_bar_close == id;
+        }
+        if (callback == "destroy") {
+            return fault_.throw_in_destroy == id;
         }
         return fault_.throw_in_update == id;
     }
@@ -268,9 +276,19 @@ struct FakeStrategy {
         }
     }
 
-    void on_bar_close(dztrader::InstrumentContext& ctx) { record(EventKind::BarClose, ctx); }
+    void on_bar_close(dztrader::InstrumentContext& ctx) {
+        record(EventKind::BarClose, ctx);
+        if (recorder().should_throw(ctx.instrument_id(), "bar_close")) {
+            throw std::runtime_error("injected on_bar_close failure");
+        }
+    }
 
-    void on_destroy(dztrader::InstrumentContext& ctx) { record(EventKind::Destroy, ctx); }
+    void on_destroy(dztrader::InstrumentContext& ctx) {
+        record(EventKind::Destroy, ctx);
+        if (recorder().should_throw(ctx.instrument_id(), "destroy")) {
+            throw std::runtime_error("injected on_destroy failure");
+        }
+    }
 };
 
 static_assert(dztrader::BarStrategy<FakeStrategy>);
@@ -735,7 +753,9 @@ TEST_F(BarStrategyFrameworkTest, CallbackExceptionFailsOnlyThatInstance) {
     write_config({std::string(kInstrumentA), std::string(kInstrumentB)});
     recorder().set_fault(FaultPlan{.throw_in_init = {},
                                    .throw_in_bar_open = {},
-                                   .throw_in_update = std::string(kInstrumentA)});
+                                   .throw_in_update = std::string(kInstrumentA),
+                                   .throw_in_bar_close = {},
+                                   .throw_in_destroy = {}});
     start_strategy();
     ASSERT_TRUE(wait_for_events(2));
 
@@ -785,6 +805,84 @@ TEST_F(BarStrategyFrameworkTest, CallbackExceptionFailsOnlyThatInstance) {
 }
 
 // ============================================================
+// 异常隔离（续）：on_bar_close / on_destroy 抛异常
+// ============================================================
+
+/**
+ * `on_bar_close` 抛异常同样只失败该实例：被关闭的那根 bar 已经走完 open/update，close 只是
+ * 收尾通知；失败后该品种不再回调，其它品种照常。
+ */
+TEST_F(BarStrategyFrameworkTest, BarCloseExceptionFailsOnlyThatInstance) {
+    write_config({std::string(kInstrumentA), std::string(kInstrumentB)});
+    recorder().set_fault(FaultPlan{.throw_in_init = {},
+                                   .throw_in_bar_open = {},
+                                   .throw_in_update = {},
+                                   .throw_in_bar_close = std::string(kInstrumentA),
+                                   .throw_in_destroy = {}});
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(2));
+
+    // 首笔只开 bar（open + update），第二笔换桶才触发 close(0) → 抛异常
+    ASSERT_TRUE(write_tick(make_tick(kInstrumentA, 64830, 100.0, 10, 1000.0)));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+    ASSERT_TRUE(write_tick(make_tick(kInstrumentA, 64890, 101.0, 20, 2010.0)));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarClose, 1));
+
+    // 失败后 A 的后续 tick 不再回调；B 健康
+    ASSERT_TRUE(write_tick(make_tick(kInstrumentA, 64950, 102.0, 30, 3030.0)));
+    ASSERT_TRUE(write_tick(make_tick(kInstrumentB, 64831, 200.0, 5, 1000.0)));
+    ASSERT_TRUE(wait_for_count(kInstrumentB, EventKind::BarUpdate, 1));
+    stop_strategy();
+
+    EXPECT_EQ(exit_code_, 0);
+
+    const auto events_a = recorder().for_instrument(kInstrumentA);
+    // init → open(0) → update → close(0)[抛异常] → destroy
+    ASSERT_EQ(events_a.size(), 5U) << "callbacks: " << describe_events(events_a);
+    EXPECT_EQ(events_a[2].kind, EventKind::BarUpdate);
+    EXPECT_EQ(events_a[3].kind, EventKind::BarClose);
+    EXPECT_EQ(events_a[4].kind, EventKind::Destroy) << "failed instance still gets on_destroy";
+    // close 抛异常后该实例彻底静默：失败之后只有停止时的 destroy，没有 open/update
+    bool failed_seen = false;
+    for (const ObservedEvent& event : events_a) {
+        if (event.kind == EventKind::BarClose) {
+            failed_seen = true;
+            continue;
+        }
+        if (!failed_seen) {
+            continue;
+        }
+        EXPECT_EQ(event.kind, EventKind::Destroy)
+            << "no bar callback after the failed on_bar_close";
+    }
+
+    const auto events_b = recorder().for_instrument(kInstrumentB);
+    EXPECT_EQ(events_b.front().kind, EventKind::Init);
+    EXPECT_EQ(events_b.back().kind, EventKind::Destroy);
+}
+
+/**
+ * `on_destroy` 抛异常不阻止其它实例销毁、也不改变退出码（销毁期不再标记失败）。
+ */
+TEST_F(BarStrategyFrameworkTest, DestroyExceptionDoesNotStopOtherInstruments) {
+    write_config({std::string(kInstrumentA), std::string(kInstrumentB)});
+    recorder().set_fault(FaultPlan{.throw_in_init = {},
+                                   .throw_in_bar_open = {},
+                                   .throw_in_update = {},
+                                   .throw_in_bar_close = {},
+                                   .throw_in_destroy = std::string(kInstrumentA)});
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(2));
+    stop_strategy();
+
+    EXPECT_EQ(exit_code_, 0) << "on_destroy exception must not change the exit code";
+
+    // 两个品种都收到了 on_destroy：一个抛异常不影响另一个
+    EXPECT_EQ(recorder().count(kInstrumentA, EventKind::Destroy), 1U);
+    EXPECT_EQ(recorder().count(kInstrumentB, EventKind::Destroy), 1U);
+}
+
+// ============================================================
 // on_init 抛异常：该品种不加入，其它品种继续
 // ============================================================
 
@@ -792,7 +890,9 @@ TEST_F(BarStrategyFrameworkTest, OnInitExceptionSkipsOnlyThatInstrument) {
     write_config({std::string(kInstrumentA), std::string(kInstrumentB)});
     recorder().set_fault(FaultPlan{.throw_in_init = std::string(kInstrumentA),
                                    .throw_in_bar_open = {},
-                                   .throw_in_update = {}});
+                                   .throw_in_update = {},
+                                   .throw_in_bar_close = {},
+                                   .throw_in_destroy = {}});
     start_strategy();
     ASSERT_TRUE(wait_for_events(2));  // A 的 init（抛异常）+ B 的 init
 

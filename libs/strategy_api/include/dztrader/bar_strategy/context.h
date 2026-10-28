@@ -58,11 +58,11 @@ struct PriceArrays {
 /**
  * @brief `InstrumentContext` 构造参数聚合（按依赖分组，避免位置参数传错）
  *
- * #157 只注入骨架所需的四项；合约属性（`InstrumentSpec`）、挂靠账户表、`ParamStore`、
- * 缩放配置随后续票（#159/#160/#162）加进本结构，构造点集中在节点内一处。
+ * #157 只注入骨架所需的三项；合约属性（`InstrumentSpec`）、挂靠账户表、`ParamStore`、
+ * 缩放配置、引擎会话句柄随后续票（#159/#160/#162）加进本结构，构造点集中在节点内一处
+ * ——到那时才加，现在留空字段等于把「以后可能要」写成接口承诺。
  */
 struct InstrumentInit {
-    DzContext* dz = nullptr;        ///< 引擎会话句柄（on_start 取得，进程内不变）
     std::string instrument_id;      ///< 合约代码（平台唯一键）
     std::int32_t max_lookback = 0;  ///< 可读历史根数上限（= 配置 max_lookback）
     std::int32_t buffer_bars = 0;   ///< 物理数组长度（= max_lookback + reserve_bars）
@@ -141,7 +141,6 @@ private:
           volume(series_internal::Access::view(price_.volume.get(), &window_)),
           turnover(series_internal::Access::view(price_.turnover.get(), &window_)),
           open_interest(series_internal::Access::view(price_.open_interest.get(), &window_)),
-          dz_(init.dz),
           instrument_id_(init.instrument_id) {}
 
     /// @brief 分配一条价格数组（`buffer_bars` 个元素；首次写入前不读，无需零初始化）
@@ -204,9 +203,8 @@ private:
     void mark_failed() noexcept { failed_ = true; }
 
     std::int64_t bar_index_ = -1;  ///< 当前 bar 序号（0 起、单调；-1 = 无 bar）
-    DzContext* dz_ = nullptr;      ///< 引擎会话句柄（on_start 注入，进程内不变）
     std::string instrument_id_;    ///< 合约代码（平台唯一键）
-    bool failed_ = false;          ///< 实例失败：不再回调、不再受理下单意图
+    bool failed_ = false;          ///< 实例失败：此后不再接收任何 B 回调
 };
 
 static_assert(!std::is_copy_constructible_v<InstrumentContext>,

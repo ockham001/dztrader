@@ -48,26 +48,37 @@ namespace dztrader {
 /**
  * @brief BarStrategy 用户策略（B）的编译期约束
  *
- * 六个回调**全部可选**（缺省视为空操作，与引擎的可选回调探测同风格）；B 不继承
- * `StrategyBase`、不接触引擎回调。约束只要求**可默认构造**：实例在节点内就地构造，构造后
- * 不再搬移。
+ * 与引擎的可选回调探测同风格：六个回调**各自可选**（未实现视为空操作），B 不继承
+ * `StrategyBase`、不接触引擎回调。除**可默认构造**（实例在节点内就地构造、之后不再搬移）
+ * 外，还要求至少实现一个 B 回调——否则 `run_bar_strategy<T>()` 会启动一个什么都不做的
+ * 进程，而这几乎总是「把策略类型写错了」的笔误，在编译期挡住比运行到线上再发现便宜。
  */
 template <typename T>
-concept BarStrategy = std::default_initializable<T>;
+concept BarStrategy = std::default_initializable<T> &&
+                      (manager_internal::HasOnInit<T> || manager_internal::HasOnDestroy<T> ||
+                       manager_internal::HasOnBarOpen<T> || manager_internal::HasOnBarUpdate<T> ||
+                       manager_internal::HasOnBarClose<T>);
+
+/// @brief 内部接缝（不进公开承诺面）：#161 的交易小节表数据源注入点
+namespace bar_strategy_internal {
 
 /**
- * @brief `run_bar_strategy` 的可选注入（#161 的接缝：交易小节表数据源）
+ * @brief 用注入的交易小节表跑策略（#161 接缝；生产入口恒用内置退化表）
  *
- * v1 默认用内置退化表（组件文档 §5.5）；platform.db 数据源落地后由调用方传入真实表，
- * 框架代码不改。显式传入表时 `degraded` 应置 false，启动诊断随之改变口径。
+ * 公开入口不自带这张表：按 #161 的约定，三个外部依赖（历史 bar 源 / 交易小节表 / 合约
+ * 元数据）都是**内部接缝**，数据源落地时只改框架内部，不改公开头面。
+ *
+ * @tparam Strategy 用户策略类型
+ * @param session_table 交易小节与竞价窗口表
+ * @return 进程退出码
  */
-struct BarStrategyRunOptions {
-    /// @brief 交易小节与竞价窗口表（省略 = 内置退化表单小节 `[0, 86399]`、无竞价窗口）
-    bar::TradingSessionTable session_table = degraded_trading_session_table();
+template <BarStrategy Strategy>
+std::int32_t run_bar_strategy_with(const bar::TradingSessionTable& session_table) {
+    BarStrategyManager<Strategy> manager(session_table);
+    return run_strategy(manager);
+}
 
-    /// @brief 是否使用内置退化表（true = 启动诊断声明退化口径）
-    bool degraded_session_table = true;
-};
+}  // namespace bar_strategy_internal
 
 /**
  * @brief 运行 bar 策略直至收到停止信号（DZ_FRAME_SHUTDOWN）或框架自主退出
@@ -76,14 +87,12 @@ struct BarStrategyRunOptions {
  * 即引擎退出码：正常停止 0、启动失败（配置缺失/非法、订阅失败）1、`dz_init` 失败返回其
  * 错误码。
  *
- * @tparam Strategy 用户策略类型（默认构造；6 个回调任意子集）
- * @param options   可选注入（交易小节表；省略 = 内置退化表）
+ * @tparam Strategy 用户策略类型（默认构造；6 个回调任意子集，但至少一个）
  * @return 进程退出码
  */
 template <BarStrategy Strategy>
-std::int32_t run_bar_strategy(const BarStrategyRunOptions& options = {}) {
-    BarStrategyManager<Strategy> manager(options.session_table, options.degraded_session_table);
-    return run_strategy(manager);
+std::int32_t run_bar_strategy() {
+    return bar_strategy_internal::run_bar_strategy_with<Strategy>(degraded_trading_session_table());
 }
 
 }  // namespace dztrader
