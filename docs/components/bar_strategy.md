@@ -705,9 +705,11 @@ Tier 2 交易统计（`ctx.stats()`：GrossProfit/GrossLoss/NetProfit/PercentPro
 > 涨跌停夹取**已落地**。纯函数在 `bar_strategy/scaling.h`（`logical_position()` 与
 > `ScalingConfig`）与 `bar_strategy/execution.h`（`resolve_order_price()` /
 > `order_volume()` / `TickSnapshot`），单元测试 `bar_strategy_execution_test.cpp` 逐格覆盖
-> （三种取整 × 正负持仓、`scale_min_one`、非法 `scale` 防御、饱和、tick 对齐边界、涨跌停
-> 夹取、非法价格/数量）；Seam A 测试覆盖镜像与反手单、`L_i` 未变化时零帧、0 账户零帧、
-> `on_init` 意图不发单（live 门禁）、涨跌停夹取诊断。**同步单（`account add/set/del` /
+> （三种取整 × 正负持仓、`scale_min_one`、非法 `scale` 防御、饱和、差量之和恒等于
+> `L(终态) − L(初态)` 因而取整误差不累积、tick 对齐边界、涨跌停夹取、非法价格/数量）；
+> Seam A 测试覆盖镜像与反手单、`L_i` 未变化时零帧、0 账户零帧、配置里的取整策略与
+> `scale_min_one` 到达执行路径、`on_init` 意图不发单（live 门禁）、涨跌停夹取诊断。
+> **同步单（`account add/set/del` /
 > `instrument del` 的 `[sync|nosync] [market]`）归 #162**：本票只提供 `submit_order()` 与
 > `publish_position()` 两个出口，命令层届时调用它们而不是另拼帧。
 
@@ -1025,13 +1027,15 @@ status | quit
 > 翻转、幅值饱和（含 `INT64_MIN` 不能直接取负）、tick 对齐不偷价（含 `0.3/0.1` 的浮点边界
 > 与「已在网格上不报调整」）、`price_tick` 缺失时跳过对齐、涨跌停夹取（只夹方向对应一侧、
 > 快照无效不夹、恰好等界不夹）、对齐与夹取的顺序、非法价格拒单、差量为 0/超范围的手数换算。
-> `bar_strategy_framework_test.cpp` 新增五条 Seam A（独立 probe reader 断言订单帧与上报帧）：
+> `bar_strategy_framework_test.cpp` 新增七条 Seam A（独立 probe reader 断言订单帧与上报帧）：
 > `AttachedAccountsMirrorAndReverseWithSingleDeltaOrder`（scale 1.0/0.5 的镜像手数、反手
 > 每账户**一张**差量单、effect=AUTO、上报净手数）、`AccountsWithUnchangedLogicalPositionAreSkipped`
 > （`L_i` 未变 → 零帧，同时是「取整在目标持仓上」的可观测后果）、
-> `ZeroAttachedAccountsProduceNoFrames`、`OnInitIntentIsVirtualOnlyUntilLive`（live 门禁 +
-> 进入 live 时的批量上报）、`OrderPriceIsClampedToLimitAndDiagnosed`（挂涨停价而非拒单 +
-> `reason=limit_up` 诊断）。下列清单是随各票逐步补齐的完整目标。
+> `ZeroAttachedAccountsProduceNoFrames`、`ConfiguredRoundingAndMinOneReachExecution` 与
+> `ScaleMinOneIsWiredThroughConfig`（配置层到执行路径的接线：默认值断不出接线错误，故用
+> `floor` + `scale_min_one` 与足以区分的 scale）、`OnInitIntentIsVirtualOnlyUntilLive`
+> （live 门禁 + 进入 live 时的全量批量上报）、`OrderPriceIsClampedToLimitAndDiagnosed`
+> （挂涨停价而非拒单 + `reason=limit_up` 诊断）。下列清单是随各票逐步补齐的完整目标。
 
 - 单元：
   - Series：`[n]` 读值/负索引/`n ≥ size` 抛 `std::out_of_range`、消息含 `n/size/max_lookback`；`span()` 长度与顺序；`size/max_lookback` 语义；write-only-`[0]` 的编译期约束（无 `push_back/resize`）；Debug assert。
