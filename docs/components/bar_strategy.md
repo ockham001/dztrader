@@ -657,7 +657,7 @@ ctx.buy_to_cover(volume, price); // 买方向：平空（只减不增）；volum
 
 > **实现状态（#159）**：本节全部 API 与口径已落地（`context.h` 的 Tier 1 查询 +
 > `position.h` 的台账转移），单元测试 `libs/strategy_api/tests/bar_strategy_position_test.cpp`
-> 逐条覆盖（9 个 `Tier1Test` 用例 + 全表/即时性/诊断/拒单各组）；Seam A 接线
+> 逐条覆盖（8 个 `Tier1Test` 用例 + 全表/即时性/诊断/拒单各组）；Seam A 接线
 > （`IntentLedgerIsWiredIntoRealCallbacks`）覆盖「意图在真实回调里即时生效」与「进场时间取
 > bar 标准结束时间」；**极值更新时机**由单元测试经注入的 `InstrumentSpec` 覆盖（Seam A 路径
 > 上乘数为 0，观察不到极值数值）。**已知限制**：`volume_multiple` 来自合约元数据源（#161），
