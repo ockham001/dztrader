@@ -634,7 +634,7 @@ ctx.buy_to_cover(volume, price); // 买方向：平空（只减不增）；volum
 | `sell(0)` / `sell_short(0)` | 无操作 | 无操作 | `P = 0` |
 
   出口函数的 `0 = 全平` 是 TB 约定（`Share` 缺省/0 平掉当前所有持仓）；入口函数的 `0 = 只平反向、不建新仓` 是 MC 口径（`Buy 0`/`SellShort 0`）。两者在净持仓模型下是同一条规则：**`0` 是模式值不是数量**——出口函数 `sell(0)` 与 `sell(1)` 不连续，用计算量调平仓函数时必须自己保证 `> 0`（或显式分支）。
-- **参数与诊断**：`volume >= 0`，负数拒单并诊断；`n > 0` 方向无效（如空仓 `sell`）无操作 + WARN 诊断，`n > |P|` 钳制到 `|P|` + WARN 诊断；`0` 且无可平仓无操作、**不诊断**（避免平仓语句逐 bar 刷屏），`0` 实际触发平仓记 INFO 诊断（便于追溯非预期清仓）。
+- **参数与诊断**：`volume >= 0`，负数拒单并诊断；`n > 0` 方向无效（如空仓 `sell`）无操作 + WARN 诊断，`n > |P|` 钳制到 `|P|` + WARN 诊断；`0` 且无可平仓无操作、**不诊断**（避免平仓语句逐 bar 刷屏），`0` 实际触发平仓记 INFO 诊断（便于追溯非预期清仓）。日志文本用小写 prose 区分（`intent rejected` / `intent ignored` / `intent clamped` / `intent flat_by_zero`）；注意 header-only 框架只能写 stderr，而 master 把子进程 stderr 一律按 WARN 转发，因此**当前这三档在 master 日志里级别相同、只靠 prose 区分**——真正的级别分流要等 SDK 给策略代码一条日志通道（ADR 0021 现状）。
 - **逻辑台账是虚拟成交（TB 虚拟账户口径）**：B 的每笔交易意图按传入限价**即时**记账——`P` 按上表推进，Tier 1（均价、建仓次数、浮动盈亏、进出场时间）在同一个漏斗里按开平归属更新（跨越 0 时拆成平仓段 + 开仓段）。不等待成交回报、不跟踪在途；拒单/部分成交不回流。B **只接触**这本逻辑账：不接触账户真实持仓/资金/权益，也不接触任何委托与成交明细（`order_id`、委托状态、部分成交、拒单原因都不出现在 B 的 API 面）。
 - `on_order_report` / `on_position_info` / `on_trading_account` v1 忽略，不参与任何 B 可见状态。
 
@@ -657,10 +657,11 @@ ctx.buy_to_cover(volume, price); // 买方向：平空（只减不增）；volum
 
 > **实现状态（#159）**：本节全部 API 与口径已落地（`context.h` 的 Tier 1 查询 +
 > `position.h` 的台账转移），单元测试 `libs/strategy_api/tests/bar_strategy_position_test.cpp`
-> 逐条覆盖（8 个 `Tier1Test` 用例 + 全表/即时性/诊断/拒单各组）；Seam A 接线
-> （`IntentLedgerIsWiredIntoRealCallbacks`）覆盖「意图在真实回调里即时生效」「进场时间取 bar
-> 标准结束时间」「极值在 close 回调前更新」。**已知限制**：`volume_multiple` 来自合约元数据
-> 源（#161），在它落地前盈亏与极值恒为 0（见 §6 实现状态的启动诊断）。
+> 逐条覆盖（9 个 `Tier1Test` 用例 + 全表/即时性/诊断/拒单各组）；Seam A 接线
+> （`IntentLedgerIsWiredIntoRealCallbacks`）覆盖「意图在真实回调里即时生效」与「进场时间取
+> bar 标准结束时间」；**极值更新时机**由单元测试经注入的 `InstrumentSpec` 覆盖（Seam A 路径
+> 上乘数为 0，观察不到极值数值）。**已知限制**：`volume_multiple` 来自合约元数据源（#161），
+> 在它落地前盈亏与极值恒为 0（见 §6 实现状态的启动诊断）。
 
 签名与可见性见 §3（`InstrumentContext` public 区）；本节只定义语义与口径。状态落在 §3 的 `PositionState`（`market_position()` 由 `net_volume` 派生，不存字段）；Tier 1 在「交易意图 → 虚拟成交」的单一漏斗上记账（下单即更新，ADR 0030），B 只读；语义对齐 TB 文档但按本项目口径裁剪：
 
@@ -678,7 +679,7 @@ ctx.buy_to_cover(volume, price); // 买方向：平空（只减不增）；volum
 | `ctx.position_profit()` / `ctx.contract_profit()` | 浮动盈亏 / 每手浮动盈亏：`(最新价 − avg_entry_price) × P × volume_multiple` / `(最新价 − avg_entry_price) × sign(P) × volume_multiple`；不含费用；无仓 0 |
 | `ctx.max_position_profit()` / `max_position_loss()` | 当前持仓期间浮盈/浮亏极值；bar 收盘前用该 bar 收盘价更新；开仓重置 0、平仓后归零 |
 
-口径补充：`volume_multiple` 来自 `InstrumentSpec`（缺失则实例创建失败）；盈亏单位是钱（不是价格点）；`entry/last_entry/exit` 的日期时间取对应 bar 的标准结束时间（`begin_sec + period_sec`）。与 TB 的差异：`max_contracts` 是本实例历史峰值（TB 的 `MaxContracts`/`MaxContractsHeld` 区分当前持仓期与历史），状态一律由虚拟成交驱动、与真实成交无关。`current_contracts` 返回非负手数（TB 同口径），内部 `PositionState.net_volume` 仍有符号。
+口径补充：`volume_multiple` 来自 `InstrumentSpec`（目标口径：必需字段 > 0，缺失则实例创建失败——该判定随元数据来源在 #161 落地；**当前 v1 尚无合约元数据来源**，见 §6 实现状态，因此它恒为 0、盈亏与极值恒为 0 并由启动诊断声明）；盈亏单位是钱（不是价格点）；`entry/last_entry/exit` 的日期时间取对应 bar 的标准结束时间（`begin_sec + period_sec`）。与 TB 的差异：`max_contracts` 是本实例历史峰值（TB 的 `MaxContracts`/`MaxContractsHeld` 区分当前持仓期与历史），状态一律由虚拟成交驱动、与真实成交无关。`current_contracts` 返回非负手数（TB 同口径），内部 `PositionState.net_volume` 仍有符号。
 
 返回值类型：`market_position` / `current_entries` / `max_entries` 为 `std::int32_t`（计数类 ≥0）；`current_contracts` / `max_contracts` 为 `LargeVolume`；`bars_since_*` 为 `std::int64_t`（与 `bar_index` 同宽，不做差值窄化；无参考值返回 -1）；价格/盈亏为 `double`；进出场日期/时间为 `DzDate` / `DzTime`。
 
@@ -973,7 +974,7 @@ status | quit
 > 退化小节表合法、覆盖全
 > 交易日内秒并被 `is_degraded_session_table()` 识别、缺失/非法配置的非 0 退出。
 >
-> **#159 新增**：`bar_strategy_position_test.cpp`（Seam C，19 用例）覆盖四函数开平意图全表
+> **#159 新增**：`bar_strategy_position_test.cpp`（纯单元，20 用例）覆盖四函数开平意图全表
 > （含反手目标化、只减不增与钳制、`volume = 0` 的两组等价对逐格比较）、即时记账（同一回调内
 > 立刻可见 + `on_init` 期意图的 `bars_since_* == -1`）、Tier 1 每条口径（方向派生与计数非负、
 > 加权均价/部分平仓不变/反手重置、建仓段数与历史峰值、进出场时间取 bar 标准结束时间、
@@ -981,8 +982,8 @@ status | quit
 > 拒单（负手数与非法价格逐字段不变、失败实例拒单）、诊断分级（四档 prose + 零值静默 + 受理
 > 路径无声）、账户身份编译期不可见。`bar_strategy_framework_test.cpp` 新增两条 Seam A：
 > `IntentLedgerIsWiredIntoRealCallbacks`（意图 → 台账 → Tier 1 在真实回调里的接线，含进场
-> 时间与极值更新时机的正面断言）与 `FailedInstanceStopsAcceptingIntents`（失败实例保留逻辑
-> 持仓且不再收回调）。
+> 时间断言；极值更新时机由单元测试覆盖，Seam A 路径乘数为 0 观察不到数值）与
+> `FailedInstanceStopsAcceptingIntents`（失败实例保留逻辑持仓且不再收回调）。
 >
 > **#158 新增（同一文件）**：回调门禁（静默填窗 `max_lookback` 根零回调）、首个回调序列
 > `close(静默填窗最后一根) → open → update`、回调期恒有 `size == max_lookback` 且 `[n]`

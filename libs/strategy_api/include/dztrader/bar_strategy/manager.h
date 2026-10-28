@@ -588,7 +588,7 @@ private:
         // `if (!metadata_loaded) {…}`（那时才有第二个取值）。
         std::cerr << std::format(
                          "instrument metadata unavailable | effect=tier1_profit_zero "
-                         "source=absent_ticket=161")
+                         "source=absent ticket=161")
                   << '\n';
     }
 

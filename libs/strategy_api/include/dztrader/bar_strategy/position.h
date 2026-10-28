@@ -6,7 +6,7 @@
  * `buy_to_cover`）按传入限价**即时虚拟成交**——不等待成交回报、不跟踪在途、不建成交台账
  * （ADR 0030 决策 1）。本头只放**纯状态与纯转移**：`PositionState`（净持仓 + Tier 1）与
  * `apply_intent()`（开平规则 + 同漏斗的 Tier 1 归属计算）。它不写 stderr、不碰引擎句柄、
- * 不持账户表，因此可以独立单元测试（组件文档 §11 接缝 C）。
+ * 不持账户表，因此可以独立单元测试（issue #153 的「接缝 C（纯单元）」）。
  *
  * 为什么意图语义放在这里而不是 `InstrumentContext`：四函数的开平规则是**一张表**
  * （`buy`/`sell_short` 反向时目标化为 `P = ±n`；`sell`/`buy_to_cover` 只减不增、超出钳制；
@@ -14,7 +14,7 @@
  * 平仓段 + 开仓段）。两者放在一起，测试能对全表逐格断言，不必搭帧通道；诊断分级留在
  * ctx（它才知道品种代码），把「状态怎么变」与「怎么报」分开。
  *
- * 内部类型（`bar_strategy_internal` 命名空间）不进公开承诺面：B 只经 `InstrumentContext`
+ * 内部类型（`position_internal` 命名空间）不进公开承诺面：B 只经 `InstrumentContext`
  * 的四个意图方法与 Tier 1 查询接触本头的状态，不构造 `PositionState`、不调用 `apply_intent`。
  */
 #ifndef DZTRADER_BAR_STRATEGY_POSITION_H_
@@ -24,7 +24,6 @@
 
 #include <cmath>
 #include <cstdint>
-#include <string>
 #include <string_view>
 
 namespace dztrader {
@@ -82,7 +81,7 @@ struct PositionState {
     }
 };
 
-namespace bar_strategy_internal {
+namespace position_internal {
 
 /**
  * @brief 交易意图的种类（四个公开方法各对应一格，决定开平规则）
@@ -150,16 +149,9 @@ struct LedgerOutcome {
 }
 
 /**
- * @brief 解析一次意图的目标净持仓（组件文档 §6 两张表的实现）
+ * @brief 一次意图的**目标**净持仓与诊断标志（`resolve_target()` 的返回类型）
  *
- * 只算目标，不改状态——诊断分级需要知道「方向是否无效」「是否钳制」，而这些事实从
- * `(intent, volume, position)` 就能确定，与状态更新无关。分开之后 `apply_ledger()` 只处理
- * 「怎么从旧持仓走到新持仓」，两个关注点各自可读。
- *
- * @param intent     意图种类
- * @param volume     策略手数（调用方已保证 ≥ 0）
- * @param position   当前净持仓（多正空负）
- * @return 目标净持仓与诊断标志
+ * 只描述「该走到哪里」，不含任何 Tier 1 状态——均价/段数/极值怎么变由 `apply_ledger()` 决定。
  */
 struct Resolution {
     LargeVolume target = 0;          ///< 目标净持仓
@@ -167,64 +159,60 @@ struct Resolution {
     bool clamped = false;            ///< 手数超过逻辑持仓、被钳制到全平
 };
 
+/**
+ * @brief 解析一次意图的目标净持仓（组件文档 §6 两张表的实现）
+ *
+ * 只算目标，不改状态——诊断分级需要知道「方向是否无效」「是否钳制」，而这些事实从
+ * `(intent, volume, position)` 就能确定，与状态更新无关。分开之后 `apply_ledger()` 只处理
+ * 「怎么从旧持仓走到新持仓」，两个关注点各自可读。
+ *
+ * @param intent   意图种类
+ * @param volume   策略手数（`>= 0`；负数在调用方已被拒）
+ * @param position 当前净持仓（多正空负）
+ * @return 目标净持仓与诊断标志
+ */
 [[nodiscard]] inline Resolution resolve_target(Intent intent,
                                                Volume volume,
                                                LargeVolume position) noexcept {
     const LargeVolume n = static_cast<LargeVolume>(volume);
     Resolution result;
     result.target = position;
-    switch (intent) {
-        case Intent::Buy:
-            // 空仓/加多：+n；反向（空头）：目标化为 +n（先平全部空再开 n 多）
-            if (volume == 0) {
-                result.target = position < 0 ? 0 : position;
-                return result;
-            }
-            result.target = position < 0 ? n : position + n;
+
+    // 四格子其实是**两对镜像**：`buy`/`sell_short` 是入口（反向时目标化 `±n`），
+    // `sell`/`buy_to_cover` 是出口（只减不增、超出钳制）。每对的两格只差一个方向符号，
+    // 因此把持仓换算到「本意图的方向空间」（`own = direction × position`，买方向/平多方向
+    // 为正）后，规则写一次即可——两个方向各抄一遍的话，改一处漏一处不会有编译错误。
+    const bool entry = intent == Intent::Buy || intent == Intent::SellShort;
+    const LargeVolume direction =
+        (intent == Intent::Buy || intent == Intent::Sell) ? LargeVolume{1} : LargeVolume{-1};
+    const LargeVolume own = direction * position;
+
+    if (entry) {
+        if (volume == 0) {
+            // 只平反向、不建新仓（MC 的 `Buy 0` / `SellShort 0` 口径）
+            result.target = own < 0 ? 0 : position;
             return result;
-        case Intent::SellShort:
-            // 空仓/加空：-n；反向（多头）：目标化为 -n（先平全部多再开 n 空）
-            if (volume == 0) {
-                result.target = position > 0 ? 0 : position;
-                return result;
-            }
-            result.target = position > 0 ? -n : position - n;
-            return result;
-        case Intent::Sell:
-            // 出口：只减不增（超出钳制到全平）；volume == 0 = 全平多
-            if (volume == 0) {
-                result.target = position > 0 ? 0 : position;
-                return result;
-            }
-            if (position <= 0) {
-                result.direction_invalid = true;
-                return result;
-            }
-            if (n > position) {
-                result.clamped = true;
-                result.target = 0;
-                return result;
-            }
-            result.target = position - n;
-            return result;
-        case Intent::BuyToCover:
-            // 出口：只减不增（超出钳制到全平）；volume == 0 = 全平空
-            if (volume == 0) {
-                result.target = position < 0 ? 0 : position;
-                return result;
-            }
-            if (position >= 0) {
-                result.direction_invalid = true;
-                return result;
-            }
-            if (n > -position) {
-                result.clamped = true;
-                result.target = 0;
-                return result;
-            }
-            result.target = position + n;
-            return result;
+        }
+        // 反向（`own < 0`）时目标化为 `±n`：平掉对手仓再按 `n` 建仓，一步到位
+        result.target = direction * (own < 0 ? n : own + n);
+        return result;
     }
+
+    if (volume == 0) {
+        // 全平对应方向（TB 的 `Sell(0)` / `BuyToCover(0)` 口径）
+        result.target = own > 0 ? 0 : position;
+        return result;
+    }
+    if (own <= 0) {
+        result.direction_invalid = true;  // 该方向无可减持仓：无操作 + WARN
+        return result;
+    }
+    if (n > own) {
+        result.clamped = true;  // 超出逻辑持仓：钳制到全平 + WARN
+        result.target = 0;
+        return result;
+    }
+    result.target = direction * (own - n);
     return result;
 }
 
@@ -340,16 +328,19 @@ inline void apply_ledger(PositionState& state,
         outcome.negative_volume = true;
         return outcome;
     }
-    if (!std::isfinite(price) || price <= 0.0) {
-        outcome.invalid_price = true;
-        return outcome;
-    }
 
+    // 先解析目标、**再**校验价格：`volume == 0` 且无可平仓是「无操作」，按组件文档 §6 必须
+    // **不诊断**——若先校验价格，一次 `sell(0, 0.0)` 就会打出拒单诊断，违反这条明文要求
+    // （B 的平仓语句通常逐 bar 无条件调用，刷屏代价最高）。无变化的意图本来就不会用到价格。
     const Resolution resolution = resolve_target(intent, volume, state.net_volume);
     outcome.direction_invalid = resolution.direction_invalid;
     outcome.clamped = resolution.clamped;
     if (resolution.target == state.net_volume) {
-        return outcome;  // 无变化
+        return outcome;  // 无变化：无操作、不诊断
+    }
+    if (!std::isfinite(price) || price <= 0.0) {
+        outcome.invalid_price = true;
+        return outcome;
     }
     outcome.zero_volume_closed = volume == 0;
     apply_ledger(state, state.net_volume, resolution.target, price, stamp);
@@ -357,7 +348,7 @@ inline void apply_ledger(PositionState& state,
     return outcome;
 }
 
-}  // namespace bar_strategy_internal
+}  // namespace position_internal
 
 }  // namespace dztrader
 

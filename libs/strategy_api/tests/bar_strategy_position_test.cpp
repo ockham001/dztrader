@@ -2,10 +2,10 @@
  * @file bar_strategy_position_test.cpp
  * @brief 虚拟台账 + Tier 1 的单元测试（issue #159；组件文档 §6/§6.1）
  *
- * 只经**公开面 + 内部构造缝**验证：`bar_strategy_internal::ContextAccess::make()` 造一个脱离
- * 引擎的 ctx（不订阅、不发单），然后像 B 那样调四个意图方法并读 Tier 1 查询。这条缝是组件
- * 文档 §11 的「接缝 C」——台账口径是纯状态转移，用 Seam A（帧通道 + 真实回调）验证会把
- * 「哪一格算错」淹没在事件序断言里。
+ * 只经**公开面 + 内部构造缝**验证：`context_internal::ContextAccess::make()` 造一个脱离
+ * 引擎的 ctx（不订阅、不发单），然后像 B 那样调四个意图方法并读 Tier 1 查询。这条缝是
+ * issue #153 的「接缝 C（纯单元）」——台账口径是纯状态转移，用 Seam A（帧通道 + 真实回调）
+ * 验证会把「哪一格算错」淹没在事件序断言里。
  *
  * 三组断言：
  *   1. **四函数全表**：`buy` / `sell_short` 反向目标化为 `P = ±n`；`sell` / `buy_to_cover`
@@ -26,6 +26,7 @@
 #include <gtest/gtest.h>
 
 #include <dztrader/bar_strategy/context.h>
+#include <dztrader/bar_strategy/context_internal.h>
 #include <dztrader/bar_strategy/position.h>
 #include <dztrader/data_type.h>
 
@@ -44,9 +45,9 @@ using dztrader::InstrumentSpec;
 using dztrader::LargeVolume;
 using dztrader::PositionState;
 using dztrader::Volume;
-using dztrader::bar_strategy_internal::BarStamp;
-using dztrader::bar_strategy_internal::ContextAccess;
-using dztrader::bar_strategy_internal::Intent;
+using dztrader::context_internal::ContextAccess;
+using dztrader::position_internal::BarStamp;
+using dztrader::position_internal::Intent;
 
 /// 测试用合约乘数（10 = 常见的 10 吨/手；让「乘不乘乘数」在断言里一眼可辨）
 constexpr double kVolumeMultiple = 10.0;
@@ -85,11 +86,11 @@ struct Ledger {
     DzTime time = kBarEndTime;
     double price = 100.0;
 
-    dztrader::bar_strategy_internal::LedgerOutcome apply(Intent intent,
-                                                         Volume volume,
-                                                         double intent_price) {
+    dztrader::position_internal::LedgerOutcome apply(Intent intent,
+                                                     Volume volume,
+                                                     double intent_price) {
         price = intent_price;
-        return dztrader::bar_strategy_internal::apply_intent(
+        return dztrader::position_internal::apply_intent(
             state, intent, volume, intent_price,
             BarStamp{.date = date, .time = time, .bar_index = bar_index});
     }
@@ -225,12 +226,12 @@ TEST(IntentTableTest, ExitIntentsOnlyReduceAndClamp) {
         ledger.state.net_volume = c.before;
         const auto outcome = ledger.apply(c.intent, c.volume, 100.0);
         EXPECT_EQ(ledger.state.net_volume, c.expected)
-            << dztrader::bar_strategy_internal::intent_name(c.intent) << " | before=" << c.before
+            << dztrader::position_internal::intent_name(c.intent) << " | before=" << c.before
             << " volume=" << c.volume;
         EXPECT_EQ(outcome.clamped, c.expect_clamped)
-            << dztrader::bar_strategy_internal::intent_name(c.intent) << " clamped flag";
+            << dztrader::position_internal::intent_name(c.intent) << " clamped flag";
         EXPECT_EQ(outcome.direction_invalid, c.expect_direction_invalid)
-            << dztrader::bar_strategy_internal::intent_name(c.intent) << " direction_invalid flag";
+            << dztrader::position_internal::intent_name(c.intent) << " direction_invalid flag";
     }
 }
 
@@ -389,13 +390,10 @@ TEST(Tier1Test, DirectionIsDerivedAndCountsAreNonNegative) {
     ctx->buy(5, 100.0);
     EXPECT_EQ(ctx->market_position(), 1);
     EXPECT_EQ(ctx->current_contracts(), 5);
-    EXPECT_GE(ctx->current_contracts(), 0);
-    EXPECT_GE(ctx->max_contracts(), 0);
 
     ctx->sell_short(9, 100.0);  // 反手到 -9
     EXPECT_EQ(ctx->market_position(), -1);
-    EXPECT_EQ(ctx->current_contracts(), 9);
-    EXPECT_GE(ctx->current_contracts(), 0) << "current_contracts is an absolute value";
+    EXPECT_EQ(ctx->current_contracts(), 9) << "current_contracts is an absolute value";
     EXPECT_EQ(ctx->max_contracts(), 9) << "max_contracts tracks |P| peak regardless of sign";
 
     ctx->buy_to_cover(0, 100.0);  // 全平
@@ -504,23 +502,6 @@ TEST(Tier1Test, EntryAndExitStampsUseTheBarStandardEndTime) {
     EXPECT_DOUBLE_EQ(ctx->last_entry_price(), 95.0);
     EXPECT_EQ(ctx->bars_since_last_entry(), 0);
     EXPECT_EQ(ctx->bars_since_entry(), 2);
-}
-
-/// @brief 日线（`period_sec = 0`）没有标准结束时间：退回开始时间，不产生恒为 0 的时间戳
-TEST(Tier1Test, DailyBarFallsBackToBeginTimeForStamps) {
-    const auto ctx = make_ctx();
-    dztrader::bar::Bar daily{};
-    daily.trading_day = kTradingDay;
-    daily.begin_sec = 0;  // 日线的 begin_sec 恒为 0（18:00 锚点）
-    daily.period_sec = 0;
-    daily.close = 100.0;
-    daily.is_final = false;
-    ContextAccess::advance(*ctx, daily);
-    ctx->buy(1, 100.0);
-    // 若直接用 `standard_end_sec()`（= 0），时间戳会恒为墙钟 18:00:00，与「日线」语义无关；
-    // 退回 begin_sec 也还是 0，但这条路是显式分支而不是巧合。这里锁定 `to_clock(0)` 的墙钟值。
-    EXPECT_EQ(ctx->entry_time(), dztrader::bar::TradingTime::to_clock(0));
-    EXPECT_EQ(ctx->entry_date(), kTradingDay);
 }
 
 /**
@@ -784,6 +765,38 @@ TEST(IntentDiagnosticsTest, DiagnosticsAreGradedByProse) {
     const std::string failed = testing::internal::GetCapturedStderr();
     EXPECT_NE(failed.find("intent rejected |"), std::string::npos) << failed;
     EXPECT_NE(failed.find("reason=instance_failed"), std::string::npos) << failed;
+}
+
+/**
+ * @brief **`volume == 0` 且无可平仓时，价格非法也不诊断**（组件文档 §6 明文）
+ *
+ * 回归用例。`sell(0, price)` 是策略里最常见的无条件平仓语句，每个 bar 都会执行；当方向没有
+ * 持仓时它是**无操作**，§6 明确要求「`0` 且无可平仓时**不诊断**」。若价格校验排在「是否有
+ * 变化」之前，一次 `sell(0, 0.0)` 就会打出拒单诊断——价格非法在这种情况下无关紧要，因为
+ * 根本没有要用到这个价格的动作。
+ */
+TEST(IntentDiagnosticsTest, ZeroVolumeNoOpStaysSilentEvenWithAnInvalidPrice) {
+    const auto ctx = make_ctx();
+
+    testing::internal::CaptureStderr();
+    // 空仓：买方向无可平空、卖方向无可平多——全部无操作，且价格非法（0）也不该诊断
+    ctx->sell(0, 0.0);
+    ctx->sell_short(0, 0.0);
+    ctx->buy(0, 0.0);
+    ctx->buy_to_cover(0, 0.0);
+    const std::string quiet = testing::internal::GetCapturedStderr();
+    EXPECT_TRUE(quiet.empty())
+        << "zero volume with nothing to close must not diagnose, even with price 0: " << quiet;
+    EXPECT_EQ(ctx->current_contracts(), 0);
+
+    // 对照：同样非法价格、但**有**可平仓 → 必须拒单（价格非法在这里是真的问题）
+    ctx->buy(2, 100.0);
+    testing::internal::CaptureStderr();
+    ctx->sell(1, 0.0);
+    const std::string rejected = testing::internal::GetCapturedStderr();
+    EXPECT_NE(rejected.find("intent rejected |"), std::string::npos) << rejected;
+    EXPECT_NE(rejected.find("reason=invalid_price"), std::string::npos) << rejected;
+    EXPECT_EQ(ctx->current_contracts(), 2) << "the rejected intent must not change the ledger";
 }
 
 /// @brief 正常受理的意图**不打**日志（热路径无日志约束，组件文档 §10）
