@@ -630,6 +630,27 @@ TEST(Tier1Test, ProfitExtremesUpdatePerCloseResetOnOpenAndZeroAfterFlat) {
     EXPECT_DOUBLE_EQ(ctx->max_position_loss(), 0.0);
 }
 
+/**
+ * @brief **没有价格时不产生虚假盈亏**（无 bar 的 ctx / `on_init` 期）
+ *
+ * 回归用例：`current_price()` 在无 bar 时返回 0（哨兵），如果盈亏公式不识别这个哨兵，
+ * `(0 − 均价) × P × 乘数` 会算出一笔巨大的**虚假浮亏**（均价 100、2 手、乘数 10 → −2000）。
+ * B 在 `on_init` 里下单后读 `position_profit()` 就会拿到它，并据此写出错误的止损逻辑。
+ * 口径是「无仓 0、有仓但没有价格也 0」——没有价格时「浮盈」没有定义，返回 0 而不是编一个数。
+ */
+TEST(Tier1Test, ProfitIsZeroWhenNoPriceExistsYet) {
+    const auto ctx = make_ctx();  // 未推进窗口：没有任何 bar，也没有价格
+    ctx->buy(2, 100.0);
+    ASSERT_EQ(ctx->current_contracts(), 2) << "the position itself is booked immediately";
+    EXPECT_DOUBLE_EQ(ctx->position_profit(), 0.0) << "no price yet, so no floating profit";
+    EXPECT_DOUBLE_EQ(ctx->contract_profit(), 0.0);
+
+    // 极值更新同样不能用哨兵价格算出虚假极值
+    ContextAccess::update_profit_extremes(*ctx, 0.0);
+    EXPECT_DOUBLE_EQ(ctx->max_position_loss(), 0.0) << "a zero price must not book a loss";
+    EXPECT_DOUBLE_EQ(ctx->max_position_profit(), 0.0);
+}
+
 /// @brief 无仓时极值更新是无操作（A 在每次 close 都会调，不能因此攒出极值）
 TEST(Tier1Test, ProfitExtremesAreNotAccumulatedWhileFlat) {
     const auto ctx = make_ctx();

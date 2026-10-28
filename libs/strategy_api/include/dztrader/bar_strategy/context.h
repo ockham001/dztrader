@@ -424,8 +424,12 @@ private:
     }
 
     /// @brief 浮动盈亏（钱）在给定价格下的取值（极值更新与查询共用同一公式）
+    ///
+    /// 无仓返回 0；`price <= 0` 也返回 0——那表示「还没有任何价格」（`on_init` 期或无 bar 的
+    /// ctx），而不是「价格真的是 0」。若不挡这一条，`(0 − 均价) × P × 乘数` 会算出一笔巨大的
+    /// 虚假浮亏（均价 100、2 手、乘数 10 → −2000），而 B 在 `on_init` 里读到的就是它。
     [[nodiscard]] double position_profit_at(double price) const noexcept {
-        if (position_.net_volume == 0) {
+        if (position_.net_volume == 0 || price <= 0.0) {
             return 0;
         }
         return (price - position_.avg_entry_price) * static_cast<double>(position_.net_volume) *
@@ -433,6 +437,9 @@ private:
     }
 
     /// @brief 最新价（当前 bar 的收盘价 = 最近一笔已接受 tick 的价；无 bar 时为 0）
+    ///
+    /// 返回 0 是「没有价格」的哨兵值，由 {@link position_profit_at} 识别并返回 0 盈亏；
+    /// 不在这里另设 optional/NaN，避免把「没有价格」变成 B 可见的第二种状态。
     [[nodiscard]] double current_price() const noexcept {
         if (bar_index_ < 0 || window_.size == 0) {
             return 0;

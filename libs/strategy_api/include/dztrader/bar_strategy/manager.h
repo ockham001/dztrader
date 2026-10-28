@@ -582,12 +582,14 @@ private:
         // `InstrumentSpec::volume_multiple` 恒为 0，于是 `position_profit()` /
         // `contract_profit()` / 极值全线返回 0。**这是已知限制，必须在这里说出来**——
         // 静默返回 0 会让策略作者以为「浮盈真的是 0」，把止损逻辑写成永不触发。
-        if (!has_instrument_metadata_) {
-            std::cerr << std::format(
-                             "instrument metadata unavailable | effect=tier1_profit_zero "
-                             "source=absent_ticket=161")
-                      << '\n';
-        }
+        //
+        // 无条件打印而不是用「有没有拿到元数据」的标志位：v1 根本没有元数据来源，标志位恒为
+        // false，那就是一段只有一个取值的分支。等 #161 接上数据源时，这行自然改成
+        // `if (!metadata_loaded) {…}`（那时才有第二个取值）。
+        std::cerr << std::format(
+                         "instrument metadata unavailable | effect=tier1_profit_zero "
+                         "source=absent_ticket=161")
+                  << '\n';
     }
 
     /**
@@ -626,6 +628,8 @@ private:
                 .instrument_id = instrument_id,
                 .max_lookback = effective_.max_lookback,
                 .buffer_bars = effective_.buffer_bars,
+                // 合约属性：v1 没有元数据来源（#161 接缝），因此 `volume_multiple == 0`——
+                // 启动诊断会显式声明 Tier 1 盈亏恒为 0 这条已知限制。
                 .spec = InstrumentSpec{},
             };
             auto [slot, inserted] =
@@ -678,8 +682,6 @@ private:
     bar::TradingSessionTable session_table_;  ///< 交易小节表（v1 = 退化表）
     bool degraded_ = true;                    ///< 由 session_table_ 判定（诊断口径，§5.5）
     std::int32_t rollback_clock_ms_ = DEFAULT_ROLLBACK_CLOCK_MS;
-    /// 是否拿到了合约元数据（#161 的内部缝；缺失时 Tier 1 盈亏恒为 0，见启动诊断）
-    bool has_instrument_metadata_ = false;
     bool startup_failed_ = false;         ///< 启动失败：请求引擎立即退出
     std::int32_t startup_exit_code_ = 0;  ///< 启动失败时的进程退出码
     // 最后声明 → 最先析构：节点不会看到已销毁的配置/会话
