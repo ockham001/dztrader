@@ -97,15 +97,17 @@ struct PriceArrays {
  * （`dz` / `accounts`）指向 A 持有的对象，A 保证其在 ctx 之后析构（`instruments_` 是 A 的
  * 最后一个成员）。
  *
- * `dz == nullptr` 表示「脱离引擎的虚拟台账模式」：`on_init` 期与单元测试用，此时不发单、
- * 不上报（没有会话句柄可写）。这也是 `context_internal::ContextAccess` 这条测试缝的形状。
+ * `dz == nullptr` 表示「没有引擎会话」：只有 `context_internal::ContextAccess` 这条测试缝这么
+ * 构造（脱离引擎的单元测试），此时不发单、不上报。**`on_init` 期 `dz` 不是 nullptr**——A 在
+ * `create_instances()` 之前就已注入会话句柄；`on_init` 期的「只记账不发单」由 `live_ == false`
+ * 决定，不由空句柄决定。两件事分开表达，才不会让「虚拟台账」这句话在两条路径上含义不同。
  */
 struct InstrumentInit {
     std::string instrument_id;               ///< 合约代码（平台唯一键）
     std::int32_t max_lookback = 0;           ///< 可读历史根数上限（= 配置 max_lookback）
     std::int32_t buffer_bars = 0;            ///< 物理数组长度（= max_lookback + reserve_bars）
     InstrumentSpec spec;                     ///< 合约属性（乘数供 Tier 1、`price_tick` 供价格对齐）
-    DzContext* dz = nullptr;                 ///< 引擎会话句柄（nullptr = 虚拟台账，不发单不上报）
+    DzContext* dz = nullptr;                 ///< 引擎会话句柄（仅测试缝传 nullptr，见上）
     const AccountTable* accounts = nullptr;  ///< A 的挂靠账户表（只读；nullptr = 0 个账户）
     ScalingConfig scaling;                   ///< 缩放配置副本（启动后不可变，按值持有）
 };
@@ -597,7 +599,8 @@ private:
     /**
      * @brief 用本笔 tick 刷新快照（A 在事件入口调用；只对**已被 builder 接受**的 tick）
      *
-     * 价格夹取与后续的同步单对手价都读它。被 builder 丢弃的 tick（乱序/非交易时段/量额倒退）
+     * 价格夹取读它（同步单的对手价与最新价随命令层 #162 加进来）。被 builder 丢弃的 tick
+     * （乱序/非交易时段/量额倒退）
      * 不刷新：否则一次乱序 tick 就能把涨跌停换成过期值，后续单子会夹到错误价格。
      *
      * @param tick 本笔已接受的行情快照
@@ -605,7 +608,7 @@ private:
     void update_tick(const DzTick& tick) noexcept { tick_ = snapshot_from_tick(tick); }
 
     /**
-     * @brief 设置执行门禁（A 在回放/静默填窗结束、进入 live 时调用；组件文档 §3）
+     * @brief 设置执行门禁（A 在回放结束、进入 live 时调用；组件文档 §3）
      *
      * `live_ == false` 时交易意图只做虚拟成交、不发单、不上报。这是两个执行开关里唯一会被
      * A 拨动的一个（另一个是 `failed_`，由异常边界设置）。
@@ -918,7 +921,7 @@ private:
     std::vector<SeriesStorage<std::int64_t>> series_i_;
     InstrumentSpec spec_;     ///< 合约属性（乘数供 Tier 1、`price_tick` 供价格对齐）
     PositionState position_;  ///< 策略虚拟持仓 + Tier 1（只在 `execute_intent` 漏斗里更新）
-    /// 最近一笔**已接受** tick 的快照（价格夹取 / 同步单对手价；组件文档 §3）
+    /// 最近一笔**已接受** tick 的快照（价格夹取；组件文档 §3）
     TickSnapshot tick_;
     DzContext* dz_ = nullptr;                 ///< 引擎会话句柄（nullptr = 虚拟台账模式）
     const AccountTable* accounts_ = nullptr;  ///< A 的挂靠账户表只读指针（nullptr = 0 个账户）
