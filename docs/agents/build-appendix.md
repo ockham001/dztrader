@@ -50,12 +50,14 @@ Ninja 不像 VS 生成器那样自动激活 MSVC，需设 `INCLUDE` / `LIB` / `P
 
 ## Windows 编译陷阱（MSVC-only，Linux 门禁拦不到）
 
-Linux 的 GCC/clang 门禁（含 Release `-Werror`）**复现不了**下列 MSVC-only 失败，它们实际红过 CI（#77×2、#78×1）。改 Windows 分支前先对照；`scripts/preflight.sh` 的 `msvc hazard lint`（`scripts/check_msvc_hazards.py`）会机械检查 R1–R3：
+Linux 的 GCC/clang 门禁（含 Release `-Werror`）**复现不了**下列 MSVC-only 失败，它们实际红过 CI（#77×2、#78×1、#159×1）。改 Windows 分支前先对照；`scripts/preflight.sh` 的 `msvc hazard lint`（`scripts/check_msvc_hazards.py`）会机械检查 R1–R3，R4 与 R5 见下：
 
 - **IP Helper 头顺序（R1）**：`winsock2.h → ws2tcpip.h → windows.h → iphlpapi.h`。`ws2tcpip.h` 负责引入 `ws2ipdef.h`（`MIB_IF_ROW2` 依赖的接口类型），缺它会报 `'PMIB_IF_TABLE2': undeclared identifier` 等 31 条级联。**禁止直接 `#include <netioapi.h>`**：用户态它依赖 `iphlpapi.h` 提供的 winnt/NDIS 上下文，单引会报 `missing ';' before '__cdecl'` / `NTSTATUS` 重定义。
 - **PDH 状态常量（R2）**：`PDH_CSTATUS_*` 不保证由 `<pdh.h>` 引入，需显式 `#include <pdhmsg.h>`。
 - **`SPDLOG_DEBUG/SPDLOG_TRACE` 在 Release 被编译掉（R3）**：若 catch 参数只在该宏里被引用，Release 下成为未引用局部变量 → MSVC `C4101` → `/WX` 升 `C2220`。异常路径改用 `SPDLOG_WARN`，或显式引用参数。
-- 排查办法：对比失败 TU 与同 job 通过 TU 的 **`showIncludes` 包含树**（CI 日志搜 `Note: including file:`），差异通常就是根因（#77 靠它定位）。
+- **公开 SDK 头里的弃用 CRT 调用（R4，`check_msvc_hazards.py`）**：`_wfopen` / `strcpy` / `sprintf` 等在 MSVC 下 `C4996` → `/WX` 升 `C2220`。内部 target 有 `_CRT_SECURE_NO_WARNINGS` 掩盖，但 `libs/strategy_api/include/` 是 header-only 公开面，下游工程没有那个宏（#157）。
+- **成员被同名参数/局部遮蔽（R5：C4458）**：MSVC `/W4` 报 `declaration of 'x' hides class member` → `/WX` 升 `C2220`；GCC **默认不报**（只有 `-Wshadow` 才报），所以 Linux 门禁本来是盲的（#159：`Volume volume` 参数遮蔽 `InstrumentContext::volume` 成交量序列成员）。机械守卫**不是** lint 脚本而是编译器本身：`libs/strategy_api/CMakeLists.txt` 给两个 SDK-only 探针（`json_sdk_probe_{builtin,external}`）加了 `-Wshadow` / `/we4458`；它们包含**每个**公开头且只链 `strategy_api_headers`，等价于下游策略工程。只加在探针上而不是全部 SDK 测试目标——后者编入 `src/api.cpp`，会把内部代码的既有遮蔽一并卷进来。
+- 排查办法：对比失败 TU 与同 job 通过 TU 的 **`showIncludes` 包含树**（CI 日志搜 `Note: including file:`），差异通常就是根因（#77 靠它定位）。Windows job 日志可达数十 MB，`scripts/ci-log.sh` 优先取 `last-test-log` artifact；若日志流式拉取被截断（`stream error: stream ID 1; CANCEL`），用 `curl -H "Authorization: token $(gh auth token)"` 直接下到文件再 grep —— 截断的日志会停在构建中途、**没有任何 error 行**，看起来像「无故失败」（#159 实测）。
 
 ## clangd / compile_commands.json
 

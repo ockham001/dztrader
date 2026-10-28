@@ -441,11 +441,14 @@ private:
      * 等价于「当前窗口已满」（`size == max_lookback`）。
      */
     void dispatch_bar_close(InstrumentNode<Strategy>& node, const bar::Bar& bar, bool is_auction) {
-        (void)bar;         // 已写入 [0]，close 不重复写
         (void)is_auction;  // ctx.is_auction() 随 #163 接入
         if (node.ctx.is_failed()) {
             return;
         }
+        // 极值在「bar 收盘前」更新（组件文档 §6.1）：B 在 `on_bar_close` 里读到的
+        // `max_position_profit/loss` 已包含刚收这根 bar 的收盘价。放在门禁之前——门禁只
+        // 决定「要不要调 B」，不决定台账口径；静默填窗期无持仓，调用是无操作。
+        node.ctx.update_profit_extremes(bar.close);
         if (!close_callback_enabled(node.ctx)) {
             return;  // 静默填窗：B 零回调
         }
@@ -575,6 +578,18 @@ private:
                          effective_.config.instruments.size(), effective_.config.period_sec,
                          effective_.max_lookback, effective_.buffer_bars)
                   << '\n';
+        // Tier 1 的浮动盈亏要乘合约乘数，而合约元数据源属 #161 的内部依赖缝：在它落地前
+        // `InstrumentSpec::volume_multiple` 恒为 0，于是 `position_profit()` /
+        // `contract_profit()` / 极值全线返回 0。**这是已知限制，必须在这里说出来**——
+        // 静默返回 0 会让策略作者以为「浮盈真的是 0」，把止损逻辑写成永不触发。
+        //
+        // 无条件打印而不是用「有没有拿到元数据」的标志位：v1 根本没有元数据来源，标志位恒为
+        // false，那就是一段只有一个取值的分支。等 #161 接上数据源时，这行自然改成
+        // `if (!metadata_loaded) {…}`（那时才有第二个取值）。
+        std::cerr << std::format(
+                         "instrument metadata unavailable | effect=tier1_profit_zero "
+                         "source=absent ticket=161")
+                  << '\n';
     }
 
     /**
@@ -613,6 +628,9 @@ private:
                 .instrument_id = instrument_id,
                 .max_lookback = effective_.max_lookback,
                 .buffer_bars = effective_.buffer_bars,
+                // 合约属性：v1 没有元数据来源（#161 接缝），因此 `volume_multiple == 0`——
+                // 启动诊断会显式声明 Tier 1 盈亏恒为 0 这条已知限制。
+                .spec = InstrumentSpec{},
             };
             auto [slot, inserted] =
                 instruments_.try_emplace(instrument_id, *this, init, session_table_, period_sec);

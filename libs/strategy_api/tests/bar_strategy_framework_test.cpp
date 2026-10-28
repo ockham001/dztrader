@@ -117,6 +117,40 @@ struct ObservedEvent {
     std::vector<double> open_interest_history;  ///< `open_interest[0] … [size-1]`
     std::vector<double> user_d_history;         ///< 用户 double 序列 `[0] … [size-1]`
     std::vector<std::int64_t> user_i_history;   ///< 用户 int64 序列 `[0] … [size-1]`
+    // #159：Tier 1 查询快照。每次回调抄一份，让「意图 → 台账」的接线可以在真实帧通道上
+    // 被观测——包括「同一回调里 buy() 之后立刻读」与「close 时极值已含刚收 bar」。
+    std::int32_t market_position = 0;             ///< `ctx.market_position()`
+    dztrader::LargeVolume current_contracts = 0;  ///< `ctx.current_contracts()`
+    double avg_entry_price = 0;                   ///< `ctx.avg_entry_price()`
+    std::int32_t current_entries = 0;             ///< `ctx.current_entries()`
+    dztrader::LargeVolume max_contracts = 0;      ///< `ctx.max_contracts()`
+    std::int32_t max_entries = 0;                 ///< `ctx.max_entries()`
+    double entry_price = 0;                       ///< `ctx.entry_price()`
+    DzDate entry_date = DZ_DATE_NA;               ///< `ctx.entry_date()`
+    DzTime entry_time = 0;                        ///< `ctx.entry_time()`
+    double last_entry_price = 0;                  ///< `ctx.last_entry_price()`
+    double exit_price = 0;                        ///< `ctx.exit_price()`
+    std::int64_t bars_since_entry = -1;           ///< `ctx.bars_since_entry()`
+    std::int64_t bars_since_last_entry = -1;      ///< `ctx.bars_since_last_entry()`
+    std::int64_t bars_since_exit = -1;            ///< `ctx.bars_since_exit()`
+    double position_profit = 0;                   ///< `ctx.position_profit()`
+    double contract_profit = 0;                   ///< `ctx.contract_profit()`
+    double max_position_profit = 0;               ///< `ctx.max_position_profit()`
+    double max_position_loss = 0;                 ///< `ctx.max_position_loss()`
+};
+
+/**
+ * @brief 一笔由测试脚本注入的交易意图（#159）
+ *
+ * `apply` 用 `std::function` 而不是 `{intent, volume, price}` 三元组：脚本要能在调用点
+ * **前后**各读一次 Tier 1（即时记账的可观测证据），也能在同一根 bar 里连做多个意图。
+ * 三元组表达不了这种「读 → 写 → 再读」的形状。
+ */
+struct ScriptedIntent {
+    std::string instrument;                 ///< 空 = 任意品种（单品种脚本可省略）
+    std::int64_t bar_index = -1;            ///< 在第几根 bar 上执行（`ctx.bar_index()`）
+    EventKind when = EventKind::BarUpdate;  ///< 在哪个回调里执行
+    std::function<void(dztrader::InstrumentContext&)> apply;  ///< 脚本动作
 };
 
 /// @brief 故障注入计划：让 fake B 在指定品种的指定回调里抛异常（异常隔离用例）
@@ -156,6 +190,7 @@ public:
         const std::lock_guard<std::mutex> lock(mutex_);
         events_.clear();
         fault_ = FaultPlan{};
+        scripts_.clear();
         saved_views_.clear();
         user_series_.clear();
     }
@@ -189,6 +224,41 @@ public:
             return fault_.throw_in_destroy == id;
         }
         return fault_.throw_in_update == id;
+    }
+
+    /**
+     * @brief 注册一个交易意图脚本（#159；在指定 bar 的指定回调里执行）
+     *
+     * 脚本在 `record()` **之后**执行（`FakeStrategy` 的顺序），因此：
+     *   - 回调内那一格 `ObservedEvent` 的 Tier 1 快照是「意图执行**前**」的状态；
+     *   - 紧随其后的下一次回调快照是「意图执行**后**」的状态。
+     * 这两格之差就是「意图即时生效」的可观测证据，测试按 `bar_index` + `kind` 取用。
+     *
+     * 脚本自己在 `apply` 里也可以读 ctx（例如同一回调内 `buy()` 之后立刻
+     * `market_position()`），用于断言「同一个回调里立刻可见」这条 AC。
+     */
+    void add_script(ScriptedIntent script) {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        scripts_.push_back(std::move(script));
+    }
+
+    /// @brief 取出并移除本品种本次回调应执行的脚本（无匹配时返回空）
+    std::vector<ScriptedIntent> take_scripts(std::string_view instrument,
+                                             EventKind when,
+                                             std::int64_t bar_index) {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<ScriptedIntent> matched;
+        auto it = scripts_.begin();
+        while (it != scripts_.end()) {
+            if (it->when == when && it->bar_index == bar_index &&
+                (it->instrument.empty() || it->instrument == instrument)) {
+                matched.push_back(std::move(*it));
+                it = scripts_.erase(it);
+                continue;
+            }
+            ++it;
+        }
+        return matched;
     }
 
     /// @brief 取某品种的事件子序列（保持发生顺序）
@@ -282,6 +352,7 @@ private:
     mutable std::mutex mutex_;
     std::vector<ObservedEvent> events_;
     FaultPlan fault_;
+    std::vector<ScriptedIntent> scripts_;
     std::map<std::string, dztrader::SeriesView<double>> saved_views_;
     std::map<std::string, std::pair<dztrader::Series<double>, dztrader::Series<std::int64_t>>>
         user_series_;
@@ -380,6 +451,25 @@ void record(EventKind kind, dztrader::InstrumentContext& ctx) {
     event.ctx_address = &ctx;
     event.bar_index = ctx.bar_index();
     event.window_size = ctx.close.size();
+    // #159：Tier 1 快照（on_init 也抄——初始空仓是「无参考 + 盈亏 0」的基线）
+    event.market_position = ctx.market_position();
+    event.current_contracts = ctx.current_contracts();
+    event.avg_entry_price = ctx.avg_entry_price();
+    event.current_entries = ctx.current_entries();
+    event.max_contracts = ctx.max_contracts();
+    event.max_entries = ctx.max_entries();
+    event.entry_price = ctx.entry_price();
+    event.entry_date = ctx.entry_date();
+    event.entry_time = ctx.entry_time();
+    event.last_entry_price = ctx.last_entry_price();
+    event.exit_price = ctx.exit_price();
+    event.bars_since_entry = ctx.bars_since_entry();
+    event.bars_since_last_entry = ctx.bars_since_last_entry();
+    event.bars_since_exit = ctx.bars_since_exit();
+    event.position_profit = ctx.position_profit();
+    event.contract_profit = ctx.contract_profit();
+    event.max_position_profit = ctx.max_position_profit();
+    event.max_position_loss = ctx.max_position_loss();
     // on_init 里已保存的视图副本此刻是否仍与窗口一致（视图只绑一次、推进后自动看到新 bar）
     if (const auto saved = recorder().saved_view(event.instrument); saved.has_value()) {
         event.saved_view_bound = true;
@@ -433,9 +523,24 @@ struct FakeStrategy {
         }
     }
 
+    /**
+     * @brief 执行测试脚本注入到本次回调的交易意图（#159）
+     *
+     * 位置在 `record()` 之后：那一格快照是「意图执行前」的 Tier 1 状态，紧随其后的回调快照
+     * 是「意图执行后」的状态；两者之差即「意图即时生效」的证据。脚本也可在 `apply` 内自行
+     * 读 ctx，断言同一回调内立刻可见。
+     */
+    static void run_scripts(dztrader::InstrumentContext& ctx, EventKind kind) {
+        for (ScriptedIntent& script :
+             recorder().take_scripts(ctx.instrument_id(), kind, ctx.bar_index())) {
+            script.apply(ctx);
+        }
+    }
+
     void on_bar_open(dztrader::InstrumentContext& ctx) {
         record(EventKind::BarOpen, ctx);
         write_user_series(ctx);
+        run_scripts(ctx, EventKind::BarOpen);
         if (recorder().should_throw(ctx.instrument_id(), "bar_open")) {
             throw std::runtime_error("injected on_bar_open failure");
         }
@@ -460,6 +565,7 @@ struct FakeStrategy {
     void on_bar_update(dztrader::InstrumentContext& ctx) {
         record(EventKind::BarUpdate, ctx);
         write_user_series(ctx);
+        run_scripts(ctx, EventKind::BarUpdate);
         if (recorder().should_make_series(ctx.instrument_id())) {
             // 非 on_init 注册必须响亮失败（组件文档 §4.1「创建」）。让异常逃出回调，
             // 框架会把该实例标记失败——这本身就是「被发现」的证据。
@@ -472,6 +578,7 @@ struct FakeStrategy {
 
     void on_bar_close(dztrader::InstrumentContext& ctx) {
         record(EventKind::BarClose, ctx);
+        run_scripts(ctx, EventKind::BarClose);
         if (recorder().should_throw(ctx.instrument_id(), "bar_close")) {
             throw std::runtime_error("injected on_bar_close failure");
         }
@@ -1732,6 +1839,237 @@ TEST_F(BarStrategyFrameworkTest, OnInitExceptionSkipsOnlyThatInstrument) {
     EXPECT_EQ(events_b[5].bar_index, kTestMaxLookback + 1);
     EXPECT_EQ(events_b[6].kind, EventKind::BarUpdate);
     EXPECT_EQ(events_b[7].kind, EventKind::Destroy);
+}
+
+// ============================================================
+// 交易意图与 Tier 1 的端到端接线（#159；Seam A）
+// ============================================================
+
+/**
+ * **意图在同一回调内立刻可见，并由 A 的 close 分发驱动 Tier 1 极值更新**（#159 AC）。
+ *
+ * 单测（`bar_strategy_position_test.cpp`）覆盖台账的逐格口径；这里补的是**接线**：真实帧
+ * 通道 + 真实回调顺序下，
+ *   1. `on_bar_close` 里做的意图在紧接着的 `on_bar_open` 快照里已经可见（没有被推到下一根）；
+ *   2. `on_bar_close` 之前 A 已经用被关闭 bar 的收盘价更新了浮盈极值（组件文档 §6.1
+ *      「极值在 bar 收盘前更新」）——B 在 close 里读到的极值包含刚收这根 bar；
+ *   3. `bars_since_*` 在三个回调里同 bar = 0、跨 bar 线性增长、无仓 = -1。
+ *
+ * 脚本按 `bar_index` 精确投放，因此断言不依赖 tick 时序（每个 tick 落到哪根 bar 由
+ * `warmed_up_clock` 唯一确定）。
+ */
+TEST_F(BarStrategyFrameworkTest, IntentLedgerIsWiredIntoRealCallbacks) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback);
+    // 静默填窗最后一根（索引 max_lookback-1）；它的 close 是 B 在回调期的第一次回调，
+    // 由回调期第一笔 tick 触发。bar 事件里的索引就是被关闭/打开的那根 bar 自己。
+    const auto fill_bar = static_cast<std::int64_t>(kTestMaxLookback - 1);
+    const auto bar0 = static_cast<std::int64_t>(kTestMaxLookback);
+    const auto bar1 = bar0 + 1;
+    const auto bar2 = bar0 + 2;
+
+    const double price_fill = warmed_up_price(-1);  // 静默填窗最后一根的收盘价
+
+    // ① 静默填窗最后一根的 close 里买 2 手，并在同一回调内立刻读（AC 的即时性要求）
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = fill_bar,
+        .when = EventKind::BarClose,
+        .apply =
+            [price_fill](dztrader::InstrumentContext& ctx) {
+                EXPECT_EQ(ctx.current_contracts(), 0) << "flat before the first intent";
+                EXPECT_EQ(ctx.bars_since_entry(), -1) << "no entry reference while flat";
+                ctx.buy(2, price_fill);
+                // 同一回调内立刻可见（不依赖任何回报）
+                EXPECT_EQ(ctx.market_position(), 1);
+                EXPECT_EQ(ctx.current_contracts(), 2);
+                EXPECT_DOUBLE_EQ(ctx.avg_entry_price(), price_fill);
+                EXPECT_EQ(ctx.current_entries(), 1);
+                EXPECT_EQ(ctx.bars_since_entry(), 0) << "entry on this bar = 0";
+                EXPECT_DOUBLE_EQ(ctx.entry_price(), price_fill);
+            },
+    });
+    // ② bar0 的 update 里部分平仓 1 手（均价与段数都不变）
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = bar0,
+        .when = EventKind::BarUpdate,
+        .apply =
+            [](dztrader::InstrumentContext& ctx) {
+                EXPECT_EQ(ctx.current_contracts(), 2) << "the intent from the previous close";
+                EXPECT_EQ(ctx.bars_since_entry(), 1) << "one bar after the entry";
+                const double close = ctx.close[0];
+                ctx.sell(1, close);  // 部分平仓
+                EXPECT_EQ(ctx.current_contracts(), 1);
+                EXPECT_EQ(ctx.current_entries(), 1) << "partial close keeps the segment count";
+                EXPECT_EQ(ctx.bars_since_exit(), 0) << "closed on this bar = 0";
+                EXPECT_DOUBLE_EQ(ctx.exit_price(), close);
+            },
+    });
+    // ③ bar1 的 close 里全平（volume = 0 是模式值）
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = bar1,
+        .when = EventKind::BarClose,
+        .apply =
+            [](dztrader::InstrumentContext& ctx) {
+                EXPECT_EQ(ctx.current_contracts(), 1);
+                ctx.sell(0, ctx.close[0]);
+                EXPECT_EQ(ctx.market_position(), 0);
+                EXPECT_EQ(ctx.current_contracts(), 0);
+                EXPECT_EQ(ctx.current_entries(), 0) << "flat position has no entry segments";
+                EXPECT_EQ(ctx.bars_since_entry(), -1) << "no entry reference once flat";
+                EXPECT_EQ(ctx.bars_since_exit(), 0) << "the exit reference survives going flat";
+                EXPECT_GE(ctx.max_contracts(), 2) << "historical peak survives going flat";
+            },
+    });
+
+    testing::internal::CaptureStderr();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+
+    // 四笔 tick → 四根回调期 bar 打开；第 4 笔才关闭 bar2（纯 tick 驱动，无 flush）
+    for (std::int32_t i = 0; i <= 3; ++i) {
+        ASSERT_TRUE(
+            write_tick(make_tick(kInstrumentA, warmed_up_clock(i), warmed_up_price(i),
+                                 warmed_up_volume(i), warmed_up_price(i) * warmed_up_volume(i))));
+    }
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 4));
+    stop_strategy();
+    ASSERT_EQ(exit_code_, 0);
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    // Tier 1 盈亏的乘数来源缺失必须**说出来**（静默 0 会让止损逻辑永不触发）
+    EXPECT_NE(stderr_text.find("instrument metadata unavailable |"), std::string::npos)
+        << "the missing metadata source must be announced: " << stderr_text;
+    EXPECT_NE(stderr_text.find("ticket=161"), std::string::npos) << stderr_text;
+
+    const auto events = recorder().for_instrument(kInstrumentA);
+    ASSERT_GE(events.size(), 10U) << "callbacks: " << describe_events(events);
+
+    // 按 (bar_index, kind) 取快照。close 事件的 bar_index 就是被关闭的那根 bar。
+    auto find_event = [&events](EventKind kind, std::int64_t bar_index) -> const ObservedEvent* {
+        for (const ObservedEvent& event : events) {
+            if (event.kind == kind && event.bar_index == bar_index) {
+                return &event;
+            }
+        }
+        return nullptr;
+    };
+
+    const ObservedEvent* close_fill = find_event(EventKind::BarClose, fill_bar);
+    // 打开的新根是 bar0：close(fill_bar) 的 bar_index 是**被关**的那根，open 的是**新**那根
+    const ObservedEvent* open_fill = find_event(EventKind::BarOpen, bar0);
+    const ObservedEvent* update0 = find_event(EventKind::BarUpdate, bar0);
+    const ObservedEvent* close1 = find_event(EventKind::BarClose, bar1);
+    const ObservedEvent* close2 = find_event(EventKind::BarClose, bar2);
+    ASSERT_NE(close_fill, nullptr) << "fill-window close missing";
+    ASSERT_NE(open_fill, nullptr) << "fill-window open missing";
+    ASSERT_NE(update0, nullptr) << "bar0 update missing";
+    ASSERT_NE(close1, nullptr) << "bar1 close missing";
+    ASSERT_NE(close2, nullptr) << "bar2 close missing";
+
+    // ① 即时性：close_fill 的快照在脚本之前（空仓），紧随的 open_fill 已是多头 2 手
+    EXPECT_EQ(close_fill->current_contracts, 0) << "recorded before the script ran";
+    EXPECT_EQ(open_fill->market_position, 1) << "the intent is visible in the very next callback";
+    EXPECT_EQ(open_fill->current_contracts, 2);
+    EXPECT_DOUBLE_EQ(open_fill->avg_entry_price, price_fill);
+    EXPECT_EQ(open_fill->current_entries, 1);
+    // 意图发生在 fill_bar 的 close 里（那一格快照的 bars_since_entry 已在脚本内断言为 0）；
+    // 到新根 open 时 bar_index 已 +1，所以这里是 1——两格之差正是「推进发生过」的证据。
+    EXPECT_EQ(open_fill->bars_since_entry, 1) << "one bar after the entry bar";
+    // 进场时间 = **该 bar 的标准结束时间**（begin_sec + period_sec），不是 tick 时间。
+    // tick 脚本把 tick 落在桶起点（clock = 起点），所以若实现误取 tick 时间，这里会差 60s。
+    const std::int32_t fill_tsec = dztrader::bar::TradingTime::from_clock(warmed_up_clock(-1));
+    const std::int32_t fill_begin = fill_tsec - fill_tsec % 60;
+    EXPECT_EQ(open_fill->entry_date, kTradingDay);
+    EXPECT_EQ(open_fill->entry_time, dztrader::bar::TradingTime::to_clock(fill_begin + 60))
+        << "entry time is the bar's standard end time, not the tick time";
+
+    // ② 极值/盈亏在框架路径上**目前恒为 0**：`volume_multiple` 来自合约元数据源，而那是
+    //    #161 的内部依赖缝（v1 尚未落地）。这里把这个已知限制**正面锁死**，而不是留一个
+    //    「反正都是 0」的空断言：一旦 #161 接上元数据源，本断言会失败并强制改为按乘数核对
+    //    （同时启动诊断里那行 `instrument metadata unavailable` 也该消失）。
+    //    极值「在 bar 收盘前更新」的**公式与更新时机**由单元测试
+    //    `bar_strategy_position_test.cpp` 用注入的 `InstrumentSpec` 覆盖。
+    EXPECT_DOUBLE_EQ(close1->max_position_profit, 0.0)
+        << "without a metadata source the multiplier is 0, so profit stays 0 (known gap, #161)";
+    // 部分平仓后均价不变（只有 exit_* 更新）
+    EXPECT_DOUBLE_EQ(close1->avg_entry_price, price_fill);
+
+    // ③ 平仓后 Tier 1 归零 / 无参考：全平脚本在 bar1 的 close 里执行，因此 bar2 的 close
+    //    快照（以及其后的一切）已经是空仓态
+    EXPECT_EQ(close2->current_contracts, 0) << "flat since the bar1 close";
+    EXPECT_EQ(close2->current_entries, 0);
+    EXPECT_EQ(close2->bars_since_entry, -1);
+    EXPECT_EQ(close2->max_position_profit, 0.0) << "extremes reset when flat";
+    EXPECT_EQ(close2->max_position_loss, 0.0);
+    const ObservedEvent* final_update = find_event(EventKind::BarUpdate, bar2 + 1);
+    ASSERT_NE(final_update, nullptr) << "the bar after the flat intent is missing";
+    EXPECT_EQ(final_update->current_contracts, 0);
+    EXPECT_EQ(final_update->bars_since_entry, -1);
+    EXPECT_EQ(final_update->max_position_profit, 0.0) << "extremes reset when flat";
+    EXPECT_EQ(final_update->max_position_loss, 0.0);
+}
+
+/**
+ * **失败实例拒单且不影响其它品种**（#159 AC「失败实例不再受理下单意图」）。
+ *
+ * 与上一条同一接线，但让 A 在 `on_bar_update` 抛异常（实例失败）后继续投放意图脚本：
+ * 脚本里的 `current_contracts()` 必须停在被保留的逻辑持仓上——失败实例的逻辑持仓保留、
+ * 但不再受理任何意图（组件文档 §4.6）。
+ */
+TEST_F(BarStrategyFrameworkTest, FailedInstanceStopsAcceptingIntents) {
+    write_config({std::string(kInstrumentA), std::string(kInstrumentB)}, kTestMaxLookback);
+    const auto fill_bar = static_cast<std::int64_t>(kTestMaxLookback - 1);
+
+    // 静默填窗最后一根的 close（B 的第一个回调，先于同笔 tick 的 open/update）里建多 2 手；
+    // 紧接着的 update 注入异常 → 实例失败。因此「失败前的意图已生效」与「失败后不再收
+    // 回调」两条都能在同一笔 tick 上观察。
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = fill_bar,
+        .when = EventKind::BarClose,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(2, ctx.close[0]); },
+    });
+
+    recorder().set_fault(FaultPlan{.throw_in_init = {},
+                                   .throw_in_bar_open = {},
+                                   .throw_in_update = std::string(kInstrumentA),
+                                   .throw_in_bar_close = {},
+                                   .throw_in_destroy = {},
+                                   .make_series_in_update = {}});
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(2));
+    EXPECT_EQ(warm_up(kInstrumentA), 1U);
+    EXPECT_EQ(warm_up(kInstrumentB, 64831), 1U);
+
+    // 同一笔 tick：close（脚本建多）→ open → update（抛异常 → 实例失败）
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+    // B 照常运行（失败隔离）
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentB, warmed_up_clock(0, 64831), 400.0, 600, 240000.0)));
+    ASSERT_TRUE(wait_for_count(kInstrumentB, EventKind::BarUpdate, 1));
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0) << "process must survive a failed instance";
+
+    const auto events_a = recorder().for_instrument(kInstrumentA);
+    // 失败实例：init → close（脚本建多）→ open → update（抛异常）→ destroy。
+    // 失败后不再收任何回调，所以后续 tick 既不产生事件也不执行脚本。
+    EXPECT_EQ(events_a.size(), 5U) << "callbacks: " << describe_events(events_a);
+    ASSERT_EQ(events_a.size(), 5U);
+    EXPECT_EQ(events_a[0].kind, EventKind::Init);
+    EXPECT_EQ(events_a[1].kind, EventKind::BarClose) << "the fill-window close carries the intent";
+    EXPECT_EQ(events_a[1].current_contracts, 0) << "recorded before the script ran";
+    EXPECT_EQ(events_a[2].kind, EventKind::BarOpen);
+    EXPECT_EQ(events_a[2].current_contracts, 2) << "the successful intent before the failure";
+    EXPECT_EQ(events_a[2].market_position, 1);
+    EXPECT_EQ(events_a[3].kind, EventKind::BarUpdate) << "this callback throws";
+    EXPECT_EQ(events_a[4].kind, EventKind::Destroy);
+    // 框架不自动平仓：失败实例的逻辑持仓保留（组件文档 §4.6）
+    EXPECT_EQ(events_a[4].current_contracts, 2) << "a failed instance keeps its position";
 }
 
 // ============================================================

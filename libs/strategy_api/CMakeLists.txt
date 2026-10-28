@@ -225,6 +225,18 @@ set_tests_properties(BarPerfBench PROPERTIES LABELS perf)
 # ============================================================
 add_executable(dztrader_sdk_json_probe_builtin tests/json_sdk_probe.cpp)
 target_link_libraries(dztrader_sdk_json_probe_builtin PRIVATE strategy_api_headers)
+# 遮蔽门禁（-Wshadow / MSVC C4458）只加在两个 SDK-only 探针上：它们包含 libs/strategy_api/
+# include/ 下的**每个**公开头、且只链 strategy_api_headers，正是「下游策略工程」的等价 TU。
+# 2026-10-28 #159 的 Windows CI 因 `Volume volume` 参数遮蔽 `InstrumentContext::volume`
+# 价格序列成员（C4458 -> /WX -> C2220）而红，Linux 的 -Wall -Wextra -Wconversion 看不到
+# （GCC 只有 -Wshadow 才报）——加在这里后同类遮蔽在 Linux 侧即红，不必等 35 分钟 Windows job。
+# 不加在全部 SDK 测试目标上：那些目标编入 src/api.cpp（内部实现），会把既有内部代码的遮蔽
+# （如 strategy_context.h 的构造函数）一并卷进来，超出「公开头门禁」的范围。
+if(MSVC)
+    set(DZ_SDK_HEADER_PROBE_WARNINGS /we4458)
+else()
+    set(DZ_SDK_HEADER_PROBE_WARNINGS -Wshadow)
+endif()
 
 add_executable(dztrader_sdk_json_probe_external tests/json_sdk_probe.cpp)
 target_link_libraries(dztrader_sdk_json_probe_external PRIVATE
@@ -232,6 +244,12 @@ target_link_libraries(dztrader_sdk_json_probe_external PRIVATE
 # 测试专用宏: 让探针能断言「外部宏真的生效了」而不是静默回退内置模式
 target_compile_definitions(dztrader_sdk_json_probe_external PRIVATE
     DZTRADER_JSON_EXTERNAL DZ_JSON_PROBE_EXPECT_EXTERNAL)
+
+foreach(sdk_only_probe
+    dztrader_sdk_json_probe_builtin
+    dztrader_sdk_json_probe_external)
+    target_compile_options(${sdk_only_probe} PRIVATE ${DZ_SDK_HEADER_PROBE_WARNINGS})
+endforeach()
 
 # 聚合头隔离检查: <dztrader.h> 不得引入内置 JSON 单头 (#154 验收项)
 add_executable(dztrader_sdk_aggregate_header_probe tests/aggregate_header_probe.cpp)

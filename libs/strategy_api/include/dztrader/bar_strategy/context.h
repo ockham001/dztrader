@@ -14,8 +14,15 @@
  * `++end`）。
  *
  * **B 可见面**只有 public 区：7 条只读价格视图、`make_series()`、`bar_index()`、
- * `instrument_id()`。窗口推进、回卷、失败标记等运行期状态是 private，仅 `BarStrategyManager`
- * 与 `InstrumentNode` 可访问（friend），热路径上没有虚函数。
+ * `instrument_id()`、四个交易意图（#159）、Tier 1 查询（#159）。窗口推进、回卷、失败标记
+ * 等运行期状态是 private，仅 `BarStrategyManager` 与 `InstrumentNode` 可访问（friend），
+ * 热路径上没有虚函数。
+ *
+ * **交易意图与台账（#159）**：四个意图函数在 ctx 内完成「开平规则 → 虚拟成交 → Tier 1」的
+ * 单一漏斗（ADR 0030 决策 1），不等待成交回报、不持有账户表（挂靠缩放与下单归 #160）。
+ * 0 个挂靠账户时同样只记逻辑账——这正是「先纸上跑通策略」的口径。台账语义在
+ * `dztrader/bar_strategy/position.h`（纯状态与纯转移，可独立单测），本头只负责把 B 的调用
+ * 翻成一次记账 + 分级诊断。
  *
  * 本头是 SDK 公开头（header-only 框架的一部分）：只依赖标准库与 SDK 公开头，不依赖
  * 任何内部库或日志库（ADR 0020/0021）。
@@ -25,15 +32,18 @@
 
 #include <dztrader/api.h>
 #include <dztrader/bar/types.h>
+#include <dztrader/bar_strategy/position.h>
 #include <dztrader/series.h>
 #include <dztrader/series_internal.h>
 
 #include <concepts>
 #include <cstdint>
 #include <format>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -44,6 +54,15 @@ class BarStrategyManager;  // 前向：A 通过 friend 驱动窗口推进与失�
 
 template <class Strategy>
 struct InstrumentNode;  // 前向：节点就地构造 ctx（传 InstrumentInit）
+
+namespace context_internal {
+
+/// 前向：ctx 的内部构造缝。**定义在内部头** `dztrader/bar_strategy/context_internal.h`
+/// （与 `series.h` 声明 `series_internal::Access`、`series_internal.h` 定义它的先例一致），
+/// 因此本公开头只多一行 friend 声明，不把测试缝的成员函数摆进公开承诺面。
+struct ContextAccess;
+
+}  // namespace context_internal
 
 /**
  * @brief 7 条价格序列的物理数组（A 内部；B 只经只读视图读）
@@ -64,14 +83,16 @@ struct PriceArrays {
 /**
  * @brief `InstrumentContext` 构造参数聚合（按依赖分组，避免位置参数传错）
  *
- * #157 只注入骨架所需的三项；合约属性（`InstrumentSpec`）、挂靠账户表、`ParamStore`、
- * 缩放配置、引擎会话句柄随后续票（#159/#160/#162）加进本结构，构造点集中在节点内一处
- * ——到那时才加，现在留空字段等于把「以后可能要」写成接口承诺。
+ * #157 只注入骨架所需的三项；#159 加合约属性（`InstrumentSpec`：Tier 1 盈亏换算需要合约
+ * 乘数）。挂靠账户表、`ParamStore`、缩放配置、引擎会话句柄随后续票（#160/#161/#162）加进
+ * 本结构，构造点集中在节点内一处——到那时才加，现在留空字段等于把「以后可能要」写成接口
+ * 承诺。
  */
 struct InstrumentInit {
     std::string instrument_id;      ///< 合约代码（平台唯一键）
     std::int32_t max_lookback = 0;  ///< 可读历史根数上限（= 配置 max_lookback）
     std::int32_t buffer_bars = 0;   ///< 物理数组长度（= max_lookback + reserve_bars）
+    InstrumentSpec spec;            ///< 合约属性（#159：`volume_multiple` 供 Tier 1 换算）
 };
 
 /**
@@ -175,6 +196,134 @@ public:
         return series_internal::Access::series(storage.base.get(), &window_);
     }
 
+    // ==== 交易意图（v1 仅限价；返回 void，B 不感知执行结果；组件文档 §6）====
+    //
+    // 四个方法是**开平意图**，不是方向别名（与 TB/MC 默认图表信号一致）：
+    //   - `buy` / `sell_short`：反向时先平对手仓、再按 `volume` 建仓（目标化 `P = ±n`）；
+    //   - `sell` / `buy_to_cover`：只减不增，`volume` 超过逻辑持仓时钳制到全平；
+    //   - `volume == 0` 是**模式值**而非数量（只平不建 / 全平）：买方向平空、卖方向平多，
+    //     因此 `buy(0) ≡ buy_to_cover(0)`、`sell(0) ≡ sell_short(0)`。
+    //
+    // 每笔意图**即时**记账到本品种的逻辑持仓与 Tier 1（ADR 0030 决策 1）：不等待成交回报、
+    // 不跟踪在途、不建成交台账，所以同一个回调里 `buy()` 之后立刻 `market_position()` 就能
+    // 看到结果。挂靠账户的手数缩放与下单不在本票（#160）：v1 这里只推进虚拟台账。
+
+    // 注：四个方法的参数名用 `strategy_volume` 而不是 `volume`——`InstrumentContext` 自己有
+    // 一个 `volume` 成交量序列成员，同名参数会触发 MSVC C4458（/W4 /WX 下是硬错误，Linux 的
+    // 告警集拦不到）。`strategy_volume` 也正好是组件文档 §6 的说法（「策略手数」，与挂靠
+    // 账户的每账户手数区分）。
+
+    /// @brief 买方向开/加多；反向（持有空头）时先平全部空再开 `strategy_volume` 多
+    void buy(Volume strategy_volume, double price) {
+        execute_intent(position_internal::Intent::Buy, strategy_volume, price);
+    }
+
+    /// @brief 卖方向平多（只减不增；超出逻辑持仓钳制到全平）
+    void sell(Volume strategy_volume, double price) {
+        execute_intent(position_internal::Intent::Sell, strategy_volume, price);
+    }
+
+    /// @brief 卖方向开/加空；反向（持有多头）时先平全部多再开 `strategy_volume` 空
+    void sell_short(Volume strategy_volume, double price) {
+        execute_intent(position_internal::Intent::SellShort, strategy_volume, price);
+    }
+
+    /// @brief 买方向平空（只减不增；超出逻辑持仓钳制到全平）
+    void buy_to_cover(Volume strategy_volume, double price) {
+        execute_intent(position_internal::Intent::BuyToCover, strategy_volume, price);
+    }
+
+    // ==== Tier 1 持仓/进出场查询（语义与口径见组件文档 §6.1；只读）====
+
+    /// @brief 净持仓方向：-1（空）/ 0（无仓）/ 1（多）；由净持仓符号派生
+    [[nodiscard]] std::int32_t market_position() const noexcept {
+        return position_.market_position();
+    }
+
+    /// @brief 持仓手数（≥ 0 的绝对值；方向看 `market_position()`，TB 同口径）
+    [[nodiscard]] LargeVolume current_contracts() const noexcept {
+        return position_internal::abs_volume(position_.net_volume);
+    }
+
+    /// @brief 当前持仓加权平均建仓价（部分平仓不变、反手重置；无仓 0）
+    [[nodiscard]] double avg_entry_price() const noexcept { return position_.avg_entry_price; }
+
+    /// @brief 当前持仓建仓段数（每次开仓/加仓 +1，反手新开 +1，部分平仓不变；无仓 0）
+    [[nodiscard]] std::int32_t current_entries() const noexcept {
+        return position_.current_entries;
+    }
+
+    /// @brief 本实例历史最大持仓手数（`|P|` 峰值，≥ 0，永不回落）
+    [[nodiscard]] LargeVolume max_contracts() const noexcept { return position_.max_contracts; }
+
+    /// @brief 本实例历史最大建仓段数（≥ 0，永不回落）
+    [[nodiscard]] std::int32_t max_entries() const noexcept { return position_.max_entries; }
+
+    /// @brief 当前持仓第一笔建仓的成交价（价格为传入限价）
+    [[nodiscard]] double entry_price() const noexcept { return position_.entry_price; }
+
+    /// @brief 当前持仓第一笔建仓的日期（对应 bar 的交易日）
+    [[nodiscard]] DzDate entry_date() const noexcept { return position_.entry_date; }
+
+    /// @brief 当前持仓第一笔建仓的时间（对应 bar 的标准结束时间）
+    [[nodiscard]] DzTime entry_time() const noexcept { return position_.entry_time; }
+
+    /// @brief 最近一笔加仓的成交价（无持仓时保留最近一次建仓值，与 TB 同口径）
+    [[nodiscard]] double last_entry_price() const noexcept { return position_.last_entry_price; }
+
+    /// @brief 最近一笔加仓的日期
+    [[nodiscard]] DzDate last_entry_date() const noexcept { return position_.last_entry_date; }
+
+    /// @brief 最近一笔加仓的时间
+    [[nodiscard]] DzTime last_entry_time() const noexcept { return position_.last_entry_time; }
+
+    /// @brief 最近一笔平仓的成交价（含部分平仓与反手平仓段）
+    [[nodiscard]] double exit_price() const noexcept { return position_.exit_price; }
+
+    /// @brief 最近一笔平仓的日期
+    [[nodiscard]] DzDate exit_date() const noexcept { return position_.exit_date; }
+
+    /// @brief 最近一笔平仓的时间
+    [[nodiscard]] DzTime exit_time() const noexcept { return position_.exit_time; }
+
+    /// @brief 距首次建仓的 bar 数（同 bar = 0；当前无持仓 = -1）
+    [[nodiscard]] std::int64_t bars_since_entry() const noexcept {
+        return bars_since(position_.entry_bar);
+    }
+
+    /// @brief 距最近加仓的 bar 数（同 bar = 0；当前无持仓 = -1）
+    [[nodiscard]] std::int64_t bars_since_last_entry() const noexcept {
+        return bars_since(position_.last_entry_bar);
+    }
+
+    /// @brief 距最近平仓的 bar 数（同 bar = 0；从未平仓 = -1）
+    [[nodiscard]] std::int64_t bars_since_exit() const noexcept {
+        return bars_since(position_.exit_bar);
+    }
+
+    /// @brief 浮动盈亏（钱）：`(最新价 − 均价) × P × volume_multiple`；无仓 0
+    [[nodiscard]] double position_profit() const noexcept {
+        return position_profit_at(current_price());
+    }
+
+    /// @brief 每手浮动盈亏（钱）：`(最新价 − 均价) × sign(P) × volume_multiple`；无仓 0
+    ///
+    /// 按 §6.1 的公式**直接乘**，不由 `position_profit()` 除以手数得出：除法会引入一次多余的
+    /// 浮点舍入（均价是加权平均值，通常不是二进制可表示的数），使每手盈亏与文档公式在末位
+    /// 上不一致——而用户拿它做止损阈值比较时，末位正是容易被踩到的地方。
+    [[nodiscard]] double contract_profit() const noexcept {
+        const double direction = position_.net_volume > 0 ? 1.0 : -1.0;
+        return profit_at(current_price(), direction);
+    }
+
+    /// @brief 当前持仓期间浮盈极值（≥ 0；bar 收盘前更新，开仓重置、平仓归零）
+    [[nodiscard]] double max_position_profit() const noexcept {
+        return position_.max_position_profit;
+    }
+
+    /// @brief 当前持仓期间浮亏极值（≤ 0；口径同上）
+    [[nodiscard]] double max_position_loss() const noexcept { return position_.max_position_loss; }
+
     InstrumentContext(const InstrumentContext&) = delete;
     InstrumentContext& operator=(const InstrumentContext&) = delete;
     InstrumentContext(InstrumentContext&&) = delete;
@@ -183,9 +332,10 @@ public:
 private:
     template <class>
     friend class BarStrategyManager;  // A 通过 friend 驱动推进 / 标记失败
-
     template <class>
     friend struct InstrumentNode;  // 节点就地构造（传 InstrumentInit）
+
+    friend struct context_internal::ContextAccess;  // 内部构造缝（#159 单元测试）
 
     /**
      * @brief A 内部构造：按 `buffer_bars` 一次分配 7 条价格数组并绑定视图
@@ -213,12 +363,156 @@ private:
           volume(series_internal::Access::view(price_.volume.get(), &window_)),
           turnover(series_internal::Access::view(price_.turnover.get(), &window_)),
           open_interest(series_internal::Access::view(price_.open_interest.get(), &window_)),
-          instrument_id_(init.instrument_id) {}
+          instrument_id_(init.instrument_id),
+          spec_(init.spec) {}
 
     /// @brief 分配一条价格数组（`buffer_bars` 个元素；首次写入前不读，无需零初始化）
     [[nodiscard]] static std::unique_ptr<double[]> make_array(std::int32_t buffer_bars) {
         return std::make_unique_for_overwrite<double[]>(static_cast<std::size_t>(buffer_bars));
     }
+
+    // ==== 交易意图与 Tier 1 的内部面（#159；只有 ctx 自己与 A 用）====
+
+    /**
+     * @brief 一笔交易意图的单一漏斗：拒单门禁 → 虚拟成交记账 → 分级诊断（组件文档 §6）
+     *
+     * B 的四个意图方法都走到这里，因此「哪条路径都不许绕过门禁」是结构性保证，而不是
+     * 四个方法各写一遍的纪律。
+     *
+     * 门禁只有一条：**失败实例不再受理下单意图**（§4.6）。执行门禁 `live_`（回放/静默填窗
+     * 只做虚拟成交）与挂靠账户 fanout 归 #160/#161——v1 的台账路径本来就不发单，没有需要
+     * 判 `live_` 的分支，提前留一个恒真的开关只会误导。
+     *
+     * @param intent          意图种类
+     * @param strategy_volume 策略手数（负数会被拒）
+     * @param price           传入限价（虚拟成交价）
+     */
+    void execute_intent(position_internal::Intent intent, Volume strategy_volume, double price) {
+        if (failed_) [[unlikely]] {
+            // 失败实例拒绝一切意图；但 `volume == 0` 且无可平仓是「无操作」，与 §6 同一条
+            // 理由（平仓语句逐 bar 无条件调用）——不用为它刷一行拒单诊断。
+            if (!is_zero_volume_noop(intent, strategy_volume)) {
+                report_intent_rejected(intent, "instance_failed");
+            }
+            return;
+        }
+        const position_internal::LedgerOutcome outcome =
+            position_internal::apply_intent(position_, intent, strategy_volume, price, bar_stamp());
+        if (outcome.negative_volume) [[unlikely]] {
+            report_intent_rejected(intent, "negative_volume");
+            return;
+        }
+        if (outcome.invalid_price) [[unlikely]] {
+            report_intent_rejected(intent, "invalid_price");
+            return;
+        }
+        report_intent_outcome(intent, strategy_volume, outcome);
+    }
+
+    /// @brief `volume == 0` 且本方向没有可平仓（= 无操作，按 §6 不诊断）
+    [[nodiscard]] bool is_zero_volume_noop(position_internal::Intent intent,
+                                           Volume strategy_volume) const noexcept {
+        if (strategy_volume != 0) {
+            return false;
+        }
+        const bool buying_side = intent == position_internal::Intent::Buy ||
+                                 intent == position_internal::Intent::BuyToCover;
+        return buying_side ? position_.net_volume >= 0 : position_.net_volume <= 0;
+    }
+
+    /// @brief 当前 bar 的记账时间戳（Tier 1 的进出场日期/时间/bar 序号来源）
+    [[nodiscard]] position_internal::BarStamp bar_stamp() const noexcept {
+        return position_internal::BarStamp{
+            .date = current_date_, .time = current_time_, .bar_index = bar_index_};
+    }
+
+    /**
+     * @brief 用被关闭 bar 的收盘价更新当前持仓期间浮盈/浮亏极值（组件文档 §6.1）
+     *
+     * 调用点在 A 的 `on_bar_close` 分发里、**B 的回调之前**：「bar 收盘前更新」意味着 B 在
+     * `on_bar_close` 里读到的极值已包含刚收这根 bar 的收盘价。A 不判持仓、不算钱——口径
+     * （无仓不动、`volume_multiple` 换算）只在这里写一次。
+     *
+     * @param bar_close 被关闭 bar 的收盘价
+     */
+    void update_profit_extremes(double bar_close) noexcept {
+        if (position_.net_volume == 0) {
+            return;  // 无仓：极值在平仓时已归零，没有可更新的持仓期间
+        }
+        const double profit = position_profit_at(bar_close);
+        if (profit > position_.max_position_profit) {
+            position_.max_position_profit = profit;
+        }
+        if (profit < position_.max_position_loss) {
+            position_.max_position_loss = profit;
+        }
+    }
+
+    /**
+     * @brief 浮动盈亏（钱）在给定价格下的取值（`position_profit` / `contract_profit` / 极值
+     *        更新三处共用的唯一公式）
+     *
+     * 权重 `volume_weight` 是「乘什么手数」：传 `P` 得总浮动盈亏，传 `sign(P)` 得每手浮动
+     * 盈亏（组件文档 §6.1 的两条公式本来只差这一个因子）。
+     *
+     * 两种情形返回 0：
+     *   - **无仓**（`P == 0`）：没有持仓就没有浮动盈亏；
+     *   - **`price <= 0`**：表示「还没有任何价格」（`on_init` 期或无 bar 的 ctx），而不是
+     *     「价格真的是 0」。若不挡这一条，`(0 − 均价) × P × 乘数` 会算出一笔巨大的虚假浮亏
+     *     （均价 100、2 手、乘数 10 → −2000），而 B 在 `on_init` 里读到的就是它。
+     *
+     * @param price         用来计价的现价（bar 收盘价）
+     * @param volume_weight 手数权重：`P`（总额）或 `sign(P)`（每手）
+     */
+    [[nodiscard]] double profit_at(double price, double volume_weight) const noexcept {
+        if (position_.net_volume == 0 || price <= 0.0) {
+            return 0;
+        }
+        return (price - position_.avg_entry_price) * volume_weight * spec_.volume_multiple;
+    }
+
+    /// @brief 总浮动盈亏在给定价格下的取值（极值更新用）
+    [[nodiscard]] double position_profit_at(double price) const noexcept {
+        return profit_at(price, static_cast<double>(position_.net_volume));
+    }
+
+    /// @brief 最新价（当前 bar 的收盘价 = 最近一笔已接受 tick 的价；无 bar 时为 0）
+    ///
+    /// 返回 0 是「没有价格」的哨兵值，由 {@link position_profit_at} 识别并返回 0 盈亏；
+    /// 不在这里另设 optional/NaN，避免把「没有价格」变成 B 可见的第二种状态。
+    [[nodiscard]] double current_price() const noexcept {
+        if (bar_index_ < 0 || window_.size == 0) {
+            return 0;
+        }
+        return price_.close[static_cast<std::size_t>(window_.end - 1)];
+    }
+
+    /**
+     * @brief 距某个参考 bar 的 bar 数（`bars_since_*` 的唯一实现）
+     *
+     * 同 bar 返回 0、无参考返回 -1。参考值为 -1 有两种来源，语义相同（都表示「无可参照的
+     * 建仓/平仓」）：从未发生，或当前已无持仓（台账在全平时把 entry/last_entry 的 bar 序号
+     * 复位为 -1）。
+     *
+     * `on_bar_close` 里调用时窗口尚未推进，`bar_index_` 仍是被关闭那根 bar 的序号，因此
+     * 「同 bar = 0」在三个回调里自动成立，不需要额外参数（组件文档 §6.1 的口径）。
+     *
+     * @param reference_bar 参考 bar 序号（-1 = 无参考）
+     * @return bar 差值；任一侧无效返回 -1
+     */
+    [[nodiscard]] std::int64_t bars_since(std::int64_t reference_bar) const noexcept {
+        if (reference_bar < 0 || bar_index_ < 0) {
+            return -1;
+        }
+        return bar_index_ - reference_bar;
+    }
+
+    /// @brief 拒单诊断（负手数 / 非法价格 / 失败实例）：逻辑持仓与 Tier 1 完全不变
+    void report_intent_rejected(position_internal::Intent intent, std::string_view reason);
+    /// @brief 记账结果的分级诊断（WARN 无效方向与钳制、INFO 由 0 触发平仓；无变化不诊断）
+    void report_intent_outcome(position_internal::Intent intent,
+                               Volume strategy_volume,
+                               const position_internal::LedgerOutcome& outcome);
 
     /**
      * @brief 推进一根 bar：回卷兜底 → 把 `bar` 写进新槽位 → 用户序列写初值/carry → 收尾
@@ -241,6 +535,11 @@ private:
         write_user_series(slot);
         series_internal::commit_advance(window_);
         ++bar_index_;
+        // Tier 1 的进出场时间 = 该 bar 的**标准结束时间**（§6.1）。在推进时写一次、bar 内不变：
+        // 同一根 bar 内多次建仓/平仓都归到同一个时间戳，与 `bars_since_*` 的 bar 序号自洽。
+        // v1 只支持日内周期（60/180/300/900），`period_sec == 0` 的日线不在范围内，不做兜底。
+        current_date_ = bar.trading_day;
+        current_time_ = bar::TradingTime::to_clock(bar.standard_end_sec());
     }
 
     /**
@@ -389,9 +688,68 @@ private:
     /// 用户序列（只放 B 经 `make_series` 注册的序列；框架内部状态不进这里，组件文档 §3）
     std::vector<SeriesStorage<double>> series_d_;
     std::vector<SeriesStorage<std::int64_t>> series_i_;
+    InstrumentSpec spec_;     ///< 合约属性（#159：`volume_multiple` 供 Tier 1 盈亏换算）
+    PositionState position_;  ///< 策略虚拟持仓 + Tier 1（只在 `execute_intent` 漏斗里更新）
+    /// 当前 bar 的记账时间戳（A 在推进窗口时从 `bar::Bar` 写入；Tier 1 进出场时间来源）
+    DzDate current_date_ = DZ_DATE_NA;
+    DzTime current_time_ = 0;
     bool in_on_init_ = false;  ///< 是否正处在 `on_init` 内（限制 `make_series` 的调用时机）
-    bool failed_ = false;      ///< 实例失败：此后不再接收任何 B 回调
+    bool failed_ = false;      ///< 实例失败：此后不再接收任何 B 回调、不再受理下单意图
 };
+
+/**
+ * @brief 意图诊断（stderr；header-only 公开代码不引入 spdlog，ADR 0020/0021）
+ *
+ * 文案口径与 `strategy_engine.h` 一致：小写开头、无句号、`prose | k=v k=v`、全英文。分级照
+ * 组件文档 §6，用四段不同的 prose 表达：
+ *   - 拒单（负手数 / 非法价格 / 失败实例）= `intent rejected | ...`；
+ *   - `n > 0` 方向无效、`n > |P|` 钳制 = `intent ignored` / `intent clamped`；
+ *   - `volume == 0` 实际触发平仓 = `intent flat_by_zero`（便于追溯非预期清仓）；
+ *   - 无变化且无诊断依据（`volume == 0` 且无可平仓）**不诊断**，避免平仓语句逐 bar 刷屏。
+ *
+ * **这里没有「级别」**：框架是 header-only、只能写 stderr，而 master 把子进程 stderr 一律按
+ * WARN 转发——三条路径在 master 日志里级别相同，靠 prose 区分。所以注释与文档都不写
+ * 「ERROR 级 / WARN 级」，避免让人以为有级别分流。
+ *
+ * 三个分级用不同的 prose 而不是同一个 prose 加 `level=` 字段：master 把子进程 stderr 一律
+ * 按 WARN 转发，日志级别只看得到 prose；prose 相同就等于三个级别在日志里无法区分。
+ */
+inline void InstrumentContext::report_intent_rejected(position_internal::Intent intent,
+                                                      std::string_view reason) {
+    std::cerr << std::format("intent rejected | instrument={} intent={} reason={}", instrument_id_,
+                             position_internal::intent_name(intent), reason)
+              << '\n';
+}
+
+inline void InstrumentContext::report_intent_outcome(
+    position_internal::Intent intent,
+    Volume strategy_volume,
+    const position_internal::LedgerOutcome& outcome) {
+    const std::string_view name = position_internal::intent_name(intent);
+    if (outcome.direction_invalid) {
+        std::cerr << std::format(
+                         "intent ignored | instrument={} intent={} volume={} net_position={}",
+                         instrument_id_, name, strategy_volume, outcome.net_before)
+                  << '\n';
+        return;
+    }
+    if (outcome.clamped) {
+        std::cerr << std::format(
+                         "intent clamped | instrument={} intent={} volume={} net_position={}",
+                         instrument_id_, name, strategy_volume, outcome.net_before)
+                  << '\n';
+        return;
+    }
+    if (!outcome.applied()) {
+        return;  // `volume == 0` 且无可平仓：静默（§6 明确要求不诊断）
+    }
+    if (outcome.zero_volume_closed) {
+        std::cerr << std::format(
+                         "intent flat_by_zero | instrument={} intent={} net_before={} net_after={}",
+                         instrument_id_, name, outcome.net_before, outcome.net_after)
+                  << '\n';
+    }
+}
 
 static_assert(!std::is_copy_constructible_v<InstrumentContext>,
               "InstrumentContext holds self-referential views and must not be copied");
