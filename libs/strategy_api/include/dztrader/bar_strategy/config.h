@@ -31,6 +31,7 @@
 #ifndef DZTRADER_BAR_STRATEGY_CONFIG_H_
 #define DZTRADER_BAR_STRATEGY_CONFIG_H_
 
+#include <dztrader/bar_strategy/scaling.h>
 #include <dztrader/date_time/date_time.h>
 #include <dztrader/json.h>
 #include <dztrader/series_internal.h>
@@ -56,31 +57,10 @@ namespace dztrader {
 // 落盘字段类型（组件文档 §7「C++ 侧配置类型」）
 // ============================================================
 
-/**
- * @brief 挂靠账户（`accounts` 数组元素）：平台账户标识 + 挂靠比率（ADR 0028/0030）
- *
- * 挂靠比率 `scale` 是「逻辑持仓 → 该账户目标持仓」的比例系数：`L_i = f(scale × |P|)`。
- * 账户的登录/凭据/交易接口归属属于平台 td 配置，框架只持有标识与比率。
- */
-struct AttachedAccount {
-    std::string account_id;  ///< 平台账户标识（非空、配置内唯一）
-    double scale = 1.0;      ///< 挂靠比率（`(0, max_scale]`）
-};
-
-/**
- * @brief 挂靠比率的取整方向（ADR 0030 决策 2）：`L_i = f(scale_i × |P|)`
- *
- * 进程级取整策略，配置里写作字符串 `"nearest"` / `"floor"` / `"ceil"`：
- *   - `Nearest`：四舍五入（默认）
- *   - `Floor`：向少取整
- *   - `Ceil`：向多取整
- */
-enum class ScaleRounding {
-    Nearest,  ///< 四舍五入（默认）
-    Floor,    ///< 向少取整
-    Ceil,     ///< 向多取整
-    // 新增取值时必须同步 config_internal::SCALE_ROUNDING_NAMES（唯一映射表与日志/解析共用）
-};
+// 挂靠账户 / 取整方向 / 缩放配置三个**值类型**定义在 `dztrader/bar_strategy/scaling.h`：
+// 执行路径（ctx 的每账户手数换算）与配置路径都要用它们，而 ctx 不该为几个值类型承担内置
+// JSON 的编译成本（ADR 0026 的隔离口径）。本头持它们的**配置侧**：JSON 字段名、wire 名
+// 映射表与语义校验。
 
 namespace config_internal {
 
@@ -107,22 +87,6 @@ inline constexpr std::array<ScaleRoundingName, 3> SCALE_ROUNDING_NAMES{{
     }
     return "nearest";
 }
-
-/**
- * @brief 进程级缩放配置（生效值；组件文档 §3）
- *
- * 由配置层的三个可选字段解析/取默认后得到：`max_scale` 启动加载一次、盘中不可变
- * （运行期编辑无效，重启生效，ADR 0027 决策 11）；`rounding` / `min_one` 是挂靠
- * 手数换算策略（ADR 0030）。`ctx` 按值拷贝一份，随 `InstrumentContext` 分发给各实例。
- *
- * 落盘字段的「省略 vs 显式默认值」在 {@link BarStrategyConfig} 里保留（写回时原样保留
- * 省略状态），本结构只描述生效值。
- */
-struct ScalingConfig {
-    double max_scale = 1.0;                           ///< 挂靠比率上限（> 0）
-    ScaleRounding rounding = ScaleRounding::Nearest;  ///< 取整方向
-    bool min_one = false;                             ///< 目标非零时至少 1 手
-};
 
 /**
  * @brief 历史预热深度：`bars` 与 `from` 二选一（都省略 = 用默认值）

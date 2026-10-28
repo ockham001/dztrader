@@ -19,7 +19,7 @@
 
 - 一个策略 = 一个可执行文件 `stg_<id>` = 一个进程 = 一个逻辑账户；实体账户 0..N 个挂在进程内（既有「一个策略一个进程」不变量不变）。
 - 一个进程只有一种用户策略类型 `Strategy`（B）；框架管理器 `BarStrategyManager<Strategy>`（A）对引擎而言是唯一的策略对象，入口 `run_bar_strategy<Strategy>(config)` 内部以 A 调用既有 `run_strategy`。
-- **实现状态（#157）**：公开入口 `dztrader/bar_strategy.h`（`run_bar_strategy<Strategy>()` + `BarStrategy` concept），管理器 `dztrader/bar_strategy/manager.h`（A 的引擎回调、tick 分发、事件适配器、`BarEventSink` / `InstrumentNode`、退化小节表），品种上下文 `dztrader/bar_strategy/context.h`（`InstrumentContext` / `InstrumentInit` / `PriceArrays`），虚拟台账 `dztrader/bar_strategy/position.h`（`PositionState` / `InstrumentSpec` / `apply_intent`）。#157 实现骨架（配置加载与启动诊断、订阅、tick→bar 分发、`close → open → update` 分发、异常隔离、退化小节表），#158 补齐回调门禁 / 静默填窗 / 用户序列 / 18:00 回卷（`on_schedule` 已实现），#159 补齐**交易意图 + 虚拟台账 + Tier 1**（四个开平意图、即时记账、Tier 1 查询、诊断分级、失败实例拒单；挂靠缩放与下单仍归 #160）；`on_ui_input` 与参数归 #162、预热回放归 #161、`is_auction()` 归 #163。骨架期 A 未实现 `on_trade_report` / `on_order_report` / `on_position_info` / `on_trading_account`（引擎按编译期探测跳过），`on_ui_input` 同样尚未实现。集成测试 `libs/strategy_api/tests/bar_strategy_framework_test.cpp`（Seam A：真实帧通道）、单元测试 `libs/strategy_api/tests/bar_strategy_position_test.cpp`（台账与 Tier 1 逐格口径）。
+- **实现状态（#157）**：公开入口 `dztrader/bar_strategy.h`（`run_bar_strategy<Strategy>()` + `BarStrategy` concept），管理器 `dztrader/bar_strategy/manager.h`（A 的引擎回调、tick 分发、事件适配器、`BarEventSink` / `InstrumentNode`、退化小节表），品种上下文 `dztrader/bar_strategy/context.h`（`InstrumentContext` / `InstrumentInit` / `PriceArrays`），虚拟台账 `dztrader/bar_strategy/position.h`（`PositionState` / `InstrumentSpec` / `apply_intent`），挂靠缩放 `dztrader/bar_strategy/scaling.h`（`AttachedAccount` / `ScalingConfig` / `logical_position`），执行原语 `dztrader/bar_strategy/execution.h`（`TickSnapshot` / `resolve_order_price` / `order_volume`）。#157 实现骨架（配置加载与启动诊断、订阅、tick→bar 分发、`close → open → update` 分发、异常隔离、退化小节表），#158 补齐回调门禁 / 静默填窗 / 用户序列 / 18:00 回卷（`on_schedule` 已实现），#159 补齐**交易意图 + 虚拟台账 + Tier 1**（四个开平意图、即时记账、Tier 1 查询、诊断分级、失败实例拒单），#160 补齐**挂靠缩放 + 差量单 + 逻辑持仓上报**（`L_i = sign(P)×f(scale×|P|)`、每账户差量单、effect 恒 AUTO、涨跌停夹取与 tick 对齐逻辑（后者因 `price_tick` 待 #161 供数而暂不生效，见 §6）、下单/上报各一个唯一出口、live 门禁与进入 live 时的全量批量上报；同步单与命令归 #162）；`on_ui_input` 与参数归 #162、预热回放归 #161、`is_auction()` 归 #163。骨架期 A 未实现 `on_trade_report` / `on_order_report` / `on_position_info` / `on_trading_account`（引擎按编译期探测跳过），`on_ui_input` 同样尚未实现。集成测试 `libs/strategy_api/tests/bar_strategy_framework_test.cpp`（Seam A：真实帧通道）、单元测试 `libs/strategy_api/tests/bar_strategy_position_test.cpp`（台账与 Tier 1 逐格口径）、`libs/strategy_api/tests/bar_strategy_execution_test.cpp`（缩放/价格/手数逐格口径）。
 - A 实现引擎侧回调（`on_start` / `on_tick` / `on_schedule` / `on_ui_input` / `on_stop` 等）：`on_start` 里取得 `DzContext*`、读取并校验配置（含挂靠账户表）、注册 A 内部的每日 18:00 回卷定时器（§10）；`on_tick` 里把 tick 转交该品种的 builder（bar 边界由 ADR 0031 组件负责，§5.4）并分发实例；`on_ui_input` 里解析 `instrument *` / `account *` / `param *` / `status` / `quit` 命令；`on_schedule` 里只处理自己的定时器 ID，不转发给 B。**成交/委托/持仓/资金回报 v1 全部忽略**（不建成交台账、不跟踪委托；逻辑账只由 B 的交易意图推进）。
 - A 为配置里的每个品种创建一个 B 实例（`instruments` 列表）；品种可按 `instrument add/del` 动态增删；进程故障域独立。
 - 账户表由 A 持有（账户标识 + 挂靠比率），运行期可增删改（§8）；策略逻辑不可见账户身份，也不提供 `ctx.account_id()`。0 个账户时策略照常运行（只记逻辑台账、不发实盘单）。
@@ -111,7 +111,8 @@ struct InstrumentSpec {                     // 合约属性（dz_db_query_instru
     double volume_multiple = 0;             // 合约乘数（>0；金额/浮动盈亏换算）
     double price_tick = 0;                  // 最小变动价位（>0；下单价格对齐）
     // v1 只用这三项；下单量上下限、期权等字段用到时再加
-    // 实现状态（#159）：只落地 volume_multiple（Tier 1 盈亏换算需要）
+    // 实现状态：volume_multiple 在 #159 落地（Tier 1 盈亏换算），price_tick 在 #160 落地
+    // （下单价格对齐）；exchange_id 随元数据来源（#161）加进来
 };
 
 struct PositionState {                      // 策略虚拟持仓 + Tier 1 状态（每品种一份；只在「交易意图 → 虚拟成交」漏斗更新）
@@ -136,11 +137,12 @@ struct PriceArrays {                        // 7 条价格序列的物理数组�
     std::unique_ptr<double[]> open, high, low, close, volume, turnover, open_interest;
 };
 
-struct TickSnapshot {                       // 最近一笔 tick 的快照（价格夹取与同步单对手价用）
-    double last = 0, bid1 = 0, ask1 = 0;
+struct TickSnapshot {                       // 最近一笔已被 builder 接受的 tick（价格夹取用）
     double upper_limit = 0, lower_limit = 0;
-    DzDate date{}; DzTime time{};
-    bool valid = false;                     // 回放结束进入 live 时清 false，避免用历史价发同步单
+    bool valid = false;                     // false = 还没有任何行情，价格夹取跳过
+    // 实现状态（#160）：只落地价格夹取需要的最小集合。同步单对手价用的 bid1/ask1 与
+    // date/time 随命令层（#162）加进来——届时同时实现「回放结束后清 valid，避免用历史价
+    // 发同步单」；v1 没有回放，valid 一旦置 true 就不再变。
 };
 
 struct AttachedAccount {                    // 挂靠账户（A 持有；运行期可增删改，ADR 0028）
@@ -151,7 +153,7 @@ using AccountTable = std::vector<AttachedAccount>;  // 只读遍历；命令按�
 
 struct ScalingConfig {                      // 进程级缩放配置（启动加载后不可变；ctx 按值拷贝）
     double max_scale = 1.0;                 // 挂靠比率上限（> 0）
-    ScaleRounding rounding = ScaleRounding::Nearest;  // 取整方向（enum 定义在配置层，#156）
+    ScaleRounding rounding = ScaleRounding::Nearest;  // 取整方向（enum 与 ScalingConfig 同在 scaling.h）
     bool min_one = false;                   // 目标非零时至少 1 手
 };
 
@@ -233,20 +235,24 @@ private:
     std::vector<SeriesStorage<std::int64_t>> series_i_;
     InstrumentSpec spec_;                   // 合约属性（见上）
     PositionState position_;                // 策略虚拟持仓 + Tier 1（下单意图即时记账）
-    TickSnapshot tick_;                     // 最近一笔 tick（价格夹取 / 同步单对手价）
+    TickSnapshot tick_;                     // 最近一笔已接受 tick（价格夹取；对手价字段随 #162 加）
     ScalingConfig scaling_;                 // 缩放配置副本（启动后不可变；按值持有，避免再一层解引用）
     const ParamStore* params_ = nullptr;    // 指向 manager 的参数存储（地址稳定）
     DzContext* dz_ = nullptr;               // 引擎会话句柄（on_start 注入，进程内不变）
     const AccountTable* accounts_ = nullptr; // A 的挂靠账户表只读指针（A 只在两次回调之间修改）
     std::string instrument_id_;             // 合约代码（平台唯一键；注意区分 symbol/name）
-    bool live_ = false;                     // false = 回放/静默填窗：只做虚拟成交、不发单、不上报
+    bool live_ = false;                     // false = on_init/回放期：只做虚拟成交、不发单、不上报
     bool failed_ = false;                   // 实例失败：不再回调、不再受理下单意图
     InstrumentContext(const InstrumentInit& init);  // A 内部构造：分配 buffer_bars、绑定 7 个价格视图
-    // ==== 下单/记账内部方法（所有路径共用，避免重复实现） ====
-    //   place(direction, volume, price)：逻辑持仓差量 → 每账户手数 → 价格处理 → 发单(AUTO)/虚拟成交 → 上报
-    //   publish_positions(const AttachedAccount&) / publish_all_positions()：上报逻辑持仓
-    //   sync_account(const AttachedAccount&, LargeVolume old_l, LargeVolume new_l, SyncMode, PriceMode) → SyncOutcome
-    //   submit_order(const AttachedAccount&, LargeVolume qty, PriceMode)：唯一的 dz_place_order 出口
+    // ==== 执行与记账内部方法（所有路径共用，避免重复实现；实现状态 #160）====
+    //   execute_intent(intent, volume, price)：拒单门禁 → 虚拟成交记账 → fanout → 分级诊断（单一漏斗）
+    //   fanout_positions(net_before, price)：P_old → P_new 后逐账户算 L_i 差量 → 发单 + 上报
+    //   submit_delta_order(account, delta, price)：差量 → 方向 + 手数（差量 0/超范围在这里分流）
+    //   submit_order(account, direction, volume, price)：唯一的 dz_place_order 出口
+    //   publish_position(account, const char* instrument_id, net_l)：唯一的 dz_set_logical_position 出口
+    //     （instrument_id == nullptr = 空品种通配清零，归 #162 的删除命令）
+    //   publish_all_positions()：进入 live / 账户表变更后的全量对账上报（不发单）
+    //   sync_account(...) → SyncOutcome：生命周期命令的同步单，归 #162
     // A 内部方法：advance_bar / relocate / set_live / set_failed；形成中 bar 与边界判定由每品种的
     // builder 持有（§5.4），ctx 不保存形成中 bar 聚合值；回放游标为 A 的局部变量
 public:
@@ -321,7 +327,7 @@ private:
 约束：
 - `InstrumentNode` 由 A 在 `unordered_map` 节点内就地构造（`try_emplace` 就地装配 ctx、sink、builder 与 B）：ctx 的 `dz_` / `accounts_` / `params_` / `scaling_` / `spec_` / 窗口几何在构造时注入，公开价格视图绑定自身 `window_` 与 `price_`；sink 持本节点 ctx 与 A 指针，builder 持 sink 引用（构造顺序 ctx → sink → builder，节点地址稳定）。
 - **两类状态分清**：值语义状态（`ScalingConfig` / `PositionState` / `TickSnapshot` / `InstrumentSpec`）随 ctx 持有或按值拷贝，没有生命周期指针问题；指针语义状态（`ParamStore` / `AccountTable` / `DzContext`）由 A 持有，A 在 `instruments_` 之前声明（析构顺序保证节点先销毁）。
-- **执行门禁只有两个开关**：`live_`（回放/静默填窗期 false——`place` 只做虚拟成交，不发单、不上报）与 `failed_`（实例失败——不再回调、拒单）；两者都在 ctx 内，避免 A 与 ctx 对执行阶段的判断漂移。
+- **执行门禁只有两个开关**：`live_`（`on_init` 期与回放期 false——`execute_intent` 只做虚拟成交，不发单、不上报）与 `failed_`（实例失败——不再回调、拒单）；两者都在 ctx 内，避免 A 与 ctx 对执行阶段的判断漂移。**实现状态（#160）**：`enter_live()` 在 `on_start` 末尾把全部实例置 true 并做一次全量上报——静默填窗期本来就不调 B（回调门禁），所以 v1 的 false 区间只有 `on_init`；#161 接上回放后，`enter_live()` 的调用点挪到回放之后，回放期自然落进 false 区间，ctx 侧无需改动。
 - `InstrumentContext` 不可拷贝、不可移动（视图与 `Series` 自持指针，搬移即失效）；`Strategy` 只要求可默认构造（节点内构造），不再有 move 约束。
 - B 不得保存 `InstrumentContext*`（每次回调都传入，保存没有收益且 `instrument del` 后失效）；`make_series` 仅限 `on_init`。
 - **用户序列容器只放用户序列**：`series_d_` / `series_i_` 只存 B 在 `on_init` 经 `make_series` 注册的 `SeriesStorage<T>`；价格序列在 `price_`，框架内部状态（形成中 bar 聚合、预热/回放游标等）不进用户序列表；将来若内部需要序列，单独存储、不复用 `make_series` 通道（命名、容量与生命周期语义不同）。
@@ -333,7 +339,7 @@ private:
 - **索引类型分工**：对外 `operator[]` 取 `std::ptrdiff_t`；`WindowState` 的几何量取 `std::int32_t`（4 个几何量 + `advance_seq`，有界：`size ≤ end ≤ buffer_bars`、`size ≤ max_lookback ≤ buffer_bars`、`buffer_bars = max_lookback + reserve_bars`；窗口 20 字节 = 5×int32）。转换只发生在 `operator[]` 内部一次宽化 `base_[end - 1 - n]`。`max_lookback ∈ [32, 16384]` 与 `buffer_bars ≤ 24576` 的区间校验已结构性保证二者远小于 `INT32_MAX / 2`，无需额外断言。
 - **无 vector 写接口、无扩容**：不提供 `push_back` / `erase` / `resize` / `reserve`（bar 生命周期与窗口推进由 A 管，B 只能写 `[0]`）；容量 = 配置值，在实例创建时一次性分配、之后永不 realloc——B 持有的视图/指针全程有效，热路径上没有分配器；不够用是配置错误（读越界抛异常，§4.2）。用户序列也不做「单条更深回溯」：它们共享品种窗口（见 §14 后置项）。
 - **分配不做特化**：每序列一次普通堆分配（`operator new` 的自然对齐，x86-64 至少 16B，足以满足 `double` 与非对齐加载），物理长度就是 `buffer_bars`，不做 2 的幂取整、不做 cache-line padding。理由：热路径只有 8B 自然对齐的标量读写（永不跨 cache line），回卷一天只发生一次（§10），对齐收益在测量噪声内；2 的幂反而有 4KB 同余导致的 L1 cache set 冲突风险。若将来改为 arena/矩阵布局，行步长禁止取 4096 的整数倍（§14 记录）。
-- **唯一出口**：所有 `dz_place_order` 调用都走 `ctx.submit_order()`（正常单、同步单、删除平仓共用），所有 `dz_set_logical_position` 调用都走 `ctx.publish_positions()/publish_all_positions()`；A 不直接拼这两种帧，避免两条路径的上报/价格处理漂移。
+- **唯一出口**：所有 `dz_place_order` 调用都走 `ctx.submit_order()`（正常单、同步单、删除平仓共用；差量先经 `ctx.submit_delta_order()` 翻译成方向 + 手数），所有 `dz_set_logical_position` 调用都走 `ctx.publish_position()` / `ctx.publish_all_positions()`；A 不直接拼这两种帧，避免两条路径的上报/价格处理漂移。
 
 **热路径**（每 tick）：
 
@@ -595,16 +601,23 @@ bar 边界由 tick→bar 通用组件（[ADR 0031](../adr/0031-tick-bar-synthesi
 
 ## 6. 交易与执行
 
-> **实现状态（#159）**：**虚拟台账 + Tier 1 + 四个开平意图已落地**，落在
-> `libs/strategy_api/include/dztrader/bar_strategy/position.h`（`PositionState` /
-> `InstrumentSpec` / `apply_intent` 纯转移，可独立单测）与
-> `dztrader/bar_strategy/context.h`（B 可见的四个意图方法、Tier 1 查询、分级诊断、失败实例
-> 拒单）。**尚无**：挂靠缩放与下单（`L_i` 差量、价格对齐/夹取、`dz_place_order`、上报）
-> 归 #160；合约元数据来源归 #161——在它落地前 `InstrumentSpec::volume_multiple` 恒为 0，
-> 因此 `position_profit()` / `contract_profit()` / 浮盈浮亏极值**恒为 0**，启动诊断打一行
-> `instrument metadata unavailable | effect=tier1_profit_zero source=absent ticket=161` 声明
-> 该已知限制（静默 0 会让止损逻辑永不触发）。执行门禁 `live_` 也随 #160/#161 接入：v1 的
-> 台账路径本来不发单，没有需要判它的分支。
+> **实现状态（#159 / #160）**：**虚拟台账 + Tier 1 + 四个开平意图 + 挂靠执行与上报已落地**。
+> 台账落 `libs/strategy_api/include/dztrader/bar_strategy/position.h`（`PositionState` /
+> `InstrumentSpec` / `apply_intent` 纯转移，可独立单测）；缩放与价格落
+> `bar_strategy/scaling.h`（`AttachedAccount` / `ScalingConfig` / `logical_position()`）与
+> `bar_strategy/execution.h`（`TickSnapshot` / `resolve_order_price()` / `order_volume()`）——
+> 两者都是纯函数，因此逐格单测（`bar_strategy_execution_test.cpp`）而不必搭帧通道。B 可见的
+> 四个意图方法、Tier 1 查询、分级诊断、失败实例拒单、**挂靠 fanout 与两个唯一出口**在
+> `bar_strategy/context.h`，Seam A 接线在 `bar_strategy_framework_test.cpp`（订单帧与上报帧
+> 用独立 probe reader 断言）。
+>
+> **仍未落地**：合约元数据来源归 #161——在它落地前 `InstrumentSpec` 的两项恒为 0，因此
+> `position_profit()` / `contract_profit()` / 浮盈浮亏极值**恒为 0**，且下单价格
+> **不做 tick 对齐**；启动诊断各打一行声明（`instrument metadata unavailable | ...`）。
+> 生命周期命令的同步单（`account add/set/del`、`instrument del` 的 `[sync|nosync]`）归 #162；
+> 历史回放的虚拟成交与回放后一次性上报归 #161（`enter_live()` 的调用点已在 `on_start`
+> 末尾，#161 只需把它挪到回放之后）。回放期不逐笔上报、结束后批量上报的**批量上报入口**
+> （`publish_all_positions()`）已就位并在进入 live 时调用。
 
 **账户与逻辑持仓**（ADR 0028/0030）：策略进程只有一个逻辑账户；挂靠账户 0..N 个，每个有 `scale`。策略虚拟净持仓 `P` 是 B 可见的唯一持仓口径；挂靠账户 `i` 在某品种上的**逻辑持仓** `L_i = sign(P) × f(scale_i × |P|)`（`f` 为进程级取整策略，§6.2）。正常策略单只改变 `P` 与 `L_i`，不参考实际持仓。
 
@@ -635,6 +648,7 @@ ctx.buy_to_cover(volume, price); // 买方向：平空（只减不增）；volum
 
   出口函数的 `0 = 全平` 是 TB 约定（`Share` 缺省/0 平掉当前所有持仓）；入口函数的 `0 = 只平反向、不建新仓` 是 MC 口径（`Buy 0`/`SellShort 0`）。两者在净持仓模型下是同一条规则：**`0` 是模式值不是数量**——出口函数 `sell(0)` 与 `sell(1)` 不连续，用计算量调平仓函数时必须自己保证 `> 0`（或显式分支）。
 - **参数与诊断**：`volume >= 0`，负数拒单并诊断；`n > 0` 方向无效（如空仓 `sell`）无操作 + WARN 诊断，`n > |P|` 钳制到 `|P|` + WARN 诊断；`0` 且无可平仓无操作、**不诊断**（避免平仓语句逐 bar 刷屏），`0` 实际触发平仓记 INFO 诊断（便于追溯非预期清仓）。日志文本用小写 prose 区分（`intent rejected` / `intent ignored` / `intent clamped` / `intent flat_by_zero`）；注意 header-only 框架只能写 stderr，而 master 把子进程 stderr 一律按 WARN 转发，因此**当前这三档在 master 日志里级别相同、只靠 prose 区分**——真正的级别分流要等 SDK 给策略代码一条日志通道（ADR 0021 现状）。
+> **已知门禁缺口**：`scripts/check_log_format.py` 只扫 spdlog / `LastError::set` / `throw std::*` 三类调用，**不扫 `std::cerr`**，因此本组件（以及 `strategy_engine.h`）里的 stderr 诊断没有日志格式机器校验，靠 review 把关（#157 起即如此）。规模：`#160` 新增 7 处（`bar_strategy/context.h` 4→9、`manager.h` 13→15），这两个头现共 24 处，加 `strategy_engine.h` 的 10 处即 34 处；全仓 `main` 本有 72 处、现在 79 处。补齐需要给 lint 加一类调用并把既有的 stderr 一并纳入——那是独立改动（会一次暴露全仓既有站点），不在框架票范围内。
 - **逻辑台账是虚拟成交（TB 虚拟账户口径）**：B 的每笔交易意图按传入限价**即时**记账——`P` 按上表推进，Tier 1（均价、建仓次数、浮动盈亏、进出场时间）在同一个漏斗里按开平归属更新（跨越 0 时拆成平仓段 + 开仓段）。不等待成交回报、不跟踪在途；拒单/部分成交不回流。B **只接触**这本逻辑账：不接触账户真实持仓/资金/权益，也不接触任何委托与成交明细（`order_id`、委托状态、部分成交、拒单原因都不出现在 B 的 API 面）。
 - `on_order_report` / `on_position_info` / `on_trading_account` v1 忽略，不参与任何 B 可见状态。
 
@@ -643,11 +657,17 @@ ctx.buy_to_cover(volume, price); // 买方向：平空（只减不增）；volum
 - 逻辑持仓变化 `P_old → P_new` 后，对每个挂靠账户算 `qty_i = L_i(P_new) − L_i(P_old)`；`qty_i == 0` 跳过。
 - 方向 = `sign(qty_i)`，`position_effect = DZ_POSITION_EFFECT_AUTO`（开平/锁仓/今昨由 td 按账户解析，平台专项 issue #82）。本框架固定 AUTO；特定策略/品种若需显式 `OPEN`/`CLOSE_TODAY` 等标准开平指令，走平台标准下单接口，不属于 BarStrategy（ADR 0028 决策 8）。
 - 价格 = B 传入的限价：`price_tick` 对齐（买向下取整、卖向上取整，不向不利方向偷价；发生调整时记诊断）；实盘涨跌停：买价高于涨停 → 按涨停价挂，卖价低于跌停 → 按跌停价挂（不拒单）；价格非法（NaN/≤0）或数量非法（负数、或 `|qty_i|` 超出 `DzVolume` 范围）才拒单并诊断。
+  **实现状态（#160）**：涨跌停夹取已生效（涨跌停来自 tick 本身）；**tick 对齐目前是死路径**——`price_tick` 来自合约元数据源（#161），在此之前恒为 0、对齐被跳过（`resolve_order_price` 的契约就是「`price_tick <= 0` = 元数据不可用 → 跳过对齐不拒单」）。对齐的三种边界（买向下/卖向上/已在网格上不调整）由 `bar_strategy_execution_test.cpp` 用注入的 `price_tick` 覆盖，#161 接上数据源后自动生效。
 - 调 `dz_place_order(dz_, account_id, instrument_id, direction, DZ_PRICE_LIMIT, price, |qty_i|, AUTO)`；**A 不参与下单、不记录订单路由表**。
 - 每账户手数**不保证**等于「策略手数 × scale」，保证的是持仓比例（`L` 的差量，取整误差不随逐单累积）；反手/全平同样按差量发**一张** AUTO 单，不由框架拆平/开（td 按账户持仓解析，issue #82）；不做基于实际持仓的「超出可平量丢弃」——逻辑账层只按 §6 规则钳制到逻辑持仓，实际可平量不足由 td/交易所拒绝，偏差走一键同步。
 - **不看实际持仓**：实际仓位不足时单子可能被 td/交易所拒绝；拒单不改变逻辑账，实盘与逻辑的偏差由操作员一键同步处理（§6.2）。
 
-**上报**：每次逻辑持仓变化后，对 `L_i` 发生变化的账户调 `dz_set_logical_position(dz_, account_id, instrument_id, L_i)`；回放期不逐笔上报、回放结束后一次性上报（§5.3）；删除账户用「账户 + 空品种」通配清零（§8）。策略级 `P` 不单独上报。
+**上报**：每次逻辑持仓变化后，对 `L_i` 发生变化的账户调 `dz_set_logical_position(dz_, account_id, instrument_id, L_i)`；删除账户用「账户 + 空品种」通配清零（§8，命令层 #162 调用同一个出口）。策略级 `P` 不单独上报。
+
+两条上报时机与「只报变化的账户」并列，不冲突：
+
+- **逐笔**（上段）：只在 `L_i` 变化时，`L_i` 未变即跳过（否则每笔意图刷 N 条无变化帧）；
+- **全量对账**（`publish_all_positions()`：进入 live、回放结束、`instrument add`、账户命令后）：对**全部**账户各报一条当前 `L_i`，**`0` 也报**。这条路径的目的就是让 UI 镜像与台账一致——跳过 0 会让上次运行留下非零镜像的账户在冷启动（`P == 0`）后永远显示旧持仓。回放期不逐笔上报，回放结束后由它一次性补齐（§5.3）。
 
 **成交回报**：v1 全部忽略（不建成交台账；逻辑账只由 B 的交易意图推进；实际与逻辑的偏差由操作员一键同步处理）。
 
@@ -687,6 +707,18 @@ Tier 2 交易统计（`ctx.stats()`：GrossProfit/GrossLoss/NetProfit/PercentPro
 
 ### 6.2 挂靠账户、缩放与同步
 
+> **实现状态（#160）**：`L_i` 的换算、正常单 fanout、两个唯一出口（下单/上报）、价格对齐与
+> 涨跌停夹取**已落地**。纯函数在 `bar_strategy/scaling.h`（`logical_position()` 与
+> `ScalingConfig`）与 `bar_strategy/execution.h`（`resolve_order_price()` /
+> `order_volume()` / `TickSnapshot`），单元测试 `bar_strategy_execution_test.cpp` 逐格覆盖
+> （三种取整 × 正负持仓、`scale_min_one`、非法 `scale` 防御、饱和、差量之和恒等于
+> `L(终态) − L(初态)` 因而取整误差不累积、tick 对齐边界、涨跌停夹取、非法价格/数量）；
+> Seam A 测试覆盖镜像与反手单、`L_i` 未变化时零帧、0 账户零帧、配置里的取整策略与
+> `scale_min_one` 到达执行路径、`on_init` 意图不发单（live 门禁）、涨跌停夹取诊断。
+> **同步单（`account add/set/del` /
+> `instrument del` 的 `[sync|nosync] [market]`）归 #162**：本票只提供 `submit_order()` 与
+> `publish_position()` 两个出口，命令层届时调用它们而不是另拼帧。
+
 **账户表与逻辑持仓**：A 持有挂靠账户表（启动读配置，运行期 `account` 命令增删改，§8）。账户 `i` 在某品种上的逻辑持仓：
 
 ```
@@ -711,7 +743,7 @@ scale_min_one：目标非零时至少 1 手（默认关）
 - `instrument del` 与账户命令一样支持 `[sync|nosync] [market]`（默认 `nosync`；`market` 只对 sync 生效）。
 - 失败语义：**命令层失败**（校验失败/写配置失败）→ 不发单、逻辑持仓不变；**下单失败（含写帧失败）或未成交** → 逻辑持仓照常更新为目标值，实际差额由一键同步处理。
 
-方向取 `sign(qty)`、`effect=AUTO`；**先发单，然后无论成交与否（含下单失败）都把逻辑持仓更新为 `new_l`**（删除则移除并上报清零）；不查询实际持仓、不确认成交、不建成交台账。价格默认**对手价**：买用 `tick_.ask1`、卖用 `tick_.bid1`（最近一笔 tick；tick 对齐、涨跌停夹取）；`tick_.valid == false` 或价格非有限/≤0 时回退 `tick_.last`，仍不可用则跳过该品种并报错；命令带 `market` 时用市价单。
+方向取 `sign(qty)`、`effect=AUTO`；**先发单，然后无论成交与否（含下单失败）都把逻辑持仓更新为 `new_l`**（删除则移除并上报清零）；不查询实际持仓、不确认成交、不建成交台账。价格默认**对手价**：买用卖一、卖用买一（最近一笔 tick；tick 对齐、涨跌停夹取）；无可用行情或价格非有限/≤0 时回退最新价，仍不可用则跳过该品种并报错；命令带 `market` 时用市价单。（`TickSnapshot` 目前只带涨跌停——对手价与最新价字段随本条命令能力在 **#162** 加进来，不提前留字段。）
 
 - 无近期行情的品种跳过并输出错误行；逻辑持仓仍按命令更新。
 - 删除账户：`sync` 时先发 `−old_l` 平仓单 → 立即移除账户表项并上报清零（ADR 0028）。删除品种：`sync` 时对各账户发 `−old_l` → 移除实例并清零上报（§8）。
@@ -993,7 +1025,24 @@ status | quit
 > 逐字段比较回调序列、`bar_index`、窗口长度、价格历史与用户序列历史）。
 > `series_window_test.cpp` 新增逐步回卷（`relocate_array` + `finish_relocate`）与一次性回卷
 > （`relocate_window`）的等价性、`finish_relocate` 幂等性、以及**回卷前后窗口逐位不变**的
-> 直接不变式（AC6 的正面断言，跨路径比较无法替代）。下列清单是随各票逐步补齐的完整目标。
+> 直接不变式（AC6 的正面断言，跨路径比较无法替代）。
+>
+> **#160 新增**：`bar_strategy_execution_test.cpp`（纯单元，17 用例）覆盖 `L_i` 的三种取整
+> × 正负持仓全表、`scale_min_one`（只抬到 1、空仓恒 0）、非法 `scale` 防御（NaN/0/负 →
+> 0 而不是 UB）、**取整误差不随逐单累积**（`L` 是当前 `P` 的纯函数 + 逐格数值）、反手一步
+> 翻转、幅值饱和（含 `INT64_MIN` 不能直接取负）、tick 对齐不偷价（含 `0.3/0.1` 的浮点边界
+> 与「已在网格上不报调整」）、`price_tick` 缺失时跳过对齐、涨跌停夹取（只夹方向对应一侧、
+> 快照无效不夹、恰好等界不夹）、对齐与夹取的顺序、非法价格拒单、差量为 0/超范围的手数换算。
+> `bar_strategy_framework_test.cpp` 新增八条 Seam A（独立 probe reader 断言订单帧与上报帧）：
+> `AttachedAccountsMirrorAndReverseWithSingleDeltaOrder`（scale 1.0/0.5 的镜像手数、反手
+> 每账户**一张**差量单、effect=AUTO、上报净手数）、`AccountsWithUnchangedLogicalPositionAreSkipped`
+> （`L_i` 未变 → 零帧，同时是「取整在目标持仓上」的可观测后果）、
+> `ZeroAttachedAccountsProduceNoFrames`、`ConfiguredRoundingAndMinOneReachExecution` 与
+> `ScaleMinOneIsWiredThroughConfig`（配置层到执行路径的接线：默认值断不出接线错误，故用
+> `floor` + `scale_min_one` 与足以区分的 scale）、`OnInitIntentIsVirtualOnlyUntilLive`
+> （live 门禁 + 进入 live 时的全量批量上报）、`OrderPriceIsClampedToLimitAndDiagnosed`
+> （挂涨停价而非拒单 + `reason=limit_up` 诊断）、`BatchReportCarriesTheInstrumentId`
+> （逐品种上报绝不带空合约代码——空串是通配清零的形状）。下列清单是随各票逐步补齐的完整目标。
 
 - 单元：
   - Series：`[n]` 读值/负索引/`n ≥ size` 抛 `std::out_of_range`、消息含 `n/size/max_lookback`；`span()` 长度与顺序；`size/max_lookback` 语义；write-only-`[0]` 的编译期约束（无 `push_back/resize`）；Debug assert。

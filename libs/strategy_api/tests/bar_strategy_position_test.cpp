@@ -69,6 +69,11 @@ std::unique_ptr<InstrumentContext> make_ctx(const char* instrument_id = "rb2601"
         .max_lookback = 32,
         .buffer_bars = 64,
         .spec = InstrumentSpec{.volume_multiple = kVolumeMultiple},
+        // 脱离引擎的虚拟台账模式：无会话句柄、无账户表 → 只记账、不发单、不上报（#160 的
+        // 「0 个挂靠账户」口径）。执行 fanout 的接线由 Seam A 集成测试覆盖。
+        .dz = nullptr,
+        .accounts = nullptr,
+        .scaling = {},
     });
 }
 

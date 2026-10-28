@@ -38,8 +38,10 @@
 #include <dztrader/bar_strategy/config_file.h>
 #include <dztrader/bar_strategy/context.h>
 #include <dztrader/bar_strategy/context_internal.h>
+#include <dztrader/bar_strategy/execution.h>
 #include <dztrader/bar_strategy/manager.h>
 #include <dztrader/bar_strategy/position.h>
+#include <dztrader/bar_strategy/scaling.h>
 #include <dztrader/data_type.h>
 #include <dztrader/date_time/date.h>
 #include <dztrader/date_time/date_time.h>
