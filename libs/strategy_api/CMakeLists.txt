@@ -214,6 +214,14 @@ set_tests_properties(BarPerfBench PROPERTIES LABELS perf)
 #              模拟策略作者自带版本 (本文件其它 target 也链它, 是内部库用途)
 # 两者都跑起来(不只编译)以证明取到的是能工作的 nlohmann, 不是只有预处理通过的空壳。
 # 均为百分之一秒级用例, 进默认 fast 门禁; 不用 gtest (无断言框架需求, 减少依赖面)。
+#
+# 「只链 strategy_api_headers」还有第二个用途 (#157 起): 它等价于下游策略作者自己的工程
+# ——没有内部 target 传播的宏 (典型 _CRT_SECURE_NO_WARNINGS)。所以 json_sdk_probe 直接
+# 包含 libs/strategy_api/include/ 下的**每个**公开头, 让它们都按下游方式编译一次;
+# public_header_coverage_test.cpp 断言这份清单与目录内容一致, 新增公开头却忘了纳入会直接
+# 失败, 而不是等到 Windows CI (#157 的 _wfopen C4996 正是这种「没人覆盖到」的盲区)。
+# 这两个探针必须继续只链 strategy_api_headers (+ nlohmann): 任何内部库都会把
+# _CRT_SECURE_NO_WARNINGS 之类带进来, 让上述保证静默失效。
 # ============================================================
 add_executable(dztrader_sdk_json_probe_builtin tests/json_sdk_probe.cpp)
 target_link_libraries(dztrader_sdk_json_probe_builtin PRIVATE strategy_api_headers)

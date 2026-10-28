@@ -16,6 +16,14 @@ R3 C4101 from compiled-out DEBUG logging
     In Release, SPDLOG_DEBUG/SPDLOG_TRACE expand to nothing; if a catch parameter is
     only referenced there it becomes unreferenced -> MSVC C4101 -> /WX -> C2220.
     GCC/clang do not warn about unused exception parameters by default.
+R4 deprecated CRT calls in public SDK headers (C4996 -> /WX -> C2220)
+    MSVC marks the older CRT entry points (_wfopen, strcpy, sprintf, ...) deprecated.
+    Internal targets may mask the warning with _CRT_SECURE_NO_WARNINGS, but headers
+    under libs/strategy_api/include/ are the header-only PUBLIC SDK: a downstream
+    strategy project builds them without that define and fails under /WX. The Linux
+    gate cannot see this at all -- the offending call usually sits behind an #ifdef,
+    so only the Windows CI run reproduces it (#157: _wfopen). R4 is scoped to the
+    public header tree; internal code is allowed to define _CRT_SECURE_NO_WARNINGS.
 
 Usage: python3 scripts/check_msvc_hazards.py [files...]
 Default file set: tracked .h/.cpp under apps/ and libs/.
@@ -31,6 +39,49 @@ INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]')
 CATCH_RE = re.compile(
     r'catch\s*\(\s*(?:const\s+)?[A-Za-z_][\w:<>]*\s*(?:const\s*)?&\s*([A-Za-z_]\w*)\s*\)')
 DEBUG_MACRO_RE = re.compile(r'SPDLOG_(?:DEBUG|TRACE)\s*\(')
+
+# R4: public SDK header tree (header-only; consumers build it without our defines).
+PUBLIC_SDK_INCLUDE_ROOT = "libs/strategy_api/include/"
+# CRT entry points MSVC marks deprecated under /WX. Match the call form only, so that
+# identifiers merely containing a name (my_strcpy) and the *_s replacements stay clean.
+DEPRECATED_CRT_RE = re.compile(
+    r'(?<![\w])'
+    r'(_wfopen|_wfreopen|freopen|fopen|strcpy|strcat|strncpy|strncat|sprintf|'
+    r'vsprintf|gets|sscanf|scanf|strtok|asctime|ctime|getenv|_open|_creat)'
+    r'\s*\(')
+SAFE_SUFFIX = "_s"
+COMMENT_LINE_RE = re.compile(r'^\s*(?://|/\*|\*)')
+# A conditional whose condition names a Windows-only macro: its #else branch is built by
+# Linux/GCC, not MSVC, so a deprecated CRT call there is not a hazard (config_file.h
+# keeps the POSIX std::fopen in exactly such an #else).
+WINDOWS_COND_RE = re.compile(r'_WIN32|_MSC_VER|_WIN64|DZTRADER_\w*WINDOWS')
+PP_RE = re.compile(r'^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)$')
+
+
+def preprocessor_branches(lines):
+    """Map line index -> True when the line sits in a non-Windows #else branch.
+
+    Models the dominant shape: an #if/#ifdef/#ifndef whose condition names a Windows
+    macro, plus its #else/#elif branch. Nested conditionals use a stack; a line is
+    skipped when any enclosing frame is on its non-Windows side.
+    """
+    skip = [False] * len(lines)
+    stack = []  # each frame: [is_windows_cond, on_non_windows_side]
+    for idx, line in enumerate(lines):
+        m = PP_RE.match(line)
+        if m:
+            kind, rest = m.group(1), m.group(2)
+            if kind in ("if", "ifdef", "ifndef"):
+                stack.append([bool(WINDOWS_COND_RE.search(rest)), False])
+            elif kind == "elif" and stack:
+                stack[-1][1] = stack[-1][0]
+            elif kind == "else" and stack:
+                stack[-1][1] = stack[-1][0]
+            elif kind == "endif" and stack:
+                stack.pop()
+            continue
+        skip[idx] = any(frame[1] for frame in stack)
+    return skip
 
 
 def tracked_sources():
@@ -148,6 +199,35 @@ def check_debug_only_catch(text):
     return errors
 
 
+def check_deprecated_crt(path, text):
+    """R4: deprecated CRT calls in the header-only public SDK.
+
+    Scoped to the public include tree: internal targets define
+    _CRT_SECURE_NO_WARNINGS, downstream consumers of the SDK do not. Lines MSVC never
+    compiles (the #else of a Windows conditional) are skipped -- the POSIX
+    std::fopen in such a branch is correct, not a hazard.
+    """
+    if not path.replace("\\", "/").startswith(PUBLIC_SDK_INCLUDE_ROOT):
+        return []
+    lines = text.split("\n")
+    skip = preprocessor_branches(lines)
+    errors = []
+    for idx, line in enumerate(lines):
+        if skip[idx] or COMMENT_LINE_RE.match(line):
+            continue
+        stripped = line.split("//")[0]
+        for m in DEPRECATED_CRT_RE.finditer(stripped):
+            name = m.group(1)
+            if stripped[m.end():m.end() + len(SAFE_SUFFIX)] == SAFE_SUFFIX:
+                continue  # already the safe variant (_wfopen_s / strcpy_s)
+            errors.append(
+                (idx + 1,
+                 "R4: deprecated CRT call '%s' in a public SDK header; MSVC emits C4996 -> "
+                 "C2220 under /WX for downstream strategy builds that do not define "
+                 "_CRT_SECURE_NO_WARNINGS. Use the _s variant or std::filesystem" % name))
+    return errors
+
+
 def check_file(path):
     with open(path, encoding="utf-8", errors="replace") as fh:
         text = fh.read()
@@ -157,6 +237,7 @@ def check_file(path):
     errors += check_ip_helper(lines, includes)
     errors += check_pdh(lines)
     errors += check_debug_only_catch(text)
+    errors += check_deprecated_crt(path, text)
     return sorted(set(errors))
 
 

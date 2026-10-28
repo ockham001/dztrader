@@ -16,6 +16,21 @@ import urllib.parse
 
 LOCAL_ARCHIVES = ("docs/plans/", "docs/specs/", "docs/superpowers/")
 CONTRACT_DIR = "docs/frame_contracts/"
+# Backticked repo paths in active docs must resolve. Scope mirrors check_ledger.py's
+# "active documents" set: frozen local archives and ADRs are historical records and
+# may legitimately name files that have since moved or been deleted.
+ACTIVE_DOC_ROOTS = ("docs/components/", "docs/frame_contracts/", "docs/agents/")
+ACTIVE_DOC_FILES = ("README.md", "GLOSSARY.md", "docs/README.md",
+                    "docs/development-checklist.md", "docs/unit-test-standard.md")
+REPO_TOP_DIRS = ("libs/", "apps/", "strategies/", "scripts/", "docs/", "cmake/",
+                 ".github/", "third_party/", "tools/")
+BACKTICK_PATH_RE = re.compile(
+    r"`([A-Za-z0-9_./-]+\.(?:h|cpp|py|md|json|sh|ps1|txt|map|cmake|yml|yaml))`")
+
+
+def is_active_doc(rel):
+    """True when rel is an active (non-archived) document worth drift-checking."""
+    return rel.startswith(ACTIVE_DOC_ROOTS) or rel in ACTIVE_DOC_FILES
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
 NUMBERED_HEADING_RE = re.compile(r"^#{2,6}\s+(\d+(?:\.\d+)*)[.．、]?\s")
@@ -133,6 +148,43 @@ def check_contract_refs(files, root, idx):
     return errors
 
 
+def tracked_repo_paths(root):
+    """All tracked file paths, for backticked-path drift detection."""
+    out = subprocess.run(["git", "ls-files", "-z"], cwd=root,
+                         capture_output=True, check=True).stdout
+    return {p for p in out.decode().split("\0") if p}
+
+
+def check_backticked_paths(files, root, tracked):
+    """Flag backticked repo paths in active docs that no longer exist.
+
+    Doc drift recurs in essentially every review round here, and the dominant shape is
+    a `path/to/file` inside a code span surviving the file's rename or deletion -- a
+    bare backticked path is not a link, so nothing above catches it. Only repo-shaped
+    paths (starting with a known top-level dir) are checked, which keeps prose such as
+    `config.json` out.
+    """
+    errors = []
+    for rel in files:
+        if not is_active_doc(rel):
+            continue
+        with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
+            lines = strip_code_fences(fh.read())
+        for lineno, line in enumerate(lines, 1):
+            for tok in BACKTICK_PATH_RE.findall(line):
+                candidate = tok.lstrip("./")
+                if "..." in candidate or candidate.startswith(LOCAL_ARCHIVES):
+                    continue
+                if not candidate.startswith(REPO_TOP_DIRS):
+                    continue  # prose like `config.json`
+                if candidate in tracked:
+                    continue
+                if any(t.endswith("/" + candidate) for t in tracked):
+                    continue
+                errors.append(f"{rel}:{lineno}: backticked path does not exist -> {tok}")
+    return errors
+
+
 def main(argv):
     root = subprocess.run(["git", "rev-parse", "--show-toplevel"],
                           capture_output=True, text=True, check=True).stdout.strip()
@@ -175,11 +227,12 @@ def main(argv):
 
     contract_errors = check_contract_refs(files, root, contract_index(root))
     errors.extend(contract_errors)
+    errors.extend(check_backticked_paths(files, root, tracked_repo_paths(root)))
 
     for err in errors:
         print(err)
     if errors:
-        print(f"FAIL: {len(errors)} broken link(s)/contract ref(s)")
+        print(f"FAIL: {len(errors)} broken link(s)/contract ref(s)/stale path(s)")
         return 1
     print(f"OK: {len(files)} markdown files scanned, no broken links")
     return 0
