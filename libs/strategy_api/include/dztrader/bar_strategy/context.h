@@ -469,7 +469,7 @@ private:
                 continue;  // 该账户的 L_i 未变：不发单、不上报
             }
             submit_delta_order(account, delta, price);
-            publish_position(account, new_l);
+            publish_position(account, instrument_id_, new_l);
         }
     }
 
@@ -529,8 +529,9 @@ private:
         const DzDirection direction = direction_of(delta);
         const std::optional<Volume> order_qty = order_volume(delta);
         if (!order_qty.has_value()) [[unlikely]] {
-            // 只在 `|delta| > DzVolume` 时发生（delta == 0 由调用方跳过）
-            report_order_rejected(account, direction, 0, "volume_out_of_range");
+            // 只在 `|delta| > DzVolume` 时发生（delta == 0 由调用方跳过）。诊断必须带**原始
+            // 差量**：只打 `qty=0` 等于把「哪个量越界了」这条唯一线索丢掉。
+            report_order_volume_out_of_range(account, direction, delta);
             return;
         }
         submit_order(account, direction, *order_qty, price);
@@ -542,18 +543,25 @@ private:
      * 上报的 `net_volume` 是账户逻辑持仓 `L_i`（不是策略级 P：策略逻辑持仓按账户各报一条，
      * ADR 0027 决策 15）。写帧失败记诊断——上报丢失会让 UI 侧的逻辑/实际偏差对比失真。
      *
-     * 删除挂靠账户时用的「账户 + 空品种」通配清零同样走这一个出口：命令层（#162）届时传空
-     * 合约代码即可，本函数不为此另开拼帧路径。本票（#160）只有逐品种上报，没有删除命令。
+     * 删除挂靠账户用的「账户 + 空品种」通配清零走同一个出口：命令层（#162）传空
+     * `instrument_id` 即可（契约 strategy §SET_LOGICAL_POSITION 的 `""` = 该账户全部品种）。
+     * 本票（#160）只有逐品种上报，调用者都传本品种代码；把 `instrument_id` 做成参数而不是
+     * 在函数里硬编码，是为了让那条通配路径真的可达——否则注释承诺的通配口径永远走不到。
      *
-     * @param account 目标挂靠账户
-     * @param net_l   该账户的逻辑持仓（= 目标净额）
+     * @param account       目标挂靠账户
+     * @param instrument_id 合约代码（空串 = 该账户该策略全部品种通配清零）
+     * @param net_l         该账户的逻辑持仓（= 目标净额；通配时 SDK 忽略并固定为 0）
      */
-    void publish_position(const AttachedAccount& account, LargeVolume net_l) {
+    void publish_position(const AttachedAccount& account,
+                          std::string_view instrument_id,
+                          LargeVolume net_l) {
         if (dz_ == nullptr) {
             return;  // 虚拟台账模式：无会话句柄
         }
-        if (!dz_set_logical_position(dz_, account.account_id.c_str(), instrument_id_.c_str(),
-                                     net_l)) {
+        // `dz_set_logical_position` 要 NUL 结尾的 const char*：本品种走 ctx 自己的成员
+        // （永久有效），通配/外部传入需要有主的缓冲。
+        const std::string instrument{instrument_id};
+        if (!dz_set_logical_position(dz_, account.account_id.c_str(), instrument.c_str(), net_l)) {
             report_publish_failed(account.account_id, net_l);
         }
     }
@@ -576,7 +584,7 @@ private:
         for (const AttachedAccount& account : *accounts_) {
             const LargeVolume net_l =
                 scaling_internal::logical_position(position_.net_volume, account.scale, scaling_);
-            publish_position(account, net_l);
+            publish_position(account, instrument_id_, net_l);
         }
     }
 
@@ -710,11 +718,15 @@ private:
 
     // ==== 执行诊断（#160；全部写 stderr，prose 区分等级，见 .cpp 段注释）====
 
-    /// @brief 挂靠账户单被拒（价格非法 / 数量超出 `DzVolume`）
+    /// @brief 挂靠账户单被拒（价格非法）
     void report_order_rejected(const AttachedAccount& account,
                                DzDirection direction,
                                Volume order_qty,
                                std::string_view reason);
+    /// @brief 差量幅值超出 `DzVolume`（带原始差量：这是「越界了多少」的唯一证据）
+    void report_order_volume_out_of_range(const AttachedAccount& account,
+                                          DzDirection direction,
+                                          LargeVolume delta);
     /// @brief 下单价格被调整（tick 对齐 / 涨跌停夹取）：记原始价、最终价与原因
     void report_price_adjusted(const AttachedAccount& account,
                                double requested,
@@ -988,6 +1000,16 @@ inline void InstrumentContext::report_intent_outcome(
  * `order price adjusted` 是 INFO 级事件却和拒单一样落在 stderr：它不改变任何逻辑状态，但
  * 是「策略传入价与交易所实际挂单价不一致」的唯一解释来源，静默会让迁移用户以为框架偷价。
  */
+inline void InstrumentContext::report_order_volume_out_of_range(const AttachedAccount& account,
+                                                                DzDirection direction,
+                                                                LargeVolume delta) {
+    std::cerr << std::format(
+                     "order rejected | instrument={} account={} direction={} delta={} "
+                     "reason=volume_out_of_range",
+                     instrument_id_, account.account_id, direction_name(direction), delta)
+              << '\n';
+}
+
 inline void InstrumentContext::report_order_rejected(const AttachedAccount& account,
                                                      DzDirection direction,
                                                      Volume order_qty,

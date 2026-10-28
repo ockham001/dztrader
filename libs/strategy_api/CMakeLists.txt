@@ -112,8 +112,11 @@ set(SDK_API_TESTS
 )
 
 # 只需要在**链接期**解析 API 符号、但不碰真实通道/临时 home 的测试。
-# 与 SDK_API_TESTS 的区别只在测试属性：这一组是纯单元，不共用机器全局 SHM 通道，
-# 因此不需要 RUN_SERIAL，也不该继承 60s 的超时兜底。
+# 与 SDK_API_TESTS 的区别**只在测试属性**，不在构建方式（两者都编入 src/api.cpp）：
+# SDK_API_TESTS 的用例共用机器全局 SHM 通道名，-j 并行必须 RUN_SERIAL 且要 60s 兜底；
+# 这一组是纯单元、不碰通道，串行化它只会白白拉长门禁时间，超时兜底也没有对应风险。
+# 之所以不直接复用 SDK_API_TESTS：那会把「只需要符号」的测试和「需要通道隔离」的测试
+# 绑成同一组，将来两者任一变化都要在两个关注点之间做取舍。
 set(SDK_HEADER_LINK_API_TESTS
     # 台账单元测试构造真实 InstrumentContext：ctx 的执行出口直接调 dz_place_order /
     # dz_set_logical_position（#160 的单一出口），即使用例走的是虚拟台账路径（dz_ == nullptr）

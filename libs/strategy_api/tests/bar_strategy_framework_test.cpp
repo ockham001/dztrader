@@ -2459,6 +2459,42 @@ TEST_F(BarStrategyFrameworkTest, AccountsWithUnchangedLogicalPositionAreSkipped)
 }
 
 /**
+ * **进入 live 的全量对账上报携带本品种代码**（`publish_position` 的 `instrument_id` 参数化）。
+ *
+ * `publish_position` 把合约代码做成参数而不是硬编码，是为了让「账户 + 空品种」通配清零那条
+ * 契约路径真的可达（删除账户归 #162 调用）。这条用例锁住的是**另一侧**：正常上报确实把
+ * 本品种代码写进帧，而不是写空串——把通配语义误用到普通上报时，帧里的 `instrument_id` 会
+ * 变成空串，dzweb 侧的镜像就会挂到一个不存在的合约上。
+ */
+TEST_F(BarStrategyFrameworkTest, BatchReportCarriesTheInstrumentId) {
+    write_config({std::string(kInstrumentA), std::string(kInstrumentB)}, kTestMaxLookback,
+                 /*reserve_bars=*/std::nullopt, /*period_sec=*/60,
+                 /*accounts_json=*/R"([{"account_id": "CTP001", "scale": 1.0}])");
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(2));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_EQ(warm_up(kInstrumentB, 64831), 1U);
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    // 每个品种 1 个账户 → 各 1 条基线上报（`L_i == 0` 也报，用于清掉旧镜像）
+    ASSERT_EQ(reports_.size(), 2U) << "one reconciliation report per instrument";
+    for (const ObservedPositionReport& report : reports_) {
+        EXPECT_EQ(report.account_id, "CTP001");
+        EXPECT_FALSE(report.instrument_id.empty())
+            << "a per-instrument report must never carry an empty instrument id "
+               "(that is the wildcard-clear shape, not a position report)";
+        EXPECT_TRUE(report.instrument_id == kInstrumentA || report.instrument_id == kInstrumentB)
+            << "unexpected instrument id: " << report.instrument_id;
+        EXPECT_EQ(report.net_volume, 0) << "cold start reports 0 for every account";
+    }
+    // 两个品种各报一条（不是同一品种报两条）
+    EXPECT_NE(reports_[0].instrument_id, reports_[1].instrument_id);
+}
+
+/**
  * **0 个挂靠账户：只记账、不发单、不上报**（AC「0 个挂靠账户路径仍正确」）。
  *
  * 这条路径在本票之前就存在（ctx 内没有账户表），现在账户表由 A 注入，因此「空表」必须仍然

@@ -534,8 +534,11 @@ private:
             if (node.ctx.is_failed()) {
                 continue;
             }
-            node.ctx.set_live(true);
+            // 顺序照 §5.3 第 4 步：**先上报、再放开**。`publish_all_positions()` 只读台账、
+            // 不发单，因此它在 live 打开前后调用效果相同；但把顺序写成与文档一致，才让
+            // 「之后若有人给上报加上发单/副作用，也不会先发一笔再报一个旧值」这条不变式成立。
             node.ctx.publish_all_positions();
+            node.ctx.set_live(true);
         }
         if (!accounts_.empty()) {
             std::cerr << std::format(

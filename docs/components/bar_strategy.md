@@ -19,7 +19,7 @@
 
 - 一个策略 = 一个可执行文件 `stg_<id>` = 一个进程 = 一个逻辑账户；实体账户 0..N 个挂在进程内（既有「一个策略一个进程」不变量不变）。
 - 一个进程只有一种用户策略类型 `Strategy`（B）；框架管理器 `BarStrategyManager<Strategy>`（A）对引擎而言是唯一的策略对象，入口 `run_bar_strategy<Strategy>(config)` 内部以 A 调用既有 `run_strategy`。
-- **实现状态（#157）**：公开入口 `dztrader/bar_strategy.h`（`run_bar_strategy<Strategy>()` + `BarStrategy` concept），管理器 `dztrader/bar_strategy/manager.h`（A 的引擎回调、tick 分发、事件适配器、`BarEventSink` / `InstrumentNode`、退化小节表），品种上下文 `dztrader/bar_strategy/context.h`（`InstrumentContext` / `InstrumentInit` / `PriceArrays`），虚拟台账 `dztrader/bar_strategy/position.h`（`PositionState` / `InstrumentSpec` / `apply_intent`），挂靠缩放 `dztrader/bar_strategy/scaling.h`（`AttachedAccount` / `ScalingConfig` / `logical_position`），执行原语 `dztrader/bar_strategy/execution.h`（`TickSnapshot` / `resolve_order_price` / `order_volume`）。#157 实现骨架（配置加载与启动诊断、订阅、tick→bar 分发、`close → open → update` 分发、异常隔离、退化小节表），#158 补齐回调门禁 / 静默填窗 / 用户序列 / 18:00 回卷（`on_schedule` 已实现），#159 补齐**交易意图 + 虚拟台账 + Tier 1**（四个开平意图、即时记账、Tier 1 查询、诊断分级、失败实例拒单），#160 补齐**挂靠缩放 + 差量单 + 逻辑持仓上报**（`L_i = sign(P)×f(scale×|P|)`、每账户差量单、effect 恒 AUTO、价格 tick 对齐与涨跌停夹取、下单/上报各一个唯一出口、live 门禁与进入 live 时批量上报；同步单与命令归 #162）；`on_ui_input` 与参数归 #162、预热回放归 #161、`is_auction()` 归 #163。骨架期 A 未实现 `on_trade_report` / `on_order_report` / `on_position_info` / `on_trading_account`（引擎按编译期探测跳过），`on_ui_input` 同样尚未实现。集成测试 `libs/strategy_api/tests/bar_strategy_framework_test.cpp`（Seam A：真实帧通道）、单元测试 `libs/strategy_api/tests/bar_strategy_position_test.cpp`（台账与 Tier 1 逐格口径）、`libs/strategy_api/tests/bar_strategy_execution_test.cpp`（缩放/价格/手数逐格口径）。
+- **实现状态（#157）**：公开入口 `dztrader/bar_strategy.h`（`run_bar_strategy<Strategy>()` + `BarStrategy` concept），管理器 `dztrader/bar_strategy/manager.h`（A 的引擎回调、tick 分发、事件适配器、`BarEventSink` / `InstrumentNode`、退化小节表），品种上下文 `dztrader/bar_strategy/context.h`（`InstrumentContext` / `InstrumentInit` / `PriceArrays`），虚拟台账 `dztrader/bar_strategy/position.h`（`PositionState` / `InstrumentSpec` / `apply_intent`），挂靠缩放 `dztrader/bar_strategy/scaling.h`（`AttachedAccount` / `ScalingConfig` / `logical_position`），执行原语 `dztrader/bar_strategy/execution.h`（`TickSnapshot` / `resolve_order_price` / `order_volume`）。#157 实现骨架（配置加载与启动诊断、订阅、tick→bar 分发、`close → open → update` 分发、异常隔离、退化小节表），#158 补齐回调门禁 / 静默填窗 / 用户序列 / 18:00 回卷（`on_schedule` 已实现），#159 补齐**交易意图 + 虚拟台账 + Tier 1**（四个开平意图、即时记账、Tier 1 查询、诊断分级、失败实例拒单），#160 补齐**挂靠缩放 + 差量单 + 逻辑持仓上报**（`L_i = sign(P)×f(scale×|P|)`、每账户差量单、effect 恒 AUTO、涨跌停夹取与 tick 对齐逻辑（后者因 `price_tick` 待 #161 供数而暂不生效，见 §6）、下单/上报各一个唯一出口、live 门禁与进入 live 时的全量批量上报；同步单与命令归 #162）；`on_ui_input` 与参数归 #162、预热回放归 #161、`is_auction()` 归 #163。骨架期 A 未实现 `on_trade_report` / `on_order_report` / `on_position_info` / `on_trading_account`（引擎按编译期探测跳过），`on_ui_input` 同样尚未实现。集成测试 `libs/strategy_api/tests/bar_strategy_framework_test.cpp`（Seam A：真实帧通道）、单元测试 `libs/strategy_api/tests/bar_strategy_position_test.cpp`（台账与 Tier 1 逐格口径）、`libs/strategy_api/tests/bar_strategy_execution_test.cpp`（缩放/价格/手数逐格口径）。
 - A 实现引擎侧回调（`on_start` / `on_tick` / `on_schedule` / `on_ui_input` / `on_stop` 等）：`on_start` 里取得 `DzContext*`、读取并校验配置（含挂靠账户表）、注册 A 内部的每日 18:00 回卷定时器（§10）；`on_tick` 里把 tick 转交该品种的 builder（bar 边界由 ADR 0031 组件负责，§5.4）并分发实例；`on_ui_input` 里解析 `instrument *` / `account *` / `param *` / `status` / `quit` 命令；`on_schedule` 里只处理自己的定时器 ID，不转发给 B。**成交/委托/持仓/资金回报 v1 全部忽略**（不建成交台账、不跟踪委托；逻辑账只由 B 的交易意图推进）。
 - A 为配置里的每个品种创建一个 B 实例（`instruments` 列表）；品种可按 `instrument add/del` 动态增删；进程故障域独立。
 - 账户表由 A 持有（账户标识 + 挂靠比率），运行期可增删改（§8）；策略逻辑不可见账户身份，也不提供 `ctx.account_id()`。0 个账户时策略照常运行（只记逻辑台账、不发实盘单）。
@@ -661,7 +661,12 @@ ctx.buy_to_cover(volume, price); // 买方向：平空（只减不增）；volum
 - 每账户手数**不保证**等于「策略手数 × scale」，保证的是持仓比例（`L` 的差量，取整误差不随逐单累积）；反手/全平同样按差量发**一张** AUTO 单，不由框架拆平/开（td 按账户持仓解析，issue #82）；不做基于实际持仓的「超出可平量丢弃」——逻辑账层只按 §6 规则钳制到逻辑持仓，实际可平量不足由 td/交易所拒绝，偏差走一键同步。
 - **不看实际持仓**：实际仓位不足时单子可能被 td/交易所拒绝；拒单不改变逻辑账，实盘与逻辑的偏差由操作员一键同步处理（§6.2）。
 
-**上报**：每次逻辑持仓变化后，对 `L_i` 发生变化的账户调 `dz_set_logical_position(dz_, account_id, instrument_id, L_i)`；回放期不逐笔上报、回放结束后一次性上报（§5.3）；删除账户用「账户 + 空品种」通配清零（§8）。策略级 `P` 不单独上报。
+**上报**：每次逻辑持仓变化后，对 `L_i` 发生变化的账户调 `dz_set_logical_position(dz_, account_id, instrument_id, L_i)`；删除账户用「账户 + 空品种」通配清零（§8，命令层 #162 调用同一个出口）。策略级 `P` 不单独上报。
+
+两条上报时机与「只报变化的账户」并列，不冲突：
+
+- **逐笔**（上段）：只在 `L_i` 变化时，`L_i` 未变即跳过（否则每笔意图刷 N 条无变化帧）；
+- **全量对账**（`publish_all_positions()`：进入 live、回放结束、`instrument add`、账户命令后）：对**全部**账户各报一条当前 `L_i`，**`0` 也报**。这条路径的目的就是让 UI 镜像与台账一致——跳过 0 会让上次运行留下非零镜像的账户在冷启动（`P == 0`）后永远显示旧持仓。回放期不逐笔上报，回放结束后由它一次性补齐（§5.3）。
 
 **成交回报**：v1 全部忽略（不建成交台账；逻辑账只由 B 的交易意图推进；实际与逻辑的偏差由操作员一键同步处理）。
 
@@ -737,7 +742,7 @@ scale_min_one：目标非零时至少 1 手（默认关）
 - `instrument del` 与账户命令一样支持 `[sync|nosync] [market]`（默认 `nosync`；`market` 只对 sync 生效）。
 - 失败语义：**命令层失败**（校验失败/写配置失败）→ 不发单、逻辑持仓不变；**下单失败（含写帧失败）或未成交** → 逻辑持仓照常更新为目标值，实际差额由一键同步处理。
 
-方向取 `sign(qty)`、`effect=AUTO`；**先发单，然后无论成交与否（含下单失败）都把逻辑持仓更新为 `new_l`**（删除则移除并上报清零）；不查询实际持仓、不确认成交、不建成交台账。价格默认**对手价**：买用 `tick_.ask1`、卖用 `tick_.bid1`（最近一笔 tick；tick 对齐、涨跌停夹取）；`tick_.valid == false` 或价格非有限/≤0 时回退 `tick_.last`，仍不可用则跳过该品种并报错；命令带 `market` 时用市价单。
+方向取 `sign(qty)`、`effect=AUTO`；**先发单，然后无论成交与否（含下单失败）都把逻辑持仓更新为 `new_l`**（删除则移除并上报清零）；不查询实际持仓、不确认成交、不建成交台账。价格默认**对手价**：买用卖一、卖用买一（最近一笔 tick；tick 对齐、涨跌停夹取）；无可用行情或价格非有限/≤0 时回退最新价，仍不可用则跳过该品种并报错；命令带 `market` 时用市价单。（`TickSnapshot` 目前只带涨跌停——对手价与最新价字段随本条命令能力在 **#162** 加进来，不提前留字段。）
 
 - 无近期行情的品种跳过并输出错误行；逻辑持仓仍按命令更新。
 - 删除账户：`sync` 时先发 `−old_l` 平仓单 → 立即移除账户表项并上报清零（ADR 0028）。删除品种：`sync` 时对各账户发 `−old_l` → 移除实例并清零上报（§8）。
