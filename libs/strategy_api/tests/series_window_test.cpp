@@ -34,6 +34,17 @@ using dztrader::series_internal::relocate_window;
 using dztrader::series_internal::resolve_capacity;
 using dztrader::series_internal::window_consistent;
 
+/// @brief 把一条视图的整个窗口抄成 vector（`[0]` 最新 → `[size-1]` 最旧）
+template <class T>
+[[nodiscard]] std::vector<T> view_values(const dztrader::SeriesView<T>& view) {
+    std::vector<T> values;
+    values.reserve(static_cast<std::size_t>(view.size()));
+    for (std::ptrdiff_t n = 0; n < view.size(); ++n) {
+        values.push_back(view[n]);
+    }
+    return values;
+}
+
 /// @brief 一个品种的窗口夹具：价格数组 + 用户序列数组 + 共享几何
 ///
 /// 模拟 InstrumentContext 里「价格序列与用户序列共用一个 WindowState」的布局，
@@ -69,8 +80,36 @@ public:
     [[nodiscard]] const WindowState& window() const { return window_; }
     [[nodiscard]] const std::vector<double>& close_storage() const { return close_; }
 
+    /// @brief 当前窗口的 close 全部 `[n]`（`[0]` 最新）
+    [[nodiscard]] std::vector<double> close_values() const { return view_values(close_view()); }
+
+    /// @brief 当前窗口的 high 全部 `[n]`
+    [[nodiscard]] std::vector<double> high_values() const {
+        return view_values(Access::view(const_cast<double*>(high_.data()), &window_));
+    }
+
+    /// @brief 当前窗口的用户序列全部 `[n]`
+    [[nodiscard]] std::vector<std::int64_t> user_values() const { return view_values(user_view()); }
+
+    /// @brief 当前窗口的 close `span()` 副本（时间正序）
+    [[nodiscard]] std::vector<double> close_span() const {
+        const auto span = close_view().span();
+        return {span.begin(), span.end()};
+    }
+
     /// @brief 主动回卷（18:00 主路径）：全部数组一起搬
     void relocate() { relocate_window(window_, close_.data(), high_.data(), user_.data()); }
+
+    /// @brief 回卷收尾（幂等性用例单独调用）
+    void finish_relocate() { dztrader::series_internal::finish_relocate(window_); }
+
+    /// @brief 逐步回卷：逐条搬数组 + 收尾（复刻 `InstrumentContext::relocate()` 的调用形态）
+    void relocate_stepwise() {
+        dztrader::series_internal::relocate_array<double>(window_, close_.data());
+        dztrader::series_internal::relocate_array<double>(window_, high_.data());
+        dztrader::series_internal::relocate_array<std::int64_t>(window_, user_.data());
+        dztrader::series_internal::finish_relocate(window_);
+    }
 
 private:
     [[nodiscard]] SeriesView<double> close_view_impl() const {
@@ -361,6 +400,117 @@ TEST(SeriesRelocateFuzzTest, RelocateAtEveryPossiblePointIsInvisible) {
         expect_window_matches_shadow(lazy, shadow);
         EXPECT_EQ(eager.close_view().size(), lazy.close_view().size());
     }
+}
+
+/**
+ * **逐步回卷与一次性回卷等价**（#158）：`relocate_array` + `finish_relocate` 与
+ * `relocate_window` 是同一条搬移路径的两种调用形态。
+ *
+ * 用户序列的条数在运行期才知道（B 在 `on_init` 里注册几条都合法），`InstrumentContext`
+ * 只能逐条调 `relocate_array`、最后 `finish_relocate`；价格数组数量固定，走 `relocate_window`。
+ * 若两条路径的几何收尾不一致，价格窗口与用户序列窗口就会错位——本用例把它们对同一份数据
+ * 各跑一遍，逐位比较结果。
+ */
+TEST(SeriesRelocateTest, StepwiseRelocateMatchesOneShotRelocate) {
+    constexpr std::int32_t kMaxLookback = 8;
+    constexpr std::int32_t kReserve = 4;
+    constexpr int kBars = 40;
+
+    WindowFixture one_shot(kMaxLookback, kReserve);
+    WindowFixture stepwise(kMaxLookback, kReserve);
+
+    for (int i = 0; i < kBars; ++i) {
+        const double value = static_cast<double>(i) + 0.25;
+        one_shot.advance(value, value * 2.0, i);
+        stepwise.advance(value, value * 2.0, i);
+
+        // 一次性：价格 + 用户序列一起交给 relocate_window
+        one_shot.relocate();
+        // 逐步：逐条搬 + 收尾（与 InstrumentContext::relocate() 的调用形态一致）
+        stepwise.relocate_stepwise();
+
+        ASSERT_TRUE(window_consistent(one_shot.window()));
+        ASSERT_TRUE(window_consistent(stepwise.window()));
+        EXPECT_EQ(stepwise.window().end, stepwise.window().size);
+        EXPECT_EQ(stepwise.window().end, one_shot.window().end);
+        EXPECT_EQ(stepwise.window().size, one_shot.window().size);
+        EXPECT_EQ(stepwise.close_view().size(), one_shot.close_view().size());
+        for (std::ptrdiff_t n = 0; n < one_shot.close_view().size(); ++n) {
+            EXPECT_DOUBLE_EQ(stepwise.close_view()[n], one_shot.close_view()[n]) << "n=" << n;
+            EXPECT_EQ(stepwise.user_view()[n], one_shot.user_view()[n]) << "n=" << n;
+        }
+    }
+}
+
+/**
+ * **回卷前/后窗口内容逐位不变**（#158 AC6：回卷前后 B 读到的所有序列值不变、`bar_index` 不变）。
+ *
+ * 这是**直接**的不变式断言，不是跨用例比较：在同一个夹具上，先抄下每一条视图的全部 `[n]`
+ * （以及 `span()`），执行回卷，再抄一遍，逐位比较。任何「漏搬某条数组」都会让那条数组的
+ * `[end-1-n]` 落到别的物理格子上，第二次抄到的值立刻不同——这是跨路径比较做不到的
+ * （同一个 bug 同时作用于两条路径时，跨路径比较会两边一致而通过）。
+ *
+ * 两种调用形态都验：`relocate()`（`relocate_window` 变参形态）与 `relocate_stepwise()`
+ * （`relocate_array` + `finish_relocate` 形态，即 `InstrumentContext::relocate()` 的真实形状）。
+ */
+TEST(SeriesRelocateTest, RelocatePreservesEveryWindowValue) {
+    constexpr std::int32_t kMaxLookback = 8;
+    constexpr std::int32_t kReserve = 4;
+
+    for (const bool stepwise : {false, true}) {
+        WindowFixture fixture(kMaxLookback, kReserve);
+        for (int i = 0; i < 10; ++i) {
+            const double value = static_cast<double>(i) + 0.5;
+            fixture.advance(value, value * 3.0, i * 7);
+        }
+        // 回卷前快照：每条序列的全部 [n]、span()、以及窗口几何
+        const auto close_before = fixture.close_values();
+        const auto high_before = fixture.high_values();
+        const auto user_before = fixture.user_values();
+        const auto span_before = fixture.close_span();
+        const auto size_before = fixture.window().size;
+        const auto end_before = fixture.window().end;
+
+        if (stepwise) {
+            fixture.relocate_stepwise();
+        } else {
+            fixture.relocate();
+        }
+
+        ASSERT_TRUE(window_consistent(fixture.window()));
+        // 回卷只改布局：size 不变、end 落到 size
+        EXPECT_EQ(fixture.window().size, size_before) << "stepwise=" << stepwise;
+        EXPECT_EQ(fixture.window().end, fixture.window().size) << "stepwise=" << stepwise;
+        EXPECT_GE(end_before, fixture.window().end) << "stepwise=" << stepwise;
+        // 每条序列的每个 [n] 逐位不变（漏搬任何一条都会在这里不等）
+        EXPECT_EQ(fixture.close_values(), close_before)
+            << "close changed across relocation, stepwise=" << stepwise;
+        EXPECT_EQ(fixture.high_values(), high_before)
+            << "high changed across relocation, stepwise=" << stepwise;
+        EXPECT_EQ(fixture.user_values(), user_before)
+            << "user series changed across relocation, stepwise=" << stepwise;
+        // span() 也逐位不变
+        EXPECT_EQ(fixture.close_span(), span_before)
+            << "span changed across relocation, stepwise=" << stepwise;
+    }
+}
+
+/// `finish_relocate` 幂等：`end == size` 时重复收尾不破坏几何
+TEST(SeriesRelocateTest, FinishRelocateIsIdempotent) {
+    WindowFixture fixture(6, 4);
+    for (int i = 0; i < 10; ++i) {
+        fixture.advance(static_cast<double>(i), static_cast<double>(i), i);
+    }
+    fixture.relocate();
+    const auto end_after_first = fixture.window().end;
+    const auto size_after_first = fixture.window().size;
+
+    fixture.finish_relocate();
+    fixture.finish_relocate();
+
+    EXPECT_EQ(fixture.window().end, end_after_first);
+    EXPECT_EQ(fixture.window().size, size_after_first);
+    ASSERT_TRUE(window_consistent(fixture.window()));
 }
 
 // ---------------- AC6：容量自动值按周期推导 ----------------

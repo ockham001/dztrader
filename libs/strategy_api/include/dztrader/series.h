@@ -68,8 +68,9 @@ struct Access;  // 内部构造缝（A 与测试），定义见 dztrader/series_
  * `buffer_bars` 是物理元素数（= `max_lookback + reserve_bars`，B 不可见）。
  *
  * 不变式：`0 <= size <= max_lookback <= buffer_bars`、`size <= end <= buffer_bars`。
- * 推进与回卷由 `series_internal::prepare_advance` / `commit_advance` /
- * `relocate_window` 驱动，视图只读取本结构。
+ * 推进与回卷由 `series_internal` 的窗口驱动函数负责（`commit_advance` 推进、
+ * `relocate_array` + `finish_relocate` 逐条数组回卷、`relocate_window` 是后者的变参便捷形），
+ * 视图只读取本结构。
  */
 struct WindowState {
     std::int32_t end = 0;           ///< 写入位置 = 窗口右开边界
