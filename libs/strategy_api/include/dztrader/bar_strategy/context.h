@@ -208,24 +208,29 @@ public:
     // 不跟踪在途、不建成交台账，所以同一个回调里 `buy()` 之后立刻 `market_position()` 就能
     // 看到结果。挂靠账户的手数缩放与下单不在本票（#160）：v1 这里只推进虚拟台账。
 
-    /// @brief 买方向开/加多；反向（持有空头）时先平全部空再开 `volume` 多
-    void buy(Volume volume, double price) {
-        execute_intent(position_internal::Intent::Buy, volume, price);
+    // 注：四个方法的参数名用 `strategy_volume` 而不是 `volume`——`InstrumentContext` 自己有
+    // 一个 `volume` 成交量序列成员，同名参数会触发 MSVC C4458（/W4 /WX 下是硬错误，Linux 的
+    // 告警集拦不到）。`strategy_volume` 也正好是组件文档 §6 的说法（「策略手数」，与挂靠
+    // 账户的每账户手数区分）。
+
+    /// @brief 买方向开/加多；反向（持有空头）时先平全部空再开 `strategy_volume` 多
+    void buy(Volume strategy_volume, double price) {
+        execute_intent(position_internal::Intent::Buy, strategy_volume, price);
     }
 
-    /// @brief 卖方向平多（只减不增；`volume` 超出逻辑持仓钳制到全平）
-    void sell(Volume volume, double price) {
-        execute_intent(position_internal::Intent::Sell, volume, price);
+    /// @brief 卖方向平多（只减不增；超出逻辑持仓钳制到全平）
+    void sell(Volume strategy_volume, double price) {
+        execute_intent(position_internal::Intent::Sell, strategy_volume, price);
     }
 
-    /// @brief 卖方向开/加空；反向（持有多头）时先平全部多再开 `volume` 空
-    void sell_short(Volume volume, double price) {
-        execute_intent(position_internal::Intent::SellShort, volume, price);
+    /// @brief 卖方向开/加空；反向（持有多头）时先平全部多再开 `strategy_volume` 空
+    void sell_short(Volume strategy_volume, double price) {
+        execute_intent(position_internal::Intent::SellShort, strategy_volume, price);
     }
 
-    /// @brief 买方向平空（只减不增；`volume` 超出逻辑持仓钳制到全平）
-    void buy_to_cover(Volume volume, double price) {
-        execute_intent(position_internal::Intent::BuyToCover, volume, price);
+    /// @brief 买方向平空（只减不增；超出逻辑持仓钳制到全平）
+    void buy_to_cover(Volume strategy_volume, double price) {
+        execute_intent(position_internal::Intent::BuyToCover, strategy_volume, price);
     }
 
     // ==== Tier 1 持仓/进出场查询（语义与口径见组件文档 §6.1；只读）====
@@ -378,21 +383,21 @@ private:
      * 只做虚拟成交）与挂靠账户 fanout 归 #160/#161——v1 的台账路径本来就不发单，没有需要
      * 判 `live_` 的分支，提前留一个恒真的开关只会误导。
      *
-     * @param intent 意图种类
-     * @param volume 策略手数（负数会被拒）
-     * @param price  传入限价（虚拟成交价）
+     * @param intent          意图种类
+     * @param strategy_volume 策略手数（负数会被拒）
+     * @param price           传入限价（虚拟成交价）
      */
-    void execute_intent(position_internal::Intent intent, Volume volume, double price) {
+    void execute_intent(position_internal::Intent intent, Volume strategy_volume, double price) {
         if (failed_) [[unlikely]] {
             // 失败实例拒绝一切意图；但 `volume == 0` 且无可平仓是「无操作」，与 §6 同一条
             // 理由（平仓语句逐 bar 无条件调用）——不用为它刷一行拒单诊断。
-            if (!is_zero_volume_noop(intent, volume)) {
+            if (!is_zero_volume_noop(intent, strategy_volume)) {
                 report_intent_rejected(intent, "instance_failed");
             }
             return;
         }
         const position_internal::LedgerOutcome outcome =
-            position_internal::apply_intent(position_, intent, volume, price, bar_stamp());
+            position_internal::apply_intent(position_, intent, strategy_volume, price, bar_stamp());
         if (outcome.negative_volume) [[unlikely]] {
             report_intent_rejected(intent, "negative_volume");
             return;
@@ -401,13 +406,13 @@ private:
             report_intent_rejected(intent, "invalid_price");
             return;
         }
-        report_intent_outcome(intent, volume, outcome);
+        report_intent_outcome(intent, strategy_volume, outcome);
     }
 
     /// @brief `volume == 0` 且本方向没有可平仓（= 无操作，按 §6 不诊断）
     [[nodiscard]] bool is_zero_volume_noop(position_internal::Intent intent,
-                                           Volume volume) const noexcept {
-        if (volume != 0) {
+                                           Volume strategy_volume) const noexcept {
+        if (strategy_volume != 0) {
             return false;
         }
         const bool buying_side = intent == position_internal::Intent::Buy ||
@@ -506,7 +511,7 @@ private:
     void report_intent_rejected(position_internal::Intent intent, std::string_view reason);
     /// @brief 记账结果的分级诊断（WARN 无效方向与钳制、INFO 由 0 触发平仓；无变化不诊断）
     void report_intent_outcome(position_internal::Intent intent,
-                               Volume volume,
+                               Volume strategy_volume,
                                const position_internal::LedgerOutcome& outcome);
 
     /**
@@ -718,20 +723,20 @@ inline void InstrumentContext::report_intent_rejected(position_internal::Intent 
 
 inline void InstrumentContext::report_intent_outcome(
     position_internal::Intent intent,
-    Volume volume,
+    Volume strategy_volume,
     const position_internal::LedgerOutcome& outcome) {
     const std::string_view name = position_internal::intent_name(intent);
     if (outcome.direction_invalid) {
         std::cerr << std::format(
                          "intent ignored | instrument={} intent={} volume={} net_position={}",
-                         instrument_id_, name, volume, outcome.net_before)
+                         instrument_id_, name, strategy_volume, outcome.net_before)
                   << '\n';
         return;
     }
     if (outcome.clamped) {
         std::cerr << std::format(
                          "intent clamped | instrument={} intent={} volume={} net_position={}",
-                         instrument_id_, name, volume, outcome.net_before)
+                         instrument_id_, name, strategy_volume, outcome.net_before)
                   << '\n';
         return;
     }
