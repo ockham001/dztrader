@@ -371,6 +371,17 @@ status_run() {
         echo "wait-ci: run $rid success"
         return 0
     fi
+    if [ "$conclusion" = "cancelled" ]; then
+        # 与 wait_run 默认口径一致：cancelled 通常是被同分支新 run 取代，不是失败
+        # （wait_run 返回 2 并提示改用 --pr/--branch；--fail-on-cancel 才当失败）。
+        if [ "$FAIL_ON_CANCEL" -eq 1 ]; then
+            print_failed_jobs "$rid"
+            echo "wait-ci: run $rid conclusion=cancelled (--fail-on-cancel)"
+            return 1
+        fi
+        echo "wait-ci: run $rid was cancelled (superseded); use --pr/--branch for the newer run, or --fail-on-cancel"
+        return 2
+    fi
     echo "wait-ci: run $rid conclusion=$conclusion"
     print_failed_jobs "$rid"
     return 1
@@ -430,7 +441,13 @@ status_once() {
                 return 1
             fi
             # cancel = 同分支新 push 取代了旧 run（wait_pr 默认也继续等新 check），
-            # 因此算「仍在跑」而不是绿，更不是红；skipping（如 cache warm）忽略。
+            # 因此算「仍在跑」而不是绿；--fail-on-cancel 时与前台一致算红。
+            # skipping（如 cache warm）忽略。
+            if [ "$FAIL_ON_CANCEL" -eq 1 ] && printf '%s\n' "$buckets" | grep -qx "cancel"; then
+                echo "wait-ci: PR #$TARGET checks FAILED (cancelled, --fail-on-cancel)"
+                printf '%s\n' "$out" | awk -F'\t' '$2=="cancel" {print "FAILED: "$1" | "$3}'
+                return 1
+            fi
             if printf '%s\n' "$buckets" | grep -qx "pending" ||
                 printf '%s\n' "$buckets" | grep -qx "cancel"; then
                 echo "wait-ci: PR #$TARGET checks still running"
