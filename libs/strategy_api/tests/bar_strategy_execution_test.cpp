@@ -32,8 +32,11 @@ using dztrader::AttachedAccount;
 using dztrader::LargeVolume;
 using dztrader::PriceAdjustment;
 using dztrader::PricePlan;
+using dztrader::resolve_sync_price;
 using dztrader::ScaleRounding;
 using dztrader::ScalingConfig;
+using dztrader::SyncPricePlan;
+using dztrader::SyncPriceSource;
 using dztrader::TickSnapshot;
 using dztrader::Volume;
 using dztrader::scaling_internal::logical_position;
@@ -428,6 +431,120 @@ TEST(OrderVolumeTest, AccountTableIsASingleType) {
     ASSERT_EQ(table.size(), 2U);
     EXPECT_EQ(table[0].account_id, "CTP001");
     EXPECT_DOUBLE_EQ(table[1].scale, 0.5);
+}
+
+// ============================================================
+// 同步单价格（#162；组件文档 §6.2「已确认口径」）
+// ============================================================
+//
+// `resolve_sync_price` 是「命令引起的那部分差量该按什么价发单」的唯一实现。三条分支各自
+// 对应一种行情状态，而这三态在集成测试里很难凑齐（Seam A 只能喂一种 tick），所以在纯函数层
+// 逐格断言；Seam A 只覆盖对手价与市价两条（`AccountCommandsSubmitOnlyCommandInducedDeltas`、
+// `MarketKeywordSwitchesSyncOrderToMarketPriceType`）。
+
+/// 造一个带盘口与最新价的快照（`valid = true`）
+TickSnapshot make_quote(double bid, double ask, double last) {
+    return TickSnapshot{
+        .upper_limit = 0,
+        .lower_limit = 0,
+        .last_price = last,
+        .bid_price = bid,
+        .ask_price = ask,
+        .valid = true,
+    };
+}
+
+/**
+ * **对手价：买单吃卖一、卖单吃买一**（§6.2「价格默认对手价」）。
+ *
+ * 方向不取反——买单用 ask、卖单用 bid 是交易所的常规语义。这里两格都断言，因为「成交价是
+ * 盘口另一侧」正是操作员最常问的那个问题。
+ */
+TEST(SyncPriceTest, OpponentPriceTakesTheOtherSideOfTheBook) {
+    const TickSnapshot quote = make_quote(/*bid=*/4999.5, /*ask=*/5000.5, /*last=*/5000.0);
+
+    const SyncPricePlan buy = resolve_sync_price(DZ_DIRECTION_LONG, /*market=*/false, quote);
+    ASSERT_TRUE(buy.valid);
+    EXPECT_EQ(buy.source, SyncPriceSource::Opponent);
+    EXPECT_EQ(buy.price_type, DZ_PRICE_LIMIT);
+    EXPECT_DOUBLE_EQ(buy.price, 5000.5) << "a buy sync order takes ask1";
+
+    const SyncPricePlan sell = resolve_sync_price(DZ_DIRECTION_SHORT, /*market=*/false, quote);
+    ASSERT_TRUE(sell.valid);
+    EXPECT_EQ(sell.source, SyncPriceSource::Opponent);
+    EXPECT_DOUBLE_EQ(sell.price, 4999.5) << "a sell sync order takes bid1";
+}
+
+/**
+ * **对手价缺档 → 回退最新价**（§6.2「无可用行情或价格非有限/≤0 时回退最新价」）。
+ *
+ * 盘口缺档是真实状态：夜盘开盘前、集合竞价未撮合、或行情源未推盘口时 `bid_price[0]` /
+ * `ask_price[0]` 为 0。此时用最新价而不是跳过——命令已经改了逻辑持仓，不发单会让实际仓位
+ * 与逻辑口径分开。
+ */
+TEST(SyncPriceTest, MissingBookFallsBackToLastPrice) {
+    // 只有最新价，盘口两档都是 0
+    const TickSnapshot quote = make_quote(/*bid=*/0.0, /*ask=*/0.0, /*last=*/5000.0);
+
+    const SyncPricePlan buy = resolve_sync_price(DZ_DIRECTION_LONG, false, quote);
+    ASSERT_TRUE(buy.valid);
+    EXPECT_EQ(buy.source, SyncPriceSource::Last);
+    EXPECT_DOUBLE_EQ(buy.price, 5000.0);
+
+    const SyncPricePlan sell = resolve_sync_price(DZ_DIRECTION_SHORT, false, quote);
+    ASSERT_TRUE(sell.valid);
+    EXPECT_EQ(sell.source, SyncPriceSource::Last);
+    EXPECT_DOUBLE_EQ(sell.price, 5000.0);
+
+    // 一侧缺档也只影响那一侧：买一侧仍有 ask 时买单取对手价，卖单回退最新价
+    const TickSnapshot half = make_quote(/*bid=*/0.0, /*ask=*/5001.0, /*last=*/5000.0);
+    EXPECT_EQ(resolve_sync_price(DZ_DIRECTION_LONG, false, half).source, SyncPriceSource::Opponent);
+    const SyncPricePlan sell_half = resolve_sync_price(DZ_DIRECTION_SHORT, false, half);
+    EXPECT_EQ(sell_half.source, SyncPriceSource::Last);
+    EXPECT_DOUBLE_EQ(sell_half.price, 5000.0);
+}
+
+/**
+ * **既无盘口也无最新价 → 跳过该品种**（§6.2「仍不可用则跳过该品种并报错」）。
+ *
+ * 这是「没收到过任何可用行情」的状态。返回 `valid = false` 让调用方跳过而不是发一张价格 0
+ * 的单（那会被 td 拒绝，且在日志里看起来像参数错误）。
+ */
+TEST(SyncPriceTest, NoMarketDataYieldsUnavailable) {
+    // 完全没有行情：快照默认构造（valid = false）
+    const SyncPricePlan plan =
+        resolve_sync_price(DZ_DIRECTION_LONG, /*market=*/false, TickSnapshot{});
+    EXPECT_FALSE(plan.valid);
+    EXPECT_EQ(plan.source, SyncPriceSource::Unavailable);
+
+    // valid 但价格全是 0（盘口与最新价都缺）
+    const SyncPricePlan zeroed = resolve_sync_price(DZ_DIRECTION_LONG, false, make_quote(0, 0, 0));
+    EXPECT_FALSE(zeroed.valid);
+    EXPECT_EQ(zeroed.source, SyncPriceSource::Unavailable);
+
+    // 非有限价格同样视为不可用（NaN 传进 dz_place_order 是另一类事故）
+    const TickSnapshot nan_quote = make_quote(std::numeric_limits<double>::quiet_NaN(),
+                                              std::numeric_limits<double>::quiet_NaN(),
+                                              std::numeric_limits<double>::quiet_NaN());
+    EXPECT_FALSE(resolve_sync_price(DZ_DIRECTION_LONG, false, nan_quote).valid);
+    EXPECT_FALSE(resolve_sync_price(DZ_DIRECTION_SHORT, false, nan_quote).valid);
+}
+
+/**
+ * **`market` 绕过行情直接给市价单**（§6.2「命令带 `market` 时用市价单」）。
+ *
+ * 市价单的价格与行情无关：即使快照完全不可用也应当 `valid = true`（价格字段 0 由 td 忽略）。
+ * 这条与上一条形成对照——「没有行情」不该阻止市价单。
+ */
+TEST(SyncPriceTest, MarketPriceIgnoresMarketDataEntirely) {
+    for (const TickSnapshot& quote :
+         {TickSnapshot{}, make_quote(0, 0, 0), make_quote(4999.5, 5000.5, 5000.0)}) {
+        const SyncPricePlan plan = resolve_sync_price(DZ_DIRECTION_LONG, /*market=*/true, quote);
+        EXPECT_TRUE(plan.valid) << "market orders do not depend on market data";
+        EXPECT_EQ(plan.price_type, DZ_PRICE_MARKET);
+        EXPECT_EQ(plan.source, SyncPriceSource::Market);
+        EXPECT_DOUBLE_EQ(plan.price, 0.0);
+    }
 }
 
 }  // namespace

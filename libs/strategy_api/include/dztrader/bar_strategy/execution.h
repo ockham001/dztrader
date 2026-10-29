@@ -46,13 +46,20 @@ namespace dztrader {
 struct TickSnapshot {
     double upper_limit = 0;  ///< 涨停价（0/非有限 = 不可用，不夹取）
     double lower_limit = 0;  ///< 跌停价（同上）
-    bool valid = false;      ///< 是否有过可用的 tick（false = 价格夹取跳过）
-    // 只放**当前有消费者**的字段。同步单的对手价（bid1/ask1）随命令层（#162）加进来——
-    // 不提前留字段，避免把「以后可能要」写成接口承诺（#157/#159 的同类判断）。
+    double last_price = 0;   ///< 最新价（0/非有限 = 不可用；同步单的兜底价 #162）
+    double bid_price = 0;    ///< 买一价（0/非有限 = 不可用；同步单卖出侧的对手价 #162）
+    double ask_price = 0;    ///< 卖一价（0/非有限 = 不可用；同步单买入侧的对手价 #162）
+    bool valid = false;      ///< 是否有过可用的 tick（false = 价格夹取与对手价都跳过）
+    // 只放**当前有消费者**的字段：涨跌停供 `resolve_order_price`；最新价与买一/卖一供
+    // 生命周期命令的同步单（`resolve_sync_price`，#162）。不提前留「以后可能要」的字段。
 };
 
 /**
  * @brief 从一个行情 tick 构造快照（A 在事件入口调用，不校验 tick 是否被 builder 接受）
+ *
+ * 对手价取盘口**第一档**（`bid_price[0]` / `ask_price[0]`）。盘口缺档（商品期货夜盘前、
+ * 集合竞价未撮合、或行情源未推盘口）时该档为 0，由 {@link resolve_sync_price} 回退最新价。
+ *
  * @param tick 触发本次事件的 tick
  * @return 快照（`valid = true`）
  */
@@ -60,6 +67,9 @@ struct TickSnapshot {
     return TickSnapshot{
         .upper_limit = tick.upper_limit_price,
         .lower_limit = tick.lower_limit_price,
+        .last_price = tick.last_price,
+        .bid_price = tick.bid_price[0],
+        .ask_price = tick.ask_price[0],
         .valid = true,
     };
 }
@@ -248,6 +258,106 @@ namespace execution_internal {
 /// @brief 方向名（诊断用：`long` / `short`；本框架只会下这两个方向）
 [[nodiscard]] inline const char* direction_name(DzDirection direction) noexcept {
     return direction == DZ_DIRECTION_LONG ? "long" : "short";
+}
+
+// ============================================================
+// 生命周期命令的同步单价格（#162；组件文档 §6.2「已确认口径」）
+// ============================================================
+
+/**
+ * @brief 同步单（`account add/set/del`、`instrument del`）的价格来源
+ *
+ * 与 §6 的正常策略单不同，同步单**没有策略传入的限价**——它要补的是「命令引起的逻辑持仓
+ * 变化量」，价格只能由框架从行情里取。三种结局：
+ *
+ *   - `Opponent`：对手价（买用卖一、卖用买一）。默认口径，最容易成交且不主动穿价；
+ *   - `Last`：对手价缺档/非法时回退最新价；
+ *   - `Market`：命令带 `market` 关键字，下市价单（价格类型 `DZ_PRICE_MARKET`，价格字段 0）；
+ *   - `Unavailable`：既无盘口也无最新价（该品种没有近期行情）→ **跳过该品种并报错**，
+ *     逻辑持仓仍按命令更新（§6.2）。
+ */
+enum class SyncPriceSource : std::uint8_t {
+    Opponent,     ///< 对手价（买 → 卖一，卖 → 买一）
+    Last,         ///< 回退最新价
+    Market,       ///< 市价单（`market` 关键字）
+    Unavailable,  ///< 无可用行情（跳过该品种）
+};
+
+/// @brief 同步单价格来源的诊断名（`opponent` / `last` / `market` / `unavailable`）
+[[nodiscard]] inline const char* sync_price_source_name(SyncPriceSource source) noexcept {
+    switch (source) {
+        case SyncPriceSource::Opponent:
+            return "opponent";
+        case SyncPriceSource::Last:
+            return "last";
+        case SyncPriceSource::Market:
+            return "market";
+        case SyncPriceSource::Unavailable:
+            return "unavailable";
+    }
+    return "unavailable";
+}
+
+/**
+ * @brief 一次同步单价格处理的结果（`valid == false` 时该品种跳过）
+ *
+ * `price` 是**未对齐的原始价**：限价路径仍要过 {@link resolve_order_price} 的 tick 对齐与
+ * 涨跌停夹取（组件文档 §6.2 明文要求）。市价路径不读 `price`，由调用方直接按
+ * `DZ_PRICE_MARKET` 发单。
+ */
+struct SyncPricePlan {
+    DzPriceType price_type = DZ_PRICE_LIMIT;                ///< 价格类型（限价 / 市价）
+    double price = 0;                                       ///< 原始价（市价时为 0）
+    SyncPriceSource source = SyncPriceSource::Unavailable;  ///< 价格来源
+    bool valid = false;                                     ///< false = 无可用行情，跳过该品种
+};
+
+/**
+ * @brief 同步单的委托价格（组件文档 §6.2：`sync` 默认对手价、`market` 走市价）
+ *
+ * 顺序固定，每一步的存在理由：
+ *
+ *   1. **`market`**：命令显式要求市价，价格与行情无关，`valid = true` 直接返回
+ *      `DZ_PRICE_MARKET`（市价单的价格字段由 SDK/td 忽略，填 0）；
+ *   2. **对手价**：买方向取卖一、卖方向取买一。对手价是「能立刻成交且不主动穿价」的口径；
+ *      注意方向**不是**取反——买单吃卖一是交易所的常规语义；
+ *   3. **最新价兜底**：盘口缺档（夜盘前、集合竞价、行情源未推盘口）时用最新价。这不是
+ *      最优价，但比「跳过」好：命令已经改了逻辑持仓，不发单会让实际仓位与逻辑口径分开；
+ *   4. **跳过**：连最新价都没有（该品种从未收到过可用 tick）→ `valid = false`，调用方跳过
+ *      该品种并报错，逻辑持仓照常更新。
+ *
+ * 价格只做**可用性**判定（有限且 > 0），不做对齐与夹取——那两件事在
+ * {@link resolve_order_price} 里只有一处实现，这里是它的输入准备。
+ *
+ * @param direction 委托方向（`DZ_DIRECTION_LONG` 买 / `DZ_DIRECTION_SHORT` 卖）
+ * @param market    true = 用市价单（命令带 `market` 关键字）
+ * @param tick      最近一笔已接受 tick 的快照
+ * @return 价格类型、原始价、来源与可用性
+ */
+[[nodiscard]] inline SyncPricePlan resolve_sync_price(DzDirection direction,
+                                                      bool market,
+                                                      const TickSnapshot& tick) noexcept {
+    SyncPricePlan plan;
+    if (market) {
+        plan.price_type = DZ_PRICE_MARKET;
+        plan.source = SyncPriceSource::Market;
+        plan.valid = true;
+        return plan;
+    }
+    const bool buying = direction == DZ_DIRECTION_LONG;
+    const double opponent = buying ? tick.ask_price : tick.bid_price;
+    if (std::isfinite(opponent) && opponent > 0.0) {
+        plan.price = opponent;
+        plan.source = SyncPriceSource::Opponent;
+        plan.valid = true;
+        return plan;
+    }
+    if (std::isfinite(tick.last_price) && tick.last_price > 0.0) {
+        plan.price = tick.last_price;
+        plan.source = SyncPriceSource::Last;
+        plan.valid = true;
+    }
+    return plan;  // 无可用行情：valid = false，source = Unavailable
 }
 
 }  // namespace dztrader
