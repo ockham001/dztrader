@@ -125,6 +125,8 @@ run_and_report() {
         # verdict 行固定打在**末尾**：`./scripts/gate.sh ... 2>&1 | tail -2` 也必须看得见。
         echo "gate: OK $cmd (log: .cache/gate/$(basename "$LOG"))"
     else
+        # 有意重复两次 FAILED：第一处紧随命令结束，供日志/输出前部检索；最后一处在摘录之后，
+        # 供 `2>&1 | tail -N` 截尾时仍能看到真实结论（管道会吞掉退出码，见 #75/#81）。
         echo "gate: FAILED $cmd rc=$rc (log: .cache/gate/$(basename "$LOG"))" >&2
         grep -nE '\[  FAILED  \]|error:|FAILED:|fatal error|ninja: build stopped|tests failed|Test Failed|ERROR:' "$LOG" |
             head -n 30 >&2 || true
