@@ -4,7 +4,7 @@
  * 目的：把内部 C++（dztrader::db / shm / Exception …）与第三方（OpenSSL / zlib /
  * SQLite / Boost / nlohmann）符号隔离在库内，避免策略作者意外依赖随时会消失的符号。
  *
- * 实测效果：导出从 13038 收敛到 50（全部 dz_*）。
+ * 实测效果：导出从 13038 收敛到 49（全部 dz_*；#175 删除 dz_version_hex 后为 49）。
  *
  * 新增公开 API 时：函数名必须以 dz_ 开头（https://…/AGENTS.md 命名约定），
  * 因此本文件通常无需修改。若将来需要导出非 dz_ 前缀的符号，在此显式添加。
