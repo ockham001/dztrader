@@ -200,6 +200,68 @@ static_assert(std::is_trivially_copyable_v<TradingSessionTable>,
               "TradingSessionTable must be trivially copyable");
 
 /**
+ * @brief 一笔 tick 的目标 bar 桶（bar 边界分桶判定的结论）
+ *
+ * 由 {@link resolve_tick_bucket} 唯一产出；`in_session == false` 表示该 tick 不属于任何
+ * 交易小节/Open 竞价窗口（应丢弃并计入 `out_of_session`）。
+ */
+struct TickBucket {
+    bool in_session;    ///< true = 命中交易小节或 Open 竞价窗口
+    int32_t begin_sec;  ///< 目标 bar 桶起点（交易日内秒；`in_session == false` 时无意义）
+    bool open_auction;  ///< true = 命中 Open 竞价窗口（归后一小节首桶、事件相位为 true）
+};
+
+/**
+ * @brief 交易日内秒 → 目标 bar 桶（tick→bar 分桶判定的**唯一实现**）
+ *
+ * `IntradayBarBuilder` 的边界判定与 BarStrategy 框架的「缓冲 tick 续接」过滤都用本函数。
+ * 两处若各写一份「tick 属于哪根 bar」，过滤会按一套规则丢、builder 按另一套收，续接静默
+ * 漂移。判定口径与 [ADR 0031](../adr/0031-tick-bar-synthesis-component.md) 一致：
+ *
+ *   1. **Open 竞价窗口命中优先于小节判定**（[ADR
+ * 0032](../adr/0032-auction-window-strategy-events.md)）： tick
+ * 归后一小节首桶（`floor(session.begin_sec / period_sec) * period_sec`）； Close
+ * 竞价窗口不特殊处理，落到小节判定；
+ *   2. **小节末端 tick 归前一根**：`tsec == session.end_sec` 时分桶用 `end_sec - 1`；
+ *   3. 不在任何小节/Open 窗口内 → `in_session == false`。
+ *
+ * @param tsec       交易日内秒（0..86399，由 `TradingTime::from_clock` 得到）
+ * @param table      交易小节与竞价窗口表（须 `valid()`）
+ * @param period_sec bar 周期秒数（正数；桶起点 = 18:00 锚点整数网格）
+ * @return 目标桶（`in_session == false` 时表示应丢弃）
+ */
+[[nodiscard]] constexpr TickBucket resolve_tick_bucket(int32_t tsec,
+                                                       const TradingSessionTable& table,
+                                                       int32_t period_sec) noexcept {
+    // 1. Open 竞价窗口命中优先于小节判定；窗口按时间升序，越过即停。
+    for (int32_t i = 0; i < table.auction_count; ++i) {
+        const AuctionWindow& window = table.auctions[i];
+        if (tsec < window.begin_sec) {
+            break;
+        }
+        if (tsec <= window.end_sec) {
+            if (window.kind != AuctionKind::Open) {
+                break;  // Close 窗口按普通小节内 tick 处理（ADR 0031 决策 5）
+            }
+            const TradingSession& session = table.sessions[window.session_index];
+            return TickBucket{true, (session.begin_sec / period_sec) * period_sec, true};
+        }
+    }
+    // 2. 交易小节：小节末端 tick 归前一根（端点含）。
+    for (int32_t i = 0; i < table.session_count; ++i) {
+        const TradingSession& session = table.sessions[i];
+        if (tsec < session.begin_sec) {
+            break;  // 小节按时间升序，后续小节开始更晚
+        }
+        if (tsec <= session.end_sec) {
+            const int32_t bucket_tsec = (tsec == session.end_sec) ? tsec - 1 : tsec;
+            return TickBucket{true, (bucket_tsec / period_sec) * period_sec, false};
+        }
+    }
+    return TickBucket{false, 0, false};
+}
+
+/**
  * @brief tick→bar 合成的丢弃计数（构造后从 0 累计）
  */
 struct BarBuilderStats {

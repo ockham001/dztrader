@@ -24,6 +24,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 namespace dztrader {
@@ -31,13 +32,13 @@ namespace dztrader {
 /**
  * @brief 合约属性（组件文档 §3；`dz_db_query_instruments` 的解码子集）
  *
- * 两项已落地：`volume_multiple`（合约乘数，Tier 1 盈亏换算，#159）与 `price_tick`（最小变动
- * 价位，下单价格对齐，#160）。两者都来自合约元数据源，而那是 #161 的内部依赖缝——在它落地
- * 前恒为 0，因此盈亏恒为 0（启动诊断声明该已知限制）、价格对齐被跳过（见
- * `execution.h` 的 `resolve_order_price`）。仅作诊断的 `exchange_id` 随元数据来源（#161）
- * 加进来——不提前留字段，避免把「以后可能要」写成接口承诺（#157 的同类判断）。
+ * 三项都由合约元数据来源（#161 的内部依赖缝，默认实现见 `bar_strategy/dependencies.h`）填充：
+ * `volume_multiple`（合约乘数，Tier 1 盈亏换算，#159）、`price_tick`（最小变动价位，下单价格
+ * 对齐，#160）、`exchange_id`（交易所，仅诊断/展示）。元数据源不可用时三项保持 0/空——此时
+ * 盈亏恒为 0、价格不做 tick 对齐，A 在启动诊断里显式声明该已知限制（组件文档 §6）。
  */
 struct InstrumentSpec {
+    std::string exchange_id;     ///< 交易所（仅诊断/展示；AUTO 下单不需要）
     double volume_multiple = 0;  ///< 合约乘数（> 0；浮动盈亏换算成钱）
     double price_tick = 0;       ///< 最小变动价位（> 0；下单价格对齐；0 = 元数据不可用）
 };

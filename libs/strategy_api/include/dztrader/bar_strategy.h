@@ -59,22 +59,45 @@ concept BarStrategy = std::default_initializable<T> &&
                        manager_internal::HasOnBarOpen<T> || manager_internal::HasOnBarUpdate<T> ||
                        manager_internal::HasOnBarClose<T>);
 
-/// @brief 内部接缝（不进公开承诺面）：#161 的交易小节表数据源注入点
+/// @brief 内部接缝（不进公开承诺面）：三个外部数据源的注入点（历史 bar / 小节表 / 元数据）
 namespace bar_strategy_internal {
 
 /**
- * @brief 用注入的内部依赖跑策略（内部接缝；生产入口恒用内置退化表 + 18:00）
+ * @brief 用注入的内部依赖跑策略（内部接缝；生产入口恒用默认归档实现 + 内置退化表 + 18:00）
  *
- * 公开入口 `run_bar_strategy()` 不带这两项：按 #161 的约定，外部依赖（历史 bar 源 / 交易
+ * 公开入口 `run_bar_strategy()` 不带依赖参数：按 #161 的约定，外部依赖（历史 bar 源 / 交易
  * 小节表 / 合约元数据）都是**内部接缝**，数据源落地时只改框架内部，不改公开头面。
  *
- * 两个参数都是「让测试能确定性地构造场景」的注入点，合在一个入口里而不是各开一个函数——
- * 它们服务同一类需求（替换框架内的固定取值），分开会让接缝面按参数个数膨胀：
+ * 参数 `dependencies` 聚合三个数据源与回卷时刻（定义见 `bar_strategy/dependencies.h`）：
  *
- * - **`session_table`**（#161 接缝）：交易小节与竞价窗口表，数据源落地后由配置注入；
+ * - **`session_table`**（接缝）：交易小节与竞价窗口表，数据源落地后由配置注入；
+ * - **`history` / `metadata`**（接缝）：历史 bar 与合约元数据来源，空 = 默认归档实现
+ *   （`dz_db_query_bar` / `dz_db_query_instruments`，归档域未实现时前者的默认实现恒返回
+ *   Unavailable）；测试注入 fake 后不需要真实归档库或 platform.db 就能验证回放、冷启动降级
+ *   与元数据失败路径（Seam B）；
  * - **`rollback_clock_ms`**（测试接缝）：18:00 回卷定时器按 wall clock 触发，真实用例无法
  *   等一天，因此把回卷时刻换成「当前时刻之后若干秒」，让 Seam A 集成测试能在秒级内确定性地
  *   走通定时器路径，并与推进前兜底路径对比 B 观察到的值。
+ *
+ * 合在一个入口里而不是各开一个函数：它们服务同一类需求（替换框架内的外部数据/固定取值），
+ * 分开会让接缝面按参数个数膨胀。
+ *
+ * @tparam Strategy 用户策略类型
+ * @param dependencies 内部依赖聚合（见 `bar_strategy/dependencies.h`）
+ * @return 进程退出码
+ */
+template <BarStrategy Strategy>
+std::int32_t run_bar_strategy_with(
+    const bar_strategy_internal::FrameworkDependencies& dependencies) {
+    BarStrategyManager<Strategy> manager(dependencies);
+    return run_strategy(manager);
+}
+
+/**
+ * @brief 用注入的交易小节表与回卷时刻跑策略（内部接缝的简化形态）
+ *
+ * 历史 bar 与合约元数据走默认归档实现；只需要替换小节表的测试（#163 的竞价事件序）用本
+ * 重载，需要替换历史/元数据来源的测试（#161 的 Seam B）用完整形态。
  *
  * @tparam Strategy 用户策略类型
  * @param session_table     交易小节与竞价窗口表
@@ -84,8 +107,10 @@ namespace bar_strategy_internal {
 template <BarStrategy Strategy>
 std::int32_t run_bar_strategy_with(const bar::TradingSessionTable& session_table,
                                    std::int32_t rollback_clock_ms = DEFAULT_ROLLBACK_CLOCK_MS) {
-    BarStrategyManager<Strategy> manager(session_table, rollback_clock_ms);
-    return run_strategy(manager);
+    bar_strategy_internal::FrameworkDependencies dependencies;
+    dependencies.session_table = session_table;
+    dependencies.rollback_clock_ms = rollback_clock_ms;
+    return run_bar_strategy_with<Strategy>(dependencies);
 }
 
 }  // namespace bar_strategy_internal

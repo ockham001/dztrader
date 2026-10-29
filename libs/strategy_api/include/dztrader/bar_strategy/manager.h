@@ -30,8 +30,13 @@
 #include <dztrader/bar_strategy/config.h>
 #include <dztrader/bar_strategy/config_file.h>
 #include <dztrader/bar_strategy/context.h>
+#include <dztrader/bar_strategy/dependencies.h>
+#include <dztrader/error.h>
+#include <dztrader/strategy_engine.h>
 #include <dztrader/struct.h>
 
+#include <algorithm>
+#include <array>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -39,6 +44,7 @@
 #include <filesystem>
 #include <format>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -103,55 +109,25 @@ concept HasOnBarClose =
     return std::string_view(tick.instrument_id, length);
 }
 
+/**
+ * @brief 组装简化形态的依赖聚合（默认归档实现 + 指定小节表/回卷时刻）
+ *
+ * 放在 `manager_internal` 而不是构造函数体里：委托构造的成员初始化列表不能安全引用同一类内
+ * 后置声明的静态辅助函数，而这三行的唯一职责就是「把两个值塞进默认聚合」，放这里最直白。
+ *
+ * @param session_table     交易小节与竞价窗口表
+ * @param rollback_clock_ms 每日回卷时刻（距午夜毫秒）
+ * @return 依赖聚合（`history` / `metadata` 为空 → 默认归档实现）
+ */
+[[nodiscard]] inline bar_strategy_internal::FrameworkDependencies make_dependencies(
+    const bar::TradingSessionTable& session_table, std::int32_t rollback_clock_ms) {
+    bar_strategy_internal::FrameworkDependencies dependencies;
+    dependencies.session_table = session_table;
+    dependencies.rollback_clock_ms = rollback_clock_ms;
+    return dependencies;
+}
+
 }  // namespace manager_internal
-
-/**
- * @brief 每日回卷的默认墙钟时刻（18:00，距午夜毫秒；组件文档 §4.4）
- *
- * 18:00 位于日盘收盘之后、夜盘开盘之前，是天然静默窗。生产入口恒用本值；测试经
- * `bar_strategy_internal::run_bar_strategy_with` 注入一个近未来的时刻以便确定性触发
- * （与 #161 的交易小节表注入同风格：都是内部接缝，不进公开承诺面）。
- *
- * 放在 `dztrader` 命名空间而不是 `manager_internal`：后者只装 B 回调的编译期探测，
- * 塞一个回卷时刻常量会让这个命名空间的含义变糊。
- */
-inline constexpr std::int32_t DEFAULT_ROLLBACK_CLOCK_MS = 18 * 60 * 60 * 1000;
-
-/**
- * @brief v1 内置退化交易小节表（组件文档 §5.5）
- *
- * platform.db 的交易小节/竞价窗口数据源尚未落地（ADR 0018 决策 2/3），v1 用内置退化表：
- * 单小节 `[0, 86399]`（覆盖全部交易日内秒）、无竞价窗口。**这不是新数据源、也不是配置
- * 项**（ADR 0032 决策 8 不引入占位配置），只是数据源落地前框架内置的临时表，代码里只有
- * 一处构造，落地后删除。
- *
- * 三条已知限制（策略与迁移必须知晓）：竞价 tick 按普通 tick 处理（`ctx.is_auction()` 恒
- * false）、小节末端整点 tick 会开新 bar、无交易时段过滤。
- *
- * @return 合法的退化表（`TradingSessionTable::valid()` 为 true）
- */
-[[nodiscard]] inline bar::TradingSessionTable degraded_trading_session_table() noexcept {
-    bar::TradingSessionTable table{};
-    table.session_count = 1;
-    table.sessions[0] = bar::TradingSession{.begin_sec = 0, .end_sec = 86399};
-    table.auction_count = 0;
-    return table;
-}
-
-/**
- * @brief 判定一张小节表是否为内置退化表（组件文档 §5.5）
- *
- * 退化表 = 恰好一个小节 `[0, 86399]` 且无竞价窗口。启动诊断据此声明口径，而不是靠调用方
- * 额外传一个布尔标志——标志与实际表可能不一致，那样打印出的诊断就是假的。
- *
- * @param table 待判定的表
- * @return true = 内置退化口径
- */
-[[nodiscard]] inline bool is_degraded_session_table(
-    const bar::TradingSessionTable& table) noexcept {
-    return table.session_count == 1 && table.auction_count == 0 &&
-           table.sessions[0].begin_sec == 0 && table.sessions[0].end_sec == 86399;
-}
 
 /**
  * @brief A 内部：builder 事件 → 窗口推进 + B 回调的适配器（组件文档 §5.4）
@@ -194,10 +170,22 @@ struct BarEventSink {
 template <class Strategy>
 struct InstrumentNode {
     /**
+     * @brief 该品种的历史回放锚点（组件文档 §5.3：锚点 = 该实例自己加载的最早一根历史）
+     *
+     * 只服务「缓冲 tick 续接」过滤，**不做跨实例拼接**：每个品种的锚点独立，`valid == false`
+     * 表示该品种没有可用历史（冷启动或归档不可用），续接规则不生效。
+     */
+    struct ReplayAnchor {
+        bool valid = false;     ///< false = 该实例没有历史锚点
+        bar::Bar last_bar{};    ///< 回放的最后一根归档 bar（续接的比较基准 B）
+        bool is_final = false;  ///< 最后一根是否已收（决定同桶 tick 丢弃还是续接）
+    };
+
+    /**
      * @brief 就地装配一个品种实例
      * @param manager    A（sink 反向调用）
      * @param init       ctx 构造参数
-     * @param table      交易小节表（#157 = 内置退化表；#161 换成 platform.db 数据源）
+     * @param table      交易小节表（v1 = 内置退化表；数据源落地后由依赖缝注入）
      * @param period_sec bar 周期秒数（来自配置）
      */
     InstrumentNode(BarStrategyManager<Strategy>& manager,
@@ -213,6 +201,11 @@ struct InstrumentNode {
     BarEventSink<Strategy> sink;                              ///< builder 事件适配器
     bar::IntradayBarBuilder<BarEventSink<Strategy>> builder;  ///< tick→bar 唯一实现（ADR 0031）
     Strategy instance;                                        ///< B：默认构造，节点内不再搬移
+    // ---- A 侧的回放簿记（B 不可见；不参与地址稳定性约束）----
+    ReplayAnchor replay_anchor;      ///< 历史回放锚点（续接过滤用）
+    std::int32_t silent_bars = 0;    ///< 该实例静默填窗的历史根数（诊断口径）
+    std::int32_t replayed_bars = 0;  ///< 该实例进入回调期的历史根数（诊断口径）
+    bool history_degraded = false;   ///< 该实例的历史不可用（冷启动降级）
 };
 
 /**
@@ -231,17 +224,29 @@ template <class Strategy>
 class BarStrategyManager {
 public:
     /**
-     * @brief 构造 A
-     * @param session_table 交易小节表（v1 = `degraded_trading_session_table()`）
+     * @brief 构造 A（完整依赖注入形态）
+     * @param dependencies 三个内部依赖缝 + 回卷时刻（组件文档 §5.3/§5.5/§8）
      *
      * 「是否退化」由表自身判定（`is_degraded_session_table`），不另设标志位：两个独立状态
      * 会互相矛盾（注入真实表却仍打印 degraded 诊断），而这条诊断正是 §5.5 要保证的口径。
      */
+    explicit BarStrategyManager(const bar_strategy_internal::FrameworkDependencies& dependencies)
+        : dependencies_(dependencies),
+          session_table_(dependencies.session_table),
+          degraded_(is_degraded_session_table(dependencies.session_table)),
+          rollback_clock_ms_(dependencies.rollback_clock_ms) {}
+
+    /**
+     * @brief 构造 A（只需要换小节表/回卷时刻的简化形态）
+     *
+     * 历史 bar 与合约元数据走默认归档实现（{@link bar_strategy_internal::query_archive_history}
+     * / {@link bar_strategy_internal::load_archive_metadata}）。公开入口 `run_bar_strategy()`
+     * 与既有 Seam A 测试用这一形态；注入 fake 数据源的 Seam B 测试用完整形态。
+     */
     explicit BarStrategyManager(const bar::TradingSessionTable& session_table,
                                 std::int32_t rollback_clock_ms = DEFAULT_ROLLBACK_CLOCK_MS)
-        : session_table_(session_table),
-          degraded_(is_degraded_session_table(session_table)),
-          rollback_clock_ms_(rollback_clock_ms) {}
+        : BarStrategyManager(
+              manager_internal::make_dependencies(session_table, rollback_clock_ms)) {}
 
     BarStrategyManager(const BarStrategyManager&) = delete;
     BarStrategyManager& operator=(const BarStrategyManager&) = delete;
@@ -251,7 +256,21 @@ public:
     // ==== 引擎回调（`run_strategy` 鸭子类型接入）====
 
     /**
-     * @brief 启动：读配置 → 打印有效配置 → 订阅 → 装配实例并调 `on_init` → 排 18:00 回卷
+     * @brief 启动：读配置 → 订阅 → 查元数据 → 装配实例 → 回放 → 续接 → 进入实盘
+     *
+     * 顺序即组件文档 §5.3/§8 的启动序列，每一步的存在理由：
+     *
+     *   1. `load_startup_config()`：配置缺失/非法 → 打印诊断 + 非 0 退出，不静默继续；
+     *   2. `subscribe_configured_instruments()`：**订阅先于历史查询**，保证切换窗口的 tick
+     *      不丢（它们会在第 6 步被排空并按续接规则处理）；
+     *   3. `create_instances()`：先查该品种的合约元数据（缺失 = 该实例创建失败），再就地装配
+     *      节点并调 `on_init`；
+     *   4. `schedule_daily_rollback()`：注册 18:00 回卷（只做布局，不影响 bar 边界）；
+     *   5. `warmup_history_replay()`：逐品种查历史 → 静默填窗 → 合成 tick 回放（**阻塞在启动
+     *      阶段**，期间不派发其它事件；回放期 B 照常运行、下单只做虚拟成交）；
+     *   6. `drain_buffered_ticks()`：回放完成后排空缓冲 tick，按「最后一根已收/未完成」规则
+     *      丢弃或续接；
+     *   7. `enter_live()`：全部品种处理完 → 一次性上报各账户逻辑持仓 → 放开执行门禁。
      *
      * 失败（配置缺失/非法、订阅失败）时打印诊断、置非 0 退出码并返回，不进入事件循环；
      * 单个品种的 `on_init` 抛异常只丢弃该品种（组件文档 §4.6）。
@@ -272,7 +291,10 @@ public:
             return;
         }
         create_instances();
+        print_metadata_diagnostics();
         schedule_daily_rollback();
+        warmup_history_replay();
+        drain_buffered_ticks();
         enter_live();
     }
 
@@ -327,13 +349,14 @@ public:
         relocate_live_instruments();
     }
 
-    /// @brief 停止：注销回卷定时器 → 逐品种调 `on_destroy` → 销毁节点
+    /// @brief 停止：注销回卷定时器 → 逐品种调 `on_destroy` → 销毁节点 → 关闭归档库句柄
     void on_stop() {
         cancel_daily_rollback();
         for (auto& [instrument_id, node] : instruments_) {
             dispatch_on_destroy(node);
         }
         instruments_.clear();
+        release_archive_db();
     }
 
     /// @brief 自主退出探测：启动失败时请求引擎立即优雅退出（组件文档 §7）
@@ -515,19 +538,17 @@ private:
     /**
      * @brief 进入实盘阶段：对每个存活实例开执行门禁并批量上报逻辑持仓（组件文档 §3/§5.3）
      *
-     * `on_start` 的最后一步，顺序是**先上报、再放开**：反过来会让首个 tick 的意图先发一笔单、
-     * 再补报一个与它不一致的旧持仓。
+     * `on_start` 的最后一步（预热回放与缓冲 tick 续接之后），顺序是**先上报、再放开**：
+     * 反过来会让首个 tick 的意图先发一笔单、再补报一个与它不一致的旧持仓。
      *
      * 分类讨论当下的状态：
      *
-     *   - **冷启动（v1 现状，#161 的历史回放未落地）**：回放期没有历史可放，进入 live 时逻辑
-     *     台账里只有 `on_init` 阶段建立的持仓（ADR 0030 决策 1：`on_init` 期的意图同样即时
-     *     记账）。因此这里必须**照常批量上报**——它可能是 0（无 `on_init` 意图），也可能不是；
-     *     硬编码「启动时逻辑持仓为 0」会让 `on_init` 建仓的策略在 UI 上显示空仓；
-     *   - **有归档历史时**（#161）：回放期 B 照常下单但只做虚拟成交，结束后同样在这里
-     *     `set_live(true)` + `publish_all_positions()` 一次性上报各账户逻辑持仓。
-     *
-     * #161 只需把 `on_start` 里的调用点挪到回放之后，本函数内容不变。
+     *   - **有归档历史（#161 已落地）**：回放期 B 照常下单但只做虚拟成交（`live_ == false`），
+     *     结束后在这里 `set_live(true)` + `publish_all_positions()` 一次性上报各账户逻辑持仓；
+     *   - **冷启动（归档不可用）**：回放期没有历史可放，进入 live 时逻辑台账里只有 `on_init`
+     *     阶段建立的持仓（ADR 0030 决策 1：`on_init` 期的意图同样即时记账）。因此这里必须
+     *     **照常批量上报**——它可能是 0（无 `on_init` 意图），也可能不是；硬编码「启动时逻辑
+     *     持仓为 0」会让 `on_init` 建仓的策略在 UI 上显示空仓。
      */
     void enter_live() {
         for (auto& [instrument_id, node] : instruments_) {
@@ -543,8 +564,9 @@ private:
         if (!accounts_.empty()) {
             std::cerr << std::format(
                              "account fanout enabled | account_count={} instrument_count={} "
-                             "source=ledger_without_warmup_replay ticket=161",
-                             accounts_.size(), instruments_.size())
+                             "warmup={}",
+                             accounts_.size(), instruments_.size(),
+                             warmup_replayed_ ? "replayed" : "cold_start")
                       << '\n';
         }
     }
@@ -654,20 +676,503 @@ private:
                          scale_rounding_name(effective_.scaling.rounding),
                          effective_.scaling.min_one ? 1 : 0)
                   << '\n';
-        // Tier 1 的浮动盈亏要乘合约乘数、下单价格要按最小变动价位对齐，而合约元数据源属
-        // #161 的内部依赖缝：在它落地前 `InstrumentSpec` 的两项都是 0，于是
-        //   - `position_profit()` / `contract_profit()` / 极值全线返回 0；
-        //   - 下单价格**不做 tick 对齐**（`price_tick == 0` 时跳过对齐，见 execution.h）。
-        // **两条都是已知限制，必须在这里说出来**——静默返回 0 会让策略作者以为「浮盈真的是
-        // 0」把止损写成永不触发；静默不对齐会让人以为框架按 tick 处理过价格。
-        //
-        // 无条件打印而不是用「有没有拿到元数据」的标志位：v1 根本没有元数据来源，标志位恒为
-        // false，那就是一段只有一个取值的分支。等 #161 接上数据源时，这行自然改成
-        // `if (!metadata_loaded) {…}`（那时才有第二个取值）。
+        // 合约元数据的已知限制诊断在**查到元数据之后**打印（`print_metadata_diagnostics`）：
+        // 有没有元数据来源是运行期事实（platform.db 在不在），不能在配置阶段断言。
+    }
+
+    // ==== 合约元数据来源（#161 接缝 2；组件文档 §3/§8）====
+
+    /**
+     * @brief 懒开默认归档库句柄（`dz_db_open_default`：td 库按配置解析打开）
+     *
+     * 历史 bar 与合约元数据都在同一个 td 库里（平台库），因此只开一次、进程内复用。打开失败
+     * 只记一次（`archive_db_attempted_`），不反复尝试——v1 无 platform.db 是常态，每次
+     * 启动尝试一次足够；数据源恢复要重启进程（与配置加载同口径）。
+     *
+     * @return 库句柄；nullptr = 库不可用（调用方据此降级）
+     */
+    DzDatabase* archive_db() {
+        if (!archive_db_attempted_) {
+            archive_db_attempted_ = true;
+            archive_db_ = dz_db_open_default();
+        }
+        return archive_db_;
+    }
+
+    /// @brief 关闭归档库句柄（`on_stop` 调用；NULL 是安全 no-op）
+    void release_archive_db() noexcept {
+        if (archive_db_ != nullptr) {
+            (void)dz_db_close(archive_db_);
+            archive_db_ = nullptr;
+        }
+    }
+
+    /**
+     * @brief 查一个品种的合约元数据（注入的 fake 优先，否则走默认归档实现）
+     *
+     * @param instrument_id 合约代码
+     * @return 元数据结果（四态，见 `MetadataStatus`）
+     */
+    [[nodiscard]] bar_strategy_internal::MetadataResult load_metadata(
+        std::string_view instrument_id) {
+        if (dependencies_.metadata) {
+            return dependencies_.metadata(instrument_id);
+        }
+        return bar_strategy_internal::load_archive_metadata(archive_db(), instrument_id);
+    }
+
+    /// @brief 合约元数据缺失/非法的诊断（该实例创建失败，进程与其它品种继续）
+    void report_metadata_failure(const std::string& instrument_id,
+                                 const bar_strategy_internal::MetadataResult& metadata) const {
         std::cerr << std::format(
-                         "instrument metadata unavailable | effect=tier1_profit_zero "
-                         "price_alignment_skipped=1 source=absent ticket=161")
+                         "instance creation skipped | instrument={} stage=instrument_metadata "
+                         "status={} detail=\"{}\"",
+                         instrument_id,
+                         metadata.status == bar_strategy_internal::MetadataStatus::Missing
+                             ? "missing"
+                             : "invalid",
+                         metadata.message)
                   << '\n';
+    }
+
+    /**
+     * @brief 合约元数据口径诊断（组件文档 §3/§6）
+     *
+     * 元数据齐全时只报一行摘要；数据源不可用（v1 无 platform.db 的常态）时打印两条**已知
+     * 限制**：
+     *
+     *   - `position_profit()` / `contract_profit()` / 极值全线返回 0（乘数 0）；
+     *   - 下单价格**不做 tick 对齐**（`price_tick == 0`，见 execution.h）。
+     *
+     * 必须说出来——静默返回 0 会让策略作者以为「浮盈真的是 0」把止损写成永不触发；静默不
+     * 对齐会让人以为框架按 tick 处理过价格。
+     */
+    void print_metadata_diagnostics() const {
+        if (metadata_source_unavailable_) {
+            std::cerr << std::format(
+                             "instrument metadata unavailable | effect=tier1_profit_zero "
+                             "price_alignment_skipped=1 reason=platform_db_unavailable "
+                             "instrument_count={}",
+                             instruments_.size())
+                      << '\n';
+            return;
+        }
+        std::cerr << std::format("instrument metadata loaded | instrument_count={} failed={}",
+                                 metadata_loaded_count_, metadata_failed_count_)
+                  << '\n';
+    }
+
+    // ==== 历史预热回放 + 缓冲 tick 续接（#161；组件文档 §5.3）====
+
+    /**
+     * @brief 按预热配置估算「计划回放根数」（成本估算的输入）
+     *
+     * `warmup.bars` 直接用；`warmup.from` 按「日期跨度 × 每日 bar 数上限（`86400/period`）」
+     * 取**上界**（真实交易日 bar 数更少，估算偏保守——启动估算宁可报大不报小）。
+     *
+     * @return 计划回放根数（按品种；0 = 无法估算，不打印 WARN 阈值）
+     */
+    [[nodiscard]] std::int64_t planned_warmup_bars() const {
+        if (effective_.warmup_bars.has_value()) {
+            return *effective_.warmup_bars;
+        }
+        if (!effective_.warmup_from.has_value()) {
+            return 0;
+        }
+        try {
+            const Date from = Date::from_string(*effective_.warmup_from);
+            // `Date::days_to` 的口径是 `d - *this`：要算「从起始日到今天过了几天」必须
+            // 以起始日为左操作数
+            const std::int64_t days =
+                static_cast<std::int64_t>(from.days_to(DateTime::local_now().date()));
+            if (days <= 0) {
+                return 0;
+            }
+            const std::int64_t bars_per_day = 86400 / effective_.config.period_sec;
+            return days * bars_per_day + 1;
+        } catch (const std::exception&) {
+            return 0;  // 配置层已校验过；这里只做防御，估算失败不影响启动
+        }
+    }
+
+    /**
+     * @brief 打印回放成本估算并按阈值告警（组件文档 §5.3：启动前估算 + 两级 WARN）
+     *
+     * 成本 = 合成 tick × 0.1µs + 回放期 B 回调 × 0.3µs（`estimate_replay_seconds`）。阈值
+     * 60s/300s 提醒运维「这次启动会卡住多久」——回放阻塞在启动阶段（期间不派发其它事件），
+     * 没有估算就只能靠事后发现。
+     */
+    void report_warmup_plan() const {
+        const std::int64_t planned = planned_warmup_bars();
+        const auto instrument_count = static_cast<std::int64_t>(instruments_.size());
+        const std::int64_t total_bars = planned * instrument_count;
+        const std::int64_t silent_bars =
+            std::min<std::int64_t>(planned, effective_.max_lookback) * instrument_count;
+        const std::int64_t replay_bars = std::max<std::int64_t>(0, total_bars - silent_bars);
+        const double seconds = bar_strategy_internal::estimate_replay_seconds(
+            total_bars * bar_strategy_internal::REPLAY_TICKS_PER_BAR, replay_bars * 6);
+        std::cerr << std::format(
+                         "warmup replay plan | instrument_count={} warmup_bars={} silent_bars={} "
+                         "replay_bars={} estimated_seconds={:.3f}",
+                         instruments_.size(), planned, silent_bars, replay_bars, seconds)
+                  << '\n';
+        if (seconds > 300.0) {
+            std::cerr << std::format(
+                             "warmup replay slow | estimated_seconds={:.3f} threshold=300 "
+                             "effect=startup_blocked",
+                             seconds)
+                      << '\n';
+        } else if (seconds > 60.0) {
+            std::cerr << std::format(
+                             "warmup replay slow | estimated_seconds={:.3f} threshold=60 "
+                             "effect=startup_blocked",
+                             seconds)
+                      << '\n';
+        }
+    }
+
+    /**
+     * @brief 查一个品种的历史 bar（注入的 fake 优先，否则走默认归档实现）
+     *
+     * @param instrument_id 合约代码
+     * @return 历史查询结果（含诊断消息）
+     */
+    [[nodiscard]] bar_strategy_internal::HistoryQueryResult query_history(
+        std::string_view instrument_id) {
+        bar_strategy_internal::HistoryQuery query;
+        query.instrument_id = instrument_id;
+        query.period_sec = effective_.config.period_sec;
+        query.max_lookback = effective_.max_lookback;
+        query.warmup_bars = effective_.warmup_bars;
+        if (effective_.warmup_from.has_value()) {
+            try {
+                query.warmup_from = static_cast<DzDate>(
+                    Date::from_string(*effective_.warmup_from).days_since_epoch());
+            } catch (const std::exception&) {
+                // 配置层已校验；防御分支保持「无起始日期」语义（查询全部历史）
+            }
+        }
+        if (dependencies_.history) {
+            return dependencies_.history(query);
+        }
+        return bar_strategy_internal::query_archive_history(archive_db(), query);
+    }
+
+    /**
+     * @brief 逐品种查历史、静默填窗、合成 tick 回放（组件文档 §5.3；阻塞在启动阶段）
+     *
+     * **逐品种顺序执行**（不是先全部查完再全部回放）：每个品种的历史在回放后立即释放，进程
+     * 峰值内存只多一个品种的历史；锚点天然独立，不存在跨实例拼接。
+     *
+     * 回放不另写一条 tick→bar 路径：4 个合成 tick 喂进该实例**同一个** `IntradayBarBuilder`，
+     * 回调门禁（§5.2）自动把前 `max_lookback` 根变成静默填窗、其余变成 B 的真实回调。因此
+     * 回放事件序与 live 同构，不需要第二套事件分发。
+     */
+    void warmup_history_replay() {
+        report_warmup_plan();
+        std::int64_t replayed_bars = 0;
+        std::int64_t silent_bars = 0;
+        std::size_t replayed_instruments = 0;
+        std::size_t degraded_instruments = 0;
+        for (auto& [instrument_id, node] : instruments_) {
+            if (node.ctx.is_failed()) {
+                continue;
+            }
+            bar_strategy_internal::HistoryQueryResult result = query_history(instrument_id);
+            if (result.status != bar_strategy_internal::HistoryStatus::Loaded) {
+                node.history_degraded = true;
+                ++degraded_instruments;
+                const char* status = result.status == bar_strategy_internal::HistoryStatus::Failed
+                                         ? "query_failed"
+                                         : "source_unavailable";
+                std::cerr << std::format(
+                                 "historical bars unavailable | instrument={} status={} "
+                                 "error=\"{}\" fallback=cold_start",
+                                 instrument_id, status, result.message)
+                          << '\n';
+                continue;
+            }
+            ++replayed_instruments;
+            replay_instrument_history(node, result);
+            replayed_bars += node.replayed_bars;
+            silent_bars += node.silent_bars;
+        }
+        std::cerr << std::format(
+                         "warmup replay complete | instrument_count={} replayed_instruments={} "
+                         "degraded_instruments={} silent_bars={} replayed_bars={}",
+                         instruments_.size(), replayed_instruments, degraded_instruments,
+                         silent_bars, replayed_bars)
+                  << '\n';
+    }
+
+    /**
+     * @brief 清洗 + 裁剪 + 回放一个品种的历史 bar
+     *
+     * 顺序：校验并截断到第一个不自洽的 bar（WARN）→ 按 `warmup.bars` 裁剪到最近 N 根 →
+     * 记录锚点 → 逐根喂 4 个合成 tick。清洗不通过时降级为「无历史」（冷启动）。
+     *
+     * @param node   该品种节点（回放锚点与回放根数写回这里）
+     * @param result 历史查询结果（`bars` 升序）
+     */
+    void replay_instrument_history(InstrumentNode<Strategy>& node,
+                                   const bar_strategy_internal::HistoryQueryResult& result) {
+        std::string rejected_reason;
+        std::vector<bar::Bar> bars = sanitize_history(result.bars, rejected_reason);
+        if (bars.size() < result.bars.size()) {
+            std::cerr << std::format(
+                             "warmup history truncated | instrument={} kept_bars={} "
+                             "dropped_bars={} reason=\"{}\"",
+                             node.ctx.instrument_id(), bars.size(),
+                             result.bars.size() - bars.size(), rejected_reason)
+                      << '\n';
+        }
+        // 按预热深度裁剪（归档层已按查询深度返回，这里幂等兜底：`from` 模式也按日期查）
+        if (effective_.warmup_bars.has_value()) {
+            const auto limit = static_cast<std::size_t>(*effective_.warmup_bars);
+            if (bars.size() > limit) {
+                bars.erase(bars.begin(), bars.end() - static_cast<std::ptrdiff_t>(limit));
+            }
+        }
+        if (bars.empty()) {
+            node.history_degraded = true;
+            std::cerr << std::format(
+                             "historical bars unavailable | instrument={} status=empty "
+                             "fallback=cold_start",
+                             node.ctx.instrument_id())
+                      << '\n';
+            return;
+        }
+        if (!result.message.empty()) {
+            // is_final 列缺失等数据源缺口：归档域落地后必须补齐（组件文档 §5.3）
+            std::cerr << std::format("warmup history partial | instrument={} note=\"{}\"",
+                                     node.ctx.instrument_id(), result.message)
+                      << '\n';
+        }
+
+        const auto total = static_cast<std::int32_t>(bars.size());
+        node.silent_bars = std::min(total, effective_.max_lookback);
+        node.replayed_bars = total - node.silent_bars;
+        node.replay_anchor.valid = true;
+        node.replay_anchor.last_bar = bars.back();
+        node.replay_anchor.is_final = bars.back().is_final;
+        warmup_replayed_ = true;
+
+        // 无成交的桶不生成 bar（ADR 0031）：begin_sec 跳跃是正常现象，只记 INFO 便于诊断；
+        // 跨交易日的跳跃不算 gap（新交易日从自己的第一个桶开始）。
+        std::int32_t gap_count = 0;
+        for (std::size_t i = 1; i < bars.size(); ++i) {
+            const bar::Bar& previous = bars[i - 1];
+            const bar::Bar& current = bars[i];
+            if (current.trading_day == previous.trading_day &&
+                current.begin_sec != previous.begin_sec + previous.period_sec) {
+                ++gap_count;
+            }
+        }
+        if (gap_count > 0) {
+            std::cerr << std::format("warmup history gaps | instrument={} gap_count={}",
+                                     node.ctx.instrument_id(), gap_count)
+                      << '\n';
+        }
+        if (node.silent_bars < effective_.max_lookback) {
+            std::cerr << std::format(
+                             "warmup history insufficient | instrument={} available_bars={} "
+                             "max_lookback={} fallback=live_fill",
+                             node.ctx.instrument_id(), total, effective_.max_lookback)
+                      << '\n';
+        }
+
+        for (const bar::Bar& bar : bars) {
+            if (node.ctx.is_failed()) {
+                return;  // B 在回放期抛异常：该实例失败，停止回放（锚点保留但不收 tick）
+            }
+            const auto ticks = bar_strategy_internal::make_replay_ticks(bar);
+            for (const DzTick& tick : ticks) {
+                if (node.ctx.is_failed()) {
+                    return;
+                }
+                node.builder.on_tick(tick);
+            }
+        }
+    }
+
+    /**
+     * @brief 历史 bar 清洗：返回按顺序自洽的前缀（遇到第一个不自洽的 bar 即截断）
+     *
+     * 归档域尚未落地，历史数据的自洽性由数据源保证；但**回放期间 B 会按这些 bar 做决策并
+     * 建立虚拟持仓**，一条坏数据（NaN 价格、倒序、量额倒退）会让回放静默出错。清洗规则全部
+     * 是「回放可表示性」的必要条件：
+     *
+     *   - 周期与配置一致、`begin_sec` 落在周期网格上且 tick 时刻可表示（见合成 tick 的
+     *     桶内偏移）；
+     *   - OHLC 自洽（`high >= max(open, close, low)`、`low <= min(...)`）、价格有限且为正；
+     *   - 量额非负、`cum >= bar 内量额`，且累计量能以 `DzTick::volume`（int32）表示；
+     *   - 序列严格升序（交易日增大，或同交易日内 `begin_sec` 增大）；
+     *   - 只有最后一根可以是 forming（`is_final == false`），中间出现 forming 视为归档不自洽。
+     *
+     * @param input  归档 bar（期望升序）
+     * @param reason 截断原因（截断时写入；用于 WARN）
+     * @return 自洽前缀（可能为空）
+     */
+    [[nodiscard]] std::vector<bar::Bar> sanitize_history(const std::vector<bar::Bar>& input,
+                                                         std::string& reason) const {
+        std::vector<bar::Bar> sanitized;
+        sanitized.reserve(input.size());
+        const std::int32_t period_sec = effective_.config.period_sec;
+        constexpr std::int32_t MAX_TSEC = 86399;
+        constexpr std::int64_t MAX_TICK_VOLUME = std::numeric_limits<DzVolume>::max();
+        for (std::size_t i = 0; i < input.size(); ++i) {
+            const bar::Bar& bar = input[i];
+            const bool last = i + 1 == input.size();
+            const char* reason_text = nullptr;
+            if (bar.period_sec != period_sec) {
+                reason_text = "period_mismatch";
+            } else if (bar.trading_day <= 0) {
+                reason_text = "trading_day_invalid";
+            } else if (bar.begin_sec < 0 || bar.begin_sec > MAX_TSEC ||
+                       bar.begin_sec % period_sec != 0) {
+                reason_text = "begin_sec_off_grid";
+            } else if (bar.last_tick_sec < bar.begin_sec ||
+                       bar.last_tick_sec > bar.begin_sec + bar.period_sec - 1) {
+                // 合成 tick 的时刻以 last_tick_sec 为末点：它必须落在本 bar 桶内，否则回放会
+                // 造出跨桶/空桶的时刻（ADR 0031 的 Bar 不变式）
+                reason_text = "last_tick_sec_outside_bucket";
+            } else if (!(bar.open > 0.0) || !(bar.high > 0.0) || !(bar.low > 0.0) ||
+                       !(bar.close > 0.0) || !std::isfinite(bar.open) || !std::isfinite(bar.high) ||
+                       !std::isfinite(bar.low) || !std::isfinite(bar.close)) {
+                reason_text = "price_invalid";
+            } else if (bar.high < bar.low || bar.high < bar.open || bar.high < bar.close ||
+                       bar.low > bar.open || bar.low > bar.close) {
+                reason_text = "ohlc_inconsistent";
+            } else if (bar.volume < 0 || bar.cum_volume < bar.volume || bar.cum_volume < 0 ||
+                       bar.cum_volume > MAX_TICK_VOLUME) {
+                reason_text = "volume_invalid";
+            } else if (!std::isfinite(bar.turnover) || bar.turnover < 0.0 ||
+                       !std::isfinite(bar.cum_turnover) || bar.cum_turnover < bar.turnover) {
+                reason_text = "turnover_invalid";
+            } else if (!bar.is_final && !last) {
+                reason_text = "forming_bar_before_last";
+            } else if (!sanitized.empty()) {
+                const bar::Bar& previous = sanitized.back();
+                if (bar.trading_day < previous.trading_day ||
+                    (bar.trading_day == previous.trading_day &&
+                     bar.begin_sec <= previous.begin_sec)) {
+                    reason_text = "out_of_order";
+                }
+            }
+            if (reason_text != nullptr) {
+                reason = reason_text;
+                break;
+            }
+            sanitized.push_back(bar);
+        }
+        return sanitized;
+    }
+
+    /**
+     * @brief 排空回放期间缓冲的 tick，按续接规则丢弃或续接（组件文档 §5.3）
+     *
+     * 回放阻塞在 `on_start` 里，这期间到达的 tick 全在行情通道中；进入主循环前主动排空，
+     * 否则它们会被当成「新 tick」直接推进 bar，与归档尾部重叠：
+     *
+     *   - 最后一根**已收（final）**：丢弃目标桶 `begin_sec <= B` 的 tick——那根（及更早）已经
+     *     由归档覆盖，再喂一次会把同一根 bar 重复计一次；
+     *   - 最后一根**未完成（forming）**：丢弃 `begin_sec < B`、保留 `== B`——forming bar 还没
+     *     收，缓冲 tick 是它的真实续接；保留后由 builder 原地 update，不产生重复 close/open。
+     *
+     * 「桶」的判定与 builder 共用 `bar::resolve_tick_bucket`（唯一实现），不是另一套算术。
+     * 没有锚点的品种（冷启动/历史不可用）不参与过滤，缓冲 tick 直接当 live tick 处理。
+     *
+     * 排空完成后打一行汇总：丢了多少、留了多少是「续接规则是否生效」的唯一可观测证据。
+     */
+    void drain_buffered_ticks() {
+        if (dz_ == nullptr) {
+            return;
+        }
+        std::size_t drained = 0;
+        std::size_t retained = 0;
+        std::size_t dropped = 0;
+        std::size_t other = 0;
+        for (;;) {
+            const void* frame = dz_next_md(dz_);
+            if (frame == nullptr) {
+                break;
+            }
+            const auto* bytes = static_cast<const std::byte*>(frame);
+            if (strategy_engine_internal::frame_header(bytes).frame_type != DZ_FRAME_TICK) {
+                continue;  // 行情通道里的非 tick 帧忽略（引擎侧同口径）
+            }
+            if (!strategy_engine_internal::payload_size_matches<DzTick>(bytes)) {
+                continue;  // 布局错配由引擎侧诊断；这里丢弃不可解析的帧
+            }
+            ++drained;
+            const DzTick& tick = strategy_engine_internal::frame_payload<DzTick>(bytes);
+            const auto node = instruments_.find(manager_internal::instrument_id_of(tick));
+            if (node == instruments_.end() || node->second.ctx.is_failed()) {
+                ++other;  // 未订阅/失败实例：与会话无关的行情，不计数为「缓冲续接」
+                continue;
+            }
+            if (should_drop_continuation_tick(node->second, tick)) {
+                ++dropped;
+                continue;
+            }
+            ++retained;
+            current_tick_ = &tick;
+            node->second.builder.on_tick(tick);
+            current_tick_ = nullptr;
+        }
+        if (drained > 0) {
+            std::cerr << std::format(
+                             "warmup continuation | drained={} retained={} dropped={} "
+                             "other_instrument={}",
+                             drained, retained, dropped, other)
+                      << '\n';
+        }
+    }
+
+    /**
+     * @brief 续接过滤：这笔缓冲 tick 是否应丢弃（组件文档 §5.3 的两条规则）
+     *
+     * 判定顺序：早于锚点交易日 → 丢；更晚交易日 → 留；同交易日按 `resolve_tick_bucket` 解析
+     * 目标桶后比较 `begin_sec`：
+     *
+     *   - 目标桶 < B：丢（归档已覆盖更早的 bar）；
+     *   - 目标桶 > B：留（新 bar 的 tick，由 builder 先 close 锚点再开新根）；
+     *   - 目标桶 == B：**最后一根已收 → 丢**、**未完成 → 留**（原地续接 forming bar）。
+     *
+     * 非交易时段/时间越界的 tick 交给 builder 丢弃并计数（它本来就会做，且计数是运维口径），
+     * 这里不重复判定。
+     *
+     * @param node 该品种节点
+     * @param tick 缓冲 tick
+     * @return true = 丢弃
+     */
+    [[nodiscard]] bool should_drop_continuation_tick(const InstrumentNode<Strategy>& node,
+                                                     const DzTick& tick) const {
+        if (!node.replay_anchor.valid) {
+            return false;  // 冷启动：没有归档尾部可重叠，按 live tick 处理
+        }
+        const bar::Bar& anchor = node.replay_anchor.last_bar;
+        if (tick.date < anchor.trading_day) {
+            return true;
+        }
+        if (tick.date > anchor.trading_day) {
+            return false;
+        }
+        if (tick.time < 0 || tick.time > 86399) {
+            return false;  // 非法时间：builder 计 out_of_session，这里不越俎代庖
+        }
+        const bar::TickBucket bucket = bar::resolve_tick_bucket(
+            bar::TradingTime::from_clock(tick.time), session_table_, effective_.config.period_sec);
+        if (!bucket.in_session) {
+            return false;  // 非交易时段：builder 丢弃并计数
+        }
+        if (bucket.begin_sec < anchor.begin_sec) {
+            return true;
+        }
+        if (bucket.begin_sec > anchor.begin_sec) {
+            return false;
+        }
+        return node.replay_anchor.is_final;
     }
 
     /**
@@ -694,7 +1199,15 @@ private:
     }
 
     /**
-     * @brief 逐品种装配 `InstrumentNode` 并调 `on_init`（组件文档 §8 启动第 3 步）
+     * @brief 逐品种查元数据、装配 `InstrumentNode` 并调 `on_init`（组件文档 §8 启动第 3 步）
+     *
+     * 元数据先于实例：`InstrumentSpec` 是 ctx 的构造参数（Tier 1 盈亏与下单价格对齐都读它）。
+     * 三种结局：
+     *
+     *   - `Loaded` → 用元数据构造实例；
+     *   - `SourceUnavailable` → 部署级降级：零元数据 + 启动诊断声明两条已知限制（先纸上跑通）；
+     *   - `Missing` / `Invalid` → **该实例创建失败**（打印诊断、跳过该品种，进程与其它品种
+     *     继续）——静默用 0 乘数会让浮动盈亏恒为 0、止损永不触发，比不启动更危险。
      *
      * `on_init` 抛异常 = 该品种创建失败：打印诊断、丢弃节点（不调 `on_destroy`），继续创建
      * 其它品种。成功时 ctx 的 `bar_index() == -1`、窗口为空。
@@ -705,14 +1218,28 @@ private:
     void create_instances() {
         const auto period_sec = effective_.config.period_sec;
         for (const std::string& instrument_id : effective_.config.instruments) {
+            InstrumentSpec spec;
+            const bar_strategy_internal::MetadataResult metadata = load_metadata(instrument_id);
+            switch (metadata.status) {
+                case bar_strategy_internal::MetadataStatus::Loaded:
+                    spec = metadata.spec;
+                    ++metadata_loaded_count_;
+                    break;
+                case bar_strategy_internal::MetadataStatus::SourceUnavailable:
+                    // 数据源缺失是**部署级**状态：所有品种一起降级，不是单品种配置错误
+                    metadata_source_unavailable_ = true;
+                    break;
+                case bar_strategy_internal::MetadataStatus::Missing:
+                case bar_strategy_internal::MetadataStatus::Invalid:
+                    ++metadata_failed_count_;
+                    report_metadata_failure(instrument_id, metadata);
+                    continue;
+            }
             InstrumentInit init{
                 .instrument_id = instrument_id,
                 .max_lookback = effective_.max_lookback,
                 .buffer_bars = effective_.buffer_bars,
-                // 合约属性：v1 没有元数据来源（#161 接缝），因此 `volume_multiple` 与
-                // `price_tick` 都是 0——启动诊断会显式声明这两条已知限制（盈亏恒为 0、价格
-                // 不做 tick 对齐）。
-                .spec = InstrumentSpec{},
+                .spec = spec,
                 .dz = dz_,
                 .accounts = &accounts_,
                 .scaling = effective_.scaling,
@@ -763,10 +1290,20 @@ private:
     DzTimerId rollback_timer_ = DZ_TIMER_INVALID;  ///< 18:00 回卷定时器 id（无效 = 注册失败）
     /// 启动加载的配置仓（document + effective；`param set` / `account *` 的写回接缝 #162）
     std::unique_ptr<ConfigStore> store_;
-    EffectiveConfig effective_;               ///< 启动快照（构建实例用，进程内不变）
+    EffectiveConfig effective_;  ///< 启动快照（构建实例用，进程内不变）
+    /// 三个内部依赖缝 + 回卷时刻（#161；测试经它注入 fake 历史/元数据，§5.3）
+    /// **声明在 session_table_ 之前**：构造函数按声明顺序初始化（它先于派生字段被读）
+    bar_strategy_internal::FrameworkDependencies dependencies_;
     bar::TradingSessionTable session_table_;  ///< 交易小节表（v1 = 退化表）
     bool degraded_ = true;                    ///< 由 session_table_ 判定（诊断口径，§5.5）
     std::int32_t rollback_clock_ms_ = DEFAULT_ROLLBACK_CLOCK_MS;
+    /// 默认归档库句柄（懒开：`dz_db_open_default`；`on_stop` 关闭）。历史与元数据共用。
+    DzDatabase* archive_db_ = nullptr;
+    bool archive_db_attempted_ = false;         ///< 已尝试打开（失败也只试一次）
+    bool metadata_source_unavailable_ = false;  ///< 元数据源不可用（部署级降级口径）
+    std::size_t metadata_loaded_count_ = 0;     ///< 元数据齐全的实例数（诊断）
+    std::size_t metadata_failed_count_ = 0;     ///< 元数据缺失/非法而跳过的实例数（诊断）
+    bool warmup_replayed_ = false;              ///< 至少一个品种完成历史回放（诊断口径）
     /// 挂靠账户表（启动读配置；#162 起由命令增删改）。**必须在 instruments_ 之前声明**：
     /// 节点里的 ctx 持它的地址，析构顺序保证表比节点活得久。
     AccountTable accounts_;

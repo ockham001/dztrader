@@ -68,6 +68,9 @@ constexpr std::int64_t kUserSeriesInitI = 11;
 /// 门禁用例的显式可读深度（= `MAX_LOOKBACK_MIN`）：静态填窗只要 32 根 bar
 constexpr std::int32_t kTestMaxLookback = dztrader::series_internal::MAX_LOOKBACK_MIN;
 
+/// 注入式假历史的第一个 60s 桶起点（tsec 21600 = 墙钟 00:00；落在退化表 0–86399 内）
+constexpr std::int32_t kHistoryFirstBeginSec = 21600;
+
 // ============================================================
 // fake B 的事件记录器（进程内全局；B 由框架默认构造，拿不到测试注入的指针）
 // ============================================================
@@ -676,6 +679,59 @@ DzTick make_tick_on(std::string_view instrument,
 }
 
 /**
+ * @brief 构造一段可回放的归档历史（#161 Seam B 的假历史 bar 源数据）
+ *
+ * 每根 bar 占一个 60 秒桶（`first_begin_sec` 起连续），价格按索引线性变化，涨跌交替（奇数
+ * 根 `close < open`、偶数根 `close > open`），量额/持仓量逐根推进，**当日累计**从 0 起算
+ * ——这正是 builder 的累计基准口径，回放才可能逐字段还原。
+ *
+ * @param bar_count      根数
+ * @param first_begin_sec 第一根的桶起点（交易日内秒，须为 60 的整数倍）
+ * @param first_price    第一根的开盘价（每根 +1）
+ * @param last_forming   true = 最后一根按 forming 给出（验证续接规则的另一半）
+ * @return 升序归档 bar
+ */
+std::vector<dztrader::bar::Bar> make_archive_history(
+    std::size_t bar_count,
+    std::int32_t first_begin_sec = kHistoryFirstBeginSec,
+    double first_price = 200.0,
+    bool last_forming = false) {
+    std::vector<dztrader::bar::Bar> bars;
+    bars.reserve(bar_count);
+    std::int64_t cum_volume = 0;
+    double cum_turnover = 0.0;
+    for (std::size_t i = 0; i < bar_count; ++i) {
+        dztrader::bar::Bar bar{};
+        bar.trading_day = kTradingDay;
+        bar.begin_sec = first_begin_sec + static_cast<std::int32_t>(i) * 60;
+        bar.last_tick_sec = bar.begin_sec + 59;
+        bar.period_sec = 60;
+        bar.open = first_price + static_cast<double>(i);
+        bar.high = bar.open + 2.0;
+        bar.low = bar.open - 1.0;
+        bar.close = (i % 2 == 0) ? bar.open + 1.0 : bar.open - 0.5;
+        bar.volume = 10;
+        bar.turnover = bar.close * 10.0;
+        bar.open_interest = 1000 + static_cast<DzLargeVolume>(i);
+        cum_volume += bar.volume;
+        cum_turnover += bar.turnover;
+        bar.cum_volume = cum_volume;
+        bar.cum_turnover = cum_turnover;
+        bar.is_final = !(last_forming && i + 1 == bar_count);
+        bars.push_back(bar);
+    }
+    return bars;
+}
+
+/// @brief 一根归档 bar 的 4 个合成 tick 的收盘价顺序（组件文档 §5.3 的涨/跌/平口径）
+std::array<double, 4> replay_tick_prices(const dztrader::bar::Bar& bar) {
+    if (bar.close < bar.open) {
+        return {bar.open, bar.high, bar.low, bar.close};
+    }
+    return {bar.open, bar.low, bar.high, bar.close};
+}
+
+/**
  * @brief 框架集成测试夹具：临时 home + 真实通道 + 确定性配置
  *
  * `run_bar_strategy` 内部自己 `dz_init` / `dz_release`，夹具只准备环境、写配置、注入帧。
@@ -734,12 +790,14 @@ protected:
     /// @param period_sec   bar 周期秒数（默认 60；回卷等价性用例用 900 换取更小的 buffer_bars）
     /// @param accounts_json `accounts` 数组字面量（#160 的挂靠用例传 1–2 个账户）
     /// @param scaling_json  缩放字段片段（`"scale_rounding": ...` 等，含行尾逗号）
+    /// @param warmup_json   预热字段片段（`"warmup": {"bars": 40},` 等，含行尾逗号；#161）
     void write_config(const std::vector<std::string>& instruments,
                       std::optional<std::int32_t> max_lookback = std::nullopt,
                       std::optional<std::int32_t> reserve_bars = std::nullopt,
                       std::int32_t period_sec = 60,
                       const std::string& accounts_json = "[]",
-                      const std::string& scaling_json = "") {
+                      const std::string& scaling_json = "",
+                      const std::string& warmup_json = "") {
         std::string list;
         for (const std::string& instrument : instruments) {
             if (!list.empty()) {
@@ -757,6 +815,7 @@ protected:
             text += "  \"reserve_bars\": " + std::to_string(*reserve_bars) + ",\n";
         }
         text += scaling_json;
+        text += warmup_json;
         text += "  \"params\": {}\n}\n";
         std::ofstream stream(config_path_);
         ASSERT_TRUE(stream.good()) << "write config failed: " << config_path_.string();
@@ -1082,6 +1141,117 @@ protected:
     std::optional<dztrader::shm::Reader> probe_;
     std::vector<ObservedOrder> orders_;
     std::vector<ObservedPositionReport> reports_;
+
+    // ---- Seam B：注入式假历史 bar 源 + 假合约元数据源（#161）----
+
+    /// @brief 一次历史查询的观测记录（加载器在策略线程写；主线程 join 后读）
+    struct ObservedHistoryQuery {
+        std::string instrument_id;
+        std::int32_t period_sec = 0;
+        std::optional<std::int32_t> warmup_bars;
+        std::optional<DzDate> warmup_from;
+    };
+
+    /// @brief 假历史 bar 源：instrument → 归档 bar（升序）；缺省 = Unavailable
+    std::map<std::string, std::vector<dztrader::bar::Bar>, std::less<>> fake_history_;
+    bool fake_history_available_ = true;                 ///< false = 数据源不可用（冷启动降级用例）
+    std::vector<ObservedHistoryQuery> history_queries_;  ///< 查询参数（断言 warmup 两形态）
+
+    /// @brief 假合约元数据源：instrument → 合约属性；缺省 = Missing
+    std::map<std::string, dztrader::InstrumentSpec, std::less<>> fake_metadata_;
+    bool fake_metadata_available_ = true;  ///< false = 数据源不可用（部署级降级用例）
+
+    /**
+     * @brief 「回放即将开始」同步点（缓冲 tick 续接用例）
+     *
+     * 行情 reader 在 `dz_init` 时从当前写位置开始，**测试在启动前写入的 tick 会被跳过**；
+     * 要复现「回放期间到达的缓冲 tick」，必须让回放晚于测试写帧。做法是让假历史加载器
+     * （在策略线程、回放之前调用）发出「回放即将开始」信号并等待测试写完缓冲 tick：
+     * 这既确定性地覆盖 `drain_buffered_ticks` 路径，又不依赖 sleep/时序。
+     */
+    std::mutex history_barrier_mutex_;
+    std::condition_variable history_barrier_cv_;
+    bool history_barrier_enabled_ = false;
+    bool history_loader_reached_ = false;  ///< 加载器已到达（回放即将开始）
+    bool buffered_ticks_written_ = false;  ///< 测试已写完缓冲 tick
+
+    /// @brief 等假历史加载器到达同步点（超时返回 false）
+    bool wait_for_history_loader(std::chrono::milliseconds timeout = 15s) {
+        std::unique_lock<std::mutex> lock(history_barrier_mutex_);
+        return history_barrier_cv_.wait_for(lock, timeout,
+                                            [this] { return history_loader_reached_; });
+    }
+
+    /// @brief 放行被同步点挂住的假历史加载器（测试写完缓冲 tick 后调用）
+    void release_history_loader() {
+        {
+            const std::lock_guard<std::mutex> lock(history_barrier_mutex_);
+            buffered_ticks_written_ = true;
+        }
+        history_barrier_cv_.notify_all();
+    }
+
+    /// @brief 组装注入 fake 历史/元数据的依赖（退化小节表 + 默认回卷时刻）
+    dztrader::bar_strategy_internal::FrameworkDependencies make_injected_dependencies() {
+        dztrader::bar_strategy_internal::FrameworkDependencies dependencies;
+        dependencies.history = [this](const dztrader::bar_strategy_internal::HistoryQuery& query) {
+            history_queries_.push_back(ObservedHistoryQuery{
+                .instrument_id = std::string(query.instrument_id),
+                .period_sec = query.period_sec,
+                .warmup_bars = query.warmup_bars,
+                .warmup_from = query.warmup_from,
+            });
+            if (history_barrier_enabled_) {
+                std::unique_lock<std::mutex> lock(history_barrier_mutex_);
+                history_loader_reached_ = true;
+                history_barrier_cv_.notify_all();
+                history_barrier_cv_.wait(lock, [this] { return buffered_ticks_written_; });
+            }
+            dztrader::bar_strategy_internal::HistoryQueryResult result;
+            if (!fake_history_available_) {
+                result.status = dztrader::bar_strategy_internal::HistoryStatus::Unavailable;
+                result.message = "fake history source unavailable";
+                return result;
+            }
+            const auto found = fake_history_.find(query.instrument_id);
+            if (found == fake_history_.end()) {
+                result.status = dztrader::bar_strategy_internal::HistoryStatus::Unavailable;
+                result.message = "fake history source has no data";
+                return result;
+            }
+            result.status = dztrader::bar_strategy_internal::HistoryStatus::Loaded;
+            result.bars = found->second;
+            return result;
+        };
+        dependencies.metadata = [this](std::string_view instrument_id) {
+            dztrader::bar_strategy_internal::MetadataResult result;
+            if (!fake_metadata_available_) {
+                result.status = dztrader::bar_strategy_internal::MetadataStatus::SourceUnavailable;
+                result.message = "fake metadata source unavailable";
+                return result;
+            }
+            const auto found = fake_metadata_.find(instrument_id);
+            if (found == fake_metadata_.end()) {
+                result.status = dztrader::bar_strategy_internal::MetadataStatus::Missing;
+                result.message = "fake metadata missing | instrument=" + std::string(instrument_id);
+                return result;
+            }
+            result.status = dztrader::bar_strategy_internal::MetadataStatus::Loaded;
+            result.spec = found->second;
+            return result;
+        };
+        return dependencies;
+    }
+
+    /// @brief 在策略线程用注入依赖启动（Seam B）
+    void start_strategy_with_injected_dependencies() {
+        dztrader::bar_strategy_internal::FrameworkDependencies dependencies =
+            make_injected_dependencies();
+        strategy_thread_ = std::thread([this, dependencies] {
+            exit_code_ =
+                dztrader::bar_strategy_internal::run_bar_strategy_with<FakeStrategy>(dependencies);
+        });
+    }
 };
 
 // ============================================================
@@ -2035,10 +2205,16 @@ TEST_F(BarStrategyFrameworkTest, IntentLedgerIsWiredIntoRealCallbacks) {
     stop_strategy();
     ASSERT_EQ(exit_code_, 0);
     const std::string stderr_text = testing::internal::GetCapturedStderr();
-    // Tier 1 盈亏的乘数来源缺失必须**说出来**（静默 0 会让止损逻辑永不触发）
+    // Tier 1 盈亏的乘数来源缺失必须**说出来**（静默 0 会让止损逻辑永不触发）。
+    // 本用例的临时 home 里没有 td 库：元数据接缝（#161）走「部署级不可用」降级，
+    // 而不是逐品种判失败——所以这里断言的是 `reason=platform_db_unavailable`。
     EXPECT_NE(stderr_text.find("instrument metadata unavailable |"), std::string::npos)
         << "the missing metadata source must be announced: " << stderr_text;
-    EXPECT_NE(stderr_text.find("ticket=161"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("reason=platform_db_unavailable"), std::string::npos) << stderr_text;
+    // 归档域未实现（dz_db_query_bar stub）必须按「无历史」降级冷启动，而不是把启动打断
+    EXPECT_NE(stderr_text.find("historical bars unavailable |"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("fallback=cold_start"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("warmup replay complete |"), std::string::npos) << stderr_text;
 
     const auto events = recorder().for_instrument(kInstrumentA);
     ASSERT_GE(events.size(), 10U) << "callbacks: " << describe_events(events);
@@ -2673,6 +2849,589 @@ TEST_F(BarStrategyFrameworkTest, InvalidConfigExitsNonZero) {
     EXPECT_EQ(exit_code_, 1) << "invalid config must exit non-zero";
     EXPECT_NE(stderr_text.find("strategy startup failed |"), std::string::npos) << stderr_text;
     EXPECT_TRUE(recorder().snapshot().empty());
+}
+
+// ============================================================
+// #161 历史预热回放 + 缓冲续接（Seam B：注入假历史 bar 源 / 假合约元数据源）
+// ============================================================
+
+/**
+ * 注入 K = max_lookback + 8 根归档历史：前 32 根静默填窗（B 零回调），之后 8 根逐根回放。
+ *
+ * 断言三件事，任何一件错了都说明「回放没走 live 那条 tick→bar 实现」：
+ *   1. 事件序与 live 同构：`close(上一根) → open(新根) → update(新根) × 4`，一根不差；
+ *   2. 回调里交出的 bar 值与归档一致（O/H/L/C、量/额/OI、合成 tick 的价格顺序）；
+ *   3. 窗口历史就是归档历史（`close[n] == archive[bar_index - n].close`）——窗口被完整恢复。
+ */
+TEST_F(BarStrategyFrameworkTest, WarmupReplayDrivesLiveIsomorphicCallbacks) {
+    const std::int32_t replayed = 8;
+    const std::size_t total =
+        static_cast<std::size_t>(kTestMaxLookback) + static_cast<std::size_t>(replayed);
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback);
+    const std::vector<dztrader::bar::Bar> history = make_archive_history(total);
+    fake_history_[std::string(kInstrumentA)] = history;
+    fake_metadata_available_ = false;  // 元数据缺失不影响回放事件序
+
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(
+        wait_for_count(kInstrumentA, EventKind::BarClose, static_cast<std::size_t>(replayed)))
+        << "replay did not produce the expected callbacks";
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(exit_code_, 0);
+
+    EXPECT_NE(stderr_text.find("warmup replay plan |"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("silent_bars=32"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("replayed_bars=8"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("warmup replay complete |"), std::string::npos) << stderr_text;
+
+    // 去掉 init/destroy：只剩回放期 B 可见的回调（close → open → update × 4）
+    const std::vector<ObservedEvent> events = callback_stage_events(kInstrumentA);
+    ASSERT_EQ(events.size(), static_cast<std::size_t>(replayed) * 6U);
+    std::size_t cursor = 0;
+    for (std::int32_t bar = kTestMaxLookback; bar < kTestMaxLookback + replayed; ++bar) {
+        const std::int32_t previous = bar - 1;
+        const ObservedEvent& close_event = events[cursor++];
+        EXPECT_EQ(close_event.kind, EventKind::BarClose);
+        EXPECT_EQ(close_event.bar_index, previous);
+        // 被关闭那根的值 = 归档值（最后一根由下一笔更晚 tick 关闭，回放未额外 flush）
+        EXPECT_EQ(close_event.open, history[static_cast<std::size_t>(previous)].open);
+        EXPECT_EQ(close_event.high, history[static_cast<std::size_t>(previous)].high);
+        EXPECT_EQ(close_event.low, history[static_cast<std::size_t>(previous)].low);
+        EXPECT_EQ(close_event.close, history[static_cast<std::size_t>(previous)].close);
+
+        const ObservedEvent& open_event = events[cursor++];
+        EXPECT_EQ(open_event.kind, EventKind::BarOpen);
+        EXPECT_EQ(open_event.bar_index, bar);
+        EXPECT_EQ(open_event.close, history[static_cast<std::size_t>(bar)].open);
+
+        const dztrader::bar::Bar& archive = history[static_cast<std::size_t>(bar)];
+        const std::array<double, 4> expected_closes = replay_tick_prices(archive);
+        double last_close = 0;
+        for (std::size_t tick = 0; tick < expected_closes.size(); ++tick) {
+            const ObservedEvent& update = events[cursor++];
+            EXPECT_EQ(update.kind, EventKind::BarUpdate);
+            EXPECT_EQ(update.bar_index, bar);
+            EXPECT_DOUBLE_EQ(update.close, expected_closes[tick])
+                << "synthetic tick price order must be O->L->H->C / O->H->L->C";
+            last_close = update.close;
+        }
+        // 第 4 个 tick 之后 bar 的终值 = 归档值（量/额/OI 与 OHLC 同批校验）
+        const ObservedEvent& last_update = events[cursor - 1];
+        EXPECT_DOUBLE_EQ(last_update.close, archive.close);
+        EXPECT_DOUBLE_EQ(last_update.high, archive.high);
+        EXPECT_DOUBLE_EQ(last_update.low, archive.low);
+        EXPECT_DOUBLE_EQ(last_update.volume_history[0], static_cast<double>(archive.volume));
+        EXPECT_DOUBLE_EQ(last_update.turnover_history[0], archive.turnover);
+        EXPECT_DOUBLE_EQ(last_update.open_interest_history[0],
+                         static_cast<double>(archive.open_interest));
+        EXPECT_DOUBLE_EQ(last_close, archive.close);
+    }
+
+    // 窗口历史就是归档历史：最后一笔 update 的 close[n] == archive[最后 bar - n].close
+    const ObservedEvent& final_update = events.back();
+    const std::int32_t final_bar = kTestMaxLookback + replayed - 1;
+    ASSERT_EQ(final_update.history.size(), static_cast<std::size_t>(kTestMaxLookback));
+    for (std::size_t n = 0; n < final_update.history.size(); ++n) {
+        EXPECT_DOUBLE_EQ(final_update.history[n],
+                         history[static_cast<std::size_t>(final_bar) - n].close)
+            << "window slot close[" << n << "] must equal archive history";
+    }
+}
+
+/**
+ * 回放期的交易意图只做虚拟成交：不落单、不逐笔上报；回放结束后**一次性**上报恢复后的逻辑
+ * 持仓（引用）：开平仓记录的持仓是 P=2，`enter_live` 的批量上报必须把它带出去，否则策略在
+ * UI 上显示空仓、并被实盘 tick 的第一笔意图覆盖。
+ */
+TEST_F(BarStrategyFrameworkTest, WarmupReplayKeepsIntentsVirtualAndPublishesRecoveredPositionOnce) {
+    const std::size_t total = static_cast<std::size_t>(kTestMaxLookback) + 5;
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60,
+                 R"([{"account_id":"CTP001","scale":1.0}])");
+    const std::vector<dztrader::bar::Bar> history = make_archive_history(total);
+    fake_history_[std::string(kInstrumentA)] = history;
+    fake_metadata_[std::string(kInstrumentA)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+    // 第一根回放 bar 上建仓 2 手（回放期 live_ == false → 只记账）
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = kTestMaxLookback,
+        .when = EventKind::BarUpdate,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(2, ctx.close[0]); },
+    });
+
+    open_probe();
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 5 * 4));
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    EXPECT_TRUE(orders_.empty()) << "replay intents must be virtual only (no order frames)";
+    ASSERT_EQ(reports_.size(), 1U) << "logical positions must be published exactly once at startup";
+    EXPECT_EQ(reports_[0].account_id, "CTP001");
+    EXPECT_EQ(reports_[0].instrument_id, std::string(kInstrumentA));
+    EXPECT_EQ(reports_[0].net_volume, 2) << "recovered position must be published, not zero";
+    EXPECT_NE(stderr_text.find("account fanout enabled |"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("warmup=replayed"), std::string::npos) << stderr_text;
+}
+
+/**
+ * 最后一根归档 bar 已收（final）：回放期间缓冲的 tick 中，目标桶 `<= B` 的必须丢弃（归档已
+ * 覆盖，再喂一次会重复计一根），更晚桶的保留并触发 `close(B) → open(B+1)`。
+ *
+ * 用「假历史加载器同步点」保证缓冲 tick 在回放开始**之前**已写入 md 通道（行情 reader 在
+ * `dz_init` 时从当前写位置开始，启动前写入的 tick 会被跳过）。
+ */
+TEST_F(BarStrategyFrameworkTest, BufferedTicksAreDroppedAgainstFinalAnchor) {
+    const std::size_t total = static_cast<std::size_t>(kTestMaxLookback) + 4;
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback);
+    const std::vector<dztrader::bar::Bar> history = make_archive_history(total);
+    fake_history_[std::string(kInstrumentA)] = history;
+    fake_metadata_available_ = false;
+    history_barrier_enabled_ = true;
+
+    const dztrader::bar::Bar& anchor = history.back();
+    const int32_t last_tick_sec = anchor.begin_sec + 30;
+    const auto cum_volume_after = static_cast<DzVolume>(anchor.cum_volume + 1);
+
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_history_loader()) << "the fake history loader was never reached";
+    // 1) 更早的桶（属于已收的上一根）→ 丢；2) 同桶（final）→ 丢；3) 下一桶 → 留
+    ASSERT_TRUE(write_tick(
+        make_tick(kInstrumentA, dztrader::bar::TradingTime::to_clock(anchor.begin_sec - 60 + 30),
+                  anchor.close, cum_volume_after, anchor.cum_turnover + 1.0)));
+    ASSERT_TRUE(write_tick(make_tick(
+        kInstrumentA, dztrader::bar::TradingTime::to_clock(last_tick_sec), anchor.close + 0.5,
+        static_cast<DzVolume>(cum_volume_after + 1), anchor.cum_turnover + 2.0)));
+    ASSERT_TRUE(write_tick(
+        make_tick(kInstrumentA, dztrader::bar::TradingTime::to_clock(anchor.begin_sec + 60 + 30),
+                  anchor.close + 1.0, static_cast<DzVolume>(cum_volume_after + 2),
+                  anchor.cum_turnover + 3.0)));
+    release_history_loader();
+
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarClose, 5));
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(exit_code_, 0);
+
+    EXPECT_NE(stderr_text.find("warmup continuation | drained=3 retained=1 dropped=2"),
+              std::string::npos)
+        << stderr_text;
+
+    const std::vector<ObservedEvent> events = callback_stage_events(kInstrumentA);
+    // final 锚点：同桶缓冲 tick 不产生第 5 个 update
+    std::size_t updates_of_anchor = 0;
+    for (const ObservedEvent& event : events) {
+        if (event.kind == EventKind::BarUpdate &&
+            event.bar_index == static_cast<std::int64_t>(total) - 1) {
+            ++updates_of_anchor;
+        }
+    }
+    EXPECT_EQ(updates_of_anchor, 4U)
+        << "a buffered same-bucket tick must be dropped for final anchor";
+    // 保留的下一桶 tick 关闭锚点并开新根
+    ASSERT_GE(events.size(), 3U);
+    EXPECT_EQ(events[events.size() - 3].kind, EventKind::BarClose);
+    EXPECT_EQ(events[events.size() - 3].bar_index, static_cast<std::int64_t>(total) - 1);
+    EXPECT_EQ(events[events.size() - 2].kind, EventKind::BarOpen);
+    EXPECT_EQ(events[events.size() - 2].bar_index, static_cast<std::int64_t>(total));
+    EXPECT_EQ(events[events.size() - 1].kind, EventKind::BarUpdate);
+    EXPECT_EQ(events[events.size() - 1].bar_index, static_cast<std::int64_t>(total));
+}
+
+/**
+ * 最后一根归档 bar 未完成（forming）：同桶的缓冲 tick 保留并**原地续接** forming bar——不产生
+ * 重复的 close/open（同一根 bar 只能 open 一次、close 一次），多出的 update 直接并入。
+ */
+TEST_F(BarStrategyFrameworkTest, BufferedTicksContinueFormingAnchorWithoutDuplicateOpenClose) {
+    const std::size_t total = static_cast<std::size_t>(kTestMaxLookback) + 4;
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback);
+    std::vector<dztrader::bar::Bar> history =
+        make_archive_history(total, kHistoryFirstBeginSec, 200.0, true);
+    // forming bar 的 last_tick_sec 是「断线前最后一笔」：续接 tick 必须晚于它才不会被 builder
+    // 当乱序丢掉。归档里默认填桶末（begin+59），这里改成断线时刻 begin+10。
+    history.back().last_tick_sec = history.back().begin_sec + 10;
+    fake_history_[std::string(kInstrumentA)] = history;
+    fake_metadata_available_ = false;
+    history_barrier_enabled_ = true;
+
+    const dztrader::bar::Bar& anchor = history.back();
+    const auto cum_volume_after = static_cast<DzVolume>(anchor.cum_volume + 1);
+
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_history_loader()) << "the fake history loader was never reached";
+    // 更早桶 → 丢；同桶 → 留（续接 forming bar）；下一桶 → 留（收 forming bar 并开新根）
+    ASSERT_TRUE(write_tick(
+        make_tick(kInstrumentA, dztrader::bar::TradingTime::to_clock(anchor.begin_sec - 60 + 30),
+                  anchor.close, cum_volume_after, anchor.cum_turnover + 1.0)));
+    ASSERT_TRUE(write_tick(
+        make_tick(kInstrumentA, dztrader::bar::TradingTime::to_clock(anchor.begin_sec + 40),
+                  anchor.close + 2.0, static_cast<DzVolume>(cum_volume_after + 1),
+                  anchor.cum_turnover + 2.0)));
+    ASSERT_TRUE(write_tick(
+        make_tick(kInstrumentA, dztrader::bar::TradingTime::to_clock(anchor.begin_sec + 60 + 30),
+                  anchor.close + 1.0, static_cast<DzVolume>(cum_volume_after + 2),
+                  anchor.cum_turnover + 3.0)));
+    release_history_loader();
+
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarClose, 5));
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(exit_code_, 0);
+
+    EXPECT_NE(stderr_text.find("warmup continuation | drained=3 retained=2 dropped=1"),
+              std::string::npos)
+        << stderr_text;
+
+    const auto anchor_index = static_cast<std::int64_t>(total) - 1;
+    const std::vector<ObservedEvent> events = callback_stage_events(kInstrumentA);
+    std::size_t anchor_updates = 0;
+    std::size_t anchor_opens = 0;
+    std::size_t anchor_closes = 0;
+    double last_anchor_update_close = 0;
+    for (const ObservedEvent& event : events) {
+        if (event.kind == EventKind::BarUpdate && event.bar_index == anchor_index) {
+            ++anchor_updates;
+            last_anchor_update_close = event.close;
+        } else if (event.kind == EventKind::BarOpen && event.bar_index == anchor_index) {
+            ++anchor_opens;
+        } else if (event.kind == EventKind::BarClose && event.bar_index == anchor_index) {
+            ++anchor_closes;
+        }
+    }
+    EXPECT_EQ(anchor_updates, 5U) << "the same-bucket buffered tick must continue the forming bar";
+    EXPECT_EQ(anchor_opens, 1U) << "a forming bar must not be opened twice";
+    EXPECT_EQ(anchor_closes, 1U)
+        << "a forming bar must be closed exactly once (by the next bucket)";
+    EXPECT_DOUBLE_EQ(last_anchor_update_close, anchor.close + 2.0);
+}
+
+/// 冷启动（归档不可用）：打印降级 WARN、不阻断启动，tick 照常走门禁（静默填窗 → 回调）
+TEST_F(BarStrategyFrameworkTest, ColdStartDegradesToLiveWithoutHistory) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback);
+    fake_history_available_ = false;
+    fake_metadata_available_ = false;
+
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_events(1));  // on_init 已执行 → 说明启动没被历史缺失打断
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(exit_code_, 0);
+
+    EXPECT_NE(stderr_text.find("historical bars unavailable |"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("fallback=cold_start"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("warmup replay complete |"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("replayed_instruments=0"), std::string::npos) << stderr_text;
+    EXPECT_TRUE(recorder().count(kInstrumentA, EventKind::BarOpen) == 0U)
+        << "no history = no replay callbacks";
+}
+
+/// `warmup.bars` 模式：按**尾部**裁剪到最近 N 根（多给的历史被裁掉，锚点仍是归档尾部）
+TEST_F(BarStrategyFrameworkTest, WarmupBarsModeCropsToTailOfHistory) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60, "[]", "",
+                 "  \"warmup\": {\"bars\": 40},\n");
+    std::vector<dztrader::bar::Bar> history = make_archive_history(50);
+    fake_history_[std::string(kInstrumentA)] = history;
+    fake_metadata_available_ = false;
+
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    // 40 根里 32 根静默 → 8 根回放，共 48 个回调
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarClose, 8));
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(exit_code_, 0);
+
+    ASSERT_EQ(history_queries_.size(), 1U);
+    EXPECT_EQ(history_queries_[0].instrument_id, std::string(kInstrumentA));
+    EXPECT_EQ(history_queries_[0].period_sec, 60);
+    ASSERT_TRUE(history_queries_[0].warmup_bars.has_value());
+    EXPECT_EQ(*history_queries_[0].warmup_bars, 40);
+    EXPECT_FALSE(history_queries_[0].warmup_from.has_value());
+    EXPECT_NE(stderr_text.find("silent_bars=32"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("replayed_bars=8"), std::string::npos) << stderr_text;
+
+    // 裁剪取尾部：首个 close 事件对应原归档下标 10+31 = 41
+    const std::vector<ObservedEvent> events = recorder().for_instrument(kInstrumentA);
+    const std::int64_t first_close_index = static_cast<std::int64_t>(kTestMaxLookback) - 1;
+    ASSERT_GE(events.size(), 2U);
+    EXPECT_EQ(events[1].kind, EventKind::BarClose);
+    EXPECT_EQ(events[1].bar_index, first_close_index);
+    EXPECT_DOUBLE_EQ(events[1].close, history[static_cast<std::size_t>(10 + 31)].close);
+}
+
+/// `warmup.from` 模式：把起始交易日（距纪元天数）原样交给数据源（裁剪语义由数据源负责）
+TEST_F(BarStrategyFrameworkTest, WarmupFromModeForwardsStartDateToSource) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60, "[]", "",
+                 "  \"warmup\": {\"from\": \"2026-01-05\"},\n");
+    fake_history_[std::string(kInstrumentA)] = make_archive_history(40);
+    fake_metadata_available_ = false;
+
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarClose, 8));
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(exit_code_, 0);
+
+    ASSERT_EQ(history_queries_.size(), 1U);
+    EXPECT_FALSE(history_queries_[0].warmup_bars.has_value());
+    ASSERT_TRUE(history_queries_[0].warmup_from.has_value());
+    EXPECT_EQ(*history_queries_[0].warmup_from,
+              static_cast<DzDate>(dztrader::Date::from_string("2026-01-05").days_since_epoch()));
+    EXPECT_NE(stderr_text.find("replayed_bars=8"), std::string::npos) << stderr_text;
+    // `from` 模式的回放计划也要按日期跨度估算（起始日在过去 → 根数 > 0），否则成本 WARN 失效
+    EXPECT_EQ(stderr_text.find("warmup_bars=0"), std::string::npos) << stderr_text;
+    EXPECT_EQ(stderr_text.find("estimated_seconds=0.000"), std::string::npos) << stderr_text;
+}
+
+/**
+ * 锚点按实例独立：两个品种的历史起点/深度不同，各自的回放从自己的最早一根开始，窗口内容
+ * 来自各自的归档历史，不跨实例拼接（组件文档 §5.3 AC）。
+ *
+ * 同时锁「`begin_sec` 跳跃只记 INFO」：B 的历史刻意缺一根（无成交的桶不生成 bar），
+ * 回放照常继续、只打印 gap 计数。
+ */
+TEST_F(BarStrategyFrameworkTest, WarmupAnchorsAreIndependentPerInstrument) {
+    const auto total_a = static_cast<std::size_t>(kTestMaxLookback) + 8;
+    const auto total_b = static_cast<std::size_t>(kTestMaxLookback) + 5;
+    const std::int32_t b_first_begin = kHistoryFirstBeginSec + 20 * 60;
+    std::vector<dztrader::bar::Bar> history_a = make_archive_history(total_a);
+    std::vector<dztrader::bar::Bar> history_b = make_archive_history(total_b, b_first_begin, 900.0);
+    // B 的历史缺第 5 根（begin_sec 跳跃）：无成交桶，回放照常、只记 INFO
+    history_b.erase(history_b.begin() + 4);
+    write_config({std::string(kInstrumentA), std::string(kInstrumentB)}, kTestMaxLookback);
+    fake_history_[std::string(kInstrumentA)] = history_a;
+    fake_history_[std::string(kInstrumentB)] = history_b;
+    fake_metadata_available_ = false;
+
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarClose, 8));
+    ASSERT_TRUE(wait_for_count(kInstrumentB, EventKind::BarClose, 4));
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(exit_code_, 0);
+
+    EXPECT_NE(stderr_text.find("warmup history gaps | instrument=rb2605 gap_count=1"),
+              std::string::npos)
+        << stderr_text;
+    // 每个实例的 bar_index 从自己的窗口推进，互不干扰
+    const auto last_update_a = recorder().count(kInstrumentA, EventKind::BarUpdate);
+    const auto last_update_b = recorder().count(kInstrumentB, EventKind::BarUpdate);
+    EXPECT_EQ(last_update_a, 8U * 4U);
+    EXPECT_EQ(last_update_b, 4U * 4U);
+    const std::vector<ObservedEvent> events_a = recorder().for_instrument(kInstrumentA);
+    const std::vector<ObservedEvent> events_b = recorder().for_instrument(kInstrumentB);
+    ASSERT_FALSE(events_a.empty());
+    ASSERT_FALSE(events_b.empty());
+    // 两个实例的最终窗口分别等于各自归档的尾部
+    EXPECT_DOUBLE_EQ(events_a.back().close, history_a.back().close);
+    EXPECT_DOUBLE_EQ(events_b.back().close, history_b.back().close);
+    EXPECT_NE(events_a.back().close, events_b.back().close) << "windows must not be cross-stitched";
+}
+
+/// 历史深度不足可读深度：先填可用部分（静默），余下由 live tick 补足（INFO + 行为一致）
+TEST_F(BarStrategyFrameworkTest, InsufficientHistoryFillsRemainderFromLive) {
+    const std::size_t available = 10;
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback);
+    fake_history_[std::string(kInstrumentA)] = make_archive_history(available);
+    fake_metadata_available_ = false;
+
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_events(1));
+    // live 补足剩余 22 根静默 bar：每根一根 tick（时钟顺序推进，价格单调；累计量额接着
+    // 归档尾部，否则 builder 按「量额倒退」丢弃）
+    const std::vector<dztrader::bar::Bar> history = make_archive_history(available);
+    const std::int32_t first_begin =
+        kHistoryFirstBeginSec + static_cast<std::int32_t>(available) * 60;
+    double price = 300.0;
+    DzVolume cum_volume = static_cast<DzVolume>(history.back().cum_volume);
+    double cum_turnover = history.back().cum_turnover;
+    // 补 22 根静默 bar 后窗口才装满，再补 1 根新桶的 tick 才会触发 close(31)
+    for (std::int32_t index = 0; index <= kTestMaxLookback - static_cast<std::int32_t>(available);
+         ++index) {
+        cum_volume = static_cast<DzVolume>(cum_volume + 10);
+        cum_turnover += price * 10.0;
+        ASSERT_TRUE(write_tick(make_tick(
+            kInstrumentA, dztrader::bar::TradingTime::to_clock(first_begin + index * 60 + 30),
+            price, cum_volume, cum_turnover)));
+        ++price;
+    }
+    // 第 33 根（bar_index == max_lookback）才产生第一个回调
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarClose, 1));
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(exit_code_, 0);
+
+    EXPECT_NE(stderr_text.find("warmup history insufficient | instrument=rb2601"),
+              std::string::npos)
+        << stderr_text;
+    EXPECT_NE(stderr_text.find("fallback=live_fill"), std::string::npos) << stderr_text;
+    const std::vector<ObservedEvent> events = recorder().for_instrument(kInstrumentA);
+    ASSERT_GE(events.size(), 3U);
+    EXPECT_EQ(events[1].kind, EventKind::BarClose);
+    EXPECT_EQ(events[1].bar_index, static_cast<std::int64_t>(kTestMaxLookback) - 1);
+}
+
+/**
+ * 合约元数据源接上之后：Tier 1 盈亏按合约乘数换算、下单价格按最小变动价位对齐。
+ *
+ * 回放期建仓（虚拟）、回放结束后收到 live tick 触发平仓意图：归一化后的委托价必须是
+ * `4500.0`（`price_tick=0.5` 向下对齐），且盈亏按 `×10` 乘数计算（此前为零的已知限制消失）。
+ */
+TEST_F(BarStrategyFrameworkTest, InjectedMetadataRecoversTier1AndPriceAlignment) {
+    const std::size_t total = static_cast<std::size_t>(kTestMaxLookback) + 4;
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60,
+                 R"([{"account_id":"CTP001","scale":1.0}])");
+    const std::vector<dztrader::bar::Bar> history = make_archive_history(total);
+    fake_history_[std::string(kInstrumentA)] = history;
+    fake_metadata_[std::string(kInstrumentA)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+
+    // 回放第一根建仓 2 手（虚拟），下一根 close 回调里校验按 ×10 的浮动盈亏
+    const double entry_price = history[static_cast<std::size_t>(kTestMaxLookback)].open;
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = kTestMaxLookback,
+        .when = EventKind::BarUpdate,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(2, ctx.close[0]); },
+    });
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = kTestMaxLookback + 1,
+        .when = EventKind::BarUpdate,
+        .apply =
+            [entry_price](dztrader::InstrumentContext& ctx) {
+                EXPECT_DOUBLE_EQ(ctx.position_profit(), (ctx.close[0] - entry_price) * 2 * 10.0)
+                    << "Tier 1 profit must use the injected volume_multiple";
+            },
+    });
+    // live 阶段加仓：价格 4500.3 不在 tick 网格上 → 买单委托价必须向下对齐到 4500.0
+    const std::int64_t live_bar = static_cast<std::int64_t>(total);
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = live_bar,
+        .when = EventKind::BarUpdate,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(1, 4500.3); },
+    });
+
+    open_probe();
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    // 触发 live bar：喂一根下一桶的 tick（量额继续累计）
+    const dztrader::bar::Bar& anchor = history.back();
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 4 * 4));
+    ASSERT_TRUE(write_tick(make_tick(
+        kInstrumentA, dztrader::bar::TradingTime::to_clock(anchor.begin_sec + 60 + 30), 4500.3,
+        static_cast<DzVolume>(anchor.cum_volume + 10), anchor.cum_turnover + 45003.0)));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 4 * 4 + 1));
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    EXPECT_NE(stderr_text.find("instrument metadata loaded |"), std::string::npos) << stderr_text;
+    EXPECT_EQ(stderr_text.find("instrument metadata unavailable |"), std::string::npos)
+        << stderr_text;
+    ASSERT_EQ(orders_.size(), 1U);
+    EXPECT_EQ(orders_[0].direction, DZ_DIRECTION_LONG);
+    EXPECT_DOUBLE_EQ(orders_[0].price, 4500.0) << "order price must be aligned to the price tick";
+    // 回放期 2 手 + live 加 1 手：差量成交 1 手
+    EXPECT_EQ(orders_[0].volume, 1);
+}
+
+/// 合约元数据缺失只让**该**实例创建失败：打印诊断、进程继续、其它品种照常回放
+TEST_F(BarStrategyFrameworkTest, MissingMetadataSkipsOnlyThatInstrument) {
+    write_config({std::string(kInstrumentA), std::string(kInstrumentB)}, kTestMaxLookback);
+    const auto total = static_cast<std::size_t>(kTestMaxLookback) + 2;
+    fake_history_[std::string(kInstrumentA)] = make_archive_history(total);
+    fake_history_[std::string(kInstrumentB)] = make_archive_history(total);
+    // 只给 A 元数据：B 走 Missing → 实例创建失败
+    fake_metadata_[std::string(kInstrumentA)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarClose, 2));
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(exit_code_, 0) << "a single instrument metadata failure must not stop the process";
+
+    EXPECT_NE(stderr_text.find("instance creation skipped | instrument=rb2605 "
+                               "stage=instrument_metadata status=missing"),
+              std::string::npos)
+        << stderr_text;
+    EXPECT_EQ(recorder().for_instrument(kInstrumentB).size(), 0U)
+        << "the skipped instrument must not receive any callback";
+    EXPECT_FALSE(recorder().for_instrument(kInstrumentA).empty())
+        << "the healthy instrument must still replay";
+}
+
+/**
+ * 回放成本估算的**第一级 WARN**（> 60s）：`warmup.bars` 取配置上限 × 10 个品种时，估算约
+ * 220 秒。回放阻塞在启动阶段，运维必须先被告知「这次启动会卡多久」。
+ */
+TEST_F(BarStrategyFrameworkTest, WarmupPlanWarnsAtSixtySeconds) {
+    std::vector<std::string> instruments;
+    for (int index = 0; index < 10; ++index) {
+        instruments.push_back("rb" + std::to_string(2601 + index));
+    }
+    write_config(instruments, kTestMaxLookback, std::nullopt, 60, "[]", "",
+                 "  \"warmup\": {\"bars\": 10000000},\n");
+    for (const std::string& instrument : instruments) {
+        fake_history_[instrument] =
+            make_archive_history(static_cast<std::size_t>(kTestMaxLookback));
+        fake_metadata_available_ = false;
+    }
+
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_events(static_cast<std::size_t>(instruments.size())));
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(exit_code_, 0);
+
+    EXPECT_NE(stderr_text.find("warmup replay plan |"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("warmup replay slow |"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("threshold=60"), std::string::npos) << stderr_text;
+    EXPECT_EQ(stderr_text.find("threshold=300"), std::string::npos) << stderr_text;
+}
+
+/**
+ * 回放成本估算的**第二级 WARN**（> 300s）：20 个品种时估算约 440 秒，必须升级到 300 阈值
+ * （只打一条，不重复刷两级告警）。
+ */
+TEST_F(BarStrategyFrameworkTest, WarmupPlanWarnsAtThreeHundredSeconds) {
+    std::vector<std::string> instruments;
+    for (int index = 0; index < 20; ++index) {
+        instruments.push_back("rb" + std::to_string(2601 + index));
+    }
+    write_config(instruments, kTestMaxLookback, std::nullopt, 60, "[]", "",
+                 "  \"warmup\": {\"bars\": 10000000},\n");
+    for (const std::string& instrument : instruments) {
+        fake_history_[instrument] =
+            make_archive_history(static_cast<std::size_t>(kTestMaxLookback));
+        fake_metadata_available_ = false;
+    }
+
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_events(static_cast<std::size_t>(instruments.size())));
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(exit_code_, 0);
+
+    EXPECT_NE(stderr_text.find("threshold=300"), std::string::npos) << stderr_text;
+    EXPECT_EQ(stderr_text.find("threshold=60"), std::string::npos) << stderr_text;
 }
 
 }  // namespace
