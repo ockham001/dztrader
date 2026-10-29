@@ -16,7 +16,7 @@
 
 改行为或删符号后，旧注释、README、组件文档仍在描述旧行为——编译与测试都不失败，只有人会读到错话。
 
-- **已有机械防线（先跑，不要靠肉眼）**：`preflight` 的 `docs links` 步现在还会校验活跃文档里**反引号包裹的仓库路径**与**反引号包裹的 snake_case 代码符号**是否仍然存在（`docs/components/`、`docs/frame_contracts/`、`docs/agents/` 与根 README/GLOSSARY 等活跃文档；冻结归档与 ADR 豁免）。改/删文件后路径写错报 `backticked path does not exist`；删/改符号后文档仍写旧名报 `backticked symbol not found in code`（#191；白名单只收环境/计划名词，已实现又删掉的符号**不进白名单**）。**这一步只覆盖存在性**——行为描述、口径文字仍要人核对。
+- **已有机械防线（先跑，不要靠肉眼）**：`preflight` 的 `docs links` 步现在还会校验活跃文档里**反引号包裹的仓库路径**与**反引号包裹的 snake_case 代码符号**是否仍然存在（`docs/components/`、`docs/frame_contracts/`、`docs/agents/` 与根 README/GLOSSARY 等活跃文档；冻结归档与 ADR 豁免）。改/删文件后路径写错报 `backticked path does not exist`；删/改符号后文档仍写旧名报 `backticked symbol not found in code`（#191；白名单只收环境/计划/外部工具名词；已实现又删掉的符号**默认不进白名单**——唯一例外是文档把历史符号当反例有意引用，此时显式登记并在检查器注释注明）。**这一步只覆盖存在性**——行为描述、口径文字仍要人核对。
 - 搜法：对 diff 里改动的每个函数/字段/配置键，反查全仓（含同文件相邻注释）提及它的地方；删掉的类/字段尤其要 grep 注释。
 - 事实校准：文档里每一句「已实现 / 已接上 / 已支持」都要能在 diff 里指到对应代码；指不到就是**宣称先于实现**，与代码漂移同级（#157 曾把 `ConfigStore` 接线写进文档而代码未做）。反向同样成立：代码做了而文档没提，下一票会当成「还没做」重做。
 - 本波实例：#123 删掉 `AlertEvaluator` 后 `snapshot_builder.cpp` 仍注释"告警判定与冷却在 AlertEvaluator 中完成"、`main.cpp` 两处"告警判定"措辞、README 资源监控条目仍写"经 UI 通知并冷却"。#155/#156/#157 的 9 轮修复**全部**动过 `docs/components/bar_strategy.md`——同一段落被连续改写 4 次，是这条规则最高频的复发点。
