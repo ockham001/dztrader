@@ -127,6 +127,15 @@ Refs: <contract/component/docs 路径>
 - **共享工作区交还**：`git switch main && git pull --ff-only`；`git status` 只允许出现**已登记的并行线**产物（没有并行线时应完全干净）。不把工作区留在 feature 分支就结束会话——会直接阻塞下一条线（本波 #91→#92：共享工作区留在 feat 分支，另一会话卡 15 分钟 + 人工介入）。
 - 报告固定包含：审查轮数与结论、改动文件数、commit hash、CI run 链接与结论、PR 链接与 merge commit、preflight 结果、issue 状态、工作区/分支状态。
 
+## 8. 本机沙箱（DSH）环境约定
+
+AGENTS §五「本机沙箱」的细节都放在这里（AGENTS 只留指针，避免常驻上下文重复）：
+
+- **等待与门禁**：长命令（门禁 / CI / 子代理）用**后台作业**启动（`run_in_background`），需要结果时 `job_output(wait=true)`；等待期做只读准备，不要 `sleep` 轮询或前台空等。CI 用 `./scripts/wait-ci.sh --pr <n>`（随时查状态加 `--status`，0 绿 / 1 红 / 2 错误 / 3 仍在跑）；门禁用 `./scripts/gate.sh build|test|preflight`（短输出用 `--tail N`，**不要接管道**）。异步子代理完成会自动以 `subagent-settled` 通知；`wait_agent` 只对 Team 成员有效。
+- **跨调用文件与缓存**：每次 bash 调用的 `/tmp` 相互隔离，跨调用产物写 `.cache/`（已 gitignore）；`~/.conan2` / `~/.cache/gh` / `~/.npm` 只读时相关脚本已回退仓库 `.cache/`，仍被拒时一次性申请更高权限，不要反复重试。
+- **权限与交接**：会话从 `read-only` 转执行（写文件 / commit / push）前请用户切回一次 `workspace-write`，不要逐操作申请 escalation；`handoff` 文档写 `.cache/handoff/`（`/tmp` 不可跨会话）。
+- **不要自建后台进程**：DSH 在工具调用结束时回收直接 fork 的孙进程（实测 `setsid` 子进程也活不过调用边界），后台等待一律用 `run_in_background`。
+
 ## 反模式（实际踩过）
 
 - 审未提交工作区 → 审查期间工作区被改（含并行线提交），结论失效，提交后还要 amend。

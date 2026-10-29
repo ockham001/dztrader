@@ -150,13 +150,13 @@
 1. **外科手术式改动。** 只碰必须碰的；不要"顺手改进"相邻代码、注释或格式；不要重构没坏的东西；匹配现有风格。**发现无关死代码只提示，不删除**；只清理**你自己**的改动造成的孤儿（多余的 import / 变量 / 函数）。判据：每一行改动都能直接追溯到用户这次的请求
 2. **先说假设再动手。** 不假设、不掩饰困惑。多种解释时**全部列出**而不是默默选一个；有更简单的方案就直说；不清楚就停下来问
 3. **发现文档与代码漂移：当场修文档**（见第三节收敛规则 4）
-4. **源码改动优先 `edit`/`write`**：用 python/sed 批量重写文件后必须重新 `read` 再 `edit`（FS 守卫按「读过才可改」判定）；常规路径不要用 `sed -i` / heredoc 直接写 `libs/`、`docs/`
+4. **源码改动优先 `edit`/`write`**：批量重写（python/sed）后必须重新读取再改（宿主文件守卫按「读过才可改」判定，stale 会拒绝）；常规路径不要用 `sed -i` / heredoc 直接写 `libs/`、`docs/`
 
 ### 日常工作流（单人 + AI 协作）
 
 1. **开工前必读**：本文 → [docs/README.md](docs/README.md)（文档地图与冲突裁决规则）→ 相关帧契约（先读 `general.md`）
 2. **小步提交**：一个提交只做一件事，每步可验证（构建 + 相关测试）。提交信息**中文**，前缀 `fix:` / `feat:` / `refactor:` / `docs:` / `test:` / `chore:` / `perf:` / `style:` / `build:` / `ci:`
-3. **push 前自检**：见 [docs/development-checklist.md](docs/development-checklist.md) 的 C 段（权威且更全）。同一波内 PR 开完即可继续下一票的只读准备，CI 结果在自然断点或波末统一收；**本票合并前、开新波前 CI 必须绿**；**CI 红先修红，不叠加新改动**
+3. **push 前自检**：见 [docs/development-checklist.md](docs/development-checklist.md) 的 C 段（权威且更全 —— 含 `type-check` / `lint` / `lint:css` / 契约 Freshness 门禁）。同一波内 PR 开完即可继续下一票的只读准备，CI 结果在自然断点或波末统一收；**本票合并前、开新波前 CI 必须绿**；**CI 红先修红，不叠加新改动**
 4. **大改动先写文档**：spec 设计 + plan 实施计划（checkbox 制），我确认后再实现
 5. **收尾**：工作区保持干净（运行产物已 gitignore；临时诊断脚本要么通用化提交、要么删除）。每波改动结束 `git status` 干净 + `git log` 可读 + CI 绿
 
@@ -202,15 +202,13 @@
 
 ### 本机沙箱（DSH）
 
-- **等待与门禁纪律**：长命令（门禁 / CI / 子代理）用**后台作业**启动（`run_in_background`），需要结果时 `job_output(wait=true)`；等待期做只读准备，不要 `sleep` 轮询或前台空等。CI 用 `./scripts/wait-ci.sh --pr <n>`（随时查状态加 `--status`，0 绿 / 1 红 / 2 错误 / 3 仍在跑）；门禁用 `./scripts/gate.sh build|test|preflight`（短输出用 `--tail N`，**不要接管道**）。细节见 [ticket-closeout](docs/agents/ticket-closeout.md) §2/§4
-- **跨调用文件与缓存**：每次 bash 调用的 `/tmp` 相互隔离，跨调用产物写 `.cache/`（已 gitignore）；`~/.conan2` / `~/.cache/gh` / `~/.npm` 只读时相关脚本已回退仓库 `.cache/`，仍被拒时一次性申请更高权限
-- **权限与交接**：会话从 `read-only` 转执行（写文件 / commit / push）前请用户切回一次 `workspace-write`；`handoff` 文档写 `.cache/handoff/`（`/tmp` 不可跨会话）
+- 后台作业/CI 快照/门禁用法、跨调用 `/tmp` 与缓存回退、权限 preset、`.cache/handoff/` 约定见 [ticket-closeout](docs/agents/ticket-closeout.md) §2/§4/§8。
 
 ---
 
 ## 六、CodeGraph
 
-仓库根存在 `.codegraph/` 时才用：MCP `codegraph_explore` 一次返回相关符号源码 + 调用路径（含动态派发链），shell 兜底 `codegraph explore "<符号>"`；没有索引就跳过。**是否建索引由我决定，不要自行 `codegraph init`**
+仓库根存在 `.codegraph/` 时才用（没有索引就跳过）；shell 兜底 `codegraph explore "<符号>"`。**是否建索引由我决定，不要自行 `codegraph init`**
 
 ---
 
