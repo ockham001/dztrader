@@ -1016,6 +1016,16 @@ status | quit
     `quit` 与关键错误（如 `instrument add` 元数据缺失）**额外** `dz_notify_ui`（WARN/ERROR，
     不弹窗）。语法错误不弹通知——那是操作员当场可改的。超长结果由 SDK 按单页上限截断
     （`api.h` 的 `dz_output_ui` 口径），命令层不自行分片。
+  - **`status` 的输出字段**：一行 `status | instrument_count=… account_count=… period_sec=…
+    max_lookback=… buffer_bars=… net_position=… failed_instances=… param_count=… live=…`。
+    比 AC 的最低要求（「`status` 存在」）多几项，理由是运维排障时最常问的就是这几个数；
+    `net_position` 是各品种逻辑净持仓之和（策略级 P 不单独上报，这里只是观测汇总），
+    `live=0` 表示进程还在预热/回放（正常启动完成后恒为 1）。
+  - **同步单没发全时命令结果多一行**：命令本身仍算成功（写盘与逻辑台账都已按命令推进），
+    但若同步单因无行情（`skipped_no_market_data`）或手数越界（`rejected`）没发出去，结果文本
+    追加一行 `sync orders incomplete | submitted=… skipped_no_market_data=… rejected=…`。
+    不把它并成错误行：命令确实成功了，改写成失败会让脚本化运维误判并重试（重试还会撞
+    「已存在 / 未挂靠」再次失败）。组件文档 §6.2 的「跳过并输出错误行」指的就是这行。
   - **`quit` 只置标志**：`should_exit()` 返回 true、`exit_code()` 为 0，由引擎走自退出路径
     （`on_stop` → 逐品种 `on_destroy`）。命令实现里**不**销毁实例，否则 `on_destroy` 会被调两次。
 
@@ -1050,7 +1060,8 @@ status | quit
   引号：命令层没有引号语法，加引号会让人以为要再输入一次），其余用 JSON dump——因此
   `param set x 10` → `param get x` 打印 `10` → 再 `param set x 10` 是同一个值（往返一致）。
 - **通知的投递时机（实现期确认 #162）**：判据是实例「是否**交付过**至少一次 B 回调」
-  （`mark_callback_stage_entered()`，在三个 bar 分发入口交付回调之后设置），不是
+  （`note_callback_delivered()`，在三个 bar 分发入口交付回调之后设置；**不在**
+  `if constexpr (HasOnBarXxx)` 里面——它标记的是实例阶段，与 B 实现了哪个回调无关），不是
   `bar_index >= max_lookback`——后者只看窗口几何，把「参数通知该不该投递」与「回调门禁」两件
   事绑在一起，将来门禁口径一变就会改错一处。挂起标记在**每次**回调之后检查一次（挂起可能发生
   在任何时刻，不只在静默填窗期）。合并语义：连续 N 次 `param set` 在挂起位置只留一个标记，

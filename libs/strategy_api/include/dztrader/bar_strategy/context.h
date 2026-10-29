@@ -155,6 +155,70 @@ concept ParamValue = std::same_as<T, std::int64_t> || std::same_as<T, double> ||
                      std::same_as<T, bool> || std::same_as<T, std::string>;
 
 /**
+ * @brief 一张同步单的结局（`submit_sync_order` 的返回；命令层据此决定要不要报错行）
+ *
+ * 为什么需要返回值而不只是 stderr：组件文档 §6.2 明确规定「无近期行情的品种跳过并**输出
+ * 错误行**；逻辑持仓仍按命令更新」。这里的「输出错误行」是给操作员的**命令结果**
+ * （`OUTPUT_UI`）——只写 stderr 会让 `instrument del X sync` 在无 tick 时回一句 `ok`，
+ * 而操作员以为平仓单已经发出去了。
+ */
+enum class SyncOrderOutcome : std::uint8_t {
+    Submitted,            ///< 已下发（成功路径）
+    SkippedNotLive,       ///< 未进入 live（回放/虚拟台账）：不是错误
+    SkippedNoMarketData,  ///< 无可用行情：该品种跳过（命令结果里要报出来）
+    RejectedVolume,       ///< 差量手数越界：拒单（命令结果里要报出来）
+};
+
+/**
+ * @brief 一组同步单的结局汇总（命令层据此在结果文本里追加一行「哪些被跳过」）
+ *
+ * 只记「成功几张、跳过几张、拒单几张」：命令层不需要逐账户明细（stderr 诊断已有），但必须
+ * 知道**有没有单没发出去**——组件文档 §6.2 要求「无近期行情的品种跳过并输出错误行」。
+ */
+struct SyncOrderTally {
+    std::int32_t submitted = 0;               ///< 已下发的张数
+    std::int32_t skipped_no_market_data = 0;  ///< 无行情而跳过的张数
+    std::int32_t rejected = 0;                ///< 手数越界而拒单的张数
+
+    /// @brief 记一张同步单的结局
+    void record(SyncOrderOutcome outcome) noexcept {
+        switch (outcome) {
+            case SyncOrderOutcome::Submitted:
+                ++submitted;
+                break;
+            case SyncOrderOutcome::SkippedNoMarketData:
+                ++skipped_no_market_data;
+                break;
+            case SyncOrderOutcome::RejectedVolume:
+                ++rejected;
+                break;
+            case SyncOrderOutcome::SkippedNotLive:
+                break;  // 未进入 live 不是可报的问题
+        }
+    }
+
+    /// @brief 是否有单没发出去（命令结果需要追加错误行）
+    [[nodiscard]] bool has_problem() const noexcept {
+        return skipped_no_market_data > 0 || rejected > 0;
+    }
+};
+
+/// @brief 同步单结局的诊断名（`submitted` / …；仅用于诊断与测试可读性）
+[[nodiscard]] inline const char* sync_order_outcome_name(SyncOrderOutcome outcome) noexcept {
+    switch (outcome) {
+        case SyncOrderOutcome::Submitted:
+            return "submitted";
+        case SyncOrderOutcome::SkippedNotLive:
+            return "skipped_not_live";
+        case SyncOrderOutcome::SkippedNoMarketData:
+            return "skipped_no_market_data";
+        case SyncOrderOutcome::RejectedVolume:
+            return "rejected_volume";
+    }
+    return "skipped_not_live";
+}
+
+/**
  * @brief 每品种一个：品种数据 + B 的 API 面合并为同一对象（组件文档 §3）
  *
  * 公开面（B 可见）：7 条只读价格视图、`make_series()`、`bar_index()`、`instrument_id()`。
@@ -606,19 +670,42 @@ private:
     void publish_position(const AttachedAccount& account,
                           const char* instrument_id,
                           LargeVolume net_l) {
-        if (dz_ == nullptr) {
+        publish_position_to(dz_, account.account_id, instrument_id_.c_str(), instrument_id, net_l);
+    }
+
+    /**
+     * @brief **唯一的** `dz_set_logical_position` 调用点（静态形态；实例形态委托过来）
+     *
+     * 做成静态是因为 `account del` 需要「账户 + 空品种」通配清零，而那一步发生时**账户已不在
+     * 表内、且可能一个品种都没有**——没有实例可以承载这次调用。若为它另开一条直接调
+     * `dz_set_logical_position` 的分支，仓库里就有两个上报出口，而「上报只有一个出口」正是
+     * §3/§6 的明文不变量（`docs/components/bar_strategy.md` §2/§8）。
+     *
+     * 用 `const char*` + `nullptr` 而不是 `std::string_view` 表示通配，有两个理由：
+     *   1. **零分配**——`dz_set_logical_position` 本来就要 NUL 结尾的指针，传
+     *      `instrument_id_.c_str()` 直接用；`string_view` 版本必须造一个 `std::string`
+     *      才能拿到指针，等于每笔意图 × 每个账户多一次堆分配（§10 的 1us 预算不容它）；
+     *   2. **没有歧义**——`string_view` 版本里「传别的合约代码」既不是通配也不是本品种，
+     *      实现只能二选一（原来会静默变成通配清零）。`nullptr` 只有「通配」一个含义，
+     *      传本品种代码就是本品种，语义由类型而非约定保证。
+     *
+     * @param dz            引擎会话句柄（nullptr = 虚拟台账模式，无操作）
+     * @param account_id    目标挂靠账户
+     * @param scope         诊断用的作用域描述（本品种代码 / `all_instruments`）
+     * @param instrument_id 合约代码；`nullptr` = 该账户本策略全部品种清零
+     * @param net_l         该账户的逻辑持仓（通配时 SDK 忽略并固定为 0）
+     */
+    static void publish_position_to(DzContext* dz,
+                                    const std::string& account_id,
+                                    const char* scope,
+                                    const char* instrument_id,
+                                    LargeVolume net_l) {
+        if (dz == nullptr) {
             return;  // 虚拟台账模式：无会话句柄
         }
-        // 用 `const char*` + `nullptr` 而不是 `std::string_view` 表示通配，有两个理由：
-        //   1. **零分配**——`dz_set_logical_position` 本来就要 NUL 结尾的指针，传
-        //      `instrument_id_.c_str()` 直接用；`string_view` 版本必须造一个 `std::string`
-        //      才能拿到指针，等于每笔意图 × 每个账户多一次堆分配（§10 的 1us 预算不容它）；
-        //   2. **没有歧义**——`string_view` 版本里「传别的合约代码」既不是通配也不是本品种，
-        //      实现只能二选一（原来会静默变成通配清零）。`nullptr` 只有「通配」一个含义，
-        //      传本品种代码就是本品种，语义由类型而非约定保证。
-        const char* target = instrument_id == nullptr ? "" : instrument_id;
-        if (!dz_set_logical_position(dz_, account.account_id.c_str(), target, net_l)) {
-            report_publish_failed(account.account_id, net_l);
+        const char* const target = instrument_id == nullptr ? "" : instrument_id;
+        if (!dz_set_logical_position(dz, account_id.c_str(), target, net_l)) {
+            report_publish_failed_for(account_id, scope, net_l);
         }
     }
 
@@ -684,42 +771,47 @@ private:
      * @param delta   命令引起的逻辑持仓差量（正 = 买、负 = 卖；调用方保证非 0）
      * @param market  true = 市价单（命令带 `market`），false = 对手价
      */
-    void submit_sync_order(const AttachedAccount& account, LargeVolume delta, bool market) {
+    [[nodiscard]] SyncOrderOutcome submit_sync_order(const AttachedAccount& account,
+                                                     LargeVolume delta,
+                                                     bool market) {
         if (dz_ == nullptr || !live_) {
-            return;  // 虚拟台账模式 / 回放期：只记逻辑账（命令在 live 前不可达，仍防御）
+            return SyncOrderOutcome::SkippedNotLive;  // 虚拟台账模式 / 回放期：只记逻辑账
         }
         const DzDirection direction = direction_of(delta);
         const SyncPricePlan plan = resolve_sync_price(direction, market, tick_);
         if (!plan.valid) [[unlikely]] {
             report_sync_price_unavailable(account, direction);
-            return;
+            return SyncOrderOutcome::SkippedNoMarketData;
         }
         const std::optional<Volume> order_qty = order_volume(delta);
         if (!order_qty.has_value()) [[unlikely]] {
             report_order_volume_out_of_range(account, direction, delta);
-            return;
+            return SyncOrderOutcome::RejectedVolume;
         }
         if (plan.source == SyncPriceSource::Opponent) {
             report_sync_price(account, direction, *order_qty, plan);
         }
         submit_order(account, direction, *order_qty, plan.price, plan.price_type);
+        return SyncOrderOutcome::Submitted;
     }
 
     /// @brief 对全部挂靠账户发本品种的平仓同步单（`qty = −L_i(old)`；`instrument del sync`）
     ///
     /// 只发单、不改逻辑台账、不上报——`instrument del` 的上报清零在退订与 `on_destroy` 之后，
     /// 由 {@link publish_zero_all_accounts} 做（§8 的顺序要求）。
-    void submit_sync_close_orders(bool sync, bool market) {
+    [[nodiscard]] SyncOrderTally submit_sync_close_orders(bool sync, bool market) {
+        SyncOrderTally tally;
         if (!sync || dz_ == nullptr || accounts_ == nullptr || !live_) {
-            return;
+            return tally;
         }
         for (const AttachedAccount& account : *accounts_) {
             const LargeVolume old_l = logical_position_for(account);
             if (old_l == 0) {
                 continue;  // 该账户本来就没有本品种的逻辑持仓：无差量可补
             }
-            submit_sync_order(account, -old_l, market);
+            tally.record(submit_sync_order(account, -old_l, market));
         }
+        return tally;
     }
 
     /// @brief 逐账户上报本品种逻辑持仓为 0（`instrument del` 移除实例前；§8）
@@ -757,18 +849,10 @@ private:
      * @param account 被删除的账户（只用它的 id）
      */
     static void publish_account_wildcard_zero(DzContext* dz, const AttachedAccount& account) {
-        if (dz == nullptr) {
-            return;
-        }
         // 契约 strategy §SET_LOGICAL_POSITION：account_id 有效 + instrument_id 为 "" →
-        // 该账户本策略的全部品种清零（net_volume 忽略，固定 0）。
-        if (!dz_set_logical_position(dz, account.account_id.c_str(), "", 0)) {
-            std::cerr << std::format(
-                             "logical position publish failed | account={} net_volume=0 "
-                             "scope=all_instruments error=\"{}\"",
-                             account.account_id, dz_errmsg())
-                      << '\n';
-        }
+        // 该账户本策略的全部品种清零（net_volume 忽略，固定 0）。走**同一个**上报出口。
+        publish_position_to(dz, account.account_id, "all_instruments", /*instrument_id=*/nullptr,
+                            /*net_l=*/0);
     }
 
     /// @brief 本品种的逻辑净持仓 P（A 的 `instrument list` / `status` 汇总用；B 用 Tier 1）
@@ -955,8 +1039,12 @@ private:
                              double price,
                              Volume order_qty,
                              DzDirection direction);
-    /// @brief 逻辑持仓上报写帧失败
+    /// @brief 逻辑持仓上报写帧失败（实例形态：作用域就是本品种）
     void report_publish_failed(const std::string& account_id, LargeVolume net_l);
+    /// @brief 逻辑持仓上报写帧失败（静态形态：作用域由调用方给出，如 `all_instruments`）
+    static void report_publish_failed_for(const std::string& account_id,
+                                          const char* scope,
+                                          LargeVolume net_l);
     /// @brief 同步单无可用行情（无盘口也无最新价）：该品种跳过、逻辑持仓仍按命令更新
     void report_sync_price_unavailable(const AttachedAccount& account, DzDirection direction);
     /// @brief 同步单用了对手价（INFO：解释「为什么成交价是盘口另一侧」）
@@ -1284,6 +1372,16 @@ inline void InstrumentContext::report_publish_failed(const std::string& account_
                      "logical position publish failed | instrument={} account={} net_volume={} "
                      "error=\"{}\"",
                      instrument_id_, account_id, net_l, dz_errmsg())
+              << '\n';
+}
+
+inline void InstrumentContext::report_publish_failed_for(const std::string& account_id,
+                                                         const char* scope,
+                                                         LargeVolume net_l) {
+    std::cerr << std::format(
+                     "logical position publish failed | account={} scope={} net_volume={} "
+                     "error=\"{}\"",
+                     account_id, scope, net_l, dz_errmsg())
               << '\n';
 }
 

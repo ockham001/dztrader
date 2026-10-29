@@ -516,6 +516,47 @@ private:
                                          command_name, field, target, error));
     }
 
+    /**
+     * @brief 同步单跳过/拒单的追记行（组件文档 §6.2「跳过并输出错误行」）
+     *
+     * 命令本身**成功**（写盘与逻辑台账都已按命令推进），但同步单没发出去——这是操作员必须
+     * 知道的分叉：实际仓位与逻辑口径在这一刻不一致了。返回空串表示没有需要追记的东西。
+     *
+     * @param tally 该命令发出的全部同步单的结局汇总
+     * @return 追加到命令结果后的一行（或空串）
+     */
+    [[nodiscard]] static std::string sync_skipped_line(const SyncOrderTally& tally) {
+        if (!tally.has_problem()) {
+            return {};
+        }
+        return std::format(
+            "sync orders incomplete | submitted={} skipped_no_market_data={} "
+            "rejected={}",
+            tally.submitted, tally.skipped_no_market_data, tally.rejected);
+    }
+
+    /**
+     * @brief 把「同步单没发全」的追记行拼到命令结果之后
+     *
+     * 命令结果本身是**成功**行（写盘与逻辑台账都已按命令推进），但若同步单因无行情/手数越界
+     * 没发出去，操作员必须看到——组件文档 §6.2 要求「跳过并输出错误行」。两者不合并成一行
+     * 错误：命令确实成功了，把成功改写成「失败」会让脚本化运维误判并重试（重试还会因
+     * 「已存在/未挂靠」再次失败）。分两行表达两件事。
+     *
+     * @param result 命令的成功结果行
+     * @param tally  该命令发出的全部同步单结局
+     * @return 结果行（无问题时原样返回）
+     */
+    [[nodiscard]] static std::string with_sync_notes(std::string result,
+                                                     const SyncOrderTally& tally) {
+        const std::string note = sync_skipped_line(tally);
+        if (!note.empty()) {
+            result += '\n';
+            result += note;
+        }
+        return result;
+    }
+
     /// @brief 失败结果的统一构造（`text` 即给操作员看的单行错误）
     static CommandOutcome command_error(std::string text,
                                         bool notify = false,
@@ -654,10 +695,18 @@ private:
         warmup_single_instrument(slot->second);
 
         // 5. 写盘（把新品种加进 `instruments`）。失败 → 回滚实例与订阅、内存不变。
+        //
+        // **幂等追加**：该 id 可能已经写在配置里，但启动期创建失败（元数据缺失 / `on_init`
+        // 抛异常）——那种情况下实例表里没有它，而配置里保留着它（我们不悄悄删用户的配置）。
+        // 运行期 `instrument add` 正是这类品种的补救路径，因此只在缺失时追加；无条件
+        // `push_back` 会让重试撞上配置层的 `duplicate` 校验、回一句与真实原因无关的错误。
         std::string writeback_error;
         if (!commit_config_with(
                 [&instrument_id](BarStrategyConfig& next) {
-                    next.instruments.push_back(instrument_id);
+                    if (std::ranges::find(next.instruments, instrument_id) ==
+                        next.instruments.end()) {
+                        next.instruments.push_back(instrument_id);
+                    }
                 },
                 writeback_error)) {
             dispatch_on_destroy(slot->second);
@@ -717,7 +766,7 @@ private:
             return writeback_failed("instrument del", "instrument", instrument_id, writeback_error);
         }
         // 2. 可选 sync 平仓单（`qty = −L_i(old)`；先发单，再退订/销毁）
-        node->second.ctx.submit_sync_close_orders(sync, market);
+        const SyncOrderTally close_tally = node->second.ctx.submit_sync_close_orders(sync, market);
         // 3. 退订该品种（失败只诊断：实例正在被移除，订阅残留由 master 侧的超集校验兜底）
         unsubscribe_one(instrument_id);
         // 4. 销毁实例（`on_destroy`）
@@ -730,7 +779,8 @@ private:
         std::cerr << std::format("instrument removed | instrument={} sync={} market={}",
                                  instrument_id, sync ? 1 : 0, market ? 1 : 0)
                   << '\n';
-        return command_ok(std::format("instrument del ok | instrument={}", instrument_id));
+        return command_ok(with_sync_notes(
+            std::format("instrument del ok | instrument={}", instrument_id), close_tally));
     }
 
     /// @brief `instrument list`：逐品种一行（品种 + bar 序号 + 逻辑持仓 + 各账户 `L_i`）
@@ -791,21 +841,24 @@ private:
             node.ctx.publish_position_for(added);
         }
         // 4. 可选 sync（写盘成功之后才发单，§8「sync 发单发生在写盘成功之后」）
+        SyncOrderTally tally;
         if (sync) {
             for (auto& [instrument_id, node] : instruments_) {
                 const LargeVolume new_l = node.ctx.logical_position_for(added);
                 if (new_l == 0) {
                     continue;  // 该品种无逻辑持仓：新账户目标就是 0，无单可发
                 }
-                node.ctx.submit_sync_order(added, new_l, market);
+                tally.record(node.ctx.submit_sync_order(added, new_l, market));
             }
         }
         std::cerr << std::format("account attached | account={} scale={} sync={} market={}",
                                  account_id, config_internal::format_ratio(scale), sync ? 1 : 0,
                                  market ? 1 : 0)
                   << '\n';
-        return command_ok(std::format("account add ok | account={} scale={}", account_id,
-                                      config_internal::format_ratio(scale)));
+        return command_ok(
+            with_sync_notes(std::format("account add ok | account={} scale={}", account_id,
+                                        config_internal::format_ratio(scale)),
+                            tally));
     }
 
     /**
@@ -860,6 +913,7 @@ private:
             node.ctx.publish_position_for(updated);
         }
         // 4. 可选 sync：差量基于「命令前的 L 与命令后的 L」
+        SyncOrderTally tally;
         if (sync) {
             for (auto& [instrument_id, node] : instruments_) {
                 const LargeVolume old_l = node.ctx.logical_position_with_scale(old_scale);
@@ -868,7 +922,7 @@ private:
                 if (delta == 0) {
                     continue;
                 }
-                node.ctx.submit_sync_order(updated, delta, market);
+                tally.record(node.ctx.submit_sync_order(updated, delta, market));
             }
         }
         std::cerr << std::format(
@@ -877,8 +931,10 @@ private:
                          account_id, config_internal::format_ratio(old_scale),
                          config_internal::format_ratio(scale), sync ? 1 : 0, market ? 1 : 0)
                   << '\n';
-        return command_ok(std::format("account set ok | account={} scale={} changed=1", account_id,
-                                      config_internal::format_ratio(scale)));
+        return command_ok(
+            with_sync_notes(std::format("account set ok | account={} scale={} changed=1",
+                                        account_id, config_internal::format_ratio(scale)),
+                            tally));
     }
 
     /**
@@ -912,13 +968,14 @@ private:
         //    部分只有 id，但保留整个结构体让「同一份 AttachedAccount」的语义显式）
         const AttachedAccount removed = *target;
         // 3. 可选 sync：逐品种发 `−L_i(old)` 平仓单（此时账户仍在表内，L_i 仍可算）
+        SyncOrderTally tally;
         if (sync) {
             for (auto& [instrument_id, node] : instruments_) {
                 const LargeVolume old_l = node.ctx.logical_position_for(removed);
                 if (old_l == 0) {
                     continue;
                 }
-                node.ctx.submit_sync_order(removed, -old_l, market);
+                tally.record(node.ctx.submit_sync_order(removed, -old_l, market));
             }
         }
         // 4. 立即移除账户表项
@@ -930,7 +987,8 @@ private:
         std::cerr << std::format("account detached | account={} sync={} market={}", account_id,
                                  sync ? 1 : 0, market ? 1 : 0)
                   << '\n';
-        return command_ok(std::format("account del ok | account={}", account_id));
+        return command_ok(
+            with_sync_notes(std::format("account del ok | account={}", account_id), tally));
     }
 
     /// @brief `account list`：逐账户一行（id + scale + 各品种 `L_i`）
@@ -1302,8 +1360,8 @@ private:
         if constexpr (manager_internal::HasOnBarOpen<Strategy>) {
             invoke_b(node, "on_bar_open",
                      [](Strategy& instance, InstrumentContext& ctx) { instance.on_bar_open(ctx); });
-            on_callback_delivered(node);
         }
+        on_callback_delivered(node);
     }
 
     /// @brief `on_bar_update` 事件：把 `Bar` 字段写进 `[0]` → 调 B（每笔已接受 tick 一次）
@@ -1321,8 +1379,8 @@ private:
             invoke_b(node, "on_bar_update", [](Strategy& instance, InstrumentContext& ctx) {
                 instance.on_bar_update(ctx);
             });
-            on_callback_delivered(node);
         }
+        on_callback_delivered(node);
     }
 
     /**
@@ -1353,8 +1411,8 @@ private:
             invoke_b(node, "on_bar_close", [](Strategy& instance, InstrumentContext& ctx) {
                 instance.on_bar_close(ctx);
             });
-            on_callback_delivered(node);
         }
+        on_callback_delivered(node);
     }
 
     /**
@@ -1373,6 +1431,10 @@ private:
         if (node.ctx.is_failed()) {
             return;  // 回调抛异常：实例已死，不再投递任何回调
         }
+        // 注意：本函数**不在** `if constexpr (HasOnBarXxx)` 里面。它标记的是「**实例**已进入
+        // 回调阶段」（窗口已满、框架开始交付事件），与 B 恰好实现了哪一个 bar 回调无关。
+        // 放进 if constexpr 里会让「只实现 on_init + on_params_update」的策略（`BarStrategy`
+        // concept 允许）永远不进入回调阶段，于是 `param set` 的挂起更新永不投递。
         if (node.ctx.note_callback_delivered()) {
             node.ctx.params_update_delivered();
             invoke_params_update(node);

@@ -69,6 +69,12 @@ constexpr std::int64_t kUserSeriesInitI = 11;
 /// 门禁用例的显式可读深度（= `MAX_LOOKBACK_MIN`）：静态填窗只要 32 根 bar
 constexpr std::int32_t kTestMaxLookback = dztrader::series_internal::MAX_LOOKBACK_MIN;
 
+/// `DzVolume` 上限（手数越界拒单的用例：两次 `buy` 这个值，第二笔差量必然越界）
+constexpr dztrader::Volume kVolumeMax = std::numeric_limits<dztrader::Volume>::max();
+/// 两笔 `kVolumeMax` 的意图后应有的逻辑持仓（拒单不回流，逻辑账照常推进）
+constexpr dztrader::LargeVolume kTwiceVolumeMax =
+    2 * static_cast<dztrader::LargeVolume>(kVolumeMax);
+
 /// 注入式假历史的第一个 60s 桶起点（tsec 21600 = 墙钟 00:00；落在退化表 0–86399 内）
 constexpr std::int32_t kHistoryFirstBeginSec = 21600;
 
@@ -4353,6 +4359,206 @@ TEST_F(BarStrategyFrameworkTest, AccountScaleAboveMaxIsRejectedWithoutChangingMa
     // 上界本身没有被动过：1.5（<= 2.0）应当成功
     ASSERT_TRUE(run_command("account add CTP002 1.5", 2));
     EXPECT_NE(ui_outputs_[2].find("account add ok"), std::string::npos) << ui_outputs_[2];
+
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+}
+
+/**
+ * **下单失败（手数越界被拒）仍更新逻辑持仓**（AC「下单失败或未成交仍更新逻辑持仓」）。
+ *
+ * 这是 AC 里唯一没有其它用例覆盖的一半：写帧彻底失败（shm 页满）在测试里无法确定性触发，但
+ * 「单没发出去而逻辑账照常推进」这条**性质**有一条可复现的入口——账户差量手数超出
+ * `DzVolume` 上限时 `order_volume()` 返回 `nullopt`，单被拒（`order rejected | …
+ * reason=volume_out_of_range`），而 `PositionState` 已经按 B 的意图推进。
+ *
+ * 构造：B 两次 `buy(INT32_MAX)`。第一次差量恰好等于上限、发单成功；第二次差量约为上限的
+ * 两倍，被拒。断言逻辑持仓 = 2×INT32_MAX（不受拒单影响），而订单帧只有第一张。
+ */
+TEST_F(BarStrategyFrameworkTest, RejectedOrderStillAdvancesTheLogicalLedger) {
+    // 挂靠比率 2.0 + `max_scale` 2.0：一笔 `buy(INT32_MAX)` 的目标 L = 2×INT32_MAX，差量因此
+    // **超过** `DzVolume` 上限 → `order_volume()` 返回 nullopt → 单被拒。这是「单没发出去」
+    // 在测试里唯一可确定性复现的入口（写帧失败依赖 shm 页满，无法构造）。
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60,
+                 R"([{"account_id": "CTP001", "scale": 2.0}])", "  \"max_scale\": 2.0,\n");
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = kTestMaxLookback,
+        .when = EventKind::BarUpdate,
+        .apply =
+            [](dztrader::InstrumentContext& ctx) {
+                ctx.buy(kVolumeMax, 5000.0);
+                // 即时记账：拒单不回流，逻辑持仓仍是本笔意图的结果
+                EXPECT_EQ(ctx.current_contracts(), static_cast<dztrader::LargeVolume>(kVolumeMax))
+                    << "a rejected order must not roll back the logical ledger";
+            },
+    });
+
+    open_probe();
+    testing::internal::CaptureStderr();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+    stop_strategy();
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    // 单被拒（差量越界），stderr 有诊断
+    EXPECT_NE(stderr_text.find("order rejected"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("reason=volume_out_of_range"), std::string::npos) << stderr_text;
+
+    // 一张单都没发出去；上报仍按**命令后的**逻辑持仓走（L = 2×INT32_MAX）
+    EXPECT_TRUE(orders_.empty()) << "the oversized delta must not be submitted";
+    bool saw_report = false;
+    for (const ObservedPositionReport& report : reports_) {
+        if (report.account_id == "CTP001" && report.instrument_id == std::string(kInstrumentA) &&
+            report.net_volume == kTwiceVolumeMax) {
+            saw_report = true;
+        }
+    }
+    EXPECT_TRUE(saw_report)
+        << "the logical position must be published even though no order went out";
+
+    // 逻辑台账未被拒单回滚：下一次回调里读到的持仓仍是本笔意图的结果
+    const auto events = recorder().for_instrument(kInstrumentA);
+    const auto last = std::ranges::find_if(
+        events.rbegin(), events.rend(),
+        [](const ObservedEvent& event) { return event.kind == EventKind::Destroy; });
+    ASSERT_NE(last, events.rend());
+    EXPECT_EQ(last->current_contracts, static_cast<dztrader::LargeVolume>(kVolumeMax))
+        << "the ledger must keep the intent even though the order was rejected";
+}
+
+/**
+ * **`instrument add` 补报该品种各账户逻辑持仓**（AC「instrument add … → 补报持仓 → 进入实盘」）。
+ *
+ * 现有 `CommandSurfaceCoversAllTwelveCommands` 里新加品种的逻辑持仓恰好是 0，看不出「补报
+ * 有没有发生」。这里让新加品种在**加入后的回调期**建仓，再让账户命令触发一次重报——但更直接
+ * 的证据是：`instrument add` 成功之后立刻断言该品种在上报帧里出现过。
+ *
+ * 用冷启动（无历史）的品种：它加进来时逻辑持仓为 0，补报会报一条 `net_volume == 0`——
+ * 「0 也报」正是全量对账的口径（`publish_all_positions` 的注释）。这足以证明补报发生了。
+ */
+TEST_F(BarStrategyFrameworkTest, InstrumentAddPublishesTheNewInstrumentPosition) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60,
+                 R"([{"account_id": "CTP001", "scale": 1.0}])");
+    fake_metadata_[std::string(kInstrumentA)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+    fake_metadata_[std::string(kInstrumentB)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+    fake_history_[std::string(kInstrumentB)] = make_archive_history(4);
+
+    open_probe();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+
+    ASSERT_TRUE(run_command(std::format("instrument add {}", kInstrumentB), 0));
+    EXPECT_NE(ui_outputs_[0].find("instrument add ok"), std::string::npos) << ui_outputs_[0];
+
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    // 补报：新加品种的上报帧出现在通道里（此处逻辑持仓为 0，正好验证「0 也报」）
+    bool saw_added_report = false;
+    for (const ObservedPositionReport& report : reports_) {
+        if (report.instrument_id == std::string(kInstrumentB)) {
+            saw_added_report = true;
+            EXPECT_EQ(report.net_volume, 0);
+        }
+    }
+    EXPECT_TRUE(saw_added_report)
+        << "instrument add must publish the new instrument's logical position per account";
+}
+
+/**
+ * **`instrument del <id> sync` 在无行情时报出「同步单没发全」**（组件文档 §6.2「无近期行情的
+ * 品种跳过并输出错误行；逻辑持仓仍按命令更新」）。
+ *
+ * 这是第 1 轮 Spec 审查发现的一个真实缺口：早先实现只在 stderr 打诊断，命令结果仍回 `ok`，
+ * 操作员会以为平仓单已经发出去了。现在结果文本追加一行 `sync orders incomplete | …`。
+ *
+ * 构造：品种 A 有持仓但**从未收到过任何 tick**（快照 invalid → `resolve_sync_price` 返回
+ * Unavailable）→ `instrument del A sync` 成功但那张平仓单发不出去。
+ */
+TEST_F(BarStrategyFrameworkTest, InstrumentDelSyncReportsIncompleteWhenNoMarketData) {
+    // 两个品种撑住配置（删最后一个会被写回校验拒掉）
+    write_config({std::string(kInstrumentA), std::string(kInstrumentB)}, kTestMaxLookback,
+                 std::nullopt, 60, R"([{"account_id": "CTP001", "scale": 1.0}])");
+    fake_metadata_[std::string(kInstrumentA)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+    fake_metadata_[std::string(kInstrumentB)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+    // A 在 on_init 建仓（虚拟成交，进入 live 后补报），但**一笔 tick 都不喂** → 无行情快照
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = -1,
+        .when = EventKind::Init,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(3, 5000.0); },
+    });
+
+    open_probe();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_events(2));
+
+    ASSERT_TRUE(run_command(std::format("instrument del {} sync", kInstrumentA), 0));
+    // 命令成功（写盘与台账都已推进）
+    EXPECT_NE(ui_outputs_[0].find("instrument del ok"), std::string::npos) << ui_outputs_[0];
+    // 但同步单没发出去，结果里必须说出来
+    EXPECT_NE(ui_outputs_[0].find("sync orders incomplete"), std::string::npos) << ui_outputs_[0];
+    EXPECT_NE(ui_outputs_[0].find("skipped_no_market_data=1"), std::string::npos) << ui_outputs_[0];
+
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+    // 一张单都没发：无行情时不能凭空发一张价格 0 的单
+    EXPECT_TRUE(orders_.empty()) << "no order may be placed without market data";
+}
+
+/**
+ * **启动期创建失败的品种可以在运行期用 `instrument add` 补救**（第 1 轮 Spec 审查的 finding 3）。
+ *
+ * 场景：配置里写了 rb2605，但启动时元数据缺失 → 实例创建失败（进程继续）。该 id **仍在配置
+ * 文件里**（框架不悄悄删用户的配置）。之后元数据源恢复（fake 里补上），`instrument add`
+ * 必须能把它建起来——若写回无条件 `push_back`，会撞上配置层的 `duplicate` 校验并回一句与
+ * 真实原因无关的错误。
+ */
+TEST_F(BarStrategyFrameworkTest, InstrumentAddRecoversAnInstrumentThatFailedAtStartup) {
+    write_config({std::string(kInstrumentA), std::string(kInstrumentB)}, kTestMaxLookback);
+    fake_metadata_[std::string(kInstrumentA)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+    // rb2605 启动期**没有**元数据 → 实例创建失败，但 id 留在配置里
+    // （fake_metadata_ 里暂时不放 rb2605）
+
+    open_probe();
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_events(1));  // 只有 rb2601 的 on_init
+    const std::string startup_stderr = testing::internal::GetCapturedStderr();
+    // 前置条件：启动期 rb2605 确实因元数据缺失被跳过（该 id 仍在配置里）
+    ASSERT_NE(startup_stderr.find("instance creation skipped | instrument=rb2605"),
+              std::string::npos)
+        << startup_stderr;
+
+    // 元数据源恢复：现在 add 应当成功（写回不得因 duplicate 失败）
+    fake_metadata_[std::string(kInstrumentB)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+    fake_history_[std::string(kInstrumentB)] = make_archive_history(4);
+
+    ASSERT_TRUE(run_command(std::format("instrument add {}", kInstrumentB), 0));
+    EXPECT_NE(ui_outputs_[0].find("instrument add ok"), std::string::npos)
+        << "recovering a startup-failed instrument must not hit a duplicate-config error; got "
+        << ui_outputs_[0];
 
     stop_strategy();
     EXPECT_EQ(exit_code_, 0);
