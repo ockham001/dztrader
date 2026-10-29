@@ -103,7 +103,8 @@ record_last_status() {
     local head ts tmp
     head="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
     ts="$(date +%s)"
-    tmp="$LOG_DIR/.last-status.tmp"
+    # 唯一 tmp 名（`$$`）：preflight 可与 build 重叠，两个进程共用固定名会互相覆盖/撕裂。
+    tmp="$LOG_DIR/.last-status.$$.tmp"
     printf 'cmd=%s\nrc=%s\nhead=%s\ntime=%s\n' "$cmd" "$rc" "$head" "$ts" >"$tmp" &&
         mv -f "$tmp" "$LOG_DIR/last-status"
 }

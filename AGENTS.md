@@ -192,7 +192,7 @@
 - push 前跑 `./scripts/check-push-scope.sh <issue>`，确认 `@{u}..HEAD` 只含本票 commit
 - 多终端可在不同 worktree 并行；**禁止同一 worktree 同时操作**
 - 合并前确认共同祖先：`git merge-base main HEAD`，无则 cherry-pick
-- **本地 git hooks 由 `setup` 自动安装**（`core.hooksPath=.githooks`；安装前 `setup` 会确认 `.githooks` 存在）：pre-commit 由 staged 文件触发——clang-format 校验 index 内容，日志格式 / docs links 为工作区全仓扫描；pre-push 拦直推 main、非快进、非白名单分支名与 tag，并按分支票号跑 `check-push-scope`。hooks 是快速护栏，**不能替代** `preflight` 与 CI。
+- **本地 git hooks 由 `setup` 自动安装**（`core.hooksPath=.githooks`；安装前 `setup` 会确认 `.githooks` 存在）：pre-commit 由 staged 文件触发——clang-format 校验 index 内容，日志格式 / docs links 为工作区全仓扫描；pre-push 拦直推 main、非快进、非白名单分支名与 tag，并按分支票号跑 `check-push-scope`；最近一次门禁在**当前 HEAD** 失败时拒绝推送（读 `.cache/gate/last-status`，HEAD 不符/缺失只警告，逃生口 `DZ_ALLOW_RED_GATE=1`）。hooks 是快速护栏，**不能替代** `preflight` 与 CI。
 - **push 分级授权**（见 [ADR 0036](docs/adr/0036-push-authorization-tiered-with-guardrails.md)；机器守卫 = pre-push hook + GitHub main ruleset + `.opencode` 权限）：
   - **免逐次确认**：把本票 commit push 到符合命名约定的 feature 分支、`-u` 建上游、创建/更新 PR、重跑 CI、合并后删除**本票**远端分支。前置：本票门禁绿（代码票 `gate build/test`；纯文档票 docs links / `preflight --c-only`）、`check-push-scope` 通过、一轮 review 的修复合并为一次 push。
   - **仍需确认**：合并 PR 到 main（最后一道；可按票或按波一次授权）、删除非本票分支、打 tag（opencode 会话里 `gh pr merge` / tag 为 ask；DSH 等宿主靠本规则人工确认）。

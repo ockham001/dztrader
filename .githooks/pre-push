@@ -39,11 +39,17 @@ check_gate_status() {
         warn "warning: no .cache/gate/last-status; run ./scripts/gate.sh build/test before push"
         return 0
     }
+    # 格式由 scripts/gate.sh 的 record_last_status 写入（单一写入方），此处只读解析。
     local rc head current
     rc="$(sed -n 's/^rc=//p' "$status_file" | head -1)"
     head="$(sed -n 's/^head=//p' "$status_file" | head -1)"
     current="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
-    [ "${rc:-}" = "0" ] && return 0
+    if [ -z "${rc:-}" ]; then
+        # 文件存在但格式不可读（并发写/手工损坏）：按「缺失」处理，只警告不误拦。
+        warn "warning: unreadable .cache/gate/last-status; run ./scripts/gate.sh build/test before push"
+        return 0
+    fi
+    [ "$rc" = "0" ] && return 0
     if [ "${head:-}" = "$current" ]; then
         if [ "${DZ_ALLOW_RED_GATE:-0}" = "1" ]; then
             warn "WARNING: pushing with a failing gate at HEAD allowed by DZ_ALLOW_RED_GATE=1 (emergency only)"
