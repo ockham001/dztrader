@@ -23,6 +23,9 @@
 #     并**原样返回被包装命令的退出码**；
 #   - `--tail N` 由 gate.sh 自己解析，不传给被包装命令；要短输出就用它，
 #     不要给门禁命令接 `| tail` / `| head`（管道会吞掉退出码，见 #75/#81 假绿）。
+#   - 最终 verdict 行固定打在输出**末尾**（`| tail -2` 也可见）；每次结果原子写入
+#     `.cache/gate/last-status`（cmd/rc/head/time），pre-push 对「当前 HEAD 上最近一次
+#     门禁失败」直接拦截（issue #190；应急逃生 `DZ_ALLOW_RED_GATE=1`）。
 #   - preflight 不取构建锁（只读检查 + 前端 lint），其前端阶段与构建里的 npm 安装
 #     可能重叠 —— 由 preflight.sh 自身的 npm 门控脚本处理。
 #
@@ -89,25 +92,48 @@ LOG_DIR="$ROOT/.cache/gate"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/${CMD}-$(date +%Y%m%d-%H%M%S)-$$.log"
 
+# 记录最近一次门禁结果（pre-push 守卫读它；纯文本 k=v，不引入 jq 依赖）。
+#
+# 为什么需要：复盘 #158-#161 发现 192 次 gate 调用里 157 次接了 `| tail/head`，管道把
+# 真实退出码换成了 tail 的状态，agent 看到 `[exit code: 0]`。verdict 行固定在输出末尾
+# 只能救「肉眼看输出」，last-status + pre-push 才能把「当前 HEAD 上最近一次门禁失败」
+# 变成推不出去的机器事实（详见 issue #190）。
+record_last_status() {
+    local cmd="$1" rc="$2"
+    local head ts tmp
+    head="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+    ts="$(date +%s)"
+    # 唯一 tmp 名（`$$`）：preflight 可与 build 重叠，两个进程共用固定名会互相覆盖/撕裂。
+    tmp="$LOG_DIR/.last-status.$$.tmp"
+    printf 'cmd=%s\nrc=%s\nhead=%s\ntime=%s\n' "$cmd" "$rc" "$head" "$ts" >"$tmp" &&
+        mv -f "$tmp" "$LOG_DIR/last-status"
+}
+
 run_and_report() {
     local cmd="$1"
     shift
     "$@" >"$LOG" 2>&1
     local rc=$?
+    record_last_status "$cmd" "$rc"
     local ok_tail="${TAIL_LINES:-8}"
     local fail_tail="$ok_tail"
     if [ "$fail_tail" -lt 30 ]; then
         fail_tail=30
     fi
     if [ "$rc" -eq 0 ]; then
-        echo "gate: OK $cmd (log: .cache/gate/$(basename "$LOG"))"
         tail -n "$ok_tail" "$LOG"
+        # verdict 行固定打在**末尾**：`./scripts/gate.sh ... 2>&1 | tail -2` 也必须看得见。
+        echo "gate: OK $cmd (log: .cache/gate/$(basename "$LOG"))"
     else
+        # 有意重复两次 FAILED：第一处紧随命令结束，供日志/输出前部检索；最后一处在摘录之后，
+        # 供 `2>&1 | tail -N` 截尾时仍能看到真实结论（管道会吞掉退出码，见 #75/#81）。
         echo "gate: FAILED $cmd rc=$rc (log: .cache/gate/$(basename "$LOG"))" >&2
         grep -nE '\[  FAILED  \]|error:|FAILED:|fatal error|ninja: build stopped|tests failed|Test Failed|ERROR:' "$LOG" |
             head -n 30 >&2 || true
         echo "--- last $fail_tail lines ---" >&2
         tail -n "$fail_tail" "$LOG" >&2
+        # 同上：真正的 verdict 放最后，管道截尾也不会丢掉失败信号。
+        echo "gate: FAILED $cmd rc=$rc (log: .cache/gate/$(basename "$LOG"))" >&2
     fi
     return "$rc"
 }
