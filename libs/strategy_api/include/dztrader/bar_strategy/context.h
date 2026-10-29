@@ -14,9 +14,9 @@
  * `++end`）。
  *
  * **B 可见面**只有 public 区：7 条只读价格视图、`make_series()`、`bar_index()`、
- * `instrument_id()`、四个交易意图（#159）、Tier 1 查询（#159）。窗口推进、回卷、失败标记
- * 等运行期状态是 private，仅 `BarStrategyManager` 与 `InstrumentNode` 可访问（friend），
- * 热路径上没有虚函数。
+ * `instrument_id()`、`is_auction()`（#163）、四个交易意图（#159）、Tier 1 查询（#159）。
+ * 窗口推进、回卷、失败标记等运行期状态是 private，仅 `BarStrategyManager` 与
+ * `InstrumentNode` 可访问（friend），热路径上没有虚函数。
  *
  * **交易意图与台账（#159）**：四个意图函数在 ctx 内完成「开平规则 → 虚拟成交 → Tier 1」的
  * 单一漏斗（ADR 0030 决策 1），不等待成交回报、不持有账户表。
@@ -253,6 +253,23 @@ public:
 
     /// @brief 合约代码（平台唯一键）
     [[nodiscard]] const std::string& instrument_id() const noexcept { return instrument_id_; }
+
+    /**
+     * @brief 本次回调是否处于 Open 竞价窗口相位（ADR 0032；#163）
+     *
+     * 语义是**触发本次回调的那笔 tick 是否处于 Open 竞价窗口**，不是被交出 bar 的属性：
+     * 竞价窗口首笔 tick 触发的 `on_bar_close(上一根)` 同样为 true——被关闭的是上一根普通
+     * bar。因此不能拿它当「跳过整个回调」的开关：只在 `on_bar_open` / `on_bar_update` 里
+     * 用它过滤交易意图，`on_bar_close` 照常处理。框架**不因相位拦截下单**（可交易性由
+     * 交易所保证，拦截会让逻辑账与实盘分叉），过滤是策略责任（旧版 `bar.isCallAuction`
+     * 口径）。
+     *
+     * 恒为 false 的时机：历史回放与静默填窗（回放复用 live 的 tick→bar 实现，合成 tick 的
+     * 相位不外泄；静默填窗期 B 根本不被回调）、`on_init` / `on_params_update` /
+     * `on_destroy`（不是 bar 事件，没有触发 tick）；内置退化小节表（v1 无小节数据源，
+     * 见组件文档 §5.5）没有竞价窗口，因此生产入口下也恒为 false。
+     */
+    [[nodiscard]] bool is_auction() const noexcept { return is_auction_; }
 
     /**
      * @brief 读一个策略参数（组件文档 §9；只在回调里按需读，不在热路径）
@@ -905,6 +922,17 @@ private:
     void update_tick(const DzTick& tick) noexcept { tick_ = snapshot_from_tick(tick); }
 
     /**
+     * @brief 写入本次回调的竞价相位（A 在 bar 事件入口与非 bar 回调入口调用；#163）
+     *
+     * 写入口径照组件文档 §5.4：`close` / `update` 在写 `[0]` 之后、调 B 之前统一写；
+     * `open` 在推进窗口之后写。回放期 A 传 false（合成 tick 的相位不外泄）；
+     * `on_params_update` / `on_destroy` 入口显式清零，`on_init` 由构造默认值（false）保证。
+     *
+     * @param is_auction true = 触发本次回调的 tick 处于 Open 竞价窗口
+     */
+    void set_auction(bool is_auction) noexcept { is_auction_ = is_auction; }
+
+    /**
      * @brief 设置执行门禁（A 在回放结束、进入 live 时调用；组件文档 §3）
      *
      * `live_ == false` 时交易意图只做虚拟成交、不发单、不上报。这是两个执行开关里唯一会被
@@ -1241,7 +1269,9 @@ private:
     DzTime current_time_ = 0;
     bool in_on_init_ = false;  ///< 是否正处在 `on_init` 内（限制 `make_series` 的调用时机）
     bool live_ = false;        ///< false = 回放/静默填窗：只做虚拟成交、不发单、不上报
-    bool failed_ = false;      ///< 实例失败：此后不再接收任何 B 回调、不再受理下单意图
+    /// 本次回调的竞价相位（触发 tick 是否处于 Open 竞价窗口；#163；非 bar 回调恒 false）
+    bool is_auction_ = false;
+    bool failed_ = false;  ///< 实例失败：此后不再接收任何 B 回调、不再受理下单意图
     /// 已收到过至少一次 B 回调（`on_params_update` 的投递门禁：未进入则挂起，§9）
     bool callback_stage_entered_ = false;
     /// 有挂起的参数更新通知（进入回调阶段后由 A 合并投递一次，§9）

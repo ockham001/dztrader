@@ -198,7 +198,14 @@ struct InstrumentNode {
     bar::IntradayBarBuilder<BarEventSink<Strategy>> builder;  ///< tick→bar 唯一实现（ADR 0031）
     Strategy instance;                                        ///< B：默认构造，节点内不再搬移
     // ---- A 侧的回放簿记（B 不可见；不参与地址稳定性约束）----
-    ReplayTail replay_tail;          ///< 回放尾部（续接过滤用）
+    ReplayTail replay_tail;  ///< 回放尾部（续接过滤用）
+    /// 正在回放该实例的历史：合成 tick 的竞价相位**不外泄**（#163，组件文档 §5.4）
+    ///
+    /// 回放复用 live 的 tick→bar 实现，竞价归档 bar 的合成 tick 会被 builder 标记
+    /// `is_auction=true`；但回放不是实时竞价，B 在回放期看到的 `ctx.is_auction()` 必须恒为
+    /// false。用显式回放簿记而不是 `ctx.live_`：后者在「回放结束 → 进入 live」之间的缓冲
+    /// tick 续接期仍为 false，而那些是**实时** tick，相位不应被吞掉。
+    bool replaying = false;
     std::int32_t silent_bars = 0;    ///< 该实例静默填窗的历史根数（诊断口径）
     std::int32_t replayed_bars = 0;  ///< 该实例进入回调期的历史根数（诊断口径）
 };
@@ -1322,6 +1329,9 @@ private:
     /// （`flush_pending_params_update`）。失败实例跳过（它不再接收任何 B 回调）。
     void invoke_params_update(InstrumentNode<Strategy>& node) {
         if constexpr (manager_internal::HasOnParamsUpdate<Strategy>) {
+            // 参数更新不是 bar 事件：没有「触发本次回调的 tick」，相位恒 false（#163）。
+            // 尤其在竞价首笔 close 之后补投挂起更新时，ctx 里还留着上一次事件的相位 true。
+            node.ctx.set_auction(false);
             invoke_b(node, "on_params_update", [](Strategy& instance, InstrumentContext& ctx) {
                 instance.on_params_update(ctx);
             });
@@ -1352,7 +1362,6 @@ private:
      * **回调门禁（§5.2）**：推进与静默填窗照常进行，但窗口填满前不调 B。
      */
     void dispatch_bar_open(InstrumentNode<Strategy>& node, const bar::Bar& bar, bool is_auction) {
-        (void)is_auction;  // ctx.is_auction() 随 #163 接入
         if (node.ctx.is_failed()) {
             return;
         }
@@ -1361,6 +1370,9 @@ private:
         if (!bar_callback_enabled(node.ctx)) {
             return;  // 静默填窗：B 零回调
         }
+        // 相位在推进窗口之后、调 B 之前写入（组件文档 §5.4；#163）：B 在 `on_bar_open` 里读到
+        // 的是**触发本笔事件的 tick** 的相位，与被交出 bar 的属性无关（ADR 0032 决策 3）。
+        node.ctx.set_auction(is_auction && !node.replaying);
         if constexpr (manager_internal::HasOnBarOpen<Strategy>) {
             invoke_b(node, "on_bar_open",
                      [](Strategy& instance, InstrumentContext& ctx) { instance.on_bar_open(ctx); });
@@ -1368,9 +1380,8 @@ private:
         on_callback_delivered(node);
     }
 
-    /// @brief `on_bar_update` 事件：把 `Bar` 字段写进 `[0]` → 调 B（每笔已接受 tick 一次）
+    /// @brief `on_bar_update` 事件：把 `Bar` 字段写进 `[0]` → 写相位 → 调 B（每笔已接受 tick 一次）
     void dispatch_bar_update(InstrumentNode<Strategy>& node, const bar::Bar& bar, bool is_auction) {
-        (void)is_auction;  // ctx.is_auction() 随 #163 接入
         if (node.ctx.is_failed()) {
             return;
         }
@@ -1379,6 +1390,8 @@ private:
         if (!bar_callback_enabled(node.ctx)) {
             return;  // 静默填窗：B 零回调
         }
+        // 相位在写 `[0]` 之后、调 B 之前写入（组件文档 §5.4；#163）。
+        node.ctx.set_auction(is_auction && !node.replaying);
         if constexpr (manager_internal::HasOnBarUpdate<Strategy>) {
             invoke_b(node, "on_bar_update", [](Strategy& instance, InstrumentContext& ctx) {
                 instance.on_bar_update(ctx);
@@ -1399,7 +1412,6 @@ private:
      * 等价于「当前窗口已满」（`size == max_lookback`）。
      */
     void dispatch_bar_close(InstrumentNode<Strategy>& node, const bar::Bar& bar, bool is_auction) {
-        (void)is_auction;  // ctx.is_auction() 随 #163 接入
         if (node.ctx.is_failed()) {
             return;
         }
@@ -1411,6 +1423,9 @@ private:
         if (!close_callback_enabled(node.ctx)) {
             return;  // 静默填窗：B 零回调
         }
+        // 相位 = **触发本次 close 的 tick** 的相位（组件文档 §5.4；#163）：竞价窗口首笔 tick
+        // 触发的 close 关闭的是上一根普通 bar，但相位仍为 true（ADR 0032 决策 3）。
+        node.ctx.set_auction(is_auction && !node.replaying);
         if constexpr (manager_internal::HasOnBarClose<Strategy>) {
             invoke_b(node, "on_bar_close", [](Strategy& instance, InstrumentContext& ctx) {
                 instance.on_bar_close(ctx);
@@ -1582,6 +1597,8 @@ private:
     /// @brief 调 `on_destroy`（失败实例同样调用；异常只记诊断，不阻止其它实例销毁）
     void dispatch_on_destroy(InstrumentNode<Strategy>& node) {
         if constexpr (manager_internal::HasOnDestroy<Strategy>) {
+            // 销毁不是 bar 事件：没有「触发本次回调的 tick」，相位恒 false（#163）。
+            node.ctx.set_auction(false);
             try {
                 node.instance.on_destroy(node.ctx);
             } catch (const std::exception& e) {
@@ -1959,18 +1976,25 @@ private:
                       << '\n';
         }
 
+        // 回放期相位抑制（#163）：回放复用 live 的 tick→bar 实现，竞价归档 bar 的合成 tick
+        // 会被 builder 标记 is_auction=true；A 在 dispatch 里按本标记清成 false，B 因此看不到
+        // 「回放中的竞价相位」。失败时提前返回也要复位（实例已死，但状态保持自洽）。
+        node.replaying = true;
         for (const bar::Bar& bar : bars) {
             if (node.ctx.is_failed()) {
+                node.replaying = false;
                 return;  // B 在回放期抛异常：该实例失败，停止回放（尾部保留但不收 tick）
             }
             const auto ticks = bar_strategy_internal::make_replay_ticks(bar);
             for (const DzTick& tick : ticks) {
                 if (node.ctx.is_failed()) {
+                    node.replaying = false;
                     return;
                 }
                 node.builder.on_tick(tick);
             }
         }
+        node.replaying = false;
     }
 
     /**
