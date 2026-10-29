@@ -216,7 +216,58 @@ set_target_properties(dztrader_sdk_bar_perf_bench PROPERTIES
 )
 add_test(NAME BarPerfBench COMMAND dztrader_sdk_bar_perf_bench)
 # perf = 无阈值基准项, 不进默认 fast 门禁; ctest --preset <plat>-<config>-perf
-set_tests_properties(BarPerfBench PROPERTIES LABELS perf)
+# RUN_SERIAL: 基准量的是 p99, 并行跑会让同机其它基准/测试的 CPU 竞争污染数值
+# (test.sh 默认 CTEST_PARALLEL_LEVEL=4); 串行后 perf 档总时长仍是秒级。
+set_tests_properties(BarPerfBench PROPERTIES LABELS perf RUN_SERIAL TRUE)
+
+# ============================================================
+# BarStrategy 框架性能基准 (#164)：五个独立可执行文件, perf 标签, report-only
+#
+#   bench_tick_update        框架 tick 路径 (聚合 + 分发)
+#   bench_bar_close_dual_ma  bar close 路径 (回调 + 双均线 + 意图 fanout + 上报, 不含 shm 写)
+#   bench_series_read        Series 读路径 ([n] 与 span())
+#   bench_relocate           18:00 回卷成本 (memmove 布局变换)
+#   bench_warmup_replay      历史预热回放吞吐
+#
+# 可执行文件名用 issue #164 AC 指定的裸名（bench_*），不套仓内单测的 dztrader_sdk_ 前缀：
+# AC 明确列了这五个名字，基准也不是 gtest 单测。ctest 名与可执行名一致, 便于 perf 档过滤。
+#
+# 与 dztrader_sdk_bar_perf_bench 同一条口径: 只输出数值、不做阈值断言 (report-only),
+# 不进默认 fast 门禁, 手动/CI 经 perf 标签跑 (ctest --preset <plat>-<config>-perf)。
+#
+# 三个框架路径基准在 SDK/C API 边界打桩 (bench_framework_harness.h), 因此**不链接**
+# dztrading/dzcore 等内部库; 打桩需要 DZ_API_COMPILE_STATIC (否则 Windows 上
+# __declspec(dllimport) 与定义冲突, 见 SDK_API_TESTS 的同一注释)。
+# 两个纯 ctx 基准 (series/relocate) 只经 ContextAccess 构造, 不接触任何 SDK 入口。
+# ============================================================
+set(DZ_BAR_STRATEGY_BENCH_FRAMEWORK
+    bench_tick_update
+    bench_bar_close_dual_ma
+    bench_warmup_replay
+)
+set(DZ_BAR_STRATEGY_BENCH_CTX
+    bench_series_read
+    bench_relocate
+)
+foreach(bench ${DZ_BAR_STRATEGY_BENCH_FRAMEWORK} ${DZ_BAR_STRATEGY_BENCH_CTX})
+    add_executable(${bench} tests/${bench}.cpp)
+    target_link_libraries(${bench} PRIVATE strategy_api_headers)
+    set_target_properties(${bench} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
+    )
+    add_test(NAME ${bench} COMMAND ${bench})
+    # RUN_SERIAL: 同 BarPerfBench——p99 基准不能与其它进程并行 (test.sh 默认并行度 4)
+    set_tests_properties(${bench} PROPERTIES LABELS perf RUN_SERIAL TRUE)
+endforeach()
+foreach(bench ${DZ_BAR_STRATEGY_BENCH_FRAMEWORK})
+    # DZ_API_COMPILE_STATIC: 在 SDK/C API 边界打桩 (bench_framework_harness.h) 需要
+    #   DZ_API 展开为空, 否则 Windows 上 __declspec(dllimport) 与定义冲突 (同上文 SDK_API_TESTS)
+    # _CRT_SECURE_NO_WARNINGS: 夹具用 std::getenv 读 DZTRADER_HOME; MSVC /W4 /WX 会把
+    #   C4996 (getenv 不安全) 当错误。这些 target 不是「下游工程等价探针」(那是
+    #   json_sdk_probe_*), 加此宏不影响那条保证。
+    target_compile_definitions(${bench} PRIVATE
+        DZ_API_COMPILE_STATIC _CRT_SECURE_NO_WARNINGS)
+endforeach()
 
 # ============================================================
 # 「仅凭 SDK include 路径可编译」双模检查 (#154, ADR 0026 决策 6)

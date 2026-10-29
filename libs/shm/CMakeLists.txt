@@ -56,4 +56,5 @@ set_target_properties(dz_shm_perf_bench PROPERTIES
 )
 add_test(NAME PerfBench COMMAND dz_shm_perf_bench)
 # perf = 无阈值基准项, 不进默认 fast 门禁; ctest --preset <plat>-<config>-perf
-set_tests_properties(PerfBench PROPERTIES LABELS perf)
+# RUN_SERIAL: p99 基准不能与其它进程并行 (test.sh 默认并行度 4), 否则数值被 CPU 竞争污染
+set_tests_properties(PerfBench PROPERTIES LABELS perf RUN_SERIAL TRUE)

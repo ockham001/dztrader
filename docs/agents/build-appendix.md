@@ -120,7 +120,7 @@ test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈�
 - **分层标签**（与 `RUN_SERIAL` / `TIMEOUT` 正交）：
   - `fast`：默认单测门禁，秒级用例；所有普通 `gtest_discover_tests` 注册必须带 `PROPERTIES LABELS fast`
   - `slow`：显式穷举/慢速档。`libs/strategy_api` 的 `SDK_SLOW_TESTS`（`date_exhaustive_test` / `date_time_exhaustive_test` / `bar_diff_exhaustive_test`）单独成 target 并打 `slow`；对应抽样版留在 `date_test.cpp` / `date_time_test.cpp` / `bar_diff_test.cpp` 的 `fast` 门禁。`bar_diff_exhaustive_test` 是 tick→bar 差分验收（ADR 0031 决策 10）的全量档：用例逻辑在 `bar_diff_cases.h` 只写一份，fast 档每条路径各跑一次、slow 档用多 seed/多日/高密度覆盖
-  - `perf`：无阈值基准项（`PerfBench`（SHM 往返）、`BarPerfBench`（tick→bar 四路径）），不进默认门禁；数值与记录方式见下节「性能基准」
+  - `perf`：无阈值基准项（`PerfBench`（SHM 往返）、`BarPerfBench`（tick→bar 四路径）、#164 的五个 BarStrategy 框架基准），不进默认门禁；数值与记录方式见下节「性能基准」
   - 运行：`./scripts/test.sh`（fast）/ `-L slow` / `-L perf`（Windows 用 `-Label`）；等价直调 `ctest --preset linux-release[-slow|-perf]`。测试 `DZTRADER_HOME` 由 `test-base` 注入 `.cache/test_home`，**运行请走 `test.sh` / `gate.sh test`**（每次清空重建，避免上一轮残留 shm/DB 污染无关测试）；绕过脚本直调 `ctest --preset` 不复位该目录
   - `slow` / `perf` 不在 CI 默认门禁内（CI 只跑 fast），按需本地手动运行；`fast` 过滤依赖构建期发现，必须先 build 再 test（未构建 target 的 `_NOT_BUILT` 回退不带标签）
 
@@ -128,25 +128,60 @@ test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈�
 
 ## 性能基准
 
-基准与秒级单测分层（[单元测试判据 §4.3](../unit-test-standard.md)）：基准只**报告数值**、不做阈值断言，稳定后才升级为 CI 门禁。当前两项，都在 `perf` 标签下：
+基准与秒级单测分层（[单元测试判据 §4.3](../unit-test-standard.md)）：基准只**报告数值**、不做阈值断言，稳定后才升级为 CI 门禁。当前七项，都在 `perf` 标签下：
 
 | 基准 | 源码 | ctest 名 | 测什么 |
 |---|---|---|---|
 | `dz_shm_perf_bench` | `libs/shm/tests/perf_bench.cpp` | `PerfBench` | SHM 写帧→唤醒→读出往返延迟（README 30μs 目标的同进程下限） |
 | `dztrader_sdk_bar_perf_bench` | `libs/strategy_api/tests/bar_perf_bench.cpp` | `BarPerfBench` | tick→bar 四条热路径（update / 新 bar / 跨日 / 竞价）的 ns/tick 与 p99 |
+| `bench_tick_update` | `libs/strategy_api/tests/bench_tick_update.cpp` | `bench_tick_update` | BarStrategy 框架 tick 路径（聚合 + 回调分发）的 ns/tick 与 p99（#164） |
+| `bench_bar_close_dual_ma` | `libs/strategy_api/tests/bench_bar_close_dual_ma.cpp` | `bench_bar_close_dual_ma` | bar close 路径：分发 + 双均线 + 意图 fanout + 上报（不含 shm 写）的 ns/close 与 p99（#164） |
+| `bench_series_read` | `libs/strategy_api/tests/bench_series_read.cpp` | `bench_series_read` | Series `[n]` 回溯读与 `span()` 连续扫描的单操作 ns（#164） |
+| `bench_relocate` | `libs/strategy_api/tests/bench_relocate.cpp` | `bench_relocate` | 18:00 回卷（memmove 布局变换）成本与停顿：单品种 + 50 品种预算两口径（#164） |
+| `bench_warmup_replay` | `libs/strategy_api/tests/bench_warmup_replay.cpp` | `bench_warmup_replay` | 历史预热回放吞吐（bars/s、µs/bar，含 B 回调与虚拟成交）（#164） |
+
+### 五个框架基准（#164）的测量边界
+
+`bench_tick_update` / `bench_bar_close_dual_ma` / `bench_warmup_replay` 量的是**框架自身**的计算路径（组件文档 §10 的 1µs 预算不含 SDK 帧解析、shm 写与网络）。它们经 `bench_framework_harness.h` 在 **SDK/C API 边界打桩**：`dz_place_order` / `dz_set_logical_position` / `dz_subscribe` / `dz_schedule_daily` / `dz_next_md` / 归档库查询等入口只记调用计数并返回成功，不写帧、不碰 shm；历史 bar 与合约元数据经 `FrameworkDependencies` 注入（与 Seam B 测试同一条内部缝）。因此：
+
+- 启动序列（配置 → 元数据 → 实例装配 → 回放 → live）与生产完全一致，被替换的只有「帧写到哪」；
+- 桩的代价是「普通调用 + 计数器自增」几 ns，订单/上报**不含**真实帧序列化与 shm 写——这正是 §10 的口径（「不含共享内存写」）；
+- 桩是编译期替代（基准不链接 `dztrading` 的 api.cpp）：框架新增被实例化的 SDK 调用而没补桩时**链接失败**，不会静默少测一段路径；
+- `bench_series_read` / `bench_relocate` 不碰 SDK：经 `context_internal::ContextAccess` 构造脱离引擎的 ctx（与纯单元测试同一条构造缝）。
+
+`bench_series_read` 的单次读只有几 ns（低于成对读 RDTSC 约 8.8ns 的开销），故它的 p99 是**组均值的 p99**（`[n]` 每 1000 次读一组、`span()` 每 10 次整窗扫描一组），按「聚合成本」读，不要当单操作尾部。`bench_relocate` 有三个场景：单品种 `max_lookback=500`（§10 基准参数）、50 品种 `max_lookback=500`、50 品种 `max_lookback=1440`（与 §4.4 的 6.3MB 预算估算同口径）。`bench_warmup_replay` 用 `steady_clock` 量整段 `on_start`，并以「历史源不可用的冷启动」为基线扣掉与回放无关的固定启动成本；轮数少（15 warm + 5 cold），报 p50 与最大值而不是 p99。
 
 ### 运行命令
 
 ```bash
 ./scripts/build.sh                                    # 先构建（基准不进默认 target 即可，build 全量包含）
 ./scripts/test.sh --label perf                         # 跑全部 perf 基准（Release）
-./build/linux/x86_64/Release/tests/dztrader_sdk_bar_perf_bench   # 直接跑：完整输出最方便
-ctest --preset linux-release-perf -V                                  # 或经 ctest 并回显输出
+ctest --preset linux-release-perf -V                   # 或经 ctest 并回显输出
+
+# 直接跑单个基准：完整输出最方便；手动运行必须显式给项目内的 DZTRADER_HOME（AGENTS §一.2）
+DZTRADER_HOME=$PWD/.dztrader_dev ./build/linux/x86_64/Release/tests/bench_tick_update
+DZTRADER_HOME=$PWD/.dztrader_dev ./build/linux/x86_64/Release/tests/bench_bar_close_dual_ma
+DZTRADER_HOME=$PWD/.dztrader_dev ./build/linux/x86_64/Release/tests/bench_series_read
+DZTRADER_HOME=$PWD/.dztrader_dev ./build/linux/x86_64/Release/tests/bench_relocate
+DZTRADER_HOME=$PWD/.dztrader_dev ./build/linux/x86_64/Release/tests/bench_warmup_replay
+
+# 快速自测（改完基准是否还能跑通）：五个基准都接受 --quick，小样本、秒级内跑完，数值不作对比
+DZTRADER_HOME=$PWD/.dztrader_dev ./build/linux/x86_64/Release/tests/bench_tick_update --quick
+./build/linux/x86_64/Release/tests/bench_series_read --quick   # 纯 ctx 基准不读 DZTRADER_HOME
+./build/linux/x86_64/Release/tests/bench_relocate --quick
 ```
 
 Windows：`.\scripts\build.ps1` → `.\scripts\test.ps1 -Label perf`，可执行文件在 `build\windows\x86_64\Release\tests\`。
 
-**必须用 Release**（`-Werror` 与优化同时开启；Debug 数值无参考价值，基准会在报告头打印 `warning: debug build`）。跑之前关闭其它重负载，避免单次中断污染 p99。
+**在 CI 手动触发**：#164 的五个框架基准不在 CI 默认门禁（CI 只跑 fast 标签）。需要时手动触发 `CI` workflow 并勾选 `run_perf=true`（Linux job 会执行 `./scripts/test.sh --label perf`，再用 `ctest -V` 回放一次把数值打进日志）：
+
+```bash
+gh workflow run CI --ref <branch> -f run_perf=true
+```
+
+经框架启动的三个基准（`bench_tick_update` / `bench_bar_close_dual_ma` / `bench_warmup_replay`）把临时配置写在 `$DZTRADER_HOME/bench/<基准名>/`（跑完删除），未设置 `DZTRADER_HOME` 时直接报错退出，不退化到系统临时目录；`bench_series_read` / `bench_relocate` 只经 `ContextAccess` 构造 ctx，不需要 `DZTRADER_HOME`。
+
+**必须用 Release**（`-Werror` 与优化同时开启；Debug 数值无参考价值，基准会在报告头打印 `warning: debug build`）。`perf` 档的 7 个基准都带 `RUN_SERIAL`（串行执行，避免并行进程互相污染 p99）；即便如此，跑之前仍建议关闭其它重负载。
 
 **看完整输出要直接跑可执行文件，或给 ctest 加 `-V`**：`ctest` 默认只在**失败时**回显输出，`--output-on-failure` 同样只在失败时回显（实测通过时 `amortized|fingerprint` 命中 0）；`--label perf` 跑完只给一行 Passed。要读数值加 `-V`（verbose，实测命中 3 处），或直接跑二进制。
 
@@ -239,6 +274,58 @@ Windows：`.\scripts\build.ps1` → `.\scripts\test.ps1 -Label perf`，可执行
 update 路径与基线同量级、无退化（略快），50ns 目标仍 met。三条连续交易路径（update / new-bar / cross-day）的 batch_mean 相对上一条记录整体低 6.4%–7.5%，方向与「#108 删除了连续交易路径上每笔 tick 一次的待补发队列 flush 循环」一致，同时也含机器/系统状态漂移；auction 行事件形态已变，不参与该区间（见下段）。本轮没有在旧 commit 上做同日 A/B，故只按同量级判定，不把差值精确归因。
 
 auction 行不能与上一条记录的 auction 行按同口径直接比较：事件形态已被 ADR 0032 改变（旧口径窗口内静默、零回调；新口径窗口内每笔 tick 一次 `update`）。旧静默口径的 batch_mean / net_p50 为 11.33 / 13.50，新事件形态为 11.01 / 12.91；batch_mean 差值 0.32ns 落在本轮单次运行抖动内（9 次范围 10.97–11.86ns），只作量级参考，不判定性能变化。
+
+#### 2026-10-29 · Intel Core i7-6700 @ 3.40GHz · Linux x86_64 · GCC 13.4 Release
+
+新增 #164 的五个 BarStrategy 框架基准，各跑 9 次取中位数；45 次运行全部 exit 0（自检通过）。本机 TSC 3.408 GHz，空区间成对读时钟 p50 = 8.80ns，p99 = 9.39ns。口径：Release、单品种（relocate 另有 50 品种预算场景）、单挂靠账户、`period_sec=60`、`max_lookback=500`；tick / bar close / warmup 用双均线基准策略，series / relocate 用双均线的两条用户序列构造窗口与数组。测量边界见上节「五个框架基准的测量边界」（SDK/C API 边界打桩，**不含 shm 写**）。
+
+**`bench_tick_update`**（1,000,000 ticks；每桶 59 update + 1 new-bar）：
+
+| path | mean_raw | net_p50 | net_p99 |
+|---|---|---|---|
+| update（同桶更新） | 47.55 | 33.45 | 59.27 |
+| new-bar（换桶，含一次 close：双均线 + 意图 + fanout） | 198.62 | 175.47 | 305.17 |
+
+stream 交叉校验 `wall_ns/tick=82.11`（上界，含 tick 生成与循环开销）；终态指纹 9/9 次一致 = `4d70714e78adb84a`。§10「A 框架计算路径 p99 ≤ 1µs」→ update **met（5.9%）**；new-bar 无预算（含一次 `on_bar_close` 的完整 B 逻辑），仅报告。单次运行的 p99 抖动约 ±25%（本轮 45.77–75.70ns），比较改动前后用多次中位数。
+
+**`bench_bar_close_dual_ma`**（200,000 closes；每根 bar 一次意图反手 → 每 close 1 单 + 1 上报）：
+
+| measure | mean_raw | net_p50 | net_p99 |
+|---|---|---|---|
+| close tick | 207.94 | 180.16 | 278.76 |
+| B callback body | 116.35 | 98.59 | 137.91 |
+
+close tick = close 分发 + B 回调体（指标 + 意图 + fanout + 上报）+ open/update 分发；B callback body 是 B 在 `on_bar_close` 内自量的「指标 + 意图 + fanout + 上报」。9/9 指纹 = `6b690457e8445381`。§10「bar close 框架路径 p99 ≤ 1µs」→ **met（27.9%）**。交易意图 fanout/上报（每账户 `L_i` 差量 → 1 单 + 1 上报，不含 shm 写）含在上表内；§10 对该项的口径是「含 shm 写与 `notify_subscribers`」，本组基准按 #164 AC 不含 shm 写，含 shm 的端到端数值属真实通道测量、不在 #164 范围（§10 第 4 段「决策 → 订单帧落 shm」单列为后续项）。
+
+**`bench_series_read`**（窗口 500 根填满 + 2 条用户序列）：
+
+| path | mean_raw | net_p50 | net_p99 |
+|---|---|---|---|
+| `[n]` 回溯读 | 2.470 | 2.375 | 3.505 |
+| `span()` 整窗扫描（500 doubles） | 885.99 | 857.51 | 2176.53 |
+
+`span()` 行是未向量化的依赖累加（500 次标量 add，约 1.72ns/元素）。p99 是组均值的 p99（组内 1000 次读 / 10 次扫描），受调度噪声影响较大（9 次 1.47–2.21µs），按「聚合成本」读。§10 无该项独立预算，作为回归基线。
+
+**`bench_relocate`**（三个场景；每个场景 = 先补满窗口到待回卷态（不计时）→ 对全部实例依次 `relocate`（计时））：
+
+| scenario | arrays/instance | moved | net_p50 | net_p99 |
+|---|---|---|---|---|
+| 单品种 `max_lookback=500`（§10 基准参数） | 9 | 36KB | 971.83ns | 1176.06ns |
+| 50 品种 `max_lookback=500` | 9 | 1.8MB | 98.18µs | 147.83µs |
+| 50 品种 `max_lookback=1440`（§4.4 预算场景） | 11 | 6.34MB | 562.93µs | 623.93µs |
+
+单品种 = 0.97µs/次（per-array 103ns），按 1440 根折算 p50 ≈ 2.7µs——v1 单品种部署远低于 0.2ms 停顿上限。**50 品种 @1440 的预算场景（≈6.3MB，正是 §4.4 的估算口径）实测 p50 = 0.56ms、p99 = 0.62ms**：有效搬移吞吐 ≈ 11.3GB/s，是 §4.4 估算隐含的 48–105GB/s 的 1/4–1/9，**超出 §10 的 60–130µs/天预算约 4–10 倍，也超出 0.2ms 停顿上限约 3 倍**。偏差原因是估算按「只数被搬字节」的带宽算，而 memmove 的读+写流量翻倍、6.34MB 工作集超过 L3（8MB 的一半以上被挤出）、50 次逐实例调用还叠加缓存冷启动。结论：**该项偏差，需要后续优化项**（§10 已列 B 镜像环形升级路径——延迟平坦、无整窗搬移；或限制单进程品种数 / `max_lookback`；真实部署前须用 50 品种实测复核）。A 的定时器路径另有 map 遍历与一行诊断日志，不属布局搬移成本。
+
+**`bench_warmup_replay`**（`warmup.bars=10,000`、`max_lookback=500`；15 warm + 5 cold 轮；轮数少，报 p50 与最大值而不报 p99）：
+
+| phase | mean_ms | p50_ms | max_ms |
+|---|---|---|---|
+| warm（带历史回放） | 4.822 | 4.787 | 5.165 |
+| cold（历史源不可用，基线） | 0.083 | 0.077 | 0.096 |
+
+派生：replay_only ≈ 4.71ms（warm − cold）→ **2.02M bars/s、0.495µs/bar**（9,500 根进入回调期的 bar，含 38,000 个合成 builder tick 与 57,000 次 B 回调）。§10 估算 = 20.9ms（0.1µs/tick × 38,000 + 0.3µs/回调 × 57,000）→ 实测为估算的 **0.23x（约 4.3 倍快）**；50 品种折算 0.235s（串行，单实例成本 × 50）vs 预算 0.5–1s → **达标（低于预算）**。估算偏保守的原因同 §5.3 的 0.1–0.4µs 区间：实测 builder tick 与回调都在该区间下沿。回放期 B 照常运行、意图只虚拟成交（自检断言零订单），故不含 fanout/上报。
+
+**结论**：§10 的 1µs 两条预算均达标（tick 路径余量约 17 倍、close 路径约 3.6 倍）。预热回放优于预算估算（预算为保守上界）。**回卷是本次唯一的偏差项**：单品种（v1 常态）0.97µs/次无问题，但「50 品种 × max_lookback=1440」的 §4.4 预算场景实测 p99 0.62ms，超 60–130µs 预算 4–10 倍、超 0.2ms 停顿上限 3 倍；原因与后续优化项（§10 的 B 镜像环形升级路径 / 限制单进程品种数或 max_lookback）已记录在组件文档 §10 与 §4.4。本组基准仍为 report-only、未升级为 CI 门禁；升级时按上文「升级为 CI 门禁时的约定」取 CI runner 上的 5 次中位数基线。
 
 <!-- 下一条基线记录（追加到这里，保持时间顺序） -->
 
