@@ -4167,6 +4167,16 @@ TEST_F(BarStrategyFrameworkTest, QuitRoutesThroughSelfExitWithNormalCode) {
     ASSERT_FALSE(events.empty());
     EXPECT_EQ(events.back().kind, EventKind::Destroy)
         << "on_destroy is dispatched by the self-exit path (on_stop)";
+
+    // 退出之后进程已结束：再写 tick 不会产生任何回调（`on_destroy` 真的是最后一个）
+    const std::size_t after_quit = recorder().for_instrument(kInstrumentA).size();
+    EXPECT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(1), warmed_up_price(1),
+                             warmed_up_volume(1), warmed_up_price(1) * warmed_up_volume(1))));
+    wake_strategy();
+    std::this_thread::sleep_for(50ms);
+    EXPECT_EQ(recorder().for_instrument(kInstrumentA).size(), after_quit)
+        << "no user callback may run after the self-exit path finished";
 }
 
 /**
@@ -4221,6 +4231,18 @@ TEST_F(BarStrategyFrameworkTest, InstrumentAddFailsOnMissingMetadataAndProcessCo
     EXPECT_TRUE(saw_notification)
         << "a failed instrument add must also push a UI notification; notifications="
         << static_cast<std::size_t>(ui_notifications_.size());
+
+    // 关键错误用 ERROR 级（「实例建不起来」是操作员必须立刻处理的），不是 WARN
+    bool saw_error_level = false;
+    for (const std::string& notification : ui_notifications_) {
+        if (notification.find("instrument_metadata_unavailable") != std::string::npos &&
+            notification.find("\"level\":\"error\"") != std::string::npos) {
+            saw_error_level = true;
+        }
+    }
+    EXPECT_TRUE(saw_error_level)
+        << "an instance that cannot be created must notify at error level; payload sample="
+        << (ui_notifications_.empty() ? std::string("<none>") : ui_notifications_.front());
 }
 
 /**

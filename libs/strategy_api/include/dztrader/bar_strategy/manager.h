@@ -831,6 +831,8 @@ private:
             invalid.has_value()) {
             return command_error(std::move(*invalid));
         }
+        // `target` 指向 `accounts_` 的元素；`commit_config_with` 只写配置文件与 `effective_`，
+        // **不碰 `accounts_`**，因此这句指针在写回之后仍然有效。记下旧 scale 供差量计算。
         const double old_scale = target->scale;
         if (old_scale == scale) {
             // 幂等：scale 未变则无差量、无上报、无单（也不算错误——操作员重放同一命令是常态）
