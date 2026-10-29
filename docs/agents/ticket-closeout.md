@@ -135,6 +135,7 @@ AGENTS §五「本机沙箱」的细节都放在这里（AGENTS 只留指针，�
 - **跨调用文件与缓存**：每次 bash 调用的 `/tmp` 相互隔离，跨调用产物写 `.cache/`（已 gitignore）；`~/.conan2` / `~/.cache/gh` / `~/.npm` 只读时相关脚本已回退仓库 `.cache/`，仍被拒时一次性申请更高权限，不要反复重试。
 - **权限与交接**：会话从 `read-only` 转执行（写文件 / commit / push）前请用户切回一次 `workspace-write`，不要逐操作申请 escalation；`handoff` 文档写 `.cache/handoff/`（`/tmp` 不可跨会话）。
 - **不要自建后台进程**：DSH 在工具调用结束时回收直接 fork 的孙进程（实测 `setsid` 子进程也活不过调用边界），后台等待一律用 `run_in_background`。
+- **读写守卫**：宿主文件守卫按「读过才可改」判定，批量重写后直接改会报 stale；此时重新读取再改，不要反复重试同一改动。
 
 ## 反模式（实际踩过）
 
