@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""Check Markdown internal links: relative-path existence and heading anchors.
+"""Check Markdown internal links: relative-path existence, heading anchors,
+backticked repo-path existence, and backticked code-symbol existence.
 
 Usage: python scripts/check_docs_links.py [files...]
+       python scripts/check_docs_links.py --selftest   # 检查器自测（临时目录，不碰工作区）
 Default file set: tracked *.md (git ls-files). Exit 1 on any broken link.
 
 Skipped: absolute URLs (http/https/mailto) and links into local-only archives
 (docs/plans/, docs/specs/, docs/superpowers/) which are not version-controlled.
+
+符号检查（issue #191）：活跃文档里反引号包裹的 snake_case 标识符必须是代码里存在的
+符号。复盘 #158-#161 发现「文档仍列已删除函数」（#161 第 2 轮审查 HARD）反复出现；
+路径检查只能覆盖文件名，覆盖不到符号名。
 """
 
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 
 LOCAL_ARCHIVES = ("docs/plans/", "docs/specs/", "docs/superpowers/")
@@ -26,6 +33,44 @@ REPO_TOP_DIRS = ("libs/", "apps/", "strategies/", "scripts/", "docs/", "cmake/",
                  ".github/", "third_party/", "tools/")
 BACKTICK_PATH_RE = re.compile(
     r"`([A-Za-z0-9_./-]+\.(?:h|cpp|py|md|json|sh|ps1|txt|map|cmake|yml|yaml))`")
+# 反引号里的 snake_case 标识符（函数/字段/配置键/工具名）。纯全大写、驼峰、带点路径不算。
+BACKTICK_SYMBOL_RE = re.compile(r"`([a-z][a-z0-9_]{3,})`")
+# 代码 token 索引的扫描范围（环境里可查的产物如 build/、node_modules/ 不扫；
+# third_party 是 vendored 外部代码，扫进来会掩盖本仓符号缺失）。
+SYMBOL_SCAN_ROOTS = ("libs", "apps", "strategies", "scripts", "cmake", ".github")
+SYMBOL_SCAN_ROOT_FILES = ("CMakeLists.txt", "CMakePresets.json", "conanfile.py", "package.json")
+SYMBOL_SCAN_SUFFIXES = (".h", ".hpp", ".cpp", ".cc", ".c", ".py", ".sh", ".ps1", ".js", ".ts",
+                        ".tsx", ".mjs", ".cmake", ".json", ".yml", ".yaml", ".toml", ".txt")
+SYMBOL_SCAN_SKIP_DIRS = {"node_modules", "dist", "build", "install", ".cache", ".git",
+                         "third_party", ".worktrees"}
+# 本检查器源码不参与 token 索引（理由见 code_token_index）。
+CHECKER_REL_PATH = "scripts/check_docs_links.py"
+TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# 显式白名单：文档有意引用、但代码里查不到的「环境/工单/计划/外部工具」名词。
+# 判据与 check_backticked_paths 一致——只有「环境里能查到，或明确是计划/外部名词」才豁免。
+# 默认**不豁免**已实现后又删掉的符号（那正是要抓的漂移）；唯一例外是文档把历史符号
+# 当作示例明确引用（见 watch_path），此时注释必须写明「历史示例」。
+# 注意：本文件自身不参与 token 索引（见 code_token_index），否则白名单字面量会自我豁免。
+SYMBOL_ALLOWLIST = {
+    # CMake targets / 构建产物 / npm scripts（在 CMakePresets.json 或 package.json 里可查）
+    "add_custom_command", "cmake_minimum_required", "copy_directory",
+    "dz_on_md_started", "dz_preload_event", "dz_preload_md", "dz_wait_for",
+    "dztest_support", "dz_shm_perf_bench", "dz_smoke_test",
+    "dzmd_ctp_options", "ctp_2", "ctp_options", "frame_types_test", "alert_e2e",
+    "stg_demo_test", "dztrader_sdk", "dztrader_sdk_static",
+    # 计划中的基准项/文档示例（§10 基准清单）
+    "bench_bar_close_dual_ma", "bench_bar_tick_daily", "bench_bar_tick_intraday",
+    "bench_relocate", "bench_series_read", "bench_tick_update", "bench_warmup_replay",
+    # 示例数据/平台遥测字段（文档示例，不是本仓符号）
+    "bip_buffer", "ios_in_progress", "iwlwifi_1",
+    # GitHub / DSH / issue 字段与工具名（含 MCP 外部工具名：AGENTS §六 引用 codegraph_explore，
+    # 它是宿主提供的工具而非本仓符号）
+    "blocked_by", "node_id", "package_id", "run_in_background", "wait_agent",
+    "codegraph_explore",
+    # 历史示例：review-checklist §2.3 用「已删除的 watch_path」说明漂移类 finding，
+    # 该引用是有意保留的反例，不是当前符号
+    "watch_path",
+}
 
 
 def is_active_doc(rel):
@@ -185,7 +230,99 @@ def check_backticked_paths(files, root, tracked):
     return errors
 
 
+def code_token_index(root):
+    """Collect every identifier appearing in code/build/config text under root."""
+    tokens = set()
+    for name in SYMBOL_SCAN_ROOT_FILES:
+        path = os.path.join(root, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                tokens.update(TOKEN_RE.findall(fh.read()))
+        except OSError:
+            continue
+    for scan_root in SYMBOL_SCAN_ROOTS:
+        base_dir = os.path.join(root, scan_root)
+        if not os.path.isdir(base_dir):
+            continue
+        for dirpath, dirnames, filenames in os.walk(base_dir):
+            dirnames[:] = [d for d in dirnames if d not in SYMBOL_SCAN_SKIP_DIRS]
+            for filename in filenames:
+                rel = os.path.relpath(os.path.join(dirpath, filename), root)
+                if rel.replace(os.sep, "/") == CHECKER_REL_PATH:
+                    # 本文件含白名单字面量；扫进来会让所有白名单项「自我豁免」。
+                    continue
+                if not filename.endswith(SYMBOL_SCAN_SUFFIXES):
+                    continue
+                try:
+                    with open(os.path.join(dirpath, filename), encoding="utf-8",
+                              errors="replace") as fh:
+                        tokens.update(TOKEN_RE.findall(fh.read()))
+                except OSError:
+                    continue
+    return tokens
+
+
+def check_backticked_symbols(files, root):
+    """Flag backticked snake_case identifiers in active docs that code does not define."""
+    code_tokens = code_token_index(root)
+    errors = []
+    for rel in files:
+        if not is_active_doc(rel):
+            continue
+        with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
+            lines = strip_code_fences(fh.read())
+        for lineno, line in enumerate(lines, 1):
+            for tok in BACKTICK_SYMBOL_RE.findall(line):
+                if "_" not in tok or tok.endswith("_") or tok.startswith("_"):
+                    continue
+                if tok in SYMBOL_ALLOWLIST:
+                    continue
+                if tok not in code_tokens:
+                    errors.append(f"{rel}:{lineno}: backticked symbol not found in code -> {tok}")
+    return errors
+
+
+def selftest():
+    """Self-test for the symbol check on a throwaway tree (worktree untouched)."""
+    with tempfile.TemporaryDirectory(prefix="dz_docs_links_selftest_") as tmp:
+        os.makedirs(os.path.join(tmp, "libs", "demo"))
+        with open(os.path.join(tmp, "libs", "demo", "sample.h"), "w", encoding="utf-8") as fh:
+            fh.write("struct Sample { int field_name = 0; };\nvoid real_symbol();\n")
+        os.makedirs(os.path.join(tmp, "docs", "components"))
+        doc = os.path.join(tmp, "docs", "components", "sample.md")
+        with open(doc, "w", encoding="utf-8") as fh:
+            fh.write("\n".join([
+                "`real_symbol` 存在 → 通过；`field_name` 存在 → 通过。",
+                "`dztrader_sdk` 白名单 → 通过。",
+                "`ghost_symbol` 不存在 → 必须被抓到。",
+                "```",
+                "`fenced_ghost_symbol` 在代码块里 → 忽略。",
+                "```",
+                "",
+            ]))
+        errors = check_backticked_symbols(["docs/components/sample.md"], tmp)
+        if len(errors) != 1 or "ghost_symbol" not in errors[0] or "fenced" in errors[0]:
+            print("selftest FAIL: expected exactly one ghost_symbol error, got:", errors)
+            return 1
+
+        # 路径检查回归用例（#191 验收要求「路径检查不回退」）：tracked 里有 sample.h，
+        # 文档引用存在的路径通过、不存在的路径必须报。
+        with open(doc, "w", encoding="utf-8") as fh:
+            fh.write("`libs/demo/sample.h` 存在 → 通过；`libs/demo/missing.h` 不存在 → 必须报。\n")
+        path_errors = check_backticked_paths(["docs/components/sample.md"], tmp,
+                                             {"libs/demo/sample.h"})
+        if len(path_errors) != 1 or "missing.h" not in path_errors[0]:
+            print("selftest FAIL: expected exactly one missing path error, got:", path_errors)
+            return 1
+    print("selftest OK: symbol check detects missing symbols; path check regression covered")
+    return 0
+
+
 def main(argv):
+    if "--selftest" in argv:
+        return selftest()
     root = subprocess.run(["git", "rev-parse", "--show-toplevel"],
                           capture_output=True, text=True, check=True).stdout.strip()
     if argv:
@@ -228,13 +365,14 @@ def main(argv):
     contract_errors = check_contract_refs(files, root, contract_index(root))
     errors.extend(contract_errors)
     errors.extend(check_backticked_paths(files, root, tracked_repo_paths(root)))
+    errors.extend(check_backticked_symbols(files, root))
 
     for err in errors:
         print(err)
     if errors:
-        print(f"FAIL: {len(errors)} broken link(s)/contract ref(s)/stale path(s)")
+        print(f"FAIL: {len(errors)} broken link(s)/contract ref(s)/stale path(s)/stale symbol(s)")
         return 1
-    print(f"OK: {len(files)} markdown files scanned, no broken links")
+    print(f"OK: {len(files)} markdown files scanned, no broken links/paths/symbols")
     return 0
 
 
