@@ -509,18 +509,12 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 - **Open 竞价窗口内同构**（[ADR 0032](../adr/0032-auction-window-strategy-events.md)）：窗口首笔 tick 即完成 `on_bar_close(上一根) → on_bar_open(新首根) → on_bar_update`，其后每笔竞价 tick 只 `on_bar_update`；开盘后第一笔连续交易 tick 只 `on_bar_update`（同一根 bar 继续），此时 `ctx.is_auction()` 由 true 变 false。窗口内没有 tick 就没有回调（纯 tick 驱动，不加定时器）。
 - **`ctx.is_auction()` 标识触发相位，不是被交出 bar 的属性**（[ADR 0032](../adr/0032-auction-window-strategy-events.md) 决策 3）：竞价窗口首笔 tick 触发的那次 `on_bar_close(上一根)` 同样为 true——被关闭的是上一根普通 bar。因此不能拿它当「跳过整个回调」的开关：**只在 `on_bar_open` / `on_bar_update` 里用它拦交易意图，`on_bar_close` 应照常处理**（否则平仓记账与指标收尾会漏）。静默填窗、历史回放、`on_init`、`on_params_update` 期间恒为 false。
 
-> **实现状态（#163）**：相位写入口径已落地——三个 bar 事件入口在窗口推进 / 字段写入之后、
-> 调 B 之前写入 ctx；竞价窗口首笔 tick 触发的 `on_bar_close` 为 true，离开窗口的第一笔连续
-> tick 只 update 且相位转 false；`on_init` / `on_params_update` / `on_destroy` 恒 false
-> （不是 bar 事件，没有触发 tick）；**回放期由 `InstrumentNode::replaying` 强制 false**——
-> 回放复用 live 的 tick→bar 实现，竞价归档 bar 的合成 tick 在 builder 层是
-> `is_auction=true`（`bar_strategy_replay_test.cpp` 锁定），但回放不是实时竞价，合成 tick 的
-> 相位不外泄。框架不因相位拦截下单：窗口内意图与其它时刻走同一条执行路径（Seam B 断言
-> 窗口内单在窗口结束前已落地）。Seam B/A 测试：`bar_strategy_framework_test.cpp` 的
-> `AuctionWindowDrivesEventOrderAndPhaseWrites` / `AuctionPhaseIsSuppressedDuringReplay` /
-> `DeferredParamsUpdateSeesPhaseFalseAfterFirstAuctionCallback` /
-> `DegradedSessionTableKeepsAuctionPhaseFalse`。
-
+> **实现状态（#163）**：相位写入口径已落地（接线顺序见 §5.4）。竞价窗口首笔 tick 触发的
+> `on_bar_close` 为 true、离开窗口的第一笔连续 tick 只 update 且相位转 false；`on_init` /
+> `on_params_update` / `on_destroy` 恒 false（不是 bar 事件，没有触发 tick）；**回放期恒
+> false**——回放复用 live 的 tick→bar 实现，竞价归档 bar 的合成 tick 会被 builder 标记
+> `is_auction=true`，但回放不是实时竞价，合成 tick 的相位不外泄（抑制实现见 §5.4）。框架
+> 不因相位拦截下单：窗口内意图与其它时刻走同一条执行路径。测试见 §13。
 
 ### 5.2 回调门禁：窗口填满前不回调
 
@@ -600,14 +594,15 @@ bar 边界由 tick→bar 通用组件（[ADR 0031](../adr/0031-tick-bar-synthesi
   - `on_bar_update(bar, is_auction)`：把 `Bar` 的 OHLC/量额/OI/`last_tick_sec` 写进 `[0]` → 写 `is_auction` → `B.on_bar_update(ctx)`。
 
   每个事件入口先用本笔 tick 刷新 `TickSnapshot`（价格夹取/同步单对手价）；**只有被 builder 接受的 tick 才产生事件**——乱序/非交易时段/量额倒退的 tick 被丢弃并计入 `BarBuilderStats`，不刷新快照；回调门禁（§5.2）、静默填窗/回放（§5.3）、失败实例（§4.6）都在适配器里短路。
-
-> **实现状态（#163）**：三个入口已按上述顺序接线（`close` / `update` 在写 `[0]` 之后、
-> `open` 在推进窗口之后写相位）；回放期由 `InstrumentNode::replaying` 强制 false，其余
-> 非 bar 回调入口显式清零。相位只影响 B 的观测，不改变执行路径（§6）。
 - **单一实现**：live、静默填窗、历史回放都喂同一个 builder 的 `on_tick`（回放/静默填窗用合成 tick，§5.3）；不存在第二条 bar 边界实现，`ctx` 也不向 B 暴露边界/聚合类的半成品入口。
 - 事件顺序不变：`on_bar_close(上一根) → 推进 → on_bar_open → on_bar_update`；**不使用定时器定义 bar 边界**（回卷定时器只做布局，不参与 bar 生命周期）。
 - bar 标识（用于历史对齐）= `(trading_day, begin_sec)`；归档域 schema 与时间标注随归档 spec（#4）对齐该标识。
 - 小节末尾不会有独立收盘事件：最后一根 bar 在下一笔更晚 tick 到达时收盘（纯 tick 驱动，无 flush）。
+
+> **实现状态（#163）**：三个入口已按上述顺序接线（`close` / `update` 在写 `[0]` 之后、
+> `open` 在推进窗口之后写相位，三者共用 `write_auction_phase`）；回放期由
+> `InstrumentNode::replaying` 抑制（语义见 §5.1），`on_params_update` / `on_destroy` 入口
+> 显式清零。相位只影响 B 的观测，不改变执行路径（§6）。
 
 ### 5.5 v1 退化交易小节表（已知限制）
 
@@ -1196,15 +1191,17 @@ status | quit
 > 估算行与实际回放行按行分别断言，防止「拿估算当实测」恒真）。
 >
 > **#163 新增**：`bar_strategy_framework_test.cpp` 扩 **Seam B/A**（含 Open 竞价窗口的注入
-> 小节表 `auction_session_table()`）：竞价窗口内事件序与相位写入
+> 小节表 `day_auction_session_table()`，复用 `bar_test_data.h`）：竞价窗口内事件序与相位写入
 > （`AuctionWindowDrivesEventOrderAndPhaseWrites`：窗口首笔 tick 的 `close → open → update`
 > 三者均为 true、后续竞价 tick 只 update、离开窗口第一笔连续 tick 只 update 且相位转 false；
 > 同用例用脚本意图断言窗口内下单立即落地、与连续交易单形状相同——框架不因相位拦截下单）、
-> 回放期相位恒 false（`AuctionPhaseIsSuppressedDuringReplay`：竞价归档 bar 的合成 tick 在
-> builder 层为 true、经 A 后 B 看到 false）、非 bar 回调恒 false
+> 回放期相位恒 false（`AuctionPhaseIsSuppressedDuringReplay`：用例内先用 builder 做正对照
+> ——竞价归档 bar 的合成 tick 标记 true、窗口内启动首笔只 `open → update`——再断言经 A 后
+> B 看到 false）、非 bar 回调恒 false
 > （`DeferredParamsUpdateSeesPhaseFalseAfterFirstAuctionCallback`：竞价首笔 close 之后补投的
 > `on_params_update` 为 false）、退化表下恒 false
-> （`DegradedSessionTableKeepsAuctionPhaseFalse`）。下列清单是随各票逐步补齐的完整目标。
+> （`DegradedSessionTableKeepsAuctionPhaseFalse`：tick 落在生产口径的竞价窗口内仍为 false）。
+> 下列清单是随各票逐步补齐的完整目标。
 
 - 单元：
   - Series：`[n]` 读值/负索引/`n ≥ size` 抛 `std::out_of_range`、消息含 `n/size/max_lookback`；`span()` 长度与顺序；`size/max_lookback` 语义；write-only-`[0]` 的编译期约束（无 `push_back/resize`）；Debug assert。

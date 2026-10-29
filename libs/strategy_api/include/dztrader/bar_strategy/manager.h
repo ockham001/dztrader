@@ -19,7 +19,7 @@
  * 已落地（#157 + #158）：配置加载与启动诊断、订阅、tick→bar、回调分发、异常隔离、退化交易
  * 小节表，以及**回调门禁 + 静默填窗 + 用户序列 + 18:00 回卷**（§4.4/§5.2）；交易意图与逻辑
  * 台账（#159）、挂靠缩放与上报（#160）、历史预热回放（#161）、**动态管理命令与参数热更新**
- * （#162）。竞价相位（#163）后续接入，接缝见各成员注释。
+ * （#162），以及**竞价相位**（#163，§5.1/§5.4）。
  *
  * **动态管理（#162，组件文档 §8/§9）**：`on_ui_input` 是本框架唯一的命令入口——按
  * `command_internal::parse_command` 的 token 文法解析，再执行 `instrument *` / `account *` /
@@ -103,6 +103,33 @@ concept HasOnBarClose =
 template <typename T>
 concept HasOnParamsUpdate =
     requires(T instance, InstrumentContext& ctx) { instance.on_params_update(ctx); };
+
+/**
+ * @brief 把 bool 置 true 的析构复位守卫（#163 回放期相位抑制用）
+ *
+ * 回放循环有多个提前返回（B 抛异常 → 实例失败）；手写成对赋值时漏复位一处就会让
+ * `InstrumentNode::replaying` 永久为 true，B 从此再也看不到竞价相位——静默、且只在
+ * 「回放中 B 抛异常」这条罕见路径上出现。用守卫把复位绑定到作用域，任何返回路径都恢复。
+ */
+class ScopedFlag {
+public:
+    /// @brief 进入作用域：把目标置 true
+    explicit ScopedFlag(bool& flag) noexcept
+        : flag_(flag) {
+        flag_ = true;
+    }
+
+    /// @brief 离开作用域：把目标复位 false（异常展开时同样执行）
+    ~ScopedFlag() { flag_ = false; }
+
+    ScopedFlag(const ScopedFlag&) = delete;
+    ScopedFlag& operator=(const ScopedFlag&) = delete;
+    ScopedFlag(ScopedFlag&&) = delete;
+    ScopedFlag& operator=(ScopedFlag&&) = delete;
+
+private:
+    bool& flag_;
+};
 
 /**
  * @brief 从 tick 的定长 `instrument_id` 取出合约代码视图（不分配、不复制）
@@ -1354,7 +1381,19 @@ private:
     // ==== 事件适配器回调（`BarEventSink` 调用；A 内部，B 不可见）====
 
     /**
-     * @brief `on_bar_open` 事件：回卷兜底 → 推进窗口 → 调 B
+     * @brief 把 builder 给出的竞价相位写进 ctx（回放期强制 false；#163，组件文档 §5.4）
+     *
+     * 相位 = **触发本次事件的 tick** 的相位（ADR 0032 决策 3）：竞价窗口首笔 tick 触发的
+     * `on_bar_close` 也为 true。回放复用 live 的 tick→bar 实现，竞价归档 bar 的合成 tick
+     * 在 builder 层为 true；但回放不是实时竞价，由 `node.replaying` 统一抑制。三个 bar
+     * 事件入口共用本函数——同一策略只有一处，避免某个入口漏写就静默泄漏。
+     */
+    static void write_auction_phase(InstrumentNode<Strategy>& node, bool is_auction) noexcept {
+        node.ctx.set_auction(is_auction && !node.replaying);
+    }
+
+    /**
+     * @brief `on_bar_open` 事件：回卷兜底 → 推进窗口 → 写相位 → 调 B
      *
      * 推进后 `[0]` 已是新根，且 OHLC 由 builder 用本笔 tick 播种完毕——B 在 `on_bar_open`
      * 里读 `ctx.close[0]` 即本笔 tick 价（组件文档 §5.1）。
@@ -1370,9 +1409,7 @@ private:
         if (!bar_callback_enabled(node.ctx)) {
             return;  // 静默填窗：B 零回调
         }
-        // 相位在推进窗口之后、调 B 之前写入（组件文档 §5.4；#163）：B 在 `on_bar_open` 里读到
-        // 的是**触发本笔事件的 tick** 的相位，与被交出 bar 的属性无关（ADR 0032 决策 3）。
-        node.ctx.set_auction(is_auction && !node.replaying);
+        write_auction_phase(node, is_auction);
         if constexpr (manager_internal::HasOnBarOpen<Strategy>) {
             invoke_b(node, "on_bar_open",
                      [](Strategy& instance, InstrumentContext& ctx) { instance.on_bar_open(ctx); });
@@ -1390,8 +1427,7 @@ private:
         if (!bar_callback_enabled(node.ctx)) {
             return;  // 静默填窗：B 零回调
         }
-        // 相位在写 `[0]` 之后、调 B 之前写入（组件文档 §5.4；#163）。
-        node.ctx.set_auction(is_auction && !node.replaying);
+        write_auction_phase(node, is_auction);
         if constexpr (manager_internal::HasOnBarUpdate<Strategy>) {
             invoke_b(node, "on_bar_update", [](Strategy& instance, InstrumentContext& ctx) {
                 instance.on_bar_update(ctx);
@@ -1423,9 +1459,9 @@ private:
         if (!close_callback_enabled(node.ctx)) {
             return;  // 静默填窗：B 零回调
         }
-        // 相位 = **触发本次 close 的 tick** 的相位（组件文档 §5.4；#163）：竞价窗口首笔 tick
-        // 触发的 close 关闭的是上一根普通 bar，但相位仍为 true（ADR 0032 决策 3）。
-        node.ctx.set_auction(is_auction && !node.replaying);
+        // close 的相位语义见 {@link write_auction_phase}：竞价窗口首笔 tick 触发的 close
+        // 关闭的是上一根普通 bar，但相位仍为 true（ADR 0032 决策 3）。
+        write_auction_phase(node, is_auction);
         if constexpr (manager_internal::HasOnBarClose<Strategy>) {
             invoke_b(node, "on_bar_close", [](Strategy& instance, InstrumentContext& ctx) {
                 instance.on_bar_close(ctx);
@@ -1978,23 +2014,20 @@ private:
 
         // 回放期相位抑制（#163）：回放复用 live 的 tick→bar 实现，竞价归档 bar 的合成 tick
         // 会被 builder 标记 is_auction=true；A 在 dispatch 里按本标记清成 false，B 因此看不到
-        // 「回放中的竞价相位」。失败时提前返回也要复位（实例已死，但状态保持自洽）。
-        node.replaying = true;
+        // 「回放中的竞价相位」。守卫按作用域复位，失败实例的提前返回不会把标记留在 true。
+        const manager_internal::ScopedFlag replaying_scope(node.replaying);
         for (const bar::Bar& bar : bars) {
             if (node.ctx.is_failed()) {
-                node.replaying = false;
                 return;  // B 在回放期抛异常：该实例失败，停止回放（尾部保留但不收 tick）
             }
             const auto ticks = bar_strategy_internal::make_replay_ticks(bar);
             for (const DzTick& tick : ticks) {
                 if (node.ctx.is_failed()) {
-                    node.replaying = false;
                     return;
                 }
                 node.builder.on_tick(tick);
             }
         }
-        node.replaying = false;
     }
 
     /**
