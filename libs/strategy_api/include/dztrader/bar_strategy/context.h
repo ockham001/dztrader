@@ -775,21 +775,39 @@ private:
     [[nodiscard]] LargeVolume net_position() const noexcept { return position_.net_volume; }
 
     // ==== 参数热更新的投递状态（#162；组件文档 §9）====
+    //
+    // 只需要两个操作（不是五个 getter/setter）：`A` 在每次交付 B 回调之后调
+    // `note_callback_delivered()`，它一句话表达「已进入回调阶段 + 该不该投递挂起的更新」——
+    // 状态的读取与写入都发生在这一次调用里。`pending` 的置位由 `request_params_update()` 做。
+    //
+    // 抽成一个复合操作而不是五个访问器：ctx 与 `BarStrategyManager` 本来就是 friend，五个
+    // 细粒度访问器不增加封装、只把「这两个 bool 怎么配合」的知识泄漏给调用方；而它们的配合
+    // 恰好是 §9 那条「未进入回调阶段就挂起、进入后合并投递一次」的全部语义。
 
-    /// @brief 该实例是否已经进入回调阶段（收到过至少一次 B 回调）
-    [[nodiscard]] bool callback_stage_entered() const noexcept { return callback_stage_entered_; }
+    /// @brief 交付过一次 B 回调：标记已进入回调阶段，并返回是否有挂起的参数更新要补投
+    ///
+    /// 调用方（A）在拿到 `true` 时必须调 `on_params_update` 并随后调
+    /// {@link params_update_delivered}；拿到 `false` 什么都不用做。
+    ///
+    /// @return true = 有挂起的更新，投递后需调 {@link params_update_delivered}
+    [[nodiscard]] bool note_callback_delivered() noexcept {
+        callback_stage_entered_ = true;
+        return params_update_pending_;
+    }
 
-    /// @brief 标记「已进入回调阶段」（A 在交付第一次 B 回调之后调用）
-    void mark_callback_stage_entered() noexcept { callback_stage_entered_ = true; }
+    /// @brief 标记挂起的参数更新已投递（清标记；合并语义：N 次 set → 1 次回调）
+    void params_update_delivered() noexcept { params_update_pending_ = false; }
 
-    /// @brief 挂起一次参数更新通知（实例还没进入回调阶段时）
-    void mark_params_update_pending() noexcept { params_update_pending_ = true; }
-
-    /// @brief 是否有挂起的参数更新通知（进入回调阶段后由 A 合并投递）
-    [[nodiscard]] bool params_update_pending() const noexcept { return params_update_pending_; }
-
-    /// @brief 清掉挂起的参数更新通知（A 投递 `on_params_update` 之后调用）
-    void clear_params_update_pending() noexcept { params_update_pending_ = false; }
+    /// @brief 请求一次参数更新通知：已进入回调阶段的由 A 当场投递，否则挂起
+    ///
+    /// @return true = 该实例还没进入回调阶段，已挂起（A 需在首根回调后补投）
+    [[nodiscard]] bool request_params_update() noexcept {
+        if (callback_stage_entered_) {
+            return false;
+        }
+        params_update_pending_ = true;
+        return true;
+    }
 
     /**
      * @brief 用本笔 tick 刷新快照（A 在事件入口调用；只对**已被 builder 接受**的 tick）

@@ -3679,12 +3679,26 @@ TEST_F(BarStrategyFrameworkTest, CommandSurfaceCoversAllTwelveCommands) {
     EXPECT_NE(ui_outputs_[7].find("param mode = live"), std::string::npos) << ui_outputs_[7];
 
     // ── 5. instrument add（查元数据 → 订阅 → on_init → 回放 → 进入实盘）──
+    //
+    // 地址稳定性（AC「实例增删后的地址稳定性」）：先记下 rb2601 当前回调里的 ctx 地址，
+    // 增删品种之后它必须**逐位不变**——B 在 `on_init` 保存的价格视图只绑一次，节点若搬移
+    // 视图就会悬空。`instruments_` 用 `std::map` 正是为此（节点地址稳定）。
+    const void* const address_a_before_add =
+        recorder().for_instrument(kInstrumentA).back().ctx_address;
     ASSERT_TRUE(run_command(std::format("instrument add {}", kInstrumentB), 8));
     EXPECT_NE(ui_outputs_[8].find("instrument add ok"), std::string::npos) << ui_outputs_[8];
 
     ASSERT_TRUE(run_command("instrument list", 9));
     EXPECT_NE(ui_outputs_[9].find("instrument list | count=2"), std::string::npos)
         << ui_outputs_[9];
+
+    // 让 rb2601 再走一次回调：新回调里的 ctx 地址必须与 add 之前相同
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(1), warmed_up_price(1),
+                             warmed_up_volume(1), warmed_up_price(1) * warmed_up_volume(1))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 2));
+    EXPECT_EQ(recorder().for_instrument(kInstrumentA).back().ctx_address, address_a_before_add)
+        << "instrument rb2601's ctx address must survive instrument add";
 
     // ── 6. account add / set / del ──
     ASSERT_TRUE(run_command("account add CTP002 0.5", 10));
@@ -3702,6 +3716,14 @@ TEST_F(BarStrategyFrameworkTest, CommandSurfaceCoversAllTwelveCommands) {
     // ── 7. instrument del ──
     ASSERT_TRUE(run_command(std::format("instrument del {}", kInstrumentB), 13));
     EXPECT_NE(ui_outputs_[13].find("instrument del ok"), std::string::npos) << ui_outputs_[13];
+
+    // 删除另一个品种同样不能搬移 rb2601 的节点
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(2), warmed_up_price(2),
+                             warmed_up_volume(2), warmed_up_price(2) * warmed_up_volume(2))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 3));
+    EXPECT_EQ(recorder().for_instrument(kInstrumentA).back().ctx_address, address_a_before_add)
+        << "instrument rb2601's ctx address must survive instrument del of rb2605";
 
     // ── 8. 解析失败三条：都只回一行错误，且状态不变 ──
     const std::size_t status_before = ui_outputs_.size();
@@ -4233,6 +4255,82 @@ TEST_F(BarStrategyFrameworkTest, OversizedCommandOutputIsTruncatedToPageLimit) {
         << "the response must be capped by the page limit, not accumulated unbounded";
     EXPECT_GT(ui_outputs_[0].size(), 1024U * 1024U - 4096U)
         << "the truncated response should fill the page; got " << ui_outputs_[0].size();
+
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+}
+
+/**
+ * **`account set` 在 scale 未变时幂等**（组件文档 §8「实现期确认」：`changed=0`，不发单、不上报）。
+ *
+ * 报错会让脚本化运维很难写——运维脚本重放同一批命令是常态。这条路径没有任何帧可观测（不发单、
+ * 不上报），唯一的证据是命令结果里的 `changed=0`。
+ */
+TEST_F(BarStrategyFrameworkTest, AccountSetWithUnchangedScaleIsIdempotent) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60,
+                 R"([{"account_id": "CTP001", "scale": 0.5}])");
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = kTestMaxLookback,
+        .when = EventKind::BarUpdate,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(4, 5000.0); },
+    });
+
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+
+    // 带 sync 但 scale 没变：不发单、不上报，只回 changed=0
+    ASSERT_TRUE(run_command("account set CTP001 scale 0.5 sync", 0));
+    EXPECT_NE(ui_outputs_[0].find("changed=0"), std::string::npos) << ui_outputs_[0];
+
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    // 唯一的单来自建仓意图（1 张）；幂等 set 不该有同步单
+    ASSERT_EQ(orders_.size(), 1U) << "an unchanged scale must not place a sync order; got "
+                                  << orders_.size();
+
+    // 上报只有「进入 live 的基线 1 条 + 建仓 1 条」；幂等 set 不该有重报
+    // （基线报 L=0，建仓后报 L=2；若 set 重报了会多一条 L=2）
+    ASSERT_EQ(reports_.size(), 2U)
+        << "an unchanged scale must not republish; got " << reports_.size();
+    EXPECT_EQ(reports_[0].net_volume, 0);
+    EXPECT_EQ(reports_[1].net_volume, 2);
+}
+
+/**
+ * **`account set` / `account add` 的 `scale` 上界是运行期的 `max_scale`**（ADR 0027 决策 11：
+ * `max_scale` 启动加载一次、盘中不可变）。
+ *
+ * 超出上限时命令失败、**不顺带放宽上限**——否则「盘中不可变」就成了一句空话（操作员只要先
+ * `account add` 一个大比率，之后就能一直用它）。
+ */
+TEST_F(BarStrategyFrameworkTest, AccountScaleAboveMaxIsRejectedWithoutChangingMaxScale) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60, "[]",
+                 "  \"max_scale\": 2.0,\n");
+
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+
+    ASSERT_TRUE(run_command("account add CTP001 3.0", 0));
+    EXPECT_NE(ui_outputs_[0].find("reason=scale_exceeds_max_scale"), std::string::npos)
+        << ui_outputs_[0];
+
+    // 账户表不变：add 失败后表仍是空的
+    ASSERT_TRUE(run_command("account list", 1));
+    EXPECT_NE(ui_outputs_[1].find("account list | -"), std::string::npos) << ui_outputs_[1];
+
+    // 上界本身没有被动过：1.5（<= 2.0）应当成功
+    ASSERT_TRUE(run_command("account add CTP002 1.5", 2));
+    EXPECT_NE(ui_outputs_[2].find("account add ok"), std::string::npos) << ui_outputs_[2];
 
     stop_strategy();
     EXPECT_EQ(exit_code_, 0);

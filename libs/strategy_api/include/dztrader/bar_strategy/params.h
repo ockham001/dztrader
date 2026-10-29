@@ -23,7 +23,6 @@
 
 #include <cstdint>
 #include <format>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -31,6 +30,15 @@
 #include <vector>
 
 namespace dztrader {
+
+/// @brief 参数层的内部辅助（与 `config_internal` / `scaling_internal` / `execution_internal`
+/// 同风格）
+///
+/// 不放进 `dztrader::` 顶层的原因：本头是**分发的 SDK 公开头**，顶层符号等于对外承诺面。
+/// 这三个函数服务的是命令层与错误消息（「值 token 怎么解释」「JSON 值怎么渲染」），不是策略
+/// 作者会直接调用的 API；放进 `_internal` 与同名兄弟（`series_internal` / `command_internal`）
+/// 保持一致。
+namespace params_internal {
 
 /// @brief JSON 形态名（错误消息用：`integer` / `number` / `boolean` / `string` / …）
 [[nodiscard]] inline std::string_view json_type_name(const nlohmann::json& value) noexcept {
@@ -54,6 +62,8 @@ namespace dztrader {
     }
     return "object";
 }
+
+}  // namespace params_internal
 
 /**
  * @brief 进程级参数仓：JSON 对象 + 类型化读写（组件文档 §9）
@@ -127,10 +137,11 @@ public:
         if (found == values_.end()) {
             return fallback;
         }
-        if (!param_type_matches<T>(*found)) {
+        const auto [expected_name, matches] = param_type_traits<T>();
+        if (!matches(*found)) {
             throw std::invalid_argument(
                 std::format("param type mismatch | name={} expected={} actual={}", name,
-                            param_type_name<T>(), json_type_name(*found)));
+                            expected_name, params_internal::json_type_name(*found)));
         }
         return found->template get<T>();
     }
@@ -145,36 +156,37 @@ public:
     }
 
 private:
-    /// @brief `T` 与 JSON 形态是否匹配（口径见类注释的表；`double` 接受任意数值）
+    /**
+     * @brief `T` 的 JSON 形态描述：**类型匹配与类型名来自同一张表**（组件文档 §9 的四行）
+     *
+     * 两个 4 路 `if constexpr`（「这个 JSON 值算不算 T」与「T 叫什么名字」）若不共用一张表，
+     * 加第五种参数类型时必有一处漏改——而漏改的那处不会编译失败：`param_type_name` 落进
+     * `else` 分支就变成「叫 string 但实际接受 anything」，错误消息从此开始说谎。
+     *
+     * @tparam T 参数类型（`ParamValue` 已约束为四种之一）
+     * @return `{名字, 匹配谓词}`；`double` 接受任意数值（含整数），其余严格
+     */
     template <class T>
-    [[nodiscard]] static bool param_type_matches(const nlohmann::json& value) {
+    [[nodiscard]] static constexpr auto param_type_traits() noexcept {
         if constexpr (std::same_as<T, std::int64_t>) {
-            return value.is_number_integer();
+            return std::pair{std::string_view{"integer"},
+                             [](const nlohmann::json& value) { return value.is_number_integer(); }};
         } else if constexpr (std::same_as<T, double>) {
-            return value.is_number();
+            return std::pair{std::string_view{"number"},
+                             [](const nlohmann::json& value) { return value.is_number(); }};
         } else if constexpr (std::same_as<T, bool>) {
-            return value.is_boolean();
+            return std::pair{std::string_view{"boolean"},
+                             [](const nlohmann::json& value) { return value.is_boolean(); }};
         } else {
-            return value.is_string();
-        }
-    }
-
-    /// @brief 类型名（错误消息用；与 {@link param_type_matches} 的四个分支一一对应）
-    template <class T>
-    [[nodiscard]] static constexpr const char* param_type_name() noexcept {
-        if constexpr (std::same_as<T, std::int64_t>) {
-            return "integer";
-        } else if constexpr (std::same_as<T, double>) {
-            return "number";
-        } else if constexpr (std::same_as<T, bool>) {
-            return "boolean";
-        } else {
-            return "string";
+            return std::pair{std::string_view{"string"},
+                             [](const nlohmann::json& value) { return value.is_string(); }};
         }
     }
 
     nlohmann::json values_ = nlohmann::json::object();  ///< 参数（落盘形态，有序）
 };
+
+namespace params_internal {
 
 /**
  * @brief `UI_INPUT` 的 `param set` 值 token → JSON 值（组件文档 §7「字符串协议」）
@@ -214,6 +226,8 @@ private:
     }
     return value.dump();
 }
+
+}  // namespace params_internal
 
 /**
  * @brief 参数读取（{@link ParamStore::get} 的 B 侧入口；定义放本头以隔离 JSON）

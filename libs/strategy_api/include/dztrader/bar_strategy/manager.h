@@ -473,8 +473,48 @@ private:
     struct CommandOutcome {
         std::string text;          ///< 写 OUTPUT_UI 的单行或多行结果
         bool notify = false;       ///< 是否额外 `dz_notify_ui`（关键错误 / `quit`）
-        bool error_level = false;  ///< `notify` 时用 ERROR 级还是 WARN 级
+        bool error_level = false;  ///< `notify` 时用 ERROR 还是 WARN：关键错误（实例建不起来）用
+                                   ///< ERROR，quit 用 WARN
     };
+
+    /**
+     * @brief 把值渲染成满足日志格式的 `k=v` 右侧（含空格/等号/双引号时加双引号）
+     *
+     * AGENTS §四：值含空格、等号或引号时必须用双引号包裹，否则「按空白切 `k=v`」的日志解析器
+     * 会把一个值读成两个字段。命令层的 token 不含空白，但**可以含等号**（`param set tag a=b`
+     * 合法），所以这里按同一口径处理。
+     *
+     * 只用于**日志**（stderr）；`OUTPUT_UI` 是给操作员看的文本，不加引号（加了会让人以为要按
+     * 引号再输入一次）。
+     */
+    [[nodiscard]] static std::string quote_log_value(const std::string& value) {
+        if (value.find_first_of(" =\"") == std::string::npos) {
+            return value;
+        }
+        return std::format("\"{}\"", value);
+    }
+
+    /**
+     * @brief 写回失败的统一错误行（6 条命令共用同一形状）
+     *
+     * `ConfigStore::commit` 有一组固定的失败面（全量校验、不可变字段守卫、原子写盘），对操作员
+     * 而言它们的处置完全相同：**命令失败、内存与磁盘都不变**。把错误行的形状收在一处，是为了
+     * 让「写回失败长什么样」不随命令漂移——`stage=config_write` 是运维 grep 的锚点，六处各写
+     * 一遍就一定会有一处漏字段。
+     *
+     * @param command_name 命令名（`instrument add` / `account set` / …）
+     * @param field        目标字段名（`instrument` / `account` / `name`）
+     * @param target       目标值（品种 id / 账户 id / 参数名）
+     * @param error        底层错误消息（来自 `commit_config_with`）
+     * @return 可直接返回的单行错误
+     */
+    [[nodiscard]] static CommandOutcome writeback_failed(std::string_view command_name,
+                                                         std::string_view field,
+                                                         const std::string& target,
+                                                         const std::string& error) {
+        return command_error(std::format("{} failed | {}={} stage=config_write error=\"{}\"",
+                                         command_name, field, target, error));
+    }
 
     /// @brief 失败结果的统一构造（`text` 即给操作员看的单行错误）
     static CommandOutcome command_error(std::string text,
@@ -517,7 +557,11 @@ private:
             case command_internal::CommandKind::Quit:
                 return run_quit();
         }
-        return command_error("invalid command | reason=unknown_kind");
+        // 12 个分支已全覆盖，无可达的兜底路径。仍然写一行「未知种类」返回而不是让控制流掉出
+        // 函数（那是 UB）：将来 `CommandKind` 加值时，编译器会在 `-Wswitch` 上报缺失分支，
+        // 而这行保证即便有人加了 `default:` 也不会静默返回一个未初始化的结果。
+        return command_error(std::format("invalid command | reason=unknown_kind kind={}",
+                                         command_internal::command_kind_name(command.kind)));
     }
 
     // ---- instrument add / del / list ----
@@ -546,13 +590,6 @@ private:
             return command_error(std::format(
                 "instrument add failed | instrument={} reason=already_exists", instrument_id));
         }
-        if (std::ranges::find(effective_.config.instruments, instrument_id) !=
-            effective_.config.instruments.end()) {
-            // 配置里有、实例表里没有：该品种在启动期创建失败（元数据缺失/on_init 抛异常）。
-            // 运行期重试要让操作员知道「这次会重新尝试创建」，所以直接往下走而不是报已存在。
-            (void)0;
-        }
-
         // 1. 合约元数据（必需字段缺失 → 命令失败、进程继续；§8）
         InstrumentSpec spec;
         bool metadata_loaded = false;
@@ -578,7 +615,7 @@ private:
                                     ? "missing"
                                     : "invalid",
                                 metadata.message),
-                    /*notify=*/true);
+                    /*notify=*/true, /*error_level=*/true);
         }
 
         // 2. 订阅（追加，不替换）。失败 → 命令失败、内存不变（§8 第 2 步）。
@@ -626,20 +663,26 @@ private:
             dispatch_on_destroy(slot->second);
             instruments_.erase(slot);
             unsubscribe_one(instrument_id);
-            return command_error(
-                std::format("instrument add failed | instrument={} stage=config_write error=\"{}\"",
-                            instrument_id, writeback_error));
+            return writeback_failed("instrument add", "instrument", instrument_id, writeback_error);
         }
 
         // 6. 补报该品种各账户逻辑持仓 → 进入 live（§8 的最后两步）。
+        //
+        // 顺序与 `enter_live()` 一致：**先上报、再放开**（反过来会让首个 tick 的意图先发一笔单、
+        // 再补报一个与它不一致的旧持仓）。失败实例（B 在回放期抛过异常）同样上报——§4.6 保留
+        // 它的逻辑台账，跳过会让 UI 镜像停在旧值；但执行门禁对它保持关闭（失败实例本来就拒单，
+        // `set_live` 交给它没有意义）。
         slot->second.ctx.publish_all_positions();
-        slot->second.ctx.set_live(true);
+        const bool failed = slot->second.ctx.is_failed();
+        if (!failed) {
+            slot->second.ctx.set_live(true);
+        }
 
         std::cerr << std::format(
                          "instrument added | instrument={} replayed_bars={} silent_bars={} "
-                         "metadata={}",
+                         "metadata={} failed={}",
                          instrument_id, slot->second.replayed_bars, slot->second.silent_bars,
-                         metadata_loaded ? "loaded" : "unavailable")
+                         metadata_loaded ? "loaded" : "unavailable", failed ? 1 : 0)
                   << '\n';
         return command_ok(std::format("instrument add ok | instrument={}", instrument_id));
     }
@@ -671,9 +714,7 @@ private:
                     std::erase(next.instruments, instrument_id);
                 },
                 writeback_error)) {
-            return command_error(
-                std::format("instrument del failed | instrument={} stage=config_write error=\"{}\"",
-                            instrument_id, writeback_error));
+            return writeback_failed("instrument del", "instrument", instrument_id, writeback_error);
         }
         // 2. 可选 sync 平仓单（`qty = −L_i(old)`；先发单，再退订/销毁）
         node->second.ctx.submit_sync_close_orders(sync, market);
@@ -728,18 +769,9 @@ private:
             return command_error(
                 std::format("account add failed | account={} reason=already_attached", account_id));
         }
-        if (!(scale > 0.0) || !std::isfinite(scale)) {
-            return command_error(
-                std::format("account add failed | account={} reason=invalid_scale scale={}",
-                            account_id, scale));
-        }
-        if (scale > effective_.scaling.max_scale) {
-            // max_scale 盘中不可变（ADR 0027 决策 11）：命令只能提示，不能顺带放宽上限。
-            return command_error(std::format(
-                "account add failed | account={} reason=scale_exceeds_max_scale scale={} "
-                "max_scale={}",
-                account_id, config_internal::format_ratio(scale),
-                config_internal::format_ratio(effective_.scaling.max_scale)));
+        if (std::optional<std::string> invalid = validate_scale("account add", account_id, scale);
+            invalid.has_value()) {
+            return command_error(std::move(*invalid));
         }
         // 1. 写盘（append 到 accounts）
         std::string writeback_error;
@@ -749,9 +781,7 @@ private:
                         AttachedAccount{.account_id = account_id, .scale = scale});
                 },
                 writeback_error)) {
-            return command_error(
-                std::format("account add failed | account={} stage=config_write error=\"{}\"",
-                            account_id, writeback_error));
+            return writeback_failed("account add", "account", account_id, writeback_error);
         }
         // 2. 入账户表（写盘成功之后；表地址稳定，元素地址变化不影响 ctx 的指针）
         accounts_.push_back(AttachedAccount{.account_id = account_id, .scale = scale});
@@ -769,9 +799,6 @@ private:
                 }
                 node.ctx.submit_sync_order(added, new_l, market);
             }
-        }
-        if (metadata_source_unavailable_) {
-            // 无元数据时新账户的持仓手数换算与正常单同口径（缩放不依赖元数据），不必额外诊断
         }
         std::cerr << std::format("account attached | account={} scale={} sync={} market={}",
                                  account_id, config_internal::format_ratio(scale), sync ? 1 : 0,
@@ -800,17 +827,9 @@ private:
             return command_error(
                 std::format("account set failed | account={} reason=not_attached", account_id));
         }
-        if (!(scale > 0.0) || !std::isfinite(scale)) {
-            return command_error(
-                std::format("account set failed | account={} reason=invalid_scale scale={}",
-                            account_id, scale));
-        }
-        if (scale > effective_.scaling.max_scale) {
-            return command_error(std::format(
-                "account set failed | account={} reason=scale_exceeds_max_scale scale={} "
-                "max_scale={}",
-                account_id, config_internal::format_ratio(scale),
-                config_internal::format_ratio(effective_.scaling.max_scale)));
+        if (std::optional<std::string> invalid = validate_scale("account set", account_id, scale);
+            invalid.has_value()) {
+            return command_error(std::move(*invalid));
         }
         const double old_scale = target->scale;
         if (old_scale == scale) {
@@ -829,9 +848,7 @@ private:
                     }
                 },
                 writeback_error)) {
-            return command_error(
-                std::format("account set failed | account={} stage=config_write error=\"{}\"",
-                            account_id, writeback_error));
+            return writeback_failed("account set", "account", account_id, writeback_error);
         }
         // 2. 改表（元素地址不变，ctx 只持表地址，因此无需重绑）
         target->scale = scale;
@@ -887,9 +904,7 @@ private:
                     });
                 },
                 writeback_error)) {
-            return command_error(
-                std::format("account del failed | account={} stage=config_write error=\"{}\"",
-                            account_id, writeback_error));
+            return writeback_failed("account del", "account", account_id, writeback_error);
         }
         // 2. 拷贝一份账户信息：表项即将被移除，而发单/上报都还要用它的 id（与 scale 无关的
         //    部分只有 id，但保留整个结构体让「同一份 AttachedAccount」的语义显式）
@@ -944,8 +959,8 @@ private:
         if (!params_.contains(name)) {
             return command_error(std::format("param get failed | name={} reason=not_found", name));
         }
-        return command_ok(
-            std::format("param {} = {}", name, format_param_value(params_.values().at(name))));
+        return command_ok(std::format(
+            "param {} = {}", name, params_internal::format_param_value(params_.values().at(name))));
     }
 
     /**
@@ -966,25 +981,25 @@ private:
         if (value_token.empty()) {
             return command_error("invalid command | reason=empty_param_value");
         }
-        const nlohmann::json value = param_value_from_token(value_token);
+        const nlohmann::json value = params_internal::param_value_from_token(value_token);
         // 1. 写盘：只改 `params` 对象里的一项（其余参数与未知顶层字段原样保留）
         std::string writeback_error;
         if (!commit_config_with(
                 [&name, &value](BarStrategyConfig& next) { next.params[name] = value; },
                 writeback_error)) {
-            return command_error(
-                std::format("param set failed | name={} stage=config_write error=\"{}\"", name,
-                            writeback_error));
+            return writeback_failed("param set", "name", name, writeback_error);
         }
         // 2. 更新内存（写盘成功之后）
         params_.set(name, value);
         // 3. 通知：已进入回调阶段的实例当场回调；未进入的挂起，首根回调后合并投递
         dispatch_params_update();
-        std::cerr << std::format("param changed | name={} value={} instruments={}", name,
-                                 format_param_value(value), instruments_.size())
+        // 值必须**加引号**输出：`param set tag a=b` 合法（token 里允许 `=`），不加引号会打出
+        // `value=a=b`，破坏 `prose | k=v` 的日志格式（「按空白切 k=v」的解析器读不回它）。
+        const std::string rendered = quote_log_value(params_internal::format_param_value(value));
+        std::cerr << std::format("param changed | name={} value={} instruments={}", name, rendered,
+                                 instruments_.size())
                   << '\n';
-        return command_ok(
-            std::format("param set ok | name={} value={}", name, format_param_value(value)));
+        return command_ok(std::format("param set ok | name={} value={}", name, rendered));
     }
 
     /// @brief `param list`：逐参数一行（升序；空参数 → 单行 `param list | -`）
@@ -995,7 +1010,8 @@ private:
         std::string text = std::format("param list | count={}", params_.size());
         for (const std::string& name : params_.names()) {
             text += '\n';
-            text += std::format("{} = {}", name, format_param_value(params_.values().at(name)));
+            text += std::format("{} = {}", name,
+                                params_internal::format_param_value(params_.values().at(name)));
         }
         return command_ok(std::move(text));
     }
@@ -1144,6 +1160,35 @@ private:
         return text;
     }
 
+    /**
+     * @brief 校验一个挂靠比率（`account add` / `account set` 共用；`nullopt` = 合法）
+     *
+     * 两条命令的比率校验逐字相同（非空/正有限/`<= max_scale`），只有错误行的命令前缀不同。
+     * 抽出来不是为了省几行，而是为了让「什么算合法比率」只有一处定义——`max_scale` 盘中不可变
+     * （ADR 0027 决策 11），若某一处漏掉上界检查，`account set` 就能绕过启动期的上限。
+     *
+     * @param command_name 错误行前缀（`account add` / `account set`）
+     * @param account_id   账户标识（错误行用）
+     * @param scale        待校验比率
+     * @return `nullopt` = 合法；有值 = 可直接返回的单行错误
+     */
+    [[nodiscard]] std::optional<std::string> validate_scale(std::string_view command_name,
+                                                            const std::string& account_id,
+                                                            double scale) const {
+        if (!(scale > 0.0) || !std::isfinite(scale)) {
+            return std::format("{} failed | account={} reason=invalid_scale scale={}", command_name,
+                               account_id, scale);
+        }
+        if (scale > effective_.scaling.max_scale) {
+            // max_scale 盘中不可变（ADR 0027 决策 11）：命令只能提示，不能顺带放宽上限。
+            return std::format(
+                "{} failed | account={} reason=scale_exceeds_max_scale scale={} max_scale={}",
+                command_name, account_id, config_internal::format_ratio(scale),
+                config_internal::format_ratio(effective_.scaling.max_scale));
+        }
+        return std::nullopt;
+    }
+
     /// @brief 按 id 找账户表项（未找到返回 nullptr；表量级个位数，线性查找足够）
     [[nodiscard]] AttachedAccount* find_account(std::string_view account_id) noexcept {
         for (AttachedAccount& account : accounts_) {
@@ -1170,11 +1215,11 @@ private:
             mutate(next);
             // commit 内部做全量校验 + 不可变字段守卫 + 原子写盘；成功后才更新内存镜像
             EffectiveConfig committed = store_->commit(next);
-            // `effective_` 是启动快照（构建实例用），写回后同步它的落盘字段：`instruments`
-            // 与 `accounts` 是下一次读它的命令（`instrument list` 之外的校验、`status`）的依据。
-            effective_.config.instruments = committed.config.instruments;
-            effective_.config.accounts = committed.config.accounts;
-            effective_.config.params = committed.config.params;
+            // `effective_` 的**推导值**（`max_lookback` / `buffer_bars` / `scaling` / `warmup`）
+            // 是启动期架构参数，运行期命令一律不改它们（`ConfigStore::commit` 也守卫了
+            // `period_sec` / `max_scale`），因此只同步落盘字段：`instruments` 是 `instrument add`
+            // 的「是否已在配置里」判据，`accounts` 是诊断行与重启后的依据。
+            effective_.config = committed.config;
             return true;
         } catch (const std::exception& e) {
             error = e.what();
@@ -1225,21 +1270,11 @@ private:
             if (node.ctx.is_failed()) {
                 continue;
             }
-            if (!node.ctx.callback_stage_entered()) {
-                node.ctx.mark_params_update_pending();
-                continue;
+            if (node.ctx.request_params_update()) {
+                continue;  // 还没进入回调阶段：已挂起，首根回调后由 on_callback_delivered 补投
             }
             invoke_params_update(node);
         }
-    }
-
-    /// @brief 实例进入回调阶段时补投一次挂起的参数更新（首根回调之后、合并投递）
-    void flush_pending_params_update(InstrumentNode<Strategy>& node) {
-        if (!node.ctx.params_update_pending()) {
-            return;
-        }
-        node.ctx.clear_params_update_pending();
-        invoke_params_update(node);
     }
 
     // ==== 事件适配器回调（`BarEventSink` 调用；A 内部，B 不可见）====
@@ -1265,8 +1300,8 @@ private:
         if constexpr (manager_internal::HasOnBarOpen<Strategy>) {
             invoke_b(node, "on_bar_open",
                      [](Strategy& instance, InstrumentContext& ctx) { instance.on_bar_open(ctx); });
+            on_callback_delivered(node);
         }
-        on_callback_delivered(node);
     }
 
     /// @brief `on_bar_update` 事件：把 `Bar` 字段写进 `[0]` → 调 B（每笔已接受 tick 一次）
@@ -1284,8 +1319,8 @@ private:
             invoke_b(node, "on_bar_update", [](Strategy& instance, InstrumentContext& ctx) {
                 instance.on_bar_update(ctx);
             });
+            on_callback_delivered(node);
         }
-        on_callback_delivered(node);
     }
 
     /**
@@ -1316,8 +1351,8 @@ private:
             invoke_b(node, "on_bar_close", [](Strategy& instance, InstrumentContext& ctx) {
                 instance.on_bar_close(ctx);
             });
+            on_callback_delivered(node);
         }
-        on_callback_delivered(node);
     }
 
     /**
@@ -1336,8 +1371,10 @@ private:
         if (node.ctx.is_failed()) {
             return;  // 回调抛异常：实例已死，不再投递任何回调
         }
-        node.ctx.mark_callback_stage_entered();
-        flush_pending_params_update(node);
+        if (node.ctx.note_callback_delivered()) {
+            node.ctx.params_update_delivered();
+            invoke_params_update(node);
+        }
     }
 
     /**
