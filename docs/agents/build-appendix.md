@@ -181,7 +181,7 @@ Windows：`.\scripts\build.ps1` → `.\scripts\test.ps1 -Label perf`，可执行
 
 #### 2026-10-23 · Intel Core i7-6700 @ 3.40GHz · Linux x86_64 · GCC 13.4 Release
 
-`dzstrategy_sdk_bar_perf_bench`，1 分钟周期、单合约、`NullBarSink`，9 次运行取中位数。本机 TSC 3.408 GHz，空区间成对读时钟 p50 = 8.80ns，p99 = 9.39ns。
+`dztrader_sdk_bar_perf_bench`，1 分钟周期、单合约、`NullBarSink`，9 次运行取中位数。本机 TSC 3.408 GHz，空区间成对读时钟 p50 = 8.80ns，p99 = 9.39ns。
 
 | 路径 | batch_mean | wall_mean | net_p50 | net_p99 | 50ns 目标（仅 update） |
 |---|---|---|---|---|---|
@@ -209,7 +209,7 @@ Windows：`.\scripts\build.ps1` → `.\scripts\test.ps1 -Label perf`，可执行
 
 #### 2026-10-27 · Intel Core i7-6700 @ 3.40GHz · Linux x86_64 · GCC 13.4 Release
 
-`dzstrategy_sdk_bar_perf_bench`（release，`-O3 -DNDEBUG`），1 分钟周期、单合约、`NullBarSink`，9 次运行取中位数；9 次运行均 exit 0，日程自检与路径身份自检全部通过（auction 路径按 ADR 0032 新事件形态：窗口内每笔竞价 tick 一次 `update`、事件携带 `is_auction=true`）。本机 TSC 3.408 GHz，空区间成对读时钟 p50 = 8.80ns，p99 = 9.39ns。
+`dztrader_sdk_bar_perf_bench`（release，`-O3 -DNDEBUG`），1 分钟周期、单合约、`NullBarSink`，9 次运行取中位数；9 次运行均 exit 0，日程自检与路径身份自检全部通过（auction 路径按 ADR 0032 新事件形态：窗口内每笔竞价 tick 一次 `update`、事件携带 `is_auction=true`）。本机 TSC 3.408 GHz，空区间成对读时钟 p50 = 8.80ns，p99 = 9.39ns。
 
 | 路径 | batch_mean | wall_mean | net_p50 | net_p99 | 50ns 目标（仅 update） |
 |---|---|---|---|---|---|
