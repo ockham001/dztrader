@@ -514,7 +514,7 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 > `on_params_update` / `on_destroy` 恒 false（不是 bar 事件，没有触发 tick）；**回放期恒
 > false**——回放复用 live 的 tick→bar 实现，竞价归档 bar 的合成 tick 会被 builder 标记
 > `is_auction=true`，但回放不是实时竞价，合成 tick 的相位不外泄（抑制实现见 §5.4）。框架
-> 不因相位拦截下单：窗口内意图与其它时刻走同一条执行路径。测试见 §13。
+> 不因相位拦截下单：窗口内意图与其它时刻走同一条执行路径。测试见 §11。
 
 ### 5.2 回调门禁：窗口填满前不回调
 

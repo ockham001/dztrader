@@ -1459,7 +1459,7 @@ private:
         if (!close_callback_enabled(node.ctx)) {
             return;  // 静默填窗：B 零回调
         }
-        // close 的相位语义见 {@link write_auction_phase}：竞价窗口首笔 tick 触发的 close
+        // close 的相位语义见 write_auction_phase()：竞价窗口首笔 tick 触发的 close
         // 关闭的是上一根普通 bar，但相位仍为 true（ADR 0032 决策 3）。
         write_auction_phase(node, is_auction);
         if constexpr (manager_internal::HasOnBarClose<Strategy>) {
