@@ -43,10 +43,14 @@ SYMBOL_SCAN_SUFFIXES = (".h", ".hpp", ".cpp", ".cc", ".c", ".py", ".sh", ".ps1",
                         ".tsx", ".mjs", ".cmake", ".json", ".yml", ".yaml", ".toml", ".txt")
 SYMBOL_SCAN_SKIP_DIRS = {"node_modules", "dist", "build", "install", ".cache", ".git",
                          "third_party", ".worktrees"}
+# 本检查器源码不参与 token 索引（理由见 code_token_index）。
+CHECKER_REL_PATH = "scripts/check_docs_links.py"
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-# 显式白名单：文档有意引用、但代码里查不到的「环境/工单/计划」名词。
-# 判据与 check_backticked_paths 一致——只有「环境里能查到，或明确是计划/外部名词」才豁免；
-# 已实现后又删掉的符号**不进白名单**（那正是要抓的漂移）。
+# 显式白名单：文档有意引用、但代码里查不到的「环境/工单/计划/外部工具」名词。
+# 判据与 check_backticked_paths 一致——只有「环境里能查到，或明确是计划/外部名词」才豁免。
+# 默认**不豁免**已实现后又删掉的符号（那正是要抓的漂移）；唯一例外是文档把历史符号
+# 当作示例明确引用（见 watch_path），此时注释必须写明「历史示例」。
+# 注意：本文件自身不参与 token 索引（见 code_token_index），否则白名单字面量会自我豁免。
 SYMBOL_ALLOWLIST = {
     # CMake targets / 构建产物 / npm scripts（在 CMakePresets.json 或 package.json 里可查）
     "add_custom_command", "cmake_minimum_required", "copy_directory",
@@ -63,11 +67,10 @@ SYMBOL_ALLOWLIST = {
     # 它是宿主提供的工具而非本仓符号）
     "blocked_by", "node_id", "package_id", "run_in_background", "wait_agent",
     "codegraph_explore",
-    # 历史示例：review-checklist 用「已删除的 watch_path」说明漂移类 finding
+    # 历史示例：review-checklist §2.3 用「已删除的 watch_path」说明漂移类 finding，
+    # 该引用是有意保留的反例，不是当前符号
     "watch_path",
 }
-# 成组豁免（前缀）：基准项、SDK target 家族。
-SYMBOL_ALLOWLIST_PREFIXES = ("bench_", "dztrader_sdk_")
 
 
 def is_active_doc(rel):
@@ -246,6 +249,10 @@ def code_token_index(root):
         for dirpath, dirnames, filenames in os.walk(base_dir):
             dirnames[:] = [d for d in dirnames if d not in SYMBOL_SCAN_SKIP_DIRS]
             for filename in filenames:
+                rel = os.path.relpath(os.path.join(dirpath, filename), root)
+                if rel.replace(os.sep, "/") == CHECKER_REL_PATH:
+                    # 本文件含白名单字面量；扫进来会让所有白名单项「自我豁免」。
+                    continue
                 if not filename.endswith(SYMBOL_SCAN_SUFFIXES):
                     continue
                 try:
@@ -270,7 +277,7 @@ def check_backticked_symbols(files, root):
             for tok in BACKTICK_SYMBOL_RE.findall(line):
                 if "_" not in tok or tok.endswith("_") or tok.startswith("_"):
                     continue
-                if tok in SYMBOL_ALLOWLIST or tok.startswith(SYMBOL_ALLOWLIST_PREFIXES):
+                if tok in SYMBOL_ALLOWLIST:
                     continue
                 if tok not in code_tokens:
                     errors.append(f"{rel}:{lineno}: backticked symbol not found in code -> {tok}")
@@ -299,7 +306,17 @@ def selftest():
         if len(errors) != 1 or "ghost_symbol" not in errors[0] or "fenced" in errors[0]:
             print("selftest FAIL: expected exactly one ghost_symbol error, got:", errors)
             return 1
-    print("selftest OK: symbol check detects missing symbols, honors allowlist and code fences")
+
+        # 路径检查回归用例（#191 验收要求「路径检查不回退」）：tracked 里有 sample.h，
+        # 文档引用存在的路径通过、不存在的路径必须报。
+        with open(doc, "w", encoding="utf-8") as fh:
+            fh.write("`libs/demo/sample.h` 存在 → 通过；`libs/demo/missing.h` 不存在 → 必须报。\n")
+        path_errors = check_backticked_paths(["docs/components/sample.md"], tmp,
+                                             {"libs/demo/sample.h"})
+        if len(path_errors) != 1 or "missing.h" not in path_errors[0]:
+            print("selftest FAIL: expected exactly one missing path error, got:", path_errors)
+            return 1
+    print("selftest OK: symbol check detects missing symbols; path check regression covered")
     return 0
 
 
