@@ -142,12 +142,24 @@ print_failed_jobs() {
         2>/dev/null || true
 }
 
+# ---- 共享的低层查询（前台等待与 --status 同一实现，#192 审查发现两套会漂移） ----
+
+# 抓一次 PR checks 的表格行；结果放全局 PR_CHECKS_OUT，退出码放 PR_CHECKS_RC。
+# 8 是 gh 的「有 check 未完成」约定，调用方按需区分。
+fetch_pr_checks() {
+    local pr="$1"
+    PR_CHECKS_RC=0
+    PR_CHECKS_OUT="$("$GH_BIN" pr checks "$pr" --json name,bucket,link \
+        --jq '.[] | [.name,.bucket,.link] | @tsv' 2>/dev/null)" || PR_CHECKS_RC=$?
+}
+
 wait_pr() {
     local pr="$1"
     while :; do
         local rc=0 out
-        out="$("$GH_BIN" pr checks "$pr" --json name,bucket,link \
-            --jq '.[] | [.name,.bucket,.link] | @tsv' 2>/dev/null)" || rc=$?
+        fetch_pr_checks "$pr"
+        rc="$PR_CHECKS_RC"
+        out="$PR_CHECKS_OUT"
 
         if [ -z "$out" ]; then
             EMPTY_COUNT=$((EMPTY_COUNT + 1))
@@ -342,17 +354,19 @@ wait_branch() {
 
 # 打印一个 run 的状态并返回 0/1/3（run 维度的单次查询，pr/sha/branch 共用）。
 status_run() {
-    local rid="$1" rc=0 status conclusion
-    status="$("$GH_BIN" run view "$rid" --json status --jq .status 2>/dev/null)" || rc=$?
-    if [ "$rc" -ne 0 ] || [ -z "$status" ]; then
+    local rid="$1" rc=0 raw status conclusion
+    # 与 wait_run 同一 jq 形状（#192 审查：单次查询、同一惯例；jobs 详情只在失败时再拉）。
+    raw="$("$GH_BIN" run view "$rid" --json status,conclusion \
+        --jq '[.status, (.conclusion // "")] | @tsv' 2>/dev/null)" || rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$raw" ]; then
         echo "wait-ci: cannot read run $rid (exit $rc)" >&2
         return 2
     fi
+    IFS=$'\t' read -r status conclusion <<<"$raw"
     if [ "$status" != "completed" ]; then
         echo "wait-ci: run $rid status=$status"
         return 3
     fi
-    conclusion="$("$GH_BIN" run view "$rid" --json conclusion --jq .conclusion 2>/dev/null)"
     if [ "$conclusion" = "success" ]; then
         echo "wait-ci: run $rid success"
         return 0
@@ -368,27 +382,39 @@ status_once() {
             status_run "${TARGET##*/}"
             return $?
             ;;
-        sha|branch)
-            local json rid
-            if [ "$MODE" = "sha" ]; then
-                json="$("$GH_BIN" run list --commit "$TARGET" --limit 1 \
-                    --json databaseId 2>/dev/null)" || json=""
-            else
-                json="$("$GH_BIN" run list --branch "$TARGET" --limit 1 \
-                    --json databaseId 2>/dev/null)" || json=""
+        sha)
+            local full_sha rid
+            # 与 wait_sha 一致：短 sha 先解析成完整 commit，否则 gh 返回空。
+            full_sha="$(git -C "$ROOT" rev-parse --verify --quiet "${TARGET}^{commit}" 2>/dev/null || true)"
+            if [ -z "$full_sha" ]; then
+                echo "wait-ci: cannot resolve commit: $TARGET" >&2
+                return 2
             fi
-            rid="$(printf '%s' "$json" | sed -n 's/.*"databaseId":\([0-9][0-9]*\).*/\1/p' | head -1)"
+            rid="$("$GH_BIN" run list --commit "$full_sha" --limit 10 \
+                --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)"
             if [ -z "$rid" ]; then
-                echo "wait-ci: no run found for $MODE $TARGET"
+                echo "wait-ci: no run found for sha $TARGET"
+                return 2
+            fi
+            status_run "$rid"
+            return $?
+            ;;
+        branch)
+            local rid
+            rid="$("$GH_BIN" run list --branch "$TARGET" --limit 1 \
+                --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)"
+            if [ -z "$rid" ]; then
+                echo "wait-ci: no run found for branch $TARGET"
                 return 2
             fi
             status_run "$rid"
             return $?
             ;;
         pr)
-            local rc=0 out buckets
-            out="$("$GH_BIN" pr checks "$TARGET" --json name,bucket,link \
-                --jq '.[] | [.name,.bucket,.link] | @tsv' 2>/dev/null)" || rc=$?
+            local rc out buckets
+            fetch_pr_checks "$TARGET"
+            rc="$PR_CHECKS_RC"
+            out="$PR_CHECKS_OUT"
             if [ -z "$out" ]; then
                 if [ "$rc" -ne 0 ] && [ "$rc" -ne 8 ]; then
                     echo "wait-ci: gh pr checks failed (exit $rc)" >&2
@@ -403,7 +429,10 @@ status_once() {
                 printf '%s\n' "$out" | awk -F'\t' '$2=="fail" {print "FAILED: "$1" | "$3}'
                 return 1
             fi
-            if printf '%s\n' "$buckets" | grep -qx "pending"; then
+            # cancel = 同分支新 push 取代了旧 run（wait_pr 默认也继续等新 check），
+            # 因此算「仍在跑」而不是绿，更不是红；skipping（如 cache warm）忽略。
+            if printf '%s\n' "$buckets" | grep -qx "pending" ||
+                printf '%s\n' "$buckets" | grep -qx "cancel"; then
                 echo "wait-ci: PR #$TARGET checks still running"
                 return 3
             fi
