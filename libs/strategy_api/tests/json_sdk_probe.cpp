@@ -38,6 +38,7 @@
 #include <dztrader/bar_strategy/config_file.h>
 #include <dztrader/bar_strategy/context.h>
 #include <dztrader/bar_strategy/context_internal.h>
+#include <dztrader/bar_strategy/dependencies.h>
 #include <dztrader/bar_strategy/execution.h>
 #include <dztrader/bar_strategy/manager.h>
 #include <dztrader/bar_strategy/position.h>

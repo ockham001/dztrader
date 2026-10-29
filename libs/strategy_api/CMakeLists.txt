@@ -122,6 +122,9 @@ set(SDK_HEADER_LINK_API_TESTS
     # dz_set_logical_position（#160 的单一出口），即使用例走的是虚拟台账路径（dz_ == nullptr）
     # 也要在链接期解析这些符号。与 framework_test 的差别是它不需要串行化。
     bar_strategy_position_test
+    # 内部依赖缝的默认实现（#161）：真实 td 库走 dz_db_open / dz_db_query_instruments；
+    # 归档域 stub 走 dz_db_query_bar。库文件在 SetUp 内自管的临时目录里，不碰 SHM 通道。
+    bar_strategy_dependencies_test
 )
 
 # 穷举/慢速用例单独成 target, 打 slow 标签; 默认 fast 门禁只跑对应抽样版。

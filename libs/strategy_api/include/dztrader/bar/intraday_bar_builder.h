@@ -140,11 +140,9 @@ public:
         if (!std::isfinite(tick.last_price) || tick.last_price <= 0.0) {
             return;  // 非法价格只跳过，不计数、不推进任何基准
         }
-        // 窗口命中优先于 session 判定；Close 窗口返回 false 后按普通小节内 tick 处理。
-        const AuctionMatch auction = match_auction(tsec);
-        if (auction.in_open_window) {
-            const int32_t auction_begin_sec = session_bucket_begin(auction.session_index);
-            if (!restored_final_accepts(tick, auction_begin_sec)) {
+        const TickBucket bucket = resolve_bucket(tsec);
+        if (bucket.open_auction) {
+            if (!restored_final_accepts(tick, bucket.begin_sec)) {
                 ++stats_.out_of_order;
                 return;
             }
@@ -152,15 +150,14 @@ public:
                 ++stats_.bad_volume;
                 return;
             }
-            on_open_auction_tick(tick, tsec, auction_begin_sec);
+            on_open_auction_tick(tick, tsec, bucket.begin_sec);
             return;
         }
-        const SessionMatch match = match_session(tsec);
-        if (!match.in_session) {
+        if (!bucket.in_session) {
             ++stats_.out_of_session;
             return;
         }
-        const int32_t begin_sec = (match.bucket_tsec / period_sec_) * period_sec_;
+        const int32_t begin_sec = bucket.begin_sec;
         if (!restored_final_accepts(tick, begin_sec)) {
             ++stats_.out_of_order;
             return;
@@ -239,74 +236,22 @@ public:
 
 private:
     /// @brief 一日内的最大墙钟秒数（23:59:59）；time 越界计入 out_of_session
-    static constexpr DzTime MAX_CLOCK_SEC = 86399;
+    static constexpr DzTime MAX_CLOCK_SEC = MAX_TRADING_SEC;
 
     /// @brief 交易日内秒上限（23:59:59）；restore 校验用，与墙钟秒同域
-    static constexpr int32_t MAX_TSEC = 86399;
-
-    /// @brief 交易小节匹配结果
-    struct SessionMatch {
-        bool in_session;      ///< true = tick 落在某个交易小节内
-        int32_t bucket_tsec;  ///< 分桶用有效时间（小节末端为 tsec-1）
-    };
-
-    /// @brief Open 竞价窗口匹配结果
-    struct AuctionMatch {
-        bool in_open_window;    ///< true = tick 落在某个 Open 竞价窗口内
-        int32_t session_index;  ///< Open 窗口归属交易小节下标（Close 窗口无意义）
-    };
+    static constexpr int32_t MAX_TSEC = MAX_TRADING_SEC;
 
     /**
      * @brief 判定交易日内秒是否落在某个交易小节内（端点含），并给出分桶用有效时间
      *
-     * 小节末端时刻的 tick 归前一根 bar：分桶用有效时间取 tsec-1；last_tick_sec
-     * 仍记录 tick 的真实 tsec。
+     * 实际判定在 types.h 的 {@link resolve_tick_bucket}（builder 与框架续接过滤的唯一实现），
+     * 这里只是把「小节末端归前一根」的语义保留在调用点，避免桶算术散落。
      *
      * @param tsec 交易日内秒
-     * @return 命中结果；未命中时 in_session=false
+     * @return 命中时 `in_session == true` 且 `begin_sec` 为目标桶起点
      */
-    [[nodiscard]] SessionMatch match_session(int32_t tsec) const noexcept {
-        for (int32_t i = 0; i < table_.session_count; ++i) {
-            const TradingSession& session = table_.sessions[i];
-            if (tsec < session.begin_sec) {
-                return SessionMatch{false, tsec};  // 小节按时间升序，后续小节开始更晚
-            }
-            if (tsec <= session.end_sec) {
-                return SessionMatch{true, (tsec == session.end_sec) ? tsec - 1 : tsec};
-            }
-        }
-        return SessionMatch{false, tsec};
-    }
-
-    /**
-     * @brief 判定交易日内秒是否落在某个 Open 竞价窗口内（端点含）
-     *
-     * 窗口按时间升序且互不重叠；命中 Close 窗口返回 false（按普通小节内 tick 处理）。
-     *
-     * @param tsec 交易日内秒
-     * @return 命中结果；未命中 Open 窗口时 in_open_window=false
-     */
-    [[nodiscard]] AuctionMatch match_auction(int32_t tsec) const noexcept {
-        for (int32_t i = 0; i < table_.auction_count; ++i) {
-            const AuctionWindow& window = table_.auctions[i];
-            if (tsec < window.begin_sec) {
-                break;  // 窗口按时间升序，后续窗口开始更晚
-            }
-            if (tsec <= window.end_sec) {
-                return AuctionMatch{window.kind == AuctionKind::Open, window.session_index};
-            }
-        }
-        return AuctionMatch{false, 0};
-    }
-
-    /**
-     * @brief 交易小节首桶起点：Open 竞价 tick 归入的目标桶（18:00 锚点整数网格）
-     *
-     * @param session_index 竞价窗口归属的交易小节下标
-     * @return 该小节首桶的桶起点（交易日内秒）
-     */
-    [[nodiscard]] int32_t session_bucket_begin(int32_t session_index) const noexcept {
-        return (table_.sessions[session_index].begin_sec / period_sec_) * period_sec_;
+    [[nodiscard]] TickBucket resolve_bucket(int32_t tsec) const noexcept {
+        return resolve_tick_bucket(tsec, table_, period_sec_);
     }
 
     /**
@@ -462,10 +407,9 @@ private:
      * 无法从归档区分），属已知限制。
      */
     [[nodiscard]] bool is_auction_only_bar(const Bar& bar) const noexcept {
-        const AuctionMatch auction = match_auction(bar.last_tick_sec);
-        return auction.in_open_window &&
-               session_bucket_begin(auction.session_index) == bar.begin_sec &&
-               bar.open == bar.high && bar.high == bar.low && bar.low == bar.close;
+        const TickBucket bucket = resolve_bucket(bar.last_tick_sec);
+        return bucket.open_auction && bucket.begin_sec == bar.begin_sec && bar.open == bar.high &&
+               bar.high == bar.low && bar.low == bar.close;
     }
 
     /**
