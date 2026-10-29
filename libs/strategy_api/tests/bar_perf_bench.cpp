@@ -64,27 +64,13 @@
 #include <utility>
 #include <vector>
 
-// 本基准依赖 x86_64 RDTSC。仓库支持 Windows/MSVC 与 Linux/GCC，两者都在 x86_64 上；
-// 其余组合显式 #error，不静默回退到精度不足的计时源（AGENTS §四 跨平台）。clang 与 GCC
-// 共用同一套 x86intrin 接口，故一并接受（`__GNUC__` 在 clang 下同样定义）。
-#if !defined(__x86_64__) && !defined(_M_X64)
-#error "bar_perf_bench requires x86_64 (rdtsc)"
-#endif
-
-#if !defined(_WIN32) && !defined(__linux__)
-#error "bar_perf_bench supports only windows x86_64 and linux x86_64"
-#endif
-
-#if defined(_MSC_VER)
-#include <intrin.h>
-#elif defined(__GNUC__)
-#include <cpuid.h>
-#include <x86intrin.h>
-#else
-#error "bar_perf_bench supports MSVC or GCC/Clang only"
-#endif
+#include "bench_support.h"
 
 namespace {
+
+// 计时设施（RDTSC / TSC 标定 / 机器信息 / 分布统计）在 bench_support.h 里只有一份实现，
+// 与 #164 的五个框架基准共用；本文件只保留 tick→bar 组件特有的路径与自检。
+using namespace dztrader::strategy_api::bench_support;
 
 using dztrader::bar::AuctionKind;
 using dztrader::bar::AuctionWindow;
@@ -117,160 +103,6 @@ constexpr int32_t AUCTION_WINDOW_TICKS = TSEC_09_30 - AUCTION_WINDOW_BEGIN;
 constexpr int64_t TARGET_SAMPLES = 1000000;
 /// @brief 逐笔 pass 丢弃的预热轮数（分支预测与缓存状态稳定）
 constexpr int64_t WARMUP_REPS = 200;
-/// @brief 空区间成对读时钟开销的标定样本数
-constexpr int64_t OVERHEAD_SAMPLES = 100000;
-/// @brief TSC 频率标定窗口（毫秒）
-constexpr int TSC_CALIBRATION_MS = 50;
-
-// ============================================================
-// 计时与机器信息
-// ============================================================
-
-/**
- * @brief 读取 TSC（前置 lfence 阻止前面的被测指令被重排到读时钟之后）
- *
- * lfence + rdtsc 不保证区间末尾的指令全部退役，但对本基准（report-only、相对比较）足够：
- * 绝对误差远小于列间差异。
- *
- * @return TSC 周期数
- */
-inline uint64_t tsc_now() noexcept {
-    _mm_lfence();
-    return __rdtsc();
-}
-
-/**
- * @brief 用 steady_clock 标定 TSC 频率
- *
- * TSC 与核心频率解耦（constant_tsc/nonstop_tsc）时，以墙钟时长换算是唯一正确做法。
- *
- * @return TSC 频率（GHz）；标定失败返回 0
- */
-double measure_tsc_ghz() {
-    const auto wall_begin = std::chrono::steady_clock::now();
-    const uint64_t tsc_begin = tsc_now();
-    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_begin).count() <
-           static_cast<double>(TSC_CALIBRATION_MS) / 1000.0) {
-    }
-    const uint64_t tsc_end = tsc_now();
-    const double seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_begin).count();
-    if (seconds <= 0.0) {
-        return 0.0;
-    }
-    return static_cast<double>(tsc_end - tsc_begin) / seconds / 1.0e9;
-}
-
-/**
- * @brief 读取 cpuid 叶（MSVC 与 GCC 两套接口）
- * @param leaf cpuid 叶号
- * @param regs 输出：EAX/EBX/ECX/EDX
- */
-void cpuid_leaf(unsigned leaf, unsigned (&regs)[4]) {
-#if defined(_MSC_VER)
-    int out[4] = {};
-    __cpuid(out, static_cast<int>(leaf));
-    for (std::size_t i = 0; i < 4; ++i) {
-        regs[i] = static_cast<unsigned>(out[i]);
-    }
-#else
-    __get_cpuid(leaf, &regs[0], &regs[1], &regs[2], &regs[3]);
-#endif
-}
-
-/// @brief CPU 品牌串（cpuid 扩展叶 0x80000002..0x80000004；不可用时返回 unknown）
-std::string cpu_brand() {
-    unsigned regs[4] = {};
-    cpuid_leaf(0x80000000U, regs);
-    if (regs[0] < 0x80000004U) {
-        return "unknown";
-    }
-    std::array<char, 49> brand{};
-    for (unsigned i = 0; i < 3; ++i) {
-        cpuid_leaf(0x80000002U + i, regs);
-        std::memcpy(brand.data() + static_cast<std::size_t>(i) * 16U, regs, 16U);
-    }
-    const std::string text(brand.data());
-    const std::size_t first = text.find_first_not_of(' ');
-    return first == std::string::npos ? std::string("unknown") : text.substr(first);
-}
-
-/// @brief 编译器标识（区分不同构建产物的数值）
-std::string compiler_name() {
-#if defined(_MSC_VER)
-    return "msvc " + std::to_string(_MSC_VER);
-#elif defined(__clang__)
-    return "clang " + std::to_string(__clang_major__) + "." + std::to_string(__clang_minor__);
-#else
-    return "gcc " + std::to_string(__GNUC__) + "." + std::to_string(__GNUC_MINOR__);
-#endif
-}
-
-/// @brief 平台标识（两个受支持平台在文件头已 gate，故无 else 分支）
-std::string platform_name() {
-#if defined(_WIN32)
-    return "windows x86_64";
-#else
-    return "linux x86_64";
-#endif
-}
-
-/// @brief 构建类型（Debug 数值无参考价值，报告显式告警）
-std::string build_type_name() {
-#ifdef NDEBUG
-    return "release";
-#else
-    return "debug";
-#endif
-}
-
-// ============================================================
-// 统计
-// ============================================================
-
-/// @brief 一组计时样本的分布（ns）
-struct Statistics {
-    int64_t count = 0;  ///< 样本数
-    double mean = 0.0;  ///< 均值
-    double p50 = 0.0;   ///< 中位数
-    double p99 = 0.0;   ///< 99 分位
-    double max = 0.0;   ///< 最大值
-};
-
-/// @brief 周期数分布 → ns 统计量（会原地排序，故按值接收）
-Statistics summarize(std::vector<uint64_t> cycles, double ns_per_cycle) {
-    Statistics stats;
-    stats.count = static_cast<int64_t>(cycles.size());
-    if (cycles.empty()) {
-        return stats;
-    }
-    std::sort(cycles.begin(), cycles.end());
-    const auto quantile = [&cycles, ns_per_cycle](double q) {
-        const auto index = static_cast<std::size_t>(static_cast<double>(cycles.size()) * q);
-        return static_cast<double>(cycles[index]) * ns_per_cycle;
-    };
-    double total = 0.0;
-    for (const uint64_t cycle : cycles) {
-        total += static_cast<double>(cycle);
-    }
-    stats.mean = total / static_cast<double>(cycles.size()) * ns_per_cycle;
-    stats.p50 = quantile(0.50);
-    stats.p99 = quantile(0.99);
-    stats.max = static_cast<double>(cycles.back()) * ns_per_cycle;
-    return stats;
-}
-
-/// @brief 空区间成对读时钟的开销分布（逐笔计时的扣减基准）
-Statistics measure_timer_overhead(double ns_per_cycle) {
-    std::vector<uint64_t> cycles;
-    cycles.reserve(static_cast<std::size_t>(OVERHEAD_SAMPLES));
-    for (int64_t i = 0; i < OVERHEAD_SAMPLES; ++i) {
-        const uint64_t begin = tsc_now();
-        const uint64_t end = tsc_now();
-        cycles.push_back(end - begin);
-    }
-    return summarize(std::move(cycles), ns_per_cycle);
-}
 
 // ============================================================
 // 固定 tick 块

@@ -8,7 +8,7 @@
 #   ./scripts/test.sh                           # Release，fast 档
 #   ./scripts/test.sh --config debug            # Debug（仅本地）
 #   ./scripts/test.sh --label slow              # 只跑 slow 穷举档
-#   ./scripts/test.sh --label perf              # 只跑性能基准（PerfBench + BarPerfBench）
+#   ./scripts/test.sh --label perf              # 只跑性能基准（#93 tick→bar + #164 框架五项）
 #   ./scripts/test.sh --test-name TimeTest      # 只跑匹配 TimeTest 的测试
 
 set -euo pipefail

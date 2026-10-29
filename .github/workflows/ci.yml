@@ -20,7 +20,15 @@ on:
   # 是预热生效后的稳态目标，不是首跑承诺。
   schedule:
     - cron: "17 16 * * *"  # UTC 16:17 = Asia/Shanghai 00:17
+  # 手动触发：
+  #   - run_perf=false（默认）：只跑缓存预热 job，与夜间定时任务一致；
+  #   - run_perf=true：额外让 linux job 跑 perf 档性能基准（#164，report-only，不进默认门禁）。
   workflow_dispatch:
+    inputs:
+      run_perf:
+        description: "跑性能基准（report-only，仅 Linux）"
+        type: boolean
+        default: false
 
 # 同一分支的新 push 取消上一次仍在跑的 PR run，避免 #93 那种「3 个 run 排队后被取代」的浪费。
 # main 的 push run 不取消（保持每个 merge commit 的验证结果）。
@@ -133,8 +141,11 @@ jobs:
   linux:
     name: Linux (GCC Release)
     # schedule / dispatch 只为预热 Windows 缓存（见 windows-cache-warm）；Linux 已由每次
-    # main push 与每个 PR 覆盖，不在这两种触发下重复跑。
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    # main push 与每个 PR 覆盖，不在这两种触发下重复跑。例外：手动触发并勾选 run_perf=true
+    # 时跑一次 perf 档性能基准（#164，report-only）。
+    if: >-
+      github.event_name == 'push' || github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_perf)
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -233,6 +244,15 @@ jobs:
 
       - name: C++ Tests (incl. integration smoke)
         run: ./scripts/test.sh --config release
+
+      # 性能基准（#164）：report-only，默认门禁不跑。手动 workflow_dispatch 勾选
+      # run_perf=true 时执行：先经 test.sh（清空 test_home + 测试锁）跑 perf 档，
+      # 再用 ctest -V 回放一次以把数值打进日志（ctest 默认只在失败时回显输出）。
+      - name: Performance benchmarks (report-only, manual trigger)
+        if: github.event_name == 'workflow_dispatch' && inputs.run_perf
+        run: |
+          ./scripts/test.sh --config release --label perf
+          ctest --preset linux-release-perf -V --no-tests=error
 
       - name: Frontend Type Check
         working-directory: apps/webui/frontend
