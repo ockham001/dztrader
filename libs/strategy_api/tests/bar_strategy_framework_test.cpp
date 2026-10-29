@@ -3033,7 +3033,7 @@ TEST_F(BarStrategyFrameworkTest, WarmupReplayKeepsIntentsVirtualAndPublishesReco
  * 用「假历史加载器同步点」保证缓冲 tick 在回放开始**之前**已写入 md 通道（行情 reader 在
  * `dz_init` 时从当前写位置开始，启动前写入的 tick 会被跳过）。
  */
-TEST_F(BarStrategyFrameworkTest, BufferedTicksAreDroppedAgainstFinalAnchor) {
+TEST_F(BarStrategyFrameworkTest, BufferedTicksAreDroppedAgainstFinalTail) {
     const std::size_t total = static_cast<std::size_t>(kTestMaxLookback) + 4;
     write_config({std::string(kInstrumentA)}, kTestMaxLookback);
     const std::vector<dztrader::bar::Bar> history = make_archive_history(total);
@@ -3071,7 +3071,7 @@ TEST_F(BarStrategyFrameworkTest, BufferedTicksAreDroppedAgainstFinalAnchor) {
         << stderr_text;
 
     const std::vector<ObservedEvent> events = callback_stage_events(kInstrumentA);
-    // final 锚点：同桶缓冲 tick 不产生第 5 个 update
+    // final 尾部：同桶缓冲 tick 不产生第 5 个 update
     std::size_t updates_of_anchor = 0;
     for (const ObservedEvent& event : events) {
         if (event.kind == EventKind::BarUpdate &&
@@ -3081,7 +3081,7 @@ TEST_F(BarStrategyFrameworkTest, BufferedTicksAreDroppedAgainstFinalAnchor) {
     }
     EXPECT_EQ(updates_of_anchor, 4U)
         << "a buffered same-bucket tick must be dropped for final anchor";
-    // 保留的下一桶 tick 关闭锚点并开新根
+    // 保留的下一桶 tick 关闭尾部 bar 并开新根
     ASSERT_GE(events.size(), 3U);
     EXPECT_EQ(events[events.size() - 3].kind, EventKind::BarClose);
     EXPECT_EQ(events[events.size() - 3].bar_index, static_cast<std::int64_t>(total) - 1);
@@ -3095,7 +3095,7 @@ TEST_F(BarStrategyFrameworkTest, BufferedTicksAreDroppedAgainstFinalAnchor) {
  * 最后一根归档 bar 未完成（forming）：同桶的缓冲 tick 保留并**原地续接** forming bar——不产生
  * 重复的 close/open（同一根 bar 只能 open 一次、close 一次），多出的 update 直接并入。
  */
-TEST_F(BarStrategyFrameworkTest, BufferedTicksContinueFormingAnchorWithoutDuplicateOpenClose) {
+TEST_F(BarStrategyFrameworkTest, BufferedTicksContinueFormingTailWithoutDuplicateOpenClose) {
     const std::size_t total = static_cast<std::size_t>(kTestMaxLookback) + 4;
     write_config({std::string(kInstrumentA)}, kTestMaxLookback);
     std::vector<dztrader::bar::Bar> history =
@@ -3180,7 +3180,7 @@ TEST_F(BarStrategyFrameworkTest, ColdStartDegradesToLiveWithoutHistory) {
         << "no history = no replay callbacks";
 }
 
-/// `warmup.bars` 模式：按**尾部**裁剪到最近 N 根（多给的历史被裁掉，锚点仍是归档尾部）
+/// `warmup.bars` 模式：按**尾部**裁剪到最近 N 根（多给的历史被裁掉，续接基准仍是归档尾部）
 TEST_F(BarStrategyFrameworkTest, WarmupBarsModeCropsToTailOfHistory) {
     write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60, "[]", "",
                  "  \"warmup\": {\"bars\": 40},\n");

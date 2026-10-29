@@ -228,6 +228,8 @@ enum class HistoryStatus : std::uint8_t {
 };
 
 /// @brief 历史加载结果（`bars` 升序：最早一根在前；最后一根是续接比较基准 B）
+///
+/// `message` 约定同 `MetadataResult::message`：纯 prose，不内嵌 `| k=v`。
 struct HistoryQueryResult {
     HistoryStatus status = HistoryStatus::Unavailable;
     std::vector<bar::Bar> bars;  ///< 归档 bar（升序；`Loaded` 时有效）
@@ -274,6 +276,10 @@ enum class MetadataStatus : std::uint8_t {
 };
 
 /// @brief 合约元数据结果（`spec` 仅在 `Loaded` 时有意义）
+///
+/// `message` 是**纯 prose**（小写英文、不内嵌 `| k=v`）：它会被日志站点作为 `detail="…"` /
+/// `error="…"` 的值包裹，消息自身再拼 `k=v` 会形成二次嵌套、让日志解析歧义；结构化字段由
+/// 日志站点自己输出。
 struct MetadataResult {
     MetadataStatus status = MetadataStatus::SourceUnavailable;
     InstrumentSpec spec;
@@ -466,7 +472,7 @@ struct BarColumns {
     MetadataResult result;
     if (db == nullptr) {
         result.status = MetadataStatus::SourceUnavailable;
-        result.message = "database unavailable | source=platform_db";
+        result.message = "platform database unavailable";
         return result;
     }
     const std::string id(instrument_id);
@@ -485,7 +491,7 @@ struct BarColumns {
     }
     if (!dz_resultset_next(results)) {
         result.status = MetadataStatus::Missing;
-        result.message = "instrument metadata not found | instrument=" + id;
+        result.message = "no metadata row for instrument " + id;
         return result;
     }
     const auto exchange_column = dependencies_internal::find_column(results, "exchange_id");
@@ -493,7 +499,7 @@ struct BarColumns {
     const auto tick_column = dependencies_internal::find_column(results, "price_tick");
     if (!exchange_column.has_value() || !multiple_column.has_value() || !tick_column.has_value()) {
         result.status = MetadataStatus::Invalid;
-        result.message = "instrument metadata columns missing | instrument=" + id;
+        result.message = "required instrument metadata columns are missing";
         return result;
     }
     result.spec.exchange_id = dependencies_internal::column_string(results, *exchange_column);
@@ -502,20 +508,17 @@ struct BarColumns {
 
     if (result.spec.exchange_id.empty()) {
         result.status = MetadataStatus::Invalid;
-        result.message =
-            "instrument metadata invalid | instrument=" + id + " field=exchange_id reason=empty";
+        result.message = "instrument metadata invalid: exchange_id is empty";
         return result;
     }
     if (!(result.spec.volume_multiple > 0.0) || !std::isfinite(result.spec.volume_multiple)) {
         result.status = MetadataStatus::Invalid;
-        result.message = "instrument metadata invalid | instrument=" + id +
-                         " field=volume_multiple reason=not_positive";
+        result.message = "instrument metadata invalid: volume_multiple is not positive";
         return result;
     }
     if (!(result.spec.price_tick > 0.0) || !std::isfinite(result.spec.price_tick)) {
         result.status = MetadataStatus::Invalid;
-        result.message = "instrument metadata invalid | instrument=" + id +
-                         " field=price_tick reason=not_positive";
+        result.message = "instrument metadata invalid: price_tick is not positive";
         return result;
     }
     result.status = MetadataStatus::Loaded;
@@ -530,7 +533,7 @@ struct BarColumns {
     HistoryQueryResult result;
     if (db == nullptr) {
         result.status = HistoryStatus::Unavailable;
-        result.message = "database unavailable | source=archive";
+        result.message = "archive database unavailable";
         return result;
     }
     // 起始日期：`warmup_from` 直接用；`bars` 模式按每日 bar 数下限回推（多给几天余量吸收
@@ -574,12 +577,11 @@ struct BarColumns {
     if (!columns.has_value()) {
         // schema 与解码不匹配：归档域落地时必须与契约同步修这里（不是「无历史」）
         result.status = HistoryStatus::Failed;
-        result.message =
-            "archive bar schema mismatch | instrument=" + id + " reason=required_columns_absent";
+        result.message = "archive bar schema mismatch: required columns are missing";
         return result;
     }
     if (!columns->is_final.has_value()) {
-        result.message = "archive bar is_final column absent | assumed_last_bar_forming";
+        result.message = "archive bar is_final column absent; last bar assumed forming";
     }
     while (dz_resultset_next(results)) {
         bar::Bar bar{};
