@@ -3,6 +3,8 @@
 量化交易系统（CMake + Conan 2 + Ninja + GTest / C++20，Windows MSVC + Linux GCC 13）。
 单人 + AI 协作。**项目简介、特性、4 命令工作流、命令详解、部署流程见 [README.md](README.md)** —— 本文只写 README 不会写、且写错代价很高的部分。
 
+**定位/理解代码先 `codegraph_explore`（MCP）或 `codegraph explore "<符号>"`；不要先 grep/sed 逐个读文件。**
+
 ---
 
 ## 一、硬门禁
@@ -148,12 +150,13 @@
 1. **外科手术式改动。** 只碰必须碰的；不要"顺手改进"相邻代码、注释或格式；不要重构没坏的东西；匹配现有风格。**发现无关死代码只提示，不删除**；只清理**你自己**的改动造成的孤儿（多余的 import / 变量 / 函数）。判据：每一行改动都能直接追溯到用户这次的请求
 2. **先说假设再动手。** 不假设、不掩饰困惑。多种解释时**全部列出**而不是默默选一个；有更简单的方案就直说；不清楚就停下来问
 3. **发现文档与代码漂移：当场修文档**（见第三节收敛规则 4）
+4. **源码改动优先 `edit`/`write`**：批量重写（python/sed）后必须重新读取再改；常规路径不要用 `sed -i` / heredoc 直接写 `libs/`、`docs/`
 
 ### 日常工作流（单人 + AI 协作）
 
 1. **开工前必读**：本文 → [docs/README.md](docs/README.md)（文档地图与冲突裁决规则）→ 相关帧契约（先读 `general.md`）
 2. **小步提交**：一个提交只做一件事，每步可验证（构建 + 相关测试）。提交信息**中文**，前缀 `fix:` / `feat:` / `refactor:` / `docs:` / `test:` / `chore:` / `perf:` / `style:` / `build:` / `ci:`
-3. **push 前自检**：见 [docs/development-checklist.md](docs/development-checklist.md) 的 C 段（**那是权威且更全的清单** —— 含 `type-check` / `lint` / `lint:css` / 契约 Freshness 门禁）。同一波内 PR 开完即可继续下一票的只读准备（读契约 / 定 spec），CI 结果在自然断点或波末统一收；**本票合并前、开新波前 CI 必须绿**；**CI 红先修红，不叠加新改动**
+3. **push 前自检**：见 [docs/development-checklist.md](docs/development-checklist.md) 的 C 段（权威且更全 —— 含 `type-check` / `lint` / `lint:css` / 契约 Freshness 门禁）。同一波内 PR 开完即可继续下一票的只读准备，CI 结果在自然断点或波末统一收；**本票合并前、开新波前 CI 必须绿**；**CI 红先修红，不叠加新改动**
 4. **大改动先写文档**：spec 设计 + plan 实施计划（checkbox 制），我确认后再实现
 5. **收尾**：工作区保持干净（运行产物已 gitignore；临时诊断脚本要么通用化提交、要么删除）。每波改动结束 `git status` 干净 + `git log` 可读 + CI 绿
 
@@ -188,8 +191,7 @@
 - **并行波（同一时间多个 ticket）必须一票一 worktree**；禁止在共享工作区同时改两条线
 - **共享工作区只允许当前票的 WIP**：收尾最后一步 `git switch main && git pull --ff-only`，并让 `git status` 除**已登记的并行线**外干净；把工作区留在 feature 分支就结束会话 = 直接阻塞下一条线（本波 #91→#92）
 - **跨会话（>1 个会话）不提交的文档批次**：开 `docs/*` 分支提交/推送，或移出共享工作区；不要让未提交 docs 长期占着 `git status`（本波 ADR 0026–0030 从 10-22 挂到 10-23）
-- 分支名 `^(feat|fix|docs|test|chore|ci|refactor|perf|style|build)/issue-<n>-<slug>`：pre-push 强制前缀白名单，并从中取票号跑 scope 检查（无票号时提示改名并跳过）
-- push 前跑 `./scripts/check-push-scope.sh <issue>`，确认 `@{u}..HEAD` 只含本票 commit
+- 分支名 `^(feat|fix|docs|test|chore|ci|refactor|perf|style|build)/issue-<n>-<slug>`（pre-push 强制）；push 前跑 `./scripts/check-push-scope.sh <issue>`，确认 `@{u}..HEAD` 只含本票 commit
 - 多终端可在不同 worktree 并行；**禁止同一 worktree 同时操作**
 - 合并前确认共同祖先：`git merge-base main HEAD`，无则 cherry-pick
 - **本地 git hooks 由 `setup` 自动安装**（`core.hooksPath=.githooks`；安装前 `setup` 会确认 `.githooks` 存在）：pre-commit 由 staged 文件触发——clang-format 校验 index 内容，日志格式 / docs links 为工作区全仓扫描；pre-push 拦直推 main、非快进、非白名单分支名与 tag，并按分支票号跑 `check-push-scope`；最近一次门禁在**当前 HEAD** 失败时拒绝推送（读 `.cache/gate/last-status`，HEAD 不符/缺失只警告，逃生口 `DZ_ALLOW_RED_GATE=1`）。hooks 是快速护栏，**不能替代** `preflight` 与 CI。
@@ -200,23 +202,13 @@
 
 ### 本机沙箱（DSH）
 
-- **每次 bash 调用的 `/tmp` 相互隔离**：跨调用要用的日志/快照写 `.cache/`（已 gitignore），不要写 `/tmp`
-- **等待规则**：CI / 门禁等长命令用**后台作业**启动（`run_in_background`），需要结果时 `job_output(wait=true)`；等待期做只读准备（拟关闭评论 / 读下一票契约 / 清理 worktree），不要在前台空等（2026-10-26 #146/#147 各阻塞 21–22 分钟）。CI 等待统一 `./scripts/wait-ci.sh --pr <n>`（`--sha` 对无 PR 分支约 180s 报错而不是空等）。**异步子代理完成会自动以 `subagent-settled` 通知**，不要 bash `sleep` 轮询；`wait_agent` 只对 Team 成员有效
-- **权限 preset**：会话被切到 `read-only` 做研究后，转入执行（写文件 / commit / push）前先请用户切回 `workspace-write`（一次），不要逐操作申请 escalation
-- **门禁命令用 `./scripts/gate.sh build|test|preflight`**：同一 build tree 用 flock 串行、自动导出 ccache 环境、日志落 `.cache/gate/`、返回**真实退出码**。要短输出用 `./scripts/gate.sh … --tail N`（成功留 N 行、失败留 max(N,30) 行）；**不要**给门禁命令接 `| tail` / `| head`——管道会吞掉退出码，造成假绿（本波 #75/#81 实测）
-- **交接文档写 `.cache/handoff/`**：全局 `handoff` 技能默认写 OS 临时目录（`/tmp`），本沙箱下不可跨会话，必须改写到仓库 `.cache/`
-- `~/.conan2`、`~/.cache/gh`、`~/.npm` 在 workspace-write 下可能只读：`setup.sh` / `build.sh` / `wait-ci.sh` / `ci-log.sh` 已回退到仓库 `.cache/`；仍被拒时再申请一次更高权限，不要反复重试
-- 提交前门禁统一 `./scripts/preflight.sh`（agent 侧 `./scripts/gate.sh preflight`）；CI 等待/失败日志统一 `./scripts/wait-ci.sh` / `./scripts/ci-log.sh`（失败先用 200KB 的 `last-test-log` artifact 定位，别拉几十 MB job 日志）；push 前统一 `./scripts/check-push-scope.sh <issue>`（含 CI 进行中拒推检查）
+- 后台作业/CI 快照/门禁用法、跨调用 `/tmp` 与缓存回退、权限 preset、`.cache/handoff/` 约定见 [ticket-closeout](docs/agents/ticket-closeout.md) §2/§4/§8。
 
 ---
 
 ## 六、CodeGraph
 
-本仓已建索引（仓库根存在 `.codegraph/`）。**理解或定位代码时先用 CodeGraph，而不是 grep / find / 逐个读文件**：
-
-- MCP 工具 `codegraph_explore`：一次调用返回相关符号的逐字源码 + 调用路径（含 grep 跟不动的动态派发链）。传入文件名即可当作读该文件
-- Shell 兜底（永远可用）：`codegraph explore "<符号名或问题>"`
-- 仓库根**没有** `.codegraph/` 时完全跳过 CodeGraph。**是否建索引由我决定，不要自行 `codegraph init`**
+仓库根存在 `.codegraph/` 时才用（没有索引就跳过）；shell 兜底 `codegraph explore "<符号>"`。**是否建索引由我决定，不要自行 `codegraph init`**
 
 ---
 

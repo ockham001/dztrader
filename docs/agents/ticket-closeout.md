@@ -64,6 +64,7 @@ gh pr create --base main --head <branch> --title "<type>: <摘要>（#<issue>）
 
 - 本仓用 PR 落地（`ci.yml` 只在 PR / main 触发）；main 有 GitHub ruleset `main-protection`（require PR、禁非快进、禁删除、`bypass_actors=[]`，admins 也无绕过）。payload 见 `.github/rulesets/main-protection.json`，查看/重建：`gh api repos/<owner>/<repo>/rulesets`、`gh api --method POST repos/<owner>/<repo>/rulesets --input .github/rulesets/main-protection.json`；仓库同时开启 `delete_branch_on_merge=true`。应急直推 main 需临时禁用 ruleset（`DZ_ALLOW_MAIN_PUSH=1` 只绕过本地 hook）。
 - **push 分级**（[ADR 0036](../adr/0036-push-authorization-tiered-with-guardrails.md)，AGENTS 硬门禁的细化）：feature 分支 push / PR 创建更新免逐次确认，前置是本票门禁绿 + `check-push-scope` 通过 + 一轮修复一次 push；**合并 PR 到 main 仍需确认**（可按票或按波一次授权）；删除非本票分支、打 tag 逐次确认；**force push 禁止**（`pre-push` 非快进拦截 + `.opencode` deny）。本地 `.githooks/pre-push`、main ruleset 与 `.opencode` 权限是机器守卫。
+- **实现完成即自动推进到本节，无需等用户口令**：门禁绿后直接 push → 建 PR → 起 CI 等待；#159 曾在「实现完成」处停下，需要用户催「进行收尾，可以推送」。唯一需确认的是 §5 合并 main、打 tag、删除非本票分支（ADR 0036）。
 - **PR 开完不阻塞等 CI**：`gh pr create` 成功后即可转下一票（读契约 / 定 spec）或本票收尾准备（拟关闭评论、清理 worktree 计划），CI 结果在自然断点或波末统一用 `./scripts/wait-ci.sh --pr <n>` 收；不要把 CI 等待写成同步步骤（本波 `wait-ci` 阻塞约 3.4h）。**边界**：不阻塞只适用于同波内的下一步准备；本票**合并前必须 CI 绿**，开新波前必须已完成合并（见 §5）。
 - **`wait-ci.sh` 的退出码就是 CI 结论**：不要接 `| tail` / `| head`（会吞掉退出码）；它本来就是静默输出，只打状态变化与失败链接。feature 分支没开 PR 时 `--sha` 约 180s 就报错并提示先建 PR，不会空等到 60 分钟总超时。
 - **pre-push 还会拦截「当前 HEAD 上最近一次门禁失败」**：读 `.cache/gate/last-status`，HEAD 不符或缺失只警告；被拦时先重跑 `./scripts/gate.sh build/test`（不要接管道），应急 `DZ_ALLOW_RED_GATE=1`。
@@ -130,6 +131,16 @@ Refs: <contract/component/docs 路径>
 - 远端分支：`git push origin --delete <branch>`（`gh pr merge --delete-branch` 已删则跳过），`git ls-remote --heads origin <branch>` 确认为空。
 - **共享工作区交还**：`git switch main && git pull --ff-only`；`git status` 只允许出现**已登记的并行线**产物（没有并行线时应完全干净）。不把工作区留在 feature 分支就结束会话——会直接阻塞下一条线（本波 #91→#92：共享工作区留在 feat 分支，另一会话卡 15 分钟 + 人工介入）。
 - 报告固定包含：审查轮数与结论、改动文件数、commit hash、CI run 链接与结论、PR 链接与 merge commit、preflight 结果、issue 状态、工作区/分支状态。
+
+## 8. 本机沙箱（DSH）环境约定
+
+AGENTS §五「本机沙箱」的细节都放在这里（AGENTS 只留指针，避免常驻上下文重复）：
+
+- **等待与门禁**：长命令（门禁 / CI / 子代理）用**后台作业**启动（`run_in_background`），需要结果时 `job_output(wait=true)`；等待期做只读准备，不要 `sleep` 轮询或前台空等。CI 用 `./scripts/wait-ci.sh --pr <n>`（随时查状态加 `--status`，0 绿 / 1 红 / 2 错误 / 3 仍在跑）；门禁用 `./scripts/gate.sh build|test|preflight`（短输出用 `--tail N`，**不要接管道**）。异步子代理完成会自动以 `subagent-settled` 通知；`wait_agent` 只对 Team 成员有效。
+- **跨调用文件与缓存**：每次 bash 调用的 `/tmp` 相互隔离，跨调用产物写 `.cache/`（已 gitignore）；`~/.conan2` / `~/.cache/gh` / `~/.npm` 只读时相关脚本已回退仓库 `.cache/`，仍被拒时一次性申请更高权限，不要反复重试。
+- **权限与交接**：会话从 `read-only` 转执行（写文件 / commit / push）前请用户切回一次 `workspace-write`，不要逐操作申请 escalation；`handoff` 文档写 `.cache/handoff/`（`/tmp` 不可跨会话）。
+- **不要自建后台进程**：DSH 在工具调用结束时回收直接 fork 的孙进程（实测 `setsid` 子进程也活不过调用边界），后台等待一律用 `run_in_background`。
+- **读写守卫**：宿主文件守卫按「读过才可改」判定，批量重写后直接改会报 stale；此时重新读取再改，不要反复重试同一改动。
 
 ## 反模式（实际踩过）
 
