@@ -7,6 +7,9 @@
 #     应急逃生：DZ_ALLOW_FORCE_PUSH=1）
 #   - 拒绝白名单前缀之外的分支名（feat/fix/docs/test/chore/ci/refactor/perf/style/build；
 #     应急逃生：DZ_ALLOW_NONSTANDARD_BRANCH=1）
+#   - 最近一次门禁**在当前 HEAD 上失败**时拒绝推送（读 gate.sh 写的 .cache/gate/last-status；
+#     缺失或 HEAD 不符只警告——「commit 后复跑门禁」是正常顺序，不误伤；
+#     应急逃生：DZ_ALLOW_RED_GATE=1）
 #   - 白名单分支：从分支名提取 issue 号，以被推的 local_sha / 远端分支名调用
 #     scripts/check-push-scope.sh <n> --base origin/main --head <sha> --branch <name>
 #   - 删除远端分支（local ref 为 (delete)）放行
@@ -25,6 +28,33 @@ BRANCH_RE='^(feat|fix|docs|test|chore|ci|refactor|perf|style|build)/'
 BLOCKED=0
 
 warn() { printf 'pre-push: %s\n' "$*" >&2; }
+
+# 最近一次门禁是否在**当前 HEAD** 上失败（gate.sh 写入 .cache/gate/last-status）。
+#
+# 口径刻意保守：只有「同 HEAD + rc!=0」才拦截——那时推上去的代码确定带着已知红灯；
+# 缺失或 HEAD 不符只警告（agent 常在 commit 前跑门禁、commit 后直接推，属正常顺序）。
+check_gate_status() {
+    local status_file=".cache/gate/last-status"
+    [ -f "$status_file" ] || {
+        warn "warning: no .cache/gate/last-status; run ./scripts/gate.sh build/test before push"
+        return 0
+    }
+    local rc head current
+    rc="$(sed -n 's/^rc=//p' "$status_file" | head -1)"
+    head="$(sed -n 's/^head=//p' "$status_file" | head -1)"
+    current="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+    [ "${rc:-}" = "0" ] && return 0
+    if [ "${head:-}" = "$current" ]; then
+        if [ "${DZ_ALLOW_RED_GATE:-0}" = "1" ]; then
+            warn "WARNING: pushing with a failing gate at HEAD allowed by DZ_ALLOW_RED_GATE=1 (emergency only)"
+            return 0
+        fi
+        warn "last gate run FAILED at current HEAD '$current'; rerun ./scripts/gate.sh build/test (no pipe) before pushing (escape: DZ_ALLOW_RED_GATE=1)"
+        return 1
+    fi
+    warn "warning: last gate run failed at '${head:-unknown}' (current HEAD '$current'); proceeding"
+    return 0
+}
 
 remote_ref=""
 while read -r local_ref local_sha remote_ref remote_sha || [ -n "${remote_ref:-}" ]; do
@@ -79,6 +109,11 @@ while read -r local_ref local_sha remote_ref remote_sha || [ -n "${remote_ref:-}
                 continue
             fi
         fi
+    fi
+
+    if [ "${GATE_STATUS_CHECKED:-0}" = "0" ]; then
+        GATE_STATUS_CHECKED=1
+        check_gate_status || BLOCKED=1
     fi
 
     issue="$(printf '%s' "$branch" | sed -n 's#.*issue-\([0-9][0-9]*\).*#\1#p' | head -1)"
