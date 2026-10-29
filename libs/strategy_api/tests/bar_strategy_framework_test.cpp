@@ -4889,7 +4889,8 @@ TEST_F(BarStrategyFrameworkTest, DegradedSessionTableKeepsAuctionPhaseFalse) {
     ASSERT_EQ(warm_up(kInstrumentA), 1U) << "no callback may fire before the window is full";
 
     // 价格/累计量延续 warm_up 的序列（每笔 +1 / +10；warm_up 最后一笔是 131/320）。
-    // 前两笔同桶只 update；第三笔（09:00:00）换桶触发 close/open/update。
+    // 首笔 08:59:00 换桶：close(静默填窗最后一根) → open(08:59 bar) → update；第二笔同桶只
+    // update；第三笔 09:00:00 再换桶 → close(08:59 bar) → open(09:00 bar) → update。
     ASSERT_TRUE(write_tick_at_tsec(kInstrumentA, 0, kAuctionBeginSec, 132.0, 330));
     ASSERT_TRUE(write_tick_at_tsec(kInstrumentA, 0, kAuctionBeginSec + 30, 133.0, 340));
     ASSERT_TRUE(write_tick_at_tsec(kInstrumentA, 0, kAuctionBeginSec + 60, 134.0, 350));

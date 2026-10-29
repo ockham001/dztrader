@@ -286,9 +286,8 @@ struct BarBuilderStats {
  *
  * `is_auction` 语义：**触发本次回调的 tick 是否处于 Open 竞价窗口**，是回调时刻的环境
  * 相位，不是被交出 bar 的属性（同一根 bar 可在窗口内开始、在连续交易中继续更新）。
- * 仅 Open 窗口标记；Close 窗口按普通 tick 处理、不标记；日线回调恒为 false（日线不分竞价）。
- * 组件只按 tick 判定：回放合成 tick 若落在 Open 窗口内同样标记 true，是否把回放期相位交给
- * 最终用户由调用方决定（BarStrategy 框架在回放期抑制）。
+ * 仅 Open 窗口标记，Close 窗口与日线回调恒为 false；回放期是否把该相位交给最终用户由调用
+ * 方决定（BarStrategy 框架在回放期抑制，见 `intraday_bar_builder.h` 的相位判定说明）。
  *
  * 本类型三个回调均为空实现，是 builder 的默认 Sink，表示不关心 bar 事件。
  */
