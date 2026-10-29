@@ -16,6 +16,9 @@
 
 namespace dztrader::bar {
 
+/// @brief 交易日内秒上限（23:59:59；即第 86400 秒之前一刻，与墙钟秒 0..86399 同域）
+inline constexpr std::int32_t MAX_TRADING_SEC = 86399;
+
 /**
  * @brief 交易日内时间坐标（tsec）与墙钟秒的换算
  *
@@ -149,7 +152,7 @@ struct TradingSessionTable {
      * @return true = 表合法；false = 表非法，调用方应 fail-fast
      */
     [[nodiscard]] constexpr bool valid() const noexcept {
-        constexpr int32_t MAX_TSEC = 86399;  // 17:59:59，交易日终点前 1 秒
+        constexpr int32_t MAX_TSEC = MAX_TRADING_SEC;  // 17:59:59，交易日终点前 1 秒
         if (session_count < 1 || session_count > MAX_SESSIONS) {
             return false;
         }

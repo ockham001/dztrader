@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -447,6 +448,22 @@ void expect_user_series_window(const ObservedEvent& event) {
 Recorder& recorder() {
     static Recorder instance;
     return instance;
+}
+
+/// @brief 取 stderr 中包含 marker 的第一行（未找到返回空串）
+///
+/// `silent_bars=` 同时出现在回放计划（估算）与完成汇总（实际）两行里，只做全串 find 无法
+/// 区分二者——必须按行取用。
+std::string stderr_line_with(const std::string& stderr_text, std::string_view marker) {
+    const std::size_t at = stderr_text.find(marker);
+    if (at == std::string::npos) {
+        return {};
+    }
+    const std::size_t begin = stderr_text.rfind('\n', at);
+    const std::size_t line_begin = begin == std::string::npos ? 0 : begin + 1;
+    const std::size_t end = stderr_text.find('\n', at);
+    return stderr_text.substr(line_begin,
+                              end == std::string::npos ? std::string::npos : end - line_begin);
 }
 
 /// @brief 读当前 ctx 状态并记录（B 的六个回调共用）
@@ -1251,6 +1268,33 @@ protected:
             exit_code_ =
                 dztrader::bar_strategy_internal::run_bar_strategy_with<FakeStrategy>(dependencies);
         });
+    }
+
+    /**
+     * @brief 起一次「`instrument_count` 个品种 × 预热上限」的启动并返回 stderr（成本 WARN
+     * 用例共用）
+     *
+     * 成本估算只吃配置（`warmup.bars` × 品种数），回放本身喂很小的假历史；两个阈值用例只有
+     * 品种数不同，共用这段准备/启动/停止序列。
+     */
+    std::string run_warmup_cost_case(int instrument_count) {
+        std::vector<std::string> instruments;
+        for (int index = 0; index < instrument_count; ++index) {
+            instruments.push_back("rb" + std::to_string(2601 + index));
+        }
+        write_config(instruments, kTestMaxLookback, std::nullopt, 60, "[]", "",
+                     "  \"warmup\": {\"bars\": 10000000},\n");
+        for (const std::string& instrument : instruments) {
+            fake_history_[instrument] =
+                make_archive_history(static_cast<std::size_t>(kTestMaxLookback));
+        }
+        fake_metadata_available_ = false;
+
+        testing::internal::CaptureStderr();
+        start_strategy_with_injected_dependencies();
+        EXPECT_TRUE(wait_for_events(static_cast<std::size_t>(instruments.size())));
+        stop_strategy();
+        return testing::internal::GetCapturedStderr();
     }
 };
 
@@ -2881,10 +2925,13 @@ TEST_F(BarStrategyFrameworkTest, WarmupReplayDrivesLiveIsomorphicCallbacks) {
     const std::string stderr_text = testing::internal::GetCapturedStderr();
     ASSERT_EQ(exit_code_, 0);
 
-    EXPECT_NE(stderr_text.find("warmup replay plan |"), std::string::npos) << stderr_text;
-    EXPECT_NE(stderr_text.find("silent_bars=32"), std::string::npos) << stderr_text;
-    EXPECT_NE(stderr_text.find("replayed_bars=8"), std::string::npos) << stderr_text;
-    EXPECT_NE(stderr_text.find("warmup replay complete |"), std::string::npos) << stderr_text;
+    // 计划行是**按配置估算**（默认 warmup.bars=10000 → replay_bars≈9968），完成行才是
+    // **实际回放**（K−max_lookback = 8）：两者必须分开断言，否则永远测不出估算是否被误用。
+    const std::string plan_line = stderr_line_with(stderr_text, "warmup replay plan |");
+    const std::string complete_line = stderr_line_with(stderr_text, "warmup replay complete |");
+    EXPECT_NE(plan_line.find("warmup_bars=10000 silent_bars=32"), std::string::npos) << stderr_text;
+    EXPECT_NE(complete_line.find("silent_bars=32 replayed_bars=8"), std::string::npos)
+        << stderr_text;
 
     // 去掉 init/destroy：只剩回放期 B 可见的回调（close → open → update × 4）
     const std::vector<ObservedEvent> events = callback_stage_events(kInstrumentA);
@@ -3155,8 +3202,10 @@ TEST_F(BarStrategyFrameworkTest, WarmupBarsModeCropsToTailOfHistory) {
     ASSERT_TRUE(history_queries_[0].warmup_bars.has_value());
     EXPECT_EQ(*history_queries_[0].warmup_bars, 40);
     EXPECT_FALSE(history_queries_[0].warmup_from.has_value());
-    EXPECT_NE(stderr_text.find("silent_bars=32"), std::string::npos) << stderr_text;
-    EXPECT_NE(stderr_text.find("replayed_bars=8"), std::string::npos) << stderr_text;
+    const std::string plan_line = stderr_line_with(stderr_text, "warmup replay plan |");
+    const std::string complete_line = stderr_line_with(stderr_text, "warmup replay complete |");
+    EXPECT_NE(plan_line.find("silent_bars=32 replay_bars=8"), std::string::npos) << stderr_text;
+    EXPECT_NE(complete_line.find("replayed_bars=8"), std::string::npos) << stderr_text;
 
     // 裁剪取尾部：首个 close 事件对应原归档下标 10+31 = 41
     const std::vector<ObservedEvent> events = recorder().for_instrument(kInstrumentA);
@@ -3381,29 +3430,20 @@ TEST_F(BarStrategyFrameworkTest, MissingMetadataSkipsOnlyThatInstrument) {
  * 220 秒。回放阻塞在启动阶段，运维必须先被告知「这次启动会卡多久」。
  */
 TEST_F(BarStrategyFrameworkTest, WarmupPlanWarnsAtSixtySeconds) {
-    std::vector<std::string> instruments;
-    for (int index = 0; index < 10; ++index) {
-        instruments.push_back("rb" + std::to_string(2601 + index));
-    }
-    write_config(instruments, kTestMaxLookback, std::nullopt, 60, "[]", "",
-                 "  \"warmup\": {\"bars\": 10000000},\n");
-    for (const std::string& instrument : instruments) {
-        fake_history_[instrument] =
-            make_archive_history(static_cast<std::size_t>(kTestMaxLookback));
-        fake_metadata_available_ = false;
-    }
-
-    testing::internal::CaptureStderr();
-    start_strategy_with_injected_dependencies();
-    ASSERT_TRUE(wait_for_events(static_cast<std::size_t>(instruments.size())));
-    stop_strategy();
-    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    // 10 品种 × 预热上限：估算约 220s（> 60 但 < 300）
+    const std::string stderr_text = run_warmup_cost_case(10);
     ASSERT_EQ(exit_code_, 0);
 
     EXPECT_NE(stderr_text.find("warmup replay plan |"), std::string::npos) << stderr_text;
     EXPECT_NE(stderr_text.find("warmup replay slow |"), std::string::npos) << stderr_text;
-    EXPECT_NE(stderr_text.find("threshold=60"), std::string::npos) << stderr_text;
-    EXPECT_EQ(stderr_text.find("threshold=300"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find(std::format(
+                  "threshold={}", dztrader::bar_strategy_internal::REPLAY_SLOW_WARN_SECONDS)),
+              std::string::npos)
+        << stderr_text;
+    EXPECT_EQ(stderr_text.find(std::format(
+                  "threshold={}", dztrader::bar_strategy_internal::REPLAY_HARD_WARN_SECONDS)),
+              std::string::npos)
+        << stderr_text;
 }
 
 /**
@@ -3411,27 +3451,75 @@ TEST_F(BarStrategyFrameworkTest, WarmupPlanWarnsAtSixtySeconds) {
  * （只打一条，不重复刷两级告警）。
  */
 TEST_F(BarStrategyFrameworkTest, WarmupPlanWarnsAtThreeHundredSeconds) {
-    std::vector<std::string> instruments;
-    for (int index = 0; index < 20; ++index) {
-        instruments.push_back("rb" + std::to_string(2601 + index));
-    }
-    write_config(instruments, kTestMaxLookback, std::nullopt, 60, "[]", "",
-                 "  \"warmup\": {\"bars\": 10000000},\n");
-    for (const std::string& instrument : instruments) {
-        fake_history_[instrument] =
-            make_archive_history(static_cast<std::size_t>(kTestMaxLookback));
-        fake_metadata_available_ = false;
-    }
+    // 20 品种 × 预热上限：估算约 440s（> 300），且只打一条升级告警
+    const std::string stderr_text = run_warmup_cost_case(20);
+    ASSERT_EQ(exit_code_, 0);
 
+    EXPECT_NE(stderr_text.find(std::format(
+                  "threshold={}", dztrader::bar_strategy_internal::REPLAY_HARD_WARN_SECONDS)),
+              std::string::npos)
+        << stderr_text;
+    EXPECT_EQ(stderr_text.find(std::format(
+                  "threshold={}", dztrader::bar_strategy_internal::REPLAY_SLOW_WARN_SECONDS)),
+              std::string::npos)
+        << stderr_text;
+}
+
+/**
+ * 失败实例的逻辑台账也要在启动时上报一次（§6 全量对账口径）。
+ *
+ * B 在回放期抛异常后实例失败（§4.6 不清仓），台账里可能已有 `on_init`/回放期建立的虚拟持仓；
+ * `enter_live` 若跳过失败实例，UI 镜像会停留在旧值，与「全部品种处理完 → 一次性上报各账户
+ * 逻辑持仓」冲突。执行门禁对它保持关闭（失败实例本来就拒单），但台账要报。
+ */
+TEST_F(BarStrategyFrameworkTest, FailedInstanceStillPublishesItsLedgerAtStartup) {
+    write_config({std::string(kInstrumentA), std::string(kInstrumentB)}, kTestMaxLookback,
+                 std::nullopt, 60, R"([{"account_id":"CTP001","scale":1.0}])");
+    fake_history_[std::string(kInstrumentA)] =
+        make_archive_history(static_cast<std::size_t>(kTestMaxLookback) + 4);
+    fake_history_[std::string(kInstrumentB)] =
+        make_archive_history(static_cast<std::size_t>(kTestMaxLookback) + 4);
+    fake_metadata_available_ = false;
+    recorder().set_fault(FaultPlan{.throw_in_init = {},
+                                   .throw_in_bar_open = {},
+                                   .throw_in_update = std::string(kInstrumentA),
+                                   .throw_in_bar_close = {},
+                                   .throw_in_destroy = {},
+                                   .make_series_in_update = {}});
+    // A 在 on_init 建立 2 手虚拟持仓（合法用法），随后首个回放 update 抛异常 → 实例失败
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = -1,
+        .when = EventKind::Init,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(2, 100.0); },
+    });
+
+    open_probe();
     testing::internal::CaptureStderr();
     start_strategy_with_injected_dependencies();
-    ASSERT_TRUE(wait_for_events(static_cast<std::size_t>(instruments.size())));
+    ASSERT_TRUE(wait_for_count(kInstrumentB, EventKind::BarClose, 4))
+        << "the healthy instrument must keep replaying after the other one failed";
     stop_strategy();
     const std::string stderr_text = testing::internal::GetCapturedStderr();
     ASSERT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
 
-    EXPECT_NE(stderr_text.find("threshold=300"), std::string::npos) << stderr_text;
-    EXPECT_EQ(stderr_text.find("threshold=60"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("instance failed | instrument=rb2601"), std::string::npos)
+        << stderr_text;
+    bool saw_failed_ledger = false;
+    bool saw_healthy_zero = false;
+    for (const ObservedPositionReport& report : reports_) {
+        if (report.instrument_id == std::string(kInstrumentA)) {
+            EXPECT_EQ(report.net_volume, 2)
+                << "a failed instance's ledger must still be published at startup";
+            saw_failed_ledger = true;
+        } else if (report.instrument_id == std::string(kInstrumentB)) {
+            EXPECT_EQ(report.net_volume, 0);
+            saw_healthy_zero = true;
+        }
+    }
+    EXPECT_TRUE(saw_failed_ledger) << "no position report for the failed instrument";
+    EXPECT_TRUE(saw_healthy_zero) << "no position report for the healthy instrument";
 }
 
 }  // namespace

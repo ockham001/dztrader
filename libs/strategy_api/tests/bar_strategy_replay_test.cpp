@@ -10,7 +10,9 @@
  *      唯一的 tick→bar 实现，否则会出现两套 bar 语义。
  *   2. **分桶判定的唯一实现**（`bar::resolve_tick_bucket`）：builder 与 A 的缓冲 tick 续接
  *      过滤必须用同一份「tick 属于哪根 bar」的判定，否则过滤会按一套规则丢、builder 按另一套
- *      收，续接静默漂移。这里逐 tick 差分比较「resolver 的结论」与「builder 的实际行为」。
+ *      收，续接静默漂移。这里把 ADR 0031/0032 的口径**手写成期望桶**，同时对齐 resolver 的
+ *      结论与 builder 的接受行为——不能拿 resolver 的返回值当 builder 的期望（builder 内部
+ *      就调 resolver，两边同错会恒真通过）。
  */
 #include "bar_test_data.h"
 
@@ -108,6 +110,19 @@ void close_current_bar(const Bar& current, IntradayBarBuilder<RecordingSink>& bu
     builder.on_tick(
         make_tick(next_clock, current.close, static_cast<DzVolume>(current.cum_volume + 1),
                   current.cum_turnover + 1.0, current.open_interest, current.trading_day));
+}
+
+/// @brief 喂下一根 tick 关闭当前 bar，并返回 close 事件里交出的 bar（未找到返回 nullptr）
+const Bar* close_and_find(const RecordingSink& sink,
+                          IntradayBarBuilder<RecordingSink>& builder,
+                          const Bar& current) {
+    close_current_bar(current, builder);
+    for (auto it = sink.events.rbegin(); it != sink.events.rend(); ++it) {
+        if (it->kind == EventKind::Close && it->bar.begin_sec == current.begin_sec) {
+            return &it->bar;
+        }
+    }
+    return nullptr;
 }
 
 /// @brief 目标 bar 的 4 个 update 事件里交出的收盘价序列（= 合成 tick 的价格顺序）
@@ -354,30 +369,85 @@ TEST(BarStrategyReplayTest, CrossDayReplayResetsDailyCumulativeBasis) {
     expect_replay_bar_equal(*closed, day2_first);
 }
 
+/**
+ * Open 竞价 bar 的回放保真（ADR 0032）：竞价 tick 归**后一小节首桶**，所以这类 bar 的
+ * `last_tick_sec` 落在 `begin_sec` 之前（如 08:59:59 的 tick 归 09:00 的 bar）。合成 tick
+ * 必须全部取归档的 `last_tick_sec`（它的 tsec 经会话表仍映射到本 bar 桶），回放产出的 bar
+ * 才与归档逐字段一致（含 `last_tick_sec`）——这也是重启在竞价窗口内时能续接 forming bar
+ * 的前提；若把合成 tick 铺到 `begin_sec` 之后，回放会伪造一根「桶内无竞价 tick」的 bar。
+ *
+ * 竞价-only bar 的 OHLC 恒为 `O=H=L=C`（builder 的 `update_auction_bar` 每笔竞价 tick 都
+ * 覆盖 O=H=L=C，竞价阶段无连续买卖价差）；归档域提供的历史 bar 必须满足该形态，这是
+ * ADR 0031/0032 的数据契约。
+ */
+TEST(BarStrategyReplayTest, AuctionOnlyBarIsRebuiltWithArchivedLastTickSec) {
+    const TradingSessionTable table = day_auction_session_table();
+    RecordingSink sink;
+    IntradayBarBuilder<RecordingSink> builder(table, 60, sink);
+
+    Bar auction{};
+    auction.trading_day = TRADING_DAY;
+    auction.begin_sec = TSEC_09_00;          // 竞价 tick 归入的小节首桶
+    auction.last_tick_sec = TSEC_09_00 - 1;  // 08:59:59，落在 Open 竞价窗口内
+    auction.period_sec = 60;
+    auction.open = 100.5;
+    auction.high = 100.5;
+    auction.low = 100.5;
+    auction.close = 100.5;
+    auction.volume = 8;
+    auction.turnover = 804.0;
+    auction.open_interest = 500;
+    auction.cum_volume = 8;
+    auction.cum_turnover = 804.0;
+    auction.is_final = true;
+
+    feed_replay_bar(auction, builder);
+    ASSERT_TRUE(builder.has_current_bar());
+    EXPECT_EQ(builder.current_bar().begin_sec, TSEC_09_00)
+        << "auction ticks (08:59:xx) must still land in the 09:00 bucket";
+    EXPECT_EQ(builder.current_bar().last_tick_sec, auction.last_tick_sec);
+
+    const Bar* closed = close_and_find(sink, builder, auction);
+    ASSERT_NE(closed, nullptr) << "the auction bar must be closed by the next tick";
+    expect_replay_bar_equal(*closed, auction);
+
+    // 竞价窗口内触发的 open/update 事件相位为 true（ADR 0032 的 is_auction 口径）
+    bool saw_auction_phase = false;
+    for (const BarEvent& event : sink.events) {
+        if (event.bar.begin_sec == TSEC_09_00 && event.is_auction) {
+            saw_auction_phase = true;
+        }
+    }
+    EXPECT_TRUE(saw_auction_phase) << "auction-window ticks must mark the events as auction phase";
+}
+
 // ============================================================
-// 分桶判定的唯一实现：resolver 与 builder 逐 tick 差分
+// 分桶判定的唯一实现：手写期望桶（spec oracle）↔ resolver ↔ builder
 // ============================================================
 
-/// @brief 一次差分用例：一笔 tick 的墙钟时刻与（期望的）分桶结论
+/// @brief 一次分桶用例：输入 tick + 按 ADR 0031/0032 口径**手写**的期望结论
 struct BucketCase {
-    DzTime clock;
-    double price;
-    DzVolume cum_volume;
-    double cum_turnover;
+    DzTime clock;                     ///< 墙钟秒
+    double price;                     ///< 价格（合法即可）
+    DzVolume cum_volume;              ///< 当日累计成交量（单调）
+    double cum_turnover;              ///< 当日累计成交额（单调）
+    bool expected_in_session;         ///< 期望：命中交易小节或 Open 竞价窗口
+    std::int32_t expected_begin_sec;  ///< 期望：目标桶起点（out_of_session 时无意义）
+    bool expected_open_auction;       ///< 期望：是否命中 Open 竞价窗口（相位）
 };
 
 /**
- * @brief 逐 tick 差分比较 `resolve_tick_bucket` 与 builder 的实际行为
+ * @brief 用手写期望桶同时校验「分桶判定」与「builder 的接受行为」
  *
- * 断言两件事：
- *   1. resolver 判定为「在交易时段内」的 tick，builder 必须接受并把 bar 落在 resolver 给出的
- *      桶起点上（同一份判定）；
- *   2. resolver 判定为「不在任何小节/Open 竞价窗口内」的 tick，builder 必须计入
- *      `out_of_session` 且不改变当前 bar。
+ * 不能只用 resolver 的返回值当 builder 的期望：builder 内部就调 resolver，那样两边同错也
+ * 会通过（恒真断言）。这里把 ADR 0031/0032 的口径逐条手写成 `expected_*`，三处对齐：
+ *   1. `resolve_tick_bucket` 的结论 == 手写期望（契约唯一实现的正面断言）；
+ *   2. builder 对 accepted tick 落到的桶 == 同一期望（builder 真的用了这份判定）；
+ *   3. out_of_session tick 被 builder 丢弃并计数、不改变当前 bar。
  */
-void expect_resolver_matches_builder(const TradingSessionTable& table,
-                                     int32_t period_sec,
-                                     const std::vector<BucketCase>& cases) {
+void expect_bucket_contract(const TradingSessionTable& table,
+                            int32_t period_sec,
+                            const std::vector<BucketCase>& cases) {
     RecordingSink sink;
     IntradayBarBuilder<RecordingSink> builder(table, period_sec, sink);
     int32_t last_begin_sec = -1;
@@ -385,16 +455,25 @@ void expect_resolver_matches_builder(const TradingSessionTable& table,
     for (const BucketCase& bucket_case : cases) {
         SCOPED_TRACE(::testing::Message() << "clock=" << bucket_case.clock);
         const int32_t tsec = TradingTime::from_clock(bucket_case.clock);
-        const TickBucket expected = resolve_tick_bucket(tsec, table, period_sec);
-        const auto sessions_before = builder.stats();
+
+        // 1) 契约的唯一实现 == 手写期望
+        const TickBucket resolved = resolve_tick_bucket(tsec, table, period_sec);
+        EXPECT_EQ(resolved.in_session, bucket_case.expected_in_session);
+        EXPECT_EQ(resolved.open_auction, bucket_case.expected_open_auction);
+        if (bucket_case.expected_in_session) {
+            EXPECT_EQ(resolved.begin_sec, bucket_case.expected_begin_sec);
+        }
+
+        // 2)+3) builder 的实际行为 == 同一份手写期望
+        const auto stats_before = builder.stats();
         const bool had_bar = builder.has_current_bar();
         const int32_t begin_before = had_bar ? builder.current_bar().begin_sec : -1;
 
         builder.on_tick(make_tick(bucket_case.clock, bucket_case.price, bucket_case.cum_volume,
                                   bucket_case.cum_turnover, 1000));
 
-        if (!expected.in_session) {
-            EXPECT_EQ(builder.stats().out_of_session, sessions_before.out_of_session + 1)
+        if (!bucket_case.expected_in_session) {
+            EXPECT_EQ(builder.stats().out_of_session, stats_before.out_of_session + 1)
                 << "an out-of-session tick must be dropped and counted";
             if (had_bar) {
                 EXPECT_EQ(builder.current_bar().begin_sec, begin_before);
@@ -403,82 +482,136 @@ void expect_resolver_matches_builder(const TradingSessionTable& table,
         }
 
         ASSERT_TRUE(builder.has_current_bar()) << "an accepted tick must open a bar";
-        EXPECT_EQ(builder.current_bar().begin_sec, expected.begin_sec)
-            << "resolver and builder must agree on the bar bucket";
+        EXPECT_EQ(builder.current_bar().begin_sec, bucket_case.expected_begin_sec)
+            << "builder must land the tick in the expected bucket";
         // 桶起点单调：同一张表内后面的 tick 不会退回更早的桶
         EXPECT_GE(builder.current_bar().begin_sec, last_begin_sec);
         last_begin_sec = builder.current_bar().begin_sec;
     }
 }
 
-/// 退化小节表（单小节 0–86399）：普通 tick、跨桶、小节末端 tick 三种情形
-TEST(BarStrategyReplayTest, ResolverMatchesBuilderForDegradedTable) {
+/// 退化小节表（单小节 0–86399）：普通 tick、跨桶
+TEST(BarStrategyReplayTest, BucketContractForDegradedTable) {
     const TradingSessionTable table = dztrader::degraded_trading_session_table();
-    expect_resolver_matches_builder(
-        table, 60,
-        {
-            // 18:00:00（tsec 0）→ 桶 0
-            BucketCase{.clock = 64800, .price = 100.0, .cum_volume = 1, .cum_turnover = 100.0},
-            // 18:00:59（tsec 59）→ 同桶 0
-            BucketCase{.clock = 64859, .price = 101.0, .cum_volume = 2, .cum_turnover = 201.0},
-            // 18:01:00（tsec 60）→ 桶 60
-            BucketCase{.clock = 64860, .price = 102.0, .cum_volume = 3, .cum_turnover = 303.0},
-        });
+    expect_bucket_contract(table, 60,
+                           {
+                               // 18:00:00（tsec 0）→ 桶 0
+                               BucketCase{.clock = 64800,
+                                          .price = 100.0,
+                                          .cum_volume = 1,
+                                          .cum_turnover = 100.0,
+                                          .expected_in_session = true,
+                                          .expected_begin_sec = 0,
+                                          .expected_open_auction = false},
+                               // 18:00:59（tsec 59）→ 同桶 0
+                               BucketCase{.clock = 64859,
+                                          .price = 101.0,
+                                          .cum_volume = 2,
+                                          .cum_turnover = 201.0,
+                                          .expected_in_session = true,
+                                          .expected_begin_sec = 0,
+                                          .expected_open_auction = false},
+                               // 18:01:00（tsec 60）→ 桶 60
+                               BucketCase{.clock = 64860,
+                                          .price = 102.0,
+                                          .cum_volume = 3,
+                                          .cum_turnover = 303.0,
+                                          .expected_in_session = true,
+                                          .expected_begin_sec = 60,
+                                          .expected_open_auction = false},
+                           });
 }
 
 /// 多小节表：休息时段丢弃、小节首桶、小节末端 tick 归前一根（ADR 0031 决策 5）
-TEST(BarStrategyReplayTest, ResolverMatchesBuilderForMultiSessionTable) {
+TEST(BarStrategyReplayTest, BucketContractForMultiSessionTable) {
     const TradingSessionTable table = day_break_session_table();
-    expect_resolver_matches_builder(
-        table, 60,
-        {
-            // 09:00:00 → 09:00 桶
-            BucketCase{.clock = 9 * 3600, .price = 100.0, .cum_volume = 1, .cum_turnover = 100.0},
-            // 09:59:00 → 09:59 桶
-            BucketCase{.clock = 9 * 3600 + 59 * 60,
-                       .price = 101.0,
-                       .cum_volume = 2,
-                       .cum_turnover = 201.0},
-            // 10:15:00 小节末端 → 归 10:14 桶（不是 10:15 桶）
-            BucketCase{.clock = 10 * 3600 + 15 * 60,
-                       .price = 102.0,
-                       .cum_volume = 3,
-                       .cum_turnover = 303.0},
-            // 10:20:00 早盘休息中 → out_of_session
-            BucketCase{.clock = 10 * 3600 + 20 * 60,
-                       .price = 103.0,
-                       .cum_volume = 4,
-                       .cum_turnover = 404.0},
-            // 10:30:00 第二小节开始 → 10:30 桶
-            BucketCase{.clock = 10 * 3600 + 30 * 60,
-                       .price = 104.0,
-                       .cum_volume = 5,
-                       .cum_turnover = 505.0},
-        });
+    expect_bucket_contract(table, 60,
+                           {
+                               // 09:00:00 → 09:00 桶
+                               BucketCase{.clock = 9 * 3600,
+                                          .price = 100.0,
+                                          .cum_volume = 1,
+                                          .cum_turnover = 100.0,
+                                          .expected_in_session = true,
+                                          .expected_begin_sec = TSEC_09_00,
+                                          .expected_open_auction = false},
+                               // 09:59:00 → 09:59 桶
+                               BucketCase{.clock = 9 * 3600 + 59 * 60,
+                                          .price = 101.0,
+                                          .cum_volume = 2,
+                                          .cum_turnover = 201.0,
+                                          .expected_in_session = true,
+                                          .expected_begin_sec = TSEC_09_00 + 59 * 60,
+                                          .expected_open_auction = false},
+                               // 10:15:00 小节末端 → 归 10:14 桶（不是 10:15 桶）
+                               BucketCase{.clock = 10 * 3600 + 15 * 60,
+                                          .price = 102.0,
+                                          .cum_volume = 3,
+                                          .cum_turnover = 303.0,
+                                          .expected_in_session = true,
+                                          .expected_begin_sec = TSEC_10_15 - 60,
+                                          .expected_open_auction = false},
+                               // 10:20:00 早盘休息中 → out_of_session
+                               BucketCase{.clock = 10 * 3600 + 20 * 60,
+                                          .price = 103.0,
+                                          .cum_volume = 4,
+                                          .cum_turnover = 404.0,
+                                          .expected_in_session = false,
+                                          .expected_begin_sec = 0,
+                                          .expected_open_auction = false},
+                               // 10:30:00 第二小节开始 → 10:30 桶
+                               BucketCase{.clock = 10 * 3600 + 30 * 60,
+                                          .price = 104.0,
+                                          .cum_volume = 5,
+                                          .cum_turnover = 505.0,
+                                          .expected_in_session = true,
+                                          .expected_begin_sec = TSEC_10_30,
+                                          .expected_open_auction = false},
+                           });
 }
 
-/// Open 竞价窗口表：窗口内 tick 归目标小节首桶，且被 builder 接受（ADR 0032）
-TEST(BarStrategyReplayTest, ResolverMatchesBuilderForOpenAuctionTable) {
+/// Open 竞价窗口表：窗口内 tick 归目标小节首桶、相位为 true（ADR 0032）
+TEST(BarStrategyReplayTest, BucketContractForOpenAuctionTable) {
     const TradingSessionTable table = day_auction_session_table();
-    expect_resolver_matches_builder(
-        table, 60,
-        {
-            // 08:59:30 竞价窗口内 → 目标桶 09:00
-            BucketCase{
-                .clock = 9 * 3600 - 30, .price = 100.0, .cum_volume = 1, .cum_turnover = 100.0},
-            // 08:59:59 竞价窗口末尾 → 同桶 09:00
-            BucketCase{
-                .clock = 9 * 3600 - 1, .price = 101.0, .cum_volume = 2, .cum_turnover = 201.0},
-            // 09:00:00 连续交易首笔 → 同桶 09:00
-            BucketCase{.clock = 9 * 3600, .price = 102.0, .cum_volume = 3, .cum_turnover = 303.0},
-            // 09:01:00 → 09:01 桶
-            BucketCase{
-                .clock = 9 * 3600 + 60, .price = 103.0, .cum_volume = 4, .cum_turnover = 404.0},
-        });
+    expect_bucket_contract(table, 60,
+                           {
+                               // 08:59:30 竞价窗口内 → 目标桶 09:00、相位 true
+                               BucketCase{.clock = 9 * 3600 - 30,
+                                          .price = 100.0,
+                                          .cum_volume = 1,
+                                          .cum_turnover = 100.0,
+                                          .expected_in_session = true,
+                                          .expected_begin_sec = TSEC_09_00,
+                                          .expected_open_auction = true},
+                               // 08:59:59 竞价窗口末尾 → 同桶、相位 true
+                               BucketCase{.clock = 9 * 3600 - 1,
+                                          .price = 101.0,
+                                          .cum_volume = 2,
+                                          .cum_turnover = 201.0,
+                                          .expected_in_session = true,
+                                          .expected_begin_sec = TSEC_09_00,
+                                          .expected_open_auction = true},
+                               // 09:00:00 连续交易首笔 → 同桶、相位 false
+                               BucketCase{.clock = 9 * 3600,
+                                          .price = 102.0,
+                                          .cum_volume = 3,
+                                          .cum_turnover = 303.0,
+                                          .expected_in_session = true,
+                                          .expected_begin_sec = TSEC_09_00,
+                                          .expected_open_auction = false},
+                               // 09:01:00 → 09:01 桶
+                               BucketCase{.clock = 9 * 3600 + 60,
+                                          .price = 103.0,
+                                          .cum_volume = 4,
+                                          .cum_turnover = 404.0,
+                                          .expected_in_session = true,
+                                          .expected_begin_sec = TSEC_09_00 + 60,
+                                          .expected_open_auction = false},
+                           });
 }
 
 /// 竞价窗口命中优先于小节判定：窗口内 tick 归**后一小节**首桶（overlap 表）
-TEST(BarStrategyReplayTest, ResolverPrefersAuctionWindowOverSession) {
+TEST(BarStrategyReplayTest, AuctionWindowTakesPriorityOverSession) {
     const TradingSessionTable table = overlapping_auction_session_table();
     // 11:00:00 落在早盘小节（09:00–11:30）内，同时是午盘（13:00）开盘竞价窗口
     // → 目标桶 = floor(13:00 / 60s) = 13:00，而不是 11:00

@@ -37,6 +37,7 @@
 
 #include <dztrader/bar/types.h>
 #include <dztrader/bar_strategy/context.h>
+#include <dztrader/bar_strategy/dependencies.h>
 #include <dztrader/bar_strategy/manager.h>
 #include <dztrader/strategy_engine.h>
 
@@ -107,10 +108,8 @@ std::int32_t run_bar_strategy_with(
 template <BarStrategy Strategy>
 std::int32_t run_bar_strategy_with(const bar::TradingSessionTable& session_table,
                                    std::int32_t rollback_clock_ms = DEFAULT_ROLLBACK_CLOCK_MS) {
-    bar_strategy_internal::FrameworkDependencies dependencies;
-    dependencies.session_table = session_table;
-    dependencies.rollback_clock_ms = rollback_clock_ms;
-    return run_bar_strategy_with<Strategy>(dependencies);
+    return run_bar_strategy_with<Strategy>(
+        bar_strategy_internal::make_dependencies(session_table, rollback_clock_ms));
 }
 
 }  // namespace bar_strategy_internal

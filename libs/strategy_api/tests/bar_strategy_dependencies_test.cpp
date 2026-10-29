@@ -17,6 +17,11 @@
  * 而不是错误——历史是增强项，不阻断启动。
  *
  * 默认实现在 Seam B 里被 fake 替换，因此这里只锁「默认实现自己的口径」，不碰帧通道。
+ *
+ * **覆盖边界（已知限制）**：`query_archive_history` 的**行解码**分支在归档域落地（#4）前
+ * 不可达——`dz_db_query_bar` 恒返回 NULL（ADR 0018/0019），因此本文件只能覆盖调用契约与
+ * 「未实现 → Unavailable」的降级映射；解码契约（列名 = `bar::Bar` 字段名）在 #4 同步时补
+ * 端到端测试。
  */
 #include <gtest/gtest.h>
 
@@ -170,15 +175,15 @@ HistoryQuery make_query(std::int32_t warmup_bars = 10000) {
 
 /**
  * `dz_db_query_bar` 当前是 stub（恒 NULL + `DZ_EC_NOT_IMPLEMENTED`）：默认实现必须把它当成
- * 「没有历史数据」而不是错误——否则冷启动会被一个未实现的接口阻断。
+ * 「没有历史数据」（`Unavailable`）而不是错误（`Failed`）——否则冷启动会被一个未实现的接口
+ * 阻断。错误消息的**措辞归 SDK 契约**（`dz_errmsg()`），这里只断言状态映射与非空诊断，不
+ * 把测试钉在 stub 的具体文案上。
  */
 TEST_F(BarStrategyDependenciesTest, HistoryUnavailableWhileArchiveDomainIsUnimplemented) {
     const auto result = query_archive_history(db_, make_query());
     EXPECT_EQ(result.status, HistoryStatus::Unavailable);
     EXPECT_TRUE(result.bars.empty());
-    // 错误码必须被识别成「未实现」，不能把 stub 当成一般故障（否则每次启动都会刷 WARN）
-    EXPECT_NE(result.message.find("archive"), std::string::npos) << result.message;
-    EXPECT_NE(result.message.find("not_implemented"), std::string::npos) << result.message;
+    EXPECT_FALSE(result.message.empty()) << "a degraded source must carry a diagnostic message";
 }
 
 /// 库句柄不可用（无 platform.db / 打开失败）→ Unavailable，不尝试查询

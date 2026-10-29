@@ -67,7 +67,7 @@ inline constexpr std::int32_t DEFAULT_ROLLBACK_CLOCK_MS = 18 * 60 * 60 * 1000;
 [[nodiscard]] inline bar::TradingSessionTable degraded_trading_session_table() noexcept {
     bar::TradingSessionTable table{};
     table.session_count = 1;
-    table.sessions[0] = bar::TradingSession{.begin_sec = 0, .end_sec = 86399};
+    table.sessions[0] = bar::TradingSession{.begin_sec = 0, .end_sec = bar::MAX_TRADING_SEC};
     table.auction_count = 0;
     return table;
 }
@@ -84,7 +84,7 @@ inline constexpr std::int32_t DEFAULT_ROLLBACK_CLOCK_MS = 18 * 60 * 60 * 1000;
 [[nodiscard]] inline bool is_degraded_session_table(
     const bar::TradingSessionTable& table) noexcept {
     return table.session_count == 1 && table.auction_count == 0 &&
-           table.sessions[0].begin_sec == 0 && table.sessions[0].end_sec == 86399;
+           table.sessions[0].begin_sec == 0 && table.sessions[0].end_sec == bar::MAX_TRADING_SEC;
 }
 
 namespace bar_strategy_internal {
@@ -102,6 +102,15 @@ inline constexpr double REPLAY_SECONDS_PER_BUILDER_TICK = 0.1e-6;
 /// @brief 合成 tick 引发的单次 B 回调成本估算（组件文档 §5.3）
 inline constexpr double REPLAY_SECONDS_PER_STRATEGY_CALLBACK = 0.3e-6;
 
+/// @brief 每根回放 bar 的 B 回调次数（close + open + 4×update；成本估算用）
+inline constexpr std::int32_t REPLAY_CALLBACKS_PER_BAR = 6;
+
+/// @brief 回放成本估算的 WARN 阈值（秒）：超过即提示「启动会被回放阻塞这么久」（§5.3）
+inline constexpr std::int32_t REPLAY_SLOW_WARN_SECONDS = 60;
+
+/// @brief 回放成本估算的**升级** WARN 阈值（秒）：只打一条，不重复刷两级告警（§5.3）
+inline constexpr std::int32_t REPLAY_HARD_WARN_SECONDS = 300;
+
 /**
  * @brief 把一根归档 bar 拆成 4 个合成 tick（回放的唯一 tick 合成实现）
  *
@@ -112,15 +121,19 @@ inline constexpr double REPLAY_SECONDS_PER_STRATEGY_CALLBACK = 0.3e-6;
  *   - **时刻**：限定在归档记录的最后一笔真实 tick 之前（`last_tick_sec` 为末点，前三个在
  *     `[begin, last_tick_sec]` 内均匀分布），既不跨桶也不撞小节末端（后者会被 builder 归到
  *     前一根）。这样第 4 个 tick 的 `last_tick_sec` 恰好等于归档值，且 forming bar 的回放
- *     不会把时刻推到未到达的桶末——否则同桶的缓冲 tick 会被 builder 当乱序丢掉，续接失效；
+ *     不会把时刻推到未到达的桶末——否则同桶的缓冲 tick 会被 builder 当乱序丢掉，续接失效。
+ *     **Open 竞价 bar**（ADR 0032）的 `last_tick_sec` 落在目标小节之前（竞价 tick 归后一
+ *     小节首桶，`last_tick_sec < begin_sec`）：此时 4 个 tick 都取 `last_tick_sec`——它的
+ *     tsec 经小节表仍映射到本 bar 桶（与 live 同一条 `resolve_tick_bucket` 口径），重建的
+ *     bar 因此仍与归档一致；
  *   - **量/额/持仓**：按 `k/4` 线性累计，用归档的**当日累计**字段反推：第 k 个 tick 的
  *     `cum = bar.cum - bar.value + bar.value*k/4`。这样第 4 个 tick 的累计恰好等于归档值，
  *     builder 差分出的 bar 量额与归档一致；跨交易日时归档的当日累计从 0 起算，因此也能
  *     正确还原（builder 换日时把基准重置为 0）；
  *   - **持仓量**：4 个 tick 都取归档 bar 的 `open_interest`（归档只有最后一笔的值）。
  *
- * @param bar 归档 bar（`period_sec >= 5`、`begin_sec` 是周期整数倍、`cum >= bar 内量额`；
- *            由框架的历史数据清洗保证，纯函数不再校验）
+ * @param bar 归档 bar（`period_sec >= 5`、`begin_sec` 是周期整数倍、`cum >= bar 内量额`、
+ *            `last_tick_sec` 经会话表映射到本桶；由归档域数据契约保证（#4），纯函数不校验）
  * @return 4 个合成 tick（价格/时刻/累计量额/OI 均已填好；`instrument_id` 留空——builder
  *         不读该字段，调用方已按实例绑定合约）
  */
@@ -140,13 +153,18 @@ inline constexpr double REPLAY_SECONDS_PER_STRATEGY_CALLBACK = 0.3e-6;
     // 合成 tick 的时刻以归档的 `last_tick_sec` 为末点：forming bar 的缓冲续接 tick 必须
     // 晚于它才不会被 builder 当乱序丢掉（回放若铺到桶末，续接必然被丢）；已收 bar 的
     // last_tick_sec 通常就在桶末附近，因此与「铺满整桶」等价。
-    const std::int32_t period = bar.period_sec;
-    const std::int32_t span = std::clamp(bar.last_tick_sec - bar.begin_sec, 0, period - 1);
+    //
+    // `last_tick_sec < begin_sec` 是 **Open 竞价 bar** 的合法形态（竞价 tick 归后一小节首桶，
+    // ADR 0032）：此时 4 个 tick 都取归档的 last_tick_sec——它经会话表映射到本 bar 桶，
+    // builder 产出的 last_tick_sec 因此与归档一致；若按正 span 铺到 begin 之后，重建的
+    // last_tick_sec 会与归档不符，且 bucket 可能落到别的桶。
+    const std::int32_t tail = bar.last_tick_sec - bar.begin_sec;
+    const std::int32_t span = std::clamp(tail, 0, bar.period_sec - 1);
     const std::array<std::int32_t, REPLAY_TICKS_PER_BAR> offsets{
-        span / 4,
-        span / 2,
-        span * 3 / 4,
-        span,
+        tail < 0 ? tail : span / 4,
+        tail < 0 ? tail : span / 2,
+        tail < 0 ? tail : span * 3 / 4,
+        tail < 0 ? tail : span,
     };
 
     const std::int64_t base_volume = bar.cum_volume - bar.volume;
@@ -171,10 +189,11 @@ inline constexpr double REPLAY_SECONDS_PER_STRATEGY_CALLBACK = 0.3e-6;
  *
  * 估算口径与文档一致：`builder_ticks × 0.1µs + strategy_callbacks × 0.3µs`。真值随策略
  * 复杂度变化（B 的代码不在框架估算范围内），这里的用途是「启动前让运维知道大概量级」，
- * 因此宁可偏保守（把每根回放 bar 的 6 次回调都算上）也不做精确建模。
+ * 因此宁可偏保守（把每根回放 bar 的 `REPLAY_CALLBACKS_PER_BAR` 次回调都算上）也不做精确建模。
  *
  * @param builder_ticks        合成 tick 总数（= 历史根数 × 4）
- * @param strategy_callbacks   B 回调总数（= 回放根数 × 6；静默填窗根数不回调 B）
+ * @param strategy_callbacks   B 回调总数（= 回放根数 ×
+ * `REPLAY_CALLBACKS_PER_BAR`；静默填窗根数不回调 B）
  * @return 预计秒数（双精度；异常大的输入会饱和在 double 范围内，不需要额外守卫）
  */
 [[nodiscard]] inline double estimate_replay_seconds(std::int64_t builder_ticks,
@@ -208,7 +227,7 @@ enum class HistoryStatus : std::uint8_t {
     Failed,       ///< 数据源可用但查询失败 → 同样降级（WARN），带错误消息
 };
 
-/// @brief 历史加载结果（`bars` 升序：最早一根在前，即该品种的锚点）
+/// @brief 历史加载结果（`bars` 升序：最早一根在前；最后一根是续接比较基准 B）
 struct HistoryQueryResult {
     HistoryStatus status = HistoryStatus::Unavailable;
     std::vector<bar::Bar> bars;  ///< 归档 bar（升序；`Loaded` 时有效）
@@ -267,9 +286,12 @@ using InstrumentMetadataLoader = std::function<MetadataResult(std::string_view)>
 /**
  * @brief 默认合约元数据来源：`dz_db_query_instruments` 解码 volume_multiple/price_tick/exchange_id
  *
- * 必需字段（组件文档 §3/§8）：`volume_multiple > 0`、`price_tick > 0`、`exchange_id` 非空。
- * 缺任一 → `Invalid`，A 据此把该实例判为创建失败（进程与其它品种继续）——静默用 0 乘数会让
- * 浮动盈亏恒为 0、止损永不触发；静默跳过 tick 对齐会让挂单价与交易所口径不一致。
+ * 必需字段（issue #153 的依赖缝清单 + 组件文档 §3/§8）：`volume_multiple > 0`、
+ * `price_tick > 0`、`exchange_id` 非空。缺任一 → `Invalid`，A 据此把该实例判为创建失败
+ * （进程与其它品种继续）——静默用 0 乘数会让浮动盈亏恒为 0、止损永不触发；静默跳过 tick
+ * 对齐会让挂单价与交易所口径不一致。`exchange_id` 目前只随 `InstrumentSpec` 携带（诊断/
+ * 展示用，AUTO 下单不读），但它是 spec 要求的**必需**元数据：缺失说明平台库快照不完整，
+ * 按实例失败处理比静默放行诚实。
  *
  * 库不可达（v1 无 platform.db 的常态）→ `SourceUnavailable`：这是**部署级**降级，A 打印
  * 已知限制诊断后按零元数据继续（先纸上跑通策略）。与 `Missing` 区分开，避免「没装平台库」
@@ -301,6 +323,24 @@ struct FrameworkDependencies {
     InstrumentMetadataLoader metadata;  ///< 空 = {@link load_archive_metadata}
     std::int32_t rollback_clock_ms = DEFAULT_ROLLBACK_CLOCK_MS;
 };
+
+/**
+ * @brief 组装「只替换小节表/回卷时刻」的依赖聚合（默认归档实现）
+ *
+ * 唯一的装配点：`BarStrategyManager` 的简化构造与 `run_bar_strategy_with(table, clock)` 都
+ * 走它，避免同一份三行装配在头文件里出现两次。
+ *
+ * @param session_table     交易小节与竞价窗口表
+ * @param rollback_clock_ms 每日回卷时刻（距午夜毫秒）
+ * @return 依赖聚合（`history` / `metadata` 为空 → 默认归档实现）
+ */
+[[nodiscard]] inline FrameworkDependencies make_dependencies(
+    const bar::TradingSessionTable& session_table, std::int32_t rollback_clock_ms) {
+    FrameworkDependencies dependencies;
+    dependencies.session_table = session_table;
+    dependencies.rollback_clock_ms = rollback_clock_ms;
+    return dependencies;
+}
 
 // ============================================================
 // 默认实现的内部辅助
@@ -514,8 +554,10 @@ struct BarColumns {
         const std::int32_t code = dz_errcode();
         if (code == DZ_EC_NOT_IMPLEMENTED) {
             // 归档域未实现是 v1 的**正常状态**：按「无历史」降级，调用方打 WARN 后冷启动。
+            // 消息原样沿用 SDK 的 `dz_errmsg()`（错误措辞归 SDK 契约），不再往里拼 k=v——
+            // 外层诊断已有 `status=source_unavailable`，内嵌第二个 status 只会让日志解析歧义。
             result.status = HistoryStatus::Unavailable;
-            result.message = std::string(dz_errmsg()) + " status=not_implemented";
+            result.message = dz_errmsg();
         } else {
             result.status = HistoryStatus::Failed;
             result.message = dz_errmsg();

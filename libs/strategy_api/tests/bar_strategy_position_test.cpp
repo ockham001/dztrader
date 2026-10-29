@@ -64,11 +64,13 @@ constexpr DzTime kBarEndTime = 9 * 3600 + 60;
  * 不发单、不上报」——ctx 内本来就没有账户表，测试能构造成功本身就是那条路径的证据。
  */
 std::unique_ptr<InstrumentContext> make_ctx(const char* instrument_id = "rb2601") {
+    InstrumentSpec spec;
+    spec.volume_multiple = kVolumeMultiple;  // 本文件的 Tier 1 用例只关心乘数
     return ContextAccess::make(InstrumentInit{
         .instrument_id = instrument_id,
         .max_lookback = 32,
         .buffer_bars = 64,
-        .spec = InstrumentSpec{.exchange_id = {}, .volume_multiple = kVolumeMultiple},
+        .spec = spec,
         // 脱离引擎的虚拟台账模式：无会话句柄、无账户表 → 只记账、不发单、不上报（#160 的
         // 「0 个挂靠账户」口径）。执行 fanout 的接线由 Seam A 集成测试覆盖。
         .dz = nullptr,

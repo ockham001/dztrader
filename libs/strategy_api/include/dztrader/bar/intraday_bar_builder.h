@@ -236,10 +236,10 @@ public:
 
 private:
     /// @brief 一日内的最大墙钟秒数（23:59:59）；time 越界计入 out_of_session
-    static constexpr DzTime MAX_CLOCK_SEC = 86399;
+    static constexpr DzTime MAX_CLOCK_SEC = MAX_TRADING_SEC;
 
     /// @brief 交易日内秒上限（23:59:59）；restore 校验用，与墙钟秒同域
-    static constexpr int32_t MAX_TSEC = 86399;
+    static constexpr int32_t MAX_TSEC = MAX_TRADING_SEC;
 
     /**
      * @brief 判定交易日内秒是否落在某个交易小节内（端点含），并给出分桶用有效时间
