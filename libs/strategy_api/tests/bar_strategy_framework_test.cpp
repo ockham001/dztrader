@@ -28,6 +28,7 @@
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -47,6 +48,7 @@
 #include <utility>
 #include <vector>
 
+#include "bar_test_data.h"
 #include "test_temp_dir.h"
 
 namespace {
@@ -111,6 +113,7 @@ struct ObservedEvent {
     const void* ctx_address = nullptr;  ///< `&ctx`（断言节点地址稳定）
     std::int64_t bar_index = -1;        ///< `ctx.bar_index()`
     std::int32_t window_size = -1;      ///< `ctx.close.size()`（已填充 bar 数）
+    bool is_auction = false;            ///< `ctx.is_auction()`（#163：触发本次回调的 tick 相位）
     // 本品种在 on_init 里保存的视图副本：跨回调仍有效且跟随窗口（#157 AC2 视图有效性）
     bool saved_view_bound = false;      ///< 是否已保存过视图副本（on_init 之后为 true）
     std::int32_t saved_view_size = -1;  ///< 保存的视图副本此刻的 `size()`（= 当前窗口）
@@ -485,6 +488,7 @@ void record(EventKind kind, dztrader::InstrumentContext& ctx) {
     event.ctx_address = &ctx;
     event.bar_index = ctx.bar_index();
     event.window_size = ctx.close.size();
+    event.is_auction = ctx.is_auction();
     // #159：Tier 1 快照（on_init 也抄——初始空仓是「无参考 + 盈亏 0」的基线）
     event.market_position = ctx.market_position();
     event.current_contracts = ctx.current_contracts();
@@ -770,6 +774,17 @@ std::array<double, 4> replay_tick_prices(const dztrader::bar::Bar& bar) {
     }
     return {bar.open, bar.low, bar.high, bar.close};
 }
+
+// 复用 bar 层测试的共享夹具（单一真相源：含 Open 竞价窗口的小节表与 09:00/15:00 交易日内秒
+// 常量只在 `bar_test_data.h` 定义一次；replay / diff / builder 测试同样 include 该头）。
+using dztrader::strategy_api::test::day_auction_session_table;
+using dztrader::strategy_api::test::TSEC_09_00;
+
+/// @brief 08:59:00（墙钟）的交易日内秒：Open 竞价窗口起点（tsec = 53940）
+constexpr std::int32_t kAuctionBeginSec = TSEC_09_00 - 60;
+
+/// @brief 日盘静默填窗的起始墙钟秒（09:00；`warm_up` 按墙钟秒步进）
+constexpr std::int32_t kDaySessionWarmupClock = dztrader::bar::TradingTime::to_clock(TSEC_09_00);
 
 /**
  * @brief 框架集成测试夹具：临时 home + 真实通道 + 确定性配置
@@ -1058,6 +1073,17 @@ protected:
         return start_volume + 10 * (kTestMaxLookback + bars_after_warmup);
     }
 
+    /// @brief 写出某个交易日内秒的一笔 tick（`trading_day = kTradingDay + day_offset`）
+    bool write_tick_at_tsec(std::string_view instrument,
+                            std::int32_t day_offset,
+                            std::int32_t tsec,
+                            double price,
+                            DzVolume volume) {
+        return write_tick(make_tick_on(instrument, kTradingDay + day_offset,
+                                       dztrader::bar::TradingTime::to_clock(tsec), price, volume,
+                                       price * static_cast<double>(volume)));
+    }
+
     /**
      * @brief 900 秒周期脚本的 tick 游标：每根 bar 一笔 tick，按**交易日内秒**步进
      *
@@ -1259,6 +1285,10 @@ protected:
         std::optional<DzDate> warmup_from;
     };
 
+    /// @brief 注入的交易小节/竞价窗口表（默认退化表；#163 的竞价用例换成含 Open 窗口的表）
+    dztrader::bar::TradingSessionTable injected_session_table_ =
+        dztrader::degraded_trading_session_table();
+
     /// @brief 假历史 bar 源：instrument → 归档 bar（升序）；缺省 = Unavailable
     std::map<std::string, std::vector<dztrader::bar::Bar>, std::less<>> fake_history_;
     bool fake_history_available_ = true;                 ///< false = 数据源不可用（冷启动降级用例）
@@ -1298,9 +1328,10 @@ protected:
         history_barrier_cv_.notify_all();
     }
 
-    /// @brief 组装注入 fake 历史/元数据的依赖（退化小节表 + 默认回卷时刻）
+    /// @brief 组装注入 fake 历史/元数据/小节表的依赖（默认退化表 + 默认回卷时刻）
     dztrader::bar_strategy_internal::FrameworkDependencies make_injected_dependencies() {
         dztrader::bar_strategy_internal::FrameworkDependencies dependencies;
+        dependencies.session_table = injected_session_table_;
         dependencies.history = [this](const dztrader::bar_strategy_internal::HistoryQuery& query) {
             history_queries_.push_back(ObservedHistoryQuery{
                 .instrument_id = std::string(query.instrument_id),
@@ -4562,6 +4593,319 @@ TEST_F(BarStrategyFrameworkTest, InstrumentAddRecoversAnInstrumentThatFailedAtSt
 
     stop_strategy();
     EXPECT_EQ(exit_code_, 0);
+}
+
+// ============================================================
+// #163 竞价相位：ctx.is_auction()
+// ============================================================
+
+/**
+ * **含 Open 竞价窗口的小节表（Seam B 注入）**：窗口内事件序与相位写入（#163 AC1/AC2/AC3）。
+ *
+ * 用 `day_auction_session_table()`（日盘 09:00–15:00 + 08:59:00–08:59:59 Open 窗口）驱动：
+ *
+ *   1. 静默填窗 32 根（09:00–09:31，B 零回调）；
+ *   2. 次日 08:59:15 竞价首笔：`close(上一根普通 bar) → open(新首根) → update`，三者相位均
+ *      为 true——**close 也是 true**，因为相位属于触发 tick、不属于被交出的 bar（ADR 0032）；
+ *   3. 后续竞价 tick 只 update、相位 true；
+ *   4. 09:00:00 连续交易首笔：同一根 bar 继续、只 update、相位转 false；
+ *   5. 09:01:00 下一根：close/open/update 相位 false。
+ *
+ * 窗口内脚本注入的 `buy` 与连续交易里的 `buy` 各产生一张形状相同的差量单：框架不因相位
+ * 拒单、缓存或延后发单（#163 AC3）。竞价窗口内的单在窗口结束**之前**就已落地（`wait_until`
+ * 在写入 09:00 连续 tick 之前断言 `orders_` 非空）。
+ */
+TEST_F(BarStrategyFrameworkTest, AuctionWindowDrivesEventOrderAndPhaseWrites) {
+    injected_session_table_ = day_auction_session_table();
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60,
+                 R"([{"account_id":"CTP001","scale":1.0}])");
+    fake_metadata_[std::string(kInstrumentA)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+    // 两笔意图：bar 32 的 update（竞价窗口内）与 bar 33 的 update（连续交易）
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = kTestMaxLookback,
+        .when = EventKind::BarUpdate,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(2, ctx.close[0]); },
+    });
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = kTestMaxLookback + 1,
+        .when = EventKind::BarUpdate,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(2, ctx.close[0]); },
+    });
+
+    open_probe();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_events(1)) << "on_init not observed";
+    ASSERT_EQ(warm_up(kInstrumentA, kDaySessionWarmupClock), 1U)
+        << "no callback may fire before the window is full";
+
+    // 次日 08:59:15 / 08:59:30 / 08:59:45：竞价首笔 + 两笔后续竞价 tick
+    ASSERT_TRUE(write_tick_at_tsec(kInstrumentA, 1, kAuctionBeginSec + 15, 200.0, 1));
+    ASSERT_TRUE(write_tick_at_tsec(kInstrumentA, 1, kAuctionBeginSec + 30, 201.0, 2));
+    ASSERT_TRUE(write_tick_at_tsec(kInstrumentA, 1, kAuctionBeginSec + 45, 202.0, 3));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 3));
+    // 窗口内下单立即落地（若框架按相位缓存/延后，这里会等不到单子）
+    ASSERT_TRUE(wait_until([this] {
+        collect_order_and_report_frames();
+        return orders_.size() >= 1;
+    })) << "an auction-window intent must be placed immediately, not cached until the session "
+           "opens";
+
+    // 09:00:00 连续交易首笔 → 同桶只 update、相位 false；09:01:00 下一根 → close/open/update
+    ASSERT_TRUE(write_tick_at_tsec(kInstrumentA, 1, TSEC_09_00, 203.0, 4));
+    ASSERT_TRUE(write_tick_at_tsec(kInstrumentA, 1, TSEC_09_00 + 60, 204.0, 5));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 5));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarClose, 2));
+    ASSERT_TRUE(wait_until([this] {
+        collect_order_and_report_frames();
+        return orders_.size() >= 2;
+    }));
+    stop_strategy();
+    ASSERT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    const std::vector<ObservedEvent> events = recorder().for_instrument(kInstrumentA);
+    // init + close(31) + open(32) + update×4 + close(32) + open(33) + update + destroy = 11
+    ASSERT_EQ(events.size(), 11U) << "callbacks: " << describe_events(events);
+    EXPECT_EQ(events[0].kind, EventKind::Init);
+    EXPECT_FALSE(events[0].is_auction) << "on_init must never be in auction phase";
+    EXPECT_EQ(events[0].bar_index, -1);
+
+    const auto first = kTestMaxLookback;
+    // ── AC1/AC2：竞价首笔触发 close(上一根) → open(新首根) → update，三者均为 true ──
+    EXPECT_EQ(events[1].kind, EventKind::BarClose);
+    EXPECT_EQ(events[1].bar_index, first - 1) << "the closed bar is the previous normal bar";
+    EXPECT_TRUE(events[1].is_auction)
+        << "the close triggered by the first auction tick must carry auction phase";
+    EXPECT_EQ(events[2].kind, EventKind::BarOpen);
+    EXPECT_EQ(events[2].bar_index, first);
+    EXPECT_TRUE(events[2].is_auction);
+    EXPECT_EQ(events[3].kind, EventKind::BarUpdate);
+    EXPECT_EQ(events[3].bar_index, first);
+    EXPECT_TRUE(events[3].is_auction);
+    // ── 窗口内后续每笔只 update、相位 true ──
+    EXPECT_EQ(events[4].kind, EventKind::BarUpdate);
+    EXPECT_TRUE(events[4].is_auction);
+    EXPECT_EQ(events[5].kind, EventKind::BarUpdate);
+    EXPECT_TRUE(events[5].is_auction);
+    // ── AC2：离开窗口第一笔连续 tick 只 update、相位转 false ──
+    EXPECT_EQ(events[6].kind, EventKind::BarUpdate);
+    EXPECT_EQ(events[6].bar_index, first) << "the first continuous tick continues the same bar";
+    EXPECT_FALSE(events[6].is_auction)
+        << "the first continuous-trading tick must turn the auction phase false";
+    // ── 下一根 bar 的三事件相位均 false ──
+    EXPECT_EQ(events[7].kind, EventKind::BarClose);
+    EXPECT_EQ(events[7].bar_index, first);
+    EXPECT_FALSE(events[7].is_auction);
+    EXPECT_EQ(events[8].kind, EventKind::BarOpen);
+    EXPECT_EQ(events[8].bar_index, first + 1);
+    EXPECT_FALSE(events[8].is_auction);
+    EXPECT_EQ(events[9].kind, EventKind::BarUpdate);
+    EXPECT_EQ(events[9].bar_index, first + 1);
+    EXPECT_FALSE(events[9].is_auction);
+    EXPECT_EQ(events[10].kind, EventKind::Destroy);
+    EXPECT_FALSE(events[10].is_auction) << "on_destroy is not a bar event";
+
+    // ── AC3：窗口内下单与其它时刻同路径（各一张形状相同的差量单）──
+    ASSERT_EQ(orders_.size(), 2U)
+        << "both intents must produce an order frame (auction phase must not block or drop)";
+    for (const ObservedOrder& order : orders_) {
+        EXPECT_EQ(order.account_id, "CTP001");
+        EXPECT_EQ(order.instrument_id, std::string(kInstrumentA));
+        EXPECT_EQ(order.direction, DZ_DIRECTION_LONG);
+        EXPECT_EQ(order.price_type, DZ_PRICE_LIMIT);
+        EXPECT_EQ(order.effect, DZ_POSITION_EFFECT_AUTO);
+        EXPECT_EQ(order.volume, 2);
+    }
+}
+
+/**
+ * **历史回放期相位恒 false**（#163 AC4）。
+ *
+ * 回放复用 live 的 tick→bar 实现：竞价归档 bar 的合成 tick 会被 builder 标记
+ * `is_auction=true`（本用例先在本地用 builder 做控制；builder 层另有
+ * `bar_strategy_replay_test.cpp` 的 `AuctionOnlyBarIsRebuiltWithArchivedLastTickSec`）。但
+ * 回放不是实时竞价——A 在写 ctx 时必须抑制，B 在回放期观察到的相位一律 false。若去掉抑制，
+ * 下面第一条 close/open/update（由竞价归档 bar 的合成 tick 触发）会带 true，本用例立即失败。
+ */
+TEST_F(BarStrategyFrameworkTest, AuctionPhaseIsSuppressedDuringReplay) {
+    injected_session_table_ = day_auction_session_table();
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback);
+
+    // 前 32 根静默填窗（day D 09:00–09:31）；day D+1 首根是竞价 bar：begin = 09:00 桶、
+    // last_tick = 08:59:59（合成 tick 全部落在 Open 窗口内，builder 相位为 true）。
+    std::vector<dztrader::bar::Bar> history = make_archive_history(kTestMaxLookback, TSEC_09_00);
+    dztrader::bar::Bar auction{};
+    auction.trading_day = kTradingDay + 1;
+    auction.begin_sec = TSEC_09_00;
+    auction.last_tick_sec = TSEC_09_00 - 1;
+    auction.period_sec = 60;
+    auction.open = 100.0;
+    auction.high = 100.0;
+    auction.low = 100.0;
+    auction.close = 100.0;
+    auction.volume = 8;
+    auction.turnover = 800.0;
+    auction.open_interest = 500;
+    auction.cum_volume = 8;
+    auction.cum_turnover = 800.0;
+    auction.is_final = true;
+    history.push_back(auction);
+    // 竞价 bar 之后的普通 bar（关闭竞价 bar，并覆盖「回放里普通 bar 也是 false」）
+    dztrader::bar::Bar after_auction{};
+    after_auction.trading_day = kTradingDay + 1;
+    after_auction.begin_sec = TSEC_09_00 + 60;
+    after_auction.last_tick_sec = TSEC_09_00 + 119;
+    after_auction.period_sec = 60;
+    after_auction.open = 101.0;
+    after_auction.high = 103.0;
+    after_auction.low = 100.0;
+    after_auction.close = 102.0;
+    after_auction.volume = 5;
+    after_auction.turnover = 510.0;
+    after_auction.open_interest = 500;
+    after_auction.cum_volume = 13;
+    after_auction.cum_turnover = 1310.0;
+    after_auction.is_final = true;
+    history.push_back(after_auction);
+    fake_history_[std::string(kInstrumentA)] = history;
+    fake_metadata_available_ = false;
+
+    // 本地控制（防止断言恒真）：同一根竞价归档 bar 的合成 tick 经 builder 必须标记竞价相位，
+    // 且实例首笔只触发 `open → update`（ADR 0032 的「窗口内启动」形态：没有上一根可 close）。
+    // 若合成 tick 不再命中 Open 窗口，本控制先失败，下面「B 看到 false」才不是恒真。
+    {
+        dztrader::strategy_api::test::RecordingSink control_sink;
+        dztrader::bar::IntradayBarBuilder<dztrader::strategy_api::test::RecordingSink>
+            control_builder(day_auction_session_table(), 60, control_sink);
+        for (const DzTick& tick : dztrader::bar_strategy_internal::make_replay_ticks(auction)) {
+            control_builder.on_tick(tick);
+        }
+        ASSERT_FALSE(control_sink.events.empty());
+        EXPECT_EQ(control_sink.events.front().kind, dztrader::strategy_api::test::EventKind::Open)
+            << "the first auction tick must open the auction bar (no previous bar to close)";
+        EXPECT_EQ(std::ranges::count_if(control_sink.events,
+                                        [](const auto& event) {
+                                            return event.kind ==
+                                                   dztrader::strategy_api::test::EventKind::Close;
+                                        }),
+                  0)
+            << "an instance starting inside the auction window has no bar to close";
+        for (const auto& event : control_sink.events) {
+            EXPECT_TRUE(event.is_auction)
+                << "control: builder must mark replay ticks of an auction bar as auction phase";
+        }
+    }
+
+    testing::internal::CaptureStderr();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 8))
+        << "replay did not produce the expected callbacks";
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarClose, 2));
+    stop_strategy();
+    ASSERT_EQ(exit_code_, 0);
+    const std::string stderr_text = testing::internal::GetCapturedStderr();
+    EXPECT_NE(stderr_text.find("warmup replay complete |"), std::string::npos) << stderr_text;
+    EXPECT_NE(stderr_text.find("replayed_bars=2"), std::string::npos)
+        << "the two archived bars (including the auction bar) must actually be replayed: "
+        << stderr_text;
+
+    const std::vector<ObservedEvent> events = callback_stage_events(kInstrumentA);
+    ASSERT_EQ(events.size(), 12U) << "callbacks: " << describe_events(events);
+    // 结构断言：竞价归档 bar（bar 32）确实是 B 可见的第一根回放 bar（O=H=L=C=100）
+    EXPECT_EQ(events[0].kind, EventKind::BarClose);
+    EXPECT_EQ(events[0].bar_index, kTestMaxLookback - 1);
+    EXPECT_EQ(events[1].kind, EventKind::BarOpen);
+    EXPECT_EQ(events[1].bar_index, kTestMaxLookback);
+    EXPECT_DOUBLE_EQ(events[1].close, 100.0) << "the first replayed bar must be the auction bar";
+    EXPECT_EQ(events[6].kind, EventKind::BarClose);
+    EXPECT_EQ(events[6].bar_index, kTestMaxLookback);
+    EXPECT_EQ(events[7].kind, EventKind::BarOpen);
+    EXPECT_EQ(events[7].bar_index, kTestMaxLookback + 1);
+
+    for (const ObservedEvent& event : events) {
+        EXPECT_FALSE(event.is_auction)
+            << "replay must not expose auction phase | kind=" << event_kind_name(event.kind)
+            << " bar_index=" << event.bar_index;
+    }
+}
+
+/**
+ * **非 bar 回调的相位恒 false**（#163 AC4）：`on_params_update` 没有触发 tick。
+ *
+ * 覆盖最刁钻的投递时机：`param set` 发生在首根回调之前（挂起），竞价首笔 tick 触发首个
+ * 回调序列 `close(上一根) → open → update`，挂起的参数更新在 `close` 之后补投——此刻 ctx 里
+ * 还留着这次 close 的竞价相位 true。若不显式清零，B 会在 `on_params_update` 里读到 true，
+ * 而它根本不是 bar 事件。
+ */
+TEST_F(BarStrategyFrameworkTest, DeferredParamsUpdateSeesPhaseFalseAfterFirstAuctionCallback) {
+    injected_session_table_ = day_auction_session_table();
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60, "[]", "", "",
+                 R"({"fast": 1.0})");
+    fake_metadata_available_ = false;
+    open_probe();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA, kDaySessionWarmupClock), 1U)
+        << "no callback may fire before the window is full";
+
+    // 首根回调之前 `param set`：实例还没进入回调阶段 → 挂起，首根回调之后补投。
+    ASSERT_TRUE(run_command("param set fast 5.0", 0)) << "param set response not observed";
+
+    // 次日竞价首笔：close(31)（true）→ 补投挂起的 on_params_update → open(32) → update
+    ASSERT_TRUE(write_tick_at_tsec(kInstrumentA, 1, kAuctionBeginSec + 15, 200.0, 1));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::ParamsUpdate, 1));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+    stop_strategy();
+    ASSERT_EQ(exit_code_, 0);
+
+    const std::vector<ObservedEvent> events = recorder().for_instrument(kInstrumentA);
+    const auto params_event = std::ranges::find_if(
+        events, [](const ObservedEvent& event) { return event.kind == EventKind::ParamsUpdate; });
+    ASSERT_NE(params_event, events.end()) << "callbacks: " << describe_events(events);
+    EXPECT_EQ(params_event->bar_index, kTestMaxLookback - 1)
+        << "the deferred update is delivered after the first close callback";
+    EXPECT_FALSE(params_event->is_auction)
+        << "on_params_update is not a bar event: it must never carry the auction phase";
+    EXPECT_DOUBLE_EQ(params_event->param_fast, 5.0) << "B must reread the new value";
+    // 前置条件：同一次竞价首笔触发的 close 确实带 true（证明上面不是恒 false 的假绿）
+    EXPECT_TRUE(events[1].is_auction) << "the triggering close must carry auction phase";
+}
+
+/**
+ * **退化小节表下相位恒 false**（#163 AC5；组件文档 §5.5）。
+ *
+ * 生产入口 v1 用内置退化表（单小节 `[0, 86399]`、无竞价窗口）：即使 tick 落在生产口径的
+ * 竞价时段，也没有竞价窗口可命中，`ctx.is_auction()` 必须始终为 false。用 Seam A 默认入口
+ * （`run_bar_strategy` = 退化表 + 默认归档实现）跑静默填窗，再喂 08:59:00 / 08:59:30 两笔
+ * **生产口径 Open 竞价窗口内**的 tick 与 09:00:00 连续交易首笔，覆盖全部 B 回调。
+ */
+TEST_F(BarStrategyFrameworkTest, DegradedSessionTableKeepsAuctionPhaseFalse) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback);
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U) << "no callback may fire before the window is full";
+
+    // 价格/累计量延续 warm_up 的序列（每笔 +1 / +10；warm_up 最后一笔是 131/320）。
+    // 首笔 08:59:00 换桶：close(静默填窗最后一根) → open(08:59 bar) → update；第二笔同桶只
+    // update；第三笔 09:00:00 再换桶 → close(08:59 bar) → open(09:00 bar) → update。
+    ASSERT_TRUE(write_tick_at_tsec(kInstrumentA, 0, kAuctionBeginSec, 132.0, 330));
+    ASSERT_TRUE(write_tick_at_tsec(kInstrumentA, 0, kAuctionBeginSec + 30, 133.0, 340));
+    ASSERT_TRUE(write_tick_at_tsec(kInstrumentA, 0, kAuctionBeginSec + 60, 134.0, 350));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 3));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarClose, 1));
+    stop_strategy();
+    ASSERT_EQ(exit_code_, 0);
+
+    const std::vector<ObservedEvent> events = recorder().for_instrument(kInstrumentA);
+    ASSERT_GE(events.size(), 7U) << "callbacks: " << describe_events(events);
+    for (const ObservedEvent& event : events) {
+        EXPECT_FALSE(event.is_auction)
+            << "the degraded session table has no auction windows | kind="
+            << event_kind_name(event.kind) << " bar_index=" << event.bar_index;
+    }
 }
 
 }  // namespace

@@ -49,8 +49,10 @@ namespace dztrader::bar {
  * 回调参数：三个 bar 回调的签名均为 `(const Bar&, bool is_auction)`（见 types.h 的
  * Sink 契约）。`is_auction` 表示**触发本次回调的 tick 是否处于 Open 竞价窗口**，是回调
  * 时刻的环境相位、不是被交出 bar 的属性；仅 Open 窗口标记，Close 窗口按普通 tick 处理、
- * 不标记，历史回放恒为 false。窗口首笔触发的 close 关闭的是上一根 bar，但 is_auction 取
- * 本笔竞价 tick 的相位（true）。
+ * 不标记。窗口首笔触发的 close 关闭的是上一根 bar，但 is_auction 取本笔竞价 tick 的相位
+ * （true）。组件只按 tick 判定：回放合成 tick 若落在 Open 窗口内同样标记 true，是否把
+ * 回放期相位交给最终用户由调用方决定（BarStrategy 框架在回放期抑制，见
+ * `bar_strategy/manager.h` 的 `InstrumentNode::replaying`）。
  *
  * @tparam Sink bar 事件接收者：可选实现 on_bar_open / on_bar_update / on_bar_close，
  *              签名均为 `void(const Bar&, bool is_auction)`，未实现视为空操作；
