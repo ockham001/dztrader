@@ -13,6 +13,14 @@
 #   ./scripts/wait-ci.sh --branch <branch>    # 等该分支的最新 run（main 合并后用）
 #   以上均可加 --interval <seconds>（默认 60）、--fail-on-cancel（把 cancelled 当失败）
 #
+#   ./scripts/wait-ci.sh --status --pr <n>    # **单次快照**，立即返回：
+#                                             # 0 绿 / 1 红（打印失败 job）/ 2 无 run 或错误 / 3 仍在跑
+#
+# 为什么需要 --status（复盘 #158-#161 → #192）：等待期间在会话里 `sleep N` 再查 gh 是纯浪费
+# （#159/#160 各 6 次、共约 13 分钟）。DSH 下正确的做法是：等待进程用宿主的后台作业跑
+# （`run_in_background`），拿结论时用 `--status` 快速查一次；宿主的 shell 会回收直接 fork
+# 的孙进程，所以本脚本不提供 `--detach`（实测 setsid 子进程在工具调用结束即被杀）。
+#
 # 环境变量:
 #   GH                        gh 可执行路径（默认 gh，缺失时回退 ~/.local/bin/gh）
 #   WAIT_CI_TIMEOUT           总超时秒数（默认 3600）
@@ -20,13 +28,15 @@
 #   WAIT_CI_APPEAR_TIMEOUT    等 run 出现的超时秒数（默认 180；用于 --sha/--branch）
 #   WAIT_CI_HEARTBEAT         心跳输出间隔秒数（默认 300；长时间等待时提示仍在等）
 #
-# 退出码: 0=全部通过, 1=有失败（--fail-on-cancel 时取消也算）, 2=超时/无 run/参数或环境错误
+# 退出码: 0=全部通过, 1=有失败（--fail-on-cancel 时取消也算）, 2=超时/无 run/参数或环境错误,
+#         3=仅 --status 下：检查仍在跑（非失败；稍后再查一次即可）
 
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE=""      # pr | run | sha | branch
 TARGET=""
+STATUS=0     # --status：单次快照后立即返回（不等待）
 INTERVAL="${WAIT_CI_INTERVAL:-60}"
 TIMEOUT="${WAIT_CI_TIMEOUT:-3600}"
 APPEAR_TIMEOUT="${WAIT_CI_APPEAR_TIMEOUT:-180}"
@@ -46,6 +56,7 @@ while [ $# -gt 0 ]; do
         --pr) MODE=pr; TARGET="${2:?--pr needs a number}"; shift 2 ;;
         --branch) MODE=branch; TARGET="${2:?--branch needs a branch name}"; shift 2 ;;
         --fail-on-cancel) FAIL_ON_CANCEL=1; shift ;;
+        --status) STATUS=1; shift ;;
         -*) echo "error: unknown option: $1" >&2; usage >&2; exit 2 ;;
         *)
             if [ -z "$MODE" ]; then
@@ -131,12 +142,24 @@ print_failed_jobs() {
         2>/dev/null || true
 }
 
+# ---- 共享的低层查询（前台等待与 --status 同一实现，#192 审查发现两套会漂移） ----
+
+# 抓一次 PR checks 的表格行；结果放全局 PR_CHECKS_OUT，退出码放 PR_CHECKS_RC。
+# 8 是 gh 的「有 check 未完成」约定，调用方按需区分。
+fetch_pr_checks() {
+    local pr="$1"
+    PR_CHECKS_RC=0
+    PR_CHECKS_OUT="$("$GH_BIN" pr checks "$pr" --json name,bucket,link \
+        --jq '.[] | [.name,.bucket,.link] | @tsv' 2>/dev/null)" || PR_CHECKS_RC=$?
+}
+
 wait_pr() {
     local pr="$1"
     while :; do
         local rc=0 out
-        out="$("$GH_BIN" pr checks "$pr" --json name,bucket,link \
-            --jq '.[] | [.name,.bucket,.link] | @tsv' 2>/dev/null)" || rc=$?
+        fetch_pr_checks "$pr"
+        rc="$PR_CHECKS_RC"
+        out="$PR_CHECKS_OUT"
 
         if [ -z "$out" ]; then
             EMPTY_COUNT=$((EMPTY_COUNT + 1))
@@ -326,6 +349,125 @@ wait_branch() {
         maybe_heartbeat
     done
 }
+
+# ---- --status：单次快照（#192；不 fork、不循环、立即返回） ----
+
+# 打印一个 run 的状态并返回 0/1/3（run 维度的单次查询，pr/sha/branch 共用）。
+status_run() {
+    local rid="$1" rc=0 raw status conclusion
+    # 与 wait_run 同一 jq 形状（#192 审查：单次查询、同一惯例；jobs 详情只在失败时再拉）。
+    raw="$("$GH_BIN" run view "$rid" --json status,conclusion \
+        --jq '[.status, (.conclusion // "")] | @tsv' 2>/dev/null)" || rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$raw" ]; then
+        echo "wait-ci: cannot read run $rid (exit $rc)" >&2
+        return 2
+    fi
+    IFS=$'\t' read -r status conclusion <<<"$raw"
+    if [ "$status" != "completed" ]; then
+        echo "wait-ci: run $rid status=$status"
+        return 3
+    fi
+    if [ "$conclusion" = "success" ]; then
+        echo "wait-ci: run $rid success"
+        return 0
+    fi
+    if [ "$conclusion" = "cancelled" ]; then
+        # 与 wait_run 默认口径一致：cancelled 通常是被同分支新 run 取代，不是失败
+        # （wait_run 返回 2 并提示改用 --pr/--branch；--fail-on-cancel 才当失败）。
+        if [ "$FAIL_ON_CANCEL" -eq 1 ]; then
+            print_failed_jobs "$rid"
+            echo "wait-ci: run $rid conclusion=cancelled (--fail-on-cancel)"
+            return 1
+        fi
+        echo "wait-ci: run $rid was cancelled (superseded); use --pr/--branch for the newer run, or --fail-on-cancel"
+        return 2
+    fi
+    echo "wait-ci: run $rid conclusion=$conclusion"
+    print_failed_jobs "$rid"
+    return 1
+}
+
+status_once() {
+    case "$MODE" in
+        run)
+            status_run "${TARGET##*/}"
+            return $?
+            ;;
+        sha)
+            local full_sha rid
+            # 与 wait_sha 一致：短 sha 先解析成完整 commit，否则 gh 返回空。
+            full_sha="$(git -C "$ROOT" rev-parse --verify --quiet "${TARGET}^{commit}" 2>/dev/null || true)"
+            if [ -z "$full_sha" ]; then
+                echo "wait-ci: cannot resolve commit: $TARGET" >&2
+                return 2
+            fi
+            rid="$("$GH_BIN" run list --commit "$full_sha" --limit 10 \
+                --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)"
+            if [ -z "$rid" ]; then
+                echo "wait-ci: no run found for sha $TARGET"
+                return 2
+            fi
+            status_run "$rid"
+            return $?
+            ;;
+        branch)
+            local rid
+            rid="$("$GH_BIN" run list --branch "$TARGET" --limit 1 \
+                --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)"
+            if [ -z "$rid" ]; then
+                echo "wait-ci: no run found for branch $TARGET"
+                return 2
+            fi
+            status_run "$rid"
+            return $?
+            ;;
+        pr)
+            local rc out buckets
+            fetch_pr_checks "$TARGET"
+            rc="$PR_CHECKS_RC"
+            out="$PR_CHECKS_OUT"
+            if [ -z "$out" ]; then
+                if [ "$rc" -ne 0 ] && [ "$rc" -ne 8 ]; then
+                    echo "wait-ci: gh pr checks failed (exit $rc)" >&2
+                    return 2
+                fi
+                echo "wait-ci: no checks found for PR #$TARGET (not pushed/opened yet?)"
+                return 2
+            fi
+            buckets="$(printf '%s\n' "$out" | cut -f2 | sort -u)"
+            if printf '%s\n' "$buckets" | grep -qx "fail"; then
+                echo "wait-ci: PR #$TARGET checks FAILED"
+                printf '%s\n' "$out" | awk -F'\t' '$2=="fail" {print "FAILED: "$1" | "$3}'
+                return 1
+            fi
+            # cancel = 同分支新 push 取代了旧 run（wait_pr 默认也继续等新 check），
+            # 因此算「仍在跑」而不是绿；--fail-on-cancel 时与前台一致算红。
+            # skipping（如 cache warm）忽略。
+            if [ "$FAIL_ON_CANCEL" -eq 1 ] && printf '%s\n' "$buckets" | grep -qx "cancel"; then
+                echo "wait-ci: PR #$TARGET checks FAILED (cancelled, --fail-on-cancel)"
+                printf '%s\n' "$out" | awk -F'\t' '$2=="cancel" {print "FAILED: "$1" | "$3}'
+                return 1
+            fi
+            if printf '%s\n' "$buckets" | grep -qx "pending" ||
+                printf '%s\n' "$buckets" | grep -qx "cancel"; then
+                echo "wait-ci: PR #$TARGET checks still running"
+                return 3
+            fi
+            echo "wait-ci: PR #$TARGET checks all pass"
+            return 0
+            ;;
+    esac
+    return 2
+}
+
+if [ "$STATUS" = "1" ]; then
+    if [ -z "$MODE" ]; then
+        echo "error: --status needs a target (e.g. --status --pr <n>)" >&2
+        exit 2
+    fi
+    status_once
+    exit $?
+fi
 
 case "$MODE" in
     pr) wait_pr "$TARGET" ;;
