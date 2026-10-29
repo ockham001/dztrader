@@ -67,6 +67,8 @@ gh pr create --base main --head <branch> --title "<type>: <摘要>（#<issue>）
 - **推送前先看 `gh run list --branch <branch> --json status`**：同一分支已有 in-progress run 时不要推——会排队/取消，每次 ≈35–40 分钟。把剩余修复攒成 **1 个 commit** 再推；review 修复不要在 CI 跑的时候逐条推（本波 #93 因此取消 3 个 run）。
 - 等待期间不要 `gh run watch` 全量输出、不要 `sleep` 轮询、不要反复 tail 后台日志。CI 红先用 `./scripts/ci-log.sh <run-id>` 定位：它**优先取 `last-test-log` artifact（约 200KB，秒级给出失败用例名）**，再退回失败 job 日志（Windows 可达数十 MB）；同一 run/job 已下载过会复用（`--refresh` 强制重拉，`--context N` 调上下文行数）。
 - **等 CI 用后台作业**：`wait-ci.sh --pr <n>` 以 `run_in_background` 启动，等待期做只读准备（拟关闭评论 / 清理 worktree 计划 / 读下一票契约）；需要结果时 `job_output(wait=true)`，不要前台空等（2026-10-26 #146 / #147 各阻塞 21–22 分钟）。
+- **单次快照（#192）**：任意时刻想看 CI 现在到哪了，用 `./scripts/wait-ci.sh --status [--pr <n>|--sha <sha>|--run <id>|--branch <b>]`——立即返回，0 绿 / 1 红（打印失败 job）/ 2 无 run 或错误 / 3 仍在跑。**不要** `sleep` 轮询（#159/#160 曾各 sleep 6 次、共约 13 分钟）：把它当「随时可查的仪表盘」，等待本身交给后台作业。
+- **不要自建后台进程**：DSH 会在一次工具调用结束时回收直接 fork 的孙进程（实测 `setsid` 子进程也活不过调用边界），所以 `wait-ci.sh` 不提供 `--detach`；后台等待一律用宿主的 `run_in_background`。
 - 修红单独提交，不叠加新改动。
 - **CI 红过的失败类别，修完必须补一条静态规则**：修完只把当次修绿，下一票会以同样形态再红一次。把该类加进对应 linter 并附上该 run/票号（Windows 独有的编译失败 → `scripts/check_msvc_hazards.py` 的 R 编号；Linux 侧 → 对应 check 脚本）。理由：`check_msvc_hazards.py` 的每一项都对应一次真实的 Windows CI 红，它是**类别登记表**而不是一次性修复；被它拦下的失败（#157 的 `_wfopen` C4996）只花 5 行就永久关闭同一类盲区。修完顺手补规则，比下一票重跑一轮 35–45 分钟的 CI 便宜一个量级。
 
