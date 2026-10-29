@@ -34,6 +34,7 @@
 #include <dztrader/bar/intraday_bar_builder.h>
 #include <dztrader/bar/types.h>
 #include <dztrader/bar_strategy.h>
+#include <dztrader/bar_strategy/command.h>
 #include <dztrader/bar_strategy/config.h>
 #include <dztrader/bar_strategy/config_file.h>
 #include <dztrader/bar_strategy/context.h>
@@ -41,6 +42,7 @@
 #include <dztrader/bar_strategy/dependencies.h>
 #include <dztrader/bar_strategy/execution.h>
 #include <dztrader/bar_strategy/manager.h>
+#include <dztrader/bar_strategy/params.h>
 #include <dztrader/bar_strategy/position.h>
 #include <dztrader/bar_strategy/scaling.h>
 #include <dztrader/data_type.h>

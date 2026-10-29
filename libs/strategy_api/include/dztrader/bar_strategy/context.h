@@ -65,6 +65,8 @@ class BarStrategyManager;  // 前向：A 通过 friend 驱动窗口推进与失�
 template <class Strategy>
 struct InstrumentNode;  // 前向：节点就地构造 ctx（传 InstrumentInit）
 
+class ParamStore;  // 前向：进程级参数仓（定义在 `bar_strategy/params.h`，见下方 `ParamValue`）
+
 namespace context_internal {
 
 /// 前向：ctx 的内部构造缝。**定义在内部头** `dztrader/bar_strategy/context_internal.h`
@@ -109,7 +111,9 @@ struct InstrumentInit {
     InstrumentSpec spec;                     ///< 合约属性（乘数供 Tier 1、`price_tick` 供价格对齐）
     DzContext* dz = nullptr;                 ///< 引擎会话句柄（仅测试缝传 nullptr，见上）
     const AccountTable* accounts = nullptr;  ///< A 的挂靠账户表（只读；nullptr = 0 个账户）
-    ScalingConfig scaling;                   ///< 缩放配置副本（启动后不可变，按值持有）
+    /// 进程级参数仓（只读；nullptr = 0 个参数，`ctx.param` 一律返回默认值）
+    const ParamStore* params = nullptr;
+    ScalingConfig scaling;  ///< 缩放配置副本（启动后不可变，按值持有）
 };
 
 /**
@@ -138,6 +142,17 @@ struct SeriesStorage {
  */
 template <class T>
 concept UserSeriesElement = std::same_as<T, double> || std::same_as<T, std::int64_t>;
+
+/**
+ * @brief 参数读取的类型约束（组件文档 §9：只运输四种标量）
+ *
+ * 与 {@link UserSeriesElement} 同风格：类型是**编译期**约束而不是运行期校验。参数值来自
+ * JSON，可选类型由 `ParamStore::get` 的四个分支界定（`int64_t` / `double` / `bool` /
+ * `std::string`）；其它类型在 `ctx.param<T>` 的签名处直接编译失败，报错指向调用点。
+ */
+template <class T>
+concept ParamValue = std::same_as<T, std::int64_t> || std::same_as<T, double> ||
+                     std::same_as<T, bool> || std::same_as<T, std::string>;
 
 /**
  * @brief 每品种一个：品种数据 + B 的 API 面合并为同一对象（组件文档 §3）
@@ -174,6 +189,26 @@ public:
 
     /// @brief 合约代码（平台唯一键）
     [[nodiscard]] const std::string& instrument_id() const noexcept { return instrument_id_; }
+
+    /**
+     * @brief 读一个策略参数（组件文档 §9；只在回调里按需读，不在热路径）
+     *
+     * 参数名/类型/默认值全由策略决定，框架只做运输：`const double fast =
+     * ctx.param<double>("fast", 10.0);`。名字不存在 → 返回 `fallback`；名字存在但类型不符 →
+     * 抛 `std::invalid_argument`（响亮失败，不静默退回默认值）。
+     *
+     * **定义在 `bar_strategy/params.h`**（不在本头）：本头是交易意图与 tick 热路径的依赖，
+     * 不应为参数读取把内置 nlohmann JSON 单头拉进每个策略 TU（ADR 0026 的隔离口径，与
+     * `execution.h` / `scaling.h` 同一条理由）。只声明、不定义，本头因此仍然只依赖标准库。
+     *
+     * @tparam T 参数类型（`std::int64_t` / `double` / `bool` / `std::string`）
+     * @param name     参数名
+     * @param fallback 名字不存在时的返回值
+     * @return 参数值或默认值
+     * @throw std::invalid_argument 名字存在但 JSON 形态与 `T` 不符
+     */
+    template <ParamValue T>
+    [[nodiscard]] T param(std::string_view name, T fallback) const;
 
     /**
      * @brief 注册一条用户序列（组件文档 §4.1「创建」；仅 `on_init` 可调用）
@@ -384,6 +419,7 @@ private:
           spec_(init.spec),
           dz_(init.dz),
           accounts_(init.accounts),
+          params_(init.params),
           scaling_(init.scaling) {}
 
     /// @brief 分配一条价格数组（`buffer_bars` 个元素；首次写入前不读，无需零初始化）
@@ -498,7 +534,19 @@ private:
     void submit_order(const AttachedAccount& account,
                       DzDirection direction,
                       Volume order_qty,
-                      double price) {
+                      double price,
+                      DzPriceType price_type = DZ_PRICE_LIMIT) {
+        // 市价单不做价格处理（价格字段由 td/SDK 忽略）：直接跳到出口，避免把 0 价送进
+        // `resolve_order_price` 被当成非法价格拒掉。
+        if (price_type == DZ_PRICE_MARKET) {
+            const DzOrderId order_id =
+                dz_place_order(dz_, account.account_id.c_str(), instrument_id_.c_str(), direction,
+                               DZ_PRICE_MARKET, 0, order_qty, DZ_POSITION_EFFECT_AUTO);
+            if (order_id < 0) [[unlikely]] {
+                report_order_failed(account, 0, order_qty, direction);
+            }
+            return;
+        }
         const PricePlan plan = resolve_order_price(price, spec_.price_tick, direction, tick_);
         if (!plan.valid) [[unlikely]] {
             report_order_rejected(account, direction, order_qty, "invalid_price");
@@ -596,10 +644,157 @@ private:
         }
     }
 
+    // ==== 生命周期命令的同步单与清零上报（#162；组件文档 §6.2/§8）====
+    //
+    // 命令层的三件事在 ctx 内完成，A 只做编排（不自己算 L_i、不自己拼单）：
+    //   1. 该账户在本品种上的目标逻辑持仓 L_i（`logical_position_for` / `..._with_scale`）；
+    //   2. 按命令引起的差量发同步单（`submit_sync_order`：对手价或市价）；
+    //   3. 逐账户清零上报（`publish_zero_all_accounts` / `publish_account_wildcard_zero`）。
+    // 与正常意图共用唯一的两个出口（`submit_order` / `publish_position`），因此命令路径不会
+    // 长出第二套价格处理或第二套上报。
+
+    /// @brief 该账户在本品种上的目标逻辑持仓 `L_i = sign(P) × f(scale_i × |P|)`
+    [[nodiscard]] LargeVolume logical_position_for(const AttachedAccount& account) const noexcept {
+        return scaling_internal::logical_position(position_.net_volume, account.scale, scaling_);
+    }
+
+    /**
+     * @brief 用显式 scale 算目标逻辑持仓（`account set` 需要同时拿到改前/改后的 `L_i`）
+     *
+     * `account set <id> scale <v>` 的差量是 `L_i(new_scale) − L_i(old_scale)`，而改表之后
+     * 旧 scale 就没了。与其让命令层在改表前把整张表拷一份，不如把「scale → L_i」这条换算
+     * 暴露成一个参数（换算口径仍只有 `scaling_internal::logical_position` 一处实现）。
+     */
+    [[nodiscard]] LargeVolume logical_position_with_scale(double scale) const noexcept {
+        return scaling_internal::logical_position(position_.net_volume, scale, scaling_);
+    }
+
+    /**
+     * @brief 发一张同步单（命令引起的那部分差量；组件文档 §6.2）
+     *
+     * 与 `fanout_positions` 的差别只有**价格从哪来**：正常单用 B 传入的限价，同步单没有限价，
+     * 只能从行情取对手价（或市价）。因此这里先经 `resolve_sync_price` 定价，再交给唯一的
+     * `submit_order` 出口（限价路径仍做 tick 对齐与涨跌停夹取）。
+     *
+     * **下单失败或未成交都不影响逻辑持仓**（§6.2 已确认口径）：命令层在写盘成功后就已按目标
+     * 值更新内存与上报，本函数只负责把差额单发出去。无可用行情（无 tick）时跳过并诊断——
+     * 逻辑持仓仍按命令更新，实际偏差交由账户级一键同步处理。
+     *
+     * @param account 目标挂靠账户
+     * @param delta   命令引起的逻辑持仓差量（正 = 买、负 = 卖；调用方保证非 0）
+     * @param market  true = 市价单（命令带 `market`），false = 对手价
+     */
+    void submit_sync_order(const AttachedAccount& account, LargeVolume delta, bool market) {
+        if (dz_ == nullptr || !live_) {
+            return;  // 虚拟台账模式 / 回放期：只记逻辑账（命令在 live 前不可达，仍防御）
+        }
+        const DzDirection direction = direction_of(delta);
+        const SyncPricePlan plan = resolve_sync_price(direction, market, tick_);
+        if (!plan.valid) [[unlikely]] {
+            report_sync_price_unavailable(account, direction);
+            return;
+        }
+        const std::optional<Volume> order_qty = order_volume(delta);
+        if (!order_qty.has_value()) [[unlikely]] {
+            report_order_volume_out_of_range(account, direction, delta);
+            return;
+        }
+        if (plan.source == SyncPriceSource::Opponent) {
+            report_sync_price(account, direction, *order_qty, plan);
+        }
+        submit_order(account, direction, *order_qty, plan.price, plan.price_type);
+    }
+
+    /// @brief 对全部挂靠账户发本品种的平仓同步单（`qty = −L_i(old)`；`instrument del sync`）
+    ///
+    /// 只发单、不改逻辑台账、不上报——`instrument del` 的上报清零在退订与 `on_destroy` 之后，
+    /// 由 {@link publish_zero_all_accounts} 做（§8 的顺序要求）。
+    void submit_sync_close_orders(bool sync, bool market) {
+        if (!sync || dz_ == nullptr || accounts_ == nullptr || !live_) {
+            return;
+        }
+        for (const AttachedAccount& account : *accounts_) {
+            const LargeVolume old_l = logical_position_for(account);
+            if (old_l == 0) {
+                continue;  // 该账户本来就没有本品种的逻辑持仓：无差量可补
+            }
+            submit_sync_order(account, -old_l, market);
+        }
+    }
+
+    /// @brief 逐账户上报本品种逻辑持仓为 0（`instrument del` 移除实例前；§8）
+    ///
+    /// `L_i == 0` 也报：这是全量对账的口径（与 `publish_all_positions` 同一条理由），目的就是
+    /// 把 UI 镜像清成 0。
+    void publish_zero_all_accounts() {
+        if (dz_ == nullptr || accounts_ == nullptr) {
+            return;
+        }
+        for (const AttachedAccount& account : *accounts_) {
+            publish_position(account, instrument_id_.c_str(), 0);
+        }
+    }
+
+    /**
+     * @brief 上报给定账户在本品种上的当前逻辑持仓（`account add` / `account set` 后只报该账户）
+     *
+     * 与 `publish_all_positions` 的区别是**只报一个账户**：账户命令只影响一个账户的 `L_i`，
+     * 重报其它账户是纯噪音（还会让 UI 误以为有变化）。
+     */
+    void publish_position_for(const AttachedAccount& account) {
+        publish_position(account, instrument_id_.c_str(), logical_position_for(account));
+    }
+
+    /**
+     * @brief 用「账户 + 空品种」通配把该账户的本策略逻辑持仓全部清零（`account del`；§8）
+     *
+     * 做成 **static**：删除账户时它已不在账户表里，逐品种遍历它不可能，而且**0 个品种时仍然
+     * 必须清零**——若挂在某个实例上，实例表为空就什么也不会发生，UI 镜像会永远停在旧值。
+     * 唯一 `dz_set_logical_position` 出口仍在 `publish_position`，本函数只把「通配清零」这次
+     * 调用收在一处。
+     *
+     * @param dz      引擎会话句柄（nullptr = 虚拟台账模式，无操作）
+     * @param account 被删除的账户（只用它的 id）
+     */
+    static void publish_account_wildcard_zero(DzContext* dz, const AttachedAccount& account) {
+        if (dz == nullptr) {
+            return;
+        }
+        // 契约 strategy §SET_LOGICAL_POSITION：account_id 有效 + instrument_id 为 "" →
+        // 该账户本策略的全部品种清零（net_volume 忽略，固定 0）。
+        if (!dz_set_logical_position(dz, account.account_id.c_str(), "", 0)) {
+            std::cerr << std::format(
+                             "logical position publish failed | account={} net_volume=0 "
+                             "scope=all_instruments error=\"{}\"",
+                             account.account_id, dz_errmsg())
+                      << '\n';
+        }
+    }
+
+    /// @brief 本品种的逻辑净持仓 P（A 的 `instrument list` / `status` 汇总用；B 用 Tier 1）
+    [[nodiscard]] LargeVolume net_position() const noexcept { return position_.net_volume; }
+
+    // ==== 参数热更新的投递状态（#162；组件文档 §9）====
+
+    /// @brief 该实例是否已经进入回调阶段（收到过至少一次 B 回调）
+    [[nodiscard]] bool callback_stage_entered() const noexcept { return callback_stage_entered_; }
+
+    /// @brief 标记「已进入回调阶段」（A 在交付第一次 B 回调之后调用）
+    void mark_callback_stage_entered() noexcept { callback_stage_entered_ = true; }
+
+    /// @brief 挂起一次参数更新通知（实例还没进入回调阶段时）
+    void mark_params_update_pending() noexcept { params_update_pending_ = true; }
+
+    /// @brief 是否有挂起的参数更新通知（进入回调阶段后由 A 合并投递）
+    [[nodiscard]] bool params_update_pending() const noexcept { return params_update_pending_; }
+
+    /// @brief 清掉挂起的参数更新通知（A 投递 `on_params_update` 之后调用）
+    void clear_params_update_pending() noexcept { params_update_pending_ = false; }
+
     /**
      * @brief 用本笔 tick 刷新快照（A 在事件入口调用；只对**已被 builder 接受**的 tick）
      *
-     * 价格夹取读它（同步单的对手价与最新价随命令层 #162 加进来）。被 builder 丢弃的 tick
+     * 价格夹取与同步单的对手价（#162）都读它。被 builder 丢弃的 tick
      * （乱序/非交易时段/量额倒退）
      * 不刷新：否则一次乱序 tick 就能把涨跌停换成过期值，后续单子会夹到错误价格。
      *
@@ -744,6 +939,13 @@ private:
                              DzDirection direction);
     /// @brief 逻辑持仓上报写帧失败
     void report_publish_failed(const std::string& account_id, LargeVolume net_l);
+    /// @brief 同步单无可用行情（无盘口也无最新价）：该品种跳过、逻辑持仓仍按命令更新
+    void report_sync_price_unavailable(const AttachedAccount& account, DzDirection direction);
+    /// @brief 同步单用了对手价（INFO：解释「为什么成交价是盘口另一侧」）
+    void report_sync_price(const AttachedAccount& account,
+                           DzDirection direction,
+                           Volume order_qty,
+                           const SyncPricePlan& plan);
 
     /**
      * @brief 推进一根 bar：回卷兜底 → 把 `bar` 写进新槽位 → 用户序列写初值/carry → 收尾
@@ -925,13 +1127,19 @@ private:
     TickSnapshot tick_;
     DzContext* dz_ = nullptr;                 ///< 引擎会话句柄（nullptr = 虚拟台账模式）
     const AccountTable* accounts_ = nullptr;  ///< A 的挂靠账户表只读指针（nullptr = 0 个账户）
-    ScalingConfig scaling_;                   ///< 缩放配置副本（启动后不可变）
+    /// 进程级参数仓只读指针（nullptr = 0 个参数；`ctx.param` 一律返回默认值）
+    const ParamStore* params_ = nullptr;
+    ScalingConfig scaling_;  ///< 缩放配置副本（启动后不可变）
     /// 当前 bar 的记账时间戳（A 在推进窗口时从 `bar::Bar` 写入；Tier 1 进出场时间来源）
     DzDate current_date_ = DZ_DATE_NA;
     DzTime current_time_ = 0;
     bool in_on_init_ = false;  ///< 是否正处在 `on_init` 内（限制 `make_series` 的调用时机）
     bool live_ = false;        ///< false = 回放/静默填窗：只做虚拟成交、不发单、不上报
     bool failed_ = false;      ///< 实例失败：此后不再接收任何 B 回调、不再受理下单意图
+    /// 已收到过至少一次 B 回调（`on_params_update` 的投递门禁：未进入则挂起，§9）
+    bool callback_stage_entered_ = false;
+    /// 有挂起的参数更新通知（进入回调阶段后由 A 合并投递一次，§9）
+    bool params_update_pending_ = false;
 };
 
 /**
@@ -1058,6 +1266,38 @@ inline void InstrumentContext::report_publish_failed(const std::string& account_
                      "logical position publish failed | instrument={} account={} net_volume={} "
                      "error=\"{}\"",
                      instrument_id_, account_id, net_l, dz_errmsg())
+              << '\n';
+}
+
+/**
+ * @brief 同步单诊断（#162；同样写 stderr、无级别，prose 区分两类事件）
+ *
+ * 两类都不是错误路径以外的噪音：
+ *   - `sync order skipped`：**该品种在该账户上没有可用行情**，同步单没发出去。命令本身成功
+ *     （写盘 + 逻辑持仓已更新），但实际仓位与逻辑口径在这一刻分叉了——这正是「一键同步」
+ *     要处理的情形，必须留证据；
+ *   - `sync order priced`：同步单用了**对手价**（而不是最新价兜底）。它是「为什么成交价是
+ *     盘口另一侧」的唯一解释来源；回退最新价与市价单不诊断（前者仍是限价单的常规取值，
+ *     后者价格与行情无关）。
+ */
+inline void InstrumentContext::report_sync_price_unavailable(const AttachedAccount& account,
+                                                             DzDirection direction) {
+    std::cerr << std::format(
+                     "sync order skipped | instrument={} account={} direction={} "
+                     "reason=no_market_data",
+                     instrument_id_, account.account_id, direction_name(direction))
+              << '\n';
+}
+
+inline void InstrumentContext::report_sync_price(const AttachedAccount& account,
+                                                 DzDirection direction,
+                                                 Volume order_qty,
+                                                 const SyncPricePlan& plan) {
+    std::cerr << std::format(
+                     "sync order priced | instrument={} account={} direction={} qty={} "
+                     "price={:.10g} source={}",
+                     instrument_id_, account.account_id, direction_name(direction), order_qty,
+                     plan.price, sync_price_source_name(plan.source))
               << '\n';
 }
 

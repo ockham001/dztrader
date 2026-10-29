@@ -18,6 +18,7 @@
  *           (void)price;
  *       }
  *       void on_bar_close(dztrader::InstrumentContext& ctx) {}
+ *       void on_params_update(dztrader::InstrumentContext& ctx) {}
  *       void on_destroy(dztrader::InstrumentContext& ctx) {}
  *   };
  *
@@ -39,6 +40,7 @@
 #include <dztrader/bar_strategy/context.h>
 #include <dztrader/bar_strategy/dependencies.h>
 #include <dztrader/bar_strategy/manager.h>
+#include <dztrader/bar_strategy/params.h>
 #include <dztrader/strategy_engine.h>
 
 #include <concepts>
@@ -55,10 +57,11 @@ namespace dztrader {
  * 进程，而这几乎总是「把策略类型写错了」的笔误，在编译期挡住比运行到线上再发现便宜。
  */
 template <typename T>
-concept BarStrategy = std::default_initializable<T> &&
-                      (manager_internal::HasOnInit<T> || manager_internal::HasOnDestroy<T> ||
-                       manager_internal::HasOnBarOpen<T> || manager_internal::HasOnBarUpdate<T> ||
-                       manager_internal::HasOnBarClose<T>);
+concept BarStrategy =
+    std::default_initializable<T> &&
+    (manager_internal::HasOnInit<T> || manager_internal::HasOnDestroy<T> ||
+     manager_internal::HasOnBarOpen<T> || manager_internal::HasOnBarUpdate<T> ||
+     manager_internal::HasOnBarClose<T> || manager_internal::HasOnParamsUpdate<T>);
 
 /// @brief 内部接缝（不进公开承诺面）：三个外部数据源的注入点（历史 bar / 小节表 / 元数据）
 namespace bar_strategy_internal {

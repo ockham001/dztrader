@@ -76,8 +76,8 @@ constexpr std::int32_t kHistoryFirstBeginSec = 21600;
 // fake B 的事件记录器（进程内全局；B 由框架默认构造，拿不到测试注入的指针）
 // ============================================================
 
-/// @brief B 的五类观测事件（与六个回调一一对应，`on_params_update` 属 #162）
-enum class EventKind : std::uint8_t { Init, BarOpen, BarUpdate, BarClose, Destroy };
+/// @brief B 的六类观测事件（与六个回调一一对应；`on_params_update` 属 #162）
+enum class EventKind : std::uint8_t { Init, BarOpen, BarUpdate, BarClose, ParamsUpdate, Destroy };
 
 /// @brief 回调名（断言失败时打印）
 const char* event_kind_name(EventKind kind) noexcept {
@@ -90,6 +90,8 @@ const char* event_kind_name(EventKind kind) noexcept {
             return "bar_update";
         case EventKind::BarClose:
             return "bar_close";
+        case EventKind::ParamsUpdate:
+            return "params_update";
         case EventKind::Destroy:
             return "destroy";
     }
@@ -144,6 +146,9 @@ struct ObservedEvent {
     double contract_profit = 0;                   ///< `ctx.contract_profit()`
     double max_position_profit = 0;               ///< `ctx.max_position_profit()`
     double max_position_loss = 0;                 ///< `ctx.max_position_loss()`
+    // #162：每次回调读一次参数（「`param set` 之后 B 重读到新值」的唯一可观测证据）
+    double param_fast = -1;  ///< `ctx.param<double>("fast", -1)`
+    std::string param_mode;  ///< `ctx.param<std::string>("mode", "<unset>")`
 };
 
 /**
@@ -493,6 +498,8 @@ void record(EventKind kind, dztrader::InstrumentContext& ctx) {
     event.contract_profit = ctx.contract_profit();
     event.max_position_profit = ctx.max_position_profit();
     event.max_position_loss = ctx.max_position_loss();
+    event.param_fast = ctx.param<double>("fast", -1.0);
+    event.param_mode = ctx.param<std::string>("mode", "<unset>");
     // on_init 里已保存的视图副本此刻是否仍与窗口一致（视图只绑一次、推进后自动看到新 bar）
     if (const auto saved = recorder().saved_view(event.instrument); saved.has_value()) {
         event.saved_view_bound = true;
@@ -608,6 +615,16 @@ struct FakeStrategy {
         if (recorder().should_throw(ctx.instrument_id(), "bar_close")) {
             throw std::runtime_error("injected on_bar_close failure");
         }
+    }
+
+    /**
+     * @brief 参数热更新通知（#162）：记录并重读参数
+     *
+     * `record()` 里的 `param_fast` 字段带着本次回调读到的参数值——这才让「通知之后 B 读到
+     * 新值」成为可观测事实，而不是只断言「回调被调了一次」。
+     */
+    void on_params_update(dztrader::InstrumentContext& ctx) {
+        record(EventKind::ParamsUpdate, ctx);
     }
 
     void on_destroy(dztrader::InstrumentContext& ctx) {
@@ -759,6 +776,7 @@ class BarStrategyFrameworkTest : public ::testing::Test {
 protected:
     void SetUp() override {
         recorder().reset();
+        reset_observations();
         home_ = dztrader::test::unique_temp_dir("dz_test_bar_framework").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
@@ -814,7 +832,8 @@ protected:
                       std::int32_t period_sec = 60,
                       const std::string& accounts_json = "[]",
                       const std::string& scaling_json = "",
-                      const std::string& warmup_json = "") {
+                      const std::string& warmup_json = "",
+                      const std::string& params_json = "{}") {
         std::string list;
         for (const std::string& instrument : instruments) {
             if (!list.empty()) {
@@ -833,7 +852,7 @@ protected:
         }
         text += scaling_json;
         text += warmup_json;
-        text += "  \"params\": {}\n}\n";
+        text += "  \"params\": " + params_json + "\n}\n";
         std::ofstream stream(config_path_);
         ASSERT_TRUE(stream.good()) << "write config failed: " << config_path_.string();
         stream << text;
@@ -860,6 +879,41 @@ protected:
         } catch (...) {
             return false;
         }
+    }
+
+    /// @brief 写一条定向本策略的 UI_INPUT 帧（#162；命令文本，无 NUL 结尾也合法）
+    ///
+    /// 与 SHUTDOWN 同一条 event 通道、同一套 `ext_inst` 布局；`DZ_FRAME_UI_INPUT` 的 payload
+    /// 是 UTF-8 文本、**不以 NUL 结尾**（长度由 `data_size` 给出），因此这里按字节数写、
+    /// 不依赖 `strlen`。
+    bool write_ui_input(std::string_view command) {
+        try {
+            dztrader::shm::MultiWriter writer =
+                dztrader::shm::MultiWriter::create(open_event_meta(), "bar_framework_test_writer");
+            const bool written =
+                writer.write_ext_inst_frame(DZ_FRAME_UI_INPUT, strategy_id_.c_str(),
+                                            reinterpret_cast<const std::byte*>(command.data()),
+                                            static_cast<std::uint32_t>(command.size()));
+            writer.notify_subscribers();
+            return written;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    /// @brief 写一条 UI_INPUT 并等它的响应出现在 OUTPUT_UI 里（超时返回 false）
+    ///
+    /// 命令是异步的（帧 → 事件泵 → `on_ui_input` → 写 OUTPUT_UI），因此必须「等结果出现」
+    /// 而不是「发完就断言」。`expected_index` 是本用例里第几条响应（从 0 起）——同一用例
+    /// 连发多条命令时用它区分先后。
+    bool run_command(std::string_view command, std::size_t expected_index = 0) {
+        if (!write_ui_input(command)) {
+            return false;
+        }
+        return wait_until([this, expected_index] {
+            drain_probe();  // 响应是异步写出的：每轮都排空，才能观察到第 N 条
+            return ui_outputs_.size() > expected_index;
+        });
     }
 
     /// @brief 写定向本策略的 SHUTDOWN 帧（无 gtest 断言：可在任意线程调用）
@@ -1086,18 +1140,35 @@ protected:
     };
 
     /**
-     * @brief 排空事件通道里由策略写出的订单帧与上报帧（须在策略停止后调用）
+     * @brief 排空事件通道里**剩余**的订单帧与上报帧（须在策略停止后调用）
      *
      * 用**独立 probe reader** 而不是 `dz_next_event`：平台内部帧（TD_ORDER_REQ /
      * SET_LOGICAL_POSITION）在 SDK 侧被拦截，不会交给策略回调（见 `trade_api_test` 的同款
      * 做法）。probe 从创建时刻起顺序读通道，因此必须在启动策略**之前**创建它，否则会漏掉
-     * 启动阶段的帧——本文件只在停止后读一次，创建点放在 `start_strategy()` 之前。
+     * 启动阶段的帧。
      *
-     * 只保留本策略写的两类帧：同一个 shm 目录里的 md/event 通道可能也有测试自身写入的帧。
+     * **不清空观测容器**：`run_command()` 需要在命令进行中反复 `drain_probe()`（OUTPUT_UI 是
+     * 异步写出的），那些帧已经被消费掉了——这里再清一次等于丢掉它们。清空发生在每个用例
+     * 开始前的 `reset_observations()`（`SetUp` 调用）。
      */
-    void collect_order_and_report_frames() {
+    void collect_order_and_report_frames() { drain_probe(); }
+
+    /// @brief 清空全部观测容器（`SetUp` 调用；probe 尚未创建，无帧可丢）
+    void reset_observations() {
         orders_.clear();
         reports_.clear();
+        ui_outputs_.clear();
+        ui_notifications_.clear();
+    }
+
+    /**
+     * @brief 把 probe 里**新增**的帧追加到观测容器（不清空）
+     *
+     * `run_command()` 需要在命令进行中反复排空：命令响应是异步写出的，`wait_until` 的判定
+     * 依据就是「`ui_outputs_` 里出现了第 N 条」。stop 之后那一轮 `collect_order_and_report_frames`
+     * 会清空重扫，因此两处不冲突。
+     */
+    void drain_probe() {
         if (!probe_.has_value()) {
             return;
         }
@@ -1121,6 +1192,16 @@ protected:
                 report.instrument_id = pos.instrument_id;
                 report.net_volume = pos.net_volume;
                 reports_.push_back(std::move(report));
+            } else if (view.type() == DZ_FRAME_OUTPUT_UI) {
+                // #162：OUTPUT_UI 是变长 ext_inst 帧（instance_id = 策略名，payload = UTF-8 文本）
+                const auto size = static_cast<std::size_t>(view.ext_inst_payload_size());
+                ui_outputs_.emplace_back(reinterpret_cast<const char*>(view.ext_inst_payload()),
+                                         size);
+            } else if (view.type() == DZ_FRAME_NOTIFY_UI) {
+                // #162：dz_notify_ui 写 JSON payload（source/level/message/timestamp/popup）
+                const auto size = static_cast<std::size_t>(view.ext_payload_size());
+                ui_notifications_.emplace_back(reinterpret_cast<const char*>(view.ext_payload()),
+                                               size);
             }
         }
     }
@@ -1158,6 +1239,9 @@ protected:
     std::optional<dztrader::shm::Reader> probe_;
     std::vector<ObservedOrder> orders_;
     std::vector<ObservedPositionReport> reports_;
+    /// #162：命令的 OUTPUT_UI 响应（文本）与 NOTIFY_UI 通知（JSON）
+    std::vector<std::string> ui_outputs_;
+    std::vector<std::string> ui_notifications_;
 
     // ---- Seam B：注入式假历史 bar 源 + 假合约元数据源（#161）----
 
@@ -3520,6 +3604,638 @@ TEST_F(BarStrategyFrameworkTest, FailedInstanceStillPublishesItsLedgerAtStartup)
     }
     EXPECT_TRUE(saw_failed_ledger) << "no position report for the failed instrument";
     EXPECT_TRUE(saw_healthy_zero) << "no position report for the healthy instrument";
+}
+
+// ============================================================
+// #162：动态管理命令与参数热更新（Seam A：UI_INPUT → OUTPUT_UI / 订单帧 / 上报帧）
+// ============================================================
+//
+// 这一组覆盖组件文档 §7「UI_INPUT 宿主命令」与 §8「动态管理」的命令面。断言只落在**外部
+// 可观察行为**上：OUTPUT_UI 的文本行、订单帧、上报帧、退出码，以及 B 观察到的回调序列。
+// 命令的**解析**（文法/参数个数/取值）由 `bar_strategy_command_test.cpp` 纯单元覆盖，这里
+// 只验证「解析结果真的驱动了 A 的状态与帧」。
+//
+// 每个用例都先静默填窗、再发第一笔回调期 tick：命令要求 `live_`（执行门禁）打开才发单，
+// 而 `live_` 只在 `enter_live()` 之后为 true——与真实运维时序一致（进程起来了才有命令）。
+
+/**
+ * **命令面完整 + 解析失败不改内存**（AC「命令面完整 / 文法错误返回单行错误且内存不变」）。
+ *
+ * 一次跑通全部 12 条命令的「成功路径」，再验证 3 条错误命令各回一行错误、且随后的 `status`
+ * 显示状态完全没变——「内存不变」用 status 的计数与退出码间接断言（B 的 ctx 不在命令层
+ * 可见，但品种数/账户数/参数数就是内存状态的摘要）。
+ */
+TEST_F(BarStrategyFrameworkTest, CommandSurfaceCoversAllTwelveCommands) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60,
+                 R"([{"account_id": "CTP001", "scale": 1.0}])");
+    fake_metadata_[std::string(kInstrumentA)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+    // rb2605 也需要元数据，否则 instrument add 会走「元数据缺失 → 命令失败」分支
+    fake_metadata_[std::string(kInstrumentB)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+    // 注入历史让 instrument add 能走「静默填窗 + 回放」而不是仅有冷启动
+    fake_history_[std::string(kInstrumentB)] = make_archive_history(4);
+
+    open_probe();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+
+    // ── 1. status ──
+    ASSERT_TRUE(run_command("status", 0)) << "status did not respond";
+    EXPECT_NE(ui_outputs_[0].find("status | instrument_count=1 account_count=1"), std::string::npos)
+        << ui_outputs_[0];
+
+    // ── 2. instrument list ──
+    ASSERT_TRUE(run_command("instrument list", 1));
+    EXPECT_NE(ui_outputs_[1].find("instrument list | count=1"), std::string::npos)
+        << ui_outputs_[1];
+    EXPECT_NE(ui_outputs_[1].find(std::string(kInstrumentA)), std::string::npos);
+
+    // ── 3. account list（含 scale 与各品种 L_i）──
+    ASSERT_TRUE(run_command("account list", 2));
+    EXPECT_NE(ui_outputs_[2].find("account list | count=1"), std::string::npos) << ui_outputs_[2];
+    EXPECT_NE(ui_outputs_[2].find("CTP001 scale=1.0"), std::string::npos) << ui_outputs_[2];
+
+    // ── 4. param list / get / set ──
+    ASSERT_TRUE(run_command("param list", 3));
+    EXPECT_NE(ui_outputs_[3].find("param list | -"), std::string::npos)
+        << "empty params must render as a single dash line; got " << ui_outputs_[3];
+
+    ASSERT_TRUE(run_command("param set fast 10", 4));
+    EXPECT_NE(ui_outputs_[4].find("param set ok | name=fast value=10"), std::string::npos)
+        << ui_outputs_[4];
+
+    ASSERT_TRUE(run_command("param get fast", 5));
+    EXPECT_NE(ui_outputs_[5].find("param fast = 10"), std::string::npos) << ui_outputs_[5];
+
+    // 非数值 token 按字符串存；`param get` 原样回显（不加引号）
+    ASSERT_TRUE(run_command("param set mode live", 6));
+    ASSERT_TRUE(run_command("param get mode", 7));
+    EXPECT_NE(ui_outputs_[7].find("param mode = live"), std::string::npos) << ui_outputs_[7];
+
+    // ── 5. instrument add（查元数据 → 订阅 → on_init → 回放 → 进入实盘）──
+    ASSERT_TRUE(run_command(std::format("instrument add {}", kInstrumentB), 8));
+    EXPECT_NE(ui_outputs_[8].find("instrument add ok"), std::string::npos) << ui_outputs_[8];
+
+    ASSERT_TRUE(run_command("instrument list", 9));
+    EXPECT_NE(ui_outputs_[9].find("instrument list | count=2"), std::string::npos)
+        << ui_outputs_[9];
+
+    // ── 6. account add / set / del ──
+    ASSERT_TRUE(run_command("account add CTP002 0.5", 10));
+    EXPECT_NE(ui_outputs_[10].find("account add ok | account=CTP002 scale=0.5"), std::string::npos)
+        << ui_outputs_[10];
+
+    ASSERT_TRUE(run_command("account set CTP002 scale 0.25", 11));
+    EXPECT_NE(ui_outputs_[11].find("account set ok | account=CTP002 scale=0.25"), std::string::npos)
+        << ui_outputs_[11];
+
+    ASSERT_TRUE(run_command("account del CTP002", 12));
+    EXPECT_NE(ui_outputs_[12].find("account del ok | account=CTP002"), std::string::npos)
+        << ui_outputs_[12];
+
+    // ── 7. instrument del ──
+    ASSERT_TRUE(run_command(std::format("instrument del {}", kInstrumentB), 13));
+    EXPECT_NE(ui_outputs_[13].find("instrument del ok"), std::string::npos) << ui_outputs_[13];
+
+    // ── 8. 解析失败三条：都只回一行错误，且状态不变 ──
+    const std::size_t status_before = ui_outputs_.size();
+    ASSERT_TRUE(run_command("instrument", status_before));
+    ASSERT_TRUE(run_command("bogus command", status_before + 1));
+    ASSERT_TRUE(run_command("account add CTP003 0", status_before + 2));
+    EXPECT_NE(ui_outputs_[status_before].find("invalid command"), std::string::npos)
+        << ui_outputs_[status_before];
+    EXPECT_NE(ui_outputs_[status_before + 1].find("invalid command"), std::string::npos)
+        << ui_outputs_[status_before + 1];
+    // 语法错误（0 scale 被解析层拒绝）→ 单行错误，账户表不变
+    EXPECT_NE(ui_outputs_[status_before + 2].find("invalid command"), std::string::npos)
+        << ui_outputs_[status_before + 2];
+
+    ASSERT_TRUE(run_command("status", status_before + 3));
+    EXPECT_NE(ui_outputs_[status_before + 3].find("instrument_count=1 account_count=1"),
+              std::string::npos)
+        << "a rejected command must not change memory; got " << ui_outputs_[status_before + 3];
+
+    // ── 9. quit：正常码 0 ──
+    ASSERT_TRUE(run_command("quit", status_before + 4));
+    EXPECT_NE(ui_outputs_[status_before + 4].find("quit ok"), std::string::npos)
+        << ui_outputs_[status_before + 4];
+    if (strategy_thread_.joinable()) {
+        strategy_thread_.join();
+    }
+    EXPECT_EQ(exit_code_, 0) << "quit must take the self-exit path with a normal exit code";
+}
+
+/**
+ * **写盘失败不发单且逻辑不变**（AC「写盘失败不发单且逻辑不变」）。
+ *
+ * 让配置文件所在目录在运行期变得不可写不现实（同一进程里已打开过），因此这里用**另一条
+ * 不可达路径**制造写盘失败：`instrument del` 删掉唯一的品种会让写回后的配置 `instruments`
+ * 为空 → `ConfigStore::commit` 的全量校验失败（§7「写回后可重新加载」）→ 命令失败、内存与
+ * 磁盘都不变。这与「磁盘满」是同一类结局（写回被拒），而可确定性触发。
+ */
+TEST_F(BarStrategyFrameworkTest, RejectedWritebackLeavesMemoryAndDiskUnchanged) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60,
+                 R"([{"account_id": "CTP001", "scale": 1.0}])");
+    fake_metadata_[std::string(kInstrumentA)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+    // 先把逻辑持仓做起来（3 手多），这样若命令错误地「先改内存再写盘」，就会留下可观测的
+    // 差异：L_i 被清成 0、上报帧多一条。
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = kTestMaxLookback,
+        .when = EventKind::BarUpdate,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(3, 5000.0); },
+    });
+
+    open_probe();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+
+    // 删掉唯一的品种：写回后 instruments 为空 → 校验失败
+    ASSERT_TRUE(run_command(std::format("instrument del {}", kInstrumentA), 0));
+    EXPECT_NE(ui_outputs_[0].find("instrument del failed"), std::string::npos) << ui_outputs_[0];
+    EXPECT_NE(ui_outputs_[0].find("stage=config_write"), std::string::npos) << ui_outputs_[0];
+
+    // 内存不变：品种仍在、bar 序号仍在（若实例被销毁，这个品种之后再发 tick 不会产生回调）
+    ASSERT_TRUE(run_command("status", 1));
+    EXPECT_NE(ui_outputs_[1].find("instrument_count=1"), std::string::npos) << ui_outputs_[1];
+
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+    // 只有建仓那笔意图自己的单（3 手买）；**没有**「删除」引起的平仓单——若命令先改内存再
+    // 写盘失败，会多一张 `-3` 的平仓单；若它先发单再写盘，同样会多一张。
+    ASSERT_EQ(orders_.size(), 1U) << "a rejected command must not place orders; got "
+                                  << orders_.size();
+    EXPECT_EQ(orders_[0].direction, DZ_DIRECTION_LONG);
+    EXPECT_EQ(orders_[0].volume, 3);
+    // 上报同样只有建仓那一条（净 3），没有清零上报
+    const auto intent_only = intent_reports(1);
+    ASSERT_EQ(intent_only.size(), 1U);
+    EXPECT_EQ(intent_only[0].net_volume, 3);
+}
+
+/**
+ * **`instrument del` 的完整顺序**（AC：「可选 sync 发 `−L_i` 差额单 → 退订 → `on_destroy` →
+ * 逐账户清零上报 → 移除实例」，以及「删除立即移除并清零上报」）。
+ *
+ * 断言三件事，顺序即 AC 的顺序：
+ *   1. `sync` 发一张 `−L_i` 的**平仓单**（方向取差量符号）；
+ *   2. `on_destroy` 被调用，且它是该品种的**最后一个** B 回调（之后再无 bar 事件）；
+ *   3. 清零上报出现在上报帧里（`net_volume == 0` 且 instrument 是该品种）。
+ */
+TEST_F(BarStrategyFrameworkTest, InstrumentDelSyncSubmitsClosingOrderThenDestroys) {
+    // 两个品种：`instrument del` 删掉最后一个品种会被配置校验拒掉（`instruments` 非空），
+    // 那是 `RejectedWritebackLeavesMemoryAndDiskUnchanged` 覆盖的另一条路径。这里要测的是
+    // **成功删除**的完整顺序，因此留一个品种撑住配置。
+    write_config({std::string(kInstrumentA), std::string(kInstrumentB)}, kTestMaxLookback,
+                 std::nullopt, 60, R"([{"account_id": "CTP001", "scale": 1.0}])");
+    fake_metadata_[std::string(kInstrumentA)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+    fake_metadata_[std::string(kInstrumentB)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = kTestMaxLookback,
+        .when = EventKind::BarUpdate,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(4, 5000.0); },
+    });
+
+    open_probe();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    // 先喂一笔 tick 让 tick 快照有效（同步单要取对手价/最新价）。给一个明确的盘口。
+    DzTick quoting = make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                               warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0));
+    quoting.bid_price[0] = 4999.5;
+    quoting.ask_price[0] = 5000.5;
+    quoting.last_price = 5000.0;
+    ASSERT_TRUE(write_tick(quoting));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+    const std::size_t callbacks_before_del = recorder().for_instrument(kInstrumentA).size();
+
+    ASSERT_TRUE(run_command(std::format("instrument del {} sync", kInstrumentA), 0));
+    EXPECT_NE(ui_outputs_[0].find("instrument del ok"), std::string::npos) << ui_outputs_[0];
+
+    // 删除之后该品种再有 tick 也不应产生回调（实例已从 map 移除）
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(1), warmed_up_price(1),
+                             warmed_up_volume(1), warmed_up_price(1) * warmed_up_volume(1))));
+    ASSERT_TRUE(wait_until(
+        [&] { return recorder().for_instrument(kInstrumentA).size() > callbacks_before_del; }));
+    // 唯一新增的回调应当是 on_destroy
+    const auto events = recorder().for_instrument(kInstrumentA);
+    ASSERT_GT(events.size(), callbacks_before_del);
+    EXPECT_EQ(events.back().kind, EventKind::Destroy)
+        << "on_destroy must be the last user callback for a deleted instrument";
+
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    // 1) sync 平仓单：卖方、4 手（L = 1.0 × 4）、对手价 = 买一（卖单吃买一）
+    ASSERT_EQ(orders_.size(), 2U) << "1 entry order + 1 sync closing order; got " << orders_.size();
+    const ObservedOrder& close_order = orders_[1];
+    EXPECT_EQ(close_order.account_id, "CTP001");
+    EXPECT_EQ(close_order.instrument_id, kInstrumentA);
+    EXPECT_EQ(close_order.direction, DZ_DIRECTION_SHORT);
+    EXPECT_EQ(close_order.volume, 4);
+    EXPECT_DOUBLE_EQ(close_order.price, 4999.5)
+        << "a sell sync order must take bid1 (the opponent price)";
+    EXPECT_EQ(close_order.effect, DZ_POSITION_EFFECT_AUTO);
+
+    // 2) 清零上报
+    bool saw_zero = false;
+    for (const ObservedPositionReport& report : reports_) {
+        if (report.account_id == "CTP001" && report.instrument_id == std::string(kInstrumentA) &&
+            report.net_volume == 0) {
+            saw_zero = true;
+        }
+    }
+    EXPECT_TRUE(saw_zero) << "instrument del must publish a zero logical position per account";
+}
+
+/**
+ * **`account del` 立刻移除并通配清零上报**（AC「删除立即移除并清零上报」/ §8）。
+ *
+ * 「通配」是契约里 `instrument_id == ""` 的语义。这里断言上报帧的 `instrument_id` 为空串——
+ * 若实现改成逐个品种上报，这条断言会失败（那意味着「删账户只清了启动时认识的品种」，
+ * 运行期新增的品种会被漏掉）。
+ */
+TEST_F(BarStrategyFrameworkTest, AccountDelRemovesImmediatelyAndPublishesWildcardZero) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60,
+                 R"([{"account_id": "CTP001", "scale": 1.0}])");
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = kTestMaxLookback,
+        .when = EventKind::BarUpdate,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(2, 5000.0); },
+    });
+
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+
+    ASSERT_TRUE(run_command("account del CTP001", 0));
+    EXPECT_NE(ui_outputs_[0].find("account del ok | account=CTP001"), std::string::npos)
+        << ui_outputs_[0];
+
+    ASSERT_TRUE(run_command("account list", 1));
+    EXPECT_NE(ui_outputs_[1].find("account list | -"), std::string::npos)
+        << "the account table must be empty right after deletion; got " << ui_outputs_[1];
+
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    bool saw_wildcard = false;
+    for (const ObservedPositionReport& report : reports_) {
+        if (report.account_id == "CTP001" && report.instrument_id.empty() &&
+            report.net_volume == 0) {
+            saw_wildcard = true;
+        }
+    }
+    EXPECT_TRUE(saw_wildcard)
+        << "account del must publish a wildcard (empty instrument_id) zero-position report";
+}
+
+/**
+ * **账户命令的 `sync` 语义**（AC「`sync` 按命令引起的逻辑持仓变化量先发差额单」/ §6.2）。
+ *
+ * 三条命令各一格，差额口径不同：
+ *   - `account add`：`qty = new_l`（新账户 `old_l = 0`）：P = 4、scale 0.5 → `L = 2`；
+ *   - `account set`：`qty = new_l − old_l`：scale 0.5 → 1.0，`L` 从 2 变 4 → 差量 2；
+ *   - `account del`：`qty = −old_l`：`L = 4` → 平 4 手。
+ *
+ * 同时覆盖「默认 nosync 不发单」：不带关键字的 `account add` 只改表、不发单。
+ */
+TEST_F(BarStrategyFrameworkTest, AccountCommandsSubmitOnlyCommandInducedDeltas) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60, "[]");
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = kTestMaxLookback,
+        .when = EventKind::BarUpdate,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(4, 5000.0); },
+    });
+
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    // 有盘口才能取对手价
+    DzTick quoting = make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                               warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0));
+    quoting.bid_price[0] = 4999.5;
+    quoting.ask_price[0] = 5000.5;
+    quoting.last_price = 5000.0;
+    ASSERT_TRUE(write_tick(quoting));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+
+    // 默认 nosync：只改表、不发单（P = 4，新账户目标 L = 2，但命令没带 sync）
+    ASSERT_TRUE(run_command("account add CTP002 0.5", 0));
+    ASSERT_TRUE(run_command("account list", 1));
+    EXPECT_NE(ui_outputs_[1].find("CTP002 scale=0.5"), std::string::npos) << ui_outputs_[1];
+    EXPECT_NE(ui_outputs_[1].find(std::string(kInstrumentA) + "=2"), std::string::npos)
+        << "L = 0.5 x 4 = 2 must be visible in account list; got " << ui_outputs_[1];
+
+    // 带 sync 的 set：0.5 → 1.0，L 2 → 4，差量买 2 手（对手价 = 卖一 5000.5）
+    ASSERT_TRUE(run_command("account set CTP002 scale 1.0 sync", 2));
+    // 带 sync 的 del：L = 4 → 平 4 手（对手价 = 买一 4999.5）
+    ASSERT_TRUE(run_command("account del CTP002 sync", 3));
+
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    // 只有两笔意图之外的订单帧：set 的差量 2 手买、del 的平仓 4 手卖
+    ASSERT_EQ(orders_.size(), 2U) << "nosync add must not order; got " << orders_.size();
+    EXPECT_EQ(orders_[0].account_id, "CTP002");
+    EXPECT_EQ(orders_[0].direction, DZ_DIRECTION_LONG);
+    EXPECT_EQ(orders_[0].volume, 2) << "set: L(1.0) - L(0.5) = 4 - 2";
+    EXPECT_DOUBLE_EQ(orders_[0].price, 5000.5) << "a buy sync order must take ask1";
+
+    EXPECT_EQ(orders_[1].account_id, "CTP002");
+    EXPECT_EQ(orders_[1].direction, DZ_DIRECTION_SHORT);
+    EXPECT_EQ(orders_[1].volume, 4) << "del: -L = -4";
+    EXPECT_DOUBLE_EQ(orders_[1].price, 4999.5) << "a sell sync order must take bid1";
+}
+
+/**
+ * **`market` 只影响同步单价格方式**（AC「`market` 只影响同步单价格方式」）。
+ *
+ * 带 `market` 时走市价单（`price_type == DZ_PRICE_MARKET`、价格 0），而不是对手价限价单。
+ * 同时验证 `market` 对 `sync` 之外的路径没有副作用：不带 `sync` 的 `market` 不发单。
+ */
+TEST_F(BarStrategyFrameworkTest, MarketKeywordSwitchesSyncOrderToMarketPriceType) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60,
+                 R"([{"account_id": "CTP001", "scale": 1.0}])");
+    recorder().add_script(ScriptedIntent{
+        .instrument = std::string(kInstrumentA),
+        .bar_index = kTestMaxLookback,
+        .when = EventKind::BarUpdate,
+        .apply = [](dztrader::InstrumentContext& ctx) { ctx.buy(3, 5000.0); },
+    });
+
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+
+    // nosync + market：market 无单可影响（语法合法、语义无操作）
+    ASSERT_TRUE(run_command("account add CTP002 0.5 nosync market", 0));
+    // sync + market：走市价单
+    ASSERT_TRUE(run_command("account add CTP003 1.0 sync market", 1));
+
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+    collect_order_and_report_frames();
+
+    // 两笔：建仓意图自己发的一笔（CTP001 限价）+ sync+market 命令的一笔（CTP003 市价）。
+    // `nosync market` 那笔不该有单——这是「market 只对同步单生效」的正面证据。
+    ASSERT_EQ(orders_.size(), 2U) << "entry order + one sync+market order; got " << orders_.size();
+    EXPECT_EQ(orders_[0].account_id, "CTP001")
+        << "the entry intent still goes to the attached account";
+    EXPECT_EQ(orders_[0].price_type, DZ_PRICE_LIMIT);
+
+    const ObservedOrder& market_order = orders_[1];
+    EXPECT_EQ(market_order.account_id, "CTP003");
+    EXPECT_EQ(market_order.price_type, DZ_PRICE_MARKET);
+    EXPECT_DOUBLE_EQ(market_order.price, 0.0) << "a market order carries no limit price";
+    EXPECT_EQ(market_order.volume, 3) << "P = 3, scale 1.0 -> L = 3";
+}
+
+/**
+ * **`param set` 通知已进入回调阶段的实例、未进入的挂起并在首根回调后合并投递**
+ * （AC「`param set`：写盘成功 → 更新 → 通知已进入回调的实例；未进入的挂起并在首根回调后
+ * 合并投递」）。
+ *
+ * 场景：A 早已进入回调期（收到过 bar 回调），B 新加进来且刚回放完毕——它也会进入回调阶段。
+ * 「挂起 + 合并投递」的正面证据在 `ParamUpdateIsDeferredUntilFirstCallback` 里（那是唯一能
+ * 真正制造「未进入回调阶段」窗口的路径）；本用例锁定「已进入 → 立刻通知，且 B 读到新值」。
+ */
+TEST_F(BarStrategyFrameworkTest, ParamSetNotifiesLiveInstancesAndTheyReread) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60, "[]");
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+
+    const std::size_t updates_before = recorder().count(kInstrumentA, EventKind::ParamsUpdate);
+    ASSERT_TRUE(run_command("param set fast 42", 0));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::ParamsUpdate, updates_before + 1));
+
+    const auto events = recorder().for_instrument(kInstrumentA);
+    const auto update = std::ranges::find_if(
+        events, [](const ObservedEvent& event) { return event.kind == EventKind::ParamsUpdate; });
+    ASSERT_NE(update, events.end());
+    EXPECT_DOUBLE_EQ(update->param_fast, 42.0)
+        << "the notification must let B reread the new parameter value";
+
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+}
+
+/**
+ * **未进入回调阶段的实例挂起参数更新、首根回调后合并投递一次**
+ * （AC「未进入的挂起并在首根回调后合并投递」）。
+ *
+ * 制造窗口的办法：`instrument add` 的实例在**回放期**收不到 B 回调（静默填窗），回放结束
+ * 后才可能收到回调。但 `instrument add` 是同步完成的，测试无法在它「回放中」发命令。
+ * 因此改用**启动期**这条路：静默填窗还没喂满时发 `param set`——此时实例已 `on_init` 但
+ * 从未收到回调（`callback_stage_entered_ == false`），通知必须挂起；随后喂满窗口并触发首根
+ * 回调，挂起的通知应该在那之后**恰好一次**。
+ *
+ * 两次 `param set` 都在挂起窗口内：合并投递的证据是「只有一次 `on_params_update`」，而
+ * 不是两次。
+ */
+TEST_F(BarStrategyFrameworkTest, ParamUpdateIsDeferredUntilFirstCallbackAndCoalesced) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60, "[]");
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));  // on_init 已发生
+
+    // 静默填窗期：实例未进入回调阶段
+    ASSERT_EQ(recorder().count(kInstrumentA, EventKind::ParamsUpdate), 0U);
+    ASSERT_TRUE(run_command("param set fast 7", 0));
+    ASSERT_TRUE(run_command("param set fast 8", 1));
+    EXPECT_EQ(recorder().count(kInstrumentA, EventKind::ParamsUpdate), 0U)
+        << "updates must be deferred while the instance has not entered the callback stage";
+
+    // 填满窗口 + 第一笔回调期 tick → 首根回调之后合并投递一次
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::ParamsUpdate, 1));
+
+    // 再喂一根：不应再有挂起的投递（合并只投一次）
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(1), warmed_up_price(1),
+                             warmed_up_volume(1), warmed_up_price(1) * warmed_up_volume(1))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 2));
+    EXPECT_EQ(recorder().count(kInstrumentA, EventKind::ParamsUpdate), 1U)
+        << "two pending updates must coalesce into a single delivery";
+
+    // 合并投递读到的是**最后一次**的值
+    const auto events = recorder().for_instrument(kInstrumentA);
+    const auto update = std::ranges::find_if(
+        events, [](const ObservedEvent& event) { return event.kind == EventKind::ParamsUpdate; });
+    ASSERT_NE(update, events.end());
+    EXPECT_DOUBLE_EQ(update->param_fast, 8.0) << "the coalesced delivery must see the latest value";
+
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+}
+
+/**
+ * **`quit` 走引擎自主退出路径（正常码 0），`on_stop` 是最后一个用户回调**
+ * （AC「`quit` 走引擎自主退出路径（正常码），`on_stop` 是最后一个用户回调」）。
+ *
+ * curl 断言：
+ *   - 进程退出码 0（不是启动失败的 1，也不是异常路径的负码）；
+ *   - 退出之后 `on_destroy` 已经跑过（`on_stop` → 逐品种 `on_destroy` 是引擎的自退出路径）；
+ *   - 退出之后不再有任何 bar 回调（写 tick 也不该有反应）。
+ */
+TEST_F(BarStrategyFrameworkTest, QuitRoutesThroughSelfExitWithNormalCode) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60, "[]");
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+
+    // `run_command` 会在等待响应时反复唤醒策略（测试进程无 master，订阅者列表为空）
+    ASSERT_TRUE(run_command("quit", 0));
+    EXPECT_NE(ui_outputs_[0].find("quit ok"), std::string::npos) << ui_outputs_[0];
+    if (strategy_thread_.joinable()) {
+        strategy_thread_.join();
+    }
+    EXPECT_EQ(exit_code_, 0) << "quit is a normal exit, not a startup failure";
+
+    const auto events = recorder().for_instrument(kInstrumentA);
+    ASSERT_FALSE(events.empty());
+    EXPECT_EQ(events.back().kind, EventKind::Destroy)
+        << "on_destroy is dispatched by the self-exit path (on_stop)";
+}
+
+/**
+ * **`instrument add` 的元数据缺失让命令失败、进程继续**（AC「查元数据（必需字段缺失则命令
+ * 失败、进程继续）」）。
+ *
+ * 与启动期的 `MissingMetadataSkipsOnlyThatInstrument` 是同一口径的运行期版本：命令回一行
+ * 错误（并推 UI 通知），已存在的品种照常工作，进程退出码仍是 0。
+ */
+TEST_F(BarStrategyFrameworkTest, InstrumentAddFailsOnMissingMetadataAndProcessContinues) {
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60, "[]");
+    // 只给 A 元数据：add B 时 Missing → 命令失败
+    fake_metadata_[std::string(kInstrumentA)] =
+        dztrader::InstrumentSpec{.exchange_id = "SHFE", .volume_multiple = 10, .price_tick = 0.5};
+    fake_history_[std::string(kInstrumentB)] = make_archive_history(4);
+
+    open_probe();
+    start_strategy_with_injected_dependencies();
+    ASSERT_TRUE(wait_for_events(1));
+    ASSERT_EQ(warm_up(kInstrumentA), 1U);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(0), warmed_up_price(0),
+                             warmed_up_volume(0), warmed_up_price(0) * warmed_up_volume(0))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+
+    ASSERT_TRUE(run_command(std::format("instrument add {}", kInstrumentB), 0));
+    EXPECT_NE(ui_outputs_[0].find("instrument add failed"), std::string::npos) << ui_outputs_[0];
+    EXPECT_NE(ui_outputs_[0].find("notify=instrument_metadata_unavailable"), std::string::npos)
+        << ui_outputs_[0];
+
+    // 进程继续：原品种照常收 tick
+    const std::size_t updates_before = recorder().count(kInstrumentA, EventKind::BarUpdate);
+    ASSERT_TRUE(
+        write_tick(make_tick(kInstrumentA, warmed_up_clock(1), warmed_up_price(1),
+                             warmed_up_volume(1), warmed_up_price(1) * warmed_up_volume(1))));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, updates_before + 1));
+    // 新账户的命令同样能正常工作（证明命令层没有卡住）
+    ASSERT_TRUE(run_command("status", 1));
+    EXPECT_NE(ui_outputs_[1].find("instrument_count=1"), std::string::npos) << ui_outputs_[1];
+
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
+
+    // 元数据缺失是关键错误：额外推了 UI 通知
+    collect_order_and_report_frames();
+    bool saw_notification = false;
+    for (const std::string& notification : ui_notifications_) {
+        if (notification.find("instrument_metadata_unavailable") != std::string::npos) {
+            saw_notification = true;
+        }
+    }
+    EXPECT_TRUE(saw_notification)
+        << "a failed instrument add must also push a UI notification; notifications="
+        << static_cast<std::size_t>(ui_notifications_.size());
+}
+
+/**
+ * **超长命令结果按 SDK 页上限截断**（AC「命令结果写 OUTPUT_UI；超长按 SDK 页上限截断」）。
+ *
+ * `param list` 是唯一能稳定造出超长结果的命令：塞进足够多/足够长的参数后，响应超过单页
+ * payload 上限。SDK 的截断在 `dz_output_ui` 内部完成（`output_limit.h`），因此这里断言的是
+ * 「截断后仍写出了一帧、且长度等于页上限」——不是「命令失败」。
+ */
+TEST_F(BarStrategyFrameworkTest, OversizedCommandOutputIsTruncatedToPageLimit) {
+    // 512 个参数 × 每行约 200 字节 ≈ 100KB；测试通道页 1MB，因此还不到上限。
+    // 用 2000 个参数（每行约 200B ≈ 400KB）仍然小于 1MB —— 改成把参数名拉长：每行 ~5KB × 400
+    // ≈ 2MB，必然超过 1MB 页上限。
+    std::string params_json = "{";
+    for (int index = 0; index < 400; ++index) {
+        if (index > 0) {
+            params_json += ", ";
+        }
+        params_json += std::format("\"p{}\": \"{}\"", index, std::string(4000, 'x'));
+    }
+    params_json += "}";
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback, std::nullopt, 60, "[]", "", "",
+                 params_json);
+
+    open_probe();
+    start_strategy();
+    ASSERT_TRUE(wait_for_events(1));
+
+    ASSERT_TRUE(run_command("param list", 0));
+    // 单页 payload 上限（测试通道 1MB 页）：输出被 SDK 截断到该上限
+    EXPECT_LT(ui_outputs_[0].size(), 2U * 1024U * 1024U)
+        << "the response must be capped by the page limit, not accumulated unbounded";
+    EXPECT_GT(ui_outputs_[0].size(), 1024U * 1024U - 4096U)
+        << "the truncated response should fill the page; got " << ui_outputs_[0].size();
+
+    stop_strategy();
+    EXPECT_EQ(exit_code_, 0);
 }
 
 }  // namespace
