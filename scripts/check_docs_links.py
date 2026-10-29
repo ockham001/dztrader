@@ -59,8 +59,10 @@ SYMBOL_ALLOWLIST = {
     "bench_relocate", "bench_series_read", "bench_tick_update", "bench_warmup_replay",
     # 示例数据/平台遥测字段（文档示例，不是本仓符号）
     "bip_buffer", "ios_in_progress", "iwlwifi_1",
-    # GitHub / DSH / issue 字段与工具名
+    # GitHub / DSH / issue 字段与工具名（含 MCP 外部工具名：AGENTS §六 引用 codegraph_explore，
+    # 它是宿主提供的工具而非本仓符号）
     "blocked_by", "node_id", "package_id", "run_in_background", "wait_agent",
+    "codegraph_explore",
     # 历史示例：review-checklist 用「已删除的 watch_path」说明漂移类 finding
     "watch_path",
 }
