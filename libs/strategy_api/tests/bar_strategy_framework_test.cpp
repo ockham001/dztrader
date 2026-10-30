@@ -648,6 +648,220 @@ struct FakeStrategy {
 static_assert(dztrader::BarStrategy<FakeStrategy>);
 
 // ============================================================
+// E2E 验收用策略：双均线 + 固定止损（#165 AC1；只经公开 API）
+// ============================================================
+//
+// 这条策略是「整条链路」的验收载体：它不碰框架私有状态，只用 `InstrumentContext` 的公开面
+// （价格序列 / `make_series` / 四个交易意图 / Tier 1 查询），因此它同时是「公开 API 够用」
+// 的正面证据。策略线程只做确定性计算与记录；gtest 断言一律留在主线程。
+
+/// @brief 快线（5 根收盘均线）周期
+constexpr std::int32_t kDualMaFastPeriod = 5;
+/// @brief 慢线（20 根收盘均线）周期
+constexpr std::int32_t kDualMaSlowPeriod = 20;
+/// @brief 固定止损距离（tick 数）：多仓 `close <= 均价 − 5 × price_tick`，空仓镜像
+constexpr std::int32_t kDualMaStopTicks = 5;
+/// @brief 测试注入的合约最小变动价位（与 Seam B 的 `InstrumentSpec.price_tick` 一致）
+///
+/// B 的公开面没有「读合约元数据」的接口（元数据只供框架做价格对齐与 Tier 1 换算），
+/// 因此策略按配置常量工作：验收用例注入 `price_tick = 1.0`，这里也取 1.0。
+constexpr double kDualMaPriceTick = 1.0;
+/// @brief 每次开仓/加仓的策略手数（验收场景的 2 手）
+constexpr dztrader::Volume kDualMaVolume = 2;
+
+/// @brief 一次意图前后各抄一份的 Tier 1 快照（#165 AC2 的精确数值断言用）
+struct Tier1Snapshot {
+    std::int32_t market_position = 0;             ///< `ctx.market_position()`
+    dztrader::LargeVolume current_contracts = 0;  ///< `ctx.current_contracts()`
+    double avg_entry_price = 0;                   ///< `ctx.avg_entry_price()`
+    std::int32_t current_entries = 0;             ///< `ctx.current_entries()`
+    dztrader::LargeVolume max_contracts = 0;      ///< `ctx.max_contracts()`
+    std::int32_t max_entries = 0;                 ///< `ctx.max_entries()`
+    double entry_price = 0;                       ///< `ctx.entry_price()`
+    double exit_price = 0;                        ///< `ctx.exit_price()`
+    std::int64_t bars_since_entry = -1;           ///< `ctx.bars_since_entry()`
+    std::int64_t bars_since_last_entry = -1;      ///< `ctx.bars_since_last_entry()`
+    std::int64_t bars_since_exit = -1;            ///< `ctx.bars_since_exit()`
+    double position_profit = 0;                   ///< `ctx.position_profit()`
+    double contract_profit = 0;                   ///< `ctx.contract_profit()`
+    double close = 0;                             ///< 意图执行时的 `ctx.close[0]`（计价现价）
+};
+
+/// @brief 抄一份当前 Tier 1（在策略线程调用；只读公开查询面）
+[[nodiscard]] Tier1Snapshot capture_tier1(dztrader::InstrumentContext& ctx) {
+    Tier1Snapshot snapshot;
+    snapshot.market_position = ctx.market_position();
+    snapshot.current_contracts = ctx.current_contracts();
+    snapshot.avg_entry_price = ctx.avg_entry_price();
+    snapshot.current_entries = ctx.current_entries();
+    snapshot.max_contracts = ctx.max_contracts();
+    snapshot.max_entries = ctx.max_entries();
+    snapshot.entry_price = ctx.entry_price();
+    snapshot.exit_price = ctx.exit_price();
+    snapshot.bars_since_entry = ctx.bars_since_entry();
+    snapshot.bars_since_last_entry = ctx.bars_since_last_entry();
+    snapshot.bars_since_exit = ctx.bars_since_exit();
+    snapshot.position_profit = ctx.position_profit();
+    snapshot.contract_profit = ctx.contract_profit();
+    if (ctx.bar_index() >= 0 && ctx.close.size() > 0) {
+        snapshot.close = ctx.close[0];
+    }
+    return snapshot;
+}
+
+/// @brief 一次测试策略意图的观测（标签 + 意图价 + 两条均线 + 前后 Tier 1）
+struct IntentObservation {
+    std::string label;            ///< `buy` / `sell_short` / `buy_to_cover` / `sell`
+    std::int64_t bar_index = -1;  ///< `ctx.bar_index()`（触发意图的 bar）
+    double price = 0;             ///< 意图传入的限价（= 当根 bar 收盘价）
+    double fast = 0;              ///< 本次回调算出的 5 根均线
+    double slow = 0;              ///< 本次回调算出的 20 根均线
+    Tier1Snapshot before;         ///< 意图执行前
+    Tier1Snapshot after;          ///< 意图执行后（虚拟成交即时生效）
+};
+
+/// @brief 进程内意图观测记录器（策略线程写、测试线程读；与 {@link Recorder} 同模式）
+///
+/// 不复用 {@link Recorder}：两者记录的数据结构不同（这里是意图 + 前后 Tier 1 快照，那边是
+/// 回调事件 + 脚本注入面），合并会把两类关注点绑在一起；记录器本身只有 30 行，独立更清晰。
+class IntentRecorder {
+public:
+    /// @brief 记录一次意图观测
+    void push(IntentObservation observation) {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        observations_.push_back(std::move(observation));
+    }
+
+    /// @brief 当前记录数（等待循环用）
+    [[nodiscard]] std::size_t size() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return observations_.size();
+    }
+
+    /// @brief 观测快照拷贝
+    [[nodiscard]] std::vector<IntentObservation> snapshot() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return observations_;
+    }
+
+    /// @brief 清空（每个用例开始前）
+    void reset() {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        observations_.clear();
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<IntentObservation> observations_;
+};
+
+/// @brief 进程内唯一意图记录器（策略与测试共用）
+IntentRecorder& intent_recorder() {
+    static IntentRecorder instance;
+    return instance;
+}
+
+/// @brief 当前 bar 的收盘均价（`[0]` 最新）；调用方保证窗口已满
+[[nodiscard]] double mean_close(dztrader::InstrumentContext& ctx, std::int32_t period) {
+    double sum = 0.0;
+    for (std::int32_t n = 0; n < period; ++n) {
+        sum += ctx.close[static_cast<std::ptrdiff_t>(n)];
+    }
+    return sum / static_cast<double>(period);
+}
+
+/// @brief 执行一次意图并记录前后 Tier 1（标签 + 意图价 + 均线 + 快照）
+template <class Action>
+void record_intent(dztrader::InstrumentContext& ctx,
+                   std::string_view label,
+                   double fast_value,
+                   double slow_value,
+                   Action&& action) {
+    IntentObservation observation;
+    observation.label = std::string(label);
+    observation.bar_index = ctx.bar_index();
+    observation.fast = fast_value;
+    observation.slow = slow_value;
+    observation.before = capture_tier1(ctx);
+    observation.price = observation.before.close;
+    action();
+    observation.after = capture_tier1(ctx);
+    intent_recorder().push(std::move(observation));
+}
+
+/**
+ * @brief 双均线 + 固定止损测试策略（#165 AC1）
+ *
+ * 状态机（确定性、逐 bar 只跑一次，全部在 `on_bar_close`）：
+ *
+ *   1. **固定止损优先**：多仓且 `close <= avg_entry_price − 5 × price_tick` → `sell(0)` 全平；
+ *      空仓且 `close >= avg_entry_price + 5 × price_tick` → `buy_to_cover(0)` 全平。命中即记
+ *      一条意图标签并返回（同一根 bar 不再做均线动作）。
+ *   2. **均线关系**：快线 > 慢线且当前不是多头 → `buy(2)`；快线 < 慢线且当前不是空头 →
+ *      `sell_short(2)`；相等不动。反向时框架把「平旧仓 + 开新仓」记成一次反手，发单侧仍是
+ *      一张差量单。
+ *
+ * 六回调全部实现：`on_init` 注册两条用户序列（5/20 均线），其余回调只记录观测（事件序断言
+ * 用），`on_bar_close` 才是决策点。
+ */
+struct DualMaStopStrategy {
+    dztrader::Series<double> fast;  ///< 5 根收盘均线（当前 bar 写在 `[0]`）
+    dztrader::Series<double> slow;  ///< 20 根收盘均线
+
+    void on_init(dztrader::InstrumentContext& ctx) {
+        fast = ctx.make_series<double>(0.0);
+        slow = ctx.make_series<double>(0.0);
+        record(EventKind::Init, ctx);
+    }
+
+    void on_bar_open(dztrader::InstrumentContext& ctx) { record(EventKind::BarOpen, ctx); }
+
+    void on_bar_update(dztrader::InstrumentContext& ctx) { record(EventKind::BarUpdate, ctx); }
+
+    void on_bar_close(dztrader::InstrumentContext& ctx) {
+        record(EventKind::BarClose, ctx);
+        if (ctx.close.size() < kDualMaSlowPeriod) {
+            return;  // 均线窗口未就绪（本验收脚本不会走到这里：回调期窗口恒为满窗）
+        }
+        const double fast_value = mean_close(ctx, kDualMaFastPeriod);
+        const double slow_value = mean_close(ctx, kDualMaSlowPeriod);
+        fast[0] = fast_value;
+        slow[0] = slow_value;
+
+        const double close_price = ctx.close[0];
+        const std::int32_t position = ctx.market_position();
+        const double stop_distance = static_cast<double>(kDualMaStopTicks) * kDualMaPriceTick;
+        // 1. 固定止损优先：命中即全平同类方向持仓并结束本 bar 的决策。
+        if (position > 0 && close_price <= ctx.avg_entry_price() - stop_distance) {
+            record_intent(ctx, "sell", fast_value, slow_value,
+                          [&ctx, close_price] { ctx.sell(0, close_price); });
+            return;
+        }
+        if (position < 0 && close_price >= ctx.avg_entry_price() + stop_distance) {
+            record_intent(ctx, "buy_to_cover", fast_value, slow_value,
+                          [&ctx, close_price] { ctx.buy_to_cover(0, close_price); });
+            return;
+        }
+        // 2. 均线关系决定持仓方向；反向时框架把「平旧仓 + 开新仓」记成一次反手。
+        if (fast_value > slow_value && position <= 0) {
+            record_intent(ctx, "buy", fast_value, slow_value,
+                          [&ctx, close_price] { ctx.buy(kDualMaVolume, close_price); });
+        } else if (fast_value < slow_value && position >= 0) {
+            record_intent(ctx, "sell_short", fast_value, slow_value,
+                          [&ctx, close_price] { ctx.sell_short(kDualMaVolume, close_price); });
+        }
+    }
+
+    void on_params_update(dztrader::InstrumentContext& ctx) {
+        record(EventKind::ParamsUpdate, ctx);
+    }
+
+    void on_destroy(dztrader::InstrumentContext& ctx) { record(EventKind::Destroy, ctx); }
+};
+
+static_assert(dztrader::BarStrategy<DualMaStopStrategy>);
+
+// ============================================================
 // 通道 helper
 // ============================================================
 
@@ -797,6 +1011,7 @@ class BarStrategyFrameworkTest : public ::testing::Test {
 protected:
     void SetUp() override {
         recorder().reset();
+        intent_recorder().reset();
         reset_observations();
         home_ = dztrader::test::unique_temp_dir("dz_test_bar_framework").string();
         std::filesystem::remove_all(home_);
@@ -959,11 +1174,15 @@ protected:
 
     // ---- 策略线程 ----
 
-    /// @brief 在线程里启动 `run_bar_strategy`（内部自行 dz_init / dz_release）
-    void start_strategy() {
+    /// @brief 在线程里启动 `run_bar_strategy<Strategy>`（内部自行 dz_init / dz_release）
+    template <class Strategy>
+    void start_strategy_as() {
         strategy_thread_ =
-            std::thread([this] { exit_code_ = dztrader::run_bar_strategy<FakeStrategy>(); });
+            std::thread([this] { exit_code_ = dztrader::run_bar_strategy<Strategy>(); });
     }
+
+    /// @brief 用既有 fake B 启动（行为不变；#165 起转调模板版本）
+    void start_strategy() { start_strategy_as<FakeStrategy>(); }
 
     /**
      * @brief 在线程里启动策略，并把 18:00 回卷时刻换到「若干秒后」（#158 定时器路径用例）
@@ -1381,14 +1600,20 @@ protected:
         return dependencies;
     }
 
-    /// @brief 在策略线程用注入依赖启动（Seam B）
-    void start_strategy_with_injected_dependencies() {
+    /// @brief 在策略线程用注入依赖启动 `run_bar_strategy_with<Strategy>`（Seam B）
+    template <class Strategy>
+    void start_strategy_as_with_injected_dependencies() {
         dztrader::bar_strategy_internal::FrameworkDependencies dependencies =
             make_injected_dependencies();
         strategy_thread_ = std::thread([this, dependencies] {
             exit_code_ =
-                dztrader::bar_strategy_internal::run_bar_strategy_with<FakeStrategy>(dependencies);
+                dztrader::bar_strategy_internal::run_bar_strategy_with<Strategy>(dependencies);
         });
+    }
+
+    /// @brief 用既有 fake B 走 Seam B 启动（行为不变；#165 起转调模板版本）
+    void start_strategy_with_injected_dependencies() {
+        start_strategy_as_with_injected_dependencies<FakeStrategy>();
     }
 
     /**
@@ -4905,6 +5130,435 @@ TEST_F(BarStrategyFrameworkTest, DegradedSessionTableKeepsAuctionPhaseFalse) {
         EXPECT_FALSE(event.is_auction)
             << "the degraded session table has no auction windows | kind="
             << event_kind_name(event.kind) << " bar_index=" << event.bar_index;
+    }
+}
+
+// ============================================================
+// #165 E2E 验收（Seam A 真实帧通道 + Seam B 注入依赖缝）：双均线 + 固定止损策略
+// ============================================================
+//
+// Seam A 指真实事件/行情通道 + 独立 writer 注入 tick；本组用例额外经 Seam B 注入假合约元数据
+// （`volume_multiple` / `price_tick`），否则 Tier 1 盈亏恒为 0、委托价不做 tick 对齐——B 的
+// 公开面没有元数据查询口（组件文档 §6.1），验收要求「Tier 1 数值」时必须由测试缝供给。
+//
+// 两条用例共用同一个测试策略 fixture：
+//   - `E2eAcceptanceDualMaStop`：1 逻辑账户 + 2 挂靠账户（1.0 / 0.5），断言事件序、指标驱动
+//     的建仓/反手/止损平仓、Tier 1 数值、订单帧、上报帧与退出码（AC2）；
+//   - `E2eAccountCommandSyncSemantics`：`account add/set/del` 的 sync/nosync 语义（AC3）。
+
+/**
+ * **双均线 + 固定止损策略的端到端验收**（#165 AC2；Seam A 真实帧通道 + Seam B 注入合约元数据）。
+ *
+ * tick 脚本（静默填窗 32 根之后）：
+ *   1. 静默填窗最后一根（bar 31）的桶内再补一笔 tick，把它的收盘价从 131 压到 108——
+ *      同一桶内的 tick 不启动新 bar（B 仍零回调），但会改写 bar 31 的 close；
+ *   2. 回调期三笔 tick（各占一个新桶）：bar 32 close=104、bar 33 close=115、bar 34 close=120。
+ *
+ * 由此驱动三条路径：
+ *   - close(bar 31)：快线 124.4 > 慢线 120.35 → `buy(2)` 建多（均价 108）；
+ *   - close(bar 32)：快线 119.8 < 慢线 119.95 → `sell_short(2)` 反手（P +2 → −2，一张差量单）；
+ *   - close(bar 33)：空头均价 104，115 ≥ 104 + 5×1.0 → `buy_to_cover(0)` 固定止损全平。
+ *
+ * 断言口径全部落在外部可观察行为上：B 的回调事件序、Tier 1 查询值、订单帧、上报帧、退出码。
+ */
+TEST_F(BarStrategyFrameworkTest, E2eAcceptanceDualMaStop) {
+    // 验收场景：1 个逻辑账户 + 2 个挂靠账户（scale 1.0 / 0.5）。
+    write_config(
+        {std::string(kInstrumentA)}, kTestMaxLookback,
+        /*reserve_bars=*/std::nullopt, /*period_sec=*/60,
+        /*accounts_json=*/
+        R"([{"account_id": "CTP001", "scale": 1.0}, {"account_id": "CTP002", "scale": 0.5}])");
+    // Seam B 注入假合约元数据：Tier 1 盈亏按 ×10 乘数、委托价按 1.0 的最小变动价位对齐。
+    // 历史留空（`fake_history_` 不填）→ 冷启动 live，静默填窗由 `warm_up` 的 tick 补足。
+    fake_metadata_[std::string(kInstrumentA)] = dztrader::InstrumentSpec{
+        .exchange_id = "SHFE", .volume_multiple = 10.0, .price_tick = kDualMaPriceTick};
+
+    open_probe();
+    start_strategy_as_with_injected_dependencies<DualMaStopStrategy>();
+    ASSERT_TRUE(wait_for_events(1)) << "on_init not observed";
+    ASSERT_EQ(warm_up(kInstrumentA), 1U) << "no callback may fire before the window is full";
+    EXPECT_EQ(recorder().count(kInstrumentA, EventKind::BarClose), 0U)
+        << "the silent fill window must not deliver callbacks";
+
+    constexpr double kEntryPrice = 108.0;
+    constexpr double kReversalPrice = 104.0;
+    constexpr double kStopClosePrice = 115.0;
+    constexpr std::int32_t kCallbackTicks = 3;
+    constexpr double kCallbackPrices[kCallbackTicks] = {kReversalPrice, kStopClosePrice, 120.0};
+
+    // 累计量额承接 `warm_up` 的最后一笔（价格 131 / 累计量 320 / 累计额 131×320）；
+    // 之后每笔按「新增手数 × 本笔价」推进，满足 builder 的累计量额单调判据。
+    std::int32_t cumulative_volume = warmed_up_volume(-1);
+    double cumulative_turnover = warmed_up_price(-1) * static_cast<double>(warmed_up_volume(-1));
+
+    // bar 31 桶内补笔（tsec 1900，与 warm_up 最后一笔的 tsec 1890 同桶）
+    cumulative_volume += 5;
+    cumulative_turnover += kEntryPrice * 5.0;
+    ASSERT_TRUE(write_tick(make_tick(kInstrumentA, warmed_up_clock(-1) + 10, kEntryPrice,
+                                     cumulative_volume, cumulative_turnover)));
+
+    for (std::int32_t index = 0; index < kCallbackTicks; ++index) {
+        const std::int32_t volume = warmed_up_volume(index);
+        cumulative_turnover +=
+            kCallbackPrices[index] * static_cast<double>(volume - cumulative_volume);
+        cumulative_volume = volume;
+        ASSERT_TRUE(
+            write_tick(make_tick(kInstrumentA, warmed_up_clock(index), kCallbackPrices[index],
+                                 cumulative_volume, cumulative_turnover)));
+    }
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, kCallbackTicks));
+    stop_strategy();
+    ASSERT_EQ(exit_code_, 0) << "the strategy process must exit normally";
+    collect_order_and_report_frames();
+
+    // ── AC2-a：事件序（每笔回调期 tick 一次 close(上一根) → open(新根) → update）──
+    const std::vector<ObservedEvent> events = recorder().for_instrument(kInstrumentA);
+    ASSERT_EQ(events.size(), 1U + 3U * static_cast<std::size_t>(kCallbackTicks) + 1U)
+        << "callbacks: " << describe_events(events);
+    EXPECT_EQ(events.front().kind, EventKind::Init);
+    EXPECT_EQ(events.front().bar_index, -1);
+    EXPECT_EQ(events.back().kind, EventKind::Destroy);
+    const auto first_callback_bar = static_cast<std::int64_t>(kTestMaxLookback);  // 32
+    for (std::int32_t index = 0; index < kCallbackTicks; ++index) {
+        const std::size_t base = 1U + static_cast<std::size_t>(index) * 3U;
+        SCOPED_TRACE(::testing::Message() << "callback group index=" << index);
+        EXPECT_EQ(events[base].kind, EventKind::BarClose);
+        EXPECT_EQ(events[base].bar_index, first_callback_bar - 1 + index)
+            << "each new-bar tick first closes the previous bar";
+        EXPECT_EQ(events[base + 1].kind, EventKind::BarOpen);
+        EXPECT_EQ(events[base + 1].bar_index, first_callback_bar + index);
+        EXPECT_EQ(events[base + 2].kind, EventKind::BarUpdate);
+        EXPECT_EQ(events[base + 2].bar_index, first_callback_bar + index);
+        for (std::size_t offset = 0; offset < 3U; ++offset) {
+            EXPECT_EQ(events[base + offset].window_size, kTestMaxLookback)
+                << "callbacks only start once the window is full";
+            EXPECT_EQ(events[base + offset].instrument, std::string(kInstrumentA));
+        }
+    }
+    // 静默填窗的 bar 0–30 从来没有 close：回调期 close 数 = tick 数，首次 close 是 bar 31。
+    EXPECT_EQ(recorder().count(kInstrumentA, EventKind::BarClose),
+              static_cast<std::size_t>(kCallbackTicks));
+    std::int64_t previous_bar = -1;
+    for (const ObservedEvent& event : events) {
+        if (event.kind == EventKind::Init || event.kind == EventKind::Destroy) {
+            continue;
+        }
+        EXPECT_GE(event.bar_index, previous_bar) << "bar_index must be monotonic";
+        previous_bar = event.bar_index;
+    }
+
+    // ── AC2-b：意图序列与每次意图前后的 Tier 1 精确数值（乘数 10、2 手）──
+    const std::vector<IntentObservation> intents = intent_recorder().snapshot();
+    ASSERT_EQ(intents.size(), 3U) << "expected buy → sell_short(reversal) → buy_to_cover(stop)";
+    // 1) 建多 2 手 @108：均价 108、1 段、最大持仓 2 手、bars_since_entry = 0
+    EXPECT_EQ(intents[0].label, "buy");
+    EXPECT_EQ(intents[0].bar_index, first_callback_bar - 1);
+    EXPECT_DOUBLE_EQ(intents[0].price, kEntryPrice);
+    EXPECT_DOUBLE_EQ(intents[0].fast, 124.4);
+    EXPECT_DOUBLE_EQ(intents[0].slow, 120.35) << "fast > slow is what opens the long";
+    EXPECT_EQ(intents[0].before.market_position, 0);
+    EXPECT_EQ(intents[0].before.current_contracts, 0);
+    EXPECT_EQ(intents[0].before.max_contracts, 0);
+    EXPECT_EQ(intents[0].before.bars_since_entry, -1);
+    EXPECT_EQ(intents[0].after.market_position, 1);
+    EXPECT_EQ(intents[0].after.current_contracts, 2);
+    EXPECT_DOUBLE_EQ(intents[0].after.avg_entry_price, kEntryPrice);
+    EXPECT_EQ(intents[0].after.current_entries, 1);
+    EXPECT_EQ(intents[0].after.max_contracts, 2);
+    EXPECT_EQ(intents[0].after.max_entries, 1);
+    EXPECT_DOUBLE_EQ(intents[0].after.entry_price, kEntryPrice);
+    EXPECT_EQ(intents[0].after.bars_since_entry, 0);
+    EXPECT_EQ(intents[0].after.bars_since_exit, -1) << "no exit has happened yet";
+    EXPECT_DOUBLE_EQ(intents[0].after.position_profit, 0.0)
+        << "(108 − 108) × 2 × 10 = 0 at the entry price";
+    EXPECT_DOUBLE_EQ(intents[0].after.contract_profit, 0.0);
+
+    // 2) 反手做空 2 手 @104：P +2 → −2（一张 sell_short 意图），均价重置为 104
+    EXPECT_EQ(intents[1].label, "sell_short");
+    EXPECT_EQ(intents[1].bar_index, first_callback_bar);
+    EXPECT_DOUBLE_EQ(intents[1].price, kReversalPrice);
+    EXPECT_DOUBLE_EQ(intents[1].fast, 119.8);
+    EXPECT_DOUBLE_EQ(intents[1].slow, 119.95) << "fast < slow is what flips the position";
+    // 意图前：多 2 手均价 108，现价 104 → 总浮亏 (104−108)×2×10 = −80、每手 −40
+    EXPECT_EQ(intents[1].before.market_position, 1);
+    EXPECT_EQ(intents[1].before.current_contracts, 2);
+    EXPECT_DOUBLE_EQ(intents[1].before.avg_entry_price, kEntryPrice);
+    EXPECT_EQ(intents[1].before.bars_since_entry, 1);
+    EXPECT_DOUBLE_EQ(intents[1].before.position_profit, -80.0);
+    EXPECT_DOUBLE_EQ(intents[1].before.contract_profit, -40.0);
+    // 意图后：空 2 手均价 104，反手重置均价/段数，exit_price = 104、同 bar 内 bars_since = 0
+    EXPECT_EQ(intents[1].after.market_position, -1);
+    EXPECT_EQ(intents[1].after.current_contracts, 2);
+    EXPECT_DOUBLE_EQ(intents[1].after.avg_entry_price, kReversalPrice);
+    EXPECT_EQ(intents[1].after.current_entries, 1);
+    EXPECT_EQ(intents[1].after.max_contracts, 2);
+    EXPECT_EQ(intents[1].after.max_entries, 1);
+    EXPECT_DOUBLE_EQ(intents[1].after.entry_price, kReversalPrice);
+    EXPECT_DOUBLE_EQ(intents[1].after.exit_price, kReversalPrice);
+    EXPECT_EQ(intents[1].after.bars_since_entry, 0);
+    EXPECT_EQ(intents[1].after.bars_since_exit, 0);
+    EXPECT_DOUBLE_EQ(intents[1].after.position_profit, 0.0) << "the reversal resets the average";
+
+    // 3) 空头固定止损：close(bar 33)=115 ≥ 104 + 5×1.0 → buy_to_cover(0) 全平
+    EXPECT_EQ(intents[2].label, "buy_to_cover");
+    EXPECT_EQ(intents[2].bar_index, first_callback_bar + 1);
+    EXPECT_DOUBLE_EQ(intents[2].price, kStopClosePrice);
+    EXPECT_DOUBLE_EQ(intents[2].fast, 117.2);
+    EXPECT_DOUBLE_EQ(intents[2].slow, 120.05);
+    // 意图前：空 2 手均价 104、现价 115 → 浮亏 (115−104)×(−2)×10 = −220、每手 −110
+    EXPECT_EQ(intents[2].before.market_position, -1);
+    EXPECT_EQ(intents[2].before.current_contracts, 2);
+    EXPECT_DOUBLE_EQ(intents[2].before.avg_entry_price, kReversalPrice);
+    EXPECT_EQ(intents[2].before.bars_since_entry, 1);
+    EXPECT_DOUBLE_EQ(intents[2].before.position_profit, -220.0);
+    EXPECT_DOUBLE_EQ(intents[2].before.contract_profit, -110.0);
+    // 意图后：空仓（均价/段数/浮盈亏归零）；entry/exit 价格保留最近值、max_* 不回落
+    EXPECT_EQ(intents[2].after.market_position, 0);
+    EXPECT_EQ(intents[2].after.current_contracts, 0);
+    EXPECT_DOUBLE_EQ(intents[2].after.avg_entry_price, 0.0);
+    EXPECT_EQ(intents[2].after.current_entries, 0);
+    EXPECT_EQ(intents[2].after.max_contracts, 2) << "the historical max never falls back";
+    EXPECT_EQ(intents[2].after.max_entries, 1);
+    EXPECT_DOUBLE_EQ(intents[2].after.entry_price, kReversalPrice)
+        << "a flat ledger keeps the last entry price";
+    EXPECT_DOUBLE_EQ(intents[2].after.exit_price, kStopClosePrice);
+    EXPECT_EQ(intents[2].after.bars_since_entry, -1) << "no position, no reference bar";
+    EXPECT_EQ(intents[2].after.bars_since_exit, 0);
+    EXPECT_DOUBLE_EQ(intents[2].after.position_profit, 0.0);
+
+    // ── AC2-c：订单帧（每账户每笔意图一张差量单；反手单幅度 = |P_old| + |P_new| = 4）──
+    ASSERT_EQ(orders_.size(), 6U) << "2 accounts × 3 intents; got " << orders_.size();
+    struct ExpectedOrder {
+        const char* account;
+        DzDirection direction;
+        dztrader::Volume volume;
+        double price;
+    };
+    const ExpectedOrder expected_orders[] = {
+        {"CTP001", DZ_DIRECTION_LONG, 2, kEntryPrice},
+        {"CTP002", DZ_DIRECTION_LONG, 1, kEntryPrice},
+        // 反手：CTP001 qty = −2 −(+2) = −4；CTP002 qty = −1 −(+1) = −2——**各一张**卖单
+        {"CTP001", DZ_DIRECTION_SHORT, 4, kReversalPrice},
+        {"CTP002", DZ_DIRECTION_SHORT, 2, kReversalPrice},
+        // 止损全平：CTP001 买回 2 手；CTP002 买回 1 手
+        {"CTP001", DZ_DIRECTION_LONG, 2, kStopClosePrice},
+        {"CTP002", DZ_DIRECTION_LONG, 1, kStopClosePrice},
+    };
+    for (std::size_t index = 0; index < orders_.size(); ++index) {
+        SCOPED_TRACE(::testing::Message() << "order index=" << index);
+        const ObservedOrder& order = orders_[index];
+        EXPECT_EQ(order.account_id, expected_orders[index].account);
+        EXPECT_EQ(order.instrument_id, std::string(kInstrumentA));
+        EXPECT_EQ(order.direction, expected_orders[index].direction);
+        EXPECT_EQ(order.volume, expected_orders[index].volume);
+        EXPECT_DOUBLE_EQ(order.price, expected_orders[index].price)
+            << "the order price is the aligned intent limit price";
+        EXPECT_EQ(order.price_type, DZ_PRICE_LIMIT);
+        EXPECT_EQ(order.effect, DZ_POSITION_EFFECT_AUTO) << "every strategy intent is AUTO";
+    }
+
+    // ── AC2-d：上报帧（基线 2 条 + 每笔意图每账户一条，net_volume 精确等于 L_i）──
+    ASSERT_EQ(reports_.size(), 8U)
+        << "2 baseline (live entry, L=0) + 6 intent reports; got " << reports_.size();
+    for (std::size_t index = 0; index < 2U; ++index) {
+        EXPECT_EQ(reports_[index].instrument_id, std::string(kInstrumentA))
+            << "the live-entry baseline carries the instrument id";
+        EXPECT_EQ(reports_[index].net_volume, 0) << "cold start publishes 0 for every account";
+    }
+    EXPECT_EQ(reports_[0].account_id, "CTP001");
+    EXPECT_EQ(reports_[1].account_id, "CTP002");
+    const std::vector<ObservedPositionReport> mirror_reports = intent_reports(2);
+    ASSERT_EQ(mirror_reports.size(), 6U);
+    struct ExpectedReport {
+        const char* account;
+        dztrader::LargeVolume net_volume;
+    };
+    const ExpectedReport expected_reports[] = {
+        {"CTP001", 2}, {"CTP002", 1}, {"CTP001", -2}, {"CTP002", -1}, {"CTP001", 0}, {"CTP002", 0},
+    };
+    for (std::size_t index = 0; index < mirror_reports.size(); ++index) {
+        SCOPED_TRACE(::testing::Message() << "report index=" << index);
+        EXPECT_EQ(mirror_reports[index].account_id, expected_reports[index].account);
+        EXPECT_EQ(mirror_reports[index].instrument_id, std::string(kInstrumentA));
+        EXPECT_EQ(mirror_reports[index].net_volume, expected_reports[index].net_volume);
+    }
+
+    // ── AC2-e：正常退出，on_destroy 恰好一次 ──
+    EXPECT_EQ(recorder().count(kInstrumentA, EventKind::Destroy), 1U);
+}
+
+/**
+ * **账户命令的 sync / nosync 语义**（#165 AC3；含 add / set / del 三条命令）。
+ *
+ * 启动时 0 个挂靠账户：双均线策略先建多 2 手（只推进逻辑台账，零订单帧），随后每条命令
+ * 单独验证「改账户表 → 上报 → 可选同步单」的完整效果：
+ *
+ *   1. `account add CTP003 0.5 nosync`：L = 1，**不发单**，上报 L=1；
+ *   2. `account add CTP004 1.0 sync`：L = 2，发买 2 手（假设该账户实际持仓为 0），上报 2；
+ *   3. `account set CTP003 scale 1.0 sync`：L 1 → 2，发差量买 1 手，上报 2；
+ *   4. `account set CTP004 scale 0.5 nosync`：L 2 → 1，**不发单**，上报 1；
+ *   5. `account del CTP003 sync`：发卖 2 手（qty = −L），随后「账户 + 空品种」通配清零上报；
+ *   6. `account del CTP004 nosync`：**不发单**，只做通配清零上报。
+ *
+ * 同步单价格取对手价（买 = 卖一 105、卖 = 买一 103，均已在 1.0 的价格网格上）。
+ */
+TEST_F(BarStrategyFrameworkTest, E2eAccountCommandSyncSemantics) {
+    // 启动时 0 个挂靠账户：建仓只推进逻辑台账。
+    write_config({std::string(kInstrumentA)}, kTestMaxLookback);
+    fake_metadata_[std::string(kInstrumentA)] = dztrader::InstrumentSpec{
+        .exchange_id = "SHFE", .volume_multiple = 10.0, .price_tick = kDualMaPriceTick};
+
+    open_probe();
+    start_strategy_as_with_injected_dependencies<DualMaStopStrategy>();
+    ASSERT_TRUE(wait_for_events(1)) << "on_init not observed";
+    ASSERT_EQ(warm_up(kInstrumentA), 1U) << "no callback may fire before the window is full";
+
+    constexpr double kEntryPrice = 108.0;
+    constexpr double kBid1 = 103.0;
+    constexpr double kAsk1 = 105.0;
+
+    std::int32_t cumulative_volume = warmed_up_volume(-1);
+    double cumulative_turnover = warmed_up_price(-1) * static_cast<double>(warmed_up_volume(-1));
+    cumulative_volume += 5;
+    cumulative_turnover += kEntryPrice * 5.0;
+    ASSERT_TRUE(write_tick(make_tick(kInstrumentA, warmed_up_clock(-1) + 10, kEntryPrice,
+                                     cumulative_volume, cumulative_turnover)));
+
+    // 回调期第一笔 tick：close(bar 31) 建多 2 手；同一笔 tick 带盘口，供后续同步单取对手价。
+    std::int32_t previous_volume = cumulative_volume;
+    cumulative_volume = warmed_up_volume(0);
+    cumulative_turnover += 104.0 * static_cast<double>(cumulative_volume - previous_volume);
+    DzTick quoting =
+        make_tick(kInstrumentA, warmed_up_clock(0), 104.0, cumulative_volume, cumulative_turnover);
+    quoting.bid_price[0] = kBid1;
+    quoting.ask_price[0] = kAsk1;
+    ASSERT_TRUE(write_tick(quoting));
+    ASSERT_TRUE(wait_for_count(kInstrumentA, EventKind::BarUpdate, 1));
+
+    // P = 2（策略已建多），但没有挂靠账户 → 意图不产生任何帧。
+    collect_order_and_report_frames();
+    EXPECT_TRUE(orders_.empty()) << "an intent with no attached accounts must not trade";
+    EXPECT_TRUE(reports_.empty()) << "an intent with no attached accounts must not report";
+    ASSERT_EQ(intent_recorder().size(), 1U) << "the dual-MA entry must have fired exactly once";
+
+    // ── 1. nosync：只改表 + 上报 L=1，不发单 ──
+    ASSERT_TRUE(run_command("account add CTP003 0.5 nosync", 0));
+    EXPECT_NE(ui_outputs_[0].find("account add ok | account=CTP003 scale=0.5"), std::string::npos)
+        << ui_outputs_[0];
+    collect_order_and_report_frames();
+    EXPECT_EQ(orders_.size(), 0U) << "a nosync add must not place an order";
+    ASSERT_EQ(reports_.size(), 1U) << "a nosync add still publishes the account's L";
+    EXPECT_EQ(reports_[0].account_id, "CTP003");
+    EXPECT_EQ(reports_[0].instrument_id, std::string(kInstrumentA));
+    EXPECT_EQ(reports_[0].net_volume, 1) << "L = nearest(0.5 x 2) = 1";
+
+    ASSERT_TRUE(run_command("account list", 1));
+    EXPECT_NE(ui_outputs_[1].find("CTP003 scale=0.5 rb2601=1"), std::string::npos)
+        << ui_outputs_[1];
+
+    // ── 2. sync：新账户按 L=2 发买 2 手，上报 2 ──
+    ASSERT_TRUE(run_command("account add CTP004 1.0 sync", 2));
+    EXPECT_NE(ui_outputs_[2].find("account add ok | account=CTP004 scale=1.0"), std::string::npos)
+        << ui_outputs_[2];
+    collect_order_and_report_frames();
+    ASSERT_EQ(orders_.size(), 1U) << "a sync add places the new account's delta order";
+    ASSERT_EQ(reports_.size(), 2U);
+    EXPECT_EQ(reports_[1].account_id, "CTP004");
+    EXPECT_EQ(reports_[1].net_volume, 2) << "L = 1.0 x 2 = 2";
+
+    ASSERT_TRUE(run_command("account list", 3));
+    EXPECT_NE(ui_outputs_[3].find("CTP003 scale=0.5 rb2601=1"), std::string::npos)
+        << ui_outputs_[3];
+    EXPECT_NE(ui_outputs_[3].find("CTP004 scale=1.0 rb2601=2"), std::string::npos)
+        << ui_outputs_[3];
+
+    // ── 3. set + sync：L 1 → 2，差量买 1 手，上报 2 ──
+    ASSERT_TRUE(run_command("account set CTP003 scale 1.0 sync", 4));
+    EXPECT_NE(ui_outputs_[4].find("account set ok | account=CTP003 scale=1.0 changed=1"),
+              std::string::npos)
+        << ui_outputs_[4];
+    collect_order_and_report_frames();
+    ASSERT_EQ(orders_.size(), 2U);
+    ASSERT_EQ(reports_.size(), 3U);
+    EXPECT_EQ(reports_[2].account_id, "CTP003");
+    EXPECT_EQ(reports_[2].net_volume, 2) << "the rescaled account now targets L = 2";
+
+    // ── 4. set + nosync：L 2 → 1，不发单，上报 1 ──
+    ASSERT_TRUE(run_command("account set CTP004 scale 0.5 nosync", 5));
+    collect_order_and_report_frames();
+    EXPECT_EQ(orders_.size(), 2U) << "a nosync set must not place an order";
+    ASSERT_EQ(reports_.size(), 4U) << "a nosync set still republishes the new L";
+    EXPECT_EQ(reports_[3].account_id, "CTP004");
+    EXPECT_EQ(reports_[3].net_volume, 1) << "L = nearest(0.5 x 2) = 1";
+
+    ASSERT_TRUE(run_command("account list", 6));
+    EXPECT_NE(ui_outputs_[6].find("CTP003 scale=1.0 rb2601=2"), std::string::npos)
+        << ui_outputs_[6];
+    EXPECT_NE(ui_outputs_[6].find("CTP004 scale=0.5 rb2601=1"), std::string::npos)
+        << ui_outputs_[6];
+
+    // ── 5. del + sync：发卖 2 手（qty = −L），随后通配清零上报 ──
+    ASSERT_TRUE(run_command("account del CTP003 sync", 7));
+    EXPECT_NE(ui_outputs_[7].find("account del ok | account=CTP003"), std::string::npos)
+        << ui_outputs_[7];
+    collect_order_and_report_frames();
+    ASSERT_EQ(orders_.size(), 3U) << "a sync del closes the account's L with one order";
+    ASSERT_EQ(reports_.size(), 5U);
+    EXPECT_EQ(reports_[4].account_id, "CTP003");
+    EXPECT_TRUE(reports_[4].instrument_id.empty())
+        << "account del publishes a wildcard (empty instrument id) zero-position report";
+    EXPECT_EQ(reports_[4].net_volume, 0);
+
+    ASSERT_TRUE(run_command("account list", 8));
+    EXPECT_NE(ui_outputs_[8].find("account list | count=1"), std::string::npos) << ui_outputs_[8];
+    EXPECT_EQ(ui_outputs_[8].find("CTP003"), std::string::npos)
+        << "a deleted account must disappear immediately";
+    EXPECT_NE(ui_outputs_[8].find("CTP004 scale=0.5 rb2601=1"), std::string::npos)
+        << ui_outputs_[8];
+
+    // ── 6. del + nosync：不发单，只做通配清零上报 ──
+    ASSERT_TRUE(run_command("account del CTP004 nosync", 9));
+    collect_order_and_report_frames();
+    EXPECT_EQ(orders_.size(), 3U) << "a nosync del must not place an order";
+    ASSERT_EQ(reports_.size(), 6U);
+    EXPECT_EQ(reports_[5].account_id, "CTP004");
+    EXPECT_TRUE(reports_[5].instrument_id.empty());
+    EXPECT_EQ(reports_[5].net_volume, 0);
+
+    ASSERT_TRUE(run_command("account list", 10));
+    EXPECT_NE(ui_outputs_[10].find("account list | -"), std::string::npos) << ui_outputs_[10];
+
+    stop_strategy();
+    ASSERT_EQ(exit_code_, 0) << "the strategy process must exit normally";
+    collect_order_and_report_frames();
+
+    // 订单帧：只有 sync 命令引起的三张单（nosync 两条命令各零张）。
+    ASSERT_EQ(orders_.size(), 3U) << "only sync commands may place orders; got " << orders_.size();
+    struct ExpectedSyncOrder {
+        const char* account;
+        DzDirection direction;
+        dztrader::Volume volume;
+        double price;
+    };
+    const ExpectedSyncOrder expected_orders[] = {
+        // add CTP004 1.0 sync：买 2 手 @ 卖一
+        {"CTP004", DZ_DIRECTION_LONG, 2, kAsk1},
+        // set CTP003 scale 1.0 sync：L 1 → 2，差量买 1 手 @ 卖一
+        {"CTP003", DZ_DIRECTION_LONG, 1, kAsk1},
+        // del CTP003 sync：qty = −L = −2，卖 2 手 @ 买一
+        {"CTP003", DZ_DIRECTION_SHORT, 2, kBid1},
+    };
+    for (std::size_t index = 0; index < orders_.size(); ++index) {
+        SCOPED_TRACE(::testing::Message() << "sync order index=" << index);
+        const ObservedOrder& order = orders_[index];
+        EXPECT_EQ(order.account_id, expected_orders[index].account);
+        EXPECT_EQ(order.instrument_id, std::string(kInstrumentA));
+        EXPECT_EQ(order.direction, expected_orders[index].direction);
+        EXPECT_EQ(order.volume, expected_orders[index].volume);
+        EXPECT_DOUBLE_EQ(order.price, expected_orders[index].price)
+            << "a sync order prices at the opponent side (buy = ask1, sell = bid1)";
+        EXPECT_EQ(order.price_type, DZ_PRICE_LIMIT);
+        EXPECT_EQ(order.effect, DZ_POSITION_EFFECT_AUTO);
     }
 }
 
