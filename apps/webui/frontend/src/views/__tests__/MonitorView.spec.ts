@@ -1418,6 +1418,8 @@ describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口�
     await wrapper.find('[data-test="monitor-tab-config"]').trigger('click')
 
     expect(wrapper.find('[data-test="sysmon-config-save"]').exists()).toBe(true)
+    // #207 D1：admin 的只读摘要默认折叠，展开后仍展示生效值并可对照
+    await wrapper.find('[data-test="sysmon-config-summary-toggle"]').trigger('click')
     expect(wrapper.find('[data-test="sysmon-config-value-realtime.push_interval_sec"]').text()).toBe('5 秒')
 
     // WS 全量回推（重连快照域 / SET 成功后的 RTN）：展示跟随镜像更新

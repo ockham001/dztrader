@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import type { SysmonConfigPatch } from '@/api/sysmon'
 import { formatBytes } from '@/composables/format'
@@ -77,6 +77,15 @@ const THRESHOLDS_FIELDS: readonly NumberFieldSpec[] = [
 const canEdit = computed(() => auth.isAdmin)
 const config = computed(() => sysmon.config)
 const savePending = computed(() => sysmon.configPending)
+
+/**
+ * admin 的只读摘要是否展开（#207 D1）。
+ * admin 视图同时有「六个只读摘要卡」与「修改配置表单」，同批字段两套并存、页面也被撑长；
+ * 默认折叠摘要（表单本身就是同一批字段的可编辑版本），展开后仍可对照**当前生效值**——
+ * 保存后表单会跟随镜像重置，但用户仍可能想确认「现在到底生效的是什么」。
+ * 非 admin 没有编辑表单，摘要始终展示（只读视图不回归）。
+ */
+const showSummary = ref(false)
 
 function enabledText(enabled: boolean): string {
   return enabled ? '已启用' : '已关闭'
@@ -460,8 +469,19 @@ async function onSave(): Promise<void> {
     </div>
 
     <template v-else>
-      <!-- 生效配置展示：按契约六个段分组 -->
-      <div class="sysmon-config__grid">
+      <!-- 生效配置展示：按契约六个段分组
+           #207 D1：admin 同时有「只读摘要」和「修改配置表单」时，同批字段会出现两套。
+           因此 admin 默认折叠摘要（保留入口，展开仍可对照生效值），非 admin 只读视图不变。 -->
+      <div v-if="canEdit" class="sysmon-config__summary-toggle">
+        <button
+          class="ds-btn ds-btn--tertiary ds-btn--sm"
+          type="button"
+          data-test="sysmon-config-summary-toggle"
+          :aria-expanded="showSummary"
+          @click="showSummary = !showSummary"
+        >{{ showSummary ? '收起当前生效配置' : '查看当前生效配置（只读）' }}</button>
+      </div>
+      <div v-if="!canEdit || showSummary" class="sysmon-config__grid" data-test="sysmon-config-summary">
         <section
           v-for="section in displaySections"
           :key="section.key"
@@ -796,11 +816,28 @@ async function onSave(): Promise<void> {
   gap: var(--spacer-4) var(--spacer-16);
 }
 
+/* #207 D1：保存按钮 sticky 到视口底部。
+   滚动容器是外层的 MonitorView（.monitor-view overflow:auto），因此 sticky 相对它生效；
+   表格/表单很长时，改顶部字段后不必滚到文档末尾才能保存。
+   背景 + 上边框让浮起的按钮条与下面的字段内容分离（否则按钮会压住输入框文字）。 */
 .sysmon-config__footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: var(--spacer-12);
   flex-wrap: wrap;
+  padding: var(--spacer-12) 0;
+  background: var(--bg-base-secondary);  /* 与 .ds-card 同底色，浮起时不透出下面的字段 */
+  border-top: 1px solid var(--border-neutral-l1);
+}
+
+/* admin 的摘要折叠入口（#207 D1）：弱化，不与「修改配置」标题争层级 */
+.sysmon-config__summary-toggle {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: calc(-1 * var(--spacer-8));
 }
 
 @media (max-width: 767.98px) {
