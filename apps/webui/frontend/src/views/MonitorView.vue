@@ -24,6 +24,7 @@ import {
   groupTemperatures,
   normalizeTemperatureReadings,
 } from '@/composables/sysmonTemperature'
+import { semanticHintText } from '@/composables/sysmonSemanticHint'
 import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
 import { useAuthStore } from '@/stores/auth'
 import { useSysmonHistoryStore } from '@/stores/sysmonHistory'
@@ -179,7 +180,12 @@ const coresEmptyDesc = computed(() => cpuCoresAvailable.value
 
 const loadAvailable = computed(() => isAvailable('cpu.load_average'))
 const loadAverage = computed(() => sysmon.cpuLoadAverage)
-const loadHint = computed(() => sysmon.semanticHint('cpu.load_average'))
+const loadHintRaw = computed(() => sysmon.semanticHint('cpu.load_average'))
+// 语义提示按稳定 key 映射中文（#207 B2）；发送方原文保留在 tooltip 里可对照
+const loadHint = computed(() => {
+  const raw = loadHintRaw.value
+  return raw === '' ? null : { text: semanticHintText('cpu.load_average', raw), raw }
+})
 const loadEmptyDesc = computed(() => loadAvailable.value ? '当前快照未提供负载数据' : unavailableDesc('cpu.load_average'))
 // 口径由发送方 semantic 字段承载：processor_queue 只展示单值，不与 load average 同轴比较；
 // 契约外的未知 semantic 按 1/5/15 三项数值展示（不与其他口径做同轴比较）。
@@ -249,7 +255,12 @@ const shmDir = computed(() => sysmon.shmDirInfo)
 // 逐项显示「不可用」，绝不显示 0。
 const diskIoAvailable = computed(() => isAvailable('disk_io'))
 const diskIo = computed(() => sysmon.diskIo)
-const diskIoHint = computed(() => sysmon.semanticHint('disk_io'))
+const diskIoHintRaw = computed(() => sysmon.semanticHint('disk_io'))
+// 语义提示按稳定 key 映射中文（#207 B2）；发送方原文保留在 tooltip 里可对照
+const diskIoHint = computed(() => {
+  const raw = diskIoHintRaw.value
+  return raw === '' ? null : { text: semanticHintText('disk_io', raw), raw }
+})
 // 磁盘性能计数器最常见的不可用原因（Windows 非管理员 / 计数器未开启）给出可操作文案；
 // 其余 reason 走既有 unavailableDesc。
 const diskIoUnavailableDesc = computed(() => {
@@ -558,7 +569,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 data-test="monitor-sparkline-load"
                 @open="openHistory('cpu.load_average.one')"
               />
-              <p v-if="loadHint" class="monitor-view__hint" data-test="monitor-load-hint">语义提示：{{ loadHint }}</p>
+              <p v-if="loadHint" class="monitor-view__hint" data-test="monitor-load-hint" :title="loadHint.raw">语义提示：{{ loadHint.text }}</p>
             </template>
             <div v-else class="ds-empty monitor-view__empty" data-test="monitor-load-unavailable">
               <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
@@ -978,7 +989,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
             <div class="ds-empty__desc">当前快照未提供磁盘 I/O 数据</div>
           </div>
           <!-- 语义提示（如 Windows 计数器口径说明）：非空时展示，参考系统负载 hint 的做法 -->
-          <p v-if="diskIoHint" class="monitor-view__hint" data-test="monitor-disk-io-hint">语义提示：{{ diskIoHint }}</p>
+          <p v-if="diskIoHint" class="monitor-view__hint" data-test="monitor-disk-io-hint" :title="diskIoHint.raw">语义提示：{{ diskIoHint.text }}</p>
         </template>
         <div v-else class="ds-empty monitor-view__empty" data-test="monitor-disk-io-unavailable">
           <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
