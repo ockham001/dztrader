@@ -146,9 +146,9 @@ function openRemoveUserModal(u: UserView): void {
 }
 
 function closeRemoveUserModal(): void {
+  if (removeUserSubmitting.value) return  // 请求进行中不允许关闭: 失败时必须保留 Modal
   removeUserModalOpen.value = false
   removeUserTarget.value = null
-  removeUserSubmitting.value = false
 }
 
 async function confirmRemoveUser(): Promise<void> {
@@ -162,6 +162,7 @@ async function confirmRemoveUser(): Promise<void> {
     showToast(store.error ?? '删除用户失败', 'error')
     return
   }
+  store.clearError()
   closeRemoveUserModal()
   showToast('用户已删除', 'success')
 }
@@ -1025,7 +1026,7 @@ onUnmounted(() => {
         </div>
       </div>
       <template #footer>
-        <button class="ds-btn ds-btn--secondary" type="button" @click="closeRemoveUserModal">取消</button>
+        <button class="ds-btn ds-btn--secondary" type="button" :disabled="removeUserSubmitting" @click="closeRemoveUserModal">取消</button>
         <button
           class="ds-btn ds-btn--danger"
           type="button"

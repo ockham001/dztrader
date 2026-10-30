@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { nextTick } from 'vue'
-import { mount, flushPromises } from '@vue/test-utils'
+import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import CtpCard from '../CtpCard.vue'
 import { useMarketSourcesStore } from '@/stores/marketSources'
@@ -202,83 +202,108 @@ describe('CtpCard 删除行情源二次确认（#204）', () => {
     setActivePinia(createPinia())
   })
 
+  function mountCard(): { src: ReturnType<typeof sourceWith>, w: VueWrapper } {
+    const src = sourceWith([], null)
+    const w = mount(CtpCard, { props: { source: src }, global: { stubs } })
+    return { src, w }
+  }
+
+  async function openDeleteModal(w: VueWrapper): Promise<void> {
+    await w.findAll('button').find(b => b.text() === '删除此行情源')!.trigger('click')
+  }
+
   it('点击「删除此行情源」先弹确认, 取消后不发删除请求且无状态变化', async () => {
     const store = useMarketSourcesStore()
     const spy = vi.spyOn(store, 'removeSource').mockResolvedValue()
-    const src = sourceWith([], null)
-    const w = mount(CtpCard, { props: { source: src }, global: { stubs } })
+    const { w } = mountCard()
     await nextTick()
 
-    await w.findAll('button').find(b => b.text() === '删除此行情源')!.trigger('click')
+    await openDeleteModal(w)
     expect(spy).not.toHaveBeenCalled()
-    expect(w.text()).toContain('确认删除行情源')
-    expect(w.text()).toContain('CTP')  // 确认文案写明源名
+    // 断言限定在 Modal 内：卡片 header 也渲染 CTP / source_name, 用全量 w.text() 无法发现 Modal 漏源名
+    const modal = w.find('.modal-stub')
+    expect(modal.exists()).toBe(true)
+    expect(modal.text()).toContain('确认删除行情源')
+    expect(modal.text()).toContain('CTP')
+    expect(modal.text()).toContain('从自动启动配置中移除')
+    expect(modal.text()).toContain('不可撤销')
 
     await w.findAll('button').find(b => b.text() === '取消')!.trigger('click')
     expect(spy).not.toHaveBeenCalled()
-    expect(w.text()).not.toContain('确认删除行情源')
+    expect(w.find('.modal-stub').exists()).toBe(false)
   })
 
-  it('确认删除后下发 removeSource 并关闭 Modal', async () => {
+  it('确认删除后下发 removeSource 并关闭 Modal（确认按钮为 danger）', async () => {
     const store = useMarketSourcesStore()
     const spy = vi.spyOn(store, 'removeSource').mockResolvedValue()
-    const src = sourceWith([], null)
-    const w = mount(CtpCard, { props: { source: src }, global: { stubs } })
+    const { w } = mountCard()
     await nextTick()
 
-    await w.findAll('button').find(b => b.text() === '删除此行情源')!.trigger('click')
-    await w.findAll('button').find(b => b.text() === '删除')!.trigger('click')
+    await openDeleteModal(w)
+    const confirm = w.findAll('button').find(b => b.text() === '删除')!
+    expect(confirm.classes()).toContain('ds-btn--danger')
+    await confirm.trigger('click')
     await flushPromises()
 
     expect(spy).toHaveBeenCalledWith(1)
-    expect(w.text()).not.toContain('确认删除行情源')
+    expect(w.find('.modal-stub').exists()).toBe(false)
   })
 
   it('运行中的行情源在确认文案中注明「当前运行中，将先停止进程」', async () => {
-    const src = sourceWith([], null)  // process_state: 'Running'
+    const { w } = mountCard()  // sourceWith 默认 process_state: 'Running'
+    await nextTick()
+
+    await openDeleteModal(w)
+    expect(w.find('.modal-stub').text()).toContain('当前运行中，将先停止进程')
+  })
+
+  it('非运行中的行情源不显示「当前运行中」提示', async () => {
+    const src = { ...sourceWith([], null), process_state: 'Stopped' as const }
     const w = mount(CtpCard, { props: { source: src }, global: { stubs } })
     await nextTick()
 
-    await w.findAll('button').find(b => b.text() === '删除此行情源')!.trigger('click')
-    expect(w.text()).toContain('当前运行中，将先停止进程')
+    await openDeleteModal(w)
+    expect(w.find('.modal-stub').exists()).toBe(true)
+    expect(w.find('.modal-stub').text()).not.toContain('当前运行中')
   })
 
   it('删除失败保持 Modal 打开并可重试', async () => {
     const store = useMarketSourcesStore()
     const spy = vi.spyOn(store, 'removeSource').mockRejectedValue(new Error('remove market source failed'))
-    const src = sourceWith([], null)
-    const w = mount(CtpCard, { props: { source: src }, global: { stubs } })
+    const { w } = mountCard()
     await nextTick()
 
-    await w.findAll('button').find(b => b.text() === '删除此行情源')!.trigger('click')
+    await openDeleteModal(w)
     await w.findAll('button').find(b => b.text() === '删除')!.trigger('click')
     await flushPromises()
 
     expect(spy).toHaveBeenCalledTimes(1)
-    expect(w.text()).toContain('确认删除行情源')  // 失败保留 Modal
+    // 失败反馈：Modal 保留（错误 toast 由 MarketSourcesView 的 store.error watch 承载，见该 spec）
+    expect(w.find('.modal-stub').exists()).toBe(true)
     const confirm = w.findAll('button').find(b => b.text() === '删除')!
     expect(confirm.attributes('disabled')).toBeUndefined()  // 可重试
   })
 
-  it('删除请求进行中确认按钮禁用并显示删除中', async () => {
+  it('删除请求进行中确认/取消按钮禁用并显示删除中', async () => {
     const store = useMarketSourcesStore()
     let resolveRemove!: () => void
     vi.spyOn(store, 'removeSource').mockImplementation(
       () => new Promise<void>((resolve) => { resolveRemove = resolve }),
     )
-    const src = sourceWith([], null)
-    const w = mount(CtpCard, { props: { source: src }, global: { stubs } })
+    const { w } = mountCard()
     await nextTick()
 
-    await w.findAll('button').find(b => b.text() === '删除此行情源')!.trigger('click')
+    await openDeleteModal(w)
     await w.findAll('button').find(b => b.text() === '删除')!.trigger('click')
     await nextTick()
 
     const pending = w.findAll('button').find(b => b.text() === '删除中…')!
     expect(pending.attributes('disabled')).toBeDefined()
+    const cancel = w.findAll('button').find(b => b.text() === '取消')!
+    expect(cancel.attributes('disabled')).toBeDefined()
 
     resolveRemove()
     await flushPromises()
-    expect(w.text()).not.toContain('确认删除行情源')
+    expect(w.find('.modal-stub').exists()).toBe(false)
   })
 })

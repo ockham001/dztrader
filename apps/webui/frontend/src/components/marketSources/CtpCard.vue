@@ -191,30 +191,31 @@ async function confirmAddPreload(): Promise<void> {
 // ===== 删除行情源二次确认（#204）=====
 // remove 语义含 Stop 且会从启动配置持久移除网关段、不可撤销, 必须二次确认。
 // 确认失败（HTTP 层）保持 Modal 打开, 错误经 store.error → MarketSourcesView toast。
-const deleteModalOpen = ref(false)
-const deleteSubmitting = ref(false)
+const sourceDeleteModalOpen = ref(false)
+const sourceDeleteSubmitting = ref(false)
 
-function openDeleteModal(): void {
+function openSourceDeleteModal(): void {
   if (src.value.stopPending) return  // pending 期间不重入
-  deleteSubmitting.value = false
-  deleteModalOpen.value = true
+  sourceDeleteSubmitting.value = false
+  sourceDeleteModalOpen.value = true
 }
 
-function closeDeleteModal(): void {
-  deleteModalOpen.value = false
-  deleteSubmitting.value = false
+function closeSourceDeleteModal(): void {
+  if (sourceDeleteSubmitting.value) return  // 请求进行中不允许关闭: 失败时必须保留 Modal
+  sourceDeleteModalOpen.value = false
 }
 
 async function confirmDeleteSource(): Promise<void> {
-  if (deleteSubmitting.value) return  // 防重入
-  deleteSubmitting.value = true
+  if (sourceDeleteSubmitting.value) return  // 防重入
+  sourceDeleteSubmitting.value = true
   try {
     await store.removeSource(src.value.id)
     // HTTP 成功: 卡片由 Remove RTN ack 移除, 这里先关 Modal（pending 态由卡片按钮承载）
-    closeDeleteModal()
+    sourceDeleteSubmitting.value = false
+    closeSourceDeleteModal()
   } catch {
     // 错误已由 store.error → MarketSourcesView toast; 保持 Modal 打开让用户重试
-    deleteSubmitting.value = false
+    sourceDeleteSubmitting.value = false
   }
 }
 
@@ -433,7 +434,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
         :style="{ width: '100%', marginTop: 'var(--spacer-16)', justifyContent: 'center' }"
         type="button"
         :disabled="src.stopPending"
-        @click="openDeleteModal"
+        @click="openSourceDeleteModal"
       >
         <span v-if="src.stopPending" class="ds-btn__spinner"></span>
         {{ src.stopPending ? '停止中…' : '删除此行情源' }}
@@ -512,7 +513,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
       </template>
     </Modal>
     <!-- ===== Delete Source Confirmation Modal (#204: 二次确认) ===== -->
-    <Modal :open="deleteModalOpen" title="确认删除行情源" @close="closeDeleteModal">
+    <Modal :open="sourceDeleteModalOpen" title="确认删除行情源" @close="closeSourceDeleteModal">
       <div :style="{ color: 'var(--text-default)' }">
         确认删除行情源 <code class="mono" :style="{ fontWeight: 500 }">{{ src.display_name || src.source_name }}</code> 吗？
         <div :style="{ marginTop: 'var(--spacer-8)', color: 'var(--text-tertiary)', fontSize: 'var(--body-sm-font-size)' }">
@@ -521,15 +522,15 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
         </div>
       </div>
       <template #footer>
-        <button class="ds-btn ds-btn--secondary" type="button" @click="closeDeleteModal">取消</button>
+        <button class="ds-btn ds-btn--secondary" type="button" :disabled="sourceDeleteSubmitting" @click="closeSourceDeleteModal">取消</button>
         <button
           class="ds-btn ds-btn--danger"
           type="button"
-          :disabled="deleteSubmitting || src.removePending"
+          :disabled="sourceDeleteSubmitting || src.removePending"
           @click="confirmDeleteSource"
         >
-          <span v-if="deleteSubmitting" class="ds-btn__spinner"></span>
-          {{ deleteSubmitting ? '删除中…' : '删除' }}
+          <span v-if="sourceDeleteSubmitting" class="ds-btn__spinner"></span>
+          {{ sourceDeleteSubmitting ? '删除中…' : '删除' }}
         </button>
       </template>
     </Modal>
