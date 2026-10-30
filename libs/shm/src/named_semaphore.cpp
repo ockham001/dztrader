@@ -60,7 +60,7 @@ public:
         if (result == WAIT_TIMEOUT) {
             return false;
         }
-        LastError::set(DZ_EC_SHM_SEM_WAIT_FAILED, "WaitForSingleObject failed: err={}",
+        LastError::set(DZ_EC_SHM_SEM_WAIT_FAILED, "semaphore wait failed | error={}",
                        GetLastError());
         return false;
     }

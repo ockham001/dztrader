@@ -64,9 +64,11 @@ SYMBOL_ALLOWLIST = {
     # 示例数据/平台遥测字段（文档示例，不是本仓符号）
     "bip_buffer", "ios_in_progress", "iwlwifi_1",
     # GitHub / DSH / issue 字段与工具名（含 MCP 外部工具名：AGENTS §六 引用 codegraph_explore，
-    # 它是宿主提供的工具而非本仓符号）
+    # 它是宿主提供的工具而非本仓符号）。spawn_teammate / send_message / job_output 同理：
+    # ticket-closeout §1 的审查派工流程必须按名字引用它们（#213）。
     "blocked_by", "node_id", "package_id", "run_in_background", "wait_agent",
-    "codegraph_explore",
+    "codegraph_explore", "spawn_teammate", "send_message", "job_output", "interrupt_agent",
+    "team_task_create", "team_task_update", "list_agents",
     # 历史示例：review-checklist §2.3 用「已删除的 watch_path」说明漂移类 finding，
     # 该引用是有意保留的反例，不是当前符号
     "watch_path",
@@ -79,6 +81,8 @@ def is_active_doc(rel):
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
 NUMBERED_HEADING_RE = re.compile(r"^#{2,6}\s+(\d+(?:\.\d+)*)[.．、]?\s")
+# 表格首列的编号条目（`| 1.3 | ... |`）也是可引用的小节目标，见 numbered_items()。
+NUMBERED_ROW_RE = re.compile(r"^\|\s*(\d+(?:\.\d+)*)\s*\|")
 SKIP_PREFIXES = ("http://", "https://", "mailto:")
 # 契约内 §N 引用的三种实际写法（《帧契约：标题》§N / 契约 <文件名> §N / 总则 §N）；
 # 裸 §N 按「本契约编号标题或总则编号标题」校验。见 docs/frame_contracts/general.md §11.2。
@@ -126,6 +130,28 @@ def numbered_headings(text):
         if m:
             nums.add(m.group(1))
     return nums
+
+
+def numbered_items(text):
+    """Section numbers declared by numbered table rows, e.g. ``| 1.3 | ... |`` -> {"1.3"}.
+
+    Some active docs number their criteria as table rows rather than headings
+    (``docs/unit-test-standard.md`` writes ``§1.3`` for the third row of section 1).
+    Those rows are section targets just as headings are, so the reference check below
+    must accept them -- otherwise every legit ``§N.M`` citation in such a doc is a
+    false positive.
+    """
+    nums = set()
+    for line in text.splitlines():
+        m = NUMBERED_ROW_RE.match(line)
+        if m:
+            nums.add(m.group(1))
+    return nums
+
+
+def declared_sections(text):
+    """Every section number a doc makes referenceable: numbered headings + numbered rows."""
+    return numbered_headings(text) | numbered_items(text)
 
 
 def contract_index(root):
@@ -193,6 +219,60 @@ def check_contract_refs(files, root, idx):
     return errors
 
 
+def check_active_doc_sections(files, root):
+    """Validate bare ``§N`` references in active docs that number their own sections.
+
+    ``check_contract_refs`` covers the frame contracts, where a bare ``§N`` means "a
+    section of this contract, or of general.md". Every other active doc that numbers its
+    sections uses ``§N`` the same way for *itself* -- and nothing checked those, so a
+    rewrite that moved section 11's content to 13 left ``测试见 §13`` pointing at the
+    wrong section (#163 shipped exactly that, caught only by a human reviewer; #213).
+
+    Rules, deliberately narrow to avoid false positives on prose:
+      - only active docs that declare at least one numbered section are checked; a doc
+        without numbered sections can only be citing someone else, so it is skipped;
+      - a reference resolves against the doc's own numbers *or* general.md's (the
+        ``general.md §11.3`` idiom used from closeout/checklist/AGENTS);
+      - the four explicit contract-reference forms are masked first, so
+        ``《帧契约：X》§N`` / ``契约 x §N`` / ``总则 §N`` stay with their own checker;
+      - ``§N`` behind 设计/方案/计划 points at a local archive spec that is not in
+        version control, so it cannot be verified and is skipped.
+    """
+    general_rel = CONTRACT_DIR + "general.md"
+    general_nums = set()
+    general_path = os.path.join(root, general_rel)
+    if os.path.isfile(general_path):
+        with open(general_path, encoding="utf-8", errors="replace") as fh:
+            general_nums = declared_sections("\n".join(strip_code_fences(fh.read())))
+
+    errors = []
+    for rel in files:
+        if not is_active_doc(rel):
+            continue
+        if rel.startswith(CONTRACT_DIR) or rel.startswith(LOCAL_ARCHIVES):
+            continue  # 契约内引用归 check_contract_refs；归档文档不在版本控制内
+        with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
+            text = "\n".join(strip_code_fences(fh.read()))
+        own_nums = declared_sections(text)
+        if not own_nums:
+            continue  # 本文不编号小节 → 只可能在引用别人的小节，不归本检查
+        masked = list(text)
+        for _kind, pattern in CONTRACT_REF_RES:
+            for m in pattern.finditer("".join(masked)):
+                masked[m.start():m.end()] = " " * (m.end() - m.start())
+        bare_text = "".join(masked)
+        for m in BARE_SECTION_RE.finditer(bare_text):
+            num = m.group(1)
+            if num in own_nums or num in general_nums:
+                continue
+            prefix = bare_text[max(0, m.start() - 4):m.start()].rstrip()
+            if prefix.endswith(EXTERNAL_SECTION_PREFIXES):
+                continue  # 指向本地归档设计文档，无法验证
+            errors.append("%s:%d: missing section -> §%s"
+                          % (rel, bare_text.count("\n", 0, m.start()) + 1, num))
+    return errors
+
+
 def tracked_repo_paths(root):
     """All tracked file paths, for backticked-path drift detection."""
     out = subprocess.run(["git", "ls-files", "-z"], cwd=root,
@@ -208,6 +288,13 @@ def check_backticked_paths(files, root, tracked):
     bare backticked path is not a link, so nothing above catches it. Only repo-shaped
     paths (starting with a known top-level dir) are checked, which keeps prose such as
     `config.json` out.
+
+    A candidate counts as existing when it is tracked **or** present on disk. The disk
+    check is not redundant: during a ticket the file a doc just started naming is
+    usually still untracked, and a tracker-only rule reported it as "does not exist"
+    -- which is how #165's doc calibration ended up monkeypatching this checker to prove
+    the doc was fine (issue #213). On disk also still catches the drift this rule exists
+    for: a renamed/deleted file is gone from both.
     """
     errors = []
     for rel in files:
@@ -226,6 +313,8 @@ def check_backticked_paths(files, root, tracked):
                     continue
                 if any(t.endswith("/" + candidate) for t in tracked):
                     continue
+                if os.path.isfile(os.path.join(root, candidate)):
+                    continue  # untracked but already on disk (in-ticket addition)
                 errors.append(f"{rel}:{lineno}: backticked path does not exist -> {tok}")
     return errors
 
@@ -316,7 +405,46 @@ def selftest():
         if len(path_errors) != 1 or "missing.h" not in path_errors[0]:
             print("selftest FAIL: expected exactly one missing path error, got:", path_errors)
             return 1
-    print("selftest OK: symbol check detects missing symbols; path check regression covered")
+
+        # untracked-but-on-disk 回归用例（#213）：票内新增、还没 git add 的文件必须通过。
+        # 反向仍要成立：既不在 tracked、也不在磁盘的路径照样被报（上一段已覆盖）。
+        with open(os.path.join(tmp, "libs", "demo", "fresh.cpp"), "w", encoding="utf-8") as fh:
+            fh.write("// in-ticket addition, not committed yet\n")
+        with open(doc, "w", encoding="utf-8") as fh:
+            fh.write("`libs/demo/fresh.cpp` 未跟踪但已落盘 → 必须通过。\n")
+        fresh_errors = check_backticked_paths(["docs/components/sample.md"], tmp,
+                                              {"libs/demo/sample.h"})
+        if fresh_errors:
+            print("selftest FAIL: untracked-but-present path must pass, got:", fresh_errors)
+            return 1
+
+        # 小节引用检查（#213）：组件文档的裸 §N 必须指向本文件声明的编号小节；
+        # 表格行编号（| 1.3 |）算声明；契约引用形式与「设计 §N」豁免。
+        os.makedirs(os.path.join(tmp, CONTRACT_DIR), exist_ok=True)
+        with open(os.path.join(tmp, CONTRACT_DIR, "general.md"), "w", encoding="utf-8") as fh:
+            fh.write("## 11. 规则\n\n### 11.3 变更 checklist\n")
+        with open(doc, "w", encoding="utf-8") as fh:
+            fh.write("\n".join([
+                "## 1. 有效性",
+                "",
+                "| # | 判据 |",
+                "|---|------|",
+                "| 1.3 | 契约锚定 |",
+                "",
+                "引用 §1.3 存在；引用 general.md §11.3 存在；引用 设计 §9 豁免。",
+                "引用 §13 不存在 → 必须被抓到。",
+                "```",
+                "引用 §99 在代码块里 → 忽略。",
+                "```",
+                "",
+            ]))
+        section_errors = check_active_doc_sections(["docs/components/sample.md"], tmp)
+        if len(section_errors) != 1 or "§13" not in section_errors[0]:
+            print("selftest FAIL: expected exactly one missing section (§13), got:",
+                  section_errors)
+            return 1
+    print("selftest OK: symbol check detects missing symbols; path check covers regression + "
+          "untracked-but-present files; section check catches stale §N in active docs")
     return 0
 
 
@@ -364,6 +492,7 @@ def main(argv):
 
     contract_errors = check_contract_refs(files, root, contract_index(root))
     errors.extend(contract_errors)
+    errors.extend(check_active_doc_sections(files, root))
     errors.extend(check_backticked_paths(files, root, tracked_repo_paths(root)))
     errors.extend(check_backticked_symbols(files, root))
 

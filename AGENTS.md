@@ -3,7 +3,7 @@
 量化交易系统（CMake + Conan 2 + Ninja + GTest / C++20，Windows MSVC + Linux GCC 13）。
 单人 + AI 协作。**项目简介、特性、4 命令工作流、命令详解、部署流程见 [README.md](README.md)** —— 本文只写 README 不会写、且写错代价很高的部分。
 
-**定位/理解代码先 `codegraph_explore`（MCP）或 `codegraph explore "<符号>"`；不要先 grep/sed 逐个读文件。**
+**改 `libs/`/`apps/` 下的 `.h`/`.cpp` 之前，先用 `codegraph_explore <符号或文件名>`**（MCP 工具，或 shell 兜底 `codegraph explore "<符号>"`）：它返回的就是 `read` 的等价内容 + 调用方 + 影响面，不必再逐文件读。只有它没覆盖的地方（配置、文档、`.cache/`）才用 grep/read。
 
 ---
 
@@ -202,13 +202,14 @@
 
 ### 本机沙箱（DSH）
 
-- 后台作业/CI 快照/门禁用法、跨调用 `/tmp` 与缓存回退、权限 preset、`.cache/handoff/` 约定见 [ticket-closeout](docs/agents/ticket-closeout.md) §2/§4/§8。
+- **等待一律后台作业**：门禁 / CI / 子代理 / 任何 >60s 命令用 `run_in_background` 启动，需要结果时 `job_output(wait=true)`；**不要 `sleep` 轮询、不要前台空等**。CI 单次快照用 `./scripts/wait-ci.sh --status`（0 绿 / 1 红 / 2 错误 / 3 仍在跑）。实测代价：不看这条的票在 `sleep` 上花掉 10%–28% 墙钟（#162 1760s、#163 1985s），遵守的票只有 3s（#165）。
+- 跨调用 `/tmp` 隔离、缓存回退、权限 preset、`.cache/handoff/` 约定见 [ticket-closeout](docs/agents/ticket-closeout.md) §2/§4/§8。
 
 ---
 
 ## 六、CodeGraph
 
-仓库根存在 `.codegraph/` 时才用（没有索引就跳过）；shell 兜底 `codegraph explore "<符号>"`。**是否建索引由我决定，不要自行 `codegraph init`**
+仓库根存在 `.codegraph/` 才可用（没有索引就跳过；触达方式见本文开头）。**是否建索引由我决定，不要自行 `codegraph init`**
 
 ---
 
