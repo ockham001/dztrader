@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useUserManagementStore, ACCOUNT_PERMISSIONS, STRATEGY_PERMISSIONS } from '@/stores/userManagement'
 import type { UserView } from '@/stores/userManagement'
+import { usersApi } from '@/api/users'
 import UserManagementView from '../UserManagementView.vue'
 
 // jsdom 缺 IntersectionObserver（登录历史无限滚动用）
@@ -119,5 +120,105 @@ describe('UserManagementView', () => {
     await sw.trigger('click')
     expect(spy).toHaveBeenLastCalledWith(false)
     expect(spy).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('UserManagementView 删除用户二次确认（#204）', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    setActivePinia(createPinia())
+    const store = useUserManagementStore()
+    vi.spyOn(store, 'loadAll').mockResolvedValue()
+  })
+
+  function mountWithUsers(users: UserView[]): VueWrapper {
+    const store = useUserManagementStore()
+    store.users = users
+    return mount(UserManagementView, { global: { stubs: sharedStubs } })
+  }
+
+  async function openRemoveModal(w: VueWrapper, username: string): Promise<void> {
+    await w.find(`button[title="删除用户 ${username}"]`).trigger('click')
+  }
+
+  it('点击删除用户先弹确认, 取消后不发删除请求且用户保留', async () => {
+    const store = useUserManagementStore()
+    const spy = vi.spyOn(store, 'removeUser').mockResolvedValue(true)
+    const w = mountWithUsers([fakeUser(2, 'bob')])
+    await flushPromises()
+
+    await openRemoveModal(w, 'bob')
+    expect(spy).not.toHaveBeenCalled()
+    // 断言限定在 Modal 内：列表行本身已渲染 bob, 用全量 w.text() 无法发现 Modal 漏用户名
+    const modal = w.find('.modal-stub')
+    expect(modal.exists()).toBe(true)
+    expect(modal.text()).toContain('确认删除用户')
+    expect(modal.text()).toContain('bob')
+    expect(modal.text()).toContain('不可恢复')
+    expect(modal.text()).toContain('权限配置将一并移除')
+
+    await w.findAll('button').find(b => b.text() === '取消')!.trigger('click')
+    expect(spy).not.toHaveBeenCalled()
+    expect(w.find('.modal-stub').exists()).toBe(false)
+    expect(store.users.map(u => u.username)).toContain('bob')  // 取消不影响镜像
+  })
+
+  it('确认删除后走 store.removeUser, 成功后用户从列表消失且有成功提示', async () => {
+    const store = useUserManagementStore()
+    // mock API 边界而非 store 本身：用户从镜像消失由真实 store.removeUser 完成
+    const removeSpy = vi.spyOn(usersApi, 'remove').mockResolvedValue(undefined)
+    const w = mountWithUsers([fakeUser(1, 'alice', 'admin'), fakeUser(2, 'bob')])
+    await flushPromises()
+
+    await openRemoveModal(w, 'bob')
+    const confirm = w.findAll('button').find(b => b.text() === '删除')!
+    expect(confirm.classes()).toContain('ds-btn--danger')
+    await confirm.trigger('click')
+    await flushPromises()
+
+    expect(removeSpy).toHaveBeenCalledWith(2)
+    expect(store.users.map(u => u.username)).not.toContain('bob')
+    expect(w.text()).not.toContain('bob')
+    expect(w.find('.modal-stub').exists()).toBe(false)
+    expect(w.find('.ds-toast').text()).toContain('用户已删除')
+  })
+
+  it('删除失败保持 Modal 打开并提示真实错误', async () => {
+    const store = useUserManagementStore()
+    vi.spyOn(usersApi, 'remove').mockRejectedValue(new Error('boom'))
+    const w = mountWithUsers([fakeUser(2, 'bob')])
+    await flushPromises()
+
+    await openRemoveModal(w, 'bob')
+    await w.findAll('button').find(b => b.text() === '删除')!.trigger('click')
+    await flushPromises()
+
+    expect(w.find('.modal-stub').exists()).toBe(true)  // 失败保留 Modal
+    expect(store.users.map(u => u.username)).toContain('bob')  // 镜像保留
+    // 与兜底文案区分：真实 store.error 含「未删除，请重试」
+    expect(w.find('.ds-toast').text()).toContain('未删除，请重试')
+  })
+
+  it('删除请求进行中确认/取消按钮禁用并显示删除中', async () => {
+    const store = useUserManagementStore()
+    let resolveRemove!: (ok: boolean) => void
+    vi.spyOn(store, 'removeUser').mockImplementation(
+      () => new Promise<boolean>((resolve) => { resolveRemove = resolve }),
+    )
+    const w = mountWithUsers([fakeUser(2, 'bob')])
+    await flushPromises()
+
+    await openRemoveModal(w, 'bob')
+    await w.findAll('button').find(b => b.text() === '删除')!.trigger('click')
+    await w.vm.$nextTick()
+
+    const pending = w.findAll('button').find(b => b.text() === '删除中…')!
+    expect(pending.attributes('disabled')).toBeDefined()
+    const cancel = w.findAll('button').find(b => b.text() === '取消')!
+    expect(cancel.attributes('disabled')).toBeDefined()
+
+    resolveRemove(false)  // 结束挂起（失败保留 Modal 即可）
+    await flushPromises()
+    expect(w.find('.modal-stub').exists()).toBe(true)
   })
 })
