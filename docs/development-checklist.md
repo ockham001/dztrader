@@ -27,14 +27,14 @@
 | # | 动作 | 对应的自动化门禁 |
 |---|------|------------------|
 | B1 | 新增控制器/领域服务 | `ctest`（webui 套件）绿色；（后台门禁在 CI 的 C++ Tests 步骤） |
-| B2 | 改帧/WS/REST 契约 | **先改 `docs/frame_contracts/`**（先读 `general.md` 总则），再按 `general.md` §11.3 逐项同步（platform 头文件、帧号登记、dzweb、前端、测试）；契约 Freshness 步骤防生成类型漂移。项目技能 `frame-contract-change` 封装了此流程 |
+| B2 | 改帧/WS/REST 契约 | **先改 `docs/frame_contracts/`**（先读 `general.md` 总则），再按 `general.md` §11.3 逐项同步（platform 头文件、帧号登记、dzweb、前端、测试）；契约 Freshness 步骤防生成类型漂移。项目技能 `frame-contract-change`（`.opencode/skills/frame-contract-change/SKILL.md`）封装了此流程：opencode 会话可加载；DSH 等其它宿主按 `general.md` §11.3 手动执行（技能不可用不等于流程可省） |
 | B3 | 改 WS payload 字段 | 改 schema → 跑 `npm run gen:types` → 前端类型自动更新；CI 校验 generated.ts 最新 |
 | B4 | 新增角色/权限判断 | 对照 `ControlGuard` 共享守卫，避免 REST/WS 平行实现 |
 
 ## C. 提交前（每次 push）
 
 - [ ] 本地 git hooks 已装：`git config --get core.hooksPath` 输出 `.githooks`（`setup` 自动安装）。pre-commit 由 staged 文件触发——clang-format 校验 index 内容，日志格式 / docs links 为工作区全仓扫描；**不能替代** `preflight`。pre-push 拦直推 main / 非快进 / 非白名单分支名；最近一次门禁在**当前 HEAD** 失败会拒绝推送（`.cache/gate/last-status`；HEAD 不符/缺失只警告，应急 `DZ_ALLOW_RED_GATE=1`）。
-- [ ] `./scripts/preflight.sh` 全绿（日志格式 / clang-format 21.x / 文档链接（含契约 §N 引用）/ 测试可移植性+临时目录唯一化 / **MSVC hazard lint** / **内置 JSON 版本一致性** / 前端 `type-check` + `lint` + `lint:css` + `vitest` + `gen:types` 新鲜度，一条命令一个结论）——CI linux job 复用同脚本的 C 段（`--c-only`）；首次需先 `./scripts/build.sh` 生成 `node_modules`
+- [ ] `./scripts/preflight.sh` 全绿（日志格式 / clang-format 21.x / 文档链接（含契约 §N 引用：活跃文档 + apps/libs 源码注释）/ 测试可移植性+临时目录唯一化 / **MSVC hazard lint** / **内置 JSON 版本一致性** / 前端 `type-check` + `lint` + `lint:css` + `vitest` + `gen:types` 新鲜度，一条命令一个结论）——CI linux job 复用同脚本的 C 段（`--c-only`）；首次需先 `./scripts/build.sh` 生成 `node_modules`
 - [ ] `./scripts/build.sh --config release` 通过（agent 侧用 `./scripts/gate.sh build --config release`：同 build tree 串行 + ccache 环境 + 真实退出码；管道用法见 [ticket-closeout](agents/ticket-closeout.md) §2）
 - [ ] `./scripts/test.sh` 全绿（后台 fast 门禁；含冒烟 smoke）；穷举/基准按需 `--label slow` / `--label perf`（Windows `-Label`）；agent 侧 `./scripts/gate.sh test`
 - [ ] `git status` 干净，改动为小步提交（信息中文，`fix:/feat:/refactor:/docs:/test:/chore:/perf:/style:/build:/ci:` 前缀）
