@@ -377,8 +377,10 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
   }
 
   /// "删除此行情源": best-effort 停进程 + 保留 DB 记录; RTN 成功 ack 后移除卡片。
+  /// rethrow: HTTP 失败抛 Error 支撑确认 Modal 保持打开（#204）；RTN 失败仍走 NOTIFY_UI。
   async function removeSource(id: number): Promise<void> {
-    await runOp(id, 'remove', s => process.removeSource(id, s.source_name), 'remove market source failed')
+    await runOp(id, 'remove', s => process.removeSource(id, s.source_name), 'remove market source failed',
+      { rethrow: true })
   }
 
   // ===== Process control =====

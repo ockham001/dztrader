@@ -518,11 +518,11 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(store.error).toBeNull()
     })
 
-    it('remove HTTP 失败清 pending + error', async () => {
+    it('remove HTTP 失败清 pending + error 并 rethrow（#204: 确认 Modal 感知失败保持打开）', async () => {
       await loadDb()
       vi.mocked(marketSourcesApi.remove).mockRejectedValue(new Error('boom'))
       const store = useMarketSourcesStore()
-      await store.removeSource(1)
+      await expect(store.removeSource(1)).rejects.toThrow('remove market source failed')
       expect(store.sources[0].removePending).toBe(false)
       expect(store.sources[0].stopPending).toBe(false)
       expect(store.error).toBe('remove market source failed')

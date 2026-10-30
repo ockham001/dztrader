@@ -131,10 +131,39 @@ async function handleAddIp(): Promise<void> {
   }
 }
 
-// P3 任务6：删除用户按真实结果反馈——失败保留用户并提示
-async function handleRemoveUser(id: number): Promise<void> {
-  const ok = await store.removeUser(id)
-  if (!ok) showToast(store.error ?? '删除用户失败', 'error')
+// ===== 删除用户二次确认（#204）=====
+// 后端是硬 DELETE（级联权限并踢断 WS），不可撤销，必须二次确认。
+// 失败保留 Modal 让用户重试，错误经 toast 反馈（与添加/编辑用户一致）。
+const removeUserModalOpen = ref(false)
+const removeUserTarget = ref<UserView | null>(null)
+const removeUserSubmitting = ref(false)
+
+function openRemoveUserModal(u: UserView): void {
+  if (u.removePending) return  // 删除进行中不重入
+  removeUserTarget.value = u
+  removeUserSubmitting.value = false
+  removeUserModalOpen.value = true
+}
+
+function closeRemoveUserModal(): void {
+  removeUserModalOpen.value = false
+  removeUserTarget.value = null
+  removeUserSubmitting.value = false
+}
+
+async function confirmRemoveUser(): Promise<void> {
+  const target = removeUserTarget.value
+  if (!target || removeUserSubmitting.value) return  // 防重入
+  removeUserSubmitting.value = true
+  // P3 任务6：按真实结果反馈——失败保留用户与 Modal，不产生与服务端不一致的乐观删除
+  const ok = await store.removeUser(target.id)
+  removeUserSubmitting.value = false
+  if (!ok) {
+    showToast(store.error ?? '删除用户失败', 'error')
+    return
+  }
+  closeRemoveUserModal()
+  showToast('用户已删除', 'success')
 }
 
 async function handleRemoveIp(list: 'black' | 'white', id: number): Promise<void> {
@@ -579,7 +608,7 @@ onUnmounted(() => {
                         :title="`删除用户 ${u.display_name}`"
                         :aria-label="`删除用户 ${u.display_name}`"
                         :disabled="u.removePending"
-                        @click="handleRemoveUser(u.id)"
+                        @click="openRemoveUserModal(u)"
                       >
                         <span v-if="u.removePending" class="ds-btn__spinner"></span>
                         <Icon v-else name="Delete" :size="14" />
@@ -984,6 +1013,28 @@ onUnmounted(() => {
           :disabled="!resetPasswordData.newPassword"
           @click="confirmResetPassword"
         >重置</button>
+      </template>
+    </Modal>
+
+    <!-- ===== Delete User Confirmation Modal (#204: 二次确认) ===== -->
+    <Modal :open="removeUserModalOpen" title="确认删除用户" @close="closeRemoveUserModal">
+      <div :style="{ color: 'var(--text-default)' }">
+        确认删除用户 <code class="mono" :style="{ fontWeight: 500 }">{{ removeUserTarget?.username }}</code> 吗？
+        <div :style="{ marginTop: 'var(--spacer-8)', color: 'var(--text-tertiary)', fontSize: 'var(--body-sm-font-size)' }">
+          删除后不可恢复，该用户的账户/策略权限配置将一并移除，已登录会话会被断开。
+        </div>
+      </div>
+      <template #footer>
+        <button class="ds-btn ds-btn--secondary" type="button" @click="closeRemoveUserModal">取消</button>
+        <button
+          class="ds-btn ds-btn--danger"
+          type="button"
+          :disabled="removeUserSubmitting"
+          @click="confirmRemoveUser"
+        >
+          <span v-if="removeUserSubmitting" class="ds-btn__spinner"></span>
+          {{ removeUserSubmitting ? '删除中…' : '删除' }}
+        </button>
       </template>
     </Modal>
   </div>

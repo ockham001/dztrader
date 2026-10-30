@@ -121,3 +121,93 @@ describe('UserManagementView', () => {
     expect(spy).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('UserManagementView 删除用户二次确认（#204）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    const store = useUserManagementStore()
+    vi.spyOn(store, 'loadAll').mockResolvedValue()
+  })
+
+  function mountWithUsers(users: UserView[]) {
+    const store = useUserManagementStore()
+    store.users = users
+    return mount(UserManagementView, { global: { stubs: sharedStubs } })
+  }
+
+  it('点击删除用户先弹确认, 取消后不发删除请求且用户保留', async () => {
+    const store = useUserManagementStore()
+    const spy = vi.spyOn(store, 'removeUser').mockResolvedValue(true)
+    const w = mountWithUsers([fakeUser(2, 'bob')])
+    await flushPromises()
+
+    await w.find('button[title="删除用户 bob"]').trigger('click')
+    expect(spy).not.toHaveBeenCalled()
+    expect(w.text()).toContain('确认删除用户')
+    expect(w.text()).toContain('bob')
+    expect(w.text()).toContain('不可恢复')
+
+    await w.findAll('button').find(b => b.text() === '取消')!.trigger('click')
+    expect(spy).not.toHaveBeenCalled()
+    expect(w.text()).not.toContain('确认删除用户')
+    expect(w.text()).toContain('bob')
+  })
+
+  it('确认删除后调用 removeUser, 成功后用户消失且有成功提示', async () => {
+    const store = useUserManagementStore()
+    const spy = vi.spyOn(store, 'removeUser').mockImplementation(async (id: number) => {
+      store.users = store.users.filter(u => u.id !== id)
+      return true
+    })
+    const w = mountWithUsers([fakeUser(1, 'alice', 'admin'), fakeUser(2, 'bob')])
+    await flushPromises()
+
+    await w.find('button[title="删除用户 bob"]').trigger('click')
+    await w.findAll('button').find(b => b.text() === '删除')!.trigger('click')
+    await flushPromises()
+
+    expect(spy).toHaveBeenCalledWith(2)
+    expect(w.text()).not.toContain('bob')
+    expect(w.text()).not.toContain('确认删除用户')
+    expect(w.find('.ds-toast').text()).toContain('用户已删除')
+  })
+
+  it('删除失败保持 Modal 打开并提示错误', async () => {
+    const store = useUserManagementStore()
+    vi.spyOn(store, 'removeUser').mockImplementation(async () => {
+      store.error = '删除用户失败（未删除，请重试）'
+      return false
+    })
+    const w = mountWithUsers([fakeUser(2, 'bob')])
+    await flushPromises()
+
+    await w.find('button[title="删除用户 bob"]').trigger('click')
+    await w.findAll('button').find(b => b.text() === '删除')!.trigger('click')
+    await flushPromises()
+
+    expect(w.text()).toContain('确认删除用户')  // 失败保留 Modal
+    expect(w.text()).toContain('bob')
+    expect(w.find('.ds-toast').text()).toContain('删除用户失败')
+  })
+
+  it('删除请求进行中确认按钮禁用并显示删除中', async () => {
+    const store = useUserManagementStore()
+    let resolveRemove!: (ok: boolean) => void
+    vi.spyOn(store, 'removeUser').mockImplementation(
+      () => new Promise<boolean>((resolve) => { resolveRemove = resolve }),
+    )
+    const w = mountWithUsers([fakeUser(2, 'bob')])
+    await flushPromises()
+
+    await w.find('button[title="删除用户 bob"]').trigger('click')
+    await w.findAll('button').find(b => b.text() === '删除')!.trigger('click')
+    await w.vm.$nextTick()
+
+    const pending = w.findAll('button').find(b => b.text() === '删除中…')!
+    expect(pending.attributes('disabled')).toBeDefined()
+
+    resolveRemove(false)  // 结束挂起（失败保留 Modal 即可）
+    await flushPromises()
+    expect(w.text()).toContain('确认删除用户')
+  })
+})
