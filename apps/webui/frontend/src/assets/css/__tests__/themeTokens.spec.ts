@@ -10,15 +10,17 @@ import postcss, { type Root, type Rule } from 'postcss'
 // token 全空、页面破相。当时 stylelint 对 .css 文件完全空转（全局 customSyntax 设为
 // postcss-html，.css 解析出 0 个节点、0 警告，见 stylelint.config.mjs），于是潜伏两个月。
 //
-// 本 spec 不依赖浏览器运行时：纯文本 + postcss AST 断言，CI 成本可忽略（12 例 ~50ms）。
+// 本 spec 不依赖浏览器运行时：纯文本 + postcss AST 断言，CI 成本可忽略（9 例 ~40ms）。
 // 不变量（任一失守都会让某个主题下缺色，且浏览器不报错）：
 //   1. src 下每个 .css 都能被标准 CSS 解析器解析；
-//   2. 任何文件的规则选择器都不残留提前闭合痕迹（`*/` / 非 ASCII）——
+//   2. 任何文件的规则选择器都不残留提前闭合痕迹（`*/` / 非 ASCII / 选择器跨行）——
 //      注意这类缺陷**不一定**让 postcss 抛错：残缺文字会被并进下一条规则的选择器；
-//   3. system 段的 `html:not(.light):not(.dark)` 必须位于 @media (prefers-color-scheme: dark) 内；
-//   4. 三条链齐全：:root 字面量 ⊆ .dark / system；`.dark` 字面量与 system 同值；
-//      `:root` 每个 var() 别名的**目标 token** 在 .dark / system 都被覆盖（别名靠 var()
-//      在计算值阶段替换，只查"名字出现过"会把悬空目标放过去）。
+//   3. system 段的 `html:not(.light):not(.dark)` 必须位于 @media (prefers-color-scheme:
+//      dark) 内，且该条件是**裸的**正条件（`not` / `@supports` / 媒体列表都会让它失效或反转）；
+//   4. 三段对称：.dark 与 system 的 token 集合必须相等（`.dark⇒system` 同值 + system
+//      不得有独有 token），`:root` 字面量 ⊆ `.dark`/system，`:root` 每个 var() 别名的
+//      **目标 token** 在三段都被覆盖（别名靠 var() 在计算值阶段替换，只查"名字出现过"
+//      会把悬空目标放过去）。
 
 const CSS_ROOT = join(fileURLToPath(import.meta.url), '..', '..')
 // 扫描起点是 src（而不是 assets/css）：本次事故的形态在任何 .css 里都可能复发，
@@ -72,10 +74,29 @@ function requireThemeRoot(): Root {
 
 const SYSTEM_SELECTOR = /html:not\(\.light\):not\(\.dark\)/
 
-/** system 段规则必须位于深色 media 条件内（选择器对了但条件写错 = system 深色失效） */
+/**
+ * system 段是否受「深色」媒体条件保护。
+ * 必须沿祖先链找 @media（system 段可能合法嵌套），且条件必须是**裸的正条件**：
+ * 接受 `(prefers-color-scheme: dark)` / `screen and (...)` / 附加 `and (min-width…)`；
+ * 拒绝 `not (...)`（语义反转）、`@supports`（不是媒体查询）、媒体列表
+ * `(prefers-color-scheme: dark), (min-width: 0px)`（含恒真分支）。
+ */
 function systemRuleIsGuarded(rule: Rule): boolean {
-  const parent = rule.parent
-  return parent?.type === 'atrule' && /prefers-color-scheme:\s*dark/.test((parent as { params: string }).params)
+  // 沿祖先链找 @media（system 段可能合法嵌套）。postcss 的 parent 类型含 Document_，
+  // 这里只需 type/name/params/parent 四件事，用结构类型避免其类型联合的噪音。
+  type Ancestor = { type: string; name?: string; params?: string; parent?: Ancestor | undefined }
+  let node = rule.parent as unknown as Ancestor | undefined
+  while (node) {
+    if (node.type === 'atrule' && node.name?.toLowerCase() === 'media') {
+      const params = (node.params ?? '').trim()
+      // 媒体列表（顶层逗号）会让 dark 条件与别的条件并列 → 不是"仅深色时生效"
+      const isBareDarkQuery =
+        !params.includes(',') && !/\bnot\b/i.test(params) && /prefers-color-scheme:\s*dark/i.test(params)
+      if (isBareDarkQuery) return true
+    }
+    node = node.parent
+  }
+  return false
 }
 
 const lightOf = () => declarationsOf(requireThemeRoot(), (r) => r.selector.trim() === ':root')
@@ -107,6 +128,9 @@ describe('#198 主题 token 回归', () => {
 
   it('任何 .css 的规则选择器不含提前闭合残留（`*/` 或非 ASCII 文本）', () => {
     // 覆盖全部文件而不只是 theme.css：残缺文字常被 postcss 并进选择器而不抛错。
+    // 边界：纯 ASCII 散文形态（如 "tokens for light and dark" 被并进选择器）在本条漏过
+    // —— 它没有 `*/` 残留也不是中文。该形态由 lint:css 的 selector-type-no-unknown 兜住
+    // （实测 exit 2）。不用"选择器含换行"来判：合法选择器列表本就常跨行书写。
     const offenders: string[] = []
     for (const file of cssFiles) {
       const outcome = parseFile(file)
@@ -153,6 +177,28 @@ describe('#198 主题 token 回归', () => {
     expect(problems, problems.join('\n')).toEqual([])
   })
 
+  it('.dark / system 的 token 都在 :root 有浅色基线（无单边深色 token）', () => {
+    // 反方向补齐：只有"深色段 ⊆ 浅色段"仍会让「删掉 :root 某个字面量 token」静默通过
+    // （浅色主题缺色，深色却仍有值——恰恰是 #198 的不对称形态）。
+    // 唯一豁免：日志高亮 token（--log-*）按设计只有深色取值，浅色主题刻意不定义。
+    const light = lightOf()
+    const dark = darkOf()
+    const system = systemOf()
+    const DARK_ONLY_ALLOWED = /^--log-/
+    const problems: string[] = []
+    for (const token of dark.keys()) {
+      if (!light.has(token) && !DARK_ONLY_ALLOWED.test(token)) {
+        problems.push(`${token} 只在 .dark 段定义、:root 无浅色基线 → 浅色主题下该 token 无值`)
+      }
+    }
+    for (const token of system.keys()) {
+      if (!light.has(token) && !DARK_ONLY_ALLOWED.test(token)) {
+        problems.push(`${token} 只在 system 段定义、:root 无浅色基线 → 浅色主题下该 token 无值`)
+      }
+    }
+    expect(problems, problems.join('\n')).toEqual([])
+  })
+
   it(':root 的每个 var() 别名，其目标 token 在 .dark 与 system 段都被覆盖', () => {
     const light = lightOf()
     const dark = darkOf()
@@ -171,6 +217,20 @@ describe('#198 主题 token 回归', () => {
       else if (isAlias(rootTarget)) problems.push(`${token} → ${target}：目标本身是别名，链路过深`)
       if (!dark.has(target)) problems.push(`${token} → ${target}：目标在 .dark 段未覆盖（深色下别名值不随主题变化）`)
       if (!system.has(target)) problems.push(`${token} → ${target}：目标在 system 段未覆盖（系统深色下别名值不随主题变化）`)
+    }
+    expect(problems, problems.join('\n')).toEqual([])
+  })
+
+  it('.dark 与 system 的 token 集合对称（无单边 token）', () => {
+    const dark = darkOf()
+    const system = systemOf()
+    const problems: string[] = []
+    // 反向：只在 system 定义的 token 在深色主题（.dark）下无值 → 两套深色不一致
+    for (const token of system.keys()) {
+      if (!dark.has(token)) problems.push(`${token} 只在 system 段定义、.dark 段缺失（切到深色主题时无值）`)
+    }
+    for (const token of dark.keys()) {
+      if (!system.has(token)) problems.push(`${token} 只在 .dark 段定义、system 段缺失（系统深色下无值）`)
     }
     expect(problems, problems.join('\n')).toEqual([])
   })
