@@ -29,7 +29,7 @@ void MdApi::connect(bool user_initiated) {
     // 失败后可直接重试，不要求先登出）；不重建 API 实例。
     if (state_machine_.can_login()) {
         SPDLOG_INFO("connect request treated as relogin | state={}", magic_enum::enum_name(state));
-        req_user_login();
+        req_user_login(user_initiated);
         return;
     }
     if (state == MdState::Disconnected) {
@@ -116,7 +116,7 @@ void MdApi::cancel_login_timer() {
     }
 }
 
-void MdApi::req_user_login() {
+void MdApi::req_user_login(bool user_initiated) {
     if (api_ == nullptr) {
         SPDLOG_WARN("login api is null");
         return;
@@ -149,9 +149,12 @@ void MdApi::req_user_login() {
     if (ret != 0) {
         SPDLOG_WARN("login req failed | ret={} request_id={} user_id={}", ret, request_id_,
                     req.UserID);
-        // 请求被 CTP API 同步拒绝：给 UI 反馈，避免只写日志（#203）；状态未转移，
-        // 仍在 Connected/LoginFailed，可由自动调度或用户重试
-        notify_ui_.warn("行情登录请求失败: 返回码 " + std::to_string(ret));
+        // 请求被 CTP API 同步拒绝：用户请求路径给 UI 反馈，避免只写日志（#203）；
+        // 自动调度/重连补登路径只记日志避免重复打扰。状态未转移，仍在 Connected/LoginFailed，
+        // 可由自动调度或用户重试
+        if (user_initiated) {
+            notify_ui_.warn("行情登录请求失败: 返回码 " + std::to_string(ret));
+        }
         return;
     }
     // ReqUserLogin 成功后才转移状态, 避免失败时永久 stuck LoggingIn

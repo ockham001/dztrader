@@ -105,4 +105,17 @@ describe('LoginPanel 登录按钮可用性（契约 md-status 前端义务③）
     })
     expect(loginButton(w).attributes('disabled')).toBeDefined()
   })
+
+  it('已登录（online）时禁用登录（重新登录需先登出，避免 md 拒绝后 pending 悬挂）', () => {
+    const w = mount(LoginPanel, {
+      props: {
+        source: sourceWith({
+          loginState: 'online',
+          progressView: { current: 4, min: 0, max: 4 },
+        }),
+      },
+      global: { stubs },
+    })
+    expect(loginButton(w).attributes('disabled')).toBeDefined()
+  })
 })

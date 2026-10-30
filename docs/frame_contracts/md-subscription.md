@@ -43,14 +43,15 @@
 ## DZ_FRAME_REQUEST_MD_CONNECT / DZ_FRAME_REQUEST_MD_DISCONNECT
 
 **语义**：请求指定行情进程建立 / 断开连接（登录 / 登出）
-**数据流**：形态 3（总则 §4.2）——UI → dzweb → 目标行情进程（帧头 `instance_id` = 行情进程名）；前端入口 `POST /api/market-sources/{id}/login|logout`（契约 rest）或 WS `md_connect`/`md_disconnect`（契约 webui-ws，两路等效）；无 RTN，结果经该进程 `RTN_PROGRESS` 体现（ack 仅表示已写通道）
+**数据流**：形态 3（总则 §4.2）——UI → dzweb → 目标行情进程（帧头 `instance_id` = 行情进程名）；前端入口 `POST /api/market-sources/{id}/login|logout`（契约 rest）或 WS `md_connect`/`md_disconnect`（契约 webui-ws，两路等效）；无 RTN，结果经该进程 `RTN_PROGRESS` 与 `RTN_MD_STATUS.last_error`（失败原因，契约 md-status）体现（ack 仅表示已写通道）
 **Payload**：空
 
 **时序**：前端发起 → dzweb 对前端回 ack（仅表示已写入事件通道，**不表示连接结果**；写通道失败时 `ok=false`，见契约 webui-ws）→ **无 RTN**
 
 **约束**：
 - 定向帧，仅 `instance_id` 匹配的行情进程处理
-- 连接结果通过该行情进程的 `RTN_PROGRESS`（状态数值映射，契约 progress）体现；前端不得以 ack 判定连接成败
+- 连接结果通过该行情进程的 `RTN_PROGRESS`（状态数值映射，契约 progress）体现；登录失败原因经 `RTN_MD_STATUS.last_error` 持久承载（契约 md-status 失败语义）；前端不得以 ack 判定连接成败
+- **前置条件拒绝**（无当前经纪商 / 经纪商不存在 / 无可用前置 / 当前状态不接受连接）**不产生 RTN**：用户请求路径（REST/WS 入口）经 `NOTIFY_UI` 警告说明原因（契约 notify-ui）；自动调度/重连补登路径只记日志。前端以该通知提示用户；`NOTIFY_UI` 是纯通知、**永不清除 pending**（契约 webui-ws §5），此时 login pending 由前端超时兜底
 
 ---
 

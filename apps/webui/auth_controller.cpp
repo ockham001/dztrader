@@ -24,8 +24,21 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
         callback(json_response(drogon::k400BadRequest, Json{{"error", "bad request"}}));
         return;
     }
-    const std::string username = body.value("username", "");
-    const std::string password = body.value("password", "");
+    // 契约 rest §1: 请求体必须是含 string 类型 username/password 的 JSON 对象；
+    // 合法 JSON 但非对象（如 []）或字段类型错（如数字）同样是 bad request（不得 500）
+    if (!body.is_object()) {
+        callback(json_response(drogon::k400BadRequest, Json{{"error", "bad request"}}));
+        return;
+    }
+    const auto username_it = body.find("username");
+    const auto password_it = body.find("password");
+    if (username_it == body.end() || !username_it->is_string() || password_it == body.end() ||
+        !password_it->is_string()) {
+        callback(json_response(drogon::k400BadRequest, Json{{"error", "bad request"}}));
+        return;
+    }
+    const std::string username = username_it->get<std::string>();
+    const std::string password = password_it->get<std::string>();
     if (username.empty() || password.empty()) {
         callback(json_response(drogon::k400BadRequest, Json{{"error", "bad request"}}));
         return;

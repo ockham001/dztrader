@@ -160,7 +160,9 @@ private:
     /// 断开 CTP 前置 (Release)
     void disconnect();
     /// 发送登录请求 (ReqUserLogin)。前置条件: MdState::Connected 或 MdState::LoginFailed。
-    void req_user_login();
+    /// @param user_initiated 是否由用户请求触发；true 时 CTP 同步拒绝会给 UI 反馈，
+    ///        自动调度/重连补登路径（false）只记日志避免重复打扰
+    void req_user_login(bool user_initiated = false);
     /// 推送 UI 通知 (转发 state_machine 返回的 json 到 NotifyUi 类)
     void notify_ui(const nlohmann::json& field);
     /// 应用配置变更 (op-based: 验证 -> 持久化 -> 应用 -> 上报), 失败 catch

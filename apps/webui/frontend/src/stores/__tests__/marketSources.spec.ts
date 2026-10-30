@@ -748,6 +748,30 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       await vi.advanceTimersByTimeAsync(10_000)
     })
 
+    it('batchLogin 排除不可重试的 pending 源（Connecting/Disconnected），失败态可重试源计入', async () => {
+      await loadDb()
+      vi.mocked(marketSourcesApi.login).mockResolvedValue({ ok: true })
+      const store = useMarketSourcesStore()
+      // Connecting/Disconnected（current=1）: md 会拒绝重连请求，不得计入批量目标
+      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 1 })
+      await nextTick()
+      expect(store.batchLoginTargets).toHaveLength(0)
+      await store.batchLogin()
+      expect(marketSourcesApi.login).not.toHaveBeenCalled()
+
+      // 登录失败态（current=2 + last_error）: 可直接重试，计入批量目标
+      useMdConfigStore().applyMdStatus({ source: 'dzmd_ctp', status: {
+        last_error: { code: 'login_timeout', message: '', error_id: 0, timestamp: 1_700_000_000 },
+      } })
+      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 2 })
+      await nextTick()
+      expect(store.batchLoginTargets.map(s => s.source_name)).toEqual(['dzmd_ctp'])
+      await store.batchLogin()
+      expect(marketSourcesApi.login).toHaveBeenCalledTimes(1)
+      // 等登录超时兜底清（45s，防 fake timer 挂起）
+      await vi.advanceTimersByTimeAsync(45_000)
+    })
+
     it('batchLogout 只登出 online 且未 logout pending 的 source', async () => {
       vi.mocked(marketSourcesApi.list).mockResolvedValue([dbSource, dbSourceB])
       vi.mocked(marketSourcesApi.logout).mockResolvedValue({ ok: true })

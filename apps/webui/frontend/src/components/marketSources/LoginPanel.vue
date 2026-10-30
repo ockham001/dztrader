@@ -31,13 +31,16 @@ const autoLoginStatusClass = (s: MarketSourceView): string => {
     <ProcessStartButton :source="src" />
     <!-- 契约 md-status 前端义务③：失败态（last_error 且进度处于已连接档 current=2）允许
          直接重试登录，不要求先登出；登录中/连接中/断线自动重连中（Disconnected 也会保留
-         last_error）仍禁用，避免 md 静默拒绝导致 pending 悬挂。 -->
+         last_error）仍禁用，避免 md 拒绝后 pending 悬挂。已登录态禁用（重新登录需先登出，
+         否则请求被 md 拒绝、pending 只能等超时）。 -->
     <button
       class="ds-btn ds-btn--sm"
       :class="src.loginState === 'offline' ? 'ds-btn--primary' : 'ds-btn--secondary'"
       type="button"
-      :disabled="src.loginPending || src.process_state !== 'Running' || (src.loginState === 'pending' && !loginRetryable(src.progressView, src.lastLoginError))"
-      :title="src.process_state !== 'Running' ? '进程未运行，请先启动进程' : undefined"
+      :disabled="src.loginPending || src.process_state !== 'Running' || src.loginState === 'online' || (src.loginState === 'pending' && !loginRetryable(src.progressView, src.lastLoginError))"
+      :title="src.process_state !== 'Running'
+        ? '进程未运行，请先启动进程'
+        : src.loginState === 'online' ? '已登录，如需重新登录请先登出' : undefined"
       @click="store.login(src.id)"
     >
       <span v-if="src.loginPending" class="ds-btn__spinner"></span>

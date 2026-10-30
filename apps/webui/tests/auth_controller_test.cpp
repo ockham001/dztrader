@@ -195,6 +195,23 @@ TEST_F(AuthControllerTest, LoginBadJsonReturns400) {
     EXPECT_EQ(body["error"].get<std::string>(), "bad request");
 }
 
+// 9a. 合法 JSON 但非对象 / 字段类型错 → 400（契约 rest §1：bad request 不得 500）
+TEST_F(AuthControllerTest, LoginNonObjectOrNonStringBodyReturns400) {
+    const std::vector<std::string> cases = {
+        "[]",
+        "123",
+        R"({"username":123,"password":"password123"})",
+        R"({"username":"testuser","password":123})",
+        R"({"username":"testuser"})",
+        R"({"password":"password123"})",
+    };
+    for (const auto& raw : cases) {
+        auto resp = do_login_raw(raw);
+        EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest) << "body=" << raw;
+        EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "bad request");
+    }
+}
+
 // 9b. 空 username / 空 password → 400（契约 rest §2.1 校验）
 TEST_F(AuthControllerTest, LoginEmptyFieldsReturn400) {
     const std::vector<std::pair<std::string, std::string>> cases = {

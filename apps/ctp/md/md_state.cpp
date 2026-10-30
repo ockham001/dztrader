@@ -140,7 +140,7 @@ std::optional<nlohmann::json> MdStateMachine::on_front_disconnected(int reason) 
 }
 
 std::optional<nlohmann::json> MdStateMachine::on_req_login() {
-    if (status_.state != MdState::Connected && status_.state != MdState::LoginFailed) {
+    if (!can_login()) {
         SPDLOG_WARN("login req rejected | state={}", magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
