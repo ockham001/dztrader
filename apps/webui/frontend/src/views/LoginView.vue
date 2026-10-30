@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { ApiError } from '@/api/client'
@@ -24,6 +24,14 @@ const errorMessage = ref<string | null>(null)
 const errorType = ref<'error' | 'warning' | null>(null)
 
 const passwordIcon = computed(() => (showPassword.value ? 'EyeInvisible' : 'Eye'))
+
+// 首屏聚焦用户名（#207 C5）：SPA 下 autofocus 属性在客户端路由挂载时不生效，
+// 必须 onMounted 手动 focus（用 ref 而非 document.querySelector，组件可多实例/可测）。
+const usernameInput = ref<HTMLInputElement | null>(null)
+onMounted(async () => {
+  await nextTick()
+  usernameInput.value?.focus()
+})
 
 async function handleLogin(): Promise<void> {
   errorMessage.value = null
@@ -139,10 +147,12 @@ function togglePassword(): void {
               <span class="ds-input__icon"><Icon name="UserCheck" :size="16" /></span>
               <input
                 id="username"
+                ref="usernameInput"
                 v-model="username"
                 type="text"
                 placeholder="请输入用户名"
                 autocomplete="username"
+                required
                 :disabled="auth.loading"
               />
             </div>
@@ -167,6 +177,7 @@ function togglePassword(): void {
                 :type="showPassword ? 'text' : 'password'"
                 placeholder="请输入密码"
                 autocomplete="current-password"
+                required
                 :disabled="auth.loading"
               />
               <button
