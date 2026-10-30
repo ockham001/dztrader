@@ -16,6 +16,7 @@ find_path(SQLITE3_INCLUDE_DIR NAMES sqlite3.h REQUIRED)
 add_library(dzweb_obj OBJECT
     msgpack_encoder.cpp
     config.cpp
+    system_info.cpp
     jwt.cpp
     event_monitor.cpp
     event_preloader.cpp

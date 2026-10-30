@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useSystemStore } from '@/stores/system'
 import { useToastStore } from '@/stores/toast'
 import { authApi, type ChangePasswordResponse } from '@/api/auth'
 import { ApiError } from '@/api/client'
@@ -43,6 +44,12 @@ const aboutOpen = ref(false)
 
 const displayName = computed(() => auth.user?.display_name || auth.user?.username || 'Admin')
 const avatarLetter = computed(() => displayName.value.charAt(0).toUpperCase())
+
+// 版本号唯一来源：后端 /api/system/info 的 version（工程版本，单一真相源 CMake project(VERSION)）。
+// 前端不再硬编码版本（#207 A3）——版本升级只改 CMakeLists.txt，无需回改组件。
+// 后端信息未到达/拉取失败时显示「未知」，不编造版本号。
+const system = useSystemStore()
+const aboutVersion = computed(() => system.version ? `Version ${system.version}` : 'Version 未知')
 
 function toggleUserDropdown(): void {
   userDropdownOpen.value = !userDropdownOpen.value
@@ -407,7 +414,7 @@ function openAbout(): void {
       <div :style="{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--spacer-16)', padding: 'var(--spacer-16) 0' }">
         <div :style="{ fontSize: '48px', fontWeight: 700, color: 'var(--brand-primary)' }">DZTrader</div>
         <div :style="{ fontSize: 'var(--body-lg-font-size)', color: 'var(--text-secondary)' }">DZTrader 量化交易系统</div>
-        <div :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-tertiary)' }">Version 0.0.1</div>
+        <div :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-tertiary)' }" data-test="about-version">{{ aboutVersion }}</div>
         <div :style="{ width: '100%', height: '1px', background: 'var(--border-neutral-l1)', margin: 'var(--spacer-8) 0' }"></div>
         <div :style="{ width: '100%' }">
           <div :style="{ fontSize: 'var(--body-base-font-size)', fontWeight: 600, marginBottom: 'var(--spacer-8)', color: 'var(--text-default)' }">技术栈 / 开源致谢</div>
