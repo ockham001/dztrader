@@ -10,17 +10,23 @@ import postcss, { type Root, type Rule } from 'postcss'
 // token 全空、页面破相。当时 stylelint 对 .css 文件完全空转（全局 customSyntax 设为
 // postcss-html，.css 解析出 0 个节点、0 警告，见 stylelint.config.mjs），于是潜伏两个月。
 //
-// 本 spec 不依赖浏览器运行时：纯文本 + postcss AST 断言，CI 成本可忽略（9 例 ~40ms）。
+// 本 spec 不依赖浏览器运行时：纯文本 + postcss AST 断言，CI 成本可忽略（11 例 ~40ms）。
 // 不变量（任一失守都会让某个主题下缺色，且浏览器不报错）：
 //   1. src 下每个 .css 都能被标准 CSS 解析器解析；
-//   2. 任何文件的规则选择器都不残留提前闭合痕迹（`*/` / 非 ASCII / 选择器跨行）——
-//      注意这类缺陷**不一定**让 postcss 抛错：残缺文字会被并进下一条规则的选择器；
+//   2. 任何文件的规则选择器都不残留提前闭合痕迹（`*/` / 非 ASCII）——
+//      注意这类缺陷**不一定**让 postcss 抛错：残缺文字会被并进下一条规则的选择器。
+//      已知边界：纯 ASCII 散文形态（如 `tokens for light and dark` 被并进选择器）本条
+//      漏过，由 lint:css 的 selector-type-no-unknown 兜住（实测 exit 2）；
 //   3. system 段的 `html:not(.light):not(.dark)` 必须位于 @media (prefers-color-scheme:
 //      dark) 内，且该条件是**裸的**正条件（`not` / `@supports` / 媒体列表都会让它失效或反转）；
 //   4. 三段对称：.dark 与 system 的 token 集合必须相等（`.dark⇒system` 同值 + system
-//      不得有独有 token），`:root` 字面量 ⊆ `.dark`/system，`:root` 每个 var() 别名的
-//      **目标 token** 在三段都被覆盖（别名靠 var() 在计算值阶段替换，只查"名字出现过"
-//      会把悬空目标放过去）。
+//      不得有独有 token）；`:root` 字面量 ⊆ `.dark`/system；深色段 ⊆ `:root` 浅色基线
+//      （反方向，否则删掉 `:root` 某个 token 会静默让浅色主题缺色）；`:root` 每个
+//      var() 别名的**目标 token** 在三段都被覆盖（别名靠 var() 在计算值阶段替换，
+//      只查"名字出现过"会把悬空目标放过去）。
+//      「浅色基线」取 `src` 下全部 .css 的 `:root` 并集 —— token 可以按文件分工定义
+//      （如 `--log-*` 的浅色值在 design-tokens.css、深色值在 theme.css），只看
+//      theme.css 的 :root 会误判。
 
 const CSS_ROOT = join(fileURLToPath(import.meta.url), '..', '..')
 // 扫描起点是 src（而不是 assets/css）：本次事故的形态在任何 .css 里都可能复发，
@@ -73,6 +79,29 @@ function requireThemeRoot(): Root {
 }
 
 const SYSTEM_SELECTOR = /html:not\(\.light\):not\(\.dark\)/
+
+/**
+ * 「浅色基线」= src 下全部 .css 的顶层 `:root` 声明并集。
+ * token 允许按文件分工（`--log-*` 的浅色值在 design-tokens.css、深色值在 theme.css），
+ * 所以基线不能只看 theme.css —— 否则每个跨文件定义的 token 都要开豁免口子。
+ */
+function collectLightBaseline(): Map<string, string> {
+  const baseline = new Map<string, string>()
+  for (const file of cssFiles) {
+    const outcome = parseFile(file)
+    if ('error' in outcome) continue // 解析失败另有专门用例报告
+    const entries = declarationsOf(outcome.root, (rule) => {
+      if (rule.selector.trim() !== ':root') return false
+      // 只认顶层 :root：媒体查询里的 :root 是条件作用域，不是全局浅色基线
+      for (let node = rule.parent; node; node = (node as { parent?: typeof node }).parent) {
+        if ((node as { type: string }).type === 'atrule') return false
+      }
+      return true
+    })
+    for (const [token, value] of entries) baseline.set(token, value)
+  }
+  return baseline
+}
 
 /**
  * system 段是否受「深色」媒体条件保护。
@@ -180,20 +209,20 @@ describe('#198 主题 token 回归', () => {
   it('.dark / system 的 token 都在 :root 有浅色基线（无单边深色 token）', () => {
     // 反方向补齐：只有"深色段 ⊆ 浅色段"仍会让「删掉 :root 某个字面量 token」静默通过
     // （浅色主题缺色，深色却仍有值——恰恰是 #198 的不对称形态）。
-    // 唯一豁免：日志高亮 token（--log-*）按设计只有深色取值，浅色主题刻意不定义。
-    const light = lightOf()
+    // 基线取全部 .css 的顶层 :root 并集，无豁免口子：`--log-*` 的浅色值定义在
+    // design-tokens.css，其深色值在 theme.css，天然通过。
+    const baseline = collectLightBaseline()
     const dark = darkOf()
     const system = systemOf()
-    const DARK_ONLY_ALLOWED = /^--log-/
     const problems: string[] = []
     for (const token of dark.keys()) {
-      if (!light.has(token) && !DARK_ONLY_ALLOWED.test(token)) {
-        problems.push(`${token} 只在 .dark 段定义、:root 无浅色基线 → 浅色主题下该 token 无值`)
+      if (!baseline.has(token)) {
+        problems.push(`${token} 只在 .dark 段定义、无 :root 浅色基线 → 浅色主题下该 token 无值`)
       }
     }
     for (const token of system.keys()) {
-      if (!light.has(token) && !DARK_ONLY_ALLOWED.test(token)) {
-        problems.push(`${token} 只在 system 段定义、:root 无浅色基线 → 浅色主题下该 token 无值`)
+      if (!baseline.has(token)) {
+        problems.push(`${token} 只在 system 段定义、无 :root 浅色基线 → 浅色主题下该 token 无值`)
       }
     }
     expect(problems, problems.join('\n')).toEqual([])
