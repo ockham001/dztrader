@@ -4,8 +4,11 @@
    ═══ 主题（light / dark / system）三大载体 ═══
    1. design-tokens.css —— 非主题色 token（radius/spacer/font/status/brand/accent/viz/shadow
       等，恒定不随主题变化），只定义在 :root，@light-only。
-   2. theme.css 本文件  —— 主题色 token（bg-*/text-*/icon-*/border-*/color-* 及对照别名），
+   2. theme.css 本文件  —— 主题色 token（bg- / text- / icon- / border- / color- 前缀及对照别名），
       分为三段：:root=浅色(默认)、.dark=深色、@media(prefers-color-scheme:dark){html:not(.light):not(.dark)}=跟随系统。
+      注意：本注释内禁止出现"星号紧跟斜杠"的字符组合（通配符写法后直接接注释结尾）；
+      那会提前闭合块注释，其余文字变成非法选择器，浏览器丢弃其后的整条规则
+      （#198 潜伏两个月的根因，由 lint:css + themeTokens.spec.ts 拦）。
    3. 组件/页面 —— 只消费 var(--x)，禁止裸写颜色（dz/token-literal 强制）。
 
    ═══ 主题机制（由 ThemeDropdown.setTheme 驱动，html classList）═══
@@ -205,6 +208,9 @@
     --bg-tooltip: #171717;
     --bg-card: #202020;
     --bg-invert: #e5e5e5;
+    --bg-invert-hover: #fafafa;
+    --bg-invert-active: #fafafa;
+    --bg-invert-disabled: #525252;
     --bg-brand: #4b3fe3;
     --bg-brand-hover: #6a6fff;
     --bg-brand-active: #3f31c6;
@@ -213,17 +219,29 @@
 
     --text-default: #e5e5e5;
     --text-default-hover: #fafafa;
+    --text-default-active: #fafafa;
     --text-secondary: #a1a1a1;
+    --text-secondary-hover: #e5e5e5;
+    --text-secondary-active: #e5e5e5;
     --text-tertiary: #737373;
     --text-disabled: #525252;
     --text-onbrand: #ffffff;
     --text-onaccent: #ffffff;
     --text-white: #ffffff;
     --text-brand: #6a6fff;
+    --text-brand-hover: #4b3fe3;
 
     --icon-default: #e5e5e5;
+    --icon-default-hover: #fafafa;
+    --icon-default-active: #fafafa;
     --icon-secondary: #a1a1a1;
+    --icon-secondary-hover: #e5e5e5;
+    --icon-secondary-active: #e5e5e5;
     --icon-tertiary: #737373;
+    --icon-disabled: #525252;
+    --icon-onbrand: #ffffff;
+    --icon-onaccent: #ffffff;
+    --icon-white: #ffffff;
     --icon-brand: #6a6fff;
     --icon-brand-hover: #6a6fff;
 

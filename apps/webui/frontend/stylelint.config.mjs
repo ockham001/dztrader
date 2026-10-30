@@ -1,9 +1,15 @@
 // stylelint 配置：标准规则 + 项目自定义 token 红线插件
 // 当前阶段设置 warning（摸清存量规模），P4 设计系统完成后再升 error。
+//
+// customSyntax 必须**按文件类型**限定（见底部 overrides），不能全局设成 postcss-html：
+// stylelint 的 customSyntax 是「所有被 lint 的文件都用这个语法解析」，把 .css 也交给
+// postcss-html 会让每个 .css 解析出 0 个节点、0 个 warning —— lint:css 对全部独立
+// 样式文件静默空转（#198：theme.css 头注释提前闭合导致浅色主题整体失效，潜伏两个月，
+// 期间 lint:css 一直 exit 0）。.vue 的 <style> 块才需要 postcss-html；.css 用默认
+// postcss 解析器，语法错误（含注释吞规则）才会如实报 CssSyntaxError。
 export default {
   extends: ['stylelint-config-standard'],
   plugins: ['./stylelint-plugin-tokens.mjs'],
-  customSyntax: 'postcss-html', // 支持 .vue <style> 块
   rules: {
     // ----- 项目 token 红线（P4-T3 升 error：任何字面量违规即失败，CI 门禁）-----
     // 注：插件的 `if (actual !== true) return` 要求 primary 必须为 true；
@@ -47,12 +53,28 @@ export default {
     ],
   },
   overrides: [
+    // .vue 的 <style> 块需要 postcss-html 才能从 SFC 里剥出样式；.css 保持默认 postcss
+    // 解析器（理由见文件头注释：#198 的静默空转）。
+    {
+      files: ['**/*.vue'],
+      customSyntax: 'postcss-html',
+    },
     // 全局变量定义文件例外：token 值本身必须用字面量定义
     {
       files: ['src/assets/css/**'],
       rules: {
         'dz/token-literal': null,
         'dz/no-ds-namespace': null,
+        // 资产 CSS 是「存量紧凑格式」而非组件样式（#198 后 .css 首次真正被 lint）：
+        // 这几条纯格式/写法偏好规则在修复后实测报 87 处存量噪音（= alpha 38 +
+        // color-function 38 + custom-property 空行 8 + vendor 前缀 2 + :not 写法 1），
+        // 与主题正确性无关。修复前只报 51 处，因为 theme.css 整文件解析失败被跳过。
+        // 与顶部已关闭的 8 条同类规则同口径 —— 格式归 P4/Prettier，不进门禁。
+        'alpha-value-notation': null,
+        'color-function-notation': null,
+        'value-no-vendor-prefix': null,
+        'custom-property-empty-line-before': null,
+        'selector-not-notation': null,
       },
     },
     // 组件三层（P4 T4）：只对 domain 业务组件目录强制「禁止定义 .ds-* 模式库类」。
