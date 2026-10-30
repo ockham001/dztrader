@@ -94,6 +94,18 @@ CONTRACT_REF_RES = (
 )
 # 指向本地归档设计文档（docs/specs/、未入库）的 §N 引用：无法验证，跳过裸 §N 校验。
 EXTERNAL_SECTION_PREFIXES = ("设计", "方案", "计划")
+# 指向**另一个**已编号文档的 §N：形如 `组件文档 §10`、`单元测试判据 §4.3`、
+# `[单元测试判据 §5.2](...)`、`` `general.md` §11.3 ``、`见 §2`（指向本文）除外。
+# 判据是「§N 前面紧邻一个文档名」——本文自己的裸 §N 前面是标点或空白。
+CROSS_DOC_SECTION_RES = (
+    # markdown 链接文本里的 §N：`[单元测试判据 §5.2](../unit-test-standard.md)`
+    re.compile(r"\[[^\]]*?§\d+(?:\.\d+)*[^\]]*?\]\([^)]*\)"),
+    # `组件文档 §10` / `单元测试判据 §4.3` / `closeout §2` / `build-appendix §N`
+    re.compile(r"(?:[\w\u4e00-\u9fff.-]+\s*文档|判据|closeout|build-appendix|checklist|"
+               r"review-checklist|ticket-closeout)\s*§\d+(?:\.\d+)*"),
+    # `` `general.md` §11.3 ``（反引号文件名，契约检查已覆盖，这里再挡一遍防漏）
+    re.compile(r"`[^`]+\.md`\s*§\d+(?:\.\d+)*"),
+)
 BARE_SECTION_RE = re.compile(r"§(\d+(?:\.\d+)*)")
 
 
@@ -257,7 +269,11 @@ def check_active_doc_sections(files, root):
         if not own_nums:
             continue  # 本文不编号小节 → 只可能在引用别人的小节，不归本检查
         masked = list(text)
+        # 先遮蔽「明确指向别处」的引用：契约四形态、跨文档标签、归档设计文档。
         for _kind, pattern in CONTRACT_REF_RES:
+            for m in pattern.finditer("".join(masked)):
+                masked[m.start():m.end()] = " " * (m.end() - m.start())
+        for pattern in CROSS_DOC_SECTION_RES:
             for m in pattern.finditer("".join(masked)):
                 masked[m.start():m.end()] = " " * (m.end() - m.start())
         bare_text = "".join(masked)
@@ -442,6 +458,24 @@ def selftest():
         if len(section_errors) != 1 or "§13" not in section_errors[0]:
             print("selftest FAIL: expected exactly one missing section (§13), got:",
                   section_errors)
+            return 1
+
+        # 跨文档 §N 不得被当成「本文的小节」（#213）：指向别的文档的引用一律先遮蔽，
+        # 否则任何「[单元测试判据 §4.3](…)」「组件文档 §10」都会误报——误报多的检查
+        # 最后会被关掉，那比没有检查更糟。
+        with open(doc, "w", encoding="utf-8") as fh:
+            fh.write("\n".join([
+                "## 1. 有效性",
+                "",
+                "见 [单元测试判据 §4.3](../unit-test-standard.md)、组件文档 §10、"
+                "`general.md` §11.3、设计 §9。",
+                "本文裸引用 §13 不存在 → 仍必须被抓到。",
+                "",
+            ]))
+        cross_errors = check_active_doc_sections(["docs/components/sample.md"], tmp)
+        if len(cross_errors) != 1 or "§13" not in cross_errors[0]:
+            print("selftest FAIL: cross-doc §N must be exempt, only §13 reported; got:",
+                  cross_errors)
             return 1
     print("selftest OK: symbol check detects missing symbols; path check covers regression + "
           "untracked-but-present files; section check catches stale §N in active docs")
