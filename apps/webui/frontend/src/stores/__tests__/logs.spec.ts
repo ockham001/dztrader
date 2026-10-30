@@ -302,6 +302,14 @@ describe('useLogsStore', () => {
       expect(store.processes[0].type).toBe('未知')
     })
 
+    it('WebUI 自进程名优先于类别前缀：改名后仍识别为 WebUI（#199 分类收敛后的既有语义）', () => {
+      const system = useSystemStore()
+      system.processName = 'dzmd_webui'  // 部署时把 dzweb 改名成与行情前缀相同的名字
+      const store = useLogsStore()
+      store.applySnapshot({ dzmd_webui: { log_config: { level: 'info' } } })
+      expect(store.processes[0].type).toBe('WebUI')
+    })
+
     it('竞态：快照先到（后端进程名未就绪）→ system-info 到达后重算既有列表类型', async () => {
       const system = useSystemStore()
       system.processName = ''  // /api/system/info 尚未返回

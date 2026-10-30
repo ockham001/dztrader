@@ -3,9 +3,12 @@ import { computed, onMounted, ref, watch } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import ThemeDropdown from './ThemeDropdown.vue'
 import { UNAVAILABLE_TEXT } from '@/composables/format'
+import { processCategory, type ProcessCategory } from '@/composables/processNaming'
 import { useBreakpoint } from '@/composables/useBreakpoint'
-import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
+import { processStateLevel, processStateText, type ProcessLevel } from '@/composables/useProcessState'
+import { resourceLevel, worstResourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
 import { useWebSocket } from '@/composables/wsClient'
+import { useProcessStore } from '@/stores/process'
 import { useSysmonStore } from '@/stores/sysmon'
 
 const emit = defineEmits<{ toggleMobile: [] }>()
@@ -208,9 +211,6 @@ function toggleDiskExpanded(): void {
 // 展开态只属于当次宽屏布局：跨断点（含回到宽屏）回到「前 2 + 其余 N 个」的默认密度（#127 AC「不持久化」）
 watch(isWide, () => { diskExpanded.value = false })
 
-/** 资源等级排序：窄屏状态图标取「最差等级」（danger > warn > normal） */
-const RESOURCE_LEVEL_RANK: Record<ResourceLevel, number> = { normal: 0, warn: 1, danger: 2 }
-
 interface ResourceGauge {
   stateClass: string
   title: string
@@ -230,19 +230,80 @@ const resourceGauge = computed<ResourceGauge>(() => {
     }
   }
   const readings: Pick<ResourceBadge, 'level' | 'title'>[] = [cpuBadge.value, memBadge.value, ...diskBadges.value]
-  let worst: ResourceLevel | null = null
-  for (const reading of readings) {
-    if (reading.level === null) continue
-    if (worst === null || RESOURCE_LEVEL_RANK[reading.level] > RESOURCE_LEVEL_RANK[worst]) {
-      worst = reading.level
-    }
-  }
+  // 取最差等级的唯一实现（useResourceLevel.worstResourceLevel）；全部不可判读 → null 走中性等待态
+  const worst = worstResourceLevel(readings.map(reading => reading.level))
   // title 汇总各资源读数：沿用各徽章自身的 title 文案，避免在窄屏另造一套格式化口径
   return {
     stateClass: resourceStateClass(worst),
     title: readings.map(reading => reading.title).join(' · '),
   }
 })
+
+// 顶栏服务状态徽章（#199）：聚合 process_status 镜像，不再写死 MD / TD / STG 状态。
+// 数据源：WS process_status 增量 + 建连 snapshot 全量 → stores/process.ts 的 statuses 镜像；
+// 进程类别由 composables/processNaming.ts 唯一判定（日志页进程类型推导共用同一规则）。
+// 聚合逻辑与资源徽章（#127）同层留在组件内：两类徽章都只服务顶栏、无第二个消费者，
+// 下沉 composable 只会多一层转手（需要时再抽，不在本票提前抽象）。
+// 镜像未到达 / 该类别无进程 = 中性「未知」，不得默认绿。
+const processStore = useProcessStore()
+
+/** 服务徽章对应的进程类别（master / sysmon / WebUI 不属于 MD / TD / STG 服务） */
+type ServiceCategory = Extract<ProcessCategory, 'md' | 'td' | 'strategy'>
+
+interface ServiceDefinition {
+  /** DOM 锚点 id（#199 要求保留，供测试 / E2E 断言） */
+  id: 'resMd' | 'resTd' | 'resStg'
+  label: string
+  /** 进程类别（判定规则唯一实现见 composables/processNaming.ts） */
+  category: ServiceCategory
+  /** 中文服务名（GLOSSARY 术语：行情源 / 交易接口 / 策略） */
+  name: string
+}
+
+const SERVICE_DEFINITIONS: readonly ServiceDefinition[] = [
+  { id: 'resMd', label: 'MD', category: 'md', name: '行情源' },
+  { id: 'resTd', label: 'TD', category: 'td', name: '交易接口' },
+  { id: 'resStg', label: 'STG', category: 'strategy', name: '策略' },
+]
+
+interface ServiceBadge {
+  id: ServiceDefinition['id']
+  label: string
+  level: ProcessLevel
+  title: string
+}
+
+/**
+ * 状态色 class 复用资源徽章的同一映射（`resourceStateClass`，#125）：未知态走中性
+ * unavailable 类，不套 status 色，也不命中 layout.css 的 warn / danger 闪烁规则
+ * （#199 AC「未知不闪烁」）。
+ */
+function serviceStateClass(level: ProcessLevel): string {
+  return resourceStateClass(level === 'unknown' ? null : level)
+}
+
+/** 单个服务类别 → 聚合等级 + title（多进程取最差；title 列出各进程状态，未知时说明原因） */
+function aggregateService(def: ServiceDefinition): ServiceBadge {
+  const statuses = Object.values(processStore.statuses)
+  const matched = statuses.filter(status => processCategory(status.name) === def.category)
+  // 多进程聚合取「最差等级」：与窄屏资源图标共用 worstResourceLevel 唯一实现；
+  // unknown 不是进程状态等级，转 null 不参与取最差（全部不可判读时保持中性未知）
+  const worst = worstResourceLevel(matched.map(status => {
+    const level = processStateLevel(status.state)
+    return level === 'unknown' ? null : level
+  }))
+  let title: string
+  if (matched.length === 0) {
+    title = statuses.length === 0
+      ? `${def.name}状态未知（等待进程状态镜像）`
+      : `${def.name}状态未知（无对应进程）`
+  } else {
+    title = `${def.name}：${matched.map(status => `${status.name} ${processStateText(status.state)}`).join('；')}`
+  }
+  return { id: def.id, label: def.label, level: worst ?? 'unknown', title }
+}
+
+const serviceBadges = computed<ServiceBadge[]>(() => SERVICE_DEFINITIONS.map(aggregateService))
 </script>
 
 <template>
@@ -262,23 +323,25 @@ const resourceGauge = computed<ResourceGauge>(() => {
         id="topbarResources"
         :class="{ 'topbar__resources--gauge': !isWide }"
       >
-        <!-- Service status: MD / TD / STG -->
-        <span class="topbar__resource topbar__resource--svc topbar__resource--normal" id="resMd" title="行情服务">
-          <span class="res-label">MD</span>
+        <!-- 服务状态徽章（#199）：状态由 process_status 镜像按进程类别聚合，不再写死。
+             图标随状态切换（勾 / 警告三角 / 叉 / 中性横线），颜色由状态类给出；
+             未知态走中性 unavailable 类 —— layout.css 的闪烁规则只匹配 warn / danger
+             （仅真实告警闪烁），因此未知态不闪烁。 -->
+        <span
+          v-for="badge in serviceBadges"
+          :key="badge.id"
+          class="topbar__resource topbar__resource--svc"
+          :class="serviceStateClass(badge.level)"
+          :id="badge.id"
+          :data-level="badge.level === 'unknown' ? undefined : badge.level"
+          :title="badge.title"
+        >
+          <span class="res-label">{{ badge.label }}</span>
           <span class="res-icon">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          </span>
-        </span>
-        <span class="topbar__resource topbar__resource--svc topbar__resource--warn" id="resTd" title="交易服务">
-          <span class="res-label">TD</span>
-          <span class="res-icon">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          </span>
-        </span>
-        <span class="topbar__resource topbar__resource--svc topbar__resource--danger" id="resStg" title="策略服务">
-          <span class="res-label">STG</span>
-          <span class="res-icon">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            <svg v-if="badge.level === 'normal'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            <svg v-else-if="badge.level === 'warn'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <svg v-else-if="badge.level === 'danger'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            <svg v-else width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
           </span>
         </span>
         <span class="topbar__resource-divider"></span>
@@ -381,8 +444,10 @@ const resourceGauge = computed<ResourceGauge>(() => {
   background: var(--status-error-default);
 }
 
-/* 指标不可用 / 快照未到达：中性色，不得用状态色或 0 冒充数据 */
-.topbar__resource--unavailable .res-value {
+/* 指标不可用 / 快照未到达 / 服务状态未知：中性色，不得用状态色或 0 冒充数据；
+   服务徽章只有 res-label / res-icon，中性图标颜色也由本规则给出（#199） */
+.topbar__resource--unavailable .res-value,
+.topbar__resource--unavailable .res-icon {
   color: var(--text-tertiary);
 }
 

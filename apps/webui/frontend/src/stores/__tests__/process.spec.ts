@@ -102,6 +102,30 @@ describe('useProcessStore', () => {
       store.applyProcessConfig([{ a: 1 }] as never)
       expect(Object.keys(store.configs)).toHaveLength(0)
     })
+
+    // 契约 process: 条目消失 = 进程已移除——状态镜像必须同步清理，否则
+    // 前端聚合（顶栏服务徽章 #199）会把已删除进程的旧状态继续当作现状
+    it('全量覆盖时同步清理已移除进程的状态镜像', () => {
+      const store = useProcessStore()
+      store.applyProcessConfig({ dzmd_ctp: { a: 1 }, dzmd_other: { b: 2 } })
+      store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Running', pid: 1 })
+      store.applyProcessStatus({ name: 'dzmd_other', state: 'Running', pid: 2 })
+
+      store.applyProcessConfig({ dzmd_ctp: { a: 2 } })
+
+      expect(store.statuses['dzmd_other']).toBeUndefined()
+      expect(store.statuses['dzmd_ctp'].state).toBe('Running')  // 仍注册的进程状态保留
+    })
+
+    it('全量覆盖为空时清空全部状态镜像（全部进程已移除）', () => {
+      const store = useProcessStore()
+      store.applyProcessConfig({ dzmd_ctp: { a: 1 } })
+      store.applyProcessStatus({ name: 'dzmd_ctp', state: 'Running', pid: 1 })
+
+      store.applyProcessConfig({})
+
+      expect(Object.keys(store.statuses)).toHaveLength(0)
+    })
   })
 
   describe('start', () => {

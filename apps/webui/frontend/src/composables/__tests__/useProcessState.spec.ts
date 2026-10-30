@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { processStateText, processStateColor, isStateIdle } from '../useProcessState'
+import { processStateText, processStateColor, processStateLevel, isStateIdle } from '../useProcessState'
 
 describe('processStateText', () => {
   it('PascalCase key 映射为中文文案（契约 process ChildState）', () => {
@@ -36,5 +36,21 @@ describe('isStateIdle', () => {
     expect(isStateIdle('Running', 'online')).toBe(false)
     expect(isStateIdle('Stopped', 'offline')).toBe(false)
     expect(isStateIdle('', '')).toBe(false)
+  })
+})
+
+describe('processStateLevel', () => {
+  it('Running → normal；Starting / Stopping → warn；Stopped / Crashed → danger（#199 徽章聚合口径）', () => {
+    expect(processStateLevel('Running')).toBe('normal')
+    expect(processStateLevel('Starting')).toBe('warn')
+    expect(processStateLevel('Stopping')).toBe('warn')
+    expect(processStateLevel('Stopped')).toBe('danger')
+    expect(processStateLevel('Crashed')).toBe('danger')
+  })
+
+  it('null / 空串 / 未映射状态 → unknown（中性，不得默认绿）', () => {
+    expect(processStateLevel(null)).toBe('unknown')
+    expect(processStateLevel('')).toBe('unknown')
+    expect(processStateLevel('unknown_state')).toBe('unknown')
   })
 })
