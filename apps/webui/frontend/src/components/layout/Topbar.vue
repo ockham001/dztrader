@@ -4,8 +4,10 @@ import Icon from '@/components/shared/Icon.vue'
 import ThemeDropdown from './ThemeDropdown.vue'
 import { UNAVAILABLE_TEXT } from '@/composables/format'
 import { useBreakpoint } from '@/composables/useBreakpoint'
+import { processStateLevel, processStateText, type ProcessLevel } from '@/composables/useProcessState'
 import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
 import { useWebSocket } from '@/composables/wsClient'
+import { useProcessStore } from '@/stores/process'
 import { useSysmonStore } from '@/stores/sysmon'
 
 const emit = defineEmits<{ toggleMobile: [] }>()
@@ -28,6 +30,67 @@ const connStatus = computed<{ text: string; dotClass: string }>(() => {
       return { text: '已断开', dotClass: 'topbar__conn-dot--error' }
   }
 })
+
+// 顶栏服务状态徽章（#199）：聚合 process_status 镜像，不再写死 MD / TD / STG 状态。
+// 数据源：WS process_status 增量 + 建连 snapshot 全量 → stores/process.ts 的 statuses 镜像；
+// 类别按进程命名规则归类（契约 general §5：dzmd_* / dztd_* / stg_*，与 stores/logs.ts
+// deriveType 的日志进程分类同源）。镜像未到达 / 该类别无进程 = 中性「未知」，不得默认绿。
+const processStore = useProcessStore()
+
+interface ServiceDefinition {
+  /** DOM 锚点 id（#199 要求保留，供测试 / E2E 断言） */
+  id: 'resMd' | 'resTd' | 'resStg'
+  label: string
+  /** 进程名前缀（契约 general §5 命名规则） */
+  prefix: string
+  /** 中文服务名（GLOSSARY 术语：行情源 / 交易接口 / 策略） */
+  name: string
+}
+
+const SERVICE_DEFINITIONS: readonly ServiceDefinition[] = [
+  { id: 'resMd', label: 'MD', prefix: 'dzmd_', name: '行情源' },
+  { id: 'resTd', label: 'TD', prefix: 'dztd_', name: '交易接口' },
+  { id: 'resStg', label: 'STG', prefix: 'stg_', name: '策略' },
+]
+
+/** 多进程聚合取「最差」等级（danger > warn > normal > unknown） */
+const PROCESS_LEVEL_RANK: Record<ProcessLevel, number> = { unknown: 0, normal: 1, warn: 2, danger: 3 }
+
+interface ServiceBadge {
+  id: ServiceDefinition['id']
+  label: string
+  level: ProcessLevel
+  title: string
+}
+
+/**
+ * 状态色 class 复用资源徽章的中性不可用类：未知态不套 status 色，
+ * 也不命中 layout.css 的 warn / danger 闪烁规则（#199 AC「未知不闪烁」）。
+ */
+function serviceStateClass(level: ProcessLevel): string {
+  return level === 'unknown' ? 'topbar__resource--unavailable' : `topbar__resource--${level}`
+}
+
+/** 单个服务类别 → 聚合等级 + title（title 列出各进程状态，未知时说明原因） */
+function aggregateService(def: ServiceDefinition): ServiceBadge {
+  const matched = Object.values(processStore.statuses).filter(status => status.name.startsWith(def.prefix))
+  let level: ProcessLevel = 'unknown'
+  for (const status of matched) {
+    const current = processStateLevel(status.state)
+    if (PROCESS_LEVEL_RANK[current] > PROCESS_LEVEL_RANK[level]) level = current
+  }
+  let title: string
+  if (matched.length === 0) {
+    title = Object.keys(processStore.statuses).length === 0
+      ? `${def.name}状态未知（等待进程状态镜像）`
+      : `${def.name}状态未知（无 ${def.prefix}* 进程）`
+  } else {
+    title = `${def.name}：${matched.map(status => `${status.name} ${processStateText(status.state)}`).join('；')}`
+  }
+  return { id: def.id, label: def.label, level, title }
+}
+
+const serviceBadges = computed<ServiceBadge[]>(() => SERVICE_DEFINITIONS.map(aggregateService))
 
 // 顶栏资源徽章（CPU / 内存 / 各卷）：契约 sysmon 实时快照（固定实例 dzsysmon）。
 // 首次挂载经 REST 补拉镜像，之后只由 WS 推送刷新 —— 刷新基线由发送方
@@ -262,23 +325,25 @@ const resourceGauge = computed<ResourceGauge>(() => {
         id="topbarResources"
         :class="{ 'topbar__resources--gauge': !isWide }"
       >
-        <!-- Service status: MD / TD / STG -->
-        <span class="topbar__resource topbar__resource--svc topbar__resource--normal" id="resMd" title="行情服务">
-          <span class="res-label">MD</span>
+        <!-- 服务状态徽章（#199）：状态由 process_status 镜像按进程类别聚合，不再写死。
+             图标随状态切换（勾 / 警告三角 / 叉 / 中性横线），颜色由状态类给出；
+             未知态走中性 unavailable 类 —— layout.css 的闪烁规则只匹配 warn / danger
+             （仅真实告警闪烁），因此未知态不闪烁。 -->
+        <span
+          v-for="badge in serviceBadges"
+          :key="badge.id"
+          class="topbar__resource topbar__resource--svc"
+          :class="serviceStateClass(badge.level)"
+          :id="badge.id"
+          :data-state="badge.level"
+          :title="badge.title"
+        >
+          <span class="res-label">{{ badge.label }}</span>
           <span class="res-icon">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          </span>
-        </span>
-        <span class="topbar__resource topbar__resource--svc topbar__resource--warn" id="resTd" title="交易服务">
-          <span class="res-label">TD</span>
-          <span class="res-icon">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          </span>
-        </span>
-        <span class="topbar__resource topbar__resource--svc topbar__resource--danger" id="resStg" title="策略服务">
-          <span class="res-label">STG</span>
-          <span class="res-icon">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            <svg v-if="badge.level === 'normal'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            <svg v-else-if="badge.level === 'warn'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <svg v-else-if="badge.level === 'danger'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            <svg v-else width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
           </span>
         </span>
         <span class="topbar__resource-divider"></span>

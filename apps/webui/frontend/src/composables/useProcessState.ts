@@ -13,6 +13,23 @@ export function processStateText(state: string | null): string {
   return map[state] || state
 }
 
+// 进程状态展示等级（顶栏服务徽章聚合用，#199）：unknown = 中性「未知」，
+// 不套状态色、也不得命中 layout.css 的 warn / danger 闪烁规则。
+export type ProcessLevel = 'normal' | 'warn' | 'danger' | 'unknown'
+
+/**
+ * 进程状态 → 展示等级。Running 正常、Starting/Stopping 过渡（warn）、
+ * Stopped/Crashed 需关注（danger，服务已离线）；空值/未映射 → unknown。
+ * 注意与 processStateColor 的口径差异：卡片上的状态文字对 Stopped 用中性 tertiary，
+ * 而顶栏徽章是常驻在线状态指示，Stopped 必须显性告警（#199 AC）。
+ */
+export function processStateLevel(state: string | null): ProcessLevel {
+  if (state === 'Running') return 'normal'
+  if (state === 'Starting' || state === 'Stopping') return 'warn'
+  if (state === 'Stopped' || state === 'Crashed') return 'danger'
+  return 'unknown'
+}
+
 export function processStateColor(state: string | null): string {
   if (!state) return 'var(--text-tertiary)'
   if (state === 'Running') return 'var(--status-success-default)'
