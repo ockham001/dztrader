@@ -23,14 +23,14 @@ void SysmonCtrl::reply_mirror_domain(
 void SysmonCtrl::get_snapshot(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
-    (void)req;  // 认证由 JWT advice 处理，读端点不做角色判断（《帧契约：REST》§2.8）
+    (void)req;  // 认证由 JWT advice 处理，读端点不做角色判断（契约 rest §2.8）
     reply_mirror_domain("sysmon_snapshot", "sysmon snapshot not available", std::move(callback));
 }
 
 void SysmonCtrl::get_history(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
-    // 认证由 JWT advice 处理，本端点所有已认证用户可读（《帧契约：REST》§2.8）。
+    // 认证由 JWT advice 处理，本端点所有已认证用户可读（契约 rest §2.8）。
     // 历史库路径在构造时注入（生产为 $DZTRADER_HOME/db/sysmon.db）；未注入时按「历史不可用」
     // 降级，而不是去猜一个路径读错文件。
     if (history_db_path_.empty()) {
@@ -57,7 +57,7 @@ void SysmonCtrl::get_history(
 void SysmonCtrl::get_config(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
-    (void)req;  // 认证由 JWT advice 处理，读端点不做角色判断（《帧契约：REST》§2.8）
+    (void)req;  // 认证由 JWT advice 处理，读端点不做角色判断（契约 rest §2.8）
     // 只读镜像、不产生帧往返（《帧契约：系统监控》§6）：生效值即 RTN_SYSMON_CONFIG 的回推结果。
     reply_mirror_domain("sysmon_config", "sysmon config not available", std::move(callback));
 }
@@ -65,7 +65,7 @@ void SysmonCtrl::get_config(
 void SysmonCtrl::set_config(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
-    // 《帧契约：REST》§2.8：写类端点需 admin（服务端校验，不是前端隐藏）。
+    // 契约 rest §2.8：写类端点需 admin（服务端校验，不是前端隐藏）。
     if (!is_admin(req)) {
         callback(error_response(drogon::k403Forbidden, "admin required"));
         return;

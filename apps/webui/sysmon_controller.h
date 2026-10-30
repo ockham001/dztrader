@@ -14,7 +14,7 @@
 
 namespace dztrader::webui {
 
-/// 系统监控 REST（《帧契约：REST》§2.8，《帧契约：系统监控》§6）。
+/// 系统监控 REST（契约 rest §2.8，《帧契约：系统监控》§6）。
 /// 读端点（snapshot / history / config）只要求已认证：认证在 JWT advice 层完成，
 /// handler 内**不**做角色判断；写端点（PUT config）在 handler 内校验 admin。
 /// - GET /api/sysmon/snapshot：读取镜像当前快照；镜像尚未就绪回 503。

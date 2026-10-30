@@ -1,6 +1,6 @@
 // 登录失败错误码 → 用户可读文案（单一真相源）。
 //
-// 契约来源：《帧契约：REST》§1/§2.1 —— 登录失败（POST /api/login）错误体为
+// 契约来源：契约 rest §1/§2.1 —— 登录失败（POST /api/login）错误体为
 // `{"error": <snake_case_code>}`，**不携带 `code` 字段**，`error` 即机器码；
 // HTTP 状态码表达类别（401 凭据/状态/封禁类，423 锁定），machine code 清单：
 //   invalid_credentials / account_disabled / ip_banned → 401

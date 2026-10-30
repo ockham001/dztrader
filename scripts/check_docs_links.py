@@ -12,6 +12,12 @@ Skipped: absolute URLs (http/https/mailto) and links into local-only archives
 符号检查（issue #191）：活跃文档里反引号包裹的 snake_case 标识符必须是代码里存在的
 符号。复盘 #158-#161 发现「文档仍列已删除函数」（#161 第 2 轮审查 HARD）反复出现；
 路径检查只能覆盖文件名，覆盖不到符号名。
+
+源码注释契约引用（issue #221）：apps/、libs/ 源码注释里的显式契约引用
+（`契约 <name> §N` / `《帧契约：<name>》§N` / `总则 §N`）必须指向存在的契约且该契约声明了
+这个编号小节。字符串/字符/原始字符串字面量以及代码本身不算注释——#207 的 blocking
+finding 是 `stores/logs.ts` 注释引用 `契约 strategy §5`（该契约根本没有编号小节），
+旧的「只扫 *.md」检查覆盖不到代码注释。
 """
 
 import os
@@ -43,6 +49,13 @@ SYMBOL_SCAN_SUFFIXES = (".h", ".hpp", ".cpp", ".cc", ".c", ".py", ".sh", ".ps1",
                         ".tsx", ".mjs", ".cmake", ".json", ".yml", ".yaml", ".toml", ".txt")
 SYMBOL_SCAN_SKIP_DIRS = {"node_modules", "dist", "build", "install", ".cache", ".git",
                          "third_party", ".worktrees"}
+# 源码注释契约引用检查（issue #221）的扫描范围与注释语法：C 系语言有 // 与 /* */
+# （.vue 模板区另有 <!-- -->），hash 系语言只有行注释；CMakeLists.txt 按 hash 注释处理。
+SOURCE_CONTRACT_ROOTS = ("apps", "libs")
+C_LIKE_COMMENT_SUFFIXES = (".h", ".hpp", ".c", ".cc", ".cpp", ".ts", ".tsx", ".js", ".mjs",
+                           ".vue")
+HASH_COMMENT_SUFFIXES = (".py", ".sh", ".ps1", ".cmake")
+HASH_COMMENT_FILES = ("CMakeLists.txt",)
 # 本检查器源码不参与 token 索引（理由见 code_token_index）。
 CHECKER_REL_PATH = "scripts/check_docs_links.py"
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -107,6 +120,11 @@ CROSS_DOC_SECTION_RES = (
     re.compile(r"`[^`]+\.md`\s*§\d+(?:\.\d+)*"),
 )
 BARE_SECTION_RE = re.compile(r"§(\d+(?:\.\d+)*)")
+# 源码注释只认显式引用形式（标题式 / 文件名式 / 总则式）：stemonly（裸 `<小写词> §N`）
+# 在散文里误报面太大，且源码注释里的裸 §N 无法机械判定指向哪份契约，不在此检查范围。
+SOURCE_CONTRACT_REF_RES = tuple(
+    (kind, pattern) for kind, pattern in CONTRACT_REF_RES
+    if kind in ("title", "stem", "general"))
 
 
 def strip_code_fences(text):
@@ -389,6 +407,173 @@ def check_backticked_symbols(files, root):
     return errors
 
 
+def c_like_comment_text(text):
+    """Return text with only comment content kept; code and string literals blanked.
+
+    Newlines are preserved so line numbers from the result match the source file.
+    Handles // line comments, /* */ block comments, .vue <!-- --> comments, and blanks
+    out string/char literals (including C++ raw strings and JS template literals) so a
+    contract reference inside a string is not mistaken for a comment.
+    """
+    out = ["\n" if ch == "\n" else " " for ch in text]
+    i, n = 0, len(text)
+    state = "code"  # code | line | block | html | string
+    quote = ""
+    while i < n:
+        ch = text[i]
+        if state == "code":
+            if ch == "/" and text.startswith("//", i):
+                state = "line"
+                i += 2
+                continue
+            if ch == "/" and text.startswith("/*", i):
+                state = "block"
+                i += 2
+                continue
+            if ch == "<" and text.startswith("<!--", i):
+                state = "html"
+                i += 4
+                continue
+            if ch == "R" and text.startswith('R"', i):
+                # C++ raw string R"delim(...)delim": blank it to its closing sequence.
+                j = i + 2
+                while j < n and text[j] not in '(\n' and j - i < 20:
+                    j += 1
+                if j < n and text[j] == "(":
+                    close = ")" + text[i + 2:j] + '"'
+                    end = text.find(close, j + 1)
+                    if end != -1:
+                        i = end + len(close)
+                        continue
+            if ch in ('"', "'", "`"):
+                state, quote = "string", ch
+            i += 1
+            continue
+        if state == "string":
+            if ch == "\\" and quote != "`":
+                i += 2
+                continue
+            if ch == quote:
+                state = "code"
+            elif ch == "\n" and quote != "`":
+                state = "code"  # unterminated single-line literal: recover
+            i += 1
+            continue
+        if state == "line":
+            if ch == "\n":
+                state = "code"
+            else:
+                out[i] = ch
+            i += 1
+            continue
+        if state == "block":
+            if ch == "*" and text.startswith("*/", i):
+                state = "code"
+                i += 2
+                continue
+            out[i] = ch
+            i += 1
+            continue
+        if ch == "-" and text.startswith("-->", i):  # html
+            state = "code"
+            i += 3
+            continue
+        out[i] = ch
+        i += 1
+    return "".join(out)
+
+
+def hash_comment_text(text):
+    """Return text with only hash line-comment content kept (Python/shell/CMake).
+
+    Quoted values are blanked so a '#' inside a string is not treated as a comment;
+    newlines are preserved for line numbers.
+    """
+    out = ["\n" if ch == "\n" else " " for ch in text]
+    i, n = 0, len(text)
+    state = "code"  # code | line | string
+    quote = ""
+    while i < n:
+        ch = text[i]
+        if state == "code":
+            if ch in ('"', "'"):
+                state, quote = "string", ch
+            elif ch == "#":
+                state = "line"
+            i += 1
+            continue
+        if state == "string":
+            if ch == "\\" and quote == '"':
+                i += 2
+                continue
+            if ch == quote or ch == "\n":
+                state = "code"  # closing quote, or unterminated value: recover
+            i += 1
+            continue
+        if ch == "\n":
+            state = "code"
+        else:
+            out[i] = ch
+        i += 1
+    return "".join(out)
+
+
+def source_comment_files(root):
+    """Yield (repo-relative path, comment-only text) for files whose comments may cite contracts."""
+    for scan_root in SOURCE_CONTRACT_ROOTS:
+        base_dir = os.path.join(root, scan_root)
+        if not os.path.isdir(base_dir):
+            continue
+        for dirpath, dirnames, filenames in os.walk(base_dir):
+            dirnames[:] = [d for d in dirnames if d not in SYMBOL_SCAN_SKIP_DIRS]
+            for filename in filenames:
+                if filename in HASH_COMMENT_FILES:
+                    extract = hash_comment_text
+                elif filename.endswith(C_LIKE_COMMENT_SUFFIXES):
+                    extract = c_like_comment_text
+                elif filename.endswith(HASH_COMMENT_SUFFIXES):
+                    extract = hash_comment_text
+                else:
+                    continue
+                path = os.path.join(dirpath, filename)
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as fh:
+                        text = fh.read()
+                except OSError:
+                    continue
+                yield os.path.relpath(path, root).replace(os.sep, "/"), extract(text)
+
+
+def check_source_contract_refs(root, idx):
+    """Validate explicit contract §N references inside source comments (issue #221).
+
+    A stale reference such as ``契约 strategy §5`` is invisible to the Markdown-only
+    checks but misleads the next reader: #207 shipped exactly that in
+    ``apps/webui/frontend/src/stores/logs.ts`` even though ``strategy.md`` declares no
+    numbered sections. Only the explicit forms are checked -- a bare ``§N`` in a source
+    comment names no contract, so it cannot be resolved mechanically (the doc-side
+    rules for bare ``§N`` live in check_contract_refs / check_active_doc_sections).
+    """
+    general_rel = CONTRACT_DIR + "general.md"
+    errors = []
+    for rel, text in source_comment_files(root):
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for kind, pattern in SOURCE_CONTRACT_REF_RES:
+                for m in pattern.finditer(line):
+                    if kind == "general":
+                        num, target = m.group(1), general_rel
+                    else:
+                        raw, num = m.group(1), m.group(2)
+                        target = idx["titles"].get(raw) or idx["stems"].get(raw)
+                    if target is None:
+                        errors.append("%s:%d: unknown contract in source comment -> %s"
+                                      % (rel, lineno, m.group(0)))
+                    elif num not in idx["headings"].get(target, set()):
+                        errors.append("%s:%d: missing contract section in source comment -> %s"
+                                      % (rel, lineno, m.group(0)))
+    return errors
+
+
 def selftest():
     """Self-test for the symbol check on a throwaway tree (worktree untouched)."""
     with tempfile.TemporaryDirectory(prefix="dz_docs_links_selftest_") as tmp:
@@ -477,8 +662,43 @@ def selftest():
             print("selftest FAIL: cross-doc §N must be exempt, only §13 reported; got:",
                   cross_errors)
             return 1
+
+        # 源码注释契约引用检查（#221）：注释里的显式契约 §N 引用必须指向存在的契约与
+        # 编号小节；字符串（含原始字符串）、模板正文与代码本身不算注释。坏引用覆盖四种
+        # 注释形态（行注释 / 块注释 / .vue 的 HTML 注释 / 未知契约名），必须全部报出。
+        with open(os.path.join(tmp, CONTRACT_DIR, "sample.md"), "w", encoding="utf-8") as fh:
+            fh.write("# 帧契约：示例契约\n\n## 2. 规则\n\n### 2.1 小节\n")
+        os.makedirs(os.path.join(tmp, "apps", "demo"), exist_ok=True)
+        with open(os.path.join(tmp, "apps", "demo", "sample.cpp"), "w", encoding="utf-8") as fh:
+            fh.write("\n".join([
+                "// 契约 sample §2.1 存在（文件名式）→ 通过。",
+                "// 《帧契约：示例契约》§2 存在（标题式）→ 通过。",
+                "// 总则 §11.3 存在（总则式）→ 通过。",
+                "/* 块注释：契约 sample §98 不存在 → 必须被抓到。 */",
+                "// 契约 ghost §1 未知契约 → 必须被抓到。",
+                'const char* text = "契约 sample §99 在字符串里 → 忽略。";',
+                'const char* raw = R"(契约 sample §96 在原始字符串里 → 忽略)";',
+                "auto value = 1; // 契约 sample §9 小节不存在 → 必须被抓到。",
+                "",
+            ]))
+        with open(os.path.join(tmp, "apps", "demo", "panel.vue"), "w", encoding="utf-8") as fh:
+            fh.write("\n".join([
+                "<template>",
+                "  <!-- HTML 注释：契约 sample §97 不存在 → 必须被抓到。 -->",
+                "  <div>模板正文：契约 sample §95 不是注释 → 忽略。</div>",
+                "</template>",
+                "",
+            ]))
+        source_errors = check_source_contract_refs(tmp, contract_index(tmp))
+        expected_tokens = ("§97", "§98", "ghost", "§9")
+        if len(source_errors) != len(expected_tokens) or not all(
+                any(token in err for err in source_errors) for token in expected_tokens):
+            print("selftest FAIL: source comments must flag exactly §97/§98/ghost/§9, got:",
+                  source_errors)
+            return 1
     print("selftest OK: symbol check detects missing symbols; path check covers regression + "
-          "untracked-but-present files; section check catches stale §N in active docs")
+          "untracked-but-present files; section check catches stale §N in active docs; "
+          "source-comment check catches stale contract refs and ignores strings")
     return 0
 
 
@@ -524,18 +744,21 @@ def main(argv):
                     if slugify(urllib.parse.unquote(frag)) not in slugs_cache[resolved]:
                         errors.append(f"{rel}:{lineno}: missing anchor -> {target}")
 
-    contract_errors = check_contract_refs(files, root, contract_index(root))
+    idx = contract_index(root)
+    contract_errors = check_contract_refs(files, root, idx)
     errors.extend(contract_errors)
     errors.extend(check_active_doc_sections(files, root))
     errors.extend(check_backticked_paths(files, root, tracked_repo_paths(root)))
     errors.extend(check_backticked_symbols(files, root))
+    errors.extend(check_source_contract_refs(root, idx))
 
     for err in errors:
         print(err)
     if errors:
         print(f"FAIL: {len(errors)} broken link(s)/contract ref(s)/stale path(s)/stale symbol(s)")
         return 1
-    print(f"OK: {len(files)} markdown files scanned, no broken links/paths/symbols")
+    print(f"OK: {len(files)} markdown files + source comments scanned, "
+          "no broken links/paths/symbols/contract refs")
     return 0
 
 

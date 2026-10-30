@@ -188,7 +188,7 @@ struct DzContext {
         return &replay_frames[idx];
     }
 
-    /// 断档回补重试状态 (契约 td-data-sync §5.2 "耗尽放行"): 首次回补查得行数
+    /// 断档回补重试状态 (契约 td-data-sync §5 "耗尽放行"): 首次回补查得行数
     /// 不足以覆盖 gap 区间 (触发帧到达 ≠ persist 已提交的在途窗口) 时, 保留
     /// gap 待重试并拦截触发帧 (宁缺勿乱); 每次dz_next_event 调用重试一次
     /// (无 sleep, 调用间隔即天然"短重试"间隔), 覆盖后补发触发帧 + 回补帧

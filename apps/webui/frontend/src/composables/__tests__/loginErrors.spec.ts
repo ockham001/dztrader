@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { LOGIN_ERROR_TEXT, loginErrorText, lockedRemainingMinutes } from '../loginErrors'
 
-// 契约来源：《帧契约：REST》§1/§2.1 —— 登录失败错误体 {"error": <code>}（无 code 字段）；
+// 契约来源：契约 rest §1/§2.1 —— 登录失败错误体 {"error": <code>}（无 code 字段）；
 // 423 account_locked 附 locked_until（绝对 Unix 秒级时间戳，按 locked_until - now 计算剩余分钟）。
 describe('loginErrors', () => {
   it('四个机器码映射为中文文案（契约 rest §2.1）', () => {

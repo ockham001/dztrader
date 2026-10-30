@@ -211,7 +211,7 @@ TEST_F(SysmonControllerTest, Returns503BeforeFirstReport) {
     EXPECT_EQ(body.value("error", ""), "sysmon snapshot not available");
 }
 
-// ===== GET /api/sysmon/config（《帧契约：系统监控》§6、《帧契约：REST》§2.8）=====
+// ===== GET /api/sysmon/config（《帧契约：系统监控》§6、契约 rest §2.8）=====
 
 TEST_F(SysmonControllerTest, ConfigReturnsMirroredRuntimeConfig) {
     // 生效值 = RTN_SYSMON_CONFIG 回推写入镜像的 payload；GET 原样透传，不裁剪不归一化
@@ -247,7 +247,7 @@ TEST_F(SysmonControllerTest, Config503WhenSnapshotArrivedButConfigMissing) {
 // 读端点不做角色判断（认证在 JWT advice 层完成，见 sysmon_controller.h 类注释）：
 // 非 admin 可读这条语义不存在 handler 分支，无法也不应由 handler 单测断言。
 
-// ===== PUT /api/sysmon/config（《帧契约：REST》§2.8、《帧契约：系统监控》§3）=====
+// ===== PUT /api/sysmon/config（契约 rest §2.8、《帧契约：系统监控》§3）=====
 
 /// 构造带 user_id 属性与 body 的 PUT 请求（JWT advice 在真实链路里注入 user_id）。
 drogon::HttpRequestPtr put_request(const std::string& user_id, const std::string& body) {
@@ -335,7 +335,7 @@ TEST_F(SysmonControllerTest, SetConfigEmptyPatchStillDispatched) {
     EXPECT_TRUE(frame->empty());
 }
 
-// ===== GET /api/sysmon/history（《帧契约：系统监控》§6.1、《帧契约：REST》§2.8）=====
+// ===== GET /api/sysmon/history（《帧契约：系统监控》§6.1、契约 rest §2.8）=====
 
 /// 构造带 query 参数的 GET 请求（drogon 的 getParameter 从 query 解析）。
 drogon::HttpRequestPtr get_request(const std::map<std::string, std::string>& query = {}) {
