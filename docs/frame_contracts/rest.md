@@ -11,7 +11,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - 认证：除 `POST /api/login`、`GET /health`、`GET /api/system/info` 外，全部 `/api/*` 需要 JWT（`Authorization: Bearer <jwt>`）；失败回 401 `{"error":"unauthorized"}`（token 缺失）或 `{"error":"invalid_token"}`（校验失败）。
 - 响应：JSON（`application/json`）。
 - 错误：`{"error": message}` + 对应 HTTP 状态码；404 为 `{"error":"not found"}`。
-- 登录失败错误体（`POST /api/login` 专用）：`{"error": <snake_case_code>}`，HTTP 状态码表达类别（401 凭据/状态/封禁类，423 锁定）；**不携带 `code` 字段**——`error` 即机器码（清单见 §2.1）。请求体缺失/非法 JSON/缺用户名或密码时回 400 `{"error":"bad request"}`（非机器码，前端按通用失败处理）。`account_locked` 额外携带 `locked_until`（**绝对 Unix 秒级时间戳**，与 `GET /api/user*` 的 `locked_until` 同语义；前端按 `locked_until - now` 计算剩余分钟，不得按剩余秒数解释；`locked_until <= now` 表示无剩余时间信息，前端只显示锁定文案、不显示分钟）。
+- 登录失败错误体（`POST /api/login` 专用）：`{"error": <snake_case_code>}`，HTTP 状态码表达类别（401 凭据/状态/封禁类，423 锁定）；**不携带 `code` 字段**——`error` 即机器码（清单见 §2.1）。请求体必须为 JSON 对象且 `username`/`password` 均为 string；请求体缺失/非法 JSON/非对象/字段类型错/缺用户名或密码时回 400 `{"error":"bad request"}`（非机器码，前端按通用失败处理）。`account_locked` 额外携带 `locked_until`（**绝对 Unix 秒级时间戳**，与 `GET /api/user*` 的 `locked_until` 同语义；前端按 `locked_until - now` 计算剩余分钟，不得按剩余秒数解释；`locked_until <= now` 表示无剩余时间信息，前端只显示锁定文案、不显示分钟）。
 - 权限：管理类端点需 admin 角色（服务端校验，非前端隐藏）。
 - 数据变更联动：变更 DB 的端点成功后由 dzweb 广播 `data_changed{scope}`（契约 webui-ws），前端按 scope 重新 REST 拉取。
 - 设置类请求（转发 SHM 帧的端点）：响应只表示"已写事件通道"；生效以 WS 领域消息为准（对应帧契约的 RTN）。超时无 RTN 时按总则 §7 兜底。

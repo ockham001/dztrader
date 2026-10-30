@@ -51,7 +51,7 @@
 **约束**：
 - 定向帧，仅 `instance_id` 匹配的行情进程处理
 - 连接结果通过该行情进程的 `RTN_PROGRESS`（状态数值映射，契约 progress）体现；登录失败原因经 `RTN_MD_STATUS.last_error` 持久承载（契约 md-status 失败语义）；前端不得以 ack 判定连接成败
-- **前置条件拒绝**（无当前经纪商 / 经纪商不存在 / 无可用前置 / 当前状态不接受连接）**不产生 RTN**：用户请求路径（REST/WS 入口）经 `NOTIFY_UI` 警告说明原因（契约 notify-ui）；自动调度/重连补登路径只记日志。前端以该通知提示用户；`NOTIFY_UI` 是纯通知、**永不清除 pending**（契约 webui-ws §5），此时 login pending 由前端超时兜底
+- **前置条件拒绝**（无当前经纪商 / 经纪商不存在 / 无可用前置 / 当前状态不接受连接 / CTP API 同步拒绝登录请求，`ReqUserLogin` 返回值非 0）**不产生 RTN**：用户请求路径（REST/WS 入口，含其连接成功后立即发起的初次登录）经 `NOTIFY_UI` 警告说明原因（契约 notify-ui）；自动调度/重连补登路径只记日志。前端以该通知提示用户；`NOTIFY_UI` 是纯通知、**永不清除 pending**（契约 webui-ws §5），此时 login pending 由前端超时兜底
 
 ---
 

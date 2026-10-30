@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import SyncSwitch from '@/components/shared/SyncSwitch.vue'
 import ProcessStartButton from './ProcessStartButton.vue'
-import { loginRetryable } from '@/composables/marketSourceView'
+import { canRequestLogin } from '@/composables/marketSourceView'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import type { MarketSourceView } from '@/stores/marketSources'
 
@@ -37,7 +37,7 @@ const autoLoginStatusClass = (s: MarketSourceView): string => {
       class="ds-btn ds-btn--sm"
       :class="src.loginState === 'offline' ? 'ds-btn--primary' : 'ds-btn--secondary'"
       type="button"
-      :disabled="src.loginPending || src.process_state !== 'Running' || src.loginState === 'online' || (src.loginState === 'pending' && !loginRetryable(src.progressView, src.lastLoginError))"
+      :disabled="src.loginPending || src.process_state !== 'Running' || !canRequestLogin(src)"
       :title="src.process_state !== 'Running'
         ? '进程未运行，请先启动进程'
         : src.loginState === 'online' ? '已登录，如需重新登录请先登出' : undefined"

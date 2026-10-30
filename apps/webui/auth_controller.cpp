@@ -17,30 +17,34 @@ using Json = nlohmann::json;
 void LoginCtrl::login(const drogon::HttpRequestPtr& req,
                       std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     // 1. Parse body
+    // 400 统一出口（契约 rest §1：请求体形状非法一律 400 {"error":"bad request"}）
+    const auto reply_bad_request = [&callback]() {
+        callback(json_response(drogon::k400BadRequest, Json{{"error", "bad request"}}));
+    };
     Json body;
     try {
         body = Json::parse(req->getBody());
     } catch (const std::exception&) {
-        callback(json_response(drogon::k400BadRequest, Json{{"error", "bad request"}}));
+        reply_bad_request();
         return;
     }
     // 契约 rest §1: 请求体必须是含 string 类型 username/password 的 JSON 对象；
     // 合法 JSON 但非对象（如 []）或字段类型错（如数字）同样是 bad request（不得 500）
     if (!body.is_object()) {
-        callback(json_response(drogon::k400BadRequest, Json{{"error", "bad request"}}));
+        reply_bad_request();
         return;
     }
     const auto username_it = body.find("username");
     const auto password_it = body.find("password");
     if (username_it == body.end() || !username_it->is_string() || password_it == body.end() ||
         !password_it->is_string()) {
-        callback(json_response(drogon::k400BadRequest, Json{{"error", "bad request"}}));
+        reply_bad_request();
         return;
     }
     const std::string username = username_it->get<std::string>();
     const std::string password = password_it->get<std::string>();
     if (username.empty() || password.empty()) {
-        callback(json_response(drogon::k400BadRequest, Json{{"error", "bad request"}}));
+        reply_bad_request();
         return;
     }
 

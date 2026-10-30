@@ -218,6 +218,14 @@ export function loginRetryable(
   return typeof progress?.current === 'number' && progress.current === 2
 }
 
+/// 是否可发起登录请求（契约 md-status 前端义务③）：Idle（offline）正常登录，或失败态可重试。
+/// 单次登录按钮与批量登录目标共用此判定，避免两处各自编码「登录资格」。
+export function canRequestLogin(
+  s: Pick<MarketSourceView, 'loginState' | 'progressView' | 'lastLoginError'>,
+): boolean {
+  return s.loginState === 'offline' || loginRetryable(s.progressView, s.lastLoginError)
+}
+
 export function parseMdStatus(raw: unknown): MdStatusView | null {
   const s = raw as Partial<{
     api_version: unknown

@@ -174,7 +174,7 @@ async function confirmBatch(): Promise<void> {
               data-test="batch-login"
               :disabled="batchTargets('login').length === 0"
               :title="batchTargets('login').length === 0
-                ? '没有需要登录的行情源（在线、正在连接/重连的源不计入）'
+                ? '没有需要登录的行情源（在线、连接/重连中或已连接未登录的源不计入）'
                 : `将登录 ${batchTargets('login').length} 个可登录行情源`"
               @click="requestBatch('login')"
             >批量登录{{ batchTargets('login').length > 0 ? `（${batchTargets('login').length}）` : '' }}</button>

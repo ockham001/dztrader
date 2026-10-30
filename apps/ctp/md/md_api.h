@@ -303,6 +303,9 @@ private:
     dztrader::core::TimerQueue::TimerId sub_timer_id_ = 0;
     /// 连接超时定时器 id。connect() 排定 30s 超时, on_front_connected/disconnect 取消。
     dztrader::core::TimerQueue::TimerId connect_timer_id_ = 0;
+    /// 本次连接是否由用户请求触发（REQUEST_MD_CONNECT）。跨 OnFrontConnected 异步边界传递，
+    /// 使初次登录的 ReqUserLogin 同步拒绝也能给 UI 反馈；on_front_connected 消费后复位。
+    bool user_initiated_connect_ = false;
     /// 登录超时定时器 id。req_user_login() 排定 10s 超时, on_rsp_user_login(成功/失败) 取消。
     /// 防止 OnRspUserLogin 事件丢失 (队列满) 或 CTP 无响应导致永久卡在 LoggingIn。
     dztrader::core::TimerQueue::TimerId login_timer_id_ = 0;

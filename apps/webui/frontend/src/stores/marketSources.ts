@@ -8,7 +8,7 @@ import { marketSourcePending } from '@/composables/marketSourcePending'
 import { useProcessStore } from '@/stores/process'
 import { useMdConfigStore } from '@/stores/mdConfig'
 import { useProgressStore } from '@/stores/progress'
-import { makeSource, progressLoginState, isDeterminateProgress, parseMdStatus, loginRetryable, type MarketSourceView, type LoginState, type ScheduleView } from '@/composables/marketSourceView'
+import { makeSource, progressLoginState, isDeterminateProgress, parseMdStatus, canRequestLogin, type MarketSourceView, type LoginState, type ScheduleView } from '@/composables/marketSourceView'
 
 export type { MarketSourceView, LoginState, ScheduleView }
 // P4 Task5: DB列表+聚合view; 领域状态由 process/mdConfig 镜像+usePending(单写化);
@@ -392,13 +392,11 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
   // ===== Batch operations =====
   // #207 C3：批量操作的**目标集合**必须可在 UI 侧算出并展示（"将影响 N 个 / 分别是哪些"），
   // 因此目标推导从函数内提到 computed —— 点按钮前先确认，无目标时按钮禁用。
-  // 判据（#203 审查修复）：未在线、未在登录中，且处于可发起登录的状态——Idle（offline）或
-  // 失败态（last_error + current=2，可直接重试）。Connecting/LoggingIn/Disconnected
-  // （loginState=pending 且不可重试）不计入：md 会拒绝重连请求，pending 只能等 45s 兜底。
-  const batchLoginTargets = computed(() => sources.value.filter(
-    s => s.loginState !== 'online' && !s.loginPending
-      && (s.loginState === 'offline' || loginRetryable(s.progressView, s.lastLoginError)),
-  ))
+  // 判据（#203 审查修复）：与单次登录按钮共用 canRequestLogin（Idle 正常登录 / 失败态可重试），
+  // 且未在登录中。Connecting/LoggingIn/Disconnected/已连接未登录不计入：md 会拒绝请求，
+  // pending 只能等 45s 兜底。
+  const batchLoginTargets = computed(() =>
+    sources.value.filter(s => !s.loginPending && canRequestLogin(s)))
   const batchLogoutTargets = computed(() => sources.value.filter(s => s.loginState === 'online' && !s.logoutPending))
 
   /// 自动登录批量目标（enabled 决定"哪些源需要被改"，与按钮语义绑定）

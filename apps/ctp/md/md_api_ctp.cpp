@@ -93,6 +93,9 @@ void MdApi::connect(bool user_initiated) {
         api_->RegisterFront(const_cast<char*>(front_addr.c_str()));  // NOLINT
     }
     api_->Init();
+    // 跨 OnFrontConnected 异步边界保存「用户发起」语义：初次登录的 ReqUserLogin 同步拒绝
+    // 也要给 UI 反馈（on_front_connected 消费后复位）
+    user_initiated_connect_ = user_initiated;
     state_machine_.on_connect();
     // 新尝试开始已清空 last_error，先推状态帧让前端撤下「上次失败」展示（契约 md-status）
     report_md_status();
@@ -186,7 +189,10 @@ void MdApi::on_front_connected(const OnFrontConnectedField& rsp [[maybe_unused]]
     SPDLOG_INFO("connected");
     if (auto n = state_machine_.on_front_connected()) notify_ui(*n);
     report_progress();
-    req_user_login();
+    // 消费并复位「用户发起」标记：初次登录（连接成功后立即发起）同步拒绝时给 UI 反馈
+    const bool user_initiated = user_initiated_connect_;
+    user_initiated_connect_ = false;
+    req_user_login(user_initiated);
 }
 
 // ============================================================================
@@ -248,6 +254,8 @@ void MdApi::disconnect() {
         timer_queue_.cancel(connect_timer_id_);
         connect_timer_id_ = 0;
     }
+    // 主动断开/连接超时后复位「用户发起」标记，避免陈旧标记影响后续自动重连的登录反馈
+    user_initiated_connect_ = false;
     cancel_login_timer();  // 取消可能挂起的登录超时
     if (api_ != nullptr) {
         api_->Release();
