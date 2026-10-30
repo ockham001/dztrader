@@ -1,6 +1,6 @@
 # 审查清单（Review Checklist）
 
-> 用途：每票 `code-review` 的固定对照清单——先逐条核对 AC，再按 5 类高频 finding 主动搜。
+> 用途：每票 `code-review` 的固定对照清单——先逐条核对 AC，再按 6 类高频 finding 主动搜。
 > 配套：[ticket-closeout.md](ticket-closeout.md) §1（审查流程与冻结纪律）、[development-checklist.md](../development-checklist.md) C 段（机器门禁）、[unit-test-standard.md](../unit-test-standard.md)（测试判据）。
 
 ## 1. AC 逐条核对
@@ -10,13 +10,13 @@
 - 反向核对：diff 里每处改动都能追溯到某条 AC 或上一轮 finding；追溯不到的是 scope creep，删掉或拆票。
 - 验证覆盖边界（等值、0、空、不可用、失败路径），不只走 happy path。
 
-## 2. 5 类高频 finding（#121–#125 实测反复出现）
+## 2. 6 类高频 finding（#121–#125、#161 实测反复出现）
 
 ### 2.1 注释/文档随自身改动漂移
 
 改行为或删符号后，旧注释、README、组件文档仍在描述旧行为——编译与测试都不失败，只有人会读到错话。
 
-- **已有机械防线（先跑，不要靠肉眼）**：`preflight` 的 `docs links` 步现在还会校验活跃文档里**反引号包裹的仓库路径**与**反引号包裹的 snake_case 代码符号**是否仍然存在（`docs/components/`、`docs/frame_contracts/`、`docs/agents/` 与根 README/GLOSSARY 等活跃文档；冻结归档与 ADR 豁免）。改/删文件后路径写错报 `backticked path does not exist`；删/改符号后文档仍写旧名报 `backticked symbol not found in code`（#191；白名单只收环境/计划/外部工具名词；已实现又删掉的符号**默认不进白名单**——唯一例外是文档把历史符号当反例有意引用，此时显式登记并在检查器注释注明）。**这一步只覆盖存在性**——行为描述、口径文字仍要人核对。
+- **已有机械防线（先跑，不要靠肉眼）**：`preflight` 的 `docs links` 步现在还会校验活跃文档里**反引号包裹的仓库路径**与**反引号包裹的 snake_case 代码符号**是否仍然存在（`docs/components/`、`docs/frame_contracts/`、`docs/agents/` 与根 README/GLOSSARY 等活跃文档；冻结归档与 ADR 豁免）。改/删文件后路径写错报 `backticked path does not exist`；删/改符号后文档仍写旧名报 `backticked symbol not found in code`（#191；白名单只收环境/计划/外部工具名词；已实现又删掉的符号**默认不进白名单**——唯一例外是文档把历史符号当反例有意引用，此时显式登记并在检查器注释注明）。**这一步只覆盖存在性**——行为描述、口径文字仍要人核对。同一步还会校验 `apps/` + `libs/` 源码注释中的显式契约引用（`契约 <name> §N` / `《帧契约：<name>》§N` / `总则 §N`）：未知契约或缺失小节即红，字符串与非注释文本不扫描（#221）。
 - 搜法：对 diff 里改动的每个函数/字段/配置键，反查全仓（含同文件相邻注释）提及它的地方；删掉的类/字段尤其要 grep 注释。
 - 事实校准：文档里每一句「已实现 / 已接上 / 已支持」都要能在 diff 里指到对应代码；指不到就是**宣称先于实现**，与代码漂移同级（#157 曾把 `ConfigStore` 接线写进文档而代码未做）。反向同样成立：代码做了而文档没提，下一票会当成「还没做」重做。
 - 本波实例：#123 删掉 `AlertEvaluator` 后 `snapshot_builder.cpp` 仍注释"告警判定与冷却在 AlertEvaluator 中完成"、`main.cpp` 两处"告警判定"措辞、README 资源监控条目仍写"经 UI 通知并冷却"。#155/#156/#157 的 9 轮修复**全部**动过 `docs/components/bar_strategy.md`——同一段落被连续改写 4 次，是这条规则最高频的复发点。
@@ -27,6 +27,7 @@
 
 - 搜法：逐个看新增断言是否可能为假——`not.toContain` / `toBeDefined` / `expect(fn).not.toThrow` / 只断言输入 flag 未断言最终状态；新字段是否真被断言。
 - 搜法补充（#161）：**对比测试的 oracle 不得与被测实现共享**——若 A 内部就调用 B，用 A 的输出当 B 的期望是恒真；期望值必须来自 spec / 手写表 / 独立实现。
+- **前端测试 oracle 不得依赖大小写敏感文件系统 / 路径分隔符**（CI Windows 会跑 vitest）——`existsSync` 一类大小写断言在 Linux 绿、NTFS 恒真（#207 blocking finding）。
 - 本波实例：#122 折叠组"不得用 0 冒充"原用恒真的 `not.toContain`，改为值列精确断言（`bc3ee97`）；#123 给进入记录补了 `since_unix_sec` 却未断言、AC2"静默清除"原只断言输入 flag 未验状态真被清掉（`46879e8`、`281270b`）。
 
 ### 2.3 删除不彻底留孤儿

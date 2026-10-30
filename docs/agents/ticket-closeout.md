@@ -1,7 +1,7 @@
 # 每票收尾（Ticket Close-out）
 
 > 用途：`/implement #N` 实现完成后的**唯一收尾流程**。人工 prompt 只说 `/implement #N` + "收尾见 docs/agents/ticket-closeout.md"，不再粘贴 6 步模板。
-> 配套：[development-checklist.md](../development-checklist.md) C 段（门禁权威来源）、[review-checklist.md](review-checklist.md)（审查清单：AC 逐条 + 5 类高频 finding）、[issue-tracker.md](issue-tracker.md)（issue 操作）、`code-review` / `pr` 技能。
+> 配套：[development-checklist.md](../development-checklist.md) C 段（门禁权威来源）、[review-checklist.md](review-checklist.md)（审查清单：AC 逐条 + 6 类高频 finding）、[issue-tracker.md](issue-tracker.md)（issue 操作）、`code-review` / `pr` 技能。
 
 ---
 
@@ -13,6 +13,7 @@
 |---|---|
 | `docs/frame_contracts/*.md` | 契约本身 + platform 头文件 + 帧号登记 + dzweb 领域服务 + 前端 + 测试（general §11.3 六项） |
 | `docs/components/<topic>.md` | 组件文档与代码/契约一致 |
+| 改进程状态机/失败语义/生命周期/线程模型 | `docs/components/<进程>.md` 同步（进程内行为以组件文档为准；契约只承载跨进程可观察语义） |
 | 新增/改动公开行为 | `README.md`、`docs/README.md` 地图（按需） |
 | 新术语 / 新决策 | `GLOSSARY.md` / `docs/adr/NNNN-*.md`（ADR 触发条件见 AGENTS §三） |
 | 空实现 / 已知限制 | issue 正文或组件文档显式标注，**后续票范围必须引用票号；不跟踪的写明不跟踪理由**；不留在代码注释里 |
@@ -25,7 +26,7 @@
 2. `/code-review since <base>`，即审 `git diff <base>...HEAD`。
 3. **冻结纪律**：从 spawn verifier 到最后一个 verifier 返回，**不改任何文件、不 amend、不 push**。审查期间继续改代码会让 findings 对旧 commit 作废，整轮白跑（本波 #93：HEAD 在审查中前移 4 次，审阅者只能对旧 commit 出结论并重跑；#164 的 Standards verifier 自己声明「working tree moved during review」，findings 只能对旧快照负责）。
 4. **verifier 一律 `spawn_teammate`，不用 `subagent`**：`code-review` 技能写的是「并行 sub-agent」，但本宿主的 `subagent` id **不可寻址**——`send_message` 报 `TEAM_MEMBER_NOT_FOUND`、`wait_agent` 报 `no-active-peer`，跑完报告也容易整份丢失（#165 两个 review 轴的结果全丢，只能重派一轮；本波四张票共 15 次此类失败）。用 `spawn_teammate` 派 Standards / Spec 两个变体，各自 `wait_agent` 或等报告；两条到齐再动代码。
-5. **verifier prompt 必须带齐**：固定点与 `HEAD`、`git diff <base>...HEAD` 命令、上一轮 findings 编号列表（要求逐条确认/未修说明）、只读约束（不改文件、不 commit）。上一轮 findings 贴全，避免重复审查与相反结论。
+5. **verifier prompt 必须带齐**：固定点与 `HEAD`、`git diff <base>...HEAD` 命令、上一轮 findings 编号列表（要求逐条确认/未修说明）、只读约束（不改文件、不 commit）。上一轮 findings 贴全，避免重复审查与相反结论。**成本封套（写进 prompt）**：① 先一次 `git diff <base>...HEAD` 取全量，禁止逐文件/逐目录 diff；② 默认预算 ≤15 min / ≤60 次工具调用，超预算先出报告；③ 默认不跑构建/测试（门禁由 Lead 跑），确需实测只跑与 AC 直接相关的最小命令；④ 变异实验只在 `mktemp -d` 副本，禁止临时改仓库文件（冻结纪律硬边界）。依据：#207 Standards verifier 85 min / 345 次 bash 只产出 3 条 non-blocking + 3 条 nit，而 blocking finding 来自 28.6 min 的 Spec verifier；#203 用「只读、不跑构建、≤400 词」prompt 后每轮 8–16 min，仍抓出真问题。
 6. 轮次口径：**1 轮 = 1 次修复 + 1 个 verifier**；最多 3 轮修复。第 3 轮仍有 blocking → 修完后必须再跑 **1 轮只读验证**（不算第 4 轮修复），并把结论写进报告。禁止用改写 prompt 重跑 verifier 来"刷新"结论。
 7. **等 verifier 不要 `sleep` 轮询**（AGENTS §五「等待一律后台作业」）：`spawn_teammate` 的成员用 `wait_agent` 真正阻塞；派 `subagent` 时结果以 `subagent-settled` 通知到达。等待窗口做**不写文件**的工作（读 diff/契约、拟关闭评论与报告、跑幂等 `preflight --c-only`）。反例：#77/#78/#81 因 sleep 等 verifier 累计 ≈3.9h。
 8. **verifier `failed` 恢复协议**（`failed` = 子代理异常退出、无报告）：① 原 prompt 重跑一次；② 仍 `failed` → 用 `spawn_teammate` 派 verifier（Team 成员可 `wait_agent` 真正阻塞）；③ 仍不可用 → **人工代轴**逐条核对（机器门禁须已全绿），并在报告写明"verifier failed N 次、人工代轴"。#123 两个审查线程丢失、用户被迫介入、Lead 人工补轴即反例；禁止改写 prompt 反复重跑刷结论。
@@ -42,7 +43,7 @@
 
 `gate.sh` 是 agent 侧的统一入口：同一 build tree 用 `flock` 串行（并行子代理不会互相踩 ninja）、自动导出 ccache 环境、输出落 `.cache/gate/`、返回**真实退出码**。人工可直接跑 `build.sh` / `test.sh` / `preflight.sh` 等价命令。**要短输出用 `./scripts/gate.sh build|test|preflight --tail N`**（成功留 N 行、失败留 max(N,30) 行）；**不要**给门禁命令接 `| tail` / `| head`——管道会把失败吞成 exit 0（#75 的 wait-ci 超时、#81 的 ninja 失败都因此被记成假绿）。
 
-`./scripts/preflight.sh` 覆盖：日志格式、clang-format 21.x、文档链接（含契约 §N 引用）、测试可移植性、**MSVC hazard lint**（Windows 头顺序 / C4101 等 Linux 编译器拦不到的失败）、**内置 JSON 版本一致性**（conanfile / 单头 / `VENDORED.md` 三方，含自测）、前端 `type-check` / `lint` / `lint:css` / `vitest` / `gen:types` 新鲜度。任一项红就停，**先修红，不叠加新改动**。CI linux job 复用同一脚本（`--c-only`）。
+`./scripts/preflight.sh` 覆盖：日志格式、clang-format 21.x、文档链接（含契约 §N 引用：活跃文档 + apps/libs 源码注释）、测试可移植性、**MSVC hazard lint**（Windows 头顺序 / C4101 等 Linux 编译器拦不到的失败）、**内置 JSON 版本一致性**（conanfile / 单头 / `VENDORED.md` 三方，含自测）、前端 `type-check` / `lint` / `lint:css` / `vitest` / `gen:types` 新鲜度。任一项红就停，**先修红，不叠加新改动**。CI linux job 复用同一脚本（`--c-only`）。
 
 > **门禁结果可追溯（#190）**：`gate.sh` 的最终 `gate: OK|FAILED` 行固定打在输出**末尾**（`| tail -2` 也可见），每次结果原子写入 `.cache/gate/last-status`。`.githooks/pre-push` 会拒绝「当前 HEAD 上最近一次门禁失败」的推送（HEAD 不符/缺失只警告；应急逃生 `DZ_ALLOW_RED_GATE=1`）。
 

@@ -1236,7 +1236,7 @@ TEST_F(IngestWiringTest, FirstReadyDoesNotResetGate) {
 // 终检发现 E 回归 (第二轮复审 open item 1): gap_covered 绝对态容差 —
 // PositionRebuild 删行 (positions 全平) 后, 被删行 seq 在 DB 无行 → 行数 < 区间宽,
 // 旧判定误报"未覆盖" → 10 次重试耗尽放行且不回补现存行 (orders/trades 追加流缺条)。
-// 修复 (契约 §74): 该账户当前 MAX(seq) ≥ gap 上界即视为覆盖, 缺的中间 seq 是被删的
+// 修复 (契约 td-data-sync §5): 该账户当前 MAX(seq) ≥ gap 上界即视为覆盖, 缺的中间 seq 是被删的
 // 历史行, 当前态已到位 → 覆盖成功, 现存回补行 (orders 6,8) 送达 + 触发帧放行。
 TEST_F(IngestWiringTest, GapCoverageToleratesDeletedPositionRow) {
     // W=5 (SetUp 预置 orders seq 1..5)。gap 区间 [6,8]:

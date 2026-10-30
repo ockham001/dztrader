@@ -324,7 +324,7 @@ std::string format_epoch_day_to_yyyyMMdd(int32_t days) {
     }
 }
 
-/// TRADE_REPORT 成交去重二道防线 (契约 strategy §5.4 / "SDK ingest 过滤职责"):
+/// TRADE_REPORT 成交去重二道防线 (《帧契约：策略》"SDK ingest 过滤职责"):
 /// 从帧 payload 取 (account_id, date, trade_id) 调 admit_trade。日期以帧 date 为真源
 /// (帧 date 为实时/回补路径均已填的 DzDate), 转 "YYYYMMDD" 文本对齐 gate 段键。
 /// 返回 false = 已存在重复 (拦截, 不返回策略用户)。
@@ -384,7 +384,7 @@ void on_account_status_gate_reset(DzContext* ctx, const DzAccountStatus& st) {
               << '\n';
 }
 
-/// 断档回补重试上限 (契约 td-data-sync §5.2 "几十 ms 短重试; 耗尽放行"):
+/// 断档回补重试上限 (契约 td-data-sync §5 "几十 ms 短重试; 耗尽放行"):
 /// 无 sleep 设计 (dz_next_event 热路径不能阻塞), 每次调用查一次库, 上限耗尽后
 /// 按"崩溃丢失"放行触发帧 + ERROR 日志。
 constexpr uint32_t kGapRetryMax = 10;
@@ -424,7 +424,7 @@ GapBackfillRows query_gap_tables(DzDatabase* db,
     return rows;
 }
 
-/// 覆盖判定 (契约 td-data-sync §74): 追加流 + 绝对态容差。
+/// 覆盖判定 (契约 td-data-sync §5): 追加流 + 绝对态容差。
 /// 四表共享一个 seq 取号器, 区间内每个 seq 恰有一行落在某表。
 /// - 追加流 (orders/trades) 不删行: 四表总行数 ≥ 区间宽 = 区间每个 seq 恰有一行
 ///   (含绝对态现存的) 即精确覆盖;
@@ -1045,7 +1045,7 @@ DZ_API const void* dz_next_event(DzContext* ctx) {
     // 同键时回补旧状态不得覆盖新状态)。
     // 回补帧已过 ingest gate (W/断档/去重), 不再重复过滤; 但
     // DZ_FRAME_ORDER_REPORT/DZ_FRAME_TRADE_REPORT 仍按 strategy_id 定向 (回补查询按账户全量,
-    // 含他策略/外部单, 仅本策略放行)。 断档回补重试驱动 (契约 td-data-sync §5.2):
+    // 含他策略/外部单, 仅本策略放行)。 断档回补重试驱动 (契约 td-data-sync §5):
     // 回补不足时每次调用查一次库 (无 sleep, 调用间隔即天然"短重试"间隔); 成功/耗尽后触发帧 +
     // 回补帧经 下面的 replay FIFO 前置派发。置于 replay 消费前, 使结果本次即可见。
     if (ctx->gap_retry.active) {

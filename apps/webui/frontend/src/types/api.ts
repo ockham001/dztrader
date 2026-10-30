@@ -203,7 +203,7 @@ export interface WebuiSettingsUpdateBody {
   notify_cache_size?: number
 }
 
-// ===== 系统监控历史查询（《帧契约：系统监控》§6.1、《帧契约：REST》§2.8）=====
+// ===== 系统监控历史查询（《帧契约：系统监控》§6.1、契约 rest §2.8）=====
 // 历史查询走 REST（dzweb 只读打开历史库），不是 WS 领域消息，故类型定义在此而非
 // schema/domain-payloads.schema.json（后者只承载 WS 领域载荷）。
 

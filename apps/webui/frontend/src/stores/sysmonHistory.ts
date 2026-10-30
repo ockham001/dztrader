@@ -90,7 +90,7 @@ export function historyUnavailableText(reason: SysmonHistoryUnavailableReason): 
 }
 
 /**
- * 系统监控历史 store（《帧契约：系统监控》§6.1、《帧契约：REST》§2.8）。
+ * 系统监控历史 store（《帧契约：系统监控》§6.1、契约 rest §2.8）。
  *
  * **与实时 store 完全独立**（验收标准：实时/历史切换不影响 WS 连接与实时数据）：
  * 本 store 只发 REST 查询、不订阅任何 WS 消息、不写实时镜像。监控页切换视图时只是换

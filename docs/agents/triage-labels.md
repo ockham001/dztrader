@@ -11,3 +11,8 @@
 | `wontfix`                  | `wontfix`         | 不会处理                   |
 
 技能提到某角色（如「apply the AFK-ready triage label」）时，用本表对应的标签字符串。
+
+## 拍板闭环
+
+- **`ready-for-agent` 前置**：spec **无未拍板项**；有未拍板项时先拍板，并把决策写进 issue 正文——不要等实现会话中途再问。
+- **`/implement` 遇 `needs-triage`**：先跑决策清单（列出待拍板项 → 问用户 → 把决策写回 issue 正文 → 换标签），不要边实现边等拍板（#203 等人工决策 79 min，占该票墙钟 30%）。

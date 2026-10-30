@@ -16,6 +16,12 @@
 
 **PRs as a request surface: no**（本仓库不把外部 PR 当功能请求对待；`triage` 技能读这个标志）。
 
+## 分诊拍板
+
+规则与标签口径见 [triage-labels.md](triage-labels.md)「拍板闭环」（`ready-for-agent` 前置条件在那里）。
+
+- `/implement` 遇 `needs-triage`：先跑决策清单（列出待拍板项 → 问用户 → 把决策写回 issue 正文 → 换标签），不要边实现边等拍板（#203 等人工决策 79 min = 该票 30% 墙钟）。
+
 ## 技能说「publish to the issue tracker」时
 
 创建一个 GitHub issue。

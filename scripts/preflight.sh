@@ -2,8 +2,9 @@
 # preflight.sh — 提交前本地门禁的唯一入口（Linux）
 #
 # 覆盖：日志格式 / clang-format 21.x / 文档链接（含活跃文档里反引号路径**与代码符号**的
-#       存在性）/ 测试可移植性+临时目录隔离 / MSVC hazard lint / 内置 nlohmann/json 版本
-#       一致性 / 前端五件套。MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
+#       存在性，以及 apps/libs 源码注释里显式契约 §N 引用的目标存在性）/ 测试可移植性+
+#       临时目录隔离 / MSVC hazard lint / 内置 nlohmann/json 版本一致性 / 前端五件套。
+#       MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
 #       Linux 编译器拦不到，由 scripts/check_msvc_hazards.py 做源码级 lint；
 #       conanfile.py 与内置 JSON 单头的版本漂移由 scripts/check_json_vendor_version.py 拦住。
 # CI 的 linux job 复用同一脚本的 C 段（--c-only），避免门禁命令在
@@ -100,8 +101,9 @@ check_clang_format() {
 }
 
 check_docs_links() {
-    # 先跑检查器自测：保证「缺失符号必报 / 白名单豁免 / 代码块忽略 / 路径检查不回退」
-    # 四种形态仍被拦住，再扫真实文档（#191）。
+    # 先跑检查器自测：保证「缺失符号必报 / 白名单豁免 / 代码块忽略 / 路径检查不回退 /
+    # 源码注释契约引用（缺失契约或小节必报、字符串与代码不算注释）」等形态仍被拦住，
+    # 再扫真实文档与源码注释（#191、#213、#221）。
     # 必须显式串联（`|| return $?`）：`set -u -o pipefail` 没有 `-e`，自测失败会被下一条
     # 命令的退出码覆盖，门禁变恒真。
     "$PYTHON" scripts/check_docs_links.py --selftest || return $?
