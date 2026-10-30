@@ -6,7 +6,7 @@ import { UNAVAILABLE_TEXT } from '@/composables/format'
 import { processCategory, type ProcessCategory } from '@/composables/processNaming'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { processStateLevel, processStateText, type ProcessLevel } from '@/composables/useProcessState'
-import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
+import { resourceLevel, worstResourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
 import { useWebSocket } from '@/composables/wsClient'
 import { useProcessStore } from '@/stores/process'
 import { useSysmonStore } from '@/stores/sysmon'
@@ -211,9 +211,6 @@ function toggleDiskExpanded(): void {
 // 展开态只属于当次宽屏布局：跨断点（含回到宽屏）回到「前 2 + 其余 N 个」的默认密度（#127 AC「不持久化」）
 watch(isWide, () => { diskExpanded.value = false })
 
-/** 资源等级排序：窄屏状态图标取「最差等级」（danger > warn > normal） */
-const RESOURCE_LEVEL_RANK: Record<ResourceLevel, number> = { normal: 0, warn: 1, danger: 2 }
-
 interface ResourceGauge {
   stateClass: string
   title: string
@@ -233,13 +230,8 @@ const resourceGauge = computed<ResourceGauge>(() => {
     }
   }
   const readings: Pick<ResourceBadge, 'level' | 'title'>[] = [cpuBadge.value, memBadge.value, ...diskBadges.value]
-  let worst: ResourceLevel | null = null
-  for (const reading of readings) {
-    if (reading.level === null) continue
-    if (worst === null || RESOURCE_LEVEL_RANK[reading.level] > RESOURCE_LEVEL_RANK[worst]) {
-      worst = reading.level
-    }
-  }
+  // 取最差等级的唯一实现（useResourceLevel.worstResourceLevel）；全部不可判读 → null 走中性等待态
+  const worst = worstResourceLevel(readings.map(reading => reading.level))
   // title 汇总各资源读数：沿用各徽章自身的 title 文案，避免在窄屏另造一套格式化口径
   return {
     stateClass: resourceStateClass(worst),
@@ -250,6 +242,8 @@ const resourceGauge = computed<ResourceGauge>(() => {
 // 顶栏服务状态徽章（#199）：聚合 process_status 镜像，不再写死 MD / TD / STG 状态。
 // 数据源：WS process_status 增量 + 建连 snapshot 全量 → stores/process.ts 的 statuses 镜像；
 // 进程类别由 composables/processNaming.ts 唯一判定（日志页进程类型推导共用同一规则）。
+// 聚合逻辑与资源徽章（#127）同层留在组件内：两类徽章都只服务顶栏、无第二个消费者，
+// 下沉 composable 只会多一层转手（需要时再抽，不在本票提前抽象）。
 // 镜像未到达 / 该类别无进程 = 中性「未知」，不得默认绿。
 const processStore = useProcessStore()
 
@@ -292,14 +286,12 @@ function serviceStateClass(level: ProcessLevel): string {
 function aggregateService(def: ServiceDefinition): ServiceBadge {
   const statuses = Object.values(processStore.statuses)
   const matched = statuses.filter(status => processCategory(status.name) === def.category)
-  // 多进程聚合取「最差等级」：沿用资源徽章同一张 rank 表
-  // （unknown 不是进程状态等级、不参与取最差，全部不可判读时保持未知）
-  let worst: ResourceLevel | null = null
-  for (const status of matched) {
-    const current = processStateLevel(status.state)
-    if (current === 'unknown') continue
-    if (worst === null || RESOURCE_LEVEL_RANK[current] > RESOURCE_LEVEL_RANK[worst]) worst = current
-  }
+  // 多进程聚合取「最差等级」：与窄屏资源图标共用 worstResourceLevel 唯一实现；
+  // unknown 不是进程状态等级，转 null 不参与取最差（全部不可判读时保持中性未知）
+  const worst = worstResourceLevel(matched.map(status => {
+    const level = processStateLevel(status.state)
+    return level === 'unknown' ? null : level
+  }))
   let title: string
   if (matched.length === 0) {
     title = statuses.length === 0

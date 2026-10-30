@@ -29,3 +29,20 @@ export function resourceLevel(ratio: number): ResourceLevel {
   if (ratio >= RESOURCE_WARN_RATIO) return 'warn'
   return 'normal'
 }
+
+/** 等级排序：danger > warn > normal（顶栏资源图标 / 服务徽章的「取最差」共用） */
+const RESOURCE_LEVEL_RANK: Record<ResourceLevel, number> = { normal: 0, warn: 1, danger: 2 }
+
+/**
+ * 多读数取「最差」展示等级（danger > warn > normal），与读数顺序无关。
+ * null = 不可判读（无快照 / 指标不可用 / 进程状态未知），不参与聚合：
+ * 全部不可判读时返回 null，由调用方决定中性展示，不得默认 normal 冒充「一切正常」。
+ */
+export function worstResourceLevel(levels: Iterable<ResourceLevel | null>): ResourceLevel | null {
+  let worst: ResourceLevel | null = null
+  for (const level of levels) {
+    if (level === null) continue
+    if (worst === null || RESOURCE_LEVEL_RANK[level] > RESOURCE_LEVEL_RANK[worst]) worst = level
+  }
+  return worst
+}

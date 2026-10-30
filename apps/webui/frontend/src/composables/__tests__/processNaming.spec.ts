@@ -16,6 +16,12 @@ describe('processCategory', () => {
     expect(processCategory('x-stg_demo')).toBe('unknown')
   })
 
+  it('网关前缀必须带下划线（契约 `dzmd_*` / `dztd_*`；`dzmdfoo` 不归类）', () => {
+    expect(processCategory('dzmd_ctp_2')).toBe('md')
+    expect(processCategory('dzmdfoo')).toBe('unknown')
+    expect(processCategory('dztdfoo')).toBe('unknown')
+  })
+
   it('dzweb（可重命名）与无法识别的进程名返回 unknown，由调用方按 self 身份判定 WebUI', () => {
     expect(processCategory('dzweb')).toBe('unknown')
     expect(processCategory('some_tool')).toBe('unknown')

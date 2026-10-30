@@ -3,6 +3,7 @@ import {
   RESOURCE_DANGER_RATIO,
   RESOURCE_WARN_RATIO,
   resourceLevel,
+  worstResourceLevel,
 } from '../useResourceLevel'
 
 describe('resourceLevel 阈值边界（含边界）', () => {
@@ -21,5 +22,24 @@ describe('resourceLevel 阈值边界（含边界）', () => {
 
   it.each(cases)('ratio=%s → %s', (ratio, expected) => {
     expect(resourceLevel(ratio)).toBe(expected)
+  })
+})
+
+describe('worstResourceLevel 多读数取最差等级', () => {
+  it('取 danger > warn > normal 中最差的等级（与顺序无关）', () => {
+    expect(worstResourceLevel(['normal', 'warn'])).toBe('warn')
+    expect(worstResourceLevel(['warn', 'normal'])).toBe('warn')
+    expect(worstResourceLevel(['danger', 'warn', 'normal'])).toBe('danger')
+    expect(worstResourceLevel(['normal'])).toBe('normal')
+  })
+
+  it('null（不可判读）不参与聚合', () => {
+    expect(worstResourceLevel([null, 'normal'])).toBe('normal')
+    expect(worstResourceLevel(['warn', null, 'normal'])).toBe('warn')
+  })
+
+  it('空集合 / 全部 null → null（调用方决定中性展示，不得默认 normal）', () => {
+    expect(worstResourceLevel([])).toBeNull()
+    expect(worstResourceLevel([null, null])).toBeNull()
   })
 })
