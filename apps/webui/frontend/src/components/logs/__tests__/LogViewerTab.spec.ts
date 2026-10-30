@@ -5,6 +5,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import LogViewerTab from '../LogViewerTab.vue'
 import { useLogsStore } from '@/stores/logs'
+import { SELF_LOG_TAIL_DISABLED_TEXT } from '@/composables/logTailNotice'
 import type { WsConnectionState } from '@/composables/wsClient'
 
 // --- Mocks ---
@@ -222,8 +223,8 @@ describe('实时开关禁用态解释（#207 C2）', () => {
     expect((tail.element as HTMLInputElement).disabled).toBe(true)
     const hint = w.find('[data-test="log-tail-hint"]')
     expect(hint.exists()).toBe(true)
-    expect(hint.text()).toContain('WebUI 自身日志不支持实时跟随')
-    expect(hint.text()).toContain('反馈循环')
+    // 文案与后端退订 toast 共用同一常量（composables/logTailNotice）
+    expect(hint.text()).toBe(SELF_LOG_TAIL_DISABLED_TEXT)
     // 可见文案与 hover 说明同源，用户不必猜
     expect(tail.element.closest('label')?.getAttribute('title')).toContain('反馈循环')
 

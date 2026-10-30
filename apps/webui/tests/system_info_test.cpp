@@ -6,6 +6,8 @@
 #include <dztrader/core/this_process.h>
 #include <dztrader/version.h>
 #include <gtest/gtest.h>
+#include <string>
+#include <vector>
 #include "system_info.h"
 
 namespace {
@@ -25,14 +27,29 @@ TEST(SystemInfoTest, BodyCarriesProcessNameAndVersion) {
 
 TEST(SystemInfoTest, VersionIsSemVerShaped) {
     // 契约要求的形态是 SemVer（MAJOR.MINOR.PATCH，可带 -prerelease 后缀）：
-    // 这里只断言主版本段可解析，避免把版本号硬编码进测试（版本升级不该让门禁变红）。
+    // 只断言形态，不断言具体数值——版本升级不该让门禁变红。
+    // （与 DZ_VERSION_STRING 同源已由 BodyCarriesProcessNameAndVersion 覆盖，此处不重复断言
+    // `DZ_VERSION_MAJOR == version 首段`：两者同出 version.h，改坏响应体也不会让那条变红。）
     const std::string version =
         dztrader::webui::system_info_body().at("version").get<std::string>();
-    const auto first_dot = version.find('.');
-    ASSERT_NE(first_dot, std::string::npos) << "version not semver: " << version;
-    EXPECT_NE(version.find('.', first_dot + 1), std::string::npos)
-        << "version not semver: " << version;
-    EXPECT_EQ(DZ_VERSION_MAJOR, std::stoi(version.substr(0, first_dot)));
+    // 去掉可选的 -prerelease 后缀，剩下必须是三段纯数字：CMake 变量未替换（如残留
+    // "${VERSION_MAJOR}"）时这里会直接暴露成非数字段。
+    const std::string core = version.substr(0, version.find('-'));
+    std::vector<std::string> segments;
+    std::size_t begin = 0;
+    while (true) {
+        const auto dot = core.find('.', begin);
+        segments.push_back(
+            core.substr(begin, dot == std::string::npos ? std::string::npos : dot - begin));
+        if (dot == std::string::npos) break;
+        begin = dot + 1;
+    }
+    EXPECT_EQ(segments.size(), 3u) << "version not semver: " << version;
+    for (const auto& segment : segments) {
+        EXPECT_FALSE(segment.empty()) << "version not semver: " << version;
+        EXPECT_EQ(segment.find_first_not_of("0123456789"), std::string::npos)
+            << "non-numeric version segment, not semver: " << version;
+    }
 }
 
 /// 免认证端点不得泄露环境/主机信息：字段集合固定为这两项（新增字段须同步契约并改测试）

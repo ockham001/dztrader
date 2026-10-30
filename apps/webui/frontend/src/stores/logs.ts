@@ -209,7 +209,8 @@ export const useLogsStore = defineStore('logs', () => {
 
   /// 按进程名前缀推导类型（与后端旧 GET /api/logs/processes 的 type 逻辑一致）
   /// 进程命名真相：master `dztraderd`、行情网关 `dzmd_*`、交易网关 `dztd_*`、
-  /// 系统监控 `dzsysmon`、策略 `stg_*`（如 `stg_demo`，契约 strategy §5 裸策略名）。
+  /// 系统监控 `dzsysmon`、策略 `stg_*`（如 `stg_demo`；裸策略名规则见总则 §5 身份边界，
+  /// 契约 strategy 只写差异并指向总则）。
   function deriveType(name: string): string {
     if (name === 'dztraderd') return '主进程'
     if (name.startsWith('dzmd')) return '行情源'

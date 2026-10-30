@@ -12,6 +12,11 @@
  * - key 是契约里定义的指标键（`cpu.load_average` / `disk_io`），不是文案。发送方改文案、
  *   新增平台时中文映射仍然有效；新增 key 时前端未命中即回退原文（不吞提示）。
  * - 中文文案必须表达**同一口径事实**，不得比原文多也不得少（原文是可以被对照的真相）。
+ * - **已知边界**：本模块只按 key 索引，因此假设「同一 key 在同一时期只有一种口径」。
+ *   当前成立——发送方只在 `semantic=processor_queue` 时携带 `cpu.load_average` 提示
+ *   （`apps/sysmon/snapshot_builder.cpp`），Linux 原生负载不携带；`disk_io` 两平台同口径。
+ *   若将来同一 key 需要按平台/`semantic` 给出不同中文口径，须改成 key+semantic 双键查表，
+ *   并同步 `apps/sysmon/snapshot_builder.cpp` 的 key 约定与契约 sysmon §2.5。
  */
 
 /** key → 中文文案（与 dzsysmon 发送的英文原文语义一一对应） */

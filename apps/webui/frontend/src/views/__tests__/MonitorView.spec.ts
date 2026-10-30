@@ -132,10 +132,10 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
   })
 
   it('全部可用：16 核、负载三项、上下文切换/中断速率均渲染，不出现不可用', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      resourceData: true,
-      semanticHints: { 'cpu.load_average': 'linux load average from /proc/loadavg' },
-    }))
+    // 夹具刻意**不**携带 cpu.load_average 的 semantic_hints：真实发送方只在
+    // semantic=processor_queue（Windows 代理量）时携带该提示（apps/sysmon/snapshot_builder.cpp），
+    // Linux 原生负载不携带。此前的 'linux load average from /proc/loadavg' 夹具与契约不符。
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
     const wrapper = await mountView()
 
     // CPU 卡片整行宽（总量 + 每核 + 负载 + 速率）
@@ -151,10 +151,8 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
     expect(wrapper.find('[data-test="monitor-load-one"]').text()).toBe('0.42')
     expect(wrapper.find('[data-test="monitor-load-five"]').text()).toBe('0.51')
     expect(wrapper.find('[data-test="monitor-load-fifteen"]').text()).toBe('0.63')
-    // #207 B2：key 命中 → 中文口径；发送方原文进 tooltip（Linux 夹具原文仍可对照）
-    expect(wrapper.find('[data-test="monitor-load-hint"]').text()).toContain('处理器队列长度')
-    expect(wrapper.find('[data-test="monitor-load-hint"]').attributes('title'))
-      .toContain('linux load average from /proc/loadavg')
+    // 无提示时不得凭空造提示（#207 B2 的映射只在发送方真的携带 key 时生效）
+    expect(wrapper.find('[data-test="monitor-load-hint"]').exists()).toBe(false)
 
     expect(wrapper.find('[data-test="monitor-context-switches"]').text()).toBe('1234/s')
     expect(wrapper.find('[data-test="monitor-interrupts"]').text()).toBe('567/s')

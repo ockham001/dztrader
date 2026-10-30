@@ -24,7 +24,7 @@ export const useSystemStore = defineStore('system', () => {
     try {
       const info = await systemApi.info()
       processName.value = info.process_name
-      version.value = info.version ?? ''
+      version.value = info.version
     } catch {
       // 拉取失败时保持空串：tail 按钮仍可点击，后端 guard 兜底拒绝；
       // 关于页版本显示「未知」而不是硬编码版本

@@ -18,6 +18,7 @@ vi.mock('@/composables/wsClient', () => ({
 await import('@/composables/wsHandlers')
 import { useLogsStore } from '@/stores/logs'
 import { useToastStore } from '@/stores/toast'
+import { LOG_TAIL_SEND_FAILURES_TEXT, SELF_LOG_TAIL_DISABLED_TEXT } from '@/composables/logTailNotice'
 
 describe('log_tail_unsubscribed 的可见提示（#207 C2）', () => {
   let warning: MockInstance
@@ -40,7 +41,7 @@ describe('log_tail_unsubscribed 的可见提示（#207 C2）', () => {
     dispatch({ file: 'logs/dzweb/dzweb.log', reason: 'self_logs_cannot_be_tailed' })
 
     expect(logs.tailEnabled).toBe(false)
-    expect(warning).toHaveBeenCalledWith('WebUI 自身日志不支持实时跟随（避免日志反馈循环）')
+    expect(warning).toHaveBeenCalledWith(SELF_LOG_TAIL_DISABLED_TEXT)
   })
 
   it('send failures：同样关闭实时开关，提示文案说明是推送失败（不是被拒绝）', () => {
@@ -50,7 +51,7 @@ describe('log_tail_unsubscribed 的可见提示（#207 C2）', () => {
     dispatch({ file: 'logs/dztraderd/dztraderd.log', reason: 'send failures' })
 
     expect(logs.tailEnabled).toBe(false)
-    expect(warning.mock.calls[0][0]).toContain('连续失败')
+    expect(warning).toHaveBeenCalledWith(LOG_TAIL_SEND_FAILURES_TEXT)
   })
 
   it('未知 reason：仍然停止跟随（服务端已退订），但不编造解释', () => {

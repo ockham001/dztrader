@@ -6,6 +6,7 @@ import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
 import { useLogsStore } from '@/stores/logs'
 import { useSystemStore } from '@/stores/system'
 import { useWebSocket } from '@/composables/wsClient'
+import { SELF_LOG_TAIL_DISABLED_TEXT } from '@/composables/logTailNotice'
 import { LOG_LEVELS } from '@/stores/logs'
 import { LEVEL_COLORS, levelColor } from '@/composables/useLogLevelColors'
 import Dropdown from '@/components/shared/Dropdown.vue'
@@ -17,11 +18,12 @@ const system = useSystemStore()
 const ws = useWebSocket()
 const scroller = ref<RecycleScrollerExposed | null>(null)
 
-/** 实时开关被禁用的原因（#207 C2）：只在「选中文件是 WebUI 自身日志」时成立 */
+/** 实时开关被禁用的原因（#207 C2）：只在「选中文件是 WebUI 自身日志」时成立。
+ *  文案与 wsHandlers 的退订 toast 共用同一常量（composables/logTailNotice）。 */
 const tailDisabledReason = computed<string>(() => {
   if (!store.selectedFile) return ''
   if (system.isSelf(store.selectedLogger)) {
-    return 'WebUI 自身日志不支持实时跟随（避免日志反馈循环）'
+    return SELF_LOG_TAIL_DISABLED_TEXT
   }
   return ''
 })
@@ -209,7 +211,7 @@ function formatTs(ts: string): string {
         </button>
         <label
           class="ds-switch"
-          :class="{ 'ds-switch--disabled': !!tailDisabledReason }"
+          :class="{ 'log-viewer__tail-switch--disabled': !!tailDisabledReason }"
           :title="tailDisabledReason"
         >
           <input
@@ -316,6 +318,13 @@ function formatTs(ts: string): string {
   line-height: var(--body-xs-line-height);
   color: var(--text-tertiary);
   white-space: nowrap;
+}
+
+/* #207 C2：禁用态视觉（.ds-switch 本身只按 input:disabled 变灰，仍像可点）。
+   本页 scoped 类名，避免动全局组件库的 .ds-switch（SyncSwitch 用的是内联 opacity）。 */
+.log-viewer__tail-switch--disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .log-viewer__toolbar .ds-dropdown {

@@ -143,8 +143,9 @@ describe('SettingsView', () => {
       expect(w.find('[data-test="webui-save"]').attributes('disabled')).toBeUndefined()
       expect(w.find('[data-test="webui-save-clean"]').exists()).toBe(false)
 
-      // 数值相同但文本不同不算改动（如 "3600" vs "3600" 的相等性按数值比较）
-      await input.setValue('3600')
+      // 按**数值**比较输入与镜像：表单是字符串/数字混合态，文本形态差异（前导零、number 回写）
+      // 不算改动，只有值真的不同才是 dirty
+      await input.setValue('03600')
       expect(w.find('[data-test="webui-save"]').attributes('disabled')).toBeDefined()
       expect(w.find('[data-test="webui-save-clean"]').exists()).toBe(true)
       expect(saveSpy).not.toHaveBeenCalled()

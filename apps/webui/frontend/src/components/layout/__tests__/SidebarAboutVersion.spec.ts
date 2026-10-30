@@ -5,8 +5,10 @@ import { useSystemStore } from '@/stores/system'
 import { useAuthStore } from '@/stores/auth'
 import Sidebar from '../Sidebar.vue'
 
-// 侧边栏（#207 A3/A4）：关于页版本号只来自后端 /api/system/info，前端不得硬编码。
-// vue-router 依赖由 mock 提供（Sidebar 只用 useRouter().push 与 router-link 渲染导航）。
+// 侧边栏关于页版本号（#207 A3）：版本只来自后端 /api/system/info，前端不得硬编码。
+// 单独的 spec 文件（而非与 A4/C4 共用一个）是刻意的：本票每项要求「独立可回滚」，
+// 共文件会让 revert 本项时连带删掉其它项的测试覆盖。
+
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: vi.fn() }),
   RouterLink: { template: '<a><slot /></a>' },
@@ -68,52 +70,5 @@ describe('Sidebar 关于页版本号（#207 A3）', () => {
     useSystemStore().version = ''
     const el = await openAbout(await mountSidebar())
     expect(el.text()).toBe('Version 未知')
-  })
-})
-
-describe('Sidebar 登出图标语义（#207 A4）', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-  })
-
-  it('用户菜单的登出项使用 logout 图标，不再是下载箭头 download2', async () => {
-    const wrapper = await mountSidebar()
-    // 打开用户下拉菜单（按钮含显示名）
-    const userBtn = wrapper.findAll('button').find(b => b.text().includes('Admin'))
-    expect(userBtn, '缺少用户菜单按钮').toBeTruthy()
-    await userBtn!.trigger('click')
-    await flushPromises()
-
-    const icons = wrapper.findAll('[data-icon]').map(i => i.attributes('data-icon'))
-    expect(icons).toContain('logout')
-    expect(icons).not.toContain('download2')
-  })
-})
-
-describe('Sidebar 导航「开发中」标识（#207 C4）', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-  })
-
-  it('五个占位页导航项带「开发中」标签，已实现页面不带', async () => {
-    const wrapper = await mountSidebar()
-
-    // 每个导航项一个 .nav-link；按文案定位，避免依赖顺序
-    function navByLabel(label: string) {
-      const link = wrapper.findAll('.nav-link').find(l => l.text().includes(label))
-      expect(link, `缺少导航项 ${label}`).toBeTruthy()
-      return link!
-    }
-
-    for (const label of ['交易账户', '策略管理', '数据管理', '结算', '风控']) {
-      const tag = navByLabel(label).find('[data-test="nav-wip-tag"]')
-      expect(tag.exists(), `${label} 缺「开发中」标签`).toBe(true)
-      expect(tag.text()).toBe('开发中')
-    }
-    for (const label of ['仪表盘', '行情源', '日志', '资源监控', '访问控制', '系统设置']) {
-      expect(navByLabel(label).find('[data-test="nav-wip-tag"]').exists(), `${label} 不应有标签`).toBe(false)
-    }
-    // 仍可点入：标签只是标识，不改变 link 目标（路由未安装时 router-link 保留 to 属性）
-    expect(navByLabel('交易账户').attributes('to')).toBe('/trading')
   })
 })

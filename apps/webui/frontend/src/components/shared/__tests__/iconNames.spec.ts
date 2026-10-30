@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, extname, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { navItems } from '@/router/routes'
@@ -32,9 +32,19 @@ function collectSources(dir: string, out: string[] = []): string[] {
   return out
 }
 
-/** 图标是否存在于 public/icons/builtin（大小写精确） */
+/**
+ * 图标是否存在于 public/icons/builtin，**大小写精确**。
+ *
+ * 不能用 `existsSync` 判大小写：NTFS 默认大小写不敏感，`existsSync('close.svg')` 会命中
+ * `Close.svg` 返回 true——于是 Windows 上既无法复现该 404（运行时行为确实不同），
+ * 也会让本 spec 的「close 必须不存在」断言直接变红（CI 的 Windows job 会跑 npm test）。
+ * 这里改成对目录项做**精确字符串集合**比较：Linux 与 Windows 得到同一结论。
+ * 注意不要把集合落成小写（那会把大小写错配重新藏起来）。
+ */
+const ICON_FILES = new Set(readdirSync(ICON_DIR))
+
 function iconExists(name: string): boolean {
-  return existsSync(join(ICON_DIR, `${name}.svg`))
+  return ICON_FILES.has(`${name}.svg`)
 }
 
 /**
@@ -54,17 +64,24 @@ interface IconUsage {
   names: string[]
 }
 
-/** 从一段模板/脚本文本里抽 `<Icon ...>` 标签的字面量 name 与 `?? 'xxx'` 兜底名 */
+/**
+ * 从一段模板文本里抽 `<Icon ...>` 标签：
+ * - 静态 `name="X"` 的字面量 X；
+ * - 任何标签里的兜底字面量 `<expr> ?? 'X'`（动态 name 的兜底名同样必须存在）。
+ *
+ * 兜底抽取必须放在「动态 name → 跳过」之前：动态写法正是兜底名出现的地方，
+ * 先 continue 会让这段逻辑变成永不执行的死代码。
+ */
 function literalIconNames(text: string): string[] {
   const names: string[] = []
   for (const tag of text.match(/<Icon\b[^>]*>/g) ?? []) {
-    if (/\s(?::|v-bind:)name=/.test(tag)) continue  // 动态，由登记表负责
-    const literal = tag.match(/\sname="([^"]*)"/)
-    if (literal) names.push(literal[1])
-    // 动态写法里的兜底字面量（如 `ICON_MAP[item.level] ?? 'Tips'`）同样必须存在
+    // 兜底字面量（如 `ICON_MAP[item.level] ?? 'Tips'`）无论静态/动态写法都要收
     for (const fallback of tag.match(/\?\?\s*'([^']+)'/g) ?? []) {
       names.push(fallback.replace(/^\?\?\s*'|'$/g, ''))
     }
+    if (/\s(?::|v-bind:)name=/.test(tag)) continue  // 动态 name 本身由登记表负责
+    const literal = tag.match(/\sname="([^"]*)"/)
+    if (literal) names.push(literal[1])
   }
   return names
 }

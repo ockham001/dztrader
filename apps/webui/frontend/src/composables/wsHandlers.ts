@@ -2,6 +2,7 @@
 // 注册表分发（模块级副作用：import 即注册）。
 // error/pong 为连接协议消息，留在 wsClient.ts 内部处理（不注册）。
 import { registerHandler } from './wsClient'
+import { LOG_TAIL_SEND_FAILURES_TEXT, SELF_LOG_TAIL_DISABLED_TEXT } from './logTailNotice'
 import { clearByPrefix } from './marketSourcePending'
 import { useUserManagementStore } from '@/stores/userManagement'
 import { useLogsStore } from '@/stores/logs'
@@ -49,11 +50,12 @@ registerHandler('log_tail_unsubscribed', (payload) => {
   logs.setTailEnabled(false)
   // 契约 webui-ws §2.3：reason ∈ self_logs_cannot_be_tailed | send failures。
   // #207 C2：两种都转成一次性可见提示（旧实现只在 console 记一句，用户看不到原因）。
+  // 文案取自 logTailNotice：与 LogViewerTab 的禁用态文案共用同一常量，改一处两处同步。
   const reason = (payload as { reason?: string } | undefined)?.reason
   if (reason === TAIL_REASON_SELF_LOGS) {
-    useToastStore().warning('WebUI 自身日志不支持实时跟随（避免日志反馈循环）')
+    useToastStore().warning(SELF_LOG_TAIL_DISABLED_TEXT)
   } else if (reason === TAIL_REASON_SEND_FAILURES) {
-    useToastStore().warning('实时日志推送连续失败，已自动停止跟随')
+    useToastStore().warning(LOG_TAIL_SEND_FAILURES_TEXT)
   }
 })
 

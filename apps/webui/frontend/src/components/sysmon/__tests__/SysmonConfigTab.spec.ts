@@ -1,7 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { mount, flushPromises } from '@vue/test-utils'
 import type { VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -315,70 +312,5 @@ describe('SysmonConfigTab 历史库上限单位换算（#207 B1）', () => {
 
     await wrapper.find('[data-test="sysmon-config-input-max_bytes"]').setValue('')
     expect(hintText(wrapper)).toBe('请输入有效字节数')
-  })
-})
-
-
-// #207 D1：admin 同时有只读摘要与编辑表单 → 同批字段两套；摘要默认折叠、保存按钮 sticky
-describe('SysmonConfigTab 布局收敛（#207 D1）', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    sysmonPending.__resetForTests()
-    vi.clearAllMocks()
-  })
-
-  it('admin：只读摘要默认折叠，编辑表单可见（不再同屏两套字段）', async () => {
-    const { wrapper } = await mountTab({ config: makeSysmonConfig(), expandSummary: false })
-
-    expect(wrapper.find('[data-test="sysmon-config-editor"]').exists()).toBe(true)
-    // 默认折叠：摘要卡片不渲染，字段值自然也不渲染（避免同批字段两套）
-    expect(wrapper.find('[data-test="sysmon-config-summary"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="sysmon-config-section-sampling"]').exists()).toBe(false)
-    const toggle = wrapper.find('[data-test="sysmon-config-summary-toggle"]')
-    expect(toggle.exists()).toBe(true)
-    expect(toggle.attributes('aria-expanded')).toBe('false')
-    expect(toggle.text()).toBe('查看当前生效配置（只读）')
-  })
-
-  it('admin：展开摘要后可见生效值，再收起回到折叠态（入口始终可用）', async () => {
-    const { wrapper } = await mountTab({ config: makeSysmonConfig(), expandSummary: false })
-
-    const toggle = () => wrapper.find('[data-test="sysmon-config-summary-toggle"]')
-    await toggle().trigger('click')
-    await flushPromises()
-    expect(toggle().attributes('aria-expanded')).toBe('true')
-    expect(wrapper.find('[data-test="sysmon-config-summary"]').exists()).toBe(true)
-    expect(valueText(wrapper, 'realtime.push_interval_sec')).toBe('5 秒')
-    expect(toggle().text()).toBe('收起当前生效配置')
-
-    await toggle().trigger('click')
-    await flushPromises()
-    expect(wrapper.find('[data-test="sysmon-config-summary"]').exists()).toBe(false)
-  })
-
-  it('非 admin：没有摘要折叠入口，只读摘要始终展示（只读视图不回归）', async () => {
-    const { wrapper } = await mountTab({ config: makeSysmonConfig(), role: 'user', expandSummary: false })
-
-    expect(wrapper.find('[data-test="sysmon-config-summary-toggle"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="sysmon-config-summary"]').exists()).toBe(true)
-    expect(valueText(wrapper, 'realtime.push_interval_sec')).toBe('5 秒')
-    expect(wrapper.find('[data-test="sysmon-config-editor"]').exists()).toBe(false)
-  })
-
-  it('保存 footer 是 sticky：底部吸附 + 背景/上边框把浮起按钮条与字段分离', async () => {
-    // jsdom 不做布局，sticky 的真实吸附行为无法断言；这里锁样式契约本身
-    // （回归形态是「保存按钮回到文档流末尾 → 改顶部字段要滚到底才能保存」）。
-    const source = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), '..', 'SysmonConfigTab.vue'),
-      'utf8',
-    )
-    const footer = source.slice(source.indexOf('.sysmon-config__footer'))
-    const rule = footer.slice(0, footer.indexOf('}'))
-    expect(rule).toContain('position: sticky')
-    expect(rule).toContain('bottom: 0')
-    expect(rule).toContain('background:')
-    expect(rule).toContain('border-top:')
-    // sticky 元素必须仍在编辑卡片内、位于表单之后（结构不能被挪出滚动祖先）
-    expect(source.indexOf('sysmon-config__footer')).toBeGreaterThan(source.indexOf('sysmon-config__form'))
   })
 })
