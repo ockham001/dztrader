@@ -337,7 +337,7 @@ function openAbout(): void {
             :style="{ textDecoration: 'none', cursor: 'pointer' }"
             @click="logout"
           >
-            <span class="icon" :style="{ width: '16px', height: '16px' }" aria-hidden="true"><Icon name="download2" :size="16" /></span>
+            <span class="icon" :style="{ width: '16px', height: '16px' }" aria-hidden="true"><Icon name="logout" :size="16" /></span>
             登出
           </div>
         </div>
