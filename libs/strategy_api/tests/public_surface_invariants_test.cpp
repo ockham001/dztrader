@@ -98,6 +98,10 @@ constexpr const char* kPlatformFrameHint =
 // ============================================================
 
 /// @brief 仓库根（测试从 build 目录运行，向上找 .git；写法与 public_header_coverage_test.cpp 一致）
+///
+/// 不抽公共测试头：这两个测试目标各自独立编译，共享 3 个 15 行 helper 会引入一个新的跨目标
+/// 依赖面（头放哪、改谁验证、两个 target 的编译顺序），收益不抵成本；两处都保持"从 .git 向
+/// 上找根"这一条唯一口径，写错会在本测试的 ASSERT_FALSE 上直接暴露。
 std::filesystem::path repo_root() {
     std::filesystem::path dir = std::filesystem::current_path();
     for (;;) {
@@ -384,6 +388,10 @@ std::vector<std::pair<std::string, int>> parse_frame_macros(std::string_view sou
 }
 
 /// @brief 结构体名 → 字段声明有序表（只认 `DZ_DECLARE_ALIGNED_STRUCT(Name, { ... });`）
+///
+/// 假设 payload 是**纯字段声明**（含数组与 `char reserved[N]`）——`DZ_DECLARE_ALIGNED_STRUCT`
+/// 的语义就是 POD 字段集合，嵌套花括号会让该块解析为空，从而在本测试的逐字段比较中立刻暴露
+/// （缺失结构体），不会静默通过。
 std::map<std::string, std::vector<std::string>> parse_aligned_structs(std::string_view source) {
     const std::string text = strip_comments(source);
     const std::regex pattern(
@@ -1007,6 +1015,16 @@ TEST(PublicSurfaceInvariants, EngineEntryPointsAreFrozen) {
         "dztrader::run_bar_strategy signature changed (expected int32_t())");
     static_assert(sizeof(dztrader::StrategyBase) == sizeof(void*),
                   "StrategyBase layout changed: it must stay a plain vptr-only base class");
+
+    // 运行时再断言一次：只有 static_assert 的 TEST 在运行期是空壳（失败只会出现在编译期），
+    // 读测试日志的人看不出它到底检了什么。这里让「检查过」本身也出现在用例输出里。
+    EXPECT_TRUE((std::is_same_v<decltype(&dztrader::run_strategy<ProbeStrategy>),
+                                std::int32_t (*)(ProbeStrategy&)>));
+    EXPECT_TRUE((std::is_same_v<decltype(&dztrader::run_bar_strategy<ProbeBarStrategy>),
+                                std::int32_t (*)()>));
+    EXPECT_TRUE(dztrader::Strategy<ProbeStrategy>);
+    EXPECT_TRUE(dztrader::BarStrategy<ProbeBarStrategy>);
+    EXPECT_EQ(sizeof(dztrader::StrategyBase), sizeof(void*));
 }
 
 /**
@@ -1025,10 +1043,15 @@ TEST(PublicSurfaceInvariants, FrameNumbersAreFrozen) {
     const std::string strategy_text = read_repo_file(root, kStrategyDataTypeHeader);
     ASSERT_FALSE(strategy_text.empty())
         << "cannot read " << kStrategyDataTypeHeader << " under " << root.generic_string();
-    const std::map<std::string, int> actual_strategy =
-        to_frame_map(parse_frame_macros(strategy_text));
+    const std::vector<std::pair<std::string, int>> parsed_strategy =
+        parse_frame_macros(strategy_text);
+    const std::map<std::string, int> actual_strategy = to_frame_map(parsed_strategy);
     ASSERT_FALSE(actual_strategy.empty())
         << "no DZ_FRAME_* macros parsed from " << kStrategyDataTypeHeader;
+    // map.emplace 会静默吞掉同名重复项：同一书写位置里把一帧写两次也破坏「每帧一个书写位置」。
+    ASSERT_EQ(parsed_strategy.size(), actual_strategy.size())
+        << "duplicate DZ_FRAME_* #define in " << kStrategyDataTypeHeader
+        << " (each frame must be defined exactly once in its single writing location)";
 
     const std::map<std::string, int> frozen_strategy = frozen_frame_map(kFrozenStrategyFrames);
     std::vector<std::string> strategy_problems;
@@ -1043,8 +1066,12 @@ TEST(PublicSurfaceInvariants, FrameNumbersAreFrozen) {
     const std::string core_text = read_repo_file(root, kCoreDataTypeHeader);
     ASSERT_FALSE(core_text.empty())
         << "cannot read " << kCoreDataTypeHeader << " under " << root.generic_string();
-    const std::map<std::string, int> actual_core = to_frame_map(parse_frame_macros(core_text));
+    const std::vector<std::pair<std::string, int>> parsed_core = parse_frame_macros(core_text);
+    const std::map<std::string, int> actual_core = to_frame_map(parsed_core);
     ASSERT_FALSE(actual_core.empty()) << "no DZ_FRAME_* macros parsed from " << kCoreDataTypeHeader;
+    ASSERT_EQ(parsed_core.size(), actual_core.size())
+        << "duplicate DZ_FRAME_* #define in " << kCoreDataTypeHeader
+        << " (each frame must be defined exactly once in its single writing location)";
 
     const std::map<std::string, int> frozen_core = frozen_frame_map(kFrozenCoreFrames);
     std::vector<std::string> core_problems;
@@ -1085,6 +1112,22 @@ TEST(PublicSurfaceInvariants, FramePayloadStructsAreFrozen) {
         parse_aligned_structs(strategy_text);
     ASSERT_FALSE(strategy_structs.empty())
         << "no DZ_DECLARE_ALIGNED_STRUCT blocks parsed from " << kStrategyStructHeader;
+
+    // 冻结表是「完整集合」：struct.h 是策略可见帧 payload 的唯一书写位置，新增一个对齐结构体
+    // 就是新增一种公开帧布局——必须同提交更新冻结表（不存在"合法新增但无需登记"的路径）。
+    std::vector<std::string> unexpected_structs;
+    for (const auto& [name, fields] : strategy_structs) {
+        const bool frozen =
+            std::ranges::any_of(kFrozenStrategyStructs,
+                                [&name](const FrozenStruct& entry) { return entry.name == name; });
+        if (!frozen) {
+            unexpected_structs.push_back(name + " (" + std::to_string(fields.size()) + " fields)");
+        }
+    }
+    EXPECT_TRUE(unexpected_structs.empty())
+        << kStrategyStructHeader << " contains aligned structs missing from the frozen table:\n"
+        << join_problems(unexpected_structs)
+        << "a new frame payload struct is a public surface change: " << kIntentionalChangeHint;
 
     std::vector<std::string> strategy_problems;
     for (const FrozenStruct& frozen : kFrozenStrategyStructs) {

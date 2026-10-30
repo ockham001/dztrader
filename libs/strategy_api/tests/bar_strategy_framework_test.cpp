@@ -721,6 +721,9 @@ struct IntentObservation {
 };
 
 /// @brief 进程内意图观测记录器（策略线程写、测试线程读；与 {@link Recorder} 同模式）
+///
+/// 不复用 {@link Recorder}：两者记录的数据结构不同（这里是意图 + 前后 Tier 1 快照，那边是
+/// 回调事件 + 脚本注入面），合并会把两类关注点绑在一起；记录器本身只有 30 行，独立更清晰。
 class IntentRecorder {
 public:
     /// @brief 记录一次意图观测
@@ -5131,8 +5134,12 @@ TEST_F(BarStrategyFrameworkTest, DegradedSessionTableKeepsAuctionPhaseFalse) {
 }
 
 // ============================================================
-// #165 E2E 验收（Seam A）：双均线 + 固定止损策略跑通整条链路
+// #165 E2E 验收（Seam A 真实帧通道 + Seam B 注入依赖缝）：双均线 + 固定止损策略
 // ============================================================
+//
+// Seam A 指真实事件/行情通道 + 独立 writer 注入 tick；本组用例额外经 Seam B 注入假合约元数据
+// （`volume_multiple` / `price_tick`），否则 Tier 1 盈亏恒为 0、委托价不做 tick 对齐——B 的
+// 公开面没有元数据查询口（组件文档 §6.1），验收要求「Tier 1 数值」时必须由测试缝供给。
 //
 // 两条用例共用同一个测试策略 fixture：
 //   - `E2eAcceptanceDualMaStop`：1 逻辑账户 + 2 挂靠账户（1.0 / 0.5），断言事件序、指标驱动
@@ -5140,7 +5147,7 @@ TEST_F(BarStrategyFrameworkTest, DegradedSessionTableKeepsAuctionPhaseFalse) {
 //   - `E2eAccountCommandSyncSemantics`：`account add/set/del` 的 sync/nosync 语义（AC3）。
 
 /**
- * **双均线 + 固定止损策略的 Seam A 端到端验收**（#165 AC2）。
+ * **双均线 + 固定止损策略的端到端验收**（#165 AC2；Seam A 真实帧通道 + Seam B 注入合约元数据）。
  *
  * tick 脚本（静默填窗 32 根之后）：
  *   1. 静默填窗最后一根（bar 31）的桶内再补一笔 tick，把它的收盘价从 131 压到 108——
@@ -5319,7 +5326,7 @@ TEST_F(BarStrategyFrameworkTest, E2eAcceptanceDualMaStop) {
     EXPECT_EQ(intents[2].after.bars_since_exit, 0);
     EXPECT_DOUBLE_EQ(intents[2].after.position_profit, 0.0);
 
-    // ── AC2-c：订单帧（每账户每笔意图一张差量单；反手是一张 |ΔP| + |P_old| 的单）──
+    // ── AC2-c：订单帧（每账户每笔意图一张差量单；反手单幅度 = |P_old| + |P_new| = 4）──
     ASSERT_EQ(orders_.size(), 6U) << "2 accounts × 3 intents; got " << orders_.size();
     struct ExpectedOrder {
         const char* account;
