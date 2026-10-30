@@ -66,7 +66,9 @@ export default {
         'dz/token-literal': null,
         'dz/no-ds-namespace': null,
         // 资产 CSS 是「存量紧凑格式」而非组件样式（#198 后 .css 首次真正被 lint）：
-        // 这几条纯格式/写法偏好规则会报 51 处存量噪音，且与主题正确性无关。
+        // 这几条纯格式/写法偏好规则在修复后实测报 87 处存量噪音（= alpha 38 +
+        // color-function 38 + custom-property 空行 8 + vendor 前缀 2 + :not 写法 1），
+        // 与主题正确性无关。修复前只报 51 处，因为 theme.css 整文件解析失败被跳过。
         // 与顶部已关闭的 8 条同类规则同口径 —— 格式归 P4/Prettier，不进门禁。
         'alpha-value-notation': null,
         'color-function-notation': null,
