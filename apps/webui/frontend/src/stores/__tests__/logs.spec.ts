@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { nextTick } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 import { useLogsStore, logPending } from '../logs'
+import { useSystemStore } from '@/stores/system'
 import { useToastStore } from '@/stores/toast'
 import * as logsApi from '@/api/logs'
 import type { LogFile, LogStats, LogAggregate, TimelineBucket } from '@/types/api'
@@ -267,6 +269,54 @@ describe('useLogsStore', () => {
     store.applyLogConfig('dzmd_ctp', { level: 'debug' })
     expect(store.processes).toHaveLength(1)
     expect(store.processes[0]).toEqual({ name: 'dzmd_ctp', type: '行情源', level: 'debug' })
+  })
+
+  describe('进程类型推导（#207 A2）', () => {
+    it('覆盖全部进程类别：主进程 / 行情源 / 交易 / 系统监控 / WebUI / 策略', () => {
+      const system = useSystemStore()
+      system.processName = 'dzweb'
+      const store = useLogsStore()
+      store.applySnapshot({
+        dztraderd: { log_config: { level: 'info' } },
+        dzmd_ctp: { log_config: { level: 'info' } },
+        dzmd_ctp_2: { log_config: { level: 'info' } },
+        dztd_ctp: { log_config: { level: 'info' } },
+        dzsysmon: { log_config: { level: 'info' } },
+        dzweb: { log_config: { level: 'info' } },
+        stg_demo: { log_config: { level: 'info' } },
+      })
+      expect(store.processes.map(p => [p.name, p.type])).toEqual([
+        ['dztraderd', '主进程'],
+        ['dzmd_ctp', '行情源'],
+        ['dzmd_ctp_2', '行情源'],
+        ['dztd_ctp', '交易'],
+        ['dzsysmon', '系统监控'],
+        ['dzweb', 'WebUI'],
+        ['stg_demo', '策略'],
+      ])
+    })
+
+    it('无法识别的进程名回退「未知」', () => {
+      const store = useLogsStore()
+      store.applySnapshot({ some_tool: { log_config: { level: 'info' } } })
+      expect(store.processes[0].type).toBe('未知')
+    })
+
+    it('竞态：快照先到（后端进程名未就绪）→ system-info 到达后重算既有列表类型', async () => {
+      const system = useSystemStore()
+      system.processName = ''  // /api/system/info 尚未返回
+      const store = useLogsStore()
+      store.applySnapshot({ dzweb: { log_config: { level: 'info' } } })
+      expect(store.processes[0].type).toBe('未知')
+
+      // system.init() 完成：进程名就绪 → 既有列表重算，无需刷新/重连
+      system.processName = 'dzweb'
+      await nextTick()
+      expect(store.processes[0].type).toBe('WebUI')
+      // 增量推送只更新 level，不得把类型改坏
+      store.applyLogConfig('dzweb', { level: 'debug' })
+      expect(store.processes[0]).toEqual({ name: 'dzweb', type: 'WebUI', level: 'debug' })
+    })
   })
 
   it('toggleProcessSelection adds and removes', () => {
