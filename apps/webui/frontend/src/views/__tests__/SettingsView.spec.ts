@@ -99,4 +99,66 @@ describe('SettingsView', () => {
 
     expect(saveSpy).toHaveBeenCalledWith({ token_ttl_sec: 7200, notify_cache_size: 200 })
   })
+
+  // #207 C1：无改动时保存按钮禁用且不发请求（旧实现只按 webuiSaving 禁用，能白点一次 PUT）
+  describe('WebUI 保存的 dirty 判据（#207 C1）', () => {
+    function seedWebui(overrides: Partial<{ token_ttl_sec: number; notify_cache_size: number }> = {}) {
+      const store = useSettingsStore()
+      store.webui = {
+        server_listen: '0.0.0.0', server_port: 8080, token_ttl_sec: 3600,
+        jwt_secret_set: true, notify_cache_size: 100, ...overrides,
+      }
+      return store
+    }
+
+    async function mountWebuiTab() {
+      const w = mount(SettingsView, { global: { stubs: sharedStubs } })
+      const webuiTab = w.findAll('button').find(b => b.text() === 'WebUI')
+      await webuiTab!.trigger('click')
+      await w.vm.$nextTick()
+      return w
+    }
+
+    it('初值与镜像一致：保存按钮禁用 + 显示「无改动」，点击不发请求', async () => {
+      const store = seedWebui()
+      const saveSpy = vi.spyOn(store, 'setWebui').mockResolvedValue(true)
+      const w = await mountWebuiTab()
+
+      const saveBtn = w.find('[data-test="webui-save"]')
+      expect(saveBtn.attributes('disabled')).toBeDefined()
+      expect(w.find('[data-test="webui-save-clean"]').exists()).toBe(true)
+
+      await saveBtn.trigger('click')
+      await flushPromises()
+      expect(saveSpy).not.toHaveBeenCalled()
+    })
+
+    it('改动后可保存；改回原值又回到禁用（按生效镜像比较，不是按「是否碰过输入框」）', async () => {
+      const store = seedWebui()
+      const saveSpy = vi.spyOn(store, 'setWebui').mockResolvedValue(true)
+      const w = await mountWebuiTab()
+
+      const input = w.findAll('input[type="number"]')[0]
+      await input.setValue('7200')
+      expect(w.find('[data-test="webui-save"]').attributes('disabled')).toBeUndefined()
+      expect(w.find('[data-test="webui-save-clean"]').exists()).toBe(false)
+
+      // 数值相同但文本不同不算改动（如 "3600" vs "3600" 的相等性按数值比较）
+      await input.setValue('3600')
+      expect(w.find('[data-test="webui-save"]').attributes('disabled')).toBeDefined()
+      expect(w.find('[data-test="webui-save-clean"]').exists()).toBe(true)
+      expect(saveSpy).not.toHaveBeenCalled()
+    })
+
+    it('镜像尚未到达（store.webui 为 null）时保存禁用，不凭空发请求', async () => {
+      const store = useSettingsStore()
+      store.webui = null
+      const saveSpy = vi.spyOn(store, 'setWebui').mockResolvedValue(true)
+      const w = await mountWebuiTab()
+
+      // 加载中态没有保存按钮
+      expect(w.find('[data-test="webui-save"]').exists()).toBe(false)
+      expect(saveSpy).not.toHaveBeenCalled()
+    })
+  })
 })
