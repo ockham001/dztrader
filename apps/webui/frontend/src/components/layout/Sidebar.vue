@@ -246,6 +246,14 @@ function openAbout(): void {
             class="nav-label"
             :style="{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }"
           >{{ item.label }}</span>
+          <!-- #207 C4：占位页功能在导航上先标出「开发中」，用户不必点进去才发现 -->
+          <span
+            v-if="item.wip"
+            class="ds-tag ds-tag--warning"
+            :style="{ marginLeft: 'auto', flexShrink: 0, fontSize: 'var(--body-xs-font-size)' }"
+            data-test="nav-wip-tag"
+            :title="`${item.label}功能开发中`"
+          >开发中</span>
         </router-link>
       </nav>
     </div>
