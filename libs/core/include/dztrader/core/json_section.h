@@ -29,7 +29,7 @@ T load_json_section(const std::filesystem::path& path,
     try {
         ifs >> full;
     } catch (const std::exception& e) {
-        throw std::runtime_error("JSON parse failed | path=" + path.string() + " error=\"" +
+        throw std::runtime_error("json parse failed | path=" + path.string() + " error=\"" +
                                  e.what() + "\"");
     }
     if (!full.is_object() || !full.contains(section)) {

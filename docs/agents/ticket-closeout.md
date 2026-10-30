@@ -21,15 +21,16 @@
 
 **审查对象是 commit，不是活动工作区。**
 
-1. `git add <本票路径>`（显式路径，禁止 `git add -A`）→ `git commit`（WIP 提交也可）。
+1. `git add <本票路径>`（显式路径，禁止 `git add -A`）→ `git commit`（WIP 提交也可）→ **`git status` 必须干净**，并把 `git rev-parse --short HEAD` 写进 verifier prompt。
 2. `/code-review since <base>`，即审 `git diff <base>...HEAD`。
-3. **冻结纪律**：从 spawn verifier 到最后一个 verifier 返回，**不改任何文件、不 amend、不 push**。审查期间继续改代码会让 findings 对旧 commit 作废，整轮白跑（本波 #93：HEAD 在审查中前移 4 次，审阅者只能对旧 commit 出结论并重跑）。
-4. **双轴并行 + 异步投递**：`code-review` 技能会并行 spawn Standards / Spec 两个 verifier；本环境的子代理是异步的，结果以 `subagent-settled` 通知到达。**等两条都到齐再动代码，不要因为未立即返回就重跑**；verifier prompt 里把上一轮 findings 以编号列表贴全（"逐条确认/未修说明"），避免重复审查与相反结论。
-5. 轮次口径：**1 轮 = 1 次修复 + 1 个 verifier**；最多 3 轮修复。第 3 轮仍有 blocking → 修完后必须再跑 **1 轮只读验证**（不算第 4 轮修复），并把结论写进报告。禁止用改写 prompt 重跑 verifier 来"刷新"结论。
-6. **等 verifier 不要 `sleep` 轮询**：子代理是异步的，完成会以 `subagent-settled` 通知到达；`wait_agent` 只对 Team 成员（`spawn_teammate`）有效，对 `subagent` 会返回 `no-active-peer`。等待窗口做**不写文件**的工作（读 diff/契约、拟关闭评论与报告、跑幂等 `preflight --c-only`）；需要真正阻塞时用 `spawn_teammate` 派 verifier 再 `wait_agent`（本波 #77/#78/#81 因 sleep 等 verifier 累计 ≈3.9h）。
-7. **verifier `failed` 恢复协议**（`failed` = 子代理异常退出、无报告）：① 原 prompt 重跑一次；② 仍 `failed` → 用 `spawn_teammate` 派 verifier（Team 成员可 `wait_agent` 真正阻塞）；③ 仍不可用 → **人工代轴**逐条核对（机器门禁须已全绿），并在报告写明"verifier failed N 次、人工代轴"。#123 两个审查线程丢失、用户被迫介入、Lead 人工补轴即反例；禁止改写 prompt 反复重跑刷结论。
-8. **review 完成、修复收敛后才进入 §4 push**；push 之后只允许修 CI 红。
-9. 并行波（同一时间多个 ticket）必须一票一 worktree（AGENTS §五）；共享工作区只留单线。
+3. **冻结纪律**：从 spawn verifier 到最后一个 verifier 返回，**不改任何文件、不 amend、不 push**。审查期间继续改代码会让 findings 对旧 commit 作废，整轮白跑（本波 #93：HEAD 在审查中前移 4 次，审阅者只能对旧 commit 出结论并重跑；#164 的 Standards verifier 自己声明「working tree moved during review」，findings 只能对旧快照负责）。
+4. **verifier 一律 `spawn_teammate`，不用 `subagent`**：`code-review` 技能写的是「并行 sub-agent」，但本宿主的 `subagent` id **不可寻址**——`send_message` 报 `TEAM_MEMBER_NOT_FOUND`、`wait_agent` 报 `no-active-peer`，跑完报告也容易整份丢失（#165 两个 review 轴的结果全丢，只能重派一轮；本波四张票共 15 次此类失败）。用 `spawn_teammate` 派 Standards / Spec 两个变体，各自 `wait_agent` 或等报告；两条到齐再动代码。
+5. **verifier prompt 必须带齐**：固定点与 `HEAD`、`git diff <base>...HEAD` 命令、上一轮 findings 编号列表（要求逐条确认/未修说明）、只读约束（不改文件、不 commit）。上一轮 findings 贴全，避免重复审查与相反结论。
+6. 轮次口径：**1 轮 = 1 次修复 + 1 个 verifier**；最多 3 轮修复。第 3 轮仍有 blocking → 修完后必须再跑 **1 轮只读验证**（不算第 4 轮修复），并把结论写进报告。禁止用改写 prompt 重跑 verifier 来"刷新"结论。
+7. **等 verifier 不要 `sleep` 轮询**（AGENTS §五「等待一律后台作业」）：`spawn_teammate` 的成员用 `wait_agent` 真正阻塞；派 `subagent` 时结果以 `subagent-settled` 通知到达。等待窗口做**不写文件**的工作（读 diff/契约、拟关闭评论与报告、跑幂等 `preflight --c-only`）。反例：#77/#78/#81 因 sleep 等 verifier 累计 ≈3.9h。
+8. **verifier `failed` 恢复协议**（`failed` = 子代理异常退出、无报告）：① 原 prompt 重跑一次；② 仍 `failed` → 用 `spawn_teammate` 派 verifier（Team 成员可 `wait_agent` 真正阻塞）；③ 仍不可用 → **人工代轴**逐条核对（机器门禁须已全绿），并在报告写明"verifier failed N 次、人工代轴"。#123 两个审查线程丢失、用户被迫介入、Lead 人工补轴即反例；禁止改写 prompt 反复重跑刷结论。
+9. **review 完成、修复收敛后才进入 §4 push**；push 之后只允许修 CI 红。
+10. 并行波（同一时间多个 ticket）必须一票一 worktree（AGENTS §五）；共享工作区只留单线。
 
 ## 2. 门禁（全绿才算完）
 
@@ -66,8 +67,8 @@ gh pr create --base main --head <branch> --title "<type>: <摘要>（#<issue>）
 - **push 分级**（[ADR 0036](../adr/0036-push-authorization-tiered-with-guardrails.md)，AGENTS 硬门禁的细化）：feature 分支 push / PR 创建更新免逐次确认，前置是本票门禁绿 + `check-push-scope` 通过 + 一轮修复一次 push；**合并 PR 到 main 仍需确认**（可按票或按波一次授权）；删除非本票分支、打 tag 逐次确认；**force push 禁止**（`pre-push` 非快进拦截 + `.opencode` deny）。本地 `.githooks/pre-push`、main ruleset 与 `.opencode` 权限是机器守卫。
 - **实现完成即自动推进到本节，无需等用户口令**：门禁绿后直接 push → 建 PR → 起 CI 等待；#159 曾在「实现完成」处停下，需要用户催「进行收尾，可以推送」。唯一需确认的是 §5 合并 main、打 tag、删除非本票分支（ADR 0036）。
 - **PR 开完不阻塞等 CI**：`gh pr create` 成功后即可转下一票（读契约 / 定 spec）或本票收尾准备（拟关闭评论、清理 worktree 计划），CI 结果在自然断点或波末统一用 `./scripts/wait-ci.sh --pr <n>` 收；不要把 CI 等待写成同步步骤（本波 `wait-ci` 阻塞约 3.4h）。**边界**：不阻塞只适用于同波内的下一步准备；本票**合并前必须 CI 绿**，开新波前必须已完成合并（见 §5）。
-- **`wait-ci.sh` 的退出码就是 CI 结论**：不要接 `| tail` / `| head`（会吞掉退出码）；它本来就是静默输出，只打状态变化与失败链接。feature 分支没开 PR 时 `--sha` 约 180s 就报错并提示先建 PR，不会空等到 60 分钟总超时。
-- **pre-push 还会拦截「当前 HEAD 上最近一次门禁失败」**：读 `.cache/gate/last-status`，HEAD 不符或缺失只警告；被拦时先重跑 `./scripts/gate.sh build/test`（不要接管道），应急 `DZ_ALLOW_RED_GATE=1`。
+- **`wait-ci.sh` 的退出码就是 CI 结论**：它本来就是静默输出，只打状态变化与失败链接，别接管道（理由见 §2）。feature 分支没开 PR 时 `--sha` 约 180s 就报错并提示先建 PR，不会空等到 60 分钟总超时。
+- **pre-push 还会拦截「当前 HEAD 上最近一次门禁失败」**：读 `.cache/gate/last-status`，HEAD 不符或缺失只警告；被拦时先重跑 `./scripts/gate.sh build/test`，应急 `DZ_ALLOW_RED_GATE=1`。
 - **推送前先看 `gh run list --branch <branch> --json status`**：同一分支已有 in-progress run 时不要推——会排队/取消，每次 ≈35–40 分钟。把剩余修复攒成 **1 个 commit** 再推；review 修复不要在 CI 跑的时候逐条推（本波 #93 因此取消 3 个 run）。
 - 等待期间不要 `gh run watch` 全量输出、不要 `sleep` 轮询、不要反复 tail 后台日志。CI 红先用 `./scripts/ci-log.sh <run-id>` 定位：它**优先取 `last-test-log` artifact（约 200KB，秒级给出失败用例名）**，再退回失败 job 日志（Windows 可达数十 MB）；同一 run/job 已下载过会复用（`--refresh` 强制重拉，`--context N` 调上下文行数）。
 - **等 CI 用后台作业**：`wait-ci.sh --pr <n>` 以 `run_in_background` 启动，等待期做只读准备（拟关闭评论 / 清理 worktree 计划 / 读下一票契约）；需要结果时 `job_output(wait=true)`，不要前台空等（2026-10-26 #146 / #147 各阻塞 21–22 分钟）。
@@ -113,17 +114,21 @@ Refs: <contract/component/docs 路径>
 
 关闭后检查下游依赖是否解除：`gh issue view <child> --json blockedBy`（返回 `{nodes:[],totalCount}`，用 `.blockedBy.nodes[]`；或 `gh api repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by` 拿数组），或在票的报告里写清"#X 的 blocked_by 从 N → 0"。
 
+**关完这张票再跑一次** `./scripts/gate.sh ledger`：若它以「spec 母票可收口」点名某张 `[spec]`，说明刚关的这张就是最后一张子票 → 立刻按 §6「spec 母票收口」处置母票，**不要留到下一波**（#41、#153 都是这样空挂的）。
+
 ### spec 母票收口（子票全部关闭后）
 
 实现票逐张关闭不等于 spec 收口。`[spec]` 母票必须在子票全部关闭后单独处置：
 
-0. **先跑台账体检**：`python3 scripts/check_ledger.py --strict`，按报告清掉悬空承诺（docs 里指向已关闭票的「后续票」）与过期的 `needs-triage`，再开始收口。
+0. **先跑台账体检**：`./scripts/gate.sh ledger`（默认 `--strict`，error 级即退出 1），按报告清掉悬空承诺（docs 里指向已关闭票的「后续票」）与过期的 `needs-triage`，再开始收口。
 1. **清点差异**：逐条核对 spec 的用户故事 / 实现决策，分成三类——已交付（给出票号）、已被后续决策推翻或收窄（引用 ADR / spec / PR，并在母票留评论）、不跟踪（写明理由，遵守 §0「不跟踪的写明不跟踪理由」）。
 2. **写收口评论**：沿用 §6 模板（交付 / 已知限制 / 提交 / CI / PR / 验证 / 审查），另加「spec 逐条符合性」与差异清单；参考 #120 的关闭评论。
 3. **关闭母票**：`gh issue close <spec> --comment "<收口评论>"`。母票不作为长期真相源留在 backlog——真相源是契约 / ADR / 文档；遗留的 `ready-for-agent` 等标签会让后续 agent 把已完成的 spec 当成待实现任务。
 4. **先有票再关**：仍想做的事必须先有票（或明确的 out-of-scope 记录），否则不允许关闭母票。
 
-> 动机：#41（dzsysmon spec）的 13 张子票于 2026-10-24 全部关闭，母票却一直开放到 2026-10-26 才被发现——本流程原先只覆盖「单票 → 关本票」（mattpocock 原版 `implement-spec` 靠 integration branch 的 PR 关闭 spec，本仓改成一票一 PR 后该机制丢失）。
+> **什么时候该想起这一节**：每次关闭一张实现票之前跑 `./scripts/gate.sh ledger` —— 它会直接点名「哪张 `[spec]` 的子票已经全关、母票还开着」。不要靠记忆判断「这是不是最后一张子票」。
+>
+> 动机：#41（dzsysmon spec）的 13 张子票于 2026-10-24 全部关闭，母票却一直开放到 2026-10-26 才被发现；#153（BarStrategy v1）的 12 张子票于 2026-10-30 全关，母票同样还开着——同一形态第二次发生（issue #213）。本流程原先只覆盖「单票 → 关本票」（mattpocock 原版 `implement-spec` 靠 integration branch 的 PR 关闭 spec，本仓改成一票一 PR 后该机制丢失）。
 
 ## 7. 清理、交还与报告
 
@@ -136,7 +141,7 @@ Refs: <contract/component/docs 路径>
 
 AGENTS §五「本机沙箱」的细节都放在这里（AGENTS 只留指针，避免常驻上下文重复）：
 
-- **等待与门禁**：长命令（门禁 / CI / 子代理）用**后台作业**启动（`run_in_background`），需要结果时 `job_output(wait=true)`；等待期做只读准备，不要 `sleep` 轮询或前台空等。CI 用 `./scripts/wait-ci.sh --pr <n>`（随时查状态加 `--status`，0 绿 / 1 红 / 2 错误 / 3 仍在跑）；门禁用 `./scripts/gate.sh build|test|preflight`（短输出用 `--tail N`，**不要接管道**）。异步子代理完成会自动以 `subagent-settled` 通知；`wait_agent` 只对 Team 成员有效。
+- **等待与门禁**：长命令（门禁 / CI / 子代理）用**后台作业**启动（`run_in_background`），需要结果时 `job_output(wait=true)`；等待期做只读准备，不要 `sleep` 轮询或前台空等（AGENTS §五「等待一律后台作业」）。CI 用 `./scripts/wait-ci.sh --pr <n>`（随时查状态加 `--status`，0 绿 / 1 红 / 2 错误 / 3 仍在跑）；门禁用 `./scripts/gate.sh build|test|preflight|ledger`（短输出用 `--tail N`；管道规则见 §2）。
 - **跨调用文件与缓存**：每次 bash 调用的 `/tmp` 相互隔离，跨调用产物写 `.cache/`（已 gitignore）；`~/.conan2` / `~/.cache/gh` / `~/.npm` 只读时相关脚本已回退仓库 `.cache/`，仍被拒时一次性申请更高权限，不要反复重试。
 - **权限与交接**：会话从 `read-only` 转执行（写文件 / commit / push）前请用户切回一次 `workspace-write`，不要逐操作申请 escalation；`handoff` 文档写 `.cache/handoff/`（`/tmp` 不可跨会话）。
 - **不要自建后台进程**：DSH 在工具调用结束时回收直接 fork 的孙进程（实测 `setsid` 子进程也活不过调用边界），后台等待一律用 `run_in_background`。
@@ -151,7 +156,7 @@ AGENTS §五「本机沙箱」的细节都放在这里（AGENTS 只留指针，�
 - **CI 绿就关 issue / PR 未合并就关 issue** → 下游卡住、PR 悬空与冲突返工（#91/#92）。
 - **共享工作区留在 feature 分支 / 长期不提交的文档批次占着 `git status`** → 阻塞并行会话（#91→#92；ADR 0026–0030 从 10-22 挂到 10-23）。
 - **逐条 push review 修复** → 每次推送排队/取消 ≈35–40 分钟 CI（#93 取消 3 个 run）。
-- 门禁/等待命令接 `| tail`、`| head` → 退出码被管道吞掉，失败记成 exit 0 假绿（#75 wait-ci 超时、#81 ninja 失败）。要短输出用 `./scripts/gate.sh … --tail N`。
+- 门禁/等待命令接 `| tail`、`| head` → 退出码被管道吞掉，失败记成假绿（#75 wait-ci 超时、#81 ninja 失败）。规则与正确用法见本文 §2。
 - 用 bash `sleep` 等异步子代理 → 白等且触发重复工具提醒（#78 19 次 5028s、#81 10 次 2400s）；子代理完成会自动通知。
 - 省略 issue close → 人工追问，下游 `blocked_by` 卡住。
 - 共享工作区做并行票 → 提交父节点带上另一条线，push 时一并发布。

@@ -13,7 +13,7 @@ TdSpi::TdSpi(std::string account_id, const MpmcQueuePtr& event_queue)
     : account_id_(std::move(account_id)),
       event_queue_(event_queue) {
     if (!event_queue_) {
-        throw std::runtime_error("TdSpi: event_queue is null");
+        throw std::runtime_error("td spi init failed | reason=event_queue_null");
     }
 }
 

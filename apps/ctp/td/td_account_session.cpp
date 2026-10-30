@@ -53,7 +53,7 @@ AccountSession::AccountSession(std::string account_id,
       account_state_cb_(std::move(account_state_cb)),
       risk_gate_(false) {
     if (!event_queue_) {
-        throw std::runtime_error("AccountSession: event_queue is null");
+        throw std::runtime_error("account session init failed | reason=event_queue_null");
     }
     init_from_boot(std::move(boot));
 }
@@ -130,7 +130,7 @@ void AccountSession::open(const std::string& flow_dir,
 
     api_ = CThostFtdcTraderApi::CreateFtdcTraderApi(flow_dir.c_str());
     if (api_ == nullptr) {
-        throw std::runtime_error("CreateFtdcTraderApi returned null");
+        throw std::runtime_error("create trader api failed | reason=null");
     }
 
     // 保存 CTP API 版本, 用于 on_rsp_user_login 填充 sys_version (I1: 替代 CZCETime)

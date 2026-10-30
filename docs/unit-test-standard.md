@@ -74,6 +74,21 @@
 | 5.1 | **注册方式唯一**：沿用每文件一 target + `gtest_discover_tests`；注意无 `TEST_PREFIX`，`-R` 只能按 `Suite.Case` 过滤 | 引入第二种注册/构建方式 |
 | 5.2 | **重复基建需有据**：重复的 `test_main.cpp`、多份「同款 fixture」要么注明理由（先例：build-appendix 已写明「部分模块有意只编译源码子集」），要么收敛 | 纯复制粘贴且无人能说出为什么 |
 | 5.3 | **产物去向有意**：测试二进制的 install 行为应是有意决定 | 无人知道为何被安装 |
+| 5.4 | **先查共享夹具再写**：`tests/` 下的共享头是本仓的「测试基建真相源」，动手前先查下表；要复制其中任何一件，按 5.2 注明理由 | 重写一份已有的 fake/夹具/常量（#163 重复定义了 `bar_test_data.h` 的小节表，只有人工 review 抓到；#165 重复了 `Recorder` 与 `repo_root`） |
+
+**共享测试夹具索引**（新增共享头时同一次提交登记；只列「提供什么」，用法看头文件）：
+
+| 头 | 提供什么 |
+|---|---|
+| `libs/core/tests/test_temp_dir.h` | `dztrader::test::unique_temp_dir()` / `unique_temp_path()`：进程唯一临时路径，atexit 清理（3.5 的唯一实现） |
+| `libs/strategy_api/tests/bar_test_data.h` | 交易日内秒常量（`TSEC_09_00` 等）+ `day_session_table()` / `day_auction_session_table()`：交易小节与竞价窗口表的**唯一**定义 |
+| `libs/strategy_api/tests/bar_diff_streams.h` | 确定性 tick 流生成器（差分验收用） |
+| `libs/strategy_api/tests/bar_diff_compare.h` | `bar::Bar` 逐字段比较器（fast/slow 两档共用） |
+| `libs/strategy_api/tests/bar_diff_cases.h` | 差分验收的用例执行器 |
+| `libs/strategy_api/tests/legacy_bar_oracle.h` | 旧版 tick→bar 参考实现（差分 oracle） |
+| `libs/strategy_api/tests/date_range.h` / `date_exhaustive_cases.h` / `date_time_exhaustive_cases.h` | 穷举/抽样共用的日期范围与用例数据集 |
+| `libs/strategy_api/tests/bench_support.h` | RDTSC 计时、TSC 标定、分布统计、报告头（所有 `bench_*` 共用） |
+| `libs/strategy_api/tests/bench_framework_harness.h` | 框架基准的假 SDK 边界 + 假依赖 + 配置 home（`bench_tick_update` / `bench_bar_close_dual_ma` / `bench_warmup_replay` 共用） |
 
 ## 明确不做
 

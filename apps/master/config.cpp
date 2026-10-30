@@ -154,7 +154,7 @@ Config parse_master_json(const std::filesystem::path& config_path) {
     try {
         ifs >> data;
     } catch (const std::exception& e) {
-        throw std::runtime_error(std::format("JSON parse failed | path={} error=\"{}\"",
+        throw std::runtime_error(std::format("json parse failed | path={} error=\"{}\"",
                                              config_path.string(), e.what()));
     }
     if (!data.is_object()) {

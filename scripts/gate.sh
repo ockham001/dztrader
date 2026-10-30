@@ -15,6 +15,7 @@
 #   ./scripts/gate.sh build [--tail N] [build.sh 参数...]
 #   ./scripts/gate.sh test  [--tail N] [test.sh 参数...]
 #   ./scripts/gate.sh preflight [--tail N] [preflight.sh 参数...]
+#   ./scripts/gate.sh ledger [check_ledger.py 参数...]  # 台账体检（只读；spec 母票/悬空承诺/triage）
 #   ./scripts/gate.sh wait-ci [wait-ci.sh 参数...]   # 透传，前台阻塞，退出码真实
 #
 # 行为:
@@ -28,6 +29,8 @@
 #     门禁失败」直接拦截（issue #190；应急逃生 `DZ_ALLOW_RED_GATE=1`）。
 #   - preflight 不取构建锁（只读检查 + 前端 lint），其前端阶段与构建里的 npm 安装
 #     可能重叠 —— 由 preflight.sh 自身的 npm 门控脚本处理。
+#   - ledger 透传给 `scripts/check_ledger.py`（需要 `gh` 登录态与网络）。它是 spec 母票
+#     收口前的必跑体检（issue #213）：子票全关后母票必须单独收口，靠记忆发现不了。
 #
 # 退出码: 0=通过；非 0=被包装命令的真实退出码（wait-ci 额外有 1=失败/取消、2=超时）。
 
@@ -139,6 +142,20 @@ run_and_report() {
 }
 
 case "$CMD" in
+    ledger)
+        # 台账体检：只读、不碰构建树，但同样落日志 + 返回真实退出码。
+        # 独立分支是因为它不在 scripts/<cmd>.sh 的命名约定里（脚本叫 check_ledger.py）。
+        #
+        # **默认加 `--strict`**：check_ledger.py 不带该标志时即使发现 error 级问题也返回 0，
+        # 于是 gate 会打出 `gate: OK ledger` 而报告正文写着「结果：FAIL」——门禁假绿（issue
+        # #213 实测第一条命令就撞上）。只要纯报告（不看退出码）就直接跑
+        # `python3 scripts/check_ledger.py`。
+        ledger_args=("--strict")
+        if [ ${#ARGS[@]} -gt 0 ]; then
+            ledger_args=("${ARGS[@]}")
+        fi
+        run_and_report ledger "$ROOT/scripts/check_ledger.py" "${ledger_args[@]}"
+        ;;
     build|test|preflight)
         # 不在此处持锁：build.sh / test.sh 自己会取 .cache/build.lock。
         # 若这里先 flock 再调它们，子进程打开同一文件是另一个 open file description，
@@ -148,7 +165,7 @@ case "$CMD" in
         run_and_report "$CMD" "$ROOT/scripts/$CMD.sh" "${ARGS[@]}"
         ;;
     *)
-        echo "error: unknown gate command: $CMD (build|test|preflight|wait-ci)" >&2
+        echo "error: unknown gate command: $CMD (build|test|preflight|ledger|wait-ci)" >&2
         exit 2
         ;;
 esac

@@ -413,7 +413,7 @@ TEST_F(ShmManagerTest, SetShmConfigAppliesAndPersists) {
     std::ofstream(cfg_path_) << initial.dump(2);
 
     ShmManager mgr(make_default_shm_global(), cfg_path_);
-    SPDLOG_INFO("BISECT: ctor done");
+    SPDLOG_INFO("bisect | stage=ctor");
 
     // 构造 SET_EVENT_SHM_CONFIG 帧 (无 instance_id, payload = JSON Merge Patch)
     // page_size_mb 不可变, SET 中传 999 应被完全跳过 (不解析、不校验、不报错)
@@ -427,22 +427,22 @@ TEST_F(ShmManagerTest, SetShmConfigAppliesAndPersists) {
     // 注册 reader 观察 master 回写的 RTN_EVENT_SHM_CONFIG (reader 只能看到注册之后写入的帧)
     shm::Reader rtn_reader = shm::Reader::create(shm::channel_name("dzevent"),
                                                  dztrader::paths::shm(), "shm_report_reader");
-    SPDLOG_INFO("BISECT: reader done");
+    SPDLOG_INFO("bisect | stage=reader");
 
     // 用独立 MultiWriter 模拟 UI 写入 SET_EVENT_SHM_CONFIG 帧 (无 instance_id, DzExtFrameHeader)
     auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
     auto writer =
         shm::MultiWriter::create(std::make_shared<shm::ChannelMeta>(std::move(meta)), "fake_ui");
-    SPDLOG_INFO("BISECT: writer done");
+    SPDLOG_INFO("bisect | stage=writer");
     ASSERT_TRUE(shm::write_ext_json(writer, DZ_FRAME_SET_EVENT_SHM_CONFIG, req));
     writer.notify_subscribers();
-    SPDLOG_INFO("BISECT: write done");
+    SPDLOG_INFO("bisect | stage=write");
 
     // master drain 应读到该帧并执行 SET_EVENT_SHM_CONFIG
     for (int i = 0; i < 10; ++i) {
         mgr.drain_event_channel();
     }
-    SPDLOG_INFO("BISECT: drains done");
+    SPDLOG_INFO("bisect | stage=drains");
 
     // 验证: 持久化到磁盘的可变字段已更新, 不可变字段保留原值
     std::ifstream ifs(cfg_path_);

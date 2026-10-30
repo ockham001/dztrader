@@ -32,7 +32,7 @@ constexpr size_t PREFIX_LEN = 14;  // strlen("pbkdf2_sha256$")
 std::string hash_password(const std::string& password) {
     unsigned char salt[SALT_LEN];
     if (RAND_bytes(salt, SALT_LEN) != 1) {
-        throw std::runtime_error("RAND_bytes failed");
+        throw std::runtime_error("rand bytes failed");
     }
     char salt_hex[(SALT_LEN * 2) + 1];
     for (size_t i = 0; i < SALT_LEN; i++) {
@@ -43,7 +43,7 @@ std::string hash_password(const std::string& password) {
     unsigned char hash[HASH_LEN];
     if (PKCS5_PBKDF2_HMAC(password.c_str(), static_cast<int>(password.size()), salt, SALT_LEN,
                           PBKDF2_ITERATIONS, EVP_sha256(), HASH_LEN, hash) != 1) {
-        throw std::runtime_error("PKCS5_PBKDF2_HMAC failed");
+        throw std::runtime_error("pbkdf2 hmac failed");
     }
     char hash_hex[(HASH_LEN * 2) + 1];
     for (size_t i = 0; i < HASH_LEN; i++) {
