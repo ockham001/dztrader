@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { RecycleScroller } from 'vue-virtual-scroller'
 import type { RecycleScrollerExposed } from 'vue-virtual-scroller'
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
@@ -16,6 +16,15 @@ const store = useLogsStore()
 const system = useSystemStore()
 const ws = useWebSocket()
 const scroller = ref<RecycleScrollerExposed | null>(null)
+
+/** 实时开关被禁用的原因（#207 C2）：只在「选中文件是 WebUI 自身日志」时成立 */
+const tailDisabledReason = computed<string>(() => {
+  if (!store.selectedFile) return ''
+  if (system.isSelf(store.selectedLogger)) {
+    return 'WebUI 自身日志不支持实时跟随（避免日志反馈循环）'
+  }
+  return ''
+})
 
 function levelTagClass(level: string): string {
   return `log-level-tag log-level-${level}`
@@ -198,16 +207,27 @@ function formatTs(ts: string): string {
         >
           {{ store.contentLoading ? '...' : '刷新' }}
         </button>
-        <label class="ds-switch">
+        <label
+          class="ds-switch"
+          :class="{ 'ds-switch--disabled': !!tailDisabledReason }"
+          :title="tailDisabledReason"
+        >
           <input
             type="checkbox"
             :checked="store.tailEnabled"
-            :disabled="!store.selectedFile || system.isSelf(store.selectedLogger)"
+            :disabled="!store.selectedFile || !!tailDisabledReason"
+            data-test="log-tail-switch"
             @change="toggleTail"
           >
           <span class="ds-switch__track"><span class="ds-switch__thumb"></span></span>
         </label>
         <span class="log-viewer__tail-label">实时</span>
+        <!-- #207 C2：禁用态必须有可见解释（原因此前只写在代码注释里） -->
+        <span
+          v-if="tailDisabledReason"
+          class="log-viewer__tail-hint"
+          data-test="log-tail-hint"
+        >{{ tailDisabledReason }}</span>
       </div>
     </div>
 
@@ -287,6 +307,14 @@ function formatTs(ts: string): string {
 .log-viewer__tail-label {
   font-size: var(--body-sm-font-size);
   color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* #207 C2：实时开关禁用态的解释文案（与开关同一行，弱化以免抢焦点） */
+.log-viewer__tail-hint {
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  color: var(--text-tertiary);
   white-space: nowrap;
 }
 

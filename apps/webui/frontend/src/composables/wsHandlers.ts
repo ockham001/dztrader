@@ -13,7 +13,13 @@ import { useProgressStore } from '@/stores/progress'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useSettingsStore } from '@/stores/settings'
 import { useSysmonStore } from '@/stores/sysmon'
+import { useToastStore } from '@/stores/toast'
 import type { ProcessStatusPayload, MdConfigPayload } from '@/types/api'
+
+// 契约 webui-ws §2.3 `log_tail_unsubscribed.reason` 的两个取值（发送方真相源：
+// apps/webui/ws_log_tail.h 的 kReasonSelfLog / kReasonSendFailures）。
+const TAIL_REASON_SELF_LOGS = 'self_logs_cannot_be_tailed'
+const TAIL_REASON_SEND_FAILURES = 'send failures'
 
 registerHandler('data_changed', (payload) => {
   // 多设备同步：后端数据变更时推送通知，前端按 scope 重新 REST 刷新
@@ -41,8 +47,13 @@ registerHandler('log_line', (payload) => {
 registerHandler('log_tail_unsubscribed', (payload) => {
   const logs = useLogsStore()
   logs.setTailEnabled(false)
-  if ((payload as { file?: string; reason?: string } | undefined)?.reason === 'self_logs_cannot_be_tailed') {
-    console.info('self logs cannot be tailed')
+  // 契约 webui-ws §2.3：reason ∈ self_logs_cannot_be_tailed | send failures。
+  // #207 C2：两种都转成一次性可见提示（旧实现只在 console 记一句，用户看不到原因）。
+  const reason = (payload as { reason?: string } | undefined)?.reason
+  if (reason === TAIL_REASON_SELF_LOGS) {
+    useToastStore().warning('WebUI 自身日志不支持实时跟随（避免日志反馈循环）')
+  } else if (reason === TAIL_REASON_SEND_FAILURES) {
+    useToastStore().warning('实时日志推送连续失败，已自动停止跟随')
   }
 })
 
