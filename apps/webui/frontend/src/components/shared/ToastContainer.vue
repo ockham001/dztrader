@@ -31,7 +31,7 @@ const ICON_MAP: Record<string, string> = {
           aria-label="关闭"
           @click="toast.dismiss(item.id)"
         >
-          <Icon name="close" :size="14" />
+          <Icon name="Close" :size="14" />
         </button>
         <span v-if="item.duration > 0" class="ds-toast__progress">
           <span class="ds-toast__progress-bar" :style="{ animationDuration: `${item.duration}ms` }"></span>

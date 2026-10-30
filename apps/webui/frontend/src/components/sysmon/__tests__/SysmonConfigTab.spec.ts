@@ -31,17 +31,35 @@ function setRole(role: 'admin' | 'user'): void {
   }
 }
 
-async function mountTab(options: { config?: SysmonConfigPayload; role?: 'admin' | 'user' } = {}) {
+async function mountTab(options: {
+  config?: SysmonConfigPayload
+  role?: 'admin' | 'user'
+  /** false = 保持 #207 D1 的默认折叠态（用于验证默认布局）；默认展开以便断言生效值 */
+  expandSummary?: boolean
+} = {}) {
   const store = useSysmonStore()
   if (options.config) store.applyConfig(options.config)
   setRole(options.role ?? 'admin')
   const wrapper = mount(SysmonConfigTab, { global: { stubs } })
   await flushPromises()
+  if (options.expandSummary !== false) await expandSummary(wrapper)
   return { wrapper, store }
 }
 
 function valueText(wrapper: VueWrapper, field: string): string {
   return wrapper.find(`[data-test="sysmon-config-value-${field}"]`).text()
+}
+
+/**
+ * #207 D1 起 admin 的只读摘要默认折叠（避免与编辑表单字段重复两套）；
+ * 验证「生效值展示」的用例需先展开。
+ */
+async function expandSummary(wrapper: VueWrapper): Promise<void> {
+  const toggle = wrapper.find('[data-test="sysmon-config-summary-toggle"]')
+  if (toggle.exists() && toggle.attributes('aria-expanded') === 'false') {
+    await toggle.trigger('click')
+    await flushPromises()
+  }
 }
 
 describe('SysmonConfigTab 生效配置展示（#81）', () => {
@@ -243,5 +261,56 @@ describe('SysmonConfigTab 编辑与保存（#81，仅 admin）', () => {
     expect((wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]').element as HTMLInputElement).value)
       .toBe('1000')
     expect(valueText(wrapper, 'sampling.measure_interval_ms')).toBe('1000 ms')
+  })
+})
+
+// #207 B1：字节输入框与摘要的 IEC 单位同屏，必须给出实时换算提示，避免错 1024 倍
+describe('SysmonConfigTab 历史库上限单位换算（#207 B1）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sysmonPending.__resetForTests()
+    vi.clearAllMocks()
+  })
+
+  function hintText(wrapper: VueWrapper): string {
+    const hint = wrapper.find('[data-test="sysmon-config-hint-max_bytes"]')
+    expect(hint.exists(), '缺少 max_bytes 换算提示').toBe(true)
+    return hint.text()
+  }
+
+  it('初值（镜像 2147483648 字节）就显示与摘要一致的 IEC 换算', async () => {
+    const { wrapper } = await mountTab({ config: makeSysmonConfig() })
+
+    expect((wrapper.find('[data-test="sysmon-config-input-max_bytes"]').element as HTMLInputElement).value)
+      .toBe('2147483648')
+    // 输入框是字节口径，摘要行是 2.0 GiB —— 提示必须把两者对上
+    expect(hintText(wrapper)).toBe('≈ 2.0 GiB')
+  })
+
+  it('输入 2147483648 时同屏显示 2.0 GiB（实时跟随输入）', async () => {
+    const { wrapper } = await mountTab({ config: makeSysmonConfig({ history: { max_bytes: 0 } }) })
+
+    await wrapper.find('[data-test="sysmon-config-input-max_bytes"]').setValue('2147483648')
+    expect(hintText(wrapper)).toBe('≈ 2.0 GiB')
+
+    await wrapper.find('[data-test="sysmon-config-input-max_bytes"]').setValue('1048576')
+    expect(hintText(wrapper)).toBe('≈ 1.0 MiB')
+  })
+
+  it('0 表示不限制（与只读摘要同一语义），不显示 0 B', async () => {
+    const { wrapper } = await mountTab({ config: makeSysmonConfig({ history: { max_bytes: 0 } }) })
+
+    expect(hintText(wrapper)).toBe('0 = 不限制')
+    expect(hintText(wrapper)).not.toContain('0 B')
+  })
+
+  it('非法输入（非数字 / 负数）给出可读提示而不是换算结果', async () => {
+    const { wrapper } = await mountTab({ config: makeSysmonConfig() })
+
+    await wrapper.find('[data-test="sysmon-config-input-max_bytes"]').setValue('-1')
+    expect(hintText(wrapper)).toBe('字节数不能为负')
+
+    await wrapper.find('[data-test="sysmon-config-input-max_bytes"]').setValue('')
+    expect(hintText(wrapper)).toBe('请输入有效字节数')
   })
 })

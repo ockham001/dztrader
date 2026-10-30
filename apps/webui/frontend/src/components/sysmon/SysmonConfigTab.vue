@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import type { SysmonConfigPatch } from '@/api/sysmon'
 import { formatBytes } from '@/composables/format'
@@ -77,6 +77,15 @@ const THRESHOLDS_FIELDS: readonly NumberFieldSpec[] = [
 const canEdit = computed(() => auth.isAdmin)
 const config = computed(() => sysmon.config)
 const savePending = computed(() => sysmon.configPending)
+
+/**
+ * admin 的只读摘要是否展开（#207 D1）。
+ * admin 视图同时有「六个只读摘要卡」与「修改配置表单」，同批字段两套并存、页面也被撑长；
+ * 默认折叠摘要（表单本身就是同一批字段的可编辑版本），展开后仍可对照**当前生效值**——
+ * 保存后表单会跟随镜像重置，但用户仍可能想确认「现在到底生效的是什么」。
+ * 非 admin 没有编辑表单，摘要始终展示（只读视图不回归）。
+ */
+const showSummary = ref(false)
 
 function enabledText(enabled: boolean): string {
   return enabled ? '已启用' : '已关闭'
@@ -401,6 +410,20 @@ const dirty = computed(() => draft.value.invalidLabel !== null || Object.keys(dr
 const saveDisabled = computed(() => !canEdit.value || savePending.value || !dirty.value)
 
 /**
+ * 历史库总量上限的实时换算提示（#207 B1）：
+ * 该字段的输入单位是**字节**（后端契约口径），但同一数值在只读摘要里按 IEC 档显示
+ * （`2147483648` 摘要显示 `2.0 GiB`）。两套单位同屏且无换算提示，容易错 1024 倍。
+ * 这里按共享格式化模块（`formatBytes`）给出实时换算，口径与摘要行完全一致；`0` 表示不限制。
+ */
+const maxBytesHint = computed<string>(() => {
+  const parsed = parseNumberInput(form.historyNumbers[FIELDS.maxBytes.key], FIELDS.maxBytes.integer)
+  if (parsed === null) return '请输入有效字节数'
+  if (parsed < 0) return '字节数不能为负'
+  if (parsed === 0) return '0 = 不限制'
+  return `≈ ${formatBytes(parsed)}`
+})
+
+/**
  * 保存：只下发差异 patch。成功（REST 已写事件通道）后 toast「配置已保存」并保持 pending，
  * 生效信号仍是 WS `sysmon_config` 回推（校验失败时发送方回推旧值，表单随镜像回退）。
  */
@@ -446,8 +469,19 @@ async function onSave(): Promise<void> {
     </div>
 
     <template v-else>
-      <!-- 生效配置展示：按契约六个段分组 -->
-      <div class="sysmon-config__grid">
+      <!-- 生效配置展示：按契约六个段分组
+           #207 D1：admin 同时有「只读摘要」和「修改配置表单」时，同批字段会出现两套。
+           因此 admin 默认折叠摘要（保留入口，展开仍可对照生效值），非 admin 只读视图不变。 -->
+      <div v-if="canEdit" class="sysmon-config__summary-toggle">
+        <button
+          class="ds-btn ds-btn--tertiary ds-btn--sm"
+          type="button"
+          data-test="sysmon-config-summary-toggle"
+          :aria-expanded="showSummary"
+          @click="showSummary = !showSummary"
+        >{{ showSummary ? '收起当前生效配置' : '查看当前生效配置（只读）' }}</button>
+      </div>
+      <div v-if="!canEdit || showSummary" class="sysmon-config__grid" data-test="sysmon-config-summary">
         <section
           v-for="section in displaySections"
           :key="section.key"
@@ -576,6 +610,12 @@ async function onSave(): Promise<void> {
                     :data-test="`sysmon-config-input-${field.key}`"
                   >
                 </span>
+                <!-- #207 B1：字节输入与摘要的 IEC 单位同屏时给出换算，避免错 1024 倍 -->
+                <span
+                  v-if="field.key === FIELDS.maxBytes.key"
+                  class="sysmon-config__field-hint"
+                  data-test="sysmon-config-hint-max_bytes"
+                >{{ maxBytesHint }}</span>
               </label>
             </div>
           </section>
@@ -762,17 +802,42 @@ async function onSave(): Promise<void> {
   line-height: var(--body-xs-line-height);
 }
 
+/* #207 B1：单位换算提示（与字段标签同级，弱化以便不抢输入框注意力） */
+.sysmon-config__field-hint {
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  font-variant-numeric: tabular-nums;
+}
+
 .sysmon-config__groups {
   display: flex;
   flex-wrap: wrap;
   gap: var(--spacer-4) var(--spacer-16);
 }
 
+/* #207 D1：保存按钮 sticky 到视口底部。
+   滚动容器是外层的 MonitorView（.monitor-view overflow:auto），因此 sticky 相对它生效；
+   表格/表单很长时，改顶部字段后不必滚到文档末尾才能保存。
+   背景 + 上边框让浮起的按钮条与下面的字段内容分离（否则按钮会压住输入框文字）。 */
 .sysmon-config__footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: var(--spacer-12);
   flex-wrap: wrap;
+  padding: var(--spacer-12) 0;
+  background: var(--bg-base-secondary);  /* 与 .ds-card 同底色，浮起时不透出下面的字段 */
+  border-top: 1px solid var(--border-neutral-l1);
+}
+
+/* admin 的摘要折叠入口（#207 D1）：弱化，不与「修改配置」标题争层级 */
+.sysmon-config__summary-toggle {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: calc(-1 * var(--spacer-8));
 }
 
 @media (max-width: 767.98px) {

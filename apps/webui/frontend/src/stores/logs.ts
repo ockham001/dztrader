@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { logsApi } from '@/api/logs'
 import { useSystemStore } from '@/stores/system'
 import { usePending } from '@/composables/usePending'
@@ -27,6 +27,11 @@ const FILE_PAGE_SIZE = 30
 export const logPending = usePending()
 
 export const useLogsStore = defineStore('logs', () => {
+  // 系统信息 store：提供后端自身进程名（system.init 拉取一次），用于 deriveType 判定 WebUI。
+  // 注意 system.init() 与 WS 快照存在竞态（contract：/api/system/info 未返回时快照先到），
+  // 见下方 watch —— 进程名就绪后重算既有列表的 type。
+  const system = useSystemStore()
+
   // === Tab state ===
   const browserTab = ref<'viewer' | 'analysis'>('viewer')
 
@@ -203,12 +208,17 @@ export const useLogsStore = defineStore('logs', () => {
   }
 
   /// 按进程名前缀推导类型（与后端旧 GET /api/logs/processes 的 type 逻辑一致）
+  /// 进程命名真相：master `dztraderd`、行情网关 `dzmd_*`、交易网关 `dztd_*`、
+  /// 系统监控 `dzsysmon`、策略 `stg_*`（如 `stg_demo`；裸策略名规则见总则 §5 身份边界，
+  /// 契约 strategy 只写差异并指向总则）。
   function deriveType(name: string): string {
     if (name === 'dztraderd') return '主进程'
     if (name.startsWith('dzmd')) return '行情源'
     if (name.startsWith('dztd')) return '交易'
-    if (useSystemStore().isSelf(name)) return 'WebUI'
-    if (name.includes('strategy')) return '策略'
+    if (name === 'dzsysmon') return '系统监控'
+    if (system.isSelf(name)) return 'WebUI'
+    // 策略进程名以 `stg_` 开头（历史实现用 `includes('strategy')`，真实进程名不匹配 → 显示「未知」）
+    if (name.startsWith('stg_')) return '策略'
     return '未知'
   }
 
@@ -244,6 +254,15 @@ export const useLogsStore = defineStore('logs', () => {
     // 契约 log: log_config 推送到达 = 生效信号，清 set_level pending
     resolve(`logs:${instanceId}:set_level`)
   }
+
+  /// 竞态修复：`/api/system/info`（system.init）与 WS 全量快照并行——
+  /// 快照先到时 `deriveType` 还拿不到后端自身进程名，WebUI 行会落到「未知」，
+  /// 而后续增量只更新 level 不重算 type（要刷新/重连才恢复）。
+  /// 进程名就绪（或变化）时对既有列表重跑 deriveType；推导是幂等的，重复执行无副作用。
+  watch(() => system.processName, () => {
+    if (processes.value.length === 0) return
+    processes.value = processes.value.map(p => ({ ...p, type: deriveType(p.name) }))
+  })
 
   /// Append a new line from WebSocket log_line push (real-time tail)
   function appendLogLine(line: LogLine): void {

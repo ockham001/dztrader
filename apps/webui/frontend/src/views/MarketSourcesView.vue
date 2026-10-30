@@ -3,7 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
 import SyncSelect from '@/components/shared/SyncSelect.vue'
-import { useMarketSourcesStore } from '@/stores/marketSources'
+import { useMarketSourcesStore, type MarketSourceView } from '@/stores/marketSources'
 import { resolveCard } from '@/stores/marketSourcesCardRegistry'
 import { useToastStore } from '@/stores/toast'
 import type { SelectItem } from '@/components/shared/SyncSelect.vue'
@@ -86,6 +86,50 @@ async function confirmAddSource(): Promise<void> {
 onMounted(() => {
   store.loadSources()
 })
+
+// ===== 批量操作确认（#207 C3） =====
+// 旧实现点一下就对全部非在线源并发执行，无选择、无确认、无影响范围提示。
+// 现改为：按钮先给出影响范围，点击后弹确认框列出目标源名称与数量，确认才下发；
+// 无目标时按钮禁用（不弹空确认框）。
+type BatchAction = 'login' | 'logout' | 'autoLoginOn' | 'autoLoginOff'
+
+interface BatchActionSpec {
+  title: string
+  /** 动作在界面上的名字（确认框正文用） */
+  verb: string
+  targets: () => MarketSourceView[]
+}
+
+const BATCH_ACTIONS: Record<BatchAction, BatchActionSpec> = {
+  login: { title: '批量登录', verb: '登录', targets: () => store.batchLoginTargets },
+  logout: { title: '批量登出', verb: '登出', targets: () => store.batchLogoutTargets },
+  autoLoginOn: { title: '批量开启自动登录', verb: '开启自动登录', targets: () => store.batchAutoLoginTargets(true) },
+  autoLoginOff: { title: '批量关闭自动登录', verb: '关闭自动登录', targets: () => store.batchAutoLoginTargets(false) },
+}
+
+const batchConfirm = ref<BatchAction | null>(null)
+
+/** 当前按钮对应的目标集合（渲染按钮文案与确认框共用同一份推导） */
+function batchTargets(action: BatchAction): MarketSourceView[] {
+  return BATCH_ACTIONS[action].targets()
+}
+
+function requestBatch(action: BatchAction): void {
+  if (batchTargets(action).length === 0) return
+  batchConfirm.value = action
+}
+
+async function confirmBatch(): Promise<void> {
+  const action = batchConfirm.value
+  if (!action) return
+  // 目标在确认瞬间重算：弹框期间状态可能变化（如某源自己登录上了），以点击确认时为准
+  const targets = batchTargets(action)
+  batchConfirm.value = null
+  if (targets.length === 0) return
+  if (action === 'login') await store.batchLogin(targets)
+  else if (action === 'logout') await store.batchLogout(targets)
+  else await store.batchToggleAutoLogin(action === 'autoLoginOn', targets)
+}
 </script>
 
 <template>
@@ -120,15 +164,52 @@ onMounted(() => {
       </div>
 
       <!-- ===== Batch Operations Bar ===== -->
+      <!-- #207 C3：按钮上直接标出将影响的源数量，点击后弹确认框列出具体目标；无目标时禁用 -->
       <div class="batch-bar">
         <div class="batch-bar__actions">
           <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-8)', flexWrap: 'nowrap' }">
-            <button class="ds-btn ds-btn--secondary ds-btn--sm" type="button" @click="store.batchLogin">批量登录</button>
-            <button class="ds-btn ds-btn--secondary ds-btn--sm" type="button" @click="store.batchLogout">批量登出</button>
+            <button
+              class="ds-btn ds-btn--secondary ds-btn--sm"
+              type="button"
+              data-test="batch-login"
+              :disabled="batchTargets('login').length === 0"
+              :title="batchTargets('login').length === 0
+                ? '没有需要登录的行情源（在线或正在登录的源不计入）'
+                : `将登录 ${batchTargets('login').length} 个未在线行情源`"
+              @click="requestBatch('login')"
+            >批量登录{{ batchTargets('login').length > 0 ? `（${batchTargets('login').length}）` : '' }}</button>
+            <button
+              class="ds-btn ds-btn--secondary ds-btn--sm"
+              type="button"
+              data-test="batch-logout"
+              :disabled="batchTargets('logout').length === 0"
+              :title="batchTargets('logout').length === 0
+                ? '没有在线且未在登出的行情源'
+                : `将登出 ${batchTargets('logout').length} 个在线行情源`"
+              @click="requestBatch('logout')"
+            >批量登出{{ batchTargets('logout').length > 0 ? `（${batchTargets('logout').length}）` : '' }}</button>
           </div>
           <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-8)', flexWrap: 'nowrap' }">
-            <button class="ds-btn ds-btn--secondary ds-btn--sm" type="button" @click="store.batchToggleAutoLogin(true)">批量开启自动登录</button>
-            <button class="ds-btn ds-btn--secondary ds-btn--sm" type="button" @click="store.batchToggleAutoLogin(false)">批量关闭自动登录</button>
+            <button
+              class="ds-btn ds-btn--secondary ds-btn--sm"
+              type="button"
+              data-test="batch-auto-login-on"
+              :disabled="batchTargets('autoLoginOn').length === 0"
+              :title="batchTargets('autoLoginOn').length === 0
+                ? '所有行情源都已开启自动登录'
+                : `将为 ${batchTargets('autoLoginOn').length} 个行情源开启自动登录`"
+              @click="requestBatch('autoLoginOn')"
+            >批量开启自动登录{{ batchTargets('autoLoginOn').length > 0 ? `（${batchTargets('autoLoginOn').length}）` : '' }}</button>
+            <button
+              class="ds-btn ds-btn--secondary ds-btn--sm"
+              type="button"
+              data-test="batch-auto-login-off"
+              :disabled="batchTargets('autoLoginOff').length === 0"
+              :title="batchTargets('autoLoginOff').length === 0
+                ? '所有行情源都已关闭自动登录'
+                : `将为 ${batchTargets('autoLoginOff').length} 个行情源关闭自动登录`"
+              @click="requestBatch('autoLoginOff')"
+            >批量关闭自动登录{{ batchTargets('autoLoginOff').length > 0 ? `（${batchTargets('autoLoginOff').length}）` : '' }}</button>
           </div>
         </div>
       </div>
@@ -164,6 +245,32 @@ onMounted(() => {
           <span v-if="addSourceSubmitting" class="ds-btn__spinner"></span>
           {{ addSourceSubmitting ? '启动中…' : '添加' }}
         </button>
+      </template>
+    </Modal>
+
+    <!-- ===== Batch Confirm Modal（#207 C3：列出影响范围后再执行，无目标时不弹） ===== -->
+    <Modal
+      :open="batchConfirm !== null"
+      :title="batchConfirm ? BATCH_ACTIONS[batchConfirm].title : ''"
+      @close="batchConfirm = null"
+    >
+      <div v-if="batchConfirm" class="dialog-form" data-test="batch-confirm">
+        <div class="dialog-row__hint" data-test="batch-confirm-summary">
+          将对 <strong>{{ batchTargets(batchConfirm).length }}</strong> 个行情源执行「{{ BATCH_ACTIONS[batchConfirm].verb }}」：
+        </div>
+        <ul class="batch-confirm__list" data-test="batch-confirm-targets">
+          <li v-for="src in batchTargets(batchConfirm)" :key="src.id">{{ src.display_name || src.source_name }}</li>
+        </ul>
+      </div>
+      <template #footer>
+        <button class="ds-btn ds-btn--secondary" type="button" data-test="batch-confirm-cancel" @click="batchConfirm = null">取消</button>
+        <button
+          class="ds-btn ds-btn--primary"
+          type="button"
+          data-test="batch-confirm-ok"
+          :disabled="batchConfirm !== null && batchTargets(batchConfirm).length === 0"
+          @click="confirmBatch"
+        >确认{{ batchConfirm ? BATCH_ACTIONS[batchConfirm].verb : '' }}</button>
       </template>
     </Modal>
 </template>
@@ -237,6 +344,17 @@ onMounted(() => {
 
 /* Spinner: 样式回归全局组件库 components.css 的 .ds-btn__spinner（P4 T4 去重复）。
    此前本页 scoped 重复定义同一原子，属绕过 pattern 的冗余复制，已删除。 */
+
+/* 批量操作确认框的目标列表（#207 C3）：长列表可滚动，不把确认框撑高到遮住按钮 */
+.batch-confirm__list {
+  max-height: 240px;
+  overflow-y: auto;
+  margin: 0;
+  padding-left: var(--spacer-20);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  color: var(--text-default);
+}
 
 /* Responsive */
 @media (max-width: 767.98px) {

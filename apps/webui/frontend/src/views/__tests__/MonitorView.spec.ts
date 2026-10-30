@@ -132,10 +132,10 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
   })
 
   it('全部可用：16 核、负载三项、上下文切换/中断速率均渲染，不出现不可用', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      resourceData: true,
-      semanticHints: { 'cpu.load_average': 'linux load average from /proc/loadavg' },
-    }))
+    // 夹具刻意**不**携带 cpu.load_average 的 semantic_hints：真实发送方只在
+    // semantic=processor_queue（Windows 代理量）时携带该提示（apps/sysmon/snapshot_builder.cpp），
+    // Linux 原生负载不携带。此前的 'linux load average from /proc/loadavg' 夹具与契约不符。
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
     const wrapper = await mountView()
 
     // CPU 卡片整行宽（总量 + 每核 + 负载 + 速率）
@@ -151,7 +151,8 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
     expect(wrapper.find('[data-test="monitor-load-one"]').text()).toBe('0.42')
     expect(wrapper.find('[data-test="monitor-load-five"]').text()).toBe('0.51')
     expect(wrapper.find('[data-test="monitor-load-fifteen"]').text()).toBe('0.63')
-    expect(wrapper.find('[data-test="monitor-load-hint"]').text()).toContain('linux load average from /proc/loadavg')
+    // 无提示时不得凭空造提示（#207 B2 的映射只在发送方真的携带 key 时生效）
+    expect(wrapper.find('[data-test="monitor-load-hint"]').exists()).toBe(false)
 
     expect(wrapper.find('[data-test="monitor-context-switches"]').text()).toBe('1234/s')
     expect(wrapper.find('[data-test="monitor-interrupts"]').text()).toBe('567/s')
@@ -250,8 +251,12 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
     expect(loadPanel.text()).toContain('3.25')
     expect(loadPanel.text()).not.toContain('1 分钟')
     expect(wrapper.find('[data-test="monitor-load-one"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="monitor-load-hint"]').text())
-      .toContain('processor queue length is not load average')
+    // #207 B2：契约 key 命中 → 展示中文口径；发送方英文原文保留在 title（tooltip）里可对照
+    const hint = wrapper.find('[data-test="monitor-load-hint"]')
+    expect(hint.text()).toContain('语义提示：')
+    expect(hint.text()).toContain('处理器队列长度')
+    expect(hint.text()).not.toContain('processor queue length is not load average')
+    expect(hint.attributes('title')).toBe('processor queue length is not load average')
   })
 
   it('首批计数未就绪（total null）：仍走总使用率不可用空态，其余 CPU 子区块独立渲染', async () => {
@@ -1057,9 +1062,13 @@ describe('MonitorView 磁盘 I/O（#76，可用性驱动）', () => {
     }))
     const wrapper = await mountView()
 
+    // #207 B2：disk_io 是契约定义的稳定 key → 展示中文口径；原文只作为 tooltip 保留
     const hint = wrapper.find('[data-test="monitor-disk-io-hint"]')
     expect(hint.exists()).toBe(true)
-    expect(hint.text()).toBe('语义提示：windows counters are per physical disk')
+    expect(hint.text()).toContain('语义提示：')
+    expect(hint.text()).toContain('队列深度')
+    expect(hint.text()).not.toContain('windows counters are per physical disk')
+    expect(hint.attributes('title')).toBe('windows counters are per physical disk')
 
     // 防御：payload 缺省 semantic_hints（前向兼容/发送方未提供）时不渲染提示行
     useSysmonStore().applySnapshot(makeSysmonSnapshot({ semanticHints: {} }))
@@ -1407,6 +1416,8 @@ describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口�
     await wrapper.find('[data-test="monitor-tab-config"]').trigger('click')
 
     expect(wrapper.find('[data-test="sysmon-config-save"]').exists()).toBe(true)
+    // #207 D1：admin 的只读摘要默认折叠，展开后仍展示生效值并可对照
+    await wrapper.find('[data-test="sysmon-config-summary-toggle"]').trigger('click')
     expect(wrapper.find('[data-test="sysmon-config-value-realtime.push_interval_sec"]').text()).toBe('5 秒')
 
     // WS 全量回推（重连快照域 / SET 成功后的 RTN）：展示跟随镜像更新

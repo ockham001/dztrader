@@ -10,9 +10,15 @@ export interface LoginRequest {
 }
 
 // ===== System Info =====
-/** 后端进程信息（/api/system/info），用于前端比对 logger 名禁用自我 tail */
+/**
+ * 后端进程自述（GET /api/system/info，契约 rest §2.1，免认证）
+ * - `process_name`：dzweb 可执行文件名（不含扩展名），用于前端比对 logger 名禁用自我 tail
+ * - `version`：工程版本串（`DZ_VERSION_STRING`，单一真相源根 CMakeLists.txt 的 project(VERSION)），
+ *   「关于」页显示此值，前端不得硬编码版本（#207 A3）
+ */
 export interface SystemInfo {
   process_name: string
+  version: string
 }
 
 export interface LoginResponse {

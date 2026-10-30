@@ -11,6 +11,7 @@
 #include <spdlog/spdlog.h>
 #include <sqlite3.h>
 #include "config.h"
+#include "system_info.h"
 #include "auth_controller.h"
 #include "ws_controller.h"
 #include "event_monitor.h"
@@ -191,15 +192,14 @@ int main(int argc, char* argv[]) {
         },
         {drogon::Get});
 
-    // /api/system/info 系统信息（免认证）：返回当前后端进程名，供前端比对 logger 名
-    // 用于禁用 WebUI 自身日志的实时 tail（避免反馈循环），支持重命名 dzweb.exe 部署
+    // /api/system/info 系统信息（免认证）：返回当前后端进程名与工程版本号。
+    // process_name 供前端比对 logger 名以禁用 WebUI 自身日志的实时 tail（避免反馈循环），
+    // 支持重命名 dzweb.exe 部署；version 供「关于」页显示（单一真相源 version.h）。
     drogon::app().registerHandler(
         "/api/system/info",
         [](const drogon::HttpRequestPtr&,
            std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
-            const nlohmann::json body = {
-                {"process_name", dztrader::this_process::exe_stem()},
-            };
+            const nlohmann::json body = dztrader::webui::system_info_body();
             auto resp = drogon::HttpResponse::newHttpResponse();
             resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
             // 用 replace error handler 容忍无效 UTF-8（项目约定）

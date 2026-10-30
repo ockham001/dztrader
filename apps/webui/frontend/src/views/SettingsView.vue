@@ -102,8 +102,24 @@ watch(() => store.webui, (w) => {
   webuiForm.notify_cache_size = w.notify_cache_size
 }, { immediate: true })
 
+/**
+ * 是否有未保存改动（#207 C1）：与**生效镜像**逐字段按数值比较。
+ * 无 dirty 时保存按钮禁用且不发请求——旧实现只按 `webuiSaving` 禁用，无改动也能点、
+ * 会发一次 PUT 并提示「已保存」，与 SysmonConfigTab 的 dirty 判据不一致。
+ * 镜像未到达（`store.webui === null`）时视为无改动（无从比较，保存也无意义）。
+ */
+const webuiDirty = computed(() => {
+  const w = store.webui
+  if (!w) return false
+  return Number(webuiForm.token_ttl_sec) !== w.token_ttl_sec
+    || Number(webuiForm.notify_cache_size) !== w.notify_cache_size
+})
+
+/** 保存可用性：请求在途、镜像未到达、无改动 → 不可点（与 SysmonConfigTab 同形） */
+const webuiSaveDisabled = computed(() => webuiSaving.value || !store.webui || !webuiDirty.value)
+
 async function saveWebui(): Promise<void> {
-  if (webuiSaving.value) return
+  if (webuiSaveDisabled.value) return
   webuiSaving.value = true
   try {
     const ok = await store.setWebui({
@@ -218,10 +234,18 @@ async function saveWebui(): Promise<void> {
           <span class="ds-tag ds-tag--warning">重启后生效</span>
         </div>
         <div class="cfg-row">
-          <button class="ds-btn ds-btn--primary ds-btn--sm" type="button" :disabled="webuiSaving" @click="saveWebui">
+          <button
+            class="ds-btn ds-btn--primary ds-btn--sm"
+            type="button"
+            data-test="webui-save"
+            :disabled="webuiSaveDisabled"
+            @click="saveWebui"
+          >
             <span v-if="webuiSaving" class="ds-btn__spinner"></span>
             {{ webuiSaving ? '保存中...' : '保存配置' }}
           </button>
+          <!-- #207 C1：无改动时禁用保存并明说原因（对齐 SysmonConfigTab 的「无改动」提示） -->
+          <span v-if="!webuiDirty && !webuiSaving" class="webui-save-hint" data-test="webui-save-clean">无改动</span>
         </div>
       </div>
       <div v-else style="color:var(--text-tertiary)">加载中...</div>
@@ -333,4 +357,7 @@ async function saveWebui(): Promise<void> {
 .dialog-row__label { font-size: var(--body-sm-font-size); color: var(--text-tertiary); font-weight: var(--font-weight-medium); flex-shrink: 0; width: 110px; white-space: nowrap; }
 .dialog-row__control { flex: 1; min-width: 0; }
 .dialog-row__error { font-size: var(--body-sm-font-size); color: var(--status-error-default); padding-left: var(--form-label-col-width); }
+
+/* #207 C1：无改动提示（与 SysmonConfigTab 的「无改动」同一形态） */
+.webui-save-hint { font-size: var(--body-sm-font-size); color: var(--text-tertiary); }
 </style>

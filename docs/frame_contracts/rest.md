@@ -19,12 +19,13 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 ## 2. 端点清单
 
-### 2.1 鉴权
+### 2.1 鉴权与进程自述
 
 | 方法/路径 | 语义 |
 |---|---|
 | POST `/api/login` | 登录，返回 JWT；失败计数与锁定策略见实现 |
 | POST `/api/auth/change-password` | 修改本人密码 |
+| GET `/api/system/info` | 免认证。dzweb 进程自述：`{"process_name": <exe 文件名不含扩展名>, "version": <SemVer 版本串>}`。`process_name` 供前端比对 logger 名以禁用自我日志 tail（支持重命名 `dzweb.exe` 部署）；`version` 为工程版本（根 `CMakeLists.txt` 的 `project(VERSION)`，经 `version.h` 的 `DZ_VERSION_STRING` 生成，含 pre-release 后缀），供「关于」页显示，前端不得另存硬编码版本。仅新增只读字段，无帧往返 |
 
 ### 2.2 用户与安全
 

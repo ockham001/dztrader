@@ -108,3 +108,35 @@ describe('LoginView', () => {
     expect((w.find('input#password').element as HTMLInputElement).type).toBe('text')
   })
 })
+// #207 C5：原生 required + 首屏聚焦用户名（SPA 下 autofocus 不可靠，用 onMounted focus）
+describe('LoginView 表单可用性（#207 C5）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    pushMock.mockClear()
+    sessionStorage.clear()
+    localStorage.clear()
+  })
+
+  it('用户名/密码输入带 required（空提交有原生提示，JS 文案仍保留）', () => {
+    const w = mount(LoginView, { attachTo: document.body })
+    expect(w.find('input#username').attributes('required')).toBeDefined()
+    expect(w.find('input#password').attributes('required')).toBeDefined()
+    w.unmount()
+  })
+
+  it('首屏焦点在用户名输入框', async () => {
+    const w = mount(LoginView, { attachTo: document.body })
+    await flushPromises()
+    expect(document.activeElement).toBe(w.find('input#username').element)
+    w.unmount()
+  })
+
+  it('已有回填用户名时同样聚焦用户名（不是密码框）', async () => {
+    sessionStorage.setItem('last_username', 'alice')
+    const w = mount(LoginView, { attachTo: document.body })
+    await flushPromises()
+    expect((w.find('input#username').element as HTMLInputElement).value).toBe('alice')
+    expect(document.activeElement).toBe(w.find('input#username').element)
+    w.unmount()
+  })
+})
