@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { logsApi } from '@/api/logs'
 import { useSystemStore } from '@/stores/system'
+import { processCategory } from '@/composables/processNaming'
 import { usePending } from '@/composables/usePending'
 import type {
   LogFile, LogLine, LogStats, LogAggregate,
@@ -207,19 +208,20 @@ export const useLogsStore = defineStore('logs', () => {
     await Promise.all([loadStats(), loadAggregate(), loadTimeline()])
   }
 
-  /// 按进程名前缀推导类型（与后端旧 GET /api/logs/processes 的 type 逻辑一致）
-  /// 进程命名真相：master `dztraderd`、行情网关 `dzmd_*`、交易网关 `dztd_*`、
-  /// 系统监控 `dzsysmon`、策略 `stg_*`（如 `stg_demo`；裸策略名规则见总则 §5 身份边界，
-  /// 契约 strategy 只写差异并指向总则）。
+  /// 按进程名推导类型（与后端旧 GET /api/logs/processes 的 type 逻辑一致）：
+  /// 类别判定唯一实现见 composables/processNaming.ts（顶栏服务徽章聚合 #199 共用同一规则）。
+  /// WebUI 进程名可重命名部署、无法按名字模式判定，故用 system.isSelf 单独识别
+  /// （快照与 /api/system/info 的竞态修复见下方 watch）。
   function deriveType(name: string): string {
-    if (name === 'dztraderd') return '主进程'
-    if (name.startsWith('dzmd')) return '行情源'
-    if (name.startsWith('dztd')) return '交易'
-    if (name === 'dzsysmon') return '系统监控'
     if (system.isSelf(name)) return 'WebUI'
-    // 策略进程名以 `stg_` 开头（历史实现用 `includes('strategy')`，真实进程名不匹配 → 显示「未知」）
-    if (name.startsWith('stg_')) return '策略'
-    return '未知'
+    switch (processCategory(name)) {
+      case 'master': return '主进程'
+      case 'md': return '行情源'
+      case 'td': return '交易'
+      case 'sysmon': return '系统监控'
+      case 'strategy': return '策略'
+      default: return '未知'
+    }
   }
 
   /// 从 WS 全量镜像快照重建进程列表（连接/重连时由后端推送）

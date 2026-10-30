@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import ThemeDropdown from './ThemeDropdown.vue'
 import { UNAVAILABLE_TEXT } from '@/composables/format'
+import { processCategory, type ProcessCategory } from '@/composables/processNaming'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { processStateLevel, processStateText, type ProcessLevel } from '@/composables/useProcessState'
 import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
@@ -30,67 +31,6 @@ const connStatus = computed<{ text: string; dotClass: string }>(() => {
       return { text: '已断开', dotClass: 'topbar__conn-dot--error' }
   }
 })
-
-// 顶栏服务状态徽章（#199）：聚合 process_status 镜像，不再写死 MD / TD / STG 状态。
-// 数据源：WS process_status 增量 + 建连 snapshot 全量 → stores/process.ts 的 statuses 镜像；
-// 类别按进程命名规则归类（契约 general §5：dzmd_* / dztd_* / stg_*，与 stores/logs.ts
-// deriveType 的日志进程分类同源）。镜像未到达 / 该类别无进程 = 中性「未知」，不得默认绿。
-const processStore = useProcessStore()
-
-interface ServiceDefinition {
-  /** DOM 锚点 id（#199 要求保留，供测试 / E2E 断言） */
-  id: 'resMd' | 'resTd' | 'resStg'
-  label: string
-  /** 进程名前缀（契约 general §5 命名规则） */
-  prefix: string
-  /** 中文服务名（GLOSSARY 术语：行情源 / 交易接口 / 策略） */
-  name: string
-}
-
-const SERVICE_DEFINITIONS: readonly ServiceDefinition[] = [
-  { id: 'resMd', label: 'MD', prefix: 'dzmd_', name: '行情源' },
-  { id: 'resTd', label: 'TD', prefix: 'dztd_', name: '交易接口' },
-  { id: 'resStg', label: 'STG', prefix: 'stg_', name: '策略' },
-]
-
-/** 多进程聚合取「最差」等级（danger > warn > normal > unknown） */
-const PROCESS_LEVEL_RANK: Record<ProcessLevel, number> = { unknown: 0, normal: 1, warn: 2, danger: 3 }
-
-interface ServiceBadge {
-  id: ServiceDefinition['id']
-  label: string
-  level: ProcessLevel
-  title: string
-}
-
-/**
- * 状态色 class 复用资源徽章的中性不可用类：未知态不套 status 色，
- * 也不命中 layout.css 的 warn / danger 闪烁规则（#199 AC「未知不闪烁」）。
- */
-function serviceStateClass(level: ProcessLevel): string {
-  return level === 'unknown' ? 'topbar__resource--unavailable' : `topbar__resource--${level}`
-}
-
-/** 单个服务类别 → 聚合等级 + title（title 列出各进程状态，未知时说明原因） */
-function aggregateService(def: ServiceDefinition): ServiceBadge {
-  const matched = Object.values(processStore.statuses).filter(status => status.name.startsWith(def.prefix))
-  let level: ProcessLevel = 'unknown'
-  for (const status of matched) {
-    const current = processStateLevel(status.state)
-    if (PROCESS_LEVEL_RANK[current] > PROCESS_LEVEL_RANK[level]) level = current
-  }
-  let title: string
-  if (matched.length === 0) {
-    title = Object.keys(processStore.statuses).length === 0
-      ? `${def.name}状态未知（等待进程状态镜像）`
-      : `${def.name}状态未知（无 ${def.prefix}* 进程）`
-  } else {
-    title = `${def.name}：${matched.map(status => `${status.name} ${processStateText(status.state)}`).join('；')}`
-  }
-  return { id: def.id, label: def.label, level, title }
-}
-
-const serviceBadges = computed<ServiceBadge[]>(() => SERVICE_DEFINITIONS.map(aggregateService))
 
 // 顶栏资源徽章（CPU / 内存 / 各卷）：契约 sysmon 实时快照（固定实例 dzsysmon）。
 // 首次挂载经 REST 补拉镜像，之后只由 WS 推送刷新 —— 刷新基线由发送方
@@ -306,6 +246,72 @@ const resourceGauge = computed<ResourceGauge>(() => {
     title: readings.map(reading => reading.title).join(' · '),
   }
 })
+
+// 顶栏服务状态徽章（#199）：聚合 process_status 镜像，不再写死 MD / TD / STG 状态。
+// 数据源：WS process_status 增量 + 建连 snapshot 全量 → stores/process.ts 的 statuses 镜像；
+// 进程类别由 composables/processNaming.ts 唯一判定（日志页进程类型推导共用同一规则）。
+// 镜像未到达 / 该类别无进程 = 中性「未知」，不得默认绿。
+const processStore = useProcessStore()
+
+/** 服务徽章对应的进程类别（master / sysmon / WebUI 不属于 MD / TD / STG 服务） */
+type ServiceCategory = Extract<ProcessCategory, 'md' | 'td' | 'strategy'>
+
+interface ServiceDefinition {
+  /** DOM 锚点 id（#199 要求保留，供测试 / E2E 断言） */
+  id: 'resMd' | 'resTd' | 'resStg'
+  label: string
+  /** 进程类别（判定规则唯一实现见 composables/processNaming.ts） */
+  category: ServiceCategory
+  /** 中文服务名（GLOSSARY 术语：行情源 / 交易接口 / 策略） */
+  name: string
+}
+
+const SERVICE_DEFINITIONS: readonly ServiceDefinition[] = [
+  { id: 'resMd', label: 'MD', category: 'md', name: '行情源' },
+  { id: 'resTd', label: 'TD', category: 'td', name: '交易接口' },
+  { id: 'resStg', label: 'STG', category: 'strategy', name: '策略' },
+]
+
+interface ServiceBadge {
+  id: ServiceDefinition['id']
+  label: string
+  level: ProcessLevel
+  title: string
+}
+
+/**
+ * 状态色 class 复用资源徽章的同一映射（`resourceStateClass`，#125）：未知态走中性
+ * unavailable 类，不套 status 色，也不命中 layout.css 的 warn / danger 闪烁规则
+ * （#199 AC「未知不闪烁」）。
+ */
+function serviceStateClass(level: ProcessLevel): string {
+  return resourceStateClass(level === 'unknown' ? null : level)
+}
+
+/** 单个服务类别 → 聚合等级 + title（多进程取最差；title 列出各进程状态，未知时说明原因） */
+function aggregateService(def: ServiceDefinition): ServiceBadge {
+  const statuses = Object.values(processStore.statuses)
+  const matched = statuses.filter(status => processCategory(status.name) === def.category)
+  // 多进程聚合取「最差等级」：沿用资源徽章同一张 rank 表
+  // （unknown 不是进程状态等级、不参与取最差，全部不可判读时保持未知）
+  let worst: ResourceLevel | null = null
+  for (const status of matched) {
+    const current = processStateLevel(status.state)
+    if (current === 'unknown') continue
+    if (worst === null || RESOURCE_LEVEL_RANK[current] > RESOURCE_LEVEL_RANK[worst]) worst = current
+  }
+  let title: string
+  if (matched.length === 0) {
+    title = statuses.length === 0
+      ? `${def.name}状态未知（等待进程状态镜像）`
+      : `${def.name}状态未知（无对应进程）`
+  } else {
+    title = `${def.name}：${matched.map(status => `${status.name} ${processStateText(status.state)}`).join('；')}`
+  }
+  return { id: def.id, label: def.label, level: worst ?? 'unknown', title }
+}
+
+const serviceBadges = computed<ServiceBadge[]>(() => SERVICE_DEFINITIONS.map(aggregateService))
 </script>
 
 <template>
@@ -335,7 +341,7 @@ const resourceGauge = computed<ResourceGauge>(() => {
           class="topbar__resource topbar__resource--svc"
           :class="serviceStateClass(badge.level)"
           :id="badge.id"
-          :data-state="badge.level"
+          :data-level="badge.level === 'unknown' ? undefined : badge.level"
           :title="badge.title"
         >
           <span class="res-label">{{ badge.label }}</span>
@@ -446,8 +452,10 @@ const resourceGauge = computed<ResourceGauge>(() => {
   background: var(--status-error-default);
 }
 
-/* 指标不可用 / 快照未到达：中性色，不得用状态色或 0 冒充数据 */
-.topbar__resource--unavailable .res-value {
+/* 指标不可用 / 快照未到达 / 服务状态未知：中性色，不得用状态色或 0 冒充数据；
+   服务徽章只有 res-label / res-icon，中性图标颜色也由本规则给出（#199） */
+.topbar__resource--unavailable .res-value,
+.topbar__resource--unavailable .res-icon {
   color: var(--text-tertiary);
 }
 

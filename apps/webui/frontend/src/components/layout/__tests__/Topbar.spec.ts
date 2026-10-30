@@ -511,7 +511,8 @@ describe('Topbar 服务状态徽章（#199：聚合 process_status 镜像）', (
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
   })
 
-  type ServiceAnchor = 'resMd' | 'resTd' | 'resStg'
+  const SERVICE_ANCHORS = ['resMd', 'resTd', 'resStg'] as const
+  type ServiceAnchor = typeof SERVICE_ANCHORS[number]
 
   function serviceBadge(wrapper: TopbarWrapper, id: ServiceAnchor) {
     return wrapper.find(`#${id}`)
@@ -525,29 +526,36 @@ describe('Topbar 服务状态徽章（#199：聚合 process_status 镜像）', (
     }
   }
 
+  function expectLevel(badge: ReturnType<typeof serviceBadge>, level: string): void {
+    expect(badge.attributes('data-level')).toBe(level)
+    expect(badge.classes()).toContain(`topbar__resource--${level}`)
+  }
+
   function expectNeutralUnknown(badge: ReturnType<typeof serviceBadge>): void {
     expect(badge.exists()).toBe(true)
     expect(badge.classes()).toContain('topbar__resource--unavailable')
     expect(badge.classes()).not.toContain('topbar__resource--normal')
     expect(badge.classes()).not.toContain('topbar__resource--warn')
     expect(badge.classes()).not.toContain('topbar__resource--danger')
+    // 未知不是色标等级：不写 data-level（与卷徽章的「不可用」一致）
+    expect(badge.attributes('data-level')).toBeUndefined()
     expect(badge.attributes('title')).toContain('未知')
   }
 
   it('镜像未到达 / 无任何进程：MD / TD / STG 均为中性「未知」，不得默认绿', async () => {
     const wrapper = await mountTopbar()
 
-    for (const id of ['resMd', 'resTd', 'resStg'] as const) {
+    for (const id of SERVICE_ANCHORS) {
       expectNeutralUnknown(serviceBadge(wrapper, id))
     }
 
-    // 进程镜像到达但该类别无进程：仍是中性未知，title 说明缺哪类进程
+    // 进程镜像到达但该类别无进程：仍是中性未知，title 说明无对应进程
     applyStatuses([{ name: 'dzweb', state: 'Running' }])
     await wrapper.vm.$nextTick()
-    for (const id of ['resMd', 'resTd', 'resStg'] as const) {
+    for (const id of SERVICE_ANCHORS) {
       expectNeutralUnknown(serviceBadge(wrapper, id))
     }
-    expect(serviceBadge(wrapper, 'resMd').attributes('title')).toContain('无 dzmd_* 进程')
+    expect(serviceBadge(wrapper, 'resMd').attributes('title')).toContain('无对应进程')
   })
 
   it('dzmd_ctp Running → MD 绿；TD / STG 无进程时保持中性未知', async () => {
@@ -555,10 +563,8 @@ describe('Topbar 服务状态徽章（#199：聚合 process_status 镜像）', (
     applyStatuses([{ name: 'dzmd_ctp', state: 'Running' }])
     await wrapper.vm.$nextTick()
 
-    const md = serviceBadge(wrapper, 'resMd')
-    expect(md.classes()).toContain('topbar__resource--normal')
-    expect(md.attributes('data-state')).toBe('normal')
-    expect(md.attributes('title')).toContain('dzmd_ctp 运行中')
+    expectLevel(serviceBadge(wrapper, 'resMd'), 'normal')
+    expect(serviceBadge(wrapper, 'resMd').attributes('title')).toContain('dzmd_ctp 运行中')
     expectNeutralUnknown(serviceBadge(wrapper, 'resTd'))
     expectNeutralUnknown(serviceBadge(wrapper, 'resStg'))
   })
@@ -568,13 +574,27 @@ describe('Topbar 服务状态徽章（#199：聚合 process_status 镜像）', (
 
     applyStatuses([{ name: 'dzmd_ctp', state: 'Stopped' }])
     await wrapper.vm.$nextTick()
-    expect(serviceBadge(wrapper, 'resMd').classes()).toContain('topbar__resource--danger')
+    expectLevel(serviceBadge(wrapper, 'resMd'), 'danger')
     expect(serviceBadge(wrapper, 'resMd').attributes('title')).toContain('dzmd_ctp 已停止')
 
     applyStatuses([{ name: 'dzmd_ctp', state: 'Crashed' }])
     await wrapper.vm.$nextTick()
-    expect(serviceBadge(wrapper, 'resMd').classes()).toContain('topbar__resource--danger')
+    expectLevel(serviceBadge(wrapper, 'resMd'), 'danger')
     expect(serviceBadge(wrapper, 'resMd').attributes('title')).toContain('dzmd_ctp 已崩溃')
+  })
+
+  it('TD / STG 与 MD 同构：进程 Stopped / Crashed → 红', async () => {
+    const wrapper = await mountTopbar()
+
+    for (const [anchor, name] of [['resTd', 'dztd_ctp'], ['resStg', 'stg_demo']] as const) {
+      applyStatuses([{ name, state: 'Stopped' }])
+      await wrapper.vm.$nextTick()
+      expectLevel(serviceBadge(wrapper, anchor), 'danger')
+
+      applyStatuses([{ name, state: 'Crashed' }])
+      await wrapper.vm.$nextTick()
+      expectLevel(serviceBadge(wrapper, anchor), 'danger')
+    }
   })
 
   it('dztd_* 归入 TD、stg_* 归入 STG（按进程名类别聚合）', async () => {
@@ -585,9 +605,9 @@ describe('Topbar 服务状态徽章（#199：聚合 process_status 镜像）', (
     ])
     await wrapper.vm.$nextTick()
 
-    expect(serviceBadge(wrapper, 'resTd').classes()).toContain('topbar__resource--normal')
+    expectLevel(serviceBadge(wrapper, 'resTd'), 'normal')
     expect(serviceBadge(wrapper, 'resTd').attributes('title')).toContain('dztd_ctp 运行中')
-    expect(serviceBadge(wrapper, 'resStg').classes()).toContain('topbar__resource--danger')
+    expectLevel(serviceBadge(wrapper, 'resStg'), 'danger')
     expect(serviceBadge(wrapper, 'resStg').attributes('title')).toContain('stg_demo 已停止')
     // 同帧下 MD 无进程：中性未知
     expectNeutralUnknown(serviceBadge(wrapper, 'resMd'))
@@ -600,15 +620,14 @@ describe('Topbar 服务状态徽章（#199：聚合 process_status 镜像）', (
       { name: 'dzmd_xtp', state: 'Stopped' },
     ])
     await wrapper.vm.$nextTick()
-    expect(serviceBadge(wrapper, 'resMd').classes()).toContain('topbar__resource--danger')
+    expectLevel(serviceBadge(wrapper, 'resMd'), 'danger')
     expect(serviceBadge(wrapper, 'resMd').attributes('title')).toContain('dzmd_ctp 运行中')
     expect(serviceBadge(wrapper, 'resMd').attributes('title')).toContain('dzmd_xtp 已停止')
 
     // Starting 是过渡态（warn）：不得因另一个 Running 进程被稀释成正常
     applyStatuses([{ name: 'dzmd_xtp', state: 'Starting' }])
     await wrapper.vm.$nextTick()
-    expect(serviceBadge(wrapper, 'resMd').classes()).toContain('topbar__resource--warn')
-    expect(serviceBadge(wrapper, 'resMd').attributes('data-state')).toBe('warn')
+    expectLevel(serviceBadge(wrapper, 'resMd'), 'warn')
   })
 
   it('状态随 WS 推送实时更新（无需刷新）', async () => {
@@ -617,17 +636,17 @@ describe('Topbar 服务状态徽章（#199：聚合 process_status 镜像）', (
 
     applyStatuses([{ name: 'dzmd_ctp', state: 'Running' }])
     await wrapper.vm.$nextTick()
-    expect(serviceBadge(wrapper, 'resMd').classes()).toContain('topbar__resource--normal')
+    expectLevel(serviceBadge(wrapper, 'resMd'), 'normal')
 
     applyStatuses([{ name: 'dzmd_ctp', state: 'Crashed' }])
     await wrapper.vm.$nextTick()
-    expect(serviceBadge(wrapper, 'resMd').classes()).toContain('topbar__resource--danger')
+    expectLevel(serviceBadge(wrapper, 'resMd'), 'danger')
   })
 
   it('未知态不闪烁：只带中性类，不含 layout.css 挂 animation 的 warn / danger 类', async () => {
     const wrapper = await mountTopbar()
 
-    for (const id of ['resMd', 'resTd', 'resStg'] as const) {
+    for (const id of SERVICE_ANCHORS) {
       const classes = serviceBadge(wrapper, id).classes()
       expect(classes).not.toContain('topbar__resource--warn')
       expect(classes).not.toContain('topbar__resource--danger')
@@ -645,13 +664,11 @@ describe('Topbar 服务状态徽章（#199：聚合 process_status 镜像）', (
     const store = useProcessStore()
     applyStatuses([{ name: 'dzmd_ctp', state: 'Running' }])
     await wrapper.vm.$nextTick()
-    expect(serviceBadge(wrapper, 'resMd').classes()).toContain('topbar__resource--normal')
+    expectLevel(serviceBadge(wrapper, 'resMd'), 'normal')
 
     // 契约 process：process_config 全量覆盖、条目消失 = 进程已移除——状态镜像随之清理
     store.applyProcessConfig({})
     await wrapper.vm.$nextTick()
-    expect(serviceBadge(wrapper, 'resMd').attributes('title')).toContain('未知')
-    expect(serviceBadge(wrapper, 'resMd').classes()).not.toContain('topbar__resource--normal')
     expectNeutralUnknown(serviceBadge(wrapper, 'resMd'))
   })
 })
