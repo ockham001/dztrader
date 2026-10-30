@@ -107,6 +107,12 @@ public:
     /// 设置 CTP API 版本字符串 (构造时调用一次)。
     void set_api_version(const std::string& version) { status_.api_version = version; }
 
+    /// 是否处于可发起/重试登录的状态（Connected 或 LoginFailed）。
+    /// 契约 md-status 失败语义: 失败后可直接重试登录，不要求先登出。
+    bool can_login() const {
+        return status_.state == MdState::Connected || status_.state == MdState::LoginFailed;
+    }
+
     // --- 状态转移 ---
     // 每个方法返回可选通知, 调用方应发送给 UI
 
@@ -136,14 +142,12 @@ public:
 
     /// 登录失败时调用 (LoggingIn 状态)。记录 last_error 并转 LoginFailed（契约 md-status）。
     /// @param code 失败原因码
-    /// @param message 用户可读原因（CTP ErrorMsg 原文或固定文案；空串时用错误码兜底）
+    /// @param message 用户可读原因（CTP ErrorMsg 原文或固定文案）；空串 = 无详情，
+    ///                由前端按 code 映射固定文案（契约 md-status 失败语义）
     /// @param error_id CTP ErrorID（仅 LoginRejected 有效，其余传 0）
     std::optional<nlohmann::json> on_login_failed(MdFailureCode code,
                                                   const std::string& message,
                                                   int error_id = 0);
-
-    /// 登录响应中交易日解析错误时调用。
-    std::optional<nlohmann::json> on_login_parse_error();
 
     /// 服务器主动登出时调用。
     std::optional<nlohmann::json> on_server_logout();

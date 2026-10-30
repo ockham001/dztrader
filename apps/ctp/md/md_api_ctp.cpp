@@ -23,22 +23,32 @@ using namespace dztrader::shm;
 //   on_front_connected / on_front_disconnected / on_heartbeat_warning
 //   on_rsp_user_login / on_rsp_user_logout / on_rsp_error
 
-void MdApi::connect() {
+void MdApi::connect(bool user_initiated) {
     const auto state = state_machine_.state();
     // 已连接/登录失败态: REQUEST_MD_CONNECT 等价于重新登录（契约 md-status 失败语义:
     // 失败后可直接重试，不要求先登出）；不重建 API 实例。
-    if (state == MdState::Connected || state == MdState::LoginFailed) {
+    if (state_machine_.can_login()) {
         SPDLOG_INFO("connect request treated as relogin | state={}", magic_enum::enum_name(state));
         req_user_login();
         return;
     }
+    if (state == MdState::Disconnected) {
+        // 网络断线重连中: CTP SDK 自动重连，重连成功后 on_front_connected 会自动重新登录，
+        // 此时不接受新的连接请求。用户主动发起时给明确反馈，不静默拒绝（#203 审查修复）。
+        SPDLOG_WARN("connect rejected | reason=\"reconnecting\" state={}",
+                    magic_enum::enum_name(state));
+        if (user_initiated) notify_ui_.warn("行情断线重连中，请稍后重试");
+        return;
+    }
     if (state != MdState::Idle) {
         SPDLOG_WARN("connect rejected | state={}", magic_enum::enum_name(state));
+        if (user_initiated) notify_ui_.warn("行情正在连接或登录中，请稍后重试");
         return;
     }
 
     if (ctp_md_config_.config().current_broker_name.empty()) {
         SPDLOG_WARN("connect rejected | reason=\"no_current_broker\"");
+        if (user_initiated) notify_ui_.warn("行情登录失败: 未配置当前经纪商");
         return;
     }
 
@@ -46,6 +56,7 @@ void MdApi::connect() {
     if (current_broker == nullptr) {
         SPDLOG_WARN("connect rejected | reason=\"current_broker_not_found\" value=\"{}\"",
                     ctp_md_config_.config().current_broker_name);
+        if (user_initiated) notify_ui_.warn("行情登录失败: 当前经纪商不存在");
         return;
     }
 
@@ -60,12 +71,14 @@ void MdApi::connect() {
     if (!has_enabled) {
         SPDLOG_WARN("connect rejected | reason=\"no_enabled_frontend\" broker=\"{}\"",
                     current_broker->name);
+        if (user_initiated) notify_ui_.warn("行情登录失败: 当前经纪商无可用前置地址");
         return;
     }
 
     api_ = CThostFtdcMdApi::CreateFtdcMdApi(flow_dir_.string().c_str());
     if (api_ == nullptr) {
         SPDLOG_ERROR("create api failed");
+        if (user_initiated) notify_ui_.error("行情登录失败: 创建 CTP API 失败");
         return;
     }
     api_->RegisterSpi(&spi_);
@@ -109,7 +122,7 @@ void MdApi::req_user_login() {
         return;
     }
     const auto state = state_machine_.state();
-    if (state != MdState::Connected && state != MdState::LoginFailed) {
+    if (!state_machine_.can_login()) {
         SPDLOG_WARN("login rejected | state={}", magic_enum::enum_name(state));
         return;
     }
@@ -136,7 +149,9 @@ void MdApi::req_user_login() {
     if (ret != 0) {
         SPDLOG_WARN("login req failed | ret={} request_id={} user_id={}", ret, request_id_,
                     req.UserID);
-        // 状态未转移, 仍在 Connected, 可由自动调度重试
+        // 请求被 CTP API 同步拒绝：给 UI 反馈，避免只写日志（#203）；状态未转移，
+        // 仍在 Connected/LoginFailed，可由自动调度或用户重试
+        notify_ui_.warn("行情登录请求失败: 返回码 " + std::to_string(ret));
         return;
     }
     // ReqUserLogin 成功后才转移状态, 避免失败时永久 stuck LoggingIn

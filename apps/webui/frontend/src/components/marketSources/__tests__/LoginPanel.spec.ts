@@ -48,12 +48,14 @@ describe('LoginPanel 登录按钮可用性（契约 md-status 前端义务③）
     expect(loginButton(w).attributes('disabled')).toBeDefined()
   })
 
-  it('失败态（loginState=pending 且有 lastLoginError）时允许直接重试', () => {
+  it('失败态（loginState=pending、lastLoginError 且进度处于已连接档 current=2）时允许直接重试', () => {
     const w = mount(LoginPanel, {
       props: {
         source: sourceWith({
           loginState: 'pending',
           loginPending: false,
+          // 契约 md-status 失败语义: 失败态 RTN_PROGRESS 映射与 Connected 相同（current=2）
+          progressView: { current: 2, min: 0, max: 4, desc: '登录失败' },
           lastLoginError: { code: 'login_rejected', message: 'CTP:用户密码错误', errorId: 3, timestamp: 1_700_000_000 },
         }),
       },
@@ -62,11 +64,29 @@ describe('LoginPanel 登录按钮可用性（契约 md-status 前端义务③）
     expect(loginButton(w).attributes('disabled')).toBeUndefined()
   })
 
+  it('断线自动重连中（current=1，last_error 按契约保留）不得启用重试', () => {
+    // 契约 md-status: last_error 在 Disconnected 期间保留；此时 md 进程拒绝重连请求，
+    // 若启用按钮会静默拒绝并让 pending 悬挂到 45s 兜底。
+    const w = mount(LoginPanel, {
+      props: {
+        source: sourceWith({
+          loginState: 'pending',
+          loginPending: false,
+          progressView: { current: 1, min: 0, max: 4, desc: '重连中...' },
+          lastLoginError: { code: 'login_timeout', message: '', errorId: 0, timestamp: 1_700_000_000 },
+        }),
+      },
+      global: { stubs },
+    })
+    expect(loginButton(w).attributes('disabled')).toBeDefined()
+  })
+
   it('失败态点击登录直接下发 REQUEST_MD_CONNECT（不要求先登出）', async () => {
     const w = mount(LoginPanel, {
       props: {
         source: sourceWith({
           loginState: 'pending',
+          progressView: { current: 2, min: 0, max: 4 },
           lastLoginError: { code: 'login_timeout', message: '', errorId: 0, timestamp: 1_700_000_000 },
         }),
       },

@@ -158,8 +158,9 @@ registerHandler('process_config', (payload) => {
 
 registerHandler('md_rtn_status', (payload) => {
   // P4 Task 5 单写:mdConfig store 为 md_rtn_status 帧唯一写入点。
-  // P6: 契约 md-status 无状态字段——loginState 聚合与 login/logout pending 清除
-  // 由 RTN_PROGRESS（契约 progress）驱动, 本消息仅写镜像。
+  // 契约 md-status 无状态/进度字段——loginState 聚合与登录成功/登出 pending 清除由
+  // RTN_PROGRESS（契约 progress）驱动；登录失败不产生 online/offline 转移，改由
+  // last_error.timestamp 变化清除 login pending（契约 md-status 失败语义，见 mdConfig watch）。
   // payload 已由 WsDataByType 类型化为 MdRtnStatusPayload（契约单源）
   useMdConfigStore().applyMdStatus(payload)
 })

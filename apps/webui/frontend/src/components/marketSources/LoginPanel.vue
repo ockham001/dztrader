@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import SyncSwitch from '@/components/shared/SyncSwitch.vue'
 import ProcessStartButton from './ProcessStartButton.vue'
+import { loginRetryable } from '@/composables/marketSourceView'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import type { MarketSourceView } from '@/stores/marketSources'
 
@@ -28,13 +29,14 @@ const autoLoginStatusClass = (s: MarketSourceView): string => {
   <!-- ── 登录操作 ── -->
   <div class="card-actions">
     <ProcessStartButton :source="src" />
-    <!-- 契约 md-status 前端义务③：有 lastLoginError（失败态）时允许直接重试登录，
-         不要求先登出；登录中/连接中（loginPending 或无失败原因的 pending）仍禁用。 -->
+    <!-- 契约 md-status 前端义务③：失败态（last_error 且进度处于已连接档 current=2）允许
+         直接重试登录，不要求先登出；登录中/连接中/断线自动重连中（Disconnected 也会保留
+         last_error）仍禁用，避免 md 静默拒绝导致 pending 悬挂。 -->
     <button
       class="ds-btn ds-btn--sm"
       :class="src.loginState === 'offline' ? 'ds-btn--primary' : 'ds-btn--secondary'"
       type="button"
-      :disabled="src.loginPending || src.process_state !== 'Running' || (src.loginState === 'pending' && !src.lastLoginError)"
+      :disabled="src.loginPending || src.process_state !== 'Running' || (src.loginState === 'pending' && !loginRetryable(src.progressView, src.lastLoginError))"
       :title="src.process_state !== 'Running' ? '进程未运行，请先启动进程' : undefined"
       @click="store.login(src.id)"
     >

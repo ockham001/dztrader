@@ -197,15 +197,18 @@ TEST_F(MdStateMachineTest, LoginRejectedTransitionsToLoginFailedWithReason) {
     EXPECT_TRUE((*notif)["popup"].get<bool>());
 }
 
-TEST_F(MdStateMachineTest, LoginRejectedWithoutMessageFallsBackToErrorId) {
+TEST_F(MdStateMachineTest, LoginRejectedWithoutMessageKeepsEmptyDetail) {
     sm.on_connect();
     sm.on_front_connected();
     sm.on_req_login();
 
     auto notif = sm.on_login_failed(MdFailureCode::LoginRejected, "", 7);
     ASSERT_TRUE(sm.status().last_error.has_value());
-    EXPECT_EQ(sm.status().last_error->message, "错误码 7");
+    // 契约 md-status 失败语义: 空 message = 无详情，由前端按 code 映射固定文案
+    EXPECT_EQ(sm.status().last_error->message, "");
+    EXPECT_EQ(sm.status().last_error->error_id, 7);
     ASSERT_TRUE(notif.has_value());
+    // 即时通知仍带错误码兜底（通知是展示文案，不是持久字段）
     EXPECT_EQ((*notif)["message"].get<std::string>(), "行情登录失败: 错误码 7");
 }
 
@@ -234,7 +237,7 @@ TEST_F(MdStateMachineTest, LoginParseErrorTransitionsToLoginFailed) {
     sm.on_req_login();
     ASSERT_FALSE(sm.status().login_time.empty());
 
-    auto notif = sm.on_login_parse_error();
+    auto notif = sm.on_login_failed(MdFailureCode::LoginParseError, "登录响应解析失败");
     EXPECT_EQ(sm.state(), MdState::LoginFailed);
     EXPECT_TRUE(sm.status().login_time.empty());
     ASSERT_TRUE(sm.status().last_error.has_value());
@@ -283,6 +286,54 @@ TEST_F(MdStateMachineTest, LoginSuccessClearsLastError) {
     sm.on_req_login();
     sm.on_login_success("v", "d", "t");
     EXPECT_FALSE(sm.status().last_error.has_value());
+}
+
+TEST_F(MdStateMachineTest, DisconnectRetainsLastError) {
+    // 契约 md-status 失败语义: 进入 Idle（用户主动登出）不清空 last_error，保留供用户查看
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_login();
+    ASSERT_TRUE(
+        sm.on_login_failed(MdFailureCode::LoginRejected, "CTP:不合法的登录", 3).has_value());
+    ASSERT_TRUE(sm.status().last_error.has_value());
+
+    sm.on_disconnect();
+    EXPECT_EQ(sm.state(), MdState::Idle);
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "login_rejected");
+}
+
+TEST_F(MdStateMachineTest, FrontDisconnectRetainsLastError) {
+    // 契约 md-status 失败语义: 断线（Disconnected）期间不清空 last_error；
+    // 前端不得据 last_error 在断线态启用重试（进程自动重连中）
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_login();
+    ASSERT_TRUE(
+        sm.on_login_failed(MdFailureCode::LoginTimeout, "10 秒内未收到登录响应").has_value());
+    ASSERT_TRUE(sm.status().last_error.has_value());
+
+    sm.on_front_disconnected(0x1001);
+    EXPECT_EQ(sm.state(), MdState::Disconnected);
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "login_timeout");
+}
+
+TEST_F(MdStateMachineTest, CanLoginOnlyInConnectedOrLoginFailed) {
+    EXPECT_FALSE(sm.can_login());  // Idle
+    sm.on_connect();
+    EXPECT_FALSE(sm.can_login());  // Connecting
+    sm.on_front_connected();
+    EXPECT_TRUE(sm.can_login());  // Connected
+    sm.on_req_login();
+    EXPECT_FALSE(sm.can_login());  // LoggingIn
+    sm.on_login_failed(MdFailureCode::LoginRejected, "x", 1);
+    EXPECT_TRUE(sm.can_login());  // LoginFailed
+    sm.on_req_login();
+    sm.on_login_success("v", "d", "t");
+    EXPECT_FALSE(sm.can_login());  // LoggedIn
+    sm.on_front_disconnected(0x1001);
+    EXPECT_FALSE(sm.can_login());  // Disconnected
 }
 
 TEST_F(MdStateMachineTest, ConnectTimeoutRecordsReasonAndReturnsToIdle) {
@@ -529,7 +580,7 @@ TEST_F(MdStateMachineTest, LoginFailedFromUnexpectedStateIgnored) {
 }
 
 TEST_F(MdStateMachineTest, LoginParseErrorFromUnexpectedStateIgnored) {
-    auto notif = sm.on_login_parse_error();
+    auto notif = sm.on_login_failed(MdFailureCode::LoginParseError, "登录响应解析失败");
     EXPECT_EQ(sm.state(), MdState::Idle);
     EXPECT_FALSE(notif.has_value());
 }

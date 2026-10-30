@@ -14,10 +14,11 @@ import { progressLoginState, parseMdStatus } from '@/composables/marketSourceVie
 // - configs:  md_rtn_config 帧镜像（source → MdConfigPayload，后到覆盖先到）
 // - statuses: md_rtn_status 帧镜像（source → MdRtnStatusPayload，后到覆盖先到）
 // - autoLogins: auto_login 帧镜像（契约 auto-login：source → {enabled, schedules}，后到覆盖先到）
-// - 操作: pending 迁移 usePending（key: source:{id}:{op}，配置类操作 timeout 10s）
+// - 操作: pending 迁移 usePending（key: source:{id}:{op}，配置类操作 timeout 10s；
+//   登录操作 45s，见 LOGIN_OP_TIMEOUT_MS）
 //   pending 语义与 marketSources.ts 现有实现逐项一致（拆 store 不得改变清理触发点）：
 //     HTTP 成功不清 pending（keepPendingOnSuccess 默认 true，等 WS RTN 帧清）
-//     HTTP 失败清 pending + 返回 false；超时兜底（10s，usePending 超时清 + toast）
+//     HTTP 失败清 pending + 返回 false；超时兜底（配置类 10s / 登录 45s，usePending 超时清 + toast）
 // - applyMdConfig: 到达时清该 source 全部配置类 pending——对照 setMdConfig 批量清
 //   各配置字段语义以契约 md-config MdConfig schema 为准（逐字段核对），用 clearByPrefix 逐 op 前缀批量清。
 //   注意不能用 source:{id}: 全量前缀——pending 为跨 store 共享的模块级命名空间，
@@ -253,7 +254,7 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
 
   // ===== 操作（pending 迁移 usePending；签名带 sourceName 用于 name→id 映射）=====
   // 语义与 marketSources.ts 现有实现一致：HTTP 成功不清 pending（等 WS RTN 清），
-  // HTTP 失败清 pending + 返回 false，超时（10s）清 + toast。
+  // HTTP 失败清 pending + 返回 false，超时（配置类 10s / 登录 45s）清 + toast。
   // 现有 addBroker/removeBroker/addFrontend/removeFrontend 失败 re-throw 的
   // F-C10 语义（Modal 保持打开）依赖调用方错误信息，Task 5 聚合层接入时处理。
   async function login(id: number, sourceName: string): Promise<MdConfigOpResult> {

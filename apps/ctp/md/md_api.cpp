@@ -339,7 +339,7 @@ void MdApi::handle_frame_inner(const std::byte* frame) {
             break;
         case DZ_FRAME_REQUEST_MD_CONNECT:
             if (is_addressed_to_me(view)) {
-                connect();
+                connect(true);  // 用户请求: 前置条件不满足时给 UI 反馈
             }
             break;
         case DZ_FRAME_REQUEST_MD_DISCONNECT:

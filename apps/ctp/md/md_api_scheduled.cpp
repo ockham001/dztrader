@@ -137,8 +137,7 @@ void MdApi::on_sched_timer() {
                 SPDLOG_INFO("auto sched login | time={} weekday={}", hh_mm, weekday);
                 if (state_machine_.state() == MdState::Idle) {
                     connect();  // 需要先建立前置连接
-                } else if (state_machine_.state() == MdState::Connected ||
-                           state_machine_.state() == MdState::LoginFailed) {
+                } else if (state_machine_.can_login()) {
                     // 前置已连接（含登录失败态）: 直接重新登录（契约 md-status 失败语义可重试）
                     req_user_login();
                 } else {

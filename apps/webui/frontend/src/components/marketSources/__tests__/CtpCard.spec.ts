@@ -54,10 +54,25 @@ describe('CtpCard 卡片 header 上次失败展示（契约 md-status 前端义�
     })
     const w = mount(CtpCard, { props: { source: src }, global: { stubs } })
     await nextTick()
-    const timeText = new Date(timestamp * 1000).toLocaleTimeString('zh-CN', { hour12: false })
-    expect(w.text()).toContain(`上次失败：CTP:用户密码错误（${timeText}）`)
+    // 不复制实现的 toLocaleTimeString 作为 oracle：断言「时间括号」形状（HH:MM:SS）
+    expect(w.text()).toMatch(/上次失败：CTP:用户密码错误（\d{2}:\d{2}:\d{2}）/)
     // 展示层不得出现 snake_case 机器码
     expect(w.text()).not.toContain('login_rejected')
+  })
+
+  it('timestamp 非法（<=0）时只展示原因、不渲染 1970 时间', async () => {
+    const src = makeSource({
+      id: 1,
+      source_type: 'CTP',
+      source_name: 'dzmd_ctp',
+      display_name: 'CTP',
+      lastLoginError: { code: 'login_timeout', message: '登录超时', errorId: 0, timestamp: 0 },
+    })
+    const w = mount(CtpCard, { props: { source: src }, global: { stubs } })
+    await nextTick()
+    expect(w.text()).toContain('上次失败：登录超时')
+    expect(w.text()).not.toContain('1970')
+    expect(w.text()).not.toContain('（')
   })
 
   it('message 为空时按 code 映射中文（不得展示 machine code）', async () => {

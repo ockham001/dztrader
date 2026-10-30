@@ -204,6 +204,20 @@ export function mdLastErrorText(e: MdLastErrorView | null): string {
   return MD_LAST_ERROR_TEXT[e.code] || '登录失败'
 }
 
+// ===== 登录失败态可重试判定（契约 md-status 前端义务③）=====
+// last_error 在 Idle（主动登出）与 Disconnected（SDK 自动重连中）都会保留（契约 md-status），
+// 不能仅凭 last_error 启用重试：只有进度处于「已连接/登录失败」数值档（current=2，与
+// Connected 同映射）时行情进程才接受重连请求（md_api connect() 对 Disconnected 等状态拒绝，
+// 静默拒绝会让 pending 悬挂到 45s 兜底）。数值映射真相源见 md_state.cpp set_state 注释：
+// Idle=0, Connecting/Disconnected=1, Connected/LoginFailed=2, LoggingIn=3, LoggedIn=4。
+export function loginRetryable(
+  progress: { min?: unknown; max?: unknown; current?: unknown } | null | undefined,
+  lastError: MdLastErrorView | null | undefined,
+): boolean {
+  if (!lastError) return false
+  return typeof progress?.current === 'number' && progress.current === 2
+}
+
 export function parseMdStatus(raw: unknown): MdStatusView | null {
   const s = raw as Partial<{
     api_version: unknown

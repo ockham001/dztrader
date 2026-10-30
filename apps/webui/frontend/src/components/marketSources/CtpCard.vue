@@ -92,8 +92,18 @@ const autoLoginStatusText = (s: MarketSourceView): string =>
 
 // 契约 md-status 前端义务②：卡片持久展示「上次失败：message + 时间」。
 // timestamp 为 Unix 秒，转本地时间；message 空时 mdLastErrorText 按 code 映射中文。
+// timestamp<=0（非法/缺失）不展示时间，避免渲染 1970 时间。
 const lastErrorTime = (e: MdLastErrorView): string =>
-  new Date(e.timestamp * 1000).toLocaleTimeString('zh-CN', { hour12: false })
+  e.timestamp > 0
+    ? new Date(e.timestamp * 1000).toLocaleTimeString('zh-CN', { hour12: false })
+    : ''
+const lastErrorText = computed(() => {
+  const e = src.value.lastLoginError
+  if (!e) return ''
+  const time = lastErrorTime(e)
+  const text = `上次失败：${mdLastErrorText(e)}`
+  return time ? `${text}（${time}）` : text
+})
 // 可选 tooltip：CTP ErrorID 仅 login_rejected 非 0，其余不给 title（避免误导）
 const lastErrorTitle = (e: MdLastErrorView): string | undefined =>
   e.errorId ? `CTP 错误码：${e.errorId}` : undefined
@@ -228,7 +238,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
           v-if="src.lastLoginError"
           class="source-card__info-sub source-card__info-sub--warn"
           :title="lastErrorTitle(src.lastLoginError)"
-        >上次失败：{{ mdLastErrorText(src.lastLoginError) }}（{{ lastErrorTime(src.lastLoginError) }}）</span>
+        >{{ lastErrorText }}</span>
       </div>
       <StatusIndicator
         :current="src.progressView.current"

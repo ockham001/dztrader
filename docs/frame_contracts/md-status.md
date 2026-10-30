@@ -82,8 +82,8 @@ JSON 示例：
 **前端义务**：
 
 1. `last_error.timestamp` 变化且非 `null` 表示一次登录失败已结束：清除该实例的登录 pending，不等待超时兜底。
-2. 卡片持久展示「上次失败：`message` + 时间」；`message` 为空时按 `code` 映射固定文案；**不得把 `code` 原文直接展示给用户**。
-3. 失败态（`last_error != null` 且未登录）允许直接重试（下发 `REQUEST_MD_CONNECT`），不要求先登出。
+2. 卡片持久展示「上次失败：`message` + 时间」；`message` 为空时按 `code` 映射固定文案；**不得把 `code` 原文直接展示给用户**。`timestamp` 非法/缺失时不展示时间（不得渲染 1970）。
+3. 失败态可重试判定：仅当 `last_error != null` 且 `RTN_PROGRESS` 处于「已连接/登录失败」数值档（`current=2`）时启用重试（下发 `REQUEST_MD_CONNECT`），不要求先登出；`Disconnected`（`current=1`）期间 `last_error` 可能保留，但此时进程自动重连中、不接受新的连接请求，前端**不得**据 `last_error` 启用重试（否则请求被拒、pending 悬挂至超时）。`Idle`（`current=0`）由常规「登录」按钮承担。
 4. 登录成功后 `last_error` 清空，前端不得保留旧失败展示；断开/重连期间展示以本帧全量覆盖为准。
 
 ---

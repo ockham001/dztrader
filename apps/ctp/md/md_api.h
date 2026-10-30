@@ -154,7 +154,9 @@ private:
 
     /// 连接 CTP 前置 (RegisterFront + Init)。前置条件: MdState::Idle。
     /// 已连接/登录失败态下等价于重试登录（契约 md-status 失败语义：失败后可直接重试）。
-    void connect();
+    /// @param user_initiated 是否由用户请求触发（REQUEST_MD_CONNECT）；true 时前置条件
+    ///        不满足会给 UI 明确反馈，自动调度/恢复补登路径（false）只记日志避免重复打扰
+    void connect(bool user_initiated = false);
     /// 断开 CTP 前置 (Release)
     void disconnect();
     /// 发送登录请求 (ReqUserLogin)。前置条件: MdState::Connected 或 MdState::LoginFailed。

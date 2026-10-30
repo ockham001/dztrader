@@ -15,17 +15,6 @@ namespace {
 /// 当前 Unix 秒级时间戳（契约 md-status last_error.timestamp）
 int64_t now_epoch_seconds() { return static_cast<int64_t>(std::time(nullptr)); }
 
-/// 失败详情兜底：无 CTP 原文时用错误码（不把英文原文直接给用户）。
-std::string failure_detail(MdFailureCode code, const std::string& message, int error_id) {
-    if (!message.empty()) {
-        return message;
-    }
-    if (code == MdFailureCode::LoginRejected) {
-        return std::format("错误码 {}", error_id);
-    }
-    return "未知原因";
-}
-
 }  // namespace
 
 // --- 工具函数 (无 CTP 依赖) ---
@@ -189,19 +178,16 @@ std::optional<nlohmann::json> MdStateMachine::on_login_failed(MdFailureCode code
     }
     // 登录失败, 清空残留的登录时间避免 UI 误显示
     status_.login_time.clear();
-    const std::string detail = failure_detail(code, message, error_id);
-    set_last_error(code, detail, error_id);
+    // last_error.message 保持原样（空串 = 无详情，前端按 code 映射，契约 md-status 失败语义）
+    set_last_error(code, message, error_id);
     set_state(MdState::LoginFailed);
     SPDLOG_ERROR("login failed | code={} error_id={}", md_failure_code_str(code), error_id);
-    // 失败原因进通知文案（契约 notify-ui message 为自由文本；契约 md-status last_error 持久承载）
+    // 通知文案带具体原因（契约 notify-ui message 为自由文本）；无 CTP 原文时用错误码兜底
     const std::string prefix =
         code == MdFailureCode::LoginTimeout ? "行情登录超时: " : "行情登录失败: ";
+    const std::string detail = message.empty() ? std::format("错误码 {}", error_id) : message;
     return nlohmann::json{
         {"level", DZ_NOTIFY_ERROR}, {"message", prefix + detail}, {"popup", true}};
-}
-
-std::optional<nlohmann::json> MdStateMachine::on_login_parse_error() {
-    return on_login_failed(MdFailureCode::LoginParseError, "登录响应解析失败", 0);
 }
 
 std::optional<nlohmann::json> MdStateMachine::on_server_logout() {

@@ -59,6 +59,21 @@ describe('UserManagementView', () => {
     expect(w.text()).toContain('共 0 个用户')
   })
 
+  it('登录历史失败原因与登录页共用中文映射（未知 reason 原样回退）', async () => {
+    const store = useUserManagementStore()
+    store.loginHistory = [
+      { id: 1, username: 'alice', ip: '1.2.3.4', success: false, reason: 'invalid_credentials', created_at: '2026-08-21 10:00:00' },
+      { id: 2, username: 'bob', ip: '1.2.3.5', success: false, reason: 'custom_reason', created_at: '2026-08-21 10:01:00' },
+    ]
+    const w = mount(UserManagementView, { global: { stubs: sharedStubs } })
+    await flushPromises()
+    // 契约 rest §2.1: 机器码 → 中文（与登录页同源），不展示 snake_case
+    expect(w.text()).toContain('用户名或密码错误')
+    expect(w.text()).not.toContain('invalid_credentials')
+    // 未知 reason 保持原样回退（登录历史可能含后端新增/历史遗留 code）
+    expect(w.text()).toContain('custom_reason')
+  })
+
   it('列表渲染用户并按搜索框过滤', async () => {
     const store = useUserManagementStore()
     store.users = [fakeUser(1, 'alice', 'admin'), fakeUser(2, 'bob')]
