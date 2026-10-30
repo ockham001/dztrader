@@ -1,6 +1,6 @@
 # 审查清单（Review Checklist）
 
-> 用途：每票 `code-review` 的固定对照清单——先逐条核对 AC，再按 5 类高频 finding 主动搜。
+> 用途：每票 `code-review` 的固定对照清单——先逐条核对 AC，再按 6 类高频 finding 主动搜。
 > 配套：[ticket-closeout.md](ticket-closeout.md) §1（审查流程与冻结纪律）、[development-checklist.md](../development-checklist.md) C 段（机器门禁）、[unit-test-standard.md](../unit-test-standard.md)（测试判据）。
 
 ## 1. AC 逐条核对
@@ -10,7 +10,7 @@
 - 反向核对：diff 里每处改动都能追溯到某条 AC 或上一轮 finding；追溯不到的是 scope creep，删掉或拆票。
 - 验证覆盖边界（等值、0、空、不可用、失败路径），不只走 happy path。
 
-## 2. 5 类高频 finding（#121–#125 实测反复出现）
+## 2. 6 类高频 finding（#121–#125、#161 实测反复出现）
 
 ### 2.1 注释/文档随自身改动漂移
 

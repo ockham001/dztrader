@@ -8,7 +8,7 @@ import type {
   TimelineBucket, LogProcess, LogLevel,
 } from '@/types/api'
 
-// 进程控制 pending 迁移 usePending（设计 §5.3，契约 log/webui-ws §5）：
+// 进程控制 pending 迁移 usePending（设计 §5.3，契约 webui-ws §5）：
 // - key: logs:{name}:set_level（按进程名，行级按钮独立 spin）
 // - minPendingMs: 300 防闪烁
 // - set_level: RTN 驱动 --SET 后 pending，以对应实例的 log_config 推送

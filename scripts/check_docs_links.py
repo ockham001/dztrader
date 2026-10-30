@@ -50,11 +50,11 @@ SYMBOL_SCAN_SUFFIXES = (".h", ".hpp", ".cpp", ".cc", ".c", ".py", ".sh", ".ps1",
 SYMBOL_SCAN_SKIP_DIRS = {"node_modules", "dist", "build", "install", ".cache", ".git",
                          "third_party", ".worktrees"}
 # 源码注释契约引用检查（issue #221）的扫描范围与注释语法：C 系语言有 // 与 /* */
-# （.vue 模板区另有 <!-- -->），hash 系语言只有行注释；CMakeLists.txt 按 hash 注释处理。
+# （.vue 模板区另有 <!-- -->）；apps/libs 下没有 Python/shell 目标，唯一的 hash 行注释
+# 文件是 CMakeLists.txt。
 SOURCE_CONTRACT_ROOTS = ("apps", "libs")
 C_LIKE_COMMENT_SUFFIXES = (".h", ".hpp", ".c", ".cc", ".cpp", ".ts", ".tsx", ".js", ".mjs",
                            ".vue")
-HASH_COMMENT_SUFFIXES = (".py", ".sh", ".ps1", ".cmake")
 HASH_COMMENT_FILES = ("CMakeLists.txt",)
 # 本检查器源码不参与 token 索引（理由见 code_token_index）。
 CHECKER_REL_PATH = "scripts/check_docs_links.py"
@@ -184,8 +184,13 @@ def declared_sections(text):
     return numbered_headings(text) | numbered_items(text)
 
 
+def contract_target(idx, raw):
+    """Resolve a contract reference (title or file stem) to its path; None when unknown."""
+    return idx["titles"].get(raw) or idx["stems"].get(raw)
+
+
 def contract_index(root):
-    """Map contract titles/file stems to relative paths, and collect numbered headings."""
+    """Map contract titles/file stems to relative paths, and collect referenceable sections."""
     idx = {"titles": {}, "stems": {}, "headings": {}}
     contract_dir = os.path.join(root, CONTRACT_DIR)
     if not os.path.isdir(contract_dir):
@@ -200,7 +205,9 @@ def contract_index(root):
         first = text.split("\n", 1)[0].strip()
         if first.startswith("# ") and "：" in first:
             idx["titles"][first.split("：", 1)[1].strip()] = rel
-        idx["headings"][rel] = numbered_headings("\n".join(strip_code_fences(text)))
+        # declared_sections = numbered headings + numbered table rows; contracts currently
+        # only use headings, but §N targets are resolved the same way as in active docs.
+        idx["headings"][rel] = declared_sections("\n".join(strip_code_fences(text)))
     return idx
 
 
@@ -224,7 +231,7 @@ def check_contract_refs(files, root, idx):
                     target = general_rel
                 else:
                     raw, num = m.group(1), m.group(2)
-                    target = idx["titles"].get(raw) or idx["stems"].get(raw)
+                    target = contract_target(idx, raw)
                 if kind == "stemonly" and target is None:
                     continue  # 不是已知契约名（例如正文提到某个缩写），不当作契约引用
                 if target is None:
@@ -450,8 +457,8 @@ def c_like_comment_text(text):
             i += 1
             continue
         if state == "string":
-            if ch == "\\" and quote != "`":
-                i += 2
+            if ch == "\\":
+                i += 2  # escaped char in "..." / '...' / `...` (incl. \`)
                 continue
             if ch == quote:
                 state = "code"
@@ -484,7 +491,7 @@ def c_like_comment_text(text):
 
 
 def hash_comment_text(text):
-    """Return text with only hash line-comment content kept (Python/shell/CMake).
+    """Return text with only hash line-comment content kept (CMakeLists.txt).
 
     Quoted values are blanked so a '#' inside a string is not treated as a comment;
     newlines are preserved for line numbers.
@@ -531,8 +538,6 @@ def source_comment_files(root):
                     extract = hash_comment_text
                 elif filename.endswith(C_LIKE_COMMENT_SUFFIXES):
                     extract = c_like_comment_text
-                elif filename.endswith(HASH_COMMENT_SUFFIXES):
-                    extract = hash_comment_text
                 else:
                     continue
                 path = os.path.join(dirpath, filename)
@@ -564,7 +569,7 @@ def check_source_contract_refs(root, idx):
                         num, target = m.group(1), general_rel
                     else:
                         raw, num = m.group(1), m.group(2)
-                        target = idx["titles"].get(raw) or idx["stems"].get(raw)
+                        target = contract_target(idx, raw)
                     if target is None:
                         errors.append("%s:%d: unknown contract in source comment -> %s"
                                       % (rel, lineno, m.group(0)))
@@ -664,8 +669,9 @@ def selftest():
             return 1
 
         # 源码注释契约引用检查（#221）：注释里的显式契约 §N 引用必须指向存在的契约与
-        # 编号小节；字符串（含原始字符串）、模板正文与代码本身不算注释。坏引用覆盖四种
-        # 注释形态（行注释 / 块注释 / .vue 的 HTML 注释 / 未知契约名），必须全部报出。
+        # 编号小节；字符串（含原始字符串与模板字面量）、模板正文与代码本身不算注释。
+        # 坏引用覆盖行注释 / 块注释 / .vue HTML 注释 / CMake hash 注释 / 未知契约名 /
+        # 缺失总则小节六种形态；小节号取互不为前缀的数字，避免弱断言（#221 review）。
         with open(os.path.join(tmp, CONTRACT_DIR, "sample.md"), "w", encoding="utf-8") as fh:
             fh.write("# 帧契约：示例契约\n\n## 2. 规则\n\n### 2.1 小节\n")
         os.makedirs(os.path.join(tmp, "apps", "demo"), exist_ok=True)
@@ -674,27 +680,34 @@ def selftest():
                 "// 契约 sample §2.1 存在（文件名式）→ 通过。",
                 "// 《帧契约：示例契约》§2 存在（标题式）→ 通过。",
                 "// 总则 §11.3 存在（总则式）→ 通过。",
-                "/* 块注释：契约 sample §98 不存在 → 必须被抓到。 */",
+                "/* 块注释：契约 sample §6 不存在 → 必须被抓到。 */",
                 "// 契约 ghost §1 未知契约 → 必须被抓到。",
-                'const char* text = "契约 sample §99 在字符串里 → 忽略。";',
-                'const char* raw = R"(契约 sample §96 在原始字符串里 → 忽略)";',
-                "auto value = 1; // 契约 sample §9 小节不存在 → 必须被抓到。",
+                'const char* text = "契约 sample §88 在字符串里 → 忽略。";',
+                'const char* raw = R"(契约 sample §87 在原始字符串里 → 忽略)";',
+                "auto value = 1; // 契约 sample §5 小节不存在 → 必须被抓到。",
+                "// 总则 §99 不存在 → 必须被抓到。",
                 "",
             ]))
         with open(os.path.join(tmp, "apps", "demo", "panel.vue"), "w", encoding="utf-8") as fh:
             fh.write("\n".join([
                 "<template>",
-                "  <!-- HTML 注释：契约 sample §97 不存在 → 必须被抓到。 -->",
-                "  <div>模板正文：契约 sample §95 不是注释 → 忽略。</div>",
+                "  <!-- HTML 注释：契约 sample §7 不存在 → 必须被抓到。 -->",
+                "  <div>模板正文：契约 sample §86 不是注释 → 忽略。</div>",
                 "</template>",
                 "",
             ]))
+        with open(os.path.join(tmp, "apps", "demo", "panel.ts"), "w", encoding="utf-8") as fh:
+            # 转义反引号不得提前结束模板字面量，其后的 // 不是注释（#221 review）。
+            fh.write("const tpl = `路径 \\` // 契约 sample §85 在模板字面量里 → 忽略`;\n")
+        with open(os.path.join(tmp, "apps", "demo", "CMakeLists.txt"),
+                  "w", encoding="utf-8") as fh:
+            fh.write("# 契约 sample §4 不存在（CMake hash 行注释）→ 必须被抓到。\n")
         source_errors = check_source_contract_refs(tmp, contract_index(tmp))
-        expected_tokens = ("§97", "§98", "ghost", "§9")
+        expected_tokens = ("§4", "§5", "§6", "§7", "ghost", "总则 §99")
         if len(source_errors) != len(expected_tokens) or not all(
                 any(token in err for err in source_errors) for token in expected_tokens):
-            print("selftest FAIL: source comments must flag exactly §97/§98/ghost/§9, got:",
-                  source_errors)
+            print("selftest FAIL: source comments must flag exactly "
+                  "§4/§5/§6/§7/ghost/总则§99, got:", source_errors)
             return 1
     print("selftest OK: symbol check detects missing symbols; path check covers regression + "
           "untracked-but-present files; section check catches stale §N in active docs; "
