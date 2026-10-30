@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <ctime>
 #include <format>
 
 #include <spdlog/spdlog.h>
@@ -9,7 +10,28 @@
 
 namespace dztrader::ctp {
 
+namespace {
+
+/// 当前 Unix 秒级时间戳（契约 md-status last_error.timestamp）
+int64_t now_epoch_seconds() { return static_cast<int64_t>(std::time(nullptr)); }
+
+}  // namespace
+
 // --- 工具函数 (无 CTP 依赖) ---
+
+const char* md_failure_code_str(MdFailureCode code) {
+    switch (code) {
+        case MdFailureCode::ConnectTimeout:
+            return "connect_timeout";
+        case MdFailureCode::LoginRejected:
+            return "login_rejected";
+        case MdFailureCode::LoginTimeout:
+            return "login_timeout";
+        case MdFailureCode::LoginParseError:
+            return "login_parse_error";
+    }
+    return "unknown";
+}
 
 std::string disconnect_reason_str(int reason) {
     switch (reason) {
@@ -67,8 +89,25 @@ std::optional<nlohmann::json> MdStateMachine::on_connect() {
         SPDLOG_WARN("connect rejected | state={}", magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
+    // 新连接尝试开始：清空最近一次失败（契约 md-status 失败语义）
+    status_.last_error.reset();
     set_state(MdState::Connecting);
     return std::nullopt;
+}
+
+std::optional<nlohmann::json> MdStateMachine::on_connect_timeout() {
+    if (status_.state != MdState::Connecting) {
+        SPDLOG_WARN("connect timeout: unexpected state | state={}",
+                    magic_enum::enum_name(status_.state));
+        return std::nullopt;
+    }
+    const std::string detail = "30 秒内未连接上前置";
+    set_last_error(MdFailureCode::ConnectTimeout, detail, 0);
+    // 连接超时后无可用 API 实例，直接回 Idle（调用方负责 Release）
+    set_state(MdState::Idle);
+    SPDLOG_WARN("connect timeout | state=Idle");
+    return nlohmann::json{
+        {"level", DZ_NOTIFY_WARN}, {"message", "行情连接超时: " + detail}, {"popup", false}};
 }
 
 std::optional<nlohmann::json> MdStateMachine::on_disconnect() {
@@ -101,10 +140,12 @@ std::optional<nlohmann::json> MdStateMachine::on_front_disconnected(int reason) 
 }
 
 std::optional<nlohmann::json> MdStateMachine::on_req_login() {
-    if (status_.state != MdState::Connected) {
+    if (!can_login()) {
         SPDLOG_WARN("login req rejected | state={}", magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
+    // 新登录尝试开始：清空最近一次失败（契约 md-status 失败语义）
+    status_.last_error.reset();
     set_state(MdState::LoggingIn);
     return std::nullopt;
 }
@@ -119,13 +160,17 @@ std::optional<nlohmann::json> MdStateMachine::on_login_success(const std::string
     status_.sys_version = sys_version;
     status_.trading_day = trading_day;
     status_.login_time = login_time;
+    // 登录成功：清空最近一次失败（契约 md-status 失败语义）
+    status_.last_error.reset();
     set_state(MdState::LoggedIn);
     SPDLOG_INFO("login success | sys_version={} trading_day={} login_time={}", sys_version,
                 trading_day, login_time);
     return nlohmann::json{{"level", DZ_NOTIFY_INFO}, {"message", "行情登录成功"}, {"popup", false}};
 }
 
-std::optional<nlohmann::json> MdStateMachine::on_login_failed() {
+std::optional<nlohmann::json> MdStateMachine::on_login_failed(MdFailureCode code,
+                                                              const std::string& message,
+                                                              int error_id) {
     if (status_.state != MdState::LoggingIn) {
         SPDLOG_WARN("login failed: unexpected state | state={}",
                     magic_enum::enum_name(status_.state));
@@ -133,22 +178,16 @@ std::optional<nlohmann::json> MdStateMachine::on_login_failed() {
     }
     // 登录失败, 清空残留的登录时间避免 UI 误显示
     status_.login_time.clear();
-    set_state(MdState::Connected);
-    SPDLOG_ERROR("login failed | state=LoggingIn");
-    return nlohmann::json{{"level", DZ_NOTIFY_ERROR}, {"message", "行情登录失败"}, {"popup", true}};
-}
-
-std::optional<nlohmann::json> MdStateMachine::on_login_parse_error() {
-    if (status_.state != MdState::LoggingIn) {
-        SPDLOG_WARN("login parse error: unexpected state | state={}",
-                    magic_enum::enum_name(status_.state));
-        return std::nullopt;
-    }
-    // 登录失败, 清空残留的登录时间避免 UI 误显示
-    status_.login_time.clear();
-    set_state(MdState::Connected);
-    SPDLOG_ERROR("login parse error | state=LoggingIn");
-    return nlohmann::json{{"level", DZ_NOTIFY_ERROR}, {"message", "行情登录失败"}, {"popup", true}};
+    // last_error.message 保持原样（空串 = 无详情，前端按 code 映射，契约 md-status 失败语义）
+    set_last_error(code, message, error_id);
+    set_state(MdState::LoginFailed);
+    SPDLOG_ERROR("login failed | code={} error_id={}", md_failure_code_str(code), error_id);
+    // 通知文案带具体原因（契约 notify-ui message 为自由文本）；无 CTP 原文时用错误码兜底
+    const std::string prefix =
+        code == MdFailureCode::LoginTimeout ? "行情登录超时: " : "行情登录失败: ";
+    const std::string detail = message.empty() ? std::format("错误码 {}", error_id) : message;
+    return nlohmann::json{
+        {"level", DZ_NOTIFY_ERROR}, {"message", prefix + detail}, {"popup", true}};
 }
 
 std::optional<nlohmann::json> MdStateMachine::on_server_logout() {
@@ -173,11 +212,14 @@ void MdStateMachine::set_state(MdState new_state) {
 
     status_.state = new_state;
 
-    // progress_max=4: Idle=0, Connecting/Disconnected=1, Connected=2, LoggingIn=3, LoggedIn=4
+    // progress_max=4: Idle=0, Connecting/Disconnected=1, Connected/LoginFailed=2,
+    // LoggingIn=3, LoggedIn=4
     // progress 仅反映连接/登录阶段, 不依赖订阅完成
     // 契约 progress 消费者约定（跨进程稳定契约）: 前端以 current 数值映射驱动登录态判定
     //   (current==max → 登录完成; current==min → 已登出; 其余 → 中间态),
     //   数值映射不可变更; desc 仅为展示文案, 前端不得依赖 desc 做状态判定。
+    //   LoginFailed 与 Connected 同为 current=2（失败原因由 RTN_MD_STATUS.last_error 承载，
+    //   见契约 md-status 失败语义），前端不据数值区分两者。
     switch (new_state) {
         case MdState::Idle:
             status_.progress_desc = "未登录";
@@ -213,6 +255,12 @@ void MdStateMachine::set_state(MdState new_state) {
             status_.progress_max = 4;
             status_.progress_current = 4;
             break;
+        case MdState::LoginFailed:
+            status_.progress_desc = "登录失败";
+            status_.progress_min = 0;
+            status_.progress_max = 4;
+            status_.progress_current = 2;
+            break;
         case MdState::Disconnected:
             status_.progress_desc = "重连中...";
             status_.progress_min = 0;
@@ -223,14 +271,28 @@ void MdStateMachine::set_state(MdState new_state) {
     }
 }
 
+void MdStateMachine::set_last_error(MdFailureCode code, const std::string& message, int error_id) {
+    status_.last_error =
+        MdLastError{md_failure_code_str(code), message, error_id, now_epoch_seconds()};
+}
+
 void MdStateMachine::set_subscription_stats(size_t expected, size_t subscribed) {
     status_.expected_subscribe_count = expected;
     status_.subscribed_count = subscribed;
 }
 
 nlohmann::json build_md_status_payload(const MdStatus& s) {
-    // 契约 md-status: 仅 6 字段，始终全量。登录/进度状态由 RTN_PROGRESS（契约 progress）覆盖，
-    // 本帧不包含状态与进度字段。
+    // 契约 md-status: 全量字段。登录/进度状态由 RTN_PROGRESS（契约 progress）覆盖；
+    // last_error 为最近一次登录/连接失败（契约 md-status 失败语义），无失败时为 null。
+    nlohmann::json last_error = nullptr;
+    if (s.last_error.has_value()) {
+        last_error = {
+            {"code", s.last_error->code},
+            {"message", s.last_error->message},
+            {"error_id", s.last_error->error_id},
+            {"timestamp", s.last_error->timestamp},
+        };
+    }
     return {
         {"api_version", s.api_version},
         {"sys_version", s.sys_version},
@@ -238,6 +300,7 @@ nlohmann::json build_md_status_payload(const MdStatus& s) {
         {"login_time", s.login_time},
         {"expected_subscribe_count", s.expected_subscribe_count},
         {"subscribed_count", s.subscribed_count},
+        {"last_error", last_error},
     };
 }
 

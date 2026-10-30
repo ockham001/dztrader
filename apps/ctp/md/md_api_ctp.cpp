@@ -23,14 +23,32 @@ using namespace dztrader::shm;
 //   on_front_connected / on_front_disconnected / on_heartbeat_warning
 //   on_rsp_user_login / on_rsp_user_logout / on_rsp_error
 
-void MdApi::connect() {
-    if (state_machine_.state() != MdState::Idle) {
-        SPDLOG_WARN("connect rejected | state={}", magic_enum::enum_name(state_machine_.state()));
+void MdApi::connect(bool user_initiated) {
+    const auto state = state_machine_.state();
+    // 已连接/登录失败态: REQUEST_MD_CONNECT 等价于重新登录（契约 md-status 失败语义:
+    // 失败后可直接重试，不要求先登出）；不重建 API 实例。
+    if (state_machine_.can_login()) {
+        SPDLOG_INFO("connect request treated as relogin | state={}", magic_enum::enum_name(state));
+        req_user_login(user_initiated);
+        return;
+    }
+    if (state == MdState::Disconnected) {
+        // 网络断线重连中: CTP SDK 自动重连，重连成功后 on_front_connected 会自动重新登录，
+        // 此时不接受新的连接请求。用户主动发起时给明确反馈，不静默拒绝（#203 审查修复）。
+        SPDLOG_WARN("connect rejected | reason=\"reconnecting\" state={}",
+                    magic_enum::enum_name(state));
+        if (user_initiated) notify_ui_.warn("行情断线重连中，请稍后重试");
+        return;
+    }
+    if (state != MdState::Idle) {
+        SPDLOG_WARN("connect rejected | state={}", magic_enum::enum_name(state));
+        if (user_initiated) notify_ui_.warn("行情正在连接或登录中，请稍后重试");
         return;
     }
 
     if (ctp_md_config_.config().current_broker_name.empty()) {
         SPDLOG_WARN("connect rejected | reason=\"no_current_broker\"");
+        if (user_initiated) notify_ui_.warn("行情登录失败: 未配置当前经纪商");
         return;
     }
 
@@ -38,6 +56,7 @@ void MdApi::connect() {
     if (current_broker == nullptr) {
         SPDLOG_WARN("connect rejected | reason=\"current_broker_not_found\" value=\"{}\"",
                     ctp_md_config_.config().current_broker_name);
+        if (user_initiated) notify_ui_.warn("行情登录失败: 当前经纪商不存在");
         return;
     }
 
@@ -52,12 +71,14 @@ void MdApi::connect() {
     if (!has_enabled) {
         SPDLOG_WARN("connect rejected | reason=\"no_enabled_frontend\" broker=\"{}\"",
                     current_broker->name);
+        if (user_initiated) notify_ui_.warn("行情登录失败: 当前经纪商无可用前置地址");
         return;
     }
 
     api_ = CThostFtdcMdApi::CreateFtdcMdApi(flow_dir_.string().c_str());
     if (api_ == nullptr) {
         SPDLOG_ERROR("create api failed");
+        if (user_initiated) notify_ui_.error("行情登录失败: 创建 CTP API 失败");
         return;
     }
     api_->RegisterSpi(&spi_);
@@ -72,13 +93,20 @@ void MdApi::connect() {
         api_->RegisterFront(const_cast<char*>(front_addr.c_str()));  // NOLINT
     }
     api_->Init();
+    // 跨 OnFrontConnected 异步边界保存「用户发起」语义：初次登录的 ReqUserLogin 同步拒绝
+    // 也要给 UI 反馈（on_front_connected 消费后复位）
+    user_initiated_connect_ = user_initiated;
     state_machine_.on_connect();
+    // 新尝试开始已清空 last_error，先推状态帧让前端撤下「上次失败」展示（契约 md-status）
+    report_md_status();
     report_progress();
-    // 30s 连接超时: 未收到 OnFrontConnected 则自动 disconnect 回 Idle
+    // 30s 连接超时: 未收到 OnFrontConnected 则记录失败原因并 disconnect 回 Idle
     connect_timer_id_ =
         timer_queue_.schedule_after_replace("connect_timeout", std::chrono::seconds(30), [this]() {
             if (state_machine_.state() == MdState::Connecting) {
                 SPDLOG_WARN("connect timeout, disconnecting | timeout=30s");
+                // on_connect_timeout 记录 last_error 并回 Idle；disconnect 负责 Release API
+                if (auto n = state_machine_.on_connect_timeout()) notify_ui(*n);
                 disconnect();
             }
         });
@@ -91,13 +119,14 @@ void MdApi::cancel_login_timer() {
     }
 }
 
-void MdApi::req_user_login() {
+void MdApi::req_user_login(bool user_initiated) {
     if (api_ == nullptr) {
         SPDLOG_WARN("login api is null");
         return;
     }
-    if (state_machine_.state() != MdState::Connected) {
-        SPDLOG_WARN("login rejected | state={}", magic_enum::enum_name(state_machine_.state()));
+    const auto state = state_machine_.state();
+    if (!state_machine_.can_login()) {
+        SPDLOG_WARN("login rejected | state={}", magic_enum::enum_name(state));
         return;
     }
 
@@ -123,17 +152,27 @@ void MdApi::req_user_login() {
     if (ret != 0) {
         SPDLOG_WARN("login req failed | ret={} request_id={} user_id={}", ret, request_id_,
                     req.UserID);
-        // 状态未转移, 仍在 Connected, 可由自动调度重试
+        // 请求被 CTP API 同步拒绝：用户请求路径给 UI 反馈，避免只写日志（#203）；
+        // 自动调度/重连补登路径只记日志避免重复打扰。状态未转移，仍在 Connected/LoginFailed，
+        // 可由自动调度或用户重试
+        if (user_initiated) {
+            notify_ui_.warn("行情登录请求失败: 返回码 " + std::to_string(ret));
+        }
         return;
     }
     // ReqUserLogin 成功后才转移状态, 避免失败时永久 stuck LoggingIn
     state_machine_.on_req_login();
-    // 登录超时: 10s 内未收到 OnRspUserLogin 则回退到 Connected
+    // 新登录尝试开始已清空 last_error，先推状态帧让前端撤下「上次失败」展示（契约 md-status）
+    report_md_status();
+    // 登录超时: 10s 内未收到 OnRspUserLogin 则记录失败原因并转登录失败态（可直接重试）
     login_timer_id_ =
         timer_queue_.schedule_after_replace("login_timeout", std::chrono::seconds(10), [this]() {
             if (state_machine_.state() == MdState::LoggingIn) {
-                SPDLOG_WARN("login timeout, fallback to connected | timeout=10s");
-                if (auto n = state_machine_.on_login_failed()) notify_ui(*n);
+                SPDLOG_WARN("login timeout, fallback | timeout=10s");
+                if (auto n = state_machine_.on_login_failed(MdFailureCode::LoginTimeout,
+                                                            "10 秒内未收到登录响应")) {
+                    notify_ui(*n);
+                }
                 report_md_status();
                 report_progress();
             }
@@ -150,7 +189,10 @@ void MdApi::on_front_connected(const OnFrontConnectedField& rsp [[maybe_unused]]
     SPDLOG_INFO("connected");
     if (auto n = state_machine_.on_front_connected()) notify_ui(*n);
     report_progress();
-    req_user_login();
+    // 消费并复位「用户发起」标记：初次登录（连接成功后立即发起）同步拒绝时给 UI 反馈
+    const bool user_initiated = user_initiated_connect_;
+    user_initiated_connect_ = false;
+    req_user_login(user_initiated);
 }
 
 // ============================================================================
@@ -212,6 +254,8 @@ void MdApi::disconnect() {
         timer_queue_.cancel(connect_timer_id_);
         connect_timer_id_ = 0;
     }
+    // 主动断开/连接超时后复位「用户发起」标记，避免陈旧标记影响后续自动重连的登录反馈
+    user_initiated_connect_ = false;
     cancel_login_timer();  // 取消可能挂起的登录超时
     if (api_ != nullptr) {
         api_->Release();
@@ -273,8 +317,11 @@ void MdApi::on_rsp_user_login(const OnRspUserLoginField& rsp) {
     }
     cancel_login_timer();  // 收到任何登录响应, 取消超时
     if (!rsp.rsp_info.has_value()) {
-        SPDLOG_ERROR("login rsp_info missing, fallback to connected");
-        if (auto n = state_machine_.on_login_failed()) notify_ui(*n);
+        SPDLOG_ERROR("login rsp_info missing, fallback to login failed");
+        if (auto n = state_machine_.on_login_failed(MdFailureCode::LoginParseError,
+                                                    "登录响应缺少错误信息")) {
+            notify_ui(*n);
+        }
         report_md_status();
         report_progress();
         return;
@@ -282,14 +329,22 @@ void MdApi::on_rsp_user_login(const OnRspUserLoginField& rsp) {
     if (rsp.rsp_info->ErrorID != 0) {
         SPDLOG_ERROR("login rejected | error_id={} error_msg=\"{}\"", rsp.rsp_info->ErrorID,
                      dztrader::to_utf8_from_gbk(rsp.rsp_info->ErrorMsg));
-        if (auto n = state_machine_.on_login_failed()) notify_ui(*n);
+        // CTP 拒绝原因（ErrorMsg 为 GBK 中文）进 last_error / 通知，不再只写日志（#203）
+        if (auto n = state_machine_.on_login_failed(
+                MdFailureCode::LoginRejected, dztrader::to_utf8_from_gbk(rsp.rsp_info->ErrorMsg),
+                rsp.rsp_info->ErrorID)) {
+            notify_ui(*n);
+        }
         report_md_status();
         report_progress();
         return;
     }
     if (!rsp.rsp_user_login.has_value()) {
-        SPDLOG_ERROR("login rsp_user_login missing, fallback to connected");
-        if (auto n = state_machine_.on_login_failed()) notify_ui(*n);
+        SPDLOG_ERROR("login rsp_user_login missing, fallback to login failed");
+        if (auto n = state_machine_.on_login_failed(MdFailureCode::LoginParseError,
+                                                    "登录响应缺少登录数据")) {
+            notify_ui(*n);
+        }
         report_md_status();
         report_progress();
         return;
@@ -299,7 +354,10 @@ void MdApi::on_rsp_user_login(const OnRspUserLoginField& rsp) {
             "login trading day parse failed | trading_day={} days_since_epoch={} error=\"{}\"",
             rsp.rsp_user_login->TradingDay, rsp.days_since_epoch,
             rsp.trading_day_parse_error.value());
-        if (auto n = state_machine_.on_login_parse_error()) notify_ui(*n);
+        if (auto n = state_machine_.on_login_failed(MdFailureCode::LoginParseError,
+                                                    "登录响应交易日解析失败")) {
+            notify_ui(*n);
+        }
         report_md_status();
         report_progress();
         return;

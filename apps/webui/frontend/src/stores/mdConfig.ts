@@ -8,28 +8,35 @@ import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { marketSourcePending, clearByPrefix as clearMSPrefix } from '@/composables/marketSourcePending'
 import { createOperationRunner } from '@/composables/useOperation'
 import { useProgressStore } from '@/stores/progress'
-import { progressLoginState } from '@/composables/marketSourceView'
+import { progressLoginState, parseMdStatus } from '@/composables/marketSourceView'
 
 // 设计 §5.2：MD 配置/状态领域（marketSources 的 md_rtn_config / md_rtn_status 拆出）
 // - configs:  md_rtn_config 帧镜像（source → MdConfigPayload，后到覆盖先到）
 // - statuses: md_rtn_status 帧镜像（source → MdRtnStatusPayload，后到覆盖先到）
 // - autoLogins: auto_login 帧镜像（契约 auto-login：source → {enabled, schedules}，后到覆盖先到）
-// - 操作: pending 迁移 usePending（key: source:{id}:{op}，配置类操作 timeout 10s）
+// - 操作: pending 迁移 usePending（key: source:{id}:{op}，配置类操作 timeout 10s；
+//   登录操作 45s，见 LOGIN_OP_TIMEOUT_MS）
 //   pending 语义与 marketSources.ts 现有实现逐项一致（拆 store 不得改变清理触发点）：
 //     HTTP 成功不清 pending（keepPendingOnSuccess 默认 true，等 WS RTN 帧清）
-//     HTTP 失败清 pending + 返回 false；超时兜底（10s，usePending 超时清 + toast）
+//     HTTP 失败清 pending + 返回 false；超时兜底（配置类 10s / 登录 45s，usePending 超时清 + toast）
 // - applyMdConfig: 到达时清该 source 全部配置类 pending——对照 setMdConfig 批量清
 //   各配置字段语义以契约 md-config MdConfig schema 为准（逐字段核对），用 clearByPrefix 逐 op 前缀批量清。
 //   注意不能用 source:{id}: 全量前缀——pending 为跨 store 共享的模块级命名空间，
 //   会误伤 process store 的 source:{id}:start/stop/remove 与 login/logout。
-// - applyMdStatus: 仅写镜像；login/logout pending 由 RTN_PROGRESS 状态转移驱动
-//   （契约 progress 消费者约定: current>=max 清 login、current<=min 清 logout,
-//    progressLoginState 为唯一实现, 见 composables/marketSourceView.ts; 禁止依赖 desc 文案）
+// - applyMdStatus: 写镜像 + 失败语义驱动 login pending 清理——RTN_PROGRESS 状态转移
+//   仍负责登录成功/登出（契约 progress 消费者约定: current>=max 清 login、current<=min
+//   清 logout, progressLoginState 为唯一实现, 见 composables/marketSourceView.ts;
+//   禁止依赖 desc 文案）。登录失败不产生 online/offline 转移，改由
+//   last_error.timestamp 变化清理（契约 md-status 前端义务①）。
 // - applyAutoLogin: 到达时清排程类 pending（auto_login/schedule_add/schedule_remove）
 // 本 store 不持有 sources 列表（Task 5 聚合层回填），通过 name→id 映射定位 pending key
 // （与 process store 模式一致）。isStateIdle 状态保护（契约 §状态保护）依赖 sources
 // 列表，由 Task 5 聚合层/UI 承担，本 store 不重复实现。
 const CONFIG_OP_TIMEOUT_MS = 10_000
+// 登录操作兜底超时（> 其余配置类 op 的 10s）：行情进程连接超时 30s + 登录超时 10s +
+// 余量（契约 md-status 失败语义）。正常失败由 md_status.last_error 更早清 pending
+// （见下方 watch），45s 只是「失败帧丢失/进程崩溃」等异常路径的兜底。
+const LOGIN_OP_TIMEOUT_MS = 45_000
 
 export type MdConfigOp =
   | 'login' | 'logout' | 'auto_login'
@@ -74,6 +81,9 @@ const OP_LABELS: Record<MdConfigOp, string> = {
 //   - auto_login：RTN_AUTO_LOGIN 到达清（auto_login/schedule_add/schedule_remove，
 //     契约 auto-login：排程操作回 RTN_AUTO_LOGIN 而非 RTN_MD_CONFIG）。
 //   - progress_login / progress_logout：RTN_PROGRESS 状态转移驱动清（契约 progress）。
+//   - md_status_failure：RTN_MD_STATUS 的 last_error.timestamp 变化驱动清 login
+//     （契约 md-status「失败语义」前端义务①）——登录失败态 RTN_PROGRESS 数值映射与
+//     Connected 相同（current=2），不产生 online/offline 转移，仅靠 progress 清不掉 pending。
 // 不含进程类 op（start/stop/remove 属 process store 领域，其 handleProcessEvent 另有声明）。
 // =====================================================================
 export type ClearKind =
@@ -82,6 +92,7 @@ export type ClearKind =
   | 'auto_login'       // RTN_AUTO_LOGIN
   | 'progress_login'   // RTN_PROGRESS → 登录完成（online）
   | 'progress_logout'  // RTN_PROGRESS → 已登出（offline）
+  | 'md_status_failure' // RTN_MD_STATUS → last_error.timestamp 变化（登录失败结束）
 
 export const CLEAR_BY_RTN: Record<ClearKind, readonly MdConfigOp[]> = {
   md_config: [
@@ -93,6 +104,7 @@ export const CLEAR_BY_RTN: Record<ClearKind, readonly MdConfigOp[]> = {
   auto_login: ['auto_login', 'schedule_add', 'schedule_remove'],
   progress_login: ['login'],
   progress_logout: ['logout'],
+  md_status_failure: ['login'],
 }
 
 // 保留既有导出（兼容 spec 引用），值取自统一声明表
@@ -145,8 +157,8 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
   }
 
   // md_rtn_status 帧：单条完整覆盖（后到覆盖先到），非法 payload 忽略不写。
-  // 不再承担 pending 清理（契约 md-status 无状态字段）：login/logout pending 由
-  // RTN_PROGRESS 状态转移驱动（契约 progress，见下方 watch）。
+  // login/logout pending 主清理仍由 RTN_PROGRESS 状态转移驱动（契约 progress，见下方 watch）；
+  // 登录失败不产生 online/offline 转移，另由 last_error.timestamp 变化清理（见下）。
   function applyMdStatus(payload: MdRtnStatusPayload): void {
     // 契约 webui-ws §2.2: payload 必须含 source + status（对象）；缺 status 的非法帧
     // 不得覆盖已有镜像（与 applyMdConfig 对 source/config 的校验对齐）
@@ -212,16 +224,45 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     { deep: true },
   )
 
+  // ===== md_status 失败语义驱动 login pending 清理（契约 md-status 前端义务①）=====
+  // last_error.timestamp 变化且非 null = 一次登录失败已结束 → 立刻清该实例 login pending，
+  // 不等待 45s 兜底（登录失败态 RTN_PROGRESS 仍为 current=2，与 Connected 同映射，不会产生
+  // progress 的 online/offline 转移）。记录已见 timestamp 防止 md_status 因订阅统计等变化
+  // 重复推送同一次失败时反复清理（可能误清用户重试后新一次登录的 pending）。
+  // last_error 变 null（下一次尝试开始 / 登录成功）只丢弃去重记录、不清 pending。
+  const seenLastErrorTimestamp = ref<Record<string, number>>({})
+  watch(
+    () => statuses.value,
+    (statusMap) => {
+      for (const [source, payload] of Object.entries(statusMap)) {
+        const lastError = parseMdStatus(payload?.status)?.lastError
+        if (!lastError) {
+          // 失败已清空：丢弃去重记录，使后续失败（即使落在同一秒）仍能触发清理
+          delete seenLastErrorTimestamp.value[source]
+          continue
+        }
+        if (!lastError.timestamp) continue
+        if (seenLastErrorTimestamp.value[source] === lastError.timestamp) continue
+        seenLastErrorTimestamp.value[source] = lastError.timestamp
+        const sourceId = nameToId.value[source]
+        if (sourceId === undefined) continue
+        clearPending(sourceId, CLEAR_BY_RTN.md_status_failure)
+      }
+    },
+    { deep: true },
+  )
+
   // ===== 操作（pending 迁移 usePending；签名带 sourceName 用于 name→id 映射）=====
   // 语义与 marketSources.ts 现有实现一致：HTTP 成功不清 pending（等 WS RTN 清），
-  // HTTP 失败清 pending + 返回 false，超时（10s）清 + toast。
+  // HTTP 失败清 pending + 返回 false，超时（配置类 10s / 登录 45s）清 + toast。
   // 现有 addBroker/removeBroker/addFrontend/removeFrontend 失败 re-throw 的
   // F-C10 语义（Modal 保持打开）依赖调用方错误信息，Task 5 聚合层接入时处理。
   async function login(id: number, sourceName: string): Promise<MdConfigOpResult> {
     const key = runner.opKey(id, 'login')
     if (runner.busy(key)) return false
     runner.assign(id, sourceName)
-    return runner.execute(key, () => marketSourcesApi.login(id), OP_LABELS.login)
+    // 登录超时 45s（连接 30s + 登录 10s + 余量）；失败通常由 md_status.last_error 更早清 pending
+    return runner.execute(key, () => marketSourcesApi.login(id), OP_LABELS.login, LOGIN_OP_TIMEOUT_MS)
   }
 
   async function logout(id: number, sourceName: string): Promise<MdConfigOpResult> {

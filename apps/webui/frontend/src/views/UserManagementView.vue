@@ -6,6 +6,7 @@ import Dropdown from '@/components/shared/Dropdown.vue'
 import SyncSwitch from '@/components/shared/SyncSwitch.vue'
 import SyncSelect from '@/components/shared/SyncSelect.vue'
 import { sourceTypeText, sourceTypeClass } from '@/composables/useSourceType'
+import { LOGIN_ERROR_TEXT, type LoginErrorCode } from '@/composables/loginErrors'
 import {
   useUserManagementStore,
   ACCOUNT_PERMISSIONS,
@@ -397,16 +398,14 @@ function historyStatusText(success: boolean): string {
   return success ? '成功' : '失败'
 }
 
-const failReasonMap: Record<string, string> = {
-  invalid_credentials: '密码错误',
-  account_locked: '账号锁定',
-  account_disabled: '账号已禁用',
-  ip_banned: 'IP 被封禁',
-}
-
+// 登录历史失败原因：与登录页共用 LOGIN_ERROR_TEXT（契约 rest §2.1 机器码单一真相源）。
+// 未知 reason 保持原样回退（登录历史可能含后端新增/历史遗留 code，保持现状不吞掉）。
+// 用 hasOwnProperty 而非直接索引：reason 是 DB 自由文本，直接索引会命中原型链键。
 function loginFailReason(reason?: string): string {
   if (!reason) return '未知'
-  return failReasonMap[reason] || reason
+  return Object.prototype.hasOwnProperty.call(LOGIN_ERROR_TEXT, reason)
+    ? LOGIN_ERROR_TEXT[reason as LoginErrorCode]
+    : reason
 }
 
 // 哨兵元素随数据加载/WS刷新动态出现（v-if），watch 确保挂载时重新挂载 observer

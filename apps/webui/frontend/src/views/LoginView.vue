@@ -3,6 +3,7 @@ import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { ApiError } from '@/api/client'
+import { loginErrorText, lockedRemainingMinutes } from '@/composables/loginErrors'
 import ThemeDropdown from '@/components/layout/ThemeDropdown.vue'
 import Icon from '@/components/shared/Icon.vue'
 
@@ -52,32 +53,19 @@ async function handleLogin(): Promise<void> {
     // 登录失败，保留已输入的用户名供下次回填
     try { sessionStorage.setItem('last_username', username.value) } catch { /* ignore */ }
     if (e instanceof ApiError) {
-      const body = e.body
+      // 契约 rest §1/§2.1：登录失败错误体为 {"error": <machine_code>}（无 code 字段），
+      // 按 error 机器码映射中文；account_locked 额外带绝对 Unix 秒级 locked_until。
+      const body: unknown = e.body
       if (body && typeof body === 'object') {
-        const code = 'code' in body ? String(body.code) : undefined
-        const error = 'error' in body ? String(body.error) : '登录失败'
-
-        if (code === 'account_locked' && 'locked_until' in body) {
-          const lockedUntil = Number(body.locked_until)
-          if (lockedUntil > 0) {
-            const remainingSec = Math.max(0, lockedUntil - Math.floor(Date.now() / 1000))
-            const minutes = Math.ceil(remainingSec / 60)
-            errorMessage.value = `${error}，剩余 ${minutes} 分钟`
-          } else {
-            errorMessage.value = error
-          }
+        const record = body as Record<string, unknown>
+        if (record.error === 'account_locked') {
+          const minutes = lockedRemainingMinutes(record.locked_until)
+          const text = loginErrorText(record.error)
+          errorMessage.value = minutes > 0 ? `${text}，剩余 ${minutes} 分钟` : text
           errorType.value = 'warning'
-        } else if (code === 'ip_banned') {
-          errorMessage.value = error
-          errorType.value = 'error'
-        } else if (code === 'account_disabled') {
-          errorMessage.value = error
-          errorType.value = 'error'
-        } else if (code === 'invalid_credentials') {
-          errorMessage.value = error
-          errorType.value = 'error'
         } else {
-          errorMessage.value = error
+          // 未知/非法机器码由 loginErrorText 统一回落「登录失败」，绝不回显 snake_case
+          errorMessage.value = loginErrorText(record.error)
           errorType.value = e.status >= 500 ? 'warning' : 'error'
         }
       } else {

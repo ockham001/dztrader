@@ -137,7 +137,7 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 以下为跨进程可观察行为义务（视觉细节不属契约）：
 
 1. **pending 生命周期**：设置/控制请求发出后设 pending → 收到对应领域消息（RTN 推送）后清除；`*_ack` 的 `ok=false` 立即清除并提示；**所有请求必须有超时兜底**（建议 5s，超时视为目标进程无响应并提示），总则 §7。
-2. **pending 清除信号的唯一来源**：由各契约声明（如进程操作用 `process_status` 的 `event` 字段，日志配置用 `log_config` 推送）；`notify_ui` 是纯通知，**永不**清除 pending（契约 notify-ui）。
+2. **pending 清除信号的唯一来源**：由各契约声明（如进程操作用 `process_status` 的 `event` 字段，日志配置用 `log_config` 推送，行情登录失败用 `md_rtn_status` 的 `last_error` 变化——契约 md-status）；`notify_ui` 是纯通知，**永不**清除 pending（契约 notify-ui）。
 3. **错误展示来源**：业务失败经 `NOTIFY_UI`（`popup=true` 必须打断展示）或领域消息的错误字段（如 `md_rtn_subscriptions.error`）表达；`error`（WS 协议错误）只表示请求未被受理。
 4. **刷新来源**：镜像数据以 WS 推送为准（不本地缓存镜像）；`data_changed` 只提示按 `scope` 重新 REST 拉取对应列表。
 5. **幂等覆盖**：所有领域消息按"后到覆盖先到"处理（含快照分发与增量 apply），重复消息无害；对已移除进程的后续 `process_status` 忽略（契约 process）。

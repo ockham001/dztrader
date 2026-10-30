@@ -86,6 +86,8 @@ TEST_F(AuthControllerTest, LoginWrongPasswordReturns401) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k401Unauthorized);
     auto body = parse_body(resp);
     EXPECT_EQ(body["error"].get<std::string>(), "invalid_credentials");
+    // 契约 rest §1: 登录错误体不携带 code 字段（error 即机器码，前端按真实形状映射）
+    EXPECT_FALSE(body.contains("code"));
 }
 
 // 3. User doesn't exist → 401 invalid_credentials
@@ -106,7 +108,7 @@ TEST_F(AuthControllerTest, LoginDisabledUserReturns401) {
     EXPECT_EQ(body["error"].get<std::string>(), "account_disabled");
 }
 
-// 5. Locked user → 423 account_locked with locked_until
+// 5. Locked user → 423 account_locked with locked_until (绝对 Unix 秒级时间戳)
 TEST_F(AuthControllerTest, LoginLockedUserReturns423) {
     auto user = repo_->get_user_by_username("testuser");
     const int64_t future = static_cast<int64_t>(std::time(nullptr)) + 600;
@@ -116,9 +118,8 @@ TEST_F(AuthControllerTest, LoginLockedUserReturns423) {
     auto body = parse_body(resp);
     EXPECT_EQ(body["error"].get<std::string>(), "account_locked");
     EXPECT_TRUE(body.contains("locked_until"));
-    const int64_t remaining = body["locked_until"].get<int64_t>();
-    EXPECT_GT(remaining, 0);
-    EXPECT_LE(remaining, 600);
+    // 契约 rest §1: locked_until 为绝对 Unix 秒级时间戳（与 User.locked_until 同语义）
+    EXPECT_EQ(body["locked_until"].get<int64_t>(), future);
 }
 
 // 6. After N failed attempts (max_failed_attempts), account gets locked → 423
@@ -137,11 +138,16 @@ TEST_F(AuthControllerTest, LoginFailedAttemptsLockAccount) {
     }
 
     // The Nth failure should trigger lockout → 423
+    const int64_t before = static_cast<int64_t>(std::time(nullptr));
     auto resp = do_login("testuser", "badpwd");
+    const int64_t after = static_cast<int64_t>(std::time(nullptr));
     EXPECT_EQ(resp->getStatusCode(), drogon::k423Locked);
     auto body = parse_body(resp);
     EXPECT_EQ(body["error"].get<std::string>(), "account_locked");
-    EXPECT_EQ(body["locked_until"].get<int64_t>(), config.lockout_duration_sec);
+    // 契约 rest §1: locked_until 为绝对 Unix 秒级时间戳 = 锁定时刻 + 锁定时长
+    const int64_t locked_until = body["locked_until"].get<int64_t>();
+    EXPECT_GE(locked_until, before + config.lockout_duration_sec);
+    EXPECT_LE(locked_until, after + config.lockout_duration_sec);
 
     // Verify the user is now locked in the DB
     auto user = repo_->get_user_by_username("testuser");
@@ -187,6 +193,23 @@ TEST_F(AuthControllerTest, LoginBadJsonReturns400) {
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
     auto body = parse_body(resp);
     EXPECT_EQ(body["error"].get<std::string>(), "bad request");
+}
+
+// 9a. 合法 JSON 但非对象 / 字段类型错 → 400（契约 rest §1：bad request 不得 500）
+TEST_F(AuthControllerTest, LoginNonObjectOrNonStringBodyReturns400) {
+    const std::vector<std::string> cases = {
+        "[]",
+        "123",
+        R"({"username":123,"password":"password123"})",
+        R"({"username":"testuser","password":123})",
+        R"({"username":"testuser"})",
+        R"({"password":"password123"})",
+    };
+    for (const auto& raw : cases) {
+        auto resp = do_login_raw(raw);
+        EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest) << "body=" << raw;
+        EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "bad request");
+    }
 }
 
 // 9b. 空 username / 空 password → 400（契约 rest §2.1 校验）

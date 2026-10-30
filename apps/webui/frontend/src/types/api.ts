@@ -28,11 +28,15 @@ export interface LoginResponse {
   is_default_password?: boolean
 }
 
-export type LoginErrorCode = 'invalid_credentials' | 'account_disabled' | 'account_locked' | 'ip_banned' | 'network_error'
-
+/**
+ * POST /api/login 失败错误体（契约 rest §1/§2.1）。
+ * - `error`：机器码本身（invalid_credentials / account_disabled / ip_banned / account_locked），
+ *   **无 code 字段**；文案映射见 composables/loginErrors.ts 的 LOGIN_ERROR_TEXT。
+ * - `locked_until`：仅 account_locked / 423 携带，**绝对 Unix 秒级时间戳**（与 User.locked_until 同语义），
+ *   剩余分钟须按 locked_until - now 计算，不得解释为剩余秒数。
+ */
 export interface LoginError {
   error: string
-  code?: LoginErrorCode
   locked_until?: number
 }
 

@@ -5,6 +5,7 @@ import Modal from '@/components/shared/Modal.vue'
 import TimePicker from '@/components/shared/TimePicker.vue'
 import StatusIndicator from '@/components/shared/StatusIndicator.vue'
 import { processStateText, processStateColor } from '@/composables/useProcessState'
+import { mdLastErrorText, type MdLastErrorView } from '@/composables/marketSourceView'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import type { MarketSourceView } from '@/stores/marketSources'
 import type { SubscribeParamsBody, ShmConfigPatch } from '@/api/marketSources'
@@ -88,6 +89,24 @@ const subscribeClass = (s: MarketSourceView): string => {
 // header 展示自动登录状态; 控件内状态见 LoginPanel
 const autoLoginStatusText = (s: MarketSourceView): string =>
   s.autoLoginPending ? '切换中' : (s.auto_login ? '已启用' : '未启用')
+
+// 契约 md-status 前端义务②：卡片持久展示「上次失败：message + 时间」。
+// timestamp 为 Unix 秒，转本地时间；message 空时 mdLastErrorText 按 code 映射中文。
+// timestamp<=0（非法/缺失）不展示时间，避免渲染 1970 时间。
+const lastErrorTime = (e: MdLastErrorView): string =>
+  e.timestamp > 0
+    ? new Date(e.timestamp * 1000).toLocaleTimeString('zh-CN', { hour12: false })
+    : ''
+const lastErrorText = computed(() => {
+  const e = src.value.lastLoginError
+  if (!e) return ''
+  const time = lastErrorTime(e)
+  const text = `上次失败：${mdLastErrorText(e)}`
+  return time ? `${text}（${time}）` : text
+})
+// 可选 tooltip：CTP ErrorID 仅 login_rejected 非 0，其余不给 title（避免误导）
+const lastErrorTitle = (e: MdLastErrorView): string | undefined =>
+  e.errorId ? `CTP 错误码：${e.errorId}` : undefined
 
 // ===== 高级段（不常用且需专业知识的参数, 默认折叠）=====
 // 含两组子配置: 订阅参数（契约 md-config SetSubscribeParams, 无状态保护, 缺失=保留旧值）+
@@ -213,6 +232,13 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
         <span class="source-card__info-sub" :class="subscribeClass(src)">订阅：<span>{{ src.subscribeCount }}/{{ src.subscribeTotal }}</span></span>
         <span class="source-card__info-meta" :style="{ color: src.auto_login ? 'var(--status-success-default)' : 'var(--status-alert-default)' }">自动登录：<span>{{ autoLoginStatusText(src) }}</span></span>
         <span class="source-card__info-meta" :style="{ color: processStateColor(src.process_state) }">进程：<span>{{ processStateText(src.process_state) }}</span></span>
+        <!-- 契约 md-status 前端义务②：持久展示上次登录/连接失败原因 + 时间；
+             message 为空时按 code 映射中文，绝不展示 snake_case 机器码 -->
+        <span
+          v-if="src.lastLoginError"
+          class="source-card__info-sub source-card__info-sub--warn"
+          :title="lastErrorTitle(src.lastLoginError)"
+        >{{ lastErrorText }}</span>
       </div>
       <StatusIndicator
         :current="src.progressView.current"

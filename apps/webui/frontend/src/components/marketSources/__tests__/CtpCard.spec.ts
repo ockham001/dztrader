@@ -38,6 +38,65 @@ function sourceWith(brokers: BrokerEntry[], current: string | null) {
   })
 }
 
+describe('CtpCard 卡片 header 上次失败展示（契约 md-status 前端义务②）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('有 lastLoginError 时 header 展示「上次失败：<原因>（时间）」', async () => {
+    const timestamp = 1_700_000_000 // 绝对 Unix 秒
+    const src = makeSource({
+      id: 1,
+      source_type: 'CTP',
+      source_name: 'dzmd_ctp',
+      display_name: 'CTP',
+      lastLoginError: { code: 'login_rejected', message: 'CTP:用户密码错误', errorId: 3, timestamp },
+    })
+    const w = mount(CtpCard, { props: { source: src }, global: { stubs } })
+    await nextTick()
+    // 不复制实现的 toLocaleTimeString 作为 oracle：断言「时间括号」形状（HH:MM:SS）
+    expect(w.text()).toMatch(/上次失败：CTP:用户密码错误（\d{2}:\d{2}:\d{2}）/)
+    // 展示层不得出现 snake_case 机器码
+    expect(w.text()).not.toContain('login_rejected')
+  })
+
+  it('timestamp 非法（<=0）时只展示原因、不渲染 1970 时间', async () => {
+    const src = makeSource({
+      id: 1,
+      source_type: 'CTP',
+      source_name: 'dzmd_ctp',
+      display_name: 'CTP',
+      lastLoginError: { code: 'login_timeout', message: '登录超时', errorId: 0, timestamp: 0 },
+    })
+    const w = mount(CtpCard, { props: { source: src }, global: { stubs } })
+    await nextTick()
+    expect(w.text()).toContain('上次失败：登录超时')
+    expect(w.text()).not.toContain('1970')
+    expect(w.text()).not.toContain('（')
+  })
+
+  it('message 为空时按 code 映射中文（不得展示 machine code）', async () => {
+    const src = makeSource({
+      id: 1,
+      source_type: 'CTP',
+      source_name: 'dzmd_ctp',
+      display_name: 'CTP',
+      lastLoginError: { code: 'connect_timeout', message: '', errorId: 0, timestamp: 1_700_000_000 },
+    })
+    const w = mount(CtpCard, { props: { source: src }, global: { stubs } })
+    await nextTick()
+    expect(w.text()).toContain('连接超时')
+    expect(w.text()).not.toContain('connect_timeout')
+  })
+
+  it('无 lastLoginError 时不展示上次失败', async () => {
+    const src = makeSource({ id: 1, source_type: 'CTP', source_name: 'dzmd_ctp', display_name: 'CTP' })
+    const w = mount(CtpCard, { props: { source: src }, global: { stubs } })
+    await nextTick()
+    expect(w.text()).not.toContain('上次失败')
+  })
+})
+
 describe('CtpCard 经纪商折叠', () => {
   beforeEach(() => {
     setActivePinia(createPinia())

@@ -146,18 +146,23 @@ private:
     void cancel_login_timer();
     /// 处理 DZ_FRAME_SHUTDOWN 帧: 设置 running_=false, 让 run() 退出
     void handle_shutdown();
-    /// 推送网关状态 (RTN_MD_STATUS): 契约 md-status 的 6 字段
+    /// 推送网关状态 (RTN_MD_STATUS): 契约 md-status 全量字段（含 last_error 失败原因）
     /// 内部先同步订阅统计 (set_subscription_stats)，再构造 JSON 发送。
     void report_md_status();
     /// 推送进度 (RTN_PROGRESS): 从状态机 progress_* 字段读取, 经 progress_reporter_ 发送。
     void report_progress();
 
-    /// 连接 CTP 前置 (RegisterFront + Init)。前置条件: MdState::Idle
-    void connect();
+    /// 连接 CTP 前置 (RegisterFront + Init)。前置条件: MdState::Idle。
+    /// 已连接/登录失败态下等价于重试登录（契约 md-status 失败语义：失败后可直接重试）。
+    /// @param user_initiated 是否由用户请求触发（REQUEST_MD_CONNECT）；true 时前置条件
+    ///        不满足会给 UI 明确反馈，自动调度/恢复补登路径（false）只记日志避免重复打扰
+    void connect(bool user_initiated = false);
     /// 断开 CTP 前置 (Release)
     void disconnect();
-    /// 发送登录请求 (ReqUserLogin)。前置条件: MdState::Connected
-    void req_user_login();
+    /// 发送登录请求 (ReqUserLogin)。前置条件: MdState::Connected 或 MdState::LoginFailed。
+    /// @param user_initiated 是否由用户请求触发；true 时 CTP 同步拒绝会给 UI 反馈，
+    ///        自动调度/重连补登路径（false）只记日志避免重复打扰
+    void req_user_login(bool user_initiated = false);
     /// 推送 UI 通知 (转发 state_machine 返回的 json 到 NotifyUi 类)
     void notify_ui(const nlohmann::json& field);
     /// 应用配置变更 (op-based: 验证 -> 持久化 -> 应用 -> 上报), 失败 catch
@@ -298,6 +303,9 @@ private:
     dztrader::core::TimerQueue::TimerId sub_timer_id_ = 0;
     /// 连接超时定时器 id。connect() 排定 30s 超时, on_front_connected/disconnect 取消。
     dztrader::core::TimerQueue::TimerId connect_timer_id_ = 0;
+    /// 本次连接是否由用户请求触发（REQUEST_MD_CONNECT）。跨 OnFrontConnected 异步边界传递，
+    /// 使初次登录的 ReqUserLogin 同步拒绝也能给 UI 反馈；on_front_connected 消费后复位。
+    bool user_initiated_connect_ = false;
     /// 登录超时定时器 id。req_user_login() 排定 10s 超时, on_rsp_user_login(成功/失败) 取消。
     /// 防止 OnRspUserLogin 事件丢失 (队列满) 或 CTP 无响应导致永久卡在 LoggingIn。
     dztrader::core::TimerQueue::TimerId login_timer_id_ = 0;

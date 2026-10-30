@@ -58,10 +58,12 @@ describe('LoginView', () => {
     expect(sessionStorage.getItem('last_username')).toBeNull()
   })
 
-  it('登录失败（错误凭证）显示错误且保留 last_username', async () => {
+  // 契约 rest §1/§2.1：登录失败错误体只有 {"error": <snake_case_code>}（无 code 字段），
+  // 前端必须把机器码映射成中文，任何情况下都不得把 snake_case 原样展示给用户。
+  it('登录失败（invalid_credentials）映射中文且保留 last_username', async () => {
     const auth = useAuthStore()
     vi.spyOn(auth, 'login').mockRejectedValue(
-      new ApiError(401, { error: '用户名或密码错误' }),
+      new ApiError(401, { error: 'invalid_credentials' }),
     )
     const w = mount(LoginView)
     await w.find('input#username').setValue('alice')
@@ -70,21 +72,83 @@ describe('LoginView', () => {
     await flushPromises()
     expect(pushMock).not.toHaveBeenCalled()
     expect(w.text()).toContain('用户名或密码错误')
+    expect(w.text()).not.toContain('invalid_credentials')
     expect(sessionStorage.getItem('last_username')).toBe('alice')
   })
 
-  it('邮箱被锁定（account_locked）时显示剩余分钟警告', async () => {
+  it('account_disabled / ip_banned 映射中文且不展示机器码', async () => {
+    for (const [code, text] of [
+      ['account_disabled', '账户已禁用'],
+      ['ip_banned', 'IP 已被封禁'],
+    ] as const) {
+      const auth = useAuthStore()
+      vi.spyOn(auth, 'login').mockRejectedValue(new ApiError(401, { error: code }))
+      const w = mount(LoginView)
+      await w.find('input#username').setValue('alice')
+      await w.find('input#password').setValue('pw')
+      await w.find('form').trigger('submit')
+      await flushPromises()
+      expect(w.text()).toContain(text)
+      expect(w.text()).not.toContain(code)
+    }
+  })
+
+  it('账户锁定（account_locked, 423）按绝对 locked_until 显示剩余分钟警告', async () => {
     const auth = useAuthStore()
+    const lockedUntil = Math.floor(Date.now() / 1000) + 300
     vi.spyOn(auth, 'login').mockRejectedValue(
-      new ApiError(401, { error: '账号已锁定', code: 'account_locked', locked_until: Math.floor(Date.now() / 1000) + 300 }),
+      new ApiError(423, { error: 'account_locked', locked_until: lockedUntil }),
     )
     const w = mount(LoginView)
     await w.find('input#username').setValue('bob')
     await w.find('input#password').setValue('pw')
     await w.find('form').trigger('submit')
     await flushPromises()
+    expect(w.text()).toContain('账户已锁定')
     expect(w.text()).toContain('剩余')
     expect(w.text()).toContain('分钟')
+    expect(w.text()).not.toContain('account_locked')
+    expect(w.html()).toContain('status-warning-surface-l1')
+  })
+
+  it('锁定已过期（locked_until 为过去时刻）只显示文案，不显示剩余分钟', async () => {
+    const auth = useAuthStore()
+    vi.spyOn(auth, 'login').mockRejectedValue(
+      new ApiError(423, { error: 'account_locked', locked_until: Math.floor(Date.now() / 1000) - 60 }),
+    )
+    const w = mount(LoginView)
+    await w.find('input#username').setValue('bob')
+    await w.find('input#password').setValue('pw')
+    await w.find('form').trigger('submit')
+    await flushPromises()
+    expect(w.text()).toContain('账户已锁定')
+    expect(w.text()).not.toContain('剩余')
+  })
+
+  it('未知机器码统一「登录失败」，不回显 snake_case', async () => {
+    const auth = useAuthStore()
+    vi.spyOn(auth, 'login').mockRejectedValue(
+      new ApiError(401, { error: 'unexpected_error_code' }),
+    )
+    const w = mount(LoginView)
+    await w.find('input#username').setValue('alice')
+    await w.find('input#password').setValue('pw')
+    await w.find('form').trigger('submit')
+    await flushPromises()
+    expect(w.text()).toContain('登录失败')
+    expect(w.text()).not.toContain('unexpected_error_code')
+  })
+
+  it('非对象错误体（如网关纯文本）回退 e.message', async () => {
+    const auth = useAuthStore()
+    vi.spyOn(auth, 'login').mockRejectedValue(new ApiError(502, null))
+    const w = mount(LoginView)
+    await w.find('input#username').setValue('alice')
+    await w.find('input#password').setValue('pw')
+    await w.find('form').trigger('submit')
+    await flushPromises()
+    // ApiError.message 在 body 为空时回落 "HTTP 502"
+    expect(w.text()).toContain('HTTP 502')
   })
 
   it('网络错误显示网络错误提示', async () => {

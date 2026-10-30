@@ -2,7 +2,6 @@
 #include "jwt.h"
 #include "ws_controller.h"
 
-#include <algorithm>
 #include <nlohmann/json.hpp>
 #include <ctime>
 #include <string>
@@ -18,17 +17,34 @@ using Json = nlohmann::json;
 void LoginCtrl::login(const drogon::HttpRequestPtr& req,
                       std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
     // 1. Parse body
+    // 400 统一出口（契约 rest §1：请求体形状非法一律 400 {"error":"bad request"}）
+    const auto reply_bad_request = [&callback]() {
+        callback(json_response(drogon::k400BadRequest, Json{{"error", "bad request"}}));
+    };
     Json body;
     try {
         body = Json::parse(req->getBody());
     } catch (const std::exception&) {
-        callback(json_response(drogon::k400BadRequest, Json{{"error", "bad request"}}));
+        reply_bad_request();
         return;
     }
-    const std::string username = body.value("username", "");
-    const std::string password = body.value("password", "");
+    // 契约 rest §1: 请求体必须是含 string 类型 username/password 的 JSON 对象；
+    // 合法 JSON 但非对象（如 []）或字段类型错（如数字）同样是 bad request（不得 500）
+    if (!body.is_object()) {
+        reply_bad_request();
+        return;
+    }
+    const auto username_it = body.find("username");
+    const auto password_it = body.find("password");
+    if (username_it == body.end() || !username_it->is_string() || password_it == body.end() ||
+        !password_it->is_string()) {
+        reply_bad_request();
+        return;
+    }
+    const std::string username = username_it->get<std::string>();
+    const std::string password = password_it->get<std::string>();
     if (username.empty() || password.empty()) {
-        callback(json_response(drogon::k400BadRequest, Json{{"error", "bad request"}}));
+        reply_bad_request();
         return;
     }
 
@@ -46,10 +62,10 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
         return;
     }
     if (user->status == "locked" || user->locked_until > now_epoch) {
-        int64_t remaining = user->locked_until - now_epoch;
-        remaining = std::max<int64_t>(remaining, 0);
-        callback(json_response(drogon::k423Locked,
-                               Json{{"error", "account_locked"}, {"locked_until", remaining}}));
+        // 契约 rest §1: 登录错误体 locked_until 为绝对 Unix 秒级时间戳（与 User.locked_until
+        // 同语义），前端按 locked_until - now 计算剩余分钟
+        callback(json_response(drogon::k423Locked, Json{{"error", "account_locked"},
+                                                        {"locked_until", user->locked_until}}));
         return;
     }
 
@@ -85,9 +101,11 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
                                      "account_locked");
             notifier_.broadcast_data_changed("login_history");
             notifier_.broadcast_data_changed("users");
-            callback(json_response(
-                drogon::k423Locked,
-                Json{{"error", "account_locked"}, {"locked_until", config.lockout_duration_sec}}));
+            // 契约 rest §1: locked_until 为绝对 Unix 秒级时间戳
+            callback(
+                json_response(drogon::k423Locked,
+                              Json{{"error", "account_locked"},
+                                   {"locked_until", now_epoch + config.lockout_duration_sec}}));
             return;
         }
         repo_->add_login_history(username, client_ip, "web", false, user_agent,
