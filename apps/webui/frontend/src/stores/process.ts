@@ -118,6 +118,13 @@ export const useProcessStore = defineStore('process', () => {
     }
     configs.value = next
     configsInitialized.value = true
+    // 契约 process：条目消失 = 进程已移除——同步清理已移除进程的状态镜像。
+    // 后端 Remove 流程先推 process_config（条目消失）再推 Stopped，而晚到的 status
+    // 被注册守卫忽略（见 applyProcessStatus），不在此清理会让旧状态永久残留；
+    // 顶栏服务徽章按状态镜像聚合（#199）时会把已删除进程继续当作现状。
+    for (const name of Object.keys(statuses.value)) {
+      if (!(name in next)) delete statuses.value[name]
+    }
   }
 
   // 进程控制操作：pending 语义与 marketSources.ts 现状逐项一致
