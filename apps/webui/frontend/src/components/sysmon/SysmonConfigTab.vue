@@ -401,6 +401,20 @@ const dirty = computed(() => draft.value.invalidLabel !== null || Object.keys(dr
 const saveDisabled = computed(() => !canEdit.value || savePending.value || !dirty.value)
 
 /**
+ * 历史库总量上限的实时换算提示（#207 B1）：
+ * 该字段的输入单位是**字节**（后端契约口径），但同一数值在只读摘要里按 IEC 档显示
+ * （`2147483648` 摘要显示 `2.0 GiB`）。两套单位同屏且无换算提示，容易错 1024 倍。
+ * 这里按共享格式化模块（`formatBytes`）给出实时换算，口径与摘要行完全一致；`0` 表示不限制。
+ */
+const maxBytesHint = computed<string>(() => {
+  const parsed = parseNumberInput(form.historyNumbers[FIELDS.maxBytes.key], FIELDS.maxBytes.integer)
+  if (parsed === null) return '请输入有效字节数'
+  if (parsed < 0) return '字节数不能为负'
+  if (parsed === 0) return '0 = 不限制'
+  return `≈ ${formatBytes(parsed)}`
+})
+
+/**
  * 保存：只下发差异 patch。成功（REST 已写事件通道）后 toast「配置已保存」并保持 pending，
  * 生效信号仍是 WS `sysmon_config` 回推（校验失败时发送方回推旧值，表单随镜像回退）。
  */
@@ -576,6 +590,12 @@ async function onSave(): Promise<void> {
                     :data-test="`sysmon-config-input-${field.key}`"
                   >
                 </span>
+                <!-- #207 B1：字节输入与摘要的 IEC 单位同屏时给出换算，避免错 1024 倍 -->
+                <span
+                  v-if="field.key === FIELDS.maxBytes.key"
+                  class="sysmon-config__field-hint"
+                  data-test="sysmon-config-hint-max_bytes"
+                >{{ maxBytesHint }}</span>
               </label>
             </div>
           </section>
@@ -760,6 +780,14 @@ async function onSave(): Promise<void> {
   color: var(--text-tertiary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
+}
+
+/* #207 B1：单位换算提示（与字段标签同级，弱化以便不抢输入框注意力） */
+.sysmon-config__field-hint {
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  font-variant-numeric: tabular-nums;
 }
 
 .sysmon-config__groups {

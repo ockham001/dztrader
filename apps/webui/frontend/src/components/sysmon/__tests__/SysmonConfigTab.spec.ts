@@ -245,3 +245,55 @@ describe('SysmonConfigTab 编辑与保存（#81，仅 admin）', () => {
     expect(valueText(wrapper, 'sampling.measure_interval_ms')).toBe('1000 ms')
   })
 })
+
+// #207 B1：字节输入框与摘要的 IEC 单位同屏，必须给出实时换算提示，避免错 1024 倍
+describe('SysmonConfigTab 历史库上限单位换算（#207 B1）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sysmonPending.__resetForTests()
+    vi.clearAllMocks()
+  })
+
+  function hintText(wrapper: VueWrapper): string {
+    const hint = wrapper.find('[data-test="sysmon-config-hint-max_bytes"]')
+    expect(hint.exists(), '缺少 max_bytes 换算提示').toBe(true)
+    return hint.text()
+  }
+
+  it('初值（镜像 2147483648 字节）就显示与摘要一致的 IEC 换算', async () => {
+    const { wrapper } = await mountTab({ config: makeSysmonConfig() })
+
+    expect((wrapper.find('[data-test="sysmon-config-input-max_bytes"]').element as HTMLInputElement).value)
+      .toBe('2147483648')
+    // 输入框是字节口径，摘要行是 2.0 GiB —— 提示必须把两者对上
+    expect(hintText(wrapper)).toBe('≈ 2.0 GiB')
+  })
+
+  it('输入 2147483648 时同屏显示 2.0 GiB（实时跟随输入）', async () => {
+    const { wrapper } = await mountTab({ config: makeSysmonConfig({ history: { max_bytes: 0 } }) })
+
+    await wrapper.find('[data-test="sysmon-config-input-max_bytes"]').setValue('2147483648')
+    expect(hintText(wrapper)).toBe('≈ 2.0 GiB')
+
+    await wrapper.find('[data-test="sysmon-config-input-max_bytes"]').setValue('1048576')
+    expect(hintText(wrapper)).toBe('≈ 1.0 MiB')
+  })
+
+  it('0 表示不限制（与只读摘要同一语义），不显示 0 B', async () => {
+    const { wrapper } = await mountTab({ config: makeSysmonConfig({ history: { max_bytes: 0 } }) })
+
+    expect(hintText(wrapper)).toBe('0 = 不限制')
+    expect(hintText(wrapper)).not.toContain('0 B')
+  })
+
+  it('非法输入（非数字 / 负数）给出可读提示而不是换算结果', async () => {
+    const { wrapper } = await mountTab({ config: makeSysmonConfig() })
+
+    await wrapper.find('[data-test="sysmon-config-input-max_bytes"]').setValue('-1')
+    expect(hintText(wrapper)).toBe('字节数不能为负')
+
+    await wrapper.find('[data-test="sysmon-config-input-max_bytes"]').setValue('')
+    expect(hintText(wrapper)).toBe('请输入有效字节数')
+  })
+})
+
