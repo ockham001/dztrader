@@ -11,6 +11,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - 认证：除 `POST /api/login`、`GET /health`、`GET /api/system/info` 外，全部 `/api/*` 需要 JWT（`Authorization: Bearer <jwt>`）；失败回 401 `{"error":"unauthorized"}`（token 缺失）或 `{"error":"invalid_token"}`（校验失败）。
 - 响应：JSON（`application/json`）。
 - 错误：`{"error": message}` + 对应 HTTP 状态码；404 为 `{"error":"not found"}`。
+- 登录失败错误体（`POST /api/login` 专用）：`{"error": <snake_case_code>}`，HTTP 状态码表达类别（401 凭据/状态/封禁类，423 锁定）；**不携带 `code` 字段**——`error` 即机器码（清单见 §2.1）。`account_locked` 额外携带 `locked_until`（**绝对 Unix 秒级时间戳**，与 `GET /api/user*` 的 `locked_until` 同语义；前端按 `locked_until - now` 计算剩余分钟，不得按剩余秒数解释；`locked_until <= now` 表示无剩余时间信息，前端只显示锁定文案、不显示分钟）。
 - 权限：管理类端点需 admin 角色（服务端校验，非前端隐藏）。
 - 数据变更联动：变更 DB 的端点成功后由 dzweb 广播 `data_changed{scope}`（契约 webui-ws），前端按 scope 重新 REST 拉取。
 - 设置类请求（转发 SHM 帧的端点）：响应只表示"已写事件通道"；生效以 WS 领域消息为准（对应帧契约的 RTN）。超时无 RTN 时按总则 §7 兜底。
@@ -23,7 +24,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 | 方法/路径 | 语义 |
 |---|---|
-| POST `/api/login` | 登录，返回 JWT；失败计数与锁定策略见实现 |
+| POST `/api/login` | 登录，返回 JWT；失败计数与锁定策略见实现。失败错误体见 §1；机器码：`invalid_credentials`（用户名或密码错误）/ `account_disabled`（账户已禁用）/ `ip_banned`（IP 被封禁）→ 401；`account_locked`（账户锁定）→ 423 + `locked_until`（绝对 Unix 秒级时间戳） |
 | POST `/api/auth/change-password` | 修改本人密码 |
 | GET `/api/system/info` | 免认证。dzweb 进程自述：`{"process_name": <exe 文件名不含扩展名>, "version": <SemVer 版本串>}`。`process_name` 供前端比对 logger 名以禁用自我日志 tail（支持重命名 `dzweb.exe` 部署）；`version` 为工程版本（根 `CMakeLists.txt` 的 `project(VERSION)`，经 `version.h` 的 `DZ_VERSION_STRING` 生成，含 pre-release 后缀），供「关于」页显示，前端不得另存硬编码版本。仅新增只读字段，无帧往返 |
 

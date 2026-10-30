@@ -106,6 +106,8 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
         tradingDay: mdStatus?.tradingDay || '--',
         subscribeCount: mdStatus?.subscribeCount ?? 0,
         subscribeTotal: mdStatus?.subscribeTotal ?? 0,
+        // 契约 md-status 失败语义：last_error 持久展示「上次失败原因+时间」（登录成功后清空）
+        lastLoginError: mdStatus?.lastError ?? null,
         brokers: mdConfig?.brokers ?? [],
         subscribeBatchSize: mdConfig?.subscribe_batch_size ?? null,
         subscribeBatchDelayMs: mdConfig?.subscribe_batch_delay_ms ?? null,

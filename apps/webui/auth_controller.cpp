@@ -2,7 +2,6 @@
 #include "jwt.h"
 #include "ws_controller.h"
 
-#include <algorithm>
 #include <nlohmann/json.hpp>
 #include <ctime>
 #include <string>
@@ -46,10 +45,10 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
         return;
     }
     if (user->status == "locked" || user->locked_until > now_epoch) {
-        int64_t remaining = user->locked_until - now_epoch;
-        remaining = std::max<int64_t>(remaining, 0);
-        callback(json_response(drogon::k423Locked,
-                               Json{{"error", "account_locked"}, {"locked_until", remaining}}));
+        // 契约 rest §1: 登录错误体 locked_until 为绝对 Unix 秒级时间戳（与 User.locked_until
+        // 同语义），前端按 locked_until - now 计算剩余分钟
+        callback(json_response(drogon::k423Locked, Json{{"error", "account_locked"},
+                                                        {"locked_until", user->locked_until}}));
         return;
     }
 
@@ -85,9 +84,11 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
                                      "account_locked");
             notifier_.broadcast_data_changed("login_history");
             notifier_.broadcast_data_changed("users");
-            callback(json_response(
-                drogon::k423Locked,
-                Json{{"error", "account_locked"}, {"locked_until", config.lockout_duration_sec}}));
+            // 契约 rest §1: locked_until 为绝对 Unix 秒级时间戳
+            callback(
+                json_response(drogon::k423Locked,
+                              Json{{"error", "account_locked"},
+                                   {"locked_until", now_epoch + config.lockout_duration_sec}}));
             return;
         }
         repo_->add_login_history(username, client_ip, "web", false, user_agent,

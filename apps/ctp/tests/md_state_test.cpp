@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <ctime>
 #include <optional>
 #include <string>
 
@@ -168,7 +169,7 @@ TEST_F(MdStateMachineTest, LoginSuccessTransitionsToLoggedIn) {
     EXPECT_EQ(sm.status().progress_desc, "已登录");
 }
 
-TEST_F(MdStateMachineTest, LoginFailedTransitionsToConnected) {
+TEST_F(MdStateMachineTest, LoginRejectedTransitionsToLoginFailedWithReason) {
     sm.on_connect();
     sm.on_front_connected();
     sm.on_req_login();
@@ -179,16 +180,50 @@ TEST_F(MdStateMachineTest, LoginFailedTransitionsToConnected) {
     sm.on_req_login();
     ASSERT_FALSE(sm.status().login_time.empty());
 
-    auto notif = sm.on_login_failed();
-    EXPECT_EQ(sm.state(), MdState::Connected);
+    // 契约 md-status 失败语义: CTP 拒绝登录（ErrorID/ErrorMsg 进 last_error 与通知）
+    auto notif = sm.on_login_failed(MdFailureCode::LoginRejected, "CTP:不合法的登录", 3);
+    EXPECT_EQ(sm.state(), MdState::LoginFailed);
     EXPECT_TRUE(sm.status().login_time.empty());
+    EXPECT_EQ(sm.status().progress_desc, "登录失败");
+    EXPECT_EQ(sm.status().progress_current, 2);
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "login_rejected");
+    EXPECT_EQ(sm.status().last_error->message, "CTP:不合法的登录");
+    EXPECT_EQ(sm.status().last_error->error_id, 3);
+    EXPECT_GT(sm.status().last_error->timestamp, 0);
     ASSERT_TRUE(notif.has_value());
-    EXPECT_EQ((*notif)["message"].get<std::string>(), "行情登录失败");
+    EXPECT_EQ((*notif)["message"].get<std::string>(), "行情登录失败: CTP:不合法的登录");
     EXPECT_EQ((*notif)["level"].get<int>(), DZ_NOTIFY_ERROR);
     EXPECT_TRUE((*notif)["popup"].get<bool>());
 }
 
-TEST_F(MdStateMachineTest, LoginParseErrorTransitionsToConnected) {
+TEST_F(MdStateMachineTest, LoginRejectedWithoutMessageFallsBackToErrorId) {
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_login();
+
+    auto notif = sm.on_login_failed(MdFailureCode::LoginRejected, "", 7);
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->message, "错误码 7");
+    ASSERT_TRUE(notif.has_value());
+    EXPECT_EQ((*notif)["message"].get<std::string>(), "行情登录失败: 错误码 7");
+}
+
+TEST_F(MdStateMachineTest, LoginTimeoutRecordsReason) {
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_login();
+
+    auto notif = sm.on_login_failed(MdFailureCode::LoginTimeout, "10 秒内未收到登录响应");
+    EXPECT_EQ(sm.state(), MdState::LoginFailed);
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "login_timeout");
+    EXPECT_EQ(sm.status().last_error->error_id, 0);
+    ASSERT_TRUE(notif.has_value());
+    EXPECT_EQ((*notif)["message"].get<std::string>(), "行情登录超时: 10 秒内未收到登录响应");
+}
+
+TEST_F(MdStateMachineTest, LoginParseErrorTransitionsToLoginFailed) {
     sm.on_connect();
     sm.on_front_connected();
     sm.on_req_login();
@@ -200,12 +235,79 @@ TEST_F(MdStateMachineTest, LoginParseErrorTransitionsToConnected) {
     ASSERT_FALSE(sm.status().login_time.empty());
 
     auto notif = sm.on_login_parse_error();
-    EXPECT_EQ(sm.state(), MdState::Connected);
+    EXPECT_EQ(sm.state(), MdState::LoginFailed);
     EXPECT_TRUE(sm.status().login_time.empty());
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "login_parse_error");
     ASSERT_TRUE(notif.has_value());
-    EXPECT_EQ((*notif)["message"].get<std::string>(), "行情登录失败");
+    EXPECT_EQ((*notif)["message"].get<std::string>(), "行情登录失败: 登录响应解析失败");
     EXPECT_EQ((*notif)["level"].get<int>(), DZ_NOTIFY_ERROR);
     EXPECT_TRUE((*notif)["popup"].get<bool>());
+}
+
+TEST_F(MdStateMachineTest, LoginFailedAllowsDirectRetry) {
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_login();
+    ASSERT_TRUE(
+        sm.on_login_failed(MdFailureCode::LoginRejected, "CTP:不合法的登录", 3).has_value());
+    EXPECT_EQ(sm.state(), MdState::LoginFailed);
+    ASSERT_TRUE(sm.status().last_error.has_value());
+
+    // 契约 md-status 失败语义: 失败态可直接重试登录（无需先登出），重试开始即清空 last_error
+    auto notif = sm.on_req_login();
+    EXPECT_EQ(sm.state(), MdState::LoggingIn);
+    EXPECT_FALSE(notif.has_value());
+    EXPECT_FALSE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().progress_desc, "用户登录...");
+}
+
+TEST_F(MdStateMachineTest, NewConnectAttemptClearsLastError) {
+    sm.on_connect();
+    ASSERT_TRUE(sm.on_connect_timeout().has_value());
+    ASSERT_TRUE(sm.status().last_error.has_value());
+
+    // 下一次连接尝试开始（Idle -> Connecting）清空最近一次失败
+    sm.on_connect();
+    EXPECT_FALSE(sm.status().last_error.has_value());
+}
+
+TEST_F(MdStateMachineTest, LoginSuccessClearsLastError) {
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_login();
+    ASSERT_TRUE(
+        sm.on_login_failed(MdFailureCode::LoginTimeout, "10 秒内未收到登录响应").has_value());
+    ASSERT_TRUE(sm.status().last_error.has_value());
+
+    sm.on_req_login();
+    sm.on_login_success("v", "d", "t");
+    EXPECT_FALSE(sm.status().last_error.has_value());
+}
+
+TEST_F(MdStateMachineTest, ConnectTimeoutRecordsReasonAndReturnsToIdle) {
+    sm.on_connect();
+    EXPECT_EQ(sm.state(), MdState::Connecting);
+
+    auto notif = sm.on_connect_timeout();
+    EXPECT_EQ(sm.state(), MdState::Idle);
+    ASSERT_TRUE(notif.has_value());
+    EXPECT_EQ((*notif)["level"].get<int>(), DZ_NOTIFY_WARN);
+    EXPECT_FALSE((*notif)["popup"].get<bool>());
+    EXPECT_EQ((*notif)["message"].get<std::string>(), "行情连接超时: 30 秒内未连接上前置");
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "connect_timeout");
+    EXPECT_EQ(sm.status().last_error->error_id, 0);
+    EXPECT_GT(sm.status().last_error->timestamp, 0);
+    EXPECT_EQ(sm.status().progress_current, 0);
+}
+
+TEST_F(MdStateMachineTest, ConnectTimeoutFromNonConnectingIgnored) {
+    // Idle 状态（未发起连接）收到超时回调: 不记录失败、不转移状态
+    auto notif = sm.on_connect_timeout();
+    EXPECT_EQ(sm.state(), MdState::Idle);
+    EXPECT_FALSE(notif.has_value());
+    EXPECT_FALSE(sm.status().last_error.has_value());
 }
 
 TEST_F(MdStateMachineTest, LoginFromUnexpectedStateIgnored) {
@@ -284,6 +386,26 @@ TEST_F(MdStateMachineTest, ProgressMappingDisconnected) {
     EXPECT_EQ(sm.status().progress_desc, "重连中...");
     EXPECT_EQ(sm.status().progress_max, 4);
     EXPECT_EQ(sm.status().progress_current, 1);
+}
+
+TEST_F(MdStateMachineTest, ProgressMappingLoginFailed) {
+    // 契约 md-status 失败语义: 登录失败态数值映射与 Connected 相同（current=2），
+    // 失败原因由 RTN_MD_STATUS.last_error 承载；desc 仅展示为「登录失败」
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_login();
+    sm.on_login_failed(MdFailureCode::LoginTimeout, "10 秒内未收到登录响应");
+    EXPECT_EQ(sm.status().progress_desc, "登录失败");
+    EXPECT_EQ(sm.status().progress_min, 0);
+    EXPECT_EQ(sm.status().progress_max, 4);
+    EXPECT_EQ(sm.status().progress_current, 2);
+}
+
+TEST(MdFailureCodeStrTest, MapsAllCodes) {
+    EXPECT_EQ(md_failure_code_str(MdFailureCode::ConnectTimeout), "connect_timeout");
+    EXPECT_EQ(md_failure_code_str(MdFailureCode::LoginRejected), "login_rejected");
+    EXPECT_EQ(md_failure_code_str(MdFailureCode::LoginTimeout), "login_timeout");
+    EXPECT_EQ(md_failure_code_str(MdFailureCode::LoginParseError), "login_parse_error");
 }
 
 // --- Set API version ---
@@ -400,9 +522,10 @@ TEST(TradingDayToDaysTest, ImpossibleDateThrows) {
 
 TEST_F(MdStateMachineTest, LoginFailedFromUnexpectedStateIgnored) {
     // 不经过 on_req_login, 直接调 on_login_failed
-    auto notif = sm.on_login_failed();
+    auto notif = sm.on_login_failed(MdFailureCode::LoginRejected, "x", 1);
     EXPECT_EQ(sm.state(), MdState::Idle);
     EXPECT_FALSE(notif.has_value());
+    EXPECT_FALSE(sm.status().last_error.has_value());
 }
 
 TEST_F(MdStateMachineTest, LoginParseErrorFromUnexpectedStateIgnored) {
@@ -415,7 +538,7 @@ TEST_F(MdStateMachineTest, LoginParseErrorFromUnexpectedStateIgnored) {
 // build_md_status_payload: 契约 md-status 字段集验证
 // ============================================================================
 
-TEST(BuildMdStatusPayloadTest, ContainsExactlySixContractFields) {
+TEST(BuildMdStatusPayloadTest, ContainsContractFieldsIncludingNullLastError) {
     MdStateMachine sm;
     sm.set_api_version("v6.7.2");
     sm.on_connect();
@@ -426,15 +549,17 @@ TEST(BuildMdStatusPayloadTest, ContainsExactlySixContractFields) {
 
     auto j = build_md_status_payload(sm.status());
 
-    // 契约 md-status 的 6 个字段
+    // 契约 md-status 的 6 个状态字段 + last_error（无失败时为 null）
     EXPECT_EQ(j["api_version"], "v6.7.2");
     EXPECT_EQ(j["sys_version"], "v6.7.2_20240105");
     EXPECT_EQ(j["trading_day"], "20260808");
     EXPECT_EQ(j["login_time"], "08:45:32");
     EXPECT_EQ(j["expected_subscribe_count"], 5000);
     EXPECT_EQ(j["subscribed_count"], 5000);
-    // 契约 md-status: payload 仅 6 字段——登录/进度状态由 RTN_PROGRESS（契约 progress）覆盖
-    EXPECT_EQ(j.size(), 6);
+    ASSERT_TRUE(j.contains("last_error"));
+    EXPECT_TRUE(j["last_error"].is_null());
+    // 契约 md-status: 登录/进度状态由 RTN_PROGRESS（契约 progress）覆盖
+    EXPECT_EQ(j.size(), 7);
     EXPECT_FALSE(j.contains("login_state"));
 
     // 不应包含 state / progress_* 字段
@@ -445,6 +570,26 @@ TEST(BuildMdStatusPayloadTest, ContainsExactlySixContractFields) {
     EXPECT_FALSE(j.contains("progress_current"));
 }
 
+TEST(BuildMdStatusPayloadTest, LastErrorSerializedWhenPresent) {
+    MdStateMachine sm;
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_login();
+    auto before = static_cast<int64_t>(std::time(nullptr));
+    sm.on_login_failed(MdFailureCode::LoginRejected, "CTP:不合法的登录", 3);
+    auto after = static_cast<int64_t>(std::time(nullptr));
+
+    auto j = build_md_status_payload(sm.status());
+
+    ASSERT_TRUE(j["last_error"].is_object());
+    const auto& e = j["last_error"];
+    EXPECT_EQ(e["code"], "login_rejected");
+    EXPECT_EQ(e["message"], "CTP:不合法的登录");
+    EXPECT_EQ(e["error_id"], 3);
+    EXPECT_GE(e["timestamp"].get<int64_t>(), before);
+    EXPECT_LE(e["timestamp"].get<int64_t>(), after);
+}
+
 TEST(BuildMdStatusPayloadTest, EmptyStringsWhenNotLoggedIn) {
     MdStateMachine sm;
     auto j = build_md_status_payload(sm.status());
@@ -453,6 +598,7 @@ TEST(BuildMdStatusPayloadTest, EmptyStringsWhenNotLoggedIn) {
     EXPECT_EQ(j["login_time"], "");
     EXPECT_EQ(j["expected_subscribe_count"], 0);
     EXPECT_EQ(j["subscribed_count"], 0);
-    EXPECT_EQ(j.size(), 6);
+    EXPECT_TRUE(j["last_error"].is_null());
+    EXPECT_EQ(j.size(), 7);
     EXPECT_FALSE(j.contains("login_state"));
 }

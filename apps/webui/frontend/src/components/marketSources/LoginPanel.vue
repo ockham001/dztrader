@@ -28,11 +28,13 @@ const autoLoginStatusClass = (s: MarketSourceView): string => {
   <!-- ── 登录操作 ── -->
   <div class="card-actions">
     <ProcessStartButton :source="src" />
+    <!-- 契约 md-status 前端义务③：有 lastLoginError（失败态）时允许直接重试登录，
+         不要求先登出；登录中/连接中（loginPending 或无失败原因的 pending）仍禁用。 -->
     <button
       class="ds-btn ds-btn--sm"
       :class="src.loginState === 'offline' ? 'ds-btn--primary' : 'ds-btn--secondary'"
       type="button"
-      :disabled="src.loginPending || src.loginState === 'pending' || src.process_state !== 'Running'"
+      :disabled="src.loginPending || src.process_state !== 'Running' || (src.loginState === 'pending' && !src.lastLoginError)"
       :title="src.process_state !== 'Running' ? '进程未运行，请先启动进程' : undefined"
       @click="store.login(src.id)"
     >

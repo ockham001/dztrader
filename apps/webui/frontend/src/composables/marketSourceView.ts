@@ -60,9 +60,9 @@ export interface MarketSourceView extends MarketSource {
   scheduleAddPending: boolean
   scheduleRemovePending: boolean
   expanded: boolean
-  // 以下 6 字段来自契约 md-status MdStatus（CTP 类型 schema，interface_type=ctp）。
+  // 以下 7 字段来自契约 md-status MdStatus（CTP 类型 schema，interface_type=ctp）。
   // 放通用视图模型是务实取舍：聚合层单一 computed 是现有架构约定，组件不直接读镜像。
-  // xtp 等其他接口类型无对应概念时恒为默认值（''/--/0），UI 无感知、无害；
+  // xtp 等其他接口类型无对应概念时恒为默认值（''/--/0/null），UI 无感知、无害；
   // 届时若 xtp 状态 schema 差异大，由其 ui_card 组件定义独立解析（见 parseMdStatus 注释）。
   apiVersion: string      // 契约 md-status api_version，镜像未到达为 ''
   sysVersion: string      // 契约 md-status sys_version，镜像未到达为 ''
@@ -70,6 +70,7 @@ export interface MarketSourceView extends MarketSource {
   tradingDay: string
   subscribeCount: number
   subscribeTotal: number
+  lastLoginError: MdLastErrorView | null  // 契约 md-status 失败语义 last_error；null = 无持久失败原因
   subscribeBatchSize: number | null       // 契约 md-config 订阅参数（镜像未到达为 null）
   subscribeBatchDelayMs: number | null
   subCheckIntervalMs: number | null
@@ -117,6 +118,7 @@ export function makeSource(
     tradingDay: '--',
     subscribeCount: 0,
     subscribeTotal: 0,
+    lastLoginError: null,
     subscribeBatchSize: null,
     subscribeBatchDelayMs: null,
     subCheckIntervalMs: null,
@@ -142,7 +144,7 @@ export function makeSource(
   }
 }
 
-// ===== md_status 镜像解析（契约 md-status CTP 类型，6 字段全量）=====
+// ===== md_status 镜像解析（契约 md-status CTP 类型，6 字段全量 + last_error）=====
 // 层级归属：契约 md-status 的 MdStatus schema 定义于「CTP 类型（interface_type = ctp）」章节，
 // 本解析器为 CTP 接口专属（dzmd_ctp*）。dzmd_* 通用层不感知字段细节；
 // 将来 xtp 等其他 interface_type 由其独立 ui_card 组件 + 独立解析函数承接，不复用本函数。
@@ -150,6 +152,17 @@ export function makeSource(
 // 逐字段独立 typeof 校验：类型非法的字段单独回落默认值，其余字段正常采用——
 // 契约 md-status 清空语义是分层的（进 Idle 全清空、登录失败仅清 login_time 其余保留），
 // 空串是合法值不是非法帧，禁止整帧全有或全无判定（否则登录失败场景会误丢 trading_day）。
+
+/// 一次性登录/连接失败（契约 md-status「失败语义（last_error）」）。
+/// 展示层 camelCase；进程/SHM 边界为 snake_case（code/message/error_id/timestamp），
+/// 转换只发生在 parseMdStatus，组件不接触后端字段形状。
+export interface MdLastErrorView {
+  code: string       // connect_timeout | login_rejected | login_timeout | login_parse_error（未知码也保留原文，仅用于映射兜底）
+  message: string    // 中文用户可读原因；空串 = 无详情，展示时按 code 映射固定文案
+  errorId: number    // CTP ErrorID；仅 login_rejected 非 0，其余 0
+  timestamp: number  // 失败发生时间，Unix 秒
+}
+
 export interface MdStatusView {
   apiVersion: string
   sysVersion: string
@@ -157,6 +170,38 @@ export interface MdStatusView {
   loginTime: string
   subscribeCount: number
   subscribeTotal: number
+  lastError: MdLastErrorView | null  // null = 无未清空失败（契约 md-status「失败语义」）
+}
+
+/// last_error 解析：对象且 code 为 string 才采纳；其余字段逐字段防御回落
+/// （message 非 string → ''，error_id/timestamp 非有限 number → 0）。
+/// last_error 为 null/非法 → null（不构成一次失败，不清 pending、不展示）。
+function parseLastError(raw: unknown): MdLastErrorView | null {
+  if (!raw || typeof raw !== 'object') return null
+  const e = raw as { code?: unknown; message?: unknown; error_id?: unknown; timestamp?: unknown }
+  if (typeof e.code !== 'string') return null
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+  return {
+    code: e.code,
+    message: typeof e.message === 'string' ? e.message : '',
+    errorId: num(e.error_id),
+    timestamp: num(e.timestamp),
+  }
+}
+
+/// 失败原因展示文案（契约 md-status 前端义务②）：message 优先；空则按 code 映射固定中文。
+/// 未知 code 统一「登录失败」——绝不把 snake_case 机器码直接展示给用户。
+const MD_LAST_ERROR_TEXT: Record<string, string> = {
+  connect_timeout: '连接超时（30 秒内未连接上前置）',
+  login_rejected: '登录被拒绝',
+  login_timeout: '登录超时（10 秒内未收到响应）',
+  login_parse_error: '登录响应解析失败',
+}
+
+export function mdLastErrorText(e: MdLastErrorView | null): string {
+  if (!e) return ''
+  if (e.message) return e.message
+  return MD_LAST_ERROR_TEXT[e.code] || '登录失败'
 }
 
 export function parseMdStatus(raw: unknown): MdStatusView | null {
@@ -167,6 +212,7 @@ export function parseMdStatus(raw: unknown): MdStatusView | null {
     login_time: unknown
     expected_subscribe_count: unknown
     subscribed_count: unknown
+    last_error: unknown
   }> | null | undefined
   if (!s || typeof s !== 'object') return null  // 非对象: 镜像未到达/非法帧
   const str = (v: unknown): string => (typeof v === 'string' ? v : '')
@@ -178,5 +224,6 @@ export function parseMdStatus(raw: unknown): MdStatusView | null {
     loginTime: str(s.login_time),
     subscribeCount: num(s.subscribed_count),
     subscribeTotal: num(s.expected_subscribe_count),
+    lastError: parseLastError(s.last_error),
   }
 }

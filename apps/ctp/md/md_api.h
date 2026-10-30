@@ -146,17 +146,18 @@ private:
     void cancel_login_timer();
     /// 处理 DZ_FRAME_SHUTDOWN 帧: 设置 running_=false, 让 run() 退出
     void handle_shutdown();
-    /// 推送网关状态 (RTN_MD_STATUS): 契约 md-status 的 6 字段
+    /// 推送网关状态 (RTN_MD_STATUS): 契约 md-status 全量字段（含 last_error 失败原因）
     /// 内部先同步订阅统计 (set_subscription_stats)，再构造 JSON 发送。
     void report_md_status();
     /// 推送进度 (RTN_PROGRESS): 从状态机 progress_* 字段读取, 经 progress_reporter_ 发送。
     void report_progress();
 
-    /// 连接 CTP 前置 (RegisterFront + Init)。前置条件: MdState::Idle
+    /// 连接 CTP 前置 (RegisterFront + Init)。前置条件: MdState::Idle。
+    /// 已连接/登录失败态下等价于重试登录（契约 md-status 失败语义：失败后可直接重试）。
     void connect();
     /// 断开 CTP 前置 (Release)
     void disconnect();
-    /// 发送登录请求 (ReqUserLogin)。前置条件: MdState::Connected
+    /// 发送登录请求 (ReqUserLogin)。前置条件: MdState::Connected 或 MdState::LoginFailed。
     void req_user_login();
     /// 推送 UI 通知 (转发 state_machine 返回的 json 到 NotifyUi 类)
     void notify_ui(const nlohmann::json& field);

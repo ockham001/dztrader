@@ -45,8 +45,8 @@ export interface OperationRunner {
   busy(key: string): boolean
   /** 记录 sourceName→id 映射，供 RTN 回调定位 key */
   assign(id: number, sourceName: string): void
-  /** 执行 run + 结果映射（唯一一处 sample 落地） */
-  execute(key: string, fn: () => Promise<unknown>, opLabel: string): Promise<OperationResult>
+  /** 执行 run + 结果映射（唯一一处 sample 落地）；timeoutMs 覆盖构造默认超时（按 op 定制） */
+  execute(key: string, fn: () => Promise<unknown>, opLabel: string, timeoutMs?: number): Promise<OperationResult>
 }
 
 export function createOperationRunner(opts: OperationRunnerOptions): OperationRunner {
@@ -57,8 +57,10 @@ export function createOperationRunner(opts: OperationRunnerOptions): OperationRu
     assign: (id, sourceName) => {
       nameToId.value[sourceName] = id
     },
-    execute: async (key, fn, opLabel) => {
-      const result = await pending.run(key, fn, { timeout, opLabel, distinguishTimeout: true })
+    execute: async (key, fn, opLabel, timeoutMs) => {
+      const result = await pending.run(key, fn, {
+        timeout: timeoutMs ?? timeout, opLabel, distinguishTimeout: true,
+      })
       if (result === PENDING_TIMEOUT) return PENDING_TIMEOUT
       return result !== undefined
     },

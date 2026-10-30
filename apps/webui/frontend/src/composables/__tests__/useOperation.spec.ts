@@ -73,4 +73,15 @@ describe('createOperationRunner', () => {
     expect(await r).toBe(PENDING_TIMEOUT)
     expect(inst.pending[key]).toBe(false)  // 超时 usePending 置 false（非 delete）
   })
+
+  it('execute 可选第 4 参数 timeoutMs 覆盖构造默认超时（登录 45s 兜底）', async () => {
+    const key = runner.opKey(12, 'login')
+    const r = runner.execute(key, () => new Promise(() => {}), '行情源登录', 45_000)
+    // 构造默认 1000ms 不再生效：推进 1s 后 pending 仍在
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(inst.pending[key]).toBe(true)
+    await vi.advanceTimersByTimeAsync(44_000)
+    expect(await r).toBe(PENDING_TIMEOUT)
+    expect(inst.pending[key]).toBe(false)
+  })
 })

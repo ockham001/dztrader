@@ -125,6 +125,8 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(s.subscribeBatchDelayMs).toBeNull()
       expect(s.subCheckIntervalMs).toBeNull()
       expect(s.subMaxRetry).toBeNull()
+      // 契约 md-status 失败语义：镜像未到达时无持久失败原因
+      expect(s.lastLoginError).toBeNull()
       // 18 个 pending 字段默认 false
       expect(s.loginPending).toBe(false)
       expect(s.logoutPending).toBe(false)
@@ -189,6 +191,53 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
         expect(s.tradingDay).toBe('--')
         expect(s.subscribeCount).toBe(0)
         expect(s.subscribeTotal).toBe(0)
+      })
+
+      it('last_error 聚合为 lastLoginError（契约 md-status 失败语义）', async () => {
+        await loadDb()
+        useMdConfigStore().applyMdStatus({ source: 'dzmd_ctp', status: {
+          api_version: 'v6.7.2',
+          last_error: {
+            code: 'login_rejected',
+            message: 'CTP:用户密码错误',
+            error_id: 3,
+            timestamp: 1_700_000_000,
+          },
+        }})
+        const s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
+        expect(s.lastLoginError).toEqual({
+          code: 'login_rejected',
+          message: 'CTP:用户密码错误',
+          errorId: 3,
+          timestamp: 1_700_000_000,
+        })
+      })
+
+      it('last_error 字段类型非法时逐字段防御回落（code 非 string 整体不采纳）', async () => {
+        await loadDb()
+        const store = useMdConfigStore()
+        // code 非 string → 不构成本次失败（lastError=null）
+        store.applyMdStatus({ source: 'dzmd_ctp', status: { last_error: { code: 7, message: 'x', timestamp: 1 } } })
+        let s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
+        expect(s.lastLoginError).toBeNull()
+        // code 合法，其余字段类型非法 → 逐字段回落
+        store.applyMdStatus({ source: 'dzmd_ctp', status: { last_error: {
+          code: 'connect_timeout', message: 42, error_id: 'x', timestamp: 'y',
+        } } })
+        s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
+        expect(s.lastLoginError).toEqual({ code: 'connect_timeout', message: '', errorId: 0, timestamp: 0 })
+      })
+
+      it('last_error 清空为 null 后 lastLoginError 归 null（登录成功后不保留旧失败展示）', async () => {
+        await loadDb()
+        const store = useMdConfigStore()
+        const failure = { code: 'login_timeout', message: '', error_id: 0, timestamp: 1_700_000_000 }
+        store.applyMdStatus({ source: 'dzmd_ctp', status: { last_error: failure } })
+        const s1 = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
+        expect(s1.lastLoginError).not.toBeNull()
+        store.applyMdStatus({ source: 'dzmd_ctp', status: { last_error: null } })
+        const s2 = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
+        expect(s2.lastLoginError).toBeNull()
       })
     })
 
@@ -318,13 +367,16 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(store.error).toBe('login failed')
     })
 
-    it('login: 超时兜底清 pending（usePending 30s/10s 语义）', async () => {
+    it('login: 超时兜底清 pending（登录 45s：连接 30s + 登录 10s + 余量）', async () => {
       await loadDb()
       vi.mocked(marketSourcesApi.login).mockImplementation(() => new Promise(() => {}))
       const store = useMarketSourcesStore()
       const p = store.login(1)
       expect(store.sources[0].loginPending).toBe(true)
+      // 其余配置类 op 仍 10s：登录 pending 在 10s 时不得被误清
       await vi.advanceTimersByTimeAsync(10_000)
+      expect(store.sources[0].loginPending).toBe(true)
+      await vi.advanceTimersByTimeAsync(35_001)
       expect(store.sources[0].loginPending).toBe(false)
       await p  // 超时后 run resolve
     })

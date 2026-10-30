@@ -58,14 +58,23 @@ describe('CLEAR_BY_RTN 声明完整性', () => {
     }
   })
 
-  it('各清理类互不重叠（同 op 不得归属多个 RTN）', () => {
-    const seen = new Set<string>()
+  it('各清理类互不重叠（同 op 不得归属多个 RTN）——login 例外：progress 登录完成 + md_status 失败双触点', () => {
+    // 契约 md-status 前端义务①：登录失败态 RTN_PROGRESS 数值映射与 Connected 相同（不产生
+    // online/offline 转移），因此 login pending 除 progress_login 外还由 last_error.timestamp
+    // 变化清理（CLEAR_BY_RTN.md_status_failure）——这是唯一有意登记的跨类双触点。
     for (const kind of Object.keys(CLEAR_BY_RTN) as (keyof typeof CLEAR_BY_RTN)[]) {
+      if (kind === 'progress_login' || kind === 'md_status_failure') continue
       for (const op of CLEAR_BY_RTN[kind]) {
-        expect(seen.has(op), `op「${op}」归属了多个清理类`).toBe(false)
-        seen.add(op)
+        const others = (Object.keys(CLEAR_BY_RTN) as (keyof typeof CLEAR_BY_RTN)[])
+          .filter(k => k !== kind)
+        for (const other of others) {
+          expect(CLEAR_BY_RTN[other].includes(op), `op「${op}」归属了多个清理类`).toBe(false)
+        }
       }
     }
+    // 双触点必须且仅覆盖 login
+    expect(CLEAR_BY_RTN.progress_login).toEqual(['login'])
+    expect(CLEAR_BY_RTN.md_status_failure).toEqual(['login'])
   })
 })
 
@@ -280,6 +289,65 @@ describe('useMdConfigStore', () => {
     })
   })
 
+  describe('md_status last_error 驱动登录 pending 清理（契约 md-status 前端义务①）', () => {
+    const lastErrorStatus = (timestamp: number) => ({
+      source: 'dzmd_ctp',
+      status: {
+        api_version: 'v6.7.2',
+        login_time: '',
+        last_error: { code: 'login_rejected', message: 'CTP:用户密码错误', error_id: 3, timestamp },
+      },
+    })
+
+    it('login() 发起后 pending；last_error 新 timestamp 到达 → 清除该 source 的 login pending', async () => {
+      vi.mocked(marketSourcesApi.login).mockResolvedValue({ ok: true })
+      const store = useMdConfigStore()
+      await store.login(1, 'dzmd_ctp')
+      expect(marketSourcePending.pending['source:1:login']).toBe(true)
+
+      store.applyMdStatus(lastErrorStatus(1_700_000_000))
+      await nextTick()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(marketSourcePending.pending['source:1:login']).toBeUndefined()
+    })
+
+    it('同 timestamp 重复推送不重复清（不清除新一次登录的 pending）', async () => {
+      vi.mocked(marketSourcesApi.login).mockResolvedValue({ ok: true })
+      const store = useMdConfigStore()
+      await store.login(1, 'dzmd_ctp')
+      store.applyMdStatus(lastErrorStatus(1_700_000_000))
+      await nextTick()
+      expect(marketSourcePending.pending['source:1:login']).toBeUndefined()
+
+      // 用户重试登录（新 pending），md_status 因订阅统计等变化重复推送同一次失败
+      await store.login(1, 'dzmd_ctp')
+      expect(marketSourcePending.pending['source:1:login']).toBe(true)
+      store.applyMdStatus(lastErrorStatus(1_700_000_000))
+      await nextTick()
+      expect(marketSourcePending.pending['source:1:login']).toBe(true)
+    })
+
+    it('last_error 变 null（下一次尝试开始/登录成功）不清 pending', async () => {
+      vi.mocked(marketSourcesApi.login).mockResolvedValue({ ok: true })
+      const store = useMdConfigStore()
+      await store.login(1, 'dzmd_ctp')
+      store.applyMdStatus({ source: 'dzmd_ctp', status: { last_error: null } })
+      await nextTick()
+      expect(marketSourcePending.pending['source:1:login']).toBe(true)
+    })
+
+    it('无 name→id 映射（未经过本 store 操作）时不清 pending', async () => {
+      const { run } = marketSourcePending
+      await run('source:9:login', () => Promise.resolve('x'))
+      const store = useMdConfigStore()
+      store.applyMdStatus({ source: 'unknown_src', status: {
+        last_error: { code: 'login_timeout', message: '', error_id: 0, timestamp: 1_700_000_000 },
+      } })
+      await nextTick()
+      expect(marketSourcePending.pending['source:9:login']).toBe(true)
+    })
+  })
+
   describe('login / logout', () => {
     it('login: HTTP 成功不清 pending（等 RTN_PROGRESS "已登录" 清）', async () => {
       vi.mocked(marketSourcesApi.login).mockResolvedValue({ ok: true })
@@ -328,12 +396,15 @@ describe('useMdConfigStore', () => {
       expect(marketSourcePending.pending['source:1:login']).toBe(true)
     })
 
-    it('配置类操作超时兜底（10s）清 pending 并返回 PENDING_TIMEOUT', async () => {
+    it('登录操作超时兜底（45s：连接 30s + 登录 10s + 余量）清 pending 并返回 PENDING_TIMEOUT', async () => {
       vi.mocked(marketSourcesApi.login).mockImplementation(() => new Promise(() => {}))
       const store = useMdConfigStore()
       const p = store.login(1, 'dzmd_ctp')
       expect(marketSourcePending.pending['source:1:login']).toBe(true)
+      // 其他配置类 op 仍是 10s：10s 时 login 不得被误清
       await vi.advanceTimersByTimeAsync(10_001)
+      expect(marketSourcePending.pending['source:1:login']).toBe(true)
+      await vi.advanceTimersByTimeAsync(34_999)
       expect(marketSourcePending.pending['source:1:login']).toBe(false)
       const result = await p
       expect(result).toBe(PENDING_TIMEOUT)  // 超时供薄代理识别去重双 toast
@@ -347,8 +418,8 @@ describe('useMdConfigStore', () => {
       await vi.advanceTimersByTimeAsync(0)  // 冲刷微任务，让 p1 的 HTTP 调用发出
       expect(marketSourcesApi.login).toHaveBeenCalledTimes(1)
       expect(await p2).toBe(false)
-      // 收尾：推进 10s 让 p1 走超时兜底 settle，不残留挂起 promise/timer
-      await vi.advanceTimersByTimeAsync(10_001)
+      // 收尾：推进 45s 让 p1 走登录超时兜底 settle，不残留挂起 promise/timer
+      await vi.advanceTimersByTimeAsync(45_001)
       expect(await p1).toBe(PENDING_TIMEOUT)
       expect(marketSourcePending.pending['source:1:login']).toBe(false)
     })
