@@ -388,16 +388,24 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
   }
 
   // ===== Batch operations =====
-  async function batchLogin(): Promise<void> {
-    const targets = sources.value.filter(s => s.loginState !== 'online' && !s.loginPending)
+  // #207 C3：批量操作的**目标集合**必须可在 UI 侧算出并展示（"将影响 N 个 / 分别是哪些"），
+  // 因此目标推导从函数内提到 computed —— 点按钮前先确认，无目标时按钮禁用。
+  // 判据与原实现一致（离线且未在登录中 / 在线且未在登出中 / 自动登录状态不符且未在切换中）。
+  const batchLoginTargets = computed(() => sources.value.filter(s => s.loginState !== 'online' && !s.loginPending))
+  const batchLogoutTargets = computed(() => sources.value.filter(s => s.loginState === 'online' && !s.logoutPending))
+
+  /// 自动登录批量目标（enabled 决定"哪些源需要被改"，与按钮语义绑定）
+  function batchAutoLoginTargets(enabled: boolean) {
+    return sources.value.filter(s => s.auto_login !== enabled && !s.autoLoginPending)
+  }
+
+  async function batchLogin(targets = batchLoginTargets.value): Promise<void> {
     await Promise.all(targets.map(s => login(s.id)))
   }
-  async function batchLogout(): Promise<void> {
-    const targets = sources.value.filter(s => s.loginState === 'online' && !s.logoutPending)
+  async function batchLogout(targets = batchLogoutTargets.value): Promise<void> {
     await Promise.all(targets.map(s => logout(s.id)))
   }
-  async function batchToggleAutoLogin(enabled: boolean): Promise<void> {
-    const targets = sources.value.filter(s => s.auto_login !== enabled && !s.autoLoginPending)
+  async function batchToggleAutoLogin(enabled: boolean, targets = batchAutoLoginTargets(enabled)): Promise<void> {
     await Promise.all(targets.map(s => toggleAutoLogin(s.id, enabled)))
   }
 
@@ -435,6 +443,9 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
     removeSource,
     start,
     stop,
+    batchLoginTargets,
+    batchLogoutTargets,
+    batchAutoLoginTargets,
     batchLogin,
     batchLogout,
     batchToggleAutoLogin,
