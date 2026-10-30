@@ -329,10 +329,9 @@ class BarStrategyManager {                    // A：引擎侧唯一策略对象
     DzContext* dz_ = nullptr;                // 引擎会话句柄（on_start 取得，注入各 ctx）
     DzTimerId rollback_timer_ = DZ_TIMER_INVALID;  // 18:00 回卷定时器 id（无效 = 注册失败）
     std::unique_ptr<ConfigStore> store_;     // 配置写回（命令层原子写盘）
-    EffectiveConfig effective_;              // 启动快照（构建实例用，进程内不变）
+    EffectiveConfig effective_;              // 启动快照（构建实例/诊断用；缩放配置在 effective_.scaling）
     // …… 依赖聚合 / 归档库句柄 / 启动诊断计数（略）……
     ParamStore params_;                      // 进程级参数（v1 所有品种相同）
-    ScalingConfig scaling_;                  // 进程级缩放配置（启动加载一次、盘中不可变）
     AccountTable accounts_;                  // 挂靠账户表（启动读配置，运行期命令修改）
     const DzTick* current_tick_ = nullptr;   // 本次 on_tick 正在分发的 tick（事件入口刷新快照）
     bool startup_failed_ = false;            // 启动失败：请求引擎立即退出
@@ -777,7 +776,7 @@ ctx.buy_to_cover(volume, price); // 买方向：平空（只减不增）；volum
 | `ctx.avg_entry_price()` | 当前持仓加权平均建仓价；部分平仓不变，反手重置 |
 | `ctx.current_entries()` | 当前持仓建仓段数（每次开仓/加仓计 1，反手新开计 1；部分平仓不变；无仓 0） |
 | `ctx.max_contracts()` / `max_entries()` | 本实例历史最大持仓手数（`|P|` 峰值）/ 最大建仓段数 |
-| `ctx.entry_price()` / `entry_date()` / `entry_time()` | 当前持仓第一笔建仓（日期时间为该 bar 的标准结束时间）；**无持仓时保留最近一次建仓值**（TB 同口径，与 `last_entry_price` 一致） |
+| `ctx.entry_price()` / `entry_date()` / `entry_time()` | 当前持仓第一笔建仓（日期时间为该 bar 的标准结束时间）；**无持仓时保留最近持仓周期的第一笔建仓值**（TB 同口径；仅无加仓时与 `last_entry_price` 相同） |
 | `ctx.last_entry_price()` / `last_entry_date()` / `last_entry_time()` | 最近一笔加仓 |
 | `ctx.exit_price()` / `exit_date()` / `exit_time()` | 最近一笔平仓（含部分平仓与反手平仓段） |
 | `ctx.bars_since_entry()` / `bars_since_last_entry()` / `bars_since_exit()` | 距首次建仓 / 最近加仓 / 最近平仓的 bar 数（同 bar=0；无参考 -1；`on_bar_close` 内用被关闭 bar 的 `bar_index`） |
@@ -1189,7 +1188,7 @@ status | quit
 
 > **已交付的测试（#157 起按票追加）**：`libs/strategy_api/tests/bar_strategy_framework_test.cpp`（Seam A：临时
 > `DZTRADER_HOME` + 真实事件/行情通道，测试线程内跑生产入口 `run_bar_strategy<FakeStrategy>()`；需要
-> 注入回卷时刻 / 小节表 / 假数据源的用例走内部接缝 `run_bar_strategy_with`（Seam B），独立
+> 注入回卷时刻 / 小节表 / 假数据源的用例走内部接缝 `run_bar_strategy_with`（内部接缝；通道性质仍是 Seam A），独立
 > writer 注入 TICK/SHUTDOWN 帧）覆盖：回调序列 `close → open → update`、每笔 tick 恰好一次
 > update、`bar_index` 0 起单调且 bar 内不变、`on_bar_open` 时 OHLC 等于本笔 tick 价、`on_init`
 > 时 `bar_index == -1` 且窗口为空、B 保存的视图副本跨 bar 推进仍有效（节点地址稳定性的可观测
@@ -1430,4 +1429,4 @@ status | quit
 24. 委托/拒单可见性：v1 不跟踪 `ORDER_REPORT`、不撤单；td 拒单只能从 td 日志排查。后续算法/委托管理层（§13 架构级后置）再接管。
 25. 账户存在性/在线校验：`account add` 目前只校验字符串与 `scale`；ACCOUNT_STATUS 广播可用于提示“账户未配置/离线”，但属后置增强，避免拼错账户静默丢单。
 26. 性能基准进 CI 的方式：**已落地（#164）**——五个 report-only 基准、`perf` 标签与 `workflow_dispatch` 的 `run_perf=true` 手动入口；基线见 §10 与 [build-appendix「性能基准」](../agents/build-appendix.md#性能基准)。稳定后再把 `bench_tick_update` / `bench_bar_close_dual_ma` 升为 p99 门禁（取 CI runner 上的多次中位数）；tick→bar 组件级的 `bench_bar_tick_intraday` / `bench_bar_tick_daily` 仍未排期（`bar_perf_bench` 已覆盖日内容四条路径，日线 builder 基准未建）。
-27. **入口形态与 spec #153 草案的差异（已按实现定稿）**：spec #153 的入口草案是 `run_bar_strategy<Strategy>(const BarStrategyRunOptions& options = {})`（`options` 只含运行期覆盖），v1 实现为无参 `run_bar_strategy<Strategy>()`——配置路径由 `dz_strategy_home()` + exe stem 唯一确定，没有运行期覆盖项（部署目录只读的覆盖需求见第 15 条）。`BarStrategyRunOptions` 未实现，将来若需要覆盖再按新票加参数（加法，不改现有签名语义）。§2 已按实现校准并标注该差异。
+27. **入口形态与 spec #153 草案的差异**：`BarStrategyRunOptions` 未实现、入口为无参形态——差异与原因见 §2 入口 bullet（含将来加参数的条件）。
