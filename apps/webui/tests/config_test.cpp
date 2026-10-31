@@ -84,12 +84,15 @@ TEST_F(WebuiConfigTest, MissingAuthSectionYieldsEmptySecretAndDefaultTtl) {
 }
 
 // ---- 监听地址回环判定（#201）----
-// 只有明确的本机回环字面量才算回环；其余（含 0.0.0.0 / :: 通配与非本机地址）一律
+// 只有语义上仅本机可达的地址才算回环；其余（含 0.0.0.0 / :: 通配与非本机地址）一律
 // 视为对外暴露 —— 方向刻意保守：宁可多报一条启动告警，不可漏报管理面暴露。
+// 注意 `[::1]` / `localhost` 虽是回环语义，drogon 的 addListener 会拒绝它们（启动期 FATAL）；
+// 本函数只判语义可达性，不判「该值能否启动」。
 
 TEST(WebuiListenLoopbackTest, LoopbackLiteralsAreRecognized) {
-    for (const char* listen : {"127.0.0.1", "127.0.0.2", "127.255.255.254", "::1", "[::1]",
-                               "localhost", "LOCALHOST", " localhost "}) {
+    for (const char* listen :
+         {"127.0.0.1", "127.0.0.2", "127.255.255.254", "::1", "0:0:0:0:0:0:0:1", "[::1]",
+          "localhost", "LOCALHOST", " localhost "}) {
         EXPECT_TRUE(is_loopback_listen(listen)) << "listen=" << listen;
     }
 }

@@ -97,14 +97,19 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
 
 ### 告警日志
 
-`listen` 非回环时，`addListener` 之前打一条（日志文本的唯一真相源是本文件；README 只描述语义）：
+`listen` 非回环时，`addListener` 之前打一条（日志文本的唯一真相源是本文件；README 只描述语义）。
+下面是**节选**——真实行还带时间戳、`file=main.cpp:<行号>`、`pid`、`tid` 等固定字段，控制台
+pattern 与文件 pattern 也不同（见 `libs/log/include/dztrader/log/log.h`）：
 
 ```text
-warning dzweb [func=main file=main.cpp] webui management plane exposed to network | listen=0.0.0.0 port=8080 tls=disabled advice="use 127.0.0.1 for local-only access, or a strong password, network isolation, or a TLS reverse proxy"
+webui management plane exposed to network | listen=0.0.0.0 port=8080 tls=disabled advice="use 127.0.0.1 for local-only access, or a strong password, network isolation, or a TLS reverse proxy"
 ```
 
-`listen` 为回环地址（如 `127.0.0.1`）时**不打**该行；默认口令告警（`default admin password in use`）
-是另一条独立 WARN，两者互不替代。
+- `listen` 为回环地址（如 `127.0.0.1`）时**不打**该行。
+- **受 `webui.json` 的 `log.level` 约束**：该 WARN 在 `LogConfig::load()` 应用日志级别之后发出，
+  因此把级别设成 `error` 时它会被静默丢弃——这是刻意不绕过日志级别的结果（告警不该比用户设定的
+  日志策略更吵），需要时把级别调回 `info`/`warning`（默认即 `info`）。
+- 默认口令告警（`default admin password in use`）是另一条独立 WARN，两者互不替代。
 
 ### listen 的取值约束
 
