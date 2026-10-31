@@ -166,13 +166,18 @@ onUnmounted(() => {
                 @update:model-value="handleDateFilterChange"
               />
             </div>
-            <div class="log-browser__file-list">
+            <div class="log-browser__file-list" role="listbox" aria-label="日志文件">
               <div
                 v-for="f in store.files"
                 :key="f.path"
                 class="log-browser__file-item"
                 :class="{ 'is-selected': f.path === store.selectedFile }"
+                role="option"
+                tabindex="0"
+                :aria-selected="f.path === store.selectedFile"
                 @click="handleSelectFile(f.path, f.logger)"
+                @keydown.enter.prevent="handleSelectFile(f.path, f.logger)"
+                @keydown.space.prevent="handleSelectFile(f.path, f.logger)"
               >
                 <div class="log-browser__file-name">
                   {{ f.name }}
@@ -194,6 +199,10 @@ onUnmounted(() => {
             >加载更多</button>
           </div>
 
+          <!-- 拖拽分隔条：纯鼠标横向调宽便利路径，键盘用户无需它也能看到全部内容
+               （列表与正文各自可滚动），故不做 role/tabindex 伪装成可聚焦控件。
+               键盘可调的等效交互登记在后续票（#206 范围外）。 -->
+          <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
           <div class="splitter-v log-splitter" @mousedown="onSplitterDown"></div>
 
           <div class="log-browser__content" :style="{ display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }">

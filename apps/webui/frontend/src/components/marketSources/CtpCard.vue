@@ -249,8 +249,18 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 
 <template>
   <div class="source-card ds-card">
-    <!-- Card Header -->
-    <div class="source-card__header" @click="store.toggleExpand(src.id)">
+    <!-- Card Header: 展开/收起用 role=button + Enter/Space，键盘可达（#206）。
+         不改原生 <button>：头部内含 block 级 div（__info / __meta-row / StatusIndicator），
+         button 的内容模型只允许 phrasing content。 -->
+    <div
+      class="source-card__header"
+      role="button"
+      tabindex="0"
+      :aria-expanded="src.expanded"
+      @click="store.toggleExpand(src.id)"
+      @keydown.enter.prevent="store.toggleExpand(src.id)"
+      @keydown.space.prevent="store.toggleExpand(src.id)"
+    >
       <span class="icon source-card__chevron" :class="{ 'is-expanded': src.expanded }" :style="{ width: '16px', height: '16px', color: 'var(--icon-tertiary)' }" aria-hidden="true">
         <Icon name="arrow-right" :size="16" />
       </span>

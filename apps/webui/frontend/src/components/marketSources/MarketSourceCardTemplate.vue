@@ -33,8 +33,17 @@ const src = computed(() => props.source)
 
 <template>
   <div class="source-card ds-card">
-    <!-- 卡片头：展示名 + 进程状态 + 进度，与 GenericCard/CtpCard 一致（可直接复用） -->
-    <div class="source-card__header" @click="store.toggleExpand(src.id)">
+    <!-- 卡片头：展示名 + 进程状态 + 进度，与 GenericCard/CtpCard 一致（可直接复用）;
+         #206: role=button + Enter/Space 键盘可达 -->
+    <div
+      class="source-card__header"
+      role="button"
+      tabindex="0"
+      :aria-expanded="src.expanded"
+      @click="store.toggleExpand(src.id)"
+      @keydown.enter.prevent="store.toggleExpand(src.id)"
+      @keydown.space.prevent="store.toggleExpand(src.id)"
+    >
       <span class="source-card__chevron" :class="{ 'is-expanded': src.expanded }" aria-hidden="true">›</span>
       <div class="source-card__info">
         <span class="source-card__info-name">{{ src.display_name || src.source_name }}</span>

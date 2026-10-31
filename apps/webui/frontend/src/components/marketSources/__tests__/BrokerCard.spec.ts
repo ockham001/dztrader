@@ -50,10 +50,14 @@ describe('BrokerCard', () => {
     expect(collapsed.text()).toContain('1 个前置')
   })
 
-  it('点击折叠行头部(非 radio 区域)触发 toggle 事件', async () => {
+  it('点击折叠开关(原生 button)触发 toggle 事件; 点击 header 空白处不切换（#206：头部不再是点击区）', async () => {
     const src = sourceWith([brokerA], 'A券商')
     const w = mount(BrokerCard, { props: { source: src, broker: brokerA, expanded: false }, global: { stubs } })
+    // 头部整行不再是交互元素（避免把 radio/删除按钮裹进 disclosure）
     await w.find('.broker-card__header').trigger('click')
+    expect(w.emitted('toggle')).toBeUndefined()
+    // 展开/收起由经纪商名这段原生 button 承担，键盘 Enter/Space 由浏览器合成为 click
+    await w.find('.broker-card__disclosure').trigger('click')
     expect(w.emitted('toggle')).toHaveLength(1)
   })
 

@@ -29,6 +29,7 @@
     "@vue/test-utils": "^2.4.11",
     "eslint": "^9.39.4",
     "eslint-plugin-vue": "^9.33.0",
+    "eslint-plugin-vuejs-accessibility": "^2.6.3",
     "jsdom": "^25.0.1",
     "postcss": "^8.5.17",
     "postcss-html": "^2.0.0",

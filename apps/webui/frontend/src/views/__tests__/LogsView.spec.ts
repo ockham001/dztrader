@@ -74,3 +74,77 @@ describe('LogsView', () => {
     expect(store.browserTab).toBe('analysis')
   })
 })
+// 日志文件列表键盘可达（#206 B3）：列表项原为 div + @click，键盘用户无法查看任何日志
+// （本页没有替代路径），故按 listbox/option 语义 + Enter/Space 选择。
+describe('LogsView 日志文件列表键盘可达（#206）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.spyOn(useLogsStore(), 'loadFiles').mockResolvedValue()
+    vi.spyOn(useLogsStore(), 'refreshFiles').mockResolvedValue()
+    vi.spyOn(useSystemStore(), 'init').mockResolvedValue()
+  })
+
+  function seedFiles() {
+    const store = useLogsStore()
+    store.files = [
+      { name: 'a.log', logger: 'dzweb', size: 1024, mtime: '2026-10-26 15:00:00', path: '/logs/a.log' },
+      { name: 'b.log', logger: 'dzmd_ctp', size: 2048, mtime: '2026-10-26 15:00:00', path: '/logs/b.log' },
+    ]
+    return store
+  }
+
+  it('文件项暴露 listbox/option 语义，选中态经 aria-selected 表达', async () => {
+    const store = seedFiles()
+    const w = mount(LogsView, { global: { stubs: sharedStubs } })
+    await flushPromises()
+
+    const list = w.find('.log-browser__file-list')
+    expect(list.attributes('role')).toBe('listbox')
+
+    const items = w.findAll('.log-browser__file-item')
+    expect(items).toHaveLength(2)
+    for (const item of items) {
+      expect(item.attributes('role')).toBe('option')
+      // 可聚焦是键盘可达的前提：没有 tabindex 的 div 不在 Tab 序列里
+      expect(item.attributes('tabindex')).toBe('0')
+    }
+    // 未选中时两项都是 false（不是缺省属性）
+    expect(items[0].attributes('aria-selected')).toBe('false')
+
+    store.selectedFile = '/logs/b.log'
+    await flushPromises()
+    const after = w.findAll('.log-browser__file-item')
+    expect(after[0].attributes('aria-selected')).toBe('false')
+    expect(after[1].attributes('aria-selected')).toBe('true')
+  })
+
+  it('Enter 与 Space 都能选中文件（键盘等效于点击）', async () => {
+    const store = seedFiles()
+    const selectSpy = vi.spyOn(store, 'selectFile').mockResolvedValue()
+    const w = mount(LogsView, { global: { stubs: sharedStubs } })
+    await flushPromises()
+
+    const first = w.findAll('.log-browser__file-item')[0]
+    await first.trigger('keydown.enter')
+    await flushPromises()
+    // 断言选择真的落到该文件上，而不是只触发了一个事件
+    expect(selectSpy).toHaveBeenCalledWith('/logs/a.log', 'dzweb')
+
+    const second = w.findAll('.log-browser__file-item')[1]
+    await second.trigger('keydown.space')
+    await flushPromises()
+    expect(selectSpy).toHaveBeenCalledWith('/logs/b.log', 'dzmd_ctp')
+    expect(selectSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('鼠标点击仍能选中（原有路径未被键盘改动破坏）', async () => {
+    const store = seedFiles()
+    vi.spyOn(store, 'selectFile').mockResolvedValue()
+    const w = mount(LogsView, { global: { stubs: sharedStubs } })
+    await flushPromises()
+
+    await w.findAll('.log-browser__file-item')[1].trigger('click')
+    await flushPromises()
+    expect(store.selectFile).toHaveBeenCalledWith('/logs/b.log', 'dzmd_ctp')
+  })
+})
