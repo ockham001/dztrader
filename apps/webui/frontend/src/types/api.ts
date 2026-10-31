@@ -29,14 +29,17 @@ export interface LoginResponse {
 }
 
 /**
- * POST /api/login 失败错误体（契约 rest §1/§2.1）。
- * - `error`：机器码本身（invalid_credentials / account_disabled / ip_banned / account_locked），
- *   **无 code 字段**；文案映射见 composables/loginErrors.ts 的 LOGIN_ERROR_TEXT。
+ * POST /api/login 失败错误体（契约 rest §1/§2.1）：
+ * `{"error": <human message>, "code": <snake_case machine code>}`。
+ * - `error`：人类可读消息（全站唯一语义，小写英文），仅作兜底展示。
+ * - `code`：机器码，前端**唯一**分支依据，取值见 composables/loginErrors.ts 的
+ *   LOGIN_ERROR_TEXT（invalid_credentials / account_disabled / ip_banned / account_locked）。
  * - `locked_until`：仅 account_locked / 423 携带，**绝对 Unix 秒级时间戳**（与 User.locked_until 同语义），
  *   剩余分钟须按 locked_until - now 计算，不得解释为剩余秒数。
  */
 export interface LoginError {
   error: string
+  code: string
   locked_until?: number
 }
 

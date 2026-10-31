@@ -58,12 +58,13 @@ describe('LoginView', () => {
     expect(sessionStorage.getItem('last_username')).toBeNull()
   })
 
-  // 契约 rest §1/§2.1：登录失败错误体只有 {"error": <snake_case_code>}（无 code 字段），
-  // 前端必须把机器码映射成中文，任何情况下都不得把 snake_case 原样展示给用户。
+  // 契约 rest §1/§2.1：登录失败错误体为 {"error": <human message>, "code": <machine code>}。
+  // 前端只按 code 分支映射中文，error 仅作兜底消息；任何情况下都不得把 code / 英文 error
+  // 原样展示给用户。
   it('登录失败（invalid_credentials）映射中文且保留 last_username', async () => {
     const auth = useAuthStore()
     vi.spyOn(auth, 'login').mockRejectedValue(
-      new ApiError(401, { error: 'invalid_credentials' }),
+      new ApiError(401, { error: 'invalid credentials', code: 'invalid_credentials' }),
     )
     const w = mount(LoginView)
     await w.find('input#username').setValue('alice')
@@ -73,16 +74,17 @@ describe('LoginView', () => {
     expect(pushMock).not.toHaveBeenCalled()
     expect(w.text()).toContain('用户名或密码错误')
     expect(w.text()).not.toContain('invalid_credentials')
+    expect(w.text()).not.toContain('invalid credentials')
     expect(sessionStorage.getItem('last_username')).toBe('alice')
   })
 
-  it('account_disabled / ip_banned 映射中文且不展示机器码', async () => {
-    for (const [code, text] of [
-      ['account_disabled', '账户已禁用'],
-      ['ip_banned', 'IP 已被封禁'],
+  it('account_disabled / ip_banned 按 code 映射中文且不展示机器码', async () => {
+    for (const [code, message, text] of [
+      ['account_disabled', 'account disabled', '账户已禁用'],
+      ['ip_banned', 'ip banned', 'IP 已被封禁'],
     ] as const) {
       const auth = useAuthStore()
-      vi.spyOn(auth, 'login').mockRejectedValue(new ApiError(401, { error: code }))
+      vi.spyOn(auth, 'login').mockRejectedValue(new ApiError(401, { error: message, code }))
       const w = mount(LoginView)
       await w.find('input#username').setValue('alice')
       await w.find('input#password').setValue('pw')
@@ -97,7 +99,7 @@ describe('LoginView', () => {
     const auth = useAuthStore()
     const lockedUntil = Math.floor(Date.now() / 1000) + 300
     vi.spyOn(auth, 'login').mockRejectedValue(
-      new ApiError(423, { error: 'account_locked', locked_until: lockedUntil }),
+      new ApiError(423, { error: 'account locked', code: 'account_locked', locked_until: lockedUntil }),
     )
     const w = mount(LoginView)
     await w.find('input#username').setValue('bob')
@@ -114,7 +116,11 @@ describe('LoginView', () => {
   it('锁定已过期（locked_until 为过去时刻）只显示文案，不显示剩余分钟', async () => {
     const auth = useAuthStore()
     vi.spyOn(auth, 'login').mockRejectedValue(
-      new ApiError(423, { error: 'account_locked', locked_until: Math.floor(Date.now() / 1000) - 60 }),
+      new ApiError(423, {
+        error: 'account locked',
+        code: 'account_locked',
+        locked_until: Math.floor(Date.now() / 1000) - 60,
+      }),
     )
     const w = mount(LoginView)
     await w.find('input#username').setValue('bob')
@@ -125,10 +131,10 @@ describe('LoginView', () => {
     expect(w.text()).not.toContain('剩余')
   })
 
-  it('未知机器码统一「登录失败」，不回显 snake_case', async () => {
+  it('未知 code 统一「登录失败」，不回显 code 或英文 error 消息', async () => {
     const auth = useAuthStore()
     vi.spyOn(auth, 'login').mockRejectedValue(
-      new ApiError(401, { error: 'unexpected_error_code' }),
+      new ApiError(401, { error: 'some unexpected failure', code: 'unexpected_error_code' }),
     )
     const w = mount(LoginView)
     await w.find('input#username').setValue('alice')
@@ -137,9 +143,22 @@ describe('LoginView', () => {
     await flushPromises()
     expect(w.text()).toContain('登录失败')
     expect(w.text()).not.toContain('unexpected_error_code')
+    expect(w.text()).not.toContain('some unexpected failure')
   })
 
-  it('非对象错误体（如网关纯文本）回退 e.message', async () => {
+  it('缺 code 的 400（bad request）按通用失败文案，不回显 error 文本', async () => {
+    const auth = useAuthStore()
+    vi.spyOn(auth, 'login').mockRejectedValue(new ApiError(400, { error: 'bad request' }))
+    const w = mount(LoginView)
+    await w.find('input#username').setValue('alice')
+    await w.find('input#password').setValue('pw')
+    await w.find('form').trigger('submit')
+    await flushPromises()
+    expect(w.text()).toContain('登录失败')
+    expect(w.text()).not.toContain('bad request')
+  })
+
+  it('非对象错误体（如网关纯文本）按通用失败提示，5xx 用警告样式', async () => {
     const auth = useAuthStore()
     vi.spyOn(auth, 'login').mockRejectedValue(new ApiError(502, null))
     const w = mount(LoginView)
@@ -147,8 +166,9 @@ describe('LoginView', () => {
     await w.find('input#password').setValue('pw')
     await w.find('form').trigger('submit')
     await flushPromises()
-    // ApiError.message 在 body 为空时回落 "HTTP 502"
-    expect(w.text()).toContain('HTTP 502')
+    // 契约 rest §1：无 code 的错误体按通用失败处理，不展示原始 HTTP/英文消息
+    expect(w.text()).toContain('登录失败')
+    expect(w.html()).toContain('status-warning-surface-l1')
   })
 
   it('网络错误显示网络错误提示', async () => {

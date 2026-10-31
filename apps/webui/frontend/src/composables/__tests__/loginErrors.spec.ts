@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { LOGIN_ERROR_TEXT, loginErrorText, lockedRemainingMinutes } from '../loginErrors'
 
-// 契约来源：契约 rest §1/§2.1 —— 登录失败错误体 {"error": <code>}（无 code 字段）；
+// 契约来源：契约 rest §1/§2.1 —— 登录失败错误体为
+// {"error": <human message>, "code": <snake_case machine code>}；前端只按 code 分支，
 // 423 account_locked 附 locked_until（绝对 Unix 秒级时间戳，按 locked_until - now 计算剩余分钟）。
 describe('loginErrors', () => {
   it('四个机器码映射为中文文案（契约 rest §2.1）', () => {
@@ -13,14 +14,14 @@ describe('loginErrors', () => {
     })
   })
 
-  it('loginErrorText: 已知码返回中文文案', () => {
+  it('loginErrorText: 已知 code 返回中文文案', () => {
     expect(loginErrorText('invalid_credentials')).toBe('用户名或密码错误')
     expect(loginErrorText('account_disabled')).toBe('账户已禁用')
     expect(loginErrorText('account_locked')).toBe('账户已锁定')
     expect(loginErrorText('ip_banned')).toBe('IP 已被封禁')
   })
 
-  it('loginErrorText: 未知/非法码统一《登录失败》，不得回显 snake_case', () => {
+  it('loginErrorText: 未知/非法 code 统一《登录失败》，不得回显 snake_case', () => {
     expect(loginErrorText('network_error')).toBe('登录失败')
     expect(loginErrorText('some_unknown_code')).toBe('登录失败')
     expect(loginErrorText(undefined)).toBe('登录失败')

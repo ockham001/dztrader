@@ -23,13 +23,15 @@ describe('api client 401 处理', () => {
   it('登录接口 401 不清会话，并把响应体原样交给调用方', async () => {
     localStorage.setItem('jwt_token', 'token-1')
     localStorage.setItem('user_info', '{"username":"admin"}')
-    stub401({ error: 'invalid_credentials' })
+    const loginError = { error: 'invalid credentials', code: 'invalid_credentials' }
+    stub401(loginError)
 
     const error = await api.post('/api/login', { username: 'admin', password: 'bad' })
       .catch((e: unknown) => e)
 
     expect(error).toBeInstanceOf(ApiError)
-    expect((error as ApiError).body).toEqual({ error: 'invalid_credentials' })
+    // 契约 rest §1/§2.1: 登录错误体原样透传给调用方（error 消息 + code 机器码）
+    expect((error as ApiError).body).toEqual(loginError)
     expect(localStorage.getItem('jwt_token')).toBe('token-1')
     expect(localStorage.getItem('user_info')).toBe('{"username":"admin"}')
   })
