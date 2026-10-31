@@ -20,9 +20,13 @@ CMake 的默认发现超时只有 5 秒（`Modules/GoogleTest.cmake`：
   R3 `DZ_GTEST_DISCOVERY_TIMEOUT` 默认值必须 ≥ 30 秒（#227 两次 red 的实测结论；
      改小等于把已知的 flaky 重新引入）
 
-刻意不校验的东西：
-  - 不解析 CMake 语义（不做变量展开），只看调用点字面形态 —— CMake 是配置期语言，
-    过度解析的检查器本身会成为维护负担；三条规则覆盖的正是真实失败形态
+刻意不校验的东西（已知边界，均有意的，不是漏洞）：
+  - 不做 CMake 变量展开：`set(F gtest_discover_tests)` 再用变量名调用的间接形态查不到
+  - token 与 `(` 分处两行、或宏内把超时写死成 `DISCOVERY_TIMEOUT 5`（不是读默认值）不报
+  - 同一条语句内出现多次调用只按「语句包含 token」计一次；因为 R2 只要求语句里
+    出现 DISCOVERY_TIMEOUT，多调用叠加时仍会逐个通过各自的参数检查
+  这些边界都是「不解析 CMake 语义」的代价与有意取舍：CMake 是配置期语言，过度解析的
+  检查器本身会成为维护负担；三条规则覆盖的正是 #227 的真实失败形态
 
 用法:
   python scripts/check_gtest_discovery_timeout.py                # 扫本仓 tracked CMake 文件
@@ -86,15 +90,36 @@ def code_lines(text: str) -> list[str]:
     return [strip_comment(line) for line in text.splitlines()]
 
 
-def is_call_site(line: str, token: str) -> bool:
-    """该行是不是一次**调用**（而不是把名字写在字符串/帮助文本里）。
+def strip_string_literals(line: str) -> str:
+    """把双引号字符串的内容清空（保留引号），用于区分「调用」与「文案里的名字」。
 
-    CMake 里 `CACHE STRING` 的帮助文本、`message()` 文案都可能出现这个标识符；
+    CMake 里 `CACHE STRING` 的帮助文本、`message()` 文案都可能出现标识符；
     只看「行内含 token」会把这些字面量当成调用点，进而误报「漏了超时参数」
     （实测：宏自己的 CACHE 帮助文本就让本检查器在冻结树上自红）。
-    调用点按 CMake 语法必然出现在语句起始位置，故要求 token 前只有空白。
     """
-    return re.match(rf"^\s*{re.escape(token)}\s*\(", line) is not None
+    out = []
+    in_quotes = False
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if ch == '"':
+            out.append(ch)
+            in_quotes = not in_quotes
+        elif not in_quotes:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def is_call_site(line: str, token: str) -> bool:
+    """该行是否出现一次**调用** `token(...)`（不在注释里、不在字符串字面量里）。
+
+    判据是「去掉注释与字符串后，token 以标识符形式后接 `(`」。这比「行首即 token」
+    更宽松（同一行前面可以写 `if(WIN32)` 之类的语句，CMake 允许紧凑写法），
+    又不会像纯子串匹配那样把帮助文本误报成调用点。
+    """
+    code = strip_string_literals(strip_comment(line))
+    return re.search(rf"(?<![\w-]){re.escape(token)}\s*\(", code) is not None
 
 
 def statements_containing(lines: list[str], token: str) -> list[str]:
@@ -253,6 +278,21 @@ def selftest() -> int:
         ("libs/x/CMakeLists.txt",
          "# 说明文本里提到 gtest_discover_tests(...) 不算直接调用\n"
          "dz_add_test(t SOURCES a.cpp LABELS fast)\n", False),
+        # 字符串字面量里出现带括号的完整调用形态：仅靠「token 后接 (」会误报，
+        # 必须先去字符串再判定（CACHE 帮助文本/告警文案会这么写）。
+        (MODULE_REL,
+         "set(DZ_GTEST_DISCOVERY_TIMEOUT 30 CACHE STRING\n"
+         "    \"passed to gtest_discover_tests(target) by dz_add_test\")\n"
+         "function(dz_add_test target)\n"
+         "  gtest_discover_tests(${target} PROPERTIES LABELS fast"
+         " DISCOVERY_TIMEOUT ${DZ_GTEST_DISCOVERY_TIMEOUT})\n"
+         "endfunction()\n", False),
+        # 紧凑写法：调用前同一行还有别的语句。早期用「行首即 token」判定会漏掉它
+        # （复审实测暴露），故判据改为「去注释/去字符串后以标识符形式后接 (」。
+        ("libs/x/CMakeLists.txt",
+         "if(WIN32)\n  gtest_discover_tests(t PROPERTIES LABELS fast)\nendif()\n", True),
+        ("libs/x/CMakeLists.txt",
+         "if(WIN32) gtest_discover_tests(t PROPERTIES LABELS fast) endif()\n", True),
     ]
 
     with tempfile.TemporaryDirectory() as tmp:
