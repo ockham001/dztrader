@@ -30,8 +30,8 @@ export const useAuthStore = defineStore('auth', () => {
     } catch (e: unknown) {
       if (e instanceof ApiError) {
         // 契约 rest §1/§2.1：错误体 code 是机器码、error 是人类可读英文消息。
-        // store.error 一旦上屏就必须是中文，故与登录页共用 loginErrorText 按 code 映射
-        // （缺 code 的 400 等通用失败回落「登录失败」），绝不回显英文 error。
+        // 本分支按 code 映射中文（与登录页共用 loginErrorText 单一真相源，
+        // 缺 code 的 400 等通用失败回落「登录失败」），不回显英文 error。
         error.value = loginErrorText(e.body?.code)
       } else if (e instanceof Error) {
         error.value = e.message
