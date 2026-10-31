@@ -2,7 +2,8 @@
 // 关闭后把焦点还原到打开它的触发元素（#206 A）。
 //
 // 为什么不自引第三方 focus-trap：本仓只有 Modal 与 App.vue 通知弹窗两处需要，
-// 共用不到 120 行，且两处调用方对「打开时聚焦哪里」的需求已由 slot 内容决定。
+// 且两处调用方对「打开时聚焦哪里」的需求已由 slot 内容决定，接入完整库的
+// 依赖与配置成本高于这套实现（约 140 行，含注释）。
 import { nextTick, onUnmounted, watch, type Ref } from 'vue'
 
 // 可聚焦候选：覆盖常见 Tab 序列成员。**不等于**浏览器的完整 Tab 算法——
@@ -51,6 +52,13 @@ export interface FocusTrapOptions {
 export interface FocusTrapHandle {
   /** 手动把焦点移入容器（打开后由 watch 自动调用；测试可直接调用） */
   focusInitial: () => void
+  /**
+   * 本陷阱是否为当前最上层（最后打开的）对话框。
+   *
+   * 供调用方给 Esc 等「一次只该关一层」的快捷键做作用域判断：多个模态同时打开时，
+   * 若每个实例都无条件响应 Esc，按一次会同时关掉多层，键盘用户无法预期。
+   */
+  isTopmost: () => boolean
 }
 
 /**
@@ -136,5 +144,9 @@ export function useFocusTrap(options: FocusTrapOptions): FocusTrapHandle {
     document.removeEventListener('keydown', trapTab, true)
   })
 
-  return { focusInitial }
+  function isTopmost(): boolean {
+    return activeTraps[activeTraps.length - 1] === token
+  }
+
+  return { focusInitial, isTopmost }
 }

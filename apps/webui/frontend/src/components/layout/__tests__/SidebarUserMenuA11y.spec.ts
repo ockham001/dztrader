@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import Sidebar from '../Sidebar.vue'
@@ -207,21 +208,47 @@ describe('Sidebar 用户菜单键盘可达（#206）', () => {
     outside.remove()
   })
 
-  // 回归点：先开改密弹窗再关它，焦点不能掉到 body。
+  // 回归点：先开改密弹窗再关它，焦点必须回到用户菜单触发按钮（不是 body）。
   // 若 openChangePassword 没有先把焦点移回触发按钮，焦点陷阱记录到的还原目标
-  // 是即将被 v-if 移除的菜单项，isConnected 保护会跳过还原 → document.activeElement 变 body。
-  it('从菜单打开改密弹窗后，焦点还原目标是触发按钮而不是 body', async () => {
-    wrapper = await mountSidebar()
-    await openMenu(wrapper)
-
-    const item = menuItem(wrapper, '修改密码')
-    ;(item.element as HTMLElement).focus()
-    // 原生 button 的键盘激活：keydown → UA click
-    await item.trigger('click')
+  // 是即将被 v-if 移除的菜单项，isConnected 保护会跳过还原 → 焦点掉到 body。
+  //
+  // 这条用例**不能** stub Modal/ChangePasswordModal：stub 后焦点陷阱根本不运行，
+  // 「还原目标是谁」就无从断言（写 not.toBe(body) 是恒真的假绿）。
+  it('从菜单打开改密弹窗后关闭，焦点还原到用户菜单触发按钮', async () => {
+    const auth = useAuthStore()
+    auth.user = {
+      id: 1, username: 'admin', display_name: 'Admin', email: 'a@x.com',
+      role: 'admin', status: 'online', created_at: '2026-08-01',
+    }
+    // 只 stub 图标，保留真实 Modal（焦点陷阱）与真实 ChangePasswordModal
+    const real = mount(Sidebar, {
+      props: { collapsed: false, mobileOpen: false, isMobile: false },
+      global: { stubs: { Icon: { props: ['name', 'size'], template: '<span class="icon" />' }, RouterLink: { template: '<a><slot /></a>' } } },
+      attachTo: document.body,
+    })
+    wrapper = real
     await flushPromises()
 
-    // 弹窗打开时焦点应已移入弹窗内容（此处 stub 无焦点元素，故只断言不是 body）
-    expect(document.activeElement).not.toBe(document.body)
-    expect(wrapper.find('[data-test="change-pwd-stub"]').exists()).toBe(true)
+    await openMenu(real)
+    const item = menuItem(real, '修改密码')
+    ;(item.element as HTMLElement).focus()
+    await item.trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    // 前置：焦点确实进了弹窗（否则下面的还原断言无意义）
+    const dialog = real.find('[role="dialog"]')
+    expect(dialog.exists()).toBe(true)
+    expect(dialog.element.contains(document.activeElement)).toBe(true)
+
+    // 关闭弹窗：点关闭按钮
+    await real.find('.ds-dialog__close').trigger('click')
+    await flushPromises()
+    await nextTick()
+    await nextTick()
+
+    expect(real.find('[role="dialog"]').exists()).toBe(false)
+    // 关键断言：必须精确落在触发按钮，而不是只「不是 body」
+    expect(document.activeElement).toBe(real.find('.user-section-btn').element)
   })
 })

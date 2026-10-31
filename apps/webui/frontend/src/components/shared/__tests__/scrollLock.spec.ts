@@ -7,6 +7,7 @@ import { defineComponent, h, ref } from 'vue'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import Modal from '../Modal.vue'
+import { activeScrollLockCount } from '@/composables/useScrollLock'
 
 const stubs = { Icon: { props: ['name', 'size'], template: '<span class="icon" />' } }
 
@@ -30,6 +31,9 @@ let wrapper: VueWrapper | null = null
 afterEach(() => {
   wrapper?.unmount()
   wrapper = null
+  // 计数器是模块级单例：本用例若中途失败会留下未释放的锁，让后续用例级联误判。
+  // 先断言没有泄漏，再手动把 DOM 复原，避免一条失败演变成整组红。
+  expect(activeScrollLockCount(), '用例结束时仍有未释放的滚动锁').toBe(0)
   document.body.style.overflow = ''
 })
 
@@ -92,5 +96,41 @@ describe('body 滚动锁引用计数（#206）', () => {
     vm.a = false
     await nextTick()
     expect(document.body.style.overflow).toBe('scroll')
+  })
+})
+
+// 嵌套/并存对话框的 Esc 作用域（#206）：一次 Esc 只关最上层。
+// 若每层各自无条件响应，按一次会同时关掉多层，键盘用户无法预期。
+// 复用上面的 Host 宿主（两个开关控制两个 Modal），避免在一个文件里定义第二个组件。
+describe('多个对话框并存时的 Esc 作用域（#206）', () => {
+  it('一次 Esc 只关闭最上层对话框', async () => {
+    // Host 的 onClose 只改自己的开关，故直接观察「哪一层还在渲染」
+    const w = mount(Host, { global: { stubs }, attachTo: document.body })
+    wrapper = w
+    const vm = w.vm as unknown as { a: boolean; b: boolean }
+
+    vm.a = true
+    await nextTick()
+    vm.b = true
+    await nextTick()
+    expect(w.findAll('[role="dialog"]')).toHaveLength(2)
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await nextTick()
+
+    // 只关最后打开的 B：A 的对话框仍在
+    expect(vm.a).toBe(true)
+    expect(vm.b).toBe(false)
+    const remaining = w.findAll('[role="dialog"]')
+    expect(remaining).toHaveLength(1)
+    // 剩下的是 A（标题已与面板关联，读得到名字）
+    expect(w.find('[role="dialog"]').attributes('aria-labelledby')).toBeTruthy()
+    expect(w.text()).toContain('A')
+
+    // 再按一次 Esc 才关 A
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(vm.a).toBe(false)
+    expect(w.findAll('[role="dialog"]')).toHaveLength(0)
   })
 })

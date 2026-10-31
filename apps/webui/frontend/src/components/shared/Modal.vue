@@ -17,12 +17,6 @@ const emit = defineEmits<{
 const titleId = useId()
 const dialogEl = ref<HTMLElement | null>(null)
 
-function handleKeydown(e: KeyboardEvent): void {
-  if (e.key === 'Escape' && props.open) {
-    emit('close')
-  }
-}
-
 function handleOverlayClick(e: MouseEvent): void {
   if (e.target === e.currentTarget) {
     emit('close')
@@ -30,11 +24,19 @@ function handleOverlayClick(e: MouseEvent): void {
 }
 
 // 焦点管理（#206 A）：打开时焦点移入对话框、Tab / Shift+Tab 在框内循环、关闭还原到触发元素
-useFocusTrap({ active: computed(() => props.open), container: dialogEl })
+const trap = useFocusTrap({ active: computed(() => props.open), container: dialogEl })
 
 // body overflow 锁定：打开时禁背景滚动，关闭还原（原有行为，勿改坏）。
 // 走引用计数（useScrollLock）：同时打开多个模态时，先关闭的那个不能解掉后关闭者的锁。
 useScrollLock(computed(() => props.open))
+
+// Esc 只由最上层对话框响应：多个模态同时打开时，若每层都关，
+// 按一次会同时关掉多层，键盘用户无法预期。
+function handleKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Escape' || !props.open) return
+  if (!trap.isTopmost()) return
+  emit('close')
+}
 
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)

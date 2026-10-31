@@ -59,3 +59,13 @@ export function useScrollLock(active: Ref<boolean>): void {
     }
   })
 }
+
+/**
+ * 当前持有锁的实例数。仅供测试断言「用例结束后没有泄漏的锁」。
+ *
+ * 计数器是模块级单例：某条用例中途失败会留下脏状态，让后续用例级联误判成
+ * 「引用计数坏了」。用它把泄漏变成一条明确的失败，而不是一串看不懂的连环红。
+ */
+export function activeScrollLockCount(): number {
+  return lockCount
+}

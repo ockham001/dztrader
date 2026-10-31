@@ -38,7 +38,10 @@ async function handleSelectFile(path: string, logger: string): Promise<void> {
 // （tabindex=0），组内移动交给方向键，当前项由 aria-activedescendant 指示。
 // 这样整个列表在 Tab 序列里只占一格——若每个 option 各带 tabindex，
 // Tab 要按 N 次才穿过列表，且与「一个 listbox 是一个复合控件」的语义冲突。
-const fileListEl = ref<HTMLElement | null>(null)
+//
+// 键盘事件全部挂在**容器**上：option 已退出 Tab 序列（tabindex=-1），
+// 键盘用户的焦点永远在容器，挂在 option 上的 keydown 是不可达的死路径。
+// 因此 Enter/Space 也由容器处理——选中当前 activedescendant 项。
 
 /** 列表项 DOM id：必须全局唯一且稳定（同一路径重复渲染时按 index 兜底） */
 function fileOptionId(index: number): string {
@@ -51,7 +54,13 @@ const activeFileIndex = computed(() => {
   return idx >= 0 ? idx : 0
 })
 
-/** 方向键 / Home / End 在 option 之间移动（移动即选中，符合单选 listbox 习惯） */
+/** 选中当前 activedescendant 项（Enter/Space 的等效动作） */
+async function selectActiveFile(): Promise<void> {
+  const file = store.files[activeFileIndex.value]
+  if (file) await handleSelectFile(file.path, file.logger)
+}
+
+/** 方向键 / Home / End 移动当前项；Enter / Space 选中（单选 listbox 即移动即选中） */
 async function onFileListKeydown(e: KeyboardEvent): Promise<void> {
   const total = store.files.length
   if (total === 0) return
@@ -62,6 +71,11 @@ async function onFileListKeydown(e: KeyboardEvent): Promise<void> {
     case 'ArrowUp': next = Math.max(0, current - 1); break
     case 'Home': next = 0; break
     case 'End': next = total - 1; break
+    case 'Enter':
+    case ' ':
+      e.preventDefault()
+      await selectActiveFile()
+      return
     default: return
   }
   e.preventDefault()
@@ -203,7 +217,6 @@ onUnmounted(() => {
               />
             </div>
             <div
-              ref="fileListEl"
               class="log-browser__file-list"
               role="listbox"
               aria-label="日志文件"
@@ -211,6 +224,10 @@ onUnmounted(() => {
               :aria-activedescendant="store.files.length > 0 ? fileOptionId(activeFileIndex) : undefined"
               @keydown="onFileListKeydown"
             >
+              <!-- 点击是鼠标便利路径；键盘等效路径全部在容器上（role=listbox 的
+                   @keydown：方向键移动 + Enter/Space 选中），option 自身退出 Tab 序列
+                   故不该有自己的 keydown（挂了也是不可达的死路径）。 -->
+              <!-- eslint-disable-next-line vuejs-accessibility/click-events-have-key-events -- option 的键盘路径由 listbox 容器统一处理 -->
               <div
                 v-for="(f, index) in store.files"
                 :id="fileOptionId(index)"
@@ -221,8 +238,6 @@ onUnmounted(() => {
                 tabindex="-1"
                 :aria-selected="f.path === store.selectedFile"
                 @click="handleSelectFile(f.path, f.logger)"
-                @keydown.enter.prevent="handleSelectFile(f.path, f.logger)"
-                @keydown.space.prevent="handleSelectFile(f.path, f.logger)"
               >
                 <div class="log-browser__file-name">
                   {{ f.name }}
