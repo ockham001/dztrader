@@ -88,7 +88,6 @@ function onBrokerFieldBlur(
         :class="{ 'is-pending': src.brokerSelectPending }"
         :style="{ minHeight: 'auto' }"
         :title="!isStateIdle(src.process_state, src.loginState) ? '需在未登录状态下操作' : ''"
-        @click.stop
       >
         <input
           type="radio"
@@ -114,7 +113,7 @@ function onBrokerFieldBlur(
         class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--danger-subtle"
         type="button"
         :disabled="!isStateIdle(src.process_state, src.loginState) || src.brokerRemovePending"
-        @click.stop="openBrokerDeleteModal(src.id, broker.name)"
+        @click="openBrokerDeleteModal(src.id, broker.name)"
       >
         {{ src.brokerRemovePending ? '删除中…' : '删除经纪商' }}
       </button>

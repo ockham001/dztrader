@@ -2,16 +2,23 @@
 // 关闭后把焦点还原到打开它的触发元素（#206 A）。
 //
 // 为什么不自引第三方 focus-trap：本仓只有 Modal 与 App.vue 通知弹窗两处需要，
-// 共用不到 100 行；此前「Esc 关闭 + body 锁定」已在两处各写一套并漂移过。
+// 共用不到 120 行，且两处调用方对「打开时聚焦哪里」的需求已由 slot 内容决定。
 import { nextTick, onUnmounted, watch, type Ref } from 'vue'
 
-// 可聚焦候选：与浏览器 Tab 序列口径一致（排除 disabled / 负 tabindex）
+// 可聚焦候选：覆盖常见 Tab 序列成员。**不等于**浏览器的完整 Tab 算法——
+// 浏览器还会按视觉顺序跳过 hidden/不可见元素，这里由 isVisible() 兜住显隐，
+// 但不处理 flex/grid 视觉重排；用作「首尾循环锚点」足够，不追求逐点等价。
 const FOCUSABLE_SELECTOR = [
   'a[href]',
   'button:not([disabled])',
-  'input:not([disabled])',
+  // type=hidden 的 input 不可聚焦，若被当成首/尾锚点会让 Tab 循环断在这里
+  'input:not([disabled]):not([type="hidden"])',
   'select:not([disabled])',
   'textarea:not([disabled])',
+  '[contenteditable]:not([contenteditable="false"])',
+  'audio[controls]',
+  'video[controls]',
+  'summary',
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 

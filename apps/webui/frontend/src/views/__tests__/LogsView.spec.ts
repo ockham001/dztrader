@@ -100,14 +100,23 @@ describe('LogsView 日志文件列表键盘可达（#206）', () => {
 
     const list = w.find('.log-browser__file-list')
     expect(list.attributes('role')).toBe('listbox')
+    // 单一 tab 停靠点在容器上（APG 单选 listbox）：整组在 Tab 序列里只占一格
+    expect(list.attributes('tabindex')).toBe('0')
+    expect(list.attributes('aria-label')).toBe('日志文件')
+    // 当前项经 aria-activedescendant 指到具体的 option id
+    const activeId = list.attributes('aria-activedescendant')
+    expect(activeId).toBeTruthy()
 
     const items = w.findAll('.log-browser__file-item')
     expect(items).toHaveLength(2)
     for (const item of items) {
       expect(item.attributes('role')).toBe('option')
-      // 可聚焦是键盘可达的前提：没有 tabindex 的 div 不在 Tab 序列里
-      expect(item.attributes('tabindex')).toBe('0')
+      // option 由 activedescendant 指示，自身不进 Tab 序列（-1 仍可被脚本聚焦）
+      expect(item.attributes('tabindex')).toBe('-1')
+      expect(item.attributes('id')).toBeTruthy()
     }
+    expect(items[0].attributes('id')).toBe(activeId)
+
     // 未选中时两项都是 false（不是缺省属性）
     expect(items[0].attributes('aria-selected')).toBe('false')
 
@@ -116,22 +125,54 @@ describe('LogsView 日志文件列表键盘可达（#206）', () => {
     const after = w.findAll('.log-browser__file-item')
     expect(after[0].attributes('aria-selected')).toBe('false')
     expect(after[1].attributes('aria-selected')).toBe('true')
+    // activedescendant 跟随选中项
+    expect(w.find('.log-browser__file-list').attributes('aria-activedescendant')).toBe(after[1].attributes('id'))
   })
 
-  it('Enter 与 Space 都能选中文件（键盘等效于点击）', async () => {
+  it('方向键在文件项之间移动并选中（listbox 键盘语义）', async () => {
+    const store = seedFiles()
+    const selectSpy = vi.spyOn(store, 'selectFile').mockImplementation(async (path, logger) => {
+      store.selectedFile = path
+      store.selectedLogger = logger
+    })
+    const w = mount(LogsView, { global: { stubs: sharedStubs } })
+    await flushPromises()
+
+    const list = w.find('.log-browser__file-list')
+    // 初始无选中 → activedescendant 落在首项；ArrowDown 选第二项
+    await list.trigger('keydown', { key: 'ArrowDown' })
+    await flushPromises()
+    expect(selectSpy).toHaveBeenLastCalledWith('/logs/b.log', 'dzmd_ctp')
+
+    // 已在末项，再 ArrowDown 不越界（仍停在末项）
+    await list.trigger('keydown', { key: 'ArrowDown' })
+    await flushPromises()
+    expect(selectSpy).toHaveBeenCalledTimes(2)
+
+    // Home 回到首项
+    await list.trigger('keydown', { key: 'Home' })
+    await flushPromises()
+    expect(selectSpy).toHaveBeenLastCalledWith('/logs/a.log', 'dzweb')
+    expect(store.selectedFile).toBe('/logs/a.log')
+
+    // End 到末项
+    await list.trigger('keydown', { key: 'End' })
+    await flushPromises()
+    expect(store.selectedFile).toBe('/logs/b.log')
+  })
+
+  it('Enter 与 Space 也能选中文件（option 上的键盘等效路径）', async () => {
     const store = seedFiles()
     const selectSpy = vi.spyOn(store, 'selectFile').mockResolvedValue()
     const w = mount(LogsView, { global: { stubs: sharedStubs } })
     await flushPromises()
 
-    const first = w.findAll('.log-browser__file-item')[0]
-    await first.trigger('keydown.enter')
+    await w.findAll('.log-browser__file-item')[0].trigger('keydown.enter')
     await flushPromises()
     // 断言选择真的落到该文件上，而不是只触发了一个事件
     expect(selectSpy).toHaveBeenCalledWith('/logs/a.log', 'dzweb')
 
-    const second = w.findAll('.log-browser__file-item')[1]
-    await second.trigger('keydown.space')
+    await w.findAll('.log-browser__file-item')[1].trigger('keydown.space')
     await flushPromises()
     expect(selectSpy).toHaveBeenCalledWith('/logs/b.log', 'dzmd_ctp')
     expect(selectSpy).toHaveBeenCalledTimes(2)

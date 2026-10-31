@@ -58,9 +58,8 @@ export default tsPlugin.config(
       // 故意保留空 catch（前端多处吞异常容忍乱码不崩溃，见项目约定）
       'no-empty': 'off',
       // --- 无障碍存量豁免（#206 决策：先关，存量修完再打开）---
-      // 表单控件与 <label> 的关联（label-has-for / form-control-has-label）共 97 条存量，
-      // 分布在 CtpCard / SettingsView / UserManagementView / SysmonConfigTab /
-      // ChangePasswordModal 等 16 个文件，属"label↔input 关联"另一类问题（与键盘可达正交）。
+      // 表单控件与 <label> 的关联（label-has-for 58 条 + form-control-has-label 39 条 = 97 条，
+      // 分布在 14 个 .vue 文件）属"label↔input 关联"另一类问题，与键盘可达正交。
       // #206 只修键盘可达与对话框语义；这两条在此显式关闭，清单与口径见 #233，
       // **#233 修完后必须把这两行改回 'error'**（否则该票无法验收）。
       'vuejs-accessibility/label-has-for': 'off',

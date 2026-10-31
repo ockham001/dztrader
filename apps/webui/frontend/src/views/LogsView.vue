@@ -33,6 +33,42 @@ async function handleSelectFile(path: string, logger: string): Promise<void> {
   await store.selectFile(path, logger)
 }
 
+// ── 日志文件列表键盘导航（#206 B3）──────────────────────────────────────────
+// 采用 ARIA Listbox 模式（APG 单选 listbox）：容器本身是唯一的 Tab 停靠点
+// （tabindex=0），组内移动交给方向键，当前项由 aria-activedescendant 指示。
+// 这样整个列表在 Tab 序列里只占一格——若每个 option 各带 tabindex，
+// Tab 要按 N 次才穿过列表，且与「一个 listbox 是一个复合控件」的语义冲突。
+const fileListEl = ref<HTMLElement | null>(null)
+
+/** 列表项 DOM id：必须全局唯一且稳定（同一路径重复渲染时按 index 兜底） */
+function fileOptionId(index: number): string {
+  return `log-file-option-${index}`
+}
+
+/** 键盘导航的当前项索引：优先已选中文件，否则首个 */
+const activeFileIndex = computed(() => {
+  const idx = store.files.findIndex(f => f.path === store.selectedFile)
+  return idx >= 0 ? idx : 0
+})
+
+/** 方向键 / Home / End 在 option 之间移动（移动即选中，符合单选 listbox 习惯） */
+async function onFileListKeydown(e: KeyboardEvent): Promise<void> {
+  const total = store.files.length
+  if (total === 0) return
+  const current = activeFileIndex.value
+  let next = current
+  switch (e.key) {
+    case 'ArrowDown': next = Math.min(total - 1, current + 1); break
+    case 'ArrowUp': next = Math.max(0, current - 1); break
+    case 'Home': next = 0; break
+    case 'End': next = total - 1; break
+    default: return
+  }
+  e.preventDefault()
+  const file = store.files[next]
+  if (file) await handleSelectFile(file.path, file.logger)
+}
+
 async function handleLoggerFilterChange(value: string | number): Promise<void> {
   store.fileLoggerFilter = String(value)
   await store.loadFiles(true)
@@ -166,14 +202,23 @@ onUnmounted(() => {
                 @update:model-value="handleDateFilterChange"
               />
             </div>
-            <div class="log-browser__file-list" role="listbox" aria-label="日志文件">
+            <div
+              ref="fileListEl"
+              class="log-browser__file-list"
+              role="listbox"
+              aria-label="日志文件"
+              tabindex="0"
+              :aria-activedescendant="store.files.length > 0 ? fileOptionId(activeFileIndex) : undefined"
+              @keydown="onFileListKeydown"
+            >
               <div
-                v-for="f in store.files"
+                v-for="(f, index) in store.files"
+                :id="fileOptionId(index)"
                 :key="f.path"
                 class="log-browser__file-item"
                 :class="{ 'is-selected': f.path === store.selectedFile }"
                 role="option"
-                tabindex="0"
+                tabindex="-1"
                 :aria-selected="f.path === store.selectedFile"
                 @click="handleSelectFile(f.path, f.logger)"
                 @keydown.enter.prevent="handleSelectFile(f.path, f.logger)"

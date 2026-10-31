@@ -9,6 +9,7 @@ import { useNotifyStore } from '@/stores/notify'
 import { useWebSocket } from '@/composables/wsClient'
 import { useToastStore } from '@/stores/toast'
 import { useFocusTrap } from '@/composables/useFocusTrap'
+import { useScrollLock } from '@/composables/useScrollLock'
 import { authApi } from '@/api/auth'
 import ChangePasswordModal from '@/components/shared/ChangePasswordModal.vue'
 import Icon from '@/components/shared/Icon.vue'
@@ -58,9 +59,11 @@ async function ackDefaultPassword() {
 // notify 弹窗与共享 Modal 统一焦点口径（#206 A）：打开时焦点移入、框内 Tab 循环、
 // 关闭后还原到打开前的元素。语义仍是 alertdialog（比 Modal 多一层"打断用户"要求，
 // 故不直接复用 Modal 组件——那会丢掉 alertdialog 角色与既有样式）。
+// 滚动锁同样走引用计数，与 Modal 共用一个计数器：两者同时打开时先关的那个不解后关的锁。
 const popupEl = ref<HTMLElement | null>(null)
 const popupOpen = computed(() => notify.popupCurrent !== null)
 useFocusTrap({ active: popupOpen, container: popupEl })
+useScrollLock(popupOpen)
 
 onUnmounted(() => {
   ws.disconnect()

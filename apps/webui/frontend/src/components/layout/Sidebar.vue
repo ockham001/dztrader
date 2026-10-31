@@ -64,8 +64,17 @@ function handleOutsideClick(e: MouseEvent): void {
 // 监听挂在 document 上而不是模板 @keydown：user-section 容器本身不是可聚焦控件，
 // 给它加 keydown 会被 a11y 规则判为「静态元素带交互处理器 / 交互角色必须可聚焦」；
 // 这也与点击外部关闭共用同一条挂载路径。
+//
+// 作用域：只在「焦点仍落在菜单内或触发按钮上」时响应。否则页面别处按 Esc（例如
+// 关掉某个对话框）会顺带把本菜单关掉并无故抢走焦点——对话框自己也要用 Esc，
+// 两层同时响应会让键盘用户无法预期到底关掉了哪一层。
 function handleGlobalKeydown(e: KeyboardEvent): void {
   if (e.key !== 'Escape' || !userDropdownOpen.value) return
+  const active = document.activeElement
+  const menuEl = userSectionRef.value?.querySelector('[role="menu"]')
+  const inMenu = active instanceof Node
+    && (Boolean(menuEl?.contains(active)) || active === userSectionBtnRef.value)
+  if (!inMenu) return
   userDropdownOpen.value = false
   userSectionBtnRef.value?.focus()
 }
@@ -79,7 +88,12 @@ onUnmounted(() => {
   document.removeEventListener('keydown', handleGlobalKeydown)
 })
 
+// 打开改密弹窗：先把焦点从菜单项（即将被 v-if 移除）移回触发按钮，再关菜单。
+// 顺序很重要——焦点陷阱在 open=true 时记录 document.activeElement 作为还原目标，
+// 若此时焦点还挂在已被移除的菜单项上，关闭弹窗后无法还原（isConnected 保护会跳过），
+// 焦点会掉到 body。这是 useFocusTrap 文档里写明的调用方约定。
 function openChangePassword(): void {
+  userSectionBtnRef.value?.focus()
   changePwdOpen.value = true
   userDropdownOpen.value = false
 }
@@ -329,7 +343,9 @@ function openAbout(): void {
             <span class="icon" :style="{ width: '16px', height: '16px' }" aria-hidden="true"><Icon name="authentication" :size="16" /></span>
             修改密码
           </button>
-          <div class="ds-menu__divider"></div>
+          <!-- role="menu" 的允许子角色只有 menuitem / menuitemradio / menuitemcheckbox /
+               group / separator；裸 div 会让读屏把分隔线当作菜单项读出来 -->
+          <div class="ds-menu__divider" role="separator"></div>
           <button
             type="button"
             role="menuitem"

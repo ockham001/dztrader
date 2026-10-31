@@ -186,4 +186,42 @@ describe('Sidebar 用户菜单键盘可达（#206）', () => {
     expect(wrapper.find('[role="menu"]').exists()).toBe(false)
     expect(triggerButton(wrapper).attributes('aria-expanded')).toBe('false')
   })
+
+  // 焦点不在这两者上时，Esc 不应被本菜单吃掉：
+  // 否则对话框自己的 Esc 会连带关掉下拉菜单并无故抢走焦点。
+  it('焦点不在菜单内时 Escape 不关闭菜单（不与对话框的 Esc 抢）', async () => {
+    wrapper = await mountSidebar()
+    await openMenu(wrapper)
+    expect(wrapper.find('[role="menu"]').exists()).toBe(true)
+
+    const outside = document.createElement('button')
+    document.body.appendChild(outside)
+    outside.focus()
+    expect(document.activeElement).toBe(outside)
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await flushPromises()
+
+    expect(wrapper.find('[role="menu"]').exists()).toBe(true)
+    expect(document.activeElement).toBe(outside)
+    outside.remove()
+  })
+
+  // 回归点：先开改密弹窗再关它，焦点不能掉到 body。
+  // 若 openChangePassword 没有先把焦点移回触发按钮，焦点陷阱记录到的还原目标
+  // 是即将被 v-if 移除的菜单项，isConnected 保护会跳过还原 → document.activeElement 变 body。
+  it('从菜单打开改密弹窗后，焦点还原目标是触发按钮而不是 body', async () => {
+    wrapper = await mountSidebar()
+    await openMenu(wrapper)
+
+    const item = menuItem(wrapper, '修改密码')
+    ;(item.element as HTMLElement).focus()
+    // 原生 button 的键盘激活：keydown → UA click
+    await item.trigger('click')
+    await flushPromises()
+
+    // 弹窗打开时焦点应已移入弹窗内容（此处 stub 无焦点元素，故只断言不是 body）
+    expect(document.activeElement).not.toBe(document.body)
+    expect(wrapper.find('[data-test="change-pwd-stub"]').exists()).toBe(true)
+  })
 })

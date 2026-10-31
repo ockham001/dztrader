@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import Icon from './Icon.vue'
 import { useFocusTrap } from '@/composables/useFocusTrap'
+import { useScrollLock } from '@/composables/useScrollLock'
 
 const props = defineProps<{
   open: boolean
@@ -32,11 +33,8 @@ function handleOverlayClick(e: MouseEvent): void {
 useFocusTrap({ active: computed(() => props.open), container: dialogEl })
 
 // body overflow 锁定：打开时禁背景滚动，关闭还原（原有行为，勿改坏）。
-// immediate 兜住「挂载即已打开」的场景（父组件把 open 一开始就置 true），
-// 只监听变化会让首帧漏锁。
-watch(() => props.open, (isOpen) => {
-  document.body.style.overflow = isOpen ? 'hidden' : ''
-}, { immediate: true })
+// 走引用计数（useScrollLock）：同时打开多个模态时，先关闭的那个不能解掉后关闭者的锁。
+useScrollLock(computed(() => props.open))
 
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)
@@ -44,8 +42,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', handleKeydown)
-  // 打开状态下被卸载（如路由切换）必须放开滚动锁，否则整站无法滚动
-  document.body.style.overflow = ''
 })
 </script>
 
