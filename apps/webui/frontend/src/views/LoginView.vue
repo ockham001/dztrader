@@ -53,24 +53,20 @@ async function handleLogin(): Promise<void> {
     // 登录失败，保留已输入的用户名供下次回填
     try { sessionStorage.setItem('last_username', username.value) } catch { /* ignore */ }
     if (e instanceof ApiError) {
-      // 契约 rest §1/§2.1：登录失败错误体为 {"error": <machine_code>}（无 code 字段），
-      // 按 error 机器码映射中文；account_locked 额外带绝对 Unix 秒级 locked_until。
-      const body: unknown = e.body
-      if (body && typeof body === 'object') {
-        const record = body as Record<string, unknown>
-        if (record.error === 'account_locked') {
-          const minutes = lockedRemainingMinutes(record.locked_until)
-          const text = loginErrorText(record.error)
-          errorMessage.value = minutes > 0 ? `${text}，剩余 ${minutes} 分钟` : text
-          errorType.value = 'warning'
-        } else {
-          // 未知/非法机器码由 loginErrorText 统一回落「登录失败」，绝不回显 snake_case
-          errorMessage.value = loginErrorText(record.error)
-          errorType.value = e.status >= 500 ? 'warning' : 'error'
-        }
+      // 契约 rest §1/§2.1：登录失败错误体为 {"error": <human message>, "code": <machine code>}。
+      // 前端只按 `code` 分支映射中文（`error` 是英文消息，回显给用户没有意义）；
+      // account_locked 额外带绝对 Unix 秒级 locked_until。
+      const record = (e.body ?? {}) as Record<string, unknown>
+      if (record.code === 'account_locked') {
+        const minutes = lockedRemainingMinutes(record.locked_until)
+        const text = loginErrorText(record.code)
+        errorMessage.value = minutes > 0 ? `${text}，剩余 ${minutes} 分钟` : text
+        errorType.value = 'warning'
       } else {
-        errorMessage.value = e.message || '登录失败'
-        errorType.value = 'error'
+        // 未知/缺失 code（含 400 bad request、网关错误体）统一「登录失败」，
+        // 绝不回显 code 或英文 error 消息
+        errorMessage.value = loginErrorText(record.code)
+        errorType.value = e.status >= 500 ? 'warning' : 'error'
       }
     } else if (e instanceof Error) {
       // Network error (fetch failed)
@@ -195,6 +191,7 @@ function togglePassword(): void {
           <!-- Error message -->
           <div
             v-if="errorMessage"
+            :data-test-error-level="errorType"
             :style="{
               padding: 'var(--spacer-8) var(--spacer-12)',
               borderRadius: 'var(--radius-8)',

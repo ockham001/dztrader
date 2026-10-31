@@ -59,6 +59,31 @@ protected:
     static nlohmann::json parse_body(const drogon::HttpResponsePtr& resp) {
         return nlohmann::json::parse(resp->getBody());
     }
+
+    /// 断言 400 形状（契约 rest §1）：请求体非法是通用失败，只有 error、**无 code**。
+    static void expect_bad_request(const drogon::HttpResponsePtr& resp) {
+        EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+        const auto body = parse_body(resp);
+        EXPECT_EQ(body["error"].get<std::string>(), "bad request");
+        EXPECT_FALSE(body.contains("code")) << body.dump();
+    }
+
+    /// 断言登录失败错误体形状（契约 rest §1/§2.1）：
+    /// {"error": <human message>, "code": <snake_case machine code>}。
+    /// 机器码只出现在 `code`；`error` 是人类可读消息，不得再承载机器码。
+    static void expect_login_error(const drogon::HttpResponsePtr& resp,
+                                   drogon::HttpStatusCode status,
+                                   const std::string& code) {
+        EXPECT_EQ(resp->getStatusCode(), status);
+        const auto body = parse_body(resp);
+        ASSERT_TRUE(body.contains("code")) << body.dump();
+        EXPECT_EQ(body["code"].get<std::string>(), code);
+        ASSERT_TRUE(body.contains("error")) << body.dump();
+        ASSERT_TRUE(body["error"].is_string()) << body.dump();
+        const auto message = body["error"].get<std::string>();
+        EXPECT_FALSE(message.empty());
+        EXPECT_NE(message, code);  // error 是消息，不是机器码
+    }
 };
 
 // 1. Valid credentials → 200, body has token, expires_in, user with correct fields
@@ -83,19 +108,14 @@ TEST_F(AuthControllerTest, LoginSuccessReturns200) {
 // 2. Wrong password → 401 invalid_credentials
 TEST_F(AuthControllerTest, LoginWrongPasswordReturns401) {
     auto resp = do_login("testuser", "wrongpassword");
-    EXPECT_EQ(resp->getStatusCode(), drogon::k401Unauthorized);
-    auto body = parse_body(resp);
-    EXPECT_EQ(body["error"].get<std::string>(), "invalid_credentials");
-    // 契约 rest §1: 登录错误体不携带 code 字段（error 即机器码，前端按真实形状映射）
-    EXPECT_FALSE(body.contains("code"));
+    // 契约 rest §1/§2.1: 错误体 {"error": <human message>, "code": <machine code>}
+    expect_login_error(resp, drogon::k401Unauthorized, "invalid_credentials");
 }
 
 // 3. User doesn't exist → 401 invalid_credentials
 TEST_F(AuthControllerTest, LoginNonexistentUserReturns401) {
     auto resp = do_login("ghost", "whatever");
-    EXPECT_EQ(resp->getStatusCode(), drogon::k401Unauthorized);
-    auto body = parse_body(resp);
-    EXPECT_EQ(body["error"].get<std::string>(), "invalid_credentials");
+    expect_login_error(resp, drogon::k401Unauthorized, "invalid_credentials");
 }
 
 // 4. Disabled user → 401 account_disabled
@@ -103,9 +123,7 @@ TEST_F(AuthControllerTest, LoginDisabledUserReturns401) {
     auto user = repo_->get_user_by_username("testuser");
     repo_->update_user_status(user->id, "disabled");
     auto resp = do_login("testuser", "password123");
-    EXPECT_EQ(resp->getStatusCode(), drogon::k401Unauthorized);
-    auto body = parse_body(resp);
-    EXPECT_EQ(body["error"].get<std::string>(), "account_disabled");
+    expect_login_error(resp, drogon::k401Unauthorized, "account_disabled");
 }
 
 // 5. Locked user → 423 account_locked with locked_until (绝对 Unix 秒级时间戳)
@@ -114,9 +132,8 @@ TEST_F(AuthControllerTest, LoginLockedUserReturns423) {
     const int64_t future = static_cast<int64_t>(std::time(nullptr)) + 600;
     repo_->lock_user(user->id, future);
     auto resp = do_login("testuser", "password123");
-    EXPECT_EQ(resp->getStatusCode(), drogon::k423Locked);
+    expect_login_error(resp, drogon::k423Locked, "account_locked");
     auto body = parse_body(resp);
-    EXPECT_EQ(body["error"].get<std::string>(), "account_locked");
     EXPECT_TRUE(body.contains("locked_until"));
     // 契约 rest §1: locked_until 为绝对 Unix 秒级时间戳（与 User.locked_until 同语义）
     EXPECT_EQ(body["locked_until"].get<int64_t>(), future);
@@ -132,18 +149,15 @@ TEST_F(AuthControllerTest, LoginFailedAttemptsLockAccount) {
     // Trigger (max_attempts - 1) failures: each should be 401 invalid_credentials
     for (int i = 0; i < max_attempts - 1; ++i) {
         auto resp = do_login("testuser", "badpwd");
-        ASSERT_EQ(resp->getStatusCode(), drogon::k401Unauthorized);
-        auto body = parse_body(resp);
-        ASSERT_EQ(body["error"].get<std::string>(), "invalid_credentials");
+        expect_login_error(resp, drogon::k401Unauthorized, "invalid_credentials");
     }
 
     // The Nth failure should trigger lockout → 423
     const int64_t before = static_cast<int64_t>(std::time(nullptr));
     auto resp = do_login("testuser", "badpwd");
     const int64_t after = static_cast<int64_t>(std::time(nullptr));
-    EXPECT_EQ(resp->getStatusCode(), drogon::k423Locked);
+    expect_login_error(resp, drogon::k423Locked, "account_locked");
     auto body = parse_body(resp);
-    EXPECT_EQ(body["error"].get<std::string>(), "account_locked");
     // 契约 rest §1: locked_until 为绝对 Unix 秒级时间戳 = 锁定时刻 + 锁定时长
     const int64_t locked_until = body["locked_until"].get<int64_t>();
     EXPECT_GE(locked_until, before + config.lockout_duration_sec);
@@ -190,9 +204,7 @@ TEST_F(AuthControllerTest, LoginSuccessRecordsHistory) {
 // 9. Invalid JSON body → 400
 TEST_F(AuthControllerTest, LoginBadJsonReturns400) {
     auto resp = do_login_raw("not valid nlohmann::json {{{");
-    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
-    auto body = parse_body(resp);
-    EXPECT_EQ(body["error"].get<std::string>(), "bad request");
+    expect_bad_request(resp);
 }
 
 // 9a. 合法 JSON 但非对象 / 字段类型错 → 400（契约 rest §1：bad request 不得 500）
@@ -207,8 +219,7 @@ TEST_F(AuthControllerTest, LoginNonObjectOrNonStringBodyReturns400) {
     };
     for (const auto& raw : cases) {
         auto resp = do_login_raw(raw);
-        EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest) << "body=" << raw;
-        EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "bad request");
+        expect_bad_request(resp);
     }
 }
 
@@ -221,9 +232,7 @@ TEST_F(AuthControllerTest, LoginEmptyFieldsReturn400) {
     };
     for (const auto& [username, password] : cases) {
         auto resp = do_login(username, password);
-        EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest)
-            << "username=" << username << " password=" << password;
-        EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "bad request");
+        expect_bad_request(resp);
     }
 }
 
@@ -242,8 +251,7 @@ TEST_F(AuthControllerTest, LoginBlacklistedIpReturns401IpBanned) {
     drogon::HttpResponsePtr captured;
     ctrl_->login(req, [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
     ASSERT_NE(captured.get(), nullptr);
-    EXPECT_EQ(captured->getStatusCode(), drogon::k401Unauthorized);
-    EXPECT_EQ(parse_body(captured)["error"].get<std::string>(), "ip_banned");
+    expect_login_error(captured, drogon::k401Unauthorized, "ip_banned");
 }
 
 TEST_F(AuthControllerTest, LoginWhitelistModeRejectsUnlistedIp) {
@@ -259,8 +267,7 @@ TEST_F(AuthControllerTest, LoginWhitelistModeRejectsUnlistedIp) {
     drogon::HttpResponsePtr rejected;
     ctrl_->login(req, [&rejected](const drogon::HttpResponsePtr& r) { rejected = r; });
     ASSERT_NE(rejected.get(), nullptr);
-    EXPECT_EQ(rejected->getStatusCode(), drogon::k401Unauthorized);
-    EXPECT_EQ(parse_body(rejected)["error"].get<std::string>(), "ip_banned");
+    expect_login_error(rejected, drogon::k401Unauthorized, "ip_banned");
 
     // 白名单放行后正常登录
     ASSERT_TRUE(repo_->add_to_whitelist(peer_ip, "test allow"));

@@ -56,8 +56,8 @@ async function request<T>(
   const resp = await fetch(`${BASE_URL}${path}`, { ...options, headers })
 
   if (resp.status === 401) {
-    // 401 的响应体是凭据错误（invalid_credentials / account_disabled 等），必须原样
-    // 交给调用方展示，否则登录表单只能看到笼统的 unauthorized
+    // 401 的响应体是凭据错误（契约 rest §1/§2.1：{"error": <message>, "code": <machine code>}），
+    // 必须原样交给调用方按 `code` 分支处理，否则登录表单只能看到笼统的 unauthorized
     const body = await parse_error_body(resp)
     // 登录接口的 401 是凭据错误而非会话失效：不清会话、不跳转
     if (path !== LOGIN_PATH) {

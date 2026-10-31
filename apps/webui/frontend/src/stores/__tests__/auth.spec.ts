@@ -109,13 +109,18 @@ describe('useAuthStore.login / logout（主登录链路）', () => {
     expect(JSON.parse(localStorage.getItem('user_info')!)).toEqual(user)
   })
 
-  it('login 失败：ApiError.body.error 映射 error、复位 loading 并重新抛出', async () => {
-    const apiError = new ApiError(401, { error: 'invalid_credentials' })
+  it('login 失败：保留 ApiError、复位 loading 并重新抛出', async () => {
+    const apiError = new ApiError(401, {
+      error: 'invalid credentials',
+      code: 'invalid_credentials',
+    })
     mockedAuthApi.login.mockRejectedValue(apiError)
     const auth = useAuthStore()
     auth.token = 'existing-token'  // 已有会话：失败不得写/清 token
     await expect(auth.login({ username: 'regular', password: 'bad' })).rejects.toBe(apiError)
-    expect(auth.error).toBe('invalid_credentials')
+    // ApiError 分支按 code 映射中文（与登录页共用单一真相源），
+    // 不回显英文 error 消息，也不展示机器码
+    expect(auth.error).toBe('用户名或密码错误')
     expect(auth.token).toBe('existing-token')  // 失败不写 token
     expect(auth.loading).toBe(false)
     expect(localStorage.getItem('jwt_token')).toBeNull()

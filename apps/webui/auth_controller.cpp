@@ -10,6 +10,25 @@ namespace dztrader::webui {
 
 using Json = nlohmann::json;
 
+namespace {
+
+/// 登录失败错误体（契约 rest §1/§2.1）：{"error": <human message>, "code": <machine code>}。
+/// `error` 全站唯一语义是人类可读消息（小写英文、无句号），机器码只出现在 `code`——
+/// 前端按 `code` 分支映射文案，绝不解析或回显 `error`。
+Json login_error_body(const std::string& code, const std::string& message) {
+    return Json{{"error", message}, {"code", code}};
+}
+
+/// 账户锁定错误体：login_error_body + `locked_until`（**绝对 Unix 秒级时间戳**，契约 rest §1）。
+/// 两个锁定站点（已锁定 / 失败次数达阈值触发锁定）共用，避免形状漂移。
+Json account_locked_body(int64_t locked_until) {
+    Json body = login_error_body("account_locked", "account locked");
+    body["locked_until"] = locked_until;
+    return body;
+}
+
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // POST /api/login
 // ---------------------------------------------------------------------------
@@ -51,21 +70,22 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
     // 2. Query user
     auto user = repo_->get_user_by_username(username);
     if (!user.has_value()) {
-        callback(error_response(drogon::k401Unauthorized, "invalid_credentials"));
+        callback(json_response(drogon::k401Unauthorized,
+                               login_error_body("invalid_credentials", "invalid credentials")));
         return;
     }
 
     // 3. Check account status
     const auto now_epoch = static_cast<int64_t>(std::time(nullptr));
     if (user->status == "disabled") {
-        callback(error_response(drogon::k401Unauthorized, "account_disabled"));
+        callback(json_response(drogon::k401Unauthorized,
+                               login_error_body("account_disabled", "account disabled")));
         return;
     }
     if (user->status == "locked" || user->locked_until > now_epoch) {
         // 契约 rest §1: 登录错误体 locked_until 为绝对 Unix 秒级时间戳（与 User.locked_until
         // 同语义），前端按 locked_until - now 计算剩余分钟
-        callback(json_response(drogon::k423Locked, Json{{"error", "account_locked"},
-                                                        {"locked_until", user->locked_until}}));
+        callback(json_response(drogon::k423Locked, account_locked_body(user->locked_until)));
         return;
     }
 
@@ -74,11 +94,13 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
     const std::string user_agent = req->getHeader("User-Agent");
     auto security = repo_->get_security_config();
     if (security.access_mode == "blacklist" && repo_->is_ip_blacklisted(client_ip)) {
-        callback(error_response(drogon::k401Unauthorized, "ip_banned"));
+        callback(
+            json_response(drogon::k401Unauthorized, login_error_body("ip_banned", "ip banned")));
         return;
     }
     if (security.access_mode == "whitelist" && !repo_->is_ip_whitelisted(client_ip)) {
-        callback(error_response(drogon::k401Unauthorized, "ip_banned"));
+        callback(
+            json_response(drogon::k401Unauthorized, login_error_body("ip_banned", "ip banned")));
         return;
     }
 
@@ -86,7 +108,8 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
     auto hash = repo_->get_password_hash(username);
     if (!hash.has_value()) {
         // Should not happen since we already fetched the user, but guard anyway
-        callback(error_response(drogon::k401Unauthorized, "invalid_credentials"));
+        callback(json_response(drogon::k401Unauthorized,
+                               login_error_body("invalid_credentials", "invalid credentials")));
         return;
     }
     if (!verify_password(password, *hash)) {
@@ -102,16 +125,15 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
             notifier_.broadcast_data_changed("login_history");
             notifier_.broadcast_data_changed("users");
             // 契约 rest §1: locked_until 为绝对 Unix 秒级时间戳
-            callback(
-                json_response(drogon::k423Locked,
-                              Json{{"error", "account_locked"},
-                                   {"locked_until", now_epoch + config.lockout_duration_sec}}));
+            callback(json_response(drogon::k423Locked,
+                                   account_locked_body(now_epoch + config.lockout_duration_sec)));
             return;
         }
         repo_->add_login_history(username, client_ip, "web", false, user_agent,
                                  "invalid_credentials");
         notifier_.broadcast_data_changed("login_history");
-        callback(error_response(drogon::k401Unauthorized, "invalid_credentials"));
+        callback(json_response(drogon::k401Unauthorized,
+                               login_error_body("invalid_credentials", "invalid credentials")));
         return;
     }
 

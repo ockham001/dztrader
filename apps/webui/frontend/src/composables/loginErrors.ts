@@ -1,7 +1,8 @@
 // 登录失败错误码 → 用户可读文案（单一真相源）。
 //
 // 契约来源：契约 rest §1/§2.1 —— 登录失败（POST /api/login）错误体为
-// `{"error": <snake_case_code>}`，**不携带 `code` 字段**，`error` 即机器码；
+// `{"error": <human message>, "code": <snake_case_code>}`；`error` 是人类可读消息（英文），
+// `code` 是机器码，也是前端**唯一**的分支依据（不解析 `error` 文本）。
 // HTTP 状态码表达类别（401 凭据/状态/封禁类，423 锁定），machine code 清单：
 //   invalid_credentials / account_disabled / ip_banned → 401
 //   account_locked → 423 且额外携带 `locked_until`（绝对 Unix 秒级时间戳，
@@ -26,7 +27,7 @@ export const LOGIN_ERROR_TEXT: Record<LoginErrorCode, string> = {
 
 /**
  * 登录失败机器码 → 用户可读文案；未知/非法码统一「登录失败」（绝不回显 snake_case）。
- * @param code 后端错误体的 `error` 字段（运行时不可信，故入参为 unknown）
+ * @param code 后端错误体的 `code` 字段（运行时不可信，故入参为 unknown）
  */
 export function loginErrorText(code: unknown): string {
   if (typeof code === 'string' && Object.prototype.hasOwnProperty.call(LOGIN_ERROR_TEXT, code)) {
