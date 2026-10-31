@@ -262,6 +262,33 @@
   background: var(--bg-brand);
 }
 
+/* ===== 演示数据横幅（issue #200）=====
+   仪表盘是整页锁高的监控页（见文件头 P5-T4 规范），横幅必须单行紧凑，
+   且跨满 grid 两列、始终在首屏可见——不得折叠、不得进滚动区。 */
+.dashboard-demo-banner {
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: var(--spacer-8);
+  padding: var(--spacer-6) var(--spacer-12);
+  border-radius: var(--radius-8);
+  background: var(--status-warning-surface-l1);
+  border-color: var(--status-warning-surface-l2);
+}
+.dashboard-demo-banner .ds-alert__icon {
+  margin-top: 0;
+  color: var(--status-warning-default);
+}
+.dashboard-demo-banner__text {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+}
+.dashboard-demo-banner__text strong {
+  color: var(--text-default);
+  font-weight: var(--font-weight-strong);
+}
+
 /* ===== 响应式布局 — 窄屏 + 矮屏 ===== */
 @media (max-width: 1024px), (max-height: 600px) {
   body {
