@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onUnmounted, type Ref } from 'vue'
 import StatusIndicator from '@/components/shared/StatusIndicator.vue'
+import Icon from '@/components/shared/Icon.vue'
 import { processStateText, processStateColor } from '@/composables/useProcessState'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 
@@ -75,35 +76,42 @@ interface MessageRow {
   source: string
 }
 
-// === Mock data (from main.html prototype) ===
+// === 演示数据（issue #200）===
+// 账户 / 持仓 / 委托 / 策略 / 消息五个面板的交易数据链路尚未建立
+// （见 issue #6：TdDataService 未暴露 REST/WS）。此处保留原型布局，
+// 但满足三条约束：
+//   1) 页面永久可见地标注「演示数据」（横幅 + 逐面板 ds-tag）；
+//   2) 券商名 / 账户号 / 合约代码全部虚构，不得与真实期货公司或真实合约撞名；
+//   3) 面板聚合数一律由下列行数据计算，禁止硬编码（历史版本存在 2/3、5/5 等矛盾数字）。
+// 接入真实数据后本块整体删除（另立 spec 票承接）。
 const strategyNames = ['长线', '中线', '短线1号', '短线2号', '多因子一号']
 
 const positions: PositionRow[] = [
-  { code: 'rb2510', isMain: true, diff: -3, netPos: 3, stratNet: 3, account: '山金期货_wy', strategies: [5, 3, 2, 0, 0] },
-  { code: 'hc2510', isMain: true, diff: 2, netPos: -2, stratNet: -2, account: '山金期货_wy', strategies: [-2, 1, 0, 3, 0] },
-  { code: 'i2509', isMain: true, diff: 0, netPos: 0, stratNet: 0, account: '华鑫期货_ocm', strategies: [20, 15, 10, 5, 0] },
-  { code: 'hc2511', isMain: false, diff: 0, netPos: -5, stratNet: -5, account: '山金期货_wy', strategies: [-8, -6, -4, -2, 0] },
-  { code: 'rb2511', isMain: false, diff: 1, netPos: 1, stratNet: 1, account: '华鑫期货_ocm', strategies: [3, 2, 1, 0, 0] },
-  { code: 'j2509', isMain: true, diff: 0, netPos: 0, stratNet: 0, account: '山金期货_wy', strategies: [10, 8, 7, 5, 0] },
-  { code: 'JM2510', isMain: false, diff: -5, netPos: 5, stratNet: 5, account: '山金期货_wy', strategies: [-10, 3, 2, 0, 0] },
-  { code: 'i2510', isMain: false, diff: 0, netPos: 0, stratNet: 0, account: '华鑫期货_ocm', strategies: [-15, -10, -8, -7, 0] },
+  { code: 'zz2601', isMain: true, diff: -3, netPos: 3, stratNet: 3, account: '演示期货_A', strategies: [5, 3, 2, 0, 0] },
+  { code: 'yy2601', isMain: true, diff: 2, netPos: -2, stratNet: -2, account: '演示期货_A', strategies: [-2, 1, 0, 3, 0] },
+  { code: 'xx2601', isMain: true, diff: 0, netPos: 0, stratNet: 0, account: '演示期货_B', strategies: [20, 15, 10, 5, 0] },
+  { code: 'yy2605', isMain: false, diff: 0, netPos: -5, stratNet: -5, account: '演示期货_A', strategies: [-8, -6, -4, -2, 0] },
+  { code: 'zz2605', isMain: false, diff: 1, netPos: 1, stratNet: 1, account: '演示期货_B', strategies: [3, 2, 1, 0, 0] },
+  { code: 'ww2601', isMain: true, diff: 0, netPos: 0, stratNet: 0, account: '演示期货_A', strategies: [10, 8, 7, 5, 0] },
+  { code: 'ww2605', isMain: false, diff: -5, netPos: 5, stratNet: 5, account: '演示期货_A', strategies: [-10, 3, 2, 0, 0] },
+  { code: 'xx2609', isMain: false, diff: 0, netPos: 0, stratNet: 0, account: '演示期货_B', strategies: [-15, -10, -8, -7, 0] },
 ]
 
 const accounts: AccountRow[] = [
   {
-    name: '华鑫期货_ocm', sub: '12345678 · ctp', status: 'logged-in', loadingText: '',
+    name: '演示期货_A', sub: 'demo-0001 · ctp', status: 'logged-in', loadingText: '',
     equity: '1,890,887.80', risk: '62.3%', riskColor: 'var(--status-alert-default)',
     available: '715,340.50', margin: '1,175,547.30', deposit: '+50,000', profit: '+12,350',
     profitColor: '#2a9d5c', fee: '1,230.50',
   },
   {
-    name: '山金期货_wy', sub: '4242423425252 · xtp', status: 'loading', loadingText: '查询持仓...',
+    name: '演示期货_B', sub: 'demo-0002 · xtp', status: 'loading', loadingText: '查询持仓...',
     equity: '2,345,621.35', risk: '38.1%', riskColor: 'var(--status-success-default)',
     available: '1,451,230.80', margin: '894,390.55', deposit: '0', profit: '-8,560',
     profitColor: '#d4543e', fee: '3,560.20',
   },
   {
-    name: '华鑫期货_cxc', sub: '232333121 · ctptest', status: 'logged-out', loadingText: '',
+    name: '演示期货_C', sub: 'demo-0003 · ctptest', status: 'logged-out', loadingText: '',
     equity: '--', risk: '--', riskColor: 'var(--text-tertiary)',
     available: '--', margin: '--', deposit: '--', profit: '--',
     profitColor: 'var(--text-tertiary)', fee: '--',
@@ -111,13 +119,13 @@ const accounts: AccountRow[] = [
 ]
 
 const orders: OrderRow[] = [
-  { contract: 'rb2510', icon: 'pending', source: '长线', account: '华鑫期货_ocm', direction: 'buy', filled: '5/10', price: '3,680', avgPrice: '3,682', time: '14:05:23', tagText: '部分成交', tagClass: 'ds-tag--alert', rowClass: '' },
-  { contract: 'hc2510', icon: 'filled', source: '中线', account: '山金期货_wy', direction: 'sell', filled: '8/8', price: '3,915', avgPrice: '3,915', time: '14:03:12', tagText: '全部成交', tagClass: 'ds-tag--success', rowClass: '' },
-  { contract: 'rb2510', icon: 'filled', source: '长线', account: '华鑫期货_ocm', direction: 'sell', filled: '3/3', price: '3,695', avgPrice: '3,694', time: '14:01:45', tagText: '全部成交', tagClass: 'ds-tag--success', rowClass: '' },
-  { contract: 'i2609', icon: 'pending', source: '短线1号', account: '山金期货_wy', direction: 'buy', filled: '0/20', price: '785.5', avgPrice: '--', time: '13:58:30', tagText: '未成交', tagClass: '', rowClass: '' },
-  { contract: 'hc2501', icon: 'cancelled', source: '短线2号', account: '华鑫期货_ocm', direction: 'buy', filled: '0/5', price: '3,720', avgPrice: '--', time: '13:50:22', tagText: '已撤单', tagClass: '', rowClass: 'order-row--cancelled' },
-  { contract: 'j2601', icon: 'rejected', source: '多因子一号', account: '山金期货_wy', direction: 'sell', filled: '0/10', price: '2,350', avgPrice: '--', time: '13:45:10', tagText: '废单', tagClass: 'ds-tag--danger', rowClass: 'order-row--rejected' },
-  { contract: 'hc2510', icon: 'filled', source: '多因子一号', account: '华鑫期货_ocm', direction: 'buy', filled: '10/10', price: '3,908', avgPrice: '3,907', time: '13:55:18', tagText: '全部成交', tagClass: 'ds-tag--success', rowClass: '' },
+  { contract: 'zz2601', icon: 'pending', source: '长线', account: '演示期货_A', direction: 'buy', filled: '5/10', price: '3,680', avgPrice: '3,682', time: '14:05:23', tagText: '部分成交', tagClass: 'ds-tag--alert', rowClass: '' },
+  { contract: 'yy2601', icon: 'filled', source: '中线', account: '演示期货_A', direction: 'sell', filled: '8/8', price: '3,915', avgPrice: '3,915', time: '14:03:12', tagText: '全部成交', tagClass: 'ds-tag--success', rowClass: '' },
+  { contract: 'zz2601', icon: 'filled', source: '长线', account: '演示期货_A', direction: 'sell', filled: '3/3', price: '3,695', avgPrice: '3,694', time: '14:01:45', tagText: '全部成交', tagClass: 'ds-tag--success', rowClass: '' },
+  { contract: 'xx2605', icon: 'pending', source: '短线1号', account: '演示期货_A', direction: 'buy', filled: '0/20', price: '785.5', avgPrice: '--', time: '13:58:30', tagText: '未成交', tagClass: '', rowClass: '' },
+  { contract: 'ww2601', icon: 'cancelled', source: '短线2号', account: '演示期货_B', direction: 'buy', filled: '0/5', price: '3,720', avgPrice: '--', time: '13:50:22', tagText: '已撤单', tagClass: '', rowClass: 'order-row--cancelled' },
+  { contract: 'ww2605', icon: 'rejected', source: '多因子一号', account: '演示期货_A', direction: 'sell', filled: '0/10', price: '2,350', avgPrice: '--', time: '13:45:10', tagText: '废单', tagClass: 'ds-tag--danger', rowClass: 'order-row--rejected' },
+  { contract: 'yy2601', icon: 'filled', source: '多因子一号', account: '演示期货_B', direction: 'buy', filled: '10/10', price: '3,908', avgPrice: '3,907', time: '13:55:18', tagText: '全部成交', tagClass: 'ds-tag--success', rowClass: '' },
 ]
 
 const strategyList: StrategyRow[] = [
@@ -129,16 +137,37 @@ const strategyList: StrategyRow[] = [
 ]
 
 const messages: MessageRow[] = [
-  { level: 'info', text: '多因子一号 rb2510 平仓信号触发', time: '1分钟前', source: '多因子一号' },
-  { level: 'info', text: '中线 i2509 止损触发', time: '5分钟前', source: '中线' },
-  { level: 'info', text: '长线 hc2510 加仓执行完成，当前持仓 10 手，均价 38520', time: '18分钟前', source: '长线' },
+  { level: 'info', text: '多因子一号 zz2601 平仓信号触发', time: '1分钟前', source: '多因子一号' },
+  { level: 'info', text: '中线 xx2601 止损触发', time: '5分钟前', source: '中线' },
+  { level: 'info', text: '长线 yy2601 加仓执行完成，当前持仓 10 手，均价 38520', time: '18分钟前', source: '长线' },
   { level: 'info', text: '短线2号 参数热更新完成', time: '32分钟前', source: '短线2号' },
   { level: 'warning', text: '行情源 CTP 断线重连成功，已补发 12 笔行情快照', time: '1小时前', source: 'md_ctp' },
-  { level: 'error', text: '螺纹钢套利 rb2510 订单被拒：超出可开仓手数限制', time: '2小时前', source: '短线1号' },
+  { level: 'error', text: '演示品种套利 zz2601 订单被拒：超出可开仓手数限制', time: '2小时前', source: '短线1号' },
   { level: 'info', text: '账户权益更新', time: '3小时前', source: 'account_ctp' },
   { level: 'warning', text: '期货备用登录超时，30秒后重试', time: '5小时前', source: 'account_ctp' },
-  { level: 'info', text: '短线1号 JM2510 开仓，方向：空，手数：5，委托价 1580', time: '6小时前', source: '短线1号' },
+  { level: 'info', text: '短线1号 ww2605 开仓，方向：空，手数：5，委托价 1580', time: '6小时前', source: '短线1号' },
 ]
+
+// === 面板聚合数：一律由上面的演示行计算（issue #200）===
+// 历史版本硬编码 2/3、7/8、2/12、5/5 与展示行互相矛盾；此处改为派生，
+// 行数据变化时聚合数自动跟随，不可能再漂移。
+const accountAggregate = computed(
+  () => `${accounts.filter(a => a.status === 'logged-in').length}/${accounts.length}`,
+)
+// 「隐藏匹配行」筛选尚未实现：无行被隐藏，命中数恒等于总行数
+const matchedPositionCount = computed(() => positions.length)
+const positionAggregate = computed(
+  () => `${matchedPositionCount.value}/${positions.length}`,
+)
+const ordersAggregate = computed(
+  () => `${orders.filter(o => o.icon === 'pending').length}/${orders.length} 笔`,
+)
+const strategyAggregate = computed(
+  () => `${strategyList.filter(s => s.running).length}/${strategyList.length}`,
+)
+const strategyFooter = computed(
+  () => `总计: ${strategyList.length} 已加载, ${strategyList.filter(s => !s.running).length} 已停止`,
+)
 
 // === Splitter state (flex-grow values) ===
 const leftFlex = ref(1)
@@ -285,24 +314,43 @@ onUnmounted(() => {
         flex: 1,
         display: 'grid',
         gridTemplateColumns: `minmax(300px, ${leftFlex}fr) 6px minmax(200px, ${rightFlex}fr)`,
+        gridTemplateRows: 'auto minmax(0, 1fr)',
         overflow: 'hidden',
         padding: '6px',
         columnGap: '0',
+        rowGap: 'var(--spacer-6)',
       }"
     >
+      <!-- 演示数据横幅（issue #200）：首屏永久可见，与是否滚动 / 展开无关。
+           五个面板的交易数据链路尚未建立（issue #6），横幅是读者第一眼就应看到的事实声明，
+           不得改为可关闭 banner 或仅靠图注。仪表盘锁一屏高度，故压成单行紧凑条。 -->
+      <div
+        class="ds-alert ds-alert--warning dashboard-demo-banner"
+        data-test="dashboard-demo-banner"
+        role="status"
+      >
+        <span class="ds-alert__icon"><Icon name="Tips" :size="16" /></span>
+        <span class="dashboard-demo-banner__text">
+          <strong>演示数据</strong>：账户 / 持仓 / 委托 / 策略 / 消息面板尚未接入真实链路，内容均为虚构；仅「行情」面板为实时数据。
+        </span>
+      </div>
+
       <!-- Left Panel -->
       <div ref="leftPanelEl" class="dashboard-left-panel" :style="{ display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }">
 
         <!-- Position Monitor -->
         <div class="dashboard-panel dashboard-panel--position" :style="{ flex: `${positionFlex} 1 0%`, minHeight: '120px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }">
           <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'var(--spacer-8) var(--spacer-16)', background: 'var(--bg-card)', borderBottom: '1px solid var(--border-neutral-l1)', flexShrink: 0 }">
-            <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">持仓</span>
+            <span :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)' }">
+              <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">持仓</span>
+              <span class="ds-tag ds-tag--warning" data-test="dashboard-demo-tag" :style="{ fontSize: '10px' }">演示</span>
+            </span>
             <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-12)', fontSize: 'var(--body-xs-font-size)' }">
               <span class="filter-dropdown__trigger" :style="{ cursor: 'pointer' }">来源</span>
               <label class="ds-check" :style="{ minHeight: 'auto', fontSize: 'var(--body-xs-font-size)', color: 'var(--text-secondary)' }">
                 <input type="checkbox"><span class="ds-check__box"></span> 隐藏匹配行
               </label>
-              <span :style="{ fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums', color: 'var(--status-success-default)', cursor: 'default' }" title="匹配持仓数/总持仓数">7/8</span>
+              <span data-test="position-aggregate" :style="{ fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums', color: 'var(--status-success-default)', cursor: 'default' }" title="匹配持仓数/总持仓数">{{ positionAggregate }}</span>
             </div>
           </div>
           <div class="auto-scroll" :style="{ flex: 1, overflow: 'auto', padding: 0 }">
@@ -343,8 +391,11 @@ onUnmounted(() => {
           <!-- Account Overview -->
           <div class="dashboard-panel dashboard-panel--account" :style="{ flex: `${accountFlex} 1 0%`, minWidth: '150px', minHeight: '100px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }">
             <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'var(--spacer-8) var(--spacer-16)', background: 'var(--bg-card)', borderBottom: '1px solid var(--border-neutral-l1)', flexShrink: 0 }">
-              <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">账户</span>
-              <span :style="{ fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums', color: 'var(--text-tertiary)' }" title="已登录账户/总账户">2/3</span>
+              <span :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)' }">
+                <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">账户</span>
+                <span class="ds-tag ds-tag--warning" data-test="dashboard-demo-tag" :style="{ fontSize: '10px' }">演示</span>
+              </span>
+              <span data-test="account-aggregate" :style="{ fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums', color: 'var(--text-tertiary)' }" title="已登录账户/总账户">{{ accountAggregate }}</span>
             </div>
             <div class="auto-scroll" :style="{ flex: 1, overflow: 'auto' }">
               <table class="ds-table ds-table--normal" :style="{ width: '100%', tableLayout: 'auto', whiteSpace: 'nowrap' }">
@@ -394,12 +445,15 @@ onUnmounted(() => {
           <!-- Orders -->
           <div class="dashboard-panel dashboard-panel--orders" :style="{ flex: `${orderFlex} 1 0%`, minWidth: '150px', minHeight: '100px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }">
             <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'var(--spacer-8) var(--spacer-16)', background: 'var(--bg-card)', borderBottom: '1px solid var(--border-neutral-l1)', flexShrink: 0 }">
-              <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">委托</span>
+              <span :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)' }">
+                <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">委托</span>
+                <span class="ds-tag ds-tag--warning" data-test="dashboard-demo-tag" :style="{ fontSize: '10px' }">演示</span>
+              </span>
               <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-12)', fontSize: 'var(--body-xs-font-size)' }">
                 <label class="ds-check" :style="{ minHeight: 'auto', fontSize: 'var(--body-xs-font-size)', color: 'var(--text-secondary)' }">
                   <input type="checkbox"><span class="ds-check__box"></span> 仅挂单
                 </label>
-                <span :style="{ fontVariantNumeric: 'tabular-nums', color: 'var(--text-tertiary)', cursor: 'pointer', userSelect: 'none' }" title="点击切换 笔数/手数">2/12 笔</span>
+                <span data-test="orders-aggregate" :style="{ fontVariantNumeric: 'tabular-nums', color: 'var(--text-tertiary)', cursor: 'pointer', userSelect: 'none' }" title="点击切换 笔数/手数">{{ ordersAggregate }}</span>
               </div>
             </div>
             <div class="auto-scroll" :style="{ flex: 1, overflow: 'auto' }">
@@ -485,8 +539,11 @@ onUnmounted(() => {
         <!-- Strategy List -->
         <div class="dashboard-panel" :style="{ flex: `${strategyFlex} 1 0%`, minHeight: '80px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }">
           <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'var(--spacer-8) var(--spacer-16)', background: 'var(--bg-card)', borderBottom: '1px solid var(--bg-base-secondary)', flexShrink: 0 }">
-            <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">策略</span>
-            <span :style="{ fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums', color: 'var(--text-tertiary)' }" title="正常运行策略/总策略数">5/5</span>
+            <span :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)', minWidth: 0 }">
+              <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">策略</span>
+              <span class="ds-tag ds-tag--warning" data-test="dashboard-demo-tag" :style="{ fontSize: '10px' }">演示</span>
+            </span>
+            <span data-test="strategy-aggregate" :style="{ fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums', color: 'var(--text-tertiary)' }" title="正常运行策略/总策略数">{{ strategyAggregate }}</span>
           </div>
           <div class="auto-scroll" :style="{ flex: 1, overflow: 'auto', fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums' }">
             <div
@@ -503,7 +560,7 @@ onUnmounted(() => {
               </div>
               <span class="ds-tag" :class="strat.running ? 'ds-tag--success' : 'ds-tag--danger'" :style="{ fontSize: '10px', flexShrink: 0 }">{{ strat.running ? '运行中' : '已停止' }}</span>
             </div>
-            <div :style="{ padding: 'var(--spacer-8) var(--spacer-16)', fontSize: 'var(--body-xs-font-size)', color: 'var(--text-tertiary)', borderTop: '1px solid var(--bg-base-secondary)' }">总计: 5 已加载, 1 已停止</div>
+            <div :style="{ padding: 'var(--spacer-8) var(--spacer-16)', fontSize: 'var(--body-xs-font-size)', color: 'var(--text-tertiary)', borderTop: '1px solid var(--bg-base-secondary)' }" data-test="strategy-footer">{{ strategyFooter }}</div>
           </div>
         </div>
 
@@ -513,7 +570,10 @@ onUnmounted(() => {
         <!-- Messages -->
         <div class="dashboard-panel" :style="{ flex: `${msgFlex} 1 0%`, minHeight: '80px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }">
           <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'var(--spacer-8) var(--spacer-16)', background: 'var(--bg-card)', borderBottom: '1px solid var(--bg-base-secondary)', flexShrink: 0 }">
-            <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">消息</span>
+            <span :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)' }">
+              <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">消息</span>
+              <span class="ds-tag ds-tag--warning" data-test="dashboard-demo-tag" :style="{ fontSize: '10px' }">演示</span>
+            </span>
             <button type="button" :style="{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '0 4px', fontSize: 'var(--body-xs-font-size)', lineHeight: '20px' }" title="切换时间显示">n分钟前</button>
           </div>
           <div class="auto-scroll" :style="{ flex: 1, overflow: 'auto', fontSize: 'var(--body-xs-font-size)' }">
