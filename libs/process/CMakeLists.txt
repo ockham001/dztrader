@@ -21,10 +21,6 @@ target_link_libraries(dzprocess
 file(GLOB PROCESS_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${PROCESS_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
-    add_executable(dzprocess_${testname} ${testfile} tests/test_main.cpp)
+    dz_add_test(dzprocess_${testname} SOURCES ${testfile} tests/test_main.cpp LABELS fast)
     target_link_libraries(dzprocess_${testname} PRIVATE dzprocess dztest_support GTest::gtest)
-    set_target_properties(dzprocess_${testname} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
-    )
-    gtest_discover_tests(dzprocess_${testname} PROPERTIES LABELS fast)
 endforeach()

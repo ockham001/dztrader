@@ -50,7 +50,30 @@ install(TARGETS dzsysmon RUNTIME DESTINATION ${DZ_INSTALL_DIR})
 file(GLOB DZSYSMON_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${DZSYSMON_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
-    add_executable(dzsysmon_${testname} ${testfile} ../master/tests/test_main.cpp)
+    # 进程级 E2E（#77/#80/#81/#123）：起真实 dzsysmon 观察帧序（SET_SYSMON_CONFIG 后立即推送
+    # 快照；#123 起资源越限不再出现 NOTIFY_UI；#81 运行期配置的全段生效/定时器重排/history 开关）。
+    # 事件通道命名信号量是机器全局命名空间，与 dev 栈/其它测试实例互扰，必须串行；
+    # 且需先构建 dzsysmon（测试从 <build>/tests 的上一级定位该可执行文件）。
+    if(testname STREQUAL "network_config_e2e_test" OR testname STREQUAL "history_e2e_test" OR
+       testname STREQUAL "alert_e2e_test" OR testname STREQUAL "config_e2e_test")
+        set(test_needs_daemon TRUE)
+        set(test_properties RUN_SERIAL TRUE)
+    elseif(testname STREQUAL "collector_oracle_test")
+        # 真机 oracle（#136 AC5）：读 ctest 注入的 DZTRADER_HOME/shm（全仓测试共享同一目录），
+        # DiskDomainsHoldOnRealMachine 先 collect_shm_dir 再用 recursive_directory_iterator
+        # 独立走第二遍同一目录，断言 page_files 与 oldest_file_age_sec「同源」（⟺）以及
+        # 页文件字节 ≤ 目录总字节。两次读取之间若有并发进程增删页文件，两个视图取自不同
+        # 时刻会让 ⟺ 与 ≤ 翻转 —— 必须与往该目录写 shm 的用例互斥。
+        set(test_needs_daemon FALSE)
+        set(test_properties RUN_SERIAL TRUE TIMEOUT 60)
+    else()
+        set(test_needs_daemon FALSE)
+        set(test_properties "")
+    endif()
+    dz_add_test(dzsysmon_${testname}
+        SOURCES ${testfile} ../master/tests/test_main.cpp
+        LABELS fast
+        PROPERTIES ${test_properties})
     target_link_libraries(dzsysmon_${testname} PRIVATE
         dzsysmon_obj
         dzshm_test_support
@@ -60,37 +83,12 @@ foreach(testfile ${DZSYSMON_TESTS})
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )
-    set_target_properties(dzsysmon_${testname} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
-    )
     if(MSVC)
         # gtest 1.17 gtest-printers.h + nlohmann::json 在 MSVC /O2 下偶发 C4702
         # （unreachable code），Release /WX 升级为错误；仅豁免测试目标。
         target_compile_options(dzsysmon_${testname} PRIVATE /wd4702)
     endif()
-    # 进程级 E2E（#77/#80/#81/#123）：起真实 dzsysmon 观察帧序（SET_SYSMON_CONFIG 后立即推送
-    # 快照；#123 起资源越限不再出现 NOTIFY_UI；#81 运行期配置的全段生效/定时器重排/history 开关）。
-    # 事件通道命名信号量是机器全局命名空间，与 dev 栈/其它测试实例互扰，必须串行；
-    # 且需先构建 dzsysmon（测试从 <build>/tests 的上一级定位该可执行文件）。
-    if(testname STREQUAL "network_config_e2e_test" OR testname STREQUAL "history_e2e_test" OR
-       testname STREQUAL "alert_e2e_test" OR testname STREQUAL "config_e2e_test")
+    if(test_needs_daemon)
         add_dependencies(dzsysmon_${testname} dzsysmon)
-        gtest_discover_tests(dzsysmon_${testname} PROPERTIES
-            LABELS fast
-            RUN_SERIAL TRUE
-        )
-    elseif(testname STREQUAL "collector_oracle_test")
-        # 真机 oracle（#136 AC5）：读 ctest 注入的 DZTRADER_HOME/shm（全仓测试共享同一目录），
-        # DiskDomainsHoldOnRealMachine 先 collect_shm_dir 再用 recursive_directory_iterator
-        # 独立走第二遍同一目录，断言 page_files 与 oldest_file_age_sec「同源」（⟺）以及
-        # 页文件字节 ≤ 目录总字节。两次读取之间若有并发进程增删页文件，两个视图取自不同
-        # 时刻会让 ⟺ 与 ≤ 翻转 —— 必须与往该目录写 shm 的用例互斥。
-        gtest_discover_tests(dzsysmon_${testname} PROPERTIES
-            LABELS fast
-            RUN_SERIAL TRUE
-            TIMEOUT 60
-        )
-    else()
-        gtest_discover_tests(dzsysmon_${testname} PROPERTIES LABELS fast)
     endif()
 endforeach()

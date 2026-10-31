@@ -88,7 +88,16 @@ set(WEBUI_SHARED_CHANNEL_TESTS
 file(GLOB WEBUI_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${WEBUI_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
-    add_executable(dzweb_${testname} ${testfile} ../master/tests/test_main.cpp)
+    if(testname IN_LIST WEBUI_SHARED_CHANNEL_TESTS)
+        # 见上方 WEBUI_SHARED_CHANNEL_TESTS 注释：共享 dzevent 通道且断言自己刚写的帧
+        set(test_properties RUN_SERIAL TRUE TIMEOUT 60)
+    else()
+        set(test_properties "")
+    endif()
+    dz_add_test(dzweb_${testname}
+        SOURCES ${testfile} ../master/tests/test_main.cpp
+        LABELS fast
+        PROPERTIES ${test_properties})
     target_link_libraries(dzweb_${testname} PRIVATE
         dzweb_obj
         dzshm_test_support
@@ -98,18 +107,10 @@ foreach(testfile ${WEBUI_TESTS})
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )
-    set_target_properties(dzweb_${testname} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR})
     if(MSVC AND testname MATCHES "^sysmon_")
         # gtest 1.17 gtest-printers.h 在 MSVC /O2 下对 nlohmann::json 相关模板实例化
         # 偶发 C4702（unreachable code），Release /WX 会升级为错误；仅豁免测试目标。
         target_compile_options(dzweb_${testname} PRIVATE /wd4702)
-    endif()
-    if(testname IN_LIST WEBUI_SHARED_CHANNEL_TESTS)
-        # 见上方 WEBUI_SHARED_CHANNEL_TESTS 注释：共享 dzevent 通道且断言自己刚写的帧
-        gtest_discover_tests(dzweb_${testname}
-            PROPERTIES LABELS fast RUN_SERIAL TRUE TIMEOUT 60)
-    else()
-        gtest_discover_tests(dzweb_${testname} PROPERTIES LABELS fast)
     endif()
 endforeach()
 

@@ -62,14 +62,10 @@ file(GLOB MAIN_ENGINE_TESTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${MAIN_ENGINE_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
-    add_executable(dztraderd_${testname} ${testfile} tests/test_main.cpp)
+    dz_add_test(dztraderd_${testname} SOURCES ${testfile} tests/test_main.cpp LABELS fast)
     target_link_libraries(dztraderd_${testname} PRIVATE
         dztraderd_obj dzshm_test_support GTest::gtest
     )
-    set_target_properties(dztraderd_${testname} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
-    )
-    gtest_discover_tests(dztraderd_${testname} PROPERTIES LABELS fast)
 endforeach()
 
 # ============================================================
@@ -77,9 +73,7 @@ endforeach()
 # 独立于上方 glob (源码在 tests/smoke/ 子目录), RUN_SERIAL:
 # spawn 真实 dztraderd/dzmd_ctp + 机器全局 NamedSemaphore, 不与并行测试混跑
 # ============================================================
-add_executable(dz_smoke_test tests/smoke/smoke_test.cpp tests/test_main.cpp)
+dz_add_test(dz_smoke_test
+    SOURCES tests/smoke/smoke_test.cpp tests/test_main.cpp
+    LABELS fast PROPERTIES RUN_SERIAL TRUE)
 target_link_libraries(dz_smoke_test PRIVATE dztraderd_obj GTest::gtest)
-set_target_properties(dz_smoke_test PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
-)
-gtest_discover_tests(dz_smoke_test PROPERTIES LABELS fast RUN_SERIAL TRUE)

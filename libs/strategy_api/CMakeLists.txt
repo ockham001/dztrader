@@ -161,10 +161,25 @@ file(GLOB SDK_TESTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${SDK_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
-    add_executable(dztrader_sdk_${testname}
-        ${testfile}
-        tests/test_main.cpp
-        ${SDK_TEST_SOURCES})
+    # SDK API 测试 (md/notify/trade/engine) 使用固定 DZTRADER_HOME + 机器全局 SHM 通道名,
+    # gtest_discover_tests 把每个用例注册为独立 ctest 测试, -j 并行时同二进制
+    # 多进程共用同一通道文件互相踩踏 -> RUN_SERIAL 串行化;
+    # 均为秒级用例, TIMEOUT 60 防挂死兜底失效时拖死 CI
+    # 测试分层标签: fast = 默认门禁; slow = 显式穷举/慢速档, 与 RUN_SERIAL/TIMEOUT 正交
+    if(testname IN_LIST SDK_SLOW_TESTS)
+        set(test_labels slow)
+        set(test_properties "")
+    elseif(testname IN_LIST SDK_API_TESTS)
+        set(test_labels fast)
+        set(test_properties RUN_SERIAL TRUE TIMEOUT 60)
+    else()
+        set(test_labels fast)
+        set(test_properties "")
+    endif()
+    dz_add_test(dztrader_sdk_${testname}
+        SOURCES ${testfile} tests/test_main.cpp ${SDK_TEST_SOURCES}
+        LABELS ${test_labels}
+        PROPERTIES ${test_properties})
     target_include_directories(dztrader_sdk_${testname} PRIVATE ${SDK_INTERNAL_INCLUDES})
     target_link_libraries(dztrader_sdk_${testname} PRIVATE
         dztrading strategy_api_headers dzcore dzshm dztest_support GTest::gtest
@@ -184,22 +199,6 @@ foreach(testfile ${SDK_TESTS})
         # db_test 直接用 SQLiteCpp 建临时库, 经 dzdb PUBLIC 依赖满足
         # api.cpp 调 tdstore::query_instruments -> 链 dztdstore
         target_link_libraries(dztrader_sdk_${testname} PRIVATE dzdb dztdstore)
-    endif()
-    set_target_properties(dztrader_sdk_${testname} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
-    )
-    # SDK API 测试 (md/notify/trade/engine) 使用固定 DZTRADER_HOME + 机器全局 SHM 通道名,
-    # gtest_discover_tests 把每个用例注册为独立 ctest 测试, -j 并行时同二进制
-    # 多进程共用同一通道文件互相踩踏 -> RUN_SERIAL 串行化;
-    # 均为秒级用例, TIMEOUT 60 防挂死兜底失效时拖死 CI
-    # 测试分层标签: fast = 默认门禁; slow = 显式穷举/慢速档, 与 RUN_SERIAL/TIMEOUT 正交
-    if(testname IN_LIST SDK_SLOW_TESTS)
-        gtest_discover_tests(dztrader_sdk_${testname} PROPERTIES LABELS slow)
-    elseif(testname IN_LIST SDK_API_TESTS)
-        gtest_discover_tests(dztrader_sdk_${testname}
-            PROPERTIES LABELS fast RUN_SERIAL TRUE TIMEOUT 60)
-    else()
-        gtest_discover_tests(dztrader_sdk_${testname} PROPERTIES LABELS fast)
     endif()
 endforeach()
 

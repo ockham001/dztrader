@@ -4,7 +4,7 @@
 > 1. **撰写**——新增或修改测试时逐条对照；
 > 2. **审查**——全仓测试审查（及后续复查）按条目编号出结论，发现引用形如 `§1.3`。
 >
-> **分工**：本文管「写得好不好」。**机制**（每文件一 target、`gtest_discover_tests`、`DZTRADER_HOME` 豁免、ctest 命名）在
+> **分工**：本文管「写得好不好」。**机制**（每文件一 target、`dz_add_test`/`gtest_discover_tests`、`DZTRADER_HOME` 豁免、ctest 命名）在
 > [build-appendix.md](agents/build-appendix.md) 的「单元测试约定」节；**位置与去向**在仓库根 `CONTRIBUTING.md` §4；
 > **门禁动作**（每次 push 跑什么）在 [development-checklist.md](development-checklist.md) C 段。
 > 本文不改它们的内容，只做判据。
@@ -71,7 +71,7 @@
 
 | # | 判据 | 不合格长什么样 |
 |---|------|----------------|
-| 5.1 | **注册方式唯一**：沿用每文件一 target + `gtest_discover_tests`；注意无 `TEST_PREFIX`，`-R` 只能按 `Suite.Case` 过滤 | 引入第二种注册/构建方式 |
+| 5.1 | **注册方式唯一**：每文件一 target，统一经 `dz_add_test()`（`cmake/DzTest.cmake`）注册——它内部调 `gtest_discover_tests` 并固定带用例发现超时（#227），不要在模块 `CMakeLists.txt` 里直接调（preflight 的 `check_gtest_discovery_timeout.py` 会拦）；注意无 `TEST_PREFIX`，`-R` 只能按 `Suite.Case` 过滤 | 引入第二种注册/构建方式；直接调 `gtest_discover_tests` 而漏掉 `DISCOVERY_TIMEOUT`（退回 5 秒 → Windows CI 随机变红） |
 | 5.2 | **重复基建需有据**：重复的 `test_main.cpp`、多份「同款 fixture」要么注明理由（先例：build-appendix 已写明「部分模块有意只编译源码子集」），要么收敛 | 纯复制粘贴且无人能说出为什么 |
 | 5.3 | **产物去向有意**：测试二进制的 install 行为应是有意决定 | 无人知道为何被安装 |
 | 5.4 | **先查共享夹具再写**：`tests/` 下的共享头是本仓的「测试基建真相源」，动手前先查下表；要复制其中任何一件，按 5.2 注明理由 | 重写一份已有的 fake/夹具/常量（#163 重复定义了 `bar_test_data.h` 的小节表，只有人工 review 抓到；#165 重复了 `Recorder` 与 `repo_root`） |

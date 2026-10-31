@@ -35,10 +35,6 @@ file(GLOB LOG_TESTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${LOG_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
-    add_executable(dzlog_${testname} ${testfile} tests/test_main.cpp)
+    dz_add_test(dzlog_${testname} SOURCES ${testfile} tests/test_main.cpp LABELS fast)
     target_link_libraries(dzlog_${testname} PRIVATE dzlog GTest::gtest)
-    set_target_properties(dzlog_${testname} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
-    )
-    gtest_discover_tests(dzlog_${testname} PROPERTIES LABELS fast)
 endforeach()

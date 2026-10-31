@@ -34,7 +34,7 @@ dztrader 是一个由一位作者维护的开源量化交易系统。Issue 与 P
 
 ## 4. 测试放哪
 
-- 单元测试用 Google Test，与被测模块同目录：`libs/<名称>/tests/` 或 `apps/<组件>/tests/`；每个 `*_test.cpp` 独立编译，由 `gtest_discover_tests` 自动注册
+- 单元测试用 Google Test，与被测模块同目录：`libs/<名称>/tests/` 或 `apps/<组件>/tests/`；每个 `*_test.cpp` 独立编译，经 `dz_add_test()`（`cmake/DzTest.cmake`）注册（内部用 `gtest_discover_tests`）—— 机制细节见 [build-appendix](docs/agents/build-appendix.md)「单元测试约定」
 - 集成冒烟测试在 `apps/master/tests/`
 - 新功能应带测试。**本项目不设覆盖率指标，也没有接入覆盖率工具** —— 靠测试的针对性而非数字
 
