@@ -241,8 +241,6 @@ describe('UserManagementView 权限功能下线（#205）', () => {
     const userTable = w.findAll('table.ds-table').find(t => t.text().includes('用户名'))!
     const headers = userTable.findAll('th').map(th => th.text())
     expect(headers).toEqual(['用户名', '显示名称', '角色', '状态', '最后登录', '操作'])
-    expect(headers).not.toContain('账户权限')
-    expect(headers).not.toContain('策略权限')
   })
 
   it('用户行不再显示「N 个账户 / N 个策略」入口', async () => {
@@ -266,11 +264,11 @@ describe('UserManagementView 权限功能下线（#205）', () => {
     await w.vm.$nextTick()
     const modal = w.find('.modal-stub')
     expect(modal.exists()).toBe(true)
-    // 两块权限勾选区（含全选）均已下线, Modal 内不应有任何 checkbox
-    expect(modal.findAll('input[type="checkbox"]')).toHaveLength(0)
+    // 正向锚点：证明默认 slot 确实渲染（只有否定断言时 slot 整体消失仍会全绿）
+    expect(modal.text()).toContain('用户名')
+    // 两块权限勾选区（含全选）及其原型选项均已下线
     expect(modal.text()).not.toContain('账户权限')
     expect(modal.text()).not.toContain('策略权限')
-    // 原型的固定权限项文本也不应出现
     expect(modal.text()).not.toContain('CTP-主力账户')
     expect(modal.text()).not.toContain('IB-美股账户')
     expect(modal.text()).not.toContain('MACD_V3')

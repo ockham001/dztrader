@@ -456,85 +456,83 @@ onUnmounted(() => {
               </tr>
             </thead>
             <tbody>
-              <template v-for="u in filteredUsers" :key="u.id">
-                <tr :style="{ opacity: u.status === 'disabled' ? 0.55 : 1 }">
-                  <td>
-                    <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-10)' }">
-                      <span class="ds-avatar ds-avatar--sm">{{ avatarChar(u.display_name) }}</span>
-                      <div>
-                        <div :style="{ fontWeight: 'var(--font-weight-medium)' }">{{ u.username }}</div>
-                        <div :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-tertiary)' }">{{ u.email }}</div>
-                      </div>
+              <tr v-for="u in filteredUsers" :key="u.id" :style="{ opacity: u.status === 'disabled' ? 0.55 : 1 }">
+                <td>
+                  <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-10)' }">
+                    <span class="ds-avatar ds-avatar--sm">{{ avatarChar(u.display_name) }}</span>
+                    <div>
+                      <div :style="{ fontWeight: 'var(--font-weight-medium)' }">{{ u.username }}</div>
+                      <div :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-tertiary)' }">{{ u.email }}</div>
                     </div>
-                  </td>
-                  <td>{{ u.display_name }}</td>
-                  <td>
-                    <span class="ds-tag" :style="u.role === 'admin' ? { background: 'var(--bg-brand)', color: 'var(--text-onbrand)' } : {}">
-                      {{ u.role === 'admin' ? '管理员' : '普通用户' }}
-                    </span>
-                  </td>
-                  <td>
-                    <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)' }">
-                      <span class="status-dot" :class="statusDotClass(u.status)"></span>
-                      <span>{{ statusText(u.status) }}</span>
-                    </div>
-                  </td>
-                  <td :style="{ fontVariantNumeric: 'tabular-nums' }">{{ u.last_login_at ?? '--' }}</td>
-                  <td class="ds-table__actions">
-                    <div :style="{ display: 'flex', gap: 'var(--spacer-4)', justifyContent: 'flex-end' }">
-                      <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm" type="button" title="编辑" @click="openEditUserModal(u)">
-                        <Icon name="edit" :size="14" />
-                      </button>
-                      <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm" type="button" title="重置密码" v-if="u.status !== 'disabled'" @click="openResetPasswordModal(u)">
-                        <Icon name="lock-refresh" :size="14" />
-                      </button>
-                      <button
-                        v-if="u.status === 'locked'"
-                        class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
-                        type="button"
-                        title="解锁"
-                        :style="{ color: 'var(--status-success-default)' }"
-                        :disabled="u.actionPending"
-                        @click="store.updateUserStatus(u.id, 'unlocked')"
-                      >
-                        <Icon name="unlock" :size="14" />
-                      </button>
-                      <button
-                        v-if="u.status === 'disabled'"
-                        class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
-                        type="button"
-                        title="启用"
-                        :disabled="u.actionPending"
-                        @click="store.updateUserStatus(u.id, 'enabled')"
-                      >
-                        <Icon name="play-filled" :size="14" />
-                      </button>
-                      <button
-                        v-else-if="u.role !== 'admin'"
-                        class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
-                        type="button"
-                        title="禁用"
-                        :disabled="u.actionPending"
-                        @click="store.updateUserStatus(u.id, 'disabled')"
-                      >
-                        <Icon name="Ban" :size="14" />
-                      </button>
-                      <button
-                        v-if="u.role !== 'admin'"
-                        class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm ds-btn--danger-icon"
-                        type="button"
-                        :title="`删除用户 ${u.display_name}`"
-                        :aria-label="`删除用户 ${u.display_name}`"
-                        :disabled="u.removePending"
-                        @click="openRemoveUserModal(u)"
-                      >
-                        <span v-if="u.removePending" class="ds-btn__spinner"></span>
-                        <Icon v-else name="Delete" :size="14" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              </template>
+                  </div>
+                </td>
+                <td>{{ u.display_name }}</td>
+                <td>
+                  <span class="ds-tag" :style="u.role === 'admin' ? { background: 'var(--bg-brand)', color: 'var(--text-onbrand)' } : {}">
+                    {{ u.role === 'admin' ? '管理员' : '普通用户' }}
+                  </span>
+                </td>
+                <td>
+                  <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)' }">
+                    <span class="status-dot" :class="statusDotClass(u.status)"></span>
+                    <span>{{ statusText(u.status) }}</span>
+                  </div>
+                </td>
+                <td :style="{ fontVariantNumeric: 'tabular-nums' }">{{ u.last_login_at ?? '--' }}</td>
+                <td class="ds-table__actions">
+                  <div :style="{ display: 'flex', gap: 'var(--spacer-4)', justifyContent: 'flex-end' }">
+                    <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm" type="button" title="编辑" @click="openEditUserModal(u)">
+                      <Icon name="edit" :size="14" />
+                    </button>
+                    <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm" type="button" title="重置密码" v-if="u.status !== 'disabled'" @click="openResetPasswordModal(u)">
+                      <Icon name="lock-refresh" :size="14" />
+                    </button>
+                    <button
+                      v-if="u.status === 'locked'"
+                      class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
+                      type="button"
+                      title="解锁"
+                      :style="{ color: 'var(--status-success-default)' }"
+                      :disabled="u.actionPending"
+                      @click="store.updateUserStatus(u.id, 'unlocked')"
+                    >
+                      <Icon name="unlock" :size="14" />
+                    </button>
+                    <button
+                      v-if="u.status === 'disabled'"
+                      class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
+                      type="button"
+                      title="启用"
+                      :disabled="u.actionPending"
+                      @click="store.updateUserStatus(u.id, 'enabled')"
+                    >
+                      <Icon name="play-filled" :size="14" />
+                    </button>
+                    <button
+                      v-else-if="u.role !== 'admin'"
+                      class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
+                      type="button"
+                      title="禁用"
+                      :disabled="u.actionPending"
+                      @click="store.updateUserStatus(u.id, 'disabled')"
+                    >
+                      <Icon name="Ban" :size="14" />
+                    </button>
+                    <button
+                      v-if="u.role !== 'admin'"
+                      class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm ds-btn--danger-icon"
+                      type="button"
+                      :title="`删除用户 ${u.display_name}`"
+                      :aria-label="`删除用户 ${u.display_name}`"
+                      :disabled="u.removePending"
+                      @click="openRemoveUserModal(u)"
+                    >
+                      <span v-if="u.removePending" class="ds-btn__spinner"></span>
+                      <Icon v-else name="Delete" :size="14" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>
