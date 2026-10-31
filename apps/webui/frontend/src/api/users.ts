@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { User, UserListResponse, Permission } from '@/types/api'
+import type { User, UserListResponse } from '@/types/api'
 
 export interface UserListParams {
   search?: string
@@ -40,7 +40,4 @@ export const usersApi = {
     api.put<User>(`/api/user/${id}/status`, { status }),
   resetPassword: (id: number, newPassword: string) =>
     api.put<void>(`/api/user/${id}/password`, { new_password: newPassword }),
-  getPermissions: (id: number) => api.get<Permission[]>(`/api/user/${id}/permissions`),
-  updatePermissions: (id: number, permissions: Permission[]) =>
-    api.put<Permission[]>(`/api/user/${id}/permissions`, { permissions }),
 }

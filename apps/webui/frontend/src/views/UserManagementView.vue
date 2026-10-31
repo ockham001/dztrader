@@ -9,8 +9,6 @@ import { sourceTypeText, sourceTypeClass } from '@/composables/useSourceType'
 import { LOGIN_ERROR_TEXT, type LoginErrorCode } from '@/composables/loginErrors'
 import {
   useUserManagementStore,
-  ACCOUNT_PERMISSIONS,
-  STRATEGY_PERMISSIONS,
   getAccessModeDescription,
 } from '@/stores/userManagement'
 import type { DropdownItem } from '@/components/shared/Dropdown.vue'
@@ -132,7 +130,7 @@ async function handleAddIp(): Promise<void> {
 }
 
 // ===== 删除用户二次确认（#204）=====
-// 后端是硬 DELETE（级联权限并踢断 WS），不可撤销，必须二次确认。
+// 后端是硬 DELETE 并踢断 WS，不可撤销，必须二次确认。
 // 失败保留 Modal 让用户重试，错误经 toast 反馈（与添加/编辑用户一致）。
 const removeUserModalOpen = ref(false)
 const removeUserTarget = ref<UserView | null>(null)
@@ -186,17 +184,13 @@ const newUser = ref({
   email: '',
   password: '88888888',
   role: 'user',
-  accountPermissions: [...ACCOUNT_PERMISSIONS] as string[],
-  strategyPermissions: [...STRATEGY_PERMISSIONS] as string[],
 })
 
 function openAddUserModal(): void {
-  // 默认全选权限、密码默认 88888888、邮箱选填
+  // 密码默认 88888888、邮箱选填
   newUser.value = {
     username: '', display_name: '', email: '', password: '88888888',
     role: 'user',
-    accountPermissions: [...ACCOUNT_PERMISSIONS],
-    strategyPermissions: [...STRATEGY_PERMISSIONS],
   }
   addUserModalOpen.value = true
 }
@@ -214,8 +208,6 @@ async function confirmAddUser(): Promise<void> {
     email: newUser.value.email.trim(),
     password: newUser.value.password,
     role: newUser.value.role,
-    accountPermissions: newUser.value.accountPermissions,
-    strategyPermissions: newUser.value.strategyPermissions,
   })
   if (!ok) {
     showToast(store.error ?? '添加用户失败', 'error')
@@ -288,77 +280,6 @@ async function confirmResetPassword(): Promise<void> {
   const ok = await store.resetPassword(resetPasswordData.value.id, resetPasswordData.value.newPassword)
   closeResetPasswordModal()
   showToast(ok ? '密码已重置' : '重置失败', ok ? 'success' : 'error')
-}
-
-function toggleAccountPerm(perm: string): void {
-  const idx = newUser.value.accountPermissions.indexOf(perm)
-  if (idx === -1) {
-    newUser.value.accountPermissions = [...newUser.value.accountPermissions, perm]
-  } else {
-    newUser.value.accountPermissions = newUser.value.accountPermissions.filter(p => p !== perm)
-  }
-}
-
-function toggleStrategyPerm(perm: string): void {
-  const idx = newUser.value.strategyPermissions.indexOf(perm)
-  if (idx === -1) {
-    newUser.value.strategyPermissions = [...newUser.value.strategyPermissions, perm]
-  } else {
-    newUser.value.strategyPermissions = newUser.value.strategyPermissions.filter(p => p !== perm)
-  }
-}
-
-// 权限全选/取消全选（含 indeterminate 状态：部分选中时 checkbox 显示横线）
-const accountPermAll = computed(() => newUser.value.accountPermissions.length === ACCOUNT_PERMISSIONS.length)
-const strategyPermAll = computed(() => newUser.value.strategyPermissions.length === STRATEGY_PERMISSIONS.length)
-const accountPermIndeterminate = computed(() =>
-  newUser.value.accountPermissions.length > 0 && !accountPermAll.value)
-const strategyPermIndeterminate = computed(() =>
-  newUser.value.strategyPermissions.length > 0 && !strategyPermAll.value)
-
-function toggleAllAccountPerms(): void {
-  newUser.value.accountPermissions = accountPermAll.value ? [] : [...ACCOUNT_PERMISSIONS]
-}
-function toggleAllStrategyPerms(): void {
-  newUser.value.strategyPermissions = strategyPermAll.value ? [] : [...STRATEGY_PERMISSIONS]
-}
-
-function toggleUserAccountPerm(user: UserView, perm: string): void {
-  const idx = user.accountPermissions.indexOf(perm)
-  const newPerms = idx === -1
-    ? [...user.accountPermissions, perm]
-    : user.accountPermissions.filter(p => p !== perm)
-  void store.updatePermissions(user.id, newPerms, user.strategyPermissions)
-}
-
-function toggleUserStrategyPerm(user: UserView, perm: string): void {
-  const idx = user.strategyPermissions.indexOf(perm)
-  const newPerms = idx === -1
-    ? [...user.strategyPermissions, perm]
-    : user.strategyPermissions.filter(p => p !== perm)
-  void store.updatePermissions(user.id, user.accountPermissions, newPerms)
-}
-
-// 用户列表权限面板的全选状态（按用户计算）
-function userAccountPermAll(user: UserView): boolean {
-  return user.accountPermissions.length === ACCOUNT_PERMISSIONS.length
-}
-function userStrategyPermAll(user: UserView): boolean {
-  return user.strategyPermissions.length === STRATEGY_PERMISSIONS.length
-}
-function userAccountPermIndeterminate(user: UserView): boolean {
-  return user.accountPermissions.length > 0 && !userAccountPermAll(user)
-}
-function userStrategyPermIndeterminate(user: UserView): boolean {
-  return user.strategyPermissions.length > 0 && !userStrategyPermAll(user)
-}
-function toggleAllUserAccountPerms(user: UserView): void {
-  const newPerms = userAccountPermAll(user) ? [] : [...ACCOUNT_PERMISSIONS]
-  void store.updatePermissions(user.id, newPerms, user.strategyPermissions)
-}
-function toggleAllUserStrategyPerms(user: UserView): void {
-  const newPerms = userStrategyPermAll(user) ? [] : [...STRATEGY_PERMISSIONS]
-  void store.updatePermissions(user.id, user.accountPermissions, newPerms)
 }
 
 // Status helpers
@@ -529,148 +450,89 @@ onUnmounted(() => {
                 <th>用户名</th>
                 <th>显示名称</th>
                 <th>角色</th>
-                <th>账户权限</th>
-                <th>策略权限</th>
                 <th>状态</th>
                 <th>最后登录</th>
                 <th :style="{ textAlign: 'right' }">操作</th>
               </tr>
             </thead>
             <tbody>
-              <template v-for="u in filteredUsers" :key="u.id">
-                <tr :style="{ opacity: u.status === 'disabled' ? 0.55 : 1 }">
-                  <td>
-                    <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-10)' }">
-                      <span class="ds-avatar ds-avatar--sm">{{ avatarChar(u.display_name) }}</span>
-                      <div>
-                        <div :style="{ fontWeight: 'var(--font-weight-medium)' }">{{ u.username }}</div>
-                        <div :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-tertiary)' }">{{ u.email }}</div>
-                      </div>
+              <tr v-for="u in filteredUsers" :key="u.id" :style="{ opacity: u.status === 'disabled' ? 0.55 : 1 }">
+                <td>
+                  <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-10)' }">
+                    <span class="ds-avatar ds-avatar--sm">{{ avatarChar(u.display_name) }}</span>
+                    <div>
+                      <div :style="{ fontWeight: 'var(--font-weight-medium)' }">{{ u.username }}</div>
+                      <div :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-tertiary)' }">{{ u.email }}</div>
                     </div>
-                  </td>
-                  <td>{{ u.display_name }}</td>
-                  <td>
-                    <span class="ds-tag" :style="u.role === 'admin' ? { background: 'var(--bg-brand)', color: 'var(--text-onbrand)' } : {}">
-                      {{ u.role === 'admin' ? '管理员' : '普通用户' }}
-                    </span>
-                  </td>
-                  <td><button class="ds-btn ds-btn--link" type="button" @click="store.toggleExpand(u.id)">{{ u.accountPermissions.length }} 个账户</button></td>
-                  <td><button class="ds-btn ds-btn--link" type="button" @click="store.toggleExpand(u.id)">{{ u.strategyPermissions.length }} 个策略</button></td>
-                  <td>
-                    <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)' }">
-                      <span class="status-dot" :class="statusDotClass(u.status)"></span>
-                      <span>{{ statusText(u.status) }}</span>
-                    </div>
-                  </td>
-                  <td :style="{ fontVariantNumeric: 'tabular-nums' }">{{ u.last_login_at ?? '--' }}</td>
-                  <td class="ds-table__actions">
-                    <div :style="{ display: 'flex', gap: 'var(--spacer-4)', justifyContent: 'flex-end' }">
-                      <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm" type="button" title="编辑" @click="openEditUserModal(u)">
-                        <Icon name="edit" :size="14" />
-                      </button>
-                      <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm" type="button" title="重置密码" v-if="u.status !== 'disabled'" @click="openResetPasswordModal(u)">
-                        <Icon name="lock-refresh" :size="14" />
-                      </button>
-                      <button
-                        v-if="u.status === 'locked'"
-                        class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
-                        type="button"
-                        title="解锁"
-                        :style="{ color: 'var(--status-success-default)' }"
-                        :disabled="u.actionPending"
-                        @click="store.updateUserStatus(u.id, 'unlocked')"
-                      >
-                        <Icon name="unlock" :size="14" />
-                      </button>
-                      <button
-                        v-if="u.status === 'disabled'"
-                        class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
-                        type="button"
-                        title="启用"
-                        :disabled="u.actionPending"
-                        @click="store.updateUserStatus(u.id, 'enabled')"
-                      >
-                        <Icon name="play-filled" :size="14" />
-                      </button>
-                      <button
-                        v-else-if="u.role !== 'admin'"
-                        class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
-                        type="button"
-                        title="禁用"
-                        :disabled="u.actionPending"
-                        @click="store.updateUserStatus(u.id, 'disabled')"
-                      >
-                        <Icon name="Ban" :size="14" />
-                      </button>
-                      <button
-                        v-if="u.role !== 'admin'"
-                        class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm ds-btn--danger-icon"
-                        type="button"
-                        :title="`删除用户 ${u.display_name}`"
-                        :aria-label="`删除用户 ${u.display_name}`"
-                        :disabled="u.removePending"
-                        @click="openRemoveUserModal(u)"
-                      >
-                        <span v-if="u.removePending" class="ds-btn__spinner"></span>
-                        <Icon v-else name="Delete" :size="14" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-                <!-- Expandable permission row -->
-                <tr v-if="u.expanded" class="expand-row is-open" :key="`expand-${u.id}`">
-                  <td colspan="8" :style="{ padding: 'var(--spacer-16) var(--spacer-12)' }">
-                    <div :style="{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--spacer-24)' }">
-                      <div>
-                        <label class="ds-check ds-check--all" :style="{ marginBottom: 'var(--spacer-8)' }">
-                          <input
-                            type="checkbox"
-                            :checked="userAccountPermAll(u)"
-                            :indeterminate.prop="userAccountPermIndeterminate(u)"
-                            @change="toggleAllUserAccountPerms(u)"
-                          >
-                          <span class="ds-check__box"></span>
-                          <span :style="{ fontWeight: 'var(--font-weight-medium)', fontSize: 'var(--body-md-font-size)' }">账户权限</span>
-                        </label>
-                        <div class="perm-list">
-                          <label v-for="perm in ACCOUNT_PERMISSIONS" :key="perm" class="ds-check">
-                            <input
-                              type="checkbox"
-                              :checked="u.accountPermissions.includes(perm)"
-                              @change="toggleUserAccountPerm(u, perm)"
-                            >
-                            <span class="ds-check__box"></span>
-                            {{ perm }}
-                          </label>
-                        </div>
-                      </div>
-                      <div>
-                        <label class="ds-check ds-check--all" :style="{ marginBottom: 'var(--spacer-8)' }">
-                          <input
-                            type="checkbox"
-                            :checked="userStrategyPermAll(u)"
-                            :indeterminate.prop="userStrategyPermIndeterminate(u)"
-                            @change="toggleAllUserStrategyPerms(u)"
-                          >
-                          <span class="ds-check__box"></span>
-                          <span :style="{ fontWeight: 'var(--font-weight-medium)', fontSize: 'var(--body-md-font-size)' }">策略权限</span>
-                        </label>
-                        <div class="perm-list">
-                          <label v-for="perm in STRATEGY_PERMISSIONS" :key="perm" class="ds-check">
-                            <input
-                              type="checkbox"
-                              :checked="u.strategyPermissions.includes(perm)"
-                              @change="toggleUserStrategyPerm(u, perm)"
-                            >
-                            <span class="ds-check__box"></span>
-                            {{ perm }}
-                          </label>
-                        </div>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              </template>
+                  </div>
+                </td>
+                <td>{{ u.display_name }}</td>
+                <td>
+                  <span class="ds-tag" :style="u.role === 'admin' ? { background: 'var(--bg-brand)', color: 'var(--text-onbrand)' } : {}">
+                    {{ u.role === 'admin' ? '管理员' : '普通用户' }}
+                  </span>
+                </td>
+                <td>
+                  <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)' }">
+                    <span class="status-dot" :class="statusDotClass(u.status)"></span>
+                    <span>{{ statusText(u.status) }}</span>
+                  </div>
+                </td>
+                <td :style="{ fontVariantNumeric: 'tabular-nums' }">{{ u.last_login_at ?? '--' }}</td>
+                <td class="ds-table__actions">
+                  <div :style="{ display: 'flex', gap: 'var(--spacer-4)', justifyContent: 'flex-end' }">
+                    <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm" type="button" title="编辑" @click="openEditUserModal(u)">
+                      <Icon name="edit" :size="14" />
+                    </button>
+                    <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm" type="button" title="重置密码" v-if="u.status !== 'disabled'" @click="openResetPasswordModal(u)">
+                      <Icon name="lock-refresh" :size="14" />
+                    </button>
+                    <button
+                      v-if="u.status === 'locked'"
+                      class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
+                      type="button"
+                      title="解锁"
+                      :style="{ color: 'var(--status-success-default)' }"
+                      :disabled="u.actionPending"
+                      @click="store.updateUserStatus(u.id, 'unlocked')"
+                    >
+                      <Icon name="unlock" :size="14" />
+                    </button>
+                    <button
+                      v-if="u.status === 'disabled'"
+                      class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
+                      type="button"
+                      title="启用"
+                      :disabled="u.actionPending"
+                      @click="store.updateUserStatus(u.id, 'enabled')"
+                    >
+                      <Icon name="play-filled" :size="14" />
+                    </button>
+                    <button
+                      v-else-if="u.role !== 'admin'"
+                      class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
+                      type="button"
+                      title="禁用"
+                      :disabled="u.actionPending"
+                      @click="store.updateUserStatus(u.id, 'disabled')"
+                    >
+                      <Icon name="Ban" :size="14" />
+                    </button>
+                    <button
+                      v-if="u.role !== 'admin'"
+                      class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm ds-btn--danger-icon"
+                      type="button"
+                      :title="`删除用户 ${u.display_name}`"
+                      :aria-label="`删除用户 ${u.display_name}`"
+                      :disabled="u.removePending"
+                      @click="openRemoveUserModal(u)"
+                    >
+                      <span v-if="u.removePending" class="ds-btn__spinner"></span>
+                      <Icon v-else name="Delete" :size="14" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -893,56 +755,6 @@ onUnmounted(() => {
             <input v-model="newUser.password" type="text" placeholder="默认 88888888">
           </div>
         </div>
-        <div class="dialog-field dialog-field--perms">
-          <div class="dialog-field__perms-header">
-            <label class="ds-check ds-check--all">
-              <input
-                type="checkbox"
-                :checked="accountPermAll"
-                :indeterminate.prop="accountPermIndeterminate"
-                @change="toggleAllAccountPerms"
-              >
-              <span class="ds-check__box"></span>
-              <span class="dialog-field__label">账户权限</span>
-            </label>
-          </div>
-          <div class="perm-list">
-            <label v-for="perm in ACCOUNT_PERMISSIONS" :key="perm" class="ds-check">
-              <input
-                type="checkbox"
-                :checked="newUser.accountPermissions.includes(perm)"
-                @change="toggleAccountPerm(perm)"
-              >
-              <span class="ds-check__box"></span>
-              {{ perm }}
-            </label>
-          </div>
-        </div>
-        <div class="dialog-field dialog-field--perms">
-          <div class="dialog-field__perms-header">
-            <label class="ds-check ds-check--all">
-              <input
-                type="checkbox"
-                :checked="strategyPermAll"
-                :indeterminate.prop="strategyPermIndeterminate"
-                @change="toggleAllStrategyPerms"
-              >
-              <span class="ds-check__box"></span>
-              <span class="dialog-field__label">策略权限</span>
-            </label>
-          </div>
-          <div class="perm-list">
-            <label v-for="perm in STRATEGY_PERMISSIONS" :key="perm" class="ds-check">
-              <input
-                type="checkbox"
-                :checked="newUser.strategyPermissions.includes(perm)"
-                @change="toggleStrategyPerm(perm)"
-              >
-              <span class="ds-check__box"></span>
-              {{ perm }}
-            </label>
-          </div>
-        </div>
       </div>
       <template #footer>
         <button class="ds-btn ds-btn--secondary" type="button" @click="closeAddUserModal">取消</button>
@@ -1022,7 +834,7 @@ onUnmounted(() => {
       <div :style="{ color: 'var(--text-default)' }">
         确认删除用户 <code class="mono" :style="{ fontWeight: 500 }">{{ removeUserTarget?.username }}</code> 吗？
         <div :style="{ marginTop: 'var(--spacer-8)', color: 'var(--text-tertiary)', fontSize: 'var(--body-sm-font-size)' }">
-          删除后不可恢复，该用户的账户/策略权限配置将一并移除，已登录会话会被断开。
+          删除后不可恢复，已登录会话会被断开。
         </div>
       </div>
       <template #footer>
@@ -1075,18 +887,6 @@ onUnmounted(() => {
 
 .section-gap {
   margin-top: var(--spacer-32);
-}
-
-/* Expandable permission row */
-.expand-row td {
-  background: var(--bg-overlay-l1);
-}
-
-/* Permission list */
-.perm-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--spacer-8);
 }
 
 /* Status dot */

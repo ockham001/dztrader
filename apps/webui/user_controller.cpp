@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <nlohmann/json.hpp>
-#include <spdlog/spdlog.h>
 #include <ctime>
 #include <string>
 #include "ws_controller.h"
@@ -10,18 +9,6 @@
 namespace dztrader::webui {
 
 using Json = nlohmann::json;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-Json UserCtrl::permission_to_json(const Permission& p) {
-    return {
-        {"type", p.type},
-        {"id", p.id},
-        {"granted", p.granted},
-    };
-}
 
 // ---------------------------------------------------------------------------
 // GET /api/user - list users with filters and pagination
@@ -346,86 +333,6 @@ void UserCtrl::reset_password(
     }
 
     callback(json_response(drogon::k200OK, {{"ok", true}}));
-}
-
-// ---------------------------------------------------------------------------
-// GET /api/user/{id}/permissions - get user permissions
-// ---------------------------------------------------------------------------
-
-void UserCtrl::get_permissions(
-    const drogon::HttpRequestPtr& req,
-    std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
-    int64_t id) {
-    if (!is_admin(req)) {
-        callback(error_response(drogon::k403Forbidden, "forbidden"));
-        return;
-    }
-
-    if (!repo_->get_user_by_id(id).has_value()) {
-        callback(error_response(drogon::k404NotFound, "not found"));
-        return;
-    }
-    auto perms = repo_->get_user_permissions(id);
-    Json arr = Json::array();
-    for (const auto& p : perms) {
-        arr.push_back(permission_to_json(p));
-    }
-    callback(json_response(drogon::k200OK, arr));
-}
-
-// ---------------------------------------------------------------------------
-// PUT /api/user/{id}/permissions - update permissions (admin only)
-// ---------------------------------------------------------------------------
-
-void UserCtrl::update_permissions(
-    const drogon::HttpRequestPtr& req,
-    std::function<void(const drogon::HttpResponsePtr&)>&& callback,  // NOLINT
-    int64_t id) {
-    if (!is_admin(req)) {
-        callback(error_response(drogon::k403Forbidden, "forbidden"));
-        return;
-    }
-
-    Json body;
-    try {
-        body = Json::parse(req->getBody());
-    } catch (...) {
-        callback(error_response(drogon::k400BadRequest, "bad request"));
-        return;
-    }
-
-    if (!body.contains("permissions") || !body["permissions"].is_array()) {
-        callback(error_response(drogon::k400BadRequest, "missing permissions array"));
-        return;
-    }
-
-    if (!repo_->get_user_by_id(id).has_value()) {
-        callback(error_response(drogon::k404NotFound, "not found"));
-        return;
-    }
-
-    for (const auto& perm : body["permissions"]) {
-        std::string type = perm.value("type", "");
-        std::string perm_id = perm.value("id", "");
-        const bool granted = perm.value("granted", false);
-        if (type.empty() || perm_id.empty()) {
-            continue;
-        }
-        if (!repo_->set_user_permission(id, type, perm_id, granted)) {
-            SPDLOG_WARN("set_user_permission failed | user={} type={} id={}", id, type, perm_id);
-            callback(
-                error_response(drogon::k500InternalServerError, "failed to set user permission"));
-            return;
-        }
-    }
-
-    auto perms = repo_->get_user_permissions(id);
-    Json arr = Json::array();
-    for (const auto& p : perms) {
-        arr.push_back(permission_to_json(p));
-    }
-    notifier_.broadcast_data_changed("users");
-    callback(json_response(drogon::k200OK, arr));
 }
 
 // ---------------------------------------------------------------------------

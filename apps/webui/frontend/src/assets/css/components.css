@@ -318,9 +318,6 @@ pre {
     .ds-btn--brand:hover { background: var(--bg-brand-hover); border-color: var(--bg-brand-hover); }
     .ds-btn--brand:active { background: var(--bg-brand-active); border-color: var(--bg-brand-active); }
     .ds-btn--brand[disabled] { background: var(--bg-brand-disabled); border-color: transparent; color: var(--text-onbrand); cursor: not-allowed; }
-    .ds-btn--link { background: transparent; color: var(--text-default); border-color: transparent; padding: 0; height: auto; }
-    .ds-btn--link:hover { color: var(--text-default-hover); text-decoration: underline; }
-    .ds-btn--link[disabled] { color: var(--text-disabled); text-decoration: none; cursor: not-allowed; }
     .ds-btn--icon { width: 28px; padding: 0; justify-content: center; }
     .ds-btn--icon.ds-btn--sm { width: 24px; }
     .ds-btn--icon.ds-btn--lg { width: 32px; }
@@ -369,10 +366,6 @@ pre {
     .dialog-field > .ds-input,
     .dialog-field > .ds-select-wrap,
     .dialog-field > .ds-textarea { flex: 1; min-width: 0; }
-    .dialog-field--perms { flex-direction: column; align-items: flex-start; }
-    .dialog-field--perms .dialog-field__label { width: auto; text-align: left; }
-    .dialog-field__perms-header { display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: var(--spacer-8); }
-    .dialog-field__perms-header .dialog-field__label { margin-bottom: 0; }
     .ds-link-btn { background: transparent; border: none; color: var(--text-tertiary); font-size: var(--body-xs-font-size); cursor: pointer; padding: 0; }
     .ds-link-btn:hover { color: var(--text-default); }
     .dialog-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--spacer-12); }

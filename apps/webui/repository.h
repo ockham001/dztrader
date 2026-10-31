@@ -37,12 +37,6 @@ struct User {
     int default_password_acknowledged = 0;  ///< 默认密码告警确认标志(0=未确认,1=已确认)
 };
 
-struct Permission {
-    std::string type;  ///< "account" | "strategy"
-    std::string id;
-    bool granted = false;
-};
-
 struct LoginHistoryEntry {
     int64_t id = 0;
     std::string username;
@@ -122,13 +116,6 @@ public:
     void reset_failed_login(const std::string& username);
     void lock_user(int64_t id, int64_t locked_until);
     void update_last_login(int64_t id, const std::string& ip);
-
-    // Permissions
-    std::vector<Permission> get_user_permissions(int64_t user_id);
-    bool set_user_permission(int64_t user_id,
-                             const std::string& type,
-                             const std::string& perm_id,
-                             bool granted);
 
     // Login history
     void add_login_history(const std::string& username,

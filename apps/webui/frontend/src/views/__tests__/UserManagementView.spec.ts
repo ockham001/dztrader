@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { useUserManagementStore, ACCOUNT_PERMISSIONS, STRATEGY_PERMISSIONS } from '@/stores/userManagement'
+import { useUserManagementStore } from '@/stores/userManagement'
 import type { UserView } from '@/stores/userManagement'
 import { usersApi } from '@/api/users'
 import UserManagementView from '../UserManagementView.vue'
@@ -35,8 +35,7 @@ function fakeUser(
   return {
     id, username, display_name: username, email: `${username}@x.com`, role, status,
     last_login_at: '2026-08-21 10:00:00', created_at: '2026-08-01',
-    accountPermissions: [...ACCOUNT_PERMISSIONS], strategyPermissions: [...STRATEGY_PERMISSIONS],
-    expanded: false, actionPending: false, removePending: false,
+    actionPending: false, removePending: false,
   }
 }
 
@@ -155,7 +154,10 @@ describe('UserManagementView 删除用户二次确认（#204）', () => {
     expect(modal.text()).toContain('确认删除用户')
     expect(modal.text()).toContain('bob')
     expect(modal.text()).toContain('不可恢复')
-    expect(modal.text()).toContain('权限配置将一并移除')
+    // #205 权限功能下线：确认文案不再提及权限配置
+    expect(modal.text()).toContain('已登录会话会被断开')
+    expect(modal.text()).not.toContain('权限配置将一并移除')
+    expect(modal.text()).not.toContain('账户/策略权限')
 
     await w.findAll('button').find(b => b.text() === '取消')!.trigger('click')
     expect(spy).not.toHaveBeenCalled()
@@ -220,5 +222,55 @@ describe('UserManagementView 删除用户二次确认（#204）', () => {
     resolveRemove(false)  // 结束挂起（失败保留 Modal 即可）
     await flushPromises()
     expect(w.find('.modal-stub').exists()).toBe(true)
+  })
+})
+
+describe('UserManagementView 权限功能下线（#205）', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    setActivePinia(createPinia())
+    const store = useUserManagementStore()
+    vi.spyOn(store, 'loadAll').mockResolvedValue()
+  })
+
+  it('用户列表表头不含账户/策略权限列', async () => {
+    const store = useUserManagementStore()
+    store.users = [fakeUser(1, 'alice', 'admin')]
+    const w = mount(UserManagementView, { global: { stubs: sharedStubs } })
+    await flushPromises()
+    const userTable = w.findAll('table.ds-table').find(t => t.text().includes('用户名'))!
+    const headers = userTable.findAll('th').map(th => th.text())
+    expect(headers).toEqual(['用户名', '显示名称', '角色', '状态', '最后登录', '操作'])
+  })
+
+  it('用户行不再显示「N 个账户 / N 个策略」入口', async () => {
+    const store = useUserManagementStore()
+    store.users = [fakeUser(1, 'alice', 'admin'), fakeUser(2, 'bob')]
+    const w = mount(UserManagementView, { global: { stubs: sharedStubs } })
+    await flushPromises()
+    const userTable = w.findAll('table.ds-table').find(t => t.text().includes('用户名'))!
+    const rows = userTable.findAll('tbody tr')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].findAll('td')).toHaveLength(6)  // 权限两列已移除
+    expect(w.text()).not.toMatch(/\d+ 个账户/)
+    expect(w.text()).not.toMatch(/\d+ 个策略/)
+    expect(w.findAll('button').some(b => /个账户|个策略/.test(b.text()))).toBe(false)
+  })
+
+  it('添加用户 Modal 不再渲染权限勾选区', async () => {
+    const w = mount(UserManagementView, { global: { stubs: sharedStubs } })
+    await flushPromises()
+    await w.findAll('button').find(b => b.text().includes('添加用户'))!.trigger('click')
+    await w.vm.$nextTick()
+    const modal = w.find('.modal-stub')
+    expect(modal.exists()).toBe(true)
+    // 正向锚点：证明默认 slot 确实渲染（只有否定断言时 slot 整体消失仍会全绿）
+    expect(modal.text()).toContain('用户名')
+    // 两块权限勾选区（含全选）及其原型选项均已下线
+    expect(modal.text()).not.toContain('账户权限')
+    expect(modal.text()).not.toContain('策略权限')
+    expect(modal.text()).not.toContain('CTP-主力账户')
+    expect(modal.text()).not.toContain('IB-美股账户')
+    expect(modal.text()).not.toContain('MACD_V3')
   })
 })
