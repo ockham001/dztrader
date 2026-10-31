@@ -42,7 +42,7 @@ endif()
 # 测试 exe 在 tests/ 下、动态库在上级目录: Linux 用 $ORIGIN/.. rpath,
 # Windows 构建后把 DLL 复制到 tests/ (该 POST_BUILD 命令先于 gtest 用例发现声明
 # —— 同一目标的 POST_BUILD 按声明顺序执行, 故构建期列举用例时 DLL 已就位;
-# 走 dz_add_test 的 POST_BUILD 参数正是为了保住这个顺序, 见 cmake/DzTest.cmake)。
+# 走 dz_add_test 的 POST_BUILD_COMMAND 参数正是为了保住这个顺序, 见 cmake/DzTest.cmake)。
 # 额外链 dzshm 仅因测试自身要用内部帧通道做探针 (见 tests/stg_demo_test.cpp);
 # 策略侧 (stg_demo_core) 仍只经动态 SDK, 测试不是示例的构建参照。
 # RUN_SERIAL: 机器全局 NamedSemaphore + 会话固定 DZTRADER_HOME,

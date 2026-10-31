@@ -232,9 +232,6 @@ foreach(testfile ${TD_CTP_TESTS})
         target_compile_definitions(dztd_ctp_${testname} PRIVATE
             _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=0x0602)
     endif()
-    set_target_properties(dztd_ctp_${testname} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
-    )
     # td_persist_writer_test 需要 td_persist_writer.cpp + td_persist_rows.cpp + dztdstore
     if(testname STREQUAL "td_persist_writer_test")
         target_sources(dztd_ctp_${testname} PRIVATE td/td_persist_writer.cpp td/td_persist_rows.cpp)

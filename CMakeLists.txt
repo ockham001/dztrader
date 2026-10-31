@@ -89,7 +89,7 @@ add_custom_target(copy_compile_commands ALL
         ${CMAKE_SOURCE_DIR}/compile_commands.json
     COMMENT "Copying compile_commands.json to source root for clangd")
 
-# 启用 CTest（必须在顶层，子目录的 gtest_discover_tests 才能注册）
+# 启用 CTest（必须在顶层，子目录注册的测试才能被发现）
 enable_testing()
 include(GoogleTest)
 # 测试注册的唯一入口（#227）：dz_add_test() 统一带 DISCOVERY_TIMEOUT，

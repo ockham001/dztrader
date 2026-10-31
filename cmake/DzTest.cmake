@@ -36,12 +36,6 @@ set(DZ_GTEST_DISCOVERY_TIMEOUT 30 CACHE STRING
     "gtest_discover_tests discovery timeout in seconds (#227); do not lower below 30")
 
 # dz_add_test(<target> SOURCES <src...> [LABELS <label...>] [PROPERTIES <key value...>]
-#             [POST_BUILD <command...>])
-#
-#   SOURCES     必需；交给 add_executable 的源文件（含各模块自己的 tests/test_main.cpp）
-#   LABELS      ctest 标签，默认 fast（单元测试判据 §4.3 的分层口径）
-#   PROPERTIES  透传给 gtest_discover_tests 的用例属性（RUN_SERIAL TRUE / TIMEOUT 60 ...）
-# dz_add_test(<target> SOURCES <src...> [LABELS <label...>] [PROPERTIES <key value...>]
 #             [POST_BUILD_COMMAND <command...>] [POST_BUILD_COMMENT <text>])
 #
 #   SOURCES             必需；交给 add_executable 的源文件（含各模块自己的 tests/test_main.cpp）

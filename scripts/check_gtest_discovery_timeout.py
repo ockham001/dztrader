@@ -35,6 +35,7 @@ CMake 的默认发现超时只有 5 秒（`Modules/GoogleTest.cmake`：
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 import tempfile
@@ -85,14 +86,25 @@ def code_lines(text: str) -> list[str]:
     return [strip_comment(line) for line in text.splitlines()]
 
 
+def is_call_site(line: str, token: str) -> bool:
+    """该行是不是一次**调用**（而不是把名字写在字符串/帮助文本里）。
+
+    CMake 里 `CACHE STRING` 的帮助文本、`message()` 文案都可能出现这个标识符；
+    只看「行内含 token」会把这些字面量当成调用点，进而误报「漏了超时参数」
+    （实测：宏自己的 CACHE 帮助文本就让本检查器在冻结树上自红）。
+    调用点按 CMake 语法必然出现在语句起始位置，故要求 token 前只有空白。
+    """
+    return re.match(rf"^\s*{re.escape(token)}\s*\(", line) is not None
+
+
 def statements_containing(lines: list[str], token: str) -> list[str]:
-    """返回包含 token 的「完整语句」文本（按括号深度拼接到配对的右括号）。
+    """返回「以 token 开头的调用语句」的完整文本（按括号深度拼到配对右括号）。
 
     用于 R2：`gtest_discover_tests(...)` 常跨行书写，只看命中行会误判超时参数缺失。
     """
     found: list[str] = []
     for idx, line in enumerate(lines):
-        if token not in line:
+        if not is_call_site(line, token):
             continue
         chunk: list[str] = []
         depth = 0
@@ -136,7 +148,7 @@ def check_file(root: Path, path: Path) -> list[str]:
     if rel != MODULE_REL:
         # R1: 直接调用绕过了 dz_add_test 里的 DISCOVERY_TIMEOUT
         for lineno, line in enumerate(lines, 1):
-            if DISCOVER_RE in line:
+            if is_call_site(line, DISCOVER_RE):
                 errors.append(
                     f"{rel}:{lineno}: R1 direct gtest_discover_tests call -> use "
                     f"dz_add_test() from {MODULE_REL} instead (#227: the macro is the only "
@@ -192,7 +204,8 @@ def selftest() -> int:
     """检查器自测：三条规则各注入一次已知违例，并确认合法形态与注释示例不误报。
 
     存在的理由与其它 check 脚本一致：规则本身也会写错（#191 的路径检查曾恒真）。
-    这些样本就是 #227 的真实失败形态 —— 直接调用（绕过宏）、宏里漏参数、默认值被改小。
+    这些样本就是 #227 的真实失败形态 —— 直接调用（绕过宏）、宏里漏参数、默认值被改小，
+    外加「标识符只出现在字符串/注释里」这种必须**不**误报的形态。
     """
     failures = 0
     cases = [
@@ -227,6 +240,19 @@ def selftest() -> int:
          "  gtest_discover_tests(${target} PROPERTIES LABELS fast"
          " DISCOVERY_TIMEOUT 30)\n"
          "endfunction()\n", True),
+        # 标识符出现在字符串字面量里不是调用点：CACHE 帮助文本 / message 文案。
+        # 这条曾让检查器在冻结树上自红（宏自己的帮助文本被当成了漏参数的调用）。
+        (MODULE_REL,
+         "set(DZ_GTEST_DISCOVERY_TIMEOUT 30 CACHE STRING\n"
+         "    \"gtest_discover_tests discovery timeout in seconds\")\n"
+         "function(dz_add_test target)\n"
+         "  # gtest_discover_tests 是本宏唯一允许的调用点\n"
+         "  gtest_discover_tests(${target} PROPERTIES LABELS fast"
+         " DISCOVERY_TIMEOUT ${DZ_GTEST_DISCOVERY_TIMEOUT})\n"
+         "endfunction()\n", False),
+        ("libs/x/CMakeLists.txt",
+         "# 说明文本里提到 gtest_discover_tests(...) 不算直接调用\n"
+         "dz_add_test(t SOURCES a.cpp LABELS fast)\n", False),
     ]
 
     with tempfile.TemporaryDirectory() as tmp:

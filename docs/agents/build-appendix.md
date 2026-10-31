@@ -107,8 +107,8 @@ test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈�
 
 - 每个 `*_test.cpp` 独立编译运行，经 `dz_add_test()` 自动注册（`cmake/DzTest.cmake`），输出到 `${DZ_TESTS_DIR}`。**不要在模块 `CMakeLists.txt` 里直接调 `add_executable` + `gtest_discover_tests`** —— 超时参数会被漏掉（见下条）
 - **用例发现超时（#227）**：`gtest_discover_tests` 在 **POST_BUILD** 阶段执行测试二进制枚举用例，CMake 默认发现超时只有 **5 秒**，且**没有**全局超时变量（只有全局 `CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE`），只能逐调用点传参。5 秒在 Windows runner 冷启动下不够（sccache READ_ONLY + 近千 target 并发链接 + 杀毒/IO 抖动），已两次与改动无关地把 Windows CI 打成红（run 40856647679 / 41167289411，报 `Process terminated due to timeout` / `Timeout: '5'`）。因此 `dz_add_test()` 统一带 `DISCOVERY_TIMEOUT`（默认 30s，`-DDZ_GTEST_DISCOVERY_TIMEOUT=<n>` 可覆盖），`scripts/check_gtest_discovery_timeout.py` 在 preflight 里守住三条：除宏定义处不得直接调 `gtest_discover_tests`、宏内调用必须带超时参数、默认值不得低于 30s
-  - `dz_add_test(<target> SOURCES <src...> [LABELS <label...>] [PROPERTIES <key value...>] [POST_BUILD <command...>])`；`LABELS` 缺省为 `fast`
-  - 测试目标自己的 POST_BUILD 命令（如 `strategies/demo` 把 `dztrader_sdk` DLL 复制到测试 exe 旁边）**必须**走 `POST_BUILD` 参数，不能写在宏调用之后：同一目标的 POST_BUILD 按声明顺序执行，后发现者在前者之后，而发现阶段本身就需要 DLL 已就位
+  - `dz_add_test(<target> SOURCES <src...> [LABELS <label...>] [PROPERTIES <key value...>] [POST_BUILD_COMMAND <command...>] [POST_BUILD_COMMENT <text>])`；`LABELS` 缺省为 `fast`
+  - 测试目标自己的 POST_BUILD 命令（如 `strategies/demo` 把 `dztrader_sdk` DLL 复制到测试 exe 旁边）**必须**走 `POST_BUILD_COMMAND` 参数，不能写在宏调用之后：同一目标的 POST_BUILD 按声明顺序执行，后发现者在前者之后，而发现阶段本身就需要 DLL 已就位
 - **部分模块的测试有意只编译源码子集**，换取与外部依赖解耦：
   - `strategy_api` 测试约一半只编译内部类；`SDK_API_TESTS` 名单（notify_ui/trade/md/schedule/engine/db/db_instruments/td_ingest_*）额外编入 `api.cpp` + `db_database.cpp`，覆盖 C 接口完整写读路径（名单以 `libs/strategy_api/CMakeLists.txt` 为准）
   - `ctp` 测试不含 `md_main.cpp` / `md_api.cpp` / `md_spi.cpp`（避免链接 CTP 库）
