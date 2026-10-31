@@ -33,6 +33,56 @@ async function handleSelectFile(path: string, logger: string): Promise<void> {
   await store.selectFile(path, logger)
 }
 
+// ── 日志文件列表键盘导航（#206 B3）──────────────────────────────────────────
+// 采用 ARIA Listbox 模式（APG 单选 listbox）：容器本身是唯一的 Tab 停靠点
+// （tabindex=0），组内移动交给方向键，当前项由 aria-activedescendant 指示。
+// 这样整个列表在 Tab 序列里只占一格——若每个 option 各带 tabindex，
+// Tab 要按 N 次才穿过列表，且与「一个 listbox 是一个复合控件」的语义冲突。
+//
+// 键盘事件全部挂在**容器**上：option 已退出 Tab 序列（tabindex=-1），
+// 键盘用户的焦点永远在容器，挂在 option 上的 keydown 是不可达的死路径。
+// 因此 Enter/Space 也由容器处理——选中当前 activedescendant 项。
+
+/** 列表项 DOM id：必须全局唯一且稳定（同一路径重复渲染时按 index 兜底） */
+function fileOptionId(index: number): string {
+  return `log-file-option-${index}`
+}
+
+/** 键盘导航的当前项索引：优先已选中文件，否则首个 */
+const activeFileIndex = computed(() => {
+  const idx = store.files.findIndex(f => f.path === store.selectedFile)
+  return idx >= 0 ? idx : 0
+})
+
+/** 选中当前 activedescendant 项（Enter/Space 的等效动作） */
+async function selectActiveFile(): Promise<void> {
+  const file = store.files[activeFileIndex.value]
+  if (file) await handleSelectFile(file.path, file.logger)
+}
+
+/** 方向键 / Home / End 移动当前项；Enter / Space 选中（单选 listbox 即移动即选中） */
+async function onFileListKeydown(e: KeyboardEvent): Promise<void> {
+  const total = store.files.length
+  if (total === 0) return
+  const current = activeFileIndex.value
+  let next = current
+  switch (e.key) {
+    case 'ArrowDown': next = Math.min(total - 1, current + 1); break
+    case 'ArrowUp': next = Math.max(0, current - 1); break
+    case 'Home': next = 0; break
+    case 'End': next = total - 1; break
+    case 'Enter':
+    case ' ':
+      e.preventDefault()
+      await selectActiveFile()
+      return
+    default: return
+  }
+  e.preventDefault()
+  const file = store.files[next]
+  if (file) await handleSelectFile(file.path, file.logger)
+}
+
 async function handleLoggerFilterChange(value: string | number): Promise<void> {
   store.fileLoggerFilter = String(value)
   await store.loadFiles(true)
@@ -166,12 +216,27 @@ onUnmounted(() => {
                 @update:model-value="handleDateFilterChange"
               />
             </div>
-            <div class="log-browser__file-list">
+            <div
+              class="log-browser__file-list"
+              role="listbox"
+              aria-label="日志文件"
+              tabindex="0"
+              :aria-activedescendant="store.files.length > 0 ? fileOptionId(activeFileIndex) : undefined"
+              @keydown="onFileListKeydown"
+            >
+              <!-- 点击是鼠标便利路径；键盘等效路径全部在容器上（role=listbox 的
+                   @keydown：方向键移动 + Enter/Space 选中），option 自身退出 Tab 序列
+                   故不该有自己的 keydown（挂了也是不可达的死路径）。 -->
+              <!-- eslint-disable-next-line vuejs-accessibility/click-events-have-key-events -- option 的键盘路径由 listbox 容器统一处理 -->
               <div
-                v-for="f in store.files"
+                v-for="(f, index) in store.files"
+                :id="fileOptionId(index)"
                 :key="f.path"
                 class="log-browser__file-item"
                 :class="{ 'is-selected': f.path === store.selectedFile }"
+                role="option"
+                tabindex="-1"
+                :aria-selected="f.path === store.selectedFile"
                 @click="handleSelectFile(f.path, f.logger)"
               >
                 <div class="log-browser__file-name">
@@ -194,6 +259,10 @@ onUnmounted(() => {
             >加载更多</button>
           </div>
 
+          <!-- 拖拽分隔条：纯鼠标横向调宽便利路径，键盘用户无需它也能看到全部内容
+               （列表与正文各自可滚动），故不做 role/tabindex 伪装成可聚焦控件。
+               键盘可调的等效交互登记在后续票（#206 范围外）。 -->
+          <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
           <div class="splitter-v log-splitter" @mousedown="onSplitterDown"></div>
 
           <div class="log-browser__content" :style="{ display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }">

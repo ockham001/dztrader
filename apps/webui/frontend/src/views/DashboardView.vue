@@ -381,6 +381,7 @@ onUnmounted(() => {
         </div>
 
         <!-- Vertical Splitter 1 (Position / Bottom) -->
+        <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
         <div class="splitter-v v-splitter-1" :style="{ height: '6px', cursor: 'row-resize', flexShrink: 0, margin: 0 }" @mousedown="onVSplitter1Down"></div>
 
         <!-- Bottom: Account + Orders -->
@@ -438,6 +439,7 @@ onUnmounted(() => {
           </div>
 
           <!-- Horizontal Splitter (Account / Orders) -->
+          <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
           <div class="splitter-h h-splitter" :style="{ width: '6px', cursor: 'col-resize', flexShrink: 0, margin: 0 }" @mousedown="onHSplitterDown"></div>
 
           <!-- Orders -->
@@ -495,6 +497,7 @@ onUnmounted(() => {
       </div>
 
       <!-- Vertical Splitter 2 (Left / Right) -->
+      <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
       <div class="splitter-v v-splitter-main" :style="{ width: '6px', cursor: 'col-resize', flexShrink: 0 }" @mousedown="onVSplitter2Down"></div>
 
       <!-- Right Panel -->
@@ -532,6 +535,7 @@ onUnmounted(() => {
         </div>
 
         <!-- Splitter (Market / Strategy) -->
+        <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
         <div class="splitter-h market-strategy-splitter" :style="{ height: '6px', cursor: 'row-resize', flexShrink: 0, margin: 0 }" @mousedown="startMarketDrag"></div>
 
         <!-- Strategy List -->
@@ -563,6 +567,7 @@ onUnmounted(() => {
         </div>
 
         <!-- Splitter (Strategy / Messages) -->
+        <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
         <div class="splitter-h strategy-msg-splitter" :style="{ height: '6px', cursor: 'row-resize', flexShrink: 0, margin: 0 }" @mousedown="startStrategyMsgDrag"></div>
 
         <!-- Messages -->

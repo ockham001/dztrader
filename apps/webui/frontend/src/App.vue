@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { watch, onMounted, onUnmounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import ToastContainer from '@/components/shared/ToastContainer.vue'
 import AppShell from '@/components/layout/AppShell.vue'
@@ -8,6 +8,8 @@ import { useSystemStore } from '@/stores/system'
 import { useNotifyStore } from '@/stores/notify'
 import { useWebSocket } from '@/composables/wsClient'
 import { useToastStore } from '@/stores/toast'
+import { useFocusTrap } from '@/composables/useFocusTrap'
+import { useScrollLock } from '@/composables/useScrollLock'
 import { authApi } from '@/api/auth'
 import ChangePasswordModal from '@/components/shared/ChangePasswordModal.vue'
 import Icon from '@/components/shared/Icon.vue'
@@ -54,7 +56,34 @@ async function ackDefaultPassword() {
   }
 }
 
+// notify 弹窗与共享 Modal 统一焦点口径（#206 A）：打开时焦点移入、框内 Tab 循环、
+// 关闭后还原到打开前的元素。语义仍是 alertdialog（比 Modal 多一层"打断用户"要求，
+// 故不直接复用 Modal 组件——那会丢掉 alertdialog 角色与既有样式）。
+// 滚动锁同样走引用计数，与 Modal 共用一个计数器：两者同时打开时先关的那个不解后关的锁。
+const popupEl = ref<HTMLElement | null>(null)
+const popupOpen = computed(() => notify.popupCurrent !== null)
+const popupTrap = useFocusTrap({ active: popupOpen, container: popupEl })
+useScrollLock(popupOpen)
+
+// Esc 确认当前通知：它和 Modal 共用同一个焦点陷阱栈，必须同样提供 Esc 通道。
+// 否则本弹窗压栈期间，下层 Modal 的 Esc 会被 isTopmost 判为「不是最上层」而静默失效，
+// 形成「按 Esc 什么都不发生」的死窗口。
+// 语义依据：契约 notify-ui 「前端义务」只要求「level=error 且 popup=true 必须打断用户
+// 展示」，**没有**规定用按钮还是 Esc 确认；「逐条出队」是本组件 ackPopup 的实现事实，
+// 不是契约条款。Esc 与点「确认」都走 ackPopup，出队行为因此必然一致。
+function handlePopupKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Escape' || !popupOpen.value) return
+  if (!popupTrap.isTopmost()) return
+  e.preventDefault()
+  notify.ackPopup()
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', handlePopupKeydown)
+})
+
 onUnmounted(() => {
+  document.removeEventListener('keydown', handlePopupKeydown)
   ws.disconnect()
 })
 </script>
@@ -85,13 +114,20 @@ onUnmounted(() => {
        后端同时拦接口（403 password_change_required），前端这一层只是让路径可走完 -->
   <ChangePasswordModal :open="auth.mustChangePassword" forced />
   <!-- 契约 notify-ui 前端义务: NOTIFY_UI level=error 且 popup=true 必须打断用户展示
-       （遮罩 modal + 确认按钮，逐条出队） -->
-  <div v-if="notify.popupCurrent" class="popup-overlay" role="alertdialog" aria-modal="true">
-    <div class="popup-modal">
+       （遮罩 modal + 确认按钮，逐条出队）。
+       焦点管理与共享 Modal 同口径（#206 A）：打开移入、框内循环、关闭还原 -->
+  <div
+    v-if="notify.popupCurrent"
+    class="popup-overlay"
+    role="alertdialog"
+    aria-modal="true"
+    aria-labelledby="notify-popup-message"
+  >
+    <div ref="popupEl" class="popup-modal" tabindex="-1">
       <span class="popup-modal__icon">
         <Icon name="Tips" :size="16" />
       </span>
-      <span class="popup-modal__msg">{{ notify.popupCurrent.message }}</span>
+      <span id="notify-popup-message" class="popup-modal__msg">{{ notify.popupCurrent.message }}</span>
       <button type="button" class="popup-modal__action" @click="notify.ackPopup()">
         确认
       </button>

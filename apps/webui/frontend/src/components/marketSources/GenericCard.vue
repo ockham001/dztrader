@@ -20,8 +20,16 @@ const src = computed(() => props.source)
 
 <template>
   <div class="source-card ds-card">
-    <!-- Card Header (可展开/收起, 但 body 仅显示基本信息) -->
-    <div class="source-card__header" @click="store.toggleExpand(src.id)">
+    <!-- Card Header (可展开/收起, 但 body 仅显示基本信息); #206: role=button + Enter/Space 键盘可达 -->
+    <div
+      class="source-card__header"
+      role="button"
+      tabindex="0"
+      :aria-expanded="src.expanded"
+      @click="store.toggleExpand(src.id)"
+      @keydown.enter.prevent="store.toggleExpand(src.id)"
+      @keydown.space.prevent="store.toggleExpand(src.id)"
+    >
       <span class="source-card__chevron" :class="{ 'is-expanded': src.expanded }" aria-hidden="true">›</span>
       <div class="source-card__info">
         <span class="source-card__info-name">{{ src.display_name || src.source_name }}</span>

@@ -78,15 +78,16 @@ function onBrokerFieldBlur(
 
 <template>
   <div class="broker-card">
-    <div class="broker-card__header" @click="emit('toggle')">
-      <!-- 当前选中 radio: 受控 checked + change 下发; click.stop 防触发折叠;
+    <!-- 头部含 radio 与「删除经纪商」按钮（交互元素不能互相嵌套），因此折叠开关只覆盖
+         经纪商名这一段，用原生 <button> 做 disclosure；外层不再是点击区（#206）。 -->
+    <div class="broker-card__header">
+      <!-- 当前选中 radio: 受控 checked + change 下发;
            title 与 FrontendTable 启用 checkbox 同款状态保护提示 -->
       <label
         class="ds-radio broker-card__radio"
         :class="{ 'is-pending': src.brokerSelectPending }"
         :style="{ minHeight: 'auto' }"
         :title="!isStateIdle(src.process_state, src.loginState) ? '需在未登录状态下操作' : ''"
-        @click.stop
       >
         <input
           type="radio"
@@ -98,14 +99,21 @@ function onBrokerFieldBlur(
         >
         <span class="ds-radio__dot"></span>
       </label>
-      <span class="broker-card__name">{{ broker.name }}</span>
+      <button
+        type="button"
+        class="broker-card__disclosure"
+        :aria-expanded="expanded"
+        @click="emit('toggle')"
+      >
+        <span class="broker-card__name">{{ broker.name }}</span>
+      </button>
       <span v-if="!expanded" class="broker-card__summary">{{ broker.frontends.length }} 个前置</span>
       <!-- F-C1: 删除经纪商按钮 + 二次确认; F-C4: 受状态保护 -->
       <button
         class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--danger-subtle"
         type="button"
         :disabled="!isStateIdle(src.process_state, src.loginState) || src.brokerRemovePending"
-        @click.stop="openBrokerDeleteModal(src.id, broker.name)"
+        @click="openBrokerDeleteModal(src.id, broker.name)"
       >
         {{ src.brokerRemovePending ? '删除中…' : '删除经纪商' }}
       </button>
@@ -208,7 +216,22 @@ function onBrokerFieldBlur(
   align-items: center;
   gap: var(--spacer-8);
   margin-bottom: 0; /* 原间距移至 __body, 消除折叠态死空间 */
-  cursor: pointer; /* 可点击切换展开（与 source-card__header 一致） */
+}
+
+/* 折叠开关（#206）：原生 button 承载 disclosure 语义，重置默认样式，
+   使其视觉与原「经纪商名」行一致；键盘行为由原生 button 提供（Enter/Space）。 */
+.broker-card__disclosure {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-8);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .broker-card__body { margin-top: var(--spacer-8); }

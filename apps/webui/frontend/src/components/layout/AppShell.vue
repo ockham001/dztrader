@@ -54,10 +54,12 @@ function closeMobile(): void {
     class="app-shell"
     :class="{ 'sidebar-collapsed': sidebarCollapsed && !isMobile }"
   >
-    <!-- Mobile overlay -->
+    <!-- Mobile overlay：点击关闭抽屉是鼠标便利路径，键盘等效路径是顶栏抽屉按钮与抽屉内导航；
+         role="presentation" 表明遮罩本身不是可交互控件（#206） -->
     <div
       v-if="isMobile"
       class="sidebar-overlay"
+      role="presentation"
       :style="{
         display: mobileSidebarOpen ? 'block' : 'none',
         position: 'fixed',

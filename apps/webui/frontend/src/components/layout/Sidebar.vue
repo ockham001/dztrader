@@ -51,6 +51,8 @@ function toggleUserDropdown(): void {
 
 // 点击外部关闭用户下拉菜单
 const userSectionRef = ref<HTMLElement | null>(null)
+// 触发按钮引用：菜单按 Esc 关闭后焦点必须回到它（#206）
+const userSectionBtnRef = ref<HTMLButtonElement | null>(null)
 function handleOutsideClick(e: MouseEvent): void {
   if (!userDropdownOpen.value) return
   if (userSectionRef.value && !userSectionRef.value.contains(e.target as Node)) {
@@ -58,14 +60,40 @@ function handleOutsideClick(e: MouseEvent): void {
   }
 }
 
+// 用户菜单键盘可达（#206）：菜单打开时按 Esc 关闭，并把焦点还给触发按钮。
+// 监听挂在 document 上而不是模板 @keydown：user-section 容器本身不是可聚焦控件，
+// 给它加 keydown 会被 a11y 规则判为「静态元素带交互处理器 / 交互角色必须可聚焦」；
+// 这也与点击外部关闭共用同一条挂载路径。
+//
+// 作用域：只在「焦点仍落在菜单内或触发按钮上」时响应。否则页面别处按 Esc（例如
+// 关掉某个对话框）会顺带把本菜单关掉并无故抢走焦点——对话框自己也要用 Esc，
+// 两层同时响应会让键盘用户无法预期到底关掉了哪一层。
+function handleGlobalKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Escape' || !userDropdownOpen.value) return
+  const active = document.activeElement
+  const menuEl = userSectionRef.value?.querySelector('[role="menu"]')
+  const inMenu = active instanceof Node
+    && (Boolean(menuEl?.contains(active)) || active === userSectionBtnRef.value)
+  if (!inMenu) return
+  userDropdownOpen.value = false
+  userSectionBtnRef.value?.focus()
+}
+
 onMounted(() => {
   document.addEventListener('click', handleOutsideClick)
+  document.addEventListener('keydown', handleGlobalKeydown)
 })
 onUnmounted(() => {
   document.removeEventListener('click', handleOutsideClick)
+  document.removeEventListener('keydown', handleGlobalKeydown)
 })
 
+// 打开改密弹窗：先把焦点从菜单项（即将被 v-if 移除）移回触发按钮，再关菜单。
+// 顺序很重要——焦点陷阱在 open=true 时记录 document.activeElement 作为还原目标，
+// 若此时焦点还挂在已被移除的菜单项上，关闭弹窗后无法还原（isConnected 保护会跳过），
+// 焦点会掉到 body。这是 useFocusTrap 文档里写明的调用方约定。
 function openChangePassword(): void {
+  userSectionBtnRef.value?.focus()
   changePwdOpen.value = true
   userDropdownOpen.value = false
 }
@@ -232,7 +260,10 @@ function openAbout(): void {
     >
       <!-- User menu button -->
       <button type="button"
+        ref="userSectionBtnRef"
         class="user-section-btn"
+        aria-haspopup="menu"
+        :aria-expanded="userDropdownOpen"
         :style="{
           display: 'flex',
           alignItems: 'center',
@@ -291,6 +322,7 @@ function openAbout(): void {
       >
         <div
           class="ds-menu"
+          role="menu"
           :style="{
             margin: 0,
             boxShadow: '0 12px 32px color-mix(in srgb, var(--text-default) 12%, transparent), 0 2px 8px color-mix(in srgb, var(--text-default) 8%, transparent)',
@@ -300,19 +332,29 @@ function openAbout(): void {
             padding: 'var(--spacer-4)',
           }"
         >
-          <div class="ds-menu__item" :style="{ cursor: 'pointer' }" @click="openChangePassword">
+          <!-- 菜单项用原生 <button>（而不是 div + @click）：Tab 可达 + Enter/Space 由浏览器
+               原生派发 click，不需要也不允许再写 keydown.enter，否则会双触发。 -->
+          <button
+            type="button"
+            role="menuitem"
+            class="ds-menu__item user-menu__item"
+            @click="openChangePassword"
+          >
             <span class="icon" :style="{ width: '16px', height: '16px' }" aria-hidden="true"><Icon name="authentication" :size="16" /></span>
             修改密码
-          </div>
-          <div class="ds-menu__divider"></div>
-          <div
-            class="ds-menu__item ds-menu__item--danger"
-            :style="{ textDecoration: 'none', cursor: 'pointer' }"
+          </button>
+          <!-- role="menu" 的允许子角色只有 menuitem / menuitemradio / menuitemcheckbox /
+               group / separator；裸 div 会让读屏把分隔线当作菜单项读出来 -->
+          <div class="ds-menu__divider" role="separator"></div>
+          <button
+            type="button"
+            role="menuitem"
+            class="ds-menu__item ds-menu__item--danger user-menu__item"
             @click="logout"
           >
             <span class="icon" :style="{ width: '16px', height: '16px' }" aria-hidden="true"><Icon name="logout" :size="16" /></span>
             登出
-          </div>
+          </button>
         </div>
       </div>
 
@@ -389,3 +431,31 @@ function openAbout(): void {
     </Modal>
   </aside>
 </template>
+
+<style scoped>
+/* 用户菜单项（#206）：两个菜单项由 div 改为原生 <button> 后，覆盖 button 的 UA 默认样式
+   （button 自带灰底、居中文本、系统字体、可点区域不撑满），使视觉与原 div 版本一致。
+   类名用本地前缀（.user-menu__item），不定义 .ds-* 模式库类（组件三层规则）；
+   所有值与颜色只引用 token，不写字面量。 */
+.user-menu__item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+
+  /* font: inherit 会把 .ds-menu__item 已声明的排版 token 一并重置成继承值，
+     这里显式写回同一组 token：两种 CSS 抽离顺序（dev 注入 / build 提取）下视觉都不变。 */
+  font-family: var(--body-base-font-family);
+  font-size: var(--body-base-font-size);
+  font-weight: var(--body-base-font-weight);
+  line-height: var(--body-base-line-height);
+}
+
+/* danger 项沿用 .ds-menu__item--danger 的语义色；上面 color: inherit 需要在这里重新声明 */
+.user-menu__item.ds-menu__item--danger {
+  color: var(--status-error-default);
+}
+</style>
