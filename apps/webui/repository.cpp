@@ -149,8 +149,9 @@ bool write_password_locked(sqlite3* db,
     sqlite3_finalize(stmt);
     // 注：旧实现在「改回系统默认口令」时重置 default_password_acknowledged。默认口令长度
     // 8 < kMinPasswordLength，经 REST 已不可能再被设置（契约 rest §1「密码策略」），该分支
-    // 成为不可达代码，随 #202 一并删除；默认口令告警仍由 seed 路径与 admin_password_is_default
-    // 决定（见 config.h / auth_controller.cpp）。
+    // 成为不可达代码，随 #202 一并删除。默认口令告警由配置缺省位（admin_password_is_default）
+    // 与 `password_matches` 实比当前 hash **共同**决定（见 auth_controller.cpp /
+    // ws_controller.cpp）， 单独任一条都不足以触发告警。
     return changes > 0;
 }
 
