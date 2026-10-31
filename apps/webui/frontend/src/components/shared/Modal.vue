@@ -50,7 +50,9 @@ onBeforeUnmount(() => {
 
 <template>
   <!-- 遮罩点击关闭是鼠标便利路径，键盘等效路径是 Esc（handleKeydown）。
-       role="presentation" 表明遮罩本身不是可交互元素，避免被读屏当成按钮（#206） -->
+       role="presentation" 表明遮罩本身不是可交互元素，避免被读屏当成按钮（#206）。
+       例外：调用方可以在 @close 里拒绝关闭（如强制改密场景，契约 rest §1 要求必须
+       先改密再登出），此时 Esc 与遮罩点击都不生效——这是设计行为，不是键盘缺陷。 -->
   <div
     v-if="open"
     class="modal-overlay is-open"

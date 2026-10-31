@@ -68,7 +68,9 @@ useScrollLock(popupOpen)
 // Esc 确认当前通知：它和 Modal 共用同一个焦点陷阱栈，必须同样提供 Esc 通道。
 // 否则本弹窗压栈期间，下层 Modal 的 Esc 会被 isTopmost 判为「不是最上层」而静默失效，
 // 形成「按 Esc 什么都不发生」的死窗口。
-// 契约 notify-ui 要求逐条出队确认——ackPopup 正是「确认」这个动作，Esc 与点确认等效。
+// 语义依据：契约 notify-ui 「前端义务」只要求「level=error 且 popup=true 必须打断用户
+// 展示」，**没有**规定用按钮还是 Esc 确认；「逐条出队」是本组件 ackPopup 的实现事实，
+// 不是契约条款。Esc 与点「确认」都走 ackPopup，出队行为因此必然一致。
 function handlePopupKeydown(e: KeyboardEvent): void {
   if (e.key !== 'Escape' || !popupOpen.value) return
   if (!popupTrap.isTopmost()) return
