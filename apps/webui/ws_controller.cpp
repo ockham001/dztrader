@@ -1,5 +1,6 @@
 #include "ws_controller.h"
 #include "ws_auth.h"
+#include "session_guard.h"
 
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/writer.h>
@@ -57,9 +58,16 @@ WsController::WsController(WebuiConfig cfg,
 void WsController::handleNewConnection(const drogon::HttpRequestPtr& req,
                                        const drogon::WebSocketConnectionPtr& conn) {
     // 从 query 参数或 header 提取 token 并校验（契约 webui-ws §1）
-    const auto user_id_opt = ws_authenticate(req->getParameter("token"),
-                                             req->getHeader("authorization"), cfg_.jwt_secret);
-    if (!user_id_opt.has_value()) {
+    int64_t token_version = 0;
+    const auto user_id_opt =
+        ws_authenticate(req->getParameter("token"), req->getHeader("authorization"),
+                        cfg_.jwt_secret, &token_version);
+    // 验签通过后还需 DB 侧会话判定（契约 webui-ws §1：改密/重置/禁用即失效，
+    // 强制改密期间拒连）；两者统一按 auth failed 拒绝，不向客户端泄露具体原因
+    const bool session_ok =
+        user_id_opt.has_value() && repo_ &&
+        check_session(*repo_, *user_id_opt, token_version) == SessionState::Valid;
+    if (!session_ok) {
         const nlohmann::json err = {{"type", "error"}, {"payload", {{"message", "auth failed"}}}};
         conn->send(err.dump());
         conn->shutdown();
@@ -111,9 +119,7 @@ void WsController::handleNewConnection(const drogon::HttpRequestPtr& req,
                 admin_user->default_password_acknowledged == 0) {
                 const nlohmann::json warning = {
                     {"type", "default_password_warning"},
-                    {"payload",
-                     {{"message",
-                       "系统正在使用默认管理员密码 88888888,存在安全风险,请尽快修改密码"}}}};
+                    {"payload", {{"message", kDefaultPasswordWarningMessage}}}};
                 conn->send(warning.dump());
             }
         } catch (...) {

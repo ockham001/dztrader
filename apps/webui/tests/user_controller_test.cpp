@@ -61,8 +61,8 @@ protected:
 
 TEST_F(UserControllerTest, CreateAsAdminReturns201) {
     auto req = admin_req();
-    req->setBody(
-        R"({"username":"newuser","display_name":"New","email":"n@t.com","password":"pw","role":"user"})");
+    req->setBody(R"({"username":"newuser","display_name":"New","email":"n@t.com",)"
+                 R"("password":"CreatePass123!","role":"user"})");
     auto resp = invoke(&UserCtrl::create, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k201Created);
     auto body = parse_body(resp);
@@ -76,14 +76,14 @@ TEST_F(UserControllerTest, CreateAsAdminReturns201) {
 
 TEST_F(UserControllerTest, CreateAsNonAdminReturns403) {
     auto req = user_req();
-    req->setBody(R"({"username":"newuser","password":"pw"})");
+    req->setBody(R"({"username":"newuser","password":"CreatePass123!"})");
     auto resp = invoke(&UserCtrl::create, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
 }
 
 TEST_F(UserControllerTest, CreateDuplicateReturns409) {
     auto req = admin_req();
-    req->setBody(R"({"username":"regular","password":"pw"})");
+    req->setBody(R"({"username":"regular","password":"CreatePass123!"})");
     auto resp = invoke(&UserCtrl::create, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k409Conflict);
 }
@@ -363,7 +363,7 @@ TEST_F(UserControllerTest, NonAdminForbiddenEndpoints) {
               drogon::k403Forbidden);
 
     auto pw = user_req();
-    pw->setBody(R"({"new_password":"x"})");
+    pw->setBody(R"({"new_password":"ResetPass123!"})");
     EXPECT_EQ(invoke(&UserCtrl::reset_password, pw, user_id_)->getStatusCode(),
               drogon::k403Forbidden);
 }
@@ -372,20 +372,20 @@ TEST_F(UserControllerTest, NonAdminForbiddenEndpoints) {
 
 TEST_F(UserControllerTest, ResetPassword) {
     auto req = admin_req();
-    req->setBody(R"({"new_password":"newsecret"})");
+    req->setBody(R"({"new_password":"ResetPass123!"})");
     auto resp = invoke(&UserCtrl::reset_password, req, user_id_);
     EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
 
     // 断言新密码生效、旧密码失效（控制器未真正改密但返回 200 时必红）
     auto hash = repo_->get_password_hash("regular");
     ASSERT_TRUE(hash.has_value());
-    EXPECT_TRUE(verify_password("newsecret", *hash));
+    EXPECT_TRUE(verify_password("ResetPass123!", *hash));
     EXPECT_FALSE(verify_password("pass", *hash));
 }
 
 TEST_F(UserControllerTest, ResetPasswordNonexistentReturns404) {
     auto req = admin_req();
-    req->setBody(R"({"new_password":"x"})");
+    req->setBody(R"({"new_password":"ResetPass123!"})");
     auto resp = invoke(&UserCtrl::reset_password, req, 99999);
     EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
     EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
@@ -396,6 +396,35 @@ TEST_F(UserControllerTest, ResetPasswordEmptyReturns400) {
     req->setBody(R"({"new_password":""})");
     auto resp = invoke(&UserCtrl::reset_password, req, user_id_);
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+// 契约 rest §1「密码策略」：强度由服务端强制，前端不作为安全边界
+TEST_F(UserControllerTest, ResetPasswordTooWeakReturns400) {
+    auto req = admin_req();
+    req->setBody(R"({"new_password":"short11char"})");  // 11 位 < kMinPasswordLength
+    auto resp = invoke(&UserCtrl::reset_password, req, user_id_);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+    EXPECT_EQ(parse_body(resp)["code"].get<std::string>(), "password_too_weak");
+    // 弱口令不得落库
+    auto hash = repo_->get_password_hash("regular");
+    ASSERT_TRUE(hash.has_value());
+    EXPECT_TRUE(verify_password("pass", *hash));
+}
+
+// 契约 rest §2.2：管理员重置须吊销既有会话并置强制改密（不需要旧密码）
+TEST_F(UserControllerTest, ResetPasswordRevokesSessionsAndForcesChange) {
+    const int64_t before_version = repo_->get_user_by_id(user_id_)->token_version;
+    auto req = admin_req();
+    req->setBody(R"({"new_password":"ResetPass123!"})");
+    ASSERT_EQ(invoke(&UserCtrl::reset_password, req, user_id_)->getStatusCode(), drogon::k200OK);
+
+    auto after = repo_->get_user_by_id(user_id_);
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(after->token_version, before_version + 1);
+    EXPECT_EQ(after->must_change_password, 1);
+    // WS 连接被强制断开
+    ASSERT_EQ(notifier_->kicked.size(), 1u);
+    EXPECT_EQ(notifier_->kicked[0], "regular");
 }
 
 // 改为非默认密码时不应重置 default_password_acknowledged
@@ -421,20 +450,23 @@ TEST_F(UserControllerTest, ResetPasswordNonDefaultDoesNotResetAck) {
     EXPECT_TRUE(verify_password("StrongPass123!", *hash));
 }
 
-// 改回默认密码时应重置 ack（会再次触发默认密码告警）
-TEST_F(UserControllerTest, ResetPasswordToDefaultResetsAck) {
+// 系统默认口令（8 位）不满足最小长度 12，经 REST 已无法再被设置为口令
+// （旧实现里「改回默认口令 → 重置 ack」的分支因此不可达，随 #202 删除）
+TEST_F(UserControllerTest, ResetPasswordToSystemDefaultIsRejected) {
     ASSERT_TRUE(repo_->ack_default_password(user_id_));
     auto req = admin_req();
     req->setBody(std::string(R"({"new_password":")") + kDefaultAdminPassword + R"("})");
     auto resp = invoke(&UserCtrl::reset_password, req, user_id_);
-    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+    EXPECT_EQ(parse_body(resp)["code"].get<std::string>(), "password_too_weak");
 
+    // 口令与 ack 标志都未被改动
     auto u = repo_->get_user_by_id(user_id_);
     ASSERT_TRUE(u.has_value());
-    EXPECT_EQ(u->default_password_acknowledged, 0);
+    EXPECT_EQ(u->default_password_acknowledged, 1);
     auto hash = repo_->get_password_hash("regular");
     ASSERT_TRUE(hash.has_value());
-    EXPECT_TRUE(verify_password(kDefaultAdminPassword, *hash));
+    EXPECT_TRUE(verify_password("pass", *hash));
 }
 
 // ---- 非法 JSON 统一 400（禁止解析异常逃逸）----
@@ -463,7 +495,7 @@ TEST_F(UserControllerTest, MutatingEndpointsRejectInvalidJson) {
 
 TEST_F(UserControllerTest, ChangePasswordWithoutAuthContextReturns401) {
     auto req = drogon::HttpRequest::newHttpRequest();
-    req->setBody(R"({"new_password":"newpw"})");
+    req->setBody(R"({"old_password":"pass","new_password":"NewPass123!!"})");
     auto resp = invoke(&UserCtrl::change_password, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k401Unauthorized);
 }
@@ -471,7 +503,7 @@ TEST_F(UserControllerTest, ChangePasswordWithoutAuthContextReturns401) {
 TEST_F(UserControllerTest, ChangePasswordUnknownUserReturns404) {
     auto req = drogon::HttpRequest::newHttpRequest();
     req->getAttributes()->insert("user_id", std::string("ghost"));
-    req->setBody(R"({"new_password":"newpw"})");
+    req->setBody(R"({"old_password":"x","new_password":"NewPass123!!"})");
     auto resp = invoke(&UserCtrl::change_password, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
     EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
@@ -486,21 +518,73 @@ TEST_F(UserControllerTest, ChangePasswordInvalidJsonReturns400) {
 
 TEST_F(UserControllerTest, ChangePasswordEmptyReturns400) {
     auto req = user_req();
-    req->setBody(R"({"new_password":""})");
+    req->setBody(R"({"old_password":"","new_password":""})");
     auto resp = invoke(&UserCtrl::change_password, req);
     EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
 }
 
+// 契约 rest §1「自助改密 vs 管理员重置」：自助改密必须校验旧密码
+TEST_F(UserControllerTest, ChangePasswordWrongOldPasswordReturns400) {
+    auto req = user_req();
+    req->setBody(R"({"old_password":"wrong-old","new_password":"NewPass123!!"})");
+    auto resp = invoke(&UserCtrl::change_password, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+    EXPECT_EQ(parse_body(resp)["code"].get<std::string>(), "invalid_old_password");
+    // 口令未被改动
+    auto hash = repo_->get_password_hash("regular");
+    ASSERT_TRUE(hash.has_value());
+    EXPECT_TRUE(verify_password("pass", *hash));
+}
+
+TEST_F(UserControllerTest, ChangePasswordMissingOldPasswordReturns400) {
+    auto req = user_req();
+    req->setBody(R"({"new_password":"NewPass123!!"})");
+    auto resp = invoke(&UserCtrl::change_password, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+}
+
+TEST_F(UserControllerTest, ChangePasswordTooWeakReturns400) {
+    auto req = user_req();
+    req->setBody(R"({"old_password":"pass","new_password":"short11char"})");
+    auto resp = invoke(&UserCtrl::change_password, req);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+    EXPECT_EQ(parse_body(resp)["code"].get<std::string>(), "password_too_weak");
+}
+
+// 契约 rest §2.2：自助改密吊销既有会话（含当前会话）并清除强制改密标志
+TEST_F(UserControllerTest, ChangePasswordRevokesSessionsAndClearsMustChange) {
+    // 模拟管理员重置后的状态
+    repo_->update_user_status(user_id_, "offline");
+    ASSERT_TRUE(repo_->admin_reset_password(user_id_, "AdminSet123!"));
+    auto mid = repo_->get_user_by_id(user_id_);
+    ASSERT_TRUE(mid.has_value());
+    ASSERT_EQ(mid->must_change_password, 1);
+    const int64_t version_before = mid->token_version;
+
+    auto req = user_req();
+    req->setBody(R"({"old_password":"AdminSet123!","new_password":"MyNewPass123!"})");
+    auto resp = invoke(&UserCtrl::change_password, req);
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    auto after = repo_->get_user_by_id(user_id_);
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(after->must_change_password, 0);
+    EXPECT_EQ(after->token_version, version_before + 1);
+    // 当前会话被踢
+    ASSERT_FALSE(notifier_->kicked.empty());
+    EXPECT_EQ(notifier_->kicked.back(), "regular");
+}
+
 TEST_F(UserControllerTest, ChangePasswordSucceedsAndTakesEffect) {
     auto req = user_req();
-    req->setBody(R"({"new_password":"MyNewPass!"})");
+    req->setBody(R"({"old_password":"pass","new_password":"MyNewPass123!"})");
     auto resp = invoke(&UserCtrl::change_password, req);
     ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
 
     // 新密码生效、旧密码失效
     auto hash = repo_->get_password_hash("regular");
     ASSERT_TRUE(hash.has_value());
-    EXPECT_TRUE(verify_password("MyNewPass!", *hash));
+    EXPECT_TRUE(verify_password("MyNewPass123!", *hash));
     EXPECT_FALSE(verify_password("pass", *hash));
 }
 

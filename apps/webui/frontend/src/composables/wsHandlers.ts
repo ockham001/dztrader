@@ -137,9 +137,12 @@ registerHandler('log_config', (payload, instanceId) => {
   }
 })
 
-registerHandler('default_password_warning', () => {
+// 契约 webui-ws §2.3：payload 携带后端给出的完整中文告警文案（唯一真相源在后端），
+// 前端直接取用、不硬编码（#202：旧实现忽略 payload 自写文案，改一端必漂移）
+registerHandler('default_password_warning', (payload) => {
   const auth = useAuthStore()
-  auth.isDefaultPassword = true
+  const message = (payload as { message?: unknown } | null)?.message
+  auth.defaultPasswordWarning = typeof message === 'string' && message ? message : null
 })
 
 registerHandler('process_status', (payload) => {

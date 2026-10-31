@@ -82,7 +82,9 @@ describe('WsDataByType 判别联合（契约单源一致性）', () => {
     expectTypeOf<WsDataByType['log_line']>().toEqualTypeOf<{ file?: string; line?: LogLine }>()
     expectTypeOf<WsDataByType['log_tail_unsubscribed']>().toBeUnknown()
     expectTypeOf<WsDataByType['data_changed']>().toBeUnknown()
-    expectTypeOf<WsDataByType['default_password_warning']>().toBeUnknown()
+    // 契约 webui-ws §2.3：payload 是后端下发的完整中文文案 { message }
+    expectTypeOf<WsDataByType['default_password_warning']>()
+      .toEqualTypeOf<{ message: string }>()
     expectTypeOf<WsDataByType['error']>().toEqualTypeOf<{ message: string }>()
     expectTypeOf<WsDataByType['pong']>().toEqualTypeOf<void>()
   })

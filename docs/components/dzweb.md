@@ -93,7 +93,7 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
 - WARN 是**纯可观测性**：不改变监听地址、不改变退出码、不影响 `/health` 与 API-only 降级路径。
 - `webui.json` 自动生成时 `server._comment` 写明风险与改法（JSON 无注释语法，加载器忽略未知键）。
   注意它只在**首次生成**时写入：已存在的配置文件不会补注释（存量部署需手工加）。
-- 反向代理 TLS / 默认口令处置不属于本组件范围：TLS 需另立 ADR，口令见「密码处理加固」票（#202）。
+- 反向代理 TLS 不属于本组件范围（需另立 ADR）；口令处理见下方「口令与会话（#202）」。
 
 ### 告警日志
 
@@ -110,6 +110,35 @@ webui management plane exposed to network | listen=0.0.0.0 port=8080 tls=disable
   因此把级别设成 `error` 时它会被静默丢弃——这是刻意不绕过日志级别的结果（告警不该比用户设定的
   日志策略更吵），需要时把级别调回 `info`/`warning`（默认即 `info`）。
 - 默认口令告警（`default admin password in use`）是另一条独立 WARN，两者互不替代。
+  该行**不回显口令值**（#202），只说事实与改法。
+
+## 口令与会话（#202）
+
+维护者 2026-10-31 拍板的四条决策，落在这里作为**行为真相源**（跨进程可观察语义在契约
+[rest](../frame_contracts/rest.md) §1/§2.1/§2.2 与 [webui-ws](../frame_contracts/webui-ws.md) §1/§2.3）：
+
+| 项 | 决定 | 实现位置 |
+|---|---|---|
+| 口令强度 | 最小长度 **12**，纯长度策略（不强制复杂度）；**服务端强制**，前端只提示 | `password_policy.h` 的 `kMinPasswordLength` / `is_password_acceptable` |
+| 自助改密 | 必须校验**旧密码**；管理员重置**不需要**旧密码（admin 已鉴权，属正常设计） | `user_controller.cpp` `change_password` / `reset_password` |
+| 默认口令 | **保留** `88888888` + 首次登录强制改密（不改成安装随机生成） | `db_init.cpp` / `main.cpp` 启动时按实际 hash 置位 |
+| 会话吊销 | **token 版本号**：JWT 带 `ver` claim，改密/重置/禁用时 `users.token_version` 自增 | `jwt.cpp` `jwt_sign`/`jwt_verify`、`session_guard.h` `check_session` |
+
+要点：
+
+- **强度常量只有一处**：`kMinPasswordLength`。默认可令 `88888888` 只有 8 位，因此**改密后无法
+  再设回默认口令**；旧实现里「改回默认口令 → 重置 ack 标志」的分支随之成为不可达代码并被删除。
+- **强制改密是后端门禁**：`must_change_password=1` 的账户除 `POST /api/auth/change-password`
+  与 `GET /api/user/me` 外，全部 `/api/*` 回 403 `password_change_required`；WS 直接拒连。
+  前端弹窗只是让路径可走完，**不是**安全边界（契约 rest §1）。
+- **自助改密会让当前会话失效**（后端自增 `token_version` 并踢掉该用户全部 WS 连接），
+  前端改密成功后必须 `logout` 并回登录页——这是协议要求，不是体验细节。
+- **默认口令告白名单一来源**：文案常量 `kDefaultPasswordWarningMessage`（`config.h`），
+  REST 登录响应与 WS `default_password_warning` 都下发它，前端只展示不拼接（#202 之前
+  两端各写一份 `88888888` 文案，改一端必漂移）。
+- **升级影响**：新增 `users.token_version` / `users.must_change_password` 两列（`db_init.cpp`
+  幂等迁移，默认 0）。存量 token 无 `ver` claim，按 0 解释，与迁移后 DB 默认值相等 →
+  升级**不会**把全部存量会话打成 401；`must_change_password` 默认 0 也不改存量用户行为。
 
 ### listen 的取值约束
 

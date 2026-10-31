@@ -144,18 +144,27 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
     notifier_.broadcast_data_changed("login_history");
     notifier_.broadcast_data_changed("users");
 
-    std::string token = jwt_sign(username, cfg_->token_ttl_sec, cfg_->jwt_secret);
+    std::string token =
+        jwt_sign(username, cfg_->token_ttl_sec, cfg_->jwt_secret, user->token_version);
     // Re-fetch the user so the response reflects the updated last_login fields
     auto refreshed = repo_->get_user_by_username(username);
     Json user_json = user_to_json(refreshed ? *refreshed : *user);
-    // 默认密码告警标志:仅 admin 用户、当前密码是默认密码、且未确认告警时返回 true
-    bool is_default_password = cfg_->admin_password_is_default && refreshed &&
-                               refreshed->role == "admin" &&
-                               refreshed->default_password_acknowledged == 0;
-    callback(json_response(drogon::k200OK, Json{{"token", token},
-                                                {"expires_in", cfg_->token_ttl_sec},
-                                                {"user", user_json},
-                                                {"is_default_password", is_default_password}}));
+    // 默认密码告警：文案唯一真相源是后端常量，前端直接展示（契约 rest §2.1 / webui-ws §2.3）
+    const bool is_default_password = cfg_->admin_password_is_default && refreshed &&
+                                     refreshed->role == "admin" &&
+                                     refreshed->default_password_acknowledged == 0;
+    Json default_password_warning = nullptr;
+    if (is_default_password) {
+        default_password_warning = Json{{"message", kDefaultPasswordWarningMessage}};
+    }
+    // 契约 rest §1「强制改密」：被管理员重置过口令的账户登录后只能改密
+    const bool must_change = refreshed ? refreshed->must_change_password != 0 : false;
+    callback(
+        json_response(drogon::k200OK, Json{{"token", token},
+                                           {"expires_in", cfg_->token_ttl_sec},
+                                           {"user", user_json},
+                                           {"default_password_warning", default_password_warning},
+                                           {"must_change_password", must_change}}));
 }
 
 }  // namespace dztrader::webui

@@ -89,13 +89,19 @@ std::string hmac_sha256(const std::string& key, const std::string& msg) {
 
 }  // namespace
 
-std::string jwt_sign(const std::string& sub, uint32_t ttl_sec, const std::string& secret) {
+std::string jwt_sign(const std::string& sub,
+                     uint32_t ttl_sec,
+                     const std::string& secret,
+                     int64_t token_version) {
     const std::string header_b64 = base64url_encode_str(HEADER_JSON);
 
     auto now = std::chrono::system_clock::now();
     auto exp = now + std::chrono::seconds(ttl_sec);
     const nlohmann::json payload = {
         {"sub", sub},
+        // ver：签发时刻用户的 token_version。校验方与 DB 现值比对，不等即失效
+        // （契约 rest §1「会话吊销」——JWT 本身无状态，吊销只能靠这个版本号）
+        {"ver", token_version},
         {"iat",
          static_cast<int64_t>(
              std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count())},
@@ -112,7 +118,10 @@ std::string jwt_sign(const std::string& sub, uint32_t ttl_sec, const std::string
     return signing_input + "." + sig_b64;
 }
 
-bool jwt_verify(const std::string& token, const std::string& secret, std::string& out_sub) {
+bool jwt_verify(const std::string& token,
+                const std::string& secret,
+                std::string& out_sub,
+                int64_t* out_token_version) {
     const size_t dot1 = token.find('.');
     const size_t dot2 = token.find('.', dot1 + 1);
     if (dot1 == std::string::npos || dot2 == std::string::npos) {
@@ -149,6 +158,11 @@ bool jwt_verify(const std::string& token, const std::string& secret, std::string
     try {
         auto payload = nlohmann::json::parse(payload_json);
         out_sub = payload.value("sub", "");
+        // ver 缺失按 0：旧实现签发的 token 无此 claim，DB 侧 token_version 也是 0，
+        // 两者相等 → 升级瞬间不会把全部存量会话打成 401（迁移语义见 db_init.cpp）。
+        if (out_token_version != nullptr) {
+            *out_token_version = payload.value("ver", static_cast<int64_t>(0));
+        }
         int64_t const exp = payload.value("exp", 0LL);
         auto now = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
                                             std::chrono::system_clock::now().time_since_epoch())

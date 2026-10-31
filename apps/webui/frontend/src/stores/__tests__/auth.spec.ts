@@ -90,10 +90,12 @@ describe('useAuthStore.login / logout（主登录链路）', () => {
     vi.clearAllMocks()
   })
 
-  it('login 成功：写 token/user/localStorage/isDefaultPassword 并复位 loading', async () => {
+  it('login 成功：写 token/user/localStorage/默认口令告警并复位 loading', async () => {
     const user = makeUser()
     mockedAuthApi.login.mockResolvedValue({
-      token: 'jwt-1', expires_in: 3600, user, is_default_password: true,
+      token: 'jwt-1', expires_in: 3600, user,
+      default_password_warning: { message: '后端下发的告警文案' },
+      must_change_password: true,
     })
     const auth = useAuthStore()
     const resp = await auth.login({ username: 'regular', password: 'p' })
@@ -101,7 +103,9 @@ describe('useAuthStore.login / logout（主登录链路）', () => {
     expect(mockedAuthApi.login).toHaveBeenCalledWith({ username: 'regular', password: 'p' })
     expect(auth.token).toBe('jwt-1')
     expect(auth.user).toEqual(user)
-    expect(auth.isDefaultPassword).toBe(true)
+    // 契约 rest §2.1：告警文案原样取自后端，store 不拼接、不硬编码
+    expect(auth.defaultPasswordWarning).toBe('后端下发的告警文案')
+    expect(auth.mustChangePassword).toBe(true)
     expect(auth.isAuthenticated).toBe(true)
     expect(auth.loading).toBe(false)
     expect(auth.error).toBeNull()
@@ -126,16 +130,57 @@ describe('useAuthStore.login / logout（主登录链路）', () => {
     expect(localStorage.getItem('jwt_token')).toBeNull()
   })
 
-  it('logout：清 token/user/isDefaultPassword 与 localStorage', () => {
+  it('login 无告警时：defaultPasswordWarning 为 null、mustChangePassword 为 false', async () => {
+    mockedAuthApi.login.mockResolvedValue({
+      token: 'jwt-2', expires_in: 3600, user: makeUser(),
+      default_password_warning: null, must_change_password: false,
+    })
+    const auth = useAuthStore()
+    await auth.login({ username: 'regular', password: 'p' })
+    expect(auth.defaultPasswordWarning).toBeNull()
+    expect(auth.mustChangePassword).toBe(false)
+  })
+
+  it('mustChangePassword 与 token 一起持久化（刷新后不丢，避免连 WS 被拒→登出循环）', async () => {
+    mockedAuthApi.login.mockResolvedValue({
+      token: 'jwt-3', expires_in: 3600, user: makeUser(), must_change_password: true,
+    })
+    const auth = useAuthStore()
+    await auth.login({ username: 'regular', password: 'p' })
+    expect(localStorage.getItem('must_change_password')).toBe('1')
+
+    // 重新创建 store（模拟刷新页面）：从 localStorage 恢复
+    setActivePinia(createPinia())
+    const restored = useAuthStore()
+    expect(restored.mustChangePassword).toBe(true)
+  })
+
+  it('clearMustChangePassword 与 logout 都清除持久化标记', () => {
+    localStorage.setItem('must_change_password', '1')
+    const auth = useAuthStore()
+    auth.mustChangePassword = true
+    auth.clearMustChangePassword()
+    expect(auth.mustChangePassword).toBe(false)
+    expect(localStorage.getItem('must_change_password')).toBeNull()
+
+    localStorage.setItem('must_change_password', '1')
+    auth.mustChangePassword = true
+    auth.logout()
+    expect(localStorage.getItem('must_change_password')).toBeNull()
+  })
+
+  it('logout：清 token/user/告警态/强制改密标记与 localStorage', () => {
     localStorage.setItem('jwt_token', 'jwt-1')
     localStorage.setItem('user_info', JSON.stringify(makeUser()))
     const auth = useAuthStore()
     auth.user = makeUser()
-    auth.isDefaultPassword = true
+    auth.defaultPasswordWarning = 'some warning'
+    auth.mustChangePassword = true
     auth.logout()
     expect(auth.token).toBeNull()
     expect(auth.user).toBeNull()
-    expect(auth.isDefaultPassword).toBe(false)
+    expect(auth.defaultPasswordWarning).toBeNull()
+    expect(auth.mustChangePassword).toBe(false)
     expect(auth.isAuthenticated).toBe(false)
     expect(localStorage.getItem('jwt_token')).toBeNull()
     expect(localStorage.getItem('user_info')).toBeNull()

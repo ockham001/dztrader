@@ -14,6 +14,10 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - 需要**机器可判别**的失败额外携带 `code`（snake_case 机器码）：`{"error": <human message>, "code": <snake_case_code>}`。`code` 是机器判别的唯一手段——前端分支只认 `code`，不得解析 `error` 文本；未登记 `code` 的普通错误体按通用失败处理。当前登记 `code` 的错误体仅登录失败（下条，清单 §2.1）；将来需要机器判别时按本通用形状补 `code`。**已知的历史遗留例外**（不适用本形状、也不得再新增同类）：认证 401 的 `unauthorized`/`invalid_token`、以及若干端点把 `admin_only`/`no_user`/`update_failed` 之类的短标识放进 `error`——这些值是**既有实现**，清理需单独一票；新代码不得以它们为先例。
 - 登录失败错误体（`POST /api/login` 专用）：`{"error": <human message>, "code": <snake_case_code>}`，HTTP 状态码表达类别（401 凭据/状态/封禁类，423 锁定）。请求体必须为 JSON 对象且 `username`/`password` 均为 string；请求体缺失/非法 JSON/非对象/字段类型错/缺用户名或密码时回 400 `{"error":"bad request"}`（**无 `code`**，前端按通用失败处理）。`account_locked` 额外携带 `locked_until`（**绝对 Unix 秒级时间戳**，与 `GET /api/user*` 的 `locked_until` 同语义；前端按 `locked_until - now` 计算剩余分钟，不得按剩余秒数解释；`locked_until <= now` 表示无剩余时间信息，前端只显示锁定文案、不显示分钟）。前端把 `code` 映射中文文案（单一真相源 `composables/loginErrors.ts`），**绝不把 `code` 或英文 `error` 回显给用户**；未知/缺失 `code` 统一回落「登录失败」。
 - 权限：管理类端点需 admin 角色（服务端校验，非前端隐藏）。
+- **密码策略**：凡设置口令的端点（`POST /api/user`、`PUT /api/user/{id}/password`、`POST /api/auth/change-password`）一律由**服务端**强制最小长度 12（唯一常量 `kMinPasswordLength`，`apps/webui/password_policy.h`）；不合格回 400 `{"error":"password too weak","code":"password_too_weak"}`。前端只做提示与按钮禁用，**不是安全边界**。口令值永不出现在响应体、日志与任何用户可见文案中。
+- **自助改密 vs 管理员重置**：前者（`POST /api/auth/change-password`）必须提交 `old_password` 并校验，失败回 400 `{"error":"invalid old password","code":"invalid_old_password"}`；后者（`PUT /api/user/{id}/password`）**不需要**旧密码（admin 已鉴权，属正常设计），但同样受强度策略约束。管理员重置成功后置 `must_change_password=1`；管理员创建用户不置位（口令由管理员当场设定）。
+- **会话吊销**：JWT 载荷携带 `ver`（签发时刻用户的 `token_version`）。改密 / 管理员重置 / 禁用账户时 `token_version` 自增，该用户**既有**的 JWT 与 WS 连接立即失效（REST 回 401 `{"error":"invalid_token"}`，WS 回 `auth failed` 并断开）。**自助改密后当前会话同样失效**——前端必须让用户用新口令重新登录，不得继续使用旧 token。
+- **强制改密**：`must_change_password=1` 的账户登录后只能调用 `POST /api/auth/change-password` 与 `GET /api/user/me`，其余 `/api/*` 一律 403 `{"error":"password change required","code":"password_change_required"}`；WS 连接以 `auth failed` 拒绝。自助改密成功后清除该标志。
 - 数据变更联动：变更 DB 的端点成功后由 dzweb 广播 `data_changed{scope}`（契约 webui-ws），前端按 scope 重新 REST 拉取。
 - 设置类请求（转发 SHM 帧的端点）：响应只表示"已写事件通道"；生效以 WS 领域消息为准（对应帧契约的 RTN）。超时无 RTN 时按总则 §7 兜底。
 
@@ -25,18 +29,18 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 | 方法/路径 | 语义 |
 |---|---|
-| POST `/api/login` | 登录，返回 JWT；失败计数与锁定策略见实现。失败错误体形状见 §1；机器码 `code`：`invalid_credentials`（用户名或密码错误）/ `account_disabled`（账户已禁用）/ `ip_banned`（IP 被封禁）→ 401；`account_locked`（账户锁定）→ 423 + `locked_until`（绝对 Unix 秒级时间戳）。`error` 为对应英文消息 |
-| POST `/api/auth/change-password` | 修改本人密码 |
+| POST `/api/login` | 登录，返回 JWT；失败计数与锁定策略见实现。失败错误体形状见 §1；机器码 `code`：`invalid_credentials`（用户名或密码错误）/ `account_disabled`（账户已禁用）/ `ip_banned`（IP 被封禁）→ 401；`account_locked`（账户锁定）→ 423 + `locked_until`（绝对 Unix 秒级时间戳）。`error` 为对应英文消息。成功响应另带 `default_password_warning`（`{"message": <中文告警文案>}` 或 `null`；仅 admin 仍在用系统默认口令且未确认告警时非 null，**文案由后端给出，前端不得自行硬编码**）与 **`must_change_password`**（本账户被管理员重置过口令，须先改密，见 §1「强制改密」） |
+| POST `/api/auth/change-password` | 修改本人密码。请求体 `{ old_password, new_password }`：`old_password` 必填并校验（错误 → 400 `code=invalid_old_password`），`new_password` 受最小长度 12 约束（→ 400 `code=password_too_weak`）。成功后本账户 `token_version` 自增（既有 JWT/WS 全部失效，含当前会话）并清除 `must_change_password`；响应 `{"ok":true}` 后前端须引导重新登录 |
 | GET `/api/system/info` | 免认证。dzweb 进程自述：`{"process_name": <exe 文件名不含扩展名>, "version": <SemVer 版本串>}`。`process_name` 供前端比对 logger 名以禁用自我日志 tail（支持重命名 `dzweb.exe` 部署）；`version` 为工程版本（根 `CMakeLists.txt` 的 `project(VERSION)`，经 `version.h` 的 `DZ_VERSION_STRING` 生成，含 pre-release 后缀），供「关于」页显示，前端不得另存硬编码版本。仅新增只读字段，无帧往返 |
 
 ### 2.2 用户与安全
 
 | 方法/路径 | 语义 |
 |---|---|
-| GET/POST `/api/user`，GET/PUT/DELETE `/api/user/{id}` | 用户 CRUD（admin） |
+| GET/POST `/api/user`，GET/PUT/DELETE `/api/user/{id}` | 用户 CRUD（admin）。POST 的 `password` 必填且受最小长度 12 约束（→ 400 `code=password_too_weak`） |
 | GET `/api/user/me` | 当前登录用户自身信息（任意已认证用户）；前端在 WS 连接/重连成功后借此刷新缓存角色，使 `isAdmin` 与服务端实时一致（角色降级时后端踢其 WS 连接，重连即刷新） |
-| PUT `/api/user/{id}/status` | 启用/禁用用户；禁用时强制断开其 WS 连接 |
-| PUT `/api/user/{id}/password` | 重置密码（admin） |
+| PUT `/api/user/{id}/status` | 启用/禁用用户；禁用时强制断开其 WS 连接并自增 `token_version`（既有 JWT 立即失效） |
+| PUT `/api/user/{id}/password` | 重置密码（admin）。不需要旧密码；`new_password` 受最小长度 12 约束（→ 400 `code=password_too_weak`）。成功后自增该用户 `token_version`（既有 JWT 与 WS 全失效）并置 `must_change_password=1`（下次登录强制改密） |
 | GET/PUT `/api/security/config` | 安全配置（IP 限制/黑白名单模式等） |
 | GET/POST `/api/security/blacklist`，DELETE `/api/security/blacklist/{id}` | 黑名单 |
 | GET/POST `/api/security/whitelist`，DELETE `/api/security/whitelist/{id}` | 白名单 |

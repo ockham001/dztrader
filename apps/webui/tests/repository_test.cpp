@@ -166,7 +166,10 @@ TEST_F(RepositoryTest, MutatorsRejectUnknownIdsWithoutSideEffects) {
     EXPECT_FALSE(repo_.update_user(kMissingId, "Changed", "x@test.com", "admin"));
     EXPECT_FALSE(repo_.delete_user(kMissingId));
     EXPECT_FALSE(repo_.update_user_status(kMissingId, "disabled"));
-    EXPECT_FALSE(repo_.reset_password(kMissingId, "new-password"));
+    EXPECT_FALSE(repo_.admin_reset_password(kMissingId, "new-password"));
+    EXPECT_FALSE(repo_.change_own_password(kMissingId, "new-password"));
+    EXPECT_FALSE(repo_.revoke_user_tokens(kMissingId));
+    EXPECT_FALSE(repo_.force_password_change_if_default(kMissingId, "pass"));
     EXPECT_FALSE(repo_.ack_default_password(kMissingId));
     EXPECT_FALSE(repo_.update_market_source(kMissingId, "Changed"));
     EXPECT_FALSE(repo_.delete_market_source(kMissingId));
@@ -191,6 +194,66 @@ TEST_F(RepositoryTest, MutatorsRejectUnknownIdsWithoutSideEffects) {
     const auto blacklist = repo_.list_blacklist();
     ASSERT_EQ(blacklist.size(), 1u);
     EXPECT_EQ(blacklist[0].ip, "10.0.0.9");
+}
+
+// ---- #202 会话吊销与强制改密 ----
+
+TEST_F(RepositoryTest, AdminResetPasswordBumpsVersionAndForcesChange) {
+    const int64_t id = repo_.create_user("resetuser", "Reset User", "", "oldpassword123", "user");
+    const auto before = repo_.get_user_by_id(id);
+    ASSERT_TRUE(before.has_value());
+    EXPECT_EQ(before->token_version, 0);
+    EXPECT_EQ(before->must_change_password, 0);
+
+    ASSERT_TRUE(repo_.admin_reset_password(id, "ResetPass123!"));
+    const auto after = repo_.get_user_by_id(id);
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(after->token_version, before->token_version + 1);
+    EXPECT_EQ(after->must_change_password, 1);
+    // 新口令生效
+    auto hash = repo_.get_password_hash("resetuser");
+    ASSERT_TRUE(hash.has_value());
+    EXPECT_TRUE(verify_password("ResetPass123!", *hash));
+}
+
+TEST_F(RepositoryTest, ChangeOwnPasswordBumpsVersionAndClearsForcedChange) {
+    const int64_t id = repo_.create_user("ownuser", "Own User", "", "oldpassword123", "user");
+    ASSERT_TRUE(repo_.admin_reset_password(id, "ResetPass123!"));
+    const auto mid = repo_.get_user_by_id(id);
+    ASSERT_TRUE(mid.has_value());
+    ASSERT_EQ(mid->must_change_password, 1);
+
+    ASSERT_TRUE(repo_.change_own_password(id, "MyNewPass123!"));
+    const auto after = repo_.get_user_by_id(id);
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(after->token_version, mid->token_version + 1);
+    EXPECT_EQ(after->must_change_password, 0);
+    auto hash = repo_.get_password_hash("ownuser");
+    ASSERT_TRUE(hash.has_value());
+    EXPECT_TRUE(verify_password("MyNewPass123!", *hash));
+}
+
+TEST_F(RepositoryTest, RevokeUserTokensOnlyBumpsVersion) {
+    const int64_t id = repo_.create_user("revokeuser", "Revoke", "", "pw1234567890", "user");
+    const auto hash_before = repo_.get_password_hash("revokeuser");
+    ASSERT_TRUE(repo_.revoke_user_tokens(id));
+    const auto after = repo_.get_user_by_id(id);
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(after->token_version, 1);
+    EXPECT_EQ(after->must_change_password, 0);
+    // 吊销不动口令
+    EXPECT_EQ(repo_.get_password_hash("revokeuser"), hash_before);
+}
+
+TEST_F(RepositoryTest, ForcePasswordChangeIfDefaultOnlyForDefaultPassword) {
+    const int64_t id = repo_.create_user("defuser", "Def", "", "NotTheDefault123!", "user");
+    // 口令不是给定默认值 → 不置位
+    EXPECT_FALSE(repo_.force_password_change_if_default(id, "88888888"));
+    EXPECT_EQ(repo_.get_user_by_id(id)->must_change_password, 0);
+    // 口令正是给定默认值 → 置位
+    const int64_t def_id = repo_.create_user("defuser2", "Def2", "", "88888888", "user");
+    EXPECT_TRUE(repo_.force_password_change_if_default(def_id, "88888888"));
+    EXPECT_EQ(repo_.get_user_by_id(def_id)->must_change_password, 1);
 }
 
 TEST_F(RepositoryTest, UpdateUserStatus) {

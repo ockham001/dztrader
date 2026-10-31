@@ -35,6 +35,12 @@ struct User {
     std::string created_at;
     std::string updated_at;
     int default_password_acknowledged = 0;  ///< 默认密码告警确认标志(0=未确认,1=已确认)
+    /// JWT 吊销版本号（契约 rest §1「会话吊销」）：签发时写入 token 的 `ver` claim，
+    /// 改密/重置/禁用时自增，使既有 token 与 WS 连接立即失效
+    int64_t token_version = 0;
+    /// 是否必须下次登录改密（0=否,1=是）：管理员重置口令后置位，
+    /// 自助改密成功后清除；置位期间除改密与 /api/user/me 外全部拒绝
+    int must_change_password = 0;
 };
 
 struct LoginHistoryEntry {
@@ -109,7 +115,19 @@ public:
                      const std::string& role);
     bool delete_user(int64_t id);
     bool update_user_status(int64_t id, const std::string& status);
-    bool reset_password(int64_t id, const std::string& new_password);
+    /// 管理员重置口令（契约 rest §2.2）：改 hash + 自增 token_version（吊销既有会话）
+    /// + 置 must_change_password=1（下次登录强制改密）。不需旧密码（admin 已鉴权）。
+    bool admin_reset_password(int64_t id, const std::string& new_password);
+    /// 自助改密（契约 rest §2.2）：改 hash + 自增 token_version（含当前会话失效）
+    /// + 清除 must_change_password。不改 default_password_acknowledged。
+    bool change_own_password(int64_t id, const std::string& new_password);
+    /// 自增 token_version 以吊销该用户全部既有 JWT/WS 会话（禁用账户时调用）。
+    /// 用户不存在返回 false。
+    bool revoke_user_tokens(int64_t id);
+    /// 若该用户当前口令**仍是** `default_password`，置 must_change_password=1
+    /// （#202 决策：保留系统默认口令，但首次登录强制改密）。已改过口令则无操作。
+    /// @return true=需要/已处于强制改密；false=口令非默认值或用户不存在
+    bool force_password_change_if_default(int64_t id, const std::string& default_password);
     /// 标记用户已确认默认密码告警。返回是否成功更新。
     bool ack_default_password(int64_t user_id);
     void increment_failed_login(const std::string& username);

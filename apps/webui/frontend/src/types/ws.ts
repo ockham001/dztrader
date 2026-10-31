@@ -23,7 +23,7 @@ export interface WsDataByType {
   log_line: { file?: string; line?: LogLine }    // 契约 webui-ws log_line（file + 单条 line）
   log_tail_unsubscribed: unknown
   data_changed: unknown
-  default_password_warning: unknown
+  default_password_warning: { message: string }  // 契约 webui-ws §2.3：文案由后端下发
   error: { message: string }
   pong: void
   event_shm_config: ShmConfigView

@@ -101,8 +101,9 @@ TEST_F(AuthControllerTest, LoginSuccessReturns200) {
     EXPECT_EQ(user["role"].get<std::string>(), "user");
     // password_hash must never appear in the response
     EXPECT_FALSE(user.contains("password_hash"));
-    // 普通用户不触发默认密码告警
-    EXPECT_FALSE(body["is_default_password"].get<bool>());
+    // 普通用户不触发默认密码告警（契约 rest §2.1：文案由后端下发，无告警时为 null）
+    EXPECT_TRUE(body["default_password_warning"].is_null());
+    EXPECT_FALSE(body["must_change_password"].get<bool>());
 }
 
 // 2. Wrong password → 401 invalid_credentials
@@ -280,14 +281,18 @@ TEST_F(AuthControllerTest, LoginWhitelistModeRejectsUnlistedIp) {
     EXPECT_EQ(allowed->getStatusCode(), drogon::k200OK);
 }
 
-// 11. is_default_password 分支（前端 stores/auth.ts 依赖该字段触发默认密码告警）
-TEST_F(AuthControllerTest, LoginAdminWithUnackedDefaultPasswordFlagsTrue) {
+// 11. default_password_warning 分支（前端 stores/auth.ts 依赖它展示默认密码告警）。
+// 契约 rest §2.1：文案由后端下发（唯一真相源 kDefaultPasswordWarningMessage），前端不硬编码。
+TEST_F(AuthControllerTest, LoginAdminWithUnackedDefaultPasswordCarriesWarning) {
     cfg_->admin_password_is_default = true;
     repo_->create_user("admin", "Administrator", "", "admin_pass", "admin");
 
     auto resp = do_login("admin", "admin_pass");
     ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
-    EXPECT_TRUE(parse_body(resp)["is_default_password"].get<bool>());
+    auto body = parse_body(resp);
+    ASSERT_FALSE(body["default_password_warning"].is_null());
+    EXPECT_EQ(body["default_password_warning"]["message"].get<std::string>(),
+              kDefaultPasswordWarningMessage);
 
     // 确认告警后不再提示
     auto admin = repo_->get_user_by_username("admin");
@@ -295,16 +300,51 @@ TEST_F(AuthControllerTest, LoginAdminWithUnackedDefaultPasswordFlagsTrue) {
     ASSERT_TRUE(repo_->ack_default_password(admin->id));
     auto resp2 = do_login("admin", "admin_pass");
     ASSERT_EQ(resp2->getStatusCode(), drogon::k200OK);
-    EXPECT_FALSE(parse_body(resp2)["is_default_password"].get<bool>());
+    EXPECT_TRUE(parse_body(resp2)["default_password_warning"].is_null());
 }
 
-TEST_F(AuthControllerTest, LoginAdminWithCustomPasswordFlagsFalse) {
+TEST_F(AuthControllerTest, LoginAdminWithCustomPasswordHasNoWarning) {
     // 配置已改非默认密码 -> 即便 admin 未 ack 也不告警
     cfg_->admin_password_is_default = false;
     repo_->create_user("admin", "Administrator", "", "admin_pass", "admin");
     auto resp = do_login("admin", "admin_pass");
     ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
-    EXPECT_FALSE(parse_body(resp)["is_default_password"].get<bool>());
+    EXPECT_TRUE(parse_body(resp)["default_password_warning"].is_null());
+}
+
+// 契约 rest §1「强制改密」：管理员重置后的账户登录响应带 must_change_password=true
+TEST_F(AuthControllerTest, LoginReportsMustChangePassword) {
+    auto user = repo_->get_user_by_username("testuser");
+    ASSERT_TRUE(user.has_value());
+    ASSERT_TRUE(repo_->admin_reset_password(user->id, "ResetPass123!"));
+
+    auto resp = do_login("testuser", "ResetPass123!");
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_TRUE(parse_body(resp)["must_change_password"].get<bool>());
+}
+
+TEST_F(AuthControllerTest, LoginWithoutForcedChangeReportsFalse) {
+    auto resp = do_login("testuser", "password123");
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_FALSE(parse_body(resp)["must_change_password"].get<bool>());
+}
+
+// 契约 rest §1「会话吊销」：token 携带签发时的 token_version，改密后旧 token 的 ver 过时
+TEST_F(AuthControllerTest, LoginTokenCarriesCurrentTokenVersion) {
+    auto user = repo_->get_user_by_username("testuser");
+    ASSERT_TRUE(user.has_value());
+    ASSERT_TRUE(repo_->revoke_user_tokens(user->id));
+    const auto bumped = repo_->get_user_by_username("testuser");
+    ASSERT_TRUE(bumped.has_value());
+
+    auto resp = do_login("testuser", "password123");
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    const std::string token = parse_body(resp)["token"].get<std::string>();
+    int64_t version = -1;
+    std::string sub;
+    ASSERT_TRUE(jwt_verify(token, cfg_->jwt_secret, sub, &version));
+    EXPECT_EQ(sub, "testuser");
+    EXPECT_EQ(version, bumped->token_version);
 }
 
 // 10. The token in the response can be verified with jwt_verify

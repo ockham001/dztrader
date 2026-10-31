@@ -4,11 +4,28 @@
 #include <nlohmann/json.hpp>
 #include <ctime>
 #include <string>
+#include "password_policy.h"
 #include "ws_controller.h"
 
 namespace dztrader::webui {
 
 using Json = nlohmann::json;
+
+namespace {
+
+/// 口令强度不合格错误体（契约 rest §1「密码策略」）：机器码供前端分支，
+/// error 是人类可读消息。文案不回显口令值。
+Json password_too_weak_body() {
+    return Json{{"error", "password too weak"},
+                {"code", "password_too_weak"},
+                {"min_length", kMinPasswordLength}};
+}
+
+Json old_password_invalid_body() {
+    return Json{{"error", "invalid old password"}, {"code", "invalid_old_password"}};
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // GET /api/user - list users with filters and pagination
@@ -128,6 +145,11 @@ void UserCtrl::create(const drogon::HttpRequestPtr& req,
 
     if (username.empty() || password.empty()) {
         callback(error_response(drogon::k400BadRequest, "missing required fields"));
+        return;
+    }
+
+    if (!is_password_acceptable(password)) {
+        callback(json_response(drogon::k400BadRequest, password_too_weak_body()));
         return;
     }
 
@@ -280,7 +302,8 @@ void UserCtrl::update_status(
 
     if (status == "disabled") {
         repo_->update_user_status(id, "disabled");
-        // 强制断开被禁用用户的所有 WS 连接（契约 rest §2.2：禁用时强制断开）
+        // 契约 rest §2.2：禁用时强制断开其 WS 连接并吊销既有 JWT（token_version 自增）
+        repo_->revoke_user_tokens(id);
         notifier_.kick_user(target->username);
     } else if (status == "enabled") {
         repo_->update_user_status(id, "offline");
@@ -326,12 +349,22 @@ void UserCtrl::reset_password(
         callback(error_response(drogon::k400BadRequest, "missing new_password"));
         return;
     }
-
-    if (!repo_->reset_password(id, new_password)) {
-        callback(error_response(drogon::k404NotFound, "not found"));
+    if (!is_password_acceptable(new_password)) {
+        callback(json_response(drogon::k400BadRequest, password_too_weak_body()));
         return;
     }
 
+    // 契约 rest §2.2：管理员重置不需要旧密码，但会吊销该用户既有会话并置强制改密
+    auto target = repo_->get_user_by_id(id);
+    if (!target.has_value()) {
+        callback(error_response(drogon::k404NotFound, "not found"));
+        return;
+    }
+    if (!repo_->admin_reset_password(id, new_password)) {
+        callback(error_response(drogon::k404NotFound, "not found"));
+        return;
+    }
+    notifier_.kick_user(target->username);
     callback(json_response(drogon::k200OK, {{"ok", true}}));
 }
 
@@ -362,16 +395,31 @@ void UserCtrl::change_password(
         return;
     }
 
+    const std::string old_password = body.value("old_password", "");
     const std::string new_password = body.value("new_password", "");
-    if (new_password.empty()) {
-        callback(error_response(drogon::k400BadRequest, "missing new_password"));
+    if (old_password.empty() || new_password.empty()) {
+        callback(error_response(drogon::k400BadRequest, "missing required fields"));
         return;
     }
 
-    if (!repo_->reset_password(user->id, new_password)) {
+    // 契约 rest §1「自助改密 vs 管理员重置」：自助改密必须校验旧密码
+    auto hash = repo_->get_password_hash(username);
+    if (!hash.has_value() || !verify_password(old_password, *hash)) {
+        callback(json_response(drogon::k400BadRequest, old_password_invalid_body()));
+        return;
+    }
+
+    if (!is_password_acceptable(new_password)) {
+        callback(json_response(drogon::k400BadRequest, password_too_weak_body()));
+        return;
+    }
+
+    // 契约 rest §2.2：改密吊销既有会话（含当前会话），并清除强制改密标志
+    if (!repo_->change_own_password(user->id, new_password)) {
         callback(error_response(drogon::k500InternalServerError, "failed to change password"));
         return;
     }
+    notifier_.kick_user(username);
 
     callback(json_response(drogon::k200OK, {{"ok", true}}));
 }

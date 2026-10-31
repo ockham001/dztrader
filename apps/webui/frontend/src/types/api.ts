@@ -21,11 +21,23 @@ export interface SystemInfo {
   version: string
 }
 
+/**
+ * 默认口令告警载荷（契约 rest §2.1 / webui-ws §2.3）。
+ * `message` 是后端给出的**完整中文文案**（唯一真相源 `apps/webui/config.h` 的
+ * `kDefaultPasswordWarningMessage`）；前端直接展示，不得自行拼接或硬编码（#202）。
+ */
+export interface DefaultPasswordWarning {
+  message: string
+}
+
 export interface LoginResponse {
   token: string
   expires_in: number
   user: User
-  is_default_password?: boolean
+  /** 非 null = 仍在用系统默认管理员口令且未确认告警；文案由后端下发 */
+  default_password_warning?: DefaultPasswordWarning | null
+  /** true = 管理员重置过口令，登录后必须先改密（契约 rest §1「强制改密」） */
+  must_change_password?: boolean
 }
 
 /**

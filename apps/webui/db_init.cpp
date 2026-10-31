@@ -24,7 +24,9 @@ CREATE TABLE IF NOT EXISTS users (
     last_login_ip TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    default_password_acknowledged INTEGER NOT NULL DEFAULT 0
+    default_password_acknowledged INTEGER NOT NULL DEFAULT 0,
+    token_version INTEGER NOT NULL DEFAULT 0,
+    must_change_password INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS login_history (
@@ -165,7 +167,62 @@ void run_schema(sqlite3* db) {
         }
     }
 
-    // Migration: drop legacy broker/credential tables (Wave 2C).
+    // Migration: add token_version / must_change_password columns to users (#202 会话吊销)。
+    // 既有 DB 的行为等价旧实现：token_version=0 使已签发的旧 token（无 ver claim）仍被拒，
+    // 因此升级后所有存量会话强制重登一次——这正是本票的意图（旧 token 无法证明未被泄露）。
+    // must_change_password 默认 0：不改存量用户行为，仅管理员重置时置位。
+    {
+        sqlite3_stmt* stmt = nullptr;
+        dz_prepare_v2(db, "PRAGMA table_info(users)", -1, &stmt, nullptr);
+        bool has_token_version = false;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char* name = sqlite3_column_text(stmt, 1);
+            if (name && std::string(reinterpret_cast<const char*>(name)) == "token_version") {
+                has_token_version = true;
+                break;
+            }
+        }
+        sqlite3_finalize(stmt);
+        if (!has_token_version) {
+            rc = sqlite3_exec(db,
+                              "ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL "
+                              "DEFAULT 0;",
+                              nullptr, nullptr, &err_msg);
+            if (rc != SQLITE_OK) {
+                const std::string err = err_msg ? err_msg : "unknown";
+                sqlite3_free(err_msg);
+                throw std::runtime_error("failed to add token_version column: " + err);
+            }
+            spdlog::info("legacy column added | table=users column=token_version");
+        }
+    }
+    {
+        sqlite3_stmt* stmt = nullptr;
+        dz_prepare_v2(db, "PRAGMA table_info(users)", -1, &stmt, nullptr);
+        bool has_must_change = false;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char* name = sqlite3_column_text(stmt, 1);
+            if (name &&
+                std::string(reinterpret_cast<const char*>(name)) == "must_change_password") {
+                has_must_change = true;
+                break;
+            }
+        }
+        sqlite3_finalize(stmt);
+        if (!has_must_change) {
+            rc = sqlite3_exec(db,
+                              "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT "
+                              "NULL DEFAULT 0;",
+                              nullptr, nullptr, &err_msg);
+            if (rc != SQLITE_OK) {
+                const std::string err = err_msg ? err_msg : "unknown";
+                sqlite3_free(err_msg);
+                throw std::runtime_error("failed to add must_change_password column: " + err);
+            }
+            spdlog::info("legacy column added | table=users column=must_change_password");
+        }
+    }
+
     // 经纪商列表 + 当前选中 + 凭证 现在由子进程配置文件存储, 通过 SHM 镜像同步, 不再使用 DB.
     // 现有 DB 行将被遗弃, 用户需通过新 UI 重新输入经纪商信息.
     {
