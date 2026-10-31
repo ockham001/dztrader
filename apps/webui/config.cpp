@@ -2,8 +2,10 @@
 
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <cctype>
 #include <fstream>
 #include <random>
+#include <string_view>
 
 namespace dztrader::webui {
 
@@ -77,7 +79,67 @@ std::string generate_random_hex_32() {
     return result;
 }
 
+/// IPv4 点分十进制字面量是否落在 127.0.0.0/8（严格四段，每段 0..255，不允许多余字符）
+bool is_ipv4_loopback(std::string_view addr) {
+    int part = 0;
+    std::size_t i = 0;
+    while (i <= addr.size()) {
+        const std::size_t dot = addr.find('.', i);
+        const std::string_view seg = addr.substr(i, dot == std::string_view::npos ? dot : dot - i);
+        if (seg.empty() || seg.size() > 3) {
+            return false;
+        }
+        int value = 0;
+        for (const char c : seg) {
+            if (c < '0' || c > '9') {
+                return false;
+            }
+            value = value * 10 + (c - '0');
+        }
+        if (value > 255) {
+            return false;
+        }
+        if (part == 0 && value != 127) {
+            return false;  // 只看 127.0.0.0/8
+        }
+        ++part;
+        if (dot == std::string_view::npos) {
+            break;
+        }
+        i = dot + 1;
+    }
+    return part == 4;
+}
+
 }  // namespace
+
+bool is_loopback_listen(const std::string& listen) {
+    // 首尾空白与大小写容忍：配置文件手写 " 127.0.0.1 " / "LocalHost" 仍应识别
+    std::string_view addr(listen);
+    while (!addr.empty() && (addr.front() == ' ' || addr.front() == '\t')) {
+        addr.remove_prefix(1);
+    }
+    while (!addr.empty() && (addr.back() == ' ' || addr.back() == '\t')) {
+        addr.remove_suffix(1);
+    }
+    std::string lowered(addr);
+    for (char& c : lowered) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    addr = lowered;
+
+    // IPv6 允许 addListener 的方括号写法 "[::1]"
+    if (addr.size() > 2 && addr.front() == '[' && addr.back() == ']') {
+        addr = addr.substr(1, addr.size() - 2);
+    }
+    if (addr == "localhost") {
+        return true;
+    }
+    if (addr == "::1" || addr == "0:0:0:0:0:0:0:1") {
+        return true;
+    }
+    return is_ipv4_loopback(addr);
+}
 
 void generate_default_config(const std::filesystem::path& json_path) {
     if (std::filesystem::exists(json_path)) {
@@ -88,8 +150,16 @@ void generate_default_config(const std::filesystem::path& json_path) {
     std::error_code ec;
     std::filesystem::create_directories(json_path.parent_path(), ec);
 
+    // JSON 无注释语法：server 段的说明以 `_comment` 键承载（加载器忽略未知键）。
+    // 文案只讲风险与修改方式，不改默认值——默认 0.0.0.0 是维护者的决定（#201）。
     const nlohmann::json data = {
-        {"server", {{"listen", "0.0.0.0"}, {"port", 8080}}},
+        {"server",
+         {{"listen", "0.0.0.0"},
+          {"port", 8080},
+          {"_comment",
+           "listen 默认为 0.0.0.0（全部网卡，局域网可访问）且无 TLS：管理面与 token 均为"
+           "明文传输。仅在本机使用请改为 127.0.0.1（或 localhost）；跨机访问请配合内网隔离、"
+           "强口令或反向代理 TLS。此两项仅配置文件可改，重启生效。"}}},
         {"log", {{"level", "info"}, {"flush_on", "info"}}},
         {"auth", {{"jwt_secret", generate_random_hex_32()}, {"token_ttl_sec", 3600}}},
         {"admin",

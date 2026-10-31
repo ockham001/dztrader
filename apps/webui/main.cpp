@@ -178,6 +178,15 @@ int main(int argc, char* argv[]) {
     // 数据竞争。 本重构 LogCtrl 直调 self_log_ + 写 mirror_ 依赖此串行化（HTTP 与 WS 回调同在 IO
     // 线程）
     drogon::app().setThreadNum(1);
+    // 暴露面告警（#201）：管理面无 TLS、JWT 存 localStorage，监听非回环地址即在对端明文可达。
+    // 仅告警，不改变监听行为/退出码/健康检查；默认值 0.0.0.0 由维护者决定，保持不动。
+    if (!dztrader::webui::is_loopback_listen(cfg.server_listen)) {
+        SPDLOG_WARN(
+            "webui management plane exposed to network | listen={} port={} tls=disabled "
+            "advice=\"use 127.0.0.1 for local-only access, or a strong password, network "
+            "isolation, or a TLS reverse proxy\"",
+            cfg.server_listen, cfg.server_port);
+    }
     drogon::app().addListener(cfg.server_listen, cfg.server_port);
 
     // /health 健康检查（Task 1 引入，Task 8 冒烟测试依赖）
