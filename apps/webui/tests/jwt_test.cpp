@@ -89,6 +89,49 @@ TEST(JwtTest, VerifyFailsWhenSignatureTampered) {
     EXPECT_EQ(sub, "sentinel");
 }
 
+TEST(JwtTest, SignEmbedsTokenVersionAndVerifyReadsItBack) {
+    // 契约 rest §1「会话吊销」：ver claim 是 JWT 无状态下唯一的吊销手段
+    const std::string token = jwt_sign("admin", 3600, "secret", 7);
+    std::string sub;
+    int64_t version = -1;
+    ASSERT_TRUE(jwt_verify(token, "secret", sub, &version));
+    EXPECT_EQ(sub, "admin");
+    EXPECT_EQ(version, 7);
+}
+
+TEST(JwtTest, SignDefaultsToZeroVersion) {
+    // 未显式传版本（如测试/工具调用）时按 0，与 DB 新行默认值一致
+    const std::string token = jwt_sign("admin", 3600, "secret");
+    std::string sub;
+    int64_t version = -1;
+    ASSERT_TRUE(jwt_verify(token, "secret", sub, &version));
+    EXPECT_EQ(version, 0);
+}
+
+TEST(JwtTest, VerifyWithoutVersionOutParamStillWorks) {
+    // 旧调用点（不关心 ver）不受签名变更影响
+    const std::string token = jwt_sign("admin", 3600, "secret", 3);
+    std::string sub;
+    EXPECT_TRUE(jwt_verify(token, "secret", sub));
+    EXPECT_EQ(sub, "admin");
+}
+
+TEST(JwtTest, VersionIsCoveredBySignature) {
+    // ver 在签名覆盖范围内：篡改 ver 段必须验签失败（否则吊销可被绕过）
+    const std::string token = jwt_sign("admin", 3600, "secret", 1);
+    auto parts = split_token(token);
+    ASSERT_EQ(parts.size(), 3u);
+    // 直接改 payload 段的一个字符 → 签名不匹配
+    std::string tampered_payload = parts[1];
+    ASSERT_FALSE(tampered_payload.empty());
+    flip_char(tampered_payload, tampered_payload.size() - 1);
+    std::string sub = "sentinel";
+    int64_t version = -1;
+    EXPECT_FALSE(
+        jwt_verify(parts[0] + "." + tampered_payload + "." + parts[2], "secret", sub, &version));
+    EXPECT_EQ(sub, "sentinel");
+}
+
 TEST(JwtTest, VerifyRejectsAlgNoneHeader) {
     const std::string token = jwt_sign("admin", 3600, "secret");
     auto parts = split_token(token);

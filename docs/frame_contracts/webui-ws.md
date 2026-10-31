@@ -12,6 +12,7 @@
 
 - 端点：`/ws?token=<jwt>`（也接受 `Authorization: Bearer <jwt>` 头）。
 - 鉴权失败：服务端回 `{"type":"error","payload":{"message":"auth failed"}}` 并关闭连接。
+- **凭证有效性随口令变化失效**（契约 rest §1「会话吊销」）：除验签 + `exp` 外，JWT 的 `ver` claim 必须等于该用户当前的 `token_version`；不等（改密 / 管理员重置 / 被禁用）或该用户 `must_change_password=1` 时一律按鉴权失败处理（回 `auth failed` 并断开）。已建立的连接不逐帧复核，由服务端在吊销时主动 `shutdown`（契约 rest §2.2 的重置/禁用路径）。
 - 建连成功：服务端立即推送**全量镜像快照** `snapshot`（连接/重连的初始基线），之后以增量消息更新。
 - 心跳：客户端每 30s 发 `{"type":"ping"}`，服务端回 `{"type":"pong"}`（无载荷）。服务端不因心跳缺失而踢连接。
 - 多客户端：同用户可多连接；领域消息对所有已连接客户端广播；`snapshot`/`default_password_warning`/`*_ack`/`error`/`log_line`/`log_tail_unsubscribed`/`pong` 不广播（按连接/定向发送）；`data_changed` 对所有客户端广播。
@@ -88,7 +89,7 @@ domain 清单与挂载实例：
 | `log_line` | 日志 tail 推送（客户端 `subscribe_log` 后逐行推送，单次上限 200 行） | `{ file, line: { n, ts, level, logger, func, file, line, pid, tid, msg, raw, parsed } }` |
 | `log_tail_unsubscribed` | 服务端主动退订日志 tail（连续失败 3 次 / 订阅自身日志被拒） | `{ file, reason }`；`reason ∈ self_logs_cannot_be_tailed \| send failures` |
 | `data_changed` | 后端 DB 数据变更（用户上下线等），通知前端按 `scope` 重新 REST 刷新 | `{ scope }` |
-| `default_password_warning` | admin 用户连接且仍为默认密码且未确认时，定向推送 | `{ message }` |
+| `default_password_warning` | admin 用户连接且仍为默认密码且未确认时，定向推送 | `{ message }`；**`message` 是后端给出的完整中文告警文案（唯一真相源 `apps/webui/config.h` 的 `kDefaultPasswordWarningMessage`），前端直接展示、不得自行拼接或硬编码** |
 | `error` | 连接协议错误（鉴权失败 / 非法 JSON / 未知 type / 控制消息参数缺失 / 管理操作权限或进程状态预检未通过） | `{ message, seq? }` |
 | `pong` | 响应客户端 `ping` | 无载荷 |
 

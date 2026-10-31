@@ -5,9 +5,7 @@ import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSystemStore } from '@/stores/system'
-import { useToastStore } from '@/stores/toast'
-import { authApi, type ChangePasswordResponse } from '@/api/auth'
-import { ApiError } from '@/api/client'
+import ChangePasswordModal from '@/components/shared/ChangePasswordModal.vue'
 import { navItems } from '@/router/routes'
 
 const visibleNavItems = computed(() => {
@@ -28,16 +26,12 @@ const emit = defineEmits<{
 
 const router = useRouter()
 const auth = useAuthStore()
-const toast = useToastStore()
 
 const userDropdownOpen = ref(false)
 
-// Change password modal state
+// Change password modal state（表单/校验/契约错误码映射都在 ChangePasswordModal 内，
+// 侧边栏只负责开合——避免两套校验与文案漂移）
 const changePwdOpen = ref(false)
-const newPassword = ref('')
-const confirmPassword = ref('')
-const changePwdError = ref<string | null>(null)
-const changePwdLoading = ref(false)
 
 // About modal state
 const aboutOpen = ref(false)
@@ -72,48 +66,12 @@ onUnmounted(() => {
 })
 
 function openChangePassword(): void {
-  newPassword.value = ''
-  confirmPassword.value = ''
-  changePwdError.value = null
-  changePwdLoading.value = false
   changePwdOpen.value = true
   userDropdownOpen.value = false
 }
 
-async function submitChangePassword(): Promise<void> {
-  changePwdError.value = null
-
-  if (!newPassword.value) {
-    changePwdError.value = '请输入新密码'
-    return
-  }
-  if (newPassword.value !== confirmPassword.value) {
-    changePwdError.value = '两次输入的密码不一致'
-    return
-  }
-
-  changePwdLoading.value = true
-  try {
-    const resp: ChangePasswordResponse = await authApi.changePassword(newPassword.value)
-    if (resp?.ok) {
-      toast.success('密码修改成功')
-      changePwdOpen.value = false
-    } else {
-      changePwdError.value = '密码修改失败'
-      toast.error('密码修改失败')
-    }
-  } catch (e: unknown) {
-    let msg = '密码修改失败'
-    if (e instanceof ApiError) {
-      msg = e.body?.error || e.message
-    } else if (e instanceof Error) {
-      msg = e.message
-    }
-    changePwdError.value = msg
-    toast.error(msg)
-  } finally {
-    changePwdLoading.value = false
-  }
+function closeChangePassword(): void {
+  changePwdOpen.value = false
 }
 
 function onBrandToggle(): void {
@@ -393,29 +351,8 @@ function openAbout(): void {
       </button>
     </div>
 
-    <!-- Change password modal -->
-    <Modal :open="changePwdOpen" title="修改密码" @close="changePwdOpen = false">
-      <div :style="{ display: 'flex', flexDirection: 'column', gap: 'var(--spacer-12)' }">
-        <div class="ds-input">
-          <input v-model="newPassword" type="password" placeholder="新密码" />
-        </div>
-        <div class="ds-input">
-          <input v-model="confirmPassword" type="password" placeholder="确认新密码" />
-        </div>
-        <div
-          v-if="changePwdError"
-          :style="{ color: 'var(--status-error-default)', fontSize: 'var(--body-sm-font-size)' }"
-        >
-          {{ changePwdError }}
-        </div>
-      </div>
-      <template #footer>
-        <button type="button" class="ds-btn ds-btn--secondary" @click="changePwdOpen = false">取消</button>
-        <button type="button" class="ds-btn ds-btn--primary" :disabled="changePwdLoading" @click="submitChangePassword">
-          {{ changePwdLoading ? '提交中...' : '确认' }}
-        </button>
-      </template>
-    </Modal>
+    <!-- Change password modal（表单实现见 components/shared/ChangePasswordModal.vue） -->
+    <ChangePasswordModal :open="changePwdOpen" @close="closeChangePassword" />
 
     <!-- About modal -->
     <Modal :open="aboutOpen" title="关于 DZTrader" @close="aboutOpen = false">

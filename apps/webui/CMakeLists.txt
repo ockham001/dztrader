@@ -18,6 +18,8 @@ add_library(dzweb_obj OBJECT
     config.cpp
     system_info.cpp
     jwt.cpp
+    password_policy.cpp
+    session_guard.cpp
     event_monitor.cpp
     event_preloader.cpp
     auth_controller.cpp

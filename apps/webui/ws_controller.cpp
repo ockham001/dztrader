@@ -1,5 +1,6 @@
 #include "ws_controller.h"
 #include "ws_auth.h"
+#include "session_guard.h"
 
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/writer.h>
@@ -57,9 +58,16 @@ WsController::WsController(WebuiConfig cfg,
 void WsController::handleNewConnection(const drogon::HttpRequestPtr& req,
                                        const drogon::WebSocketConnectionPtr& conn) {
     // 从 query 参数或 header 提取 token 并校验（契约 webui-ws §1）
-    const auto user_id_opt = ws_authenticate(req->getParameter("token"),
-                                             req->getHeader("authorization"), cfg_.jwt_secret);
-    if (!user_id_opt.has_value()) {
+    int64_t token_version = 0;
+    const auto user_id_opt =
+        ws_authenticate(req->getParameter("token"), req->getHeader("authorization"),
+                        cfg_.jwt_secret, &token_version);
+    // 验签通过后还需 DB 侧会话判定（契约 webui-ws §1：改密/重置/禁用即失效，
+    // 强制改密期间拒连）；两者统一按 auth failed 拒绝，不向客户端泄露具体原因
+    const bool session_ok =
+        user_id_opt.has_value() && repo_ &&
+        check_session(*repo_, *user_id_opt, token_version) == SessionState::Valid;
+    if (!session_ok) {
         const nlohmann::json err = {{"type", "error"}, {"payload", {{"message", "auth failed"}}}};
         conn->send(err.dump());
         conn->shutdown();
@@ -103,17 +111,18 @@ void WsController::handleNewConnection(const drogon::HttpRequestPtr& req,
     }
     broadcast_data_changed("users");
 
-    // 默认密码告警:仅 admin 用户、当前是默认密码、且未确认时推送
+    // 默认密码告警:仅 admin 用户、**当前口令仍是系统默认口令**、且未确认时推送。
+    // 不看配置缺省标志单独判定：用户改密后 admin_password_is_default 仍为 true，
+    // 只看它会让 banner 在改密后继续谎报「正在使用默认口令」。
     if (cfg_.admin_password_is_default && repo_) {
         try {
             auto admin_user = repo_->get_user_by_username(user_id);
             if (admin_user && admin_user->role == "admin" &&
-                admin_user->default_password_acknowledged == 0) {
+                admin_user->default_password_acknowledged == 0 &&
+                repo_->password_matches(user_id, kDefaultAdminPassword)) {
                 const nlohmann::json warning = {
                     {"type", "default_password_warning"},
-                    {"payload",
-                     {{"message",
-                       "系统正在使用默认管理员密码 88888888,存在安全风险,请尽快修改密码"}}}};
+                    {"payload", {{"message", kDefaultPasswordWarningMessage}}}};
                 conn->send(warning.dump());
             }
         } catch (...) {
