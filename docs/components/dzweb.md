@@ -83,13 +83,34 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
 | 传输 | **无 TLS**：只有 `addListener`，不加载证书；口令 / JWT / REST / WS 全为明文 |
 | 凭证 | JWT 由前端存 `localStorage`；默认管理员口令 `88888888` |
 | 运行期可改 | **否**：`listen` / `port` 仅在启动时读取，改配置文件后重启生效（UI 上「不可变，改配置文件重启生效」标签准确） |
-| 启动告警 | 非回环监听时打一条 WARN（`webui management plane exposed to network \| listen=... tls=disabled ...`） |
+| 启动告警 | 非回环监听时打一条 WARN（逐字文案见下方「告警日志」） |
 
 **默认值不改**是维护者 2026-10-29 的决定（局域网多机盯盘），本组件文档只固化事实与告警口径：
 
 - 回环判定唯一入口是 `is_loopback_listen`（`config.cpp`）：只认 `localhost`、IPv4 `127.0.0.0/8`
-  字面量、IPv6 `::1`（含 `[...]` 形式）；通配地址、其他网卡地址、主机名、空串与带端口写法一律
-  判为暴露 —— 方向保守，宁可多报不可漏报。
+  字面量、IPv6 `::1`（含 `0:0:0:0:0:0:0:1` 与 `[...]` 形式）；通配地址（`0.0.0.0` / `::`）、
+  其他网卡地址、其他主机名、空串与带端口写法一律判为暴露 —— 方向保守，宁可多报不可漏报。
 - WARN 是**纯可观测性**：不改变监听地址、不改变退出码、不影响 `/health` 与 API-only 降级路径。
 - `webui.json` 自动生成时 `server._comment` 写明风险与改法（JSON 无注释语法，加载器忽略未知键）。
+  注意它只在**首次生成**时写入：已存在的配置文件不会补注释（存量部署需手工加）。
 - 反向代理 TLS / 默认口令处置不属于本组件范围：TLS 需另立 ADR，口令见「密码处理加固」票（#202）。
+
+### 告警日志
+
+`listen` 非回环时，`addListener` 之前打一条（日志文本的唯一真相源是本文件；README 只描述语义）：
+
+```text
+warning dzweb [func=main file=main.cpp] webui management plane exposed to network | listen=0.0.0.0 port=8080 tls=disabled advice="use 127.0.0.1 for local-only access, or a strong password, network isolation, or a TLS reverse proxy"
+```
+
+`listen` 为回环地址（如 `127.0.0.1`）时**不打**该行；默认口令告警（`default admin password in use`）
+是另一条独立 WARN，两者互不替代。
+
+### listen 的取值约束
+
+`server.listen` 直接交给 drogon 的 `addListener`，而 drogon **只接受 IP 字面量**：主机名
+（含 `localhost`）与 `[...]` 方括号写法会在启动期 FATAL 退出
+（`Failed to parse IP address ... - ListenerManager.cc`），进程以非零码结束、不会降级。
+可用的回环写法是 `127.0.0.1`（或 `127.0.0.0/8` 内其他地址）与 `::1`；通配写法是 `0.0.0.0` 与 `::`。
+`is_loopback_listen` 判的是「语义上是否仅本机可达」，**不**替代这项取值校验——本票不加启动前
+校验，写错仍然是启动失败（与改动前一致）。

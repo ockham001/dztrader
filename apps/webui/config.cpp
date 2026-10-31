@@ -128,10 +128,14 @@ bool is_loopback_listen(const std::string& listen) {
     }
     addr = lowered;
 
-    // IPv6 允许 addListener 的方括号写法 "[::1]"
+    // IPv6 的方括号写法语义上仍是回环地址，按回环处理
+    // （注意：drogon 的 addListener 只接受裸 IP 字面量，"[::1]" 会在启动期 FATAL 退出，
+    //  故配置文件应写 "::1"；本判定只回答「语义上是否仅本机可达」，不承诺 drogon 可接受）
     if (addr.size() > 2 && addr.front() == '[' && addr.back() == ']') {
         addr = addr.substr(1, addr.size() - 2);
     }
+    // 注：drogon 拒绝主机名（含 localhost，启动期 FATAL），但它在语义上确实只解析到回环，
+    // 故仍判为回环；配置文件应写 IP 字面量。
     if (addr == "localhost") {
         return true;
     }
@@ -157,9 +161,10 @@ void generate_default_config(const std::filesystem::path& json_path) {
          {{"listen", "0.0.0.0"},
           {"port", 8080},
           {"_comment",
-           "listen 默认为 0.0.0.0（全部网卡，局域网可访问）且无 TLS：管理面与 token 均为"
-           "明文传输。仅在本机使用请改为 127.0.0.1（或 localhost）；跨机访问请配合内网隔离、"
-           "强口令或反向代理 TLS。此两项仅配置文件可改，重启生效。"}}},
+           "listen 默认为 0.0.0.0（全部网卡，局域网可访问）且无 TLS：管理面与口令、token 均为"
+           "明文传输。仅在本机使用请改为 127.0.0.1；跨机访问请配合内网隔离、强口令或反向代理 "
+           "TLS。listen 只接受 IP 字面量（写主机名如 localhost 会导致启动失败），且仅配置文件"
+           "可改，重启生效。"}}},
         {"log", {{"level", "info"}, {"flush_on", "info"}}},
         {"auth", {{"jwt_secret", generate_random_hex_32()}, {"token_ttl_sec", 3600}}},
         {"admin",

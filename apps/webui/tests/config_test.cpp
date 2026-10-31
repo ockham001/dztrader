@@ -123,15 +123,26 @@ TEST_F(WebuiConfigTest, GeneratedConfigDocumentsListenExposure) {
     ifs >> data;
     ASSERT_TRUE(data["server"].contains("_comment"))
         << "generated webui.json must document the listen exposure";
+    // 注释不能顶替默认值：默认监听仍是 0.0.0.0:8080
+    ASSERT_TRUE(data["server"]["listen"].is_string());
+    EXPECT_EQ(data["server"]["listen"].get<std::string>(), "0.0.0.0");
+    EXPECT_EQ(data["server"]["port"].get<int>(), 8080);
 
+    // 注释必须同时讲清三件事：无 TLS/明文、本机场景的改法、跨机场景的缓解措施。
+    // 断言到具体子串而非仅关键词——只含关键词拼接的空话不能通过。
     const auto comment = data["server"]["_comment"].get<std::string>();
-    std::string comment_lower = comment;
-    for (char& c : comment_lower) {
+    std::string lower = comment;
+    for (char& c : lower) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
-    EXPECT_NE(comment_lower.find("listen"), std::string::npos) << comment;
-    EXPECT_NE(comment_lower.find("tls"), std::string::npos) << comment;
+    EXPECT_NE(lower.find("无 tls"), std::string::npos) << comment;
+    EXPECT_NE(lower.find("明文"), std::string::npos) << comment;
     EXPECT_NE(comment.find("127.0.0.1"), std::string::npos) << comment;
+    EXPECT_NE(lower.find("内网隔离"), std::string::npos) << comment;
+    EXPECT_NE(lower.find("反向代理 tls"), std::string::npos) << comment;
+    // drogon 只接受 IP 字面量：注释必须提醒别写主机名，否则用户照抄会启动失败
+    EXPECT_NE(lower.find("ip 字面量"), std::string::npos) << comment;
+    EXPECT_NE(comment.find("localhost"), std::string::npos) << comment;
 
     // 注释键不参与加载：默认值照常生效，不因多出未知键而抛
     const auto cfg = load_webui_config(tmp_);

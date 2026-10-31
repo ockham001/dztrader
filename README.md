@@ -228,11 +228,15 @@ glibc 版本需 ≥ 构建机（或同等）。
 
 - **无 TLS**：只有 `addListener`，没有证书配置；口令、JWT、全部 REST/WS 流量都是明文
 - **JWT 存浏览器 `localStorage`**（XSS 可读），默认管理员口令是 `88888888`
-- **非回环监听时启动日志会打一条 WARN**（`webui management plane exposed to network | listen=... tls=disabled`），
-  它只是提醒，不改变监听行为、退出码与 `/health`
+- **非回环监听时启动日志会打一条 WARN**，说明管理面暴露在网络上；它只是提醒，不改变监听
+  行为、退出码与 `/health`（日志原文与判定规则见
+  [docs/components/dzweb.md](docs/components/dzweb.md) 的「监听与暴露面」节）
 - 缓解措施按场景选：仅本机使用 → `listen` 改 `"127.0.0.1"`；跨机使用 → 内网隔离 +
   强口令（默认口令与改密能力的加固见 #202）+ 前置反向代理做 TLS。`listen` 只能在
   配置文件里改，重启生效（运行期不可热改）
+
+> ⚠️ `listen` 只接受 **IP 字面量**（drogon 的限制）：写 `localhost` 之类的主机名会让
+> `dzweb` 启动即 FATAL 退出（`Failed to parse IP address`），不是"静默不生效"。
 
 ### 版本号
 
