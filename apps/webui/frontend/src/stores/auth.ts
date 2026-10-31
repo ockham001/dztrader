@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { authApi } from '@/api/auth'
 import { usersApi } from '@/api/users'
 import { ApiError } from '@/api/client'
+import { loginErrorText } from '@/composables/loginErrors'
 import type { User, LoginRequest } from '@/types/api'
 
 export const useAuthStore = defineStore('auth', () => {
@@ -28,7 +29,10 @@ export const useAuthStore = defineStore('auth', () => {
       return resp
     } catch (e: unknown) {
       if (e instanceof ApiError) {
-        error.value = e.body?.error || e.message
+        // 契约 rest §1/§2.1：错误体 code 是机器码、error 是人类可读英文消息。
+        // store.error 一旦上屏就必须是中文，故与登录页共用 loginErrorText 按 code 映射
+        // （缺 code 的 400 等通用失败回落「登录失败」），绝不回显英文 error。
+        error.value = loginErrorText(e.body?.code)
       } else if (e instanceof Error) {
         error.value = e.message
       } else {

@@ -99,7 +99,11 @@ describe('LoginView', () => {
     const auth = useAuthStore()
     const lockedUntil = Math.floor(Date.now() / 1000) + 300
     vi.spyOn(auth, 'login').mockRejectedValue(
-      new ApiError(423, { error: 'account locked', code: 'account_locked', locked_until: lockedUntil }),
+      new ApiError(423, {
+        error: 'account locked',
+        code: 'account_locked',
+        locked_until: lockedUntil,
+      }),
     )
     const w = mount(LoginView)
     await w.find('input#username').setValue('bob')
@@ -110,7 +114,8 @@ describe('LoginView', () => {
     expect(w.text()).toContain('剩余')
     expect(w.text()).toContain('分钟')
     expect(w.text()).not.toContain('account_locked')
-    expect(w.html()).toContain('status-warning-surface-l1')
+    // 断言行为级状态（警告档），不断言内联样式的 CSS token（unit-test-standard §3.7）
+    expect(w.find('[data-test-error-level]').attributes('data-test-error-level')).toBe('warning')
   })
 
   it('锁定已过期（locked_until 为过去时刻）只显示文案，不显示剩余分钟', async () => {
@@ -168,7 +173,8 @@ describe('LoginView', () => {
     await flushPromises()
     // 契约 rest §1：无 code 的错误体按通用失败处理，不展示原始 HTTP/英文消息
     expect(w.text()).toContain('登录失败')
-    expect(w.html()).toContain('status-warning-surface-l1')
+    // 断言行为级状态（警告档），不断言内联样式的 CSS token（unit-test-standard §3.7）
+    expect(w.find('[data-test-error-level]').attributes('data-test-error-level')).toBe('warning')
   })
 
   it('网络错误显示网络错误提示', async () => {

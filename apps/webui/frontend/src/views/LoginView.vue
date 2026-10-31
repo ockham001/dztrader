@@ -191,6 +191,7 @@ function togglePassword(): void {
           <!-- Error message -->
           <div
             v-if="errorMessage"
+            :data-test-error-level="errorType"
             :style="{
               padding: 'var(--spacer-8) var(--spacer-12)',
               borderRadius: 'var(--radius-8)',
