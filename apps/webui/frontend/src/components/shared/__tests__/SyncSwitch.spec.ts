@@ -69,4 +69,20 @@ describe('SyncSwitch', () => {
     expect((input.element as HTMLInputElement).checked).toBe(false)
     expect(wrapper.emitted('change')).toBeTruthy()
   })
+
+  // #233：纯图形开关在 label 内没有可读文字，视觉名称由调用方的相邻 span 提供，
+  // 读屏读不到 → 必须由 label prop 落到内部 input 的 aria-label 上
+  it('把 label prop 透出为 checkbox 的 aria-label（读屏可报出名称）', () => {
+    const wrapper = mount(SyncSwitch, {
+      props: { modelValue: false, label: '自动登录' },
+    })
+    expect(wrapper.find('input[type="checkbox"]').attributes('aria-label')).toBe('自动登录')
+  })
+
+  it('未传 label 时不生成 aria-label（避免出现空的无障碍名称）', () => {
+    const wrapper = mount(SyncSwitch, {
+      props: { modelValue: false },
+    })
+    expect(wrapper.find('input[type="checkbox"]').attributes('aria-label')).toBeUndefined()
+  })
 })

@@ -15,6 +15,12 @@ const props = withDefaults(defineProps<{
   disabled?: boolean
   /** When set, overrides selectedLabel (e.g. "切换中…" during pending) */
   loadingText?: string
+  /**
+   * 触发器按钮的 id，供外部 `<label for>` 关联（#233）。
+   * 组件根节点是非可标注的 `<div>`，attr fallthrough 只会落到 div 上、
+   * `for` 指过去不成立；可标注元素是内部的 `<button>`，故须显式接收后绑到按钮。
+   */
+  id?: string // eslint-disable-line vue/require-default-prop -- 可选：调用方不关联 label 时合法
 }>(), {
   placeholder: '请选择',
   disabled: false,
@@ -71,7 +77,7 @@ onUnmounted(() => {
 
 <template>
   <div class="ds-dropdown" :class="{ 'is-open': isOpen, 'is-disabled': props.disabled }">
-    <button class="ds-dropdown__trigger" type="button" :disabled="props.disabled" @click.stop="!props.disabled && toggle()">
+    <button class="ds-dropdown__trigger" type="button" :id="props.id" :disabled="props.disabled" @click.stop="!props.disabled && toggle()">
       <span
         v-if="selectedItem?.dot"
         class="ds-dropdown__trigger-dot"

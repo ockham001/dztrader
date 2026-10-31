@@ -1011,6 +1011,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               :model-value="showAllNics"
               :pending="hideVirtualPending"
               :disabled="!canToggleNetwork"
+              label="显示全部网卡"
               @change="onToggleShowAll"
             />
             <span class="monitor-view__net-toggle-label">显示全部网卡</span>

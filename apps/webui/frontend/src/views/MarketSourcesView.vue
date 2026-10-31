@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
 import SyncSelect from '@/components/shared/SyncSelect.vue'
+import { useFieldId } from '@/composables/useFieldId'
 import { useMarketSourcesStore, type MarketSourceView } from '@/stores/marketSources'
 import { resolveCard } from '@/stores/marketSourcesCardRegistry'
 import { useToastStore } from '@/stores/toast'
@@ -10,6 +11,9 @@ import type { SelectItem } from '@/components/shared/SyncSelect.vue'
 
 const store = useMarketSourcesStore()
 const toast = useToastStore()
+
+// label↔input 配对（#233）：id 按组件实例前缀生成
+const fieldId = useFieldId()
 
 // 镜像驱动架构下, store.error 仅由 HTTP 失败链路 (薄代理 catch) 写入,
 // 统一用 error toast 提示 (notify_ui 已走 NotifyStore, 不再经 store.error)
@@ -230,9 +234,9 @@ async function confirmBatch(): Promise<void> {
     <Modal :open="addSourceModalOpen" :title="`启动行情源: ${addSourceTargetName}`" @close="closeAddSourceModal">
       <div class="dialog-form">
         <div class="dialog-row">
-          <label class="dialog-row__label">显示名</label>
+          <label class="dialog-row__label" :for="fieldId('add-source-display-name')">显示名</label>
           <div class="ds-input dialog-row__control">
-            <input v-model="addSourceTargetDisplayName" type="text" placeholder="例如：CTP主行情">
+            <input :id="fieldId('add-source-display-name')" v-model="addSourceTargetDisplayName" type="text" placeholder="例如：CTP主行情">
           </div>
         </div>
         <div class="dialog-row__hint">行情通道 page 大小由配置文件决定（configs/dzmd_&lt;type&gt;.json 的 shm.page_size_mb，默认 1024MB）</div>

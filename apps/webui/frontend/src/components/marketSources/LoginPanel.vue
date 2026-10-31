@@ -65,6 +65,7 @@ const autoLoginStatusClass = (s: MarketSourceView): string => {
         <SyncSwitch
           :model-value="src.auto_login"
           :pending="src.autoLoginPending || src.scheduleAddPending || src.scheduleRemovePending"
+          label="自动登录"
           @change="(v: boolean) => store.toggleAutoLogin(src.id, v)"
         />
         <span class="auto-login-control__label">自动登录</span>

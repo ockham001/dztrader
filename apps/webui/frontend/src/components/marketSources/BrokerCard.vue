@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import Modal from '@/components/shared/Modal.vue'
 import FrontendTable from './FrontendTable.vue'
 import { isStateIdle } from '@/composables/useProcessState'
+import { useFieldId } from '@/composables/useFieldId'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import type { MarketSourceView } from '@/stores/marketSources'
 import type { BrokerEntry } from '@/types/api'
@@ -16,6 +17,9 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{ toggle: [] }>()
+
+// label↔input 配对（#233）：每个 BrokerCard 实例对应不同经纪商，id 前缀按实例区分
+const fieldId = useFieldId()
 
 const store = useMarketSourcesStore()
 const src = computed(() => props.source)
@@ -131,9 +135,10 @@ function onBrokerFieldBlur(
         </div>
         <div class="login-fields">
           <div class="login-field">
-            <label class="login-field__label">BrokerID</label>
+            <label class="login-field__label" :for="fieldId('broker-id')">BrokerID</label>
             <div class="ds-input">
               <input
+                :id="fieldId('broker-id')"
                 type="text"
                 :value="broker.broker_id"
                 :disabled="!isStateIdle(src.process_state, src.loginState) || src.brokerFieldEditPending"
@@ -143,9 +148,10 @@ function onBrokerFieldBlur(
             </div>
           </div>
           <div class="login-field">
-            <label class="login-field__label">UserID</label>
+            <label class="login-field__label" :for="fieldId('user-id')">UserID</label>
             <div class="ds-input">
               <input
+                :id="fieldId('user-id')"
                 type="text"
                 :value="broker.user_id"
                 :disabled="!isStateIdle(src.process_state, src.loginState) || src.brokerFieldEditPending"
@@ -155,9 +161,10 @@ function onBrokerFieldBlur(
             </div>
           </div>
           <div class="login-field">
-            <label class="login-field__label">Password</label>
+            <label class="login-field__label" :for="fieldId('password')">Password</label>
             <div class="ds-input">
               <input
+                :id="fieldId('password')"
                 type="password"
                 :value="broker.password"
                 :disabled="!isStateIdle(src.process_state, src.loginState) || src.brokerFieldEditPending"
@@ -167,9 +174,10 @@ function onBrokerFieldBlur(
             </div>
           </div>
           <div class="login-field">
-            <label class="login-field__label">ProductInfo</label>
+            <label class="login-field__label" :for="fieldId('product-info')">ProductInfo</label>
             <div class="ds-input">
               <input
+                :id="fieldId('product-info')"
                 type="text"
                 :value="broker.product_info"
                 :disabled="!isStateIdle(src.process_state, src.loginState) || src.brokerFieldEditPending"

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import Modal from './Modal.vue'
+import { useFieldId } from '@/composables/useFieldId'
 import { authApi } from '@/api/auth'
 import { ApiError } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
@@ -27,6 +28,10 @@ const emit = defineEmits<{
   close: []
   changed: []
 }>()
+
+// label↔input 配对（#233）：id 按组件实例前缀生成，多个实例（本组件可同时被
+// 侧边栏与 App.vue 强制改密弹窗挂载）不会撞
+const fieldId = useFieldId()
 
 const auth = useAuthStore()
 const oldPassword = ref('')
@@ -111,9 +116,10 @@ function close(): void {
         data-test="force-change-hint"
       >管理员已重置你的密码，请设置新密码后重新登录。</p>
       <div class="dialog-field">
-        <label class="dialog-field__label">旧密码</label>
+        <label class="dialog-field__label" :for="fieldId('old-password')">旧密码</label>
         <div class="ds-input">
           <input
+            :id="fieldId('old-password')"
             v-model="oldPassword"
             type="password"
             autocomplete="current-password"
@@ -123,9 +129,10 @@ function close(): void {
         </div>
       </div>
       <div class="dialog-field">
-        <label class="dialog-field__label">新密码</label>
+        <label class="dialog-field__label" :for="fieldId('new-password')">新密码</label>
         <div class="ds-input">
           <input
+            :id="fieldId('new-password')"
             v-model="newPassword"
             type="password"
             autocomplete="new-password"
@@ -136,9 +143,10 @@ function close(): void {
         <span class="dialog-field__hint" data-test="password-length-hint">{{ PASSWORD_LENGTH_TEXT }}</span>
       </div>
       <div class="dialog-field">
-        <label class="dialog-field__label">确认新密码</label>
+        <label class="dialog-field__label" :for="fieldId('confirm-password')">确认新密码</label>
         <div class="ds-input">
           <input
+            :id="fieldId('confirm-password')"
             v-model="confirmPassword"
             type="password"
             autocomplete="new-password"

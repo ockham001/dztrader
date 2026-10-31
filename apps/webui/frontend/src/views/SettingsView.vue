@@ -5,11 +5,15 @@ import Modal from '@/components/shared/Modal.vue'
 import TimePicker from '@/components/shared/TimePicker.vue'
 import type { EventShmConfigPatch } from '@/api/settings'
 import { formatBytes } from '@/composables/format'
+import { useFieldId } from '@/composables/useFieldId'
 import { useSettingsStore } from '@/stores/settings'
 import { useToastStore } from '@/stores/toast'
 
 const store = useSettingsStore()
 const toast = useToastStore()
+
+// label↔控件配对（#233）：id 按组件实例前缀生成，避免同页多实例撞 id
+const fieldId = useFieldId()
 
 const tab = ref<'event' | 'webui' | 'master'>('event')
 
@@ -165,16 +169,16 @@ async function saveWebui(): Promise<void> {
           <span class="ds-tag ds-tag--warning">不可变，改配置文件重启生效</span>
         </div>
         <div class="cfg-row">
-          <span class="cfg-label">周期检查间隔(分)</span>
-          <div class="ds-input" style="width:120px"><input type="number" :value="store.eventShmConfig.check_interval_min" :disabled="store.eventShmPending" @blur="onCheckBlur('check_interval_min', $event)"></div>
+          <label class="cfg-label" :for="fieldId('check-interval-min')">周期检查间隔(分)</label>
+          <div class="ds-input" style="width:120px"><input :id="fieldId('check-interval-min')" type="number" :value="store.eventShmConfig.check_interval_min" :disabled="store.eventShmPending" @blur="onCheckBlur('check_interval_min', $event)"></div>
         </div>
         <div class="cfg-row">
-          <span class="cfg-label">检查预载页数</span>
-          <div class="ds-input" style="width:120px"><input type="number" :value="store.eventShmConfig.check_pages" :disabled="store.eventShmPending" @blur="onCheckBlur('check_pages', $event)"></div>
+          <label class="cfg-label" :for="fieldId('check-pages')">检查预载页数</label>
+          <div class="ds-input" style="width:120px"><input :id="fieldId('check-pages')" type="number" :value="store.eventShmConfig.check_pages" :disabled="store.eventShmPending" @blur="onCheckBlur('check_pages', $event)"></div>
         </div>
         <div class="cfg-row">
-          <span class="cfg-label">检查预载字节</span>
-          <div class="ds-input" style="width:120px"><input type="number" :value="store.eventShmConfig.check_bytes" :disabled="store.eventShmPending" @blur="onCheckBlur('check_bytes', $event)"></div>
+          <label class="cfg-label" :for="fieldId('check-bytes')">检查预载字节</label>
+          <div class="ds-input" style="width:120px"><input :id="fieldId('check-bytes')" type="number" :value="store.eventShmConfig.check_bytes" :disabled="store.eventShmPending" @blur="onCheckBlur('check_bytes', $event)"></div>
         </div>
         <div class="cfg-row">
           <span class="cfg-label">预加载点</span>
@@ -182,12 +186,12 @@ async function saveWebui(): Promise<void> {
         </div>
         <div v-for="[time, pt] in preloadEntries" :key="time" class="cfg-row preload-row">
           <span class="cfg-label preload-time">{{ time }}</span>
-          <label class="preload-field">页
-            <input class="shm-num-input" type="number" :value="pt.pages"
+          <label class="preload-field" :for="fieldId(`preload-${time}-pages`)">页
+            <input :id="fieldId(`preload-${time}-pages`)" class="shm-num-input" type="number" :value="pt.pages"
               :disabled="store.eventShmPending" @blur="onPreloadBlur(time, 'pages', $event)">
           </label>
-          <label class="preload-field">字节
-            <input class="shm-num-input" type="number" :value="pt.bytes"
+          <label class="preload-field" :for="fieldId(`preload-${time}-bytes`)">字节
+            <input :id="fieldId(`preload-${time}-bytes`)" class="shm-num-input" type="number" :value="pt.bytes"
               :disabled="store.eventShmPending" @blur="onPreloadBlur(time, 'bytes', $event)">
           </label>
           <button
@@ -225,12 +229,12 @@ async function saveWebui(): Promise<void> {
           <span class="ds-tag ds-tag--warning">不可变，改配置文件重启生效</span>
         </div>
         <div class="cfg-row">
-          <span class="cfg-label">Token 有效期(秒)</span>
-          <div class="ds-input" style="width:120px"><input v-model.number="webuiForm.token_ttl_sec" type="number" min="60" max="604800" :disabled="webuiSaving"></div>
+          <label class="cfg-label" :for="fieldId('webui-token-ttl-sec')">Token 有效期(秒)</label>
+          <div class="ds-input" style="width:120px"><input :id="fieldId('webui-token-ttl-sec')" v-model.number="webuiForm.token_ttl_sec" type="number" min="60" max="604800" :disabled="webuiSaving"></div>
         </div>
         <div class="cfg-row">
-          <span class="cfg-label">Notify 缓存条数</span>
-          <div class="ds-input" style="width:120px"><input v-model.number="webuiForm.notify_cache_size" type="number" min="0" max="1000000" :disabled="webuiSaving"></div>
+          <label class="cfg-label" :for="fieldId('webui-notify-cache-size')">Notify 缓存条数</label>
+          <div class="ds-input" style="width:120px"><input :id="fieldId('webui-notify-cache-size')" v-model.number="webuiForm.notify_cache_size" type="number" min="0" max="1000000" :disabled="webuiSaving"></div>
           <span class="ds-tag ds-tag--warning">重启后生效</span>
         </div>
         <div class="cfg-row">
@@ -282,19 +286,19 @@ async function saveWebui(): Promise<void> {
     <Modal :open="preloadModalOpen" title="添加预加载点" @close="preloadModalOpen = false">
       <div class="dialog-form">
         <div class="dialog-row">
-          <label class="dialog-row__label">时间</label>
-          <div class="dialog-row__control"><TimePicker v-model="preloadTime" /></div>
+          <label class="dialog-row__label" :for="fieldId('preload-time')">时间</label>
+          <div class="dialog-row__control"><TimePicker :id="fieldId('preload-time')" v-model="preloadTime" /></div>
         </div>
         <div class="dialog-row">
-          <label class="dialog-row__label">预加载页数</label>
+          <label class="dialog-row__label" :for="fieldId('preload-pages')">预加载页数</label>
           <div class="ds-input dialog-row__control">
-            <input v-model="preloadPages" type="number" placeholder="页数">
+            <input :id="fieldId('preload-pages')" v-model="preloadPages" type="number" placeholder="页数">
           </div>
         </div>
         <div class="dialog-row">
-          <label class="dialog-row__label">预加载字节</label>
+          <label class="dialog-row__label" :for="fieldId('preload-bytes')">预加载字节</label>
           <div class="ds-input dialog-row__control">
-            <input v-model="preloadBytes" type="number" placeholder="字节数">
+            <input :id="fieldId('preload-bytes')" v-model="preloadBytes" type="number" placeholder="字节数">
           </div>
         </div>
         <div v-if="preloadError" class="dialog-row__error">{{ preloadError }}</div>

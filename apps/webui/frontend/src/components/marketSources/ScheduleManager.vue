@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
 import TimePicker from '@/components/shared/TimePicker.vue'
+import { useFieldId } from '@/composables/useFieldId'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import type { MarketSourceView } from '@/stores/marketSources'
 
@@ -11,6 +12,10 @@ import type { MarketSourceView } from '@/stores/marketSources'
 const props = defineProps<{
   source: MarketSourceView
 }>()
+
+// label↔控件配对（#233）：TimePicker 的根是 div，可标注元素是其内部 button，
+// 故 id 走 prop 传进去；id 前缀按组件实例区分（每个行情源一份本组件）
+const fieldId = useFieldId()
 
 const store = useMarketSourcesStore()
 const src = computed(() => props.source)
@@ -102,15 +107,15 @@ const scheduleAddPending = computed(() => {
   <Modal :open="scheduleModalOpen" title="添加自动登录登出" @close="closeScheduleModal">
     <div class="dialog-form">
       <div class="dialog-row">
-        <label class="dialog-row__label">登录时间</label>
+        <label class="dialog-row__label" :for="fieldId('schedule-login-time')">登录时间</label>
         <div class="dialog-row__control">
-          <TimePicker v-model="scheduleLoginTime" />
+          <TimePicker :id="fieldId('schedule-login-time')" v-model="scheduleLoginTime" />
         </div>
       </div>
       <div class="dialog-row">
-        <label class="dialog-row__label">登出时间</label>
+        <label class="dialog-row__label" :for="fieldId('schedule-logout-time')">登出时间</label>
         <div class="dialog-row__control">
-          <TimePicker v-model="scheduleLogoutTime" />
+          <TimePicker :id="fieldId('schedule-logout-time')" v-model="scheduleLogoutTime" />
         </div>
       </div>
       <div v-if="scheduleError" class="dialog-row__error">{{ scheduleError }}</div>

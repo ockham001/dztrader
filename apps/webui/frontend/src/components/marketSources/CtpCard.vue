@@ -6,6 +6,7 @@ import TimePicker from '@/components/shared/TimePicker.vue'
 import StatusIndicator from '@/components/shared/StatusIndicator.vue'
 import { processStateText, processStateColor } from '@/composables/useProcessState'
 import { mdLastErrorText, type MdLastErrorView } from '@/composables/marketSourceView'
+import { useFieldId } from '@/composables/useFieldId'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import type { MarketSourceView } from '@/stores/marketSources'
 import type { SubscribeParamsBody, ShmConfigPatch } from '@/api/marketSources'
@@ -20,6 +21,10 @@ import BrokerCard from './BrokerCard.vue'
 const props = defineProps<{ source: MarketSourceView }>()
 const store = useMarketSourcesStore()
 const src = computed(() => props.source)
+
+// label↔控件配对（#233）：id 按组件实例前缀生成，多个行情源卡片同页并存不会撞。
+// TimePicker 根节点是 div、可标注元素是内部 button，故其 id 走 prop 传入
+const fieldId = useFieldId()
 
 // ===== Add broker modal (F-C10: name 创建后不可改 + broker_id/user_id/password/product_info) =====
 const brokerModalOpen = ref(false)
@@ -353,33 +358,33 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
           </div>
           <div class="sub-params">
             <div class="sub-params__field">
-              <label>每批订阅数</label>
+              <label :for="fieldId('sub-batch-size')">每批订阅数</label>
               <div class="ds-input">
-                <input type="number" min="1" :value="src.subscribeBatchSize ?? ''"
+                <input :id="fieldId('sub-batch-size')" type="number" min="1" :value="src.subscribeBatchSize ?? ''"
                   :disabled="src.subscribeParamsPending"
                   @blur="onSubParamBlur(src, 'subscribe_batch_size', $event)">
               </div>
             </div>
             <div class="sub-params__field">
-              <label>批间延迟(ms)</label>
+              <label :for="fieldId('sub-batch-delay-ms')">批间延迟(ms)</label>
               <div class="ds-input">
-                <input type="number" min="0" :value="src.subscribeBatchDelayMs ?? ''"
+                <input :id="fieldId('sub-batch-delay-ms')" type="number" min="0" :value="src.subscribeBatchDelayMs ?? ''"
                   :disabled="src.subscribeParamsPending"
                   @blur="onSubParamBlur(src, 'subscribe_batch_delay_ms', $event)">
               </div>
             </div>
             <div class="sub-params__field">
-              <label>补订检查间隔(ms)</label>
+              <label :for="fieldId('sub-check-interval-ms')">补订检查间隔(ms)</label>
               <div class="ds-input">
-                <input type="number" min="1" :value="src.subCheckIntervalMs ?? ''"
+                <input :id="fieldId('sub-check-interval-ms')" type="number" min="1" :value="src.subCheckIntervalMs ?? ''"
                   :disabled="src.subscribeParamsPending"
                   @blur="onSubParamBlur(src, 'sub_check_interval_ms', $event)">
               </div>
             </div>
             <div class="sub-params__field">
-              <label>补订最大重试</label>
+              <label :for="fieldId('sub-max-retry')">补订最大重试</label>
               <div class="ds-input">
-                <input type="number" min="0" :value="src.subMaxRetry ?? ''"
+                <input :id="fieldId('sub-max-retry')" type="number" min="0" :value="src.subMaxRetry ?? ''"
                   :disabled="src.subscribeParamsPending"
                   @blur="onSubParamBlur(src, 'sub_max_retry', $event)">
               </div>
@@ -394,18 +399,18 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
             <span class="gateway-info__item" title="仅可通过配置文件修改，进程启动前生效（契约 shm）">
               页大小：<span>{{ shmCfg ? `${shmCfg.page_size_mb} MB` : '--' }}</span>
             </span>
-            <span class="gateway-info__item">周期检查间隔(分)：
-              <input class="shm-num-input" type="number" :value="shmCfg?.check_interval_min ?? ''"
+            <label class="gateway-info__item" :for="fieldId('shm-check-interval')">周期检查间隔(分)：
+              <input :id="fieldId('shm-check-interval')" class="shm-num-input" type="number" :value="shmCfg?.check_interval_min ?? ''"
                 :disabled="src.shmConfigPending" @blur="onShmNumBlur('check_interval_min', $event)">
-            </span>
-            <span class="gateway-info__item">检查预载页数：
-              <input class="shm-num-input" type="number" :value="shmCfg?.check_pages ?? ''"
+            </label>
+            <label class="gateway-info__item" :for="fieldId('shm-check-pages')">检查预载页数：
+              <input :id="fieldId('shm-check-pages')" class="shm-num-input" type="number" :value="shmCfg?.check_pages ?? ''"
                 :disabled="src.shmConfigPending" @blur="onShmNumBlur('check_pages', $event)">
-            </span>
-            <span class="gateway-info__item">检查预载字节：
-              <input class="shm-num-input" type="number" :value="shmCfg?.check_bytes ?? ''"
+            </label>
+            <label class="gateway-info__item" :for="fieldId('shm-check-bytes')">检查预载字节：
+              <input :id="fieldId('shm-check-bytes')" class="shm-num-input" type="number" :value="shmCfg?.check_bytes ?? ''"
                 :disabled="src.shmConfigPending" @blur="onShmNumBlur('check_bytes', $event)">
-            </span>
+            </label>
           </div>
           <div class="preload-list">
             <div class="card-section__row" style="margin-top: var(--spacer-8)">
@@ -414,12 +419,12 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
             </div>
             <div v-for="[time, pt] in preloadEntries" :key="time" class="preload-item">
               <span class="preload-item__time">{{ time }}</span>
-              <label class="preload-item__field">页
-                <input class="shm-num-input" type="number" :value="pt.pages"
+              <label class="preload-item__field" :for="fieldId(`preload-${time}-pages`)">页
+                <input :id="fieldId(`preload-${time}-pages`)" class="shm-num-input" type="number" :value="pt.pages"
                   :disabled="src.shmConfigPending" @blur="onPreloadBlur(time, 'pages', $event)">
               </label>
-              <label class="preload-item__field">字节
-                <input class="shm-num-input" type="number" :value="pt.bytes"
+              <label class="preload-item__field" :for="fieldId(`preload-${time}-bytes`)">字节
+                <input :id="fieldId(`preload-${time}-bytes`)" class="shm-num-input" type="number" :value="pt.bytes"
                   :disabled="src.shmConfigPending" @blur="onPreloadBlur(time, 'bytes', $event)">
               </label>
               <button
@@ -455,33 +460,33 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
     <Modal :open="brokerModalOpen" title="添加经纪商" @close="closeBrokerModal">
       <div class="dialog-form">
         <div class="dialog-row">
-          <label class="dialog-row__label">名称</label>
+          <label class="dialog-row__label" :for="fieldId('new-broker-name')">名称</label>
           <div class="ds-input dialog-row__control">
-            <input v-model="newBrokerName" type="text" placeholder="例如：上海中期（创建后不可修改）">
+            <input :id="fieldId('new-broker-name')" v-model="newBrokerName" type="text" placeholder="例如：上海中期（创建后不可修改）">
           </div>
         </div>
         <div class="dialog-row">
-          <label class="dialog-row__label">BrokerID</label>
+          <label class="dialog-row__label" :for="fieldId('new-broker-broker-id')">BrokerID</label>
           <div class="ds-input dialog-row__control">
-            <input v-model="newBrokerBrokerId" type="text" placeholder="经纪商编号">
+            <input :id="fieldId('new-broker-broker-id')" v-model="newBrokerBrokerId" type="text" placeholder="经纪商编号">
           </div>
         </div>
         <div class="dialog-row">
-          <label class="dialog-row__label">UserID</label>
+          <label class="dialog-row__label" :for="fieldId('new-broker-user-id')">UserID</label>
           <div class="ds-input dialog-row__control">
-            <input v-model="newBrokerUserId" type="text" placeholder="用户代码">
+            <input :id="fieldId('new-broker-user-id')" v-model="newBrokerUserId" type="text" placeholder="用户代码">
           </div>
         </div>
         <div class="dialog-row">
-          <label class="dialog-row__label">密码</label>
+          <label class="dialog-row__label" :for="fieldId('new-broker-password')">密码</label>
           <div class="ds-input dialog-row__control">
-            <input v-model="newBrokerPassword" type="password" placeholder="密码">
+            <input :id="fieldId('new-broker-password')" v-model="newBrokerPassword" type="password" placeholder="密码">
           </div>
         </div>
         <div class="dialog-row">
-          <label class="dialog-row__label">ProductInfo</label>
+          <label class="dialog-row__label" :for="fieldId('new-broker-product-info')">ProductInfo</label>
           <div class="ds-input dialog-row__control">
-            <input v-model="newBrokerProductInfo" type="text" placeholder="客户端产品信息（可选）">
+            <input :id="fieldId('new-broker-product-info')" v-model="newBrokerProductInfo" type="text" placeholder="客户端产品信息（可选）">
           </div>
         </div>
       </div>
@@ -500,19 +505,19 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
     <Modal :open="preloadModalOpen" title="添加预加载点" @close="preloadModalOpen = false">
       <div class="dialog-form">
         <div class="dialog-row">
-          <label class="dialog-row__label">时间</label>
-          <div class="dialog-row__control"><TimePicker v-model="preloadTime" /></div>
+          <label class="dialog-row__label" :for="fieldId('preload-time')">时间</label>
+          <div class="dialog-row__control"><TimePicker :id="fieldId('preload-time')" v-model="preloadTime" /></div>
         </div>
         <div class="dialog-row">
-          <label class="dialog-row__label">预加载页数</label>
+          <label class="dialog-row__label" :for="fieldId('preload-pages')">预加载页数</label>
           <div class="ds-input dialog-row__control">
-            <input v-model="preloadPages" type="number" placeholder="页数">
+            <input :id="fieldId('preload-pages')" v-model="preloadPages" type="number" placeholder="页数">
           </div>
         </div>
         <div class="dialog-row">
-          <label class="dialog-row__label">预加载字节</label>
+          <label class="dialog-row__label" :for="fieldId('preload-bytes')">预加载字节</label>
           <div class="ds-input dialog-row__control">
-            <input v-model="preloadBytes" type="number" placeholder="字节数">
+            <input :id="fieldId('preload-bytes')" v-model="preloadBytes" type="number" placeholder="字节数">
           </div>
         </div>
         <div v-if="preloadError" class="dialog-row__error">{{ preloadError }}</div>

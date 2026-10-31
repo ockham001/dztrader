@@ -57,13 +57,16 @@ export default tsPlugin.config(
       'vue/html-button-has-type': 'warn',
       // 故意保留空 catch（前端多处吞异常容忍乱码不崩溃，见项目约定）
       'no-empty': 'off',
-      // --- 无障碍存量豁免（#206 决策：先关，存量修完再打开）---
-      // 表单控件与 <label> 的关联（label-has-for 58 条 + form-control-has-label 39 条 = 97 条，
-      // 分布在 14 个 .vue 文件）属"label↔input 关联"另一类问题，与键盘可达正交。
-      // #206 只修键盘可达与对话框语义；这两条在此显式关闭，清单与口径见 #233，
-      // **#233 修完后必须把这两行改回 'error'**（否则该票无法验收）。
-      'vuejs-accessibility/label-has-for': 'off',
-      'vuejs-accessibility/form-control-has-label': 'off',
+      // --- 无障碍：表单控件与 <label> 的程序化关联（#233 起恢复为 error）---
+      // #206 曾把这两条显式关闭（当时 97 条存量），本票已按「真实配对」修完并重新打开，
+      // 回归基线见 #233。口径说明：label-has-for 配 some:['nesting','id']——
+      // 「控件嵌套在 label 内」**或**「label 有 for 且控件有 id」满足其一即可。
+      // 为什么不用插件默认的 every：every 要求 nesting 与 for/id **同时**满足，
+      // 会把正确写法判红（LoginView 的 <label for>+<input id> 兄弟结构在 every 下报错），
+      // 等于强迫把控件塞进 label 里，与本票验收「for/id 配对或 aria-labelledby」相悖，
+      // 也与 WCAG / HTML 规范 / axe-core 的口径不一致。
+      'vuejs-accessibility/label-has-for': ['error', { required: { some: ['nesting', 'id'] } }],
+      'vuejs-accessibility/form-control-has-label': 'error',
     },
   },
   // LogViewerTab 的 v-html 是受控高亮：highlightMessage 已先行转义 &<> 无注入路径

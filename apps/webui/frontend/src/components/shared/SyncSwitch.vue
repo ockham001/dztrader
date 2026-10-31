@@ -23,6 +23,12 @@ const props = defineProps<{
   modelValue: boolean
   pending?: boolean
   disabled?: boolean
+  /**
+   * 开关的无障碍名称（#233）。本组件是纯图形开关，label 内没有可读文字——
+   * 视觉上的名称由调用方写在相邻的 `<span>` 里，读屏拿不到，因此必须显式传入。
+   * 例：`<SyncSwitch label="自动登录" />`
+   */
+  label?: string
 }>()
 
 const emit = defineEmits<{
@@ -53,6 +59,7 @@ function onToggle(e: Event): void {
       type="checkbox"
       :checked="modelValue"
       :disabled="disabled || pending"
+      :aria-label="props.label"
       @change="onToggle"
     >
     <span class="ds-switch__track">

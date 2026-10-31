@@ -193,6 +193,7 @@ function formatTs(ts: string): string {
           <input
             type="text"
             placeholder="关键字搜索..."
+            aria-label="搜索日志关键字"
             :value="store.keyword"
             @input="handleKeywordInput"
           >

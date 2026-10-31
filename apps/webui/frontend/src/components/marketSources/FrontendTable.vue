@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
 import { isStateIdle } from '@/composables/useProcessState'
+import { useFieldId } from '@/composables/useFieldId'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import type { MarketSourceView } from '@/stores/marketSources'
 import type { BrokerEntry } from '@/types/api'
@@ -13,6 +14,9 @@ const props = defineProps<{
   source: MarketSourceView
   broker: BrokerEntry
 }>()
+
+// label↔input 配对（#233）：id 前缀按组件实例区分（每个经纪商一份本组件）
+const fieldId = useFieldId()
 
 const store = useMarketSourcesStore()
 const src = computed(() => props.source)
@@ -140,6 +144,7 @@ function onFrontendAddressBlur(
                   type="checkbox"
                   :checked="fe.enabled"
                   :disabled="!isStateIdle(src.process_state, src.loginState) || src.frontendTogglePending"
+                  :aria-label="`启用前置 ${fe.address}`"
                   @change="store.setFrontendEnabled(src.id, broker.name, fe.address, ($event.target as HTMLInputElement).checked)"
                 >
                 <span class="ds-check__box"></span>
@@ -153,6 +158,7 @@ function onFrontendAddressBlur(
                 :value="fe.address"
                 :disabled="!isStateIdle(src.process_state, src.loginState) || src.frontendEditPending"
                 :title="!isStateIdle(src.process_state, src.loginState) ? '需在未登录状态下操作' : ''"
+                :aria-label="`前置地址 ${fe.address}`"
                 @blur="onFrontendAddressBlur(src.id, broker.name, fe.address, $event)"
               >
             </td>
@@ -183,15 +189,15 @@ function onFrontendAddressBlur(
   <Modal :open="frontendModalOpen" title="添加前置地址" @close="closeFrontendModal">
     <div class="dialog-form">
       <div class="dialog-row">
-        <label class="dialog-row__label">地址</label>
+        <label class="dialog-row__label" :for="fieldId('frontend-address')">地址</label>
         <div class="ds-input dialog-row__control">
-          <input v-model="newFrontendAddress" type="text" placeholder="例如：tcp://180.168.146.187:10211">
+          <input :id="fieldId('frontend-address')" v-model="newFrontendAddress" type="text" placeholder="例如：tcp://180.168.146.187:10211">
         </div>
       </div>
       <div class="dialog-row">
-        <label class="dialog-row__label">标签</label>
+        <label class="dialog-row__label" :for="fieldId('frontend-label')">标签</label>
         <div class="ds-input dialog-row__control">
-          <input v-model="newFrontendLabel" type="text" placeholder="例如：电信线路（可选）">
+          <input :id="fieldId('frontend-label')" v-model="newFrontendLabel" type="text" placeholder="例如：电信线路（可选）">
         </div>
       </div>
     </div>

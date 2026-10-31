@@ -7,6 +7,12 @@ const props = withDefaults(defineProps<{
   placeholder?: string
   /** minute step (1/5/15/30). 默认 1 */
   step?: number
+  /**
+   * 触发器按钮的 id，供外部 `<label for>` 关联（#233）。
+   * 组件根节点是非可标注的 `<div>`，attr fallthrough 只会落到 div 上、
+   * `for` 指过去不成立；可标注元素是内部的 `<button>`，故须显式接收后绑到按钮。
+   */
+  id?: string // eslint-disable-line vue/require-default-prop -- 可选：调用方不关联 label 时合法
 }>(), {
   modelValue: '',
   disabled: false,
@@ -167,6 +173,7 @@ onUnmounted(() => {
       ref="triggerRef"
       class="ds-timepicker__trigger"
       type="button"
+      :id="props.id"
       :disabled="props.disabled"
       :aria-expanded="isOpen"
       @click="toggle()"
