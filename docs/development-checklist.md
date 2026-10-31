@@ -21,7 +21,7 @@
 | A6 | 新增行情源类型 | 四件套：新建 `<Type>Card.vue`（复制 `MarketSourceCardTemplate`）+ `marketSourcesCardRegistry` 加一行（键小写）；store/api/view 免改 |
 | A7 | 处理 WS 广播消息 | 类型经 `src/types/generated.ts`（schema 单源）+ 判别联合 `WsDataByType` 类型化；handler 勿用宽松 cast |
 | A8 | 加测试 | 现有 spec 目录补充；改动后 `npm test` 全绿 |
-| A9 | 新增可点击/可操作元素、对话框 | 无障碍规则门禁（`eslint-plugin-vuejs-accessibility` recommended，见 `eslint.config.js`）：`div` + `@click` 必须补键盘等效路径与 `role`/`tabindex`（键盘可达）、对话框必须有 `role="dialog"` + `aria-modal` + `aria-labelledby` 并走 `useFocusTrap`（焦点移入/框内循环/关闭还原，见 `src/composables/useFocusTrap.ts`）、图标按钮必须有 `aria-label`。**静态装饰性元素**（拖拽分隔条、点击遮罩）用 `role="presentation"` 或行内 `eslint-disable-next-line` 并写明理由。存量豁免：`label-has-for` / `form-control-has-label` 两条当前关闭（97 条存量，随 #206 后续票逐处修完再打开） |
+| A9 | 新增可点击/可操作元素、对话框 | 无障碍规则门禁（`eslint-plugin-vuejs-accessibility` recommended，见 `eslint.config.js`）：`div` + `@click` 必须补键盘等效路径与 `role`/`tabindex`（键盘可达）、对话框必须有 `role="dialog"` + `aria-modal` + `aria-labelledby` 并走 `useFocusTrap`（焦点移入/框内循环/关闭还原，见 `src/composables/useFocusTrap.ts`）、需要锁背景滚动的走 `useScrollLock`（引用计数，见 `src/composables/useScrollLock.ts`）、图标按钮必须有 `aria-label`。**静态装饰性元素**（拖拽分隔条、点击遮罩）用 `role="presentation"` 或行内 `eslint-disable-next-line` 并写明理由。存量豁免：`label-has-for` / `form-control-has-label` 两条当前关闭（97 条存量，修完并把 `eslint.config.js` 里两行改回 `error` 才算完，清单见 #233） |
 
 ## B. 后台（`apps/webui` C++ / 契约）
 

@@ -96,3 +96,47 @@ describe('App 通知弹窗焦点管理（#206 A）', () => {
     expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
   })
 })
+
+// Esc 通道（#206）：notify 弹窗与 Modal 共用同一焦点陷阱栈。
+// 若 alertdialog 只压栈、不提供 Esc 关闭自己的通道，那么它打开期间下层 Modal 的
+// Esc 会被 isTopmost() 判为「不是最上层」而静默失效——出现「按 Esc 什么都不发生」。
+// 本组用例钉住：notify 在上层时 Esc 确认通知（逐条出队），而不是死窗口。
+describe('App 通知弹窗的 Esc 通道（#206）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('notify 弹窗打开时按 Esc 确认当前条（等价于点确认），不会静默无响应', async () => {
+    const notify = useNotifyStore()
+    wrapper = mount(App, { global: { stubs }, attachTo: document.body })
+    notify.push('磁盘空间不足', 'dzsysmon', 'error', true)
+    await flushPromises()
+    await nextTick()
+    expect(wrapper.find('[role="alertdialog"]').exists()).toBe(true)
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await flushPromises()
+    await nextTick()
+
+    // 出队：弹窗消失（ackPopup 的效果），不是「按了没反应」
+    expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
+  })
+
+  it('多条通知时 Esc 逐条出队，一次只确认一条', async () => {
+    const notify = useNotifyStore()
+    wrapper = mount(App, { global: { stubs }, attachTo: document.body })
+    notify.push('第一条', 'dzsysmon', 'error', true)
+    notify.push('第二条', 'dzweb', 'error', true)
+    await flushPromises()
+    await nextTick()
+    expect(wrapper.find('.popup-modal__msg').text()).toBe('第一条')
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await flushPromises()
+    await nextTick()
+
+    // 仍在展示第二条：一次 Esc 只确认一条
+    expect(wrapper.find('[role="alertdialog"]').exists()).toBe(true)
+    expect(wrapper.find('.popup-modal__msg').text()).toBe('第二条')
+  })
+})

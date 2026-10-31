@@ -69,3 +69,15 @@ export function useScrollLock(active: Ref<boolean>): void {
 export function activeScrollLockCount(): number {
   return lockCount
 }
+
+/**
+ * 强制复位计数器与 body 内联值。**仅供测试 `afterEach` 使用**。
+ *
+ * 光断言不泄漏是不够的：用例中途失败时计数器已经脏了，后续用例的第一个断言
+ * 照样会红（级联误判）。复位后每条用例都从确定状态起步，失败只归因于自己。
+ */
+export function resetScrollLockForTest(): void {
+  lockCount = 0
+  savedOverflow = ''
+  document.body.style.overflow = ''
+}

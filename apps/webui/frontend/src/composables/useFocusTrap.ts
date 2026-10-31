@@ -3,7 +3,7 @@
 //
 // 为什么不自引第三方 focus-trap：本仓只有 Modal 与 App.vue 通知弹窗两处需要，
 // 且两处调用方对「打开时聚焦哪里」的需求已由 slot 内容决定，接入完整库的
-// 依赖与配置成本高于这套实现（约 140 行，含注释）。
+// 依赖与配置成本高于这套实现。（刻意不写行数：它随迭代漂移，此前写过两次都不准。）
 import { nextTick, onUnmounted, watch, type Ref } from 'vue'
 
 // 可聚焦候选：覆盖常见 Tab 序列成员。**不等于**浏览器的完整 Tab 算法——
@@ -57,6 +57,11 @@ export interface FocusTrapHandle {
    *
    * 供调用方给 Esc 等「一次只该关一层」的快捷键做作用域判断：多个模态同时打开时，
    * 若每个实例都无条件响应 Esc，按一次会同时关掉多层，键盘用户无法预期。
+   *
+   * **调用方义务**：只要用本 composable 打开了模态，就必须提供一个「Esc 关闭自己」
+   * 的通道，并在其中用 isTopmost() 做作用域判断。否则该模态压栈期间，下层模态的
+   * Esc 会因 isTopmost() 为 false 而静默失效——形成「按 Esc 什么都不发生」的死窗口。
+   * 栈里不只 Modal：App.vue 的 notify alertdialog 也在同一栈上。
    */
   isTopmost: () => boolean
 }

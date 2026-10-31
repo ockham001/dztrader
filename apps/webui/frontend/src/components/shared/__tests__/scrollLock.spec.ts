@@ -7,7 +7,7 @@ import { defineComponent, h, ref } from 'vue'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import Modal from '../Modal.vue'
-import { activeScrollLockCount } from '@/composables/useScrollLock'
+import { activeScrollLockCount, resetScrollLockForTest } from '@/composables/useScrollLock'
 
 const stubs = { Icon: { props: ['name', 'size'], template: '<span class="icon" />' } }
 
@@ -31,10 +31,11 @@ let wrapper: VueWrapper | null = null
 afterEach(() => {
   wrapper?.unmount()
   wrapper = null
-  // 计数器是模块级单例：本用例若中途失败会留下未释放的锁，让后续用例级联误判。
-  // 先断言没有泄漏，再手动把 DOM 复原，避免一条失败演变成整组红。
-  expect(activeScrollLockCount(), '用例结束时仍有未释放的滚动锁').toBe(0)
-  document.body.style.overflow = ''
+  // 计数器是模块级单例：先记下是否泄漏（把泄漏变成一条明确失败），
+  // 再**强制复位**——否则本用例中途失败留下的脏计数会让后续用例级联误判。
+  const leaked = activeScrollLockCount()
+  resetScrollLockForTest()
+  expect(leaked, '用例结束时仍有未释放的滚动锁').toBe(0)
 })
 
 describe('body 滚动锁引用计数（#206）', () => {

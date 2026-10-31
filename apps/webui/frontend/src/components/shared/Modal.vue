@@ -30,7 +30,8 @@ const trap = useFocusTrap({ active: computed(() => props.open), container: dialo
 // 走引用计数（useScrollLock）：同时打开多个模态时，先关闭的那个不能解掉后关闭者的锁。
 useScrollLock(computed(() => props.open))
 
-// Esc 只由最上层对话框响应：多个模态同时打开时，若每层都关，
+// Esc 只由最上层对话框响应：多个模态同时打开时（本组件可多层叠加，App.vue 的
+// notify alertdialog 也与本组件共用同一个焦点陷阱栈），若每层都关，
 // 按一次会同时关掉多层，键盘用户无法预期。
 function handleKeydown(e: KeyboardEvent): void {
   if (e.key !== 'Escape' || !props.open) return

@@ -185,12 +185,14 @@ describe('LogsView 日志文件列表键盘可达（#206）', () => {
     await flushPromises()
     expect(store.selectedFile).toBe('/logs/b.log')
 
-    // option 自身不再绑 keydown（它已退出 Tab 序列，挂了也是不可达死路径）
-    const option = w.findAll('.log-browser__file-item')[0]
-    await option.trigger('keydown', { key: 'Enter' })
-    await flushPromises()
-    // 仍停在 b.log：对 option 直接派发 Enter 不产生任何选中
-    expect(store.selectedFile).toBe('/logs/b.log')
+    // 结构约束：option 不进 Tab 序列（tabindex=-1），整个列表只有容器一个 tab 停靠点。
+    // 这是「键盘焦点永远在容器」的前提，也是 option 不该自带 keydown 的原因。
+    // （不能用「对 option 派发 keydown 看是否选中」来断言——VTU 派发的事件会冒泡到
+    // 容器的 handler，那样测出来的是容器路径，与 option 无关。）
+    for (const option of w.findAll('.log-browser__file-item')) {
+      expect(option.attributes('tabindex')).toBe('-1')
+    }
+    expect(list.attributes('tabindex')).toBe('0')
   })
 
   it('鼠标点击仍能选中（原有路径未被键盘改动破坏）', async () => {

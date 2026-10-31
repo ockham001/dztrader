@@ -62,10 +62,26 @@ async function ackDefaultPassword() {
 // 滚动锁同样走引用计数，与 Modal 共用一个计数器：两者同时打开时先关的那个不解后关的锁。
 const popupEl = ref<HTMLElement | null>(null)
 const popupOpen = computed(() => notify.popupCurrent !== null)
-useFocusTrap({ active: popupOpen, container: popupEl })
+const popupTrap = useFocusTrap({ active: popupOpen, container: popupEl })
 useScrollLock(popupOpen)
 
+// Esc 确认当前通知：它和 Modal 共用同一个焦点陷阱栈，必须同样提供 Esc 通道。
+// 否则本弹窗压栈期间，下层 Modal 的 Esc 会被 isTopmost 判为「不是最上层」而静默失效，
+// 形成「按 Esc 什么都不发生」的死窗口。
+// 契约 notify-ui 要求逐条出队确认——ackPopup 正是「确认」这个动作，Esc 与点确认等效。
+function handlePopupKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Escape' || !popupOpen.value) return
+  if (!popupTrap.isTopmost()) return
+  e.preventDefault()
+  notify.ackPopup()
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', handlePopupKeydown)
+})
+
 onUnmounted(() => {
+  document.removeEventListener('keydown', handlePopupKeydown)
   ws.disconnect()
 })
 </script>
