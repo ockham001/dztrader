@@ -7,7 +7,7 @@ import {
   MIN_PASSWORD_LENGTH,
   OLD_PASSWORD_INVALID_TEXT,
   PASSWORD_MISMATCH_TEXT,
-  PASSWORD_TOO_WEAK_TEXT,
+  PASSWORD_LENGTH_TEXT,
 } from '../passwordPolicy'
 
 describe('passwordPolicy', () => {
@@ -30,7 +30,7 @@ describe('passwordPolicy', () => {
   })
 
   it('提示文案含具体长度且不回显口令值', () => {
-    expect(PASSWORD_TOO_WEAK_TEXT).toContain(String(MIN_PASSWORD_LENGTH))
+    expect(PASSWORD_LENGTH_TEXT).toContain(String(MIN_PASSWORD_LENGTH))
     // 三个文案都是固定中文提示，不拼接用户输入
     expect(PASSWORD_MISMATCH_TEXT).toBe('两次输入的密码不一致')
     expect(OLD_PASSWORD_INVALID_TEXT).toBe('旧密码不正确')

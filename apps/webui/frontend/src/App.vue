@@ -66,7 +66,11 @@ onUnmounted(() => {
   <AppShell v-else-if="!auth.mustChangePassword">
     <router-view />
   </AppShell>
-  <div v-if="auth.defaultPasswordWarning" class="default-password-banner" role="alert">
+  <div
+    v-if="auth.defaultPasswordWarning && !auth.mustChangePassword"
+    class="default-password-banner"
+    role="alert"
+  >
     <span class="default-password-banner__icon">
       <Icon name="Tips" :size="16" />
     </span>

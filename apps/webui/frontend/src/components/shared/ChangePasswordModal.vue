@@ -8,8 +8,8 @@ import {
   isPasswordAcceptable,
   MIN_PASSWORD_LENGTH,
   OLD_PASSWORD_INVALID_TEXT,
+  PASSWORD_LENGTH_TEXT,
   PASSWORD_MISMATCH_TEXT,
-  PASSWORD_TOO_WEAK_TEXT,
 } from '@/composables/passwordPolicy'
 
 // 自助改密表单（契约 rest §2.1/§2.2）：旧密码必填、新口令满足最小长度。
@@ -56,7 +56,7 @@ async function submit(): Promise<void> {
     return
   }
   if (tooShort()) {
-    errorText.value = PASSWORD_TOO_WEAK_TEXT
+    errorText.value = PASSWORD_LENGTH_TEXT
     return
   }
   if (newPassword.value !== confirmPassword.value) {
@@ -85,7 +85,7 @@ function mapErrorCode(e: unknown): string {
   if (e instanceof ApiError) {
     // body 可为 null（非 JSON 错误体）；ApiErrorBody 带索引签名，code 是 unknown
     const code: unknown = e.body?.code
-    if (code === 'password_too_weak') return PASSWORD_TOO_WEAK_TEXT
+    if (code === 'password_too_weak') return PASSWORD_LENGTH_TEXT
     if (code === 'invalid_old_password') return OLD_PASSWORD_INVALID_TEXT
   }
   return '密码修改失败'
@@ -133,7 +133,7 @@ function close(): void {
             data-test="new-password"
           >
         </div>
-        <span class="dialog-field__hint" data-test="password-length-hint">密码长度至少 {{ MIN_PASSWORD_LENGTH }} 位</span>
+        <span class="dialog-field__hint" data-test="password-length-hint">{{ PASSWORD_LENGTH_TEXT }}</span>
       </div>
       <div class="dialog-field">
         <label class="dialog-field__label">确认新密码</label>

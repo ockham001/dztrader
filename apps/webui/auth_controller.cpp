@@ -149,10 +149,13 @@ void LoginCtrl::login(const drogon::HttpRequestPtr& req,
     // Re-fetch the user so the response reflects the updated last_login fields
     auto refreshed = repo_->get_user_by_username(username);
     Json user_json = user_to_json(refreshed ? *refreshed : *user);
-    // 默认密码告警：文案唯一真相源是后端常量，前端直接展示（契约 rest §2.1 / webui-ws §2.3）
+    // 默认密码告警：文案唯一真相源是后端常量，前端直接展示（契约 rest §2.1 / webui-ws §2.3）。
+    // 判定看**当前口令是否仍是系统默认口令**，而不是只看配置缺省标志——admin_password_is_default
+    // 只说明配置文件没写 password，用户改密后它依然是 true；只看它会让告警在改密后继续谎报。
     const bool is_default_password = cfg_->admin_password_is_default && refreshed &&
                                      refreshed->role == "admin" &&
-                                     refreshed->default_password_acknowledged == 0;
+                                     refreshed->default_password_acknowledged == 0 &&
+                                     repo_->password_matches(username, kDefaultAdminPassword);
     Json default_password_warning = nullptr;
     if (is_default_password) {
         default_password_warning = Json{{"message", kDefaultPasswordWarningMessage}};

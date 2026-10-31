@@ -506,6 +506,26 @@ bool Repository::revoke_user_tokens(int64_t id) {
     return changes > 0;
 }
 
+bool Repository::password_matches(const std::string& username, const std::string& plain) {
+    std::optional<std::string> stored;
+    {
+        std::scoped_lock lk(mutex_);
+        sqlite3_stmt* stmt = nullptr;
+        dz_prepare_v2(db_, "SELECT password_hash FROM users WHERE username = ?", -1, &stmt,
+                      nullptr);
+        sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char* h = sqlite3_column_text(stmt, 0);
+            if (h) {
+                stored = std::string(reinterpret_cast<const char*>(h));
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+    // verify 在锁外：PBKDF2 是 CPU 密集的，持锁会阻塞其它 DB 访问
+    return stored.has_value() && verify_password(plain, *stored);
+}
+
 bool Repository::force_password_change_if_default(int64_t id, const std::string& default_password) {
     std::scoped_lock lk(mutex_);
     std::optional<std::string> stored;

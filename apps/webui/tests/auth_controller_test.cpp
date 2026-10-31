@@ -285,9 +285,11 @@ TEST_F(AuthControllerTest, LoginWhitelistModeRejectsUnlistedIp) {
 // 契约 rest §2.1：文案由后端下发（唯一真相源 kDefaultPasswordWarningMessage），前端不硬编码。
 TEST_F(AuthControllerTest, LoginAdminWithUnackedDefaultPasswordCarriesWarning) {
     cfg_->admin_password_is_default = true;
-    repo_->create_user("admin", "Administrator", "", "admin_pass", "admin");
+    // 告警的判定条件是「当前口令**仍是**系统默认口令」，因此这里必须真的用默认口令建号；
+    // 配置缺省标志为 true 但实际口令已被改过时不得告警（见下一条用例）
+    repo_->create_user("admin", "Administrator", "", kDefaultAdminPassword, "admin");
 
-    auto resp = do_login("admin", "admin_pass");
+    auto resp = do_login("admin", kDefaultAdminPassword);
     ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
     auto body = parse_body(resp);
     ASSERT_FALSE(body["default_password_warning"].is_null());
@@ -298,9 +300,21 @@ TEST_F(AuthControllerTest, LoginAdminWithUnackedDefaultPasswordCarriesWarning) {
     auto admin = repo_->get_user_by_username("admin");
     ASSERT_TRUE(admin.has_value());
     ASSERT_TRUE(repo_->ack_default_password(admin->id));
-    auto resp2 = do_login("admin", "admin_pass");
+    auto resp2 = do_login("admin", kDefaultAdminPassword);
     ASSERT_EQ(resp2->getStatusCode(), drogon::k200OK);
     EXPECT_TRUE(parse_body(resp2)["default_password_warning"].is_null());
+}
+
+// 配置缺省标志为 true、但管理员**已经改过口令**时不得再告警（否则 banner 在改密后继续谎报）
+TEST_F(AuthControllerTest, LoginAdminAfterChangingDefaultPasswordHasNoWarning) {
+    cfg_->admin_password_is_default = true;
+    auto id = repo_->create_user("admin", "Administrator", "", kDefaultAdminPassword, "admin");
+    // 改密（不 ack 告警，排除 ack 标志的干扰）
+    ASSERT_TRUE(repo_->change_own_password(id, "MyNewStrongPass1"));
+
+    auto resp = do_login("admin", "MyNewStrongPass1");
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_TRUE(parse_body(resp)["default_password_warning"].is_null());
 }
 
 TEST_F(AuthControllerTest, LoginAdminWithCustomPasswordHasNoWarning) {

@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 
+#include "jwt.h"
 #include "repository.h"
 #include "session_guard.h"
 
@@ -70,6 +71,47 @@ TEST_F(SessionGuardTest, ChangeOwnPasswordClearsForcedChange) {
     ASSERT_TRUE(after.has_value());
     EXPECT_EQ(after->must_change_password, 0);
     EXPECT_EQ(check_session(*repo_, "alice", after->token_version), SessionState::Valid);
+}
+
+// 端到端：签发 token → 管理员重置 → 旧 token 被拒（契约 rest §1「会话吊销」）
+// 这是 issue「补测试」要求的直接断言：前面几条分别验版本自增与版本比对，
+// 这里把两者串起来验「旧 token 真的不能再用」，避免只测半截。
+TEST_F(SessionGuardTest, OldTokenRejectedAfterAdminReset) {
+    const std::string secret = "test_secret";
+    const auto before = repo_->get_user_by_username("alice");
+    ASSERT_TRUE(before.has_value());
+
+    // 1. 用当前 token_version 签发一个 token（等价于用户此刻登录拿到的那个）
+    const std::string token = jwt_sign("alice", 3600, secret, before->token_version);
+    std::string sub;
+    int64_t ver = -1;
+    ASSERT_TRUE(jwt_verify(token, secret, sub, &ver));
+    ASSERT_EQ(check_session(*repo_, sub, ver), SessionState::Valid);
+
+    // 2. 管理员重置口令 → token_version 自增 + 强制改密
+    ASSERT_TRUE(repo_->admin_reset_password(uid_, "ResetPass123!"));
+
+    // 3. 同一个 token 再走一次会话判定：签名仍有效，但会话必须已失效
+    std::string sub2;
+    int64_t ver2 = -1;
+    ASSERT_TRUE(jwt_verify(token, secret, sub2, &ver2)) << "签名不该因重置而变化";
+    // 版本已过时 + 强制改密；两者都不能让 token 继续可用（此处先撞版本不匹配）
+    EXPECT_EQ(check_session(*repo_, sub2, ver2), SessionState::InvalidToken);
+}
+
+// 端到端：自助改密后**另一个**会话的旧 token 也被吊销（不只当前会话）
+TEST_F(SessionGuardTest, OtherSessionsInvalidatedByPasswordChange) {
+    const std::string secret = "test_secret";
+    const auto before = repo_->get_user_by_username("alice");
+    ASSERT_TRUE(before.has_value());
+    const std::string other_device_token = jwt_sign("alice", 3600, secret, before->token_version);
+
+    ASSERT_TRUE(repo_->change_own_password(uid_, "MyNewPass123!"));
+
+    std::string sub;
+    int64_t ver = -1;
+    ASSERT_TRUE(jwt_verify(other_device_token, secret, sub, &ver));
+    EXPECT_EQ(check_session(*repo_, sub, ver), SessionState::InvalidToken);
 }
 
 TEST_F(SessionGuardTest, PathWhitelistBeforePasswordChange) {

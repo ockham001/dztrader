@@ -168,8 +168,9 @@ void run_schema(sqlite3* db) {
     }
 
     // Migration: add token_version / must_change_password columns to users (#202 会话吊销)。
-    // 既有 DB 的行为等价旧实现：token_version=0 使已签发的旧 token（无 ver claim）仍被拒，
-    // 因此升级后所有存量会话强制重登一次——这正是本票的意图（旧 token 无法证明未被泄露）。
+    // 两列默认 0，使升级对存量会话**无影响**：旧 token 没有 ver claim，jwt_verify 按 0 解释
+    // （jwt.cpp），与迁移后 DB 的默认值相等，因此存量会话在升级瞬间仍然有效；它们会在该用户
+    // 下次改密/重置/被禁用时随 token_version 自增而失效。
     // must_change_password 默认 0：不改存量用户行为，仅管理员重置时置位。
     {
         sqlite3_stmt* stmt = nullptr;

@@ -16,9 +16,9 @@ namespace {
 /// 口令强度不合格错误体（契约 rest §1「密码策略」）：机器码供前端分支，
 /// error 是人类可读消息。文案不回显口令值。
 Json password_too_weak_body() {
-    return Json{{"error", "password too weak"},
-                {"code", "password_too_weak"},
-                {"min_length", kMinPasswordLength}};
+    // 形状严格照契约 rest §1：只有 error + code（不额外塞 min_length——未登记字段会
+    // 变成第二份「最小长度」真相源，前端已经从前端常量拿提示文案）
+    return Json{{"error", "password too weak"}, {"code", "password_too_weak"}};
 }
 
 Json old_password_invalid_body() {

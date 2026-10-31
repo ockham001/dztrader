@@ -111,12 +111,15 @@ void WsController::handleNewConnection(const drogon::HttpRequestPtr& req,
     }
     broadcast_data_changed("users");
 
-    // 默认密码告警:仅 admin 用户、当前是默认密码、且未确认时推送
+    // 默认密码告警:仅 admin 用户、**当前口令仍是系统默认口令**、且未确认时推送。
+    // 不看配置缺省标志单独判定：用户改密后 admin_password_is_default 仍为 true，
+    // 只看它会让 banner 在改密后继续谎报「正在使用默认口令」。
     if (cfg_.admin_password_is_default && repo_) {
         try {
             auto admin_user = repo_->get_user_by_username(user_id);
             if (admin_user && admin_user->role == "admin" &&
-                admin_user->default_password_acknowledged == 0) {
+                admin_user->default_password_acknowledged == 0 &&
+                repo_->password_matches(user_id, kDefaultAdminPassword)) {
                 const nlohmann::json warning = {
                     {"type", "default_password_warning"},
                     {"payload", {{"message", kDefaultPasswordWarningMessage}}}};

@@ -124,6 +124,11 @@ public:
     /// 自增 token_version 以吊销该用户全部既有 JWT/WS 会话（禁用账户时调用）。
     /// 用户不存在返回 false。
     bool revoke_user_tokens(int64_t id);
+    /// 该用户当前口令是否仍等于给定明文（用于「是否仍在使用系统默认口令」判定：
+    /// 配置里的 admin_password_is_default 只说明**配置缺省**，用户改密后它仍是 true，
+    /// 不能用来判断当前口令，否则默认口令告警会在改密后继续谎报）。
+    /// 用户不存在或读 hash 失败返回 false。
+    bool password_matches(const std::string& username, const std::string& plain);
     /// 若该用户当前口令**仍是** `default_password`，置 must_change_password=1
     /// （#202 决策：保留系统默认口令，但首次登录强制改密）。已改过口令则无操作。
     /// @return true=需要/已处于强制改密；false=口令非默认值或用户不存在

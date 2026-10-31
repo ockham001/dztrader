@@ -22,7 +22,8 @@ std::string jwt_sign(const std::string& sub,
 /// @param token JWT 字符串
 /// @param secret HMAC 密钥
 /// @param out_sub 输出用户标识（校验成功时填充）
-/// @param out_token_version 输出 `ver` claim；缺失按 0（兼容旧 token，见 provider 侧比对逻辑）
+/// @param out_token_version 输出 `ver` claim；缺失按 0（兼容旧 token）——调用方把它交给
+///        `session_guard.h` 的 `check_session` 与 DB 现值比对
 /// @return true=校验成功，false=签名错误/过期/格式错误
 bool jwt_verify(const std::string& token,
                 const std::string& secret,

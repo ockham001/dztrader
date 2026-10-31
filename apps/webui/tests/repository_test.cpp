@@ -249,11 +249,26 @@ TEST_F(RepositoryTest, ForcePasswordChangeIfDefaultOnlyForDefaultPassword) {
     const int64_t id = repo_.create_user("defuser", "Def", "", "NotTheDefault123!", "user");
     // 口令不是给定默认值 → 不置位
     EXPECT_FALSE(repo_.force_password_change_if_default(id, "88888888"));
-    EXPECT_EQ(repo_.get_user_by_id(id)->must_change_password, 0);
+    const auto untouched = repo_.get_user_by_id(id);
+    ASSERT_TRUE(untouched.has_value());
+    EXPECT_EQ(untouched->must_change_password, 0);
     // 口令正是给定默认值 → 置位
     const int64_t def_id = repo_.create_user("defuser2", "Def2", "", "88888888", "user");
     EXPECT_TRUE(repo_.force_password_change_if_default(def_id, "88888888"));
-    EXPECT_EQ(repo_.get_user_by_id(def_id)->must_change_password, 1);
+    const auto flagged = repo_.get_user_by_id(def_id);
+    ASSERT_TRUE(flagged.has_value());
+    EXPECT_EQ(flagged->must_change_password, 1);
+}
+
+TEST_F(RepositoryTest, PasswordMatchesReflectsCurrentHash) {
+    const int64_t id = repo_.create_user("matchuser", "Match", "", "88888888", "user");
+    EXPECT_TRUE(repo_.password_matches("matchuser", "88888888"));
+    ASSERT_TRUE(repo_.change_own_password(id, "NewStrongPass1"));
+    // 改密后不再匹配系统默认口令——默认口令告警据此不再谎报
+    EXPECT_FALSE(repo_.password_matches("matchuser", "88888888"));
+    EXPECT_TRUE(repo_.password_matches("matchuser", "NewStrongPass1"));
+    // 不存在的用户
+    EXPECT_FALSE(repo_.password_matches("ghost", "whatever"));
 }
 
 TEST_F(RepositoryTest, UpdateUserStatus) {

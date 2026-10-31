@@ -16,8 +16,11 @@ export function isPasswordAcceptable(password: string): boolean {
   return password.length >= MIN_PASSWORD_LENGTH
 }
 
-/** 不合格时的提示文案（不回显口令值，也不拼接具体口令） */
-export const PASSWORD_TOO_WEAK_TEXT = `密码长度至少 ${MIN_PASSWORD_LENGTH} 位`
+/**
+ * 口令长度提示文案的**唯一真相源**（错误提示与字段下方常驻提示共用同一句，
+ * 避免模板里各处手写中文）。
+ */
+export const PASSWORD_LENGTH_TEXT = `密码长度至少 ${MIN_PASSWORD_LENGTH} 位`
 
 /** 两次输入不一致的提示文案（改密类表单共用） */
 export const PASSWORD_MISMATCH_TEXT = '两次输入的密码不一致'

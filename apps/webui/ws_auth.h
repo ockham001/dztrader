@@ -14,7 +14,7 @@ namespace dztrader::webui {
 /// 连接对象无法脱离框架实例化）。返回 nullopt = 鉴权失败。
 ///
 /// **不含**会话吊销与强制改密判定：那两步需要 DB 与 Repository，由调用方在
-/// 拿到 username 后经 `is_session_allowed` 完成（同一函数也被 REST 预检使用）。
+/// 拿到 username 后经 `session_guard.h` 的 `check_session` 完成（同一函数也被 REST 预检使用）。
 inline std::optional<std::string> ws_authenticate(const std::string& query_token,
                                                   const std::string& authorization_header,
                                                   const std::string& jwt_secret,

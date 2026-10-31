@@ -14,7 +14,11 @@ import {
 import type { DropdownItem } from '@/components/shared/Dropdown.vue'
 import type { SelectItem } from '@/components/shared/SyncSelect.vue'
 import type { UserView } from '@/stores/userManagement'
-import { isPasswordAcceptable, MIN_PASSWORD_LENGTH, PASSWORD_TOO_WEAK_TEXT } from '@/composables/passwordPolicy'
+import {
+  isPasswordAcceptable,
+  MIN_PASSWORD_LENGTH,
+  PASSWORD_LENGTH_TEXT,
+} from '@/composables/passwordPolicy'
 
 const store = useUserManagementStore()
 
@@ -205,7 +209,7 @@ async function confirmAddUser(): Promise<void> {
   if (!newUser.value.username.trim() || !newUser.value.display_name.trim() || !newUser.value.password) return
   // 契约 rest §1「密码策略」：最小长度（服务端强制，此处只避免无谓往返）
   if (!isPasswordAcceptable(newUser.value.password)) {
-    showToast(PASSWORD_TOO_WEAK_TEXT, 'error')
+    showToast(PASSWORD_LENGTH_TEXT, 'error')
     return
   }
   // P3 任务6：按真实结果反馈——失败不关窗、不改本地假用户
@@ -285,7 +289,7 @@ function closeResetPasswordModal(): void {
 async function confirmResetPassword(): Promise<void> {
   if (!resetPasswordData.value.newPassword) return
   if (!isPasswordAcceptable(resetPasswordData.value.newPassword)) {
-    showToast(PASSWORD_TOO_WEAK_TEXT, 'error')
+    showToast(PASSWORD_LENGTH_TEXT, 'error')
     return
   }
   const ok = await store.resetPassword(resetPasswordData.value.id, resetPasswordData.value.newPassword)
@@ -770,7 +774,7 @@ onUnmounted(() => {
               :placeholder="`至少 ${MIN_PASSWORD_LENGTH} 位`"
             >
           </div>
-          <span class="dialog-field__hint">密码长度至少 {{ MIN_PASSWORD_LENGTH }} 位</span>
+          <span class="dialog-field__hint">{{ PASSWORD_LENGTH_TEXT }}</span>
         </div>
       </div>
       <template #footer>
@@ -839,7 +843,7 @@ onUnmounted(() => {
               @keyup.enter="confirmResetPassword"
             >
           </div>
-          <span class="dialog-field__hint">密码长度至少 {{ MIN_PASSWORD_LENGTH }} 位；重置后该用户下次登录须先改密</span>
+          <span class="dialog-field__hint">{{ PASSWORD_LENGTH_TEXT }}；重置后该用户下次登录须先改密</span>
         </div>
       </div>
       <template #footer>

@@ -33,9 +33,13 @@ describe('default_password_warning（#202 文案单一来源）', () => {
     expect(auth.defaultPasswordWarning).toBe('后端文案：系统正在使用默认管理员密码')
   })
 
-  it('文案里不出现具体口令值（后端负责不回显，前端不做二次加工）', () => {
+  it('文案里不出现具体口令值（前端只透传后端文案，不做二次加工）', () => {
     const auth = useAuthStore()
-    dispatch({ message: '系统正在使用默认管理员密码，存在安全风险，请尽快修改密码' })
+    // 后端常量 kDefaultPasswordWarningMessage 的真实文案形态：只说事实、不含口令值
+    const backendText = '系统正在使用默认管理员密码，存在安全风险，请尽快修改密码'
+    dispatch({ message: backendText })
+    // 双向断言：既是原文透传（不是被改写/截断），又确实不含口令值
+    expect(auth.defaultPasswordWarning).toBe(backendText)
     expect(auth.defaultPasswordWarning).not.toContain('88888888')
   })
 

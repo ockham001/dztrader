@@ -23,9 +23,11 @@ SessionState check_session(Repository& repo, const std::string& username, int64_
         }
         return SessionState::Valid;
     } catch (const std::exception& e) {
-        // 吞因：查询失败按无效会话处理（保守拒绝优于放行），不向调用方抛 500
-        SPDLOG_DEBUG("session check failed, treat as invalid | user={} error=\"{}\"", username,
-                     e.what());
+        // 吞因：查询失败按无效会话处理（保守拒绝优于放行），不向调用方抛 500。
+        // WARN 而非 DEBUG：SPDLOG_DEBUG 在 Release 编译掉后 catch 参数 e 不再被引用，
+        // MSVC /WX 报 C4101；且会话判定失败会让用户被踢下线，值得运维看见
+        SPDLOG_WARN("session check failed, treat as invalid | user={} error=\"{}\"", username,
+                    e.what());
         return SessionState::InvalidToken;
     }
 }
