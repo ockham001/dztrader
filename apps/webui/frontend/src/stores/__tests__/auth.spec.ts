@@ -118,8 +118,8 @@ describe('useAuthStore.login / logout（主登录链路）', () => {
     const auth = useAuthStore()
     auth.token = 'existing-token'  // 已有会话：失败不得写/清 token
     await expect(auth.login({ username: 'regular', password: 'bad' })).rejects.toBe(apiError)
-    // store.error 一旦上屏必须是中文：按 code 映射（与登录页共用单一真相源），
-    // 绝不回显英文 error 消息，也不展示机器码
+    // ApiError 分支按 code 映射中文（与登录页共用单一真相源），
+    // 不回显英文 error 消息，也不展示机器码
     expect(auth.error).toBe('用户名或密码错误')
     expect(auth.token).toBe('existing-token')  // 失败不写 token
     expect(auth.loading).toBe(false)
