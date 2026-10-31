@@ -221,6 +221,23 @@ glibc 版本需 ≥ 构建机（或同等）。
 **符号文件不进部署包**：崩溃时用 `Release-debug-symbols/` 里的同名 `.debug`
 解析（`addr2line -e <symbols>/dztraderd.debug -f -C 0x<addr>`）。
 
+### 管理面暴露面（默认监听 `0.0.0.0`，无 TLS）
+
+`dzweb` 的默认配置是 `server.listen = "0.0.0.0"`、`server.port = 8080`（`$DZTRADER_HOME/configs/webui.json`）：
+**启动即对全部网卡开放**，这是有意为之的局域网用法（多机盯盘）。相应地要知道：
+
+- **无 TLS**：只有 `addListener`，没有证书配置；口令、JWT、全部 REST/WS 流量都是明文
+- **JWT 存浏览器 `localStorage`**（XSS 可读），默认管理员口令是 `88888888`
+- **非回环监听时启动日志会打一条 WARN**，说明管理面暴露在网络上；它只是提醒，不改变监听
+  行为、退出码与 `/health`。该行受 `log.level` 约束（设为 `error` 时不打）；日志原文与判定
+  规则见 [docs/components/dzweb.md](docs/components/dzweb.md) 的「监听与暴露面」节
+- 缓解措施按场景选：仅本机使用 → `listen` 改 `"127.0.0.1"`；跨机使用 → 内网隔离 +
+  强口令（默认口令与改密能力的加固见 #202）+ 前置反向代理做 TLS。`listen` 只能在
+  配置文件里改，重启生效（运行期不可热改）
+
+> ⚠️ `listen` 只接受 **IP 字面量**（drogon 的限制）：写 `localhost` 之类的主机名会让
+> `dzweb` 启动即 FATAL 退出（`Failed to parse IP address`），不是"静默不生效"。
+
 ### 版本号
 
 版本遵循 [SemVer 2.0.0](https://semver.org/)：`MAJOR.MINOR.PATCH`，预发布加后缀（`0.1.0-rc1`）。
