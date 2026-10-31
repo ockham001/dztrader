@@ -14,6 +14,11 @@ import {
 import type { DropdownItem } from '@/components/shared/Dropdown.vue'
 import type { SelectItem } from '@/components/shared/SyncSelect.vue'
 import type { UserView } from '@/stores/userManagement'
+import {
+  isPasswordAcceptable,
+  MIN_PASSWORD_LENGTH,
+  PASSWORD_LENGTH_TEXT,
+} from '@/composables/passwordPolicy'
 
 const store = useUserManagementStore()
 
@@ -182,14 +187,15 @@ const newUser = ref({
   username: '',
   display_name: '',
   email: '',
-  password: '88888888',
+  password: '',
   role: 'user',
 })
 
 function openAddUserModal(): void {
-  // 密码默认 88888888、邮箱选填
+  // #202：不再预填固定弱口令（旧实现预填 88888888）；口令由管理员当场输入，
+  // 且必须满足最小长度（服务端强制，前端只提示）
   newUser.value = {
-    username: '', display_name: '', email: '', password: '88888888',
+    username: '', display_name: '', email: '', password: '',
     role: 'user',
   }
   addUserModalOpen.value = true
@@ -201,6 +207,11 @@ function closeAddUserModal(): void {
 
 async function confirmAddUser(): Promise<void> {
   if (!newUser.value.username.trim() || !newUser.value.display_name.trim() || !newUser.value.password) return
+  // 契约 rest §1「密码策略」：最小长度（服务端强制，此处只避免无谓往返）
+  if (!isPasswordAcceptable(newUser.value.password)) {
+    showToast(PASSWORD_LENGTH_TEXT, 'error')
+    return
+  }
   // P3 任务6：按真实结果反馈——失败不关窗、不改本地假用户
   const ok = await store.createUser({
     username: newUser.value.username.trim(),
@@ -277,6 +288,10 @@ function closeResetPasswordModal(): void {
 
 async function confirmResetPassword(): Promise<void> {
   if (!resetPasswordData.value.newPassword) return
+  if (!isPasswordAcceptable(resetPasswordData.value.newPassword)) {
+    showToast(PASSWORD_LENGTH_TEXT, 'error')
+    return
+  }
   const ok = await store.resetPassword(resetPasswordData.value.id, resetPasswordData.value.newPassword)
   closeResetPasswordModal()
   showToast(ok ? '密码已重置' : '重置失败', ok ? 'success' : 'error')
@@ -752,8 +767,14 @@ onUnmounted(() => {
         <div class="dialog-field">
           <label class="dialog-field__label">密码</label>
           <div class="ds-input">
-            <input v-model="newUser.password" type="text" placeholder="默认 88888888">
+            <input
+              v-model="newUser.password"
+              type="password"
+              autocomplete="new-password"
+              :placeholder="`至少 ${MIN_PASSWORD_LENGTH} 位`"
+            >
           </div>
+          <span class="dialog-field__hint">{{ PASSWORD_LENGTH_TEXT }}</span>
         </div>
       </div>
       <template #footer>
@@ -814,8 +835,15 @@ onUnmounted(() => {
         <div class="dialog-field">
           <label class="dialog-field__label">新密码</label>
           <div class="ds-input">
-            <input v-model="resetPasswordData.newPassword" type="text" placeholder="输入新密码" @keyup.enter="confirmResetPassword">
+            <input
+              v-model="resetPasswordData.newPassword"
+              type="password"
+              autocomplete="new-password"
+              :placeholder="`至少 ${MIN_PASSWORD_LENGTH} 位`"
+              @keyup.enter="confirmResetPassword"
+            >
           </div>
+          <span class="dialog-field__hint">{{ PASSWORD_LENGTH_TEXT }}；重置后该用户下次登录须先改密</span>
         </div>
       </div>
       <template #footer>

@@ -20,6 +20,7 @@
 #include "db_init.h"
 #include "repository.h"
 #include "jwt.h"
+#include "session_guard.h"
 #include "user_controller.h"
 #include "security_controller.h"
 #include "market_source_controller.h"
@@ -136,14 +137,32 @@ int main(int argc, char* argv[]) {
     }
     sqlite3_close(db);  // Repository will open its own connection
 
-    // 默认密码告警：配置未显式指定 password 时使用弱密码 88888888，提醒立即修改
+    // 默认密码告警：配置未显式指定 password 时使用系统默认弱口令，提醒立即修改。
+    // 日志不回显口令值（#202：明文口令不得进日志）。
     if (cfg.admin_password_is_default) {
         SPDLOG_WARN(
-            "default admin password in use | password=88888888 action=change_now advice=\"edit "
-            "admin.password in configs/webui.json or login to change\"");
+            "default admin password in use | action=change_now advice=\"edit admin.password in "
+            "configs/webui.json or login to change\"");
     }
 
     auto repo = std::make_shared<dztrader::webui::Repository>(dztrader::paths::db() / "webui.db");
+    // #202：仍是系统默认口令的 admin 首次登录强制改密（不因配置改了用户名以外的路径漂移，
+    // 只比对实际 hash，已改过的账户不动）
+    if (cfg.admin_password_is_default) {
+        try {
+            auto admin = repo->get_user_by_username(cfg.admin_username);
+            if (admin.has_value() &&
+                repo->force_password_change_if_default(admin->id, cfg.admin_password)) {
+                SPDLOG_INFO("admin must change default password on next login | user={}",
+                            cfg.admin_username);
+            }
+        } catch (const std::exception& e) {
+            // 吞因：置位失败不阻断启动（登录后仍有默认密码告警兜底）。
+            // WARN 而非 DEBUG：SPDLOG_DEBUG 在 Release 编译掉后 catch 参数 e 不再被引用，
+            // MSVC /WX 下报 C4101（unreferenced local variable）；且这条失败值得运维看见
+            SPDLOG_WARN("force password change flag failed, ignored | error=\"{}\"", e.what());
+        }
+    }
     auto shm_dir = dztrader::paths::shm();
     // 共享 MirrorStore 先行构造，ProcessMirror 注入共享镜像（与领域服务共用同一份数据）
     auto mirror_store = std::make_shared<dztrader::webui::MirrorStore>();
@@ -266,41 +285,58 @@ int main(int argc, char* argv[]) {
 
     // JWT 全局认证（pre-handling advice）
     // 对所有 /api/* 路由生效，跳过 /api/login 与非 /api/ 路径（如静态文件、/health）
-    auto jwt_secret = cfg.jwt_secret;
-    drogon::app().registerPreHandlingAdvice([jwt_secret](const drogon::HttpRequestPtr& req,
-                                                         drogon::AdviceCallback&& cb,
-                                                         const drogon::AdviceChainCallback& ccb) {
-        const std::string& path = req->getPath();
-        if (path == "/api/login" || path == "/health" || path == "/api/system/info" ||
-            !path.starts_with("/api/")) {
+    // 除验签 + exp 外还做 DB 侧会话判定（契约 rest §1「会话吊销」/「强制改密」）：
+    // token 的 ver claim 必须等于 users.token_version，且未处于强制改密状态。
+    const std::string jwt_secret = cfg.jwt_secret;
+    auto jwt_repo = repo;
+    drogon::app().registerPreHandlingAdvice(
+        [jwt_secret, jwt_repo](const drogon::HttpRequestPtr& req, drogon::AdviceCallback&& cb,
+                               const drogon::AdviceChainCallback& ccb) {
+            const std::string& path = req->getPath();
+            if (path == "/api/login" || path == "/health" || path == "/api/system/info" ||
+                !path.starts_with("/api/")) {
+                ccb();
+                return;
+            }
+            const auto reply = [&cb](drogon::HttpStatusCode code, const char* body) {
+                auto resp = drogon::HttpResponse::newHttpResponse();
+                resp->setStatusCode(code);
+                resp->setContentTypeString("application/json");
+                resp->setBody(body);
+                cb(resp);
+            };
+            std::string token;
+            auto auth = req->getHeader("Authorization");
+            if (auth.size() >= 7 && auth.starts_with("Bearer ")) {
+                token = auth.substr(7);
+            }
+            if (token.empty()) {
+                reply(drogon::k401Unauthorized, R"({"error":"unauthorized"})");
+                return;
+            }
+            std::string user_id;
+            int64_t token_version = 0;
+            if (!dztrader::webui::jwt_verify(token, jwt_secret, user_id, &token_version)) {
+                reply(drogon::k401Unauthorized, R"({"error":"invalid_token"})");
+                return;
+            }
+            switch (dztrader::webui::check_session(*jwt_repo, user_id, token_version)) {
+                case dztrader::webui::SessionState::InvalidToken:
+                    reply(drogon::k401Unauthorized, R"({"error":"invalid_token"})");
+                    return;
+                case dztrader::webui::SessionState::PasswordChangeRequired:
+                    if (!dztrader::webui::is_path_allowed_before_password_change(path)) {
+                        reply(drogon::k403Forbidden, R"({"error":"password change required",)"
+                                                     R"("code":"password_change_required"})");
+                        return;
+                    }
+                    break;
+                case dztrader::webui::SessionState::Valid:
+                    break;
+            }
+            req->getAttributes()->insert("user_id", user_id);
             ccb();
-            return;
-        }
-        std::string token;
-        auto auth = req->getHeader("Authorization");
-        if (auth.size() >= 7 && auth.starts_with("Bearer ")) {
-            token = auth.substr(7);
-        }
-        if (token.empty()) {
-            auto resp = drogon::HttpResponse::newHttpResponse();
-            resp->setStatusCode(drogon::k401Unauthorized);
-            resp->setContentTypeString("application/json");
-            resp->setBody(R"({"error":"unauthorized"})");
-            cb(resp);
-            return;
-        }
-        std::string user_id;
-        if (!dztrader::webui::jwt_verify(token, jwt_secret, user_id)) {
-            auto resp = drogon::HttpResponse::newHttpResponse();
-            resp->setStatusCode(drogon::k401Unauthorized);
-            resp->setContentTypeString("application/json");
-            resp->setBody(R"({"error":"invalid_token"})");
-            cb(resp);
-            return;
-        }
-        req->getAttributes()->insert("user_id", user_id);
-        ccb();
-    });
+        });
 
     // ===== 领域服务装配（镜像 + 广播，行为等价搬迁自 WsController::handle_*） =====
     // LogDomainService 归并 log_control（P4 Task 6）：持有 self_log + event_writer，

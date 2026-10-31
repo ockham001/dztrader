@@ -102,6 +102,41 @@ describe('UserManagementView', () => {
     expect(saveBtn?.attributes('disabled')).toBeDefined()
   })
 
+  it('添加用户 Modal 的密码框是 type=password 且不再预填固定弱口令（#202）', async () => {
+    const w = mount(UserManagementView, { global: { stubs: sharedStubs } })
+    await flushPromises()
+    await w.findAll('button').find(b => b.text().includes('添加用户'))!.trigger('click')
+    await w.vm.$nextTick()
+
+    const pwdInputs = w.findAll('.modal-stub input[type="password"]')
+    expect(pwdInputs.length).toBeGreaterThan(0)
+    // 明文框已全部清除：Modal 内不得出现承载口令的 type="text" 输入
+    // （用户名/显示名称/邮箱仍是 text，故只针对密码标签后的输入断言类型）
+    const pwd = pwdInputs[0]
+    expect(pwd.attributes('autocomplete')).toBe('new-password')
+    // 旧实现预填 88888888，新实现为空并强制管理员输入
+    expect((pwd.element as HTMLInputElement).value).toBe('')
+    expect(w.find('.modal-stub').text()).not.toContain('88888888')
+    expect(w.find('.modal-stub').text()).toContain('密码长度至少 12 位')
+  })
+
+  it('重置密码 Modal 的密码框是 type=password（#202）', async () => {
+    const store = useUserManagementStore()
+    store.users = [fakeUser(1, 'alice', 'admin')]
+    const w = mount(UserManagementView, { global: { stubs: sharedStubs } })
+    await flushPromises()
+    // 行内「重置密码」按钮是 icon-only（title 承载文案）
+    const resetBtn = w.findAll('button[title="重置密码"]')[0]
+    expect(resetBtn, '缺少重置密码按钮').toBeTruthy()
+    await resetBtn!.trigger('click')
+    await w.vm.$nextTick()
+
+    const pwd = w.find('.modal-stub input[type="password"]')
+    expect(pwd.exists()).toBe(true)
+    expect(pwd.attributes('autocomplete')).toBe('new-password')
+    expect(w.find('.modal-stub').text()).toContain('密码长度至少 12 位')
+  })
+
   it('登录失败锁定开关切换调用 store.toggleLoginLockout，并以当前镜像值下发', async () => {
     const store = useUserManagementStore()
     const spy = vi.spyOn(store, 'toggleLoginLockout').mockResolvedValue()

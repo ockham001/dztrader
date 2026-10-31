@@ -8,8 +8,18 @@
 namespace dztrader::webui {
 
 /// 默认 admin 密码（配置文件未显式指定时使用）。
-/// 弱密码，部署后应立即修改。
+/// 弱密码，部署后应立即修改；`must_change_password` 不在此路径置位（系统默认口令
+/// 走「默认密码告警 + 首次登录提示」，管理员重置才强制改密，见 #202 决策）。
 constexpr const char* kDefaultAdminPassword = "88888888";
+
+/// 默认口令告警文案的**唯一真相源**（契约 rest §2.1 / webui-ws §2.3）。
+///
+/// 同时用于 REST 登录响应 `default_password_warning.message` 与 WS
+/// `default_password_warning` 推送 payload；前端只展示后端下发的这条文案，
+/// 不得自行拼接或硬编码（#202：改一端必漂移）。
+/// 文案只说「默认密码」这一事实，**不回显具体口令值**。
+constexpr const char* kDefaultPasswordWarningMessage =
+    "系统正在使用默认管理员密码，存在安全风险，请尽快修改密码";
 
 struct WebuiConfig {
     /// 监听地址。默认 "0.0.0.0"（全部网卡，局域网使用），main.cpp 对非回环地址

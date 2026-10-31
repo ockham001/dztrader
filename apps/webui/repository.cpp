@@ -1,5 +1,4 @@
 #include "repository.h"
-#include "config.h"
 #include "db_init.h"
 
 #include <sqlite3.h>
@@ -124,6 +123,38 @@ std::string col_text(sqlite3_stmt* stmt, int col) {
     return {};
 }
 
+/// 写入新口令 hash 及其副作用（契约 rest §2.2）：改 hash + 自增 token_version
+/// （吊销该用户全部既有 JWT/WS 会话）+ 按需置/清 must_change_password。
+/// 两个调用方（管理员重置 / 自助改密）只差 must_change_password 的取值，
+/// 因此合成一条 UPDATE，避免「改了 hash 忘了吊销会话」这类半截状态。
+/// @param must_change_password 0=清除 / 1=置位
+/// @return true=目标用户存在且已更新
+bool write_password_locked(sqlite3* db,
+                           int64_t id,
+                           const std::string& new_password,
+                           int must_change_password) {
+    const std::string password_hash = hash_password(new_password);
+    const std::string now = now_iso();
+    const char* sql =
+        "UPDATE users SET password_hash = ?, updated_at = ?, token_version = token_version + 1, "
+        "must_change_password = ? WHERE id = ?";
+    sqlite3_stmt* stmt = nullptr;
+    dz_prepare_v2(db, sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, password_hash.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, now.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, must_change_password);
+    sqlite3_bind_int64(stmt, 4, id);
+    sqlite3_step(stmt);
+    const int changes = sqlite3_changes(db);
+    sqlite3_finalize(stmt);
+    // 注：旧实现在「改回系统默认口令」时重置 default_password_acknowledged。默认口令长度
+    // 8 < kMinPasswordLength，经 REST 已不可能再被设置（契约 rest §1「密码策略」），该分支
+    // 成为不可达代码，随 #202 一并删除。默认口令告警由配置缺省位（admin_password_is_default）
+    // 与 `password_matches` 实比当前 hash **共同**决定（见 auth_controller.cpp /
+    // ws_controller.cpp）， 单独任一条都不足以触发告警。
+    return changes > 0;
+}
+
 }  // anonymous namespace
 
 // ---------------------------------------------------------------------------
@@ -188,7 +219,8 @@ std::optional<User> Repository::get_user_by_id(int64_t id) {
     const char* sql =
         "SELECT id, username, display_name, email, role, status, "
         "locked_until, failed_login_count, last_login_at, last_login_ip, "
-        "created_at, updated_at, default_password_acknowledged FROM users WHERE id = ?";
+        "created_at, updated_at, default_password_acknowledged, token_version, "
+        "must_change_password FROM users WHERE id = ?";
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_int64(stmt, 1, id);
 
@@ -208,6 +240,8 @@ std::optional<User> Repository::get_user_by_id(int64_t id) {
         u.created_at = col_text(stmt, 10);
         u.updated_at = col_text(stmt, 11);
         u.default_password_acknowledged = sqlite3_column_int(stmt, 12);
+        u.token_version = sqlite3_column_int64(stmt, 13);
+        u.must_change_password = sqlite3_column_int(stmt, 14);
         result = u;
     }
     sqlite3_finalize(stmt);
@@ -220,7 +254,8 @@ std::optional<User> Repository::get_user_by_username(const std::string& username
     const char* sql =
         "SELECT id, username, display_name, email, role, status, "
         "locked_until, failed_login_count, last_login_at, last_login_ip, "
-        "created_at, updated_at, default_password_acknowledged FROM users WHERE username = ?";
+        "created_at, updated_at, default_password_acknowledged, token_version, "
+        "must_change_password FROM users WHERE username = ?";
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
 
@@ -240,6 +275,8 @@ std::optional<User> Repository::get_user_by_username(const std::string& username
         u.created_at = col_text(stmt, 10);
         u.updated_at = col_text(stmt, 11);
         u.default_password_acknowledged = sqlite3_column_int(stmt, 12);
+        u.token_version = sqlite3_column_int64(stmt, 13);
+        u.must_change_password = sqlite3_column_int(stmt, 14);
         result = u;
     }
     sqlite3_finalize(stmt);
@@ -308,7 +345,8 @@ Repository::UserListResult Repository::list_users(const std::string& search,
     const std::string sql =
         "SELECT id, username, display_name, email, role, status, "
         "locked_until, failed_login_count, last_login_at, last_login_ip, "
-        "created_at, updated_at FROM users" +
+        "created_at, updated_at, default_password_acknowledged, token_version, "
+        "must_change_password FROM users" +
         where + " ORDER BY id LIMIT ? OFFSET ?";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
@@ -345,6 +383,9 @@ Repository::UserListResult Repository::list_users(const std::string& search,
         u.last_login_ip = col_text(stmt, 9);
         u.created_at = col_text(stmt, 10);
         u.updated_at = col_text(stmt, 11);
+        u.default_password_acknowledged = sqlite3_column_int(stmt, 12);
+        u.token_version = sqlite3_column_int64(stmt, 13);
+        u.must_change_password = sqlite3_column_int(stmt, 14);
         result.users.push_back(u);
     }
     sqlite3_finalize(stmt);
@@ -442,29 +483,75 @@ bool Repository::update_user_status(int64_t id, const std::string& status) {
     return changes > 0;
 }
 
-bool Repository::reset_password(int64_t id, const std::string& new_password) {
+bool Repository::admin_reset_password(int64_t id, const std::string& new_password) {
     std::scoped_lock lk(mutex_);
-    const std::string password_hash = hash_password(new_password);
-    const std::string now = now_iso();
-    const char* sql = "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?";
+    // 契约 rest §2.2：吊销既有会话 + 置强制改密
+    return write_password_locked(db_, id, new_password, /*must_change_password=*/1);
+}
+
+bool Repository::change_own_password(int64_t id, const std::string& new_password) {
+    std::scoped_lock lk(mutex_);
+    // 契约 rest §2.2：吊销既有会话（含当前会话）+ 清除强制改密标志
+    return write_password_locked(db_, id, new_password, /*must_change_password=*/0);
+}
+
+bool Repository::revoke_user_tokens(int64_t id) {
+    std::scoped_lock lk(mutex_);
+    const char* sql = "UPDATE users SET token_version = token_version + 1 WHERE id = ?";
     sqlite3_stmt* stmt = nullptr;
     dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    sqlite3_bind_text(stmt, 1, password_hash.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, now.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 3, id);
+    sqlite3_bind_int64(stmt, 1, id);
     sqlite3_step(stmt);
     const int changes = sqlite3_changes(db_);
     sqlite3_finalize(stmt);
-    // 改回默认密码时重置确认标志(会再次告警);改为强密码时不重置(避免误报)
-    if (changes > 0 && new_password == kDefaultAdminPassword) {
-        sqlite3_stmt* reset_stmt = nullptr;
-        dz_prepare_v2(db_, "UPDATE users SET default_password_acknowledged = 0 WHERE id = ?", -1,
-                      &reset_stmt, nullptr);
-        sqlite3_bind_int64(reset_stmt, 1, id);
-        sqlite3_step(reset_stmt);
-        sqlite3_finalize(reset_stmt);
-    }
     return changes > 0;
+}
+
+bool Repository::password_matches(const std::string& username, const std::string& plain) {
+    std::optional<std::string> stored;
+    {
+        std::scoped_lock lk(mutex_);
+        sqlite3_stmt* stmt = nullptr;
+        dz_prepare_v2(db_, "SELECT password_hash FROM users WHERE username = ?", -1, &stmt,
+                      nullptr);
+        sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char* h = sqlite3_column_text(stmt, 0);
+            if (h) {
+                stored = std::string(reinterpret_cast<const char*>(h));
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+    // verify 在锁外：PBKDF2 是 CPU 密集的，持锁会阻塞其它 DB 访问
+    return stored.has_value() && verify_password(plain, *stored);
+}
+
+bool Repository::force_password_change_if_default(int64_t id, const std::string& default_password) {
+    std::scoped_lock lk(mutex_);
+    std::optional<std::string> stored;
+    {
+        sqlite3_stmt* stmt = nullptr;
+        dz_prepare_v2(db_, "SELECT password_hash FROM users WHERE id = ?", -1, &stmt, nullptr);
+        sqlite3_bind_int64(stmt, 1, id);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char* h = sqlite3_column_text(stmt, 0);
+            if (h) {
+                stored = std::string(reinterpret_cast<const char*>(h));
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+    if (!stored.has_value() || !verify_password(default_password, *stored)) {
+        return false;
+    }
+    sqlite3_stmt* stmt = nullptr;
+    dz_prepare_v2(db_, "UPDATE users SET must_change_password = 1 WHERE id = ?", -1, &stmt,
+                  nullptr);
+    sqlite3_bind_int64(stmt, 1, id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return true;
 }
 
 bool Repository::ack_default_password(int64_t user_id) {

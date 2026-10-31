@@ -11,7 +11,13 @@ export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
-  const isDefaultPassword = ref(false)
+  // 默认口令告警文案（null = 无告警）。契约 rest §2.1：文案由后端下发，
+  // 前端只负责展示——store 里不出现任何硬编码的口令或告警文本（#202）。
+  const defaultPasswordWarning = ref<string | null>(null)
+  // 契约 rest §1「强制改密」：管理员重置过口令的账户登录后必须先改密。
+  // 与 token 一起持久化：刷新页面后若不恢复，App.vue 会照常连 WS，而 WS 对强制改密账户
+  // 一律 auth failed → wsClient 误判会话失效 → 登出，用户被锁在「登录→弹窗→刷新→登出」里。
+  const mustChangePassword = ref(localStorage.getItem('must_change_password') === '1')
 
   const isAuthenticated = computed(() => !!token.value)
   const isAdmin = computed(() => user.value?.role === 'admin')
@@ -23,9 +29,11 @@ export const useAuthStore = defineStore('auth', () => {
       const resp = await authApi.login(credentials)
       token.value = resp.token
       user.value = resp.user
-      isDefaultPassword.value = !!resp.is_default_password
+      defaultPasswordWarning.value = resp.default_password_warning?.message ?? null
+      mustChangePassword.value = !!resp.must_change_password
       localStorage.setItem('jwt_token', resp.token)
       localStorage.setItem('user_info', JSON.stringify(resp.user))
+      setMustChangeStorage(mustChangePassword.value)
       return resp
     } catch (e: unknown) {
       if (e instanceof ApiError) {
@@ -47,9 +55,11 @@ export const useAuthStore = defineStore('auth', () => {
   function logout() {
     token.value = null
     user.value = null
-    isDefaultPassword.value = false
+    defaultPasswordWarning.value = null
+    mustChangePassword.value = false
     localStorage.removeItem('jwt_token')
     localStorage.removeItem('user_info')
+    setMustChangeStorage(false)
   }
 
   function restoreUser() {
@@ -61,7 +71,9 @@ export const useAuthStore = defineStore('auth', () => {
         user.value = null
       }
     }
-    // restoreUser 不恢复 isDefaultPassword(需要重新登录就知道)
+    // restoreUser 不恢复 defaultPasswordWarning（纯提示，刷新后由登录/WS 重新给出）；
+    // mustChangePassword 例外——它决定「要不要连 WS / 显示不可关闭的弹窗」，从
+    // localStorage 恢复（见上方 ref 初始化）
   }
 
   // 从后端刷新当前登录用户（WS 重连成功后调用）：同步角色降级等服务端变更，
@@ -77,5 +89,42 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  return { token, user, loading, error, isDefaultPassword, isAuthenticated, isAdmin, login, logout, restoreUser, refreshCurrentUser }
+  /** 清除默认口令告警（用户点「我知道了」并 ack 成功后调用） */
+  function clearDefaultPasswordWarning(): void {
+    defaultPasswordWarning.value = null
+  }
+
+  /** 强制改密标记的持久化（与 token 同生命周期） */
+  function setMustChangeStorage(on: boolean): void {
+    try {
+      if (on) {
+        localStorage.setItem('must_change_password', '1')
+      } else {
+        localStorage.removeItem('must_change_password')
+      }
+    } catch { /* localStorage 不可用时只丢持久化，不影响本次会话 */ }
+  }
+
+  /** 自助改密成功后清除强制改密标记（后端已清除，前端同步本地态以便跳转登录） */
+  function clearMustChangePassword(): void {
+    mustChangePassword.value = false
+    setMustChangeStorage(false)
+  }
+
+  return {
+    token,
+    user,
+    loading,
+    error,
+    defaultPasswordWarning,
+    mustChangePassword,
+    isAuthenticated,
+    isAdmin,
+    login,
+    logout,
+    restoreUser,
+    refreshCurrentUser,
+    clearDefaultPasswordWarning,
+    clearMustChangePassword,
+  }
 })
