@@ -131,6 +131,15 @@ check_json_vendor_version() {
     "$PYTHON" scripts/check_json_vendor_version.py
 }
 
+check_ci_log_pattern() {
+    # ci-log.sh 的 ERROR_PATTERN 是「CI 红类别登记表」：漏掉一类错误会让整条排查链
+    # 退化成翻几十 MB 日志（#200 实测多耗约 28 分钟），过宽则被 env dump 噪声占满窗口
+    # 把真根因挤出 head -120（SCCACHE_*_ERROR 命中裸 `ERROR:`）。
+    # 内置「必须命中 / 必须不命中」样本，改模式时先红后绿；--selftest 不联网、不需要
+    # gh 登录态，可在 preflight 安全运行。
+    "$ROOT/scripts/ci-log.sh" --selftest
+}
+
 # ---- 前端 ----------------------------------------------------------------
 
 check_frontend() {
@@ -184,6 +193,7 @@ run_step "docs links" check_docs_links
 run_step "test portability + temp-dir isolation" check_test_portability
 run_step "msvc hazard lint" check_msvc_hazards
 run_step "vendored JSON version consistency" check_json_vendor_version
+run_step "ci-log error pattern" check_ci_log_pattern
 if [ "$C_ONLY" -eq 0 ]; then
     run_step "frontend (type-check/lint/lint:css/test/gen:types)" check_frontend
 fi
