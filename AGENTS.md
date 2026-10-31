@@ -168,7 +168,7 @@
 2. **立 spec** —— `to-spec` 写 GitHub Issue。涉及帧契约的 spec 必须先列契约影响面（哪份契约、哪些帧号），先改契约再改代码；满足 ADR 触发条件的在 spec 注明。
 3. **拆票** —— `to-tickets`：tracer-bullet 子 issue + 原生阻塞边。
 4. **实现** —— `implement` 单票（默认）或 `implement-spec` 大特性（worktree 内先跑 `setup`）；提交 review 前按 [review-checklist](docs/agents/review-checklist.md) §2 自搜 6 类高频 finding。
-5. **审查** —— `code-review`：从固定点起，双轴（仓库规范 / spec 一致性）。
+5. **审查** —— `code-review`：从固定点起，双轴（仓库规范 / spec 一致性）。**两轴用 `spawn_teammate` 派，不用 `subagent`**（本宿主 subagent id 不可寻址、报告易整份丢失；冻结纪律与 verifier prompt 模板见 [ticket-closeout](docs/agents/ticket-closeout.md) §1.4–1.5）。
 6. **收尾** —— 动契约或有决策：契约、docs 地图、ADR 随同提交（`general.md` §11.3 checklist）；等 CI 绿；波末 `retro`。每票的冻结审查→门禁→push→**PR→合并→关 issue** 见 [docs/agents/ticket-closeout.md](docs/agents/ticket-closeout.md)。
 7. **交接** —— `handoff` 文档写 `.cache/handoff/`（本沙箱 `/tmp` 每次 bash 调用隔离、不可跨会话，见 DSH 小节）。
 

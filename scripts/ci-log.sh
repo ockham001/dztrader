@@ -40,9 +40,76 @@ usage() {
     sed -n '2,/^$/p' "$0"
 }
 
+# 错误模式是**类别登记表**，不是一次性修复：每新增一类真实 CI 红，就把该类的错误串
+# 加进来并在注释里登记票号/run 号，同时在下面 selftest_pattern() 里补一条 must-match
+# 样本。原因：本脚本一旦漏掉某类错误，report_log() 会退化成「no known error pattern;
+# last 60 lines」，agent 只能手工翻几十 MB 日志重找（#200 实测因此多耗约 28 分钟）。
+#
+#   error C####/LNK####/MSB####  —— MSVC 编译/链接失败
+#   CMake Error                  —— CMake 配置期/自定义命令失败（含 gtest_discover_tests
+#                                   发现超时，见 #227：Windows runner 冷启动时
+#                                   `Result: Process terminated due to timeout` 只出现在
+#                                   CMake 的 message 里，没有 error C 前缀）
+#   FAILED:                      —— ninja 单条规则失败（CMake 会把真实错误打在其后）
+#
+# `ERROR:` 必须限定日志级别形态（`ERROR:` / `[ERROR]` / `: ERROR:`），不能裸写 `ERROR:`：
+# GitHub Actions 会把 env dump 打进日志，`SCCACHE_IGNORE_SERVER_IO_ERROR: 1` 这类行会被
+# 裸 `ERROR:` 命中，用噪声把 report_log 的 `head -120` 窗口占满，真正的根因（在日志尾部
+# 数万行处）就被挤掉了（#200 实测那轮 19 处命中里 9 处是这种噪声）。
+ERROR_PATTERN='\[  FAILED  \]|The following tests FAILED|FAILED TEST|error C[0-9]{4}|error LNK[0-9]+|fatal error|FAILED:|ninja: build stopped|error MSB[0-9]+|Test Failed|(^|[[:space:]:])ERROR:|\[ERROR\]|CMake Error|Process terminated due to timeout'
+
+# 错误模式自测（--selftest）：把「必须命中」与「必须不命中」的样本行喂给 ERROR_PATTERN。
+# 存在理由与 check_json_vendor_version.py --selftest 相同——规则本身也会写错：
+# 一个漏掉某类错误的模式会让整条 CI 排查链退化成「翻几十 MB 日志」（#200 实测 28 分钟），
+# 一个过宽的模式会被 env dump 噪声占满窗口（SCCACHE_*_ERROR 曾命中裸 `ERROR:`）。
+# 该函数只读、不联网，preflight 与 CI 都会跑。
+#
+# 样本格式为 `理由|样本行`，以 `|` 分隔（只在第一个 `|` 处切分）——因此**样本行本身
+# 不能含 `|`**；需要含 `|` 的样本请改写模式或换一条等价样本。
+selftest_pattern() {
+    local fails=0
+    # 必须命中（每行前面是这条样本存在的理由）
+    while IFS='|' read -r why sample; do
+        [ -z "$why" ] && continue
+        if ! printf '%s\n' "$sample" | grep -qE "$ERROR_PATTERN"; then
+            printf 'selftest FAIL: 应命中但未命中 [%s] %s\n' "$why" "$sample" >&2
+            fails=$((fails + 1))
+        fi
+    done <<'CASES'
+msvc compile error|2026-01-01T00:00:00Z src/foo.cpp(12,3): error C2065: 'x': undeclared identifier
+msvc link error|2026-01-01T00:00:00Z foo.obj : error LNK2019: unresolved external symbol
+ninja rule failed|2026-01-01T00:00:00Z FAILED: [code=1] tests/dzlog_init_test.exe
+cmake error|2026-01-01T00:00:00Z CMake Error at Modules/GoogleTestAddTests.cmake:233 (message):
+gtest discovery timeout|2026-01-01T00:00:00Z     Result: Process terminated due to timeout
+ctest case failed|2026-01-01T00:00:00Z [  FAILED  ] FooTest.Bar (12 ms)
+log-level ERROR|2026-01-01T00:00:00Z ERROR: something went wrong
+bracketed ERROR|2026-01-01T00:00:00Z [ERROR] something went wrong
+prefixed ERROR|2026-01-01T00:00:00Z 2026-01-01 foo: ERROR: bar
+CASES
+    # 必须不命中（噪声样本：命中即说明模式过宽，会挤掉真根因）
+    while IFS='|' read -r why sample; do
+        [ -z "$why" ] && continue
+        if printf '%s\n' "$sample" | grep -qE "$ERROR_PATTERN"; then
+            printf 'selftest FAIL: 不应命中但命中了 [%s] %s\n' "$why" "$sample" >&2
+            fails=$((fails + 1))
+        fi
+    done <<'CASES'
+sccache env dump|2026-01-01T00:00:00Z   SCCACHE_IGNORE_SERVER_IO_ERROR: 1
+sccache rw mode|2026-01-01T00:00:00Z   SCCACHE_GHA_RW_MODE: READ_ONLY
+plain info line|2026-01-01T00:00:00Z [946/941] Building CXX object libs/log/CMakeFiles/dzlog.dir/x.cpp.obj
+CASES
+    if [ "$fails" -ne 0 ]; then
+        printf 'selftest: %d case(s) failed\n' "$fails" >&2
+        return 1
+    fi
+    printf 'selftest: ERROR_PATTERN ok (9 must-match, 3 must-not-match)\n'
+    return 0
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
+        --selftest) SELFTEST=1; shift ;;
         --job) JOB_ID="${2:?--job 需要参数}"; shift 2 ;;
         --print-full) PRINT_FULL=1; shift ;;
         --context) CONTEXT="${2:?--context 需要参数}"; shift 2 ;;
@@ -56,6 +123,12 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+# --selftest 不联网、不需要 gh：在参数校验之前返回，供 preflight / CI 调用
+if [ "${SELFTEST:-0}" -eq 1 ]; then
+    selftest_pattern
+    exit $?
+fi
 
 if [ -z "$TARGET" ] && [ -z "$JOB_ID" ]; then
     usage >&2
@@ -95,8 +168,6 @@ REPO="$("$GH_BIN" repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null
 strip_ansi() {
     sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g'
 }
-
-ERROR_PATTERN='\[  FAILED  \]|The following tests FAILED|FAILED TEST|error C[0-9]{4}|error LNK[0-9]+|fatal error|FAILED:|ninja: build stopped|error MSB[0-9]+|Test Failed|ERROR:'
 
 # 从一份已落盘日志里打印错误行 + 上下文；没有命中时打末尾 60 行。
 report_log() {
