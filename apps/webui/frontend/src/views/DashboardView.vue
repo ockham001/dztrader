@@ -154,11 +154,9 @@ const messages: MessageRow[] = [
 const accountAggregate = computed(
   () => `${accounts.filter(a => a.status === 'logged-in').length}/${accounts.length}`,
 )
-// 「隐藏匹配行」筛选尚未实现：无行被隐藏，命中数恒等于总行数
-const matchedPositionCount = computed(() => positions.length)
-const positionAggregate = computed(
-  () => `${matchedPositionCount.value}/${positions.length}`,
-)
+// 「隐藏匹配行」筛选尚未实现，没有行被隐藏，故命中数 = 总行数；
+// 不引入「匹配数」变量假装已有筛选逻辑（避免同一事实两处定义）。
+const positionAggregate = computed(() => `${positions.length}/${positions.length}`)
 const ordersAggregate = computed(
   () => `${orders.filter(o => o.icon === 'pending').length}/${orders.length} 笔`,
 )
