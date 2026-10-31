@@ -531,52 +531,6 @@ void Repository::update_last_login(int64_t id, const std::string& ip) {
 }
 
 // ---------------------------------------------------------------------------
-// Permissions
-// ---------------------------------------------------------------------------
-
-std::vector<Permission> Repository::get_user_permissions(int64_t user_id) {
-    std::scoped_lock lk(mutex_);
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql =
-        "SELECT permission_type, permission_id, granted FROM user_permissions "
-        "WHERE user_id = ? ORDER BY permission_type, permission_id";
-    dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    sqlite3_bind_int64(stmt, 1, user_id);
-
-    std::vector<Permission> result;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        Permission p;
-        p.type = col_text(stmt, 0);
-        p.id = col_text(stmt, 1);
-        p.granted = sqlite3_column_int(stmt, 2) != 0;
-        result.push_back(p);
-    }
-    sqlite3_finalize(stmt);
-    return result;
-}
-
-bool Repository::set_user_permission(int64_t user_id,
-                                     const std::string& type,
-                                     const std::string& perm_id,
-                                     bool granted) {
-    std::scoped_lock lk(mutex_);
-    const char* sql =
-        "INSERT INTO user_permissions (user_id, permission_type, permission_id, granted) "
-        "VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(user_id, permission_type, permission_id) DO UPDATE SET granted = "
-        "excluded.granted";
-    sqlite3_stmt* stmt = nullptr;
-    dz_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    sqlite3_bind_int64(stmt, 1, user_id);
-    sqlite3_bind_text(stmt, 2, type.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, perm_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 4, granted ? 1 : 0);
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-    return true;
-}
-
-// ---------------------------------------------------------------------------
 // Login history
 // ---------------------------------------------------------------------------
 

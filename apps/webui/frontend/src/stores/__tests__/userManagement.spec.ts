@@ -17,8 +17,6 @@ vi.mock('@/api/users', () => ({
     remove: vi.fn(),
     updateStatus: vi.fn(),
     resetPassword: vi.fn(),
-    getPermissions: vi.fn(),
-    updatePermissions: vi.fn(),
     me: vi.fn(),
     get: vi.fn(),
   },
@@ -63,11 +61,16 @@ describe('useUserManagementStore (P3 任务6 原型残留清理)', () => {
       const store = useUserManagementStore()
       const ok = await store.createUser({
         username: 'alice', display_name: 'Alice', email: 'a@x.io',
-        password: 'p', role: 'user', accountPermissions: ['CTP-主力账户'], strategyPermissions: [],
+        password: 'p', role: 'user',
       })
       expect(ok).toBe(true)
       expect(store.users).toHaveLength(1)
       expect(store.users[0].id).toBe(7)  // 服务端 id, 非 Date.now()
+      // #205 权限功能下线：创建用户不再携带任何权限字段
+      expect(usersApi.create).toHaveBeenCalledWith({
+        username: 'alice', display_name: 'Alice', email: 'a@x.io',
+        password: 'p', role: 'user',
+      })
     })
 
     it('失败：不插入假用户（无 Date.now() 幽灵 id），返回 false 并置 error', async () => {
@@ -75,7 +78,7 @@ describe('useUserManagementStore (P3 任务6 原型残留清理)', () => {
       const store = useUserManagementStore()
       const ok = await store.createUser({
         username: 'ghost', display_name: 'Ghost', email: '',
-        password: 'p', role: 'user', accountPermissions: [], strategyPermissions: [],
+        password: 'p', role: 'user',
       })
       expect(ok).toBe(false)
       expect(store.users).toHaveLength(0)  // 不产生本地假用户

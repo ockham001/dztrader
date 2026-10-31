@@ -54,12 +54,6 @@ export interface User {
   created_at: string
 }
 
-export interface Permission {
-  type: 'account' | 'strategy'
-  id: string
-  granted: boolean
-}
-
 export interface UserListResponse {
   users: User[]
   total: number

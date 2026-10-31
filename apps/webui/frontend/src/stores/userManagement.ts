@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { usersApi } from '@/api/users'
 import { securityApi } from '@/api/security'
-import type { User, Permission, SecurityConfig, IpEntry, LoginHistoryEntry } from '@/types/api'
+import type { User, SecurityConfig, IpEntry, LoginHistoryEntry } from '@/types/api'
 
 // 同步类操作 pending 最小持续时间（ms），避免网络过快时 spinner 一闪而过
 const MIN_PENDING_MS = 300
@@ -10,30 +10,7 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-// Available permission options (from the prototype)
-export const ACCOUNT_PERMISSIONS = [
-  'CTP-主力账户',
-  'CTP-套利账户',
-  'IB-美股账户',
-  '模拟盘-测试',
-] as const
-
-export const STRATEGY_PERMISSIONS = [
-  'MACD_V3',
-  'Grid_BTC',
-  'RSI_Multi',
-  'Arb_Future',
-  'Alpha_Quant',
-  'Trend_Follow',
-] as const
-
-export type AccountPermission = typeof ACCOUNT_PERMISSIONS[number]
-export type StrategyPermission = typeof STRATEGY_PERMISSIONS[number]
-
 export interface UserView extends User {
-  accountPermissions: string[]
-  strategyPermissions: string[]
-  expanded: boolean
   actionPending: boolean
   removePending: boolean
 }
@@ -115,9 +92,6 @@ export const useUserManagementStore = defineStore('userManagement', () => {
       users.value = userResp.users.map(u => {
         return {
           ...u,
-          accountPermissions: [],
-          strategyPermissions: [],
-          expanded: false,
           actionPending: false,
           removePending: false,
         } as UserView
@@ -141,13 +115,8 @@ export const useUserManagementStore = defineStore('userManagement', () => {
     }
   }
 
-  function toggleExpand(id: number): void {
-    const u = findUser(id)
-    if (u) updateUser(id, { expanded: !u.expanded })
-  }
-
   // 多设备同步：收到 WS data_changed 推送时按 scope 刷新对应数据
-  // 保留 pending/error/expanded 等 view state，避免打断正在进行的本地操作
+  // 保留 pending/error 等 view state，避免打断正在进行的本地操作
   async function refreshByScope(scope: string): Promise<void> {
     try {
       if (scope === 'security_config') {
@@ -163,15 +132,12 @@ export const useUserManagementStore = defineStore('userManagement', () => {
         whitelist.value = white.map(w => ({ ...w, sourceType: (w.source === 'auto' ? 'auto' : 'manual') as 'auto' | 'manual', removePending: prevWhite.get(w.id) ?? false }))
       } else if (scope === 'users') {
         const userResp = await usersApi.list({ page: 1, page_size: 50 })
-        // 保留现有用户的 expanded/permissions 等 view state；被删除的用户自然消失
+        // 保留现有用户的 pending 等 view state；被删除的用户自然消失
         const existingMap = new Map(users.value.map(u => [u.id, u]))
         users.value = userResp.users.map(u => {
           const existing = existingMap.get(u.id)
           return {
             ...u,
-            accountPermissions: existing?.accountPermissions ?? [],
-            strategyPermissions: existing?.strategyPermissions ?? [],
-            expanded: existing?.expanded ?? false,
             actionPending: false,
             // 保留 in-flight 删除标记（WS 刷新不打断正在进行的删除防重入）
             removePending: existing?.removePending ?? false,
@@ -214,8 +180,6 @@ export const useUserManagementStore = defineStore('userManagement', () => {
     email: string
     password: string
     role: string
-    accountPermissions: string[]
-    strategyPermissions: string[]
   }): Promise<boolean> {
     // P3 任务6：去掉本地插假用户兜底（Date.now() 当 id 的幽灵用户会污染镜像）。
     // 失败只置 error 返回 false，由视图按真实结果反馈。
@@ -229,9 +193,6 @@ export const useUserManagementStore = defineStore('userManagement', () => {
       })
       const newUser: UserView = {
         ...created,
-        accountPermissions: data.accountPermissions,
-        strategyPermissions: data.strategyPermissions,
-        expanded: false,
         actionPending: false,
         removePending: false,
       }
@@ -386,19 +347,6 @@ export const useUserManagementStore = defineStore('userManagement', () => {
     }
   }
 
-  async function updatePermissions(id: number, accountPermissions: string[], strategyPermissions: string[]): Promise<void> {
-    updateUser(id, { accountPermissions, strategyPermissions })
-    try {
-      const perms: Permission[] = [
-        ...accountPermissions.map(p => ({ type: 'account' as const, id: p, granted: true })),
-        ...strategyPermissions.map(p => ({ type: 'strategy' as const, id: p, granted: true })),
-      ]
-      await usersApi.updatePermissions(id, perms)
-    } catch {
-      // Local-only update
-    }
-  }
-
   function clearError(): void {
     error.value = null
   }
@@ -417,7 +365,6 @@ export const useUserManagementStore = defineStore('userManagement', () => {
     blacklistCount,
     whitelistCount,
     loadAll,
-    toggleExpand,
     refreshByScope,
     loadMoreLoginHistory,
     createUser,
@@ -429,7 +376,6 @@ export const useUserManagementStore = defineStore('userManagement', () => {
     setAccessMode,
     addIp,
     removeIp,
-    updatePermissions,
     clearError,
   }
 })

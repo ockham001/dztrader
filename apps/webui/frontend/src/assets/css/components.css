@@ -369,10 +369,6 @@ pre {
     .dialog-field > .ds-input,
     .dialog-field > .ds-select-wrap,
     .dialog-field > .ds-textarea { flex: 1; min-width: 0; }
-    .dialog-field--perms { flex-direction: column; align-items: flex-start; }
-    .dialog-field--perms .dialog-field__label { width: auto; text-align: left; }
-    .dialog-field__perms-header { display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: var(--spacer-8); }
-    .dialog-field__perms-header .dialog-field__label { margin-bottom: 0; }
     .ds-link-btn { background: transparent; border: none; color: var(--text-tertiary); font-size: var(--body-xs-font-size); cursor: pointer; padding: 0; }
     .ds-link-btn:hover { color: var(--text-default); }
     .dialog-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--spacer-12); }

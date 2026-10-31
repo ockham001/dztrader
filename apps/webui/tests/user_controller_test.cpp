@@ -368,21 +368,6 @@ TEST_F(UserControllerTest, NonAdminForbiddenEndpoints) {
               drogon::k403Forbidden);
 }
 
-TEST_F(UserControllerTest, GetPermissionsNonexistentReturns404) {
-    auto req = admin_req();
-    auto resp = invoke(&UserCtrl::get_permissions, req, 99999);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
-    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
-}
-
-TEST_F(UserControllerTest, UpdatePermissionsNonexistentReturns404) {
-    auto req = admin_req();
-    req->setBody(R"({"permissions":[]})");
-    auto resp = invoke(&UserCtrl::update_permissions, req, 99999);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
-    EXPECT_EQ(parse_body(resp)["error"].get<std::string>(), "not found");
-}
-
 // ---- reset_password ----
 
 TEST_F(UserControllerTest, ResetPassword) {
@@ -452,65 +437,6 @@ TEST_F(UserControllerTest, ResetPasswordToDefaultResetsAck) {
     EXPECT_TRUE(verify_password(kDefaultAdminPassword, *hash));
 }
 
-// ---- permissions ----
-
-TEST_F(UserControllerTest, GetPermissionsEmpty) {
-    auto req = admin_req();
-    auto resp = invoke(&UserCtrl::get_permissions, req, user_id_);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
-    auto body = parse_body(resp);
-    EXPECT_TRUE(body.is_array());
-    EXPECT_EQ(body.size(), 0);
-}
-
-TEST_F(UserControllerTest, UpdateAndGetPermissions) {
-    auto req = admin_req();
-    req->setBody(
-        R"({"permissions":[{"type":"account","id":"CTP-001","granted":true},{"type":"strategy","id":"MACD","granted":false}]})");
-    auto resp = invoke(&UserCtrl::update_permissions, req, user_id_);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
-    auto body = parse_body(resp);
-    ASSERT_EQ(body.size(), 2u);
-
-    // Now get permissions
-    auto get_req = admin_req();
-    auto get_resp = invoke(&UserCtrl::get_permissions, get_req, user_id_);
-    auto get_body = parse_body(get_resp);
-    ASSERT_EQ(get_body.size(), 2u);
-
-    // 逐项断言三个字段（granted 翻转或字段丢失必须变红）；顺序无关，按 id 查找
-    auto find_perm = [](const nlohmann::json& arr, const std::string& id) -> nlohmann::json {
-        for (const auto& p : arr) {
-            if (p.value("id", "") == id) {
-                return p;
-            }
-        }
-        return nullptr;
-    };
-    const auto acct = find_perm(get_body, "CTP-001");
-    ASSERT_FALSE(acct.is_null());
-    EXPECT_EQ(acct["type"].get<std::string>(), "account");
-    EXPECT_TRUE(acct["granted"].get<bool>());
-
-    const auto strat = find_perm(get_body, "MACD");
-    ASSERT_FALSE(strat.is_null());
-    EXPECT_EQ(strat["type"].get<std::string>(), "strategy");
-    EXPECT_FALSE(strat["granted"].get<bool>());
-
-    // 契约 rest §1: 变更 DB 成功后广播 data_changed{users}
-    ASSERT_EQ(notifier_->scopes.size(), 1u);
-    EXPECT_EQ(notifier_->scopes[0], "users");
-}
-
-TEST_F(UserControllerTest, UpdatePermissionsRejectsMissingOrNonArray) {
-    for (const char* body : {R"({})", R"({"permissions":{}})"}) {
-        auto req = admin_req();
-        req->setBody(body);
-        auto resp = invoke(&UserCtrl::update_permissions, req, user_id_);
-        EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest) << body;
-    }
-}
-
 // ---- 非法 JSON 统一 400（禁止解析异常逃逸）----
 
 TEST_F(UserControllerTest, MutatingEndpointsRejectInvalidJson) {
@@ -530,11 +456,6 @@ TEST_F(UserControllerTest, MutatingEndpointsRejectInvalidJson) {
     auto reset = admin_req();
     reset->setBody("{not json");
     EXPECT_EQ(invoke(&UserCtrl::reset_password, reset, user_id_)->getStatusCode(),
-              drogon::k400BadRequest);
-
-    auto perms = admin_req();
-    perms->setBody("{not json");
-    EXPECT_EQ(invoke(&UserCtrl::update_permissions, perms, user_id_)->getStatusCode(),
               drogon::k400BadRequest);
 }
 
@@ -581,13 +502,6 @@ TEST_F(UserControllerTest, ChangePasswordSucceedsAndTakesEffect) {
     ASSERT_TRUE(hash.has_value());
     EXPECT_TRUE(verify_password("MyNewPass!", *hash));
     EXPECT_FALSE(verify_password("pass", *hash));
-}
-
-TEST_F(UserControllerTest, UpdatePermissionsNonAdminReturns403) {
-    auto req = user_req();
-    req->setBody(R"({"permissions":[]})");
-    auto resp = invoke(&UserCtrl::update_permissions, req, user_id_);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
 }
 
 // ---- JSON excludes password_hash ----

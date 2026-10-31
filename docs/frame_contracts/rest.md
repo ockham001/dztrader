@@ -36,7 +36,6 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 | GET `/api/user/me` | 当前登录用户自身信息（任意已认证用户）；前端在 WS 连接/重连成功后借此刷新缓存角色，使 `isAdmin` 与服务端实时一致（角色降级时后端踢其 WS 连接，重连即刷新） |
 | PUT `/api/user/{id}/status` | 启用/禁用用户；禁用时强制断开其 WS 连接 |
 | PUT `/api/user/{id}/password` | 重置密码（admin） |
-| GET/PUT `/api/user/{id}/permissions` | 权限查询/修改 |
 | GET/PUT `/api/security/config` | 安全配置（IP 限制/黑白名单模式等） |
 | GET/POST `/api/security/blacklist`，DELETE `/api/security/blacklist/{id}` | 黑名单 |
 | GET/POST `/api/security/whitelist`，DELETE `/api/security/whitelist/{id}` | 白名单 |
@@ -113,7 +112,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - **行情源列表**：DB（repository）为真相源。行情进程上报 `RTN_MD_CONFIG` 时，dzweb 对未入库的 `dzmd_*` 来源自动对账补录（幂等）。DB 与 master 进程配置（契约 process）的同步通过帧联动实现：添加行情源 + Start 由 master 动态注册（契约 process）。列表条目的生命周期由 DB `is_added` 标记承载（remove 下发成功置 0、再次添加复位 1）。
 - **进程存在性与运行状态**：master 进程配置为真相源（契约 process）；REST 列表是投影。
 - **配置与状态数据**：进程镜像（MirrorStore）为投影，真相源为对应帧契约的 RTN。
-- **用户/安全/权限**：DB 为真相源，变更经 `data_changed` 广播。
+- **用户/安全**：DB 为真相源，变更经 `data_changed` 广播。
 
 ---
 

@@ -27,15 +27,6 @@ CREATE TABLE IF NOT EXISTS users (
     default_password_acknowledged INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS user_permissions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    permission_type TEXT NOT NULL,
-    permission_id TEXT NOT NULL,
-    granted INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(user_id, permission_type, permission_id)
-);
-
 CREATE TABLE IF NOT EXISTS login_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL,
@@ -192,6 +183,18 @@ void run_schema(sqlite3* db) {
             }
         }
         spdlog::info("legacy broker/credential tables dropped if present");
+    }
+
+    // Migration: drop legacy user_permissions table (#205).
+    // 权限模型延后（#205 / ADR 0040），原型权限数据不再使用。
+    {
+        rc = sqlite3_exec(db, "DROP TABLE IF EXISTS user_permissions;", nullptr, nullptr, &err_msg);
+        if (rc != SQLITE_OK) {
+            const std::string err = err_msg ? err_msg : "unknown";
+            sqlite3_free(err_msg);
+            throw std::runtime_error(std::string("failed to drop legacy table: ") + err);
+        }
+        spdlog::info("legacy permission table dropped if present");
     }
 
     // Migration: drop legacy market_source_schedules table and market_sources.auto_login column.

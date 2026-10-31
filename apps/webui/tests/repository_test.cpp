@@ -372,47 +372,5 @@ TEST(RepositoryLoginHistoryFilterTest, DaysFilterExcludesOldEntries) {
     }
 }
 
-TEST_F(RepositoryTest, Permissions) {
-    const int64_t uid = repo_.create_user("permuser", "Perm User", "", "pass", "user");
-    EXPECT_TRUE(repo_.set_user_permission(uid, "account", "CTP-主力账户", true));
-    EXPECT_TRUE(repo_.set_user_permission(uid, "strategy", "MACD_V3", true));
-    EXPECT_TRUE(repo_.set_user_permission(uid, "strategy", "Grid_BTC", false));
-
-    auto perms = repo_.get_user_permissions(uid);
-    ASSERT_EQ(perms.size(), 3u);
-
-    auto find_perm = [&perms](const std::string& type, const std::string& id) -> const Permission* {
-        for (const auto& p : perms) {
-            if (p.type == type && p.id == id) {
-                return &p;
-            }
-        }
-        return nullptr;
-    };
-
-    const Permission* account = find_perm("account", "CTP-主力账户");
-    ASSERT_NE(account, nullptr);
-    EXPECT_TRUE(account->granted);
-
-    const Permission* macd = find_perm("strategy", "MACD_V3");
-    ASSERT_NE(macd, nullptr);
-    EXPECT_TRUE(macd->granted);
-
-    const Permission* grid = find_perm("strategy", "Grid_BTC");
-    ASSERT_NE(grid, nullptr);
-    EXPECT_FALSE(grid->granted);
-
-    // 同 (type, perm_id) 二次写入覆盖 granted（ON CONFLICT DO UPDATE），不新增条目
-    EXPECT_TRUE(repo_.set_user_permission(uid, "strategy", "MACD_V3", false));
-    perms = repo_.get_user_permissions(uid);
-    ASSERT_EQ(perms.size(), 3u);
-    macd = find_perm("strategy", "MACD_V3");
-    ASSERT_NE(macd, nullptr);
-    EXPECT_FALSE(macd->granted);
-    account = find_perm("account", "CTP-主力账户");
-    ASSERT_NE(account, nullptr);
-    EXPECT_TRUE(account->granted);  // 其他条目不受影响
-}
-
 }  // anonymous namespace
 }  // namespace dztrader::webui
