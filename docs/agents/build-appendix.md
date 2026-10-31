@@ -105,7 +105,10 @@ test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈�
 
 > 本节讲**机制**（怎么编译、注册、跑）；**判据**（测试该怎么写、怎么判）见 [../unit-test-standard.md](../unit-test-standard.md)。
 
-- 每个 `*_test.cpp` 独立编译运行，`gtest_discover_tests` 自动注册，输出到 `${DZ_TESTS_DIR}`。标准模板见各模块 `CMakeLists.txt`
+- 每个 `*_test.cpp` 独立编译运行，经 `dz_add_test()` 自动注册（`cmake/DzTest.cmake`），输出到 `${DZ_TESTS_DIR}`。**不要在模块 `CMakeLists.txt` 里直接调 `add_executable` + `gtest_discover_tests`** —— 超时参数会被漏掉（见下条）
+- **用例发现超时（#227）**：`gtest_discover_tests` 在 **POST_BUILD** 阶段执行测试二进制枚举用例，CMake 默认发现超时只有 **5 秒**，且**没有**全局超时变量（只有全局 `CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE`），只能逐调用点传参。5 秒在 Windows runner 冷启动下不够（sccache READ_ONLY + 近千 target 并发链接 + 杀毒/IO 抖动），已两次与改动无关地把 Windows CI 打成红（run 40856647679 / 41167289411，报 `Process terminated due to timeout` / `Timeout: '5'`）。因此 `dz_add_test()` 统一带 `DISCOVERY_TIMEOUT`（默认 30s，`-DDZ_GTEST_DISCOVERY_TIMEOUT=<n>` 可覆盖），`scripts/check_gtest_discovery_timeout.py` 在 preflight 里守住三条：除宏定义处不得直接调 `gtest_discover_tests`、宏内调用必须带超时参数、默认值不得低于 30s
+  - `dz_add_test(<target> SOURCES <src...> [LABELS <label...>] [PROPERTIES <key value...>] [POST_BUILD <command...>])`；`LABELS` 缺省为 `fast`
+  - 测试目标自己的 POST_BUILD 命令（如 `strategies/demo` 把 `dztrader_sdk` DLL 复制到测试 exe 旁边）**必须**走 `POST_BUILD` 参数，不能写在宏调用之后：同一目标的 POST_BUILD 按声明顺序执行，后发现者在前者之后，而发现阶段本身就需要 DLL 已就位
 - **部分模块的测试有意只编译源码子集**，换取与外部依赖解耦：
   - `strategy_api` 测试约一半只编译内部类；`SDK_API_TESTS` 名单（notify_ui/trade/md/schedule/engine/db/db_instruments/td_ingest_*）额外编入 `api.cpp` + `db_database.cpp`，覆盖 C 接口完整写读路径（名单以 `libs/strategy_api/CMakeLists.txt` 为准）
   - `ctp` 测试不含 `md_main.cpp` / `md_api.cpp` / `md_spi.cpp`（避免链接 CTP 库）
@@ -118,7 +121,7 @@ test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈�
   - 新增固定名 `temp_directory_path()/dz_xxx` 会被 preflight 的 `scripts/check_test_portability.py` 拦下（白名单只含唯一化实现本身）
   - **进程级/机器全局资源必须 `RUN_SERIAL`**：真实进程 E2E（`apps/sysmon` 的 `*_e2e_test`、`apps/master` 的 `dz_smoke_test`）、机器全局 `NamedSemaphore` 通道名（`SDK_API_TESTS`、`stg_demo_test`）。判据是「该用例能否与同机另一个测试进程同时安全运行」，不是「跑得慢不慢」
 - **分层标签**（与 `RUN_SERIAL` / `TIMEOUT` 正交）：
-  - `fast`：默认单测门禁，秒级用例；所有普通 `gtest_discover_tests` 注册必须带 `PROPERTIES LABELS fast`
+  - `fast`：默认单测门禁，秒级用例；`dz_add_test` 的 `LABELS` 缺省值就是 `fast`，显式写与省略等价
   - `slow`：显式穷举/慢速档。`libs/strategy_api` 的 `SDK_SLOW_TESTS`（`date_exhaustive_test` / `date_time_exhaustive_test` / `bar_diff_exhaustive_test`）单独成 target 并打 `slow`；对应抽样版留在 `date_test.cpp` / `date_time_test.cpp` / `bar_diff_test.cpp` 的 `fast` 门禁。`bar_diff_exhaustive_test` 是 tick→bar 差分验收（ADR 0031 决策 10）的全量档：用例逻辑在 `bar_diff_cases.h` 只写一份，fast 档每条路径各跑一次、slow 档用多 seed/多日/高密度覆盖
   - `perf`：无阈值基准项（`PerfBench`（SHM 往返）、`BarPerfBench`（tick→bar 四路径）、#164 的五个 BarStrategy 框架基准），不进默认门禁；数值与记录方式见下节「性能基准」
   - 运行：`./scripts/test.sh`（fast）/ `-L slow` / `-L perf`（Windows 用 `-Label`）；等价直调 `ctest --preset linux-release[-slow|-perf]`。测试 `DZTRADER_HOME` 由 `test-base` 注入 `.cache/test_home`，**运行请走 `test.sh` / `gate.sh test`**（每次清空重建，避免上一轮残留 shm/DB 污染无关测试）；绕过脚本直调 `ctest --preset` 不复位该目录

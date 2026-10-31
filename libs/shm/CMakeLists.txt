@@ -36,13 +36,10 @@ target_link_libraries(dzshm_test_support INTERFACE dztest_support)
 file(GLOB SHM_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${SHM_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
-    add_executable(dzshm_${testname} ${testfile} tests/test_main.cpp)
-    target_link_libraries(dzshm_${testname} PRIVATE dzshm dztest_support GTest::gtest)
-    set_target_properties(dzshm_${testname} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
-    )
     # 锁序/跨进程用例挂死时由 ctest 兜底；正常单例为秒级
-    gtest_discover_tests(dzshm_${testname} PROPERTIES LABELS fast TIMEOUT 120)
+    dz_add_test(dzshm_${testname} SOURCES ${testfile} tests/test_main.cpp
+        LABELS fast PROPERTIES TIMEOUT 120)
+    target_link_libraries(dzshm_${testname} PRIVATE dzshm dztest_support GTest::gtest)
 endforeach()
 
 # ============================================================

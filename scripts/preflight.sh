@@ -3,7 +3,8 @@
 #
 # 覆盖：日志格式 / clang-format 21.x / 文档链接（含活跃文档里反引号路径**与代码符号**的
 #       存在性，以及 apps/libs 源码注释里显式契约 §N 引用的目标存在性）/ 测试可移植性+
-#       临时目录隔离 / MSVC hazard lint / 内置 nlohmann/json 版本一致性 / 前端五件套。
+#       临时目录隔离 / MSVC hazard lint / 内置 nlohmann/json 版本一致性 / gtest 发现超时
+#       纪律（#227）/ 前端五件套。
 #       MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
 #       Linux 编译器拦不到，由 scripts/check_msvc_hazards.py 做源码级 lint；
 #       conanfile.py 与内置 JSON 单头的版本漂移由 scripts/check_json_vendor_version.py 拦住。
@@ -140,6 +141,16 @@ check_ci_log_pattern() {
     "$ROOT/scripts/ci-log.sh" --selftest
 }
 
+check_gtest_discovery_timeout() {
+    # gtest 用例发现超时纪律（#227）：Windows CI 已两次因 CMake 默认 5 秒发现超时
+    # 与改动无关地变红（run 40856647679 / 41167289411）。CMake 没有全局超时变量，
+    # 只能靠「所有注册都走 dz_add_test()」来保证不漏参数，本检查器就是这条纪律的机器守卫。
+    # 先跑自测（直接调用 / 宏内漏参数 / 默认值被改小三种形态仍被拦住），再扫真实文件。
+    # 同样显式串联：`set -u -o pipefail` 没有 `-e`，自测失败会被后一条的 0 覆盖。
+    "$PYTHON" scripts/check_gtest_discovery_timeout.py --selftest || return $?
+    "$PYTHON" scripts/check_gtest_discovery_timeout.py
+}
+
 # ---- 前端 ----------------------------------------------------------------
 
 check_frontend() {
@@ -194,6 +205,7 @@ run_step "test portability + temp-dir isolation" check_test_portability
 run_step "msvc hazard lint" check_msvc_hazards
 run_step "vendored JSON version consistency" check_json_vendor_version
 run_step "ci-log error pattern" check_ci_log_pattern
+run_step "gtest discovery timeout (#227)" check_gtest_discovery_timeout
 if [ "$C_ONLY" -eq 0 ]; then
     run_step "frontend (type-check/lint/lint:css/test/gen:types)" check_frontend
 fi

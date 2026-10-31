@@ -37,7 +37,7 @@ set_target_properties(dzsysmonstore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 file(GLOB SYSMONSTORE_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${SYSMONSTORE_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
-    add_executable(dzsysmonstore_${testname} ${testfile} tests/test_main.cpp)
+    dz_add_test(dzsysmonstore_${testname} SOURCES ${testfile} tests/test_main.cpp LABELS fast)
     target_link_libraries(dzsysmonstore_${testname} PRIVATE dzsysmonstore dztest_support GTest::gtest)
     # 测试直接用 sqlite3 造「版本不符/无 schema」的库来验证读取方降级路径
     # （写入方 API 故意不提供改版本的能力）。
@@ -45,8 +45,4 @@ foreach(testfile ${SYSMONSTORE_TESTS})
         ${CMAKE_CURRENT_SOURCE_DIR}/tests
         ${SQLITE3_INCLUDE_DIR}
     )
-    set_target_properties(dzsysmonstore_${testname} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
-    )
-    gtest_discover_tests(dzsysmonstore_${testname} PROPERTIES LABELS fast)
 endforeach()

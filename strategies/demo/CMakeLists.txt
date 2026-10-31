@@ -40,35 +40,34 @@ endif()
 # 临时 DZTRADER_HOME + 真实事件/行情通道, 测试线程跑 run_strategy;
 # 只经 UI_INPUT 写入 / OUTPUT_UI 读出 / TICK 与回报帧注入验证行为。
 # 测试 exe 在 tests/ 下、动态库在上级目录: Linux 用 $ORIGIN/.. rpath,
-# Windows 构建后把 DLL 复制到 tests/ (该 POST_BUILD 命令先于
-# gtest_discover_tests 声明 —— 同一目标的 POST_BUILD 按声明顺序执行,
-# 故构建期列举用例时 DLL 已就位)。
+# Windows 构建后把 DLL 复制到 tests/ (该 POST_BUILD 命令先于 gtest 用例发现声明
+# —— 同一目标的 POST_BUILD 按声明顺序执行, 故构建期列举用例时 DLL 已就位;
+# 走 dz_add_test 的 POST_BUILD 参数正是为了保住这个顺序, 见 cmake/DzTest.cmake)。
 # 额外链 dzshm 仅因测试自身要用内部帧通道做探针 (见 tests/stg_demo_test.cpp);
 # 策略侧 (stg_demo_core) 仍只经动态 SDK, 测试不是示例的构建参照。
 # RUN_SERIAL: 机器全局 NamedSemaphore + 会话固定 DZTRADER_HOME,
 # 不与并行测试混跑 (与 SDK API 测试同理)。
 # ============================================================
-add_executable(stg_demo_test
-    tests/stg_demo_test.cpp
-    tests/test_main.cpp
-)
+if(UNIX)
+    # Linux 由测试 exe 的 rpath 定位上级目录的 .so, 无需构建期复制
+    dz_add_test(stg_demo_test
+        SOURCES tests/stg_demo_test.cpp tests/test_main.cpp
+        LABELS fast PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
+else()
+    dz_add_test(stg_demo_test
+        SOURCES tests/stg_demo_test.cpp tests/test_main.cpp
+        LABELS fast PROPERTIES RUN_SERIAL TRUE TIMEOUT 120
+        POST_BUILD_COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:dztrader_sdk> $<TARGET_FILE_DIR:stg_demo_test>
+        POST_BUILD_COMMENT "Copy dztrader_sdk next to stg_demo_test")
+endif()
 target_link_libraries(stg_demo_test PRIVATE stg_demo_core dzshm GTest::gtest)
-set_target_properties(stg_demo_test PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
-)
 if(UNIX)
     set_target_properties(stg_demo_test PROPERTIES
         BUILD_RPATH "$ORIGIN/.."
         INSTALL_RPATH "$ORIGIN/.."
     )
-else()
-    add_custom_command(TARGET stg_demo_test POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:dztrader_sdk> $<TARGET_FILE_DIR:stg_demo_test>
-        COMMENT "Copy dztrader_sdk next to stg_demo_test"
-    )
 endif()
-gtest_discover_tests(stg_demo_test PROPERTIES LABELS fast RUN_SERIAL TRUE TIMEOUT 120)
 
 install(TARGETS stg_demo RUNTIME DESTINATION ${DZ_INSTALL_DIR})
 # Windows 安装树与构建树同布局: 加载器只搜索 exe 所在目录, 测试可执行同目录

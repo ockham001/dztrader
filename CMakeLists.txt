@@ -92,6 +92,9 @@ add_custom_target(copy_compile_commands ALL
 # 启用 CTest（必须在顶层，子目录的 gtest_discover_tests 才能注册）
 enable_testing()
 include(GoogleTest)
+# 测试注册的唯一入口（#227）：dz_add_test() 统一带 DISCOVERY_TIMEOUT，
+# 见 cmake/DzTest.cmake 头部说明（Windows CI 两次 5s 发现超时变红的根因与取 30s 的依据）
+include(cmake/DzTest.cmake)
 
 # 默认构建类型
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)

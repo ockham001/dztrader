@@ -168,13 +168,14 @@ file(GLOB MD_CTP_TESTS CONFIGURE_DEPENDS
 )
 foreach(testfile ${MD_CTP_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
-    add_executable(dzmd_ctp_${testname}
-        ${testfile}
-        tests/test_main.cpp
-        md/md_state.cpp
-        md/md_api_pure.cpp
-        common/trading_calendar.cpp
-    )
+    dz_add_test(dzmd_ctp_${testname}
+        SOURCES
+            ${testfile}
+            tests/test_main.cpp
+            md/md_state.cpp
+            md/md_api_pure.cpp
+            common/trading_calendar.cpp
+        LABELS fast)
     target_include_directories(dzmd_ctp_${testname} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(dzmd_ctp_${testname} PRIVATE
         dzcore dzplatform_headers dztest_support GTest::gtest
@@ -189,10 +190,6 @@ foreach(testfile ${MD_CTP_TESTS})
         target_compile_definitions(dzmd_ctp_${testname} PRIVATE
             _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=0x0602)
     endif()
-    set_target_properties(dzmd_ctp_${testname} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
-    )
-    gtest_discover_tests(dzmd_ctp_${testname} PROPERTIES LABELS fast)
 endforeach()
 
 # td 测试 (dztd_ctp_<testname>): 编译 td 源文件, 不依赖 CTP 库
@@ -202,14 +199,15 @@ file(GLOB TD_CTP_TESTS CONFIGURE_DEPENDS
 )
 foreach(testfile ${TD_CTP_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
-    add_executable(dztd_ctp_${testname}
-        ${testfile}
-        tests/test_main.cpp
-        td/td_state.cpp
-        td/td_config.cpp
-        td/td_api_pure.cpp
-        common/trading_calendar.cpp
-    )
+    dz_add_test(dztd_ctp_${testname}
+        SOURCES
+            ${testfile}
+            tests/test_main.cpp
+            td/td_state.cpp
+            td/td_config.cpp
+            td/td_api_pure.cpp
+            common/trading_calendar.cpp
+        LABELS fast)
     target_include_directories(dztd_ctp_${testname} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(dztd_ctp_${testname} PRIVATE
         dzcore dztest_support GTest::gtest
@@ -287,5 +285,4 @@ foreach(testfile ${TD_CTP_TESTS})
             td/td_prescan.cpp)
         target_link_libraries(dztd_ctp_${testname} PRIVATE dztdstore dztrading)
     endif()
-    gtest_discover_tests(dztd_ctp_${testname} PROPERTIES LABELS fast)
 endforeach()

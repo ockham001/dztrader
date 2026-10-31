@@ -43,7 +43,7 @@ endif()
 file(GLOB PLATFORM_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${PLATFORM_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
-    add_executable(dzplatform_${testname} ${testfile} tests/test_main.cpp)
+    dz_add_test(dzplatform_${testname} SOURCES ${testfile} tests/test_main.cpp LABELS fast)
     target_link_libraries(dzplatform_${testname} PRIVATE
         dzplatform_headers dzshm dzlog dzcore dzshm_test_support GTest::gtest
         spdlog::spdlog nlohmann_json::nlohmann_json)
@@ -57,13 +57,9 @@ foreach(testfile ${PLATFORM_TESTS})
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(dzplatform_${testname} PRIVATE -Wno-missing-field-initializers)
     endif()
-    set_target_properties(dzplatform_${testname} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
-    )
     if(MSVC AND testname STREQUAL "sysmon_test")
         # gtest 1.17 gtest-printers.h 在 MSVC /O2 下对 nlohmann::json 相关模板实例化
         # 偶发 C4702（unreachable code），Release /WX 会升级为错误；仅豁免测试目标。
         target_compile_options(dzplatform_${testname} PRIVATE /wd4702)
     endif()
-    gtest_discover_tests(dzplatform_${testname} PROPERTIES LABELS fast)
 endforeach()

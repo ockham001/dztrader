@@ -39,10 +39,6 @@ target_include_directories(dztest_support INTERFACE
 file(GLOB CORE_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp")
 foreach(testfile ${CORE_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
-    add_executable(dzcore_${testname} ${testfile} tests/test_main.cpp)
+    dz_add_test(dzcore_${testname} SOURCES ${testfile} tests/test_main.cpp LABELS fast)
     target_link_libraries(dzcore_${testname} PRIVATE dzcore dztest_support GTest::gtest)
-    set_target_properties(dzcore_${testname} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
-    )
-    gtest_discover_tests(dzcore_${testname} PROPERTIES LABELS fast)
 endforeach()
