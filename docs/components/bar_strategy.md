@@ -686,7 +686,7 @@ ctx.buy_to_cover(volume, price); // 买方向：平空（只减不增）；volum
 | `ctx.current_contracts()` | 持仓手数（≥ 0，绝对值；方向看 `market_position()`）|
 | `ctx.avg_entry_price()` | 当前持仓加权平均建仓价；部分平仓不变，反手重置 |
 | `ctx.current_entries()` | 当前持仓建仓段数（每次开仓/加仓计 1，反手新开计 1；部分平仓不变；无仓 0）|
-| `ctx.max_contracts()` / `max_entries()` | 本实例历史最大持仓手数（`|P|` 峰值）/ 最大建仓段数 |
+| `ctx.max_contracts()` / `max_entries()` | 本实例历史最大持仓手数（`\|P\|` 峰值）/ 最大建仓段数 |
 | `ctx.entry_price()` / `entry_date()` / `entry_time()` | 当前持仓第一笔建仓（日期时间为该 bar 的标准结束时间）；**无持仓时保留最近持仓周期的第一笔建仓值**（TB 同口径；仅无加仓时与 `last_entry_price` 相同）|
 | `ctx.last_entry_price()` / `last_entry_date()` / `last_entry_time()` | 最近一笔加仓 |
 | `ctx.exit_price()` / `exit_date()` / `exit_time()` | 最近一笔平仓（含部分平仓与反手平仓段）|
@@ -760,7 +760,7 @@ scale_min_one：目标非零时至少 1 手（默认关）
 | `schema_version` | ✅ | — | 必须为整数 `1`（其它值/类型报错）|
 | `accounts` | ❌ | `[]`（0 个挂靠账户：只记逻辑台账、不发实盘单）| 数组 `{"account_id": 非空字符串, "scale": 有限正数}`；`scale ∈ (0, max_scale]`；账户标识不得重复；账户的登录/凭据属于平台 td 配置 |
 | `max_scale` | ❌ | `1.0` | 有限正数；挂靠比率上限，启动加载一次、盘中不可变（运行期编辑无效，重启生效）|
-| `scale_rounding` | ❌ | `"nearest"` | `"nearest"` / `"floor"` / `"ceil"`：逻辑持仓 `L_i = f(scale_i × |P|)` 的取整方向（§6.2）|
+| `scale_rounding` | ❌ | `"nearest"` | `"nearest"` / `"floor"` / `"ceil"`：逻辑持仓 `L_i = f(scale_i × \|P\|)` 的取整方向（§6.2）|
 | `scale_min_one` | ❌ | `false` | 目标非零时至少 1 手（保证小比率账户参与，会放大实际比例）|
 | `period_sec` | ✅ | — | ∈ {60, 180, 300, 900}（v1）|
 | `max_lookback` | ❌ | `clamp(86400/period_sec, 32, 2048)`（§4.5）| 整数 ∈ [32, 16384]；调大以支持更深回溯 |
@@ -1022,7 +1022,7 @@ status | quit
 
 - **交易意图只有一个出口**：`ctx.buy/...` 在 ctx 内完成「逻辑持仓差量 → 每账户手数 → 对齐/夹取 → SDK 调用」；未来 simulated executor 在同一出口内分支（交易意图冷路径），tick/bar 热路径不变。回报 v1 全部忽略。
 
-- 回卷成本（每进程）：1 分钟典型 60–130µs/天，15 分钟 5–10µs/天；事件循环停顿上限 < 0.2ms。实测值见上表与 §4.4「实测」——**多品种 + 大 `max_lookback` 是唯一超预算场景**。
+- 回卷成本（每进程）：1 分钟典型 60–130µs/天，15 分钟 5–10µs/天；要求记录事件循环停顿（上限 0.2ms）。实测值见上表与 §4.4「实测」——**多品种 + 大 `max_lookback` 是唯一超预算场景**。
 - 定时器错过时兜底回卷会把一次搬移拉进盘中推进路径，成本相同，属可接受的降级。
 - 预热回放：K=10,000、50 品种约 0.5–1s/进程；10 年 1 分钟约 85–175s/进程（WARN）；回放期虚拟成交，成本与挂靠账户数无关。
 
@@ -1044,7 +1044,7 @@ status | quit
 | 主题 | 锁定的行为 | 文件 |
 |---|---|---|
 | Series 读写 | `[n]` TB 口径与 `span()` STL 口径；越界一律抛 `std::out_of_range`（消息含 `n/size/max_lookback`）；只写 `[0]`（无 `push_back/resize`）；过期代理抛 stale；`Series` 布局零开销（static_assert）；Debug 断言在开启/关闭两种构建下都可观测 | `series_test.cpp`、`series_debug_assert_test.cpp` |
-| 窗口几何与回卷 | 容量自动值与校验区间；回卷前后窗口逐位不变（同一夹具前后快照，非跨路径比较）；逐步回卷与一次性回卷等价、幂等；随机推进 fuzz 对照影子模型 | `series_window_test.cpp` |
+| 窗口几何与回卷 | 容量自动值与校验区间（含 `buffer_bars ≤ 24576` 与派生关系）；回卷前后窗口逐位不变（同一夹具前后快照，非跨路径比较）；逐步回卷与一次性回卷等价、幂等；随机推进 fuzz 对照影子模型；强制 `reserve_bars` 极小值时的兜底回卷路径 | `series_window_test.cpp` |
 | 事件序与回调门禁 | `close → open → update` 顺序、每笔 tick 恰一次 update、`bar_index` 0 起单调、`on_bar_open` 时 OHLC 等于本笔 tick 价、`on_init` 时 `bar_index == -1`；门禁在窗口填满前零回调、首个回调序列、首根 bar 从不被报告为已收盘、最后一根不主动收（无 flush）；视图副本跨推进仍有效（地址稳定）、`on_destroy` 每实例一次；回卷两条路径（定时器 / 推进前兜底）对 B 完全等价 | `bar_strategy_framework_test.cpp` |
 | 异常隔离 | `on_init` / `on_bar_open` / `on_bar_update` / `on_bar_close` / `on_destroy` 五条抛异常路径：只影响本实例、其它品种继续、进程退出码 0、失败实例不再收回调或受理意图 | `bar_strategy_framework_test.cpp` |
 | 交易意图与台账 | 四函数开平意图全表（反手目标化、只减不增与钳制、`volume=0` 两组等价对）；即时记账与 Tier 1 每条口径（均价/建仓段/极值/`bars_since_*`）；拒单与诊断分级；账户身份编译期不可见 | `bar_strategy_position_test.cpp` |
@@ -1055,15 +1055,13 @@ status | quit
 | 依赖缝 | 合约元数据四态（`Loaded` / `Missing` / `Invalid` ×2 / `SourceUnavailable`）、归档 stub 按「无历史」降级、`FrameworkDependencies` 默认口径（退化表 + 18:00 + 空 loader）| `bar_strategy_dependencies_test.cpp` |
 | 启动衔接（Seam B）| 回放事件序与 live 同构且窗口即归档历史；回放期零订单帧、启动恰一条恢复后持仓上报；final 尾部丢同桶 tick / forming 尾部同桶续接不重复 close·open；冷启动降级；`warmup.bars` 尾部裁剪与 `warmup.from` 起始日透传；锚点按品种独立；历史不足由 live 补足；元数据端到端接线（Tier 1 乘数 + 委托价对齐）；元数据缺失只跳过该实例；成本估算两级 WARN（阈值取生产常量，估算行与实际回放行分别断言）| `bar_strategy_framework_test.cpp` |
 | 竞价相位 | 窗口内事件序与三个入口的相位写入（首笔 `close` 也为 true、离窗后转 false）；回放期恒 false（用例内先用 builder 做正对照）；非 bar 回调恒 false；退化表下恒 false | `bar_strategy_framework_test.cpp` |
-| 命令面 | 12 条命令的解析与尾部 `sync|nosync|market`（顺序无关/重复冲突/未知 token/只在尾部）；数值校验与错误行文本协议；参数仓（缺名回退、类型不符抛异常、整数拒小数、往返稳定）| `bar_strategy_command_test.cpp`、`bar_strategy_params_test.cpp` |
+| 命令面 | 12 条命令的解析与尾部 `sync\|nosync\|market`（顺序无关/重复冲突/未知 token/只在尾部）；数值校验与错误行文本协议；参数仓（缺名回退、类型不符抛异常、整数拒小数、往返稳定）| `bar_strategy_command_test.cpp`、`bar_strategy_params_test.cpp` |
 | 命令执行（Seam A）| 完整命令面；品种增删后既有实例 ctx/视图仍有效（地址稳定）；写盘失败不改内存；`instrument del` 先 sync 发单再销毁并逐账户清零；账户命令只发命令引起的差量、`market` 切市价、`scale` 上界与幂等；参数热更新即刻通知与挂起合并；`quit` 自退出；超长输出截断；`instrument add` 元数据缺失失败、启动期创建失败的品种可恢复、下单被拒仍推进逻辑账、sync 未发全追加 incomplete 行 | `bar_strategy_framework_test.cpp` |
 | 性能基准 | 五个 report-only 基准（框架 tick 路径 / bar close 路径 / Series 扫描 / 回卷 / 预热回放），`perf` 标签、`RUN_SERIAL`、不进默认 fast 门禁；三个框架路径基准在 SDK/C API 边界打桩、不写 shm | `bench_tick_update.cpp`、`bench_bar_close_dual_ma.cpp`、`bench_series_read.cpp`、`bench_relocate.cpp`、`bench_warmup_replay.cpp` |
 | 端到端验收 | 双均线 + 固定止损 fixture 只用公开 API：1 逻辑账户 + 2 挂靠账户（scale 1.0/0.5）跑真实帧通道，断言事件序、指标驱动的建仓/反手/止损平仓、Tier 1 数值、两账户订单帧、上报帧、退出码 0；`account add/set/del` 的 sync/nosync 语义 | `bar_strategy_framework_test.cpp` |
 | 公开面不变量 | 冻结的是评审过的快照（不是从头文件生成的恒真表）：`exported_symbols.map` 白名单结构、`api.h` / `api.cpp` 的 49 个 `dz_*` C ABI 名称集合、`StrategyBase` 虚函数声明序列、引擎入口的编译期函数指针类型与 concept、策略帧号映射、帧 payload 字段表；不依赖 nm/readelf/dumpbin，Windows CI 同样跑 | `public_surface_invariants_test.cpp` |
 
-> 仍未覆盖（后续项）：「master 编排的真实进程 E2E」归 #7；「一键同步」属平台/WebUI 能力；五个基准升为 CI 硬门禁（p99 中位数口径）待稳定。
-
-**目标清单中仍未覆盖的部分**（其余目标已由上表逐主题锁定）：
+**尚未覆盖的验收目标**（其余目标已由上表逐主题锁定）：
 
 - 指标函数库（统一签名 `double average(const SeriesView<double>&, int)` 等）：v1 只提供视图与
   `span()`，不随框架交付指标实现。
