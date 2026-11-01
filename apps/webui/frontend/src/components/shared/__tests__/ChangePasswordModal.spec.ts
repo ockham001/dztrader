@@ -2,6 +2,7 @@
 // 覆盖：旧密码必填、新口令最小长度、两次输入一致、契约错误码映射、成功后必须重新登录。
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { defineComponent } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { ApiError } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
@@ -125,6 +126,40 @@ describe('ChangePasswordModal', () => {
     await flushPromises()
     expect(w.text()).toContain('旧密码不正确')
     expect(w.text()).not.toContain('invalid old password')
+  })
+
+  // #233 验收第 2/3 条：for 必须在渲染后的 DOM 里真实解析到唯一元素（lint 只看静态结构，
+  // 写错 slug / 前缀落空都过 lint）；三个字段的 for 还必须指向各自的 input，不能错配到相邻字段。
+  it('三个密码字段的 label 都能解析到自己那个 input（#233）', () => {
+    const w = mountModal()
+    const inputs = w.findAll('input[type="password"]')
+    expect(inputs).toHaveLength(3)
+
+    for (const input of inputs) {
+      const id = input.attributes('id')
+      expect(id, '受控 input 必须有 id 才能被 label 关联').toBeTruthy()
+      const labels = w.findAll(`label[for="${id}"]`)
+      expect(labels, `id=${id} 应恰好被 1 个 label 关联`).toHaveLength(1)
+      expect(labels[0].text().length).toBeGreaterThan(0)
+    }
+
+    // 文案对齐，防止 for/id 配到了相邻字段（存在性断言查不出错配）
+    const labelFor = (i: number): string =>
+      w.find(`label[for="${inputs[i].attributes('id')}"]`).text()
+    expect(labelFor(0)).toBe('旧密码')
+    expect(labelFor(1)).toBe('新密码')
+    expect(labelFor(2)).toBe('确认新密码')
+  })
+
+  it('同 app 内两个实例并存的 id 不重复（#233）', () => {
+    const Host = defineComponent({
+      components: { ChangePasswordModal },
+      template: '<div><ChangePasswordModal :open="true" /><ChangePasswordModal :open="true" forced /></div>',
+    })
+    const w = mount(Host, { global: { stubs } })
+    const ids = w.findAll('[id]').map(el => el.attributes('id')!).filter(Boolean)
+    expect(ids).toHaveLength(6)
+    expect(new Set(ids).size).toBe(6) // 撞 id 会让 for 只关联第一个，读屏报错名称
   })
 
   it('强制改密：显示提示且不给「取消」按钮', async () => {

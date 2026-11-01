@@ -6,6 +6,7 @@ import Dropdown from '@/components/shared/Dropdown.vue'
 import SyncSwitch from '@/components/shared/SyncSwitch.vue'
 import SyncSelect from '@/components/shared/SyncSelect.vue'
 import { sourceTypeText, sourceTypeClass } from '@/composables/useSourceType'
+import { useFieldId } from '@/composables/useFieldId'
 import { LOGIN_ERROR_TEXT, type LoginErrorCode } from '@/composables/loginErrors'
 import {
   useUserManagementStore,
@@ -21,6 +22,9 @@ import {
 } from '@/composables/passwordPolicy'
 
 const store = useUserManagementStore()
+
+// label↔控件配对（#233）：id 按组件实例前缀生成，避免同页多实例撞 id
+const fieldId = useFieldId()
 
 // 登录历史无限滚动：IntersectionObserver 监听哨兵元素进入视口时加载下一页
 const loginHistorySentinel = ref<HTMLElement | null>(null)
@@ -432,6 +436,7 @@ onUnmounted(() => {
           <SyncSwitch
             :model-value="store.securityConfig.login_lockout_enabled"
             :pending="store.securityConfig.lockoutPending"
+            label="登录失败锁定"
             @change="(v: boolean) => store.toggleLoginLockout(v)"
           />
           <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-medium)', color: 'var(--text-secondary)' }">登录失败锁定</span>
@@ -443,7 +448,7 @@ onUnmounted(() => {
       <div class="filter-bar">
         <div class="ds-input" :style="{ maxWidth: '280px' }">
           <span class="icon ds-input__icon"><Icon name="Search" :size="16" /></span>
-          <input v-model="searchQuery" type="text" placeholder="搜索用户名、显示名称或邮箱...">
+          <input v-model="searchQuery" type="text" placeholder="搜索用户名、显示名称或邮箱..." aria-label="搜索用户">
         </div>
         <Dropdown
           :items="roleItems"
@@ -601,10 +606,10 @@ onUnmounted(() => {
           <!-- IP input + reason + add button -->
           <div class="filter-bar">
             <div class="ds-input">
-              <input v-model="newIpInput" type="text" placeholder="输入 IP 地址" :disabled="addIpPending" @keyup.enter="handleAddIp">
+              <input v-model="newIpInput" type="text" placeholder="输入 IP 地址" aria-label="IP 地址" :disabled="addIpPending" @keyup.enter="handleAddIp">
             </div>
             <div class="ds-input">
-              <input v-model="newIpReason" type="text" placeholder="备注（可选）" :disabled="addIpPending" @keyup.enter="handleAddIp">
+              <input v-model="newIpReason" type="text" placeholder="备注（可选）" aria-label="IP 备注" :disabled="addIpPending" @keyup.enter="handleAddIp">
             </div>
             <button class="ds-btn ds-btn--secondary ds-btn--sm" type="button" :disabled="addIpPending" @click="handleAddIp" :style="{ flexShrink: 0 }">
               <span v-if="addIpPending" class="ds-btn__spinner"></span>
@@ -747,27 +752,28 @@ onUnmounted(() => {
     <Modal :open="addUserModalOpen" title="添加用户" @close="closeAddUserModal">
       <div class="dialog-form">
         <div class="dialog-field">
-          <label class="dialog-field__label">用户名</label>
+          <label class="dialog-field__label" :for="fieldId('add-username')">用户名</label>
           <div class="ds-input">
-            <input v-model="newUser.username" type="text" placeholder="英文用户名">
+            <input :id="fieldId('add-username')" v-model="newUser.username" type="text" placeholder="英文用户名">
           </div>
         </div>
         <div class="dialog-field">
-          <label class="dialog-field__label">显示名称</label>
+          <label class="dialog-field__label" :for="fieldId('add-display-name')">显示名称</label>
           <div class="ds-input">
-            <input v-model="newUser.display_name" type="text" placeholder="中文名称">
+            <input :id="fieldId('add-display-name')" v-model="newUser.display_name" type="text" placeholder="中文名称">
           </div>
         </div>
         <div class="dialog-field">
-          <label class="dialog-field__label">邮箱</label>
+          <label class="dialog-field__label" :for="fieldId('add-email')">邮箱</label>
           <div class="ds-input">
-            <input v-model="newUser.email" type="email" placeholder="选填，用于通知">
+            <input :id="fieldId('add-email')" v-model="newUser.email" type="email" placeholder="选填，用于通知">
           </div>
         </div>
         <div class="dialog-field">
-          <label class="dialog-field__label">密码</label>
+          <label class="dialog-field__label" :for="fieldId('add-password')">密码</label>
           <div class="ds-input">
             <input
+              :id="fieldId('add-password')"
               v-model="newUser.password"
               type="password"
               autocomplete="new-password"
@@ -792,26 +798,27 @@ onUnmounted(() => {
     <Modal :open="editUserModalOpen" title="编辑用户" @close="closeEditUserModal">
       <div class="dialog-form">
         <div class="dialog-field">
-          <label class="dialog-field__label">用户名</label>
+          <label class="dialog-field__label" :for="fieldId('edit-username')">用户名</label>
           <div class="ds-input">
-            <input :value="editUserData.username" type="text" disabled>
+            <input :id="fieldId('edit-username')" :value="editUserData.username" type="text" disabled>
           </div>
         </div>
         <div class="dialog-field">
-          <label class="dialog-field__label">显示名称</label>
+          <label class="dialog-field__label" :for="fieldId('edit-display-name')">显示名称</label>
           <div class="ds-input">
-            <input v-model="editUserData.display_name" type="text" placeholder="中文名称">
+            <input :id="fieldId('edit-display-name')" v-model="editUserData.display_name" type="text" placeholder="中文名称">
           </div>
         </div>
         <div class="dialog-field">
-          <label class="dialog-field__label">邮箱</label>
+          <label class="dialog-field__label" :for="fieldId('edit-email')">邮箱</label>
           <div class="ds-input">
-            <input v-model="editUserData.email" type="email" placeholder="选填，用于通知">
+            <input :id="fieldId('edit-email')" v-model="editUserData.email" type="email" placeholder="选填，用于通知">
           </div>
         </div>
         <div class="dialog-field">
-          <label class="dialog-field__label">角色</label>
+          <label class="dialog-field__label" :for="fieldId('edit-role')">角色</label>
           <Dropdown
+            :id="fieldId('edit-role')"
             :items="[{ value: 'user', label: '普通用户' }, { value: 'admin', label: '管理员' }]"
             v-model="editUserData.role"
             :placeholder="'普通用户'"
@@ -833,9 +840,10 @@ onUnmounted(() => {
     <Modal :open="resetPasswordModalOpen" :title="`重置密码 — ${resetPasswordData.username}`" @close="closeResetPasswordModal">
       <div class="dialog-form">
         <div class="dialog-field">
-          <label class="dialog-field__label">新密码</label>
+          <label class="dialog-field__label" :for="fieldId('reset-new-password')">新密码</label>
           <div class="ds-input">
             <input
+              :id="fieldId('reset-new-password')"
               v-model="resetPasswordData.newPassword"
               type="password"
               autocomplete="new-password"

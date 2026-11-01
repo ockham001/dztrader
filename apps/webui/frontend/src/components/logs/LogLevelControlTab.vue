@@ -134,6 +134,7 @@ function handleSelectAll(event: Event): void {
               <label class="ds-check ds-check--all">
                 <input
                   type="checkbox"
+                  aria-label="全选进程"
                   :checked="store.selectedProcesses.size === store.processes.length && store.processes.length > 0"
                   :indeterminate.prop="store.selectedProcesses.size > 0 && store.selectedProcesses.size < store.processes.length"
                   :disabled="!isAdmin()"
@@ -159,6 +160,7 @@ function handleSelectAll(event: Event): void {
               <label v-if="!isStrategy(proc)" class="ds-check" :style="{ minHeight: 'auto' }">
                 <input
                   type="checkbox"
+                  :aria-label="`选择进程 ${proc.name}`"
                   :checked="store.selectedProcesses.has(proc.name)"
                   :disabled="!isAdmin()"
                   @change="store.toggleProcessSelection(proc.name)"

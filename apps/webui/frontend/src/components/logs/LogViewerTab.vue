@@ -193,6 +193,7 @@ function formatTs(ts: string): string {
           <input
             type="text"
             placeholder="关键字搜索..."
+            aria-label="搜索日志关键字"
             :value="store.keyword"
             @input="handleKeywordInput"
           >
@@ -209,6 +210,8 @@ function formatTs(ts: string): string {
         >
           {{ store.contentLoading ? '...' : '刷新' }}
         </button>
+        <!-- 图形开关：可见名称「实时」写在 label 外的 span 里，读屏拿不到（同 SyncSwitch，
+             #233），故显式给 aria-label。nesting 让两条 lint 规则通过，但 lint 不查 label 有无文字 -->
         <label
           class="ds-switch"
           :class="{ 'log-viewer__tail-switch--disabled': !!tailDisabledReason }"
@@ -219,6 +222,7 @@ function formatTs(ts: string): string {
             :checked="store.tailEnabled"
             :disabled="!store.selectedFile || !!tailDisabledReason"
             data-test="log-tail-switch"
+            aria-label="实时"
             @change="toggleTail"
           >
           <span class="ds-switch__track"><span class="ds-switch__thumb"></span></span>
