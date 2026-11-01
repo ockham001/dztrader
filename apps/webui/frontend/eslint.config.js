@@ -25,9 +25,8 @@ export default tsPlugin.config(
   },
   // SFC（.vue 模板/脚本）
   ...vuePlugin.configs['flat/recommended'],
-  // 无障碍（#206）：组件可键盘操作与对话框语义的规则门禁。
-  // 采用插件 recommended 全集，再按下述存量清单**显式**关闭两类——显式 off 而非降级 warning，
-  // 因为 lint 脚本是 `--max-warnings 0`，warning 与关闭对门禁等价，写 off 才看得出是"有意豁免"。
+  // 无障碍（#206 引入）：组件可键盘操作与对话框语义的规则门禁。
+  // 采用插件 recommended 全集；表单关联两条规则自 #233 起恢复 error（口径见下方 rules 段）。
   ...a11yPlugin.configs['flat/recommended'],
   {
     files: ['**/*.vue'],

@@ -247,6 +247,20 @@ describe('实时开关禁用态解释（#207 C2）', () => {
     w.unmount()
   })
 
+  // #233 验收第 2 条：图形开关的 label 内只有 span（track/thumb），无任何可读文字；
+  // 视觉名称「实时」写在 label 外的 span 里，读屏拿不到。nesting 能让两条 lint 规则通过，
+  // 但 lint 不查「label 内有没有文字」——故这里断言运行期真的有可读名称。
+  it('实时开关有可访问名称（读屏可报出，而非只有图形和旁边的未关联文字）', () => {
+    const store = useLogsStore()
+    store.selectedFile = 'logs/dztraderd/dztraderd.log'
+    store.selectedLogger = 'dztraderd'
+
+    const w = mount(LogViewerTab, { global: { stubs } })
+    const tail = w.find('[data-test="log-tail-switch"]')
+    expect(tail.attributes('aria-label')).toBe('实时')
+    w.unmount()
+  })
+
   it('未选中文件：开关禁用但没有"自身日志"原因（原因是未选文件，不误导）', async () => {
     const { useSystemStore } = await import('@/stores/system')
     useSystemStore().processName = 'dzweb'

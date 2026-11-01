@@ -460,33 +460,33 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
     <Modal :open="brokerModalOpen" title="添加经纪商" @close="closeBrokerModal">
       <div class="dialog-form">
         <div class="dialog-row">
-          <label class="dialog-row__label" :for="fieldId('new-broker-name')">名称</label>
+          <label class="dialog-row__label" :for="fieldId('add-broker-name')">名称</label>
           <div class="ds-input dialog-row__control">
-            <input :id="fieldId('new-broker-name')" v-model="newBrokerName" type="text" placeholder="例如：上海中期（创建后不可修改）">
+            <input :id="fieldId('add-broker-name')" v-model="newBrokerName" type="text" placeholder="例如：上海中期（创建后不可修改）">
           </div>
         </div>
         <div class="dialog-row">
-          <label class="dialog-row__label" :for="fieldId('new-broker-broker-id')">BrokerID</label>
+          <label class="dialog-row__label" :for="fieldId('add-broker-broker-id')">BrokerID</label>
           <div class="ds-input dialog-row__control">
-            <input :id="fieldId('new-broker-broker-id')" v-model="newBrokerBrokerId" type="text" placeholder="经纪商编号">
+            <input :id="fieldId('add-broker-broker-id')" v-model="newBrokerBrokerId" type="text" placeholder="经纪商编号">
           </div>
         </div>
         <div class="dialog-row">
-          <label class="dialog-row__label" :for="fieldId('new-broker-user-id')">UserID</label>
+          <label class="dialog-row__label" :for="fieldId('add-broker-user-id')">UserID</label>
           <div class="ds-input dialog-row__control">
-            <input :id="fieldId('new-broker-user-id')" v-model="newBrokerUserId" type="text" placeholder="用户代码">
+            <input :id="fieldId('add-broker-user-id')" v-model="newBrokerUserId" type="text" placeholder="用户代码">
           </div>
         </div>
         <div class="dialog-row">
-          <label class="dialog-row__label" :for="fieldId('new-broker-password')">密码</label>
+          <label class="dialog-row__label" :for="fieldId('add-broker-password')">密码</label>
           <div class="ds-input dialog-row__control">
-            <input :id="fieldId('new-broker-password')" v-model="newBrokerPassword" type="password" placeholder="密码">
+            <input :id="fieldId('add-broker-password')" v-model="newBrokerPassword" type="password" placeholder="密码">
           </div>
         </div>
         <div class="dialog-row">
-          <label class="dialog-row__label" :for="fieldId('new-broker-product-info')">ProductInfo</label>
+          <label class="dialog-row__label" :for="fieldId('add-broker-product-info')">ProductInfo</label>
           <div class="ds-input dialog-row__control">
-            <input :id="fieldId('new-broker-product-info')" v-model="newBrokerProductInfo" type="text" placeholder="客户端产品信息（可选）">
+            <input :id="fieldId('add-broker-product-info')" v-model="newBrokerProductInfo" type="text" placeholder="客户端产品信息（可选）">
           </div>
         </div>
       </div>
