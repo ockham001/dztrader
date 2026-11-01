@@ -9,7 +9,7 @@
 ## 1. 日志位置
 
 ```
-~/.dsh/sessions/--<cwd 路径以 - 连接>--/<session-id>/session.v4.jsonl.zstd
+~/.dsh/sessions/--<cwd 路径以 - 连接>--/session-<session-id>/session.v4.jsonl.zstd
 ```
 
 本仓库：
@@ -20,8 +20,17 @@ BASE="$HOME/.dsh/sessions/--$(pwd -P | sed 's#^/##; s#/#-#g')--"
 ls "$BASE"        # 每个目录一个会话（含主会话与子代理会话）
 ```
 
-- 同一 cwd 的会话共享一个父目录；目录名带 `session-` 前缀的通常是主会话，其余为子代理/派生会话。
-- 文件是 **zstd 压缩的 JSONL**（一行一个事件）：`zstd -dc "$BASE/<id>/session.v4.jsonl.zstd"`。不要用 `cat` 直接读；先 `zstd -dc` 再 `jq` / `grep`。
+- 同一 cwd 的会话共享一个父目录，**目录名两种形态并存且前缀就是判据**（本仓 2026-11-01 实测）：
+
+  | 目录名 | 数量 | `session` 首事件是否有 `parentSession` | 含义 |
+  |---|---|---|---|
+  | `session-<uuid>/` | 98 | 否 | 主会话 |
+  | `<uuid>/` | 425 | 是 | 子代理/派生会话 |
+
+  即**主会话目录带 `session-` 前缀，子会话不带**（不是「通常」）。`retro_extract.py --all` 只 glob
+  `session-*/`，因此只扫主会话——这是有意为之，不是漏扫。
+- 文件是 **zstd 压缩的 JSONL**（一行一个事件）：`zstd -dc "$BASE/session-<id>/session.v4.jsonl.zstd"`。不要用 `cat` 直接读；先 `zstd -dc` 再 `jq` / `grep`。
+- 拼路径时漏掉 `session-` 前缀会得到 `session file not found`（主会话一定带前缀）。用 `ls "$BASE" | grep <uuid>` 确认形态，不要凭记忆拼。
 
 ## 2. 事件格式（jsonl.zstd）
 
@@ -69,7 +78,8 @@ BASE="$HOME/.dsh/sessions/--$(pwd -P | sed 's#^/##; s#/#-#g')--"
 # 本 cwd 最新主会话
 python3 scripts/retro_extract.py --latest
 # 指定会话（复盘当前会话时传路径；当前会话的尾部事件在 turn 结束才落盘）
-python3 scripts/retro_extract.py --session "$BASE/<session-id>/session.v4.jsonl.zstd"
+# 注意 session- 前缀：主会话目录叫 session-<uuid>，不带前缀的是子会话
+python3 scripts/retro_extract.py --session "$BASE/session-<session-id>/session.v4.jsonl.zstd"
 # 最近 5 个主会话批量出 digest
 python3 scripts/retro_extract.py --all --recent 5
 ```
