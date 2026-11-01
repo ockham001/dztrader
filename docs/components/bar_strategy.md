@@ -30,7 +30,7 @@
 
 - 一个策略 = 一个可执行文件 `stg_<id>` = 一个进程 = 一个逻辑账户；实体账户 0..N 个挂在进程内（既有「一个策略一个进程」不变量不变）。
 - 一个进程只有一种用户策略类型 `Strategy`（B）；框架管理器 `BarStrategyManager<Strategy>`（A）对引擎而言是唯一的策略对象，入口 `run_bar_strategy<Strategy>()`（无参数：配置路径由 `dz_strategy_home()` + exe stem 推导，§7）内部以 A 调用既有 `run_strategy`。**入口形态**：无参（v1 没有任何运行期覆盖项，配置路径由 exe 目录唯一确定）；部署目录只读时的覆盖需求归 §14 第 15 条，落地时再加参数。
-- **代码落点**：公开入口 `dztrader/bar_strategy.h`（`run_bar_strategy<Strategy>()` + `BarStrategy` concept）；管理器 `dztrader/bar_strategy/manager.h`（A 的引擎回调、tick 分发、事件适配器、`BarEventSink` / `InstrumentNode`）；品种上下文 `dztrader/bar_strategy/context.h`（`InstrumentContext` / `InstrumentInit` / `PriceArrays`）；虚拟台账 `dztrader/bar_strategy/position.h`（`PositionState` / `InstrumentSpec` / `apply_intent`）；挂靠缩放 `dztrader/bar_strategy/scaling.h`（`AttachedAccount` / `ScalingConfig` / `logical_position`）；执行原语 `dztrader/bar_strategy/execution.h`（`TickSnapshot` / `resolve_order_price` / `order_volume`）；命令文法 `dztrader/bar_strategy/command.h`；参数仓 `dztrader/bar_strategy/params.h`（§9）；三个内部依赖缝 `dztrader/bar_strategy/dependencies.h`（§5.3/§5.5）。**A 不实现** `on_trade_report` / `on_order_report` / `on_position_info` / `on_trading_account`（v1 回报全部忽略，引擎按编译期探测跳过）。
+- **代码落点**：公开入口 `dztrader/bar_strategy.h`（`run_bar_strategy<Strategy>()` + `BarStrategy` concept）；管理器 `dztrader/bar_strategy/manager.h`（A 的引擎回调、tick 分发、事件适配器、`BarEventSink` / `InstrumentNode`）；品种上下文 `dztrader/bar_strategy/context.h`（`InstrumentContext` / `InstrumentInit` / `PriceArrays`）；虚拟台账 `dztrader/bar_strategy/position.h`（`PositionState` / `InstrumentSpec` / `apply_intent`）；挂靠缩放 `dztrader/bar_strategy/scaling.h`（`AttachedAccount` / `ScalingConfig` / `logical_position`）；执行原语 `dztrader/bar_strategy/execution.h`（`TickSnapshot` / `resolve_order_price` / `order_volume`）；命令文法 `dztrader/bar_strategy/command.h`；参数仓 `dztrader/bar_strategy/params.h`（§9）；三个内部依赖缝 `dztrader/bar_strategy/dependencies.h`（`FrameworkDependencies` / `HistoryBarLoader` / `InstrumentMetadataLoader`；§5.3/§5.5）。**A 不实现** `on_trade_report` / `on_order_report` / `on_position_info` / `on_trading_account`（v1 回报全部忽略，引擎按编译期探测跳过）。
 - A 实现引擎侧回调（`on_start` / `on_tick` / `on_schedule` / `on_ui_input` / `on_stop` 等）：`on_start` 里取得 `DzContext*`、读取并校验配置（含挂靠账户表）、注册 A 内部的每日 18:00 回卷定时器（§4.4）；`on_tick` 里把 tick 转交该品种的 builder（bar 边界由 ADR 0031 组件负责，§5.4）并分发实例；`on_ui_input` 里解析 `instrument *` / `account *` / `param *` / `status` / `quit` 命令；`on_schedule` 里只处理自己的定时器 ID，不转发给 B。**成交/委托/持仓/资金回报 v1 全部忽略**（不建成交台账、不跟踪委托；逻辑账只由 B 的交易意图推进）。
 - A 为配置里的每个品种创建一个 B 实例（`instruments` 列表）；品种可按 `instrument add/del` 动态增删；进程故障域独立。
 - 账户表由 A 持有（账户标识 + 挂靠比率），运行期可增删改（§8）；策略逻辑不可见账户身份，也不提供 `ctx.account_id()`。0 个账户时策略照常运行（只记逻辑台账、不发实盘单）。
@@ -480,7 +480,7 @@ bar   写入位置   end  size   窗口 [end-size, end)   窗口内容（最旧�
 
 两条边界：
 
-- **`buffer_bars ≤ 24576` 是防御性校验**：两个字段各自合法时其和必然不超过上限（`16384 + 8192 = 24576`），因此这条派生校验当前不可达，为将来放宽单字段区间保留。测试以静态断言锁定「上限 = 两字段上限之和」，避免它退化成无人验证的死分支。
+- **`buffer_bars ≤ 24576` 是防御性校验**：两个字段各自合法时其和必然不超过上限（`16384 + 8192 = 24576`），因此这条派生校验当前不可达，为将来放宽单字段区间保留。测试以静态断言锁定「上限 = 两字段上限之和」（`BufferBarsLimitIsSubsumedByPerFieldBounds`），避免它退化成无人验证的死分支。
 - **周期下界有两个，含义不同**：`min_feasible_period()`（= 12）是「存在合法配置」的下界——低于它时 `[R_min, 8192]` 是空区间，报 `period_sec` 非法（不能报一个倒置区间）；`min_auto_reserve_period()`（= 22）是「省略 `reserve_bars` 也合法」的下界——两者之间的周期（如 12–21 秒）必须显式配置 `reserve_bars`，否则按「不静默修正」报错（消息给出 `field=reserve_bars` 的实际值与合法区间，用户据此补上显式值）。错误信息里的合法区间必须真的合法（回归用例解析消息区间并逐点验证，曾把下界写错一根）。v1 的四个周期（60/180/300/900）都远在两个下界之上。
 
 交易小节表落地后（ADR 0018），「每日 bar 数」改用真实 session 总分钟数（1 分钟周期 = 600 根/交易日），默认内存降到约四成（`buffer_bars` 4320 → 1800）：
@@ -903,7 +903,7 @@ param get <name> | param set <name> <value> | param list
 status | quit
 ```
 
-- **字符串协议**：`UI_INPUT`/`OUTPUT_UI` 的 payload 都是 UTF-8 文本；命令是空白分隔的 token 行（命令名 + 参数），不引入 JSON/引号语法；参数只接受平台标识/数字/日期（不含空白）；`sync`/`nosync`/`market` 为小写关键字。解析失败、未知命令、参数个数/取值错误 → 单行错误字符串，内存不变；成功 → 结果字符串。
+- **字符串协议**：`UI_INPUT`/`OUTPUT_UI` 的 payload 都是 UTF-8 文本；命令是空白分隔的 token 行（命令名 + 参数），不引入 JSON/引号语法；参数只接受平台标识/数字/日期（不含空白）；`sync`/`nosync`/`market` 为小写关键字。解析失败、未知命令、参数个数/取值错误 → 单行错误字符串（形态 `invalid command | reason=…`），内存不变；成功 → 结果字符串。解析结果恰有「命令」或「错误」之一。
 - 结果输出：正常结果与错误行写 `OUTPUT_UI`（字符串），关键错误同时 `dz_notify_ui`；dzweb 的入口、权限、请求关联与展示归 #6/#9，本 spec 只保证解析与执行可被测试帧驱动。
 - 增删改账户命令默认 **nosync**；`instrument del` 同样支持 `[sync|nosync] [market]`（默认 nosync）；`sync` 按 §6.2 发同步/平仓单；`market` 只对同步单生效（默认对手价）。命令语义见 §6.2 与 ADR 0028/0030。
 - 命令成功后 A 写回配置（原子）；失败则内存不变、返回错误行。`param set` 成功后通过 `on_params_update` 通知策略重读。
@@ -1049,7 +1049,7 @@ status | quit
 | 异常隔离 | `on_init` / `on_bar_open` / `on_bar_update` / `on_bar_close` / `on_destroy` 五条抛异常路径：只影响本实例、其它品种继续、进程退出码 0、失败实例不再收回调或受理意图 | `bar_strategy_framework_test.cpp` |
 | 交易意图与台账 | 四函数开平意图全表（反手目标化、只减不增与钳制、`volume=0` 两组等价对）；即时记账与 Tier 1 每条口径（均价/建仓段/极值/`bars_since_*`）；拒单与诊断分级；账户身份编译期不可见 | `bar_strategy_position_test.cpp` |
 | 执行原语 | `L_i` 三种取整 × 正负持仓、`scale_min_one`、非法 `scale` 防御、饱和、差量之和恒等于 `L(终态) − L(初态)`；tick 对齐不偷价与三种边界、涨跌停夹取、非法价格/数量；`resolve_sync_price()` 对手价 / 回退最新价 / 不可用 / `market` | `bar_strategy_execution_test.cpp` |
-| 挂靠 fanout 与上报 | 镜像与反手单（每账户一张差量单、`effect=AUTO`）、`L_i` 未变零帧、0 账户零帧、取整与 `scale_min_one` 从配置到执行路径的接线、`on_init` 意图不发单（live 门禁）、涨跌停诊断、逐品种上报不出现空合约代码、进入 live 时全量上报、失败实例仍上报台账 | `bar_strategy_framework_test.cpp` |
+| 挂靠 fanout 与上报 | 镜像与反手单（每账户一张差量单、`effect=AUTO`）、`L_i` 未变零帧、0 账户零帧、取整与 `scale_min_one` 从配置到执行路径的接线、`on_init` 意图不发单（live 门禁）、挂涨停价而非拒单 + `reason=limit_up` 诊断、逐品种上报不出现空合约代码、进入 live 时全量上报、失败实例仍上报台账 | `bar_strategy_framework_test.cpp` |
 | 配置层 | 路径推导、默认生成（5 键、故意不可运行）、分层校验（JSON 形态 vs 语义）、未知键策略、自动值与区间、`warmup` 两种模式、有效配置日志、原子写与失败不改旧文件、`ConfigStore` 写回保留未知字段与省略态、不可变字段守卫 | `bar_strategy_config_test.cpp`、`bar_strategy_config_file_test.cpp` |
 | 历史回放 | 合成 tick 回放保真（涨/跌/平三序、量额 `k/4`、跨日基准重置、产出的 bar 与归档逐字段一致含 `last_tick_sec`、竞价-only 负 `last_tick_sec`）；**桶判定用独立手写期望桶**做 oracle（退化表 / 多小节含末端 tick / 竞价窗口 / 窗口优先级），不拿被测 resolver 的返回值当期望 | `bar_strategy_replay_test.cpp` |
 | 依赖缝 | 合约元数据四态（`Loaded` / `Missing` / `Invalid` ×2 / `SourceUnavailable`）、归档 stub 按「无历史」降级、`FrameworkDependencies` 默认口径（退化表 + 18:00 + 空 loader）| `bar_strategy_dependencies_test.cpp` |
@@ -1059,7 +1059,7 @@ status | quit
 | 命令执行（Seam A）| 完整命令面；品种增删后既有实例 ctx/视图仍有效（地址稳定）；写盘失败不改内存；`instrument del` 先 sync 发单再销毁并逐账户清零；账户命令只发命令引起的差量、`market` 切市价、`scale` 上界与幂等；参数热更新即刻通知与挂起合并；`quit` 自退出；超长输出截断；`instrument add` 元数据缺失失败、启动期创建失败的品种可恢复、下单被拒仍推进逻辑账、sync 未发全追加 incomplete 行 | `bar_strategy_framework_test.cpp` |
 | 性能基准 | 五个 report-only 基准（框架 tick 路径 / bar close 路径 / Series 扫描 / 回卷 / 预热回放），`perf` 标签、`RUN_SERIAL`、不进默认 fast 门禁；三个框架路径基准在 SDK/C API 边界打桩、不写 shm | `bench_tick_update.cpp`、`bench_bar_close_dual_ma.cpp`、`bench_series_read.cpp`、`bench_relocate.cpp`、`bench_warmup_replay.cpp` |
 | 端到端验收 | 双均线 + 固定止损 fixture 只用公开 API：1 逻辑账户 + 2 挂靠账户（scale 1.0/0.5）跑真实帧通道，断言事件序、指标驱动的建仓/反手/止损平仓、Tier 1 数值、两账户订单帧、上报帧、退出码 0；`account add/set/del` 的 sync/nosync 语义 | `bar_strategy_framework_test.cpp` |
-| 公开面不变量 | 冻结的是评审过的快照（不是从头文件生成的恒真表）：导出符号白名单、`api.h` / `api.cpp` 的 49 个 `dz_*` C ABI 名称集合、`StrategyBase` 虚函数声明序列、引擎入口的编译期函数指针类型与 concept、策略帧号映射、帧 payload 字段表；不依赖 nm/readelf/dumpbin，Windows CI 同样跑 | `public_surface_invariants_test.cpp` |
+| 公开面不变量 | 冻结的是评审过的快照（不是从头文件生成的恒真表）：`exported_symbols.map` 白名单结构、`api.h` / `api.cpp` 的 49 个 `dz_*` C ABI 名称集合、`StrategyBase` 虚函数声明序列、引擎入口的编译期函数指针类型与 concept、策略帧号映射、帧 payload 字段表；不依赖 nm/readelf/dumpbin，Windows CI 同样跑 | `public_surface_invariants_test.cpp` |
 
 > 仍未覆盖（后续项）：「master 编排的真实进程 E2E」归 #7；「一键同步」属平台/WebUI 能力；五个基准升为 CI 硬门禁（p99 中位数口径）待稳定。
 
