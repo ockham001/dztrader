@@ -29,7 +29,7 @@
 5. **verifier prompt 用模板，不要临场写**：**成本封套与 prompt 骨架见 [verifier-prompt.md](verifier-prompt.md)**（Standards / Spec / 只读验证三个可复制块 + 为什么必须写步骤序）。带齐固定点与 `HEAD`、`git diff <base>...HEAD` 命令、上一轮 findings（贴全，避免重复审查与相反结论）、只读约束。**先复制模板再填占位符**——只写「预算 ≤N 分钟」是已知失效形态（#216 首轮两个 verifier 19.4 / 14.4 min 零产出；换步骤序后 4.8 / 0.7 min 交付）。
 6. **一个会话只能同时有 8 个 teammate**（`spawn_teammate` 第 9 个报 `Team member limit 8 reached`，本宿主硬上限，#233 实测）。`interrupt_agent` 只是结束该成员的当前轮，**不会释放名额**——要腾位就先让它返回、再派新的。机械工单（如 #233 的 97 条 lint）天然想拆成多份并行，拆分前先算「已有几个 + 还差几个」，超了就分批：先派一批做完收报告，再派下一批。
 
-7. **票内多 teammate 并行必须划写作用域**：AGENTS 的「一票一 worktree」只覆盖**跨票**。票内并行时，同仓多成员同时改同一批文件会互相踩——#206/#233 共 7 次 `file changed since it was read`（`Modal.vue` / `useFocusTrap.ts` / `App.vue` 被多个成员碰过）。规则：**一个成员一个文件集，共享文件归 Lead**；用 `team_task_create` 的 `write_scopes` 字段登记该成员要改的路径前缀，派活时写进 prompt。审阅/验证类成员只读，不占作用域。
+7. **票内多 teammate 并行必须划写作用域**：AGENTS 的「一票一 worktree」只覆盖**跨票**。票内并行时，同仓多成员同时改同一批文件会互相踩——#206/#233 共 7 次 `file changed since it was read`（`Modal.vue` / `useFocusTrap.ts` / `App.vue` 被多个成员碰过）。规则：**一个成员一个文件集，共享文件归 Lead**；用 `team_task_create` 的 `write_scopes` 字段登记该成员要改的路径前缀，派活时写进 prompt。审阅/验证类成员只读，不占作用域。**注意 `write_scopes` 是建议性声明、不是互斥锁**——它不会阻止两个成员写同一文件，纪律靠 prompt 与分工，不靠工具强制。
 
 8. 轮次口径：**1 轮 = 1 次修复 + 1 个 verifier**；最多 3 轮修复。第 3 轮仍有 blocking → 修完后必须再跑 **1 轮只读验证**（不算第 4 轮修复），并把结论写进报告。禁止用改写 prompt 重跑 verifier 来"刷新"结论。
 9. **等 verifier 不要 `sleep` 轮询**（AGENTS §五「等待一律后台作业」）：`spawn_teammate` 的成员用 `wait_agent` 真正阻塞；派 `subagent` 时结果以 `subagent-settled` 通知到达。等待窗口做**不写文件**的工作（读 diff/契约、拟关闭评论与报告、跑幂等 `preflight --c-only`）。反例：#77/#78/#81 因 sleep 等 verifier 累计 ≈3.9h。

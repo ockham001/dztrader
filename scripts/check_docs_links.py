@@ -81,7 +81,7 @@ SYMBOL_ALLOWLIST = {
     # ticket-closeout §1 的审查派工流程必须按名字引用它们（#213）。
     "node_id", "package_id", "run_in_background", "wait_agent",
     "codegraph_explore", "spawn_teammate", "send_message", "job_output", "interrupt_agent",
-    "team_task_create", "team_task_update", "team_task_list", "list_agents",
+    "team_task_create", "team_task_update", "list_agents",
     # team_task_create 的参数名（#237 起 closeout §1.7 要求用它登记票内并行写作用域）
     "write_scopes", "blocked_by",
     # 历史示例：review-checklist §2.3 用「已删除的 watch_path」说明漂移类 finding，
@@ -353,7 +353,11 @@ def check_table_columns(files, root):
             lines = strip_code_fences(fh.read())
         expected, header_lineno = None, 0
         for lineno, line in enumerate(lines, 1):
+            # 引用块里的表格（`> | a | b |`）同样是表格：先剥掉前导 `>` 标记再判，
+            # 否则整类形态静默漏检（#237 review）。
             stripped = line.strip()
+            while stripped.startswith(">"):
+                stripped = stripped[1:].strip()
             if not stripped.startswith("|"):
                 expected = None  # table ended
                 continue
@@ -782,11 +786,17 @@ def selftest():
                 "| 宽度为 1 的分隔行 | 容忍 |",
                 "|-|",
                 "",
+                "> | 引用块表头 | b |",
+                "> |---|---|",
+                "> | 破表行 | `p|q` |",
+                "",
             ]))
         table_errors = check_table_columns(["docs/components/sample.md"], tmp)
-        # 只有第 4 行（裸竖线那行）该报；转义行、代码块、宽度 1 的分隔行都不该报。
-        if len(table_errors) != 1 or ":4:" not in table_errors[0]:
-            print("selftest FAIL: expected exactly one broken table row (line 4), got:",
+        # 两处该报：第 4 行（裸竖线）与第 15 行（引用块里的裸竖线）。
+        # 不该报：转义行、围栏代码块、宽度 1 的分隔行。
+        if len(table_errors) != 2 or not any(":4:" in e for e in table_errors) \
+                or not any(":15:" in e for e in table_errors):
+            print("selftest FAIL: expected broken rows at lines 4 and 15, got:",
                   table_errors)
             return 1
     print("selftest OK: symbol check detects missing symbols; path check covers regression + "
