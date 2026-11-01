@@ -79,9 +79,11 @@ SYMBOL_ALLOWLIST = {
     # GitHub / DSH / issue 字段与工具名（含 MCP 外部工具名：AGENTS §六 引用 codegraph_explore，
     # 它是宿主提供的工具而非本仓符号）。spawn_teammate / send_message / job_output 同理：
     # ticket-closeout §1 的审查派工流程必须按名字引用它们（#213）。
-    "blocked_by", "node_id", "package_id", "run_in_background", "wait_agent",
+    "node_id", "package_id", "run_in_background", "wait_agent",
     "codegraph_explore", "spawn_teammate", "send_message", "job_output", "interrupt_agent",
     "team_task_create", "team_task_update", "list_agents",
+    # team_task_create 的参数名（#237 起 closeout §1.7 要求用它登记票内并行写作用域）
+    "write_scopes", "blocked_by",
     # 历史示例：review-checklist §2.3 用「已删除的 watch_path」说明漂移类 finding，
     # 该引用是有意保留的反例，不是当前符号
     "watch_path",
@@ -311,6 +313,64 @@ def check_active_doc_sections(files, root):
                 continue  # 指向本地归档设计文档，无法验证
             errors.append("%s:%d: missing section -> §%s"
                           % (rel, bare_text.count("\n", 0, m.start()) + 1, num))
+    return errors
+
+
+TABLE_SEPARATOR_RE = re.compile(r"^\|\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$")
+
+
+def _unmasked_pipes(row):
+    """Count table-cell separators, treating ``\\|`` inside cells as literal text."""
+    count, i, n = 0, 0, len(row)
+    while i < n:
+        ch = row[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2  # skip the escaped char so an escaped pipe is not counted
+            continue
+        if ch == "|":
+            count += 1
+        i += 1
+    return count
+
+
+def check_table_columns(files, root):
+    """Flag markdown table rows whose cell count disagrees with the header.
+
+    A literal pipe inside a cell splits the row and silently drops trailing
+    columns: ``| :--- | ``sync|nosync`` |`` renders as four cells, not three.
+    Caught by a human review in #216; nothing checked table shape while the
+    same file already had path/symbol/section checks (#237). Fenced code is
+    blanked first, so pipes in code blocks never count.
+    """
+    errors = []
+    for rel in files:
+        if not rel.endswith(".md") or rel.startswith(LOCAL_ARCHIVES):
+            continue
+        path = os.path.join(root, rel)
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = strip_code_fences(fh.read())
+        expected, header_lineno = None, 0
+        for lineno, line in enumerate(lines, 1):
+            # 引用块里的表格（`> | a | b |`）同样是表格：先剥掉前导 `>` 标记再判，
+            # 否则整类形态静默漏检（#237 review）。
+            stripped = line.strip()
+            while stripped.startswith(">"):
+                stripped = stripped[1:].strip()
+            if not stripped.startswith("|"):
+                expected = None  # table ended
+                continue
+            cells = _unmasked_pipes(stripped)
+            if expected is None:
+                expected, header_lineno = cells, lineno
+                continue
+            if TABLE_SEPARATOR_RE.match(stripped):
+                continue  # |---|---| must match by construction; tolerate any width
+            if cells != expected:
+                errors.append(
+                    f"{rel}:{lineno}: table row has {cells} pipe(s), "
+                    f"header (line {header_lineno}) has {expected}")
     return errors
 
 
@@ -709,9 +769,40 @@ def selftest():
             print("selftest FAIL: source comments must flag exactly "
                   "§4/§5/§6/§7/ghost/总则§99, got:", source_errors)
             return 1
+
+        # 表格列数检查（#237）：裸竖线会把一行拆成多列并静默吞掉尾列（#216 的破表
+        # finding 只能靠人读出来）。转义 ``\|`` 不是列分隔符；代码块里的竖线不算。
+        with open(doc, "w", encoding="utf-8") as fh:
+            fh.write("\n".join([
+                "| 主题 | 行为 | 文件 |",
+                "|------|------|------|",
+                "| 好的行 | 普通内容 | `a.cpp` |",
+                "| 破表行 | 裸竖线 `sync|nosync|market` 会拆列 | `b.cpp` |",
+                "| 转义行 | 转义 `sync\\|nosync\\|market` 不算列分隔 | `c.cpp` |",
+                "```",
+                "| 代码块 | 里的 `x|y` | 不算表格 |",
+                "```",
+                "",
+                "| 宽度为 1 的分隔行 | 容忍 |",
+                "|-|",
+                "",
+                "> | 引用块表头 | b |",
+                "> |---|---|",
+                "> | 破表行 | `p|q` |",
+                "",
+            ]))
+        table_errors = check_table_columns(["docs/components/sample.md"], tmp)
+        # 两处该报：第 4 行（裸竖线）与第 15 行（引用块里的裸竖线）。
+        # 不该报：转义行、围栏代码块、宽度 1 的分隔行。
+        if len(table_errors) != 2 or not any(":4:" in e for e in table_errors) \
+                or not any(":15:" in e for e in table_errors):
+            print("selftest FAIL: expected broken rows at lines 4 and 15, got:",
+                  table_errors)
+            return 1
     print("selftest OK: symbol check detects missing symbols; path check covers regression + "
           "untracked-but-present files; section check catches stale §N in active docs; "
-          "source-comment check catches stale contract refs and ignores strings")
+          "source-comment check catches stale contract refs and ignores strings; "
+          "table check catches unescaped column-splitting pipes")
     return 0
 
 
@@ -764,14 +855,16 @@ def main(argv):
     errors.extend(check_backticked_paths(files, root, tracked_repo_paths(root)))
     errors.extend(check_backticked_symbols(files, root))
     errors.extend(check_source_contract_refs(root, idx))
+    errors.extend(check_table_columns(files, root))
 
     for err in errors:
         print(err)
     if errors:
-        print(f"FAIL: {len(errors)} broken link(s)/contract ref(s)/stale path(s)/stale symbol(s)")
+        print(f"FAIL: {len(errors)} broken link(s)/contract ref(s)/stale path(s)/"
+              "stale symbol(s)/table row(s)")
         return 1
     print(f"OK: {len(files)} markdown files + source comments scanned, "
-          "no broken links/paths/symbols/contract refs")
+          "no broken links/paths/symbols/contract refs/table rows")
     return 0
 
 

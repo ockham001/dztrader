@@ -4,8 +4,8 @@
 
 ## 目录地图
 
-| 主题 | 覆盖帧 | 类型层真相源 |
-|------|--------|--------------|
+| 主题 | 描述 | 覆盖帧 | 类型层真相源 |
+|------|------|--------|--------------|
 | [general](general.md) | 通用规则 | 帧布局/传输与数据流（§4 链路形态）/请求响应总则 + `QUERY_FULL_SNAPSHOT` | `libs/strategy_api/include/dztrader/struct.h`、`data_type.h`、`libs/core/.../core_data_type.h` |
 | [log](log.md) | 日志 | `SET_LOG_CONFIG`/`FLUSH_LOG`/`RTN_LOG_CONFIG` | `libs/platform/.../log_config.h` |
 | [shm](shm.md) | SHM 通道配置 | `SET/RTN_EVENT_SHM_CONFIG`、`SET/RTN_MD_SHM_CONFIG`、`PRELOAD_EVENT/MD_SHM`、`UPDATE_SHM_EVENT/MD_SUBSCRIBER`、`REQUEST/RTN_MD_READER_REGISTER`、`REQUEST/RTN_MD_READER_UNREGISTER` | `libs/platform/.../shm_config.h` |
