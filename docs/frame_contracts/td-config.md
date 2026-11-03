@@ -8,7 +8,7 @@
 
 **类型层真相源（CTP 类型，实现侧）**：`apps/ctp/td/td_config.h`（`TdConfig`/`TdConfigOp`/`TdConfigOpReq` 等）。JSON payload schema 以本契约为唯一语义真相源（总则 §6）。
 
-**实现注记**：契约先行——当前 td 上报的 `DZ_FRAME_TD_RTN_CONFIG` payload 为 CTP 扁平结构（账户连接参数直接在账户对象上），且未在启动时主动推送；通用化（通用字段 + `ext`）与启动主动推一次由后续实现票落地，dzweb 当前也未消费本帧。
+**实现注记**：契约先行——当前 td 上报的 `DZ_FRAME_TD_RTN_CONFIG` payload 为 CTP 扁平结构（账户连接参数直接在账户对象上），且未在启动时主动推送；通用化（通用字段 + `ext`）与启动主动推一次由后续实现票落地，dzweb 当前也未消费本帧。op 层同样泛化：进程级柜台特有配置改用 `SetExt`（CTP 的旧 `SetLockMode` 并入 `ext.enable_lock_mode`），实现票按方案收敛规则删除旧 op、不留双实现。
 
 ---
 
@@ -47,7 +47,7 @@
 | op | params 字段 | 状态保护 | 说明 |
 |---|---|---|---|
 | `AddAccount` | `account_id`\*、`enabled`、`risk_control_enabled`、`currency_id`、`ext`\* | 否 | 追加账户配置；`account_id` 在本进程配置内重复即拒绝（全局唯一由平台入口校验，§5）；`ext` 为该接口类型的连接参数 |
-| `RemoveAccount` | `account_id`\* | 是 | 删除账户配置；**不删除交易数据**（ADR 0045）；会话活跃时拒绝，需先断开 |
+| `RemoveAccount` | `account_id`\* | 否 | 删除账户配置；**不删除交易数据**（ADR 0045）；若该账户有活跃会话，执行时销毁会话并推 Offline（ADR 0045 决策 5） |
 | `UpdateAccount` | `account_id`\* + 以下通用字段/`ext` 的任意子集 | 是 | 字段级 merge：通用字段缺失保留旧值；`ext` 内字段缺失保留旧值，`password` 缺失/空串/`"****"` 保留旧值；`frontends` 提供则整体替换；会话活跃时拒绝 |
 | `SetAccountEnabled` | `account_id`\*、`enabled`\* | 否 | 启用/禁用只影响后续连接请求（禁用后连接被拒），不强制断开已有会话（断开由连接控制帧负责） |
 | `SetAccountRiskControl` | `account_id`\*、`enabled`\* | 否 | 账户级风控开关（`enabled` = 是否启用风控） |
@@ -57,7 +57,7 @@
 
 > `*` 标注的字段为必填，缺失或类型不匹配为校验失败。
 
-> **状态保护**：标记"是"的 op 在目标账户存在活跃会话（登录中/已登录/断线重连中）时拒绝，仅 `Idle` 允许；拒绝走总则 §8 四件套（回滚 + 日志 + NOTIFY_UI 错误弹窗 + 回 `RTN_TD_CONFIG` 旧值）。
+> **状态保护**：标记"是"的 op（`UpdateAccount`）在目标账户存在活跃会话（登录中/已登录/断线重连中）时拒绝，仅 `Idle` 允许（连接参数不可热改）；`RemoveAccount` 不受状态保护，删除时销毁会话并推 Offline。拒绝走总则 §8 四件套（回滚 + 日志 + NOTIFY_UI 错误弹窗 + 回 `RTN_TD_CONFIG` 旧值）。
 
 ### 2.2 账户配置（通用层）
 
