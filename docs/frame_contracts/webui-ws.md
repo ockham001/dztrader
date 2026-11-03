@@ -17,7 +17,7 @@
 - **凭证有效性随口令变化失效**（契约 rest §1「会话吊销」）：除验签 + `exp` 外，JWT 的 `ver` claim 必须等于该用户当前的 `token_version`；不等（改密 / 管理员重置 / 被禁用）或该用户 `must_change_password=1` 时一律按鉴权失败处理（回 `auth failed` 并断开）。已建立的连接不逐帧复核，由服务端在吊销时主动 `shutdown`（契约 rest §2.2 的重置/禁用路径）。
 - 建连成功：服务端立即推送**全量镜像快照** `snapshot`（连接/重连的初始基线），随后定向推送一次交易数据补发 td_recent（§2.5），之后以增量消息更新。
 - 心跳：客户端每 30s 发 `{"type":"ping"}`，服务端回 `{"type":"pong"}`（无载荷）。服务端不因心跳缺失而踢连接。
-- 多客户端：同用户可多连接；领域消息对所有已连接客户端广播；`snapshot`、td_recent、`default_password_warning`、`*_ack`、`error`/`log_line`/`log_tail_unsubscribed`/`pong` 不广播（按连接/定向发送）；`data_changed` 对所有客户端广播。
+- 多客户端：同用户可多连接；领域消息对所有已连接客户端广播；`snapshot`/td_recent/`default_password_warning`/`*_ack`/`error`/`log_line`/`log_tail_unsubscribed`/`pong` 不广播（按连接/定向发送）；`data_changed` 对所有客户端广播。
 - 服务端**不仲裁并发请求**：多个客户端发出的请求按到达顺序由 dzweb 串行写帧，由目标进程串行应用（总则 §7）。
 
 ### 信封格式
