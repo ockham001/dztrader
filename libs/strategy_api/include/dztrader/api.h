@@ -106,8 +106,8 @@ DZ_API void dz_wait(DzContext* ctx);
  *   - 用户帧（本策略 TD 回报、定向本策略的 UI_INPUT、SHUTDOWN）直接返回，零计时器开销
  *     （断档触发帧除外：在回补行之后返回，见上条）；
  *     ORDER_REPORT/TRADE_REPORT 按 payload strategy_id == 本策略裸名定向
- *     （空/保留策略标识 `DZ_STRATEGY_ID_*`/他策略拦截，见《帧契约：策略》「策略 SDK
- * 事件拦截总则」）； POSITION_INFO/TRADING_ACCOUNT 不按策略过滤、全量放行，但先过账户级 ingest 过滤
+ *     （空/保留策略标识/他策略拦截，见《帧契约：策略》「策略 SDK 事件拦截总则」）；
+ *     POSITION_INFO/TRADING_ACCOUNT 不按策略过滤、全量放行，但先过账户级 ingest 过滤
  *     （seq ≤ 水位/重复成交不回传，断档由回补补齐）；UI_INPUT/SHUTDOWN 按 instance_id 定向；
  *     UI 域 TD 帧（风控拒绝/出入金/改密）由 SDK 直接丢弃，不返回策略用户；
  *   - 通道无用户帧时（通道空或 32 上限让位）触发到期定时器并返回定时器帧；
