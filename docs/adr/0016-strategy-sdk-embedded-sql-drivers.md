@@ -6,6 +6,8 @@ Accepted（2026-10-01）
 
 Superseded by [ADR 0020: 策略 SDK 交付形态与公开面](0020-strategy-sdk-dynamic-delivery-and-public-surface.md) —「策略二进制单文件分发」前提仅继续适用于静态 SDK 的内部用法；对外交付路径改由 ADR 0020 定义。
 
+> 交易数据后端部分被 [ADR 0041](0041-sqlite-only-trade-store-schema-v1.md) 取代：交易数据固定本地 SQLite（`db/trade.db`），MySQL / 可切换后端仅作为 SDK 内嵌能力保留给未来行情数据（[ADR 0044](0044-strategy-sdk-db-layer-privatized.md)）。
+
 ## Context
 
 - ADR 0015 定下端口-适配器接口（`db::Database`/`Session`/`Row`/`Filter`，`Database::open(config, schemas)`

@@ -4,6 +4,8 @@
 
 Accepted（2026-09-15）
 
+> 交易数据存储部分被 [ADR 0041](0041-sqlite-only-trade-store-schema-v1.md) 取代：交易库改为 `db/trade.db` 多日表 schema v1，取消 MySQL / 可切换后端路线；「统一单库、tdstore 为 schema 真相源」结论保留。
+
 ## Context
 
 td 持久化现状：
