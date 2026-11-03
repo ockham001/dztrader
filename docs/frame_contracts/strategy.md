@@ -85,11 +85,11 @@
 
 ## 策略 SDK 事件拦截总则（dz_next_event）
 
-**处理优先级**：回补帧 > 延迟触发帧 > 用户帧 > 定时器帧 > 内部帧。断档回补帧（SDK 从 td 库补取后经 replay 缓冲前置派发）先于任何实时帧返回，交付序 = 回补行 → 触发帧 → 暂存帧（见《帧契约：td-data-sync》"回补交付序"）；其余用户帧（TD 回报/用户输入/SHUTDOWN）直接返回、零计时器开销；通道无用户帧时（通道空或 32 上限让位）触发到期定时器并返回定时器帧；内部帧在扫描用户帧时顺带消费（轻量处理，预加载重活由随机延迟定时器承担）。
+**处理优先级**：回补帧 > 延迟触发帧 > 用户帧 > 定时器帧 > 内部帧。断档回补帧（SDK 从交易库补取后经 replay 缓冲前置派发）先于任何实时帧返回，交付序 = 回补行 → 触发帧 → 暂存帧（见《帧契约：TD 数据同步》"回补交付序"）；其余用户帧（TD 回报/用户输入/SHUTDOWN）直接返回、零计时器开销；通道无用户帧时（通道空或 32 上限让位）触发到期定时器并返回定时器帧；内部帧在扫描用户帧时顺带消费（轻量处理，预加载重活由随机延迟定时器承担）。
 
 **白名单（返回给策略用户）**：
 
-- `ORDER_REPORT`(DZ_FRAME_ORDER_REPORT)/`TRADE_REPORT`(DZ_FRAME_TRADE_REPORT)：按 payload `strategy_id` 定向——仅 `strategy_id` == 本策略裸名的帧放行；`strategy_id` 为空（外部单/手工单，非任何策略所下）与其他策略的回报一律拦截丢弃（td 网关按下单 `DzOrderReq.strategy_id` 回填，见契约 td-order）
+- `ORDER_REPORT`(DZ_FRAME_ORDER_REPORT)/`TRADE_REPORT`(DZ_FRAME_TRADE_REPORT)：按 payload `strategy_id` 定向——仅 `strategy_id` == 本策略裸名的帧放行；其他策略的回报、**保留策略标识**（`/external` 外部单、`/manual` 手工单、`/sync` 同步单，非任何策略所下）与空 `strategy_id` 一律拦截丢弃（td 网关按下单 `DzOrderReq.strategy_id` 回填，见契约 td-order）。保留策略标识不参与策略过滤、不投递给任何策略，也不作为策略身份出现在 SDK/UI 的策略维度
 - `POSITION_INFO`/`TRADING_ACCOUNT`：不按策略过滤，全量透传；引擎分发给策略 `on_position_info`/`on_trading_account` 回调（TD 网关查询链路已落地：登录完成协议在 Ready 前发起持仓/资金查询，响应经 SDK ingest seq 过滤后推送，见下"SDK ingest 过滤职责"）；盘中成交/活动平仓挂单变化触发的增量 `POSITION_INFO` 同样经 ingest seq 过滤推送（绝对态）
 - `ACCOUNT_STATUS`(DZ_FRAME_ACCOUNT_STATUS)：同上不按策略过滤，全量透传（payload 无 `strategy_id`，账户级广播帧）；SDK 引擎分发 `on_account_status` 回调（帧语义见《帧契约：账户登录状态》）
 - `UI_INPUT`（定向本策略）：SDK 按 `instance_id` == 裸策略名过滤
@@ -102,7 +102,7 @@
 - `UPDATE_SHM_EVENT_SUBSCRIBER`：SDK 内部 `refresh_subscribers()`
 - `NOTIFY_MD_STARTED`（本策略行情源）：SDK 自动补订阅期望集合
 - `NOTIFY_MD_STOPPED`：非策略可见，SDK 直接丢弃（reader 保持打开，重启后自动补订阅，契约 md-subscription）
-- 非本策略/空 `strategy_id` 的 `ORDER_REPORT`/`TRADE_REPORT`；非本策略 `instance_id` 的 `UI_INPUT`/`SHUTDOWN`
+- 非本策略 / 保留策略标识 / 空 `strategy_id` 的 `ORDER_REPORT`/`TRADE_REPORT`；非本策略 `instance_id` 的 `UI_INPUT`/`SHUTDOWN`
 - UI 域 TD 帧（`TD_RISK_REJECT`/`TD_TRANSFER_*`/`TD_PASSWORD_UPDATE_*`）：非策略可见，SDK 直接丢弃（契约 td-risk-reject / td-account-ops；风控拒单信息由拒单终态 `ORDER_REPORT` 提供）
 - 其余平台帧（日志/SHM 配置、进程控制、md 控制、TD 控制帧、`OUTPUT_UI`/`SET_LOGICAL_POSITION` 他策略回声等）：丢弃（`TD_QUERY_ACCOUNT_STATUS` 是 SDK 写端帧——由 `dz_query_account_status` 发出，非读端白名单成员）
 
@@ -110,10 +110,10 @@
 
 SDK 在 `dz_next_event` 派发 DZ_FRAME_ORDER_REPORT–DZ_FRAME_TRADING_ACCOUNT 帧时先经账户级 ingest 过滤，再返回策略用户：
 
-- **seq 过滤（先于 strategy_id 过滤）**：对每个账户维护水位 W（启动时查 TD 库 `MAX(seq)` 得，真相源 `struct.h` 四 payload 末尾 `seq` 字段，语义见 ADR 0007）。`seq ≤ W` 的帧（快照已含）拦截、不返回策略用户；`seq > W` 放行并推进该账户水位。**过滤次序固定：seq 过滤先于 strategy_id 过滤**——seq 是"该账户本条是否已同步"的全局判定，strategy_id 是"本策略是否定向该条"的定向判定，两者正交
-- **断档回补**：启动竞态窗口（在途帧写在 reader 开启前、落库在快照查询后）使首帧 `seq > W+1` 时，SDK 查 TD 库补回缺失区间，按 seq 序归并后派发
-- **成交去重**：按 `(account_id, trading_day, trade_id)` 二次防线去重（td 过滤器为第一道），交易日切换清理
-- **seq 倒退重置**：发现 `seq` 低于该账户已应用水位（数据被重置，非新的一天）时，清空该账户 ingest 状态、重查 TD 库设新水位后继续
+- **seq 过滤（先于 strategy_id 过滤）**：对每个账户维护水位 W（启动时查交易库四表 `MAX(seq)` 聚合得，**单只读事务**保证原子性；真相源 `struct.h` 四 payload 末尾 `seq` 字段，语义见 ADR 0007）。`seq ≤ W` 的帧（快照已含）拦截、不返回策略用户；`seq > W` 放行并推进该账户水位。**过滤次序固定：seq 过滤先于 strategy_id 过滤**——seq 是"该账户本条是否已同步"的全局判定，strategy_id 是"本策略是否定向该条"的定向判定，两者正交。**水位与回补只有 SDK ingest 一个消费方**：dzweb 不维护水位、不做回补，记录由 REST 直查交易库、帧仅转发（见《帧契约：TD 数据同步》§8）
+- **断档回补**：启动竞态窗口（在途帧写在 reader 开启前、落库在快照查询后）使首帧 `seq > W+1` 时，SDK 查交易库补回缺失区间，按 seq 序归并后派发
+- **成交去重**：按 `(account_id, date, exchange_id, trade_id)` 二次防线去重（td 过滤器为第一道；`trade_id` 仅交易所内唯一，`exchange_id` 入键防多交易所同号丢成交），交易日切换清理
+- **seq 倒退重置**：发现 `seq` 低于该账户已应用水位（数据被重置，非新的一天）时，清空该账户 ingest 状态、重查交易库设新水位后继续
 
 **对策略透明**：W 快照、断档回补、成交去重、seq 倒退重置全部在 SDK ingest 层完成，策略回调语义在正常路径不受影响——`on_trade_report` 语义 = **每笔成交恰好一次**。**例外**：断档回补重试耗尽或回补缓冲溢出时按《帧契约：TD 数据同步》§5（消费端衔接）的"崩溃丢失"语义放行触发帧，缺失区间不再补齐。
 

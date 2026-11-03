@@ -21,7 +21,9 @@
 | [webui-ws](webui-ws.md) | WebSocket 协议 | frontend ↔ dzweb 的 WS 信封、消息全集、前端行为义务 | `apps/webui/ws_controller.*` |
 | [rest](rest.md) | REST API | frontend ↔ dzweb 的 REST 端点与帧联动 | `apps/webui/*_controller.h` |
 | [td-order](td-order.md) | 交易委托请求 | `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ` | `libs/core/.../core_struct.h` |
-| [td-data-sync](td-data-sync.md) | TD 数据同步 | `ORDER_REPORT`/`TRADE_REPORT`/`POSITION_INFO`/`TRADING_ACCOUNT`（账户级 seq 水位/回补/重置/登录完成协议） | `libs/strategy_api/include/dztrader/struct.h` |
+| [td-data-sync](td-data-sync.md) | TD 数据同步 | `ORDER_REPORT`/`TRADE_REPORT`/`POSITION_INFO`/`TRADING_ACCOUNT`（账户级 seq/登录日装载/回补/重置/登录完成协议；dzweb 不保留记录镜像） | `libs/strategy_api/include/dztrader/struct.h` |
+| [td-config](td-config.md) | 交易网关配置 | `TD_REQ_MODIFY_CONFIG`/`TD_RTN_CONFIG` | `apps/ctp/td/td_config.h` |
+| [td-status](td-status.md) | 交易网关状态 | `TD_RTN_STATUS` | `apps/ctp/td/td_state.h` |
 | [td-account-ops](td-account-ops.md) | 出入金与改密 | `TD_TRANSFER_REQ`/`TD_TRANSFER_RSP`/`TD_TRANSFER_RTN`、`TD_PASSWORD_UPDATE_REQ`/`TD_PASSWORD_UPDATE_RSP` | `libs/platform/.../td_account_ops.h` |
 | [td-risk-reject](td-risk-reject.md) | 风控拒绝通知 | `TD_RISK_REJECT` | `libs/platform/.../risk_reject.h` |
 | [instrument](instrument.md) | 合约信息 | （无帧，DB 查询） | `libs/tdstore/.../records.h` |
@@ -44,7 +46,7 @@
 
 - 本目录覆盖事件通道的低频控制/配置/通知帧。
 - 策略帧契约已收录（见 [strategy](strategy.md)）；`OUTPUT_UI`/`SET_LOGICAL_POSITION` 的 dzweb 消费与 WS/REST 映射未接线（契约定义语义，实现滞后由 general §11.3 checklist 跟踪）。
-- **未覆盖**（后续独立契约）：交易帧（除契约 td-order 已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ`、契约 account-status 已覆盖的 `ACCOUNT_STATUS`/`TD_QUERY_ACCOUNT_STATUS`、契约 td-data-sync 已覆盖的 TD 推送 DZ_FRAME_ORDER_REPORT-DZ_FRAME_TRADING_ACCOUNT、契约 td-risk-reject 已覆盖的 `DZ_FRAME_TD_RISK_REJECT`、契约 td-account-ops 已覆盖的出入金与改密五帧外，其余 DZ_FRAME_TD_REQ_MODIFY_CONFIG-DZ_FRAME_NOTIFY_TD_DISCONNECTED 交易控制帧）、行情/交易数据帧（`TICK`）、`SYS_SCHED`（帧已移除，见 general §10）。
+- **未覆盖**（后续独立契约）：交易帧的其余部分——连接控制 `DZ_FRAME_TD_CONNECT`/`DZ_FRAME_TD_DISCONNECT` 与生命周期通知 `DZ_FRAME_NOTIFY_TD_STARTED`/`DZ_FRAME_NOTIFY_TD_STOPPED`/`DZ_FRAME_NOTIFY_TD_CONNECTED`/`DZ_FRAME_NOTIFY_TD_DISCONNECTED`（其余交易帧均已收录：委托见 td-order、账户登录状态见 account-status、TD 推送见 td-data-sync、配置见 td-config、状态见 td-status、风控拒绝见 td-risk-reject、出入金与改密见 td-account-ops）；行情/交易数据帧（`TICK`）、`SYS_SCHED`（帧已移除，见 general §10）。
 
 ## 变更流程
 

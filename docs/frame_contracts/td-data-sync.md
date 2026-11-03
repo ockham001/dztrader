@@ -1,99 +1,121 @@
 # 帧契约：TD 数据同步
 
-本文件覆盖 `DZ_FRAME_ORDER_REPORT`(DZ_FRAME_ORDER_REPORT)、`DZ_FRAME_TRADE_REPORT`(DZ_FRAME_TRADE_REPORT)、`DZ_FRAME_POSITION_INFO`(DZ_FRAME_POSITION_INFO)、`DZ_FRAME_TRADING_ACCOUNT`(DZ_FRAME_TRADING_ACCOUNT) 四个交易推送帧，及其账户级 `seq` 水位同步机制（衔接 DB 查询快照与 SHM 实时推送两条数据通路）。总则见《帧契约：通用规则》。
+本文件覆盖 `DZ_FRAME_ORDER_REPORT`、`DZ_FRAME_TRADE_REPORT`、`DZ_FRAME_POSITION_INFO`、`DZ_FRAME_TRADING_ACCOUNT` 四个交易推送帧，及其账户级 `seq` 同步机制（衔接交易库查询快照与 SHM 实时推送两条数据通路）。总则见《帧契约：通用规则》；语义依据见 ADR 0041（交易库 schema v1）与 ADR 0045（快照生命周期与准确性边界）。
 
 **覆盖帧**：
 
 | 帧 | payload | 性质 |
 |------|--------|------|
-| `ORDER_REPORT` | `DzOrderReport` | 追加流（委托） |
+| `ORDER_REPORT` | `DzOrderReport` | 追加流（委托；含成交均价派生字段） |
 | `TRADE_REPORT` | `DzTradeReport` | 追加流（成交） |
 | `POSITION_INFO` | `DzPositionInfo` | 绝对态（持仓） |
 | `TRADING_ACCOUNT` | `DzTradingAccount` | 绝对态（资金） |
 
-四 payload 末尾均带 `uint64_t seq`（**账户级状态变更序号：账户内全类型共享、跨日累积单调**；字段表不重复，类型层真相源 `libs/strategy_api/include/dztrader/struct.h`，语义见 ADR 0007）。相关请求帧 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ` 见《帧契约：交易委托请求》；登录状态帧 `ACCOUNT_STATUS`(DZ_FRAME_ACCOUNT_STATUS) 见《帧契约：账户登录状态》；策略 SDK 消费侧见《帧契约：策略》"SDK ingest 过滤职责"。
+四 payload 末尾均带 `uint64_t seq`（**账户级状态变更序号：账户内全类型共享、跨日累积单调**；字段表不重复，类型层真相源 `libs/strategy_api/include/dztrader/struct.h`，语义见 ADR 0007）。相关请求帧见《帧契约：交易委托请求》；登录状态帧见《帧契约：账户登录状态》；策略 SDK 消费侧见《帧契约：策略》；dzweb 的 REST/WS 出口见契约 rest 与 webui-ws。
 
-**语义**：td 推送账户内状态变更（追加流）与持仓/资金绝对态（登录查询快照 + 盘中持仓增量），消费端（策略 SDK ingest、dzweb TdDataService）以每账户水位 W 过滤/回补/去重/倒退重置，把两条数据通路衔接成"不丢数据、可延迟"的完整当日状态。
+**语义**：td 推送账户内状态变更（追加流）与持仓/资金绝对态（登录查询快照 + 盘中增量）。**交易库（`trade.db`）落库全量并按交易日累积；td 内存只保留当前交易日**（订单最新态 / 成交去重键 / 每单成交累计 / OrderRef 映射 / 当前持仓与资金），历史只在库中。策略 SDK ingest 是 `seq` 水位的**唯一**消费方（把两条数据通路衔接成"不丢数据、可延迟"的完整当日状态）；dzweb 不维护记录镜像与水位，只保留在线账户集合、统计计数器、WS 建连补发环与 td 配置已知状态（见 §8）。
 
-**数据流**：形态 5（总则 §4.2）——basic 广播帧（仅 `DzFrameHeader`，无 `instance_id`，身份在 payload `account_id`）；写端 = td 网关（权威）；读端 = 策略 SDK（经 ingest 过滤 → 回调）与 dzweb（TdDataService 建镜像）；无前端入口、无 RTN；master 不消费（drain 透传）。
+**数据流**：形态 5（总则 §4.2）——basic 广播帧（仅 `DzFrameHeader`，无 `instance_id`，身份在 payload `account_id`）；写端 = td 网关（权威）；读端 = 策略 SDK（经 ingest 过滤 → 回调）与 dzweb（在线账户集合 / 统计计数 / WS 事件转发；记录不落镜像）；无前端入口、无 RTN；master 不消费（drain 透传）。
 
-**时序（触发场景）**：实时回报（下单结果/成交，含本地拒单）；**盘中持仓增量**（成交/活动平仓挂单变化触发的 DZ_FRAME_POSITION_INFO 写端）；登录 CTP 重放（过滤器吞同后转发差异）；登录完成协议的持仓/资金查询响应（DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 写端）与最后一条重推；**Ready 后的周期持仓重查**（`qry_position_interval_s`，默认 60s，漂移自愈，有差异才推）；不响应 `QUERY_FULL_SNAPSHOT`（快照走 DB 查询，本帧为增量/推送）。
+**时序（触发场景）**：实时回报（下单结果/成交，含本地拒单与无会话拒单）；盘中持仓增量（成交/活动挂单冻结变化触发的 `POSITION_INFO` 写端）；登录 CTP 重放（过滤器吞同后转发差异）；登录完成协议的持仓/资金查询响应与最后一条重推；Ready 后的周期持仓重查（`qry_position_interval_s`，默认 60s，漂移自愈，有差异才推）；会话交易日变化时强制重推一次 `ACCOUNT_STATUS`（日切，见 §3）；不响应 `QUERY_FULL_SNAPSHOT`（快照走库查询，本帧为增量/推送）。
+
+**实现注记**：契约先行——`ORDER_REPORT` 新增成交均价字段、登录日装载、持仓原子重建、dzweb 记录镜像删除等目标语义由后续实现票落地；契约定稿后实现与契约冲突以契约为准。REST/WS 的记录字段形状由契约 rest 与 webui-ws 定义（本契约只定义语义，不重复 schema）。
 
 ---
 
 ## 1. seq 语义
 
 - **账户级**（非进程级）：帧自带 `account_id` 天然过滤；故障隔离（单账户数据重置不拖累他账户）；多账户拆进程原样带走。
-- **跨日累积不归零**（uint64 用不完）：零日界逻辑（夜盘归属次日的交易日切换点模糊，按天重置无法定义"何时归零"）；消费者无需与 td 同步重置水位；**倒退检测语义唯一：低 seq = 数据被重置（而非新的一天）**。
+- **跨日累积不归零**（uint64 用不完）：无日界逻辑（夜盘归属次日的交易日切换点模糊，按天重置无法定义"何时归零"）；消费者无需与 td 同步重置水位；**倒退检测语义唯一：低 seq = 数据被重置（而非新的一天）**。
 - **全类型共享一个计数器**（委托/成交/持仓/资金同取号）：persist 队列跨类型 FIFO ⇒ 前缀不变量跨类型成立；每账户一个 W；一次回补覆盖全部类型。
-- **seq 语义 = 状态变更序号**：被重放过滤器判定"与基准相同"的记录不推不落、不分配 seq（见下）。
-- 同一事件 shm 帧与 DB 行带同一 seq；账户 ID 全局唯一（多网关账户不撞名，运维约定，见"边界与窗口"）。
+- **seq 语义 = 状态变更序号**：被重放过滤器判定"与基准相同"的记录不推不落、不分配 seq（见 §3）。
+- 同一事件 shm 帧与 DB 行带同一 seq；`seq` 同时作为增量备份水位（ADR 0041）。
+- **账户 ID 全局唯一**（跨全部接口类型，如 CTP / XTP 不冲突）：由配置入口与 dzweb 校验保证（ADR 0045），`gateway` 只是写入来源审计列，不进唯一键、不参与查询过滤。
 
 ## 2. 不变量清单（安全性论证基础）
 
 1. **单写者按序分配**：td 主线程按序分配 seq（事件经单一事件队列派发到主线程，无并发）；同一事件两路（shm 帧 + DB 行）同值。
 2. **前缀不变量**：persist 队列 FIFO + 单 Writer 线程 + **吞同不分配** ⇒ DB 已提交集合恒为已分配 seq 的前缀。
 3. **shm 帧序 = seq 序**：分配与写帧同线程同序。
-4. **消费者铁律**：跳过判断只准用 **DB 查得的水位 W**，永不使用内存见过的最大 seq（防 td 崩溃重启 seq 复用误丢新事件）。
+4. **消费者铁律**：跳过判断只准用 **DB 查得的水位 W**，永不使用内存见过的最大 seq（防 td 崩溃重启 seq 复用误丢新事件）。该铁律适用于 SDK ingest；dzweb 不维护水位（见 §8）。
 
-## 3. 生产端：重放过滤与 seq 分配（td）
+## 3. 生产端：登录日装载、重放过滤与 seq 分配（td）
 
-基准 = **内存轻量镜像**（账户 connect 时从 DB 装载该账户全部订单最新态 + 全部 trade_id 集合，**不按交易日过滤**——connect 时交易日尚未知，且 CTP 重放在登录成功后立即到达，基准必须先于首条重放就绪；量级数百条可接受），热路径**不查数据库**（db 归 Writer 线程独占；库后端由 `db::resolve_config` 决定，默认 SQLite —— 策略读端已接，本轮写端仍为 SQLite，MySQL 侧语义与准入见 ADR 0016）。镜像在主线程**即时**更新（不等落库），否则 burst 内下一条回报拿旧基准误判。
+**基准 = 登录日装载 + 内存轻量镜像**（ADR 0045）：每次登录成功（含盘中重连、删户重加、盘中换柜台）后、处理首条重放回报前，从交易库装载**当前交易日**：
 
-- 委托：与基准对比 `{update_time, volume_traded, volume_canceled, status}`——集合完全相等 → 忽略（不推/不落/不分配 seq）；不相等 → 防御检查 update_time 回退（异常旧数据则吞并告警），否则更新镜像 + 分配 seq + 推 shm + 落库
-- 成交：`(account_id, trading_day, trade_id)` 存在性 → 已存在忽略；不存在转发
-- 持仓：绝对态混合模型（查询基准 + 盘中成交/挂单增量，见下）；资金：查询响应绝对态，与基准有差异即转发（幂等覆盖）
+- 订单最新态（重放匹配基准：`ext` 中的 `order_ref` / OrderSysID → 既有 `order_id`；均价的每单成交累计由当日成交重建）；
+- 成交去重键集合 `(exchange_id, trade_id)`；
+- **不做增量水位装载**；**删除全史预扫**（历史委托/成交不装载）。
+
+内存只保留**当日**订单最新态 / 成交去重键 / 每单成交累计 / OrderRef 映射 / 当前持仓与资金；历史只在交易库。登录频率低、当日行量级小，同步装载可消除重放与装载的竞态。热路径**不查数据库**（DB 归 persist Writer 线程与只读查询方独占）；交易库固定本地 SQLite（ADR 0041），无后端切换。镜像在主线程**即时**更新（不等落库），否则 burst 内下一条回报拿旧基准误判。
+
+- **委托**：与基准对比业务字段（`status`/`volume_traded`）与柜台去重所需内部字段（CTP：`ext` 中的 `update_time`/`volume_canceled`）——集合完全相等 → 忽略（不推/不落/不分配 seq）；不相等 → 防御检查内部时间字段回退（异常旧数据则吞并告警），否则更新镜像 + 分配 seq + 推 shm + 落库。
+- **成交**：`(account_id, date, exchange_id, trade_id)` 存在性 → 已存在忽略；不存在转发 + 落库。`trade_id` 仅交易所内唯一，`exchange_id` 入键消除多交易所同号丢成交。
+- **成交均价（`ORDER_REPORT` 派生字段 avg_price）**：柜台不直接提供（CTP 订单回报无均价），由 td 从成交回报实时累计 `Σ价×量 / Σ量`；每笔成交到达且均价变化时，刷新该订单记录（**新 seq**，与订单行同 seq）并推 `ORDER_REPORT`，不依赖柜台回调顺序；**无成交时帧/DB 值为 0，REST/WS JSON 为 `null`**（序列化与显示精度是视图层语义，ADR 0043）。重启后由登录日装载的当日成交按 `order_id` 聚合重建。DB/帧保留 double 全精度。该字段使 `ORDER_REPORT` **布局变化**——公开面不变量测试（帧大小/字段）须同步更新。
 - **持仓写端（`POSITION_INFO`）为混合模型**：聚合查询（`ReqQryInvestorPosition`）建权威基准；成交回报按 vnpy 语义增量维护今昨/量/均价；活动平仓挂单（含外部单）本地推导冻结（今仓优先、溢出到昨）；日切 today→yd、清挂单冻结。
-  - 任一业务字段（volume/today/yd/frozen/price）变化才取 seq 推 `POSITION_INFO` + `Kind::Position` 单行 upsert（同 seq）；未变化不推不落。
-  - 登录/补查的**首个成功查询**强制 `PositionRebuild`（删该账户全部持仓行 + 重灌全组，未变化行沿用既有 seq）；已就绪后的查询（含补查重入与周期查询）仅在存在差异/消失时重灌。
-  - **查询不含冻结字段**（仅量/今昨/成本），冻结始终由本地活动挂单维护；消失 side 发 volume=0 零帧（只推帧不落库，行由重灌 DELETE 兜底）。
+  - **写入只有两条路径**：(a) **完整成功查询**（`is_last` 且无错）→ 单事务"删除该账户当日行 + 写入查询快照"整组原子替换；已就绪后的周期查询仅在有差异/消失时整组重建；(b) **日内增量**（本系统成交、活动挂单冻结、日切推导）→ 单行 upsert（含 `volume=0`）。
+  - 查询失败不改表；**登录不清零、不预置 0**——首个完整成功查询之前保留上次已知快照（含跨会话、删户重加、换柜台），读者只会看到旧快照或新快照，没有中间态。
+  - 资金行只在持仓查询成功后写入（登录收尾链 持仓 → 资金；失败补查链同序），保证锚点日推进到当日时持仓行集已一致。锚点日 = 该账户四表 `MAX(date)`。
+  - **重建只碰当日行，历史交易日行不可变**；删除账户不删数据。
+  - 任一业务字段（volume/today/yd/frozen/price）变化才取 seq 推 `POSITION_INFO` + 单行 upsert（同 seq）；未变化不推不落。
+  - **查询不含冻结字段**（仅量/今昨/成本），冻结始终由本地活动挂单维护。
+  - **消失 side 发 volume=0 零帧**（绝对态语义下消费端按键覆盖自然清零），与重灌组同 seq 单调取号；查询响应不含的合约由原子替换移除，不产生幽灵持仓。
   - 登录缓冲重放阶段（kReplay）只应用委托状态（冻结），跳过成交增量，避免与查询快照双重计数；查询失败降级期（基准未建立）不应用任何持仓增量，首个成功查询统一重建。
   - 周期查询失败与登录收尾链解耦：仅记日志、等下一轮，不推进 finalize、不触发资金查询。
-- **主判据"不相等即转发"而非"严格新于"**：CTP 私有流本身正序，重放逐条对比+转发天然补发正序中间态、最终收敛最新态；recency 只作防御（update_time 回退 = 异常数据，吞 + 告警）——以"严格新于"为主判据会误吞同一秒内 status 翻转（volume_traded/update_time 均不变的部分成交后撤单拒绝）
-- **对比仅业务字段，排除时间戳噪声**（CTP 重放 UpdateTime 空值/精度不稳定，参与对比会误判差异引发全量重推）
-- **命中时回填 `order_ref_map_`**（td 重启后内存表为空，老本地单防误判外部单、错配 order_id）
-- **CTP 重放模式无关**（RESTART/RESUME/QUICK 均适配）；**保留 `THOST_TERT_RESTART`**（重放是差异来源，换 QUICK 使 td 停机期间变化永久丢失）
-- 收益：重放风暴期 DB 写入量 = 实际变化量；消除"每次重登全天重推、策略成交重复计数"隐患
+- **主判据"不相等即转发"而非"严格新于"**：CTP 私有流本身正序，重放逐条对比+转发天然补发正序中间态、最终收敛最新态；recency 只作防御（内部时间字段回退 = 异常数据，吞 + 告警）——以"严格新于"为主判据会误吞同一秒内 status 翻转（volume_traded/update_time 均不变的部分成交后撤单拒绝）。
+- **对比排除时间戳噪声**（CTP 重放 UpdateTime 空值/精度不稳定，参与对比会误判差异引发全量重推）。
+- **命中时回填 `order_ref_map_`**（td 重启后内存表为空，老本地单防误判外部单、错配 order_id）。
+- **CTP 重放模式无关**（RESTART/RESUME/QUICK 均适配）；**保留 `THOST_TERT_RESTART`**（重放是差异来源，换 QUICK 使 td 停机期间变化永久丢失）。
+- **无会话拒单**（#13 修复）：无会话拒单也必须分配账户级 seq 并落库/推帧，否则委托列表与统计缺行。
+- 收益：重放风暴期 DB 写入量 = 实际变化量；消除"每次重登全天重推、策略成交重复计数"隐患。
+
+### 日切
+
+会话交易日变化时：持仓 today→yd、清挂单冻结；**td 强制重推一次 `ACCOUNT_STATUS`**（绕过三态去重，见《帧契约：账户登录状态》），使 dzweb 感知日切并广播 `data_changed`（`scope="td"`）让前端清空重拉（契约 webui-ws）。`seq` 累积无日界；`positions` / `trading_accounts` 重建只碰当日行；委托/成交按新 `date` 继续追加。
 
 ## 4. 登录完成协议（确定性同步点）
 
 ```
-登录 → CTP 重放(过滤器吞同) → 持仓/资金查询 → persist 提交
+登录 → CTP 重放(过滤器吞同) → 持仓/资金查询 → persist flush
      → 广播 login-success（`ACCOUNT_STATUS` Ready）
      → 重推各追加流最后一条（原 seq 重发）
 ```
 
-- **查询链路**：Ready 前发起 `ReqQryInvestorPosition`/`ReqQryTradingAccount`（CTP 流控 1 次/秒，**串行间隔发起**；登录不在热路径，耗时秒级可接受）。查询失败**不永久放弃**：先转 Ready（不阻塞交易），由定时调度补查直至成功——否则 positions/trading_accounts 表缺口无帧可补（无变化即无帧），快照永久缺项
-- **flush 屏障**：登录路径 persist **排空后才广播 Ready**（`PersistWriter` 同步排空：等待队列空且末批已提交，带超时兜底）——Ready 附加"**DB 已稳定**"语义（持久化完成是 Ready 广播的前提，见《帧契约：账户登录状态》`ACCOUNT_STATUS` Ready 语义）
-- **最后一条重推带原 seq**（同一事实重投）：已同步消费者被 `seq ≤ last_applied` 过滤；未同步者拿它当触发器。真正角色 = **保证到达的触发帧**——重放全被吞、行情再安静，登录后必有一帧带 seq 到来，把"断档挂到开盘"收成"登录完成即自愈"
-- "最后一条"只对委托/成交（追加流）有意义；持仓为多记录绝对态（登录查询推送基准 + 盘中变化增量），资金由查询响应推送覆盖（`POSITION_INFO`/`TRADING_ACCOUNT` 写端）
-- 重推为**直接写帧**（不经过滤器、不落库——DB 已含该记录），从内存基准镜像取当日最后一条；无记录则不推（也无断档可能）
+- **登录日装载先于首条重放**：见 §3（装载失败按登录失败路径处理，重试登录）。
+- **查询链路**：Ready 前发起 `ReqQryInvestorPosition`/`ReqQryTradingAccount`（CTP 流控 1 次/秒，**串行间隔发起**；登录不在热路径，耗时秒级可接受）。查询失败**不永久放弃**：先转 Ready（不阻塞交易），由定时调度补查直至成功——否则 positions/trading_accounts 表缺口无帧可补（无变化即无帧），快照永久缺项。
+- **flush 屏障**：登录路径 persist 排空后才广播 Ready（等待队列空且末批已提交），**超时 5s 兜底**：超时仍照常广播 Ready 并记 ERROR（ADR 0042）。因此 **Ready 的语义是"登录完成、可交易"，不再承诺"DB 已稳定"**；持久化失败由独立的分级 ERROR 通知表达（首次 / 持续每 5 分钟最多一次 / 恢复一次），且**不阻塞交易、帧推送与 WS**。
+- **最后一条重推带原 seq**（同一事实重投）：已同步消费者被 `seq ≤ last_applied` 过滤；未同步者拿它当触发器。真正角色 = **保证到达的触发帧**——重放全被吞、行情再安静，登录后必有一帧带 seq 到来，把"断档挂到开盘"收成"登录完成即自愈"。
+- "最后一条"只对委托/成交（追加流）有意义；持仓为多记录绝对态（登录查询推送基准 + 盘中变化增量），资金由查询响应推送覆盖（`POSITION_INFO`/`TRADING_ACCOUNT` 写端）。
+- 重推为**直接写帧**（不经过滤器、不落库——DB 已含该记录），从内存基准镜像取当日最后一条；无记录则不推（也无断档可能）。
 
-## 5. 消费端衔接（SDK ingest + dzweb TdDataService）
+## 5. 消费端衔接（SDK ingest）
 
-**W 水位过滤**：启动开 reader（从最新写位置起，历史帧不重放）→ 查 DB 每账户 W = `MAX(seq)`（不带日过滤，与累积计数器对齐）→ 帧 `seq > W` 应用、`seq ≤ W` 跳过（快照已含）。W 与快照的原子性：四表读取**必须包进单只读事务**（BEGIN DEFERRED 快照读）——分次独立查询存在竞态：先查表 A 后写端提交 A 中 seq∈(W_A, W] 的行，再查表 B 得 W_B≥W，则该行"快照没有却被 W 判定已含"→ 静默误吞。单事务使首条 SELECT 起四表共享同一快照（SHARED 锁保持到 COMMIT），写端短暂阻塞由 busy_timeout 吸收（查询总时长 <10ms，仅启动/重建低频路径）。
+SDK ingest 是水位的唯一消费方；dzweb 不维护水位与记录镜像（§8）。
 
-**断档回补**：首帧 `seq > W+1` → 断档暴露（在途窗口：帧写在 reader 开启前、落库在快照查询后）→ 四表联查 `WHERE seq > W AND seq < S₀`（S₀ = 首帧 seq）→ 覆盖判定（四表查得总行数 ≥ 区间宽；四表共享取号器，区间内每个 seq 恰有一行落在某表）→ 通过后行数据经回补缓冲**前置 FIFO 派发**（回补行先、触发帧随后、暂存帧最后，见下"回补交付序"；每表内部 seq 序，跨表逐表入缓冲——回补消费端按帧类型独立，不要求跨表严格交错）。**行数不足覆盖**（触发帧到达 ≠ persist 已提交的在途窗口，或表查询失败）→ 拦截触发帧暂存（宁缺勿乱），每次消费调用重试查库一次（调用间隔即天然"短重试"间隔，无 sleep 不阻塞热路径）；覆盖后补发触发帧 + 回补帧；**重试耗尽（10 次）**→ 按"崩溃丢失"放行触发帧 + ERROR 日志。运行中断档不可能（单写者 + 通道 append-only ⇒ 帧序 = seq 序、读者连续），断档检测仅启动首帧一次。
+**W 水位过滤**：启动开 reader（从最新写位置起，历史帧不重放）→ 查交易库每账户 W = 四表 `MAX(seq)` 聚合（**不带日过滤**，与累积计数器对齐）→ 帧 `seq > W` 应用、`seq ≤ W` 跳过（快照已含）。W 与快照的原子性：四表读取**必须包进单只读事务**（BEGIN DEFERRED 快照读）——分次独立查询存在竞态：先查表 A 后写端提交 A 中 seq∈(W_A, W] 的行，再查表 B 得 W_B≥W，则该行"快照没有却被 W 判定已含"→ 静默误吞。单事务使首条 SELECT 起四表共享同一快照（SHARED 锁保持到 COMMIT），写端短暂阻塞由 busy_timeout 吸收（查询总时长 <10ms，仅启动/重建低频路径）。
 
-**回补交付序（重试期间，终检发现 B）**：gap 重试在途期间到达的**后续帧**（seq > 触发帧）不得直接放行——直接放行会让新状态帧先于回补的旧状态帧到达，同键（同 order_id）时回补旧状态覆盖新状态且无后续帧再修复。统一拦截暂存，覆盖成功后按 **seq 序**经 replay 缓冲统一派发：**回补行 → 触发帧 → 暂存帧**（回补行最小在前）。暂存上限对齐 replay 缓冲容量（512），超出丢弃 + ERROR（宁缺勿乱）；DZ_FRAME_POSITION_INFO/DZ_FRAME_TRADING_ACCOUNT 绝对态帧同样暂存（次序无关紧要但统一处理简单）。
+**断档回补**：首帧 `seq > W+1` → 断档暴露（在途窗口：帧写在 reader 开启前、落库在快照查询后）→ 四表联查 `WHERE seq > W AND seq < S₀`（S₀ = 首帧 seq）→ 覆盖判定（四表查得总行数 ≥ 区间宽；四表共享取号器，区间内每个 seq 恰有一行落在某表）→ 通过后行数据经回补缓冲**前置 FIFO 派发**（回补行先、触发帧随后、暂存帧最后）。**行数不足覆盖**（触发帧到达 ≠ persist 已提交的在途窗口，或表查询失败）→ 拦截触发帧暂存（宁缺勿乱），每次消费调用重试查库一次（调用间隔即天然"短重试"间隔，无 sleep 不阻塞热路径）；覆盖后补发触发帧 + 回补帧；**重试耗尽（10 次）**→ 按"崩溃丢失"放行触发帧 + ERROR 日志。运行中断档不可能（单写者 + 通道 append-only ⇒ 帧序 = seq 序、读者连续），断档检测仅启动首帧一次。
 
-**回补覆盖判定（终检发现 E 配套）**：追加流（orders/trades）要求行数精确覆盖区间（每 seq 恰一行）；绝对态（positions/trading_accounts，存在 PositionRebuild 删行语义）放宽为"该账户当前 `MAX(seq) ≥ gap 上界即覆盖"——缺的中间 seq 是被删的历史行，当前态已到位。SDK 与 dzweb 按此判覆盖。
+**回补交付序（重试期间，终检发现 B）**：gap 重试在途期间到达的**后续帧**（seq > 触发帧）不得直接放行——直接放行会让新状态帧先于回补的旧状态帧到达，同键（同 order_id）时回补旧状态覆盖新状态且无后续帧再修复。统一拦截暂存，覆盖成功后按 **seq 序**经 replay 缓冲统一派发：**回补行 → 触发帧 → 暂存帧**（回补行最小在前）。暂存上限对齐 replay 缓冲容量（512），超出丢弃 + ERROR（宁缺勿乱）；`DZ_FRAME_POSITION_INFO`/`DZ_FRAME_TRADING_ACCOUNT` 绝对态帧同样暂存。
 
-**成交去重**：按 `(account_id, trading_day, trade_id)` 集合**二道防线**去重（td 过滤器为第一道），交易日切换清理。
+**回补覆盖判定（终检发现 E 配套）**：追加流（orders/trades）要求行数精确覆盖区间（每 seq 恰一行）；绝对态（positions/trading_accounts，存在整组重建删行语义）放宽为"该账户当前 `MAX(seq)` ≥ gap 上界即覆盖"——缺的中间 seq 是被删除的历史行，当前态已到位。
 
-**seq 倒退重置**：发现 `seq` 低于该账户已应用水位（数据被重置，非新的一天）→ 清空该账户 ingest 状态、重查 DB 设新水位后继续。dzweb 另由 `ACCOUNT_STATUS`(DZ_FRAME_ACCOUNT_STATUS) Ready/Offline 翻转触发重建/清空（见《帧契约：账户登录状态》镜像节）。**清空必须显式**：重置后若无持仓不会再有持仓帧到达，旧镜像幽灵持仓永无人覆盖。
+**成交去重**：按 `(account_id, date, exchange_id, trade_id)` 集合**二道防线**去重（td 过滤器为第一道），交由 SDK 维护、随交易日推进清理。
 
-**消费端分布**：策略 SDK ingest（《帧契约：策略》"SDK ingest 过滤职责"：对策略透明，`on_trade_report` 语义 = **每笔成交恰好一次**）；dzweb TdDataService（同一水位/回补/去重/倒退重置，DZ_FRAME_ACCOUNT_STATUS 触发重建）。
+**seq 倒退重置**：发现 `seq` 低于该账户已应用水位（数据被重置，非新的一天）→ 清空该账户 ingest 状态、重查交易库设新水位后继续。**清空必须显式**：重置后若无持仓不会再有持仓帧到达，旧镜像幽灵持仓永无人覆盖。
 
-**dzweb 无回补腿的补齐（终检发现 E）**：dzweb 不实现 SDK 的 replay 缓冲回补，改为 ingest 在 admit 后检测 `take_pending_gap()` 非空 → 触发 `rebuild(account_id)`（等效用 DB 快照补齐缺条——绝对态/追加流一并覆盖）。注意该路径只刷新镜像 + 重设 W，**保留 last_applied**（否则后续帧 re-gap 循环重建）；DZ_FRAME_ACCOUNT_STATUS Ready 的 rebuild 才完整重置 gate。
+**SDK `ACCOUNT_STATUS` Offline→Ready 翻转触发 gate 重置（终检发现 D）**：td 重启/坏库重建可能复用 seq（整组重建删行压低 DB `MAX(seq)` → td 重启 seq_counter_ = 压低后 MAX → 撞在线策略 last_applied → admit 跳过新事件）。修复：dispatch `ACCOUNT_STATUS` 时检测**同账户 Offline→Ready 翻转** → 对该账户 `reset_account(rebuild_watermark)` + 清该账户 gap_retry 状态。首见即 Ready（无前序 Offline）不计翻转，不误触重置。
 
-**SDK `ACCOUNT_STATUS` Offline→Ready 翻转触发 gate 重置（终检发现 D）**：td 重启复用 seq（PositionRebuild 删行压低 DB MAX → td 重启 seq_counter_ = 压低后 MAX → 复用 seq 撞在线策略 last_applied → admit 跳过新事件）时，策略 SDK 无自愈路径（`ACCOUNT_STATUS` Offline 在 SDK 只清成交去重段，不动 gate）。修复：dispatch `ACCOUNT_STATUS` 时检测**同账户 Offline→Ready 翻转** → 对该账户 `reset_account(rebuild_watermark)` + 清该账户 gap_retry 状态——与 dzweb `ACCOUNT_STATUS` 重建对齐。`ACCOUNT_STATUS` Ready 后紧接的 repush/重放不会重复（td 过滤器吞同），gate 重置安全；applied_trades 清空由 trade 去重段同清（reset_account 已做）。首见即 Ready（无前序 Offline）不计翻转，不误触重置。
+**消费端分布**：策略 SDK ingest（《帧契约：策略》"SDK ingest 过滤职责"：对策略透明，`on_trade_report` 语义 = **每笔成交恰好一次**）；dzweb 不接回补腿、不维护水位（记录直查库，见 §8）。
 
-**清零帧（终检发现 A，全平幽灵持仓）**：td 登录持仓查询为**全量语义**，全平时查询响应不再含该合约——若只靠 PositionRebuild 清 DB 不推帧，策略 `on_position_info` 永不收清零、dzweb 镜像永不清零（幽灵持仓直接影响策略风控/加仓判断）。修复：td 在 `is_last` 收口处计算持仓（原镜像职责并入 PositionHolding）有而本组无的 key 差集，对每个差集 key 发 `volume=0`（含 frozen/today/yd=0）的 DZ_FRAME_POSITION_INFO 帧（**清零帧 = 新状态变更**，绝对态语义下 volume=0 即无持仓，消费端按键覆盖自然清零），与持仓行同 seq 单调取号。DB 侧由既有 PositionRebuild DELETE 覆盖（清零帧不入重灌组）。消费端无需改动。
+## 6. seq 的出后端边界与前端合并语义
 
-## 6. seq 不出后端边界
+`seq` 是 td 与后端之间的内部协调坐标，同时作为**不透明版本号**出现在 REST/WS 的交易记录中（仅用于合并，不承载业务含义；REST/WS 的字段形状见契约 rest 与 webui-ws 的唯一真相源）。
 
-seq 是 td ↔ SDK/dzweb 后端的**内部协调坐标**：**不进 WS 契约、不进 REST 契约、前端不可见**。前端自有衔接机制：WS 建连/重连推 `snapshot` 全量镜像 + 增量（契约 webui-ws），断连期间错过的增量由重连 snapshot 补齐。dzweb 后端 ingest 用 seq 对齐后照常向 WS 广播领域消息；REST 分页键用 rowid/日期+id。
+- dzweb 不做水位对齐：REST 直查交易库（游标分页、只读连接），WS 转发四类交易事件；记录与帧可能乱序到达前端。
+- 前端合并规则：**业务键去重 + 同键 `seq` 大者胜**（与到达顺序无关）；`seq` 变小视为数据重置（清空重拉）。
+- 日切 / 在线账户集合变化：dzweb 广播 `data_changed`（`scope="td"`）→ 前端清空列表并重拉基线；WS 建连先补发最近事件再转 live（细节见契约 webui-ws）。
+- 前端不得把 `seq` 显示给用户或参与业务判断。
 
 ## 7. 边界与窗口
 
@@ -101,23 +123,38 @@ seq 是 td ↔ SDK/dzweb 后端的**内部协调坐标**：**不进 WS 契约、
 |------|------|
 | td 崩溃丢失（已广播未提交） | seq 永久洞；回补重试耗尽放行 + 日志 |
 | persist 积压 > 回补重试窗口 | 放行，后续延迟修复 |
-| td 崩溃重启 seq 复用（未提交段） | 消费者铁律（"不变量清单"第 4 条，DB 水位 W）保证不误丢新事件 |
-| 账户数据清空/重加 | 重置协议（SDK 倒退检测 / dzweb `ACCOUNT_STATUS` 触发；清空必须显式） |
+| persist 持续失败（磁盘满/锁/打开失败） | 队列不设上限、入队不阻塞、提交成功才出队；失败批退避重试（1s→2s→5s→10s→30s 封顶）；通知分级；不阻塞交易/帧推送/WS（ADR 0042） |
+| 交易库文件损坏（CORRUPT/NOTADB/头非法） | 旧库改名保留 + 新建空库 + ERROR，交易继续（库不是交易真相源）；不在坏文件上无限重试；历史缺口由备份兜底（本轮不实现） |
+| 进程退出排空失败 | 只记 ERROR 并退出；未提交内存积压丢失（已知限制） |
+| td 崩溃重启 seq 复用（未提交段） | 消费者铁律（§2 第 4 条，DB 水位 W）保证不误丢新事件；SDK 亦由 `ACCOUNT_STATUS` 翻转兜底（§5） |
+| 账户删除/重加、盘中换柜台 | 删除只推 Offline、不删数据；每次登录成功重新装载当日基准、首个完整成功查询整组替换当日持仓、upsert 资金；seq 从 DB `MAX` 续号；历史交易日行不变 |
+| 账户数据清空/重置 | 重置协议（SDK 倒退检测）；清空必须显式 |
 | 启动竞态在途窗口 | 回补；安静场景由登录完成协议重推触发 |
-| 跨日 | seq 累积无边界；trades 唯一键含 trading_day；positions 单事务重灌（清该账户全部持仓行 + upsert 本组，响应不含的合约即已全平/过期）；日切 today→yd、清挂单冻结 |
-| 旧 SDK + 新 td | `payload_size_matches` 防御性丢帧；td 与 SDK 同仓同步发版 |
-| 多策略并发读 td 库 | 后端由 `db::resolve_config` 决定（默认 SQLite；MySQL 侧语义与准入见 ADR 0016）；SQLite 共享锁并发读 OK，写事务期间读端 busy_timeout 吸收 |
-| 多网关账户 ID 撞名 | 运维约定全局唯一；帧内加源标识留待需要时（YAGNI） |
+| 旧会话残留写入（旧进程已入队未提交的任务晚于新会话落地） | 有界收敛窗（≤ 一个持仓查询间隔）：当日持仓短暂回到旧值后由下一次周期查询收敛；不丢行、不产生键冲突 |
+| 跨日（日切） | seq 累积无边界；委托/成交按新的 `date` 追加；持仓/资金整组替换只碰当日行；td 强制重推 `ACCOUNT_STATUS`，dzweb 广播 `data_changed`（`scope="td"`） |
+| 多策略/多读者并发读交易库 | 交易库固定本地 SQLite；只读连接共享锁并发读，写事务期间读端 busy_timeout 吸收（dzweb 单请求 200ms；SDK 单只读事务） |
+| 旧 SDK + 新 td | `payload_size_matches` 防御性丢帧（`ORDER_REPORT` 布局变化后旧 SDK 会丢该帧）；td 与 SDK 同仓同步发版 |
+| 多网关账户 ID 撞名 | 配置入口校验：UI 预检 + dzweb 权威（已知 td 配置 + `platform.db` 注册表，含禁用/离线账户占位）；td 侧仅自身配置内查重；手工改配置可绕过属用户自担风险（ADR 0045） |
+| 其他终端交易 | 持仓/资金由周期查询收敛（≤ `qry_position_interval_s`）；外部委托/成交可能晚到（下次登录）或缺失——已知限制，本轮不做主动补拉/对账 |
+| 资金盘中不刷新 | 资金行只在登录/失败补查链更新，盘中停在最近一次查询（已知限制） |
 | 查询在途窗口成交 | 以查询快照覆盖为准；最多一个查询间隔（默认 60s）后自愈收敛（绝对态帧，消费端最终一致） |
+| 旧 dev 库 | 旧 schema 库（含旧 `td.db`）无迁移链、直接丢弃；`trade.db` 由 master 建库/重建 |
 
-## 8. 镜像
+## 8. dzweb 消费与镜像
 
-dzweb TdDataService 维护内存镜像（orders/trades/positions/trading_accounts），`ACCOUNT_STATUS`(DZ_FRAME_ACCOUNT_STATUS) Ready 触发重建（清该账户镜像 + 只读打开 td 库重查 + 设新 W）、Offline 清空该账户镜像，语义见《帧契约：账户登录状态》；WS 暴露留给后续设计。不进 dzweb WS 镜像（高频业务帧，总则 §9）。
+dzweb **不保留**委托/成交/持仓/资金记录的内存镜像，也**不做**水位过滤/断档回补/倒退重置。保留的只有：
 
-**镜像日界（终检发现 G）**：orders/trades 为追加流，重建时只装载**当日**行（`trading_day = 该账户最新交易日`，从 td 库查得）——否则镜像随历史线性增长（约 0.9GB/年）。positions/trading_accounts 单行绝对态无需日过滤。**W 查询不带日过滤**（正确性：W = 四表 MAX(seq)，跨日累积单调，含历史高 seq）。W 装载/重建改用**聚合查询**（`SELECT account_id, MAX(seq) FROM <table> GROUP BY account_id`，SDK `load_all_watermarks`/`rebuild_watermark` 与 dzweb rebuild 一致），不再全行物化（库增长线性恶化消除）。日切后 td 侧持仓 today→yd、清挂单冻结，下一轮查询权威校正；dzweb 镜像日界与之对齐。
+- **在线账户集合**：消费 `ACCOUNT_STATUS`（`Ready` = 在线；`Offline`/`LoggingIn` 下线）；委托/成交/统计只覆盖在线账户与当前交易日；持仓/资金覆盖全部账户（含离线），按账户锚点日取最新行（口径见契约 rest）。
+- **统计计数器**：4 个整数（总笔数/总手数/未成交笔数/未成交手数）；总 = 当日全部委托（含撤单、废单，与列表行数一致）；未成交 = SUBMITTING/NOT_TRADED/PART_TRADED 的剩余量；启动/Ready/日切从交易库重算并周期对账（口径见契约 rest）。
+- **WS 建连补发环**：每账户最近 300 条交易事件（四类），供新建连接补发。
+- **td 配置已知状态**：账户注册表（《帧契约：交易网关配置》§5）与细状态镜像（《帧契约：交易网关状态》）。
+
+**转发**：四类帧按在线账户集合转发为 WS 交易事件（消息名与 payload 形状见契约 webui-ws），**不进 `snapshot`**；记录一律由 REST 现查交易库（契约 rest）。`ACCOUNT_STATUS` Ready/Offline 变化、日切、在线集合变化 → 广播 `data_changed`（`scope="td"`）让前端清空重拉。交易库不可用时 REST 返回统一降级（`available:false`，契约 rest），帧照常转发。
+
+**镜像**：本契约四类帧不进 dzweb 记录镜像（总则 §9 例外：高频业务数据）；配置/状态镜像分别见《帧契约：交易网关配置》与《帧契约：交易网关状态》。
 
 ---
 
 ## 9. 变更流程
 
-本契约随 TD 数据同步实现演进；修改必须执行总则 §11.3 变更 checklist。
+本契约随 TD 数据同步实现演进；修改必须执行总则 §11.3 变更 checklist（含公开面不变量测试：帧号、payload 大小与字段，`ORDER_REPORT` 布局变化须同步）。

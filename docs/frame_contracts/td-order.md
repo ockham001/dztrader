@@ -18,6 +18,7 @@
 - **接收方**：每个交易网关进程（`dztd_*`）读所有这类帧，只处理 `account_id` 存在于本进程配置 `config_.accounts` 中的请求；其余忽略（DEBUG 日志），不产生任何响应。
 - **不使用** `DzExtInstFrameHeader`：网关对这两个帧一律按 basic 布局解析。
 - 发送方无需知道网关进程名：网关重命名（如 `dztd_ctp_2`）不影响策略下单；多网关实例共存时各实例按自身配置独立过滤。
+- **实现注记**：保留策略标识为契约先行，`DzStrategyId` 保留值常量与 td/SDK 侧取值由后续实现票落地（契约与实现冲突以契约为准）。
 
 ## Payload
 
@@ -37,7 +38,9 @@ struct 引用（不抄写字段表，字段定义见 `libs/core/include/dztrader
 
 ## 时序与触发
 
-- **响应**：无同步响应帧。下单/撤单结果由 `DZ_FRAME_ORDER_REPORT`（含 `REJECTED` 状态）异步推送，该帧契约见《帧契约：TD 数据同步》。`ORDER_REPORT`/`TRADE_REPORT` 的 `strategy_id` 由 td 网关按下单 `DzOrderReq.strategy_id` 回填（td 侧 OrderRefMap 按 `DzOrderId` 关联），外部单/手工单（非任何策略所下）该字段为空串；策略 SDK 按 `strategy_id` 定向过滤（契约 strategy）。
+- **响应**：无同步响应帧。下单/撤单结果由 `DZ_FRAME_ORDER_REPORT`（含 `REJECTED` 状态）异步推送，该帧契约见《帧契约：TD 数据同步》。`ORDER_REPORT`/`TRADE_REPORT` 的 `strategy_id` 由 td 网关按下单 `DzOrderReq.strategy_id` 回填（td 侧 OrderRefMap 按 `DzOrderId` 关联）。
+- **来源标识（保留策略标识）**：非任何策略所下的订单用 `DzStrategyId` 保留值表达——外部单 `/external`、平台手工单 `/manual`、一键同步单 `/sync`（**不再用空串**）；`orders.strategy_id` 原样落库（ADR 0041）。保留值以 `/` 开头，与策略可执行文件名天然不冲突（策略名不允许以 `/` 开头）。
+- **策略过滤**：策略 SDK 按 `strategy_id` == 本策略裸名的定向过滤（契约 strategy）；保留策略标识不等于任何策略名，**不参与策略过滤**——一律拦截、不投递给任何策略，也不作为策略身份出现在 SDK/UI 的策略维度中。
 - **当前拒绝行为**：账户不在配置 / 无 session 时静默丢弃（仅日志）；错误回报与拒单通知的完整语义由后续交易帧契约补齐。
 - **触发场景**：仅策略主动下单/撤单；本契约不响应 `QUERY_FULL_SNAPSHOT`。
 
