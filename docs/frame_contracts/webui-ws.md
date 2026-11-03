@@ -26,7 +26,7 @@
 |---|---|
 | `type` | 消息类型（见 §2/§3） |
 | `data` | 领域消息载荷（广播帧专用） |
-| `payload` | 控制消息载荷（C2S 请求、`*_ack`/`error`/`log_line`/`log_tail_unsubscribed`/`data_changed`/`default_password_warning`） |
+| `payload` | 控制消息载荷（C2S 请求、`*_ack`/`error`/`log_line`/`log_tail_unsubscribed`/`data_changed`/`default_password_warning`、td_recent） |
 | `instance_id` | 可选；领域消息的实例归属（`log_config`/`md_shm_config`/`auto_login`/`progress`）；为空时不携带该字段（`event_shm_config` 等挂 `dztraderd` 的消息为空，见 §2.2 表） |
 | `seq` | 可选；C2S 消息携带时由 `*_ack`/`error` 回填 |
 
@@ -88,7 +88,7 @@ domain 清单与挂载实例：
 
 - 未被 `process_config` 注册的进程：`process_status` 镜像不写入，但广播仍无条件发出（前端可感知未知进程状态）。
 - `md_shm_config` 前端已有消费（展示与编辑，pending 由本消息清除）；`event_shm_config` 前端已消费（系统设置页展示，编辑 pending 由本消息清除，入口契约 rest §2.7 `PUT /api/settings/event-shm-config`）。
-- 四类交易事件（td_*）是**帧转发而非镜像域**：不写 `MirrorStore`、不进 `snapshot`；仅在账户在线（`ACCOUNT_STATUS` Ready）时转发，账户转 Offline 后停止转发并清空其补发环。payload 与 REST 行同 schema（唯一真相源：契约 rest §2.9.3 与契约 rest §2.9.4）；合并语义与前端义务见 §2.5、§5。
+- 四类交易事件（td_*）是**帧转发而非镜像域**：不写 `MirrorStore`、不进 `snapshot`；payload 与 REST 行同 schema（唯一真相源：契约 rest §2.9.3 与契约 rest §2.9.4）。转发条件与补发容量见《帧契约：TD 数据同步》§8；WS 时序与合并语义见 §2.5、§5。
 
 ### 2.3 控制消息（`payload` 键）
 
@@ -96,7 +96,7 @@ domain 清单与挂载实例：
 |---|---|---|
 | `log_line` | 日志 tail 推送（客户端 `subscribe_log` 后逐行推送，单次上限 200 行） | `{ file, line: { n, ts, level, logger, func, file, line, pid, tid, msg, raw, parsed } }` |
 | `log_tail_unsubscribed` | 服务端主动退订日志 tail（连续失败 3 次 / 订阅自身日志被拒） | `{ file, reason }`；`reason ∈ self_logs_cannot_be_tailed \| send failures` |
-| `data_changed` | 后端 DB 数据变更（用户上下线、交易数据基线失效等），通知前端按 `scope` 重新 REST 刷新 | `{ scope }`；scope 取值见下 |
+| `data_changed` | 后端数据变更（DB 写或交易数据基线事件，如在线账户集合变化/日切），通知前端按 `scope` 重新 REST 刷新 | `{ scope }`；scope 取值见下 |
 | td_recent | 鉴权成功建连后（snapshot 之后）定向发送一次（§2.5） | `{ events: [ { type, data } ] }`；`type` 为四类交易事件名之一，`data` 为对应行对象；无事件时 `events` 为空数组（仍发送） |
 | `default_password_warning` | admin 用户连接且仍为默认密码且未确认时，定向推送 | `{ message }`；**`message` 是后端给出的完整中文告警文案（唯一真相源 `apps/webui/config.h` 的 `kDefaultPasswordWarningMessage`），前端直接展示、不得自行拼接或硬编码** |
 | `error` | 连接协议错误（鉴权失败 / 非法 JSON / 未知 type / 控制消息参数缺失 / 管理操作权限或进程状态预检未通过） | `{ message, seq? }` |
@@ -121,21 +121,17 @@ domain 清单与挂载实例：
 四类交易事件由交易网关的推送帧**转发**而来（《帧契约：TD 数据同步》），不是镜像域：
 
 - **payload 即行对象**：消息载荷（`data`）= 契约 rest §2.9.3 与契约 rest §2.9.4 定义的同一行 schema（含 seq、price_decimals、sort_key 等派生字段）；`instance_id` 为空（account_id 在 payload 内）。
-- **转发条件**：仅转发当前在线（`ACCOUNT_STATUS` Ready）账户的帧；非在线账户的帧丢弃（不广播、不入补发环）。账户转 Offline 时清空该账户补发环并停止转发。
-- **不进镜像、不进 snapshot**：dzweb 不维护记录镜像；前端记录基线由 REST 拉取（契约 rest §2.9）。
+- **转发与容量**：转发条件、在线账户过滤、Offline 清环与每账户补发容量见《帧契约：TD 数据同步》§8；dzweb 不维护记录镜像，前端记录基线由 REST 拉取（契约 rest §2.9）。
 - **合并**：前端按业务键去重、同键 seq 大者胜（§5）；委托/成交按 sort_key 降序插入，持仓/资金按业务键覆盖。
 
 **td_recent（建连补发）**：
 
 - 鉴权成功建连后、`snapshot` 之后定向发送一次；载荷 `{"events": [{"type": <四类交易事件名>, "data": <行对象>}, ...]}`。
-- 内容 = 各在线账户最近至多 300 条交易事件（四类混合，按入环先后从旧到新）；不同账户之间顺序不承诺。
+- 内容 = 各在线账户补发环内容（容量见《帧契约：TD 数据同步》§8），按入环先后从旧到新；不同账户之间顺序不承诺。
 - 无事件时仍发送 `{"events": []}`（前端据此确定补发阶段结束）。
 - 补发事件与随后到达的实时事件使用同一合并规则；重复/乱序无害（同键 seq 大者胜）。
 
-**容量与恢复**：
-
-- 补发环是内存环形缓冲（每账户 300 条，仅在线账户）；dzweb 重启后环为空——记录基线以 REST 为准，补发只是收敛窗口内的加速。
-- 断线重连：服务端重推 `snapshot` + td_recent，前端按 §6 重拉 REST 基线。
+**恢复**：dzweb 重启后补发环为空——记录基线以 REST 为准，补发只是收敛窗口内的加速。断线重连时服务端重推 `snapshot` + td_recent，前端按 §6 重拉 REST 基线。
 
 **日切 / 在线集合变化**：dzweb 广播 `data_changed{scope:"td"}`（§2.3），前端清空并重拉基线（§5）。
 
@@ -180,13 +176,12 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 6. **订阅查询结果处理**：以 `md_rtn_subscriptions` 的 `error` 字段判定成功/失败（`null`=成功），`truncated=true` 时按契约 md-subscription 的截断语义展示。
 7. **交易数据基线**：交易记录（委托/成交/持仓/资金）与统计的基线一律由 REST 拉取（契约 rest §2.9）。`snapshot` 不含交易记录、td_recent 有界——二者都不能替代基线；重连/日切/`data_changed{scope:"td"}` 后必须重拉。
 8. **交易事件合并**：按业务键去重 + 同键 `seq` 大者胜（与到达顺序无关）；重复/乱序无害；同一账户检测到 `seq` 回退视为数据重置——清空该账户交易数据并重拉基线。业务键见契约 rest §2.9.6。
-9. **排序与有界窗口**：委托/成交按 sort_key 降序维护（增量行按 sort_key 插入，不是简单前插）；单 tab 内存行数上限建议 2,000（可配置），超出丢弃最旧；虚拟滚动只渲染可视行；向下滚动用 next_cursor 预取（契约 rest §2.9.2）。
-10. **批量刷新**：WS 交易事件按约 10Hz 批量合并后一次性刷新，不得逐条触发渲染；统计（无 WS 推送）按需轮询，建议同节流。
-11. **日切/账户集合变化**：收到 `data_changed{scope:"td"}`（§2.3）后清空委托/成交/持仓/资金/统计并重拉基线；日切后不得混入上一交易日数据。
-12. **账户筛选**：账户多选默认全选；选项来源——委托/成交/统计用 online_accounts，持仓/资金用返回的账户全集（含离线；资金行 has_data:false 也进筛选项）；筛选变化必须重置游标从首页开始。
-13. **精度**：价格显示用行内 price_decimals / avg_price_decimals 做 `toFixed`；不得自行推断小数位，也不得依赖服务端字符串舍入（契约 rest §2.9.6）。
-14. **降级**：列表返回 `available:false` 时展示统一降级提示（不白屏、不用 0 冒充数据），按退避重试；WS 事件照常合并，恢复后重拉基线。
-15. **新数据提示**：向上翻看历史时新事件不得顶走视口，显示「N 条新数据」气泡，点击回到顶部并应用缓冲事件。
+9. **排序与分页**：委托/成交按 sort_key 降序维护（增量行按 sort_key 插入，不是简单前插）；滚动到底按 next_cursor 拉取下一页（契约 rest §2.9.2）；筛选、日切或作用域变化后丢弃游标从首页重拉。
+10. **日切/账户集合变化**：收到 `data_changed{scope:"td"}`（§2.3）后清空委托/成交/持仓/资金/统计并重拉基线；日切后不得混入上一交易日数据。统计无 WS 推送，按需轮询 REST（契约 rest §2.9.5）。
+11. **账户筛选**：账户多选默认全选；选项来源——委托/成交/统计用 online_accounts，持仓/资金用返回的账户全集（含离线；资金行 has_data:false 也进筛选项）；筛选变化必须重置游标从首页开始。
+12. **精度**：价格显示用行内 price_decimals / avg_price_decimals 做 `toFixed`；不得自行推断小数位，也不得依赖服务端字符串舍入（契约 rest §2.9.6）。
+13. **降级**：列表返回 `available:false` 时展示统一降级提示（不白屏、不用 0 冒充数据），按退避重试；WS 事件照常合并，恢复后重拉基线。
+14. **非契约范围**：有界窗口容量、虚拟滚动、批量刷新节流、新数据气泡等 UI 性能/交互设计见 ADR 0043 决策 7，由前端实现票落地，不属于本契约语义。
 
 ---
 

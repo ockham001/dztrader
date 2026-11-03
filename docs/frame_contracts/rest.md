@@ -15,14 +15,14 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - 认证：除 `POST /api/login`、`GET /health`、`GET /api/system/info` 外，全部 `/api/*` 需要 JWT（`Authorization: Bearer <jwt>`）；失败回 401 `{"error":"unauthorized"}`（token 缺失）或 `{"error":"invalid_token"}`（校验失败）。这两个值是**历史遗留的固定标识**（前端不据此分支——非登录接口的 401 一律按会话失效处理），属下条列出的已知例外，不适用 `code` 规则。
 - 响应：JSON（`application/json`）。
 - 错误：`{"error": message}` + 对应 HTTP 状态码；404 为 `{"error":"not found"}`。`error` 承载**人类可读消息**（小写英文开头、无句号），前端可直接兜底展示——**登录失败除外**（下条：其文案由 `code` 映射中文，不得展示 `error`）。
-- 需要**机器可判别**的失败额外携带 `code`（snake_case 机器码）：`{"error": <human message>, "code": <snake_case_code>}`。`code` 是机器判别的唯一手段——前端分支只认 `code`，不得解析 `error` 文本；未登记 `code` 的普通错误体按通用失败处理。**当前登记的 `code` 清单**：登录失败（`invalid_credentials` / `account_disabled` / `ip_banned` / `account_locked`，见下条与 §2.1）、口令强度（`password_too_weak`，400）、自助改密旧密码错误（`invalid_old_password`，400）、强制改密门禁（`password_change_required`，403）——后三者见 §1「密码策略」「自助改密 vs 管理员重置」「强制改密」；交易账户配置写（§2.9.7）的 admin_required（403）、invalid_gateway（400）、gateway_not_running（409）、account_exists（409）、account_not_found（404）。将来需要机器判别时按本通用形状补 `code`。**已知的历史遗留例外**（不适用本形状、也不得再新增同类）：认证 401 的 `unauthorized`/`invalid_token`、以及若干端点把 `admin_only`/`no_user`/`update_failed` 之类的短标识放进 `error`——这些值是**既有实现**，清理需单独一票；新代码不得以它们为先例。
+- 需要**机器可判别**的失败额外携带 `code`（snake_case 机器码）：`{"error": <human message>, "code": <snake_case_code>}`。`code` 是机器判别的唯一手段——前端分支只认 `code`，不得解析 `error` 文本；未登记 `code` 的普通错误体按通用失败处理。**当前登记的 `code` 清单**：登录失败（`invalid_credentials` / `account_disabled` / `ip_banned` / `account_locked`，见下条与 §2.1）、口令强度（`password_too_weak`，400）、自助改密旧密码错误（`invalid_old_password`，400）、强制改密门禁（`password_change_required`，403）——后三者见 §1「密码策略」「自助改密 vs 管理员重置」「强制改密」；交易账户配置写（§2.9.7）新增 admin_required / invalid_gateway / gateway_not_running / account_exists / account_not_found（状态码见该节）。将来需要机器判别时按本通用形状补 `code`。**已知的历史遗留例外**（不适用本形状、也不得再新增同类）：认证 401 的 `unauthorized`/`invalid_token`、以及若干端点把 `admin_only`/`no_user`/`update_failed` 之类的短标识放进 `error`——这些值是**既有实现**，清理需单独一票；新代码不得以它们为先例。
 - 登录失败错误体（`POST /api/login` 专用）：`{"error": <human message>, "code": <snake_case_code>}`，HTTP 状态码表达类别（401 凭据/状态/封禁类，423 锁定）。请求体必须为 JSON 对象且 `username`/`password` 均为 string；请求体缺失/非法 JSON/非对象/字段类型错/缺用户名或密码时回 400 `{"error":"bad request"}`（**无 `code`**，前端按通用失败处理）。`account_locked` 额外携带 `locked_until`（**绝对 Unix 秒级时间戳**，与 `GET /api/user*` 的 `locked_until` 同语义；前端按 `locked_until - now` 计算剩余分钟，不得按剩余秒数解释；`locked_until <= now` 表示无剩余时间信息，前端只显示锁定文案、不显示分钟）。前端把 `code` 映射中文文案（单一真相源 `composables/loginErrors.ts`），**绝不把 `code` 或英文 `error` 回显给用户**；未知/缺失 `code` 统一回落「登录失败」。
 - 权限：管理类端点需 admin 角色（服务端校验，非前端隐藏）。
 - **交易数据端点通用规则**（§2.9）：
   - 游标分页：默认 200 行/页、上限 1000 行/页，**禁止 OFFSET 深翻页**；分页游标为不透明字符串，与查询作用域（端点 + 账户过滤 + 当前交易日）绑定，作用域变化必须从首页重新开始（§2.9.2）。
   - 降级：只读端点读交易库失败时统一回 200 `{"available":false,"reason":<code>}`（§2.9.8），不返回 5xx、不阻塞 IO 线程。
   - 权限：读端点全部已认证用户可读全部账户（账户级过滤后续，ADR 0045）；账户配置写端点仅 admin（403 `code=admin_required`，§2.9.7）。
-- 密码策略：凡设置口令的端点（`POST /api/user`、`PUT /api/user/{id}/password`、`POST /api/auth/change-password`）一律由**服务端**强制最小长度 12（唯一常量 `kMinPasswordLength`，`apps/webui/password_policy.h`）；不合格回 400 `{"error":"password too weak","code":"password_too_weak"}`。前端只做提示与按钮禁用，**不是安全边界**。口令值永不出现在响应体、日志与任何用户可见文案中。
+- **密码策略**：凡设置口令的端点（`POST /api/user`、`PUT /api/user/{id}/password`、`POST /api/auth/change-password`）一律由**服务端**强制最小长度 12（唯一常量 `kMinPasswordLength`，`apps/webui/password_policy.h`）；不合格回 400 `{"error":"password too weak","code":"password_too_weak"}`。前端只做提示与按钮禁用，**不是安全边界**。口令值永不出现在响应体、日志与任何用户可见文案中。
 - **自助改密 vs 管理员重置**：前者（`POST /api/auth/change-password`）必须提交 `old_password` 并校验，失败回 400 `{"error":"invalid old password","code":"invalid_old_password"}`；后者（`PUT /api/user/{id}/password`）**不需要**旧密码（admin 已鉴权，属正常设计），但同样受强度策略约束。管理员重置成功后置 `must_change_password=1`；管理员创建用户不置位（口令由管理员当场设定）。
 - **会话吊销**：JWT 载荷携带 `ver`（签发时刻用户的 `token_version`）。改密 / 管理员重置 / 禁用账户时 `token_version` 自增，该用户**既有**的 JWT 与 WS 连接立即失效（REST 回 401 `{"error":"invalid_token"}`，WS 回 `auth failed` 并断开）。**自助改密后当前会话同样失效**——前端必须让用户用新口令重新登录，不得继续使用旧 token。
 - **强制改密**：`must_change_password=1` 的账户登录后只能调用 `POST /api/auth/change-password` 与 `GET /api/user/me`，其余 `/api/*` 一律 403 `{"error":"password change required","code":"password_change_required"}`；WS 连接以 `auth failed` 拒绝。自助改密成功后清除该标志。
@@ -120,7 +120,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 ### 2.9 交易数据
 
-交易数据端点直查交易库（`$DZTRADER_HOME/db/trade.db`，ADR 0041/0043）：每请求独立只读连接、`busy_timeout` 200ms，游标分页、禁止 OFFSET 深翻页；dzweb 不保留委托/成交/持仓/资金记录镜像。端点分两类：只读查询（直查交易库）与账户配置写（转发 SHM 帧），均不读已有镜像。
+交易数据端点直查交易库（`$DZTRADER_HOME/db/trade.db`，ADR 0041/0043）：每请求独立只读连接、`busy_timeout` 200ms，游标分页、禁止 OFFSET 深翻页；dzweb 不保留委托/成交/持仓/资金记录镜像。端点分三类：只读直查（委托/成交/持仓/资金）、内存计数器（统计）、账户配置写（转发 SHM 帧）；不读任何记录镜像。
 
 | 方法/路径 | 语义 | 帧/镜像联动 |
 |---|---|---|
@@ -146,7 +146,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - **权限**：全部已认证用户可读全部账户（账户级过滤后续，ADR 0045）；账户配置写端点仅 admin（§2.9.7）。
 - **空语义**：items 空数组 = 无数据（不是错误）；资金无记录行 → has_data:false 且资金字段全为 null；持仓 volume=0 的行不返回（绝对态清零帧的库内残留，不是持仓事实）。
 - **新鲜度**：交易库是已提交数据（异步持久化，ADR 0042）。WS 交易事件可能先于库提交到达，同一记录按 `seq` 合并（契约 webui-ws §5）；REST 稍后可见属预期，不是丢数据。
-- **交易日表示**：记录行的 `date` 与信封 trading_day 均为 `"YYYYMMDD"` 字符串；`date` 是记录自身交易日，trading_day 是本次查询的当前交易日（委托/成交/统计两者恒等，持仓/资金行取各账户锚点日）。
+- **交易日表示与命名**：帧/DB 内部交易日为 `DzDate`（距纪元天数）或 DB TEXT，REST/WS JSON 一律输出 `"YYYYMMDD"` 字符串（ADR 0041 决策 4 表示层约定）。记录行键名统一为 `date`（记录自身交易日）；信封键名 trading_day 表达**列表作用域的当前交易日**，是 ADR 0041 决策 4「REST/WS 键统一 date」的**登记例外**（非记录字段；改名需新 ADR/契约修订）。委托/成交/统计记录的 `date` 恒等于 trading_day，持仓/资金行 `date` 取该账户锚点日。
 
 #### 2.9.2 响应信封与游标分页
 
@@ -175,12 +175,15 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 | 参数 | 类型 | 说明 |
 |---|---|---|
 | limit | int | 可选；默认 200，允许 1–1000；越界或非整数 → 400 `{"error":"bad request"}` |
-| cursor | string | 可选；上一页返回的 next_cursor。与查询作用域（端点 + accounts + 当前交易日）绑定；作用域变化必须从首页开始；非法或作用域不符 → 400 bad request |
+| cursor | string | 可选；上一页返回的 next_cursor。与查询作用域（端点 + accounts + 该端点的日期口径）绑定；作用域变化必须从首页开始；资金端点忽略本参数；非法或作用域不符 → 400 bad request |
 | accounts | string | 可选；逗号分隔账户过滤。空串等价缺省；每项去首尾空白、空项跳过、重复忽略；未知/越界账户忽略（不报错） |
 
-- 分页禁止 OFFSET 深翻页：cursor 承载上一页最后一行的排序坐标（与 §2.9.6 的 sort_key 同源），下一页从该行之后（更旧）继续。
-- 委托/成交按 sort_key 降序返回；positions 按 (account_id, instrument_id, direction) 升序返回；trading_accounts 按 account_id 升序且**不分页**（返回全部已登记账户，next_cursor 恒 null，limit/cursor 被忽略）。
-- 同一记录在翻页过程中不得重复或遗漏；翻页期间新写入的记录只会出现在首页之前，不影响已取页面。筛选条件或当前交易日变化后必须丢弃 cursor 从首页重拉。
+- 查询作用域 = 端点 + accounts + 该端点的日期口径（委托/成交为当前交易日；持仓/资金为各账户锚点日集合）。作用域变化必须丢弃 cursor 从首页重拉。
+- 分页**禁止 OFFSET 深翻页**；各端点的游标坐标固定如下：
+  - 委托 / 成交：坐标 = 与 sort_key 同源的 (排序时间, 业务唯一键) 降序；下一页从该坐标**之后**（排序更旧）继续。
+  - 持仓：坐标 = (account_id, instrument_id, direction) 升序元组，direction 全序 Short(-1) < Net(0) < Long(1)；下一页从该元组之后继续。
+  - 资金（trading_accounts）：不适用 cursor——不分页，返回全部已登记账户（next_cursor 恒 null，limit/cursor 被忽略），按 account_id 升序。
+- 同一记录在翻页过程中不得重复或遗漏；翻页期间新写入的委托/成交只会出现在首页之前，不影响已取页面。
 
 #### 2.9.3 委托行与成交行
 
@@ -381,8 +384,10 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 | unfilled_volume | int | 上述委托的 (volume − volume_traded) 之和 |
 
 - 口径固定为**全部在线账户 + 当前交易日**：stats 不接受 `accounts` 过滤（4 个计数器是全局口径）；账户级统计后续另定。stats 不是列表：无 items / next_cursor 字段。
-- 计数器由 dzweb 维护（启动 / 账户 Ready / 日切从交易库重算，并周期对账），REST 只读；无 WS 推送，前端按需轮询（契约 webui-ws §5）。
-- available/trading_day/online_accounts 语义同列表信封（§2.9.2）；降级语义同 §2.9.8。
+- 计数器由 dzweb 维护：**增量来源** = 转发 `ORDER_REPORT` 交易事件（仅在线账户，按状态迁移增减 4 个值）；**重算触发** = 启动 / 账户 Ready / 在线集合变化（账户 Offline 下线）/ 日切从交易库重算，并周期对账（建议 30s，实现可调）。REST 只读；无 WS 推送，前端按需轮询（契约 webui-ws §5）。
+- total_orders 与未过滤委托列表口径一致（同一交易日、同一在线账户集合、含撤单/废单）；异步持久化窗口内计数器可能短暂领先已提交数据，稳态（对账后）一致。
+- available：true = 计数器已就绪；false = 尚未完成首次成功重算（或重算持续失败），reason=not_ready。计数器就绪后即使交易库暂时不可读也不降级（内存计数器仍有效），与 §2.9.8 的库失败降级区分。
+- trading_day / online_accounts 语义同列表信封（§2.9.2）。
 
 #### 2.9.6 精度、排序键与 seq
 
@@ -395,7 +400,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
   2. 同一记录在 REST 与 WS 事件中 sort_key 相同（前端据此把增量事件插入正确位置）；
   3. 前端只可做字符串比较，不得解析其结构、不得跨作用域比较。
 
-  排序坐标 = `((time + 21600) % 86400)` **降序**（18:00 锚点：夜盘归入所属交易日且与日盘排序一致），同一秒按业务唯一键降序（委托：order_id；成交：account_id、exchange_id、trade_id）。编码格式由实现决定（契约只约束比较语义）。
+  排序坐标 = `((time + 21600) % 86400)` **降序**（18:00 锚点：夜盘归入所属交易日且与日盘排序一致），同一秒按业务唯一键**降序**（委托：order_id 按数值降序；成交：依次按 account_id、exchange_id、trade_id 的 UTF-8 字节序降序）。编码格式由实现决定（契约只约束比较语义）。
 - **seq**：不透明版本号（账户级、四类共享、跨日累积，契约 td-data-sync §1）。同一业务键 seq 大者胜；业务键：委托 order_id；成交 (account_id, date, exchange_id, trade_id)；持仓 (account_id, instrument_id, direction)；资金 account_id。seq 不显示、不参与业务判断，排序一律用 sort_key / 服务端顺序。
 
 #### 2.9.7 账户配置写
@@ -405,8 +410,8 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 **请求体**：
 
 - POST：`{"gateway": "dztd_ctp", "account": { ... }}`——`gateway` 为目标交易网关进程名；`account` 为契约 td-config §2.2 的账户配置（`account_id` 必填，`enabled`/`risk_control_enabled`/`currency_id`/`ext` 按该节默认与语义；`ext` 由目标网关按接口类型校验）。
-- PUT：body 为契约 td-config §2.1 `UpdateAccount` 的 params（字段级 merge，缺失字段保留旧值），**不含 account_id**（目标由路径给出）。允许空对象 `{}`（无操作，仍写帧）。
-- DELETE：无 body（忽略请求体）。
+- PUT：body 为契约 td-config §2.1 `UpdateAccount` 的 params 子集（字段级 merge，缺失字段保留旧值）；**不得包含 account_id**（出现即 400 bad request，路径是唯一来源）。允许空对象 `{}`。dzweb 转发前以路径值**注入** `params.account_id` 后写帧（`{}` → `{"op":"UpdateAccount","params":{"account_id":<路径>}}`）。
+- DELETE：无 body（忽略请求体）；dzweb 写 `{"op":"RemoveAccount","params":{"account_id":<路径>}}`。
 
 **预检**（失败时不写帧）：
 
@@ -414,7 +419,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 2. 目标网关（POST 来自 body 的 `gateway`；PUT/DELETE 来自注册表解析结果）必须是已注册的交易网关进程（进程配置中的 `dztd_*`）；否则 400 `{"error":"invalid gateway","code":"invalid_gateway"}`。
 3. 目标网关当前必须为 Running（`process_status`，契约 process）；否则 409 `{"error":"td gateway not running","code":"gateway_not_running"}`。
 4. POST：`account_id` 非空且 ≤ 31 字节（`DzAccountId` 容量）；否则 400 bad request。`account_id` 已在账户注册表中（**任何**网关，含已禁用/离线账户）→ 409 `{"error":"account already exists","code":"account_exists"}`。
-5. PUT / DELETE：`account_id` 由账户注册表解析网关（`account_id → gateway`）；注册表无该账户 → 404 `{"error":"account not found","code":"account_not_found"}`。body 若携带 account_id 而路径不一致 → 400 bad request。
+5. PUT / DELETE：`account_id` 由账户注册表解析网关（`account_id → gateway`）；注册表无该账户 → 404 `{"error":"account not found","code":"account_not_found"}`。
 6. 其余字段（含 `ext`）dzweb 不校验，透传给目标网关；业务校验失败由目标网关走四件套（契约 td-config §2、总则 §8）。
 
 **响应**：200 `{"ok":true}`——仅表示已写入事件通道，**不代表业务已生效**（与 §1 设置类请求语义一致）。生效/失败以 `RTN_TD_CONFIG`（契约 td-config §4）为准：成功推新值，失败推回滚旧值并经 `NOTIFY_UI` 弹窗；前端 pending 以该回报清除（其 WS 映射随账户配置页实现接入，契约 webui-ws §7）。
@@ -432,7 +437,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - 读端点读交易库失败时统一回 **200** `{"available":false,"reason":<code>}`：响应只有 available 与 reason 两个键，不含 items / next_cursor / trading_day / online_accounts。
 - reason 取值：not_found（库文件不存在/尚未建库）、schema_mismatch（库版本不符）、open_failed（打开失败）、busy（200ms 内未取得读锁）、query_failed（查询执行失败）。
 - 不使用 5xx、不阻塞 dzweb 单 IO 线程（ADR 0043）；前端按退避重试并展示统一降级提示（契约 webui-ws §5）。
-- 写端点不经交易库读取，不因交易库降级而失败。
+- 写端点不经交易库读取，不因交易库降级而失败；stats 的降级条件（计数器未就绪，reason=not_ready）见 §2.9.5，不适用本节。
 
 ---
 
