@@ -895,7 +895,7 @@ void TdApi::write_account_status(const std::string& account_id,
     dztrader::copy_string(status.account_id, account_id.c_str(), true);
     dztrader::copy_string(status.gateway_name, name_.c_str(), true);
     status.state = state;
-    status.date = account_status_trading_day(state, date);
+    status.date = account_status_date(state, date);
     platform::write_struct(event_writer_, DZ_FRAME_ACCOUNT_STATUS, status);
 }
 

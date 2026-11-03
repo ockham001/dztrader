@@ -22,7 +22,7 @@ bool should_push_account_status(DzAccountState last, DzAccountState next, bool f
 /// "YYYYMMDD" -> 距纪元天数; 空串/非法回落 0 (契约: 非 Ready 或缺失交易日 = 0)。
 int32_t epoch_day_from_yyyymmdd(const std::string& yyyymmdd);
 /// 契约 account-status: 帧内 `date` 仅 Ready 时为登录返回交易日, 其余状态恒 0。
-int32_t account_status_trading_day(DzAccountState state, const std::string& date);
+int32_t account_status_date(DzAccountState state, const std::string& date);
 }  // namespace dztrader::ctp
 
 TEST(AccountQueryRoute, EmptyQueryMeansAll) {
@@ -88,22 +88,22 @@ TEST(EpochDayFromYyyymmdd, InvalidMonthDayFallsBackToZero) {
     EXPECT_EQ(dztrader::ctp::epoch_day_from_yyyymmdd("20261399"), 0);
 }
 
-// ---- account_status_trading_day: 帧内交易日状态门控 (契约 account-status) ----
+// ---- account_status_date: 帧内交易日状态门控 (契约 account-status) ----
 
 TEST(AccountStatusTradingDay, ReadyUsesLoginTradingDay) {
     const int32_t expected = dztrader::Date{2026, 8, 31}.days_since_epoch();
-    EXPECT_EQ(dztrader::ctp::account_status_trading_day(DZ_ACCOUNT_READY, "20260831"), expected);
+    EXPECT_EQ(dztrader::ctp::account_status_date(DZ_ACCOUNT_READY, "20260831"), expected);
 }
 
 TEST(AccountStatusTradingDay, OfflineAlwaysZero) {
-    EXPECT_EQ(dztrader::ctp::account_status_trading_day(DZ_ACCOUNT_OFFLINE, "20260831"), 0);
+    EXPECT_EQ(dztrader::ctp::account_status_date(DZ_ACCOUNT_OFFLINE, "20260831"), 0);
 }
 
 TEST(AccountStatusTradingDay, LoggingInAlwaysZero) {
-    EXPECT_EQ(dztrader::ctp::account_status_trading_day(DZ_ACCOUNT_LOGGING_IN, "20260831"), 0);
+    EXPECT_EQ(dztrader::ctp::account_status_date(DZ_ACCOUNT_LOGGING_IN, "20260831"), 0);
 }
 
 TEST(AccountStatusTradingDay, ReadyEmptyOrInvalidTradingDayIsZero) {
-    EXPECT_EQ(dztrader::ctp::account_status_trading_day(DZ_ACCOUNT_READY, ""), 0);
-    EXPECT_EQ(dztrader::ctp::account_status_trading_day(DZ_ACCOUNT_READY, "bad"), 0);
+    EXPECT_EQ(dztrader::ctp::account_status_date(DZ_ACCOUNT_READY, ""), 0);
+    EXPECT_EQ(dztrader::ctp::account_status_date(DZ_ACCOUNT_READY, "bad"), 0);
 }
