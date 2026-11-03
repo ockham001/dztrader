@@ -105,7 +105,7 @@ std::unique_ptr<InstrumentContext> make_ctx() {
 void fill_window(InstrumentContext& ctx, Series<double>& fast, Series<double>& slow) {
     for (std::int32_t i = 0; i < kMaxLookback; ++i) {
         dztrader::bar::Bar bar{};
-        bar.trading_day = 20000;
+        bar.date = 20000;
         bar.begin_sec = i * kPeriodSec;
         bar.last_tick_sec = bar.begin_sec + kPeriodSec - 1;
         bar.period_sec = kPeriodSec;

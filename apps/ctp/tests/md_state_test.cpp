@@ -603,7 +603,7 @@ TEST(BuildMdStatusPayloadTest, ContainsContractFieldsIncludingNullLastError) {
     // 契约 md-status 的 6 个状态字段 + last_error（无失败时为 null）
     EXPECT_EQ(j["api_version"], "v6.7.2");
     EXPECT_EQ(j["sys_version"], "v6.7.2_20240105");
-    EXPECT_EQ(j["trading_day"], "20260808");
+    EXPECT_EQ(j["date"], "20260808");
     EXPECT_EQ(j["login_time"], "08:45:32");
     EXPECT_EQ(j["expected_subscribe_count"], 5000);
     EXPECT_EQ(j["subscribed_count"], 5000);
@@ -645,7 +645,7 @@ TEST(BuildMdStatusPayloadTest, EmptyStringsWhenNotLoggedIn) {
     MdStateMachine sm;
     auto j = build_md_status_payload(sm.status());
     EXPECT_EQ(j["sys_version"], "");
-    EXPECT_EQ(j["trading_day"], "");
+    EXPECT_EQ(j["date"], "");
     EXPECT_EQ(j["login_time"], "");
     EXPECT_EQ(j["expected_subscribe_count"], 0);
     EXPECT_EQ(j["subscribed_count"], 0);

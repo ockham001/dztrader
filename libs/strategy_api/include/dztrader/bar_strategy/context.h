@@ -1105,7 +1105,7 @@ private:
         // Tier 1 的进出场时间 = 该 bar 的**标准结束时间**（§6.1）。在推进时写一次、bar 内不变：
         // 同一根 bar 内多次建仓/平仓都归到同一个时间戳，与 `bars_since_*` 的 bar 序号自洽。
         // v1 只支持日内周期（60/180/300/900），`period_sec == 0` 的日线不在范围内，不做兜底。
-        current_date_ = bar.trading_day;
+        current_date_ = bar.date;
         current_time_ = bar::TradingTime::to_clock(bar.standard_end_sec());
     }
 

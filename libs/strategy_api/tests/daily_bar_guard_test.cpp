@@ -280,7 +280,7 @@ TEST_F(DailyBarGuardTest, ForwardTradingDayResetsCumulativeBasis) {
         make_daily_tick(9 * 3600, 50.0, 51.0, 49.0, 50.5, 5, 505.0, 3, TRADING_DAY + 1));
     expect_stats(0, 0, 0);
     ASSERT_TRUE(builder_.has_current_bar());
-    EXPECT_EQ(builder_.current_bar().trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(builder_.current_bar().date, TRADING_DAY + 1);
     EXPECT_EQ(builder_.current_bar().volume, 5);
     EXPECT_DOUBLE_EQ(builder_.current_bar().turnover, 505.0);
     EXPECT_EQ(builder_.current_bar().cum_volume, 5);

@@ -114,7 +114,7 @@ TEST_F(IntradayBarDataTest, QuoteFieldsDoNotPolluteBar) {
     ASSERT_TRUE(builder_.has_current_bar());
     const Bar& bar = builder_.current_bar();
     // 逐字段字面量断言：报价字段没有可写入的落脚点
-    EXPECT_EQ(bar.trading_day, TRADING_DAY);
+    EXPECT_EQ(bar.date, TRADING_DAY);
     EXPECT_EQ(bar.begin_sec, TSEC_09_00);
     EXPECT_EQ(bar.last_tick_sec, TSEC_09_00);
     EXPECT_EQ(bar.period_sec, 60);

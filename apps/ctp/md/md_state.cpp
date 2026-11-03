@@ -296,7 +296,7 @@ nlohmann::json build_md_status_payload(const MdStatus& s) {
     return {
         {"api_version", s.api_version},
         {"sys_version", s.sys_version},
-        {"trading_day", s.trading_day},
+        {"date", s.trading_day},
         {"login_time", s.login_time},
         {"expected_subscribe_count", s.expected_subscribe_count},
         {"subscribed_count", s.subscribed_count},

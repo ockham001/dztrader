@@ -46,7 +46,7 @@ struct TdStatus {
     std::string account_id;         ///< 账户标识 (per-account 状态上报用)
     std::string api_version;        ///< CTP API 版本
     std::string sys_version;        ///< 系统版本 (OnRspUserLogin 返回)
-    std::string trading_day;        ///< 交易日 "YYYYMMDD"
+    std::string date;               ///< 交易日 "YYYYMMDD"
     std::string login_time;         ///< 登录时间
     TdState state = TdState::Idle;  ///< 当前状态
 
@@ -60,7 +60,7 @@ struct TdStatus {
                                                 account_id,
                                                 api_version,
                                                 sys_version,
-                                                trading_day,
+                                                date,
                                                 login_time,
                                                 state,
                                                 progress_desc,
@@ -128,7 +128,7 @@ public:
 
     /// 登录成功时调用, 同步 order_ref_ (由 AccountSession 处理, 状态机只更新状态)。
     std::optional<TdNotification> on_login_success(const std::string& sys_version,
-                                                   const std::string& trading_day,
+                                                   const std::string& date,
                                                    const std::string& login_time);
 
     /// 登录失败时调用 (ErrorID != 0)。

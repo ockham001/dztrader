@@ -899,7 +899,7 @@ std::string describe_events(const std::vector<ObservedEvent>& events) {
 }
 
 DzTick make_tick_on(std::string_view instrument,
-                    DzDate trading_day,
+                    DzDate date,
                     int32_t clock_sec,
                     double price,
                     int32_t cum_volume,
@@ -916,7 +916,7 @@ DzTick make_tick(std::string_view instrument,
 
 /// @brief 构造一笔指定交易日的 tick（跨日脚本用）
 DzTick make_tick_on(std::string_view instrument,
-                    DzDate trading_day,
+                    DzDate date,
                     int32_t clock_sec,
                     double price,
                     int32_t cum_volume,
@@ -927,7 +927,7 @@ DzTick make_tick_on(std::string_view instrument,
                                      : sizeof(tick.instrument_id) - 1;
     std::memcpy(tick.instrument_id, instrument.data(), copy_len);
     tick.instrument_id[copy_len] = '\0';
-    tick.date = trading_day;
+    tick.date = date;
     tick.time = clock_sec;
     tick.last_price = price;
     tick.volume = cum_volume;
@@ -960,7 +960,7 @@ std::vector<dztrader::bar::Bar> make_archive_history(
     double cum_turnover = 0.0;
     for (std::size_t i = 0; i < bar_count; ++i) {
         dztrader::bar::Bar bar{};
-        bar.trading_day = kTradingDay;
+        bar.date = kTradingDay;
         bar.begin_sec = first_begin_sec + static_cast<std::int32_t>(i) * 60;
         bar.last_tick_sec = bar.begin_sec + 59;
         bar.period_sec = 60;
@@ -1292,7 +1292,7 @@ protected:
         return start_volume + 10 * (kTestMaxLookback + bars_after_warmup);
     }
 
-    /// @brief 写出某个交易日内秒的一笔 tick（`trading_day = kTradingDay + day_offset`）
+    /// @brief 写出某个交易日内秒的一笔 tick（`date = kTradingDay + day_offset`）
     bool write_tick_at_tsec(std::string_view instrument,
                             std::int32_t day_offset,
                             std::int32_t tsec,
@@ -1315,18 +1315,18 @@ protected:
      * 累计量额**不跨日重置**：跨日后 builder 以 0 为基准比较，继续单调递增天然合法。
      */
     struct BarScriptCursor {
-        DzDate trading_day = kTradingDay;  ///< 当前交易日
-        std::int32_t tsec = 21600;         ///< 当前交易日内秒（21600 = 墙钟 0:00）
-        std::int32_t cum_volume = 10;      ///< 累计成交量（单调不减）
-        double price = 100.0;              ///< 本根 bar 的价格（每根 +1）
-        std::int32_t bars_emitted = 0;     ///< 已产出 bar 数
+        DzDate date = kTradingDay;      ///< 当前交易日
+        std::int32_t tsec = 21600;      ///< 当前交易日内秒（21600 = 墙钟 0:00）
+        std::int32_t cum_volume = 10;   ///< 累计成交量（单调不减）
+        double price = 100.0;           ///< 本根 bar 的价格（每根 +1）
+        std::int32_t bars_emitted = 0;  ///< 已产出 bar 数
     };
 
     /// @brief 按 900 秒步进推进一步游标并写出该 bar 的 tick
     void emit_900_second_bar(std::string_view instrument, BarScriptCursor& cursor) {
         const double turnover = cursor.price * static_cast<double>(cursor.cum_volume);
         const int32_t clock_sec = dztrader::bar::TradingTime::to_clock(cursor.tsec);
-        EXPECT_TRUE(write_tick(make_tick_on(instrument, cursor.trading_day, clock_sec, cursor.price,
+        EXPECT_TRUE(write_tick(make_tick_on(instrument, cursor.date, clock_sec, cursor.price,
                                             cursor.cum_volume, turnover)));
         ++cursor.bars_emitted;
         cursor.price += 1.0;
@@ -1334,7 +1334,7 @@ protected:
         cursor.tsec += 900;
         if (cursor.tsec >= 86400) {
             cursor.tsec -= 86400;
-            ++cursor.trading_day;
+            ++cursor.date;
         }
     }
 
@@ -4963,7 +4963,7 @@ TEST_F(BarStrategyFrameworkTest, AuctionPhaseIsSuppressedDuringReplay) {
     // last_tick = 08:59:59（合成 tick 全部落在 Open 窗口内，builder 相位为 true）。
     std::vector<dztrader::bar::Bar> history = make_archive_history(kTestMaxLookback, TSEC_09_00);
     dztrader::bar::Bar auction{};
-    auction.trading_day = kTradingDay + 1;
+    auction.date = kTradingDay + 1;
     auction.begin_sec = TSEC_09_00;
     auction.last_tick_sec = TSEC_09_00 - 1;
     auction.period_sec = 60;
@@ -4980,7 +4980,7 @@ TEST_F(BarStrategyFrameworkTest, AuctionPhaseIsSuppressedDuringReplay) {
     history.push_back(auction);
     // 竞价 bar 之后的普通 bar（关闭竞价 bar，并覆盖「回放里普通 bar 也是 false」）
     dztrader::bar::Bar after_auction{};
-    after_auction.trading_day = kTradingDay + 1;
+    after_auction.date = kTradingDay + 1;
     after_auction.begin_sec = TSEC_09_00 + 60;
     after_auction.last_tick_sec = TSEC_09_00 + 119;
     after_auction.period_sec = 60;

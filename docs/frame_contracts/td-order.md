@@ -18,7 +18,7 @@
 - **接收方**：每个交易网关进程（`dztd_*`）读所有这类帧，只处理 `account_id` 存在于本进程配置 `config_.accounts` 中的请求；其余忽略（DEBUG 日志），不产生任何响应。
 - **不使用** `DzExtInstFrameHeader`：网关对这两个帧一律按 basic 布局解析。
 - 发送方无需知道网关进程名：网关重命名（如 `dztd_ctp_2`）不影响策略下单；多网关实例共存时各实例按自身配置独立过滤。
-- **实现注记**：保留策略标识为契约先行，`DzStrategyId` 保留值常量与 td/SDK 侧取值由后续实现票落地（契约与实现冲突以契约为准）。
+- **实现注记**：`DzStrategyId` 保留值常量（`DZ_STRATEGY_ID_EXTERNAL` / `DZ_STRATEGY_ID_MANUAL` / `DZ_STRATEGY_ID_SYNC`）已随 #243 落地；td/SDK 侧取值由后续实现票（#245/#252）落地（契约与实现冲突以契约为准）。
 
 ## Payload
 

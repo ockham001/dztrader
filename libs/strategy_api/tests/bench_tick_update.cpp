@@ -155,7 +155,7 @@ int run(bool quick) {
 
     // live 流：从历史末根 bar 的 last_tick_sec（tsec 29999）之后 1 秒起，每 tick 前进 1 秒；
     // 当日累计量额从历史末根续接（同一交易日内不得倒退）。
-    TickStream stream(last_history_bar.trading_day, last_history_bar.last_tick_sec,
+    TickStream stream(last_history_bar.date, last_history_bar.last_tick_sec,
                       last_history_bar.cum_volume, last_history_bar.cum_turnover);
     std::vector<std::uint64_t> update_cycles;
     std::vector<std::uint64_t> new_bar_cycles;

@@ -119,18 +119,18 @@ std::optional<TdNotification> TdStateMachine::on_req_login() {
 }
 
 std::optional<TdNotification> TdStateMachine::on_login_success(const std::string& sys_version,
-                                                               const std::string& trading_day,
+                                                               const std::string& date,
                                                                const std::string& login_time) {
     if (status_.state != TdState::LoggingIn) {
         SPDLOG_WARN("login ok: unexpected state | state={}", magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
     status_.sys_version = sys_version;
-    status_.trading_day = trading_day;
+    status_.date = date;
     status_.login_time = login_time;
     set_state(TdState::LoggedIn);
-    SPDLOG_INFO("login success | sys_version={} trading_day={} login_time={}", sys_version,
-                trading_day, login_time);
+    SPDLOG_INFO("login success | sys_version={} date={} login_time={}", sys_version, date,
+                login_time);
     return TdNotification{.level = DZ_NOTIFY_INFO, .popup = false, .message = "交易登录成功"};
 }
 
@@ -235,7 +235,7 @@ void TdStateMachine::set_state(TdState new_state) {
             status_.progress_current = 0;
             status_.login_time.clear();
             status_.sys_version.clear();
-            status_.trading_day.clear();
+            status_.date.clear();
             break;
         case TdState::Connecting:
             status_.progress_desc = "前置连接...";

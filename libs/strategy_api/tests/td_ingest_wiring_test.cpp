@@ -285,7 +285,7 @@ TEST_F(IngestWiringTest, TradeDedupWiredInDispatch) {
     EXPECT_EQ(8u, FrameView(static_cast<const std::byte*>(f)).payload<DzTradeReport>().seq);
 }
 
-// 评审发现 1 (wiring): ACCOUNT_STATUS (2018) 携带 trading_day 时触发 on_trading_day_changed —
+// 评审发现 1 (wiring): ACCOUNT_STATUS (2018) 携带 `date` 时触发 on_trading_day_changed —
 // 日切后同 (account, trade_id) 在新交易日的成交不再被旧日段拦截。
 TEST_F(IngestWiringTest, AccountStatusTradingDayChangeClearsTradeDedup) {
     const char* own = dz_strategy_id(ctx_);
@@ -321,7 +321,7 @@ TEST_F(IngestWiringTest, AccountStatusTradingDayChangeClearsTradeDedup) {
     {
         DzAccountStatus st{};
         dztrader::copy_string(st.account_id, "CTP001", true);
-        st.trading_day = day_dz(2026, 9, 2);
+        st.date = day_dz(2026, 9, 2);
         st.state = DZ_ACCOUNT_READY;
         emit_struct(DZ_FRAME_ACCOUNT_STATUS, st);
     }
@@ -1079,7 +1079,7 @@ TEST_F(IngestWiringTest, AccountStatusFlipToReadyResetsGateForReusedSeq) {
         DzAccountStatus offline{};
         dztrader::copy_string(offline.account_id, "CTP001", true);
         offline.state = DZ_ACCOUNT_OFFLINE;
-        offline.trading_day = 0;
+        offline.date = 0;
         emit_struct(DZ_FRAME_ACCOUNT_STATUS, offline);
     }
     ASSERT_NE(nullptr, dz_next_event(ctx_));  // 2018 全量放行
@@ -1111,7 +1111,7 @@ TEST_F(IngestWiringTest, AccountStatusFlipToReadyResetsGateForReusedSeq) {
         DzAccountStatus ready{};
         dztrader::copy_string(ready.account_id, "CTP001", true);
         ready.state = DZ_ACCOUNT_READY;
-        ready.trading_day = day_dz(2026, 9, 1);
+        ready.date = day_dz(2026, 9, 1);
         emit_struct(DZ_FRAME_ACCOUNT_STATUS, ready);
     }
     ASSERT_NE(nullptr, dz_next_event(ctx_));  // 2018 全量放行
@@ -1155,7 +1155,7 @@ TEST_F(IngestWiringTest, AccountStatusReadyFlipCancelsPendingGapRetry) {
         DzAccountStatus offline{};
         dztrader::copy_string(offline.account_id, "CTP001", true);
         offline.state = DZ_ACCOUNT_OFFLINE;
-        offline.trading_day = 0;
+        offline.date = 0;
         emit_struct(DZ_FRAME_ACCOUNT_STATUS, offline);
     }
     ASSERT_NE(nullptr, dz_next_event(ctx_));
@@ -1163,7 +1163,7 @@ TEST_F(IngestWiringTest, AccountStatusReadyFlipCancelsPendingGapRetry) {
         DzAccountStatus ready{};
         dztrader::copy_string(ready.account_id, "CTP001", true);
         ready.state = DZ_ACCOUNT_READY;
-        ready.trading_day = day_dz(2026, 9, 1);
+        ready.date = day_dz(2026, 9, 1);
         emit_struct(DZ_FRAME_ACCOUNT_STATUS, ready);
     }
     const void* f = dz_next_event(ctx_);
@@ -1219,7 +1219,7 @@ TEST_F(IngestWiringTest, FirstReadyDoesNotResetGate) {
         DzAccountStatus ready{};
         dztrader::copy_string(ready.account_id, "CTP001", true);
         ready.state = DZ_ACCOUNT_READY;
-        ready.trading_day = dztrader::Date::from_year_month_day(2026, 9, 1).days_since_epoch();
+        ready.date = dztrader::Date::from_year_month_day(2026, 9, 1).days_since_epoch();
         emit_struct(DZ_FRAME_ACCOUNT_STATUS, ready);
     }
     ASSERT_NE(nullptr, dz_next_event(ctx_));

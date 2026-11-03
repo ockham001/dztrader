@@ -126,9 +126,9 @@ struct Case {
 
 /// @brief 一笔 tick 由日程独立推出的期望状态（仅自检读，计时区间不读）
 struct Expectation {
-    DzDate trading_day;  ///< 期望的当前 bar 交易日
-    int32_t begin_sec;   ///< 期望的当前 bar 桶起点（交易日内秒）
-    int32_t tsec;        ///< 期望的 last_tick_sec
+    DzDate date;        ///< 期望的当前 bar 交易日
+    int32_t begin_sec;  ///< 期望的当前 bar 桶起点（交易日内秒）
+    int32_t tsec;       ///< 期望的 last_tick_sec
 };
 
 /// @brief 一个可重放的 tick 块：setup → timed（全部被测路径）→ teardown
@@ -308,7 +308,7 @@ Block build_block(const Case& the_case) {
  * @return true = 交易日或桶起点发生变化
  */
 bool bar_changes(const Expectation& a, const Expectation& b) {
-    return a.trading_day != b.trading_day || a.begin_sec != b.begin_sec;
+    return a.date != b.date || a.begin_sec != b.begin_sec;
 }
 
 /// @brief 丢弃计数是否全为 0（任何丢弃都说明日程与表不匹配，数值不可信）
@@ -351,10 +351,10 @@ int64_t check_segment(IntradayBarBuilder<NullBarSink>& builder,
             field = "has_current_bar";
         } else {
             const Bar& bar = builder.current_bar();
-            if (bar.trading_day != want.trading_day) {
-                field = "trading_day";
-                actual = bar.trading_day;
-                wanted = want.trading_day;
+            if (bar.date != want.date) {
+                field = "date";
+                actual = bar.date;
+                wanted = want.date;
             } else if (bar.begin_sec != want.begin_sec) {
                 field = "begin_sec";
                 actual = bar.begin_sec;

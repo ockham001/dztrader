@@ -329,7 +329,7 @@ TEST_F(IntradayBarGuardTest, ForwardTradingDayInSameBucketNeverPublishesNegative
     const Bar* closed = last_event_bar(sink_, EventKind::Close);
     ASSERT_NE(closed, nullptr);
     EXPECT_TRUE(closed->is_final);
-    EXPECT_EQ(closed->trading_day, TRADING_DAY);
+    EXPECT_EQ(closed->date, TRADING_DAY);
     EXPECT_EQ(closed->begin_sec, TSEC_09_00);
     // 被收的正是旧交易日那根，内容未被新日 tick 污染（is_final 由 close 置位，其余逐字段比对）
     EXPECT_EQ(closed->last_tick_sec, reference.last_tick_sec);
@@ -345,7 +345,7 @@ TEST_F(IntradayBarGuardTest, ForwardTradingDayInSameBucketNeverPublishesNegative
 
     ASSERT_TRUE(builder_.has_current_bar());
     const Bar& bar = builder_.current_bar();
-    EXPECT_EQ(bar.trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(bar.date, TRADING_DAY + 1);
     EXPECT_EQ(bar.begin_sec, TSEC_09_00);  // 同一桶：begin_sec 不变
     EXPECT_EQ(bar.volume, 3);              // 以 0 为基准，不是 3 - 15
     EXPECT_DOUBLE_EQ(bar.turnover, 300.0);

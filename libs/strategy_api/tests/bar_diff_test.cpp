@@ -10,7 +10,7 @@
  * 硬验收目标：同一 tick 流分别喂入被测 builder 与本仓测试内的旧版参考实现
  * （`legacy_bar_oracle.h`，按 2023-08 前实盘版本的「预计算 18:00 分钟网格 + 字符串时间键」
  * 查表语义独立实现），逐根比较 bar 的
- * `trading_day/begin_sec/last_tick_sec/OHLC/volume/turnover/open_interest/cum_volume/cum_turnover`
+ * `date/begin_sec/last_tick_sec/OHLC/volume/turnover/open_interest/cum_volume/cum_turnover`
  * （另加 `period_sec/is_final`，共 14 个字段），证明新实现没有改变旧版的数据语义。
  *
  * ## 允许差异白名单（显式列出；任何放宽都必须同步改本文件与 issue #92）

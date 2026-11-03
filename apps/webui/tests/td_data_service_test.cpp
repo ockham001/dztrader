@@ -376,7 +376,7 @@ TEST_F(TdDataServiceTest, Ready2018TriggersRebuildFromDb) {
     DzAccountStatus ready{};
     dztrader::copy_string(ready.account_id, "CTP001", true);
     ready.state = DZ_ACCOUNT_READY;
-    ready.trading_day = dztrader::Date::from_year_month_day(2026, 9, 1).days_since_epoch();
+    ready.date = dztrader::Date::from_year_month_day(2026, 9, 1).days_since_epoch();
     feed_frame(router, DZ_FRAME_ACCOUNT_STATUS, ready);
 
     const auto& positions = svc.positions();
@@ -406,7 +406,7 @@ TEST_F(TdDataServiceTest, OfflineClearsMirror) {
     DzAccountStatus ready{};
     dztrader::copy_string(ready.account_id, "CTP001", true);
     ready.state = DZ_ACCOUNT_READY;
-    ready.trading_day = dztrader::Date::from_year_month_day(2026, 9, 1).days_since_epoch();
+    ready.date = dztrader::Date::from_year_month_day(2026, 9, 1).days_since_epoch();
     feed_frame(router, DZ_FRAME_ACCOUNT_STATUS, ready);
     ASSERT_EQ(1u, svc.positions().size());
 
@@ -414,7 +414,7 @@ TEST_F(TdDataServiceTest, OfflineClearsMirror) {
     DzAccountStatus offline{};
     dztrader::copy_string(offline.account_id, "CTP001", true);
     offline.state = DZ_ACCOUNT_OFFLINE;
-    offline.trading_day = 0;
+    offline.date = 0;
     feed_frame(router, DZ_FRAME_ACCOUNT_STATUS, offline);
 
     EXPECT_EQ(0u, svc.positions().size());
@@ -502,7 +502,7 @@ TEST_F(TdDataServiceTest, ReadyOneAccountKeepsOtherInFlightData) {
     DzAccountStatus ready_b{};
     dztrader::copy_string(ready_b.account_id, "CTP002", true);
     ready_b.state = DZ_ACCOUNT_READY;
-    ready_b.trading_day = dztrader::Date::from_year_month_day(2026, 9, 1).days_since_epoch();
+    ready_b.date = dztrader::Date::from_year_month_day(2026, 9, 1).days_since_epoch();
     feed_frame(router, DZ_FRAME_ACCOUNT_STATUS, ready_b);
 
     // A 在途委托/成交仍完整 (整库重建会误清 — 追加流不清自愈)。
@@ -830,7 +830,7 @@ TEST_F(TdDataServiceTest, RebuildMirrorOnlyCurrentTradingDay) {
     DzAccountStatus ready{};
     dztrader::copy_string(ready.account_id, "CTP001", true);
     ready.state = DZ_ACCOUNT_READY;
-    ready.trading_day = dztrader::Date::from_year_month_day(2026, 9, 2).days_since_epoch();
+    ready.date = dztrader::Date::from_year_month_day(2026, 9, 2).days_since_epoch();
     feed_frame(router, DZ_FRAME_ACCOUNT_STATUS, ready);
 
     // 镜像只含当日 (20260902): orders 1 条 (order_id=3), trades 1 条 (T2)

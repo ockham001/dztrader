@@ -117,13 +117,13 @@ TEST(ProcessMirrorTest, UpdateConfigOnly) {
 
 TEST(ProcessMirrorTest, UpdateGatewayStatusOnly) {
     ProcessMirror mirror;
-    const nlohmann::json status = {{"login_state", "online"}, {"trading_day", "20260704"}};
+    const nlohmann::json status = {{"login_state", "online"}, {"date", "20260704"}};
     mirror.update_gateway_status("dzmd_ctp", status);
 
     auto got = mirror.get_gateway_status("dzmd_ctp");
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ((*got)["login_state"], "online");
-    EXPECT_EQ((*got)["trading_day"], "20260704");
+    EXPECT_EQ((*got)["date"], "20260704");
 }
 
 TEST(ProcessMirrorTest, UpdateConfigThenGatewayStatusIndependent) {

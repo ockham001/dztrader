@@ -61,7 +61,7 @@ namespace dztrader::bar {
  * @note 交易日变化按「换根」处理：交易日变大的第一笔有效 tick 到来时，先以 `is_final=true`
  *       关闭当日最后一根 bar，再开新交易日首根（即便落在同一桶起点也换根），累计基准重置
  *       为 0，故新日首笔 tick 的量额 delta 从 0 起算、不跨日累加；被丢弃的新日 tick
- *       （非交易小节/非法价格/坏量）不切日。`trading_day` 变小或 `date` 非正的 tick 按
+ *       （非交易小节/非法价格/坏量）不切日。tick 的 `date` 小于当前 bar 或非正的 tick 按
  *       乱序丢弃并计入 `out_of_order`；没有 tick 的交易日不生成空 bar（惰性收盘）。夜盘
  *       跨午夜不切日（`date` 未变即同一交易日）。
  *
@@ -113,7 +113,7 @@ public:
      * 6. 同一交易日内累计量或累计额倒退（含 NaN/Inf）丢弃并计入 `bad_volume`。
      *
      * 基准取自最近一笔已接受 tick 的累计量额：当前 bar，或 restore final 恢复的基准（同交易日
-     * 时）。交易日变化必定换根（见下），故有当前 bar 时 `bar_.trading_day` 恒等于最近已接受
+     * 时）。交易日变化必定换根（见下），故有当前 bar 时 `bar_.date` 恒等于最近已接受
      * tick 的交易日，`bar_.last_tick_sec`/`bar_.cum_*` 即该 tick 的时间与累计。
      *
      * @param tick 行情快照（调用方保证属于本实例绑定的合约）
@@ -130,12 +130,11 @@ public:
             return;
         }
         if (has_bar_) {
-            if (tick.date < bar_.trading_day ||
-                (tick.date == bar_.trading_day && tsec < bar_.last_tick_sec)) {
+            if (tick.date < bar_.date || (tick.date == bar_.date && tsec < bar_.last_tick_sec)) {
                 ++stats_.out_of_order;
                 return;
             }
-        } else if (restored_final_ && tick.date < restored_final_bar_.trading_day) {
+        } else if (restored_final_ && tick.date < restored_final_bar_.date) {
             ++stats_.out_of_order;
             return;
         }
@@ -269,7 +268,7 @@ private:
      */
     [[nodiscard]] bool restored_final_accepts(const DzTick& tick,
                                               int32_t begin_sec) const noexcept {
-        return !restored_final_ || tick.date > restored_final_bar_.trading_day ||
+        return !restored_final_ || tick.date > restored_final_bar_.date ||
                begin_sec > restored_final_bar_.begin_sec;
     }
 
@@ -283,7 +282,7 @@ private:
      * @return true = 累计量额没有倒退，可接受
      */
     [[nodiscard]] bool cumulative_basis_ok(const DzTick& tick) const noexcept {
-        const bool same_day_basis = has_day_basis() && tick.date == day_basis_trading_day();
+        const bool same_day_basis = has_day_basis() && tick.date == day_basis_date();
         const int64_t basis_volume = same_day_basis ? day_basis_cum_volume() : 0;
         const double basis_turnover = same_day_basis ? day_basis_cum_turnover() : 0.0;
         // NaN/Inf 成交额不参与比较，用 isfinite 显式拒掉（否则 Inf 会永久毒化后续差分）。
@@ -295,8 +294,8 @@ private:
     [[nodiscard]] bool has_day_basis() const noexcept { return has_bar_ || restored_final_; }
 
     /// @brief 累计量额基准所属交易日（以 has_day_basis() 为 true 为前提）
-    [[nodiscard]] DzDate day_basis_trading_day() const noexcept {
-        return has_bar_ ? bar_.trading_day : restored_final_bar_.trading_day;
+    [[nodiscard]] DzDate day_basis_date() const noexcept {
+        return has_bar_ ? bar_.date : restored_final_bar_.date;
     }
 
     /// @brief 累计成交量基准（以 has_day_basis() 为 true 为前提）
@@ -325,9 +324,8 @@ private:
                 "restore period mismatch | builder_period_sec=" + std::to_string(period_sec_) +
                 " bar_period_sec=" + std::to_string(bar.period_sec));
         }
-        if (bar.trading_day <= 0) {
-            throw std::invalid_argument("restore invalid trading_day | trading_day=" +
-                                        std::to_string(bar.trading_day));
+        if (bar.date <= 0) {
+            throw std::invalid_argument("restore invalid date | date=" + std::to_string(bar.date));
         }
         if (bar.begin_sec < 0 || bar.begin_sec > MAX_TSEC || bar.begin_sec % period_sec_ != 0) {
             throw std::invalid_argument(
@@ -457,7 +455,7 @@ private:
             begin_bar(tick, begin_sec, tsec, is_auction);
             return false;
         }
-        if (begin_sec != bar_.begin_sec || tick.date != bar_.trading_day) {
+        if (begin_sec != bar_.begin_sec || tick.date != bar_.date) {
             finalize_bar(is_auction);
             begin_bar(tick, begin_sec, tsec, is_auction);
             return false;
@@ -485,11 +483,11 @@ private:
      *                   O=H=L=C 覆盖口径
      */
     void begin_bar(const DzTick& tick, int32_t begin_sec, int32_t tsec, bool is_auction) {
-        const bool same_day = has_day_basis() && tick.date == day_basis_trading_day();
+        const bool same_day = has_day_basis() && tick.date == day_basis_date();
         bar_start_cum_volume_ = same_day ? day_basis_cum_volume() : 0;
         bar_start_cum_turnover_ = same_day ? day_basis_cum_turnover() : 0.0;
         bar_ = Bar{};
-        bar_.trading_day = tick.date;
+        bar_.date = tick.date;
         bar_.begin_sec = begin_sec;
         bar_.period_sec = period_sec_;
         bar_.is_final = false;

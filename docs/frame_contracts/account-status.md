@@ -6,7 +6,7 @@
 
 类型层真相源：`libs/strategy_api/include/dztrader/struct.h`（`DzAccountStatus`）、`libs/strategy_api/include/dztrader/data_type.h`（`DzAccountState` 三态枚举及 `DZ_ACCOUNT_*` 宏）、`libs/core/include/dztrader/core/core_struct.h`（`DzAccountStatusReq`）。
 
-**实现注记**：契约先行——字段名 `date`（原 `trading_day`）与日切强制重推由后续实现票落地；dzweb 不再做交易记录镜像重建（改为在线账户集合 + `data_changed`）。
+**实现注记**：字段名 `date`（原 `trading_day`）已随 #243 落地；日切强制重推由后续实现票落地。dzweb 不再做交易记录镜像重建（改为在线账户集合 + `data_changed`）。
 
 四端职责：
 

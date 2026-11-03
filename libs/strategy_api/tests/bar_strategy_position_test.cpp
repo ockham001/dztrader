@@ -463,7 +463,7 @@ TEST(Tier1Test, EntryAndExitStampsUseTheBarStandardEndTime) {
     const auto ctx = make_ctx();
     // 第一根：begin_sec = 0，period_sec = 60 → 标准结束时间 = 60s = 墙钟 18:01:00
     dztrader::bar::Bar first{};
-    first.trading_day = kTradingDay;
+    first.date = kTradingDay;
     first.begin_sec = 0;
     first.period_sec = 60;
     first.close = 100.0;
@@ -480,7 +480,7 @@ TEST(Tier1Test, EntryAndExitStampsUseTheBarStandardEndTime) {
 
     // 第二根：跨交易日、900 秒周期 → 标准结束时间 = 300 + 900 = 1200s（tsec）
     dztrader::bar::Bar second{};
-    second.trading_day = kTradingDay + 1;
+    second.date = kTradingDay + 1;
     second.begin_sec = 300;
     second.period_sec = 900;
     second.close = 95.0;
@@ -498,7 +498,7 @@ TEST(Tier1Test, EntryAndExitStampsUseTheBarStandardEndTime) {
 
     // 第三根：加仓更新 last_entry_*，不动 entry_*
     dztrader::bar::Bar third{};
-    third.trading_day = kTradingDay + 1;
+    third.date = kTradingDay + 1;
     third.begin_sec = 1200;
     third.period_sec = 900;
     third.close = 95.0;
@@ -523,7 +523,7 @@ TEST(Tier1Test, ProfitReadsTheWindowCloseAndMultipliesContractMultiplier) {
     // 回调门禁之下 B 只在窗口填满后才会被回调；这里不需要推进 32 根，只验证盈亏口径，
     // 所以直接推进一根（`advance_bar` 不判门禁，门禁在 A 的分发里）。
     dztrader::bar::Bar bar{};
-    bar.trading_day = kTradingDay;
+    bar.date = kTradingDay;
     bar.begin_sec = 0;
     bar.period_sec = 60;
     bar.close = 100.0;
@@ -577,7 +577,7 @@ TEST(Tier1Test, ProfitExtremesUpdatePerCloseResetOnOpenAndZeroAfterFlat) {
     const auto ctx = make_ctx();
 
     dztrader::bar::Bar bar{};
-    bar.trading_day = kTradingDay;
+    bar.date = kTradingDay;
     bar.begin_sec = 0;
     bar.period_sec = 60;
     bar.close = 100.0;

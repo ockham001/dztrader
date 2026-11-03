@@ -697,7 +697,7 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
         (void)drain_available(*reader_);  // 排空并捕获 2018 payload 到 account_status_frames_
         for (const auto& s : account_status_frames_) {
             if (std::string(s.account_id) == "CTP001" && s.state == DZ_ACCOUNT_OFFLINE &&
-                std::string(s.gateway_name) == "dztd_ctp" && s.trading_day == 0) {
+                std::string(s.gateway_name) == "dztd_ctp" && s.date == 0) {
                 return true;
             }
         }

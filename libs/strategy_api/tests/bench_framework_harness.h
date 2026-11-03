@@ -342,7 +342,7 @@ private:
             cum_turnover = 0.0;
         }
         bar::Bar one{};
-        one.trading_day = kFirstTradingDay + static_cast<DzDate>(i / bars_per_day);
+        one.date = kFirstTradingDay + static_cast<DzDate>(i / bars_per_day);
         one.begin_sec = index * bar_sec;
         one.last_tick_sec = one.begin_sec + bar_sec - 1;
         one.period_sec = bar_sec;

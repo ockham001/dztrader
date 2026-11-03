@@ -8,7 +8,7 @@
 
 网关的动态状态（连接/登录/断开等）与步骤进度由 `RTN_PROGRESS`（契约 progress）覆盖，本帧不包含状态与进度字段。登录/连接**失败原因**由本帧 `last_error` 承载（见「失败语义」）。
 
-**实现注记**：JSON 键 `date`（原 `trading_day`）的改名涉及 `apps/ctp/md/`（生产锁定目录，AGENTS 硬门禁 1），实现按硬门禁流程单独确认后执行（已获批准：仅改 payload 的 JSON 键，契约 + 前端 + 测试同步）；本轮只改契约。
+**实现注记**：JSON 键 `date`（原 `trading_day`）已随 #243 落地（`apps/ctp/md/` 仅改 payload 的 JSON 键，按 AGENTS 硬门禁 1 确认后执行；契约 + 前端 + 测试同步）。
 
 ---
 

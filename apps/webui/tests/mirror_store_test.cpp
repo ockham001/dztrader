@@ -15,9 +15,9 @@ TEST(MirrorStoreTest, UpdateAndReadDomain) {
     m.update("dzmd_ctp", "log_config", nlohmann::json{{"level", "info"}});
     EXPECT_EQ(m.instance("dzmd_ctp")["log_config"]["level"], "info");
     // 同实例另一领域互不影响
-    m.update("dzmd_ctp", "md_status", nlohmann::json{{"trading_day", "20260812"}});
+    m.update("dzmd_ctp", "md_status", nlohmann::json{{"date", "20260812"}});
     EXPECT_EQ(m.instance("dzmd_ctp")["log_config"]["level"], "info");
-    EXPECT_EQ(m.instance("dzmd_ctp")["md_status"]["trading_day"], "20260812");
+    EXPECT_EQ(m.instance("dzmd_ctp")["md_status"]["date"], "20260812");
     // 快照含全部
     EXPECT_EQ(m.snapshot()["dzmd_ctp"]["log_config"]["level"], "info");
 }
@@ -33,7 +33,7 @@ TEST(MirrorStoreTest, UpdateOverwritesSameDomain) {
 TEST(MirrorStoreTest, EraseDomain) {
     MirrorStore m;
     m.update("dzmd_ctp", "log_config", nlohmann::json{{"level", "info"}});
-    m.update("dzmd_ctp", "md_status", nlohmann::json{{"trading_day", "20260812"}});
+    m.update("dzmd_ctp", "md_status", nlohmann::json{{"date", "20260812"}});
     m.erase("dzmd_ctp", "md_status");
     EXPECT_FALSE(m.instance("dzmd_ctp").contains("md_status"));
     EXPECT_TRUE(m.instance("dzmd_ctp").contains("log_config"));  // 其他领域保留

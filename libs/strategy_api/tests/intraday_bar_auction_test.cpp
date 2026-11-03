@@ -78,7 +78,7 @@ TEST_F(IntradayBarAuctionTest, FirstAuctionTickEmitsOpenThenUpdate) {
     expect_event(sink_.events[1], EventKind::Update, true, TSEC_09_00, tsec_of(CLOCK_08_59_20));
     for (const BarEvent& event : sink_.events) {
         EXPECT_FALSE(event.bar.is_final);
-        EXPECT_EQ(event.bar.trading_day, TRADING_DAY);
+        EXPECT_EQ(event.bar.date, TRADING_DAY);
         EXPECT_EQ(event.bar.period_sec, 60);
         expect_auction_ohlc(event.bar, 100.5);  // 归后一小节首桶，O=H=L=C=竞价价
         EXPECT_EQ(event.bar.volume, 10);
@@ -225,13 +225,13 @@ TEST_F(IntradayBarAuctionTest, NextTradingDayAuctionClosesPreviousDayBarAndOpens
     ASSERT_EQ(sink_.events.size(), 5U);
     expect_event(sink_.events[2], EventKind::Close, true, TSEC_15_00 - 60, TSEC_15_00);
     EXPECT_TRUE(sink_.events[2].bar.is_final);
-    EXPECT_EQ(sink_.events[2].bar.trading_day, TRADING_DAY);
+    EXPECT_EQ(sink_.events[2].bar.date, TRADING_DAY);
     expect_event(sink_.events[3], EventKind::Open, true, TSEC_09_00, tsec_of(CLOCK_08_59_20));
     expect_event(sink_.events[4], EventKind::Update, true, TSEC_09_00, tsec_of(CLOCK_08_59_20));
-    EXPECT_EQ(sink_.events[4].bar.trading_day, NEXT_TRADING_DAY);
+    EXPECT_EQ(sink_.events[4].bar.date, NEXT_TRADING_DAY);
     EXPECT_EQ(sink_.events[4].bar.volume, 130);  // 新日累计基准归零
     ASSERT_TRUE(builder_.has_current_bar());
-    EXPECT_EQ(builder_.current_bar().trading_day, NEXT_TRADING_DAY);
+    EXPECT_EQ(builder_.current_bar().date, NEXT_TRADING_DAY);
     EXPECT_EQ(builder_.current_bar().begin_sec, TSEC_09_00);
     EXPECT_EQ(builder_.current_bar().last_tick_sec, tsec_of(CLOCK_08_59_20));
     EXPECT_EQ(builder_.stats().out_of_order, 0U);
@@ -253,7 +253,7 @@ TEST_F(IntradayBarAuctionTest, StreamEndingInsideAuctionWindowLeavesLastBarFormi
     EXPECT_EQ(count_events(sink_, EventKind::Update), 2);
     ASSERT_TRUE(builder_.has_current_bar());
     EXPECT_FALSE(builder_.current_bar().is_final);
-    EXPECT_EQ(builder_.current_bar().trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(builder_.current_bar().date, TRADING_DAY + 1);
     EXPECT_EQ(builder_.current_bar().volume, 130);  // 新日累计基准归零
 }
 
@@ -465,15 +465,15 @@ TEST(IntradayBarAuctionOnlyStreamTest, ConsecutiveAuctionOnlyDaysEmitCompleteSeq
     expect_event(sink.events[0], EventKind::Open, true, TSEC_09_00, tsec_of(CLOCK_08_59_20));
     expect_event(sink.events[1], EventKind::Update, true, TSEC_09_00, tsec_of(CLOCK_08_59_20));
     expect_event(sink.events[2], EventKind::Close, true, TSEC_09_00, tsec_of(CLOCK_08_59_20));
-    EXPECT_EQ(sink.events[2].bar.trading_day, TRADING_DAY);
+    EXPECT_EQ(sink.events[2].bar.date, TRADING_DAY);
     EXPECT_TRUE(sink.events[2].bar.is_final);
     expect_event(sink.events[3], EventKind::Open, true, TSEC_09_00, tsec_of(CLOCK_08_59_20));
-    EXPECT_EQ(sink.events[3].bar.trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(sink.events[3].bar.date, TRADING_DAY + 1);
     expect_event(sink.events[4], EventKind::Update, true, TSEC_09_00, tsec_of(CLOCK_08_59_20));
     EXPECT_EQ(sink.events[4].bar.volume, 10);  // 新日累计基准归零
 
     EXPECT_EQ(sink.events.back().kind, EventKind::Update);
-    EXPECT_EQ(sink.events.back().bar.trading_day, TRADING_DAY + kDays - 1);
+    EXPECT_EQ(sink.events.back().bar.date, TRADING_DAY + kDays - 1);
     EXPECT_FALSE(builder.current_bar().is_final);
     const BarBuilderStats stats = builder.stats();
     EXPECT_EQ(stats.out_of_session, 0U);

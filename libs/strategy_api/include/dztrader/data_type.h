@@ -149,8 +149,20 @@ typedef char DzInstrumentId[88];
 /** @brief 账户标识 */
 typedef char DzAccountId[32];
 
-/** @brief 策略 ID */
+/** @brief 策略 ID（策略可执行文件名裸名；非策略单用 `DZ_STRATEGY_ID_*` 保留值） */
 typedef char DzStrategyId[64];
+
+/* 保留策略标识（契约 td-order）：非任何策略所下的订单用这些值表达，不参与策略过滤、
+ * 也不作为策略身份出现在 SDK/UI 的策略维度。以 '/' 开头，与策略可执行文件名天然不冲突。 */
+
+/** @brief 保留策略标识：外部终端订单 */
+#define DZ_STRATEGY_ID_EXTERNAL "/external"
+
+/** @brief 保留策略标识：平台手工订单 */
+#define DZ_STRATEGY_ID_MANUAL "/manual"
+
+/** @brief 保留策略标识：一键同步订单 */
+#define DZ_STRATEGY_ID_SYNC "/sync"
 
 /** @brief 交易所 ID */
 typedef char DzExchangeId[16];

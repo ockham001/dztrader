@@ -21,8 +21,8 @@ bool account_query_matches(const std::vector<std::string>& configured, const std
 bool should_push_account_status(DzAccountState last, DzAccountState next, bool force);
 /// "YYYYMMDD" -> 距纪元天数; 空串/非法回落 0 (契约: 非 Ready 或缺失交易日 = 0)。
 int32_t epoch_day_from_yyyymmdd(const std::string& yyyymmdd);
-/// 契约 account-status: 帧内 trading_day 仅 Ready 时为登录返回交易日, 其余状态恒 0。
-int32_t account_status_trading_day(DzAccountState state, const std::string& trading_day);
+/// 契约 account-status: 帧内 `date` 仅 Ready 时为登录返回交易日, 其余状态恒 0。
+int32_t account_status_trading_day(DzAccountState state, const std::string& date);
 }  // namespace dztrader::ctp
 
 TEST(AccountQueryRoute, EmptyQueryMeansAll) {

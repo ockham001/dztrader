@@ -46,8 +46,7 @@ static_assert(std::is_trivially_copyable_v<dztrader::bar::Bar>,
 
 /// @brief Bar 全部公开字段的比较表（顺序即逐字段比较顺序）
 inline constexpr std::array<BarFieldSpec, 14> BAR_FIELDS = {{
-    {"trading_day", false, [](const auto& bar) { return static_cast<int64_t>(bar.trading_day); },
-     nullptr},
+    {"date", false, [](const auto& bar) { return static_cast<int64_t>(bar.date); }, nullptr},
     {"begin_sec", false, [](const auto& bar) { return static_cast<int64_t>(bar.begin_sec); },
      nullptr},
     {"last_tick_sec", false,
@@ -161,11 +160,11 @@ inline std::string describe_diff(const BarSequenceDiff& diff,
     std::ostringstream stream;
     stream << diff.reason << " | first_mismatch_bar=" << diff.index;
     if (diff.index < actual.size()) {
-        stream << " actual_id=(" << actual[diff.index].trading_day << ","
-               << actual[diff.index].begin_sec << ")";
+        stream << " actual_id=(" << actual[diff.index].date << "," << actual[diff.index].begin_sec
+               << ")";
     }
     if (diff.index < expected.size()) {
-        stream << " expected_id=(" << expected[diff.index].trading_day << ","
+        stream << " expected_id=(" << expected[diff.index].date << ","
                << expected[diff.index].begin_sec << ")";
     }
     for (const FieldMismatch& mismatch : diff.mismatches) {
