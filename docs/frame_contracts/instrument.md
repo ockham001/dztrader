@@ -3,9 +3,9 @@
 本契约规定合约信息的**查询化通路**。
 
 合约静态数据**不再走帧推送**：`DZ_FRAME_TD_INSTRUMENT` 与 `DzInstrumentInfo`/`DzInstrumentLeg`/`DzInstrumentExt`/`DzInstrumentTickTier`
-已全链路删除、帧号释放（ADR 0011）；静态数据一律经**统一 td 库** `instruments` 表查询（`dz_db_query_instruments`）。
+已全链路删除、帧号释放（ADR 0011）；静态数据一律经**交易库（`trade.db`）** `instruments` 表查询（`dz_db_query_instruments`）。
 类型层真相源：`libs/tdstore/include/dztrader/tdstore/records.h`（`InstrumentRecord`）、
-`libs/tdstore/include/dztrader/tdstore/schema_catalog.h`（`tdstore::schema_catalog`，TD schema v5）。总则见《帧契约：通用规则》。
+`libs/tdstore/include/dztrader/tdstore/schema_catalog.h`（`tdstore::schema_catalog`，交易库 schema v1）。总则见《帧契约：通用规则》。
 
 ## 1. 覆盖帧
 
@@ -13,12 +13,12 @@
 
 ## 2. 语义 / 数据流 / 路由
 
-**数据流**（无帧通路；数据在统一库，经 DB 查询）：
+**数据流**（无帧通路；数据在交易库，经 DB 查询）：
 
 ```
-登录（含重连重登）:  td 全量查合约 ─→ tdstore 落库统一 td 库 instruments 表   （不再广播合约帧）
+登录（含重连重登）:  td 全量查合约 ─→ tdstore 落库交易库 trade.db 的 instruments 表   （不再广播合约帧）
 读数据:              策略 dz_db_query_instruments(db, instrument_id, fields)
-                      └─ libs/db → tdstore 投影查询 → DzResultSet
+                      └─ SDK 内部 DB 层 → tdstore 投影查询 → DzResultSet
 ```
 
 - **前端入口**：无（无帧通路，无 REST/WS 入口）。
@@ -30,7 +30,7 @@
 ## 4. instruments 表字段（23 列 + 2 元数据）
 
 真相源：`libs/tdstore/include/dztrader/tdstore/records.h`（`InstrumentRecord`）与
-`libs/tdstore/include/dztrader/tdstore/schema_catalog.h`（当前 schema 声明：`tdstore::schema_catalog`/`instruments_schema()`，`kTdSchemaVersion=5`；v4 = 4 rename + 5 add；v5 = 删除 margin_rates/commission_rates（ADR 0013））；迁移历史（v1..v5 DDL）真相源：`libs/db/src/sqlite_migrations.cpp`。
+`libs/tdstore/include/dztrader/tdstore/schema_catalog.h`（schema v1 声明：`tdstore::schema_catalog`/`instruments_schema()`，库版本号（SQLite `PRAGMA` 的 user_version）为 1；**无迁移链**——版本不符即旧库改名重建、旧 dev 库直接丢弃，ADR 0041）。
 下表 23 列 + 元数据 2 列 = 25 列，即 `fields` 白名单全集（§7）。
 
 | 区 | 列 | SQLite 类型 | 哨兵 / 约束 | 来源与填值 |
@@ -75,7 +75,7 @@
   已随合约结构体退役消除（`InstrumentRecord` 默认 -1、DB 列 `DEFAULT -1`）。
 - **`currency`** 空=跟随账户本币；**`base_asset`** 空=不适用；`is_inverse` 0=线性、1=反向（反向合约币种取 `base_asset`）。
 - **`underlying_multiple <= 0`** = NA（语义核对项 §11）。
-- v3 物理列 `settlement_method`/`option_exercise_style`/`option_series` **保留但不承诺、不可查询**（§8）；
+- 非承诺物理列 `settlement_method`/`option_exercise_style`/`option_series` **保留但不承诺、不可查询**（§8）；
   upsert SQL 不写这 3 列，`INSERT OR REPLACE` 的整行替换语义使其在**任意 upsert 后被重置为列默认值**
   （当前无消费方）。
 
@@ -118,14 +118,12 @@
 DzResultSet* dz_db_query_instruments(DzDatabase* db, const char* instrument_id, const char* fields);
 ```
 
-`db` 为 `dz_db_open` 打开的统一 td 库（`paths::td_db()` = `<DZTRADER_HOME>/db/td.db`，ADR 0012；只读打开，
-库不存在时打开失败）。`dz_db_open_default()` 按配置解析打开 td 库（优先级：环境变量
-`DZTRADER_DB_BACKEND`/`DZTRADER_DB_OPT_<KEY>` > `<DZTRADER_HOME>/configs/database.json` 的 `td` 段 > 内置默认
-`sqlite` + `<DZTRADER_HOME>/db/td.db`；配置文件缺失时自动生成，ADR 0016）；默认配置下与
-`dz_db_open(paths::td_db())` 等价。非 sqlite 后端输出一次性护栏诊断（本轮 td 写端仍锁 SQLite，
-写端切换后删除该护栏），不做功能拦截。SDK 内部 ingest（水位装载/断档回补）在库打开失败后按
-退避窗口（默认 1s）重试：窗口内视为库不可用（降级不过滤、不再发起连接），窗口过后重试；
-配置解析失败不走该退避（配置错误单独诊断）。查询走 `libs/db` → `tdstore::query_instruments`，结果映射为 `DzResultSet`。
+`db` 为 `dz_db_open` 打开的交易库（`<DZTRADER_HOME>/db/trade.db`，ADR 0041；**只读打开**，库不存在时
+打开失败、不自动建库）。`dz_db_open_default()` = 固定打开本地交易库、**首次调用懒打开并缓存进程级句柄**
+（SDK 初始化不打开任何 DB；`dz_db_open(path)` 保留显式 SQLite 路径语义，ADR 0044）。交易库固定本地
+SQLite，`database.json` 不再承担交易数据后端选择（其交易段失效）。SDK 内部 ingest（水位装载/断档回补）在
+库打开失败后按退避窗口（默认 1s）重试：窗口内视为库不可用（降级不过滤、不再发起连接），窗口过后重试。
+查询走 SDK 内部 DB 层 → `tdstore::query_instruments`，结果映射为 `DzResultSet`。
 
 | 参数 | 语义 |
 |------|------|
@@ -141,7 +139,7 @@ DzResultSet* dz_db_query_instruments(DzDatabase* db, const char* instrument_id, 
 - 无匹配行 = 空结果集（非错误）：`dz_resultset_status` = 0、0 行，列元信息仍按请求填充（0 行可遍历列名/类型）。
 - 列类型映射：TEXT→`DZ_COL_TYPE_STRING`、INTEGER→`DZ_COL_TYPE_INT64`、REAL→`DZ_COL_TYPE_FLOAT64`。
 - 结果集由策略负责 `dz_resultset_close` 释放；遍历/取值 API 见 `api.h`。
-- 仅投影 `instruments` 表承诺列；v3 保留列（`settlement_method`/`option_exercise_style`/`option_series`）不可选。
+- 仅投影 `instruments` 表承诺列；非承诺物理列（`settlement_method`/`option_exercise_style`/`option_series`）不可选。
 
 **查询量级提示**：全表查询（`instrument_id` 为 NULL/空串）在万级行下约 10²ms / 10¹MB 量级（含全部 25 列）；
 建议按 `instrument_id` 精确查询或仅请求必需 `fields`（合约表为登录期全量 upsert，行数随在役合约增长）。
@@ -181,7 +179,7 @@ DzResultSet* rs = dz_db_query_instruments(db, instrument_id, "symbol,price_tick,
 - **更新节奏**：合约数据只在**账户登录/重连**时全量查询并 upsert（见下条）；数据一律经
   `dz_db_query_instruments` 读取，完成观测点 = 目标行 `updated_at` 推进（重新查询可见）。
 - **登录链路全量落库**：账户登录（含重连重登）在结算确认后全量 `ReqQryInstrument`，回报逐条经 tdstore upsert
-  统一库（`insert or replace`，`updated_at` 每次推进）；查询完成或失败驱动账户状态机（契约 account-status）。
+  交易库（`insert or replace`，`updated_at` 每次推进）；查询完成或失败驱动账户状态机（契约 account-status）。
 - **不响应** `QUERY_FULL_SNAPSHOT`（合约信息无快照协议；数据在库中随时可查）。
 
 ## 11. 已知边界与核对项
@@ -191,7 +189,8 @@ DzResultSet* rs = dz_db_query_instruments(db, instrument_id, "symbol,price_tick,
 3. **核对**：`UnderlyingMultiple` 语义（CFFEX 指数期权 / 商品期权各一例）。
 4. `OffsetConverter` 已实现未接入下单路径（独立待办，见 ADR 0008）。
 5. SDK `.so` 分发形态的 PIC 缺口（独立待办）。
-6. 旧 dev 库清理：按 td 进程分库的旧文件不再被读取（路径变更见 ADR 0012）；统一库 `db/td.db` 首次打开自动迁移到 schema v5。
+6. 旧 dev 库清理：旧 `db/td.db`（含旧 schema 与按 td 进程分库的旧文件）**直接丢弃**，无迁移链（ADR 0041）；
+   交易库 `db/trade.db` 由主进程（master）建库/重建，子进程打开失败时等待重试或降级。
    清理旧网关库：`rm -f $DZTRADER_HOME/flow/*/*.db`（仅旧网关库 `.db`；`$DZTRADER_HOME/flow/<gw>/`
    下 CTP 流文件不动——不确定时先 `ls` 确认）。
 7. 第 2、3 条在代码中以 `TODO(ctp-verify)` 标记（`grep -rn "TODO(ctp-verify)" apps libs`），完成后随结论一并移除。
@@ -202,10 +201,10 @@ DzResultSet* rs = dz_db_query_instruments(db, instrument_id, "symbol,price_tick,
 
 ## 13. 运维约束
 
-- **进程运行中禁止删除/替换/还原覆盖 `db/td.db`**（`rm`、`mv` 覆盖、从备份 `cp` 回滚等）：写连接持有旧 inode
+- **进程运行中禁止删除/替换/还原覆盖 `db/trade.db`**（`rm`、`mv` 覆盖、从备份 `cp` 回滚等）：写连接持有旧 inode
   继续写已被替换的文件，而新读者打开的是新路径文件，两侧看到不同数据（裂脑），无自动收敛机制。
   清库/还原/备份回滚必须停全部 td 与策略进程后操作。
-- **升级次序**：先启动 td（打开统一库完成 v5 迁移）再启动策略；反向次序下策略可能以旧 schema 打开库，
-  新查询可能遇旧 schema 短暂返回 NULL，迁移完成后恢复。
-- **新旧 td 不得混跑**：v5 迁移后旧版 td 打开新库会在准备费率语句时失败退出；新 td 迁移时旧 td 的
-  预编译语句失效、持久化批整批丢弃——升级须先停旧 td 再启新 td。
+- **建库与升级次序**：交易库 schema v1 **无迁移链**；版本不符/文件损坏时由 master 启动时把旧库改名保留并新建
+  （旧 dev 库直接丢弃）。升级须先停全部 td 与策略进程，再启动新版本（master 先建库/重建，再启动 td 与策略）。
+- **新旧 td 不得混跑**：schema v1 无兼容义务——旧版进程与新版进程对库版本号/表结构预期不同，混跑会产生
+  不可信结果；升级必须先停旧进程再启新进程。

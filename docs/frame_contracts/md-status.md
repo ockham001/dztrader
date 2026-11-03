@@ -8,6 +8,8 @@
 
 网关的动态状态（连接/登录/断开等）与步骤进度由 `RTN_PROGRESS`（契约 progress）覆盖，本帧不包含状态与进度字段。登录/连接**失败原因**由本帧 `last_error` 承载（见「失败语义」）。
 
+**实现注记**：JSON 键 `date`（原 `trading_day`）的改名涉及 `apps/ctp/md/`（生产锁定目录，AGENTS 硬门禁 1），实现按硬门禁流程单独确认后执行（已获批准：仅改 payload 的 JSON 键，契约 + 前端 + 测试同步）；本轮只改契约。
+
 ---
 
 ## 接口类型识别
@@ -28,7 +30,7 @@
 |---|---|---|
 | `api_version` | string | CTP API 版本字符串，构造时设置一次 |
 | `sys_version` | string | 登录响应中的系统版本；未登录/进入 Idle 时为空串 |
-| `trading_day` | string | 交易日 `"YYYYMMDD"`，登录响应填充；未登录/进入 Idle 时为空串 |
+| `date` | string | 会话交易日 `"YYYYMMDD"`（交易日，不是自然日），登录响应填充；未登录/进入 Idle 时为空串 |
 | `login_time` | string | 登录时间 `"YYYY-MM-DD HH:MM:SS"`（服务器本地时间，由登录响应时间戳转换），登录响应填充；未登录/进入 Idle 时为空串 |
 | `expected_subscribe_count` | uint | 期望订阅合约数（有订阅者的合约条目数） |
 | `subscribed_count` | uint | 已确认订阅合约数 |
@@ -40,7 +42,7 @@ JSON 示例：
 {
   "api_version": "v6.7.2",
   "sys_version": "v6.7.2_20240105",
-  "trading_day": "20260808",
+  "date": "20260808",
   "login_time": "2026-08-08 08:45:32",
   "expected_subscribe_count": 5000,
   "subscribed_count": 5000,
@@ -48,9 +50,9 @@ JSON 示例：
 }
 ```
 
-**清空语义**：进入未连接态（`Idle`）时 `sys_version`/`trading_day`/`login_time` 清空、订阅统计归零并推送；登录失败/登录响应解析失败时 `login_time` 清空并推送（防止前端误显示过期登录信息）。`last_error` 的清空规则见「失败语义」，**不随 `Idle` 清空**。前端依赖全量覆盖，不自行推断清空时机。
+**清空语义**：进入未连接态（`Idle`）时 `sys_version`/`date`/`login_time` 清空、订阅统计归零并推送；登录失败/登录响应解析失败时 `login_time` 清空并推送（防止前端误显示过期登录信息）。`last_error` 的清空规则见「失败语义」，**不随 `Idle` 清空**。前端依赖全量覆盖，不自行推断清空时机。
 
-**断线（`Disconnected`，SDK 自动重连中）期间的保留语义**：上述字段**不清空**——`trading_day` 的语义是当前交易日（由登录响应确定，是本交易日内全部业务数据的时间锚），断线不改变交易日；`sys_version`/`login_time` 同样保留，重连成功后由新登录响应覆盖。断线时推送本帧：`subscribed_count` 归零、`expected_subscribe_count` 保留。网关的连接/登录**状态**不经本帧传达（本帧无状态字段），前端状态感知以 `RTN_PROGRESS`（契约 progress）为准；断线时本帧推送的作用是同步订阅统计变化。
+**断线（`Disconnected`，SDK 自动重连中）期间的保留语义**：上述字段**不清空**——`date` 的语义是当前会话交易日（由登录响应确定，是本交易日内全部业务数据的时间锚），断线不改变交易日；`sys_version`/`login_time` 同样保留，重连成功后由新登录响应覆盖。断线时推送本帧：`subscribed_count` 归零、`expected_subscribe_count` 保留。网关的连接/登录**状态**不经本帧传达（本帧无状态字段），前端状态感知以 `RTN_PROGRESS`（契约 progress）为准；断线时本帧推送的作用是同步订阅统计变化。
 
 ### 失败语义（`last_error`）
 

@@ -27,7 +27,9 @@
 | WebSocket 协议 | frontend ↔ dzweb 的 WS 信封与差异、前端行为义务 |
 | REST API | frontend ↔ dzweb 的 REST 端点 |
 | 交易委托请求 | TD_ORDER_REQ / TD_ORDER_CANCEL_REQ |
-| TD 数据同步 | ORDER_REPORT / TRADE_REPORT / POSITION_INFO / TRADING_ACCOUNT（账户级 seq 水位、回补、重置、登录完成协议） |
+| TD 数据同步 | ORDER_REPORT / TRADE_REPORT / POSITION_INFO / TRADING_ACCOUNT（账户级 seq、登录日装载、回补、重置、登录完成协议） |
+| 交易网关配置 | TD_REQ_MODIFY_CONFIG / TD_RTN_CONFIG |
+| 交易网关状态 | TD_RTN_STATUS |
 
 > 历史：本目录于 2026-07 由 `docs/flow_contracts/` 演进而来（后改名 frame_contracts）。2026-08 整理时新增本总则，原 00-05 顺延为 01-06，原 06-misc 拆解归位，原 07-10 编号不变。2026-08-16 契约文件名去除序号前缀，代码与文档引用改「契约 + 短名」格式（短名即文件名去扩展名）。
 
@@ -224,8 +226,8 @@
 ## 10. 本轮范围与遗留
 
 - 本目录当前覆盖事件通道的低频控制/配置/通知帧。
-- **已覆盖**：策略帧（`DZ_FRAME_UI_INPUT`/`DZ_FRAME_OUTPUT_UI`/`DZ_FRAME_SET_LOGICAL_POSITION`，见《帧契约：策略》）；TD 数据同步（TD 推送 `DZ_FRAME_ORDER_REPORT`/`DZ_FRAME_TRADE_REPORT`/`DZ_FRAME_POSITION_INFO`/`DZ_FRAME_TRADING_ACCOUNT` 的账户级 seq 水位/回补/重置/登录完成协议，见《帧契约：TD 数据同步》）。
-- **未覆盖**（后续独立契约，本目录暂不收录）：交易帧（除《帧契约：交易委托请求》已覆盖的 `TD_ORDER_REQ`/`TD_ORDER_CANCEL_REQ`、《帧契约：账户登录状态》已覆盖的 `ACCOUNT_STATUS`/`TD_QUERY_ACCOUNT_STATUS`、《帧契约：TD 数据同步》已覆盖的 TD 推送 DZ_FRAME_ORDER_REPORT-DZ_FRAME_TRADING_ACCOUNT 外，其余交易控制帧（`DZ_FRAME_TD_REQ_MODIFY_CONFIG`、`DZ_FRAME_TD_RTN_STATUS` 等，见 `core_data_type.h`），TD 已实现大半）、行情/交易数据帧（`TICK`，struct payload）。
+- **已覆盖**：策略帧（`DZ_FRAME_UI_INPUT`/`DZ_FRAME_OUTPUT_UI`/`DZ_FRAME_SET_LOGICAL_POSITION`，见《帧契约：策略》）；TD 数据同步（TD 推送 `DZ_FRAME_ORDER_REPORT`/`DZ_FRAME_TRADE_REPORT`/`DZ_FRAME_POSITION_INFO`/`DZ_FRAME_TRADING_ACCOUNT` 的账户级 seq/登录日装载/回补/重置/登录完成协议，见《帧契约：TD 数据同步》）；交易网关配置与状态（`DZ_FRAME_TD_REQ_MODIFY_CONFIG`/`DZ_FRAME_TD_RTN_CONFIG`/`DZ_FRAME_TD_RTN_STATUS`，见《帧契约：交易网关配置》《帧契约：交易网关状态》）。完整清单见 [README](README.md) 目录地图。
+- **未覆盖**（后续独立契约，本目录暂不收录）：交易帧的其余部分——连接控制 `DZ_FRAME_TD_CONNECT`/`DZ_FRAME_TD_DISCONNECT` 与生命周期通知 `DZ_FRAME_NOTIFY_TD_STARTED`/`DZ_FRAME_NOTIFY_TD_STOPPED`/`DZ_FRAME_NOTIFY_TD_CONNECTED`/`DZ_FRAME_NOTIFY_TD_DISCONNECTED`；行情/交易数据帧（`TICK`，struct payload）。
 - `DZ_FRAME_SYS_SCHED`：该帧与其 payload（`DzSysSched`）已于 2026-08 随"系统调度域废弃"**从公开头移除**（此前无任何进程消费，md 已于 2026-07 移除处理），定义行一并删除、不再占号。策略侧定时需求由 `dz_schedule_*` 定时器接口承担（见《帧契约：策略》）。
 
 ---
