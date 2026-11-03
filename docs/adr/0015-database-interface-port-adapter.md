@@ -8,6 +8,8 @@ Accepted（2026-09-17）
 > [ADR 0016](0016-strategy-sdk-embedded-sql-drivers.md) 修订 —— 策略进程内嵌 SQLite + Boost.MySQL；
 > 本 ADR 决策 1/2/3/5 与接口三件套继续有效，代理适配器路径对 Mongo/原版 MySQL 继续保留。
 
+> 平台侧交易数据部分被 [ADR 0041](0041-sqlite-only-trade-store-schema-v1.md) 取代：`libs/db` 私有化进策略 SDK（[ADR 0044](0044-strategy-sdk-db-layer-privatized.md)），td / tdstore / dzweb 直连 SQLite；端口-适配器接口只在 SDK 内部保留。
+
 ## Context
 
 - 需求：事务域（instruments/orders/trades/positions/trading_accounts）与归档域（tick/bar，未实现）

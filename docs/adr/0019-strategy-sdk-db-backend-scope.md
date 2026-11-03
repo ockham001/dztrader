@@ -4,6 +4,8 @@
 
 Accepted（2026-10-18）
 
+> 交易数据后端部分被 [ADR 0041](0041-sqlite-only-trade-store-schema-v1.md) 取代：交易数据固定本地 SQLite（`db/trade.db`），SDK 内保留 MySQL 能力仅用于未来行情数据（[ADR 0044](0044-strategy-sdk-db-layer-privatized.md)）。
+
 ## Context
 
 - ADR 0015 定了端口-适配器接口，ADR 0016 决定 SQLite + Boost.MySQL **静态内嵌**进策略 SDK
