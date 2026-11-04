@@ -115,11 +115,8 @@ foreach(testfile ${WEBUI_TESTS})
         # 手抄 DDL 会让 schema 漂移在测试里静默通过。仅在需要建库的用例上引入该依赖。
         target_link_libraries(dzweb_${testname} PRIVATE dztdstore)
     endif()
-    if(MSVC AND testname MATCHES "^sysmon_")
-        # gtest 1.17 gtest-printers.h 在 MSVC /O2 下对 nlohmann::json 相关模板实例化
-        # 偶发 C4702（unreachable code），Release /WX 会升级为错误；仅豁免测试目标。
-        target_compile_options(dzweb_${testname} PRIVATE /wd4702)
-    endif()
+    # MSVC C4702（gtest + nlohmann::json）豁免已收敛到 cmake/DzTest.cmake 的
+    # dz_add_test（所有测试目标的唯一构造入口，不会漏）。
 endforeach()
 
 # ============================================================

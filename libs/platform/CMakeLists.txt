@@ -57,9 +57,5 @@ foreach(testfile ${PLATFORM_TESTS})
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(dzplatform_${testname} PRIVATE -Wno-missing-field-initializers)
     endif()
-    if(MSVC AND testname STREQUAL "sysmon_test")
-        # gtest 1.17 gtest-printers.h 在 MSVC /O2 下对 nlohmann::json 相关模板实例化
-        # 偶发 C4702（unreachable code），Release /WX 会升级为错误；仅豁免测试目标。
-        target_compile_options(dzplatform_${testname} PRIVATE /wd4702)
-    endif()
+    # MSVC C4702（gtest + nlohmann::json）豁免已收敛到 cmake/DzTest.cmake 的 dz_add_test。
 endforeach()
