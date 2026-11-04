@@ -26,6 +26,8 @@
 #include <string_view>
 #include <vector>
 
+#include "td_read_db.h"
+
 namespace dztrader::webui {
 
 /// dzweb 只读端认可的 trade.db schema 版本（SQLite `PRAGMA user_version`，契约 rest §2.9.8）。
@@ -95,8 +97,10 @@ public:
     };
 
     /// @param trade_db_path 回调返回交易库绝对路径（空串 = 库不可用，降级 not_found）
-    /// @param busy_timeout_ms 只读连接等锁上限（契约 rest §2.9：200ms）
-    explicit TdOrdersQuery(std::function<std::string()> trade_db_path, int busy_timeout_ms = 200);
+    /// @param busy_timeout_ms 只读连接等锁上限（契约 rest §2.9：200ms，常量唯一声明在
+    ///        `td_read_db.h` 的 `kTdReadBusyTimeoutMs`）
+    explicit TdOrdersQuery(std::function<std::string()> trade_db_path,
+                           int busy_timeout_ms = kTdReadBusyTimeoutMs);
 
     /// 解析并校验 HTTP query 参数：`nullopt` = 应回 400 `{"error":"bad request"}`
     /// （limit 越界/非整数、cursor/accounts 无法解码）。
@@ -112,7 +116,7 @@ public:
 
 private:
     std::function<std::string()> trade_db_path_;
-    int busy_timeout_ms_ = 200;
+    int busy_timeout_ms_ = kTdReadBusyTimeoutMs;
 };
 
 }  // namespace dztrader::webui

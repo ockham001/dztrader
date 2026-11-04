@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 
 // 捕获 wsHandlers 注册的处理函数（不启动真实 WS 连接）：本套只验证
-// `data_changed{scope:"td"}` 同时触发委托与统计两条重拉链路（#247 design §3.5）。
+// `data_changed{scope:"td"}` 同时触发委托与统计两条重拉链路（契约 webui-ws §2.3/§5 第 10 条）。
 const registered = new Map<string, (payload: never, instanceId?: string) => void>()
 
 vi.mock('@/composables/wsClient', () => ({

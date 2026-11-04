@@ -113,7 +113,7 @@ describe('useTdStatsStore · REST 基线与轮询（契约 rest §2.9.5 / webui-
     expect(callbacks).toHaveLength(2)
   })
 
-  it('轮询间隔常量 = 1s（契约 ≤1Hz 的落地值，design §3.2 冻结）', () => {
+  it('轮询间隔常量 = 1s（契约 webui-ws §5 第 10 条「≤1Hz」的落地值）', () => {
     expect(TD_STATS_POLL_INTERVAL_MS).toBe(1_000)
   })
 
@@ -240,7 +240,6 @@ describe('useTdStatsStore · 降级（契约 rest §2.9.5 / webui-ws §5 第 13 
     expect(store.values).toBeNull()
     expect(store.unfilledText).toBe('—')
     expect(store.totalText).toBe('—')
-    expect(store.isEmpty).toBe(false) // 降级不是「无数据」空态
   })
 
   it('降级期间继续轮询，恢复后回到可用态并清除降级文案', async () => {
@@ -279,7 +278,7 @@ describe('useTdStatsStore · 降级（契约 rest §2.9.5 / webui-ws §5 第 13 
   })
 })
 
-describe('useTdStatsStore · 重置与口径（契约 webui-ws §5 第 10 条 / design §3.2）', () => {
+describe('useTdStatsStore · 重置与口径（契约 webui-ws §5 第 10 条）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     __resetTdStatsSchedulerForTests()
@@ -366,7 +365,6 @@ describe('useTdStatsStore · 重置与口径（契约 webui-ws §5 第 10 条 / 
 
     expect(store.available).toBe(true)
     expect(store.tradingDay).toBeNull()
-    expect(store.isEmpty).toBe(true)
     expect(store.unfilledText).toBe('0')
     expect(store.totalText).toBe('0')
   })

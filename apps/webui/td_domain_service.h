@@ -6,12 +6,15 @@
  * @brief TD 数据域服务：在线账户集合 + 日切感知 + WS 交易事件转发 + 建连补发环 +
  *        统计计数器（契约 rest §2.9.5）。
  *
- * 依 ADR 0043 / 契约 td-data-sync §8：dzweb **不保留**委托/成交/持仓/资金记录镜像，也不维护
- * `seq` 水位。本服务保留的只有允许的状态：
+ * 依 ADR 0043 / 契约 td-data-sync §8：dzweb **不保留**委托/成交/持仓/资金记录镜像，也不做
+ * 记录 ingest 的 `seq` 水位过滤/断档回补（那是策略 SDK 的唯一职责）。本服务保留的只有允许
+ * 的状态：
  * - 在线（`Ready`）账户集合与各账户会话交易日（`ACCOUNT_STATUS`）；
  * - 每账户最近 300 条交易事件的建连补发环（`td_recent`，契约 webui-ws §2.5）；
  * - 合约 `price_tick` 的进程内缓存（派生 `price_decimals` 用，契约 rest §2.9.6）；
- * - 统计计数器（4 值 + 活动委托表 + 每账户重算水位，契约 rest §2.9.5）。
+ * - 统计计数器（4 值 + 活动委托表 + 每账户重算水位，契约 rest §2.9.5）。这里的「水位」是
+ *   统计计数器的**重放守卫**（跳过重算已纳入的帧），不是记录 ingest 水位——它只由重算
+ *   从 DB 写入，增量永不推进，见 `td_stats.h`。
  *
  * 委托行形状的唯一真相源是契约 rest §2.9.3，序列化复用 `td_orders_query.h` 的
  * `td_order_row_json`（REST 与 WS 同 schema，禁止两份）。
@@ -82,8 +85,8 @@ public:
     void set_stats_query(std::shared_ptr<TdStatsQuery> query);
 
     /// 周期对账调度器（可注入：默认不启动；main 注入 drogon IO 循环 runEvery）。
-    /// 调度器职责：按 interval 反复调用传入的 task；返回可取消句柄（当前实现忽略）。
-    /// 测试注入假调度器后手动 tick，不依赖真实定时器。
+    /// 调度器职责：按 interval 反复调用传入的 task，直到进程退出（无需取消——服务与
+    /// IO 循环同生命周期）。测试注入假调度器后手动 tick，不依赖真实定时器。
     void set_reconcile_scheduler(
         std::function<void(double interval, std::function<void()> task)> scheduler);
 

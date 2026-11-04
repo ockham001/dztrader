@@ -91,9 +91,10 @@ describe('StatsBar（#247 契约 rest §2.9.5 / webui-ws §5 第 10 条）', () 
     const degraded = wrapper.find('[data-test="td-stats-degraded"]')
     expect(degraded.exists()).toBe(true)
     expect(degraded.text()).toBe('统计暂不可用，正在自动重试')
-    // 降级不能渲染数值（尤其不能渲染 0）
+    // 降级不能渲染数值节点（尤其不能渲染 0 冒充数据）：整条只剩降级文案
     expect(wrapper.find('[data-test="td-stats-values"]').exists()).toBe(false)
-    expect(wrapper.text()).not.toMatch(/\b0\b/)
+    expect(wrapper.find('[data-test="td-stats-pending"]').exists()).toBe(false)
+    expect(wrapper.text()).toBe('统计暂不可用，正在自动重试')
     wrapper.unmount()
   })
 
@@ -104,7 +105,8 @@ describe('StatsBar（#247 契约 rest §2.9.5 / webui-ws §5 第 10 条）', () 
 
     expect(wrapper.find('[data-test="td-stats-pending"]').text()).toBe('—')
     expect(wrapper.find('[data-test="td-stats-values"]').exists()).toBe(false)
-    expect(wrapper.text()).not.toMatch(/\b0\b/)
+    // 占位态不得出现任何数字（0 也不能用来冒充数据）
+    expect(wrapper.find('[data-test="td-stats-pending"]').text()).not.toMatch(/\d/)
     wrapper.unmount()
   })
 

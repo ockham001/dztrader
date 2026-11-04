@@ -15,8 +15,10 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -44,6 +46,26 @@ TEST(TdStatusUnfilledTest, OnlySubmittingNotTradedPartTradedCountAsUnfilled) {
     EXPECT_FALSE(td_status_unfilled(DZ_ORDER_ALL_TRADED));
     EXPECT_FALSE(td_status_unfilled(DZ_ORDER_CANCELLED));
     EXPECT_FALSE(td_status_unfilled(DZ_ORDER_REJECTED));
+}
+
+/// 判定（`td_status_unfilled`）与枚举（`td_unfilled_statuses`）必须同源：
+/// SQL 侧只消费枚举集合绑定 `IN (?,?,?)`，若两者漂移，重算口径与增量口径就会分家。
+/// 穷举 DzOrderStatus 全部取值断言「在集合里 ⟺ 判定为真」，并锁定集合内容。
+TEST(TdStatusUnfilledTest, EnumeratedSetAndPredicateAgreeOnEveryStatus) {
+    constexpr int kAllStatuses[] = {DZ_ORDER_SUBMITTING, DZ_ORDER_NOT_TRADED, DZ_ORDER_PART_TRADED,
+                                    DZ_ORDER_ALL_TRADED, DZ_ORDER_CANCELLED,  DZ_ORDER_REJECTED};
+    const std::span<const int> set = td_unfilled_statuses();
+
+    for (const int status : kAllStatuses) {
+        const bool in_set = std::find(set.begin(), set.end(), status) != set.end();
+        EXPECT_EQ(in_set, td_status_unfilled(status))
+            << "status=" << status << " in_set=" << in_set;
+    }
+    // 集合内容明确锁定（三个未成交状态，且不多不少）。
+    ASSERT_EQ(set.size(), 3U);
+    EXPECT_NE(std::find(set.begin(), set.end(), DZ_ORDER_SUBMITTING), set.end());
+    EXPECT_NE(std::find(set.begin(), set.end(), DZ_ORDER_NOT_TRADED), set.end());
+    EXPECT_NE(std::find(set.begin(), set.end(), DZ_ORDER_PART_TRADED), set.end());
 }
 
 // ===== 4 值口径（契约 rest §2.9.5）=====
@@ -186,22 +208,6 @@ TEST(TdStatsCounterTest, ResetDropsNonUnfilledSeedsFromActiveSet) {
     // 该 order_id 不在活动表 → 视为新委托。
     counter.apply("ACC1", DZ_ORDER_NOT_TRADED, 1, 5, 0);
     expect_values(counter, 2, 10, 1, 5);
-}
-
-TEST(TdStatsCounterTest, ClearResetsValuesActiveSetAndWatermarks) {
-    TdStatsCounter counter;
-    counter.apply("ACC1", DZ_ORDER_NOT_TRADED, 1, 3, 0);
-    TdStatsSnapshot snapshot;
-    snapshot.watermarks = {{"ACC1", 42}};
-    counter.reset(snapshot);
-    ASSERT_EQ(counter.watermark("ACC1"), 42U);
-
-    counter.clear();
-    expect_values(counter, 0, 0, 0, 0);
-    EXPECT_EQ(counter.watermark("ACC1"), 0U);
-    // 活动表已清空 → 同 order_id 视为新委托。
-    counter.apply("ACC1", DZ_ORDER_NOT_TRADED, 1, 3, 0);
-    expect_values(counter, 1, 3, 1, 3);
 }
 
 TEST(TdStatsCounterTest, WatermarkIsZeroWithoutRecordAndOnlyResetWritesIt) {

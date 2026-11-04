@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -59,8 +60,18 @@ struct TdStatsSnapshot {
 };
 
 /// 未成交状态判定（契约 rest §2.9.5：Submitting / NotTraded / PartTraded）。
-/// **唯一实现**——禁止在别处再写一份 status 集合。
+///
+/// **唯一实现**——禁止在别处再写一份 status 集合。需要枚举集合的场景（如重算 SQL 的
+/// `IN (?,?,?)` 占位符）用 {@link td_unfilled_statuses}，它与本函数同源：两者都由
+/// `td_stats.cpp` 里的同一张表派生，且有无遗漏由 `td_stats_test.cpp` 的穷举用例锁定。
 bool td_status_unfilled(int status);
+
+/// 未成交状态集合（契约 rest §2.9.5），供 SQL 占位符绑定用。
+///
+/// 与 {@link td_status_unfilled} **同源**（同一张表），不是第二份定义：本函数返回的
+/// 每个元素都让 `td_status_unfilled` 为真，反之为假——`td_stats_test.cpp` 穷举
+/// `DzOrderStatus` 全部取值断言二者等价。
+std::span<const int> td_unfilled_statuses();
 
 /// dzweb 内存统计计数器（只在 IO 线程使用，无锁）。
 class TdStatsCounter {
@@ -75,9 +86,6 @@ public:
     /// 同一状态重复应用 delta = 0（幂等）。
     void apply(
         const std::string& account_id, int status, int64_t order_id, int volume, int volume_traded);
-
-    /// 清空（无在线账户 / 日切前）：4 值归零、活动表与水位一并丢弃。
-    void clear();
 
     [[nodiscard]] const TdStatsValues& values() const noexcept;
 

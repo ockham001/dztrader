@@ -16,6 +16,7 @@
 #include "td_domain_service.h"
 #include "td_stats_query.h"
 #include "test_temp_dir.h"
+#include "td_order_row_writer.h"
 
 #include <dztrader/date_time/date.h>
 #include <dztrader/shm/frame_view.h>
@@ -203,7 +204,7 @@ protected:
         service_->set_stats_query(std::move(query));
     }
 
-    /// 直接写一条委托行（真 schema；只填断言关心的列）。
+    /// 直接写一条委托行（真 schema；列清单来自共享夹具 `td_order_row_writer.h`）。
     void insert_order_row(const std::string& account_id,
                           const std::string& date,
                           int64_t order_id,
@@ -211,27 +212,17 @@ protected:
                           int volume,
                           int volume_traded,
                           uint64_t seq) {
-        const std::string path = (dir_ / "trade.db").string();
-        sqlite3* db = nullptr;
-        ASSERT_EQ(SQLITE_OK, sqlite3_open(path.c_str(), &db));
-        sqlite3_stmt* stmt = nullptr;
-        const char* sql =
-            "INSERT INTO orders (account_id, date, order_id, strategy_id, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, remark, time, avg_price, seq, gateway, ext)"
-            " VALUES "
-            "(?,?,?,'stg1','rb2601','SHFE',1,1,0,?,3500.0,?,?,'',32400,0.0,?,'dztd_ctp','{}')";
-        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr));
-        sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 2, date.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 3, order_id);
-        sqlite3_bind_int(stmt, 4, status);
-        sqlite3_bind_int(stmt, 5, volume);
-        sqlite3_bind_int(stmt, 6, volume_traded);
-        sqlite3_bind_int64(stmt, 7, static_cast<int64_t>(seq));
-        EXPECT_EQ(SQLITE_DONE, sqlite3_step(stmt));
-        sqlite3_finalize(stmt);
-        sqlite3_close(db);
+        dztrader::test::TdOrderRowSeed seed;
+        seed.account_id = account_id;
+        seed.date = date;
+        seed.order_id = order_id;
+        seed.status = status;
+        seed.volume = volume;
+        seed.volume_traded = volume_traded;
+        seed.seq = seq;
+        const std::string error =
+            dztrader::test::insert_td_order_row((dir_ / "trade.db").string(), seed);
+        ASSERT_TRUE(error.empty()) << error;
     }
 
     /// `stats_body()` 的 4 值（外部可观察 JSON）。

@@ -16,11 +16,6 @@ namespace dztrader::webui {
 
 namespace {
 
-/// 未成交状态在 SQL 里的取值列表（契约 rest §2.9.5）——与 `td_status_unfilled` 同源：
-/// 这里只列枚举量，判定仍只有 `td_status_unfilled` 一份实现。
-constexpr int kUnfilledStatuses[] = {DZ_ORDER_SUBMITTING, DZ_ORDER_NOT_TRADED,
-                                     DZ_ORDER_PART_TRADED};
-
 /// 单只读事务内的查询一律走本助手：准备失败 / 步进失败都记 WARN 并返回 false，
 /// 调用方统一降级为「保持旧计数器」（契约 rest §2.9.5：库短暂不可读不降级统计）。
 bool prepare(sqlite3* db, const std::string& sql, sqlite3_stmt** stmt) {
@@ -76,7 +71,7 @@ bool TdStatsQuery::query_values(sqlite3* db,
                                 const std::string& trading_day,
                                 const std::vector<std::string>& accounts,
                                 TdStatsValues& values) const {
-    // 契约 rest §2.9.5 口径（design §2.3 照抄）：COUNT/SUM 全量 + 未成交笔数 + 未成交剩余量。
+    // 契约 rest §2.9.5 口径：COUNT/SUM 全量 + 未成交笔数 + 未成交剩余量。
     // 占位符顺序 = SQL 文本出现顺序：先 SELECT 里的 6 个 status，再 WHERE 的 date 与 accounts。
     const std::string sql =
         "SELECT COUNT(*), COALESCE(SUM(volume), 0),"
@@ -89,10 +84,10 @@ bool TdStatsQuery::query_values(sqlite3* db,
         return false;
     }
     int index = 1;
-    for (const int status : kUnfilledStatuses) {
+    for (const int status : td_unfilled_statuses()) {
         sqlite3_bind_int(stmt, index++, status);
     }
-    for (const int status : kUnfilledStatuses) {
+    for (const int status : td_unfilled_statuses()) {
         sqlite3_bind_int(stmt, index++, status);
     }
     bind_day(stmt, index++, trading_day);
@@ -126,7 +121,7 @@ bool TdStatsQuery::query_active(sqlite3* db,
     bind_day(stmt, index++, trading_day);
     bind_accounts(stmt, index, accounts);
     index += static_cast<int>(accounts.size());
-    for (const int status : kUnfilledStatuses) {
+    for (const int status : td_unfilled_statuses()) {
         sqlite3_bind_int(stmt, index++, status);
     }
 

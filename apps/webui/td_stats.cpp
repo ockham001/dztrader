@@ -9,10 +9,28 @@
 
 namespace dztrader::webui {
 
+namespace {
+
+/// 未成交状态集合的**唯一表**（契约 rest §2.9.5）。
+///
+/// `td_status_unfilled` 与 `td_unfilled_statuses` 都从这张表派生——判定与枚举是同一事实
+/// 的两种投影，不存在第二份定义。SQL 侧（`td_stats_query.cpp`）只消费
+/// `td_unfilled_statuses()` 绑定占位符，不得自行列状态常量。
+constexpr int kUnfilledStatuses[] = {DZ_ORDER_SUBMITTING, DZ_ORDER_NOT_TRADED,
+                                     DZ_ORDER_PART_TRADED};
+
+}  // namespace
+
 bool td_status_unfilled(int status) {
-    return status == DZ_ORDER_SUBMITTING || status == DZ_ORDER_NOT_TRADED ||
-           status == DZ_ORDER_PART_TRADED;
+    for (const int candidate : kUnfilledStatuses) {
+        if (status == candidate) {
+            return true;
+        }
+    }
+    return false;
 }
+
+std::span<const int> td_unfilled_statuses() { return kUnfilledStatuses; }
 
 void TdStatsCounter::reset(const TdStatsSnapshot& snapshot) {
     values_ = snapshot.values;
@@ -72,12 +90,6 @@ void TdStatsCounter::apply(
     values_.unfilled_volume += static_cast<int64_t>(volume) - volume_traded;
     active_[account_id][order_id] =
         ActiveEntry{.status = status, .volume = volume, .volume_traded = volume_traded};
-}
-
-void TdStatsCounter::clear() {
-    values_ = TdStatsValues{};
-    active_.clear();
-    watermarks_.clear();
 }
 
 const TdStatsValues& TdStatsCounter::values() const noexcept { return values_; }

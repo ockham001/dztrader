@@ -90,7 +90,7 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
 
 - **口径固定**（唯一真相源是契约 rest §2.9.5）：`total_orders` / `total_volume` = 当前交易日**全部**在线账户委托（含撤单、废单，与未过滤委托列表行数一致）；`unfilled_orders` / `unfilled_volume` = `Submitting` / `NotTraded` / `PartTraded` 的笔数与剩余量（`volume - volume_traded`）。stats 不接受 `accounts` 过滤。
 - **重算 = 全量重算**（`apps/webui/td_stats_query.{h,cpp}`）：**单只读事务**内取聚合 4 值 + 活动（未成交）委托 + 每账户四表 `MAX(seq)` 水位，三者同一快照。触发点：`TdStatsQuery` 注入后立即一次、账户 `Ready`、在线集合变化（含 Offline 下线）、日切、周期对账（默认 30s，`kTdStatsReconcileIntervalSec`）。
-- **增量 = `ORDER_REPORT`**（`apps/webui/td_stats.{h,cpp}`）：计数器保留「活动委托小表」（= 当日活跃挂单数，有界）+ 每账户 seq 水位。帧 `seq ≤ 水位` 直接跳过（登录「重推最后一条」用原 seq，靠这条避免重复计数）——安全性来自契约 td-data-sync §2 的 seq **前缀不变量**。活动表内同一 `order_id` 的状态更新只做剩余量差量，重复应用幂等。
+- **增量 = `ORDER_REPORT`**（`apps/webui/td_stats.{h,cpp}`）：计数器保留「活动委托小表」（= 当日活跃挂单数，有界）+ 每账户 **重放守卫水位**（四表 `MAX(seq)`，仅重算写入、增量永不推进——它是计数器内部去重，**不是** SDK ingest 那种记录水位，契约 td-data-sync §2 第 4 条）。帧 `seq ≤ 水位` 直接跳过（登录「重推最后一条」用原 seq，靠这条避免重复计数）——安全性来自契约 td-data-sync §2 的 seq **前缀不变量**。活动表内同一 `order_id` 的状态更新只做剩余量差量，重复应用幂等。
 - **为什么不做全量镜像**：未成交集合有界且状态单向（终态不回退），终态委托不会再收到 `ORDER_REPORT`，因此无需为终态保留任何去重状态（ADR 0043 决策 1/4）。
 - **降级**：唯一降级是计数器未就绪 → `200 {"available":false,"reason":"not_ready"}`（契约 rest §2.9.5）。计数器就绪后交易库短暂不可读**不降级**——内存计数器仍有效，重算失败只保持旧值（与 §2.9.8 的列表降级区分）。
 - **精度边界**（契约 §2.9.5 已声明）：两次重算之间，撤销后迟到成交引发的均价刷新 `ORDER_REPORT` 可能被计成新委托一次（+1 笔 +volume），≤1 个对账周期（30s）后自动纠正；异步持久化窗口内计数器可能短暂领先/落后已提交数据，稳态一致。

@@ -93,13 +93,6 @@ export const useTdStatsStore = defineStore('tdStats', () => {
     return String(unit.value === 'orders' ? values.value.total_orders : values.value.total_volume)
   })
 
-  /**
-   * 是否「成功但无数据」空态：**可用**读到基线且当日没有委托。
-   * 降级与请求失败都不是空态（契约 webui-ws §5 第 13 条：不用假空态冒充）。
-   */
-  const isEmpty = computed<boolean>(
-    () => available.value && error.value === null && values.value !== null && values.value.total_orders === 0)
-
   /** 降级提示文案（可用时为空串；统一降级提示条的唯一文案来源） */
   const degradedText = computed<string>(() => (available.value ? '' : DEGRADED_TEXT))
 
@@ -208,7 +201,6 @@ export const useTdStatsStore = defineStore('tdStats', () => {
     error,
     unfilledText,
     totalText,
-    isEmpty,
     degradedText,
     init,
     refresh,
