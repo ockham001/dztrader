@@ -89,6 +89,8 @@
 | `libs/strategy_api/tests/date_range.h` / `date_exhaustive_cases.h` / `date_time_exhaustive_cases.h` | 穷举/抽样共用的日期范围与用例数据集 |
 | `libs/strategy_api/tests/bench_support.h` | RDTSC 计时、TSC 标定、分布统计、报告头（所有 `bench_*` 共用） |
 | `libs/strategy_api/tests/bench_framework_harness.h` | 框架基准的假 SDK 边界 + 假依赖 + 配置 home（`bench_tick_update` / `bench_bar_close_dual_ma` / `bench_warmup_replay` 共用） |
+| `apps/webui/tests/td_order_row_writer.h` | 按 schema v1 `orders` 表列清单写一行委托（`TdOrderRowSeed` + `insert_td_order_row`）：委托列表 / 统计 / WS 转发测试共用，列清单唯一实现 |
+| `apps/webui/tests/td_trade_row_writer.h` | 按 schema v1 `trades` 表列清单写一行成交（`TdTradeRowSeed` + `insert_td_trade_row`）：成交列表测试共用，列清单唯一实现 |
 
 ## 明确不做
 

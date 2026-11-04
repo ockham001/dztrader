@@ -8,7 +8,6 @@ import {
 import type { TdListQuery, TdListResponse } from '@/composables/tdListStore'
 import {
   TD_TRADES_WINDOW_CAPACITY,
-  mergeTradeRows,
   tdTradeBusinessKey,
 } from '@/composables/tdTradeView'
 import type { TdTradeRow } from '@/types/api'
@@ -20,8 +19,7 @@ import type { TdTradeRow } from '@/types/api'
  * #248 设计 §4.1 / 冻结取舍 5）。本文件只提供成交的差异面：
  * - 端点 `GET /api/td/trades`（契约 rest §2.9）；
  * - WS 事件名 `td_trade_report`（契约 webui-ws §2.5）；
- * - 业务键 `account_id|date|exchange_id|trade_id` 与 {@link mergeTradeRows}
- *   （契约 rest §2.9.6，唯一实现在 `composables/tdTradeView`）。
+ * - 业务键 `account_id|date|exchange_id|trade_id`（契约 rest §2.9.6）。
  *
  * 分页/合并/重置/降级/气泡等语义全部由工厂负责，这里**不得**重复实现。
  */
@@ -53,7 +51,6 @@ export const useTdTradesStore = defineStore('tdTrades', () => {
       tdApi.getTrades(query) as Promise<TdListResponse<TdTradeRow>>,
     eventType: 'td_trade_report',
     keyOf: tdTradeBusinessKey,
-    merge: mergeTradeRows,
     capacity: TD_TRADES_WINDOW_CAPACITY,
   })
 

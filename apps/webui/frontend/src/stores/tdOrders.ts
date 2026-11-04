@@ -6,7 +6,7 @@ import {
   createTdListStore,
 } from '@/composables/tdListStore'
 import type { TdListQuery, TdListResponse } from '@/composables/tdListStore'
-import { TD_ORDERS_WINDOW_CAPACITY, mergeOrderRows } from '@/composables/tdOrderView'
+import { TD_ORDERS_WINDOW_CAPACITY } from '@/composables/tdOrderView'
 import type { TdOrderRow } from '@/types/api'
 
 /**
@@ -16,7 +16,7 @@ import type { TdOrderRow } from '@/types/api'
  * #248 设计 §4.1 / 冻结取舍 5）。本文件只提供委托的差异面：
  * - 端点 `GET /api/td/orders`（契约 rest §2.9）；
  * - WS 事件名 `td_order_report`（契约 webui-ws §2.5）；
- * - 业务键 `order_id` 与 {@link mergeOrderRows}（契约 rest §2.9.6）。
+ * - 业务键 `order_id`（契约 rest §2.9.6）——合并算法本身在 `mergeTdRows`，不在这里。
  *
  * 分页/合并/重置/降级/气泡等语义全部由工厂负责（实现契约见 `composables/tdListStore.ts`
  * 顶部注释），这里**不得**重复实现——两份列表一旦各写一份，合并语义必然漂移。
@@ -55,7 +55,6 @@ export const useTdOrdersStore = defineStore('tdOrders', () => {
       tdApi.getOrders(query) as Promise<TdListResponse<TdOrderRow>>,
     eventType: 'td_order_report',
     keyOf: row => row.order_id,
-    merge: mergeOrderRows,
     capacity: TD_ORDERS_WINDOW_CAPACITY,
   })
 

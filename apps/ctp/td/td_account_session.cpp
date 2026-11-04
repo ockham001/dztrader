@@ -126,7 +126,8 @@ void AccountSession::refresh_order_avg(int64_t order_id) {
         return;
     }
     const std::optional<double> avg = order_avgs_.avg_price(order_id);
-    if (!avg.has_value() || *avg == base->base.avg_price) {
+    // 判定用容差比较 (同价多笔的全量重算有 1 ULP 漂移); 推帧/落库仍写 *avg 全精度值.
+    if (!avg.has_value() || avg_price_unchanged(*avg, base->base.avg_price)) {
         return;
     }
     // 刷新行只覆盖均价派生列, 对比字段保持基准值 → 重放仍 kSkip (去重基准不被均价破坏).
@@ -729,6 +730,10 @@ bool AccountSession::cancel_order(DzOrderId order_id) {
 
 void AccountSession::set_trading_day(int32_t trading_day) {
     trading_day_ = trading_day;
+    // 每单成交累计只含当日成交 (契约 §3): 跨日后上一交易日的累计必须清空, 否则会话
+    // 存活跨日时均价会混入昨日成交 (重启场景由 load_trading_day_baseline 重新 seed).
+    // 登录链次序 = set_trading_day → load_trading_day_baseline, 清空后由装载重建, 安全.
+    order_avgs_ = OrderTradeAvgTracker{};
     for (auto& [inst, h] : holdings_) {
         auto ch = h.on_day_switch();
         if (ch.long_changed) push_position(h, DZ_DIRECTION_LONG);

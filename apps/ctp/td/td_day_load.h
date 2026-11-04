@@ -45,6 +45,12 @@ private:
 /// volume_canceled / status）保持基准值——seq 由调用方分配，防破坏重放去重基准。
 OrderRecord order_record_with_avg(const OrderRecord& base, double avg_price);
 
+/// 均价是否可视为未变化（浮点容差）：累计值每次全量重算，同价多笔会有 1 ULP 级漂移，
+/// 裸相等会把「未变化」误判成变化并多推一条 ORDER_REPORT（契约 td-data-sync §3）。
+/// 容差 = max(|lhs|, |rhs|, 1.0) × 1e-12（价格量级下约 1e-9，远小于任何真实 tick 变化）。
+/// 只用于「要不要刷新」的判定，不得用于舍入或落库值。
+[[nodiscard]] bool avg_price_unchanged(double lhs, double rhs);
+
 /// 登录日装载结果（只装当前交易日；历史只在库中，ADR 0045 决策 5）。
 struct DayLoadData {
     uint64_t start_seq = 0;           ///< 该账户四表 MAX(seq)（跨日累积，装载 seq 基准）

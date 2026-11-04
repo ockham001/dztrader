@@ -97,7 +97,7 @@ export type TdListResponse<Row> =
 /** WS 事件名（`td_recent` 补发事件与实时事件同名，契约 webui-ws §2.5） */
 export type TdListEventType = 'td_order_report' | 'td_trade_report'
 
-/** 有界列表 store 的配置：同一份能力的端点/事件/键/合并差异（#248 设计 §4.1） */
+/** 有界列表 store 的配置：同一份能力的端点/事件/键差异（#248 设计 §4.1） */
 export interface TdListStoreConfig<Row extends TdListRow> {
   /** 拉取一页（注入 tdApi 方法） */
   fetch: (query: TdListQuery) => Promise<TdListResponse<Row>>
@@ -105,8 +105,6 @@ export interface TdListStoreConfig<Row extends TdListRow> {
   eventType: TdListEventType
   /** 业务键（契约 rest §2.9.6）：委托 = order_id；成交 = account|date|exchange|trade_id */
   keyOf: (row: Row) => string | number
-  /** 合并纯函数（业务键去重 + 同键 seq 大者胜 + sort_key 降序 + 有界截断） */
-  merge: (existing: readonly Row[], incoming: readonly Row[], capacity: number) => Row[]
   /** 有界窗口容量 */
   capacity: number
 }
@@ -168,6 +166,50 @@ const DEGRADED_REASON_TEXT: Record<TdDegradedReason, string> = {
 }
 
 /**
+ * 有界列表合并（委托与成交的**唯一实现**，契约 webui-ws §5 第 8/9 条 + ADR 0043 决策 7）。
+ *
+ * 1. 业务键（`keyOf`）去重：同键只在 `seq` **更大**时覆盖（重复/乱序无害）；
+ * 2. 新行按 `sort_key` 字符串降序插入——一次排序而非逐行 splice（10Hz 批量合并下更省）；
+ * 3. 结果按 `capacity` 截断，丢弃 `sort_key` 最小的行（= 最旧，列表尾部）。
+ *
+ * 业务键的组成是委托与成交**唯一**的合并差异（委托 = order_id，成交 =
+ * account|date|exchange|trade_id），因此它只出现在 `keyOf` 里，合并算法本身只有这一份。
+ *
+ * `sort_key` 相同时按业务键降序兜底（契约禁止解析 sort_key 结构，这里只比较值）；
+ * 兜底按 `keyOf` 的返回类型分派：number 走数值降序（委托的 `order_id`）、string 走字典降序
+ * （成交的复合键），与两份配置此前的行为逐一等价。
+ *
+ * 纯函数：不修改 `existing` / `incoming`。
+ */
+export function mergeTdRows<Row extends TdListRow>(
+  existing: readonly Row[],
+  incoming: readonly Row[],
+  capacity: number,
+  keyOf: (row: Row) => string | number,
+): Row[] {
+  if (incoming.length === 0) return existing.slice()
+  const byKey = new Map<string | number, Row>()
+  for (const row of existing) byKey.set(keyOf(row), row)
+  for (const row of incoming) {
+    const key = keyOf(row)
+    const current = byKey.get(key)
+    // 同键 seq 大者胜；相等视为重复消息（保留先到的，两者等价）
+    if (!current || row.seq > current.seq) byKey.set(key, row)
+  }
+  const merged = Array.from(byKey.values())
+  merged.sort((a, b) => {
+    // 字符串降序（首项最大）
+    if (a.sort_key !== b.sort_key) return a.sort_key > b.sort_key ? -1 : 1
+    // 同 sort_key：按业务键降序兜底，保证顺序稳定可测
+    const keyA = keyOf(a)
+    const keyB = keyOf(b)
+    if (typeof keyA === 'number' && typeof keyB === 'number') return keyB - keyA
+    return String(keyA) > String(keyB) ? -1 : String(keyA) < String(keyB) ? 1 : 0
+  })
+  return merged.length > capacity ? merged.slice(0, capacity) : merged
+}
+
+/**
  * 创建一份有界列表 store 的行为实现（Pinia setup store 的函数体）。
  *
  * 返回的是**普通对象**（refs + 函数）：由 `stores/tdOrders.ts` / `stores/tdTrades.ts`
@@ -176,7 +218,7 @@ const DEGRADED_REASON_TEXT: Record<TdDegradedReason, string> = {
 export function createTdListStore<Row extends TdListRow>(
   config: TdListStoreConfig<Row>,
 ): TdListStoreApi<Row> {
-  const { fetch, eventType, keyOf, merge, capacity } = config
+  const { fetch, eventType, keyOf, capacity } = config
 
   // === 列表数据 ===
   /** 有界窗口内的行（按 sort_key 字符串降序：索引 0 最新） */
@@ -347,10 +389,11 @@ export function createTdListStore<Row extends TdListRow>(
       // REST 基线与已有行合并：同键 seq 大者胜（异步持久化窗口内 WS 行可能更新）。
       // seed = 建连补发事件（td_recent）：与基线走同一合并规则，同键 seq 大者胜——
       // 补发的旧行若基线已有更新版本，会被基线的 seq 覆盖，不会写回旧状态。
-      rows.value = merge(
+      rows.value = mergeTdRows(
         rows.value,
         seed.length > 0 ? [...response.items, ...seed] : response.items,
         capacity,
+        keyOf,
       )
       rebuildMaxSeq()
     } catch (e) {
@@ -388,7 +431,7 @@ export function createTdListStore<Row extends TdListRow>(
       onlineAccounts.value = response.online_accounts
       if (!filterTouched) accountFilter.value = new Set(response.online_accounts)
       nextCursor.value = response.next_cursor
-      rows.value = merge(rows.value, response.items, capacity)
+      rows.value = mergeTdRows(rows.value, response.items, capacity, keyOf)
       rebuildMaxSeq()
     } catch (e) {
       if (disposed) return
@@ -471,7 +514,7 @@ export function createTdListStore<Row extends TdListRow>(
       if (seen === undefined || row.seq > seen) maxSeqByAccount.set(row.account_id, row.seq)
     }
 
-    const merged = merge(rows.value, accepted, capacity)
+    const merged = mergeTdRows(rows.value, accepted, capacity, keyOf)
     // 容量判据：原有行 + 新增业务键 > 合并后行数 = 有行被淘汰（老数据滑出窗口，向上滚动需重拉）
     if (rows.value.length + added > merged.length) windowTruncated.value = true
     rows.value = merged

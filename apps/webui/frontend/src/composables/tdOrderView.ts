@@ -7,7 +7,7 @@
  * - 排序：只做 `sort_key` 字符串比较，**不解析其结构**（§2.9.6 性质 3）；
  * - 合并：业务键 `order_id` 去重 + 同键 `seq` 大者胜，与到达顺序无关（webui-ws §5 第 8 条）。
  */
-import { TD_LIST_WINDOW_CAPACITY } from './tdListStore'
+import { TD_LIST_WINDOW_CAPACITY, mergeTdRows } from './tdListStore'
 import type { TdOrderRow } from '@/types/api'
 
 /** 数值不可用 / 无数据时的占位（不用 0 冒充，契约 webui-ws §5 第 13 条） */
@@ -114,35 +114,13 @@ function businessKey(row: TdOrderRow): number {
 /**
  * 合并一批增量行到现有窗口（契约 webui-ws §5 第 8/9 条 + ADR 0043 决策 7 有界窗口）。
  *
- * 1. 业务键 `order_id` 去重：同键只在 `seq` **更大**时覆盖（重复/乱序无害）；
- * 2. 新行按 `sort_key` 降序插入——用一次排序而非逐行 splice，批量合并 10Hz 下更省；
- * 3. 结果按 `capacity` 截断，**丢弃 sort_key 最小的行**（= 最旧，列表尾部的行）。
- *
- * 纯函数：不修改 `existing` / `incoming`。
- *
- * 合并口径与成交的 `tdTradeView.mergeTradeRows` **必须一致**（业务键去重 + 同键 seq 大者胜 +
- * sort_key 字符串降序 + 有界截断），差别只在业务键的组成（委托 = order_id，成交 =
- * account|date|exchange|trade_id）。列表行为本身由 `tdListStore.createTdListStore` 统一承载，
- * 这里只提供委托的键与排序兜底——不要在任一侧单独改动合并语义。
+ * **薄委托**：算法本身只有一份，在 `tdListStore.mergeTdRows`（委托与成交共用）。本函数保留
+ * 既有导出与签名（调用方与测试不动），只绑定委托的业务键 `order_id` 与默认容量。
  */
 export function mergeOrderRows(
   existing: readonly TdOrderRow[],
   incoming: readonly TdOrderRow[],
   capacity: number = TD_ORDERS_WINDOW_CAPACITY,
 ): TdOrderRow[] {
-  if (incoming.length === 0) return existing.slice()
-  const byKey = new Map<number, TdOrderRow>()
-  for (const row of existing) byKey.set(businessKey(row), row)
-  for (const row of incoming) {
-    const current = byKey.get(businessKey(row))
-    // 同键 seq 大者胜；相等视为重复消息（保留先到的，两者等价）
-    if (!current || row.seq > current.seq) byKey.set(businessKey(row), row)
-  }
-  const merged = Array.from(byKey.values())
-  // 字符串降序（首项最大）；sort_key 相等时按业务键降序，保证顺序稳定可测
-  merged.sort((a, b) => {
-    if (a.sort_key !== b.sort_key) return a.sort_key > b.sort_key ? -1 : 1
-    return b.order_id - a.order_id
-  })
-  return merged.length > capacity ? merged.slice(0, capacity) : merged
+  return mergeTdRows(existing, incoming, capacity, businessKey)
 }

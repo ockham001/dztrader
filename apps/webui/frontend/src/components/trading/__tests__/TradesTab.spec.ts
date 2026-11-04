@@ -280,6 +280,35 @@ describe('TradesTab 渲染与交互（#248 契约 rest §2.9 / webui-ws §5）',
     wrapper.unmount()
   })
 
+  it('不允许取消最后一个账户（空筛选在契约里等价于「全部」，会造成歧义）', async () => {
+    vi.mocked(tdApi.getTrades).mockResolvedValue(
+      listResponse([trade()], { online_accounts: ['acc_a'] }))
+    const wrapper = mount(TradesTab)
+    await flushPromises()
+    await wrapper.find('[aria-controls="td-trade-account-filter"]').trigger('click')
+
+    const box = wrapper.find('[data-test="td-trade-account-filter"] input[type="checkbox"]')
+    expect((box.element as HTMLInputElement).disabled).toBe(true)
+    await box.trigger('change')
+    await flushPromises()
+
+    // 唯一账户被禁用 → 点击不触发重拉（没有新的请求）
+    expect(tdApi.getTrades).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('多账户时允许取消（禁用规则只作用于「唯一生效账户」）', async () => {
+    vi.mocked(tdApi.getTrades).mockResolvedValue(
+      listResponse([trade()], { online_accounts: ['acc_a', 'acc_b'] }))
+    const wrapper = mount(TradesTab)
+    await flushPromises()
+    await wrapper.find('[aria-controls="td-trade-account-filter"]').trigger('click')
+
+    const boxes = wrapper.findAll('[data-test="td-trade-account-filter"] input[type="checkbox"]')
+    expect(boxes.every(box => (box.element as HTMLInputElement).disabled)).toBe(false)
+    wrapper.unmount()
+  })
+
   it('卸载时清理 store 定时器（离开页面后不再请求）', async () => {
     vi.mocked(tdApi.getTrades).mockResolvedValue({ available: false, reason: 'busy' })
     const wrapper = mount(TradesTab)

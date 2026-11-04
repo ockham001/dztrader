@@ -198,6 +198,17 @@ OrderRecord order_record_with_avg(const OrderRecord& base, double avg_price) {
     return out;
 }
 
+bool avg_price_unchanged(double lhs, double rhs) {
+    // 同价多笔的 Σ(p×v)/Σv 全量重算有 1 ULP 级漂移 (如 3512.3×3 → 3512.3000000000006),
+    // 裸相等会把它误判成「均价变化」→ 新 seq + 多推一条 ORDER_REPORT (契约 §3 违约)。
+    // 容差取绝对量级下界 1.0, 使 0 vs 0 与近零价也不因相对误差塌成 0.
+    if (lhs == rhs) {
+        return true;  // 精确相等 (含同号零) 直接判未变化, 免去容差计算
+    }
+    const double scale = std::max({std::abs(lhs), std::abs(rhs), 1.0});
+    return std::abs(lhs - rhs) <= scale * 1e-12;
+}
+
 std::string format_day_text(int32_t day) {
     if (day <= 0) {
         return "00000000";

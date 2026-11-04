@@ -710,5 +710,54 @@ TEST_F(TdDayLoadTest, DayLoadEmptyAccountHasEmptyAvgTracker) {
     EXPECT_EQ(day.order_avgs.volume(1), 0);
 }
 
+// ============================================================================
+// 9. avg_price_unchanged: 均价「变化」判定的浮点容差 (契约 §3)
+//    累计值每次全量重算, 同价多笔有 1 ULP 级漂移; 裸 == 会误判成变化 → 多推 ORDER_REPORT.
+// ============================================================================
+
+TEST(TdDayLoadAvgPriceUnchangedTest, DriftedSamePriceIsUnchanged) {
+    // 3512.3 非二进制精确: 3 笔同价全量重算得 3512.3000000000006 (Δ=+4.5e-13),
+    // 6/7/8 笔得 3512.2999999999997 (Δ=-4.5e-13). 都不能判成「变化」.
+    constexpr double kPrice = 3512.3;
+    for (int n : {1, 2, 3, 4, 5, 6, 7, 8}) {
+        OrderTradeAvgTracker tracker;
+        for (int i = 0; i < n; ++i) {
+            tracker.add_trade(1, kPrice, 1);
+        }
+        ASSERT_TRUE(tracker.avg_price(1).has_value()) << "n=" << n;
+        const double avg = *tracker.avg_price(1);
+        EXPECT_TRUE(avg_price_unchanged(avg, kPrice)) << "n=" << n << " avg=" << avg;
+        EXPECT_TRUE(avg_price_unchanged(kPrice, avg)) << "n=" << n;  // 对称
+    }
+}
+
+TEST(TdDayLoadAvgPriceUnchangedTest, OtherDriftingPricesAreUnchanged) {
+    // 审查复现的另外两组: 3900.1×7, 3512.35×7
+    for (double price : {3900.1, 3512.35}) {
+        OrderTradeAvgTracker tracker;
+        for (int i = 0; i < 7; ++i) {
+            tracker.add_trade(1, price, 1);
+        }
+        ASSERT_TRUE(tracker.avg_price(1).has_value());
+        EXPECT_TRUE(avg_price_unchanged(*tracker.avg_price(1), price)) << "price=" << price;
+    }
+}
+
+TEST(TdDayLoadAvgPriceUnchangedTest, RealPriceDifferenceIsChanged) {
+    // 真实价差 (>= 一个 tick) 必须判成变化
+    EXPECT_FALSE(avg_price_unchanged(3512.3, 3512.35));
+    EXPECT_FALSE(avg_price_unchanged(3900.0, 3900.5));  // tick=0.5 的合约
+    EXPECT_FALSE(avg_price_unchanged(3900.0, 3901.0));
+    EXPECT_FALSE(avg_price_unchanged(3500.0, 3500.001));  // 1 分钱量级
+}
+
+TEST(TdDayLoadAvgPriceUnchangedTest, ZeroAndNegativeValues) {
+    EXPECT_TRUE(avg_price_unchanged(0.0, 0.0));
+    EXPECT_TRUE(avg_price_unchanged(-0.0, 0.0));  // 同号零语义上无变化
+    // 近零但真实变化: 容差下界 1.0 保证不会因相对误差塌成 0
+    EXPECT_FALSE(avg_price_unchanged(0.0, 1e-6));
+    EXPECT_TRUE(avg_price_unchanged(-3512.3, -3512.3000000000006));  // 负价对称
+}
+
 }  // namespace
 }  // namespace dztrader::ctp

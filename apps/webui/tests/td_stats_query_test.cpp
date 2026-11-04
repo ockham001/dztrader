@@ -10,6 +10,7 @@
  * 不用被测实现自我推导（契约 rest §2.9.5「与未过滤的委托列表总行数一致」）。
  */
 
+#include "td_list_query.h"
 #include "td_orders_query.h"
 #include "td_stats_query.h"
 #include "td_order_row_writer.h"
@@ -152,7 +153,7 @@ protected:
         TdOrdersQuery orders([this]() -> std::string { return db_path_; }, kTdReadBusyTimeoutMs);
         auto params = TdOrdersQuery::parse([](std::string_view) { return std::string{}; });
         EXPECT_TRUE(params.has_value());
-        params->limit = kTdOrdersMaxLimit;
+        params->limit = kTdListMaxLimit;
         const auto body = orders.execute(*params, online, day);
         EXPECT_TRUE(body.has_value());
         EXPECT_TRUE((*body)["available"].get<bool>());

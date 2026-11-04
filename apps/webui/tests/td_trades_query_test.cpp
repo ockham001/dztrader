@@ -600,9 +600,25 @@ TEST(TdTradeSortKeyTest, HexEncodingPreservesByteOrderAndSeparatorIsSafe) {
               td_trade_sort_key(32400, "ZZ", "SHFE", "1"));
     EXPECT_GT(td_trade_sort_key(32400, "ZZ", "SHFE", "1"),
               td_trade_sort_key(32400, "11", "SHFE", "1"));
+    // 前缀情形：前缀段才能真正考验分隔符性质。等长键比较时两条的下一段起点相同位置，
+    // 分隔符无论取什么值都不会被比较到——只有「短段是先缀」时才会落到分隔符 vs hex 字符。
+    // "A" 的 hex 是 "41"、"AA" 是 "4141"：短段后面紧跟 '-'（0x2d），长段的下一字符是 '4'
+    // （0x34）→ 长的更大。若分隔符 >= '0'（例如误用 'a'/'~'），短键会排到长键之后，这里变红。
+    EXPECT_GT(td_trade_sort_key(32400, "AA", "SHFE", "1"),
+              td_trade_sort_key(32400, "A", "SHFE", "1"));
+    // exchange 段同理（account 相同、exchange 是前缀）
+    EXPECT_GT(td_trade_sort_key(32400, "ACC1", "SHFE2", "1"),
+              td_trade_sort_key(32400, "ACC1", "SHFE", "1"));
+    // trade_id 段同理（前两段相同、trade_id 是前缀）
+    EXPECT_GT(td_trade_sort_key(32400, "ACC1", "SHFE", "11"),
+              td_trade_sort_key(32400, "ACC1", "SHFE", "1"));
     // 任何字节都编码为两个 hex 字符 → 定界安全（不可打印字符不会破坏比较）
-    const std::string with_control = td_trade_sort_key(32400, "A\x1fZ", "SHFE", "1");
+    // 用八进制转义 \037 表示 0x1f：'\x1f' 后紧跟字母会被当作更长的 hex 转义（编译告警）。
+    const std::string with_control = td_trade_sort_key(32400, "A\037Z", "SHFE", "1");
     EXPECT_EQ(with_control.find('\x1f'), std::string::npos);
+    // 控制字符也被编码：0x1f 的 hex 是 "1f"，落在 "0"-"9"/"a"-"f" 区间内，
+    // 不会原样出现在 sort_key 里污染定界（"-" 仍唯一分隔符）。
+    EXPECT_EQ(with_control, "54000-411f5a-53484645-31");
 }
 
 }  // namespace

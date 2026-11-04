@@ -41,10 +41,6 @@ namespace dztrader::webui {
 /// tdstore::kTdSchemaVersion)` 会在 schema 升版而此处忘改时直接编译失败。
 inline constexpr int kTdOrdersReadSchemaVersion = 1;
 
-/// 契约 rest §2.9.2 的 limit 常量别名（唯一声明在 `td_list_query.h`；保留旧名供既有调用点）。
-inline constexpr int kTdOrdersDefaultLimit = kTdListDefaultLimit;
-inline constexpr int kTdOrdersMaxLimit = kTdListMaxLimit;
-
 /// 查合约 `instruments.price_tick`（WS 转发事件推导精度用；库/合约不可用 = nullopt，
 /// 调用方走价格小数位兜底，契约 rest §2.9.6）。打开失败不抛、不降级整条事件。
 std::optional<double> td_query_price_tick(const std::string& trade_db_path,
