@@ -60,8 +60,9 @@ void apply_pragmas(SQLite::Database& db,
         } catch (const std::exception& e) {
             // 独占锁竞争: 有界重试. 末次失败原因单独告警便于诊断 (attempt 0/1 不刷日志)
             if (attempt == 2) {
-                SPDLOG_WARN("td db WAL conversion not applied, continue in current mode | err={}",
-                            e.what());
+                SPDLOG_WARN(
+                    "td db WAL conversion not applied, continue in current mode | err=\"{}\"",
+                    e.what());
             }
         }
     }

@@ -21,7 +21,7 @@ EventMonitor::EventMonitor(const std::filesystem::path& shm_dir,
         reader_ = std::make_shared<shm::Reader>(
             shm::Reader::create(shm::channel_name("dzevent"), shm_dir, "dzweb"));
     } catch (const std::exception& e) {
-        SPDLOG_WARN("shm reader init failed | error={} mode=api-only advice=start_dztraderd",
+        SPDLOG_WARN("shm reader init failed | error=\"{}\" mode=api-only advice=start_dztraderd",
                     e.what());
     }
     // 预加载执行器无条件创建（reader/writer 为空时内部方法自行降级为 no-op）
@@ -104,7 +104,7 @@ void EventMonitor::drain_and_post() {
         try {
             router_.dispatch(view);
         } catch (const std::exception& e) {
-            SPDLOG_WARN("decode frame failed | type={} error={}", static_cast<int>(view.type()),
+            SPDLOG_WARN("decode frame failed | type={} error=\"{}\"", static_cast<int>(view.type()),
                         e.what());
         }
     }

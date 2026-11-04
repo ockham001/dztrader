@@ -52,7 +52,7 @@ public:
                         magic_enum::enum_name(status.state),
                         status.event ? magic_enum::enum_name(*status.event) : "none");
         } catch (const std::exception& e) {
-            SPDLOG_WARN("failed to parse RTN_PROCESS_STATUS | error={}", e.what());
+            SPDLOG_WARN("failed to parse RTN_PROCESS_STATUS | error=\"{}\"", e.what());
         }
     }
 
@@ -62,7 +62,7 @@ public:
             ws_.broadcast("process_config", "", payload);
             SPDLOG_DEBUG("process_config pushed | entries={}", payload.size());
         } catch (const std::exception& e) {
-            SPDLOG_WARN("failed to parse RTN_PROCESS_CONFIG | error={}", e.what());
+            SPDLOG_WARN("failed to parse RTN_PROCESS_CONFIG | error=\"{}\"", e.what());
         }
     }
 

@@ -289,7 +289,7 @@ void run_schema(sqlite3* db) {
             if (rc != SQLITE_OK) {
                 std::string err = err_msg ? err_msg : "unknown";
                 sqlite3_free(err_msg);
-                spdlog::warn("failed to drop auto_login column, ignoring | error={}", err);
+                spdlog::warn("failed to drop auto_login column, ignoring | error=\"{}\"", err);
             } else {
                 spdlog::info("legacy column dropped | table=market_sources column=auto_login");
             }

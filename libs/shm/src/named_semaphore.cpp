@@ -19,8 +19,8 @@ public:
     explicit SemImpl(const std::string& name) {
         handle_ = CreateSemaphoreA(nullptr, 0, LONG_MAX, ("dz.sem." + name).c_str());
         if (!handle_) {
-            throw Exception(DZ_EC_SHM_SEM_CREATE_FAILED, "semaphore create failed: name={} err={}",
-                            name, GetLastError());
+            throw Exception(DZ_EC_SHM_SEM_CREATE_FAILED,
+                            "semaphore create failed: name={} err=\"{}\"", name, GetLastError());
         }
     }
 
@@ -60,7 +60,7 @@ public:
         if (result == WAIT_TIMEOUT) {
             return false;
         }
-        LastError::set(DZ_EC_SHM_SEM_WAIT_FAILED, "semaphore wait failed | error={}",
+        LastError::set(DZ_EC_SHM_SEM_WAIT_FAILED, "semaphore wait failed | error=\"{}\"",
                        GetLastError());
         return false;
     }
@@ -89,7 +89,7 @@ public:
     explicit SemImpl(const std::string& name) {
         sem_ = sem_open(("/dz.sem." + name).c_str(), O_CREAT, 0666, 0);
         if (sem_ == SEM_FAILED) {
-            throw Exception(DZ_EC_SHM_SEM_OPEN_FAILED, "semaphore open failed: name={} err={}",
+            throw Exception(DZ_EC_SHM_SEM_OPEN_FAILED, "semaphore open failed: name={} err=\"{}\"",
                             name, errno);
         }
     }

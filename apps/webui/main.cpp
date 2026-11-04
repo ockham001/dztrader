@@ -120,7 +120,7 @@ int main(int argc, char* argv[]) {
         const auto& root = dztrader::this_process::app_root();
         SPDLOG_INFO("app root | path={}", dztrader::to_utf8_from_system(root.string()));
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("failed to find app root | error={}", e.what());
+        SPDLOG_ERROR("failed to find app root | error=\"{}\"", e.what());
         return 1;
     }
 

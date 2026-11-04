@@ -34,7 +34,8 @@ bool write_ext_inst_json(shm::MultiWriter& w,
         w.notify_subscribers();
         return true;
     } catch (const std::exception& e) {
-        spdlog::error("frame serialize failed: type={} err={}", static_cast<int>(type), e.what());
+        spdlog::error("frame serialize failed: type={} err=\"{}\"", static_cast<int>(type),
+                      e.what());
         return false;
     }
 }
@@ -51,7 +52,8 @@ bool write_ext_json(shm::MultiWriter& w, DzFrameType type, const T& obj) {
         w.notify_subscribers();
         return true;
     } catch (const std::exception& e) {
-        spdlog::error("frame serialize failed: type={} err={}", static_cast<int>(type), e.what());
+        spdlog::error("frame serialize failed: type={} err=\"{}\"", static_cast<int>(type),
+                      e.what());
         return false;
     }
 }
@@ -77,7 +79,8 @@ bool write_ext_inst_json_opt_error(shm::MultiWriter& w,
         w.notify_subscribers();
         return true;
     } catch (const std::exception& e) {
-        spdlog::error("frame serialize failed: type={} err={}", static_cast<int>(type), e.what());
+        spdlog::error("frame serialize failed: type={} err=\"{}\"", static_cast<int>(type),
+                      e.what());
         return false;
     }
 }
@@ -103,7 +106,8 @@ inline bool write_ext_inst_json_obj(shm::MultiWriter& w,
         w.notify_subscribers();
         return true;
     } catch (const std::exception& e) {
-        spdlog::error("frame serialize failed: type={} err={}", static_cast<int>(type), e.what());
+        spdlog::error("frame serialize failed: type={} err=\"{}\"", static_cast<int>(type),
+                      e.what());
         return false;
     }
 }

@@ -32,7 +32,7 @@ public:
                     drogon::app().quit();
                 }
             } catch (const std::exception& e) {
-                SPDLOG_WARN("shutdown failed | error={}", e.what());
+                SPDLOG_WARN("shutdown failed | error=\"{}\"", e.what());
             }
         });
     }
@@ -47,7 +47,7 @@ public:
                     SPDLOG_INFO("subscribers refreshed (broadcast)");
                 }
             } catch (const std::exception& e) {
-                SPDLOG_WARN("update_subscribers failed | error={}", e.what());
+                SPDLOG_WARN("update_subscribers failed | error=\"{}\"", e.what());
             }
         });
     }

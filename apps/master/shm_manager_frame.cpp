@@ -382,7 +382,7 @@ void ShmManager::handle_process_start(const platform::ProcessControlReq& req) {
         if (entry && entry->category == Category::Strategy) {
             std::string pending_msg;
             if (supervisor_->is_pending_strategy(req.target, pending_msg)) {
-                SPDLOG_INFO("strategy start deferred, md source pending | target={} msg={}",
+                SPDLOG_INFO("strategy start deferred, md source pending | target={} msg=\"{}\"",
                             req.target, pending_msg);
                 supervisor_->send_process_status(req.target, ChildState::Starting, 0, pending_msg,
                                                  platform::ProcessEvent::StartSucceeded);

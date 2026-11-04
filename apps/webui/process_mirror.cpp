@@ -56,7 +56,8 @@ std::vector<platform::ProcessStatus> ProcessMirror::get_all() const {
             from_json(sit.value(), s);
             result.push_back(std::move(s));
         } catch (const std::exception& e) {
-            SPDLOG_WARN("parse process_status failed | instance={} error={}", it.key(), e.what());
+            SPDLOG_WARN("parse process_status failed | instance={} error=\"{}\"", it.key(),
+                        e.what());
         }
     }
     return result;

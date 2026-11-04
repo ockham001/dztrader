@@ -32,7 +32,7 @@ public:
     /// RTN_SYSMON_SNAPSHOT（无 instance_id）。
     void on_rtn_sysmon_snapshot(const nlohmann::json& payload) {
         if (auto error = dztrader::platform::SysmonSnapshot::validate(payload)) {
-            SPDLOG_WARN("invalid sysmon snapshot ignored | error={}", *error);
+            SPDLOG_WARN("invalid sysmon snapshot ignored | error=\"{}\"", *error);
             return;
         }
         mirror_.update(std::string(kInstance), "sysmon_snapshot", payload);
@@ -42,7 +42,7 @@ public:
     /// RTN_SYSMON_CONFIG（定向帧，source = 来源进程名）。
     void on_rtn_sysmon_config(const std::string& source, const nlohmann::json& payload) {
         if (auto error = dztrader::platform::SysmonConfig::validate(payload)) {
-            SPDLOG_WARN("invalid sysmon config ignored | source={} error={}", source, *error);
+            SPDLOG_WARN("invalid sysmon config ignored | source={} error=\"{}\"", source, *error);
             return;
         }
         // 契约 sysmon §5：两个 sysmon 域固定挂载实例 dzsysmon（帧头来源即该固定实例）。

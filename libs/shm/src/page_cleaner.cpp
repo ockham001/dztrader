@@ -93,8 +93,8 @@ size_t PageCleaner::cleanup() {
         std::filesystem::remove(path, ec);
         if (ec) {
             // 仍被映射（Windows 缓存映射）或异常竞态：跳过，不中断本次清理
-            SPDLOG_WARN("page file remove skipped (still in use): path={} err={}", path.string(),
-                        dztrader::to_utf8_from_system(ec.message()));
+            SPDLOG_WARN("page file remove skipped (still in use): path={} err=\"{}\"",
+                        path.string(), dztrader::to_utf8_from_system(ec.message()));
             continue;
         }
         ++deleted;

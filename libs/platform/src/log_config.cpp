@@ -154,7 +154,7 @@ void LogConfig::save_cfg_to_file(const nlohmann::json& cfg) const {
                                             std::chrono::system_clock::now()));
                 std::filesystem::rename(cfg_path_, backup, ec);
                 if (ec) {
-                    SPDLOG_ERROR("backup corrupt config failed | path={} error={}",
+                    SPDLOG_ERROR("backup corrupt config failed | path={} error=\"{}\"",
                                  cfg_path_.string(), ec.message());
                 }
             };

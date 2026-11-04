@@ -342,7 +342,7 @@ void WsController::on_timer() {
     try {
         poll_log_tail();
     } catch (const std::exception& e) {
-        SPDLOG_WARN("on_timer failed | error={}", e.what());
+        SPDLOG_WARN("on_timer failed | error=\"{}\"", e.what());
     }
 }
 

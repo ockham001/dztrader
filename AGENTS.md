@@ -132,7 +132,7 @@
 
 - 注释风格：**doxygen**
 - **所有**错误描述 / 异常消息 / 日志文本：**小写开头、无句号、全英文**
-- 格式：`prose | k=v k=v`。key 全小写下划线分隔；值含空格/等号/引号用双引号（`error="disk full"`）；ID/数字/枚举不加引号（`order_id=12345`）
+- 格式：`prose | k=v k=v`。key 全小写下划线分隔；值含空格/等号/引号用双引号（`error="disk full"`）；ID/数字/枚举不加引号（`order_id=12345`）。**自由文本 key 由 `check_log_format.py` 的 R6 强制**（`error`/`err`/`detail`/`msg`/`exception`/`what`/`text` 一律 `k="{}"`）；`reason`/`name`/`path`/`value`/`message` 等两类用法混用的 key 不在机械规则内，需人工判断（#266）
 - **禁止单引号包裹占位符**：错 `"user '{}' fail"`，对 `"user fail | user={}"`
 - **禁止多行 `===` banner**，必须合并为单行 `prose | k=v`。**禁止中文**（含函数名、变量名）
 - 非性能路径用异常，日志作为最终输出。`Exception ──catch──→ LastError::set()`（C 接口边界，**无日志**）/ `──→ spdlog`（平台代码，无 LastError）

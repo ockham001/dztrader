@@ -69,7 +69,7 @@ public:
                 } catch (const std::exception& e) {
                     // 契约 log: 失败必须日志 + NOTIFY_UI 错误弹窗；API-only 无 writer 时跳过
                     applied = false;
-                    SPDLOG_WARN("webui set log config failed | error={}", e.what());
+                    SPDLOG_WARN("webui set log config failed | error=\"{}\"", e.what());
                     if (event_writer_) {
                         dztrader::platform::NotifyUi(dztrader::this_process::exe_stem(),
                                                      *event_writer_)
@@ -91,7 +91,8 @@ public:
                     return LogControlResult::Ok;  // platform 层已含 notify_subscribers
                 }
             } catch (const std::exception& e) {
-                SPDLOG_WARN("write set_log_config failed | target={} error={}", target, e.what());
+                SPDLOG_WARN("write set_log_config failed | target={} error=\"{}\"", target,
+                            e.what());
             }
             return LogControlResult::WriteFailed;
         }
@@ -111,7 +112,7 @@ public:
                     return LogControlResult::Ok;
                 }
             } catch (const std::exception& e) {
-                SPDLOG_WARN("write flush_log failed | target={} error={}", target, e.what());
+                SPDLOG_WARN("write flush_log failed | target={} error=\"{}\"", target, e.what());
             }
             return LogControlResult::WriteFailed;
         }

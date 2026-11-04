@@ -35,7 +35,8 @@ public:
                         try {
                             h(source, payload);
                         } catch (const std::exception& e) {
-                            SPDLOG_ERROR("frame handler failed | type={} error={}", type, e.what());
+                            SPDLOG_ERROR("frame handler failed | type={} error=\"{}\"", type,
+                                         e.what());
                         }
                     });
                 } else {
@@ -44,13 +45,13 @@ public:
                         try {
                             h("", payload);
                         } catch (const std::exception& e) {
-                            SPDLOG_ERROR("frame handler failed | error={}", e.what());
+                            SPDLOG_ERROR("frame handler failed | error=\"{}\"", e.what());
                         }
                     });
                 }
             } catch (const std::exception& e) {
-                SPDLOG_WARN("decode frame failed | type={} error={}", static_cast<int>(view.type()),
-                            e.what());
+                SPDLOG_WARN("decode frame failed | type={} error=\"{}\"",
+                            static_cast<int>(view.type()), e.what());
             }
         };
     }
