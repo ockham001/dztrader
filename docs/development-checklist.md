@@ -38,7 +38,7 @@
 - [ ] `./scripts/preflight.sh` 全绿（日志格式 / clang-format 21.x / 文档链接（含契约 §N 引用：活跃文档 + apps/libs 源码注释）/ 测试可移植性+临时目录唯一化 / **MSVC hazard lint** / **内置 JSON 版本一致性** / **gtest 用例发现超时纪律（#227）** / 前端 `type-check` + `lint` + `lint:css` + `vitest` + `gen:types` 新鲜度，一条命令一个结论）——CI linux job 复用同脚本的 C 段（`--c-only`）；首次需先 `./scripts/build.sh` 生成 `node_modules`
 - [ ] `./scripts/build.sh --config release` 通过（agent 侧用 `./scripts/gate.sh build --config release`：同 build tree 串行 + ccache 环境 + 真实退出码；管道用法见 [ticket-closeout](agents/ticket-closeout.md) §2）
 - [ ] `./scripts/test.sh` 全绿（后台 fast 门禁；含冒烟 smoke）；穷举/基准按需 `--label slow` / `--label perf`（Windows `-Label`）；agent 侧 `./scripts/gate.sh test`；**票内并行 / 构建树中间态时用 `--target`（build）/ `--test-name`（test）定向迭代，全量 build/test 等写作用域收敛后再跑**（见 [ticket-closeout](agents/ticket-closeout.md) §2）
-- [ ] `git status` 干净，改动为小步提交（信息中文，`fix:/feat:/refactor:/docs:/test:/chore:/perf:/style:/build:/ci:` 前缀）
+- [ ] `git status` 干净，每票 1–2 个提交（实现 + 审查收敛；信息中文，`fix:/feat:/refactor:/docs:/test:/chore:/perf:/style:/build:/ci:` 前缀）
 - [ ] 契约/生成物有改动时 CI 的 Freshness 步骤绿
 
 > 收尾按 [agents/ticket-closeout.md](agents/ticket-closeout.md)：push 后建 PR → `./scripts/wait-ci.sh --pr <n>` **静默等 PR checks** → **合并 PR 后**再关 issue。等待只输出状态变化和失败摘要；失败用 `./scripts/ci-log.sh <run-id>` 只取错误行（优先取 200KB 的 `last-test-log` artifact）。不要 `gh run watch` 全量输出，不要 `sleep` 轮询，也不要在同一分支有 CI 在跑时重复 push（会排队/取消，每次 ≈35–40 分钟）。

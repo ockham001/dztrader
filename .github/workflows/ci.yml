@@ -305,7 +305,8 @@ jobs:
   # sccache 的 GitHub Actions 缓存按 ref 作用域：PR run 写入的缓存其它 PR 读不到，
   # 只有默认分支（main）写的缓存能被任意 PR restore。因此本 job 在 main 上只做
   # “configure + build” 把编译结果写进 sccache，不做测试（测试仍由 PR 的 windows job 负责）；
-  # main push（#260，每次 merge 后异步预热，与 Linux 验证同一 run 并行）+ 定时 + 手动触发，
+  # main push（#260，每次含代码改动的 merge 后异步预热，与 Linux 验证同一 run 并行；纯文档
+  # 改动被 on.push.paths-ignore 跳过，不触发本 job）+ 定时 + 手动触发，
   # 不占用任何 PR 的等待时间。
   # ============================================================
   windows-cache-warm:

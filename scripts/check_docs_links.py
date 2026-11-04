@@ -508,8 +508,8 @@ def check_pending_symbols(files, root, code_tokens=None):
                 name, issue = m.group(1), m.group(2)
                 if name in code_tokens:
                     errors.append(
-                        f"{rel}:{lineno}: stale pending-symbol marker -> "
-                        f"{name} is already implemented in code, remove the marker")
+                        f"{rel}:{lineno}: stale pending-symbol marker, symbol is already "
+                        f"implemented in code, remove the marker -> {name}")
                     continue
                 pending.append((rel, lineno, name, issue))
                 pending_by_file.setdefault(rel, set()).add(name)
