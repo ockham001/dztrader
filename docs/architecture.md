@@ -34,27 +34,19 @@
 环境变量DZTRADER_HOME指定数据根，未设置用系统默认(Win:%USERPROFILE%\.dztrader，Linux:$HOME/.dztrader)。
 子目录：configs/ shm/ logs/ cache/ strategies/ db/
 
-## 数据库后端
+## 数据库
 
-事务域 DB 走端口-适配器接口（`dztrader::db`：`Database`/`Session`/`Row`/`Filter`/`Capability`，ADR 0015），
-后端由配置选择，调用方代码不变（ADR 0016）：
+交易数据固定为本地 SQLite 单库（ADR 0041）：`$DZTRADER_HOME/db/trade.db`。schema v1 由
+`libs/tdstore` 平台自有声明（`schema_catalog.h`）单源生成，`PRAGMA user_version` 即版本；
+**无迁移链**——版本不符/损坏时 master 启动期把旧库改名保留并新建。td 写入、dzweb 只读直查、
+策略 SDK 只读查询共用这个文件；**不再为交易数据选择后端**（原 `database.json` `td` 段与
+MySQL 交易路线按 ADR 0041 废弃，SDK 侧收尾见 #252）。
 
-| 后端 | 实现 | 编入位置 | 状态 |
-|------|------|---------|------|
-| sqlite | SQLiteCpp | `dzdb`（静态编入策略 SDK） | 默认，全链路可用 |
-| mysql | Boost.MySQL + 静态 OpenSSL/ZLIB/boost_charconv | 同上，CMake `DZ_WITH_MYSQL=ON`（默认） | 驱动/一致性/真机集成已验；**td 写端与 dzweb 读端仍为 SQLite，切换属后续阶段** |
-| mongo / 原版 MySQL | 动态库插件（环境变量注入）或代理适配器（独立服务进程） | 未实现 | 只留驱动注册缝，接口不变 |
+策略 SDK 内部仍保留端口-适配器 DB 层（`sqlite` + `mysql`，ADR 0016/0019/0020；随 #252 从
+平台侧私有化进 SDK）：MySQL 仅为将来行情/归档用途保留，不承载账户交易数据。
 
-**策略进程可见后端收敛为 `sqlite` + `mysql`**（均已静态内嵌进 SDK，对外经自包含动态库交付；ADR 0016/0019/0020）：其他后端
-当前均未实现；若将来实现，也只用于平台/归档侧——策略需要读取时由对应进程镜像成 sqlite/mysql，
-或等未来代理适配器（另立 ADR）。
-
-选择规则（`db::resolve_config("td")` 是唯一入口）：环境变量 `DZTRADER_DB_BACKEND` /
-`DZTRADER_DB_OPT_<KEY>` > `<DZTRADER_HOME>/configs/database.json` 的 `td` 段（缺失自动生成，
-不提交模板）> 内置默认（sqlite + `<DZTRADER_HOME>/db/td.db`）。
-
-不变量：**同一部署读写两端必须指向同一后端与同一数据库**——写 A 读 B 会让水位/回补静默失效。
-默认配置下与迁移前完全等价（`paths::td_db()` + busy_timeout 5000）。
+不变量：**同一部署只有一个交易库文件**（`trade.db`），写端（td）与读端（dzweb/SDK）必须
+指向同一路径——路径只由 `DZTRADER_HOME` 决定，运行期不提供切换。
 
 ## IPC通道详情
 

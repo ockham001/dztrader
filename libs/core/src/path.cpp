@@ -61,7 +61,8 @@ struct PathCache {
     std::optional<std::filesystem::path> cache;
     std::optional<std::filesystem::path> strategies;
     std::optional<std::filesystem::path> db;
-    std::optional<std::filesystem::path> td_db;
+    std::optional<std::filesystem::path> trade_db;
+    std::optional<std::filesystem::path> platform_db;
 };
 
 std::mutex g_cache_mutex;
@@ -125,13 +126,22 @@ const std::filesystem::path& db() {
     return subdir_locked(g_cache.db, "db");
 }
 
-const std::filesystem::path& td_db() {
+const std::filesystem::path& trade_db() {
     std::lock_guard<std::mutex> lock(g_cache_mutex);
-    if (!g_cache.td_db) {
+    if (!g_cache.trade_db) {
         // db() 已保证目录存在, 此处不重复 ensure
-        g_cache.td_db = subdir_locked(g_cache.db, "db") / "td.db";
+        g_cache.trade_db = subdir_locked(g_cache.db, "db") / "trade.db";
     }
-    return *g_cache.td_db;
+    return *g_cache.trade_db;
+}
+
+const std::filesystem::path& platform_db() {
+    std::lock_guard<std::mutex> lock(g_cache_mutex);
+    if (!g_cache.platform_db) {
+        // db() 已保证目录存在, 此处不重复 ensure
+        g_cache.platform_db = subdir_locked(g_cache.db, "db") / "platform.db";
+    }
+    return *g_cache.platform_db;
 }
 
 void reset_for_test() {

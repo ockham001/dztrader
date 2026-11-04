@@ -14,10 +14,11 @@ add_library(dztraderd_obj OBJECT
     shm_manager_frame.cpp
     process_supervisor.cpp
     process_config.cpp
+    trade_db.cpp
 )
 target_include_directories(dztraderd_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(dztraderd_obj
-    PUBLIC dzcore dzlog dzshm dzprocess
+    PUBLIC dzcore dzlog dzshm dzprocess dztdstore
     PUBLIC dzplatform_headers
     PUBLIC spdlog::spdlog magic_enum::magic_enum Boost::boost SQLiteCpp
 )

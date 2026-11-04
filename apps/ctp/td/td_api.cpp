@@ -14,13 +14,14 @@
 
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/core_struct.h>  // DzOrderReq / DzOrderCancelReq
-#include <dztrader/core/path.h>         // paths::td_db
+#include <dztrader/core/path.h>         // paths::trade_db
 #include <dztrader/core/string_util.h>  // copy_string
 #include <dztrader/data_type.h>
 #include <dztrader/date_time/date_time.h>  // Date::from_string ("YYYYMMDD" -> DzDate)
 #include <dztrader/platform/frame_codec.h>
 #include <dztrader/shm/frame_codec.h>  // decode_ext_inst_json, decode_ext_json
 #include <dztrader/struct.h>
+#include <dztrader/tdstore/trade_db.h>
 
 namespace dztrader::ctp {
 
@@ -52,20 +53,36 @@ TdApi::TdApi(std::string name,
       notify_ui_(name_, event_writer_),
       log_config_(name_, config_path_),
       auto_login_config_(name_, config_path_, event_writer_) {
-    // 创建跨进程共享的 OrderIdMeta (本进程是创建者, open_or_create 模式)
-    // 文件布局: shm_dir_/<name_>/order_id.dat
-    // 多账户共享同一计数器 (TdApi 持有, AccountSession 通过引用获取)
-    order_id_meta_ =
-        std::make_unique<shm::OrderIdMeta>(shm::OrderIdMeta::open_or_create(name_, shm_dir_));
+    // 全平台共享一个 order_id 计数器 (CHANNEL_NAME_ORDER_ID; 策略与 td 同用):
+    // 文件布局 shm_dir_/order_id/order_id.dat。master 建库后按 DB MAX(order_id) 播种,
+    // td 只消费不建私有计数器 (ADR 0041 §6)。
+    order_id_meta_ = std::make_unique<shm::OrderIdMeta>(
+        shm::OrderIdMeta::open_or_create(dztrader::CHANNEL_NAME_ORDER_ID, shm_dir_));
 
     // 创建并打开 PersistWriter (SQLite 持久化, 启动时一次性 open + start_writer)
-    // db 路径: $DZTRADER_HOME/db/td.db (统一库, 所有 td 网关共写, 多账户共享)
-    auto db_path = dztrader::paths::td_db();
-    persist_writer_ = std::make_unique<PersistWriter>(db_path.string());
+    // db 路径: $DZTRADER_HOME/db/trade.db (统一库, 所有 td 网关共写, 多账户共享;
+    // master 建库/重建与 order_id 播种, td 只消费 — ADR 0041)
+    auto db_path = dztrader::paths::trade_db();
+    persist_writer_ = std::make_unique<PersistWriter>(db_path.string(), name_);
     persist_writer_->open();
-    // 启动自检 (设计 §13 step 8): 必须在 start_writer() 前执行 (主线程独占 db)
-    verify_order_id_against_db();
     persist_writer_->start_writer();
+
+    // ADR 0041 §6: master 启动时已按 DB MAX(order_id) 播种共享计数器；td 侧再以同一
+    // MAX(order_id)+1 幂等 ensure（fetch_max，单调不减）作兜底——覆盖 master 缺席 /
+    // 计数器 shm 文件丢失 / 跨机导入后计数器落后。库不可用只告警降级（库非交易真相源）。
+    try {
+        const int64_t db_max = dztrader::tdstore::read_max_order_id(db_path);
+        const DzOrderId counter_before = order_id_meta_->current();
+        (void)order_id_meta_->ensure_at_least(static_cast<DzOrderId>(db_max + 1));
+        if (order_id_meta_->current() > counter_before) {
+            SPDLOG_WARN(
+                "order id counter bumped by td fallback | db_max={} counter_before={} "
+                "counter_after={}",
+                db_max, counter_before, order_id_meta_->current());
+        }
+    } catch (const std::exception& e) {
+        SPDLOG_WARN("order id fallback skipped (trade db unavailable) | error=\"{}\"", e.what());
+    }
 
     // 加载日志配置 (从 dztd_ctp.json "log" section, 失败用默认值自愈, 与 spdlog 同步)
     log_config_.load();
@@ -108,24 +125,9 @@ void TdApi::set_configs(TdConfig td_cfg) {
     config_ = std::move(td_cfg);
     // Task 5: 预扫 hook. 在 run() 前 (set_configs 后、connect 前) 用独立只读连接
     // 打开同一 db 文件, 对 config_.accounts 全量预扫, 存 boot_cache_ (start_seq/orders/trades).
-    // ctor 的 open->start_writer 窗口内 config_ 为空且 max_order_id() 守卫 !writer_started_,
-    // 无法查询; 故预扫在此 (set_configs 时机, config 已就绪、Writer 未启动不影响独立只读连接).
+    // 预扫用独立只读连接, 与 Writer 会话无竞争 (#245 登录日装载替代全史预扫).
     ensure_prescan_db();
     prescan_all_accounts();
-}
-
-void TdApi::verify_order_id_against_db() {
-    // 设计 §13 step 8 + 开放问题 7: 跨机导入数据库后, 保证原子计数器 > 库内最大 order_id.
-    // 调用时机: PersistWriter::open() 后 start_writer() 前 (主线程独占 db, 无竞争).
-    const int64_t db_max = persist_writer_->max_order_id();
-    const DzOrderId before = order_id_meta_->current();
-    if (db_max >= before) {
-        order_id_meta_->ensure_at_least(db_max + 1);
-        SPDLOG_WARN("order id self-check bumped | db_max={} counter_before={} counter_after={}",
-                    db_max, before, order_id_meta_->current());
-    } else {
-        SPDLOG_INFO("order id self-check ok | db_max={} counter={}", db_max, before);
-    }
 }
 
 // ============================================================================
@@ -133,10 +135,10 @@ void TdApi::verify_order_id_against_db() {
 // ============================================================================
 
 void TdApi::ensure_prescan_db() {
-    // 独立只读连接打开同一 db 文件 ($DZTRADER_HOME/db/td.db). 文件尚不存在 (首次启动未落库)
+    // 独立只读连接打开同一 db 文件 ($DZTRADER_HOME/db/trade.db). 文件尚不存在 (首次启动未落库)
     // 时失败降级 (prescan_db_ 空), 运行期 connect 时按需重开.
     try {
-        auto db_path = dztrader::paths::td_db();
+        auto db_path = dztrader::paths::trade_db();
         if (prescan_db_ != nullptr) {
             return;  // 已打开
         }

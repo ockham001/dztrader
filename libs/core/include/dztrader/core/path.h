@@ -49,9 +49,14 @@ const std::filesystem::path& strategies();
 const std::filesystem::path& db();
 
 /**
- * @brief td 统一数据库文件 (db/td.db; 所有 td 网关共写)
+ * @brief 交易库文件 (db/trade.db; 所有 td 网关共写、master 建库/重建; ADR 0041)
  */
-const std::filesystem::path& td_db();
+const std::filesystem::path& trade_db();
+
+/**
+ * @brief 平台库文件 (db/platform.db; 用户/安全/行情源配置)
+ */
+const std::filesystem::path& platform_db();
 
 /**
  * @brief 清空全部路径缓存（仅测试使用）

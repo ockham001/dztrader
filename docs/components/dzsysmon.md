@@ -111,7 +111,7 @@
 ### 存储层
 
 - **共享模块** [`libs/sysmonstore`](../../libs/sysmonstore/)：历史库 schema 的**唯一**定义 + 行编解码 + 写入方/只读读取方门面。dzsysmon 与 dzweb 共用它——schema 只此一份，不存在第二份建表语句。
-- 库文件 `$DZTRADER_HOME/db/sysmon.db`，与交易库（`td.db`）、WebUI 库（`webui.db`）分离。WAL + `synchronous=FULL`（历史写入是低频批量，不在交易路径上，抗断电优先）；**dzsysmon 是唯一写者**，dzweb 走只读连接。
+- 库文件 `$DZTRADER_HOME/db/sysmon.db`，与交易库（`trade.db`）、平台库（`platform.db`）分离。WAL + `synchronous=FULL`（历史写入是低频批量，不在交易路径上，抗断电优先）；**dzsysmon 是唯一写者**，dzweb 走只读连接。
 - 表结构分两类（快照形状一次定稿，见[契约 §2](../frame_contracts/sysmon.md)）：
   - **宽表** `sysmon_scalar`：固定标量指标，一行一个时间桶，每指标 5 列（`_min` / `_max` / `_avg` / `_last` / `_n`）。复合主键 `(level, bucket_ts)` + `WITHOUT ROWID`：原始记录与分钟聚合同表共存、互不覆盖，按主键范围扫描即时间范围查询。
   - **长表** `sysmon_dimension`：按维度展开（CPU 核 / 卷 / 物理盘 / 网卡 / 温度传感器），一行一个 `(桶, 域, 维度, 指标)`。维度元数可变（核数、盘数、网卡数随机器与热插拔变化），固定列会把表结构钉死在某一台机器上；CPU 核序号不保证连续，因此维度标识是**不透明文本**。

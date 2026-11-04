@@ -7,6 +7,7 @@
 #include "process_registry.h"
 #include "process_supervisor.h"
 #include "shm_manager.h"
+#include "trade_db.h"
 #include "spdlog/common.h"
 
 #include <dztrader/core/json_section.h>
@@ -15,6 +16,7 @@
 #include <dztrader/log/log.h>
 #include <dztrader/platform/log_config.h>
 #include <dztrader/shm/page_cleaner.h>
+#include <dztrader/tdstore/schema_catalog.h>
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/signal_set.hpp>
@@ -153,6 +155,36 @@ int main(int argc, char* argv[]) {
         SPDLOG_ERROR("process registry load failed | path={} error=\"{}\"", config_path.string(),
                      e.what());
         return 1;
+    }
+
+    // 6.5 交易库地基（ADR 0041）：建库/重建 trade.db + 按 MAX(order_id) 播种共享
+    //     order_id 计数器，先于任何子进程启动。失败只记 ERROR 并降级启动：
+    //     交易库不是交易真相源，DB 不可用不应阻塞交易（ADR 0042）。
+    try {
+        const dztrader::master::TradeDbStartupResult trade_db =
+            dztrader::master::initialize_trade_db();
+        switch (trade_db.init.status) {
+            case dztrader::tdstore::TradeDbInitReport::Status::Created:
+                SPDLOG_INFO("trade db created | path={} schema_version={}",
+                            dztrader::paths::trade_db().string(),
+                            dztrader::tdstore::kTdSchemaVersion);
+                break;
+            case dztrader::tdstore::TradeDbInitReport::Status::Existing:
+                SPDLOG_INFO("trade db ready | path={} schema_version={}",
+                            dztrader::paths::trade_db().string(),
+                            dztrader::tdstore::kTdSchemaVersion);
+                break;
+            case dztrader::tdstore::TradeDbInitReport::Status::Rebuilt:
+                // 旧版本/损坏库：改名保留 + 新建（不删除旧文件，ERROR 可查，ADR 0041）
+                SPDLOG_ERROR("trade db rebuilt | path={} previous_version={} reason={} backup={}",
+                             dztrader::paths::trade_db().string(), trade_db.init.previous_version,
+                             trade_db.init.rebuild_reason, trade_db.init.backup_path);
+                break;
+        }
+        SPDLOG_INFO("order id counter seeded | db_max={} counter_before={} counter_after={}",
+                    trade_db.db_max_order_id, trade_db.counter_before, trade_db.counter_after);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("trade db init failed, data layer degraded | error=\"{}\"", e.what());
     }
 
     // 7. ShmManager：创建事件通道 + md 通道 (构造即初始化, 失败抛异常)

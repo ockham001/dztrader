@@ -105,13 +105,13 @@ protected:
     }
 };
 
-// 默认 (无文件): sqlite + paths::td_db() + busy_timeout_ms=5000, 并自动生成配置段;
+// 默认 (无文件): sqlite + paths::trade_db() + busy_timeout_ms=5000, 并自动生成配置段;
 // 生成内容不含 path (与 DZTRADER_HOME 位置解耦), 再次解析幂等不改文件。
 TEST_F(DbConfigTest, DefaultsGenerateConfigFileIdempotently) {
     ASSERT_FALSE(fs::exists(config_file_));
     const Config config = dztrader::db::resolve_config("td");
     EXPECT_EQ("sqlite", config.backend);
-    EXPECT_EQ(dztrader::paths::td_db().string(), option(config, "path"));
+    EXPECT_EQ(dztrader::paths::trade_db().string(), option(config, "path"));
     EXPECT_EQ("5000", option(config, "busy_timeout_ms"));
 
     ASSERT_TRUE(fs::exists(config_file_));
@@ -227,7 +227,7 @@ TEST_F(DbConfigTest, MissingSectionGeneratesAndKeepsOtherSections) {
     write_file(config_file_, R"({"web":{"backend":"sqlite","options":{"path":"/tmp/web.db"}}})");
     const Config td = dztrader::db::resolve_config("td");
     EXPECT_EQ("sqlite", td.backend);
-    EXPECT_EQ(dztrader::paths::td_db().string(), option(td, "path"));
+    EXPECT_EQ(dztrader::paths::trade_db().string(), option(td, "path"));
 
     const auto json = nlohmann::json::parse(read_file(config_file_));
     ASSERT_TRUE(json.contains("td"));
@@ -254,7 +254,7 @@ TEST_F(DbConfigTest, EnvOptionKeysAreMappedAndInvalidIgnored) {
 
     dztrader::env::set("DZTRADER_DB_OPT_PATH", "");
     const Config empty_value = dztrader::db::resolve_config("td");
-    EXPECT_EQ(dztrader::paths::td_db().string(), option(empty_value, "path"));
+    EXPECT_EQ(dztrader::paths::trade_db().string(), option(empty_value, "path"));
 }
 
 // 未知 backend 原样解析 (resolve_config 不做准入校验), 由 backend_available/Database::open 报错。

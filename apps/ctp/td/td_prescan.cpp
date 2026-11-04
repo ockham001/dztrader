@@ -3,11 +3,14 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include <SQLiteCpp/Statement.h>
+#include <nlohmann/json.hpp>
 
+#include <dztrader/data_type.h>
 #include <dztrader/date_time/date.h>
 
 namespace dztrader::ctp {
@@ -37,19 +40,51 @@ int32_t parse_yyyymmdd_to_epoch(const std::string& text) {
     }
 }
 
-/// 通用查询模板: 按 account_id 过滤 (可选 seq > since_seq 增量).
-/// 列按写端 bind_order 语义读 (direction/status/price_type/position_effect 为 INTEGER).
+/// ext JSON（schema v1 的柜台扩展列）-> OrderRecord 的 CTP 扩展字段。
+/// 登录重放匹配/重放过滤所需的 order_ref、update_time、volume_canceled 等在此恢复；
+/// 坏 JSON 按空 ext 处理（不阻塞装载）。
+void fill_order_ext(OrderRecord& record, const std::string& ext_text) {
+    if (ext_text.empty()) {
+        return;
+    }
+    try {
+        const nlohmann::json ext = nlohmann::json::parse(ext_text);
+        if (!ext.is_object()) {
+            return;
+        }
+        if (const auto it = ext.find(kOrderExtOrderRef); it != ext.end() && it->is_string()) {
+            copy_to_fixed(record.order_ref, it->get<std::string>());
+        }
+        if (const auto it = ext.find(kOrderExtOrderSysId); it != ext.end() && it->is_string()) {
+            copy_to_fixed(record.external_order_id, it->get<std::string>());
+        }
+        if (const auto it = ext.find(kOrderExtVolumeCanceled); it != ext.end() && it->is_number()) {
+            record.volume_canceled = it->get<int32_t>();
+        }
+        if (const auto it = ext.find(kOrderExtUpdateTime); it != ext.end() && it->is_number()) {
+            record.update_time = it->get<int64_t>();
+        }
+        if (const auto it = ext.find(kOrderExtErrorId); it != ext.end() && it->is_number()) {
+            record.error_id = it->get<int32_t>();
+        }
+        if (const auto it = ext.find(kOrderExtErrorMessage); it != ext.end() && it->is_string()) {
+            copy_to_fixed(record.error_msg, it->get<std::string>());
+        }
+    } catch (const std::exception&) {
+        // 坏 ext: 视为无扩展字段
+    }
+}
+
+/// orders 行装载模板 (schema v1 列序): 按 account_id 过滤 (可选 seq > since_seq 增量).
 template <bool Since>
 std::vector<OrderRecord> load_orders_impl(SQLite::Database& db,
                                           const std::string& account_id,
                                           uint64_t since_seq) {
     std::vector<OrderRecord> out;
     std::string sql =
-        "SELECT trading_day, order_id, order_ref, external_order_id, is_external,"
-        " instrument_id, exchange_id, direction, position_effect, price_type, status,"
-        " price, volume, volume_traded, volume_canceled, insert_time, update_time,"
-        " error_id, error_msg, strategy_id, remark, seq"
-        " FROM orders WHERE account_id = ?";
+        "SELECT date, order_id, strategy_id, instrument_id, exchange_id, direction,"
+        " position_effect, price_type, status, price, volume, volume_traded, remark,"
+        " time, avg_price, seq, ext FROM orders WHERE account_id = ?";
     if constexpr (Since) {
         sql += " AND seq > ?";
     }
@@ -62,46 +97,41 @@ std::vector<OrderRecord> load_orders_impl(SQLite::Database& db,
     while (stmt.executeStep()) {
         OrderRecord r{};
         copy_to_fixed(r.base.account_id, account_id);
-        std::string day = stmt.getColumn(0).getString();
+        const std::string day = stmt.getColumn(0).getString();
         copy_to_fixed(r.trading_day, day);
         r.base.order_id = stmt.getColumn(1).getInt64();
-        copy_to_fixed(r.order_ref, stmt.getColumn(2).getString());
-        copy_to_fixed(r.external_order_id, stmt.getColumn(3).getString());
-        r.is_external = static_cast<int8_t>(stmt.getColumn(4).getInt());
-        copy_to_fixed(r.base.instrument_id, stmt.getColumn(5).getString());
-        copy_to_fixed(r.base.exchange_id, stmt.getColumn(6).getString());
-        r.base.direction =
-            static_cast<int8_t>(stmt.getColumn(7).getInt());  // INTEGER 读 (Task 3 注)
-        r.base.position_effect = static_cast<int8_t>(stmt.getColumn(8).getInt());
-        r.base.price_type = static_cast<int8_t>(stmt.getColumn(9).getInt());
-        r.base.status = static_cast<int8_t>(stmt.getColumn(10).getInt());
-        r.base.price = stmt.getColumn(11).getDouble();
-        r.base.volume = stmt.getColumn(12).getInt();
-        r.base.volume_traded = stmt.getColumn(13).getInt();
-        r.volume_canceled = stmt.getColumn(14).getInt();
-        r.insert_time = stmt.getColumn(15).getInt64();
-        r.update_time = stmt.getColumn(16).getInt64();
-        r.error_id = stmt.getColumn(17).getInt();
-        copy_to_fixed(r.error_msg, stmt.getColumn(18).getString());
-        copy_to_fixed(r.base.strategy_id, stmt.getColumn(19).getString());
-        copy_to_fixed(r.base.remark, stmt.getColumn(20).getString());
-        r.base.seq = static_cast<uint64_t>(stmt.getColumn(21).getInt64());
+        copy_to_fixed(r.base.strategy_id, stmt.getColumn(2).getString());
+        copy_to_fixed(r.base.instrument_id, stmt.getColumn(3).getString());
+        copy_to_fixed(r.base.exchange_id, stmt.getColumn(4).getString());
+        r.base.direction = static_cast<int8_t>(stmt.getColumn(5).getInt());
+        r.base.position_effect = static_cast<int8_t>(stmt.getColumn(6).getInt());
+        r.base.price_type = static_cast<int8_t>(stmt.getColumn(7).getInt());
+        r.base.status = static_cast<int8_t>(stmt.getColumn(8).getInt());
+        r.base.price = stmt.getColumn(9).getDouble();
+        r.base.volume = stmt.getColumn(10).getInt();
+        r.base.volume_traded = stmt.getColumn(11).getInt();
+        copy_to_fixed(r.base.remark, stmt.getColumn(12).getString());
+        r.base.time = stmt.getColumn(13).getInt();
+        r.base.avg_price = stmt.getColumn(14).getDouble();
+        r.base.seq = static_cast<uint64_t>(stmt.getColumn(15).getInt64());
+        fill_order_ext(r, stmt.getColumn(16).getString());
+        r.is_external = (std::string_view(r.base.strategy_id) == DZ_STRATEGY_ID_EXTERNAL) ? 1 : 0;
         r.base.date = parse_yyyymmdd_to_epoch(day);
         out.push_back(r);
     }
     return out;
 }
 
+/// trades 行装载模板 (schema v1 列序).
 template <bool Since>
 std::vector<TradeRecord> load_trades_impl(SQLite::Database& db,
                                           const std::string& account_id,
                                           uint64_t since_seq) {
     std::vector<TradeRecord> out;
     std::string sql =
-        "SELECT trading_day, trade_id, order_id, instrument_id, exchange_id,"
-        " direction, position_effect, price, volume, trade_time, trade_date,"
-        " commission, strategy_id, seq"
-        " FROM trades WHERE account_id = ?";
+        "SELECT date, trade_id, order_id, strategy_id, instrument_id, exchange_id,"
+        " direction, position_effect, price, volume, time, seq FROM trades"
+        " WHERE account_id = ?";
     if constexpr (Since) {
         sql += " AND seq > ?";
     }
@@ -114,22 +144,24 @@ std::vector<TradeRecord> load_trades_impl(SQLite::Database& db,
     while (stmt.executeStep()) {
         TradeRecord r{};
         copy_to_fixed(r.base.account_id, account_id);
-        std::string day = stmt.getColumn(0).getString();
+        const std::string day = stmt.getColumn(0).getString();
         copy_to_fixed(r.trading_day, day);
         copy_to_fixed(r.base.trade_id, stmt.getColumn(1).getString());
         r.base.order_id = stmt.getColumn(2).getInt64();
-        copy_to_fixed(r.base.instrument_id, stmt.getColumn(3).getString());
-        copy_to_fixed(r.base.exchange_id, stmt.getColumn(4).getString());
-        r.base.direction = static_cast<int8_t>(stmt.getColumn(5).getInt());
-        r.base.position_effect = static_cast<int8_t>(stmt.getColumn(6).getInt());
-        r.base.price = stmt.getColumn(7).getDouble();
-        r.base.volume = stmt.getColumn(8).getInt();
-        r.trade_time = stmt.getColumn(9).getInt64();
-        r.trade_date = stmt.getColumn(10).getInt64();
-        r.commission = stmt.getColumn(11).getDouble();
-        copy_to_fixed(r.base.strategy_id, stmt.getColumn(12).getString());
-        r.base.seq = static_cast<uint64_t>(stmt.getColumn(13).getInt64());
+        copy_to_fixed(r.base.strategy_id, stmt.getColumn(3).getString());
+        copy_to_fixed(r.base.instrument_id, stmt.getColumn(4).getString());
+        copy_to_fixed(r.base.exchange_id, stmt.getColumn(5).getString());
+        r.base.direction = static_cast<int8_t>(stmt.getColumn(6).getInt());
+        r.base.position_effect = static_cast<int8_t>(stmt.getColumn(7).getInt());
+        r.base.price = stmt.getColumn(8).getDouble();
+        r.base.volume = stmt.getColumn(9).getInt();
+        r.base.time = stmt.getColumn(10).getInt();
+        r.base.seq = static_cast<uint64_t>(stmt.getColumn(11).getInt64());
         r.base.date = parse_yyyymmdd_to_epoch(day);
+        // 派生字段（DB 无对应列；装载基准只用 trading_day/trade_id 去重）
+        r.trade_date = 0;
+        r.trade_time = static_cast<int64_t>(r.base.date) * 86400 + r.base.time;
+        r.commission = 0.0;  // 手续费不逐笔（ADR 0013）
         out.push_back(r);
     }
     return out;

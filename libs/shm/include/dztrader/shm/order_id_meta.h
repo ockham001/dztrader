@@ -45,8 +45,8 @@ public:
     }
 
     /// 确保计数器至少达到 value (fetch_max 语义, 单调不减).
-    /// 用途: 启动自检, 跨机导入数据库后保证计数器 > 库内最大 order_id (设计 §13 step 8).
-    /// 返回调用前的值 (仅日志参考, 无需强制使用).
+    /// 用途: master 启动建库后按交易库 MAX(order_id)+1 播种共享计数器 (ADR 0041 §6);
+    /// 重复/并发调用幂等。返回调用前的值 (仅日志参考, 无需强制使用).
     DzOrderId ensure_at_least(DzOrderId value) noexcept {
         DzOrderId prev = id_->load(boost::memory_order_relaxed);
         while (prev < value) {

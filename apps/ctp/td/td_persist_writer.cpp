@@ -16,7 +16,7 @@
 #include <dztrader/db/database.h>
 #include <dztrader/date_time/date_time.h>  // Date (DzDate 距纪元天数 -> YYYYMMDD)
 #include <dztrader/tdstore/records_store.h>
-#include <dztrader/tdstore/schema_catalog.h>
+#include <dztrader/tdstore/schema_dzdb.h>
 
 #include "td/td_persist_rows.h"
 
@@ -26,8 +26,9 @@ namespace dztrader::ctp {
 // PersistWriter 实现
 // ============================================================================
 
-PersistWriter::PersistWriter(std::string db_path, size_t max_queue_size)
+PersistWriter::PersistWriter(std::string db_path, std::string gateway, size_t max_queue_size)
     : db_path_(std::move(db_path)),
+      gateway_(std::move(gateway)),
       max_queue_size_(max_queue_size) {}
 
 PersistWriter::~PersistWriter() {
@@ -51,9 +52,10 @@ void PersistWriter::open() {
         throw std::runtime_error("persist writer already opened");
     }
 
-    SPDLOG_INFO("opening database | path={}", db_path_);
+    SPDLOG_INFO("opening database | path={} gateway={}", db_path_, gateway_);
 
-    // 统一 DB 接口: schema 由 tdstore 声明 (字段序 = 建表列序), migrate 幂等
+    // 交易库 schema v1 由 master 建库/重建 (ADR 0041)；此处经 dzdb 端口打开并按声明
+    // 幂等补建缺失集合，仅作过渡期兜底（#245 td 写端直连 SQLiteCpp 后删除）。
     dztrader::db::Config config{.backend = "sqlite",
                                 .options = {{"path", db_path_},
                                             {"journal_mode", "wal"},
@@ -236,39 +238,6 @@ bool PersistWriter::wait_flush(uint64_t token, std::chrono::milliseconds timeout
     return true;
 }
 
-int64_t PersistWriter::max_order_id() {
-    // 调用时机: open() 后 start_writer() 前 (主线程独立只读会话, 与 Writer 无竞争)
-    if (!opened_.load()) {
-        throw std::runtime_error("must call open() before max_order_id()");
-    }
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        if (writer_started_) {
-            throw std::runtime_error(
-                "max_order_id() not available after start_writer() (writer thread owns db)");
-        }
-    }
-    if (database_ == nullptr) {
-        throw std::runtime_error("max_order_id() not available after stop()");
-    }
-    // 临时只读会话: orders/trades 两表 MAX(order_id) 取大, 空表 (NULL) 计 0
-    std::unique_ptr<dztrader::db::Session> session = database_->session(/*read_only=*/true);
-    int64_t result = 0;
-    for (std::string_view collection : {"orders", "trades"}) {
-        dztrader::db::Aggregation aggregation;
-        aggregation.op = dztrader::db::AggregateOp::Max;
-        aggregation.field = "order_id";
-        dztrader::db::ResultSet rows = session->aggregate(collection, aggregation);
-        if (rows.empty() || rows.rows().front().values().empty()) {
-            continue;
-        }
-        if (const auto* value = std::get_if<int64_t>(&rows.rows().front().values().front())) {
-            result = std::max(result, *value);
-        }
-    }
-    return result;
-}
-
 // ============================================================================
 // Writer 线程主循环 (纯事件驱动, 无轮询)
 // ============================================================================
@@ -440,10 +409,10 @@ void PersistWriter::execute_batch(std::vector<PersistTask>& batch,
     for (auto& task : batch) {
         switch (task.kind) {
             case PersistTask::Kind::Order:
-                accumulate(task.kind, make_order_row(std::get<OrderRecord>(task.data)));
+                accumulate(task.kind, make_order_row(std::get<OrderRecord>(task.data), gateway_));
                 break;
             case PersistTask::Kind::Trade:
-                accumulate(task.kind, make_trade_row(std::get<TradeRecord>(task.data)));
+                accumulate(task.kind, make_trade_row(std::get<TradeRecord>(task.data), gateway_));
                 break;
             case PersistTask::Kind::Instrument:
                 accumulate(task.kind, tdstore::make_instrument_row(
@@ -452,27 +421,29 @@ void PersistWriter::execute_batch(std::vector<PersistTask>& batch,
             case PersistTask::Kind::Position: {
                 // 单行绝对态 upsert (盘中有变化时走它). task.trading_day 是当前交易日.
                 const auto& row = std::get<std::vector<DzPositionInfo>>(task.data).front();
-                accumulate(task.kind,
-                           tdstore::make_position_row(row, format_trading_day(task.trading_day)));
+                accumulate(task.kind, tdstore::make_position_row(row, format_date(task.trading_day),
+                                                                 gateway_));
                 break;
             }
             case PersistTask::Kind::TradingAccount:
-                accumulate(task.kind,
-                           tdstore::make_trading_account_row(std::get<DzTradingAccount>(task.data),
-                                                             format_trading_day(task.trading_day)));
+                accumulate(task.kind, tdstore::make_trading_account_row(
+                                          std::get<DzTradingAccount>(task.data),
+                                          format_date(task.trading_day), gateway_));
                 break;
             case PersistTask::Kind::PositionRebuild: {
                 // 单事务重灌 (spec §3.2 全量语义): 先落此前任务保持 FIFO, 再原位
                 // remove + upsert; 外层 writer_loop 事务保证外部读者只见原子切换.
-                // 删该账户全部行 (而非按 trading_day 排除): 查询响应为全量, 响应不含的
-                // 合约 = 已全平/已过期, 必须删除 (否则盘中平仓的幽灵持仓永驻到次日).
+                // 删除该账户当日行 (历史交易日行不可变, ADR 0045): 查询响应不含的
+                // 合约 = 已全平/已过期, 必须移除 (否则盘中平仓的幽灵持仓永驻到次日).
                 flush_pending();
-                writer_session_->remove("positions",
-                                        dztrader::db::filters::eq("account_id", task.account_id));
+                const std::string day = format_date(task.trading_day);
+                writer_session_->remove(
+                    "positions",
+                    dztrader::db::Filter{dztrader::db::filters::eq("account_id", task.account_id),
+                                         dztrader::db::filters::eq("date", day)});
                 std::vector<dztrader::db::Row> rows;
-                const std::string day = format_trading_day(task.trading_day);
                 for (const auto& row : std::get<std::vector<DzPositionInfo>>(task.data)) {
-                    rows.push_back(tdstore::make_position_row(row, day));
+                    rows.push_back(tdstore::make_position_row(row, day, gateway_));
                 }
                 writer_session_->upsert("positions", rows);
                 break;
@@ -488,8 +459,8 @@ void PersistWriter::execute_batch(std::vector<PersistTask>& batch,
     flush_pending();
 }
 
-std::string PersistWriter::format_trading_day(int64_t days) {
-    // DzDate (距纪元天数) -> "YYYYMMDD" 文本 (positions/trading_accounts.trading_day 列)
+std::string PersistWriter::format_date(int64_t days) {
+    // DzDate (距纪元天数) -> "YYYYMMDD" 文本 (schema v1 date 列)
     dztrader::Date d{static_cast<int32_t>(days)};
     return std::format("{:04d}{:02d}{:02d}", d.year(), d.month(), d.day());
 }

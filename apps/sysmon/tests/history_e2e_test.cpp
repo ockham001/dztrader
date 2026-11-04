@@ -260,8 +260,8 @@ TEST_F(HistoryE2ETest, ProcessWritesHistoryDatabase) {
     const auto path = history_db();
     EXPECT_EQ(path.parent_path().filename().string(), "db");
     EXPECT_EQ(path.filename().string(), "sysmon.db");
-    EXPECT_FALSE(std::filesystem::exists(home_ / "db" / "td.db"));
-    EXPECT_FALSE(std::filesystem::exists(home_ / "db" / "webui.db"));
+    EXPECT_FALSE(std::filesystem::exists(home_ / "db" / "trade.db"));
+    EXPECT_FALSE(std::filesystem::exists(home_ / "db" / "platform.db"));
 
     // 原始记录必须带 CPU 使用率这类真实指标（进程确实在采集，不是写空行）。
     const auto rows =

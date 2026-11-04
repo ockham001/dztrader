@@ -70,7 +70,7 @@ Config builtin_default(std::string_view backend) {
     Config config;
     config.backend = std::string(backend);
     if (backend == kBackendSqlite) {
-        config.options[std::string(kKeyPath)] = paths::td_db().string();
+        config.options[std::string(kKeyPath)] = paths::trade_db().string();
         config.options[std::string("busy_timeout_ms")] = std::string(kDefaultBusyTimeoutMs);
     } else if (backend == kBackendMysql) {
         config.options[std::string("host")] = std::string(kDefaultMysqlHost);
@@ -167,7 +167,7 @@ FileSection load_file_section(const std::filesystem::path& path, std::string_vie
 
 /// 段缺失时生成默认段（原子写；保留文件中其他段）
 void generate_default_section(const std::filesystem::path& path, std::string_view domain) {
-    // 生成内容与 spec §6.2 一致: path 不写入（解析期回落到 paths::td_db()），
+    // 生成内容与 spec §6.2 一致: path 不写入（解析期回落到 paths::trade_db()），
     // 使文件与 DZTRADER_HOME 位置解耦。
     nlohmann::json options = nlohmann::json::object();
     options["busy_timeout_ms"] = std::string(kDefaultBusyTimeoutMs);
