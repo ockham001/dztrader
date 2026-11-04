@@ -267,13 +267,12 @@ describe('useTdOrdersStore · WS 合并（契约 webui-ws §5 第 8/9 条）', (
     store.applyOrderEvent(row({ order_id: 2 }))
     store.applyOrderEvent(row({ order_id: 3 }))
 
-    // 未到刷新点：列表尚未变化（避免逐条触发重渲染）。批量窗口约 10Hz
-    // = 间隔不超过 100ms，由上面的「未到点不写行 / 到点一次性合并」两个断言共同锁定：
-    // 间隔若超过 100ms，本用例前一断言仍成立但 §4.9 的刷新频率语义已破。
-    expect(TD_BATCH_INTERVAL_MS).toBeLessThanOrEqual(100)
+    // 事件刚入队：列表尚未变化（避免逐条触发重渲染）
     expect(store.rows).toHaveLength(0)
 
-    await vi.advanceTimersByTimeAsync(TD_BATCH_INTERVAL_MS)
+    // 频率 oracle 用 spec §4.9 的字面量「约 10Hz」（= 100ms），**不**用被测常量本身：
+    // 推进字面量 100ms 必须已经刷新，否则刷新频率慢于契约语义。
+    await vi.advanceTimersByTimeAsync(100)
 
     expect(store.rows.map(r => r.order_id)).toEqual([3, 2, 1])
   })
