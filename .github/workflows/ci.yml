@@ -33,8 +33,15 @@ on:
   #
   # 结论：0/1 个 C++ 文件时 ~11–14min（缓存确实生效），21 个时 35min 属正常。
   # 分档口径与预算由 `scripts/ci_budget.py` 定义（small 18 / medium 30 / large 45 分钟），
-  # 该脚本带 --selftest 并接入 preflight，用真实 PR 数据校验过四个样本。改动 CI 缓存配置
-  # 或 runner 规格后重跑一次观测，再据此调整 —— 不要凭印象改数字。
+  # 该脚本带 --selftest 与 unittest 并接入 preflight，用真实 PR 数据校验过四个样本。
+  # 改动 CI 缓存配置或 runner 规格后重跑一次观测，再据此调整 —— 不要凭印象改数字。
+  #
+  # 命中率数据（#267）：sccache stats 与本次改动规模一起上传为 `windows-sccache-stats`
+  # artifact（保留 30 天）。取用与归因：
+  #   gh run download <run-id> -n windows-sccache-stats -D .cache/ci-stats
+  #   python3 scripts/ci_budget.py --from-git origin/main...HEAD --actual <min> \
+  #       --stats-file .cache/ci-stats/sccache-stats.txt
+  # 脚本会按命中率给出归因（低命中率 -> 查缓存；命中率健康 -> 是规模或 runner 抖动）。
   #
   # 曾考虑但**否决**的改进：把 PR 侧 `SCCACHE_GHA_RW_MODE` 从 READ_ONLY 改成 READ_WRITE。
   # 不会改善后续 PR 命中率——GitHub Actions 缓存按 ref 作用域，PR 写在 `refs/pull/N/merge`
@@ -127,11 +134,52 @@ jobs:
         run: .\scripts\build.ps1
 
       # 命中率证据（#260，与 Linux 的 ccache stats 对齐）：失败不阻断构建。
+      #
+      # #267：原本只 `sccache --show-stats` 打到日志里，结论是「拿不到」——该步骤
+      # continue-on-error，输出混在数十 MB 的 job 日志中（Windows 日志 99% 是
+      # /showIncludes 噪声），既无法机器解析也无法跨 run 对比。没有命中率数据，
+      # 就只能凭墙钟猜缓存是否生效（#260 把主因误判为「配额挤兑」正是这么来的）。
+      # 因此改为**落一份机器可读的 artifact**：job 结束后 `gh run download` 即可取，
+      # 与本次改动的规模计数并列，供 ci_budget.py 做命中率-墙钟关联。
       - name: sccache stats
         if: always()
         continue-on-error: true
         shell: pwsh
-        run: sccache --show-stats
+        run: |
+          $raw = sccache --show-stats 2>&1 | Out-String
+          Write-Output $raw
+          # 逐行 `key: value` 落盘（sccache --show-stats 的文本格式稳定），
+          # 同时记录改动规模，让 artifact 自带解释墙钟所需的全部输入。
+          New-Item -ItemType Directory -Force -Path .cache/ci-stats | Out-Null
+          $raw | Set-Content -Path .cache/ci-stats/sccache-stats.txt -Encoding utf8
+          if (Test-Path env:GITHUB_SHA) {
+            "commit=$env:GITHUB_SHA" | Add-Content .cache/ci-stats/sccache-stats.txt
+          }
+
+      - name: Record Windows change scale (#267)
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          # 计数口径与 scripts/ci_budget.py 一致：git diff --name-only（不是 PR 页面
+          # files 列表——后者含重命名项，实测虚高约 50%，用它校准会判错档位）。
+          $base = "${{ github.event.pull_request.base.sha }}"
+          if ([string]::IsNullOrEmpty($base)) { $base = "origin/main" }
+          $files = git diff --name-only "$base...HEAD" 2>$null
+          $cpp = ($files | Where-Object { $_ -match '\.(cpp|cc|cxx|c)$' }).Count
+          $hdr = ($files | Where-Object { $_ -match '\.(h|hpp|hh|hxx)$' }).Count
+          New-Item -ItemType Directory -Force -Path .cache/ci-stats | Out-Null
+          "cpp_files=$cpp" | Add-Content .cache/ci-stats/change-scale.txt
+          "header_files=$hdr" | Add-Content .cache/ci-stats/change-scale.txt
+
+      - name: Upload sccache stats + change scale (#267)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-sccache-stats
+          path: .cache/ci-stats/
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: C++ Tests (incl. integration smoke)
         shell: pwsh

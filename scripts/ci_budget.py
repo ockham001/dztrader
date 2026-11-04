@@ -7,16 +7,19 @@
 含代码改动的 PR）证明这个数字**不可能恒成立**，因为它假设缓存完全命中——而 PR 的语义
 就是改源码，改动必然让对应 TU 的缓存失效：
 
-    PR     C++ 文件  Build      Windows job   命中情况
-    #268   0        4m06s      11m11s        全命中（只改脚本/文档）
-    #264   1        5m32s      13m31s        全命中（1 个 TU）
-    #269   23       16m59s     25m17s        部分
-    #263   32       27m33s     34m51s        部分（头文件传递失效大量 TU）
-    #262   0*       32m35s     41m01s        零命中（*改了 ci.yml 的 sccache 配置，
+（下表 `cpp`/`hdr` 是 **`git diff --name-only` 的真实计数**，不是 GitHub PR 页面的
+files 列表——后者含重命名项与重复项，实测虚高约 50%，用它校准会判错档位。）
+
+    PR     cpp  hdr  Build      Windows job   命中情况
+    #268   0    0    4m06s      11m11s        全命中（只改脚本/文档）
+    #264   1    0    5m32s      13m31s        全命中（1 个 TU）
+    #269   12   11   16m59s     25m17s        部分
+    #263   21   11   27m33s     34m51s        部分（头文件传递失效大量 TU）
+    #262   0*   0*   32m35s     41m01s        零命中（*改了 ci.yml 的 sccache 配置，
                                              warm 写下的旧 key 全部失配）
 
 结论：**墙钟由改动规模主导**。0/1 个 C++ 文件时 ~11–14min 可达（缓存生效的证据）；
-32 个文件时 35min 属正常。用 15min 卡所有 PR，会把 #263 判成失败——假告警，而假告警
+21 个文件时 35min 属正常。用 15min 卡所有 PR，会把 #263 判成失败——假告警，而假告警
 会让「CI 绿」这个信号失真（#260 遗留的正是这个问题）。
 
 同时记录一条**不成立**的改进方向：把 PR 的 `SCCACHE_GHA_RW_MODE` 从 READ_ONLY 改成
@@ -27,12 +30,13 @@ READ_WRITE 不会改善后续 PR 的命中率——GitHub Actions 缓存按 ref 
 口径
 ----
 改动规模按 `git diff --name-only` 的扩展名统计成两档输入：
-  - `cpp_files`：`.cpp/.cc/.cxx` 数量（直接编译单元）
-  - `header_files`：`.h/.hpp/.hh` 数量（经 include 传递失效，放大因子高）
-档位边界取观测数据的自然间隙（1→23 之间无样本，取 24 作中档上界）：
+  - `cpp_files`：`.cpp/.cc/.cxx/.c` 数量（直接编译单元）
+  - `header_files`：`.h/.hpp/.hh/.hxx` 数量（经 include 传递失效，放大因子高）
+档位边界取真实样本间的自然间隙（0–1 / 12 / 21 三簇；权威值是下方常量，
+改边界必须同步本段）：
 
     small  : cpp_files <= 2  且 header_files <= 4
-    medium : cpp_files <= 24 且 header_files <= 40
+    medium : cpp_files <= 16 且 header_files <= 20
     large  : 其余
 
 预算取该档**实测最大值再留一档余量**（不追求贴合实测，避免 runner 抖动误报）：
@@ -43,7 +47,11 @@ READ_WRITE 不会改善后续 PR 的命中率——GitHub Actions 缓存按 ref 
 
 用法:
   python3 scripts/ci_budget.py --cpp 1 --headers 0 --actual 13.5
-  python3 scripts/ci_budget.py --from-git origin/main..HEAD --actual 25.3
+  python3 scripts/ci_budget.py --from-git origin/main...HEAD --actual 25.3
+  # 从 CI artifact 取命中率并入归因（AC1 要的命中率-墙钟关联）
+  gh run download <run-id> -n windows-sccache-stats -D .cache/ci-stats
+  python3 scripts/ci_budget.py --from-git origin/main...HEAD --actual 25.3 \
+      --stats-file .cache/ci-stats/sccache-stats.txt
   python3 scripts/ci_budget.py --selftest
 
 退出码: 0=在预算内, 1=超预算, 2=参数错误
@@ -52,9 +60,11 @@ READ_WRITE 不会改善后续 PR 的命中率——GitHub Actions 缓存按 ref 
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 # 档位边界：由**真实 diff 计数**校准，不是估计（#267）。
 #
@@ -89,8 +99,8 @@ HEADER_SUFFIXES = (".h", ".hpp", ".hh", ".hxx")
 def classify_change_scale(cpp_files: int, header_files: int) -> str:
     """按改动的 C++ 文件数返回 'small' / 'medium' / 'large'。
 
-    头文件单独计入：改 5 个头文件可能牵连上百个 TU（#263 的 32 个 .cpp 里多数是被
-    头文件带出来的），只看 .cpp 数会低估。
+    头文件单独计入：改 5 个头文件可能牵连上百个 TU（#263 的 21 个 .cpp 之外还有 11 个
+    .h，真正失效的 TU 远多于 21），只看 .cpp 数会低估。
     """
     if cpp_files < 0 or header_files < 0:
         raise ValueError(
@@ -119,10 +129,25 @@ class Verdict:
     message: str
 
 
-def evaluate(cpp_files: int, header_files: int, actual_minutes: float) -> Verdict:
-    """把一次实测墙钟与该档预算比对，给出可用作 CI 判据的结论。"""
+# 命中率低于此值视为「缓存基本没生效」：改 ci.yml/sccache 配置的那次（#262）是零命中；
+# 正常 PR 应显著高于它（#268/#264 的全命中 run 可达 90%+）。
+CACHE_HIT_RATE_FLOOR = 0.5
+
+
+def evaluate(cpp_files: int,
+             header_files: int,
+             actual_minutes: float,
+             stats: SccacheStats | None = None) -> Verdict:
+    """把一次实测墙钟与该档预算比对，给出可用作 CI 判据的结论。
+
+    `stats` 可选：给了就把命中率并入结论，让「超预算」的归因有数据支撑，而不是靠猜
+    （#267 AC1 要的正是这个关联）。没给则退回纯墙钟判定。
+    """
     change_class = classify_change_scale(cpp_files, header_files)
     budget = budget_minutes(change_class)
+    rate = stats.hit_rate if stats is not None else None
+    rate_part = "" if rate is None else f" hit_rate={rate:.1%}"
+
     if actual_minutes <= budget:
         return Verdict(
             ok=True,
@@ -130,13 +155,22 @@ def evaluate(cpp_files: int, header_files: int, actual_minutes: float) -> Verdic
             budget=budget,
             actual=actual_minutes,
             message=(f"within budget | class={change_class} budget={budget}min "
-                     f"actual={actual_minutes:.1f}min"),
+                     f"actual={actual_minutes:.1f}min{rate_part}"),
         )
-    # 超预算时给出最有用的下一步提示：小档超时几乎必然是缓存没命中。
-    hint = ("cache likely not hit (check the warm job ran on main and that this PR "
-            "does not touch ci.yml/sccache config)"
-            if change_class == "small"
-            else "check for header-heavy changes invalidating many translation units")
+
+    # 超预算时按**可用数据**给归因，而不是固定话术：
+    #   命中率低 -> 缓存问题（查 warm job / 是否改了 sccache 配置）
+    #   命中率高但超时 -> 规模或 runner 抖动，不是缓存
+    if rate is not None and rate < CACHE_HIT_RATE_FLOOR:
+        hint = (f"cache is not effective (hit_rate={rate:.1%} < "
+                f"{CACHE_HIT_RATE_FLOOR:.0%}); check the warm job ran on main and that "
+                "this PR does not touch ci.yml/sccache config")
+    elif rate is not None:
+        hint = (f"cache is healthy (hit_rate={rate:.1%}); overrun comes from change size "
+                "or runner jitter, not from caching")
+    else:
+        hint = ("no cache stats available; collect the windows-sccache-stats artifact "
+                "before attributing the overrun")
     return Verdict(
         ok=False,
         change_class=change_class,
@@ -144,16 +178,22 @@ def evaluate(cpp_files: int, header_files: int, actual_minutes: float) -> Verdic
         actual=actual_minutes,
         message=(f"over budget | class={change_class} budget={budget}min "
                  f"actual={actual_minutes:.1f}min over={actual_minutes - budget:.1f}min "
-                 f"hint=\"{hint}\""),
+                 f"{rate_part.strip()} hint=\"{hint}\"".replace("  ", " ")),
     )
 
 
-def count_from_git(rev_range: str) -> tuple[int, int]:
-    """从 `git diff --name-only <range>` 统计 (cpp_files, header_files)。"""
+def count_from_git(rev_range: str, cwd: str | None = None) -> tuple[int, int]:
+    """从 `git diff --name-only <range>` 统计 (cpp_files, header_files)。
+
+    `-c core.quotepath=false`：git 默认把非 ASCII 路径转义成 `"\344\270\255.cpp"`
+    （带引号），`endswith` 会失配导致少计；真实仓库有中文路径的历史文件。
+    `cwd` 仅供测试指定临时仓库。
+    """
     out = subprocess.run(
-        ["git", "diff", "--name-only", rev_range],
+        ["git", "-c", "core.quotepath=false", "diff", "--name-only", rev_range],
         capture_output=True,
         text=True,
+        cwd=cwd,
     )
     if out.returncode != 0:
         raise RuntimeError(f"git diff failed for {rev_range!r}: {out.stderr.strip()}")
@@ -167,6 +207,45 @@ def count_from_git(rev_range: str) -> tuple[int, int]:
     return cpp, headers
 
 
+# sccache --show-stats 的文本形态（稳定）：`Cache hits            800`，中间是空格对齐。
+# 只取这两行算命中率；其余行（Cache writes / errors）本票不用。
+SCCACHE_HIT_RE = re.compile(r"^\s*Cache hits\s+(\d+)\s*$", re.MULTILINE)
+SCCACHE_MISS_RE = re.compile(r"^\s*Cache misses\s+(\d+)\s*$", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class SccacheStats:
+    hits: int
+    misses: int
+
+    @property
+    def total(self) -> int:
+        return self.hits + self.misses
+
+    @property
+    def hit_rate(self) -> float | None:
+        """命中率 0.0–1.0；没有编译请求时返回 None（不是 0，避免与「全 miss」混淆）。"""
+        if self.total == 0:
+            return None
+        return self.hits / self.total
+
+
+def parse_sccache_stats(text: str) -> SccacheStats:
+    """从 `sccache --show-stats` 的文本里取 hits/misses。
+
+    为什么需要它（#267 AC1）：命中率原本只打在 job 日志里，而 Windows 日志 99% 是
+    /showIncludes 噪声、且步骤是 continue-on-error —— 实测无法稳定取到。改成 artifact
+    后需要有人能解析，否则数据落了也没人用。
+    """
+    hit = SCCACHE_HIT_RE.search(text)
+    miss = SCCACHE_MISS_RE.search(text)
+    if hit is None or miss is None:
+        raise ValueError(
+            "sccache stats not found: expected 'Cache hits <n>' and 'Cache misses <n>'; "
+            f"got {len(text)} chars")
+    return SccacheStats(hits=int(hit.group(1)), misses=int(miss.group(1)))
+
+
 # ---------------------------------------------------------------------------
 # selftest：锁定档位边界与本票的核心回归（大改动慢是正常的，不得判失败）
 # ---------------------------------------------------------------------------
@@ -177,8 +256,10 @@ SELFTEST_CASES: list[tuple[int, int, str]] = [
     (2, 4, "small"),      # small 上边界
     (0, 5, "medium"),     # 纯头文件改动即升档
     (12, 11, "medium"),   # #269 实测点（25.3min）
+    (3, 0, "medium"),     # small 的下一个值——锁 SMALL_MAX_CPP 不被上调
     (16, 20, "medium"),   # medium 上边界
-    (17, 0, "large"),     # 超中档
+    (16, 21, "large"),    # 锁 MEDIUM_MAX_HEADERS 不被上调
+    (17, 0, "large"),     # 锁 MEDIUM_MAX_CPP 不被上调
     (21, 11, "large"),    # #263 实测点（34.9min）
 ]
 
@@ -251,11 +332,21 @@ def main(argv: list[str]) -> int:
                         help="derive counts from 'git diff --name-only RANGE'")
     parser.add_argument("--actual", type=float, metavar="MINUTES",
                         help="measured Windows job wall clock in minutes")
+    parser.add_argument("--stats-file", metavar="PATH",
+                        help="sccache --show-stats text (the windows-sccache-stats artifact)")
     parser.add_argument("--selftest", action="store_true", help="run rule selftest")
     args = parser.parse_args(argv)
 
     if args.selftest:
         return run_selftest()
+
+    stats = None
+    if args.stats_file:
+        try:
+            stats = parse_sccache_stats(Path(args.stats_file).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"error: cannot read stats file: {exc}", file=sys.stderr)
+            return 2
 
     if args.from_git:
         try:
@@ -276,7 +367,7 @@ def main(argv: list[str]) -> int:
         print(f"class={change_class} budget={budget}min cpp={cpp} headers={headers}")
         return 0
 
-    verdict = evaluate(cpp, headers, args.actual)
+    verdict = evaluate(cpp, headers, args.actual, stats=stats)
     print(verdict.message)
     return 0 if verdict.ok else 1
 
