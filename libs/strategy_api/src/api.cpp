@@ -170,7 +170,7 @@ std::string config_target(const dztrader::db::Config& config) {
 }
 
 /// 取 ingest td 库句柄 (进程内复用, 配置由 db::resolve_config("td") 决定):
-/// 默认 sqlite + <DZTRADER_HOME>/db/td.db, 与迁移前 paths::td_db() 完全等价。
+/// 默认 sqlite + <DZTRADER_HOME>/db/trade.db, 与迁移前 paths::trade_db() 完全等价。
 /// 返回借用的指针 (缓存持有, 调用方不得 close); nullptr = 库不可用 (降级不过滤),
 /// 诊断已按配置去重输出 (dz_next_event → gap 回补重试窗口内每次调用都会走到这里)。
 /// 配置解析失败与打开失败分开报告 (FIX-3): 前者是配置错误, 后者是库不可用。
@@ -298,16 +298,6 @@ int32_t parse_trading_day_to_epoch(const std::string_view text) {
     } catch (...) {
         return 0;
     }
-}
-
-/// epoch 秒 -> 距午夜秒 (DzTime, struct.h "时间（距午夜秒数）")。
-/// DB 时间列 (insert_time/update_time/trade_time) 存 epoch 秒 = 日期*86400 + 当日秒;
-/// rpt.time 只需当日秒部分 (日期已由 rpt.date 表达)。非法 (≤0) 回落 0。
-int32_t epoch_secs_to_tod(int64_t epoch_secs) {
-    if (epoch_secs <= 0) {
-        return 0;
-    }
-    return static_cast<int32_t>(epoch_secs % 86400);
 }
 
 /// DzDate (距纪元天数) -> "YYYYMMDD" 8 位文本 (gate 去重段键 day 分量)。
@@ -483,22 +473,22 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
     {
         const DbQueryResult& result = rows.orders;
         const ColumnMap cols(result);
-        const auto acct_c = cols.idx("account_id", 1);
-        const auto day_c = cols.idx("trading_day", 2);
-        const auto oid_c = cols.idx("order_id", 3);
-        const auto inst_c = cols.idx("instrument_id", 7);
-        const auto exch_c = cols.idx("exchange_id", 8);
-        const auto dir_c = cols.idx("direction", 9);
-        const auto pe_c = cols.idx("position_effect", 10);
-        const auto pt_c = cols.idx("price_type", 11);
-        const auto st_c = cols.idx("status", 12);
-        const auto pr_c = cols.idx("price", 13);
-        const auto vol_c = cols.idx("volume", 14);
-        const auto vt_c = cols.idx("volume_traded", 15);
-        const auto sid_c = cols.idx("strategy_id", 21);
-        const auto seq_c = cols.idx("seq", 23);
-        const auto itime_c = cols.idx("insert_time", 17);
-        const auto utime_c = cols.idx("update_time", 18);
+        const auto acct_c = cols.idx("account_id", 0);
+        const auto date_c = cols.idx("date", 1);
+        const auto oid_c = cols.idx("order_id", 2);
+        const auto sid_c = cols.idx("strategy_id", 3);
+        const auto inst_c = cols.idx("instrument_id", 4);
+        const auto exch_c = cols.idx("exchange_id", 5);
+        const auto dir_c = cols.idx("direction", 6);
+        const auto pe_c = cols.idx("position_effect", 7);
+        const auto pt_c = cols.idx("price_type", 8);
+        const auto st_c = cols.idx("status", 9);
+        const auto pr_c = cols.idx("price", 10);
+        const auto vol_c = cols.idx("volume", 11);
+        const auto vt_c = cols.idx("volume_traded", 12);
+        const auto time_c = cols.idx("time", 14);
+        const auto avg_c = cols.idx("avg_price", 15);
+        const auto seq_c = cols.idx("seq", 16);
         for (const Row& row : result.rows) {
             DzOrderReport rpt{};
             dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
@@ -513,12 +503,10 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
             rpt.price = row_double(row, pr_c);
             rpt.volume = static_cast<DzVolume>(row_int64(row, vol_c));
             rpt.volume_traded = static_cast<DzVolume>(row_int64(row, vt_c));
-            rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
-            // 回补时间语义 (评审发现 2): 实时帧 time 为 CTP InsertTime/UpdateTime 当日秒,
-            // DB insert_time/update_time 为 epoch 秒; 取当日秒填 rpt.time 与实时一致。
-            // 优先 update_time (最新状态时间), 缺省回落 insert_time。
-            rpt.time = epoch_secs_to_tod(row_int64(row, utime_c) != 0 ? row_int64(row, utime_c)
-                                                                      : row_int64(row, itime_c));
+            rpt.date = parse_trading_day_to_epoch(row_string(row, date_c));
+            // schema v1: DB time 列即交易所真实时钟秒 (与实时帧同表示), avg_price 为派生列
+            rpt.time = static_cast<int32_t>(row_int64(row, time_c));
+            rpt.avg_price = row_double(row, avg_c);
             rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
             ok = ctx->enqueue_replay_frame(DZ_FRAME_ORDER_REPORT, &rpt, sizeof(rpt)) && ok;
         }
@@ -527,19 +515,19 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
     {
         const DbQueryResult& result = rows.trades;
         const ColumnMap cols(result);
-        const auto acct_c = cols.idx("account_id", 1);
-        const auto day_c = cols.idx("trading_day", 2);
-        const auto tid_c = cols.idx("trade_id", 3);
-        const auto oid_c = cols.idx("order_id", 4);
+        const auto acct_c = cols.idx("account_id", 0);
+        const auto date_c = cols.idx("date", 1);
+        const auto tid_c = cols.idx("trade_id", 2);
+        const auto oid_c = cols.idx("order_id", 3);
+        const auto sid_c = cols.idx("strategy_id", 4);
         const auto inst_c = cols.idx("instrument_id", 5);
         const auto exch_c = cols.idx("exchange_id", 6);
         const auto dir_c = cols.idx("direction", 7);
         const auto pe_c = cols.idx("position_effect", 8);
         const auto pr_c = cols.idx("price", 9);
         const auto vol_c = cols.idx("volume", 10);
-        const auto sid_c = cols.idx("strategy_id", 14);
-        const auto seq_c = cols.idx("seq", 15);
-        const auto ttime_c = cols.idx("trade_time", 11);
+        const auto time_c = cols.idx("time", 11);
+        const auto seq_c = cols.idx("seq", 12);
         for (const Row& row : result.rows) {
             DzTradeReport rpt{};
             dztrader::copy_string(rpt.account_id, row_string(row, acct_c), true);
@@ -552,10 +540,8 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
             rpt.position_effect = static_cast<DzPositionEffect>(row_char_code(row, pe_c));
             rpt.price = row_double(row, pr_c);
             rpt.volume = static_cast<DzVolume>(row_int64(row, vol_c));
-            rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
-            // 回补时间语义 (评审发现 2): 实时帧 time 为 CTP TradeTime 当日秒,
-            // DB trade_time 为 epoch 秒; 取当日秒填 rpt.time 与实时一致。
-            rpt.time = epoch_secs_to_tod(row_int64(row, ttime_c));
+            rpt.date = parse_trading_day_to_epoch(row_string(row, date_c));
+            rpt.time = static_cast<int32_t>(row_int64(row, time_c));
             rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
             ok = ctx->enqueue_replay_frame(DZ_FRAME_TRADE_REPORT, &rpt, sizeof(rpt)) && ok;
         }
@@ -565,7 +551,7 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
         const DbQueryResult& result = rows.positions;
         const ColumnMap cols(result);
         const auto acct_c = cols.idx("account_id", 0);
-        const auto day_c = cols.idx("trading_day", 1);
+        const auto date_c = cols.idx("date", 1);
         const auto inst_c = cols.idx("instrument_id", 2);
         const auto exch_c = cols.idx("exchange_id", 3);
         const auto dir_c = cols.idx("direction", 4);
@@ -586,7 +572,7 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
             rpt.today_volume = row_int64(row, td_c);
             rpt.yd_volume = row_int64(row, yd_c);
             rpt.price = row_double(row, pr_c);
-            rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
+            rpt.date = parse_trading_day_to_epoch(row_string(row, date_c));
             rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
             ok = ctx->enqueue_replay_frame(DZ_FRAME_POSITION_INFO, &rpt, sizeof(rpt)) && ok;
         }
@@ -596,7 +582,7 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
         const DbQueryResult& result = rows.accounts;
         const ColumnMap cols(result);
         const auto acct_c = cols.idx("account_id", 0);
-        const auto day_c = cols.idx("trading_day", 1);
+        const auto date_c = cols.idx("date", 1);
         const auto seq_c = cols.idx("seq", 10);
         for (const Row& row : result.rows) {
             DzTradingAccount rpt{};
@@ -609,7 +595,7 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
             rpt.withdraw_quota = row_double(row, cols.idx("withdraw_quota", 7));
             rpt.deposit = row_double(row, cols.idx("deposit", 8));
             rpt.withdraw = row_double(row, cols.idx("withdraw", 9));
-            rpt.date = parse_trading_day_to_epoch(row_string(row, day_c));
+            rpt.date = parse_trading_day_to_epoch(row_string(row, date_c));
             rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
             ok = ctx->enqueue_replay_frame(DZ_FRAME_TRADING_ACCOUNT, &rpt, sizeof(rpt)) && ok;
         }
@@ -1646,7 +1632,7 @@ DZ_API DzDatabase* dz_db_open(const char* path) {
 DZ_API DzDatabase* dz_db_open_default(void) {
     try {
         // 后端/路径由配置解析决定 (env > configs/database.json > 内置默认 sqlite);
-        // 默认 sqlite 下等价于 dz_db_open(paths::td_db())。
+        // 默认 sqlite 下等价于 dz_db_open(paths::trade_db())。
         const dztrader::db::Config config = dztrader::db::resolve_config("td");
         // FIX-9: 未编入的后端早失败 (如 DZ_WITH_MYSQL=OFF 时配置成 mysql),
         // 不等到底层驱动才报错; 消息含 backend。

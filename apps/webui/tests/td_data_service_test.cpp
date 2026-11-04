@@ -48,7 +48,7 @@ protected:
         dir_ = dztrader::test::unique_temp_dir("dz_webui_td_data_service_test");
         std::filesystem::remove_all(dir_);
         std::filesystem::create_directories(dir_);
-        db_path_ = (dir_ / "td.db").string();
+        db_path_ = (dir_ / "trade.db").string();
     }
 
     void TearDown() override { std::filesystem::remove_all(dir_); }
@@ -59,7 +59,7 @@ protected:
                  "CREATE TABLE IF NOT EXISTS orders ("
                  "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
                  "    account_id TEXT NOT NULL,"
-                 "    trading_day TEXT NOT NULL,"
+                 "    date TEXT NOT NULL,"
                  "    order_id INTEGER NOT NULL,"
                  "    order_ref TEXT NOT NULL,"
                  "    external_order_id TEXT,"
@@ -86,7 +86,7 @@ protected:
                  "CREATE TABLE IF NOT EXISTS trades ("
                  "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
                  "    account_id TEXT NOT NULL,"
-                 "    trading_day TEXT NOT NULL,"
+                 "    date TEXT NOT NULL,"
                  "    trade_id TEXT NOT NULL,"
                  "    order_id INTEGER NOT NULL,"
                  "    instrument_id TEXT NOT NULL,"
@@ -100,11 +100,11 @@ protected:
                  "    commission REAL,"
                  "    strategy_id TEXT,"
                  "    seq INTEGER NOT NULL DEFAULT 0,"
-                 "    UNIQUE(account_id, trading_day, trade_id))");
+                 "    UNIQUE(account_id, date, trade_id))");
         exec_sql(db,
                  "CREATE TABLE IF NOT EXISTS positions ("
                  "    account_id TEXT NOT NULL,"
-                 "    trading_day TEXT NOT NULL,"
+                 "    date TEXT NOT NULL,"
                  "    instrument_id TEXT NOT NULL,"
                  "    exchange_id TEXT NOT NULL,"
                  "    direction CHAR(1) NOT NULL,"
@@ -118,7 +118,7 @@ protected:
         exec_sql(db,
                  "CREATE TABLE IF NOT EXISTS trading_accounts ("
                  "    account_id TEXT NOT NULL PRIMARY KEY,"
-                 "    trading_day TEXT NOT NULL,"
+                 "    date TEXT NOT NULL,"
                  "    balance REAL, available REAL, frozen REAL,"
                  "    commission REAL, margin REAL, withdraw_quota REAL,"
                  "    deposit REAL, withdraw REAL,"
@@ -140,7 +140,7 @@ protected:
                                 uint64_t seq) {
         sqlite3_stmt* stmt = nullptr;
         const char* sql =
-            "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
+            "INSERT INTO positions (account_id, date, instrument_id, exchange_id,"
             " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
             " VALUES (?, '20260901', ?, 'CFFEX', 1, ?, 0, ?, 0, 3800.5, ?)";
         EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr));
@@ -300,8 +300,8 @@ TEST_F(TdDataServiceTest, PositionFrameOverwritesSameKey) {
     ASSERT_EQ(2u, svc.positions().size());
 }
 
-// 契约 td-data-sync / spec §5.4: 成交去重二道防线 — 同 (account_id, trading_day, trade_id)
-// 只入一条; 同 trade_id 不同 trading_day 两条都入; seq ≤ W 先被过滤。
+// 契约 td-data-sync / spec §5.4: 成交去重二道防线 — 同 (account_id, date, trade_id)
+// 只入一条; 同 trade_id 不同 date 两条都入; seq ≤ W 先被过滤。
 // (补 §2.2: 此前全文件仅一条成交帧, 删掉 on_trade_report 的 admit_trade 调用也不会红)
 TEST_F(TdDataServiceTest, TradeReportDeduplicatesByDayAndTradeId) {
     FrameRouter router([](std::function<void()> f) { f(); });
@@ -365,7 +365,7 @@ TEST_F(TdDataServiceTest, Ready2018TriggersRebuildFromDb) {
         insert_position(db, "CTP001", "IF2603", 2, 1);
         insert_position(db, "CTP001", "IF2606", 5, 2);
         exec_sql(db,
-                 "INSERT INTO trading_accounts (account_id, trading_day, balance, available, seq)"
+                 "INSERT INTO trading_accounts (account_id, date, balance, available, seq)"
                  " VALUES ('CTP001', '20260901', 100000.0, 50000.0, 3)");
         sqlite3_close(db);
     }
@@ -744,7 +744,7 @@ TEST_F(TdDataServiceTest, GapTriggersRebuildToFillMissingRows) {
         sqlite3* db = open_write(db_path_);
         create_schema(db);
         exec_sql(db,
-                 "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
+                 "INSERT INTO orders (account_id, date, order_id, order_ref, instrument_id,"
                  " exchange_id, direction, position_effect, price_type, status, price, volume,"
                  " volume_traded, strategy_id, seq)"
                  " VALUES ('CTP001', '20260901', 1, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
@@ -752,7 +752,7 @@ TEST_F(TdDataServiceTest, GapTriggersRebuildToFillMissingRows) {
                  "        ('CTP001', '20260901', 2, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
                  " 3801.0, 2, 2, 'stg1', 2)");
         exec_sql(db,
-                 "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
+                 "INSERT INTO trades (account_id, date, trade_id, order_id, instrument_id,"
                  " exchange_id, direction, position_effect, price, volume, strategy_id, seq)"
                  " VALUES ('CTP001', '20260901', 'T1', 1, 'IF2603', 'CFFEX', '1', '1', 3800.0, 1,"
                  " 'stg1', 3)");
@@ -805,7 +805,7 @@ TEST_F(TdDataServiceTest, RebuildMirrorOnlyCurrentTradingDay) {
         sqlite3* db = open_write(db_path_);
         create_schema(db);
         exec_sql(db,
-                 "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
+                 "INSERT INTO orders (account_id, date, order_id, order_ref, instrument_id,"
                  " exchange_id, direction, position_effect, price_type, status, price, volume,"
                  " volume_traded, strategy_id, seq)"
                  " VALUES ('CTP001', '20260901', 1, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
@@ -815,7 +815,7 @@ TEST_F(TdDataServiceTest, RebuildMirrorOnlyCurrentTradingDay) {
                  "        ('CTP001', '20260902', 3, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
                  " 3802.0, 5, 5, 'stg1', 3)");
         exec_sql(db,
-                 "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
+                 "INSERT INTO trades (account_id, date, trade_id, order_id, instrument_id,"
                  " exchange_id, direction, position_effect, price, volume, strategy_id, seq)"
                  " VALUES ('CTP001', '20260901', 'T1', 1, 'IF2603', 'CFFEX', '1', '1', 3800.0, 1,"
                  " 'stg1', 5),"
@@ -875,7 +875,7 @@ TEST_F(TdDataServiceTest, RebuildWatermarkSharesMirrorSnapshot) {
         sqlite3* db = open_write(db_path_);
         create_schema(db);
         exec_sql(db,
-                 "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
+                 "INSERT INTO orders (account_id, date, order_id, order_ref, instrument_id,"
                  " exchange_id, direction, position_effect, price_type, status, price, volume,"
                  " volume_traded, strategy_id, seq)"
                  " VALUES ('CTP001', '20260901', 1, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
@@ -903,7 +903,7 @@ TEST_F(TdDataServiceTest, RebuildWatermarkSharesMirrorSnapshot) {
             }
             sqlite3_stmt* stmt = nullptr;
             const char* sql =
-                "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
+                "INSERT INTO positions (account_id, date, instrument_id, exchange_id,"
                 " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
                 " VALUES ('CTP001', '20260901', 'IF2606', 'CFFEX', 1, 7, 0, 7, 0, 4000.0, 5)";
             if (sqlite3_prepare_v2(w, sql, -1, &stmt, nullptr) == SQLITE_OK) {

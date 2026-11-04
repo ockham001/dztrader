@@ -49,7 +49,7 @@ std::unique_ptr<DzDatabase> db_open_readonly(const std::string& path);
  * @return 非空句柄; 失败 (后端未注册/库不存在/连不上) 抛异常 (调用方转 LastError)
  *
  * 供 SDK 内部 ingest (open_td_db) 与公开 C 接口 dz_db_open_default 共用;
- * 会话固定 read_only, 列序 = tdstore::schemas()。
+ * 会话固定 read_only, 列序 = tdstore schema v1 声明（schema_dzdb.h 投影）。
  */
 std::unique_ptr<DzDatabase> db_open_readonly_config(const dztrader::db::Config& config);
 
@@ -120,17 +120,14 @@ void reset_ingest_cache_for_test();
  * @param table "orders" / "trades"
  * @param order_by_seq 按 seq 升序 (orders/trades 有 seq 列)
  *
- * 列序 = tdstore::orders_schema()/trades_schema() 的字段声明序 (即建表列序):
- *   orders:     0=id 1=account_id 2=trading_day 3=order_id 4=order_ref
- *               5=external_order_id 6=is_external 7=instrument_id 8=exchange_id
- *               9=direction 10=position_effect 11=price_type 12=status
- *               13=price 14=volume 15=volume_traded 16=volume_canceled
- *               17=insert_time 18=update_time 19=error_id 20=error_msg
- *               21=strategy_id 22=remark 23=seq
- *   trades:     0=id 1=account_id 2=trading_day 3=trade_id 4=order_id
+ * 列序 = tdstore schema v1 声明序 (schema_catalog.h; 经 schema_dzdb.h 投影):
+ *   orders:     0=account_id 1=date 2=order_id 3=strategy_id 4=instrument_id
+ *               5=exchange_id 6=direction 7=position_effect 8=price_type 9=status
+ *               10=price 11=volume 12=volume_traded 13=remark 14=time 15=avg_price
+ *               16=seq 17=gateway 18=ext
+ *   trades:     0=account_id 1=date 2=trade_id 3=order_id 4=strategy_id
  *               5=instrument_id 6=exchange_id 7=direction 8=position_effect
- *               9=price 10=volume 11=trade_time 12=trade_date 13=commission
- *               14=strategy_id 15=seq
+ *               9=price 10=volume 11=time 12=seq 13=gateway 14=ext
  * 空串条件表示不限定。异常抛给调用方。
  */
 DbQueryResult db_query_order_trade(DzDatabase* db,
@@ -142,9 +139,10 @@ DbQueryResult db_query_order_trade(DzDatabase* db,
 /**
  * @brief 按账户/合约条件查询 positions 表
  *
- * 列序 = tdstore::positions_schema() 字段声明序:
- *       0=account_id 1=trading_day 2=instrument_id 3=exchange_id 4=direction
+ * 列序 = tdstore schema v1 positions 表声明序:
+ *       0=account_id 1=date 2=instrument_id 3=exchange_id 4=direction
  *       5=volume 6=frozen_volume 7=today_volume 8=yd_volume 9=price 10=seq
+ *       11=gateway 12=ext
  * 行序 = seq 升序。空串条件表示不限定。
  */
 DbQueryResult db_query_position(DzDatabase* db,
@@ -154,9 +152,10 @@ DbQueryResult db_query_position(DzDatabase* db,
 /**
  * @brief 按账户查询 trading_accounts 表 (单行或全量)
  *
- * 列序 = tdstore::trading_accounts_schema() 字段声明序:
- *       0=account_id 1=trading_day 2=balance 3=available 4=frozen
+ * 列序 = tdstore schema v1 trading_accounts 表声明序:
+ *       0=account_id 1=date 2=balance 3=available 4=frozen
  *       5=commission 6=margin 7=withdraw_quota 8=deposit 9=withdraw 10=seq
+ *       11=gateway 12=ext
  * 空串 account_id 表示不限定 (全量)。行序 = seq 升序。
  */
 DbQueryResult db_query_trading_account(DzDatabase* db, const std::string& account_id);

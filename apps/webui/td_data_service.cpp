@@ -32,7 +32,7 @@ int64_t col_int(sqlite3_stmt* stmt, int col) { return sqlite3_column_int64(stmt,
 double col_double(sqlite3_stmt* stmt, int col) { return sqlite3_column_double(stmt, col); }
 
 /// "YYYYMMDD" 文本 -> DzDate (距纪元天数); 非法回落 0。
-int32_t parse_trading_day_to_epoch(const std::string& text) {
+int32_t parse_date_to_epoch(const std::string& text) {
     if (text.size() != 8) {
         return 0;
     }
@@ -46,13 +46,13 @@ int32_t parse_trading_day_to_epoch(const std::string& text) {
     }
 }
 
-/// 查该账户最新交易日 (YYYYMMDD) — orders/trades 表的最大 trading_day 文本 (字典序
+/// 查该账户最新交易日 (YYYYMMDD) — orders/trades 表的最大 date 文本 (字典序
 /// = 时间序)。镜像日界过滤 (终检发现 G) 与日切判定用; 无行回落空串。
-std::string latest_trading_day(sqlite3* db, const std::string& account_id) {
+std::string latest_date(sqlite3* db, const std::string& account_id) {
     for (const char* table : {"orders", "trades"}) {
         sqlite3_stmt* stmt = nullptr;
         const std::string sql =
-            std::string("SELECT MAX(trading_day) FROM ") + table + " WHERE account_id = ?";
+            std::string("SELECT MAX(date) FROM ") + table + " WHERE account_id = ?";
         if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
             if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -71,9 +71,9 @@ std::string latest_trading_day(sqlite3* db, const std::string& account_id) {
 
 }  // namespace
 
-TdDataService::TdDataService(FrameRouter& router, std::function<std::string()> td_db_path)
+TdDataService::TdDataService(FrameRouter& router, std::function<std::string()> trade_db_path)
     : router_(router),
-      td_db_path_(std::move(td_db_path)) {
+      trade_db_path_(std::move(trade_db_path)) {
     register_handlers(router_);
 }
 
@@ -120,9 +120,9 @@ void TdDataService::on_trade_report(const DzTradeReport& rpt) {
     if (!ingest(rpt)) {
         return;
     }
-    // 成交去重二道防线 (spec §5.4): (account_id, trading_day, trade_id) 存在性。
+    // 成交去重二道防线 (spec §5.4): (account_id, date, trade_id) 存在性。
     // 日期以帧 date 为真源 (实时/回补路径均已填 DzDate), 转 "YYYYMMDD" 对齐 gate 段键。
-    if (!gate_.admit_trade(rpt.account_id, trading_day_of(rpt.date), rpt.trade_id)) {
+    if (!gate_.admit_trade(rpt.account_id, date_of(rpt.date), rpt.trade_id)) {
         return;
     }
     trades_.push_back(rpt);
@@ -211,7 +211,7 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
     //    reset_gate=false (断档 gap 补齐): 只清镜像不重置 gate (保留 last_applied)。
     clear_account(account_id, reset_gate);
 
-    const std::string path = td_db_path_();
+    const std::string path = trade_db_path_();
     if (path.empty()) {
         // 库不可用降级: 该账户镜像已清 + W=0 (reset_account 置 has_watermark 且 w=0,
         // 等价全放行), 绝不保留旧 W — 否则旧 W 过滤掉快照不含的帧, 幽灵抑制 (有帧却镜像空白)。
@@ -249,14 +249,14 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
     //    镜像键: positions (account_id,instrument_id,direction) / trading_accounts account_id。
     //    account_id 列均为索引首列 (orders/trades/positions UNIQUE、trading_accounts PK),
     //    按账户过滤只扫该账户行。
-    //    终检发现 G【Important】: orders/trades 镜像加当日过滤 (trading_day = 最新交易日),
+    //    终检发现 G【Important】: orders/trades 镜像加当日过滤 (date = 最新交易日),
     //    防镜像随历史线性增长 (0.9GB/年)。positions/trading_accounts 单行绝对态无需日过滤。
     //    W 查询不带日过滤 (正确性: W 取四表 MAX(seq), 跨日累积单调)。
-    const std::string day = latest_trading_day(db, account_id);
+    const std::string day = latest_date(db, account_id);
     {
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db,
-                               "SELECT account_id, trading_day, instrument_id, exchange_id,"
+                               "SELECT account_id, date, instrument_id, exchange_id,"
                                " direction, volume, frozen_volume, today_volume, yd_volume,"
                                " price, seq FROM positions WHERE account_id = ?",
                                -1, &stmt, nullptr) == SQLITE_OK) {
@@ -272,7 +272,7 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
                 p.today_volume = static_cast<DzVolume>(col_int(stmt, 7));
                 p.yd_volume = static_cast<DzVolume>(col_int(stmt, 8));
                 p.price = col_double(stmt, 9);
-                p.date = parse_trading_day_to_epoch(col_text(stmt, 1));
+                p.date = parse_date_to_epoch(col_text(stmt, 1));
                 p.seq = static_cast<uint64_t>(col_int(stmt, 10));
                 positions_.push_back(p);
             }
@@ -284,7 +284,7 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
     {
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db,
-                               "SELECT account_id, trading_day, balance, available, frozen,"
+                               "SELECT account_id, date, balance, available, frozen,"
                                " commission, margin, withdraw_quota, deposit, withdraw, seq"
                                " FROM trading_accounts WHERE account_id = ?",
                                -1, &stmt, nullptr) == SQLITE_OK) {
@@ -300,7 +300,7 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
                 a.withdraw_quota = col_double(stmt, 7);
                 a.deposit = col_double(stmt, 8);
                 a.withdraw = col_double(stmt, 9);
-                a.date = parse_trading_day_to_epoch(col_text(stmt, 1));
+                a.date = parse_date_to_epoch(col_text(stmt, 1));
                 a.seq = static_cast<uint64_t>(col_int(stmt, 10));
                 trading_accounts_.push_back(a);
             }
@@ -312,10 +312,10 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
     {
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db,
-                               "SELECT account_id, trading_day, order_id, instrument_id,"
+                               "SELECT account_id, date, order_id, instrument_id,"
                                " exchange_id, direction, position_effect, price_type, status,"
                                " price, volume, volume_traded, strategy_id, seq FROM orders"
-                               " WHERE account_id = ? AND trading_day = ?",
+                               " WHERE account_id = ? AND date = ?",
                                -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(stmt, 2, day.c_str(), -1, SQLITE_TRANSIENT);
@@ -333,7 +333,7 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
                 o.price = col_double(stmt, 9);
                 o.volume = static_cast<DzVolume>(col_int(stmt, 10));
                 o.volume_traded = static_cast<DzVolume>(col_int(stmt, 11));
-                o.date = parse_trading_day_to_epoch(col_text(stmt, 1));
+                o.date = parse_date_to_epoch(col_text(stmt, 1));
                 o.seq = static_cast<uint64_t>(col_int(stmt, 13));
                 orders_.push_back(o);
             }
@@ -345,10 +345,10 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
     {
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db,
-                               "SELECT account_id, trading_day, trade_id, order_id,"
+                               "SELECT account_id, date, trade_id, order_id,"
                                " instrument_id, exchange_id, direction, position_effect,"
                                " price, volume, strategy_id, seq FROM trades"
-                               " WHERE account_id = ? AND trading_day = ?",
+                               " WHERE account_id = ? AND date = ?",
                                -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(stmt, 2, day.c_str(), -1, SQLITE_TRANSIENT);
@@ -364,7 +364,7 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
                 t.position_effect = static_cast<DzPositionEffect>(col_int(stmt, 7));
                 t.price = col_double(stmt, 8);
                 t.volume = static_cast<DzVolume>(col_int(stmt, 9));
-                t.date = parse_trading_day_to_epoch(col_text(stmt, 1));
+                t.date = parse_date_to_epoch(col_text(stmt, 1));
                 t.seq = static_cast<uint64_t>(col_int(stmt, 11));
                 trades_.push_back(t);
             }
@@ -428,7 +428,7 @@ std::string TdDataService::position_key(const DzPositionInfo& p) {
            std::to_string(p.direction);
 }
 
-const char* TdDataService::trading_day_of(int32_t date) {
+const char* TdDataService::date_of(int32_t date) {
     // 静态缓冲以返回 C 字符串给 gate（admit_trade 立即拷贝），单线程串行安全。
     static thread_local std::string cached;
     try {

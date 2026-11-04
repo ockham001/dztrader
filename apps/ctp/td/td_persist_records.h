@@ -19,7 +19,7 @@ namespace dztrader::ctp {
 /// DzOrderReport 是 SHM 帧格式, 缺少 CTP 特有字段.
 struct OrderRecord {
     DzOrderReport base;          ///< SHM 帧字段 (order_id/strategy_id/instrument_id/...)
-    char trading_day[9];         ///< "YYYYMMDD" 文本 (SQL 列, base.date 是 DzDate)
+    char trading_day[9];         ///< "YYYYMMDD" 文本 (schema v1 date 列, base.date 是 DzDate)
     char order_ref[13];          ///< CTP OrderRef (12 位 + null)
     char external_order_id[21];  ///< CTP OrderSysID (20 位 + null)
     int8_t is_external;          ///< 是否外部订单 (CTP 返回的, 非本系统发出)
@@ -35,7 +35,7 @@ struct OrderRecord {
 /// DzTradeReport 缺少 commission/trade_time(秒)/trade_date(YYYYMMDD int).
 struct TradeRecord {
     DzTradeReport base;   ///< SHM 帧字段
-    char trading_day[9];  ///< "YYYYMMDD" 文本
+    char trading_day[9];  ///< "YYYYMMDD" 文本 (schema v1 date 列)
     int64_t trade_time;   ///< epoch seconds
     int64_t trade_date;   ///< YYYYMMDD as int
     double commission;    ///< 手续费

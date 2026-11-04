@@ -9,7 +9,8 @@
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/writer.h>
 #include <dztrader/struct.h>
-#include <dztrader/tdstore/schema_catalog.h>
+#include <dztrader/tdstore/schema_dzdb.h>
+#include <dztrader/tdstore/trade_db.h>
 
 #include <nlohmann/json.hpp>
 #include <SQLiteCpp/Database.h>
@@ -38,7 +39,10 @@ protected:
         const auto dir = dztrader::test::unique_temp_dir("dz_test_strategy_db");
         std::filesystem::remove_all(dir);
         std::filesystem::create_directories(dir);
-        db_path_ = (dir / "td.db").string();
+        db_path_ = (dir / "trade.db").string();
+
+        // 交易库 schema v1 由 tdstore 建库门面创建 (master 同路径; 测试直接用)。
+        (void)dztrader::tdstore::ensure_trade_db(db_path_);
 
         // 回滚日志模式 (驱动默认 WAL): 本套件含写锁阻塞读的 busy_timeout 用例 — WAL 下写锁
         // 不阻塞读快照 (无法触发 SQLITE_BUSY), 与迁移前 fixture 的默认日志模式一致。
@@ -75,50 +79,47 @@ TEST_F(DbTest, OpenNullPathFails) {
 }
 
 // 按账户过滤: 2 账户各 1 行, 查账户 A 只回 1 行, 列值断言。
-// orders 表列序 (SELECT *): 0=id 1=account_id 2=trading_day 3=order_id 4=order_ref
-//   5=external_order_id 6=is_external 7=instrument_id 8=exchange_id 9=direction
-//   10=position_effect 11=price_type 12=status 13=price 14=volume 15=volume_traded
-//   16=volume_canceled 17=insert_time 18=update_time 19=error_id 20=error_msg
-//   21=strategy_id 22=remark 23=seq
+// orders 表列序 (SELECT *, schema v1): 0=account_id 1=date 2=order_id 3=strategy_id
+//   4=instrument_id 5=exchange_id 6=direction 7=position_effect 8=price_type 9=status
+//   10=price 11=volume 12=volume_traded 13=remark 14=time 15=avg_price 16=seq
+//   17=gateway 18=ext
 TEST_F(DbTest, QueryOrderFiltersByAccount) {
     SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
     {
         SQLite::Statement ins(
             db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, direction, status, price, volume, seq)"
-            " VALUES (?, '20260901', ?, ?, ?, 'CFFEX', '0', 'a', ?, ?, ?)");
+            "INSERT INTO orders (account_id, date, order_id, instrument_id, exchange_id,"
+            " direction, status, price, volume, seq, gateway)"
+            " VALUES (?, '20260901', ?, ?, 'CFFEX', '0', 'a', ?, ?, ?, 'dztd_test')");
         ins.bind(1, "A");
         ins.bind(2, static_cast<int64_t>(1001));
-        ins.bind(3, "r1");
-        ins.bind(4, "IF2401");
-        ins.bind(5, 3800.5);
-        ins.bind(6, static_cast<int64_t>(2));
-        ins.bind(7, static_cast<int64_t>(1));
+        ins.bind(3, "IF2401");
+        ins.bind(4, 3800.5);
+        ins.bind(5, static_cast<int64_t>(2));
+        ins.bind(6, static_cast<int64_t>(1));
         ins.exec();
         ins.reset();
         ins.bind(1, "B");
         ins.bind(2, static_cast<int64_t>(2001));
-        ins.bind(3, "r2");
-        ins.bind(4, "IF2402");
-        ins.bind(5, 3900.5);
-        ins.bind(6, static_cast<int64_t>(3));
-        ins.bind(7, static_cast<int64_t>(2));
+        ins.bind(3, "IF2402");
+        ins.bind(4, 3900.5);
+        ins.bind(5, static_cast<int64_t>(3));
+        ins.bind(6, static_cast<int64_t>(2));
         ins.exec();
     }
 
     DzResultSet* rs = dz_db_query_order(db_, "A", nullptr);
     ASSERT_NE(nullptr, rs) << dz_errmsg();
     ASSERT_EQ(0, dz_resultset_status(rs));
-    ASSERT_EQ(24u, dz_resultset_column_count(rs));
+    ASSERT_EQ(19u, dz_resultset_column_count(rs));
 
     ASSERT_TRUE(dz_resultset_next(rs));
-    EXPECT_EQ(1001, dz_resultset_get_int64(rs, 3));              // order_id
-    EXPECT_STREQ("IF2401", dz_resultset_get_string(rs, 7));      // instrument_id
-    EXPECT_DOUBLE_EQ(3800.5, dz_resultset_get_float64(rs, 13));  // price
-    EXPECT_EQ(2, dz_resultset_get_int64(rs, 14));                // volume
-    EXPECT_STREQ("A", dz_resultset_get_string(rs, 1));           // account_id
-    EXPECT_EQ(1, dz_resultset_get_int64(rs, 23));                // seq
+    EXPECT_EQ(1001, dz_resultset_get_int64(rs, 2));              // order_id
+    EXPECT_STREQ("IF2401", dz_resultset_get_string(rs, 4));      // instrument_id
+    EXPECT_DOUBLE_EQ(3800.5, dz_resultset_get_float64(rs, 10));  // price
+    EXPECT_EQ(2, dz_resultset_get_int64(rs, 11));                // volume
+    EXPECT_STREQ("A", dz_resultset_get_string(rs, 0));           // account_id
+    EXPECT_EQ(1, dz_resultset_get_int64(rs, 16));                // seq
     EXPECT_FALSE(dz_resultset_next(rs));                         // 只回 1 行
     dz_resultset_close(rs);
 
@@ -130,17 +131,18 @@ TEST_F(DbTest, QueryOrderFiltersByAccount) {
 }
 
 // 新表查询: positions + trading_accounts。
-// positions 列序 (SELECT *): 0=account_id 1=trading_day 2=instrument_id 3=exchange_id
+// positions 列序 (SELECT *, schema v1): 0=account_id 1=date 2=instrument_id 3=exchange_id
 //   4=direction 5=volume 6=frozen_volume 7=today_volume 8=yd_volume 9=price 10=seq
-// trading_accounts 列序: 0=account_id 1=trading_day 2=balance 3=available 4=frozen
-//   5=commission 6=margin 7=withdraw_quota 8=deposit 9=withdraw 10=seq
+//   11=gateway 12=ext
+// trading_accounts 列序: 0=account_id 1=date 2=balance 3=available 4=frozen
+//   5=commission 6=margin 7=withdraw_quota 8=deposit 9=withdraw 10=seq 11=gateway 12=ext
 TEST_F(DbTest, QueryPositionAndTradingAccount) {
     SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
     {
-        SQLite::Statement ins(
-            db,
-            "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
-            " direction, volume, price, seq) VALUES (?, '20260901', ?, 'CFFEX', 'L', ?, ?, ?)");
+        SQLite::Statement ins(db,
+                              "INSERT INTO positions (account_id, date, instrument_id, exchange_id,"
+                              " direction, volume, price, seq, gateway)"
+                              " VALUES (?, '20260901', ?, 'CFFEX', 'L', ?, ?, ?, 'dztd_test')");
         ins.bind(1, "A");
         ins.bind(2, "IF2401");
         ins.bind(3, static_cast<int64_t>(5));
@@ -158,8 +160,8 @@ TEST_F(DbTest, QueryPositionAndTradingAccount) {
     {
         SQLite::Statement ins(
             db,
-            "INSERT INTO trading_accounts (account_id, trading_day, balance, available, seq)"
-            " VALUES (?, '20260901', ?, ?, ?)");
+            "INSERT INTO trading_accounts (account_id, date, balance, available, seq, gateway)"
+            " VALUES (?, '20260901', ?, ?, ?, 'dztd_test')");
         ins.bind(1, "A");
         ins.bind(2, 100000.5);
         ins.bind(3, 90000.25);
@@ -176,7 +178,7 @@ TEST_F(DbTest, QueryPositionAndTradingAccount) {
     DzResultSet* rs = dz_db_query_position(db_, "A", nullptr);
     ASSERT_NE(nullptr, rs);
     ASSERT_EQ(0, dz_resultset_status(rs));
-    ASSERT_EQ(11u, dz_resultset_column_count(rs));
+    ASSERT_EQ(13u, dz_resultset_column_count(rs));
     ASSERT_TRUE(dz_resultset_next(rs));
     EXPECT_STREQ("IF2401", dz_resultset_get_string(rs, 2));     // instrument_id
     EXPECT_STREQ("L", dz_resultset_get_string(rs, 4));          // direction
@@ -189,7 +191,7 @@ TEST_F(DbTest, QueryPositionAndTradingAccount) {
     rs = dz_db_query_trading_account(db_, "A");
     ASSERT_NE(nullptr, rs);
     ASSERT_EQ(0, dz_resultset_status(rs));
-    ASSERT_EQ(11u, dz_resultset_column_count(rs));
+    ASSERT_EQ(13u, dz_resultset_column_count(rs));
     ASSERT_TRUE(dz_resultset_next(rs));
     EXPECT_STREQ("A", dz_resultset_get_string(rs, 0));            // account_id
     EXPECT_DOUBLE_EQ(100000.5, dz_resultset_get_float64(rs, 2));  // balance
@@ -221,10 +223,10 @@ TEST_F(DbTest, QueryNullHandleRejected) {
 TEST_F(DbTest, ReadOnlyQueryWaitsOutWriteLockWindow) {
     SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
     {
-        SQLite::Statement ins(
-            db,
-            "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
-            " direction, volume, price, seq) VALUES (?, '20260901', ?, 'CFFEX', 'L', ?, ?, ?)");
+        SQLite::Statement ins(db,
+                              "INSERT INTO positions (account_id, date, instrument_id, exchange_id,"
+                              " direction, volume, price, seq, gateway)"
+                              " VALUES (?, '20260901', ?, 'CFFEX', 'L', ?, ?, ?, 'dztd_test')");
         ins.bind(1, "A");
         ins.bind(2, "IF2401");
         ins.bind(3, static_cast<int64_t>(5));
@@ -268,22 +270,21 @@ TEST_F(DbTest, RealDeclaredColumnStoresIntegerValue) {
         // 整数值写进 REAL 声明列 (orders.price REAL, 绑定整数 3800 -> INTEGER 存储)
         SQLite::Statement ins(
             db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, price, seq)"
-            " VALUES (?, '20260901', ?, ?, 'IF2401', 'CFFEX', ?, ?)");
+            "INSERT INTO orders (account_id, date, order_id, instrument_id, exchange_id,"
+            " price, seq, gateway)"
+            " VALUES (?, '20260901', ?, 'IF2401', 'CFFEX', ?, ?, 'dztd_test')");
         ins.bind(1, "A");
         ins.bind(2, static_cast<int64_t>(1001));
-        ins.bind(3, "r1");
-        ins.bind(4, static_cast<int64_t>(3800));
-        ins.bind(5, static_cast<int64_t>(1));
+        ins.bind(3, static_cast<int64_t>(3800));
+        ins.bind(4, static_cast<int64_t>(1));
         ins.exec();
     }
     {
         SQLite::Statement ins(
             db,
-            "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
-            " exchange_id, price, volume, seq)"
-            " VALUES (?, '20260901', ?, ?, 'IF2401', 'CFFEX', ?, ?, ?)");
+            "INSERT INTO trades (account_id, date, trade_id, order_id, instrument_id,"
+            " exchange_id, price, volume, seq, gateway)"
+            " VALUES (?, '20260901', ?, ?, 'IF2401', 'CFFEX', ?, ?, ?, 'dztd_test')");
         ins.bind(1, "A");
         ins.bind(2, "t1");
         ins.bind(3, static_cast<int64_t>(1001));
@@ -293,13 +294,13 @@ TEST_F(DbTest, RealDeclaredColumnStoresIntegerValue) {
         ins.exec();
     }
 
-    // orders.price (索引 13) REAL 存整数 -> get_float64 应返回 3800.0 (非 DBL_MAX)
+    // orders.price (索引 10) REAL 存整数 -> get_float64 应返回 3800.0 (非 DBL_MAX)
     DzResultSet* rs = dz_db_query_order(db_, "A", nullptr);
     ASSERT_NE(nullptr, rs) << dz_errmsg();
     ASSERT_EQ(0, dz_resultset_status(rs));
     ASSERT_TRUE(dz_resultset_next(rs));
-    EXPECT_DOUBLE_EQ(3800.0, dz_resultset_get_float64(rs, 13));
-    EXPECT_NE(DBL_MAX, dz_resultset_get_float64(rs, 13));
+    EXPECT_DOUBLE_EQ(3800.0, dz_resultset_get_float64(rs, 10));
+    EXPECT_NE(DBL_MAX, dz_resultset_get_float64(rs, 10));
     dz_resultset_close(rs);
 
     // trades.price (索引 9) REAL 存整数 -> get_float64 应返回 3810.0
@@ -316,22 +317,17 @@ TEST_F(DbTest, RealDeclaredColumnStoresIntegerValue) {
 
 namespace {
 
-/// 建 td 库 (schema_catalog 声明 + 驱动迁移) 到指定路径。
-void create_td_db(const std::string& path) {
-    auto database = dztrader::db::Database::open(
-        dztrader::db::Config{.backend = "sqlite", .options = {{"path", path}}},
-        dztrader::tdstore::schemas());
-    database->migrate();
-}
+/// 建交易库 (tdstore schema v1 建库门面) 到指定路径。
+void create_td_db(const std::string& path) { (void)dztrader::tdstore::ensure_trade_db(path); }
 
 /// 向 orders 表写一行 (账户 + order_id + seq)。
 void insert_order_row(const std::string& path, const char* account, int64_t order_id, int64_t seq) {
     SQLite::Database db(path, SQLite::OPEN_READWRITE);
     SQLite::Statement ins(
         db,
-        "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-        " exchange_id, direction, status, price, volume, seq)"
-        " VALUES (?, '20260901', ?, 'r', 'IF2401', 'CFFEX', '0', 'a', 3800.5, 2, ?)");
+        "INSERT INTO orders (account_id, date, order_id, instrument_id,"
+        " exchange_id, direction, status, price, volume, seq, gateway)"
+        " VALUES (?, '20260901', ?, 'IF2401', 'CFFEX', '0', 'a', 3800.5, 2, ?, 'dztd_test')");
     ins.bind(1, account);
     ins.bind(2, order_id);
     ins.bind(3, seq);
@@ -355,7 +351,7 @@ protected:
         dztrader::paths::reset_for_test();  // 清空进程级缓存, 指向本用例 home
         dztrader::env::unset("DZTRADER_DB_BACKEND");
         dztrader::env::unset("DZTRADER_DB_OPT_PATH");
-        db_path_ = home_ + "/db/td.db";
+        db_path_ = home_ + "/db/trade.db";
     }
 
     void TearDown() override {
@@ -373,7 +369,7 @@ protected:
 
 }  // namespace
 
-// 默认配置 (无 database.json): 打开 <DZTRADER_HOME>/db/td.db, 并自动生成 td 段配置文件。
+// 默认配置 (无 database.json): 打开 <DZTRADER_HOME>/db/trade.db, 并自动生成 td 段配置文件。
 TEST_F(DbOpenDefaultTest, OpensDefaultHomeTdDbAndGeneratesConfig) {
     create_td_db(db_path_);
     insert_order_row(db_path_, "A", 1001, 1);
@@ -384,7 +380,7 @@ TEST_F(DbOpenDefaultTest, OpensDefaultHomeTdDbAndGeneratesConfig) {
     ASSERT_NE(nullptr, rs) << dz_errmsg();
     ASSERT_EQ(0, dz_resultset_status(rs));
     ASSERT_TRUE(dz_resultset_next(rs));
-    EXPECT_EQ(1001, dz_resultset_get_int64(rs, 3));  // order_id
+    EXPECT_EQ(1001, dz_resultset_get_int64(rs, 2));  // order_id
     EXPECT_FALSE(dz_resultset_next(rs));
     dz_resultset_close(rs);
     dz_db_close(db);
@@ -414,7 +410,7 @@ TEST_F(DbOpenDefaultTest, EnvPathOverridesDefaultDb) {
     rs = dz_db_query_order(db, "B", nullptr);
     ASSERT_NE(nullptr, rs) << dz_errmsg();
     ASSERT_TRUE(dz_resultset_next(rs));
-    EXPECT_EQ(2001, dz_resultset_get_int64(rs, 3));
+    EXPECT_EQ(2001, dz_resultset_get_int64(rs, 2));
     dz_resultset_close(rs);
     dz_db_close(db);
 }
@@ -441,7 +437,7 @@ TEST_F(DbOpenDefaultTest, ConfigFilePathIsHonored) {
     DzResultSet* rs = dz_db_query_order(db, "B", nullptr);
     ASSERT_NE(nullptr, rs) << dz_errmsg();
     ASSERT_TRUE(dz_resultset_next(rs));
-    EXPECT_EQ(2001, dz_resultset_get_int64(rs, 3));
+    EXPECT_EQ(2001, dz_resultset_get_int64(rs, 2));
     dz_resultset_close(rs);
     dz_db_close(db);
 }

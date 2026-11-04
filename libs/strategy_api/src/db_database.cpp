@@ -8,7 +8,7 @@
 
 #include <dztrader/core/exception.h>
 #include <dztrader/error.h>
-#include <dztrader/tdstore/schema_catalog.h>
+#include <dztrader/tdstore/schema_dzdb.h>
 
 namespace dztrader::strategy_api_internal {
 

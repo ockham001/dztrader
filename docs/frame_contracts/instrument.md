@@ -7,7 +7,7 @@
 类型层真相源：`libs/tdstore/include/dztrader/tdstore/records.h`（`InstrumentRecord`）、
 `libs/tdstore/include/dztrader/tdstore/schema_catalog.h`（`tdstore::schema_catalog`，交易库 schema v1）。总则见《帧契约：通用规则》。
 
-**实现注记**：契约先行——交易库文件名（`trade.db`）、schema v1 建库/重建、迁移链删除与 `dz_db_open_default` 懒打开由后续实现票落地（当前代码仍使用旧库名与旧 schema）。
+**实现注记**：交易库文件名（`trade.db`）、schema v1 平台自有声明与 master 建库/重建已随 #244 落地（旧 v5 迁移链删除）；`dz_db_open_default` 懒打开与 SDK 查询切片由 #252 落地（当前 SDK 仍经 dzdb 端口按配置打开同一文件）。
 
 ## 1. 覆盖帧
 

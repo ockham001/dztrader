@@ -30,7 +30,8 @@
 #include <dztrader/db/database.h>
 #include <dztrader/tdstore/records.h>
 #include <dztrader/tdstore/records_store.h>
-#include <dztrader/tdstore/schema_catalog.h>
+#include <dztrader/tdstore/schema_dzdb.h>
+#include <dztrader/tdstore/trade_db.h>
 
 #include <filesystem>
 #include <string>
@@ -56,12 +57,12 @@ protected:
             dztrader::test::unique_temp_dir("dz_test_bar_dependencies");
         std::filesystem::create_directories(dir);
         dir_ = dir;
-        const std::string db_path = (dir / "td.db").string();
+        const std::string db_path = (dir / "trade.db").string();
 
+        (void)dztrader::tdstore::ensure_trade_db(db_path);
         auto database = dztrader::db::Database::open(
             dztrader::db::Config{.backend = "sqlite", .options = {{"path", db_path}}},
             dztrader::tdstore::schemas());
-        database->migrate();
         auto session = database->session();
         const std::vector<dztrader::tdstore::InstrumentRecord> records{
             make_instrument("rb2601", "SHFE", 10.0, 0.5),

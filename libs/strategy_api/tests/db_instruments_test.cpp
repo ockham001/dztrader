@@ -5,7 +5,8 @@
 #include <dztrader/error.h>
 #include <dztrader/tdstore/records.h>
 #include <dztrader/tdstore/records_store.h>
-#include <dztrader/tdstore/schema_catalog.h>
+#include <dztrader/tdstore/schema_dzdb.h>
+#include <dztrader/tdstore/trade_db.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -17,7 +18,7 @@
 namespace {
 
 /// instruments 查询 SDK 接口 (dz_db_query_instruments) 测试。
-/// 建库走 tdstore::schemas() 声明 + 驱动迁移, schema 不与测试副本漂移。
+/// 建库走 tdstore schema v1 平台自有声明（单源），不出现测试副本。
 class DbInstrumentsTest : public ::testing::Test {
 protected:
     std::string db_path_;
@@ -27,13 +28,13 @@ protected:
         const auto dir = dztrader::test::unique_temp_dir("dz_test_strategy_db_instruments");
         std::filesystem::remove_all(dir);
         std::filesystem::create_directories(dir);
-        db_path_ = (dir / "td.db").string();
+        db_path_ = (dir / "trade.db").string();
 
         {
+            (void)dztrader::tdstore::ensure_trade_db(db_path_);
             auto database = dztrader::db::Database::open(
                 dztrader::db::Config{.backend = "sqlite", .options = {{"path", db_path_}}},
                 dztrader::tdstore::schemas());
-            database->migrate();
             auto session = database->session();
             // 插入序 (rb2605、rb2601) 与期望升序相反: 实现丢掉 ORDER BY instrument_id
             // 时用例必须变红。

@@ -67,11 +67,10 @@ struct PersistTask {
 /// - Writer 线程: 阻塞等待 cv_empty_, drain 队列, 单事务批量提交
 ///
 /// 生命周期:
-/// 1. open(): 主线程打开数据库 + migration (不启动 Writer)
-/// 2. (可选) max_order_id(): 主线程查询 (如 order_id 自检, 无竞争)
-/// 3. start_writer(): 启动 Writer 线程
-/// 4. (运行期) enqueue(): SPI 线程入队
-/// 5. stop(): 主线程设置停止 + drain 残留 + join Writer + 关闭数据库
+/// 1. open(): 主线程打开交易库 (不启动 Writer; schema 由 master 建库/重建)
+/// 2. start_writer(): 启动 Writer 线程
+/// 3. (运行期) enqueue(): SPI 线程入队
+/// 4. stop(): 主线程设置停止 + drain 残留 + join Writer + 关闭数据库
 ///
 /// 队列硬上限 100000: 超限时 enqueue 阻塞 (cv 等待), 防止 OOM;
 /// shutdown 中 enqueue 直接丢弃 (不阻塞).
@@ -85,9 +84,11 @@ public:
     /// shutdown 超时 (fsync 大事务兜底).
     static constexpr auto kShutdownTimeout = std::chrono::seconds(30);
 
-    /// 构造 (不打开数据库). db_path 为数据库文件路径.
-    /// max_queue_size 为测试可配 (生产用 kDefaultMaxQueueSize).
-    explicit PersistWriter(std::string db_path, size_t max_queue_size = kDefaultMaxQueueSize);
+    /// 构造 (不打开数据库). db_path 为交易库文件路径; gateway 为写入来源 td 实例名
+    /// (schema v1 审计列, 不进唯一键). max_queue_size 为测试可配 (生产用 kDefaultMaxQueueSize).
+    explicit PersistWriter(std::string db_path,
+                           std::string gateway,
+                           size_t max_queue_size = kDefaultMaxQueueSize);
     ~PersistWriter();
 
     PersistWriter(const PersistWriter&) = delete;
@@ -95,7 +96,8 @@ public:
     PersistWriter(PersistWriter&&) = delete;
     PersistWriter& operator=(PersistWriter&&) = delete;
 
-    /// 打开数据库 + 应用 migration (不启动 Writer 线程).
+    /// 打开数据库 (不启动 Writer 线程). 交易库由 master 建库/重建 (ADR 0041);
+    /// 仍经 dzdb 端口打开并按声明幂等补建缺失集合（过渡期，#245 直连 SQLiteCpp 后删除）.
     /// 失败抛 std::runtime_error (启动期致命, 不登录 CTP).
     void open();
 
@@ -126,11 +128,6 @@ public:
     /// 超时返回 false.
     bool wait_flush(uint64_t token, std::chrono::milliseconds timeout);
 
-    /// 查询库内最大 order_id (orders + trades 两表取大), 供启动自检 (设计 §13 step 8).
-    /// 调用时机: open() 后 start_writer() 前; 未 open / start_writer() 后 / stop() 后调用抛
-    /// std::runtime_error. 两表均为空时返回 0.
-    [[nodiscard]] int64_t max_order_id();
-
 private:
     void writer_loop();
     bool wait_and_pop(PersistTask& out);
@@ -140,14 +137,15 @@ private:
     /// 抛异常时 execute_batch 收集的 flushed_tokens 可能不全, 以 batch 全量预扫描为准)。
     void fail_flushed_tokens(const std::vector<PersistTask>& batch);
 
-    /// 以 YYYYMMDD 文本生成 trading_day (DzDate 距纪元天数 -> "YYYYMMDD").
-    static std::string format_trading_day(int64_t days);
+    /// DzDate (距纪元天数) -> "YYYYMMDD" 文本 (DB date 列).
+    static std::string format_date(int64_t days);
 
     /// 析构兜底: 短超时 (1s) 等待 Writer 退出, 不 quick_exit.
     /// 主流程应显式调 stop() (30s 超时 + quick_exit 兜底).
     void stop_best_effort();
 
     std::string db_path_;
+    std::string gateway_;
     size_t max_queue_size_;
 
     /// 统一 DB 入口 (schema/migration 句柄; 生命周期须晚于 writer_session_).

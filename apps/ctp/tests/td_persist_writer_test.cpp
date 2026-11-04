@@ -76,14 +76,14 @@ protected:
 
 TEST_F(TdPersistWriterTest, OpenCreatesAllTables) {
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         // 验证表存在 (独立只读连接, 不依赖 PersistWriter 句柄)
         EXPECT_EQ(std::stoi(raw_scalar(db_path_,
                                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND "
-                                       "name IN ('schema_version','orders','trades','instruments',"
+                                       "name IN ('orders','trades','instruments',"
                                        "'positions','trading_accounts')")),
-                  6);
+                  5);
     }
 }
 
@@ -111,7 +111,7 @@ TEST_F(TdPersistWriterTest, OpenConvergesToWalAfterReadLockClears) {
         }
     });
 
-    PersistWriter w(db_path_);
+    PersistWriter w(db_path_, "dztd_test");
     bool open_threw = false;
     try {
         w.open();
@@ -128,61 +128,9 @@ TEST_F(TdPersistWriterTest, OpenConvergesToWalAfterReadLockClears) {
 
 // 无锁: WAL 转换成功, 最终 journal_mode = wal (多网关共写 + 多读者前提)。
 TEST_F(TdPersistWriterTest, OpenConvertsToWalWhenUnlocked) {
-    PersistWriter w(db_path_);
+    PersistWriter w(db_path_, "dztd_test");
     w.open();
     EXPECT_EQ("wal", raw_scalar(db_path_, "PRAGMA journal_mode"));
-}
-
-TEST_F(TdPersistWriterTest, MaxOrderIdThrowsAfterStartWriter) {
-    PersistWriter w(db_path_);
-    w.open();
-    w.start_writer();
-    EXPECT_THROW((void)w.max_order_id(), std::runtime_error);
-    w.stop();
-}
-
-TEST_F(TdPersistWriterTest, MaxOrderIdThrowsBeforeOpen) {
-    PersistWriter w(db_path_);
-    EXPECT_THROW((void)w.max_order_id(), std::runtime_error);
-}
-
-// ============================================================================
-// order_id 启动自检 (设计 §13 step 8)
-// ============================================================================
-
-TEST_F(TdPersistWriterTest, MaxOrderIdEmptyDbIsZero) {
-    PersistWriter w(db_path_);
-    w.open();
-    EXPECT_EQ(w.max_order_id(), 0);
-}
-
-TEST_F(TdPersistWriterTest, MaxOrderIdAcrossTables) {
-    PersistWriter w(db_path_);
-    w.open();
-    // orders 两笔 + trades 一笔, max = 200 (来自 trades); 原生连接播种
-    raw_exec(db_path_,
-             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, "
-             "instrument_id, exchange_id) "
-             "VALUES ('acc1', '20260814', 42, '000000000042', 'IF2506', 'CFFEX')");
-    raw_exec(db_path_,
-             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, "
-             "instrument_id, exchange_id) "
-             "VALUES ('acc1', '20260814', 100, '000000000100', 'IF2506', 'CFFEX')");
-    raw_exec(db_path_,
-             "INSERT INTO trades (account_id, trading_day, trade_id, order_id, "
-             "instrument_id, exchange_id, price, volume) "
-             "VALUES ('acc1', '20260814', 'T1', 200, 'IF2506', 'CFFEX', 100.5, 1)");
-    EXPECT_EQ(w.max_order_id(), 200);
-}
-
-TEST_F(TdPersistWriterTest, MaxOrderIdOrdersOnly) {
-    PersistWriter w(db_path_);
-    w.open();
-    raw_exec(db_path_,
-             "INSERT INTO orders (account_id, trading_day, order_id, order_ref, "
-             "instrument_id, exchange_id) "
-             "VALUES ('acc1', '20260814', 77, '000000000077', 'IF2506', 'CFFEX')");
-    EXPECT_EQ(w.max_order_id(), 77);
 }
 
 // ============================================================================
@@ -191,7 +139,7 @@ TEST_F(TdPersistWriterTest, MaxOrderIdOrdersOnly) {
 
 TEST_F(TdPersistWriterTest, SingleOrderPersisted) {
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
 
@@ -221,7 +169,7 @@ TEST_F(TdPersistWriterTest, SingleOrderPersisted) {
 
 TEST_F(TdPersistWriterTest, BatchOrdersPersisted) {
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
 
@@ -244,7 +192,7 @@ TEST_F(TdPersistWriterTest, BatchOrdersPersisted) {
 // 旧断言不会红 (§1.3 弱).
 TEST_F(TdPersistWriterTest, TradePersisted) {
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
 
@@ -272,7 +220,7 @@ TEST_F(TdPersistWriterTest, TradePersisted) {
 
 TEST_F(TdPersistWriterTest, InstrumentPersisted) {
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
 
@@ -302,7 +250,7 @@ TEST_F(TdPersistWriterTest, InstrumentPersisted) {
 
 TEST_F(TdPersistWriterTest, StopDrainsResidualTasks) {
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         // 不调 start_writer, 直接入队 (Writer 未启动, 队列堆积)
         for (int i = 1; i <= 100; ++i) {
@@ -328,7 +276,7 @@ TEST_F(TdPersistWriterTest, StopDrainsResidualTasks) {
 
 TEST_F(TdPersistWriterTest, DuplicateOrderReplacedWithLatestState) {
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
 
@@ -365,7 +313,7 @@ TEST_F(TdPersistWriterTest, DuplicateOrderReplacedWithLatestState) {
 // ① 失败批整批回滚 (同批 Order 不落库); ② Writer 线程存活 (后续任务仍提交); ③ stop() 不挂死。
 // 旧用例只入队一条合法 Order 并断言入库 1 行 — 删掉 Writer 的失败处理也全绿 (§1.1 失效)。
 TEST_F(TdPersistWriterTest, WriterFailureDoesNotCrash) {
-    PersistWriter w(db_path_);
+    PersistWriter w(db_path_, "dztd_test");
     w.open();
     raw_exec(db_path_, "DROP TABLE trades");  // 失败注入: Trade upsert 必然抛 "no such table"
 
@@ -410,7 +358,7 @@ TEST_F(TdPersistWriterTest, WriterFailureDoesNotCrash) {
 
 TEST_F(TdPersistWriterTest, QueueLimitBlocksEnqueue) {
     // 用小上限 (2) 测试阻塞逻辑
-    PersistWriter w(db_path_, 2);
+    PersistWriter w(db_path_, "dztd_test", 2);
     w.open();
     // 不启动 Writer, 队列堆积
 
@@ -452,7 +400,7 @@ TEST_F(TdPersistWriterTest, QueueLimitBlocksEnqueue) {
 
 TEST_F(TdPersistWriterTest, FlushWaitsForPriorTasksCommitted) {
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
 
@@ -482,7 +430,7 @@ TEST_F(TdPersistWriterTest, FlushWaitsForPriorTasksCommitted) {
 
 // stop() 后入队丢弃路径须立即 set: 哨兵被"消费"即视为提交完成, wait 恒 true
 TEST_F(TdPersistWriterTest, FlushAfterStopSucceedsImmediately) {
-    PersistWriter w(db_path_);
+    PersistWriter w(db_path_, "dztd_test");
     w.open();
     w.start_writer();
     auto token = w.enqueue_flush_signal();
@@ -501,7 +449,7 @@ TEST_F(TdPersistWriterTest, FlushAfterStopSucceedsImmediately) {
 // 注: 终结后 token 已 erase, 之后才调 wait_flush 的按「已消费」返回 true; 已在等待的返回
 // false — 两种布尔值都符合实现约定, 故此处断言「立即返回 + 批已回滚 + 无残留 token」。
 TEST_F(TdPersistWriterTest, BatchFailureFinalizesFlushWaiter) {
-    PersistWriter w(db_path_);
+    PersistWriter w(db_path_, "dztd_test");
     w.open();
     raw_exec(db_path_, "DROP TABLE trades");  // Trade upsert 必然抛 "no such table"
 
@@ -545,7 +493,7 @@ TEST_F(TdPersistWriterTest, BatchFailureFinalizesFlushWaiter) {
 // set 也不 erase: wait_flush 靠超时兜底返回 false, map 条目永久残留 (7×24 累积)。
 // 确定性: start_writer() 前全部入队 → 单批 drain (所有 FlushSignal 同批), 无批切分竞态。
 TEST_F(TdPersistWriterTest, FailedBatchDoesNotLeakFlushTokens) {
-    PersistWriter w(db_path_);
+    PersistWriter w(db_path_, "dztd_test");
     w.open();
     // 删 trades 表 (start_writer 前): upsert 时 prepare 失败, 执行时报错
     raw_exec(db_path_, "DROP TABLE trades");
@@ -628,14 +576,15 @@ DzPositionInfo make_position(std::int64_t volume, std::int64_t seq, int8_t direc
 
 }  // namespace
 
-// PositionRebuild 单事务重灌: 清该账户全部持仓行 + upsert 本组 (spec §3.2 全量语义)
-TEST_F(TdPersistWriterTest, PositionRebuildAtomicClearsStaleDays) {
+// PositionRebuild 单事务重灌: 清该账户**当日**持仓行 + upsert 本组；历史交易日行不可变
+// (ADR 0045 §持仓重建)。
+TEST_F(TdPersistWriterTest, PositionRebuildReplacesCurrentDayOnly) {
     // DzDate (距纪元天数) = "YYYYMMDD" 的 days-since-epoch, 与生产 trading_day_ 语义一致.
     // 20696=20260831, 20697=20260901 (见 date_time Date{2026,8,31}.days_since_epoch()).
     constexpr int64_t kOldDay = 20696;
     constexpr int64_t kNewDay = 20697;
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
 
@@ -673,10 +622,10 @@ TEST_F(TdPersistWriterTest, PositionRebuildAtomicClearsStaleDays) {
             EXPECT_TRUE(w.wait_flush(token, std::chrono::seconds(2)));
         }
 
-        // flush 后: 旧日行已删, 新 2 行在 (同事务原子切换, 无中间态)
-        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 2);
-        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE trading_day='20260831'"), 0);
-        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE trading_day='20260901'"), 2);
+        // flush 后: 历史日行原样保留, 当日 2 行在 (同事务原子切换, 无中间态)
+        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 3);
+        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20260831'"), 1);
+        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20260901'"), 2);
 
         w.stop();
     }
@@ -687,13 +636,14 @@ TEST_F(TdPersistWriterTest, PositionRebuildAtomicClearsStaleDays) {
 // (remove/upsert 各自 autocommit), 失败任务之前已提交的 remove 不可回滚 → 旧行消失 → 本用例红。
 TEST_F(TdPersistWriterTest, PositionRebuildRollsBackWhenBatchFails) {
     constexpr int64_t kNewDay = 20697;  // 20260901
-    PersistWriter w(db_path_);
+    PersistWriter w(db_path_, "dztd_test");
     w.open();
     // 原生连接播种旧日 1 行 (不经 Writer, 便于在 start_writer 前完成)
     raw_exec(db_path_,
-             "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
-             " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
-             " VALUES ('acc1', '20260831', 'IF2506', 'CFFEX', 1, 5, 0, 5, 0, 3900.0, 10)");
+             "INSERT INTO positions (account_id, date, instrument_id, exchange_id,"
+             " direction, volume, frozen_volume, today_volume, yd_volume, price, seq, gateway)"
+             " VALUES ('acc1', '20260831', 'IF2506', 'CFFEX', 1, 5, 0, 5, 0, 3900.0, 10,"
+             " 'dztd_test')");
     ASSERT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 1);
 
     // 失败注入: 删 trades 表 — 排在 rebuild 之后的 Trade 任务必然抛异常
@@ -722,8 +672,8 @@ TEST_F(TdPersistWriterTest, PositionRebuildRollsBackWhenBatchFails) {
 
     // 整批回滚: 旧日行原样保留 (rebuild 的 remove/upsert 未提交)
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 1);
-    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE trading_day='20260831'"), 1);
-    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE trading_day='20260901'"), 0);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20260831'"), 1);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20260901'"), 0);
 }
 
 // 发现 2 回归 (评审 Important): PositionRebuild 需删"该账户全部行" (而非按 trading_day 排除).
@@ -732,7 +682,7 @@ TEST_F(TdPersistWriterTest, PositionRebuildRollsBackWhenBatchFails) {
 TEST_F(TdPersistWriterTest, PositionRebuildClearsClosedCurrentDayRows) {
     constexpr int64_t kDay = 20697;  // 20260901
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
 
@@ -766,7 +716,7 @@ TEST_F(TdPersistWriterTest, PositionRebuildClearsClosedCurrentDayRows) {
 
         // 当日行也被删除 → 幽灵持仓清除.
         EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 0);
-        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE trading_day='20260901'"), 0);
+        EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20260901'"), 0);
 
         w.stop();
     }
@@ -777,7 +727,7 @@ TEST_F(TdPersistWriterTest, PositionRebuildClearsClosedCurrentDayRows) {
 // 提前到所有 upsert 之前, 早于 Rebuild 的行会意外存活 (本用例可区分).
 TEST_F(TdPersistWriterTest, PositionRebuildRespectsTaskOrderWithinBatch) {
     constexpr int64_t kDay = 20697;  // 20260901
-    PersistWriter w(db_path_);
+    PersistWriter w(db_path_, "dztd_test");
     w.open();
 
     // start_writer() 前全部入队 → 单批 drain, 强制三任务同批处理.
@@ -824,7 +774,7 @@ TEST_F(TdPersistWriterTest, PositionRebuildRespectsTaskOrderWithinBatch) {
 TEST_F(TdPersistWriterTest, SingleUpsertPositionAndTradingAccount) {
     constexpr int64_t kNewDay = 20697;  // DzDate: 20260901
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
 

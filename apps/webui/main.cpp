@@ -125,7 +125,7 @@ int main(int argc, char* argv[]) {
     // 数据库初始化 + 种子管理员账户
     sqlite3* db = nullptr;
     try {
-        const std::filesystem::path db_path = dztrader::paths::db() / "webui.db";
+        const std::filesystem::path db_path = dztrader::paths::platform_db();
         dztrader::webui::init_database(db_path, db);
         dztrader::webui::seed_admin_user(db, cfg.admin_username, cfg.admin_password);
     } catch (const std::exception& e) {
@@ -145,7 +145,7 @@ int main(int argc, char* argv[]) {
             "configs/webui.json or login to change\"");
     }
 
-    auto repo = std::make_shared<dztrader::webui::Repository>(dztrader::paths::db() / "webui.db");
+    auto repo = std::make_shared<dztrader::webui::Repository>(dztrader::paths::platform_db());
     // #202：仍是系统默认口令的 admin 首次登录强制改密（不因配置改了用户名以外的路径漂移，
     // 只比对实际 hash，已改过的账户不动）
     if (cfg.admin_password_is_default) {
@@ -379,9 +379,12 @@ int main(int argc, char* argv[]) {
 
     // TD 数据 ingest 领域服务: 消费 2000-2003 (register_raw, 二进制 struct payload) 维护
     // 内存镜像 + 2018 ACCOUNT_STATUS (Ready→rebuild / Offline→清空账户镜像)。
-    // td 库路径: $DZTRADER_HOME/db/td.db (统一库, 所有 td 网关共写, spec §3.3)。
-    const auto td_db_path_cb = []() -> std::string { return dztrader::paths::td_db().string(); };
-    auto td_data_service = std::make_shared<dztrader::webui::TdDataService>(router, td_db_path_cb);
+    // td 库路径: $DZTRADER_HOME/db/trade.db (统一库, 所有 td 网关共写, spec §3.3)。
+    const auto trade_db_path_cb = []() -> std::string {
+        return dztrader::paths::trade_db().string();
+    };
+    auto td_data_service =
+        std::make_shared<dztrader::webui::TdDataService>(router, trade_db_path_cb);
 
     // EventMonitor 由 main 持有并直调 start/stop（WsController 不再涉及）。
     // 生命周期：main 栈上 router 先声明、event_monitor 后声明（析构相反），

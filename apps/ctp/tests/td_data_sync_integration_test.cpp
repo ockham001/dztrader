@@ -111,7 +111,7 @@ TEST_F(TdDataSyncIntegrationTest, ReplayStormDedupEndToEnd) {
 
     // ---- 生产者: 真 PersistWriter 线程落 50 条入库, flush 屏障保证提交 ----
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
         for (const auto& r : seed) {
@@ -151,7 +151,7 @@ TEST_F(TdDataSyncIntegrationTest, ReplayStormDedupEndToEnd) {
     changed.base.seq = new_seq;
     filter.accept_order(changed);
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
         w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = changed});
@@ -185,7 +185,7 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
 
     // 先提交旧快照 seq 1..100 (W=100 的来源), 再在内存产生在途帧 DZ_FRAME_NOTIFY_UI-105.
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
         for (int i = 1; i <= 100; ++i) {
@@ -202,7 +202,7 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
     {
         // 生产者: 帧已写 (内存已见 seq DZ_FRAME_NOTIFY_UI-105), persist 入队但 Writer 未启动
         // (未提交) 队列堆积, 无 Writer 线程持锁 → 消费者可无锁快照.
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();  // 不 start_writer: 任务入队未提交, 不占写锁
         std::vector<OrderRecord> inflight;
         for (uint64_t s = 101; s <= 105; ++s) {
@@ -240,7 +240,7 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
     std::filesystem::remove(db2 + "-journal");
     {      // 变体 B 作用域: 内层 w/ro/ro2 三个 SQLite 句柄全部析构后才允许删库
         {  // 首个 PersistWriter 独立作用域
-            PersistWriter w(db2);
+            PersistWriter w(db2, "dztd_test");
             w.open();
             w.start_writer();
             for (int i = 1; i <= 100; ++i) {
@@ -254,7 +254,7 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
 
         // 帧 DZ_FRAME_NOTIFY_UI-105 在 reader 开启前完成写入 (内存), DB 提交在后.
         // open() 即建 schema; 不 start_writer → 队列堆积未提交, 读者无锁快照.
-        PersistWriter w(db2);
+        PersistWriter w(db2, "dztd_test");
         w.open();
         for (uint64_t s = 101; s <= 105; ++s) {
             auto r = make_order(static_cast<int64_t>(s), s);
@@ -303,7 +303,7 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
 TEST_F(TdDataSyncIntegrationTest, ResetThenRebuildWatermarkFromDb) {
     // 预置「重置后」的 DB: 新流 seq 1..2 已落库
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
         for (int i = 1; i <= 2; ++i) {
@@ -349,7 +349,7 @@ TEST_F(TdDataSyncIntegrationTest, ReconnectIncrementalReloadSkipsReplayedRows) {
         batch1.push_back(make_order(i, static_cast<uint64_t>(i)));
     }
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
         for (const auto& r : batch1) {
@@ -375,7 +375,7 @@ TEST_F(TdDataSyncIntegrationTest, ReconnectIncrementalReloadSkipsReplayedRows) {
         batch2.push_back(make_order(i, static_cast<uint64_t>(i)));
     }
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
         for (const auto& r : batch2) {
@@ -406,17 +406,17 @@ TEST_F(TdDataSyncIntegrationTest, ReconnectIncrementalReloadSkipsReplayedRows) {
 }
 
 // ============================================================================
-// 场景 5: 跨日累积 (spec §2.1 累积不归零 + §3.2 trades 唯一键含 trading_day)
+// 场景 5: 跨日累积 (spec §2.1 累积不归零 + §3.2 trades 唯一键含 date/exchange_id)
 // 两日 trades 同 trade_id 共存, W 跨日单调 (以最大 seq 为准, 不因跨日回落)
 // ============================================================================
 TEST_F(TdDataSyncIntegrationTest, CrossDayAccumulation) {
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
 
         // 第一日: trade T001 (seq 1), 第二日: trade T001 (seq 2, 同 trade_id 跨日)
-        // 唯一键 (account_id, trading_day, trade_id) → 两行共存
+        // 唯一键 (account_id, date, exchange_id, trade_id) → 两行共存
         w.enqueue(PersistTask{.kind = PersistTask::Kind::Trade,
                               .data = make_trade("T001", 1, "20260901")});
         w.enqueue(PersistTask{.kind = PersistTask::Kind::Trade,
@@ -464,7 +464,7 @@ TEST_F(TdDataSyncIntegrationTest, ReplayStormSkipsDoNotAdvanceConsumerWatermark)
         seed.push_back(make_order(i, static_cast<uint64_t>(i)));
     }
     {
-        PersistWriter w(db_path_);
+        PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
         for (const auto& r : seed) {
@@ -521,7 +521,7 @@ TEST_F(TdDataSyncIntegrationTest, PositionUpsertThenRebuildThenClear) {
         p.seq = seq;
         return p;
     };
-    PersistWriter w(db_path_);
+    PersistWriter w(db_path_, "dztd_test");
     w.open();
     w.start_writer();
     // 1) 单行增量 upsert

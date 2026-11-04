@@ -389,7 +389,7 @@ DZ_API DzDatabase* dz_db_open(const char* path);
  *   1. 环境变量 `DZTRADER_DB_BACKEND` / `DZTRADER_DB_OPT_<KEY>`（`<KEY>` 小写化后作为
  *      option 键，如 `DZTRADER_DB_OPT_PATH`、`DZTRADER_DB_OPT_HOST`）
  *   2. `<DZTRADER_HOME>/configs/database.json` 的 `td` 段（缺失时按默认自动生成）
- *   3. 内置默认：`sqlite` + `<DZTRADER_HOME>/db/td.db`（只读打开）
+ *   3. 内置默认：`sqlite` + `<DZTRADER_HOME>/db/trade.db`（只读打开）
  *
  * 不变量：同一部署内读写两端必须指向同一后端与同一数据库（写 A 读 B 会让
  * 水位/回补静默失效）。

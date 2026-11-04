@@ -12,8 +12,9 @@
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
-#include <dztrader/db/database.h>
-#include <dztrader/tdstore/schema_catalog.h>
+#include <nlohmann/json.hpp>
+
+#include <dztrader/tdstore/trade_db.h>
 
 #include "td/td_persist_records.h"
 #include "td/td_prescan.h"
@@ -30,11 +31,7 @@ protected:
         db_path_ = (tmp_dir_ / "test.db").string();
         std::filesystem::remove(db_path_);
         std::filesystem::remove(db_path_ + "-journal");
-        auto database = dztrader::db::Database::open(
-            dztrader::db::Config{.backend = "sqlite", .options = {{"path", db_path_}}},
-            dztrader::tdstore::schemas());
-        database->migrate();
-        database.reset();  // 释放句柄, TearDown 才能删临时文件; prescan 仍走独立 raw 连接
+        (void)dztrader::tdstore::ensure_trade_db(db_path_);
     }
     void TearDown() override { std::filesystem::remove_all(tmp_dir_); }
 
@@ -66,24 +63,30 @@ void insert_order(SQLite::Database& db,
                   int32_t vol_canceled,
                   int64_t update_time,
                   int8_t direction) {
-    SQLite::Statement s(
-        db,
-        "INSERT OR REPLACE INTO orders (account_id, trading_day, order_id, order_ref,"
-        " instrument_id, exchange_id, direction, status, volume, volume_traded,"
-        " volume_canceled, update_time, seq) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
+    nlohmann::json ext = nlohmann::json::object();
+    ext["order_ref"] = order_ref;
+    if (vol_canceled != 0) {
+        ext["volume_canceled"] = vol_canceled;
+    }
+    if (update_time != 0) {
+        ext["update_time"] = update_time;
+    }
+    SQLite::Statement s(db,
+                        "INSERT OR REPLACE INTO orders (account_id, date, order_id, instrument_id,"
+                        " exchange_id, direction, status, volume, volume_traded, seq, gateway, ext)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
     s.bind(1, acct);
     s.bind(2, "20260901");
     s.bind(3, static_cast<int64_t>(order_id));
-    s.bind(4, order_ref);
-    s.bind(5, "IF2506");
-    s.bind(6, "CFFEX");
-    s.bind(7, static_cast<int>(direction));
-    s.bind(8, static_cast<int>(status));
-    s.bind(9, 5);  // volume
-    s.bind(10, vol_traded);
-    s.bind(11, vol_canceled);
-    s.bind(12, update_time);
-    s.bind(13, static_cast<int64_t>(seq));
+    s.bind(4, "IF2506");
+    s.bind(5, "CFFEX");
+    s.bind(6, static_cast<int>(direction));
+    s.bind(7, static_cast<int>(status));
+    s.bind(8, 5);  // volume
+    s.bind(9, vol_traded);
+    s.bind(10, static_cast<int64_t>(seq));
+    s.bind(11, "dztd_test");
+    s.bind(12, ext.dump());
     s.exec();
 }
 
@@ -94,9 +97,9 @@ void insert_trade(SQLite::Database& db,
                   int64_t order_id) {
     SQLite::Statement s(
         db,
-        "INSERT OR REPLACE INTO trades (account_id, trading_day, trade_id, order_id,"
-        " instrument_id, exchange_id, direction, price, volume, strategy_id, seq)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+        "INSERT OR REPLACE INTO trades (account_id, date, trade_id, order_id,"
+        " instrument_id, exchange_id, direction, price, volume, strategy_id, seq, gateway)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
     s.bind(1, acct);
     s.bind(2, "20260901");
     s.bind(3, trade_id);
@@ -108,6 +111,7 @@ void insert_trade(SQLite::Database& db,
     s.bind(9, 1);
     s.bind(10, "strat1");
     s.bind(11, static_cast<int64_t>(seq));
+    s.bind(12, "dztd_test");
     s.exec();
 }
 
@@ -118,9 +122,9 @@ void insert_position(SQLite::Database& db,
                      int8_t direction) {
     SQLite::Statement s(
         db,
-        "INSERT OR REPLACE INTO positions (account_id, trading_day, instrument_id, exchange_id,"
-        " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+        "INSERT OR REPLACE INTO positions (account_id, date, instrument_id, exchange_id,"
+        " direction, volume, frozen_volume, today_volume, yd_volume, price, seq, gateway)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
     s.bind(1, acct);
     s.bind(2, "20260901");
     s.bind(3, instrument);
@@ -132,15 +136,16 @@ void insert_position(SQLite::Database& db,
     s.bind(9, 0);
     s.bind(10, 3900.0);
     s.bind(11, static_cast<int64_t>(seq));
+    s.bind(12, "dztd_test");
     s.exec();
 }
 
 void insert_taccount(SQLite::Database& db, const std::string& acct, int64_t seq) {
     SQLite::Statement s(
         db,
-        "INSERT OR REPLACE INTO trading_accounts (account_id, trading_day, balance, available,"
-        " frozen, commission, margin, withdraw_quota, deposit, withdraw, seq)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+        "INSERT OR REPLACE INTO trading_accounts (account_id, date, balance, available,"
+        " frozen, commission, margin, withdraw_quota, deposit, withdraw, seq, gateway)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
     s.bind(1, acct);
     s.bind(2, "20260901");
     s.bind(3, 100000.0);
@@ -152,6 +157,7 @@ void insert_taccount(SQLite::Database& db, const std::string& acct, int64_t seq)
     s.bind(9, 0.0);
     s.bind(10, 0.0);
     s.bind(11, static_cast<int64_t>(seq));
+    s.bind(12, "dztd_test");
     s.exec();
 }
 

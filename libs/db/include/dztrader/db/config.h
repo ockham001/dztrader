@@ -13,8 +13,8 @@
  *      自动生成（AGENTS.md 硬门禁 6：不提交模板）。段内 `backend` 为字符串，`options`
  *      为对象：值可以是字符串（原样）或数字/布尔（转字符串，如 `2048` -> `"2048"`，
  *      便于手写 `"port": 3306`）；数组/对象/null 视为配置错误。
- *   3. 内置默认：backend = `sqlite`；sqlite 未显式给 `path` 时解析为 `paths::td_db()`
- *      （= `<DZTRADER_HOME>/db/td.db`），其余键缺省由驱动内部默认
+ *   3. 内置默认：backend = `sqlite`；sqlite 未显式给 `path` 时解析为 `paths::trade_db()`
+ *      （= `<DZTRADER_HOME>/db/trade.db`），其余键缺省由驱动内部默认
  *      （`busy_timeout_ms=5000` 等）；mysql 默认 `host=127.0.0.1`、`port=3306`、
  *      `user=`、`password=`、`database=dztrader`、`connect_timeout_ms=5000`。
  *

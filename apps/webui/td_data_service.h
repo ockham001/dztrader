@@ -30,9 +30,9 @@ namespace dztrader::webui {
 class TdDataService {
 public:
     /// @param router FrameRouter 引用，ctor 内 register_raw 注册 2000-2003 + 2018
-    /// @param td_db_path 回调返回 td 统一库绝对路径（$DZTRADER_HOME/db/td.db），
+    /// @param trade_db_path 回调返回 td 统一库绝对路径（$DZTRADER_HOME/db/trade.db），
     ///   rebuild() 只读打开
-    TdDataService(FrameRouter& router, std::function<std::string()> td_db_path);
+    TdDataService(FrameRouter& router, std::function<std::string()> trade_db_path);
 
     // 含引用/不可拷贝成员（router_），禁拷贝/移动
     TdDataService(const TdDataService&) = delete;
@@ -82,10 +82,10 @@ private:
     static std::string position_key(const DzPositionInfo& p);
 
     /// DzDate (距纪元天数) -> "YYYYMMDD" 文本 (gate 去重段键 day 分量; 非法回落空串)。
-    static const char* trading_day_of(int32_t date);
+    static const char* date_of(int32_t date);
 
     FrameRouter& router_;
-    std::function<std::string()> td_db_path_;
+    std::function<std::string()> trade_db_path_;
     TdIngestGate gate_;
 
     std::vector<DzPositionInfo> positions_;

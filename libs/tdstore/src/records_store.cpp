@@ -8,13 +8,14 @@
 #include <dztrader/core/exception.h>
 #include <dztrader/error.h>
 #include <dztrader/tdstore/schema_catalog.h>
+#include <dztrader/tdstore/schema_dzdb.h>
 
 namespace dztrader::tdstore {
 
 namespace {
 
 const dztrader::db::FieldSchema* find_instrument_field(std::string_view name) {
-    for (const dztrader::db::FieldSchema& field : instruments_schema().fields) {
+    for (const dztrader::db::FieldSchema& field : instruments_schema_db().fields) {
         if (field.name == name) {
             return &field;
         }
@@ -69,10 +70,12 @@ db::Row make_instrument_row(const InstrumentRecord& r) {
     }};
 }
 
-db::Row make_position_row(const DzPositionInfo& r, std::string_view trading_day) {
+db::Row make_position_row(const DzPositionInfo& r,
+                          std::string_view date,
+                          std::string_view gateway) {
     return db::Row{std::vector<db::Value>{
         to_value(std::string_view(r.account_id)),
-        to_value(trading_day),
+        to_value(date),
         to_value(std::string_view(r.instrument_id)),
         to_value(std::string_view(r.exchange_id)),
         to_value(r.direction),  // int8_t 提升 -> int32_t 重载（'0' -> 48）
@@ -82,13 +85,17 @@ db::Row make_position_row(const DzPositionInfo& r, std::string_view trading_day)
         to_value(r.yd_volume),
         to_value(r.price),
         to_value(static_cast<int64_t>(r.seq)),
+        to_value(gateway),
+        to_value(std::string_view("{}")),  // ext: 暂无柜台扩展字段
     }};
 }
 
-db::Row make_trading_account_row(const DzTradingAccount& r, std::string_view trading_day) {
+db::Row make_trading_account_row(const DzTradingAccount& r,
+                                 std::string_view date,
+                                 std::string_view gateway) {
     return db::Row{std::vector<db::Value>{
         to_value(std::string_view(r.account_id)),
-        to_value(trading_day),
+        to_value(date),
         to_value(r.balance),
         to_value(r.available),
         to_value(r.frozen),
@@ -98,6 +105,8 @@ db::Row make_trading_account_row(const DzTradingAccount& r, std::string_view tra
         to_value(r.deposit),
         to_value(r.withdraw),
         to_value(static_cast<int64_t>(r.seq)),
+        to_value(gateway),
+        to_value(std::string_view("{}")),  // ext: 暂无柜台扩展字段
     }};
 }
 
@@ -142,7 +151,7 @@ const std::vector<std::string>& instrument_promised_fields() {
 dztrader::db::ResultSet query_instruments(dztrader::db::Session& session,
                                           std::string_view instrument_id,
                                           std::span<const std::string> fields) {
-    const dztrader::db::ResourceSchema& schema = instruments_schema();
+    const dztrader::db::ResourceSchema& schema = instruments_schema_db();
 
     std::vector<const dztrader::db::FieldSchema*> selected;
     if (fields.empty()) {

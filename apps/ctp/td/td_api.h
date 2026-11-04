@@ -143,7 +143,6 @@ private:
     /// 启动自检: 保证 order_id 原子计数器 > 库内最大 order_id (设计 §13 step 8, 开放问题 7)。
     /// 跨机导入数据库后, 原子计数器可能落后于库内最大值, 此处 fetch_max 上调, 防止重号。
     /// 构造函数内调用, 时机在 PersistWriter::open() 后 start_writer() 前 (主线程独占 db)。
-    void verify_order_id_against_db();
     // === 主循环 ===
     /// 处理一个 SHM 帧 (分两层: basic 帧 (广播控制帧 + TD_ORDER_REQ/CANCEL_REQ 按 payload
     /// account_id 路由) / 含 instance_id 帧检查 instance_id == name_ 或 name_: 前缀)
@@ -272,7 +271,7 @@ private:
     std::unique_ptr<PersistWriter>
         persist_writer_;  ///< SQLite 持久化 writer (进程级单例, TdApi 拥有)
     std::unique_ptr<shm::OrderIdMeta>
-        order_id_meta_;  ///< 跨进程 order_id 计数器 (进程级单例, TdApi 拥有)
+        order_id_meta_;  ///< 全平台共享 order_id 计数器 (CHANNEL_NAME_ORDER_ID)
 
     TdConfig config_;                    ///< td section 配置
     std::filesystem::path config_path_;  ///< dztd_ctp.json 路径, 用于持久化各 section

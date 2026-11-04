@@ -144,7 +144,8 @@ void SqliteDatabaseImpl::migrate() {
     try {
         SQLite::Database db(path_, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         apply_pragmas(db, options_, /*read_only=*/false);
-        internal::apply_td_migrations(db);
+        // 交易库 schema v1 无迁移链（ADR 0041）：建库/重建由 master 经 tdstore 负责；
+        // 本端口只按声明补建缺失集合，供仍经 dzdb 的写端/测试使用。
         internal::create_missing_collections(db, schemas_);
     } catch (const Exception&) {
         throw;

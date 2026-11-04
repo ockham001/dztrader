@@ -14,7 +14,8 @@
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/writer.h>
 #include <dztrader/struct.h>
-#include <dztrader/tdstore/schema_catalog.h>
+#include <dztrader/tdstore/schema_dzdb.h>
+#include <dztrader/tdstore/trade_db.h>
 
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
@@ -66,23 +67,18 @@ protected:
         };
         (void)ChannelMeta::open_or_create(md);
 
-        db_path_ = std::filesystem::path(home_) / "db" / "td.db";
-        {
-            auto database = dztrader::db::Database::open(
-                dztrader::db::Config{.backend = "sqlite", .options = {{"path", db_path_.string()}}},
-                dztrader::tdstore::schemas());
-            database->migrate();
-        }
+        db_path_ = std::filesystem::path(home_) / "db" / "trade.db";
+        (void)dztrader::tdstore::ensure_trade_db(db_path_);
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         // 四表预置 (账户 CTP001): orders 最大 seq=5, trades=7, positions=9, trading_accounts=11
         // → W 必须取四表最大 = 11 (非任何单表的 5/7/9)。
         SQLite::Statement o(
             db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
+            "INSERT INTO orders (account_id, date, order_id, instrument_id,"
             " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " ?, ?, ?, 'own', ?)");
+            " volume_traded, strategy_id, seq, gateway)"
+            " VALUES ('CTP001', '20260901', ?, 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " ?, ?, ?, 'own', ?, 'dztd_test')");
         for (int64_t seq = 1; seq <= 5; ++seq) {
             o.bind(1, static_cast<int64_t>(1000 + seq));
             o.bind(2, 3800.0);
@@ -94,25 +90,27 @@ protected:
         }
         SQLite::Statement t(
             db,
-            "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
-            " exchange_id, direction, position_effect, price, volume, trade_time, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', ?, ?, 'IF2603', 'CFFEX', '1', '1', ?, ?, ?, 'own', ?)");
+            "INSERT INTO trades (account_id, date, trade_id, order_id, instrument_id,"
+            " exchange_id, direction, position_effect, price, volume, time, strategy_id, seq,"
+            " gateway)"
+            " VALUES ('CTP001', '20260901', ?, ?, 'IF2603', 'CFFEX', '1', '1', ?, ?, 0, 'own', ?,"
+            " 'dztd_test')");
         for (int64_t seq = 6; seq <= 7; ++seq) {
             t.bind(1, std::to_string(seq));
             t.bind(2, static_cast<int64_t>(1000 + seq));
             t.bind(3, 3900.0);
             t.bind(4, static_cast<int64_t>(1));
-            t.bind(5, static_cast<int64_t>(0));
-            t.bind(6, static_cast<int64_t>(seq));
+            t.bind(5, static_cast<int64_t>(seq));
             t.exec();
             t.reset();
         }
         // positions: seq 8, 9 (两个方向)
         SQLite::Statement p(
             db,
-            "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
-            " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
-            " VALUES ('CTP001', '20260901', 'IF2603', 'CFFEX', ?, 3, 0, 3, 0, 3950.0, ?)");
+            "INSERT INTO positions (account_id, date, instrument_id, exchange_id,"
+            " direction, volume, frozen_volume, today_volume, yd_volume, price, seq, gateway)"
+            " VALUES ('CTP001', '20260901', 'IF2603', 'CFFEX', ?, 3, 0, 3, 0, 3950.0, ?,"
+            " 'dztd_test')");
         p.bind(1, "1");
         p.bind(2, static_cast<int64_t>(8));
         p.exec();
@@ -123,9 +121,10 @@ protected:
         // trading_accounts: seq 11 (留 seq 10 空洞模拟取号交错)
         SQLite::Statement a(
             db,
-            "INSERT INTO trading_accounts (account_id, trading_day, balance, available, frozen,"
-            " commission, margin, withdraw_quota, deposit, withdraw, seq)"
-            " VALUES ('CTP001', '20260901', 100000.0, 90000.0, 1000.0, 0, 9000, 0, 0, 0, 11)");
+            "INSERT INTO trading_accounts (account_id, date, balance, available, frozen,"
+            " commission, margin, withdraw_quota, deposit, withdraw, seq, gateway)"
+            " VALUES ('CTP001', '20260901', 100000.0, 90000.0, 1000.0, 0, 9000, 0, 0, 0, 11,"
+            " 'dztd_test')");
         a.exec();
     }
 
@@ -200,11 +199,11 @@ TEST_F(IngestWatermarkTest, WatermarkMaxIgnoresTradingDayFilter) {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         SQLite::Statement ins(
             db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
+            "INSERT INTO orders (account_id, date, order_id, instrument_id,"
             " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, seq)"
-            " VALUES ('CTP001', '20260831', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " ?, ?, ?, 'own', ?)");
+            " volume_traded, strategy_id, seq, gateway)"
+            " VALUES ('CTP001', '20260831', ?, 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " ?, ?, ?, 'own', ?, 'dztd_test')");
         ins.bind(1, static_cast<int64_t>(9013));
         ins.bind(2, 4900.0);
         ins.bind(3, static_cast<int64_t>(1));

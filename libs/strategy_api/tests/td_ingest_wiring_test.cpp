@@ -10,7 +10,8 @@
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/writer.h>
 #include <dztrader/struct.h>
-#include <dztrader/tdstore/schema_catalog.h>
+#include <dztrader/tdstore/schema_dzdb.h>
+#include <dztrader/tdstore/trade_db.h>
 
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
@@ -53,7 +54,7 @@ void create_md_channel(const std::filesystem::path& shm_dir) {
     (void)ChannelMeta::open_or_create(cfg);
 }
 
-/// SDK ingest 接线端到端: 临时 DZTRADER_HOME + 预置统一 td 库 (db/td.db)。
+/// SDK ingest 接线端到端: 临时 DZTRADER_HOME + 预置统一 td 库 (db/trade.db)。
 /// 独立二进制 (独立进程): paths::home() 按进程缓存, 本 fixture 先设 DZTRADER_HOME
 /// 再 dz_init, 保证库路径发现落在本测试目录。
 class IngestWiringTest : public ::testing::Test {
@@ -75,23 +76,18 @@ protected:
         create_event_channel(home_ + "/shm");
         create_md_channel(home_ + "/shm");
 
-        db_path_ = std::filesystem::path(home_) / "db" / "td.db";
-        {
-            auto database = dztrader::db::Database::open(
-                dztrader::db::Config{.backend = "sqlite", .options = {{"path", db_path_.string()}}},
-                dztrader::tdstore::schemas());
-            database->migrate();
-        }
+        db_path_ = std::filesystem::path(home_) / "db" / "trade.db";
+        (void)dztrader::tdstore::ensure_trade_db(db_path_);
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         // 预置快照行: 账户 CTP001, orders seq 1..5 (W 快照 = MAX(seq) = 5)
         {
             SQLite::Statement ins(
                 db,
-                "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-                " exchange_id, direction, position_effect, price_type, status, price, volume,"
-                " volume_traded, strategy_id, seq)"
-                " VALUES ('CTP001', '20260901', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-                " ?, ?, ?, 'stale', ?)");
+                "INSERT INTO orders (account_id, date, order_id, instrument_id, exchange_id,"
+                " direction, position_effect, price_type, status, price, volume, volume_traded,"
+                " strategy_id, seq, gateway)"
+                " VALUES ('CTP001', '20260901', ?, 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+                " ?, ?, ?, 'stale', ?, 'dztd_test')");
             for (int64_t seq = 1; seq <= 5; ++seq) {
                 ins.bind(1, static_cast<int64_t>(1000 + seq));
                 ins.bind(2, 3800.0 + static_cast<double>(seq));
@@ -147,11 +143,11 @@ TEST_F(IngestWiringTest, GapTriggersBackfillReplay) {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         SQLite::Statement ins(
             db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " ?, ?, ?, ?, ?)");
+            "INSERT INTO orders (account_id, date, order_id, instrument_id, exchange_id,"
+            " direction, position_effect, price_type, status, price, volume, volume_traded,"
+            " strategy_id, seq, gateway)"
+            " VALUES ('CTP001', '20260901', ?, 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " ?, ?, ?, ?, ?, 'dztd_test')");
         const char* own = dz_strategy_id(ctx_);
         for (int64_t seq = 6; seq <= 7; ++seq) {
             ins.bind(1, static_cast<int64_t>(2000 + seq));
@@ -202,11 +198,11 @@ TEST_F(IngestWiringTest, BackfillReplayFiltersByStrategy) {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         SQLite::Statement ins(
             db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " ?, ?, ?, ?, ?)");
+            "INSERT INTO orders (account_id, date, order_id, instrument_id, exchange_id,"
+            " direction, position_effect, price_type, status, price, volume, volume_traded,"
+            " strategy_id, seq, gateway)"
+            " VALUES ('CTP001', '20260901', ?, 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " ?, ?, ?, ?, ?, 'dztd_test')");
         // seq 6: 他策略; seq 7: 外部单 (strategy_id 空)
         ins.bind(1, static_cast<int64_t>(2001));
         ins.bind(2, 3901.0);
@@ -409,52 +405,52 @@ TEST_F(IngestWiringTest, TradeDedupAccountedPerStrategy) {
     EXPECT_EQ(8u, FrameView(static_cast<const std::byte*>(f)).payload<DzTradeReport>().seq);
 }
 
-// 评审发现 2 (回补帧 time=0): orders 回补解析 DB update_time/insert_time (epoch 秒)
-// 的当日秒填 rpt.time; trades 回补解析 trade_time。
+// 评审发现 2 (回补帧 time=0): schema v1 的 time 列即当日秒; orders/trades 回补直接
+// 取该列填 rpt.time（旧库的 epoch 拼日期语义随 schema v1 删除）。
 TEST_F(IngestWiringTest, BackfillFillsOrderAndTradeTime) {
     // 回补区间 6..7: orders 两行 + trades 两行, 均填时间戳
     {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         SQLite::Statement ins(
             db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, insert_time, update_time, seq)"
-            " VALUES ('CTP001', '20260901', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " ?, ?, ?, ?, ?, ?, ?)");
+            "INSERT INTO orders (account_id, date, order_id, instrument_id, exchange_id,"
+            " direction, position_effect, price_type, status, price, volume, volume_traded,"
+            " strategy_id, time, seq, gateway)"
+            " VALUES ('CTP001', '20260901', ?, 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " ?, ?, ?, ?, ?, ?, 'dztd_test')");
         const char* own = dz_strategy_id(ctx_);
-        // seq 6: 只有 insert_time (update_time=0) -> 用 insert_time 当日秒
+        // seq 6: time 列 = 09:15:05 当日秒
         ins.bind(1, static_cast<int64_t>(3001));
         ins.bind(2, 4100.0);
         ins.bind(3, static_cast<int64_t>(1));
         ins.bind(4, static_cast<int64_t>(1));
         ins.bind(5, own);
-        ins.bind(6, static_cast<int64_t>(4 * 86400 + 9 * 3600 + 15 * 60 + 5));  // insert 09:15:05
-        ins.bind(7, static_cast<int64_t>(0));                                   // update_time 空
-        ins.bind(8, static_cast<int64_t>(6));
+        ins.bind(6, static_cast<int64_t>(9 * 3600 + 15 * 60 + 5));  // 09:15:05
+        ins.bind(7, static_cast<int64_t>(6));
         ins.exec();
         ins.reset();
-        // seq 7: update_time 非 0 -> 用 update_time 当日秒 (11:30:45)
+        // seq 7: time 列 = 11:30:45 当日秒
         ins.bind(1, static_cast<int64_t>(3002));
         ins.bind(2, 4200.0);
         ins.bind(3, static_cast<int64_t>(2));
         ins.bind(4, static_cast<int64_t>(2));
         ins.bind(5, own);
-        ins.bind(6, static_cast<int64_t>(4 * 86400 + 9 * 3600 + 16 * 60 + 0));    // insert 09:16:00
-        ins.bind(7, static_cast<int64_t>(4 * 86400 + 11 * 3600 + 30 * 60 + 45));  // update 11:30:45
-        ins.bind(8, static_cast<int64_t>(7));
+        ins.bind(6, static_cast<int64_t>(11 * 3600 + 30 * 60 + 45));  // 11:30:45
+        ins.bind(7, static_cast<int64_t>(7));
         ins.exec();
 
         SQLite::Statement tins(
             db,
-            "INSERT INTO trades (account_id, trading_day, trade_id, order_id, instrument_id,"
-            " exchange_id, direction, position_effect, price, volume, trade_time, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', ?, ?, 'IF2603', 'CFFEX', '1', '1', ?, ?, ?, ?, ?)");
+            "INSERT INTO trades (account_id, date, trade_id, order_id, instrument_id,"
+            " exchange_id, direction, position_effect, price, volume, time, strategy_id, seq,"
+            " gateway)"
+            " VALUES ('CTP001', '20260901', ?, ?, 'IF2603', 'CFFEX', '1', '1', ?, ?, ?, ?, ?,"
+            " 'dztd_test')");
         tins.bind(1, "TT1");
         tins.bind(2, static_cast<int64_t>(3001));
         tins.bind(3, 4100.0);
         tins.bind(4, static_cast<int64_t>(1));
-        tins.bind(5, static_cast<int64_t>(4 * 86400 + 10 * 3600 + 1 * 60 + 2));  // trade 10:01:02
+        tins.bind(5, static_cast<int64_t>(10 * 3600 + 1 * 60 + 2));  // 10:01:02
         tins.bind(6, own);
         tins.bind(7, static_cast<int64_t>(6));
         tins.exec();
@@ -463,7 +459,7 @@ TEST_F(IngestWiringTest, BackfillFillsOrderAndTradeTime) {
         tins.bind(2, static_cast<int64_t>(3002));
         tins.bind(3, 4200.0);
         tins.bind(4, static_cast<int64_t>(1));
-        tins.bind(5, static_cast<int64_t>(4 * 86400 + 12 * 3600 + 3 * 60 + 4));  // trade 12:03:04
+        tins.bind(5, static_cast<int64_t>(12 * 3600 + 3 * 60 + 4));  // 12:03:04
         tins.bind(6, own);
         tins.bind(7, static_cast<int64_t>(7));
         tins.exec();
@@ -484,7 +480,7 @@ TEST_F(IngestWiringTest, BackfillFillsOrderAndTradeTime) {
         EXPECT_EQ(DZ_FRAME_ORDER_REPORT, view.type());
         const DzOrderReport& o6 = view.payload<DzOrderReport>();
         EXPECT_EQ(6u, o6.seq);
-        EXPECT_EQ(9 * 3600 + 15 * 60 + 5, o6.time);  // insert_time 当日秒
+        EXPECT_EQ(9 * 3600 + 15 * 60 + 5, o6.time);  // time 列直存当日秒
     }
     {
         const void* f = dz_next_event(ctx_);
@@ -492,7 +488,7 @@ TEST_F(IngestWiringTest, BackfillFillsOrderAndTradeTime) {
         const auto view = FrameView(static_cast<const std::byte*>(f));
         const DzOrderReport& o7 = view.payload<DzOrderReport>();
         EXPECT_EQ(7u, o7.seq);
-        EXPECT_EQ(11 * 3600 + 30 * 60 + 45, o7.time);  // update_time 当日秒
+        EXPECT_EQ(11 * 3600 + 30 * 60 + 45, o7.time);  // time 列直存当日秒
     }
 
     // trades 回补
@@ -503,7 +499,7 @@ TEST_F(IngestWiringTest, BackfillFillsOrderAndTradeTime) {
         EXPECT_EQ(DZ_FRAME_TRADE_REPORT, view.type());
         const DzTradeReport& t1 = view.payload<DzTradeReport>();
         EXPECT_EQ(6u, t1.seq);
-        EXPECT_EQ(10 * 3600 + 1 * 60 + 2, t1.time);  // trade_time 当日秒
+        EXPECT_EQ(10 * 3600 + 1 * 60 + 2, t1.time);  // time 列直存当日秒
     }
     {
         const void* f = dz_next_event(ctx_);
@@ -534,11 +530,11 @@ TEST_F(IngestWiringTest, BackfillBufferOverflowInterceptsTrigger) {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         SQLite::Statement ins(
             db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " ?, ?, ?, ?, ?)");
+            "INSERT INTO orders (account_id, date, order_id, instrument_id, exchange_id,"
+            " direction, position_effect, price_type, status, price, volume, volume_traded,"
+            " strategy_id, seq, gateway)"
+            " VALUES ('CTP001', '20260901', ?, 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " ?, ?, ?, ?, ?, 'dztd_test')");
         for (int64_t seq = 6; seq <= 605; ++seq) {
             ins.bind(1, static_cast<int64_t>(4000 + seq));
             ins.bind(2, 4300.0 + static_cast<double>(seq));
@@ -601,11 +597,11 @@ TEST_F(IngestWiringTest, ResetReAdmitNotFilteredByWatermark) {
         // 可由 DB 覆盖 (回补重试语义: 行存在则不拦截)
         SQLite::Statement ins(
             db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " ?, ?, ?, 'own', ?)");
+            "INSERT INTO orders (account_id, date, order_id, instrument_id, exchange_id,"
+            " direction, position_effect, price_type, status, price, volume, volume_traded,"
+            " strategy_id, seq, gateway)"
+            " VALUES ('CTP001', '20260901', ?, 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " ?, ?, ?, 'own', ?, 'dztd_test')");
         for (int64_t seq = 1; seq <= 2; ++seq) {
             ins.bind(1, static_cast<int64_t>(7000 + seq));
             ins.bind(2, 4700.0 + static_cast<double>(seq));
@@ -649,11 +645,11 @@ TEST_F(IngestWiringTest, BackfillToleratesMissingTable) {
         db.exec("DROP TABLE positions");
         SQLite::Statement ins(
             db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " ?, ?, ?, ?, ?)");
+            "INSERT INTO orders (account_id, date, order_id, instrument_id, exchange_id,"
+            " direction, position_effect, price_type, status, price, volume, volume_traded,"
+            " strategy_id, seq, gateway)"
+            " VALUES ('CTP001', '20260901', ?, 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " ?, ?, ?, ?, ?, 'dztd_test')");
         ins.bind(1, static_cast<int64_t>(5001));
         ins.bind(2, 4500.0);
         ins.bind(3, static_cast<int64_t>(1));
@@ -694,16 +690,17 @@ TEST_F(IngestWiringTest, BackfillDispatchesPositionAndTradingAccount) {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         SQLite::Statement pins(
             db,
-            "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
-            " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
-            " VALUES ('CTP001', '20260901', 'IF2603', 'CFFEX', '1', 3, 1, 3, 2, 3950.5, 6)");
+            "INSERT INTO positions (account_id, date, instrument_id, exchange_id,"
+            " direction, volume, frozen_volume, today_volume, yd_volume, price, seq, gateway)"
+            " VALUES ('CTP001', '20260901', 'IF2603', 'CFFEX', '1', 3, 1, 3, 2, 3950.5, 6,"
+            " 'dztd_test')");
         pins.exec();
         SQLite::Statement ains(
             db,
-            "INSERT INTO trading_accounts (account_id, trading_day, balance, available, frozen,"
-            " commission, margin, withdraw_quota, deposit, withdraw, seq)"
+            "INSERT INTO trading_accounts (account_id, date, balance, available, frozen,"
+            " commission, margin, withdraw_quota, deposit, withdraw, seq, gateway)"
             " VALUES ('CTP001', '20260901', 100000.5, 90000.25, 1000.0, 12.5, 9000.0,"
-            " 500.0, 2000.0, 1000.0, 7)");
+            " 500.0, 2000.0, 1000.0, 7, 'dztd_test')");
         ains.exec();
     }
 
@@ -787,11 +784,11 @@ TEST_F(IngestWiringTest, GapBackfillRetriesUntilRowsCommitted) {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         SQLite::Statement ins(
             db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " ?, ?, ?, ?, ?)");
+            "INSERT INTO orders (account_id, date, order_id, instrument_id, exchange_id,"
+            " direction, position_effect, price_type, status, price, volume, volume_traded,"
+            " strategy_id, seq, gateway)"
+            " VALUES ('CTP001', '20260901', ?, 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " ?, ?, ?, ?, ?, 'dztd_test')");
         const char* own = dz_strategy_id(ctx_);
         for (int64_t seq = 6; seq <= 7; ++seq) {
             ins.bind(1, static_cast<int64_t>(6000 + seq));
@@ -911,11 +908,11 @@ TEST_F(IngestWiringTest, GapRetryStagesSubsequentFramesThenDeliversInSeqOrder) {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         SQLite::Statement ins(
             db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " ?, ?, ?, ?, ?)");
+            "INSERT INTO orders (account_id, date, order_id, instrument_id, exchange_id,"
+            " direction, position_effect, price_type, status, price, volume, volume_traded,"
+            " strategy_id, seq, gateway)"
+            " VALUES ('CTP001', '20260901', ?, 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " ?, ?, ?, ?, ?, 'dztd_test')");
         const char* own = dz_strategy_id(ctx_);
         // seq 6: order 101 (PART_TRADED)
         ins.bind(1, static_cast<int64_t>(101));
@@ -1017,15 +1014,17 @@ TEST_F(IngestWiringTest, GapRetryStagesPositionFrameDuringRetry) {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         SQLite::Statement pins(
             db,
-            "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
-            " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
-            " VALUES ('CTP001', '20260901', 'IF2603', 'CFFEX', '1', 3, 1, 3, 2, 3950.5, 6)");
+            "INSERT INTO positions (account_id, date, instrument_id, exchange_id,"
+            " direction, volume, frozen_volume, today_volume, yd_volume, price, seq, gateway)"
+            " VALUES ('CTP001', '20260901', 'IF2603', 'CFFEX', '1', 3, 1, 3, 2, 3950.5, 6,"
+            " 'dztd_test')");
         pins.exec();
         SQLite::Statement pins2(
             db,
-            "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
-            " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
-            " VALUES ('CTP001', '20260901', 'IF2606', 'CFFEX', '1', 5, 0, 5, 0, 4000.0, 7)");
+            "INSERT INTO positions (account_id, date, instrument_id, exchange_id,"
+            " direction, volume, frozen_volume, today_volume, yd_volume, price, seq, gateway)"
+            " VALUES ('CTP001', '20260901', 'IF2606', 'CFFEX', '1', 5, 0, 5, 0, 4000.0, 7,"
+            " 'dztd_test')");
         pins2.exec();
     }
     const void* f = dz_next_event(ctx_);
@@ -1090,11 +1089,11 @@ TEST_F(IngestWiringTest, AccountStatusFlipToReadyResetsGateForReusedSeq) {
         db.exec("DELETE FROM orders");
         SQLite::Statement ins(
             db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " ?, ?, ?, 'own', ?)");
+            "INSERT INTO orders (account_id, date, order_id, instrument_id, exchange_id,"
+            " direction, position_effect, price_type, status, price, volume, volume_traded,"
+            " strategy_id, seq, gateway)"
+            " VALUES ('CTP001', '20260901', ?, 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " ?, ?, ?, 'own', ?, 'dztd_test')");
         for (int64_t seq = 1; seq <= 2; ++seq) {
             ins.bind(1, static_cast<int64_t>(8000 + seq));
             ins.bind(2, 4800.0 + static_cast<double>(seq));
@@ -1246,11 +1245,11 @@ TEST_F(IngestWiringTest, GapCoverageToleratesDeletedPositionRow) {
         SQLite::Database db(db_path_.string(), SQLite::OPEN_READWRITE);
         SQLite::Statement o1(
             db,
-            "INSERT INTO orders (account_id, trading_day, order_id, order_ref, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, strategy_id, seq)"
-            " VALUES ('CTP001', '20260901', ?, 'r', 'IF2603', 'CFFEX', '1', '1', '0', '4',"
-            " ?, ?, ?, ?, ?)");
+            "INSERT INTO orders (account_id, date, order_id, instrument_id, exchange_id,"
+            " direction, position_effect, price_type, status, price, volume, volume_traded,"
+            " strategy_id, seq, gateway)"
+            " VALUES ('CTP001', '20260901', ?, 'IF2603', 'CFFEX', '1', '1', '0', '4',"
+            " ?, ?, ?, ?, ?, 'dztd_test')");
         o1.bind(1, static_cast<int64_t>(6006));
         o1.bind(2, 4606.0);
         o1.bind(3, static_cast<int64_t>(2));
@@ -1269,9 +1268,10 @@ TEST_F(IngestWiringTest, GapCoverageToleratesDeletedPositionRow) {
         // positions seq 7 存在 → 模拟 PositionRebuild 全平删行 (INSERT 后 DELETE)。
         SQLite::Statement pin(
             db,
-            "INSERT INTO positions (account_id, trading_day, instrument_id, exchange_id,"
-            " direction, volume, frozen_volume, today_volume, yd_volume, price, seq)"
-            " VALUES ('CTP001', '20260901', 'IF2603', 'CFFEX', '1', 3, 0, 3, 0, 3950.0, 7)");
+            "INSERT INTO positions (account_id, date, instrument_id, exchange_id,"
+            " direction, volume, frozen_volume, today_volume, yd_volume, price, seq, gateway)"
+            " VALUES ('CTP001', '20260901', 'IF2603', 'CFFEX', '1', 3, 0, 3, 0, 3950.0, 7,"
+            " 'dztd_test')");
         pin.exec();
         db.exec("DELETE FROM positions WHERE account_id='CTP001'");
     }

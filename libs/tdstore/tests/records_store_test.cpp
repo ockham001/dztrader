@@ -6,7 +6,8 @@
 #include <dztrader/struct.h>
 #include <dztrader/tdstore/records.h>
 #include <dztrader/tdstore/records_store.h>
-#include <dztrader/tdstore/schema_catalog.h>
+#include <dztrader/tdstore/schema_dzdb.h>
+#include <dztrader/tdstore/trade_db.h>
 
 #include <filesystem>
 #include <memory>
@@ -23,16 +24,18 @@ class RecordsStoreTest : public ::testing::Test {
 protected:
     void SetUp() override {
         path_ = dztrader::test::unique_temp_path("dz_td_store", "db");
+        (void)dztrader::tdstore::ensure_trade_db(path_);
         database_ = dztrader::db::Database::open(
             dztrader::db::Config{.backend = "sqlite", .options = {{"path", path_.string()}}},
             dztrader::tdstore::schemas());
-        database_->migrate();
         session_ = database_->session();
     }
     void TearDown() override {
         session_.reset();
         database_.reset();
         std::filesystem::remove(path_);
+        std::filesystem::remove(path_.string() + "-wal");
+        std::filesystem::remove(path_.string() + "-shm");
     }
     std::filesystem::path path_;
     std::unique_ptr<dztrader::db::Database> database_;
@@ -194,8 +197,8 @@ TEST_F(RecordsStoreTest, MakePositionRowMatchesSchemaOrder) {
     p.yd_volume = 2;
     p.price = 70000.0;
     p.seq = 42;
-    const auto row = tdstore::make_position_row(p, "20260917");
-    ASSERT_EQ(row.size(), 11u);
+    const auto row = tdstore::make_position_row(p, "20260917", "dztd_ctp");
+    ASSERT_EQ(row.size(), 13u);
     EXPECT_EQ(row.get<std::string>(0), "ctp_001");
     EXPECT_EQ(row.get<std::string>(1), "20260917");
     EXPECT_EQ(row.get<std::string>(2), "cu2601");
@@ -207,6 +210,8 @@ TEST_F(RecordsStoreTest, MakePositionRowMatchesSchemaOrder) {
     EXPECT_EQ(row.get<int64_t>(8), 2);
     EXPECT_DOUBLE_EQ(row.get<double>(9), 70000.0);
     EXPECT_EQ(row.get<int64_t>(10), 42);
+    EXPECT_EQ(row.get<std::string>(11), "dztd_ctp");
+    EXPECT_EQ(row.get<std::string>(12), "{}");
 }
 
 TEST_F(RecordsStoreTest, MakeTradingAccountRowMatchesSchemaOrder) {
@@ -221,8 +226,8 @@ TEST_F(RecordsStoreTest, MakeTradingAccountRowMatchesSchemaOrder) {
     a.deposit = 5000.0;
     a.withdraw = 100.0;
     a.seq = 7;
-    const auto row = tdstore::make_trading_account_row(a, "20260917");
-    ASSERT_EQ(row.size(), 11u);
+    const auto row = tdstore::make_trading_account_row(a, "20260917", "dztd_ctp");
+    ASSERT_EQ(row.size(), 13u);
     EXPECT_EQ(row.get<std::string>(0), "ctp_001");
     EXPECT_EQ(row.get<std::string>(1), "20260917");
     EXPECT_DOUBLE_EQ(row.get<double>(2), 100000.0);
@@ -234,6 +239,8 @@ TEST_F(RecordsStoreTest, MakeTradingAccountRowMatchesSchemaOrder) {
     EXPECT_DOUBLE_EQ(row.get<double>(8), 5000.0);
     EXPECT_DOUBLE_EQ(row.get<double>(9), 100.0);
     EXPECT_EQ(row.get<int64_t>(10), 7);
+    EXPECT_EQ(row.get<std::string>(11), "dztd_ctp");
+    EXPECT_EQ(row.get<std::string>(12), "{}");
 }
 
 }  // namespace
