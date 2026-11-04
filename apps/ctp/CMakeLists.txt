@@ -122,7 +122,7 @@ add_executable(dztd_ctp
     td/td_account_session.cpp
     td/td_spi.cpp
     td/td_report_filter.cpp
-    td/td_prescan.cpp
+    td/td_day_load.cpp
     td/td_login_finalize.cpp
     common/trading_calendar.cpp
 )
@@ -263,9 +263,9 @@ foreach(testfile ${TD_CTP_TESTS})
     if(testname STREQUAL "td_report_filter_test")
         target_sources(dztd_ctp_${testname} PRIVATE td/td_report_filter.cpp)
     endif()
-    # td_prescan_test 需要 td_prescan.cpp + dztdstore (schema migration, 独立只读连接)
-    if(testname STREQUAL "td_prescan_test")
-        target_sources(dztd_ctp_${testname} PRIVATE td/td_prescan.cpp)
+    # td_day_load_test 需要 td_day_load.cpp + dztdstore (schema migration, 独立只读连接)
+    if(testname STREQUAL "td_day_load_test")
+        target_sources(dztd_ctp_${testname} PRIVATE td/td_day_load.cpp)
         target_link_libraries(dztd_ctp_${testname} PRIVATE dztdstore)
     endif()
     # td_login_finalize_test 需要 td_login_finalize.cpp (登录收尾状态机纯逻辑, 无 CTP 依赖)
@@ -273,13 +273,13 @@ foreach(testfile ${TD_CTP_TESTS})
         target_sources(dztd_ctp_${testname} PRIVATE td/td_login_finalize.cpp)
     endif()
     # td_data_sync_integration_test 需要 td_persist_writer.cpp + td_persist_rows.cpp
-    # + td_report_filter.cpp + td_prescan.cpp (进程内组装: PersistWriter 真线程 + ReportFilter
+    # + td_report_filter.cpp + td_day_load.cpp (进程内组装: PersistWriter 真线程 + ReportFilter
     # + TdIngestGate) + 链 dztdstore
     # TdIngestGate 由 dztrading 库提供（SDK 与 dzweb 共用的纯逻辑组件）。
     if(testname STREQUAL "td_data_sync_integration_test")
         target_sources(dztd_ctp_${testname} PRIVATE
             td/td_persist_writer.cpp td/td_persist_rows.cpp td/td_report_filter.cpp
-            td/td_prescan.cpp)
+            td/td_day_load.cpp)
         target_link_libraries(dztd_ctp_${testname} PRIVATE dztdstore dztrading)
     endif()
 endforeach()

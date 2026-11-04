@@ -2,6 +2,29 @@
 // LogContent 等内部引用）并转发对外；勿在此手写重复定义（避免与生成物同名冲突）
 import type { BrokerFrontend, BrokerEntry, LogLine, MdConfigPayload, MdRtnConfigPayload, MdRtnStatusPayload } from './generated'
 export type { BrokerFrontend, BrokerEntry, LogLine, MdConfigPayload, MdRtnConfigPayload, MdRtnStatusPayload }
+// 交易数据行/信封（契约 rest §2.9.2/§2.9.3/§2.9.8）：委托 + 成交行与两个响应信封同为生成物，
+// 前端不得手写重复类型（成交行本轮只消费类型，渲染归 #248）。
+import type {
+  TdDirection, TdPositionEffect, TdPriceType, TdOrderStatus, TdDegradedReason,
+  TdOrderRow, TdTradeRow, TdOrderListResponse, TdOrderDegradedResponse, TdRecentPayload, TdRecentEvent,
+} from './generated'
+export type {
+  TdDirection, TdPositionEffect, TdPriceType, TdOrderStatus, TdDegradedReason,
+  TdOrderRow, TdTradeRow, TdOrderListResponse, TdOrderDegradedResponse, TdRecentPayload, TdRecentEvent,
+}
+
+/**
+ * `GET /api/td/orders` 的响应：可用信封与降级信封共用 `available` 判别位
+ * （契约 rest §2.9.2/§2.9.8）。降级时响应**只有** available 与 reason —— 缺少 items 等字段是
+ * 契约规定，不是缺字段错误。
+ *
+ * 生成物把 `available` 声明为 `boolean`（契约就是 bool），这里用交叉类型把它收窄成字面量，
+ * 从而得到真正的判别联合：`response.available === false` 后可直接读 `reason`，=== true 分支
+ * 里 `items` / `next_cursor` 均可用，无需 as 断言。
+ */
+export type TdOrdersResponse =
+  | (TdOrderListResponse & { available: true })
+  | (TdOrderDegradedResponse & { available: false })
 
 // ===== Authentication =====
 export interface LoginRequest {

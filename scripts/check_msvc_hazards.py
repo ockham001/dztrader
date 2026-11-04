@@ -25,8 +25,17 @@ R4 deprecated CRT calls in public SDK headers (C4996 -> /WX -> C2220)
     so only the Windows CI run reproduces it (#157: _wfopen). R4 is scoped to the
     public header tree; internal code is allowed to define _CRT_SECURE_NO_WARNINGS.
 
+R5 gtest + nlohmann::json needs /wd4702 (C4702 -> /WX -> C2220)
+    gtest 1.17's gtest-printers.h instantiates nlohmann::json printers that make MSVC
+    /O2 emit C4702 (unreachable code) for some test targets; Release /WX turns that
+    into C2220. The exemption lives once, in dz_add_test() (cmake/DzTest.cmake), which
+    every test target goes through -- per-directory name lists (the previous
+    `MATCHES "^sysmon_"` form) kept missing new targets: #246 added
+    td_data_controller_test and reddened Windows CI (run 41809910544, ~35 min).
+    This rule checks the single-definition invariant instead of each call site.
+
 Usage: python3 scripts/check_msvc_hazards.py [files...]
-Default file set: tracked .h/.cpp under apps/ and libs/.
+Default file set: tracked .h/.cpp under apps/ and libs/ plus cmake/DzTest.cmake.
 Exit 1 on any violation, 0 when clean.
 """
 
@@ -84,11 +93,17 @@ def preprocessor_branches(lines):
     return skip
 
 
+# R5 invariant file: the single construction entry point for every test target.
+DZ_TEST_CMAKE = "cmake/DzTest.cmake"
+
+
 def tracked_sources():
     out = subprocess.run(
-        ["git", "ls-files", "-z", "--", "apps", "libs"],
+        ["git", "ls-files", "-z", "--", "apps", "libs", DZ_TEST_CMAKE],
         capture_output=True, check=True).stdout
     files = [f for f in out.decode().split("\0") if f.endswith((".h", ".cpp"))]
+    if os.path.exists(DZ_TEST_CMAKE):
+        files.append(DZ_TEST_CMAKE)
     return files
 
 
@@ -228,6 +243,24 @@ def check_deprecated_crt(path, text):
     return errors
 
 
+def check_c4702_exemption(path, text):
+    """R5: the C4702 exemption for gtest + nlohmann::json must stay in one place.
+
+    Scoped to cmake/DzTest.cmake: the invariant is that this file still opts every
+    dz_add_test target out of C4702 under MSVC. If someone deletes the block (or a
+    future refactor drops it), new json-printing test targets redden Windows CI again
+    with C2220 -- a failure the Linux gate cannot see (#246 / run 41809910544).
+    """
+    if path.replace("\\", "/") != DZ_TEST_CMAKE:
+        return []
+    if "target_compile_options" in text and "/wd4702" in text and "if(MSVC)" in text:
+        return []
+    return [(1,
+             "R5: cmake/DzTest.cmake no longer exempts test targets from MSVC C4702 "
+             "(gtest + nlohmann::json). Every json-printing test target would redden "
+             "Windows CI with C2220 under /WX; restore the /wd4702 block in dz_add_test")]
+
+
 def check_file(path):
     with open(path, encoding="utf-8", errors="replace") as fh:
         text = fh.read()
@@ -238,6 +271,7 @@ def check_file(path):
     errors += check_pdh(lines)
     errors += check_debug_only_catch(text)
     errors += check_deprecated_crt(path, text)
+    errors += check_c4702_exemption(path, text)
     return sorted(set(errors))
 
 

@@ -75,6 +75,15 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
   [dzsysmon.md](dzsysmon.md) 的「历史查询」节——查询语义由 schema 形状决定，属共享模块，
   不是 dzweb 的私有逻辑。
 
+## 交易数据读路径（#246，ADR 0043）
+
+交易记录（委托 / 成交 / 持仓 / 资金）**不进 `MirrorStore`、不做记录镜像、不维护 seq 水位**：
+
+- **REST 直查交易库**：`GET /api/td/*`（契约 rest §2.9）每请求新建只读连接、`busy_timeout=200ms`、请求结束即关闭；游标分页（默认 200 / 上限 1000，禁 OFFSET 深翻页）。库缺失 / 版本不符 / 打开失败 / 锁等待 / 查询失败一律 `200 + {"available":false,"reason":...}`，不 5xx、不阻塞单 IO 线程（②）。
+- **WS 只推增量**：委托事件 `td_order_report`（帧转发，payload = 契约 rest §2.9.3 的委托行）与建连补发 `td_recent`（每在线账户最近 300 条）；记录基线一律由 REST 拉取，`snapshot` 不含交易记录（契约 webui-ws §2.5）。
+- **域内只保留三样状态**（`apps/webui/td_domain_service.{h,cpp}`）：在线（`ACCOUNT_STATUS` Ready）账户集合与每账户 `date`、WS 建连补发环、日切感知。Ready/Offline 翻转、日切（`date` 变化）、在线集合变化 → 广播 `data_changed{scope:"td"}` 让前端清空重拉。
+- **已知限制**：`td_recent` 有界（300 条/账户），dzweb 重启后为空——记录基线以 REST 为准，补发只是收敛窗口内的加速；帧可能先于库提交到达（异步持久化），同一记录由前端按 `seq` 合并（契约 webui-ws §5）。
+
 ## 监听与暴露面（#201）
 
 | 项 | 现状 |

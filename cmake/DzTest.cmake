@@ -71,6 +71,21 @@ function(dz_add_test target)
     if(NOT arg_LABELS)
         set(arg_LABELS fast)
     endif()
+
+    # MSVC /WX 下的 gtest C4702（unreachable code）豁免。
+    #
+    # gtest 1.17 的 gtest-printers.h 在 MSVC /O2 下对 `nlohmann::json` 相关模板实例化
+    # 偶发 C4702，Release /WX 把它升级为 C2220。**凡是断言/打印 json 的测试目标都会
+    # 命中**，而目录级按 target 名单逐个豁免必然再漏：apps/webui 原先只写了
+    # `MATCHES "^sysmon_"`，#246 新增的 `td_data_controller_test` 就因此让 Windows CI
+    # 变红（run 41809910544，约 35 分钟）。与 DISCOVERY_TIMEOUT 同理（见文件头 #227）：
+    # 「每个调用点都要记得写一行」的正确形态是让它无处可漏。
+    #
+    # 只豁免测试目标（dz_add_test 的唯一职责就是建测试 target），不涉及生产代码。
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /wd4702)
+    endif()
+
     gtest_discover_tests(${target}
         PROPERTIES LABELS ${arg_LABELS} ${arg_PROPERTIES}
         DISCOVERY_TIMEOUT ${DZ_GTEST_DISCOVERY_TIMEOUT})

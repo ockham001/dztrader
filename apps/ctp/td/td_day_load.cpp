@@ -1,7 +1,8 @@
-#include "td/td_prescan.h"
+#include "td/td_day_load.h"
 
 #include <algorithm>
 #include <cstring>
+#include <format>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -9,6 +10,7 @@
 
 #include <SQLiteCpp/Statement.h>
 #include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
 
 #include <dztrader/data_type.h>
 #include <dztrader/date_time/date.h>
@@ -75,30 +77,24 @@ void fill_order_ext(OrderRecord& record, const std::string& ext_text) {
     }
 }
 
-/// orders 行装载模板 (schema v1 列序): 按 account_id 过滤 (可选 seq > since_seq 增量).
-template <bool Since>
-std::vector<OrderRecord> load_orders_impl(SQLite::Database& db,
-                                          const std::string& account_id,
-                                          uint64_t since_seq) {
+/// 当日 orders 装载 (schema v1 列序, date 过滤, 行序 = seq 升序).
+std::vector<OrderRecord> load_day_orders(SQLite::Database& db,
+                                         const std::string& account_id,
+                                         const std::string& day) {
     std::vector<OrderRecord> out;
-    std::string sql =
+    SQLite::Statement stmt(
+        db,
         "SELECT date, order_id, strategy_id, instrument_id, exchange_id, direction,"
         " position_effect, price_type, status, price, volume, volume_traded, remark,"
-        " time, avg_price, seq, ext FROM orders WHERE account_id = ?";
-    if constexpr (Since) {
-        sql += " AND seq > ?";
-    }
-    sql += " ORDER BY seq ASC";
-    SQLite::Statement stmt(db, sql);
+        " time, avg_price, seq, ext FROM orders WHERE account_id = ? AND date = ?"
+        " ORDER BY seq ASC");
     stmt.bind(1, account_id);
-    if constexpr (Since) {
-        stmt.bind(2, static_cast<int64_t>(since_seq));
-    }
+    stmt.bind(2, day);
     while (stmt.executeStep()) {
         OrderRecord r{};
         copy_to_fixed(r.base.account_id, account_id);
-        const std::string day = stmt.getColumn(0).getString();
-        copy_to_fixed(r.trading_day, day);
+        const std::string row_day = stmt.getColumn(0).getString();
+        copy_to_fixed(r.trading_day, row_day);
         r.base.order_id = stmt.getColumn(1).getInt64();
         copy_to_fixed(r.base.strategy_id, stmt.getColumn(2).getString());
         copy_to_fixed(r.base.instrument_id, stmt.getColumn(3).getString());
@@ -116,36 +112,29 @@ std::vector<OrderRecord> load_orders_impl(SQLite::Database& db,
         r.base.seq = static_cast<uint64_t>(stmt.getColumn(15).getInt64());
         fill_order_ext(r, stmt.getColumn(16).getString());
         r.is_external = (std::string_view(r.base.strategy_id) == DZ_STRATEGY_ID_EXTERNAL) ? 1 : 0;
-        r.base.date = parse_yyyymmdd_to_epoch(day);
+        r.base.date = parse_yyyymmdd_to_epoch(row_day);
         out.push_back(r);
     }
     return out;
 }
 
-/// trades 行装载模板 (schema v1 列序).
-template <bool Since>
-std::vector<TradeRecord> load_trades_impl(SQLite::Database& db,
-                                          const std::string& account_id,
-                                          uint64_t since_seq) {
+/// 当日 trades 装载 (schema v1 列序, date 过滤, 行序 = seq 升序).
+std::vector<TradeRecord> load_day_trades(SQLite::Database& db,
+                                         const std::string& account_id,
+                                         const std::string& day) {
     std::vector<TradeRecord> out;
-    std::string sql =
+    SQLite::Statement stmt(
+        db,
         "SELECT date, trade_id, order_id, strategy_id, instrument_id, exchange_id,"
         " direction, position_effect, price, volume, time, seq FROM trades"
-        " WHERE account_id = ?";
-    if constexpr (Since) {
-        sql += " AND seq > ?";
-    }
-    sql += " ORDER BY seq ASC";
-    SQLite::Statement stmt(db, sql);
+        " WHERE account_id = ? AND date = ? ORDER BY seq ASC");
     stmt.bind(1, account_id);
-    if constexpr (Since) {
-        stmt.bind(2, static_cast<int64_t>(since_seq));
-    }
+    stmt.bind(2, day);
     while (stmt.executeStep()) {
         TradeRecord r{};
         copy_to_fixed(r.base.account_id, account_id);
-        const std::string day = stmt.getColumn(0).getString();
-        copy_to_fixed(r.trading_day, day);
+        const std::string row_day = stmt.getColumn(0).getString();
+        copy_to_fixed(r.trading_day, row_day);
         copy_to_fixed(r.base.trade_id, stmt.getColumn(1).getString());
         r.base.order_id = stmt.getColumn(2).getInt64();
         copy_to_fixed(r.base.strategy_id, stmt.getColumn(3).getString());
@@ -157,17 +146,25 @@ std::vector<TradeRecord> load_trades_impl(SQLite::Database& db,
         r.base.volume = stmt.getColumn(9).getInt();
         r.base.time = stmt.getColumn(10).getInt();
         r.base.seq = static_cast<uint64_t>(stmt.getColumn(11).getInt64());
-        r.base.date = parse_yyyymmdd_to_epoch(day);
-        // 派生字段（DB 无对应列；装载基准只用 trading_day/trade_id 去重）
-        r.trade_date = 0;
-        r.trade_time = static_cast<int64_t>(r.base.date) * 86400 + r.base.time;
-        r.commission = 0.0;  // 手续费不逐笔（ADR 0013）
+        r.base.date = parse_yyyymmdd_to_epoch(row_day);
         out.push_back(r);
     }
     return out;
 }
 
 }  // namespace
+
+std::string format_day_text(int32_t day) {
+    if (day <= 0) {
+        return "00000000";
+    }
+    try {
+        const dztrader::Date d{day};
+        return std::format("{:04d}{:02d}{:02d}", d.year(), d.month(), d.day());
+    } catch (...) {
+        return "00000000";
+    }
+}
 
 uint64_t query_max_seq(SQLite::Database& db, const std::string& account_id) {
     constexpr const char* kTables[] = {"orders", "trades", "positions", "trading_accounts"};
@@ -186,37 +183,83 @@ uint64_t query_max_seq(SQLite::Database& db, const std::string& account_id) {
     return result;
 }
 
-std::vector<OrderRecord> load_orders(SQLite::Database& db, const std::string& account_id) {
-    return load_orders_impl<false>(db, account_id, 0);
+DayLoadData load_trading_day(SQLite::Database& db,
+                             const std::string& account_id,
+                             const std::string& day) {
+    DayLoadData data;
+    data.start_seq = query_max_seq(db, account_id);
+    data.orders = load_day_orders(db, account_id, day);
+    data.trades = load_day_trades(db, account_id, day);
+    return data;
 }
 
-std::vector<TradeRecord> load_trades(SQLite::Database& db, const std::string& account_id) {
-    return load_trades_impl<false>(db, account_id, 0);
+void AccountSeqAllocator::set_db_provider(std::function<SQLite::Database*()> provider) {
+    db_provider_ = std::move(provider);
 }
 
-std::vector<OrderRecord> load_orders_since(SQLite::Database& db,
-                                           const std::string& account_id,
-                                           uint64_t since_seq) {
-    return load_orders_impl<true>(db, account_id, since_seq);
-}
-
-std::vector<TradeRecord> load_trades_since(SQLite::Database& db,
-                                           const std::string& account_id,
-                                           uint64_t since_seq) {
-    return load_trades_impl<true>(db, account_id, since_seq);
-}
-
-std::map<std::string, SessionBootData> prescan_accounts(SQLite::Database& db,
-                                                        const std::vector<std::string>& accounts) {
-    std::map<std::string, SessionBootData> result;
-    for (const auto& acct : accounts) {
-        SessionBootData boot;
-        boot.start_seq = query_max_seq(db, acct);
-        boot.orders = load_orders(db, acct);
-        boot.trades = load_trades(db, acct);
-        result.emplace(acct, std::move(boot));
+uint64_t AccountSeqAllocator::next(const std::string& account_id) {
+    // 每次分配都取 max(已分配值, DB MAX(seq)) 作为基准再递增:
+    // - 已分配值只增不减 (DB 未提交的行不得让计数回退);
+    // - 同时吸收「同账户会话在无会话拒单之后又推进了 seq」的进展 (DB 已提交),
+    //   否则会话断线后本分配器会从旧种子续号, 与既有行撞 seq.
+    uint64_t base = 0;
+    const auto it = allocated_.find(account_id);
+    if (it != allocated_.end()) {
+        base = it->second;
     }
-    return result;
+    if (db_provider_) {
+        SQLite::Database* db = db_provider_();
+        if (db != nullptr) {
+            try {
+                base = std::max(base, query_max_seq(*db, account_id));
+            } catch (const std::exception& e) {
+                SPDLOG_WARN(
+                    "td seq allocator db query failed, use allocated | account={} "
+                    "allocated={} error=\"{}\"",
+                    account_id, base, e.what());
+            }
+        } else if (base == 0) {
+            SPDLOG_WARN("td seq allocator db unavailable, start from 1 | account={}", account_id);
+        }
+    } else if (base == 0) {
+        SPDLOG_WARN("td seq allocator db provider missing, start from 1 | account={}", account_id);
+    }
+    const uint64_t assigned = base + 1;
+    allocated_[account_id] = assigned;
+    return assigned;
+}
+
+uint64_t AccountSeqAllocator::current(const std::string& account_id) const {
+    const auto it = allocated_.find(account_id);
+    return it != allocated_.end() ? it->second : 0;
+}
+
+OrderRecord build_no_session_reject(const DzOrderReq& req,
+                                    int32_t date,
+                                    int32_t time,
+                                    std::string_view reason) {
+    OrderRecord rec{};
+    rec.base.order_id = req.order_id;
+    copy_to_fixed(rec.base.strategy_id, std::string(req.strategy_id));
+    copy_to_fixed(rec.base.instrument_id, std::string(req.instrument_id));
+    copy_to_fixed(rec.base.account_id, std::string(req.account_id));
+    rec.base.direction = req.direction;
+    rec.base.price_type = req.price_type;
+    rec.base.position_effect = req.position_effect;
+    rec.base.status = DZ_ORDER_REJECTED;
+    rec.base.price = req.price;
+    rec.base.volume = req.volume;
+    rec.base.volume_traded = 0;
+    rec.base.date = date;
+    rec.base.time = time;
+    copy_to_fixed(rec.base.remark, std::string(reason));
+    rec.base.seq = 0;  // 由调用方分配
+    rec.is_external = 0;
+    rec.volume_canceled = req.volume;
+    rec.error_id = -1;  // 本地拒绝, 与 CTP 错误码区分
+    copy_to_fixed(rec.error_msg, std::string(reason));
+    copy_to_fixed(rec.trading_day, format_day_text(date));
+    return rec;
 }
 
 }  // namespace dztrader::ctp

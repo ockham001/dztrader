@@ -41,6 +41,7 @@
 #include "common/ctp_events.h"
 #include "td/td_account_session_pure.h"
 #include "td/td_ctp_mapping.h"
+#include "td/td_day_load.h"
 #include "td/td_events.h"
 #include "td/td_login_finalize.h"
 #include "td/td_notify_types.h"
@@ -48,7 +49,6 @@
 #include "td/td_persist_records.h"
 #include "td/td_persist_writer.h"
 #include "td/td_position.h"
-#include "td/td_prescan.h"
 #include "td/td_report_filter.h"
 #include "td/td_risk_gate.h"
 #include "td/td_spi.h"
@@ -71,8 +71,8 @@ public:
     /// @param timer_queue 定时器队列 (外部拥有)
     /// @param account_state_cb 可选账户状态通知回调 (会话内直调状态机的路径经它推送,
     ///   当前仅连接超时; 在 TdApi 主循环线程同步调用)
-    /// @param boot 账户启动装载数据 (Task 5 §4.3): start_seq/orders/trades,
-    ///   ctor 内初始化 seq 计数器与重放过滤器基准
+    /// @param seq_allocator 无会话拒单的账户级 seq 分配器 (可空; 空 = 只用 DB 播种)。
+    ///   登录日装载时用 max(day_load.start_seq, 本分配器 current) 抬高 seq 计数器。
     /// @param notify 可选持久化通知回调 (登录 flush 屏障超时 ERROR 经它转 UI; 主循环线程调用)
     AccountSession(std::string account_id,
                    shm::OrderIdMeta& order_id_meta,
@@ -81,7 +81,7 @@ public:
                    const MpmcQueuePtr& event_queue,
                    dztrader::core::TimerQueue& timer_queue,
                    std::function<void(DzAccountState)> account_state_cb = nullptr,
-                   SessionBootData boot = {},
+                   AccountSeqAllocator* seq_allocator = nullptr,
                    AccountNotifyFn notify = nullptr);
     ~AccountSession();
 
@@ -180,10 +180,10 @@ public:
     /// spec §4.2 "最后一条重推"). 由 TdApi 在 Ready 广播之后调用.
     void repush_last_records();
 
-    /// 注入独立只读连接提供器 (TdApi 注入, 供 §4.3 重连增量装载基准用; 可空).
-    /// 返回 nullptr 表示库不可用, 增量装载降级 (保留现有基准).
-    void set_prescan_db_provider(std::function<SQLite::Database*()> provider) {
-        prescan_db_provider_ = std::move(provider);
+    /// 注入独立只读连接提供器 (TdApi 注入, 供登录日装载用; 可空).
+    /// 返回 nullptr 表示库不可用, 登录日装载失败按登录失败路径处理 (ADR 0045).
+    void set_read_db_provider(std::function<SQLite::Database*()> provider) {
+        read_db_provider_ = std::move(provider);
     }
 
     /// 释放 td 事件 (主线程 drain 队列时调用, type >= 100 走 td_delete_event_data).
@@ -239,12 +239,9 @@ private:
     /// is_last 收口: 应用本轮查询累加器 (diff 推帧/零帧/活动委托重灌/PositionRebuild).
     void apply_position_query();
 
-    /// 从 boot 初始化 seq 计数器 + 重放过滤器基准 (构造时调用).
-    void init_from_boot(const SessionBootData& boot);
-
-    /// §4.3 重连重建基准: 从断开时刻后提交的 DB 行增量装载 (seq > max_seq_at_disconnect_).
-    /// 需要独立只读连接 (由 TdApi 提供, 该连接为进程级单例). 失败降级 (保留现有基准).
-    void reload_incremental(SQLite::Database& db);
+    /// 登录日装载 (契约 td-data-sync §3 / ADR 0045 决策 5): 只装当前交易日的订单/成交,
+    /// 初始化 seq 计数器与重放过滤器基准. 失败按登录失败路径处理 (返回 false).
+    bool load_trading_day_baseline();
 
     /// LoadingInstruments 期间缓冲回报 (设计 §5.3)
     void buffer_order_rpt(const OnRtnOrderField& f);
@@ -339,10 +336,10 @@ private:
     bool position_query_ok_ = false;
     bool account_query_ok_ = false;
     bool data_query_ok_ = false;
-    /// 上次装载水位: 断连时记录, 重连时增量装载 seq > 该值的行 (spec §4.3).
-    uint64_t max_seq_at_disconnect_ = 0;
-    /// 独立只读连接提供器 (TdApi 注入; 重连增量装载基准用, 可空则降级).
-    std::function<SQLite::Database*()> prescan_db_provider_;
+    /// 独立只读连接提供器 (TdApi 注入; 登录日装载用, 可空则装载失败).
+    std::function<SQLite::Database*()> read_db_provider_;
+    /// 无会话拒单 seq 分配器 (可空; 登录日装载据此抬高 seq 计数器).
+    AccountSeqAllocator* seq_allocator_ = nullptr;
 
     /// 持仓 map: instrument_id -> PositionHolding (设计 §6)
     std::unordered_map<std::string, PositionHolding> holdings_;

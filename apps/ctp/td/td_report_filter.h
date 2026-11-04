@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -14,11 +15,14 @@ namespace dztrader::ctp {
 
 namespace detail {
 
-/// 成交键 (trading_day, trade_id) 的哈希器.
-/// 注: 本工具链 libstdc++ 未提供 std::hash<std::pair>, 故自定义.
+/// 成交键 (trading_day, exchange_id, trade_id) 的哈希器.
+/// 注: 本工具链 libstdc++ 未提供 std::hash<std::tuple>, 故自定义.
 struct TradeKeyHash {
-    size_t operator()(const std::pair<std::string, std::string>& key) const noexcept {
-        return std::hash<std::string>{}(key.first) ^ (std::hash<std::string>{}(key.second) << 1);
+    size_t operator()(const std::tuple<std::string, std::string, std::string>& key) const noexcept {
+        size_t h = std::hash<std::string>{}(std::get<0>(key));
+        h ^= std::hash<std::string>{}(std::get<1>(key)) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        h ^= std::hash<std::string>{}(std::get<2>(key)) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        return h;
     }
 };
 
@@ -31,7 +35,7 @@ struct TradeKeyHash {
 /// - 委托: order_id 定位基准行, 对比集 {update_time, volume_traded, volume_canceled, status}.
 ///   完全相等 → kSkip (重放重复); 不相等且 rec.update_time < base.update_time → kSkip + 过期告警
 ///   (防御); 否则 → kForward (含同秒 status/volume 翻转, 必须转发).
-/// - 成交: 键 (trading_day, trade_id) 存在性 (跨日同 trade_id 必须 kForward).
+/// - 成交: 键 (trading_day, exchange_id, trade_id) 存在性 (跨日/跨交易所同 trade_id 必须 kForward).
 ///
 /// check_* 不更新基准 (转发与否由调用方决定后调 accept_*); check_* 不修改对象状态.
 class ReportFilter {
@@ -57,7 +61,7 @@ public:
     /// 更新委托基准 (转发路径调用, 主线程即时更新).
     void accept_order(const OrderRecord& rec);
 
-    /// 成交去重: 键 (trading_day, trade_id) 存在性. 命中 → kSkip, 否则 kForward.
+    /// 成交去重: 键 (trading_day, exchange_id, trade_id) 存在性. 命中 → kSkip, 否则 kForward.
     [[nodiscard]] Verdict check_trade(const TradeRecord& rec) const;
 
     /// 更新成交基准 (转发路径调用).
@@ -87,8 +91,9 @@ private:
     std::string account_id_;
     /// order_id -> 基准委托行.
     std::unordered_map<int64_t, OrderRecord> orders_;
-    /// 成交键集: (trading_day, trade_id).
-    std::unordered_set<std::pair<std::string, std::string>, detail::TradeKeyHash> trade_keys_;
+    /// 成交键集: (trading_day, exchange_id, trade_id).
+    std::unordered_set<std::tuple<std::string, std::string, std::string>, detail::TradeKeyHash>
+        trade_keys_;
     /// 最近 accept 的委托/成交 (SHM 帧格式, 供 find_latest_* 返回).
     DzOrderReport latest_order_{};
     DzTradeReport latest_trade_{};

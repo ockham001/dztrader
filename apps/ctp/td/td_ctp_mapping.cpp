@@ -364,31 +364,6 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
         *end = '\0';
     }
 
-    // trade_date: YYYYMMDD as int (优先用 CTP TradeDate, 失败从 trading_day 重组)
-    int32_t ctp_trade_date = parse_ctp_date(t.TradeDate);
-    if (ctp_trade_date != DZ_DATE_NA) {
-        // CTP TradeDate "YYYYMMDD" -> int64_t
-        try {
-            r.trade_date = std::stoll(t.TradeDate);
-        } catch (...) {
-            dztrader::Date d{trading_day};
-            r.trade_date = static_cast<int64_t>(d.year()) * 10000 +
-                           static_cast<int64_t>(d.month()) * 100 + static_cast<int64_t>(d.day());
-        }
-    } else {
-        dztrader::Date d{trading_day};
-        r.trade_date = static_cast<int64_t>(d.year()) * 10000 +
-                       static_cast<int64_t>(d.month()) * 100 + static_cast<int64_t>(d.day());
-    }
-
-    // trade_time: epoch seconds (优先用 CTP TradeDate, 失败回退 trading_day)
-    int32_t trade_date_days = (ctp_trade_date != DZ_DATE_NA) ? ctp_trade_date : trading_day;
-    int32_t trade_secs = parse_ctp_time(t.TradeTime);
-    int64_t trade_day_secs = static_cast<int64_t>(trade_date_days) * 86400;
-    r.trade_time = (trade_secs >= 0) ? trade_day_secs + trade_secs : 0;
-
-    r.commission = 0.0;  // 留 0（平台不查询费率，ADR 0013）
-
     return r;
 }
 

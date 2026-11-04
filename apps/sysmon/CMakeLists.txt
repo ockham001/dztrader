@@ -83,11 +83,7 @@ foreach(testfile ${DZSYSMON_TESTS})
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )
-    if(MSVC)
-        # gtest 1.17 gtest-printers.h + nlohmann::json 在 MSVC /O2 下偶发 C4702
-        # （unreachable code），Release /WX 升级为错误；仅豁免测试目标。
-        target_compile_options(dzsysmon_${testname} PRIVATE /wd4702)
-    endif()
+    # MSVC C4702（gtest + nlohmann::json）豁免已收敛到 cmake/DzTest.cmake 的 dz_add_test。
     if(test_needs_daemon)
         add_dependencies(dzsysmon_${testname} dzsysmon)
     endif()

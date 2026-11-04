@@ -7,6 +7,7 @@
 #include <dztrader/platform/log_config.h>
 #include <unordered_map>
 #include <string>
+#include <functional>
 #include <memory>
 #include "config.h"
 #include "repository.h"
@@ -67,6 +68,15 @@ public:
         broadcast_frame(type, instance_id, data);
     }
 
+    /// 设置建连补发（`td_recent`）载荷提供者（契约 webui-ws §1/§2.5）。
+    ///
+    /// 鉴权成功建连后、`snapshot` 之后定向发送一次 `{"type":"td_recent","payload":<provider()>}`。
+    /// provider 为空 = 交易数据域服务未装配（如 API-only 模式）→ 不发送。
+    /// 由 main 在构造 TdDomainService 后注入（`[domain]{ return domain->recent_events(); }`）。
+    void set_td_recent_provider(std::function<nlohmann::json()> provider) {
+        td_recent_provider_ = std::move(provider);
+    }
+
 private:
     WebuiConfig cfg_;
     std::shared_ptr<Repository> repo_;
@@ -120,6 +130,9 @@ private:
     void broadcast_frame(const std::string& type,
                          const std::string& instance_id,
                          const nlohmann::json& data);
+
+    /// 建连补发（`td_recent`）载荷提供者（契约 webui-ws §1/§2.5）；空 = 不发送。
+    std::function<nlohmann::json()> td_recent_provider_;
 };
 
 }  // namespace dztrader::webui

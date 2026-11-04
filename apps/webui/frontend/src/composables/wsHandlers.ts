@@ -14,6 +14,7 @@ import { useProgressStore } from '@/stores/progress'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useSettingsStore } from '@/stores/settings'
 import { useSysmonStore } from '@/stores/sysmon'
+import { useTdOrdersStore } from '@/stores/tdOrders'
 import { useToastStore } from '@/stores/toast'
 import type { ProcessStatusPayload, MdConfigPayload } from '@/types/api'
 
@@ -32,8 +33,28 @@ registerHandler('data_changed', (payload) => {
     useMarketSourcesStore().loadSources()
     return
   }
+  if (scope === 'td') {
+    // 契约 webui-ws §2.3：td = 交易数据基线失效（日切 / 在线集合变化 / 账户集合增减）。
+    // 前端清空委托并重拉基线；其余交易列表（成交/持仓/资金/统计）随各自票接入。
+    void useTdOrdersStore().handleDataChanged(scope)
+    return
+  }
   const userManagement = useUserManagementStore()
   userManagement.refreshByScope(scope)
+})
+
+registerHandler('td_order_report', (payload) => {
+  // 契约 webui-ws §2.5：委托增量事件，payload 即契约 rest §2.9.3 委托行。
+  // store 内部约 10Hz 批量合并（业务键去重 + seq 大者胜 + sort_key 降序插入），
+  // 这里只入队，不逐条触发重渲染（ADR 0043 决策 7）。
+  useTdOrdersStore().applyOrderEvent(payload)
+})
+
+registerHandler('td_recent', (payload) => {
+  // 契约 webui-ws §2.5：建连补发（snapshot 之后定向一次，无事件也发空数组）。
+  // 补发有界，不能替代基线：合并事件后重拉 REST 基线（§5 第 7 条）。
+  // 成交事件本轮不消费（列表归 #248）。
+  useTdOrdersStore().applyRecent(payload)
 })
 
 registerHandler('log_line', (payload) => {

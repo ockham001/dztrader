@@ -510,35 +510,8 @@ TEST(ToTradeRecordTest, BasicFields) {
     EXPECT_STREQ(r.base.exchange_id, "CFFEX");
     EXPECT_STREQ(r.base.trade_id, "T001");
 
-    // 扩展字段
-    EXPECT_EQ(r.commission, 0.0);  // 留 0, AccountSession 后填
-
-    // 时间/交易日字段 (成交去重键 (account_id, trading_day, trade_id) 依赖)
+    // 扩展字段 (schema v1 只有 trading_day 文本列; 无 time/date/commission 派生字段)
     EXPECT_STREQ(r.trading_day, "20260727");
-    // TradeDate 为空 -> trade_date 从 trading_day 重组为 YYYYMMDD int
-    EXPECT_EQ(r.trade_date, 20260727);
-    // trade_time = 日期 * 86400 + 09:30:45 秒数
-    EXPECT_EQ(r.trade_time, static_cast<int64_t>(kTradingDay) * 86400 + 9 * 3600 + 30 * 60 + 45);
-}
-
-TEST(ToTradeRecordTest, TradeDateOverridesTradingDay) {
-    // 跨日成交: TradeDate 优先于 trading_day 参数 (trade_date 与 trade_time 同步).
-    auto tf = make_trade_field();
-    std::strcpy(tf.TradeDate, "20260728");
-
-    auto r = to_trade_record(tf, "acc1", kTradingDay);
-    EXPECT_STREQ(r.trading_day, "20260727");
-    EXPECT_EQ(r.trade_date, 20260728);
-    EXPECT_EQ(r.trade_time,
-              static_cast<int64_t>(kNextTradingDay) * 86400 + 9 * 3600 + 30 * 60 + 45);
-}
-
-TEST(ToTradeRecordTest, EmptyTradeTimeFallsBackToZero) {
-    auto tf = make_trade_field();
-    std::strcpy(tf.TradeTime, "");
-
-    auto r = to_trade_record(tf, "acc1", kTradingDay);
-    EXPECT_EQ(r.trade_time, 0);
 }
 
 TEST(ToTradeRecordTest, SellCloseYesterdayMapping) {
