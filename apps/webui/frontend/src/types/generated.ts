@@ -557,3 +557,36 @@ export interface TdRecentEvent {
     /** 行对象，schema 由 type 对应的契约 rest §2.9.3/§2.9.4 定义 */
     data: unknown
 }
+
+// 统计计数器降级原因（契约 rest §2.9.5；与列表的库失败降级 §2.9.8 分开）
+export type TdStatsDegradedReason = 'not_ready'
+
+// 统计计数器 4 值（契约 rest §2.9.5；口径 = 当前交易日 + 全部在线账户）
+export interface TdStatsValues {
+    /** 当前交易日全部委托笔数（含撤单、废单） */
+    total_orders: number
+    /** 上述委托的 volume 之和 */
+    total_volume: number
+    /** status ∈ {Submitting, NotTraded, PartTraded} 的委托笔数 */
+    unfilled_orders: number
+    /** 上述委托的 (volume − volume_traded) 之和 */
+    unfilled_volume: number
+}
+
+// GET /api/td/stats 可用响应（契约 rest §2.9.5；不是列表，无 items/next_cursor）
+export interface TdStatsAvailable {
+    /** true = 统计计数器已就绪 */
+    available: boolean
+    /** 当前交易日 YYYYMMDD；无在线账户时 null */
+    trading_day: string | null
+    /** 在线（Ready）账户集合；顺序不承诺 */
+    online_accounts: string[]
+    stats: TdStatsValues
+}
+
+// GET /api/td/stats 降级响应（200 + available=false，契约 rest §2.9.5：计数器未就绪）
+export interface TdStatsDegraded {
+    /** false = 计数器未就绪（响应只有 available 与 reason） */
+    available: boolean
+    reason: TdStatsDegradedReason
+}

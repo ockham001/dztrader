@@ -1,15 +1,17 @@
 /**
  * @file td_data_controller_test.cpp
- * @brief `GET /api/td/orders` REST handler（契约 rest §2.9.1/§2.9.2/§2.9.8）。
+ * @brief 交易数据 REST handler（契约 rest §2.9.1/§2.9.2/§2.9.5/§2.9.8）。
  *
+ * `GET /api/td/orders`（列表直查）与 `GET /api/td/stats`（内存计数器）。
  * 真 handler 直调 + 捕获响应（与 sysmon_controller_test 同型）；库用真 schema 建库。
- * 断言 HTTP 语义：200 信封、400 bad request、降级 200 available:false。
+ * 断言 HTTP 语义：200 信封、400 bad request、降级 200 available:false / not_ready。
  */
 
 #include "td_data_controller.h"
 #include "fake_data_change_notifier.h"
 #include "td_domain_service.h"
 #include "td_orders_query.h"
+#include "td_stats_query.h"
 #include "test_temp_dir.h"
 
 #include <drogon/HttpRequest.h>
@@ -72,6 +74,41 @@ protected:
 
     void create_db() { (void)dztrader::tdstore::ensure_trade_db(db_path_); }
 
+    /// 注入统计重算查询（注入即触发一次重算，契约 rest §2.9.5「启动」）。
+    void inject_stats_query() {
+        auto stats = std::make_shared<TdStatsQuery>([this]() -> std::string { return db_path_; },
+                                                    kTdReadBusyTimeoutMs);
+        domain_->set_stats_query(std::move(stats));
+    }
+
+    /// 一条委托（真 schema；status/volume/seq 可指定）。
+    void insert_order_row(const std::string& account_id,
+                          int64_t order_id,
+                          int status,
+                          int volume,
+                          int volume_traded,
+                          uint64_t seq) {
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(db_path_.c_str(), &db));
+        sqlite3_stmt* stmt = nullptr;
+        const char* sql =
+            "INSERT INTO orders (account_id, date, order_id, strategy_id, instrument_id,"
+            " exchange_id, direction, position_effect, price_type, status, price, volume,"
+            " volume_traded, remark, time, avg_price, seq, gateway, ext)"
+            " VALUES (?, '20261009', ?, 'stg1', 'rb2601', 'SHFE', 1, 1, 0, ?, 3500.0, ?, ?,"
+            " '', 32400, 0.0, ?, 'dztd_ctp', '{}')";
+        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr));
+        sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 2, order_id);
+        sqlite3_bind_int(stmt, 3, status);
+        sqlite3_bind_int(stmt, 4, volume);
+        sqlite3_bind_int(stmt, 5, volume_traded);
+        sqlite3_bind_int64(stmt, 6, static_cast<int64_t>(seq));
+        EXPECT_EQ(SQLITE_DONE, sqlite3_step(stmt));
+        sqlite3_finalize(stmt);
+        sqlite3_close(db);
+    }
+
     void insert_order(const std::string& account_id, int64_t order_id, int32_t time_sec) {
         sqlite3* db = nullptr;
         ASSERT_EQ(SQLITE_OK, sqlite3_open(db_path_.c_str(), &db));
@@ -123,6 +160,21 @@ protected:
         drogon::HttpResponsePtr captured;
         ctrl_->get_orders(request(query),
                           [&captured](const drogon::HttpResponsePtr& resp) { captured = resp; });
+        return captured;
+    }
+
+    /// `GET /api/td/stats`：请求可带任意 query（handler 必须忽略全部参数）。
+    drogon::HttpResponsePtr invoke_stats(const std::map<std::string, std::string>& query = {}) {
+        auto req = drogon::HttpRequest::newHttpRequest();
+        req->setMethod(drogon::Get);
+        req->setPath("/api/td/stats");
+        for (const auto& [key, value] : query) {
+            req->setParameter(key, value);
+        }
+        req->getAttributes()->insert("user_id", std::string("admin"));
+        drogon::HttpResponsePtr captured;
+        ctrl_->get_stats(req,
+                         [&captured](const drogon::HttpResponsePtr& resp) { captured = resp; });
         return captured;
     }
 
@@ -218,6 +270,128 @@ TEST_F(TdDataControllerTest, DegradesInsteadOf5xxWhenNotWired) {
     ASSERT_NE(captured, nullptr);
     EXPECT_EQ(captured->getStatusCode(), drogon::k200OK);
     EXPECT_FALSE(body_of(captured).value("available", true));
+}
+
+// ===== GET /api/td/stats（契约 rest §2.9.5）=====
+
+TEST_F(TdDataControllerTest, StatsReturnsEnvelopeWithFourCounters) {
+    create_db();
+    // 三笔：未成交 5 手 / 全成 3 手 / 撤单 4 手。
+    insert_order_row("ACC1", 1, DZ_ORDER_NOT_TRADED, 5, 0, 11);
+    insert_order_row("ACC1", 2, DZ_ORDER_ALL_TRADED, 3, 3, 12);
+    insert_order_row("ACC1", 3, DZ_ORDER_CANCELLED, 4, 0, 13);
+    inject_stats_query();
+    ready("ACC1", day_epoch(2026, 10, 9));
+
+    const auto resp = invoke_stats();
+    ASSERT_NE(resp, nullptr);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    const auto body = body_of(resp);
+    EXPECT_TRUE(body["available"].get<bool>());
+    EXPECT_EQ(body["trading_day"].get<std::string>(), "20261009");
+    ASSERT_EQ(body["online_accounts"].size(), 1U);
+    EXPECT_EQ(body["online_accounts"][0].get<std::string>(), "ACC1");
+    ASSERT_TRUE(body.contains("stats"));
+    // 手算（契约 §2.9.5）：total = 3 笔 / 12 手（含撤单）；未成交 = 1 笔 / 5 手。
+    EXPECT_EQ(body["stats"]["total_orders"].get<int64_t>(), 3);
+    EXPECT_EQ(body["stats"]["total_volume"].get<int64_t>(), 12);
+    EXPECT_EQ(body["stats"]["unfilled_orders"].get<int64_t>(), 1);
+    EXPECT_EQ(body["stats"]["unfilled_volume"].get<int64_t>(), 5);
+    // stats 不是列表：无 items / next_cursor。
+    EXPECT_FALSE(body.contains("items"));
+    EXPECT_FALSE(body.contains("next_cursor"));
+    EXPECT_FALSE(body.contains("reason"));
+}
+
+TEST_F(TdDataControllerTest, StatsIgnoresAllQueryParameters) {
+    create_db();
+    insert_order_row("ACC1", 1, DZ_ORDER_NOT_TRADED, 5, 0, 11);
+    insert_order_row("ACC2", 2, DZ_ORDER_NOT_TRADED, 2, 0, 12);
+    inject_stats_query();
+    ready("ACC1", day_epoch(2026, 10, 9));
+    ready("ACC2", day_epoch(2026, 10, 9));
+
+    // 契约 rest §2.9.5：stats 不接受 accounts/limit/cursor 过滤，且不校验参数（传了也不 400）。
+    const auto plain = invoke_stats();
+    ASSERT_NE(plain, nullptr);
+    const auto filtered = invoke_stats(
+        {{"accounts", "ACC1"}, {"limit", "0"}, {"cursor", "not-a-cursor"}, {"bogus", "x"}});
+    ASSERT_NE(filtered, nullptr);
+    EXPECT_EQ(filtered->getStatusCode(), drogon::k200OK);
+    // 全局口径：带 accounts=ACC1 仍是两笔（与不带参数完全同值）。
+    EXPECT_EQ(body_of(filtered), body_of(plain));
+    EXPECT_EQ(body_of(filtered)["stats"]["total_orders"].get<int64_t>(), 2);
+    EXPECT_EQ(body_of(filtered)["stats"]["total_volume"].get<int64_t>(), 7);
+}
+
+TEST_F(TdDataControllerTest, StatsReturnsNotReadyWhenQueryNotInjected) {
+    // 未注入 TdStatsQuery：200 + 降级体（只有 available/reason），绝不 5xx。
+    const auto resp = invoke_stats();
+    ASSERT_NE(resp, nullptr);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    const auto body = body_of(resp);
+    ASSERT_EQ(body.size(), 2U);
+    EXPECT_FALSE(body["available"].get<bool>());
+    EXPECT_EQ(body["reason"].get<std::string>(), "not_ready");
+    EXPECT_FALSE(body.contains("stats"));
+    EXPECT_FALSE(body.contains("trading_day"));
+    EXPECT_FALSE(body.contains("online_accounts"));
+}
+
+TEST_F(TdDataControllerTest, StatsReturnsNotReadyWhenDomainNotWired) {
+    // 装配缺失（domain 为空）：200 降级而不是 5xx（契约 rest §2.9.8 精神）。
+    auto ctrl = std::make_shared<TdCtrl>(nullptr, nullptr, nullptr);
+    auto req = drogon::HttpRequest::newHttpRequest();
+    req->setMethod(drogon::Get);
+    req->setPath("/api/td/stats");
+    drogon::HttpResponsePtr captured;
+    ctrl->get_stats(req, [&captured](const drogon::HttpResponsePtr& resp) { captured = resp; });
+    ASSERT_NE(captured, nullptr);
+    EXPECT_EQ(captured->getStatusCode(), drogon::k200OK);
+    const auto body = body_of(captured);
+    EXPECT_FALSE(body["available"].get<bool>());
+    EXPECT_EQ(body["reason"].get<std::string>(), "not_ready");
+}
+
+TEST_F(TdDataControllerTest, StatsReflectsOfflineAndStaysReadyWithZeroCounters) {
+    create_db();
+    insert_order_row("ACC1", 1, DZ_ORDER_NOT_TRADED, 5, 0, 11);
+    inject_stats_query();
+    ready("ACC1", day_epoch(2026, 10, 9));
+    EXPECT_EQ(body_of(invoke_stats())["stats"]["total_orders"].get<int64_t>(), 1);
+
+    // 账户下线 → 在线集合变化触发重算：口径变空，但计数器仍 ready（不降级）。
+    DzAccountStatus status{};
+    dztrader::copy_string(status.account_id, "ACC1", true);
+    status.state = DZ_ACCOUNT_OFFLINE;
+    status.date = 0;
+    alignas(8) std::byte frame[sizeof(DzFrameHeader) + sizeof(DzAccountStatus)];
+    auto* header = reinterpret_cast<DzFrameHeader*>(frame);
+    header->frame_size = static_cast<uint32_t>(sizeof(frame));
+    header->frame_type = DZ_FRAME_ACCOUNT_STATUS;
+    std::memcpy(frame + sizeof(DzFrameHeader), &status, sizeof(status));
+    router_.dispatch(shm::FrameView(frame));
+
+    const auto body = body_of(invoke_stats());
+    EXPECT_TRUE(body["available"].get<bool>());
+    EXPECT_TRUE(body["trading_day"].is_null());
+    EXPECT_TRUE(body["online_accounts"].empty());
+    EXPECT_EQ(body["stats"]["total_orders"].get<int64_t>(), 0);
+    EXPECT_EQ(body["stats"]["unfilled_orders"].get<int64_t>(), 0);
+}
+
+TEST_F(TdDataControllerTest, StatsNotInjectedDoesNotAffectOrdersList) {
+    create_db();
+    insert_order("ACC1", 1, 32400);
+    ready("ACC1", day_epoch(2026, 10, 9));
+    // 未注入 TdStatsQuery：统计 not_ready，但委托列表端点完全不受影响。
+    EXPECT_EQ(body_of(invoke_stats())["reason"].get<std::string>(), "not_ready");
+    const auto resp = invoke();
+    ASSERT_NE(resp, nullptr);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    const auto body = body_of(resp);
+    EXPECT_TRUE(body["available"].get<bool>());
+    ASSERT_EQ(body["items"].size(), 1U);
 }
 
 }  // namespace

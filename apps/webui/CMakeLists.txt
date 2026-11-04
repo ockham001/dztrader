@@ -40,6 +40,9 @@ add_library(dzweb_obj OBJECT
     notify_controller.cpp
     settings_controller.cpp
     td_orders_query.cpp
+    td_read_db.cpp
+    td_stats.cpp
+    td_stats_query.cpp
     td_domain_service.cpp
     td_data_controller.cpp
     sysmon_controller.cpp

@@ -1,5 +1,7 @@
 #include "td_orders_query.h"
 
+#include "td_read_db.h"
+
 #include <dztrader/data_type.h>
 #include <spdlog/spdlog.h>
 #include <sqlite3.h>
@@ -11,7 +13,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
 #include <format>
 #include <optional>
 #include <string>
@@ -32,13 +33,6 @@ constexpr int32_t kSecondsPerDay = 86400;
 std::string time_anchor_sql() {
     return std::format("((o.time + {}) % {})", kSortAnchorOffsetSec, kSecondsPerDay);
 }
-
-/// 降级原因码（契约 rest §2.9.8）。
-constexpr const char* kReasonNotFound = "not_found";
-constexpr const char* kReasonSchemaMismatch = "schema_mismatch";
-constexpr const char* kReasonOpenFailed = "open_failed";
-constexpr const char* kReasonBusy = "busy";
-constexpr const char* kReasonQueryFailed = "query_failed";
 
 /// 委托枚举 → 契约 rest §2.9.3 的 PascalCase 字符串。
 /// 未知取值（DB 被手工改写等）不抛错，按零值语义输出并记 DEBUG（页面不能因为一行脏数据整页失败）。
@@ -293,47 +287,6 @@ std::string trim(std::string_view text) {
     return std::string(text.substr(begin, end - begin));
 }
 
-/// sqlite 错误是否属于等锁失败（契约 rest §2.9.8 的 busy）。
-bool is_busy(int code) {
-    const int primary = code > 0 ? (code & 0xFF) : code;
-    return primary == SQLITE_BUSY || primary == SQLITE_LOCKED;
-}
-
-/// 打开失败时是否属于「库损坏 / 非 SQLite」（→ open_failed 而不是 not_found）。
-bool is_corrupt(int code) {
-    const int primary = code > 0 ? (code & 0xFF) : code;
-    return primary == SQLITE_CORRUPT || primary == SQLITE_NOTADB;
-}
-
-/// 打开只读连接并设 busy_timeout。失败时把原因映射成契约 reason 码。
-struct OpenResult {
-    sqlite3* db = nullptr;
-    const char* reason = nullptr;  ///< nullptr = 成功
-};
-
-OpenResult open_readonly(const std::string& path, int busy_timeout_ms) {
-    std::error_code ec;
-    if (path.empty() || !std::filesystem::exists(path, ec) || ec) {
-        return {.db = nullptr, .reason = kReasonNotFound};
-    }
-    sqlite3* db = nullptr;
-    if (sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
-        const int code = db != nullptr ? sqlite3_extended_errcode(db) : SQLITE_CANTOPEN;
-        SPDLOG_WARN("td orders db open failed | path={} error=\"{}\"", path,
-                    db != nullptr ? sqlite3_errmsg(db) : "unknown");
-        if (db != nullptr) {
-            sqlite3_close(db);
-        }
-        return {.db = nullptr, .reason = is_busy(code) ? kReasonBusy : kReasonOpenFailed};
-    }
-    sqlite3_busy_timeout(db, busy_timeout_ms);
-    return {.db = db, .reason = nullptr};
-}
-
-nlohmann::json degraded_body(const char* reason) {
-    return {{"available", false}, {"reason", reason}};
-}
-
 std::string column_text(sqlite3_stmt* stmt, int column) {
     const auto* text = sqlite3_column_text(stmt, column);
     return text != nullptr ? std::string(reinterpret_cast<const char*>(text)) : std::string{};
@@ -345,30 +298,8 @@ std::string column_text(sqlite3_stmt* stmt, int column) {
 nlohmann::json with_availability(nlohmann::json body,
                                  const std::string& path,
                                  int busy_timeout_ms) {
-    const OpenResult opened = open_readonly(path, busy_timeout_ms);
-    if (opened.db == nullptr) {
-        return degraded_body(opened.reason);
-    }
-    sqlite3_stmt* stmt = nullptr;
-    int version = -1;
-    int step = SQLITE_MISUSE;
-    if (sqlite3_prepare_v2(opened.db, "PRAGMA user_version", -1, &stmt, nullptr) == SQLITE_OK) {
-        step = sqlite3_step(stmt);
-        if (step == SQLITE_ROW) {
-            version = sqlite3_column_int(stmt, 0);
-        }
-    }
-    const char* reason = nullptr;
-    if (step != SQLITE_ROW) {
-        const int code = sqlite3_extended_errcode(opened.db);
-        reason = is_corrupt(code) ? kReasonOpenFailed
-                                  : (is_busy(code) ? kReasonBusy : kReasonQueryFailed);
-    } else if (version != kTdOrdersReadSchemaVersion) {
-        reason = kReasonSchemaMismatch;
-    }
-    sqlite3_finalize(stmt);
-    sqlite3_close(opened.db);
-    return reason == nullptr ? body : degraded_body(reason);
+    const TdReadConnection conn = TdReadConnection::open(path, busy_timeout_ms);
+    return conn.connected() ? body : td_degraded_body(conn.reason());
 }
 
 }  // namespace
@@ -418,14 +349,15 @@ std::string td_order_sort_key(int32_t time, int64_t order_id) {
 std::optional<double> td_query_price_tick(const std::string& trade_db_path,
                                           int busy_timeout_ms,
                                           const std::string& instrument_id) {
-    const OpenResult opened = open_readonly(trade_db_path, busy_timeout_ms);
-    if (opened.db == nullptr) {
+    const TdReadConnection conn = TdReadConnection::open(trade_db_path, busy_timeout_ms);
+    if (!conn.connected()) {
         return std::nullopt;
     }
     sqlite3_stmt* stmt = nullptr;
     std::optional<double> tick;
-    if (sqlite3_prepare_v2(opened.db, "SELECT price_tick FROM instruments WHERE instrument_id = ?",
-                           -1, &stmt, nullptr) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(conn.handle(),
+                           "SELECT price_tick FROM instruments WHERE instrument_id = ?", -1, &stmt,
+                           nullptr) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, instrument_id.c_str(), -1, SQLITE_TRANSIENT);
         if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
             tick = sqlite3_column_double(stmt, 0);
@@ -434,7 +366,6 @@ std::optional<double> td_query_price_tick(const std::string& trade_db_path,
         SPDLOG_DEBUG("td instrument tick query failed | instrument={}", instrument_id);
     }
     sqlite3_finalize(stmt);
-    sqlite3_close(opened.db);
     return tick;
 }
 
@@ -533,49 +464,13 @@ std::optional<nlohmann::json> TdOrdersQuery::execute(
         return with_availability(std::move(body), trade_db_path_(), busy_timeout_ms_);
     }
 
-    const OpenResult opened = open_readonly(trade_db_path_(), busy_timeout_ms_);
-    if (opened.db == nullptr) {
-        return degraded_body(opened.reason);
+    // 只读连接 + schema 版本校验（契约 rest §2.9.8）：抽取在 td_read_db，
+    // 与统计重算共用同一份实现（reason 码是对外协议，禁止两份）。
+    TdReadConnection conn = TdReadConnection::open(trade_db_path_(), busy_timeout_ms_);
+    if (!conn.connected()) {
+        return td_degraded_body(conn.reason());
     }
-    sqlite3* db = opened.db;
-    const auto close_and = [db](const nlohmann::json& result) {
-        sqlite3_close(db);
-        return result;
-    };
-
-    // schema 版本校验（契约 rest §2.9.8：schema_mismatch）。
-    {
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &stmt, nullptr) != SQLITE_OK) {
-            const int code = sqlite3_extended_errcode(db);
-            SPDLOG_WARN("td orders schema probe failed | error=\"{}\"", sqlite3_errmsg(db));
-            sqlite3_finalize(stmt);
-            return close_and(degraded_body(
-                is_corrupt(code) ? kReasonOpenFailed
-                                 : (is_busy(code) ? kReasonBusy : kReasonQueryFailed)));
-        }
-        int version = -1;
-        const int step = sqlite3_step(stmt);
-        if (step == SQLITE_ROW) {
-            version = sqlite3_column_int(stmt, 0);
-        }
-        sqlite3_finalize(stmt);
-        if (step != SQLITE_ROW) {
-            const int code = sqlite3_extended_errcode(db);
-            SPDLOG_WARN("td orders schema probe step failed | error=\"{}\"", sqlite3_errmsg(db));
-            // 非 SQLite 文件 / 页损坏：`sqlite3_open` 是惰性的，失败只在首次读页暴露，
-            // 契约 rest §2.9.8 把这类归 open_failed（不是 query_failed）。
-            const char* reason = is_corrupt(code)
-                                     ? kReasonOpenFailed
-                                     : (is_busy(code) ? kReasonBusy : kReasonQueryFailed);
-            return close_and(degraded_body(reason));
-        }
-        if (version != kTdOrdersReadSchemaVersion) {
-            SPDLOG_WARN("td orders schema mismatch | found={} expected={}", version,
-                        kTdOrdersReadSchemaVersion);
-            return close_and(degraded_body(kReasonSchemaMismatch));
-        }
-    }
+    sqlite3* db = conn.handle();
 
     // 主查询：LEFT JOIN instruments 取 price_tick（查不到走价格小数位兜底）。
     std::string sql =
@@ -602,7 +497,7 @@ std::optional<nlohmann::json> TdOrdersQuery::execute(
         const int code = sqlite3_extended_errcode(db);
         SPDLOG_WARN("td orders query prepare failed | error=\"{}\"", sqlite3_errmsg(db));
         sqlite3_finalize(stmt);
-        return close_and(degraded_body(is_busy(code) ? kReasonBusy : kReasonQueryFailed));
+        return td_degraded_body(td_sqlite_error_reason(code));
     }
 
     int bind_index = 1;
@@ -659,7 +554,7 @@ std::optional<nlohmann::json> TdOrdersQuery::execute(
     if (step != SQLITE_ROW && step != SQLITE_DONE) {
         const int code = sqlite3_extended_errcode(db);
         SPDLOG_WARN("td orders query step failed | error=\"{}\"", sqlite3_errmsg(db));
-        return close_and(degraded_body(is_busy(code) ? kReasonBusy : kReasonQueryFailed));
+        return td_degraded_body(td_sqlite_error_reason(code));
     }
 
     body["items"] = std::move(items);
@@ -667,7 +562,7 @@ std::optional<nlohmann::json> TdOrdersQuery::execute(
         body["next_cursor"] = encode_cursor(
             CursorPayload{.scope = *scope, .anchor = last_anchor, .order_id = last_order_id});
     }
-    return close_and(body);
+    return body;
 }
 
 }  // namespace dztrader::webui

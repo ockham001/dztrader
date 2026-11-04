@@ -13,18 +13,22 @@
 
 namespace dztrader::webui {
 
-/// 交易数据 REST（契约 rest §2.9）：当前仅委托列表 `GET /api/td/orders`。
+/// 交易数据 REST（契约 rest §2.9）：委托列表 `GET /api/td/orders` +
+/// 统计 `GET /api/td/stats`。
 ///
-/// 口径（§2.9.1）：在线（Ready）账户 + 当前交易日，由 `TdDomainService` 解析；记录一律
-/// 只读直查交易库（ADR 0043），不读镜像、不走帧。降级（§2.9.8）由 `TdOrdersQuery` 返回
-/// 200 + `available:false`，controller 不加自己的错误码。
+/// 委托列表口径（§2.9.1）：在线（Ready）账户 + 当前交易日，由 `TdDomainService` 解析；
+/// 记录一律只读直查交易库（ADR 0043），不读镜像、不走帧。降级（§2.9.8）由 `TdOrdersQuery`
+/// 返回 200 + `available:false`，controller 不加自己的错误码。
+///
+/// 统计（§2.9.5）：读 dzweb 内存计数器（`TdDomainService::stats_body()`），不直查库、
+/// 不接受 `accounts` 过滤；未装配 / 未就绪 → 200 `{"available":false,"reason":"not_ready"}`。
 ///
 /// 线程：drogon 固定单 IO 线程且查询为同步只读 + 200ms busy_timeout（§2.9），
 /// 与 SysmonCtrl 的历史查询同型；无共享可变状态。
 class TdCtrl : public drogon::HttpController<TdCtrl, false>, public ControllerBase {
 public:
     /// @param repo 用户数据源（认证在 JWT advice 层；读端点不做角色判断）
-    /// @param domain TD 数据域服务（在线账户集合 / 当前交易日）
+    /// @param domain TD 数据域服务（在线账户集合 / 当前交易日 / 统计计数器）
     /// @param orders 委托列表只读查询
     TdCtrl(std::shared_ptr<Repository> repo,
            std::shared_ptr<TdDomainService> domain,
@@ -35,6 +39,7 @@ public:
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(TdCtrl::get_orders, "/api/td/orders", drogon::Get);
+    ADD_METHOD_TO(TdCtrl::get_stats, "/api/td/stats", drogon::Get);
     METHOD_LIST_END
 
     /// GET `/api/td/orders`：参数 `limit`（默认 200，1..1000）、`cursor`、`accounts`（逗号）。
@@ -42,6 +47,12 @@ public:
     /// 列表可用/降级 → 200（降级体 `{"available":false,"reason":<code>}`，契约 §2.9.8）。
     void get_orders(const drogon::HttpRequestPtr& req,
                     std::function<void(const drogon::HttpResponsePtr&)>&& callback);
+
+    /// GET `/api/td/stats`：**忽略全部 query 参数**（stats 不接受 accounts/limit/cursor，
+    /// 契约 §2.9.5；传了也不 400）。未装配 / 未就绪 → 200 `not_ready`，不返回 5xx
+    /// （§2.9.8 精神）。
+    void get_stats(const drogon::HttpRequestPtr& req,
+                   std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
 private:
     std::shared_ptr<TdDomainService> domain_;
