@@ -86,7 +86,7 @@ TEST_F(TradeDbStartupTest, FirstStartCreatesDbAndSeedsCounter) {
     EXPECT_GE(result.counter_after, 1);
 
     const shm::OrderIdMeta counter =
-        shm::OrderIdMeta::open_only(dztrader::CHANNEL_NAME_ORDER_ID, dztrader::paths::shm());
+        shm::OrderIdMeta::open_or_create(dztrader::CHANNEL_NAME_ORDER_ID, dztrader::paths::shm());
     EXPECT_EQ(counter.current(), result.counter_after);
 }
 

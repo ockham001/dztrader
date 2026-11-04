@@ -2,9 +2,9 @@
  * @file schema_dzdb.h
  * @brief 交易库 schema v1 的 `dzdb` 投影（**过渡层**）
  *
- * 真相源是 `schema_catalog.h`（平台自有声明）。td 写端与策略 SDK 在本波仍经
- * `dzdb` 端口读写交易库，本投影把同一份声明转成 `db::ResourceSchema`，避免第二份
- * 列清单。#245（td 写端直连 SQLiteCpp）与 #252（SDK DB 私有化）落地后删除本文件。
+ * 真相源是 `schema_catalog.h`（平台自有声明）。策略 SDK 仍经 `dzdb` 端口读写交易库，
+ * 本投影把同一份声明转成 `db::ResourceSchema`，避免第二份列清单。td 写端自 #245 起
+ * 直连 SQLiteCpp、不再依赖本投影；#252（SDK DB 私有化）落地后删除本文件。
  */
 #ifndef DZTRADER_TDSTORE_SCHEMA_DZDB_H_
 #define DZTRADER_TDSTORE_SCHEMA_DZDB_H_

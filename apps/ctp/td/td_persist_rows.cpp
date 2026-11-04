@@ -1,5 +1,6 @@
 #include "td/td_persist_rows.h"
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -7,8 +8,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <SQLiteCpp/Statement.h>
+
 #include <dztrader/data_type.h>
-#include <dztrader/tdstore/records_store.h>
+#include <dztrader/tdstore/records.h>
 
 namespace dztrader::ctp {
 
@@ -48,52 +51,113 @@ std::string build_order_ext(const OrderRecord& r) {
 
 }  // namespace
 
-dztrader::db::Row make_order_row(const OrderRecord& r, std::string_view gateway) {
-    // 列序 = tdstore::orders_schema()（schema_catalog.h）
-    std::vector<dztrader::db::Value> v;
-    v.reserve(19);
-    v.push_back(dztrader::tdstore::to_value(std::string_view(r.base.account_id)));
-    v.push_back(dztrader::tdstore::to_value(std::string_view(r.trading_day)));
-    v.push_back(dztrader::tdstore::to_value(static_cast<int64_t>(r.base.order_id)));
-    v.push_back(dztrader::tdstore::to_value(order_strategy_id(r)));
-    v.push_back(dztrader::tdstore::to_value(std::string_view(r.base.instrument_id)));
-    v.push_back(dztrader::tdstore::to_value(std::string_view(r.base.exchange_id)));
-    v.push_back(dztrader::tdstore::to_value(r.base.direction));
-    v.push_back(dztrader::tdstore::to_value(r.base.position_effect));
-    v.push_back(dztrader::tdstore::to_value(r.base.price_type));
-    v.push_back(dztrader::tdstore::to_value(r.base.status));
-    v.push_back(dztrader::tdstore::to_value(r.base.price));
-    v.push_back(dztrader::tdstore::to_value(static_cast<int64_t>(r.base.volume)));
-    v.push_back(dztrader::tdstore::to_value(static_cast<int64_t>(r.base.volume_traded)));
-    v.push_back(dztrader::tdstore::to_value(std::string_view(r.base.remark)));
-    v.push_back(dztrader::tdstore::to_value(static_cast<int64_t>(r.base.time)));
-    v.push_back(dztrader::tdstore::to_value(r.base.avg_price));
-    v.push_back(dztrader::tdstore::to_value(static_cast<int64_t>(r.base.seq)));
-    v.push_back(dztrader::tdstore::to_value(gateway));
-    v.push_back(dztrader::tdstore::to_value(build_order_ext(r)));
-    return dztrader::db::Row{std::move(v)};
+void bind_order(SQLite::Statement& stmt, const OrderRecord& r, std::string_view gateway) {
+    stmt.bind(":account_id", std::string(r.base.account_id));
+    stmt.bind(":date", std::string(r.trading_day));
+    stmt.bind(":order_id", static_cast<int64_t>(r.base.order_id));
+    stmt.bind(":strategy_id", order_strategy_id(r));
+    stmt.bind(":instrument_id", std::string(r.base.instrument_id));
+    stmt.bind(":exchange_id", std::string(r.base.exchange_id));
+    stmt.bind(":direction", static_cast<int64_t>(r.base.direction));
+    stmt.bind(":position_effect", static_cast<int64_t>(r.base.position_effect));
+    stmt.bind(":price_type", static_cast<int64_t>(r.base.price_type));
+    stmt.bind(":status", static_cast<int64_t>(r.base.status));
+    stmt.bind(":price", r.base.price);
+    stmt.bind(":volume", static_cast<int64_t>(r.base.volume));
+    stmt.bind(":volume_traded", static_cast<int64_t>(r.base.volume_traded));
+    stmt.bind(":remark", std::string(r.base.remark));
+    stmt.bind(":time", static_cast<int64_t>(r.base.time));
+    stmt.bind(":avg_price", r.base.avg_price);
+    stmt.bind(":seq", static_cast<int64_t>(r.base.seq));
+    stmt.bind(":gateway", std::string(gateway));
+    stmt.bind(":ext", build_order_ext(r));
 }
 
-dztrader::db::Row make_trade_row(const TradeRecord& r, std::string_view gateway) {
-    // 列序 = tdstore::trades_schema()（schema_catalog.h）
-    std::vector<dztrader::db::Value> v;
-    v.reserve(15);
-    v.push_back(dztrader::tdstore::to_value(std::string_view(r.base.account_id)));
-    v.push_back(dztrader::tdstore::to_value(std::string_view(r.trading_day)));
-    v.push_back(dztrader::tdstore::to_value(std::string_view(r.base.trade_id)));
-    v.push_back(dztrader::tdstore::to_value(static_cast<int64_t>(r.base.order_id)));
-    v.push_back(dztrader::tdstore::to_value(std::string_view(r.base.strategy_id)));
-    v.push_back(dztrader::tdstore::to_value(std::string_view(r.base.instrument_id)));
-    v.push_back(dztrader::tdstore::to_value(std::string_view(r.base.exchange_id)));
-    v.push_back(dztrader::tdstore::to_value(r.base.direction));
-    v.push_back(dztrader::tdstore::to_value(r.base.position_effect));
-    v.push_back(dztrader::tdstore::to_value(r.base.price));
-    v.push_back(dztrader::tdstore::to_value(static_cast<int64_t>(r.base.volume)));
-    v.push_back(dztrader::tdstore::to_value(static_cast<int64_t>(r.base.time)));
-    v.push_back(dztrader::tdstore::to_value(static_cast<int64_t>(r.base.seq)));
-    v.push_back(dztrader::tdstore::to_value(gateway));
-    v.push_back(dztrader::tdstore::to_value(std::string_view("{}")));  // ext: CTP 无逐笔扩展
-    return dztrader::db::Row{std::move(v)};
+void bind_trade(SQLite::Statement& stmt, const TradeRecord& r, std::string_view gateway) {
+    stmt.bind(":account_id", std::string(r.base.account_id));
+    stmt.bind(":date", std::string(r.trading_day));
+    stmt.bind(":trade_id", std::string(r.base.trade_id));
+    stmt.bind(":order_id", static_cast<int64_t>(r.base.order_id));
+    stmt.bind(":strategy_id", std::string(r.base.strategy_id));
+    stmt.bind(":instrument_id", std::string(r.base.instrument_id));
+    stmt.bind(":exchange_id", std::string(r.base.exchange_id));
+    stmt.bind(":direction", static_cast<int64_t>(r.base.direction));
+    stmt.bind(":position_effect", static_cast<int64_t>(r.base.position_effect));
+    stmt.bind(":price", r.base.price);
+    stmt.bind(":volume", static_cast<int64_t>(r.base.volume));
+    stmt.bind(":time", static_cast<int64_t>(r.base.time));
+    stmt.bind(":seq", static_cast<int64_t>(r.base.seq));
+    stmt.bind(":gateway", std::string(gateway));
+    stmt.bind(":ext", std::string("{}"));  // ext: CTP 无逐笔扩展
+}
+
+void bind_position(SQLite::Statement& stmt,
+                   const DzPositionInfo& r,
+                   std::string_view date,
+                   std::string_view gateway) {
+    stmt.bind(":account_id", std::string(r.account_id));
+    stmt.bind(":date", std::string(date));
+    stmt.bind(":instrument_id", std::string(r.instrument_id));
+    stmt.bind(":exchange_id", std::string(r.exchange_id));
+    stmt.bind(":direction", static_cast<int64_t>(r.direction));
+    stmt.bind(":volume", r.volume);
+    stmt.bind(":frozen_volume", r.frozen_volume);
+    stmt.bind(":today_volume", r.today_volume);
+    stmt.bind(":yd_volume", r.yd_volume);
+    stmt.bind(":price", r.price);
+    stmt.bind(":seq", static_cast<int64_t>(r.seq));
+    stmt.bind(":gateway", std::string(gateway));
+    stmt.bind(":ext", std::string("{}"));  // ext: 暂无柜台扩展字段
+}
+
+void bind_trading_account(SQLite::Statement& stmt,
+                          const DzTradingAccount& r,
+                          std::string_view date,
+                          std::string_view gateway) {
+    stmt.bind(":account_id", std::string(r.account_id));
+    stmt.bind(":date", std::string(date));
+    stmt.bind(":balance", r.balance);
+    stmt.bind(":available", r.available);
+    stmt.bind(":frozen", r.frozen);
+    stmt.bind(":commission", r.commission);
+    stmt.bind(":margin", r.margin);
+    stmt.bind(":withdraw_quota", r.withdraw_quota);
+    stmt.bind(":deposit", r.deposit);
+    stmt.bind(":withdraw", r.withdraw);
+    stmt.bind(":seq", static_cast<int64_t>(r.seq));
+    stmt.bind(":gateway", std::string(gateway));
+    stmt.bind(":ext", std::string("{}"));  // ext: 暂无柜台扩展字段
+}
+
+void bind_instrument(SQLite::Statement& stmt, const tdstore::InstrumentRecord& r) {
+    stmt.bind(":instrument_id", r.instrument_id);
+    stmt.bind(":exchange_id", r.exchange_id);
+    stmt.bind(":symbol", r.symbol);
+    stmt.bind(":name", r.name);
+    stmt.bind(":product_class", static_cast<int64_t>(r.product_class));
+    stmt.bind(":settle_cycle", static_cast<int64_t>(r.settle_cycle));
+    stmt.bind(":settlement_method", int64_t{0});  // 历史保留列默认值
+    stmt.bind(":is_inverse", static_cast<int64_t>(r.is_inverse));
+    stmt.bind(":currency", r.currency);
+    stmt.bind(":base_asset", r.base_asset);
+    stmt.bind(":min_limit_order_volume", r.min_limit_order_volume);
+    stmt.bind(":max_limit_order_volume", r.max_limit_order_volume);
+    stmt.bind(":volume_multiple", r.volume_multiple);
+    stmt.bind(":price_tick", r.price_tick);
+    stmt.bind(":volume_step", r.volume_step);
+    stmt.bind(":listed_date", static_cast<int64_t>(r.listed_date));
+    stmt.bind(":delisted_date", static_cast<int64_t>(r.delisted_date));
+    stmt.bind(":option_type", static_cast<int64_t>(r.option_type));
+    stmt.bind(":option_exercise_style", int64_t{0});  // 历史保留列默认值
+    stmt.bind(":underlying_id", r.underlying_id);
+    stmt.bind(":option_strike", r.option_strike);
+    stmt.bind(":option_series", std::string(""));  // 历史保留列默认值
+    stmt.bind(":update_day", r.update_day);
+    stmt.bind(":product_code", r.product_code);
+    stmt.bind(":min_market_order_volume", r.min_market_order_volume);
+    stmt.bind(":max_market_order_volume", r.max_market_order_volume);
+    stmt.bind(":underlying_multiple", r.underlying_multiple);
+    stmt.bind(":updated_at", r.updated_at);
 }
 
 }  // namespace dztrader::ctp

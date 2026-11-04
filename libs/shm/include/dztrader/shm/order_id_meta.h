@@ -3,8 +3,8 @@
  * @brief 跨进程共享的订单ID原子计数器
  *
  * 仿照 ChannelMeta 的 pImpl 模式。共享内存文件布局：shm_dir/<name>/order_id.dat
- * - open_or_create：creator 角色，可调用 order_id() 获取裸指针
- * - open_only：非 creator 角色，order_id() 抛异常
+ * 仅提供 creator 角色 (open_or_create)：持有进程负责创建共享对象并保证其存活；
+ * 计数器经 generate / ensure_at_least / current 访问。
  */
 #ifndef DZTRADER_SHM_ORDER_ID_META_H_
 #define DZTRADER_SHM_ORDER_ID_META_H_
@@ -27,8 +27,6 @@ class OrderIdMeta {
 public:
     [[nodiscard]] static OrderIdMeta open_or_create(const std::string& name,
                                                     const std::filesystem::path& shm_dir);
-    [[nodiscard]] static OrderIdMeta open_only(const std::string& name,
-                                               const std::filesystem::path& shm_dir);
 
     ~OrderIdMeta();
     OrderIdMeta(OrderIdMeta&&) noexcept;
@@ -57,9 +55,6 @@ public:
         }
         return prev;
     }
-
-    [[nodiscard]] ShmAtomicOrderId* order_id();
-    [[nodiscard]] const std::string& name() const noexcept;
 
 private:
     using OrderIdMetaImpl = order_id_meta_internal::OrderIdMetaImpl;

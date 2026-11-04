@@ -43,7 +43,8 @@ AccountSession::AccountSession(std::string account_id,
                                const MpmcQueuePtr& event_queue,
                                dztrader::core::TimerQueue& timer_queue,
                                std::function<void(DzAccountState)> account_state_cb,
-                               SessionBootData boot)
+                               SessionBootData boot,
+                               AccountNotifyFn notify)
     : account_id_(std::move(account_id)),
       order_id_meta_(order_id_meta),
       event_writer_(event_writer),
@@ -51,6 +52,7 @@ AccountSession::AccountSession(std::string account_id,
       event_queue_(event_queue),
       timer_queue_(timer_queue),
       account_state_cb_(std::move(account_state_cb)),
+      notify_(std::move(notify)),
       risk_gate_(false) {
     if (!event_queue_) {
         throw std::runtime_error("account session init failed | reason=event_queue_null");
@@ -1030,17 +1032,18 @@ void AccountSession::drive_finalizer() {
                 break;
             case Phase::kFlush:
                 // flush 屏障: 排空 persist 队列且末批已提交后才转 Ready (spec 屏障语义).
-                // 登录不在 30μs 热路径, 几 ms 可接受; 5s 超时兜底 (超时仍继续, 不阻塞 Ready).
-                {
-                    auto token = persist_writer_.enqueue_flush_signal();
-                    if (!persist_writer_.wait_flush(token, std::chrono::seconds(5))) {
-                        SPDLOG_WARN("td flush barrier timeout, proceed to ready | account={}",
-                                    account_id_);
-                    }
-                }
+                // 登录不在 30μs 热路径, 几 ms 可接受; 5s 超时兜底 (超时仍继续, 不阻塞
+                // Ready; ADR 0042 §5) —— 超时的 ERROR 通知由 run_flush_barrier 统一发出.
+                (void)run_flush_barrier(
+                    [this](std::chrono::milliseconds timeout) {
+                        const uint64_t token = persist_writer_.enqueue_flush_signal();
+                        return persist_writer_.wait_flush(token, timeout);
+                    },
+                    std::chrono::seconds(5), notify_, account_id_);
                 break;
             case Phase::kReady:
-                // 此刻 persist 已排空, DB 稳定. 状态机翻转 Ready (设计 §5.8);
+                // flush 屏障已放行 (成功提交或超时降级). Ready 语义 = 登录完成、可交易,
+                // 不承诺 DB 稳定 (ADR 0042 §5). 状态机翻转 Ready (设计 §5.8);
                 // handler 返回后 TdApi 检测 Ready 翻转 -> 广播 2018.
                 // 补查重入时状态已是 Ready, 跳过 (不重复翻转/广播).
                 if (state_machine_.state() == TdState::LoadingInstruments) {

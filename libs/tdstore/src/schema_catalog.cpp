@@ -1,8 +1,11 @@
 #include <dztrader/tdstore/schema_catalog.h>
 
+#include <algorithm>
 #include <array>
 #include <format>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace dztrader::tdstore {
@@ -302,6 +305,39 @@ std::string build_create_index(const TableSchema& table, const IndexSchema& inde
     return sql;
 }
 
+/// 双引号标识符：表名/列名均为声明内的简单标识符，无需转义内部引号。
+std::string quote_identifier(std::string_view identifier) {
+    std::string quoted = "\"";
+    quoted += identifier;
+    quoted += "\"";
+    return quoted;
+}
+
+/// 列级 PRIMARY KEY 的键列（列声明不保证键列连续，需物化为可 span 的列名序列）。
+/// 进程内静态缓存：每张表只物化一次、此后只读，返回的 span 在进程生命周期内有效；
+/// mutex 只保护首次插入（并发首次调用的 map 写入安全，之后无写）。
+std::span<const std::string_view> column_primary_key_columns(const TableSchema& table) {
+    using ColumnNames = std::vector<std::string_view>;
+    static std::mutex mutex;
+    static std::unordered_map<std::string_view, ColumnNames> cache;
+    const std::lock_guard<std::mutex> lock(mutex);
+    auto it = cache.find(table.name);
+    if (it == cache.end()) {
+        ColumnNames columns;
+        for (const ColumnSchema& column : table.columns) {
+            if (column.primary_key) {
+                columns.push_back(column.name);
+            }
+        }
+        it = cache.emplace(table.name, std::move(columns)).first;
+    }
+    return it->second;
+}
+
+bool is_key_column(std::span<const std::string_view> key_columns, std::string_view column) {
+    return std::find(key_columns.begin(), key_columns.end(), column) != key_columns.end();
+}
+
 }  // namespace
 
 const TableSchema& orders_schema() { return kOrders; }
@@ -331,6 +367,81 @@ std::string build_schema_ddl() {
         }
     }
     return ddl;
+}
+
+std::span<const std::string_view> business_key_columns(const TableSchema& table) {
+    // 列级 PRIMARY KEY 优先（按列声明序）：多列主键的列名不连续，走物化缓存
+    for (const ColumnSchema& column : table.columns) {
+        if (column.primary_key) {
+            return column_primary_key_columns(table);
+        }
+    }
+    // 否则取唯一索引列（按索引声明序；当前每表至多一个业务键）
+    for (const IndexSchema& index : table.indexes) {
+        if (index.unique) {
+            return index.columns;
+        }
+    }
+    return {};
+}
+
+std::string build_upsert_sql(const TableSchema& table) {
+    const std::span<const std::string_view> key_columns = business_key_columns(table);
+
+    // INSERT INTO "t" ("col", ...) VALUES (:col, ...)
+    std::string sql = "INSERT INTO ";
+    sql += quote_identifier(table.name);
+    sql += " (";
+    for (size_t i = 0; i < table.columns.size(); ++i) {
+        if (i > 0) {
+            sql += ", ";
+        }
+        sql += quote_identifier(table.columns[i].name);
+    }
+    sql += ") VALUES (";
+    for (size_t i = 0; i < table.columns.size(); ++i) {
+        if (i > 0) {
+            sql += ", ";
+        }
+        sql += ":";
+        sql += table.columns[i].name;
+    }
+    sql += ")";
+
+    // 无业务键：退化为纯 INSERT（冲突行为交给 DDL 唯一约束）
+    if (key_columns.empty()) {
+        return sql;
+    }
+
+    // ON CONFLICT ("key", ...) DO UPDATE SET "col"=excluded."col", ...
+    sql += " ON CONFLICT (";
+    for (size_t i = 0; i < key_columns.size(); ++i) {
+        if (i > 0) {
+            sql += ", ";
+        }
+        sql += quote_identifier(key_columns[i]);
+    }
+    sql += ") DO ";
+    if (key_columns.size() == table.columns.size()) {
+        // 所有列都是业务键：没有可更新的非键列（防御分支；当前 5 张表不触发）
+        sql += "NOTHING";
+        return sql;
+    }
+    sql += "UPDATE SET ";
+    bool first = true;
+    for (const ColumnSchema& column : table.columns) {
+        if (is_key_column(key_columns, column.name)) {
+            continue;
+        }
+        if (!first) {
+            sql += ", ";
+        }
+        first = false;
+        sql += quote_identifier(column.name);
+        sql += "=excluded.";
+        sql += quote_identifier(column.name);
+    }
+    return sql;
 }
 
 }  // namespace dztrader::tdstore

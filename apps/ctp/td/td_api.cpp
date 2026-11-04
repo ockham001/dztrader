@@ -62,8 +62,15 @@ TdApi::TdApi(std::string name,
     // 创建并打开 PersistWriter (SQLite 持久化, 启动时一次性 open + start_writer)
     // db 路径: $DZTRADER_HOME/db/trade.db (统一库, 所有 td 网关共写, 多账户共享;
     // master 建库/重建与 order_id 播种, td 只消费 — ADR 0041)
+    // 失败策略用生产默认值 (ADR 0042); notify 转发 notify_ui_. 所有数据成员 (含 notify_ui_)
+    // 在进入 ctor 体前已构造完成, 而 persist_writer_ 在本体内才创建/启线程, lambda 捕获 this
+    // 只在 open()/Writer 线程回调时使用 —— 安全; 析构序上 ~TdApi 先 stop writer.
     auto db_path = dztrader::paths::trade_db();
-    persist_writer_ = std::make_unique<PersistWriter>(db_path.string(), name_);
+    persist_writer_ = std::make_unique<PersistWriter>(
+        db_path.string(), name_, PersistPolicy{},
+        [this](DzNotifyLevel level, const std::string& message, bool popup) {
+            notify_ui_.notify(level, message, popup);
+        });
     persist_writer_->open();
     persist_writer_->start_writer();
 
@@ -691,7 +698,11 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
                 // 契约 account-status: 会话内直调状态机的路径 (连接超时) 经统一出口推送
                 write_account_status(account_id, state, "");
             },
-            std::move(boot));
+            std::move(boot),
+            [this](DzNotifyLevel level, std::string message, bool popup) {
+                // 持久化通知 (登录 flush 屏障超时 ERROR) 转发 UI; 主循环线程同步调用 (安全)
+                notify_ui_.notify(level, std::move(message), popup);
+            });
         session->open(session_flow_dir.string(), front_addrs, cfg->broker.broker_id,
                       cfg->broker.user_id, cfg->broker.password, cfg->auth_code, cfg->app_id);
         // Task 5 §4.3: 注入独立只读连接提供器, 供重连时增量装载基准 (断连后提交的 DB 行).

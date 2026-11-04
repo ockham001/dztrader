@@ -6,9 +6,9 @@
  * 机械生成（`build_schema_ddl()`），版本号即 SQLite `PRAGMA user_version`。
  * 无迁移链——版本不符/旧库由 master 启动时改名重建（ADR 0041）。
  *
- * 过渡期说明：td 写端与策略 SDK 仍经 `dzdb` 端口读写本 schema（`schema_dzdb.h`
- * 将其投影为 `db::ResourceSchema`）；#245（td 写端直连 SQLiteCpp）与 #252（SDK DB
- * 私有化）落地后删除该投影，本文件保持为唯一声明源。
+ * 过渡期说明：策略 SDK 仍经 `dzdb` 端口读写本 schema（`schema_dzdb.h` 将其投影为
+ * `db::ResourceSchema`）；td 写端自 #245 起直连 SQLiteCpp、不再经该投影，#252（SDK DB
+ * 私有化）落地后删除投影，本文件保持为唯一声明源。
  */
 #ifndef DZTRADER_TDSTORE_SCHEMA_CATALOG_H_
 #define DZTRADER_TDSTORE_SCHEMA_CATALOG_H_
@@ -70,6 +70,15 @@ std::span<const TableSchema> tables();
 
 /// 全部建表 + 建索引 + 表达式索引 DDL（幂等 `IF NOT EXISTS`；建库唯一入口）
 std::string build_schema_ddl();
+
+/// 表业务键列：列级 PRIMARY KEY 优先（按列声明序），否则唯一索引列（按索引声明序）；
+/// 无键返回空 span。upsert 冲突目标与业务唯一键共用同一份声明（禁止第二份列清单）。
+[[nodiscard]] std::span<const std::string_view> business_key_columns(const TableSchema& table);
+
+/// 幂等 upsert SQL（命名参数 `:<列名>`，标识符双引号）：
+/// `INSERT INTO t (cols) VALUES (:cols) ON CONFLICT (键列) DO UPDATE SET 非键列=excluded.非键列`。
+/// 无业务键时退化为纯 INSERT（当前 5 张表都有键）。
+[[nodiscard]] std::string build_upsert_sql(const TableSchema& table);
 
 }  // namespace dztrader::tdstore
 

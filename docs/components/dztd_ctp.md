@@ -70,6 +70,56 @@
 - **漂移自愈**：Ready 后每 `qry_position_interval_s`（默认 60s，可配置）重查一次（统一 TimerQueue 定时，不另起轮询线程，符合"无轮询"原则）；查询在途窗口的成交以快照覆盖为准，≤ 一个查询间隔收敛（近似语义见《帧契约：TD 数据同步》）。周期查询的失败处理与登录收尾链解耦：仅记日志/等下一轮，不推进 finalizer、不触发资金查询；登录查询失败期的补查沿用既有固定 60s 降级路径。
 - **下单**：本波不接入 OffsetConverter（SHFE 拆分/AUTO/父子单聚合回报留待专项），`DZ_POSITION_EFFECT_AUTO` 显式拒绝；风控上下文填入该合约真实多空持仓与合约 `price_tick`（现规则实际使用 `price_tick`）。
 
+## 持久化（trade.db）
+
+交易数据（委托 / 成交 / 持仓 / 资金，以及暂留的合约字典）由本进程异步写入 `$DZTRADER_HOME/db/trade.db`。**`trade.db` 不是交易真相源**（真相在柜台回报与 td 内存态）：持久化失败只降级，不阻塞交易、帧推送与 WebSocket。schema 与业务键见 [ADR 0041](../adr/0041-sqlite-only-trade-store-schema-v1.md)，失败策略见 [ADR 0042](../adr/0042-persist-failure-backpressure-and-retry.md)，账户快照生命周期见 [ADR 0045](../adr/0045-trading-account-identity-lifecycle-and-accuracy.md)。
+
+### 写入模型
+
+- **进程级单 Writer 线程**（`apps/ctp/td/td_persist_writer.{h,cpp}`）：本进程全部账户共用同一任务队列与同一 Writer 线程；主线程只做内存入队，Writer 线程独占 SQLite 连接与预编译语句并串行提交——单写者按序提交是账户级 `seq` 前缀不变量的前提（《帧契约：TD 数据同步》§2）。
+- **任务类型**：委托 / 成交 / 合约字典 / 持仓单行 upsert / 资金单行 upsert / 持仓整组重建 / flush 哨兵。行的 upsert 由 tdstore 表声明单源生成幂等 SQL（同键覆盖最新态）；`PositionRebuild` 在批内**原位**先 `DELETE` 该账户当日持仓行再写入本组，单事务原子替换（只碰当日行，历史交易日行不可变，ADR 0045）。业务侧何时产生哪种任务（持仓基准重建、日切等）见「持仓维护与偏移转换」。
+- **建连**：首次建连（`open()`）与 Writer 线程重连都经 `tdstore::ensure_trade_db` 幂等门面（建库职责归 master，td 侧兜底：缺失库补建 / 旧版本 / 坏库改名重建），随后以读写方式打开并设 `busy_timeout=10s`、WAL、`synchronous=FULL`、缓存 8MB、`temp_store=memory`；WAL 切换遇锁视为可重试的建连失败。`open()` 失败不抛异常（只记 ERROR + 通知），由 Writer 线程按退避重连（ADR 0042 决策 3）。
+- **schema v1 无迁移链**：DDL 由 tdstore 表声明单源生成，`user_version` 不符或库损坏即旧库改名保留 + 新建空库（旧 dev 库、旧 `td.db` 直接丢弃，ADR 0041 决策 5）。行内容 = 帧业务字段 + `seq` + `gateway`（写入来源 td 实例名，仅审计，不进唯一键）+ `ext`（柜台差异 JSON）；`date` 存 `YYYYMMDD`、时间为交易所真实时钟秒。
+
+### 提交、积压与重试
+
+- **单事务批提交**：Writer 线程把队列排空为一批，按任务原始序在单事务内执行；**提交成功才出队**并放行批内 flush 哨兵。失败则整批回滚、批保留在 Writer 线程，按退避序列主动重试**同一批**：1s → 2s → 5s → 10s → 30s（末值封顶），不依赖下一次业务事件触发（ADR 0042 决策 2）。
+- **队列不设上限、入队不阻塞**：调用线程只做内存入队；积压达阈值（默认 10 万条）时发一次 WARN 通知（不弹窗）+ 日志，回落到阈值一半以下后重新武装（迟滞）。这是内存兜底告警，不是对交易链路的背压（ADR 0042 决策 1）。
+- **重试期间新任务继续入队**，FIFO 不被破坏；DB 修复后自动追平。打开失败、锁等待、磁盘满等连接 / 执行错误走同一退避重试路径；`busy_timeout=10s` 吸收与并发只读连接（dzweb / SDK）的锁等待（ADR 0042 决策 3；《帧契约：TD 数据同步》§5）。
+
+### 坏库重建
+
+- 建库/写事务命中主 result code `SQLITE_CORRUPT`（11）/ `SQLITE_NOTADB`（26）（覆盖文件头非法、非 SQLite 文件）→ 关闭连接，由下一轮建连经 `ensure_trade_db` 重建：旧库（含 `-wal` / `-shm` 伴生文件）改名 `.old-<timestamp>` 保留 + 新建空库，记 ERROR 并通知；**不在同一坏文件上无限重试**（ADR 0042 决策 3）。
+- `SQLITE_BUSY` / `SQLITE_LOCKED` 属锁竞争（可重试），**不**判定为损坏库——避免并发读者持锁时把健康库改名；建库门面探测遇 busy / locked 抛可重试错误。
+- 同一批连续损坏重建设有上限（当前 3 次），达上限后只退避重试，防止坏盘无限改名（`.old-*` 副本风暴）。
+- 重建后交易路径照常可用；重建前的历史查询缺口由备份 / 归档兜底（本轮不实现）。
+
+### 通知分级
+
+只定义通知语义，不新增持久化状态字段 / 常驻横幅（ADR 0042 决策 4）：
+
+- **首次失败**：ERROR + 弹窗 1 次；
+- **持续失败**：每 5 分钟最多 1 次 WARN + 弹窗（限频）；
+- **恢复**（失败后首次提交成功）：INFO 1 次，不弹窗。
+
+日志与通知同级、不按条 / 按批刷屏（被限频的失败只留 DEBUG 轨迹）；通知回调为空时只写日志。回调可能从 Writer 线程（失败 / 恢复）或调用 `enqueue` 的线程（积压告警）触发，实现须线程安全。
+
+### 登录 flush 屏障
+
+登录收尾链 `kReplay → kFlush → kReady` 的 `kFlush` 阶段：入队 flush 哨兵，等待此前任务全部提交后才推进 Ready；等待超时 5s 兜底——超时仍照常推进 Ready 并记 ERROR + 弹窗通知（ADR 0042 决策 5）。因此 **Ready 的语义是"登录完成、可交易"，不再承诺"DB 已稳定"**；失败批的哨兵在重试期间保持 pending，持久化降级不阻塞交易、帧推送与 WS（《帧契约：TD 数据同步》§4）。
+
+### 退出与已知限制
+
+- `stop()`：通知 Writer 停止，对失败批做最后一次立即重试；成功则继续排空队列后退出；仍失败只记 ERROR 并退出——未提交的内存积压丢弃，登记为已知限制（ADR 0042 决策 6）。等待 Writer 退出设 30s 上限（大事务 fsync 兜底；超时则快速退出进程、跳过析构）；正常路径必须显式 `stop()`，析构仅作 best-effort 兜底。
+- 坏库重建后历史查询缺口由备份 / 归档兜底（本轮不实现，ADR 0042）。
+- 跨进程旧会话已入队未提交的任务可能晚于新会话的整组替换落地：当日持仓有 ≤ 一个持仓查询间隔的收敛窗，不丢行、不产生键冲突（《帧契约：TD 数据同步》§7；ADR 0045 决策 7）。
+
+### order_id 与外部标识
+
+- `order_id` 唯一来源是**共享 shm 计数器**（`CHANNEL_NAME_ORDER_ID`）：td 无私有计数器；master 启动时按库内 `MAX(order_id)`（走 `idx_orders_order_id`）播种，td 侧 `OrderIdMeta::ensure_at_least` 仅作幂等兜底（ADR 0041 决策 6）。
+- `OrderIdMeta` 只保留 `open_or_create` / `generate` / `ensure_at_least` / `current`（#245 收口；旧 `open_only` / `order_id()` / `name()` 已删除）。
+- 柜台外部标识（CTP `order_ref` / FrontID / SessionID / OrderSysID 等）只作为 `ext` 中的**引用**：用于登录重放匹配、撤单定位、排查对账；不建唯一约束、不参与 upsert 键 / 去重，任何路径不得用它反改 `order_id`（ADR 0041 决策 6 / ADR 0045）。
+
 ## 设计原则
 
 - **锁选型对齐并发模型**：单写者用轻量自旋锁（进程内跨线程互斥）；多写者用崩溃安全的进程锁（跨进程互斥）；读取端无锁。锁不跨出通道边界。

@@ -4,8 +4,10 @@
 #include <SQLiteCpp/Statement.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -114,6 +116,85 @@ std::vector<std::string> declared_columns(const TableSchema& schema) {
     }
     return columns;
 }
+
+std::vector<std::string> business_key_names(const TableSchema& table) {
+    std::vector<std::string> names;
+    for (const std::string_view column : business_key_columns(table)) {
+        names.emplace_back(column);
+    }
+    return names;
+}
+
+std::string join_columns(const std::vector<std::string>& columns) {
+    std::string joined;
+    for (const std::string& column : columns) {
+        if (!joined.empty()) {
+            joined += ", ";
+        }
+        joined += column;
+    }
+    return joined;
+}
+
+bool is_key_column(std::span<const std::string_view> key_columns, std::string_view column) {
+    return std::find(key_columns.begin(), key_columns.end(), column) != key_columns.end();
+}
+
+/// 按列类型绑定一行确定性测试值：键列取固定值（两次写入同键），非键列随 generation 变化。
+void bind_upsert_row(SQLite::Statement& stmt, const TableSchema& table, int64_t generation) {
+    const std::span<const std::string_view> key_columns = business_key_columns(table);
+    for (const ColumnSchema& column : table.columns) {
+        const std::string name = ":" + std::string(column.name);
+        const bool key = is_key_column(key_columns, column.name);
+        switch (column.type) {
+            case ColumnType::Integer:
+                stmt.bind(name, key ? static_cast<int64_t>(7) : generation);
+                break;
+            case ColumnType::Real:
+                stmt.bind(name, key ? 7.5 : static_cast<double>(generation) + 0.25);
+                break;
+            case ColumnType::Text:
+                stmt.bind(name, key ? std::string("key_") + std::string(column.name)
+                                    : std::string(column.name) + "_g" + std::to_string(generation));
+                break;
+        }
+    }
+}
+
+void execute_upsert(SQLite::Database& db, const TableSchema& table, int64_t generation) {
+    SQLite::Statement stmt(db, build_upsert_sql(table));
+    bind_upsert_row(stmt, table, generation);
+    stmt.exec();
+}
+
+const ColumnSchema* first_non_key_column(const TableSchema& table) {
+    const std::span<const std::string_view> key_columns = business_key_columns(table);
+    for (const ColumnSchema& column : table.columns) {
+        if (!is_key_column(key_columns, column.name)) {
+            return &column;
+        }
+    }
+    return nullptr;
+}
+
+// ============================================================================
+// upsert SQL 精确形状契约（列序 = schema 声明序；键列 = business_key_columns；
+// 参数 = :列名；SET 排除键列）。任何列/键/格式漂移都会让本断言失败。
+// ============================================================================
+
+constexpr std::string_view kExpectedOrdersUpsertSql =
+    R"sql(INSERT INTO "orders" ("account_id", "date", "order_id", "strategy_id", "instrument_id", "exchange_id", "direction", "position_effect", "price_type", "status", "price", "volume", "volume_traded", "remark", "time", "avg_price", "seq", "gateway", "ext") VALUES (:account_id, :date, :order_id, :strategy_id, :instrument_id, :exchange_id, :direction, :position_effect, :price_type, :status, :price, :volume, :volume_traded, :remark, :time, :avg_price, :seq, :gateway, :ext) ON CONFLICT ("account_id", "date", "order_id") DO UPDATE SET "strategy_id"=excluded."strategy_id", "instrument_id"=excluded."instrument_id", "exchange_id"=excluded."exchange_id", "direction"=excluded."direction", "position_effect"=excluded."position_effect", "price_type"=excluded."price_type", "status"=excluded."status", "price"=excluded."price", "volume"=excluded."volume", "volume_traded"=excluded."volume_traded", "remark"=excluded."remark", "time"=excluded."time", "avg_price"=excluded."avg_price", "seq"=excluded."seq", "gateway"=excluded."gateway", "ext"=excluded."ext")sql";
+
+constexpr std::string_view kExpectedTradesUpsertSql =
+    R"sql(INSERT INTO "trades" ("account_id", "date", "trade_id", "order_id", "strategy_id", "instrument_id", "exchange_id", "direction", "position_effect", "price", "volume", "time", "seq", "gateway", "ext") VALUES (:account_id, :date, :trade_id, :order_id, :strategy_id, :instrument_id, :exchange_id, :direction, :position_effect, :price, :volume, :time, :seq, :gateway, :ext) ON CONFLICT ("account_id", "date", "exchange_id", "trade_id") DO UPDATE SET "order_id"=excluded."order_id", "strategy_id"=excluded."strategy_id", "instrument_id"=excluded."instrument_id", "direction"=excluded."direction", "position_effect"=excluded."position_effect", "price"=excluded."price", "volume"=excluded."volume", "time"=excluded."time", "seq"=excluded."seq", "gateway"=excluded."gateway", "ext"=excluded."ext")sql";
+
+constexpr std::string_view kExpectedPositionsUpsertSql =
+    R"sql(INSERT INTO "positions" ("account_id", "date", "instrument_id", "exchange_id", "direction", "volume", "frozen_volume", "today_volume", "yd_volume", "price", "seq", "gateway", "ext") VALUES (:account_id, :date, :instrument_id, :exchange_id, :direction, :volume, :frozen_volume, :today_volume, :yd_volume, :price, :seq, :gateway, :ext) ON CONFLICT ("account_id", "date", "instrument_id", "direction") DO UPDATE SET "exchange_id"=excluded."exchange_id", "volume"=excluded."volume", "frozen_volume"=excluded."frozen_volume", "today_volume"=excluded."today_volume", "yd_volume"=excluded."yd_volume", "price"=excluded."price", "seq"=excluded."seq", "gateway"=excluded."gateway", "ext"=excluded."ext")sql";
+
+constexpr std::string_view kExpectedTradingAccountsUpsertSql =
+    R"sql(INSERT INTO "trading_accounts" ("account_id", "date", "balance", "available", "frozen", "commission", "margin", "withdraw_quota", "deposit", "withdraw", "seq", "gateway", "ext") VALUES (:account_id, :date, :balance, :available, :frozen, :commission, :margin, :withdraw_quota, :deposit, :withdraw, :seq, :gateway, :ext) ON CONFLICT ("account_id", "date") DO UPDATE SET "balance"=excluded."balance", "available"=excluded."available", "frozen"=excluded."frozen", "commission"=excluded."commission", "margin"=excluded."margin", "withdraw_quota"=excluded."withdraw_quota", "deposit"=excluded."deposit", "withdraw"=excluded."withdraw", "seq"=excluded."seq", "gateway"=excluded."gateway", "ext"=excluded."ext")sql";
+
+constexpr std::string_view kExpectedInstrumentsUpsertSql = R"sql(INSERT INTO "instruments" ("instrument_id", "exchange_id", "symbol", "name", "product_class", "settle_cycle", "settlement_method", "is_inverse", "currency", "base_asset", "min_limit_order_volume", "max_limit_order_volume", "volume_multiple", "price_tick", "volume_step", "listed_date", "delisted_date", "option_type", "option_exercise_style", "underlying_id", "option_strike", "option_series", "update_day", "product_code", "min_market_order_volume", "max_market_order_volume", "underlying_multiple", "updated_at") VALUES (:instrument_id, :exchange_id, :symbol, :name, :product_class, :settle_cycle, :settlement_method, :is_inverse, :currency, :base_asset, :min_limit_order_volume, :max_limit_order_volume, :volume_multiple, :price_tick, :volume_step, :listed_date, :delisted_date, :option_type, :option_exercise_style, :underlying_id, :option_strike, :option_series, :update_day, :product_code, :min_market_order_volume, :max_market_order_volume, :underlying_multiple, :updated_at) ON CONFLICT ("instrument_id") DO UPDATE SET "exchange_id"=excluded."exchange_id", "symbol"=excluded."symbol", "name"=excluded."name", "product_class"=excluded."product_class", "settle_cycle"=excluded."settle_cycle", "settlement_method"=excluded."settlement_method", "is_inverse"=excluded."is_inverse", "currency"=excluded."currency", "base_asset"=excluded."base_asset", "min_limit_order_volume"=excluded."min_limit_order_volume", "max_limit_order_volume"=excluded."max_limit_order_volume", "volume_multiple"=excluded."volume_multiple", "price_tick"=excluded."price_tick", "volume_step"=excluded."volume_step", "listed_date"=excluded."listed_date", "delisted_date"=excluded."delisted_date", "option_type"=excluded."option_type", "option_exercise_style"=excluded."option_exercise_style", "underlying_id"=excluded."underlying_id", "option_strike"=excluded."option_strike", "option_series"=excluded."option_series", "update_day"=excluded."update_day", "product_code"=excluded."product_code", "min_market_order_volume"=excluded."min_market_order_volume", "max_market_order_volume"=excluded."max_market_order_volume", "underlying_multiple"=excluded."underlying_multiple", "updated_at"=excluded."updated_at")sql";
 
 class SchemaCatalogTest : public ::testing::Test {
 protected:
@@ -257,6 +338,113 @@ TEST_F(SchemaCatalogTest, BuildSchemaDdlIsIdempotent) {
     SQLite::Database db(path_.string(), SQLite::OPEN_READWRITE);
     EXPECT_NO_THROW(db.exec(build_schema_ddl()));
     EXPECT_EQ(db.execAndGet("PRAGMA user_version").getInt(), kTdSchemaVersion);
+}
+
+TEST_F(SchemaCatalogTest, BusinessKeyColumnsMatchDeclaredKeys) {
+    EXPECT_EQ(business_key_names(orders_schema()),
+              (std::vector<std::string>{"account_id", "date", "order_id"}));
+    EXPECT_EQ(business_key_names(trades_schema()),
+              (std::vector<std::string>{"account_id", "date", "exchange_id", "trade_id"}));
+    EXPECT_EQ(business_key_names(positions_schema()),
+              (std::vector<std::string>{"account_id", "date", "instrument_id", "direction"}));
+    EXPECT_EQ(business_key_names(trading_accounts_schema()),
+              (std::vector<std::string>{"account_id", "date"}));
+    EXPECT_EQ(business_key_names(instruments_schema()),
+              (std::vector<std::string>{"instrument_id"}));
+}
+
+TEST_F(SchemaCatalogTest, BusinessKeyColumnsMatchDatabaseConstraints) {
+    // 业务键必须与真库强制的唯一键/PK 同序（生成 SQL 的冲突目标与约束是同一份声明）
+    const std::vector<std::string> orders_keys = unique_key_signatures(path_, "orders");
+    ASSERT_EQ(orders_keys.size(), 1u);
+    EXPECT_EQ(join_columns(business_key_names(orders_schema())), orders_keys[0]);
+
+    const std::vector<std::string> trades_keys = unique_key_signatures(path_, "trades");
+    ASSERT_EQ(trades_keys.size(), 1u);
+    EXPECT_EQ(join_columns(business_key_names(trades_schema())), trades_keys[0]);
+
+    const std::vector<std::string> positions_keys = unique_key_signatures(path_, "positions");
+    ASSERT_EQ(positions_keys.size(), 1u);
+    EXPECT_EQ(join_columns(business_key_names(positions_schema())), positions_keys[0]);
+
+    EXPECT_EQ(join_columns(business_key_names(trading_accounts_schema())),
+              join_columns(primary_key_columns(path_, "trading_accounts")));
+    EXPECT_EQ(join_columns(business_key_names(instruments_schema())),
+              join_columns(primary_key_columns(path_, "instruments")));
+}
+
+TEST_F(SchemaCatalogTest, BuildUpsertSqlHasExactShape) {
+    EXPECT_EQ(build_upsert_sql(orders_schema()), kExpectedOrdersUpsertSql);
+    EXPECT_EQ(build_upsert_sql(trades_schema()), kExpectedTradesUpsertSql);
+    EXPECT_EQ(build_upsert_sql(positions_schema()), kExpectedPositionsUpsertSql);
+    EXPECT_EQ(build_upsert_sql(trading_accounts_schema()), kExpectedTradingAccountsUpsertSql);
+    EXPECT_EQ(build_upsert_sql(instruments_schema()), kExpectedInstrumentsUpsertSql);
+}
+
+TEST_F(SchemaCatalogTest, UpsertOverwritesSameKeyOnRealDatabase) {
+    SQLite::Database db(path_.string(), SQLite::OPEN_READWRITE);
+    const TableSchema* cases[] = {&orders_schema(), &trades_schema(), &positions_schema(),
+                                  &trading_accounts_schema(), &instruments_schema()};
+    for (const TableSchema* table : cases) {
+        // 同键写两次（非键列值不同）：第二次必须覆盖而非新增
+        execute_upsert(db, *table, 1);
+        execute_upsert(db, *table, 2);
+
+        SQLite::Statement count(db, "SELECT COUNT(*) FROM \"" + std::string(table->name) + "\"");
+        ASSERT_TRUE(count.executeStep()) << "table=" << table->name;
+        EXPECT_EQ(count.getColumn(0).getInt(), 1)
+            << "upsert created a duplicate row: table=" << table->name;
+
+        const ColumnSchema* updated = first_non_key_column(*table);
+        ASSERT_NE(updated, nullptr) << "table=" << table->name;
+        SQLite::Statement select(db, "SELECT \"" + std::string(updated->name) + "\" FROM \"" +
+                                         std::string(table->name) + "\"");
+        ASSERT_TRUE(select.executeStep()) << "table=" << table->name;
+        switch (updated->type) {
+            case ColumnType::Integer:
+                EXPECT_EQ(select.getColumn(0).getInt64(), 2) << "table=" << table->name;
+                break;
+            case ColumnType::Real:
+                EXPECT_DOUBLE_EQ(select.getColumn(0).getDouble(), 2.25) << "table=" << table->name;
+                break;
+            case ColumnType::Text:
+                EXPECT_EQ(select.getColumn(0).getString(), std::string(updated->name) + "_g2")
+                    << "table=" << table->name;
+                break;
+        }
+    }
+}
+
+TEST(SchemaCatalogStandaloneTest, BuildUpsertSqlWithoutBusinessKeyIsPlainInsert) {
+    constexpr ColumnSchema kColumns[] = {
+        {"a", ColumnType::Text, false, false, ""},
+        {"b", ColumnType::Integer, false, false, ""},
+    };
+    const TableSchema no_key_table = {
+        .name = "plain_insert",
+        .columns = std::span<const ColumnSchema>(kColumns),
+        .indexes = {},
+        .expression_indexes = {},
+    };
+    EXPECT_TRUE(business_key_columns(no_key_table).empty());
+    EXPECT_EQ(build_upsert_sql(no_key_table),
+              "INSERT INTO \"plain_insert\" (\"a\", \"b\") VALUES (:a, :b)");
+}
+
+TEST(SchemaCatalogStandaloneTest, BuildUpsertSqlWithAllColumnsAsKeyUsesDoNothing) {
+    constexpr ColumnSchema kColumns[] = {
+        {"k1", ColumnType::Text, false, true, ""},
+        {"k2", ColumnType::Integer, false, true, ""},
+    };
+    const TableSchema all_key_table = {
+        .name = "all_key",
+        .columns = std::span<const ColumnSchema>(kColumns),
+        .indexes = {},
+        .expression_indexes = {},
+    };
+    EXPECT_EQ(build_upsert_sql(all_key_table),
+              "INSERT INTO \"all_key\" (\"k1\", \"k2\") VALUES (:k1, :k2) "
+              "ON CONFLICT (\"k1\", \"k2\") DO NOTHING");
 }
 
 }  // namespace
