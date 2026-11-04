@@ -172,6 +172,30 @@ check_push_scope_selftest() {
     "$ROOT/scripts/check-push-scope.sh" --selftest
 }
 
+check_ci_budget() {
+    # Windows CI 墙钟分档口径（#267）：档位边界与预算由真实 PR 数据校准，改错了会让
+    # 「CI 绿」这个信号失真（#260 的单一 ≤15min 目标就把 35min 的正常大改动判成失败）。
+    # 先跑自测（8 条档位样本 + 预算单调性 + #263 回归），再跑 unittest 套件，
+    # 最后用当前分支的真实 diff 报一次档位——只输出信息、不判定（没有实测墙钟可比）。
+    "$PYTHON" "$ROOT/scripts/ci_budget.py" --selftest || return $?
+
+    # unittest 的退出码必须显式取：写成 `cmd | tail -2` 时 `$?` 是 tail 的（兄弟检查器
+    # 都显式串联）。这里先整体捕获输出再判退出码，失败时把完整输出打到 stderr——只留
+    # `tail` 会把失败用例名丢掉，排查时等于没有信息。
+    local ut_out ut_rc
+    ut_out="$("$PYTHON" -m unittest discover -s "$ROOT/scripts/tests" 2>&1)"
+    ut_rc=$?
+    if [ "$ut_rc" -ne 0 ]; then
+        printf '%s\n' "$ut_out" >&2
+        return "$ut_rc"
+    fi
+    # 成功时只留最后一行（OK），避免刷屏；失败已在上面整段打到 stderr。
+    printf '%s\n' "$ut_out" | tail -1
+
+    # 三点（merge-base）而非两点：main 前进后两点会把无关提交算进改动规模。
+    "$PYTHON" "$ROOT/scripts/ci_budget.py" --from-git "origin/main...HEAD" 2>/dev/null || true
+}
+
 # ---- 前端 ----------------------------------------------------------------
 
 check_frontend() {
@@ -229,6 +253,7 @@ run_step "ci-log error pattern" check_ci_log_pattern
 run_step "gtest discovery timeout (#227)" check_gtest_discovery_timeout
 run_step "commit subject rules (#265)" check_commit_subject
 run_step "push-scope base resolution (#265)" check_push_scope_selftest
+run_step "Windows CI budget bands (#267)" check_ci_budget
 if [ "$C_ONLY" -eq 0 ]; then
     run_step "frontend (type-check/lint/lint:css/test/gen:types)" check_frontend
 fi
