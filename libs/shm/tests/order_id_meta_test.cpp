@@ -1,6 +1,5 @@
 #include "test_util.h"
 
-#include <dztrader/core/exception.h>
 #include <dztrader/shm/order_id_meta.h>
 #include <gtest/gtest.h>
 
@@ -44,7 +43,8 @@ TEST_F(OrderIdMetaTest, OpenExistingPreservesOrderId) {
     }
 
     {
-        auto meta = OrderIdMeta::open_only(name_, shm_dir_);
+        // 幂等重开 (find_or_construct): 不重置已有计数器
+        auto meta = OrderIdMeta::open_or_create(name_, shm_dir_);
         EXPECT_EQ(meta.current(), val);
     }
 }
@@ -57,27 +57,6 @@ TEST_F(OrderIdMetaTest, GenerateIsMonotonic) {
         EXPECT_GT(cur, prev);
         prev = cur;
     }
-}
-
-TEST_F(OrderIdMetaTest, OrderIdAccessCreatorOnly) {
-    {
-        auto meta = OrderIdMeta::open_or_create(name_, shm_dir_);
-    }
-
-    auto meta = OrderIdMeta::open_only(name_, shm_dir_);
-    EXPECT_THROW((void)meta.order_id(), dztrader::Exception);
-}
-
-TEST_F(OrderIdMetaTest, OrderIdStoreViaCreator) {
-    auto meta = OrderIdMeta::open_or_create(name_, shm_dir_);
-    EXPECT_EQ(meta.current(), 0);
-
-    auto* atomic = meta.order_id();
-    ASSERT_NE(atomic, nullptr);
-    atomic->store(1000, boost::memory_order_release);
-    EXPECT_EQ(meta.current(), 1000);
-    EXPECT_EQ(meta.generate(), 1000);
-    EXPECT_EQ(meta.current(), 1001);
 }
 
 TEST_F(OrderIdMetaTest, EnsureAtLeastBumpsCounter) {

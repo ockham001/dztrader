@@ -1,5 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <string>
+#include <vector>
+
 #include "td/td_login_finalize.h"
 
 using namespace dztrader::ctp;
@@ -9,9 +13,10 @@ using namespace dztrader::ctp;
 // 两查询 (持仓/资金) 完成 (含失败降级) 才可进入收尾序列; 查询失败不阻塞 Ready;
 // 收尾序列线性推进 kQueryPosition -> kQueryAccount -> kReplay -> kFlush
 // -> kReady -> kDone (kReady 前必须经过 kFlush, 保证 flush 屏障先于 Ready).
-// 覆盖边界: 本文件只测状态机相位; kFlush 的真实屏障行为 (drive_finalizer 实际
-// enqueue_flush_signal/wait_flush 后才转 Ready, 超时仍继续) 属 AccountSession 级 —
-// 该层无测试基建 (需 CTP/SHM 全套), 不在本文件覆盖范围.
+// 覆盖边界: 本文件测状态机相位 + run_flush_barrier 纯逻辑 (ADR 0042 §5: 超时发
+// ERROR popup 一次后仍返回, 成功不通知); AccountSession 级接线 (实际
+// enqueue_flush_signal/wait_flush) 属会话层 — 该层无测试基建 (需 CTP/SHM 全套),
+// 不在本文件覆盖范围.
 // ============================================================================
 
 TEST(LoginFinalizer, TwoQueriesCompleteBeforeReplay) {
@@ -91,4 +96,72 @@ TEST(LoginFinalizer, ReassignmentAfterDoneRestartsQueryPhase) {
     fin.on_account_done();
     EXPECT_TRUE(fin.can_reach_ready());
     EXPECT_EQ(Phase::kReplay, fin.phase());
+}
+
+// ============================================================================
+// run_flush_barrier: 登录 flush 屏障纯逻辑 (ADR 0042 §5 / 契约 td-data-sync §4)
+// ============================================================================
+
+namespace {
+
+/// 通知记录器: 断言级别/文本/popup 次数.
+struct NotifyRecord {
+    DzNotifyLevel level = 0;
+    std::string message;
+    bool popup = false;
+};
+
+class NotifyRecorder {
+public:
+    FlushNotifyFn callback() {
+        return [this](DzNotifyLevel level, const std::string& message, bool popup) {
+            records_.push_back(NotifyRecord{level, message, popup});
+        };
+    }
+
+    const std::vector<NotifyRecord>& records() const { return records_; }
+
+private:
+    std::vector<NotifyRecord> records_;
+};
+
+}  // namespace
+
+TEST(LoginFlushBarrier, TimeoutReturnsTimedOutAndEmitsErrorOnce) {
+    NotifyRecorder recorder;
+    const auto result = run_flush_barrier([](std::chrono::milliseconds) { return false; },
+                                          std::chrono::seconds(5), recorder.callback(), "acc1");
+
+    EXPECT_EQ(result, FlushBarrierResult::TimedOut);
+    ASSERT_EQ(recorder.records().size(), 1u);
+    const auto& rec = recorder.records().front();
+    EXPECT_EQ(rec.level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(rec.popup);
+    EXPECT_EQ(rec.message,
+              "persist flush timeout during login, proceeding to ready | account=acc1");
+}
+
+TEST(LoginFlushBarrier, CommittedReturnsCommittedWithoutNotification) {
+    NotifyRecorder recorder;
+    int wait_calls = 0;
+    std::chrono::milliseconds observed_timeout{0};
+    const auto result = run_flush_barrier(
+        [&wait_calls, &observed_timeout](std::chrono::milliseconds timeout) {
+            ++wait_calls;
+            observed_timeout = timeout;
+            return true;
+        },
+        std::chrono::milliseconds(500), recorder.callback(), "acc2");
+
+    EXPECT_EQ(result, FlushBarrierResult::Committed);
+    EXPECT_EQ(wait_calls, 1);
+    EXPECT_EQ(observed_timeout, std::chrono::milliseconds(500));
+    EXPECT_TRUE(recorder.records().empty());
+}
+
+TEST(LoginFlushBarrier, TimeoutWithEmptyNotifyStillTimesOut) {
+    // notify 为空仅日志 (ADR 0042 §5): 不通知 UI, 但结果语义不变.
+    const auto result = run_flush_barrier([](std::chrono::milliseconds) { return false; },
+                                          std::chrono::seconds(5), {}, "acc3");
+    EXPECT_EQ(result, FlushBarrierResult::TimedOut);
 }

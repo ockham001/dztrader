@@ -38,7 +38,7 @@ protected:
         }
     }
 
-    /// 只读连接 (与生产 td_persist_writer.cpp:125 一致设置 busy_timeout,
+    /// 只读连接 (与生产 PersistWriter 的连接级 PRAGMA 同理设置 busy_timeout,
     /// 防写入提交期间同进程另一连接报 database is locked).
     static SQLite::Database open_readonly(const std::string& db_path) {
         SQLite::Database db(db_path, SQLite::OPEN_READONLY);

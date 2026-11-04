@@ -55,6 +55,10 @@
 
 namespace dztrader::ctp {
 
+/// 账户会话 UI 通知回调 (登录 flush 屏障超时等; 在 TdApi 主循环线程同步调用).
+/// 与 PersistNotifyFn 同签名族, 空 = 仅日志 (不通知 UI).
+using AccountNotifyFn = std::function<void(DzNotifyLevel level, std::string message, bool popup)>;
+
 class AccountSession {
 public:
     /// 构造 (不连接 CTP).
@@ -68,6 +72,7 @@ public:
     ///   当前仅连接超时; 在 TdApi 主循环线程同步调用)
     /// @param boot 账户启动装载数据 (Task 5 §4.3): start_seq/orders/trades,
     ///   ctor 内初始化 seq 计数器与重放过滤器基准
+    /// @param notify 可选持久化通知回调 (登录 flush 屏障超时 ERROR 经它转 UI; 主循环线程调用)
     AccountSession(std::string account_id,
                    shm::OrderIdMeta& order_id_meta,
                    shm::MultiWriter& event_writer,
@@ -75,7 +80,8 @@ public:
                    const MpmcQueuePtr& event_queue,
                    dztrader::core::TimerQueue& timer_queue,
                    std::function<void(DzAccountState)> account_state_cb = nullptr,
-                   SessionBootData boot = {});
+                   SessionBootData boot = {},
+                   AccountNotifyFn notify = nullptr);
     ~AccountSession();
 
     AccountSession(const AccountSession&) = delete;
@@ -271,6 +277,8 @@ private:
     dztrader::core::TimerQueue& timer_queue_;
     /// 账户状态通知回调 (可空; 会话内直调状态机的路径经它推送 2018, 契约 account-status)
     std::function<void(DzAccountState)> account_state_cb_;
+    /// 持久化通知回调 (可空; 登录 flush 屏障超时 ERROR 经它转 UI, 空则仅日志)
+    AccountNotifyFn notify_;
 
     CThostFtdcTraderApi* api_ = nullptr;
     std::unique_ptr<TdSpi> spi_;

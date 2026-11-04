@@ -1,9 +1,7 @@
 #include <gtest/gtest.h>
 
-#include <cstdio>
 #include <dztrader/core/exception.h>
 #include <dztrader/db/database.h>
-#include <dztrader/struct.h>
 #include <dztrader/tdstore/records.h>
 #include <dztrader/tdstore/records_store.h>
 #include <dztrader/tdstore/schema_dzdb.h>
@@ -183,64 +181,6 @@ TEST_F(RecordsStoreTest, MakeInstrumentRowMatchesSchemaOrder) {
     EXPECT_EQ(row.get<int64_t>(25), 500);
     EXPECT_DOUBLE_EQ(row.get<double>(26), 0.0);
     EXPECT_EQ(row.get<int64_t>(27), 111);
-}
-
-TEST_F(RecordsStoreTest, MakePositionRowMatchesSchemaOrder) {
-    DzPositionInfo p{};
-    std::snprintf(p.account_id, sizeof(p.account_id), "%s", "ctp_001");
-    std::snprintf(p.instrument_id, sizeof(p.instrument_id), "%s", "cu2601");
-    std::snprintf(p.exchange_id, sizeof(p.exchange_id), "%s", "SHFE");
-    p.direction = '0';
-    p.volume = 3;
-    p.frozen_volume = 4;
-    p.today_volume = 1;
-    p.yd_volume = 2;
-    p.price = 70000.0;
-    p.seq = 42;
-    const auto row = tdstore::make_position_row(p, "20260917", "dztd_ctp");
-    ASSERT_EQ(row.size(), 13u);
-    EXPECT_EQ(row.get<std::string>(0), "ctp_001");
-    EXPECT_EQ(row.get<std::string>(1), "20260917");
-    EXPECT_EQ(row.get<std::string>(2), "cu2601");
-    EXPECT_EQ(row.get<std::string>(3), "SHFE");
-    EXPECT_EQ(row.get<int64_t>(4), static_cast<int64_t>('0'));
-    EXPECT_EQ(row.get<int64_t>(5), 3);
-    EXPECT_EQ(row.get<int64_t>(6), 4);
-    EXPECT_EQ(row.get<int64_t>(7), 1);
-    EXPECT_EQ(row.get<int64_t>(8), 2);
-    EXPECT_DOUBLE_EQ(row.get<double>(9), 70000.0);
-    EXPECT_EQ(row.get<int64_t>(10), 42);
-    EXPECT_EQ(row.get<std::string>(11), "dztd_ctp");
-    EXPECT_EQ(row.get<std::string>(12), "{}");
-}
-
-TEST_F(RecordsStoreTest, MakeTradingAccountRowMatchesSchemaOrder) {
-    DzTradingAccount a{};
-    std::snprintf(a.account_id, sizeof(a.account_id), "%s", "ctp_001");
-    a.balance = 100000.0;
-    a.available = 90000.0;
-    a.frozen = 1000.0;
-    a.commission = 10.0;
-    a.margin = 9000.0;
-    a.withdraw_quota = 80000.0;
-    a.deposit = 5000.0;
-    a.withdraw = 100.0;
-    a.seq = 7;
-    const auto row = tdstore::make_trading_account_row(a, "20260917", "dztd_ctp");
-    ASSERT_EQ(row.size(), 13u);
-    EXPECT_EQ(row.get<std::string>(0), "ctp_001");
-    EXPECT_EQ(row.get<std::string>(1), "20260917");
-    EXPECT_DOUBLE_EQ(row.get<double>(2), 100000.0);
-    EXPECT_DOUBLE_EQ(row.get<double>(3), 90000.0);
-    EXPECT_DOUBLE_EQ(row.get<double>(4), 1000.0);
-    EXPECT_DOUBLE_EQ(row.get<double>(5), 10.0);
-    EXPECT_DOUBLE_EQ(row.get<double>(6), 9000.0);
-    EXPECT_DOUBLE_EQ(row.get<double>(7), 80000.0);
-    EXPECT_DOUBLE_EQ(row.get<double>(8), 5000.0);
-    EXPECT_DOUBLE_EQ(row.get<double>(9), 100.0);
-    EXPECT_EQ(row.get<int64_t>(10), 7);
-    EXPECT_EQ(row.get<std::string>(11), "dztd_ctp");
-    EXPECT_EQ(row.get<std::string>(12), "{}");
 }
 
 }  // namespace

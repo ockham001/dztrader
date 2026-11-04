@@ -1,6 +1,28 @@
 #include "td/td_login_finalize.h"
 
+#include <format>
+#include <string>
+
+#include <spdlog/spdlog.h>
+
 namespace dztrader::ctp {
+
+FlushBarrierResult run_flush_barrier(const FlushWaitFn& wait_flushed,
+                                     std::chrono::milliseconds timeout,
+                                     const FlushNotifyFn& notify,
+                                     std::string_view account_id) {
+    if (wait_flushed(timeout)) {
+        return FlushBarrierResult::Committed;
+    }
+    // 超时放行 Ready (ADR 0042 §5): 持久化降级不得阻塞交易, 只发分级 ERROR 通知.
+    const std::string message = std::format(
+        "persist flush timeout during login, proceeding to ready | account={}", account_id);
+    SPDLOG_ERROR("{}", message);
+    if (notify) {
+        notify(DZ_NOTIFY_ERROR, message, true);
+    }
+    return FlushBarrierResult::TimedOut;
+}
 
 void LoginFinalizer::on_position_done() noexcept {
     if (phase_ != Phase::kQueryPosition) {

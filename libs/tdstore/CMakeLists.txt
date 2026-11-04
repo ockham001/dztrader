@@ -2,8 +2,9 @@
 # dztdstore: 交易库 schema v1 平台自有声明 + 建库/重建门面 + 规范记录 + store facade
 # （STATIC 库；schema v1 声明与建库直连 SQLiteCpp，不经 dzdb 公共端口）
 #
-# 过渡期：td 写端与 SDK 仍经 dzdb 端口读写同一份 schema，由 schema_dzdb.h 投影，
-# 故本目标暂保留 dzdb 依赖；#245 / #252 删除投影后移除（ADR 0041 决策 5）。
+# 过渡期：策略 SDK 仍经 dzdb 端口读写同一份 schema，由 schema_dzdb.h 投影，
+# 故本目标暂保留 dzdb 依赖；td 写端自 #245 起直连 SQLiteCpp、不再依赖投影，
+# #252（SDK DB 私有化）删除投影后移除（ADR 0041 决策 5）。
 # ============================================================
 add_library(dztdstore STATIC)
 file(GLOB TDSTORE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")

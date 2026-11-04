@@ -28,15 +28,6 @@ namespace dztrader::tdstore {
 
 db::Row make_instrument_row(const InstrumentRecord& record);
 
-/// positions 表行（列序 = schema_catalog.h positions；ext 恒为 "{}"，平台内部字段暂空）
-db::Row make_position_row(const DzPositionInfo& record,
-                          std::string_view date,
-                          std::string_view gateway);
-/// trading_accounts 表行（列序 = schema_catalog.h trading_accounts）
-db::Row make_trading_account_row(const DzTradingAccount& record,
-                                 std::string_view date,
-                                 std::string_view gateway);
-
 void upsert_instruments(dztrader::db::Session& session, std::span<const InstrumentRecord> records);
 dztrader::db::ResultSet query_instruments(dztrader::db::Session& session,
                                           std::string_view instrument_id,

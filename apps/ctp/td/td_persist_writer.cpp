@@ -1,75 +1,89 @@
 #include "td/td_persist_writer.h"
 
-#include <SQLiteCpp/Exception.h>
-
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <format>
+#include <future>
 #include <stdexcept>
-#include <thread>
 #include <utility>
-#include <variant>
-#include <vector>
+
+#include <SQLiteCpp/Database.h>
+#include <SQLiteCpp/Exception.h>
+#include <SQLiteCpp/Statement.h>
+#include <SQLiteCpp/Transaction.h>
 
 #include <spdlog/spdlog.h>
 
-#include <dztrader/db/database.h>
 #include <dztrader/date_time/date_time.h>  // Date (DzDate 距纪元天数 -> YYYYMMDD)
-#include <dztrader/tdstore/records_store.h>
-#include <dztrader/tdstore/schema_dzdb.h>
+#include <dztrader/tdstore/schema_catalog.h>
+#include <dztrader/tdstore/trade_db.h>
 
 #include "td/td_persist_rows.h"
 
 namespace dztrader::ctp {
 
+namespace {
+
+constexpr int kBusyTimeoutMs = 10000;  ///< ADR 0042 §3: 写连接 busy_timeout 10s
+constexpr int kCacheSizeKb = 8000;
+/// 连续损坏重建上限：超过则只退避重试、不再改名重建（防坏盘每轮产生一个 `.old-*` 副本）
+constexpr int kMaxCorruptionRebuilds = 3;
+
+/// SQLite 主 result code（低 8 位；扩展码在 extended code 中，主码相同）。
+constexpr int kSqliteCorrupt = 11;  ///< SQLITE_CORRUPT（库文件损坏/结构非法）
+constexpr int kSqliteNotADb = 26;   ///< SQLITE_NOTADB（文件头非法，不是 SQLite 库）
+
+}  // namespace
+
 // ============================================================================
-// PersistWriter 实现
+// 构造 / 析构 / 生命周期
 // ============================================================================
 
-PersistWriter::PersistWriter(std::string db_path, std::string gateway, size_t max_queue_size)
+PersistWriter::PersistWriter(std::string db_path,
+                             std::string gateway,
+                             PersistPolicy policy,
+                             PersistNotifyFn notify)
     : db_path_(std::move(db_path)),
       gateway_(std::move(gateway)),
-      max_queue_size_(max_queue_size) {}
+      policy_(std::move(policy)),
+      notify_(std::move(notify)) {}
 
 PersistWriter::~PersistWriter() {
-    // I4: 析构仅作 best-effort 兜底 (短超时 1s + 不 quick_exit)
-    // 主流程必须显式调 stop() (30s 超时 + quick_exit 兜底)
+    // 析构仅作 best-effort 兜底 (短超时, 不 quick_exit); 主流程必须显式调 stop().
     if (explicit_stopped_) {
-        return;  // 已显式 stop, 资源已释放
+        return;
     }
-    if (writer_thread_.joinable()) {
-        SPDLOG_WARN("persist writer destroyed without explicit stop, best-effort cleanup");
+    bool started = false;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        started = writer_started_;
+    }
+    if (started) {
+        SPDLOG_WARN("persist writer destroyed without explicit stop, best-effort cleanup | path={}",
+                    db_path_);
         try {
             stop_best_effort();
         } catch (const std::exception& e) {
             SPDLOG_ERROR("persist writer best-effort stop failed | error=\"{}\"", e.what());
         }
+    } else {
+        close_connection();
+        explicit_stopped_ = true;
     }
 }
 
 void PersistWriter::open() {
-    if (opened_.load()) {
+    if (opened_) {
         throw std::runtime_error("persist writer already opened");
     }
-
-    SPDLOG_INFO("opening database | path={} gateway={}", db_path_, gateway_);
-
-    // 交易库 schema v1 由 master 建库/重建 (ADR 0041)；此处经 dzdb 端口打开并按声明
-    // 幂等补建缺失集合，仅作过渡期兜底（#245 td 写端直连 SQLiteCpp 后删除）。
-    dztrader::db::Config config{.backend = "sqlite",
-                                .options = {{"path", db_path_},
-                                            {"journal_mode", "wal"},
-                                            {"synchronous", "full"},
-                                            {"busy_timeout_ms", "5000"},
-                                            {"cache_size_kb", "8000"},
-                                            {"temp_store", "memory"}}};
-    database_ = dztrader::db::Database::open(config, dztrader::tdstore::schemas());
-    database_->migrate();
-    // Writer 线程独占会话 (open 后 start_writer 前主线程不得复用)
-    writer_session_ = database_->session();
-
     opened_ = true;
-    SPDLOG_INFO("database opened | path={}", db_path_);
+    if (try_open()) {
+        SPDLOG_INFO("trade db persist opened | path={}", db_path_);
+    } else {
+        // 首次建连失败不抛：Writer 线程按退避序列重连 (ADR 0042 §3).
+        note_failure(last_error_);
+    }
 }
 
 void PersistWriter::start_writer() {
@@ -78,108 +92,106 @@ void PersistWriter::start_writer() {
         SPDLOG_WARN("start_writer called twice, ignoring");
         return;
     }
-    if (!opened_.load()) {
+    if (!opened_) {
         throw std::runtime_error("must call open() before start_writer()");
     }
     running_ = true;
     writer_exited_ = false;
     writer_started_ = true;
     writer_thread_ = std::thread([this] { writer_loop(); });
-    SPDLOG_INFO("persist writer thread started");
+    SPDLOG_INFO("persist writer thread started | path={}", db_path_);
 }
 
 void PersistWriter::stop() {
     {
         std::lock_guard<std::mutex> lk(mtx_);
         if (!writer_started_) {
-            // 未启动 Writer, 直接关闭 db
+            // Writer 未启动: 直接关闭连接即可 (无队列可排空).
+            shutdown_ = true;
             explicit_stopped_ = true;
+            close_connection();
+            SPDLOG_INFO("persist writer stopped | path={}", db_path_);
             return;
         }
         running_ = false;
         shutdown_ = true;
     }
-    cv_empty_.notify_all();  // 唤醒 Writer
-    cv_full_.notify_all();   // 唤醒阻塞的 enqueue
+    cv_.notify_all();
 
-    // 等待 Writer 退出, 30s 超时
+    // 等待 Writer 退出 (30s 超时: 大事务 fsync 兜底)
     std::unique_lock<std::mutex> lk(mtx_);
     if (!cv_writer_done_.wait_for(lk, kShutdownTimeout, [this] { return writer_exited_; })) {
-        SPDLOG_ERROR("persist writer shutdown timeout, calling quick_exit | queue_size={}",
-                     queue_.size());
-        std::quick_exit(1);  // 跳过析构, OS 回收资源 (设计 §13.11)
+        SPDLOG_ERROR("persist writer shutdown timeout, calling quick_exit | path={} queued={}",
+                     db_path_, queue_.size());
+        std::quick_exit(1);  // 跳过析构, OS 回收资源 (Writer 可能仍持 sqlite 句柄)
     }
     lk.unlock();
 
     if (writer_thread_.joinable()) {
         writer_thread_.join();
     }
-
-    // 释放 Session + Database (Writer 已退出, 无竞争; Session 须先于 Database)
-    writer_session_.reset();
-    database_.reset();
-
-    {
-        std::lock_guard<std::mutex> lk2(mtx_);
-        writer_started_ = false;
-    }
-    explicit_stopped_ = true;  // I4: 标记已显式 stop, 析构 no-op
-    SPDLOG_INFO("persist writer stopped");
-}
-
-void PersistWriter::stop_best_effort() {
-    // I4: 析构兜底路径, 短超时 (1s) + 不 quick_exit
-    // 与 stop() 区别: 超时仅记 ERROR, 不调 quick_exit (避免析构栈中跳过其他析构)
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        if (!writer_started_) {
-            explicit_stopped_ = true;
-            return;
-        }
-        running_ = false;
-        shutdown_ = true;
-    }
-    cv_empty_.notify_all();
-    cv_full_.notify_all();
-
-    std::unique_lock<std::mutex> lk(mtx_);
-    constexpr auto kBestEffortTimeout = std::chrono::seconds(1);
-    if (!cv_writer_done_.wait_for(lk, kBestEffortTimeout, [this] { return writer_exited_; })) {
-        SPDLOG_ERROR("persist writer best-effort stop timeout (detached) | queue_size={}",
-                     queue_.size());
-        // 不 quick_exit: detach 线程, 让 OS 在进程退出时回收
-        // 注意: 此处 db_/stmt 不 reset (线程可能仍在用), 接受泄漏
-        if (writer_thread_.joinable()) {
-            writer_thread_.detach();
-        }
-        explicit_stopped_ = true;
-        return;
-    }
-    lk.unlock();
-
-    if (writer_thread_.joinable()) {
-        writer_thread_.join();
-    }
-
-    writer_session_.reset();
-    database_.reset();
+    close_connection();
 
     {
         std::lock_guard<std::mutex> lk2(mtx_);
         writer_started_ = false;
     }
     explicit_stopped_ = true;
-    SPDLOG_INFO("persist writer stopped (best-effort)");
+    SPDLOG_INFO("persist writer stopped | path={}", db_path_);
 }
 
-void PersistWriter::enqueue(PersistTask task) {
+void PersistWriter::stop_best_effort() {
+    // 析构兜底路径: 短超时, 超时 detach (不 quick_exit; 接受泄漏).
     {
-        std::unique_lock<std::mutex> lk(mtx_);
-        cv_full_.wait(lk, [this] { return queue_.size() < max_queue_size_ || shutdown_.load(); });
-        if (shutdown_.load()) {
-            // stop() 已调用, 丢弃 (区别于 running_=false 的未启动状态).
-            // FlushSignal 丢弃分支须立即 set_value: 丢弃 = 队列已无此前任务,
-            // wait_flush 恒返回 true (哨兵被"消费"即视为提交完成语义), 避免死 token.
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (!writer_started_) {
+            explicit_stopped_ = true;
+            close_connection();
+            return;
+        }
+        running_ = false;
+        shutdown_ = true;
+    }
+    cv_.notify_all();
+
+    std::unique_lock<std::mutex> lk(mtx_);
+    constexpr auto kBestEffortTimeout = std::chrono::seconds(1);
+    if (!cv_writer_done_.wait_for(lk, kBestEffortTimeout, [this] { return writer_exited_; })) {
+        SPDLOG_ERROR("persist writer best-effort stop timeout (detached) | path={} queued={}",
+                     db_path_, queue_.size());
+        if (writer_thread_.joinable()) {
+            writer_thread_.detach();
+        }
+        explicit_stopped_ = true;
+        return;  // 不释放 db_ (Writer 线程可能仍在用), 接受泄漏
+    }
+    lk.unlock();
+
+    if (writer_thread_.joinable()) {
+        writer_thread_.join();
+    }
+    close_connection();
+
+    {
+        std::lock_guard<std::mutex> lk2(mtx_);
+        writer_started_ = false;
+    }
+    explicit_stopped_ = true;
+    SPDLOG_INFO("persist writer stopped (best-effort) | path={}", db_path_);
+}
+
+// ============================================================================
+// 入队 (无上限、不阻塞) / flush 哨兵
+// ============================================================================
+
+void PersistWriter::enqueue(PersistTask task) {
+    bool backlog_warn = false;
+    std::size_t queued = 0;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (shutdown_) {
+            // stop() 已调用, 丢弃. FlushSignal 丢弃分支须立即 set_value: 丢弃 = 队列已无
+            // 此前任务, wait_flush 恒返回 true (哨兵被"消费"即视为提交完成语义).
             if (task.kind == PersistTask::Kind::FlushSignal) {
                 auto token = next_flush_token_++;
                 pending_flushes_[token].set_value();
@@ -187,26 +199,46 @@ void PersistWriter::enqueue(PersistTask task) {
             }
             return;
         }
-        queue_.push(std::move(task));
+        queue_.push_back(std::move(task));
+        queued = queue_.size();
+        const std::size_t size = queued;
+        if (!backlog_warned_ && policy_.backlog_warn_threshold > 0 &&
+            size >= policy_.backlog_warn_threshold) {
+            backlog_warned_ = true;
+            backlog_warn = true;
+        } else if (backlog_warned_ && policy_.backlog_warn_threshold > 0 &&
+                   size < policy_.backlog_warn_threshold / 2) {
+            backlog_warned_ = false;  // 回落后重新武装
+        }
     }
-    cv_empty_.notify_one();
+    cv_.notify_one();
+    if (backlog_warn) {
+        // 积压只告警一次/积压期 (ADR 0042 §1: 队列不设上限, 内存兜底 + 阈值告警).
+        SPDLOG_WARN("trade db persist backlog | path={} queued={} threshold={}", db_path_, queued,
+                    policy_.backlog_warn_threshold);
+        emit_notify(DZ_NOTIFY_WARN,
+                    std::format("trade db persist backlog | path={} queued>={}", db_path_,
+                                policy_.backlog_warn_threshold),
+                    false);
+    }
 }
 
 uint64_t PersistWriter::enqueue_flush_signal() {
-    std::unique_lock<std::mutex> lk(mtx_);
-    if (shutdown_.load()) {
-        // stop() 后: 丢弃路径语义, 返回一个"已消费"哨兵 token (wait_flush 恒 true).
-        auto token = next_flush_token_++;
-        pending_flushes_[token].set_value();
-        pending_flushes_.erase(token);
-        return token;
+    uint64_t token = 0;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        token = next_flush_token_++;
+        if (shutdown_) {
+            // stop() 后: 丢弃路径语义, 返回"已消费"哨兵 token (wait_flush 恒 true).
+            pending_flushes_[token].set_value();
+            pending_flushes_.erase(token);
+            return token;
+        }
+        pending_flushes_.emplace(token, std::promise<void>{});
+        queue_.push_back(PersistTask{
+            .kind = PersistTask::Kind::FlushSignal, .account_id = "", .flush_token = token});
     }
-    auto token = next_flush_token_++;
-    pending_flushes_.emplace(token, std::promise<void>{});
-    queue_.push(PersistTask{
-        .kind = PersistTask::Kind::FlushSignal, .account_id = "", .flush_token = token});
-    lk.unlock();
-    cv_empty_.notify_one();
+    cv_.notify_one();
     return token;
 }
 
@@ -216,20 +248,18 @@ bool PersistWriter::wait_flush(uint64_t token, std::chrono::milliseconds timeout
         std::lock_guard<std::mutex> lk(mtx_);
         auto it = pending_flushes_.find(token);
         if (it == pending_flushes_.end()) {
-            // 未知 token: 视为已消费 (stop 丢弃路径返回的 token 或非法值)
+            // 未知 token: 视为已消费 (提交成功已 erase / stop 丢弃路径 / 非法值).
             return true;
         }
         fut = it->second.get_future();
     }
-    // promise 在 Writer 线程 set_value / set_exception (批失败, 终检发现 F), 或
-    // stop 丢弃路径 set_value. set_exception 时 wait_for 仍返回 ready, get() 抛异常 —
-    // 捕获并返回 false (失败场景"此前任务未完成提交", 与超时同语义).
-    // 超时返回 false.
+    // promise 由 Writer 线程 set_value (提交成功) / set_exception (退出排空失败),
+    // 或 enqueue_flush_signal 的 stop 丢弃路径 set_value.
     if (fut.wait_for(timeout) != std::future_status::ready) {
         return false;
     }
     try {
-        fut.get();  // 传播批失败异常 (set_exception) — 捕获转 false, 不逃逸给调用方
+        fut.get();  // 传播 set_exception (退出排空失败) — 捕获转 false, 不逃逸给调用方
     } catch (const std::exception&) {
         return false;
     } catch (...) {
@@ -243,226 +273,429 @@ bool PersistWriter::wait_flush(uint64_t token, std::chrono::milliseconds timeout
 // ============================================================================
 
 void PersistWriter::writer_loop() {
-    SPDLOG_INFO("writer loop started");
+    SPDLOG_INFO("persist writer loop started | path={}", db_path_);
+    std::vector<PersistTask> batch;  // 失败时保留, 退避后重试同一批 (FIFO)
+    std::size_t retry_attempt = 0;
 
     while (true) {
-        PersistTask task;
-        if (!wait_and_pop(task)) {
-            break;  // running_=false 且队列空
-        }
-
-        // drain 批量: 取出当前队列全部, 减少锁竞争
-        std::vector<PersistTask> batch;
-        batch.push_back(std::move(task));
-        {
-            std::lock_guard<std::mutex> lk(mtx_);
-            while (!queue_.empty()) {
-                batch.push_back(std::move(queue_.front()));
-                queue_.pop();
-            }
-        }
-        cv_full_.notify_all();  // 队列已清空, 唤醒阻塞的 enqueue
-
-        // 单事务批量提交 (失败不退出, 丢弃本批, 记 ERROR)
-        // C7: 必须捕获所有异常 (含非 std 异常), 否则 Writer 线程退出会导致 enqueue 死锁
-        // 终检发现 F【Important】: 批失败时已入批的 flush 哨兵 token 既不 set_value
-        // 也不 erase → wait_flush 永久超时 + map 慢性泄漏 (7×24 周期重登累积)。
-        // 关键: 批执行中途抛异常时, execute_batch 在抛点之前收集的 flushed_tokens 可能
-        // 不含抛点之后/未执行的哨兵 token — 故 catch 分支以"本批全部 FlushSignal token"
-        // 为集合 (预扫描 batch), 对每个 set_exception + erase: wait_flush 捕获异常返回
-        // false, 语义正确 — 失败场景下批事务已回滚, "此前任务未完成提交"须以 false 显式表达。
-        // (注释: set_value 仅在批 commit 成功后执行, 保证 wait_flush 返回 true ⇒ 已提交。
-        //  既有 BatchFailureFinalizesFlushWaiter 测试的"超时不 set"语义升级为
-        //  "显式 set_exception" — 同一不变量: 失败必 false, 且不再泄漏/饿死等待者。)
-        std::vector<uint64_t> flushed_tokens;
-        try {
-            std::unique_ptr<dztrader::db::Transaction> transaction =
-                writer_session_->begin_transaction();
-            execute_batch(batch, flushed_tokens);
-            transaction->commit();
-            // 评审 C1: 批事务提交成功后才 set_value, 保证 "wait_flush 返回" ⇒
-            // "此前任务必已提交/fsync". 提交/批执行失败时 (走 catch) 不 set,
-            // waiter 超时获知失败, 不会在数据实际被回滚时误报成功.
-            if (!flushed_tokens.empty()) {
-                std::lock_guard<std::mutex> lk(mtx_);
-                for (uint64_t token : flushed_tokens) {
-                    auto it = pending_flushes_.find(token);
-                    if (it != pending_flushes_.end()) {
-                        it->second.set_value();
-                        pending_flushes_.erase(it);
-                    }
+        if (!connected_) {
+            if (!try_open()) {
+                note_failure(last_error_);
+                if (!wait_retry_or_stop(retry_attempt++)) {
+                    break;  // 停止请求: 无连接可排空, 退出
                 }
+                continue;
             }
-            SPDLOG_DEBUG("persist batch committed | count={}", batch.size());
-        } catch (const SQLite::Exception& e) {
-            SPDLOG_ERROR("persist batch failed, dropping | count={} error=\"{}\"", batch.size(),
-                         e.what());
-            fail_flushed_tokens(batch);
-        } catch (const std::exception& e) {
-            SPDLOG_ERROR("persist batch failed (std), dropping | count={} error=\"{}\"",
-                         batch.size(), e.what());
-            fail_flushed_tokens(batch);
-        } catch (...) {
-            // 非 std 异常 (如 SQLite C 接口错误回调 throw int) 也必须吞下,
-            // 防止 Writer 线程意外退出导致主线程 enqueue 永久阻塞 (设计 §13.11)
-            SPDLOG_ERROR("persist batch failed (unknown), dropping | count={}", batch.size());
-            fail_flushed_tokens(batch);
+            retry_attempt = 0;
+            // 恢复 INFO 留到首个批提交成功后发 (数据真正落盘), 见 note_recovered().
+        }
+
+        if (batch.empty()) {
+            if (!take_batch(batch)) {
+                break;  // 已停止且队列空
+            }
+        }
+
+        if (commit_batch(batch)) {
+            signal_flush_tokens(batch);
+            note_recovered();
+            corruption_rebuilds_ = 0;
+            retry_attempt = 0;
+            batch.clear();
+            continue;
+        }
+
+        // 批失败: 整批已回滚并保留在 batch, 通知 + 退避后重试同一批 (ADR 0042 §2).
+        note_failure(last_error_);
+        if (!wait_retry_or_stop(retry_attempt++)) {
+            // 停止请求: 对失败批做最后一次立即重试 (退出前尽力排空).
+            if (commit_batch(batch)) {
+                signal_flush_tokens(batch);
+                note_recovered();
+                corruption_rebuilds_ = 0;
+                batch.clear();
+                continue;  // 继续排空队列, 之后 take_batch 返回 false 退出
+            }
+            break;
         }
     }
+
+    // 退出: 未提交的失败批 + 队列 (含其中 FlushSignal token) 一律不落盘,
+    // 记 ERROR (ADR 0042 §6: 未提交内存积压丢弃为已知限制).
+    std::size_t queued = 0;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        queued = queue_.size();
+    }
+    if (!batch.empty() || queued > 0) {
+        SPDLOG_ERROR(
+            "persist shutdown with uncommitted tasks, dropping | path={} batch={} queued={}",
+            db_path_, batch.size(), queued);
+    }
+    fail_pending_flush_waiters();
+    close_connection();
 
     {
         std::lock_guard<std::mutex> lk(mtx_);
         writer_exited_ = true;
     }
     cv_writer_done_.notify_one();
-    SPDLOG_INFO("writer loop exited");
+    SPDLOG_INFO("persist writer loop exited | path={}", db_path_);
 }
 
-/// 批事务失败收尾: 本批全部 FlushSignal token 的 promise 必须终结 (set_exception), 否则
-/// wait_flush 永久阻塞/超时 + pending_flushes_ 条目永不回收 (终检发现 F 慢性泄漏)。
-/// set_exception 使 wait_flush 的 future 立即 ready (异常), 调用方捕获后返回 false —
-/// 失败场景"任务未完成提交"语义, 与 stop 丢弃路径的"已消费"语义区分。
-/// 注意: 批执行中途抛异常时 execute_batch 收集的 flushed_tokens 可能不含抛点之后的哨兵,
-/// 故以 batch 全量预扫描为 token 集合 (批内每个 FlushSignal 都是本批的等待者)。
-void PersistWriter::fail_flushed_tokens(const std::vector<PersistTask>& batch) {
-    std::vector<uint64_t> tokens;
-    for (const auto& task : batch) {
-        if (task.kind == PersistTask::Kind::FlushSignal) {
-            tokens.push_back(task.flush_token);
-        }
+bool PersistWriter::take_batch(std::vector<PersistTask>& batch) {
+    std::unique_lock<std::mutex> lk(mtx_);
+    cv_.wait(lk, [this] { return !queue_.empty() || !running_.load(); });
+    if (queue_.empty()) {
+        // 谓词保证此时 running_ == false (已停止且队列空).
+        return false;
     }
-    if (tokens.empty()) {
-        return;
+    while (!queue_.empty()) {
+        batch.push_back(std::move(queue_.front()));
+        queue_.pop_front();
     }
-    std::lock_guard<std::mutex> lk(mtx_);
-    for (uint64_t token : tokens) {
-        auto it = pending_flushes_.find(token);
-        if (it != pending_flushes_.end()) {
-            try {
-                it->second.set_exception(
-                    std::make_exception_ptr(std::runtime_error("persist batch commit failed")));
-            } catch (...) {
-                // 防御: promise 已 set (理论不可达, 单 Writer 线程串行)
+    return true;
+}
+
+bool PersistWriter::commit_batch(std::vector<PersistTask>& batch) {
+    if (!db_) {
+        last_error_ = "database not open";
+        return false;
+    }
+    last_error_.clear();
+    try {
+        SQLite::Transaction transaction(*db_);
+        for (auto& task : batch) {
+            switch (task.kind) {
+                case PersistTask::Kind::Order: {
+                    SQLite::Statement& stmt = statement_for(task.kind);
+                    stmt.reset();
+                    stmt.clearBindings();
+                    bind_order(stmt, std::get<OrderRecord>(task.data), gateway_);
+                    stmt.exec();
+                    break;
+                }
+                case PersistTask::Kind::Trade: {
+                    SQLite::Statement& stmt = statement_for(task.kind);
+                    stmt.reset();
+                    stmt.clearBindings();
+                    bind_trade(stmt, std::get<TradeRecord>(task.data), gateway_);
+                    stmt.exec();
+                    break;
+                }
+                case PersistTask::Kind::Instrument: {
+                    SQLite::Statement& stmt = statement_for(task.kind);
+                    stmt.reset();
+                    stmt.clearBindings();
+                    bind_instrument(stmt, std::get<tdstore::InstrumentRecord>(task.data));
+                    stmt.exec();
+                    break;
+                }
+                case PersistTask::Kind::Position: {
+                    // 单行绝对态 upsert (盘中有变化时走它). task.trading_day 是当前交易日.
+                    const auto& row = std::get<std::vector<DzPositionInfo>>(task.data).front();
+                    SQLite::Statement& stmt = statement_for(task.kind);
+                    stmt.reset();
+                    stmt.clearBindings();
+                    bind_position(stmt, row, format_date(task.trading_day), gateway_);
+                    stmt.exec();
+                    break;
+                }
+                case PersistTask::Kind::TradingAccount: {
+                    SQLite::Statement& stmt = statement_for(task.kind);
+                    stmt.reset();
+                    stmt.clearBindings();
+                    bind_trading_account(stmt, std::get<DzTradingAccount>(task.data),
+                                         format_date(task.trading_day), gateway_);
+                    stmt.exec();
+                    break;
+                }
+                case PersistTask::Kind::PositionRebuild: {
+                    // 单事务重灌 (ADR 0045): 先删该账户当日行再 upsert 本组. 按批内原始序
+                    // 原位执行 — 早于它的 Position 行被清除, 晚于它的 Position 行覆盖
+                    // rebuild 结果, 不得把所有 DELETE 提前到所有 upsert 之前.
+                    // 只删当日行: 历史交易日行不可变.
+                    const std::string day = format_date(task.trading_day);
+                    SQLite::Statement& del = position_delete_statement();
+                    del.reset();
+                    del.clearBindings();
+                    del.bind(":account_id", task.account_id);
+                    del.bind(":date", day);
+                    del.exec();
+                    SQLite::Statement& stmt = statement_for(PersistTask::Kind::Position);
+                    for (const auto& row : std::get<std::vector<DzPositionInfo>>(task.data)) {
+                        stmt.reset();
+                        stmt.clearBindings();
+                        bind_position(stmt, row, day, gateway_);
+                        stmt.exec();
+                    }
+                    break;
+                }
+                case PersistTask::Kind::FlushSignal:
+                    // FIFO 哨兵: 收集 token 由 writer_loop 在批事务 commit 成功后统一
+                    // set_value. 保证 "wait_flush 返回" ⇒ "此前任务必已提交".
+                    break;
             }
+        }
+        transaction.commit();
+        return true;
+    } catch (const SQLite::Exception& e) {
+        last_error_ = e.what();
+        const int primary_code = e.getErrorCode() & 0xFF;
+        if (is_corruption(primary_code)) {
+            handle_corruption(primary_code);
+        } else {
+            reset_statements();
+        }
+        return false;
+    } catch (const std::exception& e) {
+        last_error_ = e.what();
+        reset_statements();
+        return false;
+    } catch (...) {
+        // 非 std 异常 (如 SQLite C 接口错误回调 throw) 也必须吞下, 防止 Writer 线程
+        // 意外退出导致队列无消费者.
+        last_error_ = "unknown persist error";
+        reset_statements();
+        return false;
+    }
+}
+
+void PersistWriter::signal_flush_tokens(const std::vector<PersistTask>& batch) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    for (const auto& task : batch) {
+        if (task.kind != PersistTask::Kind::FlushSignal) {
+            continue;
+        }
+        auto it = pending_flushes_.find(task.flush_token);
+        if (it != pending_flushes_.end()) {
+            it->second.set_value();
             pending_flushes_.erase(it);
         }
     }
 }
 
-bool PersistWriter::wait_and_pop(PersistTask& out) {
+bool PersistWriter::wait_retry_or_stop(std::size_t attempt) {
+    std::chrono::milliseconds delay{30000};
+    if (!policy_.retry_delays.empty()) {
+        const std::size_t index = std::min(attempt, policy_.retry_delays.size() - 1);
+        delay = policy_.retry_delays[index];
+    }
     std::unique_lock<std::mutex> lk(mtx_);
-    cv_empty_.wait(lk, [this] { return !queue_.empty() || !running_.load(); });
-    // 仅在 队列空 且 running_=false 时退出 (drain 残留优先)
-    if (queue_.empty() && !running_.load()) {
+    cv_.wait_for(lk, delay, [this] { return !running_.load(); });
+    return running_.load();
+}
+
+void PersistWriter::fail_pending_flush_waiters() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    for (auto& [token, promise] : pending_flushes_) {
+        (void)token;
+        try {
+            promise.set_exception(std::make_exception_ptr(
+                std::runtime_error("persist writer stopped before commit")));
+        } catch (...) {
+            // 防御: promise 已 set (理论不可达, 单 Writer 线程串行)
+        }
+    }
+    pending_flushes_.clear();
+}
+
+// ============================================================================
+// 建连 / 语句缓存
+// ============================================================================
+
+bool PersistWriter::try_open() {
+    close_connection();
+    try {
+        // 建库门面 (master 负责建库, td 侧幂等兜底): 缺失库补建、旧版本/损坏库改名重建.
+        const tdstore::TradeDbInitReport report = tdstore::ensure_trade_db(db_path_);
+        if (report.status == tdstore::TradeDbInitReport::Status::Rebuilt) {
+            // ADR 0042 §3: 坏库/旧库改名保留 + 新建 + ERROR, 交易继续.
+            SPDLOG_ERROR("trade db rebuilt | path={} reason={} backup={}", db_path_,
+                         report.rebuild_reason, report.backup_path);
+            // 重建即本轮失败事件: 首次失败发 ERROR 弹窗一次, 后续失败按"持续"分级限频
+            // (同一事件不得两次 ERROR 弹窗); 首个批提交成功时 note_recovered() 发恢复 INFO.
+            if (!failing_) {
+                failing_ = true;
+                last_notify_ = std::chrono::steady_clock::now();
+                emit_notify(DZ_NOTIFY_ERROR,
+                            std::format("trade db rebuilt | path={} reason={} backup={}", db_path_,
+                                        report.rebuild_reason, report.backup_path),
+                            true);
+            }
+        }
+
+        auto db = std::make_unique<SQLite::Database>(db_path_, SQLite::OPEN_READWRITE);
+        db->exec(std::format("PRAGMA busy_timeout={}", kBusyTimeoutMs));
+        db->exec("PRAGMA synchronous=FULL");
+        db->exec(std::format("PRAGMA cache_size=-{}", kCacheSizeKb));
+        db->exec("PRAGMA temp_store=MEMORY");
+        const std::string journal_mode = db->execAndGet("PRAGMA journal_mode=WAL").getString();
+        if (journal_mode != "wal") {
+            // WAL 转换需独占锁且 busy_timeout 不生效: 视为可重试的建连失败.
+            throw std::runtime_error("trade db wal conversion failed | mode=" + journal_mode);
+        }
+        db_ = std::move(db);
+        connected_ = true;
+        SPDLOG_INFO("trade db opened | path={}", db_path_);
+        return true;
+    } catch (const std::exception& e) {
+        close_connection();
+        last_error_ = e.what();
+        SPDLOG_WARN("trade db open failed | path={} error=\"{}\"", db_path_, e.what());
+        return false;
+    } catch (...) {
+        close_connection();
+        last_error_ = "unknown open error";
+        SPDLOG_WARN("trade db open failed | path={} error=\"unknown\"", db_path_);
         return false;
     }
-    out = std::move(queue_.front());
-    queue_.pop();
-    cv_full_.notify_one();
-    return true;
 }
 
-void PersistWriter::execute_batch(std::vector<PersistTask>& batch,
-                                  std::vector<uint64_t>& flushed_tokens) {
-    // FIFO 语义 (load-bearing): 按批内原始序处理任务; 仅连续同类任务聚合为一次 upsert;
-    // PositionRebuild 在原位先 remove 再 upsert — 早于它的 Position 行被清除,
-    // 晚于它的 Position 行覆盖 rebuild 结果, 不得把所有 delete 提前到所有 upsert 之前.
-    PersistTask::Kind pending_kind = PersistTask::Kind::Order;
-    bool has_pending = false;
-    std::vector<dztrader::db::Row> pending_rows;
+void PersistWriter::close_connection() {
+    reset_statements();
+    db_.reset();
+    connected_ = false;
+}
 
-    const auto flush_pending = [&]() {
-        if (has_pending && !pending_rows.empty()) {
-            switch (pending_kind) {
-                case PersistTask::Kind::Order:
-                    writer_session_->upsert("orders", pending_rows);
-                    break;
-                case PersistTask::Kind::Trade:
-                    writer_session_->upsert("trades", pending_rows);
-                    break;
-                case PersistTask::Kind::Position:
-                    writer_session_->upsert("positions", pending_rows);
-                    break;
-                case PersistTask::Kind::TradingAccount:
-                    writer_session_->upsert("trading_accounts", pending_rows);
-                    break;
-                case PersistTask::Kind::Instrument:
-                    writer_session_->upsert("instruments", pending_rows);
-                    break;
-                default:
-                    break;
-            }
-        }
-        has_pending = false;
-        pending_rows.clear();
-    };
+void PersistWriter::reset_statements() {
+    stmt_order_.reset();
+    stmt_trade_.reset();
+    stmt_instrument_.reset();
+    stmt_position_.reset();
+    stmt_trading_account_.reset();
+    stmt_position_delete_.reset();
+}
 
-    const auto accumulate = [&](PersistTask::Kind kind, dztrader::db::Row row) {
-        if (has_pending && pending_kind != kind) {
-            flush_pending();
-        }
-        pending_kind = kind;
-        has_pending = true;
-        pending_rows.push_back(std::move(row));
-    };
-
-    for (auto& task : batch) {
-        switch (task.kind) {
-            case PersistTask::Kind::Order:
-                accumulate(task.kind, make_order_row(std::get<OrderRecord>(task.data), gateway_));
-                break;
-            case PersistTask::Kind::Trade:
-                accumulate(task.kind, make_trade_row(std::get<TradeRecord>(task.data), gateway_));
-                break;
-            case PersistTask::Kind::Instrument:
-                accumulate(task.kind, tdstore::make_instrument_row(
-                                          std::get<tdstore::InstrumentRecord>(task.data)));
-                break;
-            case PersistTask::Kind::Position: {
-                // 单行绝对态 upsert (盘中有变化时走它). task.trading_day 是当前交易日.
-                const auto& row = std::get<std::vector<DzPositionInfo>>(task.data).front();
-                accumulate(task.kind, tdstore::make_position_row(row, format_date(task.trading_day),
-                                                                 gateway_));
-                break;
-            }
-            case PersistTask::Kind::TradingAccount:
-                accumulate(task.kind, tdstore::make_trading_account_row(
-                                          std::get<DzTradingAccount>(task.data),
-                                          format_date(task.trading_day), gateway_));
-                break;
-            case PersistTask::Kind::PositionRebuild: {
-                // 单事务重灌 (spec §3.2 全量语义): 先落此前任务保持 FIFO, 再原位
-                // remove + upsert; 外层 writer_loop 事务保证外部读者只见原子切换.
-                // 删除该账户当日行 (历史交易日行不可变, ADR 0045): 查询响应不含的
-                // 合约 = 已全平/已过期, 必须移除 (否则盘中平仓的幽灵持仓永驻到次日).
-                flush_pending();
-                const std::string day = format_date(task.trading_day);
-                writer_session_->remove(
-                    "positions",
-                    dztrader::db::Filter{dztrader::db::filters::eq("account_id", task.account_id),
-                                         dztrader::db::filters::eq("date", day)});
-                std::vector<dztrader::db::Row> rows;
-                for (const auto& row : std::get<std::vector<DzPositionInfo>>(task.data)) {
-                    rows.push_back(tdstore::make_position_row(row, day, gateway_));
-                }
-                writer_session_->upsert("positions", rows);
-                break;
-            }
-            case PersistTask::Kind::FlushSignal:
-                // FIFO 哨兵: 收集 token, 由 writer_loop 在批事务 commit 成功后统一
-                // set_value. 保证 "wait_flush 返回" ⇒ "此前任务必已提交"
-                // (评审 C1: set 必须在 commit 之后, 不得在此处提前 set).
-                flushed_tokens.push_back(task.flush_token);
-                break;
-        }
+SQLite::Statement& PersistWriter::statement_for(PersistTask::Kind kind) {
+    std::unique_ptr<SQLite::Statement>* slot = nullptr;
+    std::string sql;
+    switch (kind) {
+        case PersistTask::Kind::Order:
+            slot = &stmt_order_;
+            sql = tdstore::build_upsert_sql(tdstore::orders_schema());
+            break;
+        case PersistTask::Kind::Trade:
+            slot = &stmt_trade_;
+            sql = tdstore::build_upsert_sql(tdstore::trades_schema());
+            break;
+        case PersistTask::Kind::Instrument:
+            slot = &stmt_instrument_;
+            sql = tdstore::build_upsert_sql(tdstore::instruments_schema());
+            break;
+        case PersistTask::Kind::Position:
+            slot = &stmt_position_;
+            sql = tdstore::build_upsert_sql(tdstore::positions_schema());
+            break;
+        case PersistTask::Kind::TradingAccount:
+            slot = &stmt_trading_account_;
+            sql = tdstore::build_upsert_sql(tdstore::trading_accounts_schema());
+            break;
+        case PersistTask::Kind::PositionRebuild:
+        case PersistTask::Kind::FlushSignal:
+            break;
     }
-    flush_pending();
+    if (slot == nullptr) {
+        throw std::runtime_error("persist task kind has no upsert statement");
+    }
+    if (!*slot) {
+        *slot = std::make_unique<SQLite::Statement>(*db_, sql);
+    }
+    return **slot;
 }
+
+SQLite::Statement& PersistWriter::position_delete_statement() {
+    if (!stmt_position_delete_) {
+        stmt_position_delete_ = std::make_unique<SQLite::Statement>(
+            *db_,
+            "DELETE FROM \"positions\" WHERE \"account_id\" = :account_id AND \"date\" = :date");
+    }
+    return *stmt_position_delete_;
+}
+
+void PersistWriter::handle_corruption(int primary_code) {
+    // Release 下 SPDLOG_DEBUG 被编译掉 (SPDLOG_ACTIVE_LEVEL), 显式消费入参防 unused-parameter.
+    (void)primary_code;
+    if (corruption_rebuilds_ >= kMaxCorruptionRebuilds) {
+        // 连续多轮重建仍损坏: 视为持续失败, 只退避重试 (不再改名, 防 .old-* 副本风暴).
+        SPDLOG_DEBUG(
+            "trade db corrupt, rebuild limit reached, retrying | path={} code={} rebuilds={}",
+            db_path_, primary_code, corruption_rebuilds_);
+        reset_statements();
+        return;
+    }
+    ++corruption_rebuilds_;
+    // 失败通知/日志由调用方的 note_failure() 分级发出; 此处只留诊断轨迹.
+    SPDLOG_DEBUG("trade db corrupt, will rebuild on next connect | path={} code={} rebuilds={}",
+                 db_path_, primary_code, corruption_rebuilds_);
+    // 关闭连接: 下一轮建连走 ensure_trade_db, 探测到坏文件后改名保留 + 新建 (ADR 0042 §3).
+    close_connection();
+}
+
+// ============================================================================
+// 通知分级 (ADR 0042 §4)
+// ============================================================================
+
+void PersistWriter::note_failure(const std::string& message) {
+    const auto now = std::chrono::steady_clock::now();
+    if (!failing_) {
+        failing_ = true;
+        last_notify_ = now;
+        SPDLOG_ERROR("trade db persist failed | path={} error=\"{}\"", db_path_, message);
+        emit_notify(
+            DZ_NOTIFY_ERROR,
+            std::format("trade db persist failed | path={} error=\"{}\"", db_path_, message), true);
+        return;
+    }
+    if (now - last_notify_ >= policy_.sustained_notify_interval) {
+        last_notify_ = now;
+        SPDLOG_WARN("trade db persist still failing | path={} error=\"{}\"", db_path_, message);
+        emit_notify(
+            DZ_NOTIFY_WARN,
+            std::format("trade db persist still failing | path={} error=\"{}\"", db_path_, message),
+            true);
+        return;
+    }
+    // 首次 ERROR / 每 5 分钟 WARN 之外不刷屏: 只留 DEBUG 轨迹.
+    SPDLOG_DEBUG("trade db persist still failing (throttled) | path={} error=\"{}\"", db_path_,
+                 message);
+}
+
+void PersistWriter::note_recovered() {
+    if (!failing_) {
+        return;
+    }
+    failing_ = false;
+    SPDLOG_INFO("trade db persist recovered | path={}", db_path_);
+    emit_notify(DZ_NOTIFY_INFO, std::format("trade db persist recovered | path={}", db_path_),
+                false);
+}
+
+void PersistWriter::emit_notify(DzNotifyLevel level, const std::string& message, bool popup) const {
+    if (!notify_) {
+        return;
+    }
+    try {
+        notify_(level, message, popup);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("persist notify callback failed | error=\"{}\"", e.what());
+    } catch (...) {
+        SPDLOG_ERROR("persist notify callback failed | error=\"unknown\"");
+    }
+}
+
+// ============================================================================
+// 工具
+// ============================================================================
 
 std::string PersistWriter::format_date(int64_t days) {
     // DzDate (距纪元天数) -> "YYYYMMDD" 文本 (schema v1 date 列)
     dztrader::Date d{static_cast<int32_t>(days)};
     return std::format("{:04d}{:02d}{:02d}", d.year(), d.month(), d.day());
+}
+
+bool PersistWriter::is_corruption(int sqlite_result_code) {
+    return sqlite_result_code == kSqliteCorrupt || sqlite_result_code == kSqliteNotADb;
 }
 
 }  // namespace dztrader::ctp
