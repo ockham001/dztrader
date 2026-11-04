@@ -179,9 +179,9 @@ check_ci_budget() {
     # 最后用当前分支的真实 diff 报一次档位——只输出信息、不判定（没有实测墙钟可比）。
     "$PYTHON" "$ROOT/scripts/ci_budget.py" --selftest || return $?
 
-    # unittest 的退出码必须显式取：`cmd | tail` 里 `$?` 是 tail 的（兄弟检查器同样
-    # 显式串联）。这里用 PIPESTATUS 取第一条命令的真实退出码，失败时把完整输出留在
-    # stderr——只显示 `tail -2` 会把失败的用例名丢掉，排查时等于没有信息。
+    # unittest 的退出码必须显式取：写成 `cmd | tail -2` 时 `$?` 是 tail 的（兄弟检查器
+    # 都显式串联）。这里先整体捕获输出再判退出码，失败时把完整输出打到 stderr——只留
+    # `tail` 会把失败用例名丢掉，排查时等于没有信息。
     local ut_out ut_rc
     ut_out="$("$PYTHON" -m unittest discover -s "$ROOT/scripts/tests" 2>&1)"
     ut_rc=$?
