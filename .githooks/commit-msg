@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# commit-msg — 提交标题形态校验（#265，由 setup 安装：git config core.hooksPath .githooks）。
+#
+# 为什么单独一个 hook，而不是塞进 pre-commit：
+#   git 在 **pre-commit 之后**才把待提交信息写进 COMMIT_EDITMSG（实测：pre-commit 阶段
+#   该文件不存在或仍是上一次的内容），所以 pre-commit 读不到本次要提交的标题。#265
+#   第一版就踩了这个坑——hook 读到陈旧消息、把合法的 commit 判成违规、同时放过了真正的
+#   违规标题。`commit-msg` 是 git 为此提供的钩子，第一个参数就是消息文件路径。
+#
+# 规则本体在 scripts/check_commit_subject.py（与 ci.yml / docs.yml / preflight 共用同一份，
+# 避免「同一个事实多处分叉」）。
+#
+# 逃生口：DZ_SKIP_HOOKS=1 git commit ...   （或 git commit --no-verify）
+
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$ROOT" || exit 0
+
+[ "${DZ_SKIP_HOOKS:-0}" = "1" ] && exit 0
+
+msg_file="${1:-}"
+[ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
+
+PY=""
+if command -v python3 >/dev/null 2>&1; then
+    PY=python3
+elif command -v python >/dev/null 2>&1; then
+    PY=python
+fi
+
+if [ -z "$PY" ] || [ ! -f scripts/check_commit_subject.py ]; then
+    printf 'commit-msg: warning: python or scripts/check_commit_subject.py missing; skipping\n' >&2
+    exit 0
+fi
+
+if ! "$PY" scripts/check_commit_subject.py --message-file "$msg_file"; then
+    printf 'commit-msg: blocked; fix the subject above, or bypass with: DZ_SKIP_HOOKS=1 git commit ...\n' >&2
+    exit 1
+fi
+exit 0

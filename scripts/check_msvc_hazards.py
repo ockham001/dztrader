@@ -277,15 +277,25 @@ def check_file(path):
 
 def main(argv):
     files = argv or tracked_sources()
+    # 工作区已删、但还没 `git add` 的 tracked 文件会出现在 `git ls-files` 里却没有实体
+    # （#265：`git ls-files` 只反映 index，暂存删除后就不再列出，所以只有「删了没暂存」
+    # 这一种状态命中）。此前直接 open() 会抛整段 FileNotFoundError traceback，信息量为零；
+    # 退出码是对的（1），但 agent 读到的是栈而不是「你在重构删文件过程中」。
+    # 跳过并单独提示，退出码语义不变。
+    missing = [p for p in files if not os.path.isfile(p)]
+    scanned = [p for p in files if p not in set(missing)]
+    if missing:
+        print("note: %d tracked file(s) missing from worktree (unstaged deletion?): %s"
+              % (len(missing), ", ".join(missing[:5]) + (" ..." if len(missing) > 5 else "")))
     violations = 0
-    for path in files:
+    for path in scanned:
         for line, message in check_file(path):
             print("%s:%d: %s" % (path, line, message))
             violations += 1
     if violations:
-        print("FAIL: %d MSVC hazard(s) in %d file(s)" % (violations, len(files)))
+        print("FAIL: %d MSVC hazard(s) in %d file(s)" % (violations, len(scanned)))
         return 1
-    print("OK: %d files scanned, no MSVC-only hazards" % len(files))
+    print("OK: %d files scanned, no MSVC-only hazards" % len(scanned))
     return 0
 
 

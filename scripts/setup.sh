@@ -45,6 +45,36 @@ else
     echo "warning: failed to install git hooks; continuing without hooks" >&2
 fi
 
+# git 推送凭据：本仓 remote 用 SSH，但 SSH agent 会间歇性失效（#246 实测同一会话里
+# `Permission denied (publickey)` 9 次，而直接 `ssh -T git@github.com` 当时是通的）。
+# 没有 HTTPS 回退时，唯一的出路是把 token 塞进 remote URL——那会把凭据写进
+# `.git/config`（#246 实际发生过，事后人工清理）。gh 已登录的话，装好 credential
+# helper 即可幂等获得 HTTPS 通道，`git push https://github.com/...` 直接就带凭据。
+#
+# 两处细节（都是 DSH 沙箱实测）：
+#  - `gh auth setup-git` 写 `--global`（~/.gitconfig），沙箱下常见只读；失败时回退到
+#    **仓库级** `credential.https://github.com.helper`，作用域小、同样够用。
+#  - 从不碰 remote URL：用 SSH 时 remote 保持 `git@github.com:...`，HTTPS 只作为
+#    显式 `git push https://github.com/<owner>/<repo>.git ...` 的回退通道。
+setup_git_credentials() {
+    command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 || {
+        echo "note: gh not available or not logged in; skipping HTTPS credential helper"
+        return 0
+    }
+    if gh auth setup-git --hostname github.com >/dev/null 2>&1; then
+        echo "git credentials: gh credential helper installed for github.com"
+        return 0
+    fi
+    if git -C "$REPO_ROOT" config credential.https://github.com.helper \
+            '!gh auth git-credential' 2>/dev/null; then
+        echo "git credentials: gh credential helper set at repo scope (global config not writable)"
+    else
+        echo "warning: could not install gh credential helper; HTTPS push fallback unavailable" >&2
+    fi
+}
+
+setup_git_credentials
+
 # ccache 的 CCACHE_DIR 需要每个调用 ccache 的 shell 自己导出（见 scripts/ccache-env.sh）
 # shellcheck source=scripts/ccache-env.sh
 . "$REPO_ROOT/scripts/ccache-env.sh"

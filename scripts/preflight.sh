@@ -151,6 +151,22 @@ check_gtest_discovery_timeout() {
     "$PYTHON" scripts/check_gtest_discovery_timeout.py
 }
 
+check_commit_subject() {
+    # 提交标题形态（#265）：`fix: #246 x` 既是 check-push-scope 要求的「含票号」，
+    # 又是 GitHub 的 closing keyword 形态 —— PR 合并即提前关闭 issue，导致 §6 的
+    # 关闭评论被静默丢弃（#246/#260/#243 实测）。票号应写进作用域 `fix(#246): ...`。
+    # CI 两个 workflow 与 pre-commit hook 都调用同一份脚本；这里只跑自测，保证规则
+    # 本身没坏（真实提交由各调用方按 range / message-file 校验）。
+    "$PYTHON" scripts/check_commit_subject.py --selftest
+}
+
+check_push_scope_selftest() {
+    # check-push-scope.sh 的 BASE 解析兜底（#265）：无上游 / 上游是 URL / 上游正常
+    # 三种形态 + 票号匹配正则。历史 bug 是 `@{u}` 解析失败时 git **打印字面量**，
+    # `|| true` 吞掉退出码后报出误导性的 "base ref not found: @{u}"（#246 实测 2 次）。
+    "$ROOT/scripts/check-push-scope.sh" --selftest
+}
+
 # ---- 前端 ----------------------------------------------------------------
 
 check_frontend() {
@@ -206,6 +222,8 @@ run_step "msvc hazard lint" check_msvc_hazards
 run_step "vendored JSON version consistency" check_json_vendor_version
 run_step "ci-log error pattern" check_ci_log_pattern
 run_step "gtest discovery timeout (#227)" check_gtest_discovery_timeout
+run_step "commit subject rules (#265)" check_commit_subject
+run_step "push-scope base resolution (#265)" check_push_scope_selftest
 if [ "$C_ONLY" -eq 0 ]; then
     run_step "frontend (type-check/lint/lint:css/test/gen:types)" check_frontend
 fi

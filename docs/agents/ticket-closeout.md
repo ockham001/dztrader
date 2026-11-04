@@ -70,6 +70,7 @@
 
 - 只 `git add` 本票路径；`git status` 核对，**严禁捎带另一条线的产物**（本波踩过：提交父节点落在另一条线未 push 的 commit 上）。
 - 提交信息中文，前缀 `fix:` / `feat:` / `refactor:` / `docs:` / `test:` / `chore:` / `perf:` / `style:` / `build:` / `ci:`。
+- **票号写进作用域**：`fix(#246): ...`，不要 `fix: #246 ...`。后者是 GitHub closing keyword 形态，PR 合并即提前关单、关闭评论被静默丢弃（§6）。`scripts/check_commit_subject.py` 在 pre-commit / CI / preflight 三处强制。
 - 契约、组件文档、ADR、GLOSSARY、docs 地图随同提交（第三节收敛规则 4）。
 
 ## 4. 推送与 PR
@@ -83,6 +84,7 @@ gh pr create --base main --head <branch> --title "<type>: <摘要>（#<issue>）
 
 - 本仓用 PR 落地（`ci.yml` 只在 PR / main 触发）；main 有 GitHub ruleset `main-protection`（require PR、禁非快进、禁删除、`bypass_actors=[]`，admins 也无绕过）。payload 见 `.github/rulesets/main-protection.json`，查看/重建：`gh api repos/<owner>/<repo>/rulesets`、`gh api --method POST repos/<owner>/<repo>/rulesets --input .github/rulesets/main-protection.json`；仓库同时开启 `delete_branch_on_merge=true`。应急直推 main 需临时禁用 ruleset（`DZ_ALLOW_MAIN_PUSH=1` 只绕过本地 hook）。
 - **push 分级**（[ADR 0036](../adr/0036-push-authorization-tiered-with-guardrails.md)，AGENTS 硬门禁的细化）：feature 分支 push / PR 创建更新免逐次确认，前置是本票门禁绿 + `check-push-scope` 通过 + 一轮修复一次 push；**合并 PR 到 main 仍需确认**（可按票或按波一次授权）；删除非本票分支、打 tag 逐次确认；**force push 禁止**（`pre-push` 非快进拦截 + `.opencode` deny）。本地 `.githooks/pre-push`、main ruleset 与 `.opencode` 权限是机器守卫。
+- **认证失败时先换通道，绝不往 URL 里塞凭据**（#265 复盘 #246）：SSH agent 会间歇性失效——同一个会话里 `Permission denied (publickey)` 可出现多次，而紧接着 `ssh -T git@github.com` 又是通的。此时正确做法是走 HTTPS：`setup.sh` 已装好 gh credential helper（全局不可写时回退仓库级），直接 `git push https://github.com/<owner>/<repo>.git HEAD:refs/heads/<branch>` 即可。**禁止** `git push https://user:<token>@github.com/...`：`-u` 会把 token 连同 upstream 一起写进 `.git/config`（#246 实际发生，事后需人工清理，且有泄漏风险）。若已误写：`git config branch.<branch>.remote origin` 覆盖回去，再用 `grep -rq "$(gh auth token)" .git` 确认无残留。
 - **实现完成即自动推进到本节，无需等用户口令**：门禁绿后直接 push → 建 PR → 起 CI 等待；#159 曾在「实现完成」处停下，需要用户催「进行收尾，可以推送」。唯一需确认的是 §5 合并 main、打 tag、删除非本票分支（ADR 0036）。
 - **PR 开完不阻塞等 CI**：`gh pr create` 成功后即可转下一票（读契约 / 定 spec）或本票收尾准备（拟关闭评论、清理 worktree 计划），CI 结果在自然断点或波末统一用 `./scripts/wait-ci.sh --pr <n>` 收；不要把 CI 等待写成同步步骤（本波 `wait-ci` 阻塞约 3.4h）。**边界**：不阻塞只适用于同波内的下一步准备；本票**合并前必须 CI 绿**，开新波前必须已完成合并（见 §5）。
 - **`wait-ci.sh` 的退出码就是 CI 结论**：它本来就是静默输出，只打状态变化与失败链接，别接管道（理由见 §2）。feature 分支没开 PR 时 `--sha` 约 180s 就报错并提示先建 PR，不会空等到 60 分钟总超时。
@@ -114,8 +116,21 @@ git merge-base --is-ancestor <merge-commit> main && echo merged
 ```bash
 gh issue view <n> --json number,state,title    # 先确认状态与标题
 gh pr view <n> --json state -q '.state'        # 必须输出 MERGED
-gh issue close <n> --comment "<关闭评论>"
+gh issue comment <n> --body-file <关闭评论文件>  # 先发评论（幂等）
+gh issue close <n> --reason completed          # 再关单
 ```
+
+**必须两步、且顺序是「先评论后关闭」**（#265）：`fix: #246 xxx` 这种提交标题会被 GitHub
+当 closing keyword 解析，PR 一合并 issue 就**已经**关掉了——此时 `gh issue close <n>
+--comment "..."` 只输出 `! Issue ... is already closed`，**评论从未发出**（#246/#260/#243
+实测；#260 的补充评论开头还写着「本票被 GitHub 按 `fix:` 提交关键字自动关闭」）。
+拆成两步后，无论 issue 是否已被 auto-close，评论都会落地。
+
+治本措施同时生效：提交标题把票号写进**作用域**，即 `fix(#246): ...` 而非 `fix: #246 ...`。
+GitHub 的 closing keyword 要求关键字后紧跟空白/冒号再接 `#N`，括号形态不匹配；而
+`check-push-scope.sh` 的正则 `#<issue>([^0-9]|$)` 照样命中。该形态由
+`scripts/check_commit_subject.py` 强制（pre-commit + 两个 workflow + preflight），
+**不要**用 `--no-verify` 绕过。
 
 关闭评论模板（交付 / 已知限制 / 提交 / CI / PR / 验证 / 审查）：
 
