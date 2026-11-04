@@ -7,10 +7,12 @@ export type { BrokerFrontend, BrokerEntry, LogLine, MdConfigPayload, MdRtnConfig
 import type {
   TdDirection, TdPositionEffect, TdPriceType, TdOrderStatus, TdDegradedReason,
   TdOrderRow, TdTradeRow, TdOrderListResponse, TdOrderDegradedResponse, TdRecentPayload, TdRecentEvent,
+  TdStatsDegradedReason, TdStatsValues, TdStatsAvailable, TdStatsDegraded,
 } from './generated'
 export type {
   TdDirection, TdPositionEffect, TdPriceType, TdOrderStatus, TdDegradedReason,
   TdOrderRow, TdTradeRow, TdOrderListResponse, TdOrderDegradedResponse, TdRecentPayload, TdRecentEvent,
+  TdStatsDegradedReason, TdStatsValues, TdStatsAvailable, TdStatsDegraded,
 }
 
 /**
@@ -25,6 +27,19 @@ export type {
 export type TdOrdersResponse =
   | (TdOrderListResponse & { available: true })
   | (TdOrderDegradedResponse & { available: false })
+
+/**
+ * `GET /api/td/stats` 的响应：可用信封与降级信封共用 `available` 判别位（契约 rest §2.9.5）。
+ * 降级时响应**只有** available 与 reason（reason 只有 `not_ready`：计数器尚未完成首次成功重算）
+ * —— 缺少 trading_day / online_accounts / stats 是契约规定，不是缺字段错误。
+ *
+ * 与 `TdOrdersResponse` 同一写法：生成物把 `available` 声明为 `boolean`（契约就是 bool），
+ * 这里用交叉类型收窄成字面量，从而得到真正的判别联合：`response.available === false` 后
+ * 可直接读 `reason`，=== true 分支里 `stats` / `trading_day` 均可用，无需 as 断言。
+ */
+export type TdStatsResponse =
+  | (TdStatsAvailable & { available: true })
+  | (TdStatsDegraded & { available: false })
 
 // ===== Authentication =====
 export interface LoginRequest {

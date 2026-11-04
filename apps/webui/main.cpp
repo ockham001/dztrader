@@ -44,6 +44,7 @@
 #include "td_domain_service.h"
 #include "td_data_controller.h"
 #include "td_orders_query.h"
+#include "td_stats_query.h"
 #include "sysmon_domain_service.h"
 #include "sysmon_controller.h"
 
@@ -394,6 +395,31 @@ int main(int argc, char* argv[]) {
     ws_ctrl->set_td_recent_provider([domain = td_domain]() { return domain->recent_events(); });
     // 交易数据 REST（契约 rest §2.9）：每请求独立只读连接、busy_timeout 200ms、游标分页
     auto td_query = std::make_shared<dztrader::webui::TdOrdersQuery>(trade_db_path_cb);
+    // 统计计数器（契约 rest §2.9.5 / ADR 0043 决策 4）：dzweb 内存 4 值，启动 / Ready /
+    // 在线集合变化 / 日切 / 周期对账从 trade.db 全量重算；ORDER_REPORT 走增量。
+    // 注入后立即触发一次重算（此时无在线账户 → 全 0 且 ready，stats 不返回 not_ready）。
+    auto td_stats_query = std::make_shared<dztrader::webui::TdStatsQuery>(trade_db_path_cb);
+    td_domain->set_stats_query(td_stats_query);
+    // 周期对账（契约 rest §2.9.5「建议 30s，实现时可调」）：必须注册到注入了连接回路的
+    // IO 循环 getIOLoop(0)，与 REST/WS 同线程串行——计数器无锁，跨线程访问即数据竞争。
+    // 用 beginning advice 而非直接调用：run() 之前 IO 循环尚未创建，getIOLoop(0) 返回
+    // nullptr（与 ControlDomainService::post_to_io_loop 同一启动窗口约束）。advice 本身在
+    // 主循环线程执行，故先 queueInLoop 到 IO 线程再 runEvery（不依赖 runEvery 的线程语义）。
+    drogon::app().registerBeginningAdvice([td_domain]() {
+        auto* io_loop = drogon::app().getIOLoop(0);
+        if (io_loop == nullptr) {
+            SPDLOG_WARN("td stats reconcile scheduler not started | reason=no_io_loop");
+            return;
+        }
+        io_loop->queueInLoop([io_loop, td_domain]() {
+            td_domain->set_reconcile_scheduler(
+                [io_loop](double interval, std::function<void()> task) {
+                    io_loop->runEvery(interval, std::move(task));
+                });
+            SPDLOG_INFO("td stats reconcile scheduler started | interval_s={}",
+                        dztrader::webui::kTdStatsReconcileIntervalSec);
+        });
+    });
     drogon::app().registerController(
         std::make_shared<dztrader::webui::TdCtrl>(repo, td_domain, td_query));
 

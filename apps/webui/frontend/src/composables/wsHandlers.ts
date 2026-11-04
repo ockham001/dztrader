@@ -15,6 +15,7 @@ import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useSettingsStore } from '@/stores/settings'
 import { useSysmonStore } from '@/stores/sysmon'
 import { useTdOrdersStore } from '@/stores/tdOrders'
+import { useTdStatsStore } from '@/stores/tdStats'
 import { useToastStore } from '@/stores/toast'
 import type { ProcessStatusPayload, MdConfigPayload } from '@/types/api'
 
@@ -35,8 +36,10 @@ registerHandler('data_changed', (payload) => {
   }
   if (scope === 'td') {
     // 契约 webui-ws §2.3：td = 交易数据基线失效（日切 / 在线集合变化 / 账户集合增减）。
-    // 前端清空委托并重拉基线；其余交易列表（成交/持仓/资金/统计）随各自票接入。
+    // 前端清空委托并重拉基线；统计无 WS 推送（§5 第 10 条），同一条消息负责「标记失效 +
+    // 立即重拉」，因此这里追加一次统计重拉而不是替换委托调用（其余交易列表随各自票接入）。
     void useTdOrdersStore().handleDataChanged(scope)
+    void useTdStatsStore().handleDataChanged()
     return
   }
   const userManagement = useUserManagementStore()

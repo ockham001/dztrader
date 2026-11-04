@@ -1,5 +1,7 @@
 #include "td_data_controller.h"
 
+#include "td_read_db.h"
+
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
@@ -31,6 +33,22 @@ void TdCtrl::get_orders(const drogon::HttpRequestPtr& req,
         return;
     }
     callback(json_response(drogon::k200OK, *body));
+}
+
+void TdCtrl::get_stats(const drogon::HttpRequestPtr& req,
+                       std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+    // 认证由 JWT advice 处理；读端点全部已认证用户可读（契约 rest §2.9.1）。
+    // 契约 rest §2.9.5：stats 口径固定为「全部在线账户 + 当前交易日」，**不接受 accounts
+    // 过滤**，也没有 limit/cursor——因此本端点**忽略全部 query 参数**，不做任何校验
+    // （传了也不 400）。req 只用于保持 handler 签名；显式标记未使用。
+    (void)req;
+    if (!domain_) {
+        // 装配缺失（测试/异常装配）：按未就绪降级而非 5xx（契约 rest §2.9.8 精神）。
+        SPDLOG_WARN("td stats domain not wired");
+        callback(json_response(drogon::k200OK, td_degraded_body(kTdReasonNotReady)));
+        return;
+    }
+    callback(json_response(drogon::k200OK, domain_->stats_body()));
 }
 
 }  // namespace dztrader::webui

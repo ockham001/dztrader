@@ -1,15 +1,22 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import TradingDataView from '../TradingDataView.vue'
+import { __resetTdStatsSchedulerForTests } from '@/stores/tdStats'
+import { tdApi } from '@/api/td'
 
 // 子 tab 各自有独立测试（OrdersTab.spec.ts 覆盖委托列表；成交占位由本文件覆盖），
-// 这里只验证页壳与 tab 切换。断言用面板的内联 display 而非 VTU 的 isVisible：
+// 这里只验证页壳、统计条位置与 tab 切换。断言用面板的内联 display 而非 VTU 的 isVisible：
 // jsdom 无布局，isVisible 依赖 offsetWidth 回退，跨用例不稳定。
 const stubs = {
   OrdersTab: { template: '<div class="orders-tab-stub">委托面板</div>' },
   TradesTab: { template: '<div class="trades-tab-stub">成交面板</div>' },
 }
+
+// 统计条挂载即拉 REST 基线（#247）：mock 掉 API，避免真实 fetch
+vi.mock('@/api/td', () => ({
+  tdApi: { getStats: vi.fn() },
+}))
 
 /** 面板在当前 tab 下是否显示（v-show 以内联 display:none 隐藏） */
 function panelVisible(wrapper: ReturnType<typeof mount>, stubSelector: string): boolean {
@@ -18,9 +25,30 @@ function panelVisible(wrapper: ReturnType<typeof mount>, stubSelector: string): 
   return panel!.getAttribute('style')?.includes('display: none') !== true
 }
 
-describe('TradingDataView（#246 交易数据页壳）', () => {
+/** 某个选择器在页壳直接子节点中的位置（用于断言统计条在 tab 栏上方） */
+function childIndex(wrapper: ReturnType<typeof mount>, selector: string): number {
+  const root = wrapper.element as HTMLElement
+  const target = root.querySelector(selector)
+  expect(target, `找不到 ${selector}`).toBeTruthy()
+  return [...root.children].indexOf(target as Element)
+}
+
+describe('TradingDataView（#246/#247 交易数据页壳）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    __resetTdStatsSchedulerForTests()
+    vi.useFakeTimers()
+    vi.resetAllMocks()
+    vi.mocked(tdApi.getStats).mockResolvedValue({
+      available: true as const,
+      trading_day: '20260808',
+      online_accounts: ['acc_a'],
+      stats: { total_orders: 1240, total_volume: 2480, unfilled_orders: 12, unfilled_volume: 21 },
+    })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    __resetTdStatsSchedulerForTests()
   })
 
   it('渲染页头「交易数据」与委托/成交两个 tab', () => {
@@ -29,6 +57,18 @@ describe('TradingDataView（#246 交易数据页壳）', () => {
     expect(wrapper.find('h1').text()).toBe('交易数据')
     expect(wrapper.find('[data-test="td-tab-orders"]').text()).toBe('委托')
     expect(wrapper.find('[data-test="td-tab-trades"]').text()).toBe('成交')
+    wrapper.unmount()
+  })
+
+  it('统计条存在且位于 tab 栏上方（spec：UI 在交易数据页显示统计条）', async () => {
+    const wrapper = mount(TradingDataView, { global: { stubs } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="td-stats-bar"]').exists()).toBe(true)
+    expect(childIndex(wrapper, '[data-test="td-stats-bar"]'))
+      .toBeLessThan(childIndex(wrapper, '.ds-tabs'))
+    // 统计条是页级口径：切 tab 不重建（它在 tab 栏之外）
+    expect(wrapper.findAll('[data-test="td-stats-values"]')).toHaveLength(1)
     wrapper.unmount()
   })
 

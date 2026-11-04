@@ -3,24 +3,31 @@
 
 /**
  * @file td_domain_service.h
- * @brief TD 数据域服务（订单部分）：在线账户集合 + 日切感知 + WS 交易事件转发 + 建连补发环。
+ * @brief TD 数据域服务：在线账户集合 + 日切感知 + WS 交易事件转发 + 建连补发环 +
+ *        统计计数器（契约 rest §2.9.5）。
  *
- * 依 ADR 0043 / 契约 td-data-sync §8：dzweb **不保留**委托/成交/持仓/资金记录镜像，也不维护
- * `seq` 水位。本服务只保留允许的三样状态：
+ * 依 ADR 0043 / 契约 td-data-sync §8：dzweb **不保留**委托/成交/持仓/资金记录镜像，也不做
+ * 记录 ingest 的 `seq` 水位过滤/断档回补（那是策略 SDK 的唯一职责）。本服务保留的只有允许
+ * 的状态：
  * - 在线（`Ready`）账户集合与各账户会话交易日（`ACCOUNT_STATUS`）；
  * - 每账户最近 300 条交易事件的建连补发环（`td_recent`，契约 webui-ws §2.5）；
- * - 合约 `price_tick` 的进程内缓存（派生 `price_decimals` 用，契约 rest §2.9.6）。
+ * - 合约 `price_tick` 的进程内缓存（派生 `price_decimals` 用，契约 rest §2.9.6）；
+ * - 统计计数器（4 值 + 活动委托表 + 每账户重算水位，契约 rest §2.9.5）。这里的「水位」是
+ *   统计计数器的**重放守卫**（跳过重算已纳入的帧），不是记录 ingest 水位——它只由重算
+ *   从 DB 写入，增量永不推进，见 `td_stats.h`。
  *
  * 委托行形状的唯一真相源是契约 rest §2.9.3，序列化复用 `td_orders_query.h` 的
  * `td_order_row_json`（REST 与 WS 同 schema，禁止两份）。
  *
  * **线程语义（register_raw）**：帧 handler 在监听线程同步执行（`FrameView` 有效期内），
  * 解析并拷贝字段后经 `FrameRouter::poster()` 投递到 IO 线程，与 REST/WS 连接回调串行，
- * 因此内部状态无需加锁。测试注入同步 poster 等价执行。
+ * 因此内部状态（含统计计数器）无需加锁。测试注入同步 poster 等价执行。
  */
 
 #include "data_change_notifier.h"
 #include "frame_router.h"
+#include "td_stats.h"
+#include "td_stats_query.h"
 #include "ws_broadcaster.h"
 
 #include <dztrader/struct.h>
@@ -30,6 +37,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -71,6 +79,27 @@ public:
     /// 全部走价格小数位兜底（契约 rest §2.9.6）。
     void set_trade_db_path_provider(std::function<std::string()> provider);
 
+    /// 统计重算查询（main 注入；未注入 = 统计恒 not_ready，不影响委托列表）。
+    /// 注入后**立即**重算一次（不放在 ctor：ctor 时查询尚未注入，只会得到 not_ready；
+    /// main 的顺序是「构造 → 注入 → 起调度器」）。
+    void set_stats_query(std::shared_ptr<TdStatsQuery> query);
+
+    /// 周期对账调度器（可注入：默认不启动；main 注入 drogon IO 循环 runEvery）。
+    /// 调度器职责：按 interval 反复调用传入的 task，直到进程退出（无需取消——服务与
+    /// IO 循环同生命周期）。测试注入假调度器后手动 tick，不依赖真实定时器。
+    void set_reconcile_scheduler(
+        std::function<void(double interval, std::function<void()> task)> scheduler);
+
+    /// 立即重算一次（启动 / Ready / 在线集合变化 / 日切 / 周期对账 / 测试直接触发）。
+    ///
+    /// 未注入 `TdStatsQuery` → `stats_ready_ = false`（不崩、不影响委托列表）；
+    /// `recompute` 返回 nullopt（库不可读）→ 保持既有计数器与 ready 状态
+    /// （契约 rest §2.9.5：计数器就绪后即使交易库暂时不可读也不降级）。
+    void reconcile_stats();
+
+    /// `GET /api/td/stats` 响应体（契约 rest §2.9.5）。
+    nlohmann::json stats_body() const;
+
     /// 帧 handler 的公开入口（供 register_raw 与单测直接调用；两处走同一实现）。
     void on_account_status(const DzAccountStatus& status);
     void on_order_report(const DzOrderReport& report);
@@ -96,6 +125,11 @@ private:
     WsBroadcaster& ws_;
     DataChangeNotifier& notifier_;
     std::function<std::string()> trade_db_path_;
+
+    /// 统计重算查询（未注入 = 统计恒 not_ready）。
+    std::shared_ptr<TdStatsQuery> stats_query_;
+    TdStatsCounter stats_;
+    bool stats_ready_ = false;
 
     /// account_id -> 会话交易日（`DzDate` 距纪元天数；契约 account-status）。
     std::map<std::string, int32_t> online_date_;

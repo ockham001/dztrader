@@ -85,6 +85,42 @@ void TdDomainService::set_trade_db_path_provider(std::function<std::string()> pr
     tick_cache_.clear();
 }
 
+void TdDomainService::set_stats_query(std::shared_ptr<TdStatsQuery> query) {
+    stats_query_ = std::move(query);
+    // 注入后立即重算一次（契约 rest §2.9.5「启动」触发点）。不放在 ctor：ctor 时查询
+    // 尚未注入，只会得到 not_ready。
+    reconcile_stats();
+}
+
+void TdDomainService::set_reconcile_scheduler(
+    std::function<void(double interval, std::function<void()> task)> scheduler) {
+    if (!scheduler) {
+        return;
+    }
+    // 契约 rest §2.9.5：周期对账（建议 30s，实现可调）。任务即全部重算路径的唯一入口。
+    scheduler(kTdStatsReconcileIntervalSec, [this]() { reconcile_stats(); });
+}
+
+void TdDomainService::reconcile_stats() {
+    if (!stats_query_) {
+        // 未装配统计查询（API-only / 测试）：统计恒 not_ready，不影响委托列表。
+        stats_ready_ = false;
+        return;
+    }
+    const auto snapshot = stats_query_->recompute(online_accounts(), current_trading_day());
+    if (!snapshot.has_value()) {
+        // 契约 rest §2.9.5：计数器就绪后即使交易库暂时不可读也不降级——保持既有计数器
+        // 与 ready 状态，等下一次对账。
+        return;
+    }
+    stats_.reset(*snapshot);
+    stats_ready_ = true;
+}
+
+nlohmann::json TdDomainService::stats_body() const {
+    return td_stats_body(stats_ready_, current_trading_day(), online_accounts(), stats_.values());
+}
+
 void TdDomainService::on_account_status(const DzAccountStatus& status) {
     const std::string account(status.account_id);
     if (account.empty()) {
@@ -106,6 +142,12 @@ void TdDomainService::on_account_status(const DzAccountStatus& status) {
                 SPDLOG_INFO("td online set changed | account={} online={} day={}", account,
                             online_date_.size(), current_day.value_or(""));
             }
+            // 契约 rest §2.9.5 重算触发点：账户 Ready——**无条件**，不跟 data_changed 的
+            // 「有变化才广播」条件合并。Ready 是**重同步点**而非优化机会：td 崩溃重启时
+            // 来不及推 Offline，重登后 `was_online` 仍为 true、日切也未发生，若按「有变化才
+            // 重算」就会漏掉这次重同步，让计数器停留在重启前的旧值直到下一次周期对账
+            // （测试锁定：RepeatedReadyResyncsBecauseTdRestartSkipsOffline）。
+            reconcile_stats();
             break;
         }
         case DZ_ACCOUNT_OFFLINE:
@@ -121,6 +163,10 @@ void TdDomainService::on_account_status(const DzAccountStatus& status) {
                 SPDLOG_INFO("td account left online set | account={} state={} online={}", account,
                             status.state == DZ_ACCOUNT_OFFLINE ? "offline" : "logging_in",
                             online_date_.size());
+                // 契约 rest §2.9.5 重算触发点：在线集合变化（含 Offline / LoggingIn 下线）。
+                // 无条件不是必需的：账户确实离开了在线集合才有口径变化，重复下线帧无害
+                // 但也无需重算（口径未变）。
+                reconcile_stats();
             }
             break;
         default:
@@ -135,6 +181,13 @@ void TdDomainService::on_order_report(const DzOrderReport& report) {
     // 登录完成后 Ready 会触发前端重拉 REST 基线。
     if (account.empty() || online_date_.find(account) == online_date_.end()) {
         return;
+    }
+    // 契约 rest §2.9.5 增量来源 + td-data-sync §2 第 4 条：跳过判断只准用**重算查得的 DB 水位**
+    // （`seq <= watermark` 的帧已由重算纳入；登录「重推最后一条」用原 seq，靠这条避免重复计数）。
+    // 注意 apply 不推进水位——水位只由 reconcile_stats() 的全量重算写入。
+    if (report.seq > stats_.watermark(account)) {
+        stats_.apply(account, static_cast<int>(report.status), report.order_id,
+                     static_cast<int>(report.volume), static_cast<int>(report.volume_traded));
     }
     const TdOrderRecord record = to_record(report);
     const int decimals = price_decimals_for(record.instrument_id, record.price);

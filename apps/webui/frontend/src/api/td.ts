@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { TdOrdersResponse } from '@/types/api'
+import type { TdOrdersResponse, TdStatsResponse } from '@/types/api'
 
 /**
  * `GET /api/td/orders` 查询参数（契约 rest §2.9.2）。
@@ -40,4 +40,10 @@ function toQueryString(query: TdOrdersQuery): string {
 export const tdApi = {
   getOrders: (query: TdOrdersQuery = {}) =>
     api.get<TdOrdersResponse>(`/api/td/orders${toQueryString(query)}`),
+  /**
+   * 统计计数器（契约 rest §2.9.5）：**无参数**——stats 是全局口径（全部在线账户 + 当前交易日），
+   * 不接受 accounts 过滤，也不是列表（无 limit/cursor）。降级同样是 200 + available:false
+   * （reason 只有 not_ready），调用方必须判断 `available`。
+   */
+  getStats: () => api.get<TdStatsResponse>('/api/td/stats'),
 }

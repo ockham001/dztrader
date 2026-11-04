@@ -1,28 +1,39 @@
 /**
  * @file td_domain_service_test.cpp
- * @brief TD 数据域服务（契约 td-data-sync §8 / webui-ws §2.3/§2.5 / rest §2.9.1/§2.9.3/§2.9.6）。
+ * @brief TD 数据域服务（契约 td-data-sync §8 / webui-ws §2.3/§2.5 / rest
+ *        §2.9.1/§2.9.3/§2.9.5/§2.9.6）。
  *
  * 断言外部可观察行为：WS 广播（type/instance_id/data）、`td_recent` 载荷、`data_changed`
- * 广播时机、在线集合与当前交易日。不断言私有成员、不读内部容器。
+ * 广播时机、在线集合与当前交易日、统计计数器（`stats_body()` 的公开 JSON）。不断言私有
+ * 成员、不读内部容器。
  *
  * 库形态用**真 schema**（`tdstore::ensure_trade_db`）：精度派生依赖
  * `instruments.price_tick` 列名，手抄 DDL 会让 schema 漂移静默通过。
+ *
+ * 时序一律用注入调度器 / 直接调用 `reconcile_stats()` 触发，不 sleep（设计 §2.6）。
  */
 
 #include "td_domain_service.h"
+#include "td_stats_query.h"
 #include "test_temp_dir.h"
+#include "td_order_row_writer.h"
 
 #include <dztrader/date_time/date.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/struct.h>
 #include <dztrader/tdstore/trade_db.h>
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 #include <sqlite3.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <functional>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace dztrader::webui {
@@ -174,6 +185,90 @@ protected:
             }
         }
         return nullptr;
+    }
+
+    // ===== 统计计数器夹具（契约 rest §2.9.5）=====
+
+    /// 建真 schema 库并把路径同时接到域服务的 tick 查询与统计重算查询上。
+    std::string create_stats_db() {
+        const std::string path = (dir_ / "trade.db").string();
+        (void)dztrader::tdstore::ensure_trade_db(path);
+        set_db_path(path);
+        return path;
+    }
+
+    /// 注入统计重算查询（注入即触发一次重算，契约 rest §2.9.5「启动」）。
+    void inject_stats_query(const std::string& path) {
+        auto query = std::make_shared<TdStatsQuery>([path]() -> std::string { return path; },
+                                                    kTdReadBusyTimeoutMs);
+        service_->set_stats_query(std::move(query));
+    }
+
+    /// 直接写一条委托行（真 schema；列清单来自共享夹具 `td_order_row_writer.h`）。
+    void insert_order_row(const std::string& account_id,
+                          const std::string& date,
+                          int64_t order_id,
+                          int status,
+                          int volume,
+                          int volume_traded,
+                          uint64_t seq) {
+        dztrader::test::TdOrderRowSeed seed;
+        seed.account_id = account_id;
+        seed.date = date;
+        seed.order_id = order_id;
+        seed.status = status;
+        seed.volume = volume;
+        seed.volume_traded = volume_traded;
+        seed.seq = seq;
+        const std::string error =
+            dztrader::test::insert_td_order_row((dir_ / "trade.db").string(), seed);
+        ASSERT_TRUE(error.empty()) << error;
+    }
+
+    /// `stats_body()` 的 4 值（外部可观察 JSON）。
+    struct StatsValues {
+        int64_t total_orders = 0;
+        int64_t total_volume = 0;
+        int64_t unfilled_orders = 0;
+        int64_t unfilled_volume = 0;
+    };
+
+    StatsValues stats_values() const {
+        const nlohmann::json body = service_->stats_body();
+        StatsValues values;
+        if (body.contains("stats")) {
+            values.total_orders = body["stats"]["total_orders"].get<int64_t>();
+            values.total_volume = body["stats"]["total_volume"].get<int64_t>();
+            values.unfilled_orders = body["stats"]["unfilled_orders"].get<int64_t>();
+            values.unfilled_volume = body["stats"]["unfilled_volume"].get<int64_t>();
+        }
+        return values;
+    }
+
+    void expect_stats(int64_t total_orders,
+                      int64_t total_volume,
+                      int64_t unfilled_orders,
+                      int64_t unfilled_volume) const {
+        const StatsValues values = stats_values();
+        EXPECT_EQ(values.total_orders, total_orders);
+        EXPECT_EQ(values.total_volume, total_volume);
+        EXPECT_EQ(values.unfilled_orders, unfilled_orders);
+        EXPECT_EQ(values.unfilled_volume, unfilled_volume);
+    }
+
+    /// 一条 ORDER_REPORT（状态/量可指定）。
+    static DzOrderReport make_order_with(int64_t order_id,
+                                         int status,
+                                         int volume,
+                                         int volume_traded,
+                                         uint64_t seq,
+                                         int32_t date,
+                                         const std::string& account = "ACC1") {
+        DzOrderReport report = make_order(account, order_id, date, 32400, seq);
+        report.status = static_cast<DzOrderStatus>(status);
+        report.volume = volume;
+        report.volume_traded = volume_traded;
+        return report;
     }
 };
 
@@ -432,6 +527,244 @@ TEST_F(TdDomainServiceTest, LoggingInKeepsRecentRingForRepush) {
     EXPECT_TRUE(service_->recent_events()["events"].empty());
     ready("ACC1", day_epoch(2026, 10, 9));
     EXPECT_EQ(service_->recent_events()["events"].size(), 1U);
+}
+
+// ===== 统计计数器：重算触发点（契约 rest §2.9.5）=====
+
+TEST_F(TdDomainServiceTest, StatsIsNotReadyWithoutInjectedQuery) {
+    // 未注入 TdStatsQuery → 统计恒 not_ready，且不影响委托列表（本条只断言统计体）。
+    const auto body = service_->stats_body();
+    EXPECT_FALSE(body["available"].get<bool>());
+    EXPECT_EQ(body["reason"].get<std::string>(), "not_ready");
+    EXPECT_FALSE(body.contains("stats"));
+    EXPECT_TRUE(service_->online_accounts().empty());
+}
+
+TEST_F(TdDomainServiceTest, InjectedStatsQueryRecomputesImmediatelyOnStartup) {
+    const std::string path = create_stats_db();
+    insert_order_row("ACC1", "20261009", 1, DZ_ORDER_NOT_TRADED, 5, 0, 11);
+    inject_stats_query(path);
+
+    // 注入即重算（启动触发点）：此时无在线账户 → 全 0 且 ready。
+    const auto body = service_->stats_body();
+    EXPECT_TRUE(body["available"].get<bool>());
+    EXPECT_TRUE(body["trading_day"].is_null());
+    expect_stats(0, 0, 0, 0);
+}
+
+TEST_F(TdDomainServiceTest, ReadyTriggersRecomputeReflectingDatabaseRows) {
+    const std::string path = create_stats_db();
+    insert_order_row("ACC1", "20261009", 1, DZ_ORDER_NOT_TRADED, 5, 0, 11);
+    insert_order_row("ACC1", "20261009", 2, DZ_ORDER_ALL_TRADED, 3, 3, 12);
+    insert_order_row("ACC1", "20261009", 3, DZ_ORDER_CANCELLED, 4, 0, 13);
+    inject_stats_query(path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+
+    // 手算：total 3 笔 / 12 手（含撤单）；未成交 1 笔 / 5 手。
+    expect_stats(3, 12, 1, 5);
+    const auto body = service_->stats_body();
+    EXPECT_TRUE(body["available"].get<bool>());
+    EXPECT_EQ(body["trading_day"].get<std::string>(), "20261009");
+    ASSERT_EQ(body["online_accounts"].size(), 1U);
+    EXPECT_EQ(body["online_accounts"][0].get<std::string>(), "ACC1");
+}
+
+TEST_F(TdDomainServiceTest, RepeatedReadyResyncsBecauseTdRestartSkipsOffline) {
+    const std::string path = create_stats_db();
+    insert_order_row("ACC1", "20261009", 1, DZ_ORDER_NOT_TRADED, 5, 0, 11);
+    inject_stats_query(path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+    expect_stats(1, 5, 1, 5);
+
+    // td 崩溃重启来不及推 Offline，重登后直接再来一条**同账户同日** Ready：
+    // 账户本就在线、日切也没发生，但这次 Ready 是重同步点——期间可能有别的终端
+    // 或重启前未落库的委托已进库，计数器必须重算到最新，而不是等到周期对账。
+    insert_order_row("ACC1", "20261009", 2, DZ_ORDER_ALL_TRADED, 3, 3, 12);
+    ready("ACC1", day_epoch(2026, 10, 9));
+
+    // 手算：total 2 笔 / 8 手；未成交仍 1 笔 / 5 手。
+    expect_stats(2, 8, 1, 5);
+}
+
+TEST_F(TdDomainServiceTest, OfflineTriggersRecomputeAndCounterFallsBackToZero) {
+    const std::string path = create_stats_db();
+    insert_order_row("ACC1", "20261009", 1, DZ_ORDER_NOT_TRADED, 5, 0, 11);
+    insert_order_row("ACC2", "20261009", 2, DZ_ORDER_NOT_TRADED, 2, 0, 12);
+    inject_stats_query(path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+    ready("ACC2", day_epoch(2026, 10, 9));
+    expect_stats(2, 7, 2, 7);
+
+    // ACC2 下线 → 重算后只含 ACC1；计数器回落。
+    offline("ACC2");
+    expect_stats(1, 5, 1, 5);
+
+    // 全部下线 → 无在线账户，口径为空（0 值但 ready）。
+    offline("ACC1");
+    expect_stats(0, 0, 0, 0);
+    const auto body = service_->stats_body();
+    EXPECT_TRUE(body["available"].get<bool>());
+    EXPECT_TRUE(body["trading_day"].is_null());
+}
+
+TEST_F(TdDomainServiceTest, TradingDayChangeDoesNotCarryOverPreviousDayRows) {
+    const std::string path = create_stats_db();
+    // 旧交易日两笔、新交易日一笔。
+    insert_order_row("ACC1", "20261008", 1, DZ_ORDER_NOT_TRADED, 5, 0, 11);
+    insert_order_row("ACC1", "20261008", 2, DZ_ORDER_ALL_TRADED, 3, 3, 12);
+    insert_order_row("ACC1", "20261009", 3, DZ_ORDER_NOT_TRADED, 2, 0, 13);
+    inject_stats_query(path);
+
+    ready("ACC1", day_epoch(2026, 10, 8));
+    expect_stats(2, 8, 1, 5);
+
+    // 日切：同一账户 date 变化 → 重算只看新交易日。
+    ready("ACC1", day_epoch(2026, 10, 9));
+    EXPECT_EQ(service_->current_trading_day().value_or(""), "20261009");
+    expect_stats(1, 2, 1, 2);
+}
+
+// ===== 统计增量：ORDER_REPORT（契约 rest §2.9.5）=====
+
+TEST_F(TdDomainServiceTest, OrderReportIncrementCountsNewOrderAndReachesStatsBody) {
+    const std::string path = create_stats_db();
+    inject_stats_query(path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+    // 重算后水位 = 0（库为空）→ seq 1 的帧走增量。
+    feed_order(make_order_with(1, DZ_ORDER_NOT_TRADED, 5, 0, 1, day_epoch(2026, 10, 9)));
+    expect_stats(1, 5, 1, 5);
+
+    // 部分成交 → 未成交剩余量 5 → 3，total 不变。
+    feed_order(make_order_with(1, DZ_ORDER_PART_TRADED, 5, 2, 2, day_epoch(2026, 10, 9)));
+    expect_stats(1, 5, 1, 3);
+
+    // 全成 → 退出未成交集合。
+    feed_order(make_order_with(1, DZ_ORDER_ALL_TRADED, 5, 5, 3, day_epoch(2026, 10, 9)));
+    expect_stats(1, 5, 0, 0);
+}
+
+TEST_F(TdDomainServiceTest, OrderReportCancelAndRejectAreCountedInTotalOnly) {
+    const std::string path = create_stats_db();
+    inject_stats_query(path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+
+    feed_order(make_order_with(1, DZ_ORDER_NOT_TRADED, 4, 0, 1, day_epoch(2026, 10, 9)));
+    feed_order(make_order_with(1, DZ_ORDER_CANCELLED, 4, 0, 2, day_epoch(2026, 10, 9)));
+    // 新委托直接废单（本地拒单）：计 total，不进未成交。
+    feed_order(make_order_with(2, DZ_ORDER_REJECTED, 3, 0, 3, day_epoch(2026, 10, 9)));
+
+    expect_stats(2, 7, 0, 0);
+}
+
+TEST_F(TdDomainServiceTest, ReplayedOrderReportAtOrBelowWatermarkIsNotCountedAgain) {
+    const std::string path = create_stats_db();
+    // 库里已有一笔 seq=11 的委托 => 重算后水位 = 11。
+    insert_order_row("ACC1", "20261009", 1, DZ_ORDER_NOT_TRADED, 5, 0, 11);
+    inject_stats_query(path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+    expect_stats(1, 5, 1, 5);
+
+    // 登录「重推最后一条」用原 seq 重发同一帧：seq <= 水位 → 跳过，不重复计数。
+    feed_order(make_order_with(1, DZ_ORDER_NOT_TRADED, 5, 0, 11, day_epoch(2026, 10, 9)));
+    expect_stats(1, 5, 1, 5);
+
+    // 更旧的 seq 同样跳过。
+    feed_order(make_order_with(1, DZ_ORDER_NOT_TRADED, 5, 0, 7, day_epoch(2026, 10, 9)));
+    expect_stats(1, 5, 1, 5);
+
+    // seq > 水位的新事件正常增量。
+    feed_order(make_order_with(2, DZ_ORDER_NOT_TRADED, 2, 0, 12, day_epoch(2026, 10, 9)));
+    expect_stats(2, 7, 2, 7);
+}
+
+TEST_F(TdDomainServiceTest, OrderReportFromOfflineAccountDoesNotTouchStats) {
+    const std::string path = create_stats_db();
+    inject_stats_query(path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+    // ACC2 不在线：帧既不转发也不计统计。
+    feed_order(make_order_with(1, DZ_ORDER_NOT_TRADED, 5, 0, 1, day_epoch(2026, 10, 9), "ACC2"));
+    expect_stats(0, 0, 0, 0);
+}
+
+TEST_F(TdDomainServiceTest, OrderReportIncrementAndReconcileAgreeOnSameData) {
+    const std::string path = create_stats_db();
+    inject_stats_query(path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+
+    // 增量路径：三帧（新单 / 部分成交 / 撤单）。
+    feed_order(make_order_with(1, DZ_ORDER_NOT_TRADED, 5, 0, 1, day_epoch(2026, 10, 9)));
+    feed_order(make_order_with(1, DZ_ORDER_PART_TRADED, 5, 2, 2, day_epoch(2026, 10, 9)));
+    feed_order(make_order_with(1, DZ_ORDER_CANCELLED, 5, 2, 3, day_epoch(2026, 10, 9)));
+    feed_order(make_order_with(2, DZ_ORDER_NOT_TRADED, 4, 0, 4, day_epoch(2026, 10, 9)));
+    const StatsValues from_increment = stats_values();
+    // 手算：total 2 笔 / 9 手；未成交 1 笔 / 4 手（1 号已撤）。
+    EXPECT_EQ(from_increment.total_orders, 2);
+    EXPECT_EQ(from_increment.total_volume, 9);
+    EXPECT_EQ(from_increment.unfilled_orders, 1);
+    EXPECT_EQ(from_increment.unfilled_volume, 4);
+
+    // 把同样的事实写进库（模拟 persist 追上），再全量重算：两条路径必须同值。
+    insert_order_row("ACC1", "20261009", 1, DZ_ORDER_CANCELLED, 5, 2, 3);
+    insert_order_row("ACC1", "20261009", 2, DZ_ORDER_NOT_TRADED, 4, 0, 4);
+    service_->reconcile_stats();
+    expect_stats(2, 9, 1, 4);
+}
+
+// ===== 周期对账：可注入调度器（设计 §2.4 / §5.3）=====
+
+TEST_F(TdDomainServiceTest, InjectedSchedulerRegistersTaskAndManualTickReconciles) {
+    // 假调度器：记录注册的 interval 与 task，测试直接 tick（不 sleep）。
+    double registered_interval = 0.0;
+    std::function<void()> registered_task;
+    int registrations = 0;
+    service_->set_reconcile_scheduler([&registered_interval, &registered_task, &registrations](
+                                          double interval, std::function<void()> task) {
+        ++registrations;
+        registered_interval = interval;
+        registered_task = std::move(task);
+    });
+    ASSERT_EQ(registrations, 1);
+    // 契约 rest §2.9.5：建议 30s（实现可调，常量单源）。
+    EXPECT_DOUBLE_EQ(registered_interval, kTdStatsReconcileIntervalSec);
+    ASSERT_TRUE(registered_task != nullptr);
+
+    const std::string path = create_stats_db();
+    inject_stats_query(path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+    expect_stats(0, 0, 0, 0);
+
+    // 库在两次重算之间多了一笔（例如 td 直写 / 上一轮失败后恢复）：tick 后收敛。
+    insert_order_row("ACC1", "20261009", 1, DZ_ORDER_NOT_TRADED, 6, 0, 21);
+    registered_task();
+    expect_stats(1, 6, 1, 6);
+}
+
+TEST_F(TdDomainServiceTest, ReconcileKeepsCounterWhenDatabaseBecomesUnreadable) {
+    const std::string path = create_stats_db();
+    insert_order_row("ACC1", "20261009", 1, DZ_ORDER_NOT_TRADED, 5, 0, 11);
+    inject_stats_query(path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+    expect_stats(1, 5, 1, 5);
+
+    // 契约 rest §2.9.5：计数器就绪后交易库暂时不可读**不降级**——保持旧值与 ready。
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    service_->reconcile_stats();
+    expect_stats(1, 5, 1, 5);
+    EXPECT_TRUE(service_->stats_body()["available"].get<bool>());
+}
+
+TEST_F(TdDomainServiceTest, StatsReconcileDoesNotDisturbOrdersListOrWsForwarding) {
+    const std::string path = create_stats_db();
+    inject_stats_query(path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+    ws_.messages.clear();
+    // WS 转发逻辑与 #246 完全不变：ORDER_REPORT 仍照常广播。
+    feed_order(make_order_with(1, DZ_ORDER_NOT_TRADED, 5, 0, 1, day_epoch(2026, 10, 9)));
+    ASSERT_NE(find_broadcast("td_order_report"), nullptr);
+    // 统计重算不影响在线集合 / 交易日。
+    EXPECT_EQ(service_->online_accounts(), std::vector<std::string>{"ACC1"});
+    EXPECT_EQ(service_->current_trading_day().value_or(""), "20261009");
 }
 
 }  // namespace
