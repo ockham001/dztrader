@@ -35,7 +35,8 @@ export interface WsDataByType {
   sysmon_snapshot: SysmonSnapshotPayload
   sysmon_config: SysmonConfigPayload
   // 契约 webui-ws §2.5 交易数据：增量事件（payload 即契约 rest §2.9.3 行）+ 建连补发。
-  // 委托事件由 tdOrders store 按业务键/seq 合并；成交事件本轮只消费类型（列表归 #248）。
+  // 委托事件由 tdOrders store、成交事件由 tdTrades store 各自按业务键/seq 合并
+  // （两份 store 是同一 createTdListStore 工厂的两份配置）。
   td_order_report: TdOrderRow
   td_trade_report: TdTradeRow
   td_recent: TdRecentPayload

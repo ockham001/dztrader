@@ -491,7 +491,7 @@ export interface TdOrderRow {
     sort_key: string
 }
 
-// 成交行（契约 rest §2.9.3；本轮只消费类型，不渲染 —— 成交列表归 #248）
+// 成交行（契约 rest §2.9.3；WS td_trade_report 与 REST items 同一 schema；业务键 = account_id|date|exchange_id|trade_id）
 export interface TdTradeRow {
     /** 账户标识 */
     account_id: string
@@ -539,6 +539,27 @@ export interface TdOrderListResponse {
 
 // GET /api/td/orders 降级响应（200 + available=false，契约 rest §2.9.8）
 export interface TdOrderDegradedResponse {
+    /** false = 降级（响应只有 available 与 reason） */
+    available: boolean
+    reason: TdDegradedReason
+}
+
+// GET /api/td/trades 可用响应信封（契约 rest §2.9.2，与委托列表同形）
+export interface TdTradeListResponse {
+    /** true = 交易库可读 */
+    available: boolean
+    /** 当前交易日 YYYYMMDD；无在线账户时 null */
+    trading_day: string | null
+    /** 在线（Ready）账户集合；顺序不承诺 */
+    online_accounts: string[]
+    /** 成交行；空数组 = 无数据（不是错误） */
+    items: TdTradeRow[]
+    /** 下一页游标；null = 没有更多 */
+    next_cursor: string | null
+}
+
+// GET /api/td/trades 降级响应（200 + available=false，契约 rest §2.9.8）
+export interface TdTradeDegradedResponse {
     /** false = 降级（响应只有 available 与 reason） */
     available: boolean
     reason: TdDegradedReason

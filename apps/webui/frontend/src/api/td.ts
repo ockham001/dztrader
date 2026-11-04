@@ -1,8 +1,10 @@
 import { api } from './client'
-import type { TdOrdersResponse, TdStatsResponse } from '@/types/api'
+import type { TdListQuery } from '@/composables/tdListStore'
+import type { TdOrdersResponse, TdStatsResponse, TdTradesResponse } from '@/types/api'
 
 /**
- * `GET /api/td/orders` 查询参数（契约 rest §2.9.2）。
+ * 交易数据列表查询参数（契约 rest §2.9.2）：委托与成交**同形**，类型单源在
+ * `composables/tdListStore`（列表 store 工厂的 TdListQuery），此处只转出便于调用方引用。
  *
  * - `limit`：默认 200，允许 1–1000；越界或非整数由服务端回 400，前端不做静默钳制。
  * - `cursor`：上一页的 `next_cursor`；与查询作用域（端点 + accounts + 交易日）绑定，
@@ -11,14 +13,10 @@ import type { TdOrdersResponse, TdStatsResponse } from '@/types/api'
  *
  * 列表**不接受交易日参数**：当前交易日由 dzweb 解析（契约 rest §2.9.1）。
  */
-export interface TdOrdersQuery {
-  limit?: number
-  cursor?: string
-  accounts?: string[]
-}
+export type TdOrdersQuery = TdListQuery
 
 /** 把查询参数拼成 query string（省略 undefined 与空串，后端按「未给」处理） */
-function toQueryString(query: TdOrdersQuery): string {
+function toQueryString(query: TdListQuery): string {
   const search = new URLSearchParams()
   if (query.limit !== undefined) search.set('limit', String(query.limit))
   if (query.cursor) search.set('cursor', query.cursor)
@@ -40,6 +38,12 @@ function toQueryString(query: TdOrdersQuery): string {
 export const tdApi = {
   getOrders: (query: TdOrdersQuery = {}) =>
     api.get<TdOrdersResponse>(`/api/td/orders${toQueryString(query)}`),
+  /**
+   * 当日成交列表（契约 rest §2.9）：与委托**同信封同分页语义**，仅路径不同
+   * （query string 拼接共用 `toQueryString`，不另写一份）。
+   */
+  getTrades: (query: TdListQuery = {}) =>
+    api.get<TdTradesResponse>(`/api/td/trades${toQueryString(query)}`),
   /**
    * 统计计数器（契约 rest §2.9.5）：**无参数**——stats 是全局口径（全部在线账户 + 当前交易日），
    * 不接受 accounts 过滤，也不是列表（无 limit/cursor）。降级同样是 200 + available:false

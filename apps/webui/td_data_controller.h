@@ -10,14 +10,15 @@
 #include "repository.h"
 #include "td_domain_service.h"
 #include "td_orders_query.h"
+#include "td_trades_query.h"
 
 namespace dztrader::webui {
 
-/// 交易数据 REST（契约 rest §2.9）：委托列表 `GET /api/td/orders` +
-/// 统计 `GET /api/td/stats`。
+/// 交易数据 REST（契约 rest §2.9）：委托列表 `GET /api/td/orders` + 成交列表
+/// `GET /api/td/trades` + 统计 `GET /api/td/stats`。
 ///
-/// 委托列表口径（§2.9.1）：在线（Ready）账户 + 当前交易日，由 `TdDomainService` 解析；
-/// 记录一律只读直查交易库（ADR 0043），不读镜像、不走帧。降级（§2.9.8）由 `TdOrdersQuery`
+/// 委托/成交列表口径（§2.9.1）：在线（Ready）账户 + 当前交易日，由 `TdDomainService` 解析；
+/// 记录一律只读直查交易库（ADR 0043），不读镜像、不走帧。降级（§2.9.8）由查询对象
 /// 返回 200 + `available:false`，controller 不加自己的错误码。
 ///
 /// 统计（§2.9.5）：读 dzweb 内存计数器（`TdDomainService::stats_body()`），不直查库、
@@ -30,15 +31,19 @@ public:
     /// @param repo 用户数据源（认证在 JWT advice 层；读端点不做角色判断）
     /// @param domain TD 数据域服务（在线账户集合 / 当前交易日 / 统计计数器）
     /// @param orders 委托列表只读查询
+    /// @param trades 成交列表只读查询
     TdCtrl(std::shared_ptr<Repository> repo,
            std::shared_ptr<TdDomainService> domain,
-           std::shared_ptr<TdOrdersQuery> orders)
+           std::shared_ptr<TdOrdersQuery> orders,
+           std::shared_ptr<TdTradesQuery> trades)
         : ControllerBase(std::move(repo)),
           domain_(std::move(domain)),
-          orders_(std::move(orders)) {}
+          orders_(std::move(orders)),
+          trades_(std::move(trades)) {}
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(TdCtrl::get_orders, "/api/td/orders", drogon::Get);
+    ADD_METHOD_TO(TdCtrl::get_trades, "/api/td/trades", drogon::Get);
     ADD_METHOD_TO(TdCtrl::get_stats, "/api/td/stats", drogon::Get);
     METHOD_LIST_END
 
@@ -46,6 +51,12 @@ public:
     /// 参数非法 / 游标非法或作用域不符 → 400 `{"error":"bad request"}`；
     /// 列表可用/降级 → 200（降级体 `{"available":false,"reason":<code>}`，契约 §2.9.8）。
     void get_orders(const drogon::HttpRequestPtr& req,
+                    std::function<void(const drogon::HttpResponsePtr&)>&& callback);
+
+    /// GET `/api/td/trades`：参数与 `get_orders` 完全同构（`limit`/`cursor`/`accounts`）。
+    /// 参数非法 / 游标非法或作用域不符 → 400 `{"error":"bad request"}`；
+    /// 列表可用/降级 → 200（降级体 `{"available":false,"reason":<code>}`，契约 §2.9.8）。
+    void get_trades(const drogon::HttpRequestPtr& req,
                     std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
     /// GET `/api/td/stats`：**忽略全部 query 参数**（stats 不接受 accounts/limit/cursor，
@@ -57,6 +68,7 @@ public:
 private:
     std::shared_ptr<TdDomainService> domain_;
     std::shared_ptr<TdOrdersQuery> orders_;
+    std::shared_ptr<TdTradesQuery> trades_;
 };
 
 }  // namespace dztrader::webui

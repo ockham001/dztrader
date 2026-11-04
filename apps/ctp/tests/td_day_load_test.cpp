@@ -5,8 +5,10 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include <SQLiteCpp/Database.h>
@@ -65,7 +67,8 @@ void insert_order(SQLite::Database& db,
                   int32_t vol_canceled,
                   int64_t update_time,
                   int8_t direction,
-                  const nlohmann::json& extra_ext = nlohmann::json::object()) {
+                  const nlohmann::json& extra_ext = nlohmann::json::object(),
+                  double avg_price = 0.0) {
     nlohmann::json ext = extra_ext;
     ext["order_ref"] = order_ref;
     if (vol_canceled != 0) {
@@ -76,8 +79,8 @@ void insert_order(SQLite::Database& db,
     }
     SQLite::Statement s(db,
                         "INSERT OR REPLACE INTO orders (account_id, date, order_id, instrument_id,"
-                        " exchange_id, direction, status, volume, volume_traded, seq, gateway, ext)"
-                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
+                        " exchange_id, direction, status, volume, volume_traded, seq, gateway, ext,"
+                        " avg_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
     s.bind(1, acct);
     s.bind(2, day);
     s.bind(3, static_cast<int64_t>(order_id));
@@ -90,6 +93,7 @@ void insert_order(SQLite::Database& db,
     s.bind(10, static_cast<int64_t>(seq));
     s.bind(11, "dztd_test");
     s.bind(12, ext.dump());
+    s.bind(13, avg_price);
     s.exec();
 }
 
@@ -98,7 +102,9 @@ void insert_trade(SQLite::Database& db,
                   const char* day,
                   const char* trade_id,
                   int64_t seq,
-                  int64_t order_id) {
+                  int64_t order_id,
+                  double price = 3900.0,
+                  int32_t volume = 1) {
     SQLite::Statement s(
         db,
         "INSERT OR REPLACE INTO trades (account_id, date, trade_id, order_id,"
@@ -111,8 +117,8 @@ void insert_trade(SQLite::Database& db,
     s.bind(5, "IF2506");
     s.bind(6, "CFFEX");
     s.bind(7, 1);  // direction LONG
-    s.bind(8, 3900.0);
-    s.bind(9, 1);
+    s.bind(8, price);
+    s.bind(9, static_cast<int>(volume));
     s.bind(10, "strat1");
     s.bind(11, static_cast<int64_t>(seq));
     s.bind(12, "dztd_test");
@@ -519,6 +525,189 @@ TEST_F(TdDayLoadTest, FormatDayText) {
               "20260901");
     EXPECT_EQ(format_day_text(0), "00000000");
     EXPECT_EQ(format_day_text(-1), "00000000");
+}
+
+// ============================================================================
+// 6. OrderTradeAvgTracker: 每单成交累计 Σ价×量/Σ量 (契约 td-data-sync §3)
+// ============================================================================
+
+TEST(TdDayLoadOrderTradeAvgTest, SingleTradeAvgIsPrice) {
+    OrderTradeAvgTracker t;
+    t.add_trade(1, 3900.5, 3);
+    ASSERT_TRUE(t.avg_price(1).has_value());
+    EXPECT_DOUBLE_EQ(*t.avg_price(1), 3900.5);
+    EXPECT_EQ(t.volume(1), 3);
+}
+
+TEST(TdDayLoadOrderTradeAvgTest, MultiTradeWeightedAvg) {
+    OrderTradeAvgTracker t;
+    t.add_trade(1, 3900.0, 1);  // 3900
+    t.add_trade(1, 3903.0, 3);  // 11709
+    // (3900*1 + 3903*3) / 4 = 15609 / 4 = 3902.25
+    ASSERT_TRUE(t.avg_price(1).has_value());
+    EXPECT_DOUBLE_EQ(*t.avg_price(1), 3902.25);
+    EXPECT_EQ(t.volume(1), 4);
+}
+
+TEST(TdDayLoadOrderTradeAvgTest, OrdersIsolated) {
+    OrderTradeAvgTracker t;
+    t.add_trade(1, 3900.0, 2);
+    t.add_trade(2, 4000.0, 5);
+    EXPECT_DOUBLE_EQ(*t.avg_price(1), 3900.0);
+    EXPECT_DOUBLE_EQ(*t.avg_price(2), 4000.0);
+    EXPECT_EQ(t.volume(1), 2);
+    EXPECT_EQ(t.volume(2), 5);
+    EXPECT_FALSE(t.avg_price(3).has_value());  // 无成交
+}
+
+TEST(TdDayLoadOrderTradeAvgTest, NonPositiveVolumeIgnored) {
+    OrderTradeAvgTracker t;
+    t.add_trade(1, 3900.0, 0);   // 忽略
+    t.add_trade(1, 3900.0, -2);  // 忽略
+    EXPECT_FALSE(t.avg_price(1).has_value());
+    EXPECT_EQ(t.volume(1), 0);
+    t.add_trade(1, 3901.0, 1);
+    EXPECT_DOUBLE_EQ(*t.avg_price(1), 3901.0);
+    EXPECT_EQ(t.volume(1), 1);
+}
+
+TEST(TdDayLoadOrderTradeAvgTest, NonFinitePriceIgnored) {
+    OrderTradeAvgTracker t;
+    t.add_trade(1, std::numeric_limits<double>::quiet_NaN(), 1);
+    t.add_trade(1, std::numeric_limits<double>::infinity(), 1);
+    EXPECT_FALSE(t.avg_price(1).has_value());
+    EXPECT_EQ(t.volume(1), 0);
+    t.add_trade(1, 3900.0, 2);  // 有限价仍正常累计
+    EXPECT_DOUBLE_EQ(*t.avg_price(1), 3900.0);
+    EXPECT_EQ(t.volume(1), 2);
+}
+
+TEST(TdDayLoadOrderTradeAvgTest, NoTradesIsNulloptAndZeroVolume) {
+    OrderTradeAvgTracker t;
+    EXPECT_FALSE(t.avg_price(42).has_value());
+    EXPECT_EQ(t.volume(42), 0);
+}
+
+TEST(TdDayLoadOrderTradeAvgTest, SeedAggregatesByOrderId) {
+    std::vector<TradeRecord> trades;
+    for (const auto& [order_id, price, volume] : std::vector<std::tuple<int64_t, double, int32_t>>{
+             {1, 3900.0, 1}, {1, 3902.0, 3}, {2, 4000.0, 2}}) {
+        TradeRecord r{};
+        r.base.order_id = order_id;
+        r.base.price = price;
+        r.base.volume = volume;
+        trades.push_back(r);
+    }
+    OrderTradeAvgTracker t;
+    t.seed(trades);
+    EXPECT_DOUBLE_EQ(*t.avg_price(1), 3901.5);  // (3900*1 + 3902*3) / 4
+    EXPECT_EQ(t.volume(1), 4);
+    EXPECT_DOUBLE_EQ(*t.avg_price(2), 4000.0);
+    EXPECT_EQ(t.volume(2), 2);
+}
+
+TEST(TdDayLoadOrderTradeAvgTest, SeedAccumulatesOnExistingAcc) {
+    OrderTradeAvgTracker t;
+    t.add_trade(1, 4000.0, 1);
+    TradeRecord r{};
+    r.base.order_id = 1;
+    r.base.price = 3900.0;
+    r.base.volume = 1;
+    t.seed({r});
+    EXPECT_DOUBLE_EQ(*t.avg_price(1), 3950.0);  // 累加种子, 不重置
+    EXPECT_EQ(t.volume(1), 2);
+}
+
+// ============================================================================
+// 7. order_record_with_avg: 只改 base.avg_price, seq 与对比字段保持基准值
+// ============================================================================
+
+TEST(TdDayLoadOrderRecordWithAvgTest, OnlyAvgPriceChanges) {
+    OrderRecord base{};
+    base.base.order_id = 7;
+    base.base.seq = 42;
+    base.base.volume = 5;
+    base.base.volume_traded = 2;
+    base.base.status = DZ_ORDER_PART_TRADED;
+    base.base.avg_price = 0.0;
+    base.update_time = 1000;
+    base.volume_canceled = 1;
+    std::strcpy(base.trading_day, "20260901");
+    std::strcpy(base.order_ref, "000000000042");
+
+    const OrderRecord out = order_record_with_avg(base, 3901.5);
+    EXPECT_DOUBLE_EQ(out.base.avg_price, 3901.5);
+    // 对比字段 (重放去重基准) 与 seq 一律不变 — 只有调用方分配 seq
+    EXPECT_EQ(out.base.seq, 42u);
+    EXPECT_EQ(out.update_time, 1000);
+    EXPECT_EQ(out.volume_canceled, 1);
+    EXPECT_EQ(out.base.volume_traded, 2);
+    EXPECT_EQ(out.base.status, DZ_ORDER_PART_TRADED);
+    EXPECT_EQ(out.base.order_id, 7);
+    EXPECT_STREQ(out.trading_day, "20260901");
+    EXPECT_STREQ(out.order_ref, "000000000042");
+    // 输入不被修改
+    EXPECT_DOUBLE_EQ(base.base.avg_price, 0.0);
+    EXPECT_EQ(base.base.seq, 42u);
+}
+
+// ============================================================================
+// 8. load_trading_day 重建均价: 当日成交按 order_id 聚合覆盖装载委托 avg_price;
+//    当日无成交的委托保留 DB 值 (不被清零; 跨日 GFD 昨日段不回填).
+// ============================================================================
+
+TEST_F(TdDayLoadTest, DayLoadRebuildsOrderAvgFromTrades) {
+    {
+        auto db = open_rw();
+        // order 1: DB avg_price 是旧值 (昨日的 3900), 当日两笔成交 → 应被聚合均价覆盖
+        insert_order(db, "acc1", "20260901", 1, "000000000001", 11, DZ_ORDER_PART_TRADED, 4, 0,
+                     1000, DZ_DIRECTION_LONG, nlohmann::json::object(), 3900.0);
+        insert_trade(db, "acc1", "20260901", "T001", 12, 1, 3900.0, 1);
+        insert_trade(db, "acc1", "20260901", "T002", 13, 1, 3903.0, 3);
+        // order 2: 当日无成交 (跨日 GFD 单) → 保留 DB 值, 不被清零
+        insert_order(db, "acc1", "20260901", 2, "000000000002", 14, DZ_ORDER_NOT_TRADED, 0, 0, 2000,
+                     DZ_DIRECTION_LONG, nlohmann::json::object(), 3888.5);
+    }
+    auto ro = open_ro();
+    auto day = load_trading_day(ro, "acc1", "20260901");
+    ASSERT_EQ(day.orders.size(), 2u);
+    ASSERT_EQ(day.trades.size(), 2u);
+
+    // 跟踪器 = 当日成交按 order_id 聚合
+    ASSERT_TRUE(day.order_avgs.avg_price(1).has_value());
+    EXPECT_DOUBLE_EQ(*day.order_avgs.avg_price(1), 3902.25);  // (3900*1 + 3903*3) / 4
+    EXPECT_EQ(day.order_avgs.volume(1), 4);
+    EXPECT_FALSE(day.order_avgs.avg_price(2).has_value());
+
+    // 装载委托的 avg_price 与聚合均价一致
+    EXPECT_DOUBLE_EQ(day.orders[0].base.avg_price, 3902.25);
+    // 当日无成交的委托保留 DB 值
+    EXPECT_DOUBLE_EQ(day.orders[1].base.avg_price, 3888.5);
+}
+
+TEST_F(TdDayLoadTest, DayLoadIgnoresHistoryDayTradesForAvg) {
+    {
+        auto db = open_rw();
+        insert_order(db, "acc1", "20260901", 1, "000000000001", 11, DZ_ORDER_PART_TRADED, 4, 0,
+                     1000, DZ_DIRECTION_LONG, nlohmann::json::object(), 3900.0);
+        insert_trade(db, "acc1", "20260831", "T900", 9, 1, 3800.0, 5);  // 历史日成交
+    }
+    auto ro = open_ro();
+    auto day = load_trading_day(ro, "acc1", "20260901");
+    ASSERT_EQ(day.orders.size(), 1u);
+    EXPECT_TRUE(day.trades.empty());
+    // 历史日成交不参与均价重建 (契约 §3 只装当日)
+    EXPECT_FALSE(day.order_avgs.avg_price(1).has_value());
+    EXPECT_DOUBLE_EQ(day.orders[0].base.avg_price, 3900.0);  // 保留 DB 值
+}
+
+TEST_F(TdDayLoadTest, DayLoadEmptyAccountHasEmptyAvgTracker) {
+    auto ro = open_ro();
+    auto day = load_trading_day(ro, "acc_empty", "20260901");
+    EXPECT_TRUE(day.orders.empty());
+    EXPECT_TRUE(day.trades.empty());
+    EXPECT_FALSE(day.order_avgs.avg_price(1).has_value());
+    EXPECT_EQ(day.order_avgs.volume(1), 0);
 }
 
 }  // namespace

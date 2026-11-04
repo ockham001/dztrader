@@ -39,7 +39,10 @@ add_library(dzweb_obj OBJECT
     process_mirror.cpp
     notify_controller.cpp
     settings_controller.cpp
+    td_list_query.cpp
+    td_row_json.cpp
     td_orders_query.cpp
+    td_trades_query.cpp
     td_read_db.cpp
     td_stats.cpp
     td_stats_query.cpp

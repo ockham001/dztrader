@@ -277,4 +277,47 @@ TEST(ReportFilterTest, ActiveOrdersKeepsPartTradedAndExcludesAllTerminalStatuses
     EXPECT_EQ(ids, (std::set<int64_t>{10, 11}));
 }
 
+// ============================================================================
+// find_order: 基准中该 order_id 的最新态 (#248 成交均价刷新取基准行)
+// ============================================================================
+
+TEST(TdReportFilterFindOrder, ReturnsNullWhenMissing) {
+    ReportFilter f{"acc1"};
+    EXPECT_EQ(nullptr, f.find_order(1));  // 空基准
+
+    f.accept_order(make_order(1, DZ_ORDER_NOT_TRADED, 0, 0, 1000));
+    EXPECT_NE(nullptr, f.find_order(1));
+    EXPECT_EQ(nullptr, f.find_order(2));  // 未装载的 order_id
+}
+
+TEST(TdReportFilterFindOrder, ReturnsLatestAcceptedState) {
+    auto f = ReportFilter::load({make_order(1, DZ_ORDER_PART_TRADED, 2, 0, 1000)}, {});
+    f.accept_order(make_order(1, DZ_ORDER_ALL_TRADED, 5, 0, 2000));
+
+    const OrderRecord* base = f.find_order(1);
+    ASSERT_NE(nullptr, base);
+    EXPECT_EQ(base->base.order_id, 1);
+    EXPECT_EQ(base->base.status, DZ_ORDER_ALL_TRADED);
+    EXPECT_EQ(base->base.volume_traded, 5);
+    EXPECT_EQ(base->update_time, 2000);
+}
+
+TEST(TdReportFilterFindOrder, ReflectsAvgPriceRefreshAndKeepsDedupBaseline) {
+    // 刷新行 (只改 avg_price + 新 seq) accept 后: find_order 看到新均价,
+    // 而对比字段未变 → 重放同一业务记录仍 kSkip (去重基准不被均价变化破坏).
+    auto f = ReportFilter::load({make_order(1, DZ_ORDER_PART_TRADED, 2, 0, 1000)}, {});
+    OrderRecord base = make_order(1, DZ_ORDER_PART_TRADED, 2, 0, 1000);
+    OrderRecord refreshed = base;
+    refreshed.base.avg_price = 3901.5;
+    refreshed.base.seq = 77;
+    f.accept_order(refreshed);
+
+    const OrderRecord* current = f.find_order(1);
+    ASSERT_NE(nullptr, current);
+    EXPECT_DOUBLE_EQ(current->base.avg_price, 3901.5);
+    EXPECT_EQ(current->base.seq, 77u);
+    // 重放原业务记录 (avg_price 不参与对比集) 仍被吞
+    EXPECT_EQ(Verdict::kSkip, f.check_order(base));
+}
+
 }  // namespace

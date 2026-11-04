@@ -7,13 +7,14 @@
  * - 排序：只做 `sort_key` 字符串比较，**不解析其结构**（§2.9.6 性质 3）；
  * - 合并：业务键 `order_id` 去重 + 同键 `seq` 大者胜，与到达顺序无关（webui-ws §5 第 8 条）。
  */
+import { TD_LIST_WINDOW_CAPACITY } from './tdListStore'
 import type { TdOrderRow } from '@/types/api'
 
 /** 数值不可用 / 无数据时的占位（不用 0 冒充，契约 webui-ws §5 第 13 条） */
 export const TD_UNAVAILABLE_TEXT = '—'
 
-/** 委托列表有界窗口容量（ADR 0043 决策 7 建议 2000，可配） */
-export const TD_ORDERS_WINDOW_CAPACITY = 2000
+/** 委托列表有界窗口容量（ADR 0043 决策 7 建议 2000；数值单源在 tdListStore，成交同口径） */
+export const TD_ORDERS_WINDOW_CAPACITY = TD_LIST_WINDOW_CAPACITY
 
 /** 报单时间 0–86399（距午夜秒数，契约 rest §2.9.3）的上界 */
 const SECONDS_PER_DAY = 86_400
@@ -118,6 +119,11 @@ function businessKey(row: TdOrderRow): number {
  * 3. 结果按 `capacity` 截断，**丢弃 sort_key 最小的行**（= 最旧，列表尾部的行）。
  *
  * 纯函数：不修改 `existing` / `incoming`。
+ *
+ * 合并口径与成交的 `tdTradeView.mergeTradeRows` **必须一致**（业务键去重 + 同键 seq 大者胜 +
+ * sort_key 字符串降序 + 有界截断），差别只在业务键的组成（委托 = order_id，成交 =
+ * account|date|exchange|trade_id）。列表行为本身由 `tdListStore.createTdListStore` 统一承载，
+ * 这里只提供委托的键与排序兜底——不要在任一侧单独改动合并语义。
  */
 export function mergeOrderRows(
   existing: readonly TdOrderRow[],

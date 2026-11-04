@@ -6,7 +6,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 交易数据读端点（§2.9）直查交易库，不读镜像、不走帧：dzweb 不保留委托/成交/持仓/资金记录镜像，库是唯一真相源（ADR 0043）。
 
-> **实现注记**：`TdDataService` 记录镜像已随 #246 删除；委托列表端点（`GET /api/td/orders`）与 WS 委托事件 / 建连补发已随 #246 落地；统计端点（`GET /api/td/stats`，§2.9.5）与 dzweb 统计计数器已随 #247 落地（`apps/webui/td_stats{,_query}.{h,cpp}`，重算查询与委托列表共用只读连接抽取 `td_read_db.{h,cpp}`）。成交 / 持仓 / 资金端点与账户配置写端点由 #248–#251 落地，当前未实现的端点在契约里同样有效（实现票随后补齐）。
+> **实现注记**：`TdDataService` 记录镜像已随 #246 删除；委托列表端点（`GET /api/td/orders`）与 WS 委托事件 / 建连补发已随 #246 落地；统计端点（`GET /api/td/stats`，§2.9.5）与 dzweb 统计计数器已随 #247 落地（`apps/webui/td_stats{,_query}.{h,cpp}`，重算查询与委托列表共用只读连接抽取 `td_read_db.{h,cpp}`）；成交列表端点（`GET /api/td/trades`）与 WS 成交事件已随 #248 落地（`apps/webui/td_trades_query.{h,cpp}`，列表参数 / 游标抽为 `apps/webui/td_list_query.{h,cpp}`、行形状与派生字段抽为 `apps/webui/td_row_json.{h,cpp}`，委托与成交共用同一份）。持仓 / 资金端点与账户配置写端点由 #249–#251 落地，当前未实现的端点在契约里同样有效（实现票随后补齐）。
 
 ---
 

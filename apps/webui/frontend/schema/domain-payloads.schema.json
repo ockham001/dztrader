@@ -519,7 +519,7 @@
     "TdTradeRow": {
       "type": "object",
       "required": ["account_id", "date", "trade_id", "order_id", "strategy_id", "instrument_id", "exchange_id", "direction", "position_effect", "price", "volume", "time", "price_decimals", "seq", "sort_key"],
-      "description": "成交行（契约 rest §2.9.3；本轮只消费类型，不渲染 —— 成交列表归 #248）",
+      "description": "成交行（契约 rest §2.9.3；WS td_trade_report 与 REST items 同一 schema；业务键 = account_id|date|exchange_id|trade_id）",
       "properties": {
         "account_id": { "type": "string", "description": "账户标识" },
         "date": { "type": "string", "description": "交易日 YYYYMMDD" },
@@ -560,6 +560,33 @@
       "type": "object",
       "required": ["available", "reason"],
       "description": "GET /api/td/orders 降级响应（200 + available=false，契约 rest §2.9.8）",
+      "properties": {
+        "available": { "type": "boolean", "description": "false = 降级（响应只有 available 与 reason）" },
+        "reason": { "$ref": "#/$defs/TdDegradedReason" }
+      }
+    },
+    "TdTradeListResponse": {
+      "type": "object",
+      "required": ["available", "trading_day", "online_accounts", "items", "next_cursor"],
+      "description": "GET /api/td/trades 可用响应信封（契约 rest §2.9.2，与委托列表同形）",
+      "properties": {
+        "available": { "type": "boolean", "description": "true = 交易库可读" },
+        "trading_day": {
+          "description": "当前交易日 YYYYMMDD；无在线账户时 null",
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "online_accounts": { "type": "array", "items": { "type": "string" }, "description": "在线（Ready）账户集合；顺序不承诺" },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/TdTradeRow" }, "description": "成交行；空数组 = 无数据（不是错误）" },
+        "next_cursor": {
+          "description": "下一页游标；null = 没有更多",
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      }
+    },
+    "TdTradeDegradedResponse": {
+      "type": "object",
+      "required": ["available", "reason"],
+      "description": "GET /api/td/trades 降级响应（200 + available=false，契约 rest §2.9.8）",
       "properties": {
         "available": { "type": "boolean", "description": "false = 降级（响应只有 available 与 reason）" },
         "reason": { "$ref": "#/$defs/TdDegradedReason" }

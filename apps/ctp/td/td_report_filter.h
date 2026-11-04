@@ -78,6 +78,10 @@ public:
     /// 终态 = ALL_TRADED/CANCELLED/REJECTED; 无排序保证 (Task 5 种入用).
     [[nodiscard]] std::vector<OrderRecord> active_orders(int32_t trading_day) const;
 
+    /// 基准中该 order_id 的委托最新态；不存在 = nullptr.
+    /// 成交均价刷新 (#248) 据此取基准行, 只覆盖 avg_price 派生列后重新 accept.
+    [[nodiscard]] const OrderRecord* find_order(int64_t order_id) const noexcept;
+
     /// 对比命中 (kSkip) 时回填钩子 (Task 5 据此转发给 order_ref_map_ 修复).
     /// 本任务内为占位: kSkip 时 rec 已带正确 order_id, 无对外状态变更.
     void replay_hit_order(const OrderRecord& rec);

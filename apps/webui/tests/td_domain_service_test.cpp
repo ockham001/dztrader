@@ -158,6 +158,34 @@ protected:
         feed_frame(router_, DZ_FRAME_ORDER_REPORT, report);
     }
 
+    static DzTradeReport make_trade(const std::string& account,
+                                    const std::string& trade_id,
+                                    int64_t order_id,
+                                    int32_t date,
+                                    int32_t time,
+                                    uint64_t seq,
+                                    const std::string& instrument = "rb2601") {
+        DzTradeReport report{};
+        dztrader::copy_string(report.account_id, account.c_str(), true);
+        dztrader::copy_string(report.trade_id, trade_id.c_str(), true);
+        dztrader::copy_string(report.instrument_id, instrument.c_str(), true);
+        dztrader::copy_string(report.exchange_id, "SHFE", true);
+        dztrader::copy_string(report.strategy_id, "stg1", true);
+        report.order_id = order_id;
+        report.direction = DZ_DIRECTION_LONG;
+        report.position_effect = DZ_POSITION_EFFECT_OPEN;
+        report.price = 3512.3;
+        report.volume = 1;
+        report.date = date;
+        report.time = time;
+        report.seq = seq;
+        return report;
+    }
+
+    void feed_trade(const DzTradeReport& report) {
+        feed_frame(router_, DZ_FRAME_TRADE_REPORT, report);
+    }
+
     /// 建真 schema 库并写入一条合约 price_tick。
     std::string create_db_with_tick(const std::string& instrument_id, double price_tick) {
         const std::string path = (dir_ / "trade.db").string();
@@ -765,6 +793,114 @@ TEST_F(TdDomainServiceTest, StatsReconcileDoesNotDisturbOrdersListOrWsForwarding
     // 统计重算不影响在线集合 / 交易日。
     EXPECT_EQ(service_->online_accounts(), std::vector<std::string>{"ACC1"});
     EXPECT_EQ(service_->current_trading_day().value_or(""), "20261009");
+}
+
+// ===== TRADE_REPORT → WS td_trade_report（契约 webui-ws §2.5）=====
+
+TEST_F(TdDomainServiceTest, TradeReportForOnlineAccountIsBroadcastAsRowPayload) {
+    const std::string db_path = create_db_with_tick("rb2601", 0.5);
+    set_db_path(db_path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+    ws_.messages.clear();
+
+    DzTradeReport report =
+        make_trade("ACC1", "00000000001", 10231, day_epoch(2026, 10, 9), 32405, 1843);
+    report.direction = DZ_DIRECTION_SHORT;
+    report.price = 3512.3;
+    report.volume = 2;
+    feed_trade(report);
+
+    const auto* message = find_broadcast("td_trade_report");
+    ASSERT_NE(message, nullptr);
+    // 契约 webui-ws §2.5：payload 即行对象，instance_id 为空
+    EXPECT_TRUE(message->instance_id.empty());
+    const auto& row = message->data;
+    EXPECT_EQ(row["account_id"].get<std::string>(), "ACC1");
+    EXPECT_EQ(row["date"].get<std::string>(), "20261009");
+    EXPECT_EQ(row["trade_id"].get<std::string>(), "00000000001");
+    EXPECT_EQ(row["order_id"].get<int64_t>(), 10231);
+    EXPECT_EQ(row["strategy_id"].get<std::string>(), "stg1");
+    EXPECT_EQ(row["instrument_id"].get<std::string>(), "rb2601");
+    EXPECT_EQ(row["exchange_id"].get<std::string>(), "SHFE");
+    EXPECT_EQ(row["direction"].get<std::string>(), "Short");
+    EXPECT_EQ(row["position_effect"].get<std::string>(), "Open");
+    EXPECT_DOUBLE_EQ(row["price"].get<double>(), 3512.3);
+    EXPECT_EQ(row["volume"].get<int>(), 2);
+    EXPECT_EQ(row["time"].get<int>(), 32405);
+    EXPECT_EQ(row["price_decimals"].get<int>(), 1);  // tick 0.5 → 1
+    EXPECT_EQ(row["seq"].get<uint64_t>(), 1843U);
+    EXPECT_TRUE(row["sort_key"].is_string());
+    // 契约 rest §2.9.3：成交行没有成交均价字段
+    EXPECT_FALSE(row.contains("avg_price"));
+    EXPECT_FALSE(row.contains("avg_price_decimals"));
+}
+
+TEST_F(TdDomainServiceTest, TradeReportForOfflineAccountIsNotBroadcast) {
+    ready("ACC1", day_epoch(2026, 10, 9));
+    ws_.messages.clear();
+    feed_trade(make_trade("ACC2", "0000000001", 7, day_epoch(2026, 10, 9), 32400, 1));
+    EXPECT_EQ(find_broadcast("td_trade_report"), nullptr);
+}
+
+TEST_F(TdDomainServiceTest, TradeReportBeforeAnyReadyIsNotBroadcast) {
+    ws_.messages.clear();
+    feed_trade(make_trade("ACC1", "0000000001", 7, day_epoch(2026, 10, 9), 32400, 1));
+    EXPECT_EQ(find_broadcast("td_trade_report"), nullptr);
+}
+
+TEST_F(TdDomainServiceTest, TradeReportDoesNotTouchStatsCounters) {
+    const std::string path = create_stats_db();
+    inject_stats_query(path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+    // 契约 rest §2.9.5：统计 4 值只来自**委托**行；成交帧不推进计数器。
+    feed_trade(make_trade("ACC1", "0000000001", 1, day_epoch(2026, 10, 9), 32400, 1));
+    expect_stats(0, 0, 0, 0);
+}
+
+TEST_F(TdDomainServiceTest, RecentEventsCarryBothOrderAndTradeRowsInArrivalOrder) {
+    ready("ACC1", day_epoch(2026, 10, 9));
+    feed_order(make_order("ACC1", 1, day_epoch(2026, 10, 9), 32400, 1));
+    feed_trade(make_trade("ACC1", "0000000001", 1, day_epoch(2026, 10, 9), 32401, 2));
+    feed_order(make_order("ACC1", 2, day_epoch(2026, 10, 9), 32402, 3));
+
+    const auto payload = service_->recent_events();
+    const auto& events = payload["events"];
+    // 契约 td-data-sync §8：同一账户环同时容纳委托与成交事件，按入环先后从旧到新。
+    ASSERT_EQ(events.size(), 3U);
+    EXPECT_EQ(events[0]["type"].get<std::string>(), "td_order_report");
+    EXPECT_EQ(events[0]["data"]["order_id"].get<int64_t>(), 1);
+    EXPECT_EQ(events[1]["type"].get<std::string>(), "td_trade_report");
+    EXPECT_EQ(events[1]["data"]["trade_id"].get<std::string>(), "0000000001");
+    EXPECT_EQ(events[2]["type"].get<std::string>(), "td_order_report");
+    EXPECT_EQ(events[2]["data"]["order_id"].get<int64_t>(), 2);
+}
+
+TEST_F(TdDomainServiceTest, RecentEventsRingCapacityIsSharedByOrdersAndTrades) {
+    ready("ACC1", day_epoch(2026, 10, 9));
+    // 契约 td-data-sync §8：容量 300 条/账户，四类事件共享（不是每类各 300）。
+    for (size_t i = 0; i < kTdRecentCapacityPerAccount; ++i) {
+        feed_order(make_order("ACC1", 1000 + static_cast<int64_t>(i), day_epoch(2026, 10, 9), 32400,
+                              static_cast<uint64_t>(i) + 1));
+    }
+    feed_trade(make_trade("ACC1", "TRADE_LAST", 9999, day_epoch(2026, 10, 9), 32401,
+                          static_cast<uint64_t>(kTdRecentCapacityPerAccount) + 1));
+
+    const nlohmann::json payload = service_->recent_events();
+    const auto& events = payload["events"];
+    ASSERT_EQ(events.size(), kTdRecentCapacityPerAccount);
+    // 丢最旧：首条不再是第一个委托，末条是新到的成交。
+    EXPECT_EQ(events.back()["type"].get<std::string>(), "td_trade_report");
+    EXPECT_EQ(events.back()["data"]["trade_id"].get<std::string>(), "TRADE_LAST");
+    EXPECT_EQ(events.front()["data"]["order_id"].get<int64_t>(), 1001);
+}
+
+TEST_F(TdDomainServiceTest, OfflineClearsBothOrderAndTradeEventsForThatAccount) {
+    ready("ACC1", day_epoch(2026, 10, 9));
+    feed_order(make_order("ACC1", 1, day_epoch(2026, 10, 9), 32400, 1));
+    feed_trade(make_trade("ACC1", "0000000001", 1, day_epoch(2026, 10, 9), 32401, 2));
+    ASSERT_EQ(service_->recent_events()["events"].size(), 2U);
+    offline("ACC1");
+    EXPECT_TRUE(service_->recent_events()["events"].empty());
 }
 
 }  // namespace
