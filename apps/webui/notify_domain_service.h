@@ -39,12 +39,12 @@ public:
                 }
             }
             if (is_warn) {
-                SPDLOG_WARN("notify_ui pushed | source={} message={}", source, message);
+                SPDLOG_WARN("notify_ui pushed | source={} message=\"{}\"", source, message);
             } else {
-                SPDLOG_INFO("notify_ui pushed | source={} message={}", source, message);
+                SPDLOG_INFO("notify_ui pushed | source={} message=\"{}\"", source, message);
             }
         } catch (const std::exception& e) {
-            SPDLOG_WARN("failed to process NOTIFY_UI | error={}", e.what());
+            SPDLOG_WARN("failed to process NOTIFY_UI | error=\"{}\"", e.what());
         }
     }
 

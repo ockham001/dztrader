@@ -57,13 +57,13 @@ void SettingsCtrl::get_master(
                 dztrader::core::load_json_section<nlohmann::json>(master_config_path_, "master");
             if (m.is_object()) master = m;
         } catch (const std::exception& e) {
-            spdlog::warn("load master section failed | error={}", e.what());
+            spdlog::warn("load master section failed | error=\"{}\"", e.what());
         }
         try {
             auto s = dztrader::core::load_json_section<nlohmann::json>(master_config_path_, "shm");
             if (s.is_object()) shm = s;
         } catch (const std::exception& e) {
-            spdlog::warn("load shm section failed | error={}", e.what());
+            spdlog::warn("load shm section failed | error=\"{}\"", e.what());
         }
     }
     // 字段类型防御: 若字段存在但类型非法(如字符串), .value() 会抛 type_error,
@@ -126,7 +126,7 @@ void save_webui_json(const std::filesystem::path& path, const nlohmann::json& pa
                     // 旧文件 JSON 损坏: 不能静默清空其他 section, 否则单 section
                     // 写入会丢失全部配置。 备份损坏文件后用空 object 起步, 让用户能从备份恢复 (对齐
                     // json_section.h)。
-                    spdlog::warn("webui.json parse failed | error={}", e.what());
+                    spdlog::warn("webui.json parse failed | error=\"{}\"", e.what());
                     corrupted = true;
                 }
             }
@@ -140,7 +140,7 @@ void save_webui_json(const std::filesystem::path& path, const nlohmann::json& pa
             std::error_code ec;
             std::filesystem::rename(path, backup, ec);
             // 备份失败不阻断 save (可能 permission denied), 但至少尝试备份
-            if (ec) spdlog::warn("backup corrupt webui.json failed | error={}", ec.message());
+            if (ec) spdlog::warn("backup corrupt webui.json failed | error=\"{}\"", ec.message());
         }
     }
     // auth/notify 段守卫: 旧文件存在但对应段缺失/非 object (如数组) 时, 先规整为 object 再写子字段

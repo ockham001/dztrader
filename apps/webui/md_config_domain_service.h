@@ -51,7 +51,7 @@ public:
                           nlohmann::json{{"source", source}, {"config", payload}});
             SPDLOG_DEBUG("md_rtn_config pushed | source={}", source);
         } catch (const std::exception& e) {
-            SPDLOG_WARN("failed to parse RTN_MD_CONFIG | error={}", e.what());
+            SPDLOG_WARN("failed to parse RTN_MD_CONFIG | error=\"{}\"", e.what());
         }
     }
 

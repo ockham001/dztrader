@@ -136,7 +136,7 @@ void LogTailManager::poll(const std::filesystem::path& log_dir) {
             }
         }
     } catch (const std::exception& e) {
-        SPDLOG_WARN("poll_log_tail failed | error={}", e.what());
+        SPDLOG_WARN("poll_log_tail failed | error=\"{}\"", e.what());
     }
 }
 

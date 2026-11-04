@@ -93,6 +93,11 @@ esac
 # ---- C 段 ----------------------------------------------------------------
 
 check_log_format() {
+    # 先跑规则自测（#266）：R6「自由文本 k=v 必须双引号」的边界是实测出来的——
+    # 第一版把 `reason=` 也纳入，而它同时用于枚举标识符（reason=negative_volume），
+    # 直接让 8 个 bar_strategy 测试变红。selftest 用正/反样本锁住这条边界，
+    # 防止后续有人「顺手把 reason 加回去」。显式串联：`set -u -o pipefail` 没有 -e。
+    "$PYTHON" scripts/check_log_format.py --selftest || return $?
     "$PYTHON" scripts/check_log_format.py apps/ libs/
 }
 

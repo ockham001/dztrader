@@ -29,7 +29,7 @@ public:
                           nlohmann::json{{"source", source}, {"status", payload}});
             SPDLOG_DEBUG("md_rtn_status pushed | source={}", source);
         } catch (const std::exception& e) {
-            SPDLOG_WARN("failed to parse RTN_MD_STATUS | error={}", e.what());
+            SPDLOG_WARN("failed to parse RTN_MD_STATUS | error=\"{}\"", e.what());
         }
     }
 

@@ -5,7 +5,7 @@ check_log_format.py — dztrader 日志格式 lint 脚本
 检测 spdlog / LastError::set / throw std::* / std::cerr 的文本是否符合项目规范:
   - 格式: prose | k=v k=v （hybrid 模式）
   - prose 全英文小写开头，无句号
-  - k=v 值含空格/等号/引号用双引号包裹
+  - 自由文本类 k=v 的值必须双引号包裹（R6，见下）
   - 禁止多行 banner（=== 装饰线）
   - 禁止单引号包裹占位符 '{}'（应用双引号或去引号）
 
@@ -13,15 +13,21 @@ check_log_format.py — dztrader 日志格式 lint 脚本
 bar_strategy §6 记录了这个缺口），因此与 spdlog 同一套文本规则。#163/#165 的审查各抓到
 一次只靠人眼发现的措辞漂移，本检查把它机械化（issue #213）。
 
-`std::cerr` 的**引号规则**（`k={}` 该写成 `k="{}"`）暂不启用：现存 24 处历史站点，需要一次
-单独清扫（见 #213）。其余规则（非英文 / 大写开头 / 句号结尾 / banner / 单引号占位符 /
-missing-pipe）在现存站点上 backlog 为 0，直接生效。
+**R6 引号规则**（#266 启用）：`error=` / `err=` / `detail=` / `msg=` / `exception=` /
+`what=` / `text=` 的值一律要求 `k="{}"`。这条规则此前只在文档里写着、检查器从未实现
+（#213 关闭时遗留，当时理由是「现存 24 处历史站点需单独清扫」——清扫最终在 #266 做完，
+实际是 67 处站点 / 49 条日志字符串）。
+
+`reason=` / `name=` / `path=` / `target=` / `value=` / `message=` **有意排除**：它们既
+用于自由文本也用于枚举标识符（如 `reason=negative_volume`，有测试断言锁定），静态不可
+判定；强行纳入会让测试变红（#266 第一版实测 8 个失败）。这几类 key 仍需人工判断。
 
 不在本 lint 范围：UI 通知（notify_ui_*）与策略输出等**面向用户的展示文案**允许中文，
 不按日志/错误文本规范检查；需要时由 review 按契约单独裁决。
 
 用法:
   python scripts/check_log_format.py apps/ libs/
+  python scripts/check_log_format.py --selftest     # 只跑规则自测（正/反样本）
   python scripts/check_log_format.py --help
 
 退出码: 0=通过, 1=有违规
@@ -69,6 +75,62 @@ NON_ENGLISH_RE = re.compile(r'[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]')
 
 # banner 装饰线检测
 BANNER_RE = re.compile(r'^={5,}|^-{5,}|\*{5,}')
+
+# R6（#266）：自由文本类 k=v 的值必须双引号包裹（AGENTS §四「值含空格/等号/引号用双引号」）。
+#
+# 只覆盖「值**必然**是自由文本」的 key —— 它们的来源固定是 e.what() / sqlite3_errmsg() /
+# 异常消息，几乎一定含空格或冒号（如 `no such table: orders`）。
+#
+# 边界是**实测**出来的，不是猜的（#266 第一版把 reason 也纳入，直接让 8 个测试变红）：
+#   - `reason=`   两种用法并存：`reason="{}"` 传 e.what()（自由文本）与 `reason={}` 传
+#     `negative_volume` / `invalid_price` 一类**枚举标识符**（AGENTS 规定枚举不加引号）。
+#     静态无法区分，故排除。`libs/strategy_api/tests/bar_strategy_position_test.cpp` 有断言
+#     `reason=negative_volume` 锁定这一点。
+#   - `name/path/target/value/message=` 同理：可能是标识符也可能是自由文本，排除。
+#     （`message=` 在本仓多为 UI 文案/结构化消息字段，不按日志 k=v 规则强制引号。）
+# 纳入规则的 key，其全部现存站点在启用时都已核对过取值来源（见 #266 issue 的 AC）。
+FREE_TEXT_KEYS = ("error", "err", "detail", "msg", "exception", "what", "text")
+UNQUOTED_FREE_TEXT_RE = re.compile(r'(?<![\w"])(' + "|".join(FREE_TEXT_KEYS) + r')=\{\}')
+
+# selftest 样本：(文本, 期望违规规则集合)。精确集合相等——既挡漏报，也挡「塌缩成永远报
+# 同一条」的退化（与 check_json_vendor_version.py 同一套做法）。
+SELFTEST_CASES: list[tuple[str, set[str]]] = [
+    # 必须报
+    ("db open failed | path={} error={}", {"log-format/unquoted-free-text"}),
+    ("query failed | error={}", {"log-format/unquoted-free-text"}),
+    ("io failed | detail={} msg={}", {"log-format/unquoted-free-text"}),
+    ("cerr path | err={}", {"log-format/unquoted-free-text"}),
+    # 已经合规
+    ('db open failed | path={} error="{}"', set()),
+    ('failed | error="{}" detail="{}"', set()),
+    # **排除**的 key：枚举标识符与自由文本混用，静态不可判定 —— 现实证据见
+    # bar_strategy_position_test.cpp 的 `reason=negative_volume` 断言
+    ("intent rejected | instrument={} intent={} reason={}", set()),
+    ("db rebuilt | path={} reason={} backup={}", set()),
+    ("changed | name={} target={} value={} message={}", set()),
+    # 不相关 key：ID/数字/枚举
+    ("placed | order_id={} error_id={}", set()),
+    ("frame | type={} state={} ret={} count={}", set()),
+    # 单词里碰巧含 key 名不算（\b 锚定）
+    ("not_a_key | myerror={} error_code={}", set()),
+]
+
+
+def run_selftest() -> int:
+    """把已知正/反样本喂给 check_string，确认 R6 与既有规则的行为没漂移。"""
+    failures = 0
+    for text, expected in SELFTEST_CASES:
+        got = {rule for rule, _, _ in check_string(text)}
+        if got != expected:
+            print(f"selftest FAIL {text!r}: expected {sorted(expected) or 'none'}, "
+                  f"got {sorted(got) or 'none'}", file=sys.stderr)
+            failures += 1
+    if failures:
+        print(f"selftest FAILED: {failures} case(s)", file=sys.stderr)
+        return 1
+    print(f"selftest: {len(SELFTEST_CASES)} log-string forms behave as expected")
+    return 0
+
 
 
 @dataclass
@@ -164,6 +226,17 @@ def check_string(content: str) -> list[tuple[str, str, str]]:
                 prose.rstrip("."),
             ))
 
+    # R6: unquoted-free-text — 自由文本类 k=v 的值必须双引号包裹（#266）
+    for m in UNQUOTED_FREE_TEXT_RE.finditer(content):
+        key = m.group(1)
+        violations.append((
+            "log-format/unquoted-free-text",
+            f"free-text value '{key}={{}}' must be double-quoted: these values come "
+            "from e.what()/sqlite3_errmsg() and usually contain spaces or colons "
+            "(AGENTS §四)",
+            content.replace(f"{key}={{}}", f'{key}="{{}}"'),
+        ))
+
     return violations
 
 
@@ -227,16 +300,26 @@ def main() -> int:
     )
     parser.add_argument(
         "paths",
-        nargs="+",
+        nargs="*",
         type=Path,
-        help="待扫描的目录或文件（如 apps/ libs/）",
+        help="待扫描的目录或文件（如 apps/ libs/）；--selftest 时可省略",
     )
     parser.add_argument(
         "--extensions",
         default=".cpp,.h,.hpp,.cc",
         help="扫描的文件扩展名（逗号分隔，默认 .cpp,.h,.hpp,.cc）",
     )
+    parser.add_argument(
+        "--selftest",
+        action="store_true",
+        help="只跑规则自测（注入已知正/反样本，不扫仓库）",
+    )
     args = parser.parse_args()
+
+    if args.selftest:
+        return run_selftest()
+    if not args.paths:
+        parser.error("paths are required unless --selftest is given")
 
     exts = set(args.extensions.split(","))
     all_violations: list[Violation] = []

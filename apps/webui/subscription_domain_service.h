@@ -28,7 +28,7 @@ public:
             ws_.broadcast("md_rtn_subscriptions", "", p);
             SPDLOG_DEBUG("md_rtn_subscriptions pushed | source={}", source);
         } catch (const std::exception& e) {
-            SPDLOG_WARN("failed to parse RTN_MD_SUBSCRIPTIONS | error={}", e.what());
+            SPDLOG_WARN("failed to parse RTN_MD_SUBSCRIPTIONS | error=\"{}\"", e.what());
         }
     }
 

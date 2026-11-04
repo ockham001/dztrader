@@ -16,6 +16,7 @@
 
 改行为或删符号后，旧注释、README、组件文档仍在描述旧行为——编译与测试都不失败，只有人会读到错话。
 
+- **已有机械防线（先跑，不要靠肉眼）**：`preflight` 的 `log format` 步现已启用 AGENTS §四的**引号规则**（#266）——自由文本类 `k={}`（`error`/`err`/`detail`/`msg`/`exception`/`what`/`text`）未加双引号即报 `log-format/unquoted-free-text`。这些值来自 `e.what()` / `sqlite3_errmsg()`，通常含空格或冒号（如 `no such table: orders`），旧规则只在文档里写着、检查器从未实现（#213 关了但清扫没做）。**规则边界是实测出来的**：`reason=` / `name=` / `path=` / `target=` / `value=` / `message=` **有意排除**——它们同时用于枚举标识符与自由文本（`reason=negative_volume` 一类有测试锁定），静态不可判定。所以这几类 key 仍需人工判断，其余靠检查器。
 - **已有机械防线（先跑，不要靠肉眼）**：`preflight` 的 `docs links` 步现在还会校验活跃文档里**反引号包裹的仓库路径**与**反引号包裹的 snake_case 代码符号**是否仍然存在（`docs/components/`、`docs/frame_contracts/`、`docs/agents/` 与根 README/GLOSSARY 等活跃文档；冻结归档与 ADR 豁免）。改/删文件后路径写错报 `backticked path does not exist`；删/改符号后文档仍写旧名报 `backticked symbol not found in code`（#191；白名单只收环境/计划/外部工具名词；已实现又删掉的符号**默认不进白名单**——唯一例外是文档把历史符号当反例有意引用，此时显式登记并在检查器注释注明）。**这一步只覆盖存在性**——行为描述、口径文字仍要人核对。同一步还会校验 `apps/` + `libs/` 源码注释中的显式契约引用（`契约 <name> §N` / `《帧契约：<name>》§N` / `总则 §N`）：未知契约或缺失小节即红，字符串与非注释文本不扫描（#221）。
 - 搜法：对 diff 里改动的每个函数/字段/配置键，反查全仓（含同文件相邻注释）提及它的地方；删掉的类/字段尤其要 grep 注释。
 - 事实校准：文档里每一句「已实现 / 已接上 / 已支持」都要能在 diff 里指到对应代码；指不到就是**宣称先于实现**，与代码漂移同级（#157 曾把 `ConfigStore` 接线写进文档而代码未做）。反向同样成立：代码做了而文档没提，下一票会当成「还没做」重做。
