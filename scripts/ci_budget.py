@@ -286,11 +286,11 @@ def run_selftest() -> int:
                   file=sys.stderr)
             failures += 1
 
-    # 核心回归：#263 的 32 文件 / 34.9min 在大档**不得**判超预算。
+    # 核心回归：#263 的真实计数 (21 cpp, 11 hdr) / 34.9min 在大档**不得**判超预算。
     # 这正是残留的单一 ≤15min 目标会产生的假告警（#260 遗留问题）。
-    big = evaluate(32, 12, 34.9)
+    big = evaluate(21, 11, 34.9)
     if not big.ok:
-        print(f"selftest FAIL 32-file run judged over budget: {big.message}", file=sys.stderr)
+        print(f"selftest FAIL #263-scale run judged over budget: {big.message}", file=sys.stderr)
         failures += 1
 
     # 小档超时必须是失败且提示缓存
