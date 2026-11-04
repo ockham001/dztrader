@@ -18,6 +18,13 @@ Skipped: absolute URLs (http/https/mailto) and links into local-only archives
 这个编号小节。字符串/字符/原始字符串字面量以及代码本身不算注释——#207 的 blocking
 finding 是 `stores/logs.ts` 注释引用 `契约 strategy §5`（该契约根本没有编号小节），
 旧的「只扫 *.md」检查覆盖不到代码注释。
+
+计划符号（issue #260）：契约先行流程里，先写进契约、代码尚未落地的名字会被上面的符号
+检查误判成漂移。docs/frame_contracts/ 下的文件可用
+<!-- pending-symbol: <name> (#<issue>) --> 标注待实现符号：标注只豁免**本文件**里同名
+反引号符号的缺失错误，检查器同时汇总打印待实现清单；符号实现落地后标注必须移除（否则
+报 stale 标注错误），标记出现在其它活跃文档或标注格式非法同样报错。判定口径、白名单与
+冻结归档/ADR 豁免均不变。
 """
 
 import os
@@ -41,6 +48,12 @@ BACKTICK_PATH_RE = re.compile(
     r"`([A-Za-z0-9_./-]+\.(?:h|cpp|py|md|json|sh|ps1|txt|map|cmake|yml|yaml))`")
 # 反引号里的 snake_case 标识符（函数/字段/配置键/工具名）。纯全大写、驼峰、带点路径不算。
 BACKTICK_SYMBOL_RE = re.compile(r"`([a-z][a-z0-9_]{3,})`")
+# 契约先行（issue #260）：docs/frame_contracts/ 下可用显式标记声明「计划符号」——契约
+# 先写、实现后落的名字此时还不在代码里。一个标记声明一个符号，且只豁免本文件内同名
+# 反引号符号的缺失错误；符号一旦实现（出现在代码 token 索引里）标注即失效，必须移除。
+PENDING_SYMBOL_PREFIX_RE = re.compile(r"<!--\s*pending-symbol")
+PENDING_SYMBOL_RE = re.compile(
+    r"<!--\s*pending-symbol\s*:\s*([a-z][a-z0-9_]{3,})\s*\(#(\d+)\)\s*-->")
 # 代码 token 索引的扫描范围（环境里可查的产物如 build/、node_modules/ 不扫；
 # third_party 是 vendored 外部代码，扫进来会掩盖本仓符号缺失）。
 SYMBOL_SCAN_ROOTS = ("libs", "apps", "strategies", "scripts", "cmake", ".github")
@@ -454,21 +467,97 @@ def code_token_index(root):
     return tokens
 
 
-def check_backticked_symbols(files, root):
-    """Flag backticked snake_case identifiers in active docs that code does not define."""
-    code_tokens = code_token_index(root)
+def check_pending_symbols(files, root, code_tokens=None):
+    """Collect ``<!-- pending-symbol: name (#issue) -->`` markers in frame contracts.
+
+    Contract-first workflow writes names into contracts before the code lands, which the
+    symbol check below would flag as drift (#260). A marker declares one planned name for
+    the containing file only; ``check_backticked_symbols`` receives the per-file mapping
+    so the exemption cannot leak into another contract that uses the same name unmarked.
+
+    A marker whose symbol is already in the code token index is stale: leaving it there
+    would let a later deletion of the symbol escape the symbol check, so it is an error
+    and the symbol is neither exempted nor listed as pending.
+
+    Returns ``(errors, pending_by_file, pending)`` where pending is a list of
+    ``(rel, lineno, name, issue)`` used for the awaiting-implementation summary.
+    """
+    if code_tokens is None:
+        code_tokens = code_token_index(root)
+    errors = []
+    pending_by_file = {}
+    pending = []
+    for rel in files:
+        if not is_active_doc(rel):
+            continue
+        in_contract_dir = rel.startswith(CONTRACT_DIR)
+        with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
+            lines = strip_code_fences(fh.read())
+        for lineno, line in enumerate(lines, 1):
+            if not in_contract_dir:
+                # 机制不扩散：标记只在 docs/frame_contracts/ 下生效，其它活跃文档
+                # （components/agents 等）出现标记一律报错。
+                for m in PENDING_SYMBOL_PREFIX_RE.finditer(line):
+                    snippet = line[m.start():m.start() + 80].strip()
+                    errors.append(
+                        f"{rel}:{lineno}: pending-symbol markers are only allowed in "
+                        f"docs/frame_contracts/ -> {snippet}")
+                continue
+            matches = list(PENDING_SYMBOL_RE.finditer(line))
+            for m in matches:
+                name, issue = m.group(1), m.group(2)
+                if name in code_tokens:
+                    errors.append(
+                        f"{rel}:{lineno}: stale pending-symbol marker -> "
+                        f"{name} is already implemented in code, remove the marker")
+                    continue
+                pending.append((rel, lineno, name, issue))
+                pending_by_file.setdefault(rel, set()).add(name)
+            # 有标记前缀但不构成完整语法（缺名称/缺 issue 号/一条多符号等）：报错并给出
+            # 期望格式，避免写错的标记被静默忽略。
+            for m in PENDING_SYMBOL_PREFIX_RE.finditer(line):
+                if any(v.start() <= m.start() < v.end() for v in matches):
+                    continue
+                snippet = line[m.start():m.start() + 80].strip()
+                errors.append(
+                    f'{rel}:{lineno}: malformed pending-symbol marker, expected '
+                    f'"<!-- pending-symbol: <snake_case_name> (#<issue>) -->" -> {snippet}')
+    return errors, pending_by_file, pending
+
+
+def pending_symbol_report(pending):
+    """Render the awaiting-implementation summary printed by main() (never affects exit)."""
+    lines = ["pending symbol(s) awaiting implementation: %d" % len(pending)]
+    lines.extend("  %s:%d %s (#%s)" % (rel, lineno, name, issue)
+                 for rel, lineno, name, issue in pending)
+    return lines
+
+
+def check_backticked_symbols(files, root, code_tokens=None, pending_by_file=None):
+    """Flag backticked snake_case identifiers in active docs that code does not define.
+
+    ``pending_by_file`` maps contract files to the planned symbols they declare (#260):
+    such a marker exempts the name for **that file only**, so an unmarked use in another
+    contract is still reported.
+    """
+    if code_tokens is None:
+        code_tokens = code_token_index(root)
+    pending_by_file = pending_by_file or {}
     errors = []
     for rel in files:
         if not is_active_doc(rel):
             continue
         with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
             lines = strip_code_fences(fh.read())
+        pending = pending_by_file.get(rel, set())
         for lineno, line in enumerate(lines, 1):
             for tok in BACKTICK_SYMBOL_RE.findall(line):
                 if "_" not in tok or tok.endswith("_") or tok.startswith("_"):
                     continue
                 if tok in SYMBOL_ALLOWLIST:
                     continue
+                if tok in pending:
+                    continue  # declared planned symbol in this contract (#260)
                 if tok not in code_tokens:
                     errors.append(f"{rel}:{lineno}: backticked symbol not found in code -> {tok}")
     return errors
@@ -799,10 +888,148 @@ def selftest():
             print("selftest FAIL: expected broken rows at lines 4 and 15, got:",
                   table_errors)
             return 1
+
+        # 计划符号机制（#260 §5）：契约先行时契约里先写的名字代码里还不存在，契约文件可用
+        # <!-- pending-symbol: name (#246) --> 显式标注。标注豁免「本文件」里该符号的缺失
+        # 错误、汇总进待实现清单；未标注符号仍被抓到；围栏代码块内不解析。
+        contract_rel = CONTRACT_DIR + "sample_contract.md"
+        other_contract_rel = CONTRACT_DIR + "other_contract.md"
+        with open(os.path.join(tmp, contract_rel), "w", encoding="utf-8") as fh:
+            fh.write("\n".join([
+                "<!-- pending-symbol: planned_widget (#246) -->",
+                "计划中的 `planned_widget` 由后续实现。",
+                "`ghost_symbol` 未标注 → 仍必须被抓到。",
+                "",
+            ]))
+        pending_errors, pending_by_file, pending = check_pending_symbols([contract_rel], tmp)
+        pending_symbol_errors = check_backticked_symbols(
+            [contract_rel], tmp, pending_by_file=pending_by_file)
+        if pending_errors:
+            print("selftest FAIL: pending-symbol marker must be accepted, got:", pending_errors)
+            return 1
+        expected_pending = [(contract_rel, 1, "planned_widget", "246")]
+        if pending != expected_pending:
+            print("selftest FAIL: expected pending symbol planned_widget, got:", pending)
+            return 1
+        if pending_by_file != {contract_rel: {"planned_widget"}}:
+            print("selftest FAIL: pending-symbol exemption must be file-scoped, got:",
+                  pending_by_file)
+            return 1
+        if len(pending_symbol_errors) != 1 or "ghost_symbol" not in pending_symbol_errors[0] \
+                or "planned_widget" in pending_symbol_errors[0]:
+            print("selftest FAIL: marked symbol must be exempt, unmarked ghost still flagged; "
+                  "got:", pending_symbol_errors)
+            return 1
+        report = pending_symbol_report(pending)
+        if report != ["pending symbol(s) awaiting implementation: 1",
+                      "  %s:1 planned_widget (#246)" % contract_rel]:
+            print("selftest FAIL: pending-symbol report format changed:", report)
+            return 1
+
+        # 文件作用域：同名符号标在契约 A、未标在契约 B → B 的缺失错误仍必须被抓到。
+        with open(os.path.join(tmp, contract_rel), "w", encoding="utf-8") as fh:
+            fh.write("<!-- pending-symbol: shared_widget (#248) -->\n"
+                     "`shared_widget` 待实现。\n")
+        with open(os.path.join(tmp, other_contract_rel), "w", encoding="utf-8") as fh:
+            fh.write("`shared_widget` 未标注 → 仍必须被抓到。\n")
+        scope_errors, scope_by_file, scope_pending = check_pending_symbols(
+            [contract_rel, other_contract_rel], tmp)
+        scope_symbol_errors = check_backticked_symbols(
+            [contract_rel, other_contract_rel], tmp, pending_by_file=scope_by_file)
+        if scope_errors or scope_pending != [(contract_rel, 1, "shared_widget", "248")] \
+                or scope_by_file != {contract_rel: {"shared_widget"}}:
+            print("selftest FAIL: file-scoped marker parsing changed; got:",
+                  scope_errors, scope_by_file, scope_pending)
+            return 1
+        if len(scope_symbol_errors) != 1 \
+                or not scope_symbol_errors[0].startswith(other_contract_rel + ":") \
+                or "shared_widget" not in scope_symbol_errors[0]:
+            print("selftest FAIL: pending-symbol exemption must stay file-scoped; got:",
+                  scope_symbol_errors)
+            return 1
+
+        # 围栏代码块内的标记必须忽略：既不声明计划符号，也不豁免围栏外的反引号符号。
+        with open(os.path.join(tmp, contract_rel), "w", encoding="utf-8") as fh:
+            fh.write("\n".join([
+                "```markdown",
+                "<!-- pending-symbol: planned_widget (#246) -->",
+                "```",
+                "`planned_widget` 在围栏外未标注 → 必须被抓到。",
+                "",
+            ]))
+        fenced_errors, fenced_by_file, fenced_pending = check_pending_symbols(
+            [contract_rel], tmp)
+        fenced_symbol_errors = check_backticked_symbols(
+            [contract_rel], tmp, pending_by_file=fenced_by_file)
+        if fenced_errors or fenced_by_file or fenced_pending:
+            print("selftest FAIL: pending-symbol marker inside a code fence must be ignored; "
+                  "got:", fenced_errors, fenced_by_file, fenced_pending)
+            return 1
+        if len(fenced_symbol_errors) != 1 or "planned_widget" not in fenced_symbol_errors[0]:
+            print("selftest FAIL: fenced marker must not exempt the symbol outside it; got:",
+                  fenced_symbol_errors)
+            return 1
+
+        # 实现落地后未清标注 → stale 标注错误（把标注留在契约里会让「删符号仍能被抓到」
+        # 失效）。stale 标记不再进豁免表/待实现清单。
+        with open(os.path.join(tmp, contract_rel), "w", encoding="utf-8") as fh:
+            fh.write("<!-- pending-symbol: real_symbol (#249) -->\n`real_symbol` 已实现。\n")
+        stale_errors, stale_by_file, stale_pending = check_pending_symbols([contract_rel], tmp)
+        if len(stale_errors) != 1 or "stale" not in stale_errors[0] \
+                or "real_symbol" not in stale_errors[0]:
+            print("selftest FAIL: implemented symbol with marker kept must report a stale "
+                  "marker; got:", stale_errors)
+            return 1
+        if stale_by_file or stale_pending:
+            print("selftest FAIL: stale marker must not exempt/list the symbol; got:",
+                  stale_by_file, stale_pending)
+            return 1
+
+        # 非法标记必须报错并说明期望格式（否则写错语法会静默失效，等于没有机制）。
+        with open(os.path.join(tmp, contract_rel), "w", encoding="utf-8") as fh:
+            fh.write("\n".join([
+                "<!-- pending-symbol: planned_widget -->",  # 缺 issue 号
+                "<!-- pending-symbol: (#250) -->",  # 缺名称
+                "<!-- pending-symbol: planned_widget other_widget (#251) -->",  # 一条多符号
+                "",
+            ]))
+        malformed_errors, malformed_by_file, malformed_pending = check_pending_symbols(
+            [contract_rel], tmp)
+        if len(malformed_errors) != 3 or not all(
+                "malformed pending-symbol" in err for err in malformed_errors):
+            print("selftest FAIL: each malformed marker must be reported; got:",
+                  malformed_errors)
+            return 1
+        if not all("<!-- pending-symbol: <snake_case_name> (#<issue>) -->" in err
+                   for err in malformed_errors):
+            print("selftest FAIL: malformed-marker error must state the expected format; "
+                  "got:", malformed_errors)
+            return 1
+        if malformed_by_file or malformed_pending:
+            print("selftest FAIL: malformed markers must not exempt/list symbols; got:",
+                  malformed_by_file, malformed_pending)
+            return 1
+
+        # 机制不扩散：计划符号标记只在 docs/frame_contracts/ 下生效，其它活跃文档
+        # （docs/components/、docs/agents/ 等）出现标记必须报错。
+        with open(doc, "w", encoding="utf-8") as fh:
+            fh.write("<!-- pending-symbol: planned_widget (#246) -->\n`real_symbol` 正常。\n")
+        misplaced_errors, misplaced_by_file, misplaced_pending = check_pending_symbols(
+            ["docs/components/sample.md"], tmp)
+        if len(misplaced_errors) != 1 \
+                or "docs/frame_contracts/" not in misplaced_errors[0]:
+            print("selftest FAIL: pending-symbol marker outside docs/frame_contracts/ must be "
+                  "reported; got:", misplaced_errors)
+            return 1
+        if misplaced_by_file or misplaced_pending:
+            print("selftest FAIL: misplaced marker must not exempt/list symbols; got:",
+                  misplaced_by_file, misplaced_pending)
+            return 1
     print("selftest OK: symbol check detects missing symbols; path check covers regression + "
           "untracked-but-present files; section check catches stale §N in active docs; "
           "source-comment check catches stale contract refs and ignores strings; "
-          "table check catches unescaped column-splitting pipes")
+          "table check catches unescaped column-splitting pipes; pending-symbol check "
+          "accepts planned contract symbols and rejects stale/malformed/misplaced markers")
     return 0
 
 
@@ -853,10 +1080,16 @@ def main(argv):
     errors.extend(contract_errors)
     errors.extend(check_active_doc_sections(files, root))
     errors.extend(check_backticked_paths(files, root, tracked_repo_paths(root)))
-    errors.extend(check_backticked_symbols(files, root))
+    code_tokens = code_token_index(root)
+    pending_errors, pending_by_file, pending = check_pending_symbols(files, root, code_tokens)
+    errors.extend(pending_errors)
+    errors.extend(check_backticked_symbols(files, root, code_tokens, pending_by_file))
     errors.extend(check_source_contract_refs(root, idx))
     errors.extend(check_table_columns(files, root))
 
+    if pending:
+        for line in pending_symbol_report(pending):
+            print(line)
     for err in errors:
         print(err)
     if errors:

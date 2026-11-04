@@ -3,7 +3,7 @@
 量化交易系统（CMake + Conan 2 + Ninja + GTest / C++20，Windows MSVC + Linux GCC 13）。
 单人 + AI 协作。**项目简介、特性、4 命令工作流、命令详解、部署流程见 [README.md](README.md)** —— 本文只写 README 不会写、且写错代价很高的部分。
 
-**改 `libs/`/`apps/` 下的 `.h`/`.cpp` 之前，先用 `codegraph_explore <符号或文件名>`**（MCP 工具，或 shell 兜底 `codegraph explore "<符号>"`）：它返回的就是 `read` 的等价内容 + 调用方 + 影响面，不必再逐文件读。只有它没覆盖的地方（配置、文档、`.cache/`）才用 grep/read。
+**改 `libs/`/`apps/` 下的 `.h`/`.cpp` 之前，先用 `codegraph_explore <符号或文件名>`**（MCP 工具，或 shell 兜底 `codegraph explore "<符号>"`）：它返回的就是 `read` 的等价内容 + 调用方 + 影响面，不必再逐文件读。只有它没覆盖的地方（配置、文档、`.cache/`）才用 grep/read。**例外**：`write` 覆盖已有文件前仍须先用 `read` 打开一次——写守卫不认 codegraph（DSH 实测多次被拦，#260）。
 
 ---
 
@@ -155,7 +155,7 @@
 ### 日常工作流（单人 + AI 协作）
 
 1. **开工前必读**：本文 → [docs/README.md](docs/README.md)（文档地图与冲突裁决规则）→ 相关帧契约（先读 `general.md`）
-2. **小步提交**：一个提交只做一件事，每步可验证（构建 + 相关测试）。提交信息**中文**，前缀 `fix:` / `feat:` / `refactor:` / `docs:` / `test:` / `chore:` / `perf:` / `style:` / `build:` / `ci:`
+2. **每票 1–2 个提交**（实现 + 审查收敛）：冻结审查后只 push 不 amend；提交前门禁绿。提交信息**中文**，前缀 `fix:` / `feat:` / `refactor:` / `docs:` / `test:` / `chore:` / `perf:` / `style:` / `build:` / `ci:`
 3. **push 前自检**：见 [docs/development-checklist.md](docs/development-checklist.md) 的 C 段（权威且更全 —— 含 `type-check` / `lint` / `lint:css` / 契约 Freshness 门禁）。同一波内 PR 开完即可继续下一票的只读准备，CI 结果在自然断点或波末统一收；**本票合并前、开新波前 CI 必须绿**；**CI 红先修红，不叠加新改动**
 4. **大改动先写文档**：spec 设计 + plan 实施计划（checkbox 制），我确认后再实现
 5. **收尾**：工作区保持干净（运行产物已 gitignore；临时诊断脚本要么通用化提交、要么删除）。每波改动结束 `git status` 干净 + `git log` 可读 + CI 绿

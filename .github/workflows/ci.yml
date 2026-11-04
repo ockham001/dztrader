@@ -13,11 +13,15 @@ on:
       - "THIRD_PARTY_NOTICES.md"
   pull_request:
     paths-ignore: *docs_only_paths
-  # 夜间预热 Windows 编译缓存（#133）：GitHub Actions 缓存按 ref 作用域，PR run 写入的
-  # 缓存不能被其它 PR 复用；只有在默认分支上构建，PR 才能 restore 到。故 PR 侧只读缓存，
-  # 由本定时任务 + workflow_dispatch 在 main 上写入（public 仓库 runner 不额外计费）。
-  # 注意：合并 #133 后首个 PR 仍是冷缓存（需先手动触发一次 warm job）；"PR 墙钟 ≤15min"
-  # 是预热生效后的稳态目标，不是首跑承诺。
+  # Windows 编译缓存预热（#133）：GitHub Actions 缓存按 ref 作用域，PR run 写入的缓存
+  # 不能被其它 PR 复用；只有在默认分支上构建，PR 才能 restore 到。故 PR 侧只读缓存，
+  # 由本定时任务 + workflow_dispatch + main push（#260）在 main 上写入（public 仓库
+  # runner 不额外计费）；main push 的 warm job 与 Linux 验证同一 run 并行，不占 PR 等待。
+  # 注意：合并 #133 后首个 PR 仍是冷缓存（需先有一次 main run 或手动触发一次 warm job）。
+  # 「PR 墙钟 ≤15min」是 #133 时预热生效后的稳态目标，已被实测推翻：2026-11-03/04 代码票
+  # #243–#245 的 Windows build 23m12s–31m27s、PR 总墙钟 31–40min（GHA 缓存配额挤兑 +
+  # main 未写 sccache 两因叠加，见 #260；同期 main 夜间 warm job Build 仅 5m21s，瓶颈是
+  # 缓存命中而非代码量）；#260 §1 修复生效后以同波代码 PR 实测重设目标，暂不承诺具体分钟数。
   schedule:
     - cron: "17 16 * * *"  # UTC 16:17 = Asia/Shanghai 00:17
   # 手动触发：
@@ -104,6 +108,13 @@ jobs:
         shell: pwsh
         run: .\scripts\build.ps1
 
+      # 命中率证据（#260，与 Linux 的 ccache stats 对齐）：失败不阻断构建。
+      - name: sccache stats
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: sccache --show-stats
+
       - name: C++ Tests (incl. integration smoke)
         shell: pwsh
         run: .\scripts\test.ps1
@@ -169,8 +180,16 @@ jobs:
       # CI 编译缓存（#133）：只缓存编译器输出，绝不缓存 build/ 目录（陈旧 obj/依赖追踪是
       # C++ CI 的公认坑）。setup.sh 会自动检测 ccache 并接 CMAKE_CXX_COMPILER_LAUNCHER，
       # 这里负责把 CCACHE_DIR 持久化；是否生效看 setup 日志 "ccache: enabled" 与下方统计。
-      # restore-keys 不要带尾 `-`：action 会自行拼 `ccache-` 前缀与 `-` 后缀（append-timestamp
-      # 默认 true），写成 `ccache-linux-` 会变成 `ccache-ccache-linux--` 永不命中。
+      # append-timestamp: false（#260）：默认 true 时 save key 追加 ISO 时间戳，每次 main
+      # push 新增一份约 1GB 缓存（2026-11-04 实测 10 份共 8.8GB，全仓 actions cache 合计
+      # 10.4GB 超 10GB 配额，Windows sccache 有被 LRU 挤出风险）；改为 false 后 save key
+      # 固定（不含时间戳，v1.2 实现里为 `ccache-`+key+`-`），每次 push 不再新增条目。
+      # 代价：GHA cache key 不可变，固定 key 首次保存后内容即冻结（重复 save 仅 warning、
+      # 不失败），需刷新时手动在 key 里 bump 版本（如 ccache-linux-v2-...）。
+      # 注：action 始终在 key/restore-keys 前拼 `ccache-`；v1.2 的 restore 侧还把
+      # append-timestamp 当字符串读（`false` 也是非空串），实际仍会追加尾 `-`，只有 save
+      # 侧按布尔解析、不加时间戳。故 restore-keys 仍不能带尾 `-`，否则成
+      # `ccache-ccache-linux--` 永不命中。
       # PR 不写缓存（写了也只对本次 PR 可见，白占配额），缓存由 main push 写入。
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -180,6 +199,7 @@ jobs:
           restore-keys: |
             ccache-linux
           max-size: 1000M
+          append-timestamp: false
           save: ${{ github.event_name != 'pull_request' }}
 
       - name: Install clang-format 21 (apt.llvm.org, official LLVM)
@@ -285,11 +305,14 @@ jobs:
   # sccache 的 GitHub Actions 缓存按 ref 作用域：PR run 写入的缓存其它 PR 读不到，
   # 只有默认分支（main）写的缓存能被任意 PR restore。因此本 job 在 main 上只做
   # “configure + build” 把编译结果写进 sccache，不做测试（测试仍由 PR 的 windows job 负责）；
-  # 定时 + 手动触发，不占用任何 PR 的等待时间。
+  # main push（#260，每次 merge 后异步预热，与 Linux 验证同一 run 并行）+ 定时 + 手动触发，
+  # 不占用任何 PR 的等待时间。
   # ============================================================
   windows-cache-warm:
     name: Windows cache warm (main)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: windows-latest
     timeout-minutes: 90
     env:

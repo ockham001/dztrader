@@ -5,6 +5,10 @@
 
 ---
 
+## 开工前置（实现前）
+
+**每票流程的第一步**：实现前对照**全部前置票的实际交付**（读前置票 issue 的关闭评论 / 对应 commit），把本票 AC 中**已交付 / 已变更**的项以 **issue 评论**记录（**不删除原文 AC**），实现只做剩余部分。判据：本票 AC 不再重复交付前置票已完成项，后续会话无需逐条比对（反例：**#245** 的 AC 已被 **#244** commit `3d4dd80` 全部交付，issue 却无记录，后续会话重复比对）。
+
 ## 0. 确定同步点（不要留占位）
 
 收尾前先看本票实际改了哪些路径，按下表机械推导要同步的文档；涉及帧/WS/REST 的**先改契约再改代码**（[general.md](../frame_contracts/general.md) §11.3）：
@@ -29,7 +33,7 @@
 5. **verifier prompt 用模板，不要临场写**：**成本封套与 prompt 骨架见 [verifier-prompt.md](verifier-prompt.md)**（Standards / Spec / 只读验证三个可复制块 + 为什么必须写步骤序）。带齐固定点与 `HEAD`、`git diff <base>...HEAD` 命令、上一轮 findings（贴全，避免重复审查与相反结论）、只读约束。**先复制模板再填占位符**——只写「预算 ≤N 分钟」是已知失效形态（#216 首轮两个 verifier 19.4 / 14.4 min 零产出；换步骤序后 4.8 / 0.7 min 交付）。
 6. **一个会话总共只能派 8 个 teammate**（`spawn_teammate` 第 9 个报 `Team member limit 8 reached`，本宿主硬上限）。**这是会话生命周期内的累计上限，不是并发上限**：成员跑完变成 `inactive` 后**仍占着名额**，`interrupt_agent` 也不释放，且没有工具能把成员移出花名册——#233 派满 8 个后第 9 个被拒；#237 同样（8 个历史成员全 inactive，第 9 个仍被拒）。**所以名额是稀缺资源，派之前先规划**：一次审查只派必要的那几个（Standards + Spec，验证轮能复用上下文就不新开轴）；机械工单（如 #233 的 97 条 lint）别按文件数拆——按文件群拆到 3–5 个就给验证轮留够余量。名额耗尽后只能 Lead 自己代轴（见 §1 第 10 条的 failed 恢复协议第 ③ 步）。
 
-7. **票内多 teammate 并行必须划写作用域**：AGENTS 的「一票一 worktree」只覆盖**跨票**。票内并行时，同仓多成员同时改同一批文件会互相踩——#206/#233 共 7 次 `file changed since it was read`（`Modal.vue` / `useFocusTrap.ts` / `App.vue` 被多个成员碰过）。规则：**一个成员一个文件集，共享文件归 Lead**；用 `team_task_create` 的 `write_scopes` 字段登记该成员要改的路径前缀，派活时写进 prompt。审阅/验证类成员只读，不占作用域。**注意 `write_scopes` 是建议性声明、不是互斥锁**——它不会阻止两个成员写同一文件，纪律靠 prompt 与分工，不靠工具强制。
+7. **票内多 teammate 并行必须划写作用域**：AGENTS 的「一票一 worktree」只覆盖**跨票**。票内并行时，同仓多成员同时改同一批文件会互相踩——#206/#233 共 7 次 `file changed since it was read`（`Modal.vue` / `useFocusTrap.ts` / `App.vue` 被多个成员碰过）。规则：**一个成员一个文件集，共享文件归 Lead**；用 `team_task_create` 的 `write_scopes` 字段登记该成员要改的路径前缀，派活时写进 prompt。审阅/验证类成员只读，不占作用域。**注意 `write_scopes` 是建议性声明、不是互斥锁**——它不会阻止两个成员写同一文件，纪律靠 prompt 与分工，不靠工具强制。**分工表（成员 / 写作用域 / 依赖 / 验收映射）必须先在 issue 评论落盘再 spawn 成员**——`.cache/handoff/` 可随时删除，不作为唯一载体；本仓以 issue 为唯一记忆。分工表与 `team_task_create` 的 `write_scopes` 登记同步维护，别只留在会话或 handoff 文档里。
 
 8. 轮次口径：**1 轮 = 1 次修复 + 1 个 verifier**；最多 3 轮修复。第 3 轮仍有 blocking → 修完后必须再跑 **1 轮只读验证**（不算第 4 轮修复），并把结论写进报告。禁止用改写 prompt 重跑 verifier 来"刷新"结论。
 9. **等 verifier 不要 `sleep` 轮询**（AGENTS §五「等待一律后台作业」）：`spawn_teammate` 的成员用 `wait_agent` 真正阻塞；派 `subagent` 时结果以 `subagent-settled` 通知到达。等待窗口做**不写文件**的工作（读 diff/契约、拟关闭评论与报告、跑幂等 `preflight --c-only`）。反例：#77/#78/#81 因 sleep 等 verifier 累计 ≈3.9h。
@@ -46,6 +50,15 @@
 ```
 
 `gate.sh` 是 agent 侧的统一入口：同一 build tree 用 `flock` 串行（并行子代理不会互相踩 ninja）、自动导出 ccache 环境、输出落 `.cache/gate/`、返回**真实退出码**。人工可直接跑 `build.sh` / `test.sh` / `preflight.sh` 等价命令。**要短输出用 `./scripts/gate.sh build|test|preflight --tail N`**（成功留 N 行、失败留 max(N,30) 行）；**不要**给门禁命令接 `| tail` / `| head`——管道会把失败吞成 exit 0（#75 的 wait-ci 超时、#81 的 ninja 失败都因此被记成假绿）。
+
+票内并行期间只跑定向作业即可（不必每轮全量，收尾仍须跑上面的全量门禁）：
+
+```bash
+./scripts/gate.sh build --tail 5 --target <target>
+./scripts/gate.sh test --tail 8 --test-name <regex>
+```
+
+`gate.sh` 只解析自己的 `--tail N`，其余参数原样透传：`build.sh` 支持 `-t|--target`（→ `cmake --build --target`）、`test.sh` 支持 `-t|--test-name <regex>`（→ `ctest -R`）。**票内并行期间用 `--target` / `--test-name` 迭代；所有写作用域完成后才跑全量 build/test**——build 树中间态（他人在途文件未收敛）下的全量构建会因别人的半成品而红，纯浪费（#243/#244/#245 门禁墙钟 13–23 min，其中多轮全量 build 落在写作用域未完成期间）。
 
 `./scripts/preflight.sh` 覆盖：日志格式、clang-format 21.x、文档链接（含契约 §N 引用：活跃文档 + apps/libs 源码注释）、测试可移植性、**MSVC hazard lint**（Windows 头顺序 / C4101 等 Linux 编译器拦不到的失败）、**内置 JSON 版本一致性**（conanfile / 单头 / `VENDORED.md` 三方，含自测）、前端 `type-check` / `lint` / `lint:css` / `vitest` / `gen:types` 新鲜度。任一项红就停，**先修红，不叠加新改动**。CI linux job 复用同一脚本（`--c-only`）。
 
