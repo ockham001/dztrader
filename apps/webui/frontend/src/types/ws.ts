@@ -5,6 +5,7 @@ import type {
   ProcessStatusPayload, ProgressStatus, LogConfigPayload, AutoLoginPayload, NotifyUiPayload,
   MdRtnConfigPayload, MdRtnStatusPayload, ShmConfigView, LogLine,
   SysmonSnapshotPayload, SysmonConfigPayload,
+  TdOrderRow, TdTradeRow, TdRecentPayload,
 } from './generated'
 
 // 服务端 → 客户端每类消息的 data 载荷类型（判别联合核心）
@@ -33,6 +34,11 @@ export interface WsDataByType {
   // 契约 sysmon: 快照域（固定实例 dzsysmon）与运行期配置，前端消费随资源监控页票接入
   sysmon_snapshot: SysmonSnapshotPayload
   sysmon_config: SysmonConfigPayload
+  // 契约 webui-ws §2.5 交易数据：增量事件（payload 即契约 rest §2.9.3 行）+ 建连补发。
+  // 委托事件由 tdOrders store 按业务键/seq 合并；成交事件本轮只消费类型（列表归 #248）。
+  td_order_report: TdOrderRow
+  td_trade_report: TdTradeRow
+  td_recent: TdRecentPayload
   // 契约 webui-ws §2.4 控制消息 ACK（payload 键）
   md_connect_ack: { source: string; ok: boolean }
   md_disconnect_ack: { source: string; ok: boolean }

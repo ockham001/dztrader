@@ -2,9 +2,9 @@
 
 #include <chrono>
 #include <cstring>
+#include <ctime>
 #include <format>
 #include <limits>
-#include <map>
 #include <string_view>
 #include <vector>
 
@@ -74,6 +74,13 @@ TdApi::TdApi(std::string name,
     persist_writer_->open();
     persist_writer_->start_writer();
 
+    // 无会话拒单 seq 分配器 (#13): 首次使用按账户从 DB MAX(seq) 播种.
+    // 只读连接在首次分配时按需打开 (ensure_read_db), 失败则从 1 开始并记 WARN.
+    no_session_seq_.set_db_provider([this]() -> SQLite::Database* {
+        ensure_read_db();
+        return read_db_.get();
+    });
+
     // ADR 0041 §6: master 启动时已按 DB MAX(order_id) 播种共享计数器；td 侧再以同一
     // MAX(order_id)+1 幂等 ensure（fetch_max，单调不减）作兜底——覆盖 master 缺席 /
     // 计数器 shm 文件丢失 / 跨机导入后计数器落后。库不可用只告警降级（库非交易真相源）。
@@ -129,85 +136,37 @@ TdApi::~TdApi() {
 }
 
 void TdApi::set_configs(TdConfig td_cfg) {
+    // 登录日装载由 AccountSession::on_rsp_user_login 在登录成功时执行
+    // (契约 td-data-sync §3 / ADR 0045 决策 5); 配置阶段不做全史预扫.
     config_ = std::move(td_cfg);
-    // Task 5: 预扫 hook. 在 run() 前 (set_configs 后、connect 前) 用独立只读连接
-    // 打开同一 db 文件, 对 config_.accounts 全量预扫, 存 boot_cache_ (start_seq/orders/trades).
-    // 预扫用独立只读连接, 与 Writer 会话无竞争 (#245 登录日装载替代全史预扫).
-    ensure_prescan_db();
-    prescan_all_accounts();
 }
 
 // ============================================================================
-// TD 数据同步: 账户启动装载 / 重连增量重建 (Task 5)
+// TD 数据同步: 登录日装载的只读连接 (契约 td-data-sync §3 / ADR 0045)
 // ============================================================================
 
-void TdApi::ensure_prescan_db() {
+void TdApi::ensure_read_db() {
     // 独立只读连接打开同一 db 文件 ($DZTRADER_HOME/db/trade.db). 文件尚不存在 (首次启动未落库)
-    // 时失败降级 (prescan_db_ 空), 运行期 connect 时按需重开.
+    // 时失败降级 (read_db_ 空), 运行期登录时按需重开.
     try {
         auto db_path = dztrader::paths::trade_db();
-        if (prescan_db_ != nullptr) {
+        if (read_db_ != nullptr) {
             return;  // 已打开
         }
-        if (prescan_db_missing_ && !std::filesystem::exists(db_path)) {
+        if (read_db_missing_ && !std::filesystem::exists(db_path)) {
             return;  // 上次确认文件缺失, 节流跳过重复打开
         }
-        prescan_db_ = std::make_unique<SQLite::Database>(db_path.string(), SQLite::OPEN_READONLY);
+        read_db_ = std::make_unique<SQLite::Database>(db_path.string(), SQLite::OPEN_READONLY);
         // 只读连接设 busy_timeout (与写端 td_persist_writer.cpp 一致, SQLiteCpp 默认 0):
-        // 装载/预扫在 td Writer 批量提交窗口内不得立即 SQLITE_BUSY (spec §3.3).
-        prescan_db_->exec("PRAGMA busy_timeout=5000");
-        prescan_db_missing_ = false;
-        SPDLOG_INFO("td prescan db opened | path={}", db_path.string());
+        // 登录日装载在 td Writer 批量提交窗口内不得立即 SQLITE_BUSY (契约 §3).
+        read_db_->exec("PRAGMA busy_timeout=5000");
+        read_db_missing_ = false;
+        SPDLOG_INFO("td read db opened | path={}", db_path.string());
     } catch (const std::exception& e) {
-        prescan_db_ = nullptr;
-        prescan_db_missing_ = true;
-        SPDLOG_WARN("td prescan db unavailable (degraded) | error=\"{}\"", e.what());
+        read_db_ = nullptr;
+        read_db_missing_ = true;
+        SPDLOG_WARN("td read db unavailable (degraded) | error=\"{}\"", e.what());
     }
-}
-
-void TdApi::prescan_all_accounts() {
-    ensure_prescan_db();
-    if (prescan_db_ == nullptr) {
-        return;  // 打开失败: 后续 connect 时 load_boot_data 兜底 (仍无历史 -> 空基准)
-    }
-    std::vector<std::string> accounts;
-    accounts.reserve(config_.accounts.size());
-    for (const auto& a : config_.accounts) {
-        accounts.push_back(a.account_id);
-    }
-    try {
-        boot_cache_ = prescan_accounts(*prescan_db_, accounts);
-        SPDLOG_INFO("td prescan done | accounts={}", accounts.size());
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("td prescan failed | error=\"{}\"", e.what());
-        boot_cache_.clear();
-    }
-}
-
-SessionBootData TdApi::load_boot_data(const std::string& account_id) {
-    // 1. boot_cache_ 命中 (set_configs 预扫过): 取缓存.
-    if (auto it = boot_cache_.find(account_id); it != boot_cache_.end()) {
-        return it->second;
-    }
-    // 2. 运行期 connect 的账户 (config 变更后新增): 走同一条独立只读连接兜底查询.
-    //    不得置零 (spec §2.1 "累积不归零": 置零会让新 seq 与 DB 旧行冲突).
-    ensure_prescan_db();
-    if (prescan_db_ != nullptr) {
-        try {
-            SessionBootData boot;
-            boot.start_seq = query_max_seq(*prescan_db_, account_id);
-            boot.orders = load_orders(*prescan_db_, account_id);
-            boot.trades = load_trades(*prescan_db_, account_id);
-            boot_cache_[account_id] = boot;  // 缓存, 重连增量装载的基础
-            return boot;
-        } catch (const std::exception& e) {
-            SPDLOG_ERROR("td boot load fallback failed | account={} error=\"{}\"", account_id,
-                         e.what());
-        }
-    }
-    // 3. 仍无历史 (或查询失败): 空基准 + INFO 注明首次连接.
-    SPDLOG_INFO("td first connect, empty baseline | account={}", account_id);
-    return SessionBootData{};
 }
 
 // ============================================================================
@@ -688,9 +647,6 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
 
     // 5. 构造 AccountSession 并 open (异常不传播, 仅记日志 + 通知 UI)
     try {
-        // Task 5: 账户启动装载数据 (start_seq/orders/trades) 注入 AccountSession ctor.
-        // boot_cache_ 命中 (set_configs 预扫) 或运行期兜底查询; 无历史 -> 空基准.
-        auto boot = load_boot_data(account_id);
         auto session = std::make_unique<AccountSession>(
             account_id, *order_id_meta_, event_writer_, *persist_writer_, event_queue_,
             timer_queue_,
@@ -698,18 +654,19 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
                 // 契约 account-status: 会话内直调状态机的路径 (连接超时) 经统一出口推送
                 write_account_status(account_id, state, "");
             },
-            std::move(boot),
+            // 无会话拒单分配器指针: 登录日装载用 max(DB MAX, 该分配器已分配值) 抬高 seq 起点
+            &no_session_seq_,
             [this](DzNotifyLevel level, std::string message, bool popup) {
                 // 持久化通知 (登录 flush 屏障超时 ERROR) 转发 UI; 主循环线程同步调用 (安全)
                 notify_ui_.notify(level, std::move(message), popup);
             });
         session->open(session_flow_dir.string(), front_addrs, cfg->broker.broker_id,
                       cfg->broker.user_id, cfg->broker.password, cfg->auth_code, cfg->app_id);
-        // Task 5 §4.3: 注入独立只读连接提供器, 供重连时增量装载基准 (断连后提交的 DB 行).
-        // ensure_prescan_db 会按需重开 (文件缺失时降级).
-        session->set_prescan_db_provider([this]() -> SQLite::Database* {
-            ensure_prescan_db();
-            return prescan_db_.get();
+        // 注入独立只读连接提供器: 登录日装载当日订单/成交基准 (契约 td-data-sync §3).
+        // ensure_read_db 按需重开 (文件缺失时降级 -> 装载失败按登录失败处理).
+        session->set_read_db_provider([this]() -> SQLite::Database* {
+            ensure_read_db();
+            return read_db_.get();
         });
         // Task 8: 注入持仓周期重查间隔 (Ready 后生效).
         session->set_position_poll_interval(config_.qry_position_interval_s);
@@ -791,24 +748,35 @@ void TdApi::on_order_req(const shm::FrameView& view) {
     // 3. find_session, 调用 place_order
     auto* session = find_session(req.account_id);
     if (session == nullptr) {
+        // 账户已配置但无运行中会话 (未连接 / 已断开): 拒单也必须分配账户级 seq 并落库/推帧
+        // (#13; 契约 td-data-sync §3 "无会话拒单也必须分配账户级 seq 并落库/推帧"),
+        // 否则委托列表与统计缺行, 且消费者水位看不到该事件.
         SPDLOG_WARN("td order req rejected | reason=no_session account={} order_id={}",
                     req.account_id, req.order_id);
-        // 账户已配置但从未连接 (会话懒创建于 connect): 推 REJECTED 回报让策略进程感知,
-        // 避免静默丢单 (与 AccountSession::reject_order 的 C3 语义对齐)
-        DzOrderReport rpt{};
-        rpt.order_id = req.order_id;
-        copy_string(rpt.strategy_id, req.strategy_id, true);
-        copy_string(rpt.instrument_id, req.instrument_id, true);
-        copy_string(rpt.account_id, req.account_id, true);
-        rpt.direction = req.direction;
-        rpt.price_type = req.price_type;
-        rpt.position_effect = req.position_effect;
-        rpt.status = DZ_ORDER_REJECTED;
-        rpt.price = req.price;
-        rpt.volume = req.volume;
-        rpt.volume_traded = 0;
-        copy_string(rpt.remark, "账户未连接", true);
-        platform::write_struct(event_writer_, DZ_FRAME_ORDER_REPORT, rpt);
+        const std::string account_id(req.account_id);
+        try {
+            // date/time 用本地自然日/本地秒 (无会话时无交易日可用 — 已知限制, 组件文档登记).
+            const auto now = std::chrono::system_clock::now();
+            const std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+            std::tm local{};
+#ifdef _WIN32
+            localtime_s(&local, &now_time);
+#else
+            localtime_r(&now_time, &local);
+#endif
+            const int32_t date = dztrader::Date::from_year_month_day(
+                                     local.tm_year + 1900, local.tm_mon + 1, local.tm_mday)
+                                     .days_since_epoch();
+            const int32_t time = local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec;
+            OrderRecord rec = build_no_session_reject(req, date, time, "账户未连接");
+            // 先分配 seq 再写帧/落库: 同事件两路同值, 帧序 = seq 序 (契约 td-data-sync §2).
+            rec.base.seq = no_session_seq_.next(account_id);
+            platform::write_struct(event_writer_, DZ_FRAME_ORDER_REPORT, rec.base);
+            persist_writer_->enqueue(PersistTask{PersistTask::Kind::Order, rec});
+        } catch (const std::exception& e) {
+            SPDLOG_ERROR("td no_session reject failed | account={} order_id={} error=\"{}\"",
+                         account_id, req.order_id, e.what());
+        }
         return;
     }
     try {

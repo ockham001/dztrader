@@ -41,7 +41,9 @@
 #include "shm_domain_service.h"
 #include "subscription_domain_service.h"
 #include "notify_domain_service.h"
-#include "td_data_service.h"
+#include "td_domain_service.h"
+#include "td_data_controller.h"
+#include "td_orders_query.h"
 #include "sysmon_domain_service.h"
 #include "sysmon_controller.h"
 
@@ -377,14 +379,23 @@ int main(int argc, char* argv[]) {
     // register_raw：在监听线程同步执行（ControlDomainService 内部投递到 IO 循环）
     dztrader::webui::FrameRouter router;
 
-    // TD 数据 ingest 领域服务: 消费 2000-2003 (register_raw, 二进制 struct payload) 维护
-    // 内存镜像 + 2018 ACCOUNT_STATUS (Ready→rebuild / Offline→清空账户镜像)。
+    // TD 数据域服务（契约 td-data-sync §8 / ADR 0043）：**不保留记录镜像、不维护水位**，
+    // 只保留在线账户集合（ACCOUNT_STATUS）+ 日切感知 + WS 建连补发环。记录基线一律由 REST
+    // 直查交易库（td_orders_query），WS 只转发 ORDER_REPORT 增量。
     // td 库路径: $DZTRADER_HOME/db/trade.db (统一库, 所有 td 网关共写, spec §3.3)。
     const auto trade_db_path_cb = []() -> std::string {
         return dztrader::paths::trade_db().string();
     };
-    auto td_data_service =
-        std::make_shared<dztrader::webui::TdDataService>(router, trade_db_path_cb);
+    // ws_ctrl 同时实现 WsBroadcaster 与 DataChangeNotifier，两个引用都传它。
+    auto td_domain = std::make_shared<dztrader::webui::TdDomainService>(router, *ws_ctrl, *ws_ctrl);
+    // 精度派生要查 instruments.price_tick（契约 rest §2.9.6，库不可用时走价格小数位兜底）
+    td_domain->set_trade_db_path_provider(trade_db_path_cb);
+    // 建连补发：handleNewConnection 在 snapshot 之后定向发送 td_recent（契约 webui-ws §2.5）
+    ws_ctrl->set_td_recent_provider([domain = td_domain]() { return domain->recent_events(); });
+    // 交易数据 REST（契约 rest §2.9）：每请求独立只读连接、busy_timeout 200ms、游标分页
+    auto td_query = std::make_shared<dztrader::webui::TdOrdersQuery>(trade_db_path_cb);
+    drogon::app().registerController(
+        std::make_shared<dztrader::webui::TdCtrl>(repo, td_domain, td_query));
 
     // EventMonitor 由 main 持有并直调 start/stop（WsController 不再涉及）。
     // 生命周期：main 栈上 router 先声明、event_monitor 后声明（析构相反），

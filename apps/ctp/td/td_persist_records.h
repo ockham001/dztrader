@@ -8,8 +8,8 @@
 namespace dztrader::ctp {
 
 // ============================================================================
-// orders.ext JSON 键（schema v1 柜台扩展列；写端 td_persist_rows.cpp 与读端
-// td_prescan.cpp 共用同一组常量，禁止两处各写一份字面量）
+// orders.ext JSON 键（schema v1 柜台扩展列）: 写端 td_persist_rows.cpp 与
+// 读端 td_day_load.cpp 共用同一组常量, 禁止两处各写一份字面量
 // ============================================================================
 inline constexpr char kOrderExtOrderRef[] = "order_ref";
 inline constexpr char kOrderExtOrderSysId[] = "order_sys_id";
@@ -43,15 +43,10 @@ struct OrderRecord {
 };
 
 /// 成交记录 (对应 trades 表, 去重 key = account_id + date + exchange_id + trade_id).
-/// 注: trade_time / trade_date / commission 在 schema v1 已无对应列（持仓/重放基准只用
-/// trading_day + trade_id）；保留字段供 td_ctp_mapping 未迁移路径使用，#245 登录日装载
-/// 重构时随 td_prescan 一并删除。
+/// 字段与 schema v1 列一一对应 (ADR 0041); 无 schema 列的派生字段一律不存这里.
 struct TradeRecord {
     DzTradeReport base;   ///< SHM 帧字段
     char trading_day[9];  ///< "YYYYMMDD" 文本 (schema v1 date 列)
-    int64_t trade_time;   ///< epoch seconds (schema v1 无列; 待 #245 删除)
-    int64_t trade_date;   ///< YYYYMMDD as int (schema v1 无列; 待 #245 删除)
-    double commission;    ///< 手续费 (schema v1 无列; 待 #245 删除)
 };
 
 }  // namespace dztrader::ctp

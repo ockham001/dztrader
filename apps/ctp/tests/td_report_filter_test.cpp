@@ -31,11 +31,14 @@ OrderRecord make_order(int64_t order_id,
     return r;
 }
 
-/// 辅助: 构造一个基准 TradeRecord (trading_day/trade_id).
-TradeRecord make_trade(const char* trading_day, const char* trade_id) {
+/// 辅助: 构造一个基准 TradeRecord (trading_day/exchange_id/trade_id).
+TradeRecord make_trade(const char* trading_day,
+                       const char* trade_id,
+                       const char* exchange_id = "CFFEX") {
     TradeRecord r{};
     std::strcpy(r.trading_day, trading_day);
     std::strcpy(r.base.trade_id, trade_id);
+    std::strcpy(r.base.exchange_id, exchange_id);
     std::strcpy(r.base.account_id, "acc1");
     r.base.seq = 1;
     return r;
@@ -129,7 +132,7 @@ TEST(ReportFilterOrder, AcceptUpdatesBaseline) {
 }
 
 // ============================================================================
-// check_trade: 成交键 (trading_day, trade_id) 存在性
+// check_trade: 成交键 (trading_day, exchange_id, trade_id) 存在性
 // ============================================================================
 
 TEST(ReportFilterTrade, SameDaySameTradeIdSkipped) {
@@ -148,6 +151,18 @@ TEST(ReportFilterTrade, SameDayDifferentTradeIdForwards) {
     auto f = ReportFilter::load({}, {make_trade("20260901", "T001")});
     auto rec = make_trade("20260901", "T002");  // 同 day 不同 trade_id
     EXPECT_EQ(Verdict::kForward, f.check_trade(rec));
+}
+
+TEST(ReportFilterTrade, SameTradeIdDifferentExchangeForwards) {
+    // spec §3.8 / 契约 td-data-sync §3: trade_id 仅交易所内唯一.
+    // 同 day 同 trade_id 不同 exchange_id = 两笔真实成交, 不得互相吞.
+    auto f = ReportFilter::load({}, {make_trade("20260901", "T001", "CFFEX")});
+    auto rec = make_trade("20260901", "T001", "SHFE");
+    EXPECT_EQ(Verdict::kForward, f.check_trade(rec));
+    f.accept_trade(rec);
+    // 两个交易所键并存: 各自重放仍 kSkip
+    EXPECT_EQ(Verdict::kSkip, f.check_trade(make_trade("20260901", "T001", "CFFEX")));
+    EXPECT_EQ(Verdict::kSkip, f.check_trade(make_trade("20260901", "T001", "SHFE")));
 }
 
 TEST(ReportFilterTrade, AcceptUpdatesTradeKeys) {

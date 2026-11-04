@@ -97,6 +97,25 @@ void WsController::handleNewConnection(const drogon::HttpRequestPtr& req,
     conn->send(snap_msg.dump());
     SPDLOG_DEBUG("mirror snapshot pushed | instances={}", snapshot.size());
 
+    // 契约 webui-ws §1/§2.5：snapshot 之后定向发送一次交易数据补发 td_recent
+    // （快照不含交易记录，ADR 0043；补发只是收敛窗口内的加速，基线仍由 REST 拉取）。
+    // provider 为空 = 交易数据域服务未装配（API-only 模式）→ 不发送。
+    if (td_recent_provider_) {
+        try {
+            const nlohmann::json recent = td_recent_provider_();
+            const nlohmann::json recent_msg = {{"type", "td_recent"}, {"payload", recent}};
+            conn->send(recent_msg.dump());
+            SPDLOG_DEBUG("td_recent pushed | events={}",
+                         recent.value("events", nlohmann::json::array()).size());
+        } catch (const std::exception& e) {
+            // 吞因：补发失败不阻断连接建立（基线仍由前端 REST 重拉收敛）。
+            // 日志取 WARN：SPDLOG_DEBUG 在 Release 编译掉会让参数未使用（MSVC C4101 + /WX）。
+            SPDLOG_WARN("td_recent push failed, ignored | error={}", e.what());
+        } catch (...) {
+            SPDLOG_DEBUG("td_recent push failed, reason=unknown_exception");
+        }
+    }
+
     // 用户上线：更新状态为 online 并通知所有设备刷新
     if (repo_) {
         try {

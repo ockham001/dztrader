@@ -11,9 +11,9 @@
 
 #include <dztrader/trading/td_ingest.h>
 
+#include "td/td_day_load.h"
 #include "td/td_persist_records.h"
 #include "td/td_persist_writer.h"
-#include "td/td_prescan.h"
 #include "td/td_report_filter.h"
 #include "test_temp_dir.h"
 
@@ -54,6 +54,16 @@ protected:
             return q.getColumn(0).getInt64();
         }
         return 0;
+    }
+
+    /// 只读文本标量查询.
+    std::string scalar_text(const std::string& sql) {
+        SQLite::Database db = open_readonly(db_path_);
+        SQLite::Statement q(db, sql);
+        if (q.executeStep()) {
+            return q.getColumn(0).getString();
+        }
+        return {};
     }
 
     std::filesystem::path tmp_dir_;
@@ -123,12 +133,14 @@ TEST_F(TdDataSyncIntegrationTest, ReplayStormDedupEndToEnd) {
     }
     ASSERT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE account_id='acc1'"), kCount);
 
-    // ---- 消费者启动: 独立只读连接查 W + 全量装载过滤器基准 ----
+    // ---- 消费者启动: 独立只读连接查 W + 登录日装载过滤器基准 ----
     SQLite::Database ro(db_path_, SQLite::OPEN_READONLY);
     const uint64_t W = query_max_seq(ro, "acc1");
     EXPECT_EQ(W, static_cast<uint64_t>(kCount));  // 四表取大 = orders 最大 seq
 
-    auto filter = ReportFilter::load(load_orders(ro, "acc1"), load_trades(ro, "acc1"));
+    auto day = load_trading_day(ro, "acc1", "20260901");
+    EXPECT_EQ(day.start_seq, W);
+    auto filter = ReportFilter::load(day.orders, day.trades);
 
     // ---- 重放风暴: CTP 重放同 50 条 (同 order_id/同字段) → 全 kSkip ----
     for (const auto& rec : seed) {
@@ -283,10 +295,17 @@ TEST_F(TdDataSyncIntegrationTest, ConsumerRacesProducerInFlightWindow) {
         ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
         w.stop();
         SQLite::Database ro2 = open_readonly(db2);
-        auto backfilled = load_orders_since(ro2, "acc1", 100u);  // seq > 100
-        ASSERT_EQ(backfilled.size(), 5u);
-        EXPECT_EQ(backfilled.front().base.seq, 101u);
-        EXPECT_EQ(backfilled.back().base.seq, 105u);
+        auto backfilled = load_trading_day(ro2, "acc1", "20260901").orders;
+        ASSERT_EQ(backfilled.size(), 105u);  // 当日全部行, 断档回补只看 seq > 100 的部分
+        std::vector<uint64_t> above;
+        for (const auto& rec : backfilled) {
+            if (rec.base.seq > 100u) {
+                above.push_back(rec.base.seq);
+            }
+        }
+        ASSERT_EQ(above.size(), 5u);
+        EXPECT_EQ(above.front(), 101u);
+        EXPECT_EQ(above.back(), 105u);
     }  // PersistWriter w / ro / ro2 在此析构, 释放 db2 的 SQLite 句柄
 
     // tmp2 由 TearDown 统一删除 (断言提前返回的失败路径也覆盖); 此时块内 SQLite 句柄
@@ -336,73 +355,75 @@ TEST_F(TdDataSyncIntegrationTest, ResetThenRebuildWatermarkFromDb) {
 }
 
 // ============================================================================
-// 场景 4: 重连重建基准 (spec §4.3) — 覆盖**增量装载原语**:
-// 生产重连路径 (AccountSession::reload_incremental) 用 load_*_since(max_seq_at_disconnect)
-// 装载断连期间新增行、合并进过滤器基准, 并把水位推进到 query_max_seq。
-// TdApi::boot_cache_ 的连接生命周期刷新无 AccountSession 级测试基建, 本用例覆盖其原语
-// 组合 (首连全量在 td_prescan_test 与本文件其他用例覆盖)。
+// 场景 4: 登录日装载 + 重放风暴 (契约 td-data-sync §3 / §4, ADR 0045 决策 5)
+// 播当日 + 历史日订单/成交 -> load_trading_day 只装当日 -> 重放同批全 kSkip
+// (不重复落库 / 不重复推帧: 校验 DB 行数不变、无新 seq 分配).
 // ============================================================================
-TEST_F(TdDataSyncIntegrationTest, ReconnectIncrementalReloadSkipsReplayedRows) {
-    // ---- 第一次连接周期: 落一批入库 (seq 1..10), 全量基准 ----
-    std::vector<OrderRecord> batch1;
-    for (int i = 1; i <= 10; ++i) {
-        batch1.push_back(make_order(i, static_cast<uint64_t>(i)));
+TEST_F(TdDataSyncIntegrationTest, DayLoadThenReplayDoesNotDuplicate) {
+    // ---- 生产端: 历史日 5 条 + 当日 10 条订单, 当日 3 条成交 ----
+    std::vector<OrderRecord> history;
+    for (int i = 1; i <= 5; ++i) {
+        history.push_back(make_order(i, static_cast<uint64_t>(i), "20260831"));
+    }
+    std::vector<OrderRecord> today;
+    for (int i = 11; i <= 20; ++i) {
+        today.push_back(make_order(i, static_cast<uint64_t>(i), "20260901"));
+    }
+    std::vector<TradeRecord> trades;
+    for (int i = 0; i < 3; ++i) {
+        trades.push_back(make_trade(("T00" + std::to_string(i + 1)).c_str(),
+                                    static_cast<uint64_t>(30 + i), "20260901"));
     }
     {
         PersistWriter w(db_path_, "dztd_test");
         w.open();
         w.start_writer();
-        for (const auto& r : batch1) {
+        for (const auto& r : history) {
             w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = r});
+        }
+        for (const auto& r : today) {
+            w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = r});
+        }
+        for (const auto& r : trades) {
+            w.enqueue(PersistTask{.kind = PersistTask::Kind::Trade, .data = r});
         }
         auto token = w.enqueue_flush_signal();
         ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
         w.stop();
     }
+    const int64_t orders_before = scalar_int("SELECT COUNT(*) FROM orders");
+    const int64_t trades_before = scalar_int("SELECT COUNT(*) FROM trades");
+    ASSERT_EQ(orders_before, 15);
+    ASSERT_EQ(trades_before, 3);
 
-    // 首连: 全量预扫装载基准 (模拟 connect 时 boot)
-    SQLite::Database ro1(db_path_, SQLite::OPEN_READONLY);
-    auto boot1 = prescan_accounts(ro1, {"acc1"});
-    ASSERT_EQ(boot1.at("acc1").start_seq, 10u);
-    auto filter1 = ReportFilter::load(boot1.at("acc1").orders, boot1.at("acc1").trades);
-    for (const auto& rec : batch1) {
-        EXPECT_EQ(ReportFilter::Verdict::kSkip, filter1.check_order(rec));
-    }
+    // ---- 登录: 只装当日 (历史日不装载), start_seq = 四表 MAX(seq) 含历史日 ----
+    SQLite::Database ro = open_readonly(db_path_);
+    auto day = load_trading_day(ro, "acc1", "20260901");
+    ASSERT_EQ(day.orders.size(), 10u);
+    ASSERT_EQ(day.trades.size(), 3u);
+    EXPECT_EQ(day.start_seq, 32u);  // trades seq 30..32 最大
 
-    // ---- 断连期间: 生产端继续提交 seq 11..15 ----
-    std::vector<OrderRecord> batch2;
-    for (int i = 11; i <= 15; ++i) {
-        batch2.push_back(make_order(i, static_cast<uint64_t>(i)));
-    }
-    {
-        PersistWriter w(db_path_, "dztd_test");
-        w.open();
-        w.start_writer();
-        for (const auto& r : batch2) {
-            w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = r});
-        }
-        auto token = w.enqueue_flush_signal();
-        ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
-        w.stop();
-    }
+    auto filter = ReportFilter::load(day.orders, day.trades);
+    uint64_t seq = day.start_seq;
 
-    // ---- 重连: 增量装载 seq > 断连水位 (10) → 恰好 11..15, 合并后重放全 kSkip ----
-    // 旧基准若原样复用 (start_seq=10, 基准=seq1..10), 重放 11..15 会被误判 kForward → 重推风暴。
-    SQLite::Database ro2(db_path_, SQLite::OPEN_READONLY);
-    auto orders_since = load_orders_since(ro2, "acc1", 10u);
-    auto trades_since = load_trades_since(ro2, "acc1", 10u);
-    ASSERT_EQ(orders_since.size(), batch2.size());
-    EXPECT_EQ(orders_since.front().base.seq, 11u);
-    EXPECT_EQ(orders_since.back().base.seq, 15u);
-    EXPECT_TRUE(trades_since.empty());
-    for (const auto& rec : orders_since) {
-        filter1.accept_order(rec);
+    // ---- 重放风暴: 当日同批全 kSkip → 不分配 seq, 不落库, 不推帧 ----
+    for (const auto& rec : today) {
+        bool warn = false;
+        ASSERT_EQ(ReportFilter::Verdict::kSkip, filter.check_order(rec, &warn))
+            << rec.base.order_id;
+        EXPECT_FALSE(warn);
     }
-    for (const auto& rec : batch2) {
-        EXPECT_EQ(ReportFilter::Verdict::kSkip, filter1.check_order(rec));
+    for (const auto& rec : trades) {
+        EXPECT_EQ(ReportFilter::Verdict::kSkip, filter.check_trade(rec));
     }
-    // 水位推进到本次装载的最大 seq (重连后的新水位)
-    EXPECT_EQ(query_max_seq(ro2, "acc1"), 15u);
+    EXPECT_EQ(seq, 32u);  // 全吞期间无新 seq 分配
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders"), orders_before);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trades"), trades_before);
+
+    // ---- 历史日行的重放不参与当日基准 (不在当日装载集内) ----
+    // 但历史日行 seq 已在 start_seq 之下, 消费端由 W 过滤兜底 (不重复推帧).
+    SQLite::Database ro2 = open_readonly(db_path_);
+    EXPECT_EQ(query_max_seq(ro2, "acc1"), 32u);
 }
 
 // ============================================================================
@@ -428,12 +449,14 @@ TEST_F(TdDataSyncIntegrationTest, CrossDayAccumulation) {
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trades WHERE account_id='acc1'"), 2);
 
     SQLite::Database ro(db_path_, SQLite::OPEN_READONLY);
-    auto trades = load_trades(ro, "acc1");
-    ASSERT_EQ(trades.size(), 2u);
-    // 跨日同 trade_id 共存, seq 各不相同
-    EXPECT_STREQ(trades[0].base.trade_id, "T001");
-    EXPECT_STREQ(trades[1].base.trade_id, "T001");
-    EXPECT_NE(trades[0].base.seq, trades[1].base.seq);
+    // 登录日装载只装当日: 两日各 1 条成交, 同 trade_id 跨日不互相吞
+    auto day1 = load_trading_day(ro, "acc1", "20260901");
+    auto day2 = load_trading_day(ro, "acc1", "20260902");
+    ASSERT_EQ(day1.trades.size(), 1u);
+    ASSERT_EQ(day2.trades.size(), 1u);
+    EXPECT_STREQ(day1.trades[0].base.trade_id, "T001");
+    EXPECT_STREQ(day2.trades[0].base.trade_id, "T001");
+    EXPECT_NE(day1.trades[0].base.seq, day2.trades[0].base.seq);
 
     // W 跨日单调 = 最大 seq, 不因交易日切换回落
     EXPECT_EQ(query_max_seq(ro, "acc1"), 2u);
@@ -479,7 +502,8 @@ TEST_F(TdDataSyncIntegrationTest, ReplayStormSkipsDoNotAdvanceConsumerWatermark)
     ASSERT_EQ(w_before, static_cast<uint64_t>(kCount));
 
     // 消费端装载基准后重放同一批 → 全 kSkip (吞同)
-    auto filter = ReportFilter::load(load_orders(ro, "acc1"), load_trades(ro, "acc1"));
+    auto day = load_trading_day(ro, "acc1", "20260901");
+    auto filter = ReportFilter::load(day.orders, day.trades);
     for (const auto& rec : seed) {
         bool warn = false;
         ASSERT_EQ(ReportFilter::Verdict::kSkip, filter.check_order(rec, &warn));
@@ -499,6 +523,86 @@ TEST_F(TdDataSyncIntegrationTest, ReplayStormSkipsDoNotAdvanceConsumerWatermark)
     gate.set_watermark("acc1", w_before);
     EXPECT_EQ(dztrader::TdIngestGate::Verdict::kSkip, gate.admit("acc1", w_before));
     EXPECT_EQ(dztrader::TdIngestGate::Verdict::kApply, gate.admit("acc1", w_before + 1));
+}
+
+// ============================================================================
+// 场景 6: #13 无会话拒单落库 (契约 td-data-sync §3 "无会话拒单也必须分配账户级
+// seq 并落库/推帧"). 预置该账户历史 seq (W>0) → 无会话拒单 seq=W+1..,
+// 真 PersistWriter 提交 → DB 行 seq == 帧 seq, 且 TdIngestGate(W) 判 kApply
+// (不再被当作"快照已含"吞掉).
+// ============================================================================
+TEST_F(TdDataSyncIntegrationTest, NoSessionRejectAllocatesSeqAndPersists) {
+    // ---- 预置历史水位: 该账户已有 seq 1..12 的订单 ----
+    constexpr uint64_t kW = 12;
+    {
+        PersistWriter w(db_path_, "dztd_test");
+        w.open();
+        w.start_writer();
+        for (uint64_t i = 1; i <= kW; ++i) {
+            w.enqueue(PersistTask{.kind = PersistTask::Kind::Order,
+                                  .data = make_order(static_cast<int64_t>(i), i)});
+        }
+        auto token = w.enqueue_flush_signal();
+        ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+        w.stop();
+    }
+    SQLite::Database ro = open_readonly(db_path_);
+    ASSERT_EQ(query_max_seq(ro, "acc1"), kW);
+
+    // ---- 无会话拒单: AccountSeqAllocator 从 DB 播种 (W) → 拒单 seq = W+1 ----
+    AccountSeqAllocator alloc;
+    alloc.set_db_provider([&ro]() -> SQLite::Database* { return &ro; });
+    EXPECT_EQ(alloc.next("acc1"), kW + 1);
+
+    DzOrderReq req{};
+    req.order_id = 9001;
+    std::strcpy(req.strategy_id, "strat1");
+    std::strcpy(req.account_id, "acc1");
+    std::strcpy(req.instrument_id, "IF2506");
+    req.direction = DZ_DIRECTION_LONG;
+    req.price_type = DZ_PRICE_LIMIT;
+    req.position_effect = DZ_POSITION_EFFECT_OPEN;
+    req.price = 3900.0;
+    req.volume = 3;
+
+    OrderRecord frame = build_no_session_reject(req, 20260901, 9 * 3600 + 30 * 60, "账户未连接");
+    frame.base.seq = alloc.next("acc1");
+    EXPECT_EQ(frame.base.seq, kW + 2);  // 第二次分配
+    // 首条拒单 (seq=W+1, 独立 order_id, 验证 DB/帧同 seq)
+    DzOrderReq req2 = req;
+    req2.order_id = 9002;
+    OrderRecord first = build_no_session_reject(req2, 20260901, 9 * 3600, "账户未连接");
+    first.base.seq = kW + 1;
+
+    // ---- 真 PersistWriter 提交两条拒单行 ----
+    {
+        PersistWriter w(db_path_, "dztd_test");
+        w.open();
+        w.start_writer();
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = first});
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = frame});
+        auto token = w.enqueue_flush_signal();
+        ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+        w.stop();
+    }
+
+    // ---- DB 有该行, seq == 帧 seq (同事件两路同值), 状态/remark 正确 ----
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE order_id=9001"), 1);
+    EXPECT_EQ(scalar_int("SELECT seq FROM orders WHERE order_id=9001"),
+              static_cast<int64_t>(frame.base.seq));
+    EXPECT_EQ(scalar_int("SELECT seq FROM orders WHERE order_id=9002"),
+              static_cast<int64_t>(kW + 1));
+    EXPECT_EQ(scalar_int("SELECT status FROM orders WHERE order_id=9001"), DZ_ORDER_REJECTED);
+    EXPECT_EQ(scalar_text("SELECT remark FROM orders WHERE order_id=9001"), "账户未连接");
+
+    // ---- 消费端: W 之后的新 seq 必须 kApply (不再被 "快照已含" 吞) ----
+    dztrader::TdIngestGate gate;
+    gate.set_watermark("acc1", kW);
+    EXPECT_EQ(dztrader::TdIngestGate::Verdict::kApply, gate.admit("acc1", kW + 1));
+    EXPECT_FALSE(gate.take_pending_gap().has_value());  // 顺序首帧无断档
+    EXPECT_EQ(dztrader::TdIngestGate::Verdict::kApply, gate.admit("acc1", kW + 2));
+    // 拒单行已进水位: 重放同一帧被吞
+    EXPECT_EQ(dztrader::TdIngestGate::Verdict::kSkip, gate.admit("acc1", kW + 1));
 }
 
 // ============================================================================

@@ -43,7 +43,7 @@ AccountSession::AccountSession(std::string account_id,
                                const MpmcQueuePtr& event_queue,
                                dztrader::core::TimerQueue& timer_queue,
                                std::function<void(DzAccountState)> account_state_cb,
-                               SessionBootData boot,
+                               AccountSeqAllocator* seq_allocator,
                                AccountNotifyFn notify)
     : account_id_(std::move(account_id)),
       order_id_meta_(order_id_meta),
@@ -53,11 +53,13 @@ AccountSession::AccountSession(std::string account_id,
       timer_queue_(timer_queue),
       account_state_cb_(std::move(account_state_cb)),
       notify_(std::move(notify)),
-      risk_gate_(false) {
+      risk_gate_(false),
+      seq_allocator_(seq_allocator) {
     if (!event_queue_) {
         throw std::runtime_error("account session init failed | reason=event_queue_null");
     }
-    init_from_boot(std::move(boot));
+    // 重放过滤器基准在登录日装载时建立 (ADR 0045 决策 5); 登录前保持空基准.
+    report_filter_ = std::make_unique<ReportFilter>(account_id_);
 }
 
 AccountSession::~AccountSession() {
@@ -70,41 +72,43 @@ AccountSession::~AccountSession() {
     alive_token_.reset();
 }
 
-void AccountSession::init_from_boot(const SessionBootData& boot) {
-    // Task 5 §2.2 启动恢复: 内存 seq = 该账户 DB 已提交最大 seq + 1.
-    // 累积不归零 (spec §2.1): MAX 对垃圾行只会抬高计数, 天然安全收敛.
-    seq_counter_ = boot.start_seq;
-    // 重放过滤器基准 = 该账户全部订单最新态 + 全部 trade_id 集合 (spec §4.1).
-    report_filter_ = std::make_unique<ReportFilter>(account_id_);
-    *report_filter_ = ReportFilter::load(boot.orders, boot.trades);
-    max_seq_at_disconnect_ = boot.start_seq;
-}
-
-void AccountSession::reload_incremental(SQLite::Database& db) {
-    // spec §4.3: 账户断开重连 (含重登) 时, 从断开时刻之后提交的 DB 行重新装载基准.
-    // 增量: seq > max_seq_at_disconnect_ 的 orders/trades, 合并进现有基准 (防重登重放全转发).
-    // 失败降级 (保留现有基准): 不阻塞重连, 重放风暴由过滤器吞同兜底.
-    try {
-        auto orders = load_orders_since(db, account_id_, max_seq_at_disconnect_);
-        auto trades = load_trades_since(db, account_id_, max_seq_at_disconnect_);
-        for (const auto& o : orders) {
-            report_filter_->accept_order(o);
-        }
-        for (const auto& t : trades) {
-            report_filter_->accept_trade(t);
-        }
-        if (!orders.empty() || !trades.empty()) {
-            SPDLOG_INFO("td incremental baseline reloaded | account={} orders={} trades={}",
-                        account_id_, orders.size(), trades.size());
-        }
-        // 水位推进到本次装载的最大 seq (含断连时水位): 防下次重连重复装载.
-        max_seq_at_disconnect_ = std::max(max_seq_at_disconnect_, query_max_seq(db, account_id_));
-        seq_counter_ = std::max(seq_counter_, max_seq_at_disconnect_);
-    } catch (const std::exception& e) {
-        SPDLOG_WARN(
-            "td incremental baseline reload failed, keep existing | account={} error=\"{}\"",
-            account_id_, e.what());
+bool AccountSession::load_trading_day_baseline() {
+    // 契约 td-data-sync §3 / ADR 0045 决策 5: 每次登录成功 (含盘中重连) 后、
+    // 处理首条重放回报前, 从交易库装载**当前交易日**的订单最新态与成交去重键.
+    // 历史只在库中 (不做增量水位装载, 删除全史预扫).
+    if (!read_db_provider_) {
+        SPDLOG_ERROR("td login day load failed | account={} error=db_provider_missing",
+                     account_id_);
+        return false;
     }
+    SQLite::Database* db = read_db_provider_();
+    if (db == nullptr) {
+        SPDLOG_ERROR("td login day load failed | account={} error=db_unavailable", account_id_);
+        return false;
+    }
+    if (trading_day_ <= 0) {
+        // 交易日未知 (CTP 未给可解析 TradingDay): 无从按日过滤, 只能空基准 + 抬 seq.
+        SPDLOG_WARN("td login day load degraded, trading day unknown | account={}", account_id_);
+    }
+    const std::string day_text = format_day_text(trading_day_);
+    DayLoadData day;
+    try {
+        day = load_trading_day(*db, account_id_, day_text);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("td login day load failed | account={} error=\"{}\"", account_id_, e.what());
+        return false;
+    }
+    // seq 基准 = max(DB 四表 MAX(seq), 无会话拒单已分配值): 两者都只增不减,
+    // 防新 seq 与 DB 旧行冲突, 也防同账户无会话拒单期间已发出的 seq 复用.
+    const uint64_t allocator_seq =
+        (seq_allocator_ != nullptr) ? seq_allocator_->current(account_id_) : 0;
+    seq_counter_ = std::max(day.start_seq, allocator_seq);
+    // 重放过滤器基准 = 当日订单最新态 + 当日成交去重键 (历史行不装载).
+    auto filter = ReportFilter::load(day.orders, day.trades);
+    *report_filter_ = std::move(filter);
+    SPDLOG_INFO("td login day loaded | account={} day={} orders={} trades={} seq={}", account_id_,
+                day_text, day.orders.size(), day.trades.size(), seq_counter_);
+    return true;
 }
 
 // ============================================================================
@@ -193,8 +197,6 @@ void AccountSession::disconnect() {
     api_ = nullptr;
     spi_.reset();
     state_machine_.on_disconnect();
-    // Task 5 §4.3: 记录断开时刻水位, 供重连时增量装载基准 (seq > 该值的行).
-    max_seq_at_disconnect_ = seq_counter_;
     // 断线持仓基准失效: 重连后重新查询重建; 在途查询响应变陈旧 (代际已失效).
     position_baseline_ready_ = false;
     position_query_in_flight_ = false;
@@ -210,14 +212,8 @@ void AccountSession::disconnect() {
 
 void AccountSession::on_front_connected() {
     cancel_connect_timer();
-    // Task 5 §4.3: 前置重连 (含重登) 时增量重建过滤器基准 — 装载断开时刻之后提交的
-    // DB 行 (seq > max_seq_at_disconnect_), 合并进现有基准, 防重登重放全转发.
-    // 库不可用 (provider 空 / 查询失败) 时降级保留现有基准, 由过滤器吞同兜底.
-    if (prescan_db_provider_) {
-        if (SQLite::Database* db = prescan_db_provider_(); db != nullptr) {
-            reload_incremental(*db);
-        }
-    }
+    // 登录日装载在 on_rsp_user_login 成功之后执行 (契约 td-data-sync §3:
+    // 装载先于首条重放回报); 前置连接阶段不装载.
     auto notif = state_machine_.on_front_connected();
     SPDLOG_INFO("td front connected | account={} state={}", account_id_,
                 magic_enum::enum_name(state_machine_.state()));
@@ -297,6 +293,13 @@ void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
     } else {
         SPDLOG_WARN("td trading_day parse failed, keep previous | account={} trading_day={}",
                     account_id_, trading_day_);
+    }
+    // 契约 td-data-sync §3 / ADR 0045 决策 5: 登录成功且交易日已更新后、处理首条
+    // 重放回报前装载当日订单/成交基准. 装载失败按登录失败路径处理 (重试登录):
+    // 空基准会让重放风暴整批误判转发, 宁可重试也不带错基准进入 Ready.
+    if (!load_trading_day_baseline()) {
+        state_machine_.on_login_failed();
+        return;
     }
     // I1: sys_version 改用 CTP API 版本 (CZCETime 是郑商所时间, 不是系统版本)
     const std::string& sys_version = api_version_;

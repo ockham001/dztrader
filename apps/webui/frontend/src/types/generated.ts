@@ -435,3 +435,125 @@ export interface SysmonConfigPayload {
     realtime: SysmonRealtimeConfigPayload
     thresholds: SysmonThresholdsConfigPayload
 }
+
+// 交易方向（契约 rest §2.9.3，值 = 帧枚举的 PascalCase 名）
+export type TdDirection = 'Long' | 'Short' | 'Net'
+
+// 开平仓（契约 rest §2.9.3）
+export type TdPositionEffect = 'Auto' | 'Open' | 'Close' | 'CloseToday' | 'CloseYesterday'
+
+// 价格类型（契约 rest §2.9.3）
+export type TdPriceType = 'Limit' | 'Market' | 'Stop' | 'Fak' | 'Fok' | 'Rfq'
+
+// 委托状态（契约 rest §2.9.3）
+export type TdOrderStatus = 'Submitting' | 'NotTraded' | 'PartTraded' | 'AllTraded' | 'Cancelled' | 'Rejected'
+
+// 交易库读端点降级原因（契约 rest §2.9.8）
+export type TdDegradedReason = 'not_found' | 'schema_mismatch' | 'open_failed' | 'busy' | 'query_failed'
+
+// 委托行（契约 rest §2.9.3；WS td_order_report 与 REST items 同一 schema）
+export interface TdOrderRow {
+    /** 账户标识 */
+    account_id: string
+    /** 交易日 YYYYMMDD（= 信封 trading_day） */
+    date: string
+    /** 平台委托单 ID（全局唯一，业务键） */
+    order_id: number
+    /** 策略 ID；非策略单为保留值 /external、/manual、/sync */
+    strategy_id: string
+    /** 合约代码 */
+    instrument_id: string
+    /** 交易所 ID */
+    exchange_id: string
+    direction: TdDirection
+    position_effect: TdPositionEffect
+    price_type: TdPriceType
+    status: TdOrderStatus
+    /** 委托价（double 全精度；市价单为 0） */
+    price: number
+    /** 委托数量 */
+    volume: number
+    /** 已成交数量 */
+    volume_traded: number
+    /** 委托备注；无则空串 */
+    remark: string
+    /** 报单时间：距午夜秒数 0–86399（真实时钟，前端格式化为 HH:MM:SS，不做时区转换） */
+    time: number
+    /** 成交均价（Σ价×量/Σ量）；无成交（volume_traded=0）时为 null */
+    avg_price: number | null
+    /** 委托价显示小数位（契约 rest §2.9.6） */
+    price_decimals: number
+    /** 成交均价显示小数位（契约 rest §2.9.6） */
+    avg_price_decimals: number
+    /** 不透明版本号：合并用，不显示、不参与业务（契约 rest §2.9.6） */
+    seq: number
+    /** 排序键：字符串降序 = 列表顺序（契约 rest §2.9.6） */
+    sort_key: string
+}
+
+// 成交行（契约 rest §2.9.3；本轮只消费类型，不渲染 —— 成交列表归 #248）
+export interface TdTradeRow {
+    /** 账户标识 */
+    account_id: string
+    /** 交易日 YYYYMMDD */
+    date: string
+    /** 交易所成交 ID（仅交易所内唯一） */
+    trade_id: string
+    /** 关联委托单 ID */
+    order_id: number
+    /** 策略 ID；保留值语义同委托行 */
+    strategy_id: string
+    /** 合约代码 */
+    instrument_id: string
+    /** 交易所 ID（与 trade_id 组合唯一） */
+    exchange_id: string
+    direction: TdDirection
+    position_effect: TdPositionEffect
+    /** 成交价（double 全精度） */
+    price: number
+    /** 成交量 */
+    volume: number
+    /** 成交时间：距午夜秒数 0–86399 */
+    time: number
+    /** 成交价显示小数位（契约 rest §2.9.6） */
+    price_decimals: number
+    /** 不透明版本号（契约 rest §2.9.6） */
+    seq: number
+    /** 排序键：字符串降序 = 列表顺序（契约 rest §2.9.6） */
+    sort_key: string
+}
+
+// GET /api/td/orders 可用响应信封（契约 rest §2.9.2）
+export interface TdOrderListResponse {
+    /** true = 交易库可读 */
+    available: boolean
+    /** 当前交易日 YYYYMMDD；无在线账户时 null */
+    trading_day: string | null
+    /** 在线（Ready）账户集合；顺序不承诺 */
+    online_accounts: string[]
+    /** 委托行；空数组 = 无数据（不是错误） */
+    items: TdOrderRow[]
+    /** 下一页游标；null = 没有更多 */
+    next_cursor: string | null
+}
+
+// GET /api/td/orders 降级响应（200 + available=false，契约 rest §2.9.8）
+export interface TdOrderDegradedResponse {
+    /** false = 降级（响应只有 available 与 reason） */
+    available: boolean
+    reason: TdDegradedReason
+}
+
+// 建连补发载荷（契约 webui-ws §2.5 td_recent）；无事件时仍发送空数组
+export interface TdRecentPayload {
+    /** 各在线账户补发环内容，按入环先后从旧到新；不同账户之间顺序不承诺 */
+    events: TdRecentEvent[]
+}
+
+// 补发事件（type ∈ td_order_report | td_trade_report | td_position_info | td_trading_account）
+export interface TdRecentEvent {
+    /** 四类交易事件名之一（前端按 type 分发到对应合并逻辑） */
+    type: string
+    /** 行对象，schema 由 type 对应的契约 rest §2.9.3/§2.9.4 定义 */
+    data: unknown
+}

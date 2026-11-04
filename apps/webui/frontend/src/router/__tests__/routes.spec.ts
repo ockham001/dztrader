@@ -19,7 +19,8 @@ describe('路由 navItems 的 wip 标记（#207 C4）', () => {
   })
 
   it('已实现页面的导航项不得带 wip（否则「开发中」标注会变成噪音）', () => {
-    const implemented = ['/', '/market-sources', '/logs', '/monitor', '/user-management', '/settings']
+    // /trading-data（#246）：委托 tab 已交付，页面不是占位页 → 不得带 wip
+    const implemented = ['/', '/market-sources', '/trading-data', '/logs', '/monitor', '/user-management', '/settings']
     for (const path of implemented) {
       const nav = navItems.find(n => n.route === path)
       expect(nav, `navItems 缺少 ${path}`).toBeTruthy()

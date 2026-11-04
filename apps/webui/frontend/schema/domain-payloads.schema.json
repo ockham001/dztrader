@@ -460,6 +460,131 @@
         "realtime": { "$ref": "#/$defs/SysmonRealtimeConfigPayload" },
         "thresholds": { "$ref": "#/$defs/SysmonThresholdsConfigPayload" }
       }
+    },
+    "TdDirection": {
+      "type": "string",
+      "enum": ["Long", "Short", "Net"],
+      "description": "交易方向（契约 rest §2.9.3，值 = 帧枚举的 PascalCase 名）"
+    },
+    "TdPositionEffect": {
+      "type": "string",
+      "enum": ["Auto", "Open", "Close", "CloseToday", "CloseYesterday"],
+      "description": "开平仓（契约 rest §2.9.3）"
+    },
+    "TdPriceType": {
+      "type": "string",
+      "enum": ["Limit", "Market", "Stop", "Fak", "Fok", "Rfq"],
+      "description": "价格类型（契约 rest §2.9.3）"
+    },
+    "TdOrderStatus": {
+      "type": "string",
+      "enum": ["Submitting", "NotTraded", "PartTraded", "AllTraded", "Cancelled", "Rejected"],
+      "description": "委托状态（契约 rest §2.9.3）"
+    },
+    "TdDegradedReason": {
+      "type": "string",
+      "enum": ["not_found", "schema_mismatch", "open_failed", "busy", "query_failed"],
+      "description": "交易库读端点降级原因（契约 rest §2.9.8）"
+    },
+    "TdOrderRow": {
+      "type": "object",
+      "required": ["account_id", "date", "order_id", "strategy_id", "instrument_id", "exchange_id", "direction", "position_effect", "price_type", "status", "price", "volume", "volume_traded", "remark", "time", "avg_price", "price_decimals", "avg_price_decimals", "seq", "sort_key"],
+      "description": "委托行（契约 rest §2.9.3；WS td_order_report 与 REST items 同一 schema）",
+      "properties": {
+        "account_id": { "type": "string", "description": "账户标识" },
+        "date": { "type": "string", "description": "交易日 YYYYMMDD（= 信封 trading_day）" },
+        "order_id": { "type": "integer", "description": "平台委托单 ID（全局唯一，业务键）" },
+        "strategy_id": { "type": "string", "description": "策略 ID；非策略单为保留值 /external、/manual、/sync" },
+        "instrument_id": { "type": "string", "description": "合约代码" },
+        "exchange_id": { "type": "string", "description": "交易所 ID" },
+        "direction": { "$ref": "#/$defs/TdDirection" },
+        "position_effect": { "$ref": "#/$defs/TdPositionEffect" },
+        "price_type": { "$ref": "#/$defs/TdPriceType" },
+        "status": { "$ref": "#/$defs/TdOrderStatus" },
+        "price": { "type": "number", "description": "委托价（double 全精度；市价单为 0）" },
+        "volume": { "type": "integer", "description": "委托数量" },
+        "volume_traded": { "type": "integer", "description": "已成交数量" },
+        "remark": { "type": "string", "description": "委托备注；无则空串" },
+        "time": { "type": "integer", "description": "报单时间：距午夜秒数 0–86399（真实时钟，前端格式化为 HH:MM:SS，不做时区转换）" },
+        "avg_price": {
+          "description": "成交均价（Σ价×量/Σ量）；无成交（volume_traded=0）时为 null",
+          "anyOf": [{ "type": "number" }, { "type": "null" }]
+        },
+        "price_decimals": { "type": "integer", "description": "委托价显示小数位（契约 rest §2.9.6）" },
+        "avg_price_decimals": { "type": "integer", "description": "成交均价显示小数位（契约 rest §2.9.6）" },
+        "seq": { "type": "integer", "description": "不透明版本号：合并用，不显示、不参与业务（契约 rest §2.9.6）" },
+        "sort_key": { "type": "string", "description": "排序键：字符串降序 = 列表顺序（契约 rest §2.9.6）" }
+      }
+    },
+    "TdTradeRow": {
+      "type": "object",
+      "required": ["account_id", "date", "trade_id", "order_id", "strategy_id", "instrument_id", "exchange_id", "direction", "position_effect", "price", "volume", "time", "price_decimals", "seq", "sort_key"],
+      "description": "成交行（契约 rest §2.9.3；本轮只消费类型，不渲染 —— 成交列表归 #248）",
+      "properties": {
+        "account_id": { "type": "string", "description": "账户标识" },
+        "date": { "type": "string", "description": "交易日 YYYYMMDD" },
+        "trade_id": { "type": "string", "description": "交易所成交 ID（仅交易所内唯一）" },
+        "order_id": { "type": "integer", "description": "关联委托单 ID" },
+        "strategy_id": { "type": "string", "description": "策略 ID；保留值语义同委托行" },
+        "instrument_id": { "type": "string", "description": "合约代码" },
+        "exchange_id": { "type": "string", "description": "交易所 ID（与 trade_id 组合唯一）" },
+        "direction": { "$ref": "#/$defs/TdDirection" },
+        "position_effect": { "$ref": "#/$defs/TdPositionEffect" },
+        "price": { "type": "number", "description": "成交价（double 全精度）" },
+        "volume": { "type": "integer", "description": "成交量" },
+        "time": { "type": "integer", "description": "成交时间：距午夜秒数 0–86399" },
+        "price_decimals": { "type": "integer", "description": "成交价显示小数位（契约 rest §2.9.6）" },
+        "seq": { "type": "integer", "description": "不透明版本号（契约 rest §2.9.6）" },
+        "sort_key": { "type": "string", "description": "排序键：字符串降序 = 列表顺序（契约 rest §2.9.6）" }
+      }
+    },
+    "TdOrderListResponse": {
+      "type": "object",
+      "required": ["available", "trading_day", "online_accounts", "items", "next_cursor"],
+      "description": "GET /api/td/orders 可用响应信封（契约 rest §2.9.2）",
+      "properties": {
+        "available": { "type": "boolean", "description": "true = 交易库可读" },
+        "trading_day": {
+          "description": "当前交易日 YYYYMMDD；无在线账户时 null",
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "online_accounts": { "type": "array", "items": { "type": "string" }, "description": "在线（Ready）账户集合；顺序不承诺" },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/TdOrderRow" }, "description": "委托行；空数组 = 无数据（不是错误）" },
+        "next_cursor": {
+          "description": "下一页游标；null = 没有更多",
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      }
+    },
+    "TdOrderDegradedResponse": {
+      "type": "object",
+      "required": ["available", "reason"],
+      "description": "GET /api/td/orders 降级响应（200 + available=false，契约 rest §2.9.8）",
+      "properties": {
+        "available": { "type": "boolean", "description": "false = 降级（响应只有 available 与 reason）" },
+        "reason": { "$ref": "#/$defs/TdDegradedReason" }
+      }
+    },
+    "TdRecentPayload": {
+      "type": "object",
+      "required": ["events"],
+      "description": "建连补发载荷（契约 webui-ws §2.5 td_recent）；无事件时仍发送空数组",
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/TdRecentEvent" },
+          "description": "各在线账户补发环内容，按入环先后从旧到新；不同账户之间顺序不承诺"
+        }
+      }
+    },
+    "TdRecentEvent": {
+      "type": "object",
+      "required": ["type", "data"],
+      "description": "补发事件（type ∈ td_order_report | td_trade_report | td_position_info | td_trading_account）",
+      "properties": {
+        "type": { "type": "string", "description": "四类交易事件名之一（前端按 type 分发到对应合并逻辑）" },
+        "data": { "type": "unknown", "description": "行对象，schema 由 type 对应的契约 rest §2.9.3/§2.9.4 定义" }
+      }
     }
   }
 }

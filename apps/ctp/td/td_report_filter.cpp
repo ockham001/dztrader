@@ -1,6 +1,7 @@
 #include "td/td_report_filter.h"
 
 #include <string>
+#include <tuple>
 #include <utility>
 
 namespace dztrader::ctp {
@@ -53,12 +54,14 @@ void ReportFilter::accept_order(const OrderRecord& rec) {
 }
 
 ReportFilter::Verdict ReportFilter::check_trade(const TradeRecord& rec) const {
-    auto key = std::make_pair(std::string(rec.trading_day), std::string(rec.base.trade_id));
+    auto key = std::make_tuple(std::string(rec.trading_day), std::string(rec.base.exchange_id),
+                               std::string(rec.base.trade_id));
     return trade_keys_.find(key) != trade_keys_.end() ? Verdict::kSkip : Verdict::kForward;
 }
 
 void ReportFilter::accept_trade(const TradeRecord& rec) {
-    trade_keys_.emplace(rec.trading_day, rec.base.trade_id);
+    trade_keys_.emplace(std::string(rec.trading_day), std::string(rec.base.exchange_id),
+                        std::string(rec.base.trade_id));
     latest_trade_ = rec.base;
     has_trade_ = true;
 }
