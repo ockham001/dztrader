@@ -215,9 +215,10 @@ struct TemperatureScanResult {
 /// `tempN_input` 为毫摄氏度，除以 1000 得摄氏温度；标识为
 /// `<name>#<hwmonN>:<label>`，无 label 时为 `<name>#<hwmonN>:tempN`。hwmon 目录名唯一，
 /// 因此标识在同一启动周期内稳定，且不随其它同名芯片出现/消失变化。单个通道读取失败
-/// 只跳过该条；没有任何可读传感器时 `readings` 为 `std::nullopt`（失败降级，不抛异常）。
+/// 只跳过该条；没有任何通过合理性窗口的通道时 `readings` 为 `std::nullopt`
+/// （失败降级，不抛异常）。
 ///
-/// **合理性过滤（#258）**：换算后不在 `[-50, 200]` °C 闭区间的通道视为病态驱动读数
+/// **合理性过滤（#258）**：换算后超出契约 sysmon §2.4 温度合理性窗口的通道视为病态读数
 /// （典型是未初始化通道的 `-273.15 °C` 占位值），跳过该通道并计入 `implausible_channels`；
 /// 过滤是逐通道的，同一芯片的其它正常通道照常返回。
 ///
@@ -228,6 +229,14 @@ struct TemperatureScanResult {
 ///        用临时目录确定性覆盖病态读数过滤，不依赖真机驱动
 [[nodiscard]] TemperatureScanResult read_temperatures(
     const std::filesystem::path& hwmon_root = "/sys/class/hwmon");
+
+/// 病态温度读数告警的去重状态机（契约 sysmon §2.4：状态首次出现时记一条 WARN，
+/// 持续存在不逐帧刷屏，恢复正常后重置）。
+///
+/// @param implausible_channels 本帧被合理性窗口过滤的通道数（0 = 本帧没有病态读数）
+/// @param logged 调用方持有的去重状态；函数按本帧结果就地更新
+/// @return 本帧是否应记一条 WARN
+[[nodiscard]] bool should_log_implausible_temperatures(uint32_t implausible_channels, bool& logged);
 
 }  // namespace dztrader::platform::system_collector_linux_internal
 

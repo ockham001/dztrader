@@ -1340,6 +1340,7 @@ TEST_F(FakeSysfsTest, MissingSysfsRootTreatsEveryInterfaceAsVirtual) {
 namespace temperature_scan_test {
 
 using dztrader::platform::system_collector_linux_internal::read_temperatures;
+using dztrader::platform::system_collector_linux_internal::should_log_implausible_temperatures;
 
 /// 假 hwmon 根 fixture：用临时目录伪造 `/sys/class/hwmon/hwmonN` 的 `name` 与
 /// `tempN_input`/`tempN_label`，使病态读数过滤不依赖真机驱动是否暴露无效通道
@@ -1436,6 +1437,23 @@ TEST_F(FakeHwmonTest, MissingRootReportsNoReadingsAndNoImplausibleCount) {
     const auto scan = read_temperatures(base_ / "no_such_hwmon");
     EXPECT_FALSE(scan.readings.has_value());
     EXPECT_EQ(scan.implausible_channels, 0U);
+}
+
+TEST(TemperatureAnomalyLogDedupTest, LogsOnceWhilePresentAndResetsAfterRecovery) {
+    // 契约 sysmon §2.4：病态读数状态首次出现时记一条 WARN，持续存在不逐帧刷屏，
+    // 恢复正常后重置去重状态（再次出现时重新告警）。
+    bool logged = false;
+    EXPECT_FALSE(should_log_implausible_temperatures(0, logged));  // 正常帧
+    EXPECT_FALSE(logged);
+    EXPECT_TRUE(should_log_implausible_temperatures(3, logged));  // 首次出现：告警
+    EXPECT_TRUE(logged);
+    EXPECT_FALSE(should_log_implausible_temperatures(2, logged));  // 持续存在：不刷屏
+    EXPECT_TRUE(logged);
+    EXPECT_FALSE(should_log_implausible_temperatures(1, logged));  // 仍在持续
+    EXPECT_TRUE(logged);
+    EXPECT_FALSE(should_log_implausible_temperatures(0, logged));  // 恢复：重置
+    EXPECT_FALSE(logged);
+    EXPECT_TRUE(should_log_implausible_temperatures(1, logged));  // 再次出现：重新告警
 }
 
 }  // namespace temperature_scan_test

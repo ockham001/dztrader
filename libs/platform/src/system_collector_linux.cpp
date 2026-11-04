@@ -813,17 +813,15 @@ public:
 
     std::optional<std::vector<RawTemperature>> collect_temperatures() override {
         auto scan = system_collector_linux_internal::read_temperatures(kHwmonRoot);
-        // 病态读数按通道计数。持续存在时只在状态首次出现 WARN 一次，避免 7x24 运行下
-        // 每次采样刷屏；恢复正常后重置去重标记（与内存异常日志同一去重纪律）。
-        if (scan.implausible_channels == 0) {
-            temperature_anomaly_logged_ = false;
-        } else if (!temperature_anomaly_logged_) {
+        // 去重状态机在内部接缝里（可确定性测试）：持续存在时只在状态首次出现 WARN 一次，
+        // 避免 7x24 运行下每次采样刷屏；恢复正常后重置（与内存异常日志同一去重纪律）。
+        if (system_collector_linux_internal::should_log_implausible_temperatures(
+                scan.implausible_channels, temperature_anomaly_logged_)) {
             SPDLOG_WARN(
                 "hwmon temperature readings outside plausible range skipped | count={} "
                 "range_lo_celsius={} range_hi_celsius={}",
                 scan.implausible_channels, kMinPlausibleTemperatureCelsius,
                 kMaxPlausibleTemperatureCelsius);
-            temperature_anomaly_logged_ = true;
         }
         return std::move(scan.readings);
     }
@@ -1393,7 +1391,7 @@ TemperatureScanResult read_temperatures(const std::filesystem::path& hwmon_root)
                 continue;
             }
             const double celsius = static_cast<double>(*millidegrees) / 1000.0;
-            // 合理性过滤（#258）：病态驱动的占位值（如未初始化通道的 -273.15 °C）
+            // 合理性过滤（#258）：病态读数（驱动占位值，如未初始化通道的 -273.15 °C）
             // 不得当作真实温度输出；逐通道跳过，同一芯片的其它通道照常返回
             // （契约 sysmon §2.4「合理性过滤」）。
             if (celsius < kMinPlausibleTemperatureCelsius ||
@@ -1407,8 +1405,8 @@ TemperatureScanResult read_temperatures(const std::filesystem::path& hwmon_root)
             const std::string base_sensor =
                 base_name + "#" + hwmon_number + ":" +
                 (label.empty() ? "temp" + std::to_string(index) : label);
-            // 病态驱动（同一 hwmon 下重复 label，或 label 恰好等于另一项的 tempN 形态）
-            // 时追加 `-<n>` 直到帧内唯一；正常硬件不会进入该循环。
+            // 同一 hwmon 下重复 label（病态驱动）或 label 恰好等于另一项的 tempN 形态时
+            // 追加 `-<n>` 直到帧内唯一；正常硬件不会进入该循环。
             std::string sensor = base_sensor;
             for (uint32_t suffix = 1; !used_sensors.insert(sensor).second; ++suffix) {
                 sensor = base_sensor + "-" + std::to_string(suffix);
@@ -1429,6 +1427,18 @@ TemperatureScanResult read_temperatures(const std::filesystem::path& hwmon_root)
     }
     result.readings = std::move(readings);
     return result;
+}
+
+bool should_log_implausible_temperatures(uint32_t implausible_channels, bool& logged) {
+    if (implausible_channels == 0) {
+        logged = false;  // 恢复正常：下次异常重新记日志
+        return false;
+    }
+    if (logged) {
+        return false;  // 持续存在：不逐帧刷屏
+    }
+    logged = true;
+    return true;
 }
 
 }  // namespace system_collector_linux_internal
