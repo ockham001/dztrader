@@ -46,10 +46,12 @@ int32_t parse_date_to_epoch(const std::string& text) {
     }
 }
 
-/// 查该账户最新交易日 (YYYYMMDD) — orders/trades 表的最大 date 文本 (字典序
-/// = 时间序)。镜像日界过滤 (终检发现 G) 与日切判定用; 无行回落空串。
-std::string latest_date(sqlite3* db, const std::string& account_id) {
-    for (const char* table : {"orders", "trades"}) {
+/// 查该账户锚点日 (YYYYMMDD) — 四表 MAX(date) 文本 (字典序 = 时间序)。
+/// schema v1 四表按 date 累积；镜像装载与日界过滤都按锚点日，避免历史日行混入当日镜像。
+/// 无行回落空串。
+std::string account_anchor_date(sqlite3* db, const std::string& account_id) {
+    std::string latest;
+    for (const char* table : {"orders", "trades", "positions", "trading_accounts"}) {
         sqlite3_stmt* stmt = nullptr;
         const std::string sql =
             std::string("SELECT MAX(date) FROM ") + table + " WHERE account_id = ?";
@@ -249,18 +251,19 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
     //    镜像键: positions (account_id,instrument_id,direction) / trading_accounts account_id。
     //    account_id 列均为索引首列 (orders/trades/positions UNIQUE、trading_accounts PK),
     //    按账户过滤只扫该账户行。
-    //    终检发现 G【Important】: orders/trades 镜像加当日过滤 (date = 最新交易日),
-    //    防镜像随历史线性增长 (0.9GB/年)。positions/trading_accounts 单行绝对态无需日过滤。
+    //    终检发现 G【Important】: schema v1 四表按 date 累积，镜像全部按账户锚点日
+    //    (四表 MAX(date))过滤，防历史日行混入当日镜像、镜像随历史线性增长 (0.9GB/年)。
     //    W 查询不带日过滤 (正确性: W 取四表 MAX(seq), 跨日累积单调)。
-    const std::string day = latest_date(db, account_id);
+    const std::string day = account_anchor_date(db, account_id);
     {
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db,
                                "SELECT account_id, date, instrument_id, exchange_id,"
                                " direction, volume, frozen_volume, today_volume, yd_volume,"
-                               " price, seq FROM positions WHERE account_id = ?",
+                               " price, seq FROM positions WHERE account_id = ? AND date = ?",
                                -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, day.c_str(), -1, SQLITE_TRANSIENT);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 DzPositionInfo p{};
                 dztrader::copy_string(p.account_id, col_text(stmt, 0).c_str(), true);
@@ -286,9 +289,10 @@ void TdDataService::rebuild(const std::string& account_id, bool reset_gate) {
         if (sqlite3_prepare_v2(db,
                                "SELECT account_id, date, balance, available, frozen,"
                                " commission, margin, withdraw_quota, deposit, withdraw, seq"
-                               " FROM trading_accounts WHERE account_id = ?",
+                               " FROM trading_accounts WHERE account_id = ? AND date = ?",
                                -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, day.c_str(), -1, SQLITE_TRANSIENT);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 DzTradingAccount a{};
                 dztrader::copy_string(a.account_id, col_text(stmt, 0).c_str(), true);

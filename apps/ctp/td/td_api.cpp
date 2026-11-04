@@ -21,6 +21,7 @@
 #include <dztrader/platform/frame_codec.h>
 #include <dztrader/shm/frame_codec.h>  // decode_ext_inst_json, decode_ext_json
 #include <dztrader/struct.h>
+#include <dztrader/tdstore/trade_db.h>
 
 namespace dztrader::ctp {
 
@@ -65,6 +66,23 @@ TdApi::TdApi(std::string name,
     persist_writer_ = std::make_unique<PersistWriter>(db_path.string(), name_);
     persist_writer_->open();
     persist_writer_->start_writer();
+
+    // ADR 0041 §6: master 启动时已按 DB MAX(order_id) 播种共享计数器；td 侧再以同一
+    // MAX(order_id)+1 幂等 ensure（fetch_max，单调不减）作兜底——覆盖 master 缺席 /
+    // 计数器 shm 文件丢失 / 跨机导入后计数器落后。库不可用只告警降级（库非交易真相源）。
+    try {
+        const int64_t db_max = dztrader::tdstore::read_max_order_id(db_path);
+        const DzOrderId counter_before = order_id_meta_->current();
+        (void)order_id_meta_->ensure_at_least(static_cast<DzOrderId>(db_max + 1));
+        if (order_id_meta_->current() > counter_before) {
+            SPDLOG_WARN(
+                "order id counter bumped by td fallback | db_max={} counter_before={} "
+                "counter_after={}",
+                db_max, counter_before, order_id_meta_->current());
+        }
+    } catch (const std::exception& e) {
+        SPDLOG_WARN("order id fallback skipped (trade db unavailable) | error=\"{}\"", e.what());
+    }
 
     // 加载日志配置 (从 dztd_ctp.json "log" section, 失败用默认值自愈, 与 spdlog 同步)
     log_config_.load();

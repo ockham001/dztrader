@@ -52,22 +52,22 @@ void fill_order_ext(OrderRecord& record, const std::string& ext_text) {
         if (!ext.is_object()) {
             return;
         }
-        if (const auto it = ext.find("order_ref"); it != ext.end() && it->is_string()) {
+        if (const auto it = ext.find(kOrderExtOrderRef); it != ext.end() && it->is_string()) {
             copy_to_fixed(record.order_ref, it->get<std::string>());
         }
-        if (const auto it = ext.find("order_sys_id"); it != ext.end() && it->is_string()) {
+        if (const auto it = ext.find(kOrderExtOrderSysId); it != ext.end() && it->is_string()) {
             copy_to_fixed(record.external_order_id, it->get<std::string>());
         }
-        if (const auto it = ext.find("volume_canceled"); it != ext.end() && it->is_number()) {
+        if (const auto it = ext.find(kOrderExtVolumeCanceled); it != ext.end() && it->is_number()) {
             record.volume_canceled = it->get<int32_t>();
         }
-        if (const auto it = ext.find("update_time"); it != ext.end() && it->is_number()) {
+        if (const auto it = ext.find(kOrderExtUpdateTime); it != ext.end() && it->is_number()) {
             record.update_time = it->get<int64_t>();
         }
-        if (const auto it = ext.find("error_id"); it != ext.end() && it->is_number()) {
+        if (const auto it = ext.find(kOrderExtErrorId); it != ext.end() && it->is_number()) {
             record.error_id = it->get<int32_t>();
         }
-        if (const auto it = ext.find("error_msg"); it != ext.end() && it->is_string()) {
+        if (const auto it = ext.find(kOrderExtErrorMessage); it != ext.end() && it->is_string()) {
             copy_to_fixed(record.error_msg, it->get<std::string>());
         }
     } catch (const std::exception&) {

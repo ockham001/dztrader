@@ -140,9 +140,6 @@ public:
     void set_external_shutdown_flag(std::atomic<bool>* flag) { external_shutdown_flag_ = flag; }
 
 private:
-    /// 启动自检: 保证 order_id 原子计数器 > 库内最大 order_id (设计 §13 step 8, 开放问题 7)。
-    /// 跨机导入数据库后, 原子计数器可能落后于库内最大值, 此处 fetch_max 上调, 防止重号。
-    /// 构造函数内调用, 时机在 PersistWriter::open() 后 start_writer() 前 (主线程独占 db)。
     // === 主循环 ===
     /// 处理一个 SHM 帧 (分两层: basic 帧 (广播控制帧 + TD_ORDER_REQ/CANCEL_REQ 按 payload
     /// account_id 路由) / 含 instance_id 帧检查 instance_id == name_ 或 name_: 前缀)

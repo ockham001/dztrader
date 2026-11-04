@@ -63,6 +63,9 @@ void create_missing_collections(SQLite::Database& db, std::span<const ResourceSc
                     if (field.auto_increment) {
                         sql += " AUTOINCREMENT";
                     }
+                    if (!field.nullable) {
+                        sql += " NOT NULL";
+                    }
                 } else if (!field.nullable) {
                     sql += " NOT NULL";
                 }

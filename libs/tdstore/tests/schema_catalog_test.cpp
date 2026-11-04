@@ -197,6 +197,16 @@ TEST_F(SchemaCatalogTest, InstrumentsRetained) {
     EXPECT_EQ(primary_key_columns(path_, "instruments"),
               (std::vector<std::string>{"instrument_id"}));
     EXPECT_TRUE(index_names(path_, "instruments").empty());
+    // SQLite 的 TEXT PRIMARY KEY 默认允许 NULL（契约 §4「非空」）：DDL 必须显式 NOT NULL
+    SQLite::Database db(path_.string(), SQLite::OPEN_READONLY);
+    SQLite::Statement info(db, "PRAGMA table_info(instruments)");
+    bool instrument_id_not_null = false;
+    while (info.executeStep()) {
+        if (info.getColumn(1).getString() == "instrument_id") {
+            instrument_id_not_null = info.getColumn(3).getInt() != 0;
+        }
+    }
+    EXPECT_TRUE(instrument_id_not_null);
 }
 
 TEST_F(SchemaCatalogTest, IndexesDeclaredPerSpec) {

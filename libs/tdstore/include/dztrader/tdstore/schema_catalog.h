@@ -23,9 +23,6 @@ namespace dztrader::tdstore {
 /// 交易库 schema 版本（写入 SQLite `PRAGMA user_version`；只增不改，无迁移链）
 inline constexpr int kTdSchemaVersion = 1;
 
-/// 交易库默认文件名（`$DZTRADER_HOME/db/trade.db`）
-inline constexpr std::string_view kTradeDbFileName = "trade.db";
-
 /// 列存储类型（SQLite 亲和性）
 enum class ColumnType : uint8_t { Integer, Real, Text };
 
@@ -45,11 +42,18 @@ struct IndexSchema {
     bool unique = false;
 };
 
+/// 表达式索引声明（列无法表达；DDL 由 `sql` 原文建）
+struct ExpressionIndexSchema {
+    std::string_view name;
+    std::string_view sql;  ///< 完整 `CREATE INDEX ...` 语句（含 IF NOT EXISTS）
+};
+
 /// 表声明：列序 = 建表列序 = dzdb 投影的 Row 位置序
 struct TableSchema {
     std::string_view name;
     std::span<const ColumnSchema> columns;
     std::span<const IndexSchema> indexes;
+    std::span<const ExpressionIndexSchema> expression_indexes;
 };
 
 /// @name 四张交易表 + 暂留的 instruments 表（ADR 0041 §1）

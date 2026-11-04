@@ -8,6 +8,17 @@
 namespace dztrader::ctp {
 
 // ============================================================================
+// orders.ext JSON 键（schema v1 柜台扩展列；写端 td_persist_rows.cpp 与读端
+// td_prescan.cpp 共用同一组常量，禁止两处各写一份字面量）
+// ============================================================================
+inline constexpr char kOrderExtOrderRef[] = "order_ref";
+inline constexpr char kOrderExtOrderSysId[] = "order_sys_id";
+inline constexpr char kOrderExtVolumeCanceled[] = "volume_canceled";
+inline constexpr char kOrderExtUpdateTime[] = "update_time";
+inline constexpr char kOrderExtErrorId[] = "error_id";
+inline constexpr char kOrderExtErrorMessage[] = "error_msg";
+
+// ============================================================================
 // SQL-ready POD 记录: 复用 strategy_api 结构体 + 组合扩展 SQL 特有字段
 // 设计: strategy_api 的 DzOrderReport/DzTradeReport 等是 SHM 帧格式, 缺少
 // CTP 特有字段 (order_ref/external_order_id/error_msg 等). 用组合方式扩展,
@@ -31,14 +42,16 @@ struct OrderRecord {
     char error_msg[128];         ///< CTP ErrorMsg (GBK->UTF8)
 };
 
-/// 成交记录 (对应 trades 表, 去重 key = account_id + trade_id).
-/// DzTradeReport 缺少 commission/trade_time(秒)/trade_date(YYYYMMDD int).
+/// 成交记录 (对应 trades 表, 去重 key = account_id + date + exchange_id + trade_id).
+/// 注: trade_time / trade_date / commission 在 schema v1 已无对应列（持仓/重放基准只用
+/// trading_day + trade_id）；保留字段供 td_ctp_mapping 未迁移路径使用，#245 登录日装载
+/// 重构时随 td_prescan 一并删除。
 struct TradeRecord {
     DzTradeReport base;   ///< SHM 帧字段
     char trading_day[9];  ///< "YYYYMMDD" 文本 (schema v1 date 列)
-    int64_t trade_time;   ///< epoch seconds
-    int64_t trade_date;   ///< YYYYMMDD as int
-    double commission;    ///< 手续费
+    int64_t trade_time;   ///< epoch seconds (schema v1 无列; 待 #245 删除)
+    int64_t trade_date;   ///< YYYYMMDD as int (schema v1 无列; 待 #245 删除)
+    double commission;    ///< 手续费 (schema v1 无列; 待 #245 删除)
 };
 
 }  // namespace dztrader::ctp

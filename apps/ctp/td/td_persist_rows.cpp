@@ -26,22 +26,22 @@ std::string order_strategy_id(const OrderRecord& r) {
 std::string build_order_ext(const OrderRecord& r) {
     nlohmann::json ext = nlohmann::json::object();
     if (r.order_ref[0] != '\0') {
-        ext["order_ref"] = std::string(r.order_ref);
+        ext[kOrderExtOrderRef] = std::string(r.order_ref);
     }
     if (r.external_order_id[0] != '\0') {
-        ext["order_sys_id"] = std::string(r.external_order_id);
+        ext[kOrderExtOrderSysId] = std::string(r.external_order_id);
     }
     if (r.volume_canceled != 0) {
-        ext["volume_canceled"] = r.volume_canceled;
+        ext[kOrderExtVolumeCanceled] = r.volume_canceled;
     }
     if (r.update_time != 0) {
-        ext["update_time"] = r.update_time;
+        ext[kOrderExtUpdateTime] = r.update_time;
     }
     if (r.error_id != 0) {
-        ext["error_id"] = r.error_id;
+        ext[kOrderExtErrorId] = r.error_id;
     }
     if (r.error_msg[0] != '\0') {
-        ext["error_msg"] = std::string(r.error_msg);
+        ext[kOrderExtErrorMessage] = std::string(r.error_msg);
     }
     return ext.dump();
 }

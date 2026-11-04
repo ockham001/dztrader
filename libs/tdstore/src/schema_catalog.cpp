@@ -139,7 +139,7 @@ constexpr IndexSchema kTradingAccountsIndexes[] = {
 // instruments：合约信息（暂留 trade.db；行情域落地后迁 market.db，ADR 0041 §1）
 // 28 物理列 = 25 承诺列 + 3 保留列（settlement_method/option_exercise_style/option_series）
 constexpr ColumnSchema kInstrumentsColumns[] = {
-    {"instrument_id", ColumnType::Text, false, true, ""},
+    {"instrument_id", ColumnType::Text, true, true, ""},
     {"exchange_id", ColumnType::Text, true, false, ""},
     {"symbol", ColumnType::Text, true, false, "''"},
     {"name", ColumnType::Text, false, false, ""},
@@ -169,34 +169,55 @@ constexpr ColumnSchema kInstrumentsColumns[] = {
     {"updated_at", ColumnType::Integer, true, false, "0"},
 };
 
+// 游标分页排序用表达式索引（18:00 锚点只出现在排序表达式，不改写真实 time；ADR 0041 §1）。
+// 破同秒并列：orders 用 order_id、trades 用 trade_id。positions/trading_accounts 无 time 列。
+constexpr ExpressionIndexSchema kOrdersExpressionIndexes[] = {
+    {"idx_orders_sort",
+     "CREATE INDEX IF NOT EXISTS idx_orders_sort ON orders("
+     "account_id, date, ((time + 21600) % 86400) DESC, order_id)"},
+};
+
 constexpr TableSchema kOrders = {
     .name = "orders",
     .columns = std::span<const ColumnSchema>(kOrdersColumns),
     .indexes = std::span<const IndexSchema>(kOrdersIndexes),
+    .expression_indexes = std::span<const ExpressionIndexSchema>(kOrdersExpressionIndexes),
+};
+
+constexpr ExpressionIndexSchema kTradesExpressionIndexes[] = {
+    {"idx_trades_sort",
+     "CREATE INDEX IF NOT EXISTS idx_trades_sort ON trades("
+     "account_id, date, ((time + 21600) % 86400) DESC, trade_id)"},
 };
 
 constexpr TableSchema kTrades = {
     .name = "trades",
     .columns = std::span<const ColumnSchema>(kTradesColumns),
     .indexes = std::span<const IndexSchema>(kTradesIndexes),
+    .expression_indexes = std::span<const ExpressionIndexSchema>(kTradesExpressionIndexes),
 };
 
 constexpr TableSchema kPositions = {
     .name = "positions",
     .columns = std::span<const ColumnSchema>(kPositionsColumns),
     .indexes = std::span<const IndexSchema>(kPositionsIndexes),
+    .expression_indexes = {},
 };
 
+// account_date 索引与 PK(account_id, date) 等效：按 spec §1「四表各建 (account_id, date)」
+// 字面保留（该表行量 = 账户数/日，冗余索引成本可忽略）。
 constexpr TableSchema kTradingAccounts = {
     .name = "trading_accounts",
     .columns = std::span<const ColumnSchema>(kTradingAccountsColumns),
     .indexes = std::span<const IndexSchema>(kTradingAccountsIndexes),
+    .expression_indexes = {},
 };
 
 constexpr TableSchema kInstruments = {
     .name = "instruments",
     .columns = std::span<const ColumnSchema>(kInstrumentsColumns),
     .indexes = {},
+    .expression_indexes = {},
 };
 
 std::string_view column_type_sql(ColumnType type) {
@@ -236,6 +257,9 @@ std::string build_create_table(const TableSchema& table) {
         sql += column_type_sql(column.type);
         if (inline_primary_key && column.primary_key) {
             sql += " PRIMARY KEY";
+            if (column.not_null) {
+                sql += " NOT NULL";
+            }
         } else if (column.not_null) {
             sql += " NOT NULL";
         }
@@ -301,15 +325,11 @@ std::string build_schema_ddl() {
             ddl += build_create_index(table, index);
             ddl += ";\n";
         }
+        for (const ExpressionIndexSchema& index : table.expression_indexes) {
+            ddl += index.sql;
+            ddl += ";\n";
+        }
     }
-    // 游标分页排序用表达式索引（18:00 锚点只出现在排序表达式，不改写真实 time；ADR 0041 §1）。
-    // 破同秒并列：orders 用 order_id、trades 用 trade_id。positions/trading_accounts 无 time 列。
-    ddl +=
-        "CREATE INDEX IF NOT EXISTS idx_orders_sort ON orders("
-        "account_id, date, ((time + 21600) % 86400) DESC, order_id);\n";
-    ddl +=
-        "CREATE INDEX IF NOT EXISTS idx_trades_sort ON trades("
-        "account_id, date, ((time + 21600) % 86400) DESC, trade_id);\n";
     return ddl;
 }
 
