@@ -172,6 +172,16 @@ check_push_scope_selftest() {
     "$ROOT/scripts/check-push-scope.sh" --selftest
 }
 
+check_ci_budget() {
+    # Windows CI 墙钟分档口径（#267）：档位边界与预算由真实 PR 数据校准，改错了会让
+    # 「CI 绿」这个信号失真（#260 的单一 ≤15min 目标就把 35min 的正常大改动判成失败）。
+    # 先跑自测（8 条档位样本 + 预算单调性 + #263 回归），再用当前分支的真实 diff 报一次
+    # 档位——后者只输出信息、不判定（没有实测墙钟可比）。
+    "$PYTHON" "$ROOT/scripts/ci_budget.py" --selftest || return $?
+    "$PYTHON" "$ROOT/scripts/ci_budget.py" --from-git "origin/main..HEAD" 2>/dev/null || true
+    "$PYTHON" -m unittest discover -s "$ROOT/scripts/tests" -q 2>&1 | tail -2 || return $?
+}
+
 # ---- 前端 ----------------------------------------------------------------
 
 check_frontend() {
@@ -229,6 +239,7 @@ run_step "ci-log error pattern" check_ci_log_pattern
 run_step "gtest discovery timeout (#227)" check_gtest_discovery_timeout
 run_step "commit subject rules (#265)" check_commit_subject
 run_step "push-scope base resolution (#265)" check_push_scope_selftest
+run_step "Windows CI budget bands (#267)" check_ci_budget
 if [ "$C_ONLY" -eq 0 ]; then
     run_step "frontend (type-check/lint/lint:css/test/gen:types)" check_frontend
 fi

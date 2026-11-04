@@ -18,10 +18,27 @@ on:
   # 由本定时任务 + workflow_dispatch + main push（#260）在 main 上写入（public 仓库
   # runner 不额外计费）；main push 的 warm job 与 Linux 验证同一 run 并行，不占 PR 等待。
   # 注意：合并 #133 后首个 PR 仍是冷缓存（需先有一次 main run 或手动触发一次 warm job）。
-  # 「PR 墙钟 ≤15min」是 #133 时预热生效后的稳态目标，已被实测推翻：2026-11-03/04 代码票
-  # #243–#245 的 Windows build 23m12s–31m27s、PR 总墙钟 31–40min（GHA 缓存配额挤兑 +
-  # main 未写 sccache 两因叠加，见 #260；同期 main 夜间 warm job Build 仅 5m21s，瓶颈是
-  # 缓存命中而非代码量）；#260 §1 修复生效后以同波代码 PR 实测重设目标，暂不承诺具体分钟数。
+  #
+  # **墙钟目标：按改动规模分档，不是一个固定分钟数**（#267 定案，推翻 #260 的「≤15min」）。
+  # 原因是 PR 的语义就是改源码，改动必然让对应 TU 的缓存失效——固定目标必然对改动大的
+  # PR 产生假告警，而假告警会让「CI 绿」失真。2026-11-04 六个含代码改动的 PR 实测
+  # （计数来自 `git diff --name-only`，不是 PR 页面的 files 列表——后者含重命名项会虚高）：
+  #
+  #   PR     cpp  headers   Build       Windows job
+  #   #268   0    0         4m06s       11m11s     small
+  #   #264   1    0         5m32s       13m31s     small
+  #   #269   12   11        16m59s      25m17s     medium
+  #   #263   21   11        27m33s      34m51s     large
+  #   #262   0*   0*        32m35s      41m01s     *改了 ci.yml 的 sccache 配置，缓存 key 全失配
+  #
+  # 结论：0/1 个 C++ 文件时 ~11–14min（缓存确实生效），21 个时 35min 属正常。
+  # 分档口径与预算由 `scripts/ci_budget.py` 定义（small 18 / medium 30 / large 45 分钟），
+  # 该脚本带 --selftest 并接入 preflight，用真实 PR 数据校验过四个样本。改动 CI 缓存配置
+  # 或 runner 规格后重跑一次观测，再据此调整 —— 不要凭印象改数字。
+  #
+  # 曾考虑但**否决**的改进：把 PR 侧 `SCCACHE_GHA_RW_MODE` 从 READ_ONLY 改成 READ_WRITE。
+  # 不会改善后续 PR 命中率——GitHub Actions 缓存按 ref 作用域，PR 写在 `refs/pull/N/merge`
+  # 下，其它 PR restore 不到（这正是 warm job 必须放在 main 上的原因）。
   schedule:
     - cron: "17 16 * * *"  # UTC 16:17 = Asia/Shanghai 00:17
   # 手动触发：
@@ -47,7 +64,8 @@ jobs:
   windows:
     name: Windows (MSVC Release)
     # Windows 只在 PR 上跑：PR 校验的是 merge-ref，已覆盖合并结果；main push 只跑 Linux，
-    # 省下每票 ~35–40 分钟的重复 Windows 验证（本波 11 票 Windows 全绿，MSVC 问题在 PR 也可见）。
+    # 省下每票 11–41 分钟的重复 Windows 验证（实测区间见文件头的分档表；本波 11 票
+    # Windows 全绿，MSVC 问题在 PR 也可见）。
     if: github.event_name == 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 90
