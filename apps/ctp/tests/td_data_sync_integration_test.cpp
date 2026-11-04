@@ -404,9 +404,14 @@ TEST_F(TdDataSyncIntegrationTest, DayLoadThenReplayDoesNotDuplicate) {
     EXPECT_EQ(day.start_seq, 32u);  // trades seq 30..32 最大
 
     auto filter = ReportFilter::load(day.orders, day.trades);
-    uint64_t seq = day.start_seq;
 
     // ---- 重放风暴: 当日同批全 kSkip → 不分配 seq, 不落库, 不推帧 ----
+    // 「不分配 seq」用真实取号器观测: 重放路径只调 check_* (全 kSkip), 没有任何 accept/落库,
+    // 因此取号器水位与 DB MAX(seq) 都必须停在 32; 取号器本身可用性由下面的 next() 反证
+    // (若它自己在重放期间被推进, 唯一一次 next() 就不会得到 33)。
+    AccountSeqAllocator allocator;
+    SQLite::Database ro_for_alloc = open_readonly(db_path_);
+    allocator.set_db_provider([&ro_for_alloc]() -> SQLite::Database* { return &ro_for_alloc; });
     for (const auto& rec : today) {
         bool warn = false;
         ASSERT_EQ(ReportFilter::Verdict::kSkip, filter.check_order(rec, &warn))
@@ -416,14 +421,11 @@ TEST_F(TdDataSyncIntegrationTest, DayLoadThenReplayDoesNotDuplicate) {
     for (const auto& rec : trades) {
         EXPECT_EQ(ReportFilter::Verdict::kSkip, filter.check_trade(rec));
     }
-    EXPECT_EQ(seq, 32u);  // 全吞期间无新 seq 分配
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders"), orders_before);
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trades"), trades_before);
-
-    // ---- 历史日行的重放不参与当日基准 (不在当日装载集内) ----
-    // 但历史日行 seq 已在 start_seq 之下, 消费端由 W 过滤兜底 (不重复推帧).
     SQLite::Database ro2 = open_readonly(db_path_);
-    EXPECT_EQ(query_max_seq(ro2, "acc1"), 32u);
+    EXPECT_EQ(query_max_seq(ro2, "acc1"), 32u);  // 全吞期间 DB 无新行
+    EXPECT_EQ(allocator.next("acc1"), 33u);      // 取号器仍从 DB MAX+1 起 (未被重放推进)
 }
 
 // ============================================================================

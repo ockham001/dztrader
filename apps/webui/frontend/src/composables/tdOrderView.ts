@@ -111,25 +111,6 @@ function businessKey(row: TdOrderRow): number {
 }
 
 /**
- * 按 sort_key 字符串降序插入一行（契约 webui-ws §5 第 9 条：增量行按 sort_key 插入，**不是**简单前插）。
- *
- * 返回新数组（纯函数），调用方用整体替换触发响应式更新。
- */
-export function insertOrderRow(rows: readonly TdOrderRow[], incoming: TdOrderRow): TdOrderRow[] {
-  const next = rows.slice()
-  // 二分找第一个 sort_key 小于 incoming 的位置（其余已降序）
-  let low = 0
-  let high = next.length
-  while (low < high) {
-    const mid = (low + high) >> 1
-    if (next[mid].sort_key > incoming.sort_key) low = mid + 1
-    else high = mid
-  }
-  next.splice(low, 0, incoming)
-  return next
-}
-
-/**
  * 合并一批增量行到现有窗口（契约 webui-ws §5 第 8/9 条 + ADR 0043 决策 7 有界窗口）。
  *
  * 1. 业务键 `order_id` 去重：同键只在 `seq` **更大**时覆盖（重复/乱序无害）；

@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
 import {
-  insertOrderRow,
   mergeOrderRows,
   formatTdPrice,
   formatTdAvgPrice,
@@ -123,9 +122,9 @@ describe('tdOrderView · 枚举中文文案（契约 rest §2.9.3 枚举取值�
 describe('tdOrderView · sort_key 降序插入与合并（契约 rest §2.9.6）', () => {
   it('插入位置由 sort_key 决定，不是简单前插', () => {
     const rows = [row({ order_id: 10, sort_key: 'b' }), row({ order_id: 5, sort_key: 'a' })]
-    const inserted = insertOrderRow(rows, row({ order_id: 7, sort_key: 'c' }))
-    expect(inserted.map(r => r.sort_key)).toEqual(['c', 'b', 'a'])
-    expect(insertOrderRow(rows, row({ order_id: 8, sort_key: 'a0' })).map(r => r.sort_key))
+    expect(mergeOrderRows(rows, [row({ order_id: 7, sort_key: 'c' })]).map(r => r.sort_key))
+      .toEqual(['c', 'b', 'a'])
+    expect(mergeOrderRows(rows, [row({ order_id: 8, sort_key: 'a0' })]).map(r => r.sort_key))
       .toEqual(['b', 'a0', 'a'])
   })
 

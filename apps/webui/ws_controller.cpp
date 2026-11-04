@@ -110,9 +110,9 @@ void WsController::handleNewConnection(const drogon::HttpRequestPtr& req,
         } catch (const std::exception& e) {
             // 吞因：补发失败不阻断连接建立（基线仍由前端 REST 重拉收敛）。
             // 日志取 WARN：SPDLOG_DEBUG 在 Release 编译掉会让参数未使用（MSVC C4101 + /WX）。
-            SPDLOG_WARN("td_recent push failed, ignored | error={}", e.what());
+            SPDLOG_WARN("td_recent push failed, ignored | error=\"{}\"", e.what());
         } catch (...) {
-            SPDLOG_DEBUG("td_recent push failed, reason=unknown_exception");
+            SPDLOG_DEBUG("td_recent push failed | reason=unknown_exception");
         }
     }
 

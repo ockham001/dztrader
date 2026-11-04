@@ -23,8 +23,15 @@ namespace dztrader::webui {
 namespace {
 
 /// 契约 rest §2.9.6：18:00 锚点（夜盘归入所属交易日且与日盘排序一致）。
+/// 排序坐标在 SQL 与 `sort_key` 两处使用，必须同源——SQL 片段由这两个常量拼出
+/// （下面的 `time_anchor_sql()`），禁止在 SQL 文本里再写字面量。
 constexpr int32_t kSortAnchorOffsetSec = 21600;
 constexpr int32_t kSecondsPerDay = 86400;
+
+/// 排序坐标的 SQL 表达式（与 `td_order_sort_key` 的时间锚同源）。
+std::string time_anchor_sql() {
+    return std::format("((o.time + {}) % {})", kSortAnchorOffsetSec, kSecondsPerDay);
+}
 
 /// 降级原因码（契约 rest §2.9.8）。
 constexpr const char* kReasonNotFound = "not_found";
@@ -312,7 +319,7 @@ OpenResult open_readonly(const std::string& path, int busy_timeout_ms) {
     sqlite3* db = nullptr;
     if (sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
         const int code = db != nullptr ? sqlite3_extended_errcode(db) : SQLITE_CANTOPEN;
-        SPDLOG_WARN("td orders db open failed | path={} error={}", path,
+        SPDLOG_WARN("td orders db open failed | path={} error=\"{}\"", path,
                     db != nullptr ? sqlite3_errmsg(db) : "unknown");
         if (db != nullptr) {
             sqlite3_close(db);
@@ -541,7 +548,7 @@ std::optional<nlohmann::json> TdOrdersQuery::execute(
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &stmt, nullptr) != SQLITE_OK) {
             const int code = sqlite3_extended_errcode(db);
-            SPDLOG_WARN("td orders schema probe failed | error={}", sqlite3_errmsg(db));
+            SPDLOG_WARN("td orders schema probe failed | error=\"{}\"", sqlite3_errmsg(db));
             sqlite3_finalize(stmt);
             return close_and(degraded_body(
                 is_corrupt(code) ? kReasonOpenFailed
@@ -555,7 +562,7 @@ std::optional<nlohmann::json> TdOrdersQuery::execute(
         sqlite3_finalize(stmt);
         if (step != SQLITE_ROW) {
             const int code = sqlite3_extended_errcode(db);
-            SPDLOG_WARN("td orders schema probe step failed | error={}", sqlite3_errmsg(db));
+            SPDLOG_WARN("td orders schema probe step failed | error=\"{}\"", sqlite3_errmsg(db));
             // 非 SQLite 文件 / 页损坏：`sqlite3_open` 是惰性的，失败只在首次读页暴露，
             // 契约 rest §2.9.8 把这类归 open_failed（不是 query_failed）。
             const char* reason = is_corrupt(code)
@@ -585,16 +592,15 @@ std::optional<nlohmann::json> TdOrdersQuery::execute(
     if (cursor.has_value()) {
         // 游标坐标 = 与 sort_key 同源的 (时间锚, order_id) 降序，下一页取「更旧」的行。
         // 禁用 OFFSET（契约 rest §2.9.2），坐标条件走 idx_orders_sort。
-        sql +=
-            " AND (((o.time + 21600) % 86400) < ? OR (((o.time + 21600) % 86400) = ?"
-            " AND o.order_id < ?))";
+        const std::string anchor = time_anchor_sql();
+        sql += std::format(" AND ({} < ? OR ({} = ? AND o.order_id < ?))", anchor, anchor);
     }
-    sql += " ORDER BY ((o.time + 21600) % 86400) DESC, o.order_id DESC LIMIT ?";
+    sql += std::format(" ORDER BY {} DESC, o.order_id DESC LIMIT ?", time_anchor_sql());
 
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
         const int code = sqlite3_extended_errcode(db);
-        SPDLOG_WARN("td orders query prepare failed | error={}", sqlite3_errmsg(db));
+        SPDLOG_WARN("td orders query prepare failed | error=\"{}\"", sqlite3_errmsg(db));
         sqlite3_finalize(stmt);
         return close_and(degraded_body(is_busy(code) ? kReasonBusy : kReasonQueryFailed));
     }
@@ -652,7 +658,7 @@ std::optional<nlohmann::json> TdOrdersQuery::execute(
     sqlite3_finalize(stmt);
     if (step != SQLITE_ROW && step != SQLITE_DONE) {
         const int code = sqlite3_extended_errcode(db);
-        SPDLOG_WARN("td orders query step failed | error={}", sqlite3_errmsg(db));
+        SPDLOG_WARN("td orders query step failed | error=\"{}\"", sqlite3_errmsg(db));
         return close_and(degraded_body(is_busy(code) ? kReasonBusy : kReasonQueryFailed));
     }
 
