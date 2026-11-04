@@ -11,9 +11,13 @@
  *
  * `/proc/net/dev` 与虚拟网卡判定同样在此：判定依据是 sysfs 结构（`<if>/device` 是否存在），
  * 与网卡名无关，注入假 sysfs 根即可用临时目录确定性覆盖（契约 sysmon §2.4）。
+ *
+ * hwmon 温度扫描同理：注入假 hwmon 根即可确定性覆盖病态读数过滤（#258，契约 sysmon §2.4），
+ * 不依赖真机驱动是否暴露无效通道。
  */
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -192,6 +196,47 @@ struct NetDevEntry {
 ///        （契约 sysmon §2.4 的判定因此不依赖真实网卡名）
 [[nodiscard]] bool is_virtual_interface(std::string_view interface_name,
                                         std::string_view sysfs_net_root = "/sys/class/net");
+
+// ===== hwmon 温度传感器扫描（契约 sysmon §2.4；Linux 实现内部接缝）=====
+
+/// 一次 hwmon 扫描的归一结果。
+struct TemperatureScanResult {
+    /// 通过合理性窗口的读数；没有任何可读且合理的通道时为 `std::nullopt`
+    /// （与 `SystemCollector::collect_temperatures()` 的失败降级口径一致）。
+    std::optional<std::vector<RawTemperature>> readings;
+    /// 因换算后超出合理性窗口而被跳过的通道数（调用方据此去重记日志）。
+    /// 读取失败/内容非法的通道**不计入**——它们不是"读数越界"。
+    uint32_t implausible_channels = 0;
+};
+
+/// 扫描 hwmon 根目录读取温度传感器读数（契约 sysmon §2.4）。
+///
+/// 每个 hwmon 目录以 `name` 文件内容为传感器前缀（缺失时回退目录名，如 "hwmon0"）；
+/// `tempN_input` 为毫摄氏度，除以 1000 得摄氏温度；标识为
+/// `<name>#<hwmonN>:<label>`，无 label 时为 `<name>#<hwmonN>:tempN`。hwmon 目录名唯一，
+/// 因此标识在同一启动周期内稳定，且不随其它同名芯片出现/消失变化。单个通道读取失败
+/// 只跳过该条；没有任何通过合理性窗口的通道时 `readings` 为 `std::nullopt`
+/// （失败降级，不抛异常）。
+///
+/// **合理性过滤（#258）**：换算后超出契约 sysmon §2.4 温度合理性窗口的通道视为病态读数
+/// （典型是未初始化通道的 `-273.15 °C` 占位值），跳过该通道并计入 `implausible_channels`；
+/// 过滤是逐通道的，同一芯片的其它正常通道照常返回。
+///
+/// 读数同时携带 `chip`（hwmon `name`）与 `label`（`tempN_label` 原值，缺失为空串），
+/// 供展示层分组与友好命名（#126）——标识的拼接规则仍只在本函数一处。
+///
+/// @param hwmon_root hwmon 类根目录，默认 `/sys/class/hwmon`；测试可注入假根，
+///        用临时目录确定性覆盖病态读数过滤，不依赖真机驱动
+[[nodiscard]] TemperatureScanResult read_temperatures(
+    const std::filesystem::path& hwmon_root = "/sys/class/hwmon");
+
+/// 病态温度读数告警的去重状态机（契约 sysmon §2.4：状态首次出现时记一条 WARN，
+/// 持续存在不逐帧刷屏，恢复正常后重置）。
+///
+/// @param implausible_channels 本帧被合理性窗口过滤的通道数（0 = 本帧没有病态读数）
+/// @param logged 调用方持有的去重状态；函数按本帧结果就地更新
+/// @return 本帧是否应记一条 WARN
+[[nodiscard]] bool should_log_implausible_temperatures(uint32_t implausible_channels, bool& logged);
 
 }  // namespace dztrader::platform::system_collector_linux_internal
 
