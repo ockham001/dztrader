@@ -19,6 +19,7 @@
 #include <dztrader/data_type.h>
 #include <dztrader/tdstore/records.h>
 
+#include "td/td_notify_types.h"
 #include "td/td_persist_records.h"
 
 namespace SQLite {
@@ -63,10 +64,9 @@ struct PersistTask {
 };
 
 /// 持久化失败通知回调 (ADR 0042 §4 分级语义): level/popup 由 Writer 决定, 调用方只转发.
-/// 线程约定: 可能从 Writer 线程 (失败/恢复) 或调用 enqueue 的线程 (积压告警) 调用,
-/// 实现方须线程安全 (td 注入 NotifyUi 转发; 测试注入加锁记录器). 空 = 仅 spdlog.
-using PersistNotifyFn =
-    std::function<void(DzNotifyLevel level, const std::string& message, bool popup)>;
+/// 别名到进程内唯一类型 TdNotifyFn (td_notify_types.h); 线程约定见该类型注释.
+/// 空 = 仅 spdlog.
+using PersistNotifyFn = TdNotifyFn;
 
 /// 持久化失败策略 (ADR 0042). 生产用默认值; 测试注入短延迟/低阈值实现确定性.
 struct PersistPolicy {
@@ -167,7 +167,8 @@ private:
     /// 退避等待. 返回 false = 收到停止请求 (应转入最后一次立即重试).
     bool wait_retry_or_stop(size_t attempt);
 
-    /// 通知分级 (ADR 0042 §4). 仅 Writer 线程访问 failing_/last_notify_.
+    /// 通知分级 (ADR 0042 §4). Writer 启动后仅 Writer 线程访问; open() 首次建连
+    /// (Writer 线程启动前) 在主线程调用本函数, 两者不并发。
     void note_failure(const std::string& message);
     void note_recovered();
     void emit_notify(DzNotifyLevel level, const std::string& message, bool popup) const;
@@ -218,7 +219,8 @@ private:
     uint64_t next_flush_token_ = 1;
     std::unordered_map<uint64_t, std::promise<void>> pending_flushes_;
 
-    /// 通知分级状态 (仅 Writer 线程访问).
+    /// 通知分级状态 (Writer 启动后仅 Writer 线程访问; open() 首次建连在主线程访问,
+    /// 两者不并发).
     bool failing_ = false;
     std::chrono::steady_clock::time_point last_notify_{};
 };

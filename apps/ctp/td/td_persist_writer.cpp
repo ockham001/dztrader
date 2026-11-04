@@ -6,6 +6,7 @@
 #include <format>
 #include <future>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 #include <SQLiteCpp/Database.h>
@@ -33,6 +34,18 @@ constexpr int kMaxCorruptionRebuilds = 3;
 /// SQLite 主 result code（低 8 位；扩展码在 extended code 中，主码相同）。
 constexpr int kSqliteCorrupt = 11;  ///< SQLITE_CORRUPT（库文件损坏/结构非法）
 constexpr int kSqliteNotADb = 26;   ///< SQLITE_NOTADB（文件头非法，不是 SQLite 库）
+
+/// 错误文本归一到单行 prose（日志值 `error="..."` 用）：SQLite/建库门面的错误消息
+/// 自带 `| k=v` 片段与双引号，直接嵌入会形成未转义引号与嵌套 k=v（违反日志格式约定）。
+/// 替换只作用于本进程输出的错误值，不改变原始异常讲给调用方的语义。
+std::string error_value(std::string_view error) {
+    std::string text(error);
+    std::replace(text.begin(), text.end(), '"', '\'');
+    std::replace(text.begin(), text.end(), '|', '/');
+    std::replace(text.begin(), text.end(), '\n', ' ');
+    std::replace(text.begin(), text.end(), '\r', ' ');
+    return text;
+}
 
 }  // namespace
 
@@ -440,7 +453,7 @@ bool PersistWriter::commit_batch(std::vector<PersistTask>& batch) {
         transaction.commit();
         return true;
     } catch (const SQLite::Exception& e) {
-        last_error_ = e.what();
+        last_error_ = error_value(e.what());
         const int primary_code = e.getErrorCode() & 0xFF;
         if (is_corruption(primary_code)) {
             handle_corruption(primary_code);
@@ -449,7 +462,7 @@ bool PersistWriter::commit_batch(std::vector<PersistTask>& batch) {
         }
         return false;
     } catch (const std::exception& e) {
-        last_error_ = e.what();
+        last_error_ = error_value(e.what());
         reset_statements();
         return false;
     } catch (...) {
@@ -541,13 +554,13 @@ bool PersistWriter::try_open() {
         return true;
     } catch (const std::exception& e) {
         close_connection();
-        last_error_ = e.what();
-        SPDLOG_WARN("trade db open failed | path={} error=\"{}\"", db_path_, e.what());
+        last_error_ = error_value(e.what());
+        SPDLOG_DEBUG("trade db open failed | path={} error=\"{}\"", db_path_, last_error_);
         return false;
     } catch (...) {
         close_connection();
         last_error_ = "unknown open error";
-        SPDLOG_WARN("trade db open failed | path={} error=\"unknown\"", db_path_);
+        SPDLOG_DEBUG("trade db open failed | path={} error=\"unknown\"", db_path_);
         return false;
     }
 }
@@ -678,7 +691,7 @@ void PersistWriter::emit_notify(DzNotifyLevel level, const std::string& message,
     try {
         notify_(level, message, popup);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("persist notify callback failed | error=\"{}\"", e.what());
+        SPDLOG_ERROR("persist notify callback failed | error=\"{}\"", error_value(e.what()));
     } catch (...) {
         SPDLOG_ERROR("persist notify callback failed | error=\"unknown\"");
     }

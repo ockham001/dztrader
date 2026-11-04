@@ -43,6 +43,7 @@
 #include "td/td_ctp_mapping.h"
 #include "td/td_events.h"
 #include "td/td_login_finalize.h"
+#include "td/td_notify_types.h"
 #include "td/td_offset_converter.h"
 #include "td/td_persist_records.h"
 #include "td/td_persist_writer.h"
@@ -56,8 +57,8 @@
 namespace dztrader::ctp {
 
 /// 账户会话 UI 通知回调 (登录 flush 屏障超时等; 在 TdApi 主循环线程同步调用).
-/// 与 PersistNotifyFn 同签名族, 空 = 仅日志 (不通知 UI).
-using AccountNotifyFn = std::function<void(DzNotifyLevel level, std::string message, bool popup)>;
+/// 别名到进程内唯一类型 TdNotifyFn (td_notify_types.h); 空 = 仅日志 (不通知 UI).
+using AccountNotifyFn = TdNotifyFn;
 
 class AccountSession {
 public:

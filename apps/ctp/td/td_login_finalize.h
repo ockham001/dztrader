@@ -20,10 +20,9 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
-#include <string>
 #include <string_view>
 
-#include <dztrader/data_type.h>  // DzNotifyLevel
+#include "td/td_notify_types.h"  // TdNotifyFn (进程内通知唯一类型)
 
 namespace dztrader::ctp {
 
@@ -50,10 +49,9 @@ enum class FlushBarrierResult : uint8_t {
 /// 等待 persist 排空 (返回 true = 末批已提交). timeout 为本次等待上限.
 using FlushWaitFn = std::function<bool(std::chrono::milliseconds timeout)>;
 
-/// 持久化通知回调 (与 td_persist_writer.h 的 PersistNotifyFn 同签名).
+/// 持久化通知回调 (别名到进程内唯一类型 TdNotifyFn).
 /// 本头不 include writer 头: 保持登录收尾纯逻辑无 tdstore/CTP/SQLite 依赖, 可独立单测.
-using FlushNotifyFn =
-    std::function<void(DzNotifyLevel level, const std::string& message, bool popup)>;
+using FlushNotifyFn = TdNotifyFn;
 
 /// 登录 flush 屏障: 等待 persist 排空. 超时发 ERROR 通知 (popup=true) 并返回 TimedOut
 /// (调用方照常推进 Ready; ADR 0042 §5). 通知文本固定为
