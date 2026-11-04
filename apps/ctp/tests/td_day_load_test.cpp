@@ -416,6 +416,21 @@ TEST_F(TdDayLoadTest, SeqAllocatorFallsBackWhenDbUnavailable) {
     EXPECT_EQ(alloc.next("acc1"), 2u);
 }
 
+// #13 AC4 的另一半: **空库** (该账户在库中没有任何行, W 不存在) 时, 无会话拒单仍必须拿到
+// seq > 0 —— 从 1 起分配. 与上一条的区别: 上一条是「连接拿不到」(provider 返回 nullptr),
+// 这条是「连接正常、库为空」(query_max_seq 返回 0), 是不同代码路径.
+TEST_F(TdDayLoadTest, SeqAllocatorStartsAtOneForEmptyAccountInLiveDb) {
+    auto ro = open_ro();
+    AccountSeqAllocator alloc;
+    alloc.set_db_provider([&ro]() -> SQLite::Database* { return &ro; });
+
+    EXPECT_EQ(query_max_seq(ro, "acc_new"), 0u);  // 库可读, 但该账户无任何行
+    EXPECT_EQ(alloc.next("acc_new"), 1u);         // 首个分配 = 1 (不是 0)
+    EXPECT_EQ(alloc.next("acc_new"), 2u);         // 单调递增
+    EXPECT_EQ(alloc.current("acc_new"), 2u);
+    EXPECT_EQ(alloc.current("acc_never_used"), 0u);  // 未取号账户
+}
+
 // 会话在无会话拒单之后推进了 seq (DB 已提交) -> 分配器必须吸收该进展,
 // 否则会话断线后的拒单会从旧种子续号, 与既有行撞 seq.
 TEST_F(TdDayLoadTest, SeqAllocatorAbsorbsSessionProgress) {
