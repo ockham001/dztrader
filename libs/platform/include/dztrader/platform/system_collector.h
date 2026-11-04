@@ -260,6 +260,8 @@ public:
     /// 采集温度传感器读数（Linux hwmon；Windows 不提供）。
     /// @return 本平台不支持 / 无温度传感器 / 全部读取失败返回 std::nullopt；
     ///         至少一个传感器可读时返回非空数组（读取失败的单个传感器不进入数组）。
+    ///         病态读数（换算后超出契约 sysmon §2.4 合理性窗口的通道）按读取失败处理，
+    ///         逐个通道跳过且不进入数组；不得把驱动占位值当作真实温度。
     virtual std::optional<std::vector<RawTemperature>> collect_temperatures() = 0;
 
     /// 采集每核当前频率（Linux cpufreq；Windows 不提供）。

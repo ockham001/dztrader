@@ -458,6 +458,12 @@ constexpr std::string_view kTemperatureInputSuffix = "_input";
 /// 温度标签文件名后缀：`temp<N>_label`（可选，人类可读标签）。
 constexpr std::string_view kTemperatureLabelSuffix = "_label";
 
+/// 温度读数合理性窗口（°C，闭区间；契约 sysmon §2.4「合理性过滤」）。
+/// 未初始化/占位通道的典型值是 -273150 m°C（-273.15 °C）；窗口只在这里定义一次，
+/// 过滤判定与告警日志共用，消费方不得重复定义（避免两处口径漂移）。
+constexpr double kMinPlausibleTemperatureCelsius = -50.0;
+constexpr double kMaxPlausibleTemperatureCelsius = 200.0;
+
 /// 匹配 `temp<数字>_input` 文件名：返回中间的 N；不匹配返回 std::nullopt。
 std::optional<uint32_t> parse_temperature_input_index(std::string_view filename) {
     if (!filename.starts_with(kTemperatureInputPrefix) ||
@@ -493,74 +499,6 @@ std::filesystem::path temperature_label_path(const std::filesystem::path& input_
     filename.resize(filename.size() - kTemperatureInputSuffix.size());
     filename += kTemperatureLabelSuffix;
     return input_path.parent_path() / filename;
-}
-
-/// 扫描 /sys/class/hwmon 读取温度传感器读数（契约 sysmon §2.4）。
-///
-/// 每个 hwmon 目录以 `name` 文件内容为传感器前缀（缺失时回退目录名，如 "hwmon0"）；
-/// `tempN_input` 为毫摄氏度，除以 1000 得摄氏温度；标识为
-/// `<name>#<hwmonN>:<label>`，无 label 时为 `<name>#<hwmonN>:tempN`。hwmon 目录名唯一，
-/// 因此标识在同一启动周期内稳定，且不随其它同名芯片出现/消失变化。单个传感器读取
-/// 失败只跳过该条；没有任何可读传感器时返回 std::nullopt（失败降级，不抛异常）。
-/// 读数同时携带 `chip`（hwmon `name`）与 `label`（`tempN_label` 原值，缺失为空串），
-/// 供展示层分组与友好命名（#126）——标识的拼接规则仍只在本函数一处。
-std::optional<std::vector<RawTemperature>> read_temperatures() {
-    std::vector<RawTemperature> readings;
-    std::set<std::string> used_sensors;
-    auto hwmon_dirs = list_directory(kHwmonRoot);
-    std::sort(hwmon_dirs.begin(), hwmon_dirs.end(),
-              [](const std::filesystem::directory_entry& lhs,
-                 const std::filesystem::directory_entry& rhs) {
-                  return lhs.path().filename().string() < rhs.path().filename().string();
-              });
-    for (const auto& hwmon_dir : hwmon_dirs) {
-        auto base_name = read_sysfs_line(hwmon_dir.path() / "name");
-        if (base_name.empty()) {
-            base_name = hwmon_dir.path().filename().string();
-        }
-        const auto hwmon_number = hwmon_dir.path().filename().string();
-        // 同一 hwmon 目录内按 tempN 的 N 数字序输出，保证顺序稳定。
-        std::vector<std::pair<uint32_t, std::filesystem::path>> inputs;
-        for (const auto& entry : list_directory(hwmon_dir.path())) {
-            if (const auto index =
-                    parse_temperature_input_index(entry.path().filename().string())) {
-                inputs.emplace_back(*index, entry.path());
-            }
-        }
-        std::sort(inputs.begin(), inputs.end(),
-                  [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
-        for (const auto& [index, input_path] : inputs) {
-            const auto millidegrees = parse_i64(read_sysfs_line(input_path));
-            if (!millidegrees) {
-                continue;
-            }
-            const auto label = read_sysfs_line(temperature_label_path(input_path));
-            // hwmon 目录名唯一：常规硬件下标识含 `<hwmonN>` 即帧内唯一，且同帧其它
-            // 传感器出现/消失不会改变本传感器标识（契约 sysmon §2.4「稳定标识」）。
-            const std::string base_sensor =
-                base_name + "#" + hwmon_number + ":" +
-                (label.empty() ? "temp" + std::to_string(index) : label);
-            // 病态驱动（同一 hwmon 下重复 label，或 label 恰好等于另一项的 tempN 形态）
-            // 时追加 `-<n>` 直到帧内唯一；正常硬件不会进入该循环。
-            std::string sensor = base_sensor;
-            for (uint32_t suffix = 1; !used_sensors.insert(sensor).second; ++suffix) {
-                sensor = base_sensor + "-" + std::to_string(suffix);
-            }
-            RawTemperature reading;
-            reading.sensor = std::move(sensor);
-            // chip / label 是 additive 字段（#126，契约 sysmon §2.4）：chip 即 hwmon 的 name
-            // （缺失时回退目录名），label 为 tempN_label 原值（空串 = 该通道没有标签）。
-            // 两者只供展示分组与友好命名；`sensor` 的拼接规则与取值不变（历史库维度键）。
-            reading.chip = base_name;
-            reading.label = label;
-            reading.celsius = static_cast<double>(*millidegrees) / 1000.0;
-            readings.push_back(std::move(reading));
-        }
-    }
-    if (readings.empty()) {
-        return std::nullopt;
-    }
-    return readings;
 }
 
 /// 扫描 /sys/devices/system/cpu/<cpuN>/cpufreq/scaling_cur_freq 读取每核当前频率
@@ -874,7 +812,20 @@ public:
     std::optional<RawLoadAverage> collect_load_average() override { return read_load_average(); }
 
     std::optional<std::vector<RawTemperature>> collect_temperatures() override {
-        return read_temperatures();
+        auto scan = system_collector_linux_internal::read_temperatures(kHwmonRoot);
+        // 病态读数按通道计数。持续存在时只在状态首次出现 WARN 一次，避免 7x24 运行下
+        // 每次采样刷屏；恢复正常后重置去重标记（与内存异常日志同一去重纪律）。
+        if (scan.implausible_channels == 0) {
+            temperature_anomaly_logged_ = false;
+        } else if (!temperature_anomaly_logged_) {
+            SPDLOG_WARN(
+                "hwmon temperature readings outside plausible range skipped | count={} "
+                "range_lo_celsius={} range_hi_celsius={}",
+                scan.implausible_channels, kMinPlausibleTemperatureCelsius,
+                kMaxPlausibleTemperatureCelsius);
+            temperature_anomaly_logged_ = true;
+        }
+        return std::move(scan.readings);
     }
 
     std::optional<std::vector<RawCoreFrequency>> collect_core_frequencies() override {
@@ -897,6 +848,7 @@ public:
 
 private:
     LinuxMemorySwapReader memory_reader_;
+    bool temperature_anomaly_logged_ = false;  ///< 病态温度读数日志去重（恢复后重置）
 };
 
 }  // namespace
@@ -1405,6 +1357,78 @@ bool is_virtual_interface(std::string_view interface_name, std::string_view sysf
         return true;
     }
     return !has_device;
+}
+
+// ===== hwmon 温度传感器扫描（契约 sysmon §2.4）=====
+
+TemperatureScanResult read_temperatures(const std::filesystem::path& hwmon_root) {
+    TemperatureScanResult result;
+    std::vector<RawTemperature> readings;
+    std::set<std::string> used_sensors;
+    auto hwmon_dirs = list_directory(hwmon_root);
+    std::sort(hwmon_dirs.begin(), hwmon_dirs.end(),
+              [](const std::filesystem::directory_entry& lhs,
+                 const std::filesystem::directory_entry& rhs) {
+                  return lhs.path().filename().string() < rhs.path().filename().string();
+              });
+    for (const auto& hwmon_dir : hwmon_dirs) {
+        auto base_name = read_sysfs_line(hwmon_dir.path() / "name");
+        if (base_name.empty()) {
+            base_name = hwmon_dir.path().filename().string();
+        }
+        const auto hwmon_number = hwmon_dir.path().filename().string();
+        // 同一 hwmon 目录内按 tempN 的 N 数字序输出，保证顺序稳定。
+        std::vector<std::pair<uint32_t, std::filesystem::path>> inputs;
+        for (const auto& entry : list_directory(hwmon_dir.path())) {
+            if (const auto index =
+                    parse_temperature_input_index(entry.path().filename().string())) {
+                inputs.emplace_back(*index, entry.path());
+            }
+        }
+        std::sort(inputs.begin(), inputs.end(),
+                  [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+        for (const auto& [index, input_path] : inputs) {
+            const auto millidegrees = parse_i64(read_sysfs_line(input_path));
+            if (!millidegrees) {
+                continue;
+            }
+            const double celsius = static_cast<double>(*millidegrees) / 1000.0;
+            // 合理性过滤（#258）：病态驱动的占位值（如未初始化通道的 -273.15 °C）
+            // 不得当作真实温度输出；逐通道跳过，同一芯片的其它通道照常返回
+            // （契约 sysmon §2.4「合理性过滤」）。
+            if (celsius < kMinPlausibleTemperatureCelsius ||
+                celsius > kMaxPlausibleTemperatureCelsius) {
+                ++result.implausible_channels;
+                continue;
+            }
+            const auto label = read_sysfs_line(temperature_label_path(input_path));
+            // hwmon 目录名唯一：常规硬件下标识含 `<hwmonN>` 即帧内唯一，且同帧其它
+            // 传感器出现/消失不会改变本传感器标识（契约 sysmon §2.4「稳定标识」）。
+            const std::string base_sensor =
+                base_name + "#" + hwmon_number + ":" +
+                (label.empty() ? "temp" + std::to_string(index) : label);
+            // 病态驱动（同一 hwmon 下重复 label，或 label 恰好等于另一项的 tempN 形态）
+            // 时追加 `-<n>` 直到帧内唯一；正常硬件不会进入该循环。
+            std::string sensor = base_sensor;
+            for (uint32_t suffix = 1; !used_sensors.insert(sensor).second; ++suffix) {
+                sensor = base_sensor + "-" + std::to_string(suffix);
+            }
+            RawTemperature reading;
+            reading.sensor = std::move(sensor);
+            // chip / label 是 additive 字段（#126，契约 sysmon §2.4）：chip 即 hwmon 的 name
+            // （缺失时回退目录名），label 为 tempN_label 原值（空串 = 该通道没有标签）。
+            // 两者只供展示分组与友好命名；`sensor` 的拼接规则与取值不变（历史库维度键）。
+            reading.chip = base_name;
+            reading.label = label;
+            reading.celsius = celsius;
+            readings.push_back(std::move(reading));
+        }
+    }
+    if (readings.empty()) {
+        return result;  // std::nullopt = 本帧没有可读且合理的通道（失败降级，不抛异常）
+    }
+    result.readings = std::move(readings);
+    return result;
 }
 
 }  // namespace system_collector_linux_internal

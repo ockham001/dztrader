@@ -292,6 +292,9 @@ TEST(SystemCollectorTest, LoadAverageReflectsPlatformSemantics) {
 
 // 契约 sysmon §2.4：Linux 有 hwmon 传感器时返回非空读数且数值合理；无传感器（CI/容器）
 // 报告不可用（std::nullopt）而不是失败。Windows 本版本不提供温度（必须为 std::nullopt）。
+// 采集层已按契约过滤病态读数（#258：换算后超出 [-50, 200] °C 的通道跳过），该过滤的
+// 边界与逐通道语义由下方 `FakeHwmonTest` 用假 hwmon 根确定性覆盖；这里仍对真机输出做
+// 同样的范围断言，防止过滤接缝未被真实采集路径调用。
 TEST(SystemCollectorTest, TemperatureReadingsFollowContract) {
     const auto collector = make_system_collector();
     ASSERT_NE(collector, nullptr);
@@ -330,6 +333,8 @@ TEST(SystemCollectorTest, TemperatureReadingsFollowContract) {
         }
         sensors.push_back(reading.sensor);
         // 真机温度必须是有限摄氏度，且落在物理上可能的工业/环境范围内。
+        // 采集层的合理性过滤（#258）保证输出恒在该窗口内；边界值本身由
+        // `FakeHwmonTest` 用假 hwmon 根确定性锁定，不依赖 runner 硬件。
         EXPECT_TRUE(std::isfinite(reading.celsius)) << reading.sensor;
         EXPECT_GE(reading.celsius, -50.0) << reading.sensor;
         EXPECT_LE(reading.celsius, 200.0) << reading.sensor;
@@ -1327,6 +1332,113 @@ TEST_F(FakeSysfsTest, MissingSysfsRootTreatsEveryInterfaceAsVirtual) {
 }
 
 }  // namespace netdev_test
+#endif  // defined(__linux__)
+
+#if defined(__linux__)
+// ===== #258 Linux 内部解析接缝：hwmon 温度扫描与合理性过滤（契约 sysmon §2.4）=====
+
+namespace temperature_scan_test {
+
+using dztrader::platform::system_collector_linux_internal::read_temperatures;
+
+/// 假 hwmon 根 fixture：用临时目录伪造 `/sys/class/hwmon/hwmonN` 的 `name` 与
+/// `tempN_input`/`tempN_label`，使病态读数过滤不依赖真机驱动是否暴露无效通道
+/// （AGENTS 硬门禁 2 自管临时目录的豁免情形）。
+class FakeHwmonTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        std::error_code ec;
+        base_ = std::filesystem::temp_directory_path(ec) /
+                ("dzsysmon_hwmon_" + std::to_string(current_process_id()) + "_" +
+                 std::to_string(counter_++));
+        std::filesystem::remove_all(base_, ec);
+        ASSERT_TRUE(std::filesystem::create_directories(base_, ec)) << ec.message();
+    }
+
+    void TearDown() override {
+        std::error_code ec;
+        std::filesystem::remove_all(base_, ec);
+    }
+
+    /// 写一个 sysfs 文本文件（读取端取首个非空行并 trim）。
+    void write_sysfs(const std::filesystem::path& path, const std::string& content) {
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
+        std::ofstream output(path);
+        ASSERT_TRUE(output.good()) << path.string();
+        output << content << '\n';
+        ASSERT_TRUE(output.good()) << path.string();
+    }
+
+    /// 造一个 hwmon 芯片目录并写入 `name`（目录名形如 `hwmonN`）。
+    void add_chip(const std::string& dir_name, const std::string& chip_name) {
+        write_sysfs(base_ / dir_name / "name", chip_name);
+    }
+
+    std::filesystem::path base_;
+    static int counter_;
+};
+
+int FakeHwmonTest::counter_ = 0;
+
+TEST_F(FakeHwmonTest, FiltersPathologicalReadingsPerChannel) {
+    add_chip("hwmon0", "coretemp");
+    write_sysfs(base_ / "hwmon0" / "temp1_label", "Package id 0");
+    write_sysfs(base_ / "hwmon0" / "temp1_input", "45000");
+    // 未初始化通道的典型占位值（#258 真机 CI 失败形态）：必须被过滤。
+    write_sysfs(base_ / "hwmon0" / "temp2_input", "-273150");
+    write_sysfs(base_ / "hwmon0" / "temp3_input", "200000");        // 上边界：闭区间内，保留
+    write_sysfs(base_ / "hwmon0" / "temp4_input", "not-a-number");  // 解析失败：不是越界
+    add_chip("hwmon1", "nvme");
+    write_sysfs(base_ / "hwmon1" / "temp1_input", "-50001");  // 下边界外：过滤
+    write_sysfs(base_ / "hwmon1" / "temp2_input", "-50000");  // 下边界：闭区间内，保留
+    add_chip("hwmon2", "acpitz");
+    write_sysfs(base_ / "hwmon2" / "temp1_input", "200001");  // 上边界外：过滤
+
+    const auto scan = read_temperatures(base_);
+    // 越界 3 条（-273.15 / 200.001 / -50.001）；解析失败的通道不计入越界计数。
+    EXPECT_EQ(scan.implausible_channels, 3U);
+    ASSERT_TRUE(scan.readings.has_value());
+    ASSERT_EQ(scan.readings->size(), 3U);
+
+    // 输出顺序：hwmon 目录名与通道号均有序（与真机路径同一确定性约定）。
+    const auto& first = scan.readings->at(0);
+    EXPECT_EQ(first.sensor, "coretemp#hwmon0:Package id 0");
+    EXPECT_EQ(first.chip, "coretemp");
+    EXPECT_EQ(first.label, "Package id 0");
+    EXPECT_DOUBLE_EQ(first.celsius, 45.0);
+    const auto& second = scan.readings->at(1);
+    EXPECT_EQ(second.sensor, "coretemp#hwmon0:temp3");
+    EXPECT_DOUBLE_EQ(second.celsius, 200.0);
+    const auto& third = scan.readings->at(2);
+    EXPECT_EQ(third.sensor, "nvme#hwmon1:temp2");
+    EXPECT_DOUBLE_EQ(third.celsius, -50.0);
+
+    // oracle 取契约窗口字面值（不引用实现常量），锁定"输出恒在窗口内"。
+    for (const auto& reading : *scan.readings) {
+        EXPECT_GE(reading.celsius, -50.0) << reading.sensor;
+        EXPECT_LE(reading.celsius, 200.0) << reading.sensor;
+    }
+}
+
+TEST_F(FakeHwmonTest, AllChannelsPathologicalReportNoReadings) {
+    add_chip("hwmon0", "nvme");
+    write_sysfs(base_ / "hwmon0" / "temp1_input", "-273150");
+    write_sysfs(base_ / "hwmon0" / "temp2_input", "200001");
+
+    const auto scan = read_temperatures(base_);
+    // 全部通道都是病态读数：与"本帧一个都读不到"同口径，不伪造 0 读数。
+    EXPECT_FALSE(scan.readings.has_value());
+    EXPECT_EQ(scan.implausible_channels, 2U);
+}
+
+TEST_F(FakeHwmonTest, MissingRootReportsNoReadingsAndNoImplausibleCount) {
+    const auto scan = read_temperatures(base_ / "no_such_hwmon");
+    EXPECT_FALSE(scan.readings.has_value());
+    EXPECT_EQ(scan.implausible_channels, 0U);
+}
+
+}  // namespace temperature_scan_test
 #endif  // defined(__linux__)
 
 }  // namespace dztrader::test

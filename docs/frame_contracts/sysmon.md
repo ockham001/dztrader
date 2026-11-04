@@ -138,6 +138,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - `chip` 为**芯片名**（hwmon 的 `name`，即 `sensor` 中 `#` 之前的部分，如 `coretemp` / `amdgpu` / `iwlwifi_1` / `acpitz`），能力可用时非空。`label` 为**通道标签**（`tempN_label` 的内容），缺失时为空串——空串是「该通道没有标签」这一合法事实，不是不可用（#126）。
 - 两者是 **additive 扩展**（#126）：`sensor` 的**值保持不变**——它是历史库 `temperature` 域的维度键，改格式会让已落库历史全部失配。消费方用二者做展示分组与友好命名，`sensor` 只用于标识与原始标识 tooltip。
 - **发送方义务与消费方容忍是两件事，不矛盾**：本版本发送方**每次都必须给出两者**（`chip` 非空、`label` 可为空串）；而消费方**必须容忍它们缺失**（旧版本发送方的载荷不带这两个键）——缺失时从 `sensor` 回退解析（`#` 前为芯片名、`:` 后为标签或通道名），新旧版本短暂并存不会渲染失败。`label` 为空串时展示层回退注入通道名（`sensor` 冒号后的 `tempN`），不退化为空。
+- **合理性过滤（#258）**：Linux hwmon 的 `tempN_input` 原始值为毫摄氏度，换算后**不在 `[-50, 200]` °C 闭区间**的通道视为不可靠驱动读数（典型是通道未初始化/驱动占位值，如 `-273150 m°C` = `-273.15 °C`），采集层**跳过该通道**并计数、在状态首次出现时记一条 WARN（持续存在不逐帧刷屏），**不得把占位值当作真实温度输出**。过滤是**逐通道**的：同一芯片的其它正常通道照常输出；全部通道都被过滤时该域为 `null`（与"本帧一个都读不到"同口径，能力可用性仍按 §2.5 粘性）。该窗口是本契约锁定的**唯一**合理性判据，消费方不得再叠加另一套范围过滤（避免两处定义漂移）。
 
 `shm_dir`：`{path:string, total_bytes:int, page_files:int, oldest_file_age_sec:int|null}`。共享内存目录占用，用于确认页清理机制没有失效。
 
@@ -292,7 +293,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
   - **计数器回绕按原生位宽处理**：采集层在每条原始计数器上携带该设备的回绕跨度（数据驱动，消费方不按平台分支）。计数类：Windows `ReadCount`/`WriteCount` 为 32 位 DWORD（跨度 `2^32`），Linux 为 64 位（跨度 0 = 不回绕，下降即重置）；时间类（微秒）：Linux 的 `ms_reading`/`ms_writing`/`io_ticks` 是 32 位毫秒计数器（跨度 `2^32 × 1000`），Windows 的 100ns 计数器为 64 位（0）；字节类：两平台均为 64 位（0）。仅当上次与本次值均落在跨度内且本次更小时按跨度回绕计算；其余下降视为计数器重置，本帧该字段 `null` 并在下一采样周期重建基线。32 位计数器上「回绕」与「重置」数值形态相同、无法区分，统一按回绕处理（与 CPU 计数器同一口径）；由此产生的单帧尖峰由下一帧的自然恢复收敛。
   - **采样窗口**：速率的分母是两次**成功采样**之间实际经过的时间；采集失败期间基线不推进，因此恢复后的首帧速率是跨越该缺口的窗口平均（口径明确，非伪造瞬时值）。磁盘 I/O 采集失败只把该域置 `null`，**不累加** `sampling.missed_ticks`（该标记表示计量 tick 整体被跳过，不是单个指标域失败）。
   - `utilization` 结果钳制到 `[0,1]`；若 Δ忙时间超过窗口的 1.5 倍，视为计数器口径异常（如 Windows `QueryTime` 受系统时间跳变影响），本帧输出 `null`，不得钳成 100%。窗口内完成请求数为 0 时 `latency_ms` 为 `null`（无定义）。
-- **温度 / 每核频率采集语义**：两者都是瞬时 gauge，不做差值或聚合（温度单位为摄氏度，频率四舍五入到整数 MHz）；传感器集合与核集合可在帧间变化，按本次读数输出，不沿用上一帧。读取失败的单个传感器/核不进入数组；能力可用但本帧一个都没读到时输出 `null`。配置 `sampling.groups.temperature=false` / `sampling.groups.cpu_frequency=false` 时跳过采集，可用性为 `disabled_by_config`、数值 `null`。Windows 不提供温度与每核频率（恒 `null`），也不提供整体频率。`chip` 与 `label` 由采集层在读取传感器时一并给出（hwmon `name` 与 `tempN_label`），发送方不重新解析 `sensor`——单帧标识的拼接规则仍只在采集层一处（§2.4）。
+- **温度 / 每核频率采集语义**：两者都是瞬时 gauge，不做差值或聚合（温度单位为摄氏度，频率四舍五入到整数 MHz）；传感器集合与核集合可在帧间变化，按本次读数输出，不沿用上一帧。读取失败的单个传感器/核不进入数组；能力可用但本帧一个都没读到时输出 `null`。**病态读数按读取失败处理**（#258）：换算后超出 `[-50, 200]` °C 的 hwmon 通道（如未初始化驱动的 `-273.15 °C` 占位值）跳过并计数告警，不进入数组，过滤口径见 §2.4 `temperature[]`。配置 `sampling.groups.temperature=false` / `sampling.groups.cpu_frequency=false` 时跳过采集，可用性为 `disabled_by_config`、数值 `null`。Windows 不提供温度与每核频率（恒 `null`），也不提供整体频率。`chip` 与 `label` 由采集层在读取传感器时一并给出（hwmon `name` 与 `tempN_label`），发送方不重新解析 `sensor`——单帧标识的拼接规则仍只在采集层一处（§2.4）。
 - **内存 / 交换采集语义**：两者都是瞬时 gauge，每次计量刷新，不做差值或聚合，不沿用上一帧。Linux 读 `/proc/meminfo`（`MemTotal`/`MemAvailable`/`Buffers`/`Cached`/`SReclaimable`/`SwapTotal`/`SwapFree`）；`MemAvailable` 缺失、为 0 或大于总量时按 `MemFree + Buffers + Cached + SReclaimable` 回退并钳制到 `[0, total]`，异常与回退均记日志；回退也无法计算时本次内存采集失败（该域 `null`，可用性按能力粘性）。Windows 读 `GetPerformanceInfo`（`PhysicalTotal`/`PhysicalAvailable`/`SystemCache`/`CommitLimit`/`CommitTotal`）。
 - **每网卡的计算语义**（契约 §2.4 `network[]`）：
   - 采集层只给原始累计计数器（`RawNetworkInfo`：收/发字节、包、错误、丢弃 + `is_virtual`），速率由纯函数从两次采样差值计算。
