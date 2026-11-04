@@ -2,7 +2,6 @@ import { defineStore } from 'pinia'
 import { tdApi } from '@/api/td'
 import {
   TD_LIST_PAGE_SIZE,
-  TD_LIST_PREFETCH_THRESHOLD,
   createTdListStore,
 } from '@/composables/tdListStore'
 import type { TdListQuery, TdListResponse } from '@/composables/tdListStore'
@@ -27,9 +26,6 @@ export const TD_ORDERS_PAGE_SIZE = TD_LIST_PAGE_SIZE
 
 /** 有界窗口容量（ADR 0043 决策 7 建议 2000；组件与测试从 store 取，单一常量来源） */
 export { TD_ORDERS_WINDOW_CAPACITY }
-
-/** 距列表底部多少行开始预取下一页 */
-export const TD_ORDERS_PREFETCH_THRESHOLD = TD_LIST_PREFETCH_THRESHOLD
 
 /**
  * 批量合并间隔 / 降级退避参数 / 测试注入点：均为工厂机制（委托与成交共用同一份），
