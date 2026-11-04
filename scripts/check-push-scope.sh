@@ -31,9 +31,16 @@ usage() {
     sed -n '2,/^$/p' "$0"
 }
 
+# --selftest（#265）：在临时仓库里复现 BASE 解析的四种状态，确认兜底生效。
+# 存在理由与 check_json_vendor_version.py / ci-log.sh 的 selftest 相同——解析逻辑本身
+# 也会写错，而这里写错的代价是「push 被挡 + 提示误导」（#246 实测 2 次）。
+# 只读 + 临时目录，不碰工作区。
+SELFTEST=0
+
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
+        --selftest) SELFTEST=1; shift ;;
         --base) BASE="${2:?--base 需要参数}"; shift 2 ;;
         --head) HEAD_SHA="${2:?--head 需要参数}"; shift 2 ;;
         --branch) BRANCH_OVERRIDE="${2:?--branch 需要参数}"; shift 2 ;;
@@ -45,6 +52,105 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# resolve_base(): 把「当前分支上游」解析成可用于 `git log base..head` 的 ref。
+# 三种失败形态都归到 origin/main：
+#   1) 没有上游（rev-parse 非零退出，无输出）
+#   2) 上游指向 URL（`git push -u <URL>` 的后果）——rev-parse 打印字面量 "@{u}"
+#   3) 上游 ref 不可解析
+resolve_base() {
+    local resolved
+    resolved="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+    case "${resolved:-}" in
+        ''|'@{u}') resolved="origin/main" ;;
+    esac
+    printf '%s' "$resolved"
+}
+
+run_selftest() {
+    local tmp fails=0 got want
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' RETURN
+
+    _st_case() {  # <名称> <期望> <setup 命令串>
+        local name="$1" want="$2" setup="$3"
+        git -C "$tmp" init -q . >/dev/null 2>&1 || { echo "selftest: git init failed" >&2; return 1; }
+        git -C "$tmp" config user.email selftest@example.com
+        git -C "$tmp" config user.name selftest
+        git -C "$tmp" checkout -q -b feat/issue-999-x 2>/dev/null || true
+        # shellcheck disable=SC2086
+        ( cd "$tmp" && eval "$setup" ) >/dev/null 2>&1 || true
+        got="$( cd "$tmp" && resolve_base )"
+        if [ "$got" = "$want" ]; then
+            echo "selftest ok $name -> $got"
+        else
+            echo "selftest FAIL $name: expected '$want', got '$got'" >&2
+            fails=$((fails + 1))
+        fi
+        rm -rf "${tmp:?}"/* "${tmp:?}"/.[!.]* 2>/dev/null || true
+    }
+
+    _st_case "no-upstream" "origin/main" "true"
+
+    _st_case "upstream-is-url" "origin/main" \
+        "git config branch.feat/issue-999-x.remote 'https://user:TOKEN@github.com/o/r.git' && \
+         git config branch.feat/issue-999-x.merge refs/heads/feat/issue-999-x"
+
+    # 正常上游：需要真实的提交 + remote.fetch refspec + 远端跟踪 ref，三者齐备时
+    # git 才认定它是远程跟踪分支（缺 fetch 会报 "not stored as a remote-tracking
+    # branch"，比缺 ref 更早失败——这正是自测要锁住的行为）。
+    git -C "$tmp" init -q . >/dev/null 2>&1
+    git -C "$tmp" config user.email selftest@example.com
+    git -C "$tmp" config user.name selftest
+    git -C "$tmp" checkout -q -b feat/issue-999-x 2>/dev/null || true
+    ( cd "$tmp" && git commit -q --allow-empty -m "chore(#999): selftest baseline" ) >/dev/null 2>&1
+    ( cd "$tmp" && git config remote.origin.url /nonexistent &&
+      git config --add remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' ) >/dev/null 2>&1
+    ( cd "$tmp" && git update-ref refs/remotes/origin/feat/issue-999-x HEAD ) >/dev/null 2>&1
+    ( cd "$tmp" && git update-ref refs/remotes/origin/main HEAD ) >/dev/null 2>&1
+    ( cd "$tmp" && git config branch.feat/issue-999-x.remote origin &&
+      git config branch.feat/issue-999-x.merge refs/heads/feat/issue-999-x ) >/dev/null 2>&1
+    got="$( cd "$tmp" && resolve_base )"
+    if [ "$got" = "origin/feat/issue-999-x" ]; then
+        echo "selftest ok upstream-normal -> $got"
+    else
+        echo "selftest FAIL upstream-normal: expected 'origin/feat/issue-999-x', got '$got'" >&2
+        fails=$((fails + 1))
+    fi
+    rm -rf "${tmp:?}"/* "${tmp:?}"/.[!.]* 2>/dev/null || true
+
+    # 票号匹配：提交标题含本票号才算通过（这是本脚本的主判定，单独自测正则形态）
+    _st_subject_case() {  # <名称> <subject> <期望 ok|bad>
+        local name="$1" subject="$2" want="$3" rc
+        if printf '%s' "$subject" | grep -qE "#265([^0-9]|\$)"; then
+            got=ok
+        else
+            got=bad
+        fi
+        if [ "$got" = "$want" ]; then
+            echo "selftest ok $name -> $got"
+        else
+            echo "selftest FAIL $name: expected '$want', got '$got' (subject: $subject)" >&2
+            fails=$((fails + 1))
+        fi
+    }
+    _st_subject_case "subject-scope-form" "fix(#265): 硬化" "ok"
+    _st_subject_case "subject-cn-parens" "feat: 硬化（#265）" "ok"
+    _st_subject_case "subject-other-ticket" "fix(#246): 别的票" "bad"
+    _st_subject_case "subject-no-ticket" "fix: 忘了票号" "bad"
+
+    if [ "$fails" -ne 0 ]; then
+        echo "selftest FAILED: $fails case(s)" >&2
+        return 1
+    fi
+    echo "selftest: base resolution + subject matching behave as expected"
+    return 0
+}
+
+if [ "$SELFTEST" = "1" ]; then
+    run_selftest
+    exit $?
+fi
+
 if [ -z "$ISSUE" ]; then
     usage >&2
     exit 2
@@ -54,14 +160,7 @@ case "$ISSUE" in
 esac
 
 if [ -z "$BASE" ]; then
-    BASE="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
-fi
-if [ -z "$BASE" ]; then
-    BASE="origin/main"
-fi
-if ! git rev-parse --verify --quiet "$BASE" >/dev/null; then
-    echo "error: base ref not found: $BASE" >&2
-    exit 2
+    BASE="$(resolve_base)"
 fi
 
 if [ -z "$HEAD_SHA" ]; then

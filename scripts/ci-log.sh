@@ -57,6 +57,21 @@ usage() {
 # 裸 `ERROR:` 命中，用噪声把 report_log 的 `head -120` 窗口占满，真正的根因（在日志尾部
 # 数万行处）就被挤掉了（#200 实测那轮 19 处命中里 9 处是这种噪声）。
 ERROR_PATTERN='\[  FAILED  \]|The following tests FAILED|FAILED TEST|error C[0-9]{4}|error LNK[0-9]+|fatal error|FAILED:|ninja: build stopped|error MSB[0-9]+|Test Failed|(^|[[:space:]:])ERROR:|\[ERROR\]|CMake Error|Process terminated due to timeout'
+# MSVC `/showIncludes` 噪声：每编译一个 TU 都会把整棵 include 树打成
+# `Note: including file: <path>` 行。#246 的失败日志实测 259,498 行里 257,976 行是这类
+# （99.4%，38MB），真根因只有一行 `warning C4702` —— `head -n 120` 窗口被 include 树
+# 占满，agent 只能手工 grep 第二次才定位（多花约 2 次调用）。
+# 过滤后单独打印被省略的行数：噪声量本身就是「日志为什么不可读」的证据，不能静默丢。
+SHOWINCLUDES_RE='^[0-9T:.+Z-]*[[:space:]]*Note: including file:'
+
+strip_showincludes() {
+    awk -v pat="$SHOWINCLUDES_RE" '
+        $0 ~ pat { skipped++; next }
+        { print }
+        END { if (skipped > 0) printf("note: %d showIncludes lines elided\n", skipped) > "/dev/stderr" }
+    '
+}
+
 
 # 错误模式自测（--selftest）：把「必须命中」与「必须不命中」的样本行喂给 ERROR_PATTERN。
 # 存在理由与 check_json_vendor_version.py --selftest 相同——规则本身也会写错：
@@ -98,11 +113,34 @@ sccache env dump|2026-01-01T00:00:00Z   SCCACHE_IGNORE_SERVER_IO_ERROR: 1
 sccache rw mode|2026-01-01T00:00:00Z   SCCACHE_GHA_RW_MODE: READ_ONLY
 plain info line|2026-01-01T00:00:00Z [946/941] Building CXX object libs/log/CMakeFiles/dzlog.dir/x.cpp.obj
 CASES
+
+    # showIncludes 过滤自测（#265）：这类行必须被滤掉，否则 120 行窗口全被 include 树
+    # 占满（#246 实测 257,976 行噪声 / 真根因 1 行）。同时确认「不是 showIncludes 行」
+    # 的普通 Note 行不会被误杀。
+    local filtered
+    filtered=$(printf '%s\n' \
+        '2026-11-04T09:54:43.4798197Z Note: including file:    C:\Users\x\nlohmann\json.hpp' \
+        '2026-11-04T09:54:43.7693838Z src/foo.cpp(12,3) : error C2220: the following warning is treated as an error' \
+        '2026-11-04T09:54:43.9000000Z Note: this is not a showIncludes line' \
+        | strip_showincludes 2>/dev/null)
+    if ! printf '%s\n' "$filtered" | grep -q "error C2220"; then
+        printf 'selftest FAIL: showIncludes filter dropped the real error line\n' >&2
+        fails=$((fails + 1))
+    fi
+    if printf '%s\n' "$filtered" | grep -q "Note: including file:"; then
+        printf 'selftest FAIL: showIncludes line survived the filter\n' >&2
+        fails=$((fails + 1))
+    fi
+    if ! printf '%s\n' "$filtered" | grep -q "Note: this is not a showIncludes line"; then
+        printf 'selftest FAIL: filter was too broad (killed a non-include Note line)\n' >&2
+        fails=$((fails + 1))
+    fi
+
     if [ "$fails" -ne 0 ]; then
         printf 'selftest: %d case(s) failed\n' "$fails" >&2
         return 1
     fi
-    printf 'selftest: ERROR_PATTERN ok (9 must-match, 3 must-not-match)\n'
+    printf 'selftest: ERROR_PATTERN ok (9 must-match, 3 must-not-match); showIncludes filter ok\n'
     return 0
 }
 
@@ -178,13 +216,15 @@ report_log() {
         return 0
     fi
     local matches
-    matches=$(grep -n -B"$CONTEXT" -A"$CONTEXT" -E "$ERROR_PATTERN" "$file" | head -n 120 || true)
+    # 先滤 showIncludes 再取窗口：否则窗口被 include 树吃掉，真根因落在 120 行之外。
+    matches=$(strip_showincludes <"$file" |
+              grep -n -B"$CONTEXT" -A"$CONTEXT" -E "$ERROR_PATTERN" | head -n 120 || true)
     if [ -n "$matches" ]; then
         printf -- '--- %s matches (context +/-%s) ---\n' "$label" "$CONTEXT"
         printf '%s\n' "$matches"
     else
         printf -- '--- %s: no known error pattern; last 60 lines ---\n' "$label"
-        tail -n 60 "$file"
+        strip_showincludes <"$file" | tail -n 60
     fi
 }
 

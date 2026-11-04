@@ -1045,6 +1045,15 @@ def main(argv):
                              capture_output=True, check=True).stdout
         files = [f for f in out.decode().split("\0") if f]
 
+    # 工作区已删、还没 `git add` 的 tracked 文档会出现在 `git ls-files` 里却没有实体
+    # （#265：暂存删除后 ls-files 就不再列出，所以只有「删了没暂存」命中）。此前直接
+    # open() 抛整段 FileNotFoundError，信息量为零。跳过并提示，退出码语义不变。
+    missing = [rel for rel in files if not os.path.isfile(os.path.join(root, rel))]
+    if missing:
+        print("note: %d tracked doc(s) missing from worktree (unstaged deletion?): %s"
+              % (len(missing), ", ".join(missing[:5]) + (" ..." if len(missing) > 5 else "")))
+        files = [rel for rel in files if rel not in set(missing)]
+
     errors = []
     slugs_cache = {}
     for rel in files:

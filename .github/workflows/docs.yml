@@ -42,12 +42,7 @@ jobs:
         if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
         shell: bash
         run: |
-          fail=0
-          while IFS=$'\t' read -r sha subject; do
-            case "$subject" in Merge*|Revert*|fixup*|squash*) continue;; esac
-            if ! printf '%s' "$subject" | grep -qE '^(fix|feat|refactor|docs|test|chore|perf|style|build|ci)(\([^)]+\))?!?: .+'; then
-              echo "bad commit subject: $sha $subject"
-              fail=1
-            fi
-          done < <(git log --no-merges --format='%H%x09%s' "${{ github.event.before }}..${{ github.sha }}")
-          exit $fail
+          # 单一真相源：scripts/check_commit_subject.py（#265，与 ci.yml、pre-commit 共用）。
+          python3 scripts/check_commit_subject.py --selftest
+          python3 scripts/check_commit_subject.py --range "${{ github.event.before }}..${{ github.sha }}"
+
