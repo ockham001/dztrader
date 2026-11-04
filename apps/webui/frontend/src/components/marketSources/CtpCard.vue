@@ -274,7 +274,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
         <span class="source-card__info-meta">{{ src.source_name }}</span>
       </div>
       <div class="source-card__meta-row">
-        <span class="source-card__info-meta">交易日：<span>{{ src.tradingDay }}</span></span>
+        <span class="source-card__info-meta">交易日：<span>{{ src.date }}</span></span>
         <span class="source-card__info-sub" :class="subscribeClass(src)">订阅：<span>{{ src.subscribeCount }}/{{ src.subscribeTotal }}</span></span>
         <span class="source-card__info-meta" :style="{ color: src.auto_login ? 'var(--status-success-default)' : 'var(--status-alert-default)' }">自动登录：<span>{{ autoLoginStatusText(src) }}</span></span>
         <span class="source-card__info-meta" :style="{ color: processStateColor(src.process_state) }">进程：<span>{{ processStateText(src.process_state) }}</span></span>

@@ -143,7 +143,7 @@ std::unique_ptr<Instance> make_instance(std::int32_t max_lookback,
 dztrader::bar::Bar make_bar(std::int64_t index) {
     constexpr std::int32_t kBarsPerDay = 86400 / kPeriodSec;
     dztrader::bar::Bar bar{};
-    bar.trading_day = 20000 + static_cast<DzDate>(index / kBarsPerDay);
+    bar.date = 20000 + static_cast<DzDate>(index / kBarsPerDay);
     bar.begin_sec = static_cast<std::int32_t>(index % kBarsPerDay) * kPeriodSec;
     bar.last_tick_sec = bar.begin_sec + kPeriodSec - 1;
     bar.period_sec = kPeriodSec;

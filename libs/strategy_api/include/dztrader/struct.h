@@ -48,6 +48,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzOrderReport, {
     DzOrderStatus status;              ///< 委托单状态
     char reserved[4];
     double price;              ///< 委托价格
+    double avg_price;          ///< 成交均价（Σ价×量/Σ量; 无成交为 0, JSON 序列化为 null）
     DzVolume volume;           ///< 委托数量
     DzVolume volume_traded;    ///< 已成交数量
     DzDate date;               ///< 交易日（距纪元天数）
@@ -161,7 +162,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzScheduleEvent, {
 DZ_DECLARE_ALIGNED_STRUCT(DzAccountStatus, {
     DzAccountId account_id;     ///< 账户标识
     DzInstanceId gateway_name;  ///< 网关进程名 (dztd_ctp/dztd_xtp); master 兜底应答为空串
-    DzDate trading_day;         ///< 交易日（距纪元天数; Offline 时为 0）
+    DzDate date;                ///< 交易日（距纪元天数; Offline 时为 0）
     DzAccountState state;       ///< 三态 (DZ_ACCOUNT_*)
     char reserved[3];
 });

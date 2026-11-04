@@ -67,7 +67,7 @@ export interface MarketSourceView extends MarketSource {
   apiVersion: string      // 契约 md-status api_version，镜像未到达为 ''
   sysVersion: string      // 契约 md-status sys_version，镜像未到达为 ''
   loginTime: string       // 契约 md-status login_time，镜像未到达为 ''
-  tradingDay: string
+  date: string
   subscribeCount: number
   subscribeTotal: number
   lastLoginError: MdLastErrorView | null  // 契约 md-status 失败语义 last_error；null = 无持久失败原因
@@ -115,7 +115,7 @@ export function makeSource(
     apiVersion: '',
     sysVersion: '',
     loginTime: '',
-    tradingDay: '--',
+    date: '--',
     subscribeCount: 0,
     subscribeTotal: 0,
     lastLoginError: null,
@@ -151,7 +151,7 @@ export function makeSource(
 // statuses[source].status 为不透明 Record<string, unknown>（dzweb 透传）。
 // 逐字段独立 typeof 校验：类型非法的字段单独回落默认值，其余字段正常采用——
 // 契约 md-status 清空语义是分层的（进 Idle 全清空、登录失败仅清 login_time 其余保留），
-// 空串是合法值不是非法帧，禁止整帧全有或全无判定（否则登录失败场景会误丢 trading_day）。
+// 空串是合法值不是非法帧，禁止整帧全有或全无判定（否则登录失败场景会误丢 date）。
 
 /// 一次性登录/连接失败（契约 md-status「失败语义（last_error）」）。
 /// 展示层 camelCase；进程/SHM 边界为 snake_case（code/message/error_id/timestamp），
@@ -166,7 +166,7 @@ export interface MdLastErrorView {
 export interface MdStatusView {
   apiVersion: string
   sysVersion: string
-  tradingDay: string
+  date: string
   loginTime: string
   subscribeCount: number
   subscribeTotal: number
@@ -230,7 +230,7 @@ export function parseMdStatus(raw: unknown): MdStatusView | null {
   const s = raw as Partial<{
     api_version: unknown
     sys_version: unknown
-    trading_day: unknown
+    date: unknown
     login_time: unknown
     expected_subscribe_count: unknown
     subscribed_count: unknown
@@ -242,7 +242,7 @@ export function parseMdStatus(raw: unknown): MdStatusView | null {
   return {
     apiVersion: str(s.api_version),
     sysVersion: str(s.sys_version),
-    tradingDay: str(s.trading_day),
+    date: str(s.date),
     loginTime: str(s.login_time),
     subscribeCount: num(s.subscribed_count),
     subscribeTotal: num(s.expected_subscribe_count),

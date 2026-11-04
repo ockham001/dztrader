@@ -28,10 +28,10 @@ namespace dztrader::bar {
  *   保证，守卫只按 spec 校验 last_price）；
  * - 成交量/成交额直接用 tick 的当日累计字段：日线起点基准恒为 0，故 volume == cum_volume、
  *   turnover == cum_turnover；
- * - 日线标识固定 begin_sec = 0（18:00 标记）、period_sec = 0，调用方以 trading_day 判断日线结束。
+ * - 日线标识固定 begin_sec = 0（18:00 标记）、period_sec = 0，调用方以 date 判断日线结束。
  *
  * 交易日切换：交易日变大的第一笔有效 tick 到来时，先以 `is_final=true` 关闭前一日线，再以本笔
- * tick 开新日线；没有 tick 的交易日不生成空日线（相邻日线的 trading_day 可跳跃）。日线收盘同样
+ * tick 开新日线；没有 tick 的交易日不生成空日线（相邻日线的 date 可跳跃）。日线收盘同样
  * 是惰性的（下一交易日第一笔有效 tick 触发），不建定时器、不 flush。跨日后首笔 tick 不受前一
  * 交易日 last_tick_sec 的顺序约束（新交易日重新计时）。
  *
@@ -96,8 +96,7 @@ public:
             return;
         }
         if (has_bar_) {
-            if (tick.date < bar_.trading_day ||
-                (tick.date == bar_.trading_day && tsec < bar_.last_tick_sec)) {
+            if (tick.date < bar_.date || (tick.date == bar_.date && tsec < bar_.last_tick_sec)) {
                 ++stats_.out_of_order;
                 return;
             }
@@ -119,7 +118,7 @@ public:
         }
         if (!has_bar_) {
             begin_bar(tick, tsec);
-        } else if (tick.date != bar_.trading_day) {
+        } else if (tick.date != bar_.date) {
             finalize_bar();
             begin_bar(tick, tsec);
         } else {
@@ -162,7 +161,7 @@ public:
         validate_restore_bar(bar);
         if (bar.is_final) {
             restored_final_ = true;
-            restored_final_day_ = bar.trading_day;
+            restored_final_day_ = bar.date;
             return;
         }
         bar_ = bar;
@@ -210,7 +209,7 @@ private:
      * @return true = 累计量额没有倒退，可接受
      */
     [[nodiscard]] bool cumulative_basis_ok(const DzTick& tick) const noexcept {
-        const bool same_day_basis = has_bar_ && tick.date == bar_.trading_day;
+        const bool same_day_basis = has_bar_ && tick.date == bar_.date;
         const int64_t basis_volume = same_day_basis ? bar_.cum_volume : 0;
         const double basis_turnover = same_day_basis ? bar_.cum_turnover : 0.0;
         // NaN/Inf 成交额不参与比较，用 isfinite 显式拒掉（否则 Inf 会永久毒化后续差分）。
@@ -234,9 +233,8 @@ private:
                 "restore period mismatch | builder_period_sec=0 bar_period_sec=" +
                 std::to_string(bar.period_sec));
         }
-        if (bar.trading_day <= 0) {
-            throw std::invalid_argument("restore invalid trading_day | trading_day=" +
-                                        std::to_string(bar.trading_day));
+        if (bar.date <= 0) {
+            throw std::invalid_argument("restore invalid date | date=" + std::to_string(bar.date));
         }
         if (bar.begin_sec != 0) {
             throw std::invalid_argument("restore invalid begin_sec | begin_sec=" +
@@ -273,7 +271,7 @@ private:
      */
     void begin_bar(const DzTick& tick, int32_t tsec) {
         bar_ = Bar{};
-        bar_.trading_day = tick.date;
+        bar_.date = tick.date;
         bar_.begin_sec = 0;
         bar_.period_sec = 0;
         bar_.is_final = false;

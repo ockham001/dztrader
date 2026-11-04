@@ -593,7 +593,7 @@ bar 边界由 tick→bar 通用组件（[ADR 0031](../adr/0031-tick-bar-synthesi
   每个事件入口先用本笔 tick 刷新 `TickSnapshot`（价格夹取/同步单对手价）；**只有被 builder 接受的 tick 才产生事件**——乱序/非交易时段/量额倒退的 tick 被丢弃并计入 `BarBuilderStats`，不刷新快照；回调门禁（§5.2）、静默填窗/回放（§5.3）、失败实例（§4.6）都在适配器里短路。
 - **单一实现**：live、静默填窗、历史回放都喂同一个 builder 的 `on_tick`（回放/静默填窗用合成 tick，§5.3）；不存在第二条 bar 边界实现，`ctx` 也不向 B 暴露边界/聚合类的半成品入口。
 - 事件顺序不变：`on_bar_close(上一根) → 推进 → on_bar_open → on_bar_update`；**不使用定时器定义 bar 边界**（回卷定时器只做布局，不参与 bar 生命周期）。
-- bar 标识（用于历史对齐）= `(trading_day, begin_sec)`；归档域 schema 与时间标注随归档 spec（#4）对齐该标识。
+- bar 标识（用于历史对齐）= `(date, begin_sec)`；归档域 schema 与时间标注随归档 spec（#4）对齐该标识。
 - 小节末尾不会有独立收盘事件：最后一根 bar 在下一笔更晚 tick 到达时收盘（纯 tick 驱动，无 flush）。
 
 > 三个入口共用 `write_auction_phase`：`close` / `update` 在写 `[0]` 之后、`open` 在推进窗口之后写相位；回放期由 `InstrumentNode::replaying` 抑制（语义见 §5.1），`on_params_update` / `on_destroy` 入口显式清零。相位只影响 B 的观测，不改变执行路径（§6）。
@@ -1096,7 +1096,7 @@ status | quit
 | `volume=0` 统一规则 | 买方向平空、卖方向平多；`buy(0) ≡ buy_to_cover(0)`、`sell(0) ≡ sell_short(0)`；0 触发平仓记 INFO（§6）|
 | `MarketPosition` / `CurrentContracts` | `ctx.market_position()` / `ctx.current_contracts()`（方向 / 持仓手数 `≥0`；内部净持仓有符号）|
 | `MaxContracts` / `MaxContractsHeld` | `ctx.max_contracts()` 只保留「本实例历史峰值」一个口径，不区分当前持仓期/历史（差异见 §6.1）|
-| `Time` / `Date` | **v1 不提供**（已知限制，§1）：Bar 字段已由 [ADR 0031](../adr/0031-tick-bar-synthesis-component.md) 定义（`trading_day`/`begin_sec`/`last_tick_sec`），但 B 侧没有 `Time`/`Date` 查询——用 `ctx.bar_index()` 计数，或读 Tier 1 的进出场日期/时间（§6.1）|
+| `Time` / `Date` | **v1 不提供**（已知限制，§1）：Bar 字段已由 [ADR 0031](../adr/0031-tick-bar-synthesis-component.md) 定义（`date`/`begin_sec`/`last_tick_sec`；交易日字段名统一 `date` 见 ADR 0041 决策 4），但 B 侧没有 `Time`/`Date` 查询——用 `ctx.bar_index()` 计数，或读 Tier 1 的进出场日期/时间（§6.1）|
 | `Q_BidPrice` / `Q_AskPrice` 等报价查询 | **v1 不提供**（随策略 API 后置，§14 第 22 条）；同步单的对手价由框架内部读取（§6.2），B 不可见 |
 | 开平/锁仓由平台自动解析 | 委托 effect 统一 AUTO；td 侧未实现前实盘单会被拒（#82，已知限制）|
 | `MaxBarsBack` / `SetBackBarMaxCount` | `max_lookback`（可读深度，实例创建时定死、不扩容；默认按周期，可显式配置；运行期命令不改容量，改配置需重启）|
@@ -1135,7 +1135,7 @@ status | quit
 
 1. 账户级头寸监控与一键同步（平台/WebUI）：比较账户实际净头寸与各策略上报的逻辑持仓、发单调向系统口径；需要「手工仓」与跨策略归属设计（[ADR 0028](../adr/0028-strategy-process-logical-account.md)），v1 不做。
 2. 策略组编排：跨进程统一启停、参数同步、UI 分组与汇总；v1 靠部署模板/脚本。
-3. 归档域历史数据（#4）：结果集 schema/时间标注对齐 `(trading_day, begin_sec)` 与 ADR 0031 的 Bar 字段、`dz_db_query_bar` 的生产实现；**bar 数据源须提供 `is_final`**（[ADR 0031](../adr/0031-tick-bar-synthesis-component.md)），并支持大 `warmup.bars`（最高 1,000 万根）的分页/LIMIT（随归档 spec）。框架侧已给出**暂定解码契约**（`bar_strategy/dependencies.h` 的 `query_archive_history`：结果集列名 = `bar::Bar` 字段名，`last_tick_sec` / `period_sec` / `is_final` 缺列时有默认），归档域 spec 定稿时须与本解码同步；stub 现状下该解码分支不可达。
+3. 归档域历史数据（#4）：结果集 schema/时间标注对齐 `(date, begin_sec)` 与 ADR 0031 的 Bar 字段、`dz_db_query_bar` 的生产实现；**bar 数据源须提供 `is_final`**（[ADR 0031](../adr/0031-tick-bar-synthesis-component.md)），并支持大 `warmup.bars`（最高 1,000 万根）的分页/LIMIT（随归档 spec）。框架侧已给出**暂定解码契约**（`bar_strategy/dependencies.h` 的 `query_archive_history`：结果集列名 = `bar::Bar` 字段名，`last_tick_sec` / `period_sec` / `is_final` 缺列时有默认），归档域 spec 定稿时须与本解码同步；stub 现状下该解码分支不可达。
 4. 交易小节表（ADR 0018 决策 2/3）：落地后 `max_lookback` / `reserve_bars` 自动值改用真实 session bar 数（内存降到约四成、冷启动从约 2.4 个交易日缩短到 1 个交易日）；session 收盘与空 bar 口径已在 ADR 0031 定稿。数据源落地前 v1 用内置退化表，三条已知差异见 §5.5。
 5. 回卷触发：v1 用 SDK `dz_schedule_daily(18:00)` 定时器（《帧契约：策略》§DZ_FRAME_SCHEDULE）；当前帧体系没有“交易日切换”系统帧，若将来新增则改接该帧（不自行造帧）。
 6. 秒级以下周期 / 单实例多周期：改用镜像环形（§10 B 方案），接口与语义不变；触发条件见 §10。

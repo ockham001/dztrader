@@ -35,7 +35,7 @@ using dztrader::bar_strategy_internal::REPLAY_TICKS_PER_BAR;
 
 /// @brief 一根归档 bar 的构造参数（测试按字段名给，避免一大串位置参数传错）
 struct ArchiveBarSpec {
-    DzDate trading_day = TRADING_DAY;
+    DzDate date = TRADING_DAY;
     int32_t begin_sec = TSEC_09_00;
     int32_t period_sec = 60;
     double open = 0;
@@ -53,7 +53,7 @@ struct ArchiveBarSpec {
 /// @brief 按 {@link ArchiveBarSpec} 构造一根归档 bar（last_tick_sec 取桶内最后一秒）
 Bar make_archive_bar(const ArchiveBarSpec& spec) {
     Bar bar{};
-    bar.trading_day = spec.trading_day;
+    bar.date = spec.date;
     bar.begin_sec = spec.begin_sec;
     bar.last_tick_sec = spec.begin_sec + spec.period_sec - 1;
     bar.period_sec = spec.period_sec;
@@ -76,7 +76,7 @@ Bar make_archive_bar(const ArchiveBarSpec& spec) {
 /// （`make_replay_ticks` 口径），因此回放能还原它——这正是 forming bar 的缓冲 tick 能续接
 /// 而不被当乱序丢掉的前提。
 void expect_replay_bar_equal(const Bar& actual, const Bar& expected) {
-    EXPECT_EQ(actual.trading_day, expected.trading_day);
+    EXPECT_EQ(actual.date, expected.date);
     EXPECT_EQ(actual.begin_sec, expected.begin_sec);
     EXPECT_EQ(actual.last_tick_sec, expected.last_tick_sec);
     EXPECT_EQ(actual.period_sec, expected.period_sec);
@@ -107,9 +107,9 @@ void feed_replay_bar(const Bar& bar, IntradayBarBuilder<RecordingSink>& builder)
  */
 void close_current_bar(const Bar& current, IntradayBarBuilder<RecordingSink>& builder) {
     const int32_t next_clock = TradingTime::to_clock(current.begin_sec + current.period_sec + 1);
-    builder.on_tick(
-        make_tick(next_clock, current.close, static_cast<DzVolume>(current.cum_volume + 1),
-                  current.cum_turnover + 1.0, current.open_interest, current.trading_day));
+    builder.on_tick(make_tick(next_clock, current.close,
+                              static_cast<DzVolume>(current.cum_volume + 1),
+                              current.cum_turnover + 1.0, current.open_interest, current.date));
 }
 
 /// @brief 喂下一根 tick 关闭当前 bar，并返回 close 事件里交出的 bar（未找到返回 nullptr）
@@ -327,7 +327,7 @@ TEST(BarStrategyReplayTest, CrossDayReplayResetsDailyCumulativeBasis) {
     IntradayBarBuilder<RecordingSink> builder(table, 60, sink);
 
     const Bar day1_last = make_archive_bar(ArchiveBarSpec{
-        .trading_day = TRADING_DAY,
+        .date = TRADING_DAY,
         .begin_sec = TSEC_15_00 - 60,
         .open = 200.0,
         .high = 201.0,
@@ -340,7 +340,7 @@ TEST(BarStrategyReplayTest, CrossDayReplayResetsDailyCumulativeBasis) {
         .cum_turnover = 1000000.0,
     });
     const Bar day2_first = make_archive_bar(ArchiveBarSpec{
-        .trading_day = TRADING_DAY + 1,
+        .date = TRADING_DAY + 1,
         .begin_sec = TSEC_09_00,
         .open = 201.0,
         .high = 203.0,
@@ -360,7 +360,7 @@ TEST(BarStrategyReplayTest, CrossDayReplayResetsDailyCumulativeBasis) {
 
     const Bar* closed = nullptr;
     for (const BarEvent& event : sink.events) {
-        if (event.kind == EventKind::Close && event.bar.trading_day == day2_first.trading_day &&
+        if (event.kind == EventKind::Close && event.bar.date == day2_first.date &&
             event.bar.begin_sec == day2_first.begin_sec) {
             closed = &event.bar;
         }
@@ -386,7 +386,7 @@ TEST(BarStrategyReplayTest, AuctionOnlyBarIsRebuiltWithArchivedLastTickSec) {
     IntradayBarBuilder<RecordingSink> builder(table, 60, sink);
 
     Bar auction{};
-    auction.trading_day = TRADING_DAY;
+    auction.date = TRADING_DAY;
     auction.begin_sec = TSEC_09_00;          // 竞价 tick 归入的小节首桶
     auction.last_tick_sec = TSEC_09_00 - 1;  // 08:59:59，落在 Open 竞价窗口内
     auction.period_sec = 60;

@@ -41,11 +41,11 @@ TEST(DailyBarBuilderTest, FirstTickFormsFormingDailyBar) {
 
     ASSERT_TRUE(builder.has_current_bar());
     const Bar& bar = builder.current_bar();
-    EXPECT_EQ(bar.trading_day, TRADING_DAY);
+    EXPECT_EQ(bar.date, TRADING_DAY);
     EXPECT_EQ(bar.begin_sec, 0);   // 18:00 标记
     EXPECT_EQ(bar.period_sec, 0);  // 日线无周期
     EXPECT_EQ(bar.begin_clock(), 18 * 3600);
-    EXPECT_EQ(bar.standard_end_sec(), 0);  // 日线以 trading_day 判断结束
+    EXPECT_EQ(bar.standard_end_sec(), 0);  // 日线以 date 判断结束
     EXPECT_EQ(bar.last_tick_sec, TSEC_09_00);
     EXPECT_EQ(bar.last_tick_clock(), 9 * 3600);
     EXPECT_DOUBLE_EQ(bar.open, 100.0);
@@ -78,7 +78,7 @@ TEST(DailyBarBuilderTest, SameDayTicksUpdateFromCumulativeFields) {
 
     // open 也取 tick 的当日累计字段（交易所同日内 open_price 不变）
     const Bar& bar = builder.current_bar();
-    EXPECT_EQ(bar.trading_day, TRADING_DAY);
+    EXPECT_EQ(bar.date, TRADING_DAY);
     EXPECT_EQ(bar.begin_sec, 0);
     EXPECT_EQ(bar.period_sec, 0);
     EXPECT_EQ(bar.last_tick_sec, TSEC_10_00);
@@ -147,7 +147,7 @@ TEST(DailyBarBuilderTest, TradingDayChangeClosesOldThenOpensNew) {
     // 旧日线以 is_final=true 关闭，携带它自己的最终数据
     const Bar& closed = sink.events[2].bar;
     EXPECT_TRUE(closed.is_final);
-    EXPECT_EQ(closed.trading_day, TRADING_DAY);
+    EXPECT_EQ(closed.date, TRADING_DAY);
     EXPECT_EQ(closed.begin_sec, 0);
     EXPECT_EQ(closed.last_tick_sec, TSEC_15_00);
     EXPECT_DOUBLE_EQ(closed.open, 100.0);
@@ -161,7 +161,7 @@ TEST(DailyBarBuilderTest, TradingDayChangeClosesOldThenOpensNew) {
     // 新日线量额以 0 为基准，直接取新交易日首笔 tick 的当日累计字段
     ASSERT_TRUE(builder.has_current_bar());
     const Bar& current = builder.current_bar();
-    EXPECT_EQ(current.trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(current.date, TRADING_DAY + 1);
     EXPECT_EQ(current.begin_sec, 0);
     EXPECT_EQ(current.period_sec, 0);
     EXPECT_EQ(current.last_tick_sec, TSEC_09_00);
@@ -177,7 +177,7 @@ TEST(DailyBarBuilderTest, TradingDayChangeClosesOldThenOpensNew) {
     expect_bar_equal(sink.events[4].bar, current);
 }
 
-/// @brief 没有 tick 的交易日不生成空日线（相邻日线的 trading_day 可跳跃）
+/// @brief 没有 tick 的交易日不生成空日线（相邻日线的 date 可跳跃）
 TEST(DailyBarBuilderTest, SkippedTradingDaysProduceNoEmptyBars) {
     RecordingSink sink;
     DailyBarBuilder<RecordingSink> builder(sink);
@@ -189,12 +189,11 @@ TEST(DailyBarBuilderTest, SkippedTradingDaysProduceNoEmptyBars) {
     EXPECT_EQ(count_events(sink, EventKind::Close), 1);
     EXPECT_EQ(count_events(sink, EventKind::Open), 2);
     for (const BarEvent& event : sink.events) {
-        EXPECT_TRUE(event.bar.trading_day == TRADING_DAY ||
-                    event.bar.trading_day == TRADING_DAY + 3)
-            << "empty trading day must not produce a bar, trading_day=" << event.bar.trading_day;
+        EXPECT_TRUE(event.bar.date == TRADING_DAY || event.bar.date == TRADING_DAY + 3)
+            << "empty trading day must not produce a bar, date=" << event.bar.date;
     }
     ASSERT_TRUE(builder.has_current_bar());
-    EXPECT_EQ(builder.current_bar().trading_day, TRADING_DAY + 3);
+    EXPECT_EQ(builder.current_bar().date, TRADING_DAY + 3);
 }
 
 /// @brief 交易日变大时即便墙钟时间更早也开新日线（新交易日重新计时，不算乱序）
@@ -210,7 +209,7 @@ TEST(DailyBarBuilderTest, ForwardTradingDayWithEarlierClockStartsNewBar) {
     EXPECT_EQ(stats.out_of_order, 0U);
     EXPECT_EQ(stats.bad_volume, 0U);
     ASSERT_TRUE(builder.has_current_bar());
-    EXPECT_EQ(builder.current_bar().trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(builder.current_bar().date, TRADING_DAY + 1);
     EXPECT_EQ(builder.current_bar().last_tick_sec, TSEC_09_00);
 }
 
@@ -241,7 +240,7 @@ TEST(DailyBarBuilderSinkTest, SinkWithMissingCallbacksStillCompilesAndUpdates) {
         make_daily_tick(9 * 3600, 50.0, 51.0, 49.0, 50.5, 200, 10100.0, 3, TRADING_DAY + 1));
 
     EXPECT_EQ(sink.update_count, 3);
-    EXPECT_EQ(sink.last_update.trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(sink.last_update.date, TRADING_DAY + 1);
     EXPECT_EQ(sink.last_update.volume, 200);
     EXPECT_FALSE(sink.last_update.is_final);
 }
@@ -269,7 +268,7 @@ TEST(DailyBarBuilderSinkTest, SinkWithNoCallbacksStillCompiles) {
         make_daily_tick(9 * 3600, 50.0, 51.0, 49.0, 50.5, 200, 10100.0, 3, TRADING_DAY + 1));
 
     ASSERT_TRUE(builder.has_current_bar());
-    EXPECT_EQ(builder.current_bar().trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(builder.current_bar().date, TRADING_DAY + 1);
     EXPECT_EQ(builder.current_bar().volume, 200);
     EXPECT_FALSE(builder.current_bar().is_final);
 }
@@ -296,7 +295,7 @@ TEST(DailyBarBuilderSinkTest, NullBarSinkBehavesLikeSinkWithoutCallbacks) {
 
     // 默认 Sink 路径的数据也要有独立断言（避免只做两个 builder 的同义比较）
     const Bar& bar = default_builder.current_bar();
-    EXPECT_EQ(bar.trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(bar.date, TRADING_DAY + 1);
     EXPECT_EQ(bar.begin_sec, 0);
     EXPECT_EQ(bar.period_sec, 0);
     EXPECT_EQ(bar.volume, 200);

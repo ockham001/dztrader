@@ -370,7 +370,7 @@ public:
             begin_bar(tick, begin_sec, bucket_id);
             return;
         }
-        if (tick.date == bar_.trading_day) {
+        if (tick.date == bar_.date) {
             if (begin_sec == bar_.begin_sec) {
                 if (entry.is_call_auction) {
                     update_auction_bar(tick);
@@ -384,7 +384,7 @@ public:
             // 同交易日更早的桶：旧版静默丢弃
             return;
         }
-        if (tick.date > bar_.trading_day) {
+        if (tick.date > bar_.date) {
             close_current_bar();
             begin_bar(tick, begin_sec, bucket_id);
         }
@@ -415,7 +415,7 @@ private:
         const int64_t start_cum_volume = same_day_basis ? accepted_cum_volume_ : 0;
         const double start_cum_turnover = same_day_basis ? accepted_cum_turnover_ : 0.0;
         bar_ = bar::Bar{};
-        bar_.trading_day = tick.date;
+        bar_.date = tick.date;
         bar_.begin_sec = begin_sec;
         bar_.period_sec = period_sec_;
         bar_.is_final = false;
@@ -514,9 +514,9 @@ public:
             begin_bar(tick);
             return;
         }
-        if (tick.date == bar_.trading_day) {
+        if (tick.date == bar_.date) {
             update_bar(tick);
-        } else if (tick.date > bar_.trading_day) {
+        } else if (tick.date > bar_.date) {
             close_current_bar();
             begin_bar(tick);
         }
@@ -539,7 +539,7 @@ private:
     /// @brief 用本笔 tick 开新日线（当日累计字段直接映射，起点基准恒为 0）
     void begin_bar(const DzTick& tick) {
         bar_ = bar::Bar{};
-        bar_.trading_day = tick.date;
+        bar_.date = tick.date;
         bar_.begin_sec = 0;
         bar_.period_sec = 0;
         bar_.is_final = false;

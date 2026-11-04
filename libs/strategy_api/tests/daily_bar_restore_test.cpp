@@ -22,7 +22,7 @@ using namespace dztrader::strategy_api::test;
 namespace {
 
 /// @brief 构造一根用于日线续接测试的 bar（begin_sec=0、period_sec=0、量额与累计一致）
-Bar make_daily_bar(DzDate trading_day,
+Bar make_daily_bar(DzDate date,
                    int32_t last_tick_sec,
                    double open,
                    double high,
@@ -33,7 +33,7 @@ Bar make_daily_bar(DzDate trading_day,
                    DzLargeVolume open_interest,
                    bool is_final) {
     Bar bar{};
-    bar.trading_day = trading_day;
+    bar.date = date;
     bar.begin_sec = 0;
     bar.last_tick_sec = last_tick_sec;
     bar.period_sec = 0;
@@ -102,7 +102,7 @@ TEST_F(DailyBarRestoreTest, RestoreFinalDropsSameTradingDayTicks) {
     builder_.on_tick(
         make_daily_tick(9 * 3600, 50.0, 51.0, 49.0, 50.5, 5, 505.0, 3, TRADING_DAY + 1));
     ASSERT_TRUE(builder_.has_current_bar());
-    EXPECT_EQ(builder_.current_bar().trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(builder_.current_bar().date, TRADING_DAY + 1);
     EXPECT_EQ(builder_.current_bar().volume, 5);
     EXPECT_EQ(builder_.stats().out_of_order, 2U);
 }
@@ -143,7 +143,7 @@ TEST_F(DailyBarRestoreTest, RestoreFinalNextTradingDayOpensNewBarWithZeroBasis) 
     EXPECT_EQ(sink_.events[1].kind, EventKind::Update);
     for (const BarEvent& event : sink_.events) {
         EXPECT_FALSE(event.bar.is_final);
-        EXPECT_EQ(event.bar.trading_day, TRADING_DAY + 1);
+        EXPECT_EQ(event.bar.date, TRADING_DAY + 1);
     }
 
     ASSERT_TRUE(builder_.has_current_bar());
@@ -176,7 +176,7 @@ TEST_F(DailyBarRestoreTest, RestoreFinalStateSurvivesRejectedTicks) {
     builder_.on_tick(
         make_daily_tick(9 * 3600, 50.0, 51.0, 49.0, 50.5, 200, 10100.0, 3, TRADING_DAY + 1));
     ASSERT_TRUE(builder_.has_current_bar());
-    EXPECT_EQ(builder_.current_bar().trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(builder_.current_bar().date, TRADING_DAY + 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +188,7 @@ TEST_F(DailyBarRestoreTest, RestoreFormingAdoptsCurrentBarWithoutOpenEvent) {
 
     ASSERT_TRUE(builder_.has_current_bar());
     const Bar& bar = builder_.current_bar();
-    EXPECT_EQ(bar.trading_day, TRADING_DAY);
+    EXPECT_EQ(bar.date, TRADING_DAY);
     EXPECT_EQ(bar.begin_sec, 0);
     EXPECT_EQ(bar.period_sec, 0);
     EXPECT_EQ(bar.last_tick_sec, TSEC_10_00);
@@ -274,7 +274,7 @@ TEST_F(DailyBarRestoreTest, RestoreFormingNextTradingDayClosesThenOpens) {
     // 恢复的形成中日线以 is_final=true 关闭，携带其原有数据
     const Bar& closed = sink_.events[0].bar;
     EXPECT_TRUE(closed.is_final);
-    EXPECT_EQ(closed.trading_day, TRADING_DAY);
+    EXPECT_EQ(closed.date, TRADING_DAY);
     EXPECT_EQ(closed.begin_sec, 0);
     EXPECT_EQ(closed.last_tick_sec, TSEC_10_00);
     EXPECT_DOUBLE_EQ(closed.open, 100.0);
@@ -287,7 +287,7 @@ TEST_F(DailyBarRestoreTest, RestoreFormingNextTradingDayClosesThenOpens) {
     // 新日线量额基准为 0
     const Bar& opened = sink_.events[1].bar;
     EXPECT_FALSE(opened.is_final);
-    EXPECT_EQ(opened.trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(opened.date, TRADING_DAY + 1);
     EXPECT_EQ(opened.volume, 200);
     EXPECT_DOUBLE_EQ(opened.turnover, 10100.0);
 }
@@ -301,7 +301,7 @@ TEST_F(DailyBarRestoreTest, RestoreFormingNextTradingDayWithEarlierClockIsAccept
 
     EXPECT_EQ(builder_.stats().out_of_order, 0U);
     ASSERT_TRUE(builder_.has_current_bar());
-    EXPECT_EQ(builder_.current_bar().trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(builder_.current_bar().date, TRADING_DAY + 1);
     EXPECT_EQ(builder_.current_bar().last_tick_sec, TSEC_09_00);
 }
 
@@ -323,7 +323,7 @@ TEST_F(DailyBarRestoreTest, RestoreRejectsNonZeroBeginSec) {
 
 TEST_F(DailyBarRestoreTest, RestoreRejectsInvalidTradingDay) {
     Bar bar = restored_forming_daily_bar();
-    bar.trading_day = 0;
+    bar.date = 0;
     EXPECT_THROW(builder_.restore(bar), std::invalid_argument);
 }
 
@@ -424,7 +424,7 @@ TEST_F(DailyBarRestoreTest, ResetClearsBarAndStats) {
     EXPECT_EQ(sink_.events[0].kind, EventKind::Open);
     EXPECT_EQ(sink_.events[1].kind, EventKind::Update);
     const Bar& bar = builder_.current_bar();
-    EXPECT_EQ(bar.trading_day, TRADING_DAY);
+    EXPECT_EQ(bar.date, TRADING_DAY);
     EXPECT_EQ(bar.volume, 50);  // 基准已清零
     EXPECT_DOUBLE_EQ(bar.turnover, 2525.0);
     EXPECT_EQ(bar.cum_volume, 50);
@@ -451,7 +451,7 @@ TEST_F(DailyBarRestoreTest, ResetClearsRestoredFinalState) {
     builder_.on_tick(make_daily_tick(10 * 3600, 100.0, 102.0, 99.0, 101.0, 50, 5050.0, 5));
 
     ASSERT_TRUE(builder_.has_current_bar());
-    EXPECT_EQ(builder_.current_bar().trading_day, TRADING_DAY);
+    EXPECT_EQ(builder_.current_bar().date, TRADING_DAY);
     EXPECT_EQ(builder_.current_bar().volume, 50);
     EXPECT_EQ(builder_.stats().out_of_order, 0U);
 }
@@ -468,7 +468,7 @@ TEST_F(DailyBarRestoreTest, ResetAllowsEarlierTradingDayAfterwards) {
         make_daily_tick(9 * 3600, 50.0, 51.0, 49.0, 50.5, 7, 707.0, 5, TRADING_DAY - 1));
 
     ASSERT_TRUE(builder_.has_current_bar());
-    EXPECT_EQ(builder_.current_bar().trading_day, TRADING_DAY - 1);
+    EXPECT_EQ(builder_.current_bar().date, TRADING_DAY - 1);
     EXPECT_EQ(builder_.current_bar().volume, 7);
     EXPECT_EQ(builder_.stats().out_of_order, 0U);
 }

@@ -207,7 +207,7 @@ void ShmManager::handle_query_account_status(const std::byte* frame) {
         DzAccountStatus fallback{};
         dztrader::copy_string(fallback.account_id, queried.c_str(), true);
         fallback.state = DZ_ACCOUNT_OFFLINE;
-        fallback.trading_day = 0;
+        fallback.date = 0;
         platform::write_struct(event_writer_, DZ_FRAME_ACCOUNT_STATUS, fallback);
         SPDLOG_INFO("account status fallback | account={} reason=no_gateway_manages", queried);
     } catch (const std::exception& e) {
@@ -225,7 +225,7 @@ void ShmManager::notify_td_stopped(std::string_view gateway_name) {
         dztrader::copy_string(status.account_id, account.c_str(), true);
         dztrader::copy_string(status.gateway_name, std::string(gateway_name).c_str(), true);
         status.state = DZ_ACCOUNT_OFFLINE;
-        status.trading_day = 0;
+        status.date = 0;
         platform::write_struct(event_writer_, DZ_FRAME_ACCOUNT_STATUS, status);
     }
     SPDLOG_INFO("td stopped, accounts marked offline | gateway={} count={}", gateway_name,

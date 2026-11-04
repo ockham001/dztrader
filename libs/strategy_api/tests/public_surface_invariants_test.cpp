@@ -9,7 +9,7 @@
  * 于是把当前公开面机械冻结成数据表：任何变化都必须是有意识的——同提交改契约/ADR、改这里
  * 的冻结表、在 PR 说明。否则测试直接红，而不是等某个策略进程读到错位的帧。
  *
- * 六组不变量（与 issue #165 AC4 一一对应）：
+ * 七组不变量（前六组与 issue #165 AC4 一一对应；第 7 组为交易数据命名统一 #243）：
  *   1. `exported_symbols.map` 的 version script 结构：`global:` 只有 `dz_*;`，`local:` 只有
  *      `*;`——新增导出必须走 ADR/契约评审；
  *   2. `api.h` 与 `src/api.cpp` 的 `DZ_API` 函数名集合 == 冻结的 49 个 `dz_*`（声明与定义
@@ -24,7 +24,10 @@
  *      禁止改旧值；两个书写位置的帧名不得重复；
  *   6. 帧 payload 结构：`struct.h` 的 11 个 `DZ_DECLARE_ALIGNED_STRUCT` 与 `core_struct.h` 的
  *      `DzOrderReq` / `DzLogicalPosition` 的字段声明有序表逐字段一致（宏本身已 static_assert
- *      8 字节对齐且无 padding，字段表冻结即布局冻结）。
+ *      8 字节对齐且无 padding，字段表冻结即布局冻结）；
+ *   7. 保留策略标识（`data_type.h` 的 `DZ_STRATEGY_ID_*`）：取值与 `/` 前缀冻结——它们出现在
+ *      `ORDER_REPORT`/`TRADE_REPORT` 的 `strategy_id` 上，值变化会让外部单/手工单/同步单
+ *      与策略名的区分语义漂移（契约 td-order）。
  *
  * 实现方式是**纯文本扫描**（repo_root 定位与 `public_header_coverage_test.cpp` 同款）：
  * 不依赖 git、不依赖 nm/readelf/dumpbin 等外部工具——Windows CI 也要跑，且这些工具看到的
@@ -614,6 +617,7 @@ const FrozenStruct kFrozenStrategyStructs[] = {
          "DzOrderStatus status",
          "char reserved[4]",
          "double price",
+         "double avg_price",
          "DzVolume volume",
          "DzVolume volume_traded",
          "DzDate date",
@@ -701,7 +705,7 @@ const FrozenStruct kFrozenStrategyStructs[] = {
      {
          "DzAccountId account_id",
          "DzInstanceId gateway_name",
-         "DzDate trading_day",
+         "DzDate date",
          "DzAccountState state",
          "char reserved[3]",
      }},
@@ -1152,6 +1156,23 @@ TEST(PublicSurfaceInvariants, FramePayloadStructsAreFrozen) {
     EXPECT_TRUE(core_problems.empty())
         << "frame payload structures changed (" << kCoreStructHeader << "):\n"
         << join_problems(core_problems) << kIntentionalChangeHint;
+}
+
+/**
+ * @brief 保留策略标识取值冻结（契约 td-order）
+ *
+ * 非策略单用 `DzStrategyId` 保留值表达：外部单 `/external`、平台手工单 `/manual`、
+ * 一键同步单 `/sync`。保留值以 `/` 开头，策略名不允许以 `/` 开头，二者天然不冲突；
+ * 策略 SDK 按 `strategy_id` == 本策略裸名过滤，这些值一律拦截、不投递给任何策略。
+ * 取值变化会让跨层来源标识语义漂移，因此随公开面一起冻结。
+ */
+TEST(PublicSurfaceInvariants, ReservedStrategyIdsAreFrozen) {
+    EXPECT_STREQ(DZ_STRATEGY_ID_EXTERNAL, "/external");
+    EXPECT_STREQ(DZ_STRATEGY_ID_MANUAL, "/manual");
+    EXPECT_STREQ(DZ_STRATEGY_ID_SYNC, "/sync");
+    static_assert(sizeof(DZ_STRATEGY_ID_EXTERNAL) <= sizeof(DzStrategyId));
+    static_assert(sizeof(DZ_STRATEGY_ID_MANUAL) <= sizeof(DzStrategyId));
+    static_assert(sizeof(DZ_STRATEGY_ID_SYNC) <= sizeof(DzStrategyId));
 }
 
 }  // namespace

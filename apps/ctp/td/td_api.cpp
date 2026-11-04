@@ -562,7 +562,7 @@ void TdApi::handle_front_event(Event& event) {
     // 异常不逃逸 (否则杀主循环 + 跳过尾部 delete 造成事件泄漏)
     try {
         write_account_status(account_id, account_state_of(after),
-                             session->state_machine().status().trading_day);
+                             session->state_machine().status().date);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("account status push failed | account={} error=\"{}\"", account_id, e.what());
     } catch (...) {
@@ -873,7 +873,7 @@ void TdApi::update_status(const std::string& account_id) {
         platform::write_ext_inst_json_obj(event_writer_, DZ_FRAME_RTN_PROGRESS, inst_id, prog);
 
         // 契约 account-status: 2018 三态去重推送 (与 2104 同一异常保护, 异常路径一致)
-        write_account_status(account_id, account_state_of(status.state), status.trading_day);
+        write_account_status(account_id, account_state_of(status.state), status.date);
     } catch (const dztrader::Exception& e) {
         SPDLOG_ERROR("update_status failed | account={} code={} error=\"{}\"", account_id, e.code(),
                      e.what());
@@ -884,7 +884,7 @@ void TdApi::update_status(const std::string& account_id) {
 
 void TdApi::write_account_status(const std::string& account_id,
                                  DzAccountState state,
-                                 const std::string& trading_day,
+                                 const std::string& date,
                                  bool force) {
     auto& last = account_last_state_[account_id];
     if (!should_push_account_status(last, state, force)) {
@@ -895,7 +895,7 @@ void TdApi::write_account_status(const std::string& account_id,
     dztrader::copy_string(status.account_id, account_id.c_str(), true);
     dztrader::copy_string(status.gateway_name, name_.c_str(), true);
     status.state = state;
-    status.trading_day = account_status_trading_day(state, trading_day);
+    status.date = account_status_date(state, date);
     platform::write_struct(event_writer_, DZ_FRAME_ACCOUNT_STATUS, status);
 }
 
@@ -904,7 +904,7 @@ void TdApi::report_account_status_all() {
         if (auto* session = find_session(acct.account_id); session != nullptr) {
             const auto& st = session->state_machine().status();
             write_account_status(acct.account_id,
-                                 account_state_of(session->state_machine().state()), st.trading_day,
+                                 account_state_of(session->state_machine().state()), st.date,
                                  /*force=*/true);
         } else {
             write_account_status(acct.account_id, DZ_ACCOUNT_OFFLINE, "", /*force=*/true);
@@ -937,7 +937,7 @@ void TdApi::handle_query_account_status(const std::byte* frame) {
     if (auto* session = find_session(std::string(req.account_id)); session != nullptr) {
         write_account_status(std::string(req.account_id),
                              account_state_of(session->state_machine().state()),
-                             session->state_machine().status().trading_day, /*force=*/true);
+                             session->state_machine().status().date, /*force=*/true);
     } else {
         write_account_status(std::string(req.account_id), DZ_ACCOUNT_OFFLINE, "", /*force=*/true);
     }

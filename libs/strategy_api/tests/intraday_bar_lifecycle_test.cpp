@@ -43,7 +43,7 @@ TEST_F(IntradayBarLifecycleTest, FirstTickEmitsOpenThenUpdate) {
     EXPECT_EQ(sink_.events[1].kind, EventKind::Update);
     for (const BarEvent& event : sink_.events) {
         EXPECT_FALSE(event.bar.is_final);
-        EXPECT_EQ(event.bar.trading_day, TRADING_DAY);
+        EXPECT_EQ(event.bar.date, TRADING_DAY);
         EXPECT_EQ(event.bar.begin_sec, TSEC_09_00);
         EXPECT_EQ(event.bar.period_sec, 60);
         EXPECT_EQ(event.bar.last_tick_sec, TSEC_09_00);
@@ -250,7 +250,7 @@ TEST(IntradayBarLifecycleSinkTest, NullBarSinkBehavesLikeSinkWithoutCallbacks) {
     const Bar& bar = default_builder.current_bar();
     EXPECT_EQ(bar.begin_sec, TSEC_09_00 + 120);
     EXPECT_EQ(bar.last_tick_sec, TSEC_09_00 + 120);
-    EXPECT_EQ(bar.trading_day, TRADING_DAY);
+    EXPECT_EQ(bar.date, TRADING_DAY);
     EXPECT_DOUBLE_EQ(bar.open, 99.0);
     EXPECT_DOUBLE_EQ(bar.high, 99.0);
     EXPECT_DOUBLE_EQ(bar.low, 99.0);

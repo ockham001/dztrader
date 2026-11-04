@@ -336,11 +336,11 @@ bool admit_trade_report(DzContext* ctx, const DzTradeReport& rpt) {
     return ctx->ingest_gate.admit_trade(rpt.account_id, day.c_str(), rpt.trade_id);
 }
 
-/// 2018 ACCOUNT_STATUS 推送: 携带 trading_day 时驱动 gate 交易日切换
+/// 2018 ACCOUNT_STATUS 推送: 携带 `date` 时驱动 gate 交易日切换
 /// (清该账户旧日去重段, 契约 strategy "成交去重…交易日切换清理")。
-/// 未携带 (trading_day=0) 或解析失败: no-op (gate 维持已见日, 由 admit_trade 自清)。
-void on_account_status_trading_day(DzContext* ctx, const DzAccountStatus& st) {
-    const std::string day = format_epoch_day_to_yyyyMMdd(st.trading_day);
+/// 未携带 (`date`=0) 或解析失败: no-op (gate 维持已见日, 由 admit_trade 自清)。
+void on_account_status_date(DzContext* ctx, const DzAccountStatus& st) {
+    const std::string day = format_epoch_day_to_yyyyMMdd(st.date);
     if (day.empty()) {
         return;
     }
@@ -992,13 +992,13 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
             return ingest_td_frame<DzTradingAccount>(ctx, frame);
         }
         case DZ_FRAME_ACCOUNT_STATUS: {
-            // 2018 携带 trading_day (DzAccountStatus.trading_day, Offline 为 0):
+            // 2018 携带日期 `date`（DzAccountStatus.date, Offline 为 0）:
             // 驱动 gate 交易日切换清旧日去重段 (契约 strategy "成交去重…交易日切换清理")。
             // 截断帧防御: 读不出 payload 不驱动 (仍全量放行, 引擎侧 payload_size_matches 丢弃)。
             const shm::FrameView view(frame);
             if (view.frame_size() >= sizeof(DzFrameHeader) + sizeof(DzAccountStatus)) {
                 const auto& st = view.payload<DzAccountStatus>();
-                on_account_status_trading_day(ctx, st);
+                on_account_status_date(ctx, st);
                 // 终检发现 D: Offline→Ready 翻转触发该账户 gate 重置 + 清 gap_retry
                 // (td 重启复用 seq 吞新事件的自愈, 与 dzweb 2018 重建对齐)。
                 on_account_status_gate_reset(ctx, st);

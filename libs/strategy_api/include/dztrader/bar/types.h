@@ -55,14 +55,14 @@ struct TradingTime {
 /**
  * @brief 一根 K 线（定长 POD，trivially copyable）
  *
- * 标识 = (trading_day, begin_sec)；日线 period_sec = 0、begin_sec = 0（18:00 标记）。
+ * 标识 = (date, begin_sec)；日线 period_sec = 0、begin_sec = 0（18:00 标记）。
  * 形成中的 bar 由 builder 通过 current_bar() 给出，is_final 区分已收/形成中。
  * last_tick_sec 记录最后接收 tick 的真实交易日内秒：竞价首根可早于 begin_sec，
  * 小节末端 tick 可等于 standard_end_sec()。
- * @note 字段名与语义在 ADR 0031 决策 9 定稿，后续不改。
+ * @note 字段名与语义在 ADR 0031 决策 9 定稿；交易日字段名统一为 `date`（ADR 0041 决策 4）。
  */
 struct Bar {
-    DzDate trading_day;           ///< 交易日（距纪元天数，夜盘归属下一交易日）
+    DzDate date;                  ///< 交易日（距纪元天数，夜盘归属下一交易日）
     int32_t begin_sec;            ///< 标准开始时间（交易日内秒，18:00 锚点整数网格桶起点）
     int32_t last_tick_sec;        ///< 最后接收 tick 的交易日内秒（竞价首根可能早于 begin_sec）
     int32_t period_sec;           ///< 周期秒数；日线为 0

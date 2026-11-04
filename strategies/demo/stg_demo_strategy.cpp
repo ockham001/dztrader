@@ -270,9 +270,9 @@ void DemoStrategy::on_trading_account(const DzTradingAccount& account) {
 }
 
 void DemoStrategy::on_account_status(const DzAccountStatus& status) {
-    emit_line(std::format("[account] action=status account={} gateway={} state={} trading_day={}",
+    emit_line(std::format("[account] action=status account={} gateway={} state={} date={}",
                           status.account_id, status.gateway_name, account_state_name(status.state),
-                          format_date(status.trading_day)));
+                          format_date(status.date)));
 }
 
 void DemoStrategy::on_error(DzErrorCode errcode, std::string_view message) {

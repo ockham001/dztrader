@@ -63,9 +63,9 @@ bool should_push_account_status(DzAccountState last, DzAccountState next, bool f
 /// Date::from_string 抛异常在此消化。
 int32_t epoch_day_from_yyyymmdd(const std::string& yyyymmdd);
 
-/// 契约 account-status: 帧内 trading_day 仅 Ready 时为登录返回交易日, 其余状态恒 0。
+/// 契约 account-status: 帧内 `date` 仅 Ready 时为登录返回交易日, 其余状态恒 0。
 /// 非法/缺失交易日回落 0。
-int32_t account_status_trading_day(DzAccountState state, const std::string& trading_day);
+int32_t account_status_date(DzAccountState state, const std::string& date);
 
 /// TdApi: CTP 交易网关进程级编排器 (设计 §1.1 多账户路由, §6.3 主循环)。
 ///
@@ -194,11 +194,11 @@ private:
     /// 推送指定账户的当前状态到 SHM (DZ_FRAME_RTN_TD_STATUS, payload 为 TdStatusRecord)
     void update_status(const std::string& account_id);
     /// 账户状态统一写出口 (spec §3.1): 2018 三态去重推送。
-    /// state 与该账户上次推送相同则跳过; trading_day 为空串或 state!=READY 时帧内 trading_day=0。
+    /// state 与该账户上次推送相同则跳过; date 为空串或 state!=READY 时帧内 date=0。
     /// force=true = 权威全量重推, 绕过去重 — snapshot/query 应答路径用 (spec §3.1 重启快照自愈)。
     void write_account_status(const std::string& account_id,
                               DzAccountState state,
-                              const std::string& trading_day,
+                              const std::string& date,
                               bool force = false);
     /// 对 config_.accounts 全量重推 (无 session=Offline; spec §3.1 配置加载即推)
     void report_account_status_all();
@@ -355,7 +355,7 @@ void TdApi::dispatch(Event& event, void (AccountSession::*handler)(const T&)) {
     // 异常不逃逸 dispatch (bad_alloc 等否则杀主循环 + 跳过尾部 delete 造成事件泄漏)
     try {
         write_account_status(rsp->account_id, account_state_of(after),
-                             session->state_machine().status().trading_day);
+                             session->state_machine().status().date);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("account status push failed | account={} error=\"{}\"", rsp->account_id,
                      e.what());

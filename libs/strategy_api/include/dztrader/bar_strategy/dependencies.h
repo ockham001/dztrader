@@ -172,7 +172,7 @@ inline constexpr std::int32_t REPLAY_HARD_WARN_SECONDS = 300;
     for (std::int32_t i = 0; i < REPLAY_TICKS_PER_BAR; ++i) {
         const std::int32_t step = i + 1;
         DzTick& tick = ticks[static_cast<std::size_t>(i)];
-        tick.date = bar.trading_day;
+        tick.date = bar.date;
         tick.time =
             bar::TradingTime::to_clock(bar.begin_sec + offsets[static_cast<std::size_t>(i)]);
         tick.last_price = prices[static_cast<std::size_t>(i)];
@@ -249,10 +249,11 @@ using HistoryBarLoader = std::function<HistoryQueryResult(const HistoryQuery&)>;
  * Unavailable**：历史是增强项，按「无历史」降级冷启动，不是错误。
  *
  * 查询成功时的解码口径（**暂定契约，随归档域 spec #4 定稿**）：结果集列名 = `bar::Bar` 的
- * 字段名（`trading_day` / `begin_sec` / `last_tick_sec` / `period_sec` / `open` / `high` /
+ * 字段名（`date` / `begin_sec` / `last_tick_sec` / `period_sec` / `open` / `high` /
  * `low` / `close` / `volume` / `turnover` / `open_interest` / `cum_volume` / `cum_turnover` /
- * `is_final`；字段语义由 [ADR 0031](../adr/0031-tick-bar-synthesis-component.md) 决策 9 冻结）。
- * `last_tick_sec` 缺失时按桶内最后一秒补；`is_final` 缺失时按「最后一根视为 forming」处理
+ * `is_final`；字段语义由 [ADR 0031](../adr/0031-tick-bar-synthesis-component.md) 决策 9 冻结，
+ * 交易日字段名统一 `date` 见 [ADR 0041](../adr/0041-sqlite-only-trade-store-schema-v1.md) 决策
+ * 4）。 `last_tick_sec` 缺失时按桶内最后一秒补；`is_final` 缺失时按「最后一根视为 forming」处理
  * 并在 `message` 里声明（组件文档 §5.3）。必需列缺失 = Failed（schema 与解码不匹配，属于
  * 归档域落地时必须同步修的接缝）。
  *
@@ -413,7 +414,7 @@ private:
 
 /// @brief 解码一行归档 bar 所需的列索引（首次遍历前解析一次）
 struct BarColumns {
-    std::uint32_t trading_day = 0;
+    std::uint32_t date = 0;
     std::uint32_t begin_sec = 0;
     std::uint32_t open = 0;
     std::uint32_t high = 0;
@@ -437,7 +438,7 @@ struct BarColumns {
         std::uint32_t* slot;
     };
     const Required required[] = {
-        {"trading_day", &columns.trading_day},
+        {"date", &columns.date},
         {"begin_sec", &columns.begin_sec},
         {"open", &columns.open},
         {"high", &columns.high},
@@ -585,8 +586,7 @@ struct BarColumns {
     }
     while (dz_resultset_next(results)) {
         bar::Bar bar{};
-        bar.trading_day =
-            static_cast<DzDate>(dependencies_internal::column_int64(results, columns->trading_day));
+        bar.date = static_cast<DzDate>(dependencies_internal::column_int64(results, columns->date));
         bar.begin_sec = static_cast<std::int32_t>(
             dependencies_internal::column_int64(results, columns->begin_sec));
         bar.period_sec = columns->period_sec.has_value()

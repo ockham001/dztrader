@@ -102,7 +102,7 @@ public:
 
 /// @brief 断言两根 bar 的全部公开字段一致
 inline void expect_bar_equal(const dztrader::bar::Bar& actual, const dztrader::bar::Bar& expected) {
-    EXPECT_EQ(actual.trading_day, expected.trading_day);
+    EXPECT_EQ(actual.date, expected.date);
     EXPECT_EQ(actual.begin_sec, expected.begin_sec);
     EXPECT_EQ(actual.last_tick_sec, expected.last_tick_sec);
     EXPECT_EQ(actual.period_sec, expected.period_sec);

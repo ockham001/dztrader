@@ -64,7 +64,7 @@ TEST_F(TdStateMachineTest, FullHappyPath) {
     ASSERT_TRUE(notif.has_value());
     EXPECT_EQ(notif->message, "交易登录成功");
     EXPECT_EQ(sm.status().sys_version, "v1.0");
-    EXPECT_EQ(sm.status().trading_day, "20260726");
+    EXPECT_EQ(sm.status().date, "20260726");
     EXPECT_EQ(sm.status().login_time, "09:00:00");
     EXPECT_EQ(sm.status().progress_current, 6);
     EXPECT_EQ(sm.status().progress_desc, "已登录");
@@ -190,7 +190,7 @@ TEST_F(TdStateMachineTest, SettlementConfirmFailedRollsBackToLoggedIn) {
     EXPECT_EQ(sm.status().progress_current, 6);
     EXPECT_EQ(sm.status().progress_desc, "已登录");
     // 回退不移除登录信息 (仅 Confirming 失败, 会话仍有效)
-    EXPECT_EQ(sm.status().trading_day, "20260726");
+    EXPECT_EQ(sm.status().date, "20260726");
     EXPECT_EQ(sm.status().login_time, "09:00:00");
 }
 
@@ -336,7 +336,7 @@ TEST_F(TdStateMachineTest, DisconnectFromAnyState) {
     // Idle 状态字段清空
     EXPECT_TRUE(sm.status().login_time.empty());
     EXPECT_TRUE(sm.status().sys_version.empty());
-    EXPECT_TRUE(sm.status().trading_day.empty());
+    EXPECT_TRUE(sm.status().date.empty());
     EXPECT_EQ(sm.status().progress_current, 0);
 }
 

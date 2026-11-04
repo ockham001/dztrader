@@ -117,7 +117,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(s.schedules).toEqual([])
       expect(s.selectedBrokerId).toBeNull()
       expect(s.expanded).toBe(false)
-      expect(s.tradingDay).toBe('--')
+      expect(s.date).toBe('--')
       expect(s.subscribeCount).toBe(0)
       expect(s.subscribeTotal).toBe(0)
       // 契约 md-config 订阅参数：镜像未到达为 null
@@ -154,13 +154,13 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
         useMdConfigStore().applyMdStatus({ source: 'dzmd_ctp', status: {
           api_version: 'v6.7.2',
           sys_version: 'v6.7.2_20240105',
-          trading_day: '20260808',
+          date: '20260808',
           login_time: '2026-08-08 08:45:32',
           expected_subscribe_count: 5,
           subscribed_count: 3,
         }})
         const s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
-        expect(s.tradingDay).toBe('20260808')
+        expect(s.date).toBe('20260808')
         expect(s.subscribeCount).toBe(3)
         expect(s.subscribeTotal).toBe(5)
         expect(s.apiVersion).toBe('v6.7.2')
@@ -173,22 +173,22 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
         useMdConfigStore().applyMdStatus({ source: 'dzmd_ctp', status: {
           api_version: 'v6.7.2',
           sys_version: 'v6.7.2_20240105',
-          trading_day: '20260808',
+          date: '20260808',
           login_time: '',
           expected_subscribe_count: 5,
           subscribed_count: 0,
         }})
         const s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
-        expect(s.tradingDay).toBe('20260808')      // 保留，不因 login_time 为空整体丢弃
+        expect(s.date).toBe('20260808')      // 保留，不因 login_time 为空整体丢弃
         expect(s.loginTime).toBe('')
         expect(s.subscribeCount).toBe(0)
       })
 
       it('字段类型非法时逐字段回落默认值', async () => {
         await loadDb()
-        useMdConfigStore().applyMdStatus({ source: 'dzmd_ctp', status: { trading_day: 123, subscribed_count: 'x' } })
+        useMdConfigStore().applyMdStatus({ source: 'dzmd_ctp', status: { date: 123, subscribed_count: 'x' } })
         const s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
-        expect(s.tradingDay).toBe('--')
+        expect(s.date).toBe('--')
         expect(s.subscribeCount).toBe(0)
         expect(s.subscribeTotal).toBe(0)
       })

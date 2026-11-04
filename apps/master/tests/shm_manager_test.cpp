@@ -1826,7 +1826,7 @@ void write_account_status_frame(shm::MultiWriter& w,
     dztrader::copy_string(status.gateway_name, gateway.c_str(), true);
     dztrader::copy_string(status.account_id, account.c_str(), true);
     status.state = state;
-    status.trading_day = 0;
+    status.date = 0;
     ASSERT_TRUE(platform::write_struct(w, DZ_FRAME_ACCOUNT_STATUS, status));
 }
 
@@ -1936,7 +1936,7 @@ TEST_F(ShmManagerTest, QueryUnknownAccountGetsOfflineFallback) {
     EXPECT_STREQ(frames[0].account_id, "UNKNOWN");
     EXPECT_STREQ(frames[0].gateway_name, "");
     EXPECT_EQ(frames[0].state, DZ_ACCOUNT_OFFLINE);
-    EXPECT_EQ(frames[0].trading_day, 0);
+    EXPECT_EQ(frames[0].date, 0);
 }
 
 // 回声防自锁: master 自己写的兜底帧 (gateway_name="") 回流后不得入镜像
@@ -1994,7 +1994,7 @@ TEST_F(ShmManagerTest, NotifyTdStoppedWritesOfflineAndClearsMirror) {
     for (const auto& st : frames) {
         EXPECT_STREQ(st.gateway_name, "dztd_ctp");
         EXPECT_EQ(st.state, DZ_ACCOUNT_OFFLINE);
-        EXPECT_EQ(st.trading_day, 0);
+        EXPECT_EQ(st.date, 0);
         accounts.insert(std::string(st.account_id));
     }
     EXPECT_EQ(accounts, (std::set<std::string>{"CTP001", "CTP002"}));

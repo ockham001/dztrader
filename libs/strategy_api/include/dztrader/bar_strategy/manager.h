@@ -1994,7 +1994,7 @@ private:
         for (std::size_t i = 1; i < bars.size(); ++i) {
             const bar::Bar& previous = bars[i - 1];
             const bar::Bar& current = bars[i];
-            if (current.trading_day == previous.trading_day &&
+            if (current.date == previous.date &&
                 current.begin_sec != previous.begin_sec + previous.period_sec) {
                 ++gap_count;
             }
@@ -2113,10 +2113,10 @@ private:
             return false;  // 冷启动：没有归档尾部可重叠，按 live tick 处理
         }
         const bar::Bar& tail = node.replay_tail.last_bar;
-        if (tick.date < tail.trading_day) {
+        if (tick.date < tail.date) {
             return true;
         }
-        if (tick.date > tail.trading_day) {
+        if (tick.date > tail.date) {
             return false;
         }
         if (tick.time < 0 || tick.time > bar::MAX_TRADING_SEC) {

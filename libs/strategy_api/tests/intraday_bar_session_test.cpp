@@ -27,7 +27,7 @@ TEST_F(IntradayBarSessionTest, NightSessionTicksInSameBucketOnlyUpdate) {
     EXPECT_EQ(count_events(sink_, EventKind::Close), 0);
     ASSERT_TRUE(builder_.has_current_bar());
     const Bar& bar = builder_.current_bar();
-    EXPECT_EQ(bar.trading_day, TRADING_DAY);
+    EXPECT_EQ(bar.date, TRADING_DAY);
     EXPECT_EQ(bar.begin_sec, TSEC_21_00);
     EXPECT_EQ(bar.last_tick_sec, TSEC_21_00 + 59);
     EXPECT_DOUBLE_EQ(bar.high, 102.0);
@@ -53,7 +53,7 @@ TEST_F(IntradayBarSessionTest, MultiSessionTableAssignsTicksToRespectiveSessionB
         builder_.on_tick(make_tick(session_tick.clock, 100.0, 1, 100.0, 1));
         ++expected_opens;
         ASSERT_TRUE(builder_.has_current_bar());
-        EXPECT_EQ(builder_.current_bar().trading_day, TRADING_DAY);
+        EXPECT_EQ(builder_.current_bar().date, TRADING_DAY);
         EXPECT_EQ(builder_.current_bar().begin_sec, session_tick.begin_sec);
         EXPECT_EQ(count_events(sink_, EventKind::Open), expected_opens);
         EXPECT_EQ(count_events(sink_, EventKind::Close), expected_opens - 1);
@@ -79,7 +79,7 @@ TEST_F(IntradayBarSessionTest, TicksAcrossMidnightAdvanceInSameTradingDay) {
     EXPECT_TRUE(last_close->is_final);
     EXPECT_EQ(last_close->begin_sec, BUCKET_23_59);
     ASSERT_TRUE(builder_.has_current_bar());
-    EXPECT_EQ(builder_.current_bar().trading_day, TRADING_DAY);  // 夜盘归属同一交易日
+    EXPECT_EQ(builder_.current_bar().date, TRADING_DAY);  // 夜盘归属同一交易日
     EXPECT_EQ(builder_.current_bar().begin_sec, BUCKET_00_00);
     EXPECT_EQ(builder_.current_bar().last_tick_sec, BUCKET_00_00);
     EXPECT_FALSE(builder_.current_bar().is_final);

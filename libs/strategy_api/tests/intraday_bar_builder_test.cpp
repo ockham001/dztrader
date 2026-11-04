@@ -26,7 +26,7 @@ TEST_F(IntradayBarBuilderTest, FirstTickStartsFormingBar) {
 
     ASSERT_TRUE(builder_.has_current_bar());
     const Bar& bar = builder_.current_bar();
-    EXPECT_EQ(bar.trading_day, TRADING_DAY);
+    EXPECT_EQ(bar.date, TRADING_DAY);
     EXPECT_EQ(bar.begin_sec, TSEC_09_00);
     EXPECT_EQ(bar.period_sec, 60);
     EXPECT_EQ(bar.last_tick_sec, TSEC_09_00);
@@ -77,7 +77,7 @@ TEST_F(IntradayBarBuilderTest, TradingDayComesFromTick) {
     builder_.on_tick(make_tick(9 * 3600, 100.5, 1, 100.5, 1, TRADING_DAY + 1));
 
     ASSERT_TRUE(builder_.has_current_bar());
-    EXPECT_EQ(builder_.current_bar().trading_day, TRADING_DAY + 1);
+    EXPECT_EQ(builder_.current_bar().date, TRADING_DAY + 1);
 }
 
 TEST(IntradayBarBuilderGridTest, BeginSecIsFlooredToPeriodGrid) {
