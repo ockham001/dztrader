@@ -38,8 +38,8 @@ export const TD_LIST_PAGE_SIZE = 200
 /** 有界窗口容量（ADR 0043 决策 7 建议 2000；组件与测试从 store 取，单一常量来源） */
 export const TD_LIST_WINDOW_CAPACITY = 2000
 
-/** 距列表底部多少行开始预取下一页 */
-export const TD_LIST_PREFETCH_THRESHOLD = 30
+/** 距列表底部多少行开始预取下一页（工厂内部参数，无外部消费者 → 不导出） */
+const TD_LIST_PREFETCH_THRESHOLD = 30
 
 /** 批量合并间隔：约 10Hz（ADR 0043 决策 7；定时器可注入以便测试） */
 export const TD_BATCH_INTERVAL_MS = 100
