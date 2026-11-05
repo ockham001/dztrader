@@ -16,8 +16,7 @@
  *
  * 为什么直接用 SQLiteCpp 而不是 SDK 私有 DB 端口（`dzsdkdb`）：保留与压缩需要 `GROUP BY` 加权均值、
  * `DELETE ... LIMIT` 与 `WITHOUT ROWID` 复合主键，该端口的 `Session` 抽象不暴露原始 SQL；
- * 而历史库是本地单文件、只此一种后端（不像 td 库需要 sqlite/mysql 切换），
- * 套一层端口只会多一份无法被满足的能力声明。
+ * 而历史库是本地单文件、只此一种后端，套一层端口只会多一份无法被满足的能力声明。
  */
 
 #include <array>

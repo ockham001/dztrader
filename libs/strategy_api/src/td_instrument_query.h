@@ -5,7 +5,8 @@
  * SDK 私有（不在 `strategy_api_headers` 的公开 include 面内）：把 `tdstore::InstrumentRecord`
  * （平台声明，`libs/tdstore/include/dztrader/tdstore/records.h`）编解码到 SDK 私有 DB 层的
  * `db::Row`，并按列投影查询。列名/列序单源来自 `tdstore::schema_catalog.h`
- * （经 `td_schema.h` 投影），本文件不持有列清单。
+ * （经 `td_schema.h` 投影）：**查询与投影路径不持有列清单**；`make_instrument_row` 是唯一
+ * 按声明序的位置编码（既有实现），其列序由 `MakeInstrumentRowMatchesSchemaOrder` 锁定。
  */
 #ifndef DZTRADER_STRATEGY_API_TD_INSTRUMENT_QUERY_H_
 #define DZTRADER_STRATEGY_API_TD_INSTRUMENT_QUERY_H_

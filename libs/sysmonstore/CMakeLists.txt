@@ -4,11 +4,11 @@
 # 职责：历史库 schema 的**唯一**定义 + 行编解码 + 写入方门面 + 只读读取方门面
 #       + 落盘线程（有界队列 + 批量提交）。
 #
-# 为什么单独成库而不是塞进 libs/db 或 apps/sysmon：历史库由 `dzsysmon` 唯一写入、
-# `dzweb` 只读（#41 spec「历史存储」），schema 与行编解码必须只有一份定义。放进任一
-# app 都会迫使另一方跨 app 依赖，而 libs/db 是 sqlite/mysql 可切换的通用端口，
-# 历史库只要本地 SQLite（保留与压缩需要 WITHOUT ROWID 复合主键、DELETE..LIMIT 等
-# 端口不暴露的能力）。
+# 为什么单独成库而不是塞进 SDK 私有 DB 层（`dzsdkdb`）或 apps/sysmon：历史库由
+# `dzsysmon` 唯一写入、`dzweb` 只读（#41 spec「历史存储」），schema 与行编解码必须
+# 只有一份定义。放进任一 app 都会迫使另一方跨 app 依赖，而 `dzsdkdb` 是 SDK 私有的
+# sqlite/mysql 可切换端口，历史库只要本地 SQLite（保留与压缩需要 WITHOUT ROWID
+# 复合主键、DELETE..LIMIT 等端口不暴露的能力）。
 #
 # 依赖方向：SQLiteCpp + dzcore（日志/异常）；不依赖 SDK 私有 DB 层（`dzsdkdb`）。
 # ============================================================

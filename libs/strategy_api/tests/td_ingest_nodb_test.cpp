@@ -78,25 +78,35 @@ protected:
     }
 };
 
-// AC (ADR 0044 决策 3): SDK 初始化不打开 DB — 无库时 dz_init 成功, 且默认库入口
-// `dz_db_open_default` 仍是"首次调用才打开"(此前后者从未被调用, 因此这里首次调用
-// 才能拿到"库不存在"的失败); 若 dz_init 曾打开并缓存句柄, 本断言之前的失败态就已
-// 被消耗, 后续行为不再可观测 —— 用失败后再建库+重开成功来锁定懒打开语义。
-TEST_F(IngestNoDbTest, InitDoesNotOpenDefaultDbAndOpenIsLazy) {
-    // 初始化阶段没有库: 默认库入口此刻首次调用 → 失败 (库不存在), 不自动建库
+// AC (ADR 0044 决策 3): `dz_init` 不提前建立**默认查询库入口**。
+// 计数器统计"真实打开（建 Session）的尝试次数"，与 ingest 缓存分开：
+// init 只走 ingest 路径 → 必须为 0；无库首次调用尝试一次（失败，计 1）；
+// 建库后每次成功调用各计一次（2、3）——因为每次调用都新建独立 Session。
+// 这个断言会真的变红 —— 若 dz_init 提前调用 default_db_handle(), 首个 EXPECT_EQ 即失败
+// （已实测：临时让 dz_init 调用 default_db_handle() 后本用例失败）。
+TEST_F(IngestNoDbTest, InitDoesNotOpenDefaultDbEntryAndOpenIsLazy) {
+    EXPECT_EQ(0u, dztrader::strategy_api_internal::default_db_open_attempts_for_test())
+        << "dz_init must not open the default query db entry";
+
+    // 无库时首次调用: 失败（不自动建库）, 且确实尝试打开过一次
     EXPECT_EQ(nullptr, dz_db_open_default());
     EXPECT_EQ(DZ_EC_DB_OPEN_FAILED, dz_errcode());
+    EXPECT_EQ(1u, dztrader::strategy_api_internal::default_db_open_attempts_for_test());
     EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(home_) / "db" / "trade.db"));
 
-    // 建库后重新调用: 懒打开成功 (init 没有把失败的句柄缓存住)
+    // 建库后再调用: 懒打开成功
     std::filesystem::create_directories(home_ + "/db");
     (void)dztrader::tdstore::ensure_trade_db(
         (std::filesystem::path(home_) / "db" / "trade.db").string());
     DzDatabase* db = dz_db_open_default();
     ASSERT_NE(nullptr, db) << dz_errmsg();
-    DzDatabase* again = dz_db_open_default();  // 独立句柄, 共享连接
+    EXPECT_EQ(2u, dztrader::strategy_api_internal::default_db_open_attempts_for_test());
+
+    // 每次调用都新建独立 Session/句柄（一线程一 Session）, 计数随之递增
+    DzDatabase* again = dz_db_open_default();
     ASSERT_NE(nullptr, again) << dz_errmsg();
     EXPECT_NE(db, again);
+    EXPECT_EQ(3u, dztrader::strategy_api_internal::default_db_open_attempts_for_test());
     dz_db_close(db);
     dz_db_close(again);
 }

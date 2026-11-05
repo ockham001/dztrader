@@ -177,11 +177,14 @@ protected:
         return dz_resultset_column_count(rs);
     }
 
-    /// 一次性读完整结果集的指定列（行序 = 结果行序）
+    /// 一次性读完整结果集的指定列（行序 = 结果行序）。
+    /// 列不存在时返回 lead 哨兵值 `<missing:name>`，使"列为空"与"列不存在"可区分
+    /// （否则投影丢了 date 列时 `EXPECT_TRUE(values.empty())` 会假通过）。
     static std::vector<std::string> column_values(DzResultSet* rs, const char* column) {
         const uint32_t index = column_index(rs, column);
         std::vector<std::string> values;
         if (index == dz_resultset_column_count(rs)) {
+            values.emplace_back(std::string("<missing:") + column + ">");
             return values;
         }
         while (dz_resultset_next(rs)) {
@@ -341,6 +344,32 @@ TEST_F(DbQueryDateTest, DateAndSeqValuesAreConsistent) {
     EXPECT_STREQ("T2", dz_resultset_get_string(rs, 2));
     EXPECT_STREQ("20260902", dz_resultset_get_string(rs, 1));
     EXPECT_FALSE(dz_resultset_next(rs));
+    dz_resultset_close(rs);
+}
+
+// 非法 `date`（既不是 DZ_DATE_NA 也不是有效 epoch day）→ NULL + DZ_EC_INVALID_PARAM。
+// 覆盖 `add_date_filter` 的错误路径（development-checklist D3: 每个公开 API 的错误路径）。
+TEST_F(DbQueryDateTest, InvalidDateRejected) {
+    EXPECT_EQ(nullptr, dz_db_query_order(db_, "A", nullptr, -1));
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+    EXPECT_EQ(nullptr, dz_db_query_position(db_, "A", nullptr, -1));
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+    EXPECT_EQ(nullptr, dz_db_query_trading_account(db_, "A", -1));
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+    EXPECT_EQ(nullptr, dz_db_query_trade(db_, "A", nullptr, -1));
+    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+}
+
+// `DZ_DATE_NA` + 空账户: 无快照行的账户必须被丢弃（不因"无锚点"而混入其它账户的行）。
+// A/B 有锚点行, GHOST 只有追加流(orders)行 → 结果只含 A、B 两行且日期各为其锚点日。
+TEST_F(DbQueryDateTest, DateNaEmptyAccountDropsAccountsWithoutSnapshot) {
+    SQLite::Database raw(db_path_, SQLite::OPEN_READWRITE);
+    insert_order(raw, "GHOST", "20260901", 9001, 50);  // 只有追加流, 无快照
+    DzResultSet* rs = dz_db_query_position(db_, nullptr, nullptr, DZ_DATE_NA);
+    ASSERT_NE(nullptr, rs) << dz_errmsg();
+    const std::vector<std::pair<std::string, std::string>> expected = {{"A", "20260902"},
+                                                                       {"B", "20260901"}};
+    EXPECT_EQ(expected, account_dates(rs)) << "GHOST has no snapshot row and must be dropped";
     dz_resultset_close(rs);
 }
 

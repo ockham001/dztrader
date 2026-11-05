@@ -1542,7 +1542,7 @@ DZ_API DzDatabase* dz_db_open_default(void) {
     try {
         // 固定本地交易库 + 首次调用懒打开 + 进程级连接缓存（ADR 0044 决策 3）:
         // 路径只由 DZTRADER_HOME 决定, 不读 database.json / DZTRADER_DB_* 环境变量。
-        // 每次调用返回独立句柄（共享底层连接），调用方按普通句柄 dz_db_close 即可。
+        // 每次调用返回独立句柄（共享入口、各自一个 Session），按普通句柄 dz_db_close。
         return strategy_api_internal::default_db_handle().release();
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
@@ -1557,8 +1557,7 @@ DZ_API bool dz_db_close(DzDatabase* db) {
     if (db == nullptr) {
         return true;  // NULL 安全: no-op 视为成功
     }
-    // 句柄 = 本次调用独占的包装, 底层连接可能与其他句柄共享（默认库入口）:
-    // 销毁包装即可, 连接随最后一个引用/进程结束释放。
+    // 句柄 = 本次调用独占的包装（含独占 Session）: 销毁包装即可, 无需特殊处理。
     delete db;  // NOLINT
     return true;
 }

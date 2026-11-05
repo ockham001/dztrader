@@ -15,6 +15,9 @@
 #define DZTRADER_STRATEGY_API_TD_SCHEMA_H_
 
 #include <span>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include <dztrader/db/types.h>
 
@@ -25,6 +28,11 @@ namespace dztrader::db {
 
 /// `instruments` 表声明的投影（`dz_db_query_instruments` 的按列投影查询用）
 [[nodiscard]] const ResourceSchema& td_instruments_schema();
+
+/// 某表对策略可见的列名（声明序；已排除 `tdstore` 声明为平台内部的列）。
+/// C API 投影的唯一依据——"哪些列不对外"单源在 `tdstore::ColumnSchema::platform_internal`，
+/// 本层不另立清单（ADR 0044 决策 2/4）。
+[[nodiscard]] std::vector<std::string> strategy_visible_column_names(std::string_view table);
 
 }  // namespace dztrader::db
 

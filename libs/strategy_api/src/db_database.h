@@ -26,9 +26,10 @@
 /**
  * @brief 数据库句柄实现体（api.h 的 DzDatabase 为不透明指针）
  *
- * 连接用 `shared_ptr` 持有：默认库入口 `dz_db_open_default` 的**底层连接**进程内缓存，
- * 每次调用返回一个独立的句柄包装（共享同一连接），因此 `dz_db_close` 对任何句柄都是
- * 普通的"销毁本次返回的包装"，既不会误关其他调用方仍在用的连接，也不存在重复关闭。
+ * 用 `shared_ptr` 持有的是**入口**（`db::Database`，文档保证线程安全、进程内共享）与
+ * **本次调用独占的 Session**（`db::Session` 非线程安全、"一线程一 Session"）。
+ * 默认库入口 `dz_db_open_default` 只缓存 `db::Database`，Session 每次新建，因此句柄之间
+ * 不共享连接，`dz_db_close` 对任何句柄都只是销毁本次返回的包装（无重复关闭/悬垂）。
  */
 struct DzDatabase {
     std::shared_ptr<dztrader::db::Database> database;
@@ -62,11 +63,11 @@ std::unique_ptr<DzDatabase> db_open_readonly(const std::string& path);
 [[nodiscard]] std::string trade_db_path();
 
 /**
- * @brief 默认库的新句柄（底层连接进程级懒打开并缓存）
+ * @brief 默认库的新句柄（底层入口进程级懒打开并缓存，Session 每次新建）
  *
- * **首次调用**才建立连接（SDK 初始化不打开任何 DB，ADR 0044 决策 3），此后同进程内
- * 复用同一底层连接；每次调用返回**独立句柄**，调用方用 `dz_db_close` 正常销毁即可
- * （连接随最后一个句柄/进程结束释放）。
+ * **首次调用**才建立 `db::Database` 入口（`dz_init` 不打开默认查询库，ADR 0044 决策 3），
+ * 此后同进程内复用该入口；**每次调用新建 Session**（`Session` 非线程安全、一线程一
+ * Session），因此每次返回的句柄都可独立使用、可跨线程各持一个、并可独立 `dz_db_close`。
  * 与 ingest 句柄分开缓存：ingest 是内部借用句柄（永不 close），本入口返回给调用方。
  *
  * @return 非空句柄所有权（失败抛异常）
@@ -78,6 +79,11 @@ std::unique_ptr<DzDatabase> default_db_handle();
  *        否则 Windows 上被占用的库文件删不掉）; 生产代码不调用
  */
 void reset_default_db_cache_for_test();
+
+/**
+ * @brief 仅测试: 默认库入口的真实打开尝试次数（含失败；证明 `dz_init` 没有提前打开它）
+ */
+[[nodiscard]] uint64_t default_db_open_attempts_for_test();
 
 /**
  * @brief ingest 库打开失败退避窗口（WP3b：故障期热路径保护）

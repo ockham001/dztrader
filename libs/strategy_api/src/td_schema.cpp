@@ -5,6 +5,8 @@
 #include <string_view>
 #include <vector>
 
+#include <dztrader/core/exception.h>
+#include <dztrader/error.h>
 #include <dztrader/tdstore/schema_catalog.h>
 
 namespace dztrader::db {
@@ -76,6 +78,20 @@ std::span<const ResourceSchema> td_schemas() { return storage().schemas; }
 
 const ResourceSchema& td_instruments_schema() {
     return storage().schemas.back();  // tdstore::tables() 末项 = instruments
+}
+
+std::vector<std::string> strategy_visible_column_names(std::string_view table) {
+    for (const tdstore::TableSchema& declared : tdstore::tables()) {
+        if (declared.name != table) {
+            continue;
+        }
+        std::vector<std::string> names;
+        for (const tdstore::ColumnSchema& column : tdstore::strategy_visible_columns(declared)) {
+            names.emplace_back(column.name);
+        }
+        return names;
+    }
+    throw Exception(DZ_EC_INVALID_PARAM, "unknown table: table={}", table);
 }
 
 }  // namespace dztrader::db

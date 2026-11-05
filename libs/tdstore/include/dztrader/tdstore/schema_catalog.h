@@ -33,6 +33,9 @@ struct ColumnSchema {
     bool not_null = false;
     bool primary_key = false;
     std::string_view default_sql;
+    /// 平台内部列：诊断/持久化用，**不进策略可见投影**（ADR 0044 决策 2 的 `gateway`/`ext`）。
+    /// 作为列声明的一部分单源表达，避免"哪些列不对外"在 SDK 侧另立第二份清单。
+    bool platform_internal = false;
 };
 
 /// 索引声明（`unique = true` 表达业务唯一键；字段序敏感）
@@ -70,6 +73,9 @@ std::span<const TableSchema> tables();
 
 /// 全部建表 + 建索引 + 表达式索引 DDL（幂等 `IF NOT EXISTS`；建库唯一入口）
 std::string build_schema_ddl();
+
+/// 某表对策略可见的列（`platform_internal == false`，声明序）；C API 投影的唯一依据
+[[nodiscard]] std::span<const ColumnSchema> strategy_visible_columns(const TableSchema& table);
 
 /// 表业务键列：列级 PRIMARY KEY 优先（按列声明序），否则唯一索引列（按索引声明序）；
 /// 无键返回空 span。upsert 冲突目标与业务唯一键共用同一份声明（禁止第二份列清单）。

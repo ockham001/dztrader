@@ -12,7 +12,6 @@
 #include <dztrader/struct.h>
 #include <dztrader/tdstore/trade_db.h>
 
-#include <nlohmann/json.hpp>
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
@@ -397,9 +396,9 @@ TEST_F(DbOpenDefaultTest, OpensFixedLocalTradeDb) {
     EXPECT_FALSE(std::filesystem::exists(home_ + "/configs/database.json"));
 }
 
-// 懒打开 + 进程级连接复用: 首次调用才建立连接; 每次调用返回独立句柄, 都可独立关闭,
-// 关闭一个不影响另一个仍在用的句柄（共享底层连接, 关到最后一个才断开）。
-TEST_F(DbOpenDefaultTest, LazilyOpensAndSharesConnectionAcrossHandles) {
+// 懒打开 + 进程级入口复用: 首次调用才建立入口; 每次调用返回独立句柄（各自一个只读
+// Session）, 都可独立关闭, 关闭一个不影响另一个仍在用的句柄。
+TEST_F(DbOpenDefaultTest, LazilyOpensAndGivesIndependentSessions) {
     create_td_db(db_path_);
     insert_order_row(db_path_, "A", 1001, 1);
 
@@ -407,7 +406,7 @@ TEST_F(DbOpenDefaultTest, LazilyOpensAndSharesConnectionAcrossHandles) {
     ASSERT_NE(nullptr, first) << dz_errmsg();
     DzDatabase* second = dz_db_open_default();
     ASSERT_NE(nullptr, second) << dz_errmsg();
-    EXPECT_NE(first, second);  // 独立句柄（不是同一个指针, 关闭互不影响）
+    EXPECT_NE(first, second);  // 独立句柄（各自 Session, 关闭互不影响）
 
     dz_db_close(first);  // 关掉第一个: 第二个必须仍然可用
     DzResultSet* rs = dz_db_query_order(second, "A", nullptr, day(2026, 9, 1));
@@ -450,6 +449,8 @@ TEST_F(DbOpenDefaultTest, ConfigAndEnvNoLongerSelectTradeDb) {
         ofs.close();
     }
     dztrader::env::set("DZTRADER_DB_OPT_PATH", alt_path);
+    // 用例内自己恢复: 不把环境变量泄漏给同二进制的其它用例 (unit-test-standard §3.4)
+    const auto restore_env = [&] { dztrader::env::unset("DZTRADER_DB_OPT_PATH"); };
 
     DzDatabase* db = dz_db_open_default();
     ASSERT_NE(nullptr, db) << dz_errmsg();
@@ -463,6 +464,7 @@ TEST_F(DbOpenDefaultTest, ConfigAndEnvNoLongerSelectTradeDb) {
     EXPECT_EQ(1001, dz_resultset_get_int64(rs, 2));
     dz_resultset_close(rs);
     dz_db_close(db);
+    restore_env();
 }
 
 /* ── ingest 句柄缓存 (FIX-5/FIX-7: 热路径复用 + 失败不缓存) ── */

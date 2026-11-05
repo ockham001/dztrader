@@ -121,8 +121,10 @@ DzResultSet* dz_db_query_instruments(DzDatabase* db, const char* instrument_id, 
 ```
 
 `db` 为 `dz_db_open` 打开的交易库（`<DZTRADER_HOME>/db/trade.db`，ADR 0041；**只读打开**，库不存在时
-打开失败、不自动建库）。`dz_db_open_default()` = 固定打开本地交易库、**首次调用懒打开并缓存进程级句柄**
-（SDK 初始化不打开任何 DB；`dz_db_open(path)` 保留显式 SQLite 路径语义，ADR 0044）。交易库固定本地
+打开失败、不自动建库）。`dz_db_open_default()` = 固定打开本地交易库、**首次调用懒打开并缓存进程级入口**
+（每次调用返回独立只读 Session；`dz_db_open(path)` 保留显式 SQLite 路径语义，ADR 0044）。"懒"专指**默认查询
+库入口**：`dz_init` 装载 ingest 水位时仍会按 ingest 的懒打开路径只读访问一次交易库（失败即降级不过滤），
+这是 ingest 的既有语义，不是默认库入口提前打开。交易库固定本地
 SQLite，`database.json` 不再承担交易数据后端选择（其交易段失效）。SDK 内部 ingest（水位装载/断档回补）在
 库打开失败后按退避窗口（默认 1s）重试：窗口内视为库不可用（降级不过滤、不再发起连接），窗口过后重试。
 查询走 SDK 私有 DB 层（`libs/strategy_api/src/db/`）→ `tdstore::query_instruments`，结果映射为

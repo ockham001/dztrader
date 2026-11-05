@@ -41,7 +41,7 @@
 **无迁移链**——版本不符/损坏时 master 启动期把旧库改名保留并新建。td 写入、dzweb 只读直查、
 策略 SDK 只读查询共用这个文件；**不再为交易数据选择后端**（原 `database.json` `td` 段与
 MySQL 交易路线按 ADR 0041 废弃；SDK 侧收尾已随 #252 完成——`database.json` 交易段不再生效，
-默认库入口 `dz_db_open_default()` 固定本地 `trade.db`、首次调用懒打开并缓存进程级句柄）。
+默认库入口 `dz_db_open_default()` 固定本地 `trade.db`、首次调用懒打开并缓存进程级入口）。
 
 策略 SDK 内部保留端口-适配器 DB 层（`sqlite` + `mysql`，ADR 0016/0019/0020），自 #252 起**私有化**
 在 `libs/strategy_api/src/db/`（target `dzsdkdb`，不安装、不导出符号，头文件不在公开 include 面内）：
