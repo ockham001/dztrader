@@ -106,7 +106,8 @@ std::optional<TdPositionsQuery::Params> TdPositionsQuery::parse(
 std::optional<nlohmann::json> TdPositionsQuery::execute(
     const Params& params,
     const std::vector<std::string>& online_accounts,
-    const std::optional<std::string>& trading_day) const {
+    const std::optional<std::string>& trading_day,
+    const std::vector<std::string>& registry_accounts) const {
     // 信封：持仓端点的 trading_day 是「列表作用域的当前交易日」，与委托/成交同义
     // （契约 rest §2.9.2）。持仓行自己的 date 是各账户锚点日（§2.9.4），两者不同。
     nlohmann::json body = td_list_envelope(trading_day, online_accounts);
@@ -119,10 +120,11 @@ std::optional<nlohmann::json> TdPositionsQuery::execute(
     }
     sqlite3* db = conn.handle();
 
-    // 账户全集 = 在线 ∪ 库中四表出现过的 account_id（含离线），再过 accounts 过滤。
+    // 账户全集 = 在线 ∪ 注册表 ∪ 库中四表出现过的 account_id（含离线），再过 accounts
+    // 过滤。三源并集在 `td_account_scope` 单点实现（契约 rest §2.9.1）。
     bool accounts_ok = true;
     const std::vector<std::string> registered =
-        td_registered_accounts(db, online_accounts, &accounts_ok);
+        td_registered_accounts(db, online_accounts, registry_accounts, &accounts_ok);
     if (!accounts_ok) {
         return td_degraded_body(kTdReasonQueryFailed);
     }

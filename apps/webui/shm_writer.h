@@ -12,8 +12,9 @@ namespace dztrader::webui {
 
 /// 封装 SHM 事件通道写入，提供业务语义化接口
 /// 返回值约定分两组：
-///   - bool 返回的 write_* (write_md_connect / write_md_disconnect / write_process_control)：
-///     true = 已写入事件通道 (契约 rest §1)，调用方必须检查返回值，false 时映射 503
+///   - bool 返回的 write_* (write_md_connect / write_md_disconnect / write_process_control /
+///     write_td_modify_config)：true = 已写入事件通道 (契约 rest §1)，调用方必须检查
+///     返回值，false 时映射 503
 ///   - void 返回的 write_* (write_set_process_config / write_query_all / write_md_set_config /
 ///     write_set_auto_login / write_set_md_shm_config)：fire-and-forget，写入失败由内部
 ///     catch 记日志，真正失败由 RTN_* 异步推送纠正 (guard 前置拦截 is_ready 保证就绪性)
@@ -75,6 +76,14 @@ public:
     /// payload 为 RFC 7386 合并 patch, 任意位置 null 由 dzsysmon 判为非法)
     /// 最终状态由 WS sysmon_config 推送 (RTN_SYSMON_CONFIG 全量回推) 决定
     void write_set_sysmon_config(const nlohmann::json& payload);
+
+    /// 写 TD_REQ_MODIFY_CONFIG 帧 (契约 td-config §3: 交易网关配置写请求, op-based)
+    /// gateway: 目标交易网关进程名 (如 "dztd_ctp")
+    /// op_req_json: 契约 td-config §3 的 {op, params}——dzweb 不解析柜台特有字段,
+    ///              只做账户唯一性等平台级预检 (契约 td-config §5 / rest §2.9.7)
+    /// 返回 true = 已写入事件通道 (与 bool 组其余方法同约定, 调用方负责映射 503)
+    /// 生效信号 = RTN_TD_CONFIG (契约 td-config §4): 成功推新值, 失败推回滚旧值
+    bool write_td_modify_config(const std::string& gateway, const nlohmann::json& op_req_json);
 
     bool is_ready() const { return event_writer_ != nullptr; }
 

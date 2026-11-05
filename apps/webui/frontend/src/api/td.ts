@@ -1,11 +1,15 @@
 import { api } from './client'
 import type { TdListQuery } from '@/composables/tdListStore'
 import type {
+  TdAccountsResponse,
+  TdAddAccountBody,
   TdOrdersResponse,
   TdPositionsResponse,
   TdStatsResponse,
   TdTradesResponse,
   TdTradingAccountsResponse,
+  TdUpdateAccountBody,
+  TdWriteOkResponse,
 } from '@/types/api'
 
 /**
@@ -97,4 +101,39 @@ export const tdApi = {
    * （reason 只有 not_ready），调用方必须判断 `available`。
    */
   getStats: () => api.get<TdStatsResponse>('/api/td/stats'),
+
+  // ===== 账户配置（契约 rest §2.9.7/§2.9.9）=====
+
+  /**
+   * 账户注册表（契约 rest §2.9.9）：账户配置页的**唯一账户列表来源**（跨网关全集）。
+   * 任意已认证用户可读（不是 admin 专属，与其它读端点权限一致）。
+   *
+   * 降级语义：注册表尚不可用（dzweb 启动后未收到任何 `TD_RTN_CONFIG` 且平台库也无条目）时回
+   * **200 + available:false**（reason 只有 `no_gateway_snapshot`），此时"无账户"不可信——
+   * 调用方必须判断 `available`，不得把空 accounts 当作"没有账户"（契约 rest §2.9.9）。
+   */
+  listAccounts: () => api.get<TdAccountsResponse>('/api/td/accounts'),
+
+  /**
+   * 添加账户（契约 rest §2.9.7，admin）：`{"gateway": <网关进程名>, "account": {...}}`。
+   * 200 `{ok:true}` 只表示已写入事件通道，**不代表业务已生效**——生效信号是 WS `td_rtn_config`
+   *（成功推新值、失败推回滚旧值），前端 pending 以该回报清除。
+   */
+  addAccount: (body: TdAddAccountBody) =>
+    api.post<TdWriteOkResponse>('/api/td/accounts', body),
+
+  /**
+   * 修改账户（契约 rest §2.9.7，admin）：body 为 `UpdateAccount` 的 params 子集（字段级 merge，
+   * 缺失字段保留旧值，允许空对象）。**不得包含 account_id**（路径是唯一来源，出现即 400）。
+   * 网关由 dzweb 按注册表从 account_id 解析，前端不传、也不写进 body。
+   */
+  updateAccount: (accountId: string, patch: TdUpdateAccountBody) =>
+    api.put<TdWriteOkResponse>(`/api/td/accounts/${encodeURIComponent(accountId)}`, patch),
+
+  /**
+   * 删除账户（契约 rest §2.9.7，admin）：无 body（dzweb 忽略请求体）。
+   * **不删除交易数据**（ADR 0045），离线账户的持仓/资金仍按锚点日可查。
+   */
+  removeAccount: (accountId: string) =>
+    api.del<TdWriteOkResponse>(`/api/td/accounts/${encodeURIComponent(accountId)}`),
 }

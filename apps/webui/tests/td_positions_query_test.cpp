@@ -129,14 +129,16 @@ protected:
     }
 
     /// 以默认在线集合（ACC1）与当前交易日执行查询；非法游标/参数时返回 nullopt。
+    /// @param registry 账户注册表账户集合（契约 rest §2.9.1 第三源），默认空 = 未接入
     std::optional<nlohmann::json> run(const std::map<std::string, std::string>& raw,
                                       std::vector<std::string> online = {"ACC1"},
-                                      std::optional<std::string> day = std::string("20261009")) {
+                                      std::optional<std::string> day = std::string("20261009"),
+                                      std::vector<std::string> registry = {}) {
         const auto parsed = TdPositionsQuery::parse(params(raw));
         if (!parsed.has_value()) {
             return std::nullopt;
         }
-        return query().execute(*parsed, online, day);
+        return query().execute(*parsed, online, day, registry);
     }
 
     /// 行里的 instrument 集合（顺序无关断言用）。
@@ -178,6 +180,58 @@ TEST_F(TdPositionsQueryTest, OnlineAccountWithoutRowsStillContributesToUniverse)
     EXPECT_EQ(body->at("online_accounts").size(), 2U);
     // 但它没有持仓行 → 不出现在 items 里。
     EXPECT_EQ(instruments(*body), std::vector<std::string>{"rb2601"});
+}
+
+TEST_F(TdPositionsQueryTest, RegistryAccountContributesToUniverseAsThirdSource) {
+    // 契约 rest §2.9.1：账户全集 = 在线 ∪ **注册表** ∪ 四表。
+    // REG1 只在注册表里（网关停机、库里也无任何行）——它必须出现在全集里，
+    // 否则账户配置页能看到它、持仓/资金面板却看不见（同一个账户两种视角）。
+    create_db();
+    insert_position({.account_id = "ACC1", .instrument_id = "rb2601"});
+
+    const auto body = run({}, /*online=*/{"ACC1"}, std::string("20261009"),
+                          /*registry=*/{"REG1"});
+    ASSERT_TRUE(body.has_value());
+    EXPECT_TRUE(body->at("available").get<bool>());
+    // 无快照行 → 不产生 holdings 行，但账户集合本身包含了它（与在线账户同口径）。
+    ASSERT_EQ(body->at("items").size(), 1U);
+    EXPECT_EQ(body->at("items")[0].at("account_id").get<std::string>(), "ACC1");
+}
+
+TEST_F(TdPositionsQueryTest, RegistryAccountWithSnapshotRowsIsListed) {
+    // 注册表账户在此前有过持仓快照（离线后仍在）：两条来源同时命中，行照常返回。
+    create_db();
+    insert_position({.account_id = "REG1", .instrument_id = "rb2601"});
+
+    const auto body = run({}, /*online=*/{}, std::string("20261009"), /*registry=*/{"REG1"});
+    ASSERT_TRUE(body.has_value());
+    ASSERT_EQ(body->at("items").size(), 1U);
+    EXPECT_EQ(body->at("items")[0].at("account_id").get<std::string>(), "REG1");
+}
+
+TEST_F(TdPositionsQueryTest, RegistryAccountsAreDeduplicatedAgainstOtherSources) {
+    // 三源取并集 = 去重，不是一个账户多行（持仓按 (account, instrument, direction) 唯一）。
+    create_db();
+    insert_position({.account_id = "ACC1", .instrument_id = "rb2601"});
+
+    const auto body = run({}, /*online=*/{"ACC1"}, std::string("20261009"),
+                          /*registry=*/{"ACC1", "REG1"});
+    ASSERT_TRUE(body.has_value());
+    ASSERT_EQ(body->at("items").size(), 1U);
+    EXPECT_EQ(body->at("items")[0].at("account_id").get<std::string>(), "ACC1");
+}
+
+TEST_F(TdPositionsQueryTest, AccountsFilterCanSelectRegistryOnlyAccount) {
+    // accounts 过滤作用于已登记账户全集（契约 rest §2.9.2），包含第三源。
+    create_db();
+    insert_position({.account_id = "ACC1", .instrument_id = "rb2601"});
+    insert_position({.account_id = "REG1", .instrument_id = "rb2610", .seq = 2});
+
+    const auto body = run({{"accounts", "REG1"}}, /*online=*/{"ACC1"}, std::string("20261009"),
+                          /*registry=*/{"REG1"});
+    ASSERT_TRUE(body.has_value());
+    ASSERT_EQ(body->at("items").size(), 1U);
+    EXPECT_EQ(body->at("items")[0].at("account_id").get<std::string>(), "REG1");
 }
 
 TEST_F(TdPositionsQueryTest, NoAccountsAtAllIsEmptyListNotDegraded) {

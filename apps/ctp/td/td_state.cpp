@@ -125,7 +125,7 @@ std::optional<TdNotification> TdStateMachine::on_login_success(const std::string
         SPDLOG_WARN("login ok: unexpected state | state={}", magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
-    status_.sys_version = sys_version;
+    status_.ext.sys_version = sys_version;
     status_.date = date;
     status_.login_time = login_time;
     set_state(TdState::LoggedIn);
@@ -234,7 +234,7 @@ void TdStateMachine::set_state(TdState new_state) {
             status_.progress_max = 10;
             status_.progress_current = 0;
             status_.login_time.clear();
-            status_.sys_version.clear();
+            status_.ext.sys_version.clear();
             status_.date.clear();
             break;
         case TdState::Connecting:

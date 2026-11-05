@@ -8,6 +8,7 @@
 
 #include "controller_base.h"
 #include "repository.h"
+#include "td_account_registry.h"
 #include "td_domain_service.h"
 #include "td_orders_query.h"
 #include "td_positions_query.h"
@@ -39,18 +40,22 @@ public:
     /// @param trades 成交列表只读查询
     /// @param positions 持仓列表只读查询
     /// @param trading_accounts 资金列表只读查询（不分页，契约 rest §2.9.2）
+    /// @param registry 账户注册表（持仓/资金的账户全集**第三源**，契约 rest §2.9.1；
+    ///        nullptr = 未装配，此时两源兜底，行为与接入注册表前一致）
     TdCtrl(std::shared_ptr<Repository> repo,
            std::shared_ptr<TdDomainService> domain,
            std::shared_ptr<TdOrdersQuery> orders,
            std::shared_ptr<TdTradesQuery> trades,
            std::shared_ptr<TdPositionsQuery> positions,
-           std::shared_ptr<TdTradingAccountsQuery> trading_accounts)
+           std::shared_ptr<TdTradingAccountsQuery> trading_accounts,
+           std::shared_ptr<TdAccountRegistry> registry = nullptr)
         : ControllerBase(std::move(repo)),
           domain_(std::move(domain)),
           orders_(std::move(orders)),
           trades_(std::move(trades)),
           positions_(std::move(positions)),
-          trading_accounts_(std::move(trading_accounts)) {}
+          trading_accounts_(std::move(trading_accounts)),
+          registry_(std::move(registry)) {}
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(TdCtrl::get_orders, "/api/td/orders", drogon::Get);
@@ -93,11 +98,17 @@ public:
                    std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
 private:
+    /// 账户注册表账户集合（契约 rest §2.9.1 第三源）；未装配 = 空集合（两源兜底）。
+    [[nodiscard]] std::vector<std::string> registry_accounts() const {
+        return registry_ ? registry_->account_ids() : std::vector<std::string>{};
+    }
+
     std::shared_ptr<TdDomainService> domain_;
     std::shared_ptr<TdOrdersQuery> orders_;
     std::shared_ptr<TdTradesQuery> trades_;
     std::shared_ptr<TdPositionsQuery> positions_;
     std::shared_ptr<TdTradingAccountsQuery> trading_accounts_;
+    std::shared_ptr<TdAccountRegistry> registry_;
 };
 
 }  // namespace dztrader::webui

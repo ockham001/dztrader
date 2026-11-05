@@ -32,14 +32,21 @@ std::string placeholders(size_t count) {
 
 std::vector<std::string> td_registered_accounts(sqlite3* db,
                                                 const std::vector<std::string>& online_accounts,
+                                                const std::vector<std::string>& registry_accounts,
                                                 bool* ok) {
     if (ok != nullptr) {
         *ok = true;
     }
-    // 起点 = 在线账户（契约 rest §2.9.1：在线 ∪ 四表；在线账户即使库里还没有任何行
-    // 也要出现在全集里——刚登录、尚未落首条记录的账户不该从 UI 里消失）。
+    // 起点 = 在线账户 ∪ 注册表账户（契约 rest §2.9.1：在线 ∪ 注册表 ∪ 四表）。
+    // 在线账户即使库里还没有任何行也要出现在全集里——刚登录、尚未落首条记录的账户不该从
+    // UI 里消失；注册表账户即使网关停机、库里也还没行同样要出现（第三源的全部意义）。
     std::set<std::string> accounts;
     for (const auto& account : online_accounts) {
+        if (!account.empty()) {
+            accounts.insert(account);
+        }
+    }
+    for (const auto& account : registry_accounts) {
         if (!account.empty()) {
             accounts.insert(account);
         }

@@ -110,11 +110,13 @@ protected:
     }
 
     /// 执行查询（资金端点没有 400 路径：`parse` 恒定成功、`execute` 恒定返回响应体）。
+    /// @param registry 账户注册表账户集合（契约 rest §2.9.1 第三源），默认空 = 未接入
     nlohmann::json run(const std::map<std::string, std::string>& raw = {},
                        const std::vector<std::string>& online = {"ACC1"},
-                       std::optional<std::string> day = std::string("20261009")) {
+                       std::optional<std::string> day = std::string("20261009"),
+                       const std::vector<std::string>& registry = {}) {
         const auto parsed = TdTradingAccountsQuery::parse(params(raw));
-        return query().execute(parsed, online, day);
+        return query().execute(parsed, online, day, registry);
     }
 
     static const nlohmann::json& row_for(const nlohmann::json& body, const std::string& account) {
@@ -165,6 +167,46 @@ TEST_F(TdTradingAccountsQueryTest, ReturnsRegisteredAccountsIncludingOffline) {
     EXPECT_TRUE(no_data["deposit"].is_null());
     EXPECT_TRUE(no_data["withdraw"].is_null());
     EXPECT_TRUE(no_data["seq"].is_null());
+}
+
+TEST_F(TdTradingAccountsQueryTest, RegistryOnlyAccountGetsPlaceholderRow) {
+    // 契约 rest §2.9.1：账户全集第三源 = 账户注册表。REG1 只在注册表里（网关停机、
+    // 库里无任何行）——资金端点仍须为它返回 has_data:false 占位行，否则账户配置页
+    // 能看到它、资金面板却当它不存在（同一个账户两种视角）。
+    create_db();
+    insert_account({.account_id = "ACC1", .date = "20261009", .seq = 5});
+
+    const auto body = run(/*raw=*/{}, /*online=*/{}, "20261009", /*registry=*/{"ACC1", "REG1"});
+    EXPECT_TRUE(body["available"].get<bool>());
+    ASSERT_EQ(body["items"].size(), 2U) << "registry-only account still gets a row";
+    EXPECT_EQ(body["items"][0]["account_id"].get<std::string>(), "ACC1");
+    EXPECT_EQ(body["items"][1]["account_id"].get<std::string>(), "REG1");
+    EXPECT_FALSE(body["items"][1]["has_data"].get<bool>());
+    EXPECT_TRUE(body["items"][1]["date"].is_null());
+    EXPECT_TRUE(body["items"][1]["seq"].is_null());
+}
+
+TEST_F(TdTradingAccountsQueryTest, RegistrySourceDoesNotDuplicateExistingAccounts) {
+    // 三源取并集 = 去重：同账户出现在在线集合与注册表里仍然只有一行。
+    create_db();
+    insert_account({.account_id = "ACC1", .date = "20261009", .seq = 5});
+
+    const auto body = run(/*raw=*/{}, /*online=*/{"ACC1"}, "20261009",
+                          /*registry=*/{"ACC1"});
+    ASSERT_EQ(body["items"].size(), 1U);
+    EXPECT_EQ(body["items"][0]["account_id"].get<std::string>(), "ACC1");
+}
+
+TEST_F(TdTradingAccountsQueryTest, AccountsFilterCanSelectRegistryOnlyAccount) {
+    // accounts 过滤作用于已登记账户全集（契约 rest §2.9.2），包含第三源。
+    create_db();
+    insert_account({.account_id = "ACC1", .date = "20261009", .seq = 5});
+
+    const auto body = run(/*raw=*/{{"accounts", "REG1"}}, /*online=*/{"ACC1"}, "20261009",
+                          /*registry=*/{"REG1"});
+    ASSERT_EQ(body["items"].size(), 1U);
+    EXPECT_EQ(body["items"][0]["account_id"].get<std::string>(), "REG1");
+    EXPECT_FALSE(body["items"][0]["has_data"].get<bool>());
 }
 
 TEST_F(TdTradingAccountsQueryTest, RowCarriesExactFundFieldsAndNoSortKey) {

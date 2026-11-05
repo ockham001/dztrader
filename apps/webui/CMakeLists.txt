@@ -51,6 +51,8 @@ add_library(dzweb_obj OBJECT
     td_stats_query.cpp
     td_domain_service.cpp
     td_data_controller.cpp
+    td_account_registry.cpp
+    td_account_controller.cpp
     sysmon_controller.cpp
     sysmon_history_service.cpp
 )

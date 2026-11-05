@@ -63,7 +63,7 @@ TEST_F(TdStateMachineTest, FullHappyPath) {
     EXPECT_EQ(sm.state(), TdState::LoggedIn);
     ASSERT_TRUE(notif.has_value());
     EXPECT_EQ(notif->message, "交易登录成功");
-    EXPECT_EQ(sm.status().sys_version, "v1.0");
+    EXPECT_EQ(sm.status().ext.sys_version, "v1.0");
     EXPECT_EQ(sm.status().date, "20260726");
     EXPECT_EQ(sm.status().login_time, "09:00:00");
     EXPECT_EQ(sm.status().progress_current, 6);
@@ -335,7 +335,7 @@ TEST_F(TdStateMachineTest, DisconnectFromAnyState) {
     EXPECT_EQ(notif->message, "交易已断开");
     // Idle 状态字段清空
     EXPECT_TRUE(sm.status().login_time.empty());
-    EXPECT_TRUE(sm.status().sys_version.empty());
+    EXPECT_TRUE(sm.status().ext.sys_version.empty());
     EXPECT_TRUE(sm.status().date.empty());
     EXPECT_EQ(sm.status().progress_current, 0);
 }
@@ -397,4 +397,52 @@ TEST(AccountStateMapping, TripleStateAggregation) {
     EXPECT_EQ(account_state_of(TdState::Confirming), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::LoadingInstruments), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::Ready), DZ_ACCOUNT_READY);
+}
+
+// --- TdStatus JSON 形状（契约 td-status §2.1：通用层 + ext 分层）---
+
+TEST(TdStatusJsonTest, PayloadMatchesContractShape) {
+    using namespace dztrader::ctp;
+    TdStateMachine sm;
+    sm.set_api_version("v6.7.2");
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_authenticate();
+    sm.on_authenticate_success();
+    sm.on_req_login();
+    sm.on_login_success("v6.7.2_20240105", "20260808", "2026-08-08 08:45:32");
+
+    nlohmann::json j = sm.status();
+
+    // 通用层（契约 td-status §2.1）：date / login_time / state / progress_* 在顶层
+    EXPECT_EQ(j["date"], "20260808");
+    EXPECT_EQ(j["login_time"], "2026-08-08 08:45:32");
+    EXPECT_EQ(j["state"], "LoggedIn");
+    EXPECT_EQ(j["progress_max"], 10);
+
+    // 柜台特有字段进 ext（§2.3），不再在顶层
+    ASSERT_TRUE(j.contains("ext"));
+    EXPECT_EQ(j["ext"]["api_version"], "v6.7.2");
+    EXPECT_EQ(j["ext"]["sys_version"], "v6.7.2_20240105");
+    EXPECT_FALSE(j.contains("api_version"));
+    EXPECT_FALSE(j.contains("sys_version"));
+}
+
+TEST(TdStatusJsonTest, IdleClearsSessionFieldsInsideExt) {
+    using namespace dztrader::ctp;
+    TdStateMachine sm;
+    sm.set_api_version("v6.7.2");
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_authenticate();
+    sm.on_authenticate_success();
+    sm.on_req_login();
+    sm.on_login_success("sys_ver", "20260808", "2026-08-08 08:45:32");
+    sm.on_disconnect();
+
+    EXPECT_TRUE(sm.status().date.empty());
+    EXPECT_TRUE(sm.status().login_time.empty());
+    EXPECT_TRUE(sm.status().ext.sys_version.empty());
+    // api_version 是进程生命周期常量，Idle 时保留
+    EXPECT_EQ(sm.status().ext.api_version, "v6.7.2");
 }

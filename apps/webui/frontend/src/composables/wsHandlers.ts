@@ -14,13 +14,14 @@ import { useProgressStore } from '@/stores/progress'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useSettingsStore } from '@/stores/settings'
 import { useSysmonStore } from '@/stores/sysmon'
+import { useTdAccountsStore } from '@/stores/tdAccounts'
 import { useTdOrdersStore } from '@/stores/tdOrders'
 import { useTdPositionsStore } from '@/stores/tdPositions'
 import { useTdStatsStore } from '@/stores/tdStats'
 import { useTdTradesStore } from '@/stores/tdTrades'
 import { useTdTradingAccountsStore } from '@/stores/tdTradingAccounts'
 import { useToastStore } from '@/stores/toast'
-import type { ProcessStatusPayload, MdConfigPayload } from '@/types/api'
+import type { ProcessStatusPayload, MdConfigPayload, TdConfigPayload, TdStatusPayload } from '@/types/api'
 
 // 契约 webui-ws §2.3 `log_tail_unsubscribed.reason` 的两个取值（发送方真相源：
 // apps/webui/ws_log_tail.h 的 kReasonSelfLog / kReasonSendFailures）。
@@ -46,6 +47,9 @@ registerHandler('data_changed', (payload) => {
     void useTdPositionsStore().handleDataChanged(scope)
     void useTdTradingAccountsStore().handleDataChanged(scope)
     void useTdStatsStore().handleDataChanged()
+    // 契约 webui-ws §2.3：账户注册表集合增减同样广播 scope:"td"（契约 rest §2.9.7 可观察效果），
+    // 账户配置页的账户列表以注册表为视角，必须随同重拉（否则新增/删除账户后列表滞后到下次挂载）。
+    void useTdAccountsStore().handleDataChanged(scope)
     return
   }
   const userManagement = useUserManagementStore()
@@ -86,6 +90,22 @@ registerHandler('td_recent', (payload) => {
   useTdTradesStore().applyRecent(payload)
   useTdPositionsStore().applyRecent(payload)
   useTdTradingAccountsStore().applyRecent(payload)
+})
+
+registerHandler('td_rtn_config', (payload, instanceId) => {
+  // 契约 webui-ws §2.2：RTN_TD_CONFIG → WS td_rtn_config（data = 脱敏全量配置，契约 td-config §2.4），
+  // instance_id = 网关进程名（镜像 domain td_config 的 key）。
+  // P4 Task 5 单写化同型：tdAccounts store 为 td_config 域唯一写入点。
+  // 该帧是该网关全部写操作 pending 的唯一清除信号（契约 td-config §4「回报先于/等于前端生效信号」）。
+  useTdAccountsStore().applyTdConfig(instanceId, payload)
+})
+
+registerHandler('td_rtn_status', (payload, instanceId) => {
+  // 契约 webui-ws §2.2：RTN_TD_STATUS → WS td_rtn_status（data = 账户级细状态，契约 td-status §2.1），
+  // instance_id = 网关名:账户ID（镜像 domain td_status 的 key）。
+  // 细状态是登录态/交易日/登录时间/进度的唯一来源之一（进度以契约 progress 为唯一入口），
+  // 不从 td_rtn_config 推导（契约 rest §4 前端义务）。
+  useTdAccountsStore().applyTdStatus(instanceId, payload)
 })
 
 registerHandler('log_line', (payload) => {
@@ -167,6 +187,17 @@ registerHandler('snapshot', (payload) => {
           // 契约 sysmon §3: 配置域固定挂 dzsysmon；快照分发复用增量帧 apply
           //（重连后恢复 hide_virtual 开关状态并清悬挂的配置 pending）
           useSysmonStore().applyConfig(value)
+          break
+        case 'td_config':
+          // 契约 td-config §8 / 契约 webui-ws §2.1: 交易网关配置域，key = 网关进程名。
+          // 快照分发复用增量帧 apply——重连后恢复配置镜像并清断连期间悬挂的写操作 pending
+          //（契约 webui-ws §6：快照是权威状态，悬挂 pending 只等 5s 超时兜底）。
+          useTdAccountsStore().applyTdConfig(instanceId, value as TdConfigPayload)
+          break
+        case 'td_status':
+          // 契约 td-status §3 / 契约 webui-ws §2.1: 账户级细状态域，key = 网关名:账户ID。
+          // 快照分发复用增量帧 apply（幂等覆盖，重连后恢复登录态/交易日展示）。
+          useTdAccountsStore().applyTdStatus(instanceId, value as TdStatusPayload)
           break
         // log_config 已由上方 applySnapshot 整体重建并兜底清 set_level pending
       }

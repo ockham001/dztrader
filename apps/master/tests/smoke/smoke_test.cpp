@@ -316,18 +316,19 @@ protected:
 
         // dztd_ctp 配置: 空账户闭环 — 配置账户 CTP001 但从不连接 (无 auto_login 段,
         // 无 --recover), 会话懒创建于 connect 不会发生; 下单走 no_session 拒单回报。
+        // 形态 = 契约 td-config §2.4（通用层 + 柜台 `ext` 分层；#251 起连接参数在账户 ext 内）。
         {
             nlohmann::json td_cfg = {
                 {"td",
-                 {{"accounts", nlohmann::json::array({{{"account_id", "CTP001"},
-                                                       {"broker",
-                                                        {{"name", "smoke-empty-account"},
-                                                         {"broker_id", "9999"},
-                                                         {"user_id", "SMOKE001"},
-                                                         {"password", ""},
-                                                         {"product_info", ""},
-                                                         {"frontends", nlohmann::json::array()}}},
-                                                       {"enabled", true}}})}}},
+                 {{"accounts",
+                   nlohmann::json::array({{{"account_id", "CTP001"},
+                                           {"enabled", true},
+                                           {"ext",
+                                            {{"broker_id", "9999"},
+                                             {"user_id", "SMOKE001"},
+                                             {"password", ""},
+                                             {"product_info", ""},
+                                             {"frontends", nlohmann::json::array()}}}}})}}},
             };
             std::ofstream ofs(home_ / "configs" / "dztd_ctp.json");
             ofs << td_cfg.dump();

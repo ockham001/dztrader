@@ -23,6 +23,25 @@ ShmWriter::ShmWriter(const std::filesystem::path& shm_dir) {
 ShmWriter::ShmWriter(std::shared_ptr<shm::MultiWriter> event_writer)
     : event_writer_(std::move(event_writer)) {}
 
+bool ShmWriter::write_td_modify_config(const std::string& gateway,
+                                       const nlohmann::json& op_req_json) {
+    if (!event_writer_ || gateway.empty()) {
+        return false;
+    }
+    // TD_REQ_MODIFY_CONFIG 定向到目标交易网关 (契约 td-config §3): payload 为
+    // {op, params}，dzweb 透传（不解析柜台特有字段）。与 write_md_set_config 不同，
+    // 本方法返回真实写入结果——写端点据此映射 503（契约 rest §2.9.7 语义：
+    // 响应 ok 只表示已写入事件通道，业务结果由 RTN_TD_CONFIG 表达）。
+    const bool ok = platform::write_ext_inst_json_obj(*event_writer_, DZ_FRAME_TD_REQ_MODIFY_CONFIG,
+                                                      gateway, op_req_json);
+    if (ok) {
+        spdlog::debug("td modify config written | gateway={}", gateway);
+    } else {
+        spdlog::error("write td modify config failed | gateway={}", gateway);
+    }
+    return ok;
+}
+
 bool ShmWriter::write_md_connect(const std::string& source) {
     if (!event_writer_ || source.empty()) {
         return false;

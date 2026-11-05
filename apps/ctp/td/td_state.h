@@ -40,14 +40,21 @@ enum class TdHealth {
     Up     ///< 可交易
 };
 
-/// 网关状态, 对 UI 和共享内存可见。
-/// 参考 mdctp MdStatus, 去掉订阅统计字段 (md 特有), 新增 account_id (per-account 标识)。
+/// CTP 柜台特有状态字段（契约 td-status §2.3）：与通用层分层，新增接口类型只换本结构。
+struct CtpStatusExt {
+    std::string api_version;  ///< 接口库版本字符串，构造时设置一次
+    std::string sys_version;  ///< 登录响应中的系统版本；未登录/进入 Idle 时为空串
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(CtpStatusExt, api_version, sys_version)
+};
+
+/// 网关状态, 对 UI 和共享内存可见（契约 td-status §2.1 TdStatus）。
+/// 通用层（account_id/state/date/login_time/progress_*）+ 柜台特有 `ext` 分层：
+/// 新增接口类型只换 `ext`，dzweb 与前端按 interface_type 选择 schema。
 struct TdStatus {
     std::string account_id;         ///< 账户标识 (per-account 状态上报用)
-    std::string api_version;        ///< CTP API 版本
-    std::string sys_version;        ///< 系统版本 (OnRspUserLogin 返回)
-    std::string date;               ///< 交易日 "YYYYMMDD"
-    std::string login_time;         ///< 登录时间
+    std::string date;               ///< 会话交易日 "YYYYMMDD"；未登录/进入 Idle 时为空串
+    std::string login_time;         ///< 登录时间；未登录/进入 Idle 时为空串
     TdState state = TdState::Idle;  ///< 当前状态
 
     // 步骤进度 (UI 可渲染为进度条)
@@ -56,17 +63,18 @@ struct TdStatus {
     int progress_max = 10;      ///< 进度最大值 (td: max=10, md 是 4)
     int progress_current = 0;   ///< 当前进度
 
+    CtpStatusExt ext;  ///< 柜台特有字段 (interface_type = ctp)
+
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(TdStatus,
                                                 account_id,
-                                                api_version,
-                                                sys_version,
                                                 date,
                                                 login_time,
                                                 state,
                                                 progress_desc,
                                                 progress_min,
                                                 progress_max,
-                                                progress_current)
+                                                progress_current,
+                                                ext)
 };
 
 /// 状态转移返回的通知信息。
@@ -93,7 +101,7 @@ public:
     const TdStatus& status() const { return status_; }
 
     /// 设置 CTP API 版本字符串 (构造时调用一次)。
-    void set_api_version(const std::string& version) { status_.api_version = version; }
+    void set_api_version(const std::string& version) { status_.ext.api_version = version; }
 
     // --- 状态转移 ---
     // 每个方法返回可选通知, 调用方应发送给 UI

@@ -56,10 +56,14 @@ public:
     ///        与库里出现过的 account_id 求并（契约 §2.9.1），不是范围上限。
     /// @param trading_day 当前交易日（资金端点不用它过滤，仅用于保持信封形状一致；
     ///        资金行的 `date` 是各账户锚点日，不是列表作用域的当前交易日）
+    /// @param registry_accounts 账户注册表账户集合（契约 rest §2.9.1 第三源；默认空 =
+    ///        注册表未就绪，在线集合与库内四表照常兜底）—影响行集合（每个已登记账户一行，
+    ///        无资金记录的账户返回 `has_data:false`），因此第三源到达会让资金列表多出占位行
     /// @return 正常/降级响应体（不会因参数返回 400——资金端点没有游标）
     nlohmann::json execute(const Params& params,
                            const std::vector<std::string>& online_accounts,
-                           const std::optional<std::string>& trading_day) const;
+                           const std::optional<std::string>& trading_day,
+                           const std::vector<std::string>& registry_accounts = {}) const;
 
 private:
     std::function<std::string()> trade_db_path_;

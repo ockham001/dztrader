@@ -221,6 +221,28 @@ TEST_F(WebuiShmWriterTest, WriteSetSysmonConfigNullWriterWritesNothing) {
     EXPECT_EQ(reader_->next_frame(), nullptr);
 }
 
+TEST_F(WebuiShmWriterTest, WriteTdModifyConfig) {
+    // 契约 td-config §3：{op, params} 定向到目标交易网关，instance_id = 网关进程名。
+    const nlohmann::json payload = {{"op", "AddAccount"},
+                                    {"params", {{"account_id", "acc_a"}, {"enabled", true}}}};
+    EXPECT_TRUE(shm_writer_->write_td_modify_config("dztd_ctp", payload));
+    auto view = next_frame_view(DZ_FRAME_TD_REQ_MODIFY_CONFIG);
+    ASSERT_TRUE(view.has_value());
+    EXPECT_STREQ(view->ext_inst_id(), "dztd_ctp");
+    EXPECT_EQ(parse_inst_payload(*view), payload);
+}
+
+TEST_F(WebuiShmWriterTest, WriteTdModifyConfigEmptyGatewayReturnsFalseAndWritesNothing) {
+    // 空网关名无处定向：返回 false（写端点据此映射 503），且不写帧。
+    EXPECT_FALSE(shm_writer_->write_td_modify_config("", nlohmann::json{{"op", "AddAccount"}}));
+    EXPECT_EQ(reader_->next_frame(), nullptr);
+}
+
+TEST_F(WebuiShmWriterTest, WriteTdModifyConfigNullWriterReturnsFalse) {
+    ShmWriter writer{std::shared_ptr<shm::MultiWriter>()};
+    EXPECT_FALSE(writer.write_td_modify_config("dztd_ctp", nlohmann::json{{"op", "AddAccount"}}));
+}
+
 TEST_F(WebuiShmWriterTest, WriteNotifiesRegisteredReaders) {
     // 通用规则 §4.1：写帧后必须唤醒等待进程；无 notify 时 wait_for 会超时
     dztrader::shm::NamedSemaphore sem(reader_name_);

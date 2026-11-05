@@ -6,7 +6,7 @@
 >
 > 链路定位（总则 §4.2）：§2.2 领域消息 = 形态 1 响应侧 / 形态 4 的 dzweb 出口；§3 C2S 控制消息 = 形态 1/3 的 WS 前端入口（与 REST 等效）。
 
-> **实现注记**：委托事件 `td_order_report`、成交事件 `td_trade_report` 与建连补发 `td_recent` 已随 #246/#248 落地（`td_recent` 的事件集合已含委托与成交两类，同一账户补发环共用 300 条上限）；持仓事件 `td_position_info` 与 `td_recent` 的持仓事件已随 #249 落地；资金事件 `td_trading_account` 与 `td_recent` 的资金事件已随 #250 落地（`td_recent` 事件集合现含委托 / 成交 / 持仓 / 资金四类，共享同一环容量）。账户配置/细状态镜像的 WS 映射（契约 td-config / td-status）随 #251 接入（§7）。
+> **实现注记**：委托事件 `td_order_report`、成交事件 `td_trade_report` 与建连补发 `td_recent` 已随 #246/#248 落地（`td_recent` 的事件集合已含委托与成交两类，同一账户补发环共用 300 条上限）；持仓事件 `td_position_info` 与 `td_recent` 的持仓事件已随 #249 落地；资金事件 `td_trading_account` 与 `td_recent` 的资金事件已随 #250 落地（`td_recent` 事件集合现含委托 / 成交 / 持仓 / 资金四类，共享同一环容量）。账户配置/细状态镜像（`td_config` / `td_status` 两个快照域 + `td_rtn_config` / `td_rtn_status` 两条增量消息）已随 #251 接入（§2.1、§2.2）；账户配置写端点见契约 rest §2.9.7。
 
 ---
 
@@ -57,6 +57,8 @@ domain 清单与挂载实例：
 | `md_status` | 各行情进程 | 行情网关状态 | md-status |
 | `sysmon_snapshot` | 固定 `dzsysmon` | 系统监控快照 | sysmon |
 | `sysmon_config` | 固定 `dzsysmon` | 系统监控全量生效配置 | sysmon |
+| `td_config` | 各交易网关进程 | 脱敏交易网关配置（契约 td-config §2.4） | td-config |
+| `td_status` | 各交易网关进程 × 账户 | 账户级细状态（契约 td-status §2.1） | td-status |
 
 > 注：
 > - `md_rtn_subscriptions`（契约 md-subscription）为查询响应，**不进镜像**，故不在快照中。
@@ -85,10 +87,13 @@ domain 清单与挂载实例：
 | td_trade_report | `TRADE_REPORT` | 契约 rest §2.9.3 的成交行 | 空（account_id 在 payload 内） | td-data-sync |
 | td_position_info | `POSITION_INFO` | 契约 rest §2.9.4 的持仓行 | 空（account_id 在 payload 内） | td-data-sync |
 | td_trading_account | `TRADING_ACCOUNT` | 契约 rest §2.9.4 的资金行 | 空（account_id 在 payload 内） | td-data-sync |
+| `td_rtn_config` | `RTN_TD_CONFIG` | 原 payload 整体透传（脱敏配置，契约 td-config §2.4） | **网关进程名**（如 `dztd_ctp`；镜像 domain `td_config` 的 key） | td-config |
+| `td_rtn_status` | `RTN_TD_STATUS` | 原 payload 整体透传（账户级细状态，契约 td-status §2.1） | **网关名:账户ID**（如 `dztd_ctp:account_001`；镜像 domain `td_status` 的 key） | td-status |
 
 - 未被 `process_config` 注册的进程：`process_status` 镜像不写入，但广播仍无条件发出（前端可感知未知进程状态）。
 - `md_shm_config` 前端已有消费（展示与编辑，pending 由本消息清除）；`event_shm_config` 前端已消费（系统设置页展示，编辑 pending 由本消息清除，入口契约 rest §2.7 `PUT /api/settings/event-shm-config`）。
 - 四类交易事件（td_*）是**帧转发而非镜像域**：不写 `MirrorStore`、不进 `snapshot`；payload 与 REST 行同 schema（唯一真相源：契约 rest §2.9.3 与契约 rest §2.9.4）。转发条件与补发容量见《帧契约：TD 数据同步》§8；WS 时序与合并语义见 §2.5、§5。
+- 账户配置与细状态（`td_rtn_config` / `td_rtn_status`）**是镜像域**（`td_config` / `td_status`，进 `snapshot`）：它们与 md 侧的 `md_rtn_config` / `md_rtn_status` 同型——全量覆盖、后到覆盖先到、不进 `td_recent` 补发环。前端基线由 `snapshot` + 增量推送构成，不需要额外的 REST 基线拉取（与交易记录相反：记录不进镜像，配置/状态进镜像）。
 
 ### 2.3 控制消息（`payload` 键）
 
@@ -199,4 +204,4 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 - 历史消息 `rtn_process_control` 已删除：进程操作 pending 由 `process_status` 帧的 `event` 字段清理（契约 process）。
 - 快照 `process_status` 域按帧层 RTN 序列化（`event` 缺失），与增量消息的 `event:null` 形状不同；前端对缺失与 null 均按自发状态处理（§2.2 形状注）。
 - 交易记录（委托/成交/持仓/资金）**不镜像、不进 snapshot**（ADR 0043）：WS 只推增量交易事件（§2.5）与有界建连补发，记录基线一律由 REST 直查交易库（契约 rest §2.9）。
-- 账户配置与细状态（契约 td-config / td-status）的镜像域与 WS 消息随账户配置页实现（#251）接入本契约；当前 `snapshot` 不含这两个域，账户配置页读取随该票定义。
+- 账户配置与细状态进镜像（`td_config` / `td_status`，§2.1/§2.2），随 #251 落地；账户配置页的账户注册表视角（跨网关账户全集 + 唯一性校验）经 REST 读端点提供（契约 rest §2.9），不走 WS。
