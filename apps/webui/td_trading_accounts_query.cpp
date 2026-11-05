@@ -64,63 +64,46 @@ nlohmann::json TdTradingAccountsQuery::execute(
         return td_degraded_body(kTdReasonQueryFailed);
     }
 
-    // 在锚点日取资金行：只查「(account, date) 对」——主键 (account_id, date) 保证每账户
-    // 至多一行，无需过滤/去重。无锚点日的账户不可能有锚点日行（不必进 SQL）。
+    // 在锚点日取资金行：只查「(account, date) 对」（条件与绑定由 `td_anchor_pairs` 生成，
+    // 持仓端点共用同一份）——主键 (account_id, date) 保证每账户至多一行，无需过滤/去重。
+    // 无锚点日的账户不可能有锚点日行（不必进 SQL）。
     std::map<std::string, TdTradingAccountRecord> found;
-    if (!anchors.empty()) {
+    const TdAnchorPairs anchor_pairs = td_anchor_pairs(scope_accounts, anchors);
+    if (!anchor_pairs.empty()) {
         std::string sql =
             "SELECT account_id, date, balance, available, frozen, commission, margin,"
             " withdraw_quota, deposit, withdraw, seq FROM trading_accounts WHERE ";
-        bool first_pair = true;
-        for (const auto& account : scope_accounts) {
-            if (anchors.find(account) == anchors.end()) {
-                continue;
-            }
-            sql +=
-                first_pair ? "(account_id = ? AND date = ?)" : " OR (account_id = ? AND date = ?)";
-            first_pair = false;
-        }
-        if (!first_pair) {
-            sqlite3_stmt* stmt = nullptr;
-            if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-                const int code = sqlite3_extended_errcode(db);
-                SPDLOG_WARN("td trading accounts query prepare failed | error=\"{}\"",
-                            sqlite3_errmsg(db));
-                sqlite3_finalize(stmt);
-                return td_degraded_body(td_sqlite_error_reason(code));
-            }
-            int bind_index = 1;
-            for (const auto& account : scope_accounts) {
-                const auto anchor = anchors.find(account);
-                if (anchor == anchors.end()) {
-                    continue;
-                }
-                sqlite3_bind_text(stmt, bind_index++, account.c_str(), -1, SQLITE_TRANSIENT);
-                sqlite3_bind_text(stmt, bind_index++, anchor->second.c_str(), -1, SQLITE_TRANSIENT);
-            }
-            int step = SQLITE_OK;
-            while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
-                TdTradingAccountRecord row;
-                row.account_id = td_column_text(stmt, 0);
-                row.date = td_column_text(stmt, 1);
-                row.balance = sqlite3_column_double(stmt, 2);
-                row.available = sqlite3_column_double(stmt, 3);
-                row.frozen = sqlite3_column_double(stmt, 4);
-                row.commission = sqlite3_column_double(stmt, 5);
-                row.margin = sqlite3_column_double(stmt, 6);
-                row.withdraw_quota = sqlite3_column_double(stmt, 7);
-                row.deposit = sqlite3_column_double(stmt, 8);
-                row.withdraw = sqlite3_column_double(stmt, 9);
-                row.seq = static_cast<uint64_t>(sqlite3_column_int64(stmt, 10));
-                found.emplace(row.account_id, std::move(row));
-            }
+        sql += anchor_pairs.sql;
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+            const int code = sqlite3_extended_errcode(db);
+            SPDLOG_WARN("td trading accounts query prepare failed | error=\"{}\"",
+                        sqlite3_errmsg(db));
             sqlite3_finalize(stmt);
-            if (step != SQLITE_DONE) {
-                const int code = sqlite3_extended_errcode(db);
-                SPDLOG_WARN("td trading accounts query step failed | error=\"{}\"",
-                            sqlite3_errmsg(db));
-                return td_degraded_body(td_sqlite_error_reason(code));
-            }
+            return td_degraded_body(td_sqlite_error_reason(code));
+        }
+        td_bind_anchor_pairs(stmt, anchor_pairs, 1);
+        int step = SQLITE_OK;
+        while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
+            TdTradingAccountRecord row;
+            row.account_id = td_column_text(stmt, 0);
+            row.date = td_column_text(stmt, 1);
+            row.balance = sqlite3_column_double(stmt, 2);
+            row.available = sqlite3_column_double(stmt, 3);
+            row.frozen = sqlite3_column_double(stmt, 4);
+            row.commission = sqlite3_column_double(stmt, 5);
+            row.margin = sqlite3_column_double(stmt, 6);
+            row.withdraw_quota = sqlite3_column_double(stmt, 7);
+            row.deposit = sqlite3_column_double(stmt, 8);
+            row.withdraw = sqlite3_column_double(stmt, 9);
+            row.seq = static_cast<uint64_t>(sqlite3_column_int64(stmt, 10));
+            found.emplace(row.account_id, std::move(row));
+        }
+        sqlite3_finalize(stmt);
+        if (step != SQLITE_DONE) {
+            const int code = sqlite3_extended_errcode(db);
+            SPDLOG_WARN("td trading accounts query step failed | error=\"{}\"", sqlite3_errmsg(db));
+            return td_degraded_body(td_sqlite_error_reason(code));
         }
     }
 

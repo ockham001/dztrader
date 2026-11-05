@@ -10,6 +10,7 @@ import {
   formatFundDateLabel,
   formatTdMoney,
   fundStatusText,
+  isTdAccountOnline,
 } from '@/composables/tdFundView'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useTdPositionsStore } from '@/stores/tdPositions'
@@ -186,11 +187,6 @@ const fundAggregate = computed<string>(() => (
     ? '0/0'
     : `${fundsStore.onlineCount}/${fundsStore.totalAccounts}`
 ))
-
-/** 账户是否在线（状态列标签样式用；文案本身由 `fundStatusText` 统一给出） */
-function isFundAccountOnline(accountId: string): boolean {
-  return fundsStore.onlineAccounts.includes(accountId)
-}
 
 // === 委托 / 策略 / 消息（演示数据，issue #200）===
 // 这三个面板的交易数据链路尚未建立（issue #6：TdDataService 未暴露 REST/WS），此处保留
@@ -606,7 +602,7 @@ onUnmounted(() => {
                     <td :style="{ textAlign: 'center' }">
                       <span
                         class="ds-tag"
-                        :class="isFundAccountOnline(row.account_id) ? 'ds-tag--success' : 'ds-tag--danger'"
+                        :class="isTdAccountOnline(row.account_id, fundsStore.onlineAccounts) ? 'ds-tag--success' : 'ds-tag--danger'"
                         :style="{ fontSize: '10px' }"
                       >{{ fundStatusText(row.account_id, fundsStore.onlineAccounts) }}</span>
                     </td>
@@ -619,14 +615,20 @@ onUnmounted(() => {
                     <td class="cell-num">{{ formatDepositWithdraw(row.deposit, row.withdraw) }}</td>
                     <td class="cell-num" data-test="fund-row-date" :style="{ color: 'var(--text-tertiary)' }">{{ row.has_data && row.date ? formatTdDate(row.date) : '—' }}</td>
                   </tr>
-                  <!-- 空态 / 加载态 / 降级态（三态互斥）：不可用与「无数据」必须可区分，
-                       不能用 0 或假空态冒充（契约 webui-ws §5 第 13 条）。 -->
-                  <tr v-if="fundsStore.rows.length === 0">
+                  <!-- 空态（请求已结束）：降级 / 失败 / 无数据三态互斥，不可用与「无数据」必须可区分，
+                       不能用 0 或假空态冒充（契约 webui-ws §5 第 13 条）。
+                       请求在途（首次加载 / data_changed 清空重拉）由下一行承担——此时 rows 已被清空
+                       但基线尚未返回，显示「暂无资金数据」就是把「刷新中」冒充「无数据」。 -->
+                  <tr v-if="!fundsStore.loading && fundsStore.rows.length === 0">
                     <td colspan="10" class="dashboard-fund-empty" data-test="fund-empty">
                       <template v-if="!fundsStore.available">交易数据暂不可用</template>
+                      <template v-else-if="fundsStore.error">加载失败</template>
                       <template v-else-if="fundsStore.initialized">暂无资金数据</template>
                       <template v-else>加载中...</template>
                     </td>
+                  </tr>
+                  <tr v-else-if="fundsStore.rows.length === 0">
+                    <td colspan="10" class="dashboard-fund-empty" data-test="fund-empty">加载中...</td>
                   </tr>
                 </tbody>
               </table>

@@ -514,13 +514,15 @@ export function createTdListStore<Row extends TdListRow>(
    * 每次挂载都重拉基线：离开页面期间 WS 增量仍在到达（store 是单例），且可能跨过日切，
    * 旧窗口不可信——重置重拉比"复用上一轮窗口"安全。首次挂载与再次挂载走同一路径。
    *
-   * 同时**重新武装退避定时器**：`dispose()` 会停用它，若不在挂载时 `reset()`，卸载再挂载后
-   * 一旦基线降级就不会再退避重试（只剩 `data_changed` 兜底），违背契约 webui-ws §5 第 13 条。
+   * 同时**重新武装退避定时器并把退避档位复位到首档**：`dispose()` 会停用定时器，若不在挂载时
+   * `reset()`，卸载再挂载后一旦基线降级就不会再退避重试；而沿用卸载前的 attempt 会让首轮失败
+   * 直接跳到更大的退避间隔。两者都违背契约 webui-ws §5 第 13 条的恢复预期。
    */
   async function init(): Promise<void> {
-    // dispose 只停流量、不终结 store 生命周期；这里解除停用并重新武装重试定时器
+    // dispose 只停流量、不终结 store 生命周期；这里解除停用、重新武装定时器并从首档退避
     disposed = false
     retryTimer.reset()
+    retryAttempt = 0
     await resetAndReload()
   }
 

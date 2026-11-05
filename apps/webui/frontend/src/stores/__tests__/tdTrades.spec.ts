@@ -443,25 +443,27 @@ describe('useTdTradesStore · 降级（契约 rest §2.9.8 / webui-ws §5 第 13
     expect(store.available).toBe(false)
   })
 
-  it('卸载再挂载（dispose → init）后重新武装退避：降级仍会按退避重试', async () => {
-    // 首次挂载成功（retryAttempt 归零、定时器被 dispose 停用）
-    vi.mocked(tdApi.getTrades).mockResolvedValue(listResponse([trade({ trade_id: 't1' })]))
+  it('卸载再挂载（dispose → init）后重新武装退避并从首档重试', async () => {
+    // 首轮挂载即降级：重试一次后 attempt 升到 1，下一档退避 = 2×base
+    vi.mocked(tdApi.getTrades).mockResolvedValue({ available: false, reason: 'busy' })
     const store = useTdTradesStore()
     await store.init()
     expect(tdApi.getTrades).toHaveBeenCalledTimes(1)
-
-    store.dispose()
-    // 重新挂载后基线降级：init 必须重新武装定时器，否则此后的降级不再退避重试
-    vi.mocked(tdApi.getTrades).mockResolvedValue({ available: false, reason: 'busy' })
-    await store.init()
+    await vi.advanceTimersByTimeAsync(TD_RETRY_BASE_DELAY_MS)
     expect(tdApi.getTrades).toHaveBeenCalledTimes(2)
-    expect(store.available).toBe(false)
+    // 第二档是 2×base：只推进 base 不应再触发（证明 attempt 确实已递增）
+    await vi.advanceTimersByTimeAsync(TD_RETRY_BASE_DELAY_MS)
+    expect(tdApi.getTrades).toHaveBeenCalledTimes(2)
 
-    // 假定时器推进首次退避间隔 → 重新发起基线请求并恢复
+    // 卸载再挂载：新生命周期必须重新武装定时器，并把退避档位复位到首档
+    store.dispose()
+    await store.init()
+    expect(tdApi.getTrades).toHaveBeenCalledTimes(3)
     vi.mocked(tdApi.getTrades).mockResolvedValue(listResponse([trade({ trade_id: 't2' })]))
+    // 若沿用卸载前的档位（2×base），此处只推进 base 不会重试
     await vi.advanceTimersByTimeAsync(TD_RETRY_BASE_DELAY_MS)
 
-    expect(tdApi.getTrades).toHaveBeenCalledTimes(3)
+    expect(tdApi.getTrades).toHaveBeenCalledTimes(4)
     expect(store.available).toBe(true)
     expect(store.rows.map(r => r.trade_id)).toEqual(['t2'])
   })

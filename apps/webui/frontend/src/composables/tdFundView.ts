@@ -59,7 +59,18 @@ export function formatFundDateLabel(dates: readonly string[]): string {
   return `数据日期 ${unique.map(formatTdDate).join(' / ')}`
 }
 
-/** 账户在线状态文案（信封 online_accounts 判定，契约 rest §2.9.2）：在线 / 离线 */
+/**
+ * 账户是否在线（信封 `online_accounts` 判定，契约 rest §2.9.2）。
+ *
+ * 唯一谓词：状态文案（{@link fundStatusText}）与面板状态标签的样式都从它推导——
+ * 两处各写一份 `onlineAccounts.includes` 时，改一处忘另一处会出现「文案=在线、样式=离线」
+ * 这种自相矛盾的单元格。
+ */
+export function isTdAccountOnline(accountId: string, onlineAccounts: readonly string[]): boolean {
+  return onlineAccounts.includes(accountId)
+}
+
+/** 账户在线状态文案（由 {@link isTdAccountOnline} 推导）：在线 / 离线 */
 export function fundStatusText(accountId: string, onlineAccounts: readonly string[]): string {
-  return onlineAccounts.includes(accountId) ? '在线' : '离线'
+  return isTdAccountOnline(accountId, onlineAccounts) ? '在线' : '离线'
 }

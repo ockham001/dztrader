@@ -147,4 +147,30 @@ std::map<std::string, std::string> td_account_anchor_days(
     return anchors;
 }
 
+TdAnchorPairs td_anchor_pairs(const std::vector<std::string>& accounts,
+                              const std::map<std::string, std::string>& anchors,
+                              std::string_view column_prefix) {
+    TdAnchorPairs result;
+    for (const auto& account : accounts) {
+        const auto it = anchors.find(account);
+        if (it == anchors.end()) {
+            continue;  // 该账户无任何快照行 → 无锚点日 → 不可能有当日行
+        }
+        result.sql += result.pairs.empty() ? "(" : " OR (";
+        result.sql += std::string(column_prefix) + "account_id = ? AND " +
+                      std::string(column_prefix) + "date = ?)";
+        result.pairs.push_back({.account_id = account, .date = it->second});
+    }
+    return result;
+}
+
+int td_bind_anchor_pairs(sqlite3_stmt* stmt, const TdAnchorPairs& pairs, int first_index) {
+    int index = first_index;
+    for (const auto& pair : pairs.pairs) {
+        sqlite3_bind_text(stmt, index++, pair.account_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, index++, pair.date.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    return index;
+}
+
 }  // namespace dztrader::webui

@@ -407,6 +407,9 @@ describe('DashboardView', () => {
 
     expect(fundRow(w, 'acc_a').text()).toContain('在线')
     expect(fundRow(w, 'acc_offline').text()).toContain('离线')
+    // 状态标签样式与文案同源（同一在线谓词）：在线 = success、离线 = danger
+    expect(fundRow(w, 'acc_a').findAll('td')[1].find('.ds-tag').classes()).toContain('ds-tag--success')
+    expect(fundRow(w, 'acc_offline').findAll('td')[1].find('.ds-tag').classes()).toContain('ds-tag--danger')
     expect(w.get('[data-test="fund-date-label"]').text())
       .toBe('数据日期 2026-08-07 / 2026-08-08')
     // 行内数据日期是该账户锚点日，不是信封 trading_day
@@ -459,11 +462,13 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
-  it('资金请求失败显示错误行（请求失败仍是独立结论，不冒充降级）', async () => {
+  it('资金请求失败：显示错误行与「加载失败」空态，不冒充「暂无资金数据」', async () => {
     vi.mocked(tdApi.getTradingAccounts).mockRejectedValue(new Error('HTTP 500'))
     const w = await mountDashboard()
 
     expect(w.get('[data-test="fund-error"]').text()).toBe('HTTP 500')
+    expect(w.get('[data-test="fund-empty"]').text()).toBe('加载失败')
+    expect(w.text()).not.toContain('暂无资金数据')
     expect(w.find('[data-test="fund-degraded-banner"]').exists()).toBe(false)
     w.unmount()
   })
@@ -484,6 +489,40 @@ describe('DashboardView', () => {
     const w = await mountDashboard()
 
     expect(w.get('[data-test="fund-empty"]').text()).toBe('加载中...')
+    w.unmount()
+  })
+
+  it('data_changed 重拉在途时显示「加载中...」，不把刷新中冒充「暂无资金数据」', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse([]))
+    const w = await mountDashboard()
+    // 已初始化空基线：此刻确为「暂无资金数据」
+    expect(w.get('[data-test="fund-empty"]').text()).toBe('暂无资金数据')
+
+    // data_changed 会先清空 rows 再重拉；请求在途期间不得显示「暂无资金数据」
+    vi.mocked(tdApi.getTradingAccounts).mockImplementation(
+      () => new Promise<TdTradingAccountsResponse>(() => {}))
+    void useTdTradingAccountsStore().handleDataChanged('td')
+    await w.vm.$nextTick()
+
+    expect(useTdTradingAccountsStore().loading).toBe(true)
+    expect(w.get('[data-test="fund-empty"]').text()).toBe('加载中...')
+    expect(w.text()).not.toContain('暂无资金数据')
+
+    w.unmount()
+  })
+
+  it('data_changed 重拉失败时显示「加载失败」与错误行，不冒充「暂无资金数据」', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse([]))
+    const w = await mountDashboard()
+    expect(w.get('[data-test="fund-empty"]').text()).toBe('暂无资金数据')
+
+    // 重拉（清空后）HTTP 失败：error 非空但 available 仍 true，不得落回「暂无资金数据」
+    vi.mocked(tdApi.getTradingAccounts).mockRejectedValue(new Error('HTTP 500'))
+    await useTdTradingAccountsStore().handleDataChanged('td')
+
+    expect(w.get('[data-test="fund-empty"]').text()).toBe('加载失败')
+    expect(w.get('[data-test="fund-error"]').text()).toBe('HTTP 500')
+    expect(w.text()).not.toContain('暂无资金数据')
     w.unmount()
   })
 })
