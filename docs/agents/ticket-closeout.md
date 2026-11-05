@@ -109,7 +109,7 @@ git merge-base --is-ancestor <merge-commit> main && echo merged
 - **PR 未 MERGED 前不得关闭 issue**。CI 绿 ≠ 已落地（本波 #91 关单 40 分钟后才合、#92 关单 5 小时后才合，期间 #93 合入造成冲突，收尾多解一次冲突 + 多跑两轮 CI）。
 - `--delete-branch` 在 worktree 里会跳过本地删除（分支被 checkout）：先 `git worktree remove`，再 `git branch -d`；远端分支用 `git ls-remote --heads origin <branch>` 确认为空。
 - 合并会触发 main 的 CI（merge commit 跑 Linux，约 15 分钟；Windows job 只在 PR 跑）；共享工作区切回 main 后不要停在旧 feature 分支。
-- **默认不等 main CI**：squash 合并后 main 上的 tree 与 PR head tree **完全相同**，main run 重测的是同一份内容，等它拿不到任何新信息。落地确认用秒级命令：`git merge-base --is-ancestor <merge-commit> main`（或 `git diff --quiet <pr-head-tree> <merge-commit>`）。实测代价：五票里四票选择等，合计约 113 分钟（#246 4286s / #260 1633s / #248 620s / #258 251s）。
+- **默认不等 main CI**：squash 合并后 main 上的 tree 与 PR head tree **完全相同**，main run 重测的是同一份内容，等它拿不到任何新信息。落地确认用秒级命令：`git merge-base --is-ancestor <merge-commit> main`；想直接验 tree 相同用 `git diff --quiet <pr-head-commit> <merge-commit>`（静默即相同）。实测代价：五票里四票选择等，合计约 113 分钟（#246 4286s / #260 1633s / #248 620s / #258 251s）。
 - 只有下列情况才抽查 main run：本次 PR 的 CI 曾红过、或改动了 `ci.yml` / ruleset / 构建缓存配置（这些是「main 与 PR 环境不同」的唯一现实来源）。真要等就留到波末批量：`./scripts/wait-ci.sh --branch main`。
 
 ## 6. 关闭 issue（PR 已合并后）
