@@ -162,20 +162,29 @@ export function tdRetryDelay(attempt: number): number {
 }
 
 /**
- * 降级重试定时器（**唯一实现**）：委托/成交（本工厂内）与持仓（独立 store）共用。
+ * 降级重试定时器（**唯一实现**）：委托/成交（本工厂内）与持仓、资金（独立 store）共用。
  *
- * 持仓 store 不复用 `createTdListStore`（它是绝对态、无 `sort_key`，见
- * `stores/tdPositions.ts` 文件头），但「交易库读不了时按指数退避重试」是同一个行为
- * （契约 webui-ws §5 第 13 条）——两个 store 各写一份退避，改一处忘另一处就会出现
- * 同一时刻两个面板用不同节奏重试。因此把定时器本身抽出来共用，工厂与持仓都用它。
+ * 持仓/资金 store 不复用 `createTdListStore`（它是绝对态、无 `sort_key`，见
+ * `stores/tdPositions.ts` / `stores/tdTradingAccounts.ts` 文件头），但「交易库读不了时按指数
+ * 退避重试」是同一个行为（契约 webui-ws §5 第 13 条）——各写一份退避，改一处忘另一处就会
+ * 出现同一时刻多个面板用不同节奏重试。因此把定时器本身抽出来共用。
+ *
+ * 生命周期（卸载只停流量、挂载重新武装）：`dispose()` 停用后定时器拒绝 `schedule`，
+ * 只有 `reset()` 能重新武装；页面卸载时 `dispose()`、重新挂载时 `init()` → `reset()`。
+ * 若遗漏 `reset()`，卸载再挂载后的降级将不再退避重试（只剩 `data_changed` 兜底）。
  */
 export interface TdRetryTimer {
   /** 安排下一次重试（`attempt` 为已尝试次数，0 = 首次失败）；重复调用重置计时 */
   schedule(attempt: number, task: () => void): void
   /** 取消待执行的重试（可用/成功时调用） */
   clear(): void
-  /** 取消并永久停用（store dispose 时调用） */
+  /** 取消挂起计时并停用：直到 {@link reset} 前拒绝新计时（store 卸载时调用） */
   dispose(): void
+  /**
+   * 重新武装：清除停用标志并取消一切挂起计时（store 重新挂载的 `init()` 调用）。
+   * 先取消挂起计时是为了不留下「上一生命周期遗留的重试 + 本生命周期的新重试」两份定时器。
+   */
+  reset(): void
 }
 
 export function createTdRetryTimer(): TdRetryTimer {
@@ -201,6 +210,11 @@ export function createTdRetryTimer(): TdRetryTimer {
     clear,
     dispose(): void {
       disposed = true
+      clear()
+    },
+    reset(): void {
+      disposed = false
+      clear()
     },
   }
 }
@@ -315,7 +329,7 @@ export function createTdListStore<Row extends TdListRow>(
   let pendingRows: Row[] = []
   let pendingKeys = new Set<string | number>()
   let batchHandle: unknown = null
-  /** 降级重试定时器（与持仓 store 共用 `createTdRetryTimer`，退避口径唯一） */
+  /** 降级重试定时器（与持仓/资金 store 共用 `createTdRetryTimer`，退避口径唯一；dispose 后由 init 重新武装） */
   const retryTimer = createTdRetryTimer()
   let retryAttempt = 0
   let disposed = false
@@ -499,10 +513,14 @@ export function createTdListStore<Row extends TdListRow>(
    *
    * 每次挂载都重拉基线：离开页面期间 WS 增量仍在到达（store 是单例），且可能跨过日切，
    * 旧窗口不可信——重置重拉比"复用上一轮窗口"安全。首次挂载与再次挂载走同一路径。
+   *
+   * 同时**重新武装退避定时器**：`dispose()` 会停用它，若不在挂载时 `reset()`，卸载再挂载后
+   * 一旦基线降级就不会再退避重试（只剩 `data_changed` 兜底），违背契约 webui-ws §5 第 13 条。
    */
   async function init(): Promise<void> {
-    // 重新挂载时解除 dispose（dispose 只停定时器，不终结 store 生命周期）
+    // dispose 只停流量、不终结 store 生命周期；这里解除停用并重新武装重试定时器
     disposed = false
+    retryTimer.reset()
     await resetAndReload()
   }
 
@@ -681,7 +699,7 @@ export function createTdListStore<Row extends TdListRow>(
     newCount.value = 0
   }
 
-  /** 页面卸载：清定时器，避免离开页面后继续请求 */
+  /** 页面卸载：清定时器，避免离开页面后继续请求（卸载只停流量；重新挂载由 `init()` 重新武装定时器） */
   function dispose(): void {
     disposed = true
     clearRetry()

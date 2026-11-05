@@ -638,6 +638,58 @@
         "reason": { "$ref": "#/$defs/TdDegradedReason" }
       }
     },
+    "TdTradingAccountRow": {
+      "type": "object",
+      "required": ["account_id", "date", "has_data", "balance", "available", "frozen", "commission", "margin", "withdraw_quota", "deposit", "withdraw", "seq"],
+      "description": "资金行（契约 rest §2.9.4；WS td_trading_account 与 REST items 同一 schema，WS 行 has_data 恒 true；业务键 = account_id；date = 该账户锚点日）",
+      "properties": {
+        "account_id": { "type": "string", "description": "账户标识（业务键，契约 rest §2.9.6）" },
+        "date": {
+          "description": "该账户锚点日 YYYYMMDD（不是全局当前交易日；无资金记录时 null）",
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "has_data": { "type": "boolean", "description": "false = 该账户无资金记录（离线且从未查询成功等）；此时 date/seq 与全部资金字段为 null，前端显示占位而不是 0" },
+        "balance": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "权益" },
+        "available": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "可用资金" },
+        "frozen": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "冻结资金" },
+        "commission": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "手续费" },
+        "margin": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "保证金占用" },
+        "withdraw_quota": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "可取资金" },
+        "deposit": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "入金金额" },
+        "withdraw": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "出金金额" },
+        "seq": {
+          "description": "不透明版本号：合并用，不显示、不参与业务（契约 rest §2.9.6）；无记录时 null",
+          "anyOf": [{ "type": "integer" }, { "type": "null" }]
+        }
+      }
+    },
+    "TdTradingAccountListResponse": {
+      "type": "object",
+      "required": ["available", "trading_day", "online_accounts", "items", "next_cursor"],
+      "description": "GET /api/td/trading_accounts 可用响应信封（契约 rest §2.9.2，与持仓同形；**不分页**——next_cursor 恒 null、limit/cursor 被忽略）",
+      "properties": {
+        "available": { "type": "boolean", "description": "true = 交易库可读" },
+        "trading_day": {
+          "description": "当前交易日 YYYYMMDD；无在线账户时 null（资金行自身的 date 是各账户锚点日，两者不同）",
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "online_accounts": { "type": "array", "items": { "type": "string" }, "description": "在线（Ready）账户集合；顺序不承诺（不是资金行的账户全集，见契约 webui-ws §5 第 11 条）" },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/TdTradingAccountRow" }, "description": "资金行：每个已登记账户一行（含离线与无记录账户），按 account_id 升序；空数组 = 无已登记账户（不是错误）" },
+        "next_cursor": {
+          "description": "不分页，恒为 null（契约 rest §2.9.2）",
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      }
+    },
+    "TdTradingAccountDegradedResponse": {
+      "type": "object",
+      "required": ["available", "reason"],
+      "description": "GET /api/td/trading_accounts 降级响应（200 + available=false，契约 rest §2.9.8）",
+      "properties": {
+        "available": { "type": "boolean", "description": "false = 降级（响应只有 available 与 reason）" },
+        "reason": { "$ref": "#/$defs/TdDegradedReason" }
+      }
+    },
     "TdRecentPayload": {
       "type": "object",
       "required": ["events"],

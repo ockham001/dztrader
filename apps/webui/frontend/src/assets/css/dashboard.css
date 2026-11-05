@@ -115,7 +115,7 @@
   white-space: nowrap;
 }
 
-/* 正常行间距 — 账户表 */
+/* 正常行间距 — 资金表 */
 .ds-table--normal tbody td {
   padding: var(--spacer-6) var(--spacer-12);
   border-bottom: 1px solid var(--border-neutral-l1);
@@ -308,7 +308,8 @@
 }
 
 /* 降级提示条（契约 webui-ws §5 第 13 条）：锁高面板内压成单行，不挤掉表格可视区 */
-.dashboard-pos-degraded {
+.dashboard-pos-degraded,
+.dashboard-fund-degraded {
   flex-shrink: 0;
   align-items: center;
   gap: var(--spacer-8);
@@ -332,7 +333,8 @@
   font-size: var(--body-xs-font-size);
 }
 
-.dashboard-pos-error {
+.dashboard-pos-error,
+.dashboard-fund-error {
   flex-shrink: 0;
   margin: var(--spacer-4) var(--spacer-8) 0;
   padding: var(--spacer-4) var(--spacer-8);
@@ -343,7 +345,8 @@
   font-size: var(--body-xs-font-size);
 }
 
-.dashboard-pos-empty {
+.dashboard-pos-empty,
+.dashboard-fund-empty {
   padding: var(--spacer-16) var(--spacer-12);
   color: var(--text-tertiary);
   text-align: center;
@@ -451,7 +454,7 @@
     gap: var(--spacer-8);
     min-height: auto !important;
   }
-  .dashboard-panel--account {
+  .dashboard-panel--fund {
     border-right: none !important;
     min-height: 180px;
   }

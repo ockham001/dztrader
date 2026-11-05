@@ -515,6 +515,29 @@ describe('useTdPositionsStore · 降级（契约 rest §2.9.8 / webui-ws §5 第
     expect(store.degradedText).toBe('')
   })
 
+  it('卸载再挂载（dispose → init）后重新武装退避：降级仍会按退避重试', async () => {
+    // 首次挂载成功（retryAttempt 归零、定时器被 dispose 停用）
+    vi.mocked(tdApi.getPositions).mockResolvedValue(listResponse([position()]))
+    const store = useTdPositionsStore()
+    await store.init()
+    expect(tdApi.getPositions).toHaveBeenCalledTimes(1)
+
+    store.dispose()
+    // 重新挂载后基线降级：init 必须重新武装定时器，否则此后的降级不再退避重试
+    vi.mocked(tdApi.getPositions).mockResolvedValue({ available: false, reason: 'busy' })
+    await store.init()
+    expect(tdApi.getPositions).toHaveBeenCalledTimes(2)
+    expect(store.available).toBe(false)
+
+    // 假定时器推进首次退避间隔 → 重新发起基线请求并恢复
+    vi.mocked(tdApi.getPositions).mockResolvedValue(listResponse([position({ seq: 20 })]))
+    await vi.advanceTimersByTimeAsync(TD_RETRY_BASE_DELAY_MS)
+
+    expect(tdApi.getPositions).toHaveBeenCalledTimes(3)
+    expect(store.available).toBe(true)
+    expect(store.rows).toHaveLength(1)
+  })
+
   it('降级期间 WS 事件照常合并（不丢增量）', async () => {
     vi.mocked(tdApi.getPositions).mockResolvedValue({ available: false, reason: 'busy' })
     const store = useTdPositionsStore()

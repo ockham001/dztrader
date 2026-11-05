@@ -45,6 +45,13 @@ struct TdListParams {
 std::optional<TdListParams> td_parse_list_params(
     const std::function<std::string(std::string_view)>& param);
 
+/// `accounts` 逗号参数解码（契约 rest §2.9.2）：每项去首尾空白、空项跳过、排序去重。
+///
+/// 唯一实现：委托/成交列表（`td_parse_list_params`）与**不分页**的资金端点共用同一份
+/// 解码口径——两处各写一份会在「空串等价缺省 / 重复忽略 / 归一化顺序」上漂移。
+/// 该解码本身不会失败（未知账户由 `td_scope_accounts` 求交时忽略）。
+std::vector<std::string> td_parse_accounts(std::string_view text);
+
 /// 账户范围 = 请求过滤 ∩ 在线集合（排序去重；请求为空 = 全部在线；未知账户忽略）。
 std::vector<std::string> td_scope_accounts(const std::vector<std::string>& requested,
                                            const std::vector<std::string>& online_accounts);

@@ -10,6 +10,7 @@ import type {
   TdRecentPayload, TdRecentEvent,
   TdTradeListResponse, TdTradeDegradedResponse,
   TdPositionListResponse, TdPositionDegradedResponse,
+  TdTradingAccountRow, TdTradingAccountListResponse, TdTradingAccountDegradedResponse,
   TdStatsDegradedReason, TdStatsValues, TdStatsAvailable, TdStatsDegraded,
 } from './generated'
 export type {
@@ -18,6 +19,7 @@ export type {
   TdRecentPayload, TdRecentEvent,
   TdTradeListResponse, TdTradeDegradedResponse,
   TdPositionListResponse, TdPositionDegradedResponse,
+  TdTradingAccountRow, TdTradingAccountListResponse, TdTradingAccountDegradedResponse,
   TdStatsDegradedReason, TdStatsValues, TdStatsAvailable, TdStatsDegraded,
 }
 
@@ -71,6 +73,18 @@ export type TdStatsResponse =
 export type TdPositionsResponse =
   | (TdPositionListResponse & { available: true })
   | (TdPositionDegradedResponse & { available: false })
+
+/**
+ * `GET /api/td/trading_accounts` 的响应：与 `TdPositionsResponse` **同形同写法**（契约 rest
+ * §2.9.2/§2.9.8）——可用信封与降级信封共用 `available` 判别位，降级时响应只有 available 与 reason。
+ *
+ * 资金与委托/成交/持仓的差异不在信封：端点**不分页**（`next_cursor` 恒 null、`limit`/`cursor`
+ * 被忽略，契约 rest §2.9.2），items 每个已登记账户一行（含离线与无资金记录账户，行内
+ * `date` 是各账户锚点日、`has_data:false` 时资金字段全 null，契约 rest §2.9.4）。
+ */
+export type TdTradingAccountsResponse =
+  | (TdTradingAccountListResponse & { available: true })
+  | (TdTradingAccountDegradedResponse & { available: false })
 
 // ===== Authentication =====
 export interface LoginRequest {

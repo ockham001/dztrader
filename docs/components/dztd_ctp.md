@@ -115,6 +115,14 @@
 - **旧会话残留写入的有界收敛窗**：跨进程旧会话已入队未提交的 persist 任务可能晚于新会话整组替换落地 → 当日持仓短暂回到旧值，由下一次完整成功查询收敛，**上界 = 一个 `qry_position_interval_s`（默认 60s）**；**不丢行、不产生键冲突**（不变量与理由见《帧契约：TD 数据同步》§7 与 ADR 0045 决策 7）。
 - 其余持仓准确性边界（查询在途窗口的成交以快照覆盖为准、其他终端交易的收敛期、资金盘中不刷新）见《帧契约：TD 数据同步》§7。
 
+### 资金快照（#250 锁定的行为）
+
+资金查询走与持仓同一条登录收尾链：`on_rsp_qry_investor_position` 收口 → 发起 `ReqQryTradingAccount` → `on_rsp_qry_trading_account` 写库/推帧（`DZ_FRAME_TRADING_ACCOUNT`）。行为由 `td_position_lifecycle_test.cpp`（会话层）、`td_persist_writer_test.cpp`（写入器层）断言库内容：
+
+- **按 `(account_id, date)` 多日累积**：每个交易日一行最新快照；同账户同日重复查询是 upsert（覆盖余额类列与 `seq`，不追加行），历史交易日行不被改写（`SameDayFundQueryUpsertsInsteadOfAppending` / `DaySwitchFundQueriesCoexistAsTwoDayRows`）。
+- **资金行只在持仓查询成功后写入**：`on_rsp_qry_trading_account` 的唯一写入点有 `position_query_ok_` 守卫——持仓查询失败时资金行不落库、不推帧，锚点日（两张快照表 `MAX(date)`，ADR 0046）不会被资金行单独推进。
+- **盘中不做周期资金查询**（已知限制，契约 td-data-sync §7）：资金查询只有登录收尾链与失败补查链（`resync_account_data`，持仓成功后按同序重查）两处触发，盘中停在最近一次查询结果；其他终端交易造成的资金变化不收敛到下一次登录。
+
 ## 持久化（trade.db）
 
 交易数据（委托 / 成交 / 持仓 / 资金，以及暂留的合约字典）由本进程异步写入 `$DZTRADER_HOME/db/trade.db`。**`trade.db` 不是交易真相源**（真相在柜台回报与 td 内存态）：持久化失败只降级，不阻塞交易、帧推送与 WebSocket。schema 与业务键见 [ADR 0041](../adr/0041-sqlite-only-trade-store-schema-v1.md)，失败策略见 [ADR 0042](../adr/0042-persist-failure-backpressure-and-retry.md)，账户快照生命周期见 [ADR 0045](../adr/0045-trading-account-identity-lifecycle-and-accuracy.md)。

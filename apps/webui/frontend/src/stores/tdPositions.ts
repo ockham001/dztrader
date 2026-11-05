@@ -78,7 +78,7 @@ export const useTdPositionsStore = defineStore('tdPositions', () => {
   let filterTouched = false
   /** 请求代号：只有最后一次发起的请求允许写状态（筛选/重置并发时旧响应不得覆盖新基线） */
   let requestSeq = 0
-  /** 降级重试定时器（与委托/成交工厂共用 `createTdRetryTimer`，退避口径唯一） */
+  /** 降级重试定时器（与委托/成交工厂共用 `createTdRetryTimer`，退避口径唯一；dispose 后由 init 重新武装） */
   const retryTimer = createTdRetryTimer()
   let retryAttempt = 0
   let disposed = false
@@ -253,9 +253,14 @@ export const useTdPositionsStore = defineStore('tdPositions', () => {
   /**
    * 页面挂载：拉完整基线。
    * 每次挂载都重拉：store 是单例，离开期间 WS 增量仍在到达且可能跨日切，旧窗口不可信。
+   *
+   * 同时**重新武装退避定时器**：`dispose()` 会停用它，若不在挂载时 `reset()`，卸载再挂载后
+   * 一旦基线降级就不会再退避重试（只剩 `data_changed` 兜底），违背契约 webui-ws §5 第 13 条。
    */
   async function init(): Promise<void> {
+    // dispose 只停流量、不终结 store 生命周期；这里解除停用并重新武装重试定时器
     disposed = false
+    retryTimer.reset()
     await resetAndReload()
   }
 
@@ -390,7 +395,7 @@ export const useTdPositionsStore = defineStore('tdPositions', () => {
     await resetAndReload()
   }
 
-  /** 页面卸载：停退避重试与在途响应写入（离开页面后不再请求） */
+  /** 页面卸载：停退避重试与在途响应写入（卸载只停流量；重新挂载由 `init()` 重新武装定时器） */
   function dispose(): void {
     disposed = true
     clearRetry()

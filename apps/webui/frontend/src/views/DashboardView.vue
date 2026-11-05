@@ -5,11 +5,19 @@ import Icon from '@/components/shared/Icon.vue'
 import { processStateText, processStateColor } from '@/composables/useProcessState'
 import { formatSignedVolume, formatTdDate, positionDetailTexts } from '@/composables/tdPositionView'
 import { TD_POSITION_DETAIL_COLUMNS } from '@/composables/tdPositionView'
+import {
+  formatDepositWithdraw,
+  formatFundDateLabel,
+  formatTdMoney,
+  fundStatusText,
+} from '@/composables/tdFundView'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useTdPositionsStore } from '@/stores/tdPositions'
+import { useTdTradingAccountsStore } from '@/stores/tdTradingAccounts'
 
 const marketSourcesStore = useMarketSourcesStore()
 const positionsStore = useTdPositionsStore()
+const fundsStore = useTdTradingAccountsStore()
 
 // 行情面板：复用 store 的 sources，与行情源页面同步
 const marketOnlineCount = computed(
@@ -25,22 +33,6 @@ function marketProcessStateText(state: string | null): string {
 }
 
 // === Types ===
-interface AccountRow {
-  name: string
-  sub: string
-  status: 'logged-in' | 'logged-out' | 'loading'
-  loadingText: string
-  equity: string
-  risk: string
-  riskColor: string
-  available: string
-  margin: string
-  deposit: string
-  profit: string
-  profitColor: string
-  fee: string
-}
-
 interface OrderRow {
   contract: string
   icon: 'pending' | 'filled' | 'cancelled' | 'rejected'
@@ -178,34 +170,35 @@ const positionColumnCount = computed(
   () => 6 + strategyNames.length + (showPositionDetail.value ? positionDetailColumns.length : 0),
 )
 
-// === 账户 / 委托 / 策略 / 消息（演示数据，issue #200）===
-// 这四个面板的交易数据链路尚未建立（issue #6：TdDataService 未暴露 REST/WS），此处保留
+// === 资金面板：真实数据（#250，契约 rest §2.9.1/§2.9.4 / 契约 webui-ws §2.5/§5）===
+// 面板接的是 `stores/tdTradingAccounts`（REST 基线 + WS 绝对态增量 + 降级退避）。
+// 一行 = 一个已登记账户（含离线与 `has_data:false` 的无记录账户）：契约资金行的 date 是
+// 各账户锚点日，可能早于当前交易日，读者必须从「数据日期」列/标签看得出这是旧快照。
+//
+// 金额一律用 `formatTdMoney`：null（无记录/不可用）显示占位「—」，绝不用 0 冒充。
+
+/** 面板级数据日期标签：各账户锚点日可能不同，只标一个日期会说谎 */
+const fundDateLabel = computed<string>(() => formatFundDateLabel(fundsStore.dataDates))
+
+/** 标题栏聚合数：在线账户 / 已登记账户（无行时 0/0，不拿在线集合冒充分母） */
+const fundAggregate = computed<string>(() => (
+  fundsStore.totalAccounts === 0
+    ? '0/0'
+    : `${fundsStore.onlineCount}/${fundsStore.totalAccounts}`
+))
+
+/** 账户是否在线（状态列标签样式用；文案本身由 `fundStatusText` 统一给出） */
+function isFundAccountOnline(accountId: string): boolean {
+  return fundsStore.onlineAccounts.includes(accountId)
+}
+
+// === 委托 / 策略 / 消息（演示数据，issue #200）===
+// 这三个面板的交易数据链路尚未建立（issue #6：TdDataService 未暴露 REST/WS），此处保留
 // 原型布局，但满足三条约束：
 //   1) 页面永久可见地标注「演示数据」（横幅 + 逐面板 ds-tag）；
 //   2) 券商名 / 账户号 / 合约代码全部虚构，不得与真实期货公司或真实合约撞名；
 //   3) 面板聚合数一律由下列行数据计算，禁止硬编码（历史版本存在 2/3、5/5 等矛盾数字）。
-// 持仓面板已随 #249 接入真实链路，不再属于演示数据。
-const accounts: AccountRow[] = [
-  {
-    name: '演示期货_A', sub: 'demo-0001 · ctp', status: 'logged-in', loadingText: '',
-    equity: '1,890,887.80', risk: '62.3%', riskColor: 'var(--status-alert-default)',
-    available: '715,340.50', margin: '1,175,547.30', deposit: '+50,000', profit: '+12,350',
-    profitColor: '#2a9d5c', fee: '1,230.50',
-  },
-  {
-    name: '演示期货_B', sub: 'demo-0002 · xtp', status: 'loading', loadingText: '查询持仓...',
-    equity: '2,345,621.35', risk: '38.1%', riskColor: 'var(--status-success-default)',
-    available: '1,451,230.80', margin: '894,390.55', deposit: '0', profit: '-8,560',
-    profitColor: '#d4543e', fee: '3,560.20',
-  },
-  {
-    name: '演示期货_C', sub: 'demo-0003 · ctptest', status: 'logged-out', loadingText: '',
-    equity: '--', risk: '--', riskColor: 'var(--text-tertiary)',
-    available: '--', margin: '--', deposit: '--', profit: '--',
-    profitColor: 'var(--text-tertiary)', fee: '--',
-  },
-]
-
+// 持仓面板已随 #249、资金面板已随 #250 接入真实链路，不再属于演示数据。
 const orders: OrderRow[] = [
   { contract: 'zz2601', icon: 'pending', source: '长线', account: '演示期货_A', direction: 'buy', filled: '5/10', price: '3,680', avgPrice: '3,682', time: '14:05:23', tagText: '部分成交', tagClass: 'ds-tag--alert', rowClass: '' },
   { contract: 'yy2601', icon: 'filled', source: '中线', account: '演示期货_A', direction: 'sell', filled: '8/8', price: '3,915', avgPrice: '3,915', time: '14:03:12', tagText: '全部成交', tagClass: 'ds-tag--success', rowClass: '' },
@@ -239,9 +232,6 @@ const messages: MessageRow[] = [
 // === 面板聚合数：一律由行数据计算（issue #200）===
 // 历史版本硬编码 2/3、7/8、2/12、5/5 与展示行互相矛盾；此处改为派生，
 // 行数据变化时聚合数自动跟随，不可能再漂移。
-const accountAggregate = computed(
-  () => `${accounts.filter(a => a.status === 'logged-in').length}/${accounts.length}`,
-)
 const ordersAggregate = computed(
   () => `${orders.filter(o => o.icon === 'pending').length}/${orders.length} 笔`,
 )
@@ -257,7 +247,7 @@ const leftFlex = ref(1)
 const rightFlex = ref(0.382)
 const positionFlex = ref(1.618)
 const bottomFlex = ref(1)
-const accountFlex = ref(1)
+const fundFlex = ref(1)
 const orderFlex = ref(1.618)
 const marketFlex = ref(1)
 const strategyFlex = ref(1.618)
@@ -378,20 +368,22 @@ function onVSplitter1Down(e: MouseEvent): void {
   if (leftPanelEl.value) startTwoPanelDrag(e, 'y', leftPanelEl.value, positionFlex, bottomFlex)
 }
 function onHSplitterDown(e: MouseEvent): void {
-  if (bottomPanelEl.value) startTwoPanelDrag(e, 'x', bottomPanelEl.value, accountFlex, orderFlex)
+  if (bottomPanelEl.value) startTwoPanelDrag(e, 'x', bottomPanelEl.value, fundFlex, orderFlex)
 }
 
 // === WebSocket lifecycle ===
 // WS 连接/断开由 App.vue 全局管理，DashboardView 不再负责。
-// 持仓面板是唯一在本页消费交易数据的面板：挂载即拉 REST 基线，卸载即停降级重试
+// 持仓与资金两个面板消费交易数据：挂载即拉各自 REST 基线，卸载即停降级重试
 // （store 是单例，无视图时不该产生流量）。
 onMounted(() => {
   void positionsStore.init()
+  void fundsStore.init()
 })
 
 onUnmounted(() => {
   onSplitterMouseUp()
   positionsStore.dispose()
+  fundsStore.dispose()
 })
 </script>
 
@@ -411,9 +403,10 @@ onUnmounted(() => {
       }"
     >
       <!-- 演示数据横幅（issue #200）：首屏永久可见，与是否滚动 / 展开无关。
-           账户 / 委托 / 策略 / 消息四个面板的交易数据链路尚未建立（issue #6），横幅是读者
-           第一眼就应看到的事实声明，不得改为可关闭 banner 或仅靠图注。持仓面板已随 #249
-           接入真实链路，已从本横幅（与逐面板 ds-tag）中移除。仪表盘锁一屏高度，故压成单行紧凑条。 -->
+           委托 / 策略 / 消息三个面板的交易数据链路尚未建立（issue #6），横幅是读者
+           第一眼就应看到的事实声明，不得改为可关闭 banner 或仅靠图注。持仓面板已随 #249、
+           资金面板已随 #250 接入真实链路，已从本横幅（与逐面板 ds-tag）中移除。
+           仪表盘锁一屏高度，故压成单行紧凑条。 -->
       <div
         class="ds-alert ds-alert--warning dashboard-demo-banner"
         data-test="dashboard-demo-banner"
@@ -421,7 +414,7 @@ onUnmounted(() => {
       >
         <span class="ds-alert__icon"><Icon name="Tips" :size="16" /></span>
         <span class="dashboard-demo-banner__text">
-          <strong>演示数据</strong>：账户 / 委托 / 策略 / 消息面板尚未接入真实链路，内容均为虚构；「行情」与「持仓」面板为实时数据。
+          <strong>演示数据</strong>：委托 / 策略 / 消息面板尚未接入真实链路，内容均为虚构；「行情」「持仓」「资金」为实时数据。
         </span>
       </div>
 
@@ -556,61 +549,91 @@ onUnmounted(() => {
         <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
         <div class="splitter-v v-splitter-1" :style="{ height: '6px', cursor: 'row-resize', flexShrink: 0, margin: 0 }" @mousedown="onVSplitter1Down"></div>
 
-        <!-- Bottom: Account + Orders -->
+        <!-- Bottom: Funds + Orders -->
         <div ref="bottomPanelEl" class="dashboard-bottom-panel" :style="{ flex: `${bottomFlex} 1 0%`, minHeight: '100px', display: 'flex', flexDirection: 'row', overflow: 'hidden' }">
 
-          <!-- Account Overview -->
-          <div class="dashboard-panel dashboard-panel--account" :style="{ flex: `${accountFlex} 1 0%`, minWidth: '150px', minHeight: '100px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }">
+          <!-- Funds（#250：真实资金卡；契约 rest §2.9.4 / 契约 webui-ws §2.5/§5） -->
+          <div class="dashboard-panel dashboard-panel--fund" :style="{ flex: `${fundFlex} 1 0%`, minWidth: '150px', minHeight: '100px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }">
             <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'var(--spacer-8) var(--spacer-16)', background: 'var(--bg-card)', borderBottom: '1px solid var(--border-neutral-l1)', flexShrink: 0 }">
-              <span :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)' }">
-                <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">账户</span>
-                <span class="ds-tag ds-tag--warning" data-test="dashboard-demo-tag" :style="{ fontSize: '10px' }">演示</span>
+              <span :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)', minWidth: 0 }">
+                <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">资金</span>
+                <!-- 面板级数据日期：行内「数据日期」列是权威来源；各账户锚点日可能不同，全部列出 -->
+                <span
+                  v-if="fundDateLabel"
+                  data-test="fund-date-label"
+                  :style="{ fontSize: '10px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }"
+                >{{ fundDateLabel }}</span>
               </span>
-              <span data-test="account-aggregate" :style="{ fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums', color: 'var(--text-tertiary)' }" title="已登录账户/总账户">{{ accountAggregate }}</span>
+              <span data-test="fund-aggregate" :style="{ fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums', color: 'var(--text-tertiary)' }" title="在线账户/已登记账户">{{ fundAggregate }}</span>
             </div>
+            <!-- 降级提示条（契约 webui-ws §5 第 13 条：统一提示 + 自动退避重试，不用 0 冒充数据） -->
+            <div
+              v-if="!fundsStore.available"
+              class="ds-alert ds-alert--warning dashboard-fund-degraded"
+              role="status"
+              data-test="fund-degraded-banner"
+            >
+              <span class="ds-alert__icon"><Icon name="Tips" :size="14" /></span>
+              <span>{{ fundsStore.degradedText }}</span>
+            </div>
+            <div v-if="fundsStore.error" class="dashboard-fund-error" role="alert" data-test="fund-error">{{ fundsStore.error }}</div>
             <div class="auto-scroll" :style="{ flex: 1, overflow: 'auto' }">
-              <table class="ds-table ds-table--normal" :style="{ width: '100%', tableLayout: 'auto', whiteSpace: 'nowrap' }">
+              <table class="ds-table ds-table--normal" :style="{ minWidth: '100%', width: 'max-content', tableLayout: 'auto', whiteSpace: 'nowrap' }">
                 <thead :style="{ position: 'sticky', top: 0, zIndex: 1 }">
                   <tr>
                     <th class="frozen frozen-last" :style="{ left: 0 }">账户</th>
                     <th>状态</th>
-                    <th>动态权益</th>
-                    <th>风险度</th>
-                    <th>可用资金</th>
-                    <th>占用保证金</th>
-                    <th>出入金</th>
-                    <th>净利润</th>
+                    <th>权益</th>
+                    <th>可用</th>
+                    <th>冻结</th>
+                    <th>保证金</th>
                     <th>手续费</th>
+                    <th>可取</th>
+                    <th>出入金</th>
+                    <th>数据日期</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="acc in accounts" :key="acc.name">
-                    <td class="frozen frozen-last cell-text" :style="{ left: 0 }">
-                      <div class="cell-two-line"><span class="cell-main">{{ acc.name }}</span><span class="cell-sub">{{ acc.sub }}</span></div>
+                  <!-- 每个已登记账户一行（含离线与 has_data:false）；无记录行的金额/日期显示占位，
+                       title 说明原因——不用 0 冒充「无资金记录」（契约 webui-ws §5 第 13 条）。 -->
+                  <tr
+                    v-for="row in fundsStore.rows"
+                    :key="row.account_id"
+                    data-test="fund-row"
+                    :title="row.has_data ? undefined : '该账户无资金记录'"
+                  >
+                    <td class="frozen frozen-last cell-text" :style="{ left: 0, fontWeight: 'var(--font-weight-medium)' }">{{ row.account_id }}</td>
+                    <td :style="{ textAlign: 'center' }">
+                      <span
+                        class="ds-tag"
+                        :class="isFundAccountOnline(row.account_id) ? 'ds-tag--success' : 'ds-tag--danger'"
+                        :style="{ fontSize: '10px' }"
+                      >{{ fundStatusText(row.account_id, fundsStore.onlineAccounts) }}</span>
                     </td>
-                    <td v-if="acc.status === 'logged-in'" :style="{ textAlign: 'center' }">
-                      <span class="ds-tag ds-tag--success">已登录</span>
+                    <td class="cell-num">{{ formatTdMoney(row.balance) }}</td>
+                    <td class="cell-num">{{ formatTdMoney(row.available) }}</td>
+                    <td class="cell-num">{{ formatTdMoney(row.frozen) }}</td>
+                    <td class="cell-num">{{ formatTdMoney(row.margin) }}</td>
+                    <td class="cell-num">{{ formatTdMoney(row.commission) }}</td>
+                    <td class="cell-num">{{ formatTdMoney(row.withdraw_quota) }}</td>
+                    <td class="cell-num">{{ formatDepositWithdraw(row.deposit, row.withdraw) }}</td>
+                    <td class="cell-num" data-test="fund-row-date" :style="{ color: 'var(--text-tertiary)' }">{{ row.has_data && row.date ? formatTdDate(row.date) : '—' }}</td>
+                  </tr>
+                  <!-- 空态 / 加载态 / 降级态（三态互斥）：不可用与「无数据」必须可区分，
+                       不能用 0 或假空态冒充（契约 webui-ws §5 第 13 条）。 -->
+                  <tr v-if="fundsStore.rows.length === 0">
+                    <td colspan="10" class="dashboard-fund-empty" data-test="fund-empty">
+                      <template v-if="!fundsStore.available">交易数据暂不可用</template>
+                      <template v-else-if="fundsStore.initialized">暂无资金数据</template>
+                      <template v-else>加载中...</template>
                     </td>
-                    <td v-else-if="acc.status === 'logged-out'" :style="{ textAlign: 'center' }">
-                      <span class="ds-tag ds-tag--danger">未登录</span>
-                    </td>
-                    <td v-else>
-                      <StatusIndicator :current="0.5" :max="1" :min="0" :mini="true" idle-text="未登录" :loading-text="acc.loadingText" done-text="已登录" />
-                    </td>
-                    <td class="cell-num" :style="{ color: acc.equity === '--' ? 'var(--text-tertiary)' : 'inherit' }">{{ acc.equity }}</td>
-                    <td class="cell-num" :style="{ color: acc.riskColor }">{{ acc.risk }}</td>
-                    <td class="cell-num" :style="{ color: acc.available === '--' ? 'var(--text-tertiary)' : 'inherit' }">{{ acc.available }}</td>
-                    <td class="cell-num" :style="{ color: acc.margin === '--' ? 'var(--text-tertiary)' : 'inherit' }">{{ acc.margin }}</td>
-                    <td class="cell-num" :style="{ color: acc.deposit === '--' ? 'var(--text-tertiary)' : '#2a9d5c' }">{{ acc.deposit }}</td>
-                    <td class="cell-num" :style="{ color: acc.profitColor }">{{ acc.profit }}</td>
-                    <td class="cell-num" :style="{ color: acc.fee === '--' ? 'var(--text-tertiary)' : 'inherit' }">{{ acc.fee }}</td>
                   </tr>
                 </tbody>
               </table>
             </div>
           </div>
 
-          <!-- Horizontal Splitter (Account / Orders) -->
+          <!-- Horizontal Splitter (Funds / Orders) -->
           <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
           <div class="splitter-h h-splitter" :style="{ width: '6px', cursor: 'col-resize', flexShrink: 0, margin: 0 }" @mousedown="onHSplitterDown"></div>
 

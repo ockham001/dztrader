@@ -613,6 +613,55 @@ export interface TdPositionDegradedResponse {
     reason: TdDegradedReason
 }
 
+// 资金行（契约 rest §2.9.4；WS td_trading_account 与 REST items 同一 schema，WS 行 has_data 恒 true；业务键 = account_id；date = 该账户锚点日）
+export interface TdTradingAccountRow {
+    /** 账户标识（业务键，契约 rest §2.9.6） */
+    account_id: string
+    /** 该账户锚点日 YYYYMMDD（不是全局当前交易日；无资金记录时 null） */
+    date: string | null
+    /** false = 该账户无资金记录（离线且从未查询成功等）；此时 date/seq 与全部资金字段为 null，前端显示占位而不是 0 */
+    has_data: boolean
+    /** 权益 */
+    balance: number | null
+    /** 可用资金 */
+    available: number | null
+    /** 冻结资金 */
+    frozen: number | null
+    /** 手续费 */
+    commission: number | null
+    /** 保证金占用 */
+    margin: number | null
+    /** 可取资金 */
+    withdraw_quota: number | null
+    /** 入金金额 */
+    deposit: number | null
+    /** 出金金额 */
+    withdraw: number | null
+    /** 不透明版本号：合并用，不显示、不参与业务（契约 rest §2.9.6）；无记录时 null */
+    seq: number | null
+}
+
+// GET /api/td/trading_accounts 可用响应信封（契约 rest §2.9.2，与持仓同形；**不分页**——next_cursor 恒 null、limit/cursor 被忽略）
+export interface TdTradingAccountListResponse {
+    /** true = 交易库可读 */
+    available: boolean
+    /** 当前交易日 YYYYMMDD；无在线账户时 null（资金行自身的 date 是各账户锚点日，两者不同） */
+    trading_day: string | null
+    /** 在线（Ready）账户集合；顺序不承诺（不是资金行的账户全集，见契约 webui-ws §5 第 11 条） */
+    online_accounts: string[]
+    /** 资金行：每个已登记账户一行（含离线与无记录账户），按 account_id 升序；空数组 = 无已登记账户（不是错误） */
+    items: TdTradingAccountRow[]
+    /** 不分页，恒为 null（契约 rest §2.9.2） */
+    next_cursor: string | null
+}
+
+// GET /api/td/trading_accounts 降级响应（200 + available=false，契约 rest §2.9.8）
+export interface TdTradingAccountDegradedResponse {
+    /** false = 降级（响应只有 available 与 reason） */
+    available: boolean
+    reason: TdDegradedReason
+}
+
 // 建连补发载荷（契约 webui-ws §2.5 td_recent）；无事件时仍发送空数组
 export interface TdRecentPayload {
     /** 各在线账户补发环内容，按入环先后从旧到新；不同账户之间顺序不承诺 */

@@ -443,6 +443,29 @@ describe('useTdTradesStore · 降级（契约 rest §2.9.8 / webui-ws §5 第 13
     expect(store.available).toBe(false)
   })
 
+  it('卸载再挂载（dispose → init）后重新武装退避：降级仍会按退避重试', async () => {
+    // 首次挂载成功（retryAttempt 归零、定时器被 dispose 停用）
+    vi.mocked(tdApi.getTrades).mockResolvedValue(listResponse([trade({ trade_id: 't1' })]))
+    const store = useTdTradesStore()
+    await store.init()
+    expect(tdApi.getTrades).toHaveBeenCalledTimes(1)
+
+    store.dispose()
+    // 重新挂载后基线降级：init 必须重新武装定时器，否则此后的降级不再退避重试
+    vi.mocked(tdApi.getTrades).mockResolvedValue({ available: false, reason: 'busy' })
+    await store.init()
+    expect(tdApi.getTrades).toHaveBeenCalledTimes(2)
+    expect(store.available).toBe(false)
+
+    // 假定时器推进首次退避间隔 → 重新发起基线请求并恢复
+    vi.mocked(tdApi.getTrades).mockResolvedValue(listResponse([trade({ trade_id: 't2' })]))
+    await vi.advanceTimersByTimeAsync(TD_RETRY_BASE_DELAY_MS)
+
+    expect(tdApi.getTrades).toHaveBeenCalledTimes(3)
+    expect(store.available).toBe(true)
+    expect(store.rows.map(r => r.trade_id)).toEqual(['t2'])
+  })
+
   it('dispose 清空定时器（卸载页面后不再请求）', async () => {
     vi.mocked(tdApi.getTrades).mockResolvedValue({ available: false, reason: 'busy' })
     const store = useTdTradesStore()

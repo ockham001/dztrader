@@ -186,13 +186,15 @@ protected:
         return f;
     }
 
-    /// 一条**成功**的资金查询响应（`is_last` 收口）。
-    static OnRspQryTradingAccountField trading_account_row(bool is_last) {
+    /// 一条**成功**的资金查询响应（`is_last` 收口；金额可指定，默认值 = 常见形态）。
+    static OnRspQryTradingAccountField trading_account_row(bool is_last,
+                                                           double balance = 100000.0,
+                                                           double available = 85000.0) {
         OnRspQryTradingAccountField f{};
         CThostFtdcTradingAccountField a{};
         std::strcpy(a.AccountID, "acc1");
-        a.Balance = 100000.0;
-        a.Available = 85000.0;
+        a.Balance = balance;
+        a.Available = available;
         a.CurrMargin = 15000.0;
         f.trading_account = a;
         f.is_last = is_last;
@@ -395,6 +397,92 @@ TEST_F(TdPositionLifecycleTest, DaySwitchWritesNewDayRowAndKeepsHistoricalSplit)
     // 历史行保持它自己当时的今昨拆分（重建只碰当日）。
     EXPECT_EQ(scalar_int("SELECT today_volume FROM positions WHERE date='20261008'"), 5);
     EXPECT_EQ(scalar_int("SELECT yd_volume FROM positions WHERE date='20261008'"), 0);
+}
+
+// ============================================================================
+// AC(#250): 资金多日快照 / 同账户同日幂等 / 日切与重连正确
+// ============================================================================
+
+TEST_F(TdPositionLifecycleTest, SameDayFundQueryUpsertsInsteadOfAppending) {
+    // 登录收尾链：持仓查询成功后才写资金行（ADR 0045 决策 4）。
+    feed_position_snapshot({position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, /*is_last=*/true)});
+    session_->on_rsp_qry_trading_account(trading_account_row(/*is_last=*/true, 100000.0, 85000.0));
+    flush_persist();
+    ASSERT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261009'"), 1);
+    const int64_t first_seq = scalar_int("SELECT seq FROM trading_accounts WHERE date='20261009'");
+
+    // 同一交易日再次成功查询（重传 / 失败补查链恢复后的首轮）：同键 (account_id,date) upsert，
+    // 不追加行、历史行不受影响；余额类列与 seq 更新为最新查询结果。
+    feed_position_snapshot({position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, /*is_last=*/true)});
+    session_->on_rsp_qry_trading_account(trading_account_row(/*is_last=*/true, 120000.0, 95000.0));
+    flush_persist();
+
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261009'"), 1)
+        << "same account+date is one row (business key), not an append";
+    EXPECT_EQ(scalar_int("SELECT CAST(balance AS INTEGER) FROM trading_accounts"
+                         " WHERE date='20261009'"),
+              120000);
+    EXPECT_EQ(scalar_int("SELECT CAST(available AS INTEGER) FROM trading_accounts"
+                         " WHERE date='20261009'"),
+              95000);
+    EXPECT_GT(scalar_int("SELECT seq FROM trading_accounts WHERE date='20261009'"), first_seq)
+        << "each successful query takes a new account-level seq";
+}
+
+TEST_F(TdPositionLifecycleTest, DaySwitchFundQueriesCoexistAsTwoDayRows) {
+    // 交易日 D1：持仓 + 资金写入 D1 行。
+    feed_position_snapshot({position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, /*is_last=*/true)});
+    session_->on_rsp_qry_trading_account(trading_account_row(/*is_last=*/true, 100000.0, 85000.0));
+    flush_persist();
+    ASSERT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261009'"), 1);
+    const int64_t day1_seq = scalar_int("SELECT seq FROM trading_accounts WHERE date='20261009'");
+
+    // 日切 → 重连/新登录链：新会话（生产上 = 交易日推进后的重新登录）写 D2 行。
+    session_.reset();
+    session_ = std::make_unique<AccountSession>("acc1", *order_id_meta_, *writer_, *persist_,
+                                                queue_, timer_queue_);
+    const int32_t next_day = day(2026, 10, 10);
+    session_->set_trading_day(next_day);
+    feed_position_snapshot({position_row("IF2506", 2, 0, 2.0 * 300.0 * 3910.0, /*is_last=*/true)});
+    session_->on_rsp_qry_trading_account(trading_account_row(/*is_last=*/true, 130000.0, 70000.0));
+    flush_persist();
+
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts"), 2) << "two trading days coexist";
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261010'"), 1);
+
+    // 历史日行不可变：余额与 seq 都保持 D1 自己的值。
+    EXPECT_EQ(scalar_int("SELECT CAST(balance AS INTEGER) FROM trading_accounts"
+                         " WHERE date='20261009'"),
+              100000);
+    EXPECT_EQ(scalar_int("SELECT seq FROM trading_accounts WHERE date='20261009'"), day1_seq);
+    // 新日行是新查询结果。
+    EXPECT_EQ(scalar_int("SELECT CAST(balance AS INTEGER) FROM trading_accounts"
+                         " WHERE date='20261010'"),
+              130000);
+    // 锚点日一致性：资金行与持仓行同属 D2（快照表同进同退）。
+    EXPECT_EQ(scalar_int("SELECT MAX(date) FROM positions"),
+              scalar_int("SELECT MAX(date) FROM trading_accounts"));
+}
+
+TEST_F(TdPositionLifecycleTest, NewSessionSameDayFundQueryOverwritesRowInPlace) {
+    // 同一交易日内的重连/删户重加：新会话的首轮成功查询把同一行覆盖（不追加、不丢行）。
+    feed_position_snapshot({position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, /*is_last=*/true)});
+    session_->on_rsp_qry_trading_account(trading_account_row(/*is_last=*/true, 100000.0, 85000.0));
+    flush_persist();
+    ASSERT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts"), 1);
+
+    session_.reset();
+    session_ = std::make_unique<AccountSession>("acc1", *order_id_meta_, *writer_, *persist_,
+                                                queue_, timer_queue_);
+    session_->set_trading_day(kDay);
+    feed_position_snapshot({position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, /*is_last=*/true)});
+    session_->on_rsp_qry_trading_account(trading_account_row(/*is_last=*/true, 99000.0, 84000.0));
+    flush_persist();
+
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts"), 1);
+    EXPECT_EQ(
+        scalar_int("SELECT CAST(balance AS INTEGER) FROM trading_accounts WHERE date='20261009'"),
+        99000);
 }
 
 }  // namespace

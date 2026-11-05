@@ -18,6 +18,7 @@ import { useTdOrdersStore } from '@/stores/tdOrders'
 import { useTdPositionsStore } from '@/stores/tdPositions'
 import { useTdStatsStore } from '@/stores/tdStats'
 import { useTdTradesStore } from '@/stores/tdTrades'
+import { useTdTradingAccountsStore } from '@/stores/tdTradingAccounts'
 import { useToastStore } from '@/stores/toast'
 import type { ProcessStatusPayload, MdConfigPayload } from '@/types/api'
 
@@ -38,11 +39,12 @@ registerHandler('data_changed', (payload) => {
   }
   if (scope === 'td') {
     // 契约 webui-ws §2.3：td = 交易数据基线失效（日切 / 在线集合变化 / 账户集合增减）。
-    // 前端清空委托/成交/持仓并重拉基线；统计无 WS 推送（§5 第 10 条），同一条消息负责
-    // 「标记失效 + 立即重拉」，因此这里追加一次统计重拉而不是替换委托调用（资金随 #250 接入）。
+    // 前端清空委托/成交/持仓/资金并重拉基线；统计无 WS 推送（§5 第 10 条），同一条消息负责
+    // 「标记失效 + 立即重拉」，因此这里追加一次统计重拉而不是替换委托调用。
     void useTdOrdersStore().handleDataChanged(scope)
     void useTdTradesStore().handleDataChanged(scope)
     void useTdPositionsStore().handleDataChanged(scope)
+    void useTdTradingAccountsStore().handleDataChanged(scope)
     void useTdStatsStore().handleDataChanged()
     return
   }
@@ -70,12 +72,20 @@ registerHandler('td_position_info', (payload) => {
   useTdPositionsStore().applyPositionEvent(payload)
 })
 
+registerHandler('td_trading_account', (payload) => {
+  // 契约 webui-ws §2.5：资金增量事件，payload 即契约 rest §2.9.4 资金行。
+  // 资金同样是**绝对态**（无 sort_key），业务键 = account_id：同键 seq 大者胜；
+  // 同账户 seq 严格回退 = 数据重置 → store 内部清空并重拉基线（契约 webui-ws §5 第 8 条）。
+  useTdTradingAccountsStore().applyTradingAccountEvent(payload)
+})
+
 registerHandler('td_recent', (payload) => {
   // 契约 webui-ws §2.5：建连补发（snapshot 之后定向一次，无事件也发空数组）。
   // 补发有界，不能替代基线：各 store 只认领自己事件类型后合并 + 重拉 REST 基线（§5 第 7 条）。
   useTdOrdersStore().applyRecent(payload)
   useTdTradesStore().applyRecent(payload)
   useTdPositionsStore().applyRecent(payload)
+  useTdTradingAccountsStore().applyRecent(payload)
 })
 
 registerHandler('log_line', (payload) => {

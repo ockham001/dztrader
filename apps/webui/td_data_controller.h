@@ -11,16 +11,18 @@
 #include "td_domain_service.h"
 #include "td_orders_query.h"
 #include "td_positions_query.h"
+#include "td_trading_accounts_query.h"
 #include "td_trades_query.h"
 
 namespace dztrader::webui {
 
 /// 交易数据 REST（契约 rest §2.9）：委托列表 `GET /api/td/orders` + 成交列表
-/// `GET /api/td/trades` + 持仓列表 `GET /api/td/positions` + 统计 `GET /api/td/stats`。
+/// `GET /api/td/trades` + 持仓列表 `GET /api/td/positions` + 资金列表
+/// `GET /api/td/trading_accounts` + 统计 `GET /api/td/stats`。
 ///
 /// 委托/成交列表口径（§2.9.1）：在线（Ready）账户 + 当前交易日，由 `TdDomainService` 解析；
-/// 持仓列表口径不同：**全部已登记账户（含离线）+ 各账户锚点日**，账户全集与锚点日由
-/// `TdPositionsQuery` 自己从库里取（ADR 0045/0046）。记录一律只读直查交易库（ADR 0043），
+/// 持仓/资金列表口径不同：**全部已登记账户（含离线）+ 各账户锚点日**，账户全集与锚点日由
+/// 查询对象自己从库里取（ADR 0045/0046）。记录一律只读直查交易库（ADR 0043），
 /// 不读镜像、不走帧。降级（§2.9.8）由查询对象返回 200 + `available:false`，controller
 /// 不加自己的错误码。
 ///
@@ -36,21 +38,25 @@ public:
     /// @param orders 委托列表只读查询
     /// @param trades 成交列表只读查询
     /// @param positions 持仓列表只读查询
+    /// @param trading_accounts 资金列表只读查询（不分页，契约 rest §2.9.2）
     TdCtrl(std::shared_ptr<Repository> repo,
            std::shared_ptr<TdDomainService> domain,
            std::shared_ptr<TdOrdersQuery> orders,
            std::shared_ptr<TdTradesQuery> trades,
-           std::shared_ptr<TdPositionsQuery> positions)
+           std::shared_ptr<TdPositionsQuery> positions,
+           std::shared_ptr<TdTradingAccountsQuery> trading_accounts)
         : ControllerBase(std::move(repo)),
           domain_(std::move(domain)),
           orders_(std::move(orders)),
           trades_(std::move(trades)),
-          positions_(std::move(positions)) {}
+          positions_(std::move(positions)),
+          trading_accounts_(std::move(trading_accounts)) {}
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(TdCtrl::get_orders, "/api/td/orders", drogon::Get);
     ADD_METHOD_TO(TdCtrl::get_trades, "/api/td/trades", drogon::Get);
     ADD_METHOD_TO(TdCtrl::get_positions, "/api/td/positions", drogon::Get);
+    ADD_METHOD_TO(TdCtrl::get_trading_accounts, "/api/td/trading_accounts", drogon::Get);
     ADD_METHOD_TO(TdCtrl::get_stats, "/api/td/stats", drogon::Get);
     METHOD_LIST_END
 
@@ -73,6 +79,13 @@ public:
     void get_positions(const drogon::HttpRequestPtr& req,
                        std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
+    /// GET `/api/td/trading_accounts`：**只接受 `accounts`**（`limit`/`cursor` 被忽略，
+    /// 契约 §2.9.2：资金不分页、`next_cursor` 恒 null）；账户范围 = 全部已登记账户
+    /// （含离线），按各账户锚点日取行，无记录账户返回 `has_data:false` 占位行
+    /// （契约 §2.9.4）。该端点没有 400 参数错误；可用/降级 → 200（契约 §2.9.8）。
+    void get_trading_accounts(const drogon::HttpRequestPtr& req,
+                              std::function<void(const drogon::HttpResponsePtr&)>&& callback);
+
     /// GET `/api/td/stats`：**忽略全部 query 参数**（stats 不接受 accounts/limit/cursor，
     /// 契约 §2.9.5；传了也不 400）。未装配 / 未就绪 → 200 `not_ready`，不返回 5xx
     /// （§2.9.8 精神）。
@@ -84,6 +97,7 @@ private:
     std::shared_ptr<TdOrdersQuery> orders_;
     std::shared_ptr<TdTradesQuery> trades_;
     std::shared_ptr<TdPositionsQuery> positions_;
+    std::shared_ptr<TdTradingAccountsQuery> trading_accounts_;
 };
 
 }  // namespace dztrader::webui

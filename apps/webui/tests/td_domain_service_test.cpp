@@ -209,6 +209,28 @@ protected:
         feed_frame(router_, DZ_FRAME_POSITION_INFO, info);
     }
 
+    static DzTradingAccount make_trading_account(const std::string& account,
+                                                 int32_t date,
+                                                 uint64_t seq) {
+        DzTradingAccount fund{};
+        dztrader::copy_string(fund.account_id, account.c_str(), true);
+        fund.balance = 1000000.0;
+        fund.available = 850000.5;
+        fund.frozen = 12000.25;
+        fund.commission = 345.75;
+        fund.margin = 150000.0;
+        fund.withdraw_quota = 800000.0;
+        fund.deposit = 50000.0;
+        fund.withdraw = 300.5;
+        fund.date = date;
+        fund.seq = seq;
+        return fund;
+    }
+
+    void feed_trading_account(const DzTradingAccount& fund) {
+        feed_frame(router_, DZ_FRAME_TRADING_ACCOUNT, fund);
+    }
+
     /// 建真 schema 库并写入一条合约 price_tick。
     std::string create_db_with_tick(const std::string& instrument_id, double price_tick) {
         const std::string path = (dir_ / "trade.db").string();
@@ -999,6 +1021,95 @@ TEST_F(TdDomainServiceTest, OfflineClearsBothOrderAndTradeEventsForThatAccount) 
     ASSERT_EQ(service_->recent_events()["events"].size(), 2U);
     offline("ACC1");
     EXPECT_TRUE(service_->recent_events()["events"].empty());
+}
+
+// ===== TRADING_ACCOUNT → WS td_trading_account（契约 webui-ws §2.2/§2.5、rest §2.9.4）=====
+
+TEST_F(TdDomainServiceTest, TradingAccountForOnlineAccountIsBroadcastAsRowPayload) {
+    ready("ACC1", day_epoch(2026, 10, 9));
+    ws_.messages.clear();
+
+    feed_trading_account(make_trading_account("ACC1", day_epoch(2026, 10, 9), 1850));
+
+    const auto* message = find_broadcast("td_trading_account");
+    ASSERT_NE(message, nullptr);
+    // 契约 webui-ws §2.5：payload 即行对象（与 REST items 同 schema），instance_id 为空。
+    EXPECT_TRUE(message->instance_id.empty());
+    const auto& row = message->data;
+    EXPECT_EQ(row["account_id"].get<std::string>(), "ACC1");
+    EXPECT_EQ(row["date"].get<std::string>(), "20261009");
+    EXPECT_TRUE(row["has_data"].get<bool>());
+    EXPECT_DOUBLE_EQ(row["balance"].get<double>(), 1000000.0);
+    EXPECT_DOUBLE_EQ(row["available"].get<double>(), 850000.5);
+    EXPECT_DOUBLE_EQ(row["frozen"].get<double>(), 12000.25);
+    EXPECT_DOUBLE_EQ(row["commission"].get<double>(), 345.75);
+    EXPECT_DOUBLE_EQ(row["margin"].get<double>(), 150000.0);
+    EXPECT_DOUBLE_EQ(row["withdraw_quota"].get<double>(), 800000.0);
+    EXPECT_DOUBLE_EQ(row["deposit"].get<double>(), 50000.0);
+    EXPECT_DOUBLE_EQ(row["withdraw"].get<double>(), 300.5);
+    EXPECT_EQ(row["seq"].get<uint64_t>(), 1850U);
+    // 资金行没有 sort_key（契约 rest §2.9.4）；也不返回平台内部列。
+    EXPECT_FALSE(row.contains("sort_key"));
+    EXPECT_FALSE(row.contains("gateway"));
+    EXPECT_FALSE(row.contains("ext"));
+}
+
+TEST_F(TdDomainServiceTest, TradingAccountForOfflineAccountIsNotBroadcast) {
+    ready("ACC1", day_epoch(2026, 10, 9));
+    ws_.messages.clear();
+    feed_trading_account(make_trading_account("ACC2", day_epoch(2026, 10, 9), 1));
+    EXPECT_EQ(find_broadcast("td_trading_account"), nullptr);
+}
+
+TEST_F(TdDomainServiceTest, TradingAccountBeforeAnyReadyIsNotBroadcast) {
+    // 登录收尾链的资金帧在 Ready 之前到达：不进补发环也不广播（前端靠 Ready 后的
+    // REST 基线拿同一批数据）。契约 td-data-sync §8：只转发在线账户的帧。
+    ws_.messages.clear();
+    feed_trading_account(make_trading_account("ACC1", day_epoch(2026, 10, 9), 1));
+    EXPECT_EQ(find_broadcast("td_trading_account"), nullptr);
+}
+
+TEST_F(TdDomainServiceTest, TradingAccountJoinsTheSharedRecentRing) {
+    ready("ACC1", day_epoch(2026, 10, 9));
+    feed_order(make_order("ACC1", 1, day_epoch(2026, 10, 9), 32400, 1));
+    feed_trade(make_trade("ACC1", "0000000001", 1, day_epoch(2026, 10, 9), 32401, 2));
+    feed_position(make_position("ACC1", "rb2601", day_epoch(2026, 10, 9), 3));
+    feed_trading_account(make_trading_account("ACC1", day_epoch(2026, 10, 9), 4));
+
+    const nlohmann::json payload = service_->recent_events();
+    const auto& events = payload["events"];
+    // 契约 td-data-sync §8：同一账户环同时容纳委托/成交/持仓/资金事件，按入环先后从旧到新。
+    ASSERT_EQ(events.size(), 4U);
+    EXPECT_EQ(events[0]["type"].get<std::string>(), "td_order_report");
+    EXPECT_EQ(events[1]["type"].get<std::string>(), "td_trade_report");
+    EXPECT_EQ(events[2]["type"].get<std::string>(), "td_position_info");
+    EXPECT_EQ(events[3]["type"].get<std::string>(), "td_trading_account");
+    EXPECT_EQ(events[3]["data"]["account_id"].get<std::string>(), "ACC1");
+}
+
+TEST_F(TdDomainServiceTest, TradingAccountDoesNotTouchStatsCounters) {
+    const std::string path = create_stats_db();
+    inject_stats_query(path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+    // 契约 rest §2.9.5：统计 4 值只来自**委托**行；资金帧不推进计数器。
+    feed_trading_account(make_trading_account("ACC1", day_epoch(2026, 10, 9), 1));
+    expect_stats(0, 0, 0, 0);
+}
+
+TEST_F(TdDomainServiceTest, TradingAccountRingCapacityIsSharedWithOtherTradeEvents) {
+    ready("ACC1", day_epoch(2026, 10, 9));
+    for (size_t i = 0; i < kTdRecentCapacityPerAccount; ++i) {
+        feed_order(make_order("ACC1", 1000 + static_cast<int64_t>(i), day_epoch(2026, 10, 9), 32400,
+                              static_cast<uint64_t>(i) + 1));
+    }
+    feed_trading_account(make_trading_account(
+        "ACC1", day_epoch(2026, 10, 9), static_cast<uint64_t>(kTdRecentCapacityPerAccount) + 1));
+
+    const nlohmann::json payload = service_->recent_events();
+    const auto& events = payload["events"];
+    ASSERT_EQ(events.size(), kTdRecentCapacityPerAccount);
+    EXPECT_EQ(events.back()["type"].get<std::string>(), "td_trading_account");
+    EXPECT_EQ(events.front()["data"]["order_id"].get<int64_t>(), 1001);
 }
 
 }  // namespace
