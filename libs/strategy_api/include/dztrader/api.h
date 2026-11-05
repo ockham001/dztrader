@@ -383,7 +383,7 @@ typedef struct DzDatabase DzDatabase;
 DZ_API DzDatabase* dz_db_open(const char* path);
 
 /**
- * @brief 打开本地交易库（固定路径；首次调用懒打开并缓存进程级句柄）
+ * @brief 打开本地交易库（固定路径；首次调用懒打开并缓存进程级入口）
  *
  * 交易库固定为本地 SQLite `<DZTRADER_HOME>/db/trade.db`（ADR 0041），**只读打开**，
  * 库不存在时失败、不自动建库。路径只由 `DZTRADER_HOME` 决定：`database.json` 的
