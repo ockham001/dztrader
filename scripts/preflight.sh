@@ -4,7 +4,8 @@
 # 覆盖：日志格式 / clang-format 21.x / 文档链接（含活跃文档里反引号路径**与代码符号**的
 #       存在性，以及 apps/libs 源码注释里显式契约 §N 引用的目标存在性）/ 测试可移植性+
 #       临时目录隔离 / MSVC hazard lint / 内置 nlohmann/json 版本一致性 / gtest 发现超时
-#       纪律（#227）/ 前端五件套。
+#       纪律（#227）/ 门禁脚本参数自测（#281，build.sh/test.sh 重复 flag 必须累积）/
+#       前端五件套。
 #       MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
 #       Linux 编译器拦不到，由 scripts/check_msvc_hazards.py 做源码级 lint；
 #       conanfile.py 与内置 JSON 单头的版本漂移由 scripts/check_json_vendor_version.py 拦住。
@@ -172,6 +173,16 @@ check_push_scope_selftest() {
     "$ROOT/scripts/check-push-scope.sh" --selftest
 }
 
+check_script_args() {
+    # 门禁脚本参数解析自测（#281）：`TARGET="${2:?}"` / `TEST_NAME="${2:?}"` 是覆盖式赋值，
+    # 重复传 flag 只有最后一个生效且退出码 0——#250 实测 7 个 target 只构建了 1 个，
+    # `gate: OK build` 假绿。已有两道机械防线（#190 verdict + last-status、#75/#81 管道）
+    # 都只覆盖**管道**，不覆盖**参数**，这是同一失败类别里未被覆盖的入口。
+    # selftest 用假 cmake/ctest/flock 断言真实构造出的命令行包含全部 flag 值；
+    # 实现改回「只留最后一个」时多 target / 多 test-name 用例立刻红。
+    "$PYTHON" "$ROOT/scripts/tests/test_script_args.py" --selftest
+}
+
 check_orphan_exports() {
     # 孤儿导出（#274）：本仓的收敛手法是「抽共用模块 + 保留旧名转发」，这个手法天然生产
     # 死定义，而两处现有护栏都不管——`noUnusedLocals` 不查 `export`，C++ 头文件里未使用的
@@ -240,13 +251,27 @@ check_frontend() {
         npm run type-check && npm run lint && npm run lint:css && npm test
     ) || return 1
 
+    # generated.ts 新鲜度判据 = 「gen:types 是否幂等」，不是工作区与 git 索引/HEAD 的差异。
+    # 收尾流程里门禁在提交之前（closeout §2 → §3）：按 git 比，已正确重生成、只是还没
+    # add/commit 的合法状态会被误报 stale（#251 实测 124 行新内容被判成漂移，白跑 40s +
+    # 一轮诊断）。改比 HEAD 同样不行——`git diff HEAD` 比的是工作区 vs HEAD，暂存与否都
+    # 报差异（#281 实测 rc：未暂存 1 / 已暂存 1 / 干净 0），等于要求先提交才能跑门禁。
+    # 幂等性判据只问「再生成一次会不会改动文件」，与暂存、提交、HEAD 位置全都无关。
+    local types_file="$fe/src/types/generated.ts"
+    if [ ! -f "$types_file" ]; then
+        echo "error: generated.ts missing; run ./scripts/build.sh to restore it" >&2
+        return 1
+    fi
+    local hash_before hash_after
+    hash_before="$(git hash-object -- "$types_file")"
     (
         cd "$fe" || exit 1
         npm run gen:types
     ) || return 1
-    if ! git diff --exit-code -- apps/webui/frontend/src/types/generated.ts >/dev/null; then
-        echo "error: generated.ts is stale; commit the regenerated file" >&2
-        git diff --stat -- apps/webui/frontend/src/types/generated.ts >&2
+    hash_after="$(git hash-object -- "$types_file")"
+    if [ "$hash_before" != "$hash_after" ]; then
+        echo "error: generated.ts was stale and has just been regenerated; include it in the commit" >&2
+        git diff --stat HEAD -- "$types_file" >&2 || true
         return 1
     fi
 }
@@ -264,6 +289,7 @@ run_step "ci-log error pattern" check_ci_log_pattern
 run_step "gtest discovery timeout (#227)" check_gtest_discovery_timeout
 run_step "commit subject rules (#265)" check_commit_subject
 run_step "push-scope base resolution (#265)" check_push_scope_selftest
+run_step "gate script arg parsing (#281)" check_script_args
 run_step "Windows CI budget bands (#267)" check_ci_budget
 run_step "orphan exports (#274)" check_orphan_exports
 if [ "$C_ONLY" -eq 0 ]; then

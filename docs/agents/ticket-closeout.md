@@ -49,7 +49,7 @@
 ./scripts/gate.sh preflight
 ```
 
-`gate.sh` 是 agent 侧的统一入口：同一 build tree 用 `flock` 串行（并行子代理不会互相踩 ninja）、自动导出 ccache 环境、输出落 `.cache/gate/`、返回**真实退出码**。人工可直接跑 `build.sh` / `test.sh` / `preflight.sh` 等价命令。**要短输出用 `./scripts/gate.sh build|test|preflight --tail N`**（成功留 N 行、失败留 max(N,30) 行）；**不要**给门禁命令接 `| tail` / `| head`——管道会把失败吞成 exit 0（#75 的 wait-ci 超时、#81 的 ninja 失败都因此被记成假绿）。
+`gate.sh` 是 agent 侧的统一入口：同一 build tree 用 `flock` 串行（并行子代理不会互相踩 ninja）、自动导出 ccache 环境、输出落 `.cache/gate/`、返回**真实退出码**。人工可直接跑 `build.sh` / `test.sh` / `preflight.sh` 等价命令。**要短输出用 `./scripts/gate.sh build|test|preflight --tail N`**（成功留 N 行、失败留 max(N,30) 行）。给门禁命令接 `| tail` / `| head` 只会丢退出码（#75 的 wait-ci 超时、#81 的 ninja 失败曾因此被记成假绿），但 `gate.sh` 的 verdict 行固定打在输出**末尾**、结果同时原子写入 `.cache/gate/last-status`，所以**结论仍可见**：判绿看 `gate: OK` 行或 last-status，不要只看 shell 退出码（#249–#251 实测 83 次接管道、0 次假绿）。输出长度来自失败摘录 max(N,30)，与是否接管道无关——**不要**靠调小 `--tail` 默认值解决长度问题。**`wait-ci.sh` 例外**：它本就静默、退出码就是 CI 结论、没有 verdict 行兜底，别接管道。
 
 票内并行期间只跑定向作业即可（不必每轮全量，收尾仍须跑上面的全量门禁）：
 
@@ -58,9 +58,14 @@
 ./scripts/gate.sh test --tail 8 --test-name <regex>
 ```
 
-`gate.sh` 只解析自己的 `--tail N`，其余参数原样透传：`build.sh` 支持 `-t|--target`（→ `cmake --build --target`）、`test.sh` 支持 `-t|--test-name <regex>`（→ `ctest -R`）。**票内并行期间用 `--target` / `--test-name` 迭代；所有写作用域完成后才跑全量 build/test**——build 树中间态（他人在途文件未收敛）下的全量构建会因别人的半成品而红，纯浪费（#243/#244/#245 门禁墙钟 13–23 min，其中多轮全量 build 落在写作用域未完成期间）。
+`gate.sh` 只解析自己的 `--tail N`，其余参数原样透传：`build.sh` 支持 `-t|--target`（→ `cmake --build --target`）、`test.sh` 支持 `-t|--test-name <regex>`（→ `ctest -R`）与 `--list`（→ `ctest -N`，只读列出用例名，不取构建锁）。**票内并行期间用 `--target` / `--test-name` 迭代；所有写作用域完成后才跑全量 build/test**——build 树中间态（他人在途文件未收敛）下的全量构建会因别人的半成品而红，纯浪费（#243/#244/#245 门禁墙钟 13–23 min，其中多轮全量 build 落在写作用域未完成期间）。`--target` / `--test-name` 都**可重复**，重复值累积后一次透传（#281；修复前是覆盖式赋值，只留最后一个且退出码 0，造成门禁假绿）。**唯一例外是 `--list`**：它直通 `ctest -N`，不落 gate 日志、不写 `last-status`（它不是门禁判定）。
 
-`./scripts/preflight.sh` 覆盖：日志格式、clang-format 21.x、文档链接（含契约 §N 引用：活跃文档 + apps/libs 源码注释）、测试可移植性、**MSVC hazard lint**（Windows 头顺序 / C4101 等 Linux 编译器拦不到的失败）、**内置 JSON 版本一致性**（conanfile / 单头 / `VENDORED.md` 三方，含自测）、前端 `type-check` / `lint` / `lint:css` / `vitest` / `gen:types` 新鲜度。任一项红就停，**先修红，不叠加新改动**。CI linux job 复用同一脚本（`--c-only`）。
+定向迭代的两个高频踩坑（#249–#251 合计浪费 10 次 gate 调用）：
+
+- **`--test-name` 的 regex 匹配 `<Fixture>.<Case>`（gtest 用例全名），不是源文件名**：`--test-name td_config_test` 匹配不到任何用例，`ctest -R` 零匹配退出码 **8**（`No tests were found!!!`）——那**不是**测试失败，与「用例红了」要分开判断。查用例名用 `./scripts/gate.sh test --list`（直通 `ctest -N`，一行一个用例名，一次调用查全量）。
+- **`--target` 的命名规则 = 模块前缀 + 测试源文件名去 `.cpp`（保留 `_test`）**：`apps/webui/tests/<name>.cpp` → `dzweb_<name>`、`apps/ctp/tests/td_<name>.cpp` → `dztd_ctp_td_<name>`、`apps/master/tests/<name>.cpp` → `dztraderd_<name>`、`libs/<mod>/tests/<name>.cpp` → `dz<mod>_<name>`；冒烟测试是例外 `dz_smoke_test`（#251 曾按源文件名猜 target、连错 3 次：前缀不是 `dztd_` 而是 `dztd_ctp_`）。
+
+`./scripts/preflight.sh` 覆盖：日志格式、clang-format 21.x、文档链接（含契约 §N 引用：活跃文档 + apps/libs 源码注释）、测试可移植性、**MSVC hazard lint**（Windows 头顺序 / C4101 等 Linux 编译器拦不到的失败）、**内置 JSON 版本一致性**（conanfile / 单头 / `VENDORED.md` 三方，含自测）、**门禁脚本参数自测**（#281：`build.sh`/`test.sh` 的重复 flag 必须累积，用假 `cmake`/`ctest` 断言真实命令行）、前端 `type-check` / `lint` / `lint:css` / `vitest` / `gen:types` 幂等性（再生成不改文件即通过，与暂存/提交次序无关）。任一项红就停，**先修红，不叠加新改动**。CI linux job 复用同一脚本（`--c-only`）。
 
 > **门禁结果可追溯（#190）**：`gate.sh` 的最终 `gate: OK|FAILED` 行固定打在输出**末尾**（`| tail -2` 也可见），每次结果原子写入 `.cache/gate/last-status`。`.githooks/pre-push` 会拒绝「当前 HEAD 上最近一次门禁失败」的推送（HEAD 不符/缺失只警告；应急逃生 `DZ_ALLOW_RED_GATE=1`）。
 
@@ -190,7 +195,7 @@ AGENTS §五「本机沙箱」的细节都放在这里（AGENTS 只留指针，�
 - **CI 绿就关 issue / PR 未合并就关 issue** → 下游卡住、PR 悬空与冲突返工（#91/#92）。
 - **共享工作区留在 feature 分支 / 长期不提交的文档批次占着 `git status`** → 阻塞并行会话（#91→#92；ADR 0026–0030 从 10-22 挂到 10-23）。
 - **逐条 push review 修复** → 每次推送排队/取消 ≈35–40 分钟 CI（#93 取消 3 个 run）。
-- 门禁/等待命令接 `| tail`、`| head` → 退出码被管道吞掉，失败记成假绿（#75 wait-ci 超时、#81 ninja 失败）。规则与正确用法见本文 §2。
+- 门禁命令接 `| tail`、`| head` → 退出码被管道吞掉；结论本身仍可从 verdict 行 / `.cache/gate/last-status` 读到（`wait-ci.sh` 无兜底，别接）。判绿口径见本文 §2。
 - 用 bash `sleep` 等异步子代理 → 白等且触发重复工具提醒（#78 19 次 5028s、#81 10 次 2400s）；子代理完成会自动通知。
 - 省略 issue close → 人工追问，下游 `blocked_by` 卡住。
 - 共享工作区做并行票 → 提交父节点带上另一条线，push 时一并发布。

@@ -1,5 +1,6 @@
 #include "td/td_config.h"
 #include "test_temp_dir.h"
+#include "tests/td_config_fixture.h"
 
 #include <gtest/gtest.h>
 #include <filesystem>
@@ -23,6 +24,14 @@ protected:
         ofs << "{\"td\": " << content << "}";
     }
 
+    /// 用夹具 seed 写 `dztd_ctp.json`：文件形态与真实配置同源（见 tests/td_config_fixture.h），
+    /// 不在用例里手写 TdConfig 的形状。
+    void write_config(const dztrader::test::TdConfigSeed& seed) {
+        path_ = tmp_dir_ / "dztd_ctp.json";
+        std::ofstream ofs(path_);
+        ofs << dztrader::test::make_td_config_json(seed).dump();
+    }
+
     std::filesystem::path tmp_dir_;
     std::filesystem::path path_;
 };
@@ -30,32 +39,11 @@ protected:
 // --- JSON 加载（契约 td-config §2.4 通用层 + ext 分层）---
 
 TEST_F(TdConfigTest, LoadFullConfig) {
-    write_json(R"json({
-  "qry_account_interval_s": 5,
-  "qry_position_interval_s": 5,
-  "qry_flush_interval_ms": 1500,
-  "ext": {"enable_lock_mode": true},
-  "accounts": [
-    {
-      "account_id": "account_001",
-      "enabled": true,
-      "risk_control_enabled": false,
-      "currency_id": "CNY",
-      "ext": {
-        "broker_id": "9999",
-        "user_id": "00001",
-        "password": "123456",
-        "product_info": "",
-        "frontends": [
-          {"address": "tcp://180.168.146.187:10130", "label": "SimNow 7x24", "enabled": true}
-        ],
-        "auth_code": "",
-        "app_id": "",
-        "flow_dir": ""
-      }
-    }
-  ]
-})json");
+    dztrader::test::TdConfigSeed seed;
+    seed.qry_position_interval_s = 5;
+    seed.frontend_address = "tcp://180.168.146.187:10130";
+    seed.frontend_label = "SimNow 7x24";
+    write_config(seed);
 
     auto cfg = TdConfig::load(path_, "td");
     EXPECT_EQ(cfg.qry_account_interval_s, 5);

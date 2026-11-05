@@ -91,6 +91,7 @@
 | `libs/strategy_api/tests/bench_framework_harness.h` | 框架基准的假 SDK 边界 + 假依赖 + 配置 home（`bench_tick_update` / `bench_bar_close_dual_ma` / `bench_warmup_replay` 共用） |
 | `apps/webui/tests/td_order_row_writer.h` | 按 schema v1 `orders` 表列清单写一行委托（`TdOrderRowSeed` + `insert_td_order_row`）：委托列表 / 统计 / WS 转发测试共用，列清单唯一实现 |
 | `apps/webui/tests/td_trade_row_writer.h` | 按 schema v1 `trades` 表列清单写一行成交（`TdTradeRowSeed` + `insert_td_trade_row`）：成交列表测试共用，列清单唯一实现 |
+| `apps/ctp/tests/td_config_fixture.h` | `dztd_ctp.json` 的 `td` section 唯一实现（`TdConfigSeed` + `make_td_config_json()`）：先构造 `TdConfig` 再经宏 `to_json` 出 JSON，零手写键字面量；形状漂移在夹具使用方 target（`dztd_ctp_td_config_test`）编译期暴露。`td_config_test` 与 smoke 共用（#281） |
 
 ## 明确不做
 

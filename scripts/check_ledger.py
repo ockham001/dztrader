@@ -129,8 +129,14 @@ def issue_state(number: int, cache: dict[int, str | None]) -> str | None:
     return cache[number]
 
 
-def tracked_doc_files() -> list[str]:
-    result = run(["git", "ls-files", *DOC_ROOTS])
+def doc_files() -> list[str]:
+    """活跃文档清单：已跟踪 + 未跟踪（未被 gitignore）都要扫。
+
+    不能只列索引里的文件：台账体检按收尾流程在提交之前跑，新建的 md 在 `git add`
+    之前对 `git ls-files`（默认 = 索引）完全隐形，悬空承诺检查会漏扫这些新文档
+    （#281；同形问题见 preflight 的 generated.ts 次序陷阱）。
+    """
+    result = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", *DOC_ROOTS])
     if result.returncode != 0:
         fail(f"git ls-files failed: {result.stderr.strip()}")
     return [line for line in result.stdout.splitlines() if line.endswith(".md")]
@@ -157,7 +163,7 @@ def selftest() -> None:
 def dangling_promises() -> list[tuple[str, int, int, str]]:
     findings: list[tuple[str, int, int, str]] = []
     states: dict[int, str | None] = {}
-    for rel in tracked_doc_files():
+    for rel in doc_files():
         try:
             lines = Path(rel).read_text(encoding="utf-8").splitlines()
         except OSError:
@@ -204,7 +210,7 @@ def main() -> int:
             stale.append((it["number"], it["title"], age))
 
     dangling = dangling_promises()
-    docs = tracked_doc_files()
+    docs = doc_files()
 
     errors = len(closable) + len(dangling)
     warnings = len(stale)

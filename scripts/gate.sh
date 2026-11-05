@@ -14,6 +14,7 @@
 # 用法:
 #   ./scripts/gate.sh build [--tail N] [build.sh 参数...]
 #   ./scripts/gate.sh test  [--tail N] [test.sh 参数...]
+#   ./scripts/gate.sh test --list                    # 直通 ctest -N，一行一个用例名
 #   ./scripts/gate.sh preflight [--tail N] [preflight.sh 参数...]
 #   ./scripts/gate.sh ledger [check_ledger.py 参数...]  # 台账体检（只读；spec 母票/悬空承诺/triage）
 #   ./scripts/gate.sh wait-ci [wait-ci.sh 参数...]   # 透传，前台阻塞，退出码真实
@@ -22,8 +23,10 @@
 #   - 输出落 `.cache/gate/<cmd>-<时间戳>.log`（gitignored）；
 #   - 成功打末尾 8 行（`--tail N` 改为 N 行）；失败打错误行 + 末尾 max(N,30) 行，
 #     并**原样返回被包装命令的退出码**；
-#   - `--tail N` 由 gate.sh 自己解析，不传给被包装命令；要短输出就用它，
-#     不要给门禁命令接 `| tail` / `| head`（管道会吞掉退出码，见 #75/#81 假绿）。
+#   - `--tail N` 由 gate.sh 自己解析，不传给被包装命令；要短输出就用它。
+#   - 门禁命令接 `| tail` / `| head` 只会丢退出码；verdict 行固定末尾 + 结果写
+#     `.cache/gate/last-status`，所以结论仍可见。判绿口径详见
+#     docs/agents/ticket-closeout.md §2（唯一详述处，避免多处漂移）。
 #   - 最终 verdict 行固定打在输出**末尾**（`| tail -2` 也可见）；每次结果原子写入
 #     `.cache/gate/last-status`（cmd/rc/head/time），pre-push 对「当前 HEAD 上最近一次
 #     门禁失败」直接拦截（issue #190；应急逃生 `DZ_ALLOW_RED_GATE=1`）。
@@ -89,6 +92,18 @@ if [ -n "$TAIL_LINES" ]; then
         echo "error: --tail needs a positive integer, got: $TAIL_LINES" >&2
         exit 2
     fi
+fi
+
+# test --list 直通 ctest -N：清单必须完整可见（落盘 + 只打末尾 8 行会截断），且它不是
+# 门禁判定——不写 last-status，免得把「查用例名」写进 pre-push 守卫的历史（#281）。
+# 放在 --tail 解析之后：--list 是查询，--tail N 没有意义，但一起传时不应把它漏给
+# test.sh 变成 "unknown option"。
+if [ "$CMD" = "test" ]; then
+    for arg in "${ARGS[@]}"; do
+        if [ "$arg" = "--list" ]; then
+            exec "$ROOT/scripts/test.sh" "${ARGS[@]}"
+        fi
+    done
 fi
 
 LOG_DIR="$ROOT/.cache/gate"

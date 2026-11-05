@@ -78,3 +78,7 @@ dz_add_test(dz_smoke_test
     SOURCES tests/smoke/smoke_test.cpp tests/test_main.cpp
     LABELS fast PROPERTIES RUN_SERIAL TRUE)
 target_link_libraries(dz_smoke_test PRIVATE dztraderd_obj GTest::gtest)
+# 冒烟测试写 dztd_ctp.json 复用 apps/ctp/tests/td_config_fixture.h（header-only，
+# TdConfig 文件形态单一真相源；该 include 路径同时让 td_config.h 的
+# "common/sched_common.h" 可解析）。
+target_include_directories(dz_smoke_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ctp)
