@@ -618,7 +618,7 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
 
     // 3. 收集所有 enabled 前置地址 (无 enabled 时拒连, 对齐 MD)
     std::vector<std::string> front_addrs;
-    for (const auto& f : cfg->broker.frontends) {
+    for (const auto& f : cfg->ext.frontends) {
         if (f.enabled && !f.address.empty()) {
             front_addrs.push_back(f.address);
         }
@@ -629,10 +629,10 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
         return;
     }
 
-    // 4. flow_dir: cfg->flow_dir 优先 (用户指定), 否则用 flow_dir_ / account_id (每账户独立)
+    // 4. flow_dir: cfg->ext.flow_dir 优先 (用户指定), 否则用 flow_dir_ / account_id (每账户独立)
     std::filesystem::path session_flow_dir;
-    if (!cfg->flow_dir.empty()) {
-        session_flow_dir = cfg->flow_dir;
+    if (!cfg->ext.flow_dir.empty()) {
+        session_flow_dir = cfg->ext.flow_dir;
     } else {
         session_flow_dir = flow_dir_ / account_id;
     }
@@ -660,8 +660,8 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
                 // 持久化通知 (登录 flush 屏障超时 ERROR) 转发 UI; 主循环线程同步调用 (安全)
                 notify_ui_.notify(level, std::move(message), popup);
             });
-        session->open(session_flow_dir.string(), front_addrs, cfg->broker.broker_id,
-                      cfg->broker.user_id, cfg->broker.password, cfg->auth_code, cfg->app_id);
+        session->open(session_flow_dir.string(), front_addrs, cfg->ext.broker_id, cfg->ext.user_id,
+                      cfg->ext.password, cfg->ext.auth_code, cfg->ext.app_id);
         // 注入独立只读连接提供器: 登录日装载当日订单/成交基准 (契约 td-data-sync §3).
         // ensure_read_db 按需重开 (文件缺失时降级 -> 装载失败按登录失败处理).
         session->set_read_db_provider([this]() -> SQLite::Database* {

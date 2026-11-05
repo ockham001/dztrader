@@ -32,15 +32,13 @@ void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req) {
                     }
                 }
             }
-            if (req.params.contains("broker")) {
-                acct.broker = req.params["broker"].get<BrokerEntry>();
+            // 通用层 + 柜台 ext（契约 td-config §2.1 AddAccount）：ext 为该接口类型的连接参数
+            if (req.params.contains("ext")) {
+                acct.ext = req.params["ext"].get<CtpAccountExt>();
             }
-            acct.auth_code = req.params.value("auth_code", "");
-            acct.app_id = req.params.value("app_id", "");
-            acct.flow_dir = req.params.value("flow_dir", "");
             acct.enabled = req.params.value("enabled", true);
             acct.risk_control_enabled = req.params.value("risk_control_enabled", false);
-            acct.currency_id = req.params.value("currency_id", "");
+            acct.currency_id = req.params.value("currency_id", "CNY");
             cfg.accounts.push_back(std::move(acct));
             break;
         }
@@ -58,28 +56,30 @@ void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req) {
             for (auto& a : cfg.accounts) {
                 if (a.account_id == id) {
                     // account_id 是不可变 key (不修改)
-                    // broker 字段级 merge: 未提供的字段保留旧值, password 特殊处理 ****
-                    if (req.params.contains("broker")) {
-                        const auto& bj = req.params["broker"];
-                        a.broker.name = bj.value("name", a.broker.name);
-                        a.broker.broker_id = bj.value("broker_id", a.broker.broker_id);
-                        a.broker.user_id = bj.value("user_id", a.broker.user_id);
-                        a.broker.product_info = bj.value("product_info", a.broker.product_info);
+                    // 通用层与 ext 都是字段级 merge：未提供的字段保留旧值（契约 td-config §2.1）
+                    a.enabled = req.params.value("enabled", a.enabled);
+                    a.risk_control_enabled =
+                        req.params.value("risk_control_enabled", a.risk_control_enabled);
+                    a.currency_id = req.params.value("currency_id", a.currency_id);
+                    if (req.params.contains("ext")) {
+                        const auto& ej = req.params["ext"];
+                        a.ext.broker_id = ej.value("broker_id", a.ext.broker_id);
+                        a.ext.user_id = ej.value("user_id", a.ext.user_id);
+                        a.ext.product_info = ej.value("product_info", a.ext.product_info);
+                        a.ext.auth_code = ej.value("auth_code", a.ext.auth_code);
+                        a.ext.app_id = ej.value("app_id", a.ext.app_id);
+                        a.ext.flow_dir = ej.value("flow_dir", a.ext.flow_dir);
                         // password 特殊处理: "****" 或空串时保留旧密码
                         // (避免脱敏值覆盖真实密码)
-                        auto pwd = bj.value("password", "");
+                        auto pwd = ej.value("password", "");
                         if (pwd != "****" && !pwd.empty()) {
-                            a.broker.password = pwd;
+                            a.ext.password = pwd;
                         }
                         // frontends 是数组, 若提供则整体替换, 不提供则保留
-                        if (bj.contains("frontends")) {
-                            a.broker.frontends = bj["frontends"].get<std::vector<BrokerFrontend>>();
+                        if (ej.contains("frontends")) {
+                            a.ext.frontends = ej["frontends"].get<std::vector<BrokerFrontend>>();
                         }
                     }
-                    a.auth_code = req.params.value("auth_code", a.auth_code);
-                    a.app_id = req.params.value("app_id", a.app_id);
-                    a.flow_dir = req.params.value("flow_dir", a.flow_dir);
-                    a.currency_id = req.params.value("currency_id", a.currency_id);
                     found = true;
                     break;
                 }
@@ -121,8 +121,13 @@ void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req) {
             }
             break;
         }
-        case TdConfigOp::SetLockMode: {
-            cfg.enable_lock_mode = req.params.value("enabled", false);
+        case TdConfigOp::SetExt: {
+            // 进程级柜台特有配置的字段级补丁（契约 td-config §2.1 SetExt）：
+            // 缺失字段保留旧值。旧 SetLockMode 已收敛进这里（ext.enable_lock_mode），不留双实现。
+            if (req.params.contains("ext")) {
+                const auto& ej = req.params["ext"];
+                cfg.ext.enable_lock_mode = ej.value("enable_lock_mode", cfg.ext.enable_lock_mode);
+            }
             break;
         }
         case TdConfigOp::SetQryIntervals: {

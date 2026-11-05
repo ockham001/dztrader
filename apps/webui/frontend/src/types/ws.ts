@@ -6,6 +6,7 @@ import type {
   MdRtnConfigPayload, MdRtnStatusPayload, ShmConfigView, LogLine,
   SysmonSnapshotPayload, SysmonConfigPayload,
   TdOrderRow, TdTradeRow, TdPositionRow, TdTradingAccountRow, TdRecentPayload,
+  TdConfigPayload, TdStatusPayload,
 } from './generated'
 
 // 服务端 → 客户端每类消息的 data 载荷类型（判别联合核心）
@@ -43,6 +44,12 @@ export interface WsDataByType {
   td_position_info: TdPositionRow
   td_trading_account: TdTradingAccountRow
   td_recent: TdRecentPayload
+  // 契约 webui-ws §2.2 交易配置/细状态（镜像域，进 snapshot；全量覆盖、后到覆盖先到）：
+  // - td_rtn_config：data = 脱敏全量配置（契约 td-config §2.4），instance_id = 网关进程名；
+  // - td_rtn_status：data = 账户级细状态（契约 td-status §2.1），instance_id = 网关名:账户ID。
+  // 二者与 md_rtn_config / md_rtn_status 同型，不进 td_recent 补发环。
+  td_rtn_config: TdConfigPayload
+  td_rtn_status: TdStatusPayload
   // 契约 webui-ws §2.4 控制消息 ACK（payload 键）
   md_connect_ack: { source: string; ok: boolean }
   md_disconnect_ack: { source: string; ok: boolean }

@@ -27,12 +27,14 @@ export interface NavItem {
 
 // 顺序即 Sidebar 展示顺序（对齐原 NAV_ITEMS 顺序；vue-router 按 path 匹配，字面路径顺序无关）
 // 404 兜底必须保持最后
-// 占位页路由（trading / strategy / data / settlement / risk）统一带 `wip: true`：
-// 它们是尚未实现的五块功能，导航项必须与 PlaceholderView 的「功能开发中」一致。
+// 占位页路由（strategy / data / settlement / risk）统一带 `wip: true`：
+// 它们是尚未实现的四块功能，导航项必须与 PlaceholderView 的「功能开发中」一致。
+// /trading（#251）已交付真实账户配置页，不再是占位页 → 不带 wip。
 export const appRoutes: RouteRecordRaw[] = [
   { path: '/', name: 'dashboard', component: () => import('@/views/DashboardView.vue'), meta: { title: '仪表盘', icon: 'dashboard' } },
   { path: '/market-sources', name: 'market-sources', component: () => import('@/views/MarketSourcesView.vue'), meta: { title: '行情源', icon: 'ArrowWallRight' } },
-  { path: '/trading', name: 'trading', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '交易账户', icon: 'profile', wip: true } },
+  // 交易账户（#251）：账户配置页（跨网关账户列表 + 增删改启停 + 唯一性冲突提示），已交付 → 不带 wip
+  { path: '/trading', name: 'trading', component: () => import('@/views/TradingAccountsView.vue'), meta: { title: '交易账户', icon: 'profile' } },
   // 交易数据（#246 委托 / #248 成交）：两个 tab 均已交付，不带 wip
   { path: '/trading-data', name: 'trading-data', component: () => import('@/views/TradingDataView.vue'), meta: { title: '交易数据', icon: 'Bar-list' } },
   { path: '/strategy', name: 'strategy', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '策略管理', icon: 'automation', wip: true } },

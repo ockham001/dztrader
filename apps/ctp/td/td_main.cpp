@@ -101,17 +101,21 @@ int main(int argc, char* argv[]) {
 
     SPDLOG_INFO("start | name={} flow={}", name, flow_dir.string());
 
-    // 2. 加载 td section (失败 fatal)
+    // 2. 加载 td section（契约 td-config §6：文件/section 缺失自愈，内容非法致命退出）
     TdConfig td_cfg;
     try {
         td_cfg = TdConfig::load(cfg_path, "td");
     } catch (const std::exception& e) {
-        SPDLOG_CRITICAL("config load failed | error=\"{}\"", e.what());
+        SPDLOG_CRITICAL(
+            "config invalid, refusing to start | path={} error=\"{}\" advice=\"fix "
+            "or delete the file; account config will not be silently reset\"",
+            cfg_path.string(), e.what());
         return 1;
     }
 
     if (auto err = validate(td_cfg)) {
-        SPDLOG_CRITICAL("td config validate failed | error=\"{}\"", *err);
+        SPDLOG_CRITICAL("td config validate failed, refusing to start | path={} error=\"{}\"",
+                        cfg_path.string(), *err);
         return 1;
     }
     // 各 section 配置 (log/auto_login) 已在 TdApi 构造函数体内 load (td_api.cpp), 无需外部加载;

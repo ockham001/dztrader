@@ -6,7 +6,7 @@
 
 与《帧契约：账户登录状态》的分工：`ACCOUNT_STATUS` 面向策略/master 的三态聚合（Offline/LoggingIn/Ready）；本帧面向 UI 的细状态（11 态 + 登录信息 + 进度），按账户上报。
 
-**实现注记**：当前 td 上报的 `DZ_FRAME_TD_RTN_STATUS` payload 为扁平结构（`date` 与 `api_version`/`sys_version` 在顶层、无 `ext`），且 dzweb 未消费；字段名 `date`（原 `trading_day`）已随 #243 落地，通用化 schema（`interface_type` + `ext`）由后续实现票（#251）落地。
+**实现注记**：扁平结构（`date`/`api_version`/`sys_version` 在顶层、无 `ext`）与通用化 schema（`interface_type` + `ext`）的分层已随 #251 落地（`date` 改名随 #243）；dzweb 已消费本帧：按 `instance_id`（= 网关名:账户ID）维护镜像 domain `td_status` 并 WS 推送 `td_rtn_status`（映射见契约 webui-ws §2.2）。
 
 ---
 

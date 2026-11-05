@@ -69,6 +69,11 @@ CREATE TABLE IF NOT EXISTS market_sources (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS td_account_registry (
+    account_id TEXT PRIMARY KEY,
+    gateway TEXT NOT NULL
+);
 )";
 
 constexpr const char* SEED_CONFIG_SQL = R"(

@@ -708,3 +708,127 @@ export interface TdStatsDegraded {
     available: boolean
     reason: TdStatsDegradedReason
 }
+
+// CTP 前置地址（契约 td-config §2.3 Frontend）：连接时至少一个 enabled 且地址非空，否则拒连
+export interface TdCtpFrontend {
+    /** 前置地址，非空，如 tcp://180.168.146.187:10131 */
+    address: string
+    /** 可选人类可读标签，可为空 */
+    label?: string
+    /** 是否启用，默认 true；多个启用前置同时注册，由接口库自动故障切换 */
+    enabled?: boolean
+}
+
+// CTP 账户级 ext（契约 td-config §2.3）。回报中 password 恒为 "****"；请求中缺失/空串/"****" 表示保留旧值（字段级 merge）
+export interface TdCtpAccountExt {
+    /** 经纪公司代码 */
+    broker_id: string
+    /** 用户代码 */
+    user_id: string
+    /** 登录密码；回报脱敏为 ****，请求中缺失/空串/**** 表示保留旧值 */
+    password: string
+    /** 产品信息，可空 */
+    product_info?: string
+    /** 前置地址列表，默认空数组；提供则整体替换 */
+    frontends?: TdCtpFrontend[]
+    /** CTP 认证码，可空 */
+    auth_code?: string
+    /** CTP AppID，可空 */
+    app_id?: string
+    /** 流文件目录；空 = 由网关自动构造 */
+    flow_dir?: string
+}
+
+// CTP 进程级 ext（契约 td-config §2.3，SetExt 补丁目标；缺失字段保留旧值）
+export interface TdCtpProcessExt {
+    /** 开平仓转换 LOCK 模式，默认 true */
+    enable_lock_mode?: boolean
+}
+
+// 交易账户配置（契约 td-config §2.2 通用层 + §2.3 接口类型 ext）：通用层字段缺失时按该节默认值，ext 由目标网关按接口类型校验
+export interface TdAccountConfig {
+    /** 账户标识，不可变 key，全局唯一（跨接口类型，ADR 0045） */
+    account_id: string
+    /** 是否启用，默认 true；禁用后连接请求被拒 */
+    enabled?: boolean
+    /** 账户级风控开关，默认 false */
+    risk_control_enabled?: boolean
+    /** 账户币种，默认 CNY */
+    currency_id?: string
+    /** 该接口类型的连接参数（本期只有 ctp；未知字段忽略，契约 td-config §8） */
+    ext?: TdCtpAccountExt
+}
+
+// 交易网关配置全量回报（契约 td-config §2.4；WS td_rtn_config 的 data，脱敏）
+export interface TdConfigPayload {
+    /** 资金查询间隔（秒），> 0；本轮未接入周期资金查询，保留配置 */
+    qry_account_interval_s: number
+    /** 持仓查询间隔（秒），> 0 */
+    qry_position_interval_s: number
+    /** 流控队列间隔（毫秒），> 0 */
+    qry_flush_interval_ms: number
+    /** 账户配置列表（RTN 全量；每个账户 ext.password 恒为 ****） */
+    accounts: TdAccountConfig[]
+    /** 进程级柜台特有配置 */
+    ext: TdCtpProcessExt
+}
+
+// GET /api/td/accounts 的 accounts[] 条目（契约 rest §2.9.9 账户注册表条目）：gateway 是当前已知归属，enabled 来自最近一次配置帧的通用层
+export interface TdConfigAccountList {
+    /** 账户标识（全局唯一） */
+    account_id: string
+    /** 拥有该账户的交易网关进程名（dztd_*） */
+    gateway: string
+    /** 该账户当前是否启用；重启窗口内注册表恢复的条目回 true（已知降级） */
+    enabled: boolean
+}
+
+// 账户注册表降级原因（契约 rest §2.9.9：dzweb 启动后尚未收到任何 TD_RTN_CONFIG 且平台库恢复加载也未提供条目）
+export type TdAccountsDegradedReason = 'no_gateway_snapshot'
+
+// GET /api/td/accounts 可用响应（契约 rest §2.9.9；accounts 按 account_id 升序，空数组 = 无已知账户）
+export interface TdAccountsListResponse {
+    /** true = 注册表可用 */
+    available: boolean
+    /** 账户注册表条目（跨网关全集），按 account_id 升序 */
+    accounts: TdConfigAccountList[]
+}
+
+// GET /api/td/accounts 降级响应（200 + available=false，契约 rest §2.9.9；只有 available 与 reason）
+export interface TdAccountsDegradedResponse {
+    /** false = 注册表尚不可用（不得把 accounts 当作空） */
+    available: boolean
+    reason: TdAccountsDegradedReason
+}
+
+// 交易网关账户级细状态（契约 td-status §2.2，11 态；值 = 发送方状态机的枚举名）
+export type TdState = 'Idle' | 'Connecting' | 'Connected' | 'Authenticating' | 'Authenticated' | 'LoggingIn' | 'LoggedIn' | 'Confirming' | 'LoadingInstruments' | 'Ready' | 'Disconnected'
+
+// CTP 细状态 ext（契约 td-status §2.3）
+export interface TdCtpStatusExt {
+    /** 接口库版本字符串，构造时设置一次 */
+    api_version?: string
+    /** 登录响应中的系统版本；未登录/进入 Idle 时为空串 */
+    sys_version?: string
+}
+
+// 交易网关账户级细状态全量结构（契约 td-status §2.1；WS td_rtn_status 的 data，始终全量、后到覆盖先到）
+export interface TdStatusPayload {
+    /** 账户标识（与 instance_id 冒号后半段一致） */
+    account_id: string
+    state: TdState
+    /** 会话交易日 YYYYMMDD（交易日，不是自然日）；未登录/进入 Idle 时为空串 */
+    date: string
+    /** 登录时间 YYYY-MM-DD HH:MM:SS（服务器本地时间）；未登录/进入 Idle 时为空串 */
+    login_time: string
+    /** 进度描述（展示文本）；无描述时为空串 */
+    progress_desc: string
+    /** 进度最小值（交易网关为 0） */
+    progress_min: number
+    /** 进度最大值（交易网关为 10） */
+    progress_max: number
+    /** 当前进度值 */
+    progress_current: number
+    /** 柜台特有字段 */
+    ext: TdCtpStatusExt
+}

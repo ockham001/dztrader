@@ -52,10 +52,14 @@ public:
     ///        与库里出现过的 account_id 求并（契约 §2.9.1），不是范围上限。
     /// @param trading_day 当前交易日（持仓端点不用它过滤，仅用于**保持信封形状一致**；
     ///        持仓行的 `date` 是各账户锚点日，不是列表作用域的当前交易日）
+    /// @param registry_accounts 账户注册表账户集合（契约 rest §2.9.1 第三源；默认空 =
+    ///        注册表未就绪，在线集合与库内四表照常兜底）
     /// @return 正常/降级响应体；`nullopt` = 游标非法或作用域不符（应回 400）
-    std::optional<nlohmann::json> execute(const Params& params,
-                                          const std::vector<std::string>& online_accounts,
-                                          const std::optional<std::string>& trading_day) const;
+    std::optional<nlohmann::json> execute(
+        const Params& params,
+        const std::vector<std::string>& online_accounts,
+        const std::optional<std::string>& trading_day,
+        const std::vector<std::string>& registry_accounts = {}) const;
 
 private:
     std::function<std::string()> trade_db_path_;

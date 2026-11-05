@@ -32,7 +32,8 @@ TdTradingAccountsQuery::Params TdTradingAccountsQuery::parse(
 nlohmann::json TdTradingAccountsQuery::execute(
     const Params& params,
     const std::vector<std::string>& online_accounts,
-    const std::optional<std::string>& trading_day) const {
+    const std::optional<std::string>& trading_day,
+    const std::vector<std::string>& registry_accounts) const {
     // 信封：与持仓列表同形（契约 rest §2.9.2）。资金行自己的 date 是各账户锚点日，
     // 信封的 trading_day 是列表作用域的当前交易日，两者不同。`next_cursor` 恒 null
     // ——资金端点不分页（契约 §2.9.2），因此信封构造后不再改写它。
@@ -46,11 +47,11 @@ nlohmann::json TdTradingAccountsQuery::execute(
     }
     sqlite3* db = conn.handle();
 
-    // 账户全集 = 在线 ∪ 库中四表出现过的 account_id（含离线），再过 accounts 过滤。
-    // 与持仓共用 `td_account_scope`：两份实现会让持仓与资金显示不同的账户集合。
+    // 账户全集 = 在线 ∪ 注册表 ∪ 库中四表出现过的 account_id（含离线），再过 accounts
+    // 过滤。与持仓共用 `td_account_scope`：两份实现会让持仓与资金显示不同的账户集合。
     bool accounts_ok = true;
     const std::vector<std::string> registered =
-        td_registered_accounts(db, online_accounts, &accounts_ok);
+        td_registered_accounts(db, online_accounts, registry_accounts, &accounts_ok);
     if (!accounts_ok) {
         return td_degraded_body(kTdReasonQueryFailed);
     }

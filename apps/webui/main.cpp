@@ -43,6 +43,10 @@
 #include "notify_domain_service.h"
 #include "td_domain_service.h"
 #include "td_data_controller.h"
+#include "td_account_registry.h"
+#include "td_account_controller.h"
+#include "td_config_domain_service.h"
+#include "td_status_domain_service.h"
 #include "td_orders_query.h"
 #include "td_positions_query.h"
 #include "td_stats_query.h"
@@ -173,6 +177,13 @@ int main(int argc, char* argv[]) {
     // 共享 MirrorStore 先行构造，ProcessMirror 注入共享镜像（与领域服务共用同一份数据）
     auto mirror_store = std::make_shared<dztrader::webui::MirrorStore>();
     auto process_mirror = std::make_shared<dztrader::webui::ProcessMirror>(*mirror_store);
+
+    // 交易账户注册表（契约 td-config §5 / rest §2.9.9）：平台侧 account_id → gateway 投影，
+    // 内存优先 + platform.db 尽力持久化。启动加载失败 → 从空开始、随各网关配置帧重建
+    // （已知降级：最多少覆盖一个网关）。
+    auto td_account_registry = std::make_shared<dztrader::webui::TdAccountRegistry>(
+        std::make_unique<dztrader::webui::RepositoryTdAccountRegistryStore>(*repo));
+    td_account_registry->load();
 
     // shm 初始化（master 已创建 channel，webui 只 open_only）
     // 共享内存不存在时降级为 API-only 模式（dztraderd 未启动）
@@ -373,6 +384,14 @@ int main(int argc, char* argv[]) {
     // 系统监控领域服务（契约 sysmon）：快照与配置帧的镜像 + WS 广播
     auto sysmon_domain =
         std::make_shared<dztrader::webui::SysmonDomainService>(*mirror_store, *ws_ctrl);
+    // 交易网关配置/细状态领域服务（契约 td-config §4/§8、td-status §3）：镜像 domain
+    // `td_config`（key=网关进程名）/ `td_status`（key=网关名:账户ID）+ WS 广播；
+    // 配置帧到达后按网关整组 reconcile 账户注册表（契约 td-config §5），账户集合变化时
+    // 广播 data_changed{td}（契约 webui-ws §2.3）。
+    auto td_config_domain = std::make_shared<dztrader::webui::TdConfigDomainService>(
+        *mirror_store, *td_account_registry, *ws_ctrl, *ws_ctrl);
+    auto td_status_domain =
+        std::make_shared<dztrader::webui::TdStatusDomainService>(*mirror_store, *ws_ctrl);
 
     // self log_config 镜像初值（原 WsController 构造内逻辑，契约 log：dzweb 自身纳入镜像）
     mirror_store->update(exe_stem, "log_config", self_log->current());
@@ -434,8 +453,13 @@ int main(int argc, char* argv[]) {
                         dztrader::webui::kTdStatsReconcileIntervalSec);
         });
     });
+    // 账户注册表参与持仓/资金的账户全集（契约 rest §2.9.1 第三源）
     drogon::app().registerController(std::make_shared<dztrader::webui::TdCtrl>(
-        repo, td_domain, td_query, td_trades_query, td_positions_query, td_trading_accounts_query));
+        repo, td_domain, td_query, td_trades_query, td_positions_query, td_trading_accounts_query,
+        td_account_registry));
+    // 账户注册表读端点 + 账户配置写端点（契约 rest §2.9.7/§2.9.9）
+    drogon::app().registerController(std::make_shared<dztrader::webui::TdAccountCtrl>(
+        repo, td_account_registry, process_mirror, shm_writer));
 
     // EventMonitor 由 main 持有并直调 start/stop（WsController 不再涉及）。
     // 生命周期：main 栈上 router 先声明、event_monitor 后声明（析构相反），
@@ -466,8 +490,26 @@ int main(int argc, char* argv[]) {
         });
     router.register_json<nlohmann::json>(
         DZ_FRAME_RTN_PROCESS_CONFIG, false,
-        [process_domain](const std::string&, const nlohmann::json& p) {
+        [process_domain, td_account_registry, ws_ctrl](const std::string&,
+                                                       const nlohmann::json& p) {
             process_domain->on_rtn_process_config(p);
+            // 网关被移除时清掉该网关的账户注册表条目（内存 + platform.db，契约 td-config §5）。
+            // 全量进程配置帧的条目消失 = 进程已移除（契约 process），只对 `dztd_*` 生效——
+            // 注册表只装交易网关的账户，别的进程名不该影响它。
+            if (p.is_object()) {
+                std::vector<std::string> live_gateways;
+                for (auto it = p.begin(); it != p.end(); ++it) {
+                    if (it.key().starts_with("dztd_")) {
+                        live_gateways.push_back(it.key());
+                    }
+                }
+                // 注册表里只剩 dztd_* 条目：非 dztd 进程从不写入，因此「不在 live 集合」
+                // 等价于「该网关已移除」。
+                if (td_account_registry->prune_gateways_not_in(live_gateways)) {
+                    // 账户集合变化 → 交易数据基线失效（契约 webui-ws §2.3）。
+                    ws_ctrl->broadcast_data_changed("td");
+                }
+            }
         });
     router.register_json<nlohmann::json>(
         DZ_FRAME_RTN_MD_CONFIG, true,
@@ -518,6 +560,17 @@ int main(int argc, char* argv[]) {
         DZ_FRAME_RTN_SYSMON_CONFIG, true,
         [sysmon_domain](const std::string& s, const nlohmann::json& p) {
             sysmon_domain->on_rtn_sysmon_config(s, p);
+        });
+    // 交易网关配置 / 账户级细状态（契约 td-config §4、td-status §3）：镜像 + WS 广播
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_TD_RTN_CONFIG, true,
+        [td_config_domain](const std::string& s, const nlohmann::json& p) {
+            td_config_domain->on_rtn_td_config(s, p);
+        });
+    router.register_json<nlohmann::json>(
+        DZ_FRAME_TD_RTN_STATUS, true,
+        [td_status_domain](const std::string& s, const nlohmann::json& p) {
+            td_status_domain->on_rtn_td_status(s, p);
         });
 
     // 启动事件通道监听线程（替代原 50ms 轮询的 event channel 部分）

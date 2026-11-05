@@ -123,6 +123,26 @@
 - **资金行只在持仓查询成功后写入**：`on_rsp_qry_trading_account` 的唯一写入点有 `position_query_ok_` 守卫——持仓查询失败时资金行不落库、不推帧，锚点日（两张快照表 `MAX(date)`，ADR 0046）不会被资金行单独推进。
 - **盘中不做周期资金查询**（已知限制，契约 td-data-sync §7）：资金查询只有登录收尾链与失败补查链（`resync_account_data`，持仓成功后按同序重查）两处触发，盘中停在最近一次查询结果；其他终端交易造成的资金变化不收敛到下一次登录。
 
+## 配置（契约 td-config / td-status）
+
+配置与状态 payload 都是**通用层 + 柜台 `ext` 分层**：新增接口类型只换 `ext`，通用层（`account_id` / `enabled` / `risk_control_enabled` / `currency_id`；状态帧的 `state` / `date` / `login_time` / `progress_*`）不变。类型层真相源 `apps/ctp/td/td_config.h` 与 `td_state.h`，JSON schema 以契约为唯一语义真相源。
+
+### 配置结构与持久化
+
+- **文件形态 = 帧形态**：`td` section 与 `RTN_TD_CONFIG` payload 同形（顶层 `qry_account_interval_s` / `qry_position_interval_s` / `qry_flush_interval_ms` / `ext` / `accounts[]`；账户 `ext` 内是 `broker_id` / `user_id` / `password` / `product_info` / `frontends` / `auth_code` / `app_id` / `flow_dir`）。不做「文件旧形 / 帧新形」双序列化——同一事实两处定义必然漂移。代价：**旧扁平格式（连接参数直接在账户对象上）不再兼容**，开发期无迁移义务。
+- **启动加载两级语义**（契约 td-config §6）：文件 / `td` section **缺失** → 用默认值 + 原子修复文件（自愈，首次启动的正常形态，写失败只记 ERROR 不阻断）；内容**非法**（JSON 解析失败 / section 类型不符）→ 记 CRITICAL 后**退出非零码**，不回落默认值。理由：账户连接参数是运维资产，静默清空比启动失败更危险，且自愈后的空账户集无法与"本来就空"区分。旧扁平格式因未知字段被忽略（总则 §8）不会触发解码失败，但账户 `ext` 为空 → `validate()` 以 `broker_id empty` 拒绝 → 同样致命退出。
+- **启动主动推一次**：`run()` 首次进入即 `report_full_snapshot()`（首帧 `report_config()`），供 dzweb 账户注册表启动快照（契约 td-config §4 场景 2）。配置在 `td_main` 中先于 `TdApi` 构造加载，推的是已加载的当前值。
+- **op 收敛**：进程级柜台特有配置统一走 `SetExt`（字段级补丁），旧 `SetLockMode` 已删除，不留双实现；`ext.enable_lock_mode` 是本进程唯一形态。账户级 op（`AddAccount` / `UpdateAccount` / `SetAccountEnabled` / `SetAccountRiskControl` / `SetAccountCurrency`）与 `SetQryIntervals` 语义见契约 §2.1。
+- **状态保护**：`UpdateAccount` / `RemoveAccount` 在账户有活跃会话时拒绝（连接参数不可热改；删除时销毁会话并推 Offline，不删交易数据，ADR 0045）；其余 op 不受状态保护。
+- **失败四件套**（总则 §8）：回滚旧值 + 日志 + `NOTIFY_UI` 错误弹窗 + 回 `RTN_TD_CONFIG` 旧值，清前端 pending。
+- **唯一性边界**：本进程只查自身配置文件内的 `account_id` 重复，**不是**跨网关防线——跨网关唯一性由 dzweb 权威校验（契约 td-config §5，ADR 0045）。
+
+### 状态上报
+
+- 账户级细状态 `RTN_STATUS` 按 `instance_id = <网关名>:<account_id>` 推送（总则 §5 复合键例外），该复合键只用于帧路由与 dzweb 镜像分区，**账户身份仍是 `account_id`**。
+- `date` 是**会话交易日**（登录响应确定），断线（`Disconnected`，SDK 自动重连中）期间不清空——它是本交易日全部业务数据的时间锚；进入 `Idle` 才清 `date` / `login_time` / `ext.sys_version`（`ext.api_version` 是进程生命周期常量，保留）。
+- 日切（会话交易日变化，含日切后重新登录）以新 `date` 全量推送；前端以字段值变化为准，不自行推断清空时机。
+
 ## 持久化（trade.db）
 
 交易数据（委托 / 成交 / 持仓 / 资金，以及暂留的合约字典）由本进程异步写入 `$DZTRADER_HOME/db/trade.db`。**`trade.db` 不是交易真相源**（真相在柜台回报与 td 内存态）：持久化失败只降级，不阻塞交易、帧推送与 WebSocket。schema 与业务键见 [ADR 0041](../adr/0041-sqlite-only-trade-store-schema-v1.md)，失败策略见 [ADR 0042](../adr/0042-persist-failure-backpressure-and-retry.md)，账户快照生命周期见 [ADR 0045](../adr/0045-trading-account-identity-lifecycle-and-accuracy.md)。

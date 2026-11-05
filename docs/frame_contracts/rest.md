@@ -6,7 +6,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 交易数据读端点（§2.9）直查交易库，不读镜像、不走帧：dzweb 不保留委托/成交/持仓/资金记录镜像，库是唯一真相源（ADR 0043）。
 
-> **实现注记**：`TdDataService` 记录镜像已随 #246 删除；委托列表端点（`GET /api/td/orders`）与 WS 委托事件 / 建连补发已随 #246 落地；统计端点（`GET /api/td/stats`，§2.9.5）与 dzweb 统计计数器已随 #247 落地（`apps/webui/td_stats{,_query}.{h,cpp}`，重算查询与委托列表共用只读连接抽取 `td_read_db.{h,cpp}`）；成交列表端点（`GET /api/td/trades`）与 WS 成交事件已随 #248 落地（`apps/webui/td_trades_query.{h,cpp}`，列表参数 / 游标抽为 `apps/webui/td_list_query.{h,cpp}`、行形状与派生字段抽为 `apps/webui/td_row_json.{h,cpp}`，委托与成交共用同一份）。持仓列表端点（`GET /api/td/positions`，§2.9.4）、WS 持仓事件 `td_position_info` 与 `td_recent` 持仓事件已随 #249 落地（`apps/webui/td_positions_query.{h,cpp}`；账户全集与锚点日来源抽为 `apps/webui/td_account_scope.{h,cpp}`）。资金端点（`GET /api/td/trading_accounts`，§2.9.4）与 WS 资金事件 `td_trading_account`（含 `td_recent` 第四类事件）已随 #250 落地（`apps/webui/td_trading_accounts_query.{h,cpp}`，与持仓共用 `td_account_scope` / `td_row_json` / `td_read_db`；资金端点不分页，`limit`/`cursor` 被忽略）。账户配置写端点（§2.9.7）由 #251 落地，当前未实现的端点在契约里同样有效（实现票随后补齐）。
+> **实现注记**：`TdDataService` 记录镜像已随 #246 删除；委托列表端点（`GET /api/td/orders`）与 WS 委托事件 / 建连补发已随 #246 落地；统计端点（`GET /api/td/stats`，§2.9.5）与 dzweb 统计计数器已随 #247 落地（`apps/webui/td_stats{,_query}.{h,cpp}`，重算查询与委托列表共用只读连接抽取 `td_read_db.{h,cpp}`）；成交列表端点（`GET /api/td/trades`）与 WS 成交事件已随 #248 落地（`apps/webui/td_trades_query.{h,cpp}`，列表参数 / 游标抽为 `apps/webui/td_list_query.{h,cpp}`、行形状与派生字段抽为 `apps/webui/td_row_json.{h,cpp}`，委托与成交共用同一份）。持仓列表端点（`GET /api/td/positions`，§2.9.4）、WS 持仓事件 `td_position_info` 与 `td_recent` 持仓事件已随 #249 落地（`apps/webui/td_positions_query.{h,cpp}`；账户全集与锚点日来源抽为 `apps/webui/td_account_scope.{h,cpp}`）。资金端点（`GET /api/td/trading_accounts`，§2.9.4）与 WS 资金事件 `td_trading_account`（含 `td_recent` 第四类事件）已随 #250 落地（`apps/webui/td_trading_accounts_query.{h,cpp}`，与持仓共用 `td_account_scope` / `td_row_json` / `td_read_db`；资金端点不分页，`limit`/`cursor` 被忽略）。账户注册表读端点（`GET /api/td/accounts`，§2.9.9）与账户配置写端点（§2.9.7）已随 #251 落地（`apps/webui/td_account_registry.{h,cpp}`；账户全集第三个来源接入 `td_account_scope`）。
 
 ---
 
@@ -129,6 +129,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 | GET `/api/td/positions` | 持仓列表（全部已登记账户，各账户锚点日，游标分页） | 直查交易库 |
 | GET `/api/td/trading_accounts` | 资金列表（全部已登记账户，各账户锚点日，不分页） | 直查交易库 |
 | GET `/api/td/stats` | 当日「未成交/总」统计（在线账户 + 当前交易日） | dzweb 统计计数器（§2.9.5） |
+| GET `/api/td/accounts` | 账户注册表：`account_id → gateway` 全集（账户配置页的唯一性预检与网关解析） | dzweb 账户注册表（契约 td-config §5），内存优先 |
 | POST `/api/td/accounts` | 添加交易账户配置（admin） | → `TD_REQ_MODIFY_CONFIG{AddAccount}`（契约 td-config §2.1/§3）；生效信号 = `RTN_TD_CONFIG` |
 | PUT `/api/td/accounts/{account_id}` | 修改交易账户配置（admin，字段级 merge） | → `TD_REQ_MODIFY_CONFIG{UpdateAccount}` |
 | DELETE `/api/td/accounts/{account_id}` | 删除交易账户配置（admin；不删除交易数据） | → `TD_REQ_MODIFY_CONFIG{RemoveAccount}` |
@@ -141,7 +142,8 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - **当前交易日**（信封 trading_day）：在线（Ready）账户 `date` 的最大值（会话交易日，不是自然日）；无在线账户时为 null。日切窗口内各账户可能短暂处于不同交易日，以最大值为准（列表只含已切到该日的账户，不混入上一交易日数据）。
 - **在线账户集合**（信封 online_accounts）：`ACCOUNT_STATUS` 为 Ready 的账户；Ready/Offline 翻转与日切感知由 dzweb 维护（《帧契约：账户登录状态》）。
 - **委托 / 成交 / 统计**：只覆盖在线账户 + 当前交易日（记录 `date` = 当前交易日）。`accounts` 过滤与在线集合求交，缺省 = 全部在线账户。
-- **持仓 / 资金**：覆盖全部已登记账户（在线 ∪ td 配置已知账户/账户注册表 ∪ 交易库四表中出现过的 account_id，含离线；后两者防注册表丢失时漏账户），按**账户锚点日**取该账户最新行；记录 `date` = 该账户锚点日。`accounts` 过滤作用于已登记账户全集，缺省 = 全部已登记账户；未知账户忽略。**账户注册表部分随 #251 落地**——在此之前 dzweb 的账户全集实现为「在线 ∪ 四表中出现过的 account_id」两者（契约此处保留三源并集的定义，实现按票递增）。
+- **持仓 / 资金**：覆盖全部已登记账户（在线 ∪ td 配置已知账户/账户注册表 ∪ 交易库四表中出现过的 account_id，含离线；后两者防注册表丢失时漏账户），按**账户锚点日**取该账户最新行；记录 `date` = 该账户锚点日。`accounts` 过滤作用于已登记账户全集，缺省 = 全部已登记账户；未知账户忽略。
+  - **账户注册表**（第三个来源）随 #251 落地：dzweb 消费 `TD_RTN_CONFIG` 后按网关整组 reconcile `account_id → gateway`（契约 td-config §5），使网关停机/配置镜像尚未到达时账户仍在全集里。三个来源**取并集**——注册表是投影，不是唯一真相源，缺它时前两个来源仍能兜底。
   - **锚点日 = 该账户 `positions` 与 `trading_accounts` 两张快照表的 `MAX(date)`**（不含 `orders` / `trades` 追加流表；`null` = 该账户无任何快照行）。这两张表只在**完整成功的柜台查询**上写入（ADR 0045 决策 2/4，其中资金行的写入受 `position_query_ok_` 守卫），因此锚点日恒等于"最近一次成功查询所属交易日"。
   - **为什么不是四表 `MAX(date)`**：委托 / 成交是追加流，登录重放与实时回报会先于持仓 / 资金查询落库。若锚点含追加流表，登录当天只要有一笔委托/成交，锚点就推进到当日——而持仓查询失败时 `positions` 当日无行，列表将返回**空**。这与 ADR 0045 决策 3「登录不清零、不预置 0、首个成功查询前保留上次已知快照」直接冲突：读者看到的"空仓"是假断言，比带日期的旧快照更危险。改用两张快照表后，查询失败期锚点仍停在上一成功日，列表照常返回旧快照（前端用行内 `date` 标注数据日期）。
   - 当日全平后不显示昨日幽灵持仓仍然成立：平仓走整组原子替换（当日行删除），且资金行只在持仓查询成功后写入、二者同属快照表，锚点推进到当日 + 当日持仓行为空 = 真空仓。
@@ -426,7 +428,11 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 5. PUT / DELETE：`account_id` 由账户注册表解析网关（`account_id → gateway`）；注册表无该账户 → 404 `{"error":"account not found","code":"account_not_found"}`。
 6. 其余字段（含 `ext`）dzweb 不校验，透传给目标网关；业务校验失败由目标网关走四件套（契约 td-config §2、总则 §8）。
 
-**响应**：200 `{"ok":true}`——仅表示已写入事件通道，**不代表业务已生效**（与 §1 设置类请求语义一致）。生效/失败以 `RTN_TD_CONFIG`（契约 td-config §4）为准：成功推新值，失败推回滚旧值并经 `NOTIFY_UI` 弹窗；前端 pending 以该回报清除（其 WS 映射随账户配置页实现接入，契约 webui-ws §7）。
+**预检顺序的端点差异**：POST 严格按 1→2→3→4（`gateway` 来自 body，可先行判定）。PUT / DELETE 的 `gateway` **只能从注册表解析**，因此顺序是 1→5→2→3（admin → 注册表解析 404 → `dztd_*` 校验 400 → Running 409）——契约 §2.9.7 的编号是语义清单，不是 PUT/DELETE 的机械执行序。
+
+**响应**：200 `{"ok":true}`——仅表示已写入事件通道，**不代表业务已生效**（与 §1 设置类请求语义一致）。生效/失败以 `RTN_TD_CONFIG`（契约 td-config §4）为准：成功推新值，失败推回滚旧值并经 `NOTIFY_UI` 弹窗；前端 pending 以该回报清除（WS 映射见契约 webui-ws §2.2）。
+
+**写通道不可用**：dzweb 的事件通道 writer 未就绪或写帧失败时回 503 `{"error":"shm writer not available"}` / `{"error":"shm write failed"}`（**不带 `code`**）。这是"请求未被受理"的基础设施失败，不属于上面 6 条预检的 `code` 族——前端按通用失败处理（不得展示为预检失败或业务校验失败），pending 不设（没有帧会被写出，等不到 `RTN_TD_CONFIG`）。
 
 **可观察效果**：配置回报到达后，dzweb 按网关整组 reconcile 账户注册表（契约 td-config §5）；账户集合增减时广播 `data_changed{scope:"td"}`（契约 webui-ws §2.3），持仓/资金列表随之重拉。
 
@@ -442,6 +448,43 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - reason 取值：not_found（库文件不存在/尚未建库）、schema_mismatch（库版本不符）、open_failed（打开失败）、busy（200ms 内未取得读锁）、query_failed（查询执行失败）。
 - 不使用 5xx、不阻塞 dzweb 单 IO 线程（ADR 0043）；前端按退避重试并展示统一降级提示（契约 webui-ws §5）。
 - 写端点不经交易库读取，不因交易库降级而失败；stats 的降级条件（计数器未就绪，reason=not_ready）见 §2.9.5，不适用本节。
+
+#### 2.9.9 账户注册表读
+
+`GET /api/td/accounts`——账户配置页的**唯一账户列表来源**（任意已认证用户；不是 admin 专属，与读端点权限一致）。
+
+**为什么需要这个端点**：账户配置页要展示"跨网关"的账户全集并做唯一性预检（同一 `account_id` 不得属于两个网关，契约 td-config §5）。单网关的配置镜像（WS `td_rtn_config`）只有该网关自己的账户，拼不出全集；注册表是 dzweb 侧的权威投影（契约 td-config §5），必须能读。
+
+**响应**：200
+
+```json
+{
+  "available": true,
+  "accounts": [
+    { "account_id": "account_001", "gateway": "dztd_ctp", "enabled": true },
+    { "account_id": "account_002", "gateway": "dztd_ctp_2", "enabled": false }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| available | bool | true = 注册表可用；false = 降级（此时响应只有 available 与 reason） |
+| accounts | array\<object\> | 账户注册表条目，按 `account_id` 升序；空数组 = 无已知账户 |
+| accounts[].account_id | string | 账户标识（全局唯一） |
+| accounts[].gateway | string | 拥有该账户的交易网关进程名（`dztd_*`）；是**当前已知**归属，配置帧到达后被 reconcile 覆盖 |
+| accounts[].enabled | bool | 该账户当前是否启用。来自最近一次配置帧的通用层 `enabled`；注册表本身不持久化该字段（见下） |
+
+**降级**（`available:false`）：只在注册表**尚不可用**时出现——注册表是纯内存投影 + `platform.db` 尽力持久化（契约 td-config §5），没有"读库失败"的单独 reason。reason 取值：
+
+- `no_gateway_snapshot`：dzweb 启动后尚未收到任何 `TD_RTN_CONFIG`，且 `platform.db` 恢复加载也未提供条目——此时"无账户"是不可信的（与"确实没有账户"不可区分），必须降级而不是回空数组。
+
+**约束**：
+
+- 注册表是**投影**，真相源是各 td 网关配置文件（契约 td-config §6）；本端点不写任何东西。
+- `available:false` 时前端**不得**把账户列表当作空（否则用户会以为账户被删了）——展示降级提示。
+- `enabled` 的语义边界：注册表持久化在 `platform.db` 的只有 `account_id → gateway` 两列（契约 td-config §5），**不含** `enabled`。dzweb 重启后从 `platform.db` 恢复的条目 `enabled` 未知 → 回 `true`（不把账户误标为禁用）；随后该网关的配置帧到达即 reconcile 出真实值。这是**已知降级**（重启窗口内禁用账户会被显示为启用），比"把启用账户显示成禁用"危害小。
+- 该端点**不**触发帧、**不**读交易库，因此不受 §2.9.8 交易库降级影响。
 
 ---
 
@@ -464,3 +507,9 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - 交易数据（委托/成交/持仓/资金）基线一律由 REST 拉取（§2.9）：WS 交易事件与 `snapshot` 都不能替代基线（`snapshot` 不含交易记录，WS 只推增量）。合并、有界窗口、批量刷新、日切清空、精度格式化等行为义务见契约 webui-ws §5。
 - 账户筛选变化必须丢弃 cursor 从首页重拉；`available:false` 时展示统一降级提示（不得显示 0 冒充数据），按退避重试。
 - 统计（§2.9.5）无 WS 推送：前端按需轮询，建议与列表批量刷新同节流（≤1Hz），日切或 `data_changed{scope:"td"}` 后必须重拉。
+- **账户配置页**（§2.9.7/§2.9.9）：
+  - 账户列表以 `GET /api/td/accounts` 的注册表为视角（跨网关全集）；`available:false` 时展示降级提示，**不得**当作"无账户"。
+  - **唯一性预检**：添加账户前先查注册表，发现 `account_id` 已被任何网关占用（含已禁用/离线）→ 前端直接提示冲突并**不发请求**。这只是体验优化，权威校验在 dzweb（409 `account_exists`）——两个客户端同时添加时只有服务端能裁决。
+  - 编辑/启停/删除的 pending 以 WS `td_rtn_config` 清除（契约 webui-ws §2.2）；配置帧到达后整体覆盖本地镜像（全量，后到覆盖先到），不得用返回的 200 当作已生效。
+  - 账户表单字段按网关的 `interface_type`（从 `instance_id` 派生，契约 td-config §1）选择；不展示明文密码（回报中恒为 `"****"`）。
+  - 细状态（登录态/交易日/登录时间/进度）以 WS `td_rtn_status` 与 `progress` 为唯一来源，不从 `td_rtn_config` 推导。

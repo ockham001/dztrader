@@ -79,6 +79,13 @@ struct SecurityConfig {
     int lockout_duration_sec = 900;
 };
 
+/// 交易账户注册表持久化行（契约 td-config §5 / rest §2.9.9）：
+/// platform.db 只存 `account_id → gateway` 两列，`enabled` 不持久化。
+struct TdAccountRegistryRow {
+    std::string account_id;
+    std::string gateway;
+};
+
 /// Password hashing (PBKDF2-SHA256, format: pbkdf2_sha256$iterations$salt_hex$hash_hex).
 std::string hash_password(const std::string& password);
 bool verify_password(const std::string& password, const std::string& hash);
@@ -185,6 +192,17 @@ public:
     /// 标记行情源生命周期（契约 rest: remove 下发成功置 false，再次添加复位 true）
     bool set_market_source_added(int64_t id, bool added);
     bool delete_market_source(int64_t id);
+
+    // 交易账户注册表（契约 td-config §5）：platform.db 尽力持久化，只存 account_id → gateway。
+    // 全部方法在失败时抛异常（dz_prepare_v2 / step 失败），"写失败只记 ERROR 不阻塞"
+    // 的尽力而为语义由 `TdAccountRegistry` 的 catch 承担——持久层不吞错，便于单测直接观测。
+    std::vector<TdAccountRegistryRow> list_td_account_registry();
+    /// 整组覆盖某网关的持久化条目（单事务：先删该网关全部行，再插入给定账户集合）。
+    /// 与内存 reconcile 同步调用，使重启后能恢复该网关的账户集合（契约 td-config §5）。
+    bool replace_td_account_registry_for_gateway(const std::string& gateway,
+                                                 const std::vector<std::string>& account_ids);
+    /// 删除某网关全部持久化条目（网关被移除时调用，契约 td-config §5）。
+    bool delete_td_account_registry_by_gateway(const std::string& gateway);
 
 private:
     sqlite3* db_ = nullptr;

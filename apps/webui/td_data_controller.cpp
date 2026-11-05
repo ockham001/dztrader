@@ -82,8 +82,9 @@ void TdCtrl::get_positions(const drogon::HttpRequestPtr& req,
         callback(error_response(drogon::k400BadRequest, "bad request"));
         return;
     }
-    auto body =
-        positions_->execute(*parsed, domain_->online_accounts(), domain_->current_trading_day());
+    // 账户全集第三源：注册表账户（网关停机/配置镜像未到时仍在全集里，契约 rest §2.9.1）。
+    auto body = positions_->execute(*parsed, domain_->online_accounts(),
+                                    domain_->current_trading_day(), registry_accounts());
     if (!body.has_value()) {
         // 游标非法 / 作用域不符（契约 rest §2.9.2）：必须从首页重拉，属请求错误不是降级。
         callback(error_response(drogon::k400BadRequest, "bad request"));
@@ -106,9 +107,10 @@ void TdCtrl::get_trading_accounts(const drogon::HttpRequestPtr& req,
     }
     const auto params = TdTradingAccountsQuery::parse(
         [&req](std::string_view key) { return req->getParameter(std::string(key)); });
-    callback(
-        json_response(drogon::k200OK, trading_accounts_->execute(params, domain_->online_accounts(),
-                                                                 domain_->current_trading_day())));
+    callback(json_response(
+        drogon::k200OK,
+        trading_accounts_->execute(params, domain_->online_accounts(),
+                                   domain_->current_trading_day(), registry_accounts())));
 }
 
 void TdCtrl::get_stats(const drogon::HttpRequestPtr& req,

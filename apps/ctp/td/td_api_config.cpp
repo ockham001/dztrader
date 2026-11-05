@@ -83,9 +83,9 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
 
     // 5. 审计日志: 关键字段 old->new (不记录敏感值如 password)
     // 注: enable_auto_login_logout 已随契约 auto-login 迁移（SET/RTN_AUTO_LOGIN 帧）
-    if (old_config.enable_lock_mode != new_config.enable_lock_mode) {
-        SPDLOG_INFO("lock_mode changed | old={} new={}", old_config.enable_lock_mode,
-                    new_config.enable_lock_mode);
+    if (old_config.ext.enable_lock_mode != new_config.ext.enable_lock_mode) {
+        SPDLOG_INFO("lock_mode changed | old={} new={}", old_config.ext.enable_lock_mode,
+                    new_config.ext.enable_lock_mode);
     }
     if (old_config.qry_account_interval_s != new_config.qry_account_interval_s) {
         SPDLOG_INFO("qry_account_interval_s changed | old={} new={}",

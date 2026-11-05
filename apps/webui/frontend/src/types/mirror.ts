@@ -4,8 +4,8 @@
 // 载荷细化为 unknown 是终态（设计 §5.5 实现偏差：判别联合预留至交易数据扩展前实现）
 
 // LogConfigPayload / AutoLoginPayload / NotifyUiPayload 由契约单源生成（schema → generated.ts），禁止手写
-import type { LogConfigPayload, AutoLoginPayload, AutoLoginSchedule, NotifyUiPayload, ShmConfigView, SysmonSnapshotPayload, SysmonConfigPayload } from './generated'
-export type { AutoLoginPayload, AutoLoginSchedule, LogConfigPayload, NotifyUiPayload, ShmConfigView, SysmonSnapshotPayload, SysmonConfigPayload }
+import type { LogConfigPayload, AutoLoginPayload, AutoLoginSchedule, NotifyUiPayload, ShmConfigView, SysmonSnapshotPayload, SysmonConfigPayload, TdConfigPayload, TdStatusPayload } from './generated'
+export type { AutoLoginPayload, AutoLoginSchedule, LogConfigPayload, NotifyUiPayload, ShmConfigView, SysmonSnapshotPayload, SysmonConfigPayload, TdConfigPayload, TdStatusPayload }
 
 export interface ProgressPayload { min: number; max: number; current: number; desc?: string }
 
@@ -24,6 +24,13 @@ export interface DomainPayloads {
   // 契约 sysmon: 快照域与配置域固定挂载实例 dzsysmon，进快照（新连接立即拿到当前值）
   sysmon_snapshot?: SysmonSnapshotPayload
   sysmon_config?: SysmonConfigPayload
+  // 契约 td-config §8 / 契约 webui-ws §2.1：交易网关配置镜像，key = 网关进程名（如 dztd_ctp）。
+  // 与 md_config 同型——全量覆盖、后到覆盖先到、进快照（账户配置页基线由 snapshot + 增量构成，
+  // 不需要额外 REST 基线拉取）。
+  td_config?: TdConfigPayload
+  // 契约 td-status §3 / 契约 webui-ws §2.1：账户级细状态镜像，key = 网关名:账户ID
+  //（如 dztd_ctp:account_001）。前端按 instance_id 关联账户行，全量覆盖更新。
+  td_status?: TdStatusPayload
 }
 
 export type MirrorSnapshot = Record<string, Partial<DomainPayloads>>

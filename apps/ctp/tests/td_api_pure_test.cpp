@@ -29,12 +29,12 @@ const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& acc
 namespace {
 
 AccountConfig make_account(const std::string& id,
-                           const std::string& broker_name = "",
+                           const std::string& broker_id = "",
                            const std::string& password = "") {
     AccountConfig a;
     a.account_id = id;
-    a.broker.name = broker_name;
-    a.broker.password = password;
+    a.ext.broker_id = broker_id;
+    a.ext.password = password;
     return a;
 }
 
@@ -43,28 +43,29 @@ TdConfigOpReq make_req(TdConfigOp op, nlohmann::json params) {
 }
 
 // ============================================================================
-// apply_config_op: 11 个 op case
+// apply_config_op: 全部 op case（契约 td-config §2.1）
 // ============================================================================
 
 TEST(ApplyConfigOpTest, AddAccount) {
     TdConfig cfg;
     auto req = make_req(TdConfigOp::AddAccount, {{"account_id", "a1"},
-                                                 {"broker",
-                                                  {{"name", "simnow"},
-                                                   {"broker_id", "9999"},
+                                                 {"enabled", true},
+                                                 {"risk_control_enabled", false},
+                                                 {"currency_id", "CNY"},
+                                                 {"ext",
+                                                  {{"broker_id", "9999"},
                                                    {"user_id", "00001"},
-                                                   {"password", "123456"}}},
-                                                 {"auth_code", "auth"},
-                                                 {"app_id", "app"},
-                                                 {"currency_id", "CNY"}});
+                                                   {"password", "123456"},
+                                                   {"auth_code", "auth"},
+                                                   {"app_id", "app"}}}});
     apply_config_op(cfg, req);
     ASSERT_EQ(cfg.accounts.size(), 1u);
     EXPECT_EQ(cfg.accounts[0].account_id, "a1");
-    EXPECT_EQ(cfg.accounts[0].broker.name, "simnow");
-    EXPECT_EQ(cfg.accounts[0].broker.broker_id, "9999");
-    EXPECT_EQ(cfg.accounts[0].broker.password, "123456");
-    EXPECT_EQ(cfg.accounts[0].auth_code, "auth");
-    EXPECT_EQ(cfg.accounts[0].app_id, "app");
+    EXPECT_EQ(cfg.accounts[0].ext.broker_id, "9999");
+    EXPECT_EQ(cfg.accounts[0].ext.user_id, "00001");
+    EXPECT_EQ(cfg.accounts[0].ext.password, "123456");
+    EXPECT_EQ(cfg.accounts[0].ext.auth_code, "auth");
+    EXPECT_EQ(cfg.accounts[0].ext.app_id, "app");
     EXPECT_EQ(cfg.accounts[0].currency_id, "CNY");
 }
 
@@ -74,7 +75,9 @@ TEST(ApplyConfigOpTest, AddAccountWithMissingFields) {
     apply_config_op(cfg, req);
     ASSERT_EQ(cfg.accounts.size(), 1u);
     EXPECT_TRUE(cfg.accounts[0].account_id.empty());
-    EXPECT_TRUE(cfg.accounts[0].currency_id.empty());  // 无默认值 (AddAccount 不填默认)
+    // 通用层默认值按契约 td-config §2.2：currency_id 默认 CNY、enabled 默认 true
+    EXPECT_EQ(cfg.accounts[0].currency_id, "CNY");
+    EXPECT_TRUE(cfg.accounts[0].enabled);
 }
 
 TEST(ApplyConfigOpTest, AddAccountDuplicateThrows) {
@@ -118,170 +121,182 @@ TEST(ApplyConfigOpTest, RemoveAccountNotFound) {
 
 TEST(ApplyConfigOpTest, UpdateAccount) {
     TdConfig cfg;
-    cfg.accounts.push_back(make_account("a1", "old_name", "old_pass"));
-    auto req = make_req(TdConfigOp::UpdateAccount, {{"account_id", "a1"},
-                                                    {"broker",
-                                                     {{"name", "new_name"},
-                                                      {"broker_id", "9999"},
-                                                      {"user_id", "u1"},
-                                                      {"password", "new_pass"}}}});
+    cfg.accounts.push_back(make_account("a1", "old_broker", "old_pass"));
+    auto req =
+        make_req(TdConfigOp::UpdateAccount,
+                 {{"account_id", "a1"},
+                  {"ext", {{"broker_id", "9999"}, {"user_id", "u1"}, {"password", "new_pass"}}}});
     apply_config_op(cfg, req);
-    EXPECT_EQ(cfg.accounts[0].broker.name, "new_name");
-    EXPECT_EQ(cfg.accounts[0].broker.password, "new_pass");
-    EXPECT_EQ(cfg.accounts[0].broker.broker_id, "9999");
+    EXPECT_EQ(cfg.accounts[0].ext.password, "new_pass");
+    EXPECT_EQ(cfg.accounts[0].ext.broker_id, "9999");
+    EXPECT_EQ(cfg.accounts[0].ext.user_id, "u1");
 }
 
 TEST(ApplyConfigOpTest, UpdateAccountPasswordMaskKeepsOld) {
     TdConfig cfg;
-    cfg.accounts.push_back(make_account("a1", "name", "old_pass"));
-    // password="****" 表示保留旧值
-    auto req =
-        make_req(TdConfigOp::UpdateAccount,
-                 {{"account_id", "a1"}, {"broker", {{"name", "name"}, {"password", "****"}}}});
+    cfg.accounts.push_back(make_account("a1", "broker1", "old_pass"));
+    // password="****" 表示保留旧值（契约 td-config §2.1：脱敏值不得覆盖真实密码）
+    auto req = make_req(TdConfigOp::UpdateAccount,
+                        {{"account_id", "a1"}, {"ext", {{"password", "****"}}}});
     apply_config_op(cfg, req);
-    EXPECT_EQ(cfg.accounts[0].broker.password, "old_pass");  // 保留旧值
+    EXPECT_EQ(cfg.accounts[0].ext.password, "old_pass");  // 保留旧值
 }
 
-TEST(ApplyConfigOpTest, UpdateAccountPasswordOnlyKeepsOtherBrokerFields) {
+TEST(ApplyConfigOpTest, UpdateAccountPasswordOnlyKeepsOtherExtFields) {
     TdConfig cfg;
     AccountConfig acct;
     acct.account_id = "acc1";
-    acct.broker.name = "broker_name";
-    acct.broker.broker_id = "broker1";
-    acct.broker.user_id = "user1";
-    acct.broker.product_info = "prod1";
-    acct.broker.password = "old_pass";
+    acct.ext.broker_id = "broker1";
+    acct.ext.user_id = "user1";
+    acct.ext.product_info = "prod1";
+    acct.ext.auth_code = "auth1";
+    acct.ext.app_id = "app1";
+    acct.ext.flow_dir = "flow1";
+    acct.ext.password = "old_pass";
     BrokerFrontend fe;
     fe.address = "addr1";
     fe.label = "lbl1";
     fe.enabled = true;
-    acct.broker.frontends.push_back(fe);
+    acct.ext.frontends.push_back(fe);
     cfg.accounts.push_back(acct);
 
-    // 仅提供 password, 其他 broker 字段未提供 (应保留旧值, 不被清空)
-    nlohmann::json params;
-    params["account_id"] = "acc1";
-    nlohmann::json broker;
-    broker["password"] = "new_pass";
-    params["broker"] = broker;
-    auto req = make_req(TdConfigOp::UpdateAccount, std::move(params));
+    // 仅提供 password, 其他 ext 字段未提供 (应保留旧值, 不被清空)
+    auto req = make_req(TdConfigOp::UpdateAccount,
+                        {{"account_id", "acc1"}, {"ext", {{"password", "new_pass"}}}});
     apply_config_op(cfg, req);
 
-    // password 应更新
-    EXPECT_EQ(cfg.accounts[0].broker.password, "new_pass");
+    EXPECT_EQ(cfg.accounts[0].ext.password, "new_pass");
     // 其他字段应保留旧值 (字段级 merge, 不被清空为默认值)
-    EXPECT_EQ(cfg.accounts[0].broker.name, "broker_name");
-    EXPECT_EQ(cfg.accounts[0].broker.broker_id, "broker1");
-    EXPECT_EQ(cfg.accounts[0].broker.user_id, "user1");
-    EXPECT_EQ(cfg.accounts[0].broker.product_info, "prod1");
-    ASSERT_EQ(cfg.accounts[0].broker.frontends.size(), 1u);
-    EXPECT_EQ(cfg.accounts[0].broker.frontends[0].address, "addr1");
-    EXPECT_EQ(cfg.accounts[0].broker.frontends[0].label, "lbl1");
-    EXPECT_EQ(cfg.accounts[0].broker.frontends[0].enabled, true);
+    EXPECT_EQ(cfg.accounts[0].ext.broker_id, "broker1");
+    EXPECT_EQ(cfg.accounts[0].ext.user_id, "user1");
+    EXPECT_EQ(cfg.accounts[0].ext.product_info, "prod1");
+    EXPECT_EQ(cfg.accounts[0].ext.auth_code, "auth1");
+    EXPECT_EQ(cfg.accounts[0].ext.app_id, "app1");
+    EXPECT_EQ(cfg.accounts[0].ext.flow_dir, "flow1");
+    ASSERT_EQ(cfg.accounts[0].ext.frontends.size(), 1u);
+    EXPECT_EQ(cfg.accounts[0].ext.frontends[0].address, "addr1");
+    EXPECT_EQ(cfg.accounts[0].ext.frontends[0].label, "lbl1");
+    EXPECT_TRUE(cfg.accounts[0].ext.frontends[0].enabled);
 }
 
 TEST(ApplyConfigOpTest, UpdateAccountPasswordEmptyKeepsOld) {
     TdConfig cfg;
-    cfg.accounts.push_back(make_account("a1", "name", "old_pass"));
+    cfg.accounts.push_back(make_account("a1", "broker1", "old_pass"));
     // password="" (空串) 表示不改
     auto req =
-        make_req(TdConfigOp::UpdateAccount, {{"account_id", "a1"}, {"broker", {{"password", ""}}}});
+        make_req(TdConfigOp::UpdateAccount, {{"account_id", "a1"}, {"ext", {{"password", ""}}}});
     apply_config_op(cfg, req);
-    EXPECT_EQ(cfg.accounts[0].broker.password, "old_pass");
+    EXPECT_EQ(cfg.accounts[0].ext.password, "old_pass");
 }
 
-TEST(ApplyConfigOpTest, UpdateAccountUpdatesBrokerAndTopLevelFields) {
+TEST(ApplyConfigOpTest, UpdateAccountUpdatesExtAndCommonFields) {
     TdConfig cfg;
-    AccountConfig acct = make_account("a1", "old_name", "old_pass");
-    acct.broker.broker_id = "old_broker";
-    acct.broker.user_id = "old_user";
-    acct.broker.product_info = "old_product";
-    acct.auth_code = "old_auth";
-    acct.app_id = "old_app";
-    acct.flow_dir = "old_flow";
+    AccountConfig acct = make_account("a1", "old_broker", "old_pass");
+    acct.ext.user_id = "old_user";
+    acct.ext.product_info = "old_product";
+    acct.ext.auth_code = "old_auth";
+    acct.ext.app_id = "old_app";
+    acct.ext.flow_dir = "old_flow";
     acct.currency_id = "CNY";
+    acct.enabled = true;
+    acct.risk_control_enabled = false;
     BrokerFrontend old_fe;
     old_fe.address = "old_addr";
     old_fe.label = "old_label";
     old_fe.enabled = true;
-    acct.broker.frontends.push_back(old_fe);
+    acct.ext.frontends.push_back(old_fe);
     cfg.accounts.push_back(acct);
 
     nlohmann::json frontends = nlohmann::json::array();
     frontends.push_back({{"address", "new_addr"}, {"label", "new_label"}, {"enabled", false}});
     auto req = make_req(TdConfigOp::UpdateAccount, {{"account_id", "a1"},
-                                                    {"broker",
-                                                     {{"name", "new_name"},
-                                                      {"broker_id", "new_broker"},
+                                                    {"enabled", false},
+                                                    {"risk_control_enabled", true},
+                                                    {"currency_id", "USD"},
+                                                    {"ext",
+                                                     {{"broker_id", "new_broker"},
                                                       {"user_id", "new_user"},
                                                       {"product_info", "new_product"},
                                                       {"password", "new_pass"},
-                                                      {"frontends", frontends}}},
-                                                    {"auth_code", "new_auth"},
-                                                    {"app_id", "new_app"},
-                                                    {"flow_dir", "new_flow"},
-                                                    {"currency_id", "USD"}});
+                                                      {"auth_code", "new_auth"},
+                                                      {"app_id", "new_app"},
+                                                      {"flow_dir", "new_flow"},
+                                                      {"frontends", frontends}}}});
     apply_config_op(cfg, req);
 
-    EXPECT_EQ(cfg.accounts[0].broker.name, "new_name");
-    EXPECT_EQ(cfg.accounts[0].broker.broker_id, "new_broker");
-    EXPECT_EQ(cfg.accounts[0].broker.user_id, "new_user");
-    EXPECT_EQ(cfg.accounts[0].broker.product_info, "new_product");
-    EXPECT_EQ(cfg.accounts[0].broker.password, "new_pass");
-    EXPECT_EQ(cfg.accounts[0].auth_code, "new_auth");
-    EXPECT_EQ(cfg.accounts[0].app_id, "new_app");
-    EXPECT_EQ(cfg.accounts[0].flow_dir, "new_flow");
+    EXPECT_EQ(cfg.accounts[0].ext.broker_id, "new_broker");
+    EXPECT_EQ(cfg.accounts[0].ext.user_id, "new_user");
+    EXPECT_EQ(cfg.accounts[0].ext.product_info, "new_product");
+    EXPECT_EQ(cfg.accounts[0].ext.password, "new_pass");
+    EXPECT_EQ(cfg.accounts[0].ext.auth_code, "new_auth");
+    EXPECT_EQ(cfg.accounts[0].ext.app_id, "new_app");
+    EXPECT_EQ(cfg.accounts[0].ext.flow_dir, "new_flow");
+    EXPECT_FALSE(cfg.accounts[0].enabled);
+    EXPECT_TRUE(cfg.accounts[0].risk_control_enabled);
     EXPECT_EQ(cfg.accounts[0].currency_id, "USD");
     // frontends 提供时整体替换 (旧条目被丢弃)
-    ASSERT_EQ(cfg.accounts[0].broker.frontends.size(), 1u);
-    EXPECT_EQ(cfg.accounts[0].broker.frontends[0].address, "new_addr");
-    EXPECT_EQ(cfg.accounts[0].broker.frontends[0].label, "new_label");
-    EXPECT_FALSE(cfg.accounts[0].broker.frontends[0].enabled);
+    ASSERT_EQ(cfg.accounts[0].ext.frontends.size(), 1u);
+    EXPECT_EQ(cfg.accounts[0].ext.frontends[0].address, "new_addr");
+    EXPECT_EQ(cfg.accounts[0].ext.frontends[0].label, "new_label");
+    EXPECT_FALSE(cfg.accounts[0].ext.frontends[0].enabled);
 }
 
-TEST(ApplyConfigOpTest, UpdateAccountOmittedTopLevelFieldsPreserved) {
+TEST(ApplyConfigOpTest, UpdateAccountOmittedFieldsPreserved) {
     TdConfig cfg;
-    AccountConfig acct = make_account("a1", "broker_name", "old_pass");
-    acct.broker.broker_id = "broker1";
-    acct.broker.user_id = "user1";
-    acct.broker.product_info = "prod1";
-    acct.auth_code = "auth";
-    acct.app_id = "app";
-    acct.flow_dir = "flow";
+    AccountConfig acct = make_account("a1", "broker1", "old_pass");
+    acct.ext.user_id = "user1";
+    acct.ext.product_info = "prod1";
+    acct.ext.auth_code = "auth";
+    acct.ext.app_id = "app";
+    acct.ext.flow_dir = "flow";
     acct.currency_id = "USD";
+    acct.enabled = false;
+    acct.risk_control_enabled = true;
     BrokerFrontend fe;
     fe.address = "addr1";
     fe.label = "lbl1";
     fe.enabled = true;
-    acct.broker.frontends.push_back(fe);
+    acct.ext.frontends.push_back(fe);
     cfg.accounts.push_back(acct);
 
-    // 仅更新 broker_id, 其余字段 (含 frontends 与顶层四字段) 全部缺省
-    auto req = make_req(TdConfigOp::UpdateAccount,
-                        {{"account_id", "a1"}, {"broker", {{"broker_id", "b2"}}}});
+    // 仅更新 ext.broker_id, 其余字段 (含 frontends 与通用层) 全部缺省
+    auto req =
+        make_req(TdConfigOp::UpdateAccount, {{"account_id", "a1"}, {"ext", {{"broker_id", "b2"}}}});
     apply_config_op(cfg, req);
 
-    EXPECT_EQ(cfg.accounts[0].broker.broker_id, "b2");
-    EXPECT_EQ(cfg.accounts[0].broker.name, "broker_name");
-    EXPECT_EQ(cfg.accounts[0].broker.user_id, "user1");
-    EXPECT_EQ(cfg.accounts[0].broker.product_info, "prod1");
-    EXPECT_EQ(cfg.accounts[0].broker.password, "old_pass");
-    EXPECT_EQ(cfg.accounts[0].auth_code, "auth");
-    EXPECT_EQ(cfg.accounts[0].app_id, "app");
-    EXPECT_EQ(cfg.accounts[0].flow_dir, "flow");
+    EXPECT_EQ(cfg.accounts[0].ext.broker_id, "b2");
+    EXPECT_EQ(cfg.accounts[0].ext.user_id, "user1");
+    EXPECT_EQ(cfg.accounts[0].ext.product_info, "prod1");
+    EXPECT_EQ(cfg.accounts[0].ext.password, "old_pass");
+    EXPECT_EQ(cfg.accounts[0].ext.auth_code, "auth");
+    EXPECT_EQ(cfg.accounts[0].ext.app_id, "app");
+    EXPECT_EQ(cfg.accounts[0].ext.flow_dir, "flow");
     EXPECT_EQ(cfg.accounts[0].currency_id, "USD");
-    ASSERT_EQ(cfg.accounts[0].broker.frontends.size(), 1u);
-    EXPECT_EQ(cfg.accounts[0].broker.frontends[0].address, "addr1");
+    EXPECT_FALSE(cfg.accounts[0].enabled);
+    EXPECT_TRUE(cfg.accounts[0].risk_control_enabled);
+    ASSERT_EQ(cfg.accounts[0].ext.frontends.size(), 1u);
+    EXPECT_EQ(cfg.accounts[0].ext.frontends[0].address, "addr1");
+}
+
+TEST(ApplyConfigOpTest, UpdateAccountEmptyParamsIsNoOp) {
+    // 契约 td-config §2.1 UpdateAccount：允许任意子集；PUT 允许空对象（总则 §8 空 patch = 无操作）
+    TdConfig cfg;
+    cfg.accounts.push_back(make_account("a1", "broker1", "pass1"));
+    const auto before = cfg.accounts[0].ext.password;
+    auto req = make_req(TdConfigOp::UpdateAccount, {{"account_id", "a1"}});
+    EXPECT_NO_THROW(apply_config_op(cfg, req));
+    EXPECT_EQ(cfg.accounts[0].ext.password, before);
+    EXPECT_EQ(cfg.accounts[0].ext.broker_id, "broker1");
 }
 
 TEST(ApplyConfigOpTest, UpdateAccountNotFoundThrows) {
     // 关键决策: UpdateAccount 不存在抛 std::invalid_argument
     TdConfig cfg;
-    cfg.accounts.push_back(make_account("a1"));
+    cfg.accounts.push_back(make_account("a1", "broker1"));
     auto req = make_req(TdConfigOp::UpdateAccount,
-                        {{"account_id", "nonexistent"}, {"broker", {{"name", "x"}}}});
+                        {{"account_id", "nonexistent"}, {"ext", {{"user_id", "u1"}}}});
     EXPECT_THROW(apply_config_op(cfg, req), std::invalid_argument);
-    EXPECT_EQ(cfg.accounts[0].broker.name, "");  // cfg 未被修改
+    EXPECT_EQ(cfg.accounts[0].ext.user_id, "");  // cfg 未被修改
 }
 
 TEST(ApplyConfigOpTest, SetAccountEnabled) {
@@ -352,12 +367,31 @@ TEST(ApplyConfigOpTest, SetAccountCurrencyUnknownIdLeavesAllAccountsUnchanged) {
 // 契约 auto-login 迁移完成: AddSchedule/RemoveSchedule/SetAutoLogin op 已移除,
 // 排程单一真相源为 SET/RTN_AUTO_LOGIN 帧 (见 td_api_scheduled.cpp / auto_login_config_)
 
-TEST(ApplyConfigOpTest, SetLockMode) {
+// 契约 td-config §2.1：进程级柜台特有配置改用 SetExt（旧 SetLockMode 已删除，不留双实现）
+TEST(ApplyConfigOpTest, SetExtLockMode) {
     TdConfig cfg;
-    EXPECT_TRUE(cfg.enable_lock_mode);  // 默认 true
-    auto req = make_req(TdConfigOp::SetLockMode, {{"enabled", false}});
+    EXPECT_TRUE(cfg.ext.enable_lock_mode);  // 默认 true
+    auto req = make_req(TdConfigOp::SetExt, {{"ext", {{"enable_lock_mode", false}}}});
     apply_config_op(cfg, req);
-    EXPECT_FALSE(cfg.enable_lock_mode);
+    EXPECT_FALSE(cfg.ext.enable_lock_mode);
+}
+
+TEST(ApplyConfigOpTest, SetExtMissingFieldKeepsOld) {
+    // 契约 §2.1 SetExt：缺失字段保留旧值（字段级补丁）
+    TdConfig cfg;
+    cfg.ext.enable_lock_mode = false;
+    auto req = make_req(TdConfigOp::SetExt, {{"ext", nlohmann::json::object()}});
+    EXPECT_NO_THROW(apply_config_op(cfg, req));
+    EXPECT_FALSE(cfg.ext.enable_lock_mode);
+}
+
+TEST(ApplyConfigOpTest, SetExtNoExtParamIsNoOp) {
+    // 空 patch（总则 §8）：无操作、不抛
+    TdConfig cfg;
+    cfg.ext.enable_lock_mode = true;
+    auto req = make_req(TdConfigOp::SetExt, nlohmann::json::object());
+    EXPECT_NO_THROW(apply_config_op(cfg, req));
+    EXPECT_TRUE(cfg.ext.enable_lock_mode);
 }
 
 TEST(ApplyConfigOpTest, SetQryIntervals) {
@@ -484,7 +518,7 @@ TEST(IsConnectionOpTest, ConnectionOps) {
 TEST(IsConnectionOpTest, NonConnectionOps) {
     EXPECT_FALSE(is_connection_op(TdConfigOp::AddAccount));
     // 契约 auto-login 迁移完成: AddSchedule/RemoveSchedule/SetAutoLogin 已从枚举移除
-    EXPECT_FALSE(is_connection_op(TdConfigOp::SetLockMode));
+    EXPECT_FALSE(is_connection_op(TdConfigOp::SetExt));
     EXPECT_FALSE(is_connection_op(TdConfigOp::SetQryIntervals));
     EXPECT_FALSE(is_connection_op(TdConfigOp::SetAccountEnabled));
     EXPECT_FALSE(is_connection_op(TdConfigOp::SetAccountRiskControl));

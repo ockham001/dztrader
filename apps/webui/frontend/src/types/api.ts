@@ -12,6 +12,9 @@ import type {
   TdPositionListResponse, TdPositionDegradedResponse,
   TdTradingAccountRow, TdTradingAccountListResponse, TdTradingAccountDegradedResponse,
   TdStatsDegradedReason, TdStatsValues, TdStatsAvailable, TdStatsDegraded,
+  TdCtpFrontend, TdCtpAccountExt, TdAccountConfig, TdConfigPayload,
+  TdConfigAccountList, TdAccountsDegradedReason, TdAccountsListResponse, TdAccountsDegradedResponse,
+  TdState, TdStatusPayload,
 } from './generated'
 export type {
   TdDirection, TdPositionEffect, TdPriceType, TdOrderStatus, TdDegradedReason,
@@ -21,6 +24,9 @@ export type {
   TdPositionListResponse, TdPositionDegradedResponse,
   TdTradingAccountRow, TdTradingAccountListResponse, TdTradingAccountDegradedResponse,
   TdStatsDegradedReason, TdStatsValues, TdStatsAvailable, TdStatsDegraded,
+  TdCtpFrontend, TdCtpAccountExt, TdAccountConfig, TdConfigPayload,
+  TdConfigAccountList, TdAccountsDegradedReason, TdAccountsListResponse, TdAccountsDegradedResponse,
+  TdState, TdStatusPayload,
 }
 
 /**
@@ -85,6 +91,48 @@ export type TdPositionsResponse =
 export type TdTradingAccountsResponse =
   | (TdTradingAccountListResponse & { available: true })
   | (TdTradingAccountDegradedResponse & { available: false })
+
+/**
+ * `GET /api/td/accounts` 的响应（契约 rest §2.9.9）：账户配置页的**唯一账户列表来源**。
+ *
+ * 与其它交易列表同一判别位写法：`available === false` 是**降级**（dzweb 启动后尚未收到任何
+ * `TD_RTN_CONFIG`，reason 只有 `no_gateway_snapshot`），响应只有 available 与 reason。
+ *
+ * **降级 ≠ 空列表**：`available:false` 时"无账户"是不可信的（与"确实没有账户"不可区分），
+ * 前端必须展示降级提示，绝不能把 accounts 当空数组（契约 rest §2.9.9）。
+ */
+export type TdAccountsResponse =
+  | (TdAccountsListResponse & { available: true })
+  | (TdAccountsDegradedResponse & { available: false })
+
+/**
+ * `POST /api/td/accounts` 请求体（契约 rest §2.9.7）：`gateway` 为目标交易网关进程名，
+ * `account` 为契约 td-config §2.2 的账户配置（`account_id` 必填；`ext` 由目标网关按接口类型校验）。
+ */
+export interface TdAddAccountBody {
+  gateway: string
+  account: TdAccountConfig
+}
+
+/**
+ * `PUT /api/td/accounts/{account_id}` 请求体（契约 rest §2.9.7）：契约 td-config §2.1
+ * `UpdateAccount` 的 params 子集（字段级 merge，缺失字段保留旧值）。
+ *
+ * **不得包含 `account_id`**——路径是唯一来源，出现即 400（因此类型上就不给该字段）。
+ * 允许空对象 `{}`（dzweb 转发前以路径值注入 `params.account_id`）。
+ */
+export interface TdUpdateAccountBody {
+  enabled?: boolean
+  risk_control_enabled?: boolean
+  currency_id?: string
+  /** 账户级 ext（字段级 merge；`password` 缺失/空串/`"****"` 保留旧值） */
+  ext?: Partial<TdCtpAccountExt>
+}
+
+/** 写端点成功响应（契约 rest §2.9.7）：仅表示已写入事件通道，**不代表业务已生效** */
+export interface TdWriteOkResponse {
+  ok: boolean
+}
 
 // ===== Authentication =====
 export interface LoginRequest {
