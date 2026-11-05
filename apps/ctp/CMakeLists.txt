@@ -199,6 +199,19 @@ file(GLOB TD_CTP_TESTS CONFIGURE_DEPENDS
 )
 foreach(testfile ${TD_CTP_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
+    # 直接调用 CTP API 的测试目标（td_position_lifecycle_test 构造真 AccountSession，
+    # TdSpi 继承 CThostFtdcTraderSpi、account_session 调 CreateFtdcTraderApi）在 Windows 上
+    # 会让 .exe 的导入表引用 thosttraderapi_se.dll。**必须在测试发现之前**把 DLL 放到 exe
+    # 旁边，否则 gtest_discover_tests 执行 exe 时报 STATUS_DLL_NOT_FOUND (0xc0000135)，
+    # 表现为构建阶段就失败（Linux 看不到：.so 走 rpath/按目录查找）。
+    # 走 dz_add_test 的 POST_BUILD_COMMAND —— 见 cmake/DzTest.cmake 的注释：宏调用之后再写
+    # add_custom_command 会排在 gtest_discover_tests 之后，等于没修。
+    set(_ctp_test_extra_args "")
+    if(testname STREQUAL "td_position_lifecycle_test" AND WIN32)
+        set(_ctp_test_extra_args
+            POST_BUILD_COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CTP_TD_DLL}" "${DZ_TESTS_DIR}"
+            POST_BUILD_COMMENT "Copying CTP TD DLL next to td_position_lifecycle_test.exe")
+    endif()
     dz_add_test(dztd_ctp_${testname}
         SOURCES
             ${testfile}
@@ -207,7 +220,8 @@ foreach(testfile ${TD_CTP_TESTS})
             td/td_config.cpp
             td/td_api_pure.cpp
             common/trading_calendar.cpp
-        LABELS fast)
+        LABELS fast
+        ${_ctp_test_extra_args})
     target_include_directories(dztd_ctp_${testname} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(dztd_ctp_${testname} PRIVATE
         dzcore dztest_support GTest::gtest
@@ -281,5 +295,17 @@ foreach(testfile ${TD_CTP_TESTS})
             td/td_persist_writer.cpp td/td_persist_rows.cpp td/td_report_filter.cpp
             td/td_day_load.cpp)
         target_link_libraries(dztd_ctp_${testname} PRIVATE dztdstore dztrading)
+    endif()
+    # td_position_lifecycle_test 需要**真实的 AccountSession**：持仓快照生命周期的决策点
+    # 在 on_rsp_qry_investor_position → apply_position_query 里，只链 Writer 的目标测不到。
+    # 不连柜台（不调 open()），只喂查询响应分支；登录链本身由 td_login_finalize_test 覆盖。
+    if(testname STREQUAL "td_position_lifecycle_test")
+        target_sources(dztd_ctp_${testname} PRIVATE
+            td/td_account_session.cpp td/td_account_session_pure.cpp td/td_spi.cpp
+            td/td_ctp_mapping.cpp td/td_risk_gate.cpp td/td_offset_converter.cpp
+            td/td_position.cpp td/td_persist_writer.cpp td/td_persist_rows.cpp
+            td/td_report_filter.cpp td/td_day_load.cpp td/td_login_finalize.cpp)
+        target_link_libraries(dztd_ctp_${testname} PRIVATE
+            dztdstore dzshm dzshm_test_support dztd_ctp_api)
     endif()
 endforeach()

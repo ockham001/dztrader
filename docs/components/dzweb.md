@@ -75,15 +75,17 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
   [dzsysmon.md](dzsysmon.md) 的「历史查询」节——查询语义由 schema 形状决定，属共享模块，
   不是 dzweb 的私有逻辑。
 
-## 交易数据读路径（#246/#247，ADR 0043）
+## 交易数据读路径（#246/#247/#248/#249，ADR 0043）
 
 交易记录（委托 / 成交 / 持仓 / 资金）**不进 `MirrorStore`、不做记录镜像**：
 
-- **REST 直查交易库**：`GET /api/td/*`（契约 rest §2.9）每请求新建只读连接、`busy_timeout=200ms`、请求结束即关闭；游标分页（默认 200 / 上限 1000，禁 OFFSET 深翻页）。库缺失 / 版本不符 / 打开失败 / 锁等待 / 查询失败一律 `200 + {"available":false,"reason":...}`，不 5xx、不阻塞单 IO 线程（②）。只读连接与 schema 探测只实现一份（`apps/webui/td_read_db.{h,cpp}`），全部列表端点与统计重算共用；列表参数解析 / 游标（`apps/webui/td_list_query.{h,cpp}`）与行形状 / 派生字段（`apps/webui/td_row_json.{h,cpp}`）同样各只有一份——**委托与成交共用同一套**，成交不另写一份。
-- **WS 只推增量**：委托事件 `td_order_report` 与成交事件 `td_trade_report`（帧转发，payload = 契约 rest §2.9.3 的委托行 / 成交行，与 REST 同 schema），以及建连补发 `td_recent`（每在线账户最近 300 条，**同一环容纳委托与成交两类事件**、按入环先后从旧到新）；记录基线一律由 REST 拉取，`snapshot` 不含交易记录（契约 webui-ws §2.5）。
+- **REST 直查交易库**：`GET /api/td/*`（契约 rest §2.9）每请求新建只读连接、`busy_timeout=200ms`、请求结束即关闭；游标分页（默认 200 / 上限 1000，禁 OFFSET 深翻页）。库缺失 / 版本不符 / 打开失败 / 锁等待 / 查询失败一律 `200 + {"available":false,"reason":...}`，不 5xx、不阻塞单 IO 线程（②）。只读连接与 schema 探测只实现一份（`apps/webui/td_read_db.{h,cpp}`），全部列表端点与统计重算共用；列表参数解析 / 游标（`apps/webui/td_list_query.{h,cpp}`）与行形状 / 派生字段（`apps/webui/td_row_json.{h,cpp}`）同样各只有一份——**委托、成交与持仓共用同一套**，成交与持仓不另写一份。
+- **契约要求除端点差异外只写一份的实现**（#249 抽出，资金端点 #250 共用）：账户全集与锚点日在 `apps/webui/td_account_scope.{h,cpp}`——账户全集 = 在线（Ready）账户 ∪ 四表中出现过的 `account_id`（含离线）；**锚点日 = 该账户 `positions` 与 `trading_accounts` 两张快照表的 `MAX(date)`**（ADR 0046；追加流表不参与，否则「查询失败」会被显示成「空仓」）。
+- **持仓端点口径与委托/成交不同**（契约 rest §2.9.1）：持仓覆盖**全部已登记账户（含离线）+ 各账户锚点日**，游标坐标 `(account_id, instrument_id, direction)` 升序，`volume=0` 的行在 SQL 层过滤（清零帧是库内残留、不是持仓事实）；委托/成交才是「在线 + 当前交易日 + 18:00 时间锚」。持仓行**没有** `sort_key`（无 `time` 列）。
+- **WS 只推增量**：委托事件 `td_order_report`、成交事件 `td_trade_report` 与持仓事件 `td_position_info`（帧转发，payload = 契约 rest §2.9.3 / §2.9.4 的行，与 REST 同 schema），以及建连补发 `td_recent`（每在线账户最近 300 条，**同一环容纳委托、成交与持仓事件**、按入环先后从旧到新）；记录基线一律由 REST 拉取，`snapshot` 不含交易记录（契约 webui-ws §2.5）。
 - **域内只保留三样状态 + 统计计数器**（`apps/webui/td_domain_service.{h,cpp}`）：在线（`ACCOUNT_STATUS` Ready）账户集合与每账户 `date`、WS 建连补发环、日切感知，外加统计计数器（下节）。Ready/Offline 翻转、日切（`date` 变化）、在线集合变化 → 广播 `data_changed{scope:"td"}` 让前端清空重拉。
-- **前端列表行为只有一份实现**：`apps/webui/frontend/src/composables/tdListStore.ts` 的 `createTdListStore`（REST 基线 + 游标预取 + WS 增量 10Hz 批量合并 + 有界窗口 + 重置触发 + 降级退避），委托（`stores/tdOrders`）与成交（`stores/tdTrades`）是它的两份配置而非两份实现。
-- **已知限制**：`td_recent` 有界（300 条/账户，两类事件共享），dzweb 重启后为空——记录基线以 REST 为准，补发只是收敛窗口内的加速；帧可能先于库提交到达（异步持久化），同一记录由前端按 `seq` 合并（契约 webui-ws §5）。
+- **前端列表行为只有一份实现**：`apps/webui/frontend/src/composables/tdListStore.ts` 的 `createTdListStore`（REST 基线 + 游标预取 + WS 增量 10Hz 批量合并 + 有界窗口 + 重置触发 + 降级退避），委托（`stores/tdOrders`）与成交（`stores/tdTrades`）是它的两份配置而非两份实现。**持仓不走该工厂**：它是绝对态（按业务键覆盖、无 `sort_key` 排序插入），工厂的合并算法依赖 `sort_key`；持仓 store 因此另写一份（`stores/tdPositions`）。**共用的是降级行为的两块唯一实现**：统一降级文案 `tdDegradedText` 与退避重试定时器 `createTdRetryTimer`（`tdRetryDelay` 定退避口径）——两个 store 各写一份退避会出现同一时刻两个面板用不同节奏重试；**不共用的**是合并算法（持仓是绝对态、无 `sort_key`，语义不兼容）。
+- **已知限制**：`td_recent` 有界（300 条/账户，三类事件共享），dzweb 重启后为空——记录基线以 REST 为准，补发只是收敛窗口内的加速；帧可能先于库提交到达（异步持久化），同一记录由前端按 `seq` 合并（契约 webui-ws §5）。持仓帧只在账户 Ready 之后转发——登录查询阶段（Ready 前）产生的持仓帧不进补发环，前端靠 Ready 后的 REST 基线拿到同一批数据。
 
 ### 统计计数器（#247，契约 rest §2.9.5）
 

@@ -1430,16 +1430,33 @@ void AccountSession::on_rsp_qry_trading_account(const OnRspQryTradingAccountFiel
     }
     try {
         if (f.trading_account) {
-            DzTradingAccount acct =
-                to_dz_trading_account(*f.trading_account, account_id_, trading_day_);
-            acct.seq = ++seq_counter_;
-            platform::write_struct(event_writer_, DZ_FRAME_TRADING_ACCOUNT, acct);
-            persist_writer_.enqueue(PersistTask{.kind = PersistTask::Kind::TradingAccount,
-                                                .data = acct,
-                                                .account_id = account_id_,
-                                                .trading_day = trading_day_});
-            SPDLOG_INFO("td qry trading account | account={} balance={} available={} seq={}",
-                        account_id_, acct.balance, acct.available, acct.seq);
+            // 契约 ADR 0045 决策 4 / ADR 0046：**资金行只在持仓查询成功之后写入**。
+            // 两个后果都必须避免，所以守卫放在唯一写入点（而不是只在某个调用点）：
+            // 1) 锚点日一致性——锚点日 = positions / trading_accounts 两张快照表的
+            //    MAX(date)；持仓查询失败时若资金行仍写当日，锚点推进到当日而 positions
+            //    当日无行 → 持仓 REST 返回空数组 = 假空仓（ADR 0045 决策 3 判定最危险的形态）。
+            // 2) 「资金行与持仓行同日」——锚点推进到当日时持仓行集已一致。
+            // 持仓失败时查询本身照发（收尾链需要资金查询的 is_last 才能推进到 Ready），
+            // 只是不落库、不推帧：定型数据与帧一起跳过，避免 UI 看到资金而持仓缺失。
+            if (position_query_ok_) {
+                DzTradingAccount acct =
+                    to_dz_trading_account(*f.trading_account, account_id_, trading_day_);
+                acct.seq = ++seq_counter_;
+                platform::write_struct(event_writer_, DZ_FRAME_TRADING_ACCOUNT, acct);
+                persist_writer_.enqueue(PersistTask{.kind = PersistTask::Kind::TradingAccount,
+                                                    .data = acct,
+                                                    .account_id = account_id_,
+                                                    .trading_day = trading_day_});
+                SPDLOG_INFO("td qry trading account | account={} balance={} available={} seq={}",
+                            account_id_, acct.balance, acct.available, acct.seq);
+            } else {
+                // 不写表不推帧：持仓基准未就绪，写资金行会把锚点推到当日（见上）。
+                // 由失败补查链在持仓查询成功后重新查询资金（resync_account_data 同序）。
+                SPDLOG_WARN(
+                    "td trading account skipped, position not ready | account={}"
+                    " reason=position_query_failed",
+                    account_id_);
+            }
         } else if (f.rsp_info && f.rsp_info->ErrorID != 0) {
             SPDLOG_ERROR("td qry trading account error | account={} error_id={} error=\"{}\"",
                          account_id_, f.rsp_info->ErrorID,

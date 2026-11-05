@@ -56,6 +56,25 @@ struct TdTradeRecord {
     uint64_t seq = 0;
 };
 
+/// 持仓行（契约 rest §2.9.4）在后的内部形态：DB 行与 POSITION_INFO 帧都先归一到这里。
+///
+/// 与委托/成交的关键差异：**没有 `time` / `sort_key`**——持仓是绝对态，`positions` 表无
+/// 时间列，列表顺序由服务端的 `(account_id, instrument_id, direction)` 升序决定
+/// （契约 rest §2.9.2）。前端按业务键覆盖合并，不做排序插入。
+struct TdPositionRecord {
+    std::string account_id;
+    std::string date;  ///< 该账户锚点日 "YYYYMMDD"（不是全局当前交易日）
+    std::string instrument_id;
+    std::string exchange_id;
+    int direction = 0;  ///< DzDirection（-1/0/1）
+    int volume = 0;     ///< 总持仓（含今仓与昨仓）
+    int frozen_volume = 0;
+    int today_volume = 0;
+    int yd_volume = 0;
+    double price = 0.0;  ///< 持仓均价（double 全精度）
+    uint64_t seq = 0;
+};
+
 /// 委托行 JSON（契约 rest §2.9.3）：枚举为 PascalCase 字符串，`avg_price` 在
 /// `volume_traded == 0` 时为 null，`sort_key` 由 `td_order_sort_key` 生成。
 nlohmann::json td_order_row_json(const TdOrderRecord& row, int price_decimals);
@@ -63,6 +82,10 @@ nlohmann::json td_order_row_json(const TdOrderRecord& row, int price_decimals);
 /// 成交行 JSON（契约 rest §2.9.3）：枚举为 PascalCase 字符串；成交行**没有**
 /// `avg_price` / `avg_price_decimals`（契约 §2.9.3 成交行字段表）。
 nlohmann::json td_trade_row_json(const TdTradeRecord& row, int price_decimals);
+
+/// 持仓行 JSON（契约 rest §2.9.4）：枚举为 PascalCase 字符串，无 `sort_key`。
+/// REST `items` 与 WS `td_position_info` 的 payload 是同一份 schema（契约 webui-ws §2.5）。
+nlohmann::json td_position_row_json(const TdPositionRecord& row, int price_decimals);
 
 /// 价格显示小数位（契约 rest §2.9.6）：`price_tick > 0` 时取最小 d ∈ [0,8] 使
 /// `price_tick × 10^d` 与最近整数之差 ≤ 1e-9；查不到合约 / `price_tick ≤ 0` 时用

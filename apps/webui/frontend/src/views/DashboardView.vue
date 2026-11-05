@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, onUnmounted, type Ref } from 'vue'
+import { ref, computed, onMounted, onUnmounted, type Ref } from 'vue'
 import StatusIndicator from '@/components/shared/StatusIndicator.vue'
 import Icon from '@/components/shared/Icon.vue'
 import { processStateText, processStateColor } from '@/composables/useProcessState'
+import { formatSignedVolume, formatTdDate, positionDetailTexts } from '@/composables/tdPositionView'
+import { TD_POSITION_DETAIL_COLUMNS } from '@/composables/tdPositionView'
 import { useMarketSourcesStore } from '@/stores/marketSources'
+import { useTdPositionsStore } from '@/stores/tdPositions'
 
 const marketSourcesStore = useMarketSourcesStore()
+const positionsStore = useTdPositionsStore()
 
 // 行情面板：复用 store 的 sources，与行情源页面同步
 const marketOnlineCount = computed(
@@ -21,16 +25,6 @@ function marketProcessStateText(state: string | null): string {
 }
 
 // === Types ===
-interface PositionRow {
-  code: string
-  isMain: boolean
-  diff: number
-  netPos: number
-  stratNet: number
-  account: string
-  strategies: number[]
-}
-
 interface AccountRow {
   name: string
   sub: string
@@ -76,27 +70,121 @@ interface MessageRow {
   source: string
 }
 
-// === 演示数据（issue #200）===
-// 账户 / 持仓 / 委托 / 策略 / 消息五个面板的交易数据链路尚未建立
-// （见 issue #6：TdDataService 未暴露 REST/WS）。此处保留原型布局，
-// 但满足三条约束：
+// === 持仓面板：真实数据（#249，契约 rest §2.9.4 / 契约 webui-ws §2.5/§5）===
+// 面板接的是 `stores/tdPositions`（REST 基线 + WS 绝对态增量 + 降级退避）。
+// 一行 = (account_id, instrument_id)（用户确认口径）：契约行是 (account, instrument,
+// direction) 三元组，面板按合约分组，默认显示轧差后的账户净仓，多/空明细进可展开详情列。
+//
+// 策略列（策略净仓 / 逐策略净仓 / 持仓差值）**保留列位置显示「—」**：策略维度的持仓归属
+// 尚未建立（策略侧记账只在策略进程内，契约 strategy §「策略逻辑持仓」），不能拿账户净仓
+// 冒充策略净仓。列位置保留是为了布局稳定 + 让读者看到「这里将来会有数据」。
+
+/**
+ * 策略名列表（**演示数据**的一部分）：策略维度持仓归属尚未建立，这些列只保留位置显示「—」。
+ * 与账户/委托/策略/消息面板同属 issue #200 的演示数据块。
+ */
+const strategyNames = ['长线', '中线', '短线1号', '短线2号', '多因子一号']
+
+/** 详情列（多总/多今/多昨/多冻结/多均价 × 空方）默认隐藏，勾选后展开 */
+const showPositionDetail = ref(false)
+
+/** 详情列表头（顺序与 `positionDetailTexts` 的返回值一一对应） */
+const positionDetailColumns = TD_POSITION_DETAIL_COLUMNS
+
+/** 面板行数（聚合数用）：一行 = 一个 (账户, 合约) */
+const positionAggregate = computed(() => {
+  const total = positionsStore.groups.length
+  if (total === 0) return '0/0'
+  const netted = positionsStore.groups.filter(group => group.netVolume !== 0).length
+  // 匹配数 = 净仓非零的行（与「隐藏匹配行」勾选框的口径一致：勾上后隐藏净仓为零的行）
+  return `${netted}/${total}`
+})
+
+/**
+ * 「隐藏匹配行」勾选框：原先是无逻辑的假交互（issue #200 遗留）。
+ * 现在接真实语义：勾上后隐藏**账户净仓为零**的行（多空锁仓 / 已全平但仍残留今昨明细的行）——
+ * 这类行对"当前风险敞口"没有贡献，但仍在列表里占位。聚合数始终按全部行计算（匹配数/总数），
+ * 因此勾选不会让分母跳动。
+ */
+const hideMatchedPositions = ref(false)
+
+const visiblePositionGroups = computed(() => {
+  if (!hideMatchedPositions.value) return positionsStore.groups
+  return positionsStore.groups.filter(group => group.netVolume !== 0)
+})
+
+/** 面板级数据日期标签：各行锚点日可能不同（多账户），只标一个日期会说谎 */
+const positionDateLabel = computed<string>(() => {
+  const dates = positionsStore.anchorDates
+  if (dates.length === 0) return ''
+  const shown = dates.map(formatTdDate).join(' / ')
+  return `数据日期 ${shown}`
+})
+
+/** 净仓文案：正数带 +、负数原样、零显示 0（零是合法真实值，不是不可用） */
+function netVolumeText(volume: number): string {
+  return formatSignedVolume(volume)
+}
+
+/** 净仓单元格类名（红涨绿跌，复用 dashboard.css 既有口径） */
+function netVolumeClass(volume: number): string {
+  return volume > 0 ? 'diff-pos' : volume < 0 ? 'diff-neg' : ''
+}
+
+// === 持仓账户筛选（契约 webui-ws §5 第 11 条）===
+// 选项来源 = 返回的账户全集（含离线），**不是** online_accounts；筛选变化丢弃游标从首页重拉
+// （由 store 的 setAccountFilter 负责）。
+const positionFilterOpen = ref(false)
+
+/** 筛选按钮文案：空筛选 / 全选 = 「全部账户（N）」 */
+const positionFilterLabel = computed<string>(() => {
+  const total = positionsStore.accounts.length
+  if (total === 0) return '账户 0'
+  if (positionsStore.allAccountsSelected || positionsStore.effectiveAccounts.length === 0) {
+    return `全部账户（${total}）`
+  }
+  return `账户 ${positionsStore.effectiveAccounts.length}/${total}`
+})
+
+function isPositionAccountSelected(account: string): boolean {
+  if (positionsStore.allAccountsSelected) return true
+  return positionsStore.accountFilter.has(account)
+}
+
+/** 唯一生效账户时禁用取消：空筛选在契约里 = 全部已登记账户（rest §2.9.2），会显示更多数据 */
+function isLastPositionAccount(account: string): boolean {
+  const effective = positionsStore.effectiveAccounts
+  return effective.length === 1 && effective[0] === account
+}
+
+/** 切换单个账户（不允许取消最后一个；重置重拉由 store 负责） */
+function togglePositionAccount(account: string): void {
+  const all = positionsStore.accounts
+  const next = positionsStore.allAccountsSelected
+    ? all.filter(item => item !== account)
+    : all.filter(item => (
+        item === account ? !positionsStore.accountFilter.has(item) : positionsStore.accountFilter.has(item)
+      ))
+  if (next.length === 0) return
+  void positionsStore.setAccountFilter(next)
+}
+
+function selectAllPositionAccounts(): void {
+  void positionsStore.selectAllAccounts()
+}
+
+/** 空态行的 colspan：固定列（合约/差值/净仓/策略净仓/账户/日期）+ 策略列 + 详情列 */
+const positionColumnCount = computed(
+  () => 6 + strategyNames.length + (showPositionDetail.value ? positionDetailColumns.length : 0),
+)
+
+// === 账户 / 委托 / 策略 / 消息（演示数据，issue #200）===
+// 这四个面板的交易数据链路尚未建立（issue #6：TdDataService 未暴露 REST/WS），此处保留
+// 原型布局，但满足三条约束：
 //   1) 页面永久可见地标注「演示数据」（横幅 + 逐面板 ds-tag）；
 //   2) 券商名 / 账户号 / 合约代码全部虚构，不得与真实期货公司或真实合约撞名；
 //   3) 面板聚合数一律由下列行数据计算，禁止硬编码（历史版本存在 2/3、5/5 等矛盾数字）。
-// 接入真实数据后本块整体删除（另立 spec 票承接）。
-const strategyNames = ['长线', '中线', '短线1号', '短线2号', '多因子一号']
-
-const positions: PositionRow[] = [
-  { code: 'zz2601', isMain: true, diff: -3, netPos: 3, stratNet: 3, account: '演示期货_A', strategies: [5, 3, 2, 0, 0] },
-  { code: 'yy2601', isMain: true, diff: 2, netPos: -2, stratNet: -2, account: '演示期货_A', strategies: [-2, 1, 0, 3, 0] },
-  { code: 'xx2601', isMain: true, diff: 0, netPos: 0, stratNet: 0, account: '演示期货_B', strategies: [20, 15, 10, 5, 0] },
-  { code: 'yy2605', isMain: false, diff: 0, netPos: -5, stratNet: -5, account: '演示期货_A', strategies: [-8, -6, -4, -2, 0] },
-  { code: 'zz2605', isMain: false, diff: 1, netPos: 1, stratNet: 1, account: '演示期货_B', strategies: [3, 2, 1, 0, 0] },
-  { code: 'ww2601', isMain: true, diff: 0, netPos: 0, stratNet: 0, account: '演示期货_A', strategies: [10, 8, 7, 5, 0] },
-  { code: 'ww2605', isMain: false, diff: -5, netPos: 5, stratNet: 5, account: '演示期货_A', strategies: [-10, 3, 2, 0, 0] },
-  { code: 'xx2609', isMain: false, diff: 0, netPos: 0, stratNet: 0, account: '演示期货_B', strategies: [-15, -10, -8, -7, 0] },
-]
-
+// 持仓面板已随 #249 接入真实链路，不再属于演示数据。
 const accounts: AccountRow[] = [
   {
     name: '演示期货_A', sub: 'demo-0001 · ctp', status: 'logged-in', loadingText: '',
@@ -148,15 +236,12 @@ const messages: MessageRow[] = [
   { level: 'info', text: '短线1号 ww2605 开仓，方向：空，手数：5，委托价 1580', time: '6小时前', source: '短线1号' },
 ]
 
-// === 面板聚合数：一律由上面的演示行计算（issue #200）===
+// === 面板聚合数：一律由行数据计算（issue #200）===
 // 历史版本硬编码 2/3、7/8、2/12、5/5 与展示行互相矛盾；此处改为派生，
 // 行数据变化时聚合数自动跟随，不可能再漂移。
 const accountAggregate = computed(
   () => `${accounts.filter(a => a.status === 'logged-in').length}/${accounts.length}`,
 )
-// 「隐藏匹配行」筛选尚未实现，没有行被隐藏，故命中数 = 总行数；
-// 不引入「匹配数」变量假装已有筛选逻辑（避免同一事实两处定义）。
-const positionAggregate = computed(() => `${positions.length}/${positions.length}`)
 const ordersAggregate = computed(
   () => `${orders.filter(o => o.icon === 'pending').length}/${orders.length} 笔`,
 )
@@ -297,10 +382,16 @@ function onHSplitterDown(e: MouseEvent): void {
 }
 
 // === WebSocket lifecycle ===
-// WS 连接/断开由 App.vue 全局管理，DashboardView 不再负责
+// WS 连接/断开由 App.vue 全局管理，DashboardView 不再负责。
+// 持仓面板是唯一在本页消费交易数据的面板：挂载即拉 REST 基线，卸载即停降级重试
+// （store 是单例，无视图时不该产生流量）。
+onMounted(() => {
+  void positionsStore.init()
+})
 
 onUnmounted(() => {
   onSplitterMouseUp()
+  positionsStore.dispose()
 })
 </script>
 
@@ -320,8 +411,9 @@ onUnmounted(() => {
       }"
     >
       <!-- 演示数据横幅（issue #200）：首屏永久可见，与是否滚动 / 展开无关。
-           五个面板的交易数据链路尚未建立（issue #6），横幅是读者第一眼就应看到的事实声明，
-           不得改为可关闭 banner 或仅靠图注。仪表盘锁一屏高度，故压成单行紧凑条。 -->
+           账户 / 委托 / 策略 / 消息四个面板的交易数据链路尚未建立（issue #6），横幅是读者
+           第一眼就应看到的事实声明，不得改为可关闭 banner 或仅靠图注。持仓面板已随 #249
+           接入真实链路，已从本横幅（与逐面板 ds-tag）中移除。仪表盘锁一屏高度，故压成单行紧凑条。 -->
       <div
         class="ds-alert ds-alert--warning dashboard-demo-banner"
         data-test="dashboard-demo-banner"
@@ -329,28 +421,89 @@ onUnmounted(() => {
       >
         <span class="ds-alert__icon"><Icon name="Tips" :size="16" /></span>
         <span class="dashboard-demo-banner__text">
-          <strong>演示数据</strong>：账户 / 持仓 / 委托 / 策略 / 消息面板尚未接入真实链路，内容均为虚构；仅「行情」面板为实时数据。
+          <strong>演示数据</strong>：账户 / 委托 / 策略 / 消息面板尚未接入真实链路，内容均为虚构；「行情」与「持仓」面板为实时数据。
         </span>
       </div>
 
       <!-- Left Panel -->
       <div ref="leftPanelEl" class="dashboard-left-panel" :style="{ display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }">
 
-        <!-- Position Monitor -->
+        <!-- Position Monitor（#249：真实持仓；契约 rest §2.9.4 / 契约 webui-ws §2.5/§5） -->
         <div class="dashboard-panel dashboard-panel--position" :style="{ flex: `${positionFlex} 1 0%`, minHeight: '120px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }">
           <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'var(--spacer-8) var(--spacer-16)', background: 'var(--bg-card)', borderBottom: '1px solid var(--border-neutral-l1)', flexShrink: 0 }">
-            <span :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)' }">
+            <span :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)', minWidth: 0 }">
               <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">持仓</span>
-              <span class="ds-tag ds-tag--warning" data-test="dashboard-demo-tag" :style="{ fontSize: '10px' }">演示</span>
+              <!-- 数据日期（面板级）：行内「数据日期」列是权威来源；这里给整屏一眼可读的标记。
+                   持仓行的 date 是各账户锚点日，可能早于当前交易日 —— 读者必须看得出这是旧快照。 -->
+              <span
+                v-if="positionDateLabel"
+                data-test="position-date-label"
+                :style="{ fontSize: '10px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }"
+              >{{ positionDateLabel }}</span>
             </span>
             <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-12)', fontSize: 'var(--body-xs-font-size)' }">
-              <span class="filter-dropdown__trigger" :style="{ cursor: 'pointer' }">来源</span>
+              <div class="dashboard-pos-filter">
+                <button
+                  class="filter-dropdown__trigger"
+                  type="button"
+                  :aria-expanded="positionFilterOpen"
+                  aria-controls="dashboard-position-account-filter"
+                  :style="{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 0, color: 'inherit', font: 'inherit' }"
+                  data-test="position-account-filter-trigger"
+                  @click="positionFilterOpen = !positionFilterOpen"
+                >{{ positionFilterLabel }}</button>
+                <div v-if="positionFilterOpen" id="dashboard-position-account-filter" class="dashboard-pos-filter__panel">
+                  <div class="dashboard-pos-filter__head">
+                    <span class="dashboard-pos-filter__title">账户筛选</span>
+                    <button
+                      v-if="!positionsStore.allAccountsSelected"
+                      class="dashboard-pos-filter__all"
+                      type="button"
+                      @click="selectAllPositionAccounts"
+                    >全选</button>
+                  </div>
+                  <p v-if="positionsStore.accounts.length === 0" class="dashboard-pos-filter__empty">暂无已登记账户</p>
+                  <div v-else data-test="position-account-filter" class="dashboard-pos-filter__list">
+                    <label v-for="account in positionsStore.accounts" :key="account" class="ds-check">
+                      <input
+                        type="checkbox"
+                        :checked="isPositionAccountSelected(account)"
+                        :disabled="isLastPositionAccount(account)"
+                        :aria-label="`筛选持仓账户 ${account}`"
+                        :title="isLastPositionAccount(account) ? '至少保留一个账户；要显示全部请用「全选」' : ''"
+                        @change="togglePositionAccount(account)"
+                      >
+                      <span class="ds-check__box"></span>
+                      <span class="dashboard-pos-filter__label">{{ account }}</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
               <label class="ds-check" :style="{ minHeight: 'auto', fontSize: 'var(--body-xs-font-size)', color: 'var(--text-secondary)' }">
-                <input type="checkbox"><span class="ds-check__box"></span> 隐藏匹配行
+                <input v-model="showPositionDetail" type="checkbox" data-test="position-detail-toggle">
+                <span class="ds-check__box"></span> 详情
               </label>
-              <span data-test="position-aggregate" :style="{ fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums', color: 'var(--status-success-default)', cursor: 'default' }" title="匹配持仓数/总持仓数">{{ positionAggregate }}</span>
+              <label class="ds-check" :style="{ minHeight: 'auto', fontSize: 'var(--body-xs-font-size)', color: 'var(--text-secondary)' }">
+                <input v-model="hideMatchedPositions" type="checkbox" data-test="position-hide-matched">
+                <span class="ds-check__box"></span> 隐藏匹配行
+              </label>
+              <span data-test="position-aggregate" :style="{ fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums', color: 'var(--status-success-default)', cursor: 'default' }" title="净仓非零行/全部行">{{ positionAggregate }}</span>
             </div>
           </div>
+          <!-- 降级提示条（契约 webui-ws §5 第 13 条：统一提示 + 自动退避重试，不用 0 冒充数据） -->
+          <div
+            v-if="!positionsStore.available"
+            class="ds-alert ds-alert--warning dashboard-pos-degraded"
+            role="status"
+            data-test="position-degraded-banner"
+          >
+            <span class="ds-alert__icon"><Icon name="Tips" :size="14" /></span>
+            <span>{{ positionsStore.degradedText }}</span>
+          </div>
+          <div v-if="positionsStore.truncated" class="dashboard-pos-truncated" role="status" data-test="position-truncated">
+            持仓行数超过单次拉取上限，列表不完整；请用账户筛选缩小范围
+          </div>
+          <div v-if="positionsStore.error" class="dashboard-pos-error" role="alert">{{ positionsStore.error }}</div>
           <div class="auto-scroll" :style="{ flex: 1, overflow: 'auto', padding: 0 }">
             <table class="ds-table ds-table--dense" :style="{ minWidth: '100%', width: 'max-content', tableLayout: 'auto', whiteSpace: 'nowrap' }">
               <thead :style="{ position: 'sticky', top: 0, zIndex: 1 }">
@@ -360,20 +513,39 @@ onUnmounted(() => {
                   <th>账户净仓</th>
                   <th>策略净仓</th>
                   <th>账户</th>
+                  <th>数据日期</th>
                   <th v-for="name in strategyNames" :key="name" class="strategy-col">{{ name }}</th>
+                  <template v-if="showPositionDetail">
+                    <th v-for="name in positionDetailColumns" :key="name" class="position-detail-col">{{ name }}</th>
+                  </template>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="pos in positions" :key="pos.code">
-                  <td class="frozen frozen-last cell-text" :style="{ left: 0, fontWeight: 'var(--font-weight-medium)' }">
-                    {{ pos.code }}
-                    <span v-if="pos.isMain" :style="{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '14px', height: '14px', borderRadius: '2px', background: 'var(--bg-contract-main)', color: 'var(--text-on-contract-main)', fontSize: '9px', fontWeight: 'bold', lineHeight: 1, flexShrink: 0, marginLeft: '3px', verticalAlign: 'middle' }">M</span>
+                <tr v-for="group in visiblePositionGroups" :key="group.key">
+                  <td class="frozen frozen-last cell-text" :style="{ left: 0, fontWeight: 'var(--font-weight-medium)' }">{{ group.instrument_id }}</td>
+                  <!-- 策略维度持仓归属尚未建立（策略记账在策略进程内）：保留列位置显示占位，
+                       不拿账户净仓冒充策略净仓（契约 strategy §「策略逻辑持仓」）。 -->
+                  <td class="cell-num" :style="{ color: 'var(--text-tertiary)' }" title="策略维度持仓归属尚未建立">—</td>
+                  <td class="cell-num" :class="netVolumeClass(group.netVolume)">{{ netVolumeText(group.netVolume) }}</td>
+                  <td class="cell-num" :style="{ color: 'var(--text-tertiary)' }" title="策略维度持仓归属尚未建立">—</td>
+                  <td class="cell-text" :style="{ color: 'var(--text-secondary)' }">{{ group.account_id }}</td>
+                  <td class="cell-num" :style="{ color: 'var(--text-tertiary)' }" data-test="position-row-date">{{ formatTdDate(group.date) }}</td>
+                  <td v-for="name in strategyNames" :key="name" class="cell-num strategy-col" title="策略维度持仓归属尚未建立">—</td>
+                  <template v-if="showPositionDetail">
+                    <td
+                      v-for="(text, index) in positionDetailTexts(group)"
+                      :key="index"
+                      class="cell-num position-detail-col"
+                    >{{ text }}</td>
+                  </template>
+                </tr>
+                <!-- 空态 / 加载态：降级与请求失败不是「无数据」（契约 webui-ws §5 第 13 条） -->
+                <tr v-if="!positionsStore.loading && visiblePositionGroups.length === 0">
+                  <td :colspan="positionColumnCount" class="dashboard-pos-empty" data-test="position-empty">
+                    <template v-if="!positionsStore.available">交易数据暂不可用</template>
+                    <template v-else-if="positionsStore.initialized">暂无持仓</template>
+                    <template v-else>加载中...</template>
                   </td>
-                  <td class="cell-num" :class="{ 'diff-neg': pos.diff < 0, 'diff-pos': pos.diff > 0 }">{{ pos.diff > 0 ? '+' + pos.diff : pos.diff }}</td>
-                  <td class="cell-num">{{ pos.netPos > 0 ? '+' + pos.netPos : pos.netPos }}</td>
-                  <td class="cell-num">{{ pos.stratNet > 0 ? '+' + pos.stratNet : pos.stratNet }}</td>
-                  <td class="cell-text" :style="{ color: 'var(--text-secondary)' }">{{ pos.account }}</td>
-                  <td v-for="(val, i) in pos.strategies" :key="i" class="cell-num strategy-col">{{ val }}</td>
                 </tr>
               </tbody>
             </table>

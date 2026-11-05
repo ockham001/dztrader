@@ -95,6 +95,8 @@ def preprocessor_branches(lines):
 
 # R5 invariant file: the single construction entry point for every test target.
 DZ_TEST_CMAKE = "cmake/DzTest.cmake"
+# R6 invariant file: the ctp module owns both the imported CTP targets and its test targets.
+CTP_CMAKE = "apps/ctp/CMakeLists.txt"
 
 
 def tracked_sources():
@@ -102,8 +104,9 @@ def tracked_sources():
         ["git", "ls-files", "-z", "--", "apps", "libs", DZ_TEST_CMAKE],
         capture_output=True, check=True).stdout
     files = [f for f in out.decode().split("\0") if f.endswith((".h", ".cpp"))]
-    if os.path.exists(DZ_TEST_CMAKE):
-        files.append(DZ_TEST_CMAKE)
+    for invariant in (DZ_TEST_CMAKE, CTP_CMAKE):
+        if os.path.exists(invariant):
+            files.append(invariant)
     return files
 
 
@@ -261,6 +264,35 @@ def check_c4702_exemption(path, text):
              "Windows CI with C2220 under /WX; restore the /wd4702 block in dz_add_test")]
 
 
+def check_ctp_api_dll_next_to_tests(path, text):
+    """R6: a ctp *test* target that links the imported CTP API needs the DLL beside the exe.
+
+    Windows loads `thosttraderapi_se.dll` at process start; `gtest_discover_tests` runs the
+    test exe during the **build** phase. A test target that actually calls the API therefore
+    fails with STATUS_DLL_NOT_FOUND (0xc0000135) at build time unless the DLL is copied into
+    DZ_TESTS_DIR -- a failure Linux cannot see (it resolves .so from the build tree).
+    Real case: #249 `td_position_lifecycle_test` (run 41964680320).
+
+    The copy must go through `dz_add_test(POST_BUILD_COMMAND ...)`: a later
+    `add_custom_command` on the same target runs *after* gtest discovery, which is too late.
+
+    Scope note: this is a **category** guard, not per-target analysis. It requires that the
+    file which links `dztd_ctp_api` into test targets has arranged a copy to DZ_TESTS_DIR;
+    header-only users of the CTP headers (no import table entry) do not need it, and the
+    check deliberately does not try to tell them apart.
+    """
+    if path.replace("\\", "/") != CTP_CMAKE:
+        return []
+    if "dztd_ctp_api" not in text:
+        return []
+    if 'copy_if_different "${CTP_TD_DLL}" "${DZ_TESTS_DIR}"' in text:
+        return []
+    return [(1,
+             "R6: %s links dztd_ctp_api into test targets but never copies the CTP DLL "
+             "next to the test exe. Windows loads it at gtest discovery and fails the build "
+             "with 0xc0000135; copy it via dz_add_test(POST_BUILD_COMMAND ...)" % CTP_CMAKE)]
+
+
 def check_file(path):
     with open(path, encoding="utf-8", errors="replace") as fh:
         text = fh.read()
@@ -272,6 +304,7 @@ def check_file(path):
     errors += check_debug_only_catch(text)
     errors += check_deprecated_crt(path, text)
     errors += check_c4702_exemption(path, text)
+    errors += check_ctp_api_dll_next_to_tests(path, text)
     return sorted(set(errors))
 
 

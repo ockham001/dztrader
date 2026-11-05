@@ -6,7 +6,7 @@
 >
 > 链路定位（总则 §4.2）：§2.2 领域消息 = 形态 1 响应侧 / 形态 4 的 dzweb 出口；§3 C2S 控制消息 = 形态 1/3 的 WS 前端入口（与 REST 等效）。
 
-> **实现注记**：委托事件 `td_order_report`、成交事件 `td_trade_report` 与建连补发 `td_recent` 已随 #246/#248 落地（`td_recent` 的事件集合已含委托与成交两类，同一账户补发环共用 300 条上限）；持仓 / 资金事件由 #249–#250 落地，`td_recent` 的事件集合随它们继续扩展。账户配置/细状态镜像的 WS 映射（契约 td-config / td-status）随 #251 接入（§7）。
+> **实现注记**：委托事件 `td_order_report`、成交事件 `td_trade_report` 与建连补发 `td_recent` 已随 #246/#248 落地（`td_recent` 的事件集合已含委托与成交两类，同一账户补发环共用 300 条上限）；持仓事件 `td_position_info` 与 `td_recent` 的持仓事件已随 #249 落地（`td_recent` 事件集合现含委托 / 成交 / 持仓三类，四类共享同一环容量）。资金事件 `td_trading_account` 由 #250 落地，`td_recent` 的事件集合随它继续扩展。账户配置/细状态镜像的 WS 映射（契约 td-config / td-status）随 #251 接入（§7）。
 
 ---
 

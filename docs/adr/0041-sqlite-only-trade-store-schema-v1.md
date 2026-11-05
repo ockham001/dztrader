@@ -4,6 +4,8 @@
 
 Accepted（2026-11-03，交易数据架构调整）
 
+决策 2 中「持仓 / 资金按该账户**四表** `MAX(date)` 过滤」的取值表集合已被 [ADR 0046](0046-anchor-day-from-snapshot-tables-only.md) 修正为「两张快照表」；本 ADR 其余决策不变。
+
 ## Context
 
 - 现有 td 数据写入 `$DZTRADER_HOME/db/td.db`，经 `libs/db` 端口（[ADR 0012](0012-unified-td-db-and-abstraction.md) 统一单库、[ADR 0015](0015-database-interface-port-adapter.md) 端口-适配器）与 MySQL 路线（[ADR 0016](0016-strategy-sdk-embedded-sql-drivers.md) / [ADR 0019](0019-strategy-sdk-db-backend-scope.md)），schema 已迭代到 v5 迁移链。

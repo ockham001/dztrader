@@ -16,8 +16,9 @@
  *   统计计数器的**重放守卫**（跳过重算已纳入的帧），不是记录 ingest 水位——它只由重算
  *   从 DB 写入，增量永不推进，见 `td_stats.h`。
  *
- * 委托行与成交行形状的唯一真相源是契约 rest §2.9.3，序列化复用 `td_row_json.h` 的
- * `td_order_row_json` / `td_trade_row_json`（REST 与 WS 同 schema，禁止两份）。
+ * 委托行、成交行与持仓行形状的唯一真相源是契约 rest §2.9.3 / §2.9.4，序列化复用
+ * `td_row_json.h` 的 `td_order_row_json` / `td_trade_row_json` / `td_position_row_json`
+ * （REST 与 WS 同 schema，禁止两份）。
  *
  * **线程语义（register_raw）**：帧 handler 在监听线程同步执行（`FrameView` 有效期内），
  * 解析并拷贝字段后经 `FrameRouter::poster()` 投递到 IO 线程，与 REST/WS 连接回调串行，
@@ -66,9 +67,9 @@ public:
     TdDomainService(TdDomainService&&) = delete;
     TdDomainService& operator=(TdDomainService&&) = delete;
 
-    /// 建连补发载荷：`{"events":[{"type":"td_order_report"|"td_trade_report","data":<行>},...]}`。
-    /// 内容 = 各在线账户补发环从旧到新；同一账户环**同时容纳委托与成交事件**
-    /// （契约 td-data-sync §8：每账户最近 300 条交易事件，四类共享容量）。
+    /// 建连补发载荷：`{"events":[{"type":"td_order_report"|"td_trade_report"|"td_position_info",
+    /// "data":<行>},...]}`。内容 = 各在线账户补发环从旧到新；同一账户环**同时容纳委托、
+    /// 成交与持仓事件**（契约 td-data-sync §8：每账户最近 300 条交易事件，四类共享容量）。
     /// 不同账户之间顺序不承诺。无事件 = 空数组。
     nlohmann::json recent_events() const;
 
@@ -107,16 +108,17 @@ public:
     void on_account_status(const DzAccountStatus& status);
     void on_order_report(const DzOrderReport& report);
     void on_trade_report(const DzTradeReport& report);
+    void on_position_info(const DzPositionInfo& info);
 
 private:
-    /// 注册 1002 / 1003 / 1012（ctor 调用）。
+    /// 注册 1002 / 1003 / 1004 / 1012（ctor 调用）。
     void register_handlers(FrameRouter& router);
 
     /// 该合约的价格小数位（契约 rest §2.9.6）：按 instrument_id 缓存 price_tick 查询结果；
     /// 查不到合约 / 库不可用 → 用该行委托价的小数位兜底。
     int price_decimals_for(const std::string& instrument_id, double price);
 
-    /// 该账户补发环追加一条（超过容量丢最旧）。委托与成交共用同一环与容量
+    /// 该账户补发环追加一条（超过容量丢最旧）。委托、成交与持仓共用同一环与容量
     /// （契约 td-data-sync §8；`type` 区分事件种类）。
     void push_recent(const std::string& account_id, const char* type, nlohmann::json row);
 

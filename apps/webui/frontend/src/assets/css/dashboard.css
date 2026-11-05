@@ -242,6 +242,116 @@
 /* ===== 策略列 ===== */
 .strategy-col { color: var(--text-tertiary); }
 
+/* ===== 持仓面板（#249 真实数据）=====
+   面板与委托/成交列表不同：它不占满整页，而是嵌在仪表盘左栏的锁高面板里，
+   因此筛选浮层、降级条、空态行都必须是**紧凑**形态（按面板内可用宽度而不是页宽）。 */
+.dashboard-pos-filter {
+  position: relative;
+}
+
+.dashboard-pos-filter__panel {
+  position: absolute;
+  top: calc(100% + var(--spacer-4));
+  right: 0;
+  z-index: 20;
+  min-width: 180px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: var(--spacer-8);
+  background: var(--bg-base-default);
+  border: 1px solid var(--border-neutral-l1);
+  border-radius: var(--radius-8);
+  box-shadow: var(--shadow-lg);
+}
+
+.dashboard-pos-filter__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacer-8);
+  margin-bottom: var(--spacer-4);
+}
+
+.dashboard-pos-filter__title {
+  font-size: var(--body-xs-font-size);
+  color: var(--text-tertiary);
+}
+
+.dashboard-pos-filter__all {
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--text-brand);
+  font: inherit;
+  font-size: var(--body-xs-font-size);
+  cursor: pointer;
+}
+
+.dashboard-pos-filter__list {
+  display: flex;
+  flex-direction: column;
+}
+
+.dashboard-pos-filter__label {
+  font-size: var(--body-xs-font-size);
+  color: var(--text-default);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-pos-filter__empty {
+  margin: 0;
+  padding: var(--spacer-4) 0;
+  font-size: var(--body-xs-font-size);
+  color: var(--text-tertiary);
+}
+
+/* 降级提示条（契约 webui-ws §5 第 13 条）：锁高面板内压成单行，不挤掉表格可视区 */
+.dashboard-pos-degraded {
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--spacer-8);
+  margin: var(--spacer-4) var(--spacer-8) 0;
+  padding: var(--spacer-4) var(--spacer-8);
+  border-radius: var(--radius-8);
+  background: var(--status-warning-surface-l1);
+  border-color: var(--status-warning-surface-l2);
+  color: var(--status-warning-default);
+  font-size: var(--body-xs-font-size);
+}
+
+.dashboard-pos-truncated {
+  flex-shrink: 0;
+  margin: var(--spacer-4) var(--spacer-8) 0;
+  padding: var(--spacer-4) var(--spacer-8);
+  border: 1px solid var(--status-alert-surface-l2);
+  border-radius: var(--radius-8);
+  background: var(--status-alert-surface-l1);
+  color: var(--status-alert-default);
+  font-size: var(--body-xs-font-size);
+}
+
+.dashboard-pos-error {
+  flex-shrink: 0;
+  margin: var(--spacer-4) var(--spacer-8) 0;
+  padding: var(--spacer-4) var(--spacer-8);
+  border: 1px solid var(--status-error-surface-l2);
+  border-radius: var(--radius-8);
+  background: var(--status-error-surface-l1);
+  color: var(--status-error-default);
+  font-size: var(--body-xs-font-size);
+}
+
+.dashboard-pos-empty {
+  padding: var(--spacer-16) var(--spacer-12);
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+/* 详情列（默认隐藏，勾选后展开）：明细数字列，宽度不参与冻结列计算 */
+.position-detail-col { color: var(--text-secondary); }
+
 /* ===== 分隔条 ===== */
 .splitter-v, .splitter-h {
   background: transparent;

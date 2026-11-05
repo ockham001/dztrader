@@ -6,14 +6,18 @@ export type { BrokerFrontend, BrokerEntry, LogLine, MdConfigPayload, MdRtnConfig
 // 前端不得手写重复类型。
 import type {
   TdDirection, TdPositionEffect, TdPriceType, TdOrderStatus, TdDegradedReason,
-  TdOrderRow, TdTradeRow, TdOrderListResponse, TdOrderDegradedResponse, TdRecentPayload, TdRecentEvent,
+  TdOrderRow, TdTradeRow, TdPositionRow, TdOrderListResponse, TdOrderDegradedResponse,
+  TdRecentPayload, TdRecentEvent,
   TdTradeListResponse, TdTradeDegradedResponse,
+  TdPositionListResponse, TdPositionDegradedResponse,
   TdStatsDegradedReason, TdStatsValues, TdStatsAvailable, TdStatsDegraded,
 } from './generated'
 export type {
   TdDirection, TdPositionEffect, TdPriceType, TdOrderStatus, TdDegradedReason,
-  TdOrderRow, TdTradeRow, TdOrderListResponse, TdOrderDegradedResponse, TdRecentPayload, TdRecentEvent,
+  TdOrderRow, TdTradeRow, TdPositionRow, TdOrderListResponse, TdOrderDegradedResponse,
+  TdRecentPayload, TdRecentEvent,
   TdTradeListResponse, TdTradeDegradedResponse,
+  TdPositionListResponse, TdPositionDegradedResponse,
   TdStatsDegradedReason, TdStatsValues, TdStatsAvailable, TdStatsDegraded,
 }
 
@@ -54,6 +58,19 @@ export type TdTradesResponse =
 export type TdStatsResponse =
   | (TdStatsAvailable & { available: true })
   | (TdStatsDegraded & { available: false })
+
+/**
+ * `GET /api/td/positions` 的响应：与 `TdOrdersResponse` / `TdTradesResponse` **同形同写法**
+ * （契约 rest §2.9.2/§2.9.8）——可用信封与降级信封共用 `available` 判别位，降级时响应只有
+ * available 与 reason。
+ *
+ * 持仓与委托/成交的差异**不在信封**，在 items 的内容与账户范围：items 是绝对态持仓行
+ * （无 sort_key），覆盖全部已登记账户（含离线），行 `date` 是各账户锚点日而非 trading_day
+ * （契约 rest §2.9.1/§2.9.4）。
+ */
+export type TdPositionsResponse =
+  | (TdPositionListResponse & { available: true })
+  | (TdPositionDegradedResponse & { available: false })
 
 // ===== Authentication =====
 export interface LoginRequest {

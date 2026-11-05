@@ -197,6 +197,23 @@ nlohmann::json td_trade_row_json(const TdTradeRecord& row, int price_decimals) {
     };
 }
 
+nlohmann::json td_position_row_json(const TdPositionRecord& row, int price_decimals) {
+    return {
+        {"account_id", row.account_id},
+        {"date", row.date},
+        {"instrument_id", row.instrument_id},
+        {"exchange_id", row.exchange_id},
+        {"direction", direction_text(row.direction)},
+        {"volume", row.volume},
+        {"frozen_volume", row.frozen_volume},
+        {"today_volume", row.today_volume},
+        {"yd_volume", row.yd_volume},
+        {"price", row.price},
+        {"price_decimals", price_decimals},
+        {"seq", row.seq},
+    };
+}
+
 int td_price_decimals(double price_tick, double price) {
     if (const auto from_tick = tick_decimals(price_tick); from_tick.has_value()) {
         return *from_tick;
