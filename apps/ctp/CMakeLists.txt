@@ -199,6 +199,19 @@ file(GLOB TD_CTP_TESTS CONFIGURE_DEPENDS
 )
 foreach(testfile ${TD_CTP_TESTS})
     get_filename_component(testname ${testfile} NAME_WE)
+    # 直接调用 CTP API 的测试目标（td_position_lifecycle_test 构造真 AccountSession，
+    # TdSpi 继承 CThostFtdcTraderSpi、account_session 调 CreateFtdcTraderApi）在 Windows 上
+    # 会让 .exe 的导入表引用 thosttraderapi_se.dll。**必须在测试发现之前**把 DLL 放到 exe
+    # 旁边，否则 gtest_discover_tests 执行 exe 时报 STATUS_DLL_NOT_FOUND (0xc0000135)，
+    # 表现为构建阶段就失败（Linux 看不到：.so 走 rpath/按目录查找）。
+    # 走 dz_add_test 的 POST_BUILD_COMMAND —— 见 cmake/DzTest.cmake 的注释：宏调用之后再写
+    # add_custom_command 会排在 gtest_discover_tests 之后，等于没修。
+    set(_ctp_test_extra_args "")
+    if(testname STREQUAL "td_position_lifecycle_test" AND WIN32)
+        set(_ctp_test_extra_args
+            POST_BUILD_COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CTP_TD_DLL}" "${DZ_TESTS_DIR}"
+            POST_BUILD_COMMENT "Copying CTP TD DLL next to td_position_lifecycle_test.exe")
+    endif()
     dz_add_test(dztd_ctp_${testname}
         SOURCES
             ${testfile}
@@ -207,7 +220,8 @@ foreach(testfile ${TD_CTP_TESTS})
             td/td_config.cpp
             td/td_api_pure.cpp
             common/trading_calendar.cpp
-        LABELS fast)
+        LABELS fast
+        ${_ctp_test_extra_args})
     target_include_directories(dztd_ctp_${testname} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(dztd_ctp_${testname} PRIVATE
         dzcore dztest_support GTest::gtest
