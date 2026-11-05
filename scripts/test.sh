@@ -10,25 +10,42 @@
 #   ./scripts/test.sh --label slow              # 只跑 slow 穷举档
 #   ./scripts/test.sh --label perf              # 只跑性能基准（#93 tick→bar + #164 框架五项）
 #   ./scripts/test.sh --test-name TimeTest      # 只跑匹配 TimeTest 的测试
+#   ./scripts/test.sh --test-name TdConfigTest --test-name SmokeTest   # 多个 regex 择一（#281）
+#   ./scripts/test.sh --list                    # 只列出用例名（ctest -N），不跑
 
 set -euo pipefail
 
+usage() {
+    echo "Usage: $0 [--config release|debug] [--label fast|slow|perf] [--test-name <regex>]... [--list]"
+    echo "  无 --config 时默认 release"
+    echo "  无 --label 时跑 fast 档；slow/perf 为显式可选档"
+    echo "  --test-name 可重复（用 | 合成一个 ctest -R）；regex 匹配 <Fixture>.<Case>，不是源文件名"
+    echo "  --list 只打印用例名（ctest -N），用于查 --test-name 该填什么"
+}
+
+# 取 flag 的参数；缺参数时报用法。${2:?} 的 bash 内建报错只有 "parameter null or
+# not set"、不含用法，且覆盖式赋值让重复 flag 静默丢弃前值（#281/#250 门禁假绿）。
+require_value() {  # <实际剩余参数个数 $#> <flag 名>
+    if [ "$1" -lt 2 ]; then
+        echo "error: $2 needs a value" >&2
+        usage >&2
+        exit 2
+    fi
+}
+
 CONFIG=""
 LABEL=""
-TEST_NAME=""
+TEST_NAMES=()
+LIST=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        -c|--config) CONFIG="${2:?--config 需要参数}"; shift 2 ;;
-        -L|--label) LABEL="${2:?--label 需要参数}"; shift 2 ;;
-        -t|--test-name) TEST_NAME="${2:?--test-name 需要参数}"; shift 2 ;;
-        -h|--help)
-            echo "Usage: $0 [--config release|debug] [--label fast|slow|perf] [--test-name <regex>]"
-            echo "  无 --config 时默认 release"
-            echo "  无 --label 时跑 fast 档；slow/perf 为显式可选档"
-            exit 0
-            ;;
-        *) echo "Unknown option: $1"; exit 1 ;;
+        -c|--config) require_value $# "--config"; CONFIG="$2"; shift 2 ;;
+        -L|--label) require_value $# "--label"; LABEL="$2"; shift 2 ;;
+        -t|--test-name) require_value $# "--test-name"; TEST_NAMES+=("$2"); shift 2 ;;
+        --list) LIST=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "error: unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
 
@@ -50,8 +67,25 @@ case "$LABEL" in
 esac
 
 CTEST_ARGS=(--preset "$PRESET")
-if [ -n "$TEST_NAME" ]; then
-    CTEST_ARGS+=(-R "$TEST_NAME")
+if [ ${#TEST_NAMES[@]} -gt 0 ]; then
+    # ctest 只接受一个 -R：多个 regex 用 | 连接成同一正则的择一分支（#281）。
+    # 不给每个分支加括号：| 的优先级低于锚点，`^A\.|^B\.` 各分支的锚点语义不受影响。
+    joined_regex=""
+    for name in "${TEST_NAMES[@]}"; do
+        joined_regex="${joined_regex:+$joined_regex|}${name}"
+    done
+    CTEST_ARGS+=(-R "$joined_regex")
+fi
+if [ "$LIST" -eq 1 ]; then
+    CTEST_ARGS+=(-N)
+fi
+
+# --list 直通 ctest -N：只读、不取构建锁、不重建 test_home。
+# 用例名是 <Fixture>.<Case>，猜源文件名会得到 rc=8 "No tests were found"——
+# 与「测试红」同形但含义完全不同（#281）。一次调用查全量用例名，替代反复试错。
+if [ "$LIST" -eq 1 ]; then
+    echo "ctest ${CTEST_ARGS[*]}"
+    exec ctest "${CTEST_ARGS[@]}"
 fi
 
 # 测试锁：与 build 共用同一把锁（.cache/build.lock），避免「测试跑到一半被并发构建

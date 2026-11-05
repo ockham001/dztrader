@@ -5,7 +5,7 @@
 
 **`write`/`edit` 已有文件之前必须先 `read` 打开它一次**——这是宿主的硬性写守卫，不满足就报 `file has not been read` / `file changed since it was read`，无法靠 codegraph 绕过（codegraph 返回的是内容等价的 read，但不满足守卫）。这是本仓最高频的工具失败（三票复盘：#246 11 次、#260 5 次、#258 1 次），批量重写（python/sed）之后尤其要重读一次再改。
 
-**读 `libs/`/`apps/` 下的 `.h`/`.cpp` 时，优先用 `codegraph_explore <符号或文件名>`**（MCP 工具；shell 兜底 `codegraph explore "<符号>"`）：它一次返回源码 + 调用方 + 影响面，比逐文件 grep/read 更省上下文。只有它没覆盖的地方（配置、文档、`.cache/`）才用 grep/read。
+**查函数/类的定义及其调用方时用 `codegraph_explore <符号>`**（MCP 工具；shell 兜底 `codegraph explore "<符号>"`）：一次返回源码 + 调用方 + 影响面。**不要用于**配置、JSON schema、宏、第三方头（`json.hpp` / `third_party/ctp` 会产生大量词法噪声）；单次调用只问一个符号族，不要堆自然语言长 query。其余场景（配置、文档、`.cache/`）用 grep/read。
 
 
 ---
@@ -206,6 +206,7 @@
 ### 本机沙箱（DSH）
 
 - **等待一律后台作业**：门禁 / CI / 子代理 / 任何 >60s 命令用 `run_in_background` 启动，需要结果时 `job_output(wait=true)`；**不要 `sleep` 轮询、不要前台空等**。CI 单次快照用 `./scripts/wait-ci.sh --status`（0 绿 / 1 红 / 2 错误 / 3 仍在跑）。实测代价：不看这条的票在 `sleep` 上花掉 10%–28% 墙钟（#162 1760s、#163 1985s），遵守的票只有 3s（#165）。
+- **门禁输出判绿**：给 `gate.sh` 接 `| tail` / `| head` 只丢退出码，verdict 行固定末尾且结果同时写 `.cache/gate/last-status`，**结论仍可见**——判绿看 `gate: OK` 行或 last-status，不要只看 shell 退出码；输出长度来自失败摘录 max(N,30)，与管道无关（别去调 `--tail` 默认值）。`wait-ci.sh` 例外：它本就静默、退出码即 CI 结论，不接管道。细节见 [ticket-closeout](docs/agents/ticket-closeout.md) §2。
 - 跨调用 `/tmp` 隔离、缓存回退、权限 preset、`.cache/handoff/` 约定见 [ticket-closeout](docs/agents/ticket-closeout.md) §2/§4/§8。
 
 ---

@@ -15,6 +15,7 @@
 
 #include "child_process.h"
 #include "config.h"
+#include "tests/td_config_fixture.h"
 
 #include <dztrader/core/core_data_type.h>
 #include <dztrader/core/env.h>
@@ -316,22 +317,16 @@ protected:
 
         // dztd_ctp 配置: 空账户闭环 — 配置账户 CTP001 但从不连接 (无 auto_login 段,
         // 无 --recover), 会话懒创建于 connect 不会发生; 下单走 no_session 拒单回报。
-        // 形态 = 契约 td-config §2.4（通用层 + 柜台 `ext` 分层；#251 起连接参数在账户 ext 内）。
+        // 形态不手写: 走 apps/ctp/tests/td_config_fixture.h（单一真相源 = TdConfig::to_json）。
+        // #251 把连接参数移入账户 ext 后，手写旧形态会让 dztd_ctp 启动即 CRITICAL 退出、
+        // 冒烟超时；夹具让形状变更在构造它的测试 target 编译期就红。
         {
-            nlohmann::json td_cfg = {
-                {"td",
-                 {{"accounts",
-                   nlohmann::json::array({{{"account_id", "CTP001"},
-                                           {"enabled", true},
-                                           {"ext",
-                                            {{"broker_id", "9999"},
-                                             {"user_id", "SMOKE001"},
-                                             {"password", ""},
-                                             {"product_info", ""},
-                                             {"frontends", nlohmann::json::array()}}}}})}}},
-            };
+            dztrader::test::TdConfigSeed seed;
+            seed.account_id = "CTP001";
+            seed.user_id = "SMOKE001";
+            seed.password = "";
             std::ofstream ofs(home_ / "configs" / "dztd_ctp.json");
-            ofs << td_cfg.dump();
+            ofs << dztrader::test::make_td_config_json(seed).dump();
             ASSERT_TRUE(static_cast<bool>(ofs)) << "write dztd_ctp.json failed";
         }
 

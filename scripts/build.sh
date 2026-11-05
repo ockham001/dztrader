@@ -8,9 +8,25 @@
 #   ./scripts/build.sh                           # Release
 #   ./scripts/build.sh --config debug            # Debug（仅本地）
 #   ./scripts/build.sh --target dzmd_ctp         # 只构建 dzmd_ctp target
+#   ./scripts/build.sh --target dzcore --target dzweb   # 多个 target 累积（#281）
 #   ./scripts/build.sh --config debug --target dzcore
 
 set -euo pipefail
+
+usage() {
+    echo "Usage: $0 [--config release|debug|asan] [--target <name>]..."
+    echo "  无参数时默认 release；--target 可重复，累积后一次透传给 cmake --build"
+}
+
+# 取 flag 的参数；缺参数时报用法。${2:?} 的 bash 内建报错只有 "parameter null or
+# not set"、不含用法，且覆盖式赋值让重复 flag 静默丢弃前值（#281/#250 门禁假绿）。
+require_value() {  # <实际剩余参数个数 $#> <flag 名>
+    if [ "$1" -lt 2 ]; then
+        echo "error: $2 needs a value" >&2
+        usage >&2
+        exit 2
+    fi
+}
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -44,18 +60,14 @@ if [ -z "${npm_config_cache:-}" ]; then
 fi
 
 CONFIG=""
-TARGET=""
+TARGETS=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        -c|--config) CONFIG="${2:?--config 需要参数}"; shift 2 ;;
-        -t|--target) TARGET="${2:?--target 需要参数}"; shift 2 ;;
-        -h|--help)
-            echo "Usage: $0 [--config release|debug|asan] [--target <name>]"
-            echo "  无参数时默认 release"
-            exit 0
-            ;;
-        *) echo "Unknown option: $1"; exit 1 ;;
+        -c|--config) require_value $# "--config"; CONFIG="$2"; shift 2 ;;
+        -t|--target) require_value $# "--target"; TARGETS+=("$2"); shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "error: unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
 
@@ -73,8 +85,9 @@ esac
 PRESET="linux-$CONFIG"
 
 CMAKE_ARGS=(--build --preset "$PRESET")
-if [ -n "$TARGET" ]; then
-    CMAKE_ARGS+=(--target "$TARGET")
+if [ ${#TARGETS[@]} -gt 0 ]; then
+    # 一个 --target 跟多个值：cmake --build 支持多 target，不需要重复 flag。
+    CMAKE_ARGS+=(--target "${TARGETS[@]}")
 fi
 
 echo "cmake ${CMAKE_ARGS[*]}"
