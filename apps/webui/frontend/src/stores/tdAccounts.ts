@@ -64,6 +64,18 @@ import type { ProgressView } from '@/stores/progress'
 export const TD_ACCOUNT_OP_TIMEOUT_MS = 5_000
 
 /**
+ * pending key 前缀（`td:{gateway}:{account}:{op}`）。三处使用点——`opKey()` 构造、
+ * `addPending` 的前缀扫描、`applyTdConfig` 的整网关清除——必须共用本常量：
+ * 各写一份字面量时，改前缀会静默漏改其中一处（例如清除用了新前缀而构造还在用旧前缀，
+ * pending 就永远清不掉、只能等 5s 超时）。
+ *
+ * 为什么不用 mdConfig 的 `CLEAR_BY_RTN` 声明表：那张表按「哪个 op 由哪类 RTN 清除」建模，
+ * 粒度是 op；本域的语义是**整网关一次清除**（配置帧恒为该网关全量，一个帧收口该网关全部
+ * 在途写操作，契约 td-config §4 末条），按 op 建表会表达不出「任意 op 都被同一个帧清掉」。
+ */
+export const TD_PENDING_PREFIX = 'td:'
+
+/**
  * 本领域独立 pending 实例（账户配置页无跨 store pending 交互，与 settings/sysmon 同型）。
  * 模块级单例导出供 store 与测试共享同一实例（可重置/可断言）。
  */
@@ -318,7 +330,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   // === pending 查询（页面用） ===
 
   function opKey(gateway: string, accountId: string, op: TdAccountOp): string {
-    return `td:${gateway}:${accountId}:${op}`
+    return `${TD_PENDING_PREFIX}${gateway}:${accountId}:${op}`
   }
 
   /** 该账户是否有任一在途操作（行级 spinner） */
@@ -336,7 +348,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   /** 添加操作的在途态（新账户尚未进注册表，不能用 accountPending 判定） */
   const addPending = computed<boolean>(() =>
     Object.keys(tdAccountsPending.pending).some(key =>
-      key.startsWith('td:') && key.endsWith(':add') && tdAccountsPending.pending[key] === true))
+      key.startsWith(TD_PENDING_PREFIX) && key.endsWith(':add') && tdAccountsPending.pending[key] === true))
 
   // === 注册表读取 ===
 
@@ -490,7 +502,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     configs.value[gateway] = payload
     // 清除粒度 = 该网关全部 pending：配置帧整网关全量，任何一次写帧都先于/等于生效信号
     //（契约 td-config §4 末条），因此一个网关的帧就是该网关所有在途写操作的收敛点。
-    tdAccountsPending.clearByPrefix(`td:${gateway}:`)
+    tdAccountsPending.clearByPrefix(`${TD_PENDING_PREFIX}${gateway}:`)
   }
 
   /**

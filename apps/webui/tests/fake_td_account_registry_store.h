@@ -64,6 +64,17 @@ public:
         return false;
     }
 
+    /// 某网关的整组替换是否被调用过（无论成败）——用于断言「失败路径确实被走到」，
+    /// 避免只写 `EXPECT_NO_THROW` 时即便 reconcile 完全没执行也恒过。
+    bool replaced_called(const std::string& gateway) const {
+        for (const auto& row : gateways) {
+            if (row.gateway == gateway) {
+                return row.replaced_deleted;
+            }
+        }
+        return false;
+    }
+
     /// 某网关已持久化的账户集合（未替换过 = 空）。
     std::vector<std::string> persisted(const std::string& gateway) const {
         for (const auto& row : gateways) {

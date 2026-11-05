@@ -139,9 +139,13 @@ TEST_F(TdConfigDomainServiceTest, ReconcilesRegistryAndBroadcastsDataChanged) {
     service_->on_rtn_td_config("dztd_ctp", config_payload({{"acc_a", true}, {"acc_b", false}}));
 
     EXPECT_EQ(registry_->size(), 2U);
-    EXPECT_EQ(registry_->find("acc_a")->gateway, "dztd_ctp");
-    EXPECT_TRUE(registry_->find("acc_a")->enabled);
-    EXPECT_FALSE(registry_->find("acc_b")->enabled);
+    const auto acc_a = registry_->find("acc_a");
+    ASSERT_TRUE(acc_a.has_value()) << "acc_a must be reconciled into the registry";
+    EXPECT_EQ(acc_a->gateway, "dztd_ctp");
+    EXPECT_TRUE(acc_a->enabled);
+    const auto acc_b = registry_->find("acc_b");
+    ASSERT_TRUE(acc_b.has_value()) << "acc_b must be reconciled into the registry";
+    EXPECT_FALSE(acc_b->enabled);
     // 账户集合增减 → data_changed{td}（契约 webui-ws §2.3 / rest §2.9.7 可观察效果）
     ASSERT_EQ(notifier_.scopes.size(), 1U);
     EXPECT_EQ(notifier_.scopes[0], "td");

@@ -65,7 +65,9 @@ TdConfig TdConfig::load(const std::filesystem::path& path, const std::string& se
     try {
         cfg = full[section].get<TdConfig>();
     } catch (const std::exception& e) {
-        // 类型不符（含旧扁平格式：连接参数直接在账户对象上）= 内容非法，致命
+        // 类型不符（如 accounts 不是数组、数值字段给了字符串）= 内容非法，致命退出。
+        // 注意：**旧扁平格式不走这条**——未知字段按总则 §8 忽略，解码成功但账户 ext 为空，
+        // 由 validate() 的 `broker_id empty` 拒绝，同样致命（td_main 对两者一视同仁）。
         throw std::runtime_error(
             std::format("dztd_ctp config invalid | path={} error=\"{}\"", path.string(), e.what()));
     }

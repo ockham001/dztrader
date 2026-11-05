@@ -119,13 +119,13 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
 
     // 6. 成功路径必须上报 RTN_TD_CONFIG (脱敏), 让 dzweb 镜像更新
     //    契约: REQ (TD_REQ_MODIFY_CONFIG) 必须有对应 RTN (TD_RTN_CONFIG)
-    //    注: dzweb 当前未注册 TD 配置帧（TD 领域尚未接入契约 webui-ws 镜像模型），
-    //    本帧为 TD 配置变更的权威回报，供未来 TD 领域消费
+    //    dzweb 消费本帧：更新 `td_config` 镜像 + WS `td_rtn_config`，并按网关整组
+    //    reconcile 账户注册表（契约 td-config §4/§5）
     report_config();
 }
 
 void TdApi::report_config() {
-    // 上报当前 td 配置 (脱敏: broker.password -> "****"), 推 RTN_TD_CONFIG
+    // 上报当前 td 配置 (脱敏: 账户 ext.password -> "****"), 推 RTN_TD_CONFIG
     try {
         platform::write_ext_inst_json_obj(event_writer_, DZ_FRAME_TD_RTN_CONFIG, name_,
                                           config_.to_safe_json());

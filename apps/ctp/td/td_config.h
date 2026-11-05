@@ -65,7 +65,22 @@ struct TdConfigOpReq {
 };
 
 /// CTP 账户级 `ext`（契约 td-config §2.3）：该接口类型的连接参数。
-/// `name` 字段来自平台 CtpBrokerEntry 的经纪商名，td 侧无此概念，故不纳入本 ext。
+///
+/// **为什么不直接复用平台 `CtpBrokerEntry`**（同文件顶部声明「复用平台库避免重复定义」的
+/// 口径，此处是有意的例外，两条理由都必须成立才分道）：
+/// 1. `CtpBrokerEntry` 自带 `name`（md 侧的经纪商名，md 可配多个经纪商并切换，是它的业务
+///    主键）。td 侧没有这个概念——一个 td 账户就是一个账户，账户身份是 `account_id`。强行
+///    复用会把 `name` 泄进 td 配置与 `RTN_CONFIG` payload，dzweb 与前端就得忽略一个恒空的
+///    字段，将来有人会以为它可以填。
+/// 2. **分层是契约要求**：契约 td-config §1 规定「通用层 + 柜台 `ext`」是跨接口类型约定，
+///    `ext` 的 schema 由各接口类型自己定义（§2.3）。`ext` 的键集合由契约固定
+///    （`broker_id`/`user_id`/`password`/`product_info`/`frontends`/`auth_code`/`app_id`/
+///    `flow_dir`），不完全等于 `CtpBrokerEntry` 的字段集合——复用平台类型会让「契约里的
+///    ext schema」与「平台 md 类型」两处各自演进却看起来同源。
+///
+/// 代价（已知且接受）：平台侧给 `CtpBrokerEntry` 加连接字段时本结构不会自动跟随。这与
+/// 「md 与 td 是不同接口域、字段集本就不同」一致；`BrokerFrontend` 仍然复用（见顶部
+/// `using`），因为前置地址的语义两侧完全相同。
 struct CtpAccountExt {
     std::string broker_id;                  // 经纪公司代码
     std::string user_id;                    // 用户代码
@@ -122,7 +137,9 @@ struct TdConfig {
 
     /// 从 JSON 文件的 "td" section 加载 (与 mdctp CtpMdConfig::load 模式一致)。
     /// 契约 td-config §6 两级语义：文件/section 缺失 -> 默认值 + 自愈写回；内容非法 -> 抛异常。
-    /// @throws std::runtime_error JSON 解析失败或 section 类型不符（含旧扁平格式）
+    /// **旧扁平格式不在此抛**：未知字段按总则 §8 忽略、解码成功，由 {@link validate} 拒绝
+    /// （调用方对「解码失败」与「校验失败」的处理相同——记 CRITICAL 后致命退出）。
+    /// @throws std::runtime_error JSON 解析失败或 section 类型不符
     static TdConfig load(const std::filesystem::path& path, const std::string& section = "td");
 
     /// 原子写入 JSON 文件的指定 section (load-modify-save, tmp + rename)。

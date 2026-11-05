@@ -183,10 +183,17 @@ TEST(TdAccountRegistryTest, PersistFailureDoesNotBlockInMemoryUpdate) {
 
 TEST(TdAccountRegistryTest, PersistThrowingDoesNotPropagate) {
     auto store = std::make_unique<FakeTdAccountRegistryStore>();
-    // load 用 throw 模拟异常；replace 用 return false 模拟失败——两者都必须被吞。
+    auto* raw = store.get();
     store->fail_replace = true;
     TdAccountRegistry registry(std::move(store));
+
     EXPECT_NO_THROW(registry.reconcile_gateway("dztd_ctp", accounts({{"acc_a", true}})));
+    // 不只在"没抛"上断言：失败路径必须**确实被走到**，且内存状态照常生效。
+    // （否则 reconcile 根本没执行、内存没更新时本用例也会恒过。）
+    EXPECT_TRUE(raw->replaced_called("dztd_ctp"))
+        << "reconcile must attempt the write even though it is going to fail";
+    EXPECT_TRUE(registry.contains("acc_a"))
+        << "in-memory state must survive a failed (throwing/false) persist";
 }
 
 // ============================================================================
