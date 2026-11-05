@@ -160,6 +160,12 @@ std::optional<nlohmann::json> TdPositionsQuery::execute(
 
     // 主查询：按账户逐个锚点日取行（行 `date` 必须等于该账户自己的锚点日）。
     // LEFT JOIN instruments 取 price_tick；`volume > 0` 在 SQL 过滤（契约 §2.9.1 空语义）。
+    // 锚点日条件与绑定由 `td_anchor_pairs` 生成（与资金端点共用，避免同形实现两处维护）。
+    const TdAnchorPairs anchor_pairs = td_anchor_pairs(scope_accounts, anchors, "p.");
+    if (anchor_pairs.empty()) {
+        body["items"] = nlohmann::json::array();
+        return body;
+    }
     std::string sql =
         "SELECT p.account_id, p.date, p.instrument_id, p.exchange_id, p.direction,"
         " p.volume, p.frozen_volume, p.today_volume, p.yd_volume, p.price, p.seq, i.price_tick"
@@ -169,20 +175,7 @@ std::optional<nlohmann::json> TdPositionsQuery::execute(
         sql += i == 0 ? "?" : ",?";
     }
     sql += ") AND (";
-    bool first_pair = true;
-    for (const auto& account : scope_accounts) {
-        const auto it = anchors.find(account);
-        if (it == anchors.end()) {
-            continue;  // 该账户无任何快照行 → 无锚点日 → 不可能有持仓行
-        }
-        sql += first_pair ? "(" : " OR (";
-        sql += "p.account_id = ? AND p.date = ?)";
-        first_pair = false;
-    }
-    if (first_pair) {
-        body["items"] = nlohmann::json::array();
-        return body;
-    }
+    sql += anchor_pairs.sql;
     sql += ")";
     if (cursor.has_value()) {
         // 游标坐标 = (account_id, instrument_id, direction) 升序元组，下一页取「更大」的行
@@ -206,14 +199,7 @@ std::optional<nlohmann::json> TdPositionsQuery::execute(
     for (const auto& account : scope_accounts) {
         sqlite3_bind_text(stmt, bind_index++, account.c_str(), -1, SQLITE_TRANSIENT);
     }
-    for (const auto& account : scope_accounts) {
-        const auto it = anchors.find(account);
-        if (it == anchors.end()) {
-            continue;
-        }
-        sqlite3_bind_text(stmt, bind_index++, account.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, bind_index++, it->second.c_str(), -1, SQLITE_TRANSIENT);
-    }
+    bind_index = td_bind_anchor_pairs(stmt, anchor_pairs, bind_index);
     if (cursor.has_value()) {
         sqlite3_bind_text(stmt, bind_index++, cursor->account_id.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, bind_index++, cursor->account_id.c_str(), -1, SQLITE_TRANSIENT);

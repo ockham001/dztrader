@@ -5,6 +5,7 @@ import type {
   TdPositionsResponse,
   TdStatsResponse,
   TdTradesResponse,
+  TdTradingAccountsResponse,
 } from '@/types/api'
 
 /**
@@ -20,16 +21,39 @@ import type {
  */
 export type TdOrdersQuery = TdListQuery
 
+/**
+ * 资金端点查询参数（契约 rest §2.9.2）：端点**不分页**（`next_cursor` 恒 null，
+ * `limit`/`cursor` 被忽略），因此只承载账户过滤；缺省 / 空串 = 全部已登记账户。
+ */
+export interface TdTradingAccountsQuery {
+  accounts?: string[]
+}
+
+/**
+ * 账户过滤参数编码（契约 rest §2.9.2：逗号分隔、每项去首尾空白、空项跳过、重复忽略）。
+ * 委托/成交/持仓与资金端点共用同一份编码，避免两端各自 trim/join 出细微差异。
+ */
+function appendAccountsParam(search: URLSearchParams, accounts: string[] | undefined): void {
+  const normalized = (accounts ?? [])
+    .map(account => account.trim())
+    .filter(account => account !== '')
+  if (normalized.length > 0) search.set('accounts', normalized.join(','))
+}
+
 /** 把查询参数拼成 query string（省略 undefined 与空串，后端按「未给」处理） */
 function toQueryString(query: TdListQuery): string {
   const search = new URLSearchParams()
   if (query.limit !== undefined) search.set('limit', String(query.limit))
   if (query.cursor) search.set('cursor', query.cursor)
-  // 逗号分隔 + 去空白/空项（契约 rest §2.9.2：每项去首尾空白、空项跳过、重复忽略）
-  const accounts = (query.accounts ?? [])
-    .map(account => account.trim())
-    .filter(account => account !== '')
-  if (accounts.length > 0) search.set('accounts', accounts.join(','))
+  appendAccountsParam(search, query.accounts)
+  const text = search.toString()
+  return text ? `?${text}` : ''
+}
+
+/** 资金端点 query string：只编码 accounts（端点不分页，limit/cursor 被契约忽略） */
+function toTradingAccountsQueryString(query: TdTradingAccountsQuery): string {
+  const search = new URLSearchParams()
+  appendAccountsParam(search, query.accounts)
   const text = search.toString()
   return text ? `?${text}` : ''
 }
@@ -58,6 +82,15 @@ export const tdApi = {
    */
   getPositions: (query: TdListQuery = {}) =>
     api.get<TdPositionsResponse>(`/api/td/positions${toQueryString(query)}`),
+  /**
+   * 资金列表（契约 rest §2.9.1/§2.9.2/§2.9.4）：**不分页**——`next_cursor` 恒 null，
+   * `limit`/`cursor` 被忽略，因此只接受 `accounts` 过滤（缺省 = 全部已登记账户）。
+   * 每个已登记账户一行（含离线与无资金记录账户）：无记录行 `has_data:false` 且
+   * `date`/`seq`/资金字段全 null；行 `date` 是各账户**锚点日**，不是信封 `trading_day`。
+   */
+  getTradingAccounts: (query: TdTradingAccountsQuery = {}) =>
+    api.get<TdTradingAccountsResponse>(
+      `/api/td/trading_accounts${toTradingAccountsQueryString(query)}`),
   /**
    * 统计计数器（契约 rest §2.9.5）：**无参数**——stats 是全局口径（全部在线账户 + 当前交易日），
    * 不接受 accounts 过滤，也不是列表（无 limit/cursor）。降级同样是 200 + available:false

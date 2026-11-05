@@ -5,7 +5,7 @@ import type {
   ProcessStatusPayload, ProgressStatus, LogConfigPayload, AutoLoginPayload, NotifyUiPayload,
   MdRtnConfigPayload, MdRtnStatusPayload, ShmConfigView, LogLine,
   SysmonSnapshotPayload, SysmonConfigPayload,
-  TdOrderRow, TdTradeRow, TdPositionRow, TdRecentPayload,
+  TdOrderRow, TdTradeRow, TdPositionRow, TdTradingAccountRow, TdRecentPayload,
 } from './generated'
 
 // 服务端 → 客户端每类消息的 data 载荷类型（判别联合核心）
@@ -34,12 +34,14 @@ export interface WsDataByType {
   // 契约 sysmon: 快照域（固定实例 dzsysmon）与运行期配置，前端消费随资源监控页票接入
   sysmon_snapshot: SysmonSnapshotPayload
   sysmon_config: SysmonConfigPayload
-  // 契约 webui-ws §2.5 交易数据：增量事件（payload 即契约 rest §2.9.3/§2.9.4 行）+ 建连补发。
+  // 契约 webui-ws §2.5 交易数据：四类增量事件（payload 即契约 rest §2.9.3/§2.9.4 行）+ 建连补发。
   // 委托/成交事件由 tdOrders/tdTrades 两份 `createTdListStore` 配置按业务键+seq 合并；
-  // 持仓是**绝对态**（无 sort_key），由独立的 `tdPositions` store 按业务键覆盖合并。
+  // 持仓与资金是**绝对态**（无 sort_key），由独立的 `tdPositions` / `tdTradingAccounts` store
+  // 按业务键（持仓 = account|instrument|direction，资金 = account_id）覆盖合并。
   td_order_report: TdOrderRow
   td_trade_report: TdTradeRow
   td_position_info: TdPositionRow
+  td_trading_account: TdTradingAccountRow
   td_recent: TdRecentPayload
   // 契约 webui-ws §2.4 控制消息 ACK（payload 键）
   md_connect_ack: { source: string; ok: boolean }

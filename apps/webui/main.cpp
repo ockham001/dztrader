@@ -46,6 +46,7 @@
 #include "td_orders_query.h"
 #include "td_positions_query.h"
 #include "td_stats_query.h"
+#include "td_trading_accounts_query.h"
 #include "td_trades_query.h"
 #include "sysmon_domain_service.h"
 #include "sysmon_controller.h"
@@ -403,6 +404,11 @@ int main(int argc, char* argv[]) {
     // 持仓：账户范围是全部已登记账户（含离线）+ 各账户锚点日（ADR 0045/0046），
     // 与委托/成交的「在线 + 当前交易日」口径不同；账户全集与锚点日由查询自己从库里取。
     auto td_positions_query = std::make_shared<dztrader::webui::TdPositionsQuery>(trade_db_path_cb);
+    // 资金：与持仓同一类口径（全部已登记账户含离线 + 各账户锚点日），但**不分页**
+    // （契约 rest §2.9.2：next_cursor 恒 null、limit/cursor 被忽略）；无记录账户仍返回
+    // has_data:false 占位行（§2.9.4）。
+    auto td_trading_accounts_query =
+        std::make_shared<dztrader::webui::TdTradingAccountsQuery>(trade_db_path_cb);
     // 统计计数器（契约 rest §2.9.5 / ADR 0043 决策 4）：dzweb 内存 4 值，启动 / Ready /
     // 在线集合变化 / 日切 / 周期对账从 trade.db 全量重算；ORDER_REPORT 走增量。
     // 注入后立即触发一次重算（此时无在线账户 → 全 0 且 ready，stats 不返回 not_ready）。
@@ -429,7 +435,7 @@ int main(int argc, char* argv[]) {
         });
     });
     drogon::app().registerController(std::make_shared<dztrader::webui::TdCtrl>(
-        repo, td_domain, td_query, td_trades_query, td_positions_query));
+        repo, td_domain, td_query, td_trades_query, td_positions_query, td_trading_accounts_query));
 
     // EventMonitor 由 main 持有并直调 start/stop（WsController 不再涉及）。
     // 生命周期：main 栈上 router 先声明、event_monitor 后声明（析构相反），

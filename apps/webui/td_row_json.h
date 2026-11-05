@@ -3,8 +3,8 @@
 
 /**
  * @file td_row_json.h
- * @brief 交易数据行（委托 / 成交）的内部形态 + 行 JSON + 派生字段
- *        （契约 rest §2.9.3/§2.9.6）的**唯一实现**。
+ * @brief 交易数据行（委托 / 成交 / 持仓 / 资金）的内部形态 + 行 JSON + 派生字段
+ *        （契约 rest §2.9.3/§2.9.4/§2.9.6）的**唯一实现**。
  *
  * REST 行与 WS 交易事件的 payload 是同一份 schema（契约 webui-ws §2.5：payload 即行对象）：
  * 两条路径都先把 DB 行 / 推送帧归一到这里，再走同一个 `td_*_row_json`。禁止在域服务里
@@ -75,6 +75,24 @@ struct TdPositionRecord {
     uint64_t seq = 0;
 };
 
+/// 资金行（契约 rest §2.9.4）在后的内部形态：DB 行与 TRADING_ACCOUNT 帧都先归一到这里。
+///
+/// 与持仓同属**绝对态**（无 `time` / `sort_key`），业务键 = `account_id`，列表顺序 =
+/// 服务端 account_id 升序。`date` 是该账户**锚点日**，不是信封里的当前交易日。
+struct TdTradingAccountRecord {
+    std::string account_id;
+    std::string date;             ///< 该账户锚点日 "YYYYMMDD"
+    double balance = 0.0;         ///< 权益
+    double available = 0.0;       ///< 可用资金
+    double frozen = 0.0;          ///< 冻结资金
+    double commission = 0.0;      ///< 手续费
+    double margin = 0.0;          ///< 保证金占用
+    double withdraw_quota = 0.0;  ///< 可取资金
+    double deposit = 0.0;         ///< 入金金额
+    double withdraw = 0.0;        ///< 出金金额
+    uint64_t seq = 0;
+};
+
 /// 委托行 JSON（契约 rest §2.9.3）：枚举为 PascalCase 字符串，`avg_price` 在
 /// `volume_traded == 0` 时为 null，`sort_key` 由 `td_order_sort_key` 生成。
 nlohmann::json td_order_row_json(const TdOrderRecord& row, int price_decimals);
@@ -86,6 +104,14 @@ nlohmann::json td_trade_row_json(const TdTradeRecord& row, int price_decimals);
 /// 持仓行 JSON（契约 rest §2.9.4）：枚举为 PascalCase 字符串，无 `sort_key`。
 /// REST `items` 与 WS `td_position_info` 的 payload 是同一份 schema（契约 webui-ws §2.5）。
 nlohmann::json td_position_row_json(const TdPositionRecord& row, int price_decimals);
+
+/// 资金行 JSON（契约 rest §2.9.4）：`has_data:true` 的数据行（REST `items` 与 WS
+/// `td_trading_account` 的 payload 是同一份 schema，契约 webui-ws §2.5）。
+nlohmann::json td_trading_account_row_json(const TdTradingAccountRecord& row);
+
+/// 无资金记录账户的占位行（契约 rest §2.9.4「无记录账户仍返回一行」）：`has_data:false`、
+/// `date` / `seq` 与全部资金字段为 `null`，使前端能按账户全集展示「无数据」而不是缺行。
+nlohmann::json td_trading_account_empty_row_json(const std::string& account_id);
 
 /// 价格显示小数位（契约 rest §2.9.6）：`price_tick > 0` 时取最小 d ∈ [0,8] 使
 /// `price_tick × 10^d` 与最近整数之差 ≤ 1e-9；查不到合约 / `price_tick ≤ 0` 时用

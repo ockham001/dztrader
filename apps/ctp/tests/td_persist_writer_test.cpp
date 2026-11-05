@@ -1358,5 +1358,58 @@ TEST_F(TdPersistWriterTest, SingleUpsertPositionAndTradingAccount) {
     }
 }
 
+// ============================================================================
+// #250: 资金多日快照——业务键 (account_id, date) 的作用域
+// ============================================================================
+
+// 资金行按 (account_id, date) 累积: 新交易日另起一行、历史日行不变; 更新某一天
+// 不波及其他天（重连/日切后写新日行、迟到的旧日补写都只碰自己的行）。
+TEST_F(TdPersistWriterTest, TradingAccountRowsAreScopedToAccountAndTradingDay) {
+    PersistWriter writer(db_path_, "dztd_test");
+    writer.open();
+    writer.start_writer();
+
+    // D1 两版（同一行），D2 一版。
+    writer.enqueue(PersistTask{.kind = PersistTask::Kind::TradingAccount,
+                               .data = make_trading_account(1),
+                               .account_id = "acc1",
+                               .trading_day = kTradingDay});
+    writer.enqueue(PersistTask{.kind = PersistTask::Kind::TradingAccount,
+                               .data = make_trading_account(2),
+                               .account_id = "acc1",
+                               .trading_day = kTradingDay});
+    writer.enqueue(PersistTask{.kind = PersistTask::Kind::TradingAccount,
+                               .data = make_trading_account(3),
+                               .account_id = "acc1",
+                               .trading_day = kTradingDay + 1});
+    ASSERT_TRUE(flush_writer(writer, std::chrono::seconds(10)));
+
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts"), 2)
+        << "one row per (account_id, date); D1 is upserted, D2 appended";
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20260901'"), 1);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20260902'"), 1);
+    EXPECT_EQ(scalar_int("SELECT seq FROM trading_accounts WHERE date='20260901'"), 2);
+    EXPECT_EQ(scalar_int("SELECT seq FROM trading_accounts WHERE date='20260902'"), 3);
+
+    // 迟到补写 D1（如失败补查链恢复后仍按 D1 写入）：只覆盖 D1 行，D2 行原样。
+    DzTradingAccount later = make_trading_account(9);
+    later.balance = 1234567.0;
+    writer.enqueue(PersistTask{.kind = PersistTask::Kind::TradingAccount,
+                               .data = later,
+                               .account_id = "acc1",
+                               .trading_day = kTradingDay});
+    ASSERT_TRUE(flush_writer(writer, std::chrono::seconds(10)));
+    writer.stop();
+
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts"), 2);
+    EXPECT_EQ(scalar_int("SELECT seq FROM trading_accounts WHERE date='20260901'"), 9);
+    EXPECT_DOUBLE_EQ(scalar_double("SELECT balance FROM trading_accounts WHERE date='20260901'"),
+                     1234567.0);
+    EXPECT_EQ(scalar_int("SELECT seq FROM trading_accounts WHERE date='20260902'"), 3)
+        << "writing one day must not touch another day's row";
+    EXPECT_DOUBLE_EQ(scalar_double("SELECT balance FROM trading_accounts WHERE date='20260902'"),
+                     1000000.0);
+}
+
 }  // namespace
 }  // namespace dztrader::ctp

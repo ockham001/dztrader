@@ -4,22 +4,24 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useProgressStore } from '@/stores/progress'
 import { useTdPositionsStore } from '@/stores/tdPositions'
+import { useTdTradingAccountsStore } from '@/stores/tdTradingAccounts'
 import { marketSourcesApi } from '@/api/marketSources'
 import { tdApi } from '@/api/td'
 import DashboardView from '../DashboardView.vue'
-import type { TdPositionRow } from '@/types/api'
+import type { TdPositionRow, TdTradingAccountRow, TdTradingAccountsResponse } from '@/types/api'
 
-// Dashboard 引用真实 StatusIndicator 与真实持仓 store；断言页面展示的内容，
+// Dashboard 引用真实 StatusIndicator 与真实持仓/资金 store；断言页面展示的内容，
 // 而不是测试自己刚写进 store 的值。
 //
-// #249：持仓面板已接**真实数据**（REST 基线 + WS 绝对态增量），不再是演示数据；
-// 账户 / 委托 / 策略 / 消息四个面板仍是演示数据，必须继续永久可见地标注。
+// #249：持仓面板已接**真实数据**（REST 基线 + WS 绝对态增量）；
+// #250：账户演示面板改为「资金」面板并接真实数据（REST 基线 + WS 绝对态增量）；
+// 委托 / 策略 / 消息三个面板仍是演示数据，必须继续永久可见地标注。
 vi.mock('@/api/marketSources', () => ({
   marketSourcesApi: { list: vi.fn() },
 }))
 
 vi.mock('@/api/td', () => ({
-  tdApi: { getPositions: vi.fn() },
+  tdApi: { getPositions: vi.fn(), getTradingAccounts: vi.fn() },
 }))
 
 const ctpSource = {
@@ -52,6 +54,42 @@ function position(overrides: Partial<TdPositionRow> = {}): TdPositionRow {
   }
 }
 
+function account(overrides: Partial<TdTradingAccountRow> = {}): TdTradingAccountRow {
+  return {
+    account_id: 'acc_a',
+    date: '20260808',
+    has_data: true,
+    balance: 1_234_567.89,
+    available: 850_000,
+    frozen: 0,
+    commission: 12.5,
+    margin: 150_000,
+    withdraw_quota: 800_000,
+    deposit: 50_000,
+    withdraw: 1234.5,
+    seq: 10,
+    ...overrides,
+  }
+}
+
+/** 无资金记录的账户行（has_data:false；date/seq/资金字段全 null，契约 rest §2.9.4） */
+function emptyAccount(overrides: Partial<TdTradingAccountRow> = {}): TdTradingAccountRow {
+  return account({
+    date: null,
+    has_data: false,
+    balance: null,
+    available: null,
+    frozen: null,
+    commission: null,
+    margin: null,
+    withdraw_quota: null,
+    deposit: null,
+    withdraw: null,
+    seq: null,
+    ...overrides,
+  })
+}
+
 function positionListResponse(items: TdPositionRow[], overrides: Record<string, unknown> = {}) {
   return {
     available: true as const,
@@ -63,11 +101,31 @@ function positionListResponse(items: TdPositionRow[], overrides: Record<string, 
   }
 }
 
-/** 挂载仪表盘并等待持仓基线到达 */
+/** 资金可用信封（契约 rest §2.9.2；资金端点不分页，next_cursor 恒 null） */
+function fundListResponse(items: TdTradingAccountRow[], overrides: Record<string, unknown> = {}) {
+  return {
+    available: true as const,
+    trading_day: '20260808',
+    online_accounts: ['acc_a'],
+    items,
+    next_cursor: null,
+    ...overrides,
+  }
+}
+
+/** 挂载仪表盘并等待持仓/资金基线到达 */
 async function mountDashboard() {
   const wrapper = mount(DashboardView, { attachTo: document.body })
   await flushPromises()
   return wrapper
+}
+
+/** 按账户 ID 找资金行（`data-test="fund-row"`），找不到时报错而不是静默通过 */
+function fundRow(wrapper: Awaited<ReturnType<typeof mountDashboard>>, accountId: string) {
+  const row = wrapper.findAll('[data-test="fund-row"]')
+    .find(item => item.text().includes(accountId))
+  if (!row) throw new Error(`fund row not found: ${accountId}`)
+  return row
 }
 
 describe('DashboardView', () => {
@@ -76,11 +134,13 @@ describe('DashboardView', () => {
     vi.resetAllMocks()
     vi.mocked(marketSourcesApi.list).mockResolvedValue([])
     vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([]))
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse([]))
   })
 
   afterEach(() => {
-    // 持仓 store 的降级退避定时器：用例结束时统一释放
+    // 持仓/资金 store 的降级退避定时器：用例结束时统一释放
     useTdPositionsStore().dispose()
+    useTdTradingAccountsStore().dispose()
   })
 
   it('无行情源时展示在线/总数 0/0', async () => {
@@ -170,24 +230,26 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
-  it('持仓面板不再标注「演示」，其余四个面板仍标注（演示标签 4 个）', async () => {
+  it('持仓面板不再标注「演示」，其余三个演示面板仍标注（演示标签 3 个）', async () => {
     const w = await mountDashboard()
     const tags = w.findAll('[data-test="dashboard-demo-tag"]')
-    expect(tags).toHaveLength(4)
+    expect(tags).toHaveLength(3)
     expect(tags.every(tag => tag.text() === '演示')).toBe(true)
     w.unmount()
   })
 
-  it('横幅点名仍为演示数据的面板，并说明持仓已接真实链路', async () => {
+  it('横幅点名仍为演示数据的面板，并说明持仓/资金已接真实链路', async () => {
     const w = await mountDashboard()
     const banner = w.get('[data-test="dashboard-demo-banner"]')
     const text = banner.text()
     expect(text).toContain('演示数据')
-    for (const panel of ['账户', '委托', '策略', '消息']) {
+    for (const panel of ['委托', '策略', '消息']) {
       expect(text).toContain(panel)
     }
-    // 持仓已接入真实链路：不得再被列为演示面板
-    expect(text).toContain('「行情」与「持仓」面板为实时数据')
+    // 账户面板已改「资金」并接真实链路：不得再被列为演示面板
+    expect(text).not.toContain('账户')
+    // 持仓（#249）与资金（#250）已接入真实链路
+    expect(text).toContain('「行情」「持仓」「资金」为实时数据')
     w.unmount()
   })
 
@@ -280,17 +342,187 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
-  it('聚合数与展示行自洽（账户/委托/策略仍是演示行）', async () => {
+  it('聚合数与展示行自洽（委托/策略仍是演示行，持仓/资金来自真实基线）', async () => {
     const w = await mountDashboard()
-    // 账户：3 个账户中仅 1 个已登录（旧值 2/3 与展示行矛盾）
-    expect(w.get('[data-test="account-aggregate"]').text()).toBe('1/3')
     // 持仓：空基线 → 0/0（不再是写死的演示行数）
     expect(w.get('[data-test="position-aggregate"]').text()).toBe('0/0')
+    // 资金：空基线 → 在线 0 / 已登记 0
+    expect(w.get('[data-test="fund-aggregate"]').text()).toBe('0/0')
     // 委托：7 笔中 2 笔未成交（旧值 2/12 与 7 行矛盾）
     expect(w.get('[data-test="orders-aggregate"]').text()).toBe('2/7 笔')
     // 策略：5 个策略中 4 个运行中（旧值 5/5 与「1 已停止」矛盾）
     expect(w.get('[data-test="strategy-aggregate"]').text()).toBe('4/5')
     expect(w.get('[data-test="strategy-footer"]').text()).toBe('总计: 5 已加载, 1 已停止')
+    w.unmount()
+  })
+
+  // ---- #250：资金面板接真实数据 ----
+
+  it('资金面板表头为契约资金字段，金额按 2 位小数 + 千分位格式化', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse([
+      account({
+        account_id: 'acc_a',
+        balance: 1_234_567.89,
+        available: 850_000,
+        frozen: 0,
+        margin: 150_000,
+        commission: 12.5,
+        withdraw_quota: 800_000,
+        deposit: 50_000,
+        withdraw: 1234.5,
+      }),
+    ]))
+    const w = await mountDashboard()
+
+    for (const header of ['账户', '状态', '权益', '可用', '冻结', '保证金', '手续费', '可取', '出入金', '数据日期']) {
+      expect(w.text()).toContain(header)
+    }
+
+    const row = fundRow(w, 'acc_a')
+    const cells = row.findAll('td').map(td => td.text())
+    // 列序：账户 | 状态 | 权益 | 可用 | 冻结 | 保证金 | 手续费 | 可取 | 出入金 | 数据日期
+    expect(cells[1]).toBe('在线')
+    expect(cells.slice(2)).toEqual([
+      '1,234,567.89',
+      '850,000.00',
+      '0.00',
+      '150,000.00',
+      '12.50',
+      '800,000.00',
+      '入 +50,000.00 / 出 -1,234.50',
+      '2026-08-08',
+    ])
+
+    w.unmount()
+  })
+
+  it('离线账户显示「离线」；多账户锚点日不同时面板级日期标签全部列出', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse(
+      [
+        account({ account_id: 'acc_a', date: '20260808' }),
+        account({ account_id: 'acc_offline', date: '20260807', seq: 11 }),
+      ],
+      { online_accounts: ['acc_a'] }))
+    const w = await mountDashboard()
+
+    expect(fundRow(w, 'acc_a').text()).toContain('在线')
+    expect(fundRow(w, 'acc_offline').text()).toContain('离线')
+    // 状态标签样式与文案同源（同一在线谓词）：在线 = success、离线 = danger
+    expect(fundRow(w, 'acc_a').findAll('td')[1].find('.ds-tag').classes()).toContain('ds-tag--success')
+    expect(fundRow(w, 'acc_offline').findAll('td')[1].find('.ds-tag').classes()).toContain('ds-tag--danger')
+    expect(w.get('[data-test="fund-date-label"]').text())
+      .toBe('数据日期 2026-08-07 / 2026-08-08')
+    // 行内数据日期是该账户锚点日，不是信封 trading_day
+    expect(fundRow(w, 'acc_offline').find('[data-test="fund-row-date"]').text()).toBe('2026-08-07')
+
+    w.unmount()
+  })
+
+  it('has_data:false 的账户整行金额/日期显示占位「—」，不用 0 冒充', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse(
+      [emptyAccount({ account_id: 'acc_offline' })],
+      { online_accounts: [] }))
+    const w = await mountDashboard()
+
+    const row = fundRow(w, 'acc_offline')
+    const cells = row.findAll('td').map(td => td.text())
+    expect(cells[1]).toBe('离线')
+    // 列序：账户 | 状态 | 权益 | 可用 | 冻结 | 保证金 | 手续费 | 可取 | 出入金 | 数据日期
+    expect(cells.slice(2)).toEqual([
+      '—', '—', '—', '—', '—', '—', '入 — / 出 —', '—',
+    ])
+    // title 说明「该账户无资金记录」
+    expect(row.attributes('title')).toBe('该账户无资金记录')
+
+    w.unmount()
+  })
+
+  it('资金聚合数为 在线账户/已登记账户（含离线与无记录账户）', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse(
+      [
+        account({ account_id: 'acc_a' }),
+        account({ account_id: 'acc_b', seq: 11 }),
+        emptyAccount({ account_id: 'acc_offline' }),
+      ],
+      { online_accounts: ['acc_a', 'acc_b'] }))
+    const w = await mountDashboard()
+
+    expect(w.get('[data-test="fund-aggregate"]').text()).toBe('2/3')
+    w.unmount()
+  })
+
+  it('资金降级 available:false 时展示统一提示，空态行同样是降级文案', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue({ available: false, reason: 'not_found' })
+    const w = await mountDashboard()
+
+    const banner = w.get('[data-test="fund-degraded-banner"]')
+    expect(banner.text()).toContain('交易数据暂不可用')
+    expect(w.get('[data-test="fund-empty"]').text()).toBe('交易数据暂不可用')
+
+    w.unmount()
+  })
+
+  it('资金请求失败：显示错误行与「加载失败」空态，不冒充「暂无资金数据」', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockRejectedValue(new Error('HTTP 500'))
+    const w = await mountDashboard()
+
+    expect(w.get('[data-test="fund-error"]').text()).toBe('HTTP 500')
+    expect(w.get('[data-test="fund-empty"]').text()).toBe('加载失败')
+    expect(w.text()).not.toContain('暂无资金数据')
+    expect(w.find('[data-test="fund-degraded-banner"]').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('成功读到空资金基线时显示「暂无资金数据」空态（与降级/失败区分）', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse([]))
+    const w = await mountDashboard()
+
+    expect(w.find('[data-test="fund-degraded-banner"]').exists()).toBe(false)
+    expect(w.find('[data-test="fund-error"]').exists()).toBe(false)
+    expect(w.get('[data-test="fund-empty"]').text()).toBe('暂无资金数据')
+    w.unmount()
+  })
+
+  it('资金基线请求在途时显示「加载中...」（未初始化 ≠ 无数据）', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockImplementation(
+      () => new Promise<TdTradingAccountsResponse>(() => {}))
+    const w = await mountDashboard()
+
+    expect(w.get('[data-test="fund-empty"]').text()).toBe('加载中...')
+    w.unmount()
+  })
+
+  it('data_changed 重拉在途时显示「加载中...」，不把刷新中冒充「暂无资金数据」', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse([]))
+    const w = await mountDashboard()
+    // 已初始化空基线：此刻确为「暂无资金数据」
+    expect(w.get('[data-test="fund-empty"]').text()).toBe('暂无资金数据')
+
+    // data_changed 会先清空 rows 再重拉；请求在途期间不得显示「暂无资金数据」
+    vi.mocked(tdApi.getTradingAccounts).mockImplementation(
+      () => new Promise<TdTradingAccountsResponse>(() => {}))
+    void useTdTradingAccountsStore().handleDataChanged('td')
+    await w.vm.$nextTick()
+
+    expect(useTdTradingAccountsStore().loading).toBe(true)
+    expect(w.get('[data-test="fund-empty"]').text()).toBe('加载中...')
+    expect(w.text()).not.toContain('暂无资金数据')
+
+    w.unmount()
+  })
+
+  it('data_changed 重拉失败时显示「加载失败」与错误行，不冒充「暂无资金数据」', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse([]))
+    const w = await mountDashboard()
+    expect(w.get('[data-test="fund-empty"]').text()).toBe('暂无资金数据')
+
+    // 重拉（清空后）HTTP 失败：error 非空但 available 仍 true，不得落回「暂无资金数据」
+    vi.mocked(tdApi.getTradingAccounts).mockRejectedValue(new Error('HTTP 500'))
+    await useTdTradingAccountsStore().handleDataChanged('td')
+
+    expect(w.get('[data-test="fund-empty"]').text()).toBe('加载失败')
+    expect(w.get('[data-test="fund-error"]').text()).toBe('HTTP 500')
+    expect(w.text()).not.toContain('暂无资金数据')
     w.unmount()
   })
 })

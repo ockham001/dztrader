@@ -4,7 +4,7 @@ import type {
   ProcessStatusPayload, ProgressStatus, ShmConfigView, MdRtnConfigPayload, MdRtnStatusPayload,
   NotifyUiPayload, AutoLoginPayload, LogConfigPayload, LogLine,
   SysmonSnapshotPayload, SysmonConfigPayload,
-  TdOrderRow, TdTradeRow, TdPositionRow, TdRecentPayload,
+  TdOrderRow, TdTradeRow, TdPositionRow, TdTradingAccountRow, TdRecentPayload,
 } from '@/types/generated'
 
 // 判别联合编译期保障：WsDataByType 的 type→payload 映射必须与契约单源（generated）一致。
@@ -30,6 +30,7 @@ describe('WsDataByType 判别联合（契约单源一致性）', () => {
       | 'td_order_report'
       | 'td_trade_report'
       | 'td_position_info'
+      | 'td_trading_account'
       | 'td_recent'
       | 'log_line'
       | 'log_tail_unsubscribed'
@@ -75,10 +76,11 @@ describe('WsDataByType 判别联合（契约单源一致性）', () => {
     expectTypeOf<WsDataByType['sysmon_config']>().toEqualTypeOf<SysmonConfigPayload>()
   })
 
-  it('td_order_report / td_trade_report / td_position_info / td_recent 与 generated 同源（契约 webui-ws §2.5）', () => {
+  it('td_order_report / td_trade_report / td_position_info / td_trading_account / td_recent 与 generated 同源（契约 webui-ws §2.5）', () => {
     expectTypeOf<WsDataByType['td_order_report']>().toEqualTypeOf<TdOrderRow>()
     expectTypeOf<WsDataByType['td_trade_report']>().toEqualTypeOf<TdTradeRow>()
     expectTypeOf<WsDataByType['td_position_info']>().toEqualTypeOf<TdPositionRow>()
+    expectTypeOf<WsDataByType['td_trading_account']>().toEqualTypeOf<TdTradingAccountRow>()
     expectTypeOf<WsDataByType['td_recent']>().toEqualTypeOf<TdRecentPayload>()
   })
 

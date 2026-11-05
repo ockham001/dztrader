@@ -515,6 +515,31 @@ describe('useTdPositionsStore · 降级（契约 rest §2.9.8 / webui-ws §5 第
     expect(store.degradedText).toBe('')
   })
 
+  it('卸载再挂载（dispose → init）后重新武装退避并从首档重试', async () => {
+    // 首轮挂载即降级：重试一次后 attempt 升到 1，下一档退避 = 2×base
+    vi.mocked(tdApi.getPositions).mockResolvedValue({ available: false, reason: 'busy' })
+    const store = useTdPositionsStore()
+    await store.init()
+    expect(tdApi.getPositions).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(TD_RETRY_BASE_DELAY_MS)
+    expect(tdApi.getPositions).toHaveBeenCalledTimes(2)
+    // 第二档是 2×base：只推进 base 不应再触发（证明 attempt 确实已递增）
+    await vi.advanceTimersByTimeAsync(TD_RETRY_BASE_DELAY_MS)
+    expect(tdApi.getPositions).toHaveBeenCalledTimes(2)
+
+    // 卸载再挂载：新生命周期必须重新武装定时器，并把退避档位复位到首档
+    store.dispose()
+    await store.init()
+    expect(tdApi.getPositions).toHaveBeenCalledTimes(3)
+    vi.mocked(tdApi.getPositions).mockResolvedValue(listResponse([position({ seq: 20 })]))
+    // 若沿用卸载前的档位（2×base），此处只推进 base 不会重试
+    await vi.advanceTimersByTimeAsync(TD_RETRY_BASE_DELAY_MS)
+
+    expect(tdApi.getPositions).toHaveBeenCalledTimes(4)
+    expect(store.available).toBe(true)
+    expect(store.rows).toHaveLength(1)
+  })
+
   it('降级期间 WS 事件照常合并（不丢增量）', async () => {
     vi.mocked(tdApi.getPositions).mockResolvedValue({ available: false, reason: 'busy' })
     const store = useTdPositionsStore()

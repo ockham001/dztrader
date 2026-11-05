@@ -12,6 +12,9 @@
  * - **锚点日** = 该账户 `positions` 与 `trading_accounts` 两张快照表的 `MAX(date)`（ADR 0046）。
  *   委托/成交（追加流）**不参与**——它们先于快照查询落库，算进来会让「查询失败」被显示成
  *   「空仓」，正是 ADR 0045 决策 3 判定为最危险的形态。
+ * - **锚点日取行的 `(account_id, date)` 条件与绑定**（`td_anchor_pairs` /
+ *   `td_bind_anchor_pairs`）也在这里：两个端点的取行 SQL 逐行同形，只有表名/列前缀不同，
+ *   两份实现会让锚点语义变更时改一处漏一处。
  *
  * 为什么账户全集用四表而锚点日只用两表：前者是「该账户是否存在」的判定，删户后历史数据仍要
  * 可见；后者是「取哪个日期的行」。两件事，故意用不同的表集合。
@@ -20,9 +23,11 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 struct sqlite3;
+struct sqlite3_stmt;
 
 namespace dztrader::webui {
 
@@ -45,6 +50,34 @@ std::vector<std::string> td_registered_accounts(sqlite3* db,
 /// @return account_id -> "YYYYMMDD"；无快照行的账户**不出现在结果里**
 std::map<std::string, std::string> td_account_anchor_days(
     sqlite3* db, const std::vector<std::string>& account_ids, bool* ok);
+
+/// 一次「按各账户锚点日取行」查询所需的 `(account_id, date)` 对（持仓 / 资金共用）。
+///
+/// 两个端点的取行条件逐行同形（只有表名/列前缀不同）：各账户在自己的锚点日上取行。
+/// 条件文本与绑定顺序收敛到本结构，避免锚点语义变化时改两处（§2.4 同形实现）。
+struct TdAnchorPairs {
+    struct Pair {
+        std::string account_id;
+        std::string date;
+    };
+    std::vector<Pair> pairs;
+    /// 形如 `"(<prefix>account_id = ? AND <prefix>date = ?) OR ..."`；无锚点对时为空串
+    /// （调用方应早退或返回空列表）。
+    std::string sql;
+
+    [[nodiscard]] bool empty() const noexcept { return pairs.empty(); }
+};
+
+/// 由账户集合与锚点日映射构造条件（顺序 = `accounts` 顺序，跳过无锚点日的账户）。
+///
+/// @param column_prefix SQL 列前缀（有表别名时传 `"p."`，无别名传空串）
+TdAnchorPairs td_anchor_pairs(const std::vector<std::string>& accounts,
+                              const std::map<std::string, std::string>& anchors,
+                              std::string_view column_prefix = {});
+
+/// 把锚点对依次绑定到 `stmt` 的连续参数位（`account_id, date, account_id, date, …`）。
+/// @return 下一个未使用的参数下标（调用方继续绑定游标 / limit）
+int td_bind_anchor_pairs(sqlite3_stmt* stmt, const TdAnchorPairs& pairs, int first_index);
 
 }  // namespace dztrader::webui
 

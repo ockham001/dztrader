@@ -214,6 +214,34 @@ nlohmann::json td_position_row_json(const TdPositionRecord& row, int price_decim
     };
 }
 
+nlohmann::json td_trading_account_row_json(const TdTradingAccountRecord& row) {
+    // 键序与契约 rest §2.9.4 资金行字段表一致；序列化本身不依赖顺序（契约只约束键名与语义）。
+    return {
+        {"account_id", row.account_id},
+        {"date", row.date},
+        {"has_data", true},
+        {"balance", row.balance},
+        {"available", row.available},
+        {"frozen", row.frozen},
+        {"commission", row.commission},
+        {"margin", row.margin},
+        {"withdraw_quota", row.withdraw_quota},
+        {"deposit", row.deposit},
+        {"withdraw", row.withdraw},
+        {"seq", row.seq},
+    };
+}
+
+nlohmann::json td_trading_account_empty_row_json(const std::string& account_id) {
+    // 契约 rest §2.9.4：无记录账户仍返回一行；字段全 null（不得用 0 冒充）。
+    return {
+        {"account_id", account_id}, {"date", nullptr},      {"has_data", false},
+        {"balance", nullptr},       {"available", nullptr}, {"frozen", nullptr},
+        {"commission", nullptr},    {"margin", nullptr},    {"withdraw_quota", nullptr},
+        {"deposit", nullptr},       {"withdraw", nullptr},  {"seq", nullptr},
+    };
+}
+
 int td_price_decimals(double price_tick, double price) {
     if (const auto from_tick = tick_decimals(price_tick); from_tick.has_value()) {
         return *from_tick;

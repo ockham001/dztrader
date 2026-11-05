@@ -98,27 +98,31 @@ std::optional<TdListParams> td_parse_list_params(
         params.limit = limit;
     }
     params.cursor = trim(param("cursor"));
+    params.accounts = td_parse_accounts(param("accounts"));
+    return params;
+}
 
+std::vector<std::string> td_parse_accounts(std::string_view text) {
     // accounts：逗号分隔，去首尾空白、空项跳过、重复忽略（契约 rest §2.9.2）。
-    const std::string accounts_text = param("accounts");
+    std::vector<std::string> accounts;
     size_t begin = 0;
-    while (begin <= accounts_text.size()) {
-        const size_t comma = accounts_text.find(',', begin);
-        const size_t end = comma == std::string::npos ? accounts_text.size() : comma;
-        std::string account = trim(std::string_view(accounts_text).substr(begin, end - begin));
+    while (begin <= text.size()) {
+        const size_t comma = text.find(',', begin);
+        const size_t end = comma == std::string_view::npos ? text.size() : comma;
+        std::string account = trim(text.substr(begin, end - begin));
         if (!account.empty()) {
-            params.accounts.push_back(std::move(account));
+            accounts.push_back(std::move(account));
         }
-        if (comma == std::string::npos) {
+        if (comma == std::string_view::npos) {
             break;
         }
         begin = comma + 1;
     }
-    // 归一化：排序 + 去重，使 "a,b" 与 "b,a" 属于同一游标作用域。
-    std::sort(params.accounts.begin(), params.accounts.end());
-    params.accounts.erase(std::unique(params.accounts.begin(), params.accounts.end()),
-                          params.accounts.end());
-    return params;
+    // 归一化：排序 + 去重，使 "a,b" 与 "b,a" 属于同一游标作用域（资金端点不分页，
+    // 归一化让它与列表端点的账户过滤语义保持一致）。
+    std::sort(accounts.begin(), accounts.end());
+    accounts.erase(std::unique(accounts.begin(), accounts.end()), accounts.end());
+    return accounts;
 }
 
 std::vector<std::string> td_scope_accounts(const std::vector<std::string>& requested,

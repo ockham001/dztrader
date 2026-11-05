@@ -16,10 +16,11 @@ namespace dztrader::webui {
 
 namespace {
 
-/// 交易行 WS 事件名（契约 webui-ws §2.5 四类交易事件；本服务转发委托、成交与持仓）。
+/// 交易行 WS 事件名（契约 webui-ws §2.5 四类交易事件；本服务转发委托、成交、持仓与资金）。
 constexpr const char* kOrderReportEvent = "td_order_report";
 constexpr const char* kTradeReportEvent = "td_trade_report";
 constexpr const char* kPositionInfoEvent = "td_position_info";
+constexpr const char* kTradingAccountEvent = "td_trading_account";
 
 /// `DzDate`（距纪元天数）→ "YYYYMMDD"；非法回落空串。
 std::string date_text(int32_t date) {
@@ -76,6 +77,23 @@ TdTradeRecord to_trade_record(const DzTradeReport& report) {
     return row;
 }
 
+/// TRADING_ACCOUNT 帧 → 契约 rest §2.9.4 资金行内部形态（字段拷贝，无需持 FrameView）。
+TdTradingAccountRecord to_trading_account_record(const DzTradingAccount& account) {
+    TdTradingAccountRecord row;
+    row.account_id = std::string(account.account_id);
+    row.date = date_text(account.date);
+    row.balance = account.balance;
+    row.available = account.available;
+    row.frozen = account.frozen;
+    row.commission = account.commission;
+    row.margin = account.margin;
+    row.withdraw_quota = account.withdraw_quota;
+    row.deposit = account.deposit;
+    row.withdraw = account.withdraw;
+    row.seq = account.seq;
+    return row;
+}
+
 /// POSITION_INFO 帧 → 契约 rest §2.9.4 持仓行内部形态（字段拷贝，无需持 FrameView）。
 TdPositionRecord to_position_record(const DzPositionInfo& info) {
     TdPositionRecord row;
@@ -118,6 +136,10 @@ void TdDomainService::register_handlers(FrameRouter& router) {
     router.register_raw(DZ_FRAME_POSITION_INFO, [this](const shm::FrameView& view) {
         const DzPositionInfo info = view.payload<DzPositionInfo>();
         post([this, info]() { on_position_info(info); });
+    });
+    router.register_raw(DZ_FRAME_TRADING_ACCOUNT, [this](const shm::FrameView& view) {
+        const DzTradingAccount account = view.payload<DzTradingAccount>();
+        post([this, account]() { on_trading_account(account); });
     });
     router.register_raw(DZ_FRAME_ACCOUNT_STATUS, [this](const shm::FrameView& view) {
         const DzAccountStatus status = view.payload<DzAccountStatus>();
@@ -279,6 +301,23 @@ void TdDomainService::on_position_info(const DzPositionInfo& info) {
     ws_.broadcast(kPositionInfoEvent, "", row);
     // 契约 td-data-sync §8：同一账户环同时容纳委托/成交/持仓事件，容量共享。
     push_recent(account, kPositionInfoEvent, std::move(row));
+}
+
+void TdDomainService::on_trading_account(const DzTradingAccount& account) {
+    const std::string account_id(account.account_id);
+    // 契约 td-data-sync §8：只有在线（Ready）账户的帧转发为 WS 交易事件。
+    // 登录收尾链的资金帧在 Ready 之前产生——那些帧不进补发环，前端靠 Ready 后的
+    // REST 基线拿到同一批数据（与持仓同型；资金同样是绝对态）。
+    if (account_id.empty() || online_date_.find(account_id) == online_date_.end()) {
+        return;
+    }
+    // 资金不参与统计计数器（契约 rest §2.9.5：4 值全部来自委托行）。
+    const TdTradingAccountRecord record = to_trading_account_record(account);
+    nlohmann::json row = td_trading_account_row_json(record);
+    // 契约 webui-ws §2.5：payload 即行对象，instance_id 为空（account_id 在 payload 内）。
+    ws_.broadcast(kTradingAccountEvent, "", row);
+    // 契约 td-data-sync §8：同一账户环同时容纳委托/成交/持仓/资金事件，容量共享。
+    push_recent(account_id, kTradingAccountEvent, std::move(row));
 }
 
 int TdDomainService::price_decimals_for(const std::string& instrument_id, double price) {

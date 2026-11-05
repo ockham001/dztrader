@@ -70,4 +70,22 @@ describe('tdApi 交易数据端点（契约 rest §2.9）', () => {
     expect(fetchMock.mock.calls[0][0])
       .toBe('/api/td/positions?limit=200&cursor=c1&accounts=acc_b%2Cacc_a')
   })
+
+  it('getTradingAccounts 打 /api/td/trading_accounts（资金端点，不分页）', async () => {
+    const fetchMock = stubFetch()
+
+    await tdApi.getTradingAccounts()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/td/trading_accounts')
+  })
+
+  it('getTradingAccounts 只编码 accounts，不发送 limit/cursor（端点忽略分页参数）', async () => {
+    const fetchMock = stubFetch()
+
+    await tdApi.getTradingAccounts({ accounts: [' acc_b ', '', 'acc_a'] })
+
+    expect(fetchMock.mock.calls[0][0])
+      .toBe('/api/td/trading_accounts?accounts=acc_b%2Cacc_a')
+  })
 })

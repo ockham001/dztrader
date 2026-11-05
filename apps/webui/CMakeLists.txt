@@ -45,6 +45,7 @@ add_library(dzweb_obj OBJECT
     td_orders_query.cpp
     td_trades_query.cpp
     td_positions_query.cpp
+    td_trading_accounts_query.cpp
     td_read_db.cpp
     td_stats.cpp
     td_stats_query.cpp
