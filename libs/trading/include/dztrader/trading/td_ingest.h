@@ -23,7 +23,7 @@ namespace dztrader {
 ///   - W 过滤: seq ≤ W (DB 查得水位) 或 ≤ last_applied (自身已应用) 的帧跳过
 ///   - 断档: 首帧 seq > W+1 时标记 gap(from=W+1, to=seq-1), 由调用方查库回补
 ///   - 倒退: detect_reset(seq < last_applied) → 调用方重建 DB 水位后 reset_account
-///   - 成交去重: (account_id, trading_day, trade_id) 二道防线, 交易日切换清理
+///   - 成交去重: (account_id, trading_day, exchange_id, trade_id) 二道防线, 交易日切换清理
 ///
 /// 单线程契约: 与 dz_next_event 事件循环同线程, 无需加锁。
 class TdIngestGate {
@@ -58,9 +58,14 @@ public:
     /// 账户重置: 清 last_applied/applied_trades, 设新水位 (调用方重查 DB 得 new_w)。
     void reset_account(const std::string& account_id, uint64_t new_w);
 
-    /// 成交去重二道防线: 键 (account_id, trading_day, trade_id) 存在性。
+    /// 成交去重二道防线: 键 (account_id, trading_day, exchange_id, trade_id) 存在性。
+    /// `trade_id` 仅交易所内唯一，故 `exchange_id` 必须入键（契约 strategy
+    /// "成交去重…`exchange_id` 入键防多交易所同号丢成交"）。
     /// 新键返回 true; 已存在返回 false。交易日切换清理见 on_trading_day_changed。
-    bool admit_trade(const std::string& account_id, const char* trading_day, const char* trade_id);
+    bool admit_trade(const std::string& account_id,
+                     const char* trading_day,
+                     const char* exchange_id,
+                     const char* trade_id);
 
     /// 交易日切换: 丢弃该账户全部旧日去重段 (集合增长有界, spec §5.4)。
     /// 幂等: 仅当 new_trading_day 与已见日不同时清段; 同日重复调用为 no-op
@@ -90,7 +95,7 @@ private:
     /// 待处理断档 (至多一条)
     std::optional<Gap> pending_gap_;
 
-    /// 成交去重: (account_id, trading_day) 段 -> trade_id 集合
+    /// 成交去重: (account_id, trading_day) 段 -> 去重键集合（键 = exchange_id + 分隔符 + trade_id）
     std::unordered_map<std::string, std::unordered_set<std::string>> trade_segments_;
     /// 各账户最近 admit_trade 的交易日 (admit_trade 检测到变化时自动清旧段)
     std::unordered_map<std::string, std::string> account_days_;

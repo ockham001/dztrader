@@ -4,7 +4,7 @@
  *
  * 交易库 schema v1 的声明与建库/重建由 `libs/tdstore` 平台自有实现负责
  * （ADR 0041：无迁移链，master 建库）；本文件只保留通用端口的建表能力，
- * 供仍经 `dzdb` 端口的写端/测试在缺失集合时建表。
+ * 供 SDK 侧测试在缺失集合时建表（平台侧不链接本层）。
  */
 #ifndef DZTRADER_DB_SRC_SQLITE_MIGRATIONS_H_
 #define DZTRADER_DB_SRC_SQLITE_MIGRATIONS_H_

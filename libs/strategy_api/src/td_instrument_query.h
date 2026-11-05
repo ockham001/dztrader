@@ -1,9 +1,14 @@
 /**
- * @file records_store.h
- * @brief td 记录 <-> db::Row 编解码 + instruments Session facade
+ * @file td_instrument_query.h
+ * @brief td 合约记录 <-> `db::Row` 编解码 + instruments 查询/写入实现
+ *
+ * SDK 私有（不在 `strategy_api_headers` 的公开 include 面内）：把 `tdstore::InstrumentRecord`
+ * （平台声明，`libs/tdstore/include/dztrader/tdstore/records.h`）编解码到 SDK 私有 DB 层的
+ * `db::Row`，并按列投影查询。列名/列序单源来自 `tdstore::schema_catalog.h`
+ * （经 `td_schema.h` 投影），本文件不持有列清单。
  */
-#ifndef DZTRADER_TDSTORE_RECORDS_STORE_H_
-#define DZTRADER_TDSTORE_RECORDS_STORE_H_
+#ifndef DZTRADER_STRATEGY_API_TD_INSTRUMENT_QUERY_H_
+#define DZTRADER_STRATEGY_API_TD_INSTRUMENT_QUERY_H_
 
 #include <span>
 #include <string>
@@ -26,14 +31,17 @@ namespace dztrader::tdstore {
 [[nodiscard]] dztrader::db::Value to_value(double value);
 [[nodiscard]] dztrader::db::Value to_value(char value);  ///< 枚举字符 -> int64 字符码（保持现状）
 
-db::Row make_instrument_row(const InstrumentRecord& record);
+/// 按 schema 声明序把一个合约记录编成一 `db::Row`
+[[nodiscard]] db::Row make_instrument_row(const InstrumentRecord& record);
 
 void upsert_instruments(dztrader::db::Session& session, std::span<const InstrumentRecord> records);
+
+/// 按列投影查询（列序 = `fields` 请求序；空 = schema 全列，声明序）
 dztrader::db::ResultSet query_instruments(dztrader::db::Session& session,
                                           std::string_view instrument_id,
                                           std::span<const std::string> fields);
 
-/// dz_db_query_instruments fields 为空时返回的承诺列 (契约 docs/frame_contracts/instrument.md §7,
+/// dz_db_query_instruments fields 为空时返回的承诺列 (契约 instrument §7,
 /// 声明序共 25 列)。query_instruments 的空投影 = schema 全列 (28, 含 3 个保留列
 /// settlement_method/option_exercise_style/option_series), 与 C API 既有返回列不符 —
 /// C 边界显式传承诺列, 保持结果列序/列名零变化。
@@ -41,4 +49,4 @@ dztrader::db::ResultSet query_instruments(dztrader::db::Session& session,
 
 }  // namespace dztrader::tdstore
 
-#endif  // DZTRADER_TDSTORE_RECORDS_STORE_H_
+#endif  // DZTRADER_STRATEGY_API_TD_INSTRUMENT_QUERY_H_

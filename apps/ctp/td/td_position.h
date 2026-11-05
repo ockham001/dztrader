@@ -79,7 +79,7 @@ struct ActiveOrderUpdate {
 /// - apply_order / rebuild_active_orders: 委托回报, 重算挂单冻结 (含夹取)
 /// - on_day_switch: 日切, 今仓转昨仓并清空冻结与活动委托
 ///
-/// 纯逻辑模型: 不依赖 dzdb/CTP, 帧推送由 AccountSession 负责.
+/// 纯逻辑模型: 不依赖 SDK DB 层/CTP, 帧推送由 AccountSession 负责.
 class PositionHolding {
 public:
     PositionHolding(std::string instrument_id, std::string exchange_id);

@@ -3,8 +3,8 @@
 #include <dztrader/core/exception.h>
 #include <dztrader/db/database.h>
 #include <dztrader/tdstore/records.h>
-#include <dztrader/tdstore/records_store.h>
-#include <dztrader/tdstore/schema_dzdb.h>
+#include "td_instrument_query.h"
+#include "td_schema.h"
 #include <dztrader/tdstore/trade_db.h>
 
 #include <filesystem>
@@ -25,7 +25,7 @@ protected:
         (void)dztrader::tdstore::ensure_trade_db(path_);
         database_ = dztrader::db::Database::open(
             dztrader::db::Config{.backend = "sqlite", .options = {{"path", path_.string()}}},
-            dztrader::tdstore::schemas());
+            dztrader::db::td_schemas());
         session_ = database_->session();
     }
     void TearDown() override {

@@ -10,7 +10,7 @@
 # 历史库只要本地 SQLite（保留与压缩需要 WITHOUT ROWID 复合主键、DELETE..LIMIT 等
 # 端口不暴露的能力）。
 #
-# 依赖方向：SQLiteCpp + dzcore（日志/异常）；不依赖 dzdb。
+# 依赖方向：SQLiteCpp + dzcore（日志/异常）；不依赖 SDK 私有 DB 层（`dzsdkdb`）。
 # ============================================================
 add_library(dzsysmonstore STATIC)
 file(GLOB SYSMONSTORE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
@@ -28,7 +28,7 @@ find_path(SQLITE3_INCLUDE_DIR NAMES sqlite3.h REQUIRED)
 if(WIN32)
     target_compile_definitions(dzsysmonstore PUBLIC _CRT_SECURE_NO_WARNINGS)
 endif()
-# 可被链入动态库的场景需要 PIC（与 dzdb / dztdstore 保持一致）。
+# 可被链入动态库的场景需要 PIC（与 dzsdkdb / dztdstore 保持一致）。
 set_target_properties(dzsysmonstore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ============================================================

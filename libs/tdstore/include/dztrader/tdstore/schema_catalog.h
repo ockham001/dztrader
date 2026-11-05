@@ -2,13 +2,13 @@
  * @file schema_catalog.h
  * @brief 交易库（trade.db）schema v1 的平台自有声明（唯一真相源；ADR 0041）
  *
- * 本文件只提供平台自有类型与表声明，不依赖 `dzdb` 公共端口：建库 DDL 由声明
+ * 本文件只提供平台自有类型与表声明，不依赖任何 DB 端口：建库 DDL 由声明
  * 机械生成（`build_schema_ddl()`），版本号即 SQLite `PRAGMA user_version`。
  * 无迁移链——版本不符/旧库由 master 启动时改名重建（ADR 0041）。
  *
- * 过渡期说明：策略 SDK 仍经 `dzdb` 端口读写本 schema（`schema_dzdb.h` 将其投影为
- * `db::ResourceSchema`）；td 写端自 #245 起直连 SQLiteCpp、不再经该投影，#252（SDK DB
- * 私有化）落地后删除投影，本文件保持为唯一声明源。
+ * 消费方向（ADR 0044 决策 1）：策略 SDK 私有的 DB 层把本声明机械投影为
+ * `db::ResourceSchema`（`libs/strategy_api/src/td_schema.h`），依赖方向是
+ * SDK DB 层 → 本声明，平台侧不依赖端口/驱动。td 写端与 dzweb 直连 SQLiteCpp。
  */
 #ifndef DZTRADER_TDSTORE_SCHEMA_CATALOG_H_
 #define DZTRADER_TDSTORE_SCHEMA_CATALOG_H_
@@ -48,7 +48,7 @@ struct ExpressionIndexSchema {
     std::string_view sql;  ///< 完整 `CREATE INDEX ...` 语句（含 IF NOT EXISTS）
 };
 
-/// 表声明：列序 = 建表列序 = dzdb 投影的 Row 位置序
+/// 表声明：列序 = 建表列序 = 端口侧 `db::Row` 的位置序
 struct TableSchema {
     std::string_view name;
     std::span<const ColumnSchema> columns;

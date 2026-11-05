@@ -13,10 +13,20 @@ set(SDK_SOURCES
     src/cursor_result_set.cpp
     src/vector_result_set.cpp
     src/db_database.cpp
+    src/td_instrument_query.cpp
+    src/td_schema.cpp
+    src/trading_day.cpp
 )
 
 # 内部头文件目录（src 下的 .h 是内部实现头）
 set(SDK_INTERNAL_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# ============================================================
+# SDK 私有数据库层（ADR 0044）：端口 + 驱动 + SQLite/MySQL 实现
+# 目标名 dzsdkdb（原平台公共 `dzdb` 已并入 SDK）；平台进程不链接它。
+# 必须先于本文件的两个 SDK 目标定义（它们 PUBLIC 链接 dzsdkdb）。
+# ============================================================
+add_subdirectory(src/db)
 
 # ============================================================
 # dztrader_sdk_static: 静态库，仓内/平台内部使用 (ADR 0020 保留)
@@ -27,7 +37,7 @@ target_include_directories(dztrader_sdk_static PRIVATE ${SDK_INTERNAL_INCLUDES})
 target_compile_definitions(dztrader_sdk_static PUBLIC DZ_API_COMPILE_STATIC)
 target_link_libraries(dztrader_sdk_static
     PRIVATE dztrading
-    PUBLIC strategy_api_headers dzcore dzshm dzdb dztdstore
+    PUBLIC strategy_api_headers dzcore dzshm dzsdkdb dztdstore
     PUBLIC Boost::boost nlohmann_json::nlohmann_json SQLiteCpp
 )
 
@@ -71,7 +81,7 @@ endif()
 
 target_link_libraries(dztrader_sdk
     PUBLIC strategy_api_headers
-    PRIVATE dztrading dzcore dzshm dzdb dztdstore
+    PRIVATE dztrading dzcore dzshm dzsdkdb dztdstore
     PRIVATE Boost::boost nlohmann_json::nlohmann_json SQLiteCpp
 )
 # 安装: 动态库与示例可执行同目录 (Linux $ORIGIN rpath / Windows DLL 同目录)。
@@ -102,6 +112,7 @@ set(SDK_API_TESTS
     strategy_engine_test
     db_test
     db_instruments_test
+    db_query_date_test
     td_ingest_wiring_test
     td_ingest_nodb_test
     td_ingest_watermark_test
@@ -109,6 +120,12 @@ set(SDK_API_TESTS
     result_set_test
     # BarStrategy 框架端到端 (Seam A): 真实帧通道 + run_bar_strategy + 临时 DZTRADER_HOME
     bar_strategy_framework_test
+)
+
+# 直接测 SDK 私有 DB 层（`dztrader/db/*` 头）的测试：只需链 dzsdkdb + dztdstore
+# 满足 include/链接面，不编入 api.cpp（不碰 C ABI/通道）。
+set(SDK_DB_LAYER_TESTS
+    td_instrument_query_test
 )
 
 # 只需要在**链接期**解析 API 符号、但不碰真实通道/临时 home 的测试。
@@ -184,21 +201,31 @@ foreach(testfile ${SDK_TESTS})
     target_link_libraries(dztrader_sdk_${testname} PRIVATE
         dztrading strategy_api_headers dzcore dzshm dztest_support GTest::gtest
         Boost::boost nlohmann_json::nlohmann_json)
+    if(testname IN_LIST SDK_DB_LAYER_TESTS)
+        # 被测对象是 SDK 私有 DB 层胶水（未进任何库, 只编入 SDK 目标与 API 测试）,
+        # 故在此显式编入; 不编 api.cpp（不碰 C ABI/通道）。
+        target_sources(dztrader_sdk_${testname} PRIVATE
+            src/td_instrument_query.cpp src/td_schema.cpp src/trading_day.cpp)
+        target_link_libraries(dztrader_sdk_${testname} PRIVATE dzsdkdb dztdstore)
+    endif()
     if(testname IN_LIST SDK_SERIES_TESTS)
         # Debug 断言会 abort，遮蔽 EXPECT_THROW（见上方 SDK_SERIES_TESTS 注释）
         target_compile_definitions(dztrader_sdk_${testname} PRIVATE
             DZTRADER_SERIES_NO_DEBUG_ASSERT)
     endif()
     if(testname IN_LIST SDK_API_TESTS OR testname IN_LIST SDK_HEADER_LINK_API_TESTS)
-        target_sources(dztrader_sdk_${testname} PRIVATE src/api.cpp src/db_database.cpp)
+        target_sources(dztrader_sdk_${testname} PRIVATE
+            src/api.cpp src/db_database.cpp src/td_instrument_query.cpp src/td_schema.cpp
+            src/trading_day.cpp)
         # api.cpp 直接编入测试可执行文件（自包含, 不经 DLL 导出）,
         # 语义同 dztrader_sdk_static: DZ_API 展开为空。
         # 缺此定义时 MSVC 落到 dllimport 分支, 库内定义函数体报 C2491。
         target_compile_definitions(dztrader_sdk_${testname} PRIVATE DZ_API_COMPILE_STATIC)
-        # api.cpp 引用 dzdb 的 db_database.cpp 需链 dzdb (PUBLIC 传递 SQLiteCpp);
-        # db_test 直接用 SQLiteCpp 建临时库, 经 dzdb PUBLIC 依赖满足
-        # api.cpp 调 tdstore::query_instruments -> 链 dztdstore
-        target_link_libraries(dztrader_sdk_${testname} PRIVATE dzdb dztdstore)
+        # api.cpp/db_database.cpp 经 SDK 私有 DB 层查询（dzsdkdb, PUBLIC 传递 SQLiteCpp;
+        # db_test 直接读库也靠它）; instruments 查询与 schema 投影在 SDK 源码内
+        # （td_instrument_query.cpp / td_schema.cpp 已随上面 target_sources 编入）,
+        # 声明侧仍来自 dztdstore 的 schema_catalog.h。
+        target_link_libraries(dztrader_sdk_${testname} PRIVATE dzsdkdb dztdstore)
     endif()
 endforeach()
 

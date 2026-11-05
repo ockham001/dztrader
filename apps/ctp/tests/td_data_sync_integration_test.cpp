@@ -499,8 +499,8 @@ TEST_F(TdDataSyncIntegrationTest, CrossDayAccumulation) {
     EXPECT_EQ(dztrader::TdIngestGate::Verdict::kSkip, gate.admit("acc1", 2));  // 快照已含
     EXPECT_EQ(dztrader::TdIngestGate::Verdict::kApply, gate.admit("acc1", 3));
     // 成交去重二道防线: 跨日同 trade_id 必须放行 (新唯一键同语义)
-    EXPECT_TRUE(gate.admit_trade("acc1", "20260901", "T001"));
-    EXPECT_TRUE(gate.admit_trade("acc1", "20260902", "T001"));
+    EXPECT_TRUE(gate.admit_trade("acc1", "20260901", "CFFEX", "T001"));
+    EXPECT_TRUE(gate.admit_trade("acc1", "20260902", "CFFEX", "T001"));
 }
 
 // ============================================================================

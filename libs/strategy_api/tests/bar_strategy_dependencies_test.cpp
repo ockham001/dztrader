@@ -29,8 +29,8 @@
 #include <dztrader/bar_strategy/dependencies.h>
 #include <dztrader/db/database.h>
 #include <dztrader/tdstore/records.h>
-#include <dztrader/tdstore/records_store.h>
-#include <dztrader/tdstore/schema_dzdb.h>
+#include "td_instrument_query.h"
+#include "td_schema.h"
 #include <dztrader/tdstore/trade_db.h>
 
 #include <filesystem>
@@ -62,7 +62,7 @@ protected:
         (void)dztrader::tdstore::ensure_trade_db(db_path);
         auto database = dztrader::db::Database::open(
             dztrader::db::Config{.backend = "sqlite", .options = {{"path", db_path}}},
-            dztrader::tdstore::schemas());
+            dztrader::db::td_schemas());
         auto session = database->session();
         const std::vector<dztrader::tdstore::InstrumentRecord> records{
             make_instrument("rb2601", "SHFE", 10.0, 0.5),

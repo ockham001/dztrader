@@ -14,7 +14,7 @@
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/writer.h>
 #include <dztrader/struct.h>
-#include <dztrader/tdstore/schema_dzdb.h>
+#include "td_schema.h"
 #include <dztrader/tdstore/trade_db.h>
 
 #include <SQLiteCpp/Database.h>

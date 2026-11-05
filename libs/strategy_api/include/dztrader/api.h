@@ -383,24 +383,22 @@ typedef struct DzDatabase DzDatabase;
 DZ_API DzDatabase* dz_db_open(const char* path);
 
 /**
- * @brief 按进程配置打开 td 库
+ * @brief 打开本地交易库（固定路径；首次调用懒打开并缓存进程级句柄）
  *
- * 后端与连接参数由配置解析单点决定，优先级（高 → 低）：
- *   1. 环境变量 `DZTRADER_DB_BACKEND` / `DZTRADER_DB_OPT_<KEY>`（`<KEY>` 小写化后作为
- *      option 键，如 `DZTRADER_DB_OPT_PATH`、`DZTRADER_DB_OPT_HOST`）
- *   2. `<DZTRADER_HOME>/configs/database.json` 的 `td` 段（缺失时按默认自动生成）
- *   3. 内置默认：`sqlite` + `<DZTRADER_HOME>/db/trade.db`（只读打开）
+ * 交易库固定为本地 SQLite `<DZTRADER_HOME>/db/trade.db`（ADR 0041），**只读打开**，
+ * 库不存在时失败、不自动建库。路径只由 `DZTRADER_HOME` 决定：`database.json` 的
+ * 交易段与 `DZTRADER_DB_*` 环境变量不再影响交易库选择（ADR 0044 决策 3）。
  *
- * 不变量：同一部署内读写两端必须指向同一后端与同一数据库（写 A 读 B 会让
- * 水位/回补静默失效）。
+ * **懒打开**：SDK 初始化（`dz_init`）不打开任何 DB；本函数首次调用才建立连接，此后
+ * 同一进程内复用该连接。每次调用返回**独立句柄**（共享底层只读连接），调用方按普通
+ * 句柄 `dz_db_close` 释放即可。
  *
- * 临时护栏：本轮 td 写端仍锁 SQLite，配置解析出非 sqlite 后端时输出一次性诊断
- * （不拦截），写端切换后删除。
+ * 不变量：同一部署内写端（td）与本读端必须指向同一文件——路径只由 `DZTRADER_HOME`
+ * 决定，运行期不提供切换（写 A 读 B 会让水位/回补静默失效）。
  *
- * @return 非 NULL 为句柄，NULL 为失败（调 dz_errcode() 获取错误码：配置非法 =
- *         `DZ_EC_INVALID_PARAM`；后端未编入 = `DZ_EC_DB_UNSUPPORTED_BACKEND`；
- *         库不存在/连不上 = `DZ_EC_DB_OPEN_FAILED`；配置不可读/默认段生成失败 =
- *         `DZ_EC_SYSTEM`）
+ * @return 非 NULL 为句柄（交由调用方，须传给 dz_db_close 释放），
+ *         NULL 为失败（调 dz_errcode() 获取错误码：库不存在/非库/无权限 =
+ *         `DZ_EC_DB_OPEN_FAILED`）
  */
 DZ_API DzDatabase* dz_db_open_default(void);
 
@@ -408,6 +406,9 @@ DZ_API DzDatabase* dz_db_open_default(void);
  * @brief 关闭数据库
  *
  * 释放句柄；无失败路径，恒返回 true（NULL 为安全 no-op）。
+ *
+ * 两个打开入口返回的句柄都是"本次调用独占的包装"，直接销毁；默认库入口的底层只读
+ * 连接进程内共享，随最后一个句柄或进程结束释放。
  *
  * @param db  数据库句柄
  * @return 恒为 true
@@ -423,7 +424,7 @@ DZ_API bool dz_db_close(DzDatabase* db);
  *
  *  使用模式：
  *  @code
- *    DzResultSet* rs = dz_db_query_order(db, NULL, NULL);
+ *    DzResultSet* rs = dz_db_query_order(db, NULL, NULL, DZ_DATE_NA);
  *    if (!rs || dz_resultset_status(rs) != 0) { // 错误处理 }
  *    while (dz_resultset_next(rs)) {
  *        int64_t order_id = dz_resultset_get_int64(rs, 0);
@@ -548,49 +549,69 @@ DZ_API const char* dz_resultset_column_name(DzResultSet* rs, uint32_t index);
 /* ── 查询接口（返回 DzResultSet） ── */
 
 /**
- * @brief 查询委托
+ * @brief 查询委托（按交易日）
+ *
+ * 返回该交易日的委托行，列 = 业务列 + `seq`（**不含**平台内部列 `gateway`/`ext`），
+ * 行序 = `seq` 升序。列名/列序与 `tdstore` schema v1 声明单源。
  *
  * @param db             数据库句柄
- * @param account_id     账户标识，NULL 表示不限定
- * @param instrument_id  合约代码，NULL 表示不限定
+ * @param account_id     账户标识，NULL/"" 表示不限定
+ * @param instrument_id  合约代码，NULL/"" 表示不限定
+ * @param date           交易日（距纪元天数）；`DZ_DATE_NA` = **账户锚点日**
+ *                       （该账户 `positions`/`trading_accounts` 两张快照表的 `MAX(date)`，ADR
+ * 0046）
  * @return 非 NULL 为结果集（需 dz_resultset_close），NULL 为失败（调 dz_errcode() 获取错误码）
  */
 DZ_API DzResultSet* dz_db_query_order(DzDatabase* db,
                                       const char* account_id,
-                                      const char* instrument_id);
+                                      const char* instrument_id,
+                                      DzDate date);
 
 /**
- * @brief 查询成交
+ * @brief 查询成交（按交易日）
+ *
+ * 返回列/行序/`date` 语义同 {@link dz_db_query_order}（对应 `trades` 表）。
  *
  * @param db             数据库句柄
- * @param account_id     账户标识，NULL 表示不限定
- * @param instrument_id  合约代码，NULL 表示不限定
+ * @param account_id     账户标识，NULL/"" 表示不限定
+ * @param instrument_id  合约代码，NULL/"" 表示不限定
+ * @param date           交易日（距纪元天数）；`DZ_DATE_NA` = 账户锚点日
  * @return 非 NULL 为结果集（需 dz_resultset_close），NULL 为失败（调 dz_errcode() 获取错误码）
  */
 DZ_API DzResultSet* dz_db_query_trade(DzDatabase* db,
                                       const char* account_id,
-                                      const char* instrument_id);
+                                      const char* instrument_id,
+                                      DzDate date);
 
 /**
- * @brief 查询持仓
+ * @brief 查询持仓（按交易日）
+ *
+ * 返回列/行序/`date` 语义同 {@link dz_db_query_order}（对应 `positions` 表）。
  *
  * @param db             数据库句柄
- * @param account_id     账户标识，NULL 表示不限定
- * @param instrument_id  合约代码，NULL 表示不限定
+ * @param account_id     账户标识，NULL/"" 表示不限定
+ * @param instrument_id  合约代码，NULL/"" 表示不限定
+ * @param date           交易日（距纪元天数）；`DZ_DATE_NA` = 账户锚点日
  * @return 非 NULL 为结果集（需 dz_resultset_close），NULL 为失败（调 dz_errcode() 获取错误码）
  */
 DZ_API DzResultSet* dz_db_query_position(DzDatabase* db,
                                          const char* account_id,
-                                         const char* instrument_id);
+                                         const char* instrument_id,
+                                         DzDate date);
 
 /**
- * @brief 查询交易账户资金
+ * @brief 查询交易账户资金（按交易日）
+ *
+ * 返回列/行序/`date` 语义同 {@link dz_db_query_order}（对应 `trading_accounts` 表）。
  *
  * @param db         数据库句柄
- * @param account_id 账户标识，NULL 表示不限定
+ * @param account_id 账户标识，NULL/"" 表示不限定
+ * @param date       交易日（距纪元天数）；`DZ_DATE_NA` = 账户锚点日
  * @return 非 NULL 为结果集（需 dz_resultset_close），NULL 为失败（调 dz_errcode() 获取错误码）
  */
-DZ_API DzResultSet* dz_db_query_trading_account(DzDatabase* db, const char* account_id);
+DZ_API DzResultSet* dz_db_query_trading_account(DzDatabase* db,
+                                                const char* account_id,
+                                                DzDate date);
 
 /**
  * @brief 查询 K 线数据（归档域，**当前未实现**）

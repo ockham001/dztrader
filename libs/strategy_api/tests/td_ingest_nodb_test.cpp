@@ -6,10 +6,12 @@
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/writer.h>
 #include <dztrader/struct.h>
+#include <dztrader/tdstore/trade_db.h>
 
 #include <filesystem>
 #include <string>
 
+#include "db_database.h"
 #include "test_temp_dir.h"
 
 using dztrader::shm::ChannelConfig;
@@ -59,6 +61,7 @@ protected:
 
     void TearDown() override {
         dz_release(ctx_);
+        dztrader::strategy_api_internal::reset_default_db_cache_for_test();
         std::filesystem::remove_all(home_);
     }
 
@@ -74,6 +77,29 @@ protected:
         writer.notify_subscribers();
     }
 };
+
+// AC (ADR 0044 决策 3): SDK 初始化不打开 DB — 无库时 dz_init 成功, 且默认库入口
+// `dz_db_open_default` 仍是"首次调用才打开"(此前后者从未被调用, 因此这里首次调用
+// 才能拿到"库不存在"的失败); 若 dz_init 曾打开并缓存句柄, 本断言之前的失败态就已
+// 被消耗, 后续行为不再可观测 —— 用失败后再建库+重开成功来锁定懒打开语义。
+TEST_F(IngestNoDbTest, InitDoesNotOpenDefaultDbAndOpenIsLazy) {
+    // 初始化阶段没有库: 默认库入口此刻首次调用 → 失败 (库不存在), 不自动建库
+    EXPECT_EQ(nullptr, dz_db_open_default());
+    EXPECT_EQ(DZ_EC_DB_OPEN_FAILED, dz_errcode());
+    EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(home_) / "db" / "trade.db"));
+
+    // 建库后重新调用: 懒打开成功 (init 没有把失败的句柄缓存住)
+    std::filesystem::create_directories(home_ + "/db");
+    (void)dztrader::tdstore::ensure_trade_db(
+        (std::filesystem::path(home_) / "db" / "trade.db").string());
+    DzDatabase* db = dz_db_open_default();
+    ASSERT_NE(nullptr, db) << dz_errmsg();
+    DzDatabase* again = dz_db_open_default();  // 独立句柄, 共享连接
+    ASSERT_NE(nullptr, again) << dz_errmsg();
+    EXPECT_NE(db, again);
+    dz_db_close(db);
+    dz_db_close(again);
+}
 
 // 评审发现 4: 无水位降级 (DB 缺失全放行) — 库不存在时 dz_init 不失败, ingest 全放行,
 // 仅 last_applied 防重 (seq 相同重复帧拦截), 新 seq 正常放行。
