@@ -3,9 +3,10 @@ import { setActivePinia, createPinia } from 'pinia'
 import {
   TD_POSITIONS_MAX_PAGES,
   TD_POSITIONS_PAGE_SIZE,
-  TD_POSITIONS_RETRY_BASE_DELAY_MS,
   useTdPositionsStore,
 } from '../tdPositions'
+// 退避口径的唯一来源是共享定时器（委托/成交/持仓同一份），测试从那里取常量。
+import { TD_RETRY_BASE_DELAY_MS } from '@/composables/tdListStore'
 import { tdApi } from '@/api/td'
 import type { TdPositionRow } from '@/types/api'
 
@@ -506,7 +507,7 @@ describe('useTdPositionsStore · 降级（契约 rest §2.9.8 / webui-ws §5 第
     expect(store.available).toBe(false)
 
     vi.mocked(tdApi.getPositions).mockResolvedValue(listResponse([position()]))
-    await vi.advanceTimersByTimeAsync(TD_POSITIONS_RETRY_BASE_DELAY_MS)
+    await vi.advanceTimersByTimeAsync(TD_RETRY_BASE_DELAY_MS)
 
     expect(store.available).toBe(true)
     expect(store.degradedReason).toBeNull()
@@ -531,7 +532,7 @@ describe('useTdPositionsStore · 降级（契约 rest §2.9.8 / webui-ws §5 第
     await store.init()
 
     store.dispose()
-    await vi.advanceTimersByTimeAsync(TD_POSITIONS_RETRY_BASE_DELAY_MS * 10)
+    await vi.advanceTimersByTimeAsync(TD_RETRY_BASE_DELAY_MS * 10)
 
     expect(tdApi.getPositions).toHaveBeenCalledTimes(1)
   })

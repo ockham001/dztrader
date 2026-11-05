@@ -3,16 +3,20 @@
 
 /**
  * @file td_position_row_writer.h
- * @brief 测试用「往真 schema 的 trade.db 写一行持仓 / 资金」的**唯一实现**。
+ * @brief 测试用「往真 schema 的 trade.db 写一行持仓 / 资金」——**`apps/webui/tests/`
+ * 内的唯一实现**。
  *
- * 为什么必须只有一份（`docs/unit-test-standard.md` §5.4）：`positions` 的 13 列与
- * `trading_accounts` 的 13 列都是建库声明的投影（真相源
- * `libs/tdstore/src/schema_catalog.cpp`）。每个测试文件各抄一份时，schema 加列/改名只会
- * 让抄得最晚的那份失败，其余静默继续写旧形状——而测试仍绿。与 `td_order_row_writer.h` /
- * `td_trade_row_writer.h` 同型：建库统一走 `tdstore::ensure_trade_db`，写行收敛到这里。
+ * 为什么只在 dzweb 测试目录内收敛（`docs/unit-test-standard.md` §5.4）：`positions` 的 13 列
+ * 与 `trading_accounts` 的 13 列都是建库声明的投影（真相源
+ * `libs/tdstore/src/schema_catalog.cpp`）。同一目录内的测试文件各抄一份时，schema 加列/改名
+ * 只会让抄得最晚的那份失败，其余静默继续写旧形状——而测试仍绿。
  *
- * **header-only**：`apps/webui/CMakeLists.txt` 为 `tests/` 下每个测试源文件建一个 target，
- * 没有共享测试库；与 `libs/` 各模块的共享夹具一样用 inline 头。
+ * **作用域说明**：本文件是 header-only 且被 `apps/webui/CMakeLists.txt` 的每个 `tests/`
+ * 目标共享；它**不能**跨模块复用——`apps/ctp/tests/` 与 `libs/strategy_api/tests/` 是各自的
+ * CMake target（链接的库、include 路径都不同），各有自己的行构造方式。因此「唯一实现」的
+ * 范围是**本目录**，不是全仓；跨模块统一需要把这些夹具提出成共享测试库（另票，不在本票范围）。
+ * 与同目录的 `td_order_row_writer.h` / `td_trade_row_writer.h` 同型：建库统一走
+ * `tdstore::ensure_trade_db`，写行收敛到本文件。
  */
 #include <sqlite3.h>
 

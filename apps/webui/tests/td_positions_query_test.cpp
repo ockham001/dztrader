@@ -13,6 +13,7 @@
 
 #include "td_orders_query.h"  // kTdOrdersReadSchemaVersion（schema 版本单源守卫）
 #include "td_positions_query.h"
+#include "td_order_row_writer.h"
 #include "td_position_row_writer.h"
 #include "test_temp_dir.h"
 
@@ -86,17 +87,19 @@ protected:
         ASSERT_TRUE(error.empty()) << error;
     }
 
-    /// 委托/成交追加流表的一行（只为证明它们**不参与**锚点日；列值无业务意义）。
+    /// 委托（追加流表）的一行，只为证明它**不参与**锚点日。
+    /// 列清单走共享夹具（`td_order_row_writer.h`）：orders 有 18 列，手抄一份会让
+    /// schema 加列时这里静默写旧形状（unit-test-standard §5.4）。
     void insert_raw_order(const std::string& account_id, const std::string& date) {
-        sqlite3* db = open();
-        const std::string sql = std::format(
-            "INSERT INTO orders (account_id, date, order_id, instrument_id, exchange_id,"
-            " direction, price, volume, seq, gateway) VALUES ('{}','{}',{},'rb2601','SHFE',"
-            "1,3500.0,1,1,'dztd_ctp')",
-            account_id, date, 1000);
-        const int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr);
-        ASSERT_EQ(SQLITE_OK, rc);
-        sqlite3_close(db);
+        dztrader::test::TdOrderRowSeed seed;
+        seed.account_id = account_id;
+        seed.date = date;
+        seed.order_id = 1000;
+        seed.instrument_id = "rb2601";
+        seed.exchange_id = "SHFE";
+        seed.seq = 1;
+        const std::string error = dztrader::test::insert_td_order_row(db_path_, seed);
+        ASSERT_TRUE(error.empty()) << error;
     }
 
     void insert_instrument(const std::string& instrument_id, double price_tick) {
@@ -239,7 +242,10 @@ TEST_F(TdPositionsQueryTest, AnchorDayIgnoresAppendOnlyTables) {
 TEST_F(TdPositionsQueryTest, FundRowAloneAdvancesAnchorDay) {
     create_db();
     insert_position({.date = "20261008", .instrument_id = "rb2601"});
-    // 资金比持仓新一天（正常不会发生，但 ADR 0046 的锚点取两表最大，行为必须确定）。
+    // **本用例只锁定查询层的纯口径**（锚点取两张快照表的最大值），不描述生产时序：
+    // td 侧由 `on_rsp_qry_trading_account` 的 `position_query_ok_` 守卫保证资金行只在
+    // 持仓查询成功后写入（ADR 0045 决策 4），所以「只有资金行推进锚点」在正常运行中
+    // 不会出现——它是库被外部改写/历史遗留时的确定性行为，必须可预测而不是随机。
     insert_account({.date = "20261009"});
 
     const auto body = run({});
@@ -401,8 +407,10 @@ TEST_F(TdPositionsQueryTest, CursorPaginatesWithoutGapsOrDuplicates) {
         }
         cursor = body->at("next_cursor").get<std::string>();
     }
-    EXPECT_EQ(seen.size(), 5U) << "paging must not duplicate or drop rows";
-    EXPECT_TRUE(std::is_sorted(seen.begin(), seen.end())) << "ascending instrument order expected";
+    // **精确断言完整序列**，不是「大小 == 5 且有序」——后者对「一页重复一条、另一页漏一条」
+    // 仍然为真（总数对、仍有序），无法守住标题宣称的「无重复、无遗漏」。
+    const std::vector<std::string> expected{"rb2600", "rb2601", "rb2602", "rb2603", "rb2604"};
+    EXPECT_EQ(seen, expected) << "paging must return every row exactly once, in ascending order";
 }
 
 TEST_F(TdPositionsQueryTest, CursorFromOtherEndpointIsRejected) {

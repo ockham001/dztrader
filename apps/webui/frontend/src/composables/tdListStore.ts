@@ -156,6 +156,55 @@ export type TdListStoreView<Row extends TdListRow = TdListRow> = {
     TdListStoreApi<Row>[K] extends Ref<infer V> ? V : TdListStoreApi<Row>[K]
 }
 
+/** 降级重试延迟（指数退避：base × 2^attempt，封顶 max）——三类交易列表共用同一口径 */
+export function tdRetryDelay(attempt: number): number {
+  return Math.min(TD_RETRY_MAX_DELAY_MS, TD_RETRY_BASE_DELAY_MS * 2 ** attempt)
+}
+
+/**
+ * 降级重试定时器（**唯一实现**）：委托/成交（本工厂内）与持仓（独立 store）共用。
+ *
+ * 持仓 store 不复用 `createTdListStore`（它是绝对态、无 `sort_key`，见
+ * `stores/tdPositions.ts` 文件头），但「交易库读不了时按指数退避重试」是同一个行为
+ * （契约 webui-ws §5 第 13 条）——两个 store 各写一份退避，改一处忘另一处就会出现
+ * 同一时刻两个面板用不同节奏重试。因此把定时器本身抽出来共用，工厂与持仓都用它。
+ */
+export interface TdRetryTimer {
+  /** 安排下一次重试（`attempt` 为已尝试次数，0 = 首次失败）；重复调用重置计时 */
+  schedule(attempt: number, task: () => void): void
+  /** 取消待执行的重试（可用/成功时调用） */
+  clear(): void
+  /** 取消并永久停用（store dispose 时调用） */
+  dispose(): void
+}
+
+export function createTdRetryTimer(): TdRetryTimer {
+  let handle: ReturnType<typeof setTimeout> | null = null
+  let disposed = false
+
+  function clear(): void {
+    if (handle !== null) {
+      clearTimeout(handle)
+      handle = null
+    }
+  }
+
+  return {
+    schedule(attempt: number, task: () => void): void {
+      if (disposed) return
+      clear()
+      handle = setTimeout(() => {
+        handle = null
+        task()
+      }, tdRetryDelay(attempt))
+    },
+    clear,
+    dispose(): void {
+      disposed = true
+    },
+  }
+}
+
 /** 降级原因文案（契约 rest §2.9.8 的 reason 取值 → 用户可读中文） */
 export const TD_DEGRADED_REASON_TEXT: Record<TdDegradedReason, string> = {
   not_found: '交易库尚未建立',
@@ -266,7 +315,8 @@ export function createTdListStore<Row extends TdListRow>(
   let pendingRows: Row[] = []
   let pendingKeys = new Set<string | number>()
   let batchHandle: unknown = null
-  let retryHandle: ReturnType<typeof setTimeout> | null = null
+  /** 降级重试定时器（与持仓 store 共用 `createTdRetryTimer`，退避口径唯一） */
+  const retryTimer = createTdRetryTimer()
   let retryAttempt = 0
   let disposed = false
 
@@ -348,21 +398,15 @@ export function createTdListStore<Row extends TdListRow>(
   }
 
   function clearRetry(): void {
-    if (retryHandle !== null) {
-      clearTimeout(retryHandle)
-      retryHandle = null
-    }
+    retryTimer.clear()
   }
 
   function scheduleRetry(): void {
     if (disposed) return
-    clearRetry()
-    const delay = Math.min(TD_RETRY_MAX_DELAY_MS, TD_RETRY_BASE_DELAY_MS * 2 ** retryAttempt)
-    retryAttempt += 1
-    retryHandle = setTimeout(() => {
-      retryHandle = null
+    retryTimer.schedule(retryAttempt, () => {
       void loadFirstPage(false)
-    }, delay)
+    })
+    retryAttempt += 1
   }
 
   /**
@@ -641,6 +685,7 @@ export function createTdListStore<Row extends TdListRow>(
   function dispose(): void {
     disposed = true
     clearRetry()
+    retryTimer.dispose()
     if (batchHandle !== null) {
       batchScheduler.clear(batchHandle)
       batchHandle = null

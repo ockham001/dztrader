@@ -19,7 +19,6 @@
 
 #include <functional>
 #include <map>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -37,17 +36,6 @@ namespace dztrader::webui {
 std::vector<std::string> td_registered_accounts(sqlite3* db,
                                                 const std::vector<std::string>& online_accounts,
                                                 bool* ok);
-
-/// 单账户锚点日查询（契约 rest §2.9.1，ADR 0046）：`positions` / `trading_accounts`
-/// 两张快照表的 `MAX(date)` 取较大者；两张表都无行 = nullopt。
-///
-/// @param db 已打开且通过 schema 校验的只读连接
-/// @param account_id 账户标识
-/// @param ok 输出：查询是否成功。false = 查询执行失败（区分「无记录」与「查不到」）。
-/// @return "YYYYMMDD"；无记录 = nullopt
-std::optional<std::string> td_account_anchor_day(sqlite3* db,
-                                                 const std::string& account_id,
-                                                 bool* ok);
 
 /// 批量锚点日查询（持仓/资金列表用）：一次 GROUP BY 取全部账户，避免 N 次查询。
 ///

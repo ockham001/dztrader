@@ -14,6 +14,7 @@
 #include "td_orders_query.h"
 #include "td_stats_query.h"
 #include "td_order_row_writer.h"
+#include "td_position_row_writer.h"
 #include "test_temp_dir.h"
 
 #include <dztrader/data_type.h>
@@ -105,19 +106,16 @@ protected:
     }
 
     void insert_position(const SeqRow& row) {
-        sqlite3* db = open();
-        sqlite3_stmt* stmt = nullptr;
-        const char* sql =
-            "INSERT INTO positions (account_id, date, instrument_id, exchange_id, direction,"
-            " volume, frozen_volume, today_volume, yd_volume, price, seq, gateway, ext)"
-            " VALUES (?,?,'rb2601','SHFE',1,1,0,1,0,3500.0,?,'dztd_ctp','{}')";
-        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr));
-        sqlite3_bind_text(stmt, 1, row.account_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 2, row.date.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(row.seq));
-        EXPECT_EQ(SQLITE_DONE, sqlite3_step(stmt));
-        sqlite3_finalize(stmt);
-        sqlite3_close(db);
+        // 列清单走共享夹具（`td_position_row_writer.h`）：positions 有 13 列，
+        // 各测试手抄一份会让 schema 加列时只让抄得最晚的那份失败（unit-test-standard §5.4）。
+        dztrader::test::TdPositionRowSeed seed;
+        seed.account_id = row.account_id;
+        seed.date = row.date;
+        seed.instrument_id = "rb2601";
+        seed.exchange_id = "SHFE";
+        seed.seq = row.seq;
+        const std::string error = dztrader::test::insert_td_position_row(db_path_, seed);
+        ASSERT_TRUE(error.empty()) << error;
     }
 
     void insert_trading_account(const SeqRow& row) {

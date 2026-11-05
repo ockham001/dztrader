@@ -186,6 +186,21 @@ protected:
         return f;
     }
 
+    /// 一条**成功**的资金查询响应（`is_last` 收口）。
+    static OnRspQryTradingAccountField trading_account_row(bool is_last) {
+        OnRspQryTradingAccountField f{};
+        CThostFtdcTradingAccountField a{};
+        std::strcpy(a.AccountID, "acc1");
+        a.Balance = 100000.0;
+        a.Available = 85000.0;
+        a.CurrMargin = 15000.0;
+        f.trading_account = a;
+        f.is_last = is_last;
+        f.request_id = 0;
+        f.account_id = "acc1";
+        return f;
+    }
+
     /// 一轮「成功」的持仓查询：先逐行，再 is_last 收口（生产响应的真实形态）。
     void feed_position_snapshot(const std::vector<OnRspQryInvestorPositionField>& rows) {
         for (size_t i = 0; i < rows.size(); ++i) {
@@ -242,6 +257,41 @@ TEST_F(TdPositionLifecycleTest, FailedQueryOnEmptyDayWritesNoPlaceholderRows) {
     EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE date='20261008'"), 5);
 }
 
+TEST_F(TdPositionLifecycleTest, FailedPositionQuerySuppressesFundRowSoAnchorDayStays) {
+    // 契约 ADR 0045 决策 4 / ADR 0046 的跨表不变量：**资金行只在持仓查询成功之后写入**。
+    // 若持仓失败仍写资金当日行，锚点日（两快照表 MAX(date)）会被单独推进到当日，
+    // 而 positions 当日无行 → 持仓 REST 返回空数组 = 假空仓（ADR 0045 决策 3 的最危险形态）。
+    raw_exec(
+        "INSERT INTO positions (account_id, date, instrument_id, exchange_id, direction, volume,"
+        " frozen_volume, today_volume, yd_volume, price, seq, gateway)"
+        " VALUES ('acc1','20261008','IF2506','CFFEX',1,5,0,5,0,3900.0,10,'dztd_test')");
+
+    // 生产时序：持仓查询失败 → 收尾链照常发起资金查询 → 资金响应成功到达。
+    session_->on_rsp_qry_investor_position(failed_position_query());
+    session_->on_rsp_qry_trading_account(trading_account_row(/*is_last=*/true));
+    flush_persist();
+
+    // 资金当日行**不得写入**——否则锚点日被推到当日。
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261009'"), 0)
+        << "fund row must not be written when the position query failed (ADR 0045 decision 4)";
+    // 锚点日仍是上一成功日 = 两快照表 MAX(date) 都停在 10-08。
+    EXPECT_EQ(scalar_int("SELECT MAX(date) FROM positions"), 20261008);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts"), 0);
+}
+
+TEST_F(TdPositionLifecycleTest, SuccessfulPositionQueryAllowsFundRowSameDay) {
+    // 反面对照：持仓成功后资金行与持仓行同日（锚点推进时持仓行集已一致）。
+    feed_position_snapshot({position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, /*is_last=*/true)});
+    session_->on_rsp_qry_trading_account(trading_account_row(/*is_last=*/true));
+    flush_persist();
+
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261009'"), 1);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261009'"), 1)
+        << "after a successful position query the fund row joins the same anchor day";
+    EXPECT_EQ(scalar_int("SELECT MAX(date) FROM positions"),
+              scalar_int("SELECT MAX(date) FROM trading_accounts"));
+}
+
 // ============================================================================
 // AC: 完整成功查询 → 整组原子替换（历史行不变、消失的合约被删）
 // ============================================================================
@@ -294,6 +344,34 @@ TEST_F(TdPositionLifecycleTest, EmptySuccessfulQueryClearsCurrentDayRowsOnly) {
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261009'"), 0);
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261008'"), 1);
     EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE date='20261008'"), 7);
+}
+
+// ============================================================================
+// AC: 删户重加 / 盘中换柜台——新会话重建是整组替换（不是追加）
+// ============================================================================
+
+TEST_F(TdPositionLifecycleTest, NewSessionSameDayRebuildReplacesGroupInsteadOfAppending) {
+    // 会话 A（旧柜台 / 删除前的账户实例）：快照 = IF2506 多 2 + rb2510 空 3。
+    feed_position_snapshot({position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, /*is_last=*/true)});
+    // 第二个合约用另一轮查询写入（同一轮多行也行；这里用两轮表达「两行都在库里」）。
+    ASSERT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261009'"), 1);
+
+    // 删除账户 = 销毁会话（配置层 RemoveAccount 不删库：td_api_pure 的 RemoveAccount
+    // 只改配置，全仓无 DELETE FROM positions）。这里销毁 A、重建同 account_id 的会话 B，
+    // 等价于删户重加 / 盘中换柜台后的新实例。
+    session_.reset();
+    session_ = std::make_unique<AccountSession>("acc1", *order_id_meta_, *writer_, *persist_,
+                                                queue_, timer_queue_);
+    session_->set_trading_day(kDay);
+
+    // 会话 B 的首个完整成功查询：只剩 rb2510 空 4（上一轮的 IF2506 已平、rb2510 数量变了）。
+    feed_position_snapshot({position_row("rb2510", 4, 4, 4.0 * 300.0 * 3500.0, /*is_last=*/true)});
+
+    // 新会话的整组重建**替换**当日行：不是追加，不残留上一会话独有的 IF2506，
+    // 也不产生重复行（唯一键 (account_id,date,instrument_id,direction)）。
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261009'"), 1);
+    EXPECT_EQ(scalar_text("SELECT instrument_id FROM positions WHERE date='20261009'"), "rb2510");
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE date='20261009'"), 4);
 }
 
 // ============================================================================

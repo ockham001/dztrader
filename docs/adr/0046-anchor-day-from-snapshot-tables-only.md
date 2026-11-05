@@ -4,7 +4,13 @@
 
 Accepted（2026-11-05，#249 持仓垂直切片）
 
-Supersedes [ADR 0045](0045-trading-account-identity-lifecycle-and-accuracy.md) 决策 4 末句与契约 rest §2.9.1 中「锚点日 = 该账户**四表** `MAX(date)`」的表述——只改锚点日的取值表集合，ADR 0045 的其余决策（登录不清零、整组原子替换、资金行在持仓成功后写入、历史行不可变）全部保留。
+Supersedes（**锚点日的取值表集合**，仅这一条）：
+
+- [ADR 0041](0041-sqlite-only-trade-store-schema-v1.md) 决策 2 中「持仓 / 资金按"账户锚点日"（该账户**四表** `MAX(date)`）过滤」的定义；
+- [ADR 0044](0044-strategy-sdk-db-layer-privatized.md) 决策 2 中 `DZ_DATE_NA`「指定账户时取该账户**四表** `MAX(date)`」的定义（同样只改取值表集合，查询 API 签名与语义不变）；
+- [ADR 0045](0045-trading-account-identity-lifecycle-and-accuracy.md) 决策 4 末句「保证锚点日推进到当日时持仓行集已一致」中隐含的取值口径——**该决策的主体（登录不清零、整组原子替换、资金行在持仓成功后写入、历史行不可变）全部保留**，且决策 4 的顺序约束正是本 ADR 成立的前提。
+
+`docs/frame_contracts/rest.md` §2.9.1 同步改写。
 
 ## Context
 

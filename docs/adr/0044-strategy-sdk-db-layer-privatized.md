@@ -4,6 +4,8 @@
 
 Accepted（2026-11-03）
 
+决策 2 中 `DZ_DATE_NA`「指定账户时取该账户**四表** `MAX(date)`」的取值表集合已被 [ADR 0046](0046-anchor-day-from-snapshot-tables-only.md) 修正为「两张快照表」；本 ADR 其余决策（API 签名、懒打开、列集合）不变。
+
 ## Context
 
 - [ADR 0016](0016-strategy-sdk-embedded-sql-drivers.md) / [ADR 0019](0019-strategy-sdk-db-backend-scope.md) 把 SQLite + MySQL 作为 SDK 内嵌 DB 能力，`libs/db` 是平台公共端口；[ADR 0041](0041-sqlite-only-trade-store-schema-v1.md) 已把平台侧交易数据收敛为本地 SQLite 直连。

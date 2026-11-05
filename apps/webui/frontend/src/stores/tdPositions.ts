@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { tdApi } from '@/api/td'
-import { TD_LIST_PAGE_SIZE, tdDegradedText } from '@/composables/tdListStore'
+import { TD_LIST_PAGE_SIZE, createTdRetryTimer, tdDegradedText } from '@/composables/tdListStore'
 import type { TdListQuery } from '@/composables/tdListStore'
 import {
   groupPositionRows,
@@ -46,12 +46,6 @@ export const TD_POSITIONS_PAGE_SIZE = TD_LIST_PAGE_SIZE
  */
 export const TD_POSITIONS_MAX_PAGES = 50
 
-/** 降级重试基准延迟（与列表工厂同一退避口径：2s / 4s / 8s …） */
-export const TD_POSITIONS_RETRY_BASE_DELAY_MS = 2_000
-
-/** 降级重试延迟上限（7×24 下不无限拉长，恢复要快；与列表工厂一致） */
-export const TD_POSITIONS_RETRY_MAX_DELAY_MS = 30_000
-
 export const useTdPositionsStore = defineStore('tdPositions', () => {
   // === 数据 ===
   /** 持仓行（绝对态；按服务端 `(account_id, instrument_id, direction)` 升序） */
@@ -84,7 +78,8 @@ export const useTdPositionsStore = defineStore('tdPositions', () => {
   let filterTouched = false
   /** 请求代号：只有最后一次发起的请求允许写状态（筛选/重置并发时旧响应不得覆盖新基线） */
   let requestSeq = 0
-  let retryHandle: ReturnType<typeof setTimeout> | null = null
+  /** 降级重试定时器（与委托/成交工厂共用 `createTdRetryTimer`，退避口径唯一） */
+  const retryTimer = createTdRetryTimer()
   let retryAttempt = 0
   let disposed = false
 
@@ -133,24 +128,15 @@ export const useTdPositionsStore = defineStore('tdPositions', () => {
   }
 
   function clearRetry(): void {
-    if (retryHandle !== null) {
-      clearTimeout(retryHandle)
-      retryHandle = null
-    }
+    retryTimer.clear()
   }
 
   function scheduleRetry(): void {
     if (disposed) return
-    clearRetry()
-    const delay = Math.min(
-      TD_POSITIONS_RETRY_MAX_DELAY_MS,
-      TD_POSITIONS_RETRY_BASE_DELAY_MS * 2 ** retryAttempt,
-    )
-    retryAttempt += 1
-    retryHandle = setTimeout(() => {
-      retryHandle = null
+    retryTimer.schedule(retryAttempt, () => {
       void loadBaseline()
-    }, delay)
+    })
+    retryAttempt += 1
   }
 
   /**
@@ -408,6 +394,7 @@ export const useTdPositionsStore = defineStore('tdPositions', () => {
   function dispose(): void {
     disposed = true
     clearRetry()
+    retryTimer.dispose()
   }
 
   return {

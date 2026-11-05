@@ -84,57 +84,6 @@ std::vector<std::string> td_registered_accounts(sqlite3* db,
     return {accounts.begin(), accounts.end()};
 }
 
-std::optional<std::string> td_account_anchor_day(sqlite3* db,
-                                                 const std::string& account_id,
-                                                 bool* ok) {
-    std::optional<std::string> anchor;
-    if (ok != nullptr) {
-        *ok = true;
-    }
-    if (db == nullptr) {
-        if (ok != nullptr) {
-            *ok = false;
-        }
-        return anchor;
-    }
-    for (const char* table : kSnapshotTables) {
-        const std::string sql =
-            std::format("SELECT MAX(date) FROM \"{}\" WHERE account_id = ?", table);
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-            SPDLOG_WARN("td account anchor prepare failed | table={} error=\"{}\"", table,
-                        sqlite3_errmsg(db));
-            sqlite3_finalize(stmt);
-            if (ok != nullptr) {
-                *ok = false;
-            }
-            return anchor;
-        }
-        sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
-        const int step = sqlite3_step(stmt);
-        if (step == SQLITE_ROW && sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
-            const auto* text = sqlite3_column_text(stmt, 0);
-            if (text != nullptr) {
-                const std::string day(reinterpret_cast<const char*>(text));
-                // MAX(date) 是 TEXT 列上的字典序最大值 = 交易日最大值（YYYYMMDD 定宽）。
-                if (!day.empty() && (!anchor.has_value() || day > *anchor)) {
-                    anchor = day;
-                }
-            }
-        } else if (step != SQLITE_ROW && step != SQLITE_DONE) {
-            SPDLOG_WARN("td account anchor step failed | table={} error=\"{}\"", table,
-                        sqlite3_errmsg(db));
-            if (ok != nullptr) {
-                *ok = false;
-            }
-            sqlite3_finalize(stmt);
-            return anchor;
-        }
-        sqlite3_finalize(stmt);
-    }
-    return anchor;
-}
-
 std::map<std::string, std::string> td_account_anchor_days(
     sqlite3* db, const std::vector<std::string>& account_ids, bool* ok) {
     std::map<std::string, std::string> anchors;
