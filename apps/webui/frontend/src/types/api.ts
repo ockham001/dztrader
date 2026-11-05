@@ -2,16 +2,18 @@
 // LogContent 等内部引用）并转发对外；勿在此手写重复定义（避免与生成物同名冲突）
 import type { BrokerFrontend, BrokerEntry, LogLine, MdConfigPayload, MdRtnConfigPayload, MdRtnStatusPayload } from './generated'
 export type { BrokerFrontend, BrokerEntry, LogLine, MdConfigPayload, MdRtnConfigPayload, MdRtnStatusPayload }
-// 交易数据行/信封（契约 rest §2.9.2/§2.9.3/§2.9.8）：委托 + 成交行与两个响应信封同为生成物，
-// 前端不得手写重复类型（成交行本轮只消费类型，渲染归 #248）。
+// 交易数据行/信封（契约 rest §2.9.2/§2.9.3/§2.9.8）：委托 + 成交行与两组响应信封同为生成物，
+// 前端不得手写重复类型。
 import type {
   TdDirection, TdPositionEffect, TdPriceType, TdOrderStatus, TdDegradedReason,
   TdOrderRow, TdTradeRow, TdOrderListResponse, TdOrderDegradedResponse, TdRecentPayload, TdRecentEvent,
+  TdTradeListResponse, TdTradeDegradedResponse,
   TdStatsDegradedReason, TdStatsValues, TdStatsAvailable, TdStatsDegraded,
 } from './generated'
 export type {
   TdDirection, TdPositionEffect, TdPriceType, TdOrderStatus, TdDegradedReason,
   TdOrderRow, TdTradeRow, TdOrderListResponse, TdOrderDegradedResponse, TdRecentPayload, TdRecentEvent,
+  TdTradeListResponse, TdTradeDegradedResponse,
   TdStatsDegradedReason, TdStatsValues, TdStatsAvailable, TdStatsDegraded,
 }
 
@@ -27,6 +29,18 @@ export type {
 export type TdOrdersResponse =
   | (TdOrderListResponse & { available: true })
   | (TdOrderDegradedResponse & { available: false })
+
+/**
+ * `GET /api/td/trades` 的响应：与 `TdOrdersResponse` **同形同写法**（契约 rest §2.9.2/
+ * §2.9.8）——可用信封与降级信封共用 `available` 判别位，降级时响应只有 available 与 reason。
+ *
+ * 生成物把 `available` 声明为 `boolean`（契约就是 bool），这里用交叉类型收窄成字面量，
+ * 从而得到真正的判别联合：`available === false` 后可读 `reason`，=== true 分支里
+ * `items` / `next_cursor` / `trading_day` 均可用，无需 as 断言。
+ */
+export type TdTradesResponse =
+  | (TdTradeListResponse & { available: true })
+  | (TdTradeDegradedResponse & { available: false })
 
 /**
  * `GET /api/td/stats` 的响应：可用信封与降级信封共用 `available` 判别位（契约 rest §2.9.5）。

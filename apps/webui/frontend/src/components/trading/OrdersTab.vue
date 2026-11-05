@@ -3,8 +3,8 @@
  * 委托 tab（#246；契约 rest §2.9、契约 webui-ws §2.5/§5，ADR 0043 决策 7）。
  *
  * 展示职责全部在 `stores/tdOrders` 与 `composables/tdOrderView`（合并/精度/排序都是纯函数或
- * store 状态），本组件只做三件事：虚拟滚动渲染窗口、视口位置（顶部判定 + 底部预取）、
- * 筛选面板与「N 条新数据」气泡。
+ * store 状态）；交互逻辑（筛选/视口/预取/气泡）与成交 tab 共用
+ * `composables/tdListTab`——两份 tab 只有「哪一份 store、哪几列」的差别。
  *
  * 虚拟滚动：`RecycleScroller` 只渲染可视行（先例 LogViewerTab.vue），有界窗口 2000 行由 store 保证。
  * 精度：一律 `toFixed(price_decimals / avg_price_decimals)`，`avg_price === null` 显示占位破折号
@@ -24,6 +24,17 @@ import {
   tdOrderStatusText,
   tdPositionEffectText,
 } from '@/composables/tdOrderView'
+import {
+  handleListUpdate,
+  isTdListAccountSelected,
+  isTdListLastSelectedAccount,
+  jumpListToTop,
+  refreshTdList,
+  tdListAccountOptions,
+  tdListFilterLabel,
+  toggleTdListAccount,
+} from '@/composables/tdListTab'
+import type { TdListColumn } from '@/composables/tdListTab'
 import type { TdOrderRow } from '@/types/api'
 
 const store = useTdOrdersStore()
@@ -36,45 +47,24 @@ const ROW_HEIGHT = 36
 const filterOpen = ref(false)
 
 /** 筛选面板里的账户选项（在线集合 + 已选但已下线的账户不列：契约 webui-ws §5 第 11 条） */
-const accountOptions = computed<string[]>(() => [...store.onlineAccounts].sort())
+const accountOptions = computed<string[]>(() => tdListAccountOptions(store))
 
-/** 按钮文案：空筛选 = 契约缺省语义「全部在线账户」，此时显示「全部」而不是 0/N */
-const filterLabel = computed<string>(() => {
-  const total = accountOptions.value.length
-  if (total === 0) return '账户 0'
-  if (store.allAccountsSelected || store.effectiveAccounts.length === 0) return `全部账户（${total}）`
-  return `账户 ${store.effectiveAccounts.length}/${total}`
-})
+/** 按钮文案（空筛选 = 契约缺省语义「全部在线账户」） */
+const filterLabel = computed<string>(() => tdListFilterLabel(store))
 
 /** 账户是否被选中（未改过筛选时视为全选） */
 function isAccountSelected(account: string): boolean {
-  if (store.allAccountsSelected) return true
-  return store.accountFilter.has(account)
+  return isTdListAccountSelected(store, account)
 }
 
-/**
- * 切换单个账户（重置游标重拉由 store 负责）。
- *
- * 不允许取消最后一个账户：空列表在契约里的语义是「缺省 = 全部在线账户」（rest §2.9.2），
- * 用户取消到 0 个却看到全部数据会非常反直觉。要回到全部请用「全选」。
- */
-function toggleAccount(account: string): void {
-  const next = store.allAccountsSelected
-    ? store.onlineAccounts.filter(item => item !== account)
-    : store.onlineAccounts.filter(item => (
-        item === account ? !store.accountFilter.has(item) : store.accountFilter.has(item)
-      ))
-  if (next.length === 0) return
-  void store.setAccountFilter(next)
-}
-
-/**
- * 唯一生效账户时禁用取消——取消它会让筛选变成 0 个账户，而空筛选在契约里 = 全部在线账户
- * （rest §2.9.2），用户会因此看到比原来更多的数据。判定用「当前生效筛选只剩这一个」，
- * 覆盖两种来源：只剩一个在线账户（默认全选），或用户已筛到只剩它。
- */
+/** 唯一生效账户时禁用取消（语义见 tdListTab.isTdListLastSelectedAccount） */
 function isLastSelectedAccount(account: string): boolean {
-  return store.effectiveAccounts.length === 1 && store.effectiveAccounts[0] === account
+  return isTdListLastSelectedAccount(store, account)
+}
+
+/** 切换单个账户（不允许取消最后一个；重置游标重拉由 store 负责） */
+function toggleAccount(account: string): void {
+  toggleTdListAccount(store, account)
 }
 
 /**
@@ -108,36 +98,30 @@ function directionClass(direction: TdOrderRow['direction']): string {
 }
 
 /**
- * 视口滚动（RecycleScroller 的 update 事件）：更新「是否在顶部」并触发预取。
- *
- * 顶部判定用**首个可见行索引**（visibleStartIndex === 0 才是真的在顶部），
- * 不能用 endIndex——首屏只有 10 行时 endIndex 也是 9，会把"用户在顶部"误判成"不在顶部"。
+ * 视口滚动：更新「是否在顶部」并触发预取（口径见 tdListTab.handleListUpdate：
+ * 顶部判定用首个可见行索引，不能用 endIndex）。
  */
 function handleUpdate(
-  _startIndex: number,
-  _endIndex: number,
+  startIndex: number,
+  endIndex: number,
   visibleStartIndex: number,
   visibleEndIndex: number,
 ): void {
-  store.setAtTop(visibleStartIndex <= 0)
-  store.prefetchIfNeeded(visibleEndIndex)
-  store.prefetchNearTop(visibleStartIndex)
+  handleListUpdate(store, startIndex, endIndex, visibleStartIndex, visibleEndIndex)
 }
 
 /** 点击气泡：回到顶部并清零计数（新行已在窗口内，滚动即可见） */
 function jumpToTop(): void {
-  store.setAtTop(true)
-  store.clearNewCount()
-  scroller.value?.scrollToItem(0)
+  jumpListToTop(store, () => scroller.value?.scrollToItem(0))
 }
 
 /** 手动刷新：丢弃游标从首页重拉（与日切/data_changed 同一路径） */
 function refresh(): void {
-  void store.resetAndReload()
+  refreshTdList(store)
 }
 
 /** 表格列宽：委托号/策略固定，其余按内容分配（表头与行共用同一组类） */
-const COLUMNS: { key: string; label: string; className: string }[] = [
+const COLUMNS: TdListColumn[] = [
   { key: 'time', label: '时间', className: 'td-order__col td-order__col--time' },
   { key: 'account', label: '账户', className: 'td-order__col td-order__col--account' },
   { key: 'instrument', label: '合约', className: 'td-order__col td-order__col--instrument' },

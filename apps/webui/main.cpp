@@ -45,6 +45,7 @@
 #include "td_data_controller.h"
 #include "td_orders_query.h"
 #include "td_stats_query.h"
+#include "td_trades_query.h"
 #include "sysmon_domain_service.h"
 #include "sysmon_controller.h"
 
@@ -382,7 +383,7 @@ int main(int argc, char* argv[]) {
 
     // TD 数据域服务（契约 td-data-sync §8 / ADR 0043）：**不保留记录镜像、不维护水位**，
     // 只保留在线账户集合（ACCOUNT_STATUS）+ 日切感知 + WS 建连补发环。记录基线一律由 REST
-    // 直查交易库（td_orders_query），WS 只转发 ORDER_REPORT 增量。
+    // 直查交易库（td_orders_query / td_trades_query），WS 只转发 ORDER_REPORT / TRADE_REPORT 增量。
     // td 库路径: $DZTRADER_HOME/db/trade.db (统一库, 所有 td 网关共写, spec §3.3)。
     const auto trade_db_path_cb = []() -> std::string {
         return dztrader::paths::trade_db().string();
@@ -393,8 +394,11 @@ int main(int argc, char* argv[]) {
     td_domain->set_trade_db_path_provider(trade_db_path_cb);
     // 建连补发：handleNewConnection 在 snapshot 之后定向发送 td_recent（契约 webui-ws §2.5）
     ws_ctrl->set_td_recent_provider([domain = td_domain]() { return domain->recent_events(); });
-    // 交易数据 REST（契约 rest §2.9）：每请求独立只读连接、busy_timeout 200ms、游标分页
+    // 交易数据 REST（契约 rest §2.9）：每请求独立只读连接、busy_timeout 200ms、游标分页。
+    // 委托与成交共用同一套列表参数/游标（td_list_query）与行形状/派生字段（td_row_json），
+    // 两处只是"查哪张表、怎么排序"不同。
     auto td_query = std::make_shared<dztrader::webui::TdOrdersQuery>(trade_db_path_cb);
+    auto td_trades_query = std::make_shared<dztrader::webui::TdTradesQuery>(trade_db_path_cb);
     // 统计计数器（契约 rest §2.9.5 / ADR 0043 决策 4）：dzweb 内存 4 值，启动 / Ready /
     // 在线集合变化 / 日切 / 周期对账从 trade.db 全量重算；ORDER_REPORT 走增量。
     // 注入后立即触发一次重算（此时无在线账户 → 全 0 且 ready，stats 不返回 not_ready）。
@@ -421,7 +425,7 @@ int main(int argc, char* argv[]) {
         });
     });
     drogon::app().registerController(
-        std::make_shared<dztrader::webui::TdCtrl>(repo, td_domain, td_query));
+        std::make_shared<dztrader::webui::TdCtrl>(repo, td_domain, td_query, td_trades_query));
 
     // EventMonitor 由 main 持有并直调 start/stop（WsController 不再涉及）。
     // 生命周期：main 栈上 router 先声明、event_monitor 后声明（析构相反），

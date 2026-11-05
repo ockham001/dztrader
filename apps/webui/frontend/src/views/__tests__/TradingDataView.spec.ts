@@ -3,11 +3,15 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import TradingDataView from '../TradingDataView.vue'
 import { __resetTdStatsSchedulerForTests } from '@/stores/tdStats'
+import { __resetTdBatchSchedulerForTests } from '@/stores/tdTrades'
 import { tdApi } from '@/api/td'
 
-// 子 tab 各自有独立测试（OrdersTab.spec.ts 覆盖委托列表；成交占位由本文件覆盖），
+// 子 tab 各自有独立测试（OrdersTab.spec.ts / TradesTab.spec.ts 覆盖各自列表），
 // 这里只验证页壳、统计条位置与 tab 切换。断言用面板的内联 display 而非 VTU 的 isVisible：
 // jsdom 无布局，isVisible 依赖 offsetWidth 回退，跨用例不稳定。
+//
+// #248 起成交面板是**真实组件**（不再是占位）：stub 掉只为隔离其 store/API 依赖，
+// 并额外断言「挂的是真实列表组件而不是占位文案」。
 const stubs = {
   OrdersTab: { template: '<div class="orders-tab-stub">委托面板</div>' },
   TradesTab: { template: '<div class="trades-tab-stub">成交面板</div>' },
@@ -15,7 +19,7 @@ const stubs = {
 
 // 统计条挂载即拉 REST 基线（#247）：mock 掉 API，避免真实 fetch
 vi.mock('@/api/td', () => ({
-  tdApi: { getStats: vi.fn() },
+  tdApi: { getStats: vi.fn(), getOrders: vi.fn(), getTrades: vi.fn() },
 }))
 
 /** 面板在当前 tab 下是否显示（v-show 以内联 display:none 隐藏） */
@@ -33,10 +37,11 @@ function childIndex(wrapper: ReturnType<typeof mount>, selector: string): number
   return [...root.children].indexOf(target as Element)
 }
 
-describe('TradingDataView（#246/#247 交易数据页壳）', () => {
+describe('TradingDataView（#246/#247/#248 交易数据页壳）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     __resetTdStatsSchedulerForTests()
+    __resetTdBatchSchedulerForTests()
     vi.useFakeTimers()
     vi.resetAllMocks()
     vi.mocked(tdApi.getStats).mockResolvedValue({
@@ -49,6 +54,7 @@ describe('TradingDataView（#246/#247 交易数据页壳）', () => {
   afterEach(() => {
     vi.useRealTimers()
     __resetTdStatsSchedulerForTests()
+    __resetTdBatchSchedulerForTests()
   })
 
   it('渲染页头「交易数据」与委托/成交两个 tab', () => {
@@ -96,6 +102,30 @@ describe('TradingDataView（#246/#247 交易数据页壳）', () => {
 
     await wrapper.find('[data-test="td-tab-orders"]').trigger('click')
     expect(panelVisible(wrapper, '.orders-tab-stub')).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('成交面板挂的是真实成交列表组件，不再是「后续版本提供」占位', async () => {
+    // 不 stub TradesTab：断言真实组件挂载（占位实现会有 td-trades-placeholder 标记与
+    // 「成交列表将在后续版本提供」文案；真实列表在无数据时给出「当日暂无成交」空态）。
+    vi.mocked(tdApi.getTrades).mockResolvedValue({
+      available: true as const,
+      trading_day: '20260808',
+      online_accounts: ['acc_a'],
+      items: [],
+      next_cursor: null,
+    })
+    const wrapper = mount(TradingDataView, { global: { stubs: { OrdersTab: stubs.OrdersTab } } })
+
+    await wrapper.find('[data-test="td-tab-trades"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="td-trades-placeholder"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('成交列表将在后续版本提供')
+    expect(wrapper.find('[data-test="td-trades-empty"]').exists()).toBe(true)
+    // 真实成交列表走成交端点，不误用委托端点
+    expect(tdApi.getTrades).toHaveBeenCalledTimes(1)
+    expect(tdApi.getOrders).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

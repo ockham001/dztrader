@@ -1,6 +1,7 @@
 #include "td_domain_service.h"
 
 #include "td_orders_query.h"
+#include "td_row_json.h"
 
 #include <dztrader/date_time/date.h>
 #include <dztrader/struct.h>
@@ -15,8 +16,9 @@ namespace dztrader::webui {
 
 namespace {
 
-/// 委托行 WS 事件名（契约 webui-ws §2.5）。
+/// 交易行 WS 事件名（契约 webui-ws §2.5 四类交易事件中的两类；本服务转发委托与成交）。
 constexpr const char* kOrderReportEvent = "td_order_report";
+constexpr const char* kTradeReportEvent = "td_trade_report";
 
 /// `DzDate`（距纪元天数）→ "YYYYMMDD"；非法回落空串。
 std::string date_text(int32_t date) {
@@ -54,6 +56,25 @@ TdOrderRecord to_record(const DzOrderReport& report) {
     return row;
 }
 
+/// TRADE_REPORT 帧 → 契约 rest §2.9.3 成交行内部形态（字段拷贝，无需持 FrameView）。
+TdTradeRecord to_trade_record(const DzTradeReport& report) {
+    TdTradeRecord row;
+    row.account_id = std::string(report.account_id);
+    row.date = date_text(report.date);
+    row.trade_id = std::string(report.trade_id);
+    row.order_id = report.order_id;
+    row.strategy_id = std::string(report.strategy_id);
+    row.instrument_id = std::string(report.instrument_id);
+    row.exchange_id = std::string(report.exchange_id);
+    row.direction = static_cast<int>(report.direction);
+    row.position_effect = static_cast<int>(report.position_effect);
+    row.price = report.price;
+    row.volume = static_cast<int>(report.volume);
+    row.time = static_cast<int>(report.time);
+    row.seq = report.seq;
+    return row;
+}
+
 }  // namespace
 
 TdDomainService::TdDomainService(FrameRouter& router,
@@ -71,6 +92,10 @@ void TdDomainService::register_handlers(FrameRouter& router) {
     router.register_raw(DZ_FRAME_ORDER_REPORT, [this](const shm::FrameView& view) {
         const DzOrderReport report = view.payload<DzOrderReport>();
         post([this, report]() { on_order_report(report); });
+    });
+    router.register_raw(DZ_FRAME_TRADE_REPORT, [this](const shm::FrameView& view) {
+        const DzTradeReport report = view.payload<DzTradeReport>();
+        post([this, report]() { on_trade_report(report); });
     });
     router.register_raw(DZ_FRAME_ACCOUNT_STATUS, [this](const shm::FrameView& view) {
         const DzAccountStatus status = view.payload<DzAccountStatus>();
@@ -194,7 +219,26 @@ void TdDomainService::on_order_report(const DzOrderReport& report) {
     nlohmann::json row = td_order_row_json(record, decimals);
     // 契约 webui-ws §2.5：payload 即行对象，instance_id 为空（account_id 在 payload 内）。
     ws_.broadcast(kOrderReportEvent, "", row);
-    push_recent(account, std::move(row));
+    push_recent(account, kOrderReportEvent, std::move(row));
+}
+
+void TdDomainService::on_trade_report(const DzTradeReport& report) {
+    const std::string account(report.account_id);
+    // 契约 td-data-sync §8：只有在线（Ready）账户的帧转发为 WS 交易事件。
+    // 不在线 = 该帧不属于当前列表口径（可能来自尚未 Ready 的重放），丢弃即可——
+    // 登录完成后 Ready 会触发前端重拉 REST 基线。
+    if (account.empty() || online_date_.find(account) == online_date_.end()) {
+        return;
+    }
+    // 成交不计入统计计数器（契约 rest §2.9.5：4 值全部来自**委托**行），因此这里
+    // 不碰 stats_；统计只由 ORDER_REPORT 增量与全量重算推进。
+    const TdTradeRecord record = to_trade_record(report);
+    const int decimals = price_decimals_for(record.instrument_id, record.price);
+    nlohmann::json row = td_trade_row_json(record, decimals);
+    // 契约 webui-ws §2.5：payload 即行对象，instance_id 为空（account_id 在 payload 内）。
+    ws_.broadcast(kTradeReportEvent, "", row);
+    // 契约 td-data-sync §8：同一账户环同时容纳委托与成交事件，容量共享。
+    push_recent(account, kTradeReportEvent, std::move(row));
 }
 
 int TdDomainService::price_decimals_for(const std::string& instrument_id, double price) {
@@ -217,12 +261,14 @@ int TdDomainService::price_decimals_for(const std::string& instrument_id, double
     return td_price_decimals(it->second.value_or(0.0), price);
 }
 
-void TdDomainService::push_recent(const std::string& account_id, nlohmann::json row) {
+void TdDomainService::push_recent(const std::string& account_id,
+                                  const char* type,
+                                  nlohmann::json row) {
     auto& ring = recent_[account_id];
     if (ring.size() >= kTdRecentCapacityPerAccount) {
         ring.pop_front();
     }
-    ring.push_back({{"type", kOrderReportEvent}, {"data", std::move(row)}});
+    ring.push_back({{"type", type}, {"data", std::move(row)}});
 }
 
 nlohmann::json TdDomainService::recent_events() const {

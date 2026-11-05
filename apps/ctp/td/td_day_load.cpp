@@ -1,8 +1,10 @@
 #include "td/td_day_load.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -154,6 +156,59 @@ std::vector<TradeRecord> load_day_trades(SQLite::Database& db,
 
 }  // namespace
 
+// ============================================================================
+// OrderTradeAvgTracker: 每单成交累计 (Σ价×量 / Σ量, 契约 td-data-sync §3)
+// ============================================================================
+
+void OrderTradeAvgTracker::seed(const std::vector<TradeRecord>& trades) {
+    // 只在 order_id 维度聚合: 逐笔成交记录本身不保留 (登录日只在库中)。
+    for (const auto& t : trades) {
+        add_trade(t.base.order_id, t.base.price, t.base.volume);
+    }
+}
+
+void OrderTradeAvgTracker::add_trade(int64_t order_id, double price, int32_t volume) {
+    // 非有限价与 volume<=0 不入累计 (脏数据不污染均价; 无成交语义保持 nullopt)。
+    if (volume <= 0 || !std::isfinite(price)) {
+        return;
+    }
+    Acc& acc = accs_[order_id];
+    acc.price_volume += price * static_cast<double>(volume);
+    acc.volume += static_cast<int64_t>(volume);
+}
+
+std::optional<double> OrderTradeAvgTracker::avg_price(int64_t order_id) const {
+    const auto it = accs_.find(order_id);
+    if (it == accs_.end() || it->second.volume <= 0) {
+        return std::nullopt;
+    }
+    return it->second.price_volume / static_cast<double>(it->second.volume);
+}
+
+int64_t OrderTradeAvgTracker::volume(int64_t order_id) const {
+    const auto it = accs_.find(order_id);
+    return it == accs_.end() ? 0 : it->second.volume;
+}
+
+OrderRecord order_record_with_avg(const OrderRecord& base, double avg_price) {
+    // 只改均价派生列: update_time / volume_canceled / status 等对比字段保持基准值,
+    // 否则刷新行会破坏重放去重基准 (契约 §3, 重放过滤器对比集)。
+    OrderRecord out = base;
+    out.base.avg_price = avg_price;
+    return out;
+}
+
+bool avg_price_unchanged(double lhs, double rhs) {
+    // 同价多笔的 Σ(p×v)/Σv 全量重算有 1 ULP 级漂移 (如 3512.3×3 → 3512.3000000000006),
+    // 裸相等会把它误判成「均价变化」→ 新 seq + 多推一条 ORDER_REPORT (契约 §3 违约)。
+    // 容差取绝对量级下界 1.0, 使 0 vs 0 与近零价也不因相对误差塌成 0.
+    if (lhs == rhs) {
+        return true;  // 精确相等 (含同号零) 直接判未变化, 免去容差计算
+    }
+    const double scale = std::max({std::abs(lhs), std::abs(rhs), 1.0});
+    return std::abs(lhs - rhs) <= scale * 1e-12;
+}
+
 std::string format_day_text(int32_t day) {
     if (day <= 0) {
         return "00000000";
@@ -190,6 +245,15 @@ DayLoadData load_trading_day(SQLite::Database& db,
     data.start_seq = query_max_seq(db, account_id);
     data.orders = load_day_orders(db, account_id, day);
     data.trades = load_day_trades(db, account_id, day);
+    // 均价基准重建 (契约 §3): 当日成交按 order_id 聚合, 并用聚合均价覆盖装载委托的
+    // avg_price; 当日无成交的委托保留 DB 值 (不被清零, 跨日 GFD 单昨日成交段不回填)。
+    data.order_avgs.seed(data.trades);
+    for (auto& order : data.orders) {
+        const auto avg = data.order_avgs.avg_price(order.base.order_id);
+        if (avg.has_value()) {
+            order.base.avg_price = *avg;
+        }
+    }
     return data;
 }
 

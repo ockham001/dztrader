@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -16,11 +17,47 @@
 
 namespace dztrader::ctp {
 
+/// 每单成交累计（Σ价×量 / Σ量）——委托成交均价的唯一累计口径（契约 td-data-sync §3）。
+/// 无成交 = nullopt / 0；非有限价格与 volume<=0 忽略；纯逻辑、无 IO。
+class OrderTradeAvgTracker {
+public:
+    /// 从登录日装载的当日成交聚合播种（重启后重建基准，契约 §3）。
+    void seed(const std::vector<TradeRecord>& trades);
+
+    /// 记入一笔成交。
+    void add_trade(int64_t order_id, double price, int32_t volume);
+
+    /// 该委托成交均价；无成交 = nullopt。
+    [[nodiscard]] std::optional<double> avg_price(int64_t order_id) const;
+
+    /// 该委托累计成交量；无成交 = 0。
+    [[nodiscard]] int64_t volume(int64_t order_id) const;
+
+private:
+    struct Acc {
+        double price_volume = 0.0;  ///< Σ价×量
+        int64_t volume = 0;         ///< Σ量
+    };
+    std::unordered_map<int64_t, Acc> accs_;
+};
+
+/// 用已算出的均价刷新委托记录副本：只改 base.avg_price，其余字段（含 update_time /
+/// volume_canceled / status）保持基准值——seq 由调用方分配，防破坏重放去重基准。
+OrderRecord order_record_with_avg(const OrderRecord& base, double avg_price);
+
+/// 均价是否可视为未变化（浮点容差）：累计值每次全量重算，同价多笔会有 1 ULP 级漂移，
+/// 裸相等会把「未变化」误判成变化并多推一条 ORDER_REPORT（契约 td-data-sync §3）。
+/// 容差 = max(|lhs|, |rhs|, 1.0) × 1e-12（价格量级下约 1e-9，远小于任何真实 tick 变化）。
+/// 只用于「要不要刷新」的判定，不得用于舍入或落库值。
+[[nodiscard]] bool avg_price_unchanged(double lhs, double rhs);
+
 /// 登录日装载结果（只装当前交易日；历史只在库中，ADR 0045 决策 5）。
 struct DayLoadData {
     uint64_t start_seq = 0;           ///< 该账户四表 MAX(seq)（跨日累积，装载 seq 基准）
     std::vector<OrderRecord> orders;  ///< 当日订单最新态（重放匹配基准 + order_ref/sys_id 映射）
-    std::vector<TradeRecord> trades;  ///< 当日成交（去重键基准；均价重建归 #248）
+    std::vector<TradeRecord> trades;  ///< 当日成交（去重键基准 + 每单成交累计重建）
+    /// 当日成交按 order_id 聚合的每单成交均价基准（空账户为空；契约 §3 重建口径）。
+    OrderTradeAvgTracker order_avgs;
 };
 
 /// 该账户四表 orders/trades/positions/trading_accounts 的 MAX(seq)；空账户 0。

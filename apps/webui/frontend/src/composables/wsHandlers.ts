@@ -16,6 +16,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useSysmonStore } from '@/stores/sysmon'
 import { useTdOrdersStore } from '@/stores/tdOrders'
 import { useTdStatsStore } from '@/stores/tdStats'
+import { useTdTradesStore } from '@/stores/tdTrades'
 import { useToastStore } from '@/stores/toast'
 import type { ProcessStatusPayload, MdConfigPayload } from '@/types/api'
 
@@ -36,9 +37,10 @@ registerHandler('data_changed', (payload) => {
   }
   if (scope === 'td') {
     // 契约 webui-ws §2.3：td = 交易数据基线失效（日切 / 在线集合变化 / 账户集合增减）。
-    // 前端清空委托并重拉基线；统计无 WS 推送（§5 第 10 条），同一条消息负责「标记失效 +
-    // 立即重拉」，因此这里追加一次统计重拉而不是替换委托调用（其余交易列表随各自票接入）。
+    // 前端清空委托与成交并重拉基线；统计无 WS 推送（§5 第 10 条），同一条消息负责「标记失效 +
+    // 立即重拉」，因此这里追加一次统计重拉而不是替换委托调用（持仓/资金随各自票接入）。
     void useTdOrdersStore().handleDataChanged(scope)
+    void useTdTradesStore().handleDataChanged(scope)
     void useTdStatsStore().handleDataChanged()
     return
   }
@@ -53,11 +55,17 @@ registerHandler('td_order_report', (payload) => {
   useTdOrdersStore().applyOrderEvent(payload)
 })
 
+registerHandler('td_trade_report', (payload) => {
+  // 契约 webui-ws §2.5：成交增量事件，payload 即契约 rest §2.9.3 成交行。
+  // 与委托同型：只入队 + 约 10Hz 批量合并（业务键 = account|date|exchange|trade_id）。
+  useTdTradesStore().applyTradeEvent(payload)
+})
+
 registerHandler('td_recent', (payload) => {
   // 契约 webui-ws §2.5：建连补发（snapshot 之后定向一次，无事件也发空数组）。
-  // 补发有界，不能替代基线：合并事件后重拉 REST 基线（§5 第 7 条）。
-  // 成交事件本轮不消费（列表归 #248）。
+  // 补发有界，不能替代基线：各 store 只认领自己事件类型后合并 + 重拉 REST 基线（§5 第 7 条）。
   useTdOrdersStore().applyRecent(payload)
+  useTdTradesStore().applyRecent(payload)
 })
 
 registerHandler('log_line', (payload) => {

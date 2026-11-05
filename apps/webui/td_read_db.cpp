@@ -132,4 +132,9 @@ nlohmann::json td_degraded_body(const char* reason) {
     return {{"available", false}, {"reason", reason}};
 }
 
+std::string td_column_text(sqlite3_stmt* stmt, int column) {
+    const auto* text = sqlite3_column_text(stmt, column);
+    return text != nullptr ? std::string(reinterpret_cast<const char*>(text)) : std::string{};
+}
+
 }  // namespace dztrader::webui

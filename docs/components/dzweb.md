@@ -79,10 +79,11 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
 
 交易记录（委托 / 成交 / 持仓 / 资金）**不进 `MirrorStore`、不做记录镜像**：
 
-- **REST 直查交易库**：`GET /api/td/*`（契约 rest §2.9）每请求新建只读连接、`busy_timeout=200ms`、请求结束即关闭；游标分页（默认 200 / 上限 1000，禁 OFFSET 深翻页）。库缺失 / 版本不符 / 打开失败 / 锁等待 / 查询失败一律 `200 + {"available":false,"reason":...}`，不 5xx、不阻塞单 IO 线程（②）。只读连接与 schema 探测只实现一份（`apps/webui/td_read_db.{h,cpp}`），委托列表与统计重算共用。
-- **WS 只推增量**：委托事件 `td_order_report`（帧转发，payload = 契约 rest §2.9.3 的委托行）与建连补发 `td_recent`（每在线账户最近 300 条）；记录基线一律由 REST 拉取，`snapshot` 不含交易记录（契约 webui-ws §2.5）。
+- **REST 直查交易库**：`GET /api/td/*`（契约 rest §2.9）每请求新建只读连接、`busy_timeout=200ms`、请求结束即关闭；游标分页（默认 200 / 上限 1000，禁 OFFSET 深翻页）。库缺失 / 版本不符 / 打开失败 / 锁等待 / 查询失败一律 `200 + {"available":false,"reason":...}`，不 5xx、不阻塞单 IO 线程（②）。只读连接与 schema 探测只实现一份（`apps/webui/td_read_db.{h,cpp}`），全部列表端点与统计重算共用；列表参数解析 / 游标（`apps/webui/td_list_query.{h,cpp}`）与行形状 / 派生字段（`apps/webui/td_row_json.{h,cpp}`）同样各只有一份——**委托与成交共用同一套**，成交不另写一份。
+- **WS 只推增量**：委托事件 `td_order_report` 与成交事件 `td_trade_report`（帧转发，payload = 契约 rest §2.9.3 的委托行 / 成交行，与 REST 同 schema），以及建连补发 `td_recent`（每在线账户最近 300 条，**同一环容纳委托与成交两类事件**、按入环先后从旧到新）；记录基线一律由 REST 拉取，`snapshot` 不含交易记录（契约 webui-ws §2.5）。
 - **域内只保留三样状态 + 统计计数器**（`apps/webui/td_domain_service.{h,cpp}`）：在线（`ACCOUNT_STATUS` Ready）账户集合与每账户 `date`、WS 建连补发环、日切感知，外加统计计数器（下节）。Ready/Offline 翻转、日切（`date` 变化）、在线集合变化 → 广播 `data_changed{scope:"td"}` 让前端清空重拉。
-- **已知限制**：`td_recent` 有界（300 条/账户），dzweb 重启后为空——记录基线以 REST 为准，补发只是收敛窗口内的加速；帧可能先于库提交到达（异步持久化），同一记录由前端按 `seq` 合并（契约 webui-ws §5）。
+- **前端列表行为只有一份实现**：`apps/webui/frontend/src/composables/tdListStore.ts` 的 `createTdListStore`（REST 基线 + 游标预取 + WS 增量 10Hz 批量合并 + 有界窗口 + 重置触发 + 降级退避），委托（`stores/tdOrders`）与成交（`stores/tdTrades`）是它的两份配置而非两份实现。
+- **已知限制**：`td_recent` 有界（300 条/账户，两类事件共享），dzweb 重启后为空——记录基线以 REST 为准，补发只是收敛窗口内的加速；帧可能先于库提交到达（异步持久化），同一记录由前端按 `seq` 合并（契约 webui-ws §5）。
 
 ### 统计计数器（#247，契约 rest §2.9.5）
 
@@ -91,9 +92,9 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
 - **口径固定**（唯一真相源是契约 rest §2.9.5）：`total_orders` / `total_volume` = 当前交易日**全部**在线账户委托（含撤单、废单，与未过滤委托列表行数一致）；`unfilled_orders` / `unfilled_volume` = `Submitting` / `NotTraded` / `PartTraded` 的笔数与剩余量（`volume - volume_traded`）。stats 不接受 `accounts` 过滤。
 - **重算 = 全量重算**（`apps/webui/td_stats_query.{h,cpp}`）：**单只读事务**内取聚合 4 值 + 活动（未成交）委托 + 每账户四表 `MAX(seq)` 水位，三者同一快照。触发点：`TdStatsQuery` 注入后立即一次、账户 `Ready`、在线集合变化（含 Offline 下线）、日切、周期对账（默认 30s，`kTdStatsReconcileIntervalSec`）。
 - **增量 = `ORDER_REPORT`**（`apps/webui/td_stats.{h,cpp}`）：计数器保留「活动委托小表」（= 当日活跃挂单数，有界）+ 每账户 **重放守卫水位**（四表 `MAX(seq)`，仅重算写入、增量永不推进——它是计数器内部去重，**不是** SDK ingest 那种记录水位，契约 td-data-sync §2 第 4 条）。帧 `seq ≤ 水位` 直接跳过（登录「重推最后一条」用原 seq，靠这条避免重复计数）——安全性来自契约 td-data-sync §2 的 seq **前缀不变量**。活动表内同一 `order_id` 的状态更新只做剩余量差量，重复应用幂等。
-- **为什么不做全量镜像**：未成交集合有界且状态单向（终态不回退），终态委托不会再收到 `ORDER_REPORT`，因此无需为终态保留任何去重状态（ADR 0043 决策 1/4）。
+- **为什么不做全量镜像**：未成交集合有界且状态单向（终态不回退），终态委托不会再收到**状态变化**的 `ORDER_REPORT`，因此无需为终态保留状态去重记录（ADR 0043 决策 1/4）。**例外（#248）**：终态委托仍可能收到均价刷新帧（成交均价变化 + 新 seq），计数器按「不在活动表 = 新委托」处理会短暂多计一笔，≤1 个对账周期自愈（见下条）。
 - **降级**：唯一降级是计数器未就绪 → `200 {"available":false,"reason":"not_ready"}`（契约 rest §2.9.5）。计数器就绪后交易库短暂不可读**不降级**——内存计数器仍有效，重算失败只保持旧值（与 §2.9.8 的列表降级区分）。
-- **精度边界**（契约 §2.9.5 已声明）：两次重算之间，撤销后迟到成交引发的均价刷新 `ORDER_REPORT` 可能被计成新委托一次（+1 笔 +volume），≤1 个对账周期（30s）后自动纠正；异步持久化窗口内计数器可能短暂领先/落后已提交数据，稳态一致。
+- **精度边界**（契约 §2.9.5 已声明）：两次重算之间，已终态委托因成交均价变化而收到的刷新 `ORDER_REPORT` 会被计成新委托一次（+1 笔 +volume），≤1 个对账周期（30s）后自动纠正；异步持久化窗口内计数器可能短暂领先/落后已提交数据，稳态一致。**刷新帧的条件是「该笔成交使均价变化且委托行已在基准中」**（#248，见 `dztd_ctp.md`「成交均价」），因此「部分成交后撤单仍有后续成交」或「终态后迟到的成交」会触发它——属预期，不是计数器缺陷。
 - **前端**：无 WS 推送，按需轮询（≤1Hz，契约 webui-ws §5 第 10 条）；`data_changed{scope:"td"}` 与日切后清空重拉，降级时展示统一提示而不用 0 冒充数据。
 
 ## 监听与暴露面（#201）

@@ -33,7 +33,7 @@ export const appRoutes: RouteRecordRaw[] = [
   { path: '/', name: 'dashboard', component: () => import('@/views/DashboardView.vue'), meta: { title: '仪表盘', icon: 'dashboard' } },
   { path: '/market-sources', name: 'market-sources', component: () => import('@/views/MarketSourcesView.vue'), meta: { title: '行情源', icon: 'ArrowWallRight' } },
   { path: '/trading', name: 'trading', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '交易账户', icon: 'profile', wip: true } },
-  // 交易数据（#246）：委托 tab 已交付，不带 wip；成交 tab 为空态占位但页面本身可用
+  // 交易数据（#246 委托 / #248 成交）：两个 tab 均已交付，不带 wip
   { path: '/trading-data', name: 'trading-data', component: () => import('@/views/TradingDataView.vue'), meta: { title: '交易数据', icon: 'Bar-list' } },
   { path: '/strategy', name: 'strategy', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '策略管理', icon: 'automation', wip: true } },
   { path: '/logs', name: 'logs', component: () => import('@/views/LogsView.vue'), meta: { title: '日志', icon: 'figma' } },

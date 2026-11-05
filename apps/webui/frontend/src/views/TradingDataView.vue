@@ -1,13 +1,13 @@
 <script setup lang="ts">
 /**
- * 交易数据页（#246/#247）：页头 + 统计条 + 「委托」（默认）/「成交」两个 tab。
+ * 交易数据页（#246/#247/#248）：页头 + 统计条 + 「委托」（默认）/「成交」两个 tab。
  *
- * 委托 tab 是 #246 交付内容（REST 基线 + WS 增量 + 虚拟滚动 + 有界窗口）；
- * 成交 tab 本轮为明确占位（列表归 #248，design §0）。两个 tab 用 v-show 而非 v-if：
- * 切到成交再切回时保留委托 tab 的滚动位置与 store 窗口，不重建订阅、不重拉基线。
+ * 两个 tab 都是真实列表：委托 = #246（REST 基线 + WS 增量 + 虚拟滚动 + 有界窗口），
+ * 成交 = #248（同型行为，共用 `createTdListStore` 与 `tdListTab`）。两个 tab 用 v-show 而非
+ * v-if：切到成交再切回时保留委托 tab 的滚动位置与 store 窗口，不重建订阅、不重拉基线。
  *
  * 统计条（#247，契约 rest §2.9.5）放在 tab 栏**上方**：统计是整页口径（不随 tab 切换），
- * 且与 tab 无关，放在 tab 上方才能一眼看到。StatsBar 自行 init/dispose（与 OrdersTab 同型）。
+ * 且与 tab 无关，放在 tab 上方才能一眼看到。StatsBar 自行 init/dispose（与两个列表 tab 同型）。
  */
 import { ref } from 'vue'
 import OrdersTab from '@/components/trading/OrdersTab.vue'

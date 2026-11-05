@@ -243,6 +243,11 @@ private:
     /// 初始化 seq 计数器与重放过滤器基准. 失败按登录失败路径处理 (返回 false).
     bool load_trading_day_baseline();
 
+    /// 成交后刷新委托记录（契约 §3：每笔成交且均价变化 → 新 seq + 推帧 + 落库，不依赖柜台顺序）。
+    /// 基准无该 order_id（外部单/委托回报尚未到达）→ 只保留累计，等委托回报带走均价。
+    /// 均价未变化 → 不推不落不分配 seq。
+    void refresh_order_avg(int64_t order_id);
+
     /// LoadingInstruments 期间缓冲回报 (设计 §5.3)
     void buffer_order_rpt(const OnRtnOrderField& f);
     void buffer_trade_rpt(const OnRtnTradeField& f);
@@ -293,6 +298,8 @@ private:
     uint64_t seq_counter_ = 0;
     /// 重放过滤器基准 (登录/重连时 CTP 私有流去重, spec §4.1).
     std::unique_ptr<ReportFilter> report_filter_;
+    /// 每单成交累计 (委托成交均价的唯一累源; 登录日装载时由当日成交重建, 契约 §3).
+    OrderTradeAvgTracker order_avgs_;
     /// 持仓查询累加器 (同一 (instrument, direction) 多行合并; 仅主线程).
     struct PositionQueryKey {
         std::string instrument_id;

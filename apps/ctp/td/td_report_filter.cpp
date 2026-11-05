@@ -87,6 +87,11 @@ std::vector<OrderRecord> ReportFilter::active_orders(int32_t trading_day) const 
     return result;
 }
 
+const OrderRecord* ReportFilter::find_order(int64_t order_id) const noexcept {
+    const auto it = orders_.find(order_id);
+    return it != orders_.end() ? &it->second : nullptr;
+}
+
 void ReportFilter::replay_hit_order(const OrderRecord& rec) {
     // Task 4 内仅作命中追踪占位 (本类无对外状态变更);
     // Task 5 在此转发给 order_ref_map_ 修复 (kSkip 时 rec 已带正确 order_id).

@@ -3,12 +3,15 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
+#include <dztrader/tdstore/trade_db.h>
 #include <dztrader/trading/td_ingest.h>
 
 #include "td/td_day_load.h"
@@ -66,6 +69,26 @@ protected:
         return {};
     }
 
+    /// 只读实型标量查询.
+    double scalar_double(const std::string& sql) {
+        SQLite::Database db = open_readonly(db_path_);
+        SQLite::Statement q(db, sql);
+        if (q.executeStep()) {
+            return q.getColumn(0).getDouble();
+        }
+        return 0.0;
+    }
+
+    /// 登录日装载 (用局部只读连接, 避免把临时对象绑定到非 const 引用).
+    /// 空库场景下先按生产门面建库 (master 职责), 否则只读连接打不开文件.
+    DayLoadData load_day(const char* day = "20260901") {
+        if (!std::filesystem::exists(db_path_)) {
+            (void)dztrader::tdstore::ensure_trade_db(db_path_);
+        }
+        SQLite::Database db = open_readonly(db_path_);
+        return load_trading_day(db, "acc1", day);
+    }
+
     std::filesystem::path tmp_dir_;
     std::string db_path_;
     /// 用例内另起的临时库目录 (失败路径也必须清理: TearDown 统一删除).
@@ -90,19 +113,25 @@ OrderRecord make_order(int64_t order_id, uint64_t seq, const char* day = "202609
     return r;
 }
 
-/// 构造成交记录. (trading_day, trade_id) 为唯一区分点.
-TradeRecord make_trade(const char* trade_id, uint64_t seq, const char* day = "20260901") {
+/// 构造成交记录. (trading_day, trade_id, exchange_id) 为唯一键区分点.
+TradeRecord make_trade(const char* trade_id,
+                       uint64_t seq,
+                       const char* day = "20260901",
+                       const char* exchange_id = "CFFEX",
+                       int64_t order_id = 1,
+                       double price = 3900.0,
+                       int32_t volume = 1) {
     TradeRecord r{};
     r.base.seq = seq;
     std::strcpy(r.base.account_id, "acc1");
     std::strcpy(r.trading_day, day);
     std::strcpy(r.base.trade_id, trade_id);
-    r.base.order_id = 1;
+    r.base.order_id = order_id;
     std::strcpy(r.base.instrument_id, "IF2506");
-    std::strcpy(r.base.exchange_id, "CFFEX");
+    std::strcpy(r.base.exchange_id, exchange_id);
     r.base.direction = DZ_DIRECTION_LONG;
-    r.base.price = 3900.0;
-    r.base.volume = 1;
+    r.base.price = price;
+    r.base.volume = volume;
     return r;
 }
 
@@ -664,6 +693,476 @@ TEST_F(TdDataSyncIntegrationTest, PositionUpsertThenRebuildThenClear) {
     ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 0);
     w.stop();
+}
+
+// ============================================================================
+// 场景 7 (#248): 成交均价实时累计 + 每笔成交刷新委托行 (契约 td-data-sync §3)
+//
+// seam ① 进程内组装: ReportFilter (去重基准) + OrderTradeAvgTracker (每单累计) +
+// 真 PersistWriter (落库). on_rtn_trade 的转发次序在此按同序编排:
+//   ① check_trade (kSkip 早退) ② 分配 seq ③ accept_trade ④ 落成交
+//   ⑤ tracker.add_trade ⑥ 均价变化 → order_record_with_avg + 新 seq + accept_order + 落委托.
+// 断言只看对外可观察行为: DB 行内容 / 跟踪器口径 / 重放裁决.
+// ============================================================================
+
+/// 生产端 (td 写端) 的进程内替身: 真实 ReportFilter + OrderTradeAvgTracker + PersistWriter.
+/// 次序与 AccountSession::on_rtn_trade / refresh_order_avg 一致 (见上方注释).
+class TdTradeProducer {
+public:
+    TdTradeProducer(std::string db_path,
+                    const std::vector<OrderRecord>& orders,
+                    const std::vector<TradeRecord>& trades,
+                    uint64_t start_seq)
+        : writer_(std::move(db_path), "dztd_test"),
+          filter_(ReportFilter::load(orders, trades)),
+          seq_(start_seq) {
+        tracker_.seed(trades);
+    }
+
+    void start() {
+        writer_.open();
+        writer_.start_writer();
+    }
+
+    void stop() { writer_.stop(); }
+
+    /// 转发一笔成交; 返回成交是否被吞 (去重命中).
+    bool on_trade(TradeRecord rpt) {
+        if (filter_.check_trade(rpt) == ReportFilter::Verdict::kSkip) {
+            return true;
+        }
+        rpt.base.seq = ++seq_;
+        filter_.accept_trade(rpt);
+        writer_.enqueue(PersistTask{.kind = PersistTask::Kind::Trade, .data = rpt});
+        // 每单成交累计 + 均价变化则刷新委托行.
+        tracker_.add_trade(rpt.base.order_id, rpt.base.price, rpt.base.volume);
+        refresh_order_avg(rpt.base.order_id);
+        return false;
+    }
+
+    /// 转发一条委托回报 (含均价回填: 累计值优先 → 基准行值 → 0).
+    void on_order(OrderRecord rpt) {
+        if (const auto avg = tracker_.avg_price(rpt.base.order_id); avg.has_value()) {
+            rpt.base.avg_price = *avg;
+        } else if (const OrderRecord* base = filter_.find_order(rpt.base.order_id);
+                   base != nullptr) {
+            rpt.base.avg_price = base->base.avg_price;
+        }
+        rpt.base.seq = ++seq_;
+        filter_.accept_order(rpt);
+        writer_.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = rpt});
+    }
+
+    void refresh_order_avg(int64_t order_id) {
+        const OrderRecord* base = filter_.find_order(order_id);
+        if (base == nullptr) {
+            return;
+        }
+        const std::optional<double> avg = tracker_.avg_price(order_id);
+        // 与 AccountSession::refresh_order_avg 同判据: 容差比较, 落库仍写 *avg 全精度值.
+        if (!avg.has_value() || avg_price_unchanged(*avg, base->base.avg_price)) {
+            return;
+        }
+        OrderRecord updated = order_record_with_avg(*base, *avg);
+        updated.base.seq = ++seq_;
+        filter_.accept_order(updated);
+        writer_.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = updated});
+    }
+
+    /// 日切 (AccountSession::set_trading_day 内同一步): 清空每单累计, 上一交易日成交不参与均价.
+    void set_trading_day() { tracker_ = OrderTradeAvgTracker{}; }
+
+    void flush() {
+        const uint64_t token = writer_.enqueue_flush_signal();
+        ASSERT_TRUE(writer_.wait_flush(token, std::chrono::seconds(5)));
+    }
+
+    [[nodiscard]] const ReportFilter& filter() const { return filter_; }
+    [[nodiscard]] const OrderTradeAvgTracker& tracker() const { return tracker_; }
+    /// 最近一次分配的 seq (0 = 尚未分配).
+    [[nodiscard]] uint64_t last_seq() const { return seq_; }
+
+private:
+    PersistWriter writer_;
+    ReportFilter filter_;
+    OrderTradeAvgTracker tracker_;
+    uint64_t seq_;
+};
+
+/// 该 order 的刷新路径: 两笔成交累加 → DB avg_price = 加权值, seq = 刷新 seq (帧/DB 同 seq).
+TEST_F(TdDataSyncIntegrationTest, TradeAvgAccumulatesAndRefreshesOrderRow) {
+    // 基准: 一条已存在的委托行 (seq 10, avg_price 0) + 空成交
+    OrderRecord order = make_order(1, 10);
+    order.base.status = DZ_ORDER_PART_TRADED;
+    order.base.volume_traded = 0;
+    order.update_time = 1000;
+    {
+        PersistWriter w(db_path_, "dztd_test");
+        w.open();
+        w.start_writer();
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = order});
+        auto token = w.enqueue_flush_signal();
+        ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+        w.stop();
+    }
+
+    auto day = load_day();
+    ASSERT_EQ(day.orders.size(), 1u);
+    ASSERT_EQ(day.start_seq, 10u);
+
+    TdTradeProducer producer(db_path_, day.orders, day.trades, day.start_seq);
+    producer.start();
+    // 成交 1: 3900 x 1 → 均价 3900 → 刷新行 seq 12
+    EXPECT_FALSE(producer.on_trade(make_trade("T001", 0, "20260901", "CFFEX", 1, 3900.0, 1)));
+    EXPECT_EQ(producer.last_seq(), 12u);  // 成交 seq 11 (水位 11), 刷新 seq 12
+    // 成交 2: 3903 x 3 → 均价 3902.25 → 刷新行 seq 14
+    EXPECT_FALSE(producer.on_trade(make_trade("T002", 0, "20260901", "CFFEX", 1, 3903.0, 3)));
+    EXPECT_EQ(producer.last_seq(), 14u);  // 成交 seq 13, 刷新 seq 14
+    producer.flush();
+
+    // DB: 该行均价 = 加权均价, seq = 最后一次刷新的 seq (帧/DB 同 seq)
+    EXPECT_DOUBLE_EQ(scalar_double("SELECT avg_price FROM orders WHERE order_id=1"), 3902.25);
+    EXPECT_EQ(scalar_int("SELECT seq FROM orders WHERE order_id=1"), 14);
+    // 成交两行落库
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trades WHERE account_id='acc1'"), 2);
+    // 跟踪器口径 = Σ价×量 / Σ量
+    ASSERT_TRUE(producer.tracker().avg_price(1).has_value());
+    EXPECT_DOUBLE_EQ(*producer.tracker().avg_price(1), 3902.25);
+    EXPECT_EQ(producer.tracker().volume(1), 4);
+    producer.stop();
+}
+
+/// 成交去重: 同 (account_id, date, exchange_id, trade_id) 第二笔 kSkip → DB 仍一行且均价不加倍;
+/// 同 trade_id 不同 exchange_id → 两行 (多交易所同号不丢).
+TEST_F(TdDataSyncIntegrationTest, TradeDedupAndCrossExchangeSameTradeId) {
+    OrderRecord order = make_order(1, 10);
+    order.base.status = DZ_ORDER_PART_TRADED;
+    order.base.volume_traded = 0;
+    {
+        PersistWriter w(db_path_, "dztd_test");
+        w.open();
+        w.start_writer();
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = order});
+        auto token = w.enqueue_flush_signal();
+        ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+        w.stop();
+    }
+    auto day = load_day();
+    TdTradeProducer producer(db_path_, day.orders, day.trades, day.start_seq);
+    producer.start();
+
+    const TradeRecord t1 = make_trade("T001", 0, "20260901", "CFFEX", 1, 3900.0, 1);
+    EXPECT_FALSE(producer.on_trade(t1));  // 首笔转发
+    const uint64_t seq_after_first = producer.last_seq();
+    // 同键重放 → 吞, 不落库/不累计/不刷新 (seq 水位不变)
+    EXPECT_TRUE(producer.on_trade(t1));
+    EXPECT_EQ(producer.last_seq(), seq_after_first);
+    EXPECT_EQ(producer.tracker().volume(1), 1);
+
+    // 同 trade_id 不同 exchange_id → 真实第二笔成交, 转发 + 累计
+    EXPECT_FALSE(producer.on_trade(make_trade("T001", 0, "20260901", "SHFE", 1, 4000.0, 1)));
+    producer.flush();
+
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trades WHERE account_id='acc1' AND trade_id='T001'"),
+              2);  // 多交易所同号不丢
+    EXPECT_EQ(producer.tracker().volume(1), 2);
+    // 均价 = (3900*1 + 4000*1) / 2 = 3950
+    EXPECT_DOUBLE_EQ(scalar_double("SELECT avg_price FROM orders WHERE order_id=1"), 3950.0);
+    producer.stop();
+}
+
+/// 重启重建: 写「委托行 + 两笔成交」→ 新 load_trading_day → 跟踪器均价 = Σ价×量/Σ量,
+/// 装载委托 avg_price 一致 → 重放同批委托全 kSkip (不重复落库/不产生新 seq).
+TEST_F(TdDataSyncIntegrationTest, RestartRebuildsAvgAndReplayStaysSkip) {
+    // ---- 生产端: 委托行 seq 10, 两笔成交 seq 11/13, 刷新行 seq 12/14 ----
+    OrderRecord order = make_order(1, 10);
+    order.base.status = DZ_ORDER_PART_TRADED;
+    order.base.volume_traded = 0;
+    {
+        PersistWriter w(db_path_, "dztd_test");
+        w.open();
+        w.start_writer();
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = order});
+        auto token = w.enqueue_flush_signal();
+        ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+        w.stop();
+    }
+    auto base_day = load_day();
+    {
+        TdTradeProducer producer(db_path_, base_day.orders, base_day.trades, base_day.start_seq);
+        producer.start();
+        (void)producer.on_trade(make_trade("T001", 0, "20260901", "CFFEX", 1, 3900.0, 1));
+        (void)producer.on_trade(make_trade("T002", 0, "20260901", "CFFEX", 1, 3903.0, 3));
+        producer.flush();
+        producer.stop();
+    }
+    const int64_t max_seq = scalar_int("SELECT MAX(seq) FROM orders WHERE account_id='acc1'");
+    EXPECT_EQ(max_seq, 14);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE account_id='acc1'"), 1);  // upsert 覆盖
+
+    // ---- 重启: 新登录日装载重建 ----
+    auto day = load_day();
+    ASSERT_EQ(day.orders.size(), 1u);
+    ASSERT_EQ(day.trades.size(), 2u);
+    EXPECT_EQ(day.start_seq, 14u);
+    ASSERT_TRUE(day.order_avgs.avg_price(1).has_value());
+    EXPECT_DOUBLE_EQ(*day.order_avgs.avg_price(1), 3902.25);  // Σ价×量/Σ量
+    EXPECT_EQ(day.order_avgs.volume(1), 4);
+    EXPECT_DOUBLE_EQ(day.orders[0].base.avg_price, 3902.25);  // 装载委托与聚合均价一致
+
+    // ---- 重放同批委托 → 全 kSkip (DB 行数/seq 不变, 无新行) ----
+    auto filter = ReportFilter::load(day.orders, day.trades);
+    bool warn = false;
+    EXPECT_EQ(ReportFilter::Verdict::kSkip, filter.check_order(order, &warn));
+    EXPECT_FALSE(warn);
+    for (const auto& t : day.trades) {
+        EXPECT_EQ(ReportFilter::Verdict::kSkip, filter.check_trade(t));
+    }
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE account_id='acc1'"), 1);
+    EXPECT_EQ(scalar_int("SELECT MAX(seq) FROM orders WHERE account_id='acc1'"), 14);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trades WHERE account_id='acc1'"), 2);
+
+    // ---- 重放同批成交经由转发路径 → 全吞, 累计不得二次计入 ----
+    // (去重判定先于累计: kSkip 早退, 跟踪器与 DB 均不因重放变化)
+    {
+        TdTradeProducer replay(db_path_, day.orders, day.trades, day.start_seq);
+        replay.start();
+        for (const auto& t : day.trades) {
+            EXPECT_TRUE(replay.on_trade(t)) << t.base.trade_id;
+        }
+        EXPECT_EQ(replay.tracker().volume(1), 4);  // 未二次累计
+        EXPECT_DOUBLE_EQ(*replay.tracker().avg_price(1), 3902.25);
+        EXPECT_EQ(replay.last_seq(), day.start_seq);  // 未分配任何 seq
+        replay.flush();
+        replay.stop();
+    }
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE account_id='acc1'"), 1);
+    EXPECT_EQ(scalar_int("SELECT MAX(seq) FROM orders WHERE account_id='acc1'"), 14);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trades WHERE account_id='acc1'"), 2);
+    EXPECT_EQ(scalar_int("SELECT seq FROM orders WHERE order_id=1"), 14);
+}
+
+/// 刷新行不破坏去重基准: 只改 avg_price + 新 seq 的刷新行进入基准后,
+/// 重放同一业务记录仍 kSkip (对比字段 update_time/volume_traded/volume_canceled/status 未变).
+TEST_F(TdDataSyncIntegrationTest, RefreshedRowStillSkipsReplay) {
+    OrderRecord order = make_order(1, 10);
+    order.base.status = DZ_ORDER_PART_TRADED;
+    order.base.volume_traded = 0;
+    {
+        PersistWriter w(db_path_, "dztd_test");
+        w.open();
+        w.start_writer();
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = order});
+        auto token = w.enqueue_flush_signal();
+        ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+        w.stop();
+    }
+    auto day = load_day();
+    TdTradeProducer producer(db_path_, day.orders, day.trades, day.start_seq);
+    producer.start();
+    EXPECT_FALSE(producer.on_trade(make_trade("T001", 0, "20260901", "CFFEX", 1, 3900.0, 1)));
+    producer.flush();
+    ASSERT_TRUE(producer.tracker().avg_price(1).has_value());
+
+    // 基准中已是刷新行 (avg_price=3900, seq=12), 重放原业务记录仍 kSkip
+    bool warn = false;
+    EXPECT_EQ(ReportFilter::Verdict::kSkip, producer.filter().check_order(order, &warn));
+    EXPECT_FALSE(warn);
+    // 再重放同一笔成交也 kSkip (成交去重键已入基准)
+    EXPECT_TRUE(producer.on_trade(make_trade("T001", 0, "20260901", "CFFEX", 1, 3900.0, 1)));
+    producer.stop();
+
+    // 重启后重放同批: 委托与成交全 kSkip, DB 无新行
+    auto day2 = load_day();
+    auto filter2 = ReportFilter::load(day2.orders, day2.trades);
+    bool warn2 = false;
+    EXPECT_EQ(ReportFilter::Verdict::kSkip, filter2.check_order(order, &warn2));
+    EXPECT_FALSE(warn2);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE account_id='acc1'"), 1);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trades WHERE account_id='acc1'"), 1);
+}
+
+/// 成交先于委托回报到达: 基准无该 order_id → 只累计, 不推委托帧;
+/// 委托回报到达时带走累计均价 (顺序无关).
+TEST_F(TdDataSyncIntegrationTest, TradeBeforeOrderCarriesAvgOnOrderReport) {
+    // 空基准启动
+    auto day = load_day();
+    ASSERT_TRUE(day.orders.empty());
+    ASSERT_TRUE(day.trades.empty());
+    TdTradeProducer producer(db_path_, day.orders, day.trades, 0);
+    producer.start();
+
+    // 成交先到: 只累计 (无基准行 → 不刷新), 成交自身仍转发落库
+    EXPECT_FALSE(producer.on_trade(make_trade("T001", 0, "20260901", "CFFEX", 7, 3900.0, 1)));
+    EXPECT_FALSE(producer.on_trade(make_trade("T002", 0, "20260901", "CFFEX", 7, 3902.0, 3)));
+    ASSERT_TRUE(producer.tracker().avg_price(7).has_value());
+    EXPECT_DOUBLE_EQ(*producer.tracker().avg_price(7), 3901.5);
+    // 委托行尚未存在 (无刷新写入)
+    producer.flush();
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE order_id=7"), 0);
+
+    // 委托回报到达: 带走累计均价
+    OrderRecord order = make_order(7, 0);
+    order.base.status = DZ_ORDER_PART_TRADED;
+    order.base.volume_traded = 4;
+    producer.on_order(order);
+    producer.flush();
+    EXPECT_DOUBLE_EQ(scalar_double("SELECT avg_price FROM orders WHERE order_id=7"), 3901.5);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE order_id=7"), 1);
+    producer.stop();
+}
+
+/// 当日无成交的委托: 委托回报不得把均价清零 (跨日 GFD 单保留基准行均价);
+/// 均价刷新也不产生多余 seq.
+TEST_F(TdDataSyncIntegrationTest, OrderReportKeepsBaselineAvgWhenNoDayTrades) {
+    // 基准行: 昨日成交留下的均价 3888.5 (DB 值), 当日无成交
+    OrderRecord order = make_order(2, 10);
+    order.base.status = DZ_ORDER_NOT_TRADED;
+    order.base.volume_traded = 0;
+    order.base.avg_price = 3888.5;
+    {
+        PersistWriter w(db_path_, "dztd_test");
+        w.open();
+        w.start_writer();
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = order});
+        auto token = w.enqueue_flush_signal();
+        ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+        w.stop();
+    }
+    auto day = load_day();
+    ASSERT_EQ(day.orders.size(), 1u);
+    EXPECT_TRUE(day.trades.empty());
+    EXPECT_DOUBLE_EQ(day.orders[0].base.avg_price, 3888.5);  // 当日无成交保留 DB 值
+
+    TdTradeProducer producer(db_path_, day.orders, day.trades, day.start_seq);
+    producer.start();
+    // 状态变化触发转发, 无当日成交累计 → 回填基准行均价 (不清零)
+    OrderRecord update = make_order(2, 0);
+    update.base.status = DZ_ORDER_CANCELLED;
+    update.base.volume_traded = 0;
+    update.update_time = 2000;
+    producer.on_order(update);
+    producer.flush();
+    EXPECT_DOUBLE_EQ(scalar_double("SELECT avg_price FROM orders WHERE order_id=2"), 3888.5);
+    producer.stop();
+}
+
+/// 均价未变化: 第二笔成交价与现均价相同 → 累计量增加但均价不变 → 不刷新委托行
+/// (不推帧/不落库/不分配 seq; 契约 §3「均价变化」才刷新).
+TEST_F(TdDataSyncIntegrationTest, UnchangedAvgDoesNotRefreshOrderRow) {
+    OrderRecord order = make_order(1, 10);
+    order.base.status = DZ_ORDER_PART_TRADED;
+    order.base.volume_traded = 0;
+    {
+        PersistWriter w(db_path_, "dztd_test");
+        w.open();
+        w.start_writer();
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = order});
+        auto token = w.enqueue_flush_signal();
+        ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+        w.stop();
+    }
+    auto day = load_day();
+    TdTradeProducer producer(db_path_, day.orders, day.trades, day.start_seq);
+    producer.start();
+    // 成交 1: 3900 x 1 → 均价 3900 → 刷新 (成交 seq 11, 刷新 seq 12)
+    EXPECT_FALSE(producer.on_trade(make_trade("T001", 0, "20260901", "CFFEX", 1, 3900.0, 1)));
+    EXPECT_EQ(producer.last_seq(), 12u);
+    // 成交 2: 同价 3900 x 2 → 均价仍 3900 → 只分配成交 seq 13, 无刷新 seq
+    EXPECT_FALSE(producer.on_trade(make_trade("T002", 0, "20260901", "CFFEX", 1, 3900.0, 2)));
+    EXPECT_EQ(producer.last_seq(), 13u);  // 仅成交取号
+    producer.flush();
+
+    // 累计量确实增加 (累计口径独立于刷新), 但委托行未被重写
+    EXPECT_EQ(producer.tracker().volume(1), 3);
+    EXPECT_DOUBLE_EQ(*producer.tracker().avg_price(1), 3900.0);
+    EXPECT_DOUBLE_EQ(scalar_double("SELECT avg_price FROM orders WHERE order_id=1"), 3900.0);
+    EXPECT_EQ(scalar_int("SELECT seq FROM orders WHERE order_id=1"), 12);  // 仍是首次刷新 seq
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trades WHERE account_id='acc1'"), 2);
+    producer.stop();
+}
+
+/// 审查修复 1: 非精确可表示的价 (3512.3) 连打 3 笔同价成交 — 全量重算的均价为
+/// 3512.3000000000006 (Δ=+4.5e-13). 裸 == 会判成「均价变化」→ 每笔都刷新委托行
+/// (3 个委托 seq + 3 条 ORDER_REPORT), 违反契约 §3「均价变化时才刷新」.
+/// 容差判定后: 委托行只刷新一次, 后续同价成交只分配成交 seq.
+TEST_F(TdDataSyncIntegrationTest, DriftedSamePriceRefreshesOrderOnlyOnce) {
+    constexpr double kPrice = 3512.3;
+    OrderRecord order = make_order(1, 10);
+    order.base.status = DZ_ORDER_PART_TRADED;
+    order.base.volume_traded = 0;
+    {
+        PersistWriter w(db_path_, "dztd_test");
+        w.open();
+        w.start_writer();
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = order});
+        auto token = w.enqueue_flush_signal();
+        ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+        w.stop();
+    }
+    auto day = load_day();
+    TdTradeProducer producer(db_path_, day.orders, day.trades, day.start_seq);
+    producer.start();
+
+    // 3 笔同价成交: 每笔成交 seq (11/12/13), 委托刷新只在第 1 笔发生 (seq 12)
+    // → 最终 last_seq = 13 (成交 seq), 不是 16 (3 个委托刷新).
+    EXPECT_FALSE(producer.on_trade(make_trade("T001", 0, "20260901", "CFFEX", 1, kPrice, 1)));
+    const uint64_t after_first = producer.last_seq();
+    EXPECT_EQ(after_first, 12u);  // 成交 11 + 刷新 12
+    EXPECT_FALSE(producer.on_trade(make_trade("T002", 0, "20260901", "CFFEX", 1, kPrice, 1)));
+    EXPECT_FALSE(producer.on_trade(make_trade("T003", 0, "20260901", "CFFEX", 1, kPrice, 1)));
+    // 同价 → 只有成交取号, 无委托刷新取号: 12(首笔成交) 之后仅 13/14 两个成交 seq
+    EXPECT_EQ(producer.last_seq(), 14u);
+    producer.flush();
+
+    // DB: 均价 = 该价 (全精度写入, 不做舍入), 委托行 seq 停在首次刷新值 12
+    EXPECT_DOUBLE_EQ(scalar_double("SELECT avg_price FROM orders WHERE order_id=1"), kPrice);
+    EXPECT_EQ(scalar_int("SELECT seq FROM orders WHERE order_id=1"), 12);
+    // 累计量 = 3, 均价仍视为该价
+    EXPECT_EQ(producer.tracker().volume(1), 3);
+    ASSERT_TRUE(producer.tracker().avg_price(1).has_value());
+    EXPECT_TRUE(avg_price_unchanged(*producer.tracker().avg_price(1), kPrice));
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trades WHERE account_id='acc1'"), 3);
+    producer.stop();
+}
+
+/// 审查修复 2: 日切清空每单累计 — 上一交易日成交不参与次日均价 (契约 §3「累计只含当日成交」).
+/// 重启场景由登录日装载重新 seed; 会话存活跨日由 set_trading_day 清空 (同一生产类型).
+TEST_F(TdDataSyncIntegrationTest, DaySwitchClearsTradeAvgAccumulation) {
+    OrderRecord order = make_order(1, 10);
+    order.base.status = DZ_ORDER_PART_TRADED;
+    order.base.volume_traded = 0;
+    {
+        PersistWriter w(db_path_, "dztd_test");
+        w.open();
+        w.start_writer();
+        w.enqueue(PersistTask{.kind = PersistTask::Kind::Order, .data = order});
+        auto token = w.enqueue_flush_signal();
+        ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
+        w.stop();
+    }
+    auto day = load_day();
+    TdTradeProducer producer(db_path_, day.orders, day.trades, day.start_seq);
+    producer.start();
+    // 当日 (D1) 成交 3900 x 1 → 累计均价 3900
+    EXPECT_FALSE(producer.on_trade(make_trade("T001", 0, "20260901", "CFFEX", 1, 3900.0, 1)));
+    ASSERT_TRUE(producer.tracker().avg_price(1).has_value());
+    EXPECT_DOUBLE_EQ(*producer.tracker().avg_price(1), 3900.0);
+
+    // 日切 → 累计清空: 该单回到「无成交」语义
+    producer.set_trading_day();
+    EXPECT_FALSE(producer.tracker().avg_price(1).has_value());
+    EXPECT_EQ(producer.tracker().volume(1), 0);
+
+    // D2 同一单再来一笔 4000 → 均价 = 该笔价 4000 (不是跨日加权 (3900+4000)/2=3950)
+    EXPECT_FALSE(producer.on_trade(make_trade("T101", 0, "20260902", "CFFEX", 1, 4000.0, 1)));
+    ASSERT_TRUE(producer.tracker().avg_price(1).has_value());
+    EXPECT_DOUBLE_EQ(*producer.tracker().avg_price(1), 4000.0);
+    EXPECT_EQ(producer.tracker().volume(1), 1);
+    producer.flush();
+    // 委托行均价为次日值 (未混入昨日成交)
+    EXPECT_DOUBLE_EQ(scalar_double("SELECT avg_price FROM orders WHERE order_id=1"), 4000.0);
+    producer.stop();
 }
 
 }  // namespace

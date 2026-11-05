@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <format>
+#include <optional>
 #include <unordered_set>
 #include <utility>
 
@@ -106,9 +107,37 @@ bool AccountSession::load_trading_day_baseline() {
     // 重放过滤器基准 = 当日订单最新态 + 当日成交去重键 (历史行不装载).
     auto filter = ReportFilter::load(day.orders, day.trades);
     *report_filter_ = std::move(filter);
+    // 每单成交累计基准 = 当日成交按 order_id 聚合 (契约 §3 重启后重建均价).
+    order_avgs_ = day.order_avgs;
     SPDLOG_INFO("td login day loaded | account={} day={} orders={} trades={} seq={}", account_id_,
                 day_text, day.orders.size(), day.trades.size(), seq_counter_);
     return true;
+}
+
+void AccountSession::refresh_order_avg(int64_t order_id) {
+    // 契约 td-data-sync §3: 每笔成交到达且均价变化时, 刷新该订单记录 (新 seq, 与订单行同
+    // seq) 并推 ORDER_REPORT, 不依赖柜台回调顺序. 基准缺失 (外部单/委托回报尚未到达) →
+    // 只保留累计, 等委托回报带走均价; 均价未变化 → 不推不落不分配 seq.
+    if (!report_filter_) {
+        return;
+    }
+    const OrderRecord* base = report_filter_->find_order(order_id);
+    if (base == nullptr) {
+        return;
+    }
+    const std::optional<double> avg = order_avgs_.avg_price(order_id);
+    // 判定用容差比较 (同价多笔的全量重算有 1 ULP 漂移); 推帧/落库仍写 *avg 全精度值.
+    if (!avg.has_value() || avg_price_unchanged(*avg, base->base.avg_price)) {
+        return;
+    }
+    // 刷新行只覆盖均价派生列, 对比字段保持基准值 → 重放仍 kSkip (去重基准不被均价破坏).
+    OrderRecord updated = order_record_with_avg(*base, *avg);
+    updated.base.seq = ++seq_counter_;
+    report_filter_->accept_order(updated);
+    write_order_rpt(updated.base);
+    persist_order(updated);
+    SPDLOG_DEBUG("td order avg refreshed | account={} order_id={} avg_price={} seq={}", account_id_,
+                 order_id, *avg, updated.base.seq);
 }
 
 // ============================================================================
@@ -476,6 +505,15 @@ void AccountSession::on_rtn_order(const OnRtnOrderField& f) {
         }
 
         // ③ 转发: 分配 seq -> 更新基准 -> 推帧 -> 落库 (同一事件 shm 帧与 DB 行同 seq).
+        // 均价不来自柜台 (CTP 无该字段): 有当日成交累计 → 用累计值; 否则保留基准行均价
+        // (跨日 GFD 单不得被清零); 两者都没有 → 0 (无成交语义). 顺序无关: 成交先到时
+        // 累计已建, 委托回报在此带走均价.
+        if (const auto avg = order_avgs_.avg_price(rpt.base.order_id); avg.has_value()) {
+            rpt.base.avg_price = *avg;
+        } else if (const OrderRecord* base = report_filter_->find_order(rpt.base.order_id);
+                   base != nullptr) {
+            rpt.base.avg_price = base->base.avg_price;
+        }
         rpt.base.seq = ++seq_counter_;
         report_filter_->accept_order(rpt);
         write_order_rpt(rpt.base);
@@ -542,6 +580,11 @@ void AccountSession::on_rtn_trade(const OnRtnTradeField& f) {
         report_filter_->accept_trade(rpt);
         write_trade_rpt(rpt.base);
         persist_trade(rpt);
+
+        // 每单成交累计 + 均价变化则刷新委托行 (契约 §3: 不依赖柜台回调顺序).
+        // 放在成交自身推帧/落库之后: 成交帧先于其触发的委托刷新帧, seq 亦如此.
+        order_avgs_.add_trade(rpt.base.order_id, rpt.base.price, rpt.base.volume);
+        refresh_order_avg(rpt.base.order_id);
 
         // 盘中持仓增量 (基准就绪且非缓冲重放; 重放成交已含在查询快照中)
         if (position_baseline_ready_ && !replaying_) {
@@ -687,6 +730,10 @@ bool AccountSession::cancel_order(DzOrderId order_id) {
 
 void AccountSession::set_trading_day(int32_t trading_day) {
     trading_day_ = trading_day;
+    // 每单成交累计只含当日成交 (契约 §3): 跨日后上一交易日的累计必须清空, 否则会话
+    // 存活跨日时均价会混入昨日成交 (重启场景由 load_trading_day_baseline 重新 seed).
+    // 登录链次序 = set_trading_day → load_trading_day_baseline, 清空后由装载重建, 安全.
+    order_avgs_ = OrderTradeAvgTracker{};
     for (auto& [inst, h] : holdings_) {
         auto ch = h.on_day_switch();
         if (ch.long_changed) push_position(h, DZ_DIRECTION_LONG);

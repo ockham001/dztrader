@@ -16,8 +16,8 @@
  *   统计计数器的**重放守卫**（跳过重算已纳入的帧），不是记录 ingest 水位——它只由重算
  *   从 DB 写入，增量永不推进，见 `td_stats.h`。
  *
- * 委托行形状的唯一真相源是契约 rest §2.9.3，序列化复用 `td_orders_query.h` 的
- * `td_order_row_json`（REST 与 WS 同 schema，禁止两份）。
+ * 委托行与成交行形状的唯一真相源是契约 rest §2.9.3，序列化复用 `td_row_json.h` 的
+ * `td_order_row_json` / `td_trade_row_json`（REST 与 WS 同 schema，禁止两份）。
  *
  * **线程语义（register_raw）**：帧 handler 在监听线程同步执行（`FrameView` 有效期内），
  * 解析并拷贝字段后经 `FrameRouter::poster()` 投递到 IO 线程，与 REST/WS 连接回调串行，
@@ -53,7 +53,8 @@ inline constexpr const char* kTdDataChangedScope = "td";
 
 class TdDomainService {
 public:
-    /// @param router 帧路由（ctor 内 register_raw 注册 1002 ORDER_REPORT + 1012 ACCOUNT_STATUS）
+    /// @param router 帧路由（ctor 内 register_raw 注册 1002 ORDER_REPORT + 1003 TRADE_REPORT
+    ///        + 1012 ACCOUNT_STATUS）
     /// @param ws 广播薄接口（WsController 实现）
     /// @param notifier 数据变更通知薄接口（WsController 实现）
     TdDomainService(FrameRouter& router, WsBroadcaster& ws, DataChangeNotifier& notifier);
@@ -65,8 +66,10 @@ public:
     TdDomainService(TdDomainService&&) = delete;
     TdDomainService& operator=(TdDomainService&&) = delete;
 
-    /// 建连补发载荷：`{"events":[{"type":"td_order_report","data":<委托行>},...]}`。
-    /// 内容 = 各在线账户补发环从旧到新；不同账户之间顺序不承诺。无事件 = 空数组。
+    /// 建连补发载荷：`{"events":[{"type":"td_order_report"|"td_trade_report","data":<行>},...]}`。
+    /// 内容 = 各在线账户补发环从旧到新；同一账户环**同时容纳委托与成交事件**
+    /// （契约 td-data-sync §8：每账户最近 300 条交易事件，四类共享容量）。
+    /// 不同账户之间顺序不承诺。无事件 = 空数组。
     nlohmann::json recent_events() const;
 
     /// 在线（Ready）账户集合，按 account_id 升序（契约 rest §2.9.1）。
@@ -103,17 +106,19 @@ public:
     /// 帧 handler 的公开入口（供 register_raw 与单测直接调用；两处走同一实现）。
     void on_account_status(const DzAccountStatus& status);
     void on_order_report(const DzOrderReport& report);
+    void on_trade_report(const DzTradeReport& report);
 
 private:
-    /// 注册 1002 / 1012（ctor 调用）。
+    /// 注册 1002 / 1003 / 1012（ctor 调用）。
     void register_handlers(FrameRouter& router);
 
     /// 该合约的价格小数位（契约 rest §2.9.6）：按 instrument_id 缓存 price_tick 查询结果；
     /// 查不到合约 / 库不可用 → 用该行委托价的小数位兜底。
     int price_decimals_for(const std::string& instrument_id, double price);
 
-    /// 该账户补发环追加一条（超过容量丢最旧）。
-    void push_recent(const std::string& account_id, nlohmann::json row);
+    /// 该账户补发环追加一条（超过容量丢最旧）。委托与成交共用同一环与容量
+    /// （契约 td-data-sync §8；`type` 区分事件种类）。
+    void push_recent(const std::string& account_id, const char* type, nlohmann::json row);
 
     /// 当前交易日（内部形态）：在线账户 date 最大值；无在线账户 nullopt。
     std::optional<int32_t> current_trading_day_epoch() const;

@@ -20,6 +20,7 @@
 #include <string>
 
 struct sqlite3;
+struct sqlite3_stmt;
 
 namespace dztrader::webui {
 
@@ -70,6 +71,10 @@ private:
 
 /// 降级体 `{"available":false,"reason":<code>}`（契约 rest §2.9.8）。
 nlohmann::json td_degraded_body(const char* reason);
+
+/// 结果列 → `std::string`（NULL = 空串）。委托/成交两条查询路径共用，避免两份
+/// 「NULL 转空串」的拷贝实现漂移。
+std::string td_column_text(sqlite3_stmt* stmt, int column);
 
 }  // namespace dztrader::webui
 

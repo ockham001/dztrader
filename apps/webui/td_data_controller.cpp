@@ -16,7 +16,7 @@ void TdCtrl::get_orders(const drogon::HttpRequestPtr& req,
         // 装配缺失（测试/异常装配）：按降级而非 5xx，避免把配置问题当服务器故障
         // （契约 rest §2.9.8：读端点不上 5xx）。
         SPDLOG_WARN("td orders query not wired");
-        callback(json_response(drogon::k200OK, {{"available", false}, {"reason", "query_failed"}}));
+        callback(json_response(drogon::k200OK, td_degraded_body(kTdReasonQueryFailed)));
         return;
     }
     const auto parsed = TdOrdersQuery::parse(
@@ -27,6 +27,34 @@ void TdCtrl::get_orders(const drogon::HttpRequestPtr& req,
     }
     auto body =
         orders_->execute(*parsed, domain_->online_accounts(), domain_->current_trading_day());
+    if (!body.has_value()) {
+        // 游标非法 / 作用域不符（契约 rest §2.9.2）：必须从首页重拉，属请求错误不是降级。
+        callback(error_response(drogon::k400BadRequest, "bad request"));
+        return;
+    }
+    callback(json_response(drogon::k200OK, *body));
+}
+
+void TdCtrl::get_trades(const drogon::HttpRequestPtr& req,
+                        std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+    // 认证由 JWT advice 处理；读端点全部已认证用户可读全部账户（契约 rest §2.9.1）。
+    // 与 get_orders 完全同构：参数解析/游标作用域/降级语义的唯一真相源是契约 §2.9，
+    // 此处不另写规则。
+    if (!trades_ || !domain_) {
+        // 装配缺失（测试/异常装配）：按降级而非 5xx，避免把配置问题当服务器故障
+        // （契约 rest §2.9.8：读端点不上 5xx）。
+        SPDLOG_WARN("td trades query not wired");
+        callback(json_response(drogon::k200OK, td_degraded_body(kTdReasonQueryFailed)));
+        return;
+    }
+    const auto parsed = TdTradesQuery::parse(
+        [&req](std::string_view key) { return req->getParameter(std::string(key)); });
+    if (!parsed.has_value()) {
+        callback(error_response(drogon::k400BadRequest, "bad request"));
+        return;
+    }
+    auto body =
+        trades_->execute(*parsed, domain_->online_accounts(), domain_->current_trading_day());
     if (!body.has_value()) {
         // 游标非法 / 作用域不符（契约 rest §2.9.2）：必须从首页重拉，属请求错误不是降级。
         callback(error_response(drogon::k400BadRequest, "bad request"));
