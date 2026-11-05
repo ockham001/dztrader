@@ -172,6 +172,17 @@ check_push_scope_selftest() {
     "$ROOT/scripts/check-push-scope.sh" --selftest
 }
 
+check_orphan_exports() {
+    # 孤儿导出（#274）：本仓的收敛手法是「抽共用模块 + 保留旧名转发」，这个手法天然生产
+    # 死定义，而两处现有护栏都不管——`noUnusedLocals` 不查 `export`，C++ 头文件里未使用的
+    # `inline constexpr` 编译器不告警。实测复发 4 处、全靠 reviewer 事后抓出（#246 孤儿函数；
+    # #248 两个零消费者常量别名，最后一处到第 2 轮只读验证才发现）。
+    # 先跑自测（死定义 / 别名回归 / 过度导出分级 / 测试与 .vue 引用 / C++ / 排除项），
+    # 再扫真实树。二级「过度导出」只打 note 不失败（不是死代码，按 AGENTS 改动纪律不删）。
+    "$PYTHON" scripts/check_orphan_exports.py --selftest || return $?
+    "$PYTHON" scripts/check_orphan_exports.py
+}
+
 check_ci_budget() {
     # Windows CI 墙钟分档口径（#267）：档位边界与预算由真实 PR 数据校准，改错了会让
     # 「CI 绿」这个信号失真（#260 的单一 ≤15min 目标就把 35min 的正常大改动判成失败）。
@@ -254,6 +265,7 @@ run_step "gtest discovery timeout (#227)" check_gtest_discovery_timeout
 run_step "commit subject rules (#265)" check_commit_subject
 run_step "push-scope base resolution (#265)" check_push_scope_selftest
 run_step "Windows CI budget bands (#267)" check_ci_budget
+run_step "orphan exports (#274)" check_orphan_exports
 if [ "$C_ONLY" -eq 0 ]; then
     run_step "frontend (type-check/lint/lint:css/test/gen:types)" check_frontend
 fi

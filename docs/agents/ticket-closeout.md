@@ -38,7 +38,7 @@
 8. 轮次口径：**1 轮 = 1 次修复 + 1 个 verifier**；最多 3 轮修复。第 3 轮仍有 blocking → 修完后必须再跑 **1 轮只读验证**（不算第 4 轮修复），并把结论写进报告。禁止用改写 prompt 重跑 verifier 来"刷新"结论。
 9. **等 verifier 不要 `sleep` 轮询**（AGENTS §五「等待一律后台作业」）：`spawn_teammate` 的成员用 `wait_agent` 真正阻塞；派 `subagent` 时结果以 `subagent-settled` 通知到达。等待窗口做**不写文件**的工作（读 diff/契约、拟关闭评论与报告、跑幂等 `preflight --c-only`）。反例：#77/#78/#81 因 sleep 等 verifier 累计 ≈3.9h。
 10. **verifier `failed` 恢复协议**（`failed` = 子代理异常退出、无报告）：① 原 prompt 重跑一次；② 仍 `failed` → 用 `spawn_teammate` 派 verifier（Team 成员可 `wait_agent` 真正阻塞）；③ 仍不可用 → **人工代轴**逐条核对（机器门禁须已全绿），并在报告写明"verifier failed N 次、人工代轴"。#123 两个审查线程丢失、用户被迫介入、Lead 人工补轴即反例；禁止改写 prompt 反复重跑刷结论。
-11. **review 完成、修复收敛后才进入 §4 push**；push 之后只允许修 CI 红。
+11. **review 全部收敛（含最后一轮只读验证）后才进入 §4 push**；push 之后只允许修 CI 红。只读验证轮提出的 finding 必须**并入同一个 commit** 再推——先推再验会让第二次 push 撞上 `check-push-scope` 的「CI 在跑」拒绝，白等一轮 CI（#248 实测：推修复 commit → 起 CI → 跑验证轮 → 又得 1 条 → 新 commit 被拒 → 空等 986s）。
 12. 并行波（同一时间多个 ticket）必须一票一 worktree（AGENTS §五）；共享工作区只留单线。
 
 ## 2. 门禁（全绿才算完）
@@ -109,7 +109,8 @@ git merge-base --is-ancestor <merge-commit> main && echo merged
 - **PR 未 MERGED 前不得关闭 issue**。CI 绿 ≠ 已落地（本波 #91 关单 40 分钟后才合、#92 关单 5 小时后才合，期间 #93 合入造成冲突，收尾多解一次冲突 + 多跑两轮 CI）。
 - `--delete-branch` 在 worktree 里会跳过本地删除（分支被 checkout）：先 `git worktree remove`，再 `git branch -d`；远端分支用 `git ls-remote --heads origin <branch>` 确认为空。
 - 合并会触发 main 的 CI（merge commit 跑 Linux，约 15 分钟；Windows job 只在 PR 跑）；共享工作区切回 main 后不要停在旧 feature 分支。
-- 若要显式等 main CI：`./scripts/wait-ci.sh --branch main`（约 11–18 分钟；不想阻塞收尾就留到波末批量抽查）。
+- **默认不等 main CI**：squash 合并后 main 上的 tree 与 PR head tree **完全相同**，main run 重测的是同一份内容，等它拿不到任何新信息。落地确认用秒级命令：`git merge-base --is-ancestor <merge-commit> main`（或 `git diff --quiet <pr-head-tree> <merge-commit>`）。实测代价：五票里四票选择等，合计约 113 分钟（#246 4286s / #260 1633s / #248 620s / #258 251s）。
+- 只有下列情况才抽查 main run：本次 PR 的 CI 曾红过、或改动了 `ci.yml` / ruleset / 构建缓存配置（这些是「main 与 PR 环境不同」的唯一现实来源）。真要等就留到波末批量：`./scripts/wait-ci.sh --branch main`。
 
 ## 6. 关闭 issue（PR 已合并后）
 
