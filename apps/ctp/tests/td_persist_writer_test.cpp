@@ -1099,6 +1099,198 @@ TEST_F(TdPersistWriterTest, PositionRebuildRespectsTaskOrderWithinBatch) {
     writer.stop();
 }
 
+// ============================================================================
+// #249 持仓快照生命周期 (契约 td-data-sync §3 / §7, ADR 0045 / ADR 0046)
+// ============================================================================
+
+/// `volume=0` 的单行增量 upsert 必须真的落成一行 `volume=0`：不能因为"零量"被跳过、
+/// 也不能被当作删除。这是「全平后增量可查」的写入端保证（契约 §3 路径 (b) 明文含
+/// `volume=0`；读端 REST 用 `volume>0` 过滤，行本身必须存在，否则「当日全平」与
+/// 「从未查询过」在库里不可区分 —— ADR 0046 的锚点日语义依赖这个区分）。
+TEST_F(TdPersistWriterTest, ZeroVolumePositionUpsertWritesQueryableRow) {
+    PersistWriter writer(db_path_, "dztd_test");
+    writer.open();
+    writer.start_writer();
+
+    // 先有持仓 (重启后基准里的一行)...
+    writer.enqueue(
+        PersistTask{.kind = PersistTask::Kind::Position,
+                    .data = std::vector<DzPositionInfo>{make_position(5, 10, DZ_DIRECTION_LONG)},
+                    .account_id = "acc1",
+                    .trading_day = kTradingDay});
+    ASSERT_TRUE(flush_writer(writer, std::chrono::seconds(2)));
+    ASSERT_EQ(scalar_int("SELECT volume FROM positions WHERE account_id='acc1'"), 5);
+
+    // ...盘中全平: 日内增量路径写 volume=0 的单行 upsert (同键覆盖).
+    DzPositionInfo closed = make_position(0, 11, DZ_DIRECTION_LONG);
+    closed.today_volume = 0;
+    closed.yd_volume = 0;
+    closed.price = 0.0;
+    writer.enqueue(PersistTask{.kind = PersistTask::Kind::Position,
+                               .data = std::vector<DzPositionInfo>{closed},
+                               .account_id = "acc1",
+                               .trading_day = kTradingDay});
+    ASSERT_TRUE(flush_writer(writer, std::chrono::seconds(2)));
+
+    // 行仍在 (未被"零量"跳过), volume=0, seq 前移到零帧 seq.
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 1);
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE account_id='acc1'"), 0);
+    EXPECT_EQ(scalar_int("SELECT today_volume FROM positions WHERE account_id='acc1'"), 0);
+    EXPECT_EQ(scalar_int("SELECT yd_volume FROM positions WHERE account_id='acc1'"), 0);
+    EXPECT_EQ(scalar_int("SELECT seq FROM positions WHERE account_id='acc1'"), 11);
+    writer.stop();
+}
+
+/// 重建的作用域是「该账户 + 当日」：同库其他账户的当日行、同账户的历史交易日行都不动
+/// （契约 §3「重建只碰当日行，历史交易日行不可变」；ADR 0045 决策 5）。在仓的账户行
+/// 被原地替换，不在本组里的合约行被删除 —— 三者必须在同一事务内一次生效。
+TEST_F(TdPersistWriterTest, PositionRebuildScopedToAccountAndCurrentDay) {
+    PersistWriter writer(db_path_, "dztd_test");
+    writer.open();
+    writer.start_writer();
+
+    // 历史日 1 行 (acc1) + 当日 acc1 旧行 2 行 + 当日 acc2 1 行.
+    // 注意: `Kind::Position` 是**单行** upsert（`data.front()`），两行必须分成两个任务。
+    DzPositionInfo prev_day = make_position(4, 5, DZ_DIRECTION_LONG);
+    writer.enqueue(PersistTask{.kind = PersistTask::Kind::Position,
+                               .data = std::vector<DzPositionInfo>{prev_day},
+                               .account_id = "acc1",
+                               .trading_day = kPrevTradingDay});
+    writer.enqueue(
+        PersistTask{.kind = PersistTask::Kind::Position,
+                    .data = std::vector<DzPositionInfo>{make_position(9, 7, DZ_DIRECTION_LONG)},
+                    .account_id = "acc1",
+                    .trading_day = kTradingDay});
+    DzPositionInfo acc1_stale_short = make_position(3, 6, DZ_DIRECTION_SHORT);
+    std::strcpy(acc1_stale_short.instrument_id, "rb2510");
+    std::strcpy(acc1_stale_short.exchange_id, "SHFE");
+    writer.enqueue(PersistTask{.kind = PersistTask::Kind::Position,
+                               .data = std::vector<DzPositionInfo>{acc1_stale_short},
+                               .account_id = "acc1",
+                               .trading_day = kTradingDay});
+    DzPositionInfo acc2_row = make_position(6, 8, DZ_DIRECTION_LONG);
+    std::strcpy(acc2_row.account_id, "acc2");
+    writer.enqueue(PersistTask{.kind = PersistTask::Kind::Position,
+                               .data = std::vector<DzPositionInfo>{acc2_row},
+                               .account_id = "acc2",
+                               .trading_day = kTradingDay});
+    ASSERT_TRUE(flush_writer(writer, std::chrono::seconds(2)));
+    ASSERT_EQ(scalar_int("SELECT COUNT(*) FROM positions"), 4);
+
+    // acc1 当日重建为单行 IF2506 volume=2 (盘口收缩到一行, 消失的 rb2510 必须被删).
+    writer.enqueue(
+        PersistTask{.kind = PersistTask::Kind::PositionRebuild,
+                    .data = std::vector<DzPositionInfo>{make_position(2, 9, DZ_DIRECTION_LONG)},
+                    .account_id = "acc1",
+                    .trading_day = kTradingDay});
+    ASSERT_TRUE(flush_writer(writer, std::chrono::seconds(2)));
+
+    // 历史日行 (acc1/20260831) 原样保留.
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE account_id='acc1' AND "
+                         "date='20260831'"),
+              4);
+    EXPECT_EQ(scalar_int("SELECT seq FROM positions WHERE account_id='acc1' AND date='20260831'"),
+              5);
+    // acc1 当日只剩重建组那一行.
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1' AND "
+                         "date='20260901'"),
+              1);
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE account_id='acc1' AND "
+                         "date='20260901'"),
+              2);
+    // 其他账户当日行不受影响 (不串账户).
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE account_id='acc2'"), 6);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc2'"), 1);
+    writer.stop();
+}
+
+/// 「删户重加 / 盘中换柜台」在库侧的形态：同一 `account_id` 二次登录后再次整组重建,
+/// 结果集整组替换而不是累加 —— 不产生重复行 (唯一键), 不残留上一轮独有的合约,
+/// 历史交易日行不变 (契约 §7「账户删除/重加、盘中换柜台」；ADR 0045 决策 5)。
+TEST_F(TdPersistWriterTest, PositionRebuildTwiceSameDayReplacesGroup) {
+    PersistWriter writer(db_path_, "dztd_test");
+    writer.open();
+    writer.start_writer();
+
+    // 前一日快照 (跨会话保留的"上次已知快照").
+    writer.enqueue(
+        PersistTask{.kind = PersistTask::Kind::Position,
+                    .data = std::vector<DzPositionInfo>{make_position(7, 4, DZ_DIRECTION_LONG)},
+                    .account_id = "acc1",
+                    .trading_day = kPrevTradingDay});
+    ASSERT_TRUE(flush_writer(writer, std::chrono::seconds(2)));
+
+    // 第一轮登录后的首个完整成功查询: IF2506 多 8 + rb2510 空 3.
+    DzPositionInfo short_row = make_position(3, 6, DZ_DIRECTION_SHORT);
+    std::strcpy(short_row.instrument_id, "rb2510");
+    std::strcpy(short_row.exchange_id, "SHFE");
+    writer.enqueue(PersistTask{
+        .kind = PersistTask::Kind::PositionRebuild,
+        .data = std::vector<DzPositionInfo>{make_position(8, 5, DZ_DIRECTION_LONG), short_row},
+        .account_id = "acc1",
+        .trading_day = kTradingDay});
+    ASSERT_TRUE(flush_writer(writer, std::chrono::seconds(2)));
+    ASSERT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20260901'"), 2);
+
+    // 删户重加 (同 account_id 二次登录) → 第二次完整成功查询: 只剩 IF2506 多 1.
+    writer.enqueue(
+        PersistTask{.kind = PersistTask::Kind::PositionRebuild,
+                    .data = std::vector<DzPositionInfo>{make_position(1, 12, DZ_DIRECTION_LONG)},
+                    .account_id = "acc1",
+                    .trading_day = kTradingDay});
+    ASSERT_TRUE(flush_writer(writer, std::chrono::seconds(2)));
+
+    // 当日整组替换: 1 行、无重复、上一轮独有的 rb2510 消失.
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1' AND "
+                         "date='20260901'"),
+              1);
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE account_id='acc1' AND "
+                         "date='20260901'"),
+              1);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE instrument_id='rb2510'"), 0);
+    // 历史日行与 seq 不变.
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20260831'"), 1);
+    EXPECT_EQ(scalar_int("SELECT seq FROM positions WHERE date='20260831'"), 4);
+    writer.stop();
+}
+
+/// 日切 (契约 §3「日切」)：today→yd 后的当日行以 `today_volume=0 / yd_volume=全部` 落库,
+/// 上一交易日的行保持它自己当时的今昨拆分 (历史行不可变).
+TEST_F(TdPersistWriterTest, DaySwitchPersistsTodayAsYesterday) {
+    PersistWriter writer(db_path_, "dztd_test");
+    writer.open();
+    writer.start_writer();
+
+    // 前一日: 今仓 5 (当日盘中开仓形态).
+    DzPositionInfo prev = make_position(5, 10, DZ_DIRECTION_LONG);
+    prev.today_volume = 5;
+    prev.yd_volume = 0;
+    writer.enqueue(PersistTask{.kind = PersistTask::Kind::Position,
+                               .data = std::vector<DzPositionInfo>{prev},
+                               .account_id = "acc1",
+                               .trading_day = kPrevTradingDay});
+    ASSERT_TRUE(flush_writer(writer, std::chrono::seconds(2)));
+
+    // 日切后首个完整成功查询: today→yd, 量不变.
+    DzPositionInfo switched = make_position(5, 11, DZ_DIRECTION_LONG);
+    switched.today_volume = 0;
+    switched.yd_volume = 5;
+    writer.enqueue(PersistTask{.kind = PersistTask::Kind::PositionRebuild,
+                               .data = std::vector<DzPositionInfo>{switched},
+                               .account_id = "acc1",
+                               .trading_day = kTradingDay});
+    ASSERT_TRUE(flush_writer(writer, std::chrono::seconds(2)));
+
+    // 两日并存: 前一日仍是今仓 5, 当日是昨仓 5 (重建只碰当日, 历史行不可变).
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 2);
+    EXPECT_EQ(scalar_int("SELECT today_volume FROM positions WHERE date='20260831'"), 5);
+    EXPECT_EQ(scalar_int("SELECT yd_volume FROM positions WHERE date='20260831'"), 0);
+    EXPECT_EQ(scalar_int("SELECT today_volume FROM positions WHERE date='20260901'"), 0);
+    EXPECT_EQ(scalar_int("SELECT yd_volume FROM positions WHERE date='20260901'"), 5);
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE date='20260901'"), 5);
+    writer.stop();
+}
+
 // Kind::Position / Kind::TradingAccount 单行 upsert (盘中有变化时走它).
 // 每列用互不相同的非零值 + 逐列断言: 列序错位 (frozen↔yd、seq 丢失等) 或漏绑必然变红.
 TEST_F(TdPersistWriterTest, SingleUpsertPositionAndTradingAccount) {

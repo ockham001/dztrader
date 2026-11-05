@@ -44,6 +44,7 @@
 #include "td_domain_service.h"
 #include "td_data_controller.h"
 #include "td_orders_query.h"
+#include "td_positions_query.h"
 #include "td_stats_query.h"
 #include "td_trades_query.h"
 #include "sysmon_domain_service.h"
@@ -399,6 +400,9 @@ int main(int argc, char* argv[]) {
     // 两处只是"查哪张表、怎么排序"不同。
     auto td_query = std::make_shared<dztrader::webui::TdOrdersQuery>(trade_db_path_cb);
     auto td_trades_query = std::make_shared<dztrader::webui::TdTradesQuery>(trade_db_path_cb);
+    // 持仓：账户范围是全部已登记账户（含离线）+ 各账户锚点日（ADR 0045/0046），
+    // 与委托/成交的「在线 + 当前交易日」口径不同；账户全集与锚点日由查询自己从库里取。
+    auto td_positions_query = std::make_shared<dztrader::webui::TdPositionsQuery>(trade_db_path_cb);
     // 统计计数器（契约 rest §2.9.5 / ADR 0043 决策 4）：dzweb 内存 4 值，启动 / Ready /
     // 在线集合变化 / 日切 / 周期对账从 trade.db 全量重算；ORDER_REPORT 走增量。
     // 注入后立即触发一次重算（此时无在线账户 → 全 0 且 ready，stats 不返回 not_ready）。
@@ -424,8 +428,8 @@ int main(int argc, char* argv[]) {
                         dztrader::webui::kTdStatsReconcileIntervalSec);
         });
     });
-    drogon::app().registerController(
-        std::make_shared<dztrader::webui::TdCtrl>(repo, td_domain, td_query, td_trades_query));
+    drogon::app().registerController(std::make_shared<dztrader::webui::TdCtrl>(
+        repo, td_domain, td_query, td_trades_query, td_positions_query));
 
     // EventMonitor 由 main 持有并直调 start/stop（WsController 不再涉及）。
     // 生命周期：main 栈上 router 先声明、event_monitor 后声明（析构相反），

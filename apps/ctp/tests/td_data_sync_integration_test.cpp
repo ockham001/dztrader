@@ -11,6 +11,7 @@
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
+#include <dztrader/date_time/date.h>
 #include <dztrader/tdstore/trade_db.h>
 #include <dztrader/trading/td_ingest.h>
 
@@ -693,6 +694,102 @@ TEST_F(TdDataSyncIntegrationTest, PositionUpsertThenRebuildThenClear) {
     ASSERT_TRUE(w.wait_flush(token, std::chrono::seconds(5)));
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 0);
     w.stop();
+}
+
+// ============================================================================
+// 场景 6b (#249): 旧会话残留写入的有界收敛窗 (契约 §7「旧会话残留写入」行, ADR 0045 决策 7)
+//
+// 形态: 两个 PersistWriter 同库并发 (跨进程旧会话残留写入的进程内等价模型 —— 各自的
+// 队列/线程独立, 唯一共享的是库文件). 旧会话已入队但未提交的任务可能晚于新会话的
+// 整组重建落地. 契约承诺的不是"不发生", 而是三条可验收性质:
+//   ① 不丢行、不产生键冲突 (唯一键 (account_id,date,instrument_id,direction) 下不会
+//      出现重复行, 也不会因为残留 upsert 报错而整批失败);
+//   ② 当日持仓会短暂回到旧值 —— 这正是收敛窗的来源, 用"新会话值被旧值覆盖"观测;
+//   ③ 下一次完整成功查询 (整组重建) 收敛回权威值 —— 收敛上界 = 一个持仓查询间隔.
+// 断言全部走 DB 内容; 时序用 flush 哨兵做确定性先后编排, 不用 sleep.
+// ============================================================================
+TEST_F(TdDataSyncIntegrationTest, StaleSessionWriteConvergesByNextRebuild) {
+    // `PersistTask::trading_day` 是 `DzDate`（距纪元天数），**不是** "YYYYMMDD" 字面量——
+    // 直接写 20260910 会被 format_date 解释成纪元后第 20260910 天（远未来），
+    // 断言 `date = '20260910'` 必然落空。这里由真实日期派生，日期文本随之确定。
+    const int32_t day = dztrader::Date::from_year_month_day(2026, 10, 9).days_since_epoch();
+    const std::string day_text = "20261009";
+    auto make_pos = [day](const char* inst, int64_t volume, uint64_t seq) {
+        DzPositionInfo p{};
+        std::strcpy(p.account_id, "acc1");
+        std::strcpy(p.instrument_id, inst);
+        std::strcpy(p.exchange_id, "CFFEX");
+        p.direction = DZ_DIRECTION_LONG;
+        p.volume = volume;
+        p.today_volume = volume;
+        p.yd_volume = 0;
+        p.price = 3900.0;
+        p.date = day;
+        p.seq = seq;
+        return p;
+    };
+
+    // 旧会话: 自己一条 Writer (独立队列 + 独立线程, 等价于旧进程已入队未提交).
+    PersistWriter stale(db_path_, "dztd_test");
+    stale.open();
+    stale.start_writer();
+
+    // 新会话: 另一条 Writer, 同一账户同一交易日.
+    PersistWriter fresh(db_path_, "dztd_test");
+    fresh.open();
+    fresh.start_writer();
+
+    // 1) 旧会话先落一行旧值 (volume=9), 作为"残留写入"的来源.
+    stale.enqueue(PersistTask{.kind = PersistTask::Kind::Position,
+                              .data = std::vector<DzPositionInfo>{make_pos("IF2506", 9, 20)},
+                              .account_id = "acc1",
+                              .trading_day = day});
+    const uint64_t stale_token = stale.enqueue_flush_signal();
+    ASSERT_TRUE(stale.wait_flush(stale_token, std::chrono::seconds(5)));
+    ASSERT_EQ(scalar_int("SELECT volume FROM positions WHERE instrument_id='IF2506'"), 9);
+
+    // 2) 新会话的整组重建落地: IF2506=2 + rb2510=4 (权威截面).
+    fresh.enqueue(PersistTask{
+        .kind = PersistTask::Kind::PositionRebuild,
+        .data = std::vector<DzPositionInfo>{make_pos("IF2506", 2, 30), make_pos("rb2510", 4, 31)},
+        .account_id = "acc1",
+        .trading_day = day});
+    const uint64_t fresh_token = fresh.enqueue_flush_signal();
+    ASSERT_TRUE(fresh.wait_flush(fresh_token, std::chrono::seconds(5)));
+    ASSERT_EQ(scalar_int("SELECT volume FROM positions WHERE instrument_id='IF2506'"), 2);
+    ASSERT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 2);
+
+    // 3) 旧会话的残留 upsert 迟到落地 (同键覆盖 → 当日回到旧值; 无键冲突、无重复行).
+    stale.enqueue(PersistTask{.kind = PersistTask::Kind::Position,
+                              .data = std::vector<DzPositionInfo>{make_pos("IF2506", 9, 21)},
+                              .account_id = "acc1",
+                              .trading_day = day});
+    const uint64_t late_token = stale.enqueue_flush_signal();
+    ASSERT_TRUE(stale.wait_flush(late_token, std::chrono::seconds(5)));
+
+    // 收敛窗内的可观测量: IF2506 回到旧值 9; 但仍是 2 行 (无重复键、rb2510 未被误删).
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE instrument_id='IF2506'"), 9);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 2);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE instrument_id='rb2510'"), 1);
+
+    // 4) 下一次完整成功查询的整组重建 → 收敛回权威值 (不变的行沿用原 seq, 变更行取新 seq).
+    fresh.enqueue(PersistTask{
+        .kind = PersistTask::Kind::PositionRebuild,
+        .data = std::vector<DzPositionInfo>{make_pos("IF2506", 2, 40), make_pos("rb2510", 4, 31)},
+        .account_id = "acc1",
+        .trading_day = day});
+    const uint64_t converge_token = fresh.enqueue_flush_signal();
+    ASSERT_TRUE(fresh.wait_flush(converge_token, std::chrono::seconds(5)));
+
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE instrument_id='IF2506'"), 2);
+    EXPECT_EQ(scalar_int("SELECT seq FROM positions WHERE instrument_id='IF2506'"), 40);
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE instrument_id='rb2510'"), 4);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 2);
+    // 跨日: 历史交易日行不被任何一轮重建影响.
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date <> '" + day_text + "'"), 0);
+
+    stale.stop();
+    fresh.stop();
 }
 
 // ============================================================================

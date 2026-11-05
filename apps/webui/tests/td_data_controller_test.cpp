@@ -11,6 +11,8 @@
 #include "fake_data_change_notifier.h"
 #include "td_domain_service.h"
 #include "td_orders_query.h"
+#include "td_positions_query.h"
+#include "td_position_row_writer.h"
 #include "td_stats_query.h"
 #include "td_trade_row_writer.h"
 #include "td_trades_query.h"
@@ -56,6 +58,7 @@ protected:
     std::shared_ptr<TdDomainService> domain_;
     std::shared_ptr<TdOrdersQuery> query_;
     std::shared_ptr<TdTradesQuery> trades_query_;
+    std::shared_ptr<TdPositionsQuery> positions_query_;
     std::shared_ptr<TdCtrl> ctrl_;
 
     void SetUp() override {
@@ -66,12 +69,14 @@ protected:
         domain_->set_trade_db_path_provider([this]() { return db_path_; });
         query_ = std::make_shared<TdOrdersQuery>([this]() { return db_path_; }, 200);
         trades_query_ = std::make_shared<TdTradesQuery>([this]() { return db_path_; }, 200);
+        positions_query_ = std::make_shared<TdPositionsQuery>([this]() { return db_path_; }, 200);
         // 读端点不需要 Repository（认证在 JWT advice 层）；nullptr 与生产许可一致。
-        ctrl_ = std::make_shared<TdCtrl>(nullptr, domain_, query_, trades_query_);
+        ctrl_ = std::make_shared<TdCtrl>(nullptr, domain_, query_, trades_query_, positions_query_);
     }
 
     void TearDown() override {
         ctrl_.reset();
+        positions_query_.reset();
         trades_query_.reset();
         query_.reset();
         domain_.reset();
@@ -130,6 +135,22 @@ protected:
         ASSERT_TRUE(error.empty()) << error;
     }
 
+    /// 一条持仓（真 schema；列清单来自共享夹具 `td_position_row_writer.h`）。
+    void insert_position(const std::string& account_id,
+                         const std::string& instrument_id,
+                         int volume,
+                         uint64_t seq) {
+        dztrader::test::TdPositionRowSeed seed;
+        seed.account_id = account_id;
+        seed.instrument_id = instrument_id;
+        seed.volume = volume;
+        seed.today_volume = volume;
+        seed.yd_volume = 0;
+        seed.seq = seq;
+        const std::string error = dztrader::test::insert_td_position_row(db_path_, seed);
+        ASSERT_TRUE(error.empty()) << error;
+    }
+
     void ready(const std::string& account_id, int32_t date) {
         DzAccountStatus status{};
         dztrader::copy_string(status.account_id, account_id.c_str(), true);
@@ -177,6 +198,21 @@ protected:
         drogon::HttpResponsePtr captured;
         ctrl_->get_trades(req,
                           [&captured](const drogon::HttpResponsePtr& resp) { captured = resp; });
+        return captured;
+    }
+
+    /// `GET /api/td/positions`（真 handler 直调，与 invoke 同型）。
+    drogon::HttpResponsePtr invoke_positions(const std::map<std::string, std::string>& query = {}) {
+        auto req = drogon::HttpRequest::newHttpRequest();
+        req->setMethod(drogon::Get);
+        req->setPath("/api/td/positions");
+        for (const auto& [key, value] : query) {
+            req->setParameter(key, value);
+        }
+        req->getAttributes()->insert("user_id", std::string("admin"));
+        drogon::HttpResponsePtr captured;
+        ctrl_->get_positions(req,
+                             [&captured](const drogon::HttpResponsePtr& resp) { captured = resp; });
         return captured;
     }
 
@@ -280,7 +316,7 @@ TEST_F(TdDataControllerTest, EmptyItemsWhenNoOnlineAccounts) {
 
 TEST_F(TdDataControllerTest, DegradesInsteadOf5xxWhenNotWired) {
     // 装配缺失（domain/query 为空）：契约 §2.9.8 不上 5xx
-    auto ctrl = std::make_shared<TdCtrl>(nullptr, nullptr, nullptr, nullptr);
+    auto ctrl = std::make_shared<TdCtrl>(nullptr, nullptr, nullptr, nullptr, nullptr);
     drogon::HttpResponsePtr captured;
     ctrl->get_orders(request(),
                      [&captured](const drogon::HttpResponsePtr& resp) { captured = resp; });
@@ -357,7 +393,7 @@ TEST_F(TdDataControllerTest, StatsReturnsNotReadyWhenQueryNotInjected) {
 
 TEST_F(TdDataControllerTest, StatsReturnsNotReadyWhenDomainNotWired) {
     // 装配缺失（domain 为空）：200 降级而不是 5xx（契约 rest §2.9.8 精神）。
-    auto ctrl = std::make_shared<TdCtrl>(nullptr, nullptr, nullptr, nullptr);
+    auto ctrl = std::make_shared<TdCtrl>(nullptr, nullptr, nullptr, nullptr, nullptr);
     auto req = drogon::HttpRequest::newHttpRequest();
     req->setMethod(drogon::Get);
     req->setPath("/api/td/stats");
@@ -507,7 +543,7 @@ TEST_F(TdDataControllerTest, TradesEmptyItemsWhenNoOnlineAccounts) {
 }
 
 TEST_F(TdDataControllerTest, TradesDegradesInsteadOf5xxWhenNotWired) {
-    auto ctrl = std::make_shared<TdCtrl>(nullptr, domain_, query_, nullptr);
+    auto ctrl = std::make_shared<TdCtrl>(nullptr, domain_, query_, nullptr, positions_query_);
     auto req = drogon::HttpRequest::newHttpRequest();
     req->setMethod(drogon::Get);
     req->setPath("/api/td/trades");
@@ -541,6 +577,99 @@ TEST_F(TdDataControllerTest, OrdersAndTradesEndpointsAreIndependent) {
     ASSERT_FALSE(orders_page["next_cursor"].is_null());
     const auto cross =
         invoke_trades({{"limit", "1"}, {"cursor", orders_page["next_cursor"].get<std::string>()}});
+    ASSERT_NE(cross, nullptr);
+    EXPECT_EQ(cross->getStatusCode(), drogon::k400BadRequest);
+}
+
+// ===== GET /api/td/positions（契约 rest §2.9.1/§2.9.2/§2.9.4/§2.9.8）=====
+
+TEST_F(TdDataControllerTest, PositionsReturnsOfflineAccountsToo) {
+    create_db();
+    // ACC2 从不 Ready（离线），但库里有持仓行 → 必须出现在持仓列表（契约 §2.9.1）。
+    insert_position("ACC1", "rb2601", 2, 1);
+    insert_position("ACC2", "rb2610", 3, 2);
+    ready("ACC1", day_epoch(2026, 10, 9));
+
+    const auto resp = invoke_positions();
+    ASSERT_NE(resp, nullptr);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    const auto body = body_of(resp);
+    EXPECT_TRUE(body["available"].get<bool>());
+    EXPECT_EQ(body["items"].size(), 2U);
+}
+
+TEST_F(TdDataControllerTest, PositionsRowHasNoSortKeyAndCarriesAnchorDate) {
+    create_db();
+    insert_position("ACC1", "rb2601", 2, 7);
+    ready("ACC1", day_epoch(2026, 10, 9));
+
+    const auto body = body_of(invoke_positions());
+    ASSERT_EQ(body["items"].size(), 1U);
+    const auto& row = body["items"][0];
+    EXPECT_EQ(row["account_id"].get<std::string>(), "ACC1");
+    EXPECT_EQ(row["instrument_id"].get<std::string>(), "rb2601");
+    EXPECT_EQ(row["date"].get<std::string>(), "20261009") << "row date is the account anchor day";
+    EXPECT_EQ(row["direction"].get<std::string>(), "Long");
+    EXPECT_EQ(row["volume"].get<int>(), 2);
+    EXPECT_EQ(row["seq"].get<uint64_t>(), 7U);
+    EXPECT_FALSE(row.contains("sort_key")) << "positions have no time-ordered sort key";
+}
+
+TEST_F(TdDataControllerTest, PositionsReturns400OnInvalidParameters) {
+    create_db();
+    insert_position("ACC1", "rb2601", 2, 1);
+    ready("ACC1", day_epoch(2026, 10, 9));
+    const std::map<std::string, std::map<std::string, std::string>> bad_cases = {
+        {"limit zero", {{"limit", "0"}}},
+        {"limit too large", {{"limit", "1001"}}},
+        {"malformed cursor", {{"cursor", "not-a-cursor"}}},
+    };
+    for (const auto& [label, query] : bad_cases) {
+        const auto resp = invoke_positions(query);
+        ASSERT_NE(resp, nullptr) << label;
+        EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest) << label;
+        EXPECT_EQ(body_of(resp).value("error", ""), "bad request") << label;
+    }
+}
+
+TEST_F(TdDataControllerTest, PositionsDegradesTo200WhenDatabaseMissing) {
+    ready("ACC1", day_epoch(2026, 10, 9));
+    const auto resp = invoke_positions();
+    ASSERT_NE(resp, nullptr);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
+    const auto body = body_of(resp);
+    EXPECT_FALSE(body["available"].get<bool>());
+    EXPECT_EQ(body["reason"].get<std::string>(), "not_found");
+    EXPECT_FALSE(body.contains("items"));
+}
+
+TEST_F(TdDataControllerTest, PositionsWithoutWiredQueryDegradesInsteadOf5xx) {
+    // 装配缺失（测试/异常装配）：读端点不上 5xx（契约 rest §2.9.8）——持仓的 contract
+    // 与委托/成交同型，用 query_failed 表达。
+    auto ctrl = std::make_shared<TdCtrl>(nullptr, domain_, query_, trades_query_, nullptr);
+    auto req = drogon::HttpRequest::newHttpRequest();
+    req->setMethod(drogon::Get);
+    req->setPath("/api/td/positions");
+    drogon::HttpResponsePtr captured;
+    ctrl->get_positions(req, [&captured](const drogon::HttpResponsePtr& resp) { captured = resp; });
+    ASSERT_NE(captured, nullptr);
+    EXPECT_EQ(captured->getStatusCode(), drogon::k200OK);
+    const auto body = body_of(captured);
+    EXPECT_FALSE(body.value("available", true));
+    EXPECT_EQ(body.value("reason", ""), "query_failed");
+}
+
+TEST_F(TdDataControllerTest, PositionsCursorIsRejectedByOrdersEndpoint) {
+    create_db();
+    for (int i = 0; i < 3; ++i) {
+        insert_position("ACC1", std::format("rb260{}", i), 2, static_cast<uint64_t>(i + 1));
+    }
+    ready("ACC1", day_epoch(2026, 10, 9));
+    const auto page = body_of(invoke_positions({{"limit", "1"}}));
+    ASSERT_FALSE(page["next_cursor"].is_null());
+
+    // 持仓游标拿到委托端点 → 作用域不符 → 400（契约 rest §2.9.2）。
+    const auto cross = invoke({{"limit", "1"}, {"cursor", page["next_cursor"].get<std::string>()}});
     ASSERT_NE(cross, nullptr);
     EXPECT_EQ(cross->getStatusCode(), drogon::k400BadRequest);
 }

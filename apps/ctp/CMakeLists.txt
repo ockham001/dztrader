@@ -282,4 +282,16 @@ foreach(testfile ${TD_CTP_TESTS})
             td/td_day_load.cpp)
         target_link_libraries(dztd_ctp_${testname} PRIVATE dztdstore dztrading)
     endif()
+    # td_position_lifecycle_test 需要**真实的 AccountSession**：持仓快照生命周期的决策点
+    # 在 on_rsp_qry_investor_position → apply_position_query 里，只链 Writer 的目标测不到。
+    # 不连柜台（不调 open()），只喂查询响应分支；登录链本身由 td_login_finalize_test 覆盖。
+    if(testname STREQUAL "td_position_lifecycle_test")
+        target_sources(dztd_ctp_${testname} PRIVATE
+            td/td_account_session.cpp td/td_account_session_pure.cpp td/td_spi.cpp
+            td/td_ctp_mapping.cpp td/td_risk_gate.cpp td/td_offset_converter.cpp
+            td/td_position.cpp td/td_persist_writer.cpp td/td_persist_rows.cpp
+            td/td_report_filter.cpp td/td_day_load.cpp td/td_login_finalize.cpp)
+        target_link_libraries(dztd_ctp_${testname} PRIVATE
+            dztdstore dzshm dzshm_test_support dztd_ctp_api)
+    endif()
 endforeach()

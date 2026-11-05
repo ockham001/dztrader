@@ -565,6 +565,54 @@ export interface TdTradeDegradedResponse {
     reason: TdDegradedReason
 }
 
+// 持仓行（契约 rest §2.9.4；WS td_position_info 与 REST items 同一 schema；业务键 = account_id|instrument_id|direction；**没有 sort_key**，列表顺序 = 服务端 (account_id, instrument_id, direction) 升序）
+export interface TdPositionRow {
+    /** 账户标识 */
+    account_id: string
+    /** 该账户锚点日 YYYYMMDD（不是全局当前交易日；可能早于信封 trading_day） */
+    date: string
+    /** 合约代码 */
+    instrument_id: string
+    /** 交易所 ID */
+    exchange_id: string
+    direction: TdDirection
+    /** 总持仓（含今仓与昨仓） */
+    volume: number
+    /** 冻结量 */
+    frozen_volume: number
+    /** 今仓 */
+    today_volume: number
+    /** 昨仓 */
+    yd_volume: number
+    /** 持仓均价（double 全精度） */
+    price: number
+    /** 持仓均价显示小数位（契约 rest §2.9.6） */
+    price_decimals: number
+    /** 不透明版本号：合并用，不显示、不参与业务（契约 rest §2.9.6） */
+    seq: number
+}
+
+// GET /api/td/positions 可用响应信封（契约 rest §2.9.2，与委托/成交同形；items 覆盖全部已登记账户含离线）
+export interface TdPositionListResponse {
+    /** true = 交易库可读 */
+    available: boolean
+    /** 当前交易日 YYYYMMDD；无在线账户时 null（持仓行自身的 date 是各账户锚点日，两者不同） */
+    trading_day: string | null
+    /** 在线（Ready）账户集合；顺序不承诺（不是持仓的账户全集，见契约 webui-ws §5 第 11 条） */
+    online_accounts: string[]
+    /** 持仓行（volume=0 的行不返回，契约 rest §2.9.1 空语义）；空数组 = 无数据（不是错误） */
+    items: TdPositionRow[]
+    /** 下一页游标；null = 没有更多 */
+    next_cursor: string | null
+}
+
+// GET /api/td/positions 降级响应（200 + available=false，契约 rest §2.9.8）
+export interface TdPositionDegradedResponse {
+    /** false = 降级（响应只有 available 与 reason） */
+    available: boolean
+    reason: TdDegradedReason
+}
+
 // 建连补发载荷（契约 webui-ws §2.5 td_recent）；无事件时仍发送空数组
 export interface TdRecentPayload {
     /** 各在线账户补发环内容，按入环先后从旧到新；不同账户之间顺序不承诺 */

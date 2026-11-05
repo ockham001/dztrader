@@ -95,6 +95,26 @@
 - **漂移自愈**：Ready 后每 `qry_position_interval_s`（默认 60s，可配置）重查一次（统一 TimerQueue 定时，不另起轮询线程，符合"无轮询"原则）；查询在途窗口的成交以快照覆盖为准，≤ 一个查询间隔收敛（近似语义见《帧契约：TD 数据同步》）。周期查询的失败处理与登录收尾链解耦：仅记日志/等下一轮，不推进 finalizer、不触发资金查询；登录查询失败期的补查沿用既有固定 60s 降级路径。
 - **下单**：本波不接入 OffsetConverter（SHFE 拆分/AUTO/父子单聚合回报留待专项），`DZ_POSITION_EFFECT_AUTO` 显式拒绝；风控上下文填入该合约真实多空持仓与合约 `price_tick`（现规则实际使用 `price_tick`）。
 
+### 快照生命周期（#249 锁定的行为）
+
+下列行为由 `apps/ctp/tests/td_persist_writer_test.cpp`（写入器层）、`td_data_sync_integration_test.cpp`（Writer 时序 + 收敛窗）与 `td_position_lifecycle_test.cpp`（**会话层**：真 `AccountSession` + 真 SQLite + 真 persist 线程）断言**库内容**覆盖，是《帧契约：TD 数据同步》§3 / §7 与 ADR 0045 / ADR 0046 的可执行形态（改坏任一条应红）：
+
+- **登录不清零、不预置 0**：新会话登录后、首个完整成功持仓查询之前，`positions` 当日**没有行**，上一次已知快照（前一日行，含跨会话 / 删户重加 / 换柜台）原样保留；不写 `volume=0` 占位行。
+- **查询失败不改表**：持仓查询 `is_last` 带 `ErrorID` 时，当日既有行的 `seq` 与内容完全不变（既不删也不改），资金行同样不写——锚点日停在上一成功日（ADR 0046）。
+- **整组原子替换的作用域 = 该账户 + 当日**：完整成功查询在单事务内删该账户当日行 + 写快照组；其他账户的当日行、同账户的历史交易日行都不动。响应里消失的合约行被删除（不产生幽灵持仓）。
+- **已就绪后的周期查询无差异不重建**：`position_baseline_ready_` 之后，无差异且无消失的一轮查询不产生 `PositionRebuild`（DB 各行的 `seq` 不变，即无新写入）。
+- **`volume=0` 增量可查**：全平时日内增量走单行 upsert，落库是**存在的一行 `volume=0`**（不是跳过、不是删行）——「当日全平」与「从未成功查询过」因此在库里可区分。
+- **日切 today→yd 只碰当日行**：日切后当日行落成 `today_volume=0 / yd_volume=原今仓`，上一交易日的行保持它自己当时的今昨拆分（历史行不可变）。
+- **删户重加 / 盘中换柜台**：同一 `account_id` 二次登录后再次整组重建，当日结果是**整组替换**——无重复行（唯一键）、不残留上一轮独有的合约、历史交易日行不变。
+
+> **测试边界（`td_position_lifecycle_test`）**：该目标驱动的是**持仓查询响应分支**（`on_rsp_qry_investor_position → apply_position_query`），不覆盖「登录链本身」（合约加载 → 结算确认 → 收尾 → Ready）——那条链在 `req_settlement_confirm` 里无条件解引用 `api_`，而 `api_` 只能由 `open()` 创建真实 `CThostFtdcTraderApi`（需连柜台）。登录链的 flush/Ready 语义由 `td_login_finalize_test`（纯逻辑）与 `td_data_sync_integration_test`（Writer 时序）覆盖。两条合起来即完整链路，不重复也不留缺口。
+
+### 已知限制（持仓）
+
+- **今昨冻结未拆分落库**：**schema v1 的 `positions` 只有 `frozen_volume` 单列**。td 内存里冻结是 `frozen_td` / `frozen_yd` 拆分维护的（今仓优先、溢出到昨），但落库与 `POSITION_INFO` 帧只带合计值；读端（REST / WebUI）只看得到总冻结，无法分别展示今/昨冻结。窗口 = 本轮 schema。
+- **旧会话残留写入的有界收敛窗**：跨进程旧会话已入队未提交的 persist 任务可能晚于新会话整组替换落地 → 当日持仓短暂回到旧值，由下一次完整成功查询收敛，**上界 = 一个 `qry_position_interval_s`（默认 60s）**；**不丢行、不产生键冲突**（不变量与理由见《帧契约：TD 数据同步》§7 与 ADR 0045 决策 7）。
+- 其余持仓准确性边界（查询在途窗口的成交以快照覆盖为准、其他终端交易的收敛期、资金盘中不刷新）见《帧契约：TD 数据同步》§7。
+
 ## 持久化（trade.db）
 
 交易数据（委托 / 成交 / 持仓 / 资金，以及暂留的合约字典）由本进程异步写入 `$DZTRADER_HOME/db/trade.db`。**`trade.db` 不是交易真相源**（真相在柜台回报与 td 内存态）：持久化失败只降级，不阻塞交易、帧推送与 WebSocket。schema 与业务键见 [ADR 0041](../adr/0041-sqlite-only-trade-store-schema-v1.md)，失败策略见 [ADR 0042](../adr/0042-persist-failure-backpressure-and-retry.md)，账户快照生命周期见 [ADR 0045](../adr/0045-trading-account-identity-lifecycle-and-accuracy.md)。

@@ -592,6 +592,52 @@
         "reason": { "$ref": "#/$defs/TdDegradedReason" }
       }
     },
+    "TdPositionRow": {
+      "type": "object",
+      "required": ["account_id", "date", "instrument_id", "exchange_id", "direction", "volume", "frozen_volume", "today_volume", "yd_volume", "price", "price_decimals", "seq"],
+      "description": "持仓行（契约 rest §2.9.4；WS td_position_info 与 REST items 同一 schema；业务键 = account_id|instrument_id|direction；**没有 sort_key**，列表顺序 = 服务端 (account_id, instrument_id, direction) 升序）",
+      "properties": {
+        "account_id": { "type": "string", "description": "账户标识" },
+        "date": { "type": "string", "description": "该账户锚点日 YYYYMMDD（不是全局当前交易日；可能早于信封 trading_day）" },
+        "instrument_id": { "type": "string", "description": "合约代码" },
+        "exchange_id": { "type": "string", "description": "交易所 ID" },
+        "direction": { "$ref": "#/$defs/TdDirection" },
+        "volume": { "type": "integer", "description": "总持仓（含今仓与昨仓）" },
+        "frozen_volume": { "type": "integer", "description": "冻结量" },
+        "today_volume": { "type": "integer", "description": "今仓" },
+        "yd_volume": { "type": "integer", "description": "昨仓" },
+        "price": { "type": "number", "description": "持仓均价（double 全精度）" },
+        "price_decimals": { "type": "integer", "description": "持仓均价显示小数位（契约 rest §2.9.6）" },
+        "seq": { "type": "integer", "description": "不透明版本号：合并用，不显示、不参与业务（契约 rest §2.9.6）" }
+      }
+    },
+    "TdPositionListResponse": {
+      "type": "object",
+      "required": ["available", "trading_day", "online_accounts", "items", "next_cursor"],
+      "description": "GET /api/td/positions 可用响应信封（契约 rest §2.9.2，与委托/成交同形；items 覆盖全部已登记账户含离线）",
+      "properties": {
+        "available": { "type": "boolean", "description": "true = 交易库可读" },
+        "trading_day": {
+          "description": "当前交易日 YYYYMMDD；无在线账户时 null（持仓行自身的 date 是各账户锚点日，两者不同）",
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "online_accounts": { "type": "array", "items": { "type": "string" }, "description": "在线（Ready）账户集合；顺序不承诺（不是持仓的账户全集，见契约 webui-ws §5 第 11 条）" },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/TdPositionRow" }, "description": "持仓行（volume=0 的行不返回，契约 rest §2.9.1 空语义）；空数组 = 无数据（不是错误）" },
+        "next_cursor": {
+          "description": "下一页游标；null = 没有更多",
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      }
+    },
+    "TdPositionDegradedResponse": {
+      "type": "object",
+      "required": ["available", "reason"],
+      "description": "GET /api/td/positions 降级响应（200 + available=false，契约 rest §2.9.8）",
+      "properties": {
+        "available": { "type": "boolean", "description": "false = 降级（响应只有 available 与 reason）" },
+        "reason": { "$ref": "#/$defs/TdDegradedReason" }
+      }
+    },
     "TdRecentPayload": {
       "type": "object",
       "required": ["events"],

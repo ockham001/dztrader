@@ -52,4 +52,22 @@ describe('tdApi 交易数据端点（契约 rest §2.9）', () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe('/api/td/orders?limit=200')
   })
+
+  it('getPositions 打 /api/td/positions（不是委托/成交端点）', async () => {
+    const fetchMock = stubFetch()
+
+    await tdApi.getPositions()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/td/positions')
+  })
+
+  it('getPositions 的 query 编码与 getOrders/getTrades 同源（limit/cursor/accounts）', async () => {
+    const fetchMock = stubFetch()
+
+    await tdApi.getPositions({ limit: 200, cursor: 'c1', accounts: [' acc_b ', '', 'acc_a'] })
+
+    expect(fetchMock.mock.calls[0][0])
+      .toBe('/api/td/positions?limit=200&cursor=c1&accounts=acc_b%2Cacc_a')
+  })
 })

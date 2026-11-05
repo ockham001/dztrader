@@ -1,6 +1,11 @@
 import { api } from './client'
 import type { TdListQuery } from '@/composables/tdListStore'
-import type { TdOrdersResponse, TdStatsResponse, TdTradesResponse } from '@/types/api'
+import type {
+  TdOrdersResponse,
+  TdPositionsResponse,
+  TdStatsResponse,
+  TdTradesResponse,
+} from '@/types/api'
 
 /**
  * 交易数据列表查询参数（契约 rest §2.9.2）：委托与成交**同形**，类型单源在
@@ -44,6 +49,15 @@ export const tdApi = {
    */
   getTrades: (query: TdListQuery = {}) =>
     api.get<TdTradesResponse>(`/api/td/trades${toQueryString(query)}`),
+  /**
+   * 持仓列表（契约 rest §2.9.1/§2.9.2/§2.9.4）：信封与委托/成交**同形**，分页参数编码也与
+   * 它们同源（共用 `toQueryString`）。差异在口径（不是签名）：
+   * - 覆盖**全部已登记账户（含离线）**，`accounts` 过滤作用于该全集（缺省 = 全部）；
+   * - 行 `date` 是各账户**锚点日**，不是信封 `trading_day`；
+   * - 行没有 `sort_key`，列表顺序 = 服务端 `(account_id, instrument_id, direction)` 升序。
+   */
+  getPositions: (query: TdListQuery = {}) =>
+    api.get<TdPositionsResponse>(`/api/td/positions${toQueryString(query)}`),
   /**
    * 统计计数器（契约 rest §2.9.5）：**无参数**——stats 是全局口径（全部在线账户 + 当前交易日），
    * 不接受 accounts 过滤，也不是列表（无 limit/cursor）。降级同样是 200 + available:false
