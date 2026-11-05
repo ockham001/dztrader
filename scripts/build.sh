@@ -18,11 +18,12 @@ usage() {
     echo "  无参数时默认 release；--target 可重复，累积后一次透传给 cmake --build"
 }
 
-# 取 flag 的参数；缺参数时报用法。${2:?} 的 bash 内建报错只有 "parameter null or
-# not set"、不含用法，且覆盖式赋值让重复 flag 静默丢弃前值（#281/#250 门禁假绿）。
-require_value() {  # <实际剩余参数个数 $#> <flag 名>
-    if [ "$1" -lt 2 ]; then
-        echo "error: $2 needs a value" >&2
+# 取 flag 的参数；缺参数/空值时报用法。${2:?} 的 bash 内建报错只有 "parameter null
+# or not set"、不含用法，且覆盖式赋值让重复 flag 静默丢弃前值（#281/#250 门禁假绿）。
+# 空值也要拒（`--target ""` 会让 cmake 收到空 target）：旧 `${2:?}` 同样拒绝空值。
+require_value() {  # <实际剩余参数个数 $#> <flag 名> <值>
+    if [ "$1" -lt 2 ] || [ -z "${3:-}" ]; then
+        echo "error: $2 needs a non-empty value" >&2
         usage >&2
         exit 2
     fi
@@ -64,8 +65,8 @@ TARGETS=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        -c|--config) require_value $# "--config"; CONFIG="$2"; shift 2 ;;
-        -t|--target) require_value $# "--target"; TARGETS+=("$2"); shift 2 ;;
+        -c|--config) require_value $# "--config" "${2:-}"; CONFIG="$2"; shift 2 ;;
+        -t|--target) require_value $# "--target" "${2:-}"; TARGETS+=("$2"); shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "error: unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac

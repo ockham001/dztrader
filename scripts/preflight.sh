@@ -258,6 +258,10 @@ check_frontend() {
     # 报差异（#281 实测 rc：未暂存 1 / 已暂存 1 / 干净 0），等于要求先提交才能跑门禁。
     # 幂等性判据只问「再生成一次会不会改动文件」，与暂存、提交、HEAD 位置全都无关。
     local types_file="$fe/src/types/generated.ts"
+    if [ ! -f "$types_file" ]; then
+        echo "error: generated.ts missing; run ./scripts/build.sh to restore it" >&2
+        return 1
+    fi
     local hash_before hash_after
     hash_before="$(git hash-object -- "$types_file")"
     (

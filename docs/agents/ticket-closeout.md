@@ -58,7 +58,7 @@
 ./scripts/gate.sh test --tail 8 --test-name <regex>
 ```
 
-`gate.sh` 只解析自己的 `--tail N`，其余参数原样透传：`build.sh` 支持 `-t|--target`（→ `cmake --build --target`）、`test.sh` 支持 `-t|--test-name <regex>`（→ `ctest -R`）与 `--list`（→ `ctest -N`，只读列出用例名，不取构建锁）。**票内并行期间用 `--target` / `--test-name` 迭代；所有写作用域完成后才跑全量 build/test**——build 树中间态（他人在途文件未收敛）下的全量构建会因别人的半成品而红，纯浪费（#243/#244/#245 门禁墙钟 13–23 min，其中多轮全量 build 落在写作用域未完成期间）。`--target` / `--test-name` 都**可重复**，重复值累积后一次透传（#281；修复前是覆盖式赋值，只留最后一个且退出码 0，造成门禁假绿）。
+`gate.sh` 只解析自己的 `--tail N`，其余参数原样透传：`build.sh` 支持 `-t|--target`（→ `cmake --build --target`）、`test.sh` 支持 `-t|--test-name <regex>`（→ `ctest -R`）与 `--list`（→ `ctest -N`，只读列出用例名，不取构建锁）。**票内并行期间用 `--target` / `--test-name` 迭代；所有写作用域完成后才跑全量 build/test**——build 树中间态（他人在途文件未收敛）下的全量构建会因别人的半成品而红，纯浪费（#243/#244/#245 门禁墙钟 13–23 min，其中多轮全量 build 落在写作用域未完成期间）。`--target` / `--test-name` 都**可重复**，重复值累积后一次透传（#281；修复前是覆盖式赋值，只留最后一个且退出码 0，造成门禁假绿）。**唯一例外是 `--list`**：它直通 `ctest -N`，不落 gate 日志、不写 `last-status`（它不是门禁判定）。
 
 定向迭代的两个高频踩坑（#249–#251 合计浪费 10 次 gate 调用）：
 
@@ -195,7 +195,7 @@ AGENTS §五「本机沙箱」的细节都放在这里（AGENTS 只留指针，�
 - **CI 绿就关 issue / PR 未合并就关 issue** → 下游卡住、PR 悬空与冲突返工（#91/#92）。
 - **共享工作区留在 feature 分支 / 长期不提交的文档批次占着 `git status`** → 阻塞并行会话（#91→#92；ADR 0026–0030 从 10-22 挂到 10-23）。
 - **逐条 push review 修复** → 每次推送排队/取消 ≈35–40 分钟 CI（#93 取消 3 个 run）。
-- 门禁/等待命令接 `| tail`、`| head` → 退出码被管道吞掉，失败记成假绿（#75 wait-ci 超时、#81 ninja 失败）。规则与正确用法见本文 §2。
+- 门禁命令接 `| tail`、`| head` → 退出码被管道吞掉；结论本身仍可从 verdict 行 / `.cache/gate/last-status` 读到（`wait-ci.sh` 无兜底，别接）。判绿口径见本文 §2。
 - 用 bash `sleep` 等异步子代理 → 白等且触发重复工具提醒（#78 19 次 5028s、#81 10 次 2400s）；子代理完成会自动通知。
 - 省略 issue close → 人工追问，下游 `blocked_by` 卡住。
 - 共享工作区做并行票 → 提交父节点带上另一条线，push 时一并发布。

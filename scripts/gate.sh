@@ -24,10 +24,9 @@
 #   - 成功打末尾 8 行（`--tail N` 改为 N 行）；失败打错误行 + 末尾 max(N,30) 行，
 #     并**原样返回被包装命令的退出码**；
 #   - `--tail N` 由 gate.sh 自己解析，不传给被包装命令；要短输出就用它。
-#   - 门禁命令接 `| tail` / `| head` 只会丢退出码（#75/#81 假绿）；但 verdict 行固定
-#     在输出末尾、结果同时写 `.cache/gate/last-status`，所以**结论仍可见**：判绿看
-#     `gate: OK` 行或 last-status，不要只看 shell 退出码（#281 复盘实测 83 次接管道、
-#     0 次假绿）。输出长度来自失败摘录 max(N,30)，与是否接管道无关——别去调 --tail 默认值。
+#   - 门禁命令接 `| tail` / `| head` 只会丢退出码；verdict 行固定末尾 + 结果写
+#     `.cache/gate/last-status`，所以结论仍可见。判绿口径详见
+#     docs/agents/ticket-closeout.md §2（唯一详述处，避免多处漂移）。
 #   - 最终 verdict 行固定打在输出**末尾**（`| tail -2` 也可见）；每次结果原子写入
 #     `.cache/gate/last-status`（cmd/rc/head/time），pre-push 对「当前 HEAD 上最近一次
 #     门禁失败」直接拦截（issue #190；应急逃生 `DZ_ALLOW_RED_GATE=1`）。

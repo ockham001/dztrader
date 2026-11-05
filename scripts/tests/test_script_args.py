@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # （preflight 与 build 并行是常态，等锁会让只读门禁被无关构建拖住）。
 _FAKE_TOOL = """#!/usr/bin/env sh
 kind="$(basename "$0")"
-printf '%s\\n' "$@" > "${DZ_FAKE_DIR:?}/$kind.log"
+printf '%s\\n' "$@" >> "${DZ_FAKE_DIR:?}/$kind.log"
 exit 0
 """
 
@@ -77,6 +77,9 @@ def _run(script: str, args: list[str], fake_dir: Path) -> subprocess.CompletedPr
     env["DZ_FAKE_DIR"] = str(fake_dir)
     # 指向临时目录：build.sh 的 ~/.npm 可写性探测因此整段跳过（不碰真实 HOME）。
     env["npm_config_cache"] = str(fake_dir / "npm")
+    # 假 flock 不取真实锁：禁止 test.sh 清 test_home，否则会抹掉并行真实测试的
+    # DZTRADER_HOME（#281 审查 B1）。
+    env["DZ_SKIP_TEST_HOME_RESET"] = "1"
     return subprocess.run(
         [str(REPO_ROOT / "scripts" / script), *args],
         capture_output=True,
@@ -179,6 +182,30 @@ def case_build_unknown_flag(fake_dir: Path) -> CaseResult:
     return case
 
 
+def case_build_short_flags(fake_dir: Path) -> CaseResult:
+    case = CaseResult("build: short flags -c/-t")
+    result = _run("build.sh", ["-c", "debug", "-t", "dzx"], fake_dir)
+    argv = _read_argv(fake_dir, "cmake")
+    case.check(result.returncode == 0, f"rc={result.returncode} stderr={result.stderr!r}")
+    case.check(
+        _subsequence(argv, ["--build", "--preset", "linux-debug", "--target", "dzx"]),
+        f"unexpected cmake argv: {argv}",
+    )
+    return case
+
+
+def case_build_empty_value(fake_dir: Path) -> CaseResult:
+    case = CaseResult("build: empty --target value -> usage error")
+    _usage_failure(_run("build.sh", ["--target", ""], fake_dir), case, "--target")
+    return case
+
+
+def case_build_empty_config_value(fake_dir: Path) -> CaseResult:
+    case = CaseResult("build: empty --config value -> usage error")
+    _usage_failure(_run("build.sh", ["--config", ""], fake_dir), case, "--config")
+    return case
+
+
 # ---- test.sh 用例 ---------------------------------------------------------
 
 
@@ -261,15 +288,38 @@ def case_test_unknown_flag(fake_dir: Path) -> CaseResult:
     return case
 
 
+def case_test_short_flags(fake_dir: Path) -> CaseResult:
+    case = CaseResult("test: short flags -L/-t")
+    result = _run("test.sh", ["-L", "slow", "-t", "TdConfigTest"], fake_dir)
+    argv = _read_argv(fake_dir, "ctest")
+    case.check(result.returncode == 0, f"rc={result.returncode} stderr={result.stderr!r}")
+    case.check(
+        _subsequence(argv, ["--preset", "linux-release-slow", "-R", "TdConfigTest"]),
+        f"unexpected ctest argv: {argv}",
+    )
+    return case
+
+
+def case_test_empty_value(fake_dir: Path) -> CaseResult:
+    case = CaseResult("test: empty --test-name value -> usage error")
+    _usage_failure(_run("test.sh", ["--test-name", ""], fake_dir), case, "--test-name")
+    return case
+
+
 CASES = (
     case_build_single_target,
     case_build_multi_target,
     case_build_config_and_target,
+    case_build_short_flags,
+    case_build_empty_value,
+    case_build_empty_config_value,
     case_build_missing_value,
     case_build_missing_config_value,
     case_build_unknown_flag,
     case_test_single_name,
+    case_test_short_flags,
     case_test_multi_name,
+    case_test_empty_value,
     case_test_list,
     case_test_list_with_filter,
     case_test_missing_value,

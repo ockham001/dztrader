@@ -23,11 +23,12 @@ usage() {
     echo "  --list 只打印用例名（ctest -N），用于查 --test-name 该填什么"
 }
 
-# 取 flag 的参数；缺参数时报用法。${2:?} 的 bash 内建报错只有 "parameter null or
-# not set"、不含用法，且覆盖式赋值让重复 flag 静默丢弃前值（#281/#250 门禁假绿）。
-require_value() {  # <实际剩余参数个数 $#> <flag 名>
-    if [ "$1" -lt 2 ]; then
-        echo "error: $2 needs a value" >&2
+# 取 flag 的参数；缺参数/空值时报用法。${2:?} 的 bash 内建报错只有 "parameter null
+# or not set"、不含用法，且覆盖式赋值让重复 flag 静默丢弃前值（#281/#250 门禁假绿）。
+# 空值也要拒（`--test-name ""` 会退化成 `ctest -R ""` 跑全量）：旧 `${2:?}` 同样拒绝空值。
+require_value() {  # <实际剩余参数个数 $#> <flag 名> <值>
+    if [ "$1" -lt 2 ] || [ -z "${3:-}" ]; then
+        echo "error: $2 needs a non-empty value" >&2
         usage >&2
         exit 2
     fi
@@ -40,9 +41,9 @@ LIST=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        -c|--config) require_value $# "--config"; CONFIG="$2"; shift 2 ;;
-        -L|--label) require_value $# "--label"; LABEL="$2"; shift 2 ;;
-        -t|--test-name) require_value $# "--test-name"; TEST_NAMES+=("$2"); shift 2 ;;
+        -c|--config) require_value $# "--config" "${2:-}"; CONFIG="$2"; shift 2 ;;
+        -L|--label) require_value $# "--label" "${2:-}"; LABEL="$2"; shift 2 ;;
+        -t|--test-name) require_value $# "--test-name" "${2:-}"; TEST_NAMES+=("$2"); shift 2 ;;
         --list) LIST=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "error: unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -97,9 +98,16 @@ dz_acquire_build_lock "$(cd "$(dirname "$0")/.." && pwd)" "test" || exit 2
 # 测试 DZTRADER_HOME（.cache/test_home，由 CMakePresets.json 的 test-base 注入）
 # 每次运行前清空重建：上一轮残留的 shm meta 会让无关测试一起失败（#134）；
 # 在 SetUp 内自管临时 home 的测试不受影响。
+#
+# DZ_SKIP_TEST_HOME_RESET=1 只给脚本参数自测用（scripts/tests/test_script_args.py）：
+# selftest 在 PATH 注入假 flock 以绕开真实构建锁，此时若照旧清 test_home，就会抹掉
+# 并行的 `gate.sh test` 正在使用的 DZTRADER_HOME（#281 审查 B1——加锁本要防的正是
+# 这个互踩）。普通调用方不要设置该变量。
 TEST_HOME="$(cd "$(dirname "$0")/.." && pwd)/.cache/test_home"
-rm -rf "$TEST_HOME"
-mkdir -p "$TEST_HOME"
+if [ -z "${DZ_SKIP_TEST_HOME_RESET:-}" ]; then
+    rm -rf "$TEST_HOME"
+    mkdir -p "$TEST_HOME"
+fi
 
 # ctest 并行度（#136）：gtest_discover_tests 把每个用例注册为独立进程，-j 才能并行；
 # 用例级并发安全由「临时资源唯一化」保证（固定名目录会互踩，已全仓整改 + preflight lint 兜底）。

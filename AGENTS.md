@@ -206,7 +206,7 @@
 ### 本机沙箱（DSH）
 
 - **等待一律后台作业**：门禁 / CI / 子代理 / 任何 >60s 命令用 `run_in_background` 启动，需要结果时 `job_output(wait=true)`；**不要 `sleep` 轮询、不要前台空等**。CI 单次快照用 `./scripts/wait-ci.sh --status`（0 绿 / 1 红 / 2 错误 / 3 仍在跑）。实测代价：不看这条的票在 `sleep` 上花掉 10%–28% 墙钟（#162 1760s、#163 1985s），遵守的票只有 3s（#165）。
-- **门禁输出判绿**：给 `gate.sh` 接 `| tail` / `| head` 只丢退出码，verdict 行固定末尾且结果同时写 `.cache/gate/last-status`，**结论仍可见**——判绿看 `gate: OK` 行或 last-status，不要只看 shell 退出码；输出长度来自失败摘录 max(N,30)，与管道无关（别去调 `--tail` 默认值）。`wait-ci.sh` 例外：它本就静默、退出码即 CI 结论，不接管道。细节见 [ticket-closeout](docs/agents/ticket-closeout.md) §2。
+- **门禁判绿**：给 `gate.sh` 接 `| tail` / `| head` 只丢退出码，判绿看 `gate: OK` 行或 `.cache/gate/last-status`，不要只看 shell 退出码；`wait-ci.sh` 例外（退出码即 CI 结论，不接管道）。细节见 [ticket-closeout](docs/agents/ticket-closeout.md) §2（唯一详述处）。
 - 跨调用 `/tmp` 隔离、缓存回退、权限 preset、`.cache/handoff/` 约定见 [ticket-closeout](docs/agents/ticket-closeout.md) §2/§4/§8。
 
 ---
