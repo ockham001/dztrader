@@ -1,20 +1,22 @@
-#include <dztrader/tdstore/schema_dzdb.h>
+#include "td_schema.h"
 
 #include <deque>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include <dztrader/core/exception.h>
+#include <dztrader/error.h>
 #include <dztrader/tdstore/schema_catalog.h>
 
-namespace dztrader::tdstore {
+namespace dztrader::db {
 
 namespace {
 
-/// dzdb 投影的稳定存储：string_view 指向 deque 元素（push_back 不失效既有引用）。
+/// 投影的稳定存储：string_view 指向 deque 元素（push_back 不失效既有引用）。
 struct ProjectionStorage {
     std::deque<std::string> strings;
-    std::vector<dztrader::db::ResourceSchema> schemas;
+    std::vector<ResourceSchema> schemas;
 };
 
 std::string_view intern(ProjectionStorage& storage, std::string_view text) {
@@ -22,26 +24,26 @@ std::string_view intern(ProjectionStorage& storage, std::string_view text) {
     return storage.strings.back();
 }
 
-dztrader::db::ValueType to_db_type(ColumnType type) {
+ValueType to_db_type(tdstore::ColumnType type) {
     switch (type) {
-        case ColumnType::Integer:
-            return dztrader::db::ValueType::Int64;
-        case ColumnType::Real:
-            return dztrader::db::ValueType::Float64;
-        case ColumnType::Text:
-            return dztrader::db::ValueType::String;
+        case tdstore::ColumnType::Integer:
+            return ValueType::Int64;
+        case tdstore::ColumnType::Real:
+            return ValueType::Float64;
+        case tdstore::ColumnType::Text:
+            return ValueType::String;
     }
-    return dztrader::db::ValueType::String;
+    return ValueType::String;
 }
 
 ProjectionStorage build_storage() {
     ProjectionStorage out;
-    for (const TableSchema& table : tables()) {
-        dztrader::db::ResourceSchema projected;
+    for (const tdstore::TableSchema& table : tdstore::tables()) {
+        ResourceSchema projected;
         projected.name = intern(out, table.name);
         projected.fields.reserve(table.columns.size());
-        for (const ColumnSchema& column : table.columns) {
-            projected.fields.push_back(dztrader::db::FieldSchema{
+        for (const tdstore::ColumnSchema& column : table.columns) {
+            projected.fields.push_back(FieldSchema{
                 .name = intern(out, column.name),
                 .type = to_db_type(column.type),
                 .nullable = !column.not_null,
@@ -50,8 +52,8 @@ ProjectionStorage build_storage() {
             });
         }
         projected.indexes.reserve(table.indexes.size());
-        for (const IndexSchema& index : table.indexes) {
-            dztrader::db::IndexSchema projected_index;
+        for (const tdstore::IndexSchema& index : table.indexes) {
+            IndexSchema projected_index;
             projected_index.name = intern(out, index.name);
             projected_index.unique = index.unique;
             projected_index.fields.reserve(index.columns.size());
@@ -72,10 +74,24 @@ const ProjectionStorage& storage() {
 
 }  // namespace
 
-std::span<const dztrader::db::ResourceSchema> schemas() { return storage().schemas; }
+std::span<const ResourceSchema> td_schemas() { return storage().schemas; }
 
-const dztrader::db::ResourceSchema& instruments_schema_db() {
+const ResourceSchema& td_instruments_schema() {
     return storage().schemas.back();  // tdstore::tables() 末项 = instruments
 }
 
-}  // namespace dztrader::tdstore
+std::vector<std::string> strategy_visible_column_names(std::string_view table) {
+    for (const tdstore::TableSchema& declared : tdstore::tables()) {
+        if (declared.name != table) {
+            continue;
+        }
+        std::vector<std::string> names;
+        for (const tdstore::ColumnSchema& column : tdstore::strategy_visible_columns(declared)) {
+            names.emplace_back(column.name);
+        }
+        return names;
+    }
+    throw Exception(DZ_EC_INVALID_PARAM, "unknown table: table={}", table);
+}
+
+}  // namespace dztrader::db

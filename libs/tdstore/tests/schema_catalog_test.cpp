@@ -290,6 +290,37 @@ TEST_F(SchemaCatalogTest, InstrumentsRetained) {
     EXPECT_TRUE(instrument_id_not_null);
 }
 
+// 平台内部列（`gateway`/`ext`）必须声明在表尾：`strategy_visible_columns()` 以
+// "可见列是声明序的一段前缀"实现（span 直接指向声明本身，不复制），夹在中间的内部列
+// 会抛异常。这条不变量把"策略可见列"与声明序绑死（ADR 0044 决策 2/4）。
+TEST_F(SchemaCatalogTest, PlatformInternalColumnsAreDeclaredLast) {
+    for (const TableSchema& table : tables()) {
+        bool seen_internal = false;
+        size_t expected_visible = 0;
+        for (const ColumnSchema& column : table.columns) {
+            if (column.platform_internal) {
+                seen_internal = true;
+            } else {
+                ++expected_visible;
+                EXPECT_FALSE(seen_internal) << table.name << ": platform-internal column "
+                                            << "precedes visible column `" << column.name << "`";
+            }
+        }
+        // 可见列 = 声明序的一段前缀（因此内部列必须全在表尾）
+        const std::span<const ColumnSchema> visible = strategy_visible_columns(table);
+        EXPECT_EQ(visible.size(), expected_visible) << table.name;
+        for (const ColumnSchema& column : visible) {
+            EXPECT_FALSE(column.platform_internal) << table.name << ": " << column.name;
+        }
+    }
+    // 四张交易表各 2 个内部列；instruments 无内部列
+    EXPECT_EQ(strategy_visible_columns(orders_schema()).size(), 17u);
+    EXPECT_EQ(strategy_visible_columns(trades_schema()).size(), 13u);
+    EXPECT_EQ(strategy_visible_columns(positions_schema()).size(), 11u);
+    EXPECT_EQ(strategy_visible_columns(trading_accounts_schema()).size(), 11u);
+    EXPECT_EQ(strategy_visible_columns(instruments_schema()).size(), 28u);
+}
+
 TEST_F(SchemaCatalogTest, IndexesDeclaredPerSpec) {
     EXPECT_EQ(index_names(path_, "orders"),
               (std::set<std::string>{"uq_orders_key", "idx_orders_order_id", "idx_orders_acct_seq",

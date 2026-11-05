@@ -14,10 +14,9 @@
  * （写入方是落盘线程，读取方是 dzweb 的查询线程）。这是有意为之：SQLite 让每个连接
  * 绑定一个线程语义最省心，跨线程共享连接需要额外互斥，而历史库的吞吐不需要。
  *
- * 为什么直接用 SQLiteCpp 而不是 `dzdb` 端口：保留与压缩需要 `GROUP BY` 加权均值、
- * `DELETE ... LIMIT` 与 `WITHOUT ROWID` 复合主键，`dzdb` 的 `Session` 抽象不暴露原始 SQL；
- * 而历史库是本地单文件、只此一种后端（不像 td 库需要 sqlite/mysql 切换），
- * 套一层端口只会多一份无法被满足的能力声明。
+ * 为什么直接用 SQLiteCpp 而不是 SDK 私有 DB 端口（`dzsdkdb`）：保留与压缩需要 `GROUP BY` 加权均值、
+ * `DELETE ... LIMIT` 与 `WITHOUT ROWID` 复合主键，该端口的 `Session` 抽象不暴露原始 SQL；
+ * 而历史库是本地单文件、只此一种后端，套一层端口只会多一份无法被满足的能力声明。
  */
 
 #include <array>

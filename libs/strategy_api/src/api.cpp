@@ -21,13 +21,12 @@
 #include <dztrader/data_type.h>
 #include <dztrader/core/last_error.h>
 #include <dztrader/core/random.h>
-#include <dztrader/db/config.h>
 #include <dztrader/date_time/date_time.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/frame_codec.h>
 #include <dztrader/core/core_struct.h>
 #include <dztrader/core/core_data_type.h>
-#include <dztrader/tdstore/records_store.h>
+#include <dztrader/tdstore/schema_catalog.h>
 #include <dztrader/version.h>
 
 #include "strategy_context.h"
@@ -36,6 +35,8 @@
 #include "cursor_result_set.h"
 #include "output_limit.h"
 #include "db_database.h"
+#include "td_instrument_query.h"
+#include "trading_day.h"
 
 using namespace dztrader;
 
@@ -118,86 +119,23 @@ struct ColumnMap {
     std::unordered_map<std::string, size_t> index_by_name;
 };
 
-/// 非 sqlite 后端一次性护栏诊断 (FIX-1): 本轮 td 写端仍锁 SQLite (后续阶段才切),
-/// 策略侧解析出 MySQL 等后端时提示写端尚未迁移; 写端切换后删除本护栏。
-void report_non_sqlite_backend_once(const std::string& backend) {
-    static std::mutex mutex;
-    static std::string reported;
-    const std::lock_guard<std::mutex> lock(mutex);
-    if (reported == backend) {
-        return;
-    }
-    reported = backend;
-    std::cerr << std::format(
-                     "db backend is not sqlite, platform write side not migrated in this "
-                     "release, verify writer backend matches | backend={}",
-                     backend)
-              << '\n';
-}
-
-/// 配置解析失败一次性诊断 (FIX-3): 配置错误 (如 database.json 损坏) 不是"库不存在",
-/// 不得静默降级; 同一错误文本只报一次, 且不缓存失败。
-void report_ingest_config_error_once(const std::string& error) {
-    static std::mutex mutex;
-    static std::string reported;
-    const std::lock_guard<std::mutex> lock(mutex);
-    if (reported == error) {
-        return;
-    }
-    reported = error;
-    std::cerr << std::format(
-                     "td ingest db config invalid, backfill disabled (degraded, no "
-                     "filtering) | error=\"{}\"",
-                     error)
-              << '\n';
-}
-
-/// 诊断用的目标描述: 只含 sqlite path 或 mysql host:port — 绝不输出 password (FIX-3)。
-std::string config_target(const dztrader::db::Config& config) {
-    const auto option = [&config](std::string_view key) -> std::string {
-        const auto it = config.options.find(key);
-        return it == config.options.end() ? std::string() : it->second;
-    };
-    if (config.backend == "sqlite") {
-        return option("path");
-    }
-    const std::string host = option("host");
-    const std::string port = option("port");
-    if (host.empty() && port.empty()) {
-        return "-";
-    }
-    return host + ":" + port;
-}
-
-/// 取 ingest td 库句柄 (进程内复用, 配置由 db::resolve_config("td") 决定):
-/// 默认 sqlite + <DZTRADER_HOME>/db/trade.db, 与迁移前 paths::trade_db() 完全等价。
-/// 返回借用的指针 (缓存持有, 调用方不得 close); nullptr = 库不可用 (降级不过滤),
-/// 诊断已按配置去重输出 (dz_next_event → gap 回补重试窗口内每次调用都会走到这里)。
-/// 配置解析失败与打开失败分开报告 (FIX-3): 前者是配置错误, 后者是库不可用。
+/// 取 ingest 交易库句柄（进程内复用，路径固定 `<DZTRADER_HOME>/db/trade.db`）：
+/// 交易库不再按配置选择后端/路径（ADR 0044 决策 3），`database.json` 交易段失效，
+/// 因此本函数不再有"配置解析失败"分支，只剩"库不可用"（文件不存在/非库/被独占）。
+/// 返回借用的指针（缓存持有，调用方不得 close）；nullptr = 库不可用（降级不过滤），
+/// 诊断已按路径去重输出（dz_next_event → gap 回补重试窗口内每次调用都会走到这里）。
 DzDatabase* open_td_db() {
-    dztrader::db::Config config;
-    try {
-        config = dztrader::db::resolve_config("td");
-    } catch (const std::exception& e) {
-        report_ingest_config_error_once(e.what());
-        return nullptr;
-    } catch (...) {
-        report_ingest_config_error_once("unknown exception");
-        return nullptr;
-    }
-    if (config.backend != "sqlite") {
-        report_non_sqlite_backend_once(config.backend);
-    }
+    const std::string path = strategy_api_internal::trade_db_path();
     const strategy_api_internal::IngestDbAcquire acquired =
-        strategy_api_internal::acquire_ingest_db(config);
+        strategy_api_internal::acquire_ingest_db(path);
     if (acquired.db != nullptr) {
         return acquired.db;
     }
     if (acquired.report) {
         std::cerr << std::format(
-                         "td ingest db unavailable (degraded, no filtering) | backend={} "
-                         "target=\"{}\" error=\"{}\"",
-                         config.backend, config_target(config), acquired.error)
+                         "td ingest db unavailable (degraded, no filtering) | path=\"{}\" "
+                         "error=\"{}\"",
+                         path, acquired.error)
                   << '\n';
     }
     return nullptr;
@@ -285,52 +223,24 @@ uint64_t rebuild_watermark(const std::string& account_id) {
     return 0;
 }
 
-/// "YYYYMMDD" 文本 -> DzDate (距纪元天数); 非法回落 0。
-int32_t parse_trading_day_to_epoch(const std::string_view text) {
-    if (text.size() != 8) {
-        return 0;
-    }
-    try {
-        const int32_t y = std::stoi(std::string(text.substr(0, 4)));
-        const int32_t m = std::stoi(std::string(text.substr(4, 2)));
-        const int32_t d = std::stoi(std::string(text.substr(6, 2)));
-        return dztrader::Date::from_year_month_day(y, m, d).days_since_epoch();
-    } catch (...) {
-        return 0;
-    }
-}
-
-/// DzDate (距纪元天数) -> "YYYYMMDD" 8 位文本 (gate 去重段键 day 分量)。
-/// 非法日期回落空串 (调用方按 0 日处理)。
-std::string format_epoch_day_to_yyyyMMdd(int32_t days) {
-    if (days <= 0) {
-        return "";
-    }
-    try {
-        const dztrader::Date d{days};
-        return std::format("{:04d}{:02d}{:02d}", d.year(), d.month(), d.day());
-    } catch (...) {
-        return "";
-    }
-}
-
 /// TRADE_REPORT 成交去重二道防线 (《帧契约：策略》"SDK ingest 过滤职责"):
-/// 从帧 payload 取 (account_id, date, trade_id) 调 admit_trade。日期以帧 date 为真源
-/// (帧 date 为实时/回补路径均已填的 DzDate), 转 "YYYYMMDD" 文本对齐 gate 段键。
+/// 从帧 payload 取 (account_id, date, exchange_id, trade_id) 调 admit_trade。日期以帧
+/// date 为真源 (帧 date 为实时/回补路径均已填的 DzDate), 转 "YYYYMMDD" 文本对齐 gate
+/// 段键。exchange_id 入键: trade_id 仅交易所内唯一, 多交易所同号不得互相吞掉。
 /// 返回 false = 已存在重复 (拦截, 不返回策略用户)。
 bool admit_trade_report(DzContext* ctx, const DzTradeReport& rpt) {
-    const std::string day = format_epoch_day_to_yyyyMMdd(rpt.date);
+    const std::string day = strategy_api_internal::format_trading_day(rpt.date);
     if (day.empty()) {
         return true;  // 解析失败: 不拦截 (宁可放行, 去重以帧 date 缺失时不强行拦)
     }
-    return ctx->ingest_gate.admit_trade(rpt.account_id, day.c_str(), rpt.trade_id);
+    return ctx->ingest_gate.admit_trade(rpt.account_id, day.c_str(), rpt.exchange_id, rpt.trade_id);
 }
 
 /// 2018 ACCOUNT_STATUS 推送: 携带 `date` 时驱动 gate 交易日切换
 /// (清该账户旧日去重段, 契约 strategy "成交去重…交易日切换清理")。
 /// 未携带 (`date`=0) 或解析失败: no-op (gate 维持已见日, 由 admit_trade 自清)。
 void on_account_status_date(DzContext* ctx, const DzAccountStatus& st) {
-    const std::string day = format_epoch_day_to_yyyyMMdd(st.date);
+    const std::string day = strategy_api_internal::format_trading_day(st.date);
     if (day.empty()) {
         return;
     }
@@ -503,7 +413,7 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
             rpt.price = row_double(row, pr_c);
             rpt.volume = static_cast<DzVolume>(row_int64(row, vol_c));
             rpt.volume_traded = static_cast<DzVolume>(row_int64(row, vt_c));
-            rpt.date = parse_trading_day_to_epoch(row_string(row, date_c));
+            rpt.date = strategy_api_internal::parse_trading_day(row_string(row, date_c));
             // schema v1: DB time 列即交易所真实时钟秒 (与实时帧同表示), avg_price 为派生列
             rpt.time = static_cast<int32_t>(row_int64(row, time_c));
             rpt.avg_price = row_double(row, avg_c);
@@ -540,7 +450,7 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
             rpt.position_effect = static_cast<DzPositionEffect>(row_char_code(row, pe_c));
             rpt.price = row_double(row, pr_c);
             rpt.volume = static_cast<DzVolume>(row_int64(row, vol_c));
-            rpt.date = parse_trading_day_to_epoch(row_string(row, date_c));
+            rpt.date = strategy_api_internal::parse_trading_day(row_string(row, date_c));
             rpt.time = static_cast<int32_t>(row_int64(row, time_c));
             rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
             ok = ctx->enqueue_replay_frame(DZ_FRAME_TRADE_REPORT, &rpt, sizeof(rpt)) && ok;
@@ -572,7 +482,7 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
             rpt.today_volume = row_int64(row, td_c);
             rpt.yd_volume = row_int64(row, yd_c);
             rpt.price = row_double(row, pr_c);
-            rpt.date = parse_trading_day_to_epoch(row_string(row, date_c));
+            rpt.date = strategy_api_internal::parse_trading_day(row_string(row, date_c));
             rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
             ok = ctx->enqueue_replay_frame(DZ_FRAME_POSITION_INFO, &rpt, sizeof(rpt)) && ok;
         }
@@ -595,7 +505,7 @@ bool enqueue_gap_rows(DzContext* ctx, const GapBackfillRows& rows) {
             rpt.withdraw_quota = row_double(row, cols.idx("withdraw_quota", 7));
             rpt.deposit = row_double(row, cols.idx("deposit", 8));
             rpt.withdraw = row_double(row, cols.idx("withdraw", 9));
-            rpt.date = parse_trading_day_to_epoch(row_string(row, date_c));
+            rpt.date = strategy_api_internal::parse_trading_day(row_string(row, date_c));
             rpt.seq = static_cast<uint64_t>(row_int64(row, seq_c));
             ok = ctx->enqueue_replay_frame(DZ_FRAME_TRADING_ACCOUNT, &rpt, sizeof(rpt)) && ok;
         }
@@ -1581,7 +1491,6 @@ std::unique_ptr<DzResultSet> db_rs_from_result(strategy_api_internal::DbQueryRes
 }
 
 using strategy_api_internal::db_open_readonly;
-using strategy_api_internal::db_open_readonly_config;
 using strategy_api_internal::db_query_order_trade;
 using strategy_api_internal::db_query_position;
 using strategy_api_internal::db_query_trading_account;
@@ -1631,20 +1540,10 @@ DZ_API DzDatabase* dz_db_open(const char* path) {
 }
 DZ_API DzDatabase* dz_db_open_default(void) {
     try {
-        // 后端/路径由配置解析决定 (env > configs/database.json > 内置默认 sqlite);
-        // 默认 sqlite 下等价于 dz_db_open(paths::trade_db())。
-        const dztrader::db::Config config = dztrader::db::resolve_config("td");
-        // FIX-9: 未编入的后端早失败 (如 DZ_WITH_MYSQL=OFF 时配置成 mysql),
-        // 不等到底层驱动才报错; 消息含 backend。
-        if (!dztrader::db::backend_available(config.backend)) {
-            throw Exception(DZ_EC_DB_UNSUPPORTED_BACKEND, "db backend not available | backend={}",
-                            config.backend);
-        }
-        // FIX-1: 本轮 td 写端仍锁 SQLite, 非 sqlite 后端只做一次性护栏诊断 (不拦截)。
-        if (config.backend != "sqlite") {
-            report_non_sqlite_backend_once(config.backend);
-        }
-        return db_open_readonly_config(config).release();
+        // 固定本地交易库 + 首次调用懒打开 + 进程级连接缓存（ADR 0044 决策 3）:
+        // 路径只由 DZTRADER_HOME 决定, 不读 database.json / DZTRADER_DB_* 环境变量。
+        // 每次调用返回独立句柄（共享入口、各自一个 Session），按普通句柄 dz_db_close。
+        return strategy_api_internal::default_db_handle().release();
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
     } catch (const std::exception& e) {
@@ -1658,6 +1557,7 @@ DZ_API bool dz_db_close(DzDatabase* db) {
     if (db == nullptr) {
         return true;  // NULL 安全: no-op 视为成功
     }
+    // 句柄 = 本次调用独占的包装（含独占 Session）: 销毁包装即可, 无需特殊处理。
     delete db;  // NOLINT
     return true;
 }
@@ -1711,7 +1611,8 @@ DZ_API void dz_resultset_close(DzResultSet* rs) {
 
 DZ_API DzResultSet* dz_db_query_order(DzDatabase* db,
                                       const char* account_id,
-                                      const char* instrument_id) {
+                                      const char* instrument_id,
+                                      DzDate date) {
     if (db == nullptr || db->session == nullptr) {
         LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
         return NULL;
@@ -1719,7 +1620,7 @@ DZ_API DzResultSet* dz_db_query_order(DzDatabase* db,
     try {
         return db_rs_from_result(db_query_order_trade(db, account_id ? account_id : "",
                                                       instrument_id ? instrument_id : "", "orders",
-                                                      /*order_by_seq=*/true))
+                                                      date))
             .release();
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
@@ -1732,7 +1633,8 @@ DZ_API DzResultSet* dz_db_query_order(DzDatabase* db,
 }
 DZ_API DzResultSet* dz_db_query_trade(DzDatabase* db,
                                       const char* account_id,
-                                      const char* instrument_id) {
+                                      const char* instrument_id,
+                                      DzDate date) {
     if (db == nullptr || db->session == nullptr) {
         LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
         return NULL;
@@ -1740,7 +1642,7 @@ DZ_API DzResultSet* dz_db_query_trade(DzDatabase* db,
     try {
         return db_rs_from_result(db_query_order_trade(db, account_id ? account_id : "",
                                                       instrument_id ? instrument_id : "", "trades",
-                                                      /*order_by_seq=*/true))
+                                                      date))
             .release();
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
@@ -1753,14 +1655,15 @@ DZ_API DzResultSet* dz_db_query_trade(DzDatabase* db,
 }
 DZ_API DzResultSet* dz_db_query_position(DzDatabase* db,
                                          const char* account_id,
-                                         const char* instrument_id) {
+                                         const char* instrument_id,
+                                         DzDate date) {
     if (db == nullptr || db->session == nullptr) {
         LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
         return NULL;
     }
     try {
         return db_rs_from_result(db_query_position(db, account_id ? account_id : "",
-                                                   instrument_id ? instrument_id : ""))
+                                                   instrument_id ? instrument_id : "", date))
             .release();
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
@@ -1771,13 +1674,15 @@ DZ_API DzResultSet* dz_db_query_position(DzDatabase* db,
     }
     return NULL;
 }
-DZ_API DzResultSet* dz_db_query_trading_account(DzDatabase* db, const char* account_id) {
+DZ_API DzResultSet* dz_db_query_trading_account(DzDatabase* db,
+                                                const char* account_id,
+                                                DzDate date) {
     if (db == nullptr || db->session == nullptr) {
         LastError::set(DZ_EC_INVALID_PARAM, "db handle is null");
         return NULL;
     }
     try {
-        return db_rs_from_result(db_query_trading_account(db, account_id ? account_id : ""))
+        return db_rs_from_result(db_query_trading_account(db, account_id ? account_id : "", date))
             .release();
     } catch (const Exception& e) {
         LastError::set(e.code(), e.what());
@@ -1819,7 +1724,7 @@ DZ_API DzResultSet* dz_db_query_instruments(DzDatabase* db,
             requested = tdstore::instrument_promised_fields();
         } else {
             // 显式请求字段必须过承诺列白名单 (契约 instrument §8: v3 保留列不可查询;
-            // records_store 白名单 = 物理全列, 含 3 个保留列, 不满足 C API 词表)。
+            // query_instruments 的物理全列含 3 个保留列, 不满足 C API 词表)。
             const auto& promised = tdstore::instrument_promised_fields();
             for (const std::string& name : requested) {
                 if (std::find(promised.begin(), promised.end(), name) == promised.end()) {

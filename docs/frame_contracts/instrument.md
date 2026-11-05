@@ -7,7 +7,7 @@
 类型层真相源：`libs/tdstore/include/dztrader/tdstore/records.h`（`InstrumentRecord`）、
 `libs/tdstore/include/dztrader/tdstore/schema_catalog.h`（`tdstore::schema_catalog`，交易库 schema v1）。总则见《帧契约：通用规则》。
 
-**实现注记**：交易库文件名（`trade.db`）、schema v1 平台自有声明与 master 建库/重建已随 #244 落地（旧 v5 迁移链删除）；`dz_db_open_default` 懒打开与 SDK 查询切片由 #252 落地（当前 SDK 仍经 dzdb 端口按配置打开同一文件）。
+**实现注记**：交易库文件名（`trade.db`）、schema v1 平台自有声明与 master 建库/重建已随 #244 落地（旧 v5 迁移链删除）；`dz_db_open_default` 懒打开、SDK DB 层私有化（`libs/strategy_api/src/db/`）与四类 `dz_db_query_*` 的 `date` 参数已随 #252 落地（当前平台侧不再依赖公共 DB 端口）。
 
 ## 1. 覆盖帧
 
@@ -121,11 +121,15 @@ DzResultSet* dz_db_query_instruments(DzDatabase* db, const char* instrument_id, 
 ```
 
 `db` 为 `dz_db_open` 打开的交易库（`<DZTRADER_HOME>/db/trade.db`，ADR 0041；**只读打开**，库不存在时
-打开失败、不自动建库）。`dz_db_open_default()` = 固定打开本地交易库、**首次调用懒打开并缓存进程级句柄**
-（SDK 初始化不打开任何 DB；`dz_db_open(path)` 保留显式 SQLite 路径语义，ADR 0044）。交易库固定本地
+打开失败、不自动建库）。`dz_db_open_default()` = 固定打开本地交易库、**首次调用懒打开并缓存进程级入口**
+（每次调用返回独立只读 Session；`dz_db_open(path)` 保留显式 SQLite 路径语义，ADR 0044）。"懒"专指**默认查询
+库入口**：`dz_init` 装载 ingest 水位时仍会按 ingest 的懒打开路径只读访问一次交易库（失败即降级不过滤），
+这是 ingest 的既有语义，不是默认库入口提前打开。交易库固定本地
 SQLite，`database.json` 不再承担交易数据后端选择（其交易段失效）。SDK 内部 ingest（水位装载/断档回补）在
 库打开失败后按退避窗口（默认 1s）重试：窗口内视为库不可用（降级不过滤、不再发起连接），窗口过后重试。
-查询走 SDK 内部 DB 层 → `tdstore::query_instruments`，结果映射为 `DzResultSet`。
+查询走 SDK 私有 DB 层（`libs/strategy_api/src/db/`）→ `tdstore::query_instruments`，结果映射为
+`DzResultSet`。列名/列序单源仍是 `libs/tdstore/include/dztrader/tdstore/schema_catalog.h`（平台自有声明），
+SDK 侧只做投影（ADR 0044 决策 1）。
 
 | 参数 | 语义 |
 |------|------|
@@ -146,7 +150,7 @@ SQLite，`database.json` 不再承担交易数据后端选择（其交易段失�
 **查询量级提示**：全表查询（`instrument_id` 为 NULL/空串）在万级行下约 10²ms / 10¹MB 量级（含全部 25 列）；
 建议按 `instrument_id` 精确查询或仅请求必需 `fields`（合约表为登录期全量 upsert，行数随在役合约增长）。
 
-`fields` 白名单（声明序，共 25；与 `tdstore::instrument_promised_fields()` 一致，`libs/tdstore/include/dztrader/tdstore/records_store.h`）：
+`fields` 白名单（声明序，共 25；与 `tdstore::instrument_promised_fields()` 一致，`libs/strategy_api/src/td_instrument_query.h`——SDK 私有实现头，不属公开 include 面）：
 
 `instrument_id`, `exchange_id`, `symbol`, `name`, `product_class`, `product_code`, `settle_cycle`, `currency`,
 `base_asset`, `is_inverse`, `volume_multiple`, `volume_step`, `price_tick`, `min_limit_order_volume`,

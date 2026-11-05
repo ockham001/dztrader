@@ -1723,11 +1723,11 @@ private:
     // ==== 合约元数据来源（#161 接缝 2；组件文档 §3/§8）====
 
     /**
-     * @brief 懒开默认归档库句柄（`dz_db_open_default`：td 库按配置解析打开）
+     * @brief 懒开默认交易库句柄（`dz_db_open_default`：固定本地 `trade.db`，首次调用懒打开）
      *
-     * 历史 bar 与合约元数据都在同一个 td 库里（平台库），因此只开一次、进程内复用。打开失败
-     * 只记一次（`archive_db_attempted_`），不反复尝试——v1 无 platform.db 是常态，每次
-     * 启动尝试一次足够；数据源恢复要重启进程（与配置加载同口径）。
+     * 历史 bar 与合约元数据都在同一个交易库里，因此只开一次、进程内复用。打开失败
+     * 只记一次（`archive_db_attempted_`），不反复尝试——归档域尚未落地时无历史数据是常态，
+     * 每次启动尝试一次足够；数据源恢复要重启进程（与配置加载同口径）。
      *
      * @return 库句柄；nullptr = 库不可用（调用方据此降级）
      */
@@ -2257,7 +2257,7 @@ private:
     /// 状态有机会互相矛盾，而诊断与续接过滤都读这张表。
     bar_strategy_internal::FrameworkDependencies dependencies_;
     bool degraded_ = true;  ///< 由依赖聚合的小节表判定（诊断口径，§5.5）
-    /// 默认归档库句柄（懒开：`dz_db_open_default`；`on_stop` 关闭）。历史与元数据共用。
+    /// 默认交易库句柄（懒开：`dz_db_open_default`；`on_stop` 关闭）。历史与元数据共用。
     DzDatabase* archive_db_ = nullptr;
     bool archive_db_attempted_ = false;         ///< 已尝试打开（失败也只试一次）
     bool metadata_source_unavailable_ = false;  ///< 元数据源不可用（部署级降级口径）

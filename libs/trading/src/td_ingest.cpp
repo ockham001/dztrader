@@ -91,6 +91,7 @@ void TdIngestGate::reset_account(const std::string& account_id, uint64_t new_w) 
 
 bool TdIngestGate::admit_trade(const std::string& account_id,
                                const char* trading_day,
+                               const char* exchange_id,
                                const char* trade_id) {
     if (trading_day == nullptr || trade_id == nullptr) {
         return false;
@@ -103,8 +104,14 @@ bool TdIngestGate::admit_trade(const std::string& account_id,
     }
     account_days_[account_id] = day;
 
+    // 去重键 = exchange_id + '\x1f' + trade_id: trade_id 仅交易所内唯一,
+    // 多交易所同号成交不得互相吞掉（契约 strategy "成交去重"）。
+    std::string key(exchange_id != nullptr ? exchange_id : "");
+    key.push_back('\x1f');
+    key.append(trade_id);
+
     auto& segment = trade_segments_[trade_segment_key(account_id, trading_day)];
-    return segment.insert(trade_id).second;
+    return segment.insert(std::move(key)).second;
 }
 
 void TdIngestGate::on_trading_day_changed(const std::string& account_id,

@@ -1,4 +1,4 @@
-#include <dztrader/tdstore/records_store.h>
+#include "td_instrument_query.h"
 
 #include <algorithm>
 #include <optional>
@@ -8,14 +8,15 @@
 #include <dztrader/core/exception.h>
 #include <dztrader/error.h>
 #include <dztrader/tdstore/schema_catalog.h>
-#include <dztrader/tdstore/schema_dzdb.h>
+
+#include "td_schema.h"
 
 namespace dztrader::tdstore {
 
 namespace {
 
 const dztrader::db::FieldSchema* find_instrument_field(std::string_view name) {
-    for (const dztrader::db::FieldSchema& field : instruments_schema_db().fields) {
+    for (const dztrader::db::FieldSchema& field : dztrader::db::td_instruments_schema().fields) {
         if (field.name == name) {
             return &field;
         }
@@ -111,7 +112,7 @@ const std::vector<std::string>& instrument_promised_fields() {
 dztrader::db::ResultSet query_instruments(dztrader::db::Session& session,
                                           std::string_view instrument_id,
                                           std::span<const std::string> fields) {
-    const dztrader::db::ResourceSchema& schema = instruments_schema_db();
+    const dztrader::db::ResourceSchema& schema = dztrader::db::td_instruments_schema();
 
     std::vector<const dztrader::db::FieldSchema*> selected;
     if (fields.empty()) {

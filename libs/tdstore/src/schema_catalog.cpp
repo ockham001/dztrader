@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <stdexcept>
 #include <format>
 #include <mutex>
 #include <string>
@@ -14,7 +15,7 @@ namespace {
 
 // ============================================================================
 // 四张交易表（ADR 0041 §1）：业务列 = 帧业务字段 + seq + gateway + ext
-// 列序 = 建表列序 = dzdb 投影 Row 位置序（schema_dzdb.h）。
+// 列序 = 建表列序 = 端口侧 `db::Row` 的位置序（SDK 层机械投影本声明）。
 // ============================================================================
 
 // orders：委托最新态（UNIQUE(account_id, date, order_id)；avg_price 为派生列）
@@ -36,8 +37,8 @@ constexpr ColumnSchema kOrdersColumns[] = {
     {"time", ColumnType::Integer, false, false, ""},
     {"avg_price", ColumnType::Real, false, false, "0"},
     {"seq", ColumnType::Integer, true, false, ""},
-    {"gateway", ColumnType::Text, true, false, ""},
-    {"ext", ColumnType::Text, false, false, "'{}'"},
+    {"gateway", ColumnType::Text, true, false, "", true},
+    {"ext", ColumnType::Text, false, false, "'{}'", true},
 };
 
 constexpr std::string_view kOrdersUniqueKey[] = {"account_id", "date", "order_id"};
@@ -67,8 +68,8 @@ constexpr ColumnSchema kTradesColumns[] = {
     {"volume", ColumnType::Integer, true, false, ""},
     {"time", ColumnType::Integer, false, false, ""},
     {"seq", ColumnType::Integer, true, false, ""},
-    {"gateway", ColumnType::Text, true, false, ""},
-    {"ext", ColumnType::Text, false, false, "'{}'"},
+    {"gateway", ColumnType::Text, true, false, "", true},
+    {"ext", ColumnType::Text, false, false, "'{}'", true},
 };
 
 constexpr std::string_view kTradesUniqueKey[] = {"account_id", "date", "exchange_id", "trade_id"};
@@ -96,8 +97,8 @@ constexpr ColumnSchema kPositionsColumns[] = {
     {"yd_volume", ColumnType::Integer, false, false, ""},
     {"price", ColumnType::Real, false, false, ""},
     {"seq", ColumnType::Integer, true, false, ""},
-    {"gateway", ColumnType::Text, true, false, ""},
-    {"ext", ColumnType::Text, false, false, "'{}'"},
+    {"gateway", ColumnType::Text, true, false, "", true},
+    {"ext", ColumnType::Text, false, false, "'{}'", true},
 };
 
 constexpr std::string_view kPositionsUniqueKey[] = {"account_id", "date", "instrument_id",
@@ -126,8 +127,8 @@ constexpr ColumnSchema kTradingAccountsColumns[] = {
     {"deposit", ColumnType::Real, false, false, ""},
     {"withdraw", ColumnType::Real, false, false, ""},
     {"seq", ColumnType::Integer, true, false, ""},
-    {"gateway", ColumnType::Text, true, false, ""},
-    {"ext", ColumnType::Text, false, false, "'{}'"},
+    {"gateway", ColumnType::Text, true, false, "", true},
+    {"ext", ColumnType::Text, false, false, "'{}'", true},
 };
 
 constexpr std::string_view kTradingAccountsAccountSeq[] = {"account_id", "seq"};
@@ -367,6 +368,22 @@ std::string build_schema_ddl() {
         }
     }
     return ddl;
+}
+
+std::span<const ColumnSchema> strategy_visible_columns(const TableSchema& table) {
+    // 可见列必须是声明序的一段**前缀**（内部列都在表尾）。这样返回值直接指向声明本身
+    // （span 元素连续存放，不复制、不另立清单）；违反时显式失败而不是静默错投影。
+    size_t visible = 0;
+    while (visible < table.columns.size() && !table.columns[visible].platform_internal) {
+        ++visible;
+    }
+    for (size_t i = visible; i < table.columns.size(); ++i) {
+        if (!table.columns[i].platform_internal) {
+            throw std::logic_error(
+                "platform-internal columns must be declared last in table.columns");
+        }
+    }
+    return table.columns.first(visible);
 }
 
 std::span<const std::string_view> business_key_columns(const TableSchema& table) {

@@ -53,82 +53,95 @@ TEST(TdIngestGate, ResetNotDetectedWithoutAppliedBaseline) {
     EXPECT_FALSE(g.detect_reset("B", 500));  // 他账户不受影响
 }
 
-// spec §5.4: 成交去重二道防线 — (account_id, trading_day, trade_id) 存在性。
+// spec §5.4: 成交去重二道防线 — (account_id, trading_day, exchange_id, trade_id) 存在性。
 // 跨日同 trade_id 必须放行 (新唯一键同语义)。
 TEST(TdIngestGate, TradeDedupSecondLine) {
     TdIngestGate g;
-    EXPECT_TRUE(g.admit_trade("A", "20260901", "T1"));
-    EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));
-    EXPECT_TRUE(g.admit_trade("A", "20260902", "T1"));  // 跨日共存 (trades 新唯一键同语义)
-    EXPECT_TRUE(g.admit_trade("B", "20260901", "T1"));  // 账户隔离
+    EXPECT_TRUE(g.admit_trade("A", "20260901", "CFFEX", "T1"));
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "CFFEX", "T1"));
+    EXPECT_TRUE(g.admit_trade("A", "20260902", "CFFEX", "T1"));  // 跨日共存 (trades 新唯一键同语义)
+    EXPECT_TRUE(g.admit_trade("B", "20260901", "CFFEX", "T1"));  // 账户隔离
+}
+
+// 契约 strategy "成交去重": `trade_id` 仅**交易所内**唯一, `exchange_id` 必须入键。
+// 同账户同日两个交易所的同号成交是两笔不同成交, 不得互相吞掉 (丢成交比重复更严重)。
+TEST(TdIngestGate, TradeDedupKeyIncludesExchangeId) {
+    TdIngestGate g;
+    EXPECT_TRUE(g.admit_trade("A", "20260901", "CFFEX", "T1"));
+    EXPECT_TRUE(g.admit_trade("A", "20260901", "SHFE", "T1"));   // 他交易所同号: 不同成交
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "SHFE", "T1"));  // 同交易所同号: 重复
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "CFFEX", "T1"));
+    // 空 exchange_id 也不得与任何真实交易所号冲突 (键按下标拼接, 不产生歧义)
+    EXPECT_TRUE(g.admit_trade("A", "20260901", "", "T1"));
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "", "T1"));
 }
 
 // spec §5.4: 交易日切换清理 — 新 day 清旧段, 不被旧段拦截。
 TEST(TdIngestGate, TradeDedupClearedOnTradingDayChange) {
     TdIngestGate g;
-    (void)g.admit_trade("A", "20260901", "T1");
-    g.on_trading_day_changed("A", "20260902");          // 新 day → 清旧段
-    EXPECT_TRUE(g.admit_trade("A", "20260902", "T1"));  // 不被旧段拦截
+    (void)g.admit_trade("A", "20260901", "CFFEX", "T1");
+    g.on_trading_day_changed("A", "20260902");                   // 新 day → 清旧段
+    EXPECT_TRUE(g.admit_trade("A", "20260902", "CFFEX", "T1"));  // 不被旧段拦截
 }
 
 // spec §5.4: admit_trade 自身检测交易日变化即自动清旧段 (集合增长有界)。
 TEST(TdIngestGate, TradeDedupAutoCleanOnDayChangeInAdmitTrade) {
     TdIngestGate g;
-    (void)g.admit_trade("A", "20260901", "T1");
-    EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));
-    EXPECT_TRUE(g.admit_trade("A", "20260902", "T1"));  // 新 day 自动清旧段
+    (void)g.admit_trade("A", "20260901", "CFFEX", "T1");
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "CFFEX", "T1"));
+    EXPECT_TRUE(g.admit_trade("A", "20260902", "CFFEX", "T1"));  // 新 day 自动清旧段
     // 旧段已清: 跨日同 trade_id 共存
-    EXPECT_FALSE(g.admit_trade("A", "20260902", "T1"));
-    EXPECT_TRUE(g.admit_trade("B", "20260901", "T1"));  // 他账户旧日段不受影响
+    EXPECT_FALSE(g.admit_trade("A", "20260902", "CFFEX", "T1"));
+    EXPECT_TRUE(g.admit_trade("B", "20260901", "CFFEX", "T1"));  // 他账户旧日段不受影响
 }
 
 // reset_account 清掉该账户去重段 (重置 = 新基准, spec §5.5)。
 TEST(TdIngestGate, ResetClearsTradeDedup) {
     TdIngestGate g;
-    (void)g.admit_trade("A", "20260901", "T1");
-    EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));
+    (void)g.admit_trade("A", "20260901", "CFFEX", "T1");
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "CFFEX", "T1"));
     g.reset_account("A", 10);
-    EXPECT_TRUE(g.admit_trade("A", "20260901", "T1"));  // 重置后重建集合
+    EXPECT_TRUE(g.admit_trade("A", "20260901", "CFFEX", "T1"));  // 重置后重建集合
 }
 
 // 评审发现 1 (Task 8 Fix): 重置后重新 admit — 成交去重段已清 (reset_account),
-// 同 (account, day, trade_id) 在重置后再次 admit_trade 必须放行。
+// 同 (account, day, exchange, trade_id) 在重置后再次 admit_trade 必须放行。
 TEST(TdIngestGate, TradeDedupReAdmitAfterReset) {
     TdIngestGate g;
-    (void)g.admit_trade("A", "20260901", "T1");
-    EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));
+    (void)g.admit_trade("A", "20260901", "CFFEX", "T1");
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "CFFEX", "T1"));
     g.reset_account("A", 5);
-    EXPECT_TRUE(g.admit_trade("A", "20260901", "T1"));   // 重置后重建集合, 不拦截
-    EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));  // 重建后的二道防线仍生效
+    EXPECT_TRUE(g.admit_trade("A", "20260901", "CFFEX", "T1"));   // 重置后重建集合, 不拦截
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "CFFEX", "T1"));  // 重建后的二道防线仍生效
 }
 
 // 评审发现 1: on_trading_day_changed 显式调用后, 旧日段清空 — 新日同 trade_id 放行,
 // 且旧日同 trade_id 不再拦截新日 (与 admit_trade 内部自清一致)。
 TEST(TdIngestGate, TradeDedupExplicitDayChangeAllowsSameTradeAcrossDays) {
     TdIngestGate g;
-    (void)g.admit_trade("A", "20260901", "T1");
-    EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));
+    (void)g.admit_trade("A", "20260901", "CFFEX", "T1");
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "CFFEX", "T1"));
     g.on_trading_day_changed("A", "20260902");
-    EXPECT_TRUE(g.admit_trade("A", "20260902", "T1"));   // 显式切换后新日放行
-    EXPECT_FALSE(g.admit_trade("A", "20260902", "T1"));  // 新日段正常去重
+    EXPECT_TRUE(g.admit_trade("A", "20260902", "CFFEX", "T1"));   // 显式切换后新日放行
+    EXPECT_FALSE(g.admit_trade("A", "20260902", "CFFEX", "T1"));  // 新日段正常去重
 }
 
 // spec §5.4: 同日重复调用 on_trading_day_changed 为 no-op — 不得误删当前日去重段
 // (否则二道防线失效, 同日重复成交会被放行)。
 TEST(TdIngestGate, TradeDedupSameDayRepeatDayChangeIsNoop) {
     TdIngestGate g;
-    (void)g.admit_trade("A", "20260901", "T1");
-    g.on_trading_day_changed("A", "20260901");           // 同日重复推送 ACCOUNT_STATUS
-    EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));  // 旧键仍被拦截
+    (void)g.admit_trade("A", "20260901", "CFFEX", "T1");
+    g.on_trading_day_changed("A", "20260901");                    // 同日重复推送 ACCOUNT_STATUS
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "CFFEX", "T1"));  // 旧键仍被拦截
 }
 
 // spec §5.4: new_trading_day == nullptr 时无条件清段 (强制重建语义)。
 TEST(TdIngestGate, TradeDedupNullptrDayChangeClearsUnconditionally) {
     TdIngestGate g;
-    (void)g.admit_trade("A", "20260901", "T1");
-    EXPECT_FALSE(g.admit_trade("A", "20260901", "T1"));
+    (void)g.admit_trade("A", "20260901", "CFFEX", "T1");
+    EXPECT_FALSE(g.admit_trade("A", "20260901", "CFFEX", "T1"));
     g.on_trading_day_changed("A", nullptr);
-    EXPECT_TRUE(g.admit_trade("A", "20260901", "T1"));  // 旧段已清, 可重新准入
+    EXPECT_TRUE(g.admit_trade("A", "20260901", "CFFEX", "T1"));  // 旧段已清, 可重新准入
 }
 
 // 首帧 seq == W+1 (无空洞) 不记 gap; seq ≤ W 的首帧不记 gap。
@@ -166,21 +179,21 @@ TEST(TdIngestGate, WatermarkDoesNotAffectOtherAccounts) {
 // 裸前缀匹配会让 "ctp12\x1f..." 也以 "ctp1" 开头)。
 TEST(TdIngestGate, TradeDedupSegmentsIsolatedForPrefixAccounts) {
     TdIngestGate g;
-    EXPECT_TRUE(g.admit_trade("ctp1", "20260901", "T1"));
-    EXPECT_TRUE(g.admit_trade("ctp12", "20260901", "T1"));
+    EXPECT_TRUE(g.admit_trade("ctp1", "20260901", "CFFEX", "T1"));
+    EXPECT_TRUE(g.admit_trade("ctp12", "20260901", "CFFEX", "T1"));
     g.on_trading_day_changed("ctp1", "20260902");
-    EXPECT_FALSE(g.admit_trade("ctp12", "20260901", "T1"));  // ctp12 段未被误删
+    EXPECT_FALSE(g.admit_trade("ctp12", "20260901", "CFFEX", "T1"));  // ctp12 段未被误删
     g.reset_account("ctp1", 0);
-    EXPECT_FALSE(g.admit_trade("ctp12", "20260901", "T1"));  // reset 同样不得误伤
+    EXPECT_FALSE(g.admit_trade("ctp12", "20260901", "CFFEX", "T1"));  // reset 同样不得误伤
 }
 
 // admit_trade 自动清段路径的前缀隔离 (同一条 erase 循环的第三个调用点)。
 TEST(TdIngestGate, TradeDedupAutoCleanDoesNotTouchPrefixAccount) {
     TdIngestGate g;
-    EXPECT_TRUE(g.admit_trade("ctp1", "20260901", "T1"));
-    EXPECT_TRUE(g.admit_trade("ctp12", "20260901", "T2"));
-    EXPECT_TRUE(g.admit_trade("ctp1", "20260902", "T3"));    // ctp1 切日 → 自动清段
-    EXPECT_FALSE(g.admit_trade("ctp12", "20260901", "T2"));  // ctp12 段未被误删
+    EXPECT_TRUE(g.admit_trade("ctp1", "20260901", "CFFEX", "T1"));
+    EXPECT_TRUE(g.admit_trade("ctp12", "20260901", "CFFEX", "T2"));
+    EXPECT_TRUE(g.admit_trade("ctp1", "20260902", "CFFEX", "T3"));    // ctp1 切日 → 自动清段
+    EXPECT_FALSE(g.admit_trade("ctp12", "20260901", "CFFEX", "T2"));  // ctp12 段未被误删
 }
 
 }  // namespace

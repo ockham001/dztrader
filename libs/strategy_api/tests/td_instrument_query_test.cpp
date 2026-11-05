@@ -3,8 +3,8 @@
 #include <dztrader/core/exception.h>
 #include <dztrader/db/database.h>
 #include <dztrader/tdstore/records.h>
-#include <dztrader/tdstore/records_store.h>
-#include <dztrader/tdstore/schema_dzdb.h>
+#include "td_instrument_query.h"
+#include "td_schema.h"
 #include <dztrader/tdstore/trade_db.h>
 
 #include <filesystem>
@@ -18,14 +18,14 @@
 namespace dztrader::tdstore {
 namespace {
 
-class RecordsStoreTest : public ::testing::Test {
+class TdInstrumentQueryTest : public ::testing::Test {
 protected:
     void SetUp() override {
         path_ = dztrader::test::unique_temp_path("dz_td_store", "db");
         (void)dztrader::tdstore::ensure_trade_db(path_);
         database_ = dztrader::db::Database::open(
             dztrader::db::Config{.backend = "sqlite", .options = {{"path", path_.string()}}},
-            dztrader::tdstore::schemas());
+            dztrader::db::td_schemas());
         session_ = database_->session();
     }
     void TearDown() override {
@@ -40,7 +40,7 @@ protected:
     std::unique_ptr<dztrader::db::Session> session_;
 };
 
-TEST_F(RecordsStoreTest, UpsertInstrumentIsIdempotentAndQueryable) {
+TEST_F(TdInstrumentQueryTest, UpsertInstrumentIsIdempotentAndQueryable) {
     tdstore::InstrumentRecord r{};
     r.instrument_id = "cu2601";
     r.exchange_id = "SHFE";
@@ -65,7 +65,7 @@ TEST_F(RecordsStoreTest, UpsertInstrumentIsIdempotentAndQueryable) {
     EXPECT_EQ(result.rows()[0].get<int64_t>(27), 222);  // updated_at
 }
 
-TEST_F(RecordsStoreTest, QueryInstrumentsProjectionFollowsRequest) {
+TEST_F(TdInstrumentQueryTest, QueryInstrumentsProjectionFollowsRequest) {
     tdstore::InstrumentRecord r{};
     r.instrument_id = "cu2601";
     r.exchange_id = "SHFE";
@@ -84,7 +84,7 @@ TEST_F(RecordsStoreTest, QueryInstrumentsProjectionFollowsRequest) {
     EXPECT_EQ(result.rows()[0].get<std::string>(1), "cu2601");
 }
 
-TEST_F(RecordsStoreTest, QueryInstrumentsEmptyResultKeepsColumnMeta) {
+TEST_F(TdInstrumentQueryTest, QueryInstrumentsEmptyResultKeepsColumnMeta) {
     const std::vector<std::string> fields = {"price_tick", "instrument_id"};
     const auto result = tdstore::query_instruments(*session_, "", fields);
     ASSERT_EQ(result.columns().size(), 2u);
@@ -95,7 +95,7 @@ TEST_F(RecordsStoreTest, QueryInstrumentsEmptyResultKeepsColumnMeta) {
     EXPECT_TRUE(result.rows().empty());
 }
 
-TEST_F(RecordsStoreTest, QueryInstrumentsUnknownFieldThrows) {
+TEST_F(TdInstrumentQueryTest, QueryInstrumentsUnknownFieldThrows) {
     const std::vector<std::string> fields = {"nope"};
     try {
         (void)tdstore::query_instruments(*session_, "", fields);
@@ -106,7 +106,7 @@ TEST_F(RecordsStoreTest, QueryInstrumentsUnknownFieldThrows) {
     }
 }
 
-TEST_F(RecordsStoreTest, QueryInstrumentsDuplicateFieldThrows) {
+TEST_F(TdInstrumentQueryTest, QueryInstrumentsDuplicateFieldThrows) {
     const std::vector<std::string> fields = {"price_tick", "price_tick"};
     try {
         (void)tdstore::query_instruments(*session_, "", fields);
@@ -118,12 +118,12 @@ TEST_F(RecordsStoreTest, QueryInstrumentsDuplicateFieldThrows) {
     }
 }
 
-TEST_F(RecordsStoreTest, ToValueCharUsesCharacterCode) {
+TEST_F(TdInstrumentQueryTest, ToValueCharUsesCharacterCode) {
     EXPECT_EQ(std::get<int64_t>(tdstore::to_value('B')), 66);
     EXPECT_EQ(std::get<int64_t>(tdstore::to_value(static_cast<char>(0xFF))), 255);
 }
 
-TEST_F(RecordsStoreTest, MakeInstrumentRowMatchesSchemaOrder) {
+TEST_F(TdInstrumentQueryTest, MakeInstrumentRowMatchesSchemaOrder) {
     tdstore::InstrumentRecord r{};
     r.instrument_id = "cu2601";
     r.exchange_id = "SHFE";

@@ -3,16 +3,15 @@
 #include <dztrader/api.h>
 #include <dztrader/core/env.h>
 #include <dztrader/core/path.h>
+#include <dztrader/date_time/date_time.h>
 #include <dztrader/db/database.h>
 #include <dztrader/error.h>
 #include <dztrader/shm/channel_meta.h>
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/writer.h>
 #include <dztrader/struct.h>
-#include <dztrader/tdstore/schema_dzdb.h>
 #include <dztrader/tdstore/trade_db.h>
 
-#include <nlohmann/json.hpp>
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
 
@@ -25,9 +24,15 @@
 #include <thread>
 
 #include "db_database.h"
+#include "td_schema.h"
 #include "test_temp_dir.h"
 
 namespace {
+
+/// 交易日字面量助手: `day(2026, 9, 1)` = 距纪元天数 (DzDate)
+DzDate day(int y, int m, int d) {
+    return dztrader::Date::from_year_month_day(y, m, d).days_since_epoch();
+}
 
 /// 在临时目录建 td 库 (schema_catalog 声明 + 驱动迁移) 并写入样例行。
 class DbTest : public ::testing::Test {
@@ -49,7 +54,7 @@ protected:
         auto database = dztrader::db::Database::open(
             dztrader::db::Config{.backend = "sqlite",
                                  .options = {{"path", db_path_}, {"journal_mode", "delete"}}},
-            dztrader::tdstore::schemas());
+            dztrader::db::td_schemas());
         database->migrate();
 
         db_ = dz_db_open(db_path_.c_str());
@@ -79,10 +84,10 @@ TEST_F(DbTest, OpenNullPathFails) {
 }
 
 // 按账户过滤: 2 账户各 1 行, 查账户 A 只回 1 行, 列值断言。
-// orders 表列序 (SELECT *, schema v1): 0=account_id 1=date 2=order_id 3=strategy_id
-//   4=instrument_id 5=exchange_id 6=direction 7=position_effect 8=price_type 9=status
-//   10=price 11=volume 12=volume_traded 13=remark 14=time 15=avg_price 16=seq
-//   17=gateway 18=ext
+// orders C API 列序 = 业务列 + seq（不含平台内部列 gateway/ext, ADR 0044 决策 2）:
+//   0=account_id 1=date 2=order_id 3=strategy_id 4=instrument_id 5=exchange_id
+//   6=direction 7=position_effect 8=price_type 9=status 10=price 11=volume
+//   12=volume_traded 13=remark 14=time 15=avg_price 16=seq
 TEST_F(DbTest, QueryOrderFiltersByAccount) {
     SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
     {
@@ -108,10 +113,10 @@ TEST_F(DbTest, QueryOrderFiltersByAccount) {
         ins.exec();
     }
 
-    DzResultSet* rs = dz_db_query_order(db_, "A", nullptr);
+    DzResultSet* rs = dz_db_query_order(db_, "A", nullptr, day(2026, 9, 1));
     ASSERT_NE(nullptr, rs) << dz_errmsg();
     ASSERT_EQ(0, dz_resultset_status(rs));
-    ASSERT_EQ(19u, dz_resultset_column_count(rs));
+    ASSERT_EQ(17u, dz_resultset_column_count(rs));
 
     ASSERT_TRUE(dz_resultset_next(rs));
     EXPECT_EQ(1001, dz_resultset_get_int64(rs, 2));              // order_id
@@ -124,18 +129,17 @@ TEST_F(DbTest, QueryOrderFiltersByAccount) {
     dz_resultset_close(rs);
 
     // 账户 + 合约双条件过滤
-    rs = dz_db_query_order(db_, "A", "IF9999");
+    rs = dz_db_query_order(db_, "A", "IF9999", day(2026, 9, 1));
     ASSERT_NE(nullptr, rs);
     EXPECT_FALSE(dz_resultset_next(rs));
     dz_resultset_close(rs);
 }
 
-// 新表查询: positions + trading_accounts。
-// positions 列序 (SELECT *, schema v1): 0=account_id 1=date 2=instrument_id 3=exchange_id
-//   4=direction 5=volume 6=frozen_volume 7=today_volume 8=yd_volume 9=price 10=seq
-//   11=gateway 12=ext
+// 新表查询: positions + trading_accounts（均只回业务列 + seq, 无 gateway/ext）。
+// positions 列序: 0=account_id 1=date 2=instrument_id 3=exchange_id 4=direction
+//   5=volume 6=frozen_volume 7=today_volume 8=yd_volume 9=price 10=seq
 // trading_accounts 列序: 0=account_id 1=date 2=balance 3=available 4=frozen
-//   5=commission 6=margin 7=withdraw_quota 8=deposit 9=withdraw 10=seq 11=gateway 12=ext
+//   5=commission 6=margin 7=withdraw_quota 8=deposit 9=withdraw 10=seq
 TEST_F(DbTest, QueryPositionAndTradingAccount) {
     SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
     {
@@ -175,10 +179,10 @@ TEST_F(DbTest, QueryPositionAndTradingAccount) {
         ins.exec();
     }
 
-    DzResultSet* rs = dz_db_query_position(db_, "A", nullptr);
+    DzResultSet* rs = dz_db_query_position(db_, "A", nullptr, day(2026, 9, 1));
     ASSERT_NE(nullptr, rs);
     ASSERT_EQ(0, dz_resultset_status(rs));
-    ASSERT_EQ(13u, dz_resultset_column_count(rs));
+    ASSERT_EQ(11u, dz_resultset_column_count(rs));
     ASSERT_TRUE(dz_resultset_next(rs));
     EXPECT_STREQ("IF2401", dz_resultset_get_string(rs, 2));     // instrument_id
     EXPECT_STREQ("L", dz_resultset_get_string(rs, 4));          // direction
@@ -188,10 +192,10 @@ TEST_F(DbTest, QueryPositionAndTradingAccount) {
     EXPECT_FALSE(dz_resultset_next(rs));
     dz_resultset_close(rs);
 
-    rs = dz_db_query_trading_account(db_, "A");
+    rs = dz_db_query_trading_account(db_, "A", day(2026, 9, 1));
     ASSERT_NE(nullptr, rs);
     ASSERT_EQ(0, dz_resultset_status(rs));
-    ASSERT_EQ(13u, dz_resultset_column_count(rs));
+    ASSERT_EQ(11u, dz_resultset_column_count(rs));
     ASSERT_TRUE(dz_resultset_next(rs));
     EXPECT_STREQ("A", dz_resultset_get_string(rs, 0));            // account_id
     EXPECT_DOUBLE_EQ(100000.5, dz_resultset_get_float64(rs, 2));  // balance
@@ -203,13 +207,13 @@ TEST_F(DbTest, QueryPositionAndTradingAccount) {
 
 // NULL 句柄: 四个查询 API 均返回 NULL 且错误码 DZ_EC_INVALID_PARAM (契约 instrument §7 同语义)。
 TEST_F(DbTest, QueryNullHandleRejected) {
-    EXPECT_EQ(nullptr, dz_db_query_order(nullptr, "A", nullptr));
+    EXPECT_EQ(nullptr, dz_db_query_order(nullptr, "A", nullptr, DZ_DATE_NA));
     EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
-    EXPECT_EQ(nullptr, dz_db_query_trade(nullptr, "A", nullptr));
+    EXPECT_EQ(nullptr, dz_db_query_trade(nullptr, "A", nullptr, DZ_DATE_NA));
     EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
-    EXPECT_EQ(nullptr, dz_db_query_position(nullptr, "A", nullptr));
+    EXPECT_EQ(nullptr, dz_db_query_position(nullptr, "A", nullptr, DZ_DATE_NA));
     EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
-    EXPECT_EQ(nullptr, dz_db_query_trading_account(nullptr, "A"));
+    EXPECT_EQ(nullptr, dz_db_query_trading_account(nullptr, "A", DZ_DATE_NA));
     EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
 }
 
@@ -251,7 +255,7 @@ TEST_F(DbTest, ReadOnlyQueryWaitsOutWriteLockWindow) {
     });
 
     // busy_timeout 生效 → 阻塞到锁释放后成功查询。
-    DzResultSet* rs = dz_db_query_position(ro, "A", nullptr);
+    DzResultSet* rs = dz_db_query_position(ro, "A", nullptr, day(2026, 9, 1));
     releaser.join();
     ASSERT_NE(nullptr, rs) << dz_errmsg();  // 无 busy_timeout 则此处为 NULL (SQLITE_BUSY)
     ASSERT_EQ(0, dz_resultset_status(rs));
@@ -295,7 +299,7 @@ TEST_F(DbTest, RealDeclaredColumnStoresIntegerValue) {
     }
 
     // orders.price (索引 10) REAL 存整数 -> get_float64 应返回 3800.0 (非 DBL_MAX)
-    DzResultSet* rs = dz_db_query_order(db_, "A", nullptr);
+    DzResultSet* rs = dz_db_query_order(db_, "A", nullptr, day(2026, 9, 1));
     ASSERT_NE(nullptr, rs) << dz_errmsg();
     ASSERT_EQ(0, dz_resultset_status(rs));
     ASSERT_TRUE(dz_resultset_next(rs));
@@ -304,7 +308,7 @@ TEST_F(DbTest, RealDeclaredColumnStoresIntegerValue) {
     dz_resultset_close(rs);
 
     // trades.price (索引 9) REAL 存整数 -> get_float64 应返回 3810.0
-    rs = dz_db_query_trade(db_, "A", nullptr);
+    rs = dz_db_query_trade(db_, "A", nullptr, day(2026, 9, 1));
     ASSERT_NE(nullptr, rs) << dz_errmsg();
     ASSERT_EQ(0, dz_resultset_status(rs));
     ASSERT_TRUE(dz_resultset_next(rs));
@@ -313,24 +317,29 @@ TEST_F(DbTest, RealDeclaredColumnStoresIntegerValue) {
     dz_resultset_close(rs);
 }
 
-/* ── dz_db_open_default (ADR 0016: 按配置解析打开 td 库) ── */
+/* ── dz_db_open_default (ADR 0044 决策 3: 固定本地 trade.db + 懒打开) ── */
 
 namespace {
 
 /// 建交易库 (tdstore schema v1 建库门面) 到指定路径。
 void create_td_db(const std::string& path) { (void)dztrader::tdstore::ensure_trade_db(path); }
 
-/// 向 orders 表写一行 (账户 + order_id + seq)。
-void insert_order_row(const std::string& path, const char* account, int64_t order_id, int64_t seq) {
+/// 向 orders 表写一行 (账户 + order_id + seq + date)。
+void insert_order_row(const std::string& path,
+                      const char* account,
+                      int64_t order_id,
+                      int64_t seq,
+                      const char* db_date = "20260901") {
     SQLite::Database db(path, SQLite::OPEN_READWRITE);
     SQLite::Statement ins(
         db,
         "INSERT INTO orders (account_id, date, order_id, instrument_id,"
         " exchange_id, direction, status, price, volume, seq, gateway)"
-        " VALUES (?, '20260901', ?, 'IF2401', 'CFFEX', '0', 'a', 3800.5, 2, ?, 'dztd_test')");
+        " VALUES (?, ?, ?, 'IF2401', 'CFFEX', '0', 'a', 3800.5, 2, ?, 'dztd_test')");
     ins.bind(1, account);
-    ins.bind(2, order_id);
-    ins.bind(3, seq);
+    ins.bind(2, db_date);
+    ins.bind(3, order_id);
+    ins.bind(4, seq);
     ins.exec();
 }
 
@@ -345,18 +354,15 @@ protected:
         home_ = dztrader::test::unique_temp_dir("dz_test_db_open_default").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/db");
-        std::filesystem::create_directories(home_ + "/configs");
         orig_home_ = dztrader::env::get("DZTRADER_HOME");
         dztrader::env::set("DZTRADER_HOME", home_);
         dztrader::paths::reset_for_test();  // 清空进程级缓存, 指向本用例 home
-        dztrader::env::unset("DZTRADER_DB_BACKEND");
-        dztrader::env::unset("DZTRADER_DB_OPT_PATH");
         db_path_ = home_ + "/db/trade.db";
     }
 
     void TearDown() override {
-        dztrader::env::unset("DZTRADER_DB_BACKEND");
-        dztrader::env::unset("DZTRADER_DB_OPT_PATH");
+        // 释放默认库的进程级连接缓存 (否则 Windows 上连接占住临时目录, remove_all 失败)
+        dztrader::strategy_api_internal::reset_default_db_cache_for_test();
         if (orig_home_) {
             dztrader::env::set("DZTRADER_HOME", *orig_home_);
         } else {
@@ -369,14 +375,15 @@ protected:
 
 }  // namespace
 
-// 默认配置 (无 database.json): 打开 <DZTRADER_HOME>/db/trade.db, 并自动生成 td 段配置文件。
-TEST_F(DbOpenDefaultTest, OpensDefaultHomeTdDbAndGeneratesConfig) {
+// 默认库 = <DZTRADER_HOME>/db/trade.db, 只读打开; 不再生成/读取 configs/database.json
+// (交易段已废弃, ADR 0044 决策 3)。
+TEST_F(DbOpenDefaultTest, OpensFixedLocalTradeDb) {
     create_td_db(db_path_);
     insert_order_row(db_path_, "A", 1001, 1);
 
     DzDatabase* db = dz_db_open_default();
     ASSERT_NE(nullptr, db) << dz_errmsg();
-    DzResultSet* rs = dz_db_query_order(db, "A", nullptr);
+    DzResultSet* rs = dz_db_query_order(db, "A", nullptr, day(2026, 9, 1));
     ASSERT_NE(nullptr, rs) << dz_errmsg();
     ASSERT_EQ(0, dz_resultset_status(rs));
     ASSERT_TRUE(dz_resultset_next(rs));
@@ -385,88 +392,79 @@ TEST_F(DbOpenDefaultTest, OpensDefaultHomeTdDbAndGeneratesConfig) {
     dz_resultset_close(rs);
     dz_db_close(db);
 
-    EXPECT_TRUE(std::filesystem::exists(home_ + "/configs/database.json"));
+    // 交易段废弃: 打开默认库不产生配置文件
+    EXPECT_FALSE(std::filesystem::exists(home_ + "/configs/database.json"));
 }
 
-// 环境变量 DZTRADER_DB_OPT_PATH 覆盖默认库路径 (配置解析 env > 文件 > 默认)。
-TEST_F(DbOpenDefaultTest, EnvPathOverridesDefaultDb) {
+// 懒打开 + 进程级入口复用: 首次调用才建立入口; 每次调用返回独立句柄（各自一个只读
+// Session）, 都可独立关闭, 关闭一个不影响另一个仍在用的句柄。
+TEST_F(DbOpenDefaultTest, LazilyOpensAndGivesIndependentSessions) {
     create_td_db(db_path_);
     insert_order_row(db_path_, "A", 1001, 1);
-    const std::string alt_dir = home_ + "/alt";
-    const std::string alt_path = alt_dir + "/other.db";
-    std::filesystem::create_directories(alt_dir);
-    create_td_db(alt_path);
-    insert_order_row(alt_path, "B", 2001, 1);
 
-    dztrader::env::set("DZTRADER_DB_OPT_PATH", alt_path);
-    DzDatabase* db = dz_db_open_default();
-    ASSERT_NE(nullptr, db) << dz_errmsg();
+    DzDatabase* first = dz_db_open_default();
+    ASSERT_NE(nullptr, first) << dz_errmsg();
+    DzDatabase* second = dz_db_open_default();
+    ASSERT_NE(nullptr, second) << dz_errmsg();
+    EXPECT_NE(first, second);  // 独立句柄（各自 Session, 关闭互不影响）
 
-    DzResultSet* rs = dz_db_query_order(db, "A", nullptr);
-    ASSERT_NE(nullptr, rs) << dz_errmsg();
-    EXPECT_FALSE(dz_resultset_next(rs));  // 默认库未被读取
-    dz_resultset_close(rs);
-
-    rs = dz_db_query_order(db, "B", nullptr);
+    dz_db_close(first);  // 关掉第一个: 第二个必须仍然可用
+    DzResultSet* rs = dz_db_query_order(second, "A", nullptr, day(2026, 9, 1));
     ASSERT_NE(nullptr, rs) << dz_errmsg();
     ASSERT_TRUE(dz_resultset_next(rs));
-    EXPECT_EQ(2001, dz_resultset_get_int64(rs, 2));
+    EXPECT_EQ(1001, dz_resultset_get_int64(rs, 2));
     dz_resultset_close(rs);
-    dz_db_close(db);
-}
+    dz_db_close(second);
 
-// configs/database.json 的 td 段显式 path 生效 (env 未设置时)。
-TEST_F(DbOpenDefaultTest, ConfigFilePathIsHonored) {
-    create_td_db(db_path_);
-    insert_order_row(db_path_, "A", 1001, 1);
-    const std::string alt_dir = home_ + "/alt";
-    const std::string alt_path = alt_dir + "/other.db";
-    std::filesystem::create_directories(alt_dir);
-    std::filesystem::create_directories(home_ + "/configs");
-    create_td_db(alt_path);
-    insert_order_row(alt_path, "B", 2001, 1);
-
-    nlohmann::json full = nlohmann::json::object();
-    full["td"] = {{"backend", "sqlite"}, {"options", {{"path", alt_path}}}};
-    std::ofstream ofs(home_ + "/configs/database.json", std::ios::binary | std::ios::trunc);
-    ofs << full.dump(2);
-    ofs.close();
-
-    DzDatabase* db = dz_db_open_default();
-    ASSERT_NE(nullptr, db) << dz_errmsg();
-    DzResultSet* rs = dz_db_query_order(db, "B", nullptr);
+    // 全部关闭后再打开: 仍能懒打开（连接仍在缓存里, 无需重建, 也不泄漏）
+    DzDatabase* reopened = dz_db_open_default();
+    ASSERT_NE(nullptr, reopened) << dz_errmsg();
+    rs = dz_db_query_order(reopened, "A", nullptr, day(2026, 9, 1));
     ASSERT_NE(nullptr, rs) << dz_errmsg();
-    ASSERT_TRUE(dz_resultset_next(rs));
-    EXPECT_EQ(2001, dz_resultset_get_int64(rs, 2));
+    EXPECT_TRUE(dz_resultset_next(rs));
     dz_resultset_close(rs);
-    dz_db_close(db);
+    dz_db_close(reopened);
 }
 
-// 默认库不存在: 返回 NULL + DZ_EC_DB_OPEN_FAILED (与 dz_db_open 同语义)。
+// 默认库不存在: 返回 NULL + DZ_EC_DB_OPEN_FAILED (与 dz_db_open 同语义), 不自动建库。
 TEST_F(DbOpenDefaultTest, MissingDefaultDbReturnsNull) {
     EXPECT_EQ(nullptr, dz_db_open_default());
     EXPECT_EQ(DZ_EC_DB_OPEN_FAILED, dz_errcode());
+    EXPECT_FALSE(std::filesystem::exists(db_path_));  // 不自动建库
 }
 
-// 配置指定未编入的后端: 返回 NULL + DZ_EC_DB_UNSUPPORTED_BACKEND (FIX-9 早失败),
-// 错误消息含 backend 名。
-TEST_F(DbOpenDefaultTest, UnsupportedBackendReturnsNull) {
-    dztrader::env::set("DZTRADER_DB_BACKEND", "nope");
-    EXPECT_EQ(nullptr, dz_db_open_default());
-    EXPECT_EQ(DZ_EC_DB_UNSUPPORTED_BACKEND, dz_errcode());
-    const char* msg = dz_errmsg();
-    ASSERT_NE(nullptr, msg);
-    EXPECT_NE(std::string::npos, std::string(msg).find("nope"));
-}
-
-// 配置 JSON 损坏: 返回 NULL + DZ_EC_INVALID_PARAM (不静默回落默认库)。
-TEST_F(DbOpenDefaultTest, InvalidConfigJsonReturnsNull) {
+// DZTRADER_DB_OPT_PATH / database.json 交易段都不再生效: 默认库恒为固定本地路径。
+TEST_F(DbOpenDefaultTest, ConfigAndEnvNoLongerSelectTradeDb) {
+    create_td_db(db_path_);
+    insert_order_row(db_path_, "A", 1001, 1);
+    // 另建一个库并用旧配置手段指向它 — 必须被忽略
+    const std::string alt_path = home_ + "/alt/other.db";
+    std::filesystem::create_directories(home_ + "/alt");
+    create_td_db(alt_path);
+    insert_order_row(alt_path, "B", 2001, 1, "20260901");
     std::filesystem::create_directories(home_ + "/configs");
-    std::ofstream ofs(home_ + "/configs/database.json", std::ios::binary | std::ios::trunc);
-    ofs << R"({"td": broken )";
-    ofs.close();
-    EXPECT_EQ(nullptr, dz_db_open_default());
-    EXPECT_EQ(DZ_EC_INVALID_PARAM, dz_errcode());
+    {
+        std::ofstream ofs(home_ + "/configs/database.json", std::ios::binary | std::ios::trunc);
+        ofs << R"({"td": {"backend": "sqlite", "options": {"path": ")" << alt_path << R"("}}})";
+        ofs.close();
+    }
+    dztrader::env::set("DZTRADER_DB_OPT_PATH", alt_path);
+    // 用例内自己恢复: 不把环境变量泄漏给同二进制的其它用例 (unit-test-standard §3.4)
+    const auto restore_env = [&] { dztrader::env::unset("DZTRADER_DB_OPT_PATH"); };
+
+    DzDatabase* db = dz_db_open_default();
+    ASSERT_NE(nullptr, db) << dz_errmsg();
+    DzResultSet* rs = dz_db_query_order(db, "B", nullptr, day(2026, 9, 1));
+    ASSERT_NE(nullptr, rs) << dz_errmsg();
+    EXPECT_FALSE(dz_resultset_next(rs));  // B 只在 alt 库: 未被读取
+    dz_resultset_close(rs);
+    rs = dz_db_query_order(db, "A", nullptr, day(2026, 9, 1));
+    ASSERT_NE(nullptr, rs) << dz_errmsg();
+    ASSERT_TRUE(dz_resultset_next(rs));  // A 在固定本地库: 才是实际打开的库
+    EXPECT_EQ(1001, dz_resultset_get_int64(rs, 2));
+    dz_resultset_close(rs);
+    dz_db_close(db);
+    restore_env();
 }
 
 /* ── ingest 句柄缓存 (FIX-5/FIX-7: 热路径复用 + 失败不缓存) ── */
@@ -491,22 +489,18 @@ protected:
         std::filesystem::remove_all(dir_);
     }
 
-    dztrader::db::Config make_config(const std::string& file) const {
-        return dztrader::db::Config{
-            .backend = "sqlite",
-            .options = {{"path", (dir_ / file).string()}, {"busy_timeout_ms", "5000"}}};
-    }
+    std::string db_file(const std::string& file) const { return (dir_ / file).string(); }
 };
 
 }  // namespace
 
-// 同一配置复用同一句柄 (MySQL 下即避免每次回补重试重连); 配置变化 → 关旧句柄按新配置重开,
-// 保证测试换 DZTRADER_HOME/环境变量后可隔离。
-TEST_F(IngestDbCacheTest, ReusesHandleAndReopensOnConfigChange) {
+// 同一路径复用同一句柄 (避免每次回补重试重开); 路径变化 → 关旧句柄重开,
+// 保证测试/部署换目标可隔离。
+TEST_F(IngestDbCacheTest, ReusesHandleAndReopensOnPathChange) {
     create_td_db((dir_ / "a.db").string());
     create_td_db((dir_ / "b.db").string());
-    const auto config_a = make_config("a.db");
-    const auto config_b = make_config("b.db");
+    const std::string config_a = db_file("a.db");
+    const std::string config_b = db_file("b.db");
 
     const auto first = dztrader::strategy_api_internal::acquire_ingest_db(config_a);
     ASSERT_NE(nullptr, first.db);
@@ -515,7 +509,7 @@ TEST_F(IngestDbCacheTest, ReusesHandleAndReopensOnConfigChange) {
     EXPECT_EQ(first.db, again.db);  // 同配置命中缓存
     EXPECT_EQ(1u, dztrader::strategy_api_internal::ingest_open_attempts_for_test());  // 命中不重开
 
-    // 配置变化 → 关旧句柄后重开。用打开次数断言而非指针不等: 旧句柄释放后
+    // 路径变化 → 关旧句柄后重开。用打开次数断言而非指针不等: 旧句柄释放后
     // 分配器可能把同一地址复用给新句柄 (Windows MSVC 已实测偶发)。
     const auto changed = dztrader::strategy_api_internal::acquire_ingest_db(config_b);
     ASSERT_NE(nullptr, changed.db);
@@ -530,11 +524,11 @@ TEST_F(IngestDbCacheTest, ReusesHandleAndReopensOnConfigChange) {
     EXPECT_EQ(3u, dztrader::strategy_api_internal::ingest_open_attempts_for_test());
 }
 
-// 关闭退避 (0ms) 时保持"失败不缓存, 每次调用重试一次, 同一配置只报一次"的原语义。
+// 关闭退避 (0ms) 时保持"失败不缓存, 每次调用重试一次, 同一路径只报一次"的原语义。
 TEST_F(IngestDbCacheTest, FailureIsNotCachedAndReportedOnce) {
     dztrader::strategy_api_internal::set_ingest_failure_backoff_for_test(
         std::chrono::milliseconds(0));
-    const auto config = make_config("later.db");
+    const std::string config = db_file("later.db");
     const auto failed = dztrader::strategy_api_internal::acquire_ingest_db(config);
     EXPECT_EQ(nullptr, failed.db);
     EXPECT_TRUE(failed.report);
@@ -543,7 +537,7 @@ TEST_F(IngestDbCacheTest, FailureIsNotCachedAndReportedOnce) {
 
     const auto retry = dztrader::strategy_api_internal::acquire_ingest_db(config);
     EXPECT_EQ(nullptr, retry.db);
-    EXPECT_FALSE(retry.report);  // 同一配置的失败只报一次
+    EXPECT_FALSE(retry.report);  // 同一路径的失败只报一次
 
     create_td_db((dir_ / "later.db").string());
     const auto ok = dztrader::strategy_api_internal::acquire_ingest_db(config);
@@ -556,7 +550,7 @@ TEST_F(IngestDbCacheTest, FailureIsNotCachedAndReportedOnce) {
 TEST_F(IngestDbCacheTest, BackoffSuppressesRetryWithinWindow) {
     dztrader::strategy_api_internal::set_ingest_failure_backoff_for_test(
         std::chrono::milliseconds(10000));
-    const auto config = make_config("cold.db");
+    const std::string config = db_file("cold.db");
     const auto failed = dztrader::strategy_api_internal::acquire_ingest_db(config);
     EXPECT_EQ(nullptr, failed.db);
     EXPECT_TRUE(failed.report);  // 第一次失败仍诊断 (不被退避吞掉)
@@ -578,7 +572,7 @@ TEST_F(IngestDbCacheTest, BackoffSuppressesRetryWithinWindow) {
 TEST_F(IngestDbCacheTest, RetriesAfterWindowAndThenServesFromCache) {
     dztrader::strategy_api_internal::set_ingest_failure_backoff_for_test(
         std::chrono::milliseconds(60000));
-    const auto config = make_config("warm.db");
+    const std::string config = db_file("warm.db");
     const auto failed = dztrader::strategy_api_internal::acquire_ingest_db(config);
     EXPECT_EQ(nullptr, failed.db);
     EXPECT_TRUE(failed.report);
@@ -600,13 +594,13 @@ TEST_F(IngestDbCacheTest, RetriesAfterWindowAndThenServesFromCache) {
     EXPECT_EQ(2u, dztrader::strategy_api_internal::ingest_open_attempts_for_test());
 }
 
-// WP3b 退避按配置隔离: A 失败进入退避不影响 B; 且失败配置在窗口后重试仍只诊断一次。
+// WP3b 退避按路径隔离: A 失败进入退避不影响 B; 且失败路径在窗口后重试仍只诊断一次。
 TEST_F(IngestDbCacheTest, BackoffIsPerConfigAndRetryKeepsReportOnce) {
     dztrader::strategy_api_internal::set_ingest_failure_backoff_for_test(
         std::chrono::milliseconds(100));
     create_td_db((dir_ / "ok.db").string());
-    const auto broken = make_config("missing.db");
-    const auto healthy = make_config("ok.db");
+    const std::string broken = db_file("missing.db");
+    const std::string healthy = db_file("ok.db");
 
     const auto failed = dztrader::strategy_api_internal::acquire_ingest_db(broken);
     EXPECT_EQ(nullptr, failed.db);
@@ -614,14 +608,14 @@ TEST_F(IngestDbCacheTest, BackoffIsPerConfigAndRetryKeepsReportOnce) {
     EXPECT_EQ(1u, dztrader::strategy_api_internal::ingest_open_attempts_for_test());
 
     const auto other = dztrader::strategy_api_internal::acquire_ingest_db(healthy);
-    ASSERT_NE(nullptr, other.db);  // 换配置立即尝试, 不受 broken 的退避影响
+    ASSERT_NE(nullptr, other.db);  // 换路径立即尝试, 不受 broken 的退避影响
     EXPECT_EQ(2u, dztrader::strategy_api_internal::ingest_open_attempts_for_test());
 
     // 窗口到期用测试钩子立即结束, 不 sleep (与 RetriesAfterWindowAndThenServesFromCache 一致)
     dztrader::strategy_api_internal::expire_ingest_backoff_for_test();
     const auto retried = dztrader::strategy_api_internal::acquire_ingest_db(broken);
     EXPECT_EQ(nullptr, retried.db);  // 窗口过后确实重试 (attempts +1)
-    EXPECT_FALSE(retried.report);    // 同一配置的失败仍只诊断一次
+    EXPECT_FALSE(retried.report);    // 同一路径的失败仍只诊断一次
     EXPECT_EQ(3u, dztrader::strategy_api_internal::ingest_open_attempts_for_test());
 }
 
@@ -636,10 +630,10 @@ using dztrader::shm::MultiWriter;
 
 constexpr uint64_t kChannelMB = 1024 * 1024;
 
-/// database.json 损坏 (非法 JSON) 时 ingest 路径的降级: dz_init 不得失败
-/// (异常不越过 C 边界), 库不可用 → 水位不过滤, 帧全放行。
+/// `database.json` 交易段废弃后的行为 (ADR 0044 决策 3): 配置文件**损坏**或指向别的库
+/// 都不再影响 SDK 打开的库 —— 交易库恒为 `<DZTRADER_HOME>/db/trade.db`。
 /// 独立 fixture: 需要 SHM 通道 + dz_init (进程级 context)。
-class IngestConfigErrorTest : public ::testing::Test {
+class IngestConfigObsolescenceTest : public ::testing::Test {
 protected:
     std::string home_;
     DzContext* ctx_ = nullptr;
@@ -647,21 +641,26 @@ protected:
     std::optional<std::string> orig_md_source_;
 
     void SetUp() override {
-        home_ = dztrader::test::unique_temp_dir("dz_test_ingest_config_error").string();
+        home_ = dztrader::test::unique_temp_dir("dz_test_ingest_config_obsolete").string();
         std::filesystem::remove_all(home_);
         std::filesystem::create_directories(home_ + "/shm");
+        std::filesystem::create_directories(home_ + "/db");
         std::filesystem::create_directories(home_ + "/configs");
         orig_home_ = dztrader::env::get("DZTRADER_HOME");
         orig_md_source_ = dztrader::env::get("DZTRADER_MD_SOURCE");
         dztrader::env::set("DZTRADER_HOME", home_);
         dztrader::paths::reset_for_test();  // 清空进程级缓存, 指向本用例 home
         dztrader::env::set("DZTRADER_MD_SOURCE", "test_md");
-        dztrader::env::unset("DZTRADER_DB_BACKEND");
-        dztrader::env::unset("DZTRADER_DB_OPT_PATH");
 
+        // 损坏的 database.json（旧行为下会让 ingest 配置解析失败 → 降级不过滤）
         std::ofstream ofs(home_ + "/configs/database.json", std::ios::binary | std::ios::trunc);
         ofs << R"({"td": broken )";
         ofs.close();
+
+        // 固定本地交易库存在, orders 有 seq=5 的水位行
+        const std::string db_path = home_ + "/db/trade.db";
+        create_td_db(db_path);
+        insert_order_row(db_path, "CFGOBS", 1001, 5);
 
         (void)ChannelMeta::open_or_create(ChannelConfig{
             .channel_name = dztrader::shm::channel_name(dztrader::CHANNEL_NAME_EVENT),
@@ -681,7 +680,7 @@ protected:
             .prefetch_memory = false,
         });
 
-        ctx_ = dz_init();  // 配置损坏: 降级不过滤, 不失败
+        ctx_ = dz_init();
         ASSERT_NE(nullptr, ctx_) << dz_errmsg();
     }
 
@@ -690,6 +689,8 @@ protected:
             dz_release(ctx_);
             ctx_ = nullptr;
         }
+        dztrader::strategy_api_internal::reset_ingest_cache_for_test();
+        dztrader::strategy_api_internal::reset_default_db_cache_for_test();
         if (orig_home_) {
             dztrader::env::set("DZTRADER_HOME", *orig_home_);
         } else {
@@ -703,26 +704,31 @@ protected:
         dztrader::paths::reset_for_test();
         std::filesystem::remove_all(home_);
     }
+
+    void emit_order(const char* account, uint64_t seq) {
+        auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_only(
+            dztrader::shm::channel_name(dztrader::CHANNEL_NAME_EVENT), home_ + "/shm"));
+        DzOrderReport rpt{};
+        dztrader::copy_string(rpt.account_id, account, true);
+        dztrader::copy_string(rpt.strategy_id, dz_strategy_id(ctx_), true);
+        rpt.seq = seq;
+        MultiWriter writer = MultiWriter::create(meta, "cfg_obs_writer");
+        ASSERT_TRUE(writer.write_frame(DZ_FRAME_ORDER_REPORT, rpt));
+        writer.notify_subscribers();
+    }
 };
 
 }  // namespace
 
-// 配置损坏: dz_init 仍成功 (配置错误单独诊断 + 不缓存, FIX-3), 水位装载降级为不过滤,
-// 帧全放行 (seq=5 无水位即放行 — 与"库不存在"同结果, 诊断路径不同)。
-TEST_F(IngestConfigErrorTest, CorruptConfigDegradesWithoutFailingInit) {
-    auto meta = std::make_shared<ChannelMeta>(ChannelMeta::open_only(
-        dztrader::shm::channel_name(dztrader::CHANNEL_NAME_EVENT), home_ + "/shm"));
-    DzOrderReport rpt{};
-    dztrader::copy_string(rpt.account_id, "CFGERR", true);
-    dztrader::copy_string(rpt.strategy_id, dz_strategy_id(ctx_), true);
-    rpt.seq = 5;  // 无水位 (配置损坏 → 无库) → 不过滤, 全放行
-    {
-        MultiWriter writer = MultiWriter::create(meta, "cfg_err_writer");
-        ASSERT_TRUE(writer.write_frame(DZ_FRAME_ORDER_REPORT, rpt));
-        writer.notify_subscribers();
-    }
+// AC: `database.json` 交易段修改/损坏不再影响打开的库 —— 水位仍从固定本地
+// `db/trade.db` 装载（seq=5 → seq≤5 拦截、seq=6 放行）。旧行为下损坏配置会让
+// 配置解析失败、水位装载降级为全放行（seq=5 会被放行）——本用例区分两种行为。
+TEST_F(IngestConfigObsolescenceTest, CorruptConfigDoesNotAffectOpenedDb) {
+    emit_order("CFGOBS", 5);  // ≤ W(=5): 已同步过, 拦截
+    EXPECT_EQ(nullptr, dz_next_event(ctx_)) << "seq=5 must be filtered by watermark from trade.db";
+    emit_order("CFGOBS", 6);  // > W: 放行
     const void* frame = dz_next_event(ctx_);
     ASSERT_NE(nullptr, frame);
     EXPECT_EQ(DZ_FRAME_ORDER_REPORT, FrameView(static_cast<const std::byte*>(frame)).type());
-    EXPECT_EQ(5u, FrameView(static_cast<const std::byte*>(frame)).payload<DzOrderReport>().seq);
+    EXPECT_EQ(6u, FrameView(static_cast<const std::byte*>(frame)).payload<DzOrderReport>().seq);
 }

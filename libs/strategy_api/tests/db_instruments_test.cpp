@@ -4,8 +4,8 @@
 #include <dztrader/db/database.h>
 #include <dztrader/error.h>
 #include <dztrader/tdstore/records.h>
-#include <dztrader/tdstore/records_store.h>
-#include <dztrader/tdstore/schema_dzdb.h>
+#include "td_instrument_query.h"
+#include "td_schema.h"
 #include <dztrader/tdstore/trade_db.h>
 
 #include <cstdint>
@@ -34,7 +34,7 @@ protected:
             (void)dztrader::tdstore::ensure_trade_db(db_path_);
             auto database = dztrader::db::Database::open(
                 dztrader::db::Config{.backend = "sqlite", .options = {{"path", db_path_}}},
-                dztrader::tdstore::schemas());
+                dztrader::db::td_schemas());
             auto session = database->session();
             // 插入序 (rb2605、rb2601) 与期望升序相反: 实现丢掉 ORDER BY instrument_id
             // 时用例必须变红。
