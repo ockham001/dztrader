@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useSysmonStore } from '@/stores/sysmon'
 import { useToastStore } from '@/stores/toast'
 import type {
+  SysmonClockConfigPayload,
   SysmonConfigPayload,
   SysmonDiskConfigPayload,
   SysmonHistoryConfigPayload,
@@ -26,7 +27,7 @@ const sysmon = useSysmonStore()
 const auth = useAuthStore()
 const toast = useToastStore()
 
-/** 指标大类（契约 sysmon §3.1 sampling.groups）：展示与编辑都按这 8 项全量覆盖 */
+/** 指标大类（契约 sysmon §3.1 sampling.groups）：展示与编辑都按这 9 项全量覆盖 */
 const METRIC_GROUPS = [
   { key: 'cpu', label: 'CPU' },
   { key: 'memory', label: '内存' },
@@ -36,6 +37,7 @@ const METRIC_GROUPS = [
   { key: 'network', label: '网络' },
   { key: 'temperature', label: '温度' },
   { key: 'cpu_frequency', label: 'CPU 频率' },
+  { key: 'clock', label: '时钟偏差' },
 ] as const
 
 /** 数字字段描述：label 用于表单与校验提示，unit 只用于展示/输入标签 */
@@ -60,6 +62,11 @@ const FIELDS = {
   swapUsedPct: { key: 'swap_used_pct', label: '交换使用率阈值', unit: '%', integer: false },
   volumeFreePct: { key: 'volume_free_pct', label: '卷剩余空间阈值（空闲百分比）', unit: '%', integer: false },
   logRepeat: { key: 'log_repeat_sec', label: '越限日志重记间隔', unit: '秒', integer: true },
+  probeTimeout: { key: 'probe_timeout_ms', label: '单台探测超时', unit: 'ms', integer: true },
+  manualMinInterval: { key: 'manual_min_interval_sec', label: '手动查询最小间隔', unit: '秒', integer: true },
+  offsetWarn: { key: 'offset_warn_ms', label: '偏差 warning 阈值', unit: 'ms', integer: true },
+  offsetError: { key: 'offset_error_ms', label: '偏差 error 阈值', unit: 'ms', integer: true },
+  boundAlarm: { key: 'bound_alarm_ms', label: '误差界质量阈值', unit: 'ms', integer: true },
 } as const satisfies Record<string, NumberFieldSpec>
 
 const SAMPLING_FIELDS: readonly NumberFieldSpec[] = [FIELDS.measureInterval, FIELDS.recordInterval, FIELDS.phaseOffset]
@@ -73,6 +80,13 @@ const THRESHOLDS_FIELDS: readonly NumberFieldSpec[] = [
   FIELDS.volumeFreePct,
   FIELDS.logRepeat,
 ]
+const CLOCK_FIELDS: readonly NumberFieldSpec[] = [
+  FIELDS.probeTimeout,
+  FIELDS.manualMinInterval,
+  FIELDS.offsetWarn,
+  FIELDS.offsetError,
+  FIELDS.boundAlarm,
+]
 
 const canEdit = computed(() => auth.isAdmin)
 const config = computed(() => sysmon.config)
@@ -80,7 +94,7 @@ const savePending = computed(() => sysmon.configPending)
 
 /**
  * admin 的只读摘要是否展开（#207 D1）。
- * admin 视图同时有「六个只读摘要卡」与「修改配置表单」，同批字段两套并存、页面也被撑长；
+ * admin 视图同时有「七个只读摘要卡」与「修改配置表单」，同批字段两套并存、页面也被撑长；
  * 默认折叠摘要（表单本身就是同一批字段的可编辑版本），展开后仍可对照**当前生效值**——
  * 保存后表单会跟随镜像重置，但用户仍可能想确认「现在到底生效的是什么」。
  * 非 admin 没有编辑表单，摘要始终展示（只读视图不回归）。
@@ -106,7 +120,7 @@ interface DisplaySection {
 }
 
 /**
- * 六个配置段的只读展示（数据全部来自生效镜像；镜像为 null 时不产出任何行）。
+ * 七个配置段的只读展示（数据全部来自生效镜像；镜像为 null 时不产出任何行）。
  * 数字一律带单位、布尔一律「已启用 / 已关闭」，缺失键按契约 §3.1「缺省 true」解释。
  */
 const displaySections = computed<DisplaySection[]>(() => {
@@ -176,6 +190,28 @@ const displaySections = computed<DisplaySection[]>(() => {
         { field: 'thresholds.log_repeat_sec', label: '越限日志重记间隔', value: `${cfg.thresholds.log_repeat_sec} 秒` },
       ],
     },
+    // #296 契约 sysmon §3.1 `clock` 段：三个时间阈值住本段（与探测参数同一功能单元），
+    // 不在「阈值越限」段——分组按契约，不按"看起来像阈值"归类。
+    {
+      key: 'clock',
+      title: '时钟偏差',
+      rows: [
+        { field: 'clock.enabled', label: '时钟监控', value: enabledText(cfg.clock.enabled) },
+        { field: 'clock.servers', label: '探测服务器', list: cfg.clock.servers },
+        cfg.clock.probe_times.length > 0
+          ? { field: 'clock.probe_times', label: '探测时刻', list: cfg.clock.probe_times }
+          : { field: 'clock.probe_times', label: '探测时刻', value: '已关闭定时探测' },
+        { field: 'clock.probe_timeout_ms', label: '单台探测超时', value: `${cfg.clock.probe_timeout_ms} ms` },
+        {
+          field: 'clock.manual_min_interval_sec',
+          label: '手动查询最小间隔',
+          value: cfg.clock.manual_min_interval_sec === 0 ? '不限流' : `${cfg.clock.manual_min_interval_sec} 秒`,
+        },
+        { field: 'clock.offset_warn_ms', label: '偏差 warning 阈值', value: `${cfg.clock.offset_warn_ms} ms` },
+        { field: 'clock.offset_error_ms', label: '偏差 error 阈值', value: `${cfg.clock.offset_error_ms} ms` },
+        { field: 'clock.bound_alarm_ms', label: '误差界质量阈值', value: `${cfg.clock.bound_alarm_ms} ms` },
+      ],
+    },
   ]
 })
 
@@ -193,6 +229,10 @@ interface ConfigForm {
   historyEnabled: boolean
   realtimeNumbers: Record<string, string | number>
   thresholdNumbers: Record<string, string | number>
+  clockEnabled: boolean
+  clockServers: string
+  clockProbeTimes: string
+  clockNumbers: Record<string, string | number>
 }
 
 function formFromConfig(cfg: SysmonConfigPayload): ConfigForm {
@@ -217,6 +257,10 @@ function formFromConfig(cfg: SysmonConfigPayload): ConfigForm {
       [FIELDS.pushInterval.key]: String(cfg.realtime.push_interval_sec),
     },
     thresholdNumbers: Object.fromEntries(THRESHOLDS_FIELDS.map(spec => [spec.key, String(cfg.thresholds[spec.key as keyof SysmonThresholdsConfigPayload])])),
+    clockEnabled: cfg.clock.enabled,
+    clockServers: cfg.clock.servers.join('\n'),
+    clockProbeTimes: cfg.clock.probe_times.join('\n'),
+    clockNumbers: Object.fromEntries(CLOCK_FIELDS.map(spec => [spec.key, String(cfg.clock[spec.key as keyof SysmonClockConfigPayload])])),
   }
 }
 
@@ -229,6 +273,10 @@ const form = reactive<ConfigForm>({
   historyEnabled: true,
   realtimeNumbers: {},
   thresholdNumbers: {},
+  clockEnabled: true,
+  clockServers: '',
+  clockProbeTimes: '',
+  clockNumbers: {},
 })
 
 /** 表单草稿跟随配置镜像（WS 回推 / REST 补拉 / 校验失败回推旧值都走这里） */
@@ -243,6 +291,10 @@ function resetForm(cfg: SysmonConfigPayload | null): void {
   form.historyEnabled = next.historyEnabled
   form.realtimeNumbers = next.realtimeNumbers
   form.thresholdNumbers = next.thresholdNumbers
+  form.clockEnabled = next.clockEnabled
+  form.clockServers = next.clockServers
+  form.clockProbeTimes = next.clockProbeTimes
+  form.clockNumbers = next.clockNumbers
 }
 
 watch(config, (cfg) => { resetForm(cfg) }, { immediate: true })
@@ -312,6 +364,16 @@ function parseForm(): ParsedForm {
       swap_used_pct: number(form.thresholdNumbers[FIELDS.swapUsedPct.key], FIELDS.swapUsedPct),
       volume_free_pct: number(form.thresholdNumbers[FIELDS.volumeFreePct.key], FIELDS.volumeFreePct),
       log_repeat_sec: number(form.thresholdNumbers[FIELDS.logRepeat.key], FIELDS.logRepeat),
+    },
+    clock: {
+      enabled: form.clockEnabled,
+      servers: splitLines(form.clockServers),
+      probe_times: splitLines(form.clockProbeTimes),
+      probe_timeout_ms: number(form.clockNumbers[FIELDS.probeTimeout.key], FIELDS.probeTimeout),
+      manual_min_interval_sec: number(form.clockNumbers[FIELDS.manualMinInterval.key], FIELDS.manualMinInterval),
+      offset_warn_ms: number(form.clockNumbers[FIELDS.offsetWarn.key], FIELDS.offsetWarn),
+      offset_error_ms: number(form.clockNumbers[FIELDS.offsetError.key], FIELDS.offsetError),
+      bound_alarm_ms: number(form.clockNumbers[FIELDS.boundAlarm.key], FIELDS.boundAlarm),
     },
   }
   return { config: invalidLabel === null ? parsed : null, invalidLabel }
@@ -395,6 +457,26 @@ function diffConfig(next: SysmonConfigPayload, current: SysmonConfigPayload): Sy
   }
   if (Object.keys(thresholds).length > 0) patch.thresholds = thresholds
 
+  // clock 段（#296）：两个数组字段整体替换（与 disk.devices 同款），其余按值比较。
+  const clock: Partial<SysmonClockConfigPayload> = {}
+  if (next.clock.enabled !== current.clock.enabled) clock.enabled = next.clock.enabled
+  if (!sameStringArray(next.clock.servers, current.clock.servers)) {
+    clock.servers = next.clock.servers
+  }
+  if (!sameStringArray(next.clock.probe_times, current.clock.probe_times)) {
+    clock.probe_times = next.clock.probe_times
+  }
+  // 数字字段集合由 CLOCK_FIELDS 单一维护：逐字段写 if 会变成第二份字段清单，改一处必漏另一处。
+  const clockNumbers: Record<string, number> = clock as Record<string, number>
+  for (const spec of CLOCK_FIELDS) {
+    const key = spec.key as keyof SysmonClockConfigPayload
+    const nextValue = next.clock[key]
+    if (nextValue !== current.clock[key]) {
+      clockNumbers[spec.key] = nextValue as number
+    }
+  }
+  if (Object.keys(clock).length > 0) patch.clock = clock
+
   return patch
 }
 
@@ -469,7 +551,7 @@ async function onSave(): Promise<void> {
     </div>
 
     <template v-else>
-      <!-- 生效配置展示：按契约六个段分组
+      <!-- 生效配置展示：按契约七个段分组
            #207 D1：admin 同时有「只读摘要」和「修改配置表单」时，同批字段会出现两套。
            因此 admin 默认折叠摘要（保留入口，展开仍可对照生效值），非 admin 只读视图不变。 -->
       <div v-if="canEdit" class="sysmon-config__summary-toggle">
@@ -632,6 +714,58 @@ async function onSave(): Promise<void> {
                 <span class="ds-input">
                   <input
                     v-model="form.realtimeNumbers[field.key]"
+                    type="number"
+                    :disabled="savePending"
+                    :data-test="`sysmon-config-input-${field.key}`"
+                  >
+                </span>
+              </label>
+            </div>
+          </section>
+
+          <section class="sysmon-config__form-section" data-test="sysmon-config-editor-clock">
+            <h3 class="sysmon-config__form-title">时钟偏差</h3>
+            <div class="sysmon-config__fields">
+              <label class="ds-check">
+                <input
+                  v-model="form.clockEnabled"
+                  type="checkbox"
+                  :disabled="savePending"
+                  data-test="sysmon-config-input-clock.enabled"
+                >
+                <span class="ds-check__box"></span>
+                启用时钟监控
+              </label>
+              <!-- 两个多值列表：一行一个，数组字段整体替换（契约 §3） -->
+              <label class="sysmon-config__field">
+                <span class="sysmon-config__field-label">探测服务器（一行一个；不能为空，关闭监控请用上方开关）</span>
+                <textarea
+                  v-model="form.clockServers"
+                  class="ds-textarea"
+                  rows="3"
+                  :disabled="savePending"
+                  data-test="sysmon-config-input-clock.servers"
+                ></textarea>
+              </label>
+              <label class="sysmon-config__field">
+                <span class="sysmon-config__field-label">探测时刻（一行一个 HH:MM；留空 = 关闭定时探测）</span>
+                <textarea
+                  v-model="form.clockProbeTimes"
+                  class="ds-textarea"
+                  rows="5"
+                  :disabled="savePending"
+                  data-test="sysmon-config-input-clock.probe_times"
+                ></textarea>
+              </label>
+              <label
+                v-for="field in CLOCK_FIELDS"
+                :key="field.key"
+                class="sysmon-config__field"
+              >
+                <span class="sysmon-config__field-label">{{ field.label }}（{{ field.unit }}）</span>
+                <span class="ds-input">
+                  <input
+                    v-model="form.clockNumbers[field.key]"
                     type="number"
                     :disabled="savePending"
                     :data-test="`sysmon-config-input-${field.key}`"

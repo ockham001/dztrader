@@ -1536,6 +1536,74 @@ TEST(SnapshotBuilderTest, ClockAvailabilityKeysReportUnprobedState) {
     EXPECT_EQ(service_entry.reason.value(), "not_implemented");
 }
 
+// 契约 sysmon §2.9 / §3.1.1（#296）：`clock` 域被配置关闭时（`clock.enabled=false` 或
+// `sampling.groups.clock=false`，关闭取或）该域为 **null**，两键均为 `disabled_by_config`。
+// 关闭态优先级最高：`ClockMetrics.disabled` 置位时即便带着上一轮探测结果，也不得输出旧值。
+TEST(SnapshotBuilderTest, ClockDomainNullWhenDisabledByConfig) {
+    ClockMetrics disabled_clock;
+    disabled_clock.disabled = true;
+    const auto snapshot =
+        build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, {}, disabled_clock);
+    // 域为 null（不是空态对象）：前端据此区分「配置关闭」与「尚未探测」。
+    EXPECT_EQ(snapshot.clock, std::nullopt);
+    const nlohmann::json payload = snapshot;
+    EXPECT_TRUE(payload["clock"].is_null());
+
+    for (const char* key :
+         {platform::SYSMON_METRIC_CLOCK_OFFSET, platform::SYSMON_METRIC_CLOCK_SYNC_SERVICE}) {
+        const auto& entry = snapshot.availability.metrics.at(key);
+        EXPECT_FALSE(entry.available) << key;
+        ASSERT_TRUE(entry.reason.has_value()) << key;
+        // 契约 §2.5：配置关闭一律 disabled_by_config（优先于 no_reference / not_implemented）。
+        EXPECT_EQ(entry.reason.value(), "disabled_by_config") << key;
+    }
+    // 清空不能影响其它指标：15 个键仍然全覆盖，其余域照常。
+    EXPECT_EQ(snapshot.availability.metrics.size(), platform::SYSMON_METRIC_KEYS.size());
+    EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_CPU_TOTAL).available);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(payload), std::nullopt);
+}
+
+// 契约 sysmon §3.1「enabled true→false 时清空 clock 域」（#296）：关闭态不得把**关闭前**
+// 的探测结果当当前事实输出——否则重新打开后会看到一段陈旧偏差与旧的 `last_probe_unix_ms`。
+TEST(SnapshotBuilderTest, ClockDomainDisabledDropsStaleProbeResult) {
+    ClockMetrics clock_metrics;
+    clock_metrics.disabled = true;
+    platform::SysmonClockInfo stale;
+    stale.offset_ms = 12.4;
+    stale.bound_ms = 48.7;
+    stale.source = "ntp.aliyun.com";
+    stale.source_stratum = 2;
+    stale.last_probe_unix_ms = 1'790'000'004'000;
+    clock_metrics.info = stale;
+    const auto snapshot =
+        build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, {}, clock_metrics);
+    EXPECT_EQ(snapshot.clock, std::nullopt) << "a disabled domain must not carry a stale result";
+    EXPECT_TRUE(nlohmann::json(snapshot)["clock"].is_null());
+}
+
+// 契约 sysmon §2.5（#296）：域开关是**两层入口关闭取或**——`main.cpp` 的
+// `clock_domain_enabled()` 读 `clock.enabled && sampling.groups.clock`。纯函数层只看到
+// `ClockMetrics.disabled`，因此这里锁的是「置位即全关」这一条契约（两层入口的合并由
+// config_e2e_test 用真实进程覆盖，纯函数覆盖不到配置读取）。
+TEST(SnapshotBuilderTest, ClockDisabledKeepsEveryOtherAvailabilityKey) {
+    ClockMetrics disabled_clock;
+    disabled_clock.disabled = true;
+    const auto disabled =
+        build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, {}, disabled_clock);
+    const auto enabled = build_with(make_linux_info(), make_full_metrics());
+    ASSERT_EQ(disabled.availability.metrics.size(), enabled.availability.metrics.size());
+    for (const char* key : platform::SYSMON_METRIC_KEYS) {
+        const std::string_view metric(key);
+        if (metric == platform::SYSMON_METRIC_CLOCK_OFFSET ||
+            metric == platform::SYSMON_METRIC_CLOCK_SYNC_SERVICE) {
+            continue;
+        }
+        EXPECT_EQ(disabled.availability.metrics.at(key).available,
+                  enabled.availability.metrics.at(key).available)
+            << key;
+    }
+}
+
 TEST(SnapshotBuilderTest, SnapshotOmitsRemovedAlertAndWatchPathFields) {
     const auto snapshot =
         build_with(make_linux_info(), make_full_metrics(), {}, {}, make_disk_metrics());

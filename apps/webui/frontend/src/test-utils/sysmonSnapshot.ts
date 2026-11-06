@@ -310,6 +310,7 @@ export function makeSysmonConfig(overrides: SysmonConfigOverrides = {}): SysmonC
         network: true,
         temperature: true,
         cpu_frequency: true,
+        clock: true,
       },
       ...overrides.sampling,
     },
@@ -331,6 +332,18 @@ export function makeSysmonConfig(overrides: SysmonConfigOverrides = {}): SysmonC
       volume_free_pct: 10,
       log_repeat_sec: 600,
       ...overrides.thresholds,
+    },
+    // #296 契约 sysmon §3.1 `clock` 段：默认值与后端契约一致。
+    clock: {
+      enabled: true,
+      servers: ['ntp.aliyun.com', 'ntp.tencent.com', 'cn.pool.ntp.org'],
+      probe_times: ['08:30', '12:30', '15:30', '18:00', '20:30'],
+      probe_timeout_ms: 1500,
+      manual_min_interval_sec: 10,
+      offset_warn_ms: 100,
+      offset_error_ms: 1000,
+      bound_alarm_ms: 200,
+      ...overrides.clock,
     },
   }
 }

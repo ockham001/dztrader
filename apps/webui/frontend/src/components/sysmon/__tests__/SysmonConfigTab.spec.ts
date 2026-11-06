@@ -77,15 +77,15 @@ describe('SysmonConfigTab 生效配置展示（#81）', () => {
     expect(wrapper.find('[data-test="sysmon-config-editor"]').exists()).toBe(false)
   })
 
-  it('镜像到达：按六个段展示生效值（数值带单位、布尔语义化、数组逐条）', async () => {
+  it('镜像到达：按七个段展示生效值（数值带单位、布尔语义化、数组逐条）', async () => {
     const { wrapper } = await mountTab({
       config: makeSysmonConfig({
         disk: { devices: ['sda'] },
       }),
     })
 
-    // 六个段都在
-    for (const section of ['sampling', 'disk', 'network', 'history', 'realtime', 'thresholds']) {
+    // 七个段都在（clock 段由 #296 加入）
+    for (const section of ['sampling', 'disk', 'network', 'history', 'realtime', 'thresholds', 'clock']) {
       expect(wrapper.find(`[data-test="sysmon-config-section-${section}"]`).exists()).toBe(true)
     }
     // 数字 + 单位
@@ -104,8 +104,8 @@ describe('SysmonConfigTab 生效配置展示（#81）', () => {
     // 布尔语义化
     expect(valueText(wrapper, 'network.hide_virtual')).toBe('已启用')
     expect(valueText(wrapper, 'history.enabled')).toBe('已启用')
-    // groups 8 项逐项展示
-    const groupKeys = ['cpu', 'memory', 'swap', 'volumes', 'disk_io', 'network', 'temperature', 'cpu_frequency']
+    // groups 9 项逐项展示（含 #296 新增的 clock）
+    const groupKeys = ['cpu', 'memory', 'swap', 'volumes', 'disk_io', 'network', 'temperature', 'cpu_frequency', 'clock']
     for (const key of groupKeys) {
       expect(wrapper.find(`[data-test="sysmon-config-value-sampling.groups.${key}"]`).exists()).toBe(true)
     }
@@ -185,7 +185,7 @@ describe('SysmonConfigTab 编辑与保存（#81，仅 admin）', () => {
     expect(wrapper.find('[data-test="sysmon-config-save"]').attributes('disabled')).toBeDefined()
   })
 
-  it('groups 只带改动的键（其余 7 项沿用生效值，不无谓下发）', async () => {
+  it('groups 只带改动的键（其余 8 项沿用生效值，不无谓下发）', async () => {
     vi.mocked(sysmonApi.setConfig).mockResolvedValue({ ok: true })
     const { wrapper } = await mountTab({ config: makeSysmonConfig() })
 
@@ -261,6 +261,101 @@ describe('SysmonConfigTab 编辑与保存（#81，仅 admin）', () => {
     expect((wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]').element as HTMLInputElement).value)
       .toBe('1000')
     expect(valueText(wrapper, 'sampling.measure_interval_ms')).toBe('1000 ms')
+  })
+})
+
+// #296 契约 sysmon §3.1 `clock` 段：只读展示 + admin 编辑（多值列表 / 数字 / 布尔）。
+describe('SysmonConfigTab 时钟偏差配置段（#296）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sysmonPending.__resetForTests()
+    vi.clearAllMocks()
+  })
+
+  it('只读展示：服务器与探测时刻逐条列出，阈值为数字带毫秒单位', async () => {
+    const { wrapper } = await mountTab({ config: makeSysmonConfig() })
+
+    expect(wrapper.find('[data-test="sysmon-config-section-clock"]').exists()).toBe(true)
+    // 服务器三台逐条展示（list 形态，不是逗号串）
+    const servers = wrapper.find('[data-test="sysmon-config-value-clock.servers"]')
+    expect(servers.text()).toContain('ntp.aliyun.com')
+    expect(servers.text()).toContain('cn.pool.ntp.org')
+    // 探测时刻 5 个
+    const times = wrapper.find('[data-test="sysmon-config-value-clock.probe_times"]')
+    expect(times.text()).toContain('08:30')
+    expect(times.text()).toContain('20:30')
+    // 三个时间阈值住 clock 段（不是 thresholds 段）
+    expect(valueText(wrapper, 'clock.offset_warn_ms')).toBe('100 ms')
+    expect(valueText(wrapper, 'clock.offset_error_ms')).toBe('1000 ms')
+    expect(valueText(wrapper, 'clock.bound_alarm_ms')).toBe('200 ms')
+    expect(valueText(wrapper, 'clock.probe_timeout_ms')).toBe('1500 ms')
+    expect(valueText(wrapper, 'clock.enabled')).toBe('已启用')
+  })
+
+  it('空探测时刻 = 已关闭定时探测（不是空白/0）', async () => {
+    const { wrapper } = await mountTab({ config: makeSysmonConfig({ clock: { probe_times: [] } }) })
+    expect(valueText(wrapper, 'clock.probe_times')).toBe('已关闭定时探测')
+  })
+
+  it('手动限流为 0 时显示「不限流」而不是 0 秒', async () => {
+    const { wrapper } = await mountTab({ config: makeSysmonConfig({ clock: { manual_min_interval_sec: 0 } }) })
+    expect(valueText(wrapper, 'clock.manual_min_interval_sec')).toBe('不限流')
+  })
+
+  it('编辑：多行探测时刻与服务器 → 数组整体替换，数字按值比较，布尔单独下发', async () => {
+    vi.mocked(sysmonApi.setConfig).mockResolvedValue({ ok: true })
+    const { wrapper } = await mountTab({ config: makeSysmonConfig() })
+
+    await wrapper.find('[data-test="sysmon-config-input-clock.servers"]')
+      .setValue('10.0.0.1\n ntp.example.com ')
+    await wrapper.find('[data-test="sysmon-config-input-clock.probe_times"]')
+      .setValue('06:15\n\n22:45')
+    await wrapper.find('[data-test="sysmon-config-input-offset_warn_ms"]').setValue('250')
+    await wrapper.find('[data-test="sysmon-config-input-clock.enabled"]').setValue(false)
+    await wrapper.find('[data-test="sysmon-config-save"]').trigger('click')
+    await flushPromises()
+
+    // 只下发差异：未改的字段（probe_timeout_ms / manual_min_interval_sec / bound_alarm_ms 等）不出现
+    expect(sysmonApi.setConfig).toHaveBeenCalledWith({
+      clock: {
+        enabled: false,
+        servers: ['10.0.0.1', 'ntp.example.com'],
+        probe_times: ['06:15', '22:45'],
+        offset_warn_ms: 250,
+      },
+    })
+  })
+
+  it('非法数字：不下发并提示具体字段（探测超时清空）', async () => {
+    vi.mocked(sysmonApi.setConfig).mockResolvedValue({ ok: true })
+    const errorSpy = vi.spyOn(useToastStore(), 'error')
+    const { wrapper } = await mountTab({ config: makeSysmonConfig() })
+
+    await wrapper.find('[data-test="sysmon-config-input-probe_timeout_ms"]').setValue('')
+    await wrapper.find('[data-test="sysmon-config-save"]').trigger('click')
+    await flushPromises()
+
+    expect(sysmonApi.setConfig).not.toHaveBeenCalled()
+    expect(errorSpy.mock.calls[0][0]).toContain('单台探测超时')
+  })
+
+  it('校验失败回推旧值：clock 段草稿随镜像回退', async () => {
+    vi.mocked(sysmonApi.setConfig).mockResolvedValue({ ok: true, message: 'dispatched' })
+    const { wrapper, store } = await mountTab({ config: makeSysmonConfig() })
+
+    await wrapper.find('[data-test="sysmon-config-input-clock.probe_times"]').setValue('25:00')
+    await wrapper.find('[data-test="sysmon-config-save"]').trigger('click')
+    await flushPromises()
+    expect(store.configPending).toBe(true)
+
+    // dzsysmon 校验失败 → 回推旧值（契约 §3.3 四件套）；表单必须回退，不留未生效草稿
+    store.applyConfig(makeSysmonConfig())
+    await flushPromises()
+
+    expect(store.configPending).toBe(false)
+    expect((wrapper.find('[data-test="sysmon-config-input-clock.probe_times"]').element as HTMLTextAreaElement).value)
+      .toBe('08:30\n12:30\n15:30\n18:00\n20:30')
+    expect(valueText(wrapper, 'clock.offset_warn_ms')).toBe('100 ms')
   })
 })
 

@@ -81,7 +81,7 @@
 ## 配置
 
 - 配置文件：`$DZTRADER_HOME/configs/dzsysmon.json`。进程启动时缺失则**自动生成完整默认值**，零配置可运行；仓库不提交模板文件（AGENTS 门禁 6）。
-- 内容：`log`（日志，走《帧契约：日志》的 `SET/RTN_LOG_CONFIG`，不在 sysmon 配置帧 payload 内）与 `sampling` / `disk` / `network` / `history` / `realtime` / `thresholds`（字段、默认值与约束见契约 sysmon §3.1）。消费关系（#81 收口后全部可运行期修改）：
+- 内容：`log`（日志，走《帧契约：日志》的 `SET/RTN_LOG_CONFIG`，不在 sysmon 配置帧 payload 内）与 `sampling` / `disk` / `network` / `history` / `realtime` / `thresholds` / `clock`（七个业务段；字段、默认值与约束见契约 sysmon §3.1）。消费关系（#81 收口后全部可运行期修改）：
   - `sampling.groups.cpu`（#81）：关闭时跳过 CPU 计时/负载/速率采集与饱和判定，`cpu.total` / `cpu.cores` / `cpu.load_average` / `cpu.context_switches` 标 `disabled_by_config`，重新开启从新基线开始；`cpu.frequency` 由 `sampling.groups.cpu_frequency` 独立控制（#73，Linux 默认开、Windows 默认关）。
   - `sampling.groups.memory` / `sampling.groups.swap`（#74）、`volumes`（#75）、`disk_io`（#76）、`network`（#77）：关闭时跳过对应采集并标 `disabled_by_config`，重新开启从新基线开始，关闭期不冒充速率窗口。
   - `sampling.measure_interval_ms` 与 `realtime.push_interval_sec`：SET 成功后取消 pending wait 并按新间隔重排（即时生效）；`sampling.record_interval_sec` / `sampling.phase_offset_sec`：记录窗口重配，从**下一窗口**生效（进行中窗口按旧宽度落库，避免切碎历史）。
@@ -90,6 +90,7 @@
   - `history.enabled`（#81 起支持运行期切换）：true→false 先 flush 当前记录窗口再关库/停落盘线程；false→true 建库并起线程，从空窗口开始且**不写 `restart` 标记**（进程没重启）；建库失败记 ERROR + `NOTIFY_UI`，实时链路继续，生效配置保持 `true`（配置表达意图，失败是运行期降级，不伪造回滚）；后续任意 SET 会重试建库（无需先关再开或重启）。
   - `history.raw_retention_hours` / `max_retention_days` / `max_bytes`：保留策略参数发布给落盘线程，**下一维护周期**生效。
   - `thresholds.*`（#80 原 `alerts` 段，#123 改名）：饱和阈值、内存/交换/卷阈值与 `log_repeat_sec` 重记间隔，每个计量 tick 读取当前值。卷越限只按空闲百分比判定，没有绝对容量形态的阈值。
+  - `clock`（#296，契约 sysmon §3.1）：时钟偏差监控域的开关（`enabled`）、探测服务器（`servers`）、探测时刻（`probe_times`）、单台超时（`probe_timeout_ms`）、手动限流（`manual_min_interval_sec`）与三个时间阈值（`offset_warn_ms` / `offset_error_ms` / `bound_alarm_ms`）。**域开关是两层入口关闭取或**：`clock.enabled` 与 `sampling.groups.clock` 同时为 true 才启用；关闭时 `clock` 域为 `null`、两键 `disabled_by_config`，`apply_snapshot_output_config()` 同时清掉最近一轮结果（关闭期与重开后首轮探测前都不得展示旧值）。三个时间阈值**不住** `thresholds` 段：它们与探测参数同属一个功能单元，且 error 档会弹窗（ADR 0047）。探测调度本身由 #299 接线，本节只承载配置。
   - 旧配置迁移：读到旧 `alerts` 段时把可映射的键值搬到 `thresholds`（不可映射的键丢弃）、写回配置文件、记一条日志，**不报错、不阻塞启动**；默认配置生成器直接产出 `thresholds` 形状（契约 sysmon §3.1）。
 - 运行期修改：`SET_SYSMON_CONFIG` 为 RFC 7386 merge patch（任意位置 `null` 非法；空对象无操作但仍回 RTN），成功回推全量 `RTN_SYSMON_CONFIG`；失败按四件套处理——回滚旧值 → 日志 → `NOTIFY_UI` error（`popup=true`）→ 回推旧值（契约 sysmon §3.3、通用规则 §8）。
 - 生效顺序（契约 sysmon §3.1.1，顺序是语义的一部分）：校验 → 原子持久化（保留 `log`/未知 section）→ 内存镜像替换 → 重排双定时器 → 记录窗口重配 → 保留策略发布 → 历史开关切换 → 回推 RTN → 成功时立即推送一帧快照。因此只影响快照构造的配置（`hide_virtual` / `devices`）在下一个推送周期之前就可见（不必等 5 秒基线）；`thresholds` 的改动在下一次计量 tick 起作用（越限判定与历史记录同频）。

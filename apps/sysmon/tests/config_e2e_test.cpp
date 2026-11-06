@@ -5,7 +5,7 @@
  * 单测已覆盖快照构造（snapshot_builder_test）与配置边界（platform sysmon_test）的纯逻辑；
  * 本文件补的是**进程接线**，这些语义由 `SysmonApp::apply_sysmon_config` 的副作用顺序决定，
  * 纯函数测试观测不到：
- * 1. 一次 patch 覆盖六个配置段 → RTN 回推全量生效值、未提及字段保持默认，且成功后立即推送
+ * 1. 一次 patch 覆盖七个配置段 → RTN 回推全量生效值、未提及字段保持默认，且成功后立即推送
  *    的快照已体现新配置（契约 sysmon §3.1.1、§4 触发 4）；
  * 2. `realtime.push_interval_sec` 运行期修改后**立即**按新间隔重排推送定时器，不等旧周期结束
  *    （契约 sysmon §3.1.1 第 2 步）；
@@ -152,7 +152,8 @@ protected:
                 {"disk_io", true},
                 {"network", true},
                 {"temperature", true},
-                {"cpu_frequency", true}}}}},
+                {"cpu_frequency", true},
+                {"clock", true}}}}},
             {"disk", {{"devices", nlohmann::json::array()}}},
             {"network", {{"hide_virtual", true}}},
             {"history",
@@ -168,6 +169,15 @@ protected:
               {"swap_used_pct", 50.0},
               {"volume_free_pct", 10.0},
               {"log_repeat_sec", 600}}},
+            {"clock",
+             {{"enabled", true},
+              {"servers", nlohmann::json::array({"ntp.aliyun.com"})},
+              {"probe_times", nlohmann::json::array()},
+              {"probe_timeout_ms", 1500},
+              {"manual_min_interval_sec", 10},
+              {"offset_warn_ms", 100},
+              {"offset_error_ms", 1000},
+              {"bound_alarm_ms", 200}}},
         };
         std::ofstream ofs(home_ / "configs" / "dzsysmon.json", std::ios::binary | std::ios::trunc);
         ofs << cfg.dump(2);
@@ -327,7 +337,7 @@ protected:
     std::vector<std::pair<DzFrameType, nlohmann::json>> pending_;
 };
 
-// 契约 sysmon §3.1.1：一次 patch 覆盖六个段，全部生效；未提及字段保持默认；
+// 契约 sysmon §3.1.1：一次 patch 覆盖七个段，全部生效；未提及字段保持默认；
 // 成功后立即推送的快照已体现新配置（§4 触发 4）。
 TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
     start_child();
@@ -362,7 +372,7 @@ TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
 
     const auto config = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
     ASSERT_TRUE(config.has_value()) << "SET must roll the effective config back to the client";
-    // 六个段的新值全部生效。
+    // 七个段的新值全部生效。
     EXPECT_EQ((*config)["sampling"]["measure_interval_ms"], 500);
     EXPECT_EQ((*config)["sampling"]["record_interval_sec"], 2);
     EXPECT_EQ((*config)["sampling"]["phase_offset_sec"], 1);
@@ -696,6 +706,150 @@ TEST_F(ConfigE2ETest, RuntimeHistoryEnableFailureNotifiesAndKeepsRealtime) {
         << "a later SET did not retry opening the history database";
     EXPECT_TRUE(std::filesystem::is_regular_file(history_db()))
         << "retry must create the database file, not leave the blocking directory";
+}
+
+// ===== #296：clock 配置段的运行期生效 =====
+
+// AC5：`sampling.groups.clock=false` 时 `clock` 域为 `null` 且可用性为 `disabled_by_config`；
+// 重新开启后立即回到域内空态（不是 null），两键不再是 disabled_by_config。
+// 这条覆盖「生产者侧把配置读进测量结果」——纯函数测试（手工设 ClockMetrics.disabled）
+// 覆盖不到配置读取与关闭取或的合并。
+TEST_F(ConfigE2ETest, ClockGroupDisableAndReEnableAtRuntime) {
+    start_child();
+    const auto startup = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s);
+    ASSERT_TRUE(startup.has_value());
+    pending_.clear();
+
+    // 开启态基线：clock 域是「尚未探测」空态（不是 null），两键存在。
+    ASSERT_FALSE((*startup)["clock"].is_null())
+        << "clock domain must be an in-domain empty state when enabled, not null";
+    EXPECT_EQ((*startup)["availability"]["metrics"].at("clock.offset").value("available", true),
+              false);
+    EXPECT_EQ(
+        (*startup)["availability"]["metrics"].at("clock.offset").value("reason", std::string()),
+        "no_reference");
+
+    // 关闭 clock 大类（两层入口之一）：计量 200ms / 推送 1s，最多一个推送周期即可见。
+    ASSERT_TRUE(send_set_config(
+        {{"sampling", {{"measure_interval_ms", 200}, {"groups", {{"clock", false}}}}},
+         {"realtime", {{"push_interval_sec", 1}}}}));
+
+    const auto disabled = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            const auto& metrics = payload.at("availability").at("metrics");
+            return metrics.contains("clock.offset") &&
+                   metrics.at("clock.offset").value("available", true) == false &&
+                   metrics.at("clock.offset").value("reason", std::string()) ==
+                       "disabled_by_config";
+        },
+        5s);
+    ASSERT_TRUE(disabled.has_value())
+        << "no snapshot reported clock.offset as disabled_by_config after groups.clock=false";
+    // 域为 null + 两键均为 disabled_by_config（契约 §2.5 / §3.1.1）。
+    EXPECT_TRUE((*disabled)["clock"].is_null())
+        << "clock domain must be null when the group is disabled";
+    for (const char* key : {"clock.offset", "clock.sync_service"}) {
+        const auto& entry = (*disabled)["availability"]["metrics"].at(key);
+        EXPECT_EQ(entry.value("available", true), false) << key;
+        EXPECT_EQ(entry.value("reason", std::string()), "disabled_by_config") << key;
+    }
+    EXPECT_EQ(platform::SysmonSnapshot::validate(*disabled), std::nullopt);
+
+    // 重新开启：域回到空态、clock.offset 回到 no_reference（不是 disabled_by_config）。
+    pending_.clear();
+    ASSERT_TRUE(send_set_config({{"sampling", {{"groups", {{"clock", true}}}}}}));
+    const auto reenabled = wait_for_snapshot(
+        [](const nlohmann::json& payload) { return !payload.at("clock").is_null(); }, 5s);
+    ASSERT_TRUE(reenabled.has_value()) << "re-enabling groups.clock did not restore the domain";
+    EXPECT_EQ(
+        (*reenabled)["availability"]["metrics"].at("clock.offset").value("reason", std::string()),
+        "no_reference");
+    EXPECT_EQ(platform::SysmonSnapshot::validate(*reenabled), std::nullopt);
+}
+
+// AC5（第二层入口）：`clock.enabled=false` 与 `sampling.groups.clock=false` **关闭取或**——
+// 任一层关闭即整域关闭；两层都打开才恢复。RTN 各自如实回推持久化值（不做镜像同步）。
+TEST_F(ConfigE2ETest, ClockSectionEnabledIsOrOfTwoSwitches) {
+    start_child();
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s).has_value());
+    pending_.clear();
+
+    // 只关 clock 段（groups.clock 仍为 true）→ 域同样为 null。
+    ASSERT_TRUE(send_set_config(
+        {{"clock", {{"enabled", false}}}, {"realtime", {{"push_interval_sec", 1}}}}));
+    const auto section_off = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
+    ASSERT_TRUE(section_off.has_value());
+    EXPECT_EQ((*section_off)["clock"]["enabled"], false);
+    // 两层入口各自如实回推：groups.clock 仍是 true（没有被镜像同步成 false）。
+    EXPECT_EQ((*section_off)["sampling"]["groups"]["clock"], true);
+
+    const auto disabled = wait_for_snapshot(
+        [](const nlohmann::json& payload) { return payload.at("clock").is_null(); }, 5s);
+    ASSERT_TRUE(disabled.has_value())
+        << "clock.enabled=false must null the domain even when groups.clock is true";
+    EXPECT_EQ(
+        (*disabled)["availability"]["metrics"].at("clock.offset").value("reason", std::string()),
+        "disabled_by_config");
+
+    // 只开段（groups.clock 仍为 true）→ 恢复。
+    pending_.clear();
+    ASSERT_TRUE(send_set_config({{"clock", {{"enabled", true}}}}));
+    const auto restored = wait_for_snapshot(
+        [](const nlohmann::json& payload) { return !payload.at("clock").is_null(); }, 5s);
+    ASSERT_TRUE(restored.has_value());
+}
+
+// AC2/AC3（进程级）：非法 `probe_times` 与 `offset_error_ms <= offset_warn_ms` 的 SET
+// 必须走四件套——失败**不**触发立即快照，回推的配置是**旧值**（运行期改不动）。
+TEST_F(ConfigE2ETest, InvalidClockPatchRejectedAndRolledBack) {
+    start_child();
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s).has_value());
+    // 丢弃启动期残留帧：启动推送的配置帧也是默认值，会让「回滚」断言被旧帧满足。
+    pending_.clear();
+
+    const struct {
+        const char* label;
+        nlohmann::json patch;
+    } rejected[] = {
+        {"probe_times 25:00", nlohmann::json{{"clock", {{"probe_times", {"25:00"}}}}}},
+        {"probe_times 8:3", nlohmann::json{{"clock", {{"probe_times", {"8:3"}}}}}},
+        {"probe_times empty string", nlohmann::json{{"clock", {{"probe_times", {""}}}}}},
+        {"offset_error_ms equal to warn",
+         nlohmann::json{{"clock", {{"offset_warn_ms", 500}, {"offset_error_ms", 500}}}}},
+        {"offset_error_ms below warn",
+         nlohmann::json{{"clock", {{"offset_warn_ms", 500}, {"offset_error_ms", 400}}}}},
+    };
+
+    for (const auto& item : rejected) {
+        ASSERT_TRUE(send_set_config(item.patch)) << item.label;
+
+        // 四件套之一：error 级通知 + popup，且能归因到本次配置失败。
+        const auto notify = wait_for_frame(DZ_FRAME_NOTIFY_UI, 5s);
+        ASSERT_TRUE(notify.has_value()) << "rejected SET must notify the ui: " << item.label;
+        EXPECT_EQ(notify->value("level", std::string()), "error") << item.label;
+        EXPECT_TRUE(notify->value("popup", false)) << item.label;
+        EXPECT_NE(notify->value("message", std::string()).find("sysmon config update failed"),
+                  std::string::npos)
+            << item.label;
+
+        // 回推旧值：夹具写入的 `probe_times: []` 与默认阈值原样保留（不是补丁里的非法值，
+        // 也不是契约默认时刻——夹具刻意留空，避免 #299 接线探测后 e2e 访问真实网络）。
+        const auto config = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
+        ASSERT_TRUE(config.has_value()) << item.label;
+        EXPECT_TRUE((*config)["clock"]["probe_times"].empty()) << item.label;
+        EXPECT_EQ((*config)["clock"]["offset_warn_ms"], 100) << item.label;
+        EXPECT_EQ((*config)["clock"]["offset_error_ms"], 1000) << item.label;
+        // 失败路径不推快照（契约 §4 触发 4 明确「成功后」）。
+        EXPECT_FALSE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 2s).has_value())
+            << "a rejected SET must not trigger an immediate snapshot push: " << item.label;
+        pending_.clear();
+    }
+
+    // 合法 patch 仍然生效（证明上面的拒绝来自校验，不是整段不可写）。
+    ASSERT_TRUE(send_set_config({{"clock", {{"probe_times", {"06:15", "22:45"}}}}}));
+    const auto applied = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
+    ASSERT_TRUE(applied.has_value());
+    EXPECT_EQ((*applied)["clock"]["probe_times"], (nlohmann::json::array({"06:15", "22:45"})));
 }
 
 }  // namespace

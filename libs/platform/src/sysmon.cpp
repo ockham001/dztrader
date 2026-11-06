@@ -819,6 +819,79 @@ std::optional<std::string> validate_config_thresholds(const json& thresholds) {
     return std::nullopt;
 }
 
+/// 单个 `probe_times` 元素是否合法 `HH:MM`（两位小时 + 两位分钟，00:00–23:59）。
+///
+/// **不收** `8:30` 这类单数字小时：契约 §3.1 明文要求「两位小时 + 两位分钟」。宽进会让
+/// 同一个时刻出现两种写法，配置差异比较（前端 diff、运维比对）随之失真。
+bool is_valid_probe_time(const std::string& text) {
+    if (text.size() != 5 || text[2] != ':') {
+        return false;
+    }
+    const auto digit = [](char c) { return c >= '0' && c <= '9'; };
+    if (!digit(text[0]) || !digit(text[1]) || !digit(text[3]) || !digit(text[4])) {
+        return false;
+    }
+    const int hour = (text[0] - '0') * 10 + (text[1] - '0');
+    const int minute = (text[3] - '0') * 10 + (text[4] - '0');
+    return hour <= 23 && minute <= 59;
+}
+
+/// `clock` 段校验（契约 sysmon §3.1 `clock`；#296）。
+///
+/// 两条**跨字段**规则是本段校验的重点，单字段范围检查兜不住：
+/// - `offset_error_ms > offset_warn_ms`：反了就会让 warning 档永远不出现（或 error 永远先命中），
+///   两个档位同时存在却互斥，是静默的语义崩塌。
+/// - `servers` 非空：空数组会让「尚未探测」与「无服务器可探」在快照里不可区分（§3.1 明文）。
+std::optional<std::string> validate_config_clock(const json& clock) {
+    if (!clock.is_object()) {
+        return err("clock", "must be an object");
+    }
+    if (!clock.contains("enabled") || !clock["enabled"].is_boolean()) {
+        return err("clock.enabled", "must be a boolean");
+    }
+    if (!clock.contains("servers") || !clock["servers"].is_array()) {
+        return err("clock.servers", "must be an array");
+    }
+    if (clock["servers"].empty()) {
+        return err("clock.servers", "must not be empty");
+    }
+    for (const auto& item : clock["servers"]) {
+        if (!item.is_string() || item.get<std::string>().empty()) {
+            return err("clock.servers", "elements must be non-empty strings");
+        }
+    }
+    if (!clock.contains("probe_times") || !clock["probe_times"].is_array()) {
+        return err("clock.probe_times", "must be an array");
+    }
+    for (const auto& item : clock["probe_times"]) {
+        if (!item.is_string() || !is_valid_probe_time(item.get<std::string>())) {
+            return err("clock.probe_times", "elements must be valid HH:MM within 00:00-23:59");
+        }
+    }
+    if (!clock.contains("probe_timeout_ms") ||
+        !int_in_range(clock["probe_timeout_ms"], 100, 10000)) {
+        return err("clock.probe_timeout_ms", "must be an integer within [100, 10000]");
+    }
+    if (!clock.contains("manual_min_interval_sec") ||
+        !int_in_range(clock["manual_min_interval_sec"], 0, 3600)) {
+        return err("clock.manual_min_interval_sec", "must be an integer within [0, 3600]");
+    }
+    if (!clock.contains("offset_warn_ms") || !int_in_range(clock["offset_warn_ms"], 1, 60000)) {
+        return err("clock.offset_warn_ms", "must be an integer within [1, 60000]");
+    }
+    // error 档上界是 600000；下界由跨字段规则（必须严格大于 warn）决定，不单列。
+    if (!clock.contains("offset_error_ms") || !int_in_range(clock["offset_error_ms"], 1, 600000)) {
+        return err("clock.offset_error_ms", "must be an integer within [1, 600000]");
+    }
+    if (!clock.contains("bound_alarm_ms") || !int_in_range(clock["bound_alarm_ms"], 1, 60000)) {
+        return err("clock.bound_alarm_ms", "must be an integer within [1, 60000]");
+    }
+    if (clock["offset_error_ms"].get<int64_t>() <= clock["offset_warn_ms"].get<int64_t>()) {
+        return err("clock.offset_error_ms", "must be greater than offset_warn_ms");
+    }
+    return std::nullopt;
+}
+
 }  // namespace
 
 // ===== SysmonSnapshot =====
@@ -963,6 +1036,9 @@ std::map<std::string, bool> SysmonSamplingConfig::default_groups() {
         {"network", true},
         {SYSMON_GROUP_TEMPERATURE, kTemperatureDefault},
         {SYSMON_GROUP_CPU_FREQUENCY, kCpuFrequencyDefault},
+        // 时钟偏差监控默认开（契约 sysmon §3.1；#296）：与 `clock.enabled` 同为两层入口，
+        // 两者同时为 true 才启用（关闭取或）。
+        {SYSMON_GROUP_CLOCK, true},
     };
 }
 
@@ -999,7 +1075,10 @@ std::optional<std::string> SysmonConfig::validate(const nlohmann::json& cfg) {
     if (auto e = validate_config_realtime(cfg["realtime"])) {
         return e;
     }
-    return validate_config_thresholds(cfg["thresholds"]);
+    if (auto e = validate_config_thresholds(cfg["thresholds"])) {
+        return e;
+    }
+    return validate_config_clock(cfg["clock"]);
 }
 
 nlohmann::json SysmonConfig::apply_patch(const nlohmann::json& current,

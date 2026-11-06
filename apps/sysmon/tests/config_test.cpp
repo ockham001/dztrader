@@ -63,9 +63,9 @@ TEST_F(ConfigTest, GenerateDefaultWritesCompleteConfig) {
     EXPECT_EQ(full["log"]["level"], "info");
     EXPECT_EQ(full["log"]["flush_on"], "warning");
 
-    // SysmonConfig 六个业务段全量落盘
+    // SysmonConfig 七个业务段全量落盘（clock 段由 #296 加入）
     for (const char* section :
-         {"sampling", "disk", "network", "history", "realtime", "thresholds"}) {
+         {"sampling", "disk", "network", "history", "realtime", "thresholds", "clock"}) {
         EXPECT_TRUE(full.contains(section)) << section;
     }
     EXPECT_EQ(full["sampling"]["measure_interval_ms"], 1000);
@@ -97,7 +97,7 @@ TEST_F(ConfigTest, LoadFillsDefaultsForMissingFields) {
     EXPECT_EQ(cfg["sampling"]["measure_interval_ms"], 500);  // 用户值保留
     EXPECT_EQ(cfg["sampling"]["record_interval_sec"], 60);   // 其余字段补默认
     EXPECT_EQ(cfg["realtime"]["push_interval_sec"], 5);
-    EXPECT_FALSE(cfg.contains("log"));  // 只返回六个业务段
+    EXPECT_FALSE(cfg.contains("log"));  // 只返回七个业务段
     EXPECT_EQ(platform::SysmonConfig::validate(cfg), std::nullopt);
 }
 
@@ -330,6 +330,100 @@ TEST_F(ConfigTest, DefaultConfigProducesThresholdsNotAlerts) {
     EXPECT_DOUBLE_EQ(full["thresholds"]["volume_free_pct"].get<double>(), 10.0);
     EXPECT_FALSE(full["thresholds"].contains("volume_free_bytes"));
     EXPECT_FALSE(full["thresholds"].contains("cooldown_sec"));
+}
+
+// ===== #296：`clock` 配置段（契约 sysmon §3.1）=====
+
+// AC1：缺失配置文件的进程首次启动自动生成含 `clock` 段的完整默认配置，零配置可运行。
+// 生成器直接产出契约默认值（仓库不提交模板文件），且去掉 log 后能通过类型层校验。
+TEST_F(ConfigTest, GenerateDefaultIncludesCompleteClockSection) {
+    ASSERT_FALSE(fs::exists(cfg_path_));
+    generate_default_config(cfg_path_);
+    const auto full = read_json(cfg_path_);
+
+    ASSERT_TRUE(full.contains("clock"));
+    const auto& clock = full["clock"];
+    EXPECT_TRUE(clock["enabled"].get<bool>());
+    EXPECT_EQ(clock["servers"],
+              nlohmann::json::array({"ntp.aliyun.com", "ntp.tencent.com", "cn.pool.ntp.org"}));
+    EXPECT_EQ(clock["probe_times"],
+              nlohmann::json::array({"08:30", "12:30", "15:30", "18:00", "20:30"}));
+    EXPECT_EQ(clock["probe_timeout_ms"], 1500);
+    EXPECT_EQ(clock["manual_min_interval_sec"], 10);
+    EXPECT_EQ(clock["offset_warn_ms"], 100);
+    EXPECT_EQ(clock["offset_error_ms"], 1000);
+    EXPECT_EQ(clock["bound_alarm_ms"], 200);
+    // 零配置可运行 = 生成的完整配置（去掉 log）通过类型层校验。
+    nlohmann::json cfg = full;
+    cfg.erase("log");
+    EXPECT_EQ(platform::SysmonConfig::validate(cfg), std::nullopt);
+}
+
+// AC1（旧配置文件）：文件里**缺 clock 段**时按默认值补齐（与其它段一致），不报错、不阻塞启动。
+TEST_F(ConfigTest, LoadFillsClockSectionDefaultsWhenMissing) {
+    // 只写一个不含 clock 段的旧形状文件（其余段也不全，统一走默认基底 merge）。
+    write_json(cfg_path_, nlohmann::json{{"sampling", {{"measure_interval_ms", 500}}}});
+    const auto cfg = load_config(cfg_path_);
+
+    EXPECT_EQ(cfg["sampling"]["measure_interval_ms"], 500);  // 用户值保留
+    ASSERT_TRUE(cfg.contains("clock"));                      // 缺段按默认补齐
+    EXPECT_TRUE(cfg["clock"]["enabled"].get<bool>());
+    EXPECT_EQ(cfg["clock"]["probe_timeout_ms"], 1500);
+    EXPECT_EQ(cfg["clock"]["offset_warn_ms"], 100);
+    EXPECT_EQ(cfg["clock"]["offset_error_ms"], 1000);
+    EXPECT_EQ(platform::SysmonConfig::validate(cfg), std::nullopt);
+}
+
+// AC2/AC3（持久化侧）：非法 `probe_times` 与 `offset_error_ms <= offset_warn_ms` 的 patch
+// 必须被拒绝，且**内存镜像与文件都不变**（四件套的回滚由 store 的强异常安全保证）。
+TEST_F(ConfigTest, StoreRejectsInvalidClockPatchAndKeepsOldValues) {
+    generate_default_config(cfg_path_);
+    SysmonConfigStore store(cfg_path_, load_config(cfg_path_));
+
+    for (const auto& patch : {
+             nlohmann::json{{"clock", {{"probe_times", {"25:00"}}}}},
+             nlohmann::json{{"clock", {{"probe_times", {"8:3"}}}}},
+             nlohmann::json{{"clock", {{"probe_times", {""}}}}},
+             nlohmann::json{{"clock", {{"offset_error_ms", 100}}}},  // 等于 warn
+             nlohmann::json{{"clock", {{"offset_error_ms", 50}}}},   // 小于 warn
+             nlohmann::json{{"clock", {{"servers", nlohmann::json::array()}}}},
+         }) {
+        EXPECT_THROW(store.set_patch(patch), std::runtime_error) << patch.dump();
+        // 回滚：镜像与文件都保持默认值。
+        EXPECT_EQ(store.current()["clock"]["probe_times"],
+                  (nlohmann::json::array({"08:30", "12:30", "15:30", "18:00", "20:30"})));
+        EXPECT_EQ(store.current()["clock"]["offset_error_ms"], 1000);
+        EXPECT_EQ(read_json(cfg_path_)["clock"]["offset_error_ms"], 1000);
+    }
+}
+
+// 运行期修改 clock 段：成功时持久化到文件、其它 section 原样保留，重新加载后仍生效。
+TEST_F(ConfigTest, StorePersistsClockPatchAndSurvivesReload) {
+    generate_default_config(cfg_path_);
+    auto full = read_json(cfg_path_);
+    full["custom"]["keep"] = 1;
+    write_json(cfg_path_, full);
+    SysmonConfigStore store(cfg_path_, load_config(cfg_path_));
+
+    store.set_patch(nlohmann::json{{"clock",
+                                    {{"enabled", false},
+                                     {"probe_times", nlohmann::json::array({"06:15", "22:45"})},
+                                     {"servers", nlohmann::json::array({"10.0.0.1"})},
+                                     {"probe_timeout_ms", 3000}}}});
+
+    EXPECT_FALSE(store.current()["clock"]["enabled"].get<bool>());
+    const auto persisted = read_json(cfg_path_);
+    EXPECT_FALSE(persisted["clock"]["enabled"].get<bool>());
+    EXPECT_EQ(persisted["clock"]["probe_times"], (nlohmann::json::array({"06:15", "22:45"})));
+    EXPECT_EQ(persisted["log"]["level"], "info");  // log section 保留
+    EXPECT_EQ(persisted["custom"]["keep"], 1);     // 未知 section 保留
+
+    // 重新加载：持久化的值生效，未提及的键保持默认。
+    const auto reloaded = load_config(cfg_path_);
+    EXPECT_FALSE(reloaded["clock"]["enabled"].get<bool>());
+    EXPECT_EQ(reloaded["clock"]["probe_timeout_ms"], 3000);
+    EXPECT_EQ(reloaded["clock"]["offset_warn_ms"], 100);  // 未提及 → 默认
+    EXPECT_EQ(platform::SysmonConfig::validate(reloaded), std::nullopt);
 }
 
 // 运行期 patch 只接受新段：旧段名不再被识别（会被当成未知字段忽略），因此阈值改不动。
