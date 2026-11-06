@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace dztrader::platform {
 namespace {
@@ -50,10 +51,14 @@ SysmonSnapshot make_snapshot() {
     snap.disk_io = std::nullopt;
     snap.network = std::nullopt;
     snap.shm_dir = std::nullopt;
+    // 时钟偏差域：#295 起快照恒携带域内空态（「尚未探测」），不是 null——null 只表示
+    // 该域被配置关闭（契约 sysmon §2.9）。
+    snap.clock = SysmonClockInfo{};
     snap.availability.platform_description = "Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)";
-    for (const char* key : {"system", "cpu.total", "cpu.cores", "cpu.load_average",
-                            "cpu.context_switches", "cpu.frequency", "memory", "swap", "volumes",
-                            "disk_io", "network", "shm_dir", "temperature"}) {
+    for (const char* key :
+         {"system", "cpu.total", "cpu.cores", "cpu.load_average", "cpu.context_switches",
+          "cpu.frequency", "memory", "swap", "volumes", "disk_io", "network", "shm_dir",
+          "temperature", "clock.offset", "clock.sync_service"}) {
         snap.availability.metrics[key] = {.available = false,
                                           .reason = std::string("not_implemented")};
     }
@@ -61,6 +66,8 @@ SysmonSnapshot make_snapshot() {
     snap.availability.metrics["system"].reason = std::nullopt;
     snap.availability.metrics["cpu.total"].available = true;
     snap.availability.metrics["cpu.total"].reason = std::nullopt;
+    // 空态下偏差「测不到」按契约 §2.5 是 no_reference（不是 not_implemented）。
+    snap.availability.metrics["clock.offset"].reason = std::string("no_reference");
     return snap;
 }
 
@@ -285,6 +292,367 @@ TEST(SysmonSnapshotValidateTest, AcceptsMemoryWithCacheFields) {
     no_cache["memory"]["cached_bytes"] = nullptr;
     no_cache["memory"]["buffers_bytes"] = nullptr;
     EXPECT_EQ(SysmonSnapshot::validate(no_cache), std::nullopt);
+}
+
+// ===== 契约 sysmon §2.9 / §7：clock 域 =====
+
+namespace {
+
+/// 契约 §2.9「尚未探测」空态：对象存在、测量字段全 null、`last_probe_unix_ms = 0`。
+nlohmann::json clock_empty_state() {
+    return {{"offset_ms", nullptr},
+            {"bound_ms", nullptr},
+            {"source", ""},
+            {"source_stratum", nullptr},
+            {"last_probe_unix_ms", 0},
+            {"servers", nlohmann::json::array()},
+            {"daemons", nlohmann::json::array()},
+            {"daemon_conflict", false},
+            {"kernel_synced", nullptr}};
+}
+
+/// 契约 §2.9「部分失败」：聚合值来自成功台，`servers` 保留失败明细与原因。
+nlohmann::json clock_probed_state() {
+    auto clock = clock_empty_state();
+    clock["offset_ms"] = 12.4;
+    clock["bound_ms"] = 48.7;
+    clock["source"] = "ntp.aliyun.com";
+    clock["source_stratum"] = 2;
+    clock["last_probe_unix_ms"] = 1'790'000'004'000;
+    clock["servers"] = nlohmann::json::array({{{"host", "ntp.aliyun.com"},
+                                               {"ok", true},
+                                               {"offset_ms", 12.4},
+                                               {"bound_ms", 48.7},
+                                               {"rtt_ms", 60.0},
+                                               {"stratum", 2},
+                                               {"error", nullptr}},
+                                              {{"host", "cn.pool.ntp.org"},
+                                               {"ok", false},
+                                               {"offset_ms", nullptr},
+                                               {"bound_ms", nullptr},
+                                               {"rtt_ms", nullptr},
+                                               {"stratum", nullptr},
+                                               {"error", "timeout"}}});
+    clock["daemons"] = nlohmann::json::array({{{"name", "chronyd"}, {"running", true}}});
+    clock["kernel_synced"] = true;
+    return clock;
+}
+
+/// 默认快照 + 指定 clock 域；两个新可用性键同时补齐（键集合属 §2.5，与域形状独立）。
+///
+/// `clock = null` 表示「该域被配置关闭」，按 §3.1.1 两键应为 `disabled_by_config`；
+/// 非 null 且带聚合偏差时偏差键可用，否则沿用骨架期空态的 `no_reference`。
+/// 服务检测能力由 #298 交付，非关闭态下如实为 `not_implemented`。
+/// 校验层**刻意不校验**可用性键与域之间的对应关系（校验器看不到配置，那是发送方义务）。
+nlohmann::json make_snapshot_with_clock(nlohmann::json clock) {
+    auto j = nlohmann::json(make_snapshot());
+    const bool disabled = clock.is_null();
+    // 非法形状（非对象）也要能走到校验器：只在对象上取字段，避免 operator[] 抛异常。
+    const bool has_offset = !disabled && clock.is_object() && clock.contains("offset_ms") &&
+                            !clock["offset_ms"].is_null();
+    j["clock"] = std::move(clock);
+    j["availability"]["metrics"]["clock.offset"] =
+        disabled ? nlohmann::json{{"available", false}, {"reason", "disabled_by_config"}}
+                 : (has_offset ? nlohmann::json{{"available", true}}
+                               : nlohmann::json{{"available", false}, {"reason", "no_reference"}});
+    j["availability"]["metrics"]["clock.sync_service"] =
+        disabled ? nlohmann::json{{"available", false}, {"reason", "disabled_by_config"}}
+                 : nlohmann::json{{"available", false}, {"reason", "not_implemented"}};
+    return j;
+}
+
+/// 断言 clock 域形状被拒绝，且错误消息可定位到 clock（英文、小写开头、无句号）。
+void expect_clock_rejected(const nlohmann::json& clock, std::string_view why) {
+    const auto error = SysmonSnapshot::validate(make_snapshot_with_clock(clock));
+    ASSERT_TRUE(error.has_value()) << "expected rejection: " << why;
+    EXPECT_NE(error->find("clock"), std::string::npos)
+        << "error must point at the clock domain, got: " << *error << " (" << why << ")";
+}
+
+}  // namespace
+
+// 契约 §2.9：空态（尚未探测）与正常态（部分失败）都必须通过校验；online null 语义
+// 只表示「该域被配置关闭」，形状仍由调用方负责。
+TEST(SysmonSnapshotValidateTest, AcceptsClockEmptyAndProbedStates) {
+    EXPECT_EQ(SysmonSnapshot::validate(make_snapshot_with_clock(clock_empty_state())),
+              std::nullopt);
+    EXPECT_EQ(SysmonSnapshot::validate(make_snapshot_with_clock(clock_probed_state())),
+              std::nullopt);
+
+    // 全部失败空态：last_probe 已前进、聚合值仍为 null、明细带失败原因（§2.9）。
+    auto all_failed = clock_empty_state();
+    all_failed["last_probe_unix_ms"] = 1'790'000'003'000;
+    all_failed["servers"] = nlohmann::json::array({{{"host", "ntp.aliyun.com"},
+                                                    {"ok", false},
+                                                    {"offset_ms", nullptr},
+                                                    {"bound_ms", nullptr},
+                                                    {"rtt_ms", nullptr},
+                                                    {"stratum", nullptr},
+                                                    {"error", "timeout"}}});
+    EXPECT_EQ(SysmonSnapshot::validate(make_snapshot_with_clock(all_failed)), std::nullopt);
+
+    // 五种失败原因都是合法取值（§2.9 servers[].error）。
+    for (const char* code : {"timeout", "kod_rate", "kod_deny", "bad_echo", "unreachable"}) {
+        auto state = clock_empty_state();
+        auto entry = nlohmann::json{{"host", "ntp.aliyun.com"},
+                                    {"ok", false},
+                                    {"offset_ms", nullptr},
+                                    {"bound_ms", nullptr},
+                                    {"rtt_ms", nullptr},
+                                    {"stratum", nullptr},
+                                    {"error", code}};
+        state["last_probe_unix_ms"] = 1;
+        state["servers"] = nlohmann::json::array({entry});
+        EXPECT_EQ(SysmonSnapshot::validate(make_snapshot_with_clock(state)), std::nullopt) << code;
+    }
+
+    // 域为 null 是「配置关闭」的表达（§2.9），形状校验接受。
+    EXPECT_EQ(SysmonSnapshot::validate(make_snapshot_with_clock(nullptr)), std::nullopt);
+}
+
+// 契约 §7：`offset_ms` / `bound_ms` / `source_stratum` 同生共死；`source` 空串当且仅当
+// 三者全 null；取值范围与非可空字段的 null 一律拒绝。
+TEST(SysmonSnapshotValidateTest, RejectsClockAggregateViolations) {
+    {  // 键必须存在（null 允许，键必须在——与其它可选域同口径）
+        auto j = make_snapshot_with_clock(clock_empty_state());
+        j.erase("clock");
+        const auto error = SysmonSnapshot::validate(j);
+        ASSERT_TRUE(error.has_value());
+        EXPECT_NE(error->find("clock"), std::string::npos);
+    }
+    {  // 非 null 时必须为对象
+        expect_clock_rejected(42, "clock must be an object");
+        expect_clock_rejected(nlohmann::json::array(), "clock must be an object");
+    }
+    {  // 同生共死：有偏差就必有界（AC 明确的反例）
+        auto offset_only = clock_empty_state();
+        offset_only["offset_ms"] = 12.4;
+        expect_clock_rejected(offset_only, "offset_ms without bound_ms");
+
+        auto bound_only = clock_empty_state();
+        bound_only["bound_ms"] = 48.7;
+        expect_clock_rejected(bound_only, "bound_ms without offset_ms");
+
+        auto stratum_only = clock_empty_state();
+        stratum_only["source_stratum"] = 2;
+        expect_clock_rejected(stratum_only, "source_stratum without offset_ms");
+    }
+    {  // source 与三个测量字段同生共死
+        auto empty_source_with_offset = clock_probed_state();
+        empty_source_with_offset["source"] = "";
+        expect_clock_rejected(empty_source_with_offset, "empty source with measurements");
+
+        auto non_empty_source_without = clock_empty_state();
+        non_empty_source_without["source"] = "ntp.aliyun.com";
+        expect_clock_rejected(non_empty_source_without, "source without measurements");
+    }
+    {  // 取值范围与类型
+        auto negative_bound = clock_probed_state();
+        negative_bound["bound_ms"] = -1.0;
+        expect_clock_rejected(negative_bound, "negative bound_ms");
+
+        for (const auto& stratum :
+             {nlohmann::json(0), nlohmann::json(16), nlohmann::json(2.5), nlohmann::json("2")}) {
+            auto bad_stratum = clock_probed_state();
+            bad_stratum["source_stratum"] = stratum;
+            expect_clock_rejected(bad_stratum, "source_stratum out of [1,15] or non-integer");
+        }
+
+        auto negative_probe = clock_empty_state();
+        negative_probe["last_probe_unix_ms"] = -1;
+        expect_clock_rejected(negative_probe, "negative last_probe_unix_ms");
+
+        auto missing_probe = clock_empty_state();
+        missing_probe.erase("last_probe_unix_ms");
+        expect_clock_rejected(missing_probe, "missing last_probe_unix_ms");
+
+        auto null_source = clock_probed_state();
+        null_source["source"] = nullptr;
+        expect_clock_rejected(null_source, "source must be a string (null not allowed)");
+
+        auto bad_conflict = clock_empty_state();
+        bad_conflict["daemon_conflict"] = "no";
+        expect_clock_rejected(bad_conflict, "daemon_conflict must be a bool");
+
+        auto missing_conflict = clock_empty_state();
+        missing_conflict.erase("daemon_conflict");
+        expect_clock_rejected(missing_conflict, "missing daemon_conflict");
+
+        auto bad_kernel_synced = clock_empty_state();
+        bad_kernel_synced["kernel_synced"] = 1;
+        expect_clock_rejected(bad_kernel_synced, "kernel_synced must be bool or null");
+
+        auto null_servers = clock_empty_state();
+        null_servers["servers"] = nullptr;
+        expect_clock_rejected(null_servers, "servers must be an array (null not allowed)");
+
+        auto null_daemons = clock_empty_state();
+        null_daemons["daemons"] = nullptr;
+        expect_clock_rejected(null_daemons, "daemons must be an array (null not allowed)");
+    }
+}
+
+// 契约 §7 的合法边界（闭区间端点与 0）：0 偏差 / 0 误差界 / 0 时延、stratum 1 与 15、
+// 负偏差（本地慢）都必须被接受——否则把 `>= 0` 收紧成 `> 0`、`[1,15]` 收紧成 `[2,14]`
+// 也测不出来（反例已由 RejectsClock* 覆盖）。
+TEST(SysmonSnapshotValidateTest, AcceptsClockBoundaryValues) {
+    auto zero = clock_probed_state();
+    zero["offset_ms"] = 0.0;
+    zero["bound_ms"] = 0.0;
+    zero["source_stratum"] = 1;
+    zero["servers"][0]["offset_ms"] = 0.0;
+    zero["servers"][0]["bound_ms"] = 0.0;
+    zero["servers"][0]["rtt_ms"] = 0.0;
+    zero["servers"][0]["stratum"] = 1;
+    EXPECT_EQ(SysmonSnapshot::validate(make_snapshot_with_clock(zero)), std::nullopt);
+
+    auto negative_offset = clock_probed_state();
+    negative_offset["offset_ms"] = -12.4;  // 正 = 本地快；负值（本地慢）同样合法
+    negative_offset["source_stratum"] = 15;
+    negative_offset["servers"][0]["offset_ms"] = -12.4;
+    negative_offset["servers"][0]["stratum"] = 15;
+    EXPECT_EQ(SysmonSnapshot::validate(make_snapshot_with_clock(negative_offset)), std::nullopt);
+}
+
+// 契约 §7：`servers[]` 的 `ok` 二态决定其余字段可空性——`ok=true` 必须四项测量齐全且
+// `error=null`；`ok=false` 必须给出五种失败原因之一且四项测量全为 null。
+TEST(SysmonSnapshotValidateTest, RejectsClockServerViolations) {
+    const auto base = clock_probed_state();
+
+    {  // host 非空且帧内唯一
+        auto duplicate = base;
+        duplicate["servers"][1]["host"] = "ntp.aliyun.com";
+        expect_clock_rejected(duplicate, "duplicate host");
+
+        auto empty_host = base;
+        empty_host["servers"][0]["host"] = "";
+        expect_clock_rejected(empty_host, "empty host");
+
+        auto missing_host = base;
+        missing_host["servers"][0].erase("host");
+        expect_clock_rejected(missing_host, "missing host");
+    }
+    {  // ok 必填 bool
+        auto missing_ok = base;
+        missing_ok["servers"][0].erase("ok");
+        expect_clock_rejected(missing_ok, "missing ok");
+
+        auto non_bool_ok = base;
+        non_bool_ok["servers"][0]["ok"] = "true";
+        expect_clock_rejected(non_bool_ok, "ok must be a bool");
+
+        auto non_object = base;
+        non_object["servers"][0] = 1;
+        expect_clock_rejected(non_object, "server entry must be an object");
+    }
+    {  // ok=true：error 必须为 null，四项测量必须非 null
+        auto with_error = base;
+        with_error["servers"][0]["error"] = "timeout";
+        expect_clock_rejected(with_error, "ok=true must not carry an error");
+
+        auto missing_error = base;
+        missing_error["servers"][0].erase("error");
+        expect_clock_rejected(missing_error, "ok=true must carry error=null");
+
+        for (const char* key : {"offset_ms", "bound_ms", "rtt_ms", "stratum"}) {
+            auto nulled = base;
+            nulled["servers"][0][key] = nullptr;
+            expect_clock_rejected(nulled, std::string("ok=true with null ") + key);
+        }
+
+        auto negative_rtt = base;
+        negative_rtt["servers"][0]["rtt_ms"] = -1.0;
+        expect_clock_rejected(negative_rtt, "negative rtt_ms");
+
+        for (const auto& stratum : {nlohmann::json(0), nlohmann::json(16)}) {
+            auto bad_stratum = base;
+            bad_stratum["servers"][0]["stratum"] = stratum;
+            expect_clock_rejected(bad_stratum, "server stratum out of [1,15]");
+        }
+
+        auto non_numeric_offset = base;
+        non_numeric_offset["servers"][0]["offset_ms"] = "12.4";
+        expect_clock_rejected(non_numeric_offset, "offset_ms must be a number or null");
+    }
+    {  // ok=false：error 必须非空且取五种原因之一，四项测量必须为 null
+        auto null_error = base;
+        null_error["servers"][1]["error"] = nullptr;
+        expect_clock_rejected(null_error, "ok=false must carry an error");
+
+        auto empty_error = base;
+        empty_error["servers"][1]["error"] = "";
+        expect_clock_rejected(empty_error, "ok=false error must be non-empty");
+
+        auto unknown_error = base;
+        unknown_error["servers"][1]["error"] = "unknown_code";
+        expect_clock_rejected(unknown_error, "ok=false error must be a known reason");
+
+        for (const auto& [key, value] :
+             std::initializer_list<std::pair<const char*, nlohmann::json>>{
+                 {"offset_ms", 1.0}, {"bound_ms", 1.0}, {"rtt_ms", 1.0}, {"stratum", 2}}) {
+            auto filled = base;
+            filled["servers"][1][key] = value;
+            expect_clock_rejected(filled, std::string("ok=false with ") + key);
+        }
+    }
+}
+
+// 契约 §7：`daemons[]` 的 `name` 非空且唯一、`running` 为 bool；
+// `daemon_conflict` 必须等于「running=true 的不同服务数 ≥ 2」。
+TEST(SysmonSnapshotValidateTest, RejectsClockDaemonViolations) {
+    const auto base = clock_probed_state();
+
+    {  // name 非空且帧内唯一
+        auto duplicate = base;
+        duplicate["daemons"] = nlohmann::json::array(
+            {{{"name", "chronyd"}, {"running", true}}, {{"name", "chronyd"}, {"running", false}}});
+        expect_clock_rejected(duplicate, "duplicate daemon name");
+
+        auto empty_name = base;
+        empty_name["daemons"][0]["name"] = "";
+        expect_clock_rejected(empty_name, "empty daemon name");
+
+        auto non_object = base;
+        non_object["daemons"][0] = "chronyd";
+        expect_clock_rejected(non_object, "daemon entry must be an object");
+    }
+    {  // running 必须为 bool
+        auto missing_running = base;
+        missing_running["daemons"][0].erase("running");
+        expect_clock_rejected(missing_running, "missing running");
+
+        auto non_bool_running = base;
+        non_bool_running["daemons"][0]["running"] = 1;
+        expect_clock_rejected(non_bool_running, "running must be a bool");
+    }
+    {  // daemon_conflict 与运行服务数一致（≥2 种）
+        auto two_running_no_flag = base;
+        two_running_no_flag["daemons"] = nlohmann::json::array(
+            {{{"name", "chronyd"}, {"running", true}}, {{"name", "ntpd"}, {"running", true}}});
+        expect_clock_rejected(two_running_no_flag,
+                              "two running daemons with daemon_conflict=false");
+
+        auto one_running_with_flag = base;
+        one_running_with_flag["daemon_conflict"] = true;
+        expect_clock_rejected(one_running_with_flag,
+                              "daemon_conflict=true with one running daemon");
+
+        auto empty_with_flag = clock_empty_state();
+        empty_with_flag["daemon_conflict"] = true;
+        expect_clock_rejected(empty_with_flag, "daemon_conflict=true with no daemons");
+
+        // 两台不同服务运行 + flag=true → 合法；一台运行一台停止 + flag=false 也合法。
+        auto conflict = base;
+        conflict["daemons"] = nlohmann::json::array(
+            {{{"name", "chronyd"}, {"running", true}}, {{"name", "ntpd"}, {"running", true}}});
+        conflict["daemon_conflict"] = true;
+        EXPECT_EQ(SysmonSnapshot::validate(make_snapshot_with_clock(conflict)), std::nullopt);
+
+        auto mixed = base;
+        mixed["daemons"] = nlohmann::json::array(
+            {{{"name", "chronyd"}, {"running", true}}, {{"name", "ntpd"}, {"running", false}}});
+        EXPECT_EQ(SysmonSnapshot::validate(make_snapshot_with_clock(mixed)), std::nullopt);
+    }
 }
 
 // 帧编解码：写入无 instance_id 快照帧 → 读出 → 解析 → 校验通过。

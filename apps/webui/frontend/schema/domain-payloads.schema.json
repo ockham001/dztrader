@@ -353,6 +353,45 @@
         "celsius": { "type": "number", "description": "摄氏温度（瞬时 gauge，不是累计计数器）" }
       }
     },
+    "SysmonClockServerInfo": {
+      "type": "object",
+      "description": "单台 NTP 服务器的探测明细（契约 sysmon §2.9 servers[]）。ok=true 时四项测量非 null 且 error=null；ok=false 时四项测量必须为 null、error 取 timeout / kod_rate / kod_deny / bad_echo / unreachable（失败样本不产出任何测量值）。",
+      "required": ["host", "ok", "offset_ms", "bound_ms", "rtt_ms", "stratum", "error"],
+      "properties": {
+        "host": { "type": "string", "description": "服务器标识（配置 clock.servers 中的一项；帧内唯一）" },
+        "ok": { "type": "boolean", "description": "该台是否返回可用样本" },
+        "offset_ms": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "该台有符号偏差（毫秒，正=本地快）；ok=false 时为 null" },
+        "bound_ms": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "该台误差上界（毫秒）；ok=false 时为 null" },
+        "rtt_ms": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "该台往返时延（毫秒，>= 0）；ok=false 时为 null" },
+        "stratum": { "anyOf": [{ "type": "integer" }, { "type": "null" }], "description": "参考源 stratum（[1,15]）；ok=false 时为 null" },
+        "error": { "anyOf": [{ "type": "string" }, { "type": "null" }], "description": "ok=false 时的失败原因；ok=true 时为 null" }
+      }
+    },
+    "SysmonClockDaemonInfo": {
+      "type": "object",
+      "description": "检测到的时间同步服务（契约 sysmon §2.9 daemons[]）：名称 + 是否运行。空数组=未检测到运行中的服务，不是能力不可用。",
+      "required": ["name", "running"],
+      "properties": {
+        "name": { "type": "string", "description": "服务名（帧内唯一）" },
+        "running": { "type": "boolean", "description": "是否正在运行" }
+      }
+    },
+    "SysmonClockInfo": {
+      "type": "object",
+      "description": "时钟偏差域（契约 sysmon §2.9）：只保留最近一轮探测的聚合值 + 每台明细 + 同步服务检测。offset_ms/bound_ms/source_stratum 同生共死（有偏差就必有界）；source 为空串当且仅当三者全 null。null 整个域仅表示该域被配置关闭。",
+      "required": ["offset_ms", "bound_ms", "source", "source_stratum", "last_probe_unix_ms", "servers", "daemons", "daemon_conflict", "kernel_synced"],
+      "properties": {
+        "offset_ms": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "聚合有符号偏差（毫秒，正=本地快）；null=尚未探测或本轮无可用参考源（不得用 0 冒充）" },
+        "bound_ms": { "anyOf": [{ "type": "number" }, { "type": "null" }], "description": "聚合误差上界（毫秒）= ½·RTT + 服务端离散度（root dispersion）；与 offset_ms 同生共死" },
+        "source": { "type": "string", "description": "聚合值采用的服务器标识（与 servers[].host 同值）；未探测成功时为空串" },
+        "source_stratum": { "anyOf": [{ "type": "integer" }, { "type": "null" }], "description": "参考源 stratum（[1,15]）；未探测成功时为 null" },
+        "last_probe_unix_ms": { "type": "integer", "description": "最近一轮探测的完成时刻（Unix 毫秒）；0=尚未探测（前端据此显示「尚未探测」而不是「不可用」）" },
+        "servers": { "type": "array", "items": { "$ref": "#/$defs/SysmonClockServerInfo" }, "description": "最近一轮每台服务器明细（空数组=尚未探测）" },
+        "daemons": { "type": "array", "items": { "$ref": "#/$defs/SysmonClockDaemonInfo" }, "description": "检测到的同步服务（空数组=未检测到运行中的服务，不是能力不可用）" },
+        "daemon_conflict": { "type": "boolean", "description": "检测到 >=2 种不同同步服务同时运行" },
+        "kernel_synced": { "anyOf": [{ "type": "boolean" }, { "type": "null" }], "description": "内核/服务层「是否已同步」的辅助判据；null=读不到（不猜成 false）" }
+      }
+    },
     "SysmonAvailabilityEntry": {
       "type": "object",
       "required": ["available"],
@@ -372,7 +411,7 @@
     },
     "SysmonSnapshotPayload": {
       "type": "object",
-      "required": ["source", "timestamp", "sampling", "platform", "system", "cpu", "temperature", "memory", "swap", "volumes", "disk_io", "network", "shm_dir", "availability"],
+      "required": ["source", "timestamp", "sampling", "platform", "system", "cpu", "temperature", "memory", "swap", "volumes", "disk_io", "network", "shm_dir", "clock", "availability"],
       "properties": {
         "source": { "type": "string", "description": "发送方进程名（固定 dzsysmon；无 instance_id 帧来源显式携带，general §5）" },
         "timestamp": { "type": "integer", "description": "快照生成时刻（Unix 毫秒）" },
@@ -393,6 +432,7 @@
         "disk_io": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/SysmonDiskIoInfo" } }, { "type": "null" }] },
         "network": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/SysmonNetworkInfo" } }, { "type": "null" }] },
         "shm_dir": { "anyOf": [{ "$ref": "#/$defs/SysmonShmDirInfo" }, { "type": "null" }] },
+        "clock": { "anyOf": [{ "$ref": "#/$defs/SysmonClockInfo" }, { "type": "null" }], "description": "时钟偏差与同步服务检测（契约 sysmon §2.9）；null=该域被配置关闭（尚未探测是域内空态，不是 null）" },
         "availability": { "$ref": "#/$defs/SysmonAvailability" }
       }
     },

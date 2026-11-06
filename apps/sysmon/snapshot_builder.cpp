@@ -17,6 +17,8 @@ constexpr const char* kReasonCollectFailed = "collect_failed";
 constexpr const char* kReasonUnsupported = "unsupported";
 constexpr const char* kReasonNoSensor = "no_sensor";
 constexpr const char* kReasonDisabledByConfig = "disabled_by_config";
+/// 时钟偏差「本轮没有可用参考源 / 尚未探测」的可用性原因（契约 sysmon §2.5）。
+constexpr const char* kReasonNoReference = "no_reference";
 
 /// 跨平台语义提示的键：按指标键命名（契约 sysmon §2.5）。
 constexpr const char* kHintKeyLoadAverage = "cpu.load_average";
@@ -98,6 +100,7 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
                                         const MemorySwapMetrics& memory_metrics,
                                         const DiskMetrics& disk_metrics,
                                         const NetworkMetrics& network_metrics,
+                                        const ClockMetrics& clock_metrics,
                                         int32_t measure_interval_ms,
                                         int64_t last_sample_unix_ms,
                                         uint64_t missed_ticks,
@@ -279,7 +282,12 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         }
     }
 
-    // availability：每帧必须覆盖全部 13 个固定键。
+    // 时钟偏差域（#295）：本票只落地空态——没有任何探测结果时输出「尚未探测」的域内空态
+    // （测量字段全 null、`last_probe_unix_ms = 0`、明细为空）；`null` 只用于「该域被配置
+    // 关闭」，由配置开关（#296）负责，快照构造本身不产生 null（契约 sysmon §2.9）。
+    snapshot.clock = clock_metrics.info.value_or(platform::SysmonClockInfo{});
+
+    // availability：每帧必须覆盖全部 15 个固定键。
     snapshot.availability.platform_description = make_platform_description(system_info);
     for (const char* key : platform::SYSMON_METRIC_KEYS) {
         const std::string_view metric(key);
@@ -338,6 +346,19 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
                 // Linux 无 hwmon 传感器（容器/虚拟机降级路径，契约 sysmon §2.5）。
                 mark_unavailable(snapshot.availability, key, kReasonNoSensor);
             }
+        } else if (metric == platform::SYSMON_METRIC_CLOCK_OFFSET) {
+            // 契约 sysmon §2.5：本键表达「最近一轮探测是否成功」，**不是能力粘性**——
+            // 空态（尚未探测）与本轮全部失败同为 no_reference；误差界过大只影响质量
+            // 判定（§2.8），不改写本键可用性。
+            if (clock_metrics.info.has_value() && clock_metrics.info->offset_ms.has_value()) {
+                mark_available(snapshot.availability, key);
+            } else {
+                mark_unavailable(snapshot.availability, key, kReasonNoReference);
+            }
+        } else if (metric == platform::SYSMON_METRIC_CLOCK_SYNC_SERVICE) {
+            // 同步服务枚举能力由 #298 交付；本票如实标 not_implemented，不虚报
+            // available=true（契约 §2.5 的「基线内恒为 available=true」描述能力落地后的稳态）。
+            mark_not_implemented(snapshot.availability, key);
         } else if (metric == platform::SYSMON_METRIC_MEMORY) {
             // 配置关闭优先；能力可用但本帧未读到数值时仍为 available（数值为 null）。
             if (memory_metrics.disabled) {

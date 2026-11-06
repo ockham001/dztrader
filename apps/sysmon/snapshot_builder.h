@@ -129,6 +129,17 @@ struct NetworkMetrics {
 };
 
 /**
+ * 时钟偏差域的探测结果（契约 sysmon §2.9；#295 引入接缝，真实探测由 #297/#299 接线）。
+ *
+ * 本票只落地类型与空态：没有任何探测结果时 `info == std::nullopt`，快照输出「尚未探测」
+ * 的**域内空态**（不是 `null`——`null` 只表示该域被配置关闭）。
+ */
+struct ClockMetrics {
+    /// 最近一轮探测结果；`nullopt` = 尚未探测（`last_probe_unix_ms = 0`）。
+    std::optional<platform::SysmonClockInfo> info;
+};
+
+/**
  * @brief 构造一帧实时快照。
  *
  * @param source               发送方进程名（无 instance_id 帧的来源显式携带，general §5）
@@ -139,6 +150,7 @@ struct NetworkMetrics {
  * @param disk_metrics         卷/共享内存目录/每物理盘 I/O 的测量结果与能力标记
  *                             （#75、#76）
  * @param network_metrics      每网卡累计量与速率、能力标记与 hide_virtual（#77）
+ * @param clock_metrics        时钟偏差域最近一轮探测结果（#295；无结果时输出域内空态）
  * @param measure_interval_ms  当前计量间隔（毫秒）
  * @param last_sample_unix_ms  最近一次计量成功的墙钟时间（Unix 毫秒，0 = 尚无成功样本）
  * @param missed_ticks         累计错过的计量 tick 数
@@ -152,6 +164,7 @@ struct NetworkMetrics {
                                                       const MemorySwapMetrics& memory_metrics,
                                                       const DiskMetrics& disk_metrics,
                                                       const NetworkMetrics& network_metrics,
+                                                      const ClockMetrics& clock_metrics,
                                                       int32_t measure_interval_ms,
                                                       int64_t last_sample_unix_ms,
                                                       uint64_t missed_ticks,

@@ -199,6 +199,8 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 > `cpu.frequency` / `temperature` 的可用性同为**能力粘性**：一次成功读到后可用性保持 `true`，此后单帧读取失败只把数值置 `null`（温度允许空数组/`null`、频率允许 `null`），消费方据此保留区块并显示「暂无数据」而不是「不可用」。配置关闭对应组时优先输出 `available=false` + `reason="disabled_by_config"`，数值为 `null`。温度/频率不可用时前端**整块不渲染**（不是显示 0，也不是显示「不可用」占位）。
 >
 > `clock.offset` / `clock.sync_service`（§2.9）是**两个独立键**：`clock.offset` 表示**偏差测量能力**——最近一轮探测存在可用聚合值时 `available=true`，本轮无可用参考源时为 `available=false` + `reason="no_reference"`（「尚未探测」由 `clock.last_probe_unix_ms = 0` 区分，前端显示「尚未探测」而不是「不可用」）。与其它指标键不同，`clock.offset` **不是能力粘性**——它表达「最近一轮探测是否成功」，上一轮成功后下一轮全部失败时回到 `available=false`（「测不到」必须显示为不可用而不是陈旧值）；误差界过大只影响质量判定（§2.8），**不改写本键可用性**（「测不准」与「测不到」是不同事实）。`clock.sync_service` 表示**同步服务枚举能力**——两平台基线内恒为 `available=true`，`daemons` 为空数组或全部 `running=false` 是「未检测到在运行的同步服务」这一**事实**（卡片内标黄、不弹窗），不改写可用性。**两键独立**：同步服务未运行不影响偏差测量，偏差测不到也不影响服务枚举。配置关闭 `clock` 域时两键均为 `available=false` + `reason="disabled_by_config"`（`clock` 为 `null`，§3.1.1）。
+>
+> **分阶段落地的过渡态**：本域按票落地（#293 子票），类型层先登记两键（#295），偏差测量与服务检测分别在 #299 / #298 接线。落地前快照如实报 `available=false`（`clock.offset` = `no_reference`、`clock.sync_service` = `not_implemented`）——本段前文描述的是**能力落地后**的稳态；#298 落地即把 `clock.sync_service` 翻为恒 `available=true`，不改变本契约语义。
 
 ### 2.6 快照示例（节选）
 
@@ -481,18 +483,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 **手动查询**：`DZ_FRAME_QUERY_SYSMON_CLOCK`（§1.1）触发一轮探测；限流在 dzsysmon 侧权威判定，拒绝只记日志、无错误通道。
 
 <!-- 计划符号（general §11.4）：契约先行定义的名字，实现落地后删除对应标记。 -->
-<!-- pending-symbol: offset_ms (#295) -->
-<!-- pending-symbol: bound_ms (#295) -->
-<!-- pending-symbol: source_stratum (#295) -->
-<!-- pending-symbol: last_probe_unix_ms (#295) -->
-<!-- pending-symbol: rtt_ms (#295) -->
-<!-- pending-symbol: daemon_conflict (#295) -->
-<!-- pending-symbol: kernel_synced (#295) -->
-<!-- pending-symbol: no_reference (#295) -->
 <!-- pending-symbol: root_dispersion (#297) -->
-<!-- pending-symbol: kod_rate (#297) -->
-<!-- pending-symbol: kod_deny (#297) -->
-<!-- pending-symbol: bad_echo (#297) -->
 <!-- pending-symbol: probe_times (#296) -->
 <!-- pending-symbol: probe_timeout_ms (#296) -->
 <!-- pending-symbol: manual_min_interval_sec (#296) -->

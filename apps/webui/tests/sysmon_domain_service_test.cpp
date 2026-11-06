@@ -66,6 +66,16 @@ nlohmann::json make_snapshot() {
         {"disk_io", nullptr},
         {"network", nullptr},
         {"shm_dir", nullptr},
+        {"clock",
+         {{"offset_ms", nullptr},
+          {"bound_ms", nullptr},
+          {"source", ""},
+          {"source_stratum", nullptr},
+          {"last_probe_unix_ms", 0},
+          {"servers", nlohmann::json::array()},
+          {"daemons", nlohmann::json::array()},
+          {"daemon_conflict", false},
+          {"kernel_synced", nullptr}}},
         {"availability",
          {{"platform_description", "Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)"},
           {"metrics",
@@ -81,7 +91,9 @@ nlohmann::json make_snapshot() {
             {"disk_io", {{"available", false}, {"reason", "not_implemented"}}},
             {"network", {{"available", false}, {"reason", "not_implemented"}}},
             {"shm_dir", {{"available", false}, {"reason", "not_implemented"}}},
-            {"temperature", {{"available", false}, {"reason", "not_implemented"}}}}},
+            {"temperature", {{"available", false}, {"reason", "not_implemented"}}},
+            {"clock.offset", {{"available", false}, {"reason", "no_reference"}}},
+            {"clock.sync_service", {{"available", false}, {"reason", "not_implemented"}}}}},
           {"semantic_hints", nlohmann::json::object()}}},
     };
 }
@@ -89,6 +101,12 @@ nlohmann::json make_snapshot() {
 nlohmann::json make_config() { return platform::SysmonConfig::default_config(); }
 
 }  // namespace
+
+// 夹具与契约同步：快照夹具必须通过类型层校验——否则 domain service 会静默丢弃广播，
+// 相关用例只看得到「无广播」，看不出夹具已漂移（固定 15 个可用性键 + clock 域）。
+TEST(SysmonDomainServiceTest, SnapshotFixturePassesContractValidation) {
+    EXPECT_EQ(platform::SysmonSnapshot::validate(make_snapshot()), std::nullopt);
+}
 
 TEST(SysmonDomainServiceTest, SnapshotUpdatesMirrorAndBroadcasts) {
     MirrorStore mirror;
