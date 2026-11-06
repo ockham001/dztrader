@@ -74,9 +74,9 @@
 | 5.1 | **注册方式唯一**：每文件一 target，统一经 `dz_add_test()`（`cmake/DzTest.cmake`）注册——它内部调 `gtest_discover_tests` 并固定带用例发现超时（#227），不要在模块 `CMakeLists.txt` 里直接调（preflight 的 `check_gtest_discovery_timeout.py` 会拦）；注意无 `TEST_PREFIX`，`-R` 只能按 `Suite.Case` 过滤 | 引入第二种注册/构建方式；直接调 `gtest_discover_tests` 而漏掉 `DISCOVERY_TIMEOUT`（退回 5 秒 → Windows CI 随机变红） |
 | 5.2 | **重复基建需有据**：重复的 `test_main.cpp`、多份「同款 fixture」要么注明理由（先例：build-appendix 已写明「部分模块有意只编译源码子集」），要么收敛 | 纯复制粘贴且无人能说出为什么 |
 | 5.3 | **产物去向有意**：测试二进制的 install 行为应是有意决定 | 无人知道为何被安装 |
-| 5.4 | **先查共享夹具再写**：`tests/` 下的共享头是本仓的「测试基建真相源」，动手前先查下表；要复制其中任何一件，按 5.2 注明理由 | 重写一份已有的 fake/夹具/常量（#163 重复定义了 `bar_test_data.h` 的小节表，只有人工 review 抓到；#165 重复了 `Recorder` 与 `repo_root`） |
+| 5.4 | **先查共享测试头再写**：`tests/` 下的共享测试头是本仓的「测试基建真相源」，动手前先查下表；要复制其中任何一件，按 5.2 注明理由（新增共享头未登记会被 preflight 的 `shared test headers (#284)` 步骤拦下） | 重写一份已有的 fake/夹具/常量（#163 重复定义了 `bar_test_data.h` 的小节表，只有人工 review 抓到；#165 重复了 `Recorder` 与 `repo_root`） |
 
-**共享测试夹具索引**（新增共享头时同一次提交登记；只列「提供什么」，用法看头文件）：
+**共享测试头（夹具/工具）索引**（新增共享头时同一次提交登记；只列「提供什么」，用法看头文件）：
 
 | 头 | 提供什么 |
 |---|---|
@@ -92,6 +92,22 @@
 | `apps/webui/tests/td_order_row_writer.h` | 按 schema v1 `orders` 表列清单写一行委托（`TdOrderRowSeed` + `insert_td_order_row`）：委托列表 / 统计 / WS 转发测试共用，列清单唯一实现 |
 | `apps/webui/tests/td_trade_row_writer.h` | 按 schema v1 `trades` 表列清单写一行成交（`TdTradeRowSeed` + `insert_td_trade_row`）：成交列表测试共用，列清单唯一实现 |
 | `apps/ctp/tests/td_config_fixture.h` | `dztd_ctp.json` 的 `td` section 唯一实现（`TdConfigSeed` + `make_td_config_json()`）：先构造 `TdConfig` 再经宏 `to_json` 出 JSON，零手写键字面量；形状漂移在夹具使用方 target（`dztd_ctp_td_config_test`）编译期暴露。`td_config_test` 与 smoke 共用（#281） |
+| `libs/shm/tests/test_util.h` | shm 测试工具函数：`unique_channel_name`（进程+时间戳唯一通道名）、`test_shm_dir`（进程唯一临时 shm 目录）、`create_page_file`、`cleanup_channel` / `cleanup_test_dir`；不含 GTest，PerfBench 也能用 |
+| `libs/shm/tests/test_fixture.h` | `ShmTestBase`：shm 用例共用的 gtest fixture（SetUp 分配唯一通道名与临时目录，TearDown 清理）。单独成头而非并入 `test_util.h`：PerfBench 包含工具头但不链 GTest，夹具头不能把 gtest 带进基准目标 |
+| `libs/shm/tests/test_ipc_util.h` | 多进程 IPC 用例的辅助进程框架：`spawn_helper`（测试二进制自派 `--dz-test-helper` 子进程）、`wait_with_timeout` / `wait_for_file`，以及 `--dz-test-helper` 子命令分发的 `run`；含 `mutex_lock_and_hold`、`sem_notify`、`sem_wait`、`sem_wait_for_and_notify`、`channel_writer_write` 等子进程侧动作 |
+| `apps/webui/tests/fake_data_change_notifier.h` | `FakeDataChangeNotifier`：`DataChangeNotifier` 的测试假实现，按调用顺序记录 `broadcast_data_changed` 的 scope 与 `kick_user` 的 username，供 controller / WS 测试注入断言 |
+| `apps/webui/tests/fake_td_account_registry_store.h` | `FakeTdAccountRegistryStore`：`TdAccountRegistryStore` 的内存假实现，按 gateway 保存整组 `account_ids`，用 `fail_load` / `fail_replace` / `fail_delete` 注入失败路径；生产路径仍只有 `RepositoryTdAccountRegistryStore` 一实现 |
+| `apps/webui/tests/td_position_row_writer.h` | 按 schema v1 `positions` / `trading_accounts` 表列清单各写一行（`TdPositionRowSeed` + `insert_td_position_row`、`TdTradingAccountRowSeed` + `insert_td_trading_account_row`）：列清单唯一实现，仅限 `apps/webui/tests/` 内共享（与 `td_order_row_writer.h` / `td_trade_row_writer.h` 同型，跨模块不可复用） |
+| `apps/sysmon/tests/sysmon_e2e_support.h` | dzsysmon 进程级 e2e 的共享机械约定：`e2e_strict`（`DZ_SYSMON_E2E_STRICT=1` 时前置不满足从 SKIP 升为 FAIL）、`event_semaphore_busy` / `remove_semaphore`（机器全局事件通道占用检测与清理）、`sysmon_executable` / `spawn_dzsysmon` / `stop_dzsysmon`（真实子进程启停）；不含 gtest，SKIP/FAIL 由调用方决定 |
+| `libs/strategy_api/src/db/tests/mysql_test_env.h` | 仅 `DZ_WITH_MYSQL` 编译的 MySQL 用例辅助：`configured` 判定 `DZ_TEST_MYSQL_HOST` 是否配置、`server` / `unique_database_name`（`dz_test_<pid>_<rand>`）/ `create_database` / `drop_database` / `scalar` / `config_for`；未配置时 `GTEST_SKIP` 由用例自行调用 |
+
+单一用途头豁免：使用者少于 2 个的头不需要登记（检查器自动忽略）。若一个头故意不共享、却被 2 个及以上测试 `.cpp` 包含，必须在头文件里写一行显式豁免标记并给出理由：
+
+```cpp
+// shared-test-header: exempt | reason=<为什么是有意不共享>
+```
+
+标记只认行注释的该形态，`reason=` 不得为空（缺理由会被检查器报红）；登记与标记二选一即可。检查器为 `scripts/check_shared_test_headers.py`，已接入 preflight（先跑 `--selftest`，再扫真实树）。
 
 ## 明确不做
 

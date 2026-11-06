@@ -12,6 +12,7 @@
 #     应急逃生：DZ_ALLOW_RED_GATE=1）
 #   - 白名单分支：从分支名提取 issue 号，以被推的 local_sha / 远端分支名调用
 #     scripts/check-push-scope.sh <n> --base origin/main --head <sha> --branch <name>
+#     （scope 匹配 + CI-busy supersede 判定：旧 run 已被新 commit 取代时放行）
 #   - 删除远端分支（local ref 为 (delete)）放行
 #
 # 逃生口：DZ_SKIP_HOOKS=1 git push ...（或 git push --no-verify）
@@ -132,16 +133,28 @@ while read -r local_ref local_sha remote_ref remote_sha || [ -n "${remote_ref:-}
         continue
     fi
 
-    bash scripts/check-push-scope.sh "$issue" --base origin/main --head "$local_sha" --branch "$branch" </dev/null >/dev/null 2>&1
+    # 输出先捕获再按 rc 分流：#284 起「旧 run 已被新 commit 取代」是**放行 + warning**，
+    # 把 warning 连同 `>/dev/null 2>&1` 一起吞掉等于没提示——放行分支只透传 note 块
+    # （note 行 + 其后的缩进 run 明细），其余正常输出保持静默。
+    scope_out="$(bash scripts/check-push-scope.sh "$issue" --base origin/main --head "$local_sha" --branch "$branch" </dev/null 2>&1)"
     rc=$?
     case "$rc" in
-        0) ;;
+        0)
+            show=0
+            while IFS= read -r line; do
+                case "$line" in
+                    note:*) warn "${line#note: }"; show=1 ;;
+                    "  "*) [ "$show" = "1" ] && warn "$line" ;;
+                    *) show=0 ;;
+                esac
+            done <<< "$scope_out"
+            ;;
         1)
             warn "push scope violation for #$issue (run: ./scripts/check-push-scope.sh $issue --base origin/main --head $local_sha)"
             BLOCKED=1
             ;;
         3)
-            warn "CI is already running for branch '$branch'; batch review fixes into one push (or PUSH_SCOPE_ALLOW_CI_BUSY=1)"
+            warn "CI run for the pushed head is still in progress, or its head sha cannot be proven superseded; wait for it, or set PUSH_SCOPE_ALLOW_CI_BUSY=1"
             BLOCKED=1
             ;;
         *)

@@ -38,7 +38,7 @@
 8. 轮次口径：**1 轮 = 1 次修复 + 1 个 verifier**；最多 3 轮修复。第 3 轮仍有 blocking → 修完后必须再跑 **1 轮只读验证**（不算第 4 轮修复），并把结论写进报告。禁止用改写 prompt 重跑 verifier 来"刷新"结论。
 9. **等 verifier 不要 `sleep` 轮询**（AGENTS §五「等待一律后台作业」）：`spawn_teammate` 的成员用 `wait_agent` 真正阻塞；派 `subagent` 时结果以 `subagent-settled` 通知到达。等待窗口做**不写文件**的工作（读 diff/契约、拟关闭评论与报告、跑幂等 `preflight --c-only`）。反例：#77/#78/#81 因 sleep 等 verifier 累计 ≈3.9h。
 10. **verifier `failed` 恢复协议**（`failed` = 子代理异常退出、无报告）：① 原 prompt 重跑一次；② 仍 `failed` → 用 `spawn_teammate` 派 verifier（Team 成员可 `wait_agent` 真正阻塞）；③ 仍不可用 → **人工代轴**逐条核对（机器门禁须已全绿），并在报告写明"verifier failed N 次、人工代轴"。#123 两个审查线程丢失、用户被迫介入、Lead 人工补轴即反例；禁止改写 prompt 反复重跑刷结论。
-11. **review 全部收敛（含最后一轮只读验证）后才进入 §4 push**；push 之后只允许修 CI 红。只读验证轮提出的 finding 必须**并入同一个 commit** 再推——先推再验会让第二次 push 撞上 `check-push-scope` 的「CI 在跑」拒绝，白等一轮 CI（#248 实测：推修复 commit → 起 CI → 跑验证轮 → 又得 1 条 → 新 commit 被拒 → 空等 986s）。
+11. **review 全部收敛（含最后一轮只读验证）后才进入 §4 push**；push 之后只允许修 CI 红。只读验证轮提出的 finding 必须**并入同一个 commit** 再推——先推再验会让验证轮 findings 又产生新 commit，上一轮 CI 作废重跑（旧守卫下第二次 push 还会被「CI 在跑」拒绝、白等一轮；#248 实测 986s；新口径见 §4）。**#252 实测（规则存在 ≠ 动作点看得见）**：23:15 建 PR 起 CI → 23:23:08 修复 commit → 23:23:30 push 被旧 run 拒绝 → 等旧 CI 1431s（到 23:47:57）→ 23:48:07 才推上去 → 新 run 31m42s → 00:20:44 才等到结果，**一次修复被放大成两个串行 CI 周期（≈56min）**，并在 00:20:28 触发用户 abort turn。因此 §4 把「最后一轮只读验证已返回且无 BLOCKING」写成 push / 建 PR 的**动作点前置条件**；只读验证轮模板见 [verifier-prompt.md](verifier-prompt.md) §3（模板返回后才允许进入 §4）。
 12. 并行波（同一时间多个 ticket）必须一票一 worktree（AGENTS §五）；共享工作区只留单线。
 
 ## 2. 门禁（全绿才算完）
@@ -65,7 +65,7 @@
 - **`--test-name` 的 regex 匹配 `<Fixture>.<Case>`（gtest 用例全名），不是源文件名**：`--test-name td_config_test` 匹配不到任何用例，`ctest -R` 零匹配退出码 **8**（`No tests were found!!!`）——那**不是**测试失败，与「用例红了」要分开判断。查用例名用 `./scripts/gate.sh test --list`（直通 `ctest -N`，一行一个用例名，一次调用查全量）。
 - **`--target` 的命名规则 = 模块前缀 + 测试源文件名去 `.cpp`（保留 `_test`）**：`apps/webui/tests/<name>.cpp` → `dzweb_<name>`、`apps/ctp/tests/td_<name>.cpp` → `dztd_ctp_td_<name>`、`apps/master/tests/<name>.cpp` → `dztraderd_<name>`、`libs/<mod>/tests/<name>.cpp` → `dz<mod>_<name>`；冒烟测试是例外 `dz_smoke_test`（#251 曾按源文件名猜 target、连错 3 次：前缀不是 `dztd_` 而是 `dztd_ctp_`）。
 
-`./scripts/preflight.sh` 覆盖：日志格式、clang-format 21.x、文档链接（含契约 §N 引用：活跃文档 + apps/libs 源码注释）、测试可移植性、**MSVC hazard lint**（Windows 头顺序 / C4101 等 Linux 编译器拦不到的失败）、**内置 JSON 版本一致性**（conanfile / 单头 / `VENDORED.md` 三方，含自测）、**门禁脚本参数自测**（#281：`build.sh`/`test.sh` 的重复 flag 必须累积，用假 `cmake`/`ctest` 断言真实命令行）、前端 `type-check` / `lint` / `lint:css` / `vitest` / `gen:types` 幂等性（再生成不改文件即通过，与暂存/提交次序无关）。任一项红就停，**先修红，不叠加新改动**。CI linux job 复用同一脚本（`--c-only`）。
+`./scripts/preflight.sh` 覆盖：日志格式、clang-format 21.x、文档链接（含契约 §N 引用：活跃文档 + apps/libs 源码注释）、测试可移植性、**共享测试头登记**（#284：`docs/unit-test-standard.md` §5.4 索引的确定性校验，含 `--selftest`）、**MSVC hazard lint**（Windows 头顺序 / C4101 等 Linux 编译器拦不到的失败）、**内置 JSON 版本一致性**（conanfile / 单头 / `VENDORED.md` 三方，含自测）、**ci-log 错误模式**（#200）、**gtest 发现超时纪律**（#227）、**commit subject 形态**（#265）、**push-scope 自测**（#265）、**门禁脚本参数自测**（#281：`build.sh`/`test.sh` 的重复 flag 必须累积，用假 `cmake`/`ctest` 断言真实命令行）、**Windows CI 预算分档**（#267）、**孤儿导出**（#274）、前端 `type-check` / `lint` / `lint:css` / `vitest` / `gen:types` 幂等性（再生成不改文件即通过，与暂存/提交次序无关）。任一项红就停，**先修红，不叠加新改动**。CI linux job 复用同一脚本（`--c-only`）。
 
 > **门禁结果可追溯（#190）**：`gate.sh` 的最终 `gate: OK|FAILED` 行固定打在输出**末尾**（`| tail -2` 也可见），每次结果原子写入 `.cache/gate/last-status`。`.githooks/pre-push` 会拒绝「当前 HEAD 上最近一次门禁失败」的推送（HEAD 不符/缺失只警告；应急逃生 `DZ_ALLOW_RED_GATE=1`）。
 
@@ -80,21 +80,23 @@
 
 ## 4. 推送与 PR
 
+> **push / 建 PR 的硬前置（#284 AC2）**：先确认**最后一轮只读验证已返回且无 BLOCKING**。未返回时先 `wait_agent` 阻塞等待（`subagent` 等 `subagent-settled` 通知），**不得先 push / 建 PR 再验**——#252 因此把一次修复放大成两个串行 CI 周期（≈56min，时间线见 §1 第 11 条）。只读验证轮模板见 [verifier-prompt.md](verifier-prompt.md) §3。
+
 ```bash
-./scripts/check-push-scope.sh <issue>     # @{u}..HEAD 只允许本票 commit；分支有 CI 在跑会被拒绝
+./scripts/check-push-scope.sh <issue>     # @{u}..HEAD 只允许本票 commit；同 SHA / 无法解析 SHA 的 in-progress run 才拒绝
 git push -u origin <branch>               # 按 AGENTS「push 分级授权」：feature 分支免逐次确认
 gh pr create --base main --head <branch> --title "<type>: <摘要>（#<issue>）" --body-file <body 文件>
 ./scripts/wait-ci.sh --pr <n>             # 静默等 PR checks（后台作业启动，见下）
 ```
 
 - 本仓用 PR 落地（`ci.yml` 只在 PR / main 触发）；main 有 GitHub ruleset `main-protection`（require PR、禁非快进、禁删除、`bypass_actors=[]`，admins 也无绕过）。payload 见 `.github/rulesets/main-protection.json`，查看/重建：`gh api repos/<owner>/<repo>/rulesets`、`gh api --method POST repos/<owner>/<repo>/rulesets --input .github/rulesets/main-protection.json`；仓库同时开启 `delete_branch_on_merge=true`。应急直推 main 需临时禁用 ruleset（`DZ_ALLOW_MAIN_PUSH=1` 只绕过本地 hook）。
-- **push 分级**（[ADR 0036](../adr/0036-push-authorization-tiered-with-guardrails.md)，AGENTS 硬门禁的细化）：feature 分支 push / PR 创建更新免逐次确认，前置是本票门禁绿 + `check-push-scope` 通过 + 一轮修复一次 push；**合并 PR 到 main 仍需确认**（可按票或按波一次授权）；删除非本票分支、打 tag 逐次确认；**force push 禁止**（`pre-push` 非快进拦截 + `.opencode` deny）。本地 `.githooks/pre-push`、main ruleset 与 `.opencode` 权限是机器守卫。
+- **push 分级**（[ADR 0036](../adr/0036-push-authorization-tiered-with-guardrails.md)，AGENTS 硬门禁的细化）：feature 分支 push / PR 创建更新免逐次确认，前置是本票门禁绿 + `check-push-scope` 通过 + 一轮修复一次 push；**合并 PR 到 main 仍需确认**（可按票或按波一次授权，且必须在开工/PR 创建时一次性提出——见 §5）；删除非本票分支、打 tag 逐次确认；**force push 禁止**（`pre-push` 非快进拦截 + `.opencode` deny）。本地 `.githooks/pre-push`、main ruleset 与 `.opencode` 权限是机器守卫。
 - **认证失败时先换通道，绝不往 URL 里塞凭据**（#265 复盘 #246）：SSH agent 会间歇性失效——同一个会话里 `Permission denied (publickey)` 可出现多次，而紧接着 `ssh -T git@github.com` 又是通的。此时正确做法是走 HTTPS：`setup.sh` 已装好 gh credential helper（全局不可写时回退仓库级），直接 `git push https://github.com/<owner>/<repo>.git HEAD:refs/heads/<branch>` 即可。**禁止** `git push https://user:<token>@github.com/...`：`-u` 会把 token 连同 upstream 一起写进 `.git/config`（#246 实际发生，事后需人工清理，且有泄漏风险）。若已误写：`git config branch.<branch>.remote origin` 覆盖回去，再用 `grep -rq "$(gh auth token)" .git` 确认无残留。
 - **实现完成即自动推进到本节，无需等用户口令**：门禁绿后直接 push → 建 PR → 起 CI 等待；#159 曾在「实现完成」处停下，需要用户催「进行收尾，可以推送」。唯一需确认的是 §5 合并 main、打 tag、删除非本票分支（ADR 0036）。
 - **PR 开完不阻塞等 CI**：`gh pr create` 成功后即可转下一票（读契约 / 定 spec）或本票收尾准备（拟关闭评论、清理 worktree 计划），CI 结果在自然断点或波末统一用 `./scripts/wait-ci.sh --pr <n>` 收；不要把 CI 等待写成同步步骤（本波 `wait-ci` 阻塞约 3.4h）。**边界**：不阻塞只适用于同波内的下一步准备；本票**合并前必须 CI 绿**，开新波前必须已完成合并（见 §5）。
 - **`wait-ci.sh` 的退出码就是 CI 结论**：它本来就是静默输出，只打状态变化与失败链接，别接管道（理由见 §2）。feature 分支没开 PR 时 `--sha` 约 180s 就报错并提示先建 PR，不会空等到 60 分钟总超时。
 - **pre-push 还会拦截「当前 HEAD 上最近一次门禁失败」**：读 `.cache/gate/last-status`，HEAD 不符或缺失只警告；被拦时先重跑 `./scripts/gate.sh build/test`，应急 `DZ_ALLOW_RED_GATE=1`。
-- **推送前先看 `gh run list --branch <branch> --json status`**：同一分支已有 in-progress run 时不要推——会排队/取消，每次 ≈35–40 分钟。把剩余修复攒成 **1 个 commit** 再推；review 修复不要在 CI 跑的时候逐条推（本波 #93 因此取消 3 个 run）。
+- **修复性提交立刻推，不要再等旧 run（#284 AC1）**：PR run 的 `concurrency.cancel-in-progress`（`ci.yml`）会取消旧 run，新 run 覆盖全量内容；`check-push-scope.sh` 现在按 in-progress run 的 `headSha` 判定——旧 run 的 SHA 是被推 HEAD 的祖先（已被新 commit 取代）→ **放行 + supersede warning**；只有同 SHA（没有新内容可推）才 exit 3 拦截，不可本地解析的 SHA 保守拦截。**唯一仍要攒批的情形**：把同一次修复拆成多个 commit 反复推（每个 commit 都会取消并重起一个 ≈35–40 分钟的 run）——修复请合并成 **1 个 commit** 一次推（本波 #93 曾因逐条推取消 3 个 run）。`PUSH_SCOPE_ALLOW_CI_BUSY=1` 仍是逃生口，仅真故障时用。
 - 等待期间不要 `gh run watch` 全量输出、不要 `sleep` 轮询、不要反复 tail 后台日志。CI 红先用 `./scripts/ci-log.sh <run-id>` 定位：它**优先取 `last-test-log` artifact（约 200KB，秒级给出失败用例名）**，再退回失败 job 日志（Windows 可达数十 MB）；同一 run/job 已下载过会复用（`--refresh` 强制重拉，`--context N` 调上下文行数）。
 - **等 CI 用后台作业**：`wait-ci.sh --pr <n>` 以 `run_in_background` 启动，等待期做只读准备（拟关闭评论 / 清理 worktree 计划 / 读下一票契约）；需要结果时 `job_output(wait=true)`，不要前台空等（2026-10-26 #146 / #147 各阻塞 21–22 分钟）。
 - **单次快照（#192）**：任意时刻想看 CI 现在到哪了，用 `./scripts/wait-ci.sh --status [--pr <n>|--sha <sha>|--run <id>|--branch <b>]`——立即返回，0 绿 / 1 红（打印失败 job）/ 2 无 run 或错误 / 3 仍在跑。**不要** `sleep` 轮询（#159/#160 曾各 sleep 6 次、共约 13 分钟）：把它当「随时可查的仪表盘」，等待本身交给后台作业。
@@ -112,6 +114,7 @@ git merge-base --is-ancestor <merge-commit> main && echo merged
 ```
 
 - **PR 未 MERGED 前不得关闭 issue**。CI 绿 ≠ 已落地（本波 #91 关单 40 分钟后才合、#92 关单 5 小时后才合，期间 #93 合入造成冲突，收尾多解一次冲突 + 多跑两轮 CI）。
+- **合并授权在开工时或 PR 创建时一次性提出（#284 AC3）**：条件式——「CI 绿 + 双轴审查通过即合并关单」，或使用本仓已有的「按票/按波一次授权」；**禁止把该问题留到 CI 绿之后才问**——#281 因此在 CI 全绿后才问，用户 6177s 后答复，等待占会话 49.6%（#252 同一问题在用户在场时 23s 内答复）。提问必须保留「**先不合并，我要自己看 PR**」选项；用户选此项时 issue 保持 open、不阻塞其它票（其它票照常开工）。
 - `--delete-branch` 在 worktree 里会跳过本地删除（分支被 checkout）：先 `git worktree remove`，再 `git branch -d`；远端分支用 `git ls-remote --heads origin <branch>` 确认为空。
 - 合并会触发 main 的 CI（merge commit 跑 Linux，约 15 分钟；Windows job 只在 PR 跑）；共享工作区切回 main 后不要停在旧 feature 分支。
 - **默认不等 main CI**：squash 合并后 main 上的 tree 与 PR head tree **完全相同**，main run 重测的是同一份内容，等它拿不到任何新信息。落地确认用秒级命令：`git merge-base --is-ancestor <merge-commit> main`；想直接验 tree 相同用 `git diff --quiet <pr-head-commit> <merge-commit>`（静默即相同）。实测代价：五票里四票选择等，合计约 113 分钟（#246 4286s / #260 1633s / #248 620s / #258 251s）。
@@ -194,7 +197,7 @@ AGENTS §五「本机沙箱」的细节都放在这里（AGENTS 只留指针，�
 - `sleep` / `gh run watch` 等 CI、`gh run view --log-failed` 因 `~/.cache/gh` 只读失败 → 时间与上下文双浪费。
 - **CI 绿就关 issue / PR 未合并就关 issue** → 下游卡住、PR 悬空与冲突返工（#91/#92）。
 - **共享工作区留在 feature 分支 / 长期不提交的文档批次占着 `git status`** → 阻塞并行会话（#91→#92；ADR 0026–0030 从 10-22 挂到 10-23）。
-- **逐条 push review 修复** → 每次推送排队/取消 ≈35–40 分钟 CI（#93 取消 3 个 run）。
+- **把一次修复拆成多个 commit 反复 push** → 每个 commit 取消并重起 ≈35–40 分钟 CI（#93 取消 3 个 run；#252 在旧守卫下还串行等了两个周期 ≈56min）。
 - 门禁命令接 `| tail`、`| head` → 退出码被管道吞掉；结论本身仍可从 verdict 行 / `.cache/gate/last-status` 读到（`wait-ci.sh` 无兜底，别接）。判绿口径见本文 §2。
 - 用 bash `sleep` 等异步子代理 → 白等且触发重复工具提醒（#78 19 次 5028s、#81 10 次 2400s）；子代理完成会自动通知。
 - 省略 issue close → 人工追问，下游 `blocked_by` 卡住。

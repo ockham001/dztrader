@@ -3,9 +3,11 @@
 #
 # 覆盖：日志格式 / clang-format 21.x / 文档链接（含活跃文档里反引号路径**与代码符号**的
 #       存在性，以及 apps/libs 源码注释里显式契约 §N 引用的目标存在性）/ 测试可移植性+
-#       临时目录隔离 / MSVC hazard lint / 内置 nlohmann/json 版本一致性 / gtest 发现超时
-#       纪律（#227）/ 门禁脚本参数自测（#281，build.sh/test.sh 重复 flag 必须累积）/
-#       前端五件套。
+#       临时目录隔离 / 共享测试头登记（#284，§5.4 索引的确定性校验）/ MSVC hazard lint /
+#       内置 nlohmann/json 版本一致性 / ci-log 错误模式（#200）/ gtest 发现超时纪律
+#       （#227）/ commit subject（#265）/ push-scope 自测（#265）/ 门禁脚本参数自测
+#       （#281，build.sh/test.sh 重复 flag 必须累积）/ Windows CI 预算分档（#267）/
+#       孤儿导出（#274）/ 前端五件套。
 #       MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
 #       Linux 编译器拦不到，由 scripts/check_msvc_hazards.py 做源码级 lint；
 #       conanfile.py 与内置 JSON 单头的版本漂移由 scripts/check_json_vendor_version.py 拦住。
@@ -122,6 +124,17 @@ check_test_portability() {
     # 仍被拦住，再扫真实测试文件（#136）。
     "$PYTHON" scripts/check_test_portability.py --selftest
     "$PYTHON" scripts/check_test_portability.py
+}
+
+check_shared_test_headers() {
+    # 共享测试头登记（#284 AC4）：§5.4 的索引原本是手工台账——新写一个测试头、两个以上
+    # 测试 .cpp 包含它，却忘了同一次提交登记，编译与测试全绿（#281 审查 B2 因此被判
+    # BLOCKING）。检查器扫 apps/libs 下任意 tests/ 目录（含嵌套）的 *.h，按 basename
+    # 统计测试 .cpp 使用者；使用者 >=2 且未登记（也没有显式豁免标记）即红。
+    # 先跑自测（登记绿 / 未登记红 / 单一用途忽略 / 豁免标记绿 / 表格缺失 / 多路径行），
+    # 再扫真实树。显式串联：`set -u -o pipefail` 没有 `-e`，自测失败会被后一条的 0 覆盖。
+    "$PYTHON" scripts/check_shared_test_headers.py --selftest || return $?
+    "$PYTHON" scripts/check_shared_test_headers.py
 }
 
 check_msvc_hazards() {
@@ -283,6 +296,7 @@ run_step "log format (apps/ libs/)" check_log_format
 run_step "clang-format 21.x dry-run (libs apps)" check_clang_format
 run_step "docs links" check_docs_links
 run_step "test portability + temp-dir isolation" check_test_portability
+run_step "shared test headers (#284)" check_shared_test_headers
 run_step "msvc hazard lint" check_msvc_hazards
 run_step "vendored JSON version consistency" check_json_vendor_version
 run_step "ci-log error pattern" check_ci_log_pattern

@@ -35,13 +35,13 @@
 ## C. 提交前（每次 push）
 
 - [ ] 本地 git hooks 已装：`git config --get core.hooksPath` 输出 `.githooks`（`setup` 自动安装）。pre-commit 由 staged 文件触发——clang-format 校验 index 内容，日志格式 / docs links 为工作区全仓扫描；**不能替代** `preflight`。pre-push 拦直推 main / 非快进 / 非白名单分支名；最近一次门禁在**当前 HEAD** 失败会拒绝推送（`.cache/gate/last-status`；HEAD 不符/缺失只警告，应急 `DZ_ALLOW_RED_GATE=1`）。
-- [ ] `./scripts/preflight.sh` 全绿（日志格式 / clang-format 21.x / 文档链接（含契约 §N 引用：活跃文档 + apps/libs 源码注释）/ 测试可移植性+临时目录唯一化 / **MSVC hazard lint** / **内置 JSON 版本一致性** / **gtest 用例发现超时纪律（#227）** / **孤儿导出（#274，抽共用模块后的死定义）** / **门禁脚本参数自测（#281）** / 前端 `type-check` + `lint` + `lint:css` + `vitest` + `gen:types` 幂等性，一条命令一个结论）——CI linux job 复用同脚本的 C 段（`--c-only`）；首次需先 `./scripts/build.sh` 生成 `node_modules`
+- [ ] `./scripts/preflight.sh` 全绿（日志格式 / clang-format 21.x / 文档链接（含契约 §N 引用：活跃文档 + apps/libs 源码注释）/ 测试可移植性+临时目录唯一化 / **共享测试头登记（#284，`docs/unit-test-standard.md` §5.4 索引的确定性校验）** / **MSVC hazard lint** / **内置 JSON 版本一致性** / **ci-log 错误模式（#200）** / **gtest 用例发现超时纪律（#227）** / **commit subject 形态（#265）** / **push-scope 自测（#265）** / **门禁脚本参数自测（#281）** / **Windows CI 预算分档（#267）** / **孤儿导出（#274，抽共用模块后的死定义）** / 前端 `type-check` + `lint` + `lint:css` + `vitest` + `gen:types` 幂等性，一条命令一个结论）——CI linux job 复用同脚本的 C 段（`--c-only`）；首次需先 `./scripts/build.sh` 生成 `node_modules`
 - [ ] `./scripts/build.sh --config release` 通过（agent 侧用 `./scripts/gate.sh build --config release`：同 build tree 串行 + ccache 环境 + 真实退出码；管道用法见 [ticket-closeout](agents/ticket-closeout.md) §2）
 - [ ] `./scripts/test.sh` 全绿（后台 fast 门禁；含冒烟 smoke）；穷举/基准按需 `--label slow` / `--label perf`（Windows `-Label`）；agent 侧 `./scripts/gate.sh test`；**票内并行 / 构建树中间态时用 `--target`（build）/ `--test-name`（test）定向迭代，全量 build/test 等写作用域收敛后再跑**（见 [ticket-closeout](agents/ticket-closeout.md) §2）
 - [ ] `git status` 干净，每票 1–2 个提交（实现 + 审查收敛；信息中文，`fix:/feat:/refactor:/docs:/test:/chore:/perf:/style:/build:/ci:` 前缀）
 - [ ] 契约/生成物有改动时 CI 的 Freshness 步骤绿
 
-> 收尾按 [agents/ticket-closeout.md](agents/ticket-closeout.md)：push 后建 PR → `./scripts/wait-ci.sh --pr <n>` **静默等 PR checks** → **合并 PR 后**再关 issue。等待只输出状态变化和失败摘要；失败用 `./scripts/ci-log.sh <run-id>` 只取错误行（优先取 200KB 的 `last-test-log` artifact）。不要 `gh run watch` 全量输出，不要 `sleep` 轮询，也不要在同一分支有 CI 在跑时重复 push（会排队/取消，每次 ≈35–40 分钟）。
+> 收尾按 [agents/ticket-closeout.md](agents/ticket-closeout.md)：push 后建 PR → `./scripts/wait-ci.sh --pr <n>` **静默等 PR checks** → **合并 PR 后**再关 issue。等待只输出状态变化和失败摘要；失败用 `./scripts/ci-log.sh <run-id>` 只取错误行（优先取 200KB 的 `last-test-log` artifact）。不要 `gh run watch` 全量输出，不要 `sleep` 轮询；修复性提交**立刻推**（PR concurrency 会取消旧 run，新 run 覆盖全量），但把同一次修复拆成多个 commit 反复推会连续取消/重起 ≈35–40 分钟的 run——修复合并为 1 个 commit 一次推（`check-push-scope.sh` 只对同 SHA / 无法解析 SHA 的 in-progress run 拦截）。
 
 > 若某项门禁**当前未在你的改动上跑**（例如只改了一个 `.vue` 但改了全局样式），
 > 请人工确认它确无跨层影响——机器门禁覆盖不到的正是这类"看似局部其实全局"的改动。
