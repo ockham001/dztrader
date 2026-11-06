@@ -191,10 +191,12 @@ bool account_query_matches(const std::vector<std::string>& configured, const std
     return std::ranges::find(configured, queried) != configured.end();
 }
 
-// 2018 三态去重判定 (契约 account-status): 与 write_account_status 的内联条件一致,
-// 抽出纯函数供突变测试 (audit C-F1)。
-bool should_push_account_status(DzAccountState last, DzAccountState next, bool force) {
-    return force || last != next || next == DZ_ACCOUNT_OFFLINE;
+// 2018 三态去重判定 (契约 account-status 场景 2/3): 与 write_account_status 的内联条件一致,
+// 抽出纯函数供突变测试 (audit C-F1)。同态且同交易日不推; 同态但交易日变化 (日切) 必推
+// (契约场景 3); Offline 恒推。
+bool should_push_account_status(
+    DzAccountState last, int32_t last_date, DzAccountState next, int32_t next_date, bool force) {
+    return force || last != next || last_date != next_date || next == DZ_ACCOUNT_OFFLINE;
 }
 
 // "YYYYMMDD" -> 距纪元天数; 空串/非法回落 0 (契约: 非 Ready 或缺失交易日 = 0)。

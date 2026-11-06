@@ -74,9 +74,13 @@ endforeach()
 # 独立于上方 glob (源码在 tests/smoke/ 子目录), RUN_SERIAL:
 # spawn 真实 dztraderd/dzmd_ctp + 机器全局 NamedSemaphore, 不与并行测试混跑
 # ============================================================
+# TIMEOUT 300: 冒烟正常 6s 量级(两个用例), 但 WS 客户端用 Beast **同步** 读写——
+# 同步调用不支持 expires_after 超时(见 smoke_test.cpp 内说明), 一旦断言侧的
+# data_changed 永不到达会无限阻塞。ctest 默认 1500s 会让 CI 白等 25 分钟才红;
+# 300s 足以覆盖最慢的 CI 负载, 又能在回归时快速失败。
 dz_add_test(dz_smoke_test
     SOURCES tests/smoke/smoke_test.cpp tests/test_main.cpp
-    LABELS fast PROPERTIES RUN_SERIAL TRUE)
+    LABELS fast PROPERTIES RUN_SERIAL TRUE TIMEOUT 300)
 target_link_libraries(dz_smoke_test PRIVATE dztraderd_obj GTest::gtest)
 # 冒烟测试写 dztd_ctp.json 复用 apps/ctp/tests/td_config_fixture.h（header-only，
 # TdConfig 文件形态单一真相源；该 include 路径同时让 td_config.h 的

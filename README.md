@@ -27,7 +27,7 @@
 |---|---|---|
 | ![登录](docs/images/screenshot-login.png) | ![仪表盘](docs/images/screenshot-dashboard.png) | ![日志](docs/images/screenshot-logs.png) |
 
-> 仪表盘截图中的**账户 / 持仓 / 委托 / 策略 / 消息为演示数据**——页面顶部有常驻「演示数据」横幅，五个面板各带「演示」标签；交易数据链路尚未接入，真实数据由 #6 承接。仅「行情」面板为实时数据。
+> 仪表盘截图中的**委托 / 策略 / 消息为演示数据**——页面顶部有常驻「演示数据」横幅，这三个面板各带「演示」标签。其中**委托**的真实数据在「交易数据」页（`/trading-data`，随 #246/#248 落地，REST 直查交易库），仪表盘面板仍为原型布局；策略与消息面板的数据链路由 #6 承接。「行情」「持仓」「资金」为实时数据（持仓随 #249、资金随 #250 接入真实链路，均直查交易库）。
 
 ## 前置条件
 
@@ -299,6 +299,18 @@ glibc 版本需 ≥ 构建机（或同等）。
 ## 贡献
 
 欢迎贡献代码。请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 了解贡献指南。
+
+## 文档地图
+
+| 入口 | 内容 |
+|---|---|
+| [docs/README.md](docs/README.md) | **文档总入口**：活跃真相源 / 架构参考分层、冲突裁决规则 |
+| [docs/frame_contracts/](docs/frame_contracts/README.md) | 帧协议与 frontend↔dzweb 协议的唯一语义真相源（先读 [general.md](docs/frame_contracts/general.md) 总则） |
+| [docs/architecture.md](docs/architecture.md) | 进程模型、依赖方向、IPC 通道、策略接口约束（蓝图级，细节以代码与契约为准） |
+| [docs/components/](docs/components/) | 组件级设计（线程模型、通道、会话），按组件一档 |
+| [docs/adr/](docs/adr/) | 架构决策记录，按编号追溯 |
+| [docs/development-checklist.md](docs/development-checklist.md) | 新功能开发门禁清单（前端 / 后台 / 提交前 / 策略 SDK 四段） |
+| [GLOSSARY.md](GLOSSARY.md) | 领域术语表 |
 
 ## 许可证
 
