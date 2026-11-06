@@ -132,7 +132,7 @@ test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈�
 
 ## 性能基准
 
-基准与秒级单测分层（[单元测试判据 §4.3](../unit-test-standard.md)）：基准只**报告数值**、不做阈值断言，稳定后才升级为 CI 门禁。当前七项，都在 `perf` 标签下：
+基准与秒级单测分层（[单元测试判据 §4.3](../unit-test-standard.md)）：基准只**报告数值**、不做阈值断言，稳定后才升级为 CI 门禁。当前八项，都在 `perf` 标签下：
 
 | 基准 | 源码 | ctest 名 | 测什么 |
 |---|---|---|---|
@@ -143,6 +143,7 @@ test 预设另有两档后缀：`-slow`（穷举/慢速）与 `-perf`（无阈�
 | `bench_series_read` | `libs/strategy_api/tests/bench_series_read.cpp` | `bench_series_read` | Series `[n]` 回溯读与 `span()` 连续扫描的单操作 ns（#164） |
 | `bench_relocate` | `libs/strategy_api/tests/bench_relocate.cpp` | `bench_relocate` | 18:00 回卷（memmove 布局变换）成本与停顿：单品种 + 50 品种预算两口径（#164） |
 | `bench_warmup_replay` | `libs/strategy_api/tests/bench_warmup_replay.cpp` | `bench_warmup_replay` | 历史预热回放吞吐（bars/s、µs/bar，含 B 回调与虚拟成交）（#164） |
+| `bench_td_read_path` | `apps/webui/bench_td_read_path.cpp` | `bench_td_read_path` | 交易库读路径（`TdOrdersQuery` 游标分页 / 18:00 排序表达式 / `MAX(order_id)` 播种）在 20 账户 20 万行下的 ms 与行/秒（#253） |
 
 ### 五个框架基准（#164）的测量边界
 
@@ -185,7 +186,7 @@ gh workflow run CI --ref <branch> -f run_perf=true
 
 经框架启动的三个基准（`bench_tick_update` / `bench_bar_close_dual_ma` / `bench_warmup_replay`）把临时配置写在 `$DZTRADER_HOME/bench/<基准名>/`（跑完删除），未设置 `DZTRADER_HOME` 时直接报错退出，不退化到系统临时目录；`bench_series_read` / `bench_relocate` 只经 `ContextAccess` 构造 ctx，不需要 `DZTRADER_HOME`。
 
-**必须用 Release**（`-Werror` 与优化同时开启；Debug 数值无参考价值，基准会在报告头打印 `warning: debug build`）。`perf` 档的 7 个基准都带 `RUN_SERIAL`（串行执行，避免并行进程互相污染 p99）；即便如此，跑之前仍建议关闭其它重负载。
+**必须用 Release**（`-Werror` 与优化同时开启；Debug 数值无参考价值，基准会在报告头打印 `warning: debug build`）。`perf` 档的 8 个基准都带 `RUN_SERIAL`（串行执行，避免并行进程互相污染 p99）；即便如此，跑之前仍建议关闭其它重负载。
 
 **看完整输出要直接跑可执行文件，或给 ctest 加 `-V`**：`ctest` 默认只在**失败时**回显输出，`--output-on-failure` 同样只在失败时回显（实测通过时 `amortized|fingerprint` 命中 0）；`--label perf` 跑完只给一行 Passed。要读数值加 `-V`（verbose，实测命中 3 处），或直接跑二进制。
 

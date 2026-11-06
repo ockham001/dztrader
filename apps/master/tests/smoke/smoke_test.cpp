@@ -49,7 +49,6 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <set>
@@ -435,7 +434,11 @@ public:
             return false;
         }
         stream_ = std::make_unique<beast::websocket::stream<beast::tcp_stream>>(ioc_);
-        stream_->next_layer().expires_after(10s);
+        // 注意: expires_after 只对**异步**操作生效。Beast 文档明写
+        // "Timeouts are not available when performing blocking calls"
+        // (boost/beast/core/basic_stream.hpp 的 Blocking I/O 段), 下面用的是同步
+        // connect/handshake/read, 所以本类**没有**真正的超时——失败靠 ctest 的
+        // TIMEOUT 兜底(见 apps/master/CMakeLists.txt), 不靠这里的任何时长参数。
         stream_->next_layer().connect(*results.begin(), ec);
         if (ec) {
             error_ = "connect failed: " + ec.message();
@@ -453,13 +456,18 @@ public:
         return true;
     }
 
-    /// 读一条完整消息 (阻塞, 最长 timeout_ms)。超时/关闭 = nullopt。
+    /// 读一条完整消息（**无限期阻塞**直到收到消息或连接关闭）。关闭/错误 = nullopt。
+    ///
+    /// @param timeout_ms **当前不生效**，保留是为了将来切异步读时直接可用：
+    ///        Beast 的同步读不触发 `expires_after`（见 `connect` 内的说明）。调用方
+    ///        因此不能靠它做"短超时轮询"——`pump_ws` 的返回值只表示"是否读到了一条"，
+    ///        "读不到"会一直阻塞，由 ctest TIMEOUT 兜底为失败（而不是假绿）。
     std::optional<nlohmann::json> read_message(int timeout_ms) {
+        (void)timeout_ms;  // 同步读不生效（见上）；保留参数便于将来切异步读
         if (!connected_) {
             return std::nullopt;
         }
         beast::flat_buffer buffer;
-        stream_->next_layer().expires_after(std::chrono::milliseconds(timeout_ms));
         boost::system::error_code ec;
         stream_->read(buffer, ec);
         if (ec) {
@@ -948,7 +956,7 @@ protected:
     }
 
     /// AC1-1 建库断言: 库文件存在、`PRAGMA user_version == kTdSchemaVersion`、
-    /// 五张表齐全, 且库路径与 `paths::trade_db()` 单一真相源一致。
+    /// schema 声明的全部表齐全, 且库路径与 `paths::trade_db()` 单一真相源一致。
     /// 返回空串 = 通过, 否则为失败描述 (便于 ASSERT_TRUE 输出)。
     std::string check_trade_db() {
         // 单一真相源: 断言用的路径就取自 products 的生产函数, 不手拼 db/trade.db
@@ -968,17 +976,17 @@ protected:
                 return "schema version " + std::to_string(version) +
                        " != " + std::to_string(tdstore::kTdSchemaVersion);
             }
-            const std::set<std::string> required = {"orders", "trades", "positions",
-                                                    "trading_accounts", "instruments"};
+            // 表清单取自 tdstore 的单源声明 (schema_catalog.h 的 tables()), 不在此手抄:
+            // 将来新增第六张表时 build_schema_ddl() 会自动建, 手抄清单会静默漏掉它。
             std::set<std::string> present;
             SQLite::Statement stmt(
                 db, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
             while (stmt.executeStep()) {
                 present.insert(stmt.getColumn(0).getString());
             }
-            for (const auto& table : required) {
-                if (!present.contains(table)) {
-                    return "missing table: " + table;
+            for (const auto& table : tdstore::tables()) {
+                if (!present.contains(std::string(table.name))) {
+                    return "missing table: " + std::string(table.name);
                 }
             }
         } catch (const std::exception& e) {

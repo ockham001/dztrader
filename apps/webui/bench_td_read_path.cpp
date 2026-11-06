@@ -127,10 +127,16 @@ std::string today_text() {
                        local.tm_mday);
 }
 
-/// 自检断言（不是性能阈值）：失败打印统一诊断，`main` 以此返回 1。
+/// 自检累计结果（不是性能阈值）：任何一条 `expect` 失败都会让 `main` 返回 1。
+/// 用文件级累加而非要求每个调用点写 `checks_ok &=`：调用点有 13 处，漏写一处
+/// 就等于该自检静默失效（本文件曾出现 10 处 `(void)expect(...)` 丢弃返回值的形态）。
+bool g_checks_ok = true;
+
+/// 自检断言（不是性能阈值）：失败打印统一诊断并累计到 `g_checks_ok`。
 bool expect(bool condition, const char* check) {
     if (!condition) {
         std::fprintf(stderr, "self-check failed | check=%s\n", check);
+        g_checks_ok = false;
     }
     return condition;
 }
@@ -675,11 +681,18 @@ void bind_probe_args(SQLite::Statement& stmt,
     stmt.bind(index, limit);
 }
 
-/// 在同一只读连接上执行一次探针 SQL，返回耗时（ms）；不足一页即自检失败。
+/// 在同一只读连接上执行一次探针 SQL，返回耗时（ms）。
+///
+/// @param expect_full_page 是否自检「返回满页」。**深游标探针必须传 false**：
+///        cursor 已接近该账户数据末端时，剩余行本就不足一页（`--quick` 档每账户只有
+///        `kQuickRowsPerAccount` 行，深游标之后常为空），此时「不足一页」是**正确结果**
+///        而不是失败。这个参数存在的原因：早期版本对所有调用点无条件自检满页，
+///        在 `--quick` 档恒失败（且该失败曾被 `(void)expect` 静默丢弃）。
 double time_probe_once(SQLite::Database& db,
                        const std::string& sql,
                        const std::vector<std::string>& accounts,
-                       const ProbeCursor& cursor = {}) {
+                       const ProbeCursor& cursor = {},
+                       bool expect_full_page = true) {
     const auto begin = steady_clock::now();
     SQLite::Statement stmt(db, sql);
     bind_probe_args(stmt, accounts, kPageSize + 1, cursor);
@@ -688,7 +701,9 @@ double time_probe_once(SQLite::Database& db,
         ++rows;
     }
     const double elapsed = ms_between(begin, steady_clock::now());
-    (void)expect(rows >= kPageSize, "probe sql returns a full page");
+    if (expect_full_page) {
+        (void)expect(rows >= kPageSize, "probe sql returns a full page");
+    }
     return elapsed;
 }
 
@@ -697,10 +712,11 @@ std::vector<double> time_probe(SQLite::Database& db,
                                const std::string& sql,
                                const std::vector<std::string>& accounts,
                                int reps,
-                               const ProbeCursor& cursor = {}) {
+                               const ProbeCursor& cursor = {},
+                               bool expect_full_page = true) {
     std::vector<double> samples;
     for (int rep = 0; rep < reps; ++rep) {
-        samples.push_back(time_probe_once(db, sql, accounts, cursor));
+        samples.push_back(time_probe_once(db, sql, accounts, cursor, expect_full_page));
     }
     return samples;
 }
@@ -721,13 +737,6 @@ std::pair<std::vector<double>, std::vector<double>> time_probe_pair(
     }
     return {std::move(a), std::move(b)};
 }
-
-/// 生产实现与「仅 SQL」探针的**交错配对采样**（A/B/A/B…）：
-/// 两者跑在不同阶段时，页缓存/频率漂移会被算进差值（实测符号都会翻）。配对后
-/// 每个 rep 内交替，差值的分布才有意义。
-struct PairedDelta {
-    Statistics delta;  ///< 逐 rep 的 (production - probe) 差值（ms）
-};
 
 std::pair<std::vector<double>, std::vector<double>> time_execute_vs_probe(
     const dztrader::webui::TdOrdersQuery& query,
@@ -997,8 +1006,11 @@ int main(int argc, char** argv) {
         cursor_probe.order_id = pagination.deep_cursor_order_id;
         const std::string probe_cursor_20 = probe_sql(online_accounts.size(), true, cursor_probe);
         {
+            // 深游标已接近数据末端 → 剩余行可能不足一页（--quick 档必定如此），
+            // 因此本探针不自检满页。
             const std::vector<double> cursor_samples =
-                time_probe(probe_db, probe_cursor_20, online_accounts, page_reps, cursor_probe);
+                time_probe(probe_db, probe_cursor_20, online_accounts, page_reps, cursor_probe,
+                           /*expect_full_page=*/false);
             const Statistics cursor_stats = summarize_values(cursor_samples);
             print_stats("  20 accounts, anchor ORDER BY + deep cursor", cursor_stats, "ms");
             std::printf(
@@ -1065,7 +1077,7 @@ int main(int argc, char** argv) {
         checks_ok &= expect(max_order_id == seed.max_order_id,
                             "read_max_order_id matches seeded max order_id");
         std::printf("\n");
-        exit_code = checks_ok ? 0 : 1;
+        exit_code = (checks_ok && g_checks_ok) ? 0 : 1;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "bench failed | error=\"%s\"\n", error.what());
         exit_code = 1;
