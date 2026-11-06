@@ -136,7 +136,7 @@
 - **禁止单引号包裹占位符**：错 `"user '{}' fail"`，对 `"user fail | user={}"`
 - **禁止多行 `===` banner**，必须合并为单行 `prose | k=v`。**禁止中文**（含函数名、变量名）
 - 非性能路径用异常，日志作为最终输出。`Exception ──catch──→ LastError::set()`（C 接口边界，**无日志**）/ `──→ spdlog`（平台代码，无 LastError）
-- 提交前跑 `./scripts/preflight.sh`（日志格式/格式/文档链接/可移植性/MSVC hazard/内置 JSON 版本一致性/前端，与 CI 同源）；日志违规用 `// NOLINT(log-format)` 豁免
+- 提交前跑 `./scripts/preflight.sh`（日志格式/格式/文档链接/可移植性/共享测试头登记/MSVC hazard/内置 JSON 版本一致性/前端，与 CI 同源）；日志违规用 `// NOLINT(log-format)` 豁免
 
 ### 跨平台
 
@@ -200,7 +200,8 @@
 - **本地 git hooks 由 `setup` 自动安装**（`core.hooksPath=.githooks`；安装前 `setup` 会确认 `.githooks` 存在）：pre-commit 由 staged 文件触发——clang-format 校验 index 内容，日志格式 / docs links 为工作区全仓扫描；pre-push 拦直推 main、非快进、非白名单分支名与 tag，并按分支票号跑 `check-push-scope`；最近一次门禁在**当前 HEAD** 失败时拒绝推送（读 `.cache/gate/last-status`，HEAD 不符/缺失只警告，逃生口 `DZ_ALLOW_RED_GATE=1`）。hooks 是快速护栏，**不能替代** `preflight` 与 CI。
 - **push 分级授权**（见 [ADR 0036](docs/adr/0036-push-authorization-tiered-with-guardrails.md)；机器守卫 = pre-push hook + GitHub main ruleset + `.opencode` 权限）：
   - **免逐次确认**：把本票 commit push 到符合命名约定的 feature 分支、`-u` 建上游、创建/更新 PR、重跑 CI、合并后删除**本票**远端分支。前置：本票门禁绿（代码票 `gate build/test`；纯文档票 docs links / `preflight --c-only`）、`check-push-scope` 通过、一轮 review 的修复合并为一次 push。
-  - **仍需确认**：合并 PR 到 main（最后一道；可按票或按波一次授权）、删除非本票分支、打 tag（opencode 会话里 `gh pr merge` / tag 为 ask；DSH 等宿主靠本规则人工确认）。
+  - **仍需确认**：合并 PR 到 main（最后一道）、删除非本票分支、打 tag（opencode 会话里 `gh pr merge` / tag 为 ask；DSH 等宿主靠本规则人工确认）。
+  - **合并授权前置（#284）**：合并 PR 的授权在**开工时或 PR 创建时一次性提出**（条件式「CI 绿 + 双轴审查通过即合并关单」，或按票/按波一次授权），**禁止留到 CI 绿之后才问**（#281 因此空等 6177s = 会话 49.6%；#252 同一问题在用户在场时 23s 内答复）；提问保留「**先不合并，我要自己看 PR**」选项，用户选定后 issue 保持 open、不阻塞其它票。
   - **禁止**：直推 main（pre-push + ruleset 双重拦截）、force push（pre-push 非快进拦截 + `.opencode` deny；ruleset 拒非快进）。应急逃生口 `DZ_ALLOW_MAIN_PUSH=1` / `DZ_ALLOW_FORCE_PUSH=1` / `DZ_SKIP_HOOKS=1` 只在真故障时用，用完在报告里写明；其中直推 main 的逃生口还需临时禁用 ruleset（`bypass_actors=[]`，admins 也无绕过）。
 
 ### 本机沙箱（DSH）

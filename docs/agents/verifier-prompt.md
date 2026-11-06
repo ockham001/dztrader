@@ -61,6 +61,8 @@
 报告 ≤200 词，末尾一行：`<N> 条 finding：X PASS / Y FAIL`。
 ```
 
+> 该模板返回后，Lead 才能进入 [ticket-closeout.md](ticket-closeout.md) §4 的 push / 建 PR（硬前置：最后一轮只读验证已返回且无 BLOCKING）；未返回先 `wait_agent`，#252 因跳过该动作点把一次修复放大成两个串行 CI 周期（≈56min，证据见 ticket-closeout §1 第 11 条）。
+
 ---
 
 ## 为什么必须是步骤序
