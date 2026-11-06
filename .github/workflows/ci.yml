@@ -48,10 +48,19 @@ on:
   # 下，其它 PR restore 不到（这正是 warm job 必须放在 main 上的原因）。
   #
   # 快路径（#289 AC3）：PR 的改动面由 `scripts/ci_scope.py` 分类为 fast / full，`scope` job
-  # （仅 pull_request）输出 `mode`；fast 时跳过构建/测试/前端四步，只保留 preflight（它才是
-  # scripts、docs 改动的验证面）。**denylist 只在 `scripts/ci_scope.py` 定义一处**，本文件不
-  # 重复列举——两处定义必然漂移，改规则请改脚本并跑 `--selftest`。
+  # （仅 pull_request）输出 `mode`。fast 时**跳过验证面**：Windows job 整体不跑、Linux 的
+  # Build / C++ Tests / 四个前端步骤不跑；**保留 preflight**（它才是 scripts、docs 改动的
+  # 验证面）。fast 仍会跑 Setup（conan install + cmake configure）与缓存恢复等廉价准备步骤
+  # ——它们不是验证、也不在 `if` 条件里，代价约一分钟，换来「full 回退无需重跑配置」的简单
+  # 语义（#289 审查：注释曾写「只保留 preflight」，与实现不符，这里按实际写）。
+  # **denylist 只在 `scripts/ci_scope.py` 定义一处**，本文件不重复列举——两处定义必然漂移，
+  # 改规则请改脚本并跑 `--selftest`。
   #   - 逃生口：PR 带 `ci-full` 标签强制全量（标签判断独立于 mode，fast 也覆盖）。
+  #     **注意触发时机**：`pull_request` 默认 activity types 是 opened/synchronize/reopened，
+  #     不含 `labeled`——所以「先让 fast 跑完、再补标签」不会重跑旧 run（re-run 复用同一份
+  #     event payload，也读不到新标签）。正确用法：**推送前就把标签加上**；事后补救 =
+  #     保留标签 + close/reopen PR（`reopened` 会创建新 run）。不加 `labeled` 到 types 是有意
+  #     的：那会让任意标签（如 needs-triage）都触发一次全量 CI。
   #   - main push 永远全量：`scope` job 不跑，`needs.scope.outputs.mode` 为空，各步条件里的
   #     `github.event_name != 'pull_request'` 分支保证照常执行。
   schedule:
@@ -387,7 +396,7 @@ jobs:
       # summary；原先只 `ccache --show-stats` 打日志，混在 job 日志里无法跨 run 归因
       # （#272 一个测试 cpp 跑 11m55s、#284 零 C++ 跑 14m51s 都是这样发现的）。
       # 这里落一份与 Windows `windows-sccache-stats` 对称的 artifact：统计 + 本次改动
-      # 规模（cpp/header 计数，口径与 scripts/ci_budget.py 一致）。
+      # 规模再加上 commit，供 `scripts/ci_budget.py --stats-file` 归因。
       # **只取证，不设墙钟预算门禁**：先拿数据再决定改不改缓存（#260 误判的教训）。
       - name: ccache stats
         if: always()
@@ -397,18 +406,14 @@ jobs:
           ccache --show-stats 2>&1 | tee /tmp/ccache-stats.txt || true
           mkdir -p .cache/ci-stats
           cp /tmp/ccache-stats.txt .cache/ci-stats/ccache-stats.txt
-          # 改动规模：三点 diff（merge-base..HEAD），与 Windows 侧 Record Windows change
-          # scale (#267) 同口径；base 取 PR base sha，非 PR（push/dispatch）回退 origin/main。
+          # 改动规模：**复用 scripts/ci_budget.py**（单一来源）——它按 `git diff --name-only`
+          # 数 cpp/header 并按档位打印，`--actual` 缺省时只报告不判定，正好当取证行用。
+          # 自己在这里再 grep 一遍扩展名等于把「哪些后缀算 C++」定义第三份，必然漂移。
           base="${{ github.event.pull_request.base.sha }}"
           if [ -z "$base" ]; then base="origin/main"; fi
-          files="$(git diff --name-only "${base}...HEAD" 2>/dev/null || true)"
-          cpp=$(printf '%s\n' "$files" | grep -cE '\.(cpp|cc|cxx|c)$' || true)
-          hdr=$(printf '%s\n' "$files" | grep -cE '\.(h|hpp|hh|hxx)$' || true)
-          {
-            echo "commit=${GITHUB_SHA}"
-            echo "cpp_files=${cpp}"
-            echo "header_files=${hdr}"
-          } >> .cache/ci-stats/ccache-stats.txt
+          python3 scripts/ci_budget.py --from-git "${base}...HEAD" 2>/dev/null \
+            >> .cache/ci-stats/ccache-stats.txt || true
+          echo "commit=${GITHUB_SHA}" >> .cache/ci-stats/ccache-stats.txt
 
       - name: Upload ccache stats + change scale (#289 AC4)
         if: always()

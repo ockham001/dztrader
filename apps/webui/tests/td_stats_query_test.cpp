@@ -115,7 +115,10 @@ protected:
     }
 
     void insert_trading_account(const SeqRow& row) {
-        // 列清单走共享夹具（`td_position_row_writer.h` 同时提供资金行写入）。
+        // 列清单走共享夹具（`td_position_row_writer.h` 同时提供资金行写入）：手抄 13 列会让
+        // schema 加列时只让抄得最晚的那份失败（unit-test-standard §5.4）。
+        // 夹具的资金列默认值（余额/可用/保证金等）非零，与原先这里字面量的 0 不同；本文件
+        // 只消费 account_id / date / seq（水位与排序），断言不涉及资金列，故语义等价。
         dztrader::test::TdTradingAccountRowSeed seed;
         seed.account_id = row.account_id;
         seed.date = row.date;

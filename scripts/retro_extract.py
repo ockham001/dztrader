@@ -42,7 +42,11 @@ SUBAGENT_TOOLS = ("subagent", "subagent_fork", "spawn_teammate", "workflow")
 _SAFE_CHAR_RE = re.compile(r"^[A-Za-z0-9._-]$")
 # 自掩码实红（#284 AC8）：isError=false 但工具输出文本里已有失败证据。模式保持有限，
 # 只认退出码与非零标记，不做自然语言判定；同一 tool call 只记第一条命中。
+# **只对命令类工具生效**：`read` / `grep` / `diff` 的输出里出现 `FAILED`、`error:` 是
+# 被查看的内容（日志、测试源码、CI 日志），不是本次调用的失败，否则 digest 全是误报
+# （#289 审查 conformance 8）。
 MASKED_FAILURE_LIMIT = 40
+MASKED_FAILURE_TOOL_NAMES = frozenset({"bash", "shell", "job_output", "wait-ci"})
 MASKED_FAILURE_RES = (
     # cmd; echo rc=$? 把非零退出码吞掉的形态
     ("rc!=0", re.compile(r"\brc=([1-9][0-9]*)\b")),
@@ -150,6 +154,8 @@ def masked_failure_line(text: str) -> tuple[str, str] | None:
 
     只按行匹配有限模式（rc!=0 / FAILED / FAIL: / 行首 error:），不做语义判断：
     命令把非零退出码吞掉后 isError 仍为 false，这里补捞实红（#284 AC8）。
+    调用方必须先用 `MASKED_FAILURE_TOOL_NAMES` 过滤工具类型——被 read/grep 出来的
+    `FAILED` 文本是内容，不是本次调用的失败。
     """
     for line in text.splitlines():
         stripped = line.strip()
@@ -218,11 +224,15 @@ def extract(path: Path) -> str:
                 )
             elif len(masked_failures) < MASKED_FAILURE_LIMIT:
                 # isError 为 false 但输出里有失败证据（自掩码实红）；isError 的结果
-                # 已进 failures，不重复记。
-                hit = masked_failure_line(output)
+                # 已进 failures，不重复记。只对命令类工具生效（见 MASKED_FAILURE_* 注释）。
+                name, command, cts = calls.get(call_id, ("?", "", ts))
+                hit = (
+                    masked_failure_line(output)
+                    if name in MASKED_FAILURE_TOOL_NAMES
+                    else None
+                )
                 if hit is not None:
                     pattern, line = hit
-                    name, command, cts = calls.get(call_id, ("?", "", ts))
                     masked_failures.append(
                         (cts, name, command[:160].replace("\n", " "), pattern, line)
                     )

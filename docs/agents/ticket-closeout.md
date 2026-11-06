@@ -36,7 +36,7 @@
 7. **票内多 teammate 并行必须划写作用域**：AGENTS 的「一票一 worktree」只覆盖**跨票**。票内并行时，同仓多成员同时改同一批文件会互相踩——#206/#233 共 7 次 `file changed since it was read`（`Modal.vue` / `useFocusTrap.ts` / `App.vue` 被多个成员碰过）。规则：**一个成员一个文件集，共享文件归 Lead**；用 `team_task_create` 的 `write_scopes` 字段登记该成员要改的路径前缀，派活时写进 prompt。审阅/验证类成员只读，不占作用域。**注意 `write_scopes` 是建议性声明、不是互斥锁**——它不会阻止两个成员写同一文件，纪律靠 prompt 与分工，不靠工具强制。**分工表（成员 / 写作用域 / 依赖 / 验收映射）必须先在 issue 评论落盘再 spawn 成员**——`.cache/handoff/` 可随时删除，不作为唯一载体；本仓以 issue 为唯一记忆。分工表与 `team_task_create` 的 `write_scopes` 登记同步维护，别只留在会话或 handoff 文档里。
 
 8. 轮次口径：**1 轮 = 1 次修复 + 1 个 verifier**；最多 3 轮修复。第 3 轮仍有 blocking → 修完后必须再跑 **1 轮只读验证**（不算第 4 轮修复），并把结论写进报告。禁止用改写 prompt 重跑 verifier 来"刷新"结论。
-9. **等 verifier 不要 `sleep` 轮询**（AGENTS §五「等待一律后台作业」）：`spawn_teammate` 的成员用 `wait_agent` 真正阻塞；派 `subagent` 时结果以 `subagent-settled` 通知到达。等待窗口做**不写文件**的工作（读 diff/契约、拟关闭评论与报告、跑幂等 `preflight --c-only`）。反例：#77/#78/#81 因 sleep 等 verifier 累计 ≈3.9h。
+9. **等 verifier 不要 `sleep` 轮询**（AGENTS §五「等待一律后台作业」）：`spawn_teammate` 的成员用 `wait_agent` 真正阻塞；派 `subagent` 时结果以 `subagent-settled` 通知到达。等待窗口做**不写文件**的工作（读 diff/契约、拟关闭评论与报告、跑幂等 `preflight --c-only`）。反例：#77/#78/#81 因 sleep 等 verifier 累计 ≈3.9h。**Lead 侧动作点（#289 AC5）**：等待超预算（超过 [verifier-prompt.md](verifier-prompt.md) 的档位时限）就主动 `send_message` 一条 nudge「**先发结论**（哪怕只发已完成部分）」，不要让审查无上限拖住关键路径——#253 两轴跑了 38.7min / 45.3min，T+26 / T+44min 一催，**1.5min 内即交付**，说明超支多半是缺一个交付信号而不是缺时间。
 10. **verifier / 实现 teammate `failed` ≠ 无产出**（#289 AC8）：`failed` 只表示该 turn 异常退出、没有报告，**不代表它没写文件**。恢复顺序：① 先查产出——`git status --porcelain`（它可能已落盘部分改动）、`team_task_list`（共享任务状态与 `write_scopes`）、其 session 日志（`~/.dsh/sessions/`，见 [retro-evidence.md](retro-evidence.md)）；② 成员仍可寻址（`list_agents` 里 `inactive` 而非名额释放）时用 `send_message` **续跑**，prompt 里写「上一步无产出/部分产出 + 先落最小骨架」——不要重派新成员（名额是稀缺资源，见第 6 条）；③ 原 prompt 重跑一次；④ 仍失败 → 改用 `spawn_teammate` 派 verifier（Team 成员可 `wait_agent` 真正阻塞）；⑤ 仍不可用 → **人工代轴**逐条核对（机器门禁须已全绿），并在报告写明"verifier failed N 次、人工代轴"。#123 两个审查线程丢失、用户被迫介入、Lead 人工补轴即反例；禁止改写 prompt 反复重跑刷结论。**实现类成员的 prompt 必须带「T+15min 先落最小骨架」**（#253 recon 37–39min 才写第一行，模板见 [verifier-prompt.md](verifier-prompt.md) §4）。
 11. **review 全部收敛（含最后一轮只读验证）后才进入 §4 push**；push 之后只允许修 CI 红。只读验证轮提出的 finding 必须**并入同一个 commit** 再推——先推再验会让验证轮 findings 又产生新 commit，上一轮 CI 作废重跑（旧守卫下第二次 push 还会被「CI 在跑」拒绝、白等一轮；#248 实测 986s；新口径见 §4）。**#252 实测（规则存在 ≠ 动作点看得见）**：23:15 建 PR 起 CI → 23:23:08 修复 commit → 23:23:30 push 被旧 run 拒绝 → 等旧 CI 1431s（到 23:47:57）→ 23:48:07 才推上去 → 新 run 31m42s → 00:20:44 才等到结果，**一次修复被放大成两个串行 CI 周期（≈56min）**，并在 00:20:28 触发用户 abort turn。因此 §4 把「最后一轮只读验证已返回且无 BLOCKING」写成 push / 建 PR 的**动作点前置条件**；只读验证轮模板见 [verifier-prompt.md](verifier-prompt.md) §3（模板返回后才允许进入 §4）。
 12. 并行波（同一时间多个 ticket）必须一票一 worktree（AGENTS §五）；共享工作区只留单线。
@@ -150,9 +150,15 @@ GitHub 的 closing keyword 要求关键字后紧跟空白/冒号再接 `#N`，�
 CI：<run link> Windows + Linux 绿
 PR：#<n>（merged <merge-commit>）
 验证：ctest <x>/<y>、preflight 全绿、<E2E/真机验证（如适用）>
-审查：<n> 轮双轴收敛 / 剩余 <m> 条 non-blocking（列票）
+审查：<n> 轮双轴收敛 / 剩余 <m> 条 non-blocking（列票）/ 验证标记 <issue>-standards@<sha7>、<issue>-spec@<sha7>
 Refs: <contract/component/docs 路径>
 ```
+
+> **「验证标记」必填（#289 AC6）**：只读验证轮交付时由 verifier 执行
+> `python3 scripts/review_marker.py write <issue> <axis>`，标记文件 `.cache/review/<issue>-<axis>.done`
+> 记录被验证的 sha。关单报告必须列出这两条标记及其 sha——它是「这次合并前真的跑过验证」的
+> 唯一物证（#253 的验证轮被宿主 turn 中止，合并时该轮从未发生，报告里却看不出来）。
+> 取法：`cat .cache/review/<issue>-*.done`；轴没跑就别编（写「未跑 + 理由」，不要留空）。
 
 关闭后检查下游依赖是否解除：`gh issue view <child> --json blockedBy`（返回 `{nodes:[],totalCount}`，用 `.blockedBy.nodes[]`；或 `gh api repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by` 拿数组），或在票的报告里写清"#X 的 blocked_by 从 N → 0"。
 

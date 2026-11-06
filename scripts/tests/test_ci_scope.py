@@ -27,6 +27,28 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "ci_scope.py"
 
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+import ci_scope  # noqa: E402
+
+# 生产用例表：`selftest: N cases` 的 N 必须等于它（防「selftest 提前 return，只跑了一半」）。
+EXPECTED_SELFTEST_CASES = len(ci_scope.SELFTEST_CASES)
+
+# 但「相等」挡不住删用例（删了两边一起减）——所以另按**覆盖语义**锁一遍：AC3 判据点名的
+# 分类面必须各有一个用例在表里（#289 审查 conformance 5：原断言只写「≥10 例」，删掉 16 例
+# 仍然绿）。新增覆盖时补一行标签即可，删除覆盖则必须显式删标签（review 会看到）。
+REQUIRED_COVERAGE_LABELS = (
+    "空 diff",
+    "docs-only",
+    "scripts-only",
+    "构建入口脚本",
+    "1 个 .cpp",
+    "CI 自身",
+    "githooks",
+    "前端",
+    "构建锁脚本",
+    "未知路径",
+)
+
 # PR #254 的 merge commit：实测只含 docs/frame_contracts/*.md（10 个纯文档文件）。
 # 这是 AC3 判据里的真实样本，比自造 diff 更能防「分类器只在小样本上对」。
 DOCS_ONLY_COMMIT = "9467679"
@@ -74,7 +96,18 @@ class TestSelftest(ScopeAssertions):
         self.assertEqual(result.returncode, 0, result.stderr)
         match = re.search(r"selftest: (\d+) cases", result.stdout)
         self.assertIsNotNone(match, result.stdout)
-        self.assertGreaterEqual(int(match.group(1)), 10)
+        # 精确相等：等于生产用例表长度（防 selftest 提前 return 只跑一部分）。
+        self.assertEqual(int(match.group(1)), EXPECTED_SELFTEST_CASES)
+
+    def test_required_coverage_labels_present(self):
+        """AC3 点名的分类面必须在生产用例表里各有一条（防删用例后仍然全绿）。"""
+        descriptions = [description for _paths, _mode, description in ci_scope.SELFTEST_CASES]
+        missing = [
+            label
+            for label in REQUIRED_COVERAGE_LABELS
+            if not any(label in description for description in descriptions)
+        ]
+        self.assertEqual(missing, [], f"selftest case(s) missing for: {missing}")
 
 
 class TestClassifyByFilesFrom(ScopeAssertions):

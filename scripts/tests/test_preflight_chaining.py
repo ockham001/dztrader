@@ -32,9 +32,12 @@ PREFLIGHT = REPO_ROOT / "scripts" / "preflight.sh"
 # 且 `}` 独占一行——这是本脚本的既有形态，改动该形态时本审计会解析失败并报错）。
 FUNC_RE = re.compile(r"^(check_[a-z_]+)\(\) \{\n(.*?)^\}", re.MULTILINE | re.DOTALL)
 
-# 函数体顶层的「检查器调用」：行首就是引号包的变量展开（`"$PYTHON"` / `"$ROOT/..."` /
-# `"$CF"`）。赋值（`ut_out="$(...)"`）、`if`/`printf`/`return` 与续行都不算独立调用。
-INVOCATION_RE = re.compile(r'^\s{0,4}"\$[A-Za-z_{]')
+# 函数体内的「检查器调用」：行首（**任意缩进**）就是引号包的变量展开（`"$PYTHON"` /
+# `"$ROOT/..."` / `"$CF"`）。赋值（`ut_out="$(...)"`）、`if`/`printf`/`return` 与续行
+# 都不算独立调用。缩进不设上限：`check_*` 里的调用可能落在 `if ...; then` 分支（8 空格），
+# 早期版本只认 0–4 空格，于是 `check_ci_scope` 的 range 调用整个落在审计盲区里
+# （#289 审查 blocking：删掉它前面的 `|| return $?` 审计仍全绿）。
+INVOCATION_RE = re.compile(r'^\s*"\$[A-Za-z_{]')
 CHAINED_RE = re.compile(r"\|\|\s*return\b")
 
 
@@ -139,6 +142,33 @@ def _assert_audit_detects_bad_function(test: unittest.TestCase) -> None:
         ]
     )
     test.assertEqual(unchained_check_calls(pipeline), [])
+
+    # if 分支里的调用（8 空格缩进）必须同样被审计：#289 审查实测的盲区是
+    # `check_ci_scope` 的 range 调用藏在 `if git rev-parse ...; then` 里，
+    # 旧正则只认 0–4 空格，删掉它前面的 `|| return $?` 审计仍然全绿。
+    indented_bad = "".join(
+        [
+            'check_indented() {\n',
+            '    "$PYTHON" scripts/check_x.py --selftest\n',
+            '    if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then\n',
+            '        "$PYTHON" scripts/check_x.py --range origin/main...HEAD\n',
+            '    fi\n',
+            '    "$PYTHON" scripts/check_x.py\n',
+            '}\n',
+        ]
+    )
+    problems = unchained_check_calls(indented_bad)
+    test.assertEqual(
+        len(problems), 2, f"nested/indented invocations must be audited too: {problems}"
+    )
+    indented_good = indented_bad.replace(
+        '    "$PYTHON" scripts/check_x.py --selftest\n',
+        '    "$PYTHON" scripts/check_x.py --selftest || return $?\n',
+    ).replace(
+        '        "$PYTHON" scripts/check_x.py --range origin/main...HEAD\n',
+        '        "$PYTHON" scripts/check_x.py --range origin/main...HEAD || return $?\n',
+    )
+    test.assertEqual(unchained_check_calls(indented_good), [])
 
 
 class PreflightChainingTest(unittest.TestCase):

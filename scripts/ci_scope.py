@@ -53,7 +53,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-# denylist 的第一类：C/C++ 源与头文件后缀。
+# denylist 的第一类：C/C++ 源与头文件后缀。与 `scripts/ci_budget.py` 的
+# CPP_SUFFIXES/HEADER_SUFFIXES 是同一份事实的两处消费方（那边数规模、这边判 denylist）；
+# 两个脚本都是独立单文件检查器，有意各留一份，改后缀集合时两处一起改。
 CPP_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"})
 
 # denylist 的第二类：精确文件名（小写比较，.CPP / CMakeLists.TXT 之类也按 full 保守处理）。
@@ -66,15 +68,22 @@ DENY_PATH_PREFIXES = (
     ".github/workflows/",
 )
 
-# denylist 的第四类：构建/测试入口脚本。前缀规则只匹配 scripts/ 的**直接子文件**
-# （build.sh / build.ps1 / build-lock.sh / test.sh / setup.* 等），不匹配 scripts/tests/**
-# 这类子目录——后者是检查器与 unittest，属 preflight 的验证面（fast）。
-# 下面若干精确项与 AC 原文逐项对齐（部分被前缀覆盖属冗余，但让清单可逐条核对）。
-DENY_SCRIPT_STEMS = ("build", "test", "setup")
+# denylist 的第四类：构建/测试入口脚本与构建环境。**按文件名前缀匹配**（`scripts/build*`
+# 是 AC 原文的 glob 语义）：build.sh / build.ps1 / build-lock.sh / build-lock.ps1 / test.* /
+# setup.* 全部命中。只匹配 scripts/ 的**直接子文件**，不匹配 scripts/tests/** 这类子目录
+# ——后者是检查器与 unittest，属 preflight 的验证面（fast）。
+DENY_SCRIPT_PREFIXES = ("build", "test", "setup")
+# 精确项里包含 AC 原文列出的三个脚本（前缀规则下它们已是冗余，保留是为了让清单可逐条
+# 核对），外加两个 AC 原文没点名、但由构建链执行/被 setup·build 脚本 dot-source 的构建
+# 环境文件——它们同样只有真实构建才能验证，判 fast 会静默跳过验证面，故按保守方向纳入：
+#   scripts/Activate-MSVC.ps1     Office/MSVC 环境激活（build.ps1 / setup.ps1 调用）
+#   scripts/npm-ci-if-needed.cmake 前端依赖安装门控（apps/webui/CMakeLists.txt 执行）
 DENY_SCRIPT_EXACT = frozenset({
     "scripts/install-artifacts.sh",
     "scripts/ccache-env.sh",
     "scripts/build-lock.sh",
+    "scripts/activate-msvc.ps1",
+    "scripts/npm-ci-if-needed.cmake",
 })
 
 # fast 允许面：只有这些前缀下的文件（且未命中 denylist）才允许 fast。
@@ -108,9 +117,11 @@ def deny_rule(path: str) -> str | None:
     if lowered in DENY_SCRIPT_EXACT:
         return "build/test entrypoint script"
     if lowered.startswith("scripts/") and "/" not in lowered[len("scripts/"):]:
-        stem = lowered[len("scripts/"):].split(".", 1)[0]
-        if stem in DENY_SCRIPT_STEMS:
-            return f"script matching scripts/{stem}*"
+        # 前缀匹配（不是「按第一个 `.` 截 stem 再精确比较」）：AC 原文是 `scripts/build*`
+        # 这类 glob，`build-lock.ps1` / `setup.ps1` 都必须命中（#289 审查 conformance 1）。
+        for prefix in DENY_SCRIPT_PREFIXES:
+            if name.startswith(prefix):
+                return f"script matching scripts/{prefix}*"
     return None
 
 
@@ -196,6 +207,11 @@ SELFTEST_CASES: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("scripts/install-artifacts.sh",), "full", "发版入口脚本"),
     (("scripts/ccache-env.sh",), "full", "ccache 环境脚本"),
     (("scripts/build-lock.sh",), "full", "构建锁脚本"),
+    # 前缀语义（AC 原文 `scripts/build*` / `scripts/test*` / `scripts/setup*` 是 glob）：
+    # 同族但扩展名/后缀不同的脚本必须同样命中，不能只看「第一个 `.` 之前的 stem」。
+    (("scripts/build-lock.ps1",), "full", "构建锁 PowerShell 版（build* 前缀）"),
+    (("scripts/Activate-MSVC.ps1",), "full", "MSVC 环境激活脚本（构建环境）"),
+    (("scripts/npm-ci-if-needed.cmake",), "full", "前端依赖安装门控（构建期执行）"),
     # fast 面与优先级
     (("README.md", "AGENTS.md", "GLOSSARY.md"), "fast", "根 markdown"),
     (("scripts/check_docs_links.py", "scripts/tests/test_ci_budget.py"), "fast", "scripts 下检查器与 unittest"),

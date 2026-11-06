@@ -406,7 +406,6 @@ def check_full_column_literals(
         return [], table_errors
 
     errors: list[str] = []
-    registered_norm = {os.path.normpath(rel).replace(os.sep, "/") for rel in registered}
     for directory in directories:
         base = root / directory
         if not base.is_dir():
@@ -416,8 +415,9 @@ def check_full_column_literals(
             if not path.is_file():
                 continue
             rel = rel_to_root(path, root)
-            if rel in registered_norm:
-                continue  # 登记的夹具头自身（.cpp 形态的登记项）不算手抄
+            # 只扫 *.cpp：登记的夹具是**头文件**（`.h`，见 §5.4 表），它自己写全列清单正是
+            # 「唯一实现」本体，不能报。早期版本这里还有一条「登记项自身跳过」的分支，
+            # 但登记集合里不可能出现 .cpp，那个分支是死代码（#289 审查 conformance 6），已删。
             text = read_text(path, "test source", root)
             literals = _sql_insert_columns(text)
             if not literals:
@@ -862,15 +862,19 @@ def run_selftest() -> int:
             expected_table_substring=None,
         )
 
+        # 嵌套子目录也要扫（rglob）：夹具目录下再分 `queries/`、`controllers/` 之类子目录
+        # 时，手抄全列仍然要报。原先这里放的是「夹具头自身绿」用例——把 INSERT 放在 .h 里
+        # 而扫描只认 .cpp，该用例恒真（#289 审查 conformance 6），换成真正能红的折叠用例。
         run_literal_case(
-            "r6_fixture_header_itself_green",
-            cpps={},
-            headers={f"{row_writer_dir}/inner_fixture.h": _header_body(
-                "inner_fixture",
-                'constexpr const char* kSql = "INSERT INTO trades (account_id, date, trade_id,'
-                ' order_id, seq) VALUES (?,?,?,?,?)";\n')},
+            "r6_nested_subdir_red",
+            cpps={
+                f"{row_writer_dir}/queries/nested_handwritten_test.cpp": _insert_cpp(
+                    "INSERT INTO trades (account_id, date, trade_id, order_id,",
+                    " seq) VALUES (?,?,?,?,?)"),
+            },
+            headers={},
             schema_text=None,
-            expected_literal_substrings=[],
+            expected_literal_substrings=["nested_handwritten_test.cpp", "full column list"],
             expected_table_substring=None,
         )
 

@@ -92,6 +92,10 @@ BUDGETS_MINUTES = {
     "large": 45,   # 实测 34.9min
 }
 
+# 后缀集合：与 `scripts/ci_scope.py` 的 `CPP_SUFFIXES` 是同一份事实的两处消费方——这里
+# 用来**数改动规模**（分档预算），那里用来**判 denylist**（fast/full）。两个脚本都是独立
+# 单文件检查器（本仓约定：可 `python3 scripts/x.py --selftest` 单跑，不互相 import），
+# 所以有意各留一份；改后缀集合时两处一起改（#289 审查 conformance 7 指出过这条）。
 CPP_SUFFIXES = (".cpp", ".cc", ".cxx", ".c")
 HEADER_SUFFIXES = (".h", ".hpp", ".hh", ".hxx")
 
