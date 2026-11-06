@@ -7,12 +7,17 @@
 #       内置 nlohmann/json 版本一致性 / ci-log 错误模式（#200）/ gtest 发现超时纪律
 #       （#227）/ commit subject（#265）/ push-scope 自测（#265）/ 门禁脚本参数自测
 #       （#281，build.sh/test.sh 重复 flag 必须累积）/ Windows CI 预算分档（#267）/
-#       孤儿导出（#274）/ 前端五件套。
+#       孤儿导出（#274）/ CI 快路径分类（#289，与 ci.yml scope job 共用一份 denylist）/
+#       审查验证标记（#289，pre-push 读取）/ 前端五件套。
 #       MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
 #       Linux 编译器拦不到，由 scripts/check_msvc_hazards.py 做源码级 lint；
 #       conanfile.py 与内置 JSON 单头的版本漂移由 scripts/check_json_vendor_version.py 拦住。
 # CI 的 linux job 复用同一脚本的 C 段（--c-only），避免门禁命令在
 # 人工 prompt、development-checklist 与 ci.yml 三处漂移。
+#
+# **步骤清单的唯一真相源是本脚本的 `run_step` 行**（#289 AC7）：`--help` 直接打印全部
+# 步骤名与数量。AGENTS.md / ticket-closeout.md / development-checklist.md 只留指针——
+# 手抄副本漏一项就会让终轮验证判 FAIL（#284 实测）。
 #
 # 用法:
 #   ./scripts/preflight.sh              # 全量（C 段 + 前端；需要 node_modules）
@@ -34,7 +39,20 @@ C_ONLY=0
 case "${1:-}" in
     "") ;;
     --c-only) C_ONLY=1 ;;
-    -h|--help) sed -n '2,/^$/p' "$0"; exit 0 ;;
+    -h|--help)
+        sed -n '2,/^$/p' "$0"
+        # 步骤清单从**本脚本自身**提取（#289 AC7）：覆盖清单原先在 AGENTS / closeout /
+        # checklist 三处手抄，漏一项就让终轮验证判 FAIL（#284 实测多耗 229s + 作废 150s
+        # 机时）。这里只留一个可执行真相源，文档改为指针，不再逐项枚举。
+        # 匹配允许缩进：前端阶段那一步在 `if [ "$C_ONLY" -eq 0 ]` 里；只认 `run_step "`
+        # 形态，不把 `run_step() {` 的函数定义行算成步骤。
+        STEP_COUNT="$(grep -cE '^[[:space:]]*run_step "' "$0")"
+        printf '\n步骤（从本脚本的 run_step 提取，共 %s 步；--c-only 不含前端阶段）:\n' \
+            "$STEP_COUNT"
+        grep -oE '^[[:space:]]*run_step "[^"]+"' "$0" |
+            sed 's/^[[:space:]]*run_step "/  - /; s/"$//'
+        exit 0
+        ;;
     *) echo "error: unknown option: $1" >&2; exit 1 ;;
 esac
 
@@ -122,7 +140,10 @@ check_docs_links() {
 check_test_portability() {
     # 先跑检查器自测：保证已知绕过形态（多级路径 / (ec) 重载 / 折行 / 固定通道名）
     # 仍被拦住，再扫真实测试文件（#136）。
-    "$PYTHON" scripts/check_test_portability.py --selftest
+    # 显式串联（#289 AC1）：`set -u -o pipefail` 没有 -e，自测失败会被后一条命令的 0
+    # 覆盖，step 打印 ok 而检查器已坏——同一失效形态在 #281/#284 修过 3 处，这是漏网。
+    # 由 scripts/tests/test_preflight_chaining.py 做静态审计，防再引入。
+    "$PYTHON" scripts/check_test_portability.py --selftest || return $?
     "$PYTHON" scripts/check_test_portability.py
 }
 
@@ -231,6 +252,31 @@ check_ci_budget() {
     "$PYTHON" "$ROOT/scripts/ci_budget.py" --from-git "origin/main...HEAD" 2>/dev/null || true
 }
 
+check_ci_scope() {
+    # CI 快路径分类器（#289 AC3）：denylist（C/C++ 源、构建系统、前端、workflow、构建脚本）
+    # 单一定义在 scripts/ci_scope.py，ci.yml 的 scope job 调同一份脚本——两处定义必然漂移。
+    # 先跑自测（docs-only→fast / scripts-only→fast / scripts/build.sh→full / 1 个 cpp→full /
+    # 混合→full / 空→fast 等 26 例），再分类本分支。
+    # 显式串联：`set -u -o pipefail` 没有 -e，自测失败会被后一条的 0 覆盖。
+    "$PYTHON" "$ROOT/scripts/ci_scope.py" --selftest || return $?
+    # 三点（merge-base）而非两点：分类口径与 ci.yml 的 scope job 一致。
+    if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+        "$PYTHON" "$ROOT/scripts/ci_scope.py" --range "origin/main...HEAD"
+    else
+        # 浅克隆 / 无远端时无法分类；分类不是本步唯一目的（自测才是），显式说明不静默跳过。
+        echo "    note: origin/main not found; branch classification skipped"
+    fi
+}
+
+check_review_marker() {
+    # 只读验证轮的机器标记（#289 AC6）：#253 的「修复后只读验证轮被宿主 turn 错误中止 →
+    # 未验证即合并」只靠文档约束无效（动作点看不见）。脚本把「哪个轴上跑过验证、验证的是
+    # 哪个 sha」写成 .cache/review/<issue>-<axis>.done，pre-push 读它只 warning 不拦截
+    # （拦截会误伤：marker 可能来自另一台机器）。这里只跑自测——在临时 git 仓库里复现
+    # 「同 sha 无 warning / 新 commit 后 warning 且 rc=0 / 无标记 warning」，不碰工作区。
+    "$PYTHON" "$ROOT/scripts/review_marker.py" --selftest
+}
+
 # ---- 前端 ----------------------------------------------------------------
 
 check_frontend() {
@@ -306,6 +352,8 @@ run_step "push-scope base resolution (#265)" check_push_scope_selftest
 run_step "gate script arg parsing (#281)" check_script_args
 run_step "Windows CI budget bands (#267)" check_ci_budget
 run_step "orphan exports (#274)" check_orphan_exports
+run_step "ci scope fast path (#289)" check_ci_scope
+run_step "review verification marker (#289)" check_review_marker
 if [ "$C_ONLY" -eq 0 ]; then
     run_step "frontend (type-check/lint/lint:css/test/gen:types)" check_frontend
 fi

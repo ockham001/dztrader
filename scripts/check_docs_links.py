@@ -95,6 +95,9 @@ SYMBOL_ALLOWLIST = {
     "node_id", "package_id", "run_in_background", "wait_agent",
     "codegraph_explore", "spawn_teammate", "send_message", "job_output", "interrupt_agent",
     "team_task_create", "team_task_update", "list_agents",
+    # #289 新引用的宿主工具名（同一类）：closeout §1.10 的 teammate 恢复协议要查共享任务
+    # 状态（team_task_list），§5 合并授权用 ask_user_question 提问——都不是本仓符号。
+    "team_task_list", "ask_user_question",
     # team_task_create 的参数名（#237 起 closeout §1.7 要求用它登记票内并行写作用域）
     "write_scopes", "blocked_by",
     # 历史示例：review-checklist §2.3 用「已删除的 watch_path」说明漂移类 finding，
@@ -135,6 +138,9 @@ CROSS_DOC_SECTION_RES = (
     re.compile(r"`[^`]+\.md`\s*§\d+(?:\.\d+)*"),
 )
 BARE_SECTION_RE = re.compile(r"§(\d+(?:\.\d+)*)")
+# ``§N.M`` 形态但 M 是 markdown 有序列表的条目号：合法写法是 ``§N 第 M 条``，见
+# ordered_list_item_hint（#284 复盘 AC8）。
+ORDERED_LIST_REF_RE = re.compile(r"^(\d+)\.(\d+)$")
 # 源码注释只认显式引用形式（标题式 / 文件名式 / 总则式）：stemonly（裸 `<小写词> §N`）
 # 在散文里误报面太大，且源码注释里的裸 §N 无法机械判定指向哪份契约，不在此检查范围。
 SOURCE_CONTRACT_REF_RES = tuple(
@@ -197,6 +203,24 @@ def numbered_items(text):
 def declared_sections(text):
     """Every section number a doc makes referenceable: numbered headings + numbered rows."""
     return numbered_headings(text) | numbered_items(text)
+
+
+def ordered_list_item_hint(num, headings):
+    """Return the "§N 第 M 条" hint for ``§N.M`` when M is an ordered-list item, else None.
+
+    Some active docs number a section's items as a Markdown ordered list (``1.`` ...
+    ``11.``) instead of giving each item its own heading. Citing the 11th item as
+    ``§1.11`` then does not resolve (no such section), and the legal spelling is
+    ``§1 第 11 条``; #284 spent ~2 min reading this checker's source to learn that
+    (AC8). This only *appends* a hint to the existing missing-section error -- the
+    reference is still reported, and the trigger stays narrow: ``num`` must be
+    ``N.M`` and ``N`` must be a numbered heading this doc declares.
+    """
+    match = ORDERED_LIST_REF_RE.match(num)
+    if match is None or match.group(1) not in headings:
+        return None
+    return (" (if §{n}'s items are an ordered list, the legal spelling is "
+            "'§{n} 第 {m} 条')").format(n=match.group(1), m=match.group(2))
 
 
 def contract_target(idx, raw):
@@ -288,7 +312,10 @@ def check_active_doc_sections(files, root):
       - the four explicit contract-reference forms are masked first, so
         ``《帧契约：X》§N`` / ``契约 x §N`` / ``总则 §N`` stay with their own checker;
       - ``§N`` behind 设计/方案/计划 points at a local archive spec that is not in
-        version control, so it cannot be verified and is skipped.
+        version control, so it cannot be verified and is skipped;
+      - a missing ``§N.M`` whose ``N`` is a numbered heading of this doc gets an
+        extra hint that ordered-list items are cited as ``§N 第 M 条`` (#284 AC8);
+        the error itself is unchanged.
     """
     general_rel = CONTRACT_DIR + "general.md"
     general_nums = set()
@@ -317,6 +344,7 @@ def check_active_doc_sections(files, root):
             for m in pattern.finditer("".join(masked)):
                 masked[m.start():m.end()] = " " * (m.end() - m.start())
         bare_text = "".join(masked)
+        own_headings = numbered_headings(text)
         for m in BARE_SECTION_RE.finditer(bare_text):
             num = m.group(1)
             if num in own_nums or num in general_nums:
@@ -324,8 +352,9 @@ def check_active_doc_sections(files, root):
             prefix = bare_text[max(0, m.start() - 4):m.start()].rstrip()
             if prefix.endswith(EXTERNAL_SECTION_PREFIXES):
                 continue  # 指向本地归档设计文档，无法验证
-            errors.append("%s:%d: missing section -> §%s"
-                          % (rel, bare_text.count("\n", 0, m.start()) + 1, num))
+            hint = ordered_list_item_hint(num, own_headings) or ""
+            errors.append("%s:%d: missing section -> §%s%s"
+                          % (rel, bare_text.count("\n", 0, m.start()) + 1, num, hint))
     return errors
 
 
@@ -817,6 +846,70 @@ def selftest():
                   cross_errors)
             return 1
 
+        # §N.M 的「有序列表条目」提示（#284 复盘 AC8）：文档用 ## 1. 编号标题 + 有序列表
+        # 11 条时，第 11 条的合法写法是 §1 第 11 条；写成 §1.11 仍报错（判定不变），
+        # 但报错文案要追加提示，说明该形态与正确写法。触发条件窄：num 形如 N.M 且 N 是
+        # 本文声明过的编号标题 —— 否则不加提示。
+        with open(doc, "w", encoding="utf-8") as fh:
+            fh.write("\n".join([
+                "## 1. 有效性",
+                "",
+                "1. 第一条",
+                "2. 第二条",
+                "3. 第三条",
+                "4. 第四条",
+                "5. 第五条",
+                "6. 第六条",
+                "7. 第七条",
+                "8. 第八条",
+                "9. 第九条",
+                "10. 第十条",
+                "11. 第十一条",
+                "",
+                "见 §1.11。",
+                "",
+            ]))
+        list_errors = check_active_doc_sections(["docs/components/sample.md"], tmp)
+        if len(list_errors) != 1 or "§1.11" not in list_errors[0] \
+                or "§1 第 11 条" not in list_errors[0]:
+            print("selftest FAIL: ordered-list §N.M must still be reported with a "
+                  "'§1 第 11 条' hint; got:", list_errors)
+            return 1
+
+        # 正常编号标题（## 1.3. xxx）不触发提示：§1.3 是本文声明的编号标题，直接通过。
+        with open(doc, "w", encoding="utf-8") as fh:
+            fh.write("\n".join([
+                "## 1.3. 有效性",
+                "",
+                "1. 第一条",
+                "2. 第二条",
+                "",
+                "见 §1.3。",
+                "",
+            ]))
+        numbered_heading_errors = check_active_doc_sections(["docs/components/sample.md"], tmp)
+        if numbered_heading_errors:
+            print("selftest FAIL: a declared numbered heading §1.3 must pass without a "
+                  "hint; got:", numbered_heading_errors)
+            return 1
+
+        # 窄触发：§2.11 里的 2 不是本文的编号标题 → 仍报错，但不追加有序列表提示。
+        with open(doc, "w", encoding="utf-8") as fh:
+            fh.write("\n".join([
+                "## 1. 有效性",
+                "",
+                "1. 第一条",
+                "",
+                "见 §2.11。",
+                "",
+            ]))
+        narrow_errors = check_active_doc_sections(["docs/components/sample.md"], tmp)
+        if len(narrow_errors) != 1 or "§2.11" not in narrow_errors[0] \
+                or "第 11 条" in narrow_errors[0]:
+            print("selftest FAIL: hint must stay narrow to declared numbered headings; got:",
+                  narrow_errors)
+            return 1
+
         # 源码注释契约引用检查（#221）：注释里的显式契约 §N 引用必须指向存在的契约与
         # 编号小节；字符串（含原始字符串与模板字面量）、模板正文与代码本身不算注释。
         # 坏引用覆盖行注释 / 块注释 / .vue HTML 注释 / CMake hash 注释 / 未知契约名 /
@@ -1026,7 +1119,8 @@ def selftest():
                   misplaced_by_file, misplaced_pending)
             return 1
     print("selftest OK: symbol check detects missing symbols; path check covers regression + "
-          "untracked-but-present files; section check catches stale §N in active docs; "
+          "untracked-but-present files; section check catches stale §N in active docs "
+          "(including the '§N 第 M 条' hint for ordered-list items); "
           "source-comment check catches stale contract refs and ignores strings; "
           "table check catches unescaped column-splitting pipes; pending-symbol check "
           "accepts planned contract symbols and rejects stale/malformed/misplaced markers")

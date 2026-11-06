@@ -13,6 +13,12 @@
 #   - 白名单分支：从分支名提取 issue 号，以被推的 local_sha / 远端分支名调用
 #     scripts/check-push-scope.sh <n> --base origin/main --head <sha> --branch <name>
 #     （scope 匹配 + CI-busy supersede 判定：旧 run 已被新 commit 取代时放行）
+#   - 同分支票号的只读验证轮机器标记（#289 AC6）：调用
+#     python3 scripts/review_marker.py check <n> 打印「某轴验证的 sha 与 HEAD 不一致 /
+#     从未留标记」的 warning。**只 warning、不拦截**：标记由 verifier 手写、.cache/ 不进
+#     版本控制，机器分不清「验证没跑」与「跑了但忘了写」，拦截会误伤正常推送。理由
+#     = #253 的验证轮被宿主 turn 中止后「未验证即合并」（推送 12:18:35、合并 12:38:45，
+#     验证轮 12:29 才准备即中止），纯文档约束挡不住动作点跳过，需要把状态变成可见信号。
 #   - 删除远端分支（local ref 为 (delete)）放行
 #
 # 逃生口：DZ_SKIP_HOOKS=1 git push ...（或 git push --no-verify）
@@ -161,6 +167,13 @@ while read -r local_ref local_sha remote_ref remote_sha || [ -n "${remote_ref:-}
             warn "warning: check-push-scope.sh could not run (exit $rc); proceeding"
             ;;
     esac
+
+    # 只读验证轮机器标记（#289 AC6）：只 warning、**不改变 BLOCKED**。脚本自身退出码
+    # 恒 0，`|| true` 是第二道保险（门禁脚本故障不得影响推送结论）；缺脚本/缺 python
+    # 时静默跳过，不让护栏自身成为推送的单点故障。
+    if [ -f scripts/review_marker.py ] && command -v python3 >/dev/null 2>&1; then
+        python3 scripts/review_marker.py check "$issue" </dev/null || true
+    fi
 done
 
 exit "$BLOCKED"

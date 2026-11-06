@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+"""review_marker.py — 只读验证轮的机器状态标记（#289 AC6）
+
+为什么需要
+----------
+「修复之后的只读验证轮」到底跑没跑，此前只存在于会话记录里，纯文档约束挡不住跳过：
+#253 修完 Spec 轴 BLOCKING 后 `12:18:35` 推送、`12:38:45` 合并，而验证轮的准备工作
+`12:29` 才发生、随即被宿主 turn 错误中止 —— **验证从未发生，代码已经合并**。文档写
+「最后一轮只读验证返回后才能 push」属于动作点约束，对真正跳过它的执行者无效；把
+「某个票的某个审查轴在哪个 commit 上完成过只读验证」落成文件，才能让 `.githooks/pre-push`
+在推送时把「验证轮可能没跑」变成可见的提示。
+
+它**只提示、不拦截**，理由有两条：
+  1. 写标记的是 verifier / Lead，机器分不清「验证没跑」与「跑完了但忘了写」，拦截会
+     误伤正常推送（假告警最终会让信号失效，参见 `scripts/ci_budget.py` 的同类教训）；
+  2. `.cache/` 是本地忽略目录，标记不随 commit 走，机器无法把它当成硬门禁的真相源。
+
+规则
+----
+- 标记文件：`.cache/review/<issue>-<axis>.done`（相对仓库根；`.cache/` 已被 gitignore）
+- 内容：一行 commit sha，默认取 `git rev-parse HEAD`；显式传入时以参数为准
+- `check <issue>`：读该票全部 `<issue>-*.done` 标记，逐轴比较 HEAD 与标记 sha；不一致
+  即 warning，**标记目录里没有该票的任何标记也 warning**（从未跑过验证轮）
+- sha 按前缀比较（显式传 `git rev-parse --short HEAD` 的结果同样合法）
+- 退出码恒 0：只提示，不改变 pre-push 的拦截结论
+
+用法
+----
+  python3 scripts/review_marker.py write 289 standards          # 标记 HEAD 已验证
+  python3 scripts/review_marker.py write 289 standards <sha>    # 标记指定 commit
+  python3 scripts/review_marker.py check 289                    # pre-push 调用：只 warning
+  python3 scripts/review_marker.py --selftest                   # 临时 git 仓库自测，工作区只读
+
+退出码
+------
+0=成功（`check` 恒为 0，无论有没有 warning）
+1=selftest 失败
+2=用法或环境错误（缺参数 / 非数字票号 / 非法 axis / 不在 git 仓库 / 标记不可写）
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import io
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+MARKER_DIR_REL = Path(".cache") / "review"
+MARKER_SUFFIX = ".done"
+ISSUE_RE = re.compile(r"^[0-9]+$")
+AXIS_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+SHA_RE = re.compile(r"^[0-9a-fA-F]{4,40}$")
+SHORT_SHA_LEN = 12
+
+
+class MarkerError(Exception):
+    """环境前提不满足（不是 git 仓库 / HEAD 不可解析 / 标记不可写）。"""
+
+
+def repo_root() -> Path:
+    """仓库根：优先 git（worktree / 子目录调用都正确），失败抛 MarkerError。"""
+    result = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise MarkerError(f"not inside a git repository: {result.stderr.strip()}")
+    return Path(result.stdout.strip())
+
+
+def git_head(root: Path) -> str:
+    """当前 HEAD 的完整 sha；不可解析时抛 MarkerError（不再静默当作已标记）。"""
+    result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root,
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise MarkerError(f"cannot resolve HEAD in {root}: {result.stderr.strip()}")
+    head = result.stdout.strip()
+    if not SHA_RE.fullmatch(head):
+        raise MarkerError(f"unexpected HEAD revision in {root}: {head!r}")
+    return head.lower()
+
+
+def marker_dir(root: Path) -> Path:
+    return root / MARKER_DIR_REL
+
+
+def marker_path(root: Path, issue: str, axis: str) -> Path:
+    return marker_dir(root) / f"{issue}-{axis}{MARKER_SUFFIX}"
+
+
+def write_marker(root: Path, issue: str, axis: str, sha: str) -> Path:
+    """写标记（内容一行 sha）。目录创建失败/不可写时抛 MarkerError（→ 退出码 2）。"""
+    path = marker_path(root, issue, axis)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(sha + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise MarkerError(f"cannot write review marker {path}: {exc}") from exc
+    return path
+
+
+@dataclass(frozen=True)
+class Marker:
+    """一个轴上的验证标记；sha 为空串表示文件为空/内容不是 commit sha。"""
+
+    axis: str
+    path: Path
+    sha: str = ""
+
+    @property
+    def valid(self) -> bool:
+        return bool(self.sha)
+
+
+def read_markers(root: Path, issue: str) -> list[Marker]:
+    """读该票全部 `.cache/review/<issue>-*.done` 标记；目录不存在时返回空列表。"""
+    directory = marker_dir(root)
+    if not directory.is_dir():
+        return []
+    prefix = f"{issue}-"
+    markers: list[Marker] = []
+    for path in sorted(directory.iterdir()):
+        if not path.is_file() or not path.name.startswith(prefix):
+            continue
+        if not path.name.endswith(MARKER_SUFFIX):
+            continue
+        axis = path.name[len(prefix):-len(MARKER_SUFFIX)]
+        if not axis:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        lines = text.splitlines()
+        first = lines[0].strip() if lines else ""
+        sha = first.lower() if SHA_RE.fullmatch(first) else ""
+        markers.append(Marker(axis=axis, path=path, sha=sha))
+    return markers
+
+
+def short_sha(sha: str) -> str:
+    return sha[:SHORT_SHA_LEN]
+
+
+def same_commit(head: str, marker_sha: str) -> bool:
+    """HEAD 与标记 sha 是否指同一 commit；标记允许是 HEAD 的短 sha 前缀。"""
+    marker_sha = marker_sha.lower()
+    if not SHA_RE.fullmatch(marker_sha):
+        return False
+    return head == marker_sha or head.startswith(marker_sha)
+
+
+def check_markers(root: Path, issue: str, head: str) -> list[str]:
+    """返回该票的 warning 列表（纯文本；由调用方决定前缀与输出流）。
+
+    没有任何标记也算 warning：从未跑过验证轮的票不该因为「没留下状态」而静默通过
+    —— #253 的失败形态正是「验证轮被中止后没人知道它没跑」。
+    """
+    markers = read_markers(root, issue)
+    if not markers:
+        return [f"no review marker for #{issue}; "
+                "the read-only verification round may not have run"]
+    warnings: list[str] = []
+    for marker in markers:
+        if not marker.valid:
+            warnings.append(
+                f"review marker for #{issue} ({marker.axis}) is empty or invalid; "
+                "the read-only verification round may not have run")
+        elif not same_commit(head, marker.sha):
+            warnings.append(
+                f"review marker for #{issue} ({marker.axis}) is at {short_sha(marker.sha)}, "
+                f"HEAD is {short_sha(head)}; the read-only verification round may not have run")
+    return warnings
+
+
+# ---------------------------------------------------------------------------
+# argparse 类型：非法输入统一走 argparse（退出码 2），与其它 scripts/ 检查器同口径
+# ---------------------------------------------------------------------------
+
+
+def issue_arg(text: str) -> str:
+    if not ISSUE_RE.fullmatch(text) or int(text) <= 0:
+        raise argparse.ArgumentTypeError(
+            f"invalid issue number: {text!r} (expected a positive integer, e.g. 289)")
+    return text
+
+
+def axis_arg(text: str) -> str:
+    if not AXIS_RE.fullmatch(text):
+        raise argparse.ArgumentTypeError(
+            f"invalid axis: {text!r} (expected [a-z][a-z0-9_-]*, e.g. standards)")
+    return text
+
+
+def sha_arg(text: str) -> str:
+    if not SHA_RE.fullmatch(text.strip()):
+        raise argparse.ArgumentTypeError(
+            f"invalid commit sha: {text!r} (expected 4-40 hex characters)")
+    return text.strip()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="read-only verification marker for pre-push (warning only)")
+    parser.add_argument("--selftest", action="store_true",
+                        help="run the checker against temp git repos (worktree untouched)")
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
+
+    write_parser = sub.add_parser(
+        "write", help="mark <issue>-<axis> as verified at <sha> (default: HEAD)")
+    write_parser.add_argument("issue", type=issue_arg)
+    write_parser.add_argument("axis", type=axis_arg)
+    write_parser.add_argument("sha", nargs="?", default=None, type=sha_arg)
+
+    check_parser = sub.add_parser(
+        "check", help="warn when HEAD differs from the marker (always exits 0)")
+    check_parser.add_argument("issue", type=issue_arg)
+    return parser
+
+
+# ---------------------------------------------------------------------------
+# selftest：临时 git 仓库模拟 write/check 三态，工作区只读（#289 AC6 判据）
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Case:
+    name: str
+    problems: list[str]
+
+    def check(self, condition: bool, detail: str) -> None:
+        if not condition:
+            self.problems.append(detail)
+
+
+def _selftest_git(root: Path, *args: str) -> str:
+    """临时仓库专用 git（自带身份/关签名，避免受用户全局配置干扰）。"""
+    result = subprocess.run(
+        ["git",
+         "-c", "user.name=review-marker-selftest",
+         "-c", "user.email=selftest@example.invalid",
+         "-c", "commit.gpgsign=false",
+         *args],
+        cwd=root, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise MarkerError(f"git {' '.join(args)} failed in {root}: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def _selftest_repo(path: Path) -> Path:
+    path.mkdir(parents=True)
+    _selftest_git(path, "init", "-q", "-b", "main")
+    (path / "tracked.txt").write_text("one\n", encoding="utf-8")
+    _selftest_git(path, "add", "tracked.txt")
+    _selftest_git(path, "commit", "-q", "-m", "one")
+    return path
+
+
+def _selftest_commit(root: Path, content: str) -> str:
+    (root / "tracked.txt").write_text(content, encoding="utf-8")
+    _selftest_git(root, "add", "tracked.txt")
+    _selftest_git(root, "commit", "-q", "-m", content.strip())
+    return _selftest_git(root, "rev-parse", "HEAD").lower()
+
+
+def _run_cli(cwd: Path, argv: list[str]) -> tuple[int, str, str]:
+    """在 cwd 下跑 main()，捕获 stdout/stderr 与退出码（argparse 的 SystemExit 也折算）。"""
+    out, err = io.StringIO(), io.StringIO()
+    previous = os.getcwd()
+    try:
+        os.chdir(cwd)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = main(argv)
+            except SystemExit as exc:  # argparse：用法错误走这里（2）
+                code = exc.code if isinstance(exc.code, int) else 2
+    finally:
+        os.chdir(previous)
+    return code, out.getvalue(), err.getvalue()
+
+
+def _warning_lines(stderr: str) -> list[str]:
+    return [line for line in stderr.splitlines() if line.startswith("pre-push: review marker")
+            or line.startswith("pre-push: no review marker")]
+
+
+def _case_same_sha(tmp: Path) -> Case:
+    case = Case("same sha -> no warning, rc=0", [])
+    repo = _selftest_repo(tmp / "same_sha")
+    head = _selftest_git(repo, "rev-parse", "HEAD").lower()
+    rc, out, err = _run_cli(repo, ["write", "289", "standards"])
+    marker = repo / ".cache" / "review" / "289-standards.done"
+    case.check(rc == 0, f"write rc={rc}, stderr={err!r}")
+    case.check(marker.is_file(), f"marker file missing: {marker}")
+    case.check(marker.is_file() and marker.read_text(encoding="utf-8").strip() == head,
+               "marker content must be the default HEAD sha")
+    case.check(f"marker: wrote .cache/review/289-standards.done @ {head[:SHORT_SHA_LEN]}"
+               in out, f"unexpected write output: {out!r}")
+    rc, _out, err = _run_cli(repo, ["check", "289"])
+    case.check(rc == 0, f"check rc={rc}")
+    case.check(not _warning_lines(err), f"same sha must not warn, got: {err!r}")
+    return case
+
+
+def _case_new_commit_warns(tmp: Path) -> Case:
+    case = Case("new commit -> warning, rc=0", [])
+    repo = _selftest_repo(tmp / "new_commit")
+    old_head = _selftest_git(repo, "rev-parse", "HEAD").lower()
+    rc, _out, err = _run_cli(repo, ["write", "289", "standards"])
+    case.check(rc == 0, f"write rc={rc}, stderr={err!r}")
+    new_head = _selftest_commit(repo, "two")
+    rc, _out, err = _run_cli(repo, ["check", "289"])
+    warnings = _warning_lines(err)
+    case.check(rc == 0, f"check must exit 0 even with warnings, got rc={rc}")
+    case.check(len(warnings) == 1, f"expected exactly one warning, got: {warnings}")
+    if warnings:
+        case.check("(standards)" in warnings[0], f"warning must name the axis: {warnings[0]}")
+        case.check(old_head[:SHORT_SHA_LEN] in warnings[0],
+                   f"warning must show the marker sha: {warnings[0]}")
+        case.check(new_head[:SHORT_SHA_LEN] in warnings[0],
+                   f"warning must show HEAD: {warnings[0]}")
+        case.check("may not have run" in warnings[0],
+                   f"warning must explain the risk: {warnings[0]}")
+    return case
+
+
+def _case_no_marker_warns(tmp: Path) -> Case:
+    case = Case("no marker -> warning, rc=0", [])
+    repo = _selftest_repo(tmp / "no_marker")
+    rc, _out, err = _run_cli(repo, ["check", "289"])
+    warnings = _warning_lines(err)
+    case.check(rc == 0, f"check must exit 0 without a marker, got rc={rc}")
+    case.check(len(warnings) == 1, f"expected exactly one warning, got: {warnings}")
+    if warnings:
+        case.check("no review marker for #289" in warnings[0],
+                   f"warning must name the issue: {warnings[0]}")
+    # 别的票的标记不能豁免本票（文件按票号前缀隔离）。
+    _run_cli(repo, ["write", "290", "standards"])
+    rc, _out, err = _run_cli(repo, ["check", "289"])
+    case.check(rc == 0, f"check rc={rc}")
+    case.check(len(_warning_lines(err)) == 1,
+               f"marker for #290 must not cover #289, got: {_warning_lines(err)}")
+    return case
+
+
+def _case_multi_axis_independent(tmp: Path) -> Case:
+    case = Case("standards/spec axes are independent", [])
+    repo = _selftest_repo(tmp / "multi_axis")
+    _run_cli(repo, ["write", "289", "standards"])
+    _selftest_commit(repo, "two")
+    rc, _out, err = _run_cli(repo, ["write", "289", "spec"])
+    case.check(rc == 0, f"write spec rc={rc}, stderr={err!r}")
+    rc, _out, err = _run_cli(repo, ["check", "289"])
+    warnings = _warning_lines(err)
+    case.check(rc == 0, f"check rc={rc}")
+    case.check(len(warnings) == 1,
+               f"only the stale axis may warn, got: {warnings}")
+    if warnings:
+        case.check("(standards)" in warnings[0],
+                   f"stale axis must be standards: {warnings[0]}")
+        case.check("(spec)" not in warnings[0],
+                   f"fresh axis must not warn: {warnings[0]}")
+    return case
+
+
+def _case_explicit_sha(tmp: Path) -> Case:
+    case = Case("explicit sha wins over HEAD", [])
+    repo = _selftest_repo(tmp / "explicit_sha")
+    old_head = _selftest_git(repo, "rev-parse", "HEAD").lower()
+    new_head = _selftest_commit(repo, "two")
+    marker = repo / ".cache" / "review" / "289-spec.done"
+    rc, _out, err = _run_cli(repo, ["write", "289", "spec", old_head])
+    case.check(rc == 0, f"write rc={rc}, stderr={err!r}")
+    case.check(marker.is_file() and marker.read_text(encoding="utf-8").strip() == old_head,
+               "marker must store the explicitly passed sha, not HEAD")
+    rc, _out, err = _run_cli(repo, ["check", "289"])
+    case.check(rc == 0, f"check rc={rc}")
+    case.check(len(_warning_lines(err)) == 1,
+               f"explicit old sha must warn against HEAD, got: {_warning_lines(err)}")
+    # 显式传短 sha（= 当前 HEAD 前缀）应视为同一 commit，不 warning。
+    rc, _out, err = _run_cli(repo, ["write", "289", "spec", new_head[:SHORT_SHA_LEN]])
+    case.check(rc == 0, f"write short sha rc={rc}, stderr={err!r}")
+    case.check(marker.read_text(encoding="utf-8").strip() == new_head[:SHORT_SHA_LEN],
+               "short sha must be stored verbatim")
+    rc, _out, err = _run_cli(repo, ["check", "289"])
+    case.check(rc == 0, f"check rc={rc}")
+    case.check(not _warning_lines(err),
+               f"short sha equal to HEAD must not warn, got: {err!r}")
+    return case
+
+
+def _case_usage_errors(tmp: Path) -> Case:
+    case = Case("usage errors -> rc=2", [])
+    repo = _selftest_repo(tmp / "usage")
+    for argv in (["write", "289"], ["write", "abc", "standards"], ["write", "289", "Standards!"],
+                 ["check"], ["check", "abc"], [], ["bogus"]):
+        rc, _out, _err = _run_cli(repo, argv)
+        case.check(rc == 2, f"argv={argv!r} must exit 2, got rc={rc}")
+    return case
+
+
+def run_selftest() -> int:
+    cases: list[Case] = []
+    with tempfile.TemporaryDirectory(prefix="dz_review_marker_selftest_") as tmp:
+        base = Path(tmp)
+        for builder in (_case_same_sha, _case_new_commit_warns, _case_no_marker_warns,
+                        _case_multi_axis_independent, _case_explicit_sha,
+                        _case_usage_errors):
+            case = builder(base)
+            cases.append(case)
+            if case.problems:
+                print(f"selftest FAIL {case.name}", file=sys.stderr)
+                for problem in case.problems:
+                    print(f"     {problem}", file=sys.stderr)
+            else:
+                print(f"selftest ok {case.name}")
+
+    failures = sum(1 for case in cases if case.problems)
+    if failures:
+        print(f"selftest FAILED: {failures}/{len(cases)} case(s)", file=sys.stderr)
+        return 1
+    print(f"selftest: {len(cases)} cases ok (temp git repos; the worktree is never modified)")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.selftest:
+        return run_selftest()
+
+    if args.command is None:
+        parser.error("missing command: expected 'write' or 'check' (see --help)")
+
+    if args.command == "write":
+        try:
+            root = repo_root()
+            sha = (args.sha if args.sha is not None else git_head(root)).lower()
+            path = write_marker(root, args.issue, args.axis, sha)
+        except MarkerError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        display = path.relative_to(root).as_posix()
+        print(f"marker: wrote {display} @ {short_sha(sha)}")
+        return 0
+
+    # check：只提示、不拦截（退出码恒 0）。连 git 环境都不可用时也只降级为提示，
+    # 因为它挂在 pre-push 上——门禁脚本自身的故障不该改变推送结论（#253 的教训）。
+    try:
+        root = repo_root()
+        head = git_head(root)
+    except MarkerError as exc:
+        print(f"pre-push: review marker check skipped; {exc}", file=sys.stderr)
+        return 0
+    for warning in check_markers(root, args.issue, head):
+        print(f"pre-push: {warning}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
