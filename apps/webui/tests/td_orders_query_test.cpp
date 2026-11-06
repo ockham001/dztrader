@@ -6,10 +6,12 @@
  * 游标分页的稳定性、降级 reason 码。不断言 SQL 文本与私有成员。
  *
  * 库形态用**真 schema**（`tdstore::ensure_trade_db` 建库）：测试若与 schema 漂移
- * （列名/列序变化）必须变红，而不是靠手抄 DDL 掩盖。
+ * （列名/列序变化）必须变红，而不是靠手抄 DDL 掩盖。委托行写入统一走共享夹具
+ * `td_order_row_writer.h`（列清单的唯一实现，unit-test-standard §5.4）。
  */
 
 #include "td_orders_query.h"
+#include "td_order_row_writer.h"
 #include "test_temp_dir.h"
 
 #include <dztrader/tdstore/schema_catalog.h>
@@ -29,26 +31,8 @@
 namespace dztrader::webui {
 namespace {
 
-/// 一条委托的构造参数（测试夹具用；只填断言关心的字段）。
-struct OrderSeed {
-    std::string account_id = "ACC1";
-    std::string date = "20261009";
-    int64_t order_id = 1;
-    std::string strategy_id = "stg1";
-    std::string instrument_id = "rb2601";
-    std::string exchange_id = "SHFE";
-    int direction = 1;        // Long
-    int position_effect = 1;  // Open
-    int price_type = 0;       // Limit
-    int status = 2;           // NotTraded
-    double price = 3500.0;
-    int volume = 1;
-    int volume_traded = 0;
-    std::string remark;
-    int time = 32400;
-    double avg_price = 0.0;
-    uint64_t seq = 1;
-};
+/// 一条委托的构造参数：字段清单来自共享夹具（`td_order_row_writer.h`），默认账户 ACC1。
+using OrderSeed = dztrader::test::TdOrderRowSeed;
 
 // dzweb 生产链接不引入 dztdstore（只读库，不需要建库/门面），schema 版本的耦合由这里守：
 // `kTdOrdersReadSchemaVersion` 与建库单源声明不一致时本文件编不过，而不是运行时静默降级。
@@ -91,35 +75,10 @@ protected:
         return db;
     }
 
+    /// 写一行委托（共享夹具 `td_order_row_writer.h` 是列清单的唯一实现）。
     void insert_order(const OrderSeed& seed) {
-        sqlite3* db = open();
-        sqlite3_stmt* stmt = nullptr;
-        const char* sql =
-            "INSERT INTO orders (account_id, date, order_id, strategy_id, instrument_id,"
-            " exchange_id, direction, position_effect, price_type, status, price, volume,"
-            " volume_traded, remark, time, avg_price, seq, gateway, ext)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'dztd_ctp','{}')";
-        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr));
-        sqlite3_bind_text(stmt, 1, seed.account_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 2, seed.date.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 3, seed.order_id);
-        sqlite3_bind_text(stmt, 4, seed.strategy_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 5, seed.instrument_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 6, seed.exchange_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 7, seed.direction);
-        sqlite3_bind_int(stmt, 8, seed.position_effect);
-        sqlite3_bind_int(stmt, 9, seed.price_type);
-        sqlite3_bind_int(stmt, 10, seed.status);
-        sqlite3_bind_double(stmt, 11, seed.price);
-        sqlite3_bind_int(stmt, 12, seed.volume);
-        sqlite3_bind_int(stmt, 13, seed.volume_traded);
-        sqlite3_bind_text(stmt, 14, seed.remark.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 15, seed.time);
-        sqlite3_bind_double(stmt, 16, seed.avg_price);
-        sqlite3_bind_int64(stmt, 17, static_cast<int64_t>(seed.seq));
-        EXPECT_EQ(SQLITE_DONE, sqlite3_step(stmt));
-        sqlite3_finalize(stmt);
-        sqlite3_close(db);
+        const std::string error = dztrader::test::insert_td_order_row(db_path_, seed);
+        ASSERT_TRUE(error.empty()) << error;
     }
 
     void insert_instrument(const std::string& instrument_id, double price_tick) {
